@@ -1,6 +1,10 @@
 use std::sync::Arc;
 
 use engine_core::window::{AppLifecycle, has_renderable_size};
+use wgpu::{
+    CompositeAlphaMode, Device, DeviceDescriptor, Instance, InstanceDescriptor, PresentMode, Queue,
+    Surface, SurfaceConfiguration, SurfaceError, TextureUsages,
+};
 use winit::{
     application::ApplicationHandler,
     dpi::PhysicalSize,
@@ -9,8 +13,164 @@ use winit::{
     window::{Window, WindowId},
 };
 
+struct Renderer {
+    surface: Surface<'static>,
+    device: Device,
+    queue: Queue,
+    config: SurfaceConfiguration,
+}
+
+impl Renderer {
+    fn new(window: Arc<Window>) -> Result<Self, String> {
+        pollster::block_on(Self::new_async(window))
+    }
+
+    async fn new_async(window: Arc<Window>) -> Result<Self, String> {
+        let size = window.inner_size();
+        let instance = Instance::new(&InstanceDescriptor::default());
+        let surface = instance
+            .create_surface(window)
+            .map_err(|error| format!("could not create surface: {error}"))?;
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface: Some(&surface),
+                force_fallback_adapter: false,
+            })
+            .await
+            .map_err(|error| format!("could not find a compatible GPU adapter: {error}"))?;
+        let adapter_name = adapter.get_info().name;
+        let (device, queue) = adapter
+            .request_device(&DeviceDescriptor {
+                label: Some("p2-render-device"),
+                required_features: wgpu::Features::empty(),
+                experimental_features: wgpu::ExperimentalFeatures::disabled(),
+                required_limits: wgpu::Limits::default(),
+                memory_hints: wgpu::MemoryHints::Performance,
+                trace: wgpu::Trace::Off,
+            })
+            .await
+            .map_err(|error| format!("could not create GPU device: {error}"))?;
+        let capabilities = surface.get_capabilities(&adapter);
+        let format = capabilities
+            .formats
+            .iter()
+            .copied()
+            .find(|format| format.is_srgb())
+            .or_else(|| capabilities.formats.first().copied())
+            .ok_or_else(|| "GPU surface reported no supported formats".to_owned())?;
+        let present_mode = if capabilities.present_modes.contains(&PresentMode::Mailbox) {
+            PresentMode::Mailbox
+        } else {
+            PresentMode::Fifo
+        };
+        let alpha_mode = capabilities
+            .alpha_modes
+            .first()
+            .copied()
+            .unwrap_or(CompositeAlphaMode::Auto);
+        let config = SurfaceConfiguration {
+            usage: TextureUsages::RENDER_ATTACHMENT,
+            format,
+            width: size.width.max(1),
+            height: size.height.max(1),
+            present_mode,
+            alpha_mode,
+            view_formats: vec![],
+            desired_maximum_frame_latency: 2,
+        };
+        surface.configure(&device, &config);
+        println!(
+            "[render] initialized: adapter={adapter_name} format={format:?} present_mode={present_mode:?}"
+        );
+        Ok(Self {
+            surface,
+            device,
+            queue,
+            config,
+        })
+    }
+
+    fn resize(&mut self, size: PhysicalSize<u32>) {
+        if !has_renderable_size(size.width, size.height) {
+            return;
+        }
+        self.config.width = size.width;
+        self.config.height = size.height;
+        self.surface.configure(&self.device, &self.config);
+        println!(
+            "[render] surface reconfigured: {}x{}",
+            size.width, size.height
+        );
+    }
+
+    fn render(&mut self) -> RenderOutcome {
+        let output = match self.surface.get_current_texture() {
+            Ok(output) => output,
+            Err(SurfaceError::Lost | SurfaceError::Outdated) => {
+                self.surface.configure(&self.device, &self.config);
+                println!("[render] surface reconfigured after transient error");
+                return RenderOutcome::Retry;
+            }
+            Err(SurfaceError::Timeout) => {
+                eprintln!("[render] surface acquire timed out; skipping frame");
+                return RenderOutcome::Skipped;
+            }
+            Err(SurfaceError::OutOfMemory) => {
+                eprintln!("[render] GPU out of memory; requesting shutdown");
+                return RenderOutcome::Fatal;
+            }
+            Err(SurfaceError::Other) => {
+                eprintln!("[render] surface acquire failed with an unknown error");
+                return RenderOutcome::Skipped;
+            }
+        };
+        let view = output
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("p2-clear-encoder"),
+            });
+        {
+            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("p2-clear-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 0.04,
+                            g: 0.07,
+                            b: 0.12,
+                            a: 1.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+        }
+        self.queue.submit([encoder.finish()]);
+        output.present();
+        RenderOutcome::Presented
+    }
+}
+
+enum RenderOutcome {
+    Presented,
+    Retry,
+    Skipped,
+    Fatal,
+}
+
 struct GameApp {
     window: Option<Arc<Window>>,
+    renderer: Option<Renderer>,
     lifecycle: AppLifecycle,
     occluded: bool,
 }
@@ -19,6 +179,7 @@ impl GameApp {
     fn new() -> Self {
         Self {
             window: None,
+            renderer: None,
             lifecycle: AppLifecycle::Initializing,
             occluded: false,
         }
@@ -30,6 +191,16 @@ impl GameApp {
             return;
         }
         println!("[lifecycle] {:?}", self.lifecycle);
+    }
+
+    fn request_exit(&mut self, event_loop: &ActiveEventLoop) {
+        if matches!(self.lifecycle, AppLifecycle::Running | AppLifecycle::Paused) {
+            self.transition(AppLifecycle::Exiting);
+        }
+        event_loop.exit();
+        if self.lifecycle == AppLifecycle::Exiting {
+            self.transition(AppLifecycle::Exited);
+        }
     }
 
     fn update_pause_state(&mut self, size: PhysicalSize<u32>) {
@@ -48,6 +219,20 @@ impl GameApp {
             println!("[window] renderable size: {}x{}", size.width, size.height);
         }
     }
+
+    fn redraw(&mut self, event_loop: &ActiveEventLoop) {
+        if self.lifecycle != AppLifecycle::Running {
+            return;
+        }
+        let Some(renderer) = self.renderer.as_mut() else {
+            return;
+        };
+        match renderer.render() {
+            RenderOutcome::Presented => {}
+            RenderOutcome::Retry | RenderOutcome::Skipped => {}
+            RenderOutcome::Fatal => self.request_exit(event_loop),
+        }
+    }
 }
 
 impl ApplicationHandler for GameApp {
@@ -56,12 +241,25 @@ impl ApplicationHandler for GameApp {
             return;
         }
         let attributes = Window::default_attributes()
-            .with_title("P2 RustLua Engine - M1-01 Window")
+            .with_title("P2 RustLua Engine - M1-02 Clear")
             .with_inner_size(PhysicalSize::new(1280, 720));
         let window = Arc::new(event_loop.create_window(attributes).expect("create window"));
         println!("[window] created: {:?}", window.id());
-        self.window = Some(window);
-        self.transition(AppLifecycle::Running);
+        match Renderer::new(window.clone()) {
+            Ok(renderer) => {
+                self.window = Some(window);
+                self.renderer = Some(renderer);
+                self.transition(AppLifecycle::Running);
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
+            }
+            Err(error) => {
+                eprintln!("[render] initialization failed: {error}");
+                self.window = Some(window);
+                self.request_exit(event_loop);
+            }
+        }
     }
 
     fn window_event(
@@ -80,19 +278,26 @@ impl ApplicationHandler for GameApp {
         match event {
             WindowEvent::CloseRequested => {
                 println!("[window] close requested");
-                self.transition(AppLifecycle::Exiting);
-                event_loop.exit();
-                self.transition(AppLifecycle::Exited);
+                self.request_exit(event_loop);
             }
-            WindowEvent::Resized(size) => self.update_pause_state(size),
+            WindowEvent::Resized(size) => {
+                if let Some(renderer) = self.renderer.as_mut() {
+                    renderer.resize(size);
+                }
+                self.update_pause_state(size);
+            }
             WindowEvent::Occluded(occluded) => {
                 self.occluded = occluded;
                 let size = self.window.as_ref().expect("window exists").inner_size();
                 self.update_pause_state(size);
             }
             WindowEvent::RedrawRequested => {
-                if self.lifecycle.is_simulation_active() {
-                    println!("[window] redraw");
+                self.redraw(event_loop);
+                if self.lifecycle == AppLifecycle::Running {
+                    self.window
+                        .as_ref()
+                        .expect("window exists")
+                        .request_redraw();
                 }
             }
             WindowEvent::KeyboardInput { event, .. }
@@ -101,9 +306,7 @@ impl ApplicationHandler for GameApp {
                         == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape) =>
             {
                 println!("[window] Escape pressed; requesting close");
-                self.transition(AppLifecycle::Exiting);
-                event_loop.exit();
-                self.transition(AppLifecycle::Exited);
+                self.request_exit(event_loop);
             }
             _ => {}
         }

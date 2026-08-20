@@ -35,6 +35,7 @@ $env:PATH = "C:\Users\Administrator\.cargo\bin;" + $env:PATH
 p2 game runner 0.1.0
 [lifecycle] Running
 [window] created: WindowId(...)
+[render] initialized: adapter=<GPU> format=<sRGB> present_mode=<Mailbox/Fifo>
 
 窗口标题：P2 RustLua Engine - M1-01 Window
 按 Escape 或关闭窗口退出。
@@ -52,6 +53,7 @@ p2 game runner 0.1.0
 p2 game runner 0.1.0
 [lifecycle] Running
 [window] created: WindowId(...)
+[render] initialized: adapter=<GPU> format=<sRGB> present_mode=<Mailbox/Fifo>
 
 窗口标题：P2 RustLua Engine - M1-01 Window
 按 Escape 或关闭窗口退出。

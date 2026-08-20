@@ -1,4 +1,4 @@
-[package]
+﻿[package]
 name = "game_runner"
 version.workspace = true
 edition.workspace = true
@@ -8,4 +8,6 @@ publish = false
 
 [dependencies]
 engine_core.workspace = true
+pollster = "0.4"
+wgpu = "27"
 winit = "0.30"
