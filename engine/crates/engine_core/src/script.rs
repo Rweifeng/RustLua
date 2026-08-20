@@ -75,12 +75,85 @@ struct ScriptFingerprint {
     hash: u64,
 }
 
+/// A structured diagnostic emitted by a Lua script load or execution failure.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ScriptDiagnostic {
+    pub path: PathBuf,
+    pub phase: String,
+    pub message: String,
+    pub line: Option<u32>,
+    pub stack_trace: String,
+    pub occurrences: u32,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ScriptDebugger {
+    records: Vec<ScriptDiagnostic>,
+    filter: Option<String>,
+}
+
+impl ScriptDebugger {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn record(&mut self, path: PathBuf, phase: impl Into<String>, source: impl Into<String>) {
+        let phase = phase.into();
+        let source = source.into();
+        let line = find_line_number(&source);
+        if let Some(existing) = self
+            .records
+            .iter_mut()
+            .find(|item| item.path == path && item.phase == phase && item.message == source)
+        {
+            existing.occurrences = existing.occurrences.saturating_add(1);
+            return;
+        }
+        self.records.push(ScriptDiagnostic {
+            path,
+            phase,
+            message: source.clone(),
+            line,
+            stack_trace: source,
+            occurrences: 1,
+        });
+    }
+
+    pub fn clear(&mut self) {
+        self.records.clear();
+    }
+
+    pub fn set_filter(&mut self, filter: Option<String>) {
+        self.filter = filter;
+    }
+
+    #[must_use]
+    pub fn all(&self) -> &[ScriptDiagnostic] {
+        &self.records
+    }
+
+    #[must_use]
+    pub fn visible(&self) -> Vec<ScriptDiagnostic> {
+        self.records
+            .iter()
+            .filter(|item| {
+                self.filter.as_ref().is_none_or(|filter| {
+                    item.message.contains(filter) || item.path.to_string_lossy().contains(filter)
+                })
+            })
+            .cloned()
+            .collect()
+    }
+}
+
 /// Main-thread Lua runtime for project scripts.
 pub struct LuaRuntime {
     lua: Lua,
     state: Rc<RefCell<ScriptState>>,
     current_path: Option<PathBuf>,
     fingerprint: Option<ScriptFingerprint>,
+    debugger: ScriptDebugger,
 }
 impl LuaRuntime {
     pub fn new() -> Result<Self, LuaBridgeError> {
@@ -93,6 +166,7 @@ impl LuaRuntime {
             state,
             current_path: None,
             fingerprint: None,
+            debugger: ScriptDebugger::new(),
         })
     }
 
@@ -109,11 +183,21 @@ impl LuaRuntime {
             path: path.to_path_buf(),
             source: error.to_string(),
         })?;
-        let candidate = self.load_candidate(path, &source)?;
-        call_optional(&candidate, "on_create").map_err(|error| LuaBridgeError::Runtime {
-            path: path.to_path_buf(),
-            source: error.to_string(),
-        })?;
+        let candidate = match self.load_candidate(path, &source) {
+            Ok(candidate) => candidate,
+            Err(error) => {
+                self.record_bridge_error(&error);
+                return Err(error);
+            }
+        };
+        if let Err(error) = call_optional(&candidate, "on_create") {
+            let error = LuaBridgeError::Runtime {
+                path: path.to_path_buf(),
+                source: error.to_string(),
+            };
+            self.record_bridge_error(&error);
+            return Err(error);
+        }
         self.lua = candidate;
         self.current_path = Some(path.to_path_buf());
         self.fingerprint = Some(file_fingerprint(path, &source)?);
@@ -200,10 +284,75 @@ impl LuaRuntime {
         })
     }
 
+    pub fn call_update_debug(&mut self) -> Result<String, LuaBridgeError> {
+        match self.call_update() {
+            Ok(value) => Ok(value),
+            Err(error) => {
+                self.record_bridge_error(&error);
+                Err(error)
+            }
+        }
+    }
+
+    fn record_bridge_error(&mut self, error: &LuaBridgeError) {
+        match error {
+            LuaBridgeError::Load { path, source } => {
+                self.debugger.record(path.clone(), "load", source.clone())
+            }
+            LuaBridgeError::Runtime { path, source } => {
+                self.debugger
+                    .record(path.clone(), "runtime", source.clone())
+            }
+            LuaBridgeError::Api(source) | LuaBridgeError::Init(source) => {
+                self.debugger
+                    .record(PathBuf::from("<engine>"), "api", source.clone())
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn diagnostics(&self) -> Vec<ScriptDiagnostic> {
+        self.debugger.visible()
+    }
+
+    #[must_use]
+    pub fn all_diagnostics(&self) -> &[ScriptDiagnostic] {
+        self.debugger.all()
+    }
+
+    pub fn clear_diagnostics(&mut self) {
+        self.debugger.clear();
+    }
+
+    pub fn set_debug_filter(&mut self, filter: Option<String>) {
+        self.debugger.set_filter(filter);
+    }
+
     #[must_use]
     pub fn quit_requested(&self) -> bool {
         self.state.borrow().quit_requested
     }
+}
+
+fn find_line_number(source: &str) -> Option<u32> {
+    let bytes = source.as_bytes();
+    for index in 0..bytes.len() {
+        if bytes[index] != b':' {
+            continue;
+        }
+        let start = index + 1;
+        let mut end = start;
+        while end < bytes.len() && bytes[end].is_ascii_digit() {
+            end += 1;
+        }
+        if end > start
+            && (end == bytes.len() || bytes[end] == 58 || bytes[end] == 32)
+            && let Ok(line) = source[start..end].parse()
+        {
+            return Some(line);
+        }
+    }
+    None
 }
 
 fn file_fingerprint(path: &Path, source: &str) -> Result<ScriptFingerprint, LuaBridgeError> {
@@ -818,6 +967,33 @@ mod tests {
         assert_eq!(runtime.call_update().unwrap(), "v2");
         let _ = fs::remove_file(path);
     }
+    #[test]
+    fn debugger_extracts_location_deduplicates_and_filters() {
+        let path = script("function update() error('boom') end");
+        let mut runtime = LuaRuntime::new().unwrap();
+        runtime.execute_project_script(&path).unwrap();
+        assert!(runtime.call_update_debug().is_err());
+        assert!(runtime.call_update_debug().is_err());
+        assert_eq!(runtime.all_diagnostics().len(), 1);
+        assert_eq!(runtime.all_diagnostics()[0].occurrences, 2);
+        assert_eq!(runtime.all_diagnostics()[0].phase, "runtime");
+        runtime.set_debug_filter(Some("does-not-match".to_string()));
+        assert!(runtime.diagnostics().is_empty());
+        runtime.set_debug_filter(Some("boom".to_string()));
+        assert_eq!(runtime.diagnostics().len(), 1);
+        runtime.clear_diagnostics();
+        assert!(runtime.all_diagnostics().is_empty());
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn debugger_extracts_line_from_lua_message() {
+        let mut debugger = ScriptDebugger::new();
+        debugger.record(PathBuf::from("game.lua"), "runtime", "game.lua:42: boom");
+        assert_eq!(debugger.all()[0].line, Some(42));
+        assert_eq!(debugger.all()[0].stack_trace, "game.lua:42: boom");
+    }
+
     #[test]
     fn syntax_error_contains_path_and_line() {
         let path = script("function update(\n");

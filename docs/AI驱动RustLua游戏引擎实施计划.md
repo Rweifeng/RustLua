@@ -1450,7 +1450,7 @@ artifacts/builds/<milestone>/...
 - [x] M4-04 预制体；
 - [x] M4-05 Lua API；
 - [x] M4-06 热重载；
-- [ ] M4-07 脚本调试；
+- [x] M4-07 脚本调试；
 - [ ] M4-08 场景脚本 Demo；
 - [ ] M4 里程碑验收并打标签 `v0.4-scripting`。
 

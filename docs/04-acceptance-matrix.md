@@ -74,3 +74,6 @@
 
 
 | M4-A06 | Lua 热重载 | M4-A05 | `cargo test --workspace --all-features`、`cargo run -p game_runner --example lua_hot_reload_demo --release`、`cargo fmt --all`、`cargo clippy --workspace --all-targets --all-features -- -D warnings` | 脚本未变化返回 Unchanged；修改后可加载新模块；候选脚本加载失败时保留旧 VM；支持 on_create/on_destroy；闭包、协程和 Lua 全局状态不迁移的限制有文档说明 | script 单元测试、Release Demo、格式检查、Clippy | `tasks/done/M4-06-Lua-热重载.md`；`docs/19-lua-hot-reload.md`；`lua_hot_reload_demo_ok unchanged=true reloaded=true rollback=true update=v2` | PASS | M4 |
+
+
+| M4-A07 | Lua 脚本调试 | M4-A06 | `cargo test --workspace --all-features`、`cargo run -p game_runner --example lua_script_debug_demo --release`、`cargo fmt --all`、`cargo clippy --workspace --all-targets --all-features -- -D warnings` | 语法/运行时错误包含路径和行号或调用栈文本；诊断记录支持过滤和清理；相同错误聚合计数；发布运行路径不自动开启调试控制台 | script 单元测试、Release Demo、格式检查、Clippy | `tasks/done/M4-07-脚本调试.md`；`docs/20-lua-script-debug.md`；`lua_script_debug_demo_ok diagnostics=1 deduplicated=true filtered=true stack=true` | PASS | M4 |
