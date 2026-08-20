@@ -1423,7 +1423,7 @@ artifacts/builds/<milestone>/...
 
 - [x] M2-01 EntityId；
 - [x] M2-02 World；
-- [ ] M2-03 Transform/Velocity；
+- [x] M2-03 Transform/Velocity；
 - [ ] M2-04 Scheduler；
 - [ ] M2-05 Events；
 - [ ] M2-06 Commands；

@@ -12,6 +12,8 @@ pub mod performance;
 pub mod script;
 /// Fixed-rate simulation timing primitives.
 pub mod time_step;
+/// 2D transform and velocity components with a minimal integration system.
+pub mod transform;
 /// Window and application lifecycle primitives.
 pub mod window;
 /// Entity world and type-erased component storage.
