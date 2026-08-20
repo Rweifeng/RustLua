@@ -1,19 +1,26 @@
-# M2-06 Command 闃熷垪
+# M2-06 Command 队列
 
-## 鐘舵€?
-- 鐘舵€侊細PASS
-- 瀹屾垚鏃ユ湡锛?026-08-20
-- Git 鎻愪氦锛氬緟鎻愪氦
+## 状态
 
-## 鐩爣
+- 状态：PASS
+- 完成日期：2026-08-20
+- Git 提交：64b256f（完成 M2-06 Command 队列）
 
-鍦?ECS 绯荤粺杩唬鏈熼棿锛屽皢瀹炰綋鐢熷懡鍛ㄦ湡鍜岀粍浠跺彉鏇村欢杩熷埌鏄惧紡 `apply` 闃舵鎵ц锛岄伩鍏嶇郴缁熸寔鏈夎凯浠ｆ暟鎹椂鐩存帴淇敼 `World`锛屽苟淇濊瘉鍛戒护鎸?FIFO 椤哄簭銆佹瘡鎵瑰彧搴旂敤涓€娆°€?
-## 瀹炴柦鍐呭
+## 目标
 
-- 鏂板 `engine_core::commands::CommandQueue`锛?- 鏀寔 `spawn`銆乣despawn`銆乣insert`銆乣remove` 鍛戒护锛?- 浣跨敤 `SpawnToken` 寮曠敤鍚屼竴鎵规涓皻鏈垱寤虹殑瀹炰綋锛?- 鏀寔 `spawn -> insert`銆乣spawn -> despawn` 绛夊悓鎵规鍛戒护閾撅紱
-- 閫氳繃 generation 瀹夊叏鐨?`EntityId` 闃叉杩囨湡鍙ユ焺璇搷浣滃鐢ㄦЫ浣嶏紱
-- `apply` 鍦ㄦ墽琛屽墠鍙栬蛋褰撳墠鎵规锛屽け璐ュ悗涓嶄細閲嶅鎵ц宸叉秷璐圭殑鍛戒护锛?- 閿欒鍖呭惈鍛戒护绱㈠紩銆佹搷浣滃悕绉板拰搴曞眰 World 閿欒銆?
-## 涓昏 API
+在 ECS 系统迭代期间，将实体生命周期和组件变更延迟到显式 `apply` 阶段执行，避免系统持有迭代数据时直接修改 `World`，并保证命令按 FIFO 顺序、每批只应用一次。
+
+## 实施内容
+
+- 新增 `engine_core::commands::CommandQueue`；
+- 支持 `spawn`、`despawn`、`insert`、`remove` 命令；
+- 使用 `SpawnToken` 引用同一批次中尚未创建的实体；
+- 支持 `spawn -> insert`、`spawn -> despawn` 等同批次命令链；
+- 通过 generation 安全的 `EntityId` 防止过期句柄误操作复用槽位；
+- `apply` 在执行前取走当前批次，失败后不会重复执行已消费的命令；
+- 错误包含命令索引、操作名称和底层 World 错误。
+
+## 主要 API
 
 ```rust
 CommandQueue::new()
@@ -26,25 +33,29 @@ CommandQueue::is_empty()
 CommandQueue::apply(&mut world)
 ```
 
-鐩爣鍙互鏄凡鏈?`EntityId`锛屼篃鍙互鏄湰鎵规 `spawn()` 杩斿洖鐨?`SpawnToken`銆?
-## 楠屾敹缁撴灉
+目标可以是已有 `EntityId`，也可以是本批次 `spawn()` 返回的 `SpawnToken`。
 
-| 楠屾敹椤?| 缁撴灉 | 鑷姩鍖栬瘉鎹?|
+## 验收结果
+
+| 验收项 | 结果 | 自动化证据 |
 |---|---|---|
-| 绯荤粺杩唬鏈熼棿閿€姣佽姹備笉绔嬪嵆淇敼 World | PASS | `commands::tests::despawn_during_iteration_is_deferred` |
-| 鍛戒护鎸夊叆闃熼『搴忔墽琛?| PASS | `commands::tests::queues_mutations_until_apply_and_preserves_order` |
-| 鍚屾壒娆?`spawn -> insert` 鍙В鏋愪复鏃跺彞鏌?| PASS | `commands::tests::spawn_token_can_be_used_by_later_commands_in_same_batch` |
-| 鍚屾壒娆?`spawn -> despawn` 瀹夊叏鎵ц | PASS | `commands::tests::spawn_then_despawn_is_applied_safely` |
-| 杩囨湡 EntityId 涓嶄細璇搷浣滄柊瀹炰綋 | PASS | `commands::tests::stale_existing_targets_fail_without_touching_reused_entities` |
-| 闈炴硶涓存椂鍙ユ焺杩斿洖鏄庣‘涓婁笅鏂囬敊璇?| PASS | `commands::tests::missing_token_reports_context_and_batch_is_consumed` |
-| 澶辫触鎵规涓嶄細琚噸澶嶆墽琛?| PASS | `commands::tests::missing_token_reports_context_and_batch_is_consumed` |
-| 缁勪欢绉婚櫎鍛戒护鍙敤 | PASS | `commands::tests::invalid_entity_id_is_not_accepted_as_another_entity` |
-| engine_core 娴嬭瘯 | PASS | `cargo test -p engine_core --all-features`锛?3 椤归€氳繃 |
-| Debug/Release 璐ㄩ噺闂?| 寰呰繍琛?| 瑙佹湰浠诲姟鏈€缁堥獙鏀惰褰?|
+| 系统迭代期间销毁请求不立即修改 World | PASS | `commands::tests::despawn_during_iteration_is_deferred` |
+| 命令按入队顺序执行 | PASS | `commands::tests::queues_mutations_until_apply_and_preserves_order` |
+| 同批次 `spawn -> insert` 可解析临时句柄 | PASS | `commands::tests::spawn_token_can_be_used_by_later_commands_in_same_batch` |
+| 同批次 `spawn -> despawn` 安全执行 | PASS | `commands::tests::spawn_then_despawn_is_applied_safely` |
+| 过期 EntityId 不会误操作新实体 | PASS | `commands::tests::stale_existing_targets_fail_without_touching_reused_entities` |
+| 非法临时句柄返回明确上下文错误 | PASS | `commands::tests::missing_token_reports_context_and_batch_is_consumed` |
+| 失败批次不会被重复执行 | PASS | `commands::tests::missing_token_reports_context_and_batch_is_consumed` |
+| 组件移除命令可用 | PASS | `commands::tests::invalid_entity_id_is_not_accepted_as_another_entity` |
+| engine_core 测试 | PASS | `cargo test -p engine_core --all-features`，53 项通过 |
+| Debug 质量门 | PASS | `artifacts/logs/quality/verify-20260820-180924.log` |
+| Release 质量门 | PASS | `artifacts/logs/quality/verify-20260820-180929.log` |
 
-## 璁捐杈圭晫
+## 设计边界
 
-褰撳墠瀹炵幇鏄崟绾跨▼銆佹樉寮忔壒澶勭悊妯″瀷锛屼笉鎻愪緵璺ㄧ嚎绋嬫棤閿侀槦鍒椼€佸懡浠ゆ挙閿€銆佷簨鍔″洖婊氭垨鑷姩骞惰璋冨害銆傚懡浠ゅけ璐ユ椂锛屽け璐ュ墠鐨勫懡浠ゅ凡缁忕敓鏁堬紱璋冪敤鏂瑰簲渚濇嵁閿欒涓婁笅鏂囧喅瀹氭槸鍚﹂噸寤?World 鎴栨彁浜よˉ鍋垮懡浠ゃ€?
-## 鍚庣画琛旀帴
+当前实现是单线程、显式批处理模型，不提供跨线程无锁队列、命令撤销、事务回滚或自动并行调度。命令失败时，失败前的命令已经生效；调用方应依据错误上下文决定是否重建 World 或提交补偿命令。
 
-- M2-07锛氬湪 10000 瀹炰綋鍦烘櫙涓嬫祴閲忓垱寤恒€佹煡璇€佹洿鏂般€侀攢姣佸拰鍛戒护搴旂敤寮€閿€锛?- M2 閲岀▼纰戯細缁撳悎 Events銆丼cheduler 鍜屽帇鍔涙祴璇曞畬鎴?`v0.2-ecs` 楠屾敹銆
+## 后续衔接
+
+- M2-07：在 10000 实体场景下测量创建、查询、更新、销毁和命令应用开销；
+- M2 里程碑：结合 Events、Scheduler 和压力测试完成 `v0.2-ecs` 验收。
