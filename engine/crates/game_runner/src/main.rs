@@ -1,6 +1,7 @@
 use std::{path::PathBuf, sync::Arc};
 
 use engine_core::{
+    logging::{EngineError, LogModule, init_logging},
     script::LuaRuntime,
     window::{AppLifecycle, has_renderable_size},
 };
@@ -83,7 +84,7 @@ impl Renderer {
             desired_maximum_frame_latency: 2,
         };
         surface.configure(&device, &config);
-        println!(
+        tracing::info!(target: "game",
             "[render] initialized: adapter={adapter_name} format={format:?} present_mode={present_mode:?}"
         );
         Ok(Self {
@@ -101,7 +102,7 @@ impl Renderer {
         self.config.width = size.width;
         self.config.height = size.height;
         self.surface.configure(&self.device, &self.config);
-        println!(
+        tracing::info!(target: "game",
             "[render] surface reconfigured: {}x{}",
             size.width, size.height
         );
@@ -112,19 +113,19 @@ impl Renderer {
             Ok(output) => output,
             Err(SurfaceError::Lost | SurfaceError::Outdated) => {
                 self.surface.configure(&self.device, &self.config);
-                println!("[render] surface reconfigured after transient error");
+                tracing::info!(target: "game", "[render] surface reconfigured after transient error");
                 return RenderOutcome::Retry;
             }
             Err(SurfaceError::Timeout) => {
-                eprintln!("[render] surface acquire timed out; skipping frame");
+                tracing::info!(target: "game", "[render] surface acquire timed out; skipping frame");
                 return RenderOutcome::Skipped;
             }
             Err(SurfaceError::OutOfMemory) => {
-                eprintln!("[render] GPU out of memory; requesting shutdown");
+                tracing::error!(target: "engine", error = %EngineError::new(LogModule::Engine, "render frame", "GPU is out of memory").with_suggestion("close other GPU applications or reduce resource usage"), "GPU out of memory; requesting shutdown");
                 return RenderOutcome::Fatal;
             }
             Err(SurfaceError::Other) => {
-                eprintln!("[render] surface acquire failed with an unknown error");
+                tracing::info!(target: "game", "[render] surface acquire failed with an unknown error");
                 return RenderOutcome::Skipped;
             }
         };
@@ -192,10 +193,10 @@ impl GameApp {
 
     fn transition(&mut self, next: AppLifecycle) {
         if let Err(error) = self.lifecycle.transition(next) {
-            eprintln!("[lifecycle] {error}");
+            tracing::info!(target: "game", "[lifecycle] {error}");
             return;
         }
-        println!("[lifecycle] {:?}", self.lifecycle);
+        tracing::info!(target: "game", "[lifecycle] {:?}", self.lifecycle);
     }
 
     fn request_exit(&mut self, event_loop: &ActiveEventLoop) {
@@ -216,12 +217,12 @@ impl GameApp {
             _ => {}
         }
         if should_pause {
-            println!(
+            tracing::info!(target: "game",
                 "[window] simulation paused: size={}x{} occluded={}",
                 size.width, size.height, self.occluded
             );
         } else {
-            println!("[window] renderable size: {}x{}", size.width, size.height);
+            tracing::info!(target: "game", "[window] renderable size: {}x{}", size.width, size.height);
         }
     }
 
@@ -236,32 +237,47 @@ impl GameApp {
         let mut runtime = match LuaRuntime::new() {
             Ok(runtime) => runtime,
             Err(error) => {
-                eprintln!("[script] initialization failed: {error}");
+                tracing::info!(target: "game", "[script] initialization failed: {error}");
                 self.request_exit(event_loop);
                 return;
             }
         };
         runtime.set_delta(1.0 / 60.0);
         if let Err(error) = runtime.execute_project_script(&script_path) {
-            eprintln!("[script] error: {error}");
+            let diagnostic = EngineError::new(
+                LogModule::Script,
+                "load project script",
+                script_path.display().to_string(),
+            )
+            .with_source(&error)
+            .with_suggestion("check the Lua file path, syntax, and permissions");
+            tracing::error!(target: "script", error = %diagnostic, "script loading failed");
             self.request_exit(event_loop);
             return;
         }
         match runtime.call_update() {
-            Ok(result) => println!("[script] update returned: {result}"),
+            Ok(result) => tracing::info!(target: "game", "[script] update returned: {result}"),
             Err(error) => {
-                eprintln!("[script] error: {error}");
+                let diagnostic = EngineError::new(
+                    LogModule::Script,
+                    "call update",
+                    "project Lua update function",
+                )
+                .with_source(&error)
+                .with_suggestion("fix the Lua runtime error reported above");
+                tracing::error!(target: "script", error = %diagnostic, "script update failed");
                 self.request_exit(event_loop);
                 return;
             }
         }
         if runtime.quit_requested() {
-            println!("[script] app.quit requested");
+            tracing::info!(target: "game", "[script] app.quit requested");
             self.request_exit(event_loop);
             return;
         }
         self.script_runtime = Some(runtime);
     }
+
     fn redraw(&mut self, event_loop: &ActiveEventLoop) {
         if self.lifecycle != AppLifecycle::Running {
             return;
@@ -286,7 +302,7 @@ impl ApplicationHandler for GameApp {
             .with_title("P2 RustLua Engine - M1-03 Lua Bridge")
             .with_inner_size(PhysicalSize::new(1280, 720));
         let window = Arc::new(event_loop.create_window(attributes).expect("create window"));
-        println!("[window] created: {:?}", window.id());
+        tracing::info!(target: "game", "[window] created: {:?}", window.id());
         match Renderer::new(window.clone()) {
             Ok(renderer) => {
                 self.window = Some(window);
@@ -301,7 +317,7 @@ impl ApplicationHandler for GameApp {
                 }
             }
             Err(error) => {
-                eprintln!("[render] initialization failed: {error}");
+                tracing::error!(target: "engine", error = %EngineError::new(LogModule::Engine, "initialize renderer", "GPU renderer startup failed").with_source(&error).with_suggestion("update the graphics driver or use a compatible GPU"), "renderer initialization failed");
                 self.window = Some(window);
                 self.request_exit(event_loop);
             }
@@ -323,7 +339,7 @@ impl ApplicationHandler for GameApp {
         }
         match event {
             WindowEvent::CloseRequested => {
-                println!("[window] close requested");
+                tracing::info!(target: "game", "[window] close requested");
                 self.request_exit(event_loop);
             }
             WindowEvent::Resized(size) => {
@@ -351,7 +367,7 @@ impl ApplicationHandler for GameApp {
                     && event.logical_key
                         == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape) =>
             {
-                println!("[window] Escape pressed; requesting close");
+                tracing::info!(target: "game", "[window] Escape pressed; requesting close");
                 self.request_exit(event_loop);
             }
             _ => {}
@@ -359,8 +375,17 @@ impl ApplicationHandler for GameApp {
     }
 }
 
-fn main() -> Result<(), winit::error::EventLoopError> {
-    println!("p2 game runner {}", engine_core::version());
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let log_path = [
+        PathBuf::from("artifacts/logs/game-runner.log"),
+        PathBuf::from("../artifacts/logs/game-runner.log"),
+    ]
+    .into_iter()
+    .find(|path| path.parent().is_some_and(|parent| parent.is_dir()))
+    .unwrap_or_else(|| PathBuf::from("artifacts/logs/game-runner.log"));
+    init_logging(log_path, None).map_err(|error| Box::new(error) as Box<dyn std::error::Error>)?;
+    tracing::info!(target: "game", version = engine_core::version(), "game runner starting");
     let event_loop = EventLoop::new()?;
-    event_loop.run_app(&mut GameApp::new())
+    event_loop.run_app(&mut GameApp::new())?;
+    Ok(())
 }

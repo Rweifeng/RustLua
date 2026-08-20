@@ -1,0 +1,243 @@
+2026-08-20T07:12:48.009368Z  INFO game: game runner starting version="0.1.0"
+2026-08-20T07:12:48.041349Z  INFO game: [window] created: WindowId(1509296)
+2026-08-20T07:12:48.649440Z  WARN wgpu_hal::vulkan::instance: InstanceFlags::VALIDATION requested, but unable to find layer: VK_LAYER_KHRONOS_validation
+2026-08-20T07:12:48.670857Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	No valid vk_loader_settings.json file found, no loader settings will be active
+2026-08-20T07:12:48.671938Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.672590Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	windows_get_app_package_manifest_path: Failed to find mapping layers packages by family name
+2026-08-20T07:12:48.673029Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.673272Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	Checking for Layer Manifest files in Registry at HKEY_LOCAL_MACHINE\SOFTWARE\Khronos\Vulkan\ImplicitLayers
+2026-08-20T07:12:48.673514Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.673842Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	windows_add_json_entry: Located json file "C:\WINDOWS\System32\DriverStore\FileRepository\nv_dispi.inf_amd64_6548260a81e093a0\nv-vk64.json" from PnP registry: E
+2026-08-20T07:12:48.674067Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.674338Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	Located json file "D:\Program Files (x86)\Steam\SteamOverlayVulkanLayer64.json" from registry "HKEY_LOCAL_MACHINE\SOFTWARE\Khronos\Vulkan\ImplicitLayers"
+2026-08-20T07:12:48.674546Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.674758Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	Located json file "D:\Program Files (x86)\Steam\SteamFossilizeVulkanLayer64.json" from registry "HKEY_LOCAL_MACHINE\SOFTWARE\Khronos\Vulkan\ImplicitLayers"
+2026-08-20T07:12:48.674971Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.675261Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	Located json file "C:\Program Files\RenderDoc\renderdoc.json" from registry "HKEY_LOCAL_MACHINE\SOFTWARE\Khronos\Vulkan\ImplicitLayers"
+2026-08-20T07:12:48.675473Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.675864Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	Found manifest file C:\WINDOWS\System32\DriverStore\FileRepository\nv_dispi.inf_amd64_6548260a81e093a0\nv-vk64.json (file version 1.0.1)
+2026-08-20T07:12:48.676095Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.676380Z ERROR wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	loader_get_json: Failed to open JSON file D:\Program Files (x86)\Steam\SteamOverlayVulkanLayer64.json
+2026-08-20T07:12:48.676591Z ERROR wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.676819Z ERROR wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	loader_get_json: Failed to open JSON file D:\Program Files (x86)\Steam\SteamFossilizeVulkanLayer64.json
+2026-08-20T07:12:48.677029Z ERROR wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.677333Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	Found manifest file C:\Program Files\RenderDoc\renderdoc.json (file version 1.1.2)
+2026-08-20T07:12:48.677537Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.677925Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	Checking for Layer Manifest files in Registry at HKEY_LOCAL_MACHINE\SOFTWARE\Khronos\Vulkan\ExplicitLayers
+2026-08-20T07:12:48.678138Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.678495Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	windows_get_device_registry_files: opening device PCI\VEN_10DE&DEV_1D01&SUBSYS_11E610DE&REV_A1\4&2cbd2acf&0&0008
+2026-08-20T07:12:48.678735Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.678982Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	windows_get_device_registry_entry: Device ID(1) Does not contain a value for "VulkanExplicitLayers"
+2026-08-20T07:12:48.679185Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.679399Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	windows_get_device_registry_files: Opening child device 3 - DISPLAY\AOC2403\5&31D2D1D3&2&UID4353
+2026-08-20T07:12:48.679597Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.679808Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	windows_get_device_registry_files: found no registry files
+2026-08-20T07:12:48.680004Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.680269Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	Found no registry files in HKEY_CURRENT_USER\SOFTWARE\Khronos\Vulkan\ExplicitLayers
+2026-08-20T07:12:48.680470Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.680672Z  WARN wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	windows_read_data_files_in_registry: Registry lookup failed to get layer manifest files.
+2026-08-20T07:12:48.680869Z  WARN wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.681154Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	windows_get_app_package_manifest_path: Failed to find mapping layers packages by family name
+2026-08-20T07:12:48.681353Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.681550Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	Checking for Driver Manifest files in Registry at HKEY_LOCAL_MACHINE\SOFTWARE\Khronos\Vulkan\Drivers
+2026-08-20T07:12:48.681745Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.682022Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	windows_add_json_entry: Located json file "C:\WINDOWS\System32\DriverStore\FileRepository\nv_dispi.inf_amd64_6548260a81e093a0\nv-vk64.json" from PnP registry: E
+2026-08-20T07:12:48.682222Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.682665Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	Found no registry files in HKEY_LOCAL_MACHINE\SOFTWARE\Khronos\Vulkan\Drivers
+2026-08-20T07:12:48.682867Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.683179Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	Found ICD manifest file C:\WINDOWS\System32\DriverStore\FileRepository\nv_dispi.inf_amd64_6548260a81e093a0\nv-vk64.json, version 1.0.1
+2026-08-20T07:12:48.683395Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.683670Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	Insert instance layer "VK_LAYER_NV_present" (C:\WINDOWS\System32\DriverStore\FileRepository\nv_dispi.inf_amd64_6548260a81e093a0\.\nvoglv64.dll)
+2026-08-20T07:12:48.683871Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.684254Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	Insert instance layer "VK_LAYER_NV_optimus" (C:\WINDOWS\System32\DriverStore\FileRepository\nv_dispi.inf_amd64_6548260a81e093a0\.\nvoglv64.dll)
+2026-08-20T07:12:48.684455Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.684842Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	vkCreateInstance layer callstack setup to:
+2026-08-20T07:12:48.685049Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.685324Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	   <Application>
+2026-08-20T07:12:48.685564Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.685815Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	     ||
+2026-08-20T07:12:48.686025Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.686225Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	   <Loader>
+2026-08-20T07:12:48.686423Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.686650Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	     ||
+2026-08-20T07:12:48.686881Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.687100Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	   VK_LAYER_NV_optimus
+2026-08-20T07:12:48.687300Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.687495Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	           Type: Implicit
+2026-08-20T07:12:48.687699Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.687927Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	           Enabled By: Implicit Layer
+2026-08-20T07:12:48.688122Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.688315Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	               Disable Env Var:  DISABLE_LAYER_NV_OPTIMUS_1
+2026-08-20T07:12:48.688509Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.688704Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	           Manifest: C:\WINDOWS\System32\DriverStore\FileRepository\nv_dispi.inf_amd64_6548260a81e093a0\nv-vk64.json
+2026-08-20T07:12:48.688900Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.689094Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	           Library:  C:\WINDOWS\System32\DriverStore\FileRepository\nv_dispi.inf_amd64_6548260a81e093a0\.\nvoglv64.dll
+2026-08-20T07:12:48.689290Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.689484Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	     ||
+2026-08-20T07:12:48.689679Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.689874Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	   VK_LAYER_NV_present
+2026-08-20T07:12:48.690070Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.690322Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	           Type: Implicit
+2026-08-20T07:12:48.690517Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.690712Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	           Enabled By: Implicit Layer
+2026-08-20T07:12:48.690907Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.691115Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	               Disable Env Var:  DISABLE_LAYER_NV_GR2608_1
+2026-08-20T07:12:48.691308Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.691502Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	           Manifest: C:\WINDOWS\System32\DriverStore\FileRepository\nv_dispi.inf_amd64_6548260a81e093a0\nv-vk64.json
+2026-08-20T07:12:48.691699Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.691895Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	           Library:  C:\WINDOWS\System32\DriverStore\FileRepository\nv_dispi.inf_amd64_6548260a81e093a0\.\nvoglv64.dll
+2026-08-20T07:12:48.692090Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.692283Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	     ||
+2026-08-20T07:12:48.692478Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.692674Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	   <Drivers>
+2026-08-20T07:12:48.692869Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.707834Z  INFO wgpu_hal::vulkan::instance: Enabling debug utils
+2026-08-20T07:12:48.916278Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	Inserted device layer "VK_LAYER_NV_present" (C:\WINDOWS\System32\DriverStore\FileRepository\nv_dispi.inf_amd64_6548260a81e093a0\.\nvoglv64.dll)
+2026-08-20T07:12:48.916758Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.917082Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	Inserted device layer "VK_LAYER_NV_optimus" (C:\WINDOWS\System32\DriverStore\FileRepository\nv_dispi.inf_amd64_6548260a81e093a0\.\nvoglv64.dll)
+2026-08-20T07:12:48.917338Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.917552Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	vkCreateDevice layer callstack setup to:
+2026-08-20T07:12:48.917761Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.917957Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	   <Application>
+2026-08-20T07:12:48.918150Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.918345Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	     ||
+2026-08-20T07:12:48.918594Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.918916Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	   <Loader>
+2026-08-20T07:12:48.919252Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.919529Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	     ||
+2026-08-20T07:12:48.919745Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.919953Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	   VK_LAYER_NV_optimus
+2026-08-20T07:12:48.920152Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.920348Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	           Type: Implicit
+2026-08-20T07:12:48.920543Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.920741Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	           Enabled By: Implicit Layer
+2026-08-20T07:12:48.920937Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.921246Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	               Disable Env Var:  DISABLE_LAYER_NV_OPTIMUS_1
+2026-08-20T07:12:48.921451Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.921648Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	           Manifest: C:\WINDOWS\System32\DriverStore\FileRepository\nv_dispi.inf_amd64_6548260a81e093a0\nv-vk64.json
+2026-08-20T07:12:48.921845Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.922043Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	           Library:  C:\WINDOWS\System32\DriverStore\FileRepository\nv_dispi.inf_amd64_6548260a81e093a0\.\nvoglv64.dll
+2026-08-20T07:12:48.922249Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.922457Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	     ||
+2026-08-20T07:12:48.922665Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.922862Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	   VK_LAYER_NV_present
+2026-08-20T07:12:48.923058Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.923253Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	           Type: Implicit
+2026-08-20T07:12:48.923449Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.923642Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	           Enabled By: Implicit Layer
+2026-08-20T07:12:48.923839Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.924037Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	               Disable Env Var:  DISABLE_LAYER_NV_GR2608_1
+2026-08-20T07:12:48.924233Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.924447Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	           Manifest: C:\WINDOWS\System32\DriverStore\FileRepository\nv_dispi.inf_amd64_6548260a81e093a0\nv-vk64.json
+2026-08-20T07:12:48.924709Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.924925Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	           Library:  C:\WINDOWS\System32\DriverStore\FileRepository\nv_dispi.inf_amd64_6548260a81e093a0\.\nvoglv64.dll
+2026-08-20T07:12:48.925143Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.925343Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	     ||
+2026-08-20T07:12:48.925550Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.925756Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	   <Device>
+2026-08-20T07:12:48.925975Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.926368Z  INFO wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	       Using "NVIDIA GeForce GT 1030" with driver: "C:\WINDOWS\System32\DriverStore\FileRepository\nv_dispi.inf_amd64_6548260a81e093a0\.\nvoglv64.dll"
+2026-08-20T07:12:48.926593Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x17c6c65b600, name: ?)
+2026-08-20T07:12:48.979676Z  INFO game: [render] initialized: adapter=NVIDIA GeForce GT 1030 format=Bgra8UnormSrgb present_mode=Mailbox
+2026-08-20T07:12:48.979997Z  INFO game: [lifecycle] Running
+2026-08-20T07:12:48.980885Z  INFO script: Lua log.info project script loaded
+2026-08-20T07:12:48.981104Z  INFO game: [script] update returned: lua-update-ok
+2026-08-20T07:12:48.983324Z  INFO wgpu_hal::vulkan::instance: GENERAL [NVIDIA (0x4)]
+	Requested image extent (1424x714) does not match surface (1280x720), marking swapchain out of date
+2026-08-20T07:12:48.983735Z  INFO wgpu_hal::vulkan::instance: 	objects: (type: SWAPCHAIN_KHR, hndl: 0x17c71ec30d0, name: ?)
+2026-08-20T07:12:48.984401Z  INFO game: [render] surface reconfigured: 1424x714
+2026-08-20T07:12:48.984653Z  INFO game: [window] renderable size: 1424x714
+2026-08-20T07:12:48.987510Z  INFO game: [render] surface reconfigured: 1280x720
+2026-08-20T07:12:48.987750Z  INFO game: [window] renderable size: 1280x720
+2026-08-20T07:12:48.989943Z  INFO game: [render] surface reconfigured: 1280x720
+2026-08-20T07:12:48.990170Z  INFO game: [window] renderable size: 1280x720
+2026-08-20T07:24:16.643078Z  INFO game: game runner starting version="0.1.0"
+2026-08-20T07:24:16.692855Z  INFO game: [window] created: WindowId(3409530)
+2026-08-20T07:24:17.309900Z  WARN wgpu_hal::vulkan::instance: InstanceFlags::VALIDATION requested, but unable to find layer: VK_LAYER_KHRONOS_validation
+2026-08-20T07:24:17.330430Z ERROR wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	loader_get_json: Failed to open JSON file D:\Program Files (x86)\Steam\SteamOverlayVulkanLayer64.json
+2026-08-20T07:24:17.331153Z ERROR wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x2ccfc28b860, name: ?)
+2026-08-20T07:24:17.331569Z ERROR wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	loader_get_json: Failed to open JSON file D:\Program Files (x86)\Steam\SteamFossilizeVulkanLayer64.json
+2026-08-20T07:24:17.331960Z ERROR wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x2ccfc28b860, name: ?)
+2026-08-20T07:24:17.332787Z  WARN wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	windows_read_data_files_in_registry: Registry lookup failed to get layer manifest files.
+2026-08-20T07:24:17.333021Z  WARN wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x2ccfc28b860, name: ?)
+2026-08-20T07:24:17.607812Z  INFO game: [render] initialized: adapter=NVIDIA GeForce GT 1030 format=Bgra8UnormSrgb present_mode=Mailbox
+2026-08-20T07:24:17.608102Z  INFO game: [lifecycle] Running
+2026-08-20T07:24:17.608987Z  INFO script: Lua log.info project script loaded
+2026-08-20T07:24:17.609213Z  INFO game: [script] update returned: lua-update-ok
+2026-08-20T07:24:17.611971Z  INFO game: [render] surface reconfigured: 1424x714
+2026-08-20T07:24:17.612208Z  INFO game: [window] renderable size: 1424x714
+2026-08-20T07:24:17.614809Z  INFO game: [render] surface reconfigured: 1280x720
+2026-08-20T07:24:17.615025Z  INFO game: [window] renderable size: 1280x720
+2026-08-20T07:24:17.617168Z  INFO game: [render] surface reconfigured: 1280x720
+2026-08-20T07:24:17.617626Z  INFO game: [window] renderable size: 1280x720

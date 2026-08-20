@@ -6,6 +6,7 @@ use std::{
 };
 
 use mlua::{Function, Lua, Result as LuaResult};
+use tracing::info;
 
 #[derive(Debug, Default)]
 struct ScriptState {
@@ -105,7 +106,7 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
     log.set(
         "info",
         lua.create_function(|_, message: String| {
-            println!("[script] {message}");
+            info!(target: "script", message = %message, "Lua log.info");
             Ok(())
         })?,
     )?;

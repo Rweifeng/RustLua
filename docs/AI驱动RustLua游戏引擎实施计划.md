@@ -1413,7 +1413,7 @@ artifacts/builds/<milestone>/...
 - [x] M1-01 窗口；
 - [x] M1-02 wgpu 清屏；
 - [x] M1-03 Lua VM；
-- [ ] M1-04 日志错误；
+- [x] M1-04 日志错误；
 - [ ] M1-05 固定时间步；
 - [ ] M1-06 输入快照；
 - [ ] M1-07 性能 overlay；

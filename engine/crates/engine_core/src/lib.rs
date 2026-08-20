@@ -1,5 +1,8 @@
 //! Core types for the Rust + Lua game engine.
 
+/// Logging and context-rich engine errors.
+#[doc = ""]
+pub mod logging;
 /// Lua VM and host API bridge.
 pub mod script;
 /// Window and application lifecycle primitives.
