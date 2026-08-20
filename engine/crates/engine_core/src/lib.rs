@@ -18,6 +18,8 @@ pub mod logging;
 pub mod math2d;
 /// Runtime frame and update performance sampling.
 pub mod performance;
+/// Prefab extraction, instantiation, overrides, and rebuild policy.
+pub mod prefab;
 /// Persistent project asset identities, import states, dependencies, and cache metadata.
 pub mod resource_db;
 /// Versioned scene serialization, validation, and migration boundary.

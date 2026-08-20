@@ -65,3 +65,6 @@
 | M4-A02 | 导入缓存 | M4-A01 | `cargo test --workspace --all-features`、`cargo run -p game_runner --example import_cache_demo --release`、`cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets --all-features -- -D warnings` | 未变化资源复用缓存；源文件或导入器版本变化重新导入；失败不替换有效缓存；清空缓存可重建；首批资源扩展名可识别 | import_cache 单元测试、Release Demo、格式检查、Clippy | `tasks/done/M4-02-导入缓存.md`；`docs/15-import-cache.md`；`import_cache_demo_ok` | PASS | M4 |
 
 | M4-A03 | 场景格式 | M4-A02 | `cargo test --workspace --all-features`、`cargo run -p game_runner --example scene_format_demo --release`、`cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets --all-features -- -D warnings` | 场景可保存/加载/再次保存；实体树、组件和资源 UUID 完整；未知记录报告行号；版本不支持时明确拒绝；原子写入 | scene 单元测试、Release Demo、格式检查、Clippy | `tasks/done/M4-03-场景格式.md`；`docs/16-scene-format.md`；`scene_format_demo_ok` | PASS | M4 |
+
+
+| M4-A04 | 预制体 | M4-A03 | `cargo test -p engine_core --all-features`、`cargo run -p game_runner --example prefab_demo --release`、`cargo fmt --all`、`cargo clippy --workspace --all-targets --all-features -- -D warnings` | 可从场景根实体提取预制体并保存/加载；同一预制体可重复实例化且实例根 Entity ID 唯一；名称、组件和元数据覆盖值生效；保留覆盖值重建实例；非法版本、实体和覆盖字段明确拒绝 | prefab 单元测试、Release Demo、格式检查、Clippy | `tasks/done/M4-04-预制体.md`；`docs/17-prefab.md`；`prefab_demo_ok entities=4 instances=2 unique_roots=true override=25 roundtrip=true` | PASS | M4 |
