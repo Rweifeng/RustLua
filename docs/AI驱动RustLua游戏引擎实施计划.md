@@ -1417,7 +1417,7 @@ artifacts/builds/<milestone>/...
 - [x] M1-05 固定时间步；
 - [x] M1-06 输入快照；
 - [x] M1-07 性能 overlay；
-- [ ] M1 里程碑验收并打标签 `v0.1-foundation`。
+- [x] M1 里程碑验收并打标签 `v0.1-foundation`。
 
 ## Week 4–7：M2 ECS
 
