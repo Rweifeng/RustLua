@@ -77,3 +77,5 @@
 
 
 | M4-A07 | Lua 脚本调试 | M4-A06 | `cargo test --workspace --all-features`、`cargo run -p game_runner --example lua_script_debug_demo --release`、`cargo fmt --all`、`cargo clippy --workspace --all-targets --all-features -- -D warnings` | 语法/运行时错误包含路径和行号或调用栈文本；诊断记录支持过滤和清理；相同错误聚合计数；发布运行路径不自动开启调试控制台 | script 单元测试、Release Demo、格式检查、Clippy | `tasks/done/M4-07-脚本调试.md`；`docs/20-lua-script-debug.md`；`lua_script_debug_demo_ok diagnostics=1 deduplicated=true filtered=true stack=true` | PASS | M4 |
+
+| M4-A08 | 场景脚本 Demo | M4-A07 | `cargo test --workspace --all-features`、`cargo run -p game_runner --example scene_script_demo --release`、`cargo fmt --all`、`cargo clippy --workspace --all-targets --all-features -- -D warnings` | 场景包含玩家、敌人、拾取物、门和触发器；胜利/失败规则全部由 Lua 驱动；场景重新加载结果一致；Lua 文件修改后热更新改变结果；提供脚本教程 | scene/script 单元测试、Release Demo、格式检查、Clippy | `tasks/done/M4-08-场景脚本Demo.md`；`docs/21-scene-script-demo.md`；`scene_script_demo_ok entities=5 rules=lua victory=true reload_consistent=true hot_reload=failure` | PASS | M4 |
