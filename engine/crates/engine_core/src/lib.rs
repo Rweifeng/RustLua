@@ -14,6 +14,8 @@ pub mod script;
 pub mod time_step;
 /// Window and application lifecycle primitives.
 pub mod window;
+/// Entity world and type-erased component storage.
+pub mod world;
 
 /// Returns the engine core package version.
 #[must_use]
