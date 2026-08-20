@@ -1452,7 +1452,7 @@ artifacts/builds/<milestone>/...
 - [x] M4-06 热重载；
 - [x] M4-07 脚本调试；
 - [x] M4-08 场景脚本 Demo；
-- [ ] M4 里程碑验收并打标签 `v0.4-scripting`。
+- [x] M4 里程碑验收并打标签 `v0.4-scripting`。
 
 ---
 
