@@ -18,6 +18,8 @@ pub mod performance;
 pub mod scheduler;
 /// Lua VM and host API bridge.
 pub mod script;
+/// PNG decoding and CPU-side texture asset representation.
+pub mod texture;
 /// Fixed-rate simulation timing primitives.
 pub mod time_step;
 /// 2D transform and velocity components with a minimal integration system.

@@ -1433,7 +1433,7 @@ artifacts/builds/<milestone>/...
 ## Week 8–13：M3 2D
 
 - [x] M3-01 坐标约定；
-- [ ] M3-02 纹理；
+- [x] M3-02 纹理；
 - [ ] M3-03 Sprite；
 - [ ] M3-04 SpriteBatch；
 - [ ] M3-05 Camera2D；
