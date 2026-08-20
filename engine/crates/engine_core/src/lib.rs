@@ -16,6 +16,8 @@ pub mod logging;
 pub mod math2d;
 /// Runtime frame and update performance sampling.
 pub mod performance;
+/// Persistent project asset identities, import states, dependencies, and cache metadata.
+pub mod resource_db;
 /// Deterministic stage-based system scheduling.
 pub mod scheduler;
 /// Lua VM and host API bridge.
