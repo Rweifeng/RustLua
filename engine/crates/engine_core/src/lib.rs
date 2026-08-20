@@ -20,6 +20,8 @@ pub mod math2d;
 pub mod performance;
 /// Persistent project asset identities, import states, dependencies, and cache metadata.
 pub mod resource_db;
+/// Versioned scene serialization, validation, and migration boundary.
+pub mod scene;
 /// Deterministic stage-based system scheduling.
 pub mod scheduler;
 /// Lua VM and host API bridge.
