@@ -1,6 +1,9 @@
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
-use engine_core::window::{AppLifecycle, has_renderable_size};
+use engine_core::{
+    script::LuaRuntime,
+    window::{AppLifecycle, has_renderable_size},
+};
 use wgpu::{
     CompositeAlphaMode, Device, DeviceDescriptor, Instance, InstanceDescriptor, PresentMode, Queue,
     Surface, SurfaceConfiguration, SurfaceError, TextureUsages,
@@ -173,6 +176,7 @@ struct GameApp {
     renderer: Option<Renderer>,
     lifecycle: AppLifecycle,
     occluded: bool,
+    script_runtime: Option<LuaRuntime>,
 }
 
 impl GameApp {
@@ -182,6 +186,7 @@ impl GameApp {
             renderer: None,
             lifecycle: AppLifecycle::Initializing,
             occluded: false,
+            script_runtime: None,
         }
     }
 
@@ -220,6 +225,43 @@ impl GameApp {
         }
     }
 
+    fn initialize_script(&mut self, event_loop: &ActiveEventLoop) {
+        let script_path = [
+            PathBuf::from("game/scripts/main.lua"),
+            PathBuf::from("../game/scripts/main.lua"),
+        ]
+        .into_iter()
+        .find(|path| path.is_file())
+        .unwrap_or_else(|| PathBuf::from("game/scripts/main.lua"));
+        let mut runtime = match LuaRuntime::new() {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                eprintln!("[script] initialization failed: {error}");
+                self.request_exit(event_loop);
+                return;
+            }
+        };
+        runtime.set_delta(1.0 / 60.0);
+        if let Err(error) = runtime.execute_project_script(&script_path) {
+            eprintln!("[script] error: {error}");
+            self.request_exit(event_loop);
+            return;
+        }
+        match runtime.call_update() {
+            Ok(result) => println!("[script] update returned: {result}"),
+            Err(error) => {
+                eprintln!("[script] error: {error}");
+                self.request_exit(event_loop);
+                return;
+            }
+        }
+        if runtime.quit_requested() {
+            println!("[script] app.quit requested");
+            self.request_exit(event_loop);
+            return;
+        }
+        self.script_runtime = Some(runtime);
+    }
     fn redraw(&mut self, event_loop: &ActiveEventLoop) {
         if self.lifecycle != AppLifecycle::Running {
             return;
@@ -241,7 +283,7 @@ impl ApplicationHandler for GameApp {
             return;
         }
         let attributes = Window::default_attributes()
-            .with_title("P2 RustLua Engine - M1-02 Clear")
+            .with_title("P2 RustLua Engine - M1-03 Lua Bridge")
             .with_inner_size(PhysicalSize::new(1280, 720));
         let window = Arc::new(event_loop.create_window(attributes).expect("create window"));
         println!("[window] created: {:?}", window.id());
@@ -250,6 +292,10 @@ impl ApplicationHandler for GameApp {
                 self.window = Some(window);
                 self.renderer = Some(renderer);
                 self.transition(AppLifecycle::Running);
+                self.initialize_script(event_loop);
+                if self.lifecycle != AppLifecycle::Running {
+                    return;
+                }
                 if let Some(window) = &self.window {
                     window.request_redraw();
                 }

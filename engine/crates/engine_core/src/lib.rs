@@ -1,7 +1,7 @@
-﻿//! Core types for the Rust + Lua game engine.
-//!
-//! Runtime systems are added behind explicit, tested modules.
+//! Core types for the Rust + Lua game engine.
 
+/// Lua VM and host API bridge.
+pub mod script;
 /// Window and application lifecycle primitives.
 pub mod window;
 

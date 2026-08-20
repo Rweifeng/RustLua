@@ -4,7 +4,7 @@
 
 验证 Rust Cargo workspace、`engine_core` 库和 `game_runner` 可执行程序已经形成一个可重复运行的最小基线。
 
-这个 Demo 当前验证窗口生命周期入口，不包含 wgpu 清屏、Lua、ECS 或游戏玩法。渲染和脚本能力将在后续 M1 任务中实现。
+这个 Demo 当前验证窗口、wgpu 清屏和 Lua 脚本桥接。渲染和脚本能力将在后续 M1 任务中实现。
 
 ## 环境要求
 
@@ -37,7 +37,7 @@ p2 game runner 0.1.0
 [window] created: WindowId(...)
 [render] initialized: adapter=<GPU> format=<sRGB> present_mode=<Mailbox/Fifo>
 
-窗口标题：P2 RustLua Engine - M1-01 Window
+窗口标题：P2 RustLua Engine - M1-03 Lua Bridge
 按 Escape 或关闭窗口退出。
 ```
 
@@ -55,7 +55,7 @@ p2 game runner 0.1.0
 [window] created: WindowId(...)
 [render] initialized: adapter=<GPU> format=<sRGB> present_mode=<Mailbox/Fifo>
 
-窗口标题：P2 RustLua Engine - M1-01 Window
+窗口标题：P2 RustLua Engine - M1-03 Lua Bridge
 按 Escape 或关闭窗口退出。
 ```
 
@@ -128,3 +128,9 @@ Set-Location E:\Codex\p2
 - 本地质量门可以重复执行。
 
 后续 M1 任务将增加 wgpu 清屏、Lua VM、结构化日志、固定时间步和输入系统。
+
+M1-03 关键输出：
+```text
+[script] project script loaded
+[script] update returned: lua-update-ok
+```
