@@ -1421,7 +1421,7 @@ artifacts/builds/<milestone>/...
 
 ## Week 4–7：M2 ECS
 
-- [ ] M2-01 EntityId；
+- [x] M2-01 EntityId；
 - [ ] M2-02 World；
 - [ ] M2-03 Transform/Velocity；
 - [ ] M2-04 Scheduler；
