@@ -1428,7 +1428,7 @@ artifacts/builds/<milestone>/...
 - [x] M2-05 Events；
 - [x] M2-06 Commands；
 - [x] M2-07 压力测试；
-- [ ] M2 里程碑验收并打标签 `v0.2-ecs`。
+- [x] M2 里程碑验收并打标签 `v0.2-ecs`。
 
 ## Week 8–13：M3 2D
 
