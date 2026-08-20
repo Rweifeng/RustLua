@@ -1425,7 +1425,7 @@ artifacts/builds/<milestone>/...
 - [x] M2-02 World；
 - [x] M2-03 Transform/Velocity；
 - [x] M2-04 Scheduler；
-- [ ] M2-05 Events；
+- [x] M2-05 Events；
 - [ ] M2-06 Commands；
 - [ ] M2-07 压力测试；
 - [ ] M2 里程碑验收并打标签 `v0.2-ecs`。

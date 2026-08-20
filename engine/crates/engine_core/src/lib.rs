@@ -2,6 +2,8 @@
 
 /// Generational entity handles and allocation.
 pub mod entity;
+/// Typed, frame-bounded event queues.
+pub mod events;
 /// Platform-independent keyboard, mouse, and cursor snapshots.
 pub mod input;
 /// Logging and context-rich engine errors.
