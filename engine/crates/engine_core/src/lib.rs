@@ -1,7 +1,9 @@
-//! Core types for the Rust + Lua game engine.
+﻿//! Core types for the Rust + Lua game engine.
 //!
-//! This crate intentionally starts with a dependency-free API surface. Runtime
-//! systems will be added in later milestones behind explicit, tested modules.
+//! Runtime systems are added behind explicit, tested modules.
+
+/// Window and application lifecycle primitives.
+pub mod window;
 
 /// Returns the engine core package version.
 #[must_use]

@@ -28,3 +28,4 @@
 - M0-05 本地里程碑回归验收通过；
 - M0-06 基线构建和 `v0.0.1-baseline` 标签验收通过，项目放行进入 M1；
 - M0-A08 GitHub Actions 远程执行仍为 `PENDING`，不影响本地 M0 放行。
+| M1-A01 | 窗口与应用生命周期 | M0 | `./scripts/verify.ps1`、运行 `game_runner` | 窗口创建、关闭、缩放、最小化/恢复不崩溃，生命周期日志顺序正确 | 状态机单元测试 | `artifacts/logs/M1-01-window-session.stdout.log`、`artifacts/logs/M1-01-window-interaction.stdout.log` | PASS | M1 |

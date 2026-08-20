@@ -8,3 +8,4 @@ publish = false
 
 [dependencies]
 engine_core.workspace = true
+winit = "0.30"

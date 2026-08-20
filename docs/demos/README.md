@@ -1,10 +1,10 @@
-﻿# M0 最小 Demo
+# M0 最小 Demo
 
 ## 目标
 
 验证 Rust Cargo workspace、`engine_core` 库和 `game_runner` 可执行程序已经形成一个可重复运行的最小基线。
 
-这个 Demo 不是窗口或图形 Demo，不包含 wgpu、Lua、ECS 或游戏玩法。窗口、渲染和脚本能力从 M1 开始实现。
+这个 Demo 当前验证窗口生命周期入口，不包含 wgpu 清屏、Lua、ECS 或游戏玩法。渲染和脚本能力将在后续 M1 任务中实现。
 
 ## 环境要求
 
@@ -33,6 +33,11 @@ $env:PATH = "C:\Users\Administrator\.cargo\bin;" + $env:PATH
 
 ```text
 p2 game runner 0.1.0
+[lifecycle] Running
+[window] created: WindowId(...)
+
+窗口标题：P2 RustLua Engine - M1-01 Window
+按 Escape 或关闭窗口退出。
 ```
 
 ### Release
@@ -45,6 +50,11 @@ p2 game runner 0.1.0
 
 ```text
 p2 game runner 0.1.0
+[lifecycle] Running
+[window] created: WindowId(...)
+
+窗口标题：P2 RustLua Engine - M1-01 Window
+按 Escape 或关闭窗口退出。
 ```
 
 也可以直接在 `engine` 目录执行：
@@ -106,13 +116,13 @@ Set-Location E:\Codex\p2
 
 查看脚本输出和 `artifacts/logs/quality/` 下最新日志，不得通过删除测试或放宽质量门来规避问题。
 
-## M0 验收边界
+## 当前验收边界
 
-M0 Demo 只证明：
+当前 Demo 证明：
 
 - workspace 能被 Cargo 识别；
 - `engine_core` 能编译并通过最小测试；
-- `game_runner` 能在 Debug/Release 下启动；
+- `game_runner` 能在 Debug/Release 下创建窗口并退出；
 - 本地质量门可以重复执行。
 
-M1 才会增加窗口生命周期、wgpu 清屏、Lua VM、日志、固定时间步和输入系统。
+后续 M1 任务将增加 wgpu 清屏、Lua VM、结构化日志、固定时间步和输入系统。

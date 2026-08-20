@@ -1410,7 +1410,7 @@ artifacts/builds/<milestone>/...
 
 ## Week 2–3：M1 基础运行时
 
-- [ ] M1-01 窗口；
+- [x] M1-01 窗口；
 - [ ] M1-02 wgpu 清屏；
 - [ ] M1-03 Lua VM；
 - [ ] M1-04 日志错误；
