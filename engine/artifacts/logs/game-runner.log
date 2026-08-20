@@ -241,3 +241,49 @@
 2026-08-20T07:24:17.615025Z  INFO game: [window] renderable size: 1280x720
 2026-08-20T07:24:17.617168Z  INFO game: [render] surface reconfigured: 1280x720
 2026-08-20T07:24:17.617626Z  INFO game: [window] renderable size: 1280x720
+2026-08-20T07:56:05.103717Z  INFO game: game runner starting version="0.1.0"
+2026-08-20T07:56:05.131658Z  INFO game: [window] created: WindowId(1443650)
+2026-08-20T07:56:05.729319Z  WARN wgpu_hal::vulkan::instance: InstanceFlags::VALIDATION requested, but unable to find layer: VK_LAYER_KHRONOS_validation
+2026-08-20T07:56:05.729879Z ERROR wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	loader_get_json: Failed to open JSON file D:\Program Files (x86)\Steam\SteamOverlayVulkanLayer64.json
+2026-08-20T07:56:05.729898Z ERROR wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x2178a120d10, name: ?)
+2026-08-20T07:56:05.729923Z ERROR wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	loader_get_json: Failed to open JSON file D:\Program Files (x86)\Steam\SteamFossilizeVulkanLayer64.json
+2026-08-20T07:56:05.729935Z ERROR wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x2178a120d10, name: ?)
+2026-08-20T07:56:05.730191Z  WARN wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	windows_read_data_files_in_registry: Registry lookup failed to get layer manifest files.
+2026-08-20T07:56:05.730207Z  WARN wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x2178a120d10, name: ?)
+2026-08-20T07:56:06.003139Z  INFO game: [render] initialized: adapter=NVIDIA GeForce GT 1030 format=Bgra8UnormSrgb present_mode=Mailbox
+2026-08-20T07:56:06.003196Z  INFO game: [lifecycle] Running
+2026-08-20T07:56:06.003801Z  INFO script: Lua log.info project script loaded
+2026-08-20T07:56:06.003833Z  INFO game: [script] update returned: lua-update-ok
+2026-08-20T07:56:06.006161Z  INFO game: [render] surface reconfigured: 1424x714
+2026-08-20T07:56:06.006179Z  INFO game: [window] renderable size: 1424x714
+2026-08-20T07:56:06.008264Z  INFO game: [render] surface reconfigured: 1280x720
+2026-08-20T07:56:06.008283Z  INFO game: [window] renderable size: 1280x720
+2026-08-20T07:56:06.010533Z  INFO game: [render] surface reconfigured: 1280x720
+2026-08-20T07:56:06.010552Z  INFO game: [window] renderable size: 1280x720
+2026-08-20T07:59:28.057466Z  INFO game: game runner starting version="0.1.0"
+2026-08-20T07:59:28.086165Z  INFO game: [window] created: WindowId(1574722)
+2026-08-20T07:59:28.681209Z  WARN wgpu_hal::vulkan::instance: InstanceFlags::VALIDATION requested, but unable to find layer: VK_LAYER_KHRONOS_validation
+2026-08-20T07:59:28.681799Z ERROR wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	loader_get_json: Failed to open JSON file D:\Program Files (x86)\Steam\SteamOverlayVulkanLayer64.json
+2026-08-20T07:59:28.681824Z ERROR wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x1af0aefbcc0, name: ?)
+2026-08-20T07:59:28.681863Z ERROR wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	loader_get_json: Failed to open JSON file D:\Program Files (x86)\Steam\SteamFossilizeVulkanLayer64.json
+2026-08-20T07:59:28.681883Z ERROR wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x1af0aefbcc0, name: ?)
+2026-08-20T07:59:28.682182Z  WARN wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	windows_read_data_files_in_registry: Registry lookup failed to get layer manifest files.
+2026-08-20T07:59:28.682201Z  WARN wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x1af0aefbcc0, name: ?)
+2026-08-20T07:59:28.965940Z  INFO game: [render] initialized: adapter=NVIDIA GeForce GT 1030 format=Bgra8UnormSrgb present_mode=Mailbox
+2026-08-20T07:59:28.966030Z  INFO game: [lifecycle] Running
+2026-08-20T07:59:28.967063Z  INFO script: Lua log.info project script loaded
+2026-08-20T07:59:28.974592Z  INFO game: [render] surface reconfigured: 1424x714
+2026-08-20T07:59:28.974624Z  INFO game: [window] renderable size: 1424x714
+2026-08-20T07:59:28.976908Z  INFO game: [render] surface reconfigured: 1280x720
+2026-08-20T07:59:28.976929Z  INFO game: [window] renderable size: 1280x720
+2026-08-20T07:59:28.979048Z  INFO game: [render] surface reconfigured: 1280x720
+2026-08-20T07:59:28.979068Z  INFO game: [window] renderable size: 1280x720
+2026-08-20T07:59:29.967547Z  INFO engine: [time] fixed-step stats: steps=1 dt=0.016667s accumulator=0.000044s total_steps=60 total_dropped=0
+2026-08-20T07:59:30.968160Z  INFO engine: [time] fixed-step stats: steps=1 dt=0.016667s accumulator=0.000385s total_steps=120 total_dropped=0
+2026-08-20T07:59:31.968377Z  INFO engine: [time] fixed-step stats: steps=1 dt=0.016667s accumulator=0.000199s total_steps=180 total_dropped=0

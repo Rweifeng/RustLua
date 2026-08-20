@@ -1,8 +1,9 @@
-use std::{path::PathBuf, sync::Arc};
+use std::{path::PathBuf, sync::Arc, time::Instant};
 
 use engine_core::{
     logging::{EngineError, LogModule, init_logging},
     script::LuaRuntime,
+    time_step::FixedTimeStep,
     window::{AppLifecycle, has_renderable_size},
 };
 use wgpu::{
@@ -178,6 +179,8 @@ struct GameApp {
     lifecycle: AppLifecycle,
     occluded: bool,
     script_runtime: Option<LuaRuntime>,
+    time_step: FixedTimeStep,
+    last_frame: Instant,
 }
 
 impl GameApp {
@@ -188,6 +191,8 @@ impl GameApp {
             lifecycle: AppLifecycle::Initializing,
             occluded: false,
             script_runtime: None,
+            time_step: FixedTimeStep::new(60, 8).expect("valid fixed timestep"),
+            last_frame: Instant::now(),
         }
     }
 
@@ -256,7 +261,9 @@ impl GameApp {
             return;
         }
         match runtime.call_update() {
-            Ok(result) => tracing::info!(target: "game", "[script] update returned: {result}"),
+            Ok(result) => {
+                tracing::debug!(target: "game", "[script] initial update returned: {result}")
+            }
             Err(error) => {
                 let diagnostic = EngineError::new(
                     LogModule::Script,
@@ -278,7 +285,51 @@ impl GameApp {
         self.script_runtime = Some(runtime);
     }
 
+    fn run_simulation_steps(
+        &mut self,
+        steps: u32,
+        delta_seconds: f32,
+        event_loop: &ActiveEventLoop,
+    ) {
+        let Some(runtime) = self.script_runtime.as_mut() else {
+            return;
+        };
+        runtime.set_delta(delta_seconds);
+        for _ in 0..steps {
+            match runtime.call_update() {
+                Ok(result) => {
+                    tracing::debug!(target: "game", "[simulation] fixed update returned: {result}")
+                }
+                Err(error) => {
+                    let diagnostic = EngineError::new(
+                        LogModule::Script,
+                        "fixed-step update",
+                        "project Lua update function",
+                    )
+                    .with_source(&error)
+                    .with_suggestion("fix the Lua runtime error reported above");
+                    tracing::error!(target: "script", error = %diagnostic, "fixed-step update failed");
+                    self.request_exit(event_loop);
+                    return;
+                }
+            }
+        }
+    }
+
     fn redraw(&mut self, event_loop: &ActiveEventLoop) {
+        if self.lifecycle != AppLifecycle::Running {
+            return;
+        }
+        let elapsed = self.last_frame.elapsed().as_secs_f64();
+        self.last_frame = Instant::now();
+        let report = self.time_step.advance(elapsed);
+        if report.dropped_steps > 0 {
+            tracing::warn!(target: "engine", "[time] dropped catch-up steps: dropped={} total_dropped={} accumulator={:.6}s", report.dropped_steps, report.total_dropped_steps, report.accumulator_seconds);
+        }
+        if report.steps > 0 && report.total_steps % 60 < u64::from(report.steps) {
+            tracing::info!(target: "engine", "[time] fixed-step stats: steps={} dt={:.6}s accumulator={:.6}s total_steps={} total_dropped={}", report.steps, report.delta_seconds, report.accumulator_seconds, report.total_steps, report.total_dropped_steps);
+        }
+        self.run_simulation_steps(report.steps, report.delta_seconds, event_loop);
         if self.lifecycle != AppLifecycle::Running {
             return;
         }
@@ -299,7 +350,7 @@ impl ApplicationHandler for GameApp {
             return;
         }
         let attributes = Window::default_attributes()
-            .with_title("P2 RustLua Engine - M1-03 Lua Bridge")
+            .with_title("P2 RustLua Engine - M1-05 Fixed Time Step")
             .with_inner_size(PhysicalSize::new(1280, 720));
         let window = Arc::new(event_loop.create_window(attributes).expect("create window"));
         tracing::info!(target: "game", "[window] created: {:?}", window.id());
@@ -312,9 +363,11 @@ impl ApplicationHandler for GameApp {
                 if self.lifecycle != AppLifecycle::Running {
                     return;
                 }
-                if let Some(window) = &self.window {
-                    window.request_redraw();
-                }
+                self.last_frame = Instant::now();
+                self.window
+                    .as_ref()
+                    .expect("window exists")
+                    .request_redraw();
             }
             Err(error) => {
                 tracing::error!(target: "engine", error = %EngineError::new(LogModule::Engine, "initialize renderer", "GPU renderer startup failed").with_source(&error).with_suggestion("update the graphics driver or use a compatible GPU"), "renderer initialization failed");
@@ -338,10 +391,7 @@ impl ApplicationHandler for GameApp {
             return;
         }
         match event {
-            WindowEvent::CloseRequested => {
-                tracing::info!(target: "game", "[window] close requested");
-                self.request_exit(event_loop);
-            }
+            WindowEvent::CloseRequested => self.request_exit(event_loop),
             WindowEvent::Resized(size) => {
                 if let Some(renderer) = self.renderer.as_mut() {
                     renderer.resize(size);
@@ -367,14 +417,12 @@ impl ApplicationHandler for GameApp {
                     && event.logical_key
                         == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape) =>
             {
-                tracing::info!(target: "game", "[window] Escape pressed; requesting close");
-                self.request_exit(event_loop);
+                self.request_exit(event_loop)
             }
             _ => {}
         }
     }
 }
-
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let log_path = [
         PathBuf::from("artifacts/logs/game-runner.log"),

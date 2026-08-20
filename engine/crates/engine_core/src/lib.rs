@@ -5,6 +5,8 @@
 pub mod logging;
 /// Lua VM and host API bridge.
 pub mod script;
+/// Fixed-rate simulation timing primitives.
+pub mod time_step;
 /// Window and application lifecycle primitives.
 pub mod window;
 
