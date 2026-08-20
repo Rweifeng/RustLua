@@ -68,3 +68,6 @@
 
 
 | M4-A04 | 预制体 | M4-A03 | `cargo test -p engine_core --all-features`、`cargo run -p game_runner --example prefab_demo --release`、`cargo fmt --all`、`cargo clippy --workspace --all-targets --all-features -- -D warnings` | 可从场景根实体提取预制体并保存/加载；同一预制体可重复实例化且实例根 Entity ID 唯一；名称、组件和元数据覆盖值生效；保留覆盖值重建实例；非法版本、实体和覆盖字段明确拒绝 | prefab 单元测试、Release Demo、格式检查、Clippy | `tasks/done/M4-04-预制体.md`；`docs/17-prefab.md`；`prefab_demo_ok entities=4 instances=2 unique_roots=true override=25 roundtrip=true` | PASS | M4 |
+
+
+| M4-A05 | Lua 游戏 API | M4-A04 | `cargo test -p engine_core --all-features`、`cargo run -p game_runner --example lua_api_demo --release`、`cargo fmt --all`、`cargo clippy --workspace --all-targets --all-features -- -D warnings` | Lua 可调用日志、输入、时间、实体、Transform、生命值、物理查询、场景、资源、UI、存档和退出 API；非法/过期 Entity ID 明确报错；API 错误不会导致宿主 panic | script 单元测试、Release Demo、格式检查、Clippy | `tasks/done/M4-05-Lua-API.md`；`docs/18-lua-api.md`；`lua_api_demo_ok update=lua-api-ok quit=false` | PASS | M4 |

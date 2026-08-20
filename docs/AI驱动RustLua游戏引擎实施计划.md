@@ -1448,7 +1448,7 @@ artifacts/builds/<milestone>/...
 - [x] M4-02 导入缓存；
 - [x] M4-03 场景格式；
 - [x] M4-04 预制体；
-- [ ] M4-05 Lua API；
+- [x] M4-05 Lua API；
 - [ ] M4-06 热重载；
 - [ ] M4-07 脚本调试；
 - [ ] M4-08 场景脚本 Demo；
