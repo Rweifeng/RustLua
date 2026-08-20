@@ -1,8 +1,8 @@
-# M0-02 Cargo workspace 基线
+﻿# M0-02 Cargo workspace 基线
 
 ## 状态
 
-REVIEW（等待 Rust 工具链可用后执行命令验收）
+ACCEPTED
 
 ## 目标
 
@@ -39,16 +39,22 @@ tasks/done/
 - [x] `engine_core` 可以提供最小库 API；
 - [x] `game_runner` 可以调用 `engine_core` 并输出版本；
 - [x] 提供标准验证命令和预期输出；
-- [ ] `cargo metadata --no-deps` 通过；
-- [ ] `cargo fmt --all -- --check` 通过；
-- [ ] `cargo clippy --workspace --all-targets --all-features -- -D warnings` 通过；
-- [ ] `cargo test --workspace --all-features` 通过；
-- [ ] Debug/Release 构建通过。
+- [x] `cargo metadata --no-deps --format-version 1` 通过；
+- [x] `cargo fmt --all -- --check` 通过；
+- [x] `cargo clippy --workspace --all-targets --all-features -- -D warnings` 通过；
+- [x] `cargo test --workspace --all-features` 通过；
+- [x] Debug/Release 构建通过；
+- [x] Debug/Release `game_runner` 输出 `p2 game runner 0.1.0`。
+
+## 验收证据
+
+- 工具链：cargo/rustc 1.97.1，stable-x86_64-pc-windows-msvc；
+- 质量日志：`artifacts/logs/quality/verify-20260820-113948.log`、`artifacts/logs/quality/verify-20260820-113950.log`；
+- 元数据日志：`artifacts/logs/M0-02-metadata.json`；
 
 ## 当前阻塞
 
-当前环境找不到 `cargo`、`rustc` 和 `rustup`，因此命令级验收尚未执行。代码和清单已准备完成；待安装或配置 Rust stable 后继续执行验证，不将未执行的命令标记为通过。
-
+命令级验收已完成，无当前阻塞。
 ## 验收命令
 
 ```powershell
@@ -68,3 +74,5 @@ cargo run -p game_runner
 2. 执行上面的命令并保存日志；
 3. 通过后将状态改为 `ACCEPTED`；
 4. 进入 M0-03 质量门和自动化检查。
+
+
