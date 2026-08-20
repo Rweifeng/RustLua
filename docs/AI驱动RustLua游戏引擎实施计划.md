@@ -583,7 +583,7 @@ cargo build --workspace --release
 - 游戏暂停时输入策略符合文档；
 - Lua 可读取动作和轴值。
 
-### M1-07 基础性能埋点
+### M1-07 基础性能埋点与性能 overlay
 
 实施内容：
 
@@ -1416,7 +1416,7 @@ artifacts/builds/<milestone>/...
 - [x] M1-04 日志错误；
 - [x] M1-05 固定时间步；
 - [x] M1-06 输入快照；
-- [ ] M1-07 性能 overlay；
+- [x] M1-07 性能 overlay；
 - [ ] M1 里程碑验收并打标签 `v0.1-foundation`。
 
 ## Week 4–7：M2 ECS

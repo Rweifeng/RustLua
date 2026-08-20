@@ -8,6 +8,7 @@ publish = false
 
 [dependencies]
 engine_core.workspace = true
+bytemuck.workspace = true
 pollster = "0.4"
 wgpu = "27"
 winit = "0.30"

@@ -3,8 +3,9 @@
 /// Platform-independent keyboard, mouse, and cursor snapshots.
 pub mod input;
 /// Logging and context-rich engine errors.
-#[doc = ""]
 pub mod logging;
+/// Runtime frame and update performance sampling.
+pub mod performance;
 /// Lua VM and host API bridge.
 pub mod script;
 /// Fixed-rate simulation timing primitives.

@@ -1,8 +1,10 @@
 use std::{path::PathBuf, sync::Arc, time::Instant};
 
+use bytemuck::{Pod, Zeroable};
 use engine_core::{
     input::{InputKey, InputSnapshot, MouseButton},
     logging::{EngineError, LogModule, init_logging},
+    performance::{PerformanceSnapshot, PerformanceStats},
     script::LuaRuntime,
     time_step::FixedTimeStep,
     window::{AppLifecycle, has_renderable_size},
@@ -11,6 +13,24 @@ use wgpu::{
     CompositeAlphaMode, Device, DeviceDescriptor, Instance, InstanceDescriptor, PresentMode, Queue,
     Surface, SurfaceConfiguration, SurfaceError, TextureUsages,
 };
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct OverlayVertex {
+    position: [f32; 2],
+}
+
+const OVERLAY_SHADER: &str = r#"
+struct VertexOutput { @builtin(position) position: vec4<f32> };
+@vertex fn vs_main(@location(0) position: vec2<f32>) -> VertexOutput {
+    var out: VertexOutput;
+    out.position = vec4<f32>(position, 0.0, 1.0);
+    return out;
+}
+@fragment fn fs_main() -> @location(0) vec4<f32> {
+    return vec4<f32>(0.05, 0.8, 0.35, 0.88);
+}
+"#;
+
 use winit::{
     application::ApplicationHandler,
     dpi::PhysicalSize,
@@ -24,6 +44,8 @@ struct Renderer {
     device: Device,
     queue: Queue,
     config: SurfaceConfiguration,
+    overlay_pipeline: wgpu::RenderPipeline,
+    overlay_vertex_buffer: wgpu::Buffer,
 }
 
 impl Renderer {
@@ -86,6 +108,55 @@ impl Renderer {
             desired_maximum_frame_latency: 2,
         };
         surface.configure(&device, &config);
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("p2-overlay-shader"),
+            source: wgpu::ShaderSource::Wgsl(OVERLAY_SHADER.into()),
+        });
+        let overlay_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("p2-overlay-pipeline-layout"),
+                bind_group_layouts: &[],
+                push_constant_ranges: &[],
+            });
+        let overlay_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("p2-overlay-pipeline"),
+            layout: Some(&overlay_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<OverlayVertex>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &[wgpu::VertexAttribute {
+                        format: wgpu::VertexFormat::Float32x2,
+                        offset: 0,
+                        shader_location: 0,
+                    }],
+                }],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+        let overlay_vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("p2-overlay-vertex-buffer"),
+            size: 4096,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         tracing::info!(target: "game",
             "[render] initialized: adapter={adapter_name} format={format:?} present_mode={present_mode:?}"
         );
@@ -94,6 +165,8 @@ impl Renderer {
             device,
             queue,
             config,
+            overlay_pipeline,
+            overlay_vertex_buffer,
         })
     }
 
@@ -110,7 +183,7 @@ impl Renderer {
         );
     }
 
-    fn render(&mut self) -> RenderOutcome {
+    fn render(&mut self, overlay: Option<&[OverlayVertex]>) -> RenderOutcome {
         let output = match self.surface.get_current_texture() {
             Ok(output) => output,
             Err(SurfaceError::Lost | SurfaceError::Outdated) => {
@@ -161,6 +234,31 @@ impl Renderer {
                 occlusion_query_set: None,
             });
         }
+        if let Some(vertices) = overlay.filter(|vertices| !vertices.is_empty()) {
+            let bytes = bytemuck::cast_slice(vertices);
+            if bytes.len() as u64 <= self.overlay_vertex_buffer.size() {
+                self.queue
+                    .write_buffer(&self.overlay_vertex_buffer, 0, bytes);
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("p2-overlay-pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                pass.set_pipeline(&self.overlay_pipeline);
+                pass.set_vertex_buffer(0, self.overlay_vertex_buffer.slice(..));
+                pass.draw(0..vertices.len() as u32, 0..1);
+            }
+        }
         self.queue.submit([encoder.finish()]);
         output.present();
         RenderOutcome::Presented
@@ -183,6 +281,8 @@ struct GameApp {
     time_step: FixedTimeStep,
     input: InputSnapshot,
     last_frame: Instant,
+    performance: PerformanceStats,
+    overlay_enabled: bool,
 }
 
 impl GameApp {
@@ -196,6 +296,8 @@ impl GameApp {
             time_step: FixedTimeStep::new(60, 8).expect("valid fixed timestep"),
             input: InputSnapshot::default(),
             last_frame: Instant::now(),
+            performance: PerformanceStats::new(),
+            overlay_enabled: true,
         }
     }
 
@@ -297,13 +399,17 @@ impl GameApp {
         delta_seconds: f32,
         event_loop: &ActiveEventLoop,
     ) {
-        let Some(runtime) = self.script_runtime.as_mut() else {
+        let Some(mut runtime) = self.script_runtime.take() else {
             return;
         };
+        self.performance.begin_update();
         runtime.set_delta(delta_seconds);
         for _ in 0..steps {
             runtime.set_input(self.input.clone());
-            match runtime.call_update() {
+            self.performance.begin_lua();
+            let update_result = runtime.call_update();
+            self.performance.end_lua();
+            match update_result {
                 Ok(result) => {
                     tracing::debug!(target: "game", "[simulation] fixed update returned: {result}")
                 }
@@ -322,12 +428,16 @@ impl GameApp {
             }
             self.input.clear_transitions();
         }
+        self.performance.end_update();
+        self.script_runtime = Some(runtime);
     }
 
     fn redraw(&mut self, event_loop: &ActiveEventLoop) {
         if self.lifecycle != AppLifecycle::Running {
             return;
         }
+        self.performance.begin_frame();
+        self.performance.reset_lua_sample();
         let elapsed = self.last_frame.elapsed().as_secs_f64();
         self.last_frame = Instant::now();
         let report = self.time_step.advance(elapsed);
@@ -345,10 +455,18 @@ impl GameApp {
             return;
         };
         self.input.finish_frame();
-        match renderer.render() {
+        let snapshot = self.performance.snapshot();
+        let overlay = self.overlay_enabled.then(|| {
+            build_overlay_vertices(snapshot, renderer.config.width, renderer.config.height)
+        });
+        match renderer.render(overlay.as_deref()) {
             RenderOutcome::Presented => {}
             RenderOutcome::Retry | RenderOutcome::Skipped => {}
             RenderOutcome::Fatal => self.request_exit(event_loop),
+        }
+        self.performance.end_frame();
+        if snapshot.frames.is_multiple_of(60) {
+            tracing::info!(target: "engine", "[perf] fps={:.1} frame_ms={:.3} update_ms={:.3} lua_ms={:.3} frames={} overlay={}", snapshot.fps, snapshot.frame_ms, snapshot.update_ms, snapshot.lua_ms, snapshot.frames, self.overlay_enabled);
         }
     }
 }
@@ -359,7 +477,7 @@ impl ApplicationHandler for GameApp {
             return;
         }
         let attributes = Window::default_attributes()
-            .with_title("P2 RustLua Engine - M1-06 Input Snapshot")
+            .with_title("P2 RustLua Engine - M1-07 Performance Overlay")
             .with_inner_size(PhysicalSize::new(1280, 720));
         let window = Arc::new(event_loop.create_window(attributes).expect("create window"));
         tracing::info!(target: "game", "[window] created: {:?}", window.id());
@@ -418,6 +536,15 @@ impl ApplicationHandler for GameApp {
                         .key_event(key, event.state == ElementState::Pressed);
                 }
                 if event.state == ElementState::Pressed
+                    && matches!(
+                        &event.logical_key,
+                        winit::keyboard::Key::Named(winit::keyboard::NamedKey::F3)
+                    )
+                {
+                    self.overlay_enabled = !self.overlay_enabled;
+                    tracing::info!(target: "game", "[perf] overlay {}", if self.overlay_enabled { "enabled" } else { "disabled" });
+                }
+                if event.state == ElementState::Pressed
                     && event.logical_key
                         == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape)
                 {
@@ -451,6 +578,45 @@ impl ApplicationHandler for GameApp {
         }
     }
 }
+fn build_overlay_vertices(
+    snapshot: PerformanceSnapshot,
+    width: u32,
+    height: u32,
+) -> Vec<OverlayVertex> {
+    let width = width.max(1) as f32;
+    let height = height.max(1) as f32;
+    let panel_width = (260.0 / width * 2.0).min(0.7);
+    let panel_height = 72.0 / height * 2.0;
+    let x0 = -1.0;
+    let y0 = 1.0;
+    let x1 = x0 + panel_width;
+    let y1 = y0 - panel_height;
+    let bars = [
+        (snapshot.fps / 120.0).clamp(0.0, 1.0),
+        (snapshot.frame_ms / 33.3).clamp(0.0, 1.0),
+        (snapshot.update_ms / 16.7).clamp(0.0, 1.0),
+        (snapshot.lua_ms / 8.0).clamp(0.0, 1.0),
+    ];
+    let mut vertices = rect_vertices(x0, y0, x1, y1).to_vec();
+    for (index, value) in bars.into_iter().enumerate() {
+        let top = y1 - 0.03 - index as f32 * 0.028;
+        let right = x0 + 0.02 + (x1 - x0 - 0.04) * value;
+        vertices.extend(rect_vertices(x0 + 0.02, top, right, top - 0.018));
+    }
+    vertices
+}
+
+fn rect_vertices(x0: f32, y0: f32, x1: f32, y1: f32) -> [OverlayVertex; 6] {
+    [
+        OverlayVertex { position: [x0, y0] },
+        OverlayVertex { position: [x1, y0] },
+        OverlayVertex { position: [x1, y1] },
+        OverlayVertex { position: [x0, y0] },
+        OverlayVertex { position: [x1, y1] },
+        OverlayVertex { position: [x0, y1] },
+    ]
+}
+
 fn map_key(key: &winit::keyboard::Key) -> Option<InputKey> {
     match key {
         winit::keyboard::Key::Character(value) => match value.as_str() {
