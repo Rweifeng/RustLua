@@ -1,6 +1,7 @@
 use std::{path::PathBuf, sync::Arc, time::Instant};
 
 use engine_core::{
+    input::{InputKey, InputSnapshot, MouseButton},
     logging::{EngineError, LogModule, init_logging},
     script::LuaRuntime,
     time_step::FixedTimeStep,
@@ -180,6 +181,7 @@ struct GameApp {
     occluded: bool,
     script_runtime: Option<LuaRuntime>,
     time_step: FixedTimeStep,
+    input: InputSnapshot,
     last_frame: Instant,
 }
 
@@ -192,6 +194,7 @@ impl GameApp {
             occluded: false,
             script_runtime: None,
             time_step: FixedTimeStep::new(60, 8).expect("valid fixed timestep"),
+            input: InputSnapshot::default(),
             last_frame: Instant::now(),
         }
     }
@@ -217,7 +220,10 @@ impl GameApp {
     fn update_pause_state(&mut self, size: PhysicalSize<u32>) {
         let should_pause = self.occluded || !has_renderable_size(size.width, size.height);
         match (should_pause, self.lifecycle) {
-            (true, AppLifecycle::Running) => self.transition(AppLifecycle::Paused),
+            (true, AppLifecycle::Running) => {
+                self.input.clear_all();
+                self.transition(AppLifecycle::Paused);
+            }
             (false, AppLifecycle::Paused) => self.transition(AppLifecycle::Running),
             _ => {}
         }
@@ -296,6 +302,7 @@ impl GameApp {
         };
         runtime.set_delta(delta_seconds);
         for _ in 0..steps {
+            runtime.set_input(self.input.clone());
             match runtime.call_update() {
                 Ok(result) => {
                     tracing::debug!(target: "game", "[simulation] fixed update returned: {result}")
@@ -313,6 +320,7 @@ impl GameApp {
                     return;
                 }
             }
+            self.input.clear_transitions();
         }
     }
 
@@ -336,6 +344,7 @@ impl GameApp {
         let Some(renderer) = self.renderer.as_mut() else {
             return;
         };
+        self.input.finish_frame();
         match renderer.render() {
             RenderOutcome::Presented => {}
             RenderOutcome::Retry | RenderOutcome::Skipped => {}
@@ -350,7 +359,7 @@ impl ApplicationHandler for GameApp {
             return;
         }
         let attributes = Window::default_attributes()
-            .with_title("P2 RustLua Engine - M1-05 Fixed Time Step")
+            .with_title("P2 RustLua Engine - M1-06 Input Snapshot")
             .with_inner_size(PhysicalSize::new(1280, 720));
         let window = Arc::new(event_loop.create_window(attributes).expect("create window"));
         tracing::info!(target: "game", "[window] created: {:?}", window.id());
@@ -403,6 +412,31 @@ impl ApplicationHandler for GameApp {
                 let size = self.window.as_ref().expect("window exists").inner_size();
                 self.update_pause_state(size);
             }
+            WindowEvent::KeyboardInput { event, .. } => {
+                if let Some(key) = map_key(&event.logical_key) {
+                    self.input
+                        .key_event(key, event.state == ElementState::Pressed);
+                }
+                if event.state == ElementState::Pressed
+                    && event.logical_key
+                        == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape)
+                {
+                    self.request_exit(event_loop);
+                }
+            }
+            WindowEvent::MouseInput { state, button, .. } => {
+                self.input
+                    .mouse_event(map_mouse_button(button), state == ElementState::Pressed);
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                self.input.cursor_moved(position.x, position.y);
+            }
+            WindowEvent::Focused(focused) => {
+                self.input.set_focused(focused);
+                if !focused {
+                    self.input.clear_transitions();
+                }
+            }
             WindowEvent::RedrawRequested => {
                 self.redraw(event_loop);
                 if self.lifecycle == AppLifecycle::Running {
@@ -412,15 +446,34 @@ impl ApplicationHandler for GameApp {
                         .request_redraw();
                 }
             }
-            WindowEvent::KeyboardInput { event, .. }
-                if event.state == ElementState::Pressed
-                    && event.logical_key
-                        == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape) =>
-            {
-                self.request_exit(event_loop)
-            }
+
             _ => {}
         }
+    }
+}
+fn map_key(key: &winit::keyboard::Key) -> Option<InputKey> {
+    match key {
+        winit::keyboard::Key::Character(value) => match value.as_str() {
+            "w" | "W" => Some(InputKey::W),
+            "a" | "A" => Some(InputKey::A),
+            "s" | "S" => Some(InputKey::S),
+            "d" | "D" => Some(InputKey::D),
+            _ => None,
+        },
+        winit::keyboard::Key::Named(winit::keyboard::NamedKey::Space) => Some(InputKey::Space),
+        winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape) => Some(InputKey::Escape),
+        _ => None,
+    }
+}
+
+fn map_mouse_button(button: winit::event::MouseButton) -> MouseButton {
+    match button {
+        winit::event::MouseButton::Left => MouseButton::Left,
+        winit::event::MouseButton::Right => MouseButton::Right,
+        winit::event::MouseButton::Middle => MouseButton::Middle,
+        winit::event::MouseButton::Other(value) => MouseButton::Other(value),
+        winit::event::MouseButton::Back => MouseButton::Other(4),
+        winit::event::MouseButton::Forward => MouseButton::Other(5),
     }
 }
 fn main() -> Result<(), Box<dyn std::error::Error>> {

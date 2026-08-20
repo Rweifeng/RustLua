@@ -1,5 +1,7 @@
 //! Core types for the Rust + Lua game engine.
 
+/// Platform-independent keyboard, mouse, and cursor snapshots.
+pub mod input;
 /// Logging and context-rich engine errors.
 #[doc = ""]
 pub mod logging;

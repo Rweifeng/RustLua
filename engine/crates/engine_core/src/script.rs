@@ -8,10 +8,13 @@ use std::{
 use mlua::{Function, Lua, Result as LuaResult};
 use tracing::info;
 
+use crate::input::{InputKey, InputSnapshot, MouseButton};
+
 #[derive(Debug, Default)]
 struct ScriptState {
     delta_seconds: f32,
     quit_requested: bool,
+    input: InputSnapshot,
 }
 
 /// Errors produced while loading or running a project Lua script.
@@ -60,6 +63,10 @@ impl LuaRuntime {
 
     pub fn set_delta(&mut self, delta_seconds: f32) {
         self.state.borrow_mut().delta_seconds = delta_seconds.max(0.0);
+    }
+
+    pub fn set_input(&mut self, input: InputSnapshot) {
+        self.state.borrow_mut().input = input;
     }
 
     pub fn execute_project_script(&mut self, path: &Path) -> Result<(), LuaBridgeError> {
@@ -120,6 +127,87 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
     )?;
     lua.globals().set("time", time)?;
 
+    let input = lua.create_table()?;
+    let input_state = Rc::clone(&state);
+    input.set(
+        "is_down",
+        lua.create_function(move |_, key: String| {
+            Ok(input_state.borrow().input.is_down(parse_key(&key)))
+        })?,
+    )?;
+    let input_state = Rc::clone(&state);
+    input.set(
+        "just_pressed",
+        lua.create_function(move |_, key: String| {
+            Ok(input_state.borrow().input.just_pressed(parse_key(&key)))
+        })?,
+    )?;
+    let input_state = Rc::clone(&state);
+    input.set(
+        "just_released",
+        lua.create_function(move |_, key: String| {
+            Ok(input_state.borrow().input.just_released(parse_key(&key)))
+        })?,
+    )?;
+    let input_state = Rc::clone(&state);
+    input.set(
+        "axis",
+        lua.create_function(move |_, axis: String| Ok(input_state.borrow().input.axis(&axis)))?,
+    )?;
+    let input_state = Rc::clone(&state);
+    input.set(
+        "mouse_is_down",
+        lua.create_function(move |_, button: String| {
+            Ok(input_state
+                .borrow()
+                .input
+                .mouse_is_down(parse_mouse_button(&button)))
+        })?,
+    )?;
+    let input_state = Rc::clone(&state);
+    input.set(
+        "mouse_just_pressed",
+        lua.create_function(move |_, button: String| {
+            Ok(input_state
+                .borrow()
+                .input
+                .mouse_just_pressed(parse_mouse_button(&button)))
+        })?,
+    )?;
+    let input_state = Rc::clone(&state);
+    input.set(
+        "mouse_just_released",
+        lua.create_function(move |_, button: String| {
+            Ok(input_state
+                .borrow()
+                .input
+                .mouse_just_released(parse_mouse_button(&button)))
+        })?,
+    )?;
+    let input_state = Rc::clone(&state);
+    input.set(
+        "cursor_position",
+        lua.create_function(move |lua, ()| {
+            let (x, y) = input_state.borrow().input.cursor_position();
+            let values = lua.create_table()?;
+            values.set(1, x)?;
+            values.set(2, y)?;
+            Ok(values)
+        })?,
+    )?;
+    let input_state = Rc::clone(&state);
+    input.set(
+        "cursor_delta",
+        lua.create_function(move |lua, ()| {
+            let (x, y) = input_state.borrow().input.cursor_delta();
+            let values = lua.create_table()?;
+            values.set(1, x)?;
+            values.set(2, y)?;
+            Ok(values)
+        })?,
+    )?;
+    lua.globals().set("input", input)?;
+
     let app = lua.create_table()?;
     let app_state = state;
     app.set(
@@ -131,6 +219,27 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
     )?;
     lua.globals().set("app", app)?;
     Ok(())
+}
+
+fn parse_key(key: &str) -> InputKey {
+    match key.to_ascii_lowercase().as_str() {
+        "w" => InputKey::W,
+        "a" => InputKey::A,
+        "s" => InputKey::S,
+        "d" => InputKey::D,
+        "space" => InputKey::Space,
+        "escape" => InputKey::Escape,
+        _ => InputKey::Other(0),
+    }
+}
+
+fn parse_mouse_button(button: &str) -> MouseButton {
+    match button.to_ascii_lowercase().as_str() {
+        "left" => MouseButton::Left,
+        "right" => MouseButton::Right,
+        "middle" => MouseButton::Middle,
+        _ => MouseButton::Other(0),
+    }
 }
 
 #[cfg(test)]
@@ -149,10 +258,15 @@ mod tests {
     }
 
     #[test]
-    fn registers_log_time_and_quit_api() {
+    fn registers_log_time_input_and_quit_api() {
         let mut runtime = LuaRuntime::new().unwrap();
         runtime.set_delta(0.25);
-        let path = script("assert(time.delta() == 0.25)\nfunction update() return 'ok' end");
+        let mut input = InputSnapshot::default();
+        input.key_event(InputKey::D, true);
+        runtime.set_input(input);
+        let path = script(
+            "assert(time.delta() == 0.25)\nassert(input.is_down('d'))\nassert(input.axis('horizontal') == 1.0)\nfunction update() return 'ok' end",
+        );
         runtime.execute_project_script(&path).unwrap();
         assert_eq!(runtime.call_update().unwrap(), "ok");
         runtime.lua.load("app.quit()").exec().unwrap();
