@@ -1,0 +1,16 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/engine_core",
+    "crates/game_runner",
+]
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+authors = ["p2 project"]
+license = "MIT OR Apache-2.0"
+repository = ""
+
+[workspace.dependencies]
+engine_core = { path = "crates/engine_core" }
