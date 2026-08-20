@@ -10,6 +10,8 @@ pub mod events;
 pub mod input;
 /// Logging and context-rich engine errors.
 pub mod logging;
+/// Coordinate, camera, and color-space conventions for 2D rendering.
+pub mod math2d;
 /// Runtime frame and update performance sampling.
 pub mod performance;
 /// Deterministic stage-based system scheduling.
