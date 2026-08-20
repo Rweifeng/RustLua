@@ -24,9 +24,10 @@ pub mod script;
 pub mod sprite;
 /// CPU-side batching and sorting for 2D Sprites.
 pub mod sprite_batch;
+/// Fixed-rate simulation timing primitives.
+pub mod text;
 /// PNG decoding and CPU-side texture asset representation.
 pub mod texture;
-/// Fixed-rate simulation timing primitives.
 pub mod time_step;
 /// 2D transform and velocity components with a minimal integration system.
 pub mod transform;

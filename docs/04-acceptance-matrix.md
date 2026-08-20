@@ -55,3 +55,5 @@
 
 
 | M3-A06 | 图集 | M3-A05 | `cargo test --workspace --all-features`、`cargo run -p game_runner --example atlas_demo --release`、`verify.ps1 Debug/Release` | 像素矩形转换为正确 UV；命名区域可查询；越界输入被拒绝；四个图集区域通过真实 GPU 单纹理单批次绘制 | atlas 单元测试、SpriteBatch 测试、Clippy、Debug/Release 质量门 | `tasks/done/M3-06-图集.md`、`docs/11-texture-atlas.md`、`atlas_demo_ok regions=4 sprites=4 vertices=24 draw_calls=1` | PASS | M3 |
+
+| M3-A07 | 文本 | M3-A06 | `cargo test --workspace --all-features`、`cargo run -p game_runner --example text_demo --release`、`verify.ps1 Debug/Release` | ASCII 文本可布局；换行/缩放/间距/颜色有效；无效样式被拒绝；字体图集通过真实 GPU 上传并绘制 | text 单元测试、Clippy、Debug/Release 质量门 | `tasks/done/M3-07-文本.md`、`docs/12-text.md`、`text_demo_ok glyphs=17 lines=2 vertices=102` | PASS | M3 |
