@@ -1,5 +1,7 @@
 //! Core types for the Rust + Lua game engine.
 
+/// Texture atlas regions and named Sprite sub-assets.
+pub mod atlas;
 /// Deferred world mutations for safe ECS system iteration.
 pub mod commands;
 /// Generational entity handles and allocation.

@@ -52,3 +52,6 @@
 | M3-A04 | SpriteBatch | M3-A03 | cargo test --workspace --all-features、sprite_batch_demo Release、verify Debug/Release | 1000 Sprite 可构建；排序稳定；相同纹理/图层合批；图集 UV 正确；真实 GPU 绘制成功 | SpriteBatch 单元测试、Clippy、Debug/Release 质量门 | tasks/done/M3-04-SpriteBatch.md；docs/09-sprite-batch.md；SpriteBatch Demo 输出 | PASS | M3 |
 
 | M3-A05 | Camera2D | M3-A04 | cargo test --workspace --all-features、camera_demo Release、verify Debug/Release | 平移/缩放/旋转可用；屏幕/世界坐标互转；边界限制正确；不同视口稳定 | Camera2D 单元测试、Clippy、Debug/Release 质量门 | tasks/done/M3-05-Camera2D.md；docs/10-camera2d.md；Camera Demo 输出 | PASS | M3 |
+
+
+| M3-A06 | 图集 | M3-A05 | `cargo test --workspace --all-features`、`cargo run -p game_runner --example atlas_demo --release`、`verify.ps1 Debug/Release` | 像素矩形转换为正确 UV；命名区域可查询；越界输入被拒绝；四个图集区域通过真实 GPU 单纹理单批次绘制 | atlas 单元测试、SpriteBatch 测试、Clippy、Debug/Release 质量门 | `tasks/done/M3-06-图集.md`、`docs/11-texture-atlas.md`、`atlas_demo_ok regions=4 sprites=4 vertices=24 draw_calls=1` | PASS | M3 |
