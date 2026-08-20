@@ -29,17 +29,70 @@ impl Viewport {
     }
 }
 
-/// A 2D camera with a world-space center and pixels-per-world-unit zoom.
+/// An axis-aligned world rectangle used to constrain a [`Camera2D`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CameraBounds {
+    pub min: Vec2,
+    pub max: Vec2,
+}
+
+impl CameraBounds {
+    pub fn new(min: Vec2, max: Vec2) -> Result<Self, CoordinateError> {
+        validate_vec2("camera bounds minimum", min)?;
+        validate_vec2("camera bounds maximum", max)?;
+        if min.x > max.x || min.y > max.y {
+            return Err(CoordinateError::InvalidBounds { min, max });
+        }
+        Ok(Self { min, max })
+    }
+}
+
+/// A 2D camera with center, rotation, zoom, and optional world bounds.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Camera2D {
     pub center: Vec2,
+    /// Clockwise screen rotation in radians. Positive world rotation appears clockwise on screen.
+    pub rotation: f32,
+    /// Pixels per world unit.
     pub zoom: f32,
+    pub bounds: Option<CameraBounds>,
 }
 
 impl Camera2D {
-    /// Creates a camera, where `zoom` is pixels per world unit.
+    /// Creates an unrotated camera, where `zoom` is pixels per world unit.
     pub fn new(center: Vec2, zoom: f32) -> Result<Self, CoordinateError> {
-        let camera = Self { center, zoom };
+        Self::with_settings(center, 0.0, zoom, None)
+    }
+
+    pub fn with_rotation(mut self, rotation: f32) -> Result<Self, CoordinateError> {
+        self.rotation = rotation;
+        self.validate()?;
+        Ok(self)
+    }
+
+    pub fn with_bounds(mut self, bounds: CameraBounds) -> Result<Self, CoordinateError> {
+        self.bounds = Some(bounds);
+        self.validate()?;
+        Ok(self)
+    }
+
+    pub fn without_bounds(mut self) -> Self {
+        self.bounds = None;
+        self
+    }
+
+    fn with_settings(
+        center: Vec2,
+        rotation: f32,
+        zoom: f32,
+        bounds: Option<CameraBounds>,
+    ) -> Result<Self, CoordinateError> {
+        let camera = Self {
+            center,
+            rotation,
+            zoom,
+            bounds,
+        };
         camera.validate()?;
         Ok(camera)
     }
@@ -49,9 +102,16 @@ impl Camera2D {
         self.validate()?;
         validate_vec2("world", world)?;
         validate_viewport(viewport)?;
+        let center = self.constrained_center(viewport)?;
+        let delta = Vec2::new(world.x - center.x, world.y - center.y);
+        let (sin, cos) = self.rotation.sin_cos();
+        let view = Vec2::new(
+            delta.x * cos + delta.y * sin,
+            -delta.x * sin + delta.y * cos,
+        );
         Ok(Vec2::new(
-            (world.x - self.center.x) * self.zoom + viewport.width * 0.5,
-            viewport.height * 0.5 - (world.y - self.center.y) * self.zoom,
+            view.x * self.zoom + viewport.width * 0.5,
+            viewport.height * 0.5 - view.y * self.zoom,
         ))
     }
 
@@ -64,18 +124,61 @@ impl Camera2D {
         self.validate()?;
         validate_vec2("screen", screen)?;
         validate_viewport(viewport)?;
+        let center = self.constrained_center(viewport)?;
+        let view = Vec2::new(
+            (screen.x - viewport.width * 0.5) / self.zoom,
+            (viewport.height * 0.5 - screen.y) / self.zoom,
+        );
+        let (sin, cos) = self.rotation.sin_cos();
         Ok(Vec2::new(
-            (screen.x - viewport.width * 0.5) / self.zoom + self.center.x,
-            (viewport.height * 0.5 - screen.y) / self.zoom + self.center.y,
+            center.x + view.x * cos - view.y * sin,
+            center.y + view.x * sin + view.y * cos,
+        ))
+    }
+
+    fn constrained_center(self, viewport: Viewport) -> Result<Vec2, CoordinateError> {
+        let Some(bounds) = self.bounds else {
+            return Ok(self.center);
+        };
+        let half_width = viewport.width * 0.5 / self.zoom;
+        let half_height = viewport.height * 0.5 / self.zoom;
+        let (sin, cos) = self.rotation.sin_cos();
+        let extent_x = half_width * cos.abs() + half_height * sin.abs();
+        let extent_y = half_width * sin.abs() + half_height * cos.abs();
+        Ok(Vec2::new(
+            clamp_center(
+                self.center.x,
+                bounds.min.x + extent_x,
+                bounds.max.x - extent_x,
+            ),
+            clamp_center(
+                self.center.y,
+                bounds.min.y + extent_y,
+                bounds.max.y - extent_y,
+            ),
         ))
     }
 
     fn validate(self) -> Result<(), CoordinateError> {
         validate_vec2("camera center", self.center)?;
+        if !self.rotation.is_finite() {
+            return Err(CoordinateError::InvalidRotation(self.rotation));
+        }
         if !self.zoom.is_finite() || self.zoom <= 0.0 {
             return Err(CoordinateError::InvalidZoom(self.zoom));
         }
+        if let Some(bounds) = self.bounds {
+            CameraBounds::new(bounds.min, bounds.max)?;
+        }
         Ok(())
+    }
+}
+
+fn clamp_center(value: f32, minimum: f32, maximum: f32) -> f32 {
+    if minimum > maximum {
+        (minimum + maximum) * 0.5
+    } else {
+        value.clamp(minimum, maximum)
     }
 }
 
@@ -98,6 +201,8 @@ pub enum CoordinateError {
     InvalidZoom(f32),
     NonFiniteVector { name: &'static str, value: Vec2 },
     NonFiniteColor { value: [f32; 4] },
+    InvalidRotation(f32),
+    InvalidBounds { min: Vec2, max: Vec2 },
 }
 
 impl fmt::Display for CoordinateError {
@@ -113,6 +218,12 @@ impl fmt::Display for CoordinateError {
                 value.x, value.y
             ),
             Self::NonFiniteColor { value } => write!(formatter, "color is not finite: {value:?}"),
+            Self::InvalidRotation(rotation) => {
+                write!(formatter, "invalid camera rotation: {rotation}")
+            }
+            Self::InvalidBounds { min, max } => {
+                write!(formatter, "invalid camera bounds: {min:?}..{max:?}")
+            }
         }
     }
 }
@@ -207,7 +318,8 @@ fn linear_to_srgb(channel: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        Camera2D, CoordinateError, LinearColor, SrgbColor, Viewport, WORLD_RIGHT, WORLD_UP,
+        Camera2D, CameraBounds, CoordinateError, LinearColor, SrgbColor, Viewport, WORLD_RIGHT,
+        WORLD_UP,
     };
     use crate::transform::Vec2;
     fn assert_vec_close(actual: Vec2, expected: Vec2, epsilon: f32) {
@@ -270,6 +382,48 @@ mod tests {
             Err(CoordinateError::NonFiniteVector { .. })
         ));
     }
+
+    #[test]
+    fn camera_rotation_round_trips_and_rotates_axes() {
+        let viewport = Viewport::new(200.0, 100.0).unwrap();
+        let camera = Camera2D::new(Vec2::zero(), 10.0)
+            .unwrap()
+            .with_rotation(std::f32::consts::FRAC_PI_2)
+            .unwrap();
+        assert_vec_close(
+            camera.world_to_screen(WORLD_RIGHT, viewport).unwrap(),
+            Vec2::new(100.0, 60.0),
+            0.0001,
+        );
+        let world = Vec2::new(2.5, -3.0);
+        assert_vec_close(
+            camera
+                .screen_to_world(camera.world_to_screen(world, viewport).unwrap(), viewport)
+                .unwrap(),
+            world,
+            0.0001,
+        );
+    }
+
+    #[test]
+    fn camera_bounds_keep_viewport_inside_world_rectangle() {
+        let viewport = Viewport::new(100.0, 100.0).unwrap();
+        let camera = Camera2D::new(Vec2::new(-100.0, 100.0), 10.0)
+            .unwrap()
+            .with_bounds(CameraBounds::new(Vec2::new(-5.0, -5.0), Vec2::new(5.0, 5.0)).unwrap())
+            .unwrap();
+        assert_eq!(
+            camera.world_to_screen(Vec2::zero(), viewport).unwrap(),
+            Vec2::new(50.0, 50.0)
+        );
+        assert_eq!(
+            camera
+                .screen_to_world(Vec2::new(0.0, 0.0), viewport)
+                .unwrap(),
+            Vec2::new(-5.0, 5.0)
+        );
+    }
+
     #[test]
     fn srgb_reference_values_are_correct() {
         let linear = SrgbColor::new(0.0, 0.5, 1.0, 0.25).unwrap().to_linear();
