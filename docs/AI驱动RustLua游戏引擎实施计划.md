@@ -1439,7 +1439,7 @@ artifacts/builds/<milestone>/...
 - [x] M3-05 Camera2D；
 - [x] M3-06 图集；
 - [x] M3-07 文本；
-- [ ] M3-08 2D Demo；
+- [x] M3-08 2D Demo；
 - [ ] M3 里程碑验收并打标签 `v0.3-2d`。
 
 ## Week 14–21：M4 资产与脚本
