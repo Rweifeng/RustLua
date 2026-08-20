@@ -4,9 +4,10 @@ use std::{
     fmt, fs,
     path::{Path, PathBuf},
     rc::Rc,
+    time::SystemTime,
 };
 
-use mlua::{Function, Lua, Result as LuaResult, Table};
+use mlua::{Function, Lua, Result as LuaResult, Table, Value};
 use tracing::{error, info, warn};
 
 use crate::{
@@ -60,13 +61,27 @@ impl fmt::Display for LuaBridgeError {
 
 impl std::error::Error for LuaBridgeError {}
 
+/// Result of checking a loaded script for source changes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReloadStatus {
+    Unchanged,
+    Reloaded,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ScriptFingerprint {
+    modified: Option<SystemTime>,
+    length: u64,
+    hash: u64,
+}
+
 /// Main-thread Lua runtime for project scripts.
 pub struct LuaRuntime {
     lua: Lua,
     state: Rc<RefCell<ScriptState>>,
     current_path: Option<PathBuf>,
+    fingerprint: Option<ScriptFingerprint>,
 }
-
 impl LuaRuntime {
     pub fn new() -> Result<Self, LuaBridgeError> {
         let lua = Lua::new();
@@ -77,6 +92,7 @@ impl LuaRuntime {
             lua,
             state,
             current_path: None,
+            fingerprint: None,
         })
     }
 
@@ -93,18 +109,81 @@ impl LuaRuntime {
             path: path.to_path_buf(),
             source: error.to_string(),
         })?;
-        self.lua
-            .load(&source)
+        let candidate = self.load_candidate(path, &source)?;
+        call_optional(&candidate, "on_create").map_err(|error| LuaBridgeError::Runtime {
+            path: path.to_path_buf(),
+            source: error.to_string(),
+        })?;
+        self.lua = candidate;
+        self.current_path = Some(path.to_path_buf());
+        self.fingerprint = Some(file_fingerprint(path, &source)?);
+        Ok(())
+    }
+
+    pub fn reload_if_changed(&mut self) -> Result<ReloadStatus, LuaBridgeError> {
+        let path = self
+            .current_path
+            .clone()
+            .ok_or_else(|| LuaBridgeError::Api("no project script is loaded".to_string()))?;
+        let source = fs::read_to_string(&path).map_err(|error| LuaBridgeError::Load {
+            path: path.clone(),
+            source: error.to_string(),
+        })?;
+        let fingerprint = file_fingerprint(&path, &source)?;
+        if self.fingerprint.as_ref() == Some(&fingerprint) {
+            return Ok(ReloadStatus::Unchanged);
+        }
+        let candidate = self.load_candidate(&path, &source)?;
+        call_optional(&self.lua, "on_destroy").map_err(|error| LuaBridgeError::Runtime {
+            path: path.clone(),
+            source: error.to_string(),
+        })?;
+        call_optional(&candidate, "on_create").map_err(|error| LuaBridgeError::Runtime {
+            path: path.clone(),
+            source: error.to_string(),
+        })?;
+        self.lua = candidate;
+        self.fingerprint = Some(fingerprint);
+        Ok(ReloadStatus::Reloaded)
+    }
+
+    pub fn reload(&mut self) -> Result<(), LuaBridgeError> {
+        let path = self
+            .current_path
+            .clone()
+            .ok_or_else(|| LuaBridgeError::Api("no project script is loaded".to_string()))?;
+        let source = fs::read_to_string(&path).map_err(|error| LuaBridgeError::Load {
+            path: path.clone(),
+            source: error.to_string(),
+        })?;
+        let candidate = self.load_candidate(&path, &source)?;
+        call_optional(&self.lua, "on_destroy").map_err(|error| LuaBridgeError::Runtime {
+            path: path.clone(),
+            source: error.to_string(),
+        })?;
+        call_optional(&candidate, "on_create").map_err(|error| LuaBridgeError::Runtime {
+            path: path.clone(),
+            source: error.to_string(),
+        })?;
+        self.lua = candidate;
+        self.fingerprint = Some(file_fingerprint(&path, &source)?);
+        Ok(())
+    }
+
+    fn load_candidate(&self, path: &Path, source: &str) -> Result<Lua, LuaBridgeError> {
+        let candidate = Lua::new();
+        register_api(&candidate, Rc::clone(&self.state))
+            .map_err(|error| LuaBridgeError::Init(error.to_string()))?;
+        candidate
+            .load(source)
             .set_name(path.to_string_lossy())
             .exec()
             .map_err(|error| LuaBridgeError::Load {
                 path: path.to_path_buf(),
                 source: error.to_string(),
             })?;
-        self.current_path = Some(path.to_path_buf());
-        Ok(())
+        Ok(candidate)
     }
-
     pub fn call_update(&self) -> Result<String, LuaBridgeError> {
         let path = self
             .current_path
@@ -127,6 +206,28 @@ impl LuaRuntime {
     }
 }
 
+fn file_fingerprint(path: &Path, source: &str) -> Result<ScriptFingerprint, LuaBridgeError> {
+    use std::hash::{Hash, Hasher};
+    let metadata = fs::metadata(path).map_err(|error| LuaBridgeError::Load {
+        path: path.to_path_buf(),
+        source: error.to_string(),
+    })?;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    source.hash(&mut hasher);
+    Ok(ScriptFingerprint {
+        modified: metadata.modified().ok(),
+        length: metadata.len(),
+        hash: hasher.finish(),
+    })
+}
+
+fn call_optional(lua: &Lua, name: &str) -> LuaResult<()> {
+    let callback: Value = lua.globals().get(name)?;
+    if let Value::Function(function) = callback {
+        function.call::<()>(())?;
+    }
+    Ok(())
+}
 fn api_error(message: impl Into<String>) -> mlua::Error {
     mlua::Error::RuntimeError(message.into())
 }
@@ -685,6 +786,36 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("invalid entity id"));
+        let _ = fs::remove_file(path);
+    }
+    #[test]
+    fn hot_reload_detects_changes_and_keeps_old_vm_on_failure() {
+        let path = script("function update() return 'v1' end");
+        let mut runtime = LuaRuntime::new().unwrap();
+        runtime.execute_project_script(&path).unwrap();
+        assert_eq!(runtime.call_update().unwrap(), "v1");
+        assert_eq!(
+            runtime.reload_if_changed().unwrap(),
+            ReloadStatus::Unchanged
+        );
+        fs::write(&path, "function update() return 'v2' end").unwrap();
+        assert_eq!(runtime.reload_if_changed().unwrap(), ReloadStatus::Reloaded);
+        assert_eq!(runtime.call_update().unwrap(), "v2");
+        fs::write(&path, "function update(").unwrap();
+        assert!(runtime.reload_if_changed().is_err());
+        assert_eq!(runtime.call_update().unwrap(), "v2");
+        let _ = fs::remove_file(path);
+    }
+    #[test]
+    fn hot_reload_calls_lifecycle_callbacks() {
+        let path = script(
+            "function on_create() end; function on_destroy() end; function update() return 'v1' end",
+        );
+        let mut runtime = LuaRuntime::new().unwrap();
+        runtime.execute_project_script(&path).unwrap();
+        fs::write(&path, "function on_create() end; function on_destroy() end; function update() return 'v2' end").unwrap();
+        runtime.reload_if_changed().unwrap();
+        assert_eq!(runtime.call_update().unwrap(), "v2");
         let _ = fs::remove_file(path);
     }
     #[test]
