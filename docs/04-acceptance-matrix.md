@@ -48,3 +48,5 @@
 | M3-A02 | PNG 加载与纹理上传 | M3-A01 | `cargo test --workspace --all-features`、`cargo run -p game_runner --example texture_upload --release`、`./scripts/verify.ps1 -KeepLog`、`./scripts/verify.ps1 -Release -KeepLog` | PNG 解码为 RGBA8；尺寸/行跨度正确；sRGB/Linear 格式规则正确；wgpu 纹理创建和 Queue::write_texture 上传成功 | texture 单元测试、上传示例、Clippy、Debug/Release 质量门 | `tasks/done/M3-02-加载PNG并上传纹理.md`；`docs/07-texture-loading-and-upload.md`；`assets/m3-02/red-1x1.png`；上传输出和质量门日志 | PASS | M3 |
 
 | M3-A03 | Sprite | M3-A02 | cargo test --workspace --all-features、sprite_demo Release、verify Debug/Release | Sprite 顶点/UV/pivot/scale/rotation/tint 正确；真实 GPU 绘制成功；错误输入被拒绝 | sprite 单元测试、Clippy、Debug/Release 质量门 | tasks/done/M3-03-Sprite.md；docs/08-sprite.md；Sprite Demo 输出 | PASS | M3 |
+
+| M3-A04 | SpriteBatch | M3-A03 | cargo test --workspace --all-features、sprite_batch_demo Release、verify Debug/Release | 1000 Sprite 可构建；排序稳定；相同纹理/图层合批；图集 UV 正确；真实 GPU 绘制成功 | SpriteBatch 单元测试、Clippy、Debug/Release 质量门 | tasks/done/M3-04-SpriteBatch.md；docs/09-sprite-batch.md；SpriteBatch Demo 输出 | PASS | M3 |

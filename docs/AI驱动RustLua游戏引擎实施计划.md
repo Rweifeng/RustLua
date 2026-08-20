@@ -1435,7 +1435,7 @@ artifacts/builds/<milestone>/...
 - [x] M3-01 坐标约定；
 - [x] M3-02 纹理；
 - [x] M3-03 Sprite；
-- [ ] M3-04 SpriteBatch；
+- [x] M3-04 SpriteBatch；
 - [ ] M3-05 Camera2D；
 - [ ] M3-06 图集；
 - [ ] M3-07 文本；

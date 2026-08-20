@@ -20,6 +20,8 @@ pub mod scheduler;
 pub mod script;
 /// CPU-side 2D Sprite geometry and UV generation.
 pub mod sprite;
+/// CPU-side batching and sorting for 2D Sprites.
+pub mod sprite_batch;
 /// PNG decoding and CPU-side texture asset representation.
 pub mod texture;
 /// Fixed-rate simulation timing primitives.
