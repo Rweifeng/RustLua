@@ -8,6 +8,8 @@ pub mod commands;
 pub mod entity;
 /// Typed, frame-bounded event queues.
 pub mod events;
+/// Incremental and atomic asset import cache.
+pub mod import_cache;
 /// Platform-independent keyboard, mouse, and cursor snapshots.
 pub mod input;
 /// Logging and context-rich engine errors.
