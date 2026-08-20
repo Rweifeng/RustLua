@@ -1424,7 +1424,7 @@ artifacts/builds/<milestone>/...
 - [x] M2-01 EntityId；
 - [x] M2-02 World；
 - [x] M2-03 Transform/Velocity；
-- [ ] M2-04 Scheduler；
+- [x] M2-04 Scheduler；
 - [ ] M2-05 Events；
 - [ ] M2-06 Commands；
 - [ ] M2-07 压力测试；

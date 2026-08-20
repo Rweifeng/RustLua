@@ -8,6 +8,8 @@ pub mod input;
 pub mod logging;
 /// Runtime frame and update performance sampling.
 pub mod performance;
+/// Deterministic stage-based system scheduling.
+pub mod scheduler;
 /// Lua VM and host API bridge.
 pub mod script;
 /// Fixed-rate simulation timing primitives.
