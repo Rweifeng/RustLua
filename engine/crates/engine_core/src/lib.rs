@@ -1,5 +1,7 @@
 //! Core types for the Rust + Lua game engine.
 
+/// Deferred world mutations for safe ECS system iteration.
+pub mod commands;
 /// Generational entity handles and allocation.
 pub mod entity;
 /// Typed, frame-bounded event queues.
