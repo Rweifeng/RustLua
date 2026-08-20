@@ -1,4 +1,4 @@
-﻿# AI 驱动 Rust + Lua 游戏引擎开发实施计划
+# AI 驱动 Rust + Lua 游戏引擎开发实施计划
 
 > 项目依据：`E:\Codex\p2\RustLua游戏引擎独立开发计划.md`
 >
@@ -1401,12 +1401,12 @@ artifacts/builds/<milestone>/...
 
 ## Week 1：M0 基线
 
-- [ ] M0-01 创建项目章程；
-- [ ] M0-02 创建 Cargo workspace；
-- [ ] M0-03 创建 `verify.ps1`；
-- [ ] M0-04 创建任务、验收和风险模板；
-- [ ] M0-05 建立第一个 Demo README；
-- [ ] M0-06 完成首次基线构建并打标签 `v0.0.1-baseline`。
+- [x] M0-01 创建项目章程；
+- [x] M0-02 创建 Cargo workspace；
+- [x] M0-03 创建 `verify.ps1`；
+- [x] M0-04 创建任务、验收和风险模板；
+- [x] M0-05 建立第一个 Demo README；
+- [x] M0-06 完成首次基线构建并打标签 `v0.0.1-baseline`。
 
 ## Week 2–3：M1 基础运行时
 
