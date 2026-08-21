@@ -226,17 +226,19 @@ impl LuaRuntime {
                     .insert(id, transform)
                     .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
             }
-            if let Some(path) = entity.components.get("Sprite") {
-                let sprite = Sprite::new(Vec2::new(128.0, 128.0)).map_err(|error| {
-                    LuaBridgeError::Api(format!("failed to build default Sprite: {error}"))
-                })?;
+            if let Some(raw) = entity.components.get("Sprite") {
+                let (path, size) = parse_sprite_ref(raw);
+                let sprite =
+                    Sprite::new(size.unwrap_or(Vec2::new(128.0, 128.0))).map_err(|error| {
+                        LuaBridgeError::Api(format!("failed to build default Sprite: {error}"))
+                    })?;
                 state
                     .world
                     .insert(id, sprite)
                     .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
                 state
                     .world
-                    .insert(id, SpriteAsset(path.clone()))
+                    .insert(id, SpriteAsset(path))
                     .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
             }
             if let Some(value) = entity.components.get("Tilemap") {
@@ -671,6 +673,32 @@ fn table_vec(lua: &Lua, x: f32, y: f32) -> LuaResult<Table> {
     Ok(table)
 }
 
+/// Splits a `Sprite` component value into its texture path and an optional
+/// `;size=<n>` or `;size=<w>x<h>` override. Defaults to the engine's 128px
+/// sprite when no size is given.
+fn parse_sprite_ref(value: &str) -> (String, Option<Vec2>) {
+    let (path, params) = match value.split_once(';') {
+        Some((path, params)) => (path, Some(params)),
+        None => (value, None),
+    };
+    let size = params
+        .and_then(|params| {
+            params
+                .split(';')
+                .find_map(|field| field.strip_prefix("size="))
+        })
+        .and_then(|raw| {
+            if let Some((w, h)) = raw.split_once('x') {
+                Some((w.parse().ok()?, h.parse().ok()?))
+            } else {
+                let value: f32 = raw.parse().ok()?;
+                Some((value, value))
+            }
+        })
+        .map(|(width, height)| Vec2::new(width, height));
+    (path.to_owned(), size)
+}
+
 /// Writes `text` to `path` atomically (temp file + rename), like scene saves.
 fn atomic_write(path: &Path, text: &str) -> Result<(), std::io::Error> {
     if let Some(parent) = path.parent() {
@@ -855,6 +883,7 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
             state.world.despawn(id).map_err(world_error)?;
             state.names.retain(|_, value| *value != id);
             state.health.remove(&id);
+            let _ = state.physics.remove_body(id);
             Ok(true)
         })?,
     )?;

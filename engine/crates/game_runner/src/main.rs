@@ -521,7 +521,7 @@ impl RuntimeScene {
         tracing::info!(target: "scene", "[scene] loaded name={} entities={}", scene.name, scene.entities.len());
         tracing::info!(target: "ecs", "[ecs] world initialized entities={instantiated}");
         if let Some(root) = project_root {
-            script.set_audio_asset_dir(root.join("assets"));
+            script.set_audio_asset_dir(root.join("assets").join("audio"));
             script.set_project_root(root.to_path_buf());
             script.set_save_path(root.join(".p2").join("save.sav"));
             let script_path = root.join("scripts/main.lua");

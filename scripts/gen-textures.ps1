@@ -6,7 +6,7 @@
 Add-Type -AssemblyName System.Drawing
 
 $root = Split-Path -Parent $PSScriptRoot
-$assets = Join-Path $root "game\assets"
+$assets = Join-Path $root "game\assets\textures"
 
 # palette order: cyan, orange, green, red, purple, yellow
 $colors = @(

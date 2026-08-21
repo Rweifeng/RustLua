@@ -1,18 +1,32 @@
 scene_version=1
 name=main
-meta	editor.hidden.1	true
-entity	1	Entity	
-entity	2	Player	1
-component	2	Transform	x=-40.000000000;y=0.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
-component	2	Sprite	assets/player.png
-component	2	Animation	default=idle;clip:idle:assets/idle-sheet.png:4:4:true;clip:move:assets/move-sheet.png:4:8:true;clip:attack:assets/attack-sheet.png:2:6:false;clip:hit:assets/hit-sheet.png:2:5:false;clip:death:assets/hit-sheet.png:2:3:false
-component	2	Collider	shape=ball;radius=16
-entity	3	Entity	1
-component	3	Transform	x=170.000000000;y=0.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
-component	3	Sprite	assets/red-1x1.png
-entity	4	Tilemap	1
-component	4	Transform	x=-96.000000000;y=-64.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
-component	4	Tilemap	tile_size=32x32;width=6;height=4;texture=assets/tileset.png;tiles=111111100001100201111111;solid=111111100001100001111111
-entity	5	Trigger	1
-component	5	Transform	x=16.000000000;y=16.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
-component	5	Collider	shape=ball;radius=24;sensor=true
+entity	1	Player	
+component	1	Transform	x=48.000000000;y=160.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+component	1	Sprite	assets/textures/player.png;size=32
+component	1	Animation	default=idle;clip:idle:assets/textures/hero-idle.png:4:4:true;clip:move:assets/textures/hero-move.png:4:8:true;clip:attack:assets/textures/hero-attack.png:2:6:false
+component	1	Collider	shape=ball;radius=16
+entity	2	Tilemap	
+component	2	Transform	x=0.000000000;y=0.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+component	2	Tilemap	tile_size=32x32;width=10;height=8;texture=assets/textures/tileset.png;tiles=11111111111222222221122212222112222222211222222221122222222112222222211111111111;solid=11111111111000000001100010000110000000011000000001100000000110000000011111111111
+entity	3	Slime1	
+component	3	Transform	x=160.000000000;y=80.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+component	3	Sprite	assets/textures/slime.png;size=32
+component	3	Animation	default=squish;clip:squish:assets/textures/slime.png:2:3:true
+component	3	Collider	shape=ball;radius=10
+entity	4	Slime2	
+component	4	Transform	x=240.000000000;y=200.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+component	4	Sprite	assets/textures/slime.png;size=32
+component	4	Animation	default=squish;clip:squish:assets/textures/slime.png:2:3:true
+component	4	Collider	shape=ball;radius=10
+entity	5	Coin1	
+component	5	Transform	x=96.000000000;y=64.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+component	5	Sprite	assets/textures/coin.png;size=16
+component	5	Collider	shape=ball;radius=12;sensor=true
+entity	6	Coin2	
+component	6	Transform	x=192.000000000;y=192.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+component	6	Sprite	assets/textures/coin.png;size=16
+component	6	Collider	shape=ball;radius=12;sensor=true
+entity	7	Coin3	
+component	7	Transform	x=272.000000000;y=96.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+component	7	Sprite	assets/textures/coin.png;size=16
+component	7	Collider	shape=ball;radius=12;sensor=true

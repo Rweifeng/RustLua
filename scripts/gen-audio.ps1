@@ -36,6 +36,6 @@ function Write-Wav([string]$path, [int]$frequency, [double]$duration) {
 }
 
 $root = Split-Path -Parent $PSScriptRoot
-$assets = Join-Path $root "game\assets"
+$assets = Join-Path $root "game\assets\audio"
 Write-Wav (Join-Path $assets "attack.wav") 440 0.15
 Write-Wav (Join-Path $assets "hit.wav") 160 0.25

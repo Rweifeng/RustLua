@@ -123,9 +123,19 @@ impl AudioSystem {
         let Some(dir) = &self.asset_dir else {
             return Err(AudioError::Io("no asset directory configured".to_owned()));
         };
-        let path = dir.join(format!("{name}.wav"));
-        let bytes = std::fs::read(&path)
-            .map_err(|error| AudioError::Io(format!("{}: {error}", path.display())))?;
+        // Try `.wav` first, then `.ogg` (rodio decodes both from bytes).
+        let mut loaded = None;
+        for file in [format!("{name}.wav"), format!("{name}.ogg")] {
+            let path = dir.join(&file);
+            if path.is_file() {
+                let bytes = std::fs::read(&path)
+                    .map_err(|error| AudioError::Io(format!("{}: {error}", path.display())))?;
+                loaded = Some(bytes);
+                break;
+            }
+        }
+        let bytes =
+            loaded.ok_or_else(|| AudioError::Io(format!("no .wav/.ogg clip found for {name}")))?;
         self.sounds.insert(name.to_owned(), bytes.clone());
         Ok(bytes)
     }

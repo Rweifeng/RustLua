@@ -319,6 +319,24 @@ impl PhysicsWorld {
         Ok(())
     }
 
+    /// Removes a body and its colliders (e.g. when its entity is destroyed).
+    pub fn remove_body(&mut self, entity: EntityId) -> Result<(), PhysicsError> {
+        let Some(handle) = self.entity_bodies.remove(&entity) else {
+            return Err(PhysicsError::UnknownBody(entity));
+        };
+        // RigidBodySet::remove also removes the body's attached colliders.
+        self.bodies.remove(
+            handle,
+            &mut self.islands,
+            &mut self.colliders,
+            &mut self.impulse_joints,
+            &mut self.multibody_joints,
+            true,
+        );
+        self.collider_entities.retain(|_, owner| *owner != entity);
+        Ok(())
+    }
+
     /// Sets the linear velocity of a dynamic body.
     pub fn set_velocity(&mut self, entity: EntityId, vx: f32, vy: f32) -> Result<(), PhysicsError> {
         let handle = self
