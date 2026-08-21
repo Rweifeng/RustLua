@@ -25,6 +25,14 @@ try {
     }
 
     Copy-Item -Force $runner (Join-Path $engineBuildRoot "game_runner.exe")
+    $editor = Join-Path $engineRoot "target\release\editor.exe"
+    if (-not (Test-Path $editor)) { throw "Release editor was not found: $editor" }
+    Copy-Item -Force $editor (Join-Path $engineBuildRoot "editor.exe")
+    $fontSource = Join-Path $engineRoot "crates\editor\fonts\NotoSansSC-VF.ttf"
+    if (-not (Test-Path $fontSource)) { throw "CJK font resource was not found: $fontSource" }
+    $fontTarget = Join-Path $engineBuildRoot "fonts"
+    New-Item -ItemType Directory -Force -Path $fontTarget | Out-Null
+    Copy-Item -Force $fontSource (Join-Path $fontTarget "NotoSansSC-VF.ttf")
     $gameSource = Join-Path $projectRoot "game"
     if (-not (Test-Path $gameSource)) { throw "Game project directory was not found: $gameSource" }
     if (Test-Path $gameBuildRoot) { Remove-Item -LiteralPath $gameBuildRoot -Recurse -Force }

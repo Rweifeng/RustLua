@@ -10,7 +10,7 @@ use editor::{
     ProjectError, ProjectInfo, RecoveryManager, RecoveryScan, ResourceBrowserState, SceneTreeState,
     TransformFields, check_project, open_project,
 };
-use eframe::egui;
+use eframe::egui::{self, FontData, FontDefinitions, FontFamily};
 use engine_core::{
     scene::SceneEntityId,
     script::{LuaRuntime, ScriptDiagnostic},
@@ -75,7 +75,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     eframe::run_native(
         "P2 RustLua 编辑器",
         options,
-        Box::new(move |_creation_context| {
+        Box::new(move |creation_context| {
+            configure_cjk_fonts(&creation_context.egui_ctx);
             let mut app = EditorApp::new(project.unwrap_or_else(|| ProjectInfo {
                 root: default_engine_path(),
                 version: "engine-only".to_owned(),
@@ -91,6 +92,60 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 fn format_project_error(path: &Path, error: ProjectError) -> String {
     format!("无法打开项目 {}：{}", path.display(), error)
+}
+
+const CJK_FONT_FILE_NAMES: &[&str] = &["NotoSansSC-VF.ttf", "simhei.ttf", "Deng.ttf"];
+
+fn cjk_font_candidates() -> Vec<PathBuf> {
+    let mut candidates = vec![
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("fonts")
+            .join("NotoSansSC-VF.ttf"),
+    ];
+    if let Ok(executable) = env::current_exe()
+        && let Some(parent) = executable.parent()
+    {
+        candidates.extend(
+            CJK_FONT_FILE_NAMES
+                .iter()
+                .map(|name| parent.join("fonts").join(name)),
+        );
+        candidates.extend(CJK_FONT_FILE_NAMES.iter().map(|name| parent.join(name)));
+    }
+    if cfg!(target_os = "windows") {
+        candidates.extend(
+            CJK_FONT_FILE_NAMES
+                .iter()
+                .map(|name| PathBuf::from("C:/Windows/Fonts").join(name)),
+        );
+    }
+    candidates
+}
+
+fn configure_cjk_fonts(context: &egui::Context) {
+    let Some(path) = cjk_font_candidates()
+        .into_iter()
+        .find(|path| path.is_file())
+    else {
+        eprintln!("editor: no CJK font found; Chinese text may render as tofu boxes");
+        return;
+    };
+    let Ok(bytes) = std::fs::read(&path) else {
+        eprintln!("editor: failed to read CJK font {}", path.display());
+        return;
+    };
+    let mut fonts = FontDefinitions::default();
+    fonts
+        .font_data
+        .insert("p2-cjk".to_owned(), FontData::from_owned(bytes).into());
+    for family in [FontFamily::Proportional, FontFamily::Monospace] {
+        fonts
+            .families
+            .entry(family)
+            .or_default()
+            .insert(0, "p2-cjk".to_owned());
+    }
+    context.set_fonts(fonts);
 }
 
 struct EditorApp {
