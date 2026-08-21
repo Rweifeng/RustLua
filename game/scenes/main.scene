@@ -8,3 +8,6 @@ component	2	Sprite	assets/red-1x1.png
 entity	3	Entity	1
 component	3	Transform	x=170.000000000;y=0.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
 component	3	Sprite	assets/red-1x1.png
+entity	4	Tilemap	1
+component	4	Transform	x=-96.000000000;y=-64.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+component	4	Tilemap	tile_size=32x32;width=6;height=4;tiles=111111100001100201111111;solid=111111100001100001111111

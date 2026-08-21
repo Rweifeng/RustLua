@@ -15,6 +15,7 @@ use engine_core::{
     script::LuaRuntime,
     sprite::{Sprite, SpriteVertex},
     sprite_batch::{SpriteBatch, SpriteBatchItem},
+    tilemap::{TILE_PALETTE, Tilemap},
     time_step::FixedTimeStep,
     transform::{Transform, Vec2, integrate_velocity},
     window::{AppLifecycle, has_renderable_size},
@@ -365,19 +366,73 @@ impl RuntimeScene {
                 })
                 .collect::<Vec<_>>()
         });
+        // Tile maps draw first (layer 0), sprite entities on top (layer 1+).
+        self.push_tiles()?;
         for (index, (transform, sprite)) in sprites.into_iter().enumerate() {
             self.sprite_batch
-                .push(SpriteBatchItem::new(0, index as i32, sprite, transform));
+                .push(SpriteBatchItem::new(0, 1 + index as i32, sprite, transform));
         }
         let mesh = self
             .sprite_batch
             .build(self.camera, viewport)
             .map_err(|error| error.to_string())?;
+        tracing::debug!(
+            target: "render",
+            "[render] batch items={} vertices={} draw_ranges={}",
+            self.sprite_batch.len(),
+            mesh.vertices.len(),
+            mesh.draws.len()
+        );
         Ok(mesh
             .vertices
             .iter()
             .map(|vertex| sprite_vertex(vertex, viewport))
             .collect())
+    }
+
+    /// Pushes every non-empty tile as a single-batch colored quad. All tiles
+    /// share texture id and layer, so the whole map is one draw range.
+    fn push_tiles(&mut self) -> Result<(), String> {
+        let tilemaps = self.script.with_world(|world| {
+            world
+                .entities_with2::<Transform, Tilemap>()
+                .into_iter()
+                .filter_map(|id| {
+                    let transform = world.get::<Transform>(id).ok().flatten().copied();
+                    let tilemap = world.get::<Tilemap>(id).ok().flatten().cloned();
+                    transform.zip(tilemap)
+                })
+                .collect::<Vec<_>>()
+        });
+        for (transform, tilemap) in tilemaps {
+            let base = Sprite::new(tilemap.tile_size).map_err(|error| error.to_string())?;
+            for y in 0..tilemap.height {
+                for x in 0..tilemap.width {
+                    let index = y * tilemap.width + x;
+                    let cell = tilemap.tiles[index];
+                    if cell == 0 {
+                        continue;
+                    }
+                    let tint = TILE_PALETTE[(cell as usize - 1) % TILE_PALETTE.len()];
+                    let sprite = base.with_tint(tint).map_err(|error| error.to_string())?;
+                    let offset = Vec2::new(
+                        x as f32 * tilemap.tile_size.x * transform.scale.x,
+                        y as f32 * tilemap.tile_size.y * transform.scale.y,
+                    );
+                    let tile_transform = Transform {
+                        position: Vec2::new(
+                            transform.position.x + offset.x,
+                            transform.position.y + offset.y,
+                        ),
+                        rotation: transform.rotation,
+                        scale: transform.scale,
+                    };
+                    self.sprite_batch
+                        .push(SpriteBatchItem::new(0, 0, sprite, tile_transform));
+                }
+            }
+        }
+        Ok(())
     }
 }
 

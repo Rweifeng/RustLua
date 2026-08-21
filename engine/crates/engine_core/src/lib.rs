@@ -36,6 +36,8 @@ pub mod sprite_batch;
 pub mod text;
 /// PNG decoding and CPU-side texture asset representation.
 pub mod texture;
+/// Grid tile maps with a visual layer and a separate collision layer.
+pub mod tilemap;
 pub mod time_step;
 /// 2D transform and velocity components with a minimal integration system.
 pub mod transform;

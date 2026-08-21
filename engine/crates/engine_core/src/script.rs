@@ -15,6 +15,7 @@ use crate::{
     input::{InputKey, InputSnapshot, MouseButton},
     scene::Scene,
     sprite::Sprite,
+    tilemap::{TILE_PALETTE, Tilemap},
     transform::{Transform, Vec2},
     world::{World, WorldError},
 };
@@ -149,18 +150,6 @@ impl ScriptDebugger {
     }
 }
 
-/// Default tints assigned to scene sprites so multiple entities are visually
-/// distinct until per-sprite colors are supported. The first sprite entity
-/// (usually the player) gets the engine's signature cyan.
-const SPRITE_TINTS: [[f32; 4]; 6] = [
-    [0.18, 0.72, 1.0, 1.0],
-    [0.95, 0.65, 0.15, 1.0],
-    [0.35, 0.85, 0.40, 1.0],
-    [0.90, 0.35, 0.45, 1.0],
-    [0.70, 0.45, 0.95, 1.0],
-    [0.90, 0.85, 0.35, 1.0],
-];
-
 /// Main-thread Lua runtime for project scripts.
 pub struct LuaRuntime {
     lua: Lua,
@@ -220,7 +209,7 @@ impl LuaRuntime {
                     .map_err(|error| {
                         LuaBridgeError::Api(format!("failed to build default Sprite: {error}"))
                     })?
-                    .with_tint(SPRITE_TINTS[sprite_index % SPRITE_TINTS.len()])
+                    .with_tint(TILE_PALETTE[sprite_index % TILE_PALETTE.len()])
                     .map_err(|error| {
                         LuaBridgeError::Api(format!("failed to tint default Sprite: {error}"))
                     })?;
@@ -229,6 +218,18 @@ impl LuaRuntime {
                     .insert(id, sprite)
                     .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
                 sprite_index += 1;
+            }
+            if let Some(value) = entity.components.get("Tilemap") {
+                let tilemap = Tilemap::from_component_str(value).map_err(|error| {
+                    LuaBridgeError::Api(format!(
+                        "entity {:?} has an invalid Tilemap: {error}",
+                        entity.name
+                    ))
+                })?;
+                state
+                    .world
+                    .insert(id, tilemap)
+                    .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
             }
             if !entity.name.is_empty() {
                 state.names.insert(entity.name.clone(), id);
@@ -789,6 +790,52 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
     )?;
     lua.globals().set("health", health)?;
 
+    let tilemap = lua.create_table()?;
+    let s = Rc::clone(&state);
+    tilemap.set(
+        "get",
+        lua.create_function(move |lua, id: i64| {
+            let id = entity_from_lua(id)?;
+            let state = s.borrow();
+            require_alive(&state, id)?;
+            let Some(map) = state.world.get::<Tilemap>(id).map_err(world_error)? else {
+                return Ok(mlua::Value::Nil);
+            };
+            let t = lua.create_table()?;
+            t.set("tile_size", map.tile_size.x)?;
+            t.set("width", map.width)?;
+            t.set("height", map.height)?;
+            Ok(mlua::Value::Table(t))
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    tilemap.set(
+        "is_solid",
+        lua.create_function(move |_, (id, x, y): (i64, usize, usize)| {
+            let id = entity_from_lua(id)?;
+            let state = s.borrow();
+            require_alive(&state, id)?;
+            let Some(map) = state.world.get::<Tilemap>(id).map_err(world_error)? else {
+                return Err(api_error("entity has no tilemap"));
+            };
+            Ok(map.is_solid(x, y).unwrap_or(false))
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    tilemap.set(
+        "get_cell",
+        lua.create_function(move |_, (id, x, y): (i64, usize, usize)| {
+            let id = entity_from_lua(id)?;
+            let state = s.borrow();
+            require_alive(&state, id)?;
+            let Some(map) = state.world.get::<Tilemap>(id).map_err(world_error)? else {
+                return Err(api_error("entity has no tilemap"));
+            };
+            Ok(map.cell(x, y))
+        })?,
+    )?;
+    lua.globals().set("tilemap", tilemap)?;
+
     let physics = lua.create_table()?;
     let s = Rc::clone(&state);
     physics.set(
@@ -1121,6 +1168,49 @@ mod tests {
         assert_eq!(position.x, 10.0);
         assert_eq!(position.y, 10.0);
 
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn instantiated_tilemap_is_queryable_from_lua() {
+        use crate::scene::{Scene, SceneEntityId};
+
+        let mut scene = Scene::new("test");
+        scene.add_entity(SceneEntityId(1), "Map", None).unwrap();
+        scene
+            .entities
+            .get_mut(&SceneEntityId(1))
+            .unwrap()
+            .components
+            .insert(
+                "Transform".into(),
+                "x=0;y=0;rotation=0;scale_x=1;scale_y=1".into(),
+            );
+        scene
+            .entities
+            .get_mut(&SceneEntityId(1))
+            .unwrap()
+            .components
+            .insert(
+                "Tilemap".into(),
+                "tile_size=32x32;width=4;height=3;tiles=100101000100;solid=100000000000".into(),
+            );
+
+        let mut runtime = LuaRuntime::new().unwrap();
+        assert_eq!(runtime.instantiate_scene(&scene).unwrap(), 1);
+
+        let path = script(
+            "function on_create()\nlocal m = entity.find('Map')\nlocal d = tilemap.get(m)\nassert(d ~= nil)\nassert(d.width == 4 and d.height == 3 and d.tile_size == 32)\nassert(tilemap.is_solid(m, 0, 0))\nassert(not tilemap.is_solid(m, 1, 1))\nassert(not tilemap.is_solid(m, 9, 9))\nassert(tilemap.get_cell(m, 3, 0) == 1)\nassert(tilemap.get_cell(m, 1, 0) == 0)\nreturn 'ok' end\nfunction update() return 'ok' end",
+        );
+        runtime.execute_project_script(&path).unwrap();
+        assert_eq!(runtime.call_update().unwrap(), "ok");
+
+        let maps = runtime.with_world(|world| world.entities_with::<Tilemap>());
+        assert_eq!(maps.len(), 1);
+        let map =
+            runtime.with_world(|world| world.get::<Tilemap>(maps[0]).unwrap().unwrap().clone());
+        assert_eq!(map.width, 4);
+        assert_eq!(map.is_solid(0, 0), Some(true));
         let _ = fs::remove_file(path);
     }
 
