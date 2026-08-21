@@ -2,12 +2,19 @@ use std::{path::PathBuf, sync::Arc, time::Instant};
 
 use bytemuck::{Pod, Zeroable};
 use engine_core::{
+    entity::EntityId,
     input::{InputKey, InputSnapshot, MouseButton},
     logging::{EngineError, LogModule, init_logging},
+    math2d::{Camera2D, Viewport},
     performance::{PerformanceSnapshot, PerformanceStats},
+    scene::{Scene, SceneEntityId},
     script::LuaRuntime,
+    sprite::{Sprite, SpriteVertex},
+    sprite_batch::{SpriteBatch, SpriteBatchItem},
     time_step::FixedTimeStep,
+    transform::{Transform, Vec2, integrate_velocity},
     window::{AppLifecycle, has_renderable_size},
+    world::World,
 };
 use wgpu::{
     CompositeAlphaMode, Device, DeviceDescriptor, Instance, InstanceDescriptor, PresentMode, Queue,
@@ -17,17 +24,22 @@ use wgpu::{
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct OverlayVertex {
     position: [f32; 2],
+    color: [f32; 4],
 }
 
 const OVERLAY_SHADER: &str = r#"
-struct VertexOutput { @builtin(position) position: vec4<f32> };
-@vertex fn vs_main(@location(0) position: vec2<f32>) -> VertexOutput {
+struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) color: vec4<f32>,
+};
+@vertex fn vs_main(@location(0) position: vec2<f32>, @location(1) color: vec4<f32>) -> VertexOutput {
     var out: VertexOutput;
     out.position = vec4<f32>(position, 0.0, 1.0);
+    out.color = color;
     return out;
 }
-@fragment fn fs_main() -> @location(0) vec4<f32> {
-    return vec4<f32>(0.05, 0.8, 0.35, 0.88);
+@fragment fn fs_main(@location(0) color: vec4<f32>) -> @location(0) vec4<f32> {
+    return color;
 }
 "#;
 
@@ -128,11 +140,18 @@ impl Renderer {
                 buffers: &[wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<OverlayVertex>() as u64,
                     step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &[wgpu::VertexAttribute {
-                        format: wgpu::VertexFormat::Float32x2,
-                        offset: 0,
-                        shader_location: 0,
-                    }],
+                    attributes: &[
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: 0,
+                            shader_location: 0,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x4,
+                            offset: 8,
+                            shader_location: 1,
+                        },
+                    ],
                 }],
             },
             fragment: Some(wgpu::FragmentState {
@@ -153,7 +172,7 @@ impl Renderer {
         });
         let overlay_vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("p2-overlay-vertex-buffer"),
-            size: 4096,
+            size: 1024 * 1024,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -272,6 +291,104 @@ enum RenderOutcome {
     Fatal,
 }
 
+struct RuntimeScene {
+    scene: Scene,
+    world: World,
+    sprite_batch: SpriteBatch,
+    camera: Camera2D,
+    sprite: Sprite,
+    entity: EntityId,
+}
+
+impl RuntimeScene {
+    fn new() -> Result<Self, String> {
+        let scene = load_runtime_scene();
+        let mut world = World::new();
+        let entity = world.spawn();
+        let transform = Transform::from_position(Vec2::new(640.0, 360.0));
+        world
+            .insert(entity, transform)
+            .map_err(|error| error.to_string())?;
+        let camera =
+            Camera2D::new(Vec2::new(640.0, 360.0), 1.0).map_err(|error| error.to_string())?;
+        let sprite = Sprite::new(Vec2::new(128.0, 128.0))
+            .map_err(|error| error.to_string())?
+            .with_tint([0.18, 0.72, 1.0, 1.0])
+            .map_err(|error| error.to_string())?;
+        tracing::info!(target: "scene", "[scene] loaded name={} entities={}", scene.name, scene.entities.len());
+        tracing::info!(target: "ecs", "[ecs] world initialized entities={}", world.entity_count());
+        tracing::info!(target: "render", "[render] SpriteBatch and Camera2D initialized");
+        Ok(Self {
+            scene,
+            world,
+            sprite_batch: SpriteBatch::new(),
+            camera,
+            sprite,
+            entity,
+        })
+    }
+
+    fn update(&mut self, delta_seconds: f32) -> Result<(), String> {
+        integrate_velocity(&mut self.world, delta_seconds)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
+    fn vertices(&mut self, width: u32, height: u32) -> Result<Vec<OverlayVertex>, String> {
+        let viewport = Viewport::new(width.max(1) as f32, height.max(1) as f32)
+            .map_err(|error| error.to_string())?;
+        let transform = self
+            .world
+            .get::<Transform>(self.entity)
+            .map_err(|error| error.to_string())?
+            .copied()
+            .ok_or_else(|| "runtime sprite transform missing".to_owned())?;
+        self.sprite_batch.clear();
+        self.sprite_batch.push(SpriteBatchItem::new(
+            0,
+            self.scene.entities.len() as i32,
+            self.sprite,
+            transform,
+        ));
+        let mesh = self
+            .sprite_batch
+            .build(self.camera, viewport)
+            .map_err(|error| error.to_string())?;
+        Ok(mesh
+            .vertices
+            .iter()
+            .map(|vertex| sprite_vertex(vertex, viewport))
+            .collect())
+    }
+}
+
+fn load_runtime_scene() -> Scene {
+    let candidates = [
+        PathBuf::from("scenes/main.scene"),
+        PathBuf::from("../scenes/main.scene"),
+        PathBuf::from("game/scenes/main.scene"),
+        PathBuf::from("../game/scenes/main.scene"),
+    ];
+    candidates
+        .into_iter()
+        .find_map(|path| Scene::load(path).ok())
+        .unwrap_or_else(|| {
+            let mut scene = Scene::new("runtime-main");
+            let _ = scene.add_entity(SceneEntityId(1), "SpriteRoot", None);
+            scene
+        })
+}
+
+fn sprite_vertex(vertex: &SpriteVertex, viewport: Viewport) -> OverlayVertex {
+    OverlayVertex {
+        position: [
+            vertex.position[0] / viewport.width * 2.0 - 1.0,
+            1.0 - vertex.position[1] / viewport.height * 2.0,
+        ],
+        color: vertex.color,
+    }
+}
+
 struct GameApp {
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
@@ -283,6 +400,7 @@ struct GameApp {
     last_frame: Instant,
     performance: PerformanceStats,
     overlay_enabled: bool,
+    runtime_scene: Option<RuntimeScene>,
 }
 
 impl GameApp {
@@ -298,6 +416,7 @@ impl GameApp {
             last_frame: Instant::now(),
             performance: PerformanceStats::new(),
             overlay_enabled: true,
+            runtime_scene: None,
         }
     }
 
@@ -438,6 +557,13 @@ impl GameApp {
             }
             self.input.clear_transitions();
         }
+        if let Some(scene) = self.runtime_scene.as_mut()
+            && let Err(error) = scene.update(delta_seconds * steps as f32)
+        {
+            tracing::error!(target: "ecs", "[ecs] update failed: {error}");
+            self.request_exit(event_loop);
+            return;
+        }
         self.performance.end_update();
         self.script_runtime = Some(runtime);
     }
@@ -466,10 +592,23 @@ impl GameApp {
         };
         self.input.finish_frame();
         let snapshot = self.performance.snapshot();
-        let overlay = self.overlay_enabled.then(|| {
-            build_overlay_vertices(snapshot, renderer.config.width, renderer.config.height)
-        });
-        match renderer.render(overlay.as_deref()) {
+        let mut vertices = self
+            .runtime_scene
+            .as_mut()
+            .and_then(|scene| {
+                scene
+                    .vertices(renderer.config.width, renderer.config.height)
+                    .ok()
+            })
+            .unwrap_or_default();
+        if self.overlay_enabled {
+            vertices.extend(build_overlay_vertices(
+                snapshot,
+                renderer.config.width,
+                renderer.config.height,
+            ));
+        }
+        match renderer.render((!vertices.is_empty()).then_some(vertices.as_slice())) {
             RenderOutcome::Presented => {}
             RenderOutcome::Retry | RenderOutcome::Skipped => {}
             RenderOutcome::Fatal => self.request_exit(event_loop),
@@ -495,6 +634,7 @@ impl ApplicationHandler for GameApp {
             Ok(renderer) => {
                 self.window = Some(window);
                 self.renderer = Some(renderer);
+                self.runtime_scene = RuntimeScene::new().ok();
                 self.transition(AppLifecycle::Running);
                 self.initialize_script(event_loop);
                 if self.lifecycle != AppLifecycle::Running {
@@ -618,12 +758,30 @@ fn build_overlay_vertices(
 
 fn rect_vertices(x0: f32, y0: f32, x1: f32, y1: f32) -> [OverlayVertex; 6] {
     [
-        OverlayVertex { position: [x0, y0] },
-        OverlayVertex { position: [x1, y0] },
-        OverlayVertex { position: [x1, y1] },
-        OverlayVertex { position: [x0, y0] },
-        OverlayVertex { position: [x1, y1] },
-        OverlayVertex { position: [x0, y1] },
+        OverlayVertex {
+            position: [x0, y0],
+            color: [0.05, 0.8, 0.35, 0.88],
+        },
+        OverlayVertex {
+            position: [x1, y0],
+            color: [0.05, 0.8, 0.35, 0.88],
+        },
+        OverlayVertex {
+            position: [x1, y1],
+            color: [0.05, 0.8, 0.35, 0.88],
+        },
+        OverlayVertex {
+            position: [x0, y0],
+            color: [0.05, 0.8, 0.35, 0.88],
+        },
+        OverlayVertex {
+            position: [x1, y1],
+            color: [0.05, 0.8, 0.35, 0.88],
+        },
+        OverlayVertex {
+            position: [x0, y1],
+            color: [0.05, 0.8, 0.35, 0.88],
+        },
     ]
 }
 
