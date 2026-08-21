@@ -23,6 +23,8 @@ use std::{
 };
 
 pub const REQUIRED_DIRECTORIES: &[&str] = &["engine", "game", "assets", "docs"];
+pub const GAME_PROJECT_REQUIRED_DIRECTORIES: &[&str] = &["scripts"];
+pub const GAME_PROJECT_OPTIONAL_DIRECTORIES: &[&str] = &["scenes", "assets"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectInfo {
@@ -86,8 +88,15 @@ pub fn open_project(path: impl AsRef<Path>) -> Result<ProjectInfo, ProjectError>
         return Err(ProjectError::NotDirectory(root));
     }
 
-    let mut directories = Vec::with_capacity(REQUIRED_DIRECTORIES.len());
-    for name in REQUIRED_DIRECTORIES {
+    let standalone_game = root.join("project.toml").is_file();
+    let directory_names: &[&str] = if standalone_game {
+        GAME_PROJECT_REQUIRED_DIRECTORIES
+    } else {
+        REQUIRED_DIRECTORIES
+    };
+    let mut directories =
+        Vec::with_capacity(directory_names.len() + GAME_PROJECT_OPTIONAL_DIRECTORIES.len());
+    for name in directory_names {
         let path = root.join(name);
         let metadata = match fs::metadata(&path) {
             Ok(metadata) => metadata,
@@ -113,6 +122,16 @@ pub fn open_project(path: impl AsRef<Path>) -> Result<ProjectInfo, ProjectError>
             return Err(ProjectError::MissingDirectory {
                 root: root.clone(),
                 name: (*name).to_owned(),
+            });
+        }
+    }
+    if standalone_game {
+        for name in GAME_PROJECT_OPTIONAL_DIRECTORIES {
+            let path = root.join(name);
+            directories.push(DirectoryStatus {
+                name: (*name).to_owned(),
+                exists: path.is_dir(),
+                is_directory: path.is_dir(),
             });
         }
     }
@@ -182,6 +201,18 @@ mod tests {
                 .expect("check should pass")
                 .contains("editor_project_ok")
         );
+        fs::remove_dir_all(root).expect("temporary project should be removed");
+    }
+
+    #[test]
+    fn opens_standalone_game_project_without_engine_directories() {
+        let root = temp_project();
+        fs::create_dir(root.join("scripts")).expect("scripts directory should be created");
+        fs::write(root.join("project.toml"), "[project]\nname = \"demo\"\n")
+            .expect("manifest should be created");
+        let info = open_project(&root).expect("standalone game project should open");
+        assert_eq!(info.directories[0].name, "scripts");
+        assert!(!info.directories.iter().any(|entry| entry.name == "engine"));
         fs::remove_dir_all(root).expect("temporary project should be removed");
     }
 

@@ -1,4 +1,9 @@
-use std::{path::PathBuf, sync::Arc, time::Instant};
+use std::{
+    env,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Instant,
+};
 
 use bytemuck::{Pod, Zeroable};
 use engine_core::{
@@ -301,8 +306,8 @@ struct RuntimeScene {
 }
 
 impl RuntimeScene {
-    fn new() -> Result<Self, String> {
-        let scene = load_runtime_scene();
+    fn new(project_root: Option<&Path>) -> Result<Self, String> {
+        let scene = load_runtime_scene(project_root);
         let mut world = World::new();
         let entity = world.spawn();
         let transform = Transform::from_position(Vec2::new(640.0, 360.0));
@@ -362,16 +367,12 @@ impl RuntimeScene {
     }
 }
 
-fn load_runtime_scene() -> Scene {
-    let candidates = [
-        PathBuf::from("scenes/main.scene"),
-        PathBuf::from("../scenes/main.scene"),
-        PathBuf::from("game/scenes/main.scene"),
-        PathBuf::from("../game/scenes/main.scene"),
-    ];
-    candidates
-        .into_iter()
-        .find_map(|path| Scene::load(path).ok())
+fn load_runtime_scene(project_root: Option<&Path>) -> Scene {
+    project_root
+        .map(|root| root.join("scenes/main.scene"))
+        .and_then(|path| Scene::load(path).ok())
+        // Standalone engine mode uses this engine-owned diagnostic scene and never
+        // probes the current directory for game files.
         .unwrap_or_else(|| {
             let mut scene = Scene::new("runtime-main");
             let _ = scene.add_entity(SceneEntityId(1), "SpriteRoot", None);
@@ -401,10 +402,11 @@ struct GameApp {
     performance: PerformanceStats,
     overlay_enabled: bool,
     runtime_scene: Option<RuntimeScene>,
+    project_root: Option<PathBuf>,
 }
 
 impl GameApp {
-    fn new() -> Self {
+    fn new(project_root: Option<PathBuf>) -> Self {
         Self {
             window: None,
             renderer: None,
@@ -417,6 +419,7 @@ impl GameApp {
             performance: PerformanceStats::new(),
             overlay_enabled: true,
             runtime_scene: None,
+            project_root,
         }
     }
 
@@ -459,23 +462,15 @@ impl GameApp {
     }
 
     fn initialize_script(&mut self, event_loop: &ActiveEventLoop) {
-        let mut script_candidates = vec![
-            PathBuf::from("game/scripts/main.lua"),
-            PathBuf::from("../game/scripts/main.lua"),
-        ];
-        if let Ok(executable) = std::env::current_exe() {
-            let mut root = executable.parent().map(PathBuf::from);
-            for _ in 0..3 {
-                if let Some(path) = root.take() {
-                    script_candidates.push(path.join("game/scripts/main.lua"));
-                    root = path.parent().map(PathBuf::from);
-                }
-            }
+        let Some(project_root) = self.project_root.as_ref() else {
+            tracing::info!(target: "script", "[script] no game project imported; script runtime idle");
+            return;
+        };
+        let script_path = project_root.join("scripts/main.lua");
+        if !script_path.is_file() {
+            tracing::info!(target: "script", path = %script_path.display(), "[script] game project has no scripts/main.lua; script runtime idle");
+            return;
         }
-        let script_path = script_candidates
-            .into_iter()
-            .find(|path| path.is_file())
-            .unwrap_or_else(|| PathBuf::from("game/scripts/main.lua"));
         let mut runtime = match LuaRuntime::new() {
             Ok(runtime) => runtime,
             Err(error) => {
@@ -634,7 +629,7 @@ impl ApplicationHandler for GameApp {
             Ok(renderer) => {
                 self.window = Some(window);
                 self.renderer = Some(renderer);
-                self.runtime_scene = RuntimeScene::new().ok();
+                self.runtime_scene = RuntimeScene::new(self.project_root.as_deref()).ok();
                 self.transition(AppLifecycle::Running);
                 self.initialize_script(event_loop);
                 if self.lifecycle != AppLifecycle::Running {
@@ -810,7 +805,33 @@ fn map_mouse_button(button: winit::event::MouseButton) -> MouseButton {
         winit::event::MouseButton::Forward => MouseButton::Other(5),
     }
 }
+#[derive(Debug, Default)]
+struct Arguments {
+    project: Option<PathBuf>,
+}
+
+fn parse_arguments() -> Result<Arguments, String> {
+    let mut args = Arguments::default();
+    let mut values = env::args().skip(1);
+    while let Some(value) = values.next() {
+        match value.as_str() {
+            "--project" => {
+                args.project = Some(PathBuf::from(
+                    values.next().ok_or("--project requires a path")?,
+                ))
+            }
+            "--help" | "-h" => {
+                println!("Usage: game_runner [--project <game-project-root>]");
+                std::process::exit(0);
+            }
+            other => return Err(format!("unknown argument: {other}")),
+        }
+    }
+    Ok(args)
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let arguments = parse_arguments().map_err(|error| format!("argument error: {error}"))?;
     let log_path = [
         PathBuf::from("artifacts/logs/game-runner.log"),
         PathBuf::from("../artifacts/logs/game-runner.log"),
@@ -819,8 +840,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     .find(|path| path.parent().is_some_and(|parent| parent.is_dir()))
     .unwrap_or_else(|| PathBuf::from("artifacts/logs/game-runner.log"));
     init_logging(log_path, None).map_err(|error| Box::new(error) as Box<dyn std::error::Error>)?;
-    tracing::info!(target: "game", version = engine_core::version(), "game runner starting");
+    tracing::info!(target: "game", version = engine_core::version(), project = ?arguments.project, "game runner starting");
     let event_loop = EventLoop::new()?;
-    event_loop.run_app(&mut GameApp::new())?;
+    event_loop.run_app(&mut GameApp::new(arguments.project))?;
     Ok(())
 }

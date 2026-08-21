@@ -44,10 +44,9 @@ fn parse_arguments() -> Result<Arguments, String> {
     Ok(arguments)
 }
 
-fn default_project_path() -> PathBuf {
+fn default_engine_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
-        .and_then(|path| path.parent())
         .and_then(|path| path.parent())
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."))
@@ -55,8 +54,10 @@ fn default_project_path() -> PathBuf {
 
 fn main() -> Result<(), Box<dyn Error>> {
     let arguments = parse_arguments().map_err(|message| format!("参数错误：{message}"))?;
-    let project_path = arguments.project.unwrap_or_else(default_project_path);
     if arguments.check {
+        let project_path = arguments
+            .project
+            .ok_or("--check requires --project <path>")?;
         print!(
             "{}",
             check_project(&project_path)
@@ -65,14 +66,22 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
-    let project =
-        open_project(&project_path).map_err(|error| format_project_error(&project_path, error))?;
+    let project = arguments
+        .project
+        .as_ref()
+        .map(|path| open_project(path).map_err(|error| format_project_error(path, error)))
+        .transpose()?;
     let options = eframe::NativeOptions::default();
     eframe::run_native(
         "P2 RustLua 编辑器",
         options,
         Box::new(move |_creation_context| {
-            let mut app = EditorApp::new(project);
+            let mut app = EditorApp::new(project.unwrap_or_else(|| ProjectInfo {
+                root: default_engine_path(),
+                version: "engine-only".to_owned(),
+                directories: Vec::new(),
+            }));
+            app.project_loaded = arguments.project.is_some();
             app.refresh_resources();
             Ok(Box::new(app))
         }),
@@ -107,10 +116,13 @@ struct EditorApp {
     recovery: RecoveryManager,
     autosave: AutoSaveController,
     recovery_scan: RecoveryScan,
+    project_loaded: bool,
+    import_path: String,
 }
 
 impl EditorApp {
     fn new(project: ProjectInfo) -> Self {
+        let project_loaded = project.root.join("project.toml").is_file();
         let recovery = RecoveryManager::new(project.root.join(".codex/recovery"));
         let recovery_scan = recovery.scan().unwrap_or_default();
         Self {
@@ -136,6 +148,37 @@ impl EditorApp {
             recovery,
             autosave: AutoSaveController::new(Duration::from_secs(10)),
             recovery_scan,
+            project_loaded,
+            import_path: String::new(),
+        }
+    }
+
+    fn import_game_project(&mut self) {
+        let path = self.import_path.trim();
+        if path.is_empty() {
+            self.status = "Enter a game project directory first".to_owned();
+            return;
+        }
+        match open_project(path) {
+            Ok(project) if project.root.join("project.toml").is_file() => {
+                self.project = project.clone();
+                self.document = ProjectDocument::open(project.clone());
+                self.recovery = RecoveryManager::new(project.root.join(".codex/recovery"));
+                self.recovery_scan = self.recovery.scan().unwrap_or_default();
+                self.history.clear();
+                self.autosave.reset();
+                self.lua_runtime = None;
+                self.play_session = None;
+                self.tree.clear_selection();
+                self.inspector.clear_selection();
+                self.project_loaded = true;
+                self.refresh_resources();
+                self.status = format!("Imported game project: {}", project.root.display());
+            }
+            Ok(_) => {
+                self.status = "Not a standalone game project: project.toml is missing".to_owned()
+            }
+            Err(error) => self.status = format_project_error(Path::new(path), error),
         }
     }
 
@@ -162,6 +205,10 @@ impl EditorApp {
         self.status = label.map_or_else(|| "Nothing to redo".into(), |x| format!("Redo: {x}"));
     }
     fn save_scene(&mut self) {
+        if !self.project_loaded {
+            self.status = "Import a game project before editing".to_owned();
+            return;
+        }
         let Some(doc) = self.document.current_scene.as_mut() else {
             self.status = "No scene".into();
             return;
@@ -192,6 +239,10 @@ impl EditorApp {
 
     fn refresh_resources(&mut self) {
         self.resources.set_filter(self.resources_filter.clone());
+        if !self.project_loaded {
+            self.resources = ResourceBrowserState::new();
+            return;
+        }
         if let Err(error) = self.resources.refresh(&self.project.root) {
             self.status = error.to_string();
         }
@@ -366,6 +417,10 @@ impl EditorApp {
         };
     }
     fn create_scene(&mut self) {
+        if !self.project_loaded {
+            self.status = "Import a game project before editing".to_owned();
+            return;
+        }
         if self.is_playing() {
             self.status = "Play mode locks scene editing; click Stop first".to_owned();
             return;
@@ -514,13 +569,19 @@ impl EditorApp {
 
 impl eframe::App for EditorApp {
     fn update(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
-        if let Some(doc) = self.document.current_scene.as_ref() {
+        if self.project_loaded
+            && let Some(doc) = self.document.current_scene.as_ref()
+        {
             let _ = self.autosave.tick(&self.recovery, doc, SystemTime::now());
         }
-        if context.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Z)) {
+        if self.project_loaded
+            && context.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Z))
+        {
             self.undo();
         }
-        if context.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Y)) {
+        if self.project_loaded
+            && context.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Y))
+        {
             self.redo();
         }
         egui::TopBottomPanel::top("header").show(context, |ui| {
@@ -531,11 +592,18 @@ impl eframe::App for EditorApp {
                 if ui.button("Undo").clicked() {
                     self.undo();
                 }
-                if ui.button("Redo").clicked() {
+                if ui.button("Redo").clicked() && self.project_loaded {
                     self.redo();
                 }
                 if ui.button("Save").clicked() {
                     self.save_scene();
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label("Import game project");
+                ui.text_edit_singleline(&mut self.import_path);
+                if ui.button("Import").clicked() {
+                    self.import_game_project();
                 }
             });
             ui.horizontal(|ui| {
@@ -552,7 +620,7 @@ impl eframe::App for EditorApp {
                     if ui.button("Stop").clicked() {
                         self.stop();
                     }
-                } else if ui.button("Play").clicked() {
+                } else if ui.button("Play").clicked() && self.project_loaded {
                     self.play();
                 }
             });
