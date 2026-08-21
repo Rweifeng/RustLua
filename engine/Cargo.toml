@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/editor",
     "crates/engine_core",
     "crates/game_runner",
 ]
@@ -14,6 +15,7 @@ repository = ""
 
 [workspace.dependencies]
 engine_core = { path = "crates/engine_core" }
+eframe = "0.33"
 bytemuck = { version = "1", features = ["derive"] }
 tracing = "0.1"
 tracing-appender = "0.2"

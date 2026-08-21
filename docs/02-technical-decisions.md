@@ -43,3 +43,13 @@
 - [ ] 编辑器进程模型：运行时内嵌或独立进程；
 - [ ] 项目场景主格式：RON 或 JSON；
 - [ ] Lua 运行时：Lua 5.4 或 LuaJIT 的性能评估。
+## ADR-0005：编辑器采用独立 crate，egui/eframe 起步
+
+- 状态：Accepted
+- 日期：2026-08-20
+- 范围：M5 编辑器 MVP
+- 决定：编辑器作为独立 `editor` crate，第一版采用 `egui` + `eframe`；编辑器通过 `engine_core` 公共 API 访问场景、资源和脚本。
+- 原因：独立 crate 可以隔离编辑器依赖和运行时发布包；egui/eframe 适合独立开发者快速完成 Windows 优先的工具界面，并可复用现有 Rust 代码。
+- 代价：需要处理 eframe 与现有 wgpu/winit 版本兼容；GUI 自动化能力弱于无窗口测试。
+- 约束：先实现无窗口项目检查和状态模型，再接入复杂 GUI；依赖版本锁定在 Cargo.lock；若依赖冲突，回滚为独立 winit + engine_core 状态模型，不修改 M4 场景格式。
+- 重新评估条件：M5-01 最小窗口无法构建、启动稳定性不达标，或编辑器与运行时依赖无法共存。
