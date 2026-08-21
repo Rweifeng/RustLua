@@ -1,3 +1,7 @@
+pub mod scene_tree;
+
+pub use scene_tree::{SceneTreeError, SceneTreeState};
+
 pub mod document;
 
 pub use document::{DocumentError, ProjectDocument, SceneDocument};
