@@ -1,0 +1,18 @@
+=== M6-01 Tilemap 运行证据（game_runner --project game --log-filter debug，2026-08-21）===
+
+--- 启动与地图加载 ---
+2026-08-21T15:49:57.357655Z  INFO scene: [scene] loaded name=main entities=4
+2026-08-21T15:49:57.357691Z  INFO ecs: [ecs] world initialized entities=4
+2026-08-21T15:49:57.358650Z  INFO script: Lua log.info tilemap loaded 6x4 tile_size=32.0
+
+--- 批处理计数（17 个图块 + 2 精灵 = 19 items，仅 3 个 draw_ranges，图块全部合为 1 个）---
+2026-08-21T15:50:01.332918Z DEBUG render: [render] batch items=19 vertices=114 draw_ranges=3
+
+--- 实时碰撞层查询（玩家所在格 is_solid）---
+2026-08-21T15:50:01.325898Z DEBUG game: [simulation] fixed update returned: lua-update-ok dt=0.016667 axis=(0.0,0.0) player=true pos=(-55.0,0.0) cell=(1,2)false
+
+=== 验收对应关系 ===
+1) 创建/保存/加载地图：Tilemap 组件字符串 round-trip（tilemap.rs round_trips_through_component_string 测试）
+2) 可配置图块大小：tile_size=32x32，Lua tilemap.get 返回
+3) 碰撞层与视觉层分离：tiles（视觉索引）与 solid（碰撞）分离存储
+4) 渲染不逐图块 Draw Call：items=19 draw_ranges=3，17 图块合成 1 个 draw range

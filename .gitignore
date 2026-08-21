@@ -4,7 +4,6 @@ engine/target/
 # Generated release copies and profiling/screenshot output
 **/artifacts/logs/
 artifacts/builds/*
-!artifacts/builds/.gitkeep
 artifacts/profiles/
 artifacts/screenshots/
 

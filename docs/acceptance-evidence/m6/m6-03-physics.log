@@ -1,0 +1,22 @@
+=== M6-03 物理适配（Rapier）运行证据（game_runner --project game --log-filter debug，2026-08-22）===
+
+--- 玩家按 D 走进右墙后停止（右墙边缘 64 - 球半径 16 = 48）---
+pos=(48.4,-16.0)
+pos=(48.4,-16.0)
+pos=(48.4,-16.0)
+
+--- 碰撞事件进 Lua（wall contact / trigger entered）---
+      1 trigger entered #13
+      1 trigger entered #18
+      1 trigger entered #7
+      1 wall contact #10
+      1 wall contact #11
+      1 wall contact #12
+
+=== 说明 ===
+1) 刚体/碰撞体/触发器：玩家动态球体、tilemap solid 单元格静态碰撞体、Trigger 传感器
+2) 碰撞事件进 Lua：physics.events() 驱动 main.lua 记录 wall contact / trigger entered
+3) 固定时间步执行：game_runner 每固定步 step_physics + 位置回写 ECS Transform
+4) 碰撞层与掩码：Collider 组件 layer/mask 映射 Rapier InteractionGroups（单测验证过滤）
+5) 不自研求解器：Rapier 2D
+6) 确定性验证：physics_blocks_player_on_tilemap_wall_and_emits_events 单测（玩家被墙挡 x<15 + 事件进 Lua）；画面视觉验收待项目负责人
