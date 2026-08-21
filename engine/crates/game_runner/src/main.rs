@@ -3,7 +3,7 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 use std::{
-    env,
+    env, fs,
     path::{Path, PathBuf},
     sync::Arc,
     time::Instant,
@@ -1341,6 +1341,10 @@ fn map_mouse_button(button: winit::event::MouseButton) -> MouseButton {
 struct Arguments {
     project: Option<PathBuf>,
     log_filter: Option<String>,
+    /// 发布包模式：目录为 assetc package 生成的发布资源目录，启动期严格校验资源。
+    pack: bool,
+    /// 仅校验资源完整性后退出（不弹窗口），供 CI/打包自测使用。
+    check: bool,
 }
 
 fn parse_arguments() -> Result<Arguments, String> {
@@ -1353,6 +1357,13 @@ fn parse_arguments() -> Result<Arguments, String> {
                     values.next().ok_or("--project requires a path")?,
                 ))
             }
+            "--pack" => {
+                args.project = Some(PathBuf::from(
+                    values.next().ok_or("--pack requires a path")?,
+                ));
+                args.pack = true;
+            }
+            "--check" => args.check = true,
             "--log-filter" => {
                 args.log_filter = Some(
                     values
@@ -1362,7 +1373,11 @@ fn parse_arguments() -> Result<Arguments, String> {
             }
             "--help" | "-h" => {
                 println!(
-                    "Usage: game_runner [--project <game-project-root>] [--log-filter <tracing-filter>]"
+                    "Usage: game_runner [--project <game-project-root>] [--pack <release-pack>] [--check] [--log-filter <tracing-filter>]\n\
+                     \n\
+                     --project <root>  加载开发游戏工程（含 .cache 等本地工作目录）\n\
+                     --pack <dir>      加载 assetc package 生成的发布资源目录（严格校验资源完整性）\n\
+                     --check           仅校验资源完整性后退出（exit 0/1，不弹窗口）"
                 );
                 std::process::exit(0);
             }
@@ -1394,9 +1409,92 @@ fn find_project_root() -> Option<PathBuf> {
     None
 }
 
+/// 校验项目/发布包资源完整性：项目清单、主脚本、启动场景及场景引用的资源。
+/// 返回缺失项列表（空表示完整）。
+fn verify_project(root: &Path) -> Vec<String> {
+    let mut missing = Vec::new();
+    let project_toml = root.join("project.toml");
+    if !project_toml.is_file() {
+        missing.push(format!("缺少项目清单 {}", project_toml.display()));
+        return missing;
+    }
+    let Ok(text) = fs::read_to_string(&project_toml) else {
+        missing.push(format!("无法读取项目清单 {}", project_toml.display()));
+        return missing;
+    };
+    if let Some(script) = extract_key(&text, "main_script") {
+        let path = root.join(script);
+        if !path.is_file() {
+            missing.push(format!("缺少主脚本 {}", path.display()));
+        }
+    }
+    if let Some(scene) = extract_key(&text, "startup_scene") {
+        let path = root.join(scene);
+        if !path.is_file() {
+            missing.push(format!("缺少启动场景 {}", path.display()));
+        } else if let Ok(scene_text) = fs::read_to_string(&path) {
+            for asset in extract_asset_refs(&scene_text) {
+                let asset_path = root.join(&asset);
+                if !asset_path.is_file() {
+                    let message = format!("场景引用的资源缺失 {}", asset);
+                    if !missing.contains(&message) {
+                        missing.push(message);
+                    }
+                }
+            }
+        }
+    }
+    missing
+}
+
+/// 从 `key = "value"` 样式的项目清单文本中提取字段值。
+fn extract_key(text: &str, key: &str) -> Option<String> {
+    text.lines().find_map(|line| {
+        let line = line.trim();
+        line.strip_prefix(&format!("{key} ="))
+            .map(|rest| rest.trim().trim_matches('"').to_owned())
+    })
+}
+
+/// 提取场景文本中以 `assets/` 开头、到 `;`/`:`/换行为止的资源引用。
+fn extract_asset_refs(text: &str) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut refs = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if i + 7 <= chars.len() && chars[i..i + 7].iter().collect::<String>() == "assets/" {
+            let mut end = i;
+            while end < chars.len() && !matches!(chars[end], ';' | ':' | '\n' | '\r') {
+                end += 1;
+            }
+            refs.push(chars[i..end].iter().collect());
+            i = end;
+        } else {
+            i += 1;
+        }
+    }
+    refs
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let arguments = parse_arguments().map_err(|error| format!("argument error: {error}"))?;
     let project = arguments.project.or_else(find_project_root);
+
+    // 仅校验模式：不初始化日志/窗口，输出结果后直接退出。
+    if arguments.check {
+        let Some(root) = &project else {
+            eprintln!("game_runner_check_failed: 未找到游戏项目");
+            std::process::exit(1);
+        };
+        let missing = verify_project(root);
+        if missing.is_empty() {
+            println!("game_runner_check_ok project={}", root.display());
+            return Ok(());
+        }
+        eprintln!("game_runner_check_failed: {}", missing.join("; "));
+        std::process::exit(1);
+    }
+
     // Resolve the log path relative to the executable so it works regardless of
     // the working directory (e.g. when double-clicking the exe).
     let exe_dir = std::env::current_exe()
@@ -1411,10 +1509,118 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     .into_iter()
     .find(|path| path.parent().is_some_and(|parent| parent.is_dir()))
     .unwrap_or_else(|| PathBuf::from("artifacts/logs/game-runner.log"));
-    init_logging(log_path, arguments.log_filter.as_deref())
+    init_logging(&log_path, arguments.log_filter.as_deref())
         .map_err(|error| Box::new(error) as Box<dyn std::error::Error>)?;
+    engine_core::logging::install_crash_handler(log_path.with_file_name("crash.log"));
     tracing::info!(target: "game", version = engine_core::version(), project = ?project, "game runner starting");
+
+    // 启动期资源完整性校验：发布包模式缺失即拒绝启动，开发模式仅告警。
+    if let Some(root) = &project {
+        let missing = verify_project(root);
+        if !missing.is_empty() {
+            for item in &missing {
+                tracing::error!(target: "game", "资源校验失败: {item}");
+            }
+            if arguments.pack {
+                return Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!(
+                        "发布资源包校验失败（{} 项缺失）：\n  {}",
+                        missing.len(),
+                        missing.join("\n  ")
+                    ),
+                )));
+            }
+        }
+    }
+
     let event_loop = EventLoop::new()?;
     event_loop.run_app(&mut GameApp::new(project))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{extract_asset_refs, extract_key, verify_project};
+
+    #[test]
+    fn extract_key_parses_quoted_project_fields() {
+        let text = "[project]\nname = \"p2-game\"\nmain_script = \"scripts/main.lua\"\nstartup_scene = \"scenes/main.scene\"\n";
+        assert_eq!(
+            extract_key(text, "main_script"),
+            Some("scripts/main.lua".to_owned())
+        );
+        assert_eq!(
+            extract_key(text, "startup_scene"),
+            Some("scenes/main.scene".to_owned())
+        );
+        assert_eq!(extract_key(text, "missing"), None);
+    }
+
+    #[test]
+    fn extract_asset_refs_scans_component_strings() {
+        let scene = "component 1 Sprite assets/textures/player.png;size=32\n\
+                     component 1 Animation default=idle;clip:idle:assets/textures/hero-idle.png:4:4:true\n\
+                     component 2 Tilemap texture=assets/textures/tileset.png;width=2\n";
+        let refs = extract_asset_refs(scene);
+        assert!(refs.contains(&"assets/textures/player.png".to_owned()));
+        assert!(refs.contains(&"assets/textures/hero-idle.png".to_owned()));
+        assert!(refs.contains(&"assets/textures/tileset.png".to_owned()));
+        assert!(!refs.contains(&"assets/missing.png".to_owned()));
+    }
+
+    #[test]
+    fn verify_project_reports_missing_resources_once() {
+        let root = std::env::temp_dir().join(format!("p2-verify-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("scenes")).unwrap();
+        std::fs::create_dir_all(root.join("assets/textures")).unwrap();
+        std::fs::write(
+            root.join("project.toml"),
+            "[project]\nmain_script = \"scripts/main.lua\"\nstartup_scene = \"scenes/main.scene\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("scenes/main.scene"),
+            "component 1 Sprite assets/textures/player.png\ncomponent 2 Sprite assets/textures/player.png\n",
+        )
+        .unwrap();
+        // 主脚本缺失 + player.png 缺失（引用两次，应去重为一条）
+        let missing = verify_project(&root);
+        assert_eq!(
+            missing.len(),
+            2,
+            "missing script + missing asset: {missing:?}"
+        );
+        assert!(missing.iter().any(|m| m.contains("main.lua")));
+        assert_eq!(
+            missing.iter().filter(|m| m.contains("player.png")).count(),
+            1,
+            "duplicate asset reference deduplicated"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn verify_project_passes_for_complete_project() {
+        let root = std::env::temp_dir().join(format!("p2-verify-ok-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("scripts")).unwrap();
+        std::fs::create_dir_all(root.join("scenes")).unwrap();
+        std::fs::write(
+            root.join("project.toml"),
+            "[project]\nmain_script = \"scripts/main.lua\"\nstartup_scene = \"scenes/main.scene\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("scripts/main.lua"),
+            "function update() return 'ok' end\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("scenes/main.scene"),
+            "scene_version=1\nname=main\n",
+        )
+        .unwrap();
+        assert!(verify_project(&root).is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

@@ -115,6 +115,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         .as_ref()
         .map(|path| open_project(path).map_err(|error| format_project_error(path, error)))
         .transpose()?;
+    // 崩溃日志：写在编辑器可执行文件同目录，便于定位。
+    let crash_log_path = std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(|dir| dir.join("crash.log")))
+        .unwrap_or_else(|| PathBuf::from("crash.log"));
+    engine_core::logging::install_crash_handler(crash_log_path);
     let options = eframe::NativeOptions::default();
     eframe::run_native(
         "P2 RustLua 编辑器",

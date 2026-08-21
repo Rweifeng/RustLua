@@ -155,9 +155,86 @@ pub fn init_logging(log_path: impl AsRef<Path>, filter: Option<&str>) -> Result<
     Ok(())
 }
 
+/// Registers a panic hook that writes a crash report to `crash_log_path`
+/// (version, timestamp, thread, panic message, location, backtrace) before the
+/// default hook runs. Safe to call once per process.
+pub fn install_crash_handler(crash_log_path: impl AsRef<Path>) {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let crash_log_path = crash_log_path.as_ref().to_path_buf();
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let backtrace = std::backtrace::Backtrace::capture();
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let message = if let Some(payload) = info.payload().downcast_ref::<&str>() {
+            (*payload).to_owned()
+        } else if let Some(payload) = info.payload().downcast_ref::<String>() {
+            payload.clone()
+        } else {
+            "non-string panic payload".to_owned()
+        };
+        let location = info
+            .location()
+            .map(|l| l.to_string())
+            .unwrap_or_else(|| "unknown".to_owned());
+        let thread = std::thread::current().name().unwrap_or("main").to_owned();
+        let report = format!(
+            "=== P2 crash report ===\n\
+             version={}\n\
+             timestamp={}\n\
+             thread={}\n\
+             panic={}\n\
+             location={}\n\
+             backtrace:\n{backtrace}\n",
+            crate::version(),
+            timestamp,
+            thread,
+            message,
+            location,
+        );
+        // 原子替换写入：避免并发 panic（如测试中其他线程的故意 panic）
+        // 用 fs::write 截断+写入交叠导致报告损坏。
+        if let Some(parent) = crash_log_path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let temporary = crash_log_path.with_extension("tmp");
+        let _ = fs::write(&temporary, &report);
+        let _ = fs::remove_file(&crash_log_path);
+        let _ = fs::rename(&temporary, &crash_log_path);
+        default(info);
+    }));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn crash_handler_writes_report_with_payload_and_version() {
+        let path = std::env::temp_dir().join(format!("p2-crash-{}.log", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let original = std::panic::take_hook();
+        install_crash_handler(&path);
+        let result = std::panic::catch_unwind(|| panic!("boom-marker"));
+        assert!(result.is_err(), "panic was caught");
+        // 并行测试（scheduler 的故意 panic）可能先写同一路径；轮询直到看到本测试标记。
+        let mut text = String::new();
+        for _ in 0..40 {
+            text = std::fs::read_to_string(&path).unwrap_or_default();
+            if text.contains("boom-marker") {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(text.contains("P2 crash report"));
+        assert!(text.contains("panic=boom-marker"));
+        assert!(text.contains("version="));
+        assert!(text.contains("backtrace:"));
+        std::panic::set_hook(original);
+        let _ = std::fs::remove_file(&path);
+    }
 
     #[test]
     fn formats_context_and_suggestion() {

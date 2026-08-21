@@ -108,3 +108,14 @@
 | M6-A07 | 存档与场景切换 | M6-A06 | 保存/读取/覆盖存档；格式有版本号；切换时资源与脚本生命周期正确；损坏存档不崩溃 | save 单测、质量门 | `tasks/done/M6-05-存档与场景切换.md`；`docs/acceptance-evidence/m6/m6-05-save-scene.log` | PASS | M6 |
 | M6-A08 | 样板游戏垂直切片 | M6-A07 | 可玩一局：移动/攻击/敌人/金币/胜负/UI/音效/存档；CC0 资源分目录 | 全量质量门（184 测试）、Release 运行 | `tasks/done/M6-06-样板游戏垂直切片.md`；`docs/acceptance-evidence/m6/m6-06-sample-game.log` | PASS | M6 |
 | M6-A09 | M6 里程碑综合验收 | M6-A01 至 M6-A08 | 完整跑通一局（VICTORY/DEFEATED/存读档/切场景）；30 分钟稳定性；无 P0/P1；打 v0.6 标签；画面视觉验收；实机 4 问题（文本缩放/碰撞对齐/自动读档/F4 响应）已修复并经负责人复验通过 | 全量质量门（187 测试）、M6 综合验收日志、自动读档验证日志、负责人实机复验 | `tasks/done/M6-07-M6里程碑综合验收.md`；`docs/acceptance-evidence/m6/m6-07-milestone-acceptance.log` | PASS | v0.6-2d-gameplay |
+
+## M7 工程化与发布
+
+| ID | 功能 | 前置 | 主要验收 | 自动化证据 | 状态 | 版本 |
+|---|---|---|---|---|---|---|
+| M7-A01 | assetc 资源构建工具 | M6 | scan/import/clean/list/package/--check 可用；增量只处理变化资源；失败非零退出；生成清单 | assetc 4 单测、真实项目实测、质量门 | `tasks/done/M7-01-assetc资源构建工具.md` | PASS | M7 |
+| M7-A02 | 发布配置与资源打包 | M7-A01 | `--pack` 加载发布资源目录；缺失资源启动报错含资源名与原因；`--project` 兼容 | game_runner 4 单测、缺失资源实测（exit 1）、完整包实测 | `tasks/done/M7-02-发布配置与资源打包.md` | PASS | M7 |
+| M7-A03 | 崩溃日志 | M7-A02 | panic 写 crash.log（版本/时间/线程/消息/位置/backtrace）；Release 生效；正常退出不产生 | crash handler 单测、原子写入修复 | `tasks/done/M7-03-崩溃日志.md` | PASS | M7 |
+| M7-A04 | 性能基线 | M7-A03 | 1000 精灵批处理吞吐；10000 实体 60s 无崩溃无泄漏；基线可跨版本对比 | ecs_stress 60s JSON、sprite_stress 报告、bench.ps1 | `tasks/done/M7-04-性能基线.md`；`docs/acceptance-evidence/m7/` | PASS | M7 |
+| M7-A05 | 干净机器测试与安装包 | M7-A04 | 自包含发布包（无源码/工具链依赖）；目录隔离 + 含空格路径可运行；版本/依赖清单 | package.ps1 自测（`--check` exit 0）、发布包实测 | `tasks/done/M7-05-干净机器测试与安装包.md` | PASS | M7 |
+| M7-A06 | 发布候选版本 | M7-A01 至 M7-A05 | 全量质量门通过；样板游戏 Release 完整玩通；无 P0/P1；证据完整；打 v0.7 标签；负责人确认 | 最终质量门（196 测试）、发布包、M7 验收报告 | `tasks/done/M7-06-发布候选版本.md`（待生成） | PENDING | M7 |
