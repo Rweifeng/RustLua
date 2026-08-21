@@ -9,7 +9,10 @@ use editor::{
     SceneTreeState, TransformFields, check_project, open_project,
 };
 use eframe::egui;
-use engine_core::scene::SceneEntityId;
+use engine_core::{
+    scene::SceneEntityId,
+    script::{LuaRuntime, ScriptDiagnostic},
+};
 
 #[derive(Debug, Default)]
 struct Arguments {
@@ -85,6 +88,10 @@ struct EditorApp {
     tree: SceneTreeState,
     resources: ResourceBrowserState,
     resources_filter: String,
+    lua_runtime: Option<LuaRuntime>,
+    console_input: String,
+    console_output: Vec<String>,
+    console_filter: String,
     inspector: InspectorState,
     transform: TransformFields,
     sprite_reference: String,
@@ -102,6 +109,10 @@ impl EditorApp {
             tree: SceneTreeState::new(),
             resources: ResourceBrowserState::new(),
             resources_filter: String::new(),
+            lua_runtime: None,
+            console_input: String::new(),
+            console_output: Vec::new(),
+            console_filter: String::new(),
             inspector: InspectorState::new(),
             transform: TransformFields::default(),
             sprite_reference: String::new(),
@@ -117,6 +128,78 @@ impl EditorApp {
         if let Err(error) = self.resources.refresh(&self.project.root) {
             self.status = error.to_string();
         }
+    }
+
+    fn ensure_lua_runtime(&mut self) -> Result<&mut LuaRuntime, String> {
+        if self.lua_runtime.is_none() {
+            self.lua_runtime = Some(LuaRuntime::new().map_err(|error| error.to_string())?);
+        }
+        self.lua_runtime
+            .as_mut()
+            .ok_or_else(|| "Lua VM 未初始化".to_owned())
+    }
+
+    fn run_console_command(&mut self) {
+        let source = self.console_input.trim().to_owned();
+        if source.is_empty() {
+            return;
+        }
+        let result = self.ensure_lua_runtime().and_then(|runtime| {
+            runtime
+                .execute_console(&source)
+                .map_err(|error| error.to_string())
+        });
+        match result {
+            Ok(value) => self.console_output.push(format!("> {source}\n{value}")),
+            Err(error) => {
+                self.status = error.clone();
+                self.console_output
+                    .push(format!("> {source}\n错误：{error}"));
+            }
+        }
+        self.console_input.clear();
+    }
+
+    fn clear_console(&mut self) {
+        self.console_output.clear();
+        if let Some(runtime) = self.lua_runtime.as_mut() {
+            runtime.clear_diagnostics();
+        }
+    }
+
+    fn run_selected_script(&mut self) {
+        let script = self.lua_script.trim().to_owned();
+        if script.is_empty() {
+            self.status = "当前实体没有 Lua 脚本引用".to_owned();
+            return;
+        }
+        let path = self.project.root.join(&script);
+        let result = self.ensure_lua_runtime().and_then(|runtime| {
+            runtime
+                .execute_project_script(&path)
+                .and_then(|_| runtime.call_update_debug())
+                .map_err(|error| error.to_string())
+        });
+        match result {
+            Ok(value) => {
+                self.status = format!("Lua 脚本运行成功：{script}");
+                self.console_output.push(format!("运行 {script}\n{value}"));
+            }
+            Err(error) => {
+                self.status = error.clone();
+                self.console_output
+                    .push(format!("运行 {script}\n错误：{error}"));
+            }
+        }
+    }
+
+    fn console_diagnostics(&mut self) -> Vec<ScriptDiagnostic> {
+        let filter = self.console_filter.trim().to_owned();
+        let Some(runtime) = self.lua_runtime.as_mut() else {
+            return Vec::new();
+        };
+        runtime.set_debug_filter((!filter.is_empty()).then_some(filter));
+        runtime.diagnostics()
     }
 
     fn current_scene(&self) -> Option<&editor::SceneDocument> {
@@ -343,6 +426,42 @@ impl eframe::App for EditorApp {
         let mut delete = false;
         let mut add_child = false;
 
+        egui::TopBottomPanel::bottom("lua_console")
+            .resizable(true)
+            .show(context, |ui| {
+                ui.horizontal(|ui| {
+                    ui.heading("Lua Console");
+                    ui.text_edit_singleline(&mut self.console_filter);
+                    if ui.button("运行选中脚本").clicked() {
+                        self.run_selected_script();
+                    }
+                    if ui.button("清空").clicked() {
+                        self.clear_console();
+                    }
+                });
+                ui.horizontal(|ui| {
+                    let response = ui.text_edit_singleline(&mut self.console_input);
+                    if response.lost_focus()
+                        && ui.input(|input| input.key_pressed(egui::Key::Enter))
+                    {
+                        self.run_console_command();
+                    }
+                    if ui.button("执行").clicked() {
+                        self.run_console_command();
+                    }
+                });
+                egui::ScrollArea::vertical()
+                    .max_height(120.0)
+                    .show(ui, |ui| {
+                        for line in &self.console_output {
+                            ui.monospace(line);
+                        }
+                        for diagnostic in self.console_diagnostics() {
+                            ui.colored_label(egui::Color32::RED, format_diagnostic(&diagnostic));
+                        }
+                    });
+            });
+
         egui::CentralPanel::default().show(context, |ui| {
             ui.heading("实体 Inspector");
             let Some((entity_id, parent, child_count)) = entity_info else {
@@ -425,6 +544,20 @@ impl eframe::App for EditorApp {
         }
     }
 }
+fn format_diagnostic(diagnostic: &ScriptDiagnostic) -> String {
+    let location = diagnostic
+        .line
+        .map_or_else(|| "未知行".to_owned(), |line| format!("第 {line} 行"));
+    format!(
+        "[{}] {} {}：{}（重复 {} 次）",
+        diagnostic.phase,
+        diagnostic.path.display(),
+        location,
+        diagnostic.message,
+        diagnostic.occurrences
+    )
+}
+
 impl EditorApp {
     fn draw_entity(&mut self, ui: &mut egui::Ui, id: SceneEntityId, depth: usize) {
         let Some(scene) = self.current_scene() else {

@@ -294,6 +294,26 @@ impl LuaRuntime {
         }
     }
 
+    /// Executes a short expression or statement in the currently loaded Lua VM.
+    /// Console failures are routed through the same structured debugger as script errors.
+    pub fn execute_console(&mut self, source: &str) -> Result<String, LuaBridgeError> {
+        let path = PathBuf::from("<console>");
+        let result = self
+            .lua
+            .load(source)
+            .set_name("<console>")
+            .eval::<Value>()
+            .map(format_lua_value)
+            .map_err(|error| LuaBridgeError::Runtime {
+                path: path.clone(),
+                source: error.to_string(),
+            });
+        if let Err(error) = &result {
+            self.record_bridge_error(error);
+        }
+        result
+    }
+
     fn record_bridge_error(&mut self, error: &LuaBridgeError) {
         match error {
             LuaBridgeError::Load { path, source } => {
@@ -368,6 +388,23 @@ fn file_fingerprint(path: &Path, source: &str) -> Result<ScriptFingerprint, LuaB
         length: metadata.len(),
         hash: hasher.finish(),
     })
+}
+
+fn format_lua_value(value: Value) -> String {
+    match value {
+        Value::Nil => "nil".to_owned(),
+        Value::Boolean(value) => value.to_string(),
+        Value::Integer(value) => value.to_string(),
+        Value::Number(value) => value.to_string(),
+        Value::String(value) => value.to_string_lossy(),
+        Value::Table(_) => "<table>".to_owned(),
+        Value::Function(_) => "<function>".to_owned(),
+        Value::Thread(_) => "<thread>".to_owned(),
+        Value::UserData(_) => "<userdata>".to_owned(),
+        Value::LightUserData(_) => "<lightuserdata>".to_owned(),
+        Value::Error(error) => error.to_string(),
+        Value::Other(_) => "<other>".to_owned(),
+    }
 }
 
 fn call_optional(lua: &Lua, name: &str) -> LuaResult<()> {
@@ -967,6 +1004,28 @@ mod tests {
         assert_eq!(runtime.call_update().unwrap(), "v2");
         let _ = fs::remove_file(path);
     }
+    #[test]
+    fn console_evaluates_values_and_updates_lua_state() {
+        let mut runtime = LuaRuntime::new().unwrap();
+        assert_eq!(runtime.execute_console("return 1 + 2").unwrap(), "3");
+        assert_eq!(runtime.execute_console("console_value = 7").unwrap(), "nil");
+        assert_eq!(
+            runtime.execute_console("return console_value").unwrap(),
+            "7"
+        );
+    }
+
+    #[test]
+    fn console_errors_are_recorded_with_console_path() {
+        let mut runtime = LuaRuntime::new().unwrap();
+        assert!(runtime.execute_console("error('console boom')").is_err());
+        let diagnostics = runtime.all_diagnostics();
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].path, PathBuf::from("<console>"));
+        assert_eq!(diagnostics[0].phase, "runtime");
+        assert!(diagnostics[0].message.contains("console boom"));
+    }
+
     #[test]
     fn debugger_extracts_location_deduplicates_and_filters() {
         let path = script("function update() error('boom') end");
