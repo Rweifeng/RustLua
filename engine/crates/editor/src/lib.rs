@@ -202,3 +202,12 @@ mod tests {
         fs::remove_dir_all(root).expect("temporary project should be removed");
     }
 }
+
+pub mod history;
+pub use history::{CommandHistory, CommandKind, EditCommand, HistoryError};
+
+pub mod recovery;
+pub use recovery::{
+    AutoSaveController, RecoveryCandidate, RecoveryError, RecoveryIssue, RecoveryManager,
+    RecoveryScan,
+};

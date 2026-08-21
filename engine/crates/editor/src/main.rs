@@ -2,11 +2,13 @@ use std::{
     env,
     error::Error,
     path::{Path, PathBuf},
+    time::{Duration, SystemTime},
 };
 
 use editor::{
-    InspectorState, PlaySession, ProjectDocument, ProjectError, ProjectInfo, ResourceBrowserState,
-    SceneTreeState, TransformFields, check_project, open_project,
+    AutoSaveController, CommandHistory, CommandKind, InspectorState, PlaySession, ProjectDocument,
+    ProjectError, ProjectInfo, RecoveryManager, RecoveryScan, ResourceBrowserState, SceneTreeState,
+    TransformFields, check_project, open_project,
 };
 use eframe::egui;
 use engine_core::{
@@ -98,12 +100,19 @@ struct EditorApp {
     lua_script: String,
     new_scene_name: String,
     entity_name: String,
+    parent_entity: String,
     status: String,
     play_session: Option<PlaySession>,
+    history: CommandHistory,
+    recovery: RecoveryManager,
+    autosave: AutoSaveController,
+    recovery_scan: RecoveryScan,
 }
 
 impl EditorApp {
     fn new(project: ProjectInfo) -> Self {
+        let recovery = RecoveryManager::new(project.root.join(".codex/recovery"));
+        let recovery_scan = recovery.scan().unwrap_or_default();
         Self {
             document: ProjectDocument::open(project.clone()),
             project,
@@ -120,9 +129,65 @@ impl EditorApp {
             lua_script: String::new(),
             new_scene_name: "main".to_owned(),
             entity_name: "Entity".to_owned(),
+            parent_entity: String::new(),
             status: "尚未创建场景".to_owned(),
             play_session: None,
+            history: CommandHistory::new(),
+            recovery,
+            autosave: AutoSaveController::new(Duration::from_secs(10)),
+            recovery_scan,
         }
+    }
+
+    fn undo(&mut self) {
+        let label = {
+            let h = &mut self.history;
+            let d = &mut self.document;
+            d.current_scene
+                .as_mut()
+                .and_then(|x| h.undo(x).ok())
+                .map(str::to_owned)
+        };
+        self.status = label.map_or_else(|| "Nothing to undo".into(), |x| format!("Undo: {x}"));
+    }
+    fn redo(&mut self) {
+        let label = {
+            let h = &mut self.history;
+            let d = &mut self.document;
+            d.current_scene
+                .as_mut()
+                .and_then(|x| h.redo(x).ok())
+                .map(str::to_owned)
+        };
+        self.status = label.map_or_else(|| "Nothing to redo".into(), |x| format!("Redo: {x}"));
+    }
+    fn save_scene(&mut self) {
+        let Some(doc) = self.document.current_scene.as_mut() else {
+            self.status = "No scene".into();
+            return;
+        };
+        let r = if doc.path.is_some() {
+            self.recovery.save_document(doc).map_err(|e| e.to_string())
+        } else {
+            doc.save_as(
+                self.project
+                    .root
+                    .join("scenes")
+                    .join(format!("{}.scene", doc.scene.name)),
+            )
+            .map_err(|e| e.to_string())
+        };
+        self.status = match r {
+            Ok(()) => {
+                if let Some(doc) = self.document.current_scene.as_ref() {
+                    let _ = self.recovery.clear_for(doc);
+                }
+                self.autosave.reset();
+                self.recovery_scan = self.recovery.scan().unwrap_or_default();
+                "Scene saved".into()
+            }
+            Err(error) => error,
+        };
     }
 
     fn refresh_resources(&mut self) {
@@ -265,33 +330,38 @@ impl EditorApp {
             self.status = "Play mode locks scene editing; click Stop first".to_owned();
             return;
         }
-
-        let Some(scene) = self.document.current_scene.as_mut() else {
-            self.status = "请先创建场景".to_owned();
+        let Some(selected) = self.inspector.selected() else {
+            self.status = "??????".to_owned();
             return;
         };
-        let result = self
-            .inspector
-            .set_name(scene, self.entity_name.clone())
-            .and_then(|_| self.inspector.set_transform(scene, self.transform))
-            .and_then(|_| {
-                if self.sprite_reference.trim().is_empty() {
-                    self.inspector.clear_sprite_reference(scene)
-                } else {
-                    self.inspector
-                        .set_sprite_reference(scene, self.sprite_reference.clone())
-                }
-            })
-            .and_then(|_| {
-                if self.lua_script.trim().is_empty() {
-                    self.inspector.clear_lua_script(scene)
-                } else {
-                    self.inspector
-                        .set_lua_script(scene, self.lua_script.clone())
-                }
-            });
+        let name = self.entity_name.clone();
+        let transform = self.transform;
+        let sprite = self.sprite_reference.clone();
+        let lua = self.lua_script.clone();
+        let inspector = self.inspector.clone();
+        let Some(scene) = self.document.current_scene.as_mut() else {
+            self.status = "??????".to_owned();
+            return;
+        };
+        let result =
+            self.history
+                .execute(scene, "Inspector", CommandKind::Property, move |scene| {
+                    inspector.set_name(scene, name)?;
+                    inspector.set_transform(scene, transform)?;
+                    if sprite.trim().is_empty() {
+                        inspector.clear_sprite_reference(scene)?;
+                    } else {
+                        inspector.set_sprite_reference(scene, sprite)?;
+                    }
+                    if lua.trim().is_empty() {
+                        inspector.clear_lua_script(scene)?;
+                    } else {
+                        inspector.set_lua_script(scene, lua)?;
+                    }
+                    Ok::<(), editor::InspectorError>(())
+                });
         self.status = match result {
-            Ok(()) => "Inspector 修改已应用".to_owned(),
+            Ok(_) => format!("Inspector ??????EntityId={}?", selected.0),
             Err(error) => error.to_string(),
         };
     }
@@ -307,6 +377,8 @@ impl EditorApp {
             return;
         }
         self.document.new_scene(name.clone());
+        self.history.clear();
+        self.autosave.reset();
         self.tree.clear_selection();
         self.inspector.clear_selection();
         self.status = format!("已创建场景 {name}（未保存）");
@@ -314,69 +386,157 @@ impl EditorApp {
 
     fn add_entity(&mut self, parent: Option<SceneEntityId>) {
         if self.is_playing() {
-            self.status = "Play mode locks scene editing; click Stop first".to_owned();
+            self.status = "Play mode locks scene editing; click Stop first".into();
             return;
         }
-
         let name = self.entity_name.trim().to_owned();
         if name.is_empty() {
-            self.status = "实体名称不能为空".to_owned();
+            self.status = "Entity name cannot be empty".into();
             return;
         }
-        let (document, tree) = (&mut self.document, &mut self.tree);
-        let Some(scene) = document.current_scene.as_mut() else {
-            self.status = "请先创建场景".to_owned();
+        let tree = self.tree.clone();
+        let Some(scene) = self.document.current_scene.as_mut() else {
+            self.status = "Create a scene first".into();
             return;
         };
-        match tree.create_entity(scene, name.clone(), parent) {
-            Ok(id) => self.status = format!("已创建实体 {name}（ID={}）", id.0),
-            Err(error) => self.status = error.to_string(),
+        let result =
+            self.history
+                .execute(scene, "Create entity", CommandKind::Create, move |scene| {
+                    let mut tree = tree;
+                    tree.create_entity(scene, name.clone(), parent)
+                        .map(|_| ())
+                        .map_err(|e| e.to_string())
+                });
+        match result {
+            Ok(true) => {
+                if let Some(scene) = self.document.current_scene.as_ref()
+                    && let Some(id) = scene.scene.entities.keys().max_by_key(|id| id.0).copied()
+                {
+                    let _ = self.tree.select(scene, id);
+                    self.sync_inspector(id);
+                }
+                self.status = "Entity created".into();
+            }
+            Ok(false) => self.status = "No change".into(),
+            Err(e) => self.status = e,
         }
     }
 
     fn rename_selected(&mut self) {
         if self.is_playing() {
-            self.status = "Play mode locks scene editing; click Stop first".to_owned();
+            self.status = "Play mode locks scene editing; click Stop first".into();
             return;
         }
-
         let name = self.entity_name.trim().to_owned();
-        let (document, tree) = (&mut self.document, &mut self.tree);
-        let Some(scene) = document.current_scene.as_mut() else {
-            self.status = "请先创建场景".to_owned();
+        let tree = self.tree.clone();
+        let Some(scene) = self.document.current_scene.as_mut() else {
+            self.status = "Create a scene first".into();
             return;
         };
-        match tree.rename_selected(scene, name) {
-            Ok(()) => self.status = "实体名称已更新".to_owned(),
-            Err(error) => self.status = error.to_string(),
+        let result =
+            self.history
+                .execute(scene, "Rename entity", CommandKind::Rename, move |scene| {
+                    let mut tree = tree;
+                    tree.rename_selected(scene, name).map_err(|e| e.to_string())
+                });
+        match result {
+            Ok(true) => {
+                self.status = "Entity renamed".into();
+            }
+            Ok(false) => self.status = "No change".into(),
+            Err(e) => self.status = e,
+        }
+    }
+
+    fn reparent_selected(&mut self, parent: Option<SceneEntityId>) {
+        if self.is_playing() {
+            self.status = "Play mode locks scene editing; click Stop first".into();
+            return;
+        }
+        let tree = self.tree.clone();
+        let Some(scene) = self.document.current_scene.as_mut() else {
+            self.status = "Create a scene first".into();
+            return;
+        };
+        let result = self.history.execute(
+            scene,
+            "Reparent entity",
+            CommandKind::Reparent,
+            move |scene| {
+                let mut tree = tree;
+                tree.reparent_selected(scene, parent)
+                    .map_err(|e| e.to_string())
+            },
+        );
+        match result {
+            Ok(true) => {
+                self.status = "Parent updated".into();
+            }
+            Ok(false) => self.status = "No change".into(),
+            Err(e) => self.status = e,
         }
     }
 
     fn delete_selected(&mut self) {
         if self.is_playing() {
-            self.status = "Play mode locks scene editing; click Stop first".to_owned();
+            self.status = "Play mode locks scene editing; click Stop first".into();
             return;
         }
-
-        let (document, tree) = (&mut self.document, &mut self.tree);
-        let Some(scene) = document.current_scene.as_mut() else {
-            self.status = "请先创建场景".to_owned();
+        let tree = self.tree.clone();
+        let Some(scene) = self.document.current_scene.as_mut() else {
+            self.status = "Create a scene first".into();
             return;
         };
-        match tree.delete_selected(scene) {
-            Ok(()) => self.status = "实体及其子树已删除".to_owned(),
-            Err(error) => self.status = error.to_string(),
+        let result =
+            self.history
+                .execute(scene, "Delete entity", CommandKind::Delete, move |scene| {
+                    let mut tree = tree;
+                    tree.delete_selected(scene).map_err(|e| e.to_string())
+                });
+        match result {
+            Ok(true) => {
+                if self.tree.selected().is_some_and(|id| {
+                    self.document
+                        .current_scene
+                        .as_ref()
+                        .is_none_or(|scene| !scene.scene.entities.contains_key(&id))
+                }) {
+                    self.tree.clear_selection();
+                    self.inspector.clear_selection();
+                }
+                self.status = "Entity deleted".into();
+            }
+            Ok(false) => self.status = "No change".into(),
+            Err(e) => self.status = e,
         }
     }
 }
 
 impl eframe::App for EditorApp {
     fn update(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
+        if let Some(doc) = self.document.current_scene.as_ref() {
+            let _ = self.autosave.tick(&self.recovery, doc, SystemTime::now());
+        }
+        if context.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Z)) {
+            self.undo();
+        }
+        if context.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Y)) {
+            self.redo();
+        }
         egui::TopBottomPanel::top("header").show(context, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("P2 RustLua 编辑器");
                 ui.separator();
                 ui.label(format!("项目：{}", self.project.root.display()));
+                if ui.button("Undo").clicked() {
+                    self.undo();
+                }
+                if ui.button("Redo").clicked() {
+                    self.redo();
+                }
+                if ui.button("Save").clicked() {
+                    self.save_scene();
+                }
             });
             ui.horizontal(|ui| {
                 ui.label(format!("场景：{}", self.scene_name()));
@@ -397,6 +557,26 @@ impl eframe::App for EditorApp {
                 }
             });
         });
+
+        if !self.recovery_scan.candidates.is_empty() {
+            egui::TopBottomPanel::top("recovery_prompt").show(context, |ui| {
+                ui.label("Recovery files detected");
+                for candidate in self.recovery_scan.candidates.clone() {
+                    if ui.button("Recover").clicked() {
+                        self.document.current_scene = Some(self.recovery.recover(&candidate));
+                        self.history.clear();
+                        self.autosave.reset();
+                        self.tree.clear_selection();
+                        self.inspector.clear_selection();
+                        self.recovery_scan = self.recovery.scan().unwrap_or_default();
+                    }
+                    if ui.button("Discard").clicked() {
+                        let _ = self.recovery.discard(&candidate);
+                        self.recovery_scan = self.recovery.scan().unwrap_or_default();
+                    }
+                }
+            });
+        }
 
         egui::SidePanel::left("project_status").show(context, |ui| {
             ui.heading("项目状态");
@@ -543,6 +723,23 @@ impl eframe::App for EditorApp {
             ));
             ui.label(format!("子节点数量：{child_count}"));
             ui.separator();
+            ui.horizontal(|ui| {
+                ui.label("parent id");
+                ui.text_edit_singleline(&mut self.parent_entity);
+                if ui.button("set parent").clicked() {
+                    let parent = self
+                        .parent_entity
+                        .trim()
+                        .parse::<u64>()
+                        .ok()
+                        .map(SceneEntityId);
+                    self.reparent_selected(parent);
+                }
+                if ui.button("set root").clicked() {
+                    self.parent_entity.clear();
+                    self.reparent_selected(None);
+                }
+            });
             ui.horizontal(|ui| {
                 ui.label("名称");
                 ui.text_edit_singleline(&mut self.entity_name);

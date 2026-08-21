@@ -22,7 +22,12 @@ try {
     }
 
     Copy-Item -Force $runner (Join-Path $buildRoot "game_runner.exe")
-    Write-Host "Release build complete: $buildRoot" -ForegroundColor Green
+    $gameSource = Join-Path $projectRoot "game"
+    $gameTarget = Join-Path $buildRoot "game"
+    if (-not (Test-Path $gameSource)) { throw "Game project directory was not found: $gameSource" }
+    if (Test-Path $gameTarget) { Remove-Item -LiteralPath $gameTarget -Recurse -Force }
+    Copy-Item -LiteralPath $gameSource -Destination $gameTarget -Recurse -Force
+    Write-Host "Release build complete: $buildRoot (runner + game resources)" -ForegroundColor Green
 }
 finally {
     Pop-Location

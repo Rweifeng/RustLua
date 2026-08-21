@@ -340,13 +340,23 @@ impl GameApp {
     }
 
     fn initialize_script(&mut self, event_loop: &ActiveEventLoop) {
-        let script_path = [
+        let mut script_candidates = vec![
             PathBuf::from("game/scripts/main.lua"),
             PathBuf::from("../game/scripts/main.lua"),
-        ]
-        .into_iter()
-        .find(|path| path.is_file())
-        .unwrap_or_else(|| PathBuf::from("game/scripts/main.lua"));
+        ];
+        if let Ok(executable) = std::env::current_exe() {
+            let mut root = executable.parent().map(PathBuf::from);
+            for _ in 0..3 {
+                if let Some(path) = root.take() {
+                    script_candidates.push(path.join("game/scripts/main.lua"));
+                    root = path.parent().map(PathBuf::from);
+                }
+            }
+        }
+        let script_path = script_candidates
+            .into_iter()
+            .find(|path| path.is_file())
+            .unwrap_or_else(|| PathBuf::from("game/scripts/main.lua"));
         let mut runtime = match LuaRuntime::new() {
             Ok(runtime) => runtime,
             Err(error) => {
