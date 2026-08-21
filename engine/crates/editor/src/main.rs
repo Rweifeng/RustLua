@@ -209,7 +209,10 @@ impl EditorApp {
     }
 
     fn current_scene(&self) -> Option<&editor::SceneDocument> {
-        self.document.current_scene.as_ref()
+        self.play_session
+            .as_ref()
+            .map(PlaySession::runtime_document)
+            .or(self.document.current_scene.as_ref())
     }
 
     fn play(&mut self) {
