@@ -25,6 +25,20 @@ pub struct SpriteVertex {
     pub color: [f32; 4],
 }
 
+/// The asset path of the texture a sprite renders with, from the scene's
+/// `Sprite` component value. The host renderer resolves it against the project
+/// root and samples it with the sprite's UVs.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SpriteAsset(pub String);
+
+impl SpriteAsset {
+    /// Returns the asset path this sprite samples.
+    #[must_use]
+    pub fn path(&self) -> &str {
+        &self.0
+    }
+}
+
 /// The two triangles making up a Sprite.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SpriteQuad {

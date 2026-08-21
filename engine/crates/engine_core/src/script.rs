@@ -14,8 +14,8 @@ use crate::{
     entity::EntityId,
     input::{InputKey, InputSnapshot, MouseButton},
     scene::Scene,
-    sprite::Sprite,
-    tilemap::{TILE_PALETTE, Tilemap},
+    sprite::{Sprite, SpriteAsset},
+    tilemap::Tilemap,
     transform::{Transform, Vec2},
     world::{World, WorldError},
 };
@@ -189,7 +189,6 @@ impl LuaRuntime {
     pub fn instantiate_scene(&mut self, scene: &Scene) -> Result<usize, LuaBridgeError> {
         let mut state = self.state.borrow_mut();
         let mut count = 0;
-        let mut sprite_index = 0;
         for entity in scene.entities.values() {
             let id = state.world.spawn();
             if let Some(value) = entity.components.get("Transform") {
@@ -204,20 +203,18 @@ impl LuaRuntime {
                     .insert(id, transform)
                     .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
             }
-            if entity.components.contains_key("Sprite") {
-                let sprite = Sprite::new(Vec2::new(128.0, 128.0))
-                    .map_err(|error| {
-                        LuaBridgeError::Api(format!("failed to build default Sprite: {error}"))
-                    })?
-                    .with_tint(TILE_PALETTE[sprite_index % TILE_PALETTE.len()])
-                    .map_err(|error| {
-                        LuaBridgeError::Api(format!("failed to tint default Sprite: {error}"))
-                    })?;
+            if let Some(path) = entity.components.get("Sprite") {
+                let sprite = Sprite::new(Vec2::new(128.0, 128.0)).map_err(|error| {
+                    LuaBridgeError::Api(format!("failed to build default Sprite: {error}"))
+                })?;
                 state
                     .world
                     .insert(id, sprite)
                     .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
-                sprite_index += 1;
+                state
+                    .world
+                    .insert(id, SpriteAsset(path.clone()))
+                    .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
             }
             if let Some(value) = entity.components.get("Tilemap") {
                 let tilemap = Tilemap::from_component_str(value).map_err(|error| {
@@ -1116,6 +1113,10 @@ mod tests {
         assert_eq!(player.len(), 1);
         let player = player[0];
         assert!(runtime.with_world(|world| world.has::<Sprite>(player).unwrap()));
+        assert!(runtime.with_world(|world| world.has::<SpriteAsset>(player).unwrap()));
+        let asset =
+            runtime.with_world(|world| world.get::<SpriteAsset>(player).unwrap().unwrap().clone());
+        assert_eq!(asset.path(), "assets/red-1x1.png");
         let moved = runtime.with_world(|world| *world.get::<Transform>(player).unwrap().unwrap());
         assert_eq!(moved.position, Vec2::new(10.0, 5.0));
         let _ = fs::remove_file(path);

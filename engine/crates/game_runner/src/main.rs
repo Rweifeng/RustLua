@@ -13,9 +13,10 @@ use engine_core::{
     performance::{PerformanceSnapshot, PerformanceStats},
     scene::{Scene, SceneEntityId},
     script::LuaRuntime,
-    sprite::{Sprite, SpriteVertex},
+    sprite::{Sprite, SpriteAsset, SpriteVertex},
     sprite_batch::{SpriteBatch, SpriteBatchItem},
-    tilemap::{TILE_PALETTE, Tilemap},
+    texture::{TextureAsset, TextureColorSpace},
+    tilemap::Tilemap,
     time_step::FixedTimeStep,
     transform::{Transform, Vec2, integrate_velocity},
     window::{AppLifecycle, has_renderable_size},
@@ -28,22 +29,27 @@ use wgpu::{
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct OverlayVertex {
     position: [f32; 2],
+    uv: [f32; 2],
     color: [f32; 4],
 }
 
-const OVERLAY_SHADER: &str = r#"
+const TEXTURED_SHADER: &str = r#"
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
-    @location(0) color: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+    @location(1) color: vec4<f32>,
 };
-@vertex fn vs_main(@location(0) position: vec2<f32>, @location(1) color: vec4<f32>) -> VertexOutput {
+@group(0) @binding(0) var tex: texture_2d<f32>;
+@group(0) @binding(1) var samp: sampler;
+@vertex fn vs_main(@location(0) position: vec2<f32>, @location(1) uv: vec2<f32>, @location(2) color: vec4<f32>) -> VertexOutput {
     var out: VertexOutput;
     out.position = vec4<f32>(position, 0.0, 1.0);
+    out.uv = uv;
     out.color = color;
     return out;
 }
-@fragment fn fs_main(@location(0) color: vec4<f32>) -> @location(0) vec4<f32> {
-    return color;
+@fragment fn fs_main(@location(0) uv: vec2<f32>, @location(1) color: vec4<f32>) -> @location(0) vec4<f32> {
+    return textureSample(tex, samp, uv) * color;
 }
 "#;
 
@@ -55,21 +61,48 @@ use winit::{
     window::{Window, WindowId},
 };
 
+/// One draw range over the scene vertex buffer, bound to a texture.
+/// `texture == 0` selects the built-in white texture; `texture == i > 0`
+/// selects `paths[i - 1]`.
+struct SceneDraw {
+    texture: u32,
+    start: u32,
+    count: u32,
+}
+
+/// Scene geometry plus the texture paths its draw ranges reference.
+struct SceneMesh {
+    vertices: Vec<OverlayVertex>,
+    draws: Vec<SceneDraw>,
+    paths: Vec<String>,
+}
+
+/// A texture uploaded to the GPU and ready to sample.
+struct LoadedTexture {
+    path: String,
+    bind_group: wgpu::BindGroup,
+}
+
 struct Renderer {
     surface: Surface<'static>,
     device: Device,
     queue: Queue,
     config: SurfaceConfiguration,
-    overlay_pipeline: wgpu::RenderPipeline,
-    overlay_vertex_buffer: wgpu::Buffer,
+    pipeline: wgpu::RenderPipeline,
+    texture_bind_group_layout: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
+    vertex_buffer: wgpu::Buffer,
+    textures: Vec<LoadedTexture>,
+    white: Option<wgpu::BindGroup>,
+    project_root: Option<PathBuf>,
 }
 
 impl Renderer {
-    fn new(window: Arc<Window>) -> Result<Self, String> {
-        pollster::block_on(Self::new_async(window))
+    fn new(window: Arc<Window>, project_root: Option<PathBuf>) -> Result<Self, String> {
+        pollster::block_on(Self::new_async(window, project_root))
     }
 
-    async fn new_async(window: Arc<Window>) -> Result<Self, String> {
+    async fn new_async(window: Arc<Window>, project_root: Option<PathBuf>) -> Result<Self, String> {
         let size = window.inner_size();
         let instance = Instance::new(&InstanceDescriptor::default());
         let surface = instance
@@ -124,19 +157,40 @@ impl Renderer {
             desired_maximum_frame_latency: 2,
         };
         surface.configure(&device, &config);
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("p2-overlay-shader"),
-            source: wgpu::ShaderSource::Wgsl(OVERLAY_SHADER.into()),
-        });
-        let overlay_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("p2-overlay-pipeline-layout"),
-                bind_group_layouts: &[],
-                push_constant_ranges: &[],
+        let texture_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("p2-texture-bind-group-layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
             });
-        let overlay_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("p2-overlay-pipeline"),
-            layout: Some(&overlay_pipeline_layout),
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("p2-textured-pipeline-layout"),
+            bind_group_layouts: &[&texture_bind_group_layout],
+            push_constant_ranges: &[],
+        });
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("p2-textured-shader"),
+            source: wgpu::ShaderSource::Wgsl(TEXTURED_SHADER.into()),
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("p2-textured-pipeline"),
+            layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_main"),
@@ -151,9 +205,14 @@ impl Renderer {
                             shader_location: 0,
                         },
                         wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32x4,
+                            format: wgpu::VertexFormat::Float32x2,
                             offset: 8,
                             shader_location: 1,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x4,
+                            offset: 16,
+                            shader_location: 2,
                         },
                     ],
                 }],
@@ -174,8 +233,15 @@ impl Renderer {
             multiview: None,
             cache: None,
         });
-        let overlay_vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("p2-overlay-vertex-buffer"),
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("p2-texture-sampler"),
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+        let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("p2-vertex-buffer"),
             size: 1024 * 1024,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
@@ -188,8 +254,13 @@ impl Renderer {
             device,
             queue,
             config,
-            overlay_pipeline,
-            overlay_vertex_buffer,
+            pipeline,
+            texture_bind_group_layout,
+            sampler,
+            vertex_buffer,
+            textures: Vec::new(),
+            white: None,
+            project_root,
         })
     }
 
@@ -206,7 +277,7 @@ impl Renderer {
         );
     }
 
-    fn render(&mut self, overlay: Option<&[OverlayVertex]>) -> RenderOutcome {
+    fn render(&mut self, mesh: &SceneMesh) -> RenderOutcome {
         let output = match self.surface.get_current_texture() {
             Ok(output) => output,
             Err(SurfaceError::Lost | SurfaceError::Outdated) => {
@@ -257,13 +328,12 @@ impl Renderer {
                 occlusion_query_set: None,
             });
         }
-        if let Some(vertices) = overlay.filter(|vertices| !vertices.is_empty()) {
-            let bytes = bytemuck::cast_slice(vertices);
-            if bytes.len() as u64 <= self.overlay_vertex_buffer.size() {
-                self.queue
-                    .write_buffer(&self.overlay_vertex_buffer, 0, bytes);
+        if !mesh.vertices.is_empty() {
+            let bytes = bytemuck::cast_slice(&mesh.vertices);
+            if bytes.len() as u64 <= self.vertex_buffer.size() {
+                self.queue.write_buffer(&self.vertex_buffer, 0, bytes);
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("p2-overlay-pass"),
+                    label: Some("p2-scene-pass"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                         view: &view,
                         depth_slice: None,
@@ -277,14 +347,119 @@ impl Renderer {
                     timestamp_writes: None,
                     occlusion_query_set: None,
                 });
-                pass.set_pipeline(&self.overlay_pipeline);
-                pass.set_vertex_buffer(0, self.overlay_vertex_buffer.slice(..));
-                pass.draw(0..vertices.len() as u32, 0..1);
+                pass.set_pipeline(&self.pipeline);
+                pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+                for draw in &mesh.draws {
+                    let Some(bind) = self.bind_group_for(draw.texture, &mesh.paths) else {
+                        continue;
+                    };
+                    pass.set_bind_group(0, &bind, &[]);
+                    pass.draw(draw.start..draw.start + draw.count, 0..1);
+                }
             }
         }
         self.queue.submit([encoder.finish()]);
         output.present();
         RenderOutcome::Presented
+    }
+
+    /// Returns the bind group for a draw: the white texture for `texture == 0`,
+    /// otherwise the cached (or freshly loaded) asset at `paths[texture - 1]`.
+    fn bind_group_for(&mut self, texture: u32, paths: &[String]) -> Option<wgpu::BindGroup> {
+        if texture == 0 {
+            return self.ensure_white();
+        }
+        let path = &paths[texture as usize - 1];
+        if let Some(entry) = self.textures.iter().find(|entry| entry.path == *path) {
+            return Some(entry.bind_group.clone());
+        }
+        let resolved = self
+            .project_root
+            .as_ref()
+            .map(|root| root.join(path))
+            .unwrap_or_else(|| PathBuf::from(path));
+        let asset = match TextureAsset::load_png(&resolved, TextureColorSpace::Srgb) {
+            Ok(asset) => asset,
+            Err(error) => {
+                tracing::warn!(target: "render", path = %path, error = %error, "[render] texture load failed; falling back to white");
+                return self.ensure_white();
+            }
+        };
+        let bind = self.upload_texture(&asset, path)?;
+        self.textures.push(LoadedTexture {
+            path: path.to_owned(),
+            bind_group: bind.clone(),
+        });
+        tracing::info!(target: "render", path = %path, dimensions = ?(asset.width(), asset.height()), "[render] texture loaded");
+        Some(bind)
+    }
+
+    fn ensure_white(&mut self) -> Option<wgpu::BindGroup> {
+        if let Some(white) = &self.white {
+            return Some(white.clone());
+        }
+        let asset =
+            TextureAsset::from_rgba8(1, 1, vec![255, 255, 255, 255], TextureColorSpace::Srgb)
+                .ok()?;
+        let bind = self.upload_texture(&asset, "p2-white-1x1")?;
+        self.white = Some(bind.clone());
+        Some(bind)
+    }
+
+    fn upload_texture(&self, asset: &TextureAsset, label: &str) -> Option<wgpu::BindGroup> {
+        let format = match asset.color_space() {
+            TextureColorSpace::Srgb => wgpu::TextureFormat::Rgba8UnormSrgb,
+            TextureColorSpace::Linear => wgpu::TextureFormat::Rgba8Unorm,
+        };
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(label),
+            size: wgpu::Extent3d {
+                width: asset.width(),
+                height: asset.height(),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            asset.pixels(),
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(asset.bytes_per_row()),
+                rows_per_image: Some(asset.height()),
+            },
+            wgpu::Extent3d {
+                width: asset.width(),
+                height: asset.height(),
+                depth_or_array_layers: 1,
+            },
+        );
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some(label),
+            layout: &self.texture_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+            ],
+        });
+        Some(bind_group)
     }
 }
 
@@ -299,6 +474,7 @@ struct RuntimeScene {
     script: LuaRuntime,
     sprite_batch: SpriteBatch,
     camera: Camera2D,
+    texture_paths: Vec<String>,
 }
 
 impl RuntimeScene {
@@ -327,6 +503,7 @@ impl RuntimeScene {
             script,
             sprite_batch: SpriteBatch::new(),
             camera,
+            texture_paths: Vec::new(),
         })
     }
 
@@ -351,26 +528,33 @@ impl RuntimeScene {
         Ok(())
     }
 
-    fn vertices(&mut self, width: u32, height: u32) -> Result<Vec<OverlayVertex>, String> {
+    fn vertices(&mut self, width: u32, height: u32) -> Result<SceneMesh, String> {
         let viewport = Viewport::new(width.max(1) as f32, height.max(1) as f32)
             .map_err(|error| error.to_string())?;
         self.sprite_batch.clear();
+        self.texture_paths.clear();
         let sprites = self.script.with_world(|world| {
             world
-                .entities_with2::<Transform, Sprite>()
+                .entities_with::<Sprite>()
                 .into_iter()
                 .filter_map(|id| {
-                    let transform = world.get::<Transform>(id).ok().flatten().copied();
-                    let sprite = world.get::<Sprite>(id).ok().flatten().copied();
-                    transform.zip(sprite)
+                    let transform = world.get::<Transform>(id).ok().flatten().copied()?;
+                    let sprite = world.get::<Sprite>(id).ok().flatten().copied()?;
+                    let asset = world.get::<SpriteAsset>(id).ok().flatten()?;
+                    Some((transform, sprite, asset.path().to_owned()))
                 })
                 .collect::<Vec<_>>()
         });
         // Tile maps draw first (layer 0), sprite entities on top (layer 1+).
         self.push_tiles()?;
-        for (index, (transform, sprite)) in sprites.into_iter().enumerate() {
-            self.sprite_batch
-                .push(SpriteBatchItem::new(0, 1 + index as i32, sprite, transform));
+        for (index, (transform, sprite, path)) in sprites.into_iter().enumerate() {
+            let texture = self.texture_id(&path);
+            self.sprite_batch.push(SpriteBatchItem::new(
+                texture,
+                1 + index as i32,
+                sprite,
+                transform,
+            ));
         }
         let mesh = self
             .sprite_batch
@@ -383,15 +567,39 @@ impl RuntimeScene {
             mesh.vertices.len(),
             mesh.draws.len()
         );
-        Ok(mesh
+        let draws = mesh
+            .draws
+            .iter()
+            .map(|draw| SceneDraw {
+                texture: draw.texture_id + 1, // 0 is reserved for the white texture
+                start: draw.vertex_start as u32,
+                count: draw.vertex_count as u32,
+            })
+            .collect();
+        let vertices = mesh
             .vertices
             .iter()
             .map(|vertex| sprite_vertex(vertex, viewport))
-            .collect())
+            .collect();
+        Ok(SceneMesh {
+            vertices,
+            draws,
+            paths: self.texture_paths.clone(),
+        })
     }
 
-    /// Pushes every non-empty tile as a single-batch colored quad. All tiles
-    /// share texture id and layer, so the whole map is one draw range.
+    /// Deduplicates a texture asset path and returns its id for batch items.
+    fn texture_id(&mut self, path: &str) -> u32 {
+        if let Some(index) = self.texture_paths.iter().position(|entry| entry == path) {
+            return index as u32;
+        }
+        self.texture_paths.push(path.to_owned());
+        (self.texture_paths.len() - 1) as u32
+    }
+
+    /// Pushes every non-empty tile as a textured quad sampling its tileset
+    /// column. All tiles of a map share texture id and layer, so the whole map
+    /// is one draw range.
     fn push_tiles(&mut self) -> Result<(), String> {
         let tilemaps = self.script.with_world(|world| {
             world
@@ -405,7 +613,7 @@ impl RuntimeScene {
                 .collect::<Vec<_>>()
         });
         for (transform, tilemap) in tilemaps {
-            let base = Sprite::new(tilemap.tile_size).map_err(|error| error.to_string())?;
+            let texture = self.texture_id(&tilemap.texture);
             for y in 0..tilemap.height {
                 for x in 0..tilemap.width {
                     let index = y * tilemap.width + x;
@@ -413,8 +621,11 @@ impl RuntimeScene {
                     if cell == 0 {
                         continue;
                     }
-                    let tint = TILE_PALETTE[(cell as usize - 1) % TILE_PALETTE.len()];
-                    let sprite = base.with_tint(tint).map_err(|error| error.to_string())?;
+                    let (uv_min, uv_max) = Tilemap::tile_uv(cell);
+                    let sprite = Sprite::new(tilemap.tile_size)
+                        .map_err(|error| error.to_string())?
+                        .with_uv(uv_min, uv_max)
+                        .map_err(|error| error.to_string())?;
                     let offset = Vec2::new(
                         x as f32 * tilemap.tile_size.x * transform.scale.x,
                         y as f32 * tilemap.tile_size.y * transform.scale.y,
@@ -427,8 +638,12 @@ impl RuntimeScene {
                         rotation: transform.rotation,
                         scale: transform.scale,
                     };
-                    self.sprite_batch
-                        .push(SpriteBatchItem::new(0, 0, sprite, tile_transform));
+                    self.sprite_batch.push(SpriteBatchItem::new(
+                        texture,
+                        0,
+                        sprite,
+                        tile_transform,
+                    ));
                 }
             }
         }
@@ -470,6 +685,7 @@ fn sprite_vertex(vertex: &SpriteVertex, viewport: Viewport) -> OverlayVertex {
             vertex.position[0] / viewport.width * 2.0 - 1.0,
             1.0 - vertex.position[1] / viewport.height * 2.0,
         ],
+        uv: vertex.uv,
         color: vertex.color,
     }
 }
@@ -593,7 +809,7 @@ impl GameApp {
         };
         self.input.finish_frame();
         let snapshot = self.performance.snapshot();
-        let mut vertices = self
+        let mut mesh = self
             .runtime_scene
             .as_mut()
             .and_then(|scene| {
@@ -601,15 +817,28 @@ impl GameApp {
                     .vertices(renderer.config.width, renderer.config.height)
                     .ok()
             })
-            .unwrap_or_default();
+            .unwrap_or_else(|| SceneMesh {
+                vertices: Vec::new(),
+                draws: Vec::new(),
+                paths: Vec::new(),
+            });
         if self.overlay_enabled {
-            vertices.extend(build_overlay_vertices(
+            let start = mesh.vertices.len() as u32;
+            mesh.vertices.extend(build_overlay_vertices(
                 snapshot,
                 renderer.config.width,
                 renderer.config.height,
             ));
+            let count = mesh.vertices.len() as u32 - start;
+            if count > 0 {
+                mesh.draws.push(SceneDraw {
+                    texture: 0,
+                    start,
+                    count,
+                });
+            }
         }
-        match renderer.render((!vertices.is_empty()).then_some(vertices.as_slice())) {
+        match renderer.render(&mesh) {
             RenderOutcome::Presented => {}
             RenderOutcome::Retry | RenderOutcome::Skipped => {}
             RenderOutcome::Fatal => self.request_exit(event_loop),
@@ -631,7 +860,7 @@ impl ApplicationHandler for GameApp {
             .with_inner_size(PhysicalSize::new(1280, 720));
         let window = Arc::new(event_loop.create_window(attributes).expect("create window"));
         tracing::info!(target: "game", "[window] created: {:?}", window.id());
-        match Renderer::new(window.clone()) {
+        match Renderer::new(window.clone(), self.project_root.clone()) {
             Ok(renderer) => {
                 self.window = Some(window);
                 self.renderer = Some(renderer);
@@ -768,29 +997,36 @@ fn build_overlay_vertices(
 }
 
 fn rect_vertices(x0: f32, y0: f32, x1: f32, y1: f32) -> [OverlayVertex; 6] {
+    let uv = [0.0, 0.0];
     [
         OverlayVertex {
             position: [x0, y0],
+            uv,
             color: [0.05, 0.8, 0.35, 0.88],
         },
         OverlayVertex {
             position: [x1, y0],
+            uv,
             color: [0.05, 0.8, 0.35, 0.88],
         },
         OverlayVertex {
             position: [x1, y1],
+            uv,
             color: [0.05, 0.8, 0.35, 0.88],
         },
         OverlayVertex {
             position: [x0, y0],
+            uv,
             color: [0.05, 0.8, 0.35, 0.88],
         },
         OverlayVertex {
             position: [x1, y1],
+            uv,
             color: [0.05, 0.8, 0.35, 0.88],
         },
         OverlayVertex {
             position: [x0, y1],
+            uv,
             color: [0.05, 0.8, 0.35, 0.88],
         },
     ]

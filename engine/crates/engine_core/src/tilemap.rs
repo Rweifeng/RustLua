@@ -5,7 +5,7 @@ use std::{error::Error, fmt};
 
 use crate::transform::Vec2;
 
-/// Maximum distinct tile appearances (1..=6 map to this palette; 0 is empty).
+/// Maximum distinct tile appearances (1..=6 map to a tileset column; 0 = empty).
 pub const TILE_PALETTE: [[f32; 4]; 6] = [
     [0.18, 0.72, 1.0, 1.0],
     [0.95, 0.65, 0.15, 1.0],
@@ -15,9 +15,14 @@ pub const TILE_PALETTE: [[f32; 4]; 6] = [
     [0.90, 0.85, 0.35, 1.0],
 ];
 
-/// A rectangular grid of tiles. `tiles` holds a row-major palette index per
-/// cell (`0` = empty, `1..=6` = [`TILE_PALETTE`]), and `solid` holds the
-/// separate collision layer (`true` = blocks movement).
+/// Default tileset texture a tile map samples when its component string omits
+/// a `texture` field. Columns `1..=6` hold the six distinct tile appearances.
+pub const DEFAULT_TILESET: &str = "assets/tileset.png";
+
+/// A rectangular grid of tiles. `tiles` holds a row-major tileset column per
+/// cell (`0` = empty, `1..=6` = tileset column), and `solid` holds the
+/// separate collision layer (`true` = blocks movement). The whole map samples
+/// `texture`; each tile's UV selects its tileset column.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Tilemap {
     pub tile_size: Vec2,
@@ -25,6 +30,7 @@ pub struct Tilemap {
     pub height: usize,
     pub tiles: Vec<u8>,
     pub solid: Vec<bool>,
+    pub texture: String,
 }
 
 /// Errors produced while building or parsing a tile map.
@@ -59,7 +65,8 @@ impl fmt::Display for TilemapError {
 impl Error for TilemapError {}
 
 impl Tilemap {
-    /// Creates a grid with the given size and tile size, all cells empty.
+    /// Creates a grid with the given size and tile size, all cells empty and
+    /// sampling the default tileset.
     pub fn new(tile_size: Vec2, width: usize, height: usize) -> Result<Self, TilemapError> {
         validate_dimensions(tile_size, width, height)?;
         let count = width * height;
@@ -69,7 +76,17 @@ impl Tilemap {
             height,
             tiles: vec![0; count],
             solid: vec![false; count],
+            texture: DEFAULT_TILESET.to_owned(),
         })
+    }
+
+    /// Returns the normalized UV rectangle for a tileset column (`1..=6`).
+    #[must_use]
+    pub fn tile_uv(column: u8) -> (Vec2, Vec2) {
+        let count = TILE_PALETTE.len();
+        let start = (column.saturating_sub(1) as f32 / count as f32).clamp(0.0, 1.0);
+        let end = (column as f32 / count as f32).clamp(0.0, 1.0);
+        (Vec2::new(start, 0.0), Vec2::new(end, 1.0))
     }
 
     fn index(&self, x: usize, y: usize) -> Result<usize, TilemapError> {
@@ -107,7 +124,7 @@ impl Tilemap {
     }
 
     /// Serializes the map into a scene `Tilemap` component string:
-    /// `tile_size=<x>x<y>;width=..;height=..;tiles=..;solid=..`
+    /// `tile_size=<x>x<y>;width=..;height=..;texture=<path>;tiles=..;solid=..`
     /// (`tiles` uses `0`-`6`, `solid` uses `0`/`1`, row-major).
     pub fn to_component_str(&self) -> String {
         let tiles: String = self
@@ -121,16 +138,18 @@ impl Tilemap {
             .map(|value| if *value { '1' } else { '0' })
             .collect();
         format!(
-            "tile_size={}x{};width={};height={};tiles={};solid={}",
-            self.tile_size.x, self.tile_size.y, self.width, self.height, tiles, solid
+            "tile_size={}x{};width={};height={};texture={};tiles={};solid={}",
+            self.tile_size.x, self.tile_size.y, self.width, self.height, self.texture, tiles, solid
         )
     }
 
-    /// Parses a scene `Tilemap` component string back into a map.
+    /// Parses a scene `Tilemap` component string back into a map. A missing
+    /// `texture` field falls back to [`DEFAULT_TILESET`].
     pub fn from_component_str(value: &str) -> Result<Self, TilemapError> {
         let mut tile_size = None;
         let mut width = None;
         let mut height = None;
+        let mut texture = None;
         let mut tiles = None;
         let mut solid = None;
         for field in value.split(';') {
@@ -161,6 +180,12 @@ impl Tilemap {
                         Some(raw.parse().map_err(|_| {
                             TilemapError::Parse("height not an integer".to_owned())
                         })?);
+                }
+                "texture" => {
+                    if raw.is_empty() {
+                        return Err(TilemapError::Parse("texture must not be empty".to_owned()));
+                    }
+                    texture = Some(raw.to_owned());
                 }
                 "tiles" => {
                     tiles = Some(
@@ -217,6 +242,7 @@ impl Tilemap {
         for (i, value) in solid.into_iter().enumerate() {
             map.solid[i] = value;
         }
+        map.texture = texture.unwrap_or_else(|| DEFAULT_TILESET.to_owned());
         Ok(map)
     }
 }
@@ -249,9 +275,32 @@ mod tests {
 
     #[test]
     fn round_trips_through_component_string() {
-        let map = sample();
+        let mut map = sample();
+        map.texture = "assets/custom-tileset.png".to_owned();
         let text = map.to_component_str();
+        assert!(text.contains("texture=assets/custom-tileset.png"));
         assert_eq!(Tilemap::from_component_str(&text).unwrap(), map);
+    }
+
+    #[test]
+    fn missing_texture_falls_back_to_default_tileset() {
+        let map =
+            Tilemap::from_component_str("tile_size=32x32;width=2;height=2;tiles=0000;solid=0000")
+                .unwrap();
+        assert_eq!(map.texture, DEFAULT_TILESET);
+    }
+
+    #[test]
+    fn tile_uv_selects_tileset_columns() {
+        let (min, max) = Tilemap::tile_uv(1);
+        assert_eq!(min.x, 0.0);
+        assert_eq!(max.x, 1.0 / 6.0);
+        let (min, max) = Tilemap::tile_uv(6);
+        assert_eq!(min.x, 5.0 / 6.0);
+        assert_eq!(max.x, 1.0);
+        let (min, max) = Tilemap::tile_uv(0);
+        assert_eq!(min.x, 0.0);
+        assert_eq!(max.x, 0.0);
     }
 
     #[test]
