@@ -52,7 +52,7 @@ M0-M4 已完成：窗口、wgpu、Lua、ECS、2D 渲染、资源数据库、导�
 
 **实施**：新增 crate 和入口；支持 `--project`、`--check`；检查 `engine/`、`game/`、`assets/`、`docs/`；合法项目显示状态，非法路径返回清晰非零错误；记录 UI 依赖决策。
 
-**验收**：窗口可启动；`cargo run -p editor -- --project E:\Codex\p2 --check` 成功；不存在路径失败且含路径和原因；Debug/Release 构建及 M4 回归通过。
+**验收**：窗口可启动；`cargo run -p editor -- --project C:\GitHub\p2 --check` 成功；不存在路径失败且含路径和原因；Debug/Release 构建及 M4 回归通过。
 
 ### M5-02 项目与场景文档模型
 
@@ -128,7 +128,7 @@ cargo test --workspace --all-features
 cargo build --workspace
 cargo build --workspace --release
 git diff --check
-cargo run -p editor -- --project E:\Codex\p2 --check
+cargo run -p editor -- --project C:\GitHub\p2 --check
 ```
 
 GUI 无法自动运行时，必须用无窗口状态模型测试替代，且最终保留人工视觉验收证据。

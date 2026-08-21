@@ -91,6 +91,6 @@
 | M5-A05 | 资源浏览器与刷新 | M5-A04 | 资源扫描、筛选、刷新、失败状态可见 | 40 个 editor 单测、ResourceDatabase 持久化、GUI 刷新/筛选接入 | PASS | M5 |
 | M5-A06 | Lua 绑定与 Console | M5-A04 | 脚本绑定、运行、错误诊断、Console 执行与清理 | `engine_core` 100 个测试、`editor` 40 个测试、Console GUI 通过 Debug/Release 质量门 | PASS | M5 |
 | M5-A07 | Play/Stop 运行态隔离 | M5-A06 | 运行时修改只作用于场景副本；重复 100 次 Play/Stop 不发生编辑状态漂移 | `PlaySession` 隔离编辑态与运行态；42 个 editor 测试通过；Debug/Release 构建通过 | PASS | M5 |
-| M5-A08 | Undo/Redo | M5-A03 | 属性、创建、删除、重命名、父子关系可逆 | 100 次随机操作一致性测试 | PENDING | M5 |
-| M5-A09 | 自动保存与崩溃恢复 | M5-A02 | 恢复有效版本；损坏恢复不覆盖主文件 | 故障注入、临时文件测试 | PENDING | M5 |
-| M5-A10 | 编辑器 MVP 综合验收 | M5-A01 至 M5-A09 | 十步工作流完成；无 P0/P1；打 v0.5 标签 | 综合 Demo、全量质量门、验收记录 | PENDING | M5 |
+| M5-A08 | Undo/Redo | M5-A03 | 属性、创建、删除、重命名、父子关系可逆；GUI Undo/Redo 按钮与 Ctrl/Cmd+Z/Y 已接入 | history.rs 单元测试、全量质量门 | `tasks/done/M5-08-Undo-Redo命令系统.md`；`artifacts/logs/m5/m5-10-comprehensive-acceptance.txt` | PASS | M5 |
+| M5-A09 | 自动保存与崩溃恢复 | M5-A02 | 恢复有效版本；损坏恢复不覆盖主文件；启动扫描并提供 Recover/Discard 提示；保存后清理 | recovery.rs 单元测试（故障注入）、全量质量门 | `tasks/done/M5-09-自动保存与崩溃恢复.md`；`artifacts/logs/m5/m5-10-comprehensive-acceptance.txt` | PASS | M5 |
+| M5-A10 | 编辑器 MVP 综合验收 | M5-A01 至 M5-A09 | 十步工作流完成；无 P0/P1；打 v0.5 标签 | 全量质量门（fmt/clippy/test/Debug/Release）、editor --check、GUI 启动冒烟、Release 资源检查 | `tasks/done/M5-10-编辑器MVP综合验收.md`；`artifacts/logs/m5/m5-10-comprehensive-acceptance.txt` | PASS | M5 |

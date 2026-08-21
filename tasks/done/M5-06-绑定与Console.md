@@ -38,11 +38,11 @@ execute_console(&mut self, source: &str) -> Result<String, LuaBridgeError>
 ## 3. 验收
 
 ```powershell
-cargo fmt --manifest-path E:\Codex\p2\engine\Cargo.toml --all -- --check
-cargo clippy --manifest-path E:\Codex\p2\engine\Cargo.toml --workspace --all-targets --all-features -- -D warnings
-cargo test --manifest-path E:\Codex\p2\engine\Cargo.toml --workspace --all-features
-cargo build --manifest-path E:\Codex\p2\engine\Cargo.toml --workspace
-cargo build --manifest-path E:\Codex\p2\engine\Cargo.toml --workspace --release
+cargo fmt --manifest-path C:\GitHub\p2\engine\Cargo.toml --all -- --check
+cargo clippy --manifest-path C:\GitHub\p2\engine\Cargo.toml --workspace --all-targets --all-features -- -D warnings
+cargo test --manifest-path C:\GitHub\p2\engine\Cargo.toml --workspace --all-features
+cargo build --manifest-path C:\GitHub\p2\engine\Cargo.toml --workspace
+cargo build --manifest-path C:\GitHub\p2\engine\Cargo.toml --workspace --release
 git diff --check
 ```
 

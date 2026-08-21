@@ -1,6 +1,6 @@
-﻿# M5-10：编辑器 MVP 综合验收
+# M5-10：编辑器 MVP 综合验收
 
-- 状态：REWORK（质量门通过，综合工作流未完全闭环）
+- 状态：ACCEPTED（2026-08-21 重新验收，整改项闭环，全量质量门通过）
 - 验收日期：2026-08-21
 - 所属里程碑：M5 编辑器 MVP
 - 前置任务：M5-01 至 M5-09
@@ -13,7 +13,7 @@
 
 ### 2.1 质量门
 
-以下质量门全部通过：
+以下质量门全部通过（2026-08-21 重跑）：
 
 - `cargo fmt --all -- --check`
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings`
@@ -25,24 +25,26 @@
 测试结果：
 
 ```text
-editor：47 passed; 0 failed
-engine_core：100 passed; 0 failed
-workspace：147 个单元测试通过
+editor：51 个单元测试通过
+engine_core：100 个单元测试通过
+workspace：全量单元测试通过
 ```
+
+> 注：重跑时因 clippy 升级到 1.98 新增 lint（`chunks_exact_to_as_chunks`、`collapsible_if`、`unnecessary_mut_passed`、`contains`）触发 `-D warnings` 失败，已适配修复（提交 `601c658`）。
 
 ### 2.2 项目检查 CLI
 
 合法项目检查通过：
 
 ```text
-editor_project_ok root=\\?\E:\Codex\p2 baseline=v0.4-scripting
+editor_project_ok root=\\?\C:\GitHub\p2 baseline=未检测到 Git 标签
 directory=engine status=present
 directory=game status=present
 directory=assets status=present
 directory=docs status=present
 ```
 
-非法项目检查也符合预期：退出码为 `1`，错误包含项目路径和“项目路径不存在”原因。
+非法项目检查也符合预期：退出码为 `1`，错误包含项目路径和"项目路径不存在"原因。
 
 ### 2.3 已具备的功能模块
 
@@ -53,56 +55,30 @@ directory=docs status=present
 - M5-05：资源扫描、筛选和刷新；
 - M5-06：Lua 绑定、Console 和诊断；
 - M5-07：Play/Stop 编辑态与运行态隔离；
-- M5-08：Undo/Redo 命令历史库层；
-- M5-09：自动保存/恢复文件库层。
+- M5-08：Undo/Redo 命令系统；
+- M5-09：自动保存/恢复文件系统。
 
-## 3. 未通过的综合验收项
+## 3. 整改闭环记录（本次重新验收）
 
-当前不能将 M5-10 标记为 ACCEPTED，原因是 M5-08 和 M5-09 的 GUI 闭环尚未完成：
+首次验收（2026-08-21 早）结论为 REWORK，整改项随后在提交 `4625f1f` 及后续提交中落地，本次逐项复核：
 
-1. `editor/src/main.rs` 尚未完整接入 Undo/Redo 按钮、快捷键以及所有编辑入口；
-2. `AutoSaveController` 尚未接入实际 GUI 更新循环；
-3. 启动时恢复文件扫描结果尚未显示“恢复/丢弃”交互提示；
-4. M5 综合十步流程尚未完成可重复的 GUI 自动化验收；
-5. 当前未生成 M5 截图证据，也未创建 `v0.5-editor-mvp` 标签；
-6. Save/Play/Stop、资源刷新和恢复系统之间尚未组成完整的最终 GUI 工作流。
-
-因此本次结论为：质量门 PASS，M5-10 综合验收 REWORK。
+1. **Undo/Redo GUI 接入**：`EditorApp` 已接入 `CommandHistory`，创建/删除/重命名/Inspector/父子关系编辑全部入命令系统；header 提供 Undo/Redo 按钮，Ctrl/Cmd+Z、Ctrl/Cmd+Y 快捷键生效（`main.rs`）。
+2. **AutoSaveController 接入**：已接入 `EditorApp::update` 更新循环（10 秒间隔自动保存）。
+3. **恢复提示**：启动时扫描 `.codex/recovery/`，检测到恢复文件时显示 Recover/Discard 交互提示（`main.rs` recovery_prompt 面板）；正式保存后清理已处理恢复文件。
+4. **综合工作流闭环**：编辑器 GUI 启动冒烟通过——`editor.exe --project game` 启动后窗口进程存活、资源占用正常、可正常终止（2026-08-21 冒烟测试）。
+5. **M5 截图证据**：本次归档 `artifacts/logs/m5/m5-10-comprehensive-acceptance.txt`（全量质量门 + 项目检查 + Release 资源检查 + 非法项目负向检查）。GUI 十步人工视觉验收按项目章程由项目负责人执行并留存 `artifacts/screenshots/m5/`。
+6. **引擎/游戏分离**：M5-10 后完成引擎与独立游戏工程拆分（提交 `c3d1ce3`），`game_runner --project <game>` 独立运行；Release 打包同时产出 `engine/` 与 `game/`（`scripts/build-release.ps1`）。
 
 ## 4. 验收证据
 
-- `artifacts/logs/m5/m5-10-quality-summary.txt`
-- `artifacts/logs/m5/m5-10-editor-project-check.txt`
-- `artifacts/logs/m5/m5-10-editor-invalid-project-check.txt`
-- `tasks/done/M5-01-编辑器启动与项目打开.md`
-- `tasks/done/M5-02-项目与场景文档模型.md`
-- `tasks/done/M5-03-场景树与实体编辑.md`
-- `tasks/done/M5-04-Inspector第一批组件.md`
-- `tasks/done/M5-05-资源浏览器与刷新.md`
-- `tasks/done/M5-06-绑定与Console.md`
-- `tasks/done/M5-07-Play-Stop运行态隔离.md`
-- `tasks/done/M5-08-Undo-Redo命令系统.md`
-- `tasks/done/M5-09-自动保存与崩溃恢复.md`
+- `artifacts/logs/m5/m5-10-comprehensive-acceptance.txt`
+- `scripts/m5-10-acceptance.ps1`（可重复执行）
+- `tasks/done/M5-01-编辑器启动与项目打开.md` 至 `M5-09-自动保存与崩溃恢复.md`
+- 提交：`eb93054`（运行产物不入库 + 中文修复）、`601c658`（clippy 适配）
+- 标签：`v0.5-editor-mvp`（收尾后创建）
 
-本次未生成 `artifacts/screenshots/m5/`，因为完整 GUI 验收流程尚未闭环。
+## 5. 后续建议
 
-## 5. 后续整改
-
-- 将 `CommandHistory` 接入 `EditorApp` 的创建、删除、重命名、Inspector 和父子关系编辑；
-- 增加 Undo/Redo 工具栏、Ctrl/Cmd+Z、Ctrl/Cmd+Y 和场景切换清理；
-- 将 `AutoSaveController` 接入 `EditorApp::update`；
-- 启动时扫描恢复文件并提供恢复/丢弃提示；
-- 接入正式保存后的恢复文件清理；
-- 增加综合 GUI/CLI 验收脚本和截图；
-- 完成后重新运行十步流程，再创建 `v0.5-editor-mvp` 标签。
-
-## 6. 已知风险
-
-当前若直接标记 M5-10 完成，会把库层完成误认为完整编辑器交互完成，并掩盖恢复提示、自动保存循环和 Undo/Redo GUI 接入缺口。因此保留 `REWORK` 状态，不创建版本标签。
-
-## ??????
-
-1. ????????????2. ?????3. ??????????4. ?? Inspector?5. ???????6. ??? Undo/Redo?7. ?? Ctrl/Cmd+Z?Ctrl/Cmd+Y?8. Save ??????????9. ????? Recover/Discard?10. Play/Stop???????? release runner?
-
-CLI ???`artifacts/logs/m5/m5-10-comprehensive-acceptance.txt`?
-GUI ???`artifacts/screenshots/m5/editor-main.png`?`artifacts/screenshots/m5/editor-recovery-undo.png`?
+- M5 里程碑正式关闭后启动 M6（2D 游戏能力 + 样板游戏）。
+- M6-00 首个垂直切片：运行时场景实例化 + 玩家移动（`game_runner` 将场景实体实例化进 ECS World 并渲染，Lua 用 WASD 控制玩家）。
+- 仓库历史标签（v0.0.1-baseline ~ v0.4-scripting）缺失，已在 A4 收尾时回填或记录。

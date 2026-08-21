@@ -57,8 +57,8 @@ HistoryError
 ## 4. 验收命令
 
 ```powershell
-cargo fmt --manifest-path E:\Codex\p2\engine\Cargo.toml --all
-cargo test --manifest-path E:\Codex\p2\engine\Cargo.toml -p editor --lib
+cargo fmt --manifest-path C:\GitHub\p2\engine\Cargo.toml --all
+cargo test --manifest-path C:\GitHub\p2\engine\Cargo.toml -p editor --lib
 git diff --check
 ```
 

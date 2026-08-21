@@ -58,7 +58,7 @@ tasks/done/
 ## 验收命令
 
 ```powershell
-Set-Location E:\Codex\p2\engine
+Set-Location C:\GitHub\p2\engine
 cargo metadata --no-deps
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings

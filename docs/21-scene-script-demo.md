@@ -19,7 +19,7 @@
 
 ## 运行
 
-在 `E:\Codex\p2\engine` 目录执行：
+在 `C:\GitHub\p2\engine` 目录执行：
 
 ```powershell
 cargo run -p game_runner --example scene_script_demo --release

@@ -1,6 +1,6 @@
 # AI 驱动 Rust + Lua 游戏引擎开发实施计划
 
-> 项目依据：`E:\Codex\p2\docs\AI驱动RustLua游戏引擎实施计划.md`
+> 项目依据：`C:\GitHub\p2\docs\AI驱动RustLua游戏引擎实施计划.md`
 >
 > 版本：2026-08-20
 >
@@ -132,7 +132,7 @@ AI 负责：
 
 ## 2. 推荐项目管理结构
 
-在 `E:\Codex\p2` 中建立以下目录：
+在 `C:\GitHub\p2` 中建立以下目录：
 
 ```text
 p2/
@@ -1241,7 +1241,7 @@ artifacts/builds/<milestone>/...
 你是本项目的 Rust 游戏引擎开发代理。
 
 请先读取：
-1. E:\Codex\p2\docs\AI驱动RustLua游戏引擎实施计划.md
+1. C:\GitHub\p2\docs\AI驱动RustLua游戏引擎实施计划.md
 2. 当前任务文件
 3. 当前代码和已有测试
 4. 相关依赖的锁定版本文档
