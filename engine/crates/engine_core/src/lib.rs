@@ -1,5 +1,7 @@
 //! Core types for the Rust + Lua game engine.
 
+/// Named animation states driven by sprite-sheet frame clips.
+pub mod animation;
 /// Texture atlas regions and named Sprite sub-assets.
 pub mod atlas;
 /// Deferred world mutations for safe ECS system iteration.

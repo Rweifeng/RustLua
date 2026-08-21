@@ -11,6 +11,7 @@ use mlua::{Function, Lua, Result as LuaResult, Table, Value};
 use tracing::{error, info, warn};
 
 use crate::{
+    animation::AnimationStateMachine,
     entity::EntityId,
     input::{InputKey, InputSnapshot, MouseButton},
     scene::Scene,
@@ -226,6 +227,19 @@ impl LuaRuntime {
                 state
                     .world
                     .insert(id, tilemap)
+                    .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
+            }
+            if let Some(value) = entity.components.get("Animation") {
+                let animation =
+                    AnimationStateMachine::from_component_str(value).map_err(|error| {
+                        LuaBridgeError::Api(format!(
+                            "entity {:?} has an invalid Animation: {error}",
+                            entity.name
+                        ))
+                    })?;
+                state
+                    .world
+                    .insert(id, animation)
                     .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
             }
             if !entity.name.is_empty() {
@@ -833,6 +847,75 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
     )?;
     lua.globals().set("tilemap", tilemap)?;
 
+    let animation = lua.create_table()?;
+    let s = Rc::clone(&state);
+    animation.set(
+        "get",
+        lua.create_function(move |_, id: i64| {
+            let id = entity_from_lua(id)?;
+            let state = s.borrow();
+            require_alive(&state, id)?;
+            let Some(machine) = state
+                .world
+                .get::<AnimationStateMachine>(id)
+                .map_err(world_error)?
+            else {
+                return Err(api_error("entity has no animation"));
+            };
+            Ok(machine.current_state().to_owned())
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    animation.set(
+        "set",
+        lua.create_function(move |_, (id, name): (i64, String)| {
+            let id = entity_from_lua(id)?;
+            let mut state = s.borrow_mut();
+            require_alive(&state, id)?;
+            let machine = state
+                .world
+                .get_mut::<AnimationStateMachine>(id)
+                .map_err(world_error)?
+                .ok_or_else(|| api_error("entity has no animation"))?;
+            machine
+                .set_state(&name)
+                .map_err(|error| api_error(error.to_string()))
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    animation.set(
+        "frame",
+        lua.create_function(move |_, id: i64| {
+            let id = entity_from_lua(id)?;
+            let state = s.borrow();
+            require_alive(&state, id)?;
+            let Some(machine) = state
+                .world
+                .get::<AnimationStateMachine>(id)
+                .map_err(world_error)?
+            else {
+                return Err(api_error("entity has no animation"));
+            };
+            Ok(machine.current_frame())
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    animation.set(
+        "ended",
+        lua.create_function(move |_, id: i64| {
+            let id = entity_from_lua(id)?;
+            let mut state = s.borrow_mut();
+            require_alive(&state, id)?;
+            let machine = state
+                .world
+                .get_mut::<AnimationStateMachine>(id)
+                .map_err(world_error)?
+                .ok_or_else(|| api_error("entity has no animation"))?;
+            Ok(machine.take_ended())
+        })?,
+    )?;
+    lua.globals().set("animation", animation)?;
+
     let physics = lua.create_table()?;
     let s = Rc::clone(&state);
     physics.set(
@@ -1213,6 +1296,46 @@ mod tests {
         assert_eq!(map.width, 4);
         assert_eq!(map.is_solid(0, 0), Some(true));
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn instantiated_animation_is_switchable_from_lua() {
+        use crate::scene::{Scene, SceneEntityId};
+
+        let mut scene = Scene::new("test");
+        scene.add_entity(SceneEntityId(1), "Hero", None).unwrap();
+        scene.entities.get_mut(&SceneEntityId(1)).unwrap().components.insert(
+            "Animation".into(),
+            "default=idle;clip:idle:assets/idle-sheet.png:4:4:true;clip:attack:assets/attack-sheet.png:2:2:false".into(),
+        );
+
+        let mut runtime = LuaRuntime::new().unwrap();
+        runtime.instantiate_scene(&scene).unwrap();
+
+        let first = script(
+            "function on_create()\nlocal h = entity.find('Hero')\nassert(animation.get(h) == 'idle')\nassert(animation.set(h, 'attack'))\nassert(animation.get(h) == 'attack')\nassert(not animation.set(h, 'attack'))\nreturn 'ok' end\nfunction update() return 'ok' end",
+        );
+        runtime.execute_project_script(&first).unwrap();
+        assert_eq!(runtime.call_update().unwrap(), "ok");
+
+        // advance past the 1.0s non-looping attack clip
+        let machines = runtime.with_world(|world| world.entities_with::<AnimationStateMachine>());
+        assert_eq!(machines.len(), 1);
+        runtime.with_world_mut(|world| {
+            world
+                .get_mut::<AnimationStateMachine>(machines[0])
+                .unwrap()
+                .unwrap()
+                .advance(1.1);
+        });
+
+        let second = script(
+            "function update()\nlocal h = entity.find('Hero')\nassert(animation.frame(h) == 1)\nassert(animation.ended(h))\nassert(not animation.ended(h))\nreturn 'done' end",
+        );
+        runtime.execute_project_script(&second).unwrap();
+        assert_eq!(runtime.call_update().unwrap(), "done");
+        let _ = fs::remove_file(first);
+        let _ = fs::remove_file(second);
     }
 
     #[test]

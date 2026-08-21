@@ -18,6 +18,10 @@ function on_create()
     end
 end
 
+local function is_oneshot(state)
+    return state == "attack" or state == "hit" or state == "death"
+end
+
 function update()
     local dt = time.delta()
     local horizontal = input.axis("horizontal")
@@ -25,6 +29,8 @@ function update()
     local player = entity.find(player_name)
     local position = "?"
     local cell = "?"
+    local state = "?"
+    local frame = -1
     if player and entity.is_alive(player) then
         transform.move(player, horizontal * move_speed * dt, vertical * move_speed * dt)
         local p = transform.get(player)
@@ -40,14 +46,34 @@ function update()
                 tostring(tilemap.is_solid(map_id, cx, cy))
             )
         end
+        -- animation state selection: one-shots (attack/hit/death) play to their
+        -- end event before normal idle/move selection resumes.
+        local current = animation.get(player)
+        local ended = false
+        if is_oneshot(current) then
+            ended = animation.ended(player)
+        end
+        if not (is_oneshot(current) and not ended) then
+            if input.just_pressed("space") then
+                animation.set(player, "attack")
+            elseif horizontal ~= 0 or vertical ~= 0 then
+                animation.set(player, "move")
+            else
+                animation.set(player, "idle")
+            end
+        end
+        state = animation.get(player)
+        frame = animation.frame(player)
     end
     return string.format(
-        "lua-update-ok dt=%.6f axis=(%.1f,%.1f) player=%s pos=%s cell=%s",
+        "lua-update-ok dt=%.6f axis=(%.1f,%.1f) player=%s pos=%s cell=%s anim=%s frame=%d",
         dt,
         horizontal,
         vertical,
         tostring(player ~= nil),
         position,
-        cell
+        cell,
+        state,
+        frame
     )
 end

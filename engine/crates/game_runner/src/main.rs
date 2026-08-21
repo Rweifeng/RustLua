@@ -7,6 +7,7 @@ use std::{
 
 use bytemuck::{Pod, Zeroable};
 use engine_core::{
+    animation::AnimationStateMachine,
     input::{InputKey, InputSnapshot, MouseButton},
     logging::{EngineError, LogModule, init_logging},
     math2d::{Camera2D, Viewport},
@@ -524,6 +525,12 @@ impl RuntimeScene {
         }
         self.script.with_world_mut(|world| {
             let _ = integrate_velocity(world, delta_seconds * steps as f32);
+            let elapsed = delta_seconds * steps as f32;
+            for id in world.entities_with::<AnimationStateMachine>() {
+                if let Ok(Some(machine)) = world.get_mut::<AnimationStateMachine>(id) {
+                    machine.advance(elapsed);
+                }
+            }
         });
         Ok(())
     }
@@ -540,15 +547,36 @@ impl RuntimeScene {
                 .filter_map(|id| {
                     let transform = world.get::<Transform>(id).ok().flatten().copied()?;
                     let sprite = world.get::<Sprite>(id).ok().flatten().copied()?;
-                    let asset = world.get::<SpriteAsset>(id).ok().flatten()?;
-                    Some((transform, sprite, asset.path().to_owned()))
+                    let animation = world
+                        .get::<AnimationStateMachine>(id)
+                        .ok()
+                        .flatten()
+                        .cloned();
+                    let asset = world
+                        .get::<SpriteAsset>(id)
+                        .ok()
+                        .flatten()
+                        .map(|entry| entry.path().to_owned());
+                    Some((transform, sprite, animation, asset))
                 })
                 .collect::<Vec<_>>()
         });
         // Tile maps draw first (layer 0), sprite entities on top (layer 1+).
         self.push_tiles()?;
-        for (index, (transform, sprite, path)) in sprites.into_iter().enumerate() {
-            let texture = self.texture_id(&path);
+        for (index, (transform, sprite, animation, asset)) in sprites.into_iter().enumerate() {
+            let (texture, sprite) = if let Some(machine) = animation {
+                // Animated sprite: sample the current clip's sheet at its frame UV.
+                let (uv_min, uv_max) = machine.current_frame_uv();
+                let sprite = sprite
+                    .with_uv(uv_min, uv_max)
+                    .map_err(|error| error.to_string())?;
+                let sheet = machine.current_clip().sheet.clone();
+                (self.texture_id(&sheet), sprite)
+            } else if let Some(path) = asset {
+                (self.texture_id(&path), sprite)
+            } else {
+                continue;
+            };
             self.sprite_batch.push(SpriteBatchItem::new(
                 texture,
                 1 + index as i32,
