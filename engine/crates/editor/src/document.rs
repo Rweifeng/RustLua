@@ -1,0 +1,300 @@
+use crate::{ProjectError, ProjectInfo};
+use engine_core::scene::{Scene, SceneError};
+use std::{
+    error::Error,
+    fmt, fs,
+    path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
+};
+
+/// 编辑器中的可编辑场景及其文件状态。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SceneDocument {
+    pub path: Option<PathBuf>,
+    pub scene: Scene,
+    pub dirty: bool,
+}
+
+impl SceneDocument {
+    /// 创建尚未保存的新场景。新文档必须显示为 dirty，避免用户误以为已有文件。
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            path: None,
+            scene: Scene::new(name),
+            dirty: true,
+        }
+    }
+
+    pub fn new_scene(name: impl Into<String>) -> Self {
+        Self::new(name)
+    }
+
+    /// 从磁盘打开场景；只有成功解析和校验后才创建文档。
+    pub fn open(path: impl AsRef<Path>) -> Result<Self, DocumentError> {
+        let path = path.as_ref().to_path_buf();
+        let scene = Scene::load(&path).map_err(DocumentError::Scene)?;
+        Ok(Self {
+            path: Some(path),
+            scene,
+            dirty: false,
+        })
+    }
+
+    pub fn mark_dirty(&mut self) {
+        self.dirty = true;
+    }
+    pub fn mark_clean(&mut self) {
+        self.dirty = false;
+    }
+    pub fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+
+    /// 保存到当前路径；未命名的新场景必须使用 `save_as`。
+    pub fn save(&mut self) -> Result<(), DocumentError> {
+        let path = self.path.clone().ok_or(DocumentError::MissingPath)?;
+        self.save_to(&path)
+    }
+
+    /// 保存到新路径。成功后该路径成为文档当前路径。
+    pub fn save_as(&mut self, path: impl AsRef<Path>) -> Result<(), DocumentError> {
+        let path = path.as_ref().to_path_buf();
+        self.save_to(&path)?;
+        self.path = Some(path);
+        Ok(())
+    }
+
+    fn save_to(&mut self, path: &Path) -> Result<(), DocumentError> {
+        self.scene.validate().map_err(DocumentError::Scene)?;
+        atomic_write_scene(path, &self.scene)?;
+        self.dirty = false;
+        Ok(())
+    }
+}
+
+/// 已打开项目的编辑器文档上下文。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProjectDocument {
+    pub project: ProjectInfo,
+    pub current_scene: Option<SceneDocument>,
+}
+
+impl ProjectDocument {
+    pub fn open(project: ProjectInfo) -> Self {
+        Self {
+            project,
+            current_scene: None,
+        }
+    }
+
+    pub fn new_scene(&mut self, name: impl Into<String>) -> &mut SceneDocument {
+        self.current_scene = Some(SceneDocument::new(name));
+        self.current_scene.as_mut().expect("scene was just created")
+    }
+
+    pub fn open_scene(&mut self, path: impl AsRef<Path>) -> Result<(), DocumentError> {
+        self.current_scene = Some(SceneDocument::open(path)?);
+        Ok(())
+    }
+
+    pub fn save_scene(&mut self) -> Result<(), DocumentError> {
+        self.current_scene
+            .as_mut()
+            .ok_or(DocumentError::NoCurrentScene)?
+            .save()
+    }
+
+    pub fn save_scene_as(&mut self, path: impl AsRef<Path>) -> Result<(), DocumentError> {
+        self.current_scene
+            .as_mut()
+            .ok_or(DocumentError::NoCurrentScene)?
+            .save_as(path)
+    }
+}
+
+fn atomic_write_scene(path: &Path, scene: &Scene) -> Result<(), DocumentError> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent).map_err(|error| DocumentError::Io {
+        path: parent.to_path_buf(),
+        message: error.to_string(),
+    })?;
+    let token = unique_token();
+    let temp = parent.join(format!(".{}.{}.tmp", file_name(path), token));
+    let backup = parent.join(format!(".{}.{}.bak", file_name(path), token));
+
+    fs::write(&temp, scene.to_text().as_bytes()).map_err(|error| DocumentError::Io {
+        path: temp.clone(),
+        message: error.to_string(),
+    })?;
+    // 替换正式文件前重新加载临时文件，确保落盘内容可被引擎解析。
+    if let Err(error) = Scene::load(&temp) {
+        let _ = fs::remove_file(&temp);
+        return Err(DocumentError::Scene(error));
+    }
+
+    let had_original = path.exists();
+    if had_original {
+        fs::rename(path, &backup).map_err(|error| {
+            let _ = fs::remove_file(&temp);
+            DocumentError::Io {
+                path: path.to_path_buf(),
+                message: error.to_string(),
+            }
+        })?;
+    }
+    if let Err(error) = fs::rename(&temp, path) {
+        let _ = fs::remove_file(&temp);
+        if had_original {
+            let _ = fs::rename(&backup, path);
+        }
+        return Err(DocumentError::Io {
+            path: path.to_path_buf(),
+            message: error.to_string(),
+        });
+    }
+    if had_original {
+        fs::remove_file(&backup).map_err(|error| DocumentError::Io {
+            path: backup,
+            message: error.to_string(),
+        })?;
+    }
+    Ok(())
+}
+
+fn file_name(path: &Path) -> String {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("scene")
+        .replace(['\\', '/', ':'], "_")
+}
+
+fn unique_token() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0)
+}
+
+#[derive(Debug)]
+pub enum DocumentError {
+    MissingPath,
+    NoCurrentScene,
+    Project(ProjectError),
+    Scene(SceneError),
+    Io { path: PathBuf, message: String },
+}
+
+impl fmt::Display for DocumentError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingPath => write!(f, "场景尚未命名，请使用另存为选择文件路径"),
+            Self::NoCurrentScene => write!(f, "当前项目没有打开的场景"),
+            Self::Project(error) => write!(f, "项目文档错误：{error}"),
+            Self::Scene(error) => write!(f, "场景文档错误：{error}"),
+            Self::Io { path, message } => write!(f, "文档 I/O 失败：{}：{message}", path.display()),
+        }
+    }
+}
+
+impl Error for DocumentError {}
+impl From<ProjectError> for DocumentError {
+    fn from(error: ProjectError) -> Self {
+        Self::Project(error)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use engine_core::scene::SceneEntityId;
+
+    fn temp_root(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("rustlua-m5-02-{label}-{}", unique_token()))
+    }
+
+    fn scene() -> Scene {
+        let mut scene = Scene::new("main");
+        scene.add_entity(SceneEntityId(1), "Root", None).unwrap();
+        scene.metadata.insert("author".into(), "ai".into());
+        scene
+    }
+
+    #[test]
+    fn new_document_is_dirty_and_has_no_path() {
+        let document = SceneDocument::new_scene("main");
+        assert!(document.is_dirty());
+        assert!(document.path.is_none());
+    }
+
+    #[test]
+    fn save_load_roundtrip_and_save_as_update_state() {
+        let root = temp_root("roundtrip");
+        let first = root.join("scenes/main.scene");
+        let second = root.join("scenes/copy.scene");
+        let mut document = SceneDocument::new_scene("main");
+        document.scene = scene();
+        document.save_as(&first).unwrap();
+        assert!(!document.is_dirty());
+        assert_eq!(SceneDocument::open(&first).unwrap().scene, document.scene);
+        document.mark_dirty();
+        document.save_as(&second).unwrap();
+        assert_eq!(document.path, Some(second.clone()));
+        assert!(!document.is_dirty());
+        assert_eq!(Scene::load(second).unwrap(), document.scene);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn save_without_path_is_rejected_and_dirty_remains() {
+        let mut document = SceneDocument::new("main");
+        assert!(matches!(document.save(), Err(DocumentError::MissingPath)));
+        assert!(document.is_dirty());
+    }
+
+    #[test]
+    fn invalid_scene_does_not_modify_original_or_clear_dirty() {
+        let root = temp_root("preserve");
+        let path = root.join("main.scene");
+        let mut document = SceneDocument::new_scene("main");
+        document.scene = scene();
+        document.save_as(&path).unwrap();
+        let original = fs::read(&path).unwrap();
+        document.scene.version = 999;
+        document.mark_dirty();
+        let error = document.save().unwrap_err();
+        assert!(error.to_string().contains("unsupported scene version"));
+        assert_eq!(fs::read(&path).unwrap(), original);
+        assert!(document.is_dirty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn repeated_save_is_deterministic() {
+        let root = temp_root("stable");
+        let path = root.join("main.scene");
+        let mut document = SceneDocument::new_scene("main");
+        document.scene = scene();
+        document.save_as(&path).unwrap();
+        let first = fs::read(&path).unwrap();
+        document.mark_dirty();
+        document.save().unwrap();
+        assert_eq!(fs::read(path).unwrap(), first);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn project_document_tracks_current_scene() {
+        let root = temp_root("project");
+        let project = ProjectInfo {
+            root: root.clone(),
+            version: "test".into(),
+            directories: Vec::new(),
+        };
+        let mut document = ProjectDocument::open(project);
+        assert!(document.current_scene.is_none());
+        assert!(document.save_scene().is_err());
+        document.new_scene("main");
+        assert!(document.current_scene.as_ref().unwrap().is_dirty());
+        let _ = fs::remove_dir_all(root);
+    }
+}

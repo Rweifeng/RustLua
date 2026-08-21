@@ -1,3 +1,7 @@
+pub mod document;
+
+pub use document::{DocumentError, ProjectDocument, SceneDocument};
+
 use std::{
     error::Error,
     fmt, fs,

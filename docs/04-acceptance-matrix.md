@@ -85,7 +85,7 @@
 | ID | 功能 | 前置 | 主要验收 | 自动化证据 | 状态 | 版本 |
 |---|---|---|---|---|---|---|
 | M5-A01 | 编辑器启动与项目打开 | M4 | 独立 editor 可启动；合法项目检查成功；非法路径清晰失败 | editor 单测、CLI check、Debug/Release 构建、GUI 进程启动 | PASS | M5 |
-| M5-A02 | 项目与场景文档模型 | M5-A01 | 新建/打开/保存/另存为；原子写入；dirty 正确 | 临时目录测试、场景 roundtrip、质量门 | PENDING | M5 |
+| M5-A02 | 项目与场景文档模型 | M5-A01 | 新建/打开/保存/另存为；原子写入；dirty 正确 | 临时目录测试、场景 roundtrip、质量门 | PASS | M5 |
 | M5-A03 | 场景树与实体编辑 | M5-A02 | 选择、创建、删除、重命名、父子关系一致 | 状态模型测试、GUI 手工记录 | PENDING | M5 |
 | M5-A04 | Inspector 第一批组件 | M5-A03 | Transform、Sprite 引用、Lua 字段编辑和校验 | 字段测试、保存重载测试 | PENDING | M5 |
 | M5-A05 | 资源浏览器与刷新 | M5-A04 | 资源扫描、筛选、刷新、失败状态可见 | ResourceDatabase 集成测试、GUI 记录 | PENDING | M5 |
