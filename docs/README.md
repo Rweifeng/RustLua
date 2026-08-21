@@ -45,4 +45,5 @@
 - M6-01 已完成（Tilemap 网格地图），任务记录：`tasks/done/M6-01-Tilemap.md`；
 - M6-01b 已完成（精灵与图块纹理渲染，替换调色板），任务记录：`tasks/done/M6-01b-精灵与图块纹理渲染.md`；
 - M6-02 已完成（动画状态机），任务记录：`tasks/done/M6-02-动画状态机.md`；
-- M6-03 已完成（Rapier 物理适配），任务记录：`tasks/done/M6-03-Rapier物理适配.md`。
+- M6-03 已完成（Rapier 物理适配），任务记录：`tasks/done/M6-03-Rapier物理适配.md`；
+- M6-04 已完成（UI 血条 / 音频 / 粒子），任务记录：`tasks/done/M6-04-UI音频粒子.md`。
