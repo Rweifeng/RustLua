@@ -264,8 +264,9 @@ mod tests {
         assert!(
             atlas
                 .pixels()
-                .chunks_exact(4)
-                .any(|pixel| pixel == [255, 255, 255, 255])
+                .as_chunks::<4>()
+                .0
+                .contains(&[255, 255, 255, 255])
         );
     }
     #[test]

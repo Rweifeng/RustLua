@@ -62,7 +62,7 @@ fn choose_project_directory() -> Option<PathBuf> {
     use windows_sys::Win32::UI::Shell::{BROWSEINFOW, SHBrowseForFolderW, SHGetPathFromIDListW};
 
     let title: Vec<u16> = "选择游戏项目目录\0".encode_utf16().collect();
-    let mut info = BROWSEINFOW {
+    let info = BROWSEINFOW {
         hwndOwner: std::ptr::null_mut(),
         pidlRoot: std::ptr::null_mut(),
         pszDisplayName: std::ptr::null_mut(),
@@ -72,7 +72,7 @@ fn choose_project_directory() -> Option<PathBuf> {
         lParam: 0,
         iImage: 0,
     };
-    let pidl = unsafe { SHBrowseForFolderW(&mut info) };
+    let pidl = unsafe { SHBrowseForFolderW(&info) };
     if pidl.is_null() {
         return None;
     }
@@ -777,10 +777,10 @@ impl eframe::App for EditorApp {
             ui.horizontal(|ui| {
                 ui.label("Import game project");
                 ui.text_edit_singleline(&mut self.import_path);
-                if ui.button("Browse...").clicked() {
-                    if let Some(path) = choose_project_directory() {
-                        self.import_path = path.to_string_lossy().into_owned();
-                    }
+                if ui.button("Browse...").clicked()
+                    && let Some(path) = choose_project_directory()
+                {
+                    self.import_path = path.to_string_lossy().into_owned();
                 }
                 if ui.button("Import").clicked() {
                     self.import_game_project();
@@ -1457,143 +1457,142 @@ impl EditorApp {
         }
 
         let pointer = response.interact_pointer_pos();
-        if response.drag_started_by(egui::PointerButton::Primary) {
-            if let Some(pos) = pointer {
-                let hit = entities.iter().rev().find(|(id, _, transform)| {
-                    let center = egui::pos2(
-                        rect.center().x
-                            + self.scene_state.pan.x
-                            + transform.position_x * self.scene_zoom,
-                        rect.center().y + self.scene_state.pan.y
-                            - transform.position_y * self.scene_zoom,
-                    );
-                    let size = egui::vec2(
-                        (112.0 * transform.scale_x.abs().max(0.25)) * self.scene_zoom,
-                        (44.0 * transform.scale_y.abs().max(0.25)) * self.scene_zoom,
-                    );
-                    rotated_contains(center, size, transform.rotation, pos)
-                        && !self.scene_state.locked.contains(id)
-                });
-                if let Some((id, _, _)) = hit {
-                    let additive =
-                        ui.input(|input| input.modifiers.command || input.modifiers.ctrl);
-                    if !additive && !self.scene_state.selected.contains(id) {
-                        self.scene_state.selected.clear();
-                    }
-                    self.scene_state.selected.insert(*id);
-                    if let Some(scene) = self.current_scene() {
-                        let scene = scene.clone();
-                        let _ = self.tree.select(&scene, *id);
-                    }
-                    self.sync_inspector(*id);
-                    let ids: Vec<_> = self
-                        .scene_state
-                        .selected
-                        .iter()
-                        .copied()
-                        .filter(|selected| !self.scene_state.locked.contains(selected))
-                        .collect();
-                    let initial = entities
-                        .iter()
-                        .filter(|(entity_id, _, _)| ids.contains(entity_id))
-                        .map(|(entity_id, _, value)| (*entity_id, *value))
-                        .collect();
-                    self.scene_state.drag = Some(SceneDrag {
-                        ids,
-                        start: pos,
-                        initial,
-                    });
-                } else {
-                    self.scene_state.box_select_start = Some(pos);
-                    if !ui.input(|input| input.modifiers.command || input.modifiers.ctrl) {
-                        self.scene_state.selected.clear();
-                    }
-                }
-            }
-        }
-        if let (Some(start), Some(current)) = (self.scene_state.box_select_start, pointer) {
-            if response.dragged_by(egui::PointerButton::Primary) {
-                let selection_rect = egui::Rect::from_two_pos(start, current);
-                painter.rect_stroke(
-                    selection_rect,
-                    0.0,
-                    egui::Stroke::new(1.0_f32, egui::Color32::LIGHT_BLUE),
-                    egui::StrokeKind::Outside,
+        if response.drag_started_by(egui::PointerButton::Primary)
+            && let Some(pos) = pointer
+        {
+            let hit = entities.iter().rev().find(|(id, _, transform)| {
+                let center = egui::pos2(
+                    rect.center().x
+                        + self.scene_state.pan.x
+                        + transform.position_x * self.scene_zoom,
+                    rect.center().y + self.scene_state.pan.y
+                        - transform.position_y * self.scene_zoom,
                 );
-                for (id, _, transform) in &entities {
-                    let center = egui::pos2(
-                        rect.center().x
-                            + self.scene_state.pan.x
-                            + transform.position_x * self.scene_zoom,
-                        rect.center().y + self.scene_state.pan.y
-                            - transform.position_y * self.scene_zoom,
-                    );
-                    let size = egui::vec2(
-                        (112.0 * transform.scale_x.abs().max(0.25)) * self.scene_zoom,
-                        (44.0 * transform.scale_y.abs().max(0.25)) * self.scene_zoom,
-                    );
-                    let corners = rotated_corners(center, size, transform.rotation);
-                    let contained = corners
-                        .iter()
-                        .all(|corner| selection_rect.contains(*corner));
-                    let intersects = polygon_intersects_rect(&corners, selection_rect);
-                    let left_to_right = current.x >= start.x;
-                    if (left_to_right && contained) || (!left_to_right && intersects) {
-                        self.scene_state.selected.insert(*id);
-                    }
+                let size = egui::vec2(
+                    (112.0 * transform.scale_x.abs().max(0.25)) * self.scene_zoom,
+                    (44.0 * transform.scale_y.abs().max(0.25)) * self.scene_zoom,
+                );
+                rotated_contains(center, size, transform.rotation, pos)
+                    && !self.scene_state.locked.contains(id)
+            });
+            if let Some((id, _, _)) = hit {
+                let additive = ui.input(|input| input.modifiers.command || input.modifiers.ctrl);
+                if !additive && !self.scene_state.selected.contains(id) {
+                    self.scene_state.selected.clear();
+                }
+                self.scene_state.selected.insert(*id);
+                if let Some(scene) = self.current_scene() {
+                    let scene = scene.clone();
+                    let _ = self.tree.select(&scene, *id);
+                }
+                self.sync_inspector(*id);
+                let ids: Vec<_> = self
+                    .scene_state
+                    .selected
+                    .iter()
+                    .copied()
+                    .filter(|selected| !self.scene_state.locked.contains(selected))
+                    .collect();
+                let initial = entities
+                    .iter()
+                    .filter(|(entity_id, _, _)| ids.contains(entity_id))
+                    .map(|(entity_id, _, value)| (*entity_id, *value))
+                    .collect();
+                self.scene_state.drag = Some(SceneDrag {
+                    ids,
+                    start: pos,
+                    initial,
+                });
+            } else {
+                self.scene_state.box_select_start = Some(pos);
+                if !ui.input(|input| input.modifiers.command || input.modifiers.ctrl) {
+                    self.scene_state.selected.clear();
                 }
             }
         }
-        if response.dragged_by(egui::PointerButton::Primary) {
-            if let (Some(drag), Some(pos)) = (self.scene_state.drag.as_ref(), pointer) {
-                let delta = pos - drag.start;
-                let mut preview = std::collections::BTreeMap::new();
-                let pivot = {
-                    let count = drag.initial.len().max(1) as f32;
-                    let x = drag
-                        .initial
-                        .values()
-                        .map(|value| value.position_x)
-                        .sum::<f32>()
-                        / count;
-                    let y = drag
-                        .initial
-                        .values()
-                        .map(|value| value.position_y)
-                        .sum::<f32>()
-                        / count;
-                    (x, y)
-                };
-                let angle = (delta.x * 0.5).to_radians();
-                let factor = (1.0 + delta.x * 0.01).max(0.05);
-                for id in &drag.ids {
-                    let initial = drag.initial[id];
-                    let mut next = initial;
-                    match self.scene_tool {
-                        SceneTool::Move | SceneTool::Select => {
-                            next.position_x += delta.x / self.scene_zoom;
-                            next.position_y -= delta.y / self.scene_zoom;
-                        }
-                        SceneTool::Rotate => {
-                            let relative_x = initial.position_x - pivot.0;
-                            let relative_y = initial.position_y - pivot.1;
-                            next.position_x =
-                                pivot.0 + relative_x * angle.cos() - relative_y * angle.sin();
-                            next.position_y =
-                                pivot.1 + relative_x * angle.sin() + relative_y * angle.cos();
-                            next.rotation += delta.x * 0.5;
-                        }
-                        SceneTool::Scale => {
-                            next.position_x = pivot.0 + (initial.position_x - pivot.0) * factor;
-                            next.position_y = pivot.1 + (initial.position_y - pivot.1) * factor;
-                            next.scale_x = (initial.scale_x * factor).max(0.05);
-                            next.scale_y = (initial.scale_y * factor).max(0.05);
-                        }
-                    }
-                    preview.insert(*id, next);
+        if let (Some(start), Some(current)) = (self.scene_state.box_select_start, pointer)
+            && response.dragged_by(egui::PointerButton::Primary)
+        {
+            let selection_rect = egui::Rect::from_two_pos(start, current);
+            painter.rect_stroke(
+                selection_rect,
+                0.0,
+                egui::Stroke::new(1.0_f32, egui::Color32::LIGHT_BLUE),
+                egui::StrokeKind::Outside,
+            );
+            for (id, _, transform) in &entities {
+                let center = egui::pos2(
+                    rect.center().x
+                        + self.scene_state.pan.x
+                        + transform.position_x * self.scene_zoom,
+                    rect.center().y + self.scene_state.pan.y
+                        - transform.position_y * self.scene_zoom,
+                );
+                let size = egui::vec2(
+                    (112.0 * transform.scale_x.abs().max(0.25)) * self.scene_zoom,
+                    (44.0 * transform.scale_y.abs().max(0.25)) * self.scene_zoom,
+                );
+                let corners = rotated_corners(center, size, transform.rotation);
+                let contained = corners
+                    .iter()
+                    .all(|corner| selection_rect.contains(*corner));
+                let intersects = polygon_intersects_rect(&corners, selection_rect);
+                let left_to_right = current.x >= start.x;
+                if (left_to_right && contained) || (!left_to_right && intersects) {
+                    self.scene_state.selected.insert(*id);
                 }
-                self.scene_state.preview = preview;
             }
+        }
+        if response.dragged_by(egui::PointerButton::Primary)
+            && let (Some(drag), Some(pos)) = (self.scene_state.drag.as_ref(), pointer)
+        {
+            let delta = pos - drag.start;
+            let mut preview = std::collections::BTreeMap::new();
+            let pivot = {
+                let count = drag.initial.len().max(1) as f32;
+                let x = drag
+                    .initial
+                    .values()
+                    .map(|value| value.position_x)
+                    .sum::<f32>()
+                    / count;
+                let y = drag
+                    .initial
+                    .values()
+                    .map(|value| value.position_y)
+                    .sum::<f32>()
+                    / count;
+                (x, y)
+            };
+            let angle = (delta.x * 0.5).to_radians();
+            let factor = (1.0 + delta.x * 0.01).max(0.05);
+            for id in &drag.ids {
+                let initial = drag.initial[id];
+                let mut next = initial;
+                match self.scene_tool {
+                    SceneTool::Move | SceneTool::Select => {
+                        next.position_x += delta.x / self.scene_zoom;
+                        next.position_y -= delta.y / self.scene_zoom;
+                    }
+                    SceneTool::Rotate => {
+                        let relative_x = initial.position_x - pivot.0;
+                        let relative_y = initial.position_y - pivot.1;
+                        next.position_x =
+                            pivot.0 + relative_x * angle.cos() - relative_y * angle.sin();
+                        next.position_y =
+                            pivot.1 + relative_x * angle.sin() + relative_y * angle.cos();
+                        next.rotation += delta.x * 0.5;
+                    }
+                    SceneTool::Scale => {
+                        next.position_x = pivot.0 + (initial.position_x - pivot.0) * factor;
+                        next.position_y = pivot.1 + (initial.position_y - pivot.1) * factor;
+                        next.scale_x = (initial.scale_x * factor).max(0.05);
+                        next.scale_y = (initial.scale_y * factor).max(0.05);
+                    }
+                }
+                preview.insert(*id, next);
+            }
+            self.scene_state.preview = preview;
         }
         if response.drag_stopped_by(egui::PointerButton::Primary) {
             self.commit_scene_drag();
