@@ -17,5 +17,5 @@ Thumbs.db
 # Per-project working directory: resource database, import cache, save data
 **/.cache/
 
-# Editor runtime artifacts (autosave/crash-recovery files)
-**/.codex/recovery/
+# Game project runtime temp: editor autosave/crash-recovery snapshots
+**/.temp/

@@ -64,7 +64,7 @@ directory=docs status=present
 
 1. **Undo/Redo GUI 接入**：`EditorApp` 已接入 `CommandHistory`，创建/删除/重命名/Inspector/父子关系编辑全部入命令系统；header 提供 Undo/Redo 按钮，Ctrl/Cmd+Z、Ctrl/Cmd+Y 快捷键生效（`main.rs`）。
 2. **AutoSaveController 接入**：已接入 `EditorApp::update` 更新循环（10 秒间隔自动保存）。
-3. **恢复提示**：启动时扫描 `.codex/recovery/`，检测到恢复文件时显示 Recover/Discard 交互提示（`main.rs` recovery_prompt 面板）；正式保存后清理已处理恢复文件。
+3. **恢复提示**：启动时扫描 `game/.temp/`，检测到恢复文件时显示 Recover/Discard 交互提示（`main.rs` recovery_prompt 面板）；正式保存后清理已处理恢复文件。
 4. **综合工作流闭环**：编辑器 GUI 启动冒烟通过——`editor.exe --project game` 启动后窗口进程存活、资源占用正常、可正常终止（2026-08-21 冒烟测试）。
 5. **M5 截图证据**：本次归档 `artifacts/logs/m5/m5-10-comprehensive-acceptance.txt`（全量质量门 + 项目检查 + Release 资源检查 + 非法项目负向检查）。GUI 十步人工视觉验收按项目章程由项目负责人执行并留存 `artifacts/screenshots/m5/`。
 6. **引擎/游戏分离**：M5-10 后完成引擎与独立游戏工程拆分（提交 `c3d1ce3`），`game_runner --project <game>` 独立运行；Release 打包同时产出 `engine/` 与 `game/`（`scripts/build-release.ps1`）。

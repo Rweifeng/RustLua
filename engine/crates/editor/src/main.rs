@@ -268,7 +268,7 @@ struct ComponentClipboard {
 impl EditorApp {
     fn new(project: ProjectInfo) -> Self {
         let project_loaded = project.root.join("project.toml").is_file();
-        let recovery = RecoveryManager::new(project.root.join(".codex/recovery"));
+        let recovery = RecoveryManager::new(project.root.join(".temp"));
         let recovery_scan = recovery.scan().unwrap_or_default();
         Self {
             document: ProjectDocument::open(project.clone()),
@@ -315,7 +315,7 @@ impl EditorApp {
             Ok(project) if project.root.join("project.toml").is_file() => {
                 self.project = project.clone();
                 self.document = ProjectDocument::open(project.clone());
-                self.recovery = RecoveryManager::new(project.root.join(".codex/recovery"));
+                self.recovery = RecoveryManager::new(project.root.join(".temp"));
                 self.recovery_scan = self.recovery.scan().unwrap_or_default();
                 self.history.clear();
                 self.autosave.reset();
