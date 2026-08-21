@@ -1,3 +1,9 @@
+pub mod resource_browser;
+
+pub use resource_browser::{
+    ResourceBrowserError, ResourceBrowserState, ResourceEntry, ResourceKind,
+};
+
 pub mod inspector;
 
 pub use inspector::{InspectorError, InspectorSnapshot, InspectorState, TransformFields};

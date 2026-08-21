@@ -5,8 +5,8 @@ use std::{
 };
 
 use editor::{
-    InspectorState, ProjectDocument, ProjectError, ProjectInfo, SceneTreeState, TransformFields,
-    check_project, open_project,
+    InspectorState, ProjectDocument, ProjectError, ProjectInfo, ResourceBrowserState,
+    SceneTreeState, TransformFields, check_project, open_project,
 };
 use eframe::egui;
 use engine_core::scene::SceneEntityId;
@@ -66,7 +66,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     eframe::run_native(
         "P2 RustLua 编辑器",
         options,
-        Box::new(move |_creation_context| Ok(Box::new(EditorApp::new(project)))),
+        Box::new(move |_creation_context| {
+            let mut app = EditorApp::new(project);
+            app.refresh_resources();
+            Ok(Box::new(app))
+        }),
     )?;
     Ok(())
 }
@@ -79,6 +83,8 @@ struct EditorApp {
     project: ProjectInfo,
     document: ProjectDocument,
     tree: SceneTreeState,
+    resources: ResourceBrowserState,
+    resources_filter: String,
     inspector: InspectorState,
     transform: TransformFields,
     sprite_reference: String,
@@ -94,6 +100,8 @@ impl EditorApp {
             document: ProjectDocument::open(project.clone()),
             project,
             tree: SceneTreeState::new(),
+            resources: ResourceBrowserState::new(),
+            resources_filter: String::new(),
             inspector: InspectorState::new(),
             transform: TransformFields::default(),
             sprite_reference: String::new(),
@@ -101,6 +109,13 @@ impl EditorApp {
             new_scene_name: "main".to_owned(),
             entity_name: "Entity".to_owned(),
             status: "尚未创建场景".to_owned(),
+        }
+    }
+
+    fn refresh_resources(&mut self) {
+        self.resources.set_filter(self.resources_filter.clone());
+        if let Err(error) = self.resources.refresh(&self.project.root) {
+            self.status = error.to_string();
         }
     }
 
@@ -259,6 +274,37 @@ impl eframe::App for EditorApp {
             }
         });
 
+        let mut refresh_resources = false;
+        self.resources.set_filter(self.resources_filter.clone());
+        egui::TopBottomPanel::bottom("resource_browser")
+            .resizable(true)
+            .show(context, |ui| {
+                ui.horizontal(|ui| {
+                    ui.heading("资源浏览器");
+                    ui.text_edit_singleline(&mut self.resources_filter);
+                    if ui.button("刷新").clicked() {
+                        refresh_resources = true;
+                    }
+                    ui.label(format!("{} 项", self.resources.visible_entries().len()));
+                });
+                if let Some(error) = self.resources.last_error() {
+                    ui.colored_label(egui::Color32::RED, format!("错误：{error}"));
+                }
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    for entry in self.resources.visible_entries() {
+                        let status = format!("{:?}", entry.status);
+                        ui.horizontal(|ui| {
+                            ui.label(entry.path_string());
+                            ui.label(entry.kind.label());
+                            ui.label(status);
+                            if let Some(error) = &entry.error {
+                                ui.colored_label(egui::Color32::RED, error);
+                            }
+                        });
+                    }
+                });
+            });
+
         egui::SidePanel::right("scene_tree").show(context, |ui| {
             ui.heading("场景树");
             ui.horizontal(|ui| {
@@ -358,6 +404,9 @@ impl eframe::App for EditorApp {
             });
         });
 
+        if refresh_resources {
+            self.refresh_resources();
+        }
         if rename {
             self.rename_selected();
         }
