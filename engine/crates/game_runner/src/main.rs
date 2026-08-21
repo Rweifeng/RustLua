@@ -16,6 +16,7 @@ use engine_core::{
     script::LuaRuntime,
     sprite::{Sprite, SpriteAsset, SpriteVertex},
     sprite_batch::{SpriteBatch, SpriteBatchItem},
+    text::{TextAtlas, TextLayout, TextStyle},
     texture::{TextureAsset, TextureColorSpace},
     tilemap::Tilemap,
     time_step::FixedTimeStep,
@@ -71,6 +72,11 @@ struct SceneDraw {
     count: u32,
 }
 
+/// Sentinel paths resolved by the renderer to built-in textures instead of
+/// files: the white 1x1 (bars/particles) and the built-in 5x7 glyph atlas.
+const WHITE_TEXTURE_PATH: &str = "__white__";
+const ATLAS_TEXTURE_PATH: &str = "__builtin_text_atlas__";
+
 /// Scene geometry plus the texture paths its draw ranges reference.
 struct SceneMesh {
     vertices: Vec<OverlayVertex>,
@@ -95,6 +101,7 @@ struct Renderer {
     vertex_buffer: wgpu::Buffer,
     textures: Vec<LoadedTexture>,
     white: Option<wgpu::BindGroup>,
+    atlas: Option<wgpu::BindGroup>,
     project_root: Option<PathBuf>,
 }
 
@@ -261,6 +268,7 @@ impl Renderer {
             vertex_buffer,
             textures: Vec::new(),
             white: None,
+            atlas: None,
             project_root,
         })
     }
@@ -364,13 +372,21 @@ impl Renderer {
         RenderOutcome::Presented
     }
 
-    /// Returns the bind group for a draw: the white texture for `texture == 0`,
-    /// otherwise the cached (or freshly loaded) asset at `paths[texture - 1]`.
+    /// Returns the bind group for a draw: the white texture for `texture == 0`
+    /// or the white sentinel path, the built-in glyph atlas for the atlas
+    /// sentinel path, otherwise the cached (or freshly loaded) asset at
+    /// `paths[texture - 1]`.
     fn bind_group_for(&mut self, texture: u32, paths: &[String]) -> Option<wgpu::BindGroup> {
         if texture == 0 {
             return self.ensure_white();
         }
         let path = &paths[texture as usize - 1];
+        if path == WHITE_TEXTURE_PATH {
+            return self.ensure_white();
+        }
+        if path == ATLAS_TEXTURE_PATH {
+            return self.ensure_atlas();
+        }
         if let Some(entry) = self.textures.iter().find(|entry| entry.path == *path) {
             return Some(entry.bind_group.clone());
         }
@@ -404,6 +420,23 @@ impl Renderer {
                 .ok()?;
         let bind = self.upload_texture(&asset, "p2-white-1x1")?;
         self.white = Some(bind.clone());
+        Some(bind)
+    }
+
+    fn ensure_atlas(&mut self) -> Option<wgpu::BindGroup> {
+        if let Some(atlas) = &self.atlas {
+            return Some(atlas.clone());
+        }
+        let built_in = TextAtlas::built_in();
+        let asset = TextureAsset::from_rgba8(
+            built_in.width(),
+            built_in.height(),
+            built_in.pixels().to_vec(),
+            TextureColorSpace::Srgb,
+        )
+        .ok()?;
+        let bind = self.upload_texture(&asset, "p2-builtin-text-atlas")?;
+        self.atlas = Some(bind.clone());
         Some(bind)
     }
 
@@ -488,6 +521,7 @@ impl RuntimeScene {
         tracing::info!(target: "scene", "[scene] loaded name={} entities={}", scene.name, scene.entities.len());
         tracing::info!(target: "ecs", "[ecs] world initialized entities={instantiated}");
         if let Some(root) = project_root {
+            script.set_audio_asset_dir(root.join("assets"));
             let script_path = root.join("scripts/main.lua");
             if script_path.is_file() {
                 script
@@ -525,6 +559,7 @@ impl RuntimeScene {
             // Physics advances on the fixed timestep and writes dynamic body
             // positions back into ECS Transforms.
             self.script.step_physics(delta_seconds);
+            self.script.step_particles(delta_seconds);
         }
         self.script.with_world_mut(|world| {
             let _ = integrate_velocity(world, delta_seconds * steps as f32);
@@ -587,6 +622,7 @@ impl RuntimeScene {
                 transform,
             ));
         }
+        self.push_particles()?;
         let mesh = self
             .sprite_batch
             .build(self.camera, viewport)
@@ -598,7 +634,7 @@ impl RuntimeScene {
             mesh.vertices.len(),
             mesh.draws.len()
         );
-        let draws = mesh
+        let mut draws: Vec<SceneDraw> = mesh
             .draws
             .iter()
             .map(|draw| SceneDraw {
@@ -607,16 +643,150 @@ impl RuntimeScene {
                 count: draw.vertex_count as u32,
             })
             .collect();
-        let vertices = mesh
+        let mut vertices: Vec<OverlayVertex> = mesh
             .vertices
             .iter()
             .map(|vertex| sprite_vertex(vertex, viewport))
             .collect();
+        // Screen-space UI (health bars, prompt text) draws last, on top.
+        self.push_ui_bars(&mut vertices, &mut draws, width, height)?;
+        self.push_ui_text(&mut vertices, &mut draws, width, height)?;
+        tracing::debug!(
+            target: "render",
+            "[render] mesh vertices={} draws={} paths={}",
+            vertices.len(),
+            draws.len(),
+            self.texture_paths.len()
+        );
         Ok(SceneMesh {
             vertices,
             draws,
             paths: self.texture_paths.clone(),
         })
+    }
+
+    /// Pushes every active particle as a small white-texture quad in world
+    /// space, so they sit with the scene and fade out with their color alpha.
+    fn push_particles(&mut self) -> Result<(), String> {
+        let particles = self.script.with_particles(|particles| particles.to_vec());
+        if particles.is_empty() {
+            return Ok(());
+        }
+        let texture = self.texture_id(WHITE_TEXTURE_PATH);
+        for particle in particles {
+            let sprite = Sprite::new(Vec2::new(particle.size, particle.size))
+                .map_err(|error| error.to_string())?
+                .with_tint([
+                    particle.color[0],
+                    particle.color[1],
+                    particle.color[2],
+                    particle.color[3] * particle.fade(),
+                ])
+                .map_err(|error| error.to_string())?;
+            let transform = Transform::from_position(particle.position);
+            self.sprite_batch
+                .push(SpriteBatchItem::new(texture, 1, sprite, transform));
+        }
+        Ok(())
+    }
+
+    /// Appends screen-space health bars (background + fill) as NDC quads using
+    /// the white texture.
+    fn push_ui_bars(
+        &mut self,
+        vertices: &mut Vec<OverlayVertex>,
+        draws: &mut Vec<SceneDraw>,
+        width: u32,
+        height: u32,
+    ) -> Result<(), String> {
+        let bars = self.script.with_ui(|_, bars| bars.clone());
+        for bar in bars.values() {
+            let start = vertices.len() as u32;
+            let background = [0.12, 0.12, 0.15, 0.75];
+            let fill_width = (bar.size[0] * bar.ratio).max(0.0);
+            vertices.extend_from_slice(&screen_rect_ndc(
+                bar.position[0],
+                bar.position[1],
+                bar.size[0],
+                bar.size[1],
+                background,
+                width,
+                height,
+            ));
+            vertices.extend_from_slice(&screen_rect_ndc(
+                bar.position[0],
+                bar.position[1],
+                fill_width,
+                bar.size[1],
+                bar.color,
+                width,
+                height,
+            ));
+            let count = vertices.len() as u32 - start;
+            draws.push(SceneDraw {
+                texture: 0, // white
+                start,
+                count,
+            });
+        }
+        Ok(())
+    }
+
+    /// Appends screen-space text glyphs (from the built-in 5x7 atlas) as NDC
+    /// quads sampled from the atlas texture.
+    fn push_ui_text(
+        &mut self,
+        vertices: &mut Vec<OverlayVertex>,
+        draws: &mut Vec<SceneDraw>,
+        width: u32,
+        height: u32,
+    ) -> Result<(), String> {
+        let texts = self.script.with_ui(|texts, _| texts.clone());
+        let visible: Vec<_> = texts
+            .values()
+            .filter(|text| text.visible)
+            .map(|text| (text.position, text.text.clone()))
+            .collect();
+        if visible.is_empty() {
+            return Ok(());
+        }
+        let atlas = TextAtlas::built_in();
+        let mut glyph_vertices = Vec::new();
+        for (position, text) in visible {
+            let mesh = TextLayout::build(
+                &text,
+                position,
+                TextStyle {
+                    scale: 1.0,
+                    color: [1.0, 1.0, 1.0, 1.0],
+                    ..Default::default()
+                },
+                &atlas,
+            )
+            .map_err(|error| error.to_string())?;
+            for vertex in mesh.vertices {
+                glyph_vertices.push(OverlayVertex {
+                    position: [
+                        vertex.position[0] / width.max(1) as f32 * 2.0 - 1.0,
+                        1.0 - vertex.position[1] / height.max(1) as f32 * 2.0,
+                    ],
+                    uv: vertex.uv,
+                    color: vertex.color,
+                });
+            }
+        }
+        if glyph_vertices.is_empty() {
+            return Ok(());
+        }
+        let start = vertices.len() as u32;
+        vertices.extend(glyph_vertices);
+        let texture = self.texture_id(ATLAS_TEXTURE_PATH) + 1;
+        draws.push(SceneDraw {
+            texture,
+            start,
+            count: vertices.len() as u32 - start,
+        });
+        Ok(())
     }
 
     /// Deduplicates a texture asset path and returns its id for batch items.
@@ -719,6 +889,58 @@ fn sprite_vertex(vertex: &SpriteVertex, viewport: Viewport) -> OverlayVertex {
         uv: vertex.uv,
         color: vertex.color,
     }
+}
+
+/// Builds a quad in NDC from a top-left-origin screen-space rectangle, sampling
+/// the white texture with the given flat color.
+fn screen_rect_ndc(
+    x: f32,
+    y: f32,
+    rect_w: f32,
+    rect_h: f32,
+    color: [f32; 4],
+    screen_width: u32,
+    screen_height: u32,
+) -> [OverlayVertex; 6] {
+    let sw = screen_width.max(1) as f32;
+    let sh = screen_height.max(1) as f32;
+    let x0 = x / sw * 2.0 - 1.0;
+    let y0 = 1.0 - y / sh * 2.0;
+    let x1 = (x + rect_w) / sw * 2.0 - 1.0;
+    let y1 = 1.0 - (y + rect_h) / sh * 2.0;
+    let uv = [0.0, 0.0];
+    [
+        OverlayVertex {
+            position: [x0, y0],
+            uv,
+            color,
+        },
+        OverlayVertex {
+            position: [x1, y0],
+            uv,
+            color,
+        },
+        OverlayVertex {
+            position: [x1, y1],
+            uv,
+            color,
+        },
+        OverlayVertex {
+            position: [x0, y0],
+            uv,
+            color,
+        },
+        OverlayVertex {
+            position: [x1, y1],
+            uv,
+            color,
+        },
+        OverlayVertex {
+            position: [x0, y1],
+            uv,
+            color,
+        },
+    ]
 }
 
 struct GameApp {

@@ -12,8 +12,10 @@ use tracing::{error, info, warn};
 
 use crate::{
     animation::AnimationStateMachine,
+    audio::AudioSystem,
     entity::EntityId,
     input::{InputKey, InputSnapshot, MouseButton},
+    particle::{Particle, ParticleSystem},
     physics::{ColliderDesc, ColliderShape, PhysicsWorld},
     scene::Scene,
     sprite::{Sprite, SpriteAsset},
@@ -33,14 +35,28 @@ struct ScriptState {
     scene: Option<String>,
     assets: BTreeMap<String, String>,
     ui: BTreeMap<String, UiText>,
+    ui_bars: BTreeMap<String, UiBar>,
     save_data: BTreeMap<String, String>,
     physics: PhysicsWorld,
+    particles: ParticleSystem,
+    audio: AudioSystem,
 }
 
 #[derive(Debug, Clone)]
-struct UiText {
-    text: String,
-    visible: bool,
+pub struct UiText {
+    pub text: String,
+    pub visible: bool,
+    pub position: [f32; 2],
+}
+
+/// A screen-space filled bar (e.g. a health bar) rendered by the host.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct UiBar {
+    pub position: [f32; 2],
+    pub size: [f32; 2],
+    /// Fill ratio in `0..=1`.
+    pub ratio: f32,
+    pub color: [f32; 4],
 }
 
 /// Errors produced while loading or running a project Lua script.
@@ -293,6 +309,30 @@ impl LuaRuntime {
                 transform.position = position;
             }
         }
+    }
+
+    /// Advances the particle system by `dt` seconds.
+    pub fn step_particles(&mut self, delta_seconds: f32) {
+        self.state.borrow_mut().particles.step(delta_seconds);
+    }
+
+    /// Sets the directory audio clips are loaded from.
+    pub fn set_audio_asset_dir(&mut self, dir: PathBuf) {
+        self.state.borrow_mut().audio.set_asset_dir(dir);
+    }
+
+    /// Gives the host a read view of the UI text and bar elements.
+    pub fn with_ui<R>(
+        &self,
+        f: impl FnOnce(&BTreeMap<String, UiText>, &BTreeMap<String, UiBar>) -> R,
+    ) -> R {
+        let state = self.state.borrow();
+        f(&state.ui, &state.ui_bars)
+    }
+
+    /// Gives the host a read view of the active particles.
+    pub fn with_particles<R>(&self, f: impl FnOnce(&[Particle]) -> R) -> R {
+        f(self.state.borrow().particles.particles())
     }
 
     /// Gives the host a shared read view of the runtime entity world, so the
@@ -1089,6 +1129,45 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
     )?;
     lua.globals().set("physics", physics)?;
 
+    let particles = lua.create_table()?;
+    let s = Rc::clone(&state);
+    particles.set(
+        "burst",
+        lua.create_function(move |_, (x, y, count): (f32, f32, u32)| {
+            s.borrow_mut().particles.burst(
+                Vec2::new(x, y),
+                count as usize,
+                120.0,
+                0.6,
+                [1.0, 0.6, 0.2, 1.0],
+            );
+            Ok(())
+        })?,
+    )?;
+    lua.globals().set("particles", particles)?;
+
+    let audio = lua.create_table()?;
+    let s = Rc::clone(&state);
+    audio.set(
+        "play",
+        lua.create_function(move |_, name: String| {
+            let mut state = s.borrow_mut();
+            if let Err(error) = state.audio.play(&name) {
+                tracing::warn!(target: "audio", name = %name, error = %error, "[audio] play failed");
+            }
+            Ok(())
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    audio.set(
+        "volume",
+        lua.create_function(move |_, level: f32| {
+            s.borrow_mut().audio.set_volume(level);
+            Ok(())
+        })?,
+    )?;
+    lua.globals().set("audio", audio)?;
+
     let scene = lua.create_table()?;
     let s = Rc::clone(&state);
     scene.set(
@@ -1134,10 +1213,55 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
                 UiText {
                     text,
                     visible: true,
+                    position: [10.0, 10.0],
                 },
             );
             Ok(())
         })?,
+    )?;
+    let s = Rc::clone(&state);
+    ui.set(
+        "text_at",
+        lua.create_function(move |_, (id, x, y, text): (String, f32, f32, String)| {
+            s.borrow_mut().ui.insert(
+                id,
+                UiText {
+                    text,
+                    visible: true,
+                    position: [x, y],
+                },
+            );
+            Ok(())
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    ui.set(
+        "bar",
+        lua.create_function(
+            move |_,
+                  (id, x, y, width, height, ratio, r, g, b): (
+                String,
+                f32,
+                f32,
+                f32,
+                f32,
+                f32,
+                f32,
+                f32,
+                f32,
+            )| {
+                s.borrow_mut().ui_bars.insert(
+                    id,
+                    UiBar {
+                        position: [x, y],
+                        size: [width, height],
+                        ratio: ratio.clamp(0.0, 1.0),
+                        color: [r, g, b, 1.0],
+                    },
+                );
+                Ok(())
+            },
+        )?,
     )?;
     let s = Rc::clone(&state);
     ui.set(
@@ -1149,6 +1273,7 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
                 .or_insert(UiText {
                     text: String::new(),
                     visible: false,
+                    position: [10.0, 10.0],
                 })
                 .visible = true;
             Ok(())
@@ -1164,6 +1289,7 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
                 .or_insert(UiText {
                     text: String::new(),
                     visible: false,
+                    position: [10.0, 10.0],
                 })
                 .visible = false;
             Ok(())
@@ -1526,6 +1652,26 @@ mod tests {
         assert!(count > 0, "no collision events reached Lua");
         let _ = fs::remove_file(path);
         let _ = fs::remove_file(events);
+    }
+
+    #[test]
+    fn ui_particles_and_audio_lua_api() {
+        let mut runtime = LuaRuntime::new().unwrap();
+        let path = script(
+            "particles.burst(5, -3, 10)\nui.bar('hp', 20, 30, 100, 10, 0.5, 1, 0, 0)\nui.text_at('objective', 20, 20, 'Reach the door')\naudio.volume(0.5)\nfunction update() return 'ok' end",
+        );
+        runtime.execute_project_script(&path).unwrap();
+        runtime.call_update().unwrap();
+        runtime.step_particles(0.1);
+
+        let count = runtime.with_particles(|particles| particles.len());
+        assert!(count >= 10, "particles.burst should spawn at least 10");
+        let (texts, bars) = runtime.with_ui(|texts, bars| (texts.clone(), bars.clone()));
+        let text = texts.get("objective").expect("objective text stored");
+        assert_eq!(text.text, "Reach the door");
+        let bar = bars.get("hp").expect("hp bar stored");
+        assert_eq!(bar.ratio, 0.5);
+        let _ = fs::remove_file(path);
     }
 
     #[test]

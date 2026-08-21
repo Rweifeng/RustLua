@@ -4,6 +4,8 @@
 pub mod animation;
 /// Texture atlas regions and named Sprite sub-assets.
 pub mod atlas;
+/// Named sound-effect playback backed by rodio.
+pub mod audio;
 /// Deferred world mutations for safe ECS system iteration.
 pub mod commands;
 /// Generational entity handles and allocation.
@@ -18,6 +20,8 @@ pub mod input;
 pub mod logging;
 /// Coordinate, camera, and color-space conventions for 2D rendering.
 pub mod math2d;
+/// Pooled particle bursts with spawn/update/recycle.
+pub mod particle;
 /// Runtime frame and update performance sampling.
 pub mod performance;
 /// Rapier-backed rigid bodies, colliders, sensors, and collision events.
