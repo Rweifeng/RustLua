@@ -3,12 +3,16 @@ name=main
 meta	editor.hidden.1	true
 entity	1	Entity	
 entity	2	Player	1
-component	2	Transform	x=-55.000000000;y=0.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+component	2	Transform	x=-40.000000000;y=0.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
 component	2	Sprite	assets/player.png
 component	2	Animation	default=idle;clip:idle:assets/idle-sheet.png:4:4:true;clip:move:assets/move-sheet.png:4:8:true;clip:attack:assets/attack-sheet.png:2:6:false;clip:hit:assets/hit-sheet.png:2:5:false;clip:death:assets/hit-sheet.png:2:3:false
+component	2	Collider	shape=ball;radius=16
 entity	3	Entity	1
 component	3	Transform	x=170.000000000;y=0.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
 component	3	Sprite	assets/red-1x1.png
 entity	4	Tilemap	1
 component	4	Transform	x=-96.000000000;y=-64.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
 component	4	Tilemap	tile_size=32x32;width=6;height=4;texture=assets/tileset.png;tiles=111111100001100201111111;solid=111111100001100001111111
+entity	5	Trigger	1
+component	5	Transform	x=16.000000000;y=16.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+component	5	Collider	shape=ball;radius=24;sensor=true

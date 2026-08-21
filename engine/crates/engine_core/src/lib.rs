@@ -20,6 +20,8 @@ pub mod logging;
 pub mod math2d;
 /// Runtime frame and update performance sampling.
 pub mod performance;
+/// Rapier-backed rigid bodies, colliders, sensors, and collision events.
+pub mod physics;
 /// Prefab extraction, instantiation, overrides, and rebuild policy.
 pub mod prefab;
 /// Persistent project asset identities, import states, dependencies, and cache metadata.

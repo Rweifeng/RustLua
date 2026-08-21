@@ -14,6 +14,7 @@ use crate::{
     animation::AnimationStateMachine,
     entity::EntityId,
     input::{InputKey, InputSnapshot, MouseButton},
+    physics::{ColliderDesc, ColliderShape, PhysicsWorld},
     scene::Scene,
     sprite::{Sprite, SpriteAsset},
     tilemap::Tilemap,
@@ -33,6 +34,7 @@ struct ScriptState {
     assets: BTreeMap<String, String>,
     ui: BTreeMap<String, UiText>,
     save_data: BTreeMap<String, String>,
+    physics: PhysicsWorld,
 }
 
 #[derive(Debug, Clone)]
@@ -245,9 +247,52 @@ impl LuaRuntime {
             if !entity.name.is_empty() {
                 state.names.insert(entity.name.clone(), id);
             }
+            let position = state
+                .world
+                .get::<Transform>(id)
+                .ok()
+                .flatten()
+                .map(|transform| transform.position)
+                .unwrap_or_default();
+            if let Some(value) = entity.components.get("Collider") {
+                let collider = ColliderDesc::from_component_str(value).map_err(|error| {
+                    LuaBridgeError::Api(format!(
+                        "entity {:?} has an invalid Collider: {error}",
+                        entity.name
+                    ))
+                })?;
+                state
+                    .physics
+                    .add_body(id, position, true, vec![collider])
+                    .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
+            }
+            if entity.components.contains_key("Tilemap") {
+                let tilemap = state.world.get::<Tilemap>(id).ok().flatten();
+                if let Some(tilemap) = tilemap
+                    && tilemap.solid.iter().any(|solid| *solid)
+                {
+                    let colliders = solid_cell_colliders(tilemap);
+                    state
+                        .physics
+                        .add_body(id, position, false, colliders)
+                        .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
+                }
+            }
             count += 1;
         }
         Ok(count)
+    }
+
+    /// Steps the physics world and writes moved dynamic body positions back to
+    /// their ECS Transforms so rendering and Lua see the simulated result.
+    pub fn step_physics(&mut self, delta_seconds: f32) {
+        let mut state = self.state.borrow_mut();
+        let moved = state.physics.step(delta_seconds);
+        for (entity, position) in moved {
+            if let Ok(Some(transform)) = state.world.get_mut::<Transform>(entity) {
+                transform.position = position;
+            }
+        }
     }
 
     /// Gives the host a shared read view of the runtime entity world, so the
@@ -527,6 +572,30 @@ fn table_vec(lua: &Lua, x: f32, y: f32) -> LuaResult<Table> {
     table.set(1, x)?;
     table.set(2, y)?;
     Ok(table)
+}
+
+/// Converts a tile map's solid cells into static cuboid colliders attached to
+/// the tile map entity's fixed body, one per solid cell.
+fn solid_cell_colliders(tilemap: &Tilemap) -> Vec<ColliderDesc> {
+    let half = Vec2::new(tilemap.tile_size.x / 2.0, tilemap.tile_size.y / 2.0);
+    let mut colliders = Vec::new();
+    for y in 0..tilemap.height {
+        for x in 0..tilemap.width {
+            if tilemap.solid[y * tilemap.width + x] {
+                colliders.push(ColliderDesc {
+                    shape: ColliderShape::Cuboid(half),
+                    offset: Vec2::new(
+                        x as f32 * tilemap.tile_size.x + half.x,
+                        y as f32 * tilemap.tile_size.y + half.y,
+                    ),
+                    sensor: false,
+                    layer: 0xFF,
+                    mask: 0xFF,
+                });
+            }
+        }
+    }
+    colliders
 }
 
 fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
@@ -973,6 +1042,51 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
             },
         )?,
     )?;
+    let s = Rc::clone(&state);
+    physics.set(
+        "set_velocity",
+        lua.create_function(move |_, (id, x, y): (i64, f32, f32)| {
+            let id = entity_from_lua(id)?;
+            let mut state = s.borrow_mut();
+            require_alive(&state, id)?;
+            state
+                .physics
+                .set_velocity(id, x, y)
+                .map_err(|error| api_error(error.to_string()))?;
+            Ok(())
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    physics.set(
+        "get_velocity",
+        lua.create_function(move |lua, id: i64| {
+            let id = entity_from_lua(id)?;
+            let state = s.borrow();
+            require_alive(&state, id)?;
+            let velocity = state
+                .physics
+                .velocity(id)
+                .map_err(|error| api_error(error.to_string()))?;
+            table_vec(lua, velocity.x, velocity.y)
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    physics.set(
+        "events",
+        lua.create_function(move |lua, ()| {
+            let mut state = s.borrow_mut();
+            let events = state.physics.drain_contacts();
+            let result = lua.create_table()?;
+            for (index, contact) in events.into_iter().enumerate() {
+                let entry = lua.create_table()?;
+                entry.set("a", entity_to_lua(contact.a))?;
+                entry.set("b", entity_to_lua(contact.b))?;
+                entry.set("started", contact.started)?;
+                result.set(index + 1, entry)?;
+            }
+            Ok(result)
+        })?,
+    )?;
     lua.globals().set("physics", physics)?;
 
     let scene = lua.create_table()?;
@@ -1336,6 +1450,82 @@ mod tests {
         assert_eq!(runtime.call_update().unwrap(), "done");
         let _ = fs::remove_file(first);
         let _ = fs::remove_file(second);
+    }
+
+    #[test]
+    fn physics_blocks_player_on_tilemap_wall_and_emits_events() {
+        use crate::scene::{Scene, SceneEntityId};
+
+        let mut scene = Scene::new("test");
+        scene.add_entity(SceneEntityId(1), "Player", None).unwrap();
+        scene
+            .entities
+            .get_mut(&SceneEntityId(1))
+            .unwrap()
+            .components
+            .insert(
+                "Transform".into(),
+                "x=0;y=0;rotation=0;scale_x=1;scale_y=1".into(),
+            );
+        scene
+            .entities
+            .get_mut(&SceneEntityId(1))
+            .unwrap()
+            .components
+            .insert("Collider".into(), "shape=ball;radius=10".into());
+        scene.add_entity(SceneEntityId(2), "Map", None).unwrap();
+        scene
+            .entities
+            .get_mut(&SceneEntityId(2))
+            .unwrap()
+            .components
+            .insert(
+                "Transform".into(),
+                "x=0;y=0;rotation=0;scale_x=1;scale_y=1".into(),
+            );
+        // 2x2 tilemap, right column solid -> a wall spanning x=20..40
+        scene
+            .entities
+            .get_mut(&SceneEntityId(2))
+            .unwrap()
+            .components
+            .insert(
+                "Tilemap".into(),
+                "tile_size=20x20;width=2;height=2;tiles=0000;solid=0101".into(),
+            );
+
+        let mut runtime = LuaRuntime::new().unwrap();
+        runtime.instantiate_scene(&scene).unwrap();
+
+        let path = script(
+            "function update()\nlocal p = entity.find('Player')\nphysics.set_velocity(p, 40, 0)\nreturn 'ok' end",
+        );
+        runtime.execute_project_script(&path).unwrap();
+        runtime.call_update().unwrap();
+        for _ in 0..60 {
+            runtime.step_physics(1.0 / 60.0);
+        }
+
+        let player = runtime.with_world(|world| world.entities_with::<Transform>());
+        assert_eq!(player.len(), 2);
+        let player = player[0];
+        let position =
+            runtime.with_world(|world| world.get::<Transform>(player).unwrap().unwrap().position);
+        assert!(
+            position.x < 15.0,
+            "player was not blocked by the tilemap wall: x={}",
+            position.x
+        );
+
+        let events = script(
+            "function update()\nlocal events = physics.events()\nreturn tostring(#events) end",
+        );
+        runtime.execute_project_script(&events).unwrap();
+        let count = runtime.call_update().unwrap();
+        let count: u32 = count.parse().unwrap();
+        assert!(count > 0, "no collision events reached Lua");
+        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(events);
     }
 
     #[test]

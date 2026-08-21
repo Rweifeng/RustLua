@@ -15,3 +15,5 @@ tracing.workspace = true
 tracing-appender.workspace = true
 tracing-subscriber.workspace = true
 image = { version = '0.25', default-features = false, features = ['png'] }
+rapier2d = "0.22"
+crossbeam-channel = "0.5"

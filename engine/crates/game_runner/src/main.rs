@@ -522,6 +522,9 @@ impl RuntimeScene {
                 .call_update()
                 .map_err(|error| error.to_string())?;
             tracing::debug!(target: "game", "[simulation] fixed update returned: {result}");
+            // Physics advances on the fixed timestep and writes dynamic body
+            // positions back into ECS Transforms.
+            self.script.step_physics(delta_seconds);
         }
         self.script.with_world_mut(|world| {
             let _ = integrate_velocity(world, delta_seconds * steps as f32);
