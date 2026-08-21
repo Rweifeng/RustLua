@@ -13,3 +13,6 @@ artifacts/screenshots/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Local resource database
+.p2/resources.db
