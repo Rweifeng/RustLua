@@ -5,7 +5,8 @@ use std::{
 };
 
 use editor::{
-    ProjectDocument, ProjectError, ProjectInfo, SceneTreeState, check_project, open_project,
+    InspectorState, ProjectDocument, ProjectError, ProjectInfo, SceneTreeState, TransformFields,
+    check_project, open_project,
 };
 use eframe::egui;
 use engine_core::scene::SceneEntityId;
@@ -78,6 +79,10 @@ struct EditorApp {
     project: ProjectInfo,
     document: ProjectDocument,
     tree: SceneTreeState,
+    inspector: InspectorState,
+    transform: TransformFields,
+    sprite_reference: String,
+    lua_script: String,
     new_scene_name: String,
     entity_name: String,
     status: String,
@@ -89,6 +94,10 @@ impl EditorApp {
             document: ProjectDocument::open(project.clone()),
             project,
             tree: SceneTreeState::new(),
+            inspector: InspectorState::new(),
+            transform: TransformFields::default(),
+            sprite_reference: String::new(),
+            lua_script: String::new(),
             new_scene_name: "main".to_owned(),
             entity_name: "Entity".to_owned(),
             status: "尚未创建场景".to_owned(),
@@ -105,6 +114,51 @@ impl EditorApp {
             .unwrap_or_else(|| "未打开场景".to_owned())
     }
 
+    fn sync_inspector(&mut self, id: SceneEntityId) {
+        let Some(scene) = self.current_scene() else {
+            return;
+        };
+        let scene = scene.clone();
+        if self.inspector.select(&scene, id).is_ok()
+            && let Ok(snapshot) = self.inspector.snapshot(&scene)
+        {
+            self.entity_name = snapshot.name;
+            self.transform = snapshot.transform;
+            self.sprite_reference = snapshot.sprite_reference.unwrap_or_default();
+            self.lua_script = snapshot.lua_script.unwrap_or_default();
+        }
+    }
+
+    fn apply_inspector(&mut self) {
+        let Some(scene) = self.document.current_scene.as_mut() else {
+            self.status = "请先创建场景".to_owned();
+            return;
+        };
+        let result = self
+            .inspector
+            .set_name(scene, self.entity_name.clone())
+            .and_then(|_| self.inspector.set_transform(scene, self.transform))
+            .and_then(|_| {
+                if self.sprite_reference.trim().is_empty() {
+                    self.inspector.clear_sprite_reference(scene)
+                } else {
+                    self.inspector
+                        .set_sprite_reference(scene, self.sprite_reference.clone())
+                }
+            })
+            .and_then(|_| {
+                if self.lua_script.trim().is_empty() {
+                    self.inspector.clear_lua_script(scene)
+                } else {
+                    self.inspector
+                        .set_lua_script(scene, self.lua_script.clone())
+                }
+            });
+        self.status = match result {
+            Ok(()) => "Inspector 修改已应用".to_owned(),
+            Err(error) => error.to_string(),
+        };
+    }
     fn create_scene(&mut self) {
         let name = self.new_scene_name.trim().to_owned();
         if name.is_empty() {
@@ -113,6 +167,7 @@ impl EditorApp {
         }
         self.document.new_scene(name.clone());
         self.tree.clear_selection();
+        self.inspector.clear_selection();
         self.status = format!("已创建场景 {name}（未保存）");
     }
 
@@ -225,41 +280,102 @@ impl eframe::App for EditorApp {
             }
         });
 
-        egui::CentralPanel::default().show(context, |ui| {
-            ui.heading("实体编辑");
-            let selected = self.tree.selected();
-            if let (Some(scene), Some(id)) = (self.current_scene(), selected) {
-                if let Some(entity) = scene.scene.entities.get(&id) {
-                    ui.label(format!("名称：{}", entity.name));
-                    ui.label(format!("EntityId：{}", entity.id.0));
-                    ui.label(format!(
-                        "父节点：{}",
-                        entity
-                            .parent
-                            .map_or("无".to_owned(), |parent| parent.0.to_string())
-                    ));
-                    ui.label(format!("子节点数量：{}", entity.children.len()));
-                    ui.separator();
-                    ui.horizontal(|ui| {
-                        ui.text_edit_singleline(&mut self.entity_name);
-                        if ui.button("重命名").clicked() {
-                            self.rename_selected();
-                        }
-                        if ui.button("删除子树").clicked() {
-                            self.delete_selected();
-                        }
-                    });
-                    if ui.button("添加子实体").clicked() {
-                        self.add_entity(Some(id));
-                    }
-                }
-            } else {
-                ui.label("选择一个实体查看和编辑其基本信息");
-            }
+        let selected = self.tree.selected();
+        let entity_info = selected.and_then(|id| {
+            self.current_scene().and_then(|scene| {
+                scene.scene.entities.get(&id).map(|entity| {
+                    (
+                        entity.id.0,
+                        entity.parent.map(|parent| parent.0),
+                        entity.children.len(),
+                    )
+                })
+            })
         });
+        let mut apply_inspector = false;
+        let mut rename = false;
+        let mut delete = false;
+        let mut add_child = false;
+
+        egui::CentralPanel::default().show(context, |ui| {
+            ui.heading("实体 Inspector");
+            let Some((entity_id, parent, child_count)) = entity_info else {
+                ui.label("选择一个实体查看和编辑 Inspector");
+                return;
+            };
+
+            ui.label(format!("EntityId：{entity_id}"));
+            ui.label(format!(
+                "父节点：{}",
+                parent.map_or_else(|| "无".to_owned(), |id| id.to_string())
+            ));
+            ui.label(format!("子节点数量：{child_count}"));
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.label("名称");
+                ui.text_edit_singleline(&mut self.entity_name);
+                if ui.button("重命名").clicked() {
+                    rename = true;
+                }
+            });
+            ui.collapsing("Transform", |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("位置 X");
+                    ui.add(egui::DragValue::new(&mut self.transform.position_x));
+                    ui.label("位置 Y");
+                    ui.add(egui::DragValue::new(&mut self.transform.position_y));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("旋转");
+                    ui.add(egui::DragValue::new(&mut self.transform.rotation));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("缩放 X");
+                    ui.add(egui::DragValue::new(&mut self.transform.scale_x));
+                    ui.label("缩放 Y");
+                    ui.add(egui::DragValue::new(&mut self.transform.scale_y));
+                });
+            });
+            ui.horizontal(|ui| {
+                ui.label("Sprite");
+                ui.text_edit_singleline(&mut self.sprite_reference);
+            });
+            ui.horizontal(|ui| {
+                ui.label("Lua 脚本");
+                ui.text_edit_singleline(&mut self.lua_script);
+            });
+            if ui.button("应用 Inspector 修改").clicked() {
+                apply_inspector = true;
+            }
+            ui.separator();
+            ui.horizontal(|ui| {
+                if ui.button("添加子实体").clicked() {
+                    add_child = true;
+                }
+                if ui.button("删除子树").clicked() {
+                    delete = true;
+                }
+            });
+        });
+
+        if rename {
+            self.rename_selected();
+        }
+        if apply_inspector {
+            self.apply_inspector();
+        }
+        if add_child {
+            self.add_entity(selected);
+        }
+        if delete {
+            self.delete_selected();
+            self.inspector.clear_selection();
+            self.sprite_reference.clear();
+            self.lua_script.clear();
+            self.transform = TransformFields::default();
+        }
     }
 }
-
 impl EditorApp {
     fn draw_entity(&mut self, ui: &mut egui::Ui, id: SceneEntityId, depth: usize) {
         let Some(scene) = self.current_scene() else {
@@ -281,7 +397,7 @@ impl EditorApp {
                     let scene = scene.clone();
                     let _ = self.tree.select(&scene, id);
                 }
-                self.entity_name = name.clone();
+                self.sync_inspector(id);
             }
         });
         for child in children {

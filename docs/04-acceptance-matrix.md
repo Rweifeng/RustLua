@@ -87,7 +87,7 @@
 | M5-A01 | 编辑器启动与项目打开 | M4 | 独立 editor 可启动；合法项目检查成功；非法路径清晰失败 | editor 单测、CLI check、Debug/Release 构建、GUI 进程启动 | PASS | M5 |
 | M5-A02 | 项目与场景文档模型 | M5-A01 | 新建/打开/保存/另存为；原子写入；dirty 正确 | 临时目录测试、场景 roundtrip、质量门 | PASS | M5 |
 | M5-A03 | 场景树与实体编辑 | M5-A02 | 选择、创建、删除、重命名、父子关系一致 | 13 个 editor 单测、GUI 场景树接入、质量门 | PASS | M5 |
-| M5-A04 | Inspector 第一批组件 | M5-A03 | Transform、Sprite 引用、Lua 字段编辑和校验 | 字段测试、保存重载测试 | PENDING | M5 |
+| M5-A04 | Inspector 第一批组件 | M5-A03 | Transform、Sprite 引用、Lua 字段编辑和校验 | 36 个 editor 单测、保存重载测试、GUI Inspector 接入 | PASS | M5 |
 | M5-A05 | 资源浏览器与刷新 | M5-A04 | 资源扫描、筛选、刷新、失败状态可见 | ResourceDatabase 集成测试、GUI 记录 | PENDING | M5 |
 | M5-A06 | Lua 绑定与 Console | M5-A04 | 脚本绑定、运行、错误路径/行号/调用栈可见 | Lua 回归测试、诊断测试 | PENDING | M5 |
 | M5-A07 | Play/Stop 运行态隔离 | M5-A06 | 运行时修改不污染编辑态；100 次 Play/Stop 稳定 | 快照一致性、循环回归测试 | PENDING | M5 |

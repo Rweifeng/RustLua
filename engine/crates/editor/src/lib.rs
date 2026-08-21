@@ -1,3 +1,7 @@
+pub mod inspector;
+
+pub use inspector::{InspectorError, InspectorSnapshot, InspectorState, TransformFields};
+
 pub mod scene_tree;
 
 pub use scene_tree::{SceneTreeError, SceneTreeState};
