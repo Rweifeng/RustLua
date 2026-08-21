@@ -13,6 +13,8 @@ use tracing::{error, info, warn};
 use crate::{
     entity::EntityId,
     input::{InputKey, InputSnapshot, MouseButton},
+    scene::Scene,
+    sprite::Sprite,
     transform::{Transform, Vec2},
     world::{World, WorldError},
 };
@@ -147,6 +149,18 @@ impl ScriptDebugger {
     }
 }
 
+/// Default tints assigned to scene sprites so multiple entities are visually
+/// distinct until per-sprite colors are supported. The first sprite entity
+/// (usually the player) gets the engine's signature cyan.
+const SPRITE_TINTS: [[f32; 4]; 6] = [
+    [0.18, 0.72, 1.0, 1.0],
+    [0.95, 0.65, 0.15, 1.0],
+    [0.35, 0.85, 0.40, 1.0],
+    [0.90, 0.35, 0.45, 1.0],
+    [0.70, 0.45, 0.95, 1.0],
+    [0.90, 0.85, 0.35, 1.0],
+];
+
 /// Main-thread Lua runtime for project scripts.
 pub struct LuaRuntime {
     lua: Lua,
@@ -176,6 +190,63 @@ impl LuaRuntime {
 
     pub fn set_input(&mut self, input: InputSnapshot) {
         self.state.borrow_mut().input = input;
+    }
+
+    /// Spawns every scene entity into the runtime world, parsing the editor's
+    /// `Transform` and `Sprite` component strings and registering names so Lua
+    /// can look entities up with `entity.find`. The host renderer reads the very
+    /// same world through [`LuaRuntime::with_world`], so script-driven movement
+    /// is immediately visible.
+    pub fn instantiate_scene(&mut self, scene: &Scene) -> Result<usize, LuaBridgeError> {
+        let mut state = self.state.borrow_mut();
+        let mut count = 0;
+        let mut sprite_index = 0;
+        for entity in scene.entities.values() {
+            let id = state.world.spawn();
+            if let Some(value) = entity.components.get("Transform") {
+                let transform = Transform::from_component_str(value).map_err(|error| {
+                    LuaBridgeError::Api(format!(
+                        "entity {:?} has an invalid Transform: {error}",
+                        entity.name
+                    ))
+                })?;
+                state
+                    .world
+                    .insert(id, transform)
+                    .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
+            }
+            if entity.components.contains_key("Sprite") {
+                let sprite = Sprite::new(Vec2::new(128.0, 128.0))
+                    .map_err(|error| {
+                        LuaBridgeError::Api(format!("failed to build default Sprite: {error}"))
+                    })?
+                    .with_tint(SPRITE_TINTS[sprite_index % SPRITE_TINTS.len()])
+                    .map_err(|error| {
+                        LuaBridgeError::Api(format!("failed to tint default Sprite: {error}"))
+                    })?;
+                state
+                    .world
+                    .insert(id, sprite)
+                    .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
+                sprite_index += 1;
+            }
+            if !entity.name.is_empty() {
+                state.names.insert(entity.name.clone(), id);
+            }
+            count += 1;
+        }
+        Ok(count)
+    }
+
+    /// Gives the host a shared read view of the runtime entity world, so the
+    /// renderer draws the exact entities the Lua script is mutating.
+    pub fn with_world<R>(&self, f: impl FnOnce(&World) -> R) -> R {
+        f(&self.state.borrow().world)
+    }
+
+    /// Gives the host a shared write view of the runtime entity world.
+    pub fn with_world_mut<R>(&mut self, f: impl FnOnce(&mut World) -> R) -> R {
+        f(&mut self.state.borrow_mut().world)
     }
 
     pub fn execute_project_script(&mut self, path: &Path) -> Result<(), LuaBridgeError> {
@@ -963,6 +1034,96 @@ mod tests {
         assert_eq!(runtime.call_update().unwrap(), "ok");
         let _ = fs::remove_file(path);
     }
+    #[test]
+    fn instantiated_scene_entities_are_shared_with_lua_movement() {
+        use crate::scene::{Scene, SceneEntityId};
+
+        let mut scene = Scene::new("test");
+        scene.add_entity(SceneEntityId(1), "Player", None).unwrap();
+        scene
+            .entities
+            .get_mut(&SceneEntityId(1))
+            .unwrap()
+            .components
+            .insert(
+                "Transform".into(),
+                "x=0;y=0;rotation=0;scale_x=1;scale_y=1".into(),
+            );
+        scene
+            .entities
+            .get_mut(&SceneEntityId(1))
+            .unwrap()
+            .components
+            .insert("Sprite".into(), "assets/red-1x1.png".into());
+
+        let mut runtime = LuaRuntime::new().unwrap();
+        assert_eq!(runtime.instantiate_scene(&scene).unwrap(), 1);
+
+        let path = script(
+            "function update()\nlocal p = entity.find('Player')\nassert(p ~= nil)\ntransform.move(p, 10, 5)\nreturn 'moved' end",
+        );
+        runtime.execute_project_script(&path).unwrap();
+        assert_eq!(runtime.call_update().unwrap(), "moved");
+
+        let player = runtime.with_world(|world| world.entities_with::<Transform>());
+        assert_eq!(player.len(), 1);
+        let player = player[0];
+        assert!(runtime.with_world(|world| world.has::<Sprite>(player).unwrap()));
+        let moved = runtime.with_world(|world| *world.get::<Transform>(player).unwrap().unwrap());
+        assert_eq!(moved.position, Vec2::new(10.0, 5.0));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn wasd_input_axis_moves_the_instantiated_player() {
+        use crate::scene::{Scene, SceneEntityId};
+
+        let mut scene = Scene::new("test");
+        scene.add_entity(SceneEntityId(1), "Player", None).unwrap();
+        scene
+            .entities
+            .get_mut(&SceneEntityId(1))
+            .unwrap()
+            .components
+            .insert(
+                "Transform".into(),
+                "x=0;y=0;rotation=0;scale_x=1;scale_y=1".into(),
+            );
+
+        let mut runtime = LuaRuntime::new().unwrap();
+        runtime.instantiate_scene(&scene).unwrap();
+        let path = script(
+            "local speed = 10\nfunction update()\nlocal p = entity.find('Player')\nlocal h = input.axis('horizontal')\nlocal v = input.axis('vertical')\ntransform.move(p, h * speed, v * speed)\nreturn 'moved' end",
+        );
+        runtime.execute_project_script(&path).unwrap();
+
+        let player = runtime.with_world(|world| world.entities_with::<Transform>());
+        assert_eq!(player.len(), 1);
+        let player = player[0];
+
+        // Hold D -> horizontal axis = +1 -> player moves right.
+        let mut input = InputSnapshot::default();
+        input.key_event(InputKey::D, true);
+        runtime.set_input(input);
+        runtime.call_update().unwrap();
+        let position =
+            runtime.with_world(|world| world.get::<Transform>(player).unwrap().unwrap().position);
+        assert_eq!(position.x, 10.0);
+        assert_eq!(position.y, 0.0);
+
+        // Release D, hold W -> vertical axis = +1 -> player moves up only.
+        let mut input = InputSnapshot::default();
+        input.key_event(InputKey::W, true);
+        runtime.set_input(input);
+        runtime.call_update().unwrap();
+        let position =
+            runtime.with_world(|world| world.get::<Transform>(player).unwrap().unwrap().position);
+        assert_eq!(position.x, 10.0);
+        assert_eq!(position.y, 10.0);
+
+        let _ = fs::remove_file(path);
+    }
+
     #[test]
     fn invalid_entity_is_a_lua_error() {
         let path = script("transform.get(4294967297)");

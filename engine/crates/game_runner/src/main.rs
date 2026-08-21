@@ -7,7 +7,6 @@ use std::{
 
 use bytemuck::{Pod, Zeroable};
 use engine_core::{
-    entity::EntityId,
     input::{InputKey, InputSnapshot, MouseButton},
     logging::{EngineError, LogModule, init_logging},
     math2d::{Camera2D, Viewport},
@@ -19,7 +18,6 @@ use engine_core::{
     time_step::FixedTimeStep,
     transform::{Transform, Vec2, integrate_velocity},
     window::{AppLifecycle, has_renderable_size},
-    world::World,
 };
 use wgpu::{
     CompositeAlphaMode, Device, DeviceDescriptor, Instance, InstanceDescriptor, PresentMode, Queue,
@@ -297,64 +295,80 @@ enum RenderOutcome {
 }
 
 struct RuntimeScene {
-    scene: Scene,
-    world: World,
+    script: LuaRuntime,
     sprite_batch: SpriteBatch,
     camera: Camera2D,
-    sprite: Sprite,
-    entity: EntityId,
 }
 
 impl RuntimeScene {
     fn new(project_root: Option<&Path>) -> Result<Self, String> {
         let scene = load_runtime_scene(project_root);
-        let mut world = World::new();
-        let entity = world.spawn();
-        let transform = Transform::from_position(Vec2::new(640.0, 360.0));
-        world
-            .insert(entity, transform)
-            .map_err(|error| error.to_string())?;
-        let camera =
-            Camera2D::new(Vec2::new(640.0, 360.0), 1.0).map_err(|error| error.to_string())?;
-        let sprite = Sprite::new(Vec2::new(128.0, 128.0))
-            .map_err(|error| error.to_string())?
-            .with_tint([0.18, 0.72, 1.0, 1.0])
+        let mut script = LuaRuntime::new().map_err(|error| error.to_string())?;
+        let instantiated = script
+            .instantiate_scene(&scene)
             .map_err(|error| error.to_string())?;
         tracing::info!(target: "scene", "[scene] loaded name={} entities={}", scene.name, scene.entities.len());
-        tracing::info!(target: "ecs", "[ecs] world initialized entities={}", world.entity_count());
+        tracing::info!(target: "ecs", "[ecs] world initialized entities={instantiated}");
+        if let Some(root) = project_root {
+            let script_path = root.join("scripts/main.lua");
+            if script_path.is_file() {
+                script
+                    .execute_project_script(&script_path)
+                    .map_err(|error| error.to_string())?;
+            } else {
+                tracing::info!(target: "script", path = %script_path.display(), "[script] game project has no scripts/main.lua; script runtime idle");
+            }
+        }
+        let camera =
+            Camera2D::new(Vec2::new(640.0, 360.0), 1.0).map_err(|error| error.to_string())?;
         tracing::info!(target: "render", "[render] SpriteBatch and Camera2D initialized");
         Ok(Self {
-            scene,
-            world,
+            script,
             sprite_batch: SpriteBatch::new(),
             camera,
-            sprite,
-            entity,
         })
     }
 
-    fn update(&mut self, delta_seconds: f32) -> Result<(), String> {
-        integrate_velocity(&mut self.world, delta_seconds)
-            .map(|_| ())
-            .map_err(|error| error.to_string())
+    fn run_script_steps(
+        &mut self,
+        steps: u32,
+        delta_seconds: f32,
+        input: &InputSnapshot,
+    ) -> Result<(), String> {
+        self.script.set_delta(delta_seconds);
+        for _ in 0..steps {
+            self.script.set_input(input.clone());
+            let result = self
+                .script
+                .call_update()
+                .map_err(|error| error.to_string())?;
+            tracing::debug!(target: "game", "[simulation] fixed update returned: {result}");
+        }
+        self.script.with_world_mut(|world| {
+            let _ = integrate_velocity(world, delta_seconds * steps as f32);
+        });
+        Ok(())
     }
 
     fn vertices(&mut self, width: u32, height: u32) -> Result<Vec<OverlayVertex>, String> {
         let viewport = Viewport::new(width.max(1) as f32, height.max(1) as f32)
             .map_err(|error| error.to_string())?;
-        let transform = self
-            .world
-            .get::<Transform>(self.entity)
-            .map_err(|error| error.to_string())?
-            .copied()
-            .ok_or_else(|| "runtime sprite transform missing".to_owned())?;
         self.sprite_batch.clear();
-        self.sprite_batch.push(SpriteBatchItem::new(
-            0,
-            self.scene.entities.len() as i32,
-            self.sprite,
-            transform,
-        ));
+        let sprites = self.script.with_world(|world| {
+            world
+                .entities_with2::<Transform, Sprite>()
+                .into_iter()
+                .filter_map(|id| {
+                    let transform = world.get::<Transform>(id).ok().flatten().copied();
+                    let sprite = world.get::<Sprite>(id).ok().flatten().copied();
+                    transform.zip(sprite)
+                })
+                .collect::<Vec<_>>()
+        });
+        for (index, (transform, sprite)) in sprites.into_iter().enumerate() {
+            self.sprite_batch
+                .push(SpriteBatchItem::new(0, index as i32, sprite, transform));
+        }
         let mesh = self
             .sprite_batch
             .build(self.camera, viewport)
@@ -377,6 +391,21 @@ fn load_runtime_scene(project_root: Option<&Path>) -> Scene {
             let mut scene = Scene::new("runtime-main");
             let _ = scene.add_entity(SceneEntityId(1), "SpriteRoot", None);
             scene
+                .entities
+                .get_mut(&SceneEntityId(1))
+                .unwrap()
+                .components
+                .insert(
+                    "Transform".into(),
+                    "x=640;y=360;rotation=0;scale_x=1;scale_y=1".into(),
+                );
+            scene
+                .entities
+                .get_mut(&SceneEntityId(1))
+                .unwrap()
+                .components
+                .insert("Sprite".into(), "assets/red-1x1.png".into());
+            scene
         })
 }
 
@@ -395,7 +424,6 @@ struct GameApp {
     renderer: Option<Renderer>,
     lifecycle: AppLifecycle,
     occluded: bool,
-    script_runtime: Option<LuaRuntime>,
     time_step: FixedTimeStep,
     input: InputSnapshot,
     last_frame: Instant,
@@ -412,7 +440,6 @@ impl GameApp {
             renderer: None,
             lifecycle: AppLifecycle::Initializing,
             occluded: false,
-            script_runtime: None,
             time_step: FixedTimeStep::new(60, 8).expect("valid fixed timestep"),
             input: InputSnapshot::default(),
             last_frame: Instant::now(),
@@ -461,106 +488,30 @@ impl GameApp {
         }
     }
 
-    fn initialize_script(&mut self, event_loop: &ActiveEventLoop) {
-        let Some(project_root) = self.project_root.as_ref() else {
-            tracing::info!(target: "script", "[script] no game project imported; script runtime idle");
-            return;
-        };
-        let script_path = project_root.join("scripts/main.lua");
-        if !script_path.is_file() {
-            tracing::info!(target: "script", path = %script_path.display(), "[script] game project has no scripts/main.lua; script runtime idle");
-            return;
-        }
-        let mut runtime = match LuaRuntime::new() {
-            Ok(runtime) => runtime,
-            Err(error) => {
-                tracing::info!(target: "game", "[script] initialization failed: {error}");
-                self.request_exit(event_loop);
-                return;
-            }
-        };
-        runtime.set_delta(1.0 / 60.0);
-        if let Err(error) = runtime.execute_project_script(&script_path) {
-            let diagnostic = EngineError::new(
-                LogModule::Script,
-                "load project script",
-                script_path.display().to_string(),
-            )
-            .with_source(&error)
-            .with_suggestion("check the Lua file path, syntax, and permissions");
-            tracing::error!(target: "script", error = %diagnostic, "script loading failed");
-            self.request_exit(event_loop);
-            return;
-        }
-        match runtime.call_update() {
-            Ok(result) => {
-                tracing::debug!(target: "game", "[script] initial update returned: {result}")
-            }
-            Err(error) => {
-                let diagnostic = EngineError::new(
-                    LogModule::Script,
-                    "call update",
-                    "project Lua update function",
-                )
-                .with_source(&error)
-                .with_suggestion("fix the Lua runtime error reported above");
-                tracing::error!(target: "script", error = %diagnostic, "script update failed");
-                self.request_exit(event_loop);
-                return;
-            }
-        }
-        if runtime.quit_requested() {
-            tracing::info!(target: "game", "[script] app.quit requested");
-            self.request_exit(event_loop);
-            return;
-        }
-        self.script_runtime = Some(runtime);
-    }
-
     fn run_simulation_steps(
         &mut self,
         steps: u32,
         delta_seconds: f32,
         event_loop: &ActiveEventLoop,
     ) {
-        let Some(mut runtime) = self.script_runtime.take() else {
-            return;
-        };
+        let input = self.input.clone();
         self.performance.begin_update();
-        runtime.set_delta(delta_seconds);
-        for _ in 0..steps {
-            runtime.set_input(self.input.clone());
-            self.performance.begin_lua();
-            let update_result = runtime.call_update();
-            self.performance.end_lua();
-            match update_result {
-                Ok(result) => {
-                    tracing::debug!(target: "game", "[simulation] fixed update returned: {result}")
-                }
-                Err(error) => {
-                    let diagnostic = EngineError::new(
-                        LogModule::Script,
-                        "fixed-step update",
-                        "project Lua update function",
-                    )
-                    .with_source(&error)
-                    .with_suggestion("fix the Lua runtime error reported above");
-                    tracing::error!(target: "script", error = %diagnostic, "fixed-step update failed");
-                    self.request_exit(event_loop);
-                    return;
-                }
-            }
-            self.input.clear_transitions();
-        }
-        if let Some(scene) = self.runtime_scene.as_mut()
-            && let Err(error) = scene.update(delta_seconds * steps as f32)
-        {
-            tracing::error!(target: "ecs", "[ecs] update failed: {error}");
-            self.request_exit(event_loop);
-            return;
-        }
+        let result = self
+            .runtime_scene
+            .as_mut()
+            .map(|scene| scene.run_script_steps(steps, delta_seconds, &input));
         self.performance.end_update();
-        self.script_runtime = Some(runtime);
+        if let Some(Err(error)) = result {
+            let diagnostic = EngineError::new(
+                LogModule::Script,
+                "fixed-step update",
+                "project Lua update function",
+            )
+            .with_source(&error)
+            .with_suggestion("fix the Lua runtime error reported above");
+            tracing::error!(target: "script", error = %diagnostic, "fixed-step update failed");
+            self.request_exit(event_loop);
+        }
     }
 
     fn redraw(&mut self, event_loop: &ActiveEventLoop) {
@@ -629,12 +580,22 @@ impl ApplicationHandler for GameApp {
             Ok(renderer) => {
                 self.window = Some(window);
                 self.renderer = Some(renderer);
-                self.runtime_scene = RuntimeScene::new(self.project_root.as_deref()).ok();
+                self.runtime_scene = match RuntimeScene::new(self.project_root.as_deref()) {
+                    Ok(scene) => Some(scene),
+                    Err(error) => {
+                        let diagnostic = EngineError::new(
+                            LogModule::Script,
+                            "initialize runtime scene",
+                            "runtime scene or project script failed to start",
+                        )
+                        .with_source(&error)
+                        .with_suggestion("check the project scene and scripts/main.lua");
+                        tracing::error!(target: "game", error = %diagnostic, "runtime initialization failed");
+                        self.request_exit(event_loop);
+                        return;
+                    }
+                };
                 self.transition(AppLifecycle::Running);
-                self.initialize_script(event_loop);
-                if self.lifecycle != AppLifecycle::Running {
-                    return;
-                }
                 self.last_frame = Instant::now();
                 self.window
                     .as_ref()
@@ -808,6 +769,7 @@ fn map_mouse_button(button: winit::event::MouseButton) -> MouseButton {
 #[derive(Debug, Default)]
 struct Arguments {
     project: Option<PathBuf>,
+    log_filter: Option<String>,
 }
 
 fn parse_arguments() -> Result<Arguments, String> {
@@ -820,8 +782,17 @@ fn parse_arguments() -> Result<Arguments, String> {
                     values.next().ok_or("--project requires a path")?,
                 ))
             }
+            "--log-filter" => {
+                args.log_filter = Some(
+                    values
+                        .next()
+                        .ok_or("--log-filter requires a tracing filter")?,
+                )
+            }
             "--help" | "-h" => {
-                println!("Usage: game_runner [--project <game-project-root>]");
+                println!(
+                    "Usage: game_runner [--project <game-project-root>] [--log-filter <tracing-filter>]"
+                );
                 std::process::exit(0);
             }
             other => return Err(format!("unknown argument: {other}")),
@@ -839,7 +810,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     .into_iter()
     .find(|path| path.parent().is_some_and(|parent| parent.is_dir()))
     .unwrap_or_else(|| PathBuf::from("artifacts/logs/game-runner.log"));
-    init_logging(log_path, None).map_err(|error| Box::new(error) as Box<dyn std::error::Error>)?;
+    init_logging(log_path, arguments.log_filter.as_deref())
+        .map_err(|error| Box::new(error) as Box<dyn std::error::Error>)?;
     tracing::info!(target: "game", version = engine_core::version(), project = ?arguments.project, "game runner starting");
     let event_loop = EventLoop::new()?;
     event_loop.run_app(&mut GameApp::new(arguments.project))?;

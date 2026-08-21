@@ -7,6 +7,34 @@ use crate::{
     world::{World, WorldError},
 };
 
+/// Errors while parsing the engine's scene Transform component string.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TransformParseError {
+    /// A field was not `key=number` as the scene format requires.
+    MalformedField(String),
+    /// A required field (`x`, `y`, `rotation`, `scale_x`, `scale_y`) was missing.
+    MissingField(&'static str),
+    /// A numeric field could not be parsed or was not finite.
+    NonFinite,
+    /// A scale component was zero or negative.
+    NonPositiveScale,
+}
+
+impl fmt::Display for TransformParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MalformedField(field) => {
+                write!(f, "malformed transform field: {field}")
+            }
+            Self::MissingField(field) => write!(f, "missing transform field: {field}"),
+            Self::NonFinite => write!(f, "transform contains a non-finite number"),
+            Self::NonPositiveScale => write!(f, "transform scale must be positive"),
+        }
+    }
+}
+
+impl Error for TransformParseError {}
+
 /// A two-dimensional vector used by the minimal 2D gameplay components.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Vec2 {
@@ -60,6 +88,60 @@ impl Transform {
             position,
             ..Self::identity()
         }
+    }
+
+    /// Parses the scene component string written by the editor:
+    /// `x=..;y=..;rotation=..;scale_x=..;scale_y=..`.
+    pub fn from_component_str(value: &str) -> Result<Self, TransformParseError> {
+        let mut transform = Self::identity();
+        let mut seen = [false; 5];
+        for field in value.split(';') {
+            let (key, raw) = field
+                .split_once('=')
+                .ok_or_else(|| TransformParseError::MalformedField(field.to_owned()))?;
+            let number: f32 = raw.parse().map_err(|_| TransformParseError::NonFinite)?;
+            if !number.is_finite() {
+                return Err(TransformParseError::NonFinite);
+            }
+            match key {
+                "x" => {
+                    transform.position.x = number;
+                    seen[0] = true;
+                }
+                "y" => {
+                    transform.position.y = number;
+                    seen[1] = true;
+                }
+                "rotation" => {
+                    transform.rotation = number;
+                    seen[2] = true;
+                }
+                "scale_x" => {
+                    transform.scale.x = number;
+                    seen[3] = true;
+                }
+                "scale_y" => {
+                    transform.scale.y = number;
+                    seen[4] = true;
+                }
+                _ => return Err(TransformParseError::MalformedField(field.to_owned())),
+            }
+        }
+        for (field, present) in [
+            ("x", seen[0]),
+            ("y", seen[1]),
+            ("rotation", seen[2]),
+            ("scale_x", seen[3]),
+            ("scale_y", seen[4]),
+        ] {
+            if !present {
+                return Err(TransformParseError::MissingField(field));
+            }
+        }
+        if transform.scale.x <= 0.0 || transform.scale.y <= 0.0 {
+            return Err(TransformParseError::NonPositiveScale);
+        }
+        Ok(transform)
     }
 }
 
@@ -141,8 +223,46 @@ pub fn integrate_velocity(
 
 #[cfg(test)]
 mod tests {
-    use super::{Transform, TransformSystemError, Vec2, Velocity, integrate_velocity};
+    use super::{
+        Transform, TransformParseError, TransformSystemError, Vec2, Velocity, integrate_velocity,
+    };
     use crate::world::World;
+
+    #[test]
+    fn parses_editor_component_string() {
+        let transform = Transform::from_component_str(
+            "x=-55.000000000;y=3.500000000;rotation=0.250000000;scale_x=2.000000000;scale_y=1.000000000",
+        )
+        .unwrap();
+        assert_eq!(
+            transform,
+            Transform {
+                position: Vec2::new(-55.0, 3.5),
+                rotation: 0.25,
+                scale: Vec2::new(2.0, 1.0),
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_incomplete_or_invalid_component_strings() {
+        assert!(matches!(
+            Transform::from_component_str("x=1;y=2;rotation=0;scale_x=1"),
+            Err(TransformParseError::MissingField("scale_y"))
+        ));
+        assert!(matches!(
+            Transform::from_component_str("x=1;y=2;rotation=0;scale_x=1;scale_y=0"),
+            Err(TransformParseError::NonPositiveScale)
+        ));
+        assert!(matches!(
+            Transform::from_component_str("x=1;y=2;rotation=0;scale_x=1;scale_y=1;extra=1"),
+            Err(TransformParseError::MalformedField(_))
+        ));
+        assert!(matches!(
+            Transform::from_component_str("x=nan;y=2;rotation=0;scale_x=1;scale_y=1"),
+            Err(TransformParseError::NonFinite)
+        ));
+    }
 
     #[test]
     fn identity_transform_has_expected_defaults() {
