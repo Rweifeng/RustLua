@@ -9,8 +9,8 @@ use std::{
 
 use editor::{
     AutoSaveController, CommandHistory, CommandKind, InspectorState, PlaySession, ProjectDocument,
-    ProjectError, ProjectInfo, RecoveryManager, RecoveryScan, ResourceBrowserState, ResourceKind, SceneTreeState,
-    TransformFields, check_project, open_project,
+    ProjectError, ProjectInfo, RecoveryManager, RecoveryScan, ResourceBrowserState, ResourceKind,
+    SceneTreeState, TransformFields, check_project, open_project,
 };
 use eframe::egui::{self, FontData, FontDefinitions, FontFamily};
 use engine_core::{
@@ -54,15 +54,14 @@ fn default_engine_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-
 #[cfg(windows)]
 fn choose_project_directory() -> Option<PathBuf> {
     use std::ffi::OsString;
     use std::os::windows::ffi::OsStringExt;
     use windows_sys::Win32::System::Com::CoTaskMemFree;
-    use windows_sys::Win32::UI::Shell::{SHBrowseForFolderW, SHGetPathFromIDListW, BROWSEINFOW};
+    use windows_sys::Win32::UI::Shell::{BROWSEINFOW, SHBrowseForFolderW, SHGetPathFromIDListW};
 
-    let title: Vec<u16> = "????????\0".encode_utf16().collect();
+    let title: Vec<u16> = "选择游戏项目目录\0".encode_utf16().collect();
     let mut info = BROWSEINFOW {
         hwndOwner: std::ptr::null_mut(),
         pidlRoot: std::ptr::null_mut(),
@@ -74,12 +73,21 @@ fn choose_project_directory() -> Option<PathBuf> {
         iImage: 0,
     };
     let pidl = unsafe { SHBrowseForFolderW(&mut info) };
-    if pidl.is_null() { return None; }
+    if pidl.is_null() {
+        return None;
+    }
     let mut buffer = [0u16; 32768];
     let selected = unsafe { SHGetPathFromIDListW(pidl, buffer.as_mut_ptr()) != 0 };
-    unsafe { CoTaskMemFree(pidl.cast()); }
-    if !selected { return None; }
-    let length = buffer.iter().position(|value| *value == 0).unwrap_or(buffer.len());
+    unsafe {
+        CoTaskMemFree(pidl.cast());
+    }
+    if !selected {
+        return None;
+    }
+    let length = buffer
+        .iter()
+        .position(|value| *value == 0)
+        .unwrap_or(buffer.len());
     Some(PathBuf::from(OsString::from_wide(&buffer[..length])))
 }
 
@@ -506,7 +514,9 @@ impl EditorApp {
     }
 
     fn open_scene_resource(&mut self, relative_path: PathBuf) {
-        if !self.project_loaded { return; }
+        if !self.project_loaded {
+            return;
+        }
         let path = self.project.root.join(&relative_path);
         match self.document.open_scene(&path) {
             Ok(()) => {
@@ -519,9 +529,9 @@ impl EditorApp {
                 self.scene_state.selected.clear();
                 self.scene_state.collapsed.clear();
                 self.sync_hierarchy_metadata();
-                self.status = format!("??????{}", relative_path.display());
+                self.status = format!("已打开场景：{}", relative_path.display());
             }
-            Err(error) => self.status = format!("???????{error}"),
+            Err(error) => self.status = format!("打开场景失败：{error}"),
         }
     }
 
@@ -953,12 +963,19 @@ impl eframe::App for EditorApp {
                 ui.add(egui::Slider::new(&mut self.scene_zoom, 0.5..=2.5).text("Zoom"));
             });
             ui.separator();
-            match self.workspace_tab { WorkspaceTab::Scene => self.draw_scene_view(ui), WorkspaceTab::Game => self.draw_game_view(ui) }
+            match self.workspace_tab {
+                WorkspaceTab::Scene => self.draw_scene_view(ui),
+                WorkspaceTab::Game => self.draw_game_view(ui),
+            }
         });
 
-        egui::SidePanel::right("inspector").resizable(true).default_width(380.0).min_width(340.0).show(context, |ui| {
-            self.draw_inspector_panel(ui);
-        });
+        egui::SidePanel::right("inspector")
+            .resizable(true)
+            .default_width(380.0)
+            .min_width(340.0)
+            .show(context, |ui| {
+                self.draw_inspector_panel(ui);
+            });
 
         if refresh_resources {
             self.refresh_resources();
@@ -966,19 +983,45 @@ impl eframe::App for EditorApp {
     }
 }
 fn encode_transform(transform: TransformFields) -> String {
-    format!("x={:.9};y={:.9};rotation={:.9};scale_x={:.9};scale_y={:.9}", transform.position_x, transform.position_y, transform.rotation, transform.scale_x, transform.scale_y)
+    format!(
+        "x={:.9};y={:.9};rotation={:.9};scale_x={:.9};scale_y={:.9}",
+        transform.position_x,
+        transform.position_y,
+        transform.rotation,
+        transform.scale_x,
+        transform.scale_y
+    )
 }
 
 fn rotated_corners(center: egui::Pos2, size: egui::Vec2, rotation_degrees: f32) -> [egui::Pos2; 4] {
     let angle = rotation_degrees.to_radians();
-    let corners = [egui::vec2(-size.x * 0.5, -size.y * 0.5), egui::vec2(size.x * 0.5, -size.y * 0.5), egui::vec2(size.x * 0.5, size.y * 0.5), egui::vec2(-size.x * 0.5, size.y * 0.5)];
-    corners.map(|p| center + egui::vec2(p.x * angle.cos() - p.y * angle.sin(), p.x * angle.sin() + p.y * angle.cos()))
+    let corners = [
+        egui::vec2(-size.x * 0.5, -size.y * 0.5),
+        egui::vec2(size.x * 0.5, -size.y * 0.5),
+        egui::vec2(size.x * 0.5, size.y * 0.5),
+        egui::vec2(-size.x * 0.5, size.y * 0.5),
+    ];
+    corners.map(|p| {
+        center
+            + egui::vec2(
+                p.x * angle.cos() - p.y * angle.sin(),
+                p.x * angle.sin() + p.y * angle.cos(),
+            )
+    })
 }
 
-fn rotated_contains(center: egui::Pos2, size: egui::Vec2, rotation_degrees: f32, point: egui::Pos2) -> bool {
+fn rotated_contains(
+    center: egui::Pos2,
+    size: egui::Vec2,
+    rotation_degrees: f32,
+    point: egui::Pos2,
+) -> bool {
     let angle = -rotation_degrees.to_radians();
     let delta = point - center;
-    let local = egui::vec2(delta.x * angle.cos() - delta.y * angle.sin(), delta.x * angle.sin() + delta.y * angle.cos());
+    let local = egui::vec2(
+        delta.x * angle.cos() - delta.y * angle.sin(),
+        delta.x * angle.sin() + delta.y * angle.cos(),
+    );
     local.x.abs() <= size.x * 0.5 && local.y.abs() <= size.y * 0.5
 }
 
@@ -989,7 +1032,9 @@ fn point_in_polygon(point: egui::Pos2, polygon: &[egui::Pos2]) -> bool {
         let b = polygon[(i + 1) % polygon.len()];
         let crosses = (a.y > point.y) != (b.y > point.y)
             && point.x < (b.x - a.x) * (point.y - a.y) / (b.y - a.y) + a.x;
-        if crosses { inside = !inside; }
+        if crosses {
+            inside = !inside;
+        }
     }
     inside
 }
@@ -1006,15 +1051,25 @@ fn segments_intersect(a: egui::Pos2, b: egui::Pos2, c: egui::Pos2, d: egui::Pos2
     let o4 = orientation(c, d, b);
     let on = |p: egui::Pos2, q: egui::Pos2, r: egui::Pos2| {
         orientation(p, q, r).abs() <= eps
-            && r.x >= p.x.min(q.x) - eps && r.x <= p.x.max(q.x) + eps
-            && r.y >= p.y.min(q.y) - eps && r.y <= p.y.max(q.y) + eps
+            && r.x >= p.x.min(q.x) - eps
+            && r.x <= p.x.max(q.x) + eps
+            && r.y >= p.y.min(q.y) - eps
+            && r.y <= p.y.max(q.y) + eps
     };
     (o1.signum() != o2.signum() && o3.signum() != o4.signum())
-        || on(a, b, c) || on(a, b, d) || on(c, d, a) || on(c, d, b)
+        || on(a, b, c)
+        || on(a, b, d)
+        || on(c, d, a)
+        || on(c, d, b)
 }
 
 fn polygon_intersects_rect(polygon: &[egui::Pos2], rect: egui::Rect) -> bool {
-    let rect_corners = [rect.left_top(), rect.right_top(), rect.right_bottom(), rect.left_bottom()];
+    let rect_corners = [
+        rect.left_top(),
+        rect.right_top(),
+        rect.right_bottom(),
+        rect.left_bottom(),
+    ];
     polygon.iter().any(|p| rect.contains(*p))
         || rect_corners.iter().any(|p| point_in_polygon(*p, polygon))
         || (0..polygon.len()).any(|i| {
@@ -1029,7 +1084,14 @@ fn parse_transform(value: &str) -> Option<TransformFields> {
     for part in value.split(';') {
         let (key, raw) = part.split_once('=')?;
         let number = raw.parse::<f32>().ok()?;
-        match key { "x" => fields.position_x = number, "y" => fields.position_y = number, "rotation" => fields.rotation = number, "scale_x" => fields.scale_x = number, "scale_y" => fields.scale_y = number, _ => {} }
+        match key {
+            "x" => fields.position_x = number,
+            "y" => fields.position_y = number,
+            "rotation" => fields.rotation = number,
+            "scale_x" => fields.scale_x = number,
+            "scale_y" => fields.scale_y = number,
+            _ => {}
+        }
     }
     Some(fields)
 }
@@ -1050,19 +1112,41 @@ fn format_diagnostic(diagnostic: &ScriptDiagnostic) -> String {
 
 impl EditorApp {
     fn sync_hierarchy_metadata(&mut self) {
-        let Some(scene) = self.document.current_scene.as_ref() else { return; };
+        let Some(scene) = self.document.current_scene.as_ref() else {
+            return;
+        };
         for id in scene.scene.entities.keys().copied().collect::<Vec<_>>() {
-            let hidden = scene.scene.metadata.get(&format!("editor.hidden.{}", id.0)).is_some_and(|v| v == "true");
-            let locked = scene.scene.metadata.get(&format!("editor.locked.{}", id.0)).is_some_and(|v| v == "true");
-            if hidden { self.scene_state.hidden.insert(id); } else { self.scene_state.hidden.remove(&id); }
-            if locked { self.scene_state.locked.insert(id); } else { self.scene_state.locked.remove(&id); }
+            let hidden = scene
+                .scene
+                .metadata
+                .get(&format!("editor.hidden.{}", id.0))
+                .is_some_and(|v| v == "true");
+            let locked = scene
+                .scene
+                .metadata
+                .get(&format!("editor.locked.{}", id.0))
+                .is_some_and(|v| v == "true");
+            if hidden {
+                self.scene_state.hidden.insert(id);
+            } else {
+                self.scene_state.hidden.remove(&id);
+            }
+            if locked {
+                self.scene_state.locked.insert(id);
+            } else {
+                self.scene_state.locked.remove(&id);
+            }
         }
     }
 
     fn persist_hierarchy_flag(&mut self, id: SceneEntityId, kind: &str, enabled: bool) {
         if let Some(scene) = self.document.current_scene.as_mut() {
             let key = format!("editor.{kind}.{}", id.0);
-            if enabled { scene.scene.metadata.insert(key, "true".to_owned()); } else { scene.scene.metadata.remove(&key); }
+            if enabled {
+                scene.scene.metadata.insert(key, "true".to_owned());
+            } else {
+                scene.scene.metadata.remove(&key);
+            }
             scene.mark_dirty();
         }
     }
@@ -1070,25 +1154,45 @@ impl EditorApp {
 
 impl EditorApp {
     fn copy_selected_components(&mut self) {
-        let Some(id) = self.tree.selected() else { return; };
-        let Some(entity) = self.current_scene().and_then(|scene| scene.scene.entities.get(&id)) else { return; };
-        self.inspector_clipboard = Some(ComponentClipboard { components: entity.components.clone(), resources: entity.resources.clone(), metadata: entity.metadata.clone() });
+        let Some(id) = self.tree.selected() else {
+            return;
+        };
+        let Some(entity) = self
+            .current_scene()
+            .and_then(|scene| scene.scene.entities.get(&id))
+        else {
+            return;
+        };
+        self.inspector_clipboard = Some(ComponentClipboard {
+            components: entity.components.clone(),
+            resources: entity.resources.clone(),
+            metadata: entity.metadata.clone(),
+        });
         self.status = "Components copied".to_owned();
     }
 
     fn paste_selected_components(&mut self) {
-        if self.is_playing() { return; }
-        let Some(id) = self.tree.selected() else { return; };
-        let Some(clipboard) = self.inspector_clipboard.clone() else { self.status = "Component clipboard is empty".to_owned(); return; };
+        if self.is_playing() {
+            return;
+        }
+        let Some(id) = self.tree.selected() else {
+            return;
+        };
+        let Some(clipboard) = self.inspector_clipboard.clone() else {
+            self.status = "Component clipboard is empty".to_owned();
+            return;
+        };
         if let Some(scene) = self.document.current_scene.as_mut() {
-            let _ = self.history.execute(scene, "Paste Components", CommandKind::Property, |scene| {
-                let entity = scene.scene.entities.get_mut(&id).ok_or(())?;
-                entity.components = clipboard.components.clone();
-                entity.resources = clipboard.resources.clone();
-                entity.metadata = clipboard.metadata.clone();
-                scene.mark_dirty();
-                Ok::<(), ()>(())
-            });
+            let _ =
+                self.history
+                    .execute(scene, "Paste Components", CommandKind::Property, |scene| {
+                        let entity = scene.scene.entities.get_mut(&id).ok_or(())?;
+                        entity.components = clipboard.components.clone();
+                        entity.resources = clipboard.resources.clone();
+                        entity.metadata = clipboard.metadata.clone();
+                        scene.mark_dirty();
+                        Ok::<(), ()>(())
+                    });
         }
         self.sync_inspector(id);
         self.status = "Components pasted".to_owned();
@@ -1097,77 +1201,257 @@ impl EditorApp {
     fn draw_inspector_panel(&mut self, ui: &mut egui::Ui) {
         ui.set_min_width(340.0);
         ui.heading("Inspector");
-        let Some(selected) = self.tree.selected() else { ui.label("请先在 Hierarchy 中选择实体"); return; };
-        let Some((parent, child_count)) = self.current_scene().and_then(|scene| scene.scene.entities.get(&selected).map(|e| (e.parent, e.children.len()))) else { ui.label("实体不存在"); return; };
-        ui.label(format!("实体 ID?{}", selected.0));
-        ui.label(format!("父实体?{}", parent.map_or_else(|| "无".to_owned(), |id| id.0.to_string())));
-        ui.label(format!("子实体数量?{child_count}"));
+        let Some(selected) = self.tree.selected() else {
+            ui.label("请先在 Hierarchy 中选择实体");
+            return;
+        };
+        let Some((parent, child_count)) = self.current_scene().and_then(|scene| {
+            scene
+                .scene
+                .entities
+                .get(&selected)
+                .map(|e| (e.parent, e.children.len()))
+        }) else {
+            ui.label("实体不存在");
+            return;
+        };
+        ui.label(format!("实体 ID：{}", selected.0));
+        ui.label(format!(
+            "父实体：{}",
+            parent.map_or_else(|| "无".to_owned(), |id| id.0.to_string())
+        ));
+        ui.label(format!("子实体数量：{child_count}"));
         ui.separator();
-        ui.horizontal(|ui| { ui.label("父实体 ID"); ui.text_edit_singleline(&mut self.parent_entity); if ui.button("设置父级").clicked() { let parent = self.parent_entity.trim().parse::<u64>().ok().map(SceneEntityId); self.reparent_selected(parent); } });
-        if ui.button("解除父级").clicked() { self.parent_entity.clear(); self.reparent_selected(None); }
-        ui.horizontal(|ui| { ui.label("名称"); ui.text_edit_singleline(&mut self.entity_name); if ui.button("重新命名").clicked() { self.rename_selected(); } });
-        let transform_header = if self.inspector_transform_open { "Transform  v" } else { "Transform  >" };
-        if ui.button(transform_header).clicked() { self.inspector_transform_open = !self.inspector_transform_open; }
+        ui.horizontal(|ui| {
+            ui.label("父实体 ID");
+            ui.text_edit_singleline(&mut self.parent_entity);
+            if ui.button("设置父级").clicked() {
+                let parent = self
+                    .parent_entity
+                    .trim()
+                    .parse::<u64>()
+                    .ok()
+                    .map(SceneEntityId);
+                self.reparent_selected(parent);
+            }
+        });
+        if ui.button("解除父级").clicked() {
+            self.parent_entity.clear();
+            self.reparent_selected(None);
+        }
+        ui.horizontal(|ui| {
+            ui.label("名称");
+            ui.text_edit_singleline(&mut self.entity_name);
+            if ui.button("重新命名").clicked() {
+                self.rename_selected();
+            }
+        });
+        let transform_header = if self.inspector_transform_open {
+            "Transform  v"
+        } else {
+            "Transform  >"
+        };
+        if ui.button(transform_header).clicked() {
+            self.inspector_transform_open = !self.inspector_transform_open;
+        }
         if self.inspector_transform_open {
             ui.group(|ui| {
-            ui.horizontal(|ui| { ui.label("位置 X"); ui.add(egui::DragValue::new(&mut self.transform.position_x)); });
-            ui.horizontal(|ui| { ui.label("位置 Y"); ui.add(egui::DragValue::new(&mut self.transform.position_y)); });
-            ui.horizontal(|ui| { ui.label("旋转"); ui.add(egui::DragValue::new(&mut self.transform.rotation)); });
-            ui.horizontal(|ui| { ui.label("缩放 X"); ui.add(egui::DragValue::new(&mut self.transform.scale_x)); });
-            ui.horizontal(|ui| { ui.label("缩放 Y"); ui.add(egui::DragValue::new(&mut self.transform.scale_y)); });
                 ui.horizontal(|ui| {
-                    if ui.button("Reset").clicked() { self.transform = TransformFields::default(); }
-                    if ui.button("Copy Components").clicked() { self.copy_selected_components(); }
-                    if ui.button("Paste Components").clicked() { self.paste_selected_components(); }
+                    ui.label("位置 X");
+                    ui.add(egui::DragValue::new(&mut self.transform.position_x));
                 });
-                if ui.button("Apply Transform").clicked() { self.apply_inspector(); }
+                ui.horizontal(|ui| {
+                    ui.label("位置 Y");
+                    ui.add(egui::DragValue::new(&mut self.transform.position_y));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("旋转");
+                    ui.add(egui::DragValue::new(&mut self.transform.rotation));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("缩放 X");
+                    ui.add(egui::DragValue::new(&mut self.transform.scale_x));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("缩放 Y");
+                    ui.add(egui::DragValue::new(&mut self.transform.scale_y));
+                });
+                ui.horizontal(|ui| {
+                    if ui.button("Reset").clicked() {
+                        self.transform = TransformFields::default();
+                    }
+                    if ui.button("Copy Components").clicked() {
+                        self.copy_selected_components();
+                    }
+                    if ui.button("Paste Components").clicked() {
+                        self.paste_selected_components();
+                    }
+                });
+                if ui.button("Apply Transform").clicked() {
+                    self.apply_inspector();
+                }
             });
         }
-        ui.horizontal(|ui| { ui.label("Sprite"); ui.text_edit_singleline(&mut self.sprite_reference); });
-        ui.horizontal(|ui| { ui.label("Lua"); ui.text_edit_singleline(&mut self.lua_script); });
-        if ui.button("应用修改").clicked() { self.apply_inspector(); }
+        ui.horizontal(|ui| {
+            ui.label("Sprite");
+            ui.text_edit_singleline(&mut self.sprite_reference);
+        });
+        ui.horizontal(|ui| {
+            ui.label("Lua");
+            ui.text_edit_singleline(&mut self.lua_script);
+        });
+        if ui.button("应用修改").clicked() {
+            self.apply_inspector();
+        }
         ui.separator();
-        if ui.button("添加子实体").clicked() { self.add_entity(Some(selected)); }
-        if ui.button("删除实体").clicked() { self.delete_selected(); self.inspector.clear_selection(); }
+        if ui.button("添加子实体").clicked() {
+            self.add_entity(Some(selected));
+        }
+        if ui.button("删除实体").clicked() {
+            self.delete_selected();
+            self.inspector.clear_selection();
+        }
     }
 }
 
 impl EditorApp {
     fn draw_scene_view(&mut self, ui: &mut egui::Ui) {
-        let (response, painter) = ui.allocate_painter(ui.available_size(), egui::Sense::click_and_drag());
+        let (response, painter) =
+            ui.allocate_painter(ui.available_size(), egui::Sense::click_and_drag());
         let rect = response.rect;
         let scroll = ui.input(|input| input.smooth_scroll_delta.y);
-        if scroll.abs() > 0.0 { self.scene_zoom = (self.scene_zoom * (1.0 + scroll * 0.001)).clamp(0.25, 4.0); }
-        if response.dragged_by(egui::PointerButton::Middle) || response.dragged_by(egui::PointerButton::Secondary) { self.scene_state.pan += response.drag_delta(); }
+        if scroll.abs() > 0.0 {
+            self.scene_zoom = (self.scene_zoom * (1.0 + scroll * 0.001)).clamp(0.25, 4.0);
+        }
+        if response.dragged_by(egui::PointerButton::Middle)
+            || response.dragged_by(egui::PointerButton::Secondary)
+        {
+            self.scene_state.pan += response.drag_delta();
+        }
         painter.rect_filled(rect, 0.0, egui::Color32::from_rgb(28, 32, 40));
         let grid = 32.0 * self.scene_zoom;
         let mut x = rect.left();
-        while x < rect.right() { painter.line_segment([egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())], egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(42, 48, 58))); x += grid; }
+        while x < rect.right() {
+            painter.line_segment(
+                [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
+                egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(42, 48, 58)),
+            );
+            x += grid;
+        }
         let mut y = rect.top();
-        while y < rect.bottom() { painter.line_segment([egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)], egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(42, 48, 58))); y += grid; }
-        painter.line_segment([egui::pos2(rect.center().x, rect.top()), egui::pos2(rect.center().x, rect.bottom())], egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(70, 120, 180)));
-        painter.line_segment([egui::pos2(rect.left(), rect.center().y), egui::pos2(rect.right(), rect.center().y)], egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(180, 90, 80)));
-        painter.text(rect.left_top() + egui::vec2(12.0, 12.0), egui::Align2::LEFT_TOP, "Scene View  -  2D", egui::FontId::proportional(16.0), egui::Color32::LIGHT_GRAY);
+        while y < rect.bottom() {
+            painter.line_segment(
+                [egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)],
+                egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(42, 48, 58)),
+            );
+            y += grid;
+        }
+        painter.line_segment(
+            [
+                egui::pos2(rect.center().x, rect.top()),
+                egui::pos2(rect.center().x, rect.bottom()),
+            ],
+            egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(70, 120, 180)),
+        );
+        painter.line_segment(
+            [
+                egui::pos2(rect.left(), rect.center().y),
+                egui::pos2(rect.right(), rect.center().y),
+            ],
+            egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(180, 90, 80)),
+        );
+        painter.text(
+            rect.left_top() + egui::vec2(12.0, 12.0),
+            egui::Align2::LEFT_TOP,
+            "Scene View  -  2D",
+            egui::FontId::proportional(16.0),
+            egui::Color32::LIGHT_GRAY,
+        );
         let filter = self.hierarchy_filter.to_lowercase();
-        let entities: Vec<_> = self.current_scene().map(|s| s.scene.entities.values().filter_map(|e| {
-            if !filter.trim().is_empty() && !e.name.to_lowercase().contains(filter.trim()) { return None; }
-            if self.scene_state.hidden.contains(&e.id) { return None; }
-            let transform = self.scene_state.preview.get(&e.id).copied().or_else(|| e.components.get("Transform").and_then(|v| parse_transform(v))).unwrap_or_default();
-            Some((e.id, e.name.clone(), transform))
-        }).collect()).unwrap_or_default();
+        let entities: Vec<_> = self
+            .current_scene()
+            .map(|s| {
+                s.scene
+                    .entities
+                    .values()
+                    .filter_map(|e| {
+                        if !filter.trim().is_empty()
+                            && !e.name.to_lowercase().contains(filter.trim())
+                        {
+                            return None;
+                        }
+                        if self.scene_state.hidden.contains(&e.id) {
+                            return None;
+                        }
+                        let transform = self
+                            .scene_state
+                            .preview
+                            .get(&e.id)
+                            .copied()
+                            .or_else(|| {
+                                e.components
+                                    .get("Transform")
+                                    .and_then(|v| parse_transform(v))
+                            })
+                            .unwrap_or_default();
+                        Some((e.id, e.name.clone(), transform))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         for (id, name, transform) in entities.iter() {
-            let center = egui::pos2(rect.center().x + self.scene_state.pan.x + transform.position_x * self.scene_zoom, rect.center().y + self.scene_state.pan.y - transform.position_y * self.scene_zoom);
-            let size = egui::vec2((112.0 * transform.scale_x.abs().max(0.25)) * self.scene_zoom, (44.0 * transform.scale_y.abs().max(0.25)) * self.scene_zoom);
+            let center = egui::pos2(
+                rect.center().x + self.scene_state.pan.x + transform.position_x * self.scene_zoom,
+                rect.center().y + self.scene_state.pan.y - transform.position_y * self.scene_zoom,
+            );
+            let size = egui::vec2(
+                (112.0 * transform.scale_x.abs().max(0.25)) * self.scene_zoom,
+                (44.0 * transform.scale_y.abs().max(0.25)) * self.scene_zoom,
+            );
             let box_rect = egui::Rect::from_center_size(center, size);
-            let selected = self.tree.selected() == Some(*id) || self.scene_state.selected.contains(id);
+            let selected =
+                self.tree.selected() == Some(*id) || self.scene_state.selected.contains(id);
             let corners = rotated_corners(center, size, transform.rotation);
-            let stroke = egui::Stroke::new(if selected { 2.0_f32 } else { 1.0_f32 }, egui::Color32::from_rgb(130, 170, 220));
-            painter.add(egui::Shape::convex_polygon(corners.to_vec(), if selected { egui::Color32::from_rgb(55, 100, 155) } else { egui::Color32::from_rgb(58, 66, 80) }, stroke));
-            painter.text(center, egui::Align2::CENTER_CENTER, name, egui::FontId::proportional(14.0), egui::Color32::WHITE);
-            if response.clicked() && response.interact_pointer_pos().is_some_and(|pos| box_rect.contains(pos)) {
+            let stroke = egui::Stroke::new(
+                if selected { 2.0_f32 } else { 1.0_f32 },
+                egui::Color32::from_rgb(130, 170, 220),
+            );
+            painter.add(egui::Shape::convex_polygon(
+                corners.to_vec(),
+                if selected {
+                    egui::Color32::from_rgb(55, 100, 155)
+                } else {
+                    egui::Color32::from_rgb(58, 66, 80)
+                },
+                stroke,
+            ));
+            painter.text(
+                center,
+                egui::Align2::CENTER_CENTER,
+                name,
+                egui::FontId::proportional(14.0),
+                egui::Color32::WHITE,
+            );
+            if response.clicked()
+                && response
+                    .interact_pointer_pos()
+                    .is_some_and(|pos| box_rect.contains(pos))
+            {
                 let additive = ui.input(|input| input.modifiers.command || input.modifiers.ctrl);
-                if additive { if self.scene_state.selected.contains(id) { self.scene_state.selected.remove(id); } else { self.scene_state.selected.insert(*id); } } else { self.scene_state.selected.clear(); self.scene_state.selected.insert(*id); }
-                if let Some(scene) = self.current_scene() { let scene = scene.clone(); let _ = self.tree.select(&scene, *id); }
+                if additive {
+                    if self.scene_state.selected.contains(id) {
+                        self.scene_state.selected.remove(id);
+                    } else {
+                        self.scene_state.selected.insert(*id);
+                    }
+                } else {
+                    self.scene_state.selected.clear();
+                    self.scene_state.selected.insert(*id);
+                }
+                if let Some(scene) = self.current_scene() {
+                    let scene = scene.clone();
+                    let _ = self.tree.select(&scene, *id);
+                }
                 self.sync_inspector(*id);
             }
         }
@@ -1176,37 +1460,87 @@ impl EditorApp {
         if response.drag_started_by(egui::PointerButton::Primary) {
             if let Some(pos) = pointer {
                 let hit = entities.iter().rev().find(|(id, _, transform)| {
-                    let center = egui::pos2(rect.center().x + self.scene_state.pan.x + transform.position_x * self.scene_zoom, rect.center().y + self.scene_state.pan.y - transform.position_y * self.scene_zoom);
-                    let size = egui::vec2((112.0 * transform.scale_x.abs().max(0.25)) * self.scene_zoom, (44.0 * transform.scale_y.abs().max(0.25)) * self.scene_zoom);
-                    rotated_contains(center, size, transform.rotation, pos) && !self.scene_state.locked.contains(id)
+                    let center = egui::pos2(
+                        rect.center().x
+                            + self.scene_state.pan.x
+                            + transform.position_x * self.scene_zoom,
+                        rect.center().y + self.scene_state.pan.y
+                            - transform.position_y * self.scene_zoom,
+                    );
+                    let size = egui::vec2(
+                        (112.0 * transform.scale_x.abs().max(0.25)) * self.scene_zoom,
+                        (44.0 * transform.scale_y.abs().max(0.25)) * self.scene_zoom,
+                    );
+                    rotated_contains(center, size, transform.rotation, pos)
+                        && !self.scene_state.locked.contains(id)
                 });
                 if let Some((id, _, _)) = hit {
-                    let additive = ui.input(|input| input.modifiers.command || input.modifiers.ctrl);
-                    if !additive && !self.scene_state.selected.contains(id) { self.scene_state.selected.clear(); }
+                    let additive =
+                        ui.input(|input| input.modifiers.command || input.modifiers.ctrl);
+                    if !additive && !self.scene_state.selected.contains(id) {
+                        self.scene_state.selected.clear();
+                    }
                     self.scene_state.selected.insert(*id);
-                    if let Some(scene) = self.current_scene() { let scene = scene.clone(); let _ = self.tree.select(&scene, *id); }
+                    if let Some(scene) = self.current_scene() {
+                        let scene = scene.clone();
+                        let _ = self.tree.select(&scene, *id);
+                    }
                     self.sync_inspector(*id);
-                    let ids: Vec<_> = self.scene_state.selected.iter().copied().filter(|selected| !self.scene_state.locked.contains(selected)).collect();
-                    let initial = entities.iter().filter(|(entity_id, _, _)| ids.contains(entity_id)).map(|(entity_id, _, value)| (*entity_id, *value)).collect();
-                    self.scene_state.drag = Some(SceneDrag { ids, start: pos, initial });
+                    let ids: Vec<_> = self
+                        .scene_state
+                        .selected
+                        .iter()
+                        .copied()
+                        .filter(|selected| !self.scene_state.locked.contains(selected))
+                        .collect();
+                    let initial = entities
+                        .iter()
+                        .filter(|(entity_id, _, _)| ids.contains(entity_id))
+                        .map(|(entity_id, _, value)| (*entity_id, *value))
+                        .collect();
+                    self.scene_state.drag = Some(SceneDrag {
+                        ids,
+                        start: pos,
+                        initial,
+                    });
                 } else {
                     self.scene_state.box_select_start = Some(pos);
-                    if !ui.input(|input| input.modifiers.command || input.modifiers.ctrl) { self.scene_state.selected.clear(); }
+                    if !ui.input(|input| input.modifiers.command || input.modifiers.ctrl) {
+                        self.scene_state.selected.clear();
+                    }
                 }
             }
         }
         if let (Some(start), Some(current)) = (self.scene_state.box_select_start, pointer) {
             if response.dragged_by(egui::PointerButton::Primary) {
                 let selection_rect = egui::Rect::from_two_pos(start, current);
-                painter.rect_stroke(selection_rect, 0.0, egui::Stroke::new(1.0_f32, egui::Color32::LIGHT_BLUE), egui::StrokeKind::Outside);
+                painter.rect_stroke(
+                    selection_rect,
+                    0.0,
+                    egui::Stroke::new(1.0_f32, egui::Color32::LIGHT_BLUE),
+                    egui::StrokeKind::Outside,
+                );
                 for (id, _, transform) in &entities {
-                    let center = egui::pos2(rect.center().x + self.scene_state.pan.x + transform.position_x * self.scene_zoom, rect.center().y + self.scene_state.pan.y - transform.position_y * self.scene_zoom);
-                    let size = egui::vec2((112.0 * transform.scale_x.abs().max(0.25)) * self.scene_zoom, (44.0 * transform.scale_y.abs().max(0.25)) * self.scene_zoom);
+                    let center = egui::pos2(
+                        rect.center().x
+                            + self.scene_state.pan.x
+                            + transform.position_x * self.scene_zoom,
+                        rect.center().y + self.scene_state.pan.y
+                            - transform.position_y * self.scene_zoom,
+                    );
+                    let size = egui::vec2(
+                        (112.0 * transform.scale_x.abs().max(0.25)) * self.scene_zoom,
+                        (44.0 * transform.scale_y.abs().max(0.25)) * self.scene_zoom,
+                    );
                     let corners = rotated_corners(center, size, transform.rotation);
-                    let contained = corners.iter().all(|corner| selection_rect.contains(*corner));
+                    let contained = corners
+                        .iter()
+                        .all(|corner| selection_rect.contains(*corner));
                     let intersects = polygon_intersects_rect(&corners, selection_rect);
                     let left_to_right = current.x >= start.x;
-                    if (left_to_right && contained) || (!left_to_right && intersects) { self.scene_state.selected.insert(*id); }
+                    if (left_to_right && contained) || (!left_to_right && intersects) {
+                        self.scene_state.selected.insert(*id);
+                    }
                 }
             }
         }
@@ -1216,8 +1550,18 @@ impl EditorApp {
                 let mut preview = std::collections::BTreeMap::new();
                 let pivot = {
                     let count = drag.initial.len().max(1) as f32;
-                    let x = drag.initial.values().map(|value| value.position_x).sum::<f32>() / count;
-                    let y = drag.initial.values().map(|value| value.position_y).sum::<f32>() / count;
+                    let x = drag
+                        .initial
+                        .values()
+                        .map(|value| value.position_x)
+                        .sum::<f32>()
+                        / count;
+                    let y = drag
+                        .initial
+                        .values()
+                        .map(|value| value.position_y)
+                        .sum::<f32>()
+                        / count;
                     (x, y)
                 };
                 let angle = (delta.x * 0.5).to_radians();
@@ -1226,12 +1570,17 @@ impl EditorApp {
                     let initial = drag.initial[id];
                     let mut next = initial;
                     match self.scene_tool {
-                        SceneTool::Move | SceneTool::Select => { next.position_x += delta.x / self.scene_zoom; next.position_y -= delta.y / self.scene_zoom; }
+                        SceneTool::Move | SceneTool::Select => {
+                            next.position_x += delta.x / self.scene_zoom;
+                            next.position_y -= delta.y / self.scene_zoom;
+                        }
                         SceneTool::Rotate => {
                             let relative_x = initial.position_x - pivot.0;
                             let relative_y = initial.position_y - pivot.1;
-                            next.position_x = pivot.0 + relative_x * angle.cos() - relative_y * angle.sin();
-                            next.position_y = pivot.1 + relative_x * angle.sin() + relative_y * angle.cos();
+                            next.position_x =
+                                pivot.0 + relative_x * angle.cos() - relative_y * angle.sin();
+                            next.position_y =
+                                pivot.1 + relative_x * angle.sin() + relative_y * angle.cos();
                             next.rotation += delta.x * 0.5;
                         }
                         SceneTool::Scale => {
@@ -1254,54 +1603,128 @@ impl EditorApp {
     }
 
     fn commit_scene_drag(&mut self) {
-        if self.is_playing() { self.scene_state.preview.clear(); return; }
+        if self.is_playing() {
+            self.scene_state.preview.clear();
+            return;
+        }
         let preview = std::mem::take(&mut self.scene_state.preview);
-        let Some(first) = preview.keys().next().copied() else { return; };
+        let Some(first) = preview.keys().next().copied() else {
+            return;
+        };
         if let Some(scene) = self.document.current_scene.as_mut() {
-            let _ = self.history.execute(scene, "Scene Transform", CommandKind::Transform(first), |scene| {
-                for (id, transform) in &preview {
-                    if let Some(entity) = scene.scene.entities.get_mut(id) { entity.components.insert("Transform".to_owned(), encode_transform(*transform)); }
-                }
-                scene.mark_dirty();
-                Ok::<(), ()>(())
-            });
+            let _ = self.history.execute(
+                scene,
+                "Scene Transform",
+                CommandKind::Transform(first),
+                |scene| {
+                    for (id, transform) in &preview {
+                        if let Some(entity) = scene.scene.entities.get_mut(id) {
+                            entity
+                                .components
+                                .insert("Transform".to_owned(), encode_transform(*transform));
+                        }
+                    }
+                    scene.mark_dirty();
+                    Ok::<(), ()>(())
+                },
+            );
         }
     }
 
     fn draw_game_view(&mut self, ui: &mut egui::Ui) {
         let (response, painter) = ui.allocate_painter(ui.available_size(), egui::Sense::hover());
         painter.rect_filled(response.rect, 0.0, egui::Color32::from_rgb(18, 20, 24));
-        let text = if self.is_playing() { "GAME VIEW\nRunning" } else { "GAME VIEW\nPress Play to run the scene" };
-        painter.text(response.rect.center(), egui::Align2::CENTER_CENTER, text, egui::FontId::proportional(20.0), egui::Color32::LIGHT_GRAY);
+        let text = if self.is_playing() {
+            "GAME VIEW\nRunning"
+        } else {
+            "GAME VIEW\nPress Play to run the scene"
+        };
+        painter.text(
+            response.rect.center(),
+            egui::Align2::CENTER_CENTER,
+            text,
+            egui::FontId::proportional(20.0),
+            egui::Color32::LIGHT_GRAY,
+        );
     }
 
     fn draw_entity(&mut self, ui: &mut egui::Ui, id: SceneEntityId, depth: usize) {
-        let Some(scene) = self.current_scene() else { return; };
-        let Some(entity) = scene.scene.entities.get(&id) else { return; };
+        let Some(scene) = self.current_scene() else {
+            return;
+        };
+        let Some(entity) = scene.scene.entities.get(&id) else {
+            return;
+        };
         let name = entity.name.clone();
         let children = entity.children.clone();
-        if !self.hierarchy_filter.trim().is_empty() && !name.to_lowercase().contains(&self.hierarchy_filter.to_lowercase()) { return; }
+        if !self.hierarchy_filter.trim().is_empty()
+            && !name
+                .to_lowercase()
+                .contains(&self.hierarchy_filter.to_lowercase())
+        {
+            return;
+        }
         let selected = self.tree.selected() == Some(id);
         let collapsed = self.scene_state.collapsed.contains(&id);
         let hidden = self.scene_state.hidden.contains(&id);
         let locked = self.scene_state.locked.contains(&id);
         ui.horizontal(|ui| {
             ui.add_space(depth as f32 * 14.0);
-            if !children.is_empty() { if ui.small_button(if collapsed { ">" } else { "v" }).clicked() { if collapsed { self.scene_state.collapsed.remove(&id); } else { self.scene_state.collapsed.insert(id); } } } else { ui.add_space(18.0); }
-            if ui.small_button(if hidden { "?" } else { "?" }).clicked() { if hidden { self.scene_state.hidden.remove(&id); self.persist_hierarchy_flag(id, "hidden", false); } else { self.scene_state.hidden.insert(id); self.persist_hierarchy_flag(id, "hidden", true); } }
-            if ui.small_button(if locked { "L" } else { "U" }).clicked() { if locked { self.scene_state.locked.remove(&id); self.persist_hierarchy_flag(id, "locked", false); } else { self.scene_state.locked.insert(id); self.persist_hierarchy_flag(id, "locked", true); } }
-            if ui.add_enabled(!locked, egui::Button::selectable(selected, format!("{} [{}]", name, id.0))).clicked() {
+            if !children.is_empty() {
+                if ui.small_button(if collapsed { ">" } else { "v" }).clicked() {
+                    if collapsed {
+                        self.scene_state.collapsed.remove(&id);
+                    } else {
+                        self.scene_state.collapsed.insert(id);
+                    }
+                }
+            } else {
+                ui.add_space(18.0);
+            }
+            if ui.small_button(if hidden { "隐" } else { "显" }).clicked() {
+                if hidden {
+                    self.scene_state.hidden.remove(&id);
+                    self.persist_hierarchy_flag(id, "hidden", false);
+                } else {
+                    self.scene_state.hidden.insert(id);
+                    self.persist_hierarchy_flag(id, "hidden", true);
+                }
+            }
+            if ui.small_button(if locked { "L" } else { "U" }).clicked() {
+                if locked {
+                    self.scene_state.locked.remove(&id);
+                    self.persist_hierarchy_flag(id, "locked", false);
+                } else {
+                    self.scene_state.locked.insert(id);
+                    self.persist_hierarchy_flag(id, "locked", true);
+                }
+            }
+            if ui
+                .add_enabled(
+                    !locked,
+                    egui::Button::selectable(selected, format!("{} [{}]", name, id.0)),
+                )
+                .clicked()
+            {
                 let additive = ui.input(|input| input.modifiers.command || input.modifiers.ctrl);
-                if !additive { self.scene_state.selected.clear(); }
+                if !additive {
+                    self.scene_state.selected.clear();
+                }
                 self.scene_state.selected.insert(id);
-                if let Some(scene) = self.current_scene() { let scene = scene.clone(); let _ = self.tree.select(&scene, id); }
+                if let Some(scene) = self.current_scene() {
+                    let scene = scene.clone();
+                    let _ = self.tree.select(&scene, id);
+                }
                 self.sync_inspector(id);
             }
         });
-        if !collapsed { for child in children { self.draw_entity(ui, child, depth + 1); } }
+        if !collapsed {
+            for child in children {
+                self.draw_entity(ui, child, depth + 1);
+            }
+        }
     }
 }
-
 
 #[cfg(test)]
 mod geometry_tests {
