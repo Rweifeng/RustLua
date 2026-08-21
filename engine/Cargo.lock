@@ -813,6 +813,7 @@ version = "0.1.0"
 dependencies = [
  "eframe",
  "engine_core",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

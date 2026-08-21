@@ -157,6 +157,13 @@ impl ResourceBrowserState {
         collect_files(&assets_root, &mut paths).inspect_err(|error| {
             self.last_error = Some(error.to_string());
         })?;
+        // ????????????? scenes/??????????
+        let scenes_root = project_root.join("scenes");
+        if scenes_root.is_dir() {
+            collect_files(&scenes_root, &mut paths).inspect_err(|error| {
+                self.last_error = Some(error.to_string());
+            })?;
+        }
         paths.sort();
 
         let mut database = ResourceDatabase::open(project_root)?;
