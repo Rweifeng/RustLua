@@ -1,4 +1,4 @@
-# P2 RustLua 游戏引擎文档索引
+# RustLua 游戏引擎文档索引
 
 ## 快速入口
 
@@ -49,5 +49,5 @@
 - M6-04 已完成（UI 血条 / 音频 / 粒子），任务记录：`tasks/done/M6-04-UI音频粒子.md`；
 - M6-05 已完成（存档与场景切换），任务记录：`tasks/done/M6-05-存档与场景切换.md`；
 - M6-06 已完成（样板游戏垂直切片，俯视角 Roguelite + CC0 资源），任务记录：`tasks/done/M6-06-样板游戏垂直切片.md`；
-- 第三方资源许可：`THIRD_PARTY.md`；
+- 第三方资源许可：[THIRD_PARTY.md](THIRD_PARTY.md)；
 - 里程碑验收证据：`docs/acceptance-evidence/`（`artifacts/` 目录为可再生输出，已移除）。

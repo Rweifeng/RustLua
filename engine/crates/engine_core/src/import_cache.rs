@@ -332,14 +332,14 @@ mod tests {
         let path = source(
             &root,
             "hero.png",
-            include_bytes!("../../../../assets/m3-02/red-1x1.png"),
+            include_bytes!("../../../../game/assets/textures/red-1x1.png"),
         );
         let first = cache.import_file(id, &path, "png-1").unwrap();
         fs::write(&path, b"bad").unwrap();
         assert!(cache.import_file(id, &path, "png-1").is_err());
         fs::write(
             &path,
-            include_bytes!("../../../../assets/m3-02/red-1x1.png"),
+            include_bytes!("../../../../game/assets/textures/red-1x1.png"),
         )
         .unwrap();
         let hit = cache.import_file(id, &path, "png-1").unwrap();

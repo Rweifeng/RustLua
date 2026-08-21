@@ -202,7 +202,7 @@ impl Error for TextureError {}
 mod tests {
     use super::{TextureAsset, TextureColorSpace, TextureError};
 
-    const RED_PNG: &[u8] = include_bytes!("../../../../assets/m3-02/red-1x1.png");
+    const RED_PNG: &[u8] = include_bytes!("../../../../game/assets/textures/red-1x1.png");
 
     #[test]
     fn decodes_png_to_rgba8_and_preserves_color_space() {
