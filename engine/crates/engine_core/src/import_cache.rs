@@ -87,7 +87,7 @@ pub struct ImportCache {
 impl ImportCache {
     pub fn open(root: impl AsRef<Path>) -> Result<Self, ImportCacheError> {
         let root = root.as_ref().to_path_buf();
-        let metadata_path = root.join(".p2").join("import-cache.db");
+        let metadata_path = root.join(crate::PROJECT_WORK_DIR).join("import-cache.db");
         let mut cache = Self {
             root,
             metadata_path,
@@ -127,7 +127,7 @@ impl ImportCache {
             });
         }
         validate_source(kind, source, &bytes)?;
-        let relative_cache = PathBuf::from(".p2")
+        let relative_cache = PathBuf::from(crate::PROJECT_WORK_DIR)
             .join("cache")
             .join(format!("{}-{fingerprint}.bin", id));
         let absolute_cache = self.root.join(&relative_cache);
@@ -167,7 +167,7 @@ impl ImportCache {
 
     /// Removes all generated artifacts and metadata so a full rebuild can start clean.
     pub fn clear(&mut self) -> Result<(), ImportCacheError> {
-        let cache_dir = self.root.join(".p2").join("cache");
+        let cache_dir = self.root.join(crate::PROJECT_WORK_DIR).join("cache");
         if cache_dir.exists() {
             fs::remove_dir_all(cache_dir)?;
         }
@@ -356,7 +356,7 @@ mod tests {
         assert!(root.join(first.cache_path).exists());
         cache.clear().unwrap();
         assert_eq!(cache.len(), 0);
-        assert!(!root.join(".p2/cache").exists());
+        assert!(!root.join(crate::PROJECT_WORK_DIR).join("cache").exists());
         let rebuilt = cache.import_file(id, &path, "scene-1").unwrap();
         assert!(!rebuilt.reused);
         let _ = fs::remove_dir_all(root);

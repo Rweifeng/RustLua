@@ -62,6 +62,10 @@ pub const fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
+/// Per-project working directory holding local runtime data: the resource
+/// database, import cache, and save data. Local and gitignored.
+pub const PROJECT_WORK_DIR: &str = ".cache";
+
 #[cfg(test)]
 mod tests {
     use super::version;

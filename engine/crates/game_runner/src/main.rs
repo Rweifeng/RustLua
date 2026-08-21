@@ -527,7 +527,7 @@ impl RuntimeScene {
         if let Some(root) = project_root {
             script.set_audio_asset_dir(root.join("assets").join("audio"));
             script.set_project_root(root.to_path_buf());
-            script.set_save_path(root.join(".p2").join("save.sav"));
+            script.set_save_path(root.join(engine_core::PROJECT_WORK_DIR).join("save.sav"));
             let script_path = root.join("scripts/main.lua");
             if script_path.is_file() {
                 script

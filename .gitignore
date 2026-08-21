@@ -14,8 +14,8 @@ artifacts/screenshots/
 .DS_Store
 Thumbs.db
 
-# Local resource database (per-project, e.g. game/.p2)
-**/.p2/
+# Per-project working directory: resource database, import cache, save data
+**/.cache/
 
 # Editor runtime artifacts (autosave/crash-recovery files)
 **/.codex/recovery/

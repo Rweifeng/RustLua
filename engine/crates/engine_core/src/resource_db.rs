@@ -113,7 +113,7 @@ impl ResourceDatabase {
     /// Opens an existing database or creates an empty one under `root/.p2`.
     pub fn open(root: impl AsRef<Path>) -> Result<Self, ResourceDbError> {
         let root = root.as_ref().to_path_buf();
-        let db_path = root.join(".p2").join("resources.db");
+        let db_path = root.join(crate::PROJECT_WORK_DIR).join("resources.db");
         let mut db = Self {
             root,
             db_path,
@@ -143,7 +143,9 @@ impl ResourceDatabase {
             status: ImportStatus::Registered,
             dependencies: Vec::new(),
             importer_version: importer_version.to_owned(),
-            cache_path: PathBuf::from(".p2/cache").join(id.to_string()),
+            cache_path: PathBuf::from(crate::PROJECT_WORK_DIR)
+                .join("cache")
+                .join(id.to_string()),
             error: None,
         };
         self.by_path.insert(path, id);
@@ -411,7 +413,7 @@ mod tests {
         db.set_import_result(
             id,
             ImportStatus::Failed,
-            ".p2/cache/bad",
+            ".cache/cache/bad",
             Some("decode error".into()),
         )
         .unwrap();
