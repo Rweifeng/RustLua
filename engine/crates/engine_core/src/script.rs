@@ -500,11 +500,16 @@ impl LuaRuntime {
             .current_path
             .clone()
             .unwrap_or_else(|| PathBuf::from("<project script>"));
-        let update: Function = self
+        let update: Option<Function> = self
             .lua
             .globals()
             .get("update")
             .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
+        // No script loaded (engine-only diagnostic mode) or the script has no
+        // `update` function: the game simply idles instead of erroring out.
+        let Some(update) = update else {
+            return Ok(String::new());
+        };
         update.call(()).map_err(|error| LuaBridgeError::Runtime {
             path,
             source: error.to_string(),
@@ -1893,6 +1898,15 @@ mod tests {
         let _ = fs::remove_file(load_script);
         let _ = fs::remove_file(switch);
         let _ = fs::remove_file(check);
+    }
+
+    #[test]
+    fn call_update_without_script_idles_instead_of_erroring() {
+        // Engine-only diagnostic mode has no project script; update must be a
+        // no-op rather than a fatal "nil to function" error (which used to
+        // crash double-clicked runs).
+        let runtime = LuaRuntime::new().unwrap();
+        assert_eq!(runtime.call_update().unwrap(), "");
     }
 
     #[test]

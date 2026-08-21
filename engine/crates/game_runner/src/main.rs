@@ -1,3 +1,7 @@
+// Windows: this is a GUI app; do not spawn a console window when the game is
+// launched by double-clicking the exe.
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 use std::{
     env,
     path::{Path, PathBuf},
@@ -1354,19 +1358,49 @@ fn parse_arguments() -> Result<Arguments, String> {
     Ok(args)
 }
 
+/// When no `--project` is given, walks up from the executable to find a game
+/// project: either a directory with its own `project.toml` (packaged layout) or
+/// a sibling `game/project.toml` (workspace layout). Lets double-clicking the
+/// exe launch the game instead of the diagnostic scene.
+fn find_project_root() -> Option<PathBuf> {
+    let exe_dir = std::env::current_exe()
+        .ok()?
+        .parent()
+        .map(Path::to_path_buf)?;
+    for dir in exe_dir.ancestors() {
+        let direct = dir.join("project.toml");
+        if direct.is_file() {
+            return Some(dir.to_path_buf());
+        }
+        let game = dir.join("game").join("project.toml");
+        if game.is_file() {
+            return Some(dir.join("game"));
+        }
+    }
+    None
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let arguments = parse_arguments().map_err(|error| format!("argument error: {error}"))?;
+    let project = arguments.project.or_else(find_project_root);
+    // Resolve the log path relative to the executable so it works regardless of
+    // the working directory (e.g. when double-clicking the exe).
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(Path::to_path_buf))
+        .unwrap_or_default();
     let log_path = [
+        exe_dir.join("../../../artifacts/logs/game-runner.log"),
+        exe_dir.join("../artifacts/logs/game-runner.log"),
         PathBuf::from("artifacts/logs/game-runner.log"),
-        PathBuf::from("../artifacts/logs/game-runner.log"),
     ]
     .into_iter()
     .find(|path| path.parent().is_some_and(|parent| parent.is_dir()))
     .unwrap_or_else(|| PathBuf::from("artifacts/logs/game-runner.log"));
     init_logging(log_path, arguments.log_filter.as_deref())
         .map_err(|error| Box::new(error) as Box<dyn std::error::Error>)?;
-    tracing::info!(target: "game", version = engine_core::version(), project = ?arguments.project, "game runner starting");
+    tracing::info!(target: "game", version = engine_core::version(), project = ?project, "game runner starting");
     let event_loop = EventLoop::new()?;
-    event_loop.run_app(&mut GameApp::new(arguments.project))?;
+    event_loop.run_app(&mut GameApp::new(project))?;
     Ok(())
 }
