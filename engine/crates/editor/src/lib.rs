@@ -14,7 +14,7 @@ pub use scene_tree::{SceneTreeError, SceneTreeState};
 
 pub mod document;
 
-pub use document::{DocumentError, ProjectDocument, SceneDocument};
+pub use document::{DocumentError, PlaySession, ProjectDocument, SceneDocument};
 
 use std::{
     error::Error,

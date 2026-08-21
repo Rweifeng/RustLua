@@ -72,7 +72,40 @@ impl SceneDocument {
     }
 }
 
-/// 已打开项目的编辑器文档上下文。
+/// Play/Stop runtime snapshot used by the editor.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlaySession {
+    editor_snapshot: SceneDocument,
+    runtime_document: SceneDocument,
+}
+
+impl PlaySession {
+    pub fn start(document: &SceneDocument) -> Self {
+        Self {
+            editor_snapshot: document.clone(),
+            runtime_document: document.clone(),
+        }
+    }
+
+    pub fn runtime_document(&self) -> &SceneDocument {
+        &self.runtime_document
+    }
+
+    pub fn runtime_document_mut(&mut self) -> &mut SceneDocument {
+        &mut self.runtime_document
+    }
+
+    pub fn editor_snapshot(&self) -> &SceneDocument {
+        &self.editor_snapshot
+    }
+
+    /// Stop discards the runtime copy and returns the editor snapshot.
+    pub fn stop(self) -> SceneDocument {
+        self.editor_snapshot
+    }
+}
+
+/// Open project editor document context.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProjectDocument {
     pub project: ProjectInfo,
@@ -296,5 +329,58 @@ mod tests {
         document.new_scene("main");
         assert!(document.current_scene.as_ref().unwrap().is_dirty());
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn play_session_isolates_runtime_changes_and_restores_editor_snapshot() {
+        let mut document = SceneDocument::new_scene("main");
+        document
+            .scene
+            .add_entity(SceneEntityId(1), "Player", None)
+            .unwrap();
+        document.mark_clean();
+        let original = document.clone();
+
+        let mut session = PlaySession::start(&document);
+        session
+            .runtime_document_mut()
+            .scene
+            .entities
+            .get_mut(&SceneEntityId(1))
+            .unwrap()
+            .name = "RuntimePlayer".into();
+        session.runtime_document_mut().mark_dirty();
+
+        assert_eq!(session.editor_snapshot(), &original);
+        assert_eq!(
+            session.runtime_document().scene.entities[&SceneEntityId(1)].name,
+            "RuntimePlayer"
+        );
+        assert_eq!(document, original);
+        assert_eq!(session.stop(), original);
+    }
+
+    #[test]
+    fn play_stop_can_repeat_one_hundred_times_without_edit_state_drift() {
+        let mut document = SceneDocument::new_scene("main");
+        document
+            .scene
+            .add_entity(SceneEntityId(1), "Player", None)
+            .unwrap();
+        document.mark_clean();
+        let original = document.clone();
+
+        for iteration in 0..100 {
+            let mut session = PlaySession::start(&document);
+            session
+                .runtime_document_mut()
+                .scene
+                .metadata
+                .insert("frame".into(), iteration.to_string());
+            session.runtime_document_mut().mark_dirty();
+            let restored = session.stop();
+            assert_eq!(restored, original);
+            assert_eq!(document, original);
+        }
     }
 }

@@ -90,7 +90,7 @@
 | M5-A04 | Inspector 第一批组件 | M5-A03 | Transform、Sprite 引用、Lua 字段编辑和校验 | 36 个 editor 单测、保存重载测试、GUI Inspector 接入 | PASS | M5 |
 | M5-A05 | 资源浏览器与刷新 | M5-A04 | 资源扫描、筛选、刷新、失败状态可见 | 40 个 editor 单测、ResourceDatabase 持久化、GUI 刷新/筛选接入 | PASS | M5 |
 | M5-A06 | Lua ??? Console | M5-A04 | ????????????/??/????? | `engine_core` 100 ????`editor` 40 ????Console GUI ???Debug/Release ?? | PASS | M5 |
-| M5-A07 | Play/Stop 运行态隔离 | M5-A06 | 运行时修改不污染编辑态；100 次 Play/Stop 稳定 | 快照一致性、循环回归测试 | PENDING | M5 |
+| M5-A07 | Play/Stop ????? | M5-A06 | ????????????100 ? Play/Stop ?? | `PlaySession` ????????????????? Play/Stop ???42 ? editor ???Debug/Release ?? | PASS | M5 |
 | M5-A08 | Undo/Redo | M5-A03 | 属性、创建、删除、重命名、父子关系可逆 | 100 次随机操作一致性测试 | PENDING | M5 |
 | M5-A09 | 自动保存与崩溃恢复 | M5-A02 | 恢复有效版本；损坏恢复不覆盖主文件 | 故障注入、临时文件测试 | PENDING | M5 |
 | M5-A10 | 编辑器 MVP 综合验收 | M5-A01 至 M5-A09 | 十步工作流完成；无 P0/P1；打 v0.5 标签 | 综合 Demo、全量质量门、验收记录 | PENDING | M5 |

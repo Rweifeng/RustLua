@@ -5,7 +5,7 @@ use std::{
 };
 
 use editor::{
-    InspectorState, ProjectDocument, ProjectError, ProjectInfo, ResourceBrowserState,
+    InspectorState, PlaySession, ProjectDocument, ProjectError, ProjectInfo, ResourceBrowserState,
     SceneTreeState, TransformFields, check_project, open_project,
 };
 use eframe::egui;
@@ -99,6 +99,7 @@ struct EditorApp {
     new_scene_name: String,
     entity_name: String,
     status: String,
+    play_session: Option<PlaySession>,
 }
 
 impl EditorApp {
@@ -120,6 +121,7 @@ impl EditorApp {
             new_scene_name: "main".to_owned(),
             entity_name: "Entity".to_owned(),
             status: "尚未创建场景".to_owned(),
+            play_session: None,
         }
     }
 
@@ -202,8 +204,36 @@ impl EditorApp {
         runtime.diagnostics()
     }
 
+    fn is_playing(&self) -> bool {
+        self.play_session.is_some()
+    }
+
     fn current_scene(&self) -> Option<&editor::SceneDocument> {
         self.document.current_scene.as_ref()
+    }
+
+    fn play(&mut self) {
+        if self.is_playing() {
+            self.status = "Not currently in Play mode".to_owned();
+            return;
+        }
+        let Some(document) = self.current_scene() else {
+            self.status = "Please create or open a scene first".to_owned();
+            return;
+        };
+        self.play_session = Some(PlaySession::start(document));
+        self.status = "Play mode started; runtime changes stay isolated".to_owned();
+    }
+
+    fn stop(&mut self) {
+        let Some(session) = self.play_session.take() else {
+            self.status = "Not currently in Play mode".to_owned();
+            return;
+        };
+        self.document.current_scene = Some(session.stop());
+        self.tree.clear_selection();
+        self.inspector.clear_selection();
+        self.status = "Play stopped; runtime changes were discarded".to_owned();
     }
 
     fn scene_name(&self) -> String {
@@ -228,6 +258,11 @@ impl EditorApp {
     }
 
     fn apply_inspector(&mut self) {
+        if self.is_playing() {
+            self.status = "Play mode locks scene editing; click Stop first".to_owned();
+            return;
+        }
+
         let Some(scene) = self.document.current_scene.as_mut() else {
             self.status = "请先创建场景".to_owned();
             return;
@@ -258,6 +293,11 @@ impl EditorApp {
         };
     }
     fn create_scene(&mut self) {
+        if self.is_playing() {
+            self.status = "Play mode locks scene editing; click Stop first".to_owned();
+            return;
+        }
+
         let name = self.new_scene_name.trim().to_owned();
         if name.is_empty() {
             self.status = "场景名称不能为空".to_owned();
@@ -270,6 +310,11 @@ impl EditorApp {
     }
 
     fn add_entity(&mut self, parent: Option<SceneEntityId>) {
+        if self.is_playing() {
+            self.status = "Play mode locks scene editing; click Stop first".to_owned();
+            return;
+        }
+
         let name = self.entity_name.trim().to_owned();
         if name.is_empty() {
             self.status = "实体名称不能为空".to_owned();
@@ -287,6 +332,11 @@ impl EditorApp {
     }
 
     fn rename_selected(&mut self) {
+        if self.is_playing() {
+            self.status = "Play mode locks scene editing; click Stop first".to_owned();
+            return;
+        }
+
         let name = self.entity_name.trim().to_owned();
         let (document, tree) = (&mut self.document, &mut self.tree);
         let Some(scene) = document.current_scene.as_mut() else {
@@ -300,6 +350,11 @@ impl EditorApp {
     }
 
     fn delete_selected(&mut self) {
+        if self.is_playing() {
+            self.status = "Play mode locks scene editing; click Stop first".to_owned();
+            return;
+        }
+
         let (document, tree) = (&mut self.document, &mut self.tree);
         let Some(scene) = document.current_scene.as_mut() else {
             self.status = "请先创建场景".to_owned();
@@ -328,6 +383,15 @@ impl eframe::App for EditorApp {
                     ui.label("已保存");
                 }
                 ui.label(format!("状态：{}", self.status));
+                ui.separator();
+                if self.is_playing() {
+                    ui.colored_label(egui::Color32::LIGHT_GREEN, "Play");
+                    if ui.button("Stop").clicked() {
+                        self.stop();
+                    }
+                } else if ui.button("Play").clicked() {
+                    self.play();
+                }
             });
         });
 
