@@ -555,8 +555,9 @@ impl RuntimeScene {
         input: &InputSnapshot,
     ) -> Result<(), String> {
         self.script.set_delta(delta_seconds);
-        for _ in 0..steps {
-            self.script.set_input(input.clone());
+        let mut step_input = input.clone();
+        for step in 0..steps {
+            self.script.set_input(step_input.clone());
             let result = self
                 .script
                 .call_update()
@@ -570,6 +571,12 @@ impl RuntimeScene {
             self.script
                 .process_scene_transition()
                 .map_err(|error| error.to_string())?;
+            // One-shot edges are consumed by the first fixed step of a frame;
+            // clear them so catch-up steps in the same frame don't re-fire
+            // just_pressed actions (e.g. F4 switching scenes twice).
+            if step == 0 {
+                step_input.finish_frame();
+            }
         }
         self.script.with_world_mut(|world| {
             let _ = integrate_velocity(world, delta_seconds * steps as f32);
@@ -755,19 +762,19 @@ impl RuntimeScene {
         let visible: Vec<_> = texts
             .values()
             .filter(|text| text.visible)
-            .map(|text| (text.position, text.text.clone()))
+            .map(|text| (text.position, text.text.clone(), text.scale))
             .collect();
         if visible.is_empty() {
             return Ok(());
         }
         let atlas = TextAtlas::built_in();
         let mut glyph_vertices = Vec::new();
-        for (position, text) in visible {
+        for (position, text, scale) in visible {
             let mesh = TextLayout::build(
                 &text,
                 position,
                 TextStyle {
-                    scale: 1.0,
+                    scale,
                     color: [1.0, 1.0, 1.0, 1.0],
                     ..Default::default()
                 },
@@ -837,9 +844,11 @@ impl RuntimeScene {
                         .map_err(|error| error.to_string())?
                         .with_uv(uv_min, uv_max)
                         .map_err(|error| error.to_string())?;
+                    // Center each tile sprite on its cell so visuals align with
+                    // the tilemap's per-cell colliders (cell center = x*ts + ts/2).
                     let offset = Vec2::new(
-                        x as f32 * tilemap.tile_size.x * transform.scale.x,
-                        y as f32 * tilemap.tile_size.y * transform.scale.y,
+                        (x as f32 + 0.5) * tilemap.tile_size.x * transform.scale.x,
+                        (y as f32 + 0.5) * tilemap.tile_size.y * transform.scale.y,
                     );
                     let tile_transform = Transform {
                         position: Vec2::new(
@@ -1070,7 +1079,12 @@ impl GameApp {
         let Some(renderer) = self.renderer.as_mut() else {
             return;
         };
-        self.input.finish_frame();
+        // Only clear edge transitions on frames that actually ran a fixed step:
+        // otherwise, at high frame rates a `just_pressed` (e.g. F4 scene switch)
+        // is dropped before Lua ever consumes it.
+        if report.steps > 0 {
+            self.input.finish_frame();
+        }
         let snapshot = self.performance.snapshot();
         let mut mesh = self
             .runtime_scene

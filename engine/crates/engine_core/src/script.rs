@@ -51,6 +51,8 @@ pub struct UiText {
     pub text: String,
     pub visible: bool,
     pub position: [f32; 2],
+    /// Screen-space scale of the built-in glyph atlas (1.0 = 5x7 px glyphs).
+    pub scale: f32,
 }
 
 /// A screen-space filled bar (e.g. a health bar) rendered by the host.
@@ -485,6 +487,15 @@ impl LuaRuntime {
         let candidate = Lua::new();
         register_api(&candidate, Rc::clone(&self.state))
             .map_err(|error| LuaBridgeError::Init(error.to_string()))?;
+        // Let Lua `require` resolve sibling modules relative to the project
+        // script directory (e.g. `require("player")` -> `scripts/player.lua`).
+        if let Ok(package) = candidate.globals().get::<Table>("package")
+            && let Ok(existing) = package.get::<String>("path")
+            && let Some(script_dir) = path.parent()
+        {
+            let module_path = format!("{};{}", script_dir.join("?.lua").display(), existing);
+            let _ = package.set("path", module_path);
+        }
         candidate
             .load(source)
             .set_name(path.to_string_lossy())
@@ -1325,6 +1336,7 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
                     text,
                     visible: true,
                     position: [10.0, 10.0],
+                    scale: 1.0,
                 },
             );
             Ok(())
@@ -1333,17 +1345,20 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
     let s = Rc::clone(&state);
     ui.set(
         "text_at",
-        lua.create_function(move |_, (id, x, y, text): (String, f32, f32, String)| {
-            s.borrow_mut().ui.insert(
-                id,
-                UiText {
-                    text,
-                    visible: true,
-                    position: [x, y],
-                },
-            );
-            Ok(())
-        })?,
+        lua.create_function(
+            move |_, (id, x, y, text, scale): (String, f32, f32, String, Option<f32>)| {
+                s.borrow_mut().ui.insert(
+                    id,
+                    UiText {
+                        text,
+                        visible: true,
+                        position: [x, y],
+                        scale: scale.unwrap_or(1.0),
+                    },
+                );
+                Ok(())
+            },
+        )?,
     )?;
     let s = Rc::clone(&state);
     ui.set(
@@ -1385,6 +1400,7 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
                     text: String::new(),
                     visible: false,
                     position: [10.0, 10.0],
+                    scale: 1.0,
                 })
                 .visible = true;
             Ok(())
@@ -1401,6 +1417,7 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
                     text: String::new(),
                     visible: false,
                     position: [10.0, 10.0],
+                    scale: 1.0,
                 })
                 .visible = false;
             Ok(())
@@ -1831,6 +1848,50 @@ mod tests {
         let bar = bars.get("hp").expect("hp bar stored");
         assert_eq!(bar.ratio, 0.5);
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn ui_text_at_accepts_optional_scale() {
+        let mut runtime = LuaRuntime::new().unwrap();
+        let path = script(
+            "ui.text_at('small', 10, 10, 'a')\nui.text_at('big', 10, 30, 'b', 3)\nfunction update() return 'ok' end",
+        );
+        runtime.execute_project_script(&path).unwrap();
+        runtime.call_update().unwrap();
+        let texts = runtime.with_ui(|texts, _| texts.clone());
+        assert_eq!(
+            texts.get("small").expect("small text stored").scale,
+            1.0,
+            "no scale argument defaults to 1.0"
+        );
+        assert_eq!(
+            texts.get("big").expect("big text stored").scale,
+            3.0,
+            "optional scale argument is honored"
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn project_script_can_require_sibling_lua_modules() {
+        let root = std::env::temp_dir().join(format!("p2-module-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("helper.lua"),
+            "local M = {}\nfunction M.answer() return 42 end\nreturn M\n",
+        )
+        .unwrap();
+        let main = root.join("main.lua");
+        fs::write(
+            &main,
+            "local h = require('helper')\nassert(h.answer() == 42)\nfunction update() return 'ok' end\n",
+        )
+        .unwrap();
+
+        let mut runtime = LuaRuntime::new().unwrap();
+        runtime.execute_project_script(&main).unwrap();
+        assert_eq!(runtime.call_update().unwrap(), "ok");
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

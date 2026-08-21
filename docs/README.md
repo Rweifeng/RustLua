@@ -34,20 +34,15 @@
 - `tasks/done/M2-*`：M2 ECS；
 - `tasks/done/M3-*`：M3 2D；
 - `tasks/done/M4-*`：M4 资产、场景与脚本；
-- 当前里程碑标签：`v0.4-scripting`。
+- `tasks/done/M5-*`：M5 编辑器 MVP；
+- `tasks/done/M6-*`：M6 2D 游戏能力与样板游戏；
+- 当前里程碑标签：`v0.6-2d-gameplay`。
+
 ## 下一阶段
 
-- [M5 编辑器 MVP 实施计划](24-M5编辑器MVP实施计划.md)：M5-01 至 M5-10 的依赖顺序、实施条目、验收方案和风险；
-- M5 编辑器 MVP 已验收，任务记录：`tasks/done/M5-01-编辑器启动与项目打开.md` 至 `tasks/done/M5-10-编辑器MVP综合验收.md`；
-- 当前基线标签：`v0.5-editor-mvp`；
-- 下一里程碑 M6：2D 游戏能力 + 样板游戏；
-- M6-00 已完成（运行时场景实例化 + 玩家移动），任务记录：`tasks/done/M6-00-运行时场景实例化与玩家移动.md`；
-- M6-01 已完成（Tilemap 网格地图），任务记录：`tasks/done/M6-01-Tilemap.md`；
-- M6-01b 已完成（精灵与图块纹理渲染，替换调色板），任务记录：`tasks/done/M6-01b-精灵与图块纹理渲染.md`；
-- M6-02 已完成（动画状态机），任务记录：`tasks/done/M6-02-动画状态机.md`；
-- M6-03 已完成（Rapier 物理适配），任务记录：`tasks/done/M6-03-Rapier物理适配.md`；
-- M6-04 已完成（UI 血条 / 音频 / 粒子），任务记录：`tasks/done/M6-04-UI音频粒子.md`；
-- M6-05 已完成（存档与场景切换），任务记录：`tasks/done/M6-05-存档与场景切换.md`；
-- M6-06 已完成（样板游戏垂直切片，俯视角 Roguelite + CC0 资源），任务记录：`tasks/done/M6-06-样板游戏垂直切片.md`；
+- [M6 收尾与 M7 工程化实施计划](25-M6收尾与M7工程化实施计划.md)：M6 里程碑验收 + M7-01~06（assetc/发布配置/崩溃日志/性能基线/干净机器/发布候选）；
+- M6 里程碑已验收（2026-08-22），任务记录：`tasks/done/M6-07-M6里程碑综合验收.md`；
+- M6-00~06 已完成（运行时实例化、Tilemap、纹理渲染、动画、物理、UI/音频/粒子、存档/场景切换、样板游戏垂直切片），任务记录见 `tasks/done/M6-*`；
+- 样板游戏脚本已按职责拆分：`main.lua` 为入口，`game/state/player/enemies/coins/save_manager/hud` 各模块（见 `docs/23-工程目录功能说明.md`）；
 - 第三方资源许可：[THIRD_PARTY.md](THIRD_PARTY.md)；
 - 里程碑验收证据：`docs/acceptance-evidence/`（`artifacts/` 目录为可再生输出，已移除）。

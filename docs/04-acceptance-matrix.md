@@ -94,3 +94,17 @@
 | M5-A08 | Undo/Redo | M5-A03 | 属性、创建、删除、重命名、父子关系可逆；GUI Undo/Redo 按钮与 Ctrl/Cmd+Z/Y 已接入 | history.rs 单元测试、全量质量门 | `tasks/done/M5-08-Undo-Redo命令系统.md`；`artifacts/logs/m5/m5-10-comprehensive-acceptance.txt` | PASS | M5 |
 | M5-A09 | 自动保存与崩溃恢复 | M5-A02 | 恢复有效版本；损坏恢复不覆盖主文件；启动扫描并提供 Recover/Discard 提示；保存后清理 | recovery.rs 单元测试（故障注入）、全量质量门 | `tasks/done/M5-09-自动保存与崩溃恢复.md`；`artifacts/logs/m5/m5-10-comprehensive-acceptance.txt` | PASS | M5 |
 | M5-A10 | 编辑器 MVP 综合验收 | M5-A01 至 M5-A09 | 十步工作流完成；无 P0/P1；打 v0.5 标签 | 全量质量门（fmt/clippy/test/Debug/Release）、editor --check、GUI 启动冒烟、Release 资源检查 | `tasks/done/M5-10-编辑器MVP综合验收.md`；`artifacts/logs/m5/m5-10-comprehensive-acceptance.txt` | PASS | M5 |
+
+## M6 2D 游戏能力与样板游戏（收尾验收）
+
+| ID | 功能 | 前置 | 主要验收 | 自动化证据 | 状态 | 版本 |
+|---|---|---|---|---|---|---|
+| M6-A01 | 运行时场景实例化与玩家移动 | M5 | 场景实例化后玩家可移动；Lua 驱动移动 | 质量门、runtime demo 日志 | `tasks/done/M6-00-运行时场景实例化与玩家移动.md`；`docs/acceptance-evidence/m6/m6-00-runtime-demo.log` | PASS | M6 |
+| M6-A02 | Tilemap 网格地图 | M6-A01 | 创建/保存/加载地图；图块尺寸可配；碰撞层与视觉层分离；运行时不为每个图块独立 Draw Call | tilemap 单测、质量门 | `tasks/done/M6-01-Tilemap.md`；`docs/acceptance-evidence/m6/m6-01-tilemap-demo.log` | PASS | M6 |
+| M6-A03 | 精灵与图块纹理渲染 | M6-A02 | 精灵/图块真实纹理渲染替换调色板 | 纹理渲染质量门、demo 日志 | `tasks/done/M6-01b-精灵与图块纹理渲染.md`；`docs/acceptance-evidence/m6/m6-01b-texture-rendering.log` | PASS | M6 |
+| M6-A04 | 动画状态机 | M6-A03 | idle/move/attack/hit/death 状态；切换条件可测试；结束事件只触发一次；Lua 可读切状态 | animation 单测、质量门 | `tasks/done/M6-02-动画状态机.md`；`docs/acceptance-evidence/m6/m6-02-animation.log` | PASS | M6 |
+| M6-A05 | Rapier 物理适配 | M6-A04 | 刚体/碰撞体/触发器；碰撞事件进 Lua；固定时间步执行；不自研求解器 | physics 单测、质量门 | `tasks/done/M6-03-Rapier物理适配.md`；`docs/acceptance-evidence/m6/m6-03-physics.log` | PASS | M6 |
+| M6-A06 | UI 血条 / 音频 / 粒子 | M6-A05 | 血条/目标文本；OGG/WAV 音效；粒子生成/更新/回收 | ui/audio/particle 测试、质量门 | `tasks/done/M6-04-UI音频粒子.md`；`docs/acceptance-evidence/m6/m6-04-ui-audio-particles.log` | PASS | M6 |
+| M6-A07 | 存档与场景切换 | M6-A06 | 保存/读取/覆盖存档；格式有版本号；切换时资源与脚本生命周期正确；损坏存档不崩溃 | save 单测、质量门 | `tasks/done/M6-05-存档与场景切换.md`；`docs/acceptance-evidence/m6/m6-05-save-scene.log` | PASS | M6 |
+| M6-A08 | 样板游戏垂直切片 | M6-A07 | 可玩一局：移动/攻击/敌人/金币/胜负/UI/音效/存档；CC0 资源分目录 | 全量质量门（184 测试）、Release 运行 | `tasks/done/M6-06-样板游戏垂直切片.md`；`docs/acceptance-evidence/m6/m6-06-sample-game.log` | PASS | M6 |
+| M6-A09 | M6 里程碑综合验收 | M6-A01 至 M6-A08 | 完整跑通一局（VICTORY/DEFEATED/存读档/切场景）；30 分钟稳定性；无 P0/P1；打 v0.6 标签；画面视觉验收；实机 4 问题（文本缩放/碰撞对齐/自动读档/F4 响应）已修复并经负责人复验通过 | 全量质量门（187 测试）、M6 综合验收日志、自动读档验证日志、负责人实机复验 | `tasks/done/M6-07-M6里程碑综合验收.md`；`docs/acceptance-evidence/m6/m6-07-milestone-acceptance.log` | PASS | v0.6-2d-gameplay |

@@ -22,8 +22,8 @@
 | `physics` | `overlap/raycast` | 最小圆形重叠和射线查询 |
 | `scene` | `load/reload` | 场景状态切换接口 |
 | `asset` | `load/release` | 资源句柄生命周期接口 |
-| `ui` | `text/show/hide/get` | 最小文本 UI 状态接口 |
-| `save` | `read/write` | 键值存档接口 |
+| `ui` | `text/text_at/show/hide/get` | 最小文本 UI 状态接口；`text_at(id,x,y,text[,scale])` 可选缩放 |
+| `save` | `read/write/load/commit` | 键值存档接口（load 从磁盘载入，commit 原子写入） |
 | `app` | `quit` | 请求退出应用 |
 
 ## 安全与错误策略
@@ -34,6 +34,12 @@
 - API 错误转换为 Lua 错误，不通过 panic 终止宿主；
 - API 运行在主线程共享状态中，后续可替换为 ECS Command 队列以支持安全跨系统修改；
 - 当前 `scene/asset/ui/save` 是可测试的内存状态适配层，真实持久化和渲染绑定留给后续 M4/M5 任务。
+
+## 脚本组织
+
+- 项目脚本（`scripts/main.lua`）支持 `require` 加载同目录模块（`package.path` 已包含脚本目录，如 `require("player")` → `scripts/player.lua`）；
+- 样板游戏将玩法按职责拆分：`game.lua` 编排、`state.lua` 共享状态、`player/enemies/coins/save_manager/hud` 各司其职，`main.lua` 仅作入口转发生命周期回调；
+- 热重载会重建 Lua VM，模块随脚本一并重新加载（闭包/协程/全局状态不跨重载迁移，见 [19-lua-hot-reload.md](19-lua-hot-reload.md)）。
 
 ## 验收
 
