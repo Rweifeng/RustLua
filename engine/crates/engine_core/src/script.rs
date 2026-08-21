@@ -17,6 +17,7 @@ use crate::{
     input::{InputKey, InputSnapshot, MouseButton},
     particle::{Particle, ParticleSystem},
     physics::{ColliderDesc, ColliderShape, PhysicsWorld},
+    save::{decode as decode_save, encode as encode_save},
     scene::Scene,
     sprite::{Sprite, SpriteAsset},
     tilemap::Tilemap,
@@ -33,6 +34,9 @@ struct ScriptState {
     names: BTreeMap<String, EntityId>,
     health: BTreeMap<EntityId, f32>,
     scene: Option<String>,
+    scene_pending_load: Option<String>,
+    project_root: Option<PathBuf>,
+    save_path: Option<PathBuf>,
     assets: BTreeMap<String, String>,
     ui: BTreeMap<String, UiText>,
     ui_bars: BTreeMap<String, UiBar>,
@@ -319,6 +323,59 @@ impl LuaRuntime {
     /// Sets the directory audio clips are loaded from.
     pub fn set_audio_asset_dir(&mut self, dir: PathBuf) {
         self.state.borrow_mut().audio.set_asset_dir(dir);
+    }
+
+    /// Sets the project root, used to resolve `scenes/<name>.scene` on load.
+    pub fn set_project_root(&mut self, root: PathBuf) {
+        self.state.borrow_mut().project_root = Some(root);
+    }
+
+    /// Sets the file path save data is committed to / loaded from.
+    pub fn set_save_path(&mut self, path: PathBuf) {
+        self.state.borrow_mut().save_path = Some(path);
+    }
+
+    /// Applies a pending `scene.load(name)` requested by Lua: clears the ECS
+    /// world, physics bodies, particles and UI, instantiates the new scene,
+    /// and re-runs the project script's `on_create` so the new level is
+    /// initialized with fresh entity handles. Saves and audio persist.
+    pub fn process_scene_transition(&mut self) -> Result<(), LuaBridgeError> {
+        let pending = self.state.borrow().scene_pending_load.clone();
+        let Some(name) = pending else {
+            return Ok(());
+        };
+        let root = self
+            .state
+            .borrow()
+            .project_root
+            .clone()
+            .ok_or_else(|| LuaBridgeError::Api("no project root configured".to_owned()))?;
+        let path = root.join("scenes").join(format!("{name}.scene"));
+        let scene = Scene::load(&path).map_err(|error| {
+            LuaBridgeError::Api(format!("scene {name} failed to load: {error}"))
+        })?;
+        {
+            let mut state = self.state.borrow_mut();
+            state.world = World::new();
+            state.physics = PhysicsWorld::new();
+            state.particles = ParticleSystem::new();
+            state.names.clear();
+            state.health.clear();
+            state.ui.clear();
+            state.ui_bars.clear();
+            state.scene_pending_load = None;
+            state.scene = Some(name.clone());
+        }
+        let instantiated = self.instantiate_scene(&scene)?;
+        call_optional(&self.lua, "on_create").map_err(|error| LuaBridgeError::Runtime {
+            path: self
+                .current_path
+                .clone()
+                .unwrap_or_else(|| PathBuf::from("<project script>")),
+            source: error.to_string(),
+        })?;
+        tracing::info!(target: "scene", name = %name, entities = instantiated, "[scene] switched");
+        Ok(())
     }
 
     /// Gives the host a read view of the UI text and bar elements.
@@ -612,6 +669,17 @@ fn table_vec(lua: &Lua, x: f32, y: f32) -> LuaResult<Table> {
     table.set(1, x)?;
     table.set(2, y)?;
     Ok(table)
+}
+
+/// Writes `text` to `path` atomically (temp file + rename), like scene saves.
+fn atomic_write(path: &Path, text: &str) -> Result<(), std::io::Error> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let temp = path.with_extension("tmp");
+    std::fs::write(&temp, text)?;
+    std::fs::rename(temp, path)?;
+    Ok(())
 }
 
 /// Converts a tile map's solid cells into static cuboid colliders attached to
@@ -1173,8 +1241,17 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
     scene.set(
         "load",
         lua.create_function(move |_, name: String| {
-            s.borrow_mut().scene = Some(name);
-            Ok(())
+            let state = s.borrow();
+            let exists = state.project_root.as_ref().is_some_and(|root| {
+                root.join("scenes").join(format!("{name}.scene")).is_file()
+            });
+            if exists {
+                drop(state);
+                s.borrow_mut().scene_pending_load = Some(name);
+            } else {
+                tracing::warn!(target: "scene", name = %name, "[scene] scene file not found; load ignored");
+            }
+            Ok(exists)
         })?,
     )?;
     let s = Rc::clone(&state);
@@ -1324,6 +1401,51 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
         "read",
         lua.create_function(move |_, key: String| Ok(s.borrow().save_data.get(&key).cloned()))?,
     )?;
+    let s = Rc::clone(&state);
+    save.set(
+        "commit",
+        lua.create_function(move |_, ()| {
+            let state = s.borrow();
+            let Some(path) = state.save_path.clone() else {
+                tracing::warn!(target: "save", "[save] no save path configured; commit ignored");
+                return Ok(false);
+            };
+            let text = encode_save(&state.save_data);
+            let result = atomic_write(&path, &text);
+            match &result {
+                Ok(()) => tracing::info!(target: "save", path = %path.display(), "[save] committed"),
+                Err(error) => {
+                    tracing::error!(target: "save", path = %path.display(), error = %error, "[save] commit failed")
+                }
+            }
+            Ok(result.is_ok())
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    save.set(
+        "load",
+        lua.create_function(move |_, ()| {
+            let mut state = s.borrow_mut();
+            let Some(path) = state.save_path.clone() else {
+                tracing::warn!(target: "save", "[save] no save path configured; load ignored");
+                return Ok(false);
+            };
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                return Ok(false); // no save yet is not an error
+            };
+            match decode_save(&text) {
+                Ok(data) => {
+                    state.save_data = data;
+                    tracing::info!(target: "save", path = %path.display(), "[save] loaded");
+                    Ok(true)
+                }
+                Err(error) => {
+                    tracing::warn!(target: "save", path = %path.display(), error = %error, "[save] corrupt save ignored");
+                    Ok(false)
+                }
+            }
+        })?,
+    )?;
     lua.globals().set("save", save)?;
 
     let app = lua.create_table()?;
@@ -1350,6 +1472,9 @@ fn parse_key(key: &str) -> InputKey {
         "d" => InputKey::D,
         "space" => InputKey::Space,
         "escape" => InputKey::Escape,
+        "f1" => InputKey::Other(1),
+        "f2" => InputKey::Other(2),
+        "f4" => InputKey::Other(4),
         _ => InputKey::Other(0),
     }
 }
@@ -1672,6 +1797,73 @@ mod tests {
         let bar = bars.get("hp").expect("hp bar stored");
         assert_eq!(bar.ratio, 0.5);
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn save_commit_load_and_scene_transition() {
+        use crate::scene::{Scene, SceneEntityId};
+
+        let root = std::env::temp_dir().join(format!("p2-save-scene-{}", std::process::id()));
+        let scenes = root.join("scenes");
+        fs::create_dir_all(&scenes).unwrap();
+        let mut arena = Scene::new("arena");
+        arena.add_entity(SceneEntityId(1), "Player", None).unwrap();
+        arena
+            .entities
+            .get_mut(&SceneEntityId(1))
+            .unwrap()
+            .components
+            .insert(
+                "Transform".into(),
+                "x=0;y=0;rotation=0;scale_x=1;scale_y=1".into(),
+            );
+        arena
+            .entities
+            .get_mut(&SceneEntityId(1))
+            .unwrap()
+            .components
+            .insert("Sprite".into(), "assets/player.png".into());
+        arena.save(scenes.join("arena.scene")).unwrap();
+
+        // save + commit to disk
+        let mut runtime = LuaRuntime::new().unwrap();
+        runtime.set_project_root(root.clone());
+        runtime.set_save_path(root.join(".p2").join("save.sav"));
+        let first = script(
+            "save.write('hp', '75')\nsave.write('scene', 'arena')\nassert(save.commit())\nfunction update() return 'ok' end",
+        );
+        runtime.execute_project_script(&first).unwrap();
+        runtime.call_update().unwrap();
+        assert!(root.join(".p2").join("save.sav").is_file());
+
+        // a fresh runtime loads the save back
+        let mut fresh = LuaRuntime::new().unwrap();
+        fresh.set_save_path(root.join(".p2").join("save.sav"));
+        let load_script = script(
+            "assert(save.load())\nassert(save.read('hp') == '75')\nfunction update() return 'ok' end",
+        );
+        fresh.execute_project_script(&load_script).unwrap();
+        fresh.call_update().unwrap();
+
+        // scene.load queues a transition; process_scene_transition applies it
+        let switch = script("assert(scene.load('arena'))\nfunction update() return 'ok' end");
+        runtime.execute_project_script(&switch).unwrap();
+        runtime.process_scene_transition().unwrap();
+        let players = runtime.with_world(|world| world.entities_with::<Sprite>());
+        assert_eq!(players.len(), 1, "arena player instantiated after switch");
+        assert_eq!(runtime.with_world(|world| world.entity_count()), 1);
+        // Lua can find the freshly-instantiated player after the transition
+        let check = script(
+            "local p = entity.find('Player')\nassert(p ~= nil)\nfunction update() return 'ok' end",
+        );
+        runtime.execute_project_script(&check).unwrap();
+        runtime.call_update().unwrap();
+
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_file(first);
+        let _ = fs::remove_file(load_script);
+        let _ = fs::remove_file(switch);
+        let _ = fs::remove_file(check);
     }
 
     #[test]

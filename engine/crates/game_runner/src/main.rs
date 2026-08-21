@@ -522,6 +522,8 @@ impl RuntimeScene {
         tracing::info!(target: "ecs", "[ecs] world initialized entities={instantiated}");
         if let Some(root) = project_root {
             script.set_audio_asset_dir(root.join("assets"));
+            script.set_project_root(root.to_path_buf());
+            script.set_save_path(root.join(".p2").join("save.sav"));
             let script_path = root.join("scripts/main.lua");
             if script_path.is_file() {
                 script
@@ -560,6 +562,10 @@ impl RuntimeScene {
             // positions back into ECS Transforms.
             self.script.step_physics(delta_seconds);
             self.script.step_particles(delta_seconds);
+            // Apply a pending scene.load so level switches happen between steps.
+            self.script
+                .process_scene_transition()
+                .map_err(|error| error.to_string())?;
         }
         self.script.with_world_mut(|world| {
             let _ = integrate_velocity(world, delta_seconds * steps as f32);
@@ -1296,6 +1302,9 @@ fn map_key(key: &winit::keyboard::Key) -> Option<InputKey> {
         },
         winit::keyboard::Key::Named(winit::keyboard::NamedKey::Space) => Some(InputKey::Space),
         winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape) => Some(InputKey::Escape),
+        winit::keyboard::Key::Named(winit::keyboard::NamedKey::F1) => Some(InputKey::Other(1)),
+        winit::keyboard::Key::Named(winit::keyboard::NamedKey::F2) => Some(InputKey::Other(2)),
+        winit::keyboard::Key::Named(winit::keyboard::NamedKey::F4) => Some(InputKey::Other(4)),
         _ => None,
     }
 }
