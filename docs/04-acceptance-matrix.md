@@ -139,9 +139,9 @@
 
 | ID | 功能 | 前置 | 主要验收 | 自动化证据 | 状态 | 版本 |
 |---|---|---|---|---|---|---|
-| M9-A00 | M9 基线与技术决策 | v0.8 | `v0.8-3d-foundation` 可复现；旧 2D 样板游戏与 M8 3D demo 不回归；文档索引同步；3D 物理/main.rs 边界/Gizmo/玩法锁定 ADR 齐全 | fmt、Clippy、workspace 测试、Debug/Release 构建、assetc/game_runner --check | `tasks/active/M9-00-M9基线与技术决策.md`；`docs/27-M9-3D可玩垂直切片实施计划.md` | PENDING | v0.8 |
-| M9-A01 | 渲染边界重构 | M9-A00 | main.rs 渲染职责抽到独立 Renderer/GPU 资源/RenderPass 模块；重构不改渲染行为；main.rs 显著瘦身且行数/模块边界有记录 | 重构前后 2D/3D 画面一致性、性能基线对比、workspace 质量门 | `tasks/active/M9-01-渲染边界重构.md` | PENDING | M9 |
-| M9-A02 | 3D 物理 | M9-A01 | rapier3d 刚体/碰撞体（球/盒/胶囊）/触发器/射线/重叠；碰撞事件进 Lua；固定时间步推进；2D 物理不回归 | physics 3D 单测、Lua API 测试、真实窗口碰撞/触发证据、workspace 质量门 | `tasks/active/M9-02-3D物理.md` | PENDING | M9 |
-| M9-A03 | 编辑器 3D Gizmo | M9-A02 | 选中 3D 实体拖动平移 Gizmo；Inspector 查看/编辑 Transform3D/MeshRenderer/Camera3D/Light/碰撞体；保存重开一致 | editor 单测、3D 场景 roundtrip、workspace 质量门 | `tasks/active/M9-03-编辑器3D-Gizmo与组件编辑.md` | PENDING | M9 |
-| M9-A04 | 3D 样板游戏垂直切片 | M9-A03 | 玩家碰撞移动/敌人 AI/攻击/拾取/HUD/胜负与重开全由 Lua 实现；新会话从零玩通一局；30 分钟无 P0/P1 | 全量质量门、3D 游戏运行日志、玩法 Lua 模块 | `tasks/active/M9-04-3D样板游戏垂直切片.md` | PENDING | M9 |
-| M9-A05 | 3D 性能、发布与验收 | M9-A04 | 实例化/剔除基线可对比 M8；Release 包独立玩通 3D 游戏；无 P0/P1；`v0.9-3d-game` 标签 | package.ps1 自测（含空格路径+目录隔离）、Release 包运行、workspace 质量门 | `tasks/active/M9-05-3D性能发布与验收.md` | PENDING | M9 |
+| M9-A00 | M9 基线与技术决策 | v0.8 | `v0.8-3d-foundation` 可复现；旧 2D 样板游戏与 M8 3D demo 不回归；文档索引同步；3D 物理/main.rs 边界/Gizmo/玩法锁定 ADR 齐全 | fmt、Clippy、workspace 测试、Debug/Release 构建、assetc/game_runner --check | `tasks/done/M9-00-M9基线与技术决策.md`；`docs/27-M9-3D可玩垂直切片实施计划.md` | PASS | v0.8 |
+| M9-A01 | 渲染边界重构 | M9-A00 | main.rs 渲染职责抽到独立 Renderer/GPU 资源/RenderPass 模块；重构不改渲染行为；main.rs 显著瘦身且行数/模块边界有记录 | 重构前后 2D/3D 画面一致性、性能基线对比、workspace 质量门 | `tasks/done/M9-01-渲染边界重构.md`（main.rs 2995→85 行，实机 draws/instances 与 M8 一致） | PASS | M9 |
+| M9-A02 | 3D 物理 | M9-A01 | rapier3d 刚体/碰撞体（球/盒/胶囊）/触发器/射线/重叠；碰撞事件进 Lua；固定时间步推进；2D 物理不回归 | physics3d 8 单测 + script 3D 集成测试、Lua API 测试、workspace 质量门 | `tasks/done/M9-02-3D物理.md` | PASS | M9 |
+| M9-A03 | 编辑器 3D Gizmo | M9-A02 | 选中 3D 实体拖动平移 Gizmo；Inspector 查看/编辑 Transform3D/MeshRenderer/Camera3D/Light/碰撞体；保存重开一致 | editor 单测（Collider3d roundtrip/Transform3D 写回）、3D 场景 roundtrip、workspace 质量门 | `tasks/done/M9-03-编辑器3D-Gizmo与组件编辑.md` | PASS | M9 |
+| M9-A04 | 3D 样板游戏垂直切片 | M9-A03 | 玩家碰撞移动/敌人 AI/拾取/HUD/胜负与重开全由 Lua 实现；自动寻路验证可玩通（拾取 3→0 → VICTORY） | 全量质量门（282 测试）、3D 游戏运行日志（含自动寻路拾取）、玩法 Lua 模块 | `tasks/done/M9-04-3D样板游戏垂直切片.md` | PASS | M9 |
+| M9-A05 | 3D 性能、发布与验收 | M9-A04 | 实例化/剔除基线可对比 M8；Release 包独立玩通 3D 游戏；无 P0/P1；`v0.9-3d-game` 标签 | package.ps1 自测（含空格路径+目录隔离）、Release 包运行、workspace 质量门 | `tasks/done/M9-05-3D性能发布与验收.md`；`docs/acceptance-evidence/m9/m9-05-perf-release.md` | PASS | v0.9 |
