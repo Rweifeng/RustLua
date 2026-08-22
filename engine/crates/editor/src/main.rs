@@ -3,7 +3,11 @@
 use std::{
     env,
     error::Error,
+    io::BufRead,
     path::{Path, PathBuf},
+    process::{Command, Stdio},
+    sync::mpsc::{Receiver, Sender, channel},
+    thread,
     time::{Duration, SystemTime},
 };
 
@@ -230,6 +234,24 @@ struct EditorApp {
     scene_state: SceneEditorState,
     inspector_clipboard: Option<ComponentClipboard>,
     inspector_transform_open: bool,
+    publish: PublishState,
+}
+
+/// 发布（Release 打包）后台任务状态。
+#[derive(Default)]
+struct PublishState {
+    rx: Option<Receiver<PublishEvent>>,
+    output: String,
+    running: bool,
+    done: bool,
+    success: bool,
+    show: bool,
+    package_dir: Option<PathBuf>,
+}
+
+enum PublishEvent {
+    Line(String),
+    Finished(bool),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -308,6 +330,7 @@ impl EditorApp {
             scene_state: SceneEditorState::default(),
             inspector_clipboard: None,
             inspector_transform_open: true,
+            publish: PublishState::default(),
         }
     }
 
@@ -747,6 +770,173 @@ impl EditorApp {
     }
 }
 
+impl EditorApp {
+    /// 启动 Release 发布打包（后台执行 scripts/package.ps1）。
+    fn start_publish(&mut self) {
+        let Some(script) = find_publish_script(&self.project.root) else {
+            self.publish.output = format!(
+                "未找到发布脚本（向上查找 scripts/package.ps1）：{}",
+                self.project.root.display()
+            );
+            self.publish.done = true;
+            self.publish.success = false;
+            self.publish.show = true;
+            return;
+        };
+        self.publish.output.clear();
+        self.publish.done = false;
+        self.publish.running = true;
+        self.publish.show = true;
+        // 发布脚本位于 <workspace>/scripts/package.ps1，发布包输出到 <workspace>/artifacts/builds/release/p2-game。
+        let workspace_root = script
+            .parent()
+            .and_then(|parent| parent.parent())
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+        self.publish.package_dir = Some(workspace_root.join("artifacts/builds/release/p2-game"));
+        let (tx, rx) = channel();
+        self.publish.rx = Some(rx);
+        spawn_publish(script, tx);
+    }
+
+    /// 每帧拉取发布进度输出。
+    fn poll_publish(&mut self) {
+        if !self.publish.running {
+            return;
+        }
+        let mut finished = false;
+        if let Some(rx) = self.publish.rx.as_ref()
+            && let Ok(event) = rx.try_recv()
+        {
+            match event {
+                PublishEvent::Line(text) => self.publish.output.push_str(&text),
+                PublishEvent::Finished(success) => {
+                    finished = true;
+                    self.publish.success = success;
+                }
+            }
+            // 继续排空剩余事件
+            while let Ok(event) = rx.try_recv() {
+                match event {
+                    PublishEvent::Line(text) => self.publish.output.push_str(&text),
+                    PublishEvent::Finished(success) => {
+                        finished = true;
+                        self.publish.success = success;
+                    }
+                }
+            }
+        }
+        if finished {
+            self.publish.running = false;
+            self.publish.done = true;
+            self.publish.rx = None;
+        }
+    }
+
+    fn publish_window(&mut self, context: &egui::Context) {
+        if !self.publish.show {
+            return;
+        }
+        egui::Window::new("发布打包").show(context, |ui| {
+            let status = if self.publish.running {
+                "正在打包发布..."
+            } else if self.publish.success {
+                "✔ 发布完成"
+            } else {
+                "✘ 发布失败"
+            };
+            ui.colored_label(
+                if self.publish.success {
+                    egui::Color32::LIGHT_GREEN
+                } else {
+                    egui::Color32::LIGHT_RED
+                },
+                status,
+            );
+            egui::ScrollArea::vertical()
+                .max_height(360.0)
+                .stick_to_bottom(true)
+                .show(ui, |ui| {
+                    ui.monospace(&self.publish.output);
+                });
+            if self.publish.done {
+                if let Some(dir) = &self.publish.package_dir {
+                    ui.label(format!("发布包：{}", dir.display()));
+                    if ui.button("打开目录").clicked() {
+                        let _ = Command::new("explorer").arg(dir).spawn();
+                    }
+                }
+                if ui.button("关闭").clicked() {
+                    self.publish.show = false;
+                    self.publish.done = false;
+                }
+            }
+        });
+    }
+}
+
+/// 从项目根向上查找 `scripts/package.ps1`（编辑器根可能是游戏目录或工作区根）。
+fn find_publish_script(root: &Path) -> Option<PathBuf> {
+    root.ancestors()
+        .map(|dir| dir.join("scripts").join("package.ps1"))
+        .find(|path| path.is_file())
+}
+
+/// 后台执行发布脚本，把 stdout/stderr 行转发给 UI 线程。
+fn spawn_publish(script: PathBuf, tx: Sender<PublishEvent>) {
+    thread::spawn(move || {
+        let mut child = match Command::new("powershell")
+            .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
+            .arg(&script)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+        {
+            Ok(child) => child,
+            Err(error) => {
+                let _ = tx.send(PublishEvent::Line(format!("无法启动发布脚本：{error}\n")));
+                let _ = tx.send(PublishEvent::Finished(false));
+                return;
+            }
+        };
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+        let tx_out = tx.clone();
+        let tx_err = tx.clone();
+        let h1 = thread::spawn(move || {
+            if let Some(pipe) = stdout {
+                for line in std::io::BufReader::new(pipe).lines() {
+                    if let Ok(line) = line {
+                        if tx_out.send(PublishEvent::Line(line + "\n")).is_err() {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+                }
+            }
+        });
+        let h2 = thread::spawn(move || {
+            if let Some(pipe) = stderr {
+                for line in std::io::BufReader::new(pipe).lines() {
+                    if let Ok(line) = line {
+                        if tx_err.send(PublishEvent::Line(line + "\n")).is_err() {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+                }
+            }
+        });
+        let status = child.wait();
+        let _ = h1.join();
+        let _ = h2.join();
+        let success = status.map(|s| s.success()).unwrap_or(false);
+        let _ = tx.send(PublishEvent::Finished(success));
+    });
+}
+
 impl eframe::App for EditorApp {
     fn update(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
         if self.project_loaded
@@ -765,6 +955,7 @@ impl eframe::App for EditorApp {
             self.redo();
         }
         self.sync_hierarchy_metadata();
+        self.poll_publish();
         egui::TopBottomPanel::top("header").show(context, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("RustLua 编辑器");
@@ -778,6 +969,10 @@ impl eframe::App for EditorApp {
                 }
                 if ui.button("Save").clicked() {
                     self.save_scene();
+                }
+                ui.separator();
+                if ui.button("打包发布").clicked() && !self.publish.running {
+                    self.start_publish();
                 }
             });
             ui.horizontal(|ui| {
@@ -986,6 +1181,8 @@ impl eframe::App for EditorApp {
         if refresh_resources {
             self.refresh_resources();
         }
+
+        self.publish_window(context);
     }
 }
 fn encode_transform(transform: TransformFields) -> String {
