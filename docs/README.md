@@ -41,12 +41,13 @@
 - `tasks/done/M7-*`：M7 工程化与发布（assetc/发布配置/崩溃日志/性能基线/干净机器/发布候选/压缩加密/体积优化/编辑器进度面板）；
 - `tasks/done/M8-*`：M8 轻量 3D（glTF/Math3D/Camera3D/Mesh/Depth/光照阴影PBR/骨骼动画/剔除实例化/3D Demo 与发布验收）；
 - `tasks/done/M9-*`：M9 3D 可玩垂直切片（已验收，计划见 [27-M9-3D可玩垂直切片实施计划.md](27-M9-3D可玩垂直切片实施计划.md)）；
+- `tasks/active/M10-*`：M10 编辑器强化（当前阶段，计划见 [28-编辑器强化实施计划.md](28-编辑器强化实施计划.md)）；
 - 当前里程碑标签：`v0.9-3d-game`。
 
 ## 当前状态与下一阶段
 
-- M9 已全部实施并验收（2026-08-22，`v0.9-3d-game`），任务记录见 `tasks/done/M9-*`；[27-M9-3D可玩垂直切片实施计划.md](27-M9-3D可玩垂直切片实施计划.md)保留为历史计划；
-- M0–M9 路线图已全部完成：2D 样板游戏（俯视角 Roguelite）+ 3D 可玩样板游戏（`game3d.scene`：碰撞移动/敌人/拾取/轨道相机/贴图）；
+- M0–M9 路线图已全部完成（`v0.9-3d-game`，2026-08-22）：2D 样板游戏（俯视角 Roguelite）+ 3D 可玩样板游戏（`game3d.scene`：碰撞移动/敌人/拾取/轨道相机/贴图）；
+- 下一阶段为 M10 编辑器强化（对标 Unity/Godot/UE5）：引擎内嵌游戏预览 + 3D 透视视口 + 编辑体验，实施方案见 [28-编辑器强化实施计划.md](28-编辑器强化实施计划.md)；
 - 发布包：`artifacts/builds/release/p2-game/`（约 15MB，加密开启；`game_runner.exe --pack pack`）；3D 性能基线：`docs/acceptance-evidence/m9/`；
 - 里程碑验收证据：`docs/acceptance-evidence/`（`artifacts/` 目录为可再生输出）；
-- 后续里程碑：M0–M9 路线图已完成，下一阶段由负责人决定（如 3D 游戏深化 / 2D 产品化 / 架构扩展）。
+- 后续里程碑：M10 编辑器强化。
