@@ -122,6 +122,7 @@
 | M8-A06 | 场景、Lua 与编辑器接入 | M8-A05 | 旧场景可加载；新场景 save/load roundtrip；Lua 移动角色与切换相机；编辑器 Inspector 查看/编辑 3D 组件；assetc package/--pack 兼容 | 场景迁移/组件单测、Lua 3D API 单测、编辑器 Inspector 单测、真实窗口日志证据、workspace 质量门 | `tasks/done/M8-06-场景Lua与编辑器接入.md`；`docs/acceptance-evidence/m8/m8-06-scene-lua-editor-check.md` | PASS | v0.7 |
 | M8-A07 | 骨骼动画 | M8-A06 | glTF skin/joint/animation 导入；时间推进/循环/暂停/非法关节引用单测；Demo 角色确实运动；停止/重启/切场景无残留；Lua 查询/切换剪辑 | skin/animation 导入单测、Animation3D 单测、Lua animation3d 单测、真实窗口日志证据、workspace 质量门 | `tasks/done/M8-07-骨骼动画.md`；`docs/acceptance-evidence/m8/m8-07-skin-animation-check.md` | PASS | v0.7 |
 | M8-A08 | 视锥剔除与实例化 | M8-A07 | 包围球+视锥平面 CPU 剔除且不改变可见结果；相同 Mesh/材质实例数据缓冲；实例/绘制/CPU/GPU 基线；无剔除/无实例化回退 | Frustum 平面+球单测、真实窗口实例化/剔除基线日志、`--no-cull`/`--no-instance` 回退、workspace 质量门 | `tasks/done/M8-08-视锥剔除与实例化.md`；`docs/acceptance-evidence/m8/m8-08-cull-instance-baseline.md` | PASS | v0.7 |
+| M8-A09 | 3D Demo、性能与发布验收 | M8-A08 | 角色移动/深度遮挡/光照/阴影/动画/相机可复现；100/1000 实例、场景加载、CPU/GPU 帧耗时与 Draw Call 基线；Release 发布包可运行；无 P0/P1；`v0.8-3d-foundation` 标签 | demo3d 演示、性能基线日志、`package.ps1 -SelfTest`（含空格路径+目录隔离）、Release 包运行、workspace 质量门 | `tasks/done/M8-09-3DDemo性能与发布验收.md`；`docs/acceptance-evidence/m8/m8-09-demo-perf-release.md` | PASS | v0.8 |
 
 ## M7 工程化与发布
 
