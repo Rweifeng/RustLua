@@ -118,4 +118,4 @@
 | M7-A03 | 崩溃日志 | M7-A02 | panic 写 crash.log（版本/时间/线程/消息/位置/backtrace）；Release 生效；正常退出不产生 | crash handler 单测、原子写入修复 | `tasks/done/M7-03-崩溃日志.md` | PASS | M7 |
 | M7-A04 | 性能基线 | M7-A03 | 1000 精灵批处理吞吐；10000 实体 60s 无崩溃无泄漏；基线可跨版本对比 | ecs_stress 60s JSON、sprite_stress 报告、bench.ps1 | `tasks/done/M7-04-性能基线.md`；`docs/acceptance-evidence/m7/` | PASS | M7 |
 | M7-A05 | 干净机器测试与安装包 | M7-A04 | 自包含发布包（无源码/工具链依赖）；目录隔离 + 含空格路径可运行；版本/依赖清单 | package.ps1 自测（`--check` exit 0）、发布包实测 | `tasks/done/M7-05-干净机器测试与安装包.md` | PASS | M7 |
-| M7-A06 | 发布候选版本 | M7-A01 至 M7-A05 | 全量质量门通过；样板游戏 Release 完整玩通；无 P0/P1；证据完整；打 v0.7 标签；负责人确认 | 最终质量门（196 测试）、发布包、M7 验收报告 | `tasks/done/M7-06-发布候选版本.md`（待生成） | PENDING | M7 |
+| M7-A06 | 发布候选版本 | M7-A01 至 M7-A05 | 全量质量门通过；样板游戏 Release 完整玩通；无 P0/P1；证据完整；打 v0.7 标签；负责人确认 | 最终质量门（209 测试）、发布包、M7 验收报告 | `tasks/done/M7-06-发布候选版本.md`；`docs/acceptance-evidence/m7/` | PASS | v0.7 |

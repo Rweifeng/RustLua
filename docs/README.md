@@ -36,13 +36,14 @@
 - `tasks/done/M4-*`：M4 资产、场景与脚本；
 - `tasks/done/M5-*`：M5 编辑器 MVP；
 - `tasks/done/M6-*`：M6 2D 游戏能力与样板游戏；
-- `tasks/done/M7-*`：M7 工程化与发布（assetc/发布配置/崩溃日志/性能基线/干净机器/发布候选）；
-- 当前里程碑标签：`v0.6-2d-gameplay`（M7 已实施，`v0.7` 待负责人验收后打标签）。
+- `tasks/done/M7-*`：M7 工程化与发布（assetc/发布配置/崩溃日志/性能基线/干净机器/发布候选/压缩加密/体积优化/编辑器进度面板）；
+- 当前里程碑标签：`v0.7`。
 
 ## 下一阶段
 
-- M7 已全部实施（M7-01~06，2026-08-22），任务记录见 `tasks/done/M7-*`，实施计划见 [25-M6收尾与M7工程化实施计划.md](25-M6收尾与M7工程化实施计划.md)；
-- 发布包：`artifacts/builds/release/p2-game/`（`game_runner.exe --pack pack`）；性能基线：`docs/acceptance-evidence/m7/`；
-- M6 里程碑已验收，样板游戏脚本已按职责拆分（`main.lua` 为入口 + `game/state/player/enemies/coins/save_manager/hud`）；
+- M7 已全部实施并验收（2026-08-22），任务记录见 `tasks/done/M7-*`，实施计划见 [25-M6收尾与M7工程化实施计划.md](25-M6收尾与M7工程化实施计划.md)；
+- 发布包：`artifacts/builds/release/p2-game/`（约 8MB，压缩+加密默认开启；`game_runner.exe --pack pack`）；性能基线：`docs/acceptance-evidence/m7/`；
+- 样板游戏脚本按职责拆分（`main.lua` 为入口 + 各模块）；BGM/主菜单/方向攻击/中文字体/CJK 文本已补齐；
 - 第三方资源许可：[THIRD_PARTY.md](THIRD_PARTY.md)；
-- 里程碑验收证据：`docs/acceptance-evidence/`（`artifacts/` 目录为可再生输出，已移除）。
+- 里程碑验收证据：`docs/acceptance-evidence/`（`artifacts/` 目录为可再生输出，已移除）；
+- 后续里程碑：M8 轻量 3D。
