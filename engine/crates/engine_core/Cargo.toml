@@ -18,3 +18,4 @@ image = { version = '0.25', default-features = false, features = ['png'] }
 rapier2d = "0.22"
 crossbeam-channel = "0.5"
 rodio = "0.19"
+ab_glyph = "0.2"

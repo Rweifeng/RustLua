@@ -1,5 +1,6 @@
 //! Bitmap text atlas and deterministic CPU-side text layout for the 2D renderer.
 
+use crate::font::FontAtlas;
 use std::{error::Error, fmt};
 
 /// The built-in monochrome ASCII glyph atlas used by the first text renderer.
@@ -113,6 +114,17 @@ pub struct TextMesh {
     pub size: [f32; 2],
 }
 
+impl Default for TextMesh {
+    fn default() -> Self {
+        Self {
+            vertices: Vec::new(),
+            glyph_count: 0,
+            line_count: 1,
+            size: [0.0, 0.0],
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum TextError {
     InvalidStyle,
@@ -207,6 +219,111 @@ impl TextLayout {
             ],
         })
     }
+
+    /// Lays out a string mixing ASCII (built-in 5x7 atlas) and arbitrary glyphs
+    /// (CJK font atlas). Returns `(ascii_mesh, cjk_mesh)` so the host can draw
+    /// them with their respective textures.
+    pub fn build_mixed(
+        text: &str,
+        origin: [f32; 2],
+        style: TextStyle,
+        ascii_atlas: &TextAtlas,
+        font: &mut FontAtlas,
+    ) -> Result<(TextMesh, TextMesh), TextError> {
+        if !origin[0].is_finite()
+            || !origin[1].is_finite()
+            || !style.scale.is_finite()
+            || style.scale <= 0.0
+            || !style.spacing.is_finite()
+            || style.spacing < 0.0
+            || !style.line_spacing.is_finite()
+            || style.line_spacing < 0.0
+            || style.color.iter().any(|v| !v.is_finite())
+        {
+            return Err(if origin[0].is_finite() && origin[1].is_finite() {
+                TextError::InvalidStyle
+            } else {
+                TextError::NonFiniteOrigin
+            });
+        }
+        let mut ascii = TextMesh {
+            vertices: Vec::new(),
+            glyph_count: 0,
+            line_count: 1,
+            size: [0.0, 0.0],
+        };
+        let mut cjk = TextMesh {
+            vertices: Vec::new(),
+            glyph_count: 0,
+            line_count: 1,
+            size: [0.0, 0.0],
+        };
+        let ascii_advance = 6.0 * style.scale + style.spacing;
+        let cjk_advance = 7.0 * style.scale + style.spacing;
+        let line_height = 8.0 * style.scale + style.line_spacing;
+        let mut x = origin[0];
+        let mut y = origin[1];
+        let mut max_x = x;
+        for character in text.chars() {
+            if character == '\n' {
+                max_x = max_x.max(x);
+                x = origin[0];
+                y += line_height;
+                ascii.line_count += 1;
+                cjk.line_count += 1;
+                continue;
+            }
+            let is_ascii =
+                character.is_ascii() && (character as u8) >= 32 && (character as u8) <= 127;
+            let (uv, w, h, advance) = if is_ascii {
+                let (min, max) = ascii_atlas.uv(character);
+                (
+                    [min[0], min[1], max[0], max[1]],
+                    5.0 * style.scale,
+                    7.0 * style.scale,
+                    ascii_advance,
+                )
+            } else {
+                (
+                    font.uv(character),
+                    7.0 * style.scale,
+                    7.0 * style.scale,
+                    cjk_advance,
+                )
+            };
+            let x1 = x + w;
+            let y1 = y + h;
+            let quad = [
+                [x, y, uv[0], uv[1]],
+                [x1, y, uv[2], uv[1]],
+                [x1, y1, uv[2], uv[3]],
+                [x, y1, uv[0], uv[3]],
+            ];
+            let make = |v: [f32; 4]| TextVertex {
+                position: [v[0], v[1]],
+                uv: [v[2], v[3]],
+                color: style.color,
+            };
+            let target = if is_ascii { &mut ascii } else { &mut cjk };
+            target.vertices.extend_from_slice(&[
+                make(quad[0]),
+                make(quad[1]),
+                make(quad[2]),
+                make(quad[0]),
+                make(quad[2]),
+                make(quad[3]),
+            ]);
+            target.glyph_count += 1;
+            x += advance;
+            max_x = max_x.max(x);
+        }
+        ascii.size = [
+            (max_x - origin[0]).max(0.0),
+            (y - origin[1] + 7.0 * style.scale).max(0.0),
+        ];
+        cjk.size = ascii.size;
+        Ok((ascii, cjk))
+    }
 }
 
 fn bitmap(character: char) -> [u8; 7] {
@@ -280,6 +397,31 @@ mod tests {
         );
         assert!(mesh.size[1] > 7.0);
     }
+    #[test]
+    fn build_mixed_splits_ascii_and_cjk_glyphs() {
+        let ascii = TextAtlas::built_in();
+        let font_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../editor/fonts/NotoSansSC-VF.ttf");
+        let bytes = std::fs::read(&font_path).unwrap_or_default();
+        if bytes.is_empty() {
+            eprintln!("未找到测试字体，跳过");
+            return;
+        }
+        let mut font = crate::font::FontAtlas::load(&bytes).unwrap();
+        let (ascii_mesh, cjk_mesh) = TextLayout::build_mixed(
+            "开始 SPACE",
+            [0.0, 0.0],
+            TextStyle::default(),
+            &ascii,
+            &mut font,
+        )
+        .unwrap();
+        assert!(ascii_mesh.glyph_count > 0, "ASCII 字形进入 ascii mesh");
+        assert!(cjk_mesh.glyph_count > 0, "CJK 字形进入 cjk mesh");
+        assert!(!ascii_mesh.vertices.is_empty());
+        assert!(!cjk_mesh.vertices.is_empty());
+    }
+
     #[test]
     fn invalid_style_is_rejected() {
         let atlas = TextAtlas::built_in();

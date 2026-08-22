@@ -12,6 +12,7 @@ use std::{
 use bytemuck::{Pod, Zeroable};
 use engine_core::{
     animation::AnimationStateMachine,
+    font::FontAtlas,
     input::{InputKey, InputSnapshot, MouseButton},
     logging::{EngineError, LogModule, init_logging},
     math2d::{Camera2D, Viewport},
@@ -20,7 +21,7 @@ use engine_core::{
     script::LuaRuntime,
     sprite::{Sprite, SpriteAsset, SpriteVertex},
     sprite_batch::{SpriteBatch, SpriteBatchItem},
-    text::{TextAtlas, TextLayout, TextStyle},
+    text::{TextAtlas, TextLayout, TextMesh, TextStyle},
     texture::{TextureAsset, TextureColorSpace},
     tilemap::Tilemap,
     time_step::FixedTimeStep,
@@ -80,12 +81,23 @@ struct SceneDraw {
 /// files: the white 1x1 (bars/particles) and the built-in 5x7 glyph atlas.
 const WHITE_TEXTURE_PATH: &str = "__white__";
 const ATLAS_TEXTURE_PATH: &str = "__builtin_text_atlas__";
+const FONT_ATLAS_TEXTURE_PATH: &str = "__font_atlas__";
 
 /// Scene geometry plus the texture paths its draw ranges reference.
 struct SceneMesh {
     vertices: Vec<OverlayVertex>,
     draws: Vec<SceneDraw>,
     paths: Vec<String>,
+    /// Current CJK font atlas pixels; `pixels` empty means unchanged since last upload.
+    font_atlas: Option<FontAtlasPixels>,
+}
+
+/// RGBA8 pixels of the CJK glyph atlas, with a monotonic revision for uploads.
+struct FontAtlasPixels {
+    width: u32,
+    height: u32,
+    pixels: Vec<u8>,
+    version: u64,
 }
 
 /// A texture uploaded to the GPU and ready to sample.
@@ -106,6 +118,9 @@ struct Renderer {
     textures: Vec<LoadedTexture>,
     white: Option<wgpu::BindGroup>,
     atlas: Option<wgpu::BindGroup>,
+    font_atlas_texture: Option<wgpu::Texture>,
+    font_atlas_bind: Option<wgpu::BindGroup>,
+    font_atlas_uploaded_version: u64,
     project_root: Option<PathBuf>,
 }
 
@@ -273,6 +288,9 @@ impl Renderer {
             textures: Vec::new(),
             white: None,
             atlas: None,
+            font_atlas_texture: None,
+            font_atlas_bind: None,
+            font_atlas_uploaded_version: u64::MAX,
             project_root,
         })
     }
@@ -362,6 +380,9 @@ impl Renderer {
                 });
                 pass.set_pipeline(&self.pipeline);
                 pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+                if let Some(font) = &mesh.font_atlas {
+                    let _ = self.ensure_font_atlas(font);
+                }
                 for draw in &mesh.draws {
                     let Some(bind) = self.bind_group_for(draw.texture, &mesh.paths) else {
                         continue;
@@ -390,6 +411,9 @@ impl Renderer {
         }
         if path == ATLAS_TEXTURE_PATH {
             return self.ensure_atlas();
+        }
+        if path == FONT_ATLAS_TEXTURE_PATH {
+            return self.font_atlas_bind.clone();
         }
         if let Some(entry) = self.textures.iter().find(|entry| entry.path == *path) {
             return Some(entry.bind_group.clone());
@@ -442,6 +466,71 @@ impl Renderer {
         let bind = self.upload_texture(&asset, "p2-builtin-text-atlas")?;
         self.atlas = Some(bind.clone());
         Some(bind)
+    }
+
+    /// Uploads the CJK font atlas texture when its version changed.
+    fn ensure_font_atlas(&mut self, font: &FontAtlasPixels) -> Option<wgpu::BindGroup> {
+        if font.version == self.font_atlas_uploaded_version || font.pixels.is_empty() {
+            return self.font_atlas_bind.clone();
+        }
+        let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+        let texture = if let Some(texture) = &self.font_atlas_texture {
+            texture.clone()
+        } else {
+            let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("p2-font-atlas"),
+                size: wgpu::Extent3d {
+                    width: font.width,
+                    height: font.height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            self.font_atlas_texture = Some(texture.clone());
+            texture
+        };
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &font.pixels,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(font.width * 4),
+                rows_per_image: Some(font.height),
+            },
+            wgpu::Extent3d {
+                width: font.width,
+                height: font.height,
+                depth_or_array_layers: 1,
+            },
+        );
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("p2-font-atlas-bind"),
+            layout: &self.texture_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+            ],
+        });
+        self.font_atlas_uploaded_version = font.version;
+        self.font_atlas_bind = Some(bind_group.clone());
+        Some(bind_group)
     }
 
     fn upload_texture(&self, asset: &TextureAsset, label: &str) -> Option<wgpu::BindGroup> {
@@ -513,6 +602,8 @@ struct RuntimeScene {
     sprite_batch: SpriteBatch,
     camera: Camera2D,
     texture_paths: Vec<String>,
+    font_atlas: Option<FontAtlas>,
+    last_font_version: u64,
 }
 
 impl RuntimeScene {
@@ -540,11 +631,30 @@ impl RuntimeScene {
         let camera =
             Camera2D::new(Vec2::new(640.0, 360.0), 1.0).map_err(|error| error.to_string())?;
         tracing::info!(target: "render", "[render] SpriteBatch and Camera2D initialized");
+        // 加载 CJK 字体（存在时启用任意字符文本渲染）。
+        let font_atlas = project_root
+            .map(|root| root.join("assets/fonts/NotoSansSC-VF.ttf"))
+            .filter(|path| path.is_file())
+            .and_then(|path| {
+                let bytes = std::fs::read(&path).ok()?;
+                match FontAtlas::load(&bytes) {
+                    Ok(atlas) => {
+                        tracing::info!(target: "render", path = %path.display(), "[render] CJK font atlas ready");
+                        Some(atlas)
+                    }
+                    Err(error) => {
+                        tracing::warn!(target: "render", error = %error, "[render] CJK font atlas load failed; non-ASCII text uses placeholders");
+                        None
+                    }
+                }
+            });
         Ok(Self {
             script,
             sprite_batch: SpriteBatch::new(),
             camera,
             texture_paths: Vec::new(),
+            font_atlas,
+            last_font_version: u64::MAX,
         })
     }
 
@@ -675,10 +785,28 @@ impl RuntimeScene {
             draws.len(),
             self.texture_paths.len()
         );
+        let font_atlas = if let Some(atlas) = &self.font_atlas {
+            let version = atlas.version();
+            let changed = version != self.last_font_version;
+            self.last_font_version = version;
+            Some(FontAtlasPixels {
+                width: atlas.width(),
+                height: atlas.height(),
+                pixels: if changed {
+                    atlas.pixels().to_vec()
+                } else {
+                    Vec::new()
+                },
+                version,
+            })
+        } else {
+            None
+        };
         Ok(SceneMesh {
             vertices,
             draws,
             paths: self.texture_paths.clone(),
+            font_atlas,
         })
     }
 
@@ -768,21 +896,36 @@ impl RuntimeScene {
             return Ok(());
         }
         let atlas = TextAtlas::built_in();
-        let mut glyph_vertices = Vec::new();
+        let mut ascii_vertices = Vec::new();
+        let mut cjk_vertices = Vec::new();
+        let style = TextStyle {
+            scale: 1.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+            ..Default::default()
+        };
         for (position, text, scale) in visible {
-            let mesh = TextLayout::build(
-                &text,
-                position,
-                TextStyle {
-                    scale,
-                    color: [1.0, 1.0, 1.0, 1.0],
-                    ..Default::default()
-                },
-                &atlas,
-            )
-            .map_err(|error| error.to_string())?;
-            for vertex in mesh.vertices {
-                glyph_vertices.push(OverlayVertex {
+            let style = TextStyle { scale, ..style };
+            let (ascii_mesh, cjk_mesh) = match self.font_atlas.as_mut() {
+                Some(font) => TextLayout::build_mixed(&text, position, style, &atlas, font)
+                    .map_err(|error| error.to_string())?,
+                None => {
+                    let mesh = TextLayout::build(&text, position, style, &atlas)
+                        .map_err(|error| error.to_string())?;
+                    (mesh, TextMesh::default())
+                }
+            };
+            for vertex in ascii_mesh.vertices {
+                ascii_vertices.push(OverlayVertex {
+                    position: [
+                        vertex.position[0] / width.max(1) as f32 * 2.0 - 1.0,
+                        1.0 - vertex.position[1] / height.max(1) as f32 * 2.0,
+                    ],
+                    uv: vertex.uv,
+                    color: vertex.color,
+                });
+            }
+            for vertex in cjk_mesh.vertices {
+                cjk_vertices.push(OverlayVertex {
                     position: [
                         vertex.position[0] / width.max(1) as f32 * 2.0 - 1.0,
                         1.0 - vertex.position[1] / height.max(1) as f32 * 2.0,
@@ -792,17 +935,24 @@ impl RuntimeScene {
                 });
             }
         }
-        if glyph_vertices.is_empty() {
-            return Ok(());
+        if !ascii_vertices.is_empty() {
+            let start = vertices.len() as u32;
+            vertices.extend(ascii_vertices);
+            draws.push(SceneDraw {
+                texture: self.texture_id(ATLAS_TEXTURE_PATH) + 1,
+                start,
+                count: vertices.len() as u32 - start,
+            });
         }
-        let start = vertices.len() as u32;
-        vertices.extend(glyph_vertices);
-        let texture = self.texture_id(ATLAS_TEXTURE_PATH) + 1;
-        draws.push(SceneDraw {
-            texture,
-            start,
-            count: vertices.len() as u32 - start,
-        });
+        if !cjk_vertices.is_empty() {
+            let start = vertices.len() as u32;
+            vertices.extend(cjk_vertices);
+            draws.push(SceneDraw {
+                texture: self.texture_id(FONT_ATLAS_TEXTURE_PATH) + 1,
+                start,
+                count: vertices.len() as u32 - start,
+            });
+        }
         Ok(())
     }
 
@@ -1098,6 +1248,7 @@ impl GameApp {
                 vertices: Vec::new(),
                 draws: Vec::new(),
                 paths: Vec::new(),
+                font_atlas: None,
             });
         if self.overlay_enabled {
             let start = mesh.vertices.len() as u32;

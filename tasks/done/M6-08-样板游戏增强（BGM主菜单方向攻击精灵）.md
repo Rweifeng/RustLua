@@ -28,6 +28,12 @@
 ### 升级程序化精灵
 - `scripts/gen-characters.ps1`：英雄/史莱姆/金币增加暗描边、明暗双色、面部（眼睛/瞳孔/嘴）、剑刃高光、金币内环与反光。
 
+### CJK 文本渲染（主菜单中文"?"修复）
+- `engine_core/font.rs`：`FontAtlas` 用 `ab_glyph` 按需栅格化任意字形到动态 RGBA 图集（版本号增量，仅变化时上传）；
+- `TextLayout::build_mixed`：ASCII 走内置 5×7 图集、非 ASCII 走字体图集，返回两个 mesh；
+- `game_runner`：启动加载 `assets/fonts/NotoSansSC-VF.ttf`，字体图集纹理按版本上传；主菜单中文正常显示；
+- 测试：`rasterizes_cjk_glyph_and_reports_uv`、`build_mixed_splits_ascii_and_cjk_glyphs`。
+
 ## 验收结果
 
 - 实测：启动 `[audio] music started (loop) name="bgm"`；菜单期零伤害（`player hit` 仅出现在 SPACE 开始后）；开始后伤害/追击正常；F4 切场景正常；
