@@ -237,6 +237,8 @@ struct EditorApp {
     inspector_clipboard: Option<ComponentClipboard>,
     inspector_transform_open: bool,
     progress: ProgressPanel,
+    publish_compress: bool,
+    publish_encrypt: bool,
 }
 
 /// 通用进度面板：后台任务 + 进度/日志 + 非阻塞窗口。
@@ -442,6 +444,8 @@ impl EditorApp {
             inspector_clipboard: None,
             inspector_transform_open: true,
             progress: ProgressPanel::default(),
+            publish_compress: true,
+            publish_encrypt: true,
         }
     }
 
@@ -878,7 +882,7 @@ impl EditorApp {
             .unwrap_or_else(|| PathBuf::from("."));
         let package_dir = workspace_root.join("artifacts/builds/release/p2-game");
         let (tx, rx) = channel();
-        spawn_publish(script, tx);
+        spawn_publish(script, self.publish_compress, self.publish_encrypt, tx);
         self.progress.start("发布打包", rx, Some(package_dir));
     }
 
@@ -983,15 +987,22 @@ fn prepend_path(bin: &Path) -> String {
 
 /// 后台执行发布脚本，把 stdout/stderr 行转发给 UI 线程。
 /// CREATE_NO_WINDOW 保证不弹出额外终端窗口。
-fn spawn_publish(script: PathBuf, tx: Sender<ProgressEvent>) {
+fn spawn_publish(script: PathBuf, compress: bool, encrypt: bool, tx: Sender<ProgressEvent>) {
     thread::spawn(move || {
         let mut command = Command::new("powershell");
         command
             .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
             .arg(&script)
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+            .stderr(Stdio::piped());
+        // PowerShell switch 参数：勾选才传 `-Compress`/`-Encrypt`。
+        if compress {
+            command.arg("-Compress");
+        }
+        if encrypt {
+            command.arg("-Encrypt");
+        }
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
         // 编辑器可能是双击启动（系统 PATH 无 cargo）；把 cargo bin 补进子进程 PATH。
         if let Some(bin) = cargo_bin_dir() {
             command.env("PATH", prepend_path(&bin));
@@ -1142,6 +1153,8 @@ impl eframe::App for EditorApp {
                     self.save_scene();
                 }
                 ui.separator();
+                ui.checkbox(&mut self.publish_compress, "压缩");
+                ui.checkbox(&mut self.publish_encrypt, "加密");
                 if ui.button("打包发布").clicked() && !self.progress.running {
                     self.start_publish();
                 }
@@ -2184,7 +2197,7 @@ mod publish_tests {
             return;
         };
         let (tx, rx) = channel();
-        spawn_publish(script, tx);
+        spawn_publish(script, false, false, tx);
         let mut output = String::new();
         let mut success = false;
         while let Ok(event) = rx.recv() {

@@ -60,23 +60,32 @@ fn run(args: &[String]) -> Result<String, String> {
         }
         Some("package") => {
             let project = arg(args, 2, "项目目录")?;
-            let out = {
-                let mut out_arg = None;
-                let mut i = 3;
-                while i < args.len() {
-                    if args[i] == "-o" {
-                        out_arg = Some(PathBuf::from(
+            let mut out = None;
+            let mut compress = false;
+            let mut encrypt = false;
+            let mut i = 3;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "-o" => {
+                        out = Some(PathBuf::from(
                             args.get(i + 1)
                                 .ok_or_else(|| "缺少参数: -o <输出目录>".to_owned())?,
                         ));
-                        break;
+                        i += 1;
                     }
-                    i += 1;
+                    "--compress" => compress = true,
+                    "--encrypt" => encrypt = true,
+                    other => return Err(format!("package 未知参数: {other}")),
                 }
-                out_arg.ok_or_else(|| "缺少参数: -o <输出目录>".to_owned())?
-            };
-            assetc::package(&project, &out)
-                .map(|manifest| format!("assetc_package_ok files={}", manifest.entries.len()))
+                i += 1;
+            }
+            let out = out.ok_or_else(|| "缺少参数: -o <输出目录>".to_owned())?;
+            assetc::package(&project, &out, compress, encrypt).map(|manifest| {
+                format!(
+                    "assetc_package_ok files={} compress={compress} encrypt={encrypt}",
+                    manifest.entries.len()
+                )
+            })
         }
         Some("--help") | None => {
             usage();

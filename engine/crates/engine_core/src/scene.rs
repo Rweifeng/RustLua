@@ -84,10 +84,16 @@ impl Scene {
     }
     pub fn load(path: impl AsRef<Path>) -> Result<Self, SceneError> {
         let path = path.as_ref();
-        let text = fs::read_to_string(path).map_err(|e| SceneError::Io {
+        let bytes = fs::read(path).map_err(|e| SceneError::Io {
             path: path.display().to_string(),
             reason: e.to_string(),
         })?;
+        // 支持发布包的压缩/加密场景文件；明文原样返回。
+        let decoded = crate::pack::decode(&bytes).map_err(|e| SceneError::Io {
+            path: path.display().to_string(),
+            reason: e.to_string(),
+        })?;
+        let text = String::from_utf8_lossy(&decoded).into_owned();
         Self::from_text(&text).map_err(|e| e.with_path(path))
     }
     pub fn to_text(&self) -> String {

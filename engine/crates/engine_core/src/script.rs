@@ -408,10 +408,7 @@ impl LuaRuntime {
     }
 
     pub fn execute_project_script(&mut self, path: &Path) -> Result<(), LuaBridgeError> {
-        let source = fs::read_to_string(path).map_err(|error| LuaBridgeError::Load {
-            path: path.to_path_buf(),
-            source: error.to_string(),
-        })?;
+        let source = read_project_script(path)?;
         let candidate = match self.load_candidate(path, &source) {
             Ok(candidate) => candidate,
             Err(error) => {
@@ -438,10 +435,7 @@ impl LuaRuntime {
             .current_path
             .clone()
             .ok_or_else(|| LuaBridgeError::Api("no project script is loaded".to_string()))?;
-        let source = fs::read_to_string(&path).map_err(|error| LuaBridgeError::Load {
-            path: path.clone(),
-            source: error.to_string(),
-        })?;
+        let source = read_project_script(&path)?;
         let fingerprint = file_fingerprint(&path, &source)?;
         if self.fingerprint.as_ref() == Some(&fingerprint) {
             return Ok(ReloadStatus::Unchanged);
@@ -465,10 +459,7 @@ impl LuaRuntime {
             .current_path
             .clone()
             .ok_or_else(|| LuaBridgeError::Api("no project script is loaded".to_string()))?;
-        let source = fs::read_to_string(&path).map_err(|error| LuaBridgeError::Load {
-            path: path.clone(),
-            source: error.to_string(),
-        })?;
+        let source = read_project_script(&path)?;
         let candidate = self.load_candidate(&path, &source)?;
         call_optional(&self.lua, "on_destroy").map_err(|error| LuaBridgeError::Runtime {
             path: path.clone(),
@@ -496,6 +487,8 @@ impl LuaRuntime {
             let module_path = format!("{};{}", script_dir.join("?.lua").display(), existing);
             let _ = package.set("path", module_path);
         }
+        // 拦截 require：支持压缩/加密的模块文件（明文模块同样可用）。
+        let _ = install_encoded_require_searcher(&candidate);
         candidate
             .load(source)
             .set_name(path.to_string_lossy())
@@ -713,6 +706,43 @@ fn parse_sprite_ref(value: &str) -> (String, Option<Vec2>) {
         })
         .map(|(width, height)| Vec2::new(width, height));
     (path.to_owned(), size)
+}
+
+/// 读取项目脚本源码，支持发布包的压缩/加密（明文原样返回）。
+fn read_project_script(path: &Path) -> Result<String, LuaBridgeError> {
+    let bytes = fs::read(path).map_err(|error| LuaBridgeError::Load {
+        path: path.to_path_buf(),
+        source: error.to_string(),
+    })?;
+    let decoded = crate::pack::decode(&bytes).map_err(|error| LuaBridgeError::Load {
+        path: path.to_path_buf(),
+        source: error,
+    })?;
+    Ok(String::from_utf8_lossy(&decoded).into_owned())
+}
+
+/// 在 Lua VM 上安装支持压缩/加密的 require 搜索器：
+/// 读取模块文件字节 → 解码 → 编译，供 `require` 加载发布包中的模块。
+fn install_encoded_require_searcher(lua: &Lua) -> mlua::Result<()> {
+    let searcher = lua.create_function(|lua, module: String| {
+        let package: Table = lua.globals().get("package")?;
+        let path: String = package.get("path")?;
+        let searchpath: Function = package.get("searchpath")?;
+        let (resolved, _error): (Option<String>, Option<String>) =
+            searchpath.call((module.as_str(), path.as_str()))?;
+        let Some(file) = resolved else {
+            return Ok(Value::Nil);
+        };
+        let bytes = fs::read(&file).map_err(mlua::Error::external)?;
+        let decoded = crate::pack::decode(&bytes).map_err(mlua::Error::external)?;
+        let source = String::from_utf8_lossy(&decoded).into_owned();
+        let chunk = lua.load(&source).set_name(&file).into_function()?;
+        Ok(Value::Function(chunk))
+    })?;
+    let package: Table = lua.globals().get("package")?;
+    let searchers: Table = package.get("searchers")?;
+    searchers.raw_insert(1, searcher)?;
+    Ok(())
 }
 
 /// Writes `text` to `path` atomically (temp file + rename), like scene saves.
@@ -1911,6 +1941,27 @@ mod tests {
         let mut runtime = LuaRuntime::new().unwrap();
         runtime.execute_project_script(&main).unwrap();
         assert_eq!(runtime.call_update().unwrap(), "ok");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn encrypted_project_and_modules_load_via_decode_and_require() {
+        let root = std::env::temp_dir().join(format!("p2-enc-module-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        // 用发布包格式（压缩+加密）写模块与主脚本。
+        let helper_src = "local M = {}\nfunction M.answer() return 7 end\nreturn M\n".as_bytes();
+        fs::write(
+            root.join("helper.lua"),
+            crate::pack::encode(helper_src, true, true),
+        )
+        .unwrap();
+        let main = root.join("main.lua");
+        let main_src = "local h = require('helper')\nassert(h.answer() == 7)\nfunction update() return 'enc-ok' end\n";
+        fs::write(&main, crate::pack::encode(main_src.as_bytes(), true, true)).unwrap();
+
+        let mut runtime = LuaRuntime::new().unwrap();
+        runtime.execute_project_script(&main).unwrap();
+        assert_eq!(runtime.call_update().unwrap(), "enc-ok");
         let _ = fs::remove_dir_all(&root);
     }
 

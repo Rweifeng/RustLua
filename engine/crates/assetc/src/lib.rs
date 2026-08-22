@@ -245,16 +245,70 @@ fn fnv1a(bytes: &[u8]) -> u64 {
     hash
 }
 
+/// 复制目录；`lua`/`scene` 文件在需要时压缩+加密（运行时自动解码）。
+fn copy_dir_encoded(
+    source: &Path,
+    destination: &Path,
+    compress: bool,
+    encrypt: bool,
+) -> Result<(), String> {
+    if !source.is_dir() {
+        return Ok(());
+    }
+    let mut files = Vec::new();
+    collect_files(source, &mut files)?;
+    for file in files {
+        let relative = file
+            .strip_prefix(source)
+            .expect("file must be inside source dir");
+        let dest = destination.join(relative);
+        let is_text = matches!(
+            file.extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.to_ascii_lowercase())
+                .as_deref(),
+            Some("lua") | Some("scene")
+        );
+        if is_text && (compress || encrypt) {
+            let bytes = fs::read(&file).map_err(|e| e.to_string())?;
+            let encoded = engine_core::pack::encode(&bytes, compress, encrypt);
+            if let Some(parent) = dest.parent() {
+                fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+            fs::write(&dest, &encoded).map_err(|e| e.to_string())?;
+        } else {
+            copy_file(&file, &dest)?;
+        }
+    }
+    Ok(())
+}
+
 /// 生成发布资源包：复制 `project.toml`、`scenes/`、`scripts/`、`assets/`
 /// 到 `out`，并写入 `manifest.txt`（路径、大小、校验和）。
-pub fn package(project: &Path, out: &Path) -> Result<PackageManifest, String> {
+/// `compress`/`encrypt` 对 Lua 与场景文件生效（运行时自动解码）。
+pub fn package(
+    project: &Path,
+    out: &Path,
+    compress: bool,
+    encrypt: bool,
+) -> Result<PackageManifest, String> {
     ensure_project(project)?;
     if out == project {
         return Err("输出目录不能与项目目录相同".to_owned());
     }
     copy_file(&project.join("project.toml"), &out.join("project.toml"))?;
-    copy_dir(&project.join("scenes"), &out.join("scenes"))?;
-    copy_dir(&project.join("scripts"), &out.join("scripts"))?;
+    copy_dir_encoded(
+        &project.join("scenes"),
+        &out.join("scenes"),
+        compress,
+        encrypt,
+    )?;
+    copy_dir_encoded(
+        &project.join("scripts"),
+        &out.join("scripts"),
+        compress,
+        encrypt,
+    )?;
     copy_dir(&project.join("assets"), &out.join("assets"))?;
 
     let mut files = Vec::new();
@@ -423,7 +477,7 @@ mod tests {
         let root = temp_project("package");
         let out = std::env::temp_dir().join(format!("p2-assetc-out-{}", std::process::id()));
         let _ = fs::remove_dir_all(&out);
-        package(&root, &out).unwrap();
+        package(&root, &out, false, false).unwrap();
         assert!(out.join("project.toml").is_file());
         assert!(out.join("scripts/main.lua").is_file());
         assert!(out.join("assets/textures/red-1x1.png").is_file());

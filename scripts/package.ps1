@@ -2,7 +2,11 @@
 param(
     # Run the directory-isolation self test (copy to a temp dir with spaces,
     # launch the packaged game_runner --pack without any source/target/.cache).
-    [switch]$SelfTest
+    [switch]$SelfTest,
+    # Compress Lua/scene resources in the release pack (present = on).
+    [switch]$Compress,
+    # Encrypt Lua/scene resources in the release pack (present = on).
+    [switch]$Encrypt
 )
 
 $ErrorActionPreference = "Stop"
@@ -23,10 +27,13 @@ try {
     cargo build --workspace --release
     if ($LASTEXITCODE -ne 0) { throw "Release build failed." }
 
-    Write-Host "==> assetc package (data resource pack)" -ForegroundColor Cyan
+    Write-Host "==> assetc package (data resource pack, compress=$Compress encrypt=$Encrypt)" -ForegroundColor Cyan
     $assetc = Join-Path $engineRoot "target\release\assetc.exe"
     if (Test-Path $packRoot) { Remove-Item -LiteralPath $packRoot -Recurse -Force }
-    & $assetc package (Join-Path $projectRoot "game") -o $packRoot
+    $assetcArgs = @("package", (Join-Path $projectRoot "game"), "-o", $packRoot)
+    if ($Compress) { $assetcArgs += "--compress" }
+    if ($Encrypt) { $assetcArgs += "--encrypt" }
+    & $assetc @assetcArgs
     if ($LASTEXITCODE -ne 0) { throw "assetc package failed." }
 
     Write-Host "==> Copy runner and docs" -ForegroundColor Cyan

@@ -21,6 +21,8 @@ pub mod input;
 pub mod logging;
 /// Coordinate, camera, and color-space conventions for 2D rendering.
 pub mod math2d;
+/// 发布资源编解码（压缩 + 加密）。
+pub mod pack;
 /// Pooled particle bursts with spawn/update/recycle.
 pub mod particle;
 /// Runtime frame and update performance sampling.
