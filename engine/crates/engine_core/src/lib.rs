@@ -21,6 +21,8 @@ pub mod gltf_asset;
 pub mod import_cache;
 /// Platform-independent keyboard, mouse, and cursor snapshots.
 pub mod input;
+/// Directional light component for 3D scenes.
+pub mod light;
 /// Logging and context-rich engine errors.
 pub mod logging;
 /// Coordinate, camera, and color-space conventions for 2D rendering.

@@ -1,5 +1,12 @@
 use crate::SceneDocument;
-use engine_core::scene::{SceneEntity, SceneEntityId};
+use engine_core::{
+    camera3d::Camera3D,
+    light::Light,
+    math3d::{Quat, Vec3},
+    mesh3d::MeshRenderer,
+    scene::{SceneEntity, SceneEntityId},
+    transform3d::Transform3D,
+};
 use std::{error::Error, fmt, path::Path};
 
 /// 第一批 Inspector 可编辑的 Transform 字段。
@@ -24,6 +31,94 @@ impl Default for TransformFields {
     }
 }
 
+/// Inspector 可编辑的 Transform3D 字段（无 3D Gizmo，仅查看与数值编辑）。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Transform3DFields {
+    pub position_x: f32,
+    pub position_y: f32,
+    pub position_z: f32,
+    pub rotation_x: f32,
+    pub rotation_y: f32,
+    pub rotation_z: f32,
+    pub rotation_w: f32,
+    pub scale_x: f32,
+    pub scale_y: f32,
+    pub scale_z: f32,
+}
+
+impl Default for Transform3DFields {
+    fn default() -> Self {
+        Self {
+            position_x: 0.0,
+            position_y: 0.0,
+            position_z: 0.0,
+            rotation_x: 0.0,
+            rotation_y: 0.0,
+            rotation_z: 0.0,
+            rotation_w: 1.0,
+            scale_x: 1.0,
+            scale_y: 1.0,
+            scale_z: 1.0,
+        }
+    }
+}
+
+/// Inspector 可编辑的 Camera3D 字段（aspect 由渲染窗口决定，不存储）。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Camera3DFields {
+    pub position_x: f32,
+    pub position_y: f32,
+    pub position_z: f32,
+    pub target_x: f32,
+    pub target_y: f32,
+    pub target_z: f32,
+    pub fov_degrees: f32,
+    pub near: f32,
+    pub far: f32,
+}
+
+impl Default for Camera3DFields {
+    fn default() -> Self {
+        Self {
+            position_x: 0.0,
+            position_y: 0.0,
+            position_z: 5.0,
+            target_x: 0.0,
+            target_y: 0.0,
+            target_z: 0.0,
+            fov_degrees: 90.0,
+            near: 0.1,
+            far: 100.0,
+        }
+    }
+}
+
+/// Inspector 可编辑的方向光字段。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LightFields {
+    pub direction_x: f32,
+    pub direction_y: f32,
+    pub direction_z: f32,
+    pub color_r: f32,
+    pub color_g: f32,
+    pub color_b: f32,
+    pub intensity: f32,
+}
+
+impl Default for LightFields {
+    fn default() -> Self {
+        Self {
+            direction_x: 0.4,
+            direction_y: 0.8,
+            direction_z: 0.5,
+            color_r: 1.0,
+            color_g: 1.0,
+            color_b: 1.0,
+            intensity: 1.0,
+        }
+    }
+}
+
 /// Inspector 对一个实体的可编辑快照。
 #[derive(Clone, Debug, PartialEq)]
 pub struct InspectorSnapshot {
@@ -32,6 +127,11 @@ pub struct InspectorSnapshot {
     pub transform: TransformFields,
     pub sprite_reference: Option<String>,
     pub lua_script: Option<String>,
+    /// 3D 组件（仅在实体携带对应组件时存在）。
+    pub transform3d: Option<Transform3DFields>,
+    pub mesh_renderer: Option<String>,
+    pub camera3d: Option<Camera3DFields>,
+    pub light: Option<LightFields>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -160,6 +260,82 @@ impl InspectorState {
         }
         Ok(())
     }
+
+    pub fn set_transform3d(
+        &self,
+        document: &mut SceneDocument,
+        transform: Transform3DFields,
+    ) -> Result<(), InspectorError> {
+        validate_transform3d(transform)?;
+        let id = self.selected.ok_or(InspectorError::NothingSelected)?;
+        let entity = entity_mut(document, id)?;
+        let value = encode_transform3d(transform);
+        if entity.components.get("Transform3D") != Some(&value) {
+            entity.components.insert("Transform3D".into(), value);
+            document.mark_dirty();
+        }
+        Ok(())
+    }
+
+    pub fn set_mesh_renderer(
+        &self,
+        document: &mut SceneDocument,
+        reference: impl Into<String>,
+    ) -> Result<(), InspectorError> {
+        let reference = reference.into();
+        validate_mesh_renderer(&reference)?;
+        let id = self.selected.ok_or(InspectorError::NothingSelected)?;
+        let entity = entity_mut(document, id)?;
+        let value = MeshRenderer::from_component_str(&format!("mesh={reference}"))
+            .map_err(|error| InspectorError::InvalidMeshRenderer(error.to_string()))?
+            .to_component_str();
+        if entity.components.get("MeshRenderer") != Some(&value) {
+            entity.components.insert("MeshRenderer".into(), value);
+            document.mark_dirty();
+        }
+        Ok(())
+    }
+
+    pub fn clear_mesh_renderer(&self, document: &mut SceneDocument) -> Result<(), InspectorError> {
+        let id = self.selected.ok_or(InspectorError::NothingSelected)?;
+        let entity = entity_mut(document, id)?;
+        if entity.components.remove("MeshRenderer").is_some() {
+            document.mark_dirty();
+        }
+        Ok(())
+    }
+
+    pub fn set_camera3d(
+        &self,
+        document: &mut SceneDocument,
+        camera: Camera3DFields,
+    ) -> Result<(), InspectorError> {
+        validate_camera3d(camera)?;
+        let id = self.selected.ok_or(InspectorError::NothingSelected)?;
+        let entity = entity_mut(document, id)?;
+        let value = encode_camera3d(camera);
+        if entity.components.get("Camera3D") != Some(&value) {
+            entity.components.insert("Camera3D".into(), value);
+            document.mark_dirty();
+        }
+        Ok(())
+    }
+
+    pub fn set_light(
+        &self,
+        document: &mut SceneDocument,
+        light: LightFields,
+    ) -> Result<(), InspectorError> {
+        validate_light(light)?;
+        let id = self.selected.ok_or(InspectorError::NothingSelected)?;
+        let entity = entity_mut(document, id)?;
+        let value = encode_light(light);
+        if entity.components.get("Light") != Some(&value) {
+            entity.components.insert("Light".into(), value);
+            document.mark_dirty();
+        }
+        Ok(())
+    }
 }
 
 fn entity_mut(
@@ -180,12 +356,32 @@ fn snapshot_for(entity: &SceneEntity) -> Result<InspectorSnapshot, InspectorErro
         .map_or(Ok(TransformFields::default()), |value| {
             decode_transform(value)
         })?;
+    let transform3d = entity
+        .components
+        .get("Transform3D")
+        .map_or(Ok(None), |value| decode_transform3d(value).map(Some))?;
+    let camera3d = entity
+        .components
+        .get("Camera3D")
+        .map_or(Ok(None), |value| decode_camera3d(value).map(Some))?;
+    let light = entity
+        .components
+        .get("Light")
+        .map_or(Ok(None), |value| decode_light(value).map(Some))?;
     Ok(InspectorSnapshot {
         entity_id: entity.id,
         name: entity.name.clone(),
         transform,
         sprite_reference: entity.components.get("Sprite").cloned(),
         lua_script: entity.components.get("LuaScript").cloned(),
+        transform3d,
+        mesh_renderer: entity
+            .components
+            .get("MeshRenderer")
+            .and_then(|value| value.strip_prefix("mesh="))
+            .map(str::to_owned),
+        camera3d,
+        light,
     })
 }
 
@@ -258,6 +454,120 @@ fn decode_transform(value: &str) -> Result<TransformFields, InspectorError> {
     Ok(transform)
 }
 
+fn validate_transform3d(transform: Transform3DFields) -> Result<(), InspectorError> {
+    let value = encode_transform3d(transform);
+    Transform3D::from_component_str(&value)
+        .map(|_| ())
+        .map_err(|error| InspectorError::InvalidTransform3d(error.to_string()))
+}
+
+fn encode_transform3d(transform: Transform3DFields) -> String {
+    Transform3D {
+        position: Vec3::new(
+            transform.position_x,
+            transform.position_y,
+            transform.position_z,
+        ),
+        rotation: Quat {
+            x: transform.rotation_x,
+            y: transform.rotation_y,
+            z: transform.rotation_z,
+            w: transform.rotation_w,
+        },
+        scale: Vec3::new(transform.scale_x, transform.scale_y, transform.scale_z),
+    }
+    .to_component_str()
+}
+
+fn decode_transform3d(value: &str) -> Result<Transform3DFields, InspectorError> {
+    let transform = Transform3D::from_component_str(value)
+        .map_err(|error| InspectorError::InvalidTransform3d(error.to_string()))?;
+    Ok(Transform3DFields {
+        position_x: transform.position.x,
+        position_y: transform.position.y,
+        position_z: transform.position.z,
+        rotation_x: transform.rotation.x,
+        rotation_y: transform.rotation.y,
+        rotation_z: transform.rotation.z,
+        rotation_w: transform.rotation.w,
+        scale_x: transform.scale.x,
+        scale_y: transform.scale.y,
+        scale_z: transform.scale.z,
+    })
+}
+
+fn validate_camera3d(camera: Camera3DFields) -> Result<(), InspectorError> {
+    let value = encode_camera3d(camera);
+    Camera3D::from_component_str(&value)
+        .map(|_| ())
+        .map_err(|error| InspectorError::InvalidCamera3d(error.to_string()))
+}
+
+fn encode_camera3d(camera: Camera3DFields) -> String {
+    Camera3D {
+        position: Vec3::new(camera.position_x, camera.position_y, camera.position_z),
+        target: Vec3::new(camera.target_x, camera.target_y, camera.target_z),
+        up: Vec3::Y,
+        fov_y: camera.fov_degrees.to_radians(),
+        aspect_ratio: 1.0,
+        near: camera.near,
+        far: camera.far,
+    }
+    .to_component_str()
+}
+
+fn decode_camera3d(value: &str) -> Result<Camera3DFields, InspectorError> {
+    let camera = Camera3D::from_component_str(value)
+        .map_err(|error| InspectorError::InvalidCamera3d(error.to_string()))?;
+    Ok(Camera3DFields {
+        position_x: camera.position.x,
+        position_y: camera.position.y,
+        position_z: camera.position.z,
+        target_x: camera.target.x,
+        target_y: camera.target.y,
+        target_z: camera.target.z,
+        fov_degrees: camera.fov_y.to_degrees(),
+        near: camera.near,
+        far: camera.far,
+    })
+}
+
+fn validate_light(light: LightFields) -> Result<(), InspectorError> {
+    let value = encode_light(light);
+    Light::from_component_str(&value)
+        .map(|_| ())
+        .map_err(|error| InspectorError::InvalidLight(error.to_string()))
+}
+
+fn encode_light(light: LightFields) -> String {
+    Light {
+        direction: Vec3::new(light.direction_x, light.direction_y, light.direction_z),
+        color: [light.color_r, light.color_g, light.color_b],
+        intensity: light.intensity,
+    }
+    .to_component_str()
+}
+
+fn decode_light(value: &str) -> Result<LightFields, InspectorError> {
+    let light = Light::from_component_str(value)
+        .map_err(|error| InspectorError::InvalidLight(error.to_string()))?;
+    Ok(LightFields {
+        direction_x: light.direction.x,
+        direction_y: light.direction.y,
+        direction_z: light.direction.z,
+        color_r: light.color[0],
+        color_g: light.color[1],
+        color_b: light.color[2],
+        intensity: light.intensity,
+    })
+}
+
+fn validate_mesh_renderer(reference: &str) -> Result<(), InspectorError> {
+    MeshRenderer::from_component_str(&format!("mesh={reference}"))
+        .map(|_| ())
+        .map_err(|error| InspectorError::InvalidMeshRenderer(error.to_string()))
+}
+
 fn validate_asset_reference(reference: &str) -> Result<(), InspectorError> {
     let reference = reference.trim();
     if reference.is_empty()
@@ -302,6 +612,10 @@ pub enum InspectorError {
     InvalidTransform(String),
     InvalidAssetReference(String),
     InvalidLuaScript(String),
+    InvalidTransform3d(String),
+    InvalidMeshRenderer(String),
+    InvalidCamera3d(String),
+    InvalidLight(String),
 }
 
 impl fmt::Display for InspectorError {
@@ -315,6 +629,10 @@ impl fmt::Display for InspectorError {
             Self::InvalidTransform(value) => write!(f, "Transform 数据无效：{value}"),
             Self::InvalidAssetReference(value) => write!(f, "Sprite 资源引用无效：{value}"),
             Self::InvalidLuaScript(value) => write!(f, "Lua 脚本路径无效：{value}"),
+            Self::InvalidTransform3d(value) => write!(f, "Transform3D 数据无效：{value}"),
+            Self::InvalidMeshRenderer(value) => write!(f, "MeshRenderer 资源引用无效：{value}"),
+            Self::InvalidCamera3d(value) => write!(f, "Camera3D 数据无效：{value}"),
+            Self::InvalidLight(value) => write!(f, "Light 数据无效：{value}"),
         }
     }
 }
@@ -596,6 +914,127 @@ mod tests {
         document.mark_clean();
         inspector.clear_lua_script(&mut document).unwrap();
         assert!(document.is_dirty());
+    }
+    #[test]
+    fn transform3d_set_and_snapshot() {
+        let (mut document, inspector, _) = setup();
+        let value = Transform3DFields {
+            position_x: 1.0,
+            position_y: 2.0,
+            position_z: 3.0,
+            scale_x: 2.0,
+            scale_y: 2.0,
+            scale_z: 2.0,
+            ..Default::default()
+        };
+        inspector.set_transform3d(&mut document, value).unwrap();
+        assert!(document.is_dirty());
+        assert_eq!(
+            inspector.snapshot(&document).unwrap().transform3d,
+            Some(value)
+        );
+    }
+    #[test]
+    fn transform3d_rejects_zero_scale() {
+        let (mut document, inspector, _) = setup();
+        let value = Transform3DFields {
+            scale_x: 0.0,
+            ..Default::default()
+        };
+        assert!(inspector.set_transform3d(&mut document, value).is_err());
+        assert!(!document.is_dirty());
+    }
+    #[test]
+    fn transform3d_rejects_non_unit_rotation() {
+        let (mut document, inspector, _) = setup();
+        let value = Transform3DFields {
+            rotation_w: 2.0,
+            ..Default::default()
+        };
+        assert!(inspector.set_transform3d(&mut document, value).is_err());
+    }
+    #[test]
+    fn mesh_renderer_set_and_clear() {
+        let (mut document, inspector, _) = setup();
+        inspector
+            .set_mesh_renderer(&mut document, "models/cube.glb")
+            .unwrap();
+        assert_eq!(
+            inspector
+                .snapshot(&document)
+                .unwrap()
+                .mesh_renderer
+                .as_deref(),
+            Some("models/cube.glb")
+        );
+        document.mark_clean();
+        inspector.clear_mesh_renderer(&mut document).unwrap();
+        assert!(document.is_dirty());
+        assert!(
+            inspector
+                .snapshot(&document)
+                .unwrap()
+                .mesh_renderer
+                .is_none()
+        );
+    }
+    #[test]
+    fn mesh_renderer_rejects_non_glb() {
+        let (mut document, inspector, _) = setup();
+        assert!(
+            inspector
+                .set_mesh_renderer(&mut document, "models/cube.obj")
+                .is_err()
+        );
+        assert!(!document.is_dirty());
+    }
+    #[test]
+    fn camera3d_set_and_snapshot() {
+        let (mut document, inspector, _) = setup();
+        let value = Camera3DFields {
+            position_x: 0.0,
+            position_y: 3.0,
+            position_z: 8.0,
+            fov_degrees: 75.0,
+            ..Default::default()
+        };
+        inspector.set_camera3d(&mut document, value).unwrap();
+        let snapshot = inspector.snapshot(&document).unwrap();
+        assert!(snapshot.camera3d.is_some());
+        assert!((snapshot.camera3d.unwrap().fov_degrees - 75.0).abs() < 0.01);
+    }
+    #[test]
+    fn camera3d_rejects_invalid_perspective() {
+        let (mut document, inspector, _) = setup();
+        let value = Camera3DFields {
+            near: 10.0,
+            far: 1.0,
+            ..Default::default()
+        };
+        assert!(inspector.set_camera3d(&mut document, value).is_err());
+    }
+    #[test]
+    fn light_set_and_snapshot() {
+        let (mut document, inspector, _) = setup();
+        let value = LightFields {
+            direction_y: 1.0,
+            intensity: 2.0,
+            ..Default::default()
+        };
+        inspector.set_light(&mut document, value).unwrap();
+        let snapshot = inspector.snapshot(&document).unwrap();
+        let light = snapshot.light.unwrap();
+        assert_eq!(light.direction_y, 1.0);
+        assert_eq!(light.intensity, 2.0);
+    }
+    #[test]
+    fn light_rejects_negative_intensity() {
+        let (mut document, inspector, _) = setup();
+        let value = LightFields {
+            intensity: -1.0,
+            ..Default::default()
+        };
+        assert!(inspector.set_light(&mut document, value).is_err());
     }
     #[test]
     fn save_reload_preserves_fields() {

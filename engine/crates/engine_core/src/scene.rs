@@ -9,7 +9,13 @@ use std::{
     str::FromStr,
 };
 
-pub const CURRENT_SCENE_VERSION: u32 = 1;
+/// The version written by `Scene::save` and required by `Scene::validate`.
+///
+/// Version 2 introduced the `Transform3D` / `MeshRenderer` / `Camera3D` /
+/// `Light` components. Because component payloads are opaque strings, version 1
+/// scenes migrate without data transformation: the migration only raises the
+/// version and records `meta migrated_from=1` for traceability.
+pub const CURRENT_SCENE_VERSION: u32 = 2;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SceneEntityId(pub u64);
@@ -106,12 +112,20 @@ impl Scene {
             out.push_str(&format!("meta\t{}\t{}\n", escape(k), escape(v)));
         }
         for e in self.entities.values() {
-            out.push_str(&format!(
-                "entity\t{}\t{}\t{}\n",
-                e.id.0,
-                escape(&e.name),
-                e.parent.map(|x| x.0.to_string()).unwrap_or_default()
-            ));
+            match e.parent {
+                Some(parent) => {
+                    out.push_str(&format!(
+                        "entity\t{}\t{}\t{}\n",
+                        e.id.0,
+                        escape(&e.name),
+                        parent.0
+                    ));
+                }
+                None => {
+                    // 无父实体时不输出空尾字段，避免场景文件产生尾随空白。
+                    out.push_str(&format!("entity\t{}\t{}\n", e.id.0, escape(&e.name)));
+                }
+            }
             for (k, v) in &e.components {
                 out.push_str(&format!(
                     "component\t{}\t{}\t{}\n",
@@ -164,12 +178,20 @@ impl Scene {
                 continue;
             }
             if f[0] == "entity" {
-                need(&f, 4, n + 1)?;
+                // 兼容带/不带尾随父实体字段两种写法（3 或 4 字段）。
+                if f.len() != 3 && f.len() != 4 {
+                    return Err(SceneError::Parse {
+                        line: n + 1,
+                        field: "entity".into(),
+                        reason: "expected 3 or 4 fields".into(),
+                        path: None,
+                    });
+                }
                 let id = number(f[1], n + 1)?;
-                let parent = if f[3].is_empty() {
-                    None
-                } else {
+                let parent = if f.len() == 4 && !f[3].is_empty() {
                     Some(SceneEntityId(number(f[3], n + 1)?))
+                } else {
+                    None
                 };
                 scene.add_entity(SceneEntityId(id), unescape(f[2], n + 1)?, parent)?;
                 continue;
@@ -217,9 +239,32 @@ impl Scene {
         if scene.version == 0 || scene.version > CURRENT_SCENE_VERSION {
             return Err(SceneError::UnsupportedVersion(scene.version));
         }
+        if scene.version < CURRENT_SCENE_VERSION {
+            scene.migrate_to_current()?;
+        }
         scene.validate()?;
         Ok(scene)
     }
+    /// Brings a scene written by an older format up to `CURRENT_SCENE_VERSION`.
+    ///
+    /// Component payloads are opaque strings, so version 1 → 2 needs no data
+    /// rewrite; the migration only raises the version and records the origin
+    /// for traceability. Newer migrations should transform here and must reject
+    /// versions they cannot handle with [`SceneError::UnsupportedVersion`].
+    fn migrate_to_current(&mut self) -> Result<(), SceneError> {
+        let from = self.version;
+        match from {
+            1 => {
+                self.version = CURRENT_SCENE_VERSION;
+                self.metadata
+                    .entry("migrated_from".to_owned())
+                    .or_insert_with(|| from.to_string());
+                Ok(())
+            }
+            _ => Err(SceneError::UnsupportedVersion(from)),
+        }
+    }
+
     pub fn validate(&self) -> Result<(), SceneError> {
         if self.version != CURRENT_SCENE_VERSION {
             return Err(SceneError::UnsupportedVersion(self.version));
@@ -379,11 +424,71 @@ mod tests {
         assert!(e.to_string().contains("line 3"));
     }
     #[test]
-    fn rejects_old_or_future_version() {
+    fn rejects_zero_or_future_version() {
         assert!(matches!(
-            Scene::from_text("scene_version=2\nname=x\n"),
-            Err(SceneError::UnsupportedVersion(2))
+            Scene::from_text("scene_version=0\nname=x\n"),
+            Err(SceneError::UnsupportedVersion(0))
         ));
+        assert!(matches!(
+            Scene::from_text("scene_version=3\nname=x\n"),
+            Err(SceneError::UnsupportedVersion(3))
+        ));
+    }
+
+    #[test]
+    fn version_1_scene_migrates_to_current_and_roundtrips() {
+        let text = "scene_version=1\nname=legacy\n\
+                    entity\t1\tPlayer\t\n\
+                    component\t1\tTransform\tx=0;y=0;rotation=0;scale_x=1;scale_y=1\n";
+        let migrated = Scene::from_text(text).unwrap();
+        assert_eq!(migrated.version, CURRENT_SCENE_VERSION);
+        assert_eq!(migrated.name, "legacy");
+        assert_eq!(
+            migrated.metadata.get("migrated_from").map(String::as_str),
+            Some("1")
+        );
+        assert_eq!(migrated.entities.len(), 1);
+        // A migrated scene saves and reloads as the current version.
+        let p = root("migrate").join("main.scene");
+        migrated.save(&p).unwrap();
+        let reloaded = Scene::load(&p).unwrap();
+        assert_eq!(reloaded.version, CURRENT_SCENE_VERSION);
+        assert_eq!(reloaded, migrated);
+        let _ = fs::remove_dir_all(root("migrate"));
+    }
+
+    #[test]
+    fn migration_only_runs_for_older_versions() {
+        // Current-version scenes are untouched: no `migrated_from` marker.
+        let fresh = Scene::from_text(&format!(
+            "scene_version={CURRENT_SCENE_VERSION}\nname=fresh\n"
+        ))
+        .unwrap();
+        assert!(!fresh.metadata.contains_key("migrated_from"));
+    }
+
+    #[test]
+    fn version_2_scene_roundtrips_with_3d_components() {
+        let text = "scene_version=2\nname=3d\n\
+             entity\t1\tCamera\t\n\
+             component\t1\tTransform3D\tposition=0,0,5;rotation=0,0,0,1;scale=1,1,1\n\
+             component\t1\tCamera3D\tposition=0,0,5;target=0,0,0;fov=60;near=0.1;far=100\n\
+             entity\t2\tMesh\t\n\
+             component\t2\tMeshRenderer\tmesh=assets/models/cube.glb\n";
+        let scene = Scene::from_text(text).unwrap();
+        assert_eq!(scene.version, 2);
+        assert_eq!(
+            scene.entities[&SceneEntityId(1)].components["Transform3D"],
+            "position=0,0,5;rotation=0,0,0,1;scale=1,1,1"
+        );
+        assert_eq!(
+            scene.entities[&SceneEntityId(2)].components["MeshRenderer"],
+            "mesh=assets/models/cube.glb"
+        );
+        let p = root("v2").join("3d.scene");
+        scene.save(&p).unwrap();
+        assert_eq!(Scene::load(&p).unwrap(), scene);
+        let _ = fs::remove_dir_all(root("v2"));
     }
     #[test]
     fn resources_and_migration_entry_are_explicit() {

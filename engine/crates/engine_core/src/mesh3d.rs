@@ -1,9 +1,95 @@
 //! GPU-friendly CPU mesh and material data for M8-03.
 
+use std::{error::Error, fmt, path::Path};
+
 use crate::{
     gltf_asset::{GltfAsset, GltfAssetError},
     math3d::Vec3,
 };
+
+/// A 3D mesh renderer component attached to an entity, parsed from the
+/// scene's `MeshRenderer` component string: `mesh=<relative glb/gltf path>`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MeshRenderer {
+    /// Project-relative path to a `.glb`/`.gltf` mesh, or the built-in
+    /// ground-plane sentinel `__ground_plane__`.
+    pub mesh: String,
+}
+
+/// The mesh path the renderer synthesizes a ground receiver plane for.
+pub const GROUND_PLANE_SENTINEL: &str = "__ground_plane__";
+
+/// Errors while parsing the scene's `MeshRenderer` component string.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum MeshRendererError {
+    /// A field was not `key=value` as the scene format requires.
+    MalformedField(String),
+    /// The `mesh` field was missing or empty.
+    MissingMesh,
+    /// The mesh path was absolute or escaped the project root.
+    InvalidMeshPath(String),
+    /// The mesh path did not end in `.glb`/`.gltf`.
+    UnsupportedMeshExtension(String),
+}
+impl fmt::Display for MeshRendererError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MalformedField(field) => write!(f, "malformed MeshRenderer field: {field}"),
+            Self::MissingMesh => write!(f, "missing MeshRenderer mesh path"),
+            Self::InvalidMeshPath(value) => write!(f, "invalid MeshRenderer mesh path: {value}"),
+            Self::UnsupportedMeshExtension(value) => {
+                write!(f, "unsupported MeshRenderer mesh extension: {value}")
+            }
+        }
+    }
+}
+impl Error for MeshRendererError {}
+
+impl MeshRenderer {
+    /// Parses the scene component string written by the editor: `mesh=<path>`.
+    pub fn from_component_str(value: &str) -> Result<Self, MeshRendererError> {
+        let mut mesh: Option<String> = None;
+        for field in value.split(';') {
+            let (key, raw) = field
+                .split_once('=')
+                .ok_or_else(|| MeshRendererError::MalformedField(field.to_owned()))?;
+            match key {
+                "mesh" => mesh = Some(raw.to_owned()),
+                _ => return Err(MeshRendererError::MalformedField(field.to_owned())),
+            }
+        }
+        let mesh = mesh.ok_or(MeshRendererError::MissingMesh)?;
+        validate_mesh_path(&mesh)?;
+        Ok(Self { mesh })
+    }
+
+    /// Encodes the component back to the editor's string format.
+    #[must_use]
+    pub fn to_component_str(&self) -> String {
+        format!("mesh={}", self.mesh)
+    }
+}
+
+fn validate_mesh_path(mesh: &str) -> Result<(), MeshRendererError> {
+    if mesh.is_empty() {
+        return Err(MeshRendererError::MissingMesh);
+    }
+    if mesh == GROUND_PLANE_SENTINEL {
+        return Ok(());
+    }
+    if Path::new(mesh).is_absolute() || mesh.split(['/', '\\']).any(|part| part == "..") {
+        return Err(MeshRendererError::InvalidMeshPath(mesh.to_owned()));
+    }
+    let extension = Path::new(mesh)
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if extension != "glb" && extension != "gltf" {
+        return Err(MeshRendererError::UnsupportedMeshExtension(mesh.to_owned()));
+    }
+    Ok(())
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
@@ -134,6 +220,45 @@ impl std::error::Error for MeshAssetError {}
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn parses_editor_component_string() {
+        let renderer = MeshRenderer::from_component_str("mesh=assets/models/cube.glb").unwrap();
+        assert_eq!(renderer.mesh, "assets/models/cube.glb");
+        assert_eq!(renderer.to_component_str(), "mesh=assets/models/cube.glb");
+        assert_eq!(
+            MeshRenderer::from_component_str(&renderer.to_component_str()).unwrap(),
+            renderer
+        );
+    }
+    #[test]
+    fn accepts_ground_plane_sentinel() {
+        assert_eq!(
+            MeshRenderer::from_component_str("mesh=__ground_plane__")
+                .unwrap()
+                .mesh,
+            GROUND_PLANE_SENTINEL
+        );
+    }
+    #[test]
+    fn rejects_incomplete_or_invalid_component_strings() {
+        assert!(matches!(
+            MeshRenderer::from_component_str("mesh="),
+            Err(MeshRendererError::MissingMesh)
+        ));
+        assert!(matches!(
+            MeshRenderer::from_component_str("mesh=../escape.glb"),
+            Err(MeshRendererError::InvalidMeshPath(_))
+        ));
+        assert!(matches!(
+            MeshRenderer::from_component_str("mesh=assets/models/cube.obj"),
+            Err(MeshRendererError::UnsupportedMeshExtension(_))
+        ));
+        assert!(matches!(
+            MeshRenderer::from_component_str("file=assets/models/cube.glb"),
+            Err(MeshRendererError::MalformedField(_))
+        ));
+    }
 
     fn asset_path() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))

@@ -14,9 +14,10 @@ use std::{
 };
 
 use editor::{
-    AutoSaveController, CommandHistory, CommandKind, InspectorState, PlaySession, ProjectDocument,
-    ProjectError, ProjectInfo, RecoveryManager, RecoveryScan, ResourceBrowserState, ResourceKind,
-    SceneTreeState, TransformFields, check_project, open_project,
+    AutoSaveController, Camera3DFields, CommandHistory, CommandKind, InspectorState, LightFields,
+    PlaySession, ProjectDocument, ProjectError, ProjectInfo, RecoveryManager, RecoveryScan,
+    ResourceBrowserState, ResourceKind, SceneTreeState, Transform3DFields, TransformFields,
+    check_project, open_project,
 };
 use eframe::egui::{self, FontData, FontDefinitions, FontFamily};
 use engine_core::{
@@ -216,8 +217,13 @@ struct EditorApp {
     console_filter: String,
     inspector: InspectorState,
     transform: TransformFields,
+    transform3d: Transform3DFields,
+    mesh_renderer: String,
+    camera3d: Camera3DFields,
+    light: LightFields,
     sprite_reference: String,
     lua_script: String,
+    inspector_transform3d_open: bool,
     new_scene_name: String,
     entity_name: String,
     parent_entity: String,
@@ -423,8 +429,13 @@ impl EditorApp {
             console_filter: String::new(),
             inspector: InspectorState::new(),
             transform: TransformFields::default(),
+            transform3d: Transform3DFields::default(),
+            mesh_renderer: String::new(),
+            camera3d: Camera3DFields::default(),
+            light: LightFields::default(),
             sprite_reference: String::new(),
             lua_script: String::new(),
+            inspector_transform3d_open: true,
             new_scene_name: "main".to_owned(),
             entity_name: "Entity".to_owned(),
             parent_entity: String::new(),
@@ -660,6 +671,10 @@ impl EditorApp {
         {
             self.entity_name = snapshot.name;
             self.transform = snapshot.transform;
+            self.transform3d = snapshot.transform3d.unwrap_or_default();
+            self.mesh_renderer = snapshot.mesh_renderer.unwrap_or_default();
+            self.camera3d = snapshot.camera3d.unwrap_or_default();
+            self.light = snapshot.light.unwrap_or_default();
             self.sprite_reference = snapshot.sprite_reference.unwrap_or_default();
             self.lua_script = snapshot.lua_script.unwrap_or_default();
         }
@@ -676,8 +691,28 @@ impl EditorApp {
         };
         let name = self.entity_name.clone();
         let transform = self.transform;
+        let transform3d = self.transform3d;
+        let mesh = self.mesh_renderer.clone();
+        let camera3d = self.camera3d;
+        let light = self.light;
         let sprite = self.sprite_reference.clone();
         let lua = self.lua_script.clone();
+        // 3D 组件只在实体已有该组件时更新，避免给普通实体注入默认组件。
+        let had_transform3d = self.current_scene().is_some_and(|scene| {
+            scene.scene.entities[&selected]
+                .components
+                .contains_key("Transform3D")
+        });
+        let had_camera3d = self.current_scene().is_some_and(|scene| {
+            scene.scene.entities[&selected]
+                .components
+                .contains_key("Camera3D")
+        });
+        let had_light = self.current_scene().is_some_and(|scene| {
+            scene.scene.entities[&selected]
+                .components
+                .contains_key("Light")
+        });
         let inspector = self.inspector.clone();
         let Some(scene) = self.document.current_scene.as_mut() else {
             self.status = "应用修改".to_owned();
@@ -688,6 +723,20 @@ impl EditorApp {
                 .execute(scene, "Inspector", CommandKind::Property, move |scene| {
                     inspector.set_name(scene, name)?;
                     inspector.set_transform(scene, transform)?;
+                    if had_transform3d {
+                        inspector.set_transform3d(scene, transform3d)?;
+                    }
+                    if mesh.trim().is_empty() {
+                        inspector.clear_mesh_renderer(scene)?;
+                    } else {
+                        inspector.set_mesh_renderer(scene, mesh)?;
+                    }
+                    if had_camera3d {
+                        inspector.set_camera3d(scene, camera3d)?;
+                    }
+                    if had_light {
+                        inspector.set_light(scene, light)?;
+                    }
                     if sprite.trim().is_empty() {
                         inspector.clear_sprite_reference(scene)?;
                     } else {
@@ -1706,6 +1755,87 @@ impl EditorApp {
                 }
             });
         }
+        let transform3d_header = if self.inspector_transform3d_open {
+            "Transform3D  v"
+        } else {
+            "Transform3D  >"
+        };
+        if ui.button(transform3d_header).clicked() {
+            self.inspector_transform3d_open = !self.inspector_transform3d_open;
+        }
+        if self.inspector_transform3d_open {
+            ui.group(|ui| {
+                ui.horizontal(|ui| {
+                    ui.label("位置");
+                    ui.add(egui::DragValue::new(&mut self.transform3d.position_x));
+                    ui.add(egui::DragValue::new(&mut self.transform3d.position_y));
+                    ui.add(egui::DragValue::new(&mut self.transform3d.position_z));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("旋转 Q");
+                    ui.add(egui::DragValue::new(&mut self.transform3d.rotation_x));
+                    ui.add(egui::DragValue::new(&mut self.transform3d.rotation_y));
+                    ui.add(egui::DragValue::new(&mut self.transform3d.rotation_z));
+                    ui.add(egui::DragValue::new(&mut self.transform3d.rotation_w));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("缩放");
+                    ui.add(egui::DragValue::new(&mut self.transform3d.scale_x));
+                    ui.add(egui::DragValue::new(&mut self.transform3d.scale_y));
+                    ui.add(egui::DragValue::new(&mut self.transform3d.scale_z));
+                });
+                ui.horizontal(|ui| {
+                    if ui.button("Reset 3D").clicked() {
+                        self.transform3d = Transform3DFields::default();
+                    }
+                });
+            });
+        }
+        ui.horizontal(|ui| {
+            ui.label("MeshRenderer");
+            ui.text_edit_singleline(&mut self.mesh_renderer);
+        });
+        ui.group(|ui| {
+            ui.label("Camera3D");
+            ui.horizontal(|ui| {
+                ui.label("位置");
+                ui.add(egui::DragValue::new(&mut self.camera3d.position_x));
+                ui.add(egui::DragValue::new(&mut self.camera3d.position_y));
+                ui.add(egui::DragValue::new(&mut self.camera3d.position_z));
+            });
+            ui.horizontal(|ui| {
+                ui.label("目标");
+                ui.add(egui::DragValue::new(&mut self.camera3d.target_x));
+                ui.add(egui::DragValue::new(&mut self.camera3d.target_y));
+                ui.add(egui::DragValue::new(&mut self.camera3d.target_z));
+            });
+            ui.horizontal(|ui| {
+                ui.label("FOV");
+                ui.add(egui::DragValue::new(&mut self.camera3d.fov_degrees));
+                ui.label("近/远");
+                ui.add(egui::DragValue::new(&mut self.camera3d.near));
+                ui.add(egui::DragValue::new(&mut self.camera3d.far));
+            });
+        });
+        ui.group(|ui| {
+            ui.label("Light");
+            ui.horizontal(|ui| {
+                ui.label("方向");
+                ui.add(egui::DragValue::new(&mut self.light.direction_x));
+                ui.add(egui::DragValue::new(&mut self.light.direction_y));
+                ui.add(egui::DragValue::new(&mut self.light.direction_z));
+            });
+            ui.horizontal(|ui| {
+                ui.label("颜色");
+                ui.add(egui::DragValue::new(&mut self.light.color_r));
+                ui.add(egui::DragValue::new(&mut self.light.color_g));
+                ui.add(egui::DragValue::new(&mut self.light.color_b));
+            });
+            ui.horizontal(|ui| {
+                ui.label("强度");
+                ui.add(egui::DragValue::new(&mut self.light.intensity));
+            });
+        });
         ui.horizontal(|ui| {
             ui.label("Sprite");
             ui.text_edit_singleline(&mut self.sprite_reference);

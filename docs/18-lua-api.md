@@ -9,6 +9,17 @@
 - `engine/crates/game_runner/examples/lua_api_demo.rs`
 - `docs/18-lua-api.md`
 
+## M8-06 新增 3D API
+
+| 模块 | API | 说明 |
+|---|---|---|
+| `transform3d` | `attach/get/set/move` | 挂接/查询/设置/移动 3D 变换；`set(id,x,y,z[,rx,ry,rz,rw[,sx,sy,sz]])` |
+| `mesh` | `set/get/clear` | 设置/读取/清除 `MeshRenderer` 网格路径 |
+| `camera` | `set_active/get_active/get` | 切换/查询活动相机；`get(id)` 返回 `x,y,z,tx,ty,tz,fov,near,far` |
+| `light` | `set_active/get/set` | 设置/读取方向光；`set(id,dx,dy,dz,r,g,b,intensity)` |
+
+3D 组件在 `instantiate_scene` 时从场景字符串解析为 World 组件；`camera.set_active` 与 `light.set_active` 由宿主渲染器每帧读取，未选择时回退到首个 `Camera3D` / `Light` 实体。
+
 ## 第一版 API
 
 | 模块 | API | 说明 |

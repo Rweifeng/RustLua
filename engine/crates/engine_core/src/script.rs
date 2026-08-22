@@ -13,8 +13,12 @@ use tracing::{error, info, warn};
 use crate::{
     animation::AnimationStateMachine,
     audio::AudioSystem,
+    camera3d::Camera3D,
     entity::EntityId,
     input::{InputKey, InputSnapshot, MouseButton},
+    light::Light,
+    math3d::Vec3,
+    mesh3d::MeshRenderer,
     particle::{Particle, ParticleSystem},
     physics::{ColliderDesc, ColliderShape, PhysicsWorld},
     save::{decode as decode_save, encode as encode_save},
@@ -22,8 +26,24 @@ use crate::{
     sprite::{Sprite, SpriteAsset},
     tilemap::Tilemap,
     transform::{Transform, Vec2},
+    transform3d::Transform3D,
     world::{World, WorldError},
 };
+
+/// `transform3d.set(id, x, y, z, [rx, ry, rz, rw, [sx, sy, sz]])` argument tuple.
+type Transform3dSetArgs = (
+    i64,
+    f32,
+    f32,
+    f32,
+    Option<f32>,
+    Option<f32>,
+    Option<f32>,
+    Option<f32>,
+    Option<f32>,
+    Option<f32>,
+    Option<f32>,
+);
 
 #[derive(Debug, Default)]
 struct ScriptState {
@@ -44,6 +64,12 @@ struct ScriptState {
     physics: PhysicsWorld,
     particles: ParticleSystem,
     audio: AudioSystem,
+    /// Entity whose `Camera3D` component the renderer uses this frame. Lua
+    /// selects it with `camera.set_active`; the renderer falls back to the
+    /// first camera entity when unset.
+    active_camera: Option<EntityId>,
+    /// Entity whose `Light` component the renderer uses this frame.
+    active_light: Option<EntityId>,
 }
 
 #[derive(Debug, Clone)]
@@ -268,6 +294,54 @@ impl LuaRuntime {
                     .insert(id, animation)
                     .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
             }
+            if let Some(value) = entity.components.get("Transform3D") {
+                let transform = Transform3D::from_component_str(value).map_err(|error| {
+                    LuaBridgeError::Api(format!(
+                        "entity {:?} has an invalid Transform3D: {error}",
+                        entity.name
+                    ))
+                })?;
+                state
+                    .world
+                    .insert(id, transform)
+                    .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
+            }
+            if let Some(value) = entity.components.get("MeshRenderer") {
+                let renderer = MeshRenderer::from_component_str(value).map_err(|error| {
+                    LuaBridgeError::Api(format!(
+                        "entity {:?} has an invalid MeshRenderer: {error}",
+                        entity.name
+                    ))
+                })?;
+                state
+                    .world
+                    .insert(id, renderer)
+                    .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
+            }
+            if let Some(value) = entity.components.get("Camera3D") {
+                let camera = Camera3D::from_component_str(value).map_err(|error| {
+                    LuaBridgeError::Api(format!(
+                        "entity {:?} has an invalid Camera3D: {error}",
+                        entity.name
+                    ))
+                })?;
+                state
+                    .world
+                    .insert(id, camera)
+                    .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
+            }
+            if let Some(value) = entity.components.get("Light") {
+                let light = Light::from_component_str(value).map_err(|error| {
+                    LuaBridgeError::Api(format!(
+                        "entity {:?} has an invalid Light: {error}",
+                        entity.name
+                    ))
+                })?;
+                state
+                    .world
+                    .insert(id, light)
+                    .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
+            }
             if !entity.name.is_empty() {
                 state.names.insert(entity.name.clone(), id);
             }
@@ -369,6 +443,8 @@ impl LuaRuntime {
             state.ui_bars.clear();
             state.scene_pending_load = None;
             state.scene = Some(name.clone());
+            state.active_camera = None;
+            state.active_light = None;
         }
         let instantiated = self.instantiate_scene(&scene)?;
         call_optional(&self.lua, "on_create").map_err(|error| LuaBridgeError::Runtime {
@@ -405,6 +481,20 @@ impl LuaRuntime {
     /// Gives the host a shared write view of the runtime entity world.
     pub fn with_world_mut<R>(&mut self, f: impl FnOnce(&mut World) -> R) -> R {
         f(&mut self.state.borrow_mut().world)
+    }
+
+    /// Returns the entity whose `Camera3D` the renderer should use, if Lua
+    /// selected one with `camera.set_active`.
+    #[must_use]
+    pub fn active_camera(&self) -> Option<EntityId> {
+        self.state.borrow().active_camera
+    }
+
+    /// Returns the entity whose `Light` the renderer should use, if Lua
+    /// selected one with `light.set_active`.
+    #[must_use]
+    pub fn active_light(&self) -> Option<EntityId> {
+        self.state.borrow().active_light
     }
 
     pub fn execute_project_script(&mut self, path: &Path) -> Result<(), LuaBridgeError> {
@@ -1010,6 +1100,273 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
         })?,
     )?;
     lua.globals().set("transform", transform)?;
+
+    let transform3d = lua.create_table()?;
+    let s = Rc::clone(&state);
+    transform3d.set(
+        "attach",
+        lua.create_function(move |_, id: i64| {
+            let id = entity_from_lua(id)?;
+            let mut state = s.borrow_mut();
+            require_alive(&state, id)?;
+            state
+                .world
+                .insert(id, Transform3D::default())
+                .map_err(world_error)?;
+            Ok(true)
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    transform3d.set(
+        "get",
+        lua.create_function(move |lua, id: i64| {
+            let id = entity_from_lua(id)?;
+            let state = s.borrow();
+            require_alive(&state, id)?;
+            let value = state
+                .world
+                .get::<Transform3D>(id)
+                .map_err(world_error)?
+                .ok_or_else(|| api_error("entity has no transform3d"))?;
+            let t = lua.create_table()?;
+            t.set("x", value.position.x)?;
+            t.set("y", value.position.y)?;
+            t.set("z", value.position.z)?;
+            t.set("rx", value.rotation.x)?;
+            t.set("ry", value.rotation.y)?;
+            t.set("rz", value.rotation.z)?;
+            t.set("rw", value.rotation.w)?;
+            t.set("sx", value.scale.x)?;
+            t.set("sy", value.scale.y)?;
+            t.set("sz", value.scale.z)?;
+            Ok(t)
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    transform3d.set(
+        "set",
+        lua.create_function(
+            move |_, (id, x, y, z, rx, ry, rz, rw, sx, sy, sz): Transform3dSetArgs| {
+                let id = entity_from_lua(id)?;
+                let mut state = s.borrow_mut();
+                require_alive(&state, id)?;
+                if !x.is_finite() || !y.is_finite() || !z.is_finite() {
+                    return Err(api_error("transform3d.set position must be finite"));
+                }
+                let t = state
+                    .world
+                    .get_mut::<Transform3D>(id)
+                    .map_err(world_error)?
+                    .ok_or_else(|| api_error("entity has no transform3d"))?;
+                t.position = Vec3::new(x, y, z);
+                if let (Some(rx), Some(ry), Some(rz), Some(rw)) = (rx, ry, rz, rw) {
+                    if !rx.is_finite() || !ry.is_finite() || !rz.is_finite() || !rw.is_finite() {
+                        return Err(api_error("transform3d.set rotation must be finite"));
+                    }
+                    t.rotation = crate::math3d::Quat {
+                        x: rx,
+                        y: ry,
+                        z: rz,
+                        w: rw,
+                    };
+                }
+                if let (Some(sx), Some(sy), Some(sz)) = (sx, sy, sz) {
+                    if sx <= 0.0 || sy <= 0.0 || sz <= 0.0 {
+                        return Err(api_error("transform3d.set scale must be positive"));
+                    }
+                    t.scale = Vec3::new(sx, sy, sz);
+                }
+                Ok(())
+            },
+        )?,
+    )?;
+    let s = Rc::clone(&state);
+    transform3d.set(
+        "move",
+        lua.create_function(move |_, (id, dx, dy, dz): (i64, f32, f32, f32)| {
+            let id = entity_from_lua(id)?;
+            let mut state = s.borrow_mut();
+            require_alive(&state, id)?;
+            let t = state
+                .world
+                .get_mut::<Transform3D>(id)
+                .map_err(world_error)?
+                .ok_or_else(|| api_error("entity has no transform3d"))?;
+            t.position.x += dx;
+            t.position.y += dy;
+            t.position.z += dz;
+            Ok(())
+        })?,
+    )?;
+    lua.globals().set("transform3d", transform3d)?;
+
+    let mesh = lua.create_table()?;
+    let s = Rc::clone(&state);
+    mesh.set(
+        "set",
+        lua.create_function(move |_, (id, path): (i64, String)| {
+            let id = entity_from_lua(id)?;
+            let renderer = MeshRenderer::from_component_str(&format!("mesh={path}"))
+                .map_err(|error| api_error(error.to_string()))?;
+            let mut state = s.borrow_mut();
+            require_alive(&state, id)?;
+            state.world.insert(id, renderer).map_err(world_error)?;
+            Ok(true)
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    mesh.set(
+        "get",
+        lua.create_function(move |lua, id: i64| {
+            let id = entity_from_lua(id)?;
+            let state = s.borrow();
+            require_alive(&state, id)?;
+            let Some(renderer) = state.world.get::<MeshRenderer>(id).map_err(world_error)? else {
+                return Ok(mlua::Value::Nil);
+            };
+            Ok(mlua::Value::String(lua.create_string(&renderer.mesh)?))
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    mesh.set(
+        "clear",
+        lua.create_function(move |_, id: i64| {
+            let id = entity_from_lua(id)?;
+            let mut state = s.borrow_mut();
+            require_alive(&state, id)?;
+            state
+                .world
+                .remove::<MeshRenderer>(id)
+                .map_err(world_error)?;
+            Ok(true)
+        })?,
+    )?;
+    lua.globals().set("mesh", mesh)?;
+
+    let camera = lua.create_table()?;
+    let s = Rc::clone(&state);
+    camera.set(
+        "set_active",
+        lua.create_function(move |_, id: i64| {
+            let id = entity_from_lua(id)?;
+            let mut state = s.borrow_mut();
+            require_alive(&state, id)?;
+            if state
+                .world
+                .get::<Camera3D>(id)
+                .map_err(world_error)?
+                .is_none()
+            {
+                return Err(api_error("entity has no camera3d"));
+            }
+            state.active_camera = Some(id);
+            Ok(true)
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    camera.set(
+        "get_active",
+        lua.create_function(move |_, ()| Ok(s.borrow().active_camera.map(entity_to_lua)))?,
+    )?;
+    let s = Rc::clone(&state);
+    camera.set(
+        "get",
+        lua.create_function(move |lua, id: i64| {
+            let id = entity_from_lua(id)?;
+            let state = s.borrow();
+            require_alive(&state, id)?;
+            let Some(camera) = state.world.get::<Camera3D>(id).map_err(world_error)? else {
+                return Err(api_error("entity has no camera3d"));
+            };
+            let t = lua.create_table()?;
+            t.set("x", camera.position.x)?;
+            t.set("y", camera.position.y)?;
+            t.set("z", camera.position.z)?;
+            t.set("tx", camera.target.x)?;
+            t.set("ty", camera.target.y)?;
+            t.set("tz", camera.target.z)?;
+            t.set("fov", camera.fov_y.to_degrees())?;
+            t.set("near", camera.near)?;
+            t.set("far", camera.far)?;
+            Ok(t)
+        })?,
+    )?;
+    lua.globals().set("camera", camera)?;
+
+    let light = lua.create_table()?;
+    let s = Rc::clone(&state);
+    light.set(
+        "set_active",
+        lua.create_function(move |_, id: i64| {
+            let id = entity_from_lua(id)?;
+            let mut state = s.borrow_mut();
+            require_alive(&state, id)?;
+            if state.world.get::<Light>(id).map_err(world_error)?.is_none() {
+                return Err(api_error("entity has no light"));
+            }
+            state.active_light = Some(id);
+            Ok(true)
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    light.set(
+        "get",
+        lua.create_function(move |lua, id: i64| {
+            let id = entity_from_lua(id)?;
+            let state = s.borrow();
+            require_alive(&state, id)?;
+            let Some(light) = state.world.get::<Light>(id).map_err(world_error)? else {
+                return Err(api_error("entity has no light"));
+            };
+            let t = lua.create_table()?;
+            t.set("dx", light.direction.x)?;
+            t.set("dy", light.direction.y)?;
+            t.set("dz", light.direction.z)?;
+            t.set("r", light.color[0])?;
+            t.set("g", light.color[1])?;
+            t.set("b", light.color[2])?;
+            t.set("intensity", light.intensity)?;
+            Ok(t)
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    light.set(
+        "set",
+        lua.create_function(
+            move |_,
+                  (id, dx, dy, dz, r, g, b, intensity): (
+                i64,
+                f32,
+                f32,
+                f32,
+                f32,
+                f32,
+                f32,
+                f32,
+            )| {
+                let id = entity_from_lua(id)?;
+                let mut state = s.borrow_mut();
+                require_alive(&state, id)?;
+                if !intensity.is_finite() || intensity < 0.0 {
+                    return Err(api_error("light intensity must be finite and non-negative"));
+                }
+                let values = [dx, dy, dz, r, g, b];
+                if values.iter().any(|value| !value.is_finite()) {
+                    return Err(api_error("light parameters must be finite"));
+                }
+                let light = state
+                    .world
+                    .get_mut::<Light>(id)
+                    .map_err(world_error)?
+                    .ok_or_else(|| api_error("entity has no light"))?;
+                light.direction = Vec3::new(dx, dy, dz);
+                light.color = [r, g, b];
+                light.intensity = intensity;
+                Ok(())
+            },
+        )?,
+    )?;
+    lua.globals().set("light", light)?;
 
     let health = lua.create_table()?;
     let s = Rc::clone(&state);
@@ -2030,6 +2387,117 @@ mod tests {
         let _ = fs::remove_file(load_script);
         let _ = fs::remove_file(switch);
         let _ = fs::remove_file(check);
+    }
+
+    #[test]
+    fn lua_3d_api_moves_mesh_and_switches_camera() {
+        use crate::scene::{Scene, SceneEntityId};
+
+        let mut scene = Scene::new("3d");
+        scene.add_entity(SceneEntityId(1), "Camera", None).unwrap();
+        scene
+            .entities
+            .get_mut(&SceneEntityId(1))
+            .unwrap()
+            .components
+            .insert(
+                "Camera3D".into(),
+                "position=0,0,5;target=0,0,0;fov=90;near=0.1;far=100".into(),
+            );
+        scene.add_entity(SceneEntityId(2), "Sun", None).unwrap();
+        scene
+            .entities
+            .get_mut(&SceneEntityId(2))
+            .unwrap()
+            .components
+            .insert(
+                "Light".into(),
+                "direction=0.4,0.8,0.5;color=1,1,1;intensity=1".into(),
+            );
+        scene.add_entity(SceneEntityId(3), "Hero", None).unwrap();
+        scene
+            .entities
+            .get_mut(&SceneEntityId(3))
+            .unwrap()
+            .components
+            .insert(
+                "Transform3D".into(),
+                "position=0,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
+            );
+        scene
+            .entities
+            .get_mut(&SceneEntityId(3))
+            .unwrap()
+            .components
+            .insert("MeshRenderer".into(), "mesh=assets/models/hero.glb".into());
+
+        let mut runtime = LuaRuntime::new().unwrap();
+        assert_eq!(runtime.instantiate_scene(&scene).unwrap(), 3);
+
+        let path = script(
+            "function update()\n\
+             local h = entity.find('Hero')\n\
+             assert(h ~= nil)\n\
+             assert(mesh.get(h) == 'assets/models/hero.glb')\n\
+             transform3d.move(h, 2, 3, 4)\n\
+             local t = transform3d.get(h)\n\
+             assert(t.x == 2 and t.y == 3 and t.z == 4)\n\
+             local cam = entity.find('Camera')\n\
+             assert(camera.get_active() == nil)\n\
+             assert(camera.set_active(cam))\n\
+             assert(camera.get_active() == cam)\n\
+             local c = camera.get(cam)\n\
+             assert(math.abs(c.fov - 90) < 0.001 and math.abs(c.near - 0.1) < 0.001 and c.far == 100)\n\
+             local sun = entity.find('Sun')\n\
+             light.set_active(sun)\n\
+             light.set(sun, 0, 1, 0, 1, 0.5, 0.25, 2)\n\
+             return '3d-ok' end",
+        );
+        runtime.execute_project_script(&path).unwrap();
+        assert_eq!(runtime.call_update().unwrap(), "3d-ok");
+
+        assert_eq!(
+            runtime.active_camera(),
+            Some(runtime.with_world(|world| world.entities_with::<Camera3D>()[0]))
+        );
+        assert_eq!(
+            runtime.active_light(),
+            Some(runtime.with_world(|world| world.entities_with::<Light>()[0]))
+        );
+        let moved = runtime.with_world(|world| {
+            let hero = world.entities_with::<MeshRenderer>()[0];
+            *world.get::<Transform3D>(hero).unwrap().unwrap()
+        });
+        assert_eq!(moved.position, Vec3::new(2.0, 3.0, 4.0));
+        let light = runtime.with_world(|world| {
+            let sun = world.entities_with::<Light>()[0];
+            *world.get::<Light>(sun).unwrap().unwrap()
+        });
+        assert_eq!(light.direction, Vec3::new(0.0, 1.0, 0.0));
+        assert_eq!(light.intensity, 2.0);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn lua_3d_attach_and_validation_errors() {
+        let mut runtime = LuaRuntime::new().unwrap();
+        let path = script(
+            "local e = entity.spawn('Cube')\n\
+             transform3d.attach(e)\n\
+             mesh.set(e, 'assets/models/cube.glb')\n\
+             transform3d.set(e, 1, 2, 3)\n\
+             local t = transform3d.get(e)\n\
+             assert(t.x == 1 and t.y == 2 and t.z == 3)\n\
+             assert(t.rw == 1 and t.sx == 1)\n\
+             local ok = pcall(function() transform3d.set(e, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0) end)\n\
+             assert(not ok, 'zero-scale must be rejected')\n\
+             local bad = pcall(function() mesh.set(e, 'assets/models/cube.obj') end)\n\
+             assert(not bad, 'non-glb mesh must be rejected')\n\
+             function update() return 'ok' end",
+        );
+        runtime.execute_project_script(&path).unwrap();
+        assert_eq!(runtime.call_update().unwrap(), "ok");
+        let _ = fs::remove_file(path);
     }
 
     #[test]

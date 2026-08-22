@@ -1,6 +1,35 @@
 //! Perspective 3D camera and frustum classification.
 
+use std::{error::Error, fmt};
+
 use crate::math3d::{Mat4, Vec3};
+
+/// Errors while parsing the scene's `Camera3D` component string.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Camera3dComponentError {
+    /// A field was not `key=value` as the scene format requires.
+    MalformedField(String),
+    /// A required field (`position`/`target`/`fov`/`near`/`far`) was missing.
+    MissingField(&'static str),
+    /// A numeric or vector field could not be parsed.
+    InvalidValue(String),
+    /// The perspective parameters were invalid (fov, near, far).
+    InvalidPerspective,
+    /// The camera looked at its own position or had a degenerate up vector.
+    InvalidLookAt,
+}
+impl fmt::Display for Camera3dComponentError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MalformedField(field) => write!(f, "malformed Camera3D field: {field}"),
+            Self::MissingField(field) => write!(f, "missing Camera3D field: {field}"),
+            Self::InvalidValue(value) => write!(f, "invalid Camera3D value: {value}"),
+            Self::InvalidPerspective => write!(f, "invalid Camera3D perspective parameters"),
+            Self::InvalidLookAt => write!(f, "invalid Camera3D look-at parameters"),
+        }
+    }
+}
+impl Error for Camera3dComponentError {}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Camera3D {
@@ -47,6 +76,86 @@ impl Camera3D {
         camera.validate()?;
         Ok(camera)
     }
+    /// Parses the scene component string written by the editor:
+    /// `position=x,y,z;target=x,y,z;fov=<degrees>;near=<n>;far=<f>`.
+    ///
+    /// The `up` vector defaults to +Y and `aspect_ratio` to 1.0; the host
+    /// renderer replaces `aspect_ratio` with the window aspect each frame.
+    pub fn from_component_str(value: &str) -> Result<Self, Camera3dComponentError> {
+        let mut camera = Self {
+            position: Vec3::ZERO,
+            target: Vec3::ZERO,
+            up: Vec3::Y,
+            fov_y: 0.0,
+            aspect_ratio: 1.0,
+            near: 0.0,
+            far: 0.0,
+        };
+        let mut seen = [false; 5];
+        for field in value.split(';') {
+            let (key, raw) = field
+                .split_once('=')
+                .ok_or_else(|| Camera3dComponentError::MalformedField(field.to_owned()))?;
+            match key {
+                "position" => {
+                    camera.position = parse_camera_vec3(raw)?;
+                    seen[0] = true;
+                }
+                "target" => {
+                    camera.target = parse_camera_vec3(raw)?;
+                    seen[1] = true;
+                }
+                "fov" => {
+                    camera.fov_y = parse_camera_number(raw)?.to_radians();
+                    seen[2] = true;
+                }
+                "near" => {
+                    camera.near = parse_camera_number(raw)?;
+                    seen[3] = true;
+                }
+                "far" => {
+                    camera.far = parse_camera_number(raw)?;
+                    seen[4] = true;
+                }
+                _ => return Err(Camera3dComponentError::MalformedField(field.to_owned())),
+            }
+        }
+        for (field, present) in [
+            ("position", seen[0]),
+            ("target", seen[1]),
+            ("fov", seen[2]),
+            ("near", seen[3]),
+            ("far", seen[4]),
+        ] {
+            if !present {
+                return Err(Camera3dComponentError::MissingField(field));
+            }
+        }
+        camera.validate().map_err(|error| match error {
+            Camera3dError::InvalidPerspective => Camera3dComponentError::InvalidPerspective,
+            Camera3dError::InvalidLookAt => Camera3dComponentError::InvalidLookAt,
+            Camera3dError::NonFinite => Camera3dComponentError::InvalidValue(value.to_owned()),
+        })?;
+        Ok(camera)
+    }
+
+    /// Encodes the component back to the editor's string format (fov in degrees).
+    #[must_use]
+    pub fn to_component_str(self) -> String {
+        format!(
+            "position={:.9},{:.9},{:.9};target={:.9},{:.9},{:.9};fov={:.4};near={:.9};far={:.9}",
+            self.position.x,
+            self.position.y,
+            self.position.z,
+            self.target.x,
+            self.target.y,
+            self.target.z,
+            self.fov_y.to_degrees(),
+            self.near,
+            self.far
+        )
+    }
+
     pub fn validate(self) -> Result<(), Camera3dError> {
         if !self.position.is_finite() || !self.target.is_finite() || !self.up.is_finite() {
             return Err(Camera3dError::NonFinite);
@@ -136,6 +245,38 @@ impl Camera3D {
     }
 }
 
+/// Parses an `x,y,z` camera vector, rejecting non-finite components.
+fn parse_camera_vec3(raw: &str) -> Result<Vec3, Camera3dComponentError> {
+    let parts: Vec<&str> = raw.split(',').collect();
+    if parts.len() != 3 {
+        return Err(Camera3dComponentError::InvalidValue(raw.to_owned()));
+    }
+    let mut values = [0.0_f32; 3];
+    for (slot, part) in values.iter_mut().zip(&parts) {
+        let parsed: f32 = part
+            .trim()
+            .parse()
+            .map_err(|_| Camera3dComponentError::InvalidValue(raw.to_owned()))?;
+        if !parsed.is_finite() {
+            return Err(Camera3dComponentError::InvalidValue(raw.to_owned()));
+        }
+        *slot = parsed;
+    }
+    Ok(Vec3::new(values[0], values[1], values[2]))
+}
+
+/// Parses a finite scalar camera parameter.
+fn parse_camera_number(raw: &str) -> Result<f32, Camera3dComponentError> {
+    let parsed: f32 = raw
+        .trim()
+        .parse()
+        .map_err(|_| Camera3dComponentError::InvalidValue(raw.to_owned()))?;
+    if !parsed.is_finite() {
+        return Err(Camera3dComponentError::InvalidValue(raw.to_owned()));
+    }
+    Ok(parsed)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Frustum {
     view_projection: Mat4,
@@ -195,5 +336,47 @@ mod tests {
     fn invalid_perspective_is_rejected() {
         assert!(Camera3D::perspective(Vec3::ZERO, Vec3::Z, 0.0, 1.0, 0.1, 10.0).is_err());
         assert!(Camera3D::perspective(Vec3::ZERO, Vec3::ZERO, 1.0, 1.0, 0.1, 10.0).is_err());
+    }
+    #[test]
+    fn parses_editor_component_string() {
+        let camera =
+            Camera3D::from_component_str("position=0,0,5;target=0,0,0;fov=90;near=0.1;far=100")
+                .unwrap();
+        assert_eq!(camera.position, Vec3::new(0.0, 0.0, 5.0));
+        assert_eq!(camera.target, Vec3::ZERO);
+        assert!((camera.fov_y - std::f32::consts::FRAC_PI_2).abs() < 1e-5);
+        assert_eq!(camera.aspect_ratio, 1.0);
+        assert_eq!(camera.near, 0.1);
+        assert_eq!(camera.far, 100.0);
+        assert_eq!(
+            Camera3D::from_component_str(&camera.to_component_str()).unwrap(),
+            camera
+        );
+    }
+    #[test]
+    fn rejects_incomplete_or_invalid_component_strings() {
+        assert!(matches!(
+            Camera3D::from_component_str("position=0,0,5;target=0,0,0;near=0.1;far=100"),
+            Err(Camera3dComponentError::MissingField("fov"))
+        ));
+        assert!(matches!(
+            Camera3D::from_component_str("position=0,0;target=0,0,0;fov=90;near=0.1;far=100"),
+            Err(Camera3dComponentError::InvalidValue(_))
+        ));
+        // fov out of (0, 180) degrees
+        assert!(
+            Camera3D::from_component_str("position=0,0,5;target=0,0,0;fov=0;near=0.1;far=100",)
+                .is_err()
+        );
+        // far must exceed near
+        assert!(
+            Camera3D::from_component_str("position=0,0,5;target=0,0,0;fov=90;near=10;far=1",)
+                .is_err()
+        );
+        // look-at degenerate
+        assert!(
+            Camera3D::from_component_str("position=0,0,5;target=0,0,5;fov=90;near=0.1;far=100",)
+                .is_err()
+        );
     }
 }

@@ -17,7 +17,7 @@ use std::{
 };
 
 /// assetc 的导入器版本；变更会触发全部资源重新导入。
-pub const IMPORTER_VERSION: &str = "assetc-m8-02";
+pub const IMPORTER_VERSION: &str = "assetc-m8-06";
 
 /// 扫描时跳过的本地工作目录。
 const SKIP_DIRS: &[&str] = &[".cache", ".temp", ".git", "target"];

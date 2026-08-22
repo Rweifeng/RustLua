@@ -130,6 +130,12 @@ impl Quat {
             w: self.w / length,
         })
     }
+    /// Returns whether the quaternion is unit length within `1e-3` tolerance.
+    #[must_use]
+    pub fn is_unit(self) -> bool {
+        let length_squared = self.x * self.x + self.y * self.y + self.z * self.z + self.w * self.w;
+        length_squared.is_finite() && (length_squared - 1.0).abs() < 1e-3
+    }
     #[must_use]
     pub fn conjugate(self) -> Self {
         Self {

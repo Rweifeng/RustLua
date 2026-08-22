@@ -3,6 +3,7 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 use std::{
+    collections::HashMap,
     env, fs,
     path::{Path, PathBuf},
     sync::Arc,
@@ -15,10 +16,11 @@ use engine_core::{
     camera3d::Camera3D,
     font::FontAtlas,
     input::{InputKey, InputSnapshot, MouseButton},
+    light::Light,
     logging::{EngineError, LogModule, init_logging},
     math2d::{Camera2D, Viewport},
     math3d::{Mat4, Vec3},
-    mesh3d::MeshAsset,
+    mesh3d::{GROUND_PLANE_SENTINEL, MeshAsset, MeshRenderer},
     performance::{PerformanceSnapshot, PerformanceStats},
     scene::{Scene, SceneEntityId},
     script::LuaRuntime,
@@ -29,6 +31,7 @@ use engine_core::{
     tilemap::Tilemap,
     time_step::FixedTimeStep,
     transform::{Transform, Vec2, integrate_velocity},
+    transform3d::Transform3D,
     window::{AppLifecycle, has_renderable_size},
 };
 use wgpu::util::DeviceExt;
@@ -155,18 +158,49 @@ struct LoadedTexture {
     bind_group: wgpu::BindGroup,
 }
 
-struct GpuMesh {
+/// Shared vertex/index buffers for one mesh primitive, cached by mesh path.
+#[derive(Clone)]
+struct GpuGeometry {
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
-    material_bind_group: wgpu::BindGroup,
     index_count: u32,
 }
 
+/// File-authored material parameters for one primitive; the per-draw model
+/// matrix is filled in at frame time from the owning entity's `Transform3D`.
+#[derive(Clone, Copy)]
 struct GpuMaterial {
     base_color: [f32; 4],
     metallic: f32,
     roughness: f32,
     model: Mat4,
+}
+
+/// Cached GPU geometry + file materials for one mesh path.
+struct CachedMesh {
+    primitives: Vec<CachedPrimitive>,
+}
+
+struct CachedPrimitive {
+    geometry: GpuGeometry,
+    base_color: [f32; 4],
+    metallic: f32,
+    roughness: f32,
+}
+
+/// One scene entity's 3D draw requested this frame.
+struct Scene3dDrawable {
+    mesh_path: String,
+    model: Mat4,
+}
+
+/// Per-frame 3D render state gathered from the runtime world: the active
+/// camera (aspect already applied), the active directional light, and the
+/// drawables (entities with `Transform3D` + `MeshRenderer`).
+struct Scene3d {
+    camera: Camera3D,
+    light: Light,
+    drawables: Vec<Scene3dDrawable>,
 }
 
 struct Renderer {
@@ -191,7 +225,14 @@ struct Renderer {
     font_atlas_bind: Option<wgpu::BindGroup>,
     font_atlas_uploaded_version: u64,
     project_root: Option<PathBuf>,
-    gpu_meshes: Vec<GpuMesh>,
+    /// Camera uniform buffer, rewritten every frame from the active camera.
+    camera_buffer: wgpu::Buffer,
+    /// Directional light uniform buffer, rewritten every frame.
+    light_buffer: wgpu::Buffer,
+    /// Light-space camera uniform buffer, rewritten every frame from the light.
+    shadow_camera_buffer: wgpu::Buffer,
+    /// GPU geometry + file materials cached by mesh path.
+    mesh_cache: HashMap<String, CachedMesh>,
     _material_bind_group_layout: wgpu::BindGroupLayout,
 }
 
@@ -453,6 +494,16 @@ impl Renderer {
             contents: bytemuck::cast_slice(&camera_matrix.columns),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
+        let light_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("p2-directional-light-buffer"),
+            contents: bytemuck::cast_slice(&[[0.4_f32, 0.8, 0.5, 0.0], [1.0_f32, 1.0, 1.0, 1.0]]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+        let shadow_camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("p2-shadow-camera-buffer"),
+            contents: bytemuck::cast_slice(&light_matrix.columns),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
         let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("p2-camera3d-bind-group"),
             layout: &camera_bind_group_layout,
@@ -463,26 +514,11 @@ impl Renderer {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: device
-                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                            label: Some("p2-directional-light-buffer"),
-                            contents: bytemuck::cast_slice(&[
-                                [0.4_f32, 0.8, 0.5, 0.0],
-                                [1.0_f32, 1.0, 1.0, 1.0],
-                            ]),
-                            usage: wgpu::BufferUsages::UNIFORM,
-                        })
-                        .as_entire_binding(),
+                    resource: light_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: device
-                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                            label: Some("p2-light-camera-buffer"),
-                            contents: bytemuck::cast_slice(&light_matrix.columns),
-                            usage: wgpu::BufferUsages::UNIFORM,
-                        })
-                        .as_entire_binding(),
+                    resource: shadow_camera_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
@@ -508,17 +544,12 @@ impl Renderer {
                     count: None,
                 }],
             });
-        let shadow_matrix_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("p2-shadow-camera-buffer"),
-            contents: bytemuck::cast_slice(&light_matrix.columns),
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
         let shadow_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("p2-shadow-bind-group"),
             layout: &shadow_bind_group_layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
-                resource: shadow_matrix_buffer.as_entire_binding(),
+                resource: shadow_camera_buffer.as_entire_binding(),
             }],
         });
         let mesh_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -644,11 +675,6 @@ impl Renderer {
             cache: None,
         });
         let depth_view = Self::create_depth_view(&device, config.width, config.height);
-        let gpu_meshes = Self::load_gpu_meshes(
-            &device,
-            &material_bind_group_layout,
-            project_root.as_deref(),
-        );
         tracing::info!(target: "game",
             "[render] initialized: adapter={adapter_name} format={format:?} present_mode={present_mode:?}"
         );
@@ -674,7 +700,10 @@ impl Renderer {
             font_atlas_bind: None,
             font_atlas_uploaded_version: u64::MAX,
             project_root,
-            gpu_meshes,
+            camera_buffer,
+            light_buffer,
+            shadow_camera_buffer,
+            mesh_cache: HashMap::new(),
             _material_bind_group_layout: material_bind_group_layout,
         })
     }
@@ -718,50 +747,61 @@ impl Renderer {
             .create_view(&wgpu::TextureViewDescriptor::default())
     }
 
-    fn load_gpu_meshes(
-        device: &Device,
-        material_layout: &wgpu::BindGroupLayout,
-        project_root: Option<&Path>,
-    ) -> Vec<GpuMesh> {
-        let Some(root) = project_root else {
-            return Vec::new();
-        };
-        let path = root
-            .join("assets")
-            .join("models")
-            .join("m8-test-triangle.glb");
-        if !path.is_file() {
-            return Vec::new();
+    /// Returns the cached geometry + materials for a mesh path, loading it from
+    /// the project on first use. Missing or unloadable meshes are skipped with
+    /// a warning so a bad reference never crashes the renderer.
+    fn cached_mesh(&mut self, path: &str) -> Option<&CachedMesh> {
+        if !self.mesh_cache.contains_key(path)
+            && let Some(cached) = self.load_cached_mesh(path)
+        {
+            self.mesh_cache.insert(path.to_owned(), cached);
+            tracing::info!(target: "render", path = %path, "[render] 3D mesh cached");
         }
-        let meshes = match MeshAsset::from_gltf_path(&path) {
+        self.mesh_cache.get(path)
+    }
+
+    fn load_cached_mesh(&self, path: &str) -> Option<CachedMesh> {
+        if path == GROUND_PLANE_SENTINEL {
+            return Some(self.ground_plane_cached_mesh());
+        }
+        let root = self.project_root.as_ref()?;
+        let file = root.join(path);
+        if !file.is_file() {
+            tracing::warn!(target: "render", path = %path, "[render] 3D mesh file missing; skipped");
+            return None;
+        }
+        let meshes = match MeshAsset::from_gltf_path(&file) {
             Ok(meshes) => meshes,
             Err(error) => {
-                tracing::warn!(target: "render", path = %path.display(), error = %error, "[render] 3D mesh upload skipped");
-                return Vec::new();
+                tracing::warn!(target: "render", path = %path, error = %error, "[render] 3D mesh load failed; skipped");
+                return None;
             }
         };
-        let mut uploaded = Vec::new();
-        for (mesh_index, mesh) in meshes.iter().enumerate() {
-            for (primitive_index, primitive) in mesh.primitives.iter().enumerate() {
+        let mut primitives = Vec::new();
+        for mesh in &meshes {
+            for primitive in &mesh.primitives {
                 let material = mesh.materials.get(primitive.material.unwrap_or(usize::MAX));
-                uploaded.push(Self::upload_gpu_mesh(
-                    device,
-                    material_layout,
-                    &primitive.vertices,
-                    &primitive.indices,
-                    GpuMaterial {
-                        base_color: material
-                            .map(|value| value.base_color_factor)
-                            .unwrap_or([0.55, 0.7, 1.0, 1.0]),
-                        metallic: material.map(|value| value.metallic_factor).unwrap_or(0.0),
-                        roughness: material.map(|value| value.roughness_factor).unwrap_or(0.6),
-                        model: Mat4::translation(Vec3::new(0.0, 0.7, 0.0)),
-                    },
-                ));
-                tracing::info!(target: "render", mesh = mesh_index, primitive = primitive_index, material = ?primitive.material, vertices = primitive.vertices.len(), indices = primitive.indices.len(), "[render] 3D mesh uploaded");
+                primitives.push(CachedPrimitive {
+                    geometry: self.upload_geometry(&primitive.vertices, &primitive.indices),
+                    base_color: material
+                        .map(|value| value.base_color_factor)
+                        .unwrap_or([0.55, 0.7, 1.0, 1.0]),
+                    metallic: material.map(|value| value.metallic_factor).unwrap_or(0.0),
+                    roughness: material.map(|value| value.roughness_factor).unwrap_or(0.6),
+                });
             }
         }
-        let plane_vertices = [
+        if primitives.is_empty() {
+            tracing::warn!(target: "render", path = %path, "[render] 3D mesh has no primitives; skipped");
+            return None;
+        }
+        Some(CachedMesh { primitives })
+    }
+
+    /// Synthesizes the built-in ground receiver plane for the
+    /// `__ground_plane__` MeshRenderer sentinel so shadows have a surface.
+    fn ground_plane_cached_mesh(&self) -> CachedMesh {
+        let vertices = [
             engine_core::mesh3d::MeshVertex {
                 position: [-4.0, 0.0, -4.0],
                 normal: [0.0, 1.0, 0.0],
@@ -783,62 +823,112 @@ impl Renderer {
                 texcoord: [0.0, 1.0],
             },
         ];
-        uploaded.push(Self::upload_gpu_mesh(
-            device,
-            material_layout,
-            &plane_vertices,
-            &[0, 2, 1, 0, 3, 2],
-            GpuMaterial {
+        CachedMesh {
+            primitives: vec![CachedPrimitive {
+                geometry: self.upload_geometry(&vertices, &[0, 2, 1, 0, 3, 2]),
                 base_color: [0.25, 0.3, 0.38, 1.0],
                 metallic: 0.0,
                 roughness: 0.9,
-                model: Mat4::identity(),
-            },
-        ));
-        tracing::info!(target: "render", meshes = uploaded.len(), "[render] shadow scene ready: occluder plus receiver plane");
-        uploaded
+            }],
+        }
     }
 
-    fn upload_gpu_mesh(
-        device: &Device,
-        material_layout: &wgpu::BindGroupLayout,
+    fn upload_geometry(
+        &self,
         vertices: &[engine_core::mesh3d::MeshVertex],
         indices: &[u32],
-        material: GpuMaterial,
-    ) -> GpuMesh {
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("p2-mesh3d-vertices"),
-            contents: bytemuck::cast_slice(vertices),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("p2-mesh3d-indices"),
-            contents: bytemuck::cast_slice(indices),
-            usage: wgpu::BufferUsages::INDEX,
-        });
+    ) -> GpuGeometry {
+        let vertex_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("p2-mesh3d-vertices"),
+                contents: bytemuck::cast_slice(vertices),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+        let index_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("p2-mesh3d-indices"),
+                contents: bytemuck::cast_slice(indices),
+                usage: wgpu::BufferUsages::INDEX,
+            });
+        GpuGeometry {
+            vertex_buffer,
+            index_buffer,
+            index_count: indices.len() as u32,
+        }
+    }
+
+    /// Creates a material bind group carrying one primitive's file material
+    /// plus the owning entity's model matrix.
+    fn material_bind_group(&self, material: GpuMaterial) -> wgpu::BindGroup {
         let mut material_data = Vec::with_capacity(6);
         material_data.push(material.base_color);
         material_data.push([material.metallic, material.roughness, 0.0, 0.0]);
         material_data.extend_from_slice(&material.model.columns);
-        let material_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("p2-material3d-buffer"),
-            contents: bytemuck::cast_slice(&material_data),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
-        let material_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("p2-material3d-bind-group"),
-            layout: material_layout,
+        let material_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("p2-material3d-frame-buffer"),
+                contents: bytemuck::cast_slice(&material_data),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+        self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("p2-material3d-frame-bind-group"),
+            layout: &self._material_bind_group_layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
                 resource: material_buffer.as_entire_binding(),
             }],
-        });
-        GpuMesh {
-            vertex_buffer,
-            index_buffer,
-            material_bind_group,
-            index_count: indices.len() as u32,
+        })
+    }
+
+    /// Rewrites the camera, light, and light-space uniform buffers from the
+    /// active scene's camera and directional light.
+    fn update_3d_uniforms(&mut self, scene: &Scene3d) {
+        if let Ok(matrix) = scene.camera.view_projection_matrix() {
+            self.queue.write_buffer(
+                &self.camera_buffer,
+                0,
+                bytemuck::cast_slice(&matrix.columns),
+            );
         }
+        let (direction, color_intensity) = scene.light.uniform();
+        self.queue.write_buffer(
+            &self.light_buffer,
+            0,
+            bytemuck::cast_slice(&[direction, color_intensity]),
+        );
+        let light_matrix = light_view_projection(scene.light);
+        self.queue.write_buffer(
+            &self.shadow_camera_buffer,
+            0,
+            bytemuck::cast_slice(&light_matrix.columns),
+        );
+    }
+
+    /// Gathers this frame's 3D draws: every scene entity with both a
+    /// `Transform3D` and a `MeshRenderer`, resolved to cached geometry plus a
+    /// per-entity model matrix.
+    fn frame_3d_draws(&mut self, scene: &Scene3d) -> Vec<(GpuGeometry, GpuMaterial)> {
+        let mut draws = Vec::new();
+        for drawable in &scene.drawables {
+            let Some(cached) = self.cached_mesh(&drawable.mesh_path) else {
+                continue;
+            };
+            for primitive in &cached.primitives {
+                draws.push((
+                    primitive.geometry.clone(),
+                    GpuMaterial {
+                        base_color: primitive.base_color,
+                        metallic: primitive.metallic,
+                        roughness: primitive.roughness,
+                        model: drawable.model,
+                    },
+                ));
+            }
+        }
+        draws
     }
 
     fn resize(&mut self, size: PhysicalSize<u32>) {
@@ -855,10 +945,7 @@ impl Renderer {
         );
     }
 
-    fn render(&mut self, mesh: &SceneMesh) -> RenderOutcome {
-        if !self.gpu_meshes.is_empty() {
-            tracing::trace!(target: "render", meshes = self.gpu_meshes.len(), "[render] 3D GPU meshes available");
-        }
+    fn render(&mut self, mesh: &SceneMesh, scene3d: Option<&Scene3d>) -> RenderOutcome {
         let output = match self.surface.get_current_texture() {
             Ok(output) => output,
             Err(SurfaceError::Lost | SurfaceError::Outdated) => {
@@ -909,32 +996,41 @@ impl Renderer {
                 occlusion_query_set: None,
             });
         }
-        if !self.gpu_meshes.is_empty() {
-            let mut shadow_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("p2-shadow-pass"),
-                color_attachments: &[],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.shadow_view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
-                        store: wgpu::StoreOp::Store,
+        let frame_draws = if let Some(scene) = scene3d {
+            self.update_3d_uniforms(scene);
+            self.frame_3d_draws(scene)
+        } else {
+            Vec::new()
+        };
+        if !frame_draws.is_empty() {
+            {
+                let mut shadow_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("p2-shadow-pass"),
+                    color_attachments: &[],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: &self.shadow_view,
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(1.0),
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        stencil_ops: None,
                     }),
-                    stencil_ops: None,
-                }),
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            shadow_pass.set_pipeline(&self.shadow_pipeline);
-            shadow_pass.set_bind_group(0, &self.shadow_bind_group, &[]);
-            for gpu_mesh in &self.gpu_meshes {
-                shadow_pass.set_bind_group(1, &gpu_mesh.material_bind_group, &[]);
-                shadow_pass.set_vertex_buffer(0, gpu_mesh.vertex_buffer.slice(..));
-                shadow_pass
-                    .set_index_buffer(gpu_mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-                shadow_pass.draw_indexed(0..gpu_mesh.index_count, 0, 0..1);
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                shadow_pass.set_pipeline(&self.shadow_pipeline);
+                shadow_pass.set_bind_group(0, &self.shadow_bind_group, &[]);
+                for (geometry, material) in &frame_draws {
+                    let bind = self.material_bind_group(*material);
+                    shadow_pass.set_bind_group(1, &bind, &[]);
+                    shadow_pass.set_vertex_buffer(0, geometry.vertex_buffer.slice(..));
+                    shadow_pass.set_index_buffer(
+                        geometry.index_buffer.slice(..),
+                        wgpu::IndexFormat::Uint32,
+                    );
+                    shadow_pass.draw_indexed(0..geometry.index_count, 0, 0..1);
+                }
             }
-        }
-        if !self.gpu_meshes.is_empty() {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("p2-mesh3d-pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -959,11 +1055,12 @@ impl Renderer {
             });
             pass.set_pipeline(&self.mesh_pipeline);
             pass.set_bind_group(0, &self.camera_bind_group, &[]);
-            for gpu_mesh in &self.gpu_meshes {
-                pass.set_bind_group(1, &gpu_mesh.material_bind_group, &[]);
-                pass.set_vertex_buffer(0, gpu_mesh.vertex_buffer.slice(..));
-                pass.set_index_buffer(gpu_mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..gpu_mesh.index_count, 0, 0..1);
+            for (geometry, material) in &frame_draws {
+                let bind = self.material_bind_group(*material);
+                pass.set_bind_group(1, &bind, &[]);
+                pass.set_vertex_buffer(0, geometry.vertex_buffer.slice(..));
+                pass.set_index_buffer(geometry.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..geometry.index_count, 0, 0..1);
             }
         }
         if !mesh.vertices.is_empty() {
@@ -1197,6 +1294,32 @@ impl Renderer {
     }
 }
 
+/// Light-space view-projection used by the shadow map: an orthographic-style
+/// projection from a camera placed along the light direction, looking at the
+/// origin. Mirrors the fixed matrix used by the M8-05 shadow pass.
+fn light_view_projection(light: Light) -> Mat4 {
+    let direction = light
+        .direction
+        .normalized()
+        .unwrap_or(Vec3::new(0.0, -1.0, 0.0));
+    let Ok(camera) = Camera3D::perspective(direction * 12.0, Vec3::ZERO, 1.3, 1.0, 0.1, 30.0)
+    else {
+        return Mat4::identity();
+    };
+    let Ok(view) = camera.view_matrix() else {
+        return Mat4::identity();
+    };
+    let projection = Mat4 {
+        columns: [
+            [0.1, 0.0, 0.0, 0.0],
+            [0.0, 0.1, 0.0, 0.0],
+            [0.0, 0.0, -1.0 / 29.9, 0.0],
+            [0.0, 0.0, -0.1 / 29.9, 1.0],
+        ],
+    };
+    projection * view
+}
+
 enum RenderOutcome {
     Presented,
     Retry,
@@ -1305,6 +1428,88 @@ impl RuntimeScene {
             }
         });
         Ok(())
+    }
+
+    /// Gathers the per-frame 3D render state from the runtime world: the active
+    /// camera (Lua-selected, else the first `Camera3D` entity, else a default),
+    /// the active light, and every entity with both a `Transform3D` and a
+    /// `MeshRenderer`. Returns `None` when the scene has no 3D drawables.
+    fn scene_3d(&self, aspect_ratio: f32) -> Option<Scene3d> {
+        let drawables = self.script.with_world(|world| {
+            world
+                .entities_with2::<Transform3D, MeshRenderer>()
+                .into_iter()
+                .filter_map(|id| {
+                    let transform = world.get::<Transform3D>(id).ok().flatten().copied()?;
+                    let renderer = world.get::<MeshRenderer>(id).ok().flatten()?;
+                    let model = transform.model_matrix().ok()?;
+                    Some(Scene3dDrawable {
+                        mesh_path: renderer.mesh.clone(),
+                        model,
+                    })
+                })
+                .collect::<Vec<_>>()
+        });
+        if drawables.is_empty() {
+            return None;
+        }
+        let camera = self.active_camera3d(aspect_ratio);
+        let light = self.active_light();
+        Some(Scene3d {
+            camera,
+            light,
+            drawables,
+        })
+    }
+
+    /// Resolves the active camera: Lua's `camera.set_active` selection, else the
+    /// first entity with a `Camera3D` component, else a fixed default.
+    fn active_camera3d(&self, aspect_ratio: f32) -> Camera3D {
+        let fallback = Camera3D::perspective(
+            Vec3::new(0.0, 0.0, 5.0),
+            Vec3::ZERO,
+            std::f32::consts::FRAC_PI_2,
+            aspect_ratio,
+            0.1,
+            100.0,
+        )
+        .unwrap_or_else(|_| Camera3D {
+            position: Vec3::new(0.0, 0.0, 5.0),
+            target: Vec3::ZERO,
+            up: Vec3::Y,
+            fov_y: std::f32::consts::FRAC_PI_2,
+            aspect_ratio,
+            near: 0.1,
+            far: 100.0,
+        });
+        let selected = self.script.active_camera();
+        let mut camera = self.script.with_world(|world| {
+            let candidates = world.entities_with::<Camera3D>();
+            let id = selected
+                .filter(|id| world.has::<Camera3D>(*id).unwrap_or(false))
+                .or_else(|| candidates.first().copied());
+            id.and_then(|id| world.get::<Camera3D>(id).ok().flatten().copied())
+        });
+        if let Some(camera) = &mut camera {
+            camera.aspect_ratio = aspect_ratio;
+            return *camera;
+        }
+        fallback
+    }
+
+    /// Resolves the active light: Lua's `light.set_active` selection, else the
+    /// first entity with a `Light` component, else a default directional light.
+    fn active_light(&self) -> Light {
+        let selected = self.script.active_light();
+        self.script
+            .with_world(|world| {
+                let candidates = world.entities_with::<Light>();
+                let id = selected
+                    .filter(|id| world.has::<Light>(*id).unwrap_or(false))
+                    .or_else(|| candidates.first().copied());
+                id.and_then(|id| world.get::<Light>(id).ok().flatten().copied())
+            })
+            .unwrap_or_default()
     }
 
     fn vertices(&mut self, width: u32, height: u32) -> Result<SceneMesh, String> {
@@ -1873,7 +2078,12 @@ impl GameApp {
                 });
             }
         }
-        match renderer.render(&mesh) {
+        let aspect = renderer.config.width as f32 / renderer.config.height.max(1) as f32;
+        let scene3d = self
+            .runtime_scene
+            .as_ref()
+            .and_then(|scene| scene.scene_3d(aspect));
+        match renderer.render(&mesh, scene3d.as_ref()) {
             RenderOutcome::Presented => {}
             RenderOutcome::Retry | RenderOutcome::Skipped => {}
             RenderOutcome::Fatal => self.request_exit(event_loop),
@@ -2384,6 +2594,55 @@ mod tests {
         )
         .unwrap();
         assert!(verify_project(&root).is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn extract_asset_refs_scans_3d_components() {
+        let scene = "component 1 MeshRenderer mesh=assets/models/hero.glb\n\
+                     component 1 Camera3D position=0,0,5;target=0,0,0;fov=90;near=0.1;far=100\n\
+                     component 2 MeshRenderer mesh=__ground_plane__\n";
+        let refs = extract_asset_refs(scene);
+        assert!(refs.contains(&"assets/models/hero.glb".to_owned()));
+        assert!(!refs.contains(&"__ground_plane__".to_owned()));
+        assert!(!refs.contains(&"assets/missing.glb".to_owned()));
+    }
+
+    #[test]
+    fn verify_project_reports_missing_3d_mesh() {
+        let root = std::env::temp_dir().join(format!("p2-verify-3d-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("scenes")).unwrap();
+        std::fs::create_dir_all(root.join("scripts")).unwrap();
+        std::fs::create_dir_all(root.join("assets/models")).unwrap();
+        std::fs::write(
+            root.join("project.toml"),
+            "[project]\nmain_script = \"scripts/main.lua\"\nstartup_scene = \"scenes/main.scene\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("scripts/main.lua"),
+            "function update() return 'ok' end\n",
+        )
+        .unwrap();
+        // v2 scene referencing an existing and a missing 3D mesh.
+        std::fs::write(root.join("assets/models/cube.glb"), b"fake glb bytes").unwrap();
+        std::fs::write(
+            root.join("scenes/main.scene"),
+            "scene_version=2\nname=3d\n\
+             component 1 MeshRenderer mesh=assets/models/cube.glb\n\
+             component 2 MeshRenderer mesh=assets/models/missing.glb\n",
+        )
+        .unwrap();
+        let missing = verify_project(&root);
+        assert_eq!(
+            missing.iter().filter(|m| m.contains("missing.glb")).count(),
+            1,
+            "missing 3D mesh reported: {missing:?}"
+        );
+        assert!(
+            missing.iter().all(|m| !m.contains("cube.glb")),
+            "existing 3D mesh must not be reported: {missing:?}"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 }

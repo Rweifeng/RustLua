@@ -40,7 +40,7 @@ impl ImportKind {
             "gltf" => Ok(Self::Gltf),
             "glb" => Ok(Self::Glb),
             "lua" => Ok(Self::Lua),
-            "ron" | "json" => Ok(Self::Scene),
+            "scene" | "ron" | "json" => Ok(Self::Scene),
             "prefab" => Ok(Self::Prefab),
             _ => Err(ImportCacheError::UnsupportedExtension(
                 path.as_ref().display().to_string(),
@@ -318,6 +318,18 @@ mod tests {
         let mut reloaded = ImportCache::open(&root).unwrap();
         assert!(reloaded.import_file(id, &path, "lua-1").unwrap().reused);
         let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn recognizes_scene_extension_as_import_kind() {
+        assert_eq!(
+            ImportKind::from_path("scenes/main.scene").unwrap(),
+            ImportKind::Scene
+        );
+        assert_eq!(
+            ImportKind::from_path("assets/models/hero.glb").unwrap(),
+            ImportKind::Glb
+        );
+        assert!(ImportKind::from_path("assets/unknown.xyz").is_err());
     }
     #[test]
     fn content_or_version_change_reimports() {
