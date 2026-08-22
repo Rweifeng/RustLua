@@ -309,6 +309,15 @@ impl ApplicationHandler for GameApp {
             WindowEvent::CursorMoved { position, .. } => {
                 self.input.cursor_moved(position.x, position.y);
             }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let (dx, dy) = match delta {
+                    winit::event::MouseScrollDelta::LineDelta(x, y) => (x, y),
+                    winit::event::MouseScrollDelta::PixelDelta(position) => {
+                        (position.x as f32 / 100.0, position.y as f32 / 100.0)
+                    }
+                };
+                self.input.scroll_event(dx, dy);
+            }
             WindowEvent::Focused(focused) => {
                 self.input.set_focused(focused);
                 if !focused {

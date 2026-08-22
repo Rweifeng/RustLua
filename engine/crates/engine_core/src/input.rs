@@ -34,6 +34,7 @@ pub struct InputSnapshot {
     released_mouse: HashSet<MouseButton>,
     cursor_position: (f64, f64),
     cursor_delta: (f64, f64),
+    scroll_delta: (f32, f32),
     focused: bool,
 }
 
@@ -48,6 +49,7 @@ impl Default for InputSnapshot {
             released_mouse: HashSet::new(),
             cursor_position: (0.0, 0.0),
             cursor_delta: (0.0, 0.0),
+            scroll_delta: (0.0, 0.0),
             focused: true,
         }
     }
@@ -92,13 +94,20 @@ impl InputSnapshot {
         }
     }
 
-    /// Clears edge transitions and cursor delta after the simulation/render frame.
+    /// Records a scroll-wheel event (accumulated until the next frame).
+    pub fn scroll_event(&mut self, dx: f32, dy: f32) {
+        self.scroll_delta.0 += dx;
+        self.scroll_delta.1 += dy;
+    }
+
+    /// Clears edge transitions and cursor/scroll deltas after the frame.
     pub fn finish_frame(&mut self) {
         self.pressed_keys.clear();
         self.released_keys.clear();
         self.pressed_mouse.clear();
         self.released_mouse.clear();
         self.cursor_delta = (0.0, 0.0);
+        self.scroll_delta = (0.0, 0.0);
     }
 
     /// Clears held and transient state, used when pausing or losing focus.
@@ -115,6 +124,7 @@ impl InputSnapshot {
         self.pressed_mouse.clear();
         self.released_mouse.clear();
         self.cursor_delta = (0.0, 0.0);
+        self.scroll_delta = (0.0, 0.0);
     }
 
     #[must_use]
@@ -171,6 +181,11 @@ impl InputSnapshot {
     }
 
     #[must_use]
+    pub const fn scroll_delta(&self) -> (f32, f32) {
+        self.scroll_delta
+    }
+
+    #[must_use]
     pub const fn is_focused(&self) -> bool {
         self.focused
     }
@@ -215,6 +230,16 @@ mod tests {
         input.key_event(InputKey::Space, true);
         input.clear_transitions();
         assert!(!input.just_pressed(InputKey::Space));
+    }
+
+    #[test]
+    fn accumulates_and_resets_scroll_delta() {
+        let mut input = InputSnapshot::default();
+        input.scroll_event(0.0, 1.0);
+        input.scroll_event(0.0, 2.0);
+        assert_eq!(input.scroll_delta(), (0.0, 3.0));
+        input.finish_frame();
+        assert_eq!(input.scroll_delta(), (0.0, 0.0));
     }
 
     #[test]

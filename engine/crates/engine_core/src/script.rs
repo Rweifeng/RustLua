@@ -1039,6 +1039,14 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
             table_vec(lua, p.0 as f32, p.1 as f32)
         })?,
     )?;
+    let s = Rc::clone(&state);
+    input.set(
+        "scroll_delta",
+        lua.create_function(move |lua, ()| {
+            let p = s.borrow().input.scroll_delta();
+            table_vec(lua, p.0, p.1)
+        })?,
+    )?;
     lua.globals().set("input", input)?;
 
     let entity = lua.create_table()?;
@@ -1352,6 +1360,44 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
             t.set("far", camera.far)?;
             Ok(t)
         })?,
+    )?;
+    let s = Rc::clone(&state);
+    camera.set(
+        "set",
+        lua.create_function(
+            move |_,
+                  (id, x, y, z, tx, ty, tz, fov): (
+                i64,
+                f32,
+                f32,
+                f32,
+                f32,
+                f32,
+                f32,
+                Option<f32>,
+            )| {
+                let id = entity_from_lua(id)?;
+                let mut state = s.borrow_mut();
+                require_alive(&state, id)?;
+                if !Vec3::new(x, y, z).is_finite() || !Vec3::new(tx, ty, tz).is_finite() {
+                    return Err(api_error("camera.set position/target must be finite"));
+                }
+                if let Some(fov) = fov
+                    && (!fov.is_finite() || fov <= 0.0 || fov >= 180.0)
+                {
+                    return Err(api_error("camera.set fov must be in (0, 180) degrees"));
+                }
+                let Some(camera) = state.world.get_mut::<Camera3D>(id).map_err(world_error)? else {
+                    return Err(api_error("entity has no camera3d"));
+                };
+                camera.position = Vec3::new(x, y, z);
+                camera.target = Vec3::new(tx, ty, tz);
+                if let Some(fov) = fov {
+                    camera.fov_y = fov.to_radians();
+                }
+                Ok(true)
+            },
+        )?,
     )?;
     lua.globals().set("camera", camera)?;
 
@@ -2820,6 +2866,48 @@ mod tests {
         });
         assert_eq!(light.direction, Vec3::new(0.0, 1.0, 0.0));
         assert_eq!(light.intensity, 2.0);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn camera_set_moves_position_target_and_fov() {
+        use crate::scene::{Scene, SceneEntityId};
+
+        let mut scene = Scene::new("cam");
+        scene.add_entity(SceneEntityId(1), "Cam", None).unwrap();
+        scene
+            .entities
+            .get_mut(&SceneEntityId(1))
+            .unwrap()
+            .components
+            .insert(
+                "Camera3D".into(),
+                "position=0,0,5;target=0,0,0;fov=90;near=0.1;far=100".into(),
+            );
+        let mut runtime = LuaRuntime::new().unwrap();
+        assert_eq!(runtime.instantiate_scene(&scene).unwrap(), 1);
+
+        let path = script(
+            "function update()\n\
+             local cam = entity.find('Cam')\n\
+             assert(camera.set(cam, 1, 2, 3, 4, 5, 6, 45))\n\
+             local c = camera.get(cam)\n\
+             assert(c.x == 1 and c.y == 2 and c.z == 3)\n\
+             assert(c.tx == 4 and c.ty == 5 and c.tz == 6)\n\
+             assert(math.abs(c.fov - 45) < 0.001)\n\
+             local bad = pcall(function() camera.set(cam, 0, 0, 0, 0, 0, 0, 0) end)\n\
+             assert(not bad, 'fov=0 must be rejected')\n\
+             return 'cam-ok' end",
+        );
+        runtime.execute_project_script(&path).unwrap();
+        assert_eq!(runtime.call_update().unwrap(), "cam-ok");
+        let cam = runtime.with_world(|world| {
+            let id = world.entities_with::<Camera3D>()[0];
+            *world.get::<Camera3D>(id).unwrap().unwrap()
+        });
+        assert_eq!(cam.position, Vec3::new(1.0, 2.0, 3.0));
+        assert_eq!(cam.target, Vec3::new(4.0, 5.0, 6.0));
+        assert!((cam.fov_y.to_degrees() - 45.0).abs() < 0.001);
         let _ = fs::remove_file(path);
     }
 
