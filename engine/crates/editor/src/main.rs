@@ -773,7 +773,7 @@ impl EditorApp {
 impl EditorApp {
     /// 启动 Release 发布打包（后台执行 scripts/package.ps1）。
     fn start_publish(&mut self) {
-        let Some(script) = find_publish_script(&self.project.root) else {
+        let Some(found) = find_publish_script(&self.project.root) else {
             self.publish.output = format!(
                 "未找到发布脚本（向上查找 scripts/package.ps1）：{}",
                 self.project.root.display()
@@ -783,6 +783,8 @@ impl EditorApp {
             self.publish.show = true;
             return;
         };
+        // open_project 会生成 \\?\ 逐字路径，PowerShell -File 不识别，需先去掉前缀。
+        let script = strip_verbatim(&found);
         self.publish.output.clear();
         self.publish.done = false;
         self.publish.running = true;
@@ -891,6 +893,18 @@ fn find_publish_script(root: &Path) -> Option<PathBuf> {
         .find(|path| path.is_file())
 }
 
+/// 去掉 Windows `\\?\` 逐字路径前缀（open_project 规范化产生），
+/// 外部工具（如 PowerShell -File）不识别该前缀，会静默失败。
+fn strip_verbatim(path: &Path) -> PathBuf {
+    let text = path.to_string_lossy();
+    let text = text
+        .strip_prefix(r"\\?\UNC\")
+        .map(|rest| format!(r"\\{rest}"))
+        .or_else(|| text.strip_prefix(r"\\?\").map(str::to_owned))
+        .unwrap_or_else(|| text.into_owned());
+    PathBuf::from(text)
+}
+
 /// 常见的 rustup cargo bin 目录（双击启动时系统 PATH 可能没有 cargo）。
 fn cargo_bin_dir() -> Option<PathBuf> {
     let home = env::var_os("USERPROFILE")
@@ -966,7 +980,11 @@ fn spawn_publish(script: PathBuf, tx: Sender<PublishEvent>) {
         let status = child.wait();
         let _ = h1.join();
         let _ = h2.join();
+        let code = status.as_ref().ok().and_then(|s| s.code());
         let success = status.map(|s| s.success()).unwrap_or(false);
+        let _ = tx.send(PublishEvent::Line(format!(
+            "\n[editor] 发布进程退出 code={code:?}\n"
+        )));
         let _ = tx.send(PublishEvent::Finished(success));
     });
 }
@@ -2013,6 +2031,23 @@ mod publish_tests {
         assert_eq!(
             parts.iter().filter(|p| **p == "C:/fake/cargo/bin").count(),
             1
+        );
+    }
+
+    #[test]
+    fn strip_verbatim_removes_windows_verbatim_prefix() {
+        assert_eq!(
+            strip_verbatim(Path::new(r"\\?\C:\GitHub\p2\scripts\package.ps1")),
+            PathBuf::from(r"C:\GitHub\p2\scripts\package.ps1")
+        );
+        assert_eq!(
+            strip_verbatim(Path::new(r"\\?\UNC\server\share\file.ps1")),
+            PathBuf::from(r"\\server\share\file.ps1")
+        );
+        // 无前缀原样返回
+        assert_eq!(
+            strip_verbatim(Path::new(r"C:\GitHub\p2\scripts\package.ps1")),
+            PathBuf::from(r"C:\GitHub\p2\scripts\package.ps1")
         );
     }
 
