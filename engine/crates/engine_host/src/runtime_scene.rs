@@ -46,6 +46,21 @@ impl RuntimeScene {
     /// Instantiates a specific scene (used by the editor to run the scene being
     /// edited), rather than the project's startup scene.
     pub fn from_scene(project_root: Option<&Path>, scene: Scene) -> Result<Self, String> {
+        Self::init(project_root, scene, true)
+    }
+
+    /// Instantiates a scene WITHOUT running the project script, for the editor's
+    /// scene view (render the scene as edited, no game logic).
+    pub fn from_scene_edit(project_root: Option<&Path>, scene: Scene) -> Result<Self, String> {
+        Self::init(project_root, scene, false)
+    }
+
+    /// 设置 2D 相机（编辑器场景视图用，匹配编辑器 pan/zoom）。
+    pub fn set_camera_2d(&mut self, camera: Camera2D) {
+        self.camera = camera;
+    }
+
+    fn init(project_root: Option<&Path>, scene: Scene, run_script: bool) -> Result<Self, String> {
         let mut script = LuaRuntime::new().map_err(|error| error.to_string())?;
         // Project root must be set before instantiation so scene components that
         // load assets (e.g. Animation3D) can resolve their mesh paths.
@@ -57,7 +72,7 @@ impl RuntimeScene {
             .map_err(|error| error.to_string())?;
         tracing::info!(target: "scene", "[scene] loaded name={} entities={}", scene.name, scene.entities.len());
         tracing::info!(target: "ecs", "[ecs] world initialized entities={instantiated}");
-        if let Some(root) = project_root {
+        if run_script && let Some(root) = project_root {
             script.set_audio_asset_dir(root.join("assets").join("audio"));
             script.set_save_path(root.join(engine_core::PROJECT_WORK_DIR).join("save.sav"));
             let script_path = root.join("scripts/main.lua");

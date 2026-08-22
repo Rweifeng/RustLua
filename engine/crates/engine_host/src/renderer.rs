@@ -1217,6 +1217,8 @@ impl Renderer {
     /// Rebuilds the depth view when the render target size changes (window
     /// resize or an offscreen target of a different size).
     fn ensure_depth_view(&mut self, width: u32, height: u32) {
+        let width = width.max(1);
+        let height = height.max(1);
         if self.depth_size != (width, height) {
             self.depth_view = Self::create_depth_view(&self.device, width, height);
             self.depth_size = (width, height);

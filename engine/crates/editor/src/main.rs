@@ -24,9 +24,11 @@ use engine_core::{
     camera3d::Camera3D,
     input::{InputKey, InputSnapshot, MouseButton},
     light::Light,
+    math2d::Camera2D,
     math3d::Vec3,
     scene::SceneEntityId,
     script::{LuaRuntime, ScriptDiagnostic},
+    transform::Vec2,
     transform3d::Transform3D,
 };
 use engine_host::{Renderer, RuntimeScene, Scene3d, Scene3dDrawable, SceneMesh};
@@ -289,6 +291,10 @@ struct EditorApp {
     scene_texture: Option<(wgpu::Texture, wgpu::TextureView)>,
     /// 3D 场景视图显示用的 egui 纹理。
     scene_preview_tex: Option<egui::TextureHandle>,
+    /// 编辑场景的 2D 运行时（不跑 main.lua，用于 2D 场景视图实时渲染）。
+    scene_runtime: Option<RuntimeScene>,
+    /// 2D 场景视图显示用的 egui 纹理。
+    scene_2d_tex: Option<egui::TextureHandle>,
 }
 
 /// 通用进度面板：后台任务 + 进度/日志 + 非阻塞窗口。
@@ -570,6 +576,8 @@ impl EditorApp {
             scene_renderer: None,
             scene_texture: None,
             scene_preview_tex: None,
+            scene_runtime: None,
+            scene_2d_tex: None,
         }
     }
 
@@ -2339,6 +2347,9 @@ impl EditorApp {
 
     /// 渲染 3D 场景视图（编辑场景 + 编辑器相机）到离屏纹理并更新 egui 预览。
     fn render_scene_view(&mut self, width: u32, height: u32, ctx: &egui::Context) {
+        if width == 0 || height == 0 {
+            return;
+        }
         self.ensure_scene_renderer(width, height);
         let scene3d = self.build_scene3d(width as f32 / height.max(1) as f32);
         let mesh = SceneMesh {
@@ -2367,6 +2378,73 @@ impl EditorApp {
                 None => {
                     self.scene_preview_tex =
                         Some(ctx.load_texture("scene_view", image, egui::TextureOptions::LINEAR));
+                }
+            }
+        }
+    }
+
+    /// 确保编辑场景的 2D 运行时存在（当前编辑场景，不跑 main.lua）。
+    fn ensure_scene_runtime(&mut self) {
+        if self.scene_runtime.is_some() {
+            return;
+        }
+        let Some(scene) = self.document.current_scene.as_ref() else {
+            return;
+        };
+        let root = strip_verbatim_prefix(&self.project.root);
+        if let Ok(runtime) = RuntimeScene::from_scene_edit(Some(&root), scene.scene.clone()) {
+            self.scene_runtime = Some(runtime);
+        }
+    }
+
+    /// 渲染 2D 场景视图（编辑场景，匹配编辑器 pan/zoom）到离屏纹理并更新 egui 预览。
+    fn render_scene_view_2d(&mut self, width: u32, height: u32, ctx: &egui::Context) {
+        if width == 0 || height == 0 {
+            return;
+        }
+        self.ensure_scene_runtime();
+        self.ensure_scene_renderer(width, height);
+        let zoom = self.scene_zoom;
+        let pan = self.scene_state.pan;
+        // 2D 相机匹配编辑器视图：屏幕中心对应世界 -pan/zoom。
+        let camera =
+            Camera2D::new(Vec2::new(-pan.x / zoom, -pan.y / zoom), zoom).unwrap_or_else(|_| {
+                Camera2D::new(Vec2::new(0.0, 0.0), 1.0).expect("zero camera is valid")
+            });
+        let mesh = {
+            let Some(runtime) = &mut self.scene_runtime else {
+                return;
+            };
+            runtime.set_camera_2d(camera);
+            runtime
+                .vertices(width, height)
+                .unwrap_or_else(|_| SceneMesh {
+                    vertices: Vec::new(),
+                    draws: Vec::new(),
+                    paths: Vec::new(),
+                    font_atlas: None,
+                })
+        };
+        let pixels = {
+            let Some(renderer) = &mut self.scene_renderer else {
+                return;
+            };
+            let Some((texture, view)) = &self.scene_texture else {
+                return;
+            };
+            renderer.render_into_texture(&mesh, None, view, width, height);
+            renderer.copy_texture_to_cpu(texture, width, height).ok()
+        };
+        if let Some(pixels) = pixels {
+            let image = egui::ColorImage::from_rgba_unmultiplied(
+                [width as usize, height as usize],
+                &pixels,
+            );
+            match &mut self.scene_2d_tex {
+                Some(tex) => tex.set(image, egui::TextureOptions::NEAREST),
+                None => {
+                    self.scene_2d_tex =
+                        Some(ctx.load_texture("scene_2d", image, egui::TextureOptions::NEAREST));
                 }
             }
         }
@@ -2654,37 +2732,19 @@ impl EditorApp {
             self.scene_state.pan += response.drag_delta();
         }
         painter.rect_filled(rect, 0.0, egui::Color32::from_rgb(28, 32, 40));
-        let grid = 32.0 * self.scene_zoom;
-        let mut x = rect.left();
-        while x < rect.right() {
-            painter.line_segment(
-                [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
-                egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(42, 48, 58)),
+        // 实时渲染编辑场景（精灵/图块/文本）作为背景。
+        let scale = ui.ctx().pixels_per_point();
+        let view_w = (rect.width() * scale) as u32;
+        let view_h = (rect.height() * scale) as u32;
+        self.render_scene_view_2d(view_w, view_h, ui.ctx());
+        if let Some(tex) = &self.scene_2d_tex {
+            painter.image(
+                tex.id(),
+                rect,
+                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                egui::Color32::WHITE,
             );
-            x += grid;
         }
-        let mut y = rect.top();
-        while y < rect.bottom() {
-            painter.line_segment(
-                [egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)],
-                egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(42, 48, 58)),
-            );
-            y += grid;
-        }
-        painter.line_segment(
-            [
-                egui::pos2(rect.center().x, rect.top()),
-                egui::pos2(rect.center().x, rect.bottom()),
-            ],
-            egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(70, 120, 180)),
-        );
-        painter.line_segment(
-            [
-                egui::pos2(rect.left(), rect.center().y),
-                egui::pos2(rect.right(), rect.center().y),
-            ],
-            egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(180, 90, 80)),
-        );
         painter.text(
             rect.left_top() + egui::vec2(12.0, 12.0),
             egui::Align2::LEFT_TOP,
@@ -2736,27 +2796,22 @@ impl EditorApp {
             let box_rect = egui::Rect::from_center_size(center, size);
             let selected =
                 self.tree.selected() == Some(*id) || self.scene_state.selected.contains(id);
-            let corners = rotated_corners(center, size, transform.rotation);
-            let stroke = egui::Stroke::new(
-                if selected { 2.0_f32 } else { 1.0_f32 },
-                egui::Color32::from_rgb(130, 170, 220),
-            );
-            painter.add(egui::Shape::convex_polygon(
-                corners.to_vec(),
-                if selected {
-                    egui::Color32::from_rgb(55, 100, 155)
-                } else {
-                    egui::Color32::from_rgb(58, 66, 80)
-                },
-                stroke,
-            ));
-            painter.text(
-                center,
-                egui::Align2::CENTER_CENTER,
-                name,
-                egui::FontId::proportional(14.0),
-                egui::Color32::WHITE,
-            );
+            // 场景已实时渲染，实体只画选中轮廓 + 名称。
+            if selected {
+                painter.rect_stroke(
+                    box_rect,
+                    0.0,
+                    egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(230, 170, 60)),
+                    egui::StrokeKind::Outside,
+                );
+                painter.text(
+                    center + egui::vec2(0.0, -size.y * 0.5 - 6.0),
+                    egui::Align2::CENTER_BOTTOM,
+                    name,
+                    egui::FontId::proportional(14.0),
+                    egui::Color32::LIGHT_YELLOW,
+                );
+            }
             if response.clicked()
                 && response
                     .interact_pointer_pos()
