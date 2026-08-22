@@ -257,6 +257,7 @@ struct EditorApp {
     lua_script: String,
     inspector_transform3d_open: bool,
     inspector_collider3d_open: bool,
+    inspector_add_component: String,
     new_scene_name: String,
     entity_name: String,
     parent_entity: String,
@@ -548,6 +549,7 @@ impl EditorApp {
             lua_script: String::new(),
             inspector_transform3d_open: true,
             inspector_collider3d_open: false,
+            inspector_add_component: "Transform3D".to_owned(),
             new_scene_name: "main".to_owned(),
             entity_name: "Entity".to_owned(),
             parent_entity: String::new(),
@@ -988,6 +990,108 @@ impl EditorApp {
         );
         match result {
             Ok(_) => Ok(()),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
+    /// 选中实体的组件键列表（Inspector 组件管理用）。
+    fn current_components(&self) -> Vec<String> {
+        self.current_scene()
+            .and_then(|s| {
+                self.inspector.selected().map(|id| {
+                    s.scene
+                        .entities
+                        .get(&id)
+                        .map(|e| e.components.keys().cloned().collect())
+                        .unwrap_or_default()
+                })
+            })
+            .unwrap_or_default()
+    }
+
+    /// 为选中实体添加组件（默认值，经 history 可撤销）。
+    fn add_component(&mut self, name: &str) -> Result<(), String> {
+        if self.is_playing() {
+            return Err("Play mode locks scene editing; click Stop first".to_owned());
+        }
+        let Some(selected) = self.inspector.selected() else {
+            return Ok(());
+        };
+        let Some(scene) = self.document.current_scene.as_ref() else {
+            return Ok(());
+        };
+        if scene.scene.entities[&selected]
+            .components
+            .contains_key(name)
+        {
+            return Err(format!("实体已有 {name} 组件"));
+        }
+        let inspector = self.inspector.clone();
+        let name = name.to_owned();
+        let Some(scene) = self.document.current_scene.as_mut() else {
+            return Ok(());
+        };
+        let result = self.history.execute(
+            scene,
+            format!("Add {name}"),
+            CommandKind::Property,
+            move |scene| {
+                match name.as_str() {
+                    "Transform3D" => {
+                        inspector.set_transform3d(scene, Transform3DFields::default())?
+                    }
+                    "Camera3D" => inspector.set_camera3d(scene, Camera3DFields::default())?,
+                    "Light" => inspector.set_light(scene, LightFields::default())?,
+                    "Collider3d" => inspector.set_collider3d(scene, Collider3dFields::default())?,
+                    "MeshRenderer" => inspector.set_mesh_renderer(scene, "__ground_plane__")?,
+                    other => {
+                        if let Some(entity) = scene.scene.entities.get_mut(&selected) {
+                            entity.components.insert(other.to_owned(), String::new());
+                            scene.mark_dirty();
+                        }
+                    }
+                }
+                Ok::<(), editor::InspectorError>(())
+            },
+        );
+        match result {
+            Ok(_) => {
+                self.sync_inspector(selected);
+                Ok(())
+            }
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
+    /// 移除选中实体的组件（经 history 可撤销）。
+    fn remove_component(&mut self, name: &str) -> Result<(), String> {
+        if self.is_playing() {
+            return Err("Play mode locks scene editing; click Stop first".to_owned());
+        }
+        let Some(selected) = self.inspector.selected() else {
+            return Ok(());
+        };
+        let name = name.to_owned();
+        let Some(scene) = self.document.current_scene.as_mut() else {
+            return Ok(());
+        };
+        let result = self.history.execute(
+            scene,
+            format!("Remove {name}"),
+            CommandKind::Property,
+            move |scene| {
+                if let Some(entity) = scene.scene.entities.get_mut(&selected) {
+                    entity.components.remove(&name);
+                    scene.mark_dirty();
+                }
+                Ok::<(), editor::InspectorError>(())
+            },
+        );
+        match result {
+            Ok(_) => {
+                self.sync_inspector(selected);
+                Ok(())
+            }
             Err(error) => Err(error.to_string()),
         }
     }
@@ -2027,6 +2131,50 @@ impl EditorApp {
                 self.rename_selected();
             }
         });
+        // M10-06：组件管理（添加/移除）。
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.label("添加组件");
+            egui::ComboBox::from_id_salt("inspector_add_component")
+                .selected_text(&self.inspector_add_component)
+                .show_ui(ui, |ui| {
+                    for name in [
+                        "Transform3D",
+                        "MeshRenderer",
+                        "Camera3D",
+                        "Light",
+                        "Collider3d",
+                    ] {
+                        ui.selectable_value(
+                            &mut self.inspector_add_component,
+                            name.to_owned(),
+                            name,
+                        );
+                    }
+                });
+            if ui.button("添加").clicked() {
+                let component = self.inspector_add_component.clone();
+                if let Err(error) = self.add_component(&component) {
+                    self.status = error;
+                }
+            }
+        });
+        let components = self.current_components();
+        if !components.is_empty() {
+            ui.label("组件：");
+            for key in &components {
+                ui.horizontal(|ui| {
+                    ui.label(key);
+                    if ui.small_button("移除").clicked() {
+                        let key = key.clone();
+                        if let Err(error) = self.remove_component(&key) {
+                            self.status = error;
+                        }
+                    }
+                });
+            }
+        }
+        ui.separator();
         let transform_header = if self.inspector_transform_open {
             "Transform  v"
         } else {

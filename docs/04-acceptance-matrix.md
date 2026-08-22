@@ -155,3 +155,5 @@
 | M10-A02 | Renderer offscreen 渲染目标 | M10-A01 | Renderer 支持渲染到 offscreen 纹理（非窗口 surface）；窗口模式不回归 | render_into_texture 路径、窗口模式回归（2D/3D 实机一致）、workspace 质量门（282 测试） | `tasks/done/M10-02-Renderer-offscreen渲染目标.md` | PASS | M10 |
 | M10-A03 | 编辑器内嵌游戏预览 | M10-A02 | 编辑器 Game 视图实时显示游戏（Play 真正运行 Lua+物理+渲染）；Stop 恢复编辑场景 | 离屏集成测试（render_into_texture+回读有效像素）、编辑器 wgpu 启动、workspace 质量门（283 测试） | `tasks/done/M10-03-编辑器内嵌游戏预览.md` | PASS | M10 |
 | M10-A04 | 3D 透视视口 + 导航 | M10-A03 | 编辑器 3D 视图升级为透视视口，轨道/平移/缩放导航；Gizmo 在透视视口可用 | 透视视口运行日志（View3D 启动无崩溃、无 wgpu 校验错误）、workspace 质量门（283 测试） | `tasks/done/M10-04-3D透视视口与导航.md` | PASS | M10 |
+| M10-A05 | 2D 场景视图实时渲染 | M10-A04 | 2D 场景面板实时渲染编辑场景（精灵/图块/文本），pan/zoom 作用于渲染视图 | RuntimeScene::from_scene_edit + render_scene_view_2d 运行日志、workspace 质量门（283 测试） | `tasks/done/M10-05-2D场景实时渲染.md` | PASS | M10 |
+| M10-A06 | 组件增删 | M10-A05 | Inspector 添加/移除组件（默认值），经 history 可撤销 | 添加/移除组件 + 撤销重做、workspace 质量门（283 测试） | `tasks/done/M10-06-组件增删.md` | PASS | M10 |
