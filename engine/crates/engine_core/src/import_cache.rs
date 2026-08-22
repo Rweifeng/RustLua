@@ -1,6 +1,7 @@
 //! Incremental, atomic asset import cache for M4-02.
 
 use crate::{
+    gltf_asset::GltfAsset,
     resource_db::AssetId,
     texture::{TextureAsset, TextureColorSpace},
 };
@@ -239,6 +240,12 @@ fn validate_source(kind: ImportKind, source: &Path, bytes: &[u8]) -> Result<(), 
             }
         })?;
     }
+    if matches!(kind, ImportKind::Gltf | ImportKind::Glb) {
+        GltfAsset::load(source).map_err(|error| ImportCacheError::InvalidSource {
+            path: source.display().to_string(),
+            reason: error.to_string(),
+        })?;
+    }
     Ok(())
 }
 
@@ -375,6 +382,27 @@ mod tests {
         assert!(matches!(
             cache.import_file(id, &path, "lua-1"),
             Err(ImportCacheError::EmptySource(_))
+        ));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn glb_import_is_validated_and_cached_incrementally() {
+        let root = root("gltf");
+        let mut cache = ImportCache::open(&root).unwrap();
+        let id = AssetId::from_seed("triangle");
+        let path = source(
+            &root,
+            "m8-test-triangle.glb",
+            include_bytes!("../../../../game/assets/models/m8-test-triangle.glb"),
+        );
+        let first = cache.import_file(id, &path, "assetc-m8-02").unwrap();
+        assert!(!first.reused);
+        assert!(cache.import_file(id, &path, "assetc-m8-02").unwrap().reused);
+        fs::write(&path, b"invalid glb").unwrap();
+        assert!(matches!(
+            cache.import_file(id, &path, "assetc-m8-02"),
+            Err(ImportCacheError::InvalidSource { .. })
         ));
         let _ = fs::remove_dir_all(root);
     }

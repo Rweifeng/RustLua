@@ -17,7 +17,7 @@ use std::{
 };
 
 /// assetc 的导入器版本；变更会触发全部资源重新导入。
-pub const IMPORTER_VERSION: &str = "assetc-m7-01";
+pub const IMPORTER_VERSION: &str = "assetc-m8-02";
 
 /// 扫描时跳过的本地工作目录。
 const SKIP_DIRS: &[&str] = &[".cache", ".temp", ".git", "target"];
@@ -191,6 +191,9 @@ pub fn import(project: &Path) -> Result<Vec<ImportOutcome>, String> {
                 error: Some(error.to_string()),
             }),
         }
+    }
+    if let Some(failure) = outcomes.iter().find_map(|outcome| outcome.error.as_deref()) {
+        return Err(format!("资源导入失败: {failure}"));
     }
     Ok(outcomes)
 }
@@ -442,6 +445,15 @@ mod tests {
             second.iter().all(|o| o.reused),
             "second import reuses cache"
         );
+        cleanup(&root);
+    }
+
+    #[test]
+    fn import_rejects_invalid_gltf_with_non_success_result() {
+        let root = temp_project("invalid-gltf");
+        fs::write(root.join("assets/bad.glb"), b"invalid glb").unwrap();
+        let error = import(&root).unwrap_err();
+        assert!(error.contains("资源导入失败") && error.contains("bad.glb"));
         cleanup(&root);
     }
 

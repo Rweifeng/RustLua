@@ -15,6 +15,8 @@ pub mod entity;
 /// Typed, frame-bounded event queues.
 pub mod events;
 pub mod font;
+/// CPU-side glTF/GLB mesh and scene asset importer.
+pub mod gltf_asset;
 /// Incremental and atomic asset import cache.
 pub mod import_cache;
 /// Platform-independent keyboard, mouse, and cursor snapshots.
