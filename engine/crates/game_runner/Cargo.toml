@@ -8,8 +8,10 @@ publish = false
 
 [dependencies]
 engine_core.workspace = true
+engine_host.workspace = true
+winit = "0.30"
+tracing.workspace = true
+# 下列依赖仅被 examples/（独立 GPU demo）使用，主二进制通过 engine_host 间接使用。
 bytemuck.workspace = true
 pollster = "0.4"
 wgpu = "27"
-winit = "0.30"
-tracing.workspace = true

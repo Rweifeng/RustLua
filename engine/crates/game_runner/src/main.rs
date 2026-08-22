@@ -3,11 +3,7 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 mod cli;
-mod frame;
 mod game_app;
-mod renderer;
-mod runtime_scene;
-mod shader;
 
 use std::path::{Path, PathBuf};
 

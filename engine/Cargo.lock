@@ -1257,6 +1257,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine_host"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "engine_core",
+ "pollster",
+ "tracing",
+ "wgpu",
+ "winit",
+]
+
+[[package]]
 name = "enumflags2"
 version = "0.7.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1495,6 +1507,7 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "engine_core",
+ "engine_host",
  "pollster",
  "tracing",
  "wgpu",

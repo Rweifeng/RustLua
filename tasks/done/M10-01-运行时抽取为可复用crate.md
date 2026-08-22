@@ -2,7 +2,7 @@
 
 ## 状态
 
-READY
+ACCEPTED
 
 ## 目标
 
@@ -27,7 +27,10 @@ READY
 
 ## 技术方案
 
-（实施前由 AI 填写：crate 划分、接口、生命周期与错误处理）
+- 新建 `engine/crates/engine_host/`：`lib.rs`（`pub mod frame/renderer/runtime_scene/shader` + 顶层 re-export）+ 从 game_runner 移动 `frame.rs`/`renderer.rs`/`runtime_scene.rs`/`shader.rs`（跨模块 `crate::` 引用在 engine_host 内自洽）；
+- engine_host 依赖：engine_core、wgpu、winit、bytemuck、pollster、tracing；
+- game_runner：移除已迁移模块，`game_app.rs` 改用 `engine_host::{Renderer, RuntimeScene, SceneMesh, ...}`；main.rs 仅剩 cli/game_app；Cargo 依赖 engine_host（bytemuck/wgpu/pollster 保留给 examples）；
+- workspace 添加 engine_host 成员与依赖。
 
 ## 修改范围
 
@@ -65,7 +68,31 @@ git diff --check
 
 ## AI 输出
 
-（实施后填写）
+已完成：
+
+- 新建 `engine/crates/engine_host/`：RuntimeScene + Renderer + frame + shader 从 game_runner 抽入，`lib.rs` 暴露 `pub use`（Renderer/RenderOutcome/RuntimeScene/SceneMesh/Scene3d/SceneDraw/OverlayVertex）；
+- game_runner 瘦身为入口 + CLI + app shell（main.rs 只剩 cli/game_app），`game_app.rs` 改用 engine_host；
+- workspace 添加 engine_host 成员与依赖；game_runner 保留 bytemuck/wgpu/pollster 供 examples 使用。
+
+修改文件：
+
+- 新增 `engine/crates/engine_host/{Cargo.toml, src/{lib,frame,renderer,runtime_scene,shader}.rs}`
+- `engine/Cargo.toml`、`engine/Cargo.lock`
+- `engine/crates/game_runner/{Cargo.toml, src/main.rs, src/game_app.rs}`
+- 删除 game_runner/src/{frame,renderer,runtime_scene,shader}.rs
+
+验证结果：
+
+- fmt/clippy -D warnings/282 测试/Debug/Release/--check/git diff --check 全通过；
+- 实机 2D main（entities=7）与 3D game3d（entities=13、贴图上传）行为与抽取前一致，无错误。
+
+已知问题：
+
+- 无 P0/P1。抽取只移动代码，行为不变。
+
+建议下一步：
+
+- M10-01 提交后进入 M10-02 Renderer offscreen 渲染目标。
 
 ## 已知限制
 

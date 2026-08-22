@@ -19,11 +19,7 @@ use winit::{
     window::{Window, WindowId},
 };
 
-use crate::{
-    frame::{OverlayVertex, SceneDraw, SceneMesh},
-    renderer::{RenderOutcome, Renderer},
-    runtime_scene::RuntimeScene,
-};
+use engine_host::{OverlayVertex, RenderOutcome, Renderer, RuntimeScene, SceneDraw, SceneMesh};
 
 pub struct GameApp {
     window: Option<Arc<Window>>,
