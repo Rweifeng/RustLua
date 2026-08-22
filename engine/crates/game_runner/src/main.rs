@@ -1133,7 +1133,7 @@ impl ApplicationHandler for GameApp {
             return;
         }
         let attributes = Window::default_attributes()
-            .with_title("P2 RustLua Engine - M1-07 Performance Overlay")
+            .with_title("RustLua Engine - M1-07 Performance Overlay")
             .with_inner_size(PhysicalSize::new(1280, 720));
         let window = Arc::new(event_loop.create_window(attributes).expect("create window"));
         tracing::info!(target: "game", "[window] created: {:?}", window.id());

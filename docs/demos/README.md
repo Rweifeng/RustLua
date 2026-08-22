@@ -13,7 +13,7 @@
 ./scripts/run-demo.ps1 -Release
 ```
 
-窗口标题为 `P2 RustLua Engine - M1-07 Performance Overlay`。按 F3 开关性能 overlay，按 Escape 或关闭窗口退出。
+窗口标题为 `RustLua Engine - M1-07 Performance Overlay`。按 F3 开关性能 overlay，按 Escape 或关闭窗口退出。
 
 ## 性能 overlay
 

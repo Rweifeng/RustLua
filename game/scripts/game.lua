@@ -29,13 +29,15 @@ function M.on_create()
     state.game_active = state.coin_total > 0
     state.game_over = false
     state.game_win = false
+    state.menu = true
     player.set_hp(player.find(), player.initial_hp())
     audio.volume(0.8)
-    local objective = "F1 save F2 load F4 switch - SPACE attack"
-    if state.game_active then
-        objective = "Kill slimes, collect " .. state.coin_total .. " coins - SPACE attack"
+    -- 背景音乐：启动时播放一次，跨场景切换保持循环
+    if not state.music_started then
+        audio.music("bgm")
+        state.music_started = true
     end
-    hud.init(objective)
+    hud.init_menu()
 end
 
 function M.update()
@@ -48,6 +50,7 @@ function M.update()
     local anim_state = "?"
     local frame = -1
     if id and entity.is_alive(id) then
+        player.update_facing(horizontal, vertical)
         player.move(id, horizontal, vertical, state.game_over)
         local p = transform.get(id)
         position = string.format("(%.1f,%.1f)", p.x, p.y)
@@ -62,19 +65,30 @@ function M.update()
                 tostring(tilemap.is_solid(state.map_id, cx, cy))
             )
         end
-        if not state.game_over and state.game_active then
+        -- 主菜单：SPACE 开始，开始前敌人不追击、不受伤
+        if state.menu then
+            if input.just_pressed("space") then
+                state.menu = false
+                hud.init_objective()
+                log.info("game started")
+            else
+                hud.update_menu()
+            end
+        elseif not state.game_over and state.game_active then
             enemies.chase(id)
             if input.just_pressed("space") then
                 player.attack(id)
             end
         end
-        handle_save_load(id)
+        if not state.menu then
+            handle_save_load(id)
+            handle_events(id)
+            update_status(id)
+        end
         player.choose_animation(id, horizontal, vertical)
         anim_state = animation.get(id)
         frame = animation.frame(id)
         hud.update_hp(health.get(id) / state.max_health)
-        handle_events(id)
-        update_status(id)
     end
     return string.format(
         "lua-update-ok dt=%.6f axis=(%.1f,%.1f) player=%s pos=%s cell=%s anim=%s frame=%d events=%d hp=%s scene=%s coins=%d/%d",

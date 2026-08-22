@@ -1279,6 +1279,25 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
             Ok(())
         })?,
     )?;
+    let s = Rc::clone(&state);
+    audio.set(
+        "music",
+        lua.create_function(move |_, name: String| {
+            let mut state = s.borrow_mut();
+            if let Err(error) = state.audio.play_music(&name) {
+                tracing::warn!(target: "audio", name = %name, error = %error, "[audio] music start failed");
+            }
+            Ok(())
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    audio.set(
+        "stop_music",
+        lua.create_function(move |_, ()| {
+            s.borrow_mut().audio.stop_music();
+            Ok(())
+        })?,
+    )?;
     lua.globals().set("audio", audio)?;
 
     let scene = lua.create_table()?;

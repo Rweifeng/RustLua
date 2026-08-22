@@ -4,7 +4,7 @@
 
 use std::{collections::HashMap, error::Error, fmt, io::Cursor, path::PathBuf};
 
-use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink};
+use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
 
 /// Errors produced while configuring or playing audio.
 #[derive(Debug)]
@@ -36,6 +36,7 @@ pub struct AudioSystem {
     stream: Option<OutputStream>,
     handle: Option<OutputStreamHandle>,
     sinks: Vec<Sink>,
+    music_sink: Option<Sink>,
 }
 
 impl fmt::Debug for AudioSystem {
@@ -66,6 +67,7 @@ impl AudioSystem {
             stream: None,
             handle: None,
             sinks: Vec::new(),
+            music_sink: None,
         }
     }
 
@@ -89,18 +91,7 @@ impl AudioSystem {
     /// audio device are logged and degrade gracefully instead of failing.
     pub fn play(&mut self, name: &str) -> Result<(), AudioError> {
         let bytes = self.sound_bytes(name)?;
-        if self.stream.is_none() {
-            match OutputStream::try_default() {
-                Ok((stream, handle)) => {
-                    self.stream = Some(stream);
-                    self.handle = Some(handle);
-                }
-                Err(error) => {
-                    tracing::warn!(target: "audio", error = %error, "[audio] no output device; sound effects disabled");
-                    return Ok(());
-                }
-            }
-        }
+        self.ensure_device()?;
         let handle = self
             .handle
             .as_ref()
@@ -114,6 +105,54 @@ impl AudioSystem {
         self.sinks.retain(|sink| !sink.empty());
         tracing::info!(target: "audio", name, "[audio] played");
         Ok(())
+    }
+
+    /// Plays `name.wav` as looping background music, replacing any current music.
+    pub fn play_music(&mut self, name: &str) -> Result<(), AudioError> {
+        let bytes = self.sound_bytes(name)?;
+        self.ensure_device()?;
+        let handle = self
+            .handle
+            .as_ref()
+            .ok_or_else(|| AudioError::Device("audio device handle unavailable".to_owned()))?;
+        // 停掉当前音乐再起新循环。
+        if let Some(music) = self.music_sink.take() {
+            music.stop();
+        }
+        let sink = Sink::try_new(handle).map_err(|error| AudioError::Device(error.to_string()))?;
+        let source = Decoder::new(Cursor::new(bytes))
+            .map_err(|error| AudioError::Decode(error.to_string()))?;
+        sink.set_volume(self.volume);
+        sink.append(source.repeat_infinite());
+        self.music_sink = Some(sink);
+        tracing::info!(target: "audio", name, "[audio] music started (loop)");
+        Ok(())
+    }
+
+    /// Stops any looping background music.
+    pub fn stop_music(&mut self) {
+        if let Some(music) = self.music_sink.take() {
+            music.stop();
+            tracing::info!(target: "audio", "[audio] music stopped");
+        }
+    }
+
+    /// Opens the output device on first use; degrades to a warning without one.
+    fn ensure_device(&mut self) -> Result<(), AudioError> {
+        if self.stream.is_some() {
+            return Ok(());
+        }
+        match OutputStream::try_default() {
+            Ok((stream, handle)) => {
+                self.stream = Some(stream);
+                self.handle = Some(handle);
+                Ok(())
+            }
+            Err(error) => {
+                tracing::warn!(target: "audio", error = %error, "[audio] no output device; audio disabled");
+                Ok(())
+            }
+        }
     }
 
     fn sound_bytes(&mut self, name: &str) -> Result<Vec<u8>, AudioError> {

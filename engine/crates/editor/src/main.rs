@@ -123,7 +123,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     engine_core::logging::install_crash_handler(crash_log_path);
     let options = eframe::NativeOptions::default();
     eframe::run_native(
-        "P2 RustLua 编辑器",
+        "RustLua 编辑器",
         options,
         Box::new(move |creation_context| {
             configure_cjk_fonts(&creation_context.egui_ctx);
@@ -767,7 +767,7 @@ impl eframe::App for EditorApp {
         self.sync_hierarchy_metadata();
         egui::TopBottomPanel::top("header").show(context, |ui| {
             ui.horizontal(|ui| {
-                ui.heading("P2 RustLua 编辑器");
+                ui.heading("RustLua 编辑器");
                 ui.separator();
                 ui.label(format!("项目：{}", self.project.root.display()));
                 if ui.button("Undo").clicked() {

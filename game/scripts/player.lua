@@ -40,22 +40,46 @@ function M.move(id, horizontal, vertical, game_over)
     end
 end
 
---- 攻击：半径 48 内击杀史莱姆，返回击杀数
+--- 更新攻击朝向：以最近的非零输入方向为准
+function M.update_facing(horizontal, vertical)
+    if horizontal ~= 0 or vertical ~= 0 then
+        local len = math.sqrt(horizontal * horizontal + vertical * vertical)
+        state.facing.x = horizontal / len
+        state.facing.y = vertical / len
+    end
+end
+
+--- 有方向的范围攻击：命中需在攻击距离内且在朝向锥形范围内。
+--- 返回击杀数。
 function M.attack(id)
     audio.play("attack")
     local p = transform.get(id)
-    particles.burst(p.x, p.y, 10)
+    -- 朝向方向的攻击特效
+    particles.burst(
+        p.x + state.facing.x * 24,
+        p.y + state.facing.y * 24,
+        10
+    )
+    local fx = state.facing.x
+    local fy = state.facing.y
+    local range = state.attack_range
+    local cone = state.attack_cone
     local killed = 0
     for _, slime in ipairs(state.enemies) do
         if entity.is_alive(slime) then
             local sp = transform.get(slime)
             local dx = sp.x - p.x
             local dy = sp.y - p.y
-            if dx * dx + dy * dy < 48 * 48 then
-                entity.destroy(slime)
-                particles.burst(sp.x, sp.y, 8)
-                audio.play("hit")
-                killed = killed + 1
+            local dist = math.sqrt(dx * dx + dy * dy)
+            if dist <= range and dist > 0.001 then
+                -- 朝向点积 > cone 才命中（朝向锥形判定）
+                local dot = (dx * fx + dy * fy) / dist
+                if dot >= cone then
+                    entity.destroy(slime)
+                    particles.burst(sp.x, sp.y, 8)
+                    audio.play("hit")
+                    killed = killed + 1
+                end
             end
         end
     end

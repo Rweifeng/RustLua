@@ -1,4 +1,4 @@
--- HUD 职责：血条与目标文本的绘制。
+-- HUD 职责：主菜单、血条、目标文本的绘制。
 local state = require("state")
 
 local M = {}
@@ -7,8 +7,36 @@ local BAR_X, BAR_Y, BAR_W, BAR_H = 20, 20, 200, 16
 local TEXT_X, TEXT_Y = 20, 44
 local TEXT_SCALE = 2.0
 
-function M.init(objective)
-    ui.bar("hp", BAR_X, BAR_Y, BAR_W, BAR_H, 1.0, 0.25, 0.9, 0.35)
+local function draw_bar(ratio)
+    ui.bar("hp", BAR_X, BAR_Y, BAR_W, BAR_H, ratio, 0.25, 0.9, 0.35)
+end
+
+--- 主菜单：标题 + 操作说明
+function M.init_menu()
+    draw_bar(1.0)
+    ui.text_at("objective", 20, 60, "P2 俯视角 Roguelite", 3.0)
+    ui.text_at("menu", 20, 100, "SPACE 开始", 2.0)
+    ui.text_at(
+        "menu_help",
+        20,
+        130,
+        "WASD 移动  SPACE 方向攻击  F1 存  F2 读  F4 切场景",
+        1.5
+    )
+end
+
+--- 每帧刷新主菜单文本（避免被其他绘制覆盖）
+function M.update_menu()
+    M.init_menu()
+end
+
+--- 开始游戏后的目标文本
+function M.init_objective()
+    draw_bar(1.0)
+    local objective = "F1 save F2 load F4 switch - SPACE attack"
+    if state.game_active then
+        objective = "Kill slimes, collect " .. state.coin_total .. " coins - SPACE attack"
+    end
     M.set_objective(objective)
 end
 
@@ -17,7 +45,7 @@ function M.set_objective(text)
 end
 
 function M.update_hp(ratio)
-    ui.bar("hp", BAR_X, BAR_Y, BAR_W, BAR_H, ratio, 0.25, 0.9, 0.35)
+    draw_bar(ratio)
 end
 
 return M

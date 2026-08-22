@@ -37,7 +37,7 @@ try {
     $toolchain = & rustc --version 2>$null
     cargo tree -e normal --prefix none 2>$null | Sort-Object -Unique | Set-Content (Join-Path $distRoot "deps.txt") -Encoding UTF8
     @(
-        "P2 RustLua game engine release package",
+        "RustLua game engine release package",
         "build_time: $timestamp",
         "engine_core version: $engineVersion",
         "toolchain: $toolchain",

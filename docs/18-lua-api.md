@@ -23,6 +23,7 @@
 | `scene` | `load/reload` | 场景状态切换接口 |
 | `asset` | `load/release` | 资源句柄生命周期接口 |
 | `ui` | `text/text_at/show/hide/get` | 最小文本 UI 状态接口；`text_at(id,x,y,text[,scale])` 可选缩放 |
+| `audio` | `play/volume/music/stop_music` | 音效播放与音量；`music(name)` 循环 BGM，`stop_music()` 停止 |
 | `save` | `read/write/load/commit` | 键值存档接口（load 从磁盘载入，commit 原子写入） |
 | `app` | `quit` | 请求退出应用 |
 
