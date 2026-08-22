@@ -159,3 +159,5 @@
 | M10-A06 | 组件增删 | M10-A05 | Inspector 添加/移除组件（默认值），经 history 可撤销 | 添加/移除组件 + 撤销重做、workspace 质量门（283 测试） | `tasks/done/M10-06-组件增删.md` | PASS | M10 |
 | M10-A07 | Gizmo 完善与吸附 | M10-A06 | 3D 视口 Move/Rotate/Scale Gizmo + 平移网格吸附；拖拽实时预览 | 3D Gizmo 交互（Rotate/Scale/吸附）、拖拽预览、workspace 质量门 | `tasks/done/M10-07-Gizmo完善与吸附.md` | PASS | M10 |
 | M10-A08 | 资源浏览器增强 | M10-A07 | 纹理缩略图；拖放纹理到场景创建精灵；双击场景打开 | 缩略图显示、拖放创建精灵、workspace 质量门 | `tasks/done/M10-08-资源浏览器增强.md` | PASS | M10 |
+| M10-A09 | 多选/对齐/快照 | M10-A08 | 多选实体；对齐网格/H/V；2D 平移吸附 | 对齐/吸附 + 撤销、workspace 质量门 | `tasks/done/M10-08-多选对齐快照.md` | PASS | M10 |
+| M10-A10 | Prefab 编辑器集成 | M10-A09 | 创建预制体；拖放实例化；资源浏览器显示 Prefab | 创建/实例化 Prefab、workspace 质量门 | `tasks/done/M10-09-Prefab编辑器集成.md` | PASS | M10 |

@@ -26,6 +26,8 @@ use engine_core::{
     light::Light,
     math2d::Camera2D,
     math3d::{Quat, Vec3},
+    prefab::Prefab,
+    resource_db::AssetId,
     scene::SceneEntityId,
     script::{LuaRuntime, ScriptDiagnostic},
     texture::{TextureAsset, TextureColorSpace},
@@ -675,6 +677,88 @@ impl EditorApp {
         let id = handle.id();
         self.thumbnails.insert(relative.to_owned(), handle);
         Some(id)
+    }
+
+    /// 把选中实体保存为预制体（assets/prefabs/<name>.prefab）。
+    fn create_prefab_from_selected(&mut self) {
+        if self.is_playing() {
+            self.status = "Play mode locks scene editing; click Stop first".to_owned();
+            return;
+        }
+        let Some(selected) = self.tree.selected() else {
+            self.status = "请先在 Hierarchy 中选中实体".to_owned();
+            return;
+        };
+        let Some(scene) = self.current_scene() else {
+            return;
+        };
+        let name = scene
+            .scene
+            .entities
+            .get(&selected)
+            .map(|entity| entity.name.clone())
+            .unwrap_or_else(|| "Prefab".to_owned());
+        let prefab = Prefab::from_scene(
+            &scene.scene,
+            selected,
+            AssetId::from_seed(&name),
+            name.clone(),
+        );
+        match prefab {
+            Ok(prefab) => {
+                let root = strip_verbatim_prefix(&self.project.root);
+                let dir = root.join("assets").join("prefabs");
+                if std::fs::create_dir_all(&dir).is_err() {
+                    self.status = "无法创建 prefabs 目录".to_owned();
+                    return;
+                }
+                if let Err(error) = prefab.save(dir.join(format!("{name}.prefab"))) {
+                    self.status = format!("预制体保存失败：{error}");
+                    return;
+                }
+                self.status = format!("已创建预制体 {name}");
+                self.refresh_resources();
+            }
+            Err(error) => self.status = format!("创建预制体失败：{error}"),
+        }
+    }
+
+    /// 从拖放的预制体路径实例化到场景。
+    fn spawn_prefab_from_drop(&mut self, path: &str) -> Result<(), String> {
+        if self.is_playing() {
+            return Err("Play mode locks scene editing; click Stop first".to_owned());
+        }
+        let root = strip_verbatim_prefix(&self.project.root);
+        let prefab = Prefab::load(root.join(path)).map_err(|error| error.to_string())?;
+        let Some(scene) = self.document.current_scene.as_mut() else {
+            return Ok(());
+        };
+        let overrides = std::collections::BTreeMap::new();
+        let result = self.history.execute(
+            scene,
+            "Instantiate Prefab",
+            CommandKind::Create,
+            move |scene| {
+                prefab
+                    .instantiate(&mut scene.scene, None, &overrides)
+                    .map_err(|error| error.to_string())?;
+                scene.mark_dirty();
+                Ok::<(), String>(())
+            },
+        );
+        match result {
+            Ok(_) => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// 拖放资源分发：预制体 → 实例化；其他（纹理）→ 创建精灵。
+    fn spawn_dropped_resource(&mut self, path: &str) -> Result<(), String> {
+        if path.ends_with(".prefab") {
+            self.spawn_prefab_from_drop(path)
+        } else {
+            self.spawn_sprite_from_drop(path)
+        }
     }
 
     /// 从拖放的资源路径创建 2D 精灵实体（Transform + Sprite）。
@@ -1899,8 +1983,8 @@ impl eframe::App for EditorApp {
                         let status = format!("{:?}", entry.status);
                         let path = entry.path.clone();
                         let path_string = entry.path_string();
-                        if entry.kind == ResourceKind::Texture {
-                            // 纹理：缩略图 + 可拖放到场景。
+                        if matches!(entry.kind, ResourceKind::Texture | ResourceKind::Prefab) {
+                            // 纹理/预制体：缩略图（预制体无缩略图）+ 可拖放到场景。
                             let payload = path_string.clone();
                             ui.dnd_drag_source(egui::Id::new("texture_drag"), payload, |ui| {
                                 ui.horizontal(|ui| {
@@ -1949,6 +2033,9 @@ impl eframe::App for EditorApp {
                 }
                 if ui.button("添加 3D 实体").clicked() {
                     self.add_3d_entity(None);
+                }
+                if ui.button("创建预制体").clicked() {
+                    self.create_prefab_from_selected();
                 }
             });
             ui.separator();
@@ -3169,7 +3256,7 @@ impl EditorApp {
                 ui.allocate_rect(rect, egui::Sense::hover())
             });
         if let Some(path) = dropped_texture
-            && let Err(error) = self.spawn_sprite_from_drop(&path)
+            && let Err(error) = self.spawn_dropped_resource(&path)
         {
             self.status = error;
         }
