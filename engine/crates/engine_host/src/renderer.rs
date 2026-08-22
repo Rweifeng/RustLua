@@ -1826,4 +1826,76 @@ mod tests {
             "offscreen frame is blank"
         );
     }
+
+    /// Reproduces the editor's `create_preview` path against the real game
+    /// project: instantiate `main.scene`, step, build frames, render offscreen
+    /// and read back. Requires the game project beside the engine workspace.
+    #[test]
+    #[ignore = "requires the game project on disk"]
+    fn editor_preview_path_renders_game_scene() {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let Some(adapter) =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::LowPower,
+                compatible_surface: None,
+                force_fallback_adapter: true,
+            }))
+            .ok()
+        else {
+            return;
+        };
+        let (device, queue) = pollster::block_on(adapter.request_device(&DeviceDescriptor {
+            label: Some("p2-test-device"),
+            required_features: wgpu::Features::empty(),
+            experimental_features: wgpu::ExperimentalFeatures::disabled(),
+            required_limits: wgpu::Limits::default(),
+            memory_hints: wgpu::MemoryHints::Performance,
+            trace: wgpu::Trace::Off,
+        }))
+        .expect("request test device");
+        let mut renderer = Renderer::new_offscreen(device.clone(), queue, None, false, false)
+            .expect("offscreen renderer");
+        let game = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("game");
+        let scene_text =
+            std::fs::read_to_string(game.join("scenes/main.scene")).expect("read main.scene");
+        let scene = engine_core::scene::Scene::from_text(&scene_text).expect("parse main.scene");
+        let mut runtime = crate::runtime_scene::RuntimeScene::from_scene(Some(&game), scene)
+            .expect("instantiate runtime");
+        runtime
+            .run_script_steps(1, 1.0 / 60.0, &engine_core::input::InputSnapshot::default())
+            .expect("step runtime");
+        let mesh = runtime.vertices(640, 360).expect("build 2D mesh");
+        let scene3d = runtime.scene_3d(640.0 / 360.0);
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("p2-test-preview"),
+            size: wgpu::Extent3d {
+                width: 640,
+                height: 360,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        renderer.render_into_texture(&mesh, scene3d.as_ref(), &view, 640, 360);
+        let pixels = renderer
+            .copy_texture_to_cpu(&texture, 640, 360)
+            .expect("readback");
+        assert_eq!(pixels.len(), 640 * 360 * 4);
+        assert!(
+            pixels.iter().any(|&byte| byte > 0),
+            "preview frame is blank"
+        );
+    }
 }

@@ -132,6 +132,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         .and_then(|path| path.parent().map(|dir| dir.join("crash.log")))
         .unwrap_or_else(|| PathBuf::from("crash.log"));
     engine_core::logging::install_crash_handler(crash_log_path);
+    // 编辑器日志：写入可执行文件同目录，便于排查内嵌预览等问题。
+    let log_path = std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(|dir| dir.join("editor.log")))
+        .unwrap_or_else(|| PathBuf::from("editor.log"));
+    let _ = engine_core::logging::init_logging(&log_path, None);
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
         ..Default::default()
@@ -164,6 +170,12 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 fn format_project_error(path: &Path, error: ProjectError) -> String {
     format!("无法打开项目 {}：{}", path.display(), error)
+}
+
+/// 去除 Windows 逐字路径前缀 `\\?\`（会破坏 Lua require 的 searchpath 解析）。
+fn strip_verbatim_prefix(path: &Path) -> PathBuf {
+    let text = path.to_string_lossy();
+    PathBuf::from(text.strip_prefix(r"\\?\").unwrap_or(&text))
 }
 
 const CJK_FONT_FILE_NAMES: &[&str] = &["NotoSansSC-VF.ttf", "simhei.ttf", "Deng.ttf"];
@@ -687,8 +699,12 @@ impl EditorApp {
         };
         // M10-03：创建内嵌游戏预览（Play 真正运行 Lua + 物理 + 渲染）。
         match self.create_preview(&document.scene) {
-            Ok(preview) => self.preview = Some(preview),
+            Ok(preview) => {
+                tracing::info!(target: "editor", "[preview] created {}x{}", preview.width, preview.height);
+                self.preview = Some(preview);
+            }
             Err(error) => {
+                tracing::error!(target: "editor", "[preview] create failed: {error}");
                 self.status = format!("游戏预览启动失败：{error}");
             }
         }
@@ -713,15 +729,12 @@ impl EditorApp {
         let Some((device, queue)) = &self.gpu else {
             return Err("编辑器缺少 wgpu 上下文，无法内嵌游戏预览".to_owned());
         };
-        let project_root = Some(self.project.root.as_path());
-        let runtime = RuntimeScene::from_scene(project_root, scene.clone())?;
-        let renderer = Renderer::new_offscreen(
-            device.clone(),
-            queue.clone(),
-            Some(self.project.root.clone()),
-            false,
-            false,
-        )?;
+        // Windows 逐字前缀 `\\?\` 会破坏 Lua require 的 searchpath 解析，去除后再传运行时。
+        let root = strip_verbatim_prefix(&self.project.root);
+        tracing::info!(target: "editor", "[preview] project_root={}", root.display());
+        let runtime = RuntimeScene::from_scene(Some(&root), scene.clone())?;
+        let renderer =
+            Renderer::new_offscreen(device.clone(), queue.clone(), Some(root), false, false)?;
         let width = 640;
         let height = 360;
         let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -1433,6 +1446,17 @@ impl eframe::App for EditorApp {
             && let Some(doc) = self.document.current_scene.as_ref()
         {
             let _ = self.autosave.tick(&self.recovery, doc, SystemTime::now());
+        }
+        // 调试钩子：`P2_EDITOR_AUTOPLAY=1` 打开 main.scene 后自动 Play（用于排查内嵌预览）。
+        if std::env::var("P2_EDITOR_AUTOPLAY").is_ok() && !self.is_playing() {
+            if self.document.current_scene.is_none() {
+                let _ = self
+                    .document
+                    .open_scene(self.project.root.join("scenes/main.scene"));
+            }
+            if self.document.current_scene.is_some() {
+                self.play();
+            }
         }
         if self.project_loaded
             && context.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Z))
@@ -2851,10 +2875,11 @@ impl EditorApp {
         };
         let input = InputSnapshot::default();
         if let Err(error) = preview.runtime.run_script_steps(1, 1.0 / 60.0, &input) {
-            tracing::warn!(target: "editor", "preview script step failed: {error}");
+            tracing::warn!(target: "editor", "[preview] script step failed: {error}");
             return;
         }
         let Some(mesh) = preview.runtime.vertices(preview.width, preview.height).ok() else {
+            tracing::warn!(target: "editor", "[preview] build vertices failed");
             return;
         };
         let aspect = preview.width as f32 / preview.height.max(1) as f32;
@@ -2866,21 +2891,33 @@ impl EditorApp {
             preview.width,
             preview.height,
         );
-        if let Ok(pixels) =
+        let readback =
             preview
                 .renderer
-                .copy_texture_to_cpu(&preview.texture, preview.width, preview.height)
-        {
-            let image = egui::ColorImage::from_rgba_unmultiplied(
-                [preview.width as usize, preview.height as usize],
-                &pixels,
-            );
-            match &mut preview.egui_tex {
-                Some(tex) => tex.set(image, egui::TextureOptions::LINEAR),
-                None => {
-                    preview.egui_tex =
-                        Some(ctx.load_texture("game_preview", image, egui::TextureOptions::LINEAR));
+                .copy_texture_to_cpu(&preview.texture, preview.width, preview.height);
+        match readback {
+            Ok(pixels) => {
+                let nonzero = pixels.iter().any(|&byte| byte > 0);
+                if !nonzero {
+                    tracing::warn!(target: "editor", "[preview] readback frame is all-zero");
                 }
+                let image = egui::ColorImage::from_rgba_unmultiplied(
+                    [preview.width as usize, preview.height as usize],
+                    &pixels,
+                );
+                match &mut preview.egui_tex {
+                    Some(tex) => tex.set(image, egui::TextureOptions::LINEAR),
+                    None => {
+                        preview.egui_tex = Some(ctx.load_texture(
+                            "game_preview",
+                            image,
+                            egui::TextureOptions::LINEAR,
+                        ));
+                    }
+                }
+            }
+            Err(error) => {
+                tracing::warn!(target: "editor", "[preview] readback failed: {error}");
             }
         }
     }
