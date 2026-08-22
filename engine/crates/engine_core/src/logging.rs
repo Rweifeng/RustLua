@@ -1,4 +1,8 @@
-use std::{fmt, fs, path::Path, sync::OnceLock};
+use std::{
+    fmt, fs, io,
+    path::Path,
+    sync::{Arc, Mutex, OnceLock},
+};
 
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -83,11 +87,91 @@ struct LogGuard {
     _file_guard: tracing_appender::non_blocking::WorkerGuard,
 }
 
+/// 内存日志缓冲：作为 tracing fmt 层的 writer，供编辑器控制台实时读取。
+#[derive(Clone)]
+pub struct LogSink {
+    buffer: Arc<Mutex<Vec<String>>>,
+    capacity: usize,
+}
+
+impl LogSink {
+    /// 新建缓冲，`capacity` 为保留的最大行数（超出丢弃最旧）。
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            buffer: Arc::new(Mutex::new(Vec::new())),
+            capacity: capacity.max(1),
+        }
+    }
+
+    /// 当前全部日志行（按时间先后）。
+    pub fn snapshot(&self) -> Vec<String> {
+        self.buffer
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    /// 清空缓冲。
+    pub fn clear(&self) {
+        if let Ok(mut buffer) = self.buffer.lock() {
+            buffer.clear();
+        }
+    }
+
+    fn push_line(&self, line: String) {
+        if let Ok(mut buffer) = self.buffer.lock() {
+            buffer.push(line);
+            if buffer.len() > self.capacity {
+                let overflow = buffer.len() - self.capacity;
+                buffer.drain(..overflow);
+            }
+        }
+    }
+}
+
+/// LogSink 的 `std::io::Write` 包装：fmt 层每次事件写一段（含换行），按行入队。
+pub struct SinkWriter(LogSink);
+
+impl io::Write for SinkWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let text = String::from_utf8_lossy(buf);
+        for line in text.split_inclusive('\n') {
+            let trimmed = line.trim_end_matches(['\n', '\r']);
+            if !trimmed.is_empty() {
+                self.0.push_line(trimmed.to_owned());
+            }
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogSink {
+    type Writer = SinkWriter;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        SinkWriter(self.clone())
+    }
+}
+
 /// Initializes console and file logging once.
 ///
 /// `filter` follows `tracing_subscriber::EnvFilter` syntax, for example
 /// `info,engine_core=debug,game_runner=debug`.
 pub fn init_logging(log_path: impl AsRef<Path>, filter: Option<&str>) -> Result<(), EngineError> {
+    init_logging_with_sink(log_path, filter, None)
+}
+
+/// 同 `init_logging`，额外把 tracing 日志实时回传到一个共享缓冲（如编辑器控制台）。
+/// `sink` 为 `None` 时行为与 `init_logging` 完全一致。
+pub fn init_logging_with_sink(
+    log_path: impl AsRef<Path>,
+    filter: Option<&str>,
+    sink: Option<LogSink>,
+) -> Result<(), EngineError> {
     if LOG_GUARD.get().is_some() {
         return Ok(());
     }
@@ -137,9 +221,17 @@ pub fn init_logging(log_path: impl AsRef<Path>, filter: Option<&str>) -> Result<
         .with_writer(non_blocking)
         .with_target(true)
         .with_ansi(false);
+    // 可选：把日志实时回传到共享缓冲（Option<Layer> 作为 Layer 叠加）。
+    let sink_layer = sink.map(|sink| {
+        tracing_subscriber::fmt::layer()
+            .with_writer(sink)
+            .with_target(true)
+            .with_ansi(false)
+    });
     tracing_subscriber::registry()
         .with(filter)
         .with(console)
+        .with(sink_layer)
         .with(file_layer)
         .try_init()
         .map_err(|error| {
@@ -254,5 +346,22 @@ mod tests {
         assert_eq!(LogModule::Game.to_string(), "game");
         assert_eq!(LogModule::Script.to_string(), "script");
         assert_eq!(LogModule::Asset.to_string(), "asset");
+    }
+
+    #[test]
+    fn log_sink_captures_lines_trims_newlines_and_caps_capacity() {
+        use std::io::Write;
+        let sink = LogSink::new(3);
+        let mut writer = SinkWriter(sink.clone());
+        writer.write_all(b"first line\n").unwrap();
+        writer.write_all(b"second line\n").unwrap();
+        writer.write_all(b"third\nfourth\n").unwrap();
+        writer.flush().unwrap();
+
+        // 容量 3 丢弃最旧的 first line；行尾换行被去除。
+        let lines = sink.snapshot();
+        assert_eq!(lines, vec!["second line", "third", "fourth"]);
+        sink.clear();
+        assert!(sink.snapshot().is_empty());
     }
 }

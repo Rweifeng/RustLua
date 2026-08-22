@@ -1,19 +1,19 @@
-pub mod resource_browser;
+pub mod resource_browser_state;
 
-pub use resource_browser::{
+pub use resource_browser_state::{
     ResourceBrowserError, ResourceBrowserState, ResourceEntry, ResourceKind,
 };
 
-pub mod inspector;
+pub mod inspector_state;
 
-pub use inspector::{
+pub use inspector_state::{
     Camera3DFields, Collider3dFields, InspectorError, InspectorSnapshot, InspectorState,
     LightFields, Transform3DFields, TransformFields,
 };
 
-pub mod scene_tree;
+pub mod scene_tree_state;
 
-pub use scene_tree::{SceneTreeError, SceneTreeState};
+pub use scene_tree_state::{SceneTreeError, SceneTreeState};
 
 pub mod document;
 
