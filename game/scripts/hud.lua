@@ -7,6 +7,9 @@ local BAR_X, BAR_Y, BAR_W, BAR_H = 20, 20, 200, 16
 local TEXT_X, TEXT_Y = 20, 44
 local TEXT_SCALE = 2.0
 
+-- 重玩按钮区域（屏幕像素坐标）
+local RETRY = { x = 540, y = 380, w = 200, h = 52 }
+
 local function draw_bar(ratio)
     ui.bar("hp", BAR_X, BAR_Y, BAR_W, BAR_H, ratio, 0.25, 0.9, 0.35)
 end
@@ -46,6 +49,25 @@ end
 
 function M.update_hp(ratio)
     draw_bar(ratio)
+end
+
+--- 终局重玩按钮：背景 + 标签
+function M.show_retry_button()
+    ui.bar("retry_btn", RETRY.x, RETRY.y, RETRY.w, RETRY.h, 1.0, 0.18, 0.42, 0.72)
+    ui.text_at("retry_label", RETRY.x + 30, RETRY.y + 12, "重玩一局 (R)", 2.0)
+end
+
+--- 重玩按钮命中检测：鼠标左键点击且在按钮区域内
+function M.retry_button_clicked()
+    if not input.mouse_just_pressed("left") then
+        return false
+    end
+    local pos = input.cursor_position()
+    local cx, cy = pos[1], pos[2]
+    return cx >= RETRY.x
+        and cx <= RETRY.x + RETRY.w
+        and cy >= RETRY.y
+        and cy <= RETRY.y + RETRY.h
 end
 
 return M

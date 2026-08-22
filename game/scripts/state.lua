@@ -27,6 +27,7 @@ M.attack_range = 56
 M.attack_cone = 0.707  -- cos(45°)，朝向锥形内才命中
 M.save_loaded = false
 M.music_started = false
+M.fresh_round = false  -- 死亡重玩：满血开局、跳过存档恢复
 
 --- 按前缀收集存活的实体（如 Slime1..N）
 function M.find_all(prefix)

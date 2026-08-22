@@ -19,6 +19,26 @@ function M.on_create()
             log.info("scene '" .. state.scene_name .. "' tilemap " .. d.width .. "x" .. d.height)
         end
     end
+    -- 死亡重玩：满血开局、跳过存档恢复、直接进入游戏
+    if state.fresh_round then
+        state.fresh_round = false
+        enemies.find_all()
+        coins.find_all()
+        state.score = 0
+        state.game_active = state.coin_total > 0
+        state.game_over = false
+        state.game_win = false
+        state.menu = false
+        player.set_hp(player.find(), state.max_health)
+        audio.volume(0.8)
+        if not state.music_started then
+            audio.music("bgm")
+            state.music_started = true
+        end
+        hud.init_objective()
+        log.info("fresh round started in '" .. state.scene_name .. "'")
+        return
+    end
     -- 启动自动读档（含存档场景恢复）；请求切换时直接返回
     if save_manager.auto_restore() then
         return
@@ -84,6 +104,13 @@ function M.update()
             handle_save_load(id)
             handle_events(id)
             update_status(id)
+            -- 终局：显示重玩按钮，点击或按 R 重开一局
+            if state.game_over then
+                hud.show_retry_button()
+                if input.just_pressed("r") or hud.retry_button_clicked() then
+                    retry_round()
+                end
+            end
         end
         player.choose_animation(id, horizontal, vertical)
         anim_state = animation.get(id)
@@ -145,11 +172,19 @@ function update_status(id)
     if state.game_active and coins_left == 0 then
         state.game_over = true
         state.game_win = true
-        hud.set_objective("VICTORY! Collected all " .. state.coin_total .. " coins - F4 for another arena")
+        hud.set_objective("VICTORY! R 再来一局  F4 换场")
     elseif health.get(id) <= 0 then
         state.game_over = true
         state.game_win = false
-        hud.set_objective("DEFEATED! F1 save, F2 retry")
+        hud.set_objective("DEFEATED! R 重玩  F1 存  F2 读")
+    end
+end
+
+--- 死亡/胜利后重玩一局：满血重开当前场景
+function retry_round()
+    state.fresh_round = true
+    if scene.load(state.scene_name) then
+        log.info("retry: fresh round '" .. state.scene_name .. "'")
     end
 end
 

@@ -1545,6 +1545,7 @@ fn parse_key(key: &str) -> InputKey {
         "f1" => InputKey::Other(1),
         "f2" => InputKey::Other(2),
         "f4" => InputKey::Other(4),
+        "r" => InputKey::Other(99), // 重玩一局
         _ => InputKey::Other(0),
     }
 }

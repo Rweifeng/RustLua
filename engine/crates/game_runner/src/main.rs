@@ -1467,6 +1467,7 @@ fn map_key(key: &winit::keyboard::Key) -> Option<InputKey> {
             "a" | "A" => Some(InputKey::A),
             "s" | "S" => Some(InputKey::S),
             "d" | "D" => Some(InputKey::D),
+            "r" | "R" => Some(InputKey::Other(99)), // 重玩一局
             _ => None,
         },
         winit::keyboard::Key::Named(winit::keyboard::NamedKey::Space) => Some(InputKey::Space),

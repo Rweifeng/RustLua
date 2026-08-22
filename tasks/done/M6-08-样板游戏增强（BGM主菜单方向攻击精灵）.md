@@ -28,6 +28,12 @@
 ### 升级程序化精灵
 - `scripts/gen-characters.ps1`：英雄/史莱姆/金币增加暗描边、明暗双色、面部（眼睛/瞳孔/嘴）、剑刃高光、金币内环与反光。
 
+### 死亡/胜利重玩一局
+- `state.fresh_round`：重开当前场景、满血、跳过存档恢复、直接进入游戏；
+- 终局显示"重玩一局 (R)"按钮（ui.bar 背景 + 中文标签），鼠标左键点击或按 R 重开；
+- 引擎：R 键映射到 `InputKey::Other(99)`（map_key + parse_key），`input.just_pressed("r")` 可用；
+- 实测：`player hit: hp=0` → `retry: fresh round` → 满血 100 开局（后续受击 100→80→60 确认）。
+
 ### CJK 文本渲染（主菜单中文"?"修复）
 - `engine_core/font.rs`：`FontAtlas` 用 `ab_glyph` 按需栅格化任意字形到动态 RGBA 图集（版本号增量，仅变化时上传）；
 - `TextLayout::build_mixed`：ASCII 走内置 5×7 图集、非 ASCII 走字体图集，返回两个 mesh；
