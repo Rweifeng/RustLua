@@ -7,7 +7,8 @@
 - [技术决策](02-technical-decisions.md)：关键技术选型和变更记录；
 - [验收矩阵](04-acceptance-matrix.md)：任务级验收标准和证据；
 - [AI 驱动实施计划](AI驱动RustLua游戏引擎实施计划.md)：里程碑和任务总览。
-- [M8 轻量 3D 实施计划](26-M8轻量3D实施计划.md)：基于 `v0.7` 的 3D 能力、资源管线和发布验收顺序。
+- [M9 3D 可玩垂直切片实施计划](27-M9-3D可玩垂直切片实施计划.md)：基于 `v0.8-3d-foundation` 的 3D 可玩游戏垂直切片与发布验收顺序；
+- [M8 轻量 3D 实施计划](26-M8轻量3D实施计划.md)：已完成并归档（基于 `v0.7` 的 3D 能力、资源管线和发布验收顺序）。
 
 ## 能力文档
 
@@ -38,14 +39,16 @@
 - `tasks/done/M5-*`：M5 编辑器 MVP；
 - `tasks/done/M6-*`：M6 2D 游戏能力与样板游戏；
 - `tasks/done/M7-*`：M7 工程化与发布（assetc/发布配置/崩溃日志/性能基线/干净机器/发布候选/压缩加密/体积优化/编辑器进度面板）；
-- 当前里程碑标签：`v0.7`。
+- `tasks/done/M8-*`：M8 轻量 3D（glTF/Math3D/Camera3D/Mesh/Depth/光照阴影PBR/骨骼动画/剔除实例化/3D Demo 与发布验收）；
+- `tasks/active/M9-*`：M9 3D 可玩垂直切片（当前里程碑，计划见 [27-M9-3D可玩垂直切片实施计划.md](27-M9-3D可玩垂直切片实施计划.md)）；
+- 当前里程碑标签：`v0.8-3d-foundation`。
 
 ## 当前状态与下一阶段
 
-- M7 已全部实施并验收（2026-08-22），任务记录见 `tasks/done/M7-*`；[25-M6收尾与M7工程化实施计划.md](25-M6收尾与M7工程化实施计划.md)保留为历史计划；
-- 下一阶段为 M8 轻量 3D，实施方案见 [26-M8轻量3D实施计划.md](26-M8轻量3D实施计划.md)；
-- 发布包：`artifacts/builds/release/p2-game/`（约 8MB，压缩+加密默认开启；`game_runner.exe --pack pack`）；性能基线：`docs/acceptance-evidence/m7/`；
-- 样板游戏脚本按职责拆分（`main.lua` 为入口 + 各模块）；BGM/主菜单/方向攻击/中文字体/CJK 文本已补齐；
+- M8 已全部实施并验收（2026-08-22，`v0.8-3d-foundation`），任务记录见 `tasks/done/M8-*`；[26-M8轻量3D实施计划.md](26-M8轻量3D实施计划.md)保留为历史计划；
+- 下一阶段为 M9 3D 可玩垂直切片，实施方案见 [27-M9-3D可玩垂直切片实施计划.md](27-M9-3D可玩垂直切片实施计划.md)；
+- 发布包：`artifacts/builds/release/p2-game/`（约 14MB，压缩+加密默认开启；`game_runner.exe --pack pack`）；3D 性能基线：`docs/acceptance-evidence/m8/`；
+- 2D 样板游戏（俯视角 Roguelite）与 M8 3D Demo 均可运行；脚本按职责拆分（`main.lua` 入口 + 各模块）；
 - 第三方资源许可：[THIRD_PARTY.md](THIRD_PARTY.md)；
-- 里程碑验收证据：`docs/acceptance-evidence/`（`artifacts/` 目录为可再生输出，已移除）；
-- 后续里程碑：M8 轻量 3D。
+- 里程碑验收证据：`docs/acceptance-evidence/`（`artifacts/` 目录为可再生输出）；
+- 后续里程碑：M9 3D 可玩垂直切片。
