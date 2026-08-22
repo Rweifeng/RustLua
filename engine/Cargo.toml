@@ -14,6 +14,14 @@ authors = ["p2 project"]
 license = "MIT OR Apache-2.0"
 repository = ""
 
+# Release 体积优化：strip 符号、LTO、单 codegen 单元、优化尺寸。
+# 不启用 panic=abort，保留崩溃日志/回溯能力。
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+strip = true
+
 [workspace.dependencies]
 engine_core = { path = "crates/engine_core" }
 eframe = "0.33"

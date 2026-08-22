@@ -37,8 +37,10 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "assetc package failed." }
 
     Write-Host "==> Copy runner and docs" -ForegroundColor Cyan
-    Copy-Item -Force (Join-Path $engineRoot "target\release\game_runner.exe") (Join-Path $distRoot "game_runner.exe")
-    Copy-Item -Force (Join-Path $engineRoot "target\release\assetc.exe") (Join-Path $distRoot "assetc.exe")
+    # 发布包只含运行器；assetc 为开发工具，不随包分发（并清理历史残留）。
+    Remove-Item -Path (Join-Path $distRoot "assetc.exe") -Force -ErrorAction SilentlyContinue
+    Copy-Item -Path (Join-Path $engineRoot "target\release\game_runner.exe") `
+        -Destination (Join-Path $distRoot "game_runner.exe") -Force
 
     $engineVersion = (Get-Content (Join-Path $engineRoot "Cargo.toml") | Select-String '^version = "0\.' | Select-Object -First 1).ToString().Trim().Split('=')[1].Trim().Trim('"')
     $toolchain = & rustc --version 2>$null

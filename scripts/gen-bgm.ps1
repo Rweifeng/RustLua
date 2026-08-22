@@ -1,11 +1,13 @@
-# One-off dev tool: synthesize a short looping chiptune background-music WAV.
+# One-off dev tool: synthesize a short looping chiptune background-music WAV master.
 # Uses a compiled C# helper so sample synthesis runs at native speed.
+# The shipped asset is bgm.ogg (convert bgm-master.wav via:
+#   cargo run -p engine_core --example wav2ogg -- <master.wav> game/assets/audio/bgm.ogg)
 
 param([string]$Out = "")
 
 if ([string]::IsNullOrWhiteSpace($Out)) {
     $root = Split-Path -Parent $PSScriptRoot
-    $Out = Join-Path $root "game\assets\audio\bgm.wav"
+    $Out = Join-Path $root "game\assets\audio\bgm-master.wav"
 }
 
 Add-Type -TypeDefinition @"

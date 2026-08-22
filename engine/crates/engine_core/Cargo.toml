@@ -22,3 +22,6 @@ ab_glyph = "0.2"
 flate2 = "1"
 chacha20poly1305 = "0.10"
 rand = "0.8"
+
+[dev-dependencies]
+vorbis = "0.1"
