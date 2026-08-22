@@ -152,6 +152,6 @@
 |---|---|---|---|---|---|---|
 | M10-A00 | 编辑器强化基线与技术决策 | v0.9 | `v0.9-3d-game` 质量门；ADR-0012/0013（单一 wgpu 设备+offscreen / 编辑器相机）；README/矩阵同步；tasks/active/M10-* | fmt、Clippy、workspace 测试、Debug/Release 构建 | `tasks/active/M10-00-编辑器强化基线与技术决策.md`；`docs/28-编辑器强化实施计划.md` | PENDING | v0.9 |
 | M10-A01 | 运行时抽取为可复用 crate | M10-A00 | game_runner 的 RuntimeScene/Renderer 抽到可复用 crate（engine_host）；抽取后运行行为与基线一致 | 抽取前后实机日志/性能对比（2D entities=7、3D entities=13 一致）、workspace 质量门（282 测试） | `tasks/done/M10-01-运行时抽取为可复用crate.md` | PASS | M10 |
-| M10-A02 | Renderer offscreen 渲染目标 | M10-A01 | Renderer 支持渲染到 offscreen 纹理（非窗口 surface）；窗口模式不回归 | offscreen 渲染路径、窗口模式回归、workspace 质量门 | `tasks/active/M10-02-Renderer-offscreen渲染目标.md` | PENDING | M10 |
+| M10-A02 | Renderer offscreen 渲染目标 | M10-A01 | Renderer 支持渲染到 offscreen 纹理（非窗口 surface）；窗口模式不回归 | render_into_texture 路径、窗口模式回归（2D/3D 实机一致）、workspace 质量门（282 测试） | `tasks/done/M10-02-Renderer-offscreen渲染目标.md` | PASS | M10 |
 | M10-A03 | 编辑器内嵌游戏预览 | M10-A02 | 编辑器 Game 视图实时显示游戏（Play 真正运行 Lua+物理+渲染）；Stop 恢复编辑场景 | 内嵌预览运行日志、Play/Stop 状态、发布包可用 | `tasks/active/M10-03-编辑器内嵌游戏预览.md` | PENDING | M10 |
 | M10-A04 | 3D 透视视口 + 导航 | M10-A03 | 编辑器 3D 视图升级为透视视口，轨道/平移/缩放导航；Gizmo 在透视视口可用 | 透视视口运行日志、导航/Gizmo 交互、workspace 质量门 | `tasks/active/M10-04-3D透视视口与导航.md` | PENDING | M10 |

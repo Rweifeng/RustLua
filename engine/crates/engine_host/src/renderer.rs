@@ -117,6 +117,8 @@ pub struct Renderer {
     shadow_bind_group: wgpu::BindGroup,
     shadow_pipeline: wgpu::RenderPipeline,
     depth_view: wgpu::TextureView,
+    /// Current depth-view size; rebuilt when the render target changes size.
+    depth_size: (u32, u32),
     shadow_view: wgpu::TextureView,
     texture_bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
@@ -715,6 +717,7 @@ impl Renderer {
             cache: None,
         });
         let depth_view = Self::create_depth_view(&device, config.width, config.height);
+        let depth_init = (config.width, config.height);
         tracing::info!(target: "game",
             "[render] initialized: adapter={adapter_name} format={format:?} present_mode={present_mode:?}"
         );
@@ -729,6 +732,7 @@ impl Renderer {
             shadow_bind_group,
             shadow_pipeline,
             depth_view,
+            depth_size: depth_init,
             shadow_view,
             texture_bind_group_layout,
             sampler,
@@ -1158,11 +1162,20 @@ impl Renderer {
         self.config.width = size.width;
         self.config.height = size.height;
         self.surface.configure(&self.device, &self.config);
-        self.depth_view = Self::create_depth_view(&self.device, size.width, size.height);
+        self.ensure_depth_view(size.width, size.height);
         tracing::info!(target: "game",
             "[render] surface reconfigured: {}x{}",
             size.width, size.height
         );
+    }
+
+    /// Rebuilds the depth view when the render target size changes (window
+    /// resize or an offscreen target of a different size).
+    fn ensure_depth_view(&mut self, width: u32, height: u32) {
+        if self.depth_size != (width, height) {
+            self.depth_view = Self::create_depth_view(&self.device, width, height);
+            self.depth_size = (width, height);
+        }
     }
 
     pub fn render(&mut self, mesh: &SceneMesh, scene3d: Option<&Scene3d>) -> RenderOutcome {
@@ -1194,11 +1207,49 @@ impl Renderer {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("p2-clear-encoder"),
             });
+        self.render_passes(&mut encoder, mesh, scene3d, &view);
+        self.queue.submit([encoder.finish()]);
+        output.present();
+        RenderOutcome::Presented
+    }
+
+    /// Renders the current frame into an offscreen texture view (no present).
+    /// The caller owns the target texture and supplies its view + dimensions;
+    /// the depth attachment is rebuilt to match the target size.
+    pub fn render_into_texture(
+        &mut self,
+        mesh: &SceneMesh,
+        scene3d: Option<&Scene3d>,
+        view: &wgpu::TextureView,
+        width: u32,
+        height: u32,
+    ) -> RenderOutcome {
+        self.ensure_depth_view(width, height);
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("p2-offscreen-encoder"),
+            });
+        self.render_passes(&mut encoder, mesh, scene3d, view);
+        self.queue.submit([encoder.finish()]);
+        RenderOutcome::Presented
+    }
+
+    /// Shared pass rendering into a given color view (window surface or
+    /// offscreen target): clears the view, draws 3D (shadow + mesh into the
+    /// depth view), then the 2D overlay.
+    fn render_passes(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        mesh: &SceneMesh,
+        scene3d: Option<&Scene3d>,
+        view: &wgpu::TextureView,
+    ) {
         {
             let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("p2-clear-pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
+                    view,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -1258,7 +1309,7 @@ impl Renderer {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("p2-mesh3d-pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
+                    view,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -1297,7 +1348,7 @@ impl Renderer {
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("p2-scene-pass"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &view,
+                        view,
                         depth_slice: None,
                         resolve_target: None,
                         ops: wgpu::Operations {
@@ -1323,9 +1374,6 @@ impl Renderer {
                 }
             }
         }
-        self.queue.submit([encoder.finish()]);
-        output.present();
-        RenderOutcome::Presented
     }
 
     /// Returns the bind group for a draw: the white texture for `texture == 0`
