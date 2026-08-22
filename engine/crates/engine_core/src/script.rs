@@ -22,6 +22,7 @@ use crate::{
     mesh3d::MeshRenderer,
     particle::{Particle, ParticleSystem},
     physics::{ColliderDesc, ColliderShape, PhysicsWorld},
+    physics3d::{ColliderDesc3d, PhysicsWorld3d},
     save::{decode as decode_save, encode as encode_save},
     scene::Scene,
     sprite::{Sprite, SpriteAsset},
@@ -63,6 +64,7 @@ struct ScriptState {
     ui_bars: BTreeMap<String, UiBar>,
     save_data: BTreeMap<String, String>,
     physics: PhysicsWorld,
+    physics3d: PhysicsWorld3d,
     particles: ParticleSystem,
     audio: AudioSystem,
     /// Entity whose `Camera3D` component the renderer uses this frame. Lua
@@ -403,6 +405,25 @@ impl LuaRuntime {
                         .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
                 }
             }
+            if let Some(value) = entity.components.get("Collider3d") {
+                let collider = ColliderDesc3d::from_component_str(value).map_err(|error| {
+                    LuaBridgeError::Api(format!(
+                        "entity {:?} has an invalid Collider3d: {error}",
+                        entity.name
+                    ))
+                })?;
+                let position = state
+                    .world
+                    .get::<Transform3D>(id)
+                    .ok()
+                    .flatten()
+                    .map(|transform| transform.position)
+                    .unwrap_or(Vec3::ZERO);
+                state
+                    .physics3d
+                    .add_body(id, position, collider.dynamic, vec![collider])
+                    .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
+            }
             count += 1;
         }
         Ok(count)
@@ -415,6 +436,18 @@ impl LuaRuntime {
         let moved = state.physics.step(delta_seconds);
         for (entity, position) in moved {
             if let Ok(Some(transform)) = state.world.get_mut::<Transform>(entity) {
+                transform.position = position;
+            }
+        }
+    }
+
+    /// Steps the 3D physics world and writes moved dynamic body positions back
+    /// to their ECS `Transform3D` so rendering and Lua see the simulation.
+    pub fn step_physics3d(&mut self, delta_seconds: f32) {
+        let mut state = self.state.borrow_mut();
+        let moved = state.physics3d.step(delta_seconds);
+        for (entity, position) in moved {
+            if let Ok(Some(transform)) = state.world.get_mut::<Transform3D>(entity) {
                 transform.position = position;
             }
         }
@@ -463,6 +496,7 @@ impl LuaRuntime {
             let mut state = self.state.borrow_mut();
             state.world = World::new();
             state.physics = PhysicsWorld::new();
+            state.physics3d = PhysicsWorld3d::new();
             state.particles = ParticleSystem::new();
             state.names.clear();
             state.health.clear();
@@ -1047,6 +1081,7 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
             state.names.retain(|_, value| *value != id);
             state.health.remove(&id);
             let _ = state.physics.remove_body(id);
+            let _ = state.physics3d.remove_body(id);
             Ok(true)
         })?,
     )?;
@@ -1750,6 +1785,101 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
     )?;
     lua.globals().set("physics", physics)?;
 
+    // 3D physics (M9-02): same shape as `physics`, but bodies are created from
+    // scene `Collider3d` components and positions sync to `Transform3D`.
+    let physics3d = lua.create_table()?;
+    let s = Rc::clone(&state);
+    physics3d.set(
+        "set_velocity",
+        lua.create_function(move |_, (id, x, y, z): (i64, f32, f32, f32)| {
+            let id = entity_from_lua(id)?;
+            let mut state = s.borrow_mut();
+            require_alive(&state, id)?;
+            state
+                .physics3d
+                .set_velocity(id, x, y, z)
+                .map_err(|error| api_error(error.to_string()))?;
+            Ok(())
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    physics3d.set(
+        "get_velocity",
+        lua.create_function(move |lua, id: i64| {
+            let id = entity_from_lua(id)?;
+            let state = s.borrow();
+            require_alive(&state, id)?;
+            let velocity = state
+                .physics3d
+                .velocity(id)
+                .map_err(|error| api_error(error.to_string()))?;
+            let table = lua.create_table()?;
+            table.set("x", velocity.x)?;
+            table.set("y", velocity.y)?;
+            table.set("z", velocity.z)?;
+            Ok(table)
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    physics3d.set(
+        "set_position",
+        lua.create_function(move |_, (id, x, y, z): (i64, f32, f32, f32)| {
+            let id = entity_from_lua(id)?;
+            let mut state = s.borrow_mut();
+            require_alive(&state, id)?;
+            state
+                .physics3d
+                .set_position(id, Vec3::new(x, y, z))
+                .map_err(|error| api_error(error.to_string()))?;
+            Ok(())
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    physics3d.set(
+        "events",
+        lua.create_function(move |lua, ()| {
+            let mut state = s.borrow_mut();
+            let events = state.physics3d.drain_contacts();
+            let result = lua.create_table()?;
+            for (index, contact) in events.into_iter().enumerate() {
+                let entry = lua.create_table()?;
+                entry.set("a", entity_to_lua(contact.a))?;
+                entry.set("b", entity_to_lua(contact.b))?;
+                entry.set("started", contact.started)?;
+                result.set(index + 1, entry)?;
+            }
+            Ok(result)
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    physics3d.set(
+        "raycast",
+        lua.create_function(
+            move |_, (ox, oy, oz, dx, dy, dz, max_distance): (f32, f32, f32, f32, f32, f32, f32)| {
+                let state = s.borrow();
+                let hit = state
+                    .physics3d
+                    .raycast(Vec3::new(ox, oy, oz), Vec3::new(dx, dy, dz), max_distance)
+                    .map_err(|error| api_error(error.to_string()))?;
+                Ok(hit.map(entity_to_lua))
+            },
+        )?,
+    )?;
+    let s = Rc::clone(&state);
+    physics3d.set(
+        "overlap",
+        lua.create_function(move |lua, (cx, cy, cz, radius): (f32, f32, f32, f32)| {
+            let state = s.borrow();
+            let hits = state.physics3d.overlap(Vec3::new(cx, cy, cz), radius);
+            let result = lua.create_table()?;
+            for (index, id) in hits.into_iter().enumerate() {
+                result.set(index + 1, entity_to_lua(id))?;
+            }
+            Ok(result)
+        })?,
+    )?;
+    lua.globals().set("physics3d", physics3d)?;
+
     let particles = lua.create_table()?;
     let s = Rc::clone(&state);
     particles.set(
@@ -2354,6 +2484,100 @@ mod tests {
         let count = runtime.call_update().unwrap();
         let count: u32 = count.parse().unwrap();
         assert!(count > 0, "no collision events reached Lua");
+        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(events);
+    }
+
+    #[test]
+    fn physics3d_body_falls_onto_static_ground_and_syncs_transform3d() {
+        use crate::scene::{Scene, SceneEntityId};
+
+        let mut scene = Scene::new("3d");
+        scene.add_entity(SceneEntityId(1), "Ball", None).unwrap();
+        scene
+            .entities
+            .get_mut(&SceneEntityId(1))
+            .unwrap()
+            .components
+            .insert(
+                "Transform3D".into(),
+                "position=0,5,0;rotation=0,0,0,1;scale=1,1,1".into(),
+            );
+        scene
+            .entities
+            .get_mut(&SceneEntityId(1))
+            .unwrap()
+            .components
+            .insert("Collider3d".into(), "shape=ball;radius=1".into());
+        scene.add_entity(SceneEntityId(2), "Ground", None).unwrap();
+        scene
+            .entities
+            .get_mut(&SceneEntityId(2))
+            .unwrap()
+            .components
+            .insert(
+                "Transform3D".into(),
+                "position=0,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
+            );
+        // Static ground: cuboid spanning y=-2..0 (top at y=0), centered at (0,-1,0).
+        scene
+            .entities
+            .get_mut(&SceneEntityId(2))
+            .unwrap()
+            .components
+            .insert(
+                "Collider3d".into(),
+                "shape=cuboid;half_width=10;half_height=1;half_z=10;offset=0,-1,0;dynamic=false"
+                    .into(),
+            );
+
+        let mut runtime = LuaRuntime::new().unwrap();
+        runtime.instantiate_scene(&scene).unwrap();
+
+        let path = script(
+            "function update()\nlocal b = entity.find('Ball')\nphysics3d.set_velocity(b, 0, 0, 2)\nreturn 'ok' end",
+        );
+        runtime.execute_project_script(&path).unwrap();
+        runtime.call_update().unwrap();
+        for _ in 0..180 {
+            runtime.step_physics3d(1.0 / 60.0);
+        }
+
+        let positions: Vec<_> = runtime.with_world(|world| {
+            world
+                .entities_with::<Transform3D>()
+                .into_iter()
+                .filter_map(|id| {
+                    world
+                        .get::<Transform3D>(id)
+                        .ok()
+                        .flatten()
+                        .map(|t| t.position)
+                })
+                .collect()
+        });
+        assert_eq!(positions.len(), 2);
+        let ball_pos = positions.iter().find(|p| p.y > 0.5).copied().unwrap();
+        // Ball radius 1 resting on the ground top (y=0) => y ≈ 1; it also moved +z.
+        assert!(
+            (ball_pos.y - 1.0).abs() < 0.1,
+            "ball should rest at y≈1, got y={}",
+            ball_pos.y
+        );
+        assert!(
+            ball_pos.z > 2.0,
+            "ball should have moved in +z, got z={}",
+            ball_pos.z
+        );
+
+        // Collision events reached Lua via the physics3d table.
+        let events = script(
+            "function update()\nlocal events = physics3d.events()\nreturn tostring(#events) end",
+        );
+        runtime.execute_project_script(&events).unwrap();
+        let count = runtime.call_update().unwrap();
+        let count: u32 = count.parse().unwrap();
+        assert!(count > 0, "no 3D collision events reached Lua");
         let _ = fs::remove_file(path);
         let _ = fs::remove_file(events);
     }

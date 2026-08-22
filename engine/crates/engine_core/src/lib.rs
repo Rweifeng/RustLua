@@ -41,6 +41,7 @@ pub mod particle;
 pub mod performance;
 /// Rapier-backed rigid bodies, colliders, sensors, and collision events.
 pub mod physics;
+pub mod physics3d;
 /// Prefab extraction, instantiation, overrides, and rebuild policy.
 pub mod prefab;
 /// Persistent project asset identities, import states, dependencies, and cache metadata.

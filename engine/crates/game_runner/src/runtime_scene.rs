@@ -109,8 +109,9 @@ impl RuntimeScene {
                 .map_err(|error| error.to_string())?;
             tracing::debug!(target: "game", "[simulation] fixed update returned: {result}");
             // Physics advances on the fixed timestep and writes dynamic body
-            // positions back into ECS Transforms.
+            // positions back into ECS Transforms (2D) / Transform3D (3D).
             self.script.step_physics(delta_seconds);
+            self.script.step_physics3d(delta_seconds);
             self.script.step_particles(delta_seconds);
             // Apply a pending scene.load so level switches happen between steps.
             self.script
