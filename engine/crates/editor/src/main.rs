@@ -21,13 +21,15 @@ use editor::{
 };
 use eframe::egui::{self, FontData, FontDefinitions, FontFamily};
 use engine_core::{
+    camera3d::Camera3D,
     input::{InputKey, InputSnapshot, MouseButton},
+    light::Light,
     math3d::Vec3,
     scene::SceneEntityId,
     script::{LuaRuntime, ScriptDiagnostic},
     transform3d::Transform3D,
 };
-use engine_host::{Renderer, RuntimeScene};
+use engine_host::{Renderer, RuntimeScene, Scene3d, Scene3dDrawable, SceneMesh};
 
 #[derive(Debug, Default)]
 struct Arguments {
@@ -279,6 +281,14 @@ struct EditorApp {
     gpu: Option<(wgpu::Device, wgpu::Queue)>,
     /// Play 时的内嵌游戏预览（M10-03）。
     preview: Option<EmbeddedPreview>,
+    /// 编辑器轨道相机（3D 透视视口，M10-04）。
+    editor_camera: EditorCamera,
+    /// 3D 场景视图的离屏渲染器（渲染编辑场景 + 编辑器相机）。
+    scene_renderer: Option<Renderer>,
+    /// 3D 场景视图的离屏纹理 + 视图。
+    scene_texture: Option<(wgpu::Texture, wgpu::TextureView)>,
+    /// 3D 场景视图显示用的 egui 纹理。
+    scene_preview_tex: Option<egui::TextureHandle>,
 }
 
 /// 通用进度面板：后台任务 + 进度/日志 + 非阻塞窗口。
@@ -429,6 +439,26 @@ enum SceneViewMode {
     View3D,
 }
 
+/// 编辑器轨道相机（ADR-0013）：与游戏相机分离，用于 3D 透视视口导航。
+#[derive(Clone, Copy, Debug)]
+struct EditorCamera {
+    yaw: f32,
+    pitch: f32,
+    dist: f32,
+    target: Vec3,
+}
+
+impl Default for EditorCamera {
+    fn default() -> Self {
+        Self {
+            yaw: 0.6,
+            pitch: 0.6,
+            dist: 10.0,
+            target: Vec3::ZERO,
+        }
+    }
+}
+
 #[derive(Default)]
 struct SceneEditorState {
     pan: egui::Vec2,
@@ -536,6 +566,10 @@ impl EditorApp {
             publish_encrypt: true,
             gpu,
             preview: None,
+            editor_camera: EditorCamera::default(),
+            scene_renderer: None,
+            scene_texture: None,
+            scene_preview_tex: None,
         }
     }
 
@@ -1447,8 +1481,9 @@ impl eframe::App for EditorApp {
         {
             let _ = self.autosave.tick(&self.recovery, doc, SystemTime::now());
         }
-        // 调试钩子：`P2_EDITOR_AUTOPLAY=1` 打开 main.scene 后自动 Play（用于排查内嵌预览）。
+        // 调试钩子：`P2_EDITOR_AUTOPLAY=1` 打开 main.scene、切 3D 视口并自动 Play。
         if std::env::var("P2_EDITOR_AUTOPLAY").is_ok() && !self.is_playing() {
+            self.scene_view_mode = SceneViewMode::View3D;
             if self.document.current_scene.is_none() {
                 let _ = self
                     .document
@@ -2211,74 +2246,214 @@ impl EditorApp {
 }
 
 impl EditorApp {
+    /// 确保 3D 场景视图的离屏渲染器存在；按视图尺寸重建纹理（M10-04）。
+    fn ensure_scene_renderer(&mut self, width: u32, height: u32) {
+        let width = width.max(1);
+        let height = height.max(1);
+        if self.scene_renderer.is_none()
+            && let Some((device, queue)) = &self.gpu
+        {
+            let root = strip_verbatim_prefix(&self.project.root);
+            self.scene_renderer =
+                Renderer::new_offscreen(device.clone(), queue.clone(), Some(root), false, false)
+                    .ok();
+        }
+        let size_changed = self
+            .scene_texture
+            .as_ref()
+            .is_none_or(|(texture, _)| texture.width() != width || texture.height() != height);
+        if size_changed && let Some((device, _)) = &self.gpu {
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("p2-scene-view"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            self.scene_texture = Some((texture, view));
+        }
+    }
+
+    /// 从当前编辑场景 + 编辑器轨道相机构建 3D 渲染帧（M10-04）。
+    fn build_scene3d(&self, aspect: f32) -> Option<Scene3d> {
+        let scene = self.current_scene()?;
+        let drawables = scene
+            .scene
+            .entities
+            .values()
+            .filter_map(|entity| {
+                let transform = entity
+                    .components
+                    .get("Transform3D")
+                    .and_then(|value| Transform3D::from_component_str(value).ok())?;
+                let mesh = entity
+                    .components
+                    .get("MeshRenderer")
+                    .and_then(|value| value.strip_prefix("mesh="))
+                    .map(str::to_owned)?;
+                let model = transform.model_matrix().ok()?;
+                Some(Scene3dDrawable {
+                    mesh_path: mesh,
+                    model,
+                    palette: Vec::new(),
+                })
+            })
+            .collect::<Vec<_>>();
+        if drawables.is_empty() {
+            return None;
+        }
+        let cam = self.editor_camera;
+        let position = Vec3::new(
+            cam.target.x + cam.dist * cam.pitch.cos() * cam.yaw.sin(),
+            cam.target.y + cam.dist * cam.pitch.sin(),
+            cam.target.z + cam.dist * cam.pitch.cos() * cam.yaw.cos(),
+        );
+        let camera = Camera3D {
+            position,
+            target: cam.target,
+            up: Vec3::Y,
+            fov_y: 60f32.to_radians(),
+            aspect_ratio: aspect,
+            near: 0.1,
+            far: 200.0,
+        };
+        let light = Light {
+            direction: Vec3::new(0.4, 0.8, 0.5),
+            color: [1.0, 1.0, 1.0],
+            intensity: 1.0,
+        };
+        Some(Scene3d {
+            camera,
+            light,
+            drawables,
+        })
+    }
+
+    /// 渲染 3D 场景视图（编辑场景 + 编辑器相机）到离屏纹理并更新 egui 预览。
+    fn render_scene_view(&mut self, width: u32, height: u32, ctx: &egui::Context) {
+        self.ensure_scene_renderer(width, height);
+        let scene3d = self.build_scene3d(width as f32 / height.max(1) as f32);
+        let mesh = SceneMesh {
+            vertices: Vec::new(),
+            draws: Vec::new(),
+            paths: Vec::new(),
+            font_atlas: None,
+        };
+        let pixels = {
+            let Some(renderer) = &mut self.scene_renderer else {
+                return;
+            };
+            let Some((texture, view)) = &self.scene_texture else {
+                return;
+            };
+            renderer.render_into_texture(&mesh, scene3d.as_ref(), view, width, height);
+            renderer.copy_texture_to_cpu(texture, width, height).ok()
+        };
+        if let Some(pixels) = pixels {
+            let image = egui::ColorImage::from_rgba_unmultiplied(
+                [width as usize, height as usize],
+                &pixels,
+            );
+            match &mut self.scene_preview_tex {
+                Some(tex) => tex.set(image, egui::TextureOptions::LINEAR),
+                None => {
+                    self.scene_preview_tex =
+                        Some(ctx.load_texture("scene_view", image, egui::TextureOptions::LINEAR));
+                }
+            }
+        }
+    }
+
+    /// 把世界坐标投影到屏幕（编辑器相机透视投影）。
+    fn project_to_screen(&self, world: Vec3, rect: egui::Rect) -> Option<egui::Pos2> {
+        let cam = self.editor_camera;
+        let position = Vec3::new(
+            cam.target.x + cam.dist * cam.pitch.cos() * cam.yaw.sin(),
+            cam.target.y + cam.dist * cam.pitch.sin(),
+            cam.target.z + cam.dist * cam.pitch.cos() * cam.yaw.cos(),
+        );
+        let camera = Camera3D {
+            position,
+            target: cam.target,
+            up: Vec3::Y,
+            fov_y: 60f32.to_radians(),
+            aspect_ratio: rect.width() / rect.height().max(1.0),
+            near: 0.1,
+            far: 200.0,
+        };
+        let vp = camera.view_projection_matrix().ok()?;
+        let c = vp.columns;
+        let x = c[0][0] * world.x + c[1][0] * world.y + c[2][0] * world.z + c[3][0];
+        let y = c[0][1] * world.x + c[1][1] * world.y + c[2][1] * world.z + c[3][1];
+        let w = c[0][3] * world.x + c[1][3] * world.y + c[2][3] * world.z + c[3][3];
+        if w <= 0.0 {
+            return None;
+        }
+        Some(egui::pos2(
+            rect.center().x + (x / w) * rect.width() * 0.5,
+            rect.center().y - (y / w) * rect.height() * 0.5,
+        ))
+    }
+
     /// 3D 场景视图（M9-03）：XZ 俯视投影绘制 Transform3D 实体，选中实体显示
     /// 平移 Gizmo（X/Z 轴手柄、Y 高度手柄、自由拖拽），拖拽写回 Transform3D。
     fn draw_scene_view_3d(&mut self, ui: &mut egui::Ui) {
         let (response, painter) =
             ui.allocate_painter(ui.available_size(), egui::Sense::click_and_drag());
         let rect = response.rect;
+        let scale = ui.ctx().pixels_per_point();
+        let width = (rect.width() * scale) as u32;
+        let height = (rect.height() * scale) as u32;
+
+        // 导航：滚轮缩放 / 中键轨道 / 右键平移（编辑器相机，与游戏相机分离）。
         let scroll = ui.input(|input| input.smooth_scroll_delta.y);
         if scroll.abs() > 0.0 {
-            self.scene_zoom = (self.scene_zoom * (1.0 + scroll * 0.001)).clamp(0.25, 4.0);
+            self.editor_camera.dist =
+                (self.editor_camera.dist * (1.0 + scroll * 0.001)).clamp(1.0, 100.0);
         }
-        if response.dragged_by(egui::PointerButton::Middle)
-            || response.dragged_by(egui::PointerButton::Secondary)
-        {
-            self.scene_state.pan += response.drag_delta();
+        if response.dragged_by(egui::PointerButton::Middle) {
+            let d = response.drag_delta();
+            self.editor_camera.yaw += d.x * 0.008;
+            self.editor_camera.pitch = (self.editor_camera.pitch + d.y * 0.008).clamp(0.05, 1.4);
+        } else if response.dragged_by(egui::PointerButton::Secondary) {
+            let d = response.drag_delta();
+            let fx = -self.editor_camera.yaw.sin();
+            let fz = -self.editor_camera.yaw.cos();
+            let rx = self.editor_camera.yaw.cos();
+            let rz = -self.editor_camera.yaw.sin();
+            let s = self.editor_camera.dist * 0.0016;
+            self.editor_camera.target.x += (-d.x * rx + d.y * fx) * s;
+            self.editor_camera.target.z += (-d.x * rz + d.y * fz) * s;
         }
-        let pan = self.scene_state.pan;
-        let zoom = self.scene_zoom;
-        let center = rect.center();
 
+        // 渲染透视视口（编辑场景 + 编辑器相机）到离屏纹理并显示。
+        self.render_scene_view(width, height, ui.ctx());
         painter.rect_filled(rect, 0.0, egui::Color32::from_rgb(28, 32, 40));
-        let grid = 32.0 * zoom;
-        let mut x = rect.left();
-        while x < rect.right() {
-            painter.line_segment(
-                [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
-                egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(42, 48, 58)),
+        if let Some(tex) = &self.scene_preview_tex {
+            painter.image(
+                tex.id(),
+                rect,
+                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                egui::Color32::WHITE,
             );
-            x += grid;
         }
-        let mut y = rect.top();
-        while y < rect.bottom() {
-            painter.line_segment(
-                [egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)],
-                egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(42, 48, 58)),
-            );
-            y += grid;
-        }
-        // 地面轴：X（红，屏幕 +x）与 Z（蓝，屏幕 -y，因为 Z 向下投影）。
-        painter.line_segment(
-            [
-                egui::pos2(center.x + pan.x - 200.0 * zoom, center.y + pan.y),
-                egui::pos2(center.x + pan.x + 200.0 * zoom, center.y + pan.y),
-            ],
-            egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(200, 80, 80)),
-        );
-        painter.line_segment(
-            [
-                egui::pos2(center.x + pan.x, center.y + pan.y - 200.0 * zoom),
-                egui::pos2(center.x + pan.x, center.y + pan.y + 200.0 * zoom),
-            ],
-            egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(80, 80, 200)),
-        );
         painter.text(
             rect.left_top() + egui::vec2(12.0, 12.0),
             egui::Align2::LEFT_TOP,
-            "Scene View  -  3D (XZ top-down)  拖实体平移 / X、Z 手柄单轴 / 绿点调高度",
+            "Scene View  -  3D  中键旋转 / 右键平移 / 滚轮缩放",
             egui::FontId::proportional(15.0),
             egui::Color32::LIGHT_GRAY,
         );
 
-        // 世界 -> 屏幕（XZ 俯视投影）。
-        let to_screen = move |position: Vec3| {
-            egui::pos2(
-                center.x + pan.x + position.x * zoom,
-                center.y + pan.y - position.z * zoom,
-            )
-        };
-
+        // 收集 3D 实体（Transform3D），投影到屏幕。
         let filter = self.hierarchy_filter.to_lowercase();
         let entities3d: Vec<_> = self
             .current_scene()
@@ -2292,36 +2467,33 @@ impl EditorApp {
                         {
                             return None;
                         }
-                        if self.scene_state.hidden.contains(&e.id) {
-                            return None;
-                        }
-                        let position =
-                            self.scene_state.preview3d.get(&e.id).copied().or_else(|| {
-                                e.components
-                                    .get("Transform3D")
-                                    .and_then(|value| parse_transform3d(value))
-                            })?;
+                        let position = e
+                            .components
+                            .get("Transform3D")
+                            .and_then(|v| parse_transform3d(v))?;
                         Some((e.id, e.name.clone(), position))
                     })
                     .collect()
             })
             .unwrap_or_default();
 
-        // 绘制 3D 实体（菱形标记 + 名称）。
+        // 绘制实体标记（投影后的菱形 + 名称）。
         for (id, name, position) in &entities3d {
-            let pos = to_screen(*position);
-            let half = 20.0 * zoom;
+            let Some(screen) = self.project_to_screen(*position, rect) else {
+                continue;
+            };
             let selected =
                 self.tree.selected() == Some(*id) || self.scene_state.selected.contains(id);
+            let half = 8.0;
             let stroke = egui::Stroke::new(
                 if selected { 2.0_f32 } else { 1.0_f32 },
                 egui::Color32::from_rgb(230, 170, 60),
             );
             let corners = [
-                pos + egui::vec2(-half, 0.0),
-                pos + egui::vec2(0.0, -half),
-                pos + egui::vec2(half, 0.0),
-                pos + egui::vec2(0.0, half),
+                screen + egui::vec2(-half, 0.0),
+                screen + egui::vec2(0.0, -half),
+                screen + egui::vec2(half, 0.0),
+                screen + egui::vec2(0.0, half),
             ];
             painter.add(egui::Shape::convex_polygon(
                 corners.to_vec(),
@@ -2333,7 +2505,7 @@ impl EditorApp {
                 stroke,
             ));
             painter.text(
-                pos + egui::vec2(0.0, half + 14.0),
+                screen + egui::vec2(0.0, half + 10.0),
                 egui::Align2::CENTER_CENTER,
                 name,
                 egui::FontId::proportional(14.0),
@@ -2341,14 +2513,15 @@ impl EditorApp {
             );
         }
 
-        // 点选。
+        // 点选：点击实体投影标记选中。
         if response.clicked()
             && let Some(pos) = response.interact_pointer_pos()
         {
             let hit = entities3d.iter().rev().find(|(id, _, position)| {
-                let center_pos = to_screen(*position);
-                let box_rect =
-                    egui::Rect::from_center_size(center_pos, egui::vec2(40.0 * zoom, 40.0 * zoom));
+                let Some(screen) = self.project_to_screen(*position, rect) else {
+                    return false;
+                };
+                let box_rect = egui::Rect::from_center_size(screen, egui::vec2(20.0, 20.0));
                 box_rect.contains(pos) && !self.scene_state.locked.contains(id)
             });
             if let Some((id, _, _)) = hit {
@@ -2367,107 +2540,102 @@ impl EditorApp {
             }
         }
 
-        // Gizmo：绘制在选中的 3D 实体上。
+        // Gizmo：选中实体绘制 X/Z/Y 手柄，拖拽在相机地面平面移动。
         let selected_entity = entities3d.iter().find(|(id, _, _)| {
             self.tree.selected() == Some(*id) || self.scene_state.selected.contains(id)
         });
-        if let Some((_, _, position)) = selected_entity
+        if let Some((id, _, position)) = selected_entity
             && matches!(self.scene_tool, SceneTool::Move | SceneTool::Select)
         {
-            let pos = to_screen(*position);
-            let len = 50.0 * zoom;
-            let handle = 5.0 * zoom.max(0.5);
-            // X 手柄（红）
+            let Some(screen) = self.project_to_screen(*position, rect) else {
+                return;
+            };
+            let len = 40.0;
             painter.line_segment(
-                [pos, pos + egui::vec2(len, 0.0)],
+                [screen, screen + egui::vec2(len, 0.0)],
                 egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(220, 80, 80)),
             );
             painter.circle_filled(
-                pos + egui::vec2(len, 0.0),
-                handle,
+                screen + egui::vec2(len, 0.0),
+                5.0,
                 egui::Color32::from_rgb(220, 80, 80),
             );
-            // Z 手柄（蓝）
             painter.line_segment(
-                [pos, pos + egui::vec2(0.0, -len)],
+                [screen, screen + egui::vec2(0.0, -len)],
                 egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(80, 120, 220)),
             );
             painter.circle_filled(
-                pos + egui::vec2(0.0, -len),
-                handle,
+                screen + egui::vec2(0.0, -len),
+                5.0,
                 egui::Color32::from_rgb(80, 120, 220),
             );
-            // Y 高度手柄（绿）
             painter.line_segment(
-                [pos, pos + egui::vec2(-len * 0.7, -len * 0.7)],
+                [screen, screen + egui::vec2(-len * 0.7, -len * 0.7)],
                 egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(90, 200, 90)),
             );
             painter.circle_filled(
-                pos + egui::vec2(-len * 0.7, -len * 0.7),
-                handle,
+                screen + egui::vec2(-len * 0.7, -len * 0.7),
+                5.0,
                 egui::Color32::from_rgb(90, 200, 90),
             );
-        }
-
-        // 拖拽：命中 Gizmo 手柄 -> 轴约束；命中实体 -> 自由 XZ。
-        let pointer = response.interact_pointer_pos();
-        if response.drag_started_by(egui::PointerButton::Primary)
-            && let Some(pos) = pointer
-            && let Some((id, _, position)) = selected_entity
-        {
-            let entity_pos = to_screen(*position);
-            let len = 50.0 * zoom;
-            let hit_radius = 12.0 * zoom.max(0.5);
-            let axis = if (pos - (entity_pos + egui::vec2(len, 0.0))).length() < hit_radius {
-                Some(GizmoAxis::X)
-            } else if (pos - (entity_pos + egui::vec2(0.0, -len))).length() < hit_radius {
-                Some(GizmoAxis::Z)
-            } else if (pos - (entity_pos + egui::vec2(-len * 0.7, -len * 0.7))).length()
-                < hit_radius
+            // 拖拽：命中手柄轴约束；命中实体自由 XZ（相机地面平面）。
+            let pointer = response.interact_pointer_pos();
+            if response.drag_started_by(egui::PointerButton::Primary)
+                && let Some(pos) = pointer
             {
-                Some(GizmoAxis::Y)
-            } else {
-                let box_rect =
-                    egui::Rect::from_center_size(entity_pos, egui::vec2(40.0 * zoom, 40.0 * zoom));
-                if box_rect.contains(pos) && !self.scene_state.locked.contains(id) {
-                    Some(GizmoAxis::Free)
+                let hit_radius = 12.0;
+                let axis = if (pos - (screen + egui::vec2(len, 0.0))).length() < hit_radius {
+                    Some(GizmoAxis::X)
+                } else if (pos - (screen + egui::vec2(0.0, -len))).length() < hit_radius {
+                    Some(GizmoAxis::Z)
+                } else if (pos - (screen + egui::vec2(-len * 0.7, -len * 0.7))).length()
+                    < hit_radius
+                {
+                    Some(GizmoAxis::Y)
                 } else {
-                    None
-                }
-            };
-            if let Some(axis) = axis {
-                self.scene_state.gizmo_drag = Some(GizmoDrag {
-                    id: *id,
-                    axis,
-                    start: pos,
-                    initial: *position,
-                });
-            }
-        }
-        if response.dragged_by(egui::PointerButton::Primary)
-            && let (Some(drag), Some(pos)) = (self.scene_state.gizmo_drag.as_ref(), pointer)
-        {
-            let delta = pos - drag.start;
-            let dx = delta.x / zoom;
-            let dy = delta.y / zoom;
-            let mut next = drag.initial;
-            match drag.axis {
-                GizmoAxis::X => next.x += dx,
-                GizmoAxis::Z => next.z -= dy,
-                GizmoAxis::Y => next.y -= dy,
-                GizmoAxis::Free => {
-                    next.x += dx;
-                    next.z -= dy;
+                    let box_rect = egui::Rect::from_center_size(screen, egui::vec2(24.0, 24.0));
+                    if box_rect.contains(pos) && !self.scene_state.locked.contains(id) {
+                        Some(GizmoAxis::Free)
+                    } else {
+                        None
+                    }
+                };
+                if let Some(axis) = axis {
+                    self.scene_state.gizmo_drag = Some(GizmoDrag {
+                        id: *id,
+                        axis,
+                        start: pos,
+                        initial: *position,
+                    });
                 }
             }
-            self.scene_state.preview3d.insert(drag.id, next);
-        }
-        if response.drag_stopped_by(egui::PointerButton::Primary) {
-            self.commit_gizmo_drag3d();
-            self.scene_state.gizmo_drag = None;
+            if response.dragged_by(egui::PointerButton::Primary)
+                && let (Some(drag), Some(pos)) = (self.scene_state.gizmo_drag.as_ref(), pointer)
+            {
+                let delta = pos - drag.start;
+                let d = self.editor_camera.dist * 0.002;
+                let mut next = drag.initial;
+                match drag.axis {
+                    GizmoAxis::X => next.x += delta.x * d,
+                    GizmoAxis::Z => next.z -= delta.y * d,
+                    GizmoAxis::Y => next.y -= delta.y * d,
+                    GizmoAxis::Free => {
+                        let fx = -self.editor_camera.yaw.sin();
+                        let fz = -self.editor_camera.yaw.cos();
+                        let rx = self.editor_camera.yaw.cos();
+                        let rz = -self.editor_camera.yaw.sin();
+                        next.x += (delta.x * rx - delta.y * fx) * d;
+                        next.z += (delta.x * rz - delta.y * fz) * d;
+                    }
+                }
+                self.scene_state.preview3d.insert(drag.id, next);
+            }
+            if response.drag_stopped_by(egui::PointerButton::Primary) {
+                self.commit_gizmo_drag3d();
+                self.scene_state.gizmo_drag = None;
+            }
         }
     }
-
     fn draw_scene_view(&mut self, ui: &mut egui::Ui) {
         if self.scene_view_mode == SceneViewMode::View3D {
             self.draw_scene_view_3d(ui);

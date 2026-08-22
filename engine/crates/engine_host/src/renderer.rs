@@ -1293,7 +1293,9 @@ impl Renderer {
         width: u32,
         height: u32,
     ) -> Result<Vec<u8>, String> {
-        let bytes_per_row = 4 * width;
+        // `bytes_per_row` must be a multiple of 256 for `copy_texture_to_buffer`.
+        let row_bytes = 4 * width;
+        let bytes_per_row = row_bytes.div_ceil(256) * 256;
         let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("p2-preview-readback"),
             size: (bytes_per_row * height) as u64,
@@ -1340,7 +1342,14 @@ impl Renderer {
             .recv()
             .map_err(|error| format!("preview readback channel error: {error}"))?;
         map_result.map_err(|error| format!("preview texture map failed: {error}"))?;
-        Ok(slice.get_mapped_range().to_vec())
+        // 去掉行尾填充，返回紧凑 RGBA8（每行 `row_bytes`）。
+        let padded = slice.get_mapped_range();
+        let mut pixels = Vec::with_capacity((row_bytes * height) as usize);
+        for row in 0..height as usize {
+            let start = row * bytes_per_row as usize;
+            pixels.extend_from_slice(&padded[start..start + row_bytes as usize]);
+        }
+        Ok(pixels)
     }
 
     /// Shared pass rendering into a given color view (window surface or
