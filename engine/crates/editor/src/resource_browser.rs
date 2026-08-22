@@ -10,6 +10,7 @@ use std::{
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ResourceKind {
     Texture,
+    Audio,
     LuaScript,
     Scene,
     Prefab,
@@ -27,6 +28,7 @@ impl ResourceKind {
             .as_str()
         {
             "png" | "jpg" | "jpeg" | "webp" => Self::Texture,
+            "ogg" | "wav" | "mp3" => Self::Audio,
             "lua" => Self::LuaScript,
             "scene" => Self::Scene,
             "prefab" => Self::Prefab,
@@ -38,6 +40,7 @@ impl ResourceKind {
     pub fn label(self) -> &'static str {
         match self {
             Self::Texture => "纹理",
+            Self::Audio => "音频",
             Self::LuaScript => "Lua",
             Self::Scene => "场景",
             Self::Prefab => "预制体",
@@ -283,6 +286,32 @@ mod tests {
             Some("不支持的资源类型")
         );
         assert_eq!(browser.refresh_count(), 1);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn refresh_registers_audio_ogg_and_wav() {
+        let root = temp_root("audio");
+        file(&root, "assets/audio/attack.ogg", b"ogg");
+        file(&root, "assets/audio/bgm.wav", b"wav");
+        file(&root, "assets/readme.txt", b"text");
+        let mut browser = ResourceBrowserState::new();
+        browser.refresh(&root).unwrap();
+        let audio: Vec<_> = browser
+            .entries()
+            .iter()
+            .filter(|entry| entry.kind == ResourceKind::Audio)
+            .map(|entry| entry.path_string())
+            .collect();
+        assert_eq!(audio.len(), 2, "ogg and wav recognized as audio: {audio:?}");
+        assert!(
+            browser
+                .entries()
+                .iter()
+                .filter(|entry| entry.kind == ResourceKind::Audio)
+                .all(|entry| entry.status == ImportStatus::Registered),
+            "audio files registered into the resource database"
+        );
         let _ = fs::remove_dir_all(root);
     }
 
