@@ -97,24 +97,20 @@ impl FontAtlas {
         let origin_y = (row * self.cell) as i32 + PAD;
         let glyph = self.font.glyph_id(character).with_scale(RASTER_SCALE);
         if let Some(outlined) = self.font.outline_glyph(glyph) {
-            let bounds = outlined.px_bounds();
-            let base_x = bounds.min.x.floor() as i32;
-            let base_y = bounds.min.y.floor() as i32;
+            // draw 回调的 x/y 是相对字形包围盒左上角的 0 基位图坐标，
+            // 直接以单元格原点 + PAD 放置（不可再减 bounds.min，否则 CJK
+            // 大负值 min.y 会把字形推出单元格）。
             outlined.draw(|x, y, coverage| {
-                let dx = x as i32 - base_x;
-                let dy = y as i32 - base_y;
-                let px = origin_x + dx;
-                let py = origin_y + dy;
-                if px < 0 || py < 0 {
+                // x/y 是字形包围盒内 0 基坐标；按单元内偏移裁剪，
+                // 不能用绝对像素 px/py 与 cell 比（非首列 origin_x 会超过 cell）。
+                if x >= self.cell || y >= self.cell {
                     return;
                 }
-                let px = px as u32;
-                let py = py as u32;
-                if px >= self.cell || py >= self.cell {
-                    return;
-                }
-                let offset =
-                    ((row * self.cell + py) * self.width() + col * self.cell + px) as usize;
+                let px = (origin_x + x as i32) as u32;
+                let py = (origin_y + y as i32) as u32;
+                // px/py 已含行列单元偏移（origin_x/origin_y），offset 用绝对像素，
+                // 勿再重复加 row*cell / col*cell。
+                let offset = (py * self.width() + px) as usize;
                 let alpha = (coverage.clamp(0.0, 1.0) * 255.0) as u8;
                 self.pixels[offset * 4..offset * 4 + 4].copy_from_slice(&[255, 255, 255, alpha]);
             });
@@ -172,9 +168,16 @@ mod tests {
         assert_eq!(atlas.version(), 1);
         let uv2 = atlas.uv('俯');
         assert_eq!(uv, uv2, "same glyph is cached");
+        let opaque = atlas
+            .pixels()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|px| px[3] > 0)
+            .count();
         assert!(
-            atlas.pixels().as_chunks::<4>().0.iter().any(|px| px[3] > 0),
-            "some pixel was rasterized"
+            opaque > 100,
+            "glyph must rasterize substantial opaque pixels (offset/clip bug caught), got {opaque}"
         );
     }
 

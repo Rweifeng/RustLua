@@ -38,6 +38,11 @@
 - `engine_core/font.rs`：`FontAtlas` 用 `ab_glyph` 按需栅格化任意字形到动态 RGBA 图集（版本号增量，仅变化时上传）；
 - `TextLayout::build_mixed`：ASCII 走内置 5×7 图集、非 ASCII 走字体图集，返回两个 mesh；
 - `game_runner`：启动加载 `assets/fonts/NotoSansSC-VF.ttf`，字体图集纹理按版本上传；主菜单中文正常显示；
+- 修复渲染坐标三连 bug（否则字形不可见）：
+  1. ab_glyph `draw` 回调的 x/y 已是 0 基位图坐标，不应再减 `bounds.min`（CJK 负 min.y 会把字形推出单元格）；
+  2. 裁剪检查用单元内偏移 x/y（绝对 px/py 与 cell 比会让非首列全部被裁）；
+  3. offset 用绝对像素 `py*width+px`（勿再重复加 row/col*cell，否则字形右移/下移一整格）；
+- 用 dump 示例目视验证：26 个字形各归其位、像素充足；测试断言字形不透明像素 >100 防回归；
 - 测试：`rasterizes_cjk_glyph_and_reports_uv`、`build_mixed_splits_ascii_and_cjk_glyphs`。
 
 ## 验收结果
