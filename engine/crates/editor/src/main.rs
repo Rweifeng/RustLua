@@ -882,16 +882,41 @@ fn find_publish_script(root: &Path) -> Option<PathBuf> {
         .find(|path| path.is_file())
 }
 
+/// 常见的 rustup cargo bin 目录（双击启动时系统 PATH 可能没有 cargo）。
+fn cargo_bin_dir() -> Option<PathBuf> {
+    let home = env::var_os("USERPROFILE")
+        .or_else(|| env::var_os("HOME"))
+        .map(PathBuf::from)?;
+    let dir = home.join(".cargo").join("bin");
+    (dir.join("cargo.exe").is_file() || dir.join("cargo").is_file()).then_some(dir)
+}
+
+/// 把 bin 目录加到 PATH 最前面（去重），确保子进程能找到 cargo。
+fn prepend_path(bin: &Path) -> String {
+    let current = env::var("PATH").unwrap_or_default();
+    let mut parts = vec![bin.to_string_lossy().into_owned()];
+    for part in current.split(';').filter(|part| !part.is_empty()) {
+        if !parts.iter().any(|existing| existing == part) {
+            parts.push(part.to_owned());
+        }
+    }
+    parts.join(";")
+}
+
 /// 后台执行发布脚本，把 stdout/stderr 行转发给 UI 线程。
 fn spawn_publish(script: PathBuf, tx: Sender<PublishEvent>) {
     thread::spawn(move || {
-        let mut child = match Command::new("powershell")
+        let mut command = Command::new("powershell");
+        command
             .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
             .arg(&script)
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-        {
+            .stderr(Stdio::piped());
+        // 编辑器可能是双击启动（系统 PATH 无 cargo）；把 cargo bin 补进子进程 PATH。
+        if let Some(bin) = cargo_bin_dir() {
+            command.env("PATH", prepend_path(&bin));
+        }
+        let mut child = match command.spawn() {
             Ok(child) => child,
             Err(error) => {
                 let _ = tx.send(PublishEvent::Line(format!("无法启动发布脚本：{error}\n")));
@@ -1953,5 +1978,32 @@ mod geometry_tests {
         let selection = egui::Rect::from_min_max(egui::pos2(0.0, -20.0), egui::pos2(30.0, 20.0));
         assert!(!polygon.iter().all(|p| selection.contains(*p)));
         assert!(polygon_intersects_rect(&polygon, selection));
+    }
+}
+
+#[cfg(test)]
+mod publish_tests {
+    use super::*;
+
+    #[test]
+    fn cargo_bin_dir_points_to_rustup_cargo() {
+        let Some(dir) = cargo_bin_dir() else {
+            eprintln!("本机无 ~/.cargo/bin，跳过");
+            return;
+        };
+        assert!(dir.join("cargo.exe").is_file() || dir.join("cargo").is_file());
+    }
+
+    #[test]
+    fn prepend_path_puts_bin_first_and_dedupes() {
+        let bin = PathBuf::from("C:/fake/cargo/bin");
+        let result = prepend_path(&bin);
+        let parts: Vec<_> = result.split(';').collect();
+        assert_eq!(parts[0], "C:/fake/cargo/bin");
+        // 不重复
+        assert_eq!(
+            parts.iter().filter(|p| **p == "C:/fake/cargo/bin").count(),
+            1
+        );
     }
 }
