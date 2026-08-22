@@ -12,10 +12,13 @@ use std::{
 use bytemuck::{Pod, Zeroable};
 use engine_core::{
     animation::AnimationStateMachine,
+    camera3d::Camera3D,
     font::FontAtlas,
     input::{InputKey, InputSnapshot, MouseButton},
     logging::{EngineError, LogModule, init_logging},
     math2d::{Camera2D, Viewport},
+    math3d::Vec3,
+    mesh3d::MeshAsset,
     performance::{PerformanceSnapshot, PerformanceStats},
     scene::{Scene, SceneEntityId},
     script::LuaRuntime,
@@ -28,6 +31,7 @@ use engine_core::{
     transform::{Transform, Vec2, integrate_velocity},
     window::{AppLifecycle, has_renderable_size},
 };
+use wgpu::util::DeviceExt;
 use wgpu::{
     CompositeAlphaMode, Device, DeviceDescriptor, Instance, InstanceDescriptor, PresentMode, Queue,
     Surface, SurfaceConfiguration, SurfaceError, TextureUsages,
@@ -57,6 +61,24 @@ struct VertexOutput {
 }
 @fragment fn fs_main(@location(0) uv: vec2<f32>, @location(1) color: vec4<f32>) -> @location(0) vec4<f32> {
     return textureSample(tex, samp, uv) * color;
+}
+"#;
+
+const MESH3D_SHADER: &str = r#"
+struct Camera { view_projection: mat4x4<f32> };
+struct Material { base_color: vec4<f32> };
+@group(0) @binding(0) var<uniform> camera: Camera;
+@group(1) @binding(0) var<uniform> material: Material;
+struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) normal: vec3<f32> };
+@vertex fn vs_main(@location(0) position: vec3<f32>, @location(1) normal: vec3<f32>, @location(2) uv: vec2<f32>) -> VertexOutput {
+    var out: VertexOutput;
+    out.position = camera.view_projection * vec4<f32>(position, 1.0);
+    out.normal = normal;
+    return out;
+}
+@fragment fn fs_main(@location(0) normal: vec3<f32>) -> @location(0) vec4<f32> {
+    let light = max(dot(normalize(normal), normalize(vec3<f32>(0.4, 0.8, 0.5))), 0.15);
+    return vec4<f32>(material.base_color.rgb * light, material.base_color.a);
 }
 "#;
 
@@ -106,12 +128,22 @@ struct LoadedTexture {
     bind_group: wgpu::BindGroup,
 }
 
+struct GpuMesh {
+    vertex_buffer: wgpu::Buffer,
+    index_buffer: wgpu::Buffer,
+    material_bind_group: wgpu::BindGroup,
+    index_count: u32,
+}
+
 struct Renderer {
     surface: Surface<'static>,
     device: Device,
     queue: Queue,
     config: SurfaceConfiguration,
     pipeline: wgpu::RenderPipeline,
+    mesh_pipeline: wgpu::RenderPipeline,
+    camera_bind_group: wgpu::BindGroup,
+    depth_view: wgpu::TextureView,
     texture_bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     vertex_buffer: wgpu::Buffer,
@@ -122,6 +154,8 @@ struct Renderer {
     font_atlas_bind: Option<wgpu::BindGroup>,
     font_atlas_uploaded_version: u64,
     project_root: Option<PathBuf>,
+    gpu_meshes: Vec<GpuMesh>,
+    _material_bind_group_layout: wgpu::BindGroupLayout,
 }
 
 impl Renderer {
@@ -211,6 +245,20 @@ impl Renderer {
             bind_group_layouts: &[&texture_bind_group_layout],
             push_constant_ranges: &[],
         });
+        let camera_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("p2-camera3d-bind-group-layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: wgpu::BufferSize::new(64),
+                    },
+                    count: None,
+                }],
+            });
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("p2-textured-shader"),
             source: wgpu::ShaderSource::Wgsl(TEXTURED_SHADER.into()),
@@ -273,6 +321,114 @@ impl Renderer {
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let material_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("p2-material3d-bind-group-layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: wgpu::BufferSize::new(16),
+                    },
+                    count: None,
+                }],
+            });
+        let camera = Camera3D::perspective(
+            Vec3::new(0.0, 0.0, 5.0),
+            Vec3::ZERO,
+            std::f32::consts::FRAC_PI_2,
+            config.width as f32 / config.height as f32,
+            0.1,
+            100.0,
+        )
+        .map_err(|error| error.to_string())?;
+        let camera_matrix = camera
+            .view_projection_matrix()
+            .map_err(|error| error.to_string())?;
+        let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("p2-camera3d-buffer"),
+            contents: bytemuck::cast_slice(&camera_matrix.columns),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+        let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("p2-camera3d-bind-group"),
+            layout: &camera_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: camera_buffer.as_entire_binding(),
+            }],
+        });
+        let mesh_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("p2-mesh3d-shader"),
+            source: wgpu::ShaderSource::Wgsl(MESH3D_SHADER.into()),
+        });
+        let mesh_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("p2-mesh3d-pipeline-layout"),
+            bind_group_layouts: &[&camera_bind_group_layout, &material_bind_group_layout],
+            push_constant_ranges: &[],
+        });
+        let mesh_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("p2-mesh3d-pipeline"),
+            layout: Some(&mesh_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &mesh_shader,
+                entry_point: Some("vs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<engine_core::mesh3d::MeshVertex>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &[
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x3,
+                            offset: 0,
+                            shader_location: 0,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x3,
+                            offset: 12,
+                            shader_location: 1,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: 24,
+                            shader_location: 2,
+                        },
+                    ],
+                }],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &mesh_shader,
+                entry_point: Some("fs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                cull_mode: Some(wgpu::Face::Back),
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::LessEqual,
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: Default::default(),
+            multiview: None,
+            cache: None,
+        });
+        let depth_view = Self::create_depth_view(&device, config.width, config.height);
+        let gpu_meshes = Self::load_gpu_meshes(
+            &device,
+            &material_bind_group_layout,
+            project_root.as_deref(),
+        );
         tracing::info!(target: "game",
             "[render] initialized: adapter={adapter_name} format={format:?} present_mode={present_mode:?}"
         );
@@ -282,6 +438,9 @@ impl Renderer {
             queue,
             config,
             pipeline,
+            mesh_pipeline,
+            camera_bind_group,
+            depth_view,
             texture_bind_group_layout,
             sampler,
             vertex_buffer,
@@ -292,7 +451,93 @@ impl Renderer {
             font_atlas_bind: None,
             font_atlas_uploaded_version: u64::MAX,
             project_root,
+            gpu_meshes,
+            _material_bind_group_layout: material_bind_group_layout,
         })
+    }
+
+    fn create_depth_view(device: &Device, width: u32, height: u32) -> wgpu::TextureView {
+        device
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some("p2-depth32-texture"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Depth32Float,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            })
+            .create_view(&wgpu::TextureViewDescriptor::default())
+    }
+
+    fn load_gpu_meshes(
+        device: &Device,
+        material_layout: &wgpu::BindGroupLayout,
+        project_root: Option<&Path>,
+    ) -> Vec<GpuMesh> {
+        let Some(root) = project_root else {
+            return Vec::new();
+        };
+        let path = root
+            .join("assets")
+            .join("models")
+            .join("m8-test-triangle.glb");
+        if !path.is_file() {
+            return Vec::new();
+        }
+        let meshes = match MeshAsset::from_gltf_path(&path) {
+            Ok(meshes) => meshes,
+            Err(error) => {
+                tracing::warn!(target: "render", path = %path.display(), error = %error, "[render] 3D mesh upload skipped");
+                return Vec::new();
+            }
+        };
+        let mut uploaded = Vec::new();
+        for (mesh_index, mesh) in meshes.iter().enumerate() {
+            for (primitive_index, primitive) in mesh.primitives.iter().enumerate() {
+                let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("p2-mesh3d-vertices"),
+                    contents: bytemuck::cast_slice(&primitive.vertices),
+                    usage: wgpu::BufferUsages::VERTEX,
+                });
+                let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("p2-mesh3d-indices"),
+                    contents: bytemuck::cast_slice(&primitive.indices),
+                    usage: wgpu::BufferUsages::INDEX,
+                });
+                let material_buffer =
+                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("p2-material3d-default"),
+                        contents: bytemuck::cast_slice(&[mesh
+                            .materials
+                            .get(primitive.material.unwrap_or(usize::MAX))
+                            .map(|material| material.base_color_factor)
+                            .unwrap_or([1.0, 1.0, 1.0, 1.0])]),
+                        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                    });
+                let material_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("p2-material3d-bind-group"),
+                    layout: material_layout,
+                    entries: &[wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: material_buffer.as_entire_binding(),
+                    }],
+                });
+                uploaded.push(GpuMesh {
+                    vertex_buffer,
+                    index_buffer,
+                    material_bind_group,
+                    index_count: primitive.indices.len() as u32,
+                });
+                tracing::info!(target: "render", mesh = mesh_index, primitive = primitive_index, material = ?primitive.material, vertices = primitive.vertices.len(), indices = primitive.indices.len(), "[render] 3D mesh uploaded");
+            }
+        }
+        uploaded
     }
 
     fn resize(&mut self, size: PhysicalSize<u32>) {
@@ -302,6 +547,7 @@ impl Renderer {
         self.config.width = size.width;
         self.config.height = size.height;
         self.surface.configure(&self.device, &self.config);
+        self.depth_view = Self::create_depth_view(&self.device, size.width, size.height);
         tracing::info!(target: "game",
             "[render] surface reconfigured: {}x{}",
             size.width, size.height
@@ -309,6 +555,9 @@ impl Renderer {
     }
 
     fn render(&mut self, mesh: &SceneMesh) -> RenderOutcome {
+        if !self.gpu_meshes.is_empty() {
+            tracing::trace!(target: "render", meshes = self.gpu_meshes.len(), "[render] 3D GPU meshes available");
+        }
         let output = match self.surface.get_current_texture() {
             Ok(output) => output,
             Err(SurfaceError::Lost | SurfaceError::Outdated) => {
@@ -358,6 +607,38 @@ impl Renderer {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
+        }
+        if !self.gpu_meshes.is_empty() {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("p2-mesh3d-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_pipeline(&self.mesh_pipeline);
+            pass.set_bind_group(0, &self.camera_bind_group, &[]);
+            for gpu_mesh in &self.gpu_meshes {
+                pass.set_bind_group(1, &gpu_mesh.material_bind_group, &[]);
+                pass.set_vertex_buffer(0, gpu_mesh.vertex_buffer.slice(..));
+                pass.set_index_buffer(gpu_mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..gpu_mesh.index_count, 0, 0..1);
+            }
         }
         if !mesh.vertices.is_empty() {
             let bytes = bytemuck::cast_slice(&mesh.vertices);

@@ -116,6 +116,8 @@
 | M8-A00 | M8 基线与技术决策 | M7 | `v0.7` 可复现；glTF 2.0、3D 坐标/矩阵、颜色空间和深度约定已记录；自制 GLB 可再生且许可明确 | fmt、Clippy、workspace 测试、Release 包目录隔离自测、GLB 头校验 | `tasks/active/M8-00-M8基线与技术决策.md`；`scripts/gen-m8-test-gltf.ps1`；`game/assets/models/m8-test-triangle.glb` | PASS | v0.7 |
 | M8-A01 | Math3D / Transform3D / Camera3D | M8-A00 | Vec3、Quat、Mat4、模型矩阵、透视投影、LookAt、世界/NDC 往返和视锥点分类正确；非法参数明确拒绝 | 10 个 engine_core 单测、workspace fmt/Clippy/test、Debug/Release 构建 | `tasks/done/M8-01-Math3D-Transform3D-Camera3D.md`；`artifacts/logs/m8-01-test.log` | PASS | v0.7 |
 | M8-A02 | glTF/GLB CPU 导入与资源缓存 | M8-A01 | `.gltf`/`.glb` 静态 Mesh、节点和基础材质可解析；坏资源带路径报错；缓存增量复用；失败导入返回非零 | glTF/ImportCache/assetc 单测；真实项目 21 项导入与二次缓存命中；workspace 质量门 | `tasks/done/M8-02-glTF-GLB-CPU导入与资源缓存.md`；`engine/artifacts/logs/m8-02-import.log` | PASS | v0.7 |
+| M8-A03 | Mesh / Material GPU 上传 | M8-A02 | CPU Mesh/Material 转换和 GPU buffer、材质绑定、生命周期通过；3D 纹理颜色空间正确；2D 路径不回归 | MeshAsset 单测；Renderer GPU 资源创建；workspace 质量门 | `tasks/done/M8-03-Mesh-Material-GPU上传.md` | PASS | v0.7 |
+| M8-A04 | Depth + 3D Render Pass | M8-A03 | Depth32Float 初始化/resize；Camera3D uniform；独立 3D pipeline；indexed Mesh 绘制和深度遮挡；2D pass 兼容 | game_runner check/Clippy/Debug/Release；窗口视觉与遮挡证据 | `tasks/done/M8-04-Depth-3D-Render-Pass.md`；`artifacts/builds/release/p2-game/` | PASS | v0.7 |
 
 ## M7 工程化与发布
 

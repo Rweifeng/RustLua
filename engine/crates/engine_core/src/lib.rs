@@ -27,6 +27,8 @@ pub mod logging;
 pub mod math2d;
 /// Coordinate, quaternion, and matrix primitives for 3D rendering.
 pub mod math3d;
+/// GPU-friendly CPU mesh and material data for 3D rendering.
+pub mod mesh3d;
 /// 发布资源编解码（压缩 + 加密）。
 pub mod pack;
 /// Pooled particle bursts with spawn/update/recycle.
