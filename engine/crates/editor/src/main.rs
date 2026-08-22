@@ -25,7 +25,7 @@ use engine_core::{
     input::{InputKey, InputSnapshot, MouseButton},
     light::Light,
     math2d::Camera2D,
-    math3d::Vec3,
+    math3d::{Quat, Vec3},
     scene::SceneEntityId,
     script::{LuaRuntime, ScriptDiagnostic},
     transform::Vec2,
@@ -273,6 +273,8 @@ struct EditorApp {
     scene_zoom: f32,
     scene_tool: SceneTool,
     scene_view_mode: SceneViewMode,
+    snap_enabled: bool,
+    snap_step: f32,
     hierarchy_filter: String,
     scene_state: SceneEditorState,
     inspector_clipboard: Option<ComponentClipboard>,
@@ -471,9 +473,9 @@ struct SceneEditorState {
     pan: egui::Vec2,
     drag: Option<SceneDrag>,
     preview: std::collections::BTreeMap<SceneEntityId, TransformFields>,
-    /// 3D 实体平移预览（画布俯视 XZ 投影；M9-03）。
-    preview3d: std::collections::BTreeMap<SceneEntityId, Vec3>,
-    /// 3D 平移 Gizmo 拖拽（M9-03）。
+    /// 3D 实体变换预览（画布俯视 XZ 投影；M9-03/M10-07）。
+    preview3d_transform: std::collections::BTreeMap<SceneEntityId, Transform3D>,
+    /// 3D 平移/旋转/缩放 Gizmo 拖拽（M9-03/M10-07）。
     gizmo_drag: Option<GizmoDrag>,
     collapsed: std::collections::BTreeSet<SceneEntityId>,
     hidden: std::collections::BTreeSet<SceneEntityId>,
@@ -488,12 +490,13 @@ struct SceneDrag {
     initial: std::collections::BTreeMap<SceneEntityId, TransformFields>,
 }
 
-/// 3D 平移 Gizmo 拖拽：约束到哪个轴（Y 为垂直高度，Free 为 XZ 平面）。
+/// 3D 变换 Gizmo 拖拽：约束到哪个轴（Y 为垂直高度，Free 为 XZ 平面；
+/// Scale 为等比缩放，Rotate 由 scene_tool 决定）。
 struct GizmoDrag {
     id: SceneEntityId,
     axis: GizmoAxis,
     start: egui::Pos2,
-    initial: Vec3,
+    initial: Transform3D,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -502,6 +505,7 @@ enum GizmoAxis {
     Z,
     Y,
     Free,
+    Scale,
 }
 
 #[derive(Clone)]
@@ -565,6 +569,8 @@ impl EditorApp {
             scene_zoom: 1.0,
             scene_tool: SceneTool::Select,
             scene_view_mode: SceneViewMode::default(),
+            snap_enabled: false,
+            snap_step: 0.5,
             hierarchy_filter: String::new(),
             scene_state: SceneEditorState::default(),
             inspector_clipboard: None,
@@ -1829,6 +1835,14 @@ impl eframe::App for EditorApp {
                 ui.selectable_value(&mut self.scene_tool, SceneTool::Rotate, "Rotate");
                 ui.selectable_value(&mut self.scene_tool, SceneTool::Scale, "Scale");
                 ui.separator();
+                ui.checkbox(&mut self.snap_enabled, "吸附");
+                ui.add(
+                    egui::DragValue::new(&mut self.snap_step)
+                        .range(0.05..=10.0)
+                        .speed(0.05)
+                        .prefix(" "),
+                );
+                ui.separator();
                 ui.add(egui::Slider::new(&mut self.scene_zoom, 0.5..=2.5).text("Zoom"));
             });
             ui.separator();
@@ -1965,20 +1979,6 @@ fn parse_transform(value: &str) -> Option<TransformFields> {
         }
     }
     Some(fields)
-}
-
-/// 解析 Transform3D 组件串的位置（用于 3D 场景视图俯视投影）。
-fn parse_transform3d(value: &str) -> Option<Vec3> {
-    Transform3D::from_component_str(value)
-        .ok()
-        .map(|t| t.position)
-}
-
-/// 在保留旋转/缩放的前提下更新 Transform3D 组件串的 position。
-fn encode_transform3d_position(current: &str, position: Vec3) -> String {
-    let mut transform = Transform3D::from_component_str(current).unwrap_or_default();
-    transform.position = position;
-    transform.to_component_str()
 }
 
 fn format_diagnostic(diagnostic: &ScriptDiagnostic) -> String {
@@ -2450,6 +2450,13 @@ impl EditorApp {
                     .components
                     .get("Transform3D")
                     .and_then(|value| Transform3D::from_component_str(value).ok())?;
+                // 拖拽预览优先（Gizmo 拖拽时场景即时反映）。
+                let transform = self
+                    .scene_state
+                    .preview3d_transform
+                    .get(&entity.id)
+                    .copied()
+                    .unwrap_or(transform);
                 let mesh = entity
                     .components
                     .get("MeshRenderer")
@@ -2693,19 +2700,25 @@ impl EditorApp {
                         {
                             return None;
                         }
-                        let position = e
+                        let transform = e
                             .components
                             .get("Transform3D")
-                            .and_then(|v| parse_transform3d(v))?;
-                        Some((e.id, e.name.clone(), position))
+                            .and_then(|v| Transform3D::from_component_str(v).ok())?;
+                        Some((e.id, e.name.clone(), transform))
                     })
                     .collect()
             })
             .unwrap_or_default();
 
-        // 绘制实体标记（投影后的菱形 + 名称）。
-        for (id, name, position) in &entities3d {
-            let Some(screen) = self.project_to_screen(*position, rect) else {
+        // 绘制实体标记（投影后的菱形 + 名称；拖拽预览优先）。
+        for (id, name, transform) in &entities3d {
+            let position = self
+                .scene_state
+                .preview3d_transform
+                .get(id)
+                .map(|t| t.position)
+                .unwrap_or(transform.position);
+            let Some(screen) = self.project_to_screen(position, rect) else {
                 continue;
             };
             let selected =
@@ -2743,8 +2756,14 @@ impl EditorApp {
         if response.clicked()
             && let Some(pos) = response.interact_pointer_pos()
         {
-            let hit = entities3d.iter().rev().find(|(id, _, position)| {
-                let Some(screen) = self.project_to_screen(*position, rect) else {
+            let hit = entities3d.iter().rev().find(|(id, _, transform)| {
+                let position = self
+                    .scene_state
+                    .preview3d_transform
+                    .get(id)
+                    .map(|t| t.position)
+                    .unwrap_or(transform.position);
+                let Some(screen) = self.project_to_screen(position, rect) else {
                     return false;
                 };
                 let box_rect = egui::Rect::from_center_size(screen, egui::vec2(20.0, 20.0));
@@ -2766,99 +2785,186 @@ impl EditorApp {
             }
         }
 
-        // Gizmo：选中实体绘制 X/Z/Y 手柄，拖拽在相机地面平面移动。
+        // Gizmo：按工具绘制手柄并拖拽（Move 平移 / Rotate 绕 Y / Scale 等比缩放）。
         let selected_entity = entities3d.iter().find(|(id, _, _)| {
             self.tree.selected() == Some(*id) || self.scene_state.selected.contains(id)
         });
-        if let Some((id, _, position)) = selected_entity
-            && matches!(self.scene_tool, SceneTool::Move | SceneTool::Select)
-        {
-            let Some(screen) = self.project_to_screen(*position, rect) else {
-                return;
-            };
-            let len = 40.0;
-            painter.line_segment(
-                [screen, screen + egui::vec2(len, 0.0)],
-                egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(220, 80, 80)),
-            );
-            painter.circle_filled(
-                screen + egui::vec2(len, 0.0),
-                5.0,
-                egui::Color32::from_rgb(220, 80, 80),
-            );
-            painter.line_segment(
-                [screen, screen + egui::vec2(0.0, -len)],
-                egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(80, 120, 220)),
-            );
-            painter.circle_filled(
-                screen + egui::vec2(0.0, -len),
-                5.0,
-                egui::Color32::from_rgb(80, 120, 220),
-            );
-            painter.line_segment(
-                [screen, screen + egui::vec2(-len * 0.7, -len * 0.7)],
-                egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(90, 200, 90)),
-            );
-            painter.circle_filled(
-                screen + egui::vec2(-len * 0.7, -len * 0.7),
-                5.0,
-                egui::Color32::from_rgb(90, 200, 90),
-            );
-            // 拖拽：命中手柄轴约束；命中实体自由 XZ（相机地面平面）。
-            let pointer = response.interact_pointer_pos();
-            if response.drag_started_by(egui::PointerButton::Primary)
-                && let Some(pos) = pointer
-            {
-                let hit_radius = 12.0;
-                let axis = if (pos - (screen + egui::vec2(len, 0.0))).length() < hit_radius {
-                    Some(GizmoAxis::X)
-                } else if (pos - (screen + egui::vec2(0.0, -len))).length() < hit_radius {
-                    Some(GizmoAxis::Z)
-                } else if (pos - (screen + egui::vec2(-len * 0.7, -len * 0.7))).length()
-                    < hit_radius
-                {
-                    Some(GizmoAxis::Y)
-                } else {
-                    let box_rect = egui::Rect::from_center_size(screen, egui::vec2(24.0, 24.0));
-                    if box_rect.contains(pos) && !self.scene_state.locked.contains(id) {
-                        Some(GizmoAxis::Free)
-                    } else {
-                        None
-                    }
+        if let Some((id, _, transform)) = selected_entity {
+            let tool = self.scene_tool;
+            if matches!(
+                tool,
+                SceneTool::Move | SceneTool::Select | SceneTool::Rotate | SceneTool::Scale
+            ) {
+                let Some(screen) = self.project_to_screen(transform.position, rect) else {
+                    return;
                 };
+                let len = 40.0;
+                let pointer = response.interact_pointer_pos();
+                // 命中检测：按工具判定手柄。
+                let axis = if response.drag_started_by(egui::PointerButton::Primary)
+                    && let Some(pos) = pointer
+                {
+                    match tool {
+                        SceneTool::Move | SceneTool::Select => {
+                            let hit_radius = 12.0;
+                            if (pos - (screen + egui::vec2(len, 0.0))).length() < hit_radius {
+                                Some(GizmoAxis::X)
+                            } else if (pos - (screen + egui::vec2(0.0, -len))).length() < hit_radius
+                            {
+                                Some(GizmoAxis::Z)
+                            } else if (pos - (screen + egui::vec2(-len * 0.7, -len * 0.7))).length()
+                                < hit_radius
+                            {
+                                Some(GizmoAxis::Y)
+                            } else {
+                                let box_rect =
+                                    egui::Rect::from_center_size(screen, egui::vec2(24.0, 24.0));
+                                if box_rect.contains(pos) && !self.scene_state.locked.contains(id) {
+                                    Some(GizmoAxis::Free)
+                                } else {
+                                    None
+                                }
+                            }
+                        }
+                        SceneTool::Rotate => {
+                            if (pos - (screen + egui::vec2(len, 0.0))).length() < 14.0
+                                || egui::Rect::from_center_size(screen, egui::vec2(24.0, 24.0))
+                                    .contains(pos)
+                            {
+                                Some(GizmoAxis::X)
+                            } else {
+                                None
+                            }
+                        }
+                        SceneTool::Scale => {
+                            if (pos - (screen + egui::vec2(len, len))).length() < 14.0
+                                || egui::Rect::from_center_size(screen, egui::vec2(24.0, 24.0))
+                                    .contains(pos)
+                            {
+                                Some(GizmoAxis::Scale)
+                            } else {
+                                None
+                            }
+                        }
+                    }
+                } else {
+                    None
+                };
+                // 绘制手柄。
+                match tool {
+                    SceneTool::Move | SceneTool::Select => {
+                        painter.line_segment(
+                            [screen, screen + egui::vec2(len, 0.0)],
+                            egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(220, 80, 80)),
+                        );
+                        painter.circle_filled(
+                            screen + egui::vec2(len, 0.0),
+                            5.0,
+                            egui::Color32::from_rgb(220, 80, 80),
+                        );
+                        painter.line_segment(
+                            [screen, screen + egui::vec2(0.0, -len)],
+                            egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(80, 120, 220)),
+                        );
+                        painter.circle_filled(
+                            screen + egui::vec2(0.0, -len),
+                            5.0,
+                            egui::Color32::from_rgb(80, 120, 220),
+                        );
+                        painter.line_segment(
+                            [screen, screen + egui::vec2(-len * 0.7, -len * 0.7)],
+                            egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(90, 200, 90)),
+                        );
+                        painter.circle_filled(
+                            screen + egui::vec2(-len * 0.7, -len * 0.7),
+                            5.0,
+                            egui::Color32::from_rgb(90, 200, 90),
+                        );
+                    }
+                    SceneTool::Rotate => {
+                        painter.circle_stroke(
+                            screen,
+                            len,
+                            egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(230, 160, 60)),
+                        );
+                        painter.circle_filled(
+                            screen + egui::vec2(len, 0.0),
+                            5.0,
+                            egui::Color32::from_rgb(230, 160, 60),
+                        );
+                    }
+                    SceneTool::Scale => {
+                        painter.line_segment(
+                            [screen, screen + egui::vec2(len, len)],
+                            egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(180, 100, 220)),
+                        );
+                        painter.circle_filled(
+                            screen + egui::vec2(len, len),
+                            5.0,
+                            egui::Color32::from_rgb(180, 100, 220),
+                        );
+                    }
+                }
                 if let Some(axis) = axis {
                     self.scene_state.gizmo_drag = Some(GizmoDrag {
                         id: *id,
                         axis,
-                        start: pos,
-                        initial: *position,
+                        start: pointer.expect("drag started with a pointer"),
+                        initial: *transform,
                     });
                 }
-            }
-            if response.dragged_by(egui::PointerButton::Primary)
-                && let (Some(drag), Some(pos)) = (self.scene_state.gizmo_drag.as_ref(), pointer)
-            {
-                let delta = pos - drag.start;
-                let d = self.editor_camera.dist * 0.002;
-                let mut next = drag.initial;
-                match drag.axis {
-                    GizmoAxis::X => next.x += delta.x * d,
-                    GizmoAxis::Z => next.z -= delta.y * d,
-                    GizmoAxis::Y => next.y -= delta.y * d,
-                    GizmoAxis::Free => {
-                        let fx = -self.editor_camera.yaw.sin();
-                        let fz = -self.editor_camera.yaw.cos();
-                        let rx = self.editor_camera.yaw.cos();
-                        let rz = -self.editor_camera.yaw.sin();
-                        next.x += (delta.x * rx - delta.y * fx) * d;
-                        next.z += (delta.x * rz - delta.y * fz) * d;
+                // 拖拽更新：按工具修改 Transform3D（position/rotation/scale）。
+                if response.dragged_by(egui::PointerButton::Primary)
+                    && let (Some(drag), Some(pos)) = (self.scene_state.gizmo_drag.as_ref(), pointer)
+                {
+                    let delta = pos - drag.start;
+                    let mut next = drag.initial;
+                    match tool {
+                        SceneTool::Move | SceneTool::Select => {
+                            let d = self.editor_camera.dist * 0.002;
+                            match drag.axis {
+                                GizmoAxis::X => next.position.x += delta.x * d,
+                                GizmoAxis::Z => next.position.z -= delta.y * d,
+                                GizmoAxis::Y => next.position.y -= delta.y * d,
+                                GizmoAxis::Free => {
+                                    let fx = -self.editor_camera.yaw.sin();
+                                    let fz = -self.editor_camera.yaw.cos();
+                                    let rx = self.editor_camera.yaw.cos();
+                                    let rz = -self.editor_camera.yaw.sin();
+                                    next.position.x += (delta.x * rx - delta.y * fx) * d;
+                                    next.position.z += (delta.x * rz - delta.y * fz) * d;
+                                }
+                                _ => {}
+                            }
+                            if self.snap_enabled {
+                                next.position.x =
+                                    (next.position.x / self.snap_step).round() * self.snap_step;
+                                next.position.y =
+                                    (next.position.y / self.snap_step).round() * self.snap_step;
+                                next.position.z =
+                                    (next.position.z / self.snap_step).round() * self.snap_step;
+                            }
+                        }
+                        SceneTool::Rotate => {
+                            if let Ok(rotation) = Quat::from_axis_angle(Vec3::Y, delta.x * 0.01) {
+                                next.rotation = rotation * next.rotation;
+                            }
+                        }
+                        SceneTool::Scale => {
+                            let factor = (1.0 + delta.x * 0.01).max(0.05);
+                            next.scale = Vec3::new(
+                                (next.scale.x * factor).max(0.05),
+                                (next.scale.y * factor).max(0.05),
+                                (next.scale.z * factor).max(0.05),
+                            );
+                        }
                     }
+                    self.scene_state.preview3d_transform.insert(drag.id, next);
                 }
-                self.scene_state.preview3d.insert(drag.id, next);
-            }
-            if response.drag_stopped_by(egui::PointerButton::Primary) {
-                self.commit_gizmo_drag3d();
-                self.scene_state.gizmo_drag = None;
+                if response.drag_stopped_by(egui::PointerButton::Primary) {
+                    self.commit_gizmo_drag3d();
+                    self.scene_state.gizmo_drag = None;
+                }
             }
         }
     }
@@ -3161,11 +3267,14 @@ impl EditorApp {
     /// 提交 3D 平移 Gizmo 拖拽：只改 Transform3D 的 position，保留旋转/缩放。
     fn commit_gizmo_drag3d(&mut self) {
         if self.is_playing() {
-            self.scene_state.preview3d.clear();
+            self.scene_state.preview3d_transform.clear();
             return;
         }
-        let preview = std::mem::take(&mut self.scene_state.preview3d);
-        let Some((id, position)) = preview.iter().next().map(|(id, position)| (*id, *position))
+        let preview = std::mem::take(&mut self.scene_state.preview3d_transform);
+        let Some((id, transform)) = preview
+            .iter()
+            .next()
+            .map(|(id, transform)| (*id, *transform))
         else {
             return;
         };
@@ -3176,15 +3285,9 @@ impl EditorApp {
                 CommandKind::Transform3D(id),
                 |scene| {
                     if let Some(entity) = scene.scene.entities.get_mut(&id) {
-                        let current = entity
+                        entity
                             .components
-                            .get("Transform3D")
-                            .cloned()
-                            .unwrap_or_default();
-                        entity.components.insert(
-                            "Transform3D".to_owned(),
-                            encode_transform3d_position(&current, position),
-                        );
+                            .insert("Transform3D".to_owned(), transform.to_component_str());
                     }
                     scene.mark_dirty();
                     Ok::<(), ()>(())
@@ -3537,19 +3640,17 @@ mod publish_tests {
     }
 
     #[test]
-    fn encode_transform3d_position_preserves_rotation_and_scale() {
-        let current = "position=1,2,3;rotation=0,0,0,1;scale=2,2,2";
-        let next = encode_transform3d_position(current, Vec3::new(9.0, 5.0, -3.0));
-        let transform = Transform3D::from_component_str(&next).expect("valid Transform3D");
-        assert_eq!(transform.position, Vec3::new(9.0, 5.0, -3.0));
-        assert_eq!(transform.scale, Vec3::new(2.0, 2.0, 2.0));
-        assert!(transform.rotation.is_unit());
-    }
-
-    #[test]
-    fn parse_transform3d_reads_position_only() {
-        let value = "position=4,7,1;rotation=0,0,0,1;scale=1,1,1";
-        assert_eq!(parse_transform3d(value), Some(Vec3::new(4.0, 7.0, 1.0)));
-        assert_eq!(parse_transform3d("not a transform"), None);
+    fn gizmo_drag_roundtrip_writes_full_transform3d() {
+        // 用 commit_gizmo_drag3d 的编码路径验证：完整 Transform3D（位置/旋转/缩放）往返一致。
+        let transform = Transform3D {
+            position: Vec3::new(9.0, 5.0, -3.0),
+            rotation: Quat::identity(),
+            scale: Vec3::new(2.0, 2.0, 2.0),
+        };
+        let encoded = transform.to_component_str();
+        let decoded = Transform3D::from_component_str(&encoded).expect("valid Transform3D");
+        assert_eq!(decoded.position, Vec3::new(9.0, 5.0, -3.0));
+        assert_eq!(decoded.scale, Vec3::new(2.0, 2.0, 2.0));
+        assert!(decoded.rotation.is_unit());
     }
 }

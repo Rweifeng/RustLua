@@ -157,3 +157,4 @@
 | M10-A04 | 3D 透视视口 + 导航 | M10-A03 | 编辑器 3D 视图升级为透视视口，轨道/平移/缩放导航；Gizmo 在透视视口可用 | 透视视口运行日志（View3D 启动无崩溃、无 wgpu 校验错误）、workspace 质量门（283 测试） | `tasks/done/M10-04-3D透视视口与导航.md` | PASS | M10 |
 | M10-A05 | 2D 场景视图实时渲染 | M10-A04 | 2D 场景面板实时渲染编辑场景（精灵/图块/文本），pan/zoom 作用于渲染视图 | RuntimeScene::from_scene_edit + render_scene_view_2d 运行日志、workspace 质量门（283 测试） | `tasks/done/M10-05-2D场景实时渲染.md` | PASS | M10 |
 | M10-A06 | 组件增删 | M10-A05 | Inspector 添加/移除组件（默认值），经 history 可撤销 | 添加/移除组件 + 撤销重做、workspace 质量门（283 测试） | `tasks/done/M10-06-组件增删.md` | PASS | M10 |
+| M10-A07 | Gizmo 完善与吸附 | M10-A06 | 3D 视口 Move/Rotate/Scale Gizmo + 平移网格吸附；拖拽实时预览 | 3D Gizmo 交互（Rotate/Scale/吸附）、拖拽预览、workspace 质量门 | `tasks/done/M10-07-Gizmo完善与吸附.md` | PASS | M10 |
