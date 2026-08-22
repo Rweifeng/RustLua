@@ -32,6 +32,8 @@ pub struct MaterialAsset {
     pub name: Option<String>,
     pub base_color_factor: [f32; 4],
     pub base_color_texture: Option<usize>,
+    pub metallic_factor: f32,
+    pub roughness_factor: f32,
 }
 
 impl MeshAsset {
@@ -103,6 +105,8 @@ impl From<&crate::gltf_asset::GltfMaterial> for MaterialAsset {
             name: material.name.clone(),
             base_color_factor: material.base_color_factor,
             base_color_texture: material.base_color_texture,
+            metallic_factor: material.metallic_factor,
+            roughness_factor: material.roughness_factor,
         }
     }
 }

@@ -41,6 +41,8 @@ pub struct GltfMaterial {
     pub name: Option<String>,
     pub base_color_factor: [f32; 4],
     pub base_color_texture: Option<usize>,
+    pub metallic_factor: f32,
+    pub roughness_factor: f32,
 }
 
 impl GltfAsset {
@@ -59,6 +61,8 @@ impl GltfAsset {
                     name: material.name().map(str::to_owned),
                     base_color_factor: pbr.base_color_factor(),
                     base_color_texture: pbr.base_color_texture().map(|info| info.texture().index()),
+                    metallic_factor: pbr.metallic_factor(),
+                    roughness_factor: pbr.roughness_factor(),
                 }
             })
             .collect();
