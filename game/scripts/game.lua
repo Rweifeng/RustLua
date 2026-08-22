@@ -12,6 +12,15 @@ local M = {}
 function M.on_create()
     state.scene_name = state.current_scene()
     state.map_id = entity.find(state.map_name)
+    -- 非 2D 游戏场景（如 3D 演示 demo3d）：不初始化游戏/菜单/存档
+    if not state.map_id or not entity.is_alive(state.map_id) then
+        state.game_active = false
+        state.game_over = false
+        state.game_win = false
+        state.menu = false
+        log.info("scene '" .. state.scene_name .. "' is a non-2D scene; game logic idle")
+        return
+    end
     if state.map_id and entity.is_alive(state.map_id) then
         local d = tilemap.get(state.map_id)
         if d then
@@ -62,6 +71,7 @@ end
 
 function M.update()
     local dt = time.delta()
+    handle_scene_switch()
     local horizontal = input.axis("horizontal")
     local vertical = input.axis("vertical")
     local id = player.find()
@@ -188,17 +198,28 @@ function retry_round()
     end
 end
 
---- 快捷键：F1 存 / F2 读 / F4 场景切换
+--- 快捷键：F1 存 / F2 读（F4 场景切换见 handle_scene_switch）
 function handle_save_load(id)
     if input.just_pressed("f1") then
         save_manager.save(id)
     elseif input.just_pressed("f2") then
         save_manager.load(id)
-    elseif input.just_pressed("f4") then
-        local target = (state.scene_name == "main") and "arena" or "main"
-        if scene.load(target) then
-            log.info("switching to scene '" .. target .. "'")
-        end
+    end
+end
+
+--- F4 三场景循环：main -> arena -> demo3d -> main（任意场景可切出）
+function handle_scene_switch()
+    if not input.just_pressed("f4") then
+        return
+    end
+    local target = "main"
+    if state.scene_name == "main" then
+        target = "arena"
+    elseif state.scene_name == "arena" then
+        target = "demo3d"
+    end
+    if scene.load(target) then
+        log.info("switching to scene '" .. target .. "'")
     end
 end
 

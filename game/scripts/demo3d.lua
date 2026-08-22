@@ -42,6 +42,10 @@ function M.spawn_grid()
 end
 
 function M.on_create()
+    -- 只在 3D 演示场景（demo3d，含 SkeletonWarrior）激活；其他场景（2D 游戏）不生成任何 3D 实体。
+    if not entity.find(warrior_name) then
+        return
+    end
     camera_index = 1
     warrior_index = 1
     elapsed = 0

@@ -30,19 +30,3 @@ entity	7	Coin3
 component	7	Transform	x=272.000000000;y=96.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
 component	7	Sprite	assets/textures/coin.png;size=16
 component	7	Collider	shape=ball;radius=12;sensor=true
-entity	8	Camera
-component	8	Camera3D	position=0,0,6;target=0,0,0;fov=60;near=0.1;far=100
-entity	9	Camera2
-component	9	Camera3D	position=4,4,4;target=0,0,0;fov=70;near=0.1;far=100
-entity	10	Sun
-component	10	Light	direction=0.4,0.8,0.5;color=1,1,1;intensity=1
-entity	11	ShadowTriangle
-component	11	Transform3D	position=0,0.7,0;rotation=0,0,0,1;scale=1,1,1
-component	11	MeshRenderer	mesh=assets/models/m8-test-triangle.glb
-entity	12	Ground
-component	12	Transform3D	position=0,0,0;rotation=0,0,0,1;scale=1,1,1
-component	12	MeshRenderer	mesh=__ground_plane__
-entity	13	SkeletonWarrior
-component	13	Transform3D	position=1.5,0,0;rotation=0,0,0,1;scale=1,1,1
-component	13	MeshRenderer	mesh=assets/models/kaykit-warrior.glb
-component	13	Animation3D	mesh=assets/models/kaykit-warrior.glb;clip=Idle;looped=true
