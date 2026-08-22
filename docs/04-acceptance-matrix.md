@@ -109,6 +109,13 @@
 | M6-A08 | 样板游戏垂直切片 | M6-A07 | 可玩一局：移动/攻击/敌人/金币/胜负/UI/音效/存档；CC0 资源分目录 | 全量质量门（184 测试）、Release 运行 | `tasks/done/M6-06-样板游戏垂直切片.md`；`docs/acceptance-evidence/m6/m6-06-sample-game.log` | PASS | M6 |
 | M6-A09 | M6 里程碑综合验收 | M6-A01 至 M6-A08 | 完整跑通一局（VICTORY/DEFEATED/存读档/切场景）；30 分钟稳定性；无 P0/P1；打 v0.6 标签；画面视觉验收；实机 4 问题（文本缩放/碰撞对齐/自动读档/F4 响应）已修复并经负责人复验通过 | 全量质量门（187 测试）、M6 综合验收日志、自动读档验证日志、负责人实机复验 | `tasks/done/M6-07-M6里程碑综合验收.md`；`docs/acceptance-evidence/m6/m6-07-milestone-acceptance.log` | PASS | v0.6-2d-gameplay |
 
+## M8 轻量 3D（启动基线）
+
+| ID | 功能 | 前置 | 主要验收 | 自动化证据 | 状态 | 版本 |
+|---|---|---|---|---|---|---|
+| M8-A00 | M8 基线与技术决策 | M7 | `v0.7` 可复现；glTF 2.0、3D 坐标/矩阵、颜色空间和深度约定已记录；自制 GLB 可再生且许可明确 | fmt、Clippy、workspace 测试、Release 包目录隔离自测、GLB 头校验 | `tasks/active/M8-00-M8基线与技术决策.md`；`scripts/gen-m8-test-gltf.ps1`；`game/assets/models/m8-test-triangle.glb` | PASS | v0.7 |
+| M8-A01 | Math3D / Transform3D / Camera3D | M8-A00 | Vec3、Quat、Mat4、模型矩阵、透视投影、LookAt、世界/NDC 往返和视锥点分类正确；非法参数明确拒绝 | 10 个 engine_core 单测、workspace fmt/Clippy/test、Debug/Release 构建 | `tasks/done/M8-01-Math3D-Transform3D-Camera3D.md`；`artifacts/logs/m8-01-test.log` | PASS | v0.7 |
+
 ## M7 工程化与发布
 
 | ID | 功能 | 前置 | 主要验收 | 自动化证据 | 状态 | 版本 |

@@ -6,6 +6,8 @@ pub mod animation;
 pub mod atlas;
 /// Named sound-effect playback backed by rodio.
 pub mod audio;
+/// Perspective camera and view-frustum primitives for 3D rendering.
+pub mod camera3d;
 /// Deferred world mutations for safe ECS system iteration.
 pub mod commands;
 /// Generational entity handles and allocation.
@@ -21,6 +23,8 @@ pub mod input;
 pub mod logging;
 /// Coordinate, camera, and color-space conventions for 2D rendering.
 pub mod math2d;
+/// Coordinate, quaternion, and matrix primitives for 3D rendering.
+pub mod math3d;
 /// 发布资源编解码（压缩 + 加密）。
 pub mod pack;
 /// Pooled particle bursts with spawn/update/recycle.
@@ -54,6 +58,8 @@ pub mod tilemap;
 pub mod time_step;
 /// 2D transform and velocity components with a minimal integration system.
 pub mod transform;
+/// 3D transform component and model-matrix construction.
+pub mod transform3d;
 /// Window and application lifecycle primitives.
 pub mod window;
 /// Entity world and type-erased component storage.
