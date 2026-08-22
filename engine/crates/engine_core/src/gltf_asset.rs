@@ -87,11 +87,21 @@ pub struct GltfAnimation {
     pub channels: Vec<GltfChannel>,
 }
 
+/// Decoded base-color texture pixels (RGBA8) ready for GPU upload.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GltfTextureImage {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct GltfMaterial {
     pub name: Option<String>,
     pub base_color_factor: [f32; 4],
     pub base_color_texture: Option<usize>,
+    /// Decoded base-color texture pixels when the material references one.
+    pub base_color_image: Option<GltfTextureImage>,
     pub metallic_factor: f32,
     pub roughness_factor: f32,
 }
@@ -108,10 +118,22 @@ impl GltfAsset {
             .materials()
             .map(|material| {
                 let pbr = material.pbr_metallic_roughness();
+                let base_color_texture =
+                    pbr.base_color_texture().map(|info| info.texture().index());
+                let base_color_image = base_color_texture.and_then(|tex_index| {
+                    let image_index = document.textures().nth(tex_index)?.source().index();
+                    let image = images.get(image_index)?;
+                    Some(GltfTextureImage {
+                        width: image.width,
+                        height: image.height,
+                        rgba: image.pixels.clone(),
+                    })
+                });
                 GltfMaterial {
                     name: material.name().map(str::to_owned),
                     base_color_factor: pbr.base_color_factor(),
-                    base_color_texture: pbr.base_color_texture().map(|info| info.texture().index()),
+                    base_color_texture,
+                    base_color_image,
                     metallic_factor: pbr.metallic_factor(),
                     roughness_factor: pbr.roughness_factor(),
                 }

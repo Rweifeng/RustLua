@@ -32,7 +32,9 @@ struct Material { base_color: vec4<f32>, surface: vec4<f32> };
 @group(1) @binding(0) var<uniform> material: Material;
 @group(1) @binding(1) var<uniform> joint_palette: array<mat4x4<f32>, 128>;
 @group(1) @binding(2) var<storage, read> instance_models: array<mat4x4<f32>>;
-struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) normal: vec3<f32>, @location(1) shadow_position: vec4<f32> };
+@group(1) @binding(3) var albedo: texture_2d<f32>;
+@group(1) @binding(4) var albedo_sampler: sampler;
+struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) normal: vec3<f32>, @location(1) shadow_position: vec4<f32>, @location(2) uv: vec2<f32> };
 @vertex fn vs_main(@builtin(instance_index) instance_index: u32, @location(0) position: vec3<f32>, @location(1) normal: vec3<f32>, @location(2) uv: vec2<f32>, @location(3) joint_indices: vec4<u32>, @location(4) bone_weights: vec4<f32>) -> VertexOutput {
     var out: VertexOutput;
     let model = instance_models[instance_index];
@@ -57,9 +59,13 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) norma
     out.position = camera.view_projection * world_position;
     out.normal = local_normal.xyz;
     out.shadow_position = shadow_camera.view_projection * world_position;
+    out.uv = uv;
     return out;
 }
-@fragment fn fs_main(@location(0) normal: vec3<f32>, @location(1) shadow_position: vec4<f32>) -> @location(0) vec4<f32> {
+@fragment fn fs_main(@location(0) normal: vec3<f32>, @location(1) shadow_position: vec4<f32>, @location(2) uv: vec2<f32>) -> @location(0) vec4<f32> {
+    let albedo_color = textureSample(albedo, albedo_sampler, uv);
+    let base_rgb = material.base_color.rgb * albedo_color.rgb;
+    let base_alpha = material.base_color.a * albedo_color.a;
     let n = normalize(normal);
     let l = normalize(-light.direction.xyz);
     let diffuse = max(dot(n, l), 0.0);
@@ -71,7 +77,7 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) norma
     let shadow_depth = shadow_ndc.z - 0.002;
     let shadow_visibility = select(1.0, textureSampleCompare(shadow_map, shadow_sampler, shadow_uv, shadow_depth), shadow_uv.x >= 0.0 && shadow_uv.x <= 1.0 && shadow_uv.y >= 0.0 && shadow_uv.y <= 1.0 && shadow_ndc.z >= 0.0 && shadow_ndc.z <= 1.0);
     let brightness = (0.15 + (diffuse * (1.0 - metallic) + specular * mix(0.04, 1.0, metallic)) * shadow_visibility) * light.color_intensity.w;
-    return vec4<f32>(material.base_color.rgb * light.color_intensity.rgb * brightness, material.base_color.a);
+    return vec4<f32>(base_rgb * light.color_intensity.rgb * brightness, base_alpha);
 }
 "#;
 

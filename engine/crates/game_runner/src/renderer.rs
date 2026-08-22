@@ -43,6 +43,14 @@ struct GpuGeometry {
     index_count: u32,
 }
 
+/// A decoded base-color texture uploaded to the GPU (sRGB) plus its view.
+struct CachedAlbedoTexture {
+    /// Kept alive so `view` stays valid; never read directly.
+    #[allow(dead_code)]
+    texture: wgpu::Texture,
+    view: wgpu::TextureView,
+}
+
 /// File-authored material parameters for one primitive. The per-draw model
 /// matrix is supplied through the instance buffer instead.
 #[derive(Clone, Copy)]
@@ -52,6 +60,8 @@ struct GpuMaterial {
     roughness: f32,
     /// Whether the owning entity has a skinned `Animation3D` palette.
     skinned: bool,
+    /// Index into `Renderer::albedo_textures`; `None` samples a white fallback.
+    albedo: Option<u32>,
 }
 
 /// Cached GPU geometry + file materials for one mesh path.
@@ -64,6 +74,8 @@ struct CachedPrimitive {
     base_color: [f32; 4],
     metallic: f32,
     roughness: f32,
+    /// Index into `Renderer::albedo_textures`; `None` samples a white fallback.
+    albedo: Option<u32>,
     /// Local-space bounding sphere (center, radius) used for frustum culling.
     bounds: (Vec3, f32),
 }
@@ -127,6 +139,13 @@ pub struct Renderer {
     identity_palette: wgpu::Buffer,
     /// GPU geometry + file materials cached by mesh path.
     mesh_cache: HashMap<String, CachedMesh>,
+    /// Base-color textures uploaded from glTF materials (sRGB), indexed by
+    /// `GpuMaterial::albedo`. Index 0 is reserved for the white fallback.
+    albedo_textures: Vec<CachedAlbedoTexture>,
+    /// Shared sampler for base-color textures.
+    albedo_sampler: wgpu::Sampler,
+    /// 1x1 white texture view bound when a material has no base-color texture.
+    white_albedo_view: wgpu::TextureView,
     /// CPU frustum culling of scene drawables (M8-08).
     cull_enabled: bool,
     /// Grouping of same mesh/material draws into instanced calls (M8-08).
@@ -388,6 +407,22 @@ impl Renderer {
                         },
                         count: None,
                     },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
                 ],
             });
         let camera = Camera3D::perspective(
@@ -448,6 +483,47 @@ impl Renderer {
             contents: bytemuck::cast_slice(&identity_palette_data()),
             usage: wgpu::BufferUsages::UNIFORM,
         });
+        let albedo_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("p2-albedo-sampler"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        // 1x1 white texture bound when a material has no base-color texture.
+        let white_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("p2-albedo-white"),
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &white_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &[255u8, 255, 255, 255],
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4),
+                rows_per_image: Some(1),
+            },
+            wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+        );
+        let white_albedo_view = white_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("p2-camera3d-bind-group"),
             layout: &camera_bind_group_layout,
@@ -669,6 +745,9 @@ impl Renderer {
             shadow_camera_buffer,
             identity_palette,
             mesh_cache: HashMap::new(),
+            albedo_textures: Vec::new(),
+            albedo_sampler,
+            white_albedo_view,
             cull_enabled,
             instancing_enabled,
             frame_count: 0,
@@ -728,7 +807,7 @@ impl Renderer {
         self.mesh_cache.get(path)
     }
 
-    fn load_cached_mesh(&self, path: &str) -> Option<CachedMesh> {
+    fn load_cached_mesh(&mut self, path: &str) -> Option<CachedMesh> {
         if path == GROUND_PLANE_SENTINEL {
             return Some(self.ground_plane_cached_mesh());
         }
@@ -749,6 +828,9 @@ impl Renderer {
         for mesh in &meshes {
             for primitive in &mesh.primitives {
                 let material = mesh.materials.get(primitive.material.unwrap_or(usize::MAX));
+                let albedo = material
+                    .and_then(|value| value.base_color_image.as_ref())
+                    .map(|image| self.upload_albedo(&image.rgba, image.width, image.height));
                 primitives.push(CachedPrimitive {
                     geometry: self.upload_geometry(&primitive.vertices, &primitive.indices),
                     base_color: material
@@ -756,6 +838,7 @@ impl Renderer {
                         .unwrap_or([0.55, 0.7, 1.0, 1.0]),
                     metallic: material.map(|value| value.metallic_factor).unwrap_or(0.0),
                     roughness: material.map(|value| value.roughness_factor).unwrap_or(0.6),
+                    albedo,
                     bounds: compute_mesh_bounds(&primitive.vertices),
                 });
             }
@@ -765,6 +848,55 @@ impl Renderer {
             return None;
         }
         Some(CachedMesh { primitives })
+    }
+
+    /// Uploads decoded base-color pixels (RGBA8) as an sRGB GPU texture and
+    /// returns its index in `albedo_textures`.
+    fn upload_albedo(&mut self, rgba: &[u8], width: u32, height: u32) -> u32 {
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("p2-albedo-texture"),
+            size: wgpu::Extent3d {
+                width: width.max(1),
+                height: height.max(1),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            rgba,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4 * width.max(1)),
+                rows_per_image: Some(height.max(1)),
+            },
+            wgpu::Extent3d {
+                width: width.max(1),
+                height: height.max(1),
+                depth_or_array_layers: 1,
+            },
+        );
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        self.albedo_textures
+            .push(CachedAlbedoTexture { texture, view });
+        tracing::info!(
+            target: "render",
+            index = self.albedo_textures.len() - 1,
+            width,
+            height,
+            "[render] 3D albedo texture uploaded"
+        );
+        (self.albedo_textures.len() - 1) as u32
     }
 
     /// Synthesizes the built-in ground receiver plane for the
@@ -806,6 +938,7 @@ impl Renderer {
                 base_color: [0.25, 0.3, 0.38, 1.0],
                 metallic: 0.0,
                 roughness: 0.9,
+                albedo: None,
                 bounds: compute_mesh_bounds(&vertices),
             }],
         }
@@ -882,6 +1015,10 @@ impl Renderer {
                 contents: bytemuck::cast_slice(&instance_data),
                 usage: wgpu::BufferUsages::STORAGE,
             });
+        let albedo = material
+            .albedo
+            .and_then(|index| self.albedo_textures.get(index as usize))
+            .map_or(&self.white_albedo_view, |cached| &cached.view);
         self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("p2-material3d-frame-bind-group"),
             layout: &self._material_bind_group_layout,
@@ -897,6 +1034,14 @@ impl Renderer {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: instance_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(albedo),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::Sampler(&self.albedo_sampler),
                 },
             ],
         })
@@ -959,6 +1104,7 @@ impl Renderer {
                     metallic: primitive.metallic,
                     roughness: primitive.roughness,
                     skinned: !drawable.palette.is_empty(),
+                    albedo: primitive.albedo,
                 };
                 if drawable.palette.is_empty() && instancing_enabled {
                     groups

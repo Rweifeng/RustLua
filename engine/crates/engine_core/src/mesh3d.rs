@@ -128,6 +128,8 @@ pub struct MaterialAsset {
     pub name: Option<String>,
     pub base_color_factor: [f32; 4],
     pub base_color_texture: Option<usize>,
+    /// Decoded base-color texture pixels (RGBA8) when the material has one.
+    pub base_color_image: Option<crate::gltf_asset::GltfTextureImage>,
     pub metallic_factor: f32,
     pub roughness_factor: f32,
 }
@@ -219,6 +221,7 @@ impl From<&crate::gltf_asset::GltfMaterial> for MaterialAsset {
             name: material.name.clone(),
             base_color_factor: material.base_color_factor,
             base_color_texture: material.base_color_texture,
+            base_color_image: material.base_color_image.clone(),
             metallic_factor: material.metallic_factor,
             roughness_factor: material.roughness_factor,
         }
