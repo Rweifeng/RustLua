@@ -16,8 +16,8 @@ use std::{
 use editor::{
     AutoSaveController, Camera3DFields, Collider3dFields, CommandHistory, CommandKind,
     InspectorState, LightFields, PlaySession, ProjectDocument, ProjectError, ProjectInfo,
-    RecoveryManager, RecoveryScan, ResourceBrowserState, ResourceKind, SceneTreeState,
-    Transform3DFields, TransformFields, check_project, open_project,
+    RecoveryManager, RecoveryScan, ResourceBrowserState, ResourceEntry, ResourceKind,
+    SceneTreeState, Transform3DFields, TransformFields, check_project, open_project,
 };
 use eframe::egui::{self, FontData, FontDefinitions, FontFamily};
 use engine_core::{
@@ -28,6 +28,7 @@ use engine_core::{
     math3d::{Quat, Vec3},
     scene::SceneEntityId,
     script::{LuaRuntime, ScriptDiagnostic},
+    texture::{TextureAsset, TextureColorSpace},
     transform::Vec2,
     transform3d::Transform3D,
 };
@@ -298,6 +299,8 @@ struct EditorApp {
     scene_runtime: Option<RuntimeScene>,
     /// 2D 场景视图显示用的 egui 纹理。
     scene_2d_tex: Option<egui::TextureHandle>,
+    /// 资源浏览器纹理缩略图缓存（按资源相对路径）。
+    thumbnails: std::collections::HashMap<String, egui::TextureHandle>,
 }
 
 /// 通用进度面板：后台任务 + 进度/日志 + 非阻塞窗口。
@@ -586,6 +589,7 @@ impl EditorApp {
             scene_preview_tex: None,
             scene_runtime: None,
             scene_2d_tex: None,
+            thumbnails: std::collections::HashMap::new(),
         }
     }
 
@@ -642,6 +646,68 @@ impl EditorApp {
             }
             Err(error) => error,
         };
+    }
+
+    /// 纹理缩略图（缓存；按项目相对路径）。
+    fn texture_thumbnail(
+        &mut self,
+        relative: &str,
+        ctx: &egui::Context,
+    ) -> Option<egui::TextureId> {
+        if let Some(handle) = self.thumbnails.get(relative) {
+            return Some(handle.id());
+        }
+        let root = strip_verbatim_prefix(&self.project.root);
+        let asset = TextureAsset::load_png(root.join(relative), TextureColorSpace::Srgb).ok()?;
+        let image = egui::ColorImage::from_rgba_unmultiplied(
+            [asset.width() as usize, asset.height() as usize],
+            asset.pixels(),
+        );
+        let handle = ctx.load_texture("thumb", image, egui::TextureOptions::LINEAR);
+        let id = handle.id();
+        self.thumbnails.insert(relative.to_owned(), handle);
+        Some(id)
+    }
+
+    /// 从拖放的资源路径创建 2D 精灵实体（Transform + Sprite）。
+    fn spawn_sprite_from_drop(&mut self, path: &str) -> Result<(), String> {
+        if self.is_playing() {
+            return Err("Play mode locks scene editing; click Stop first".to_owned());
+        }
+        if self.document.current_scene.is_none() {
+            return Err("请先创建场景".to_owned());
+        }
+        let name = Path::new(path)
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "Sprite".to_owned());
+        let tree = self.tree.clone();
+        let path = path.to_owned();
+        let Some(scene) = self.document.current_scene.as_mut() else {
+            return Ok(());
+        };
+        let result =
+            self.history
+                .execute(scene, "Create Sprite", CommandKind::Create, move |scene| {
+                    let mut tree = tree;
+                    let id = tree
+                        .create_entity(scene, name.clone(), None)
+                        .map_err(|error| error.to_string())?;
+                    if let Some(entity) = scene.scene.entities.get_mut(&id) {
+                        entity.components.insert(
+                            "Transform".into(),
+                            "x=0;y=0;rotation=0;scale_x=1;scale_y=1".into(),
+                        );
+                        entity
+                            .components
+                            .insert("Sprite".into(), format!("{};size=32", path));
+                    }
+                    Ok::<(), String>(())
+                });
+        match result {
+            Ok(_) => Ok(()),
+            Err(error) => Err(error),
+        }
     }
 
     fn refresh_resources(&mut self) {
@@ -1739,21 +1805,50 @@ impl eframe::App for EditorApp {
                     ui.colored_label(egui::Color32::RED, format!("错误：{error}"));
                 }
                 egui::ScrollArea::vertical().show(ui, |ui| {
+                    let entries: Vec<ResourceEntry> = self
+                        .resources
+                        .visible_entries()
+                        .into_iter()
+                        .cloned()
+                        .collect();
                     let mut scene_to_open = None;
-                    for entry in self.resources.visible_entries() {
+                    for entry in &entries {
                         let status = format!("{:?}", entry.status);
                         let path = entry.path.clone();
-                        ui.horizontal(|ui| {
-                            let response = ui.selectable_label(false, entry.path_string());
-                            if response.double_clicked() && entry.kind == ResourceKind::Scene {
-                                scene_to_open = Some(path.clone());
-                            }
-                            ui.label(entry.kind.label());
-                            ui.label(status);
-                            if let Some(error) = &entry.error {
-                                ui.colored_label(egui::Color32::RED, error);
-                            }
-                        });
+                        let path_string = entry.path_string();
+                        if entry.kind == ResourceKind::Texture {
+                            // 纹理：缩略图 + 可拖放到场景。
+                            let payload = path_string.clone();
+                            ui.dnd_drag_source(egui::Id::new("texture_drag"), payload, |ui| {
+                                ui.horizontal(|ui| {
+                                    if let Some(id) = self.texture_thumbnail(&path_string, context)
+                                    {
+                                        ui.add(egui::Image::new(egui::load::SizedTexture::new(
+                                            id,
+                                            egui::vec2(24.0, 24.0),
+                                        )));
+                                    }
+                                    let _ = ui.selectable_label(false, path_string.clone());
+                                    ui.label(entry.kind.label());
+                                    ui.label(&status);
+                                    if let Some(error) = &entry.error {
+                                        ui.colored_label(egui::Color32::RED, error);
+                                    }
+                                });
+                            });
+                        } else {
+                            ui.horizontal(|ui| {
+                                let response = ui.selectable_label(false, path_string);
+                                if response.double_clicked() && entry.kind == ResourceKind::Scene {
+                                    scene_to_open = Some(path.clone());
+                                }
+                                ui.label(entry.kind.label());
+                                ui.label(&status);
+                                if let Some(error) = &entry.error {
+                                    ui.colored_label(egui::Color32::RED, error);
+                                }
+                            });
+                        }
                     }
                     if let Some(path) = scene_to_open {
                         self.open_scene_resource(path);
@@ -2976,6 +3071,16 @@ impl EditorApp {
         let (response, painter) =
             ui.allocate_painter(ui.available_size(), egui::Sense::click_and_drag());
         let rect = response.rect;
+        // 拖放：把资源浏览器中的纹理拖到场景创建精灵。
+        let (_, dropped_texture) = ui
+            .dnd_drop_zone::<String, egui::Response>(egui::Frame::default(), |ui| {
+                ui.allocate_rect(rect, egui::Sense::hover())
+            });
+        if let Some(path) = dropped_texture
+            && let Err(error) = self.spawn_sprite_from_drop(&path)
+        {
+            self.status = error;
+        }
         let scroll = ui.input(|input| input.smooth_scroll_delta.y);
         if scroll.abs() > 0.0 {
             self.scene_zoom = (self.scene_zoom * (1.0 + scroll * 0.001)).clamp(0.25, 4.0);

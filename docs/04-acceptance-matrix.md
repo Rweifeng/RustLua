@@ -158,3 +158,4 @@
 | M10-A05 | 2D 场景视图实时渲染 | M10-A04 | 2D 场景面板实时渲染编辑场景（精灵/图块/文本），pan/zoom 作用于渲染视图 | RuntimeScene::from_scene_edit + render_scene_view_2d 运行日志、workspace 质量门（283 测试） | `tasks/done/M10-05-2D场景实时渲染.md` | PASS | M10 |
 | M10-A06 | 组件增删 | M10-A05 | Inspector 添加/移除组件（默认值），经 history 可撤销 | 添加/移除组件 + 撤销重做、workspace 质量门（283 测试） | `tasks/done/M10-06-组件增删.md` | PASS | M10 |
 | M10-A07 | Gizmo 完善与吸附 | M10-A06 | 3D 视口 Move/Rotate/Scale Gizmo + 平移网格吸附；拖拽实时预览 | 3D Gizmo 交互（Rotate/Scale/吸附）、拖拽预览、workspace 质量门 | `tasks/done/M10-07-Gizmo完善与吸附.md` | PASS | M10 |
+| M10-A08 | 资源浏览器增强 | M10-A07 | 纹理缩略图；拖放纹理到场景创建精灵；双击场景打开 | 缩略图显示、拖放创建精灵、workspace 质量门 | `tasks/done/M10-08-资源浏览器增强.md` | PASS | M10 |
