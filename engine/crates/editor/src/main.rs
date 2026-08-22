@@ -451,6 +451,14 @@ enum SceneViewMode {
     View3D,
 }
 
+/// 对齐模式：Grid 吸附网格 / H 对齐 Y / V 对齐 X（对齐到首个选中实体）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AlignMode {
+    Grid,
+    H,
+    V,
+}
+
 /// 编辑器轨道相机（ADR-0013）：与游戏相机分离，用于 3D 透视视口导航。
 #[derive(Clone, Copy, Debug)]
 struct EditorCamera {
@@ -1064,6 +1072,81 @@ impl EditorApp {
             Ok(_) => Ok(()),
             Err(error) => Err(error.to_string()),
         }
+    }
+
+    /// 对齐选中 2D 实体：Grid 吸附网格 / H 对齐 Y / V 对齐 X（对齐到首个选中）。
+    fn align_selected(&mut self, mode: AlignMode) {
+        if self.is_playing() {
+            self.status = "Play mode locks scene editing; click Stop first".to_owned();
+            return;
+        }
+        let Some(scene) = self.document.current_scene.as_ref() else {
+            return;
+        };
+        let ids: Vec<_> = self.scene_state.selected.iter().copied().collect();
+        if ids.is_empty() {
+            self.status = "请先选中实体".to_owned();
+            return;
+        }
+        let mut targets: Vec<(SceneEntityId, TransformFields)> = Vec::new();
+        for id in &ids {
+            if let Some(entity) = scene.scene.entities.get(id)
+                && let Some(transform) = entity
+                    .components
+                    .get("Transform")
+                    .and_then(|value| parse_transform(value))
+            {
+                targets.push((*id, transform));
+            }
+        }
+        if targets.is_empty() {
+            return;
+        }
+        let pivot = targets[0].1;
+        let step = self.snap_step;
+        let new_targets = match mode {
+            AlignMode::Grid => targets
+                .iter()
+                .map(|(id, transform)| {
+                    let mut next = *transform;
+                    next.position_x = (next.position_x / step).round() * step;
+                    next.position_y = (next.position_y / step).round() * step;
+                    (*id, next)
+                })
+                .collect::<Vec<_>>(),
+            AlignMode::H => targets
+                .iter()
+                .map(|(id, transform)| {
+                    let mut next = *transform;
+                    next.position_y = pivot.position_y;
+                    (*id, next)
+                })
+                .collect::<Vec<_>>(),
+            AlignMode::V => targets
+                .iter()
+                .map(|(id, transform)| {
+                    let mut next = *transform;
+                    next.position_x = pivot.position_x;
+                    (*id, next)
+                })
+                .collect::<Vec<_>>(),
+        };
+        let Some(scene) = self.document.current_scene.as_mut() else {
+            return;
+        };
+        let _ = self
+            .history
+            .execute(scene, "Align", CommandKind::Property, move |scene| {
+                for (id, transform) in &new_targets {
+                    if let Some(entity) = scene.scene.entities.get_mut(id) {
+                        entity
+                            .components
+                            .insert("Transform".to_owned(), encode_transform(*transform));
+                    }
+                }
+                scene.mark_dirty();
+                Ok::<(), ()>(())
+            });
     }
 
     /// 选中实体的组件键列表（Inspector 组件管理用）。
@@ -1937,6 +2020,15 @@ impl eframe::App for EditorApp {
                         .speed(0.05)
                         .prefix(" "),
                 );
+                if ui.button("对齐网格").clicked() {
+                    self.align_selected(AlignMode::Grid);
+                }
+                if ui.button("对齐H").clicked() {
+                    self.align_selected(AlignMode::H);
+                }
+                if ui.button("对齐V").clicked() {
+                    self.align_selected(AlignMode::V);
+                }
                 ui.separator();
                 ui.add(egui::Slider::new(&mut self.scene_zoom, 0.5..=2.5).text("Zoom"));
             });
@@ -3312,6 +3404,12 @@ impl EditorApp {
                     SceneTool::Move | SceneTool::Select => {
                         next.position_x += delta.x / self.scene_zoom;
                         next.position_y -= delta.y / self.scene_zoom;
+                        if self.snap_enabled {
+                            next.position_x =
+                                (next.position_x / self.snap_step).round() * self.snap_step;
+                            next.position_y =
+                                (next.position_y / self.snap_step).round() * self.snap_step;
+                        }
                     }
                     SceneTool::Rotate => {
                         let relative_x = initial.position_x - pivot.0;
