@@ -14,15 +14,17 @@ use std::{
 };
 
 use editor::{
-    AutoSaveController, Camera3DFields, CommandHistory, CommandKind, InspectorState, LightFields,
-    PlaySession, ProjectDocument, ProjectError, ProjectInfo, RecoveryManager, RecoveryScan,
-    ResourceBrowserState, ResourceKind, SceneTreeState, Transform3DFields, TransformFields,
-    check_project, open_project,
+    AutoSaveController, Camera3DFields, Collider3dFields, CommandHistory, CommandKind,
+    InspectorState, LightFields, PlaySession, ProjectDocument, ProjectError, ProjectInfo,
+    RecoveryManager, RecoveryScan, ResourceBrowserState, ResourceKind, SceneTreeState,
+    Transform3DFields, TransformFields, check_project, open_project,
 };
 use eframe::egui::{self, FontData, FontDefinitions, FontFamily};
 use engine_core::{
+    math3d::Vec3,
     scene::SceneEntityId,
     script::{LuaRuntime, ScriptDiagnostic},
+    transform3d::Transform3D,
 };
 
 #[derive(Debug, Default)]
@@ -221,9 +223,11 @@ struct EditorApp {
     mesh_renderer: String,
     camera3d: Camera3DFields,
     light: LightFields,
+    collider3d: Collider3dFields,
     sprite_reference: String,
     lua_script: String,
     inspector_transform3d_open: bool,
+    inspector_collider3d_open: bool,
     new_scene_name: String,
     entity_name: String,
     parent_entity: String,
@@ -238,6 +242,7 @@ struct EditorApp {
     workspace_tab: WorkspaceTab,
     scene_zoom: f32,
     scene_tool: SceneTool,
+    scene_view_mode: SceneViewMode,
     hierarchy_filter: String,
     scene_state: SceneEditorState,
     inspector_clipboard: Option<ComponentClipboard>,
@@ -387,11 +392,23 @@ enum SceneTool {
     Scale,
 }
 
+/// 场景视图投影模式：2D 画布（俯视 XY）或 3D 画布（俯视 XZ）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum SceneViewMode {
+    #[default]
+    View2D,
+    View3D,
+}
+
 #[derive(Default)]
 struct SceneEditorState {
     pan: egui::Vec2,
     drag: Option<SceneDrag>,
     preview: std::collections::BTreeMap<SceneEntityId, TransformFields>,
+    /// 3D 实体平移预览（画布俯视 XZ 投影；M9-03）。
+    preview3d: std::collections::BTreeMap<SceneEntityId, Vec3>,
+    /// 3D 平移 Gizmo 拖拽（M9-03）。
+    gizmo_drag: Option<GizmoDrag>,
     collapsed: std::collections::BTreeSet<SceneEntityId>,
     hidden: std::collections::BTreeSet<SceneEntityId>,
     locked: std::collections::BTreeSet<SceneEntityId>,
@@ -403,6 +420,22 @@ struct SceneDrag {
     ids: Vec<SceneEntityId>,
     start: egui::Pos2,
     initial: std::collections::BTreeMap<SceneEntityId, TransformFields>,
+}
+
+/// 3D 平移 Gizmo 拖拽：约束到哪个轴（Y 为垂直高度，Free 为 XZ 平面）。
+struct GizmoDrag {
+    id: SceneEntityId,
+    axis: GizmoAxis,
+    start: egui::Pos2,
+    initial: Vec3,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GizmoAxis {
+    X,
+    Z,
+    Y,
+    Free,
 }
 
 #[derive(Clone)]
@@ -433,9 +466,11 @@ impl EditorApp {
             mesh_renderer: String::new(),
             camera3d: Camera3DFields::default(),
             light: LightFields::default(),
+            collider3d: Collider3dFields::default(),
             sprite_reference: String::new(),
             lua_script: String::new(),
             inspector_transform3d_open: true,
+            inspector_collider3d_open: false,
             new_scene_name: "main".to_owned(),
             entity_name: "Entity".to_owned(),
             parent_entity: String::new(),
@@ -450,6 +485,7 @@ impl EditorApp {
             workspace_tab: WorkspaceTab::Scene,
             scene_zoom: 1.0,
             scene_tool: SceneTool::Select,
+            scene_view_mode: SceneViewMode::default(),
             hierarchy_filter: String::new(),
             scene_state: SceneEditorState::default(),
             inspector_clipboard: None,
@@ -675,6 +711,7 @@ impl EditorApp {
             self.mesh_renderer = snapshot.mesh_renderer.unwrap_or_default();
             self.camera3d = snapshot.camera3d.unwrap_or_default();
             self.light = snapshot.light.unwrap_or_default();
+            self.collider3d = snapshot.collider3d.unwrap_or_default();
             self.sprite_reference = snapshot.sprite_reference.unwrap_or_default();
             self.lua_script = snapshot.lua_script.unwrap_or_default();
         }
@@ -695,6 +732,7 @@ impl EditorApp {
         let mesh = self.mesh_renderer.clone();
         let camera3d = self.camera3d;
         let light = self.light;
+        let collider3d = self.collider3d.clone();
         let sprite = self.sprite_reference.clone();
         let lua = self.lua_script.clone();
         // 3D 组件只在实体已有该组件时更新，避免给普通实体注入默认组件。
@@ -712,6 +750,11 @@ impl EditorApp {
             scene.scene.entities[&selected]
                 .components
                 .contains_key("Light")
+        });
+        let had_collider3d = self.current_scene().is_some_and(|scene| {
+            scene.scene.entities[&selected]
+                .components
+                .contains_key("Collider3d")
         });
         let inspector = self.inspector.clone();
         let Some(scene) = self.document.current_scene.as_mut() else {
@@ -737,6 +780,9 @@ impl EditorApp {
                     if had_light {
                         inspector.set_light(scene, light)?;
                     }
+                    if had_collider3d {
+                        inspector.set_collider3d(scene, collider3d)?;
+                    }
                     if sprite.trim().is_empty() {
                         inspector.clear_sprite_reference(scene)?;
                     } else {
@@ -754,6 +800,62 @@ impl EditorApp {
             Err(error) => error.to_string(),
         };
     }
+
+    /// 为选中实体添加 Collider3d 组件（用当前字段编码，经 history 可撤销）。
+    fn add_collider3d_component(&mut self) -> Result<(), String> {
+        if self.is_playing() {
+            return Err("Play mode locks scene editing; click Stop first".to_owned());
+        }
+        if self.inspector.selected().is_none() {
+            return Ok(());
+        }
+        let inspector = self.inspector.clone();
+        let collider3d = self.collider3d.clone();
+        let Some(scene) = self.document.current_scene.as_mut() else {
+            return Ok(());
+        };
+        let result = self.history.execute(
+            scene,
+            "Add Collider3d",
+            CommandKind::Property,
+            move |scene| {
+                inspector.set_collider3d(scene, collider3d)?;
+                Ok::<(), editor::InspectorError>(())
+            },
+        );
+        match result {
+            Ok(_) => Ok(()),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
+    /// 移除选中实体的 Collider3d 组件（经 history 可撤销）。
+    fn remove_collider3d_component(&mut self) -> Result<(), String> {
+        if self.is_playing() {
+            return Err("Play mode locks scene editing; click Stop first".to_owned());
+        }
+        if self.inspector.selected().is_none() {
+            return Ok(());
+        }
+        let inspector = self.inspector.clone();
+        let Some(scene) = self.document.current_scene.as_mut() else {
+            return Ok(());
+        };
+        let result = self.history.execute(
+            scene,
+            "Remove Collider3d",
+            CommandKind::Property,
+            move |scene| {
+                inspector.clear_collider3d(scene)?;
+                Ok::<(), editor::InspectorError>(())
+            },
+        );
+        match result {
+            Ok(_) => Ok(()),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
     fn create_scene(&mut self) {
         if !self.project_loaded {
             self.status = "Import a game project before editing".to_owned();
@@ -809,6 +911,55 @@ impl EditorApp {
                     self.sync_inspector(id);
                 }
                 self.status = "Entity created".into();
+            }
+            Ok(false) => self.status = "No change".into(),
+            Err(e) => self.status = e,
+        }
+    }
+
+    /// 创建一个带 Transform3D 组件的 3D 实体（M9-03）。
+    fn add_3d_entity(&mut self, parent: Option<SceneEntityId>) {
+        if self.is_playing() {
+            self.status = "Play mode locks scene editing; click Stop first".into();
+            return;
+        }
+        let name = self.entity_name.trim().to_owned();
+        if name.is_empty() {
+            self.status = "Entity name cannot be empty".into();
+            return;
+        }
+        let tree = self.tree.clone();
+        let Some(scene) = self.document.current_scene.as_mut() else {
+            self.status = "Create a scene first".into();
+            return;
+        };
+        let result = self.history.execute(
+            scene,
+            "Create 3D entity",
+            CommandKind::Create,
+            move |scene| {
+                let mut tree = tree;
+                let id = tree
+                    .create_entity(scene, name.clone(), parent)
+                    .map_err(|e| e.to_string())?;
+                if let Some(entity) = scene.scene.entities.get_mut(&id) {
+                    entity.components.insert(
+                        "Transform3D".into(),
+                        Transform3D::default().to_component_str(),
+                    );
+                }
+                Ok::<(), String>(())
+            },
+        );
+        match result {
+            Ok(true) => {
+                if let Some(scene) = self.document.current_scene.as_ref()
+                    && let Some(id) = scene.scene.entities.keys().max_by_key(|id| id.0).copied()
+                {
+                    let _ = self.tree.select(scene, id);
+                    self.sync_inspector(id);
+                }
+                self.status = "3D entity created".into();
             }
             Ok(false) => self.status = "No change".into(),
             Err(e) => self.status = e,
@@ -1360,6 +1511,9 @@ impl eframe::App for EditorApp {
                 if ui.button("添加根实体").clicked() {
                     self.add_entity(None);
                 }
+                if ui.button("添加 3D 实体").clicked() {
+                    self.add_3d_entity(None);
+                }
             });
             ui.separator();
             let roots: Vec<_> = self
@@ -1415,7 +1569,9 @@ impl eframe::App for EditorApp {
                 ui.selectable_value(&mut self.workspace_tab, WorkspaceTab::Scene, "Scene");
                 ui.selectable_value(&mut self.workspace_tab, WorkspaceTab::Game, "Game");
                 ui.separator();
-                ui.label("2D");
+                ui.selectable_value(&mut self.scene_view_mode, SceneViewMode::View2D, "2D");
+                ui.selectable_value(&mut self.scene_view_mode, SceneViewMode::View3D, "3D");
+                ui.separator();
                 ui.selectable_value(&mut self.scene_tool, SceneTool::Select, "Select");
                 ui.selectable_value(&mut self.scene_tool, SceneTool::Move, "Move");
                 ui.selectable_value(&mut self.scene_tool, SceneTool::Rotate, "Rotate");
@@ -1557,6 +1713,20 @@ fn parse_transform(value: &str) -> Option<TransformFields> {
         }
     }
     Some(fields)
+}
+
+/// 解析 Transform3D 组件串的位置（用于 3D 场景视图俯视投影）。
+fn parse_transform3d(value: &str) -> Option<Vec3> {
+    Transform3D::from_component_str(value)
+        .ok()
+        .map(|t| t.position)
+}
+
+/// 在保留旋转/缩放的前提下更新 Transform3D 组件串的 position。
+fn encode_transform3d_position(current: &str, position: Vec3) -> String {
+    let mut transform = Transform3D::from_component_str(current).unwrap_or_default();
+    transform.position = position;
+    transform.to_component_str()
 }
 
 fn format_diagnostic(diagnostic: &ScriptDiagnostic) -> String {
@@ -1836,6 +2006,83 @@ impl EditorApp {
                 ui.add(egui::DragValue::new(&mut self.light.intensity));
             });
         });
+        let collider3d_header = if self.inspector_collider3d_open {
+            "Collider3d  v"
+        } else {
+            "Collider3d  >"
+        };
+        if ui.button(collider3d_header).clicked() {
+            self.inspector_collider3d_open = !self.inspector_collider3d_open;
+        }
+        if self.inspector_collider3d_open {
+            ui.group(|ui| {
+                ui.horizontal(|ui| {
+                    ui.label("形状");
+                    egui::ComboBox::from_id_salt("collider3d_shape")
+                        .selected_text(&self.collider3d.shape)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut self.collider3d.shape,
+                                "ball".to_owned(),
+                                "Ball",
+                            );
+                            ui.selectable_value(
+                                &mut self.collider3d.shape,
+                                "cuboid".to_owned(),
+                                "Cuboid",
+                            );
+                            ui.selectable_value(
+                                &mut self.collider3d.shape,
+                                "capsule".to_owned(),
+                                "Capsule",
+                            );
+                        });
+                    ui.checkbox(&mut self.collider3d.sensor, "sensor");
+                    ui.checkbox(&mut self.collider3d.dynamic, "dynamic");
+                });
+                match self.collider3d.shape.as_str() {
+                    "cuboid" => {
+                        ui.horizontal(|ui| {
+                            ui.label("半宽/半高/半深");
+                            ui.add(egui::DragValue::new(&mut self.collider3d.half_width));
+                            ui.add(egui::DragValue::new(&mut self.collider3d.half_height));
+                            ui.add(egui::DragValue::new(&mut self.collider3d.half_z));
+                        });
+                    }
+                    "capsule" => {
+                        ui.horizontal(|ui| {
+                            ui.label("半高/半径");
+                            ui.add(egui::DragValue::new(&mut self.collider3d.half_height));
+                            ui.add(egui::DragValue::new(&mut self.collider3d.radius));
+                        });
+                    }
+                    _ => {
+                        ui.horizontal(|ui| {
+                            ui.label("半径");
+                            ui.add(egui::DragValue::new(&mut self.collider3d.radius));
+                        });
+                    }
+                }
+                ui.horizontal(|ui| {
+                    ui.label("偏移");
+                    ui.add(egui::DragValue::new(&mut self.collider3d.offset_x));
+                    ui.add(egui::DragValue::new(&mut self.collider3d.offset_y));
+                    ui.add(egui::DragValue::new(&mut self.collider3d.offset_z));
+                });
+                ui.horizontal(|ui| {
+                    if ui.button("添加 Collider3d").clicked()
+                        && let Err(error) = self.add_collider3d_component()
+                    {
+                        self.status = error;
+                    }
+                    if ui.button("移除 Collider3d").clicked()
+                        && let Err(error) = self.remove_collider3d_component()
+                    {
+                        self.status = error;
+                    }
+                });
+            });
+        }
         ui.horizontal(|ui| {
             ui.label("Sprite");
             ui.text_edit_singleline(&mut self.sprite_reference);
@@ -1859,7 +2106,268 @@ impl EditorApp {
 }
 
 impl EditorApp {
+    /// 3D 场景视图（M9-03）：XZ 俯视投影绘制 Transform3D 实体，选中实体显示
+    /// 平移 Gizmo（X/Z 轴手柄、Y 高度手柄、自由拖拽），拖拽写回 Transform3D。
+    fn draw_scene_view_3d(&mut self, ui: &mut egui::Ui) {
+        let (response, painter) =
+            ui.allocate_painter(ui.available_size(), egui::Sense::click_and_drag());
+        let rect = response.rect;
+        let scroll = ui.input(|input| input.smooth_scroll_delta.y);
+        if scroll.abs() > 0.0 {
+            self.scene_zoom = (self.scene_zoom * (1.0 + scroll * 0.001)).clamp(0.25, 4.0);
+        }
+        if response.dragged_by(egui::PointerButton::Middle)
+            || response.dragged_by(egui::PointerButton::Secondary)
+        {
+            self.scene_state.pan += response.drag_delta();
+        }
+        let pan = self.scene_state.pan;
+        let zoom = self.scene_zoom;
+        let center = rect.center();
+
+        painter.rect_filled(rect, 0.0, egui::Color32::from_rgb(28, 32, 40));
+        let grid = 32.0 * zoom;
+        let mut x = rect.left();
+        while x < rect.right() {
+            painter.line_segment(
+                [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
+                egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(42, 48, 58)),
+            );
+            x += grid;
+        }
+        let mut y = rect.top();
+        while y < rect.bottom() {
+            painter.line_segment(
+                [egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)],
+                egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(42, 48, 58)),
+            );
+            y += grid;
+        }
+        // 地面轴：X（红，屏幕 +x）与 Z（蓝，屏幕 -y，因为 Z 向下投影）。
+        painter.line_segment(
+            [
+                egui::pos2(center.x + pan.x - 200.0 * zoom, center.y + pan.y),
+                egui::pos2(center.x + pan.x + 200.0 * zoom, center.y + pan.y),
+            ],
+            egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(200, 80, 80)),
+        );
+        painter.line_segment(
+            [
+                egui::pos2(center.x + pan.x, center.y + pan.y - 200.0 * zoom),
+                egui::pos2(center.x + pan.x, center.y + pan.y + 200.0 * zoom),
+            ],
+            egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(80, 80, 200)),
+        );
+        painter.text(
+            rect.left_top() + egui::vec2(12.0, 12.0),
+            egui::Align2::LEFT_TOP,
+            "Scene View  -  3D (XZ top-down)  拖实体平移 / X、Z 手柄单轴 / 绿点调高度",
+            egui::FontId::proportional(15.0),
+            egui::Color32::LIGHT_GRAY,
+        );
+
+        // 世界 -> 屏幕（XZ 俯视投影）。
+        let to_screen = move |position: Vec3| {
+            egui::pos2(
+                center.x + pan.x + position.x * zoom,
+                center.y + pan.y - position.z * zoom,
+            )
+        };
+
+        let filter = self.hierarchy_filter.to_lowercase();
+        let entities3d: Vec<_> = self
+            .current_scene()
+            .map(|s| {
+                s.scene
+                    .entities
+                    .values()
+                    .filter_map(|e| {
+                        if !filter.trim().is_empty()
+                            && !e.name.to_lowercase().contains(filter.trim())
+                        {
+                            return None;
+                        }
+                        if self.scene_state.hidden.contains(&e.id) {
+                            return None;
+                        }
+                        let position =
+                            self.scene_state.preview3d.get(&e.id).copied().or_else(|| {
+                                e.components
+                                    .get("Transform3D")
+                                    .and_then(|value| parse_transform3d(value))
+                            })?;
+                        Some((e.id, e.name.clone(), position))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // 绘制 3D 实体（菱形标记 + 名称）。
+        for (id, name, position) in &entities3d {
+            let pos = to_screen(*position);
+            let half = 20.0 * zoom;
+            let selected =
+                self.tree.selected() == Some(*id) || self.scene_state.selected.contains(id);
+            let stroke = egui::Stroke::new(
+                if selected { 2.0_f32 } else { 1.0_f32 },
+                egui::Color32::from_rgb(230, 170, 60),
+            );
+            let corners = [
+                pos + egui::vec2(-half, 0.0),
+                pos + egui::vec2(0.0, -half),
+                pos + egui::vec2(half, 0.0),
+                pos + egui::vec2(0.0, half),
+            ];
+            painter.add(egui::Shape::convex_polygon(
+                corners.to_vec(),
+                if selected {
+                    egui::Color32::from_rgb(120, 90, 40)
+                } else {
+                    egui::Color32::from_rgb(58, 66, 80)
+                },
+                stroke,
+            ));
+            painter.text(
+                pos + egui::vec2(0.0, half + 14.0),
+                egui::Align2::CENTER_CENTER,
+                name,
+                egui::FontId::proportional(14.0),
+                egui::Color32::WHITE,
+            );
+        }
+
+        // 点选。
+        if response.clicked()
+            && let Some(pos) = response.interact_pointer_pos()
+        {
+            let hit = entities3d.iter().rev().find(|(id, _, position)| {
+                let center_pos = to_screen(*position);
+                let box_rect =
+                    egui::Rect::from_center_size(center_pos, egui::vec2(40.0 * zoom, 40.0 * zoom));
+                box_rect.contains(pos) && !self.scene_state.locked.contains(id)
+            });
+            if let Some((id, _, _)) = hit {
+                let additive = ui.input(|input| input.modifiers.command || input.modifiers.ctrl);
+                if !additive {
+                    self.scene_state.selected.clear();
+                }
+                self.scene_state.selected.insert(*id);
+                if let Some(scene) = self.current_scene() {
+                    let scene = scene.clone();
+                    let _ = self.tree.select(&scene, *id);
+                }
+                self.sync_inspector(*id);
+            } else {
+                self.scene_state.selected.clear();
+            }
+        }
+
+        // Gizmo：绘制在选中的 3D 实体上。
+        let selected_entity = entities3d.iter().find(|(id, _, _)| {
+            self.tree.selected() == Some(*id) || self.scene_state.selected.contains(id)
+        });
+        if let Some((_, _, position)) = selected_entity
+            && matches!(self.scene_tool, SceneTool::Move | SceneTool::Select)
+        {
+            let pos = to_screen(*position);
+            let len = 50.0 * zoom;
+            let handle = 5.0 * zoom.max(0.5);
+            // X 手柄（红）
+            painter.line_segment(
+                [pos, pos + egui::vec2(len, 0.0)],
+                egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(220, 80, 80)),
+            );
+            painter.circle_filled(
+                pos + egui::vec2(len, 0.0),
+                handle,
+                egui::Color32::from_rgb(220, 80, 80),
+            );
+            // Z 手柄（蓝）
+            painter.line_segment(
+                [pos, pos + egui::vec2(0.0, -len)],
+                egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(80, 120, 220)),
+            );
+            painter.circle_filled(
+                pos + egui::vec2(0.0, -len),
+                handle,
+                egui::Color32::from_rgb(80, 120, 220),
+            );
+            // Y 高度手柄（绿）
+            painter.line_segment(
+                [pos, pos + egui::vec2(-len * 0.7, -len * 0.7)],
+                egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(90, 200, 90)),
+            );
+            painter.circle_filled(
+                pos + egui::vec2(-len * 0.7, -len * 0.7),
+                handle,
+                egui::Color32::from_rgb(90, 200, 90),
+            );
+        }
+
+        // 拖拽：命中 Gizmo 手柄 -> 轴约束；命中实体 -> 自由 XZ。
+        let pointer = response.interact_pointer_pos();
+        if response.drag_started_by(egui::PointerButton::Primary)
+            && let Some(pos) = pointer
+            && let Some((id, _, position)) = selected_entity
+        {
+            let entity_pos = to_screen(*position);
+            let len = 50.0 * zoom;
+            let hit_radius = 12.0 * zoom.max(0.5);
+            let axis = if (pos - (entity_pos + egui::vec2(len, 0.0))).length() < hit_radius {
+                Some(GizmoAxis::X)
+            } else if (pos - (entity_pos + egui::vec2(0.0, -len))).length() < hit_radius {
+                Some(GizmoAxis::Z)
+            } else if (pos - (entity_pos + egui::vec2(-len * 0.7, -len * 0.7))).length()
+                < hit_radius
+            {
+                Some(GizmoAxis::Y)
+            } else {
+                let box_rect =
+                    egui::Rect::from_center_size(entity_pos, egui::vec2(40.0 * zoom, 40.0 * zoom));
+                if box_rect.contains(pos) && !self.scene_state.locked.contains(id) {
+                    Some(GizmoAxis::Free)
+                } else {
+                    None
+                }
+            };
+            if let Some(axis) = axis {
+                self.scene_state.gizmo_drag = Some(GizmoDrag {
+                    id: *id,
+                    axis,
+                    start: pos,
+                    initial: *position,
+                });
+            }
+        }
+        if response.dragged_by(egui::PointerButton::Primary)
+            && let (Some(drag), Some(pos)) = (self.scene_state.gizmo_drag.as_ref(), pointer)
+        {
+            let delta = pos - drag.start;
+            let dx = delta.x / zoom;
+            let dy = delta.y / zoom;
+            let mut next = drag.initial;
+            match drag.axis {
+                GizmoAxis::X => next.x += dx,
+                GizmoAxis::Z => next.z -= dy,
+                GizmoAxis::Y => next.y -= dy,
+                GizmoAxis::Free => {
+                    next.x += dx;
+                    next.z -= dy;
+                }
+            }
+            self.scene_state.preview3d.insert(drag.id, next);
+        }
+        if response.drag_stopped_by(egui::PointerButton::Primary) {
+            self.commit_gizmo_drag3d();
+            self.scene_state.gizmo_drag = None;
+        }
+    }
+
     fn draw_scene_view(&mut self, ui: &mut egui::Ui) {
+        if self.scene_view_mode == SceneViewMode::View3D {
+            self.draw_scene_view_3d(ui);
+            return;
+        }
         let (response, painter) =
             ui.allocate_painter(ui.available_size(), egui::Sense::click_and_drag());
         let rect = response.rect;
@@ -2174,6 +2682,41 @@ impl EditorApp {
         }
     }
 
+    /// 提交 3D 平移 Gizmo 拖拽：只改 Transform3D 的 position，保留旋转/缩放。
+    fn commit_gizmo_drag3d(&mut self) {
+        if self.is_playing() {
+            self.scene_state.preview3d.clear();
+            return;
+        }
+        let preview = std::mem::take(&mut self.scene_state.preview3d);
+        let Some((id, position)) = preview.iter().next().map(|(id, position)| (*id, *position))
+        else {
+            return;
+        };
+        if let Some(scene) = self.document.current_scene.as_mut() {
+            let _ = self.history.execute(
+                scene,
+                "3D Transform",
+                CommandKind::Transform3D(id),
+                |scene| {
+                    if let Some(entity) = scene.scene.entities.get_mut(&id) {
+                        let current = entity
+                            .components
+                            .get("Transform3D")
+                            .cloned()
+                            .unwrap_or_default();
+                        entity.components.insert(
+                            "Transform3D".to_owned(),
+                            encode_transform3d_position(&current, position),
+                        );
+                    }
+                    scene.mark_dirty();
+                    Ok::<(), ()>(())
+                },
+            );
+        }
+    }
+
     fn draw_game_view(&mut self, ui: &mut egui::Ui) {
         let (response, painter) = ui.allocate_painter(ui.available_size(), egui::Sense::hover());
         painter.rect_filled(response.rect, 0.0, egui::Color32::from_rgb(18, 20, 24));
@@ -2397,5 +2940,22 @@ mod publish_tests {
             }
         }
         assert!(success, "导入应成功；输出：\n{output}");
+    }
+
+    #[test]
+    fn encode_transform3d_position_preserves_rotation_and_scale() {
+        let current = "position=1,2,3;rotation=0,0,0,1;scale=2,2,2";
+        let next = encode_transform3d_position(current, Vec3::new(9.0, 5.0, -3.0));
+        let transform = Transform3D::from_component_str(&next).expect("valid Transform3D");
+        assert_eq!(transform.position, Vec3::new(9.0, 5.0, -3.0));
+        assert_eq!(transform.scale, Vec3::new(2.0, 2.0, 2.0));
+        assert!(transform.rotation.is_unit());
+    }
+
+    #[test]
+    fn parse_transform3d_reads_position_only() {
+        let value = "position=4,7,1;rotation=0,0,0,1;scale=1,1,1";
+        assert_eq!(parse_transform3d(value), Some(Vec3::new(4.0, 7.0, 1.0)));
+        assert_eq!(parse_transform3d("not a transform"), None);
     }
 }

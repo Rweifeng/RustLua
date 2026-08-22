@@ -7,6 +7,7 @@ use std::{error::Error, fmt};
 pub enum CommandKind {
     Generic,
     Transform(SceneEntityId),
+    Transform3D(SceneEntityId),
     Create,
     Delete,
     Rename,
@@ -106,7 +107,10 @@ impl CommandHistory {
         self.redo.clear();
         if let Some(previous) = self.undo.last_mut()
             && previous.kind == kind
-            && matches!(kind, CommandKind::Transform(_))
+            && matches!(
+                kind,
+                CommandKind::Transform(_) | CommandKind::Transform3D(_)
+            )
         {
             previous.after = after;
         } else {
@@ -193,5 +197,29 @@ mod tests {
                 .components
                 .contains_key("x")
         );
+    }
+    #[test]
+    fn consecutive_transform3d_edits_merge() {
+        let mut d = doc();
+        d.scene.add_entity(SceneEntityId(7), "A", None).unwrap();
+        let mut h = CommandHistory::new();
+        for value in 1..=50 {
+            h.execute(
+                &mut d,
+                "3d transform",
+                CommandKind::Transform3D(SceneEntityId(7)),
+                |d| {
+                    d.scene
+                        .entities
+                        .get_mut(&SceneEntityId(7))
+                        .unwrap()
+                        .components
+                        .insert("Transform3D".into(), format!("position={value},0,0"));
+                    Ok::<_, ()>(())
+                },
+            )
+            .unwrap();
+        }
+        assert_eq!(h.undo_len(), 1, "consecutive 3D transforms merge");
     }
 }

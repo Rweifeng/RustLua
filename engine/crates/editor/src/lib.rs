@@ -7,8 +7,8 @@ pub use resource_browser::{
 pub mod inspector;
 
 pub use inspector::{
-    Camera3DFields, InspectorError, InspectorSnapshot, InspectorState, LightFields,
-    Transform3DFields, TransformFields,
+    Camera3DFields, Collider3dFields, InspectorError, InspectorSnapshot, InspectorState,
+    LightFields, Transform3DFields, TransformFields,
 };
 
 pub mod scene_tree;

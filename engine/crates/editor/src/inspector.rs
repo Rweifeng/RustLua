@@ -4,6 +4,7 @@ use engine_core::{
     light::Light,
     math3d::{Quat, Vec3},
     mesh3d::MeshRenderer,
+    physics3d::{ColliderDesc3d, ColliderShape3d},
     scene::{SceneEntity, SceneEntityId},
     transform3d::Transform3D,
 };
@@ -119,6 +120,39 @@ impl Default for LightFields {
     }
 }
 
+/// Inspector 可编辑的 Collider3d 字段（M9-03）。
+#[derive(Clone, Debug, PartialEq)]
+pub struct Collider3dFields {
+    /// `ball` | `cuboid` | `capsule`
+    pub shape: String,
+    pub radius: f32,
+    pub half_width: f32,
+    pub half_height: f32,
+    pub half_z: f32,
+    pub offset_x: f32,
+    pub offset_y: f32,
+    pub offset_z: f32,
+    pub sensor: bool,
+    pub dynamic: bool,
+}
+
+impl Default for Collider3dFields {
+    fn default() -> Self {
+        Self {
+            shape: "ball".to_owned(),
+            radius: 1.0,
+            half_width: 1.0,
+            half_height: 1.0,
+            half_z: 1.0,
+            offset_x: 0.0,
+            offset_y: 0.0,
+            offset_z: 0.0,
+            sensor: false,
+            dynamic: true,
+        }
+    }
+}
+
 /// Inspector 对一个实体的可编辑快照。
 #[derive(Clone, Debug, PartialEq)]
 pub struct InspectorSnapshot {
@@ -132,6 +166,7 @@ pub struct InspectorSnapshot {
     pub mesh_renderer: Option<String>,
     pub camera3d: Option<Camera3DFields>,
     pub light: Option<LightFields>,
+    pub collider3d: Option<Collider3dFields>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -336,6 +371,31 @@ impl InspectorState {
         }
         Ok(())
     }
+
+    pub fn set_collider3d(
+        &self,
+        document: &mut SceneDocument,
+        collider: Collider3dFields,
+    ) -> Result<(), InspectorError> {
+        validate_collider3d(&collider)?;
+        let id = self.selected.ok_or(InspectorError::NothingSelected)?;
+        let entity = entity_mut(document, id)?;
+        let value = encode_collider3d(&collider);
+        if entity.components.get("Collider3d") != Some(&value) {
+            entity.components.insert("Collider3d".into(), value);
+            document.mark_dirty();
+        }
+        Ok(())
+    }
+
+    pub fn clear_collider3d(&self, document: &mut SceneDocument) -> Result<(), InspectorError> {
+        let id = self.selected.ok_or(InspectorError::NothingSelected)?;
+        let entity = entity_mut(document, id)?;
+        if entity.components.remove("Collider3d").is_some() {
+            document.mark_dirty();
+        }
+        Ok(())
+    }
 }
 
 fn entity_mut(
@@ -382,6 +442,10 @@ fn snapshot_for(entity: &SceneEntity) -> Result<InspectorSnapshot, InspectorErro
             .map(str::to_owned),
         camera3d,
         light,
+        collider3d: entity
+            .components
+            .get("Collider3d")
+            .map_or(Ok(None), |value| decode_collider3d(value).map(Some))?,
     })
 }
 
@@ -494,6 +558,72 @@ fn decode_transform3d(value: &str) -> Result<Transform3DFields, InspectorError> 
         scale_y: transform.scale.y,
         scale_z: transform.scale.z,
     })
+}
+
+fn validate_collider3d(collider: &Collider3dFields) -> Result<(), InspectorError> {
+    let value = encode_collider3d(collider);
+    ColliderDesc3d::from_component_str(&value)
+        .map(|_| ())
+        .map_err(|error| InspectorError::InvalidCollider3d(error.to_string()))
+}
+
+fn encode_collider3d(collider: &Collider3dFields) -> String {
+    let mut parts = match collider.shape.as_str() {
+        "cuboid" => format!(
+            "shape=cuboid;half_width={:.6};half_height={:.6};half_z={:.6}",
+            collider.half_width, collider.half_height, collider.half_z
+        ),
+        "capsule" => format!(
+            "shape=capsule;half_height={:.6};radius={:.6}",
+            collider.half_height, collider.radius
+        ),
+        _ => format!("shape=ball;radius={:.6}", collider.radius),
+    };
+    parts.push_str(&format!(
+        ";offset={:.6},{:.6},{:.6}",
+        collider.offset_x, collider.offset_y, collider.offset_z
+    ));
+    if collider.sensor {
+        parts.push_str(";sensor=true");
+    }
+    if !collider.dynamic {
+        parts.push_str(";dynamic=false");
+    }
+    parts
+}
+
+fn decode_collider3d(value: &str) -> Result<Collider3dFields, InspectorError> {
+    let desc = ColliderDesc3d::from_component_str(value)
+        .map_err(|error| InspectorError::InvalidCollider3d(error.to_string()))?;
+    let mut fields = Collider3dFields {
+        sensor: desc.sensor,
+        dynamic: desc.dynamic,
+        offset_x: desc.offset.x,
+        offset_y: desc.offset.y,
+        offset_z: desc.offset.z,
+        ..Collider3dFields::default()
+    };
+    match desc.shape {
+        ColliderShape3d::Ball(radius) => {
+            fields.shape = "ball".to_owned();
+            fields.radius = radius;
+        }
+        ColliderShape3d::Cuboid(half) => {
+            fields.shape = "cuboid".to_owned();
+            fields.half_width = half.x;
+            fields.half_height = half.y;
+            fields.half_z = half.z;
+        }
+        ColliderShape3d::Capsule {
+            half_height,
+            radius,
+        } => {
+            fields.shape = "capsule".to_owned();
+            fields.half_height = half_height;
+            fields.radius = radius;
+        }
+    }
+    Ok(fields)
 }
 
 fn validate_camera3d(camera: Camera3DFields) -> Result<(), InspectorError> {
@@ -616,6 +746,7 @@ pub enum InspectorError {
     InvalidMeshRenderer(String),
     InvalidCamera3d(String),
     InvalidLight(String),
+    InvalidCollider3d(String),
 }
 
 impl fmt::Display for InspectorError {
@@ -633,6 +764,7 @@ impl fmt::Display for InspectorError {
             Self::InvalidMeshRenderer(value) => write!(f, "MeshRenderer 资源引用无效：{value}"),
             Self::InvalidCamera3d(value) => write!(f, "Camera3D 数据无效：{value}"),
             Self::InvalidLight(value) => write!(f, "Light 数据无效：{value}"),
+            Self::InvalidCollider3d(value) => write!(f, "Collider3d 数据无效：{value}"),
         }
     }
 }
@@ -1063,5 +1195,85 @@ mod tests {
             loaded.entities[&SceneEntityId(1)].components,
             document.scene.entities[&SceneEntityId(1)].components
         );
+    }
+    #[test]
+    fn collider3d_roundtrip_via_snapshot() {
+        let (mut document, inspector, _) = setup();
+        inspector
+            .set_collider3d(
+                &mut document,
+                Collider3dFields {
+                    shape: "cuboid".to_owned(),
+                    half_width: 4.0,
+                    half_height: 5.0,
+                    half_z: 6.0,
+                    offset_x: 1.0,
+                    offset_y: 2.0,
+                    offset_z: 3.0,
+                    sensor: true,
+                    dynamic: false,
+                    ..Collider3dFields::default()
+                },
+            )
+            .unwrap();
+        let snapshot = inspector.snapshot(&document).unwrap();
+        let collider = snapshot.collider3d.expect("Collider3d present");
+        assert_eq!(collider.shape, "cuboid");
+        assert_eq!(collider.half_width, 4.0);
+        assert_eq!(collider.half_height, 5.0);
+        assert_eq!(collider.half_z, 6.0);
+        assert_eq!(
+            (collider.offset_x, collider.offset_y, collider.offset_z),
+            (1.0, 2.0, 3.0)
+        );
+        assert!(collider.sensor);
+        assert!(!collider.dynamic);
+    }
+    #[test]
+    fn collider3d_rejects_invalid_size() {
+        let (mut document, inspector, _) = setup();
+        let value = Collider3dFields {
+            shape: "ball".to_owned(),
+            radius: 0.0,
+            ..Collider3dFields::default()
+        };
+        assert!(
+            matches!(
+                inspector.set_collider3d(&mut document, value),
+                Err(InspectorError::InvalidCollider3d(_))
+            ),
+            "zero radius must be rejected"
+        );
+        assert!(
+            !document.scene.entities[&SceneEntityId(1)]
+                .components
+                .contains_key("Collider3d")
+        );
+    }
+    #[test]
+    fn collider3d_persists_through_scene_text() {
+        let (mut document, inspector, _) = setup();
+        inspector
+            .set_collider3d(
+                &mut document,
+                Collider3dFields {
+                    shape: "capsule".to_owned(),
+                    half_height: 1.0,
+                    radius: 0.5,
+                    dynamic: true,
+                    ..Collider3dFields::default()
+                },
+            )
+            .unwrap();
+        let text = document.scene.to_text();
+        let loaded = engine_core::scene::Scene::from_text(&text).unwrap();
+        let stored = loaded.entities[&SceneEntityId(1)]
+            .components
+            .get("Collider3d")
+            .expect("Collider3d persisted");
+        let decoded = decode_collider3d(stored).unwrap();
+        assert_eq!(decoded.shape, "capsule");
+        assert_eq!(decoded.half_height, 1.0);
+        assert_eq!(decoded.radius, 0.5);
     }
 }
