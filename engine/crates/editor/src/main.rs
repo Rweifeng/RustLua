@@ -355,7 +355,7 @@ impl ProgressPanel {
                 if let Some(dir) = &self.output_dir {
                     ui.label(format!("输出：{}", dir.display()));
                     if ui.button("打开目录").clicked() {
-                        let _ = Command::new("explorer").arg(dir).spawn();
+                        open_in_explorer(dir);
                     }
                 }
                 if ui.button("关闭").clicked() {
@@ -944,6 +944,33 @@ impl EditorApp {
         }
     }
 }
+
+/// 在资源管理器中打开目录（ShellExecuteW，比 `explorer <path>` 更可靠）。
+#[cfg(windows)]
+fn open_in_explorer(path: &Path) {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    let path_wide: Vec<u16> = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let op_wide: Vec<u16> = "open".encode_utf16().chain(std::iter::once(0)).collect();
+    unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            op_wide.as_ptr(),
+            path_wide.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            SW_SHOWNORMAL,
+        );
+    }
+}
+
+#[cfg(not(windows))]
+fn open_in_explorer(_path: &Path) {}
 
 /// 从项目根向上查找 `scripts/package.ps1`（编辑器根可能是游戏目录或工作区根）。
 fn find_publish_script(root: &Path) -> Option<PathBuf> {
