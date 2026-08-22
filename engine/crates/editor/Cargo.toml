@@ -8,6 +8,9 @@ publish = false
 
 [dependencies]
 engine_core.workspace = true
+engine_host.workspace = true
 eframe.workspace = true
+wgpu = "27"
+tracing.workspace = true
 [target."cfg(windows)".dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_UI_WindowsAndMessaging"] }

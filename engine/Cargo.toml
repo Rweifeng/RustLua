@@ -26,7 +26,7 @@ strip = true
 [workspace.dependencies]
 engine_core = { path = "crates/engine_core" }
 engine_host = { path = "crates/engine_host" }
-eframe = "0.33"
+eframe = { version = "0.33", features = ["wgpu"] }
 gltf = { version = "1.4", features = ["import"] }
 bytemuck = { version = "1", features = ["derive"] }
 tracing = "0.1"

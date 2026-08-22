@@ -40,6 +40,12 @@ pub struct RuntimeScene {
 impl RuntimeScene {
     pub fn new(project_root: Option<&Path>) -> Result<Self, String> {
         let scene = load_runtime_scene(project_root);
+        Self::from_scene(project_root, scene)
+    }
+
+    /// Instantiates a specific scene (used by the editor to run the scene being
+    /// edited), rather than the project's startup scene.
+    pub fn from_scene(project_root: Option<&Path>, scene: Scene) -> Result<Self, String> {
         let mut script = LuaRuntime::new().map_err(|error| error.to_string())?;
         // Project root must be set before instantiation so scene components that
         // load assets (e.g. Animation3D) can resolve their mesh paths.

@@ -21,11 +21,13 @@ use editor::{
 };
 use eframe::egui::{self, FontData, FontDefinitions, FontFamily};
 use engine_core::{
+    input::InputSnapshot,
     math3d::Vec3,
     scene::SceneEntityId,
     script::{LuaRuntime, ScriptDiagnostic},
     transform3d::Transform3D,
 };
+use engine_host::{Renderer, RuntimeScene};
 
 #[derive(Debug, Default)]
 struct Arguments {
@@ -130,17 +132,28 @@ fn main() -> Result<(), Box<dyn Error>> {
         .and_then(|path| path.parent().map(|dir| dir.join("crash.log")))
         .unwrap_or_else(|| PathBuf::from("crash.log"));
     engine_core::logging::install_crash_handler(crash_log_path);
-    let options = eframe::NativeOptions::default();
+    let options = eframe::NativeOptions {
+        renderer: eframe::Renderer::Wgpu,
+        ..Default::default()
+    };
     eframe::run_native(
         "RustLua 编辑器",
         options,
         Box::new(move |creation_context| {
             configure_cjk_fonts(&creation_context.egui_ctx);
-            let mut app = EditorApp::new(project.unwrap_or_else(|| ProjectInfo {
-                root: default_engine_path(),
-                version: "engine-only".to_owned(),
-                directories: Vec::new(),
-            }));
+            // 单一 wgpu 设备（ADR-0012）：编辑器与内嵌游戏预览共用 eframe 的设备。
+            let gpu = creation_context
+                .wgpu_render_state
+                .as_ref()
+                .map(|state| (state.device.clone(), state.queue.clone()));
+            let mut app = EditorApp::new(
+                project.unwrap_or_else(|| ProjectInfo {
+                    root: default_engine_path(),
+                    version: "engine-only".to_owned(),
+                    directories: Vec::new(),
+                }),
+                gpu,
+            );
             app.project_loaded = arguments.project.is_some();
             app.refresh_resources();
             Ok(Box::new(app))
@@ -250,6 +263,10 @@ struct EditorApp {
     progress: ProgressPanel,
     publish_compress: bool,
     publish_encrypt: bool,
+    /// eframe 的 wgpu 设备/队列（单一设备，供内嵌游戏预览使用）。
+    gpu: Option<(wgpu::Device, wgpu::Queue)>,
+    /// Play 时的内嵌游戏预览（M10-03）。
+    preview: Option<EmbeddedPreview>,
 }
 
 /// 通用进度面板：后台任务 + 进度/日志 + 非阻塞窗口。
@@ -445,8 +462,20 @@ struct ComponentClipboard {
     metadata: std::collections::BTreeMap<String, String>,
 }
 
+/// 编辑器内嵌游戏预览（M10-03）：Play 时创建的运行时 + 离屏渲染器，
+/// 渲染到离屏纹理，回读后显示在 Game 视图。
+struct EmbeddedPreview {
+    runtime: RuntimeScene,
+    renderer: Renderer,
+    texture: wgpu::Texture,
+    texture_view: wgpu::TextureView,
+    egui_tex: Option<egui::TextureHandle>,
+    width: u32,
+    height: u32,
+}
+
 impl EditorApp {
-    fn new(project: ProjectInfo) -> Self {
+    fn new(project: ProjectInfo, gpu: Option<(wgpu::Device, wgpu::Queue)>) -> Self {
         let project_loaded = project.root.join("project.toml").is_file();
         let recovery = RecoveryManager::new(project.root.join(".temp"));
         let recovery_scan = recovery.scan().unwrap_or_default();
@@ -493,6 +522,8 @@ impl EditorApp {
             progress: ProgressPanel::default(),
             publish_compress: true,
             publish_encrypt: true,
+            gpu,
+            preview: None,
         }
     }
 
@@ -650,11 +681,18 @@ impl EditorApp {
             self.status = "Not currently in Play mode".to_owned();
             return;
         }
-        let Some(document) = self.current_scene() else {
+        let Some(document) = self.current_scene().cloned() else {
             self.status = "Please create or open a scene first".to_owned();
             return;
         };
-        self.play_session = Some(PlaySession::start(document));
+        // M10-03：创建内嵌游戏预览（Play 真正运行 Lua + 物理 + 渲染）。
+        match self.create_preview(&document.scene) {
+            Ok(preview) => self.preview = Some(preview),
+            Err(error) => {
+                self.status = format!("游戏预览启动失败：{error}");
+            }
+        }
+        self.play_session = Some(PlaySession::start(&document));
         self.status = "Play mode started; runtime changes stay isolated".to_owned();
     }
 
@@ -663,10 +701,53 @@ impl EditorApp {
             self.status = "Not currently in Play mode".to_owned();
             return;
         };
+        self.preview = None;
         self.document.current_scene = Some(session.stop());
         self.tree.clear_selection();
         self.inspector.clear_selection();
         self.status = "Play stopped; runtime changes were discarded".to_owned();
+    }
+
+    /// 创建内嵌游戏预览：运行时（当前场景）+ 离屏渲染器 + 预览纹理。
+    fn create_preview(&self, scene: &engine_core::scene::Scene) -> Result<EmbeddedPreview, String> {
+        let Some((device, queue)) = &self.gpu else {
+            return Err("编辑器缺少 wgpu 上下文，无法内嵌游戏预览".to_owned());
+        };
+        let project_root = Some(self.project.root.as_path());
+        let runtime = RuntimeScene::from_scene(project_root, scene.clone())?;
+        let renderer = Renderer::new_offscreen(
+            device.clone(),
+            queue.clone(),
+            Some(self.project.root.clone()),
+            false,
+            false,
+        )?;
+        let width = 640;
+        let height = 360;
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("p2-editor-preview"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        Ok(EmbeddedPreview {
+            runtime,
+            renderer,
+            texture,
+            texture_view,
+            egui_tex: None,
+            width,
+            height,
+        })
     }
 
     fn scene_name(&self) -> String {
@@ -2720,18 +2801,88 @@ impl EditorApp {
     fn draw_game_view(&mut self, ui: &mut egui::Ui) {
         let (response, painter) = ui.allocate_painter(ui.available_size(), egui::Sense::hover());
         painter.rect_filled(response.rect, 0.0, egui::Color32::from_rgb(18, 20, 24));
-        let text = if self.is_playing() {
-            "GAME VIEW\nRunning"
+        if self.preview.is_some() {
+            self.update_preview(ui.ctx());
+            if let Some(preview) = &self.preview
+                && let Some(tex) = &preview.egui_tex
+            {
+                // 保持预览纵横比，居中绘制。
+                let aspect = preview.width as f32 / preview.height.max(1) as f32;
+                let mut rect = response.rect;
+                let avail = rect.width() / rect.height().max(1.0);
+                if avail > aspect {
+                    let width = rect.height() * aspect;
+                    let extra = (rect.width() - width) / 2.0;
+                    rect.min.x += extra;
+                    rect.max.x -= extra;
+                } else {
+                    let height = rect.width() / aspect;
+                    let extra = (rect.height() - height) / 2.0;
+                    rect.min.y += extra;
+                    rect.max.y -= extra;
+                }
+                painter.image(
+                    tex.id(),
+                    rect,
+                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                    egui::Color32::WHITE,
+                );
+            }
         } else {
-            "GAME VIEW\nPress Play to run the scene"
+            let text = if self.is_playing() {
+                "GAME VIEW\n(preview unavailable)"
+            } else {
+                "GAME VIEW\nPress Play to run the scene"
+            };
+            painter.text(
+                response.rect.center(),
+                egui::Align2::CENTER_CENTER,
+                text,
+                egui::FontId::proportional(20.0),
+                egui::Color32::LIGHT_GRAY,
+            );
+        }
+    }
+
+    /// 步进内嵌游戏运行时，渲染到离屏纹理并回读更新 egui 预览纹理（M10-03）。
+    fn update_preview(&mut self, ctx: &egui::Context) {
+        let Some(preview) = &mut self.preview else {
+            return;
         };
-        painter.text(
-            response.rect.center(),
-            egui::Align2::CENTER_CENTER,
-            text,
-            egui::FontId::proportional(20.0),
-            egui::Color32::LIGHT_GRAY,
+        let input = InputSnapshot::default();
+        if let Err(error) = preview.runtime.run_script_steps(1, 1.0 / 60.0, &input) {
+            tracing::warn!(target: "editor", "preview script step failed: {error}");
+            return;
+        }
+        let Some(mesh) = preview.runtime.vertices(preview.width, preview.height).ok() else {
+            return;
+        };
+        let aspect = preview.width as f32 / preview.height.max(1) as f32;
+        let scene3d = preview.runtime.scene_3d(aspect);
+        preview.renderer.render_into_texture(
+            &mesh,
+            scene3d.as_ref(),
+            &preview.texture_view,
+            preview.width,
+            preview.height,
         );
+        if let Ok(pixels) =
+            preview
+                .renderer
+                .copy_texture_to_cpu(&preview.texture, preview.width, preview.height)
+        {
+            let image = egui::ColorImage::from_rgba_unmultiplied(
+                [preview.width as usize, preview.height as usize],
+                &pixels,
+            );
+            match &mut preview.egui_tex {
+                Some(tex) => tex.set(image, egui::TextureOptions::LINEAR),
+                None => {
+                    preview.egui_tex =
+                        Some(ctx.load_texture("game_preview", image, egui::TextureOptions::LINEAR));
+                }
+            }
+        }
     }
 
     fn draw_entity(&mut self, ui: &mut egui::Ui, id: SceneEntityId, depth: usize) {

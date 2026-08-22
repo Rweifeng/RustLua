@@ -107,7 +107,8 @@ fn max_model_scale(model: Mat4) -> f32 {
     sx.max(sy).max(sz).sqrt().max(f32::EPSILON)
 }
 pub struct Renderer {
-    surface: Surface<'static>,
+    /// Present surface in window mode; `None` in offscreen (embedded) mode.
+    surface: Option<Surface<'static>>,
     device: Device,
     queue: Queue,
     pub config: SurfaceConfiguration,
@@ -165,7 +166,27 @@ impl Renderer {
         instancing_enabled: bool,
     ) -> Result<Self, String> {
         pollster::block_on(Self::new_async(
-            window,
+            Some(window),
+            None,
+            project_root,
+            cull_enabled,
+            instancing_enabled,
+        ))
+    }
+
+    /// Creates a renderer with no window surface, using the caller-provided
+    /// device/queue (e.g. the editor's eframe device). Rendering goes through
+    /// [`Renderer::render_into_texture`].
+    pub fn new_offscreen(
+        device: Device,
+        queue: Queue,
+        project_root: Option<PathBuf>,
+        cull_enabled: bool,
+        instancing_enabled: bool,
+    ) -> Result<Self, String> {
+        pollster::block_on(Self::new_async(
+            None,
+            Some((device, queue)),
             project_root,
             cull_enabled,
             instancing_enabled,
@@ -173,65 +194,86 @@ impl Renderer {
     }
 
     async fn new_async(
-        window: Arc<Window>,
+        window: Option<Arc<Window>>,
+        external_device: Option<(Device, Queue)>,
         project_root: Option<PathBuf>,
         cull_enabled: bool,
         instancing_enabled: bool,
     ) -> Result<Self, String> {
-        let size = window.inner_size();
-        let instance = Instance::new(&InstanceDescriptor::default());
-        let surface = instance
-            .create_surface(window)
-            .map_err(|error| format!("could not create surface: {error}"))?;
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: Some(&surface),
-                force_fallback_adapter: false,
-            })
-            .await
-            .map_err(|error| format!("could not find a compatible GPU adapter: {error}"))?;
-        let adapter_name = adapter.get_info().name;
-        let (device, queue) = adapter
-            .request_device(&DeviceDescriptor {
-                label: Some("p2-render-device"),
-                required_features: wgpu::Features::empty(),
-                experimental_features: wgpu::ExperimentalFeatures::disabled(),
-                required_limits: wgpu::Limits::default(),
-                memory_hints: wgpu::MemoryHints::Performance,
-                trace: wgpu::Trace::Off,
-            })
-            .await
-            .map_err(|error| format!("could not create GPU device: {error}"))?;
-        let capabilities = surface.get_capabilities(&adapter);
-        let format = capabilities
-            .formats
-            .iter()
-            .copied()
-            .find(|format| format.is_srgb())
-            .or_else(|| capabilities.formats.first().copied())
-            .ok_or_else(|| "GPU surface reported no supported formats".to_owned())?;
-        let present_mode = if capabilities.present_modes.contains(&PresentMode::Mailbox) {
-            PresentMode::Mailbox
+        // Surface mode: create instance/adapter/device from the window.
+        // Offscreen mode: use the caller-provided device/queue.
+        let (device, queue, surface, format, config, adapter_name) = if let Some(window) = window {
+            let size = window.inner_size();
+            let instance = Instance::new(&InstanceDescriptor::default());
+            let surface = instance
+                .create_surface(window)
+                .map_err(|error| format!("could not create surface: {error}"))?;
+            let adapter = instance
+                .request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference: wgpu::PowerPreference::HighPerformance,
+                    compatible_surface: Some(&surface),
+                    force_fallback_adapter: false,
+                })
+                .await
+                .map_err(|error| format!("could not find a compatible GPU adapter: {error}"))?;
+            let adapter_name = adapter.get_info().name;
+            let (device, queue) = adapter
+                .request_device(&DeviceDescriptor {
+                    label: Some("p2-render-device"),
+                    required_features: wgpu::Features::empty(),
+                    experimental_features: wgpu::ExperimentalFeatures::disabled(),
+                    required_limits: wgpu::Limits::default(),
+                    memory_hints: wgpu::MemoryHints::Performance,
+                    trace: wgpu::Trace::Off,
+                })
+                .await
+                .map_err(|error| format!("could not create GPU device: {error}"))?;
+            let capabilities = surface.get_capabilities(&adapter);
+            let format = capabilities
+                .formats
+                .iter()
+                .copied()
+                .find(|format| format.is_srgb())
+                .or_else(|| capabilities.formats.first().copied())
+                .ok_or_else(|| "GPU surface reported no supported formats".to_owned())?;
+            let present_mode = if capabilities.present_modes.contains(&PresentMode::Mailbox) {
+                PresentMode::Mailbox
+            } else {
+                PresentMode::Fifo
+            };
+            let alpha_mode = capabilities
+                .alpha_modes
+                .first()
+                .copied()
+                .unwrap_or(CompositeAlphaMode::Auto);
+            let config = SurfaceConfiguration {
+                usage: TextureUsages::RENDER_ATTACHMENT,
+                format,
+                width: size.width.max(1),
+                height: size.height.max(1),
+                present_mode,
+                alpha_mode,
+                view_formats: vec![],
+                desired_maximum_frame_latency: 2,
+            };
+            surface.configure(&device, &config);
+            (device, queue, Some(surface), format, config, adapter_name)
         } else {
-            PresentMode::Fifo
+            let (device, queue) = external_device
+                .ok_or_else(|| "offscreen renderer requires a device/queue".to_owned())?;
+            let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+            let config = SurfaceConfiguration {
+                usage: TextureUsages::RENDER_ATTACHMENT,
+                format,
+                width: 1280,
+                height: 720,
+                present_mode: PresentMode::Fifo,
+                alpha_mode: CompositeAlphaMode::Auto,
+                view_formats: vec![],
+                desired_maximum_frame_latency: 2,
+            };
+            (device, queue, None, format, config, "offscreen".to_owned())
         };
-        let alpha_mode = capabilities
-            .alpha_modes
-            .first()
-            .copied()
-            .unwrap_or(CompositeAlphaMode::Auto);
-        let config = SurfaceConfiguration {
-            usage: TextureUsages::RENDER_ATTACHMENT,
-            format,
-            width: size.width.max(1),
-            height: size.height.max(1),
-            present_mode,
-            alpha_mode,
-            view_formats: vec![],
-            desired_maximum_frame_latency: 2,
-        };
-        surface.configure(&device, &config);
         let texture_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("p2-texture-bind-group-layout"),
@@ -719,7 +761,8 @@ impl Renderer {
         let depth_view = Self::create_depth_view(&device, config.width, config.height);
         let depth_init = (config.width, config.height);
         tracing::info!(target: "game",
-            "[render] initialized: adapter={adapter_name} format={format:?} present_mode={present_mode:?}"
+            "[render] initialized: adapter={adapter_name} format={format:?} present_mode={:?}",
+            config.present_mode
         );
         Ok(Self {
             surface,
@@ -1161,7 +1204,9 @@ impl Renderer {
         }
         self.config.width = size.width;
         self.config.height = size.height;
-        self.surface.configure(&self.device, &self.config);
+        if let Some(surface) = &self.surface {
+            surface.configure(&self.device, &self.config);
+        }
         self.ensure_depth_view(size.width, size.height);
         tracing::info!(target: "game",
             "[render] surface reconfigured: {}x{}",
@@ -1179,10 +1224,14 @@ impl Renderer {
     }
 
     pub fn render(&mut self, mesh: &SceneMesh, scene3d: Option<&Scene3d>) -> RenderOutcome {
-        let output = match self.surface.get_current_texture() {
+        let Some(surface) = &self.surface else {
+            tracing::warn!(target: "game", "[render] render() requires a window surface; use render_into_texture");
+            return RenderOutcome::Skipped;
+        };
+        let output = match surface.get_current_texture() {
             Ok(output) => output,
             Err(SurfaceError::Lost | SurfaceError::Outdated) => {
-                self.surface.configure(&self.device, &self.config);
+                surface.configure(&self.device, &self.config);
                 tracing::info!(target: "game", "[render] surface reconfigured after transient error");
                 return RenderOutcome::Retry;
             }
@@ -1233,6 +1282,65 @@ impl Renderer {
         self.render_passes(&mut encoder, mesh, scene3d, view);
         self.queue.submit([encoder.finish()]);
         RenderOutcome::Presented
+    }
+
+    /// Copies an RGBA8 texture back to the CPU (synchronous readback), used by
+    /// the editor to display the embedded preview. The texture must have
+    /// `COPY_SRC` usage.
+    pub fn copy_texture_to_cpu(
+        &self,
+        texture: &wgpu::Texture,
+        width: u32,
+        height: u32,
+    ) -> Result<Vec<u8>, String> {
+        let bytes_per_row = 4 * width;
+        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("p2-preview-readback"),
+            size: (bytes_per_row * height) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("p2-preview-copy"),
+            });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(bytes_per_row),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        self.queue.submit([encoder.finish()]);
+        let slice = buffer.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = tx.send(result);
+        });
+        let _ = self.device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        });
+        let map_result = rx
+            .recv()
+            .map_err(|error| format!("preview readback channel error: {error}"))?;
+        map_result.map_err(|error| format!("preview texture map failed: {error}"))?;
+        Ok(slice.get_mapped_range().to_vec())
     }
 
     /// Shared pass rendering into a given color view (window surface or
@@ -1651,4 +1759,71 @@ pub enum RenderOutcome {
     Retry,
     Skipped,
     Fatal,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Renders an empty frame to an offscreen texture and reads it back,
+    /// proving the offscreen path (`render_into_texture` +
+    /// `copy_texture_to_cpu`) produces real pixels. Skips when no GPU is
+    /// available.
+    #[test]
+    fn offscreen_renderer_produces_pixels() {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let Some(adapter) =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::LowPower,
+                compatible_surface: None,
+                force_fallback_adapter: true,
+            }))
+            .ok()
+        else {
+            return; // no GPU available; skip
+        };
+        let (device, queue) = pollster::block_on(adapter.request_device(&DeviceDescriptor {
+            label: Some("p2-test-device"),
+            required_features: wgpu::Features::empty(),
+            experimental_features: wgpu::ExperimentalFeatures::disabled(),
+            required_limits: wgpu::Limits::default(),
+            memory_hints: wgpu::MemoryHints::Performance,
+            trace: wgpu::Trace::Off,
+        }))
+        .expect("request test device");
+        let mut renderer = Renderer::new_offscreen(device.clone(), queue, None, false, false)
+            .expect("offscreen renderer");
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("p2-test-preview"),
+            size: wgpu::Extent3d {
+                width: 64,
+                height: 64,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let mesh = crate::frame::SceneMesh {
+            vertices: Vec::new(),
+            draws: Vec::new(),
+            paths: Vec::new(),
+            font_atlas: None,
+        };
+        let outcome = renderer.render_into_texture(&mesh, None, &view, 64, 64);
+        assert!(matches!(outcome, RenderOutcome::Presented));
+        let pixels = renderer
+            .copy_texture_to_cpu(&texture, 64, 64)
+            .expect("preview readback");
+        assert_eq!(pixels.len(), 64 * 64 * 4);
+        // Clear color is (0.04, 0.07, 0.12); the frame must not be all zero.
+        assert!(
+            pixels.iter().any(|&byte| byte > 0),
+            "offscreen frame is blank"
+        );
+    }
 }
