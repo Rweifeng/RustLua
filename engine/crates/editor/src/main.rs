@@ -830,6 +830,15 @@ impl EditorApp {
             self.publish.running = false;
             self.publish.done = true;
             self.publish.rx = None;
+            // 诊断：把本次发布输出落盘到 <workspace>/artifacts/builds/release/publish-last.log
+            if let Some(dir) = &self.publish.package_dir {
+                let log = dir
+                    .parent()
+                    .unwrap_or_else(|| Path::new("."))
+                    .join("publish-last.log");
+                let _ = std::fs::create_dir_all(log.parent().unwrap_or(Path::new(".")));
+                let _ = std::fs::write(&log, &self.publish.output);
+            }
         }
     }
 
@@ -2005,5 +2014,35 @@ mod publish_tests {
             parts.iter().filter(|p| **p == "C:/fake/cargo/bin").count(),
             1
         );
+    }
+
+    #[test]
+    fn publish_spawn_end_to_end() {
+        // 复现编辑器「打包发布」全路径：找到脚本、spawn、收集输出与退出码。
+        let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p| p.parent())
+            .and_then(|p| p.parent())
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+        let Some(script) = find_publish_script(&workspace) else {
+            eprintln!("未找到发布脚本，跳过");
+            return;
+        };
+        let (tx, rx) = channel();
+        spawn_publish(script, tx);
+        let mut output = String::new();
+        let mut success = false;
+        while let Ok(event) = rx.recv() {
+            match event {
+                PublishEvent::Line(text) => output.push_str(&text),
+                PublishEvent::Finished(s) => {
+                    success = s;
+                    break;
+                }
+            }
+        }
+        eprintln!("=== 发布输出开始 ===\n{output}=== 发布输出结束 === success={success}");
+        assert!(success, "发布应成功；输出：\n{output}");
     }
 }
