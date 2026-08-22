@@ -6,7 +6,8 @@ use ab_glyph::{Font, FontArc};
 use std::collections::HashMap;
 
 /// Rasterize scale in device pixels; each glyph is stored in a `cell` square.
-const RASTER_SCALE: f32 = 28.0;
+/// 40px 保证放大到 ~12*scale 显示时仍清晰。
+const RASTER_SCALE: f32 = 40.0;
 /// Atlas grid: `COLS * ROWS` cells (256 slots is enough for menus/HUD).
 const COLS: u32 = 16;
 const ROWS: u32 = 16;

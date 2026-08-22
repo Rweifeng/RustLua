@@ -259,7 +259,9 @@ impl TextLayout {
             size: [0.0, 0.0],
         };
         let ascii_advance = 6.0 * style.scale + style.spacing;
-        let cjk_advance = 7.0 * style.scale + style.spacing;
+        // 中文字形为方块，按更大的 em 显示（12x 而非 ASCII 的 7x），否则太小。
+        let cjk_em = 12.0 * style.scale;
+        let cjk_advance = cjk_em + style.spacing;
         let line_height = 8.0 * style.scale + style.line_spacing;
         let mut x = origin[0];
         let mut y = origin[1];
@@ -284,12 +286,7 @@ impl TextLayout {
                     ascii_advance,
                 )
             } else {
-                (
-                    font.uv(character),
-                    7.0 * style.scale,
-                    7.0 * style.scale,
-                    cjk_advance,
-                )
+                (font.uv(character), cjk_em, cjk_em, cjk_advance)
             };
             let x1 = x + w;
             let y1 = y + h;
