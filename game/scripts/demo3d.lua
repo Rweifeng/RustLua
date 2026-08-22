@@ -10,11 +10,33 @@ local elapsed = 0
 local speed = 2.0
 local warrior_clips = { "Idle", "Running_A", "1H_Melee_Attack_Chop", "Idle" }
 local warrior_index = 1
+local grid_spawned = false
+
+--- 生成 8x8 实例网格（相同 mesh 触发实例化 + 视锥剔除基线）。
+function M.spawn_grid()
+    if grid_spawned then
+        return
+    end
+    grid_spawned = true
+    local n = 0
+    for gx = 0, 7 do
+        for gz = 0, 7 do
+            local id = entity.spawn("Inst_" .. gx .. "_" .. gz)
+            transform3d.attach(id)
+            transform3d.set(id, (gx - 3.5) * 2.5, 0.7, (gz - 3.5) * 2.5)
+            mesh.set(id, "assets/models/m8-test-triangle.glb")
+            n = n + 1
+        end
+    end
+    log.info("demo3d: spawned " .. n .. " instanced triangles")
+end
 
 function M.on_create()
     camera_index = 1
     warrior_index = 1
     elapsed = 0
+    grid_spawned = false
+    M.spawn_grid()
     local cam = entity.find(camera_names[1])
     if cam and entity.is_alive(cam) then
         camera.set_active(cam)

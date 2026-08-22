@@ -281,6 +281,22 @@ fn parse_camera_number(raw: &str) -> Result<f32, Camera3dComponentError> {
 pub struct Frustum {
     view_projection: Mat4,
 }
+
+/// A world-space frustum plane `normal · p + distance = 0`; points with a
+/// positive signed distance lie on the inside (camera-facing) side.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Plane {
+    pub normal: Vec3,
+    pub distance: f32,
+}
+
+impl Plane {
+    /// Signed distance of `point` from the plane (positive = inside).
+    pub fn signed_distance(self, point: Vec3) -> f32 {
+        self.normal.dot(point) + self.distance
+    }
+}
+
 impl Frustum {
     pub fn contains_point(self, point: Vec3) -> bool {
         self.classify_point(point) == FrustumClassification::Inside
@@ -294,6 +310,72 @@ impl Frustum {
         } else {
             FrustumClassification::Outside
         }
+    }
+
+    /// Extracts the six world-space clip planes (Gribb–Hartmann) from the
+    /// view-projection matrix. Normals are normalized, so sphere offsets are
+    /// exact.
+    pub fn planes(self) -> [Plane; 6] {
+        let m = &self.view_projection.columns;
+        let rows = [
+            [m[0][0], m[1][0], m[2][0], m[3][0]],
+            [m[0][1], m[1][1], m[2][1], m[3][1]],
+            [m[0][2], m[1][2], m[2][2], m[3][2]],
+            [m[0][3], m[1][3], m[2][3], m[3][3]],
+        ];
+        // Clip-space z is [0, 1]; combine rows to build the six planes so that
+        // `inside` means a positive signed distance:
+        //   left = clip.x + clip.w >= 0  ->  row0 + row3
+        //   right = clip.w - clip.x >= 0 -> -row0 + row3
+        //   bottom = clip.y + clip.w >= 0  ->  row1 + row3
+        //   top = clip.w - clip.y >= 0  ->  -row1 + row3
+        //   near = clip.z >= 0  ->  row2
+        //   far = clip.w - clip.z >= 0  ->  -row2 + row3
+        let combos: [(usize, f32, f32); 6] = [
+            (0, 1.0, 1.0),
+            (1, 1.0, 1.0),
+            (2, 1.0, 0.0),
+            (0, -1.0, 1.0),
+            (1, -1.0, 1.0),
+            (2, -1.0, 1.0),
+        ];
+        let mut result = [Plane {
+            normal: Vec3::ZERO,
+            distance: 0.0,
+        }; 6];
+        for (index, (row_index, row_sign, row3_sign)) in combos.into_iter().enumerate() {
+            let row = rows[row_index];
+            let mut normal = Vec3::new(
+                row_sign * row[0] + row3_sign * rows[3][0],
+                row_sign * row[1] + row3_sign * rows[3][1],
+                row_sign * row[2] + row3_sign * rows[3][2],
+            );
+            let distance = row_sign * row[3] + row3_sign * rows[3][3];
+            let length = normal.length();
+            if length > f32::EPSILON {
+                normal = normal / length;
+            }
+            result[index] = Plane {
+                normal,
+                distance: distance / length.max(f32::EPSILON),
+            };
+        }
+        result
+    }
+
+    /// Returns whether a world-space bounding sphere intersects the frustum.
+    /// Conservative: touching the boundary counts as visible, so culling never
+    /// removes geometry that could be on screen.
+    pub fn contains_sphere(self, center: Vec3, radius: f32) -> bool {
+        if !radius.is_finite() || radius < 0.0 {
+            return true;
+        }
+        for plane in self.planes() {
+            if plane.signed_distance(center) < -radius {
+                return false;
+            }
+        }
+        true
     }
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -331,6 +413,46 @@ mod tests {
         let frustum = camera.frustum().unwrap();
         assert!(frustum.contains_point(Vec3::ZERO));
         assert!(!frustum.contains_point(Vec3::new(0.0, 0.0, 6.0)));
+    }
+
+    #[test]
+    fn frustum_sphere_culling_respects_radius() {
+        let camera = camera();
+        let frustum = camera.frustum().unwrap();
+        // Behind the camera (near plane) is culled; a large radius that reaches
+        // back in front is kept.
+        assert!(!frustum.contains_sphere(Vec3::new(0.0, 0.0, 6.0), 0.0));
+        assert!(frustum.contains_sphere(Vec3::new(0.0, 0.0, 6.0), 1.5));
+        // Far outside a side plane is culled unless the radius reaches in.
+        assert!(!frustum.contains_sphere(Vec3::new(6.0, 0.0, 0.0), 0.1));
+        assert!(frustum.contains_sphere(Vec3::new(6.0, 0.0, 0.0), 3.0));
+        // Inside and boundary points are always visible.
+        assert!(frustum.contains_sphere(Vec3::ZERO, 0.0));
+        assert!(frustum.contains_sphere(Vec3::new(0.0, 0.0, 4.9), 0.0));
+        // Non-finite radii degrade to visible (never cull).
+        assert!(frustum.contains_sphere(Vec3::new(50.0, 50.0, 50.0), f32::NAN));
+    }
+
+    #[test]
+    fn frustum_planes_agree_with_point_classification() {
+        let camera = camera();
+        let frustum = camera.frustum().unwrap();
+        let inside = Vec3::ZERO;
+        let outside = Vec3::new(0.0, 0.0, 6.0);
+        // The origin is inside every plane (positive signed distance).
+        for plane in frustum.planes() {
+            assert!(
+                plane.signed_distance(inside) >= 0.0,
+                "origin inside all planes"
+            );
+        }
+        // A point far behind the camera violates at least one plane.
+        assert!(
+            frustum
+                .planes()
+                .iter()
+                .any(|plane| plane.signed_distance(outside) < 0.0)
+        );
     }
     #[test]
     fn invalid_perspective_is_rejected() {

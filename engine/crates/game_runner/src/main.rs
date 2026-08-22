@@ -71,7 +71,7 @@ struct VertexOutput {
 const MESH3D_SHADER: &str = r#"
 struct Camera { view_projection: mat4x4<f32> };
 struct Light { direction: vec4<f32>, color_intensity: vec4<f32> };
-struct Material { base_color: vec4<f32>, surface: vec4<f32>, model: mat4x4<f32> };
+struct Material { base_color: vec4<f32>, surface: vec4<f32> };
 @group(0) @binding(0) var<uniform> camera: Camera;
 @group(0) @binding(1) var<uniform> light: Light;
 @group(0) @binding(2) var<uniform> shadow_camera: Camera;
@@ -79,9 +79,11 @@ struct Material { base_color: vec4<f32>, surface: vec4<f32>, model: mat4x4<f32> 
 @group(0) @binding(4) var shadow_sampler: sampler_comparison;
 @group(1) @binding(0) var<uniform> material: Material;
 @group(1) @binding(1) var<uniform> joint_palette: array<mat4x4<f32>, 128>;
+@group(1) @binding(2) var<storage, read> instance_models: array<mat4x4<f32>>;
 struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) normal: vec3<f32>, @location(1) shadow_position: vec4<f32> };
-@vertex fn vs_main(@location(0) position: vec3<f32>, @location(1) normal: vec3<f32>, @location(2) uv: vec2<f32>, @location(3) joint_indices: vec4<u32>, @location(4) bone_weights: vec4<f32>) -> VertexOutput {
+@vertex fn vs_main(@builtin(instance_index) instance_index: u32, @location(0) position: vec3<f32>, @location(1) normal: vec3<f32>, @location(2) uv: vec2<f32>, @location(3) joint_indices: vec4<u32>, @location(4) bone_weights: vec4<f32>) -> VertexOutput {
     var out: VertexOutput;
+    let model = instance_models[instance_index];
     let skinned = material.surface.z > 0.5;
     var local_position = vec4<f32>(position, 1.0);
     var local_normal = vec4<f32>(normal, 0.0);
@@ -99,7 +101,7 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) norma
         local_position = vec4<f32>(skinned_position, 1.0);
         local_normal = vec4<f32>(skinned_normal, 0.0);
     }
-    let world_position = material.model * local_position;
+    let world_position = model * local_position;
     out.position = camera.view_projection * world_position;
     out.normal = local_normal.xyz;
     out.shadow_position = shadow_camera.view_projection * world_position;
@@ -123,11 +125,13 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) norma
 
 const SHADOW_SHADER: &str = r#"
 struct Camera { view_projection: mat4x4<f32> };
-struct Material { base_color: vec4<f32>, surface: vec4<f32>, model: mat4x4<f32> };
+struct Material { base_color: vec4<f32>, surface: vec4<f32> };
 @group(0) @binding(0) var<uniform> camera: Camera;
 @group(1) @binding(0) var<uniform> material: Material;
 @group(1) @binding(1) var<uniform> joint_palette: array<mat4x4<f32>, 128>;
-@vertex fn vs_main(@location(0) position: vec3<f32>, @location(1) normal: vec3<f32>, @location(2) uv: vec2<f32>, @location(3) joint_indices: vec4<u32>, @location(4) bone_weights: vec4<f32>) -> @builtin(position) vec4<f32> {
+@group(1) @binding(2) var<storage, read> instance_models: array<mat4x4<f32>>;
+@vertex fn vs_main(@builtin(instance_index) instance_index: u32, @location(0) position: vec3<f32>, @location(1) normal: vec3<f32>, @location(2) uv: vec2<f32>, @location(3) joint_indices: vec4<u32>, @location(4) bone_weights: vec4<f32>) -> @builtin(position) vec4<f32> {
+    let model = instance_models[instance_index];
     let skinned = material.surface.z > 0.5;
     var local_position = vec4<f32>(position, 1.0);
     if skinned {
@@ -138,7 +142,7 @@ struct Material { base_color: vec4<f32>, surface: vec4<f32>, model: mat4x4<f32> 
         skinned_position += (joint_palette[joint_indices.w] * local_position).xyz * bone_weights.w;
         local_position = vec4<f32>(skinned_position, 1.0);
     }
-    return camera.view_projection * material.model * local_position;
+    return camera.view_projection * model * local_position;
 }
 "#;
 
@@ -196,14 +200,13 @@ struct GpuGeometry {
     index_count: u32,
 }
 
-/// File-authored material parameters for one primitive; the per-draw model
-/// matrix is filled in at frame time from the owning entity's `Transform3D`.
+/// File-authored material parameters for one primitive. The per-draw model
+/// matrix is supplied through the instance buffer instead.
 #[derive(Clone, Copy)]
 struct GpuMaterial {
     base_color: [f32; 4],
     metallic: f32,
     roughness: f32,
-    model: Mat4,
     /// Whether the owning entity has a skinned `Animation3D` palette.
     skinned: bool,
 }
@@ -218,6 +221,8 @@ struct CachedPrimitive {
     base_color: [f32; 4],
     metallic: f32,
     roughness: f32,
+    /// Local-space bounding sphere (center, radius) used for frustum culling.
+    bounds: (Vec3, f32),
 }
 
 /// One scene entity's 3D draw requested this frame. A non-empty `palette`
@@ -228,12 +233,32 @@ struct Scene3dDrawable {
     palette: Vec<Mat4>,
 }
 
-/// A fully-resolved frame draw: cached geometry plus per-entity material and
-/// the joint palette (empty for static meshes).
+/// A fully-resolved frame draw: cached geometry plus per-entity material, the
+/// joint palette (empty for static meshes), and per-instance model matrices.
 struct FrameDraw {
     geometry: GpuGeometry,
     material: GpuMaterial,
     palette: Vec<Mat4>,
+    models: Vec<Mat4>,
+}
+
+/// Static drawables sharing one mesh path + primitive, accumulated for a
+/// single instanced draw call.
+struct StaticGroup {
+    geometry: GpuGeometry,
+    material: GpuMaterial,
+    models: Vec<Mat4>,
+}
+
+/// Largest axis scale of a model matrix (used to inflate culling spheres).
+fn max_model_scale(model: Mat4) -> f32 {
+    let sx =
+        model.columns[0][0].powi(2) + model.columns[0][1].powi(2) + model.columns[0][2].powi(2);
+    let sy =
+        model.columns[1][0].powi(2) + model.columns[1][1].powi(2) + model.columns[1][2].powi(2);
+    let sz =
+        model.columns[2][0].powi(2) + model.columns[2][1].powi(2) + model.columns[2][2].powi(2);
+    sx.max(sy).max(sz).sqrt().max(f32::EPSILON)
 }
 
 /// Per-frame 3D render state gathered from the runtime world: the active
@@ -278,15 +303,36 @@ struct Renderer {
     identity_palette: wgpu::Buffer,
     /// GPU geometry + file materials cached by mesh path.
     mesh_cache: HashMap<String, CachedMesh>,
+    /// CPU frustum culling of scene drawables (M8-08).
+    cull_enabled: bool,
+    /// Grouping of same mesh/material draws into instanced calls (M8-08).
+    instancing_enabled: bool,
+    /// Frames rendered since startup, for periodic baseline logging.
+    frame_count: u64,
     _material_bind_group_layout: wgpu::BindGroupLayout,
 }
 
 impl Renderer {
-    fn new(window: Arc<Window>, project_root: Option<PathBuf>) -> Result<Self, String> {
-        pollster::block_on(Self::new_async(window, project_root))
+    fn new(
+        window: Arc<Window>,
+        project_root: Option<PathBuf>,
+        cull_enabled: bool,
+        instancing_enabled: bool,
+    ) -> Result<Self, String> {
+        pollster::block_on(Self::new_async(
+            window,
+            project_root,
+            cull_enabled,
+            instancing_enabled,
+        ))
     }
 
-    async fn new_async(window: Arc<Window>, project_root: Option<PathBuf>) -> Result<Self, String> {
+    async fn new_async(
+        window: Arc<Window>,
+        project_root: Option<PathBuf>,
+        cull_enabled: bool,
+        instancing_enabled: bool,
+    ) -> Result<Self, String> {
         let size = window.inner_size();
         let instance = Instance::new(&InstanceDescriptor::default());
         let surface = instance
@@ -492,7 +538,7 @@ impl Renderer {
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Uniform,
                             has_dynamic_offset: false,
-                            min_binding_size: wgpu::BufferSize::new(96),
+                            min_binding_size: wgpu::BufferSize::new(32),
                         },
                         count: None,
                     },
@@ -505,6 +551,16 @@ impl Renderer {
                             min_binding_size: wgpu::BufferSize::new(
                                 (engine_core::mesh3d::MAX_BONES * 64) as u64,
                             ),
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: wgpu::BufferSize::new(64),
                         },
                         count: None,
                     },
@@ -789,6 +845,9 @@ impl Renderer {
             shadow_camera_buffer,
             identity_palette,
             mesh_cache: HashMap::new(),
+            cull_enabled,
+            instancing_enabled,
+            frame_count: 0,
             _material_bind_group_layout: material_bind_group_layout,
         })
     }
@@ -873,6 +932,7 @@ impl Renderer {
                         .unwrap_or([0.55, 0.7, 1.0, 1.0]),
                     metallic: material.map(|value| value.metallic_factor).unwrap_or(0.0),
                     roughness: material.map(|value| value.roughness_factor).unwrap_or(0.6),
+                    bounds: compute_mesh_bounds(&primitive.vertices),
                 });
             }
         }
@@ -922,6 +982,7 @@ impl Renderer {
                 base_color: [0.25, 0.3, 0.38, 1.0],
                 metallic: 0.0,
                 roughness: 0.9,
+                bounds: compute_mesh_bounds(&vertices),
             }],
         }
     }
@@ -952,11 +1013,16 @@ impl Renderer {
         }
     }
 
-    /// Creates a material bind group carrying one primitive's file material
-    /// plus the owning entity's model matrix, and the joint palette (identity
-    /// for static meshes, the animated palette for skinned drawables).
-    fn material_bind_group(&self, material: GpuMaterial, palette: &[Mat4]) -> wgpu::BindGroup {
-        let mut material_data = Vec::with_capacity(6);
+    /// Creates a material bind group carrying one primitive's file material,
+    /// the joint palette (identity for static meshes, animated for skinned
+    /// drawables), and the per-instance model matrices.
+    fn material_bind_group(
+        &self,
+        material: GpuMaterial,
+        palette: &[Mat4],
+        models: &[Mat4],
+    ) -> wgpu::BindGroup {
+        let mut material_data = Vec::with_capacity(2);
         material_data.push(material.base_color);
         material_data.push([
             material.metallic,
@@ -964,7 +1030,6 @@ impl Renderer {
             if material.skinned { 1.0 } else { 0.0 },
             0.0,
         ]);
-        material_data.extend_from_slice(&material.model.columns);
         let material_buffer = self
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -982,6 +1047,17 @@ impl Renderer {
         } else {
             self.identity_palette.clone()
         };
+        let mut instance_data = Vec::with_capacity(models.len() * 4);
+        for model in models {
+            instance_data.extend_from_slice(&model.columns);
+        }
+        let instance_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("p2-instance-models-frame-buffer"),
+                contents: bytemuck::cast_slice(&instance_data),
+                usage: wgpu::BufferUsages::STORAGE,
+            });
         self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("p2-material3d-frame-bind-group"),
             layout: &self._material_bind_group_layout,
@@ -993,6 +1069,10 @@ impl Renderer {
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: palette_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: instance_buffer.as_entire_binding(),
                 },
             ],
         })
@@ -1023,29 +1103,80 @@ impl Renderer {
     }
 
     /// Gathers this frame's 3D draws: every scene entity with both a
-    /// `Transform3D` and a `MeshRenderer`, resolved to cached geometry, the
-    /// per-entity model matrix, and the animated joint palette (if any).
+    /// `Transform3D` and a `MeshRenderer`, CPU-culled against the camera
+    /// frustum, resolved to cached geometry. Static drawables sharing a mesh
+    /// path and primitive are grouped into one instanced draw when enabled.
     fn frame_3d_draws(&mut self, scene: &Scene3d) -> Vec<FrameDraw> {
-        let mut draws = Vec::new();
+        let frustum = if self.cull_enabled {
+            scene.camera.frustum().ok()
+        } else {
+            None
+        };
+        let mut groups: HashMap<(String, usize), StaticGroup> = HashMap::new();
+        let mut draws: Vec<FrameDraw> = Vec::new();
+        let instancing_enabled = self.instancing_enabled;
         for drawable in &scene.drawables {
             let Some(cached) = self.cached_mesh(&drawable.mesh_path) else {
                 continue;
             };
-            let palette = drawable.palette.clone();
-            let skinned = !palette.is_empty();
-            for primitive in &cached.primitives {
-                draws.push(FrameDraw {
-                    geometry: primitive.geometry.clone(),
-                    material: GpuMaterial {
-                        base_color: primitive.base_color,
-                        metallic: primitive.metallic,
-                        roughness: primitive.roughness,
-                        model: drawable.model,
-                        skinned,
-                    },
-                    palette: palette.clone(),
-                });
+            for (prim_index, primitive) in cached.primitives.iter().enumerate() {
+                if let Some(frustum) = frustum {
+                    let world_center = drawable
+                        .model
+                        .transform_point(primitive.bounds.0)
+                        .unwrap_or(primitive.bounds.0);
+                    let world_radius = primitive.bounds.1 * max_model_scale(drawable.model);
+                    if !frustum.contains_sphere(world_center, world_radius) {
+                        continue;
+                    }
+                }
+                let material = GpuMaterial {
+                    base_color: primitive.base_color,
+                    metallic: primitive.metallic,
+                    roughness: primitive.roughness,
+                    skinned: !drawable.palette.is_empty(),
+                };
+                if drawable.palette.is_empty() && instancing_enabled {
+                    groups
+                        .entry((drawable.mesh_path.clone(), prim_index))
+                        .or_insert_with(|| StaticGroup {
+                            geometry: primitive.geometry.clone(),
+                            material,
+                            models: Vec::new(),
+                        })
+                        .models
+                        .push(drawable.model);
+                } else {
+                    draws.push(FrameDraw {
+                        geometry: primitive.geometry.clone(),
+                        material,
+                        palette: drawable.palette.clone(),
+                        models: vec![drawable.model],
+                    });
+                }
             }
+        }
+        for group in groups.into_values() {
+            draws.push(FrameDraw {
+                geometry: group.geometry,
+                material: group.material,
+                palette: Vec::new(),
+                models: group.models,
+            });
+        }
+        // Periodic M8-08 baseline: instance/draw counts with culling and
+        // instancing active, useful for comparing against --no-cull/--no-instance.
+        self.frame_count = self.frame_count.wrapping_add(1);
+        if self.frame_count.is_multiple_of(120) {
+            let instances: usize = draws.iter().map(|draw| draw.models.len()).sum();
+            tracing::info!(
+                target: "render",
+                draws = draws.len(),
+                instances,
+                cull = self.cull_enabled,
+                instancing = self.instancing_enabled,
+                "[render] 3D baseline draws/instances"
+            );
         }
         draws
     }
@@ -1140,14 +1271,18 @@ impl Renderer {
                 shadow_pass.set_pipeline(&self.shadow_pipeline);
                 shadow_pass.set_bind_group(0, &self.shadow_bind_group, &[]);
                 for draw in &frame_draws {
-                    let bind = self.material_bind_group(draw.material, &draw.palette);
+                    let bind = self.material_bind_group(draw.material, &draw.palette, &draw.models);
                     shadow_pass.set_bind_group(1, &bind, &[]);
                     shadow_pass.set_vertex_buffer(0, draw.geometry.vertex_buffer.slice(..));
                     shadow_pass.set_index_buffer(
                         draw.geometry.index_buffer.slice(..),
                         wgpu::IndexFormat::Uint32,
                     );
-                    shadow_pass.draw_indexed(0..draw.geometry.index_count, 0, 0..1);
+                    shadow_pass.draw_indexed(
+                        0..draw.geometry.index_count,
+                        0,
+                        0..draw.models.len() as u32,
+                    );
                 }
             }
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1175,14 +1310,14 @@ impl Renderer {
             pass.set_pipeline(&self.mesh_pipeline);
             pass.set_bind_group(0, &self.camera_bind_group, &[]);
             for draw in &frame_draws {
-                let bind = self.material_bind_group(draw.material, &draw.palette);
+                let bind = self.material_bind_group(draw.material, &draw.palette, &draw.models);
                 pass.set_bind_group(1, &bind, &[]);
                 pass.set_vertex_buffer(0, draw.geometry.vertex_buffer.slice(..));
                 pass.set_index_buffer(
                     draw.geometry.index_buffer.slice(..),
                     wgpu::IndexFormat::Uint32,
                 );
-                pass.draw_indexed(0..draw.geometry.index_count, 0, 0..1);
+                pass.draw_indexed(0..draw.geometry.index_count, 0, 0..draw.models.len() as u32);
             }
         }
         if !mesh.vertices.is_empty() {
@@ -1414,6 +1549,33 @@ impl Renderer {
         });
         Some(bind_group)
     }
+}
+
+/// Conservative local-space bounding sphere from a primitive's vertex AABB.
+fn compute_mesh_bounds(vertices: &[engine_core::mesh3d::MeshVertex]) -> (Vec3, f32) {
+    let mut min = [f32::INFINITY; 3];
+    let mut max = [f32::NEG_INFINITY; 3];
+    for vertex in vertices {
+        for index in 0..3 {
+            min[index] = min[index].min(vertex.position[index]);
+            max[index] = max[index].max(vertex.position[index]);
+        }
+    }
+    if !min[0].is_finite() {
+        return (Vec3::ZERO, 0.0);
+    }
+    let center = Vec3::new(
+        (min[0] + max[0]) * 0.5,
+        (min[1] + max[1]) * 0.5,
+        (min[2] + max[2]) * 0.5,
+    );
+    let half = Vec3::new(
+        (max[0] - min[0]) * 0.5,
+        (max[1] - min[1]) * 0.5,
+        (max[2] - min[2]) * 0.5,
+    );
+    let radius = half.length().max(f32::EPSILON);
+    (center, radius)
 }
 
 /// Builds the joint-palette uniform data padded to `MAX_BONES` identity
@@ -2100,10 +2262,14 @@ struct GameApp {
     overlay_enabled: bool,
     runtime_scene: Option<RuntimeScene>,
     project_root: Option<PathBuf>,
+    /// CPU frustum culling (M8-08); off via `--no-cull` for baselines.
+    cull_enabled: bool,
+    /// Same mesh/material instancing (M8-08); off via `--no-instance`.
+    instancing_enabled: bool,
 }
 
 impl GameApp {
-    fn new(project_root: Option<PathBuf>) -> Self {
+    fn new(project_root: Option<PathBuf>, cull_enabled: bool, instancing_enabled: bool) -> Self {
         Self {
             window: None,
             renderer: None,
@@ -2116,6 +2282,8 @@ impl GameApp {
             overlay_enabled: true,
             runtime_scene: None,
             project_root,
+            cull_enabled,
+            instancing_enabled,
         }
     }
 
@@ -2269,7 +2437,12 @@ impl ApplicationHandler for GameApp {
             .with_inner_size(PhysicalSize::new(1280, 720));
         let window = Arc::new(event_loop.create_window(attributes).expect("create window"));
         tracing::info!(target: "game", "[window] created: {:?}", window.id());
-        match Renderer::new(window.clone(), self.project_root.clone()) {
+        match Renderer::new(
+            window.clone(),
+            self.project_root.clone(),
+            self.cull_enabled,
+            self.instancing_enabled,
+        ) {
             Ok(renderer) => {
                 self.window = Some(window);
                 self.renderer = Some(renderer);
@@ -2478,6 +2651,10 @@ struct Arguments {
     pack: bool,
     /// 仅校验资源完整性后退出（不弹窗口），供 CI/打包自测使用。
     check: bool,
+    /// 关闭 CPU 视锥剔除（M8-08 基线回退）。
+    no_cull: bool,
+    /// 关闭实例化（M8-08 基线回退）。
+    no_instance: bool,
 }
 
 fn parse_arguments() -> Result<Arguments, String> {
@@ -2497,6 +2674,8 @@ fn parse_arguments() -> Result<Arguments, String> {
                 args.pack = true;
             }
             "--check" => args.check = true,
+            "--no-cull" => args.no_cull = true,
+            "--no-instance" => args.no_instance = true,
             "--log-filter" => {
                 args.log_filter = Some(
                     values
@@ -2672,7 +2851,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let event_loop = EventLoop::new()?;
-    event_loop.run_app(&mut GameApp::new(project))?;
+    event_loop.run_app(&mut GameApp::new(
+        project,
+        !arguments.no_cull,
+        !arguments.no_instance,
+    ))?;
     Ok(())
 }
 
