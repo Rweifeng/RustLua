@@ -1,5 +1,7 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::{
     env,
     error::Error,
@@ -234,24 +236,133 @@ struct EditorApp {
     scene_state: SceneEditorState,
     inspector_clipboard: Option<ComponentClipboard>,
     inspector_transform_open: bool,
-    publish: PublishState,
+    progress: ProgressPanel,
 }
 
-/// 发布（Release 打包）后台任务状态。
+/// 通用进度面板：后台任务 + 进度/日志 + 非阻塞窗口。
+/// 可复用于导入、发布等任何耗时操作（任务在线程中执行，UI 不阻塞）。
 #[derive(Default)]
-struct PublishState {
-    rx: Option<Receiver<PublishEvent>>,
+struct ProgressPanel {
+    title: String,
+    rx: Option<Receiver<ProgressEvent>>,
     output: String,
+    /// 确定进度 `0..=1`；`None` 表示不定进度（动画条）。
+    progress: Option<f32>,
     running: bool,
     done: bool,
     success: bool,
     show: bool,
-    package_dir: Option<PathBuf>,
+    /// 任务结果负载（任务线程发送，主线程 poll 完成后按需取用）。
+    result: Option<Box<dyn std::any::Any + Send>>,
+    /// 完成时展示的目录（如发布包目录），可「打开目录」。
+    output_dir: Option<PathBuf>,
 }
 
-enum PublishEvent {
+enum ProgressEvent {
     Line(String),
-    Finished(bool),
+    // 通用组件 API：供后续进度任务发送确定进度（当前任务未用，保留）。
+    #[allow(dead_code)]
+    Progress(f32),
+    Finished {
+        success: bool,
+        result: Option<Box<dyn std::any::Any + Send>>,
+    },
+}
+
+impl ProgressPanel {
+    fn start(
+        &mut self,
+        title: impl Into<String>,
+        rx: Receiver<ProgressEvent>,
+        output_dir: Option<PathBuf>,
+    ) {
+        self.title = title.into();
+        self.rx = Some(rx);
+        self.output.clear();
+        self.progress = None;
+        self.running = true;
+        self.done = false;
+        self.success = false;
+        self.show = true;
+        self.result = None;
+        self.output_dir = output_dir;
+    }
+
+    /// 每帧排空事件；返回本帧是否刚完成。
+    fn poll(&mut self) -> bool {
+        if !self.running {
+            return false;
+        }
+        let events: Vec<ProgressEvent> = if let Some(rx) = self.rx.as_ref() {
+            std::iter::from_fn(|| rx.try_recv().ok()).collect()
+        } else {
+            Vec::new()
+        };
+        let mut finished = false;
+        for event in events {
+            match event {
+                ProgressEvent::Line(text) => self.output.push_str(&text),
+                ProgressEvent::Progress(value) => self.progress = Some(value),
+                ProgressEvent::Finished { success, result } => {
+                    finished = true;
+                    self.success = success;
+                    self.result = result;
+                }
+            }
+        }
+        if finished {
+            self.running = false;
+            self.done = true;
+            self.rx = None;
+        }
+        finished
+    }
+
+    fn window(&mut self, context: &egui::Context) {
+        if !self.show {
+            return;
+        }
+        egui::Window::new(&self.title).show(context, |ui| {
+            let status = if self.running {
+                "进行中..."
+            } else if self.success {
+                "✔ 完成"
+            } else {
+                "✘ 失败"
+            };
+            ui.colored_label(
+                if self.success {
+                    egui::Color32::LIGHT_GREEN
+                } else {
+                    egui::Color32::LIGHT_RED
+                },
+                status,
+            );
+            if let Some(progress) = self.progress {
+                ui.add(egui::ProgressBar::new(progress).show_percentage());
+            } else if self.running {
+                ui.add(egui::ProgressBar::new(0.0).animate(true));
+            }
+            egui::ScrollArea::vertical()
+                .max_height(320.0)
+                .stick_to_bottom(true)
+                .show(ui, |ui| {
+                    ui.monospace(&self.output);
+                });
+            if self.done {
+                if let Some(dir) = &self.output_dir {
+                    ui.label(format!("输出：{}", dir.display()));
+                    if ui.button("打开目录").clicked() {
+                        let _ = Command::new("explorer").arg(dir).spawn();
+                    }
+                }
+                if ui.button("关闭").clicked() {
+                    self.show = false;
+                    self.done = false;
+                }
+            }
+        });
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -330,36 +441,7 @@ impl EditorApp {
             scene_state: SceneEditorState::default(),
             inspector_clipboard: None,
             inspector_transform_open: true,
-            publish: PublishState::default(),
-        }
-    }
-
-    fn import_game_project(&mut self) {
-        let path = self.import_path.trim();
-        if path.is_empty() {
-            self.status = "Enter a game project directory first".to_owned();
-            return;
-        }
-        match open_project(path) {
-            Ok(project) if project.root.join("project.toml").is_file() => {
-                self.project = project.clone();
-                self.document = ProjectDocument::open(project.clone());
-                self.recovery = RecoveryManager::new(project.root.join(".temp"));
-                self.recovery_scan = self.recovery.scan().unwrap_or_default();
-                self.history.clear();
-                self.autosave.reset();
-                self.lua_runtime = None;
-                self.play_session = None;
-                self.tree.clear_selection();
-                self.inspector.clear_selection();
-                self.project_loaded = true;
-                self.refresh_resources();
-                self.status = format!("Imported game project: {}", project.root.display());
-            }
-            Ok(_) => {
-                self.status = "Not a standalone game project: project.toml is missing".to_owned()
-            }
-            Err(error) => self.status = format_project_error(Path::new(path), error),
+            progress: ProgressPanel::default(),
         }
     }
 
@@ -771,118 +853,91 @@ impl EditorApp {
 }
 
 impl EditorApp {
-    /// 启动 Release 发布打包（后台执行 scripts/package.ps1）。
+    /// 启动 Release 发布打包（后台执行 scripts/package.ps1，非阻塞、不弹终端窗）。
     fn start_publish(&mut self) {
+        if self.progress.running {
+            return;
+        }
         let Some(found) = find_publish_script(&self.project.root) else {
-            self.publish.output = format!(
+            self.progress.output = format!(
                 "未找到发布脚本（向上查找 scripts/package.ps1）：{}",
                 self.project.root.display()
             );
-            self.publish.done = true;
-            self.publish.success = false;
-            self.publish.show = true;
+            self.progress.done = true;
+            self.progress.success = false;
+            self.progress.show = true;
             return;
         };
         // open_project 会生成 \\?\ 逐字路径，PowerShell -File 不识别，需先去掉前缀。
         let script = strip_verbatim(&found);
-        self.publish.output.clear();
-        self.publish.done = false;
-        self.publish.running = true;
-        self.publish.show = true;
         // 发布脚本位于 <workspace>/scripts/package.ps1，发布包输出到 <workspace>/artifacts/builds/release/p2-game。
         let workspace_root = script
             .parent()
             .and_then(|parent| parent.parent())
             .map(Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from("."));
-        self.publish.package_dir = Some(workspace_root.join("artifacts/builds/release/p2-game"));
+        let package_dir = workspace_root.join("artifacts/builds/release/p2-game");
         let (tx, rx) = channel();
-        self.publish.rx = Some(rx);
         spawn_publish(script, tx);
+        self.progress.start("发布打包", rx, Some(package_dir));
     }
 
-    /// 每帧拉取发布进度输出。
-    fn poll_publish(&mut self) {
-        if !self.publish.running {
+    /// 启动导入游戏项目（后台执行，非阻塞）。
+    fn start_import(&mut self) {
+        let path = self.import_path.trim().to_owned();
+        if path.is_empty() {
+            self.status = "Enter a game project directory first".to_owned();
             return;
         }
-        let mut finished = false;
-        if let Some(rx) = self.publish.rx.as_ref()
-            && let Ok(event) = rx.try_recv()
+        if self.progress.running {
+            return;
+        }
+        let (tx, rx) = channel();
+        spawn_import(PathBuf::from(path), tx);
+        self.progress.start("导入游戏项目", rx, None);
+    }
+
+    /// 每帧轮询通用进度面板；任务完成时应用结果（导入）并落盘发布日志。
+    fn poll_progress(&mut self) {
+        let finished = self.progress.poll();
+        if !finished {
+            return;
+        }
+        self.apply_progress_result();
+        // 发布：把输出落盘到 <workspace>/artifacts/builds/release/publish-last.log
+        if let Some(dir) = &self.progress.output_dir
+            && let Some(parent) = dir.parent()
         {
-            match event {
-                PublishEvent::Line(text) => self.publish.output.push_str(&text),
-                PublishEvent::Finished(success) => {
-                    finished = true;
-                    self.publish.success = success;
-                }
-            }
-            // 继续排空剩余事件
-            while let Ok(event) = rx.try_recv() {
-                match event {
-                    PublishEvent::Line(text) => self.publish.output.push_str(&text),
-                    PublishEvent::Finished(success) => {
-                        finished = true;
-                        self.publish.success = success;
-                    }
-                }
-            }
-        }
-        if finished {
-            self.publish.running = false;
-            self.publish.done = true;
-            self.publish.rx = None;
-            // 诊断：把本次发布输出落盘到 <workspace>/artifacts/builds/release/publish-last.log
-            if let Some(dir) = &self.publish.package_dir {
-                let log = dir
-                    .parent()
-                    .unwrap_or_else(|| Path::new("."))
-                    .join("publish-last.log");
-                let _ = std::fs::create_dir_all(log.parent().unwrap_or(Path::new(".")));
-                let _ = std::fs::write(&log, &self.publish.output);
-            }
+            let log = parent.join("publish-last.log");
+            let _ = std::fs::create_dir_all(parent);
+            let _ = std::fs::write(&log, &self.progress.output);
         }
     }
 
-    fn publish_window(&mut self, context: &egui::Context) {
-        if !self.publish.show {
+    /// 任务完成：若是导入，把后台结果应用到编辑器状态。
+    fn apply_progress_result(&mut self) {
+        if !self.progress.done {
             return;
         }
-        egui::Window::new("发布打包").show(context, |ui| {
-            let status = if self.publish.running {
-                "正在打包发布..."
-            } else if self.publish.success {
-                "✔ 发布完成"
-            } else {
-                "✘ 发布失败"
-            };
-            ui.colored_label(
-                if self.publish.success {
-                    egui::Color32::LIGHT_GREEN
-                } else {
-                    egui::Color32::LIGHT_RED
-                },
-                status,
-            );
-            egui::ScrollArea::vertical()
-                .max_height(360.0)
-                .stick_to_bottom(true)
-                .show(ui, |ui| {
-                    ui.monospace(&self.publish.output);
-                });
-            if self.publish.done {
-                if let Some(dir) = &self.publish.package_dir {
-                    ui.label(format!("发布包：{}", dir.display()));
-                    if ui.button("打开目录").clicked() {
-                        let _ = Command::new("explorer").arg(dir).spawn();
-                    }
-                }
-                if ui.button("关闭").clicked() {
-                    self.publish.show = false;
-                    self.publish.done = false;
-                }
-            }
-        });
+        let Some(result) = self.progress.result.take() else {
+            return;
+        };
+        if let Ok(outcome) = result.downcast::<ImportOutcome>() {
+            let outcome = *outcome;
+            self.project = outcome.project;
+            self.document = outcome.document;
+            self.recovery = outcome.recovery;
+            self.recovery_scan = outcome.recovery_scan;
+            self.resources = outcome.resources;
+            self.history.clear();
+            self.autosave.reset();
+            self.lua_runtime = None;
+            self.play_session = None;
+            self.tree.clear_selection();
+            self.inspector.clear_selection();
+            self.project_loaded = true;
+            self.status = format!("Imported game project: {}", self.project.root.display());
+        }
     }
 }
 
@@ -927,14 +982,16 @@ fn prepend_path(bin: &Path) -> String {
 }
 
 /// 后台执行发布脚本，把 stdout/stderr 行转发给 UI 线程。
-fn spawn_publish(script: PathBuf, tx: Sender<PublishEvent>) {
+/// CREATE_NO_WINDOW 保证不弹出额外终端窗口。
+fn spawn_publish(script: PathBuf, tx: Sender<ProgressEvent>) {
     thread::spawn(move || {
         let mut command = Command::new("powershell");
         command
             .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
             .arg(&script)
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::piped())
+            .creation_flags(0x0800_0000); // CREATE_NO_WINDOW
         // 编辑器可能是双击启动（系统 PATH 无 cargo）；把 cargo bin 补进子进程 PATH。
         if let Some(bin) = cargo_bin_dir() {
             command.env("PATH", prepend_path(&bin));
@@ -942,8 +999,11 @@ fn spawn_publish(script: PathBuf, tx: Sender<PublishEvent>) {
         let mut child = match command.spawn() {
             Ok(child) => child,
             Err(error) => {
-                let _ = tx.send(PublishEvent::Line(format!("无法启动发布脚本：{error}\n")));
-                let _ = tx.send(PublishEvent::Finished(false));
+                let _ = tx.send(ProgressEvent::Line(format!("无法启动发布脚本：{error}\n")));
+                let _ = tx.send(ProgressEvent::Finished {
+                    success: false,
+                    result: None,
+                });
                 return;
             }
         };
@@ -955,7 +1015,7 @@ fn spawn_publish(script: PathBuf, tx: Sender<PublishEvent>) {
             if let Some(pipe) = stdout {
                 for line in std::io::BufReader::new(pipe).lines() {
                     if let Ok(line) = line {
-                        if tx_out.send(PublishEvent::Line(line + "\n")).is_err() {
+                        if tx_out.send(ProgressEvent::Line(line + "\n")).is_err() {
                             break;
                         }
                     } else {
@@ -968,7 +1028,7 @@ fn spawn_publish(script: PathBuf, tx: Sender<PublishEvent>) {
             if let Some(pipe) = stderr {
                 for line in std::io::BufReader::new(pipe).lines() {
                     if let Ok(line) = line {
-                        if tx_err.send(PublishEvent::Line(line + "\n")).is_err() {
+                        if tx_err.send(ProgressEvent::Line(line + "\n")).is_err() {
                             break;
                         }
                     } else {
@@ -982,10 +1042,69 @@ fn spawn_publish(script: PathBuf, tx: Sender<PublishEvent>) {
         let _ = h2.join();
         let code = status.as_ref().ok().and_then(|s| s.code());
         let success = status.map(|s| s.success()).unwrap_or(false);
-        let _ = tx.send(PublishEvent::Line(format!(
+        let _ = tx.send(ProgressEvent::Line(format!(
             "\n[editor] 发布进程退出 code={code:?}\n"
         )));
-        let _ = tx.send(PublishEvent::Finished(success));
+        let _ = tx.send(ProgressEvent::Finished {
+            success,
+            result: None,
+        });
+    });
+}
+
+/// 导入游戏项目的后台结果。
+struct ImportOutcome {
+    project: ProjectInfo,
+    document: ProjectDocument,
+    recovery: RecoveryManager,
+    recovery_scan: RecoveryScan,
+    resources: ResourceBrowserState,
+}
+
+/// 后台导入游戏项目：打开项目 + 加载文档 + 扫描资源，结果回传主线程。
+fn spawn_import(path: PathBuf, tx: Sender<ProgressEvent>) {
+    thread::spawn(move || {
+        let _ = tx.send(ProgressEvent::Line(format!(
+            "打开项目 {} ...\n",
+            path.display()
+        )));
+        let result = (|| -> Result<ImportOutcome, String> {
+            let project =
+                open_project(&path).map_err(|error| format_project_error(&path, error))?;
+            if !project.root.join("project.toml").is_file() {
+                return Err("不是独立游戏项目：缺少 project.toml".to_owned());
+            }
+            let document = ProjectDocument::open(project.clone());
+            let recovery = RecoveryManager::new(project.root.join(".temp"));
+            let recovery_scan = recovery.scan().unwrap_or_default();
+            let mut resources = ResourceBrowserState::new();
+            if let Err(error) = resources.refresh(&project.root) {
+                return Err(format!("资源扫描失败：{error}"));
+            }
+            Ok(ImportOutcome {
+                project,
+                document,
+                recovery,
+                recovery_scan,
+                resources,
+            })
+        })();
+        match result {
+            Ok(outcome) => {
+                let _ = tx.send(ProgressEvent::Line("导入完成。\n".to_owned()));
+                let _ = tx.send(ProgressEvent::Finished {
+                    success: true,
+                    result: Some(Box::new(outcome)),
+                });
+            }
+            Err(error) => {
+                let _ = tx.send(ProgressEvent::Line(format!("导入失败：{error}\n")));
+                let _ = tx.send(ProgressEvent::Finished {
+                    success: false,
+                    result: None,
+                });
+            }
+        }
     });
 }
 
@@ -1007,7 +1126,7 @@ impl eframe::App for EditorApp {
             self.redo();
         }
         self.sync_hierarchy_metadata();
-        self.poll_publish();
+        self.poll_progress();
         egui::TopBottomPanel::top("header").show(context, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("RustLua 编辑器");
@@ -1023,7 +1142,7 @@ impl eframe::App for EditorApp {
                     self.save_scene();
                 }
                 ui.separator();
-                if ui.button("打包发布").clicked() && !self.publish.running {
+                if ui.button("打包发布").clicked() && !self.progress.running {
                     self.start_publish();
                 }
             });
@@ -1036,7 +1155,7 @@ impl eframe::App for EditorApp {
                     self.import_path = path.to_string_lossy().into_owned();
                 }
                 if ui.button("Import").clicked() {
-                    self.import_game_project();
+                    self.start_import();
                 }
             });
             ui.horizontal(|ui| {
@@ -1234,7 +1353,7 @@ impl eframe::App for EditorApp {
             self.refresh_resources();
         }
 
-        self.publish_window(context);
+        self.progress.window(context);
     }
 }
 fn encode_transform(transform: TransformFields) -> String {
@@ -2070,14 +2189,43 @@ mod publish_tests {
         let mut success = false;
         while let Ok(event) = rx.recv() {
             match event {
-                PublishEvent::Line(text) => output.push_str(&text),
-                PublishEvent::Finished(s) => {
+                ProgressEvent::Line(text) => output.push_str(&text),
+                ProgressEvent::Finished { success: s, .. } => {
                     success = s;
                     break;
                 }
+                ProgressEvent::Progress(_) => {}
             }
         }
         eprintln!("=== 发布输出开始 ===\n{output}=== 发布输出结束 === success={success}");
         assert!(success, "发布应成功；输出：\n{output}");
+    }
+
+    #[test]
+    fn import_spawn_end_to_end() {
+        // 复现编辑器「导入游戏项目」后台路径：打开 game 项目并扫描资源。
+        let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p| p.parent())
+            .and_then(|p| p.parent())
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+        let game = workspace.join("game");
+        let (tx, rx) = channel();
+        spawn_import(game, tx);
+        let mut output = String::new();
+        let mut success = false;
+        while let Ok(event) = rx.recv() {
+            match event {
+                ProgressEvent::Line(text) => output.push_str(&text),
+                ProgressEvent::Finished { success: s, result } => {
+                    success = s;
+                    assert!(result.is_some(), "导入应带回 ImportOutcome 结果");
+                    break;
+                }
+                ProgressEvent::Progress(_) => {}
+            }
+        }
+        assert!(success, "导入应成功；输出：\n{output}");
     }
 }
