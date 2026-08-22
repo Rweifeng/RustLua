@@ -21,7 +21,7 @@ use editor::{
 };
 use eframe::egui::{self, FontData, FontDefinitions, FontFamily};
 use engine_core::{
-    input::InputSnapshot,
+    input::{InputKey, InputSnapshot, MouseButton},
     math3d::Vec3,
     scene::SceneEntityId,
     script::{LuaRuntime, ScriptDiagnostic},
@@ -2826,7 +2826,8 @@ impl EditorApp {
         let (response, painter) = ui.allocate_painter(ui.available_size(), egui::Sense::hover());
         painter.rect_filled(response.rect, 0.0, egui::Color32::from_rgb(18, 20, 24));
         if self.preview.is_some() {
-            self.update_preview(ui.ctx());
+            let focused = ui.rect_contains_pointer(response.rect);
+            self.update_preview(ui.ctx(), focused);
             if let Some(preview) = &self.preview
                 && let Some(tex) = &preview.egui_tex
             {
@@ -2869,11 +2870,17 @@ impl EditorApp {
     }
 
     /// 步进内嵌游戏运行时，渲染到离屏纹理并回读更新 egui 预览纹理（M10-03）。
-    fn update_preview(&mut self, ctx: &egui::Context) {
+    fn update_preview(&mut self, ctx: &egui::Context, focused: bool) {
+        // 把 egui 的键盘/鼠标/滚轮输入桥接到游戏快照（仅在指针悬停 Game 视图时，
+        // 避免编辑器输入泄漏到游戏）。先构建输入，避免与 preview 的可变借用冲突。
+        let input = if focused {
+            self.preview_input(ctx)
+        } else {
+            InputSnapshot::default()
+        };
         let Some(preview) = &mut self.preview else {
             return;
         };
-        let input = InputSnapshot::default();
         if let Err(error) = preview.runtime.run_script_steps(1, 1.0 / 60.0, &input) {
             tracing::warn!(target: "editor", "[preview] script step failed: {error}");
             return;
@@ -2920,6 +2927,34 @@ impl EditorApp {
                 tracing::warn!(target: "editor", "[preview] readback failed: {error}");
             }
         }
+    }
+
+    /// 从 egui 输入构建游戏输入快照（键盘 WASD/空格/Esc、鼠标、滚轮）。
+    fn preview_input(&self, ctx: &egui::Context) -> InputSnapshot {
+        let mut input = InputSnapshot::default();
+        ctx.input(|i| {
+            for (egui_key, game_key) in [
+                (egui::Key::W, InputKey::W),
+                (egui::Key::A, InputKey::A),
+                (egui::Key::S, InputKey::S),
+                (egui::Key::D, InputKey::D),
+                (egui::Key::Space, InputKey::Space),
+                (egui::Key::Escape, InputKey::Escape),
+            ] {
+                input.key_event(game_key, i.key_down(egui_key));
+            }
+            input.mouse_event(MouseButton::Left, i.pointer.primary_down());
+            input.mouse_event(MouseButton::Right, i.pointer.secondary_down());
+            input.mouse_event(MouseButton::Middle, i.pointer.middle_down());
+            if let Some(pos) = i.pointer.hover_pos() {
+                input.cursor_moved(pos.x as f64, pos.y as f64);
+            }
+            let scroll = i.smooth_scroll_delta;
+            if scroll.x != 0.0 || scroll.y != 0.0 {
+                input.scroll_event(scroll.x, scroll.y);
+            }
+        });
+        input
     }
 
     fn draw_entity(&mut self, ui: &mut egui::Ui, id: SceneEntityId, depth: usize) {
