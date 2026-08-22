@@ -3,13 +3,23 @@
 use crate::math3d::Vec3;
 use std::{error::Error, fmt, path::Path};
 
-pub const IMPORTER_VERSION: &str = "gltf-m8-01";
+pub const IMPORTER_VERSION: &str = "gltf-m8-07";
+
+/// Identity matrix used for absent inverse bind matrices.
+const IDENTITY_MAT4: [[f32; 4]; 4] = [
+    [1.0, 0.0, 0.0, 0.0],
+    [0.0, 1.0, 0.0, 0.0],
+    [0.0, 0.0, 1.0, 0.0],
+    [0.0, 0.0, 0.0, 1.0],
+];
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct GltfAsset {
     pub meshes: Vec<GltfMesh>,
     pub nodes: Vec<GltfNode>,
     pub materials: Vec<GltfMaterial>,
+    pub skins: Vec<GltfSkin>,
+    pub animations: Vec<GltfAnimation>,
     pub image_count: usize,
 }
 
@@ -26,14 +36,55 @@ pub struct GltfPrimitive {
     pub texcoords: Vec<[f32; 2]>,
     pub indices: Vec<u32>,
     pub material: Option<usize>,
+    /// Skinned vertex bone indices (JOINTS_0); empty when the mesh is static.
+    pub joints: Vec<[u16; 4]>,
+    /// Skinned vertex bone weights (WEIGHTS_0); empty when the mesh is static.
+    pub weights: Vec<[f32; 4]>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct GltfNode {
     pub name: Option<String>,
     pub mesh: Option<usize>,
+    pub skin: Option<usize>,
     pub children: Vec<usize>,
-    pub transform: [[f32; 4]; 4],
+    /// Bind local transform as translation / rotation (quaternion) / scale.
+    pub translation: [f32; 3],
+    pub rotation: [f32; 4],
+    pub scale: [f32; 3],
+}
+
+/// A glTF skin: the joint node indices and their inverse bind matrices.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GltfSkin {
+    pub joints: Vec<usize>,
+    pub inverse_bind_matrices: Vec<[[f32; 4]; 4]>,
+}
+
+/// The node property an animation channel drives.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GltfChannelPath {
+    Translation,
+    Rotation,
+    Scale,
+}
+
+/// One animation channel: `values` are the animated local TRS at `times`.
+/// Translation/scale values are `[x, y, z, 0]`; rotation values are quaternions.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GltfChannel {
+    pub node: usize,
+    pub path: GltfChannelPath,
+    pub times: Vec<f32>,
+    pub values: Vec<[f32; 4]>,
+    /// `true` = STEP interpolation (hold previous key), `false` = linear.
+    pub step: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct GltfAnimation {
+    pub name: Option<String>,
+    pub channels: Vec<GltfChannel>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -134,12 +185,36 @@ impl GltfAsset {
                         detail: "indices are not triangles or are out of bounds".to_owned(),
                     });
                 }
+                let joints: Vec<[u16; 4]> = reader
+                    .read_joints(0)
+                    .map(|values| values.into_u16().collect())
+                    .unwrap_or_default();
+                let weights: Vec<[f32; 4]> = reader
+                    .read_weights(0)
+                    .map(|values| values.into_f32().collect())
+                    .unwrap_or_default();
+                if joints.is_empty() != weights.is_empty() {
+                    return Err(GltfAssetError::InvalidMesh {
+                        path: path.display().to_string(),
+                        detail: "skinned mesh must provide both JOINTS_0 and WEIGHTS_0".to_owned(),
+                    });
+                }
+                if !joints.is_empty()
+                    && (joints.len() != positions.len() || weights.len() != positions.len())
+                {
+                    return Err(GltfAssetError::InvalidMesh {
+                        path: path.display().to_string(),
+                        detail: "JOINTS_0/WEIGHTS_0 count differs from POSITION count".to_owned(),
+                    });
+                }
                 primitives.push(GltfPrimitive {
                     positions,
                     normals,
                     texcoords,
                     indices,
                     material: primitive.material().index(),
+                    joints,
+                    weights,
                 });
             }
             meshes.push(GltfMesh {
@@ -149,17 +224,140 @@ impl GltfAsset {
         }
         let nodes = document
             .nodes()
-            .map(|node| GltfNode {
-                name: node.name().map(str::to_owned),
-                mesh: node.mesh().map(|mesh| mesh.index()),
-                children: node.children().map(|child| child.index()).collect(),
-                transform: node.transform().matrix(),
+            .map(|node| {
+                let (translation, rotation, scale) = node.transform().decomposed();
+                GltfNode {
+                    name: node.name().map(str::to_owned),
+                    mesh: node.mesh().map(|mesh| mesh.index()),
+                    skin: node.skin().map(|skin| skin.index()),
+                    children: node.children().map(|child| child.index()).collect(),
+                    translation,
+                    rotation,
+                    scale,
+                }
             })
             .collect();
+        let skins = document
+            .skins()
+            .map(|skin| {
+                let joints: Vec<usize> = skin.joints().map(|node| node.index()).collect();
+                let reader =
+                    skin.reader(|buffer| buffers.get(buffer.index()).map(|data| &data[..]));
+                let inverse_bind_matrices: Vec<[[f32; 4]; 4]> = reader
+                    .read_inverse_bind_matrices()
+                    .map(|values| values.collect())
+                    .unwrap_or_else(|| vec![IDENTITY_MAT4; joints.len()]);
+                if inverse_bind_matrices.len() != joints.len() {
+                    return Err(GltfAssetError::InvalidMesh {
+                        path: path.display().to_string(),
+                        detail: "skin inverse bind matrix count differs from joint count"
+                            .to_owned(),
+                    });
+                }
+                Ok(GltfSkin {
+                    joints,
+                    inverse_bind_matrices,
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let animations = document
+            .animations()
+            .map(|animation| {
+                let mut channels = Vec::new();
+                for channel in animation.channels() {
+                    let target = channel.target();
+                    let channel_path = match target.property() {
+                        gltf::animation::Property::Translation => GltfChannelPath::Translation,
+                        gltf::animation::Property::Rotation => GltfChannelPath::Rotation,
+                        gltf::animation::Property::Scale => GltfChannelPath::Scale,
+                        gltf::animation::Property::MorphTargetWeights => {
+                            return Err(GltfAssetError::Unsupported {
+                                path: path.display().to_string(),
+                                detail: "morph target animation channels are not supported"
+                                    .to_owned(),
+                            });
+                        }
+                    };
+                    let interpolation = channel.sampler().interpolation();
+                    if interpolation != gltf::animation::Interpolation::Linear
+                        && interpolation != gltf::animation::Interpolation::Step
+                    {
+                        return Err(GltfAssetError::Unsupported {
+                            path: path.display().to_string(),
+                            detail: "only linear and step animation interpolation are supported"
+                                .to_owned(),
+                        });
+                    }
+                    let reader =
+                        channel.reader(|buffer| buffers.get(buffer.index()).map(|data| &data[..]));
+                    let times: Vec<f32> = reader
+                        .read_inputs()
+                        .ok_or_else(|| GltfAssetError::MissingAttribute {
+                            path: path.display().to_string(),
+                            attribute: "animation sampler input",
+                        })?
+                        .collect();
+                    if times.is_empty() {
+                        return Err(GltfAssetError::InvalidMesh {
+                            path: path.display().to_string(),
+                            detail: "animation sampler needs at least one keyframe".to_owned(),
+                        });
+                    }
+                    let outputs =
+                        reader
+                            .read_outputs()
+                            .ok_or_else(|| GltfAssetError::MissingAttribute {
+                                path: path.display().to_string(),
+                                attribute: "animation sampler output",
+                            })?;
+                    let values: Vec<[f32; 4]> = match (&channel_path, outputs) {
+                        (
+                            GltfChannelPath::Translation | GltfChannelPath::Scale,
+                            gltf::animation::util::ReadOutputs::Translations(iter)
+                            | gltf::animation::util::ReadOutputs::Scales(iter),
+                        ) => iter
+                            .map(|value| [value[0], value[1], value[2], 0.0])
+                            .collect(),
+                        (
+                            GltfChannelPath::Rotation,
+                            gltf::animation::util::ReadOutputs::Rotations(rotations),
+                        ) => rotations.into_f32().collect(),
+                        _ => {
+                            return Err(GltfAssetError::InvalidMesh {
+                                path: path.display().to_string(),
+                                detail:
+                                    "animation sampler output type does not match the channel path"
+                                        .to_owned(),
+                            });
+                        }
+                    };
+                    if values.len() != times.len() {
+                        return Err(GltfAssetError::InvalidMesh {
+                            path: path.display().to_string(),
+                            detail: "animation sampler output count differs from input count"
+                                .to_owned(),
+                        });
+                    }
+                    channels.push(GltfChannel {
+                        node: target.node().index(),
+                        path: channel_path,
+                        times,
+                        values,
+                        step: interpolation == gltf::animation::Interpolation::Step,
+                    });
+                }
+                Ok(GltfAnimation {
+                    name: animation.name().map(str::to_owned),
+                    channels,
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(Self {
             meshes,
             nodes,
             materials,
+            skins,
+            animations,
             image_count: images.len(),
         })
     }
@@ -247,5 +445,74 @@ mod tests {
         let error = GltfAsset::load(&path).unwrap_err().to_string();
         assert!(error.contains("invalid-gltf") && error.contains("cannot import glTF"));
         let _ = fs::remove_file(path);
+    }
+
+    fn skin_asset_path() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../game/assets/models/m8-skin-quad.glb")
+    }
+
+    #[test]
+    fn imports_skinned_animated_quad() {
+        let asset = GltfAsset::load(skin_asset_path()).unwrap();
+        // Two joints and one "Bend" rotation channel on Joint1.
+        assert_eq!(asset.skins.len(), 1);
+        assert_eq!(asset.skins[0].joints, vec![1, 2]);
+        assert_eq!(asset.skins[0].inverse_bind_matrices.len(), 2);
+        assert_eq!(asset.animations.len(), 1);
+        assert_eq!(asset.animations[0].name.as_deref(), Some("Bend"));
+        assert_eq!(asset.animations[0].channels.len(), 1);
+        let channel = &asset.animations[0].channels[0];
+        assert_eq!(channel.node, 2);
+        assert_eq!(channel.path, GltfChannelPath::Rotation);
+        assert_eq!(channel.times, vec![0.0, 1.0]);
+        assert_eq!(channel.values.len(), 2);
+        // The mesh node is skinned by skin 0 and the primitive carries joints/weights.
+        assert_eq!(asset.nodes[3].mesh, Some(0));
+        assert_eq!(asset.nodes[3].skin, Some(0));
+        let primitive = &asset.meshes[0].primitives[0];
+        assert_eq!(primitive.joints.len(), 4);
+        assert_eq!(primitive.weights.len(), 4);
+        assert_eq!(primitive.joints[1], [0, 1, 0, 0]);
+        assert_eq!(primitive.weights[1], [0.0, 1.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn imports_cc0_kaykit_warrior_skin_and_animations() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../game/assets/models/kaykit-warrior.glb");
+        if !path.is_file() {
+            eprintln!("kaykit-warrior.glb missing; skipping real-model import test");
+            return;
+        }
+        let asset = GltfAsset::load(&path).unwrap();
+        assert!(
+            !asset.skins.is_empty(),
+            "warrior should have at least one skin"
+        );
+        assert!(
+            !asset.animations.is_empty(),
+            "warrior should have animation clips"
+        );
+        // Every primitive that uses a skinned mesh must carry joints and weights.
+        let skinned_primitives = asset
+            .meshes
+            .iter()
+            .flat_map(|mesh| &mesh.primitives)
+            .filter(|primitive| !primitive.joints.is_empty());
+        assert!(
+            skinned_primitives.count() > 0,
+            "warrior should have skinned primitives"
+        );
+        // Animation channels target valid nodes with ordered keyframe times.
+        for animation in &asset.animations {
+            for channel in &animation.channels {
+                assert!(channel.node < asset.nodes.len());
+                for pair in channel.times.windows(2) {
+                    assert!(pair[0] <= pair[1], "keyframe times must be non-decreasing");
+                }
+                assert_eq!(channel.times.len(), channel.values.len());
+            }
+        }
     }
 }

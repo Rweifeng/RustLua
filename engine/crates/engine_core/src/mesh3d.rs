@@ -97,13 +97,23 @@ pub struct MeshVertex {
     pub position: [f32; 3],
     pub normal: [f32; 3],
     pub texcoord: [f32; 2],
+    /// Bone indices for GPU skinning; non-skinned vertices use `[0; 4]`.
+    pub joints: [u32; 4],
+    /// Bone weights for GPU skinning; non-skinned vertices use `[1, 0, 0, 0]`
+    /// so bone 0 (identity) passes the vertex through.
+    pub weights: [f32; 4],
 }
+
+/// Maximum bones the GPU skinning palette can hold.
+pub const MAX_BONES: usize = 128;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct MeshPrimitive {
     pub vertices: Vec<MeshVertex>,
     pub indices: Vec<u32>,
     pub material: Option<usize>,
+    /// Whether the primitive carries real bone influences (JOINTS_0/WEIGHTS_0).
+    pub skinned: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -152,21 +162,39 @@ impl MeshAsset {
                         {
                             return Err(MeshAssetError::InvalidPrimitive);
                         }
+                        let skinned = !primitive.joints.is_empty();
                         let vertices = primitive
                             .positions
                             .iter()
                             .zip(normals)
                             .zip(texcoords)
-                            .map(|((position, normal), texcoord)| MeshVertex {
-                                position: [position.x, position.y, position.z],
-                                normal: [normal.x, normal.y, normal.z],
-                                texcoord,
+                            .enumerate()
+                            .map(|(index, ((position, normal), texcoord))| {
+                                let joints = if skinned {
+                                    let raw = primitive.joints[index];
+                                    [raw[0] as u32, raw[1] as u32, raw[2] as u32, raw[3] as u32]
+                                } else {
+                                    [0, 0, 0, 0]
+                                };
+                                let weights = if skinned {
+                                    primitive.weights[index]
+                                } else {
+                                    [1.0, 0.0, 0.0, 0.0]
+                                };
+                                MeshVertex {
+                                    position: [position.x, position.y, position.z],
+                                    normal: [normal.x, normal.y, normal.z],
+                                    texcoord,
+                                    joints,
+                                    weights,
+                                }
                             })
                             .collect();
                         Ok(MeshPrimitive {
                             vertices,
                             indices: primitive.indices.clone(),
                             material: primitive.material,
+                            skinned,
                         })
                     })
                     .collect::<Result<Vec<_>, _>>()?;
@@ -274,7 +302,23 @@ mod tests {
         assert_eq!(primitive.indices, vec![0, 1, 2]);
         assert_eq!(primitive.vertices[0].normal, [0.0, 1.0, 0.0]);
         assert!(meshes[0].materials.is_empty());
-        assert_eq!(std::mem::size_of::<MeshVertex>(), 32);
+        assert_eq!(std::mem::size_of::<MeshVertex>(), 64);
+        // Non-skinned primitives use the identity bone so skinning is a no-op.
+        assert!(!primitive.skinned);
+        assert_eq!(primitive.vertices[0].joints, [0, 0, 0, 0]);
+        assert_eq!(primitive.vertices[0].weights, [1.0, 0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn converts_skinned_gltf_with_bone_influences() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../game/assets/models/m8-skin-quad.glb");
+        let gltf = GltfAsset::load(&path).unwrap();
+        let meshes = MeshAsset::from_gltf(&gltf).unwrap();
+        let primitive = &meshes[0].primitives[0];
+        assert!(primitive.skinned);
+        assert_eq!(primitive.vertices[1].joints, [0, 1, 0, 0]);
+        assert_eq!(primitive.vertices[1].weights, [0.0, 1.0, 0.0, 0.0]);
     }
 
     #[test]

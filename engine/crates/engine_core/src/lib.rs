@@ -2,6 +2,8 @@
 
 /// Named animation states driven by sprite-sheet frame clips.
 pub mod animation;
+/// 3D skeletal animation component driven by glTF skins and clips.
+pub mod animation3d;
 /// Texture atlas regions and named Sprite sub-assets.
 pub mod atlas;
 /// Named sound-effect playback backed by rodio.

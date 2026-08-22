@@ -12,6 +12,7 @@ use tracing::{error, info, warn};
 
 use crate::{
     animation::AnimationStateMachine,
+    animation3d::{Animation3D, Animation3dDescriptor},
     audio::AudioSystem,
     camera3d::Camera3D,
     entity::EntityId,
@@ -304,6 +305,32 @@ impl LuaRuntime {
                 state
                     .world
                     .insert(id, transform)
+                    .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
+            }
+            if let Some(value) = entity.components.get("Animation3D") {
+                let descriptor =
+                    Animation3dDescriptor::from_component_str(value).map_err(|error| {
+                        LuaBridgeError::Api(format!(
+                            "entity {:?} has an invalid Animation3D: {error}",
+                            entity.name
+                        ))
+                    })?;
+                let root = state.project_root.clone().ok_or_else(|| {
+                    LuaBridgeError::Api(format!(
+                        "entity {:?} needs a project root to load its Animation3D mesh",
+                        entity.name
+                    ))
+                })?;
+                let animation =
+                    Animation3D::from_gltf_path(&root, &descriptor).map_err(|error| {
+                        LuaBridgeError::Api(format!(
+                            "entity {:?} Animation3D failed to load: {error}",
+                            entity.name
+                        ))
+                    })?;
+                state
+                    .world
+                    .insert(id, animation)
                     .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
             }
             if let Some(value) = entity.components.get("MeshRenderer") {
@@ -1525,6 +1552,100 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
     )?;
     lua.globals().set("animation", animation)?;
 
+    let animation3d = lua.create_table()?;
+    let s = Rc::clone(&state);
+    animation3d.set(
+        "get",
+        lua.create_function(move |lua, id: i64| {
+            let id = entity_from_lua(id)?;
+            let state = s.borrow();
+            require_alive(&state, id)?;
+            let Some(animation) = state.world.get::<Animation3D>(id).map_err(world_error)? else {
+                return Ok(mlua::Value::Nil);
+            };
+            Ok(mlua::Value::String(
+                lua.create_string(animation.current_name())?,
+            ))
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    animation3d.set(
+        "set",
+        lua.create_function(move |_, (id, name): (i64, String)| {
+            let id = entity_from_lua(id)?;
+            let mut state = s.borrow_mut();
+            require_alive(&state, id)?;
+            let animation = state
+                .world
+                .get_mut::<Animation3D>(id)
+                .map_err(world_error)?
+                .ok_or_else(|| api_error("entity has no animation3d"))?;
+            animation
+                .set_clip(&name)
+                .map_err(|error| api_error(error.to_string()))
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    animation3d.set(
+        "list",
+        lua.create_function(move |lua, id: i64| {
+            let id = entity_from_lua(id)?;
+            let state = s.borrow();
+            require_alive(&state, id)?;
+            let Some(animation) = state.world.get::<Animation3D>(id).map_err(world_error)? else {
+                return Err(api_error("entity has no animation3d"));
+            };
+            let result = lua.create_table()?;
+            for (index, name) in animation.clip_names().into_iter().enumerate() {
+                result.set(index + 1, name)?;
+            }
+            Ok(result)
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    animation3d.set(
+        "paused",
+        lua.create_function(move |_, id: i64| {
+            let id = entity_from_lua(id)?;
+            let state = s.borrow();
+            require_alive(&state, id)?;
+            let Some(animation) = state.world.get::<Animation3D>(id).map_err(world_error)? else {
+                return Err(api_error("entity has no animation3d"));
+            };
+            Ok(animation.is_paused())
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    animation3d.set(
+        "set_paused",
+        lua.create_function(move |_, (id, paused): (i64, bool)| {
+            let id = entity_from_lua(id)?;
+            let mut state = s.borrow_mut();
+            require_alive(&state, id)?;
+            let animation = state
+                .world
+                .get_mut::<Animation3D>(id)
+                .map_err(world_error)?
+                .ok_or_else(|| api_error("entity has no animation3d"))?;
+            animation.set_paused(paused);
+            Ok(())
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    animation3d.set(
+        "time",
+        lua.create_function(move |_, id: i64| {
+            let id = entity_from_lua(id)?;
+            let state = s.borrow();
+            require_alive(&state, id)?;
+            let Some(animation) = state.world.get::<Animation3D>(id).map_err(world_error)? else {
+                return Err(api_error("entity has no animation3d"));
+            };
+            Ok(animation.time())
+        })?,
+    )?;
+    lua.globals().set("animation3d", animation3d)?;
+
     let physics = lua.create_table()?;
     let s = Rc::clone(&state);
     physics.set(
@@ -2497,6 +2618,65 @@ mod tests {
         );
         runtime.execute_project_script(&path).unwrap();
         assert_eq!(runtime.call_update().unwrap(), "ok");
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn lua_3d_animation_queries_and_switches_clips() {
+        use crate::scene::{Scene, SceneEntityId};
+
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../game");
+        let mut scene = Scene::new("3d-anim");
+        scene.add_entity(SceneEntityId(1), "Hero", None).unwrap();
+        scene
+            .entities
+            .get_mut(&SceneEntityId(1))
+            .unwrap()
+            .components
+            .insert(
+                "Animation3D".into(),
+                "mesh=assets/models/m8-skin-quad.glb;clip=Bend;looped=true".into(),
+            );
+
+        let mut runtime = LuaRuntime::new().unwrap();
+        runtime.set_project_root(root.clone());
+        assert_eq!(runtime.instantiate_scene(&scene).unwrap(), 1);
+
+        let path = script(
+            "function update()\n\
+             local h = entity.find('Hero')\n\
+             assert(animation3d.get(h) == 'Bend')\n\
+             local list = animation3d.list(h)\n\
+             assert(#list == 1 and list[1] == 'Bend')\n\
+             assert(not animation3d.set(h, 'Bend'))\n\
+             assert(animation3d.time(h) >= 0)\n\
+             assert(not animation3d.paused(h))\n\
+             animation3d.set_paused(h, true)\n\
+             assert(animation3d.paused(h))\n\
+             return 'anim3d-ok' end",
+        );
+        runtime.execute_project_script(&path).unwrap();
+        assert_eq!(runtime.call_update().unwrap(), "anim3d-ok");
+
+        // The Animation3D component is present in the world and advancing works.
+        let animations = runtime.with_world(|world| world.entities_with::<Animation3D>());
+        assert_eq!(animations.len(), 1);
+        runtime.with_world_mut(|world| {
+            world
+                .get_mut::<Animation3D>(animations[0])
+                .unwrap()
+                .unwrap()
+                .advance(0.5);
+        });
+        assert!(
+            runtime.with_world(|world| world
+                .get::<Animation3D>(animations[0])
+                .unwrap()
+                .unwrap()
+                .time())
+                == 0.0,
+            "paused animation must not advance"
+        );
         let _ = fs::remove_file(path);
     }
 

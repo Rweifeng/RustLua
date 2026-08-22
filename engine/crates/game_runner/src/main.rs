@@ -13,6 +13,7 @@ use std::{
 use bytemuck::{Pod, Zeroable};
 use engine_core::{
     animation::AnimationStateMachine,
+    animation3d::Animation3D,
     camera3d::Camera3D,
     font::FontAtlas,
     input::{InputKey, InputSnapshot, MouseButton},
@@ -77,12 +78,30 @@ struct Material { base_color: vec4<f32>, surface: vec4<f32>, model: mat4x4<f32> 
 @group(0) @binding(3) var shadow_map: texture_depth_2d;
 @group(0) @binding(4) var shadow_sampler: sampler_comparison;
 @group(1) @binding(0) var<uniform> material: Material;
+@group(1) @binding(1) var<uniform> joint_palette: array<mat4x4<f32>, 128>;
 struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) normal: vec3<f32>, @location(1) shadow_position: vec4<f32> };
-@vertex fn vs_main(@location(0) position: vec3<f32>, @location(1) normal: vec3<f32>, @location(2) uv: vec2<f32>) -> VertexOutput {
+@vertex fn vs_main(@location(0) position: vec3<f32>, @location(1) normal: vec3<f32>, @location(2) uv: vec2<f32>, @location(3) joint_indices: vec4<u32>, @location(4) bone_weights: vec4<f32>) -> VertexOutput {
     var out: VertexOutput;
-    let world_position = material.model * vec4<f32>(position, 1.0);
+    let skinned = material.surface.z > 0.5;
+    var local_position = vec4<f32>(position, 1.0);
+    var local_normal = vec4<f32>(normal, 0.0);
+    if skinned {
+        var skinned_position = vec3<f32>(0.0);
+        var skinned_normal = vec3<f32>(0.0);
+        skinned_position += (joint_palette[joint_indices.x] * local_position).xyz * bone_weights.x;
+        skinned_position += (joint_palette[joint_indices.y] * local_position).xyz * bone_weights.y;
+        skinned_position += (joint_palette[joint_indices.z] * local_position).xyz * bone_weights.z;
+        skinned_position += (joint_palette[joint_indices.w] * local_position).xyz * bone_weights.w;
+        skinned_normal += (joint_palette[joint_indices.x] * local_normal).xyz * bone_weights.x;
+        skinned_normal += (joint_palette[joint_indices.y] * local_normal).xyz * bone_weights.y;
+        skinned_normal += (joint_palette[joint_indices.z] * local_normal).xyz * bone_weights.z;
+        skinned_normal += (joint_palette[joint_indices.w] * local_normal).xyz * bone_weights.w;
+        local_position = vec4<f32>(skinned_position, 1.0);
+        local_normal = vec4<f32>(skinned_normal, 0.0);
+    }
+    let world_position = material.model * local_position;
     out.position = camera.view_projection * world_position;
-    out.normal = normal;
+    out.normal = local_normal.xyz;
     out.shadow_position = shadow_camera.view_projection * world_position;
     return out;
 }
@@ -107,8 +126,19 @@ struct Camera { view_projection: mat4x4<f32> };
 struct Material { base_color: vec4<f32>, surface: vec4<f32>, model: mat4x4<f32> };
 @group(0) @binding(0) var<uniform> camera: Camera;
 @group(1) @binding(0) var<uniform> material: Material;
-@vertex fn vs_main(@location(0) position: vec3<f32>, @location(1) normal: vec3<f32>, @location(2) uv: vec2<f32>) -> @builtin(position) vec4<f32> {
-    return camera.view_projection * material.model * vec4<f32>(position, 1.0);
+@group(1) @binding(1) var<uniform> joint_palette: array<mat4x4<f32>, 128>;
+@vertex fn vs_main(@location(0) position: vec3<f32>, @location(1) normal: vec3<f32>, @location(2) uv: vec2<f32>, @location(3) joint_indices: vec4<u32>, @location(4) bone_weights: vec4<f32>) -> @builtin(position) vec4<f32> {
+    let skinned = material.surface.z > 0.5;
+    var local_position = vec4<f32>(position, 1.0);
+    if skinned {
+        var skinned_position = vec3<f32>(0.0);
+        skinned_position += (joint_palette[joint_indices.x] * local_position).xyz * bone_weights.x;
+        skinned_position += (joint_palette[joint_indices.y] * local_position).xyz * bone_weights.y;
+        skinned_position += (joint_palette[joint_indices.z] * local_position).xyz * bone_weights.z;
+        skinned_position += (joint_palette[joint_indices.w] * local_position).xyz * bone_weights.w;
+        local_position = vec4<f32>(skinned_position, 1.0);
+    }
+    return camera.view_projection * material.model * local_position;
 }
 "#;
 
@@ -174,6 +204,8 @@ struct GpuMaterial {
     metallic: f32,
     roughness: f32,
     model: Mat4,
+    /// Whether the owning entity has a skinned `Animation3D` palette.
+    skinned: bool,
 }
 
 /// Cached GPU geometry + file materials for one mesh path.
@@ -188,10 +220,20 @@ struct CachedPrimitive {
     roughness: f32,
 }
 
-/// One scene entity's 3D draw requested this frame.
+/// One scene entity's 3D draw requested this frame. A non-empty `palette`
+/// marks a skinned drawable whose joint matrices are uploaded per frame.
 struct Scene3dDrawable {
     mesh_path: String,
     model: Mat4,
+    palette: Vec<Mat4>,
+}
+
+/// A fully-resolved frame draw: cached geometry plus per-entity material and
+/// the joint palette (empty for static meshes).
+struct FrameDraw {
+    geometry: GpuGeometry,
+    material: GpuMaterial,
+    palette: Vec<Mat4>,
 }
 
 /// Per-frame 3D render state gathered from the runtime world: the active
@@ -231,6 +273,9 @@ struct Renderer {
     light_buffer: wgpu::Buffer,
     /// Light-space camera uniform buffer, rewritten every frame from the light.
     shadow_camera_buffer: wgpu::Buffer,
+    /// Shared identity joint palette bound by non-skinned draws so the shader's
+    /// skinning branch is a no-op without a per-draw allocation.
+    identity_palette: wgpu::Buffer,
     /// GPU geometry + file materials cached by mesh path.
     mesh_cache: HashMap<String, CachedMesh>,
     _material_bind_group_layout: wgpu::BindGroupLayout,
@@ -440,16 +485,30 @@ impl Renderer {
         let material_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("p2-material3d-bind-group-layout"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: wgpu::BufferSize::new(96),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: wgpu::BufferSize::new(96),
+                        },
+                        count: None,
                     },
-                    count: None,
-                }],
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: wgpu::BufferSize::new(
+                                (engine_core::mesh3d::MAX_BONES * 64) as u64,
+                            ),
+                        },
+                        count: None,
+                    },
+                ],
             });
         let camera = Camera3D::perspective(
             Vec3::new(0.0, 0.0, 5.0),
@@ -503,6 +562,11 @@ impl Renderer {
             label: Some("p2-shadow-camera-buffer"),
             contents: bytemuck::cast_slice(&light_matrix.columns),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+        let identity_palette = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("p2-identity-joint-palette"),
+            contents: bytemuck::cast_slice(&identity_palette_data()),
+            usage: wgpu::BufferUsages::UNIFORM,
         });
         let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("p2-camera3d-bind-group"),
@@ -587,6 +651,16 @@ impl Renderer {
                             offset: 24,
                             shader_location: 2,
                         },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Uint32x4,
+                            offset: 32,
+                            shader_location: 3,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x4,
+                            offset: 48,
+                            shader_location: 4,
+                        },
                     ],
                 }],
             },
@@ -651,6 +725,16 @@ impl Renderer {
                             offset: 24,
                             shader_location: 2,
                         },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Uint32x4,
+                            offset: 32,
+                            shader_location: 3,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x4,
+                            offset: 48,
+                            shader_location: 4,
+                        },
                     ],
                 }],
             },
@@ -703,6 +787,7 @@ impl Renderer {
             camera_buffer,
             light_buffer,
             shadow_camera_buffer,
+            identity_palette,
             mesh_cache: HashMap::new(),
             _material_bind_group_layout: material_bind_group_layout,
         })
@@ -806,21 +891,29 @@ impl Renderer {
                 position: [-4.0, 0.0, -4.0],
                 normal: [0.0, 1.0, 0.0],
                 texcoord: [0.0, 0.0],
+                joints: [0, 0, 0, 0],
+                weights: [1.0, 0.0, 0.0, 0.0],
             },
             engine_core::mesh3d::MeshVertex {
                 position: [4.0, 0.0, -4.0],
                 normal: [0.0, 1.0, 0.0],
                 texcoord: [1.0, 0.0],
+                joints: [0, 0, 0, 0],
+                weights: [1.0, 0.0, 0.0, 0.0],
             },
             engine_core::mesh3d::MeshVertex {
                 position: [4.0, 0.0, 4.0],
                 normal: [0.0, 1.0, 0.0],
                 texcoord: [1.0, 1.0],
+                joints: [0, 0, 0, 0],
+                weights: [1.0, 0.0, 0.0, 0.0],
             },
             engine_core::mesh3d::MeshVertex {
                 position: [-4.0, 0.0, 4.0],
                 normal: [0.0, 1.0, 0.0],
                 texcoord: [0.0, 1.0],
+                joints: [0, 0, 0, 0],
+                weights: [1.0, 0.0, 0.0, 0.0],
             },
         ];
         CachedMesh {
@@ -860,11 +953,17 @@ impl Renderer {
     }
 
     /// Creates a material bind group carrying one primitive's file material
-    /// plus the owning entity's model matrix.
-    fn material_bind_group(&self, material: GpuMaterial) -> wgpu::BindGroup {
+    /// plus the owning entity's model matrix, and the joint palette (identity
+    /// for static meshes, the animated palette for skinned drawables).
+    fn material_bind_group(&self, material: GpuMaterial, palette: &[Mat4]) -> wgpu::BindGroup {
         let mut material_data = Vec::with_capacity(6);
         material_data.push(material.base_color);
-        material_data.push([material.metallic, material.roughness, 0.0, 0.0]);
+        material_data.push([
+            material.metallic,
+            material.roughness,
+            if material.skinned { 1.0 } else { 0.0 },
+            0.0,
+        ]);
         material_data.extend_from_slice(&material.model.columns);
         let material_buffer = self
             .device
@@ -873,13 +972,29 @@ impl Renderer {
                 contents: bytemuck::cast_slice(&material_data),
                 usage: wgpu::BufferUsages::UNIFORM,
             });
+        let palette_buffer = if material.skinned && !palette.is_empty() {
+            self.device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("p2-joint-palette-frame-buffer"),
+                    contents: bytemuck::cast_slice(&joint_palette_data(palette)),
+                    usage: wgpu::BufferUsages::UNIFORM,
+                })
+        } else {
+            self.identity_palette.clone()
+        };
         self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("p2-material3d-frame-bind-group"),
             layout: &self._material_bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: material_buffer.as_entire_binding(),
-            }],
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: material_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: palette_buffer.as_entire_binding(),
+                },
+            ],
         })
     }
 
@@ -908,24 +1023,28 @@ impl Renderer {
     }
 
     /// Gathers this frame's 3D draws: every scene entity with both a
-    /// `Transform3D` and a `MeshRenderer`, resolved to cached geometry plus a
-    /// per-entity model matrix.
-    fn frame_3d_draws(&mut self, scene: &Scene3d) -> Vec<(GpuGeometry, GpuMaterial)> {
+    /// `Transform3D` and a `MeshRenderer`, resolved to cached geometry, the
+    /// per-entity model matrix, and the animated joint palette (if any).
+    fn frame_3d_draws(&mut self, scene: &Scene3d) -> Vec<FrameDraw> {
         let mut draws = Vec::new();
         for drawable in &scene.drawables {
             let Some(cached) = self.cached_mesh(&drawable.mesh_path) else {
                 continue;
             };
+            let palette = drawable.palette.clone();
+            let skinned = !palette.is_empty();
             for primitive in &cached.primitives {
-                draws.push((
-                    primitive.geometry.clone(),
-                    GpuMaterial {
+                draws.push(FrameDraw {
+                    geometry: primitive.geometry.clone(),
+                    material: GpuMaterial {
                         base_color: primitive.base_color,
                         metallic: primitive.metallic,
                         roughness: primitive.roughness,
                         model: drawable.model,
+                        skinned,
                     },
-                ));
+                    palette: palette.clone(),
+                });
             }
         }
         draws
@@ -1020,15 +1139,15 @@ impl Renderer {
                 });
                 shadow_pass.set_pipeline(&self.shadow_pipeline);
                 shadow_pass.set_bind_group(0, &self.shadow_bind_group, &[]);
-                for (geometry, material) in &frame_draws {
-                    let bind = self.material_bind_group(*material);
+                for draw in &frame_draws {
+                    let bind = self.material_bind_group(draw.material, &draw.palette);
                     shadow_pass.set_bind_group(1, &bind, &[]);
-                    shadow_pass.set_vertex_buffer(0, geometry.vertex_buffer.slice(..));
+                    shadow_pass.set_vertex_buffer(0, draw.geometry.vertex_buffer.slice(..));
                     shadow_pass.set_index_buffer(
-                        geometry.index_buffer.slice(..),
+                        draw.geometry.index_buffer.slice(..),
                         wgpu::IndexFormat::Uint32,
                     );
-                    shadow_pass.draw_indexed(0..geometry.index_count, 0, 0..1);
+                    shadow_pass.draw_indexed(0..draw.geometry.index_count, 0, 0..1);
                 }
             }
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1055,12 +1174,15 @@ impl Renderer {
             });
             pass.set_pipeline(&self.mesh_pipeline);
             pass.set_bind_group(0, &self.camera_bind_group, &[]);
-            for (geometry, material) in &frame_draws {
-                let bind = self.material_bind_group(*material);
+            for draw in &frame_draws {
+                let bind = self.material_bind_group(draw.material, &draw.palette);
                 pass.set_bind_group(1, &bind, &[]);
-                pass.set_vertex_buffer(0, geometry.vertex_buffer.slice(..));
-                pass.set_index_buffer(geometry.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..geometry.index_count, 0, 0..1);
+                pass.set_vertex_buffer(0, draw.geometry.vertex_buffer.slice(..));
+                pass.set_index_buffer(
+                    draw.geometry.index_buffer.slice(..),
+                    wgpu::IndexFormat::Uint32,
+                );
+                pass.draw_indexed(0..draw.geometry.index_count, 0, 0..1);
             }
         }
         if !mesh.vertices.is_empty() {
@@ -1294,6 +1416,30 @@ impl Renderer {
     }
 }
 
+/// Builds the joint-palette uniform data padded to `MAX_BONES` identity
+/// matrices: `[f32; 4]` rows so `bytemuck` casts the whole buffer at once.
+fn joint_palette_data(palette: &[Mat4]) -> Vec<[f32; 4]> {
+    let mut data = Vec::with_capacity(engine_core::mesh3d::MAX_BONES * 4);
+    for matrix in palette.iter().take(engine_core::mesh3d::MAX_BONES) {
+        data.extend_from_slice(&matrix.columns);
+    }
+    while data.len() < engine_core::mesh3d::MAX_BONES * 4 {
+        data.extend_from_slice(&IDENTITY_MAT4);
+    }
+    data
+}
+
+const IDENTITY_MAT4: [[f32; 4]; 4] = [
+    [1.0, 0.0, 0.0, 0.0],
+    [0.0, 1.0, 0.0, 0.0],
+    [0.0, 0.0, 1.0, 0.0],
+    [0.0, 0.0, 0.0, 1.0],
+];
+
+fn identity_palette_data() -> Vec<[f32; 4]> {
+    joint_palette_data(&[])
+}
+
 /// Light-space view-projection used by the shadow map: an orthographic-style
 /// projection from a camera placed along the light direction, looking at the
 /// origin. Mirrors the fixed matrix used by the M8-05 shadow pass.
@@ -1340,6 +1486,11 @@ impl RuntimeScene {
     fn new(project_root: Option<&Path>) -> Result<Self, String> {
         let scene = load_runtime_scene(project_root);
         let mut script = LuaRuntime::new().map_err(|error| error.to_string())?;
+        // Project root must be set before instantiation so scene components that
+        // load assets (e.g. Animation3D) can resolve their mesh paths.
+        if let Some(root) = project_root {
+            script.set_project_root(root.to_path_buf());
+        }
         let instantiated = script
             .instantiate_scene(&scene)
             .map_err(|error| error.to_string())?;
@@ -1347,7 +1498,6 @@ impl RuntimeScene {
         tracing::info!(target: "ecs", "[ecs] world initialized entities={instantiated}");
         if let Some(root) = project_root {
             script.set_audio_asset_dir(root.join("assets").join("audio"));
-            script.set_project_root(root.to_path_buf());
             script.set_save_path(root.join(engine_core::PROJECT_WORK_DIR).join("save.sav"));
             let script_path = root.join("scripts/main.lua");
             if script_path.is_file() {
@@ -1426,6 +1576,11 @@ impl RuntimeScene {
                     machine.advance(elapsed);
                 }
             }
+            for id in world.entities_with::<Animation3D>() {
+                if let Ok(Some(animation)) = world.get_mut::<Animation3D>(id) {
+                    animation.advance(elapsed);
+                }
+            }
         });
         Ok(())
     }
@@ -1443,9 +1598,18 @@ impl RuntimeScene {
                     let transform = world.get::<Transform3D>(id).ok().flatten().copied()?;
                     let renderer = world.get::<MeshRenderer>(id).ok().flatten()?;
                     let model = transform.model_matrix().ok()?;
+                    // Skinned entities also carry an Animation3D; its joint
+                    // palette is recomputed each frame from the active clip.
+                    let palette = world
+                        .get::<Animation3D>(id)
+                        .ok()
+                        .flatten()
+                        .map(|animation| animation.joint_matrices())
+                        .unwrap_or_default();
                     Some(Scene3dDrawable {
                         mesh_path: renderer.mesh.clone(),
                         model,
+                        palette,
                     })
                 })
                 .collect::<Vec<_>>()
