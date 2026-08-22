@@ -10,16 +10,19 @@
 --   demo3d.lua        M8-06 3D 集成演示（移动网格/切换相机，防御式）
 local game = require("game")
 local demo3d = require("demo3d")
+local game3d = require("game3d")
 
 log.info("project script loaded")
 
 function on_create()
     game.on_create()
     demo3d.on_create()
+    game3d.on_create()
 end
 
 function update()
     local result = game.update()
     demo3d.update()
+    game3d.update()
     return result
 end

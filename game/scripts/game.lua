@@ -207,7 +207,7 @@ function handle_save_load(id)
     end
 end
 
---- F4 三场景循环：main -> arena -> demo3d -> main（任意场景可切出）
+--- F4 三场景循环：main -> arena -> game3d -> main（任意场景可切出）
 function handle_scene_switch()
     if not input.just_pressed("f4") then
         return
@@ -216,7 +216,7 @@ function handle_scene_switch()
     if state.scene_name == "main" then
         target = "arena"
     elseif state.scene_name == "arena" then
-        target = "demo3d"
+        target = "game3d"
     end
     if scene.load(target) then
         log.info("switching to scene '" .. target .. "'")
