@@ -140,10 +140,17 @@ impl fmt::Display for TextError {
 }
 impl Error for TextError {}
 
-/// Deterministic text layout using the built-in 5x7 glyph metrics.
+/// Display px of one em at `style.scale == 1` (real-font metrics).
+const EM_PX: f32 = 12.0;
+/// Line height as a multiple of the em box.
+const LINE_HEIGHT_EM: f32 = 1.2;
+
+/// Deterministic text layout.
 pub struct TextLayout;
 impl TextLayout {
-    pub fn build(
+    /// Legacy bitmap layout using the built-in 5x7 glyph metrics (kept for the
+    /// no-font fallback and standalone examples).
+    pub fn build_bitmap(
         text: &str,
         origin: [f32; 2],
         style: TextStyle,
@@ -220,16 +227,14 @@ impl TextLayout {
         })
     }
 
-    /// Lays out a string mixing ASCII (built-in 5x7 atlas) and arbitrary glyphs
-    /// (CJK font atlas). Returns `(ascii_mesh, cjk_mesh)` so the host can draw
-    /// them with their respective textures.
-    pub fn build_mixed(
+    /// SDF text layout using real font metrics (TMP-style, crisp at any scale).
+    /// All glyphs (ASCII + CJK) come from the one SDF `FontAtlas`.
+    pub fn build(
         text: &str,
         origin: [f32; 2],
         style: TextStyle,
-        ascii_atlas: &TextAtlas,
         font: &mut FontAtlas,
-    ) -> Result<(TextMesh, TextMesh), TextError> {
+    ) -> Result<TextMesh, TextError> {
         if !origin[0].is_finite()
             || !origin[1].is_finite()
             || !style.scale.is_finite()
@@ -246,63 +251,60 @@ impl TextLayout {
                 TextError::NonFiniteOrigin
             });
         }
-        let mut ascii = TextMesh {
-            vertices: Vec::new(),
-            glyph_count: 0,
-            line_count: 1,
-            size: [0.0, 0.0],
-        };
-        let mut cjk = TextMesh {
-            vertices: Vec::new(),
-            glyph_count: 0,
-            line_count: 1,
-            size: [0.0, 0.0],
-        };
-        let ascii_advance = 6.0 * style.scale + style.spacing;
-        // 中文字形为方块，按更大的 em 显示（12x 而非 ASCII 的 7x），否则太小。
-        let cjk_em = 12.0 * style.scale;
-        let cjk_advance = cjk_em + style.spacing;
-        let line_height = 8.0 * style.scale + style.line_spacing;
+        let ascent = font.ascent_em();
+        let descent = font.descent_em();
+        let base_px = EM_PX * style.scale;
+        // 1 屏幕像素对应的图集 texel 数（display size = base_px，atlas 光栅 64px）。
+        let tex_scale = base_px / crate::font::RASTER_SCALE;
+        let line_height = EM_PX * style.scale * LINE_HEIGHT_EM + style.line_spacing;
         let mut x = origin[0];
-        let mut y = origin[1];
+        let mut y = origin[1] + ascent * base_px;
         let mut max_x = x;
+        let mut glyph_count = 0;
+        let mut line_count = 1;
+        let mut vertices = Vec::with_capacity(text.chars().count() * 6);
         for character in text.chars() {
             if character == '\n' {
                 max_x = max_x.max(x);
                 x = origin[0];
                 y += line_height;
-                ascii.line_count += 1;
-                cjk.line_count += 1;
+                line_count += 1;
                 continue;
             }
-            let is_ascii =
-                character.is_ascii() && (character as u8) >= 32 && (character as u8) <= 127;
-            let (uv, w, h, advance) = if is_ascii {
-                let (min, max) = ascii_atlas.uv(character);
-                (
-                    [min[0], min[1], max[0], max[1]],
-                    5.0 * style.scale,
-                    7.0 * style.scale,
-                    ascii_advance,
-                )
-            } else {
-                (font.uv(character), cjk_em, cjk_em, cjk_advance)
-            };
-            let x1 = x + w;
-            let y1 = y + h;
+            if character == ' ' {
+                // 空格没有字形/轮廓：只推进，不绘制（避免渲染成占位方框）。
+                x += font.advance(' ') * tex_scale + style.spacing;
+                max_x = max_x.max(x);
+                continue;
+            }
+            let metrics = font.glyph_metrics(character);
+            // 字形在整张图集中的 UV = 单元 UV + 单元内偏移在图集中的比例。
+            // 四边形尺寸 = 字形显示尺寸。
+            let rect = metrics.cell_rect;
+            let atlas_w = font.width() as f32;
+            let atlas_h = font.height() as f32;
+            let u0 = metrics.uv[0] + rect[0] / atlas_w;
+            let v0 = metrics.uv[1] + rect[1] / atlas_h;
+            let u1 = metrics.uv[0] + rect[2] / atlas_w;
+            let v1 = metrics.uv[1] + rect[3] / atlas_h;
+            let glyph_w = (rect[2] - rect[0]) * tex_scale;
+            let glyph_h = (rect[3] - rect[1]) * tex_scale;
+            let x0 = x;
+            let y0 = y + metrics.bounds[1] * tex_scale;
+            let x1 = x0 + glyph_w;
+            let y1 = y0 + glyph_h;
             let quad = [
-                [x, y, uv[0], uv[1]],
-                [x1, y, uv[2], uv[1]],
-                [x1, y1, uv[2], uv[3]],
-                [x, y1, uv[0], uv[3]],
+                [x0, y0, u0, v0],
+                [x1, y0, u1, v0],
+                [x1, y1, u1, v1],
+                [x0, y1, u0, v1],
             ];
             let make = |v: [f32; 4]| TextVertex {
                 position: [v[0], v[1]],
                 uv: [v[2], v[3]],
                 color: style.color,
             };
-            let target = if is_ascii { &mut ascii } else { &mut cjk };
-            target.vertices.extend_from_slice(&[
+            vertices.extend_from_slice(&[
                 make(quad[0]),
                 make(quad[1]),
                 make(quad[2]),
@@ -310,16 +312,19 @@ impl TextLayout {
                 make(quad[2]),
                 make(quad[3]),
             ]);
-            target.glyph_count += 1;
-            x += advance;
+            x += metrics.advance * tex_scale + style.spacing;
             max_x = max_x.max(x);
+            glyph_count += 1;
         }
-        ascii.size = [
-            (max_x - origin[0]).max(0.0),
-            (y - origin[1] + 7.0 * style.scale).max(0.0),
-        ];
-        cjk.size = ascii.size;
-        Ok((ascii, cjk))
+        Ok(TextMesh {
+            vertices,
+            glyph_count,
+            line_count,
+            size: [
+                (max_x - origin[0]).max(0.0),
+                (y + descent * base_px - origin[1]).max(0.0),
+            ],
+        })
     }
 }
 
@@ -386,17 +391,17 @@ mod tests {
     #[test]
     fn layout_handles_newlines_and_lowercase() {
         let atlas = TextAtlas::built_in();
-        let mesh =
-            TextLayout::build("Rust\nLua", [2.0, 3.0], TextStyle::default(), &atlas).unwrap();
+        let mesh = TextLayout::build_bitmap("Rust\nLua", [2.0, 3.0], TextStyle::default(), &atlas)
+            .unwrap();
         assert_eq!(
             (mesh.glyph_count, mesh.line_count, mesh.vertices.len()),
             (7, 2, 42)
         );
         assert!(mesh.size[1] > 7.0);
     }
+
     #[test]
-    fn build_mixed_splits_ascii_and_cjk_glyphs() {
-        let ascii = TextAtlas::built_in();
+    fn sdf_build_single_mesh_mixed_ascii_and_cjk() {
         let font_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../editor/fonts/NotoSansSC-VF.ttf");
         let bytes = std::fs::read(&font_path).unwrap_or_default();
@@ -405,18 +410,12 @@ mod tests {
             return;
         }
         let mut font = crate::font::FontAtlas::load(&bytes).unwrap();
-        let (ascii_mesh, cjk_mesh) = TextLayout::build_mixed(
-            "开始 SPACE",
-            [0.0, 0.0],
-            TextStyle::default(),
-            &ascii,
-            &mut font,
-        )
-        .unwrap();
-        assert!(ascii_mesh.glyph_count > 0, "ASCII 字形进入 ascii mesh");
-        assert!(cjk_mesh.glyph_count > 0, "CJK 字形进入 cjk mesh");
-        assert!(!ascii_mesh.vertices.is_empty());
-        assert!(!cjk_mesh.vertices.is_empty());
+        let mesh =
+            TextLayout::build("开始 SPACE", [0.0, 0.0], TextStyle::default(), &mut font).unwrap();
+        assert_eq!(mesh.glyph_count, 7, "ASCII + CJK 在同一个 mesh（空格不计字形）");
+        assert!(!mesh.vertices.is_empty());
+        assert!(mesh.vertices.iter().all(|v| v.position.iter().all(|p| p.is_finite())));
+        assert!(mesh.size[0] > 0.0 && mesh.size[1] > 0.0);
     }
 
     #[test]
@@ -427,7 +426,7 @@ mod tests {
             ..TextStyle::default()
         };
         assert_eq!(
-            TextLayout::build("A", [0.0, 0.0], style, &atlas),
+            TextLayout::build_bitmap("A", [0.0, 0.0], style, &atlas),
             Err(TextError::InvalidStyle)
         );
     }

@@ -5,18 +5,30 @@ struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) uv: vec2<f32>,
     @location(1) color: vec4<f32>,
+    @location(2) sdf: u32,
 };
 @group(0) @binding(0) var tex: texture_2d<f32>;
 @group(0) @binding(1) var samp: sampler;
-@vertex fn vs_main(@location(0) position: vec2<f32>, @location(1) uv: vec2<f32>, @location(2) color: vec4<f32>) -> VertexOutput {
+@vertex fn vs_main(@location(0) position: vec2<f32>, @location(1) uv: vec2<f32>, @location(2) color: vec4<f32>, @location(3) sdf: u32) -> VertexOutput {
     var out: VertexOutput;
     out.position = vec4<f32>(position, 0.0, 1.0);
     out.uv = uv;
     out.color = color;
+    out.sdf = sdf;
     return out;
 }
-@fragment fn fs_main(@location(0) uv: vec2<f32>, @location(1) color: vec4<f32>) -> @location(0) vec4<f32> {
-    return textureSample(tex, samp, uv) * color;
+@fragment fn fs_main(@location(0) uv: vec2<f32>, @location(1) color: vec4<f32>, @location(2) sdf: u32) -> @location(0) vec4<f32> {
+    let sampled = textureSample(tex, samp, uv);
+    if sdf == 1u {
+        // 有向距离场：R 通道 = 归一化距离（边缘 0.5），smoothstep 保持锐利。
+        // d + 0.08 偏置让笔画更粗（细字重下划线不过细）。
+        let d = sampled.r + 0.08;
+        let w = max(fwidth(d), 0.01) * 0.5;
+        let a = smoothstep(0.5 - w, 0.5 + w, d);
+        // 直通 alpha：管线 ALPHA_BLENDING 已按 alpha 预乘源色，不能再乘 a。
+        return vec4<f32>(color.rgb, a);
+    }
+    return sampled * color;
 }
 "#;
 

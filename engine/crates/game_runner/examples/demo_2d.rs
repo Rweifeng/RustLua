@@ -60,7 +60,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let viewport = Viewport::new(256.0, 256.0)?;
     let camera = Camera2D::new(Vec2::new(0.0, -0.5), 16.0)?;
     let sprite_mesh = sprite_batch.build(camera, viewport)?;
-    let text_mesh = TextLayout::build(
+    let text_mesh = TextLayout::build_bitmap(
         "RUST LUA 2D DEMO\nATLAS + SPRITEBATCH",
         [16.0, 16.0],
         TextStyle {

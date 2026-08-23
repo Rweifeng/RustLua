@@ -18,7 +18,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let atlas = TextAtlas::built_in();
     let text = "RUST LUA\nTEXT 2026";
-    let mesh = TextLayout::build(
+    let mesh = TextLayout::build_bitmap(
         text,
         [16.0, 16.0],
         TextStyle {

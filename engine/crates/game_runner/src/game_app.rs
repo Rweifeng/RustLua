@@ -182,6 +182,7 @@ impl GameApp {
                     texture: 0,
                     start,
                     count,
+                    sdf: false,
                 });
             }
         }
@@ -369,31 +370,37 @@ fn rect_vertices(x0: f32, y0: f32, x1: f32, y1: f32) -> [OverlayVertex; 6] {
             position: [x0, y0],
             uv,
             color: [0.05, 0.8, 0.35, 0.88],
+            sdf: 0,
         },
         OverlayVertex {
             position: [x1, y0],
             uv,
             color: [0.05, 0.8, 0.35, 0.88],
+            sdf: 0,
         },
         OverlayVertex {
             position: [x1, y1],
             uv,
             color: [0.05, 0.8, 0.35, 0.88],
+            sdf: 0,
         },
         OverlayVertex {
             position: [x0, y0],
             uv,
             color: [0.05, 0.8, 0.35, 0.88],
+            sdf: 0,
         },
         OverlayVertex {
             position: [x1, y1],
             uv,
             color: [0.05, 0.8, 0.35, 0.88],
+            sdf: 0,
         },
         OverlayVertex {
             position: [x0, y1],
             uv,
             color: [0.05, 0.8, 0.35, 0.88],
+            sdf: 0,
         },
     ]
 }

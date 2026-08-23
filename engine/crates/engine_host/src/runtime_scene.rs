@@ -21,6 +21,7 @@ use engine_core::{
     tilemap::Tilemap,
     transform::{Transform, Vec2, integrate_velocity},
     transform3d::Transform3D,
+    ui::{UiButton, UiImage, UiText},
 };
 
 use crate::frame::{
@@ -87,7 +88,8 @@ impl RuntimeScene {
         let camera =
             Camera2D::new(Vec2::new(640.0, 360.0), 1.0).map_err(|error| error.to_string())?;
         tracing::info!(target: "render", "[render] SpriteBatch and Camera2D initialized");
-        // 加载 CJK 字体（存在时启用任意字符文本渲染）。
+        // 加载字体（存在时启用 SDF 文本渲染）。编辑器场景视图同样需要，这样
+        // 场景视图也能显示清晰中文（不再依赖 5x7 位图回退）。
         let font_atlas = project_root
             .map(|root| root.join("assets/fonts/NotoSansSC-VF.ttf"))
             .filter(|path| path.is_file())
@@ -95,11 +97,11 @@ impl RuntimeScene {
                 let bytes = std::fs::read(&path).ok()?;
                 match FontAtlas::load(&bytes) {
                     Ok(atlas) => {
-                        tracing::info!(target: "render", path = %path.display(), "[render] CJK font atlas ready");
+                        tracing::info!(target: "render", path = %path.display(), "[render] font atlas ready");
                         Some(atlas)
                     }
                     Err(error) => {
-                        tracing::warn!(target: "render", error = %error, "[render] CJK font atlas load failed; non-ASCII text uses placeholders");
+                        tracing::warn!(target: "render", error = %error, "[render] font atlas load failed; text uses placeholders");
                         None
                     }
                 }
@@ -129,6 +131,10 @@ impl RuntimeScene {
                 .call_update()
                 .map_err(|error| error.to_string())?;
             tracing::debug!(target: "game", "[simulation] fixed update returned: {result}");
+            // UI Button 点击分发：按下边沿命中矩形 → Lua on_click(name)。
+            self.script
+                .process_ui_clicks(&step_input)
+                .map_err(|error| error.to_string())?;
             // Physics advances on the fixed timestep and writes dynamic body
             // positions back into ECS Transforms (2D) / Transform3D (3D).
             self.script.step_physics(delta_seconds);
@@ -321,6 +327,7 @@ impl RuntimeScene {
                 texture: draw.texture_id + 1, // 0 is reserved for the white texture
                 start: draw.vertex_start as u32,
                 count: draw.vertex_count as u32,
+                sdf: false,
             })
             .collect();
         let mut vertices: Vec<OverlayVertex> = mesh
@@ -331,6 +338,15 @@ impl RuntimeScene {
         // Screen-space UI (health bars, prompt text) draws last, on top.
         self.push_ui_bars(&mut vertices, &mut draws, width, height)?;
         self.push_ui_text(&mut vertices, &mut draws, width, height)?;
+        // Scene-node UI components (Text / Image / Button) drawn on very top.
+        self.push_scene_ui(&mut vertices, &mut draws, width, height)?;
+        tracing::info!(
+            target: "render",
+            draws = draws.len(),
+            sdf = draws.iter().filter(|d| d.sdf).count(),
+            text_entities = self.script.with_world(|w| w.entities_with::<UiText>().len()),
+            "[render] scene ui"
+        );
         tracing::debug!(
             target: "render",
             "[render] mesh vertices={} draws={} paths={}",
@@ -425,13 +441,14 @@ impl RuntimeScene {
                 texture: 0, // white
                 start,
                 count,
+                sdf: false,
             });
         }
         Ok(())
     }
 
-    /// Appends screen-space text glyphs (from the built-in 5x7 atlas) as NDC
-    /// quads sampled from the atlas texture.
+    /// Appends screen-space text glyphs (SDF font atlas) as NDC quads. Shares
+    /// `layout_text` with the scene-node UI Text component.
     fn push_ui_text(
         &mut self,
         vertices: &mut Vec<OverlayVertex>,
@@ -448,64 +465,176 @@ impl RuntimeScene {
         if visible.is_empty() {
             return Ok(());
         }
-        let atlas = TextAtlas::built_in();
-        let mut ascii_vertices = Vec::new();
-        let mut cjk_vertices = Vec::new();
+        for (position, text, scale) in visible {
+            let (mesh, is_sdf) =
+                self.layout_text(&text, position, scale, [1.0, 1.0, 1.0])?;
+            let text_vertices = text_to_ndc(mesh, is_sdf, width, height);
+            self.push_text_run(vertices, draws, text_vertices, is_sdf);
+        }
+        Ok(())
+    }
+
+    /// Pushes scene-node UI components (`Text` / `Image` / `Button`) as NDC
+    /// overlay quads on top of the Lua UI. Order: images, buttons, then text.
+    fn push_scene_ui(
+        &mut self,
+        vertices: &mut Vec<OverlayVertex>,
+        draws: &mut Vec<SceneDraw>,
+        width: u32,
+        height: u32,
+    ) -> Result<(), String> {
+        let images: Vec<UiImage> = self.script.with_world(|world| {
+            world
+                .entities_with::<UiImage>()
+                .into_iter()
+                .filter_map(|id| world.get::<UiImage>(id).ok().flatten().cloned())
+                .collect()
+        });
+        for image in images {
+            self.push_image_quad(vertices, draws, width, height, &image)?;
+        }
+        let buttons: Vec<UiButton> = self.script.with_world(|world| {
+            world
+                .entities_with::<UiButton>()
+                .into_iter()
+                .filter_map(|id| world.get::<UiButton>(id).ok().flatten().cloned())
+                .collect()
+        });
+        for button in buttons {
+            // 背景矩形（白纹理着色）。
+            let start = vertices.len() as u32;
+            vertices.extend_from_slice(&screen_rect_ndc(
+                button.position[0],
+                button.position[1],
+                button.size[0],
+                button.size[1],
+                [button.background[0], button.background[1], button.background[2], 1.0],
+                width,
+                height,
+            ));
+            draws.push(SceneDraw {
+                texture: 0, // white
+                start,
+                count: vertices.len() as u32 - start,
+                sdf: false,
+            });
+            // 居中 label：用真实布局尺寸。
+            if !button.label.is_empty() {
+                let (mesh, is_sdf) =
+                    self.layout_text(&button.label, [0.0, 0.0], 1.0, button.text_color)?;
+                let dx = button.position[0] + (button.size[0] - mesh.size[0]).max(0.0) / 2.0;
+                let dy = button.position[1] + (button.size[1] - mesh.size[1]).max(0.0) / 2.0;
+                let text_vertices = text_to_ndc_with_offset(
+                    mesh,
+                    is_sdf,
+                    [dx, dy],
+                    width,
+                    height,
+                );
+                self.push_text_run(vertices, draws, text_vertices, is_sdf);
+            }
+        }
+        let texts: Vec<UiText> = self.script.with_world(|world| {
+            world
+                .entities_with::<UiText>()
+                .into_iter()
+                .filter_map(|id| world.get::<UiText>(id).ok().flatten().cloned())
+                .collect()
+        });
+        for text in texts {
+            let (mesh, is_sdf) =
+                self.layout_text(&text.text, text.position, text.scale, text.color)?;
+            let text_vertices = text_to_ndc(mesh, is_sdf, width, height);
+            self.push_text_run(vertices, draws, text_vertices, is_sdf);
+        }
+        Ok(())
+    }
+
+    /// Layouts a string into a pixel-space text mesh using real font metrics.
+    /// Uses the SDF font atlas when available, else the legacy bitmap atlas.
+    /// Returns `(mesh, is_sdf)`.
+    fn layout_text(
+        &mut self,
+        text: &str,
+        position: [f32; 2],
+        scale: f32,
+        color: [f32; 3],
+    ) -> Result<(TextMesh, bool), String> {
         let style = TextStyle {
-            scale: 1.0,
-            color: [1.0, 1.0, 1.0, 1.0],
+            scale,
+            color: [color[0], color[1], color[2], 1.0],
             ..Default::default()
         };
-        for (position, text, scale) in visible {
-            let style = TextStyle { scale, ..style };
-            let (ascii_mesh, cjk_mesh) = match self.font_atlas.as_mut() {
-                Some(font) => TextLayout::build_mixed(&text, position, style, &atlas, font)
-                    .map_err(|error| error.to_string())?,
-                None => {
-                    let mesh = TextLayout::build(&text, position, style, &atlas)
-                        .map_err(|error| error.to_string())?;
-                    (mesh, TextMesh::default())
-                }
-            };
-            for vertex in ascii_mesh.vertices {
-                ascii_vertices.push(OverlayVertex {
-                    position: [
-                        vertex.position[0] / width.max(1) as f32 * 2.0 - 1.0,
-                        1.0 - vertex.position[1] / height.max(1) as f32 * 2.0,
-                    ],
-                    uv: vertex.uv,
-                    color: vertex.color,
-                });
-            }
-            for vertex in cjk_mesh.vertices {
-                cjk_vertices.push(OverlayVertex {
-                    position: [
-                        vertex.position[0] / width.max(1) as f32 * 2.0 - 1.0,
-                        1.0 - vertex.position[1] / height.max(1) as f32 * 2.0,
-                    ],
-                    uv: vertex.uv,
-                    color: vertex.color,
-                });
-            }
+        if let Some(font) = self.font_atlas.as_mut() {
+            TextLayout::build(text, position, style, font)
+                .map(|mesh| (mesh, true))
+                .map_err(|error| error.to_string())
+        } else {
+            let atlas = TextAtlas::built_in();
+            TextLayout::build_bitmap(text, position, style, &atlas)
+                .map(|mesh| (mesh, false))
+                .map_err(|error| error.to_string())
         }
-        if !ascii_vertices.is_empty() {
-            let start = vertices.len() as u32;
-            vertices.extend(ascii_vertices);
-            draws.push(SceneDraw {
-                texture: self.texture_id(ATLAS_TEXTURE_PATH) + 1,
-                start,
-                count: vertices.len() as u32 - start,
-            });
+    }
+
+    /// Appends a text run as a single SDF or bitmap draw.
+    fn push_text_run(
+        &mut self,
+        vertices: &mut Vec<OverlayVertex>,
+        draws: &mut Vec<SceneDraw>,
+        text_vertices: Vec<OverlayVertex>,
+        is_sdf: bool,
+    ) {
+        if text_vertices.is_empty() {
+            return;
         }
-        if !cjk_vertices.is_empty() {
-            let start = vertices.len() as u32;
-            vertices.extend(cjk_vertices);
-            draws.push(SceneDraw {
-                texture: self.texture_id(FONT_ATLAS_TEXTURE_PATH) + 1,
-                start,
-                count: vertices.len() as u32 - start,
-            });
-        }
+        let start = vertices.len() as u32;
+        let texture = if is_sdf {
+            self.texture_id(FONT_ATLAS_TEXTURE_PATH) + 1
+        } else {
+            self.texture_id(ATLAS_TEXTURE_PATH) + 1
+        };
+        vertices.extend(text_vertices);
+        draws.push(SceneDraw {
+            texture,
+            start,
+            count: vertices.len() as u32 - start,
+            sdf: is_sdf,
+        });
+    }
+
+    /// Pushes a screen-space textured quad for the `Image` component.
+    fn push_image_quad(
+        &mut self,
+        vertices: &mut Vec<OverlayVertex>,
+        draws: &mut Vec<SceneDraw>,
+        width: u32,
+        height: u32,
+        image: &UiImage,
+    ) -> Result<(), String> {
+        let sw = width.max(1) as f32;
+        let sh = height.max(1) as f32;
+        let x0 = image.position[0] / sw * 2.0 - 1.0;
+        let y0 = 1.0 - image.position[1] / sh * 2.0;
+        let x1 = (image.position[0] + image.size[0]) / sw * 2.0 - 1.0;
+        let y1 = 1.0 - (image.position[1] + image.size[1]) / sh * 2.0;
+        let color = [image.color[0], image.color[1], image.color[2], 1.0];
+        let quad = [
+            OverlayVertex { position: [x0, y0], uv: [0.0, 0.0], color, sdf: 0 },
+            OverlayVertex { position: [x1, y0], uv: [1.0, 0.0], color, sdf: 0 },
+            OverlayVertex { position: [x1, y1], uv: [1.0, 1.0], color, sdf: 0 },
+            OverlayVertex { position: [x0, y0], uv: [0.0, 0.0], color, sdf: 0 },
+            OverlayVertex { position: [x1, y1], uv: [1.0, 1.0], color, sdf: 0 },
+            OverlayVertex { position: [x0, y1], uv: [0.0, 1.0], color, sdf: 0 },
+        ];
+        let start = vertices.len() as u32;
+        vertices.extend(quad);
+        draws.push(SceneDraw {
+            texture: self.texture_id(&image.texture) + 1,
+            start,
+            count: vertices.len() as u32 - start,
+            sdf: false,
+        });
         Ok(())
     }
 
@@ -610,7 +739,41 @@ fn sprite_vertex(vertex: &SpriteVertex, viewport: Viewport) -> OverlayVertex {
         ],
         uv: vertex.uv,
         color: vertex.color,
+        sdf: 0,
     }
+}
+
+/// Converts a pixel-space text mesh into NDC overlay vertices.
+fn text_to_ndc(
+    mesh: TextMesh,
+    is_sdf: bool,
+    width: u32,
+    height: u32,
+) -> Vec<OverlayVertex> {
+    text_to_ndc_with_offset(mesh, is_sdf, [0.0, 0.0], width, height)
+}
+
+/// Converts a pixel-space text mesh into NDC overlay vertices with an extra
+/// pixel offset (used to center a button label).
+fn text_to_ndc_with_offset(
+    mesh: TextMesh,
+    is_sdf: bool,
+    offset: [f32; 2],
+    width: u32,
+    height: u32,
+) -> Vec<OverlayVertex> {
+    mesh.vertices
+        .into_iter()
+        .map(|vertex| OverlayVertex {
+            position: [
+                (vertex.position[0] + offset[0]) / width.max(1) as f32 * 2.0 - 1.0,
+                1.0 - (vertex.position[1] + offset[1]) / height.max(1) as f32 * 2.0,
+            ],
+            uv: vertex.uv,
+            color: vertex.color,
+            sdf: u32::from(is_sdf),
+        })
+        .collect()
 }
 
 /// Builds a quad in NDC from a top-left-origin screen-space rectangle, sampling
@@ -636,31 +799,66 @@ fn screen_rect_ndc(
             position: [x0, y0],
             uv,
             color,
+            sdf: 0,
         },
         OverlayVertex {
             position: [x1, y0],
             uv,
             color,
+            sdf: 0,
         },
         OverlayVertex {
             position: [x1, y1],
             uv,
             color,
+            sdf: 0,
         },
         OverlayVertex {
             position: [x0, y0],
             uv,
             color,
+            sdf: 0,
         },
         OverlayVertex {
             position: [x1, y1],
             uv,
             color,
+            sdf: 0,
         },
         OverlayVertex {
             position: [x0, y1],
             uv,
             color,
+            sdf: 0,
         },
     ]
+}
+
+#[cfg(test)]
+mod sdf_tests {
+    use super::*;
+    use engine_core::scene::{Scene, SceneEntityId};
+
+    fn game_root() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../game")
+    }
+
+    #[test]
+    fn ui_test_scene_emits_sdf_text_draws() {
+        let root = game_root();
+        let path = root.join("scenes/ui_test.scene");
+        if !path.is_file() {
+            eprintln!("ui_test.scene missing; skip");
+            return;
+        }
+        let scene = Scene::load(&path).unwrap_or_else(|e| panic!("load ui_test: {e}"));
+        let mut runtime = RuntimeScene::from_scene_edit(Some(&root), scene).expect("runtime");
+        let mesh = runtime.vertices(640, 360).expect("vertices");
+        let sdf_count = mesh.draws.iter().filter(|d| d.sdf).count();
+        eprintln!("ui_test: draws={} sdf={} text_entities={}",
+            mesh.draws.len(), sdf_count,
+            runtime.script.with_world(|w| w.entities_with::<UiText>().len()));
+        assert!(sdf_count > 0, "ui_test scene should emit SDF text draws");
+        assert!(mesh.vertices.iter().any(|v| v.sdf == 1), "SDF vertices present");
+    }
 }

@@ -11,15 +11,18 @@ pub struct OverlayVertex {
     pub position: [f32; 2],
     pub uv: [f32; 2],
     pub color: [f32; 4],
+    /// `1` = signed-distance-field glyph (text); shader applies smoothstep.
+    pub sdf: u32,
 }
 
 /// One draw range over the scene vertex buffer, bound to a texture.
 /// `texture == 0` selects the built-in white texture; `texture == i > 0`
-/// selects `paths[i - 1]`.
+/// selects `paths[i - 1]`. `sdf == true` draws through the Linear SDF pipeline.
 pub struct SceneDraw {
     pub texture: u32,
     pub start: u32,
     pub count: u32,
+    pub sdf: bool,
 }
 
 /// Sentinel paths resolved by the renderer to built-in textures instead of

@@ -96,6 +96,34 @@ struct StaticGroup {
     models: Vec<Mat4>,
 }
 
+/// 一个可复用的非阻塞回读槽：GPU 拷贝目标 buffer + 提交序号 + 映射完成标志。
+struct ReadbackSlot {
+    buffer: wgpu::Buffer,
+    /// 最近提交的拷贝序号；`None` 表示槽空闲（已读完并 unmap，可重新提交）。
+    submission: Option<wgpu::SubmissionIndex>,
+    /// `map_async` 完成回调置位（跨线程，主线程轮询读取）。
+    ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    width: u32,
+    height: u32,
+    row_bytes: u32,
+    bytes_per_row: u32,
+}
+
+/// 非阻塞离屏回读的结果。
+pub enum ReadbackStatus {
+    /// 就绪的紧凑 RGBA8 像素（每行 `row_bytes`，无行尾填充），附实际尺寸。
+    /// 尺寸可能与当前渲染尺寸不同（排空的是上一帧不同分辨率的槽）。
+    Ready {
+        pixels: Vec<u8>,
+        width: u32,
+        height: u32,
+    },
+    /// 尚未就绪（主线程未阻塞等待 GPU）；调用方沿用上一帧纹理即可。
+    Pending,
+    /// 回读失败。
+    Failed(String),
+}
+
 /// Largest axis scale of a model matrix (used to inflate culling spheres).
 fn max_model_scale(model: Mat4) -> f32 {
     let sx =
@@ -129,6 +157,12 @@ pub struct Renderer {
     atlas: Option<wgpu::BindGroup>,
     font_atlas_texture: Option<wgpu::Texture>,
     font_atlas_bind: Option<wgpu::BindGroup>,
+    /// SDF text bind group (Linear sampler); used by `draw.sdf` ranges.
+    font_atlas_sdf_bind: Option<wgpu::BindGroup>,
+    /// Linear sampler for SDF distance fields (text only).
+    sdf_sampler: wgpu::Sampler,
+    /// Pipeline for SDF text draws (Linear sampling + SDF shader branch).
+    pipeline_sdf: wgpu::RenderPipeline,
     font_atlas_uploaded_version: u64,
     project_root: Option<PathBuf>,
     /// Camera uniform buffer, rewritten every frame from the active camera.
@@ -156,6 +190,8 @@ pub struct Renderer {
     /// Frames rendered since startup, for periodic baseline logging.
     frame_count: u64,
     _material_bind_group_layout: wgpu::BindGroupLayout,
+    /// 非阻塞回读槽（离屏纹理 → CPU），避免主线程阻塞等待 GPU。
+    readback_slots: Vec<ReadbackSlot>,
 }
 
 impl Renderer {
@@ -383,6 +419,11 @@ impl Renderer {
                             offset: 16,
                             shader_location: 2,
                         },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Uint32,
+                            offset: 32,
+                            shader_location: 3,
+                        },
                     ],
                 }],
             },
@@ -408,6 +449,64 @@ impl Renderer {
             min_filter: wgpu::FilterMode::Nearest,
             mipmap_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
+        });
+        // SDF 文本需要 Linear 采样（距离场插值）；精灵保持 Nearest。
+        let sdf_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("p2-sdf-sampler"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let pipeline_sdf = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("p2-textured-sdf-pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<OverlayVertex>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &[
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: 0,
+                            shader_location: 0,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: 8,
+                            shader_location: 1,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x4,
+                            offset: 16,
+                            shader_location: 2,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Uint32,
+                            offset: 32,
+                            shader_location: 3,
+                        },
+                    ],
+                }],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
         });
         let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("p2-vertex-buffer"),
@@ -785,6 +884,9 @@ impl Renderer {
             atlas: None,
             font_atlas_texture: None,
             font_atlas_bind: None,
+            font_atlas_sdf_bind: None,
+            sdf_sampler,
+            pipeline_sdf,
             font_atlas_uploaded_version: u64::MAX,
             project_root,
             camera_buffer,
@@ -799,6 +901,7 @@ impl Renderer {
             instancing_enabled,
             frame_count: 0,
             _material_bind_group_layout: material_bind_group_layout,
+            readback_slots: Vec::new(),
         })
     }
 
@@ -1354,6 +1457,171 @@ impl Renderer {
         Ok(pixels)
     }
 
+    /// 非阻塞离屏回读：总是提交一次纹理拷贝（写进环中下一空闲槽），同时尝试
+    /// 读取之前提交的结果。就绪返回 `Ready(pixels)`，未就绪返回 `Pending`——
+    /// 主线程永不阻塞等待 GPU。纹理须有 `COPY_SRC` usage。
+    pub fn readback_frame(
+        &mut self,
+        texture: &wgpu::Texture,
+        width: u32,
+        height: u32,
+    ) -> ReadbackStatus {
+        // 先排空任意就绪槽（滞后一帧的结果）。
+        let mut ready = None;
+        for index in 0..self.readback_slots.len() {
+            if let Some(result) = self.try_finish_readback(index) {
+                ready = Some(result);
+                break;
+            }
+        }
+        // 无论是否排空到结果，都提交本次拷贝，保证每个渲染帧都会被回读。
+        self.submit_readback(texture, width, height);
+        match ready {
+            Some((pixels, width, height)) => ReadbackStatus::Ready {
+                pixels,
+                width,
+                height,
+            },
+            None => ReadbackStatus::Pending,
+        }
+    }
+
+    /// 是否有在途（已提交未读）的回读等待排空。
+    pub fn readback_in_flight(&self) -> bool {
+        self.readback_slots.iter().any(|slot| slot.submission.is_some())
+    }
+
+    /// 仅排空待读的回读（内容未变、无需新提交时调用），返回就绪像素。
+    pub fn readback_pending(&mut self) -> ReadbackStatus {
+        for index in 0..self.readback_slots.len() {
+            if let Some((pixels, width, height)) = self.try_finish_readback(index) {
+                return ReadbackStatus::Ready {
+                    pixels,
+                    width,
+                    height,
+                };
+            }
+        }
+        ReadbackStatus::Pending
+    }
+
+    /// 非阻塞检查一个回读槽：映射完成则读出行数据并置回空闲，返回紧凑像素与尺寸。
+    fn try_finish_readback(&mut self, index: usize) -> Option<(Vec<u8>, u32, u32)> {
+        let slot = self.readback_slots.get(index)?;
+        if slot.submission.is_none() {
+            return None;
+        }
+        // 非阻塞 maintain：处理所有已完成的提交与 `map_async` 回调（超时即返回，
+        // 主线程不阻塞）。就绪与否由 `ready` 标志判断。
+        let _ = self.device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: Some(std::time::Duration::ZERO),
+        });
+        if !slot.ready.load(std::sync::atomic::Ordering::Acquire) {
+            return None;
+        }
+        let (width, height, row_bytes, bytes_per_row) = (
+            slot.width,
+            slot.height,
+            slot.row_bytes,
+            slot.bytes_per_row,
+        );
+        let buffer = slot.buffer.clone();
+        let padded = buffer.slice(..).get_mapped_range();
+        let mut pixels = Vec::with_capacity((row_bytes * height) as usize);
+        for row in 0..height as usize {
+            let start = row * bytes_per_row as usize;
+            pixels.extend_from_slice(&padded[start..start + row_bytes as usize]);
+        }
+        drop(padded);
+        buffer.unmap();
+        // 槽置回空闲，允许复用。
+        let slot = &mut self.readback_slots[index];
+        slot.submission = None;
+        slot.ready.store(false, std::sync::atomic::Ordering::Release);
+        Some((pixels, width, height))
+    }
+
+    /// 向一个空闲回读槽提交离屏纹理 → staging buffer 的拷贝（buffer 尺寸不符时重建）。
+    fn submit_readback(&mut self, texture: &wgpu::Texture, width: u32, height: u32) {
+        if width == 0 || height == 0 {
+            return;
+        }
+        let row_bytes = 4 * width;
+        let bytes_per_row = row_bytes.div_ceil(256) * 256;
+        let size_bytes = (bytes_per_row * height) as u64;
+        // 惰性创建双缓冲槽。
+        while self.readback_slots.len() < 2 {
+            self.readback_slots.push(ReadbackSlot {
+                buffer: self.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("p2-editor-readback"),
+                    size: size_bytes.max(4),
+                    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                    mapped_at_creation: false,
+                }),
+                submission: None,
+                ready: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                width,
+                height,
+                row_bytes,
+                bytes_per_row,
+            });
+        }
+        // 找一个空闲槽（无在途提交）。
+        let Some(index) = self.readback_slots.iter().position(|slot| slot.submission.is_none())
+        else {
+            return; // 全部在途，跳过本次提交
+        };
+        // 尺寸不符时重建 buffer，避免越界写入。
+        let slot = &mut self.readback_slots[index];
+        if slot.width != width || slot.height != height || slot.buffer.size() < size_bytes {
+            slot.buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("p2-editor-readback"),
+                size: size_bytes,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            slot.width = width;
+            slot.height = height;
+            slot.row_bytes = row_bytes;
+            slot.bytes_per_row = bytes_per_row;
+        }
+        let buffer = slot.buffer.clone();
+        let ready = slot.ready.clone();
+        slot.ready.store(false, std::sync::atomic::Ordering::Release);
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("p2-editor-readback-copy"),
+        });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(bytes_per_row),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        // 先提交拷贝，再请求映射（与同步回读一致：map_async 会把 buffer 标记为
+        // mapped-pending，若在 copy 提交前调用会触发 "Buffer is still mapped"）。
+        let submission = self.queue.submit([encoder.finish()]);
+        buffer.slice(..).map_async(wgpu::MapMode::Read, move |_result| {
+            ready.store(true, std::sync::atomic::Ordering::Release);
+        });
+        slot.submission = Some(submission);
+    }
+
     /// Shared pass rendering into a given color view (window surface or
     /// offscreen target): clears the view, draws 3D (shadow + mesh into the
     /// depth view), then the 2D overlay.
@@ -1484,10 +1752,22 @@ impl Renderer {
                 if let Some(font) = &mesh.font_atlas {
                     let _ = self.ensure_font_atlas(font);
                 }
+                tracing::debug!(target: "render", sdf_draws = mesh.draws.iter().filter(|d| d.sdf).count(), font_bind = self.font_atlas_sdf_bind.is_some(), "[render] sdf draws");
                 for draw in &mesh.draws {
+                    if draw.sdf {
+                        // SDF 文本：Linear 采样 + SDF shader 分支。
+                        let Some(sdf_bind) = &self.font_atlas_sdf_bind else {
+                            continue;
+                        };
+                        pass.set_pipeline(&self.pipeline_sdf);
+                        pass.set_bind_group(0, sdf_bind, &[]);
+                        pass.draw(draw.start..draw.start + draw.count, 0..1);
+                        continue;
+                    }
                     let Some(bind) = self.bind_group_for(draw.texture, &mesh.paths) else {
                         continue;
                     };
+                    pass.set_pipeline(&self.pipeline);
                     pass.set_bind_group(0, &bind, &[]);
                     pass.draw(draw.start..draw.start + draw.count, 0..1);
                 }
@@ -1571,7 +1851,8 @@ impl Renderer {
         if font.version == self.font_atlas_uploaded_version || font.pixels.is_empty() {
             return self.font_atlas_bind.clone();
         }
-        let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+        // SDF 距离场不能走 sRGB 解码（会非线性化距离斜坡），用 Rgba8Unorm。
+        let format = wgpu::TextureFormat::Rgba8Unorm;
         let texture = if let Some(texture) = &self.font_atlas_texture {
             texture.clone()
         } else {
@@ -1628,6 +1909,22 @@ impl Renderer {
         });
         self.font_atlas_uploaded_version = font.version;
         self.font_atlas_bind = Some(bind_group.clone());
+        // SDF 文本用 Linear 采样绑定（同一纹理，不同采样器）。
+        let sdf_bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("p2-font-atlas-sdf-bind"),
+            layout: &self.texture_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sdf_sampler),
+                },
+            ],
+        });
+        self.font_atlas_sdf_bind = Some(sdf_bind);
         Some(bind_group)
     }
 
@@ -1836,6 +2133,79 @@ mod tests {
             pixels.iter().any(|&byte| byte > 0),
             "offscreen frame is blank"
         );
+    }
+
+    /// Non-blocking readback (`readback_frame`) eventually yields the rendered
+    /// pixels without a blocking `device.poll(Wait)` on the first call. Skips
+    /// when no GPU is available.
+    #[test]
+    fn non_blocking_readback_eventually_yields_pixels() {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let Some(adapter) =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::LowPower,
+                compatible_surface: None,
+                force_fallback_adapter: true,
+            }))
+            .ok()
+        else {
+            return; // no GPU available; skip
+        };
+        let (device, queue) = pollster::block_on(adapter.request_device(&DeviceDescriptor {
+            label: Some("p2-test-device"),
+            required_features: wgpu::Features::empty(),
+            experimental_features: wgpu::ExperimentalFeatures::disabled(),
+            required_limits: wgpu::Limits::default(),
+            memory_hints: wgpu::MemoryHints::Performance,
+            trace: wgpu::Trace::Off,
+        }))
+        .expect("request test device");
+        let mut renderer = Renderer::new_offscreen(device.clone(), queue, None, false, false)
+            .expect("offscreen renderer");
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("p2-test-readback"),
+            size: wgpu::Extent3d {
+                width: 64,
+                height: 64,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let mesh = crate::frame::SceneMesh {
+            vertices: Vec::new(),
+            draws: Vec::new(),
+            paths: Vec::new(),
+            font_atlas: None,
+        };
+        renderer.render_into_texture(&mesh, None, &view, 64, 64);
+        // 首帧提交；随后的调用非阻塞轮询，直到返回就绪像素（不应无限阻塞）。
+        let mut result = renderer.readback_frame(&texture, 64, 64);
+        for _ in 0..120 {
+            match &result {
+                ReadbackStatus::Ready { pixels, width, height } => {
+                    assert_eq!((*width, *height), (64, 64));
+                    assert_eq!(pixels.len(), 64 * 64 * 4);
+                    assert!(
+                        pixels.iter().any(|&byte| byte > 0),
+                        "offscreen frame is blank"
+                    );
+                    return;
+                }
+                ReadbackStatus::Pending => {
+                    // 未就绪：等 GPU 完成拷贝（真实编辑器帧间隔远大于此），再轮询。
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                    result = renderer.readback_frame(&texture, 64, 64);
+                }
+                ReadbackStatus::Failed(error) => panic!("readback failed: {error}"),
+            }
+        }
+        panic!("readback never became ready within 120 polls");
     }
 
     /// Reproduces the editor's `create_preview` path against the real game
