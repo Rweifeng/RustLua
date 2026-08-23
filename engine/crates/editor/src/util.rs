@@ -15,6 +15,31 @@ pub(crate) fn display_path(path: &Path) -> String {
     strip_verbatim_prefix(path).display().to_string()
 }
 
+/// 最近打开项目记录文件（与 crash.log/editor.log 同目录）。
+fn recent_projects_path() -> PathBuf {
+    env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(|dir| dir.join("recent_projects.txt")))
+        .unwrap_or_else(|| PathBuf::from("recent_projects.txt"))
+}
+
+/// 读取最近打开的项目列表（每行一个路径，最新在前）。
+pub(crate) fn load_recent_projects() -> Vec<String> {
+    let Ok(text) = std::fs::read_to_string(recent_projects_path()) else {
+        return Vec::new();
+    };
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// 落盘最近打开的项目列表。
+pub(crate) fn save_recent_projects(projects: &[String]) {
+    let _ = std::fs::write(recent_projects_path(), projects.join("\n"));
+}
+
 pub(crate) fn format_project_error(path: &Path, error: ProjectError) -> String {
     format!("无法打开项目 {}：{}", path.display(), error)
 }

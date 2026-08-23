@@ -3,8 +3,8 @@
 use crate::ComponentClipboard;
 use crate::EditorApp;
 use editor::{
-    Camera3DFields, Collider3dFields, CommandKind, InspectorError, LightFields, Transform3DFields,
-    TransformFields,
+    ButtonFields, Camera3DFields, Collider3dFields, CommandKind, ImageFields, InspectorError,
+    LightFields, TextFields, Transform3DFields, TransformFields,
 };
 use eframe::egui;
 use engine_core::scene::SceneEntityId;
@@ -37,6 +37,37 @@ impl EditorApp {
                     parent.map_or_else(|| "无".to_owned(), |id| id.0.to_string())
                 ));
                 ui.label(format!("子实体数量：{child_count}"));
+                // 持久实体：运行时切场景不销毁。
+                {
+                    let mut persistent = self
+                        .current_scene()
+                        .and_then(|scene| {
+                            scene.scene.entities.get(&selected).map(|entity| {
+                                entity
+                                    .metadata
+                                    .get("persistent")
+                                    .is_some_and(|value| value == "true")
+                            })
+                        })
+                        .unwrap_or(false);
+                    if ui
+                        .checkbox(&mut persistent, "运行时切场景不销毁（持久实体）")
+                        .changed()
+                    {
+                        let inspector = self.inspector.clone();
+                        if let Some(scene) = self.document.current_scene.as_mut() {
+                            let _ = self.history.execute(
+                                scene,
+                                "Toggle Persistent",
+                                CommandKind::Property,
+                                |scene| {
+                                    inspector.set_persistent(scene, persistent)?;
+                                    Ok::<(), InspectorError>(())
+                                },
+                            );
+                        }
+                    }
+                }
                 ui.separator();
                 ui.horizontal(|ui| {
                     ui.label("父实体 ID");
@@ -75,6 +106,9 @@ impl EditorApp {
                                 "Camera3D",
                                 "Light",
                                 "Collider3d",
+                                "Text",
+                                "Image",
+                                "Button",
                             ] {
                                 ui.selectable_value(
                                     &mut self.inspector_add_component,
@@ -91,6 +125,8 @@ impl EditorApp {
                     }
                 });
                 let components = self.current_components();
+                // 只显示实体实际拥有的组件编辑器（空 2D 实体只有 Transform，3D 只有 Transform3D）。
+                let has = |name: &str| components.iter().any(|component| component == name);
                 if !components.is_empty() {
                     ui.label("组件：");
                     for key in &components {
@@ -106,52 +142,55 @@ impl EditorApp {
                     }
                 }
                 ui.separator();
-                let transform_header = if self.inspector_transform_open {
-                    "Transform  v"
-                } else {
-                    "Transform  >"
-                };
-                if ui.button(transform_header).clicked() {
-                    self.inspector_transform_open = !self.inspector_transform_open;
+                if has("Transform") {
+                    let transform_header = if self.inspector_transform_open {
+                        "Transform  v"
+                    } else {
+                        "Transform  >"
+                    };
+                    if ui.button(transform_header).clicked() {
+                        self.inspector_transform_open = !self.inspector_transform_open;
+                    }
+                    if self.inspector_transform_open {
+                        ui.group(|ui| {
+                            ui.horizontal(|ui| {
+                                ui.label("位置 X");
+                                ui.add(egui::DragValue::new(&mut self.transform.position_x));
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("位置 Y");
+                                ui.add(egui::DragValue::new(&mut self.transform.position_y));
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("旋转");
+                                ui.add(egui::DragValue::new(&mut self.transform.rotation));
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("缩放 X");
+                                ui.add(egui::DragValue::new(&mut self.transform.scale_x));
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("缩放 Y");
+                                ui.add(egui::DragValue::new(&mut self.transform.scale_y));
+                            });
+                            ui.horizontal(|ui| {
+                                if ui.button("Reset").clicked() {
+                                    self.transform = TransformFields::default();
+                                }
+                                if ui.button("Copy Components").clicked() {
+                                    self.copy_selected_components();
+                                }
+                                if ui.button("Paste Components").clicked() {
+                                    self.paste_selected_components();
+                                }
+                            });
+                            if ui.button("Apply Transform").clicked() {
+                                self.apply_inspector();
+                            }
+                        });
+                    }
                 }
-                if self.inspector_transform_open {
-                    ui.group(|ui| {
-                        ui.horizontal(|ui| {
-                            ui.label("位置 X");
-                            ui.add(egui::DragValue::new(&mut self.transform.position_x));
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label("位置 Y");
-                            ui.add(egui::DragValue::new(&mut self.transform.position_y));
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label("旋转");
-                            ui.add(egui::DragValue::new(&mut self.transform.rotation));
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label("缩放 X");
-                            ui.add(egui::DragValue::new(&mut self.transform.scale_x));
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label("缩放 Y");
-                            ui.add(egui::DragValue::new(&mut self.transform.scale_y));
-                        });
-                        ui.horizontal(|ui| {
-                            if ui.button("Reset").clicked() {
-                                self.transform = TransformFields::default();
-                            }
-                            if ui.button("Copy Components").clicked() {
-                                self.copy_selected_components();
-                            }
-                            if ui.button("Paste Components").clicked() {
-                                self.paste_selected_components();
-                            }
-                        });
-                        if ui.button("Apply Transform").clicked() {
-                            self.apply_inspector();
-                        }
-                    });
-                }
+                if has("Transform3D") {
                 let transform3d_header = if self.inspector_transform3d_open {
                     "Transform3D  v"
                 } else {
@@ -188,51 +227,59 @@ impl EditorApp {
                         });
                     });
                 }
-                ui.horizontal(|ui| {
-                    ui.label("MeshRenderer");
-                    ui.text_edit_singleline(&mut self.mesh_renderer);
-                });
-                ui.group(|ui| {
-                    ui.label("Camera3D");
+                }
+                if has("MeshRenderer") {
                     ui.horizontal(|ui| {
-                        ui.label("位置");
-                        ui.add(egui::DragValue::new(&mut self.camera3d.position_x));
-                        ui.add(egui::DragValue::new(&mut self.camera3d.position_y));
-                        ui.add(egui::DragValue::new(&mut self.camera3d.position_z));
+                        ui.label("MeshRenderer");
+                        ui.text_edit_singleline(&mut self.mesh_renderer);
                     });
-                    ui.horizontal(|ui| {
-                        ui.label("目标");
-                        ui.add(egui::DragValue::new(&mut self.camera3d.target_x));
-                        ui.add(egui::DragValue::new(&mut self.camera3d.target_y));
-                        ui.add(egui::DragValue::new(&mut self.camera3d.target_z));
+                }
+                if has("Camera3D") {
+                    ui.group(|ui| {
+                        ui.label("Camera3D");
+                        ui.horizontal(|ui| {
+                            ui.label("位置");
+                            ui.add(egui::DragValue::new(&mut self.camera3d.position_x));
+                            ui.add(egui::DragValue::new(&mut self.camera3d.position_y));
+                            ui.add(egui::DragValue::new(&mut self.camera3d.position_z));
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("目标");
+                            ui.add(egui::DragValue::new(&mut self.camera3d.target_x));
+                            ui.add(egui::DragValue::new(&mut self.camera3d.target_y));
+                            ui.add(egui::DragValue::new(&mut self.camera3d.target_z));
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("FOV");
+                            ui.add(egui::DragValue::new(&mut self.camera3d.fov_degrees));
+                            ui.label("近/远");
+                            ui.add(egui::DragValue::new(&mut self.camera3d.near));
+                            ui.add(egui::DragValue::new(&mut self.camera3d.far));
+                        });
                     });
-                    ui.horizontal(|ui| {
-                        ui.label("FOV");
-                        ui.add(egui::DragValue::new(&mut self.camera3d.fov_degrees));
-                        ui.label("近/远");
-                        ui.add(egui::DragValue::new(&mut self.camera3d.near));
-                        ui.add(egui::DragValue::new(&mut self.camera3d.far));
+                }
+                if has("Light") {
+                    ui.group(|ui| {
+                        ui.label("Light");
+                        ui.horizontal(|ui| {
+                            ui.label("方向");
+                            ui.add(egui::DragValue::new(&mut self.light.direction_x));
+                            ui.add(egui::DragValue::new(&mut self.light.direction_y));
+                            ui.add(egui::DragValue::new(&mut self.light.direction_z));
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("颜色");
+                            ui.add(egui::DragValue::new(&mut self.light.color_r));
+                            ui.add(egui::DragValue::new(&mut self.light.color_g));
+                            ui.add(egui::DragValue::new(&mut self.light.color_b));
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("强度");
+                            ui.add(egui::DragValue::new(&mut self.light.intensity));
+                        });
                     });
-                });
-                ui.group(|ui| {
-                    ui.label("Light");
-                    ui.horizontal(|ui| {
-                        ui.label("方向");
-                        ui.add(egui::DragValue::new(&mut self.light.direction_x));
-                        ui.add(egui::DragValue::new(&mut self.light.direction_y));
-                        ui.add(egui::DragValue::new(&mut self.light.direction_z));
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("颜色");
-                        ui.add(egui::DragValue::new(&mut self.light.color_r));
-                        ui.add(egui::DragValue::new(&mut self.light.color_g));
-                        ui.add(egui::DragValue::new(&mut self.light.color_b));
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("强度");
-                        ui.add(egui::DragValue::new(&mut self.light.intensity));
-                    });
-                });
+                }
+                if has("Collider3d") {
                 let collider3d_header = if self.inspector_collider3d_open {
                     "Collider3d  v"
                 } else {
@@ -310,14 +357,132 @@ impl EditorApp {
                         });
                     });
                 }
-                ui.horizontal(|ui| {
-                    ui.label("Sprite");
-                    ui.text_edit_singleline(&mut self.sprite_reference);
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Lua");
-                    ui.text_edit_singleline(&mut self.lua_script);
-                });
+                }
+                // UI 组件：Text / Image / Button（屏幕空间）。
+                if has("Text") {
+                let text_header = if self.inspector_text_open {
+                    "Text  v"
+                } else {
+                    "Text  >"
+                };
+                if ui.button(text_header).clicked() {
+                    self.inspector_text_open = !self.inspector_text_open;
+                }
+                if self.inspector_text_open {
+                    ui.group(|ui| {
+                        ui.horizontal(|ui| {
+                            ui.label("文本");
+                            ui.text_edit_singleline(&mut self.text.text);
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("位置");
+                            ui.add(egui::DragValue::new(&mut self.text.x));
+                            ui.add(egui::DragValue::new(&mut self.text.y));
+                            ui.label("缩放");
+                            ui.add(egui::DragValue::new(&mut self.text.scale).speed(0.1));
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("颜色");
+                            ui.add(egui::DragValue::new(&mut self.text.color_r).range(0.0..=1.0));
+                            ui.add(egui::DragValue::new(&mut self.text.color_g).range(0.0..=1.0));
+                            ui.add(egui::DragValue::new(&mut self.text.color_b).range(0.0..=1.0));
+                        });
+                        if ui.button("移除 Text").clicked()
+                            && let Err(error) = self.remove_component("Text")
+                        {
+                            self.status = error;
+                        }
+                    });
+                }
+                }
+                if has("Image") {
+                let image_header = if self.inspector_image_open {
+                    "Image  v"
+                } else {
+                    "Image  >"
+                };
+                if ui.button(image_header).clicked() {
+                    self.inspector_image_open = !self.inspector_image_open;
+                }
+                if self.inspector_image_open {
+                    ui.group(|ui| {
+                        ui.horizontal(|ui| {
+                            ui.label("纹理");
+                            ui.text_edit_singleline(&mut self.image.texture);
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("位置/尺寸");
+                            ui.add(egui::DragValue::new(&mut self.image.x));
+                            ui.add(egui::DragValue::new(&mut self.image.y));
+                            ui.add(egui::DragValue::new(&mut self.image.width));
+                            ui.add(egui::DragValue::new(&mut self.image.height));
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("颜色");
+                            ui.add(egui::DragValue::new(&mut self.image.color_r).range(0.0..=1.0));
+                            ui.add(egui::DragValue::new(&mut self.image.color_g).range(0.0..=1.0));
+                            ui.add(egui::DragValue::new(&mut self.image.color_b).range(0.0..=1.0));
+                        });
+                        if ui.button("移除 Image").clicked()
+                            && let Err(error) = self.remove_component("Image")
+                        {
+                            self.status = error;
+                        }
+                    });
+                }
+                }
+                if has("Button") {
+                let button_header = if self.inspector_button_open {
+                    "Button  v"
+                } else {
+                    "Button  >"
+                };
+                if ui.button(button_header).clicked() {
+                    self.inspector_button_open = !self.inspector_button_open;
+                }
+                if self.inspector_button_open {
+                    ui.group(|ui| {
+                        ui.horizontal(|ui| {
+                            ui.label("文字");
+                            ui.text_edit_singleline(&mut self.button.label);
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("位置/尺寸");
+                            ui.add(egui::DragValue::new(&mut self.button.x));
+                            ui.add(egui::DragValue::new(&mut self.button.y));
+                            ui.add(egui::DragValue::new(&mut self.button.width));
+                            ui.add(egui::DragValue::new(&mut self.button.height));
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("背景");
+                            ui.add(egui::DragValue::new(&mut self.button.bg_r).range(0.0..=1.0));
+                            ui.add(egui::DragValue::new(&mut self.button.bg_g).range(0.0..=1.0));
+                            ui.add(egui::DragValue::new(&mut self.button.bg_b).range(0.0..=1.0));
+                            ui.label("文字色");
+                            ui.add(egui::DragValue::new(&mut self.button.text_r).range(0.0..=1.0));
+                            ui.add(egui::DragValue::new(&mut self.button.text_g).range(0.0..=1.0));
+                            ui.add(egui::DragValue::new(&mut self.button.text_b).range(0.0..=1.0));
+                        });
+                        if ui.button("移除 Button").clicked()
+                            && let Err(error) = self.remove_component("Button")
+                        {
+                            self.status = error;
+                        }
+                    });
+                }
+                }
+                if has("Sprite") {
+                    ui.horizontal(|ui| {
+                        ui.label("Sprite");
+                        ui.text_edit_singleline(&mut self.sprite_reference);
+                    });
+                }
+                if has("LuaScript") {
+                    ui.horizontal(|ui| {
+                        ui.label("Lua");
+                        ui.text_edit_singleline(&mut self.lua_script);
+                    });
+                }
                 if ui.button("应用修改").clicked() {
                     self.apply_inspector();
                 }
@@ -348,6 +513,9 @@ impl EditorApp {
         let camera3d = self.camera3d;
         let light = self.light;
         let collider3d = self.collider3d.clone();
+        let text = self.text.clone();
+        let image = self.image.clone();
+        let button = self.button.clone();
         let sprite = self.sprite_reference.clone();
         let lua = self.lua_script.clone();
         // 3D 组件只在实体已有该组件时更新，避免给普通实体注入默认组件。
@@ -370,6 +538,15 @@ impl EditorApp {
             scene.scene.entities[&selected]
                 .components
                 .contains_key("Collider3d")
+        });
+        let had_text = self.current_scene().is_some_and(|scene| {
+            scene.scene.entities[&selected].components.contains_key("Text")
+        });
+        let had_image = self.current_scene().is_some_and(|scene| {
+            scene.scene.entities[&selected].components.contains_key("Image")
+        });
+        let had_button = self.current_scene().is_some_and(|scene| {
+            scene.scene.entities[&selected].components.contains_key("Button")
         });
         let inspector = self.inspector.clone();
         let Some(scene) = self.document.current_scene.as_mut() else {
@@ -397,6 +574,15 @@ impl EditorApp {
                     }
                     if had_collider3d {
                         inspector.set_collider3d(scene, collider3d)?;
+                    }
+                    if had_text {
+                        inspector.set_text(scene, text)?;
+                    }
+                    if had_image {
+                        inspector.set_image(scene, image)?;
+                    }
+                    if had_button {
+                        inspector.set_button(scene, button)?;
                     }
                     if sprite.trim().is_empty() {
                         inspector.clear_sprite_reference(scene)?;
@@ -521,6 +707,9 @@ impl EditorApp {
                     "Light" => inspector.set_light(scene, LightFields::default())?,
                     "Collider3d" => inspector.set_collider3d(scene, Collider3dFields::default())?,
                     "MeshRenderer" => inspector.set_mesh_renderer(scene, "__ground_plane__")?,
+                    "Text" => inspector.set_text(scene, TextFields::default())?,
+                    "Image" => inspector.set_image(scene, ImageFields::default())?,
+                    "Button" => inspector.set_button(scene, ButtonFields::default())?,
                     other => {
                         if let Some(entity) = scene.scene.entities.get_mut(&selected) {
                             entity.components.insert(other.to_owned(), String::new());

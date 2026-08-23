@@ -65,6 +65,8 @@ pub mod texture;
 /// Grid tile maps with a visual layer and a separate collision layer.
 pub mod tilemap;
 pub mod time_step;
+/// Screen-space UI scene components (Text / Image / Button).
+pub mod ui;
 /// 2D transform and velocity components with a minimal integration system.
 pub mod transform;
 /// 3D transform component and model-matrix construction.

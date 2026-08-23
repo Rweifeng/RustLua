@@ -2,7 +2,7 @@
 
 use crate::EditorApp;
 use crate::progress::ProgressEvent;
-use crate::util::{display_path, format_project_error};
+use crate::util::{display_path, format_project_error, save_recent_projects, strip_verbatim_prefix};
 use editor::{open_project, ProjectDocument, ProjectInfo, RecoveryManager, RecoveryScan, ResourceBrowserState};
 use std::{
     env,
@@ -101,7 +101,24 @@ impl EditorApp {
             self.inspector.clear_selection();
             self.project_loaded = true;
             self.status = format!("Imported game project: {}", display_path(&self.project.root));
+            let root = self.project.root.clone();
+            self.record_recent_project(&root);
         }
+    }
+
+    /// 记录最近打开的项目（去重、最新在前、最多 5 个），并落盘。
+    pub(crate) fn record_recent_project(&mut self, path: &Path) {
+        let clean = strip_verbatim_prefix(path).to_string_lossy().into_owned();
+        self.recent_projects.retain(|p| p != &clean);
+        self.recent_projects.insert(0, clean);
+        self.recent_projects.truncate(5);
+        save_recent_projects(&self.recent_projects);
+    }
+
+    /// 打开最近项目（项目菜单用）：走后台导入流程。
+    pub(crate) fn open_recent_project(&mut self, path: String) {
+        self.import_path = path;
+        self.start_import();
     }
 }
 

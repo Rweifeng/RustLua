@@ -2,6 +2,7 @@
 
 use crate::EditorApp;
 use crate::EmbeddedPreview;
+use crate::WorkspaceTab;
 use crate::util::strip_verbatim_prefix;
 use editor::PlaySession;
 use eframe::egui;
@@ -10,6 +11,9 @@ use engine_core::{
     scene::Scene,
 };
 use engine_host::{Renderer, RuntimeScene};
+
+/// 游戏预览的重绘节流：~30fps，保证持续运行而不忙转。
+const PREVIEW_FRAME_INTERVAL: std::time::Duration = std::time::Duration::from_millis(33);
 
 impl EditorApp {
     /// 进入 Play：创建内嵌游戏预览（运行 Lua + 物理 + 渲染），并把编辑器场景隔离快照。
@@ -34,6 +38,8 @@ impl EditorApp {
             }
         }
         self.play_session = Some(PlaySession::start(&document));
+        // 运行预览时自动切到 Game 视图。
+        self.workspace_tab = WorkspaceTab::Game;
         self.status = "Play mode started; runtime changes stay isolated".to_owned();
     }
 
@@ -47,6 +53,8 @@ impl EditorApp {
         self.document.current_scene = Some(session.stop());
         self.tree.clear_selection();
         self.inspector.clear_selection();
+        // 停止后回到 Scene 视图。
+        self.workspace_tab = WorkspaceTab::Scene;
         self.status = "Play stopped; runtime changes were discarded".to_owned();
     }
 
@@ -55,28 +63,15 @@ impl EditorApp {
         painter.rect_filled(response.rect, 0.0, egui::Color32::from_rgb(18, 20, 24));
         if self.preview.is_some() {
             let focused = ui.rect_contains_pointer(response.rect);
-            self.update_preview(ui.ctx(), focused);
+            // 预览实际绘制矩形（纵横比居中），用于把指针坐标映射到预览像素。
+            let preview_rect = self.preview_rect(response.rect);
+            self.update_preview(ui.ctx(), focused, preview_rect);
             if let Some(preview) = &self.preview
                 && let Some(tex) = &preview.egui_tex
             {
-                // 保持预览纵横比，居中绘制。
-                let aspect = preview.width as f32 / preview.height.max(1) as f32;
-                let mut rect = response.rect;
-                let avail = rect.width() / rect.height().max(1.0);
-                if avail > aspect {
-                    let width = rect.height() * aspect;
-                    let extra = (rect.width() - width) / 2.0;
-                    rect.min.x += extra;
-                    rect.max.x -= extra;
-                } else {
-                    let height = rect.width() / aspect;
-                    let extra = (rect.height() - height) / 2.0;
-                    rect.min.y += extra;
-                    rect.max.y -= extra;
-                }
                 painter.image(
                     tex.id(),
-                    rect,
+                    preview_rect,
                     egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
                     egui::Color32::WHITE,
                 );
@@ -108,8 +103,7 @@ impl EditorApp {
         let runtime = RuntimeScene::from_scene(Some(&root), scene.clone())?;
         let renderer =
             Renderer::new_offscreen(device.clone(), queue.clone(), Some(root), false, false)?;
-        let width = 640;
-        let height = 360;
+        let (width, height) = self.preview_resolution;
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("p2-editor-preview"),
             size: wgpu::Extent3d {
@@ -137,11 +131,46 @@ impl EditorApp {
     }
 
     /// 步进内嵌游戏运行时，渲染到离屏纹理并回读更新 egui 预览纹理（M10-03）。
-    fn update_preview(&mut self, ctx: &egui::Context, focused: bool) {
+    /// 回读为非阻塞（滞后一帧）；按 ~30fps 节流步进，避免输入事件以 144Hz 加速游戏。
+    fn update_preview(
+        &mut self,
+        ctx: &egui::Context,
+        focused: bool,
+        preview_rect: egui::Rect,
+    ) {
+        // 节流：未到期时不步进游戏，仅排空在途回读（补上滞后帧），保持游戏匀速。
+        let now = std::time::Instant::now();
+        let due = self
+            .last_preview_tick
+            .is_none_or(|last| now.duration_since(last) >= PREVIEW_FRAME_INTERVAL);
+        if !due {
+            let ready = self.preview.as_mut().and_then(|preview| {
+                match preview.renderer.readback_pending() {
+                    engine_host::ReadbackStatus::Ready {
+                        pixels,
+                        width,
+                        height,
+                    } => Some((pixels, width, height)),
+                    _ => None,
+                }
+            });
+            if let Some((pixels, width, height)) = ready {
+                self.upload_preview_frame(ctx, pixels, width, height);
+            }
+            ctx.request_repaint_after(PREVIEW_FRAME_INTERVAL);
+            return;
+        }
+        self.last_preview_tick = Some(now);
+
         // 把 egui 的键盘/鼠标/滚轮输入桥接到游戏快照（仅在指针悬停 Game 视图时，
         // 避免编辑器输入泄漏到游戏）。先构建输入，避免与 preview 的可变借用冲突。
         let input = if focused {
-            self.preview_input(ctx)
+            let (width, height) = self
+                .preview
+                .as_ref()
+                .map(|preview| (preview.width, preview.height))
+                .unwrap_or((640, 360));
+            self.preview_input(ctx, preview_rect, width, height)
         } else {
             InputSnapshot::default()
         };
@@ -150,10 +179,10 @@ impl EditorApp {
         };
         if let Err(error) = preview.runtime.run_script_steps(1, 1.0 / 60.0, &input) {
             tracing::warn!(target: "editor", "[preview] script step failed: {error}");
-            return;
         }
         let Some(mesh) = preview.runtime.vertices(preview.width, preview.height).ok() else {
             tracing::warn!(target: "editor", "[preview] build vertices failed");
+            ctx.request_repaint_after(PREVIEW_FRAME_INTERVAL);
             return;
         };
         let aspect = preview.width as f32 / preview.height.max(1) as f32;
@@ -165,39 +194,81 @@ impl EditorApp {
             preview.width,
             preview.height,
         );
-        let readback =
-            preview
-                .renderer
-                .copy_texture_to_cpu(&preview.texture, preview.width, preview.height);
-        match readback {
-            Ok(pixels) => {
-                let nonzero = pixels.iter().any(|&byte| byte > 0);
-                if !nonzero {
-                    tracing::warn!(target: "editor", "[preview] readback frame is all-zero");
-                }
-                let image = egui::ColorImage::from_rgba_unmultiplied(
-                    [preview.width as usize, preview.height as usize],
-                    &pixels,
-                );
-                match &mut preview.egui_tex {
-                    Some(tex) => tex.set(image, egui::TextureOptions::LINEAR),
-                    None => {
-                        preview.egui_tex = Some(ctx.load_texture(
-                            "game_preview",
-                            image,
-                            egui::TextureOptions::LINEAR,
-                        ));
-                    }
-                }
+        // 非阻塞回读：就绪则上传；未就绪沿用上一帧（滞后一帧，主线程不阻塞）。
+        match preview
+            .renderer
+            .readback_frame(&preview.texture, preview.width, preview.height)
+        {
+            engine_host::ReadbackStatus::Ready { pixels, width, height } => {
+                self.upload_preview_frame(ctx, pixels, width, height);
             }
-            Err(error) => {
+            engine_host::ReadbackStatus::Pending => {}
+            engine_host::ReadbackStatus::Failed(error) => {
                 tracing::warn!(target: "editor", "[preview] readback failed: {error}");
             }
+        }
+        // 节流到 ~30fps：无论回读是否就绪都排下一帧，保证游戏持续运行且不忙转。
+        ctx.request_repaint_after(PREVIEW_FRAME_INTERVAL);
+    }
+
+    /// 把预览回读像素上传到 egui 纹理。
+    fn upload_preview_frame(
+        &mut self,
+        ctx: &egui::Context,
+        pixels: Vec<u8>,
+        width: u32,
+        height: u32,
+    ) {
+        let nonzero = pixels.iter().any(|&byte| byte > 0);
+        if !nonzero {
+            tracing::warn!(target: "editor", "[preview] readback frame is all-zero");
+        }
+        let image = egui::ColorImage::from_rgba_unmultiplied(
+            [width as usize, height as usize],
+            &pixels,
+        );
+        match &mut self.preview {
+            Some(preview) => match &mut preview.egui_tex {
+                Some(tex) => tex.set(image, egui::TextureOptions::LINEAR),
+                None => {
+                    preview.egui_tex =
+                        Some(ctx.load_texture("game_preview", image, egui::TextureOptions::LINEAR));
+                }
+            },
+            None => {}
         }
     }
 
     /// 从 egui 输入构建游戏输入快照（键盘 WASD/空格/Esc、鼠标、滚轮）。
-    fn preview_input(&self, ctx: &egui::Context) -> InputSnapshot {
+    /// 预览在 Game 视图内纵横比居中后的实际绘制矩形。
+    fn preview_rect(&self, rect: egui::Rect) -> egui::Rect {
+        let Some(preview) = &self.preview else {
+            return rect;
+        };
+        let aspect = preview.width as f32 / preview.height.max(1) as f32;
+        let mut rect = rect;
+        let avail = rect.width() / rect.height().max(1.0);
+        if avail > aspect {
+            let width = rect.height() * aspect;
+            let extra = (rect.width() - width) / 2.0;
+            rect.min.x += extra;
+            rect.max.x -= extra;
+        } else {
+            let height = rect.width() / aspect;
+            let extra = (rect.height() - height) / 2.0;
+            rect.min.y += extra;
+            rect.max.y -= extra;
+        }
+        rect
+    }
+
+    fn preview_input(
+        &self,
+        ctx: &egui::Context,
+        preview_rect: egui::Rect,
+        width: u32,
+        height: u32,
+    ) -> InputSnapshot {
         let mut input = InputSnapshot::default();
         ctx.input(|i| {
             for (egui_key, game_key) in [
@@ -214,7 +285,12 @@ impl EditorApp {
             input.mouse_event(MouseButton::Right, i.pointer.secondary_down());
             input.mouse_event(MouseButton::Middle, i.pointer.middle_down());
             if let Some(pos) = i.pointer.hover_pos() {
-                input.cursor_moved(pos.x as f64, pos.y as f64);
+                // 把 egui 屏幕坐标映射到预览像素坐标，供 Button 命中测试使用。
+                let px = (pos.x - preview_rect.min.x) / preview_rect.width().max(1.0)
+                    * width.max(1) as f32;
+                let py = (pos.y - preview_rect.min.y) / preview_rect.height().max(1.0)
+                    * height.max(1) as f32;
+                input.cursor_moved(px as f64, py as f64);
             }
             let scroll = i.smooth_scroll_delta;
             if scroll.x != 0.0 || scroll.y != 0.0 {

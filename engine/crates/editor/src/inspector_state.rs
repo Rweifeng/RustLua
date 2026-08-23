@@ -7,6 +7,7 @@ use engine_core::{
     physics3d::{ColliderDesc3d, ColliderShape3d},
     scene::{SceneEntity, SceneEntityId},
     transform3d::Transform3D,
+    ui::{UiButton, UiImage, UiText},
 };
 use std::{error::Error, fmt, path::Path};
 
@@ -153,6 +154,94 @@ impl Default for Collider3dFields {
     }
 }
 
+/// Inspector 可编辑的 Text（屏幕空间 UI 文本标签）字段。
+#[derive(Clone, Debug, PartialEq)]
+pub struct TextFields {
+    pub text: String,
+    pub x: f32,
+    pub y: f32,
+    pub scale: f32,
+    pub color_r: f32,
+    pub color_g: f32,
+    pub color_b: f32,
+}
+
+impl Default for TextFields {
+    fn default() -> Self {
+        Self {
+            text: String::new(),
+            x: 10.0,
+            y: 10.0,
+            scale: 1.0,
+            color_r: 1.0,
+            color_g: 1.0,
+            color_b: 1.0,
+        }
+    }
+}
+
+/// Inspector 可编辑的 Image（屏幕空间 UI 贴图）字段。
+#[derive(Clone, Debug, PartialEq)]
+pub struct ImageFields {
+    pub texture: String,
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub color_r: f32,
+    pub color_g: f32,
+    pub color_b: f32,
+}
+
+impl Default for ImageFields {
+    fn default() -> Self {
+        Self {
+            texture: String::new(),
+            x: 10.0,
+            y: 10.0,
+            width: 64.0,
+            height: 64.0,
+            color_r: 1.0,
+            color_g: 1.0,
+            color_b: 1.0,
+        }
+    }
+}
+
+/// Inspector 可编辑的 Button（屏幕空间 UI 按钮）字段。
+#[derive(Clone, Debug, PartialEq)]
+pub struct ButtonFields {
+    pub label: String,
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub bg_r: f32,
+    pub bg_g: f32,
+    pub bg_b: f32,
+    pub text_r: f32,
+    pub text_g: f32,
+    pub text_b: f32,
+}
+
+impl Default for ButtonFields {
+    fn default() -> Self {
+        Self {
+            label: String::new(),
+            x: 10.0,
+            y: 10.0,
+            width: 100.0,
+            height: 32.0,
+            bg_r: 0.2,
+            bg_g: 0.45,
+            bg_b: 0.8,
+            text_r: 1.0,
+            text_g: 1.0,
+            text_b: 1.0,
+        }
+    }
+}
+
 /// Inspector 对一个实体的可编辑快照。
 #[derive(Clone, Debug, PartialEq)]
 pub struct InspectorSnapshot {
@@ -167,6 +256,12 @@ pub struct InspectorSnapshot {
     pub camera3d: Option<Camera3DFields>,
     pub light: Option<LightFields>,
     pub collider3d: Option<Collider3dFields>,
+    /// UI 组件（屏幕空间）。
+    pub text: Option<TextFields>,
+    pub image: Option<ImageFields>,
+    pub button: Option<ButtonFields>,
+    /// 运行时切场景不销毁。
+    pub persistent: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -396,6 +491,84 @@ impl InspectorState {
         }
         Ok(())
     }
+
+    pub fn set_text(&self, document: &mut SceneDocument, text: TextFields) -> Result<(), InspectorError> {
+        validate_text(&text)?;
+        let id = self.selected.ok_or(InspectorError::NothingSelected)?;
+        let entity = entity_mut(document, id)?;
+        let value = encode_text(&text);
+        if entity.components.get("Text") != Some(&value) {
+            entity.components.insert("Text".into(), value);
+            document.mark_dirty();
+        }
+        Ok(())
+    }
+
+    pub fn clear_text(&self, document: &mut SceneDocument) -> Result<(), InspectorError> {
+        let id = self.selected.ok_or(InspectorError::NothingSelected)?;
+        let entity = entity_mut(document, id)?;
+        if entity.components.remove("Text").is_some() {
+            document.mark_dirty();
+        }
+        Ok(())
+    }
+
+    pub fn set_image(&self, document: &mut SceneDocument, image: ImageFields) -> Result<(), InspectorError> {
+        validate_image(&image)?;
+        let id = self.selected.ok_or(InspectorError::NothingSelected)?;
+        let entity = entity_mut(document, id)?;
+        let value = encode_image(&image);
+        if entity.components.get("Image") != Some(&value) {
+            entity.components.insert("Image".into(), value);
+            document.mark_dirty();
+        }
+        Ok(())
+    }
+
+    pub fn clear_image(&self, document: &mut SceneDocument) -> Result<(), InspectorError> {
+        let id = self.selected.ok_or(InspectorError::NothingSelected)?;
+        let entity = entity_mut(document, id)?;
+        if entity.components.remove("Image").is_some() {
+            document.mark_dirty();
+        }
+        Ok(())
+    }
+
+    pub fn set_button(&self, document: &mut SceneDocument, button: ButtonFields) -> Result<(), InspectorError> {
+        validate_button(&button)?;
+        let id = self.selected.ok_or(InspectorError::NothingSelected)?;
+        let entity = entity_mut(document, id)?;
+        let value = encode_button(&button);
+        if entity.components.get("Button") != Some(&value) {
+            entity.components.insert("Button".into(), value);
+            document.mark_dirty();
+        }
+        Ok(())
+    }
+
+    pub fn clear_button(&self, document: &mut SceneDocument) -> Result<(), InspectorError> {
+        let id = self.selected.ok_or(InspectorError::NothingSelected)?;
+        let entity = entity_mut(document, id)?;
+        if entity.components.remove("Button").is_some() {
+            document.mark_dirty();
+        }
+        Ok(())
+    }
+
+    /// 设置/清除「运行时不跟随场景切换销毁」标志（实体 metadata）。
+    pub fn set_persistent(&self, document: &mut SceneDocument, enabled: bool) -> Result<(), InspectorError> {
+        let id = self.selected.ok_or(InspectorError::NothingSelected)?;
+        let entity = entity_mut(document, id)?;
+        if enabled {
+            if entity.metadata.get("persistent").map(String::as_str) != Some("true") {
+                entity.metadata.insert("persistent".to_owned(), "true".to_owned());
+                document.mark_dirty();
+            }
+        } else if entity.metadata.remove("persistent").is_some() {
+            document.mark_dirty();
+        }
+        Ok(())
+    }
 }
 
 fn entity_mut(
@@ -446,6 +619,19 @@ fn snapshot_for(entity: &SceneEntity) -> Result<InspectorSnapshot, InspectorErro
             .components
             .get("Collider3d")
             .map_or(Ok(None), |value| decode_collider3d(value).map(Some))?,
+        text: entity
+            .components
+            .get("Text")
+            .map_or(Ok(None), |value| decode_text(value).map(Some))?,
+        image: entity
+            .components
+            .get("Image")
+            .map_or(Ok(None), |value| decode_image(value).map(Some))?,
+        button: entity
+            .components
+            .get("Button")
+            .map_or(Ok(None), |value| decode_button(value).map(Some))?,
+        persistent: entity.metadata.get("persistent").is_some_and(|value| value == "true"),
     })
 }
 
@@ -626,6 +812,105 @@ fn decode_collider3d(value: &str) -> Result<Collider3dFields, InspectorError> {
     Ok(fields)
 }
 
+fn encode_text(fields: &TextFields) -> String {
+    UiText {
+        text: fields.text.clone(),
+        position: [fields.x, fields.y],
+        scale: fields.scale,
+        color: [fields.color_r, fields.color_g, fields.color_b],
+    }
+    .to_component_str()
+}
+
+fn decode_text(value: &str) -> Result<TextFields, InspectorError> {
+    let ui = UiText::from_component_str(value)
+        .map_err(|error| InspectorError::InvalidText(error.to_string()))?;
+    Ok(TextFields {
+        text: ui.text,
+        x: ui.position[0],
+        y: ui.position[1],
+        scale: ui.scale,
+        color_r: ui.color[0],
+        color_g: ui.color[1],
+        color_b: ui.color[2],
+    })
+}
+
+fn validate_text(fields: &TextFields) -> Result<(), InspectorError> {
+    let value = encode_text(fields);
+    UiText::from_component_str(&value)
+        .map(|_| ())
+        .map_err(|error| InspectorError::InvalidText(error.to_string()))
+}
+
+fn encode_image(fields: &ImageFields) -> String {
+    UiImage {
+        texture: fields.texture.clone(),
+        position: [fields.x, fields.y],
+        size: [fields.width, fields.height],
+        color: [fields.color_r, fields.color_g, fields.color_b],
+    }
+    .to_component_str()
+}
+
+fn decode_image(value: &str) -> Result<ImageFields, InspectorError> {
+    let ui = UiImage::from_component_str(value)
+        .map_err(|error| InspectorError::InvalidImage(error.to_string()))?;
+    Ok(ImageFields {
+        texture: ui.texture,
+        x: ui.position[0],
+        y: ui.position[1],
+        width: ui.size[0],
+        height: ui.size[1],
+        color_r: ui.color[0],
+        color_g: ui.color[1],
+        color_b: ui.color[2],
+    })
+}
+
+fn validate_image(fields: &ImageFields) -> Result<(), InspectorError> {
+    let value = encode_image(fields);
+    UiImage::from_component_str(&value)
+        .map(|_| ())
+        .map_err(|error| InspectorError::InvalidImage(error.to_string()))
+}
+
+fn encode_button(fields: &ButtonFields) -> String {
+    UiButton {
+        label: fields.label.clone(),
+        position: [fields.x, fields.y],
+        size: [fields.width, fields.height],
+        background: [fields.bg_r, fields.bg_g, fields.bg_b],
+        text_color: [fields.text_r, fields.text_g, fields.text_b],
+    }
+    .to_component_str()
+}
+
+fn decode_button(value: &str) -> Result<ButtonFields, InspectorError> {
+    let ui = UiButton::from_component_str(value)
+        .map_err(|error| InspectorError::InvalidButton(error.to_string()))?;
+    Ok(ButtonFields {
+        label: ui.label,
+        x: ui.position[0],
+        y: ui.position[1],
+        width: ui.size[0],
+        height: ui.size[1],
+        bg_r: ui.background[0],
+        bg_g: ui.background[1],
+        bg_b: ui.background[2],
+        text_r: ui.text_color[0],
+        text_g: ui.text_color[1],
+        text_b: ui.text_color[2],
+    })
+}
+
+fn validate_button(fields: &ButtonFields) -> Result<(), InspectorError> {
+    let value = encode_button(fields);
+    UiButton::from_component_str(&value)
+        .map(|_| ())
+        .map_err(|error| InspectorError::InvalidButton(error.to_string()))
+}
+
 fn validate_camera3d(camera: Camera3DFields) -> Result<(), InspectorError> {
     let value = encode_camera3d(camera);
     Camera3D::from_component_str(&value)
@@ -747,6 +1032,9 @@ pub enum InspectorError {
     InvalidCamera3d(String),
     InvalidLight(String),
     InvalidCollider3d(String),
+    InvalidText(String),
+    InvalidImage(String),
+    InvalidButton(String),
 }
 
 impl fmt::Display for InspectorError {
@@ -765,6 +1053,9 @@ impl fmt::Display for InspectorError {
             Self::InvalidCamera3d(value) => write!(f, "Camera3D 数据无效：{value}"),
             Self::InvalidLight(value) => write!(f, "Light 数据无效：{value}"),
             Self::InvalidCollider3d(value) => write!(f, "Collider3d 数据无效：{value}"),
+            Self::InvalidText(value) => write!(f, "Text 数据无效：{value}"),
+            Self::InvalidImage(value) => write!(f, "Image 数据无效：{value}"),
+            Self::InvalidButton(value) => write!(f, "Button 数据无效：{value}"),
         }
     }
 }

@@ -26,3 +26,8 @@ function update()
     game3d.update()
     return result
 end
+
+-- UI Button 点击回调：任何按钮被点击都会记录到日志（用于 UI 测试）。
+function on_click(name)
+    log.info("button clicked: " .. tostring(name))
+end

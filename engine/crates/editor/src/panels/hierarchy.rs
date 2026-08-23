@@ -11,6 +11,7 @@ use engine_core::{
     transform3d::Transform3D,
 };
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 impl EditorApp {
     /// 层级面板：整合场景文件切换/新建，位于资源面板右侧。
@@ -81,17 +82,6 @@ impl EditorApp {
                 if self.current_scene().is_none() {
                     ui.label("请先新建场景");
                 }
-                // 项目信息折叠保留（基线/目录）。
-                ui.add_space(6.0);
-                ui.separator();
-                egui::CollapsingHeader::new("项目信息")
-                    .default_open(false)
-                    .show(ui, |ui| {
-                        ui.label(format!("基线：{}", self.project.version));
-                        for directory in &self.project.directories {
-                            ui.label(format!("✓ {}/", directory.name));
-                        }
-                    });
             });
     }
 
@@ -174,10 +164,17 @@ impl EditorApp {
     }
 
     /// 从场景元数据同步 hidden/locked 到编辑态集合。
+    /// 仅当场景标识（path, revision）变化时执行，避免每帧全量遍历实体。
     pub(crate) fn sync_hierarchy_metadata(&mut self) {
         let Some(scene) = self.document.current_scene.as_ref() else {
+            self.last_metadata_key = None;
             return;
         };
+        let key = (scene.path.clone(), scene.revision);
+        if self.last_metadata_key.as_ref() == Some(&key) {
+            return;
+        }
+        self.last_metadata_key = Some(key);
         for id in scene.scene.entities.keys().copied().collect::<Vec<_>>() {
             let hidden = scene
                 .scene
@@ -225,23 +222,19 @@ impl EditorApp {
     }
 
     /// 项目 `scenes/` 目录下的全部场景文件（相对路径，按名称排序），用于场景切换下拉。
-    fn scene_files(&self) -> Vec<PathBuf> {
+    /// 至少 2 秒缓存一次，避免每帧 read_dir 扫 scenes 目录。
+    fn scene_files(&mut self) -> Vec<PathBuf> {
         let root = strip_verbatim_prefix(&self.project.root);
-        let mut files = Vec::new();
-        if let Ok(entries) = std::fs::read_dir(root.join("scenes")) {
-            let mut paths: Vec<_> = entries
-                .flatten()
-                .map(|entry| entry.path())
-                .filter(|path| path.extension().is_some_and(|ext| ext == "scene"))
-                .collect();
-            paths.sort();
-            for path in paths {
-                if let Ok(relative) = path.strip_prefix(&root) {
-                    files.push(relative.to_path_buf());
-                }
-            }
+        let now = Instant::now();
+        if self
+            .scene_files_cache_time
+            .is_some_and(|last| now.duration_since(last) < Duration::from_secs(2))
+        {
+            return self.scene_files_cache.clone();
         }
-        files
+        self.scene_files_cache_time = Some(now);
+        self.scene_files_cache = scan_scene_files(&root);
+        self.scene_files_cache.clone()
     }
 
     /// 新建场景（未保存；保存时写入 scenes/<名称>.scene）。
@@ -360,4 +353,23 @@ impl EditorApp {
             Err(error) => self.status = format!("创建预制体失败：{error}"),
         }
     }
+}
+
+/// 扫描项目 `scenes/` 目录下的场景文件（相对路径，按名称排序）。
+fn scan_scene_files(root: &std::path::Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(root.join("scenes")) {
+        let mut paths: Vec<_> = entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "scene"))
+            .collect();
+        paths.sort();
+        for path in paths {
+            if let Ok(relative) = path.strip_prefix(root) {
+                files.push(relative.to_path_buf());
+            }
+        }
+    }
+    files
 }

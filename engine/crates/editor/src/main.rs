@@ -14,14 +14,14 @@ use std::{
     env,
     error::Error,
     path::PathBuf,
-    time::{Duration, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 
 use editor::{
-    AutoSaveController, Camera3DFields, Collider3dFields, CommandHistory, InspectorState,
-    LightFields, PlaySession, ProjectDocument, ProjectInfo, RecoveryManager, RecoveryScan,
-    ResourceBrowserState, SceneTreeState, Transform3DFields, TransformFields, check_project,
-    open_project,
+    AutoSaveController, ButtonFields, Camera3DFields, Collider3dFields, CommandHistory,
+    ImageFields, InspectorState, LightFields, PlaySession, ProjectDocument, ProjectInfo,
+    RecoveryManager, RecoveryScan, ResourceBrowserState, SceneTreeState, TextFields,
+    Transform3DFields, TransformFields, check_project, open_project,
 };
 use eframe::egui;
 use engine_core::{
@@ -127,6 +127,11 @@ fn main() -> Result<(), Box<dyn Error>> {
             );
             app.project_loaded = arguments.project.is_some();
             app.refresh_resources();
+            // 启动即把当前项目记入「最近项目」。
+            if app.project_loaded {
+                let root = app.project.root.clone();
+                app.record_recent_project(&root);
+            }
             Ok(Box::new(app))
         }),
     )?;
@@ -150,10 +155,16 @@ struct EditorApp {
     camera3d: Camera3DFields,
     light: LightFields,
     collider3d: Collider3dFields,
+    text: TextFields,
+    image: ImageFields,
+    button: ButtonFields,
     sprite_reference: String,
     lua_script: String,
     inspector_transform3d_open: bool,
     inspector_collider3d_open: bool,
+    inspector_text_open: bool,
+    inspector_image_open: bool,
+    inspector_button_open: bool,
     inspector_add_component: String,
     new_scene_name: String,
     entity_name: String,
@@ -188,10 +199,20 @@ struct EditorApp {
     show_about: bool,
     /// 窗口标题（含项目路径）缓存，避免每帧重复发送标题命令。
     last_window_title: Option<String>,
+    /// 最近打开的项目路径列表（最新在前，最多 5 个）。
+    recent_projects: Vec<String>,
     /// eframe 的 wgpu 设备/队列（单一设备，供内嵌游戏预览使用）。
     gpu: Option<(wgpu::Device, wgpu::Queue)>,
     /// Play 时的内嵌游戏预览（M10-03）。
     preview: Option<EmbeddedPreview>,
+    /// 内嵌游戏预览当前分辨率（宽×高）。
+    preview_resolution: (u32, u32),
+    /// 可用的预览分辨率列表（可增删）。
+    preview_resolutions: Vec<(u32, u32)>,
+    /// 是否正在输入自定义分辨率。
+    adding_preview_resolution: bool,
+    /// 自定义分辨率的输入值。
+    custom_preview_resolution: (u32, u32),
     /// 编辑器轨道相机（3D 透视视口，M10-04）。
     editor_camera: EditorCamera,
     /// 3D 场景视图的离屏渲染器（渲染编辑场景 + 编辑器相机）。
@@ -206,6 +227,20 @@ struct EditorApp {
     scene_2d_tex: Option<egui::TextureHandle>,
     /// 资源浏览器纹理缩略图缓存（按资源相对路径）。
     thumbnails: std::collections::HashMap<String, egui::TextureHandle>,
+    /// 2D Scene 视图渲染缓存（变更检测，避免内容未变化时重复渲染）。
+    scene_view_cache_2d: SceneViewCache2d,
+    /// 3D Scene 视图渲染缓存（同上）。
+    scene_view_cache_3d: SceneViewCache3d,
+    /// 2D 场景视图运行时对应的 SceneDocument revision（用于按需重建 scene_runtime）。
+    scene_runtime_revision: Option<u64>,
+    /// 场景文件列表缓存（避免每帧 read_dir 扫 scenes 目录）。
+    scene_files_cache: Vec<PathBuf>,
+    /// 场景文件列表最近一次扫描时间。
+    scene_files_cache_time: Option<Instant>,
+    /// 上次执行 hierarchy 元数据同步的场景标识（path, revision），避免每帧全量遍历。
+    last_metadata_key: Option<(Option<PathBuf>, u64)>,
+    /// 上次游戏预览步进时间（~30fps 节流，避免输入事件高帧率加速游戏）。
+    last_preview_tick: Option<Instant>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -239,7 +274,7 @@ enum AlignMode {
 }
 
 /// 编辑器轨道相机（ADR-0013）：与游戏相机分离，用于 3D 透视视口导航。
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct EditorCamera {
     yaw: f32,
     pitch: f32,
@@ -256,6 +291,29 @@ impl Default for EditorCamera {
             target: Vec3::ZERO,
         }
     }
+}
+
+/// 2D Scene 视图上次渲染状态快照（变更检测缓存）：内容未变化时跳过重渲染。
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct SceneViewCache2d {
+    /// 上次渲染时的 SceneDocument revision；`None` 表示无场景（用 Option 区分
+    /// "无场景"与"打开 revision=0 的新场景"，避免后者被缓存命中而不渲染）。
+    revision: Option<u64>,
+    /// 上次渲染时的视口像素尺寸。
+    size: (u32, u32),
+    /// (pan, zoom)：上次渲染时的 2D 相机。
+    camera: (egui::Vec2, f32),
+}
+
+/// 3D Scene 视图上次渲染状态快照（变更检测缓存）。
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct SceneViewCache3d {
+    /// 上次渲染时的 SceneDocument revision；`None` 表示无场景。
+    revision: Option<u64>,
+    /// 上次渲染时的视口像素尺寸。
+    size: (u32, u32),
+    /// 上次渲染时的编辑器轨道相机。
+    camera: EditorCamera,
 }
 
 #[derive(Default)]
@@ -343,10 +401,16 @@ impl EditorApp {
             camera3d: Camera3DFields::default(),
             light: LightFields::default(),
             collider3d: Collider3dFields::default(),
+            text: TextFields::default(),
+            image: ImageFields::default(),
+            button: ButtonFields::default(),
             sprite_reference: String::new(),
             lua_script: String::new(),
             inspector_transform3d_open: true,
             inspector_collider3d_open: false,
+            inspector_text_open: true,
+            inspector_image_open: true,
+            inspector_button_open: true,
             inspector_add_component: "Transform3D".to_owned(),
             new_scene_name: "main".to_owned(),
             entity_name: "Entity".to_owned(),
@@ -377,8 +441,18 @@ impl EditorApp {
             log_sink,
             show_about: false,
             last_window_title: None,
+            recent_projects: crate::util::load_recent_projects(),
             gpu,
             preview: None,
+            preview_resolution: (640, 360),
+            preview_resolutions: vec![
+                (640, 360),
+                (960, 540),
+                (1280, 720),
+                (1920, 1080),
+            ],
+            adding_preview_resolution: false,
+            custom_preview_resolution: (640, 360),
             editor_camera: EditorCamera::default(),
             scene_renderer: None,
             scene_texture: None,
@@ -386,6 +460,13 @@ impl EditorApp {
             scene_runtime: None,
             scene_2d_tex: None,
             thumbnails: std::collections::HashMap::new(),
+            scene_view_cache_2d: SceneViewCache2d::default(),
+            scene_view_cache_3d: SceneViewCache3d::default(),
+            scene_runtime_revision: None,
+            scene_files_cache: Vec::new(),
+            scene_files_cache_time: None,
+            last_metadata_key: None,
+            last_preview_tick: None,
         }
     }
 
@@ -436,6 +517,11 @@ impl eframe::App for EditorApp {
             && context.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Y))
         {
             self.redo();
+        }
+        if self.project_loaded
+            && context.input(|i| i.modifiers.command && i.key_pressed(egui::Key::S))
+        {
+            self.save_scene();
         }
         self.sync_hierarchy_metadata();
         self.poll_progress();

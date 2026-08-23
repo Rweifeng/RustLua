@@ -15,6 +15,8 @@ pub enum ResourceKind {
     Scene,
     Prefab,
     Atlas,
+    Model,
+    Font,
     Other,
 }
 
@@ -33,6 +35,8 @@ impl ResourceKind {
             "scene" => Self::Scene,
             "prefab" => Self::Prefab,
             "atlas" => Self::Atlas,
+            "glb" | "gltf" => Self::Model,
+            "ttf" | "otf" => Self::Font,
             _ => Self::Other,
         }
     }
@@ -45,6 +49,8 @@ impl ResourceKind {
             Self::Scene => "场景",
             Self::Prefab => "预制体",
             Self::Atlas => "图集",
+            Self::Model => "模型",
+            Self::Font => "字体",
             Self::Other => "其他",
         }
     }
@@ -160,10 +166,17 @@ impl ResourceBrowserState {
         collect_files(&assets_root, &mut paths).inspect_err(|error| {
             self.last_error = Some(error.to_string());
         })?;
-        // ????????????? scenes/??????????
+        // 场景文件目录（scenes/）。
         let scenes_root = project_root.join("scenes");
         if scenes_root.is_dir() {
             collect_files(&scenes_root, &mut paths).inspect_err(|error| {
+                self.last_error = Some(error.to_string());
+            })?;
+        }
+        // Lua 脚本目录（scripts/）：让脚本也出现在资源浏览器中。
+        let scripts_root = project_root.join("scripts");
+        if scripts_root.is_dir() {
+            collect_files(&scripts_root, &mut paths).inspect_err(|error| {
                 self.last_error = Some(error.to_string());
             })?;
         }
@@ -312,6 +325,24 @@ mod tests {
                 .all(|entry| entry.status == ImportStatus::Registered),
             "audio files registered into the resource database"
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn refresh_scans_lua_scripts_from_scripts_dir() {
+        let root = temp_root("scripts");
+        file(&root, "assets/player.png", b"png");
+        file(&root, "scripts/main.lua", b"return {}");
+        file(&root, "scripts/ui/hud.lua", b"return {}");
+        let mut browser = ResourceBrowserState::new();
+        browser.refresh(&root).unwrap();
+        let lua: Vec<_> = browser
+            .entries()
+            .iter()
+            .filter(|entry| entry.kind == ResourceKind::LuaScript)
+            .map(|entry| entry.path_string())
+            .collect();
+        assert_eq!(lua, vec!["scripts/main.lua", "scripts/ui/hud.lua"]);
         let _ = fs::remove_dir_all(root);
     }
 

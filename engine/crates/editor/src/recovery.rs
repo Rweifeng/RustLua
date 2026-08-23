@@ -192,6 +192,7 @@ impl RecoveryManager {
             path: candidate.original_path.clone(),
             scene: candidate.scene.clone(),
             dirty: true,
+            revision: 0,
         }
     }
 

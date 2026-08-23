@@ -105,6 +105,9 @@ impl EditorApp {
             self.camera3d = snapshot.camera3d.unwrap_or_default();
             self.light = snapshot.light.unwrap_or_default();
             self.collider3d = snapshot.collider3d.unwrap_or_default();
+            self.text = snapshot.text.unwrap_or_default();
+            self.image = snapshot.image.unwrap_or_default();
+            self.button = snapshot.button.unwrap_or_default();
             self.sprite_reference = snapshot.sprite_reference.unwrap_or_default();
             self.lua_script = snapshot.lua_script.unwrap_or_default();
         }
@@ -205,9 +208,17 @@ impl EditorApp {
             self.history
                 .execute(scene, "Create entity", CommandKind::Create, move |scene| {
                     let mut tree = tree;
-                    tree.create_entity(scene, name.clone(), parent)
-                        .map(|_| ())
-                        .map_err(|e| e.to_string())
+                    let id = tree
+                        .create_entity(scene, name.clone(), parent)
+                        .map_err(|e| e.to_string())?;
+                    // 2D 实体默认只带 Transform 组件。
+                    if let Some(entity) = scene.scene.entities.get_mut(&id) {
+                        entity.components.insert(
+                            "Transform".into(),
+                            encode_transform(TransformFields::default()),
+                        );
+                    }
+                    Ok::<(), String>(())
                 });
         match result {
             Ok(true) => {

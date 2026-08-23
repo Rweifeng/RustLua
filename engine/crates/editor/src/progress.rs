@@ -90,7 +90,9 @@ impl ProgressPanel {
         if !self.show {
             return;
         }
-        egui::Window::new(&self.title).show(context, |ui| {
+        egui::Window::new(&self.title)
+            .open(&mut self.show)
+            .show(context, |ui| {
             let status = if self.running {
                 "进行中..."
             } else if self.success {
@@ -123,10 +125,6 @@ impl ProgressPanel {
                     if ui.button("打开目录").clicked() {
                         open_in_explorer(dir);
                     }
-                }
-                if ui.button("关闭").clicked() {
-                    self.show = false;
-                    self.done = false;
                 }
             }
         });

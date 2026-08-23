@@ -23,6 +23,19 @@ impl EditorApp {
                         self.open_project_menu();
                         ui.close();
                     }
+                    // 最近项目（最多 5 个，最新在前）。
+                    ui.menu_button("最近项目", |ui| {
+                        if self.recent_projects.is_empty() {
+                            ui.label("（暂无最近项目）");
+                        } else {
+                            for path in self.recent_projects.clone() {
+                                if ui.button(display_path(Path::new(&path))).clicked() {
+                                    self.open_recent_project(path);
+                                    ui.close();
+                                }
+                            }
+                        }
+                    });
                     if ui.button("保存项目").clicked() {
                         self.save_scene();
                         ui.close();
@@ -164,6 +177,7 @@ impl EditorApp {
             return;
         }
         egui::Window::new("版本说明")
+            .open(&mut self.show_about)
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
@@ -172,10 +186,6 @@ impl EditorApp {
                 ui.label(format!("编辑器版本：{}", env!("CARGO_PKG_VERSION")));
                 ui.label(format!("项目基线：{}", self.project.version));
                 ui.label(format!("项目路径：{}", crate::util::display_path(&self.project.root)));
-                ui.separator();
-                if ui.button("关闭").clicked() {
-                    self.show_about = false;
-                }
             });
     }
 

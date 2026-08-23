@@ -5,7 +5,10 @@ use crate::geometry::{
     encode_transform, parse_transform, polygon_intersects_rect, rotated_contains, rotated_corners,
 };
 use crate::util::strip_verbatim_prefix;
-use crate::{GizmoAxis, GizmoDrag, SceneDrag, SceneTool, SceneViewMode};
+use crate::{
+    GizmoAxis, GizmoDrag, SceneDrag, SceneTool, SceneViewCache2d, SceneViewCache3d,
+    SceneViewMode,
+};
 use editor::CommandKind;
 use eframe::egui;
 use engine_core::{
@@ -17,7 +20,7 @@ use engine_core::{
     transform::Vec2,
     transform3d::Transform3D,
 };
-use engine_host::{Renderer, RuntimeScene, Scene3d, Scene3dDrawable, SceneMesh};
+use engine_host::{ReadbackStatus, Renderer, RuntimeScene, Scene3d, Scene3dDrawable, SceneMesh};
 use std::path::Path;
 
 impl EditorApp {
@@ -303,6 +306,8 @@ impl EditorApp {
             self.scene_state.drag = None;
             self.scene_state.box_select_start = None;
         }
+        // 工具小面板（Select/Move/Rotate/Scale）置于场景右上角。
+        self.draw_scene_tool_panel(ui, rect);
     }
 
     /// 3D 场景视图（M9-03）：XZ 俯视投影绘制 Transform3D 实体，选中实体显示
@@ -338,7 +343,7 @@ impl EditorApp {
         }
 
         // 渲染透视视口（编辑场景 + 编辑器相机）到离屏纹理并显示。
-        self.render_scene_view(width, height, ui.ctx());
+        self.render_scene_view_3d(width, height, ui.ctx());
         painter.rect_filled(rect, 0.0, egui::Color32::from_rgb(28, 32, 40));
         if let Some(tex) = &self.scene_preview_tex {
             painter.image(
@@ -637,6 +642,25 @@ impl EditorApp {
                 }
             }
         }
+        // 工具小面板（Select/Move/Rotate/Scale）置于场景右上角。
+        self.draw_scene_tool_panel(ui, rect);
+    }
+
+    /// Scene 视图右上角的小工具面板：选择/移动/旋转/缩放。
+    fn draw_scene_tool_panel(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
+        let width = 190.0;
+        let tools_rect = egui::Rect::from_min_size(
+            egui::pos2(rect.right() - width - 4.0, rect.top() + 4.0),
+            egui::vec2(width, 26.0),
+        );
+        ui.scope_builder(egui::UiBuilder::new().max_rect(tools_rect), |ui| {
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut self.scene_tool, SceneTool::Select, "Select");
+                ui.selectable_value(&mut self.scene_tool, SceneTool::Move, "Move");
+                ui.selectable_value(&mut self.scene_tool, SceneTool::Rotate, "Rotate");
+                ui.selectable_value(&mut self.scene_tool, SceneTool::Scale, "Scale");
+            });
+        });
     }
 
     /// 提交 2D 场景拖拽：写回 Transform 组件。
@@ -800,68 +824,136 @@ impl EditorApp {
     }
 
     /// 渲染 3D 场景视图（编辑场景 + 编辑器相机）到离屏纹理并更新 egui 预览。
-    fn render_scene_view(&mut self, width: u32, height: u32, ctx: &egui::Context) {
+    /// 内容未变化（修订/尺寸/相机未动且无活动拖拽预览）时跳过渲染，沿用缓存纹理。
+    fn render_scene_view_3d(&mut self, width: u32, height: u32, ctx: &egui::Context) {
         if width == 0 || height == 0 {
             return;
         }
-        self.ensure_scene_renderer(width, height);
-        let scene3d = self.build_scene3d(width as f32 / height.max(1) as f32);
+        let revision = self.document.current_scene.as_ref().map(|doc| doc.revision);
+        // Gizmo/拖拽预览变化需每帧重渲染；否则仅在修订/尺寸/相机变化时重渲染。
+        let preview_active = !self.scene_state.preview3d_transform.is_empty();
+        let cache = self.scene_view_cache_3d;
+        if !preview_active
+            && cache.size == (width, height)
+            && cache.revision == revision
+            && cache.camera == self.editor_camera
+        {
+            self.drain_readback_3d(ctx);
+            return;
+        }
+        // 交互期（拖拽预览活动）降半分辨率渲染，空闲恢复全分辨率。
+        let (render_w, render_h) = if preview_active {
+            ((width / 2).max(1), (height / 2).max(1))
+        } else {
+            (width, height)
+        };
+        let started = std::time::Instant::now();
+        self.ensure_scene_renderer(render_w, render_h);
+        // 前置条件未满足（无 GPU）时不更新缓存，下帧重试。
+        if self.scene_renderer.is_none() || self.scene_texture.is_none() {
+            return;
+        }
+        self.scene_view_cache_3d = SceneViewCache3d {
+            size: (width, height),
+            revision,
+            camera: self.editor_camera,
+        };
+        let scene3d = self.build_scene3d(render_w as f32 / render_h.max(1) as f32);
         let mesh = SceneMesh {
             vertices: Vec::new(),
             draws: Vec::new(),
             paths: Vec::new(),
             font_atlas: None,
         };
-        let pixels = {
-            let Some(renderer) = &mut self.scene_renderer else {
-                return;
-            };
-            let Some((texture, view)) = &self.scene_texture else {
-                return;
-            };
-            renderer.render_into_texture(&mesh, scene3d.as_ref(), view, width, height);
-            renderer.copy_texture_to_cpu(texture, width, height).ok()
+        let Some(renderer) = &mut self.scene_renderer else {
+            return;
         };
-        if let Some(pixels) = pixels {
-            let image = egui::ColorImage::from_rgba_unmultiplied(
-                [width as usize, height as usize],
-                &pixels,
-            );
-            match &mut self.scene_preview_tex {
-                Some(tex) => tex.set(image, egui::TextureOptions::LINEAR),
-                None => {
-                    self.scene_preview_tex =
-                        Some(ctx.load_texture("scene_view", image, egui::TextureOptions::LINEAR));
-                }
+        let Some((texture, view)) = &self.scene_texture else {
+            return;
+        };
+        renderer.render_into_texture(&mesh, scene3d.as_ref(), view, render_w, render_h);
+        // 非阻塞回读：就绪则上传；未就绪则请求一次重绘，下帧轮询取回。
+        match renderer.readback_frame(texture, render_w, render_h) {
+            ReadbackStatus::Ready {
+                pixels,
+                width,
+                height,
+            } => {
+                self.set_scene_3d_texture(pixels, width, height, ctx);
             }
+            ReadbackStatus::Pending => ctx.request_repaint(),
+            ReadbackStatus::Failed(error) => {
+                tracing::warn!(target: "editor", "[scene view] 3D readback failed: {error}");
+            }
+        }
+        // 性能打点：仅当单帧耗时超过阈值时记录，便于对照优化前后。
+        let elapsed = started.elapsed();
+        if elapsed >= std::time::Duration::from_millis(8) {
+            tracing::info!(
+                target: "editor",
+                "[editor-perf] scene view 3D frame: {}ms ({render_w}x{render_h})",
+                elapsed.as_millis()
+            );
         }
     }
 
-    /// 确保编辑场景的 2D 运行时存在（当前编辑场景，不跑 main.lua）。
+    /// 确保编辑场景的 2D 运行时存在，且反映当前文档 revision 的场景内容。
+    /// 场景编辑（revision 变化）时重建运行时，让背景随编辑更新。
     fn ensure_scene_runtime(&mut self) {
-        if self.scene_runtime.is_some() {
+        let revision = self.document.current_scene.as_ref().map(|doc| doc.revision);
+        // 已按此 revision 尝试过（无论成功失败）则不再重建，避免持久失败时每帧重试。
+        if self.scene_runtime_revision == revision {
             return;
         }
+        self.scene_runtime = None;
         let Some(scene) = self.document.current_scene.as_ref() else {
+            self.scene_runtime_revision = revision;
             return;
         };
         let root = strip_verbatim_prefix(&self.project.root);
-        if let Ok(runtime) = RuntimeScene::from_scene_edit(Some(&root), scene.scene.clone()) {
-            self.scene_runtime = Some(runtime);
+        match RuntimeScene::from_scene_edit(Some(&root), scene.scene.clone()) {
+            Ok(runtime) => self.scene_runtime = Some(runtime),
+            Err(error) => {
+                tracing::warn!(target: "editor", "[scene view] 2D runtime rebuild failed: {error}");
+            }
         }
+        self.scene_runtime_revision = revision;
     }
 
     /// 渲染 2D 场景视图（编辑场景，匹配编辑器 pan/zoom）到离屏纹理并更新 egui 预览。
+    /// 内容未变化（修订/尺寸/相机未动）时跳过渲染，沿用缓存纹理。
     fn render_scene_view_2d(&mut self, width: u32, height: u32, ctx: &egui::Context) {
         if width == 0 || height == 0 {
             return;
         }
+        let revision = self.document.current_scene.as_ref().map(|doc| doc.revision);
+        let camera = (self.scene_state.pan, self.scene_zoom);
+        let cache = self.scene_view_cache_2d;
+        if cache.size == (width, height) && cache.revision == revision && cache.camera == camera {
+            self.drain_readback_2d(ctx);
+            return;
+        }
+        // 前置条件未满足（无场景/无 GPU）时不更新缓存，下帧重试，避免"打开场景后
+        // revision 仍为 0 被缓存命中"导致背景永不渲染。
         self.ensure_scene_runtime();
+        if self.scene_runtime.is_none() {
+            return;
+        }
         self.ensure_scene_renderer(width, height);
+        if self.scene_renderer.is_none() || self.scene_texture.is_none() {
+            return;
+        }
+        self.scene_view_cache_2d = SceneViewCache2d {
+            size: (width, height),
+            revision,
+            camera,
+        };
+        let started = std::time::Instant::now();
+
         let zoom = self.scene_zoom;
         let pan = self.scene_state.pan;
         // 2D 相机匹配编辑器视图：屏幕中心对应世界 -pan/zoom。
-        let camera =
+        let camera2d =
             Camera2D::new(Vec2::new(-pan.x / zoom, -pan.y / zoom), zoom).unwrap_or_else(|_| {
                 Camera2D::new(Vec2::new(0.0, 0.0), 1.0).expect("zero camera is valid")
             });
@@ -869,7 +961,7 @@ impl EditorApp {
             let Some(runtime) = &mut self.scene_runtime else {
                 return;
             };
-            runtime.set_camera_2d(camera);
+            runtime.set_camera_2d(camera2d);
             runtime
                 .vertices(width, height)
                 .unwrap_or_else(|_| SceneMesh {
@@ -879,27 +971,110 @@ impl EditorApp {
                     font_atlas: None,
                 })
         };
-        let pixels = {
-            let Some(renderer) = &mut self.scene_renderer else {
-                return;
-            };
-            let Some((texture, view)) = &self.scene_texture else {
-                return;
-            };
-            renderer.render_into_texture(&mesh, None, view, width, height);
-            renderer.copy_texture_to_cpu(texture, width, height).ok()
+        let Some(renderer) = &mut self.scene_renderer else {
+            return;
         };
-        if let Some(pixels) = pixels {
-            let image = egui::ColorImage::from_rgba_unmultiplied(
-                [width as usize, height as usize],
-                &pixels,
+        let Some((texture, view)) = &self.scene_texture else {
+            return;
+        };
+        renderer.render_into_texture(&mesh, None, view, width, height);
+        // 非阻塞回读：就绪则上传；未就绪则请求一次重绘，下帧轮询取回。
+        match renderer.readback_frame(texture, width, height) {
+            ReadbackStatus::Ready { pixels, width, height } => {
+                self.set_scene_2d_texture(pixels, width, height, ctx);
+            }
+            ReadbackStatus::Pending => ctx.request_repaint(),
+            ReadbackStatus::Failed(error) => {
+                tracing::warn!(target: "editor", "[scene view] 2D readback failed: {error}");
+            }
+        }
+        // 性能打点：仅当单帧耗时超过阈值时记录，便于对照优化前后。
+        let elapsed = started.elapsed();
+        if elapsed >= std::time::Duration::from_millis(8) {
+            tracing::info!(
+                target: "editor",
+                "[editor-perf] scene view 2D frame: {}ms ({width}x{height})",
+                elapsed.as_millis()
             );
-            match &mut self.scene_2d_tex {
-                Some(tex) => tex.set(image, egui::TextureOptions::NEAREST),
-                None => {
-                    self.scene_2d_tex =
-                        Some(ctx.load_texture("scene_2d", image, egui::TextureOptions::NEAREST));
-                }
+        }
+    }
+
+    /// 把 2D 回读像素上传到 egui 纹理（NEAREST，像素风）。
+    fn set_scene_2d_texture(
+        &mut self,
+        pixels: Vec<u8>,
+        width: u32,
+        height: u32,
+        ctx: &egui::Context,
+    ) {
+        let image = egui::ColorImage::from_rgba_unmultiplied(
+            [width as usize, height as usize],
+            &pixels,
+        );
+        match &mut self.scene_2d_tex {
+            Some(tex) => tex.set(image, egui::TextureOptions::NEAREST),
+            None => {
+                self.scene_2d_tex =
+                    Some(ctx.load_texture("scene_2d", image, egui::TextureOptions::NEAREST));
+            }
+        }
+    }
+
+    /// 把 3D 回读像素上传到 egui 纹理（LINEAR 平滑缩放）。
+    fn set_scene_3d_texture(
+        &mut self,
+        pixels: Vec<u8>,
+        width: u32,
+        height: u32,
+        ctx: &egui::Context,
+    ) {
+        let image = egui::ColorImage::from_rgba_unmultiplied(
+            [width as usize, height as usize],
+            &pixels,
+        );
+        match &mut self.scene_preview_tex {
+            Some(tex) => tex.set(image, egui::TextureOptions::LINEAR),
+            None => {
+                self.scene_preview_tex =
+                    Some(ctx.load_texture("scene_view", image, egui::TextureOptions::LINEAR));
+            }
+        }
+    }
+
+    /// 内容未变化时排空 2D 在途回读（补上滞后一帧的纹理），并自终止重绘轮询。
+    fn drain_readback_2d(&mut self, ctx: &egui::Context) {
+        let Some(renderer) = &mut self.scene_renderer else {
+            return;
+        };
+        if !renderer.readback_in_flight() {
+            return;
+        }
+        match renderer.readback_pending() {
+            ReadbackStatus::Ready { pixels, width, height } => {
+                self.set_scene_2d_texture(pixels, width, height, ctx);
+            }
+            ReadbackStatus::Pending => ctx.request_repaint(),
+            ReadbackStatus::Failed(error) => {
+                tracing::warn!(target: "editor", "[scene view] 2D readback drain failed: {error}");
+            }
+        }
+    }
+
+    /// 内容未变化时排空 3D 在途回读（补上滞后一帧的纹理），并自终止重绘轮询。
+    fn drain_readback_3d(&mut self, ctx: &egui::Context) {
+        let Some(renderer) = &mut self.scene_renderer else {
+            return;
+        };
+        if !renderer.readback_in_flight() {
+            return;
+        }
+        match renderer.readback_pending() {
+            ReadbackStatus::Ready { pixels, width, height } => {
+                self.set_scene_3d_texture(pixels, width, height, ctx);
+            }
+            ReadbackStatus::Pending => ctx.request_repaint(),
+            ReadbackStatus::Failed(error) => {
+                tracing::warn!(target: "editor", "[scene view] 3D readback drain failed: {error}");
             }
         }
     }
@@ -968,8 +1143,54 @@ impl EditorApp {
     fn spawn_dropped_resource(&mut self, path: &str) -> Result<(), String> {
         if path.ends_with(".prefab") {
             self.spawn_prefab_from_drop(path)
+        } else if path.ends_with(".glb") || path.ends_with(".gltf") {
+            self.spawn_model_from_drop(path)
         } else {
             self.spawn_sprite_from_drop(path)
+        }
+    }
+
+    /// 从拖放的模型路径创建 3D 网格实体（Transform3D + MeshRenderer）。
+    fn spawn_model_from_drop(&mut self, path: &str) -> Result<(), String> {
+        if self.is_playing() {
+            return Err("Play mode locks scene editing; click Stop first".to_owned());
+        }
+        if self.document.current_scene.is_none() {
+            return Err("请先创建场景".to_owned());
+        }
+        let name = Path::new(path)
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "Model".to_owned());
+        let tree = self.tree.clone();
+        let path = path.to_owned();
+        let Some(scene) = self.document.current_scene.as_mut() else {
+            return Ok(());
+        };
+        let result = self.history.execute(
+            scene,
+            "Create Model",
+            CommandKind::Create,
+            move |scene| {
+                let mut tree = tree;
+                let id = tree
+                    .create_entity(scene, name.clone(), None)
+                    .map_err(|error| error.to_string())?;
+                if let Some(entity) = scene.scene.entities.get_mut(&id) {
+                    entity.components.insert(
+                        "Transform3D".into(),
+                        Transform3D::default().to_component_str(),
+                    );
+                    entity
+                        .components
+                        .insert("MeshRenderer".into(), format!("mesh={path}"));
+                }
+                Ok::<(), String>(())
+            },
+        );
+        match result {
+            Ok(_) => Ok(()),
+            Err(error) => Err(error),
         }
     }
 

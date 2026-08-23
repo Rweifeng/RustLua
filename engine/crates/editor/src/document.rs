@@ -8,12 +8,23 @@ use std::{
 };
 
 /// 编辑器中的可编辑场景及其文件状态。
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct SceneDocument {
     pub path: Option<PathBuf>,
     pub scene: Scene,
     pub dirty: bool,
+    /// 单调递增的编辑修订号：每次 `mark_dirty` 自增，供编辑器检测场景内容是否变化。
+    /// 不参与相等比较（纯修订计数变化不算内容变化），避免干扰 history 的 no-op 检测。
+    pub revision: u64,
 }
+
+impl PartialEq for SceneDocument {
+    fn eq(&self, other: &Self) -> bool {
+        self.path == other.path && self.scene == other.scene && self.dirty == other.dirty
+    }
+}
+
+impl Eq for SceneDocument {}
 
 impl SceneDocument {
     /// 创建尚未保存的新场景。新文档必须显示为 dirty，避免用户误以为已有文件。
@@ -22,6 +33,7 @@ impl SceneDocument {
             path: None,
             scene: Scene::new(name),
             dirty: true,
+            revision: 0,
         }
     }
 
@@ -37,11 +49,14 @@ impl SceneDocument {
             path: Some(path),
             scene,
             dirty: false,
+            revision: 0,
         })
     }
 
     pub fn mark_dirty(&mut self) {
         self.dirty = true;
+        // 每次标记 dirty 都自增修订号，让编辑器能够检测到场景内容变化（即使 dirty 早已为真）。
+        self.revision = self.revision.wrapping_add(1);
     }
     pub fn mark_clean(&mut self) {
         self.dirty = false;
@@ -382,5 +397,22 @@ mod tests {
             assert_eq!(restored, original);
             assert_eq!(document, original);
         }
+    }
+
+    #[test]
+    fn mark_dirty_bumps_revision_but_equality_ignores_it() {
+        let mut document = SceneDocument::new_scene("main");
+        let original = document.clone();
+        document.mark_dirty();
+        // 纯修订计数变化不算内容变化：等值比较仍相等（history 的 no-op 检测依赖此语义）。
+        assert_eq!(document, original);
+        // revision 递增，供编辑器检测"是否发生过编辑"。
+        assert_eq!(document.revision, original.revision + 1);
+        // 实际内容变化后不再相等。
+        document
+            .scene
+            .add_entity(SceneEntityId(1), "A", None)
+            .unwrap();
+        assert_ne!(document, original);
     }
 }

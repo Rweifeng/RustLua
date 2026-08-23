@@ -1,7 +1,9 @@
-//! 中央 Scene/Game 工作区工具栏：Play/Stop、视图切换、工具、吸附、对齐、缩放、Undo/Redo。
+//! 中央 Scene/Game 工作区工具栏：Play/Stop、视图切换、吸附、对齐、缩放。
+//! Undo/Redo 通过快捷键 Ctrl+Z / Ctrl+Y 触发（见 main.rs）。
+//! 工具按钮（Select/Move/Rotate/Scale）在 Scene 视图右上角的小面板中（见 scene_view.rs）。
 
 use crate::EditorApp;
-use crate::{AlignMode, SceneTool, SceneViewMode, WorkspaceTab};
+use crate::{AlignMode, SceneViewMode, WorkspaceTab};
 use eframe::egui;
 
 impl EditorApp {
@@ -16,17 +18,52 @@ impl EditorApp {
             } else if ui.button("Play").clicked() && self.project_loaded {
                 self.play();
             }
+            // 预览分辨率（下次 Play 生效；可自定义增删）。
+            let resolutions = self.preview_resolutions.clone();
+            egui::ComboBox::from_id_salt("preview_resolution")
+                .selected_text(format!(
+                    "{}×{}",
+                    self.preview_resolution.0, self.preview_resolution.1
+                ))
+                .show_ui(ui, |ui| {
+                    for (w, h) in &resolutions {
+                        if ui
+                            .selectable_value(
+                                &mut self.preview_resolution,
+                                (*w, *h),
+                                format!("{w}×{h}"),
+                            )
+                            .changed()
+                        {
+                            self.adding_preview_resolution = false;
+                        }
+                    }
+                    ui.separator();
+                    if ui.button("＋ 自定义…").clicked() {
+                        self.custom_preview_resolution = self.preview_resolution;
+                        self.adding_preview_resolution = true;
+                        ui.close();
+                    }
+                });
+            if ui.button("删除").clicked() {
+                let index = self
+                    .preview_resolutions
+                    .iter()
+                    .position(|r| *r == self.preview_resolution);
+                if let Some(index) = index {
+                    self.preview_resolutions.remove(index);
+                }
+                if self.preview_resolutions.is_empty() {
+                    self.preview_resolutions.push((640, 360));
+                }
+                self.preview_resolution = self.preview_resolutions[0];
+            }
             ui.separator();
             ui.selectable_value(&mut self.workspace_tab, WorkspaceTab::Scene, "Scene");
             ui.selectable_value(&mut self.workspace_tab, WorkspaceTab::Game, "Game");
             ui.separator();
             ui.selectable_value(&mut self.scene_view_mode, SceneViewMode::View2D, "2D");
             ui.selectable_value(&mut self.scene_view_mode, SceneViewMode::View3D, "3D");
-            ui.separator();
-            ui.selectable_value(&mut self.scene_tool, SceneTool::Select, "Select");
-            ui.selectable_value(&mut self.scene_tool, SceneTool::Move, "Move");
-            ui.selectable_value(&mut self.scene_tool, SceneTool::Rotate, "Rotate");
-            ui.selectable_value(&mut self.scene_tool, SceneTool::Scale, "Scale");
             ui.separator();
             ui.checkbox(&mut self.snap_enabled, "吸附");
             ui.add(
@@ -46,13 +83,35 @@ impl EditorApp {
             }
             ui.separator();
             ui.add(egui::Slider::new(&mut self.scene_zoom, 0.5..=2.5).text("Zoom"));
-            ui.separator();
-            if ui.button("Undo").clicked() && self.project_loaded {
-                self.undo();
-            }
-            if ui.button("Redo").clicked() && self.project_loaded {
-                self.redo();
-            }
         });
+        // 自定义分辨率输入行。
+        if self.adding_preview_resolution {
+            ui.horizontal(|ui| {
+                ui.label("自定义分辨率");
+                ui.add(
+                    egui::DragValue::new(&mut self.custom_preview_resolution.0)
+                        .range(100..=7680)
+                        .prefix("宽 "),
+                );
+                ui.add(
+                    egui::DragValue::new(&mut self.custom_preview_resolution.1)
+                        .range(100..=4320)
+                        .prefix("高 "),
+                );
+                if ui.button("添加").clicked() {
+                    if !self
+                        .preview_resolutions
+                        .contains(&self.custom_preview_resolution)
+                    {
+                        self.preview_resolutions.push(self.custom_preview_resolution);
+                    }
+                    self.preview_resolution = self.custom_preview_resolution;
+                    self.adding_preview_resolution = false;
+                }
+                if ui.button("取消").clicked() {
+                    self.adding_preview_resolution = false;
+                }
+            });
+        }
     }
 }

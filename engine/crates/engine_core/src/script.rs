@@ -23,6 +23,7 @@ use crate::{
     particle::{Particle, ParticleSystem},
     physics::{ColliderDesc, ColliderShape, PhysicsWorld},
     physics3d::{ColliderDesc3d, PhysicsWorld3d},
+    resource_db::AssetId,
     save::{decode as decode_save, encode as encode_save},
     scene::Scene,
     sprite::{Sprite, SpriteAsset},
@@ -73,6 +74,8 @@ struct ScriptState {
     active_camera: Option<EntityId>,
     /// Entity whose `Light` component the renderer uses this frame.
     active_light: Option<EntityId>,
+    /// Persistent entities (name → authored snapshot) that survive scene loads.
+    persistent: BTreeMap<String, PersistedEntity>,
 }
 
 #[derive(Debug, Clone)]
@@ -92,6 +95,19 @@ pub struct UiBar {
     /// Fill ratio in `0..=1`.
     pub ratio: f32,
     pub color: [f32; 4],
+}
+
+/// Authored snapshot of an entity marked `metadata["persistent"]="true"`.
+/// Keyed by entity name (the only handle stable across scene switches); kept in
+/// `ScriptState::persistent` so `process_scene_transition` can re-spawn it.
+#[derive(Clone, Debug, Default)]
+struct PersistedEntity {
+    name: String,
+    components: BTreeMap<String, String>,
+    resources: BTreeMap<String, AssetId>,
+    /// 保留元数据（如 persistent 标志自身）；当前恢复只用 components。
+    #[allow(dead_code)]
+    metadata: BTreeMap<String, String>,
 }
 
 /// Errors produced while loading or running a project Lua script.
@@ -244,189 +260,272 @@ impl LuaRuntime {
         let mut state = self.state.borrow_mut();
         let mut count = 0;
         for entity in scene.entities.values() {
-            let id = state.world.spawn();
-            if let Some(value) = entity.components.get("Transform") {
-                let transform = Transform::from_component_str(value).map_err(|error| {
-                    LuaBridgeError::Api(format!(
-                        "entity {:?} has an invalid Transform: {error}",
-                        entity.name
-                    ))
-                })?;
-                state
-                    .world
-                    .insert(id, transform)
-                    .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
-            }
-            if let Some(raw) = entity.components.get("Sprite") {
-                let (path, size) = parse_sprite_ref(raw);
-                let sprite =
-                    Sprite::new(size.unwrap_or(Vec2::new(128.0, 128.0))).map_err(|error| {
-                        LuaBridgeError::Api(format!("failed to build default Sprite: {error}"))
-                    })?;
-                state
-                    .world
-                    .insert(id, sprite)
-                    .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
-                state
-                    .world
-                    .insert(id, SpriteAsset(path))
-                    .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
-            }
-            if let Some(value) = entity.components.get("Tilemap") {
-                let tilemap = Tilemap::from_component_str(value).map_err(|error| {
-                    LuaBridgeError::Api(format!(
-                        "entity {:?} has an invalid Tilemap: {error}",
-                        entity.name
-                    ))
-                })?;
-                state
-                    .world
-                    .insert(id, tilemap)
-                    .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
-            }
-            if let Some(value) = entity.components.get("Animation") {
-                let animation =
-                    AnimationStateMachine::from_component_str(value).map_err(|error| {
-                        LuaBridgeError::Api(format!(
-                            "entity {:?} has an invalid Animation: {error}",
-                            entity.name
-                        ))
-                    })?;
-                state
-                    .world
-                    .insert(id, animation)
-                    .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
-            }
-            if let Some(value) = entity.components.get("Transform3D") {
-                let transform = Transform3D::from_component_str(value).map_err(|error| {
-                    LuaBridgeError::Api(format!(
-                        "entity {:?} has an invalid Transform3D: {error}",
-                        entity.name
-                    ))
-                })?;
-                state
-                    .world
-                    .insert(id, transform)
-                    .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
-            }
-            if let Some(value) = entity.components.get("Animation3D") {
-                let descriptor =
-                    Animation3dDescriptor::from_component_str(value).map_err(|error| {
-                        LuaBridgeError::Api(format!(
-                            "entity {:?} has an invalid Animation3D: {error}",
-                            entity.name
-                        ))
-                    })?;
-                let root = state.project_root.clone().ok_or_else(|| {
-                    LuaBridgeError::Api(format!(
-                        "entity {:?} needs a project root to load its Animation3D mesh",
-                        entity.name
-                    ))
-                })?;
-                let animation =
-                    Animation3D::from_gltf_path(&root, &descriptor).map_err(|error| {
-                        LuaBridgeError::Api(format!(
-                            "entity {:?} Animation3D failed to load: {error}",
-                            entity.name
-                        ))
-                    })?;
-                state
-                    .world
-                    .insert(id, animation)
-                    .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
-            }
-            if let Some(value) = entity.components.get("MeshRenderer") {
-                let renderer = MeshRenderer::from_component_str(value).map_err(|error| {
-                    LuaBridgeError::Api(format!(
-                        "entity {:?} has an invalid MeshRenderer: {error}",
-                        entity.name
-                    ))
-                })?;
-                state
-                    .world
-                    .insert(id, renderer)
-                    .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
-            }
-            if let Some(value) = entity.components.get("Camera3D") {
-                let camera = Camera3D::from_component_str(value).map_err(|error| {
-                    LuaBridgeError::Api(format!(
-                        "entity {:?} has an invalid Camera3D: {error}",
-                        entity.name
-                    ))
-                })?;
-                state
-                    .world
-                    .insert(id, camera)
-                    .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
-            }
-            if let Some(value) = entity.components.get("Light") {
-                let light = Light::from_component_str(value).map_err(|error| {
-                    LuaBridgeError::Api(format!(
-                        "entity {:?} has an invalid Light: {error}",
-                        entity.name
-                    ))
-                })?;
-                state
-                    .world
-                    .insert(id, light)
-                    .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
-            }
-            if !entity.name.is_empty() {
-                state.names.insert(entity.name.clone(), id);
-            }
-            let position = state
-                .world
-                .get::<Transform>(id)
-                .ok()
-                .flatten()
-                .map(|transform| transform.position)
-                .unwrap_or_default();
-            if let Some(value) = entity.components.get("Collider") {
-                let collider = ColliderDesc::from_component_str(value).map_err(|error| {
-                    LuaBridgeError::Api(format!(
-                        "entity {:?} has an invalid Collider: {error}",
-                        entity.name
-                    ))
-                })?;
-                state
-                    .physics
-                    .add_body(id, position, true, vec![collider])
-                    .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
-            }
-            if entity.components.contains_key("Tilemap") {
-                let tilemap = state.world.get::<Tilemap>(id).ok().flatten();
-                if let Some(tilemap) = tilemap
-                    && tilemap.solid.iter().any(|solid| *solid)
-                {
-                    let colliders = solid_cell_colliders(tilemap);
-                    state
-                        .physics
-                        .add_body(id, position, false, colliders)
-                        .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
-                }
-            }
-            if let Some(value) = entity.components.get("Collider3d") {
-                let collider = ColliderDesc3d::from_component_str(value).map_err(|error| {
-                    LuaBridgeError::Api(format!(
-                        "entity {:?} has an invalid Collider3d: {error}",
-                        entity.name
-                    ))
-                })?;
-                let position = state
-                    .world
-                    .get::<Transform3D>(id)
-                    .ok()
-                    .flatten()
-                    .map(|transform| transform.position)
-                    .unwrap_or(Vec3::ZERO);
-                state
-                    .physics3d
-                    .add_body(id, position, collider.dynamic, vec![collider])
-                    .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
+            Self::spawn_entity_components(
+                &mut state,
+                &entity.name,
+                &entity.components,
+                &entity.resources,
+            )?;
+            // 持久实体快照（权威、静态组件），供切场景后重生。
+            if entity.metadata.get("persistent").is_some_and(|value| value == "true")
+                && !entity.name.is_empty()
+            {
+                state.persistent.insert(
+                    entity.name.clone(),
+                    PersistedEntity {
+                        name: entity.name.clone(),
+                        components: entity.components.clone(),
+                        resources: entity.resources.clone(),
+                        metadata: entity.metadata.clone(),
+                    },
+                );
             }
             count += 1;
         }
         Ok(count)
+    }
+
+    /// 按下边沿的 Button 命中测试 → 调用全局 `on_click(name)`（若脚本定义了）。
+    pub fn process_ui_clicks(&self, input: &InputSnapshot) -> Result<(), LuaBridgeError> {
+        if !input.mouse_just_pressed(MouseButton::Left) {
+            return Ok(());
+        }
+        let (mx, my) = input.cursor_position();
+        let clicked: Vec<String> = {
+            let state = self.state.borrow();
+            state
+                .world
+                .entities_with::<crate::ui::UiButton>()
+                .into_iter()
+                .filter_map(|id| {
+                    let Ok(Some(button)) = state.world.get::<crate::ui::UiButton>(id) else {
+                        return None;
+                    };
+                    let inside = (mx as f32) >= button.position[0]
+                        && (mx as f32) <= button.position[0] + button.size[0]
+                        && (my as f32) >= button.position[1]
+                        && (my as f32) <= button.position[1] + button.size[1];
+                    if !inside {
+                        return None;
+                    }
+                    state
+                        .names
+                        .iter()
+                        .find(|(_, entity)| **entity == id)
+                        .map(|(name, _)| name.clone())
+                })
+                .collect()
+        };
+        for name in clicked {
+            let callback: Value = self.lua.globals().get("on_click").map_err(|error| {
+                LuaBridgeError::Runtime {
+                    path: self
+                        .current_path
+                        .clone()
+                        .unwrap_or_else(|| PathBuf::from("<project script>")),
+                    source: error.to_string(),
+                }
+            })?;
+            if let Value::Function(function) = callback {
+                function
+                    .call::<()>((name,))
+                    .map_err(|error| LuaBridgeError::Runtime {
+                        path: self
+                            .current_path
+                            .clone()
+                            .unwrap_or_else(|| PathBuf::from("<project script>")),
+                        source: error.to_string(),
+                    })?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Spawns a single entity from its component map into the runtime world
+    /// (components, physics bodies, name registration). Single source of truth
+    /// used by `instantiate_scene` and by the persistent-entity restore.
+    fn spawn_entity_components(
+        state: &mut ScriptState,
+        name: &str,
+        components: &BTreeMap<String, String>,
+        _resources: &BTreeMap<String, AssetId>,
+    ) -> Result<EntityId, LuaBridgeError> {
+        let id = state.world.spawn();
+        if let Some(value) = components.get("Transform") {
+            let transform = Transform::from_component_str(value).map_err(|error| {
+                LuaBridgeError::Api(format!("entity {name:?} has an invalid Transform: {error}"))
+            })?;
+            state
+                .world
+                .insert(id, transform)
+                .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
+        }
+        if let Some(raw) = components.get("Sprite") {
+            let (path, size) = parse_sprite_ref(raw);
+            let sprite =
+                Sprite::new(size.unwrap_or(Vec2::new(128.0, 128.0))).map_err(|error| {
+                    LuaBridgeError::Api(format!("failed to build default Sprite: {error}"))
+                })?;
+            state
+                .world
+                .insert(id, sprite)
+                .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
+            state
+                .world
+                .insert(id, SpriteAsset(path))
+                .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
+        }
+        if let Some(value) = components.get("Tilemap") {
+            let tilemap = Tilemap::from_component_str(value).map_err(|error| {
+                LuaBridgeError::Api(format!("entity {name:?} has an invalid Tilemap: {error}"))
+            })?;
+            state
+                .world
+                .insert(id, tilemap)
+                .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
+        }
+        if let Some(value) = components.get("Animation") {
+            let animation = AnimationStateMachine::from_component_str(value).map_err(|error| {
+                LuaBridgeError::Api(format!("entity {name:?} has an invalid Animation: {error}"))
+            })?;
+            state
+                .world
+                .insert(id, animation)
+                .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
+        }
+        if let Some(value) = components.get("Transform3D") {
+            let transform = Transform3D::from_component_str(value).map_err(|error| {
+                LuaBridgeError::Api(format!("entity {name:?} has an invalid Transform3D: {error}"))
+            })?;
+            state
+                .world
+                .insert(id, transform)
+                .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
+        }
+        if let Some(value) = components.get("Animation3D") {
+            let descriptor = Animation3dDescriptor::from_component_str(value).map_err(|error| {
+                LuaBridgeError::Api(format!(
+                    "entity {name:?} has an invalid Animation3D: {error}"
+                ))
+            })?;
+            let root = state.project_root.clone().ok_or_else(|| {
+                LuaBridgeError::Api(format!(
+                    "entity {name:?} needs a project root to load its Animation3D mesh"
+                ))
+            })?;
+            let animation = Animation3D::from_gltf_path(&root, &descriptor).map_err(|error| {
+                LuaBridgeError::Api(format!(
+                    "entity {name:?} Animation3D failed to load: {error}"
+                ))
+            })?;
+            state
+                .world
+                .insert(id, animation)
+                .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
+        }
+        if let Some(value) = components.get("MeshRenderer") {
+            let renderer = MeshRenderer::from_component_str(value).map_err(|error| {
+                LuaBridgeError::Api(format!("entity {name:?} has an invalid MeshRenderer: {error}"))
+            })?;
+            state
+                .world
+                .insert(id, renderer)
+                .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
+        }
+        if let Some(value) = components.get("Camera3D") {
+            let camera = Camera3D::from_component_str(value).map_err(|error| {
+                LuaBridgeError::Api(format!("entity {name:?} has an invalid Camera3D: {error}"))
+            })?;
+            state
+                .world
+                .insert(id, camera)
+                .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
+        }
+        if let Some(value) = components.get("Light") {
+            let light = Light::from_component_str(value).map_err(|error| {
+                LuaBridgeError::Api(format!("entity {name:?} has an invalid Light: {error}"))
+            })?;
+            state
+                .world
+                .insert(id, light)
+                .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
+        }
+        // UI scene components (screen-space overlays).
+        if let Some(value) = components.get("Text") {
+            let text = crate::ui::UiText::from_component_str(value).map_err(|error| {
+                LuaBridgeError::Api(format!("entity {name:?} has an invalid Text: {error}"))
+            })?;
+            state
+                .world
+                .insert(id, text)
+                .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
+        }
+        if let Some(value) = components.get("Image") {
+            let image = crate::ui::UiImage::from_component_str(value).map_err(|error| {
+                LuaBridgeError::Api(format!("entity {name:?} has an invalid Image: {error}"))
+            })?;
+            state
+                .world
+                .insert(id, image)
+                .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
+        }
+        if let Some(value) = components.get("Button") {
+            let button = crate::ui::UiButton::from_component_str(value).map_err(|error| {
+                LuaBridgeError::Api(format!("entity {name:?} has an invalid Button: {error}"))
+            })?;
+            state
+                .world
+                .insert(id, button)
+                .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
+        }
+        if !name.is_empty() {
+            state.names.insert(name.to_owned(), id);
+        }
+        let position = state
+            .world
+            .get::<Transform>(id)
+            .ok()
+            .flatten()
+            .map(|transform| transform.position)
+            .unwrap_or_default();
+        if let Some(value) = components.get("Collider") {
+            let collider = ColliderDesc::from_component_str(value).map_err(|error| {
+                LuaBridgeError::Api(format!("entity {name:?} has an invalid Collider: {error}"))
+            })?;
+            state
+                .physics
+                .add_body(id, position, true, vec![collider])
+                .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
+        }
+        if components.contains_key("Tilemap") {
+            let tilemap = state.world.get::<Tilemap>(id).ok().flatten();
+            if let Some(tilemap) = tilemap
+                && tilemap.solid.iter().any(|solid| *solid)
+            {
+                let colliders = solid_cell_colliders(tilemap);
+                state
+                    .physics
+                    .add_body(id, position, false, colliders)
+                    .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
+            }
+        }
+        if let Some(value) = components.get("Collider3d") {
+            let collider = ColliderDesc3d::from_component_str(value).map_err(|error| {
+                LuaBridgeError::Api(format!("entity {name:?} has an invalid Collider3d: {error}"))
+            })?;
+            let position = state
+                .world
+                .get::<Transform3D>(id)
+                .ok()
+                .flatten()
+                .map(|transform| transform.position)
+                .unwrap_or(Vec3::ZERO);
+            state
+                .physics3d
+                .add_body(id, position, collider.dynamic, vec![collider])
+                .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
+        }
+        Ok(id)
     }
 
     /// Steps the physics world and writes moved dynamic body positions back to
@@ -508,6 +607,28 @@ impl LuaRuntime {
             state.active_light = None;
         }
         let instantiated = self.instantiate_scene(&scene)?;
+        // 恢复持久实体：新场景未定义的名字用持久快照重生（新场景定义胜出）。
+        {
+            let mut state = self.state.borrow_mut();
+            let persisted: Vec<PersistedEntity> = state.persistent.values().cloned().collect();
+            for entity in persisted {
+                if state.names.contains_key(&entity.name) {
+                    continue;
+                }
+                Self::spawn_entity_components(
+                    &mut state,
+                    &entity.name,
+                    &entity.components,
+                    &entity.resources,
+                )
+                .map_err(|error| {
+                    LuaBridgeError::Api(format!(
+                        "restore persistent entity {}: {error}",
+                        entity.name
+                    ))
+                })?;
+            }
+        }
         call_optional(&self.lua, "on_create").map_err(|error| LuaBridgeError::Runtime {
             path: self
                 .current_path
@@ -2778,6 +2899,166 @@ mod tests {
         let _ = fs::remove_file(load_script);
         let _ = fs::remove_file(switch);
         let _ = fs::remove_file(check);
+    }
+
+    #[test]
+    fn persistent_entities_survive_scene_transition() {
+        use crate::scene::{Scene, SceneEntityId};
+        use crate::ui::UiText;
+
+        let root = std::env::temp_dir().join(format!("p2-persist-{}", std::process::id()));
+        let scenes = root.join("scenes");
+        fs::create_dir_all(&scenes).unwrap();
+
+        let mut arena = Scene::new("arena");
+        arena.add_entity(SceneEntityId(1), "Player", None).unwrap();
+        arena
+            .entities
+            .get_mut(&SceneEntityId(1))
+            .unwrap()
+            .components
+            .insert("Sprite".into(), "assets/player.png".into());
+        arena.add_entity(SceneEntityId(2), "Hud", None).unwrap();
+        let hud = arena.entities.get_mut(&SceneEntityId(2)).unwrap();
+        hud.components
+            .insert("Text".into(), "text=Score:0;x=10;y=10;scale=2;color=1,1,1".into());
+        hud.metadata.insert("persistent".into(), "true".into());
+        arena.save(scenes.join("arena.scene")).unwrap();
+
+        let mut hub = Scene::new("hub");
+        hub.add_entity(SceneEntityId(1), "Boss", None).unwrap();
+        hub.entities
+            .get_mut(&SceneEntityId(1))
+            .unwrap()
+            .components
+            .insert("Sprite".into(), "assets/boss.png".into());
+        hub.save(scenes.join("hub.scene")).unwrap();
+
+        let mut runtime = LuaRuntime::new().unwrap();
+        runtime.set_project_root(root.clone());
+        let load_arena = script("assert(scene.load('arena'))\nfunction update() return 'ok' end");
+        runtime.execute_project_script(&load_arena).unwrap();
+        runtime.process_scene_transition().unwrap();
+        let load_hub = script("assert(scene.load('hub'))\nfunction update() return 'ok' end");
+        runtime.execute_project_script(&load_hub).unwrap();
+        runtime.process_scene_transition().unwrap();
+
+        // Hud (persistent, UI text) survives; arena Player gone; hub Boss present.
+        let ui_texts: Vec<String> = runtime.with_world(|world| {
+            world
+                .entities_with::<UiText>()
+                .into_iter()
+                .filter_map(|id| world.get::<UiText>(id).ok().flatten().map(|t| t.text.clone()))
+                .collect()
+        });
+        assert_eq!(ui_texts.len(), 1, "persistent Hud text survives");
+        assert_eq!(ui_texts[0], "Score:0");
+        let sprites = runtime.with_world(|world| world.entities_with::<Sprite>());
+        assert_eq!(sprites.len(), 1, "only hub Boss sprite remains");
+        assert_eq!(runtime.with_world(|world| world.entity_count()), 2);
+        let check = script(
+            "local hud = entity.find('Hud')\nassert(hud ~= nil)\nlocal boss = entity.find('Boss')\nassert(boss ~= nil)\nassert(entity.find('Player') == nil)\nfunction update() return 'ok' end",
+        );
+        runtime.execute_project_script(&check).unwrap();
+        runtime.call_update().unwrap();
+
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_file(load_arena);
+        let _ = fs::remove_file(load_hub);
+        let _ = fs::remove_file(check);
+    }
+
+    #[test]
+    fn persistent_duplicate_name_new_scene_wins() {
+        use crate::scene::{Scene, SceneEntityId};
+        use crate::ui::UiText;
+
+        let root = std::env::temp_dir().join(format!("p2-persist-name-{}", std::process::id()));
+        let scenes = root.join("scenes");
+        fs::create_dir_all(&scenes).unwrap();
+
+        let mut arena = Scene::new("arena");
+        arena.add_entity(SceneEntityId(1), "Hud", None).unwrap();
+        let hud = arena.entities.get_mut(&SceneEntityId(1)).unwrap();
+        hud.components
+            .insert("Text".into(), "text=Score:0;x=10;y=10".into());
+        hud.metadata.insert("persistent".into(), "true".into());
+        arena.save(scenes.join("arena.scene")).unwrap();
+
+        let mut hub = Scene::new("hub");
+        hub.add_entity(SceneEntityId(1), "Hud", None).unwrap();
+        let hud = hub.entities.get_mut(&SceneEntityId(1)).unwrap();
+        hud.components
+            .insert("Text".into(), "text=Score:99;x=10;y=10".into());
+        hud.metadata.insert("persistent".into(), "true".into());
+        hub.save(scenes.join("hub.scene")).unwrap();
+
+        let mut runtime = LuaRuntime::new().unwrap();
+        runtime.set_project_root(root.clone());
+        let load_arena = script("scene.load('arena')\nfunction update() return 'ok' end");
+        runtime.execute_project_script(&load_arena).unwrap();
+        runtime.process_scene_transition().unwrap();
+        let load_hub = script("scene.load('hub')\nfunction update() return 'ok' end");
+        runtime.execute_project_script(&load_hub).unwrap();
+        runtime.process_scene_transition().unwrap();
+
+        let ui_texts: Vec<String> = runtime.with_world(|world| {
+            world
+                .entities_with::<UiText>()
+                .into_iter()
+                .filter_map(|id| world.get::<UiText>(id).ok().flatten().map(|t| t.text.clone()))
+                .collect()
+        });
+        assert_eq!(ui_texts.len(), 1, "exactly one Hud");
+        assert_eq!(ui_texts[0], "Score:99", "new scene's persistent Hud wins");
+
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_file(load_arena);
+        let _ = fs::remove_file(load_hub);
+    }
+
+    #[test]
+    fn button_click_calls_lua_on_click() {
+        use crate::input::MouseButton;
+        use crate::scene::{Scene, SceneEntityId};
+
+        let root = std::env::temp_dir().join(format!("p2-button-{}", std::process::id()));
+        let scenes = root.join("scenes");
+        fs::create_dir_all(&scenes).unwrap();
+        let mut menu = Scene::new("menu");
+        menu.add_entity(SceneEntityId(1), "Start", None).unwrap();
+        menu.entities
+            .get_mut(&SceneEntityId(1))
+            .unwrap()
+            .components
+            .insert(
+                "Button".into(),
+                "label=Start;x=10;y=10;width=100;height=32;bg=0.2,0.45,0.8;text_color=1,1,1".into(),
+            );
+        menu.save(scenes.join("menu.scene")).unwrap();
+
+        let mut runtime = LuaRuntime::new().unwrap();
+        runtime.set_project_root(root.clone());
+        let load = script("scene.load('menu')\nfunction update() return 'ok' end");
+        runtime.execute_project_script(&load).unwrap();
+        runtime.process_scene_transition().unwrap();
+
+        // 定义全局 on_click + 检查用 update（同一脚本，VM 不替换）。
+        let click = script(
+            "function on_click(name) clicked = name end\nfunction update() return tostring(clicked or 'nil') end",
+        );
+        runtime.execute_project_script(&click).unwrap();
+        let mut input = InputSnapshot::default();
+        input.cursor_moved(50.0, 20.0);
+        input.mouse_event(MouseButton::Left, true);
+        runtime.process_ui_clicks(&input).unwrap();
+
+        let result = runtime.call_update().unwrap();
+        assert_eq!(result, "Start", "on_click('Start') fired for the clicked button");
+
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_file(load);
+        let _ = fs::remove_file(click);
     }
 
     #[test]
