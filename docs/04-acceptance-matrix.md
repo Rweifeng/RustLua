@@ -161,3 +161,5 @@
 | M10-A08 | 资源浏览器增强 | M10-A07 | 纹理缩略图；拖放纹理到场景创建精灵；双击场景打开 | 缩略图显示、拖放创建精灵、workspace 质量门 | `tasks/done/M10-08-资源浏览器增强.md` | PASS | M10 |
 | M10-A09 | 多选/对齐/快照 | M10-A08 | 多选实体；对齐网格/H/V；2D 平移吸附 | 对齐/吸附 + 撤销、workspace 质量门 | `tasks/done/M10-08-多选对齐快照.md` | PASS | M10 |
 | M10-A10 | Prefab 编辑器集成 | M10-A09 | 创建预制体；拖放实例化；资源浏览器显示 Prefab | 创建/实例化 Prefab、workspace 质量门 | `tasks/done/M10-09-Prefab编辑器集成.md` | PASS | M10 |
+| M10-A11 | 编辑器面板拆分与四行布局 | M10-A10 | `main.rs` 拆分为 panels/state/actions/geometry 模块；四行/分区布局可启动；编辑器状态和既有工作流不回归 | editor 64+12 项测试、workspace 测试/构建、`editor --check` | `tasks/done/M10-11-编辑器面板拆分与四行布局.md`；`docs/acceptance-evidence/m10/m10-11-editor-layout.md`；真实 GUI/DPI/resize 证据待补 | PENDING | M10-11 |
+| M10-A12 | 编辑器优化与 TMP 风格 SDF 字体 | M10-A11 | 编辑器面板优化；动态字体/SDF glyph；ASCII/CJK 布局；renderer SDF draw 链路；项目 UI 场景可生成 SDF draw | engine_core font/text 测试、engine_host offscreen/readback/SDF draw 测试、workspace 测试/构建 | `tasks/done/M10-12-编辑器优化与SDF字体.md`；`docs/acceptance-evidence/m10/m10-12-editor-sdf.md`；真实中文像素、发布包字体和长会话证据待补 | PENDING | M10-12 |

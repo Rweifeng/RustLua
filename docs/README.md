@@ -40,14 +40,17 @@
 - `tasks/done/M6-*`：M6 2D 游戏能力与样板游戏；
 - `tasks/done/M7-*`：M7 工程化与发布（assetc/发布配置/崩溃日志/性能基线/干净机器/发布候选/压缩加密/体积优化/编辑器进度面板）；
 - `tasks/done/M8-*`：M8 轻量 3D（glTF/Math3D/Camera3D/Mesh/Depth/光照阴影PBR/骨骼动画/剔除实例化/3D Demo 与发布验收）；
-- `tasks/done/M9-*`：M9 3D 可玩垂直切片（已验收，计划见 [27-M9-3D可玩垂直切片实施计划.md](27-M9-3D可玩垂直切片实施计划.md)）；
-- `tasks/done/M10-*`：M10 编辑器强化（已验收，计划见 [28-编辑器强化实施计划.md](28-编辑器强化实施计划.md)）；
-- 当前里程碑标签：`v0.10-editor`。
+- `tasks/done/M9-*`：M9 3D 可玩垂直切片（已验收，计划见 [27-M9-3D可玩垂直切片实施计划.md](27-M9-3D可玩垂直切片实施计划.md)）;
+- `tasks/done/M10-*`：M10 编辑器强化基线与功能任务（计划见 [28-编辑器强化实施计划.md](28-编辑器强化实施计划.md)）；
+- `tasks/done/M10-11-*`、`M10-12-*`：`v0.10-editor` 基线之后的编辑器布局、优化与 SDF 字体增量；
+- M9 基线标签：`v0.9-3d-game`（指向 M9-05 验收提交）；
+- M10 基线标签：`v0.10-editor`（指向 M10-10 验收提交）；
 
 ## 当前状态与下一阶段
 
-- M0–M9 路线图已全部完成（`v0.9-3d-game`）：2D 样板游戏 + 3D 可玩样板游戏（`game3d.scene`）；
-- M10 编辑器强化已全部验收（`v0.10-editor`，2026-08-23）：引擎内嵌游戏预览（Play 实时运行）、3D 透视视口 + 轨道导航、2D/3D 场景实时渲染、组件增删、Gizmo（Move/Rotate/Scale + 吸附）、资源缩略图与拖放、多选对齐、Prefab 集成；实施方案见 [28-编辑器强化实施计划.md](28-编辑器强化实施计划.md)；
+- M0–M8 路线图已完成；M9 3D 可玩垂直切片以 `v0.9-3d-game` 标记，包含 2D 样板游戏 + 3D 可玩样板游戏（`game3d.scene`）；
+- M10-00..M10-10 形成 `v0.10-editor` 编辑器强化基线：引擎内嵌游戏预览（Play 实时运行）、3D 透视视口 + 轨道导航、2D/3D 场景实时渲染、组件增删、Gizmo（Move/Rotate/Scale + 吸附）、资源缩略图与拖放、多选对齐、Prefab 集成；
+- `v0.10-editor` 之后的增量提交为 M10-11（面板拆分与四行布局）和 M10-12（编辑器优化与 TMP 风格 SDF 字体），任务记录见 [M10-11](../tasks/done/M10-11-编辑器面板拆分与四行布局.md) 与 [M10-12](../tasks/done/M10-12-编辑器优化与SDF字体.md)，证据见 [docs/acceptance-evidence/m10/](acceptance-evidence/m10/)；这些增量的自动化验证已记录，但真实 GUI/GPU、DPI/resize、长期编辑会话和发布包字体验收仍需专项确认；
 - 发布包：`artifacts/builds/release/p2-game/`（约 15MB，加密开启；`game_runner.exe --pack pack`）；3D 性能基线：`docs/acceptance-evidence/m9/`；
 - 里程碑验收证据：`docs/acceptance-evidence/`（`artifacts/` 目录为可再生输出）；
 - 后续里程碑：待定（编辑器已具备成熟引擎核心编辑能力，可进入游戏深化 / 2D 产品化 / 引擎架构扩展）。
