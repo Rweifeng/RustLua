@@ -837,7 +837,7 @@ fn screen_rect_ndc(
 #[cfg(test)]
 mod sdf_tests {
     use super::*;
-    use engine_core::scene::{Scene, SceneEntityId};
+    use engine_core::scene::Scene;
 
     fn game_root() -> std::path::PathBuf {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../game")
