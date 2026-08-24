@@ -153,8 +153,7 @@ impl FontAtlas {
         let uv = [u_min, v_min, u_max, v_max];
 
         let glyph = self.font.glyph_id(character).with_scale(RASTER_SCALE);
-        let (sdf_cell, cell_rect, bounds) = if let Some(outlined) = self.font.outline_glyph(glyph)
-        {
+        let (sdf_cell, cell_rect, bounds) = if let Some(outlined) = self.font.outline_glyph(glyph) {
             rasterize_sdf(&outlined, self.cell)
         } else {
             placeholder_sdf(self.cell)
@@ -220,7 +219,9 @@ fn placeholder_sdf(cell: u32) -> (Vec<u8>, [f32; 4], [f32; 4]) {
     let mut mask = vec![false; (cell * cell) as usize];
     for y in 0..cell_i {
         for x in 0..cell_i {
-            let is_edge = (x >= inset && x < cell_i - inset && (y == inset || y == cell_i - inset - 1))
+            let is_edge = (x >= inset
+                && x < cell_i - inset
+                && (y == inset || y == cell_i - inset - 1))
                 || (y >= inset && y < cell_i - inset && (x == inset || x == cell_i - inset - 1));
             if is_edge {
                 mask[y as usize * cell as usize + x as usize] = true;
@@ -230,8 +231,18 @@ fn placeholder_sdf(cell: u32) -> (Vec<u8>, [f32; 4], [f32; 4]) {
     let sdf = sdf_from_mask(&mask, cell);
     (
         sdf,
-        [inset as f32, inset as f32, (cell_i - inset) as f32, (cell_i - inset) as f32],
-        [inset as f32, inset as f32, (cell_i - inset) as f32, (cell_i - inset) as f32],
+        [
+            inset as f32,
+            inset as f32,
+            (cell_i - inset) as f32,
+            (cell_i - inset) as f32,
+        ],
+        [
+            inset as f32,
+            inset as f32,
+            (cell_i - inset) as f32,
+            (cell_i - inset) as f32,
+        ],
     )
 }
 
@@ -316,16 +327,14 @@ mod tests {
     fn test_font() -> Vec<u8> {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../crates/editor/fonts/NotoSansSC-VF.ttf");
-        std::fs::read(&path).unwrap_or_default()
+        std::fs::read(&path)
+            .unwrap_or_else(|error| panic!("测试字体缺失或不可读 {}: {error}", path.display()))
     }
 
     #[test]
     fn rasterizes_sdf_glyph_and_reports_metrics() {
         let bytes = test_font();
-        if bytes.is_empty() {
-            eprintln!("未找到测试字体，跳过");
-            return;
-        }
+        assert!(!bytes.is_empty(), "测试字体为空");
         let mut atlas = FontAtlas::load(&bytes).unwrap();
         let metrics = atlas.glyph_metrics('俯');
         assert_ne!(metrics.uv, [0.0; 4], "glyph uv is non-zero");
@@ -338,7 +347,10 @@ mod tests {
         // SDF 符号验证：单元角（远离字形）应为外部 R<128；存在内部像素（R>140）。
         let (cell_x, cell_y) = (0u32, 0u32); // 第一个字形在 (0,0) 单元。
         let corner = atlas.pixels()[((cell_y * atlas.width() + cell_x) as usize) * 4];
-        assert!(corner < 128, "cell corner should be outside glyph, got {corner}");
+        assert!(
+            corner < 128,
+            "cell corner should be outside glyph, got {corner}"
+        );
         let mut inside = 0;
         for dy in 0..atlas.cell {
             for dx in 0..atlas.cell {
@@ -351,13 +363,10 @@ mod tests {
         assert!(inside > 0, "glyph stroke must be inside (R>128)");
     }
 
-
     #[test]
     fn atlas_dimensions_are_square_cells() {
         let bytes = test_font();
-        if bytes.is_empty() {
-            return;
-        }
+        assert!(!bytes.is_empty(), "测试字体为空");
         let atlas = FontAtlas::load(&bytes).unwrap();
         assert_eq!(atlas.width() % 16, 0);
         assert_eq!(atlas.height(), atlas.width());

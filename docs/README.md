@@ -50,7 +50,7 @@
 
 - M0–M8 路线图已完成；M9 3D 可玩垂直切片以 `v0.9-3d-game` 标记，包含 2D 样板游戏 + 3D 可玩样板游戏（`game3d.scene`）；
 - M10-00..M10-10 形成 `v0.10-editor` 编辑器强化基线：引擎内嵌游戏预览（Play 实时运行）、3D 透视视口 + 轨道导航、2D/3D 场景实时渲染、组件增删、Gizmo（Move/Rotate/Scale + 吸附）、资源缩略图与拖放、多选对齐、Prefab 集成；
-- `v0.10-editor` 之后的增量提交为 M10-11（面板拆分与四行布局）和 M10-12（编辑器优化与 TMP 风格 SDF 字体），任务记录见 [M10-11](../tasks/done/M10-11-编辑器面板拆分与四行布局.md) 与 [M10-12](../tasks/done/M10-12-编辑器优化与SDF字体.md)，证据见 [docs/acceptance-evidence/m10/](acceptance-evidence/m10/)；这些增量的自动化验证已记录，但真实 GUI/GPU、DPI/resize、长期编辑会话和发布包字体验收仍需专项确认；
+- `v0.10-editor` 之后的增量提交为 M10-11（面板拆分与四行布局）、M10-12（编辑器优化与 TMP 风格 SDF 字体）和 M10-13（质量门与 GUI/GPU 证据规范），任务记录见 [M10-11](../tasks/done/M10-11-编辑器面板拆分与四行布局.md)、[M10-12](../tasks/done/M10-12-编辑器优化与SDF字体.md) 和 [M10-13](../tasks/done/M10-13-质量门与编辑器实机证据.md)，证据见 [docs/acceptance-evidence/m10/](acceptance-evidence/m10/)；M10-13 的真实 GUI/GPU、DPI/resize、Play/Stop 原始产物仍需负责人归档；发布包字体路径为 `fonts/NotoSansSC-VF.ttf`。
 - 发布包：`artifacts/builds/release/p2-game/`（约 15MB，加密开启；`game_runner.exe --pack pack`）；3D 性能基线：`docs/acceptance-evidence/m9/`；
 - 里程碑验收证据：`docs/acceptance-evidence/`（`artifacts/` 目录为可再生输出）；
 - 后续里程碑：待定（编辑器已具备成熟引擎核心编辑能力，可进入游戏深化 / 2D 产品化 / 引擎架构扩展）。

@@ -30,9 +30,14 @@ try {
     Copy-Item -Force $editor (Join-Path $engineBuildRoot "editor.exe")
     $fontSource = Join-Path $engineRoot "crates\editor\fonts\NotoSansSC-VF.ttf"
     if (-not (Test-Path $fontSource)) { throw "CJK font resource was not found: $fontSource" }
+    if ((Get-Item $fontSource).Length -le 0) { throw "CJK font resource is empty: $fontSource" }
     $fontTarget = Join-Path $engineBuildRoot "fonts"
     New-Item -ItemType Directory -Force -Path $fontTarget | Out-Null
-    Copy-Item -Force $fontSource (Join-Path $fontTarget "NotoSansSC-VF.ttf")
+    $fontPath = Join-Path $fontTarget "NotoSansSC-VF.ttf"
+    Copy-Item -Force $fontSource $fontPath
+    if (-not (Test-Path $fontPath) -or (Get-Item $fontPath).Length -le 0) {
+        throw "Release CJK font was not copied correctly: $fontPath"
+    }
     $gameSource = Join-Path $projectRoot "game"
     if (-not (Test-Path $gameSource)) { throw "Game project directory was not found: $gameSource" }
     if (Test-Path $gameBuildRoot) { Remove-Item -LiteralPath $gameBuildRoot -Recurse -Force }

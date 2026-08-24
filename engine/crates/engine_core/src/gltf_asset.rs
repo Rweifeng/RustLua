@@ -503,10 +503,7 @@ mod tests {
     fn imports_cc0_kaykit_warrior_skin_and_animations() {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../../game/assets/models/kaykit-warrior.glb");
-        if !path.is_file() {
-            eprintln!("kaykit-warrior.glb missing; skipping real-model import test");
-            return;
-        }
+        assert!(path.is_file(), "真实模型测试资源缺失: {}", path.display());
         let asset = GltfAsset::load(&path).unwrap();
         assert!(
             !asset.skins.is_empty(),

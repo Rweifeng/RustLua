@@ -404,17 +404,23 @@ mod tests {
     fn sdf_build_single_mesh_mixed_ascii_and_cjk() {
         let font_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../editor/fonts/NotoSansSC-VF.ttf");
-        let bytes = std::fs::read(&font_path).unwrap_or_default();
-        if bytes.is_empty() {
-            eprintln!("未找到测试字体，跳过");
-            return;
-        }
+        let bytes = std::fs::read(&font_path).unwrap_or_else(|error| {
+            panic!("测试字体缺失或不可读 {}: {error}", font_path.display())
+        });
+        assert!(!bytes.is_empty(), "测试字体为空: {}", font_path.display());
         let mut font = crate::font::FontAtlas::load(&bytes).unwrap();
         let mesh =
             TextLayout::build("开始 SPACE", [0.0, 0.0], TextStyle::default(), &mut font).unwrap();
-        assert_eq!(mesh.glyph_count, 7, "ASCII + CJK 在同一个 mesh（空格不计字形）");
+        assert_eq!(
+            mesh.glyph_count, 7,
+            "ASCII + CJK 在同一个 mesh（空格不计字形）"
+        );
         assert!(!mesh.vertices.is_empty());
-        assert!(mesh.vertices.iter().all(|v| v.position.iter().all(|p| p.is_finite())));
+        assert!(
+            mesh.vertices
+                .iter()
+                .all(|v| v.position.iter().all(|p| p.is_finite()))
+        );
         assert!(mesh.size[0] > 0.0 && mesh.size[1] > 0.0);
     }
 

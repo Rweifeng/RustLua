@@ -1488,7 +1488,9 @@ impl Renderer {
 
     /// 是否有在途（已提交未读）的回读等待排空。
     pub fn readback_in_flight(&self) -> bool {
-        self.readback_slots.iter().any(|slot| slot.submission.is_some())
+        self.readback_slots
+            .iter()
+            .any(|slot| slot.submission.is_some())
     }
 
     /// 仅排空待读的回读（内容未变、无需新提交时调用），返回就绪像素。
@@ -1520,12 +1522,8 @@ impl Renderer {
         if !slot.ready.load(std::sync::atomic::Ordering::Acquire) {
             return None;
         }
-        let (width, height, row_bytes, bytes_per_row) = (
-            slot.width,
-            slot.height,
-            slot.row_bytes,
-            slot.bytes_per_row,
-        );
+        let (width, height, row_bytes, bytes_per_row) =
+            (slot.width, slot.height, slot.row_bytes, slot.bytes_per_row);
         let buffer = slot.buffer.clone();
         let padded = buffer.slice(..).get_mapped_range();
         let mut pixels = Vec::with_capacity((row_bytes * height) as usize);
@@ -1538,7 +1536,8 @@ impl Renderer {
         // 槽置回空闲，允许复用。
         let slot = &mut self.readback_slots[index];
         slot.submission = None;
-        slot.ready.store(false, std::sync::atomic::Ordering::Release);
+        slot.ready
+            .store(false, std::sync::atomic::Ordering::Release);
         Some((pixels, width, height))
     }
 
@@ -1568,7 +1567,10 @@ impl Renderer {
             });
         }
         // 找一个空闲槽（无在途提交）。
-        let Some(index) = self.readback_slots.iter().position(|slot| slot.submission.is_none())
+        let Some(index) = self
+            .readback_slots
+            .iter()
+            .position(|slot| slot.submission.is_none())
         else {
             return; // 全部在途，跳过本次提交
         };
@@ -1588,10 +1590,13 @@ impl Renderer {
         }
         let buffer = slot.buffer.clone();
         let ready = slot.ready.clone();
-        slot.ready.store(false, std::sync::atomic::Ordering::Release);
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("p2-editor-readback-copy"),
-        });
+        slot.ready
+            .store(false, std::sync::atomic::Ordering::Release);
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("p2-editor-readback-copy"),
+            });
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
                 texture,
@@ -1616,9 +1621,11 @@ impl Renderer {
         // 先提交拷贝，再请求映射（与同步回读一致：map_async 会把 buffer 标记为
         // mapped-pending，若在 copy 提交前调用会触发 "Buffer is still mapped"）。
         let submission = self.queue.submit([encoder.finish()]);
-        buffer.slice(..).map_async(wgpu::MapMode::Read, move |_result| {
-            ready.store(true, std::sync::atomic::Ordering::Release);
-        });
+        buffer
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |_result| {
+                ready.store(true, std::sync::atomic::Ordering::Release);
+            });
         slot.submission = Some(submission);
     }
 
@@ -2188,7 +2195,11 @@ mod tests {
         let mut result = renderer.readback_frame(&texture, 64, 64);
         for _ in 0..120 {
             match &result {
-                ReadbackStatus::Ready { pixels, width, height } => {
+                ReadbackStatus::Ready {
+                    pixels,
+                    width,
+                    height,
+                } => {
                     assert_eq!((*width, *height), (64, 64));
                     assert_eq!(pixels.len(), 64 * 64 * 4);
                     assert!(
@@ -2212,7 +2223,6 @@ mod tests {
     /// project: instantiate `main.scene`, step, build frames, render offscreen
     /// and read back. Requires the game project beside the engine workspace.
     #[test]
-    #[ignore = "requires the game project on disk"]
     fn editor_preview_path_renders_game_scene() {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
         let Some(adapter) =
@@ -2223,7 +2233,7 @@ mod tests {
             }))
             .ok()
         else {
-            return;
+            panic!("无法获取用于编辑器预览测试的 wgpu adapter");
         };
         let (device, queue) = pollster::block_on(adapter.request_device(&DeviceDescriptor {
             label: Some("p2-test-device"),

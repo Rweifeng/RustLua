@@ -10,6 +10,7 @@ param(
 $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $engineRoot = Join-Path $projectRoot "engine"
+$gameRoot = Join-Path $projectRoot "game"
 $logRoot = Join-Path $projectRoot "artifacts\logs\quality"
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $logPath = Join-Path $logRoot "verify-$timestamp.log"
@@ -72,6 +73,33 @@ try {
             Write-Step "Debug build"
             Invoke-Checked cargo @("build", "--workspace")
         }
+    }
+
+    Write-Step "Git diff check"
+    Push-Location $projectRoot
+    try {
+        Invoke-Checked git @("diff", "--check")
+    }
+    finally {
+        Pop-Location
+    }
+
+    Write-Step "Game project check"
+    Push-Location $projectRoot
+    try {
+        Invoke-Checked cargo @("run", "--quiet", "--manifest-path", "engine/Cargo.toml", "-p", "game_runner", "--", "--project", $gameRoot, "--check")
+    }
+    finally {
+        Pop-Location
+    }
+
+    Write-Step "Editor project check"
+    Push-Location $projectRoot
+    try {
+        Invoke-Checked cargo @("run", "--quiet", "--manifest-path", "engine/Cargo.toml", "-p", "editor", "--", "--project", $gameRoot, "--check")
+    }
+    finally {
+        Pop-Location
     }
 
     Write-Host "`nQuality gate passed. Log: $logPath" -ForegroundColor Green

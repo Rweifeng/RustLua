@@ -466,8 +466,7 @@ impl RuntimeScene {
             return Ok(());
         }
         for (position, text, scale) in visible {
-            let (mesh, is_sdf) =
-                self.layout_text(&text, position, scale, [1.0, 1.0, 1.0])?;
+            let (mesh, is_sdf) = self.layout_text(&text, position, scale, [1.0, 1.0, 1.0])?;
             let text_vertices = text_to_ndc(mesh, is_sdf, width, height);
             self.push_text_run(vertices, draws, text_vertices, is_sdf);
         }
@@ -508,7 +507,12 @@ impl RuntimeScene {
                 button.position[1],
                 button.size[0],
                 button.size[1],
-                [button.background[0], button.background[1], button.background[2], 1.0],
+                [
+                    button.background[0],
+                    button.background[1],
+                    button.background[2],
+                    1.0,
+                ],
                 width,
                 height,
             ));
@@ -524,13 +528,7 @@ impl RuntimeScene {
                     self.layout_text(&button.label, [0.0, 0.0], 1.0, button.text_color)?;
                 let dx = button.position[0] + (button.size[0] - mesh.size[0]).max(0.0) / 2.0;
                 let dy = button.position[1] + (button.size[1] - mesh.size[1]).max(0.0) / 2.0;
-                let text_vertices = text_to_ndc_with_offset(
-                    mesh,
-                    is_sdf,
-                    [dx, dy],
-                    width,
-                    height,
-                );
+                let text_vertices = text_to_ndc_with_offset(mesh, is_sdf, [dx, dy], width, height);
                 self.push_text_run(vertices, draws, text_vertices, is_sdf);
             }
         }
@@ -620,12 +618,42 @@ impl RuntimeScene {
         let y1 = 1.0 - (image.position[1] + image.size[1]) / sh * 2.0;
         let color = [image.color[0], image.color[1], image.color[2], 1.0];
         let quad = [
-            OverlayVertex { position: [x0, y0], uv: [0.0, 0.0], color, sdf: 0 },
-            OverlayVertex { position: [x1, y0], uv: [1.0, 0.0], color, sdf: 0 },
-            OverlayVertex { position: [x1, y1], uv: [1.0, 1.0], color, sdf: 0 },
-            OverlayVertex { position: [x0, y0], uv: [0.0, 0.0], color, sdf: 0 },
-            OverlayVertex { position: [x1, y1], uv: [1.0, 1.0], color, sdf: 0 },
-            OverlayVertex { position: [x0, y1], uv: [0.0, 1.0], color, sdf: 0 },
+            OverlayVertex {
+                position: [x0, y0],
+                uv: [0.0, 0.0],
+                color,
+                sdf: 0,
+            },
+            OverlayVertex {
+                position: [x1, y0],
+                uv: [1.0, 0.0],
+                color,
+                sdf: 0,
+            },
+            OverlayVertex {
+                position: [x1, y1],
+                uv: [1.0, 1.0],
+                color,
+                sdf: 0,
+            },
+            OverlayVertex {
+                position: [x0, y0],
+                uv: [0.0, 0.0],
+                color,
+                sdf: 0,
+            },
+            OverlayVertex {
+                position: [x1, y1],
+                uv: [1.0, 1.0],
+                color,
+                sdf: 0,
+            },
+            OverlayVertex {
+                position: [x0, y1],
+                uv: [0.0, 1.0],
+                color,
+                sdf: 0,
+            },
         ];
         let start = vertices.len() as u32;
         vertices.extend(quad);
@@ -744,12 +772,7 @@ fn sprite_vertex(vertex: &SpriteVertex, viewport: Viewport) -> OverlayVertex {
 }
 
 /// Converts a pixel-space text mesh into NDC overlay vertices.
-fn text_to_ndc(
-    mesh: TextMesh,
-    is_sdf: bool,
-    width: u32,
-    height: u32,
-) -> Vec<OverlayVertex> {
+fn text_to_ndc(mesh: TextMesh, is_sdf: bool, width: u32, height: u32) -> Vec<OverlayVertex> {
     text_to_ndc_with_offset(mesh, is_sdf, [0.0, 0.0], width, height)
 }
 
@@ -840,25 +863,30 @@ mod sdf_tests {
     use engine_core::scene::Scene;
 
     fn game_root() -> std::path::PathBuf {
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../game")
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../game")
     }
 
     #[test]
     fn ui_test_scene_emits_sdf_text_draws() {
         let root = game_root();
         let path = root.join("scenes/ui_test.scene");
-        if !path.is_file() {
-            eprintln!("ui_test.scene missing; skip");
-            return;
-        }
+        assert!(path.is_file(), "测试场景资源缺失: {}", path.display());
         let scene = Scene::load(&path).unwrap_or_else(|e| panic!("load ui_test: {e}"));
         let mut runtime = RuntimeScene::from_scene_edit(Some(&root), scene).expect("runtime");
         let mesh = runtime.vertices(640, 360).expect("vertices");
         let sdf_count = mesh.draws.iter().filter(|d| d.sdf).count();
-        eprintln!("ui_test: draws={} sdf={} text_entities={}",
-            mesh.draws.len(), sdf_count,
-            runtime.script.with_world(|w| w.entities_with::<UiText>().len()));
+        eprintln!(
+            "ui_test: draws={} sdf={} text_entities={}",
+            mesh.draws.len(),
+            sdf_count,
+            runtime
+                .script
+                .with_world(|w| w.entities_with::<UiText>().len())
+        );
         assert!(sdf_count > 0, "ui_test scene should emit SDF text draws");
-        assert!(mesh.vertices.iter().any(|v| v.sdf == 1), "SDF vertices present");
+        assert!(
+            mesh.vertices.iter().any(|v| v.sdf == 1),
+            "SDF vertices present"
+        );
     }
 }

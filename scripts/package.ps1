@@ -42,6 +42,21 @@ try {
     Copy-Item -Path (Join-Path $engineRoot "target\release\game_runner.exe") `
         -Destination (Join-Path $distRoot "game_runner.exe") -Force
 
+    $fontSource = Join-Path $projectRoot "game\assets\fonts\NotoSansSC-VF.ttf"
+    if (-not (Test-Path $fontSource)) { throw "Game CJK font resource was not found: $fontSource" }
+    if ((Get-Item $fontSource).Length -le 0) { throw "Game CJK font resource is empty: $fontSource" }
+    $fontTarget = Join-Path $distRoot "fonts\NotoSansSC-VF.ttf"
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $fontTarget) | Out-Null
+    Copy-Item -Path $fontSource -Destination $fontTarget -Force
+    if (-not (Test-Path $fontTarget) -or (Get-Item $fontTarget).Length -le 0) {
+        throw "Release package font is missing or empty: fonts/NotoSansSC-VF.ttf"
+    }
+
+    $packCheckOutput = & (Join-Path $distRoot "game_runner.exe") --pack $packRoot --check 2>&1
+    $packCheckExit = $LASTEXITCODE
+    Write-Host $packCheckOutput
+    if ($packCheckExit -ne 0) { throw "Release package check failed (exit $packCheckExit)." }
+
     $engineVersion = (Get-Content (Join-Path $engineRoot "Cargo.toml") | Select-String '^version = "0\.' | Select-Object -First 1).ToString().Trim().Split('=')[1].Trim().Trim('"')
     $toolchain = & rustc --version 2>$null
     cargo tree -e normal --prefix none 2>$null | Sort-Object -Unique | Set-Content (Join-Path $distRoot "deps.txt") -Encoding UTF8
@@ -50,7 +65,8 @@ try {
         "build_time: $timestamp",
         "engine_core version: $engineVersion",
         "toolchain: $toolchain",
-        "contents: game_runner.exe, assetc.exe, pack/ (data), run.txt, deps.txt"
+        "contents: game_runner.exe, fonts/NotoSansSC-VF.ttf, pack/ (data), run.txt, deps.txt",
+        "font_check: fonts/NotoSansSC-VF.ttf present and non-empty"
     ) | Set-Content (Join-Path $distRoot "build-info.txt") -Encoding UTF8
 
     @(
@@ -77,6 +93,10 @@ if ($SelfTest) {
     $isolatedRunner = Join-Path $isolated "p2-game\game_runner.exe"
     $isolatedPack = Join-Path $isolated "p2-game\pack"
     if (-not (Test-Path $isolatedRunner)) { throw "isolated dir is missing the runner" }
+    $isolatedFont = Join-Path $isolated "p2-game\fonts\NotoSansSC-VF.ttf"
+    if (-not (Test-Path $isolatedFont) -or (Get-Item $isolatedFont).Length -le 0) {
+        throw "isolated dir is missing a non-empty fonts/NotoSansSC-VF.ttf"
+    }
 
     Write-Host "Check: $isolatedRunner --pack $isolatedPack --check" -ForegroundColor DarkGray
     # 用 --check 做无窗口校验：退出码 0 表示发布包完整（含空格路径 + 无源码环境）。

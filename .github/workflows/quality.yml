@@ -4,12 +4,18 @@ on:
   push:
     paths:
       - "engine/**"
+      - "game/**"
       - "scripts/**"
+      - "docs/**"
+      - "tasks/**"
       - ".github/workflows/quality.yml"
   pull_request:
     paths:
       - "engine/**"
+      - "game/**"
       - "scripts/**"
+      - "docs/**"
+      - "tasks/**"
       - ".github/workflows/quality.yml"
 
 jobs:
@@ -32,6 +38,10 @@ jobs:
         with:
           workspaces: engine
 
+      - name: Diff check
+        working-directory: ${{ github.workspace }}
+        run: git diff --check
+
       - name: Metadata
         run: cargo metadata --no-deps --format-version 1
 
@@ -49,3 +59,11 @@ jobs:
 
       - name: Release build
         run: cargo build --workspace --release
+
+      - name: Game project check
+        working-directory: ${{ github.workspace }}
+        run: cargo run --quiet --manifest-path engine/Cargo.toml -p game_runner -- --project "${{ github.workspace }}\\game" --check
+
+      - name: Editor project check
+        working-directory: ${{ github.workspace }}
+        run: cargo run --quiet --manifest-path engine/Cargo.toml -p editor -- --project "${{ github.workspace }}\\game" --check
