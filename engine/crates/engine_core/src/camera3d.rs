@@ -2,7 +2,7 @@
 
 use std::{error::Error, fmt};
 
-use crate::math3d::{Mat4, Vec3};
+use crate::math3d::{Mat4, Math3dError, Vec3};
 
 /// Errors while parsing the scene's `Camera3D` component string.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -30,6 +30,47 @@ impl fmt::Display for Camera3dComponentError {
     }
 }
 impl Error for Camera3dComponentError {}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Ray3 {
+    pub origin: Vec3,
+    pub direction: Vec3,
+}
+
+impl Ray3 {
+    pub fn new(origin: Vec3, direction: Vec3) -> Result<Self, Math3dError> {
+        Ok(Self {
+            origin,
+            direction: direction.normalized()?,
+        })
+    }
+
+    pub fn point_at(self, distance: f32) -> Vec3 {
+        self.origin + self.direction * distance
+    }
+
+    pub fn intersect_sphere(self, center: Vec3, radius: f32) -> Option<f32> {
+        if radius < 0.0 || !radius.is_finite() {
+            return None;
+        }
+        let offset = center - self.origin;
+        let projection = offset.dot(self.direction);
+        let discriminant = projection * projection - offset.length_squared() + radius * radius;
+        if discriminant < 0.0 {
+            return None;
+        }
+        let root = discriminant.sqrt();
+        let near = projection - root;
+        let far = projection + root;
+        if near >= 0.0 {
+            Some(near)
+        } else if far >= 0.0 {
+            Some(far)
+        } else {
+            None
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Camera3D {
@@ -238,6 +279,29 @@ impl Camera3D {
             .map_err(|_| Camera3dError::InvalidLookAt)
     }
 
+    /// Converts a viewport pixel coordinate into a world-space ray.
+    pub fn ray_from_screen(
+        self,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+    ) -> Result<(Vec3, Vec3), Camera3dError> {
+        if width <= 0.0 || height <= 0.0 || !x.is_finite() || !y.is_finite() {
+            return Err(Camera3dError::NonFinite);
+        }
+        let ndc = Vec3::new(x / width * 2.0 - 1.0, 1.0 - y / height * 2.0, 0.0);
+        let near = self.ndc_to_world(ndc)?;
+        let far = self.ndc_to_world(Vec3::new(ndc.x, ndc.y, 1.0))?;
+        let direction = (far - near)
+            .normalized()
+            .map_err(|_| Camera3dError::InvalidLookAt)?;
+        if direction.length_squared() <= f32::EPSILON {
+            return Err(Camera3dError::InvalidLookAt);
+        }
+        Ok((near, direction))
+    }
+
     pub fn frustum(self) -> Result<Frustum, Camera3dError> {
         Ok(Frustum {
             view_projection: self.view_projection_matrix()?,
@@ -406,6 +470,20 @@ mod tests {
         assert!((ndc.x.abs() + ndc.y.abs() + ndc.z - 0.981).abs() < 0.01);
         let recovered = camera.ndc_to_world(ndc).unwrap();
         assert!((recovered - point).length() < 1e-4);
+    }
+    #[test]
+    fn screen_center_ray_points_toward_camera_target() {
+        let camera = camera();
+        let (origin, direction) = camera.ray_from_screen(320.0, 240.0, 640.0, 480.0).unwrap();
+        assert!(origin.z < camera.position.z);
+        assert!(direction.z < -0.9);
+        assert!(direction.y.abs() < 0.01);
+    }
+    #[test]
+    fn ray_hits_nearest_sphere_point() {
+        let ray = Ray3::new(Vec3::new(0.0, 0.0, 5.0), Vec3::new(0.0, 0.0, -1.0)).unwrap();
+        assert_eq!(ray.intersect_sphere(Vec3::ZERO, 1.0), Some(4.0));
+        assert_eq!(ray.intersect_sphere(Vec3::new(5.0, 0.0, 0.0), 0.5), None);
     }
     #[test]
     fn frustum_classifies_front_and_rear_points() {

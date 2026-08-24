@@ -2,8 +2,12 @@
 
 use crate::EditorApp;
 use crate::progress::ProgressEvent;
-use crate::util::{display_path, format_project_error, save_recent_projects, strip_verbatim_prefix};
-use editor::{open_project, ProjectDocument, ProjectInfo, RecoveryManager, RecoveryScan, ResourceBrowserState};
+use crate::util::{
+    display_path, format_project_error, save_recent_projects, strip_verbatim_prefix,
+};
+use editor::{
+    ProjectDocument, ProjectInfo, RecoveryManager, RecoveryScan, ResourceBrowserState, open_project,
+};
 use std::{
     env,
     io::BufRead,
@@ -100,7 +104,10 @@ impl EditorApp {
             self.tree.clear_selection();
             self.inspector.clear_selection();
             self.project_loaded = true;
-            self.status = format!("Imported game project: {}", display_path(&self.project.root));
+            self.status = format!(
+                "Imported game project: {}",
+                display_path(&self.project.root)
+            );
             let root = self.project.root.clone();
             self.record_recent_project(&root);
         }

@@ -50,6 +50,8 @@ pub mod resource_db;
 pub mod save;
 /// Versioned scene serialization, validation, and migration boundary.
 pub mod scene;
+/// Shared extraction of serialized 3D render components.
+pub mod scene_extract;
 /// Deterministic stage-based system scheduling.
 pub mod scheduler;
 /// Lua VM and host API bridge.
@@ -65,12 +67,12 @@ pub mod texture;
 /// Grid tile maps with a visual layer and a separate collision layer.
 pub mod tilemap;
 pub mod time_step;
-/// Screen-space UI scene components (Text / Image / Button).
-pub mod ui;
 /// 2D transform and velocity components with a minimal integration system.
 pub mod transform;
 /// 3D transform component and model-matrix construction.
 pub mod transform3d;
+/// Screen-space UI scene components (Text / Image / Button).
+pub mod ui;
 /// Window and application lifecycle primitives.
 pub mod window;
 /// Entity world and type-erased component storage.

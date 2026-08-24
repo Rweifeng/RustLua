@@ -51,6 +51,8 @@ pub struct FontAtlasPixels {
 /// One scene entity's 3D draw requested this frame. A non-empty `palette`
 /// marks a skinned drawable whose joint matrices are uploaded per frame.
 pub struct Scene3dDrawable {
+    pub entity: engine_core::scene::SceneEntityId,
+    pub name: String,
     pub mesh_path: String,
     pub model: Mat4,
     pub palette: Vec<Mat4>,

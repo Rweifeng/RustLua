@@ -48,7 +48,7 @@ pub fn parse_arguments() -> Result<Arguments, String> {
             }
             "--help" | "-h" => {
                 println!(
-                    "Usage: game_runner [--project <game-project-root>] [--pack <release-pack>] [--check] [--log-filter <tracing-filter>]\n\
+                    "Usage: game [--project <game-project-root>] [--pack <release-pack>] [--check] [--log-filter <tracing-filter>]\n\
                      \n\
                      --project <root>  加载开发游戏工程（含 .cache 等本地工作目录）\n\
                      --pack <dir>      加载 assetc package 生成的发布资源目录（严格校验资源完整性）\n\

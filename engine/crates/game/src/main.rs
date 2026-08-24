@@ -20,15 +20,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 仅校验模式：不初始化日志/窗口，输出结果后直接退出。
     if arguments.check {
         let Some(root) = &project else {
-            eprintln!("game_runner_check_failed: 未找到游戏项目");
+            eprintln!("game_check_failed: 未找到游戏项目");
             std::process::exit(1);
         };
         let missing = verify_project(root);
         if missing.is_empty() {
-            println!("game_runner_check_ok project={}", root.display());
+            println!("game_check_ok project={}", root.display());
             return Ok(());
         }
-        eprintln!("game_runner_check_failed: {}", missing.join("; "));
+        eprintln!("game_check_failed: {}", missing.join("; "));
         std::process::exit(1);
     }
 

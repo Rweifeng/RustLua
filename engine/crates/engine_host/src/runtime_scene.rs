@@ -173,6 +173,8 @@ impl RuntimeScene {
     /// the active light, and every entity with both a `Transform3D` and a
     /// `MeshRenderer`. Returns `None` when the scene has no 3D drawables.
     pub fn scene_3d(&self, aspect_ratio: f32) -> Option<Scene3d> {
+        // Runtime extraction intentionally reads ECS state so physics, scripts,
+        // active camera/light selection, and animation palettes remain live.
         let drawables = self.script.with_world(|world| {
             world
                 .entities_with2::<Transform3D, MeshRenderer>()
@@ -181,8 +183,6 @@ impl RuntimeScene {
                     let transform = world.get::<Transform3D>(id).ok().flatten().copied()?;
                     let renderer = world.get::<MeshRenderer>(id).ok().flatten()?;
                     let model = transform.model_matrix().ok()?;
-                    // Skinned entities also carry an Animation3D; its joint
-                    // palette is recomputed each frame from the active clip.
                     let palette = world
                         .get::<Animation3D>(id)
                         .ok()
@@ -190,6 +190,8 @@ impl RuntimeScene {
                         .map(|animation| animation.joint_matrices())
                         .unwrap_or_default();
                     Some(Scene3dDrawable {
+                        entity: SceneEntityId(id.index() as u64),
+                        name: format!("Entity {}", id.index()),
                         mesh_path: renderer.mesh.clone(),
                         model,
                         palette,

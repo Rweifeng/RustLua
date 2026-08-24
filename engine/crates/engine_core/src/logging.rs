@@ -160,7 +160,7 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogSink {
 /// Initializes console and file logging once.
 ///
 /// `filter` follows `tracing_subscriber::EnvFilter` syntax, for example
-/// `info,engine_core=debug,game_runner=debug`.
+/// `info,engine_core=debug,game=debug`.
 pub fn init_logging(log_path: impl AsRef<Path>, filter: Option<&str>) -> Result<(), EngineError> {
     init_logging_with_sink(log_path, filter, None)
 }
@@ -211,7 +211,7 @@ pub fn init_logging_with_sink(
                 )
                 .with_source(error)
                 .with_suggestion(
-                    "use tracing filter syntax such as info or debug,game_runner=trace",
+                    "use tracing filter syntax such as info or debug,game=trace",
                 )
             })?;
     let console = tracing_subscriber::fmt::layer()

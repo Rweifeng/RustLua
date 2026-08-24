@@ -6,17 +6,17 @@ use crate::geometry::{
 };
 use crate::util::strip_verbatim_prefix;
 use crate::{
-    GizmoAxis, GizmoDrag, SceneDrag, SceneTool, SceneViewCache2d, SceneViewCache3d,
-    SceneViewMode,
+    GizmoAxis, GizmoDrag, SceneDrag, SceneTool, SceneViewCache2d, SceneViewCache3d, SceneViewMode,
 };
 use editor::CommandKind;
 use eframe::egui;
 use engine_core::{
-    camera3d::Camera3D,
+    camera3d::{Camera3D, Ray3},
     light::Light,
     math2d::Camera2D,
     math3d::{Quat, Vec3},
     prefab::Prefab,
+    scene_extract::extract_serialized_scene_3d,
     transform::Vec2,
     transform3d::Transform3D,
 };
@@ -308,6 +308,23 @@ impl EditorApp {
         }
         // 工具小面板（Select/Move/Rotate/Scale）置于场景右上角。
         self.draw_scene_tool_panel(ui, rect);
+        if let Some(message) = &self.preview_diagnostic {
+            painter.rect_filled(
+                egui::Rect::from_min_size(
+                    rect.left_top() + egui::vec2(8.0, 8.0),
+                    egui::vec2(rect.width() - 16.0, 28.0),
+                ),
+                4.0,
+                egui::Color32::from_rgba_unmultiplied(100, 30, 30, 220),
+            );
+            painter.text(
+                rect.left_top() + egui::vec2(16.0, 14.0),
+                egui::Align2::LEFT_TOP,
+                message,
+                egui::FontId::proportional(13.0),
+                egui::Color32::LIGHT_RED,
+            );
+        }
     }
 
     /// 3D 场景视图（M9-03）：XZ 俯视投影绘制 Transform3D 实体，选中实体显示
@@ -363,27 +380,38 @@ impl EditorApp {
 
         // 收集 3D 实体（Transform3D），投影到屏幕。
         let filter = self.hierarchy_filter.to_lowercase();
-        let entities3d: Vec<_> = self
-            .current_scene()
-            .map(|s| {
-                s.scene
-                    .entities
-                    .values()
-                    .filter_map(|e| {
-                        if !filter.trim().is_empty()
-                            && !e.name.to_lowercase().contains(filter.trim())
-                        {
-                            return None;
-                        }
-                        let transform = e
-                            .components
-                            .get("Transform3D")
-                            .and_then(|v| Transform3D::from_component_str(v).ok())?;
-                        Some((e.id, e.name.clone(), transform))
-                    })
-                    .collect()
+        let Some(scene) = self.current_scene() else {
+            return;
+        };
+        let extracted = extract_serialized_scene_3d(&scene.scene);
+        if !extracted.diagnostics.is_empty() {
+            tracing::warn!(
+                target: "editor",
+                diagnostics = extracted.diagnostics.len(),
+                "[scene view] invalid 3D components were skipped"
+            );
+            let details = extracted
+                .diagnostics
+                .iter()
+                .take(2)
+                .map(|diagnostic| diagnostic.summary())
+                .collect::<Vec<_>>();
+            self.preview_diagnostic = Some(format!(
+                "{} 个 3D 组件无效：{}",
+                extracted.diagnostics.len(),
+                details.join("；")
+            ));
+        } else {
+            self.preview_diagnostic = None;
+        }
+        let entities3d: Vec<_> = extracted
+            .entities
+            .into_iter()
+            .filter(|entity| {
+                filter.trim().is_empty() || entity.name.to_lowercase().contains(filter.trim())
             })
-            .unwrap_or_default();
+            .map(|entity| (entity.id, entity.name, entity.transform))
+            .collect();
 
         // 绘制实体标记（投影后的菱形 + 名称；拖拽预览优先）。
         for (id, name, transform) in &entities3d {
@@ -427,34 +455,42 @@ impl EditorApp {
             );
         }
 
-        // 点选：点击实体投影标记选中。
+        // 点选：由屏幕坐标构造真实世界射线，按最近 bounds 命中实体。
         if response.clicked()
             && let Some(pos) = response.interact_pointer_pos()
         {
-            let hit = entities3d.iter().rev().find(|(id, _, transform)| {
-                let position = self
-                    .scene_state
-                    .preview3d_transform
-                    .get(id)
-                    .map(|t| t.position)
-                    .unwrap_or(transform.position);
-                let Some(screen) = self.project_to_screen(position, rect) else {
-                    return false;
-                };
-                let box_rect = egui::Rect::from_center_size(screen, egui::vec2(20.0, 20.0));
-                box_rect.contains(pos) && !self.scene_state.locked.contains(id)
-            });
-            if let Some((id, _, _)) = hit {
+            let px = (pos.x - rect.left()) * ui.ctx().pixels_per_point();
+            let py = (pos.y - rect.top()) * ui.ctx().pixels_per_point();
+            let hit = self
+                .editor_camera_ray(px, py, width as f32, height as f32)
+                .and_then(|ray| {
+                    entities3d
+                        .iter()
+                        .filter(|(id, _, _)| !self.scene_state.locked.contains(id))
+                        .filter_map(|(id, _, transform)| {
+                            let position = self
+                                .scene_state
+                                .preview3d_transform
+                                .get(id)
+                                .map(|value| value.position)
+                                .unwrap_or(transform.position);
+                            ray.intersect_sphere(position, 0.75)
+                                .map(|distance| (*id, distance))
+                        })
+                        .min_by(|left, right| left.1.total_cmp(&right.1))
+                        .map(|(id, _)| id)
+                });
+            if let Some(id) = hit {
                 let additive = ui.input(|input| input.modifiers.command || input.modifiers.ctrl);
                 if !additive {
                     self.scene_state.selected.clear();
                 }
-                self.scene_state.selected.insert(*id);
+                self.scene_state.selected.insert(id);
                 if let Some(scene) = self.current_scene() {
                     let scene = scene.clone();
-                    let _ = self.tree.select(&scene, *id);
+                    let _ = self.tree.select(&scene, id);
                 }
-                self.sync_inspector(*id);
+                self.sync_inspector(id);
             } else {
                 self.scene_state.selected.clear();
             }
@@ -644,6 +680,23 @@ impl EditorApp {
         }
         // 工具小面板（Select/Move/Rotate/Scale）置于场景右上角。
         self.draw_scene_tool_panel(ui, rect);
+        if let Some(message) = &self.preview_diagnostic {
+            painter.rect_filled(
+                egui::Rect::from_min_size(
+                    rect.left_top() + egui::vec2(8.0, 8.0),
+                    egui::vec2(rect.width() - 16.0, 28.0),
+                ),
+                4.0,
+                egui::Color32::from_rgba_unmultiplied(100, 30, 30, 220),
+            );
+            painter.text(
+                rect.left_top() + egui::vec2(16.0, 14.0),
+                egui::Align2::LEFT_TOP,
+                message,
+                egui::FontId::proportional(13.0),
+                egui::Color32::LIGHT_RED,
+            );
+        }
     }
 
     /// Scene 视图右上角的小工具面板：选择/移动/旋转/缩放。
@@ -762,32 +815,42 @@ impl EditorApp {
     }
 
     /// 从当前编辑场景 + 编辑器轨道相机构建 3D 渲染帧（M10-04）。
-    fn build_scene3d(&self, aspect: f32) -> Option<Scene3d> {
+    fn build_scene3d(&mut self, aspect: f32) -> Option<Scene3d> {
         let scene = self.current_scene()?;
-        let drawables = scene
-            .scene
+        let extracted = extract_serialized_scene_3d(&scene.scene);
+        if !extracted.diagnostics.is_empty() {
+            tracing::warn!(
+                target: "editor",
+                diagnostics = extracted.diagnostics.len(),
+                "[scene view] invalid 3D components were skipped"
+            );
+            let details = extracted
+                .diagnostics
+                .iter()
+                .take(2)
+                .map(|diagnostic| diagnostic.summary())
+                .collect::<Vec<_>>();
+            self.preview_diagnostic = Some(format!(
+                "{} 个 3D 组件无效：{}",
+                extracted.diagnostics.len(),
+                details.join("；")
+            ));
+        }
+        let drawables = extracted
             .entities
-            .values()
+            .into_iter()
             .filter_map(|entity| {
-                let transform = entity
-                    .components
-                    .get("Transform3D")
-                    .and_then(|value| Transform3D::from_component_str(value).ok())?;
-                // 拖拽预览优先（Gizmo 拖拽时场景即时反映）。
                 let transform = self
                     .scene_state
                     .preview3d_transform
                     .get(&entity.id)
                     .copied()
-                    .unwrap_or(transform);
-                let mesh = entity
-                    .components
-                    .get("MeshRenderer")
-                    .and_then(|value| value.strip_prefix("mesh="))
-                    .map(str::to_owned)?;
+                    .unwrap_or(entity.transform);
                 let model = transform.model_matrix().ok()?;
                 Some(Scene3dDrawable {
-                    mesh_path: mesh,
+                    entity: entity.id,
+                    name: entity.name,
+                    mesh_path: entity.mesh.mesh,
                     model,
                     palette: Vec::new(),
                 })
@@ -962,14 +1025,16 @@ impl EditorApp {
                 return;
             };
             runtime.set_camera_2d(camera2d);
-            runtime
-                .vertices(width, height)
-                .unwrap_or_else(|_| SceneMesh {
-                    vertices: Vec::new(),
-                    draws: Vec::new(),
-                    paths: Vec::new(),
-                    font_atlas: None,
-                })
+            let mesh = match runtime.vertices(width, height) {
+                Ok(mesh) => mesh,
+                Err(error) => {
+                    tracing::error!(target: "editor", "[scene view] 2D render failed: {error}");
+                    self.preview_diagnostic = Some(format!("Scene View 渲染失败：{error}"));
+                    return;
+                }
+            };
+            self.preview_diagnostic = None;
+            mesh
         };
         let Some(renderer) = &mut self.scene_renderer else {
             return;
@@ -980,12 +1045,20 @@ impl EditorApp {
         renderer.render_into_texture(&mesh, None, view, width, height);
         // 非阻塞回读：就绪则上传；未就绪则请求一次重绘，下帧轮询取回。
         match renderer.readback_frame(texture, width, height) {
-            ReadbackStatus::Ready { pixels, width, height } => {
+            ReadbackStatus::Ready {
+                pixels,
+                width,
+                height,
+            } => {
                 self.set_scene_2d_texture(pixels, width, height, ctx);
             }
-            ReadbackStatus::Pending => ctx.request_repaint(),
+            ReadbackStatus::Pending => {
+                self.preview_diagnostic = Some("Scene View 等待 GPU 回读……显示上一帧".to_owned());
+                ctx.request_repaint();
+            }
             ReadbackStatus::Failed(error) => {
                 tracing::warn!(target: "editor", "[scene view] 2D readback failed: {error}");
+                self.preview_diagnostic = Some(format!("Scene View 回读失败：{error}"));
             }
         }
         // 性能打点：仅当单帧耗时超过阈值时记录，便于对照优化前后。
@@ -1007,10 +1080,8 @@ impl EditorApp {
         height: u32,
         ctx: &egui::Context,
     ) {
-        let image = egui::ColorImage::from_rgba_unmultiplied(
-            [width as usize, height as usize],
-            &pixels,
-        );
+        let image =
+            egui::ColorImage::from_rgba_unmultiplied([width as usize, height as usize], &pixels);
         match &mut self.scene_2d_tex {
             Some(tex) => tex.set(image, egui::TextureOptions::NEAREST),
             None => {
@@ -1028,10 +1099,8 @@ impl EditorApp {
         height: u32,
         ctx: &egui::Context,
     ) {
-        let image = egui::ColorImage::from_rgba_unmultiplied(
-            [width as usize, height as usize],
-            &pixels,
-        );
+        let image =
+            egui::ColorImage::from_rgba_unmultiplied([width as usize, height as usize], &pixels);
         match &mut self.scene_preview_tex {
             Some(tex) => tex.set(image, egui::TextureOptions::LINEAR),
             None => {
@@ -1050,7 +1119,11 @@ impl EditorApp {
             return;
         }
         match renderer.readback_pending() {
-            ReadbackStatus::Ready { pixels, width, height } => {
+            ReadbackStatus::Ready {
+                pixels,
+                width,
+                height,
+            } => {
                 self.set_scene_2d_texture(pixels, width, height, ctx);
             }
             ReadbackStatus::Pending => ctx.request_repaint(),
@@ -1069,7 +1142,11 @@ impl EditorApp {
             return;
         }
         match renderer.readback_pending() {
-            ReadbackStatus::Ready { pixels, width, height } => {
+            ReadbackStatus::Ready {
+                pixels,
+                width,
+                height,
+            } => {
                 self.set_scene_3d_texture(pixels, width, height, ctx);
             }
             ReadbackStatus::Pending => ctx.request_repaint(),
@@ -1079,23 +1156,33 @@ impl EditorApp {
         }
     }
 
-    /// 把世界坐标投影到屏幕（编辑器相机透视投影）。
-    fn project_to_screen(&self, world: Vec3, rect: egui::Rect) -> Option<egui::Pos2> {
+    fn editor_camera(&self, aspect_ratio: f32) -> Camera3D {
         let cam = self.editor_camera;
         let position = Vec3::new(
             cam.target.x + cam.dist * cam.pitch.cos() * cam.yaw.sin(),
             cam.target.y + cam.dist * cam.pitch.sin(),
             cam.target.z + cam.dist * cam.pitch.cos() * cam.yaw.cos(),
         );
-        let camera = Camera3D {
+        Camera3D {
             position,
             target: cam.target,
             up: Vec3::Y,
             fov_y: 60f32.to_radians(),
-            aspect_ratio: rect.width() / rect.height().max(1.0),
+            aspect_ratio,
             near: 0.1,
             far: 200.0,
-        };
+        }
+    }
+
+    fn editor_camera_ray(&self, x: f32, y: f32, width: f32, height: f32) -> Option<Ray3> {
+        let camera = self.editor_camera(width / height.max(1.0));
+        let (origin, direction) = camera.ray_from_screen(x, y, width, height).ok()?;
+        Ray3::new(origin, direction).ok()
+    }
+
+    /// 把世界坐标投影到屏幕（编辑器相机透视投影）。
+    fn project_to_screen(&self, world: Vec3, rect: egui::Rect) -> Option<egui::Pos2> {
+        let camera = self.editor_camera(rect.width() / rect.height().max(1.0));
         let vp = camera.view_projection_matrix().ok()?;
         let c = vp.columns;
         let x = c[0][0] * world.x + c[1][0] * world.y + c[2][0] * world.z + c[3][0];
@@ -1167,27 +1254,24 @@ impl EditorApp {
         let Some(scene) = self.document.current_scene.as_mut() else {
             return Ok(());
         };
-        let result = self.history.execute(
-            scene,
-            "Create Model",
-            CommandKind::Create,
-            move |scene| {
-                let mut tree = tree;
-                let id = tree
-                    .create_entity(scene, name.clone(), None)
-                    .map_err(|error| error.to_string())?;
-                if let Some(entity) = scene.scene.entities.get_mut(&id) {
-                    entity.components.insert(
-                        "Transform3D".into(),
-                        Transform3D::default().to_component_str(),
-                    );
-                    entity
-                        .components
-                        .insert("MeshRenderer".into(), format!("mesh={path}"));
-                }
-                Ok::<(), String>(())
-            },
-        );
+        let result =
+            self.history
+                .execute(scene, "Create Model", CommandKind::Create, move |scene| {
+                    let mut tree = tree;
+                    let id = tree
+                        .create_entity(scene, name.clone(), None)
+                        .map_err(|error| error.to_string())?;
+                    if let Some(entity) = scene.scene.entities.get_mut(&id) {
+                        entity.components.insert(
+                            "Transform3D".into(),
+                            Transform3D::default().to_component_str(),
+                        );
+                        entity
+                            .components
+                            .insert("MeshRenderer".into(), format!("mesh={path}"));
+                    }
+                    Ok::<(), String>(())
+                });
         match result {
             Ok(_) => Ok(()),
             Err(error) => Err(error),

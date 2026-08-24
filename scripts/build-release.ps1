@@ -19,7 +19,7 @@ try {
     cargo build --workspace --release
     if ($LASTEXITCODE -ne 0) { throw "Release build failed." }
 
-    $runner = Join-Path $engineRoot "target\release\game_runner.exe"
+    $runner = Join-Path $engineRoot "target\release\game.exe"
     if (-not (Test-Path $runner)) {
         throw "Release runner was not found: $runner"
     }

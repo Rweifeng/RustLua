@@ -8,9 +8,11 @@ use std::collections::HashMap;
 
 /// Rasterize scale in device pixels; each glyph is stored in a `cell` square.
 pub const RASTER_SCALE: f32 = 64.0;
-/// Atlas grid: `COLS * ROWS` cells (256 slots is enough for menus/HUD).
-const COLS: u32 = 16;
-const ROWS: u32 = 16;
+/// Atlas grid starts at 16x16 cells and grows by doubling when needed.
+const INITIAL_COLS: u32 = 16;
+const INITIAL_ROWS: u32 = 16;
+const MAX_COLS: u32 = 64;
+const MAX_ROWS: u32 = 64;
 /// Signed-distance band around each glyph outline (px). The normalized SDF
 /// maps `±PAD` texels to `[0,1]`, so `smoothstep(0.5-w,0.5+w,d)` stays inside
 /// the linear region for ~1px falloff at any practical scale.
@@ -37,9 +39,12 @@ pub struct GlyphMetrics {
 pub struct FontAtlas {
     font: FontArc,
     cell: u32,
+    cols: u32,
+    rows: u32,
     pixels: Vec<u8>,
     used: u32,
     cached: HashMap<char, GlyphMetrics>,
+    slots: HashMap<char, u32>,
     version: u64,
     dirty: bool,
 }
@@ -47,23 +52,26 @@ pub struct FontAtlas {
 impl FontAtlas {
     /// Builds an atlas from TTF font bytes.
     pub fn load(bytes: &[u8]) -> Result<Self, String> {
-        // FontArc::try_from_slice 要求 'static；泄漏一份字节到进程生命周期。
-        let owned: &'static [u8] = Box::leak(bytes.to_vec().into_boxed_slice());
-        let font =
-            FontArc::try_from_slice(owned).map_err(|error| format!("字体解析失败: {error}"))?;
+        let font = FontArc::try_from_vec(bytes.to_vec())
+            .map_err(|error| format!("字体解析失败: {error}"))?;
         Ok(Self::new(font))
     }
 
     fn new(font: FontArc) -> Self {
         let cell = RASTER_SCALE.ceil() as u32 + PAD as u32 * 2;
-        let width = COLS * cell;
-        let height = ROWS * cell;
+        let cols = INITIAL_COLS;
+        let rows = INITIAL_ROWS;
+        let width = cols * cell;
+        let height = rows * cell;
         Self {
             font,
             cell,
+            cols,
+            rows,
             pixels: vec![0; (width * height * 4) as usize],
             used: 0,
             cached: HashMap::new(),
+            slots: HashMap::new(),
             version: 0,
             dirty: false,
         }
@@ -75,11 +83,11 @@ impl FontAtlas {
     }
 
     pub const fn width(&self) -> u32 {
-        COLS * self.cell
+        self.cols * self.cell
     }
 
     pub const fn height(&self) -> u32 {
-        ROWS * self.cell
+        self.rows * self.cell
     }
 
     pub fn pixels(&self) -> &[u8] {
@@ -123,17 +131,57 @@ impl FontAtlas {
             * RASTER_SCALE
     }
 
+    fn grow(&mut self) -> bool {
+        if self.cols >= MAX_COLS && self.rows >= MAX_ROWS {
+            return false;
+        }
+        let new_cols = (self.cols * 2).min(MAX_COLS);
+        let new_rows = (self.rows * 2).min(MAX_ROWS);
+        let old_width = self.width();
+        let old_height = self.height();
+        let new_width = new_cols * self.cell;
+        let new_height = new_rows * self.cell;
+        let mut pixels = vec![0; (new_width * new_height * 4) as usize];
+        for y in 0..old_height {
+            let old_start = (y * old_width * 4) as usize;
+            let new_start = (y * new_width * 4) as usize;
+            let len = (old_width * 4) as usize;
+            pixels[new_start..new_start + len]
+                .copy_from_slice(&self.pixels[old_start..old_start + len]);
+        }
+        self.cols = new_cols;
+        self.rows = new_rows;
+        self.pixels = pixels;
+        let atlas_width = self.width() as f32;
+        let atlas_height = self.height() as f32;
+        for (character, slot) in &self.slots {
+            if let Some(metrics) = self.cached.get_mut(character) {
+                let col = *slot % self.cols;
+                let row = *slot / self.cols;
+                metrics.uv = [
+                    (col * self.cell) as f32 / atlas_width,
+                    (row * self.cell) as f32 / atlas_height,
+                    ((col + 1) * self.cell) as f32 / atlas_width,
+                    ((row + 1) * self.cell) as f32 / atlas_height,
+                ];
+            }
+        }
+        self.version = self.version.wrapping_add(1);
+        self.dirty = true;
+        true
+    }
+
     /// Returns per-glyph metrics, rasterizing the SDF cell on first use.
     pub fn glyph_metrics(&mut self, character: char) -> GlyphMetrics {
         if let Some(metrics) = self.cached.get(&character) {
             return *metrics;
         }
         let slot = self.used;
-        if slot >= COLS * ROWS {
+        if slot >= self.cols * self.rows && !self.grow() {
             tracing::warn!(
                 target: "text",
                 character = character.to_string(),
-                "字形图集已满，回退到占位"
+                "字形图集已达到最大容量，回退到占位"
             );
             return GlyphMetrics {
                 uv: [0.0; 4],
@@ -142,8 +190,8 @@ impl FontAtlas {
                 advance: self.cell as f32,
             };
         }
-        let col = slot % COLS;
-        let row = slot / COLS;
+        let col = slot % self.cols;
+        let row = slot / self.cols;
         let cell_x = col * self.cell;
         let cell_y = row * self.cell;
         let u_min = cell_x as f32 / self.width() as f32;
@@ -177,6 +225,7 @@ impl FontAtlas {
         self.used += 1;
         self.dirty = true;
         self.version = self.version.wrapping_add(1);
+        self.slots.insert(character, slot);
         self.cached.insert(character, metrics);
         metrics
     }
@@ -364,11 +413,60 @@ mod tests {
     }
 
     #[test]
-    fn atlas_dimensions_are_square_cells() {
+    fn rejects_invalid_font_bytes_without_leaking_owned_storage() {
+        let error = FontAtlas::load(b"not-a-font").expect_err("invalid bytes must fail");
+        assert!(error.contains("字体解析失败"));
+    }
+
+    #[test]
+    fn atlas_grows_and_preserves_cached_glyph_geometry() {
         let bytes = test_font();
-        assert!(!bytes.is_empty(), "测试字体为空");
-        let atlas = FontAtlas::load(&bytes).unwrap();
-        assert_eq!(atlas.width() % 16, 0);
-        assert_eq!(atlas.height(), atlas.width());
+        let mut atlas = FontAtlas::load(&bytes).unwrap();
+        let first = atlas.glyph_metrics('俯');
+        let old_width = atlas.width();
+        let old_height = atlas.height();
+        let old_cell = atlas.cell;
+        let old_cell_pixels: Vec<u8> = (0..old_cell)
+            .flat_map(|y| {
+                let start = (y * old_width * 4) as usize;
+                atlas.pixels()[start..start + (old_cell * 4) as usize].to_vec()
+            })
+            .collect();
+        let old_version = atlas.version();
+        atlas.mark_uploaded();
+        // Fill the initial grid with distinct Unicode glyphs. The final glyph
+        // forces growth and must not invalidate already cached geometry.
+        for index in 0..=256u32 {
+            let character = char::from_u32(0x4e00 + index).unwrap();
+            let _ = atlas.glyph_metrics(character);
+        }
+        assert!(atlas.width() > old_width || atlas.height() > old_height);
+        assert!(atlas.version() > old_version);
+        assert!(atlas.dirty());
+        assert_eq!(atlas.glyph_metrics('俯').cell_rect, first.cell_rect);
+        assert_eq!(atlas.glyph_metrics('俯').bounds, first.bounds);
+        assert_eq!(atlas.glyph_metrics('俯').advance, first.advance);
+        assert_ne!(atlas.glyph_metrics('俯').uv, first.uv);
+        for y in 0..old_cell {
+            let start = (y * atlas.width() * 4) as usize;
+            let end = start + (old_cell * 4) as usize;
+            let expected_start = (y * old_cell * 4) as usize;
+            let expected_end = expected_start + (old_cell * 4) as usize;
+            assert_eq!(
+                &atlas.pixels()[start..end],
+                &old_cell_pixels[expected_start..expected_end],
+                "old top-left cell pixels are preserved"
+            );
+        }
+    }
+
+    #[test]
+    fn atlas_dirty_can_be_cleared_after_upload() {
+        let bytes = test_font();
+        let mut atlas = FontAtlas::load(&bytes).unwrap();
+        let _ = atlas.glyph_metrics('A');
+        assert!(atlas.dirty());
+        atlas.mark_uploaded();
+        assert!(!atlas.dirty());
     }
 }

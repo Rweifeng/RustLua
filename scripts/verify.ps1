@@ -87,7 +87,7 @@ try {
     Write-Step "Game project check"
     Push-Location $projectRoot
     try {
-        Invoke-Checked cargo @("run", "--quiet", "--manifest-path", "engine/Cargo.toml", "-p", "game_runner", "--", "--project", $gameRoot, "--check")
+        Invoke-Checked cargo @("run", "--quiet", "--manifest-path", "engine/Cargo.toml", "-p", "game", "--", "--project", $gameRoot, "--check")
     }
     finally {
         Pop-Location

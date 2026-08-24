@@ -63,7 +63,6 @@ impl EditorApp {
         painter.rect_filled(response.rect, 0.0, egui::Color32::from_rgb(18, 20, 24));
         if self.preview.is_some() {
             let focused = ui.rect_contains_pointer(response.rect);
-            // 预览实际绘制矩形（纵横比居中），用于把指针坐标映射到预览像素。
             let preview_rect = self.preview_rect(response.rect);
             self.update_preview(ui.ctx(), focused, preview_rect);
             if let Some(preview) = &self.preview
@@ -74,6 +73,19 @@ impl EditorApp {
                     preview_rect,
                     egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
                     egui::Color32::WHITE,
+                );
+            } else {
+                let text = if self.is_playing() {
+                    "GAME VIEW\n(preview unavailable)"
+                } else {
+                    "GAME VIEW\nPress Play to run the scene"
+                };
+                painter.text(
+                    response.rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    text,
+                    egui::FontId::proportional(20.0),
+                    egui::Color32::LIGHT_GRAY,
                 );
             }
         } else {
@@ -88,6 +100,23 @@ impl EditorApp {
                 text,
                 egui::FontId::proportional(20.0),
                 egui::Color32::LIGHT_GRAY,
+            );
+        }
+        if let Some(message) = &self.preview_diagnostic {
+            painter.rect_filled(
+                egui::Rect::from_min_size(
+                    response.rect.left_top() + egui::vec2(8.0, 8.0),
+                    egui::vec2(response.rect.width() - 16.0, 28.0),
+                ),
+                4.0,
+                egui::Color32::from_rgba_unmultiplied(100, 30, 30, 220),
+            );
+            painter.text(
+                response.rect.left_top() + egui::vec2(16.0, 14.0),
+                egui::Align2::LEFT_TOP,
+                message,
+                egui::FontId::proportional(13.0),
+                egui::Color32::LIGHT_RED,
             );
         }
     }
@@ -132,12 +161,7 @@ impl EditorApp {
 
     /// 步进内嵌游戏运行时，渲染到离屏纹理并回读更新 egui 预览纹理（M10-03）。
     /// 回读为非阻塞（滞后一帧）；按 ~30fps 节流步进，避免输入事件以 144Hz 加速游戏。
-    fn update_preview(
-        &mut self,
-        ctx: &egui::Context,
-        focused: bool,
-        preview_rect: egui::Rect,
-    ) {
+    fn update_preview(&mut self, ctx: &egui::Context, focused: bool, preview_rect: egui::Rect) {
         // 节流：未到期时不步进游戏，仅排空在途回读（补上滞后帧），保持游戏匀速。
         let now = std::time::Instant::now();
         let due = self
@@ -156,6 +180,7 @@ impl EditorApp {
             });
             if let Some((pixels, width, height)) = ready {
                 self.upload_preview_frame(ctx, pixels, width, height);
+                self.preview_diagnostic = None;
             }
             ctx.request_repaint_after(PREVIEW_FRAME_INTERVAL);
             return;
@@ -180,8 +205,15 @@ impl EditorApp {
         if let Err(error) = preview.runtime.run_script_steps(1, 1.0 / 60.0, &input) {
             tracing::warn!(target: "editor", "[preview] script step failed: {error}");
         }
-        let Some(mesh) = preview.runtime.vertices(preview.width, preview.height).ok() else {
-            tracing::warn!(target: "editor", "[preview] build vertices failed");
+        let Some(mesh) = (match preview.runtime.vertices(preview.width, preview.height) {
+            Ok(mesh) => Some(mesh),
+            Err(error) => {
+                tracing::error!(target: "editor", "[preview] build vertices failed: {error}");
+                self.status = format!("游戏预览渲染失败：{error}");
+                self.preview_diagnostic = Some(format!("渲染失败：{error}"));
+                None
+            }
+        }) else {
             ctx.request_repaint_after(PREVIEW_FRAME_INTERVAL);
             return;
         };
@@ -199,12 +231,20 @@ impl EditorApp {
             .renderer
             .readback_frame(&preview.texture, preview.width, preview.height)
         {
-            engine_host::ReadbackStatus::Ready { pixels, width, height } => {
+            engine_host::ReadbackStatus::Ready {
+                pixels,
+                width,
+                height,
+            } => {
                 self.upload_preview_frame(ctx, pixels, width, height);
+                self.preview_diagnostic = None;
             }
-            engine_host::ReadbackStatus::Pending => {}
+            engine_host::ReadbackStatus::Pending => {
+                self.preview_diagnostic = Some("等待 GPU 回读……显示上一帧".to_owned());
+            }
             engine_host::ReadbackStatus::Failed(error) => {
                 tracing::warn!(target: "editor", "[preview] readback failed: {error}");
+                self.preview_diagnostic = Some(format!("GPU 回读失败：{error}"));
             }
         }
         // 节流到 ~30fps：无论回读是否就绪都排下一帧，保证游戏持续运行且不忙转。
@@ -223,19 +263,16 @@ impl EditorApp {
         if !nonzero {
             tracing::warn!(target: "editor", "[preview] readback frame is all-zero");
         }
-        let image = egui::ColorImage::from_rgba_unmultiplied(
-            [width as usize, height as usize],
-            &pixels,
-        );
-        match &mut self.preview {
-            Some(preview) => match &mut preview.egui_tex {
+        let image =
+            egui::ColorImage::from_rgba_unmultiplied([width as usize, height as usize], &pixels);
+        if let Some(preview) = &mut self.preview {
+            match &mut preview.egui_tex {
                 Some(tex) => tex.set(image, egui::TextureOptions::LINEAR),
                 None => {
                     preview.egui_tex =
                         Some(ctx.load_texture("game_preview", image, egui::TextureOptions::LINEAR));
                 }
-            },
-            None => {}
+            }
         }
     }
 

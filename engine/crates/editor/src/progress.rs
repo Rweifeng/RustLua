@@ -3,10 +3,7 @@
 
 use crate::publish::open_in_explorer;
 use eframe::egui;
-use std::{
-    path::PathBuf,
-    sync::mpsc::Receiver,
-};
+use std::{path::PathBuf, sync::mpsc::Receiver};
 
 /// 进度面板事件（任务线程 → 主线程）。
 pub(crate) enum ProgressEvent {
@@ -93,40 +90,40 @@ impl ProgressPanel {
         egui::Window::new(&self.title)
             .open(&mut self.show)
             .show(context, |ui| {
-            let status = if self.running {
-                "进行中..."
-            } else if self.success {
-                "✔ 完成"
-            } else {
-                "✘ 失败"
-            };
-            ui.colored_label(
-                if self.success {
-                    egui::Color32::LIGHT_GREEN
+                let status = if self.running {
+                    "进行中..."
+                } else if self.success {
+                    "✔ 完成"
                 } else {
-                    egui::Color32::LIGHT_RED
-                },
-                status,
-            );
-            if let Some(progress) = self.progress {
-                ui.add(egui::ProgressBar::new(progress).show_percentage());
-            } else if self.running {
-                ui.add(egui::ProgressBar::new(0.0).animate(true));
-            }
-            egui::ScrollArea::vertical()
-                .max_height(320.0)
-                .stick_to_bottom(true)
-                .show(ui, |ui| {
-                    ui.monospace(&self.output);
-                });
-            if self.done {
-                if let Some(dir) = &self.output_dir {
+                    "✘ 失败"
+                };
+                ui.colored_label(
+                    if self.success {
+                        egui::Color32::LIGHT_GREEN
+                    } else {
+                        egui::Color32::LIGHT_RED
+                    },
+                    status,
+                );
+                if let Some(progress) = self.progress {
+                    ui.add(egui::ProgressBar::new(progress).show_percentage());
+                } else if self.running {
+                    ui.add(egui::ProgressBar::new(0.0).animate(true));
+                }
+                egui::ScrollArea::vertical()
+                    .max_height(320.0)
+                    .stick_to_bottom(true)
+                    .show(ui, |ui| {
+                        ui.monospace(&self.output);
+                    });
+                if self.done
+                    && let Some(dir) = &self.output_dir
+                {
                     ui.label(format!("输出：{}", dir.display()));
                     if ui.button("打开目录").clicked() {
                         open_in_explorer(dir);
                     }
                 }
-            }
-        });
+            });
     }
 }

@@ -5,7 +5,7 @@ members = [
     "crates/editor",
     "crates/engine_core",
     "crates/engine_host",
-    "crates/game_runner",
+    "crates/game",
 ]
 
 [workspace.package]

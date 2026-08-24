@@ -12,7 +12,7 @@
 | M0-A04 | 可继续开发 | M0-01 | 新 AI 会话读取文档 | 能理解当前状态和下一步 | 文档检查 | 会话验收记录 | PASS | M0 |
 | M0-A05 | 质量门脚本 | M0-03 | `./scripts/verify.ps1` | 执行 metadata、fmt、clippy、test、build | PowerShell 脚本 | `artifacts/logs/quality/verify-20260820-113948.log` | PASS | M0 |
 | M0-A06 | 测试入口 | M0-03 | `./scripts/test.ps1` | 执行测试质量门 | PowerShell 脚本 | `artifacts/logs/quality/verify-20260820-113952.log` | PASS | M0 |
-| M0-A07 | Release 构建入口 | M0-03 | `./scripts/build-release.ps1` | 生成 Release 运行器 | PowerShell 脚本 | `artifacts/builds/release/game_runner.exe` | PASS | M0 |
+| M0-A07 | Release 构建入口 | M0-03 | `./scripts/build-release.ps1` | 生成 Release 运行器 | PowerShell 脚本 | `artifacts/builds/release/game.exe` | PASS | M0 |
 | M0-A08 | CI 质量门 | M0-03 | GitHub Actions Windows runner | format、clippy、test、Debug/Release build 通过 | CI workflow | Actions 记录 | PENDING | M0 |
 | M0-A09 | M0-04 文件完整性 | M0-04 | 检查验收矩阵和风险登记 | 两份文档 UTF-8 正常、字段完整、可直接使用 | 文档检查 | 文件内容 | PASS | M0 |
 | M0-A10 | 风险登记 | M0-04 | 检查风险表 | 风险有概率、影响、应对策略、负责人和状态 | 文档检查 | 风险登记表 | PASS | M0 |
@@ -28,7 +28,7 @@
 - M0-05 本地里程碑回归验收通过；
 - M0-06 基线构建和 `v0.0.1-baseline` 标签验收通过，项目放行进入 M1；
 - M0-A08 GitHub Actions 远程执行仍为 `PENDING`，不影响本地 M0 放行。
-| M1-A01 | 窗口与应用生命周期 | M0 | `./scripts/verify.ps1`、运行 `game_runner` | 窗口创建、关闭、缩放、最小化/恢复不崩溃，生命周期日志顺序正确 | 状态机单元测试 | `artifacts/logs/M1-01-window-session.stdout.log`、`artifacts/logs/M1-01-window-interaction.stdout.log` | PASS | M1 |
+| M1-A01 | 窗口与应用生命周期 | M0 | `./scripts/verify.ps1`、运行 `game` | 窗口创建、关闭、缩放、最小化/恢复不崩溃，生命周期日志顺序正确 | 状态机单元测试 | `artifacts/logs/M1-01-window-session.stdout.log`、`artifacts/logs/M1-01-window-interaction.stdout.log` | PASS | M1 |
 | M1-A02 | wgpu 初始化与清屏 | M1-A01 | `./scripts/verify.ps1`、运行 GPU Demo 并调整窗口尺寸 | Debug/Release 均初始化 GPU、清屏、缩放后继续渲染，错误分支有处理 | workspace 测试与 Clippy | `artifacts/logs/M1-02-wgpu-session.stdout.log` | PASS | M1 |
 | M1-A03 | Lua VM 桥接 | M1-A02 | `cargo test --workspace`、`./scripts/verify.ps1`、运行 Lua Demo | Lua 调 Rust API、Rust 调 Lua 函数、脚本路径/行号错误、运行时错误日志、Debug/Release 构建 | `engine_core` 单元测试 | `artifacts/logs/M1-03-lua-session.stdout.log`、`artifacts/logs/quality/verify-20260820-144431.log`、`artifacts/logs/quality/verify-20260820-144146.log` | PASS | M1 |
 | M1-A04 | 日志与错误系统 | M1-A03 | `cargo test --workspace`；`./scripts/verify.ps1`；`./scripts/verify.ps1 -Release`；运行真实 Debug Demo | 控制台和文件日志包含时间、级别、target；支持模块过滤；Lua/渲染错误包含上下文和解决建议 | logging 单元测试；工作区质量门 | `engine/artifacts/logs/M1-04-logging-session-final.stdout.log`；`engine/artifacts/logs/game-runner.log`；`engine/artifacts/logs/quality/verify-20260820-151137.log`；`engine/artifacts/logs/quality/verify-20260820-151819.log` | PASS | M1 |
@@ -45,7 +45,7 @@
 | M2-A07 | ECS 压力测试 | M2-A06 | `cargo run -p engine_core --example ecs_stress --release -- --entities 10000 --seconds 60`、`./scripts/verify.ps1 -KeepLog`、`./scripts/verify.ps1 -Release -KeepLog` | 10000 实体稳定运行；查询/更新/销毁/重建成功；实体数量无异常变化；输出耗时统计 | ecs_stress 示例、workspace 测试、Clippy、Debug/Release 质量门 | `tasks/done/M2-07-ECS压力测试.md`、`artifacts/logs/m2-07-ecs-stress-smoke.json`、`artifacts/logs/quality/verify-20260820-191742.log`、`artifacts/logs/quality/verify-20260820-191746.log` | PASS | M2 |
 | M2-A08 | M2 ECS 里程碑验收 | M2-A01 至 M2-A07 | `cargo test --workspace --all-features`、`./scripts/verify.ps1 -KeepLog`、`./scripts/verify.ps1 -Release -KeepLog`、10000 实体 Release 60 秒长跑 | M2-01 至 M2-07 全部 PASS；60 秒无崩溃；实体数稳定；Debug/Release 质量门通过；创建 `v0.2-ecs` 标签 | 里程碑验收记录、workspace 测试、压力报告、质量门 | `tasks/done/M2-milestone-acceptance-v0.2-ecs.md`、`artifacts/logs/m2-07-ecs-stress-60s.json`、`artifacts/logs/quality/verify-20260820-191742.log`、`artifacts/logs/quality/verify-20260820-191746.log` | PASS | M2 |
 | M3-A01 | 坐标、颜色和纹理约定 | M2 | `cargo test -p engine_core --all-features`、`./scripts/verify.ps1 -KeepLog`、`./scripts/verify.ps1 -Release -KeepLog` | 世界/屏幕转换往返误差；Y 轴方向；zoom/viewport 校验；sRGB/linear 转换；约定文档完整 | math2d 单元测试、Clippy、Debug/Release 质量门 | `tasks/done/M3-01-坐标约定.md`；`docs/06-coordinate-and-color-conventions.md`；质量门日志 | PASS | M3 |
-| M3-A02 | PNG 加载与纹理上传 | M3-A01 | `cargo test --workspace --all-features`、`cargo run -p game_runner --example texture_upload --release`、`./scripts/verify.ps1 -KeepLog`、`./scripts/verify.ps1 -Release -KeepLog` | PNG 解码为 RGBA8；尺寸/行跨度正确；sRGB/Linear 格式规则正确；wgpu 纹理创建和 Queue::write_texture 上传成功 | texture 单元测试、上传示例、Clippy、Debug/Release 质量门 | `tasks/done/M3-02-加载PNG并上传纹理.md`；`docs/07-texture-loading-and-upload.md`；`game/assets/textures/red-1x1.png`；上传输出和质量门日志 | PASS | M3 |
+| M3-A02 | PNG 加载与纹理上传 | M3-A01 | `cargo test --workspace --all-features`、`cargo run -p game --example texture_upload --release`、`./scripts/verify.ps1 -KeepLog`、`./scripts/verify.ps1 -Release -KeepLog` | PNG 解码为 RGBA8；尺寸/行跨度正确；sRGB/Linear 格式规则正确；wgpu 纹理创建和 Queue::write_texture 上传成功 | texture 单元测试、上传示例、Clippy、Debug/Release 质量门 | `tasks/done/M3-02-加载PNG并上传纹理.md`；`docs/07-texture-loading-and-upload.md`；`game/assets/textures/red-1x1.png`；上传输出和质量门日志 | PASS | M3 |
 
 | M3-A03 | Sprite | M3-A02 | cargo test --workspace --all-features、sprite_demo Release、verify Debug/Release | Sprite 顶点/UV/pivot/scale/rotation/tint 正确；真实 GPU 绘制成功；错误输入被拒绝 | sprite 单元测试、Clippy、Debug/Release 质量门 | tasks/done/M3-03-Sprite.md；docs/08-sprite.md；Sprite Demo 输出 | PASS | M3 |
 
@@ -54,31 +54,31 @@
 | M3-A05 | Camera2D | M3-A04 | cargo test --workspace --all-features、camera_demo Release、verify Debug/Release | 平移/缩放/旋转可用；屏幕/世界坐标互转；边界限制正确；不同视口稳定 | Camera2D 单元测试、Clippy、Debug/Release 质量门 | tasks/done/M3-05-Camera2D.md；docs/10-camera2d.md；Camera Demo 输出 | PASS | M3 |
 
 
-| M3-A06 | 图集 | M3-A05 | `cargo test --workspace --all-features`、`cargo run -p game_runner --example atlas_demo --release`、`verify.ps1 Debug/Release` | 像素矩形转换为正确 UV；命名区域可查询；越界输入被拒绝；四个图集区域通过真实 GPU 单纹理单批次绘制 | atlas 单元测试、SpriteBatch 测试、Clippy、Debug/Release 质量门 | `tasks/done/M3-06-图集.md`、`docs/11-texture-atlas.md`、`atlas_demo_ok regions=4 sprites=4 vertices=24 draw_calls=1` | PASS | M3 |
+| M3-A06 | 图集 | M3-A05 | `cargo test --workspace --all-features`、`cargo run -p game --example atlas_demo --release`、`verify.ps1 Debug/Release` | 像素矩形转换为正确 UV；命名区域可查询；越界输入被拒绝；四个图集区域通过真实 GPU 单纹理单批次绘制 | atlas 单元测试、SpriteBatch 测试、Clippy、Debug/Release 质量门 | `tasks/done/M3-06-图集.md`、`docs/11-texture-atlas.md`、`atlas_demo_ok regions=4 sprites=4 vertices=24 draw_calls=1` | PASS | M3 |
 
-| M3-A07 | 文本 | M3-A06 | `cargo test --workspace --all-features`、`cargo run -p game_runner --example text_demo --release`、`verify.ps1 Debug/Release` | ASCII 文本可布局；换行/缩放/间距/颜色有效；无效样式被拒绝；字体图集通过真实 GPU 上传并绘制 | text 单元测试、Clippy、Debug/Release 质量门 | `tasks/done/M3-07-文本.md`、`docs/12-text.md`、`text_demo_ok glyphs=17 lines=2 vertices=102` | PASS | M3 |
+| M3-A07 | 文本 | M3-A06 | `cargo test --workspace --all-features`、`cargo run -p game --example text_demo --release`、`verify.ps1 Debug/Release` | ASCII 文本可布局；换行/缩放/间距/颜色有效；无效样式被拒绝；字体图集通过真实 GPU 上传并绘制 | text 单元测试、Clippy、Debug/Release 质量门 | `tasks/done/M3-07-文本.md`、`docs/12-text.md`、`text_demo_ok glyphs=17 lines=2 vertices=102` | PASS | M3 |
 
-| M3-A08 | 2D Demo | M3-A07 | `cargo test --workspace --all-features`、`cargo run -p game_runner --example demo_2d --release`、`verify.ps1 Debug/Release` | Camera2D、Sprite、SpriteBatch、图集、文本和两张 GPU 纹理在一个真实 Demo 中联通；7 个 Sprite 生成 2 个批次；文本完成 GPU 绘制 | workspace 测试、Clippy、Debug/Release 质量门、Demo | `tasks/done/M3-08-2D-Demo.md`、`docs/13-2d-demo.md`、`demo_2d_ok sprites=7 sprite_draws=2 text_glyphs=35 text_vertices=210` | PASS | M3 |
+| M3-A08 | 2D Demo | M3-A07 | `cargo test --workspace --all-features`、`cargo run -p game --example demo_2d --release`、`verify.ps1 Debug/Release` | Camera2D、Sprite、SpriteBatch、图集、文本和两张 GPU 纹理在一个真实 Demo 中联通；7 个 Sprite 生成 2 个批次；文本完成 GPU 绘制 | workspace 测试、Clippy、Debug/Release 质量门、Demo | `tasks/done/M3-08-2D-Demo.md`、`docs/13-2d-demo.md`、`demo_2d_ok sprites=7 sprite_draws=2 text_glyphs=35 text_vertices=210` | PASS | M3 |
 
-| M4-A01 | 资源数据库 | M3 | `cargo test --workspace --all-features`、`cargo run -p game_runner --example resource_db_demo --release`、`cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets --all-features -- -D warnings` | UUID 稳定；移动/重命名不丢失引用；重复注册幂等；失败状态持久化；删除提示依赖者；数据库可安全保存和重新加载 | resource_db 单元测试、Release Demo、格式检查、Clippy | `tasks/done/M4-01-资源数据库.md`；`docs/14-resource-database.md`；`resource_db_demo_ok` | PASS | M4 |
+| M4-A01 | 资源数据库 | M3 | `cargo test --workspace --all-features`、`cargo run -p game --example resource_db_demo --release`、`cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets --all-features -- -D warnings` | UUID 稳定；移动/重命名不丢失引用；重复注册幂等；失败状态持久化；删除提示依赖者；数据库可安全保存和重新加载 | resource_db 单元测试、Release Demo、格式检查、Clippy | `tasks/done/M4-01-资源数据库.md`；`docs/14-resource-database.md`；`resource_db_demo_ok` | PASS | M4 |
 
-| M4-A02 | 导入缓存 | M4-A01 | `cargo test --workspace --all-features`、`cargo run -p game_runner --example import_cache_demo --release`、`cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets --all-features -- -D warnings` | 未变化资源复用缓存；源文件或导入器版本变化重新导入；失败不替换有效缓存；清空缓存可重建；首批资源扩展名可识别 | import_cache 单元测试、Release Demo、格式检查、Clippy | `tasks/done/M4-02-导入缓存.md`；`docs/15-import-cache.md`；`import_cache_demo_ok` | PASS | M4 |
+| M4-A02 | 导入缓存 | M4-A01 | `cargo test --workspace --all-features`、`cargo run -p game --example import_cache_demo --release`、`cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets --all-features -- -D warnings` | 未变化资源复用缓存；源文件或导入器版本变化重新导入；失败不替换有效缓存；清空缓存可重建；首批资源扩展名可识别 | import_cache 单元测试、Release Demo、格式检查、Clippy | `tasks/done/M4-02-导入缓存.md`；`docs/15-import-cache.md`；`import_cache_demo_ok` | PASS | M4 |
 
-| M4-A03 | 场景格式 | M4-A02 | `cargo test --workspace --all-features`、`cargo run -p game_runner --example scene_format_demo --release`、`cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets --all-features -- -D warnings` | 场景可保存/加载/再次保存；实体树、组件和资源 UUID 完整；未知记录报告行号；版本不支持时明确拒绝；原子写入 | scene 单元测试、Release Demo、格式检查、Clippy | `tasks/done/M4-03-场景格式.md`；`docs/16-scene-format.md`；`scene_format_demo_ok` | PASS | M4 |
-
-
-| M4-A04 | 预制体 | M4-A03 | `cargo test -p engine_core --all-features`、`cargo run -p game_runner --example prefab_demo --release`、`cargo fmt --all`、`cargo clippy --workspace --all-targets --all-features -- -D warnings` | 可从场景根实体提取预制体并保存/加载；同一预制体可重复实例化且实例根 Entity ID 唯一；名称、组件和元数据覆盖值生效；保留覆盖值重建实例；非法版本、实体和覆盖字段明确拒绝 | prefab 单元测试、Release Demo、格式检查、Clippy | `tasks/done/M4-04-预制体.md`；`docs/17-prefab.md`；`prefab_demo_ok entities=4 instances=2 unique_roots=true override=25 roundtrip=true` | PASS | M4 |
+| M4-A03 | 场景格式 | M4-A02 | `cargo test --workspace --all-features`、`cargo run -p game --example scene_format_demo --release`、`cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets --all-features -- -D warnings` | 场景可保存/加载/再次保存；实体树、组件和资源 UUID 完整；未知记录报告行号；版本不支持时明确拒绝；原子写入 | scene 单元测试、Release Demo、格式检查、Clippy | `tasks/done/M4-03-场景格式.md`；`docs/16-scene-format.md`；`scene_format_demo_ok` | PASS | M4 |
 
 
-| M4-A05 | Lua 游戏 API | M4-A04 | `cargo test -p engine_core --all-features`、`cargo run -p game_runner --example lua_api_demo --release`、`cargo fmt --all`、`cargo clippy --workspace --all-targets --all-features -- -D warnings` | Lua 可调用日志、输入、时间、实体、Transform、生命值、物理查询、场景、资源、UI、存档和退出 API；非法/过期 Entity ID 明确报错；API 错误不会导致宿主 panic | script 单元测试、Release Demo、格式检查、Clippy | `tasks/done/M4-05-Lua-API.md`；`docs/18-lua-api.md`；`lua_api_demo_ok update=lua-api-ok quit=false` | PASS | M4 |
+| M4-A04 | 预制体 | M4-A03 | `cargo test -p engine_core --all-features`、`cargo run -p game --example prefab_demo --release`、`cargo fmt --all`、`cargo clippy --workspace --all-targets --all-features -- -D warnings` | 可从场景根实体提取预制体并保存/加载；同一预制体可重复实例化且实例根 Entity ID 唯一；名称、组件和元数据覆盖值生效；保留覆盖值重建实例；非法版本、实体和覆盖字段明确拒绝 | prefab 单元测试、Release Demo、格式检查、Clippy | `tasks/done/M4-04-预制体.md`；`docs/17-prefab.md`；`prefab_demo_ok entities=4 instances=2 unique_roots=true override=25 roundtrip=true` | PASS | M4 |
 
 
-| M4-A06 | Lua 热重载 | M4-A05 | `cargo test --workspace --all-features`、`cargo run -p game_runner --example lua_hot_reload_demo --release`、`cargo fmt --all`、`cargo clippy --workspace --all-targets --all-features -- -D warnings` | 脚本未变化返回 Unchanged；修改后可加载新模块；候选脚本加载失败时保留旧 VM；支持 on_create/on_destroy；闭包、协程和 Lua 全局状态不迁移的限制有文档说明 | script 单元测试、Release Demo、格式检查、Clippy | `tasks/done/M4-06-Lua-热重载.md`；`docs/19-lua-hot-reload.md`；`lua_hot_reload_demo_ok unchanged=true reloaded=true rollback=true update=v2` | PASS | M4 |
+| M4-A05 | Lua 游戏 API | M4-A04 | `cargo test -p engine_core --all-features`、`cargo run -p game --example lua_api_demo --release`、`cargo fmt --all`、`cargo clippy --workspace --all-targets --all-features -- -D warnings` | Lua 可调用日志、输入、时间、实体、Transform、生命值、物理查询、场景、资源、UI、存档和退出 API；非法/过期 Entity ID 明确报错；API 错误不会导致宿主 panic | script 单元测试、Release Demo、格式检查、Clippy | `tasks/done/M4-05-Lua-API.md`；`docs/18-lua-api.md`；`lua_api_demo_ok update=lua-api-ok quit=false` | PASS | M4 |
 
 
-| M4-A07 | Lua 脚本调试 | M4-A06 | `cargo test --workspace --all-features`、`cargo run -p game_runner --example lua_script_debug_demo --release`、`cargo fmt --all`、`cargo clippy --workspace --all-targets --all-features -- -D warnings` | 语法/运行时错误包含路径和行号或调用栈文本；诊断记录支持过滤和清理；相同错误聚合计数；发布运行路径不自动开启调试控制台 | script 单元测试、Release Demo、格式检查、Clippy | `tasks/done/M4-07-脚本调试.md`；`docs/20-lua-script-debug.md`；`lua_script_debug_demo_ok diagnostics=1 deduplicated=true filtered=true stack=true` | PASS | M4 |
+| M4-A06 | Lua 热重载 | M4-A05 | `cargo test --workspace --all-features`、`cargo run -p game --example lua_hot_reload_demo --release`、`cargo fmt --all`、`cargo clippy --workspace --all-targets --all-features -- -D warnings` | 脚本未变化返回 Unchanged；修改后可加载新模块；候选脚本加载失败时保留旧 VM；支持 on_create/on_destroy；闭包、协程和 Lua 全局状态不迁移的限制有文档说明 | script 单元测试、Release Demo、格式检查、Clippy | `tasks/done/M4-06-Lua-热重载.md`；`docs/19-lua-hot-reload.md`；`lua_hot_reload_demo_ok unchanged=true reloaded=true rollback=true update=v2` | PASS | M4 |
 
-| M4-A08 | 场景脚本 Demo | M4-A07 | `cargo test --workspace --all-features`、`cargo run -p game_runner --example scene_script_demo --release`、`cargo fmt --all`、`cargo clippy --workspace --all-targets --all-features -- -D warnings` | 场景包含玩家、敌人、拾取物、门和触发器；胜利/失败规则全部由 Lua 驱动；场景重新加载结果一致；Lua 文件修改后热更新改变结果；提供脚本教程 | scene/script 单元测试、Release Demo、格式检查、Clippy | `tasks/done/M4-08-场景脚本Demo.md`；`docs/21-scene-script-demo.md`；`scene_script_demo_ok entities=5 rules=lua victory=true reload_consistent=true hot_reload=failure` | PASS | M4 |
+
+| M4-A07 | Lua 脚本调试 | M4-A06 | `cargo test --workspace --all-features`、`cargo run -p game --example lua_script_debug_demo --release`、`cargo fmt --all`、`cargo clippy --workspace --all-targets --all-features -- -D warnings` | 语法/运行时错误包含路径和行号或调用栈文本；诊断记录支持过滤和清理；相同错误聚合计数；发布运行路径不自动开启调试控制台 | script 单元测试、Release Demo、格式检查、Clippy | `tasks/done/M4-07-脚本调试.md`；`docs/20-lua-script-debug.md`；`lua_script_debug_demo_ok diagnostics=1 deduplicated=true filtered=true stack=true` | PASS | M4 |
+
+| M4-A08 | 场景脚本 Demo | M4-A07 | `cargo test --workspace --all-features`、`cargo run -p game --example scene_script_demo --release`、`cargo fmt --all`、`cargo clippy --workspace --all-targets --all-features -- -D warnings` | 场景包含玩家、敌人、拾取物、门和触发器；胜利/失败规则全部由 Lua 驱动；场景重新加载结果一致；Lua 文件修改后热更新改变结果；提供脚本教程 | scene/script 单元测试、Release Demo、格式检查、Clippy | `tasks/done/M4-08-场景脚本Demo.md`；`docs/21-scene-script-demo.md`；`scene_script_demo_ok entities=5 rules=lua victory=true reload_consistent=true hot_reload=failure` | PASS | M4 |
 
 ## M5 编辑器 MVP（计划）
 
@@ -117,7 +117,7 @@
 | M8-A01 | Math3D / Transform3D / Camera3D | M8-A00 | Vec3、Quat、Mat4、模型矩阵、透视投影、LookAt、世界/NDC 往返和视锥点分类正确；非法参数明确拒绝 | 10 个 engine_core 单测、workspace fmt/Clippy/test、Debug/Release 构建 | `tasks/done/M8-01-Math3D-Transform3D-Camera3D.md`；`artifacts/logs/m8-01-test.log` | PASS | v0.7 |
 | M8-A02 | glTF/GLB CPU 导入与资源缓存 | M8-A01 | `.gltf`/`.glb` 静态 Mesh、节点和基础材质可解析；坏资源带路径报错；缓存增量复用；失败导入返回非零 | glTF/ImportCache/assetc 单测；真实项目 21 项导入与二次缓存命中；workspace 质量门 | `tasks/done/M8-02-glTF-GLB-CPU导入与资源缓存.md`；`engine/artifacts/logs/m8-02-import.log` | PASS | v0.7 |
 | M8-A03 | Mesh / Material GPU 上传 | M8-A02 | CPU Mesh/Material 转换和 GPU buffer、材质绑定、生命周期通过；3D 纹理颜色空间正确；2D 路径不回归 | MeshAsset 单测；Renderer GPU 资源创建；workspace 质量门 | `tasks/done/M8-03-Mesh-Material-GPU上传.md` | PASS | v0.7 |
-| M8-A04 | Depth + 3D Render Pass | M8-A03 | Depth32Float 初始化/resize；Camera3D uniform；独立 3D pipeline；indexed Mesh 绘制和深度遮挡；2D pass 兼容 | game_runner check/Clippy/Debug/Release；窗口视觉与遮挡证据 | `tasks/done/M8-04-Depth-3D-Render-Pass.md`；`artifacts/builds/release/p2-game/` | PASS | v0.7 |
+| M8-A04 | Depth + 3D Render Pass | M8-A03 | Depth32Float 初始化/resize；Camera3D uniform；独立 3D pipeline；indexed Mesh 绘制和深度遮挡；2D pass 兼容 | game check/Clippy/Debug/Release；窗口视觉与遮挡证据 | `tasks/done/M8-04-Depth-3D-Render-Pass.md`；`artifacts/builds/release/p2-game/` | PASS | v0.7 |
 | M8-A05 | 光照、阴影与基础 PBR | M8-A04 | 方向光、简化 PBR 材质、shadow map、颜色空间和 2D 兼容通过 | shader/资源测试、RenderDoc 或等价 GPU 证据、workspace 质量门 | `tasks/done/M8-05-光照阴影与基础PBR.md`；`docs/acceptance-evidence/m8/m8-05-shadow-gpu-check.md` | PASS | v0.7 |
 | M8-A06 | 场景、Lua 与编辑器接入 | M8-A05 | 旧场景可加载；新场景 save/load roundtrip；Lua 移动角色与切换相机；编辑器 Inspector 查看/编辑 3D 组件；assetc package/--pack 兼容 | 场景迁移/组件单测、Lua 3D API 单测、编辑器 Inspector 单测、真实窗口日志证据、workspace 质量门 | `tasks/done/M8-06-场景Lua与编辑器接入.md`；`docs/acceptance-evidence/m8/m8-06-scene-lua-editor-check.md` | PASS | v0.7 |
 | M8-A07 | 骨骼动画 | M8-A06 | glTF skin/joint/animation 导入；时间推进/循环/暂停/非法关节引用单测；Demo 角色确实运动；停止/重启/切场景无残留；Lua 查询/切换剪辑 | skin/animation 导入单测、Animation3D 单测、Lua animation3d 单测、真实窗口日志证据、workspace 质量门 | `tasks/done/M8-07-骨骼动画.md`；`docs/acceptance-evidence/m8/m8-07-skin-animation-check.md` | PASS | v0.7 |
@@ -129,7 +129,7 @@
 | ID | 功能 | 前置 | 主要验收 | 自动化证据 | 状态 | 版本 |
 |---|---|---|---|---|---|---|
 | M7-A01 | assetc 资源构建工具 | M6 | scan/import/clean/list/package/--check 可用；增量只处理变化资源；失败非零退出；生成清单 | assetc 4 单测、真实项目实测、质量门 | `tasks/done/M7-01-assetc资源构建工具.md` | PASS | M7 |
-| M7-A02 | 发布配置与资源打包 | M7-A01 | `--pack` 加载发布资源目录；缺失资源启动报错含资源名与原因；`--project` 兼容 | game_runner 4 单测、缺失资源实测（exit 1）、完整包实测 | `tasks/done/M7-02-发布配置与资源打包.md` | PASS | M7 |
+| M7-A02 | 发布配置与资源打包 | M7-A01 | `--pack` 加载发布资源目录；缺失资源启动报错含资源名与原因；`--project` 兼容 | game 4 单测、缺失资源实测（exit 1）、完整包实测 | `tasks/done/M7-02-发布配置与资源打包.md` | PASS | M7 |
 | M7-A03 | 崩溃日志 | M7-A02 | panic 写 crash.log（版本/时间/线程/消息/位置/backtrace）；Release 生效；正常退出不产生 | crash handler 单测、原子写入修复 | `tasks/done/M7-03-崩溃日志.md` | PASS | M7 |
 | M7-A04 | 性能基线 | M7-A03 | 1000 精灵批处理吞吐；10000 实体 60s 无崩溃无泄漏；基线可跨版本对比 | ecs_stress 60s JSON、sprite_stress 报告、bench.ps1 | `tasks/done/M7-04-性能基线.md`；`docs/acceptance-evidence/m7/` | PASS | M7 |
 | M7-A05 | 干净机器测试与安装包 | M7-A04 | 自包含发布包（无源码/工具链依赖）；目录隔离 + 含空格路径可运行；版本/依赖清单 | package.ps1 自测（`--check` exit 0）、发布包实测 | `tasks/done/M7-05-干净机器测试与安装包.md` | PASS | M7 |
@@ -139,7 +139,7 @@
 
 | ID | 功能 | 前置 | 主要验收 | 自动化证据 | 状态 | 版本 |
 |---|---|---|---|---|---|---|
-| M9-A00 | M9 基线与技术决策 | v0.8 | `v0.8-3d-foundation` 可复现；旧 2D 样板游戏与 M8 3D demo 不回归；文档索引同步；3D 物理/main.rs 边界/Gizmo/玩法锁定 ADR 齐全 | fmt、Clippy、workspace 测试、Debug/Release 构建、assetc/game_runner --check | `tasks/done/M9-00-M9基线与技术决策.md`；`docs/27-M9-3D可玩垂直切片实施计划.md` | PASS | v0.8 |
+| M9-A00 | M9 基线与技术决策 | v0.8 | `v0.8-3d-foundation` 可复现；旧 2D 样板游戏与 M8 3D demo 不回归；文档索引同步；3D 物理/main.rs 边界/Gizmo/玩法锁定 ADR 齐全 | fmt、Clippy、workspace 测试、Debug/Release 构建、assetc/game --check | `tasks/done/M9-00-M9基线与技术决策.md`；`docs/27-M9-3D可玩垂直切片实施计划.md` | PASS | v0.8 |
 | M9-A01 | 渲染边界重构 | M9-A00 | main.rs 渲染职责抽到独立 Renderer/GPU 资源/RenderPass 模块；重构不改渲染行为；main.rs 显著瘦身且行数/模块边界有记录 | 重构前后 2D/3D 画面一致性、性能基线对比、workspace 质量门 | `tasks/done/M9-01-渲染边界重构.md`（main.rs 2995→85 行，实机 draws/instances 与 M8 一致） | PASS | M9 |
 | M9-A02 | 3D 物理 | M9-A01 | rapier3d 刚体/碰撞体（球/盒/胶囊）/触发器/射线/重叠；碰撞事件进 Lua；固定时间步推进；2D 物理不回归 | physics3d 8 单测 + script 3D 集成测试、Lua API 测试、workspace 质量门 | `tasks/done/M9-02-3D物理.md` | PASS | M9 |
 | M9-A03 | 编辑器 3D Gizmo | M9-A02 | 选中 3D 实体拖动平移 Gizmo；Inspector 查看/编辑 Transform3D/MeshRenderer/Camera3D/Light/碰撞体；保存重开一致 | editor 单测（Collider3d roundtrip/Transform3D 写回）、3D 场景 roundtrip、workspace 质量门 | `tasks/done/M9-03-编辑器3D-Gizmo与组件编辑.md` | PASS | M9 |
@@ -151,7 +151,7 @@
 | ID | 功能 | 前置 | 主要验收 | 自动化证据 | 状态 | 版本 |
 |---|---|---|---|---|---|---|
 | M10-A00 | 编辑器强化基线与技术决策 | v0.9 | `v0.9-3d-game` 质量门；ADR-0012/0013（单一 wgpu 设备+offscreen / 编辑器相机）；README/矩阵同步 | fmt、Clippy、workspace 测试、Debug/Release 构建 | `tasks/done/M10-00-编辑器强化基线与技术决策.md`；`docs/28-编辑器强化实施计划.md` | PASS | v0.9 |
-| M10-A01 | 运行时抽取为可复用 crate | M10-A00 | game_runner 的 RuntimeScene/Renderer 抽到可复用 crate（engine_host）；抽取后运行行为与基线一致 | 抽取前后实机日志/性能对比（2D entities=7、3D entities=13 一致）、workspace 质量门（282 测试） | `tasks/done/M10-01-运行时抽取为可复用crate.md` | PASS | M10 |
+| M10-A01 | 运行时抽取为可复用 crate | M10-A00 | game 的 RuntimeScene/Renderer 抽到可复用 crate（engine_host）；抽取后运行行为与基线一致 | 抽取前后实机日志/性能对比（2D entities=7、3D entities=13 一致）、workspace 质量门（282 测试） | `tasks/done/M10-01-运行时抽取为可复用crate.md` | PASS | M10 |
 | M10-A02 | Renderer offscreen 渲染目标 | M10-A01 | Renderer 支持渲染到 offscreen 纹理（非窗口 surface）；窗口模式不回归 | render_into_texture 路径、窗口模式回归（2D/3D 实机一致）、workspace 质量门（282 测试） | `tasks/done/M10-02-Renderer-offscreen渲染目标.md` | PASS | M10 |
 | M10-A03 | 编辑器内嵌游戏预览 | M10-A02 | 编辑器 Game 视图实时显示游戏（Play 真正运行 Lua+物理+渲染）；Stop 恢复编辑场景 | 离屏集成测试（render_into_texture+回读有效像素）、编辑器 wgpu 启动、workspace 质量门（283 测试） | `tasks/done/M10-03-编辑器内嵌游戏预览.md` | PASS | M10 |
 | M10-A04 | 3D 透视视口 + 导航 | M10-A03 | 编辑器 3D 视图升级为透视视口，轨道/平移/缩放导航；Gizmo 在透视视口可用 | 透视视口运行日志（View3D 启动无崩溃、无 wgpu 校验错误）、workspace 质量门（283 测试） | `tasks/done/M10-04-3D透视视口与导航.md` | PASS | M10 |
@@ -162,4 +162,4 @@
 | M10-A09 | 多选/对齐/快照 | M10-A08 | 多选实体；对齐网格/H/V；2D 平移吸附 | 对齐/吸附 + 撤销、workspace 质量门 | `tasks/done/M10-08-多选对齐快照.md` | PASS | M10 |
 | M10-A10 | Prefab 编辑器集成 | M10-A09 | 创建预制体；拖放实例化；资源浏览器显示 Prefab | 创建/实例化 Prefab、workspace 质量门 | `tasks/done/M10-09-Prefab编辑器集成.md` | PASS | M10 |
 | M10-A11 | 编辑器面板拆分与四行布局 | M10-A10 | `main.rs` 拆分为 panels/state/actions/geometry 模块；四行/分区布局可启动；编辑器状态和既有工作流不回归 | editor 64+12 项测试、workspace 测试/构建、`editor --check` | `tasks/done/M10-11-编辑器面板拆分与四行布局.md`；`docs/acceptance-evidence/m10/m10-11-editor-layout.md`；真实 GUI/DPI/resize 证据待补 | PENDING | M10-11 |
-| M10-A13 | 质量门与编辑器实机证据 | M10-A12 | CI 触发 `game/**`、`docs/**`、`tasks/**`；`git diff --check`、`game_runner --check`、`editor --check` 和发布包字体路径检查通过；GUI/GPU、100%/150% DPI、resize、Play/Stop 证据可复核 | workflow、verify.ps1、资源缺失失败测试、package/build-release 字体检查 | `docs/acceptance-evidence/m10/m10-13-quality-and-gui-evidence.md`；`tasks/done/M10-13-质量门与编辑器实机证据.md`；真实截图/录屏/GPU日志待归档 | PENDING | M10-13 |
+| M10-A13 | 质量门与编辑器实机证据 | M10-A12 | CI 触发 `game/**`、`docs/**`、`tasks/**`；`git diff --check`、`game --check`、`editor --check` 和发布包字体路径检查通过；GUI/GPU、100%/150% DPI、resize、Play/Stop 证据可复核 | workflow、verify.ps1、资源缺失失败测试、package/build-release 字体检查 | `docs/acceptance-evidence/m10/m10-13-quality-and-gui-evidence.md`；`tasks/done/M10-13-质量门与编辑器实机证据.md`；真实截图/录屏/GPU日志待归档 | PENDING | M10-13 |

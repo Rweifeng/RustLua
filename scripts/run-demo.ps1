@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Name = "game_runner",
+    [string]$Name = "game",
     [switch]$Release
 )
 

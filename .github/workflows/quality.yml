@@ -62,7 +62,7 @@ jobs:
 
       - name: Game project check
         working-directory: ${{ github.workspace }}
-        run: cargo run --quiet --manifest-path engine/Cargo.toml -p game_runner -- --project "${{ github.workspace }}\\game" --check
+        run: cargo run --quiet --manifest-path engine/Cargo.toml -p game -- --project "${{ github.workspace }}\\game" --check
 
       - name: Editor project check
         working-directory: ${{ github.workspace }}

@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     # Run the directory-isolation self test (copy to a temp dir with spaces,
-    # launch the packaged game_runner --pack without any source/target/.cache).
+    # launch the packaged game --pack without any source/target/.cache).
     [switch]$SelfTest,
     # Compress Lua/scene resources in the release pack (present = on).
     [switch]$Compress,
@@ -39,8 +39,8 @@ try {
     Write-Host "==> Copy runner and docs" -ForegroundColor Cyan
     # 发布包只含运行器；assetc 为开发工具，不随包分发（并清理历史残留）。
     Remove-Item -Path (Join-Path $distRoot "assetc.exe") -Force -ErrorAction SilentlyContinue
-    Copy-Item -Path (Join-Path $engineRoot "target\release\game_runner.exe") `
-        -Destination (Join-Path $distRoot "game_runner.exe") -Force
+    Copy-Item -Path (Join-Path $engineRoot "target\release\game.exe") `
+        -Destination (Join-Path $distRoot "game.exe") -Force
 
     $fontSource = Join-Path $projectRoot "game\assets\fonts\NotoSansSC-VF.ttf"
     if (-not (Test-Path $fontSource)) { throw "Game CJK font resource was not found: $fontSource" }
@@ -52,7 +52,7 @@ try {
         throw "Release package font is missing or empty: fonts/NotoSansSC-VF.ttf"
     }
 
-    $packCheckOutput = & (Join-Path $distRoot "game_runner.exe") --pack $packRoot --check 2>&1
+    $packCheckOutput = & (Join-Path $distRoot "game.exe") --pack $packRoot --check 2>&1
     $packCheckExit = $LASTEXITCODE
     Write-Host $packCheckOutput
     if ($packCheckExit -ne 0) { throw "Release package check failed (exit $packCheckExit)." }
@@ -65,15 +65,15 @@ try {
         "build_time: $timestamp",
         "engine_core version: $engineVersion",
         "toolchain: $toolchain",
-        "contents: game_runner.exe, fonts/NotoSansSC-VF.ttf, pack/ (data), run.txt, deps.txt",
+        "contents: game.exe, fonts/NotoSansSC-VF.ttf, pack/ (data), run.txt, deps.txt",
         "font_check: fonts/NotoSansSC-VF.ttf present and non-empty"
     ) | Set-Content (Join-Path $distRoot "build-info.txt") -Encoding UTF8
 
     @(
         "Run instructions",
-        "1) Double-click game_runner.exe, or run: game_runner.exe --pack pack",
+        "1) Double-click game.exe, or run: game.exe --pack pack",
         "2) Controls: WASD move, SPACE attack, F1 save, F2 load, F4 switch scene",
-        "3) Logs and crash reports are written next to game_runner.exe",
+        "3) Logs and crash reports are written next to game.exe",
         "4) This package has no source or toolchain dependency and runs without Rust/IDE"
     ) | Set-Content (Join-Path $distRoot "run.txt") -Encoding UTF8
 
@@ -90,7 +90,7 @@ if ($SelfTest) {
     $isolated = Join-Path $env:TEMP ("p2 release test " + (Get-Date -Format "HHmmss"))
     New-Item -ItemType Directory -Force -Path $isolated | Out-Null
     Copy-Item -LiteralPath $distRoot -Destination $isolated -Recurse -Force
-    $isolatedRunner = Join-Path $isolated "p2-game\game_runner.exe"
+    $isolatedRunner = Join-Path $isolated "p2-game\game.exe"
     $isolatedPack = Join-Path $isolated "p2-game\pack"
     if (-not (Test-Path $isolatedRunner)) { throw "isolated dir is missing the runner" }
     $isolatedFont = Join-Path $isolated "p2-game\fonts\NotoSansSC-VF.ttf"

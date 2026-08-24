@@ -1,5 +1,5 @@
 //! Reusable engine runtime: scene instantiation + GPU rendering, extracted from
-//! `game_runner` so editors and hosts can embed a live game view (M10).
+//! the game executable so editors and hosts can embed a live game view (M10).
 //!
 //! - [`RuntimeScene`] instantiates the project scene/scripts and produces
 //!   per-frame [`SceneMesh`] (2D) and [`Scene3d`] draw data.

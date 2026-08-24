@@ -5,7 +5,7 @@
 ## 当前内容
 
 - `crates/engine_core`：无第三方依赖的引擎核心库占位；
-- `crates/game_runner`：最小可执行运行器；
+- `crates/game`：最小可执行运行器；
 - `rust-toolchain.toml`：固定 stable 工具链并声明 rustfmt/clippy；
 - `engine/.cargo/config.toml`：workspace 构建配置；
 - workspace 使用 Cargo resolver 2。
@@ -62,13 +62,13 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
 cargo build --workspace
 cargo build --workspace --release
-cargo run -p game_runner
+cargo run -p game
 ```
 
 预期运行器输出：
 
 ```text
-p2 game runner 0.1.0
+p2 game 0.1.0
 ```
 
 ## CI

@@ -25,10 +25,7 @@ use editor::{
 };
 use eframe::egui;
 use engine_core::{
-    logging::LogSink,
-    math3d::Vec3,
-    scene::SceneEntityId,
-    script::LuaRuntime,
+    logging::LogSink, math3d::Vec3, scene::SceneEntityId, script::LuaRuntime,
     transform3d::Transform3D,
 };
 use engine_host::{Renderer, RuntimeScene};
@@ -237,8 +234,10 @@ struct EditorApp {
     scene_files_cache: Vec<PathBuf>,
     /// 场景文件列表最近一次扫描时间。
     scene_files_cache_time: Option<Instant>,
-    /// 上次执行 hierarchy 元数据同步的场景标识（path, revision），避免每帧全量遍历。
+    /// 上次执行 hierarchy 元数据同步的场景标识。
     last_metadata_key: Option<(Option<PathBuf>, u64)>,
+    /// 最近一次预览或 Scene View 的结构化诊断；显示在对应视图 overlay。
+    preview_diagnostic: Option<String>,
     /// 上次游戏预览步进时间（~30fps 节流，避免输入事件高帧率加速游戏）。
     last_preview_tick: Option<Instant>,
 }
@@ -445,12 +444,7 @@ impl EditorApp {
             gpu,
             preview: None,
             preview_resolution: (640, 360),
-            preview_resolutions: vec![
-                (640, 360),
-                (960, 540),
-                (1280, 720),
-                (1920, 1080),
-            ],
+            preview_resolutions: vec![(640, 360), (960, 540), (1280, 720), (1920, 1080)],
             adding_preview_resolution: false,
             custom_preview_resolution: (640, 360),
             editor_camera: EditorCamera::default(),
@@ -465,6 +459,7 @@ impl EditorApp {
             scene_runtime_revision: None,
             scene_files_cache: Vec::new(),
             scene_files_cache_time: None,
+            preview_diagnostic: None,
             last_metadata_key: None,
             last_preview_tick: None,
         }
@@ -480,7 +475,6 @@ impl EditorApp {
             .map(PlaySession::runtime_document)
             .or(self.document.current_scene.as_ref())
     }
-
 
     fn scene_name(&self) -> String {
         self.current_scene()
@@ -567,5 +561,3 @@ impl eframe::App for EditorApp {
         self.draw_about_window(context);
     }
 }
-
-

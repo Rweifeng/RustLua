@@ -155,20 +155,21 @@ impl GameApp {
             self.input.finish_frame();
         }
         let snapshot = self.performance.snapshot();
-        let mut mesh = self
-            .runtime_scene
-            .as_mut()
-            .and_then(|scene| {
-                scene
-                    .vertices(renderer.config.width, renderer.config.height)
-                    .ok()
-            })
-            .unwrap_or_else(|| SceneMesh {
+        let mut mesh = match self.runtime_scene.as_mut() {
+            Some(scene) => match scene.vertices(renderer.config.width, renderer.config.height) {
+                Ok(mesh) => mesh,
+                Err(error) => {
+                    tracing::error!(target: "render", "[runtime] 2D scene extraction failed: {error}");
+                    return;
+                }
+            },
+            None => SceneMesh {
                 vertices: Vec::new(),
                 draws: Vec::new(),
                 paths: Vec::new(),
                 font_atlas: None,
-            });
+            },
+        };
         if self.overlay_enabled {
             let start = mesh.vertices.len() as u32;
             mesh.vertices.extend(build_overlay_vertices(

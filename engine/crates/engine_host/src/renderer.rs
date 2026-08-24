@@ -107,6 +107,8 @@ struct ReadbackSlot {
     height: u32,
     row_bytes: u32,
     bytes_per_row: u32,
+    /// Reusable compact CPU output storage.
+    pixels: Vec<u8>,
 }
 
 /// 非阻塞离屏回读的结果。
@@ -1486,6 +1488,17 @@ impl Renderer {
         }
     }
 
+    pub fn readback_slot_count(&self) -> usize {
+        self.readback_slots.len()
+    }
+
+    pub fn readback_busy_count(&self) -> usize {
+        self.readback_slots
+            .iter()
+            .filter(|slot| slot.submission.is_some())
+            .count()
+    }
+
     /// 是否有在途（已提交未读）的回读等待排空。
     pub fn readback_in_flight(&self) -> bool {
         self.readback_slots
@@ -1510,9 +1523,7 @@ impl Renderer {
     /// 非阻塞检查一个回读槽：映射完成则读出行数据并置回空闲，返回紧凑像素与尺寸。
     fn try_finish_readback(&mut self, index: usize) -> Option<(Vec<u8>, u32, u32)> {
         let slot = self.readback_slots.get(index)?;
-        if slot.submission.is_none() {
-            return None;
-        }
+        slot.submission.as_ref()?;
         // 非阻塞 maintain：处理所有已完成的提交与 `map_async` 回调（超时即返回，
         // 主线程不阻塞）。就绪与否由 `ready` 标志判断。
         let _ = self.device.poll(wgpu::PollType::Wait {
@@ -1526,7 +1537,9 @@ impl Renderer {
             (slot.width, slot.height, slot.row_bytes, slot.bytes_per_row);
         let buffer = slot.buffer.clone();
         let padded = buffer.slice(..).get_mapped_range();
-        let mut pixels = Vec::with_capacity((row_bytes * height) as usize);
+        let mut pixels = std::mem::take(&mut self.readback_slots[index].pixels);
+        pixels.clear();
+        pixels.reserve((row_bytes * height) as usize);
         for row in 0..height as usize {
             let start = row * bytes_per_row as usize;
             pixels.extend_from_slice(&padded[start..start + row_bytes as usize]);
@@ -1547,8 +1560,10 @@ impl Renderer {
             return;
         }
         let row_bytes = 4 * width;
-        let bytes_per_row = row_bytes.div_ceil(256) * 256;
+        let bytes_per_row = row_bytes.div_ceil(256);
+        let bytes_per_row = bytes_per_row * 256;
         let size_bytes = (bytes_per_row * height) as u64;
+        tracing::debug!(target: "render", width, height, "[readback] submit");
         // 惰性创建双缓冲槽。
         while self.readback_slots.len() < 2 {
             self.readback_slots.push(ReadbackSlot {
@@ -1564,6 +1579,7 @@ impl Renderer {
                 height,
                 row_bytes,
                 bytes_per_row,
+                pixels: Vec::with_capacity((row_bytes * height) as usize),
             });
         }
         // 找一个空闲槽（无在途提交）。
@@ -1860,9 +1876,14 @@ impl Renderer {
         }
         // SDF 距离场不能走 sRGB 解码（会非线性化距离斜坡），用 Rgba8Unorm。
         let format = wgpu::TextureFormat::Rgba8Unorm;
-        let texture = if let Some(texture) = &self.font_atlas_texture {
-            texture.clone()
+        let texture = if self.font_atlas_texture.as_ref().is_some_and(|texture| {
+            let size = texture.size();
+            size.width == font.width && size.height == font.height
+        }) {
+            self.font_atlas_texture.as_ref().unwrap().clone()
         } else {
+            self.font_atlas_bind = None;
+            self.font_atlas_sdf_bind = None;
             let texture = self.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("p2-font-atlas"),
                 size: wgpu::Extent3d {

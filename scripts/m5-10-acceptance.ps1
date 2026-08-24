@@ -28,7 +28,7 @@ try {
  if (Test-Path $bad) { Remove-Item -LiteralPath $bad -Recurse -Force }
  try { cargo run --quiet -p editor -- --project $bad --check; throw "invalid project unexpectedly passed" } catch { Add-Content $log "invalid project negative check passed: $($_.Exception.Message)" }
 } finally { Pop-Location }
-$runner = Join-Path $root "artifacts\builds\release\engine\game_runner.exe"
+$runner = Join-Path $root "artifacts\builds\release\engine\game.exe"
 if (-not (Test-Path $runner)) { & (Join-Path $root "scripts\build-release.ps1") }
 if (-not (Test-Path (Join-Path $root "artifacts\builds\release\game\project.toml"))) { throw "release game project manifest missing" }
 if (-not (Test-Path (Join-Path $root "artifacts\builds\release\game\scripts\main.lua"))) { throw "release game resource missing" }

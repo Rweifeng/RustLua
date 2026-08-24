@@ -1,5 +1,5 @@
 [package]
-name = "game_runner"
+name = "game"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
