@@ -173,6 +173,18 @@ impl RuntimeScene {
     /// the active light, and every entity with both a `Transform3D` and a
     /// `MeshRenderer`. Returns `None` when the scene has no 3D drawables.
     pub fn scene_3d(&self, aspect_ratio: f32) -> Option<Scene3d> {
+        self.scene_3d_with_camera(aspect_ratio, None)
+    }
+
+    /// 带可选相机覆盖的 3D 提取（M11-04 / R-05）：编辑器 Scene 3D 视图与运行时
+    /// 共用同一条 ECS drawable/component 提取路径（单一事实来源），编辑器传入
+    /// 视图导航相机作为覆盖（不改场景数据），运行时传入 `None` 走
+    /// `active_camera3d`（Lua 选择 / 首个 Camera3D / 默认）。
+    pub fn scene_3d_with_camera(
+        &self,
+        aspect_ratio: f32,
+        camera_override: Option<Camera3D>,
+    ) -> Option<Scene3d> {
         // Runtime extraction intentionally reads ECS state so physics, scripts,
         // active camera/light selection, and animation palettes remain live.
         let drawables = self.script.with_world(|world| {
@@ -230,7 +242,14 @@ impl RuntimeScene {
         if drawables.is_empty() {
             return None;
         }
-        let camera = self.active_camera3d(aspect_ratio);
+        // 编辑器视图覆盖相机时不触碰场景数据（不写 ECS、不改脚本状态），仅作为
+        // 渲染视角覆盖；运行时传 None 则按 Lua 选择 / 首个 Camera3D / 默认解析。
+        let camera = camera_override
+            .map(|mut c| {
+                c.aspect_ratio = aspect_ratio;
+                c
+            })
+            .unwrap_or_else(|| self.active_camera3d(aspect_ratio));
         let light = self.active_light();
         Some(Scene3d {
             camera,
@@ -1003,6 +1022,49 @@ mod sdf_tests {
         assert_eq!(runtime_light.direction, serialized_light.direction);
         assert_eq!(runtime_light.color, serialized_light.color);
         assert_eq!(runtime_light.intensity, serialized_light.intensity);
+    }
+
+    /// M11-04 / R-05：编辑器 3D 视图相机覆盖（`scene_3d_with_camera`）不修改场景
+    /// 数据——传 `Some` 仅覆盖渲染视角（aspect 同步为传入值），传 `None` 走
+    /// `active_camera3d`；覆盖前后 drawables 一致，且覆盖后 `scene_3d` 仍回退到
+    /// 场景相机（证明覆盖是瞬时的视图参数，未写入 ECS / 脚本状态）。
+    #[test]
+    fn scene_3d_with_camera_override_keeps_scene_data_intact() {
+        let root = game_root();
+        let path = root.join("scenes/demo3d.scene");
+        let scene = Scene::load(&path).unwrap_or_else(|e| panic!("load demo3d: {e}"));
+        let runtime = RuntimeScene::from_scene_edit(Some(&root), scene).expect("runtime demo3d");
+
+        let before = runtime.scene_3d(16.0 / 9.0).expect("3d scene");
+        let override_camera = Camera3D {
+            position: Vec3::new(10.0, 20.0, 30.0),
+            target: Vec3::new(-5.0, -6.0, -7.0),
+            up: Vec3::Z,
+            fov_y: 0.9,
+            aspect_ratio: 2.0,
+            near: 0.5,
+            far: 200.0,
+        };
+        let overridden = runtime
+            .scene_3d_with_camera(4.0 / 3.0, Some(override_camera))
+            .expect("3d scene");
+        // 覆盖仅作用于相机：aspect 同步为传入值，其余相机字段保持覆盖值。
+        assert_eq!(overridden.camera.position, Vec3::new(10.0, 20.0, 30.0));
+        assert_eq!(overridden.camera.target, Vec3::new(-5.0, -6.0, -7.0));
+        assert!((overridden.camera.aspect_ratio - 4.0 / 3.0).abs() < 1e-6);
+        assert!((overridden.camera.fov_y - 0.9).abs() < 1e-6);
+        // drawables 不受相机覆盖影响：数量与每项名称/mesh path 均一致。
+        assert_eq!(overridden.drawables.len(), before.drawables.len());
+        for (a, b) in overridden.drawables.iter().zip(before.drawables.iter()) {
+            assert_eq!(a.name, b.name);
+            assert_eq!(a.mesh_path, b.mesh_path);
+        }
+        // 无覆盖路径 = scene_3d 路径（相机/光源/资源一致），覆盖后场景数据未变。
+        let after = runtime.scene_3d(16.0 / 9.0).expect("3d scene");
+        assert_eq!(after.camera.position, before.camera.position);
+        assert_eq!(after.camera.target, before.camera.target);
+        assert_eq!(after.light.direction, before.light.direction);
+        assert_eq!(after.drawables.len(), before.drawables.len());
     }
 
     /// RuntimeScene 无 GPU 长会话：重复 create → run_script_steps → vertices → drop，

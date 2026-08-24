@@ -1,6 +1,7 @@
 //! 行3 Game 视图 + Play/Stop 运行生命周期：内嵌游戏预览。
 
 use crate::EditorApp;
+use crate::PlayState;
 use crate::WorkspaceTab;
 use crate::preview_session::PreviewSession;
 use crate::util::strip_verbatim_prefix;
@@ -13,45 +14,57 @@ use engine::core::{
 
 impl EditorApp {
     /// 进入 Play：创建内嵌游戏预览（运行 Lua + 物理 + 渲染），并把编辑器场景隔离快照。
+    /// M11-01 状态机：`Editing → Starting → Playing`；初始化失败进入 `StartFailed`，
+    /// 绝不设置 `play_session`（R-01，编辑器状态与实际运行状态保持一致）。
     pub(crate) fn play(&mut self) {
         if self.is_playing() {
-            self.status = "Not currently in Play mode".to_owned();
             return;
         }
         let Some(document) = self.current_scene().cloned() else {
             self.status = "Please create or open a scene first".to_owned();
             return;
         };
-        // M10-03：创建内嵌游戏预览（Play 真正运行 Lua + 物理 + 渲染）。
+        self.play_state = PlayState::Starting;
         match self.create_preview(&document.scene) {
             Ok(preview) => {
                 let (width, height) = preview.size();
                 tracing::info!(target: "editor", "[preview] created {}x{}", width, height);
                 self.preview = Some(preview);
+                self.play_session = Some(PlaySession::start(&document));
+                self.play_state = PlayState::Playing;
+                // 运行预览时自动切到 Game 视图。
+                self.workspace_tab = WorkspaceTab::Game;
+                self.status = "Play mode started; runtime changes stay isolated".to_owned();
             }
             Err(error) => {
                 tracing::error!(target: "editor", "[preview] create failed: {error}");
+                // 初始化失败不得进入 Playing：不设置 play_session / preview，并清空输入。
+                self.preview = None;
+                self.play_session = None;
+                self.preview_input_state.clear_all();
+                self.play_state = PlayState::StartFailed;
                 self.status = format!("游戏预览启动失败：{error}");
             }
         }
-        self.play_session = Some(PlaySession::start(&document));
-        // 运行预览时自动切到 Game 视图。
-        self.workspace_tab = WorkspaceTab::Game;
-        self.status = "Play mode started; runtime changes stay isolated".to_owned();
     }
 
     /// 停止 Play：丢弃运行态变更，恢复编辑器快照。
+    /// M11-01 状态机：`Playing → Stopping → Editing`，Stop 期间释放临时世界/GPU 纹理/Lua 状态。
     pub(crate) fn stop(&mut self) {
         let Some(session) = self.play_session.take() else {
             self.status = "Not currently in Play mode".to_owned();
             return;
         };
+        self.play_state = PlayState::Stopping;
         self.preview = None;
         self.document.current_scene = Some(session.stop());
         self.tree.clear_selection();
         self.inspector.clear_selection();
+        // Play/Stop 清空输入状态，避免下一轮 Play 残留边沿（M11-02）。
+        self.preview_input_state.clear_all();
         // 停止后回到 Scene 视图。
         self.workspace_tab = WorkspaceTab::Scene;
+        self.play_state = PlayState::Editing;
         self.status = "Play stopped; runtime changes were discarded".to_owned();
     }
 
@@ -161,20 +174,29 @@ impl EditorApp {
                 preview.resize(device, width, height);
             }
         }
-        // 把 egui 的键盘/鼠标/滚轮输入桥接到游戏快照（仅在指针悬停 Game 视图时，
-        // 避免编辑器输入泄漏到游戏）。
-        let input = if focused {
+        if focused {
             let (width, height) = self
                 .preview
                 .as_ref()
                 .map(PreviewSession::size)
                 .unwrap_or((640, 360));
-            self.preview_input(ctx, preview_rect, width, height)
+            // 复用跨帧输入状态（M11-02）：held 按键/鼠标跨帧保留，`just_pressed`/
+            // `just_released` 边沿只在本次模拟帧的 update 消费一次，随后在帧边界清空，
+            // 避免按住的键在下一个 tick 重复触发一次性动作。
+            let mut input = std::mem::take(&mut self.preview_input_state);
+            self.bridge_preview_input(&mut input, ctx, preview_rect, width, height);
+            if let Some(preview) = &mut self.preview {
+                preview.update(ctx, &input);
+            }
+            // 在模拟帧边界消费 transient edge：清边沿但保留 held 状态。
+            input.finish_frame();
+            self.preview_input_state = input;
         } else {
-            InputSnapshot::default()
-        };
-        if let Some(preview) = &mut self.preview {
-            preview.update(ctx, &input);
+            // 失焦：清空 held 防止卡键（M11-02）。
+            self.preview_input_state.clear_all();
+            if let Some(preview) = &mut self.preview {
+                preview.update(ctx, &InputSnapshot::default());
+            }
         }
     }
 
@@ -202,14 +224,16 @@ impl EditorApp {
         rect
     }
 
-    fn preview_input(
+    /// 把 egui 的键盘/鼠标/滚轮输入桥接到给定的游戏输入快照（复用调用方持有的
+    /// 跨帧 held 状态；M11-02）。预览在 Game 视图内纵横比居中后的实际绘制矩形。
+    fn bridge_preview_input(
         &self,
+        input: &mut InputSnapshot,
         ctx: &egui::Context,
         preview_rect: egui::Rect,
         width: u32,
         height: u32,
-    ) -> InputSnapshot {
-        let mut input = InputSnapshot::default();
+    ) {
         ctx.input(|i| {
             for (egui_key, game_key) in [
                 (egui::Key::W, InputKey::W),
@@ -237,6 +261,113 @@ impl EditorApp {
                 input.scroll_event(scroll.x, scroll.y);
             }
         });
-        input
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::PlayState;
+    use editor::ProjectInfo;
+    use engine::core::logging::LogSink;
+    use engine::core::scene::SceneEntityId;
+    use std::path::PathBuf;
+
+    /// 无 GPU 上下文 + 含一个实体的编辑器应用（用于失败路径测试）。
+    fn app_with_scene() -> EditorApp {
+        let root = PathBuf::from(std::env::var("TEMP").unwrap_or_else(|_| ".".into()))
+            .join(format!("p2-m11-01-{}", std::process::id()));
+        let project = ProjectInfo {
+            root,
+            version: "test".into(),
+            directories: Vec::new(),
+        };
+        let mut app = EditorApp::new(project, None, LogSink::new(64));
+        app.document.new_scene("main");
+        app.document
+            .current_scene
+            .as_mut()
+            .unwrap()
+            .scene
+            .add_entity(SceneEntityId(1), "Root", None)
+            .unwrap();
+        app
+    }
+
+    /// R-01：无 GPU 时 Play 初始化失败，绝不进入 Playing，也不设置 play_session。
+    #[test]
+    fn play_failed_without_gpu_never_enters_playing() {
+        let mut app = app_with_scene();
+        app.play();
+        assert_eq!(app.play_state, PlayState::StartFailed);
+        assert!(
+            app.play_session.is_none(),
+            "初始化失败不得持有 play_session"
+        );
+        assert!(!app.is_playing(), "StartFailed 不是运行态");
+        assert!(app.preview.is_none());
+        assert!(app.status.contains("游戏预览启动失败"), "需给用户可读错误");
+    }
+
+    /// M11-01：is_playing 反映状态机而非仅 play_session 是否被设置。
+    #[test]
+    fn is_playing_reflects_state_machine() {
+        let mut app = app_with_scene();
+        assert_eq!(app.play_state, PlayState::Editing);
+        assert!(!app.is_playing());
+        app.play_state = PlayState::Starting;
+        assert!(app.is_playing());
+        app.play_state = PlayState::Playing;
+        assert!(app.is_playing());
+        app.play_state = PlayState::StartFailed;
+        assert!(!app.is_playing(), "StartFailed 必须保持编辑态");
+        app.play_state = PlayState::Stopping;
+        assert!(app.is_playing());
+        app.play_state = PlayState::Editing;
+        assert!(!app.is_playing());
+    }
+
+    /// M11-01：未进入 Play 时 Stop 是安全 no-op，状态保持 Editing。
+    #[test]
+    fn stop_without_play_is_noop() {
+        let mut app = app_with_scene();
+        app.stop();
+        assert_eq!(app.play_state, PlayState::Editing);
+        assert!(app.play_session.is_none());
+    }
+
+    /// M11-02：跨帧复用同一 InputSnapshot 的 held 状态 + 帧边界 finish_frame 后，
+    /// 按住的键只在按下那一帧触发 just_pressed，后续 tick 不重复触发一次性动作。
+    #[test]
+    fn held_key_reuse_does_not_repeat_just_pressed_across_ticks() {
+        let mut state = InputSnapshot::default();
+        // 第 1 tick：按下 W。
+        state.key_event(InputKey::W, true);
+        assert!(state.just_pressed(InputKey::W));
+        state.finish_frame();
+        // 第 2 tick：继续按住 W（模拟 bridge_preview_input 再次写入 true）。
+        state.key_event(InputKey::W, true);
+        assert!(
+            !state.just_pressed(InputKey::W),
+            "按住期间不得重复触发一次性动作"
+        );
+        assert!(state.is_down(InputKey::W));
+        state.finish_frame();
+        // 松开 W：产生 just_released 且不再 held。
+        state.key_event(InputKey::W, false);
+        assert!(state.just_released(InputKey::W));
+        state.finish_frame();
+        assert!(!state.is_down(InputKey::W));
+    }
+
+    /// M11-02：失焦清空 held 状态防止卡键。
+    #[test]
+    fn focus_loss_clears_held_state_prevents_stuck_input() {
+        let mut state = InputSnapshot::default();
+        state.key_event(InputKey::W, true);
+        state.mouse_event(MouseButton::Left, true);
+        state.clear_all();
+        assert!(!state.is_down(InputKey::W));
+        assert!(!state.mouse_is_down(MouseButton::Left));
     }
 }

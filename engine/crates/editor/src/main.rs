@@ -27,7 +27,7 @@ use editor::{
 };
 use eframe::egui;
 use engine::core::{
-    logging::LogSink, math3d::Vec3, scene::SceneEntityId, script::LuaRuntime,
+    input::InputSnapshot, logging::LogSink, math3d::Vec3, scene::SceneEntityId, script::LuaRuntime,
     transform3d::Transform3D,
 };
 use engine::host::{Renderer, RuntimeScene};
@@ -169,6 +169,8 @@ struct EditorApp {
     entity_name: String,
     parent_entity: String,
     status: String,
+    /// Play 生命周期状态机（M11-01）；`play_session` 只在实际运行/开始切换时存在。
+    play_state: PlayState,
     play_session: Option<PlaySession>,
     history: CommandHistory,
     recovery: RecoveryManager,
@@ -241,12 +243,31 @@ struct EditorApp {
     /// 最近一次 Scene View 的结构化诊断；显示在对应视图 overlay。
     /// 游戏预览的诊断由 PreviewSession 自己持有（见 preview_session.rs）。
     preview_diagnostic: Option<String>,
+    /// Game View 输入快照的跨帧状态（M11-02）：held 按键/鼠标跨帧保留，
+    /// `just_pressed`/`just_released` 边沿只在模拟帧边界消费一次，失焦/Play-Stop 时清空。
+    preview_input_state: InputSnapshot,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum WorkspaceTab {
     Scene,
     Game,
+}
+
+/// Play 运行生命周期状态机（M11-01）：
+/// `Editing → Starting → Playing / StartFailed → Stopping → Editing`。
+///
+/// 关键约束：初始化全部成功（运行时 + 离屏渲染器 + 预览纹理）后才能进入
+/// `Playing`；任一初始化失败进入 `StartFailed` 并保持编辑态；`Stopping` 期间
+/// 释放临时世界/输入/GPU 纹理/Lua 状态后回到 `Editing`。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum PlayState {
+    #[default]
+    Editing,
+    Starting,
+    Playing,
+    StartFailed,
+    Stopping,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -405,6 +426,7 @@ impl EditorApp {
             entity_name: "Entity".to_owned(),
             parent_entity: String::new(),
             status: "尚未创建场景".to_owned(),
+            play_state: PlayState::Editing,
             play_session: None,
             history: CommandHistory::new(),
             recovery,
@@ -451,11 +473,15 @@ impl EditorApp {
             scene_files_cache_time: None,
             preview_diagnostic: None,
             last_metadata_key: None,
+            preview_input_state: InputSnapshot::default(),
         }
     }
 
     fn is_playing(&self) -> bool {
-        self.play_session.is_some()
+        matches!(
+            self.play_state,
+            PlayState::Starting | PlayState::Playing | PlayState::Stopping
+        )
     }
 
     fn current_scene(&self) -> Option<&editor::SceneDocument> {

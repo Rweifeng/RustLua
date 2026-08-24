@@ -23,7 +23,7 @@ GPU：NVIDIA GeForce RTX 3060 Laptop GPU
 
 ## 真实窗口证据（game_runner，加载改造后的 game/scenes/main.scene）
 
-`artifacts/logs/game-runner.log`：
+`artifacts/logs/game.log`：
 
 - `[scene] loaded name=main entities=12` —— 旧 v1 场景迁移加载，2D（7 实体）+ 3D（5 实体）共存；
 - `[scene] 'main' tilemap 10x8`、`project script loaded` —— 2D 样板游戏正常；

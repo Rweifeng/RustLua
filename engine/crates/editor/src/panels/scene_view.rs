@@ -857,7 +857,27 @@ impl EditorApp {
     }
 
     /// 从当前编辑场景 + 编辑器轨道相机构建 3D 渲染帧（M10-04）。
+    ///
+    /// M11-04 / R-05：优先复用 `RuntimeScene` 的 ECS 提取（与运行时同一条
+    /// drawable/component 提取路径，实体/资源数量与关键状态一致），编辑器轨道
+    /// 相机作为覆盖传入（不修改场景数据）；`scene_runtime` 缺失、实例化失败或
+    /// 提取为空时回退到静态 serialized extractor（保持既有诊断行为）。
     fn build_scene3d(&mut self, aspect: f32) -> Option<Scene3d> {
+        let camera = self.editor_camera(aspect);
+        if let Some(runtime) = &self.scene_runtime
+            && let Some(mut scene3d) = runtime.scene_3d_with_camera(aspect, Some(camera))
+        {
+            // Gizmo/拖拽预览覆盖 transform（不修改场景数据、不写回 ECS）。
+            for drawable in &mut scene3d.drawables {
+                if let Some(t) = self.scene_state.preview3d_transform.get(&drawable.entity)
+                    && let Ok(model) = t.model_matrix()
+                {
+                    drawable.model = model;
+                }
+            }
+            return Some(scene3d);
+        }
+        // 回退：serialized extractor（无 ECS 场景 / 实例化失败时保持既有行为与诊断）。
         let scene = self.current_scene()?;
         let extracted = extract_serialized_scene_3d(&scene.scene);
         if !extracted.diagnostics.is_empty() {
@@ -908,21 +928,6 @@ impl EditorApp {
         if drawables.is_empty() {
             return None;
         }
-        let cam = self.editor_camera;
-        let position = Vec3::new(
-            cam.target.x + cam.dist * cam.pitch.cos() * cam.yaw.sin(),
-            cam.target.y + cam.dist * cam.pitch.sin(),
-            cam.target.z + cam.dist * cam.pitch.cos() * cam.yaw.cos(),
-        );
-        let camera = Camera3D {
-            position,
-            target: cam.target,
-            up: Vec3::Y,
-            fov_y: 60f32.to_radians(),
-            aspect_ratio: aspect,
-            near: 0.1,
-            far: 200.0,
-        };
         let light = Light {
             direction: Vec3::new(0.4, 0.8, 0.5),
             color: [1.0, 1.0, 1.0],
@@ -936,7 +941,10 @@ impl EditorApp {
     }
 
     /// 渲染 3D 场景视图（编辑场景 + 编辑器相机）到离屏纹理并更新 egui 预览。
-    /// 内容未变化（修订/尺寸/相机未动且无活动拖拽预览）时跳过渲染，沿用缓存纹理。
+    /// 内容未变化（修订/实际渲染尺寸/相机未动且无活动拖拽预览）时跳过渲染，沿用缓存纹理。
+    ///
+    /// M11-03：缓存 key 记录实际渲染尺寸（R-03，拖拽结束半分辨率 → 全分辨率必然失效）；
+    /// 缓存只在回读成功后提交，失败清缓存并显示错误（R-04，下帧重试而非沿用旧帧）。
     fn render_scene_view_3d(&mut self, width: u32, height: u32, ctx: &egui::Context) {
         if width == 0 || height == 0 {
             return;
@@ -944,32 +952,33 @@ impl EditorApp {
         let revision = self.document.current_scene.as_ref().map(|doc| doc.revision);
         // Gizmo/拖拽预览变化需每帧重渲染；否则仅在修订/尺寸/相机变化时重渲染。
         let preview_active = !self.scene_state.preview3d_transform.is_empty();
-        let cache = self.scene_view_cache_3d;
-        if !preview_active
-            && cache.size == (width, height)
-            && cache.revision == revision
-            && cache.camera == self.editor_camera
-        {
-            self.drain_readback_3d(ctx);
-            return;
-        }
         // 交互期（拖拽预览活动）降半分辨率渲染，空闲恢复全分辨率。
         let (render_w, render_h) = if preview_active {
             ((width / 2).max(1), (height / 2).max(1))
         } else {
             (width, height)
         };
+        let cache = self.scene_view_cache_3d;
+        if scene_view_3d_cache_hit(
+            cache,
+            render_w,
+            render_h,
+            revision,
+            self.editor_camera,
+            preview_active,
+        ) {
+            self.drain_readback_3d(ctx);
+            return;
+        }
         let started = std::time::Instant::now();
         self.ensure_scene_renderer(render_w, render_h);
         // 前置条件未满足（无 GPU）时不更新缓存，下帧重试。
         if self.scene_renderer.is_none() || self.scene_texture.is_none() {
             return;
         }
-        self.scene_view_cache_3d = SceneViewCache3d {
-            size: (width, height),
-            revision,
-            camera: self.editor_camera,
-        };
+        // M11-04 / R-05：确保编辑场景的 ECS 运行时已按当前文档 revision 建立，
+        // 让 3D 视图与运行时共用同一条提取路径（相机以编辑器视图作为覆盖）。
+        self.ensure_scene_runtime();
         let scene3d = self.build_scene3d(render_w as f32 / render_h.max(1) as f32);
         let mesh = SceneMesh {
             vertices: Vec::new(),
@@ -984,18 +993,27 @@ impl EditorApp {
             return;
         };
         renderer.render_into_texture(&mesh, scene3d.as_ref(), view, render_w, render_h);
-        // 非阻塞回读：就绪则上传；未就绪则请求一次重绘，下帧轮询取回。
+        // 非阻塞回读：就绪则上传并提交缓存；Pending 请求重绘等下帧轮询；
+        // 失败清缓存（保持不匹配）让下帧重试，并显示用户可见错误（R-04）。
         match renderer.readback_frame(texture, render_w, render_h) {
             ReadbackStatus::Ready {
                 pixels,
                 width,
                 height,
             } => {
+                self.scene_view_cache_3d = SceneViewCache3d {
+                    size: (render_w, render_h),
+                    revision,
+                    camera: self.editor_camera,
+                };
                 self.set_scene_3d_texture(pixels, width, height, ctx);
             }
             ReadbackStatus::Pending => ctx.request_repaint(),
             ReadbackStatus::Failed(error) => {
                 tracing::warn!(target: "editor", "[scene view] 3D readback failed: {error}");
+                self.scene_view_cache_3d = SceneViewCache3d::default();
+                self.preview_diagnostic = Some(format!("Scene View 3D 回读失败：{error}"));
+                ctx.request_repaint();
             }
         }
         // 性能打点：仅当单帧耗时超过阈值时记录，便于对照优化前后。
@@ -1055,11 +1073,9 @@ impl EditorApp {
         if self.scene_renderer.is_none() || self.scene_texture.is_none() {
             return;
         }
-        self.scene_view_cache_2d = SceneViewCache2d {
-            size: (width, height),
-            revision,
-            camera,
-        };
+        // 本次实际渲染尺寸（2D 无半分辨率，即视口尺寸）；readback 返回的尺寸可能因
+        // 滞后帧不同，缓存记录用实际渲染尺寸。
+        let render_size = (width, height);
         let started = std::time::Instant::now();
 
         let zoom = self.scene_zoom;
@@ -1092,13 +1108,19 @@ impl EditorApp {
             return;
         };
         renderer.render_into_texture(&mesh, None, view, width, height);
-        // 非阻塞回读：就绪则上传；未就绪则请求一次重绘，下帧轮询取回。
-        match renderer.readback_frame(texture, width, height) {
+        // 非阻塞回读：就绪则上传并提交缓存；Pending 请求重绘等下帧轮询；
+        // 失败清缓存（保持不匹配）让下帧重试，并显示用户可见错误（R-04）。
+        match renderer.readback_frame(texture, render_size.0, render_size.1) {
             ReadbackStatus::Ready {
                 pixels,
                 width,
                 height,
             } => {
+                self.scene_view_cache_2d = SceneViewCache2d {
+                    size: render_size,
+                    revision,
+                    camera,
+                };
                 self.set_scene_2d_texture(pixels, width, height, ctx);
             }
             ReadbackStatus::Pending => {
@@ -1107,7 +1129,9 @@ impl EditorApp {
             }
             ReadbackStatus::Failed(error) => {
                 tracing::warn!(target: "editor", "[scene view] 2D readback failed: {error}");
+                self.scene_view_cache_2d = SceneViewCache2d::default();
                 self.preview_diagnostic = Some(format!("Scene View 回读失败：{error}"));
+                ctx.request_repaint();
             }
         }
         // 性能打点：仅当单帧耗时超过阈值时记录，便于对照优化前后。
@@ -1366,5 +1390,77 @@ impl EditorApp {
             Ok(_) => Ok(()),
             Err(error) => Err(error),
         }
+    }
+}
+
+/// 判断 3D Scene 视图是否可直接命中渲染缓存（M11-03 / R-03）：
+/// 无活动拖拽预览，且实际渲染尺寸 / 场景修订 / 编辑器相机都未变化时才命中。
+/// `render_w/render_h` 必须是实际渲染尺寸（交互期为半分辨率）——缓存 key 记录
+/// 真实渲染尺寸，拖拽结束半分辨率 → 全分辨率必然失效，不会沿用模糊帧。
+fn scene_view_3d_cache_hit(
+    cache: SceneViewCache3d,
+    render_w: u32,
+    render_h: u32,
+    revision: Option<u64>,
+    camera: crate::EditorCamera,
+    preview_active: bool,
+) -> bool {
+    !preview_active
+        && cache.size == (render_w, render_h)
+        && cache.revision == revision
+        && cache.camera == camera
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::EditorCamera;
+
+    /// R-03：3D 缓存 key 记录实际渲染尺寸。拖拽期渲染半分辨率并写入缓存；
+    /// 拖拽结束后视口恢复全分辨率，缓存不匹配 → 必然重渲染，不会沿用模糊帧。
+    #[test]
+    fn scene_view_3d_cache_records_actual_render_size() {
+        let camera = EditorCamera::default();
+        let revision = Some(7u64);
+        let view_w = 1280u32;
+        let view_h = 720u32;
+        let half = ((view_w / 2).max(1), (view_h / 2).max(1));
+        // 拖拽中写入的半分辨率缓存。
+        let cache_half = SceneViewCache3d {
+            size: half,
+            revision,
+            camera,
+        };
+        // 拖拽中（preview_active=true）：即使尺寸匹配也需每帧重渲染 → 不命中。
+        assert!(!scene_view_3d_cache_hit(
+            cache_half, half.0, half.1, revision, camera, true,
+        ));
+        // 拖拽结束：preview_active=false，但视口已恢复全分辨率，与半分辨率缓存尺寸不匹配 → 重渲染。
+        assert!(!scene_view_3d_cache_hit(
+            cache_half, view_w, view_h, revision, camera, false,
+        ));
+        // 空闲且全分辨率缓存与当前视口/修订/相机匹配 → 命中，可跳过重渲染。
+        let cache_full = SceneViewCache3d {
+            size: (view_w, view_h),
+            revision,
+            camera,
+        };
+        assert!(scene_view_3d_cache_hit(
+            cache_full, view_w, view_h, revision, camera, false,
+        ));
+        // 相机或修订变化 → 不命中。
+        let mut moved = EditorCamera::default();
+        moved.dist += 1.0;
+        assert!(!scene_view_3d_cache_hit(
+            cache_full, view_w, view_h, revision, moved, false,
+        ));
+        assert!(!scene_view_3d_cache_hit(
+            cache_full,
+            view_w,
+            view_h,
+            Some(8u64),
+            camera,
+            false,
+        ));
     }
 }

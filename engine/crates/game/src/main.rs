@@ -39,13 +39,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|path| path.parent().map(Path::to_path_buf))
         .unwrap_or_default();
     let log_path = [
-        exe_dir.join("../../../artifacts/logs/game-runner.log"),
-        exe_dir.join("../artifacts/logs/game-runner.log"),
-        PathBuf::from("artifacts/logs/game-runner.log"),
+        exe_dir.join("../../../artifacts/logs/game.log"),
+        exe_dir.join("../artifacts/logs/game.log"),
+        PathBuf::from("artifacts/logs/game.log"),
     ]
     .into_iter()
     .find(|path| path.parent().is_some_and(|parent| parent.is_dir()))
-    .unwrap_or_else(|| PathBuf::from("artifacts/logs/game-runner.log"));
+    .unwrap_or_else(|| PathBuf::from("artifacts/logs/game.log"));
     init_logging(&log_path, arguments.log_filter.as_deref())
         .map_err(|error| Box::new(error) as Box<dyn std::error::Error>)?;
     engine::core::logging::install_crash_handler(log_path.with_file_name("crash.log"));

@@ -14,7 +14,13 @@ impl EditorApp {
             .max_height(520.0)
             .show(context, |ui| {
                 ui.horizontal(|ui| {
-                    ui.heading("控制台");
+                    let project_name = self
+                        .project
+                        .root
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("项目");
+                    ui.heading(format!("控制台 — {project_name}"));
                     ui.text_edit_singleline(&mut self.console_filter);
                     if ui.button("运行选中脚本").clicked() {
                         self.run_selected_script();
@@ -129,12 +135,97 @@ fn format_diagnostic(diagnostic: &ScriptDiagnostic) -> String {
     let location = diagnostic
         .line
         .map_or_else(|| "未知行".to_owned(), |line| format!("第 {line} 行"));
-    format!(
+    let base = format!(
         "[{}] {} {}：{}（重复 {} 次）",
         diagnostic.phase,
         diagnostic.path.display(),
         location,
         diagnostic.message,
         diagnostic.occurrences
-    )
+    );
+    match suggest_action(diagnostic) {
+        Some(action) => format!("{base}\n    建议：{action}"),
+        None => base,
+    }
+}
+
+/// M11-05 / R-09：为脚本诊断提供启发式建议动作，让错误"可定位来源 + 可采取动作"。
+/// 基于诊断阶段与消息关键字给出可执行的下一步，而非仅堆叠错误文本。
+fn suggest_action(diagnostic: &ScriptDiagnostic) -> Option<String> {
+    let message = diagnostic.message.to_lowercase();
+    let action = match diagnostic.phase.as_str() {
+        "load"
+            if message.contains("找不到")
+                || message.contains("无法打开")
+                || message.contains("no such file") =>
+        {
+            "检查脚本文件是否存在，及路径与项目根目录的相对关系是否正确"
+        }
+        "load" => "检查 Lua 语法与脚本加载路径（脚本需能单独解析）",
+        "runtime" if message.contains("attempt to") || message.contains("nil") => {
+            "检查实体/变量是否已初始化——避免对 nil 调用方法或索引"
+        }
+        "runtime"
+            if message.contains("invalid")
+                || message.contains("无效")
+                || message.contains("缺失") =>
+        {
+            "检查实体引用的资源/组件路径是否存在且有效"
+        }
+        "runtime" => "检查脚本运行时逻辑与实体引用",
+        "api" => "检查 API 名称、参数类型与返回值约定",
+        _ => return None,
+    };
+    Some(action.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn diagnostic(phase: &str, message: &str) -> ScriptDiagnostic {
+        ScriptDiagnostic {
+            path: PathBuf::from("scripts/main.lua"),
+            phase: phase.to_owned(),
+            message: message.to_owned(),
+            line: Some(7),
+            stack_trace: String::new(),
+            occurrences: 1,
+        }
+    }
+
+    /// M11-05：加载/运行/API 各阶段诊断都能给出建议动作，且输出包含阶段、路径、行与消息。
+    #[test]
+    fn diagnostics_include_phase_path_line_and_suggestion() {
+        let cases = [
+            ("load", "无法打开文件 scripts/player.lua"),
+            ("load", "unexpected symbol near 'end'"),
+            ("runtime", "attempt to index a nil value"),
+            ("runtime", "无效的纹理资源 assets/tex.png"),
+            ("runtime", "boom at 42"),
+            ("api", "unknown field 'speed'"),
+        ];
+        for (phase, message) in cases {
+            let diagnostic = diagnostic(phase, message);
+            let formatted = format_diagnostic(&diagnostic);
+            assert!(formatted.contains(&format!("[{phase}]")));
+            assert!(formatted.contains("scripts/main.lua"));
+            assert!(formatted.contains("第 7 行"));
+            assert!(formatted.contains(message), "{formatted} 应包含消息");
+            assert!(
+                suggest_action(&diagnostic).is_some(),
+                "{phase}/{message} 应给出建议动作"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_diagnostic_has_no_suggestion_but_stays_structured() {
+        let diagnostic = diagnostic("mystery", "weird");
+        assert!(suggest_action(&diagnostic).is_none());
+        let formatted = format_diagnostic(&diagnostic);
+        assert!(formatted.contains("[mystery] scripts/main.lua 第 7 行"));
+        assert!(!formatted.contains("建议"));
+    }
 }

@@ -1,7 +1,7 @@
 //! 内嵌游戏预览会话（PreviewSession）：把 Play 预览的运行时、离屏渲染器、
 //! 纹理/视图与回读上传封装为可独立创建/步进/缩放/销毁的生命周期边界。
 //!
-//! 职责划分：本模块持有全部 GPU/运行时资源并驱动 ~30fps 节流步进与非阻塞回读；
+//! 职责划分：本模块持有全部 GPU/运行时资源并驱动 ~60fps 节流步进与非阻塞回读；
 //! Game 视图只负责输入桥接与绘制，Scene 视图可复用 readback 生命周期辅助。
 
 use eframe::egui;
@@ -10,8 +10,13 @@ use engine::core::scene::Scene;
 use engine::host::{ReadbackMetrics, ReadbackStatus, Renderer, RuntimeScene};
 use std::path::Path;
 
-/// 游戏预览的重绘节流：~30fps，保证持续运行而不忙转。
-const PREVIEW_FRAME_INTERVAL: std::time::Duration = std::time::Duration::from_millis(33);
+/// 游戏预览的重绘节流：~60fps，保证持续运行而不忙转。
+const PREVIEW_FRAME_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16);
+
+/// 启动期帧率打点：以 120 个到期 tick 为一窗口（tick 数、就绪上传数、窗口起始），
+/// 窗口结束时记录真实显示帧率（上传次数即显示帧率依据）。仅日志证据，不持有会话状态。
+static PERF_WINDOW: std::sync::Mutex<Option<(u32, u32, std::time::Instant)>> =
+    std::sync::Mutex::new(None);
 
 /// 一次 `update` 后的状态，供视图决定 overlay 与 repaint 调度。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -36,7 +41,7 @@ pub(crate) struct PreviewSession {
     egui_tex: Option<egui::TextureHandle>,
     width: u32,
     height: u32,
-    /// 距上次步进的时间（~30fps 节流）。
+    /// 距上次步进的时间（~60fps 节流）。
     last_tick: Option<std::time::Instant>,
     /// 最近一次步进/回读的结构化诊断；Game 视图 overlay 显示。
     diagnostic: Option<String>,
@@ -109,7 +114,7 @@ impl PreviewSession {
         self.renderer.readback_metrics()
     }
 
-    /// 每帧调用：先排空在途回读，到 ~30fps 节流周期时步进游戏并渲染提交新回读。
+    /// 每帧调用：先排空在途回读，到 ~60fps 节流周期时步进游戏并渲染提交新回读。
     /// 内部按需请求 repaint，保持游戏匀速而不忙转。
     pub(crate) fn update(&mut self, ctx: &egui::Context, input: &InputSnapshot) -> PreviewTick {
         let now = std::time::Instant::now();
@@ -177,7 +182,20 @@ impl PreviewSession {
                 PreviewTick::Failed
             }
         };
-        // 节流到 ~30fps：无论回读是否就绪都排下一帧，保证游戏持续运行且不忙转。
+        // 启动期帧率打点：每 120 个到期 tick 记录一次真实显示帧率（上传数由 upload_frame 累计）。
+        let mut window = PERF_WINDOW.lock().expect("preview perf window lock");
+        let (ticks, uploads, start) =
+            window.get_or_insert_with(|| (0, 0, std::time::Instant::now()));
+        *ticks += 1;
+        if *ticks >= 120 {
+            let fps = *uploads as f64 / start.elapsed().as_secs_f64().max(0.001);
+            tracing::info!(
+                target: "editor",
+                "[editor-perf] preview fps: {uploads} uploads / {ticks} ticks = {fps:.1} fps"
+            );
+            *window = None;
+        }
+        // 节流到 ~60fps：无论回读是否就绪都排下一帧，保证游戏持续运行且不忙转。
         ctx.request_repaint_after(PREVIEW_FRAME_INTERVAL);
         tick
     }
@@ -241,9 +259,16 @@ impl PreviewSession {
                     Some(ctx.load_texture("game_preview", image, egui::TextureOptions::LINEAR));
             }
         }
+        // 累计上传次数作为真实显示帧率依据（帧率打点读取）。
+        let Ok(mut guard) = PERF_WINDOW.lock() else {
+            return;
+        };
+        if let Some((_, uploads, _)) = guard.as_mut() {
+            *uploads = uploads.saturating_add(1);
+        }
     }
 
-    /// 测试辅助：强制下一个 `update` 视为到节流周期（免去真实 33ms 等待）。
+    /// 测试辅助：强制下一个 `update` 视为到节流周期（免去真实 16ms 等待）。
     #[cfg(test)]
     fn force_tick(&mut self) {
         self.last_tick = None;

@@ -31,7 +31,7 @@ GPU：NVIDIA GeForce RTX 3060 Laptop GPU
 
 ## 真实窗口证据（game_runner，加载 game/scenes/main.scene）
 
-`artifacts/logs/game-runner.log`（09:40 运行）：
+`artifacts/logs/game.log`（09:40 运行）：
 
 - `[scene] loaded name=main entities=13` —— 加入 SkeletonWarrior 后加载成功；
 - `[render] 3D mesh cached path=assets/models/kaykit-warrior.glb` —— CC0 战士蒙皮网格按场景缓存；

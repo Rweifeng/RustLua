@@ -524,4 +524,71 @@ mod tests {
         atlas.mark_uploaded();
         assert!(!atlas.dirty());
     }
+
+    /// M11-05：AtlasFull 之后 glyph 缓存 / 插槽 / 像素缓冲都不再增长——继续请求
+    /// 未缓存字形只会失败（返回 AtlasFull 错误），不会扩张内存。
+    #[test]
+    fn glyph_cache_and_pixels_stay_bounded_after_atlas_full() {
+        let bytes = test_font();
+        let mut atlas = FontAtlas::load(&bytes).unwrap();
+        for index in 0..(MAX_COLS * MAX_ROWS) {
+            let character = char::from_u32(0x1000 + index).unwrap();
+            let _ = atlas.try_glyph_metrics(character);
+        }
+        let cached = atlas.cached.len();
+        let slots = atlas.slots.len();
+        let pixels = atlas.pixels.len();
+        for index in 0..256u32 {
+            let character = char::from_u32(0x8000 + index).unwrap();
+            assert!(
+                matches!(
+                    atlas.try_glyph_metrics(character),
+                    Err(FontAtlasError::AtlasFull { .. })
+                ),
+                "已满后新字形应返回 AtlasFull"
+            );
+        }
+        assert_eq!(atlas.cached.len(), cached, "缓存不应继续增长");
+        assert_eq!(atlas.slots.len(), slots, "插槽不应继续增长");
+        assert_eq!(atlas.pixels.len(), pixels, "像素缓冲不应继续增长");
+        let cell = atlas.cell as u64;
+        assert_eq!(
+            atlas.width() as u64 * atlas.height() as u64,
+            (MAX_COLS as u64 * cell) * (MAX_ROWS as u64 * cell),
+            "图集尺寸不超过上限"
+        );
+    }
+
+    /// M11-05：字体热重载 / 场景切换（反复 load → rasterize → drop）无持续内存
+    /// 增长——每轮重建的新 atlas 内存有界，glyph 缓存不跨实例累积，owned buffer
+    /// 随 drop 释放（用缓存/像素上限作为无泄漏的代理证据）。
+    #[test]
+    fn repeated_load_rasterize_drop_keeps_memory_bounded() {
+        let bytes = test_font();
+        let sample: Vec<char> = "引擎编辑器场景切换热重载字体内存有界".chars().collect();
+        let mut max_cached = 0usize;
+        let mut max_pixels = 0usize;
+        for _ in 0..50 {
+            let mut atlas = FontAtlas::load(&bytes).unwrap();
+            for character in &sample {
+                let _ = atlas.try_glyph_metrics(*character);
+            }
+            max_cached = max_cached.max(atlas.cached.len());
+            max_pixels = max_pixels.max(atlas.pixels.len());
+            // drop 释放 FontArc owned buffer 与 glyph 缓存。
+        }
+        // 每轮内存有界：缓存 ≤ 输入字形数，像素 ≤ 初始网格（样例未触发 grow）。
+        assert!(
+            max_cached <= sample.len(),
+            "缓存应 ≤ 输入字形数，实际 {max_cached}"
+        );
+        let initial_cell_pixels =
+            (INITIAL_COLS * INITIAL_ROWS * (RASTER_SCALE as u32 + PAD as u32 * 2)) as usize
+                * (RASTER_SCALE as u32 + PAD as u32 * 2) as usize
+                * 4;
+        assert!(
+            max_pixels <= initial_cell_pixels,
+            "像素缓冲应 ≤ 初始网格，实际 {max_pixels}"
+        );
+    }
 }
