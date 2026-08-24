@@ -30,7 +30,7 @@ try {
     Write-Host "==> assetc package (data resource pack, compress=$Compress encrypt=$Encrypt)" -ForegroundColor Cyan
     $assetc = Join-Path $engineRoot "target\release\assetc.exe"
     if (Test-Path $packRoot) { Remove-Item -LiteralPath $packRoot -Recurse -Force }
-    $assetcArgs = @("package", (Join-Path $projectRoot "game"), "-o", $packRoot)
+    $assetcArgs = @("package", (Join-Path $projectRoot "game_test"), "-o", $packRoot)
     if ($Compress) { $assetcArgs += "--compress" }
     if ($Encrypt) { $assetcArgs += "--encrypt" }
     & $assetc @assetcArgs
@@ -42,7 +42,7 @@ try {
     Copy-Item -Path (Join-Path $engineRoot "target\release\game.exe") `
         -Destination (Join-Path $distRoot "game.exe") -Force
 
-    $fontSource = Join-Path $projectRoot "game\assets\fonts\NotoSansSC-VF.ttf"
+    $fontSource = Join-Path $projectRoot "game_test\assets\fonts\NotoSansSC-VF.ttf"
     if (-not (Test-Path $fontSource)) { throw "Game CJK font resource was not found: $fontSource" }
     if ((Get-Item $fontSource).Length -le 0) { throw "Game CJK font resource is empty: $fontSource" }
     $fontTarget = Join-Path $distRoot "fonts\NotoSansSC-VF.ttf"

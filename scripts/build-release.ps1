@@ -38,7 +38,7 @@ try {
     if (-not (Test-Path $fontPath) -or (Get-Item $fontPath).Length -le 0) {
         throw "Release CJK font was not copied correctly: $fontPath"
     }
-    $gameSource = Join-Path $projectRoot "game"
+    $gameSource = Join-Path $projectRoot "game_test"
     if (-not (Test-Path $gameSource)) { throw "Game project directory was not found: $gameSource" }
     if (Test-Path $gameBuildRoot) { Remove-Item -LiteralPath $gameBuildRoot -Recurse -Force }
     Copy-Item -LiteralPath $gameSource -Destination $gameBuildRoot -Recurse -Force

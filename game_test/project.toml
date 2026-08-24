@@ -1,5 +1,5 @@
 [project]
-name = "p2-game"
+name = "game_test"
 version = "0.1.0"
 engine = "p2"
 main_script = "scripts/main.lua"
