@@ -2,7 +2,10 @@
 
 ## 状态
 
-PENDING（自动化质量门已补强；真实 GUI/GPU 证据需负责人使用 Windows 实机归档）
+已完成归档（2026-08-24）：自动化质量门（M11 A01–A08）与实机 GUI/GPU 证据（G01–G04）已由
+[M11 实机 GUI/GPU 质量门](../m11/m11-06-gui-gpu-evidence.md) 与
+[G01–G04 实机结果](../m11/cases/result.md) 补全归档。G01 GUI/GPU 与 G04 Play/运行态不写回
+实机 PASS；G02 150% DPI、G03 分辨率 ComboBox 切换、G04 Stop 真实点击仍需负责人实机手动（见 result.md）。
 
 ## 目标
 

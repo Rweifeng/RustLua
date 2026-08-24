@@ -38,6 +38,11 @@ M10-11 的代码变更包括 editor 主文件拆分、面板模块、状态模�
 
 当前没有新增的独立截图、录屏、窗口性能日志或 DPI/resize 报告。因此 M10-A11 在验收矩阵中保持 `PENDING`，直到负责人完成 Windows 实机确认并归档可复核 artifact。
 
+> **M11 补档（2026-08-24）：** 编辑器四行布局已获实机启动佐证——M11 实机 G01 截图
+> `docs/acceptance-evidence/m11/cases/g01-editor-start.png` 与 `editor.log` 确认四行/分区布局真实
+> 启动运行（无 wgpu validation/panic/crash）。DPI 150%、resize 分辨率切换与面板交互仍需负责人实机复核
+> （见 [M11 G01–G04 结果](../m11/cases/result.md)），矩阵 M10-A11 已更新为 PASS。
+
 ## 版本关系
 
 `v0.10-editor` 只指向 M10-10 验收提交 `86095ed`。M10-11 是该标签之后的增量提交，不能将本证据反向归入 `v0.10-editor` 标签内容。

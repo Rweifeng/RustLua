@@ -161,5 +161,23 @@
 | M10-A08 | 资源浏览器增强 | M10-A07 | 纹理缩略图；拖放纹理到场景创建精灵；双击场景打开 | 缩略图显示、拖放创建精灵、workspace 质量门 | `tasks/done/M10-08-资源浏览器增强.md` | PASS | M10 |
 | M10-A09 | 多选/对齐/快照 | M10-A08 | 多选实体；对齐网格/H/V；2D 平移吸附 | 对齐/吸附 + 撤销、workspace 质量门 | `tasks/done/M10-08-多选对齐快照.md` | PASS | M10 |
 | M10-A10 | Prefab 编辑器集成 | M10-A09 | 创建预制体；拖放实例化；资源浏览器显示 Prefab | 创建/实例化 Prefab、workspace 质量门 | `tasks/done/M10-09-Prefab编辑器集成.md` | PASS | M10 |
-| M10-A11 | 编辑器面板拆分与四行布局 | M10-A10 | `main.rs` 拆分为 panels/state/actions/geometry 模块；四行/分区布局可启动；编辑器状态和既有工作流不回归 | editor 64+12 项测试、workspace 测试/构建、`editor --check` | `tasks/done/M10-11-编辑器面板拆分与四行布局.md`；`docs/acceptance-evidence/m10/m10-11-editor-layout.md`；真实 GUI/DPI/resize 证据待补 | PENDING | M10-11 |
-| M10-A13 | 质量门与编辑器实机证据 | M10-A12 | CI 触发 `game/**`、`docs/**`、`tasks/**`；`git diff --check`、`game --check`、`editor --check` 和发布包字体路径检查通过；GUI/GPU、100%/150% DPI、resize、Play/Stop 证据可复核 | workflow、verify.ps1、资源缺失失败测试、package/build-release 字体检查 | `docs/acceptance-evidence/m10/m10-13-quality-and-gui-evidence.md`；`tasks/done/M10-13-质量门与编辑器实机证据.md`；真实截图/录屏/GPU日志待归档 | PENDING | M10-13 |
+| M10-A11 | 编辑器面板拆分与四行布局 | M10-A10 | `main.rs` 拆分为 panels/state/actions/geometry 模块；四行/分区布局可启动；编辑器状态和既有工作流不回归 | editor 64+12 项测试、workspace 测试/构建、`editor --check` | `tasks/done/M10-11-编辑器面板拆分与四行布局.md`；`docs/acceptance-evidence/m10/m10-11-editor-layout.md`；M11 实机 G01（`docs/acceptance-evidence/m11/cases/g01-editor-start.png`）佐证四行布局真实启动运行 | PASS | M10-11 |
+| M10-A13 | 质量门与编辑器实机证据 | M10-A12 | CI 触发 `game/**`、`docs/**`、`tasks/**`；`git diff --check`、`game --check`、`editor --check` 和发布包字体路径检查通过；GUI/GPU、100%/150% DPI、resize、Play/Stop 证据可复核 | workflow、verify.ps1、资源缺失失败测试、package/build-release 字体检查 | `docs/acceptance-evidence/m10/m10-13-quality-and-gui-evidence.md`；`tasks/done/M10-13-质量门与编辑器实机证据.md`；M11 归档 `docs/acceptance-evidence/m11/m11-06-gui-gpu-evidence.md`（质量门 A01–A08）与 `docs/acceptance-evidence/m11/cases/result.md`（G01 实机 PASS、G04 Play/不写回 PASS；G02 150% DPI、G03 ComboBox、G04 Stop 真实点击需负责人手动） | PASS | M10-13 |
+
+## M11 编辑器可靠性收口（已归档 2026-08-24）
+
+| ID | 功能 | 前置 | 主要验收 | 自动化证据 | 手工证据 | 状态 | 版本 |
+|---|---|---|---|---|---|---|---|
+| M11-A01 | PlaySession 状态机 | M10-A13 | Play/Stop 状态机（Editing→Starting→Playing/StartFailed→Stopping→Editing）；GPU 失败不进入 Playing；100 轮 Play/Stop 往返无编辑态漂移 | `play_failed_without_gpu_never_enters_playing`、`play_stop_can_repeat_one_hundred_times_without_edit_state_drift`、`stop_without_play_is_noop` 等 | `docs/acceptance-evidence/m11/m11-milestone-evidence.md` | PASS | M11 |
+| M11-A02 | 输入快照与帧边界 | M11-A01 | 跨帧持久输入快照；按下边沿不跨 tick 重发；失焦/Play-Stop 清空防卡键 | `held_key_reuse_does_not_repeat_just_pressed_across_ticks`、`focus_loss_clears_held_state_prevents_stuck_input` | 同上 | PASS | M11 |
+| M11-A03 | Offscreen/readback/缓存一致性 | M11-A02 | ReadbackSlot 区分 NotReady/Ready/Failed；缓存记录实际渲染尺寸，仅回读成功提交；失败清缓存并给用户可见错误 | `scene_view_3d_cache_records_actual_render_size`、`failed_readback_mapping_reports_error_and_clears_slot` | 同上 | PASS | M11 |
+| M11-A04 | 场景解析与运行时提取统一 | M11-A03 | 编辑器 3D 视图与运行时共用 `scene_3d_with_camera` 提取路径；相机覆盖为视图参数、不改场景数据 | `serialized_and_runtime_consistency_demo3d`、`scene_3d_with_camera_override_keeps_scene_data_intact` | 同上 | PASS | M11 |
+| M11-A05 | 恢复、字体内存与错误可见性 | M11-A04 | recovery 带版本/校验和/损坏丢弃；FontAtlas 满后 glyph/像素/插槽内存有界；控制台诊断含阶段/路径/行号/建议动作 | `glyph_cache_and_pixels_stay_bounded_after_atlas_full`、`repeated_load_rasterize_drop_keeps_memory_bounded`、`diagnostics_include_phase_path_line_and_suggestion` | 同上 | PASS | M11 |
+| M11-A06 | 实机 GUI/GPU 质量门 | M11-A05 | 质量门 A01–A08 全过（329 项测试、`--check`、package.ps1 -SelfTest）；G01 GUI/GPU 实机 PASS、G04 Play 与运行态不写回实机 PASS；G02 150% DPI、G03 分辨率切换、G04 Stop 真实点击 PENDING（需负责人手动） | `docs/acceptance-evidence/m11/m11-06-gui-gpu-evidence.md`（A01–A08 全部通过） | `docs/acceptance-evidence/m11/cases/`（g01/g04 截图、result.md、environment.txt） | PASS | M11 |
+
+**M11 结论：** 代码/自动化侧全部 PASS（质量门 A01–A08，329 项测试）；实机 G01 GUI/GPU 与 G04 Play/运行态不写回 PASS。
+遗留手动项：G02 150% DPI、G03 分辨率 ComboBox 切换、G04 Stop 真实点击——需负责人按 `cases/result.md` 指引实机复核（受本机无真实指针设备限制，100 轮 Play/Stop 往返已由自动化测试覆盖）。
+
+**M11 后性能修复（提交 `cbbb09b`）：** 3D 场景 Game 预览帧率低根因为 30fps 硬节流 + vsync 对齐 → 约 24fps，
+非渲染瓶颈；`PREVIEW_FRAME_INTERVAL` 33ms→16ms 后实机稳定 **50fps**（GT 1030 / 60Hz，见
+`docs/acceptance-evidence/m11/m11-milestone-evidence.md`）。

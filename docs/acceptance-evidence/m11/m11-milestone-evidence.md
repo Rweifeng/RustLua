@@ -79,3 +79,17 @@ G01 实机 PASS；G04 Play 与"运行态修改不写回"实机 PASS，Stop 真�
 - 所有 P0 关闭：✅（R-01/R-02 的 P0 已有测试且质量门全绿；实机无 P0 待 G01–G04 复核）
 - 输入、缓存、DPI、resize、恢复稳定：输入/缓存/恢复由自动化测试覆盖 ✅；DPI/resize 待 G02/G03 实机
 - 状态与代码一致：代码侧一致 ✅（Play 状态机、提取路径、缓存 key 与实现同步）
+
+## 后续性能修复（2026-08-24，提交 `cbbb09b`）
+
+用户报告 3D 场景运行时帧率极低。定位根因：Game 预览硬节流 `PREVIEW_FRAME_INTERVAL = 33ms`
+（约 30fps）+ egui repaint 与 60Hz vsync 对齐 → 实际约 **24fps**；非 GPU 渲染瓶颈
+（`run_script_steps` 各阶段持续 0ms、`render_into_texture` CPU 编码约 1ms、readback 拷贝 GPU 完全跟得上）。
+
+修复：`engine/crates/editor/src/preview_session.rs` `PREVIEW_FRAME_INTERVAL` **33ms → 16ms**
+（60fps 节流），并清理临时诊断代码（保留轻量 fps 打点作为日志证据）。
+
+实机复测（AUTOPLAY 加载 `game3d.scene` + Play，GT 1030 / 60Hz）：
+`[editor-perf] preview fps: 119 uploads / 120 ticks = 50.0 fps` 连续窗口稳定——
+3D 场景 Game 预览从约 **24fps 提升到 50fps**（受 60Hz vsync 限制接近上限）。
+质量门全绿（fmt / clippy 0 警告 / test 329 项 / build / build --release / git diff --check）。
