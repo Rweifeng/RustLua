@@ -63,7 +63,7 @@ try {
     @(
         "RustLua game engine release package",
         "build_time: $timestamp",
-        "engine_core version: $engineVersion",
+        "engine version: $engineVersion",
         "toolchain: $toolchain",
         "contents: game.exe, fonts/NotoSansSC-VF.ttf, pack/ (data), run.txt, deps.txt",
         "font_check: fonts/NotoSansSC-VF.ttf present and non-empty"

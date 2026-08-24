@@ -10,7 +10,7 @@ use crate::{
 };
 use editor::CommandKind;
 use eframe::egui;
-use engine_core::{
+use engine::core::{
     camera3d::{Camera3D, Ray3},
     light::Light,
     math2d::Camera2D,
@@ -20,7 +20,7 @@ use engine_core::{
     transform::Vec2,
     transform3d::Transform3D,
 };
-use engine_host::{
+use engine::host::{
     BoundsSource, ReadbackStatus, Renderer, RuntimeScene, Scene3d, Scene3dBounds, Scene3dDrawable,
     SceneMesh,
 };
@@ -414,7 +414,7 @@ impl EditorApp {
                 filter.trim().is_empty() || entity.name.to_lowercase().contains(filter.trim())
             })
             .map(|entity| {
-                let bounds = engine_core::math3d::Aabb3 {
+                let bounds = engine::core::math3d::Aabb3 {
                     min: Vec3::new(-0.5, -0.5, -0.5),
                     max: Vec3::new(0.5, 0.5, 0.5),
                 };
@@ -483,7 +483,7 @@ impl EditorApp {
                                 .get(id)
                                 .map(|value| value.position)
                                 .unwrap_or(transform.position);
-                            let world_bounds = engine_core::math3d::Aabb3 {
+                            let world_bounds = engine::core::math3d::Aabb3 {
                                 min: bounds.min + position,
                                 max: bounds.max + position,
                             };
@@ -896,7 +896,7 @@ impl EditorApp {
                     model,
                     palette: Vec::new(),
                     bounds: Scene3dBounds {
-                        local_aabb: engine_core::math3d::Aabb3 {
+                        local_aabb: engine::core::math3d::Aabb3 {
                             min: Vec3::new(-0.5, -0.5, -0.5),
                             max: Vec3::new(0.5, 0.5, 0.5),
                         },

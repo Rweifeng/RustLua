@@ -4,7 +4,7 @@ use crate::EditorApp;
 use crate::util::strip_verbatim_prefix;
 use editor::{ResourceBrowserState, ResourceEntry, ResourceKind};
 use eframe::egui;
-use engine_core::texture::{TextureAsset, TextureColorSpace};
+use engine::core::texture::{TextureAsset, TextureColorSpace};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -237,7 +237,7 @@ mod tests {
         ResourceEntry {
             path: PathBuf::from(path),
             kind,
-            status: engine_core::resource_db::ImportStatus::Registered,
+            status: engine::core::resource_db::ImportStatus::Registered,
             asset_id: None,
             error: None,
         }

@@ -1,4 +1,4 @@
-use engine_core::texture::{TextureAsset, TextureColorSpace};
+use engine::core::texture::{TextureAsset, TextureColorSpace};
 
 const PNG: &[u8] = include_bytes!("../../../../game_test/assets/textures/red-1x1.png");
 

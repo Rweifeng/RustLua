@@ -333,8 +333,8 @@ fn spawn_import(path: PathBuf, tx: Sender<ProgressEvent>) {
 #[cfg(test)]
 mod publish_tests {
     use super::*;
-    use engine_core::math3d::{Quat, Vec3};
-    use engine_core::transform3d::Transform3D;
+    use engine::core::math3d::{Quat, Vec3};
+    use engine::core::transform3d::Transform3D;
 
     #[test]
     fn cargo_bin_dir_points_to_rustup_cargo() {

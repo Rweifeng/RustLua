@@ -4,7 +4,7 @@
 
 use std::{path::PathBuf, sync::Arc, time::Instant};
 
-use engine_core::{
+use engine::core::{
     input::{InputKey, InputSnapshot, MouseButton},
     logging::{EngineError, LogModule},
     performance::{PerformanceSnapshot, PerformanceStats},
@@ -19,7 +19,7 @@ use winit::{
     window::{Window, WindowId},
 };
 
-use engine_host::{OverlayVertex, RenderOutcome, Renderer, RuntimeScene, SceneDraw, SceneMesh};
+use engine::host::{OverlayVertex, RenderOutcome, Renderer, RuntimeScene, SceneDraw, SceneMesh};
 
 pub struct GameApp {
     window: Option<Arc<Window>>,

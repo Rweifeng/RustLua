@@ -1,7 +1,7 @@
 # One-off dev tool: synthesize a short looping chiptune background-music WAV master.
 # Uses a compiled C# helper so sample synthesis runs at native speed.
 # The shipped asset is bgm.ogg (convert bgm-master.wav via:
-#   cargo run -p engine_core --example wav2ogg -- <master.wav> game/assets/audio/bgm.ogg)
+#   cargo run -p engine --example wav2ogg -- <master.wav> game/assets/audio/bgm.ogg)
 
 param([string]$Out = "")
 

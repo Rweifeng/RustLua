@@ -1,5 +1,5 @@
 use crate::{ProjectError, ProjectInfo};
-use engine_core::scene::{Scene, SceneError};
+use engine::core::scene::{Scene, SceneError};
 use std::{
     error::Error,
     fmt, fs,
@@ -254,7 +254,7 @@ impl From<ProjectError> for DocumentError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine_core::scene::SceneEntityId;
+    use engine::core::scene::SceneEntityId;
 
     fn temp_root(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!("rustlua-m5-02-{label}-{}", unique_token()))

@@ -6,7 +6,7 @@
 //!
 //! 命令（见 `main.rs`）：`scan` / `import` / `clean` / `list` / `package` / `--check`。
 
-use engine_core::{
+use engine::core::{
     import_cache::{ImportCache, ImportKind},
     resource_db::{ImportStatus, ResourceDatabase},
 };
@@ -173,7 +173,7 @@ pub fn import(project: &Path) -> Result<Vec<ImportOutcome>, String> {
         let Some(id) = entry.asset_id else {
             continue;
         };
-        let id: engine_core::resource_db::AssetId = id
+        let id: engine::core::resource_db::AssetId = id
             .parse()
             .map_err(|error| format!("解析资源 ID 失败 {}: {error}", entry.path.display()))?;
         let source = project.join(&entry.path);
@@ -274,7 +274,7 @@ fn copy_dir_encoded(
         );
         if is_text && (compress || encrypt) {
             let bytes = fs::read(&file).map_err(|e| e.to_string())?;
-            let encoded = engine_core::pack::encode(&bytes, compress, encrypt);
+            let encoded = engine::core::pack::encode(&bytes, compress, encrypt);
             if let Some(parent) = dest.parent() {
                 fs::create_dir_all(parent).map_err(|e| e.to_string())?;
             }

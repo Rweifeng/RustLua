@@ -1,5 +1,5 @@
 use bytemuck::{Pod, Zeroable};
-use engine_core::{
+use engine::core::{
     atlas::SpriteAtlas,
     math2d::{Camera2D, Viewport},
     sprite::Sprite,

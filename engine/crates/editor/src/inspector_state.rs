@@ -1,5 +1,5 @@
 use crate::SceneDocument;
-use engine_core::{
+use engine::core::{
     camera3d::Camera3D,
     light::Light,
     math3d::{Quat, Vec3},
@@ -1085,7 +1085,7 @@ impl Error for InspectorError {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine_core::scene::SceneEntityId;
+    use engine::core::scene::SceneEntityId;
 
     fn setup() -> (SceneDocument, InspectorState, SceneEntityId) {
         let mut document = SceneDocument::new_scene("main");
@@ -1502,7 +1502,7 @@ mod tests {
             .set_lua_script(&mut document, "player.lua")
             .unwrap();
         let text = document.scene.to_text();
-        let loaded = engine_core::scene::Scene::from_text(&text).unwrap();
+        let loaded = engine::core::scene::Scene::from_text(&text).unwrap();
         assert_eq!(
             loaded.entities[&SceneEntityId(1)].components,
             document.scene.entities[&SceneEntityId(1)].components
@@ -1578,7 +1578,7 @@ mod tests {
             )
             .unwrap();
         let text = document.scene.to_text();
-        let loaded = engine_core::scene::Scene::from_text(&text).unwrap();
+        let loaded = engine::core::scene::Scene::from_text(&text).unwrap();
         let stored = loaded.entities[&SceneEntityId(1)]
             .components
             .get("Collider3d")

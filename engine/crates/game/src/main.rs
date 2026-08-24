@@ -7,7 +7,7 @@ mod game_app;
 
 use std::path::{Path, PathBuf};
 
-use engine_core::logging::init_logging;
+use engine::core::logging::init_logging;
 use winit::event_loop::EventLoop;
 
 use cli::{find_project_root, parse_arguments, verify_project};
@@ -48,8 +48,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     .unwrap_or_else(|| PathBuf::from("artifacts/logs/game-runner.log"));
     init_logging(&log_path, arguments.log_filter.as_deref())
         .map_err(|error| Box::new(error) as Box<dyn std::error::Error>)?;
-    engine_core::logging::install_crash_handler(log_path.with_file_name("crash.log"));
-    tracing::info!(target: "game", version = engine_core::version(), project = ?project, "game runner starting");
+    engine::core::logging::install_crash_handler(log_path.with_file_name("crash.log"));
+    tracing::info!(target: "game", version = engine::core::version(), project = ?project, "game runner starting");
 
     // 启动期资源完整性校验：发布包模式缺失即拒绝启动，开发模式仅告警。
     if let Some(root) = &project {

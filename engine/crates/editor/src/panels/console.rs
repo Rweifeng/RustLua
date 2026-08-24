@@ -2,7 +2,7 @@
 
 use crate::EditorApp;
 use eframe::egui;
-use engine_core::script::{LuaRuntime, ScriptDiagnostic};
+use engine::core::script::{LuaRuntime, ScriptDiagnostic};
 
 impl EditorApp {
     /// 行4 控制台面板（全宽底部，先于左右面板显示以获得整行宽度）。

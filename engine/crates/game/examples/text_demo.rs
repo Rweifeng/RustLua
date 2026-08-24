@@ -1,6 +1,6 @@
 use bytemuck::{Pod, Zeroable};
-use engine_core::text::{TextAtlas, TextLayout, TextStyle};
-use engine_core::texture::{TextureAsset, TextureColorSpace};
+use engine::core::text::{TextAtlas, TextLayout, TextStyle};
+use engine::core::texture::{TextureAsset, TextureColorSpace};
 use wgpu::util::DeviceExt;
 
 #[repr(C)]

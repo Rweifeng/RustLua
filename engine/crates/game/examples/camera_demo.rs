@@ -1,4 +1,4 @@
-use engine_core::{
+use engine::core::{
     math2d::{Camera2D, CameraBounds, Viewport},
     transform::Vec2,
 };

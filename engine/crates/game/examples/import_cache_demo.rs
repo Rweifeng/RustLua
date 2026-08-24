@@ -1,4 +1,4 @@
-use engine_core::{import_cache::ImportCache, resource_db::AssetId};
+use engine::core::{import_cache::ImportCache, resource_db::AssetId};
 use std::fs;
 
 fn main() {

@@ -1,4 +1,4 @@
-use engine_core::{
+use engine::core::{
     input::{InputKey, InputSnapshot},
     script::LuaRuntime,
 };

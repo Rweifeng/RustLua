@@ -4,7 +4,7 @@
 
 ## 当前内容
 
-- `crates/engine_core`：无第三方依赖的引擎核心库占位；
+- `crates/engine`：引擎 crate（`core/` 纯逻辑模块 + `host/` GPU 渲染模块）；
 - `crates/game`：最小可执行运行器；
 - `rust-toolchain.toml`：固定 stable 工具链并声明 rustfmt/clippy；
 - `engine/.cargo/config.toml`：workspace 构建配置；

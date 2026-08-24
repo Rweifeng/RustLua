@@ -4,7 +4,7 @@ use crate::EditorApp;
 use crate::util::{display_path, strip_verbatim_prefix};
 use editor::CommandKind;
 use eframe::egui;
-use engine_core::{
+use engine::core::{
     prefab::Prefab, resource_db::AssetId, scene::SceneEntityId, transform3d::Transform3D,
 };
 use std::path::PathBuf;

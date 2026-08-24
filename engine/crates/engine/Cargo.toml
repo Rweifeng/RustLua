@@ -1,0 +1,30 @@
+[package]
+name = "engine"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+bytemuck.workspace = true
+mlua = { version = "0.11", features = ["lua54", "vendored"] }
+tracing.workspace = true
+tracing-appender.workspace = true
+tracing-subscriber.workspace = true
+image = { version = '0.25', default-features = false, features = ['png'] }
+rapier2d = "0.22"
+rapier3d = "0.22"
+crossbeam-channel = "0.5"
+rodio = "0.19"
+ab_glyph = "0.2"
+gltf.workspace = true
+flate2 = "1"
+chacha20poly1305 = "0.10"
+rand = "0.8"
+pollster = "0.4"
+wgpu = "27"
+winit = "0.30"
+
+[dev-dependencies]
+vorbis = "0.1"

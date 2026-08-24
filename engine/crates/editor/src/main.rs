@@ -26,11 +26,11 @@ use editor::{
     Transform3DFields, TransformFields, check_project, open_project,
 };
 use eframe::egui;
-use engine_core::{
+use engine::core::{
     logging::LogSink, math3d::Vec3, scene::SceneEntityId, script::LuaRuntime,
     transform3d::Transform3D,
 };
-use engine_host::{Renderer, RuntimeScene};
+use engine::host::{Renderer, RuntimeScene};
 
 #[derive(Debug, Default)]
 struct Arguments {
@@ -92,7 +92,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .ok()
         .and_then(|path| path.parent().map(|dir| dir.join("crash.log")))
         .unwrap_or_else(|| PathBuf::from("crash.log"));
-    engine_core::logging::install_crash_handler(crash_log_path);
+    engine::core::logging::install_crash_handler(crash_log_path);
     // 编辑器日志：写入可执行文件同目录，便于排查内嵌预览等问题。
     let log_path = std::env::current_exe()
         .ok()
@@ -100,7 +100,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .unwrap_or_else(|| PathBuf::from("editor.log"));
     // 实时日志缓冲：控制台面板读取，游戏/引擎日志自动上屏。
     let log_sink = LogSink::new(500);
-    let _ = engine_core::logging::init_logging_with_sink(&log_path, None, Some(log_sink.clone()));
+    let _ = engine::core::logging::init_logging_with_sink(&log_path, None, Some(log_sink.clone()));
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
         ..Default::default()
@@ -345,7 +345,7 @@ struct GizmoDrag {
     axis: GizmoAxis,
     start: egui::Pos2,
     initial: Transform3D,
-    start_ray: Option<engine_core::camera3d::Ray3>,
+    start_ray: Option<engine::core::camera3d::Ray3>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -360,7 +360,7 @@ enum GizmoAxis {
 #[derive(Clone)]
 struct ComponentClipboard {
     components: std::collections::BTreeMap<String, String>,
-    resources: std::collections::BTreeMap<String, engine_core::resource_db::AssetId>,
+    resources: std::collections::BTreeMap<String, engine::core::resource_db::AssetId>,
     metadata: std::collections::BTreeMap<String, String>,
 }
 

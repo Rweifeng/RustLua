@@ -1,4 +1,4 @@
-use engine_core::{
+use engine::core::{
     scene::{Scene, SceneEntityId},
     script::{LuaRuntime, ReloadStatus},
 };

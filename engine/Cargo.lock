@@ -269,7 +269,7 @@ dependencies = [
 name = "assetc"
 version = "0.1.0"
 dependencies = [
- "engine_core",
+ "engine",
 ]
 
 [[package]]
@@ -1079,8 +1079,7 @@ name = "editor"
 version = "0.1.0"
 dependencies = [
  "eframe",
- "engine_core",
- "engine_host",
+ "engine",
  "pollster",
  "tracing",
  "wgpu",
@@ -1241,7 +1240,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "66b7e2430c6dff6a955451e2cfc438f09cea1965a9d6f87f7e3b90decc014099"
 
 [[package]]
-name = "engine_core"
+name = "engine"
 version = "0.1.0"
 dependencies = [
  "ab_glyph",
@@ -1252,6 +1251,7 @@ dependencies = [
  "gltf",
  "image",
  "mlua",
+ "pollster",
  "rand 0.8.7",
  "rapier2d",
  "rapier3d",
@@ -1260,16 +1260,6 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "vorbis",
-]
-
-[[package]]
-name = "engine_host"
-version = "0.1.0"
-dependencies = [
- "bytemuck",
- "engine_core",
- "pollster",
- "tracing",
  "wgpu",
  "winit",
 ]
@@ -1512,8 +1502,7 @@ name = "game"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
- "engine_core",
- "engine_host",
+ "engine",
  "pollster",
  "tracing",
  "wgpu",

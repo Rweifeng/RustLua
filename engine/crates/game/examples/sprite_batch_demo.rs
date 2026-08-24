@@ -1,5 +1,5 @@
 use bytemuck::{Pod, Zeroable};
-use engine_core::{
+use engine::core::{
     math2d::{Camera2D, Viewport},
     sprite::Sprite,
     sprite_batch::{SpriteBatch, SpriteBatchItem},

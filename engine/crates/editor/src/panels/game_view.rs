@@ -6,7 +6,7 @@ use crate::preview_session::PreviewSession;
 use crate::util::strip_verbatim_prefix;
 use editor::PlaySession;
 use eframe::egui;
-use engine_core::{
+use engine::core::{
     input::{InputKey, InputSnapshot, MouseButton},
     scene::Scene,
 };

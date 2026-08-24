@@ -1,5 +1,5 @@
 use crate::{DocumentError, SceneDocument};
-use engine_core::scene::{SceneEntity, SceneEntityId};
+use engine::core::scene::{SceneEntity, SceneEntityId};
 use std::{collections::BTreeSet, error::Error, fmt};
 
 /// 编辑器场景树的选择状态和实体编辑操作。
@@ -287,7 +287,7 @@ pub enum SceneTreeError {
         parent: Option<SceneEntityId>,
     },
     CorruptTree(SceneEntityId),
-    Scene(engine_core::scene::SceneError),
+    Scene(engine::core::scene::SceneError),
     Document(DocumentError),
 }
 
@@ -314,7 +314,7 @@ impl Error for SceneTreeError {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine_core::scene::Scene;
+    use engine::core::scene::Scene;
 
     fn document() -> SceneDocument {
         SceneDocument::new_scene("main")

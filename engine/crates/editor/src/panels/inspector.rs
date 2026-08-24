@@ -7,7 +7,7 @@ use editor::{
     LightFields, TextFields, Transform3DFields, TransformFields,
 };
 use eframe::egui;
-use engine_core::scene::SceneEntityId;
+use engine::core::scene::SceneEntityId;
 
 impl EditorApp {
     pub(crate) fn draw_inspector_panel(&mut self, ui: &mut egui::Ui) {

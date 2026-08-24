@@ -4,7 +4,7 @@ use crate::AlignMode;
 use crate::EditorApp;
 use crate::geometry::{encode_transform, parse_transform};
 use editor::{CommandKind, TransformFields};
-use engine_core::scene::SceneEntityId;
+use engine::core::scene::SceneEntityId;
 use std::path::PathBuf;
 
 impl EditorApp {

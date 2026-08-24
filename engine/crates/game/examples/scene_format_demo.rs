@@ -1,4 +1,4 @@
-use engine_core::{
+use engine::core::{
     resource_db::AssetId,
     scene::{Scene, SceneEntityId},
 };

@@ -5,9 +5,9 @@
 //! Game 视图只负责输入桥接与绘制，Scene 视图可复用 readback 生命周期辅助。
 
 use eframe::egui;
-use engine_core::input::InputSnapshot;
-use engine_core::scene::Scene;
-use engine_host::{ReadbackMetrics, ReadbackStatus, Renderer, RuntimeScene};
+use engine::core::input::InputSnapshot;
+use engine::core::scene::Scene;
+use engine::host::{ReadbackMetrics, ReadbackStatus, Renderer, RuntimeScene};
 use std::path::Path;
 
 /// 游戏预览的重绘节流：~30fps，保证持续运行而不忙转。
@@ -253,7 +253,7 @@ impl PreviewSession {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine_core::scene::Scene;
+    use engine::core::scene::Scene;
 
     /// Headless wgpu 设备/队列（fallback adapter）；无 GPU 时返回 None，测试跳过。
     fn test_device() -> Option<(wgpu::Device, wgpu::Queue)> {

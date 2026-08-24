@@ -1,5 +1,5 @@
 ﻿use crate::SceneDocument;
-use engine_core::scene::{Scene, SceneError};
+use engine::core::scene::{Scene, SceneError};
 use std::{
     error::Error,
     fmt, fs,
@@ -338,7 +338,7 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), RecoveryError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine_core::scene::SceneEntityId;
+    use engine::core::scene::SceneEntityId;
 
     fn root(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!("m5-09-{label}-{}", now_ns()))

@@ -1,5 +1,5 @@
 use crate::SceneDocument;
-use engine_core::scene::SceneEntityId;
+use engine::core::scene::SceneEntityId;
 use std::{error::Error, fmt};
 
 /// A reversible editor operation backed by document snapshots.

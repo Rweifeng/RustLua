@@ -1,4 +1,4 @@
-use engine_core::resource_db::{ImportStatus, ResourceDatabase};
+use engine::core::resource_db::{ImportStatus, ResourceDatabase};
 
 fn main() {
     let root =

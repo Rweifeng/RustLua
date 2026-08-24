@@ -32,14 +32,14 @@ try {
     $seconds = if ($Full) { 60 } else { 10 }
     $ecsReport = Join-Path $OutDir "ecs-stress-$timestamp.json"
     Invoke-Checked "cargo" @(
-        "run", "--release", "-p", "engine_core", "--example", "ecs_stress",
+        "run", "--release", "-p", "engine", "--example", "ecs_stress",
         "--", "--entities", "10000", "--seconds", "$seconds", "--output", $ecsReport
     )
     Write-Host "ECS 报告: $ecsReport" -ForegroundColor Green
 
     Write-Host "`n--> Sprite stress: 1000 精灵（CPU 批处理吞吐）" -ForegroundColor Cyan
     $spriteOut = Invoke-Checked "cargo" @(
-        "run", "--release", "-p", "engine_core", "--example", "sprite_stress"
+        "run", "--release", "-p", "engine", "--example", "sprite_stress"
     )
     $spriteReport = Join-Path $OutDir "sprite-stress-$timestamp.txt"
     $spriteOut | Set-Content -Path $spriteReport -Encoding UTF8

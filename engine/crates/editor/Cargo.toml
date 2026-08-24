@@ -7,8 +7,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
-engine_core.workspace = true
-engine_host.workspace = true
+engine.workspace = true
 eframe.workspace = true
 wgpu = "27"
 tracing.workspace = true

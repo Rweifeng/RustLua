@@ -3,8 +3,7 @@ resolver = "2"
 members = [
     "crates/assetc",
     "crates/editor",
-    "crates/engine_core",
-    "crates/engine_host",
+    "crates/engine",
     "crates/game",
 ]
 
@@ -24,8 +23,7 @@ codegen-units = 1
 strip = true
 
 [workspace.dependencies]
-engine_core = { path = "crates/engine_core" }
-engine_host = { path = "crates/engine_host" }
+engine = { path = "crates/engine" }
 eframe = { version = "0.33", features = ["wgpu"] }
 gltf = { version = "1.4", features = ["import"] }
 bytemuck = { version = "1", features = ["derive"] }
