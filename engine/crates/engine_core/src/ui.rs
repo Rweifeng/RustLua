@@ -446,8 +446,10 @@ mod tests {
         // Click rect: contains a point inside, rejects outside.
         let inside = decoded.position[0]..(decoded.position[0] + decoded.size[0]);
         let inside_y = decoded.position[1]..(decoded.position[1] + decoded.size[1]);
-        assert!(inside.contains(&(decoded.position[0] + 5.0))
-            && inside_y.contains(&(decoded.position[1] + 5.0)));
+        assert!(
+            inside.contains(&(decoded.position[0] + 5.0))
+                && inside_y.contains(&(decoded.position[1] + 5.0))
+        );
     }
 
     #[test]
@@ -463,7 +465,11 @@ mod tests {
         scene
             .add_entity(crate::scene::SceneEntityId(1), "Label", None)
             .unwrap();
-        scene.entities.get_mut(&crate::scene::SceneEntityId(1)).unwrap().components
+        scene
+            .entities
+            .get_mut(&crate::scene::SceneEntityId(1))
+            .unwrap()
+            .components
             .insert("Text".to_owned(), ui.to_component_str());
         let reloaded = crate::scene::Scene::from_text(&scene.to_text()).expect("reload");
         let value = reloaded.entities[&crate::scene::SceneEntityId(1)]

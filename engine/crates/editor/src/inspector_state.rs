@@ -492,7 +492,11 @@ impl InspectorState {
         Ok(())
     }
 
-    pub fn set_text(&self, document: &mut SceneDocument, text: TextFields) -> Result<(), InspectorError> {
+    pub fn set_text(
+        &self,
+        document: &mut SceneDocument,
+        text: TextFields,
+    ) -> Result<(), InspectorError> {
         validate_text(&text)?;
         let id = self.selected.ok_or(InspectorError::NothingSelected)?;
         let entity = entity_mut(document, id)?;
@@ -513,7 +517,11 @@ impl InspectorState {
         Ok(())
     }
 
-    pub fn set_image(&self, document: &mut SceneDocument, image: ImageFields) -> Result<(), InspectorError> {
+    pub fn set_image(
+        &self,
+        document: &mut SceneDocument,
+        image: ImageFields,
+    ) -> Result<(), InspectorError> {
         validate_image(&image)?;
         let id = self.selected.ok_or(InspectorError::NothingSelected)?;
         let entity = entity_mut(document, id)?;
@@ -534,7 +542,11 @@ impl InspectorState {
         Ok(())
     }
 
-    pub fn set_button(&self, document: &mut SceneDocument, button: ButtonFields) -> Result<(), InspectorError> {
+    pub fn set_button(
+        &self,
+        document: &mut SceneDocument,
+        button: ButtonFields,
+    ) -> Result<(), InspectorError> {
         validate_button(&button)?;
         let id = self.selected.ok_or(InspectorError::NothingSelected)?;
         let entity = entity_mut(document, id)?;
@@ -556,12 +568,18 @@ impl InspectorState {
     }
 
     /// 设置/清除「运行时不跟随场景切换销毁」标志（实体 metadata）。
-    pub fn set_persistent(&self, document: &mut SceneDocument, enabled: bool) -> Result<(), InspectorError> {
+    pub fn set_persistent(
+        &self,
+        document: &mut SceneDocument,
+        enabled: bool,
+    ) -> Result<(), InspectorError> {
         let id = self.selected.ok_or(InspectorError::NothingSelected)?;
         let entity = entity_mut(document, id)?;
         if enabled {
             if entity.metadata.get("persistent").map(String::as_str) != Some("true") {
-                entity.metadata.insert("persistent".to_owned(), "true".to_owned());
+                entity
+                    .metadata
+                    .insert("persistent".to_owned(), "true".to_owned());
                 document.mark_dirty();
             }
         } else if entity.metadata.remove("persistent").is_some() {
@@ -631,7 +649,10 @@ fn snapshot_for(entity: &SceneEntity) -> Result<InspectorSnapshot, InspectorErro
             .components
             .get("Button")
             .map_or(Ok(None), |value| decode_button(value).map(Some))?,
-        persistent: entity.metadata.get("persistent").is_some_and(|value| value == "true"),
+        persistent: entity
+            .metadata
+            .get("persistent")
+            .is_some_and(|value| value == "true"),
     })
 }
 

@@ -99,16 +99,28 @@ struct StaticGroup {
 /// 一个可复用的非阻塞回读槽：GPU 拷贝目标 buffer + 提交序号 + 映射完成标志。
 struct ReadbackSlot {
     buffer: wgpu::Buffer,
-    /// 最近提交的拷贝序号；`None` 表示槽空闲（已读完并 unmap，可重新提交）。
     submission: Option<wgpu::SubmissionIndex>,
-    /// `map_async` 完成回调置位（跨线程，主线程轮询读取）。
     ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
     width: u32,
     height: u32,
     row_bytes: u32,
     bytes_per_row: u32,
-    /// Reusable compact CPU output storage.
+    /// Reusable compact CPU output storage retained by the slot.
     pixels: Vec<u8>,
+    /// Monotonic slot generation incremented when its staging buffer is rebuilt.
+    generation: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ReadbackMetrics {
+    pub slot_count: usize,
+    pub busy_count: usize,
+    pub submitted: u64,
+    pub completed: u64,
+    pub dropped: u64,
+    pub pending: u64,
+    pub cpu_bytes: usize,
+    pub buffer_rebuilds: u64,
 }
 
 /// 非阻塞离屏回读的结果。
@@ -194,6 +206,11 @@ pub struct Renderer {
     _material_bind_group_layout: wgpu::BindGroupLayout,
     /// 非阻塞回读槽（离屏纹理 → CPU），避免主线程阻塞等待 GPU。
     readback_slots: Vec<ReadbackSlot>,
+    readback_submitted: u64,
+    readback_completed: u64,
+    readback_dropped: u64,
+    readback_pending_count: u64,
+    readback_buffer_rebuilds: u64,
 }
 
 impl Renderer {
@@ -904,6 +921,11 @@ impl Renderer {
             frame_count: 0,
             _material_bind_group_layout: material_bind_group_layout,
             readback_slots: Vec::new(),
+            readback_submitted: 0,
+            readback_completed: 0,
+            readback_dropped: 0,
+            readback_pending_count: 0,
+            readback_buffer_rebuilds: 0,
         })
     }
 
@@ -1478,6 +1500,7 @@ impl Renderer {
         }
         // 无论是否排空到结果，都提交本次拷贝，保证每个渲染帧都会被回读。
         self.submit_readback(texture, width, height);
+        self.readback_pending_count += 1;
         match ready {
             Some((pixels, width, height)) => ReadbackStatus::Ready {
                 pixels,
@@ -1499,6 +1522,22 @@ impl Renderer {
             .count()
     }
 
+    pub fn readback_metrics(&self) -> ReadbackMetrics {
+        ReadbackMetrics {
+            slot_count: self.readback_slots.len(),
+            busy_count: self.readback_busy_count(),
+            submitted: self.readback_submitted,
+            completed: self.readback_completed,
+            dropped: self.readback_dropped,
+            pending: self.readback_pending_count,
+            cpu_bytes: self
+                .readback_slots
+                .iter()
+                .map(|slot| slot.pixels.capacity())
+                .sum(),
+            buffer_rebuilds: self.readback_buffer_rebuilds,
+        }
+    }
     /// 是否有在途（已提交未读）的回读等待排空。
     pub fn readback_in_flight(&self) -> bool {
         self.readback_slots
@@ -1537,7 +1576,7 @@ impl Renderer {
             (slot.width, slot.height, slot.row_bytes, slot.bytes_per_row);
         let buffer = slot.buffer.clone();
         let padded = buffer.slice(..).get_mapped_range();
-        let mut pixels = std::mem::take(&mut self.readback_slots[index].pixels);
+        let mut pixels = self.readback_slots[index].pixels.clone();
         pixels.clear();
         pixels.reserve((row_bytes * height) as usize);
         for row in 0..height as usize {
@@ -1551,6 +1590,7 @@ impl Renderer {
         slot.submission = None;
         slot.ready
             .store(false, std::sync::atomic::Ordering::Release);
+        self.readback_completed = self.readback_completed.saturating_add(1);
         Some((pixels, width, height))
     }
 
@@ -1580,6 +1620,7 @@ impl Renderer {
                 row_bytes,
                 bytes_per_row,
                 pixels: Vec::with_capacity((row_bytes * height) as usize),
+                generation: 0,
             });
         }
         // 找一个空闲槽（无在途提交）。
@@ -1588,6 +1629,7 @@ impl Renderer {
             .iter()
             .position(|slot| slot.submission.is_none())
         else {
+            self.readback_dropped += 1;
             return; // 全部在途，跳过本次提交
         };
         // 尺寸不符时重建 buffer，避免越界写入。
@@ -1603,6 +1645,8 @@ impl Renderer {
             slot.height = height;
             slot.row_bytes = row_bytes;
             slot.bytes_per_row = bytes_per_row;
+            slot.generation = slot.generation.saturating_add(1);
+            self.readback_buffer_rebuilds = self.readback_buffer_rebuilds.saturating_add(1);
         }
         let buffer = slot.buffer.clone();
         let ready = slot.ready.clone();
@@ -1643,6 +1687,7 @@ impl Renderer {
                 ready.store(true, std::sync::atomic::Ordering::Release);
             });
         slot.submission = Some(submission);
+        self.readback_submitted = self.readback_submitted.saturating_add(1);
     }
 
     /// Shared pass rendering into a given color view (window surface or
@@ -2274,7 +2319,7 @@ mod tests {
             .unwrap()
             .parent()
             .unwrap()
-            .join("game");
+            .join("game_test");
         let scene_text =
             std::fs::read_to_string(game.join("scenes/main.scene")).expect("read main.scene");
         let scene = engine_core::scene::Scene::from_text(&scene_text).expect("parse main.scene");

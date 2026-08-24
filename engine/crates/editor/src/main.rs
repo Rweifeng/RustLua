@@ -3,10 +3,12 @@
 mod actions;
 mod geometry;
 mod panels;
+mod preview_session;
 mod progress;
 mod publish;
 mod util;
 
+use crate::preview_session::PreviewSession;
 use crate::progress::ProgressPanel;
 use crate::util::{configure_cjk_fonts, format_project_error};
 
@@ -200,8 +202,8 @@ struct EditorApp {
     recent_projects: Vec<String>,
     /// eframe 的 wgpu 设备/队列（单一设备，供内嵌游戏预览使用）。
     gpu: Option<(wgpu::Device, wgpu::Queue)>,
-    /// Play 时的内嵌游戏预览（M10-03）。
-    preview: Option<EmbeddedPreview>,
+    /// Play 时的内嵌游戏预览（M10-03；生命周期见 preview_session.rs）。
+    preview: Option<PreviewSession>,
     /// 内嵌游戏预览当前分辨率（宽×高）。
     preview_resolution: (u32, u32),
     /// 可用的预览分辨率列表（可增删）。
@@ -236,10 +238,9 @@ struct EditorApp {
     scene_files_cache_time: Option<Instant>,
     /// 上次执行 hierarchy 元数据同步的场景标识。
     last_metadata_key: Option<(Option<PathBuf>, u64)>,
-    /// 最近一次预览或 Scene View 的结构化诊断；显示在对应视图 overlay。
+    /// 最近一次 Scene View 的结构化诊断；显示在对应视图 overlay。
+    /// 游戏预览的诊断由 PreviewSession 自己持有（见 preview_session.rs）。
     preview_diagnostic: Option<String>,
-    /// 上次游戏预览步进时间（~30fps 节流，避免输入事件高帧率加速游戏）。
-    last_preview_tick: Option<Instant>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -344,6 +345,7 @@ struct GizmoDrag {
     axis: GizmoAxis,
     start: egui::Pos2,
     initial: Transform3D,
+    start_ray: Option<engine_core::camera3d::Ray3>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -360,18 +362,6 @@ struct ComponentClipboard {
     components: std::collections::BTreeMap<String, String>,
     resources: std::collections::BTreeMap<String, engine_core::resource_db::AssetId>,
     metadata: std::collections::BTreeMap<String, String>,
-}
-
-/// 编辑器内嵌游戏预览（M10-03）：Play 时创建的运行时 + 离屏渲染器，
-/// 渲染到离屏纹理，回读后显示在 Game 视图。
-struct EmbeddedPreview {
-    runtime: RuntimeScene,
-    renderer: Renderer,
-    texture: wgpu::Texture,
-    texture_view: wgpu::TextureView,
-    egui_tex: Option<egui::TextureHandle>,
-    width: u32,
-    height: u32,
 }
 
 impl EditorApp {
@@ -461,7 +451,6 @@ impl EditorApp {
             scene_files_cache_time: None,
             preview_diagnostic: None,
             last_metadata_key: None,
-            last_preview_tick: None,
         }
     }
 

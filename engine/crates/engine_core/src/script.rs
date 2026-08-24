@@ -267,7 +267,10 @@ impl LuaRuntime {
                 &entity.resources,
             )?;
             // 持久实体快照（权威、静态组件），供切场景后重生。
-            if entity.metadata.get("persistent").is_some_and(|value| value == "true")
+            if entity
+                .metadata
+                .get("persistent")
+                .is_some_and(|value| value == "true")
                 && !entity.name.is_empty()
             {
                 state.persistent.insert(
@@ -317,15 +320,17 @@ impl LuaRuntime {
                 .collect()
         };
         for name in clicked {
-            let callback: Value = self.lua.globals().get("on_click").map_err(|error| {
-                LuaBridgeError::Runtime {
-                    path: self
-                        .current_path
-                        .clone()
-                        .unwrap_or_else(|| PathBuf::from("<project script>")),
-                    source: error.to_string(),
-                }
-            })?;
+            let callback: Value =
+                self.lua
+                    .globals()
+                    .get("on_click")
+                    .map_err(|error| LuaBridgeError::Runtime {
+                        path: self
+                            .current_path
+                            .clone()
+                            .unwrap_or_else(|| PathBuf::from("<project script>")),
+                        source: error.to_string(),
+                    })?;
             if let Value::Function(function) = callback {
                 function
                     .call::<()>((name,))
@@ -362,10 +367,9 @@ impl LuaRuntime {
         }
         if let Some(raw) = components.get("Sprite") {
             let (path, size) = parse_sprite_ref(raw);
-            let sprite =
-                Sprite::new(size.unwrap_or(Vec2::new(128.0, 128.0))).map_err(|error| {
-                    LuaBridgeError::Api(format!("failed to build default Sprite: {error}"))
-                })?;
+            let sprite = Sprite::new(size.unwrap_or(Vec2::new(128.0, 128.0))).map_err(|error| {
+                LuaBridgeError::Api(format!("failed to build default Sprite: {error}"))
+            })?;
             state
                 .world
                 .insert(id, sprite)
@@ -395,7 +399,9 @@ impl LuaRuntime {
         }
         if let Some(value) = components.get("Transform3D") {
             let transform = Transform3D::from_component_str(value).map_err(|error| {
-                LuaBridgeError::Api(format!("entity {name:?} has an invalid Transform3D: {error}"))
+                LuaBridgeError::Api(format!(
+                    "entity {name:?} has an invalid Transform3D: {error}"
+                ))
             })?;
             state
                 .world
@@ -425,7 +431,9 @@ impl LuaRuntime {
         }
         if let Some(value) = components.get("MeshRenderer") {
             let renderer = MeshRenderer::from_component_str(value).map_err(|error| {
-                LuaBridgeError::Api(format!("entity {name:?} has an invalid MeshRenderer: {error}"))
+                LuaBridgeError::Api(format!(
+                    "entity {name:?} has an invalid MeshRenderer: {error}"
+                ))
             })?;
             state
                 .world
@@ -511,7 +519,9 @@ impl LuaRuntime {
         }
         if let Some(value) = components.get("Collider3d") {
             let collider = ColliderDesc3d::from_component_str(value).map_err(|error| {
-                LuaBridgeError::Api(format!("entity {name:?} has an invalid Collider3d: {error}"))
+                LuaBridgeError::Api(format!(
+                    "entity {name:?} has an invalid Collider3d: {error}"
+                ))
             })?;
             let position = state
                 .world
@@ -663,6 +673,20 @@ impl LuaRuntime {
     /// Gives the host a shared write view of the runtime entity world.
     pub fn with_world_mut<R>(&mut self, f: impl FnOnce(&mut World) -> R) -> R {
         f(&mut self.state.borrow_mut().world)
+    }
+
+    /// Returns the authored name registered for an entity, if any. Entities
+    /// spawned from a serialized scene keep their scene name; entities spawned
+    /// by Lua via `entity.spawn` are registered with the name given at spawn.
+    /// Entities never named (or dropped from `names` after despawn) return `None`.
+    #[must_use]
+    pub fn entity_name(&self, id: EntityId) -> Option<String> {
+        self.state
+            .borrow()
+            .names
+            .iter()
+            .find(|(_, registered)| **registered == id)
+            .map(|(name, _)| name.clone())
     }
 
     /// Returns the entity whose `Camera3D` the renderer should use, if Lua
@@ -2920,8 +2944,10 @@ mod tests {
             .insert("Sprite".into(), "assets/player.png".into());
         arena.add_entity(SceneEntityId(2), "Hud", None).unwrap();
         let hud = arena.entities.get_mut(&SceneEntityId(2)).unwrap();
-        hud.components
-            .insert("Text".into(), "text=Score:0;x=10;y=10;scale=2;color=1,1,1".into());
+        hud.components.insert(
+            "Text".into(),
+            "text=Score:0;x=10;y=10;scale=2;color=1,1,1".into(),
+        );
         hud.metadata.insert("persistent".into(), "true".into());
         arena.save(scenes.join("arena.scene")).unwrap();
 
@@ -2948,7 +2974,13 @@ mod tests {
             world
                 .entities_with::<UiText>()
                 .into_iter()
-                .filter_map(|id| world.get::<UiText>(id).ok().flatten().map(|t| t.text.clone()))
+                .filter_map(|id| {
+                    world
+                        .get::<UiText>(id)
+                        .ok()
+                        .flatten()
+                        .map(|t| t.text.clone())
+                })
                 .collect()
         });
         assert_eq!(ui_texts.len(), 1, "persistent Hud text survives");
@@ -3006,7 +3038,13 @@ mod tests {
             world
                 .entities_with::<UiText>()
                 .into_iter()
-                .filter_map(|id| world.get::<UiText>(id).ok().flatten().map(|t| t.text.clone()))
+                .filter_map(|id| {
+                    world
+                        .get::<UiText>(id)
+                        .ok()
+                        .flatten()
+                        .map(|t| t.text.clone())
+                })
                 .collect()
         });
         assert_eq!(ui_texts.len(), 1, "exactly one Hud");
@@ -3054,7 +3092,10 @@ mod tests {
         runtime.process_ui_clicks(&input).unwrap();
 
         let result = runtime.call_update().unwrap();
-        assert_eq!(result, "Start", "on_click('Start') fired for the clicked button");
+        assert_eq!(
+            result, "Start",
+            "on_click('Start') fired for the clicked button"
+        );
 
         let _ = fs::remove_dir_all(root);
         let _ = fs::remove_file(load);
@@ -3218,7 +3259,7 @@ mod tests {
     fn lua_3d_animation_queries_and_switches_clips() {
         use crate::scene::{Scene, SceneEntityId};
 
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../game");
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../game_test");
         let mut scene = Scene::new("3d-anim");
         scene.add_entity(SceneEntityId(1), "Hero", None).unwrap();
         scene

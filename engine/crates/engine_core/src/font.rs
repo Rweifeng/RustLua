@@ -4,7 +4,7 @@
 //! `smoothstep` so glyph edges stay crisp at any scale (TMP-style).
 
 use ab_glyph::{Font, FontArc};
-use std::collections::HashMap;
+use std::{collections::HashMap, error::Error, fmt};
 
 /// Rasterize scale in device pixels; each glyph is stored in a `cell` square.
 pub const RASTER_SCALE: f32 = 64.0;
@@ -33,6 +33,36 @@ pub struct GlyphMetrics {
     /// Horizontal advance in px at `RASTER_SCALE`.
     pub advance: f32,
 }
+
+/// Errors returned while rasterizing or growing a glyph atlas.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FontAtlasError {
+    /// The atlas reached its configured maximum capacity.
+    AtlasFull {
+        character: char,
+        width: u32,
+        height: u32,
+        capacity: u32,
+    },
+}
+
+impl fmt::Display for FontAtlasError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::AtlasFull {
+                character,
+                width,
+                height,
+                capacity,
+            } => write!(
+                formatter,
+                "字体图集已满：无法加入字形 {character:?}（{width}×{height}，容量 {capacity}）"
+            ),
+        }
+    }
+}
+
+impl Error for FontAtlasError {}
 
 /// A growable-by-slot glyph atlas producing one RGBA8 texture.
 #[derive(Clone, Debug)]
@@ -172,23 +202,18 @@ impl FontAtlas {
     }
 
     /// Returns per-glyph metrics, rasterizing the SDF cell on first use.
-    pub fn glyph_metrics(&mut self, character: char) -> GlyphMetrics {
+    pub fn try_glyph_metrics(&mut self, character: char) -> Result<GlyphMetrics, FontAtlasError> {
         if let Some(metrics) = self.cached.get(&character) {
-            return *metrics;
+            return Ok(*metrics);
         }
         let slot = self.used;
         if slot >= self.cols * self.rows && !self.grow() {
-            tracing::warn!(
-                target: "text",
-                character = character.to_string(),
-                "字形图集已达到最大容量，回退到占位"
-            );
-            return GlyphMetrics {
-                uv: [0.0; 4],
-                cell_rect: [0.0; 4],
-                bounds: [0.0; 4],
-                advance: self.cell as f32,
-            };
+            return Err(FontAtlasError::AtlasFull {
+                character,
+                width: self.width(),
+                height: self.height(),
+                capacity: self.cols * self.rows,
+            });
         }
         let col = slot % self.cols;
         let row = slot / self.cols;
@@ -227,7 +252,24 @@ impl FontAtlas {
         self.version = self.version.wrapping_add(1);
         self.slots.insert(character, slot);
         self.cached.insert(character, metrics);
-        metrics
+        Ok(metrics)
+    }
+
+    /// Returns per-glyph metrics, preserving the legacy non-fallible API.
+    /// New rendering paths should use [`Self::try_glyph_metrics`] instead.
+    pub fn glyph_metrics(&mut self, character: char) -> GlyphMetrics {
+        match self.try_glyph_metrics(character) {
+            Ok(metrics) => metrics,
+            Err(error) => {
+                tracing::warn!(target: "text", character = character.to_string(), error = %error, "字形图集已达到最大容量，回退到占位");
+                GlyphMetrics {
+                    uv: [0.0; 4],
+                    cell_rect: [0.0; 4],
+                    bounds: [0.0; 4],
+                    advance: self.cell as f32,
+                }
+            }
+        }
     }
 }
 
@@ -458,6 +500,19 @@ mod tests {
                 "old top-left cell pixels are preserved"
             );
         }
+    }
+
+    #[test]
+    fn atlas_full_is_reported_structurally() {
+        let bytes = test_font();
+        let mut atlas = FontAtlas::load(&bytes).unwrap();
+        for index in 0..(MAX_COLS * MAX_ROWS) {
+            let character = char::from_u32(0x1000 + index).unwrap();
+            atlas.try_glyph_metrics(character).unwrap();
+        }
+        let error = atlas.try_glyph_metrics('\u{3000}').unwrap_err();
+        assert!(matches!(error, FontAtlasError::AtlasFull { .. }));
+        assert!(error.to_string().contains("字体图集已满"));
     }
 
     #[test]

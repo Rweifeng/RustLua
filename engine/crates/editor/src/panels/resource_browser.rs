@@ -2,8 +2,8 @@
 
 use crate::EditorApp;
 use crate::util::strip_verbatim_prefix;
-use eframe::egui;
 use editor::{ResourceBrowserState, ResourceEntry, ResourceKind};
+use eframe::egui;
 use engine_core::texture::{TextureAsset, TextureColorSpace};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -135,8 +135,12 @@ impl EditorApp {
         }
         let root = strip_verbatim_prefix(&self.project.root);
         let asset = TextureAsset::load_png(root.join(relative), TextureColorSpace::Srgb).ok()?;
-        let (pixels, width, height) =
-            downscale_rgba(asset.pixels(), asset.width() as usize, asset.height() as usize, 64);
+        let (pixels, width, height) = downscale_rgba(
+            asset.pixels(),
+            asset.width() as usize,
+            asset.height() as usize,
+            64,
+        );
         let image = egui::ColorImage::from_rgba_unmultiplied([width, height], &pixels);
         let handle = ctx.load_texture("thumb", image, egui::TextureOptions::LINEAR);
         let id = handle.id();
@@ -196,7 +200,12 @@ fn sort_tree(node: &mut ResourceTree) {
 
 /// RGBA8 最近邻降采样：长边超过 `max` 时缩到 max，否则原样返回。
 /// 用于缩略图，避免全分辨率上传；大纹理也能保留整体色调。
-fn downscale_rgba(pixels: &[u8], width: usize, height: usize, max: usize) -> (Vec<u8>, usize, usize) {
+fn downscale_rgba(
+    pixels: &[u8],
+    width: usize,
+    height: usize,
+    max: usize,
+) -> (Vec<u8>, usize, usize) {
     if (width <= max && height <= max) || width == 0 || height == 0 {
         return (pixels.to_vec(), width, height);
     }

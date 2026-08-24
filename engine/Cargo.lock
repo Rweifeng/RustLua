@@ -1081,6 +1081,7 @@ dependencies = [
  "eframe",
  "engine_core",
  "engine_host",
+ "pollster",
  "tracing",
  "wgpu",
  "windows-sys 0.61.2",

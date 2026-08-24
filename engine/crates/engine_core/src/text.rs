@@ -1,6 +1,6 @@
 //! Bitmap text atlas and deterministic CPU-side text layout for the 2D renderer.
 
-use crate::font::FontAtlas;
+use crate::font::{FontAtlas, FontAtlasError};
 use std::{error::Error, fmt};
 
 /// The built-in monochrome ASCII glyph atlas used by the first text renderer.
@@ -125,20 +125,28 @@ impl Default for TextMesh {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum TextError {
     InvalidStyle,
     NonFiniteOrigin,
+    FontAtlas(FontAtlasError),
 }
 impl fmt::Display for TextError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidStyle => write!(f, "invalid text style"),
             Self::NonFiniteOrigin => write!(f, "text origin is not finite"),
+            Self::FontAtlas(error) => write!(f, "font atlas error: {error}"),
         }
     }
 }
 impl Error for TextError {}
+
+impl From<FontAtlasError> for TextError {
+    fn from(error: FontAtlasError) -> Self {
+        Self::FontAtlas(error)
+    }
+}
 
 /// Display px of one em at `style.scale == 1` (real-font metrics).
 const EM_PX: f32 = 12.0;
@@ -277,7 +285,7 @@ impl TextLayout {
                 max_x = max_x.max(x);
                 continue;
             }
-            let metrics = font.glyph_metrics(character);
+            let metrics = font.try_glyph_metrics(character)?;
             // 字形在整张图集中的 UV = 单元 UV + 单元内偏移在图集中的比例。
             // 四边形尺寸 = 字形显示尺寸。
             let rect = metrics.cell_rect;

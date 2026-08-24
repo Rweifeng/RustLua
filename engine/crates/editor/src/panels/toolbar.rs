@@ -103,7 +103,8 @@ impl EditorApp {
                         .preview_resolutions
                         .contains(&self.custom_preview_resolution)
                     {
-                        self.preview_resolutions.push(self.custom_preview_resolution);
+                        self.preview_resolutions
+                            .push(self.custom_preview_resolution);
                     }
                     self.preview_resolution = self.custom_preview_resolution;
                     self.adding_preview_resolution = false;

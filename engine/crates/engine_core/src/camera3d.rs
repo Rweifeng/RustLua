@@ -2,7 +2,7 @@
 
 use std::{error::Error, fmt};
 
-use crate::math3d::{Mat4, Math3dError, Vec3};
+use crate::math3d::{Aabb3, Mat4, Math3dError, Vec3};
 
 /// Errors while parsing the scene's `Camera3D` component string.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -47,6 +47,69 @@ impl Ray3 {
 
     pub fn point_at(self, distance: f32) -> Vec3 {
         self.origin + self.direction * distance
+    }
+
+    /// Intersects the ray with a plane defined by a point and unit normal.
+    pub fn intersect_plane(self, point: Vec3, normal: Vec3) -> Option<f32> {
+        if !point.is_finite() || !normal.is_finite() {
+            return None;
+        }
+        let denominator = self.direction.dot(normal);
+        if denominator.abs() <= f32::EPSILON {
+            return None;
+        }
+        let distance = (point - self.origin).dot(normal) / denominator;
+        distance
+            .is_finite()
+            .then_some(distance)
+            .filter(|value| *value >= 0.0)
+    }
+
+    /// Returns the closest ray distance and line parameter for an infinite axis.
+    pub fn closest_point_on_line(self, point: Vec3, axis: Vec3) -> Option<(f32, f32)> {
+        let axis = axis.normalized().ok()?;
+        let cross = self.direction.cross(axis);
+        let denominator = cross.length_squared();
+        if denominator <= f32::EPSILON {
+            return None;
+        }
+        let offset = point - self.origin;
+        let ray_distance = offset.cross(axis).dot(cross) / denominator;
+        let line_parameter = offset.cross(self.direction).dot(cross) / denominator;
+        (ray_distance.is_finite() && line_parameter.is_finite())
+            .then_some((ray_distance, line_parameter))
+    }
+    pub fn intersect_aabb(self, bounds: Aabb3) -> Option<f32> {
+        let mut near: f32 = 0.0;
+        let mut far = f32::INFINITY;
+        for (origin, direction, min, max) in [
+            (self.origin.x, self.direction.x, bounds.min.x, bounds.max.x),
+            (self.origin.y, self.direction.y, bounds.min.y, bounds.max.y),
+            (self.origin.z, self.direction.z, bounds.min.z, bounds.max.z),
+        ] {
+            if direction.abs() <= f32::EPSILON {
+                if origin < min || origin > max {
+                    return None;
+                }
+                continue;
+            }
+            let inv = 1.0 / direction;
+            let mut axis_near = (min - origin) * inv;
+            let mut axis_far = (max - origin) * inv;
+            if axis_near > axis_far {
+                std::mem::swap(&mut axis_near, &mut axis_far);
+            }
+            near = near.max(axis_near);
+            far = far.min(axis_far);
+            if near > far {
+                return None;
+            }
+        }
+        if far >= 0.0 {
+            Some(near.max(0.0))
+        } else {
+            None
+        }
     }
 
     pub fn intersect_sphere(self, center: Vec3, radius: f32) -> Option<f32> {
@@ -478,6 +541,14 @@ mod tests {
         assert!(origin.z < camera.position.z);
         assert!(direction.z < -0.9);
         assert!(direction.y.abs() < 0.01);
+    }
+    #[test]
+    fn ray_intersects_aabb_and_rejects_parallel_miss() {
+        let ray = Ray3::new(Vec3::new(0.0, 0.0, 5.0), -Vec3::Z).unwrap();
+        let bounds = Aabb3::new(Vec3::new(-1.0, -1.0, -1.0), Vec3::new(1.0, 1.0, 1.0)).unwrap();
+        assert_eq!(ray.intersect_aabb(bounds), Some(4.0));
+        let miss = Ray3::new(Vec3::new(2.0, 0.0, 5.0), -Vec3::Z).unwrap();
+        assert_eq!(miss.intersect_aabb(bounds), None);
     }
     #[test]
     fn ray_hits_nearest_sphere_point() {

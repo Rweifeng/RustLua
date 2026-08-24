@@ -88,6 +88,88 @@ impl std::ops::Neg for Vec3 {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Aabb3 {
+    pub min: Vec3,
+    pub max: Vec3,
+}
+
+impl Aabb3 {
+    pub fn new(min: Vec3, max: Vec3) -> Result<Self, Math3dError> {
+        if !min.is_finite() || !max.is_finite() || min.x > max.x || min.y > max.y || min.z > max.z {
+            return Err(Math3dError::NonFinite);
+        }
+        Ok(Self { min, max })
+    }
+
+    #[must_use]
+    pub fn from_points(points: &[Vec3]) -> Option<Self> {
+        let first = *points.first()?;
+        if !first.is_finite() {
+            return None;
+        }
+        let mut result = Self {
+            min: first,
+            max: first,
+        };
+        for point in &points[1..] {
+            if !point.is_finite() {
+                return None;
+            }
+            result.min.x = result.min.x.min(point.x);
+            result.min.y = result.min.y.min(point.y);
+            result.min.z = result.min.z.min(point.z);
+            result.max.x = result.max.x.max(point.x);
+            result.max.y = result.max.y.max(point.y);
+            result.max.z = result.max.z.max(point.z);
+        }
+        Some(result)
+    }
+
+    #[must_use]
+    pub fn union(self, other: Self) -> Self {
+        Self {
+            min: Vec3::new(
+                self.min.x.min(other.min.x),
+                self.min.y.min(other.min.y),
+                self.min.z.min(other.min.z),
+            ),
+            max: Vec3::new(
+                self.max.x.max(other.max.x),
+                self.max.y.max(other.max.y),
+                self.max.z.max(other.max.z),
+            ),
+        }
+    }
+    #[must_use]
+    pub fn center(self) -> Vec3 {
+        (self.min + self.max) * 0.5
+    }
+
+    #[must_use]
+    pub fn bounding_sphere(self) -> BoundingSphere3 {
+        BoundingSphere3 {
+            center: self.center(),
+            radius: (self.max - self.min).length() * 0.5,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BoundingSphere3 {
+    pub center: Vec3,
+    pub radius: f32,
+}
+
+impl BoundingSphere3 {
+    pub fn new(center: Vec3, radius: f32) -> Result<Self, Math3dError> {
+        if !center.is_finite() || !radius.is_finite() || radius < 0.0 {
+            return Err(Math3dError::NonFinite);
+        }
+        Ok(Self { center, radius })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Quat {
     pub x: f32,
     pub y: f32,
@@ -331,6 +413,20 @@ mod tests {
     use super::*;
     fn close(a: f32, b: f32) -> bool {
         (a - b).abs() < 1e-5
+    }
+    #[test]
+    fn aabb_bounds_merge_and_build_sphere() {
+        let bounds =
+            Aabb3::from_points(&[Vec3::new(-2.0, 1.0, 3.0), Vec3::new(4.0, -1.0, 5.0)]).unwrap();
+        assert_eq!(bounds.min, Vec3::new(-2.0, -1.0, 3.0));
+        assert_eq!(bounds.max, Vec3::new(4.0, 1.0, 5.0));
+        assert_eq!(bounds.center(), Vec3::new(1.0, 0.0, 4.0));
+        assert!(close(
+            bounds.bounding_sphere().radius,
+            (44.0f32).sqrt() * 0.5
+        ));
+        assert!(Aabb3::from_points(&[Vec3::new(f32::NAN, 0.0, 0.0)]).is_none());
+        assert!(Aabb3::new(Vec3::X, Vec3::ZERO).is_err());
     }
     #[test]
     fn vector_cross_product_is_right_handed() {

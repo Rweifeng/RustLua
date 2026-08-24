@@ -2,7 +2,10 @@
 
 use editor::ProjectError;
 use eframe::egui::{self, FontData, FontDefinitions, FontFamily};
-use std::{env, path::{Path, PathBuf}};
+use std::{
+    env,
+    path::{Path, PathBuf},
+};
 
 /// 去除 Windows 逐字路径前缀 `\\?\`（会破坏 Lua require 的 searchpath 解析）。
 pub(crate) fn strip_verbatim_prefix(path: &Path) -> PathBuf {

@@ -210,9 +210,7 @@ pub fn init_logging_with_sink(
                     "invalid log filter",
                 )
                 .with_source(error)
-                .with_suggestion(
-                    "use tracing filter syntax such as info or debug,game=trace",
-                )
+                .with_suggestion("use tracing filter syntax such as info or debug,game=trace")
             })?;
     let console = tracing_subscriber::fmt::layer()
         .with_target(true)

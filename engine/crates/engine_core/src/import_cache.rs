@@ -351,14 +351,14 @@ mod tests {
         let path = source(
             &root,
             "hero.png",
-            include_bytes!("../../../../game/assets/textures/red-1x1.png"),
+            include_bytes!("../../../../game_test/assets/textures/red-1x1.png"),
         );
         let first = cache.import_file(id, &path, "png-1").unwrap();
         fs::write(&path, b"bad").unwrap();
         assert!(cache.import_file(id, &path, "png-1").is_err());
         fs::write(
             &path,
-            include_bytes!("../../../../game/assets/textures/red-1x1.png"),
+            include_bytes!("../../../../game_test/assets/textures/red-1x1.png"),
         )
         .unwrap();
         let hit = cache.import_file(id, &path, "png-1").unwrap();
@@ -406,7 +406,7 @@ mod tests {
         let path = source(
             &root,
             "m8-test-triangle.glb",
-            include_bytes!("../../../../game/assets/models/m8-test-triangle.glb"),
+            include_bytes!("../../../../game_test/assets/models/m8-test-triangle.glb"),
         );
         let first = cache.import_file(id, &path, "assetc-m8-02").unwrap();
         assert!(!first.reused);

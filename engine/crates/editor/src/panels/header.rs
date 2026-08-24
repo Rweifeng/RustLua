@@ -1,9 +1,9 @@
 //! 标题栏 + 菜单栏 + 崩溃恢复提示（编辑器顶部区域）。
 
 use crate::EditorApp;
+use crate::default_engine_path;
 use crate::publish::open_in_explorer;
 use crate::util::{choose_project_directory, display_path, strip_verbatim_prefix};
-use crate::default_engine_path;
 use eframe::egui;
 use std::path::Path;
 
@@ -94,10 +94,10 @@ impl EditorApp {
                         ui.label("检测到崩溃恢复快照：");
                         ui.separator();
                         for candidate in self.recovery_scan.candidates.clone() {
-                            let label = candidate
-                                .original_path
-                                .as_ref()
-                                .map_or_else(|| display_path(&candidate.path), |path| display_path(path));
+                            let label = candidate.original_path.as_ref().map_or_else(
+                                || display_path(&candidate.path),
+                                |path| display_path(path),
+                            );
                             ui.horizontal(|ui| {
                                 ui.label(&label);
                                 if ui.button("恢复").clicked() {
@@ -185,7 +185,10 @@ impl EditorApp {
                 ui.label("RustLua 引擎编辑器（p2）");
                 ui.label(format!("编辑器版本：{}", env!("CARGO_PKG_VERSION")));
                 ui.label(format!("项目基线：{}", self.project.version));
-                ui.label(format!("项目路径：{}", crate::util::display_path(&self.project.root)));
+                ui.label(format!(
+                    "项目路径：{}",
+                    crate::util::display_path(&self.project.root)
+                ));
             });
     }
 
@@ -227,8 +230,11 @@ impl EditorApp {
             .map_err(fs_err)?;
         }
         if !dir.join("scenes/main.scene").is_file() {
-            std::fs::write(dir.join("scenes/main.scene"), "scene_version=1\nname=main\n")
-                .map_err(fs_err)?;
+            std::fs::write(
+                dir.join("scenes/main.scene"),
+                "scene_version=1\nname=main\n",
+            )
+            .map_err(fs_err)?;
         }
         Ok(())
     }

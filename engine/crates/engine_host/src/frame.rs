@@ -2,7 +2,11 @@
 //! them each frame) and the renderer (which consumes them).
 
 use bytemuck::{Pod, Zeroable};
-use engine_core::{camera3d::Camera3D, light::Light, math3d::Mat4};
+use engine_core::{
+    camera3d::Camera3D,
+    light::Light,
+    math3d::{Aabb3, Mat4},
+};
 
 /// Vertex format for the 2D textured overlay pass.
 #[repr(C)]
@@ -48,7 +52,18 @@ pub struct FontAtlasPixels {
     pub version: u64,
 }
 
-/// One scene entity's 3D draw requested this frame. A non-empty `palette`
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BoundsSource {
+    Mesh,
+    Fallback,
+}
+
+/// One draw entity's local-space bounds used by renderer and editor picking.
+pub struct Scene3dBounds {
+    pub local_aabb: Aabb3,
+    pub source: BoundsSource,
+}
+
 /// marks a skinned drawable whose joint matrices are uploaded per frame.
 pub struct Scene3dDrawable {
     pub entity: engine_core::scene::SceneEntityId,
@@ -56,6 +71,7 @@ pub struct Scene3dDrawable {
     pub mesh_path: String,
     pub model: Mat4,
     pub palette: Vec<Mat4>,
+    pub bounds: Scene3dBounds,
 }
 
 /// Per-frame 3D render state gathered from the runtime world: the active

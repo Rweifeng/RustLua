@@ -33,7 +33,11 @@ pub(crate) fn parse_transform(value: &str) -> Option<TransformFields> {
     Some(fields)
 }
 
-pub(crate) fn rotated_corners(center: egui::Pos2, size: egui::Vec2, rotation_degrees: f32) -> [egui::Pos2; 4] {
+pub(crate) fn rotated_corners(
+    center: egui::Pos2,
+    size: egui::Vec2,
+    rotation_degrees: f32,
+) -> [egui::Pos2; 4] {
     let angle = rotation_degrees.to_radians();
     let corners = [
         egui::vec2(-size.x * 0.5, -size.y * 0.5),

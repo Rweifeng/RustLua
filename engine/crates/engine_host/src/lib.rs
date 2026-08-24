@@ -11,6 +11,8 @@ pub mod renderer;
 pub mod runtime_scene;
 pub mod shader;
 
-pub use frame::{OverlayVertex, Scene3d, Scene3dDrawable, SceneDraw, SceneMesh};
-pub use renderer::{ReadbackStatus, RenderOutcome, Renderer};
+pub use frame::{
+    BoundsSource, OverlayVertex, Scene3d, Scene3dBounds, Scene3dDrawable, SceneDraw, SceneMesh,
+};
+pub use renderer::{ReadbackMetrics, ReadbackStatus, RenderOutcome, Renderer};
 pub use runtime_scene::RuntimeScene;

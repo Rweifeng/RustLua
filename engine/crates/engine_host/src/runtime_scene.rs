@@ -25,8 +25,8 @@ use engine_core::{
 };
 
 use crate::frame::{
-    ATLAS_TEXTURE_PATH, FONT_ATLAS_TEXTURE_PATH, FontAtlasPixels, OverlayVertex, Scene3d,
-    Scene3dDrawable, SceneDraw, SceneMesh, WHITE_TEXTURE_PATH,
+    ATLAS_TEXTURE_PATH, BoundsSource, FONT_ATLAS_TEXTURE_PATH, FontAtlasPixels, OverlayVertex,
+    Scene3d, Scene3dBounds, Scene3dDrawable, SceneDraw, SceneMesh, WHITE_TEXTURE_PATH,
 };
 
 pub struct RuntimeScene {
@@ -183,18 +183,46 @@ impl RuntimeScene {
                     let transform = world.get::<Transform3D>(id).ok().flatten().copied()?;
                     let renderer = world.get::<MeshRenderer>(id).ok().flatten()?;
                     let model = transform.model_matrix().ok()?;
+                    let name = self
+                        .script
+                        .entity_name(id)
+                        .unwrap_or_else(|| format!("Entity {}", id.index()));
                     let palette = world
                         .get::<Animation3D>(id)
                         .ok()
                         .flatten()
                         .map(|animation| animation.joint_matrices())
                         .unwrap_or_default();
+                    let bounds = if renderer.mesh == engine_core::mesh3d::GROUND_PLANE_SENTINEL {
+                        Scene3dBounds {
+                            local_aabb: engine_core::math3d::Aabb3::new(
+                                Vec3::new(-100.0, -0.05, -100.0),
+                                Vec3::new(100.0, 0.05, 100.0),
+                            )
+                            .unwrap_or_else(|_| {
+                                engine_core::math3d::Aabb3 {
+                                    min: Vec3::new(-1.0, -1.0, -1.0),
+                                    max: Vec3::new(1.0, 1.0, 1.0),
+                                }
+                            }),
+                            source: BoundsSource::Fallback,
+                        }
+                    } else {
+                        Scene3dBounds {
+                            local_aabb: engine_core::math3d::Aabb3 {
+                                min: Vec3::new(-0.5, -0.5, -0.5),
+                                max: Vec3::new(0.5, 0.5, 0.5),
+                            },
+                            source: BoundsSource::Fallback,
+                        }
+                    };
                     Some(Scene3dDrawable {
                         entity: SceneEntityId(id.index() as u64),
-                        name: format!("Entity {}", id.index()),
+                        name,
                         mesh_path: renderer.mesh.clone(),
                         model,
                         palette,
+                        bounds,
                     })
                 })
                 .collect::<Vec<_>>()
@@ -865,7 +893,7 @@ mod sdf_tests {
     use engine_core::scene::Scene;
 
     fn game_root() -> std::path::PathBuf {
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../game")
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../game_test")
     }
 
     #[test]
@@ -890,5 +918,122 @@ mod sdf_tests {
             mesh.vertices.iter().any(|v| v.sdf == 1),
             "SDF vertices present"
         );
+    }
+
+    /// 运行态 3D drawable 使用序列化场景的实体名称（而非 `Entity {index}`）；
+    /// 未命名的脚本实体才回退到索引名。
+    #[test]
+    fn runtime_drawables_use_scene_names() {
+        let root = game_root();
+        let path = root.join("scenes/demo3d.scene");
+        let scene = Scene::load(&path).unwrap_or_else(|e| panic!("load demo3d: {e}"));
+        let runtime = RuntimeScene::from_scene_edit(Some(&root), scene).expect("runtime demo3d");
+        let scene3d = runtime.scene_3d(16.0 / 9.0).expect("3d scene");
+        let mut names: Vec<&str> = scene3d.drawables.iter().map(|d| d.name.as_str()).collect();
+        names.sort_unstable();
+        assert_eq!(names, ["Ground", "ShadowTriangle", "SkeletonWarrior"]);
+        assert!(
+            scene3d
+                .drawables
+                .iter()
+                .all(|d| !d.name.starts_with("Entity ")),
+            "drawable 名称应来自场景实体名，而非索引"
+        );
+    }
+
+    /// 同一输入 scene 在静态 serialized extractor 与初始 runtime world 上：
+    /// 每个 serialized 3D 实体都能找到同名、同 mesh path、同 transform 的
+    /// runtime drawable；活动相机/光源与 serialized 的首个相机/光源一致
+    /// （无 Lua 时 runtime 取首个组件实体）。物理/脚本/动画 palette 属运行态
+    /// 差异，不在本测试断言逐帧相等。
+    #[test]
+    fn serialized_and_runtime_consistency_demo3d() {
+        let root = game_root();
+        let path = root.join("scenes/demo3d.scene");
+        let scene = Scene::load(&path).unwrap_or_else(|e| panic!("load demo3d: {e}"));
+        let serialized = engine_core::scene_extract::extract_serialized_scene_3d(&scene);
+        let runtime = RuntimeScene::from_scene_edit(Some(&root), scene).expect("runtime demo3d");
+        let runtime3d = runtime.scene_3d(16.0 / 9.0).expect("3d scene");
+
+        // serialized extractor 应有可断言的有效实体；合法性一致时无诊断。
+        assert_eq!(serialized.entities.len(), runtime3d.drawables.len());
+        assert!(serialized.diagnostics.is_empty());
+        for serialized_entity in &serialized.entities {
+            let drawable = runtime3d
+                .drawables
+                .iter()
+                .find(|d| d.name == serialized_entity.name)
+                .unwrap_or_else(|| panic!("runtime 缺少同名实体 {}", serialized_entity.name));
+            assert_eq!(
+                drawable.mesh_path, serialized_entity.mesh.mesh,
+                "{} 的 mesh path 应一致",
+                serialized_entity.name
+            );
+            for (row, col) in (0..4).flat_map(|r| (0..4).map(move |c| (r, c))) {
+                let runtime_value = drawable.model.columns[col][row];
+                let serialized_value = serialized_entity.model.columns[col][row];
+                assert!(
+                    (runtime_value - serialized_value).abs() < 1e-4,
+                    "{} model[{col}][{row}] 不一致: {runtime_value} vs {serialized_value}",
+                    serialized_entity.name
+                );
+            }
+        }
+
+        // 活动相机 = 首个 Camera3D 实体（from_scene_edit 无 Lua 选择），
+        // 与 serialized 首个相机一致，仅 aspect_ratio 被 host 覆盖为传入值。
+        assert!(!serialized.cameras.is_empty(), "demo3d 应有相机");
+        let serialized_camera = &serialized.cameras[0].1;
+        let runtime_camera = &runtime3d.camera;
+        assert_eq!(runtime_camera.position, serialized_camera.position);
+        assert_eq!(runtime_camera.target, serialized_camera.target);
+        assert_eq!(runtime_camera.up, serialized_camera.up);
+        assert!((runtime_camera.fov_y - serialized_camera.fov_y).abs() < 1e-6);
+        assert!((runtime_camera.near - serialized_camera.near).abs() < 1e-6);
+        assert!((runtime_camera.far - serialized_camera.far).abs() < 1e-6);
+        assert!(
+            (runtime_camera.aspect_ratio - 16.0 / 9.0).abs() < 1e-6,
+            "runtime 相机 aspect 应为传入值"
+        );
+
+        // 活动光源 = 首个 Light 实体，与 serialized 首个光源一致。
+        assert!(!serialized.lights.is_empty(), "demo3d 应有光源");
+        let serialized_light = &serialized.lights[0].1;
+        let runtime_light = &runtime3d.light;
+        assert_eq!(runtime_light.direction, serialized_light.direction);
+        assert_eq!(runtime_light.color, serialized_light.color);
+        assert_eq!(runtime_light.intensity, serialized_light.intensity);
+    }
+
+    /// RuntimeScene 无 GPU 长会话：重复 create → run_script_steps → vertices → drop，
+    /// 断言无 panic、帧顶点数/纹理路径容器有界（含字体图集反复加载/释放）。
+    #[test]
+    fn runtime_scene_create_step_drop_100_cycles() {
+        let root = game_root();
+        let path = root.join("scenes/main.scene");
+        assert!(path.is_file(), "测试场景资源缺失: {}", path.display());
+        let scene = Scene::load(&path).unwrap_or_else(|e| panic!("load main: {e}"));
+        let input = InputSnapshot::default();
+        for cycle in 0..100 {
+            let mut runtime =
+                RuntimeScene::from_scene_edit(Some(&root), scene.clone()).expect("runtime main");
+            for _ in 0..3 {
+                runtime
+                    .run_script_steps(1, 1.0 / 60.0, &input)
+                    .expect("script step");
+            }
+            let mesh = runtime.vertices(640, 360).expect("vertices");
+            assert!(
+                mesh.vertices.len() < 1_000_000,
+                "cycle {cycle}: 顶点数应有界: {}",
+                mesh.vertices.len()
+            );
+            assert!(
+                runtime.texture_paths.len() < 512,
+                "cycle {cycle}: 纹理路径容器应有界: {}",
+                runtime.texture_paths.len()
+            );
+            // drop 释放 Lua/世界/字体资源。
+        }
     }
 }

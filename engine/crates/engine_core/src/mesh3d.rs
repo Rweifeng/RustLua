@@ -4,7 +4,7 @@ use std::{error::Error, fmt, path::Path};
 
 use crate::{
     gltf_asset::{GltfAsset, GltfAssetError},
-    math3d::Vec3,
+    math3d::{Aabb3, Vec3},
 };
 
 /// A 3D mesh renderer component attached to an entity, parsed from the
@@ -134,7 +134,27 @@ pub struct MaterialAsset {
     pub roughness_factor: f32,
 }
 
+impl MeshPrimitive {
+    #[must_use]
+    pub fn local_bounds(&self) -> Option<Aabb3> {
+        Aabb3::from_points(
+            &self
+                .vertices
+                .iter()
+                .map(|vertex| Vec3::new(vertex.position[0], vertex.position[1], vertex.position[2]))
+                .collect::<Vec<_>>(),
+        )
+    }
+}
+
 impl MeshAsset {
+    #[must_use]
+    pub fn local_bounds(&self) -> Option<Aabb3> {
+        self.primitives
+            .iter()
+            .filter_map(MeshPrimitive::local_bounds)
+            .reduce(Aabb3::union)
+    }
     pub fn from_gltf(asset: &GltfAsset) -> Result<Vec<Self>, MeshAssetError> {
         asset
             .meshes
@@ -253,6 +273,40 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
+    fn computes_primitive_and_asset_local_bounds() {
+        let primitive = MeshPrimitive {
+            vertices: vec![
+                MeshVertex {
+                    position: [-2.0, 0.0, 1.0],
+                    normal: [0.0, 1.0, 0.0],
+                    texcoord: [0.0, 0.0],
+                    joints: [0; 4],
+                    weights: [1.0, 0.0, 0.0, 0.0],
+                },
+                MeshVertex {
+                    position: [3.0, 4.0, -1.0],
+                    normal: [0.0, 1.0, 0.0],
+                    texcoord: [0.0, 0.0],
+                    joints: [0; 4],
+                    weights: [1.0, 0.0, 0.0, 0.0],
+                },
+            ],
+            indices: Vec::new(),
+            material: None,
+            skinned: false,
+        };
+        assert_eq!(
+            primitive.local_bounds().unwrap().min,
+            Vec3::new(-2.0, 0.0, -1.0)
+        );
+        let asset = MeshAsset {
+            name: None,
+            primitives: vec![primitive],
+            materials: Vec::new(),
+        };
+        assert_eq!(asset.local_bounds().unwrap().max, Vec3::new(3.0, 4.0, 1.0));
+    }
+    #[test]
     fn parses_editor_component_string() {
         let renderer = MeshRenderer::from_component_str("mesh=assets/models/cube.glb").unwrap();
         assert_eq!(renderer.mesh, "assets/models/cube.glb");
@@ -293,7 +347,7 @@ mod tests {
 
     fn asset_path() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../game/assets/models/m8-test-triangle.glb")
+            .join("../../../game_test/assets/models/m8-test-triangle.glb")
     }
 
     #[test]
@@ -315,7 +369,7 @@ mod tests {
     #[test]
     fn converts_skinned_gltf_with_bone_influences() {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../game/assets/models/m8-skin-quad.glb");
+            .join("../../../game_test/assets/models/m8-skin-quad.glb");
         let gltf = GltfAsset::load(&path).unwrap();
         let meshes = MeshAsset::from_gltf(&gltf).unwrap();
         let primitive = &meshes[0].primitives[0];

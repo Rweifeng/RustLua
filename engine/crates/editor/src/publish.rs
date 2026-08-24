@@ -415,7 +415,7 @@ mod publish_tests {
             .and_then(|p| p.parent())
             .map(Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from("."));
-        let game = workspace.join("game");
+        let game = workspace.join("game_test");
         let (tx, rx) = channel();
         spawn_import(game, tx);
         let mut output = String::new();

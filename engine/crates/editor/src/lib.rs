@@ -7,9 +7,8 @@ pub use resource_browser_state::{
 pub mod inspector_state;
 
 pub use inspector_state::{
-    ButtonFields, Camera3DFields, Collider3dFields, ImageFields, InspectorError,
-    InspectorSnapshot, InspectorState, LightFields, TextFields, Transform3DFields,
-    TransformFields,
+    ButtonFields, Camera3DFields, Collider3dFields, ImageFields, InspectorError, InspectorSnapshot,
+    InspectorState, LightFields, TextFields, Transform3DFields, TransformFields,
 };
 
 pub mod scene_tree_state;

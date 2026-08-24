@@ -20,7 +20,10 @@ use engine_core::{
     transform::Vec2,
     transform3d::Transform3D,
 };
-use engine_host::{ReadbackStatus, Renderer, RuntimeScene, Scene3d, Scene3dDrawable, SceneMesh};
+use engine_host::{
+    BoundsSource, ReadbackStatus, Renderer, RuntimeScene, Scene3d, Scene3dBounds, Scene3dDrawable,
+    SceneMesh,
+};
 use std::path::Path;
 
 impl EditorApp {
@@ -410,11 +413,17 @@ impl EditorApp {
             .filter(|entity| {
                 filter.trim().is_empty() || entity.name.to_lowercase().contains(filter.trim())
             })
-            .map(|entity| (entity.id, entity.name, entity.transform))
+            .map(|entity| {
+                let bounds = engine_core::math3d::Aabb3 {
+                    min: Vec3::new(-0.5, -0.5, -0.5),
+                    max: Vec3::new(0.5, 0.5, 0.5),
+                };
+                (entity.id, entity.name, entity.transform, bounds)
+            })
             .collect();
 
         // 绘制实体标记（投影后的菱形 + 名称；拖拽预览优先）。
-        for (id, name, transform) in &entities3d {
+        for (id, name, transform, _) in &entities3d {
             let position = self
                 .scene_state
                 .preview3d_transform
@@ -466,15 +475,19 @@ impl EditorApp {
                 .and_then(|ray| {
                     entities3d
                         .iter()
-                        .filter(|(id, _, _)| !self.scene_state.locked.contains(id))
-                        .filter_map(|(id, _, transform)| {
+                        .filter(|(id, _, _, _)| !self.scene_state.locked.contains(id))
+                        .filter_map(|(id, _, transform, bounds)| {
                             let position = self
                                 .scene_state
                                 .preview3d_transform
                                 .get(id)
                                 .map(|value| value.position)
                                 .unwrap_or(transform.position);
-                            ray.intersect_sphere(position, 0.75)
+                            let world_bounds = engine_core::math3d::Aabb3 {
+                                min: bounds.min + position,
+                                max: bounds.max + position,
+                            };
+                            ray.intersect_aabb(world_bounds)
                                 .map(|distance| (*id, distance))
                         })
                         .min_by(|left, right| left.1.total_cmp(&right.1))
@@ -497,10 +510,10 @@ impl EditorApp {
         }
 
         // Gizmo：按工具绘制手柄并拖拽（Move 平移 / Rotate 绕 Y / Scale 等比缩放）。
-        let selected_entity = entities3d.iter().find(|(id, _, _)| {
+        let selected_entity = entities3d.iter().find(|(id, _, _, _)| {
             self.tree.selected() == Some(*id) || self.scene_state.selected.contains(id)
         });
-        if let Some((id, _, transform)) = selected_entity {
+        if let Some((id, _, transform, _)) = selected_entity {
             let tool = self.scene_tool;
             if matches!(
                 tool,
@@ -622,6 +635,11 @@ impl EditorApp {
                         axis,
                         start: pointer.expect("drag started with a pointer"),
                         initial: *transform,
+                        start_ray: pointer.and_then(|position| {
+                            let px = (position.x - rect.left()) * ui.ctx().pixels_per_point();
+                            let py = (position.y - rect.top()) * ui.ctx().pixels_per_point();
+                            self.editor_camera_ray(px, py, width as f32, height as f32)
+                        }),
                     });
                 }
                 // 拖拽更新：按工具修改 Transform3D（position/rotation/scale）。
@@ -633,10 +651,34 @@ impl EditorApp {
                     match tool {
                         SceneTool::Move | SceneTool::Select => {
                             let d = self.editor_camera.dist * 0.002;
+                            let world_delta = drag.start_ray.and_then(|start_ray| {
+                                let px = (pos.x - rect.left()) * ui.ctx().pixels_per_point();
+                                let py = (pos.y - rect.top()) * ui.ctx().pixels_per_point();
+                                let current_ray =
+                                    self.editor_camera_ray(px, py, width as f32, height as f32)?;
+                                let axis = match drag.axis {
+                                    GizmoAxis::X => Some(Vec3::X),
+                                    GizmoAxis::Y => Some(Vec3::Y),
+                                    GizmoAxis::Z => Some(Vec3::Z),
+                                    _ => None,
+                                }?;
+                                let start = start_ray
+                                    .closest_point_on_line(drag.initial.position, axis)?
+                                    .1;
+                                let current = current_ray
+                                    .closest_point_on_line(drag.initial.position, axis)?
+                                    .1;
+                                Some(axis * (current - start))
+                            });
                             match drag.axis {
-                                GizmoAxis::X => next.position.x += delta.x * d,
-                                GizmoAxis::Z => next.position.z -= delta.y * d,
-                                GizmoAxis::Y => next.position.y -= delta.y * d,
+                                GizmoAxis::X | GizmoAxis::Y | GizmoAxis::Z => {
+                                    if let Some(value) = world_delta {
+                                        next.position = drag.initial.position + value;
+                                    } else {
+                                        next.position = next.position
+                                            + Vec3::new(delta.x * d, -delta.y * d, 0.0);
+                                    }
+                                }
                                 GizmoAxis::Free => {
                                     let fx = -self.editor_camera.yaw.sin();
                                     let fz = -self.editor_camera.yaw.cos();
@@ -853,6 +895,13 @@ impl EditorApp {
                     mesh_path: entity.mesh.mesh,
                     model,
                     palette: Vec::new(),
+                    bounds: Scene3dBounds {
+                        local_aabb: engine_core::math3d::Aabb3 {
+                            min: Vec3::new(-0.5, -0.5, -0.5),
+                            max: Vec3::new(0.5, 0.5, 0.5),
+                        },
+                        source: BoundsSource::Fallback,
+                    },
                 })
             })
             .collect::<Vec<_>>();

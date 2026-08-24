@@ -464,7 +464,7 @@ mod tests {
 
     fn quad_path() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../game/assets/models/m8-skin-quad.glb")
+            .join("../../../game_test/assets/models/m8-skin-quad.glb")
     }
 
     fn quad_animation() -> Animation3D {
@@ -538,7 +538,7 @@ mod tests {
     fn rejects_non_skinned_asset() {
         let asset = GltfAsset::load(
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../../game/assets/models/m8-test-triangle.glb"),
+                .join("../../../game_test/assets/models/m8-test-triangle.glb"),
         )
         .unwrap();
         assert_eq!(

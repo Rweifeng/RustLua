@@ -5,10 +5,7 @@ use crate::util::{display_path, strip_verbatim_prefix};
 use editor::CommandKind;
 use eframe::egui;
 use engine_core::{
-    prefab::Prefab,
-    resource_db::AssetId,
-    scene::SceneEntityId,
-    transform3d::Transform3D,
+    prefab::Prefab, resource_db::AssetId, scene::SceneEntityId, transform3d::Transform3D,
 };
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -36,7 +33,9 @@ impl EditorApp {
                 });
                 // 场景切换下拉：列出 scenes/ 目录全部场景文件。
                 let scene_files = self.scene_files();
-                let current_path = self.current_scene().and_then(|document| document.path.clone());
+                let current_path = self
+                    .current_scene()
+                    .and_then(|document| document.path.clone());
                 let mut open_path: Option<PathBuf> = None;
                 egui::ComboBox::from_id_salt("scene_selector")
                     .width(ui.available_width())
@@ -60,10 +59,10 @@ impl EditorApp {
                         }
                     });
                 if let Some(document) = self.current_scene() {
-                    let path = document.path.as_deref().map_or_else(
-                        || "未保存，保存后将写入 scenes/".to_owned(),
-                        display_path,
-                    );
+                    let path = document
+                        .path
+                        .as_deref()
+                        .map_or_else(|| "未保存，保存后将写入 scenes/".to_owned(), display_path);
                     ui.small(format!("路径：{path}"));
                 }
                 if let Some(path) = open_path {
