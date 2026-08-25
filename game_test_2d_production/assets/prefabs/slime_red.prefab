@@ -1,0 +1,9 @@
+prefab_version=1
+asset_id=22222222-2222-4222-8222-222222222222
+name=SlimeRed
+root=1
+entity	1	SlimeRed	
+component	1	Animation	default=squish;clip:squish:assets/textures/slime.png:2:3:true
+component	1	Collider	shape=ball;radius=12;layer=2;mask=1
+component	1	Sprite	texture=assets/textures/slime.png;size=32x32;pivot=0.5,0.5;tint=1.000,0.550,0.550,1.000;sorting_layer=actors;order=0
+component	1	Transform	x=0.000000000;y=0.000000000;rotation=0.000000000;scale_x=1.100000000;scale_y=1.100000000

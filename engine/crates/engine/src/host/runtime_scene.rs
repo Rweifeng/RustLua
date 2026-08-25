@@ -962,6 +962,10 @@ mod sdf_tests {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../game_test")
     }
 
+    fn production_sample_root() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../game_test_2d_production")
+    }
+
     #[test]
     fn ui_test_scene_emits_sdf_text_draws() {
         let root = game_root();
@@ -1004,6 +1008,71 @@ mod sdf_tests {
                 .iter()
                 .all(|d| !d.name.starts_with("Entity ")),
             "drawable 名称应来自场景实体名，而非索引"
+        );
+    }
+
+    #[test]
+    fn production_sample_menu_scene_instantiates_ui() {
+        let root = production_sample_root();
+        let path = root.join("scenes/menu.scene");
+        assert!(path.is_file(), "样板菜单场景缺失: {}", path.display());
+        let scene = Scene::load(&path).unwrap_or_else(|e| panic!("load menu: {e}"));
+        let mut runtime = RuntimeScene::from_scene_edit(Some(&root), scene).expect("runtime menu");
+        let mesh = runtime.vertices(1280, 720).expect("vertices");
+        let counts = runtime.script.with_world(|world| {
+            (
+                world.entities_with::<UiButton>().len(),
+                world.entities_with::<UiImage>().len(),
+                world.entities_with::<UiText>().len(),
+            )
+        });
+        assert_eq!(counts.0, 2, "menu scene should expose two buttons");
+        assert_eq!(counts.1, 1, "menu scene should expose one image");
+        assert!(
+            counts.2 >= 3,
+            "menu scene should expose title/subtitle/help text"
+        );
+        assert!(
+            !mesh.draws.is_empty(),
+            "menu scene should produce visible 2D/UI draws"
+        );
+    }
+
+    #[test]
+    fn production_sample_scene_instantiates_gameplay_entities() {
+        let root = production_sample_root();
+        let path = root.join("scenes/production.scene");
+        assert!(path.is_file(), "样板生产场景缺失: {}", path.display());
+        let scene = Scene::load(&path).unwrap_or_else(|e| panic!("load production: {e}"));
+        let mut runtime =
+            RuntimeScene::from_scene_edit(Some(&root), scene).expect("runtime production");
+        let input = InputSnapshot::default();
+        runtime
+            .run_script_steps(1, 1.0 / 60.0, &input)
+            .expect("script step");
+        let mesh = runtime.vertices(1280, 720).expect("vertices");
+        let counts = runtime.script.with_world(|world| {
+            (
+                world.entities_with::<crate::core::tilemap::Tilemap>().len(),
+                world
+                    .entities_with::<crate::core::animation::AnimationStateMachine>()
+                    .len(),
+                world.entities_with::<UiButton>().len(),
+            )
+        });
+        assert_eq!(counts.0, 1, "production scene should have one tilemap");
+        assert_eq!(
+            counts.1, 11,
+            "production scene should have player plus ten animated enemies"
+        );
+        assert_eq!(counts.2, 1, "production scene should have one menu button");
+        assert!(
+            runtime.texture_paths.len() >= 4,
+            "production scene should load tilemap/player/enemy/pickup textures"
+        );
+        assert!(
+            mesh.draws.len() >= 6,
+            "production scene should render tilemap and gameplay actors"
         );
     }
 

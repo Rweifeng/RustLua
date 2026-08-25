@@ -1693,6 +1693,44 @@ fn build_prefab_from_instance_root(
         existing_prefab.name.clone(),
     )
     .map_err(|error| error.to_string())?;
+    let mut source_ids = std::collections::BTreeMap::new();
+    for entity_id in prefab.entities.keys().copied().collect::<Vec<_>>() {
+        let scene_entity = scene
+            .entities
+            .get(&entity_id)
+            .ok_or_else(|| format!("场景中不存在实体 {}", entity_id.0))?;
+        let source_id = scene_entity
+            .metadata
+            .get("prefab.source_id")
+            .ok_or_else(|| format!("实体 {} 缺少 prefab.source_id", entity_id.0))?
+            .parse::<u64>()
+            .map(SceneEntityId)
+            .map_err(|_| format!("实体 {} 的 prefab.source_id 非法", entity_id.0))?;
+        if source_ids.insert(entity_id, source_id).is_some() {
+            return Err(format!("实例实体 {} 出现重复映射", entity_id.0));
+        }
+    }
+    let root = *source_ids
+        .get(&prefab.root)
+        .ok_or_else(|| format!("实例根实体 {} 缺少 source_id 映射", prefab.root.0))?;
+    let mut remapped = std::collections::BTreeMap::new();
+    for (_, mut entity) in prefab.entities {
+        let source_id = *source_ids
+            .get(&entity.id)
+            .ok_or_else(|| format!("实体 {} 缺少 source_id 映射", entity.id.0))?;
+        entity.id = source_id;
+        entity.parent = entity.parent.and_then(|id| source_ids.get(&id).copied());
+        entity.children = entity
+            .children
+            .into_iter()
+            .filter_map(|id| source_ids.get(&id).copied())
+            .collect();
+        if remapped.insert(source_id, entity).is_some() {
+            return Err(format!("Prefab 写回时出现重复源实体 {}", source_id.0));
+        }
+    }
+    prefab.root = root;
+    prefab.entities = remapped;
     prefab.metadata = existing_prefab.metadata.clone();
     for entity in prefab.entities.values_mut() {
         entity.metadata.retain(|key, _| !key.starts_with("prefab."));
@@ -1972,7 +2010,102 @@ fn ui_anchor_preset_label(anchor_x: f32, anchor_y: f32) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::EditorApp;
+    use editor::open_project;
+    use engine::core::{logging::LogSink, scene::SceneEntityId};
     use engine::core::{prefab::Prefab, resource_db::AssetId, scene::Scene};
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_token() -> u128 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be valid")
+            .as_nanos()
+    }
+
+    fn temp_root(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "rustlua-m14-01-inspector-{label}-{}",
+            unique_token()
+        ))
+    }
+
+    fn sample_project_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../game_test_2d_production")
+    }
+
+    fn copy_dir(source: &Path, destination: &Path) {
+        if !source.is_dir() {
+            return;
+        }
+        for entry in fs::read_dir(source).unwrap() {
+            let entry = entry.unwrap();
+            let source_path = entry.path();
+            let target_path = destination.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                fs::create_dir_all(&target_path).unwrap();
+                copy_dir(&source_path, &target_path);
+            } else {
+                if let Some(parent) = target_path.parent() {
+                    fs::create_dir_all(parent).unwrap();
+                }
+                fs::copy(&source_path, &target_path).unwrap();
+            }
+        }
+    }
+
+    fn copy_sample_project(label: &str) -> PathBuf {
+        let source = sample_project_root();
+        assert!(
+            source.join("project.toml").is_file(),
+            "sample project missing: {}",
+            source.display()
+        );
+        let root = temp_root(label);
+        fs::create_dir_all(&root).unwrap();
+        fs::copy(source.join("project.toml"), root.join("project.toml")).unwrap();
+        copy_dir(&source.join("scripts"), &root.join("scripts"));
+        copy_dir(&source.join("scenes"), &root.join("scenes"));
+        copy_dir(&source.join("assets"), &root.join("assets"));
+        root
+    }
+
+    fn sample_app_with_production_scene(label: &str) -> (EditorApp, PathBuf) {
+        let root = copy_sample_project(label);
+        let project = open_project(&root).unwrap();
+        let mut app = EditorApp::new(project, None, LogSink::new(64));
+        app.refresh_resources();
+        app.open_scene_resource(PathBuf::from("scenes/production.scene"));
+        (app, root)
+    }
+
+    fn select_entity(app: &mut EditorApp, id: SceneEntityId) {
+        let scene = app.document.current_scene.as_ref().unwrap();
+        app.tree.select(scene, id).unwrap();
+        app.scene_state.selected.clear();
+        app.scene_state.selected.insert(id);
+        app.sync_inspector(id);
+    }
+
+    fn prefab_root(scene: &Scene, prefab_source: &str) -> SceneEntityId {
+        scene
+            .entities
+            .values()
+            .find(|entity| {
+                entity
+                    .metadata
+                    .get("prefab.root")
+                    .is_some_and(|value| value == "true")
+                    && entity
+                        .metadata
+                        .get("prefab.source")
+                        .is_some_and(|value| value == prefab_source)
+            })
+            .map(|entity| entity.id)
+            .expect("sample scene should contain prefab root")
+    }
 
     fn entity() -> SceneEntity {
         SceneEntity {
@@ -2157,5 +2290,119 @@ mod tests {
                 .get("designer.note"),
             Some(&"boss".to_owned())
         );
+    }
+
+    #[test]
+    fn sample_project_reapply_prefab_preserves_overrides() {
+        let (mut app, root) = sample_app_with_production_scene("reapply");
+        let target = {
+            let scene = &app.document.current_scene.as_ref().unwrap().scene;
+            prefab_root(scene, "assets/prefabs/slime_green.prefab")
+        };
+        {
+            let scene = app.document.current_scene.as_mut().unwrap();
+            let entity = scene.scene.entities.get_mut(&target).unwrap();
+            entity.name = "BossGreen".to_owned();
+            entity.components.insert(
+                "Transform".to_owned(),
+                "x=77;y=19;rotation=0;scale_x=1;scale_y=1".to_owned(),
+            );
+            scene.mark_dirty();
+        }
+        select_entity(&mut app, target);
+
+        app.reapply_selected_prefab();
+
+        assert!(
+            app.status.contains("已重新应用 Prefab"),
+            "status should confirm prefab reapply"
+        );
+        let selected = app.tree.selected().unwrap();
+        let scene = &app.document.current_scene.as_ref().unwrap().scene;
+        let entity = scene.entities.get(&selected).unwrap();
+        assert_eq!(entity.name, "BossGreen");
+        assert_eq!(
+            entity.components.get("Transform").map(String::as_str),
+            Some("x=77;y=19;rotation=0;scale_x=1;scale_y=1")
+        );
+        assert_eq!(
+            entity.metadata.get("prefab.source").map(String::as_str),
+            Some("assets/prefabs/slime_green.prefab")
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sample_project_save_prefab_to_source_updates_all_instances() {
+        let (mut app, root) = sample_app_with_production_scene("save-source");
+        let (target, original_names) = {
+            let scene = &app.document.current_scene.as_ref().unwrap().scene;
+            let target = prefab_root(scene, "assets/prefabs/slime_green.prefab");
+            let names = scene
+                .entities
+                .values()
+                .filter(|entity| {
+                    entity
+                        .metadata
+                        .get("prefab.root")
+                        .is_some_and(|value| value == "true")
+                        && entity
+                            .metadata
+                            .get("prefab.source")
+                            .is_some_and(|value| value == "assets/prefabs/slime_green.prefab")
+                })
+                .map(|entity| entity.name.clone())
+                .collect::<Vec<_>>();
+            (target, names)
+        };
+        {
+            let scene = app.document.current_scene.as_mut().unwrap();
+            let entity = scene.scene.entities.get_mut(&target).unwrap();
+            entity.name = "SlimeGreenElite".to_owned();
+            scene.mark_dirty();
+        }
+        select_entity(&mut app, target);
+
+        app.save_selected_prefab_to_source();
+
+        assert!(
+            app.status.contains("已写回 Prefab 源并更新实例"),
+            "status should confirm prefab save, got: {}",
+            app.status
+        );
+        let saved = Prefab::load(root.join("assets/prefabs/slime_green.prefab")).unwrap();
+        assert_eq!(saved.entities[&saved.root].name, "SlimeGreenElite");
+        let scene = &app.document.current_scene.as_ref().unwrap().scene;
+        let names: Vec<_> = scene
+            .entities
+            .values()
+            .filter(|entity| {
+                entity
+                    .metadata
+                    .get("prefab.root")
+                    .is_some_and(|value| value == "true")
+                    && entity
+                        .metadata
+                        .get("prefab.source")
+                        .is_some_and(|value| value == "assets/prefabs/slime_green.prefab")
+            })
+            .map(|entity| entity.name.as_str())
+            .collect();
+        assert!(
+            !names.is_empty(),
+            "sample scene should still contain green slimes"
+        );
+        assert!(
+            names.contains(&"SlimeGreenElite"),
+            "selected instance should rebuild from updated source"
+        );
+        assert!(
+            original_names
+                .iter()
+                .filter(|name| name.as_str() != "SlimeGreen1")
+                .all(|name| names.contains(&name.as_str())),
+            "other instance name overrides should be preserved"
+        );
+        let _ = fs::remove_dir_all(root);
     }
 }

@@ -1760,8 +1760,68 @@ fn scene_view_3d_cache_hit(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::EditorApp;
     use crate::EditorCamera;
+    use editor::open_project;
+    use engine::core::logging::LogSink;
     use engine::core::transform::Vec2;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_token() -> u128 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be valid")
+            .as_nanos()
+    }
+
+    fn temp_root(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "rustlua-m14-01-scene-view-{label}-{}",
+            unique_token()
+        ))
+    }
+
+    fn sample_project_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../game_test_2d_production")
+    }
+
+    fn copy_dir(source: &Path, destination: &Path) {
+        if !source.is_dir() {
+            return;
+        }
+        for entry in fs::read_dir(source).unwrap() {
+            let entry = entry.unwrap();
+            let source_path = entry.path();
+            let target_path = destination.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                fs::create_dir_all(&target_path).unwrap();
+                copy_dir(&source_path, &target_path);
+            } else {
+                if let Some(parent) = target_path.parent() {
+                    fs::create_dir_all(parent).unwrap();
+                }
+                fs::copy(&source_path, &target_path).unwrap();
+            }
+        }
+    }
+
+    fn copy_sample_project(label: &str) -> PathBuf {
+        let source = sample_project_root();
+        assert!(
+            source.join("project.toml").is_file(),
+            "sample project missing: {}",
+            source.display()
+        );
+        let root = temp_root(label);
+        fs::create_dir_all(&root).unwrap();
+        fs::copy(source.join("project.toml"), root.join("project.toml")).unwrap();
+        copy_dir(&source.join("scripts"), &root.join("scripts"));
+        copy_dir(&source.join("scenes"), &root.join("scenes"));
+        copy_dir(&source.join("assets"), &root.join("assets"));
+        root
+    }
 
     /// R-03：3D 缓存 key 记录实际渲染尺寸。拖拽期渲染半分辨率并写入缓存；
     /// 拖拽结束后视口恢复全分辨率，缓存不匹配 → 必然重渲染，不会沿用模糊帧。
@@ -1863,5 +1923,53 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn sample_project_prefab_drop_instantiates_prefab_metadata() {
+        let root = copy_sample_project("prefab-drop");
+        let project = open_project(&root).unwrap();
+        let mut app = EditorApp::new(project, None, LogSink::new(64));
+        app.refresh_resources();
+        app.open_scene_resource(PathBuf::from("scenes/menu.scene"));
+        let before = app
+            .document
+            .current_scene
+            .as_ref()
+            .unwrap()
+            .scene
+            .entities
+            .len();
+
+        app.spawn_prefab_from_drop("assets/prefabs/slime_green.prefab")
+            .unwrap();
+
+        let scene = app.document.current_scene.as_ref().unwrap();
+        let prefab_roots: Vec<_> = scene
+            .scene
+            .entities
+            .values()
+            .filter(|entity| {
+                entity
+                    .metadata
+                    .get("prefab.root")
+                    .is_some_and(|value| value == "true")
+                    && entity
+                        .metadata
+                        .get("prefab.source")
+                        .is_some_and(|value| value == "assets/prefabs/slime_green.prefab")
+            })
+            .collect();
+        assert_eq!(prefab_roots.len(), 1, "drop should create one prefab root");
+        assert_eq!(prefab_roots[0].name, "SlimeGreen");
+        assert!(
+            scene.scene.entities.len() > before,
+            "drop should add prefab entities to the scene"
+        );
+        assert!(
+            scene.is_dirty(),
+            "instantiating prefab should dirty the scene"
+        );
+        let _ = fs::remove_dir_all(root);
     }
 }

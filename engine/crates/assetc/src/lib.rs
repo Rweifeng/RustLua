@@ -525,6 +525,7 @@ pub struct PackageManifest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_project(name: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!("p2-assetc-{name}-{}", std::process::id()));
@@ -556,6 +557,38 @@ mod tests {
             0x3d, 0x1d, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
         ];
         fs::write(root.join("assets/textures/red-1x1.png"), png).unwrap();
+        root
+    }
+
+    fn unique_suffix() -> u128 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be valid")
+            .as_nanos()
+    }
+
+    fn sample_project_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../game_test_2d_production")
+    }
+
+    fn copy_sample_project(label: &str) -> PathBuf {
+        let source = sample_project_root();
+        assert!(
+            source.join("project.toml").is_file(),
+            "sample project missing: {}",
+            source.display()
+        );
+        let root = std::env::temp_dir().join(format!(
+            "p2-assetc-sample-{label}-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        copy_file(&source.join("project.toml"), &root.join("project.toml")).unwrap();
+        copy_dir(&source.join("scripts"), &root.join("scripts")).unwrap();
+        copy_dir(&source.join("scenes"), &root.join("scenes")).unwrap();
+        copy_dir(&source.join("assets"), &root.join("assets")).unwrap();
         root
     }
 
@@ -752,6 +785,46 @@ mod tests {
         let manifest_text = fs::read_to_string(out.join("manifest.txt")).unwrap();
         assert!(manifest_text.contains("red-1x1.png"), "manifest lists png");
         assert!(manifest_text.contains("main.lua"), "manifest lists lua");
+        fs::remove_dir_all(&out).ok();
+        cleanup(&root);
+    }
+
+    #[test]
+    fn sample_project_import_checkdeps_and_package_pass() {
+        let root = copy_sample_project("workflow");
+        let outcomes = import(&root).unwrap();
+        assert!(
+            outcomes.iter().all(|outcome| outcome.error.is_none()),
+            "sample project import should succeed: {outcomes:?}"
+        );
+
+        let broken = check_dependencies(&root).unwrap();
+        assert!(
+            broken.is_empty(),
+            "sample project should have no broken dependency chain: {broken:?}"
+        );
+
+        let out = std::env::temp_dir().join(format!(
+            "p2-assetc-sample-pack-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        let _ = fs::remove_dir_all(&out);
+        let manifest = package(&root, &out, false, false).unwrap();
+        assert!(
+            manifest.entries.contains_key("scenes/production.scene"),
+            "packaged manifest should include production scene"
+        );
+        assert!(
+            manifest
+                .entries
+                .contains_key("assets/prefabs/slime_green.prefab"),
+            "packaged manifest should include prefab"
+        );
+        assert!(
+            out.join("scripts/main.lua").is_file(),
+            "packaged scripts should be copied"
+        );
         fs::remove_dir_all(&out).ok();
         cleanup(&root);
     }

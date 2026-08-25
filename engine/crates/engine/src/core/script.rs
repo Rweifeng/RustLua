@@ -2396,6 +2396,11 @@ mod tests {
         fs::write(&path, contents).unwrap();
         path
     }
+
+    fn production_sample_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../game_test_2d_production")
+    }
+
     #[test]
     fn registers_log_time_input_and_quit_api() {
         let mut runtime = LuaRuntime::new().unwrap();
@@ -3100,6 +3105,116 @@ mod tests {
         let _ = fs::remove_dir_all(root);
         let _ = fs::remove_file(load);
         let _ = fs::remove_file(click);
+    }
+
+    #[test]
+    fn production_sample_main_script_runs_menu_update() {
+        use crate::core::scene::Scene;
+        use crate::core::ui::UiButton;
+
+        let root = production_sample_root();
+        let scene = Scene::load(root.join("scenes/menu.scene")).expect("load sample menu");
+        let mut runtime = LuaRuntime::new().unwrap();
+        runtime.set_project_root(root.clone());
+        assert_eq!(runtime.instantiate_scene(&scene).unwrap(), 7);
+        runtime
+            .execute_project_script(&root.join("scripts/main.lua"))
+            .expect("load sample main.lua");
+
+        assert_eq!(runtime.call_update().unwrap(), "menu_ready");
+        let buttons = runtime.with_world(|world| world.entities_with::<UiButton>().len());
+        assert_eq!(buttons, 2, "menu scene should expose two buttons");
+    }
+
+    #[test]
+    fn production_sample_start_button_loads_production_scene() {
+        use crate::core::{
+            animation::AnimationStateMachine, input::MouseButton, scene::Scene, tilemap::Tilemap,
+        };
+
+        let root = production_sample_root();
+        let scene = Scene::load(root.join("scenes/menu.scene")).expect("load sample menu");
+        let mut runtime = LuaRuntime::new().unwrap();
+        runtime.set_project_root(root.clone());
+        runtime.instantiate_scene(&scene).unwrap();
+        runtime
+            .execute_project_script(&root.join("scripts/main.lua"))
+            .expect("load sample main.lua");
+
+        let mut input = InputSnapshot::default();
+        input.cursor_moved(520.0, 400.0);
+        input.mouse_event(MouseButton::Left, true);
+        runtime.process_ui_clicks(&input, 1280, 720).unwrap();
+        runtime.process_scene_transition().unwrap();
+
+        let result = runtime.call_update().unwrap();
+        assert!(
+            result.starts_with("production_ok"),
+            "production gameplay update should run after transition: {result}"
+        );
+        let counts = runtime.with_world(|world| {
+            (
+                world.entities_with::<Tilemap>().len(),
+                world.entities_with::<AnimationStateMachine>().len(),
+            )
+        });
+        assert_eq!(counts.0, 1, "production scene should load one tilemap");
+        assert_eq!(
+            counts.1, 11,
+            "production scene should load player plus ten animated enemies"
+        );
+    }
+
+    #[test]
+    fn production_sample_can_save_and_return_to_menu() {
+        use crate::core::{input::InputKey, scene::Scene, ui::UiButton};
+
+        let root = production_sample_root();
+        let save_path = std::env::temp_dir().join(format!(
+            "p2-production-sample-save-{}.sav",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be valid")
+                .as_nanos()
+        ));
+        let _ = fs::remove_file(&save_path);
+        let scene = Scene::load(root.join("scenes/menu.scene")).expect("load sample menu");
+        let mut runtime = LuaRuntime::new().unwrap();
+        runtime.set_project_root(root.clone());
+        runtime.set_save_path(save_path.clone());
+        runtime.instantiate_scene(&scene).unwrap();
+        runtime
+            .execute_project_script(&root.join("scripts/main.lua"))
+            .expect("load sample main.lua");
+
+        let mut click = InputSnapshot::default();
+        click.cursor_moved(520.0, 400.0);
+        click.mouse_event(crate::core::input::MouseButton::Left, true);
+        runtime.process_ui_clicks(&click, 1280, 720).unwrap();
+        runtime.process_scene_transition().unwrap();
+
+        let mut save_input = InputSnapshot::default();
+        save_input.key_event(InputKey::Other(1), true);
+        runtime.set_input(save_input);
+        let save_result = runtime.call_update().unwrap();
+        assert!(
+            save_result.starts_with("production_ok"),
+            "save frame should continue gameplay update: {save_result}"
+        );
+        assert!(save_path.is_file(), "F1 should commit a save file");
+
+        let mut menu_input = InputSnapshot::default();
+        menu_input.key_event(InputKey::Other(4), true);
+        runtime.set_input(menu_input);
+        let switch_result = runtime.call_update().unwrap();
+        assert_eq!(switch_result, "return_menu");
+        runtime.process_scene_transition().unwrap();
+        runtime.set_input(InputSnapshot::default());
+        assert_eq!(runtime.call_update().unwrap(), "menu_ready");
+        let buttons = runtime.with_world(|world| world.entities_with::<UiButton>().len());
+        assert_eq!(buttons, 2, "menu scene should be restored after F4");
+
+        let _ = fs::remove_file(save_path);
     }
 
     #[test]

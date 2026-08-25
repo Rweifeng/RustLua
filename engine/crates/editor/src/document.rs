@@ -329,9 +329,57 @@ impl From<ProjectError> for DocumentError {
 mod tests {
     use super::*;
     use engine::core::{prefab::Prefab, scene::SceneEntityId};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_root(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!("rustlua-m5-02-{label}-{}", unique_token()))
+    }
+
+    fn unique_token() -> u128 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be valid")
+            .as_nanos()
+    }
+
+    fn sample_project_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../game_test_2d_production")
+    }
+
+    fn copy_dir(source: &Path, destination: &Path) {
+        if !source.is_dir() {
+            return;
+        }
+        for entry in fs::read_dir(source).unwrap() {
+            let entry = entry.unwrap();
+            let source_path = entry.path();
+            let target_path = destination.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                fs::create_dir_all(&target_path).unwrap();
+                copy_dir(&source_path, &target_path);
+            } else {
+                if let Some(parent) = target_path.parent() {
+                    fs::create_dir_all(parent).unwrap();
+                }
+                fs::copy(&source_path, &target_path).unwrap();
+            }
+        }
+    }
+
+    fn copy_sample_project(label: &str) -> PathBuf {
+        let source = sample_project_root();
+        assert!(
+            source.join("project.toml").is_file(),
+            "sample project missing: {}",
+            source.display()
+        );
+        let root = temp_root(&format!("sample-{label}-{}", unique_token()));
+        fs::create_dir_all(&root).unwrap();
+        fs::copy(source.join("project.toml"), root.join("project.toml")).unwrap();
+        copy_dir(&source.join("scripts"), &root.join("scripts"));
+        copy_dir(&source.join("scenes"), &root.join("scenes"));
+        copy_dir(&source.join("assets"), &root.join("assets"));
+        root
     }
 
     fn scene() -> Scene {
@@ -542,6 +590,52 @@ mod tests {
 
         let error = document.save().unwrap_err();
         assert!(error.to_string().contains("恰好有一个根实体"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sample_project_scene_document_roundtrips_cleanly() {
+        let root = copy_sample_project("scene");
+        let path = root.join("scenes/production.scene");
+        let mut document = SceneDocument::open(&path).unwrap();
+        assert_eq!(document.scene.name, "production");
+        assert!(document.scene.entities.contains_key(&SceneEntityId(1)));
+        assert!(document.scene.entities.contains_key(&SceneEntityId(2)));
+        assert!(
+            document.scene.entities.len() >= 18,
+            "sample production scene should include tilemap/player/enemies/coins/ui"
+        );
+        assert_eq!(
+            document.scene.entities[&SceneEntityId(10)]
+                .metadata
+                .get("prefab.source")
+                .map(String::as_str),
+            Some("assets/prefabs/slime_green.prefab")
+        );
+
+        document.save().unwrap();
+        let reopened = SceneDocument::open(&path).unwrap();
+        assert_eq!(reopened.scene, document.scene);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sample_project_prefab_document_roundtrips_cleanly() {
+        let root = copy_sample_project("prefab");
+        let path = root.join("assets/prefabs/slime_red.prefab");
+        let mut document = SceneDocument::open(&path).unwrap();
+        assert!(document.is_prefab_document());
+        assert_eq!(document.scene.name, "SlimeRed");
+        assert_eq!(document.scene.entities.len(), 1);
+        assert_eq!(
+            document.scene.entities[&SceneEntityId(1)].components["Sprite"],
+            "texture=assets/textures/slime.png;size=32x32;pivot=0.5,0.5;tint=1.000,0.550,0.550,1.000;sorting_layer=actors;order=0"
+        );
+
+        document.save().unwrap();
+        let saved = Prefab::load(&path).unwrap();
+        assert_eq!(saved.name, "SlimeRed");
+        assert_eq!(saved.entities.len(), 1);
         let _ = fs::remove_dir_all(root);
     }
 }
