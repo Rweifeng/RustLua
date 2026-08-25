@@ -155,7 +155,7 @@ mod tests {
 
     #[test]
     fn extract_key_parses_quoted_project_fields() {
-        let text = "[project]\nname = \"p2-game\"\nmain_script = \"scripts/main.lua\"\nstartup_scene = \"scenes/main.scene\"\n";
+        let text = "[project]\nname = \"game\"\nmain_script = \"scripts/main.lua\"\nstartup_scene = \"scenes/main.scene\"\n";
         assert_eq!(
             extract_key(text, "main_script"),
             Some("scripts/main.lua".to_owned())

@@ -32,10 +32,10 @@ Release 构建：
 ## 发布验收
 
 - `package.ps1 -SelfTest -Encrypt`：Release 构建 + assetc package（31 数据文件，加密）→
-  `artifacts/builds/release/p2-game`（38 文件，15,151 KB）。
-- 目录隔离自测：复制到含空格临时目录（`...\p2 release test 214427\p2-game`），
+  `artifacts/builds/release/game`（38 文件，15,151 KB）。
+- 目录隔离自测：复制到含空格临时目录（`...\p2 release test 214427\game`），
   `game_runner.exe --pack <dir> --check` 通过，无源码/target/.cache 依赖。
-- 发布包实际运行：`p2-game/game_runner.exe` 独立运行，main.scene（2D）正常渲染，
+- 发布包实际运行：`game/game_runner.exe` 独立运行，main.scene（2D）正常渲染，
   无 GPU/pipeline 校验错误；game3d.scene 与 kaykit-warrior.glb 等模型均在 pack 中
   （F4 循环可进入 3D 游戏）。
 

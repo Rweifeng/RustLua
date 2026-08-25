@@ -37,7 +37,7 @@ ACCEPTED
 
 ## 验收证据
 
-- Release 人工验收包：`artifacts/builds/release/p2-game/`；
+- Release 人工验收包：`artifacts/builds/release/game/`；
 - `game_runner.exe --pack pack --check` 目录隔离检查通过；
 - M8-04 自动验收：workspace 测试、Clippy、Debug/Release 构建和项目检查通过；
 - 人工验收结论：通过。

@@ -2,12 +2,13 @@
 //!
 //! Pure logic (no I/O) shared by the editor, assetc, and game's runtime
 //! verification: it scans scene/prefab component strings and Lua source for
-//! references to other assets, and resolves them to [`AssetId`]s through the
-//! database.
+//! references to other assets, resolves them to [`AssetId`]s through the
+//! database, and (in `propagate` / `detect_cycles`) propagates a dependency's
+//! bad state onto its consumers.
 
-use crate::core::resource_db::{AssetId, ResourceDatabase};
+use crate::core::resource_db::{AssetId, AssetRecord, ResourceDatabase, ResourceState};
 use crate::core::resource_kind::ResourceKind;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 /// A single extracted reference in its raw form (project-relative, forward
@@ -138,6 +139,263 @@ pub fn recompute_edges(
         unresolved.extend(un_resolved);
     }
     unresolved
+}
+
+/// Propagates dependency invalidation over a snapshot of records.
+///
+/// Pure function, idempotent and reversible: a consumer's state is the rank-max
+/// of its own physical state and the worst state among its dependencies, so a
+/// broken dependency surfaces on every consumer that transitively depends on it
+/// (`Missing → Invalid → Invalid`), and restoring the dependency revokes the
+/// `Invalid` back to a consumable state. Callers must run it with statuses
+/// freshly reflecting the physical state (right after `reconcile` or an import
+/// batch).
+pub fn propagate(
+    records: &HashMap<AssetId, AssetRecord>,
+) -> HashMap<AssetId, (ResourceState, Option<String>)> {
+    let mut current: HashMap<AssetId, ResourceState> = records
+        .iter()
+        .map(|(id, record)| (*id, record.status))
+        .collect();
+    // 循环依赖 error 先写入；传播只在状态变化时覆盖，保持 Ready 的环内节点保留循环文案。
+    let mut errors: HashMap<AssetId, Option<String>> =
+        records.keys().map(|id| (*id, None)).collect();
+    for cycle in detect_cycles(records) {
+        let text = cycle_error_text(&cycle);
+        for id in cycle {
+            errors.insert(id, Some(text.clone()));
+        }
+    }
+    // rank 单调不减，至多 records.len() 轮必收敛。
+    let rounds = records.len().max(1);
+    for _ in 0..rounds {
+        let mut changed = false;
+        for (id, record) in records {
+            if !record.status.is_durable() {
+                continue;
+            }
+            if physical_rank(record) == 7 {
+                continue; // 自身源缺失：保持 Missing/Orphaned，不因依赖改变。
+            }
+            let (dep_worst, worst_dep) = worst_dependency(records, &current, *id);
+            let final_rank = physical_rank(record).max(dep_worst);
+            if let Some(target) = state_for_rank(final_rank) {
+                if current[id] != target {
+                    current.insert(*id, target);
+                    changed = true;
+                }
+                // 只有依赖才是拖后腿因子（比自身物理态更差）时才写依赖 error；
+                // 自身差而依赖健康时保留原 error（如导入失败文案）或循环依赖文案。
+                if let Some((dep, dep_state)) = worst_dep
+                    && dep_worst > physical_rank(record)
+                {
+                    let text = dependency_error(dep, dep_state, record, records);
+                    if errors[id].as_deref() != Some(text.as_str()) {
+                        errors.insert(*id, Some(text));
+                    }
+                }
+            } else if current[id] == ResourceState::Invalid {
+                // 依赖全部健康：撤销 Invalid 回到可消费状态。
+                let restored = if record.content_hash.is_empty() {
+                    ResourceState::Discovered
+                } else {
+                    ResourceState::Ready
+                };
+                current.insert(*id, restored);
+                errors.insert(*id, None);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    current
+        .into_iter()
+        .map(|(id, state)| (id, (state, errors.remove(&id).flatten())))
+        .collect()
+}
+
+/// Detects dependency cycles with a three-color DFS and an explicit path stack.
+/// Returns each cycle as a node list (deduplicated after rotating to a stable
+/// starting node). A cycle is a graph-health warning, not itself a broken link.
+pub fn detect_cycles(records: &HashMap<AssetId, AssetRecord>) -> Vec<Vec<AssetId>> {
+    #[derive(Clone, Copy, PartialEq)]
+    enum Color {
+        White,
+        Gray,
+        Black,
+    }
+    let mut color: HashMap<AssetId, Color> = HashMap::new();
+    let mut stack: Vec<AssetId> = Vec::new();
+    let mut cycles: Vec<Vec<AssetId>> = Vec::new();
+    let mut seen: HashSet<Vec<AssetId>> = HashSet::new();
+    fn dfs(
+        v: AssetId,
+        records: &HashMap<AssetId, AssetRecord>,
+        color: &mut HashMap<AssetId, Color>,
+        stack: &mut Vec<AssetId>,
+        cycles: &mut Vec<Vec<AssetId>>,
+        seen: &mut HashSet<Vec<AssetId>>,
+    ) {
+        color.insert(v, Color::Gray);
+        stack.push(v);
+        if let Some(record) = records.get(&v) {
+            for dep in &record.dependencies {
+                match color.get(dep).copied().unwrap_or(Color::White) {
+                    Color::White => dfs(*dep, records, color, stack, cycles, seen),
+                    Color::Gray => {
+                        if let Some(index) = stack.iter().position(|x| x == dep) {
+                            let cycle: Vec<AssetId> = stack[index..].to_vec();
+                            let mut normalized = cycle.clone();
+                            if let Some(min_index) = normalized
+                                .iter()
+                                .enumerate()
+                                .min_by_key(|(_, id)| id.to_string())
+                                .map(|(index, _)| index)
+                            {
+                                normalized.rotate_left(min_index);
+                            }
+                            if seen.insert(normalized) {
+                                cycles.push(cycle);
+                            }
+                        }
+                    }
+                    Color::Black => {}
+                }
+            }
+        }
+        stack.pop();
+        color.insert(v, Color::Black);
+    }
+    for id in records.keys() {
+        if color.get(id).copied().unwrap_or(Color::White) == Color::White {
+            dfs(*id, records, &mut color, &mut stack, &mut cycles, &mut seen);
+        }
+    }
+    cycles
+}
+
+/// Worst state among `id`'s dependencies: `None`-dependent records (deleted)
+/// count as broken links, and a dependency's own `Missing`/`Orphaned` is folded
+/// into the broken-link class rather than being forwarded verbatim.
+fn worst_dependency(
+    records: &HashMap<AssetId, AssetRecord>,
+    current: &HashMap<AssetId, ResourceState>,
+    id: AssetId,
+) -> (u8, Option<(AssetId, ResourceState)>) {
+    let Some(record) = records.get(&id) else {
+        return (2, None);
+    };
+    let mut worst = 2;
+    let mut worst_dep = None;
+    for dep in &record.dependencies {
+        let (rank, state) = match records.get(dep) {
+            None => (6, ResourceState::Missing), // 指向已删除记录 → 断链。
+            Some(dep_record) => {
+                let state = current.get(dep).copied().unwrap_or(dep_record.status);
+                // 依赖侧 Missing/Orphaned/ImportFailed 都是断链类：消费者重导自己
+                // 也无济于事，所以归到 Invalid(6) 而不是转发自身等级。
+                let rank = if matches!(
+                    state,
+                    ResourceState::Missing | ResourceState::Orphaned | ResourceState::ImportFailed
+                ) {
+                    6
+                } else {
+                    state_rank(state)
+                };
+                (rank, state)
+            }
+        };
+        if rank > worst {
+            worst = rank;
+            worst_dep = Some((*dep, state));
+        }
+    }
+    (worst, worst_dep)
+}
+
+/// Consumer's own physical-state rank. `Invalid` is not physical: it is treated
+/// as the Ready baseline so the dependency graph decides whether it holds or is
+/// revoked.
+fn physical_rank(record: &AssetRecord) -> u8 {
+    match record.status {
+        ResourceState::Missing | ResourceState::Orphaned => 7,
+        ResourceState::ImportFailed => 5,
+        ResourceState::Stale => 4,
+        ResourceState::Discovered => 3,
+        ResourceState::Invalid
+        | ResourceState::Ready
+        | ResourceState::ImportQueued
+        | ResourceState::Importing
+        | ResourceState::Removed => 2,
+    }
+}
+
+/// Rank of a dependency's current state as seen by its consumers.
+fn state_rank(state: ResourceState) -> u8 {
+    match state {
+        ResourceState::Invalid => 6,
+        ResourceState::ImportFailed => 5,
+        ResourceState::Stale => 4,
+        ResourceState::Discovered => 3,
+        ResourceState::Ready
+        | ResourceState::Missing
+        | ResourceState::Orphaned
+        | ResourceState::ImportQueued
+        | ResourceState::Importing
+        | ResourceState::Removed => 2,
+    }
+}
+
+fn state_for_rank(rank: u8) -> Option<ResourceState> {
+    match rank {
+        6 => Some(ResourceState::Invalid),
+        5 => Some(ResourceState::ImportFailed),
+        4 => Some(ResourceState::Stale),
+        3 => Some(ResourceState::Discovered),
+        _ => None,
+    }
+}
+
+/// Error copy describing why a consumer is invalid, prefixed with `自身已变更；`
+/// when the consumer's own physical state is not Ready.
+fn dependency_error(
+    dep: AssetId,
+    dep_state: ResourceState,
+    consumer: &AssetRecord,
+    records: &HashMap<AssetId, AssetRecord>,
+) -> String {
+    let label = records
+        .get(&dep)
+        .map(|record| record.source_path.display().to_string())
+        .unwrap_or_else(|| format!("记录 {dep}"));
+    let cause = match dep_state {
+        ResourceState::Missing | ResourceState::Orphaned => format!("依赖 {label} 缺失"),
+        ResourceState::Invalid => format!("依赖 {label} 无效"),
+        ResourceState::ImportFailed => format!("依赖 {label} 导入失败"),
+        ResourceState::Stale => format!("依赖 {label} 已变更"),
+        ResourceState::Discovered => format!("依赖 {label} 未导入"),
+        _ => format!("依赖 {label} 状态异常"),
+    };
+    let self_bad = matches!(
+        consumer.status,
+        ResourceState::Stale | ResourceState::Discovered | ResourceState::ImportFailed
+    );
+    if self_bad {
+        format!("自身已变更；{cause}")
+    } else {
+        cause
+    }
+}
+
+fn cycle_error_text(cycle: &[AssetId]) -> String {
+    let text = cycle
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(" → ");
+    format!("循环依赖: {text}")
 }
 
 /// Scans tab-separated scene/prefab text for `assets/` references, cutting at
@@ -560,6 +818,234 @@ mod tests {
             PathBuf::from("assets/textures/player.png")
         );
         assert_eq!(db.get(scene).unwrap().dependencies, Vec::<AssetId>::new());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// DB 记录 → 传播算法用的快照 HashMap。
+    fn record_snapshot(db: &ResourceDatabase) -> HashMap<AssetId, AssetRecord> {
+        db.iter()
+            .map(|record| (record.id, record.clone()))
+            .collect()
+    }
+
+    fn applied_state(
+        outcome: &HashMap<AssetId, (ResourceState, Option<String>)>,
+        id: AssetId,
+    ) -> ResourceState {
+        outcome
+            .get(&id)
+            .map(|(state, _)| *state)
+            .expect("record in outcome")
+    }
+
+    #[test]
+    fn propagate_missing_dep_invalidates_consumer() {
+        let root = temp_root("prop-missing");
+        let mut db = ResourceDatabase::open(&root).unwrap();
+        let tex = db
+            .register("assets/textures/player.png", ResourceKind::Texture, "t1")
+            .unwrap();
+        let scene = db
+            .register("scenes/main.scene", ResourceKind::Scene, "s1")
+            .unwrap();
+        db.set_dependencies(scene, vec![tex]).unwrap();
+        db.get_mut_for_test(tex).status = ResourceState::Missing;
+        db.get_mut_for_test(scene).status = ResourceState::Ready;
+        let outcome = propagate(&record_snapshot(&db));
+        assert_eq!(
+            applied_state(&outcome, scene),
+            ResourceState::Invalid,
+            "依赖源缺失 → 消费者 Invalid"
+        );
+        let error = outcome[&scene].1.as_deref().unwrap();
+        assert!(error.contains("缺失"), "{error}");
+        assert_eq!(applied_state(&outcome, tex), ResourceState::Missing);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn propagate_import_failed_dep_invalidates() {
+        let root = temp_root("prop-import-failed");
+        let mut db = ResourceDatabase::open(&root).unwrap();
+        let tex = db
+            .register("assets/textures/player.png", ResourceKind::Texture, "t1")
+            .unwrap();
+        let scene = db
+            .register("scenes/main.scene", ResourceKind::Scene, "s1")
+            .unwrap();
+        db.set_dependencies(scene, vec![tex]).unwrap();
+        db.get_mut_for_test(tex).status = ResourceState::ImportFailed;
+        db.get_mut_for_test(scene).status = ResourceState::Ready;
+        let outcome = propagate(&record_snapshot(&db));
+        assert_eq!(applied_state(&outcome, scene), ResourceState::Invalid);
+        let error = outcome[&scene].1.as_deref().unwrap();
+        assert!(error.contains("导入失败"), "{error}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn propagate_stale_dep_marks_stale() {
+        let root = temp_root("prop-stale");
+        let mut db = ResourceDatabase::open(&root).unwrap();
+        let tex = db
+            .register("assets/textures/player.png", ResourceKind::Texture, "t1")
+            .unwrap();
+        let scene = db
+            .register("scenes/main.scene", ResourceKind::Scene, "s1")
+            .unwrap();
+        db.set_dependencies(scene, vec![tex]).unwrap();
+        db.get_mut_for_test(tex).status = ResourceState::Stale;
+        db.get_mut_for_test(scene).status = ResourceState::Ready;
+        let outcome = propagate(&record_snapshot(&db));
+        assert_eq!(applied_state(&outcome, scene), ResourceState::Stale);
+        let error = outcome[&scene].1.as_deref().unwrap();
+        assert!(error.contains("已变更"), "{error}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn propagate_restore_revokes_invalid() {
+        let root = temp_root("prop-restore");
+        let mut db = ResourceDatabase::open(&root).unwrap();
+        let tex = db
+            .register("assets/textures/player.png", ResourceKind::Texture, "t1")
+            .unwrap();
+        let scene = db
+            .register("scenes/main.scene", ResourceKind::Scene, "s1")
+            .unwrap();
+        db.set_dependencies(scene, vec![tex]).unwrap();
+        db.get_mut_for_test(scene).status = ResourceState::Ready;
+        db.get_mut_for_test(scene).content_hash = "cafe".into();
+        db.get_mut_for_test(tex).status = ResourceState::Missing;
+        let first = propagate(&record_snapshot(&db));
+        assert_eq!(applied_state(&first, scene), ResourceState::Invalid);
+        // 模拟 propagate_invalidation 写回后，依赖文件恢复（discovered→ready）。
+        db.get_mut_for_test(scene).status = ResourceState::Invalid;
+        db.get_mut_for_test(tex).status = ResourceState::Ready;
+        let second = propagate(&record_snapshot(&db));
+        assert_eq!(
+            applied_state(&second, scene),
+            ResourceState::Ready,
+            "依赖恢复后撤销 Invalid"
+        );
+        assert_eq!(applied_state(&second, tex), ResourceState::Ready);
+        assert!(second[&scene].1.is_none(), "撤销时清空 error");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn propagate_self_missing_keeps_missing() {
+        let root = temp_root("prop-self-missing");
+        let mut db = ResourceDatabase::open(&root).unwrap();
+        let tex = db
+            .register("assets/textures/player.png", ResourceKind::Texture, "t1")
+            .unwrap();
+        let scene = db
+            .register("scenes/main.scene", ResourceKind::Scene, "s1")
+            .unwrap();
+        db.set_dependencies(scene, vec![tex]).unwrap();
+        // scene 自身源也缺失（rank 7 最强），不因依赖缺失变 Invalid。
+        db.get_mut_for_test(tex).status = ResourceState::Missing;
+        db.get_mut_for_test(scene).status = ResourceState::Missing;
+        let outcome = propagate(&record_snapshot(&db));
+        assert_eq!(
+            applied_state(&outcome, scene),
+            ResourceState::Missing,
+            "自身缺失优先级高于依赖"
+        );
+        assert_eq!(applied_state(&outcome, tex), ResourceState::Missing);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn propagate_chain_a_to_c() {
+        let root = temp_root("prop-chain");
+        let mut db = ResourceDatabase::open(&root).unwrap();
+        let a = db
+            .register("assets/textures/player.png", ResourceKind::Texture, "t1")
+            .unwrap();
+        let b = db
+            .register("assets/atlases/ui.atlas", ResourceKind::Atlas, "t1")
+            .unwrap();
+        let c = db
+            .register("scenes/main.scene", ResourceKind::Scene, "s1")
+            .unwrap();
+        db.set_dependencies(b, vec![a]).unwrap();
+        db.set_dependencies(c, vec![b]).unwrap();
+        db.get_mut_for_test(a).status = ResourceState::Missing;
+        db.get_mut_for_test(b).status = ResourceState::Ready;
+        db.get_mut_for_test(c).status = ResourceState::Ready;
+        let outcome = propagate(&record_snapshot(&db));
+        assert_eq!(applied_state(&outcome, b), ResourceState::Invalid);
+        assert_eq!(
+            applied_state(&outcome, c),
+            ResourceState::Invalid,
+            "B 失效级联到 C"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn propagate_cycle_terminates() {
+        let root = temp_root("prop-cycle");
+        let mut db = ResourceDatabase::open(&root).unwrap();
+        let a = db
+            .register("scenes/a.scene", ResourceKind::Scene, "s1")
+            .unwrap();
+        let b = db
+            .register("scenes/b.scene", ResourceKind::Scene, "s1")
+            .unwrap();
+        db.set_dependencies(a, vec![b]).unwrap();
+        db.set_dependencies(b, vec![a]).unwrap();
+        db.get_mut_for_test(a).status = ResourceState::Ready;
+        db.get_mut_for_test(b).status = ResourceState::Ready;
+        let outcome = propagate(&record_snapshot(&db));
+        assert_eq!(applied_state(&outcome, a), ResourceState::Ready);
+        assert_eq!(applied_state(&outcome, b), ResourceState::Ready);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn cycle_detection_reports_chain() {
+        let root = temp_root("cycle-detect");
+        let mut db = ResourceDatabase::open(&root).unwrap();
+        let a = db
+            .register("scenes/a.scene", ResourceKind::Scene, "s1")
+            .unwrap();
+        let b = db
+            .register("scenes/b.scene", ResourceKind::Scene, "s1")
+            .unwrap();
+        db.set_dependencies(a, vec![b]).unwrap();
+        db.set_dependencies(b, vec![a]).unwrap();
+        let cycles = detect_cycles(&record_snapshot(&db));
+        assert_eq!(cycles.len(), 1, "恰好一个环: {cycles:?}");
+        assert_eq!(cycles[0].len(), 2);
+        assert!(
+            cycles[0].contains(&a) && cycles[0].contains(&b),
+            "{:?}",
+            cycles[0]
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn cycle_error_preserved_when_ready() {
+        let root = temp_root("cycle-error");
+        let mut db = ResourceDatabase::open(&root).unwrap();
+        let a = db
+            .register("scenes/a.scene", ResourceKind::Scene, "s1")
+            .unwrap();
+        let b = db
+            .register("scenes/b.scene", ResourceKind::Scene, "s1")
+            .unwrap();
+        db.set_dependencies(a, vec![b]).unwrap();
+        db.set_dependencies(b, vec![a]).unwrap();
+        db.get_mut_for_test(a).status = ResourceState::Ready;
+        db.get_mut_for_test(b).status = ResourceState::Ready;
+        let outcome = propagate(&record_snapshot(&db));
+        let error = outcome[&a].1.as_deref().unwrap();
+        assert!(error.contains("循环依赖"), "{error}");
+        assert!(outcome[&b].1.as_deref().unwrap().contains("循环依赖"));
         let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -37,9 +37,9 @@ Release 发布包（64 实例）：
 
 ## 发布验收
 
-- `package.ps1 -SelfTest -Encrypt`：Release 构建 + assetc package（28 数据文件，加密）→ `artifacts/builds/release/p2-game`（35 文件，14.2 MB）。
-- 目录隔离自测：复制到含空格临时目录（`...\p2 release test 181204\p2-game`），`game_runner --pack <dir> --check` 通过，无源码/无 target/.cache 依赖。
-- 发布包实际运行：`p2-game/game_runner.exe` 独立运行，3D 场景渲染（draws=12/instances=55）、330fps、无 GPU/pipeline 校验错误。
+- `package.ps1 -SelfTest -Encrypt`：Release 构建 + assetc package（28 数据文件，加密）→ `artifacts/builds/release/game`（35 文件，14.2 MB）。
+- 目录隔离自测：复制到含空格临时目录（`...\p2 release test 181204\game`），`game_runner --pack <dir> --check` 通过，无源码/无 target/.cache 依赖。
+- 发布包实际运行：`game/game_runner.exe` 独立运行，3D 场景渲染（draws=12/instances=55）、330fps、无 GPU/pipeline 校验错误。
 - `game_runner --project game --check`、`assetc --check`、`editor --check` 通过。
 
 ## 无 P0/P1 检查

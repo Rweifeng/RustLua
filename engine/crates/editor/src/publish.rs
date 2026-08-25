@@ -47,13 +47,13 @@ impl EditorApp {
         };
         // open_project 会生成 \\?\ 逐字路径，PowerShell -File 不识别，需先去掉前缀。
         let script = strip_verbatim(&found);
-        // 发布脚本位于 <workspace>/scripts/package.ps1，发布包输出到 <workspace>/artifacts/builds/release/p2-game。
+        // 发布脚本位于 <workspace>/scripts/package.ps1，发布包输出到 <workspace>/artifacts/builds/release/game。
         let workspace_root = script
             .parent()
             .and_then(|parent| parent.parent())
             .map(Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from("."));
-        let package_dir = workspace_root.join("artifacts/builds/release/p2-game");
+        let package_dir = workspace_root.join("artifacts/builds/release/game");
         let (tx, rx) = channel();
         spawn_publish(script, self.publish_compress, self.publish_encrypt, tx);
         self.progress.start(

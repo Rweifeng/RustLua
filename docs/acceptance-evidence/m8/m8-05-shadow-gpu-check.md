@@ -6,7 +6,7 @@ GPU：NVIDIA GeForce RTX 3060 Laptop GPU
 
 ## 真实窗口证据
 
-发布包日志 `artifacts/builds/release/p2-game/artifacts/logs/game.log` 记录：
+发布包日志 `artifacts/builds/release/game/artifacts/logs/game.log` 记录：
 
 - `3D mesh uploaded ... vertices=3 indices=3`
 - `shadow scene ready: occluder plus receiver plane meshes=2`

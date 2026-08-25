@@ -406,10 +406,17 @@ impl ResourceDatabase {
     /// Propagates dependency invalidation after a reconcile or import batch.
     ///
     /// The caller guarantees statuses already reflect the latest physical state
-    /// (reconcile or `run_import_batch` with `mark_ready`/`mark_failed`).
-    /// Implementation is wired to `dependency::propagate` in M12-02 commit 3;
-    /// a no-op placeholder lives here until then so the API surface is stable.
-    pub fn propagate_invalidation(&mut self) {}
+    /// (reconcile or `run_import_batch` with `mark_ready`/`mark_failed`), so the
+    /// snapshot the pure `dependency::propagate` sees is the physical truth.
+    pub fn propagate_invalidation(&mut self) {
+        let outcome = crate::core::dependency::propagate(&self.records);
+        for (id, (state, error)) in outcome {
+            if let Some(record) = self.records.get_mut(&id) {
+                record.status = state;
+                record.error = error;
+            }
+        }
+    }
 
     /// Moves/renames a source while preserving its UUID and references.
     pub fn move_resource(
@@ -725,7 +732,7 @@ impl From<std::io::Error> for ResourceDbError {
 
 #[cfg(test)]
 impl ResourceDatabase {
-    fn get_mut_for_test(&mut self, id: AssetId) -> &mut AssetRecord {
+    pub(crate) fn get_mut_for_test(&mut self, id: AssetId) -> &mut AssetRecord {
         self.records.get_mut(&id).expect("record exists")
     }
 }

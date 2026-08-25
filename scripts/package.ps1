@@ -12,7 +12,7 @@ param(
 $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $engineRoot = Join-Path $projectRoot "engine"
-$distRoot = Join-Path $projectRoot "artifacts\builds\release\p2-game"
+$distRoot = Join-Path $projectRoot "artifacts\builds\release\game"
 $packRoot = Join-Path $distRoot "pack"
 $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
 
@@ -90,10 +90,10 @@ if ($SelfTest) {
     $isolated = Join-Path $env:TEMP ("p2 release test " + (Get-Date -Format "HHmmss"))
     New-Item -ItemType Directory -Force -Path $isolated | Out-Null
     Copy-Item -LiteralPath $distRoot -Destination $isolated -Recurse -Force
-    $isolatedRunner = Join-Path $isolated "p2-game\game.exe"
-    $isolatedPack = Join-Path $isolated "p2-game\pack"
+    $isolatedRunner = Join-Path $isolated "game\game.exe"
+    $isolatedPack = Join-Path $isolated "game\pack"
     if (-not (Test-Path $isolatedRunner)) { throw "isolated dir is missing the runner" }
-    $isolatedFont = Join-Path $isolated "p2-game\fonts\NotoSansSC-VF.ttf"
+    $isolatedFont = Join-Path $isolated "game\fonts\NotoSansSC-VF.ttf"
     if (-not (Test-Path $isolatedFont) -or (Get-Item $isolatedFont).Length -le 0) {
         throw "isolated dir is missing a non-empty fonts/NotoSansSC-VF.ttf"
     }

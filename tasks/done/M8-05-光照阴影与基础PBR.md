@@ -36,5 +36,5 @@ ACCEPTED
 - `Depth32Float`、`LessEqual`、比较采样器和 shadow-only pass 已进入 Renderer。
 - 测试场景已加入固定接收平面，与自制 GLB 三角形一起进入真实窗口 3D 绘制；发布日志记录 `shadow scene ready: occluder plus receiver plane`、`Running` 和 `Exited`。
 - 等价 GPU 资源检查已归档至 `docs/acceptance-evidence/m8/m8-05-shadow-gpu-check.md`；RenderDoc 1.45 已安装并完成采集尝试。
-- 发布包已重建，`artifacts/builds/release/p2-game/build-info.txt` 的时间为 `2026-08-22 15:54:02`。
+- 发布包已重建，`artifacts/builds/release/game/build-info.txt` 的时间为 `2026-08-22 15:54:02`。
 - 完整 workspace 质量门与 Release 包回归由负责人完成验收，M8-05 通过。
