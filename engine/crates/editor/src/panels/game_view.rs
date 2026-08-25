@@ -268,10 +268,16 @@ impl EditorApp {
 mod tests {
     use super::*;
     use crate::PlayState;
+    use crate::WorkspaceTab;
     use editor::ProjectInfo;
+    use editor::open_project;
+    use eframe::egui::{self, Event, Key, Modifiers, MouseWheelUnit, PointerButton, RawInput};
+    use engine::core::input::{InputKey, MouseButton};
     use engine::core::logging::LogSink;
     use engine::core::scene::SceneEntityId;
-    use std::path::PathBuf;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     /// 无 GPU 上下文 + 含一个实体的编辑器应用（用于失败路径测试）。
     fn app_with_scene() -> EditorApp {
@@ -292,6 +298,79 @@ mod tests {
             .add_entity(SceneEntityId(1), "Root", None)
             .unwrap();
         app
+    }
+
+    fn unique_token() -> u128 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be valid")
+            .as_nanos()
+    }
+
+    fn temp_root(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "rustlua-m14-01-game-view-{label}-{}",
+            unique_token()
+        ))
+    }
+
+    fn sample_project_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../game_test_2d_production")
+    }
+
+    fn copy_dir(source: &Path, destination: &Path) {
+        if !source.is_dir() {
+            return;
+        }
+        for entry in fs::read_dir(source).unwrap() {
+            let entry = entry.unwrap();
+            let source_path = entry.path();
+            let target_path = destination.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                fs::create_dir_all(&target_path).unwrap();
+                copy_dir(&source_path, &target_path);
+            } else {
+                if let Some(parent) = target_path.parent() {
+                    fs::create_dir_all(parent).unwrap();
+                }
+                fs::copy(&source_path, &target_path).unwrap();
+            }
+        }
+    }
+
+    fn copy_sample_project(label: &str) -> PathBuf {
+        let source = sample_project_root();
+        assert!(
+            source.join("project.toml").is_file(),
+            "sample project missing: {}",
+            source.display()
+        );
+        let root = temp_root(label);
+        fs::create_dir_all(&root).unwrap();
+        fs::copy(source.join("project.toml"), root.join("project.toml")).unwrap();
+        copy_dir(&source.join("scripts"), &root.join("scripts"));
+        copy_dir(&source.join("scenes"), &root.join("scenes"));
+        copy_dir(&source.join("assets"), &root.join("assets"));
+        root
+    }
+
+    fn test_device() -> Option<(wgpu::Device, wgpu::Queue)> {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::LowPower,
+            compatible_surface: None,
+            force_fallback_adapter: true,
+        }))
+        .ok()?;
+        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("p2-game-view-test"),
+            required_features: wgpu::Features::empty(),
+            experimental_features: wgpu::ExperimentalFeatures::disabled(),
+            required_limits: wgpu::Limits::default(),
+            memory_hints: wgpu::MemoryHints::Performance,
+            trace: wgpu::Trace::Off,
+        }))
+        .ok()
     }
 
     /// R-01：无 GPU 时 Play 初始化失败，绝不进入 Playing，也不设置 play_session。
@@ -369,5 +448,131 @@ mod tests {
         state.clear_all();
         assert!(!state.is_down(InputKey::W));
         assert!(!state.mouse_is_down(MouseButton::Left));
+    }
+
+    #[test]
+    fn sample_project_stop_restores_scene_tab_and_clears_preview_input() {
+        let root = copy_sample_project("stop");
+        let project = open_project(&root).unwrap();
+        let mut app = EditorApp::new(project, None, LogSink::new(64));
+        app.refresh_resources();
+        app.open_scene_resource(PathBuf::from("scenes/production.scene"));
+        let original = app.document.current_scene.as_ref().unwrap().clone();
+
+        app.play_session = Some(PlaySession::start(&original));
+        app.play_state = PlayState::Playing;
+        app.workspace_tab = WorkspaceTab::Game;
+        app.tree.select(&original, SceneEntityId(2)).unwrap();
+        app.inspector.select(&original, SceneEntityId(2)).unwrap();
+        app.preview_input_state.key_event(InputKey::W, true);
+        app.preview_input_state.mouse_event(MouseButton::Left, true);
+        app.play_session
+            .as_mut()
+            .unwrap()
+            .runtime_document_mut()
+            .scene
+            .entities
+            .get_mut(&SceneEntityId(2))
+            .unwrap()
+            .name = "RuntimePlayer".to_owned();
+
+        app.stop();
+
+        assert_eq!(app.play_state, PlayState::Editing);
+        assert_eq!(app.workspace_tab, WorkspaceTab::Scene);
+        assert!(app.play_session.is_none());
+        assert!(!app.preview_input_state.is_down(InputKey::W));
+        assert!(!app.preview_input_state.mouse_is_down(MouseButton::Left));
+        assert!(
+            app.tree.selected().is_none(),
+            "stop should clear hierarchy selection"
+        );
+        assert!(
+            app.inspector.selected().is_none(),
+            "stop should clear inspector selection"
+        );
+        assert_eq!(app.document.current_scene.as_ref().unwrap(), &original);
+        assert_eq!(app.status, "Play stopped; runtime changes were discarded");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sample_project_play_starts_preview_and_switches_to_game_tab() {
+        let Some((device, queue)) = test_device() else {
+            return;
+        };
+        let root = copy_sample_project("play-start");
+        let project = open_project(&root).unwrap();
+        let mut app = EditorApp::new(project, Some((device, queue)), LogSink::new(64));
+        app.refresh_resources();
+        app.open_scene_resource(PathBuf::from("scenes/menu.scene"));
+
+        app.play();
+
+        assert_eq!(app.play_state, PlayState::Playing);
+        assert!(
+            app.play_session.is_some(),
+            "play should create play_session"
+        );
+        assert!(app.preview.is_some(), "play should create preview session");
+        assert_eq!(app.workspace_tab, WorkspaceTab::Game);
+        assert_eq!(
+            app.status,
+            "Play mode started; runtime changes stay isolated"
+        );
+        assert_eq!(
+            app.preview.as_ref().map(PreviewSession::size),
+            Some(app.preview_resolution)
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn bridge_preview_input_maps_keys_cursor_and_scroll() {
+        let app = app_with_scene();
+        let ctx = egui::Context::default();
+        let preview_rect =
+            egui::Rect::from_min_max(egui::pos2(10.0, 20.0), egui::pos2(210.0, 120.0));
+        let raw = RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(320.0, 240.0),
+            )),
+            events: vec![
+                Event::Key {
+                    key: Key::W,
+                    physical_key: Some(Key::W),
+                    pressed: true,
+                    repeat: false,
+                    modifiers: Modifiers::default(),
+                },
+                Event::PointerMoved(egui::pos2(60.0, 70.0)),
+                Event::PointerButton {
+                    pos: egui::pos2(60.0, 70.0),
+                    button: PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Modifiers::default(),
+                },
+                Event::MouseWheel {
+                    unit: MouseWheelUnit::Point,
+                    delta: egui::vec2(0.0, 24.0),
+                    modifiers: Modifiers::default(),
+                },
+            ],
+            ..Default::default()
+        };
+        ctx.begin_pass(raw);
+        let mut input = InputSnapshot::default();
+        app.bridge_preview_input(&mut input, &ctx, preview_rect, 200, 100);
+        let _ = ctx.end_pass();
+
+        assert!(input.is_down(InputKey::W));
+        assert!(input.mouse_is_down(MouseButton::Left));
+        assert_eq!(input.cursor_position(), (50.0, 50.0));
+        assert_eq!(input.scroll_delta().0, 0.0);
+        assert!(
+            input.scroll_delta().1 > 0.0,
+            "mouse wheel should produce positive smooth scroll delta"
+        );
     }
 }

@@ -1764,6 +1764,7 @@ mod tests {
     use crate::EditorCamera;
     use editor::open_project;
     use engine::core::logging::LogSink;
+    use engine::core::scene::SceneEntityId;
     use engine::core::transform::Vec2;
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -1969,6 +1970,51 @@ mod tests {
         assert!(
             scene.is_dirty(),
             "instantiating prefab should dirty the scene"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sample_project_tile_paint_persists_after_save_and_reopen() {
+        let root = copy_sample_project("tilepaint");
+        let project = open_project(&root).unwrap();
+        let mut app = EditorApp::new(project, None, LogSink::new(64));
+        app.refresh_resources();
+        app.open_scene_resource(PathBuf::from("scenes/production.scene"));
+        app.sync_inspector(SceneEntityId(1));
+        let width = app.tilemap.map.width;
+        let x = 4usize;
+        let y = 6usize;
+        let index = y * width + x;
+
+        app.tilemap.brush = 5;
+        app.tilemap.paint_collision = false;
+        app.apply_tile_paint_cell(x, y, false);
+        app.tilemap.paint_collision = true;
+        app.apply_tile_paint_cell(x, y, false);
+        app.commit_tilemap_paint(SceneEntityId(1));
+
+        let document = app.document.current_scene.as_ref().unwrap();
+        let component = document.scene.entities[&SceneEntityId(1)].components["Tilemap"].clone();
+        let tilemap = Tilemap::from_component_str(&component).unwrap();
+        assert_eq!(tilemap.tiles[index], 5);
+        assert!(
+            tilemap.solid[index],
+            "paint collision should persist to tilemap"
+        );
+        assert!(document.is_dirty(), "tile paint should dirty the scene");
+
+        app.save_scene();
+        assert_eq!(app.status, "Scene saved");
+        app.open_scene_resource(PathBuf::from("scenes/production.scene"));
+        let reopened = app.document.current_scene.as_ref().unwrap();
+        let reopened_component =
+            reopened.scene.entities[&SceneEntityId(1)].components["Tilemap"].clone();
+        let reopened_tilemap = Tilemap::from_component_str(&reopened_component).unwrap();
+        assert_eq!(reopened_tilemap.tiles[index], 5);
+        assert!(
+            reopened_tilemap.solid[index],
+            "reopened scene should preserve collision paint"
         );
         let _ = fs::remove_dir_all(root);
     }

@@ -638,4 +638,36 @@ mod tests {
         assert_eq!(saved.entities.len(), 1);
         let _ = fs::remove_dir_all(root);
     }
+
+    #[test]
+    fn sample_project_play_session_discards_runtime_edits() {
+        let root = copy_sample_project("play-session");
+        let path = root.join("scenes/production.scene");
+        let document = SceneDocument::open(&path).unwrap();
+        let original = document.clone();
+        let mut session = PlaySession::start(&document);
+
+        session
+            .runtime_document_mut()
+            .scene
+            .entities
+            .get_mut(&SceneEntityId(2))
+            .unwrap()
+            .name = "RuntimePlayer".to_owned();
+        session
+            .runtime_document_mut()
+            .scene
+            .metadata
+            .insert("runtime-only".into(), "true".into());
+        session.runtime_document_mut().mark_dirty();
+
+        assert_eq!(session.editor_snapshot(), &original);
+        assert_eq!(
+            session.runtime_document().scene.entities[&SceneEntityId(2)].name,
+            "RuntimePlayer"
+        );
+        assert!(!original.scene.metadata.contains_key("runtime-only"));
+        assert_eq!(session.stop(), original);
+        let _ = fs::remove_dir_all(root);
+    }
 }

@@ -2012,8 +2012,15 @@ mod tests {
     use super::*;
     use crate::EditorApp;
     use editor::open_project;
-    use engine::core::{logging::LogSink, scene::SceneEntityId};
-    use engine::core::{prefab::Prefab, resource_db::AssetId, scene::Scene};
+    use engine::core::{
+        animation::AnimationStateMachine,
+        logging::LogSink,
+        prefab::Prefab,
+        resource_db::AssetId,
+        scene::Scene,
+        scene::SceneEntityId,
+        ui::{UiButton, UiLayoutSpace, UiText},
+    };
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -2078,6 +2085,15 @@ mod tests {
         let mut app = EditorApp::new(project, None, LogSink::new(64));
         app.refresh_resources();
         app.open_scene_resource(PathBuf::from("scenes/production.scene"));
+        (app, root)
+    }
+
+    fn sample_app_with_menu_scene(label: &str) -> (EditorApp, PathBuf) {
+        let root = copy_sample_project(label);
+        let project = open_project(&root).unwrap();
+        let mut app = EditorApp::new(project, None, LogSink::new(64));
+        app.refresh_resources();
+        app.open_scene_resource(PathBuf::from("scenes/menu.scene"));
         (app, root)
     }
 
@@ -2403,6 +2419,94 @@ mod tests {
                 .all(|name| names.contains(&name.as_str())),
             "other instance name overrides should be preserved"
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sample_project_animation_edit_persists_after_save_and_reopen() {
+        let (mut app, root) = sample_app_with_production_scene("animation-edit");
+        select_entity(&mut app, SceneEntityId(2));
+        app.animation.machine.default = "move".to_owned();
+        let move_clip = app
+            .animation
+            .machine
+            .clips
+            .iter_mut()
+            .find(|clip| clip.name == "move")
+            .expect("player should have move clip");
+        move_clip.frame_rate = 12.0;
+        move_clip.looped = false;
+
+        app.apply_inspector();
+        app.save_scene();
+        app.open_scene_resource(PathBuf::from("scenes/production.scene"));
+
+        let reopened = app.document.current_scene.as_ref().unwrap();
+        let animation = AnimationStateMachine::from_component_str(
+            &reopened.scene.entities[&SceneEntityId(2)].components["Animation"],
+        )
+        .unwrap();
+        assert_eq!(animation.default, "move");
+        let move_clip = animation
+            .clips
+            .iter()
+            .find(|clip| clip.name == "move")
+            .expect("reopened animation should keep move clip");
+        assert_eq!(move_clip.frame_rate, 12.0);
+        assert!(!move_clip.looped);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sample_project_ui_adjustments_persist_after_save_and_reopen() {
+        let (mut app, root) = sample_app_with_menu_scene("ui-adjust");
+        select_entity(&mut app, SceneEntityId(3));
+        app.text.text = "Production Sample Title".to_owned();
+        app.text.space = "screen".to_owned();
+        app.text.anchor_x = 1.0;
+        app.text.anchor_y = 0.0;
+        app.text.x = -48.0;
+        app.text.y = 24.0;
+        app.text.scale = 2.8;
+        app.apply_inspector();
+
+        select_entity(&mut app, SceneEntityId(5));
+        app.button.label = "Begin Run".to_owned();
+        app.button.space = "screen".to_owned();
+        app.button.anchor_x = 1.0;
+        app.button.anchor_y = 1.0;
+        app.button.x = -260.0;
+        app.button.y = -72.0;
+        app.button.width = 260.0;
+        app.button.height = 64.0;
+        app.button.bg_r = 0.35;
+        app.button.bg_g = 0.28;
+        app.button.bg_b = 0.82;
+        app.apply_inspector();
+
+        app.save_scene();
+        app.open_scene_resource(PathBuf::from("scenes/menu.scene"));
+        let reopened = app.document.current_scene.as_ref().unwrap();
+        let title = UiText::from_component_str(
+            &reopened.scene.entities[&SceneEntityId(3)].components["Text"],
+        )
+        .unwrap();
+        assert_eq!(title.text, "Production Sample Title");
+        assert_eq!(title.space, UiLayoutSpace::Screen);
+        assert_eq!(title.anchor, [1.0, 0.0]);
+        assert_eq!(title.position, [-48.0, 24.0]);
+        assert_eq!(title.scale, 2.8);
+
+        let button = UiButton::from_component_str(
+            &reopened.scene.entities[&SceneEntityId(5)].components["Button"],
+        )
+        .unwrap();
+        assert_eq!(button.label, "Begin Run");
+        assert_eq!(button.space, UiLayoutSpace::Screen);
+        assert_eq!(button.anchor, [1.0, 1.0]);
+        assert_eq!(button.position, [-260.0, -72.0]);
+        assert_eq!(button.size, [260.0, 64.0]);
+        assert_eq!(button.background, [0.35, 0.28, 0.82]);
         let _ = fs::remove_dir_all(root);
     }
 }
