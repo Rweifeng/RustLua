@@ -182,12 +182,13 @@
 非渲染瓶颈；`PREVIEW_FRAME_INTERVAL` 33ms→16ms 后实机稳定 **50fps**（GT 1030 / 60Hz，见
 `docs/acceptance-evidence/m11/m11-milestone-evidence.md`）。
 
-## M12 资源系统闭环（阶段 1：M12-00 状态模型 + M12-01 Importer 增量导入）
+## M12 资源系统闭环（阶段 1：M12-00 状态模型 + M12-01 Importer 增量导入；阶段 2：M12-02 依赖图与失效传播）
 
 | ID | 功能 | 前置 | 主要验收 | 自动化证据 | 状态 | 版本 |
 |---|---|---|---|---|---|---|
 | M12-A01 | 资源状态模型统一 | M11-A06 | `ResourceKind` 9 族统一（engine core）；`ResourceState` 6 持久化 + 3 瞬态；DB TSV v2（12 列）自动迁移 v1；register 修复版本漂移；reconcile 依据 mtime 驱动新增→Discovered/变更→Stale/删除→Missing/恢复→Ready；Windows 反斜杠路径归一化 | `resource_kind` 映射全表/大小写/Other、`ResourceState` roundtrip/瞬态拒绝、DB v2/v1 迁移/损坏重建、`reconcile_normalizes_backslash_scan_paths`、workspace 质量门 | 自动化 PASS；实机 PASS（reconcile mtime→Stale→重导→Ready，`d39e6fc` 前版本落库核实） | M12-00 |
 | M12-A02 | Importer 注册表 + 增量导入 | M12-A01 | `Importer` trait + 8 内置 importer（真实校验）；`run_import_batch` 单坏项不 abort、逐项查 cancel、末尾 save；assetc import 回写 DB（`PACKAGE_VERSION`）；编辑器后台导入：refresh 产出 pending → 后台线程跑 batch → ProgressPanel 进度/取消 → 完成后重扫读取最终状态 | 各 importer 好/坏夹具、batch 计数/取消/单坏不阻断、assetc import 后 DB ready（game_test 31 项全 ready，reused=31）、`refresh_produces_pending_imports_for_discovered_files`、`failed_imports_are_not_automatically_retried_after_attempt`、workspace 质量门 | 自动化 PASS；实机后台导入链路 PASS（4 轮 GUI 实测，含新增/坏 PNG/mtime 场景）；GUI 视觉与进度窗取消点击待负责人 | M12-01 |
+| M12-A03 | 依赖图与失效传播 | M12-A02 | 场景/Prefab/Lua 引用提取（`assets/` 字面量、`require`、`scene.load` 字面量，注释感知/去重/自环排除）；`recompute_edges` 全量覆盖依赖边；rank-max 不动点传播（依赖断链→消费者 Invalid/Stale，恢复撤销）；`detect_cycles` 三色 DFS；editor `refresh` 接线（reconcile 后重建 entries 修复 Missing 不显示缺陷、pending 排除 Invalid、批次后传播）；assetc scan/import 接线 + `--check-deps` 完整链路 | 提取器 12 项（真实场景行/Lua 引用/注释/去重/自环）、传播 9 项（缺失/导入失败/Stale/恢复撤销/级联/循环终止）、editor 断链 Invalid + pending 排除 + 恢复撤销、assetc scan invalid + `--check-deps` 三层链路/成环截断/健康空、workspace 质量门 | 自动化 PASS；实机 `--check-deps` PASS（game_test 移走 player.png 输出 `scenes/main.scene → assets/textures/player.png (缺失)` 完整链路，恢复后空）；编辑器 GUI 断链图标/红字待负责人 | M12-02 |
 
 **M12 阶段 1 结论：** 5 个 C 提交（`f2529a4`/`82a1212`/`9e98deb`/`6d45401`/`38aaf4b`）质量门全过，自动化侧全 PASS；
 assetc 实机验证 game_test 31 资源全部 ready。
@@ -196,3 +197,12 @@ assetc 实机验证 game_test 31 资源全部 ready。
 touch 改 mtime→stale→重导→ready（内容未变复用原产物）。过程修复提交 `d39e6fc`（editor register 改用
 ImporterRegistry 版本，消除 importer_version 双源漂移）。
 遗留手动项：资源面板状态列/进度窗的 GUI 视觉呈现与进度窗关闭取消点击——需负责人实机复核（无截图/真实指针环境限制）。
+
+**M12 阶段 2 结论：** 5 个 C 提交（`2cebeea`/`dbdc067`/`57df5c4`[C3 传播代码]/`fb7a312`/`9e7502e`）质量门全过
+（fmt / clippy 0 警告 / workspace test engine 288+game 6 全绿 / diff --check，未编译 release——负责人要求 debug
+验证、release 手动），自动化侧全 PASS。
+**实机 `assetc --check-deps` PASS（2026-08-25）：** 健康 game_test 输出 `assetc_check_deps_ok`；移走
+`assets/textures/player.png` 后输出 `assetc_check_deps_found=2` 与 `scenes/arena.scene → assets/textures/player.png (缺失)`、
+`scenes/main.scene → assets/textures/player.png (缺失)` 完整链路；恢复后为空。过程修复 `fb7a312` 内 Lua char boundary
+panic（中文 Lua + `scene.load` 组合，接线后由真实文件暴露）。遗留手动项：编辑器 GUI 断链图标/错误红字视觉呈现——
+需负责人实机复核（有自动化测试覆盖，无截图/真实指针环境限制）。

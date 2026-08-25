@@ -44,8 +44,9 @@
 - `tasks/done/M9-*`：M9 3D 可玩垂直切片（已验收，计划见 [27-M9-3D可玩垂直切片实施计划.md](27-M9-3D可玩垂直切片实施计划.md)）;
 - `tasks/done/M10-*`：M10 编辑器强化基线与功能任务（计划见 [28-编辑器强化实施计划.md](28-编辑器强化实施计划.md)）；
 - `tasks/done/M10-11-*`、`M10-12-*`：`v0.10-editor` 基线之后的编辑器布局、优化与 SDF 字体增量；
-- `docs/acceptance-evidence/m11/`：M11 编辑器可靠性收口（PlaySession 状态机/输入快照/offscreen 缓存一致性/场景提取统一/恢复与字体内存；实机 G01/G04 PASS，G02/G03 待负责人）；
-- `tasks/doing/M12-00-*`、`M12-01-*`：M12 资源系统闭环阶段 1（资源状态模型 + Importer 增量导入，5 提交已过质量门；编辑器后台导入实机 GUI 待复核）；
+- `tasks/done/M11-*`：M11 编辑器可靠性收口（PlaySession 状态机/输入快照/offscreen 缓存一致性/场景提取统一/恢复与字体内存，任务记录见 [M11-编辑器可靠性收口.md](../tasks/done/M11-编辑器可靠性收口.md)）；
+- `docs/acceptance-evidence/m11/`：M11 实机证据（G01/G04 PASS，G02/G03 待负责人）；
+- `tasks/doing/M12-00-*`、`M12-01-*`、`M12-02-*`：M12 资源系统闭环阶段 1（状态模型 + Importer 增量导入）+ 阶段 2（依赖图与失效传播，`--check-deps` 完整链路实机 PASS；编辑器 GUI 断链图标待复核）；
 - M9 基线标签：`v0.9-3d-game`（指向 M9-05 验收提交）；
 - M10 基线标签：`v0.10-editor`（指向 M10-10 验收提交）；
 
@@ -57,4 +58,4 @@
 - 发布包：`artifacts/builds/release/game/`（约 15MB，加密开启；`game_runner.exe --pack pack`）；3D 性能基线：`docs/acceptance-evidence/m9/`；
 - 里程碑验收证据：`docs/acceptance-evidence/`（`artifacts/` 目录为可再生输出）；
 - M11 性能修复：Game 预览 3D 场景帧率 24→50fps（`cbbb09b`，`PREVIEW_FRAME_INTERVAL` 33ms→16ms）；
-- 后续里程碑：M12 资源系统闭环（阶段 1 已落地，见 `tasks/doing/M12-*`；阶段 2–5 含依赖图失效传播/资源浏览器生产化/校验报告/迁移恢复框架）。
+- 后续里程碑：M12 资源系统闭环（阶段 1/2 已落地：状态模型 + Importer 增量导入 + 依赖图与失效传播，见 `tasks/doing/M12-*`；阶段 3–5 含资源浏览器生产化/校验报告/迁移恢复框架）。
