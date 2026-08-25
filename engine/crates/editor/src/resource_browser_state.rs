@@ -1,4 +1,5 @@
 use engine::core::{
+    importer::ImporterRegistry,
     resource_db::{AssetId, DiskAsset, ResourceDatabase, ResourceDbError, ResourceState},
     resource_kind::ResourceKind,
 };
@@ -176,8 +177,12 @@ impl ResourceBrowserState {
                 continue;
             }
 
-            let importer_version = format!("editor-m5-05-{}", kind.label());
-            match database.register(&relative, kind, &importer_version) {
+            // 统一从 ImporterRegistry 取版本：assetc 与编辑器同源，避免版本漂移。
+            let importer_version = ImporterRegistry::builtin()
+                .get(kind)
+                .map(engine::core::importer::Importer::version)
+                .unwrap_or(kind.token());
+            match database.register(&relative, kind, importer_version) {
                 Ok(asset_id) => {
                     let record = database
                         .get(asset_id)
