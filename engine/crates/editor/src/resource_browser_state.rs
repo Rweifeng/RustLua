@@ -3,6 +3,7 @@ use engine::core::{
     resource_kind::ResourceKind,
 };
 use std::{
+    collections::HashSet,
     error::Error,
     fmt, fs,
     path::{Path, PathBuf},
@@ -60,6 +61,11 @@ pub struct ResourceBrowserState {
     last_error: Option<String>,
     last_refresh: Option<SystemTime>,
     refresh_count: u64,
+    /// 需要后台导入的资源（asset id + 项目相对路径），由 `refresh` 产出。
+    pending_imports: Vec<(AssetId, PathBuf)>,
+    /// 已启动导入的路径；`ImportFailed` 的资源不再自动重试，直到内容再次
+    /// 变化（reconcile 转 `Stale`）或用户重新导入，避免失败项无限循环重试。
+    import_attempted: HashSet<PathBuf>,
 }
 
 impl ResourceBrowserState {
@@ -99,6 +105,18 @@ impl ResourceBrowserState {
 
     pub fn refresh_count(&self) -> u64 {
         self.refresh_count
+    }
+
+    /// 需要后台导入的资源（相对项目根路径）。
+    pub fn pending_imports(&self) -> &[(AssetId, PathBuf)] {
+        &self.pending_imports
+    }
+
+    /// 记录本次已启动导入的路径；被标记的 `ImportFailed` 资源不再自动重试，
+    /// 直到内容再次变化触发 reconcile 转 `Stale`。
+    pub fn record_import_attempts(&mut self, items: &[(AssetId, PathBuf)]) {
+        self.import_attempted
+            .extend(items.iter().map(|(_, path)| path.clone()));
     }
 
     /// 扫描项目 assets 目录，并同步已识别资源到 ResourceDatabase。
@@ -197,6 +215,24 @@ impl ResourceBrowserState {
             self.last_error = Some(error.to_string());
             return Err(error.into());
         }
+        // 产出待导入资源：未导入/变更/丢失的总是加入；导入失败的仅当尚未
+        // 尝试过（避免失败项在每次刷新后无限重试）。
+        self.pending_imports = self
+            .entries
+            .iter()
+            .filter_map(|entry| {
+                let id = entry.asset_id?;
+                if entry.kind == ResourceKind::Other {
+                    return None;
+                }
+                let needs_import = matches!(
+                    entry.status,
+                    ResourceState::Discovered | ResourceState::Stale | ResourceState::Missing
+                ) || (entry.status == ResourceState::ImportFailed
+                    && !self.import_attempted.contains(&entry.path));
+                needs_import.then_some((id, entry.path.clone()))
+            })
+            .collect();
         self.last_refresh = Some(SystemTime::now());
         Ok(())
     }
@@ -364,6 +400,59 @@ mod tests {
             id
         );
         assert_eq!(browser.refresh_count(), 2);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn refresh_produces_pending_imports_for_discovered_files() {
+        let root = temp_root("pending");
+        file(&root, "assets/player.png", b"png");
+        file(&root, "assets/readme.txt", b"text");
+        let mut browser = ResourceBrowserState::new();
+        browser.refresh(&root).unwrap();
+        let pending = browser.pending_imports().to_vec();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].1, PathBuf::from("assets/player.png"));
+        assert_eq!(pending[0].0, browser.entries()[0].asset_id.unwrap());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn failed_imports_are_not_automatically_retried_after_attempt() {
+        let root = temp_root("attempted");
+        file(&root, "assets/player.png", b"png");
+        let mut browser = ResourceBrowserState::new();
+        browser.refresh(&root).unwrap();
+        let pending = browser.pending_imports().to_vec();
+        assert_eq!(pending.len(), 1);
+        // 模拟导入失败：DB 标 ImportFailed，并记录已尝试。
+        {
+            let mut db = ResourceDatabase::open(&root).unwrap();
+            let record = db.find_by_path("assets/player.png").unwrap().unwrap();
+            db.mark_failed(record.id, "模拟失败").unwrap();
+            db.save().unwrap();
+        }
+        browser.record_import_attempts(&pending);
+        browser.refresh(&root).unwrap();
+        assert!(
+            browser.pending_imports().is_empty(),
+            "attempted+failed 资源不再自动重试"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn staled_files_are_pending_even_after_attempt() {
+        let root = temp_root("pending-stale");
+        file(&root, "assets/player.png", b"png");
+        let mut browser = ResourceBrowserState::new();
+        browser.refresh(&root).unwrap();
+        let pending = browser.pending_imports().to_vec();
+        browser.record_import_attempts(&pending);
+        // 修改文件内容 → mtime 变化 → reconcile 转 Stale → 应重新待导入。
+        file(&root, "assets/player.png", b"png2");
+        browser.refresh(&root).unwrap();
+        assert_eq!(browser.pending_imports().len(), 1);
         let _ = fs::remove_dir_all(root);
     }
 

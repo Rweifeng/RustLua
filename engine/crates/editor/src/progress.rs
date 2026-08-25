@@ -3,7 +3,14 @@
 
 use crate::publish::open_in_explorer;
 use eframe::egui;
-use std::{path::PathBuf, sync::mpsc::Receiver};
+use std::{
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::Receiver,
+    },
+};
 
 /// 进度面板事件（任务线程 → 主线程）。
 pub(crate) enum ProgressEvent {
@@ -17,8 +24,18 @@ pub(crate) enum ProgressEvent {
     },
 }
 
+/// 进度任务的类型，决定完成时如何应用结果。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum ProgressKind {
+    #[default]
+    ImportProject,
+    Publish,
+    ResourceImport,
+}
+
 #[derive(Default)]
 pub(crate) struct ProgressPanel {
+    pub(crate) kind: ProgressKind,
     title: String,
     rx: Option<Receiver<ProgressEvent>>,
     pub(crate) output: String,
@@ -32,15 +49,20 @@ pub(crate) struct ProgressPanel {
     pub(crate) result: Option<Box<dyn std::any::Any + Send>>,
     /// 完成时展示的目录（如发布包目录），可「打开目录」。
     pub(crate) output_dir: Option<PathBuf>,
+    /// 用户关闭进度窗时置 true，让后台任务（如资源导入）尽快停止。
+    pub(crate) cancel: Option<Arc<AtomicBool>>,
 }
 
 impl ProgressPanel {
     pub(crate) fn start(
         &mut self,
+        kind: ProgressKind,
         title: impl Into<String>,
         rx: Receiver<ProgressEvent>,
         output_dir: Option<PathBuf>,
+        cancel: Option<Arc<AtomicBool>>,
     ) {
+        self.kind = kind;
         self.title = title.into();
         self.rx = Some(rx);
         self.output.clear();
@@ -51,6 +73,7 @@ impl ProgressPanel {
         self.show = true;
         self.result = None;
         self.output_dir = output_dir;
+        self.cancel = cancel;
     }
 
     /// 每帧排空事件；返回本帧是否刚完成。
@@ -87,8 +110,9 @@ impl ProgressPanel {
         if !self.show {
             return;
         }
+        let mut open = true;
         egui::Window::new(&self.title)
-            .open(&mut self.show)
+            .open(&mut open)
             .show(context, |ui| {
                 let status = if self.running {
                     "进行中..."
@@ -125,5 +149,12 @@ impl ProgressPanel {
                     }
                 }
             });
+        if !open {
+            // 用户关闭进度窗：通知后台任务取消（如资源导入）并隐藏窗口。
+            if let Some(cancel) = &self.cancel {
+                cancel.store(true, Ordering::Relaxed);
+            }
+            self.show = false;
+        }
     }
 }

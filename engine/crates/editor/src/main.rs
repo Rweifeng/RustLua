@@ -534,6 +534,8 @@ impl eframe::App for EditorApp {
         }
         self.sync_hierarchy_metadata();
         self.poll_progress();
+        // 待导入资源非空且无进行中任务时，启动后台资源导入（不阻塞 UI）。
+        self.start_resource_import();
         // 行1 标题栏 + 行2 菜单栏（含崩溃恢复「⚠ 恢复」下拉）。
         self.draw_header_panel(context);
 

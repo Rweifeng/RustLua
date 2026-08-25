@@ -1,19 +1,28 @@
 //! 发布打包与游戏项目导入：后台线程任务、进度回传、结果应用。
 
 use crate::EditorApp;
-use crate::progress::ProgressEvent;
+use crate::progress::{ProgressEvent, ProgressKind};
 use crate::util::{
     display_path, format_project_error, save_recent_projects, strip_verbatim_prefix,
 };
 use editor::{
     ProjectDocument, ProjectInfo, RecoveryManager, RecoveryScan, ResourceBrowserState, open_project,
 };
+use engine::core::{
+    import_cache::ImportCache,
+    importer::{ImportSummary, ImporterRegistry, run_import_batch},
+    resource_db::{AssetId, ResourceDatabase},
+};
 use std::{
     env,
     io::BufRead,
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::mpsc::{Sender, channel},
+    sync::{
+        Arc,
+        atomic::AtomicBool,
+        mpsc::{Sender, channel},
+    },
     thread,
 };
 
@@ -47,7 +56,13 @@ impl EditorApp {
         let package_dir = workspace_root.join("artifacts/builds/release/p2-game");
         let (tx, rx) = channel();
         spawn_publish(script, self.publish_compress, self.publish_encrypt, tx);
-        self.progress.start("发布打包", rx, Some(package_dir));
+        self.progress.start(
+            ProgressKind::Publish,
+            "发布打包",
+            rx,
+            Some(package_dir),
+            None,
+        );
     }
 
     /// 启动导入游戏项目（后台执行，非阻塞）。
@@ -62,7 +77,8 @@ impl EditorApp {
         }
         let (tx, rx) = channel();
         spawn_import(PathBuf::from(path), tx);
-        self.progress.start("导入游戏项目", rx, None);
+        self.progress
+            .start(ProgressKind::ImportProject, "导入游戏项目", rx, None, None);
     }
 
     /// 每帧轮询通用进度面板；任务完成时应用结果（导入）并落盘发布日志。
@@ -82,34 +98,70 @@ impl EditorApp {
         }
     }
 
-    /// 任务完成：若是导入，把后台结果应用到编辑器状态。
+    /// 启动资源后台导入（资源面板刷新后的待导入项），非阻塞。
+    pub(crate) fn start_resource_import(&mut self) {
+        if self.progress.running || !self.project_loaded {
+            return;
+        }
+        let pending = self.resources.pending_imports().to_vec();
+        if pending.is_empty() {
+            return;
+        }
+        let root = self.project.root.clone();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let thread_cancel = cancel.clone();
+        let (tx, rx) = channel();
+        spawn_resource_import(root, pending.clone(), thread_cancel, tx);
+        self.resources.record_import_attempts(&pending);
+        self.progress.start(
+            ProgressKind::ResourceImport,
+            "导入资源",
+            rx,
+            None,
+            Some(cancel),
+        );
+    }
+
+    /// 任务完成：按任务类型应用后台结果。
     fn apply_progress_result(&mut self) {
         if !self.progress.done {
             return;
         }
-        let Some(result) = self.progress.result.take() else {
-            return;
-        };
-        if let Ok(outcome) = result.downcast::<ImportOutcome>() {
-            let outcome = *outcome;
-            self.project = outcome.project;
-            self.document = outcome.document;
-            self.recovery = outcome.recovery;
-            self.recovery_scan = outcome.recovery_scan;
-            self.resources = outcome.resources;
-            self.history.clear();
-            self.autosave.reset();
-            self.lua_runtime = None;
-            self.play_session = None;
-            self.tree.clear_selection();
-            self.inspector.clear_selection();
-            self.project_loaded = true;
-            self.status = format!(
-                "Imported game project: {}",
-                display_path(&self.project.root)
-            );
-            let root = self.project.root.clone();
-            self.record_recent_project(&root);
+        match self.progress.kind {
+            // 资源导入完成：重新扫描读取最终状态（Ready/ImportFailed）。
+            ProgressKind::ResourceImport => {
+                if self.progress.success {
+                    self.refresh_resources();
+                    self.status = format!("资源导入完成：{}", display_path(&self.project.root));
+                }
+            }
+            ProgressKind::ImportProject => {
+                let Some(result) = self.progress.result.take() else {
+                    return;
+                };
+                if let Ok(outcome) = result.downcast::<ImportOutcome>() {
+                    let outcome = *outcome;
+                    self.project = outcome.project;
+                    self.document = outcome.document;
+                    self.recovery = outcome.recovery;
+                    self.recovery_scan = outcome.recovery_scan;
+                    self.resources = outcome.resources;
+                    self.history.clear();
+                    self.autosave.reset();
+                    self.lua_runtime = None;
+                    self.play_session = None;
+                    self.tree.clear_selection();
+                    self.inspector.clear_selection();
+                    self.project_loaded = true;
+                    self.status = format!(
+                        "Imported game project: {}",
+                        display_path(&self.project.root)
+                    );
+                    let root = self.project.root.clone();
+                    self.record_recent_project(&root);
+                }
+            }
+            ProgressKind::Publish => {}
         }
     }
 
@@ -321,6 +373,65 @@ fn spawn_import(path: PathBuf, tx: Sender<ProgressEvent>) {
             }
             Err(error) => {
                 let _ = tx.send(ProgressEvent::Line(format!("导入失败：{error}\n")));
+                let _ = tx.send(ProgressEvent::Finished {
+                    success: false,
+                    result: None,
+                });
+            }
+        }
+    });
+}
+
+/// 后台资源导入：对待导入项跑 importer batch，回写 DB，进度逐行回传。
+/// 不依赖前台状态：自行打开 DB/缓存实例，原子写盘防撕裂。
+fn spawn_resource_import(
+    root: PathBuf,
+    items: Vec<(AssetId, PathBuf)>,
+    cancel: Arc<AtomicBool>,
+    tx: Sender<ProgressEvent>,
+) {
+    thread::spawn(move || {
+        let _ = tx.send(ProgressEvent::Line(format!(
+            "导入 {} 个资源...\n",
+            items.len()
+        )));
+        let result = (|| -> Result<ImportSummary, String> {
+            let mut database = ResourceDatabase::open(&root)
+                .map_err(|error| format!("资源库打开失败：{error}"))?;
+            let mut cache =
+                ImportCache::open(&root).map_err(|error| format!("导入缓存打开失败：{error}"))?;
+            let registry = ImporterRegistry::builtin();
+            let items: Vec<(AssetId, PathBuf)> = items
+                .into_iter()
+                .map(|(id, relative)| (id, root.join(relative)))
+                .collect();
+            Ok(run_import_batch(
+                &root,
+                &mut database,
+                &mut cache,
+                registry,
+                &items,
+                &cancel,
+            ))
+        })();
+        match result {
+            Ok(summary) => {
+                let _ = tx.send(ProgressEvent::Line(format!(
+                    "导入完成：{} 个（导入 {}/复用 {}/失败 {}/跳过 {}），耗时 {}ms\n",
+                    summary.total,
+                    summary.imported,
+                    summary.reused,
+                    summary.failed,
+                    summary.skipped,
+                    summary.elapsed_ms
+                )));
+                let _ = tx.send(ProgressEvent::Finished {
+                    success: true,
+                    result: None,
+                });
+            }
+            Err(error) => {
+                let _ = tx.send(ProgressEvent::Line(format!("资源导入失败：{error}\n")));
                 let _ = tx.send(ProgressEvent::Finished {
                     success: false,
                     result: None,

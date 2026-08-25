@@ -316,14 +316,17 @@ impl ResourceDatabase {
     pub fn reconcile(&mut self, scan: &[DiskAsset], scan_roots: &[PathBuf]) {
         let mut scanned = HashMap::with_capacity(scan.len());
         for asset in scan {
-            scanned.insert(asset.path.clone(), asset.modified);
+            // 与 register 的 normalize 一致：路径统一为正斜杠再比较。
+            let normalized = PathBuf::from(asset.path.to_string_lossy().replace('\\', "/"));
+            scanned.insert(normalized, asset.modified);
         }
         let roots: Vec<PathBuf> = scan_roots
             .iter()
             .map(|root| PathBuf::from(root.to_string_lossy().replace('\\', "/")))
             .collect();
         for asset in scan {
-            let Some(&id) = self.by_path.get(&asset.path) else {
+            let normalized = PathBuf::from(asset.path.to_string_lossy().replace('\\', "/"));
+            let Some(&id) = self.by_path.get(&normalized) else {
                 continue;
             };
             let record = self
@@ -929,6 +932,26 @@ mod tests {
                 modified: 9,
             }],
             &[PathBuf::from("assets"), PathBuf::from("scenes")],
+        );
+        assert_eq!(db.get(id).unwrap().status, ResourceState::Discovered);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reconcile_normalizes_backslash_scan_paths() {
+        // Windows 上 collect_files 返回反斜杠路径；必须与 register 的正斜杠键对齐，
+        // 否则 reconcile 把在盘资源误判为 Missing/Orphaned。
+        let root = temp("backslash");
+        let mut db = ResourceDatabase::open(&root).unwrap();
+        let id = db
+            .register("assets\\hero.png", ResourceKind::Texture, "texture-1")
+            .unwrap();
+        db.reconcile(
+            &[DiskAsset {
+                path: "assets\\hero.png".into(),
+                modified: 9,
+            }],
+            &[PathBuf::from("assets")],
         );
         assert_eq!(db.get(id).unwrap().status, ResourceState::Discovered);
         let _ = fs::remove_dir_all(root);
