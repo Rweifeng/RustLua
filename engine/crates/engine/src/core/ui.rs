@@ -1,9 +1,10 @@
 //! Screen-space UI scene components: `Text`, `Image`, `Button`.
 //!
 //! These are ordinary scene-entity components (opaque `k=v;...` strings) that
-//! render as NDC overlay quads on top of the scene. Coordinates are
-//! viewport-pixel positions (top-left origin), matching the Lua `ui.text_at`
-//! convention.
+//! render as NDC overlay quads on top of the scene. Coordinates use a top-left
+//! pixel origin, but may additionally opt into a reference-resolution
+//! "Canvas" space plus an anchor point so authored UI can scale more cleanly
+//! across preview resolutions.
 
 use std::{error::Error, fmt};
 
@@ -29,16 +30,41 @@ impl fmt::Display for UiComponentError {
 }
 impl Error for UiComponentError {}
 
+/// Authored layout space for scene UI components.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UiLayoutSpace {
+    /// Raw viewport pixels; values are used as-authored.
+    Screen,
+    /// Reference-resolution canvas (1280x720) scaled to the live viewport.
+    Canvas,
+}
+
+impl UiLayoutSpace {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Screen => "screen",
+            Self::Canvas => "canvas",
+        }
+    }
+}
+
+pub const UI_REFERENCE_SIZE: [f32; 2] = [1280.0, 720.0];
+
 /// Screen-space text label (`Text` component).
 #[derive(Clone, Debug, PartialEq)]
 pub struct UiText {
     pub text: String,
-    /// Pixel position of the label top-left.
+    /// Offset from the chosen anchor point.
     pub position: [f32; 2],
     /// Screen-space glyph scale (1.0 = 5x7 px glyphs).
     pub scale: f32,
     /// RGB tint; default white.
     pub color: [f32; 3],
+    /// Screen or canvas authored space.
+    pub space: UiLayoutSpace,
+    /// Anchor in normalized viewport coordinates (`0..=1`).
+    pub anchor: [f32; 2],
 }
 
 /// Screen-space textured quad (`Image` component).
@@ -46,12 +72,14 @@ pub struct UiText {
 pub struct UiImage {
     /// Project-relative texture path.
     pub texture: String,
-    /// Pixel position of the quad top-left.
+    /// Offset from the chosen anchor point.
     pub position: [f32; 2],
-    /// Quad size in pixels.
+    /// Quad size in authored space pixels.
     pub size: [f32; 2],
     /// RGB tint; default white.
     pub color: [f32; 3],
+    pub space: UiLayoutSpace,
+    pub anchor: [f32; 2],
 }
 
 /// Screen-space clickable button (`Button` component).
@@ -59,14 +87,16 @@ pub struct UiImage {
 pub struct UiButton {
     /// Optional label text drawn centered on the button.
     pub label: String,
-    /// Pixel position of the rect top-left.
+    /// Offset from the chosen anchor point.
     pub position: [f32; 2],
-    /// Rect size in pixels.
+    /// Rect size in authored space pixels.
     pub size: [f32; 2],
     /// Background fill color.
     pub background: [f32; 3],
     /// Label text color.
     pub text_color: [f32; 3],
+    pub space: UiLayoutSpace,
+    pub anchor: [f32; 2],
 }
 
 fn parse_number(raw: &str) -> Result<f32, UiComponentError> {
@@ -90,6 +120,91 @@ fn parse_rgb(raw: &str) -> Result<[f32; 3], UiComponentError> {
         parse_number(parts[1])?,
         parse_number(parts[2])?,
     ])
+}
+
+fn parse_layout_space(raw: &str) -> Result<UiLayoutSpace, UiComponentError> {
+    match raw {
+        "screen" => Ok(UiLayoutSpace::Screen),
+        "canvas" => Ok(UiLayoutSpace::Canvas),
+        _ => Err(UiComponentError::InvalidValue(raw.to_owned())),
+    }
+}
+
+fn parse_anchor(raw: &str) -> Result<[f32; 2], UiComponentError> {
+    let parts: Vec<&str> = raw.split(',').collect();
+    if parts.len() != 2 {
+        return Err(UiComponentError::InvalidValue(raw.to_owned()));
+    }
+    let anchor = [parse_number(parts[0])?, parse_number(parts[1])?];
+    validate_anchor(anchor)?;
+    Ok(anchor)
+}
+
+fn validate_anchor(anchor: [f32; 2]) -> Result<(), UiComponentError> {
+    if anchor[0].is_finite()
+        && anchor[1].is_finite()
+        && (0.0..=1.0).contains(&anchor[0])
+        && (0.0..=1.0).contains(&anchor[1])
+    {
+        Ok(())
+    } else {
+        Err(UiComponentError::InvalidValue(format!(
+            "{:.3},{:.3}",
+            anchor[0], anchor[1]
+        )))
+    }
+}
+
+fn authored_scale(space: UiLayoutSpace, viewport: [f32; 2]) -> [f32; 2] {
+    match space {
+        UiLayoutSpace::Screen => [1.0, 1.0],
+        UiLayoutSpace::Canvas => [
+            viewport[0] / UI_REFERENCE_SIZE[0],
+            viewport[1] / UI_REFERENCE_SIZE[1],
+        ],
+    }
+}
+
+#[must_use]
+pub fn resolve_ui_rect(
+    position: [f32; 2],
+    size: [f32; 2],
+    space: UiLayoutSpace,
+    anchor: [f32; 2],
+    viewport: [f32; 2],
+) -> ([f32; 2], [f32; 2]) {
+    let scale = authored_scale(space, viewport);
+    let resolved_size = [size[0] * scale[0], size[1] * scale[1]];
+    let anchor_point = [viewport[0] * anchor[0], viewport[1] * anchor[1]];
+    let offset = [position[0] * scale[0], position[1] * scale[1]];
+    let origin = [
+        anchor_point[0] + offset[0] - resolved_size[0] * anchor[0],
+        anchor_point[1] + offset[1] - resolved_size[1] * anchor[1],
+    ];
+    (origin, resolved_size)
+}
+
+#[must_use]
+pub fn resolve_ui_text_origin(
+    position: [f32; 2],
+    text_size: [f32; 2],
+    scale: f32,
+    space: UiLayoutSpace,
+    anchor: [f32; 2],
+    viewport: [f32; 2],
+) -> ([f32; 2], f32) {
+    let canvas_scale = authored_scale(space, viewport);
+    let resolved_scale = match space {
+        UiLayoutSpace::Screen => scale,
+        UiLayoutSpace::Canvas => scale * canvas_scale[0].min(canvas_scale[1]),
+    };
+    let anchor_point = [viewport[0] * anchor[0], viewport[1] * anchor[1]];
+    let offset = [position[0] * canvas_scale[0], position[1] * canvas_scale[1]];
+    let origin = [
+        anchor_point[0] + offset[0] - text_size[0] * anchor[0],
+        anchor_point[1] + offset[1] - text_size[1] * anchor[1],
+    ];
+    (origin, resolved_scale)
 }
 
 /// Splits a component string on `;` only when NOT preceded by a backslash
@@ -157,12 +272,15 @@ fn unescape_text(text: &str) -> String {
 }
 
 impl UiText {
-    /// Parses `text=<esc>;x=..;y=..;scale=..;color=r,g,b` (scale/color optional).
+    /// Parses `text=<esc>;x=..;y=..;scale=..;color=r,g,b;space=..;anchor=x,y`
+    /// (`scale/color/space/anchor` optional).
     pub fn from_component_str(value: &str) -> Result<Self, UiComponentError> {
         let mut text = String::new();
         let mut position = [0.0; 2];
         let mut scale = 1.0;
         let mut color = [1.0, 1.0, 1.0];
+        let mut space = UiLayoutSpace::Screen;
+        let mut anchor = [0.0, 0.0];
         let mut seen = [false; 4]; // text, x, y
         for field in split_fields(value) {
             let (key, raw) = field
@@ -189,6 +307,8 @@ impl UiText {
                     seen[3] = true;
                 }
                 "color" => color = parse_rgb(raw)?,
+                "space" => space = parse_layout_space(raw)?,
+                "anchor" => anchor = parse_anchor(raw)?,
                 _ => return Err(UiComponentError::MalformedField(field.to_owned())),
             }
         }
@@ -204,6 +324,8 @@ impl UiText {
             position,
             scale,
             color,
+            space,
+            anchor,
         })
     }
 
@@ -211,25 +333,31 @@ impl UiText {
     #[must_use]
     pub fn to_component_str(&self) -> String {
         format!(
-            "text={};x={:.2};y={:.2};scale={:.2};color={:.3},{:.3},{:.3}",
+            "text={};x={:.2};y={:.2};scale={:.2};color={:.3},{:.3},{:.3};space={};anchor={:.3},{:.3}",
             escape_text(&self.text),
             self.position[0],
             self.position[1],
             self.scale,
             self.color[0],
             self.color[1],
-            self.color[2]
+            self.color[2],
+            self.space.as_str(),
+            self.anchor[0],
+            self.anchor[1]
         )
     }
 }
 
 impl UiImage {
-    /// Parses `texture=..;x=..;y=..;width=..;height=..;color=r,g,b` (color optional).
+    /// Parses `texture=..;x=..;y=..;width=..;height=..;color=r,g,b;space=..;anchor=x,y`
+    /// (`color/space/anchor` optional).
     pub fn from_component_str(value: &str) -> Result<Self, UiComponentError> {
         let mut texture = String::new();
         let mut position = [0.0; 2];
         let mut size = [0.0; 2];
         let mut color = [1.0, 1.0, 1.0];
+        let mut space = UiLayoutSpace::Screen;
+        let mut anchor = [0.0, 0.0];
         let mut seen = [false; 6];
         for field in split_fields(value) {
             let (key, raw) = field
@@ -250,13 +378,21 @@ impl UiImage {
                 }
                 "width" => {
                     size[0] = parse_number(raw)?;
+                    if size[0] <= 0.0 {
+                        return Err(UiComponentError::InvalidValue(raw.to_owned()));
+                    }
                     seen[3] = true;
                 }
                 "height" => {
                     size[1] = parse_number(raw)?;
+                    if size[1] <= 0.0 {
+                        return Err(UiComponentError::InvalidValue(raw.to_owned()));
+                    }
                     seen[4] = true;
                 }
                 "color" => color = parse_rgb(raw)?,
+                "space" => space = parse_layout_space(raw)?,
+                "anchor" => anchor = parse_anchor(raw)?,
                 _ => return Err(UiComponentError::MalformedField(field.to_owned())),
             }
         }
@@ -276,6 +412,8 @@ impl UiImage {
             position,
             size,
             color,
+            space,
+            anchor,
         })
     }
 
@@ -283,7 +421,7 @@ impl UiImage {
     #[must_use]
     pub fn to_component_str(&self) -> String {
         format!(
-            "texture={};x={:.2};y={:.2};width={:.2};height={:.2};color={:.3},{:.3},{:.3}",
+            "texture={};x={:.2};y={:.2};width={:.2};height={:.2};color={:.3},{:.3},{:.3};space={};anchor={:.3},{:.3}",
             self.texture,
             self.position[0],
             self.position[1],
@@ -291,19 +429,25 @@ impl UiImage {
             self.size[1],
             self.color[0],
             self.color[1],
-            self.color[2]
+            self.color[2],
+            self.space.as_str(),
+            self.anchor[0],
+            self.anchor[1]
         )
     }
 }
 
 impl UiButton {
-    /// Parses `label=<esc>;x=..;y=..;width=..;height=..;bg=r,g,b;text_color=r,g,b`.
+    /// Parses
+    /// `label=<esc>;x=..;y=..;width=..;height=..;bg=r,g,b;text_color=r,g,b;space=..;anchor=x,y`.
     pub fn from_component_str(value: &str) -> Result<Self, UiComponentError> {
         let mut label = String::new();
         let mut position = [0.0; 2];
         let mut size = [0.0; 2];
         let mut background = [0.2, 0.45, 0.8];
         let mut text_color = [1.0, 1.0, 1.0];
+        let mut space = UiLayoutSpace::Screen;
+        let mut anchor = [0.0, 0.0];
         let mut seen = [false; 5];
         for field in split_fields(value) {
             let (key, raw) = field
@@ -324,14 +468,22 @@ impl UiButton {
                 }
                 "width" => {
                     size[0] = parse_number(raw)?;
+                    if size[0] <= 0.0 {
+                        return Err(UiComponentError::InvalidValue(raw.to_owned()));
+                    }
                     seen[3] = true;
                 }
                 "height" => {
                     size[1] = parse_number(raw)?;
+                    if size[1] <= 0.0 {
+                        return Err(UiComponentError::InvalidValue(raw.to_owned()));
+                    }
                     seen[4] = true;
                 }
                 "bg" => background = parse_rgb(raw)?,
                 "text_color" => text_color = parse_rgb(raw)?,
+                "space" => space = parse_layout_space(raw)?,
+                "anchor" => anchor = parse_anchor(raw)?,
                 _ => return Err(UiComponentError::MalformedField(field.to_owned())),
             }
         }
@@ -352,6 +504,8 @@ impl UiButton {
             size,
             background,
             text_color,
+            space,
+            anchor,
         })
     }
 
@@ -359,7 +513,7 @@ impl UiButton {
     #[must_use]
     pub fn to_component_str(&self) -> String {
         format!(
-            "label={};x={:.2};y={:.2};width={:.2};height={:.2};bg={:.3},{:.3},{:.3};text_color={:.3},{:.3},{:.3}",
+            "label={};x={:.2};y={:.2};width={:.2};height={:.2};bg={:.3},{:.3},{:.3};text_color={:.3},{:.3},{:.3};space={};anchor={:.3},{:.3}",
             escape_text(&self.label),
             self.position[0],
             self.position[1],
@@ -370,7 +524,10 @@ impl UiButton {
             self.background[2],
             self.text_color[0],
             self.text_color[1],
-            self.text_color[2]
+            self.text_color[2],
+            self.space.as_str(),
+            self.anchor[0],
+            self.anchor[1]
         )
     }
 }
@@ -386,6 +543,8 @@ mod tests {
             position: [12.0, 30.0],
             scale: 2.0,
             color: [1.0, 0.5, 0.0],
+            space: UiLayoutSpace::Canvas,
+            anchor: [0.5, 0.0],
         };
         let encoded = ui.to_component_str();
         let decoded = UiText::from_component_str(&encoded).expect("valid text");
@@ -427,6 +586,8 @@ mod tests {
             position: [100.0, 50.0],
             size: [64.0, 64.0],
             color: [0.5, 0.5, 1.0],
+            space: UiLayoutSpace::Canvas,
+            anchor: [0.5, 0.5],
         };
         let decoded = UiImage::from_component_str(&img.to_component_str()).expect("valid");
         assert_eq!(decoded, img);
@@ -440,6 +601,8 @@ mod tests {
             size: [120.0, 40.0],
             background: [0.1, 0.6, 0.2],
             text_color: [1.0, 1.0, 1.0],
+            space: UiLayoutSpace::Canvas,
+            anchor: [1.0, 1.0],
         };
         let decoded = UiButton::from_component_str(&button.to_component_str()).expect("valid");
         assert_eq!(decoded, button);
@@ -460,6 +623,8 @@ mod tests {
             position: [1.0, 2.0],
             scale: 1.0,
             color: [1.0, 1.0, 1.0],
+            space: UiLayoutSpace::Screen,
+            anchor: [0.0, 0.0],
         };
         let mut scene = crate::core::scene::Scene::new("ui");
         scene
@@ -478,5 +643,30 @@ mod tests {
             .expect("Text component");
         let decoded = UiText::from_component_str(value).expect("valid text");
         assert_eq!(decoded.text, ui.text);
+    }
+
+    #[test]
+    fn canvas_rect_and_text_origin_follow_anchor_and_viewport() {
+        let viewport = [1920.0, 1080.0];
+        let (origin, size) = resolve_ui_rect(
+            [0.0, 0.0],
+            [320.0, 180.0],
+            UiLayoutSpace::Canvas,
+            [0.5, 0.5],
+            viewport,
+        );
+        assert_eq!(size, [480.0, 270.0]);
+        assert_eq!(origin, [720.0, 405.0]);
+
+        let (text_origin, scale) = resolve_ui_text_origin(
+            [0.0, 0.0],
+            [200.0, 50.0],
+            1.0,
+            UiLayoutSpace::Canvas,
+            [0.5, 0.5],
+            viewport,
+        );
+        assert_eq!(text_origin, [860.0, 515.0]);
+        assert!((scale - 1.5).abs() < 0.001);
     }
 }

@@ -39,9 +39,9 @@ impl EditorApp {
                         .cloned()
                         .collect();
                     let tree = build_resource_tree(&visible);
-                    let mut scene_to_open = None;
-                    self.draw_resource_tree(ui, &tree, "", context, &mut scene_to_open);
-                    if let Some(path) = scene_to_open {
+                    let mut resource_to_open = None;
+                    self.draw_resource_tree(ui, &tree, "", context, &mut resource_to_open);
+                    if let Some(path) = resource_to_open {
                         self.open_scene_resource(path);
                     }
                 });
@@ -56,7 +56,7 @@ impl EditorApp {
         node: &ResourceTree,
         prefix: &str,
         context: &egui::Context,
-        scene_to_open: &mut Option<PathBuf>,
+        resource_to_open: &mut Option<PathBuf>,
     ) {
         for (name, child) in &node.folders {
             // 过滤后没有可见内容的目录不展示。
@@ -70,11 +70,11 @@ impl EditorApp {
                 .id_salt(id)
                 .default_open(true)
                 .show(ui, |ui| {
-                    self.draw_resource_tree(ui, child, &child_prefix, context, scene_to_open);
+                    self.draw_resource_tree(ui, child, &child_prefix, context, resource_to_open);
                 });
         }
         for entry in &node.files {
-            self.draw_resource_entry(ui, entry, context, scene_to_open);
+            self.draw_resource_entry(ui, entry, context, resource_to_open);
         }
     }
 
@@ -85,7 +85,7 @@ impl EditorApp {
         ui: &mut egui::Ui,
         entry: &ResourceEntry,
         context: &egui::Context,
-        scene_to_open: &mut Option<PathBuf>,
+        resource_to_open: &mut Option<PathBuf>,
     ) {
         let path_string = entry.path_string();
         let file_name = Path::new(&path_string)
@@ -99,32 +99,44 @@ impl EditorApp {
         ) {
             // 纹理/模型/预制体：可拖放到场景（纹理/预制体带缩略图）。
             let payload = path_string.clone();
-            ui.dnd_drag_source(
-                egui::Id::new(("texture_drag", path_string.as_str())),
-                payload,
-                |ui| {
-                    ui.horizontal(|ui| {
-                        if let Some(id) = self.texture_thumbnail(&path_string, context) {
-                            ui.add(egui::Image::new(egui::load::SizedTexture::new(
-                                id,
-                                egui::vec2(20.0, 20.0),
-                            )));
-                        }
-                        if let Some((icon, color)) = marker {
-                            ui.colored_label(color, icon);
-                        }
-                        ui.label(&file_name);
-                    });
-                },
-            );
+            ui.horizontal(|ui| {
+                ui.dnd_drag_source(
+                    egui::Id::new(("texture_drag", path_string.as_str())),
+                    payload,
+                    |ui| {
+                        ui.horizontal(|ui| {
+                            if let Some(id) = self.texture_thumbnail(&path_string, context) {
+                                ui.add(egui::Image::new(egui::load::SizedTexture::new(
+                                    id,
+                                    egui::vec2(20.0, 20.0),
+                                )));
+                            }
+                            if let Some((icon, color)) = marker {
+                                ui.colored_label(color, icon);
+                            }
+                            ui.label(&file_name);
+                        });
+                    },
+                );
+                if entry.kind == ResourceKind::Prefab
+                    && ui
+                        .small_button("✎")
+                        .on_hover_text("打开 Prefab 编辑")
+                        .clicked()
+                {
+                    *resource_to_open = Some(entry.path.clone());
+                }
+            });
         } else {
             ui.horizontal(|ui| {
                 if let Some((icon, color)) = marker {
                     ui.colored_label(color, icon);
                 }
                 let response = ui.selectable_label(false, &file_name);
-                if response.double_clicked() && entry.kind == ResourceKind::Scene {
-                    *scene_to_open = Some(entry.path.clone());
+                if response.double_clicked()
+                    && matches!(entry.kind, ResourceKind::Scene | ResourceKind::Prefab)
+                {
+                    *resource_to_open = Some(entry.path.clone());
                 }
             });
         }

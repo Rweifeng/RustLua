@@ -27,7 +27,14 @@ use editor::{
 };
 use eframe::egui;
 use engine::core::{
-    input::InputSnapshot, logging::LogSink, math3d::Vec3, scene::SceneEntityId, script::LuaRuntime,
+    animation::{AnimationClip, AnimationStateMachine},
+    input::InputSnapshot,
+    logging::LogSink,
+    math3d::Vec3,
+    scene::SceneEntityId,
+    script::LuaRuntime,
+    sprite::{SpriteComponent, SpriteSorting},
+    tilemap::Tilemap,
     transform3d::Transform3D,
 };
 use engine::host::{Renderer, RuntimeScene};
@@ -158,12 +165,18 @@ struct EditorApp {
     image: ImageFields,
     button: ButtonFields,
     sprite_reference: String,
+    sprite_component: SpriteComponent,
+    tilemap: TilemapEditorState,
+    animation: AnimationEditorState,
     lua_script: String,
     inspector_transform3d_open: bool,
     inspector_collider3d_open: bool,
     inspector_text_open: bool,
     inspector_image_open: bool,
     inspector_button_open: bool,
+    inspector_sprite_open: bool,
+    inspector_tilemap_open: bool,
+    inspector_animation_open: bool,
     inspector_add_component: String,
     new_scene_name: String,
     entity_name: String,
@@ -248,6 +261,47 @@ struct EditorApp {
     preview_input_state: InputSnapshot,
 }
 
+#[derive(Clone, Debug)]
+struct TilemapEditorState {
+    map: Tilemap,
+    brush: u8,
+    paint_collision: bool,
+}
+
+impl Default for TilemapEditorState {
+    fn default() -> Self {
+        Self {
+            map: Tilemap::new(engine::core::transform::Vec2::new(32.0, 32.0), 8, 8)
+                .expect("default tilemap should be valid"),
+            brush: 1,
+            paint_collision: false,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct AnimationEditorState {
+    machine: AnimationStateMachine,
+}
+
+impl Default for AnimationEditorState {
+    fn default() -> Self {
+        Self {
+            machine: AnimationStateMachine::new(
+                "idle",
+                vec![AnimationClip {
+                    name: "idle".to_owned(),
+                    sheet: "assets/textures/player.png".to_owned(),
+                    cols: 1,
+                    frame_rate: 1.0,
+                    looped: true,
+                }],
+            )
+            .expect("default animation should be valid"),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum WorkspaceTab {
     Scene,
@@ -276,6 +330,7 @@ enum SceneTool {
     Move,
     Rotate,
     Scale,
+    TilePaint,
 }
 
 /// 场景视图投影模式：2D 画布（俯视 XY）或 3D 画布（俯视 XZ）。
@@ -351,6 +406,8 @@ struct SceneEditorState {
     locked: std::collections::BTreeSet<SceneEntityId>,
     selected: std::collections::BTreeSet<SceneEntityId>,
     box_select_start: Option<egui::Pos2>,
+    tile_paint_active: bool,
+    tile_paint_last_cell: Option<(usize, usize, bool)>,
 }
 
 struct SceneDrag {
@@ -415,12 +472,24 @@ impl EditorApp {
             image: ImageFields::default(),
             button: ButtonFields::default(),
             sprite_reference: String::new(),
+            sprite_component: SpriteComponent {
+                texture: "assets/textures/player.png".to_owned(),
+                size: engine::core::transform::Vec2::new(128.0, 128.0),
+                pivot: engine::core::transform::Vec2::new(0.5, 0.5),
+                tint: [1.0; 4],
+                sorting: SpriteSorting::default(),
+            },
+            tilemap: TilemapEditorState::default(),
+            animation: AnimationEditorState::default(),
             lua_script: String::new(),
             inspector_transform3d_open: true,
             inspector_collider3d_open: false,
             inspector_text_open: true,
             inspector_image_open: true,
             inspector_button_open: true,
+            inspector_sprite_open: true,
+            inspector_tilemap_open: true,
+            inspector_animation_open: true,
             inspector_add_component: "Transform3D".to_owned(),
             new_scene_name: "main".to_owned(),
             entity_name: "Entity".to_owned(),

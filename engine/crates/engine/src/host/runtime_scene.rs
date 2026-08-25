@@ -15,13 +15,13 @@ use crate::core::{
     mesh3d::MeshRenderer,
     scene::{Scene, SceneEntityId},
     script::LuaRuntime,
-    sprite::{Sprite, SpriteAsset, SpriteVertex},
+    sprite::{Sprite, SpriteAsset, SpriteSorting, SpriteVertex},
     sprite_batch::{SpriteBatch, SpriteBatchItem},
     text::{TextAtlas, TextLayout, TextMesh, TextStyle},
     tilemap::Tilemap,
     transform::{Transform, Vec2, integrate_velocity},
     transform3d::Transform3D,
-    ui::{UiButton, UiImage, UiText},
+    ui::{UiButton, UiImage, UiText, resolve_ui_rect, resolve_ui_text_origin},
 };
 
 use crate::host::frame::{
@@ -33,6 +33,8 @@ pub struct RuntimeScene {
     script: LuaRuntime,
     sprite_batch: SpriteBatch,
     camera: Camera2D,
+    viewport_width: u32,
+    viewport_height: u32,
     texture_paths: Vec<String>,
     font_atlas: Option<FontAtlas>,
     last_font_version: u64,
@@ -110,6 +112,8 @@ impl RuntimeScene {
             script,
             sprite_batch: SpriteBatch::new(),
             camera,
+            viewport_width: 1280,
+            viewport_height: 720,
             texture_paths: Vec::new(),
             font_atlas,
             last_font_version: u64::MAX,
@@ -133,7 +137,7 @@ impl RuntimeScene {
             tracing::debug!(target: "game", "[simulation] fixed update returned: {result}");
             // UI Button 点击分发：按下边沿命中矩形 → Lua on_click(name)。
             self.script
-                .process_ui_clicks(&step_input)
+                .process_ui_clicks(&step_input, self.viewport_width, self.viewport_height)
                 .map_err(|error| error.to_string())?;
             // Physics advances on the fixed timestep and writes dynamic body
             // positions back into ECS Transforms (2D) / Transform3D (3D).
@@ -309,6 +313,8 @@ impl RuntimeScene {
     }
 
     pub fn vertices(&mut self, width: u32, height: u32) -> Result<SceneMesh, String> {
+        self.viewport_width = width.max(1);
+        self.viewport_height = height.max(1);
         let viewport = Viewport::new(width.max(1) as f32, height.max(1) as f32)
             .map_err(|error| error.to_string())?;
         self.sprite_batch.clear();
@@ -330,13 +336,16 @@ impl RuntimeScene {
                         .ok()
                         .flatten()
                         .map(|entry| entry.path().to_owned());
-                    Some((transform, sprite, animation, asset))
+                    let sorting = world.get::<SpriteSorting>(id).ok().flatten().cloned();
+                    Some((transform, sprite, animation, asset, sorting))
                 })
                 .collect::<Vec<_>>()
         });
         // Tile maps draw first (layer 0), sprite entities on top (layer 1+).
         self.push_tiles()?;
-        for (index, (transform, sprite, animation, asset)) in sprites.into_iter().enumerate() {
+        for (index, (transform, sprite, animation, asset, sorting)) in
+            sprites.into_iter().enumerate()
+        {
             let (texture, sprite) = if let Some(machine) = animation {
                 // Animated sprite: sample the current clip's sheet at its frame UV.
                 let (uv_min, uv_max) = machine.current_frame_uv();
@@ -350,12 +359,12 @@ impl RuntimeScene {
             } else {
                 continue;
             };
-            self.sprite_batch.push(SpriteBatchItem::new(
-                texture,
-                1 + index as i32,
-                sprite,
-                transform,
-            ));
+            let layer = sorting
+                .as_ref()
+                .map(SpriteSorting::effective_layer)
+                .unwrap_or(1 + index as i32);
+            self.sprite_batch
+                .push(SpriteBatchItem::new(texture, layer, sprite, transform));
         }
         self.push_particles()?;
         let mesh = self
@@ -549,13 +558,21 @@ impl RuntimeScene {
                 .collect()
         });
         for button in buttons {
+            let viewport = [width.max(1) as f32, height.max(1) as f32];
+            let (origin, size) = resolve_ui_rect(
+                button.position,
+                button.size,
+                button.space,
+                button.anchor,
+                viewport,
+            );
             // 背景矩形（白纹理着色）。
             let start = vertices.len() as u32;
             vertices.extend_from_slice(&screen_rect_ndc(
-                button.position[0],
-                button.position[1],
-                button.size[0],
-                button.size[1],
+                origin[0],
+                origin[1],
+                size[0],
+                size[1],
                 [
                     button.background[0],
                     button.background[1],
@@ -573,10 +590,16 @@ impl RuntimeScene {
             });
             // 居中 label：用真实布局尺寸。
             if !button.label.is_empty() {
+                let label_scale = match button.space {
+                    crate::core::ui::UiLayoutSpace::Screen => 1.0,
+                    crate::core::ui::UiLayoutSpace::Canvas => (viewport[0]
+                        / crate::core::ui::UI_REFERENCE_SIZE[0])
+                        .min(viewport[1] / crate::core::ui::UI_REFERENCE_SIZE[1]),
+                };
                 let (mesh, is_sdf) =
-                    self.layout_text(&button.label, [0.0, 0.0], 1.0, button.text_color)?;
-                let dx = button.position[0] + (button.size[0] - mesh.size[0]).max(0.0) / 2.0;
-                let dy = button.position[1] + (button.size[1] - mesh.size[1]).max(0.0) / 2.0;
+                    self.layout_text(&button.label, [0.0, 0.0], label_scale, button.text_color)?;
+                let dx = origin[0] + (size[0] - mesh.size[0]).max(0.0) / 2.0;
+                let dy = origin[1] + (size[1] - mesh.size[1]).max(0.0) / 2.0;
                 let text_vertices = text_to_ndc_with_offset(mesh, is_sdf, [dx, dy], width, height);
                 self.push_text_run(vertices, draws, text_vertices, is_sdf);
             }
@@ -589,9 +612,26 @@ impl RuntimeScene {
                 .collect()
         });
         for text in texts {
+            let viewport = [width.max(1) as f32, height.max(1) as f32];
+            let (_, resolved_scale) = resolve_ui_text_origin(
+                text.position,
+                [0.0, 0.0],
+                text.scale,
+                text.space,
+                text.anchor,
+                viewport,
+            );
             let (mesh, is_sdf) =
-                self.layout_text(&text.text, text.position, text.scale, text.color)?;
-            let text_vertices = text_to_ndc(mesh, is_sdf, width, height);
+                self.layout_text(&text.text, [0.0, 0.0], resolved_scale, text.color)?;
+            let (origin, _) = resolve_ui_text_origin(
+                text.position,
+                mesh.size,
+                text.scale,
+                text.space,
+                text.anchor,
+                viewport,
+            );
+            let text_vertices = text_to_ndc_with_offset(mesh, is_sdf, origin, width, height);
             self.push_text_run(vertices, draws, text_vertices, is_sdf);
         }
         Ok(())
@@ -661,10 +701,17 @@ impl RuntimeScene {
     ) -> Result<(), String> {
         let sw = width.max(1) as f32;
         let sh = height.max(1) as f32;
-        let x0 = image.position[0] / sw * 2.0 - 1.0;
-        let y0 = 1.0 - image.position[1] / sh * 2.0;
-        let x1 = (image.position[0] + image.size[0]) / sw * 2.0 - 1.0;
-        let y1 = 1.0 - (image.position[1] + image.size[1]) / sh * 2.0;
+        let (origin, size) = resolve_ui_rect(
+            image.position,
+            image.size,
+            image.space,
+            image.anchor,
+            [sw, sh],
+        );
+        let x0 = origin[0] / sw * 2.0 - 1.0;
+        let y0 = 1.0 - origin[1] / sh * 2.0;
+        let x1 = (origin[0] + size[0]) / sw * 2.0 - 1.0;
+        let y1 = 1.0 - (origin[1] + size[1]) / sh * 2.0;
         let color = [image.color[0], image.color[1], image.color[2], 1.0];
         let quad = [
             OverlayVertex {

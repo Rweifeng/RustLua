@@ -4,11 +4,12 @@ use crate::EditorApp;
 use crate::geometry::{
     encode_transform, parse_transform, polygon_intersects_rect, rotated_contains, rotated_corners,
 };
+use crate::util::icon_toggle;
 use crate::util::strip_verbatim_prefix;
 use crate::{
     GizmoAxis, GizmoDrag, SceneDrag, SceneTool, SceneViewCache2d, SceneViewCache3d, SceneViewMode,
 };
-use editor::CommandKind;
+use editor::{CommandKind, TransformFields};
 use eframe::egui;
 use engine::core::{
     camera3d::{Camera3D, Ray3},
@@ -16,7 +17,9 @@ use engine::core::{
     math2d::Camera2D,
     math3d::{Quat, Vec3},
     prefab::Prefab,
+    scene::SceneEntityId,
     scene_extract::extract_serialized_scene_3d,
+    tilemap::Tilemap,
     transform::Vec2,
     transform3d::Transform3D,
 };
@@ -51,7 +54,8 @@ impl EditorApp {
             self.scene_zoom = (self.scene_zoom * (1.0 + scroll * 0.001)).clamp(0.25, 4.0);
         }
         if response.dragged_by(egui::PointerButton::Middle)
-            || response.dragged_by(egui::PointerButton::Secondary)
+            || (response.dragged_by(egui::PointerButton::Secondary)
+                && self.scene_tool != SceneTool::TilePaint)
         {
             self.scene_state.pan += response.drag_delta();
         }
@@ -108,6 +112,7 @@ impl EditorApp {
                     .collect()
             })
             .unwrap_or_default();
+        let tilemap_context = self.selected_tilemap_context();
         for (id, name, transform) in entities.iter() {
             let center = egui::pos2(
                 rect.center().x + self.scene_state.pan.x + transform.position_x * self.scene_zoom,
@@ -161,6 +166,45 @@ impl EditorApp {
         }
 
         let pointer = response.interact_pointer_pos();
+        let hovered_tile = pointer.and_then(|pos| {
+            tilemap_context.as_ref().and_then(|context| {
+                tilemap_cell_from_pointer(
+                    rect,
+                    self.scene_state.pan,
+                    self.scene_zoom,
+                    pos,
+                    context.transform,
+                    &self.tilemap.map,
+                )
+            })
+        });
+        if let Some(context) = tilemap_context.as_ref() {
+            self.draw_tilemap_overlay(&painter, rect, context, hovered_tile);
+        }
+        if let Some(context) = tilemap_context.as_ref()
+            && self.scene_tool == SceneTool::TilePaint
+        {
+            self.handle_tilemap_paint(&response, rect, context);
+            self.draw_scene_tool_panel(ui, rect);
+            if let Some(message) = &self.preview_diagnostic {
+                painter.rect_filled(
+                    egui::Rect::from_min_size(
+                        rect.left_top() + egui::vec2(8.0, 8.0),
+                        egui::vec2(rect.width() - 16.0, 28.0),
+                    ),
+                    4.0,
+                    egui::Color32::from_rgba_unmultiplied(100, 30, 30, 220),
+                );
+                painter.text(
+                    rect.left_top() + egui::vec2(16.0, 14.0),
+                    egui::Align2::LEFT_TOP,
+                    message,
+                    egui::FontId::proportional(13.0),
+                    egui::Color32::LIGHT_RED,
+                );
+            }
+            return;
+        }
         if response.drag_started_by(egui::PointerButton::Primary)
             && let Some(pos) = pointer
         {
@@ -299,6 +343,7 @@ impl EditorApp {
                         next.scale_x = (initial.scale_x * factor).max(0.05);
                         next.scale_y = (initial.scale_y * factor).max(0.05);
                     }
+                    SceneTool::TilePaint => {}
                 }
                 preview.insert(*id, next);
             }
@@ -570,6 +615,7 @@ impl EditorApp {
                                 None
                             }
                         }
+                        SceneTool::TilePaint => None,
                     }
                 } else {
                     None
@@ -628,6 +674,7 @@ impl EditorApp {
                             egui::Color32::from_rgb(180, 100, 220),
                         );
                     }
+                    SceneTool::TilePaint => {}
                 }
                 if let Some(axis) = axis {
                     self.scene_state.gizmo_drag = Some(GizmoDrag {
@@ -711,6 +758,7 @@ impl EditorApp {
                                 (next.scale.z * factor).max(0.05),
                             );
                         }
+                        SceneTool::TilePaint => {}
                     }
                     self.scene_state.preview3d_transform.insert(drag.id, next);
                 }
@@ -750,12 +798,228 @@ impl EditorApp {
         );
         ui.scope_builder(egui::UiBuilder::new().max_rect(tools_rect), |ui| {
             ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.scene_tool, SceneTool::Select, "Select");
-                ui.selectable_value(&mut self.scene_tool, SceneTool::Move, "Move");
-                ui.selectable_value(&mut self.scene_tool, SceneTool::Rotate, "Rotate");
-                ui.selectable_value(&mut self.scene_tool, SceneTool::Scale, "Scale");
+                if icon_toggle(ui, self.scene_tool == SceneTool::Select, "⌖", "选择").clicked()
+                {
+                    self.scene_tool = SceneTool::Select;
+                }
+                if icon_toggle(ui, self.scene_tool == SceneTool::Move, "✥", "移动").clicked() {
+                    self.scene_tool = SceneTool::Move;
+                }
+                if icon_toggle(ui, self.scene_tool == SceneTool::Rotate, "⟳", "旋转").clicked()
+                {
+                    self.scene_tool = SceneTool::Rotate;
+                }
+                if icon_toggle(ui, self.scene_tool == SceneTool::Scale, "⤢", "缩放").clicked() {
+                    self.scene_tool = SceneTool::Scale;
+                }
+                if icon_toggle(
+                    ui,
+                    self.scene_tool == SceneTool::TilePaint,
+                    "▦",
+                    "Tile 画笔",
+                )
+                .clicked()
+                {
+                    self.scene_tool = SceneTool::TilePaint;
+                }
             });
         });
+    }
+
+    fn selected_tilemap_context(&self) -> Option<TilemapPaintContext> {
+        let selected = self.tree.selected()?;
+        let scene = self.current_scene()?;
+        let entity = scene.scene.entities.get(&selected)?;
+        if !entity.components.contains_key("Tilemap") {
+            return None;
+        }
+        let transform = self
+            .scene_state
+            .preview
+            .get(&selected)
+            .copied()
+            .or_else(|| {
+                entity
+                    .components
+                    .get("Transform")
+                    .and_then(|value| parse_transform(value))
+            })?;
+        Some(TilemapPaintContext {
+            entity: selected,
+            transform,
+        })
+    }
+
+    fn draw_tilemap_overlay(
+        &self,
+        painter: &egui::Painter,
+        rect: egui::Rect,
+        context: &TilemapPaintContext,
+        hovered: Option<(usize, usize)>,
+    ) {
+        if context.transform.rotation.abs() > 0.001 {
+            painter.text(
+                rect.left_bottom() + egui::vec2(12.0, -12.0),
+                egui::Align2::LEFT_BOTTOM,
+                "TilePaint 暂不支持旋转 Tilemap",
+                egui::FontId::proportional(13.0),
+                egui::Color32::LIGHT_RED,
+            );
+            return;
+        }
+        let cell_w =
+            self.tilemap.map.tile_size.x * context.transform.scale_x.abs() * self.scene_zoom;
+        let cell_h =
+            self.tilemap.map.tile_size.y * context.transform.scale_y.abs() * self.scene_zoom;
+        if cell_w <= 0.0 || cell_h <= 0.0 {
+            return;
+        }
+        for y in 0..self.tilemap.map.height {
+            for x in 0..self.tilemap.map.width {
+                let screen_rect = tilemap_cell_screen_rect(
+                    rect,
+                    self.scene_state.pan,
+                    self.scene_zoom,
+                    context.transform,
+                    &self.tilemap.map,
+                    x,
+                    y,
+                );
+                let index = y * self.tilemap.map.width + x;
+                let value = self.tilemap.map.tiles[index];
+                let solid = self.tilemap.map.solid[index];
+                if value != 0 {
+                    painter.rect_filled(
+                        screen_rect,
+                        0.0,
+                        egui::Color32::from_rgba_unmultiplied(80, 140, 220, 48),
+                    );
+                }
+                if solid {
+                    painter.rect_filled(
+                        screen_rect.shrink(2.0),
+                        0.0,
+                        egui::Color32::from_rgba_unmultiplied(220, 90, 90, 60),
+                    );
+                }
+                let stroke = if hovered == Some((x, y)) {
+                    egui::Stroke::new(2.0_f32, egui::Color32::YELLOW)
+                } else {
+                    egui::Stroke::new(
+                        1.0_f32,
+                        egui::Color32::from_rgba_unmultiplied(180, 180, 180, 90),
+                    )
+                };
+                painter.rect_stroke(screen_rect, 0.0, stroke, egui::StrokeKind::Inside);
+            }
+        }
+    }
+
+    fn handle_tilemap_paint(
+        &mut self,
+        response: &egui::Response,
+        rect: egui::Rect,
+        context: &TilemapPaintContext,
+    ) {
+        let pointer = response.interact_pointer_pos();
+        if response.drag_started_by(egui::PointerButton::Primary)
+            || response.drag_started_by(egui::PointerButton::Secondary)
+        {
+            self.scene_state.tile_paint_active = true;
+            self.scene_state.tile_paint_last_cell = None;
+        }
+        if response.clicked_by(egui::PointerButton::Primary)
+            && let Some(pos) = pointer
+            && let Some((x, y)) = tilemap_cell_from_pointer(
+                rect,
+                self.scene_state.pan,
+                self.scene_zoom,
+                pos,
+                context.transform,
+                &self.tilemap.map,
+            )
+        {
+            self.apply_tile_paint_cell(x, y, false);
+            self.commit_tilemap_paint(context.entity);
+            self.scene_state.tile_paint_last_cell = None;
+        }
+        if response.clicked_by(egui::PointerButton::Secondary)
+            && let Some(pos) = pointer
+            && let Some((x, y)) = tilemap_cell_from_pointer(
+                rect,
+                self.scene_state.pan,
+                self.scene_zoom,
+                pos,
+                context.transform,
+                &self.tilemap.map,
+            )
+        {
+            self.apply_tile_paint_cell(x, y, true);
+            self.commit_tilemap_paint(context.entity);
+            self.scene_state.tile_paint_last_cell = None;
+        }
+        for (button, erase) in [
+            (egui::PointerButton::Primary, false),
+            (egui::PointerButton::Secondary, true),
+        ] {
+            if response.dragged_by(button)
+                && let Some(pos) = pointer
+                && let Some((x, y)) = tilemap_cell_from_pointer(
+                    rect,
+                    self.scene_state.pan,
+                    self.scene_zoom,
+                    pos,
+                    context.transform,
+                    &self.tilemap.map,
+                )
+            {
+                if self.scene_state.tile_paint_last_cell != Some((x, y, erase)) {
+                    self.apply_tile_paint_cell(x, y, erase);
+                    self.scene_state.tile_paint_last_cell = Some((x, y, erase));
+                }
+            }
+        }
+        if response.drag_stopped_by(egui::PointerButton::Primary)
+            || response.drag_stopped_by(egui::PointerButton::Secondary)
+        {
+            if self.scene_state.tile_paint_active {
+                self.commit_tilemap_paint(context.entity);
+            }
+            self.scene_state.tile_paint_active = false;
+            self.scene_state.tile_paint_last_cell = None;
+        }
+    }
+
+    fn apply_tile_paint_cell(&mut self, x: usize, y: usize, erase: bool) {
+        let index = y * self.tilemap.map.width + x;
+        if self.tilemap.paint_collision {
+            self.tilemap.map.solid[index] = !erase;
+        } else {
+            self.tilemap.map.tiles[index] = if erase { 0 } else { self.tilemap.brush.min(6) };
+        }
+    }
+
+    fn commit_tilemap_paint(&mut self, entity_id: SceneEntityId) {
+        if self.is_playing() {
+            return;
+        }
+        let tilemap = self.tilemap.map.clone();
+        if let Some(scene) = self.document.current_scene.as_mut() {
+            let _ = self.history.execute(
+                scene,
+                "Tilemap Paint",
+                CommandKind::Property,
+                move |scene| {
+                    if let Some(entity) = scene.scene.entities.get_mut(&entity_id) {
+                        entity
+                            .components
+                            .insert("Tilemap".to_owned(), tilemap.to_component_str());
+                        scene.mark_dirty();
+                    }
+                    Ok::<(), ()>(())
+                },
+            );
+        }
     }
 
     /// 提交 2D 场景拖拽：写回 Transform 组件。
@@ -1286,9 +1550,23 @@ impl EditorApp {
             "Instantiate Prefab",
             CommandKind::Create,
             move |scene| {
-                prefab
+                let instance = prefab
                     .instantiate(&mut scene.scene, None, &overrides)
                     .map_err(|error| error.to_string())?;
+                for (source_id, entity_id) in &instance.source_to_instance {
+                    if let Some(entity) = scene.scene.entities.get_mut(entity_id) {
+                        entity
+                            .metadata
+                            .insert("prefab.source".to_owned(), path.to_owned());
+                        entity
+                            .metadata
+                            .insert("prefab.source_id".to_owned(), source_id.0.to_string());
+                        entity.metadata.insert(
+                            "prefab.root".to_owned(),
+                            (entity.id == instance.instance_root).to_string(),
+                        );
+                    }
+                }
                 scene.mark_dirty();
                 Ok::<(), String>(())
             },
@@ -1380,9 +1658,16 @@ impl EditorApp {
                             "Transform".into(),
                             "x=0;y=0;rotation=0;scale_x=1;scale_y=1".into(),
                         );
+                        let sprite = engine::core::sprite::SpriteComponent {
+                            texture: path.clone(),
+                            size: engine::core::transform::Vec2::new(32.0, 32.0),
+                            pivot: engine::core::transform::Vec2::new(0.5, 0.5),
+                            tint: [1.0; 4],
+                            sorting: engine::core::sprite::SpriteSorting::default(),
+                        };
                         entity
                             .components
-                            .insert("Sprite".into(), format!("{};size=32", path));
+                            .insert("Sprite".into(), sprite.to_component_str());
                     }
                     Ok::<(), String>(())
                 });
@@ -1391,6 +1676,67 @@ impl EditorApp {
             Err(error) => Err(error),
         }
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct TilemapPaintContext {
+    entity: SceneEntityId,
+    transform: TransformFields,
+}
+
+fn screen_to_world_2d(rect: egui::Rect, pan: egui::Vec2, zoom: f32, pointer: egui::Pos2) -> Vec2 {
+    Vec2::new(
+        (pointer.x - rect.center().x - pan.x) / zoom,
+        -(pointer.y - rect.center().y - pan.y) / zoom,
+    )
+}
+
+fn tilemap_cell_from_pointer(
+    rect: egui::Rect,
+    pan: egui::Vec2,
+    zoom: f32,
+    pointer: egui::Pos2,
+    transform: TransformFields,
+    tilemap: &Tilemap,
+) -> Option<(usize, usize)> {
+    if transform.rotation.abs() > 0.001 || zoom <= 0.0 {
+        return None;
+    }
+    let world = screen_to_world_2d(rect, pan, zoom, pointer);
+    let cell_w = tilemap.tile_size.x * transform.scale_x.abs();
+    let cell_h = tilemap.tile_size.y * transform.scale_y.abs();
+    if cell_w <= 0.0 || cell_h <= 0.0 {
+        return None;
+    }
+    let local_x = (world.x - transform.position_x) / cell_w;
+    let local_y = (world.y - transform.position_y) / cell_h;
+    if !(0.0..tilemap.width as f32).contains(&local_x)
+        || !(0.0..tilemap.height as f32).contains(&local_y)
+    {
+        return None;
+    }
+    Some((local_x.floor() as usize, local_y.floor() as usize))
+}
+
+fn tilemap_cell_screen_rect(
+    rect: egui::Rect,
+    pan: egui::Vec2,
+    zoom: f32,
+    transform: TransformFields,
+    tilemap: &Tilemap,
+    x: usize,
+    y: usize,
+) -> egui::Rect {
+    let cell_w = tilemap.tile_size.x * transform.scale_x.abs() * zoom;
+    let cell_h = tilemap.tile_size.y * transform.scale_y.abs() * zoom;
+    let min_x = rect.center().x
+        + pan.x
+        + (transform.position_x + x as f32 * tilemap.tile_size.x * transform.scale_x.abs()) * zoom;
+    let max_x = min_x + cell_w;
+    let max_y = rect.center().y + pan.y
+        - (transform.position_y + y as f32 * tilemap.tile_size.y * transform.scale_y.abs()) * zoom;
+    let min_y = max_y - cell_h;
+    egui::Rect::from_min_max(egui::pos2(min_x, min_y), egui::pos2(max_x, max_y))
 }
 
 /// 判断 3D Scene 视图是否可直接命中渲染缓存（M11-03 / R-03）：
@@ -1415,6 +1761,7 @@ fn scene_view_3d_cache_hit(
 mod tests {
     use super::*;
     use crate::EditorCamera;
+    use engine::core::transform::Vec2;
 
     /// R-03：3D 缓存 key 记录实际渲染尺寸。拖拽期渲染半分辨率并写入缓存；
     /// 拖拽结束后视口恢复全分辨率，缓存不匹配 → 必然重渲染，不会沿用模糊帧。
@@ -1462,5 +1809,59 @@ mod tests {
             camera,
             false,
         ));
+    }
+
+    #[test]
+    fn tilemap_pointer_mapping_round_trips_visible_cells() {
+        let rect = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(400.0, 300.0));
+        let pan = egui::vec2(10.0, -6.0);
+        let zoom = 2.0;
+        let transform = TransformFields {
+            position_x: 16.0,
+            position_y: 8.0,
+            rotation: 0.0,
+            scale_x: 1.0,
+            scale_y: 1.0,
+        };
+        let map = Tilemap::new(Vec2::new(32.0, 32.0), 4, 3).unwrap();
+        let cell_rect = tilemap_cell_screen_rect(rect, pan, zoom, transform, &map, 2, 1);
+        let pointer = cell_rect.center();
+        assert_eq!(
+            tilemap_cell_from_pointer(rect, pan, zoom, pointer, transform, &map),
+            Some((2, 1))
+        );
+    }
+
+    #[test]
+    fn tilemap_pointer_mapping_rejects_outside_and_rotated_maps() {
+        let rect = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(400.0, 300.0));
+        let map = Tilemap::new(Vec2::new(32.0, 32.0), 2, 2).unwrap();
+        let transform = TransformFields::default();
+        assert_eq!(
+            tilemap_cell_from_pointer(
+                rect,
+                egui::Vec2::ZERO,
+                1.0,
+                egui::pos2(-20.0, -20.0),
+                transform,
+                &map,
+            ),
+            None
+        );
+        let rotated = TransformFields {
+            rotation: 15.0,
+            ..transform
+        };
+        assert_eq!(
+            tilemap_cell_from_pointer(
+                rect,
+                egui::Vec2::ZERO,
+                1.0,
+                egui::pos2(200.0, 150.0),
+                rotated,
+                &map,
+            ),
+            None
+        );
     }
 }

@@ -1,11 +1,19 @@
 use crate::{ProjectError, ProjectInfo};
-use engine::core::scene::{Scene, SceneError};
+use engine::core::{
+    prefab::{Prefab, PrefabError},
+    resource_db::AssetId,
+    scene::{Scene, SceneError},
+};
 use std::{
     error::Error,
     fmt, fs,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
+
+const PREFAB_DOCUMENT_KIND: &str = "prefab";
+const DOC_KIND_META_KEY: &str = "editor.document.kind";
+const PREFAB_ASSET_ID_META_KEY: &str = "editor.prefab.asset_id";
 
 /// 编辑器中的可编辑场景及其文件状态。
 #[derive(Clone, Debug)]
@@ -44,7 +52,12 @@ impl SceneDocument {
     /// 从磁盘打开场景；只有成功解析和校验后才创建文档。
     pub fn open(path: impl AsRef<Path>) -> Result<Self, DocumentError> {
         let path = path.as_ref().to_path_buf();
-        let scene = Scene::load(&path).map_err(DocumentError::Scene)?;
+        let scene = if path.extension().and_then(|value| value.to_str()) == Some("prefab") {
+            let prefab = Prefab::load(&path).map_err(DocumentError::Prefab)?;
+            scene_from_prefab(&prefab)
+        } else {
+            Scene::load(&path).map_err(DocumentError::Scene)?
+        };
         Ok(Self {
             path: Some(path),
             scene,
@@ -65,6 +78,10 @@ impl SceneDocument {
         self.dirty
     }
 
+    pub fn is_prefab_document(&self) -> bool {
+        is_prefab_document(&self.scene, self.path.as_deref())
+    }
+
     /// 保存到当前路径；未命名的新场景必须使用 `save_as`。
     pub fn save(&mut self) -> Result<(), DocumentError> {
         let path = self.path.clone().ok_or(DocumentError::MissingPath)?;
@@ -81,7 +98,12 @@ impl SceneDocument {
 
     fn save_to(&mut self, path: &Path) -> Result<(), DocumentError> {
         self.scene.validate().map_err(DocumentError::Scene)?;
-        atomic_write_scene(path, &self.scene)?;
+        if is_prefab_document(&self.scene, Some(path)) {
+            let prefab = prefab_from_scene(&self.scene, path)?;
+            prefab.save(path).map_err(DocumentError::Prefab)?;
+        } else {
+            atomic_write_scene(path, &self.scene)?;
+        }
         self.dirty = false;
         Ok(())
     }
@@ -209,6 +231,54 @@ fn atomic_write_scene(path: &Path, scene: &Scene) -> Result<(), DocumentError> {
     Ok(())
 }
 
+fn is_prefab_document(scene: &Scene, path: Option<&Path>) -> bool {
+    scene.metadata.get(DOC_KIND_META_KEY).map(String::as_str) == Some(PREFAB_DOCUMENT_KIND)
+        || path.and_then(|value| value.extension().and_then(|ext| ext.to_str())) == Some("prefab")
+}
+
+fn scene_from_prefab(prefab: &Prefab) -> Scene {
+    let mut scene = Scene::new(prefab.name.clone());
+    scene.entities = prefab.entities.clone();
+    scene.metadata = prefab.metadata.clone();
+    scene.metadata.insert(
+        DOC_KIND_META_KEY.to_owned(),
+        PREFAB_DOCUMENT_KIND.to_owned(),
+    );
+    scene.metadata.insert(
+        PREFAB_ASSET_ID_META_KEY.to_owned(),
+        prefab.asset_id.to_string(),
+    );
+    scene
+}
+
+fn prefab_from_scene(scene: &Scene, path: &Path) -> Result<Prefab, DocumentError> {
+    let mut source = scene.clone();
+    source
+        .metadata
+        .retain(|key, _| key != DOC_KIND_META_KEY && key != PREFAB_ASSET_ID_META_KEY);
+    let roots: Vec<_> = source
+        .entities
+        .values()
+        .filter(|entity| entity.parent.is_none())
+        .map(|entity| entity.id)
+        .collect();
+    let [root] = roots.as_slice() else {
+        return Err(DocumentError::InvalidPrefab(format!(
+            "Prefab 文档必须恰好有一个根实体，当前为 {} 个",
+            roots.len()
+        )));
+    };
+    let asset_id = scene
+        .metadata
+        .get(PREFAB_ASSET_ID_META_KEY)
+        .and_then(|value| value.parse::<AssetId>().ok())
+        .unwrap_or_else(|| AssetId::from_seed(&path.to_string_lossy()));
+    let mut prefab = Prefab::from_scene(&source, *root, asset_id, source.name.clone())
+        .map_err(DocumentError::Prefab)?;
+    prefab.metadata = source.metadata.clone();
+    Ok(prefab)
+}
+
 fn file_name(path: &Path) -> String {
     path.file_name()
         .and_then(|name| name.to_str())
@@ -229,6 +299,8 @@ pub enum DocumentError {
     NoCurrentScene,
     Project(ProjectError),
     Scene(SceneError),
+    Prefab(PrefabError),
+    InvalidPrefab(String),
     Io { path: PathBuf, message: String },
 }
 
@@ -239,6 +311,8 @@ impl fmt::Display for DocumentError {
             Self::NoCurrentScene => write!(f, "当前项目没有打开的场景"),
             Self::Project(error) => write!(f, "项目文档错误：{error}"),
             Self::Scene(error) => write!(f, "场景文档错误：{error}"),
+            Self::Prefab(error) => write!(f, "Prefab 文档错误：{error}"),
+            Self::InvalidPrefab(error) => write!(f, "Prefab 文档错误：{error}"),
             Self::Io { path, message } => write!(f, "文档 I/O 失败：{}：{message}", path.display()),
         }
     }
@@ -254,7 +328,7 @@ impl From<ProjectError> for DocumentError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::core::scene::SceneEntityId;
+    use engine::core::{prefab::Prefab, scene::SceneEntityId};
 
     fn temp_root(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!("rustlua-m5-02-{label}-{}", unique_token()))
@@ -414,5 +488,60 @@ mod tests {
             .add_entity(SceneEntityId(1), "A", None)
             .unwrap();
         assert_ne!(document, original);
+    }
+
+    #[test]
+    fn open_and_save_prefab_document_roundtrip() {
+        let root = temp_root("prefab-doc");
+        let path = root.join("assets/enemy.prefab");
+        let mut source = Scene::new("Enemy");
+        source.add_entity(SceneEntityId(1), "Enemy", None).unwrap();
+        let prefab = Prefab::from_scene(
+            &source,
+            SceneEntityId(1),
+            AssetId::from_seed("enemy"),
+            "Enemy",
+        )
+        .unwrap();
+        prefab.save(&path).unwrap();
+
+        let mut document = SceneDocument::open(&path).unwrap();
+        assert!(document.is_prefab_document());
+        document
+            .scene
+            .entities
+            .get_mut(&SceneEntityId(1))
+            .unwrap()
+            .name = "Boss".into();
+        document.mark_dirty();
+        document.save().unwrap();
+
+        let saved = Prefab::load(&path).unwrap();
+        assert_eq!(saved.entities[&SceneEntityId(1)].name, "Boss");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn prefab_document_requires_single_root() {
+        let root = temp_root("prefab-multi-root");
+        let path = root.join("assets/enemy.prefab");
+        let mut document = SceneDocument::new_scene("Enemy");
+        document
+            .scene
+            .add_entity(SceneEntityId(1), "A", None)
+            .unwrap();
+        document
+            .scene
+            .add_entity(SceneEntityId(2), "B", None)
+            .unwrap();
+        document.scene.metadata.insert(
+            DOC_KIND_META_KEY.to_owned(),
+            PREFAB_DOCUMENT_KIND.to_owned(),
+        );
+        document.path = Some(path);
+
+        let error = document.save().unwrap_err();
+        assert!(error.to_string().contains("恰好有一个根实体"));
+        let _ = fs::remove_dir_all(root);
     }
 }

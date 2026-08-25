@@ -6,6 +6,7 @@ use engine::core::{
     mesh3d::MeshRenderer,
     physics3d::{ColliderDesc3d, ColliderShape3d},
     scene::{SceneEntity, SceneEntityId},
+    sprite::SpriteComponent,
     transform3d::Transform3D,
     ui::{UiButton, UiImage, UiText},
 };
@@ -158,6 +159,9 @@ impl Default for Collider3dFields {
 #[derive(Clone, Debug, PartialEq)]
 pub struct TextFields {
     pub text: String,
+    pub space: String,
+    pub anchor_x: f32,
+    pub anchor_y: f32,
     pub x: f32,
     pub y: f32,
     pub scale: f32,
@@ -170,6 +174,9 @@ impl Default for TextFields {
     fn default() -> Self {
         Self {
             text: String::new(),
+            space: "canvas".to_owned(),
+            anchor_x: 0.0,
+            anchor_y: 0.0,
             x: 10.0,
             y: 10.0,
             scale: 1.0,
@@ -184,6 +191,9 @@ impl Default for TextFields {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ImageFields {
     pub texture: String,
+    pub space: String,
+    pub anchor_x: f32,
+    pub anchor_y: f32,
     pub x: f32,
     pub y: f32,
     pub width: f32,
@@ -197,6 +207,9 @@ impl Default for ImageFields {
     fn default() -> Self {
         Self {
             texture: String::new(),
+            space: "canvas".to_owned(),
+            anchor_x: 0.0,
+            anchor_y: 0.0,
             x: 10.0,
             y: 10.0,
             width: 64.0,
@@ -212,6 +225,9 @@ impl Default for ImageFields {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ButtonFields {
     pub label: String,
+    pub space: String,
+    pub anchor_x: f32,
+    pub anchor_y: f32,
     pub x: f32,
     pub y: f32,
     pub width: f32,
@@ -228,6 +244,9 @@ impl Default for ButtonFields {
     fn default() -> Self {
         Self {
             label: String::new(),
+            space: "canvas".to_owned(),
+            anchor_x: 0.0,
+            anchor_y: 0.0,
             x: 10.0,
             y: 10.0,
             width: 100.0,
@@ -500,7 +519,7 @@ impl InspectorState {
         validate_text(&text)?;
         let id = self.selected.ok_or(InspectorError::NothingSelected)?;
         let entity = entity_mut(document, id)?;
-        let value = encode_text(&text);
+        let value = encode_text(&text)?;
         if entity.components.get("Text") != Some(&value) {
             entity.components.insert("Text".into(), value);
             document.mark_dirty();
@@ -525,7 +544,7 @@ impl InspectorState {
         validate_image(&image)?;
         let id = self.selected.ok_or(InspectorError::NothingSelected)?;
         let entity = entity_mut(document, id)?;
-        let value = encode_image(&image);
+        let value = encode_image(&image)?;
         if entity.components.get("Image") != Some(&value) {
             entity.components.insert("Image".into(), value);
             document.mark_dirty();
@@ -550,7 +569,7 @@ impl InspectorState {
         validate_button(&button)?;
         let id = self.selected.ok_or(InspectorError::NothingSelected)?;
         let entity = entity_mut(document, id)?;
-        let value = encode_button(&button);
+        let value = encode_button(&button)?;
         if entity.components.get("Button") != Some(&value) {
             entity.components.insert("Button".into(), value);
             document.mark_dirty();
@@ -833,14 +852,16 @@ fn decode_collider3d(value: &str) -> Result<Collider3dFields, InspectorError> {
     Ok(fields)
 }
 
-fn encode_text(fields: &TextFields) -> String {
-    UiText {
+fn encode_text(fields: &TextFields) -> Result<String, InspectorError> {
+    Ok(UiText {
         text: fields.text.clone(),
         position: [fields.x, fields.y],
         scale: fields.scale,
         color: [fields.color_r, fields.color_g, fields.color_b],
+        space: parse_ui_layout_space(&fields.space).map_err(InspectorError::InvalidText)?,
+        anchor: [fields.anchor_x, fields.anchor_y],
     }
-    .to_component_str()
+    .to_component_str())
 }
 
 fn decode_text(value: &str) -> Result<TextFields, InspectorError> {
@@ -848,6 +869,9 @@ fn decode_text(value: &str) -> Result<TextFields, InspectorError> {
         .map_err(|error| InspectorError::InvalidText(error.to_string()))?;
     Ok(TextFields {
         text: ui.text,
+        space: ui.space.as_str().to_owned(),
+        anchor_x: ui.anchor[0],
+        anchor_y: ui.anchor[1],
         x: ui.position[0],
         y: ui.position[1],
         scale: ui.scale,
@@ -858,20 +882,22 @@ fn decode_text(value: &str) -> Result<TextFields, InspectorError> {
 }
 
 fn validate_text(fields: &TextFields) -> Result<(), InspectorError> {
-    let value = encode_text(fields);
+    let value = encode_text(fields)?;
     UiText::from_component_str(&value)
         .map(|_| ())
         .map_err(|error| InspectorError::InvalidText(error.to_string()))
 }
 
-fn encode_image(fields: &ImageFields) -> String {
-    UiImage {
+fn encode_image(fields: &ImageFields) -> Result<String, InspectorError> {
+    Ok(UiImage {
         texture: fields.texture.clone(),
         position: [fields.x, fields.y],
         size: [fields.width, fields.height],
         color: [fields.color_r, fields.color_g, fields.color_b],
+        space: parse_ui_layout_space(&fields.space).map_err(InspectorError::InvalidImage)?,
+        anchor: [fields.anchor_x, fields.anchor_y],
     }
-    .to_component_str()
+    .to_component_str())
 }
 
 fn decode_image(value: &str) -> Result<ImageFields, InspectorError> {
@@ -879,6 +905,9 @@ fn decode_image(value: &str) -> Result<ImageFields, InspectorError> {
         .map_err(|error| InspectorError::InvalidImage(error.to_string()))?;
     Ok(ImageFields {
         texture: ui.texture,
+        space: ui.space.as_str().to_owned(),
+        anchor_x: ui.anchor[0],
+        anchor_y: ui.anchor[1],
         x: ui.position[0],
         y: ui.position[1],
         width: ui.size[0],
@@ -890,21 +919,23 @@ fn decode_image(value: &str) -> Result<ImageFields, InspectorError> {
 }
 
 fn validate_image(fields: &ImageFields) -> Result<(), InspectorError> {
-    let value = encode_image(fields);
+    let value = encode_image(fields)?;
     UiImage::from_component_str(&value)
         .map(|_| ())
         .map_err(|error| InspectorError::InvalidImage(error.to_string()))
 }
 
-fn encode_button(fields: &ButtonFields) -> String {
-    UiButton {
+fn encode_button(fields: &ButtonFields) -> Result<String, InspectorError> {
+    Ok(UiButton {
         label: fields.label.clone(),
         position: [fields.x, fields.y],
         size: [fields.width, fields.height],
         background: [fields.bg_r, fields.bg_g, fields.bg_b],
         text_color: [fields.text_r, fields.text_g, fields.text_b],
+        space: parse_ui_layout_space(&fields.space).map_err(InspectorError::InvalidButton)?,
+        anchor: [fields.anchor_x, fields.anchor_y],
     }
-    .to_component_str()
+    .to_component_str())
 }
 
 fn decode_button(value: &str) -> Result<ButtonFields, InspectorError> {
@@ -912,6 +943,9 @@ fn decode_button(value: &str) -> Result<ButtonFields, InspectorError> {
         .map_err(|error| InspectorError::InvalidButton(error.to_string()))?;
     Ok(ButtonFields {
         label: ui.label,
+        space: ui.space.as_str().to_owned(),
+        anchor_x: ui.anchor[0],
+        anchor_y: ui.anchor[1],
         x: ui.position[0],
         y: ui.position[1],
         width: ui.size[0],
@@ -926,10 +960,18 @@ fn decode_button(value: &str) -> Result<ButtonFields, InspectorError> {
 }
 
 fn validate_button(fields: &ButtonFields) -> Result<(), InspectorError> {
-    let value = encode_button(fields);
+    let value = encode_button(fields)?;
     UiButton::from_component_str(&value)
         .map(|_| ())
         .map_err(|error| InspectorError::InvalidButton(error.to_string()))
+}
+
+fn parse_ui_layout_space(value: &str) -> Result<engine::core::ui::UiLayoutSpace, String> {
+    match value {
+        "screen" => Ok(engine::core::ui::UiLayoutSpace::Screen),
+        "canvas" => Ok(engine::core::ui::UiLayoutSpace::Canvas),
+        _ => Err(format!("invalid UI layout space: {value}")),
+    }
 }
 
 fn validate_camera3d(camera: Camera3DFields) -> Result<(), InspectorError> {
@@ -1006,19 +1048,19 @@ fn validate_mesh_renderer(reference: &str) -> Result<(), InspectorError> {
 
 fn validate_asset_reference(reference: &str) -> Result<(), InspectorError> {
     let reference = reference.trim();
-    if reference.is_empty()
-        || Path::new(reference).is_absolute()
-        || reference.split(['/', '\\']).any(|part| part == "..")
-    {
-        return Err(InspectorError::InvalidAssetReference(reference.to_owned()));
+    let component = SpriteComponent::from_component_str(reference)
+        .map_err(|error| InspectorError::InvalidAssetReference(error.to_string()))?;
+    let texture = component.texture.trim();
+    if Path::new(texture).is_absolute() || texture.split(['/', '\\']).any(|part| part == "..") {
+        return Err(InspectorError::InvalidAssetReference(texture.to_owned()));
     }
-    let extension = Path::new(reference)
+    let extension = Path::new(texture)
         .extension()
         .and_then(|value| value.to_str())
         .unwrap_or_default()
         .to_ascii_lowercase();
     if extension != "png" && extension != "jpg" && extension != "jpeg" && extension != "webp" {
-        return Err(InspectorError::InvalidAssetReference(reference.to_owned()));
+        return Err(InspectorError::InvalidAssetReference(texture.to_owned()));
     }
     Ok(())
 }

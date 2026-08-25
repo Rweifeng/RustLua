@@ -26,7 +26,7 @@ use crate::core::{
     resource_db::AssetId,
     save::{decode as decode_save, encode as encode_save},
     scene::Scene,
-    sprite::{Sprite, SpriteAsset},
+    sprite::{SpriteAsset, SpriteComponent},
     tilemap::Tilemap,
     transform::{Transform, Vec2},
     transform3d::Transform3D,
@@ -289,11 +289,17 @@ impl LuaRuntime {
     }
 
     /// 按下边沿的 Button 命中测试 → 调用全局 `on_click(name)`（若脚本定义了）。
-    pub fn process_ui_clicks(&self, input: &InputSnapshot) -> Result<(), LuaBridgeError> {
+    pub fn process_ui_clicks(
+        &self,
+        input: &InputSnapshot,
+        viewport_width: u32,
+        viewport_height: u32,
+    ) -> Result<(), LuaBridgeError> {
         if !input.mouse_just_pressed(MouseButton::Left) {
             return Ok(());
         }
         let (mx, my) = input.cursor_position();
+        let viewport = [viewport_width.max(1) as f32, viewport_height.max(1) as f32];
         let clicked: Vec<String> = {
             let state = self.state.borrow();
             state
@@ -304,10 +310,17 @@ impl LuaRuntime {
                     let Ok(Some(button)) = state.world.get::<crate::core::ui::UiButton>(id) else {
                         return None;
                     };
-                    let inside = (mx as f32) >= button.position[0]
-                        && (mx as f32) <= button.position[0] + button.size[0]
-                        && (my as f32) >= button.position[1]
-                        && (my as f32) <= button.position[1] + button.size[1];
+                    let (origin, size) = crate::core::ui::resolve_ui_rect(
+                        button.position,
+                        button.size,
+                        button.space,
+                        button.anchor,
+                        viewport,
+                    );
+                    let inside = (mx as f32) >= origin[0]
+                        && (mx as f32) <= origin[0] + size[0]
+                        && (my as f32) >= origin[1]
+                        && (my as f32) <= origin[1] + size[1];
                     if !inside {
                         return None;
                     }
@@ -366,9 +379,13 @@ impl LuaRuntime {
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
         }
         if let Some(raw) = components.get("Sprite") {
-            let (path, size) = parse_sprite_ref(raw);
-            let sprite = Sprite::new(size.unwrap_or(Vec2::new(128.0, 128.0))).map_err(|error| {
-                LuaBridgeError::Api(format!("failed to build default Sprite: {error}"))
+            let component = SpriteComponent::from_component_str(raw).map_err(|error| {
+                LuaBridgeError::Api(format!("entity {name:?} has an invalid Sprite: {error}"))
+            })?;
+            let sprite = component.sprite().map_err(|error| {
+                LuaBridgeError::Api(format!(
+                    "failed to build sprite for entity {name:?}: {error}"
+                ))
             })?;
             state
                 .world
@@ -376,7 +393,11 @@ impl LuaRuntime {
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
             state
                 .world
-                .insert(id, SpriteAsset(path))
+                .insert(id, SpriteAsset(component.texture))
+                .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
+            state
+                .world
+                .insert(id, component.sorting)
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
         }
         if let Some(value) = components.get("Tilemap") {
@@ -976,32 +997,6 @@ fn table_vec(lua: &Lua, x: f32, y: f32) -> LuaResult<Table> {
     table.set(1, x)?;
     table.set(2, y)?;
     Ok(table)
-}
-
-/// Splits a `Sprite` component value into its texture path and an optional
-/// `;size=<n>` or `;size=<w>x<h>` override. Defaults to the engine's 128px
-/// sprite when no size is given.
-fn parse_sprite_ref(value: &str) -> (String, Option<Vec2>) {
-    let (path, params) = match value.split_once(';') {
-        Some((path, params)) => (path, Some(params)),
-        None => (value, None),
-    };
-    let size = params
-        .and_then(|params| {
-            params
-                .split(';')
-                .find_map(|field| field.strip_prefix("size="))
-        })
-        .and_then(|raw| {
-            if let Some((w, h)) = raw.split_once('x') {
-                Some((w.parse().ok()?, h.parse().ok()?))
-            } else {
-                let value: f32 = raw.parse().ok()?;
-                Some((value, value))
-            }
-        })
-        .map(|(width, height)| Vec2::new(width, height));
-    (path.to_owned(), size)
 }
 
 /// 读取项目脚本源码，支持发布包的压缩/加密（明文原样返回）。
@@ -2390,6 +2385,7 @@ fn parse_mouse_button(button: &str) -> MouseButton {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::sprite::Sprite;
     use std::time::{SystemTime, UNIX_EPOCH};
     fn script(contents: &str) -> PathBuf {
         let id = SystemTime::now()
@@ -3093,7 +3089,7 @@ mod tests {
         let mut input = InputSnapshot::default();
         input.cursor_moved(50.0, 20.0);
         input.mouse_event(MouseButton::Left, true);
-        runtime.process_ui_clicks(&input).unwrap();
+        runtime.process_ui_clicks(&input, 1280, 720).unwrap();
 
         let result = runtime.call_update().unwrap();
         assert_eq!(

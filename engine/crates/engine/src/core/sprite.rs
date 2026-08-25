@@ -39,6 +39,277 @@ impl SpriteAsset {
     }
 }
 
+/// Editor/runtime-facing Sprite component payload.
+///
+/// Legacy scene files may still store `Sprite` as `<texture>` or
+/// `<texture>;size=<n>` / `<texture>;size=<w>x<h>`. New saves use the explicit
+/// keyed form so size, pivot, tint and sorting can round-trip without
+/// ambiguity.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SpriteComponent {
+    pub texture: String,
+    pub size: Vec2,
+    pub pivot: Vec2,
+    pub tint: [f32; 4],
+    pub sorting: SpriteSorting,
+}
+
+/// Stable 2D ordering metadata.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SpriteSorting {
+    pub layer: String,
+    pub order: i32,
+}
+
+impl Default for SpriteSorting {
+    fn default() -> Self {
+        Self {
+            layer: "default".to_owned(),
+            order: 0,
+        }
+    }
+}
+
+impl SpriteSorting {
+    /// Maps a symbolic layer to a stable batch order bucket.
+    #[must_use]
+    pub fn effective_layer(&self) -> i32 {
+        sorting_layer_rank(&self.layer)
+            .saturating_mul(1_000)
+            .saturating_add(self.order.clamp(-999, 999))
+    }
+}
+
+fn sorting_layer_rank(layer: &str) -> i32 {
+    match layer.trim().to_ascii_lowercase().as_str() {
+        "background" => -2,
+        "world" => -1,
+        "default" => 0,
+        "actor" => 1,
+        "foreground" => 2,
+        "ui" => 3,
+        _ => 0,
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum SpriteComponentError {
+    MissingTexture,
+    InvalidField(String),
+    InvalidSize(String),
+    InvalidPivot(String),
+    InvalidTint(String),
+    InvalidOrder(String),
+    Sprite(SpriteError),
+}
+
+impl fmt::Display for SpriteComponentError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingTexture => write!(f, "sprite component is missing texture"),
+            Self::InvalidField(field) => write!(f, "invalid sprite field: {field}"),
+            Self::InvalidSize(value) => write!(f, "invalid sprite size: {value}"),
+            Self::InvalidPivot(value) => write!(f, "invalid sprite pivot: {value}"),
+            Self::InvalidTint(value) => write!(f, "invalid sprite tint: {value}"),
+            Self::InvalidOrder(value) => write!(f, "invalid sprite order: {value}"),
+            Self::Sprite(error) => error.fmt(f),
+        }
+    }
+}
+
+impl Error for SpriteComponentError {}
+
+impl From<SpriteError> for SpriteComponentError {
+    fn from(value: SpriteError) -> Self {
+        Self::Sprite(value)
+    }
+}
+
+impl Default for SpriteComponent {
+    fn default() -> Self {
+        Self {
+            texture: String::new(),
+            size: Vec2::new(128.0, 128.0),
+            pivot: Vec2::new(0.5, 0.5),
+            tint: [1.0; 4],
+            sorting: SpriteSorting::default(),
+        }
+    }
+}
+
+impl SpriteComponent {
+    pub fn new(texture: impl Into<String>, size: Vec2) -> Result<Self, SpriteComponentError> {
+        let component = Self {
+            texture: texture.into(),
+            size,
+            ..Default::default()
+        };
+        component.validate()?;
+        Ok(component)
+    }
+
+    pub fn from_component_str(value: &str) -> Result<Self, SpriteComponentError> {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            return Err(SpriteComponentError::MissingTexture);
+        }
+        if !trimmed.contains("texture=") {
+            return parse_legacy_component(trimmed);
+        }
+        let mut component = SpriteComponent::default();
+        let mut seen_texture = false;
+        for field in trimmed.split(';') {
+            let (key, raw) = field
+                .split_once('=')
+                .ok_or_else(|| SpriteComponentError::InvalidField(field.to_owned()))?;
+            match key {
+                "texture" => {
+                    component.texture = raw.to_owned();
+                    seen_texture = true;
+                }
+                "size" => component.size = parse_size(raw)?,
+                "pivot" => component.pivot = parse_pair(raw, "pivot")?,
+                "tint" => component.tint = parse_tint(raw)?,
+                "sorting_layer" => component.sorting.layer = raw.trim().to_owned(),
+                "order" => {
+                    component.sorting.order = raw
+                        .trim()
+                        .parse()
+                        .map_err(|_| SpriteComponentError::InvalidOrder(raw.to_owned()))?
+                }
+                _ => return Err(SpriteComponentError::InvalidField(field.to_owned())),
+            }
+        }
+        if !seen_texture || component.texture.trim().is_empty() {
+            return Err(SpriteComponentError::MissingTexture);
+        }
+        component.validate()?;
+        Ok(component)
+    }
+
+    #[must_use]
+    pub fn to_component_str(&self) -> String {
+        format!(
+            "texture={};size={}x{};pivot={:.3},{:.3};tint={:.3},{:.3},{:.3},{:.3};sorting_layer={};order={}",
+            self.texture,
+            trim_float(self.size.x),
+            trim_float(self.size.y),
+            self.pivot.x,
+            self.pivot.y,
+            self.tint[0],
+            self.tint[1],
+            self.tint[2],
+            self.tint[3],
+            self.sorting.layer,
+            self.sorting.order
+        )
+    }
+
+    pub fn sprite(&self) -> Result<Sprite, SpriteComponentError> {
+        Sprite::new(self.size)?
+            .with_pivot(self.pivot)?
+            .with_tint(self.tint)
+            .map_err(Into::into)
+    }
+
+    pub fn validate(&self) -> Result<(), SpriteComponentError> {
+        if self.texture.trim().is_empty() {
+            return Err(SpriteComponentError::MissingTexture);
+        }
+        let _ = self.sprite()?;
+        Ok(())
+    }
+}
+
+fn parse_legacy_component(value: &str) -> Result<SpriteComponent, SpriteComponentError> {
+    let (texture, params) = match value.split_once(';') {
+        Some((texture, params)) => (texture, Some(params)),
+        None => (value, None),
+    };
+    let mut component = SpriteComponent::new(texture.to_owned(), Vec2::new(128.0, 128.0))?;
+    if let Some(params) = params {
+        for field in params.split(';') {
+            if let Some(raw) = field.strip_prefix("size=") {
+                component.size = parse_size(raw)?;
+            } else if !field.trim().is_empty() {
+                return Err(SpriteComponentError::InvalidField(field.to_owned()));
+            }
+        }
+    }
+    component.validate()?;
+    Ok(component)
+}
+
+fn parse_size(value: &str) -> Result<Vec2, SpriteComponentError> {
+    if let Some((w, h)) = value.split_once('x') {
+        let width = w
+            .trim()
+            .parse()
+            .map_err(|_| SpriteComponentError::InvalidSize(value.to_owned()))?;
+        let height = h
+            .trim()
+            .parse()
+            .map_err(|_| SpriteComponentError::InvalidSize(value.to_owned()))?;
+        Ok(Vec2::new(width, height))
+    } else {
+        let size = value
+            .trim()
+            .parse()
+            .map_err(|_| SpriteComponentError::InvalidSize(value.to_owned()))?;
+        Ok(Vec2::new(size, size))
+    }
+}
+
+fn parse_pair(value: &str, name: &str) -> Result<Vec2, SpriteComponentError> {
+    let Some((x, y)) = value.split_once(',') else {
+        return Err(SpriteComponentError::InvalidPivot(format!(
+            "{name}={value}"
+        )));
+    };
+    let x = x
+        .trim()
+        .parse()
+        .map_err(|_| SpriteComponentError::InvalidPivot(value.to_owned()))?;
+    let y = y
+        .trim()
+        .parse()
+        .map_err(|_| SpriteComponentError::InvalidPivot(value.to_owned()))?;
+    Ok(Vec2::new(x, y))
+}
+
+fn parse_tint(value: &str) -> Result<[f32; 4], SpriteComponentError> {
+    let parts: Vec<_> = value.split(',').collect();
+    if parts.len() != 4 {
+        return Err(SpriteComponentError::InvalidTint(value.to_owned()));
+    }
+    Ok([
+        parts[0]
+            .trim()
+            .parse()
+            .map_err(|_| SpriteComponentError::InvalidTint(value.to_owned()))?,
+        parts[1]
+            .trim()
+            .parse()
+            .map_err(|_| SpriteComponentError::InvalidTint(value.to_owned()))?,
+        parts[2]
+            .trim()
+            .parse()
+            .map_err(|_| SpriteComponentError::InvalidTint(value.to_owned()))?,
+        parts[3]
+            .trim()
+            .parse()
+            .map_err(|_| SpriteComponentError::InvalidTint(value.to_owned()))?,
+    ])
+}
+
+fn trim_float(value: f32) -> String {
+    if value.fract().abs() < 0.0001 {
+        format!("{:.0}", value)
+    } else {
+        format!("{value:.3}")
+    }
+}
+
 /// The two triangles making up a Sprite.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SpriteQuad {
@@ -285,5 +556,42 @@ mod tests {
                 .with_tint([f32::NAN; 4])
                 .is_err()
         );
+    }
+
+    #[test]
+    fn sprite_component_round_trips_structured_fields() {
+        let component = SpriteComponent {
+            texture: "assets/textures/player.png".to_owned(),
+            size: Vec2::new(48.0, 64.0),
+            pivot: Vec2::new(0.25, 0.75),
+            tint: [0.5, 0.6, 0.7, 0.8],
+            sorting: SpriteSorting {
+                layer: "actor".to_owned(),
+                order: 12,
+            },
+        };
+        let encoded = component.to_component_str();
+        let decoded = SpriteComponent::from_component_str(&encoded).unwrap();
+        assert_eq!(decoded, component);
+        assert_eq!(decoded.sorting.effective_layer(), 1012);
+    }
+
+    #[test]
+    fn sprite_component_reads_legacy_format() {
+        let decoded =
+            SpriteComponent::from_component_str("assets/textures/player.png;size=32x64").unwrap();
+        assert_eq!(decoded.texture, "assets/textures/player.png");
+        assert_eq!(decoded.size, Vec2::new(32.0, 64.0));
+        assert_eq!(decoded.pivot, Vec2::new(0.5, 0.5));
+        assert_eq!(decoded.tint, [1.0; 4]);
+        assert_eq!(decoded.sorting, SpriteSorting::default());
+    }
+
+    #[test]
+    fn sprite_component_rejects_invalid_structured_payload() {
+        assert!(SpriteComponent::from_component_str("texture=;size=32").is_err());
+        assert!(SpriteComponent::from_component_str("texture=x.png;size=0x32").is_err());
+        assert!(SpriteComponent::from_component_str("texture=x.png;pivot=2,0.5").is_err());
+        assert!(SpriteComponent::from_component_str("texture=x.png;tint=1,1,1").is_err());
     }
 }

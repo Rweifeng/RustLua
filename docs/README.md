@@ -47,6 +47,7 @@
 - `tasks/done/M11-*`：M11 编辑器可靠性收口（PlaySession 状态机/输入快照/offscreen 缓存一致性/场景提取统一/恢复与字体内存，任务记录见 [M11-编辑器可靠性收口.md](../tasks/done/M11-编辑器可靠性收口.md)）；
 - `docs/acceptance-evidence/m11/`：M11 实机证据（G01/G04 PASS，G02/G03 待负责人）；
 - `tasks/done/M12-*`：M12 资源系统闭环已归档（本次归档范围为 M12-00~M12-02：状态模型 + Importer 增量导入 + 依赖图与失效传播），任务总览见 [M12-资源系统闭环](../tasks/done/M12-资源系统闭环.md)，证据见 [docs/acceptance-evidence/m12/](acceptance-evidence/m12/)；
+- `tasks/done/M13-2D内容生产工作流.md`：M13 2D 内容生产工作流已归档（当前范围覆盖 Sprite、Tilemap、Animation、2D 排序、Prefab、UI 的最小生产闭环），证据见 [docs/acceptance-evidence/m13/](acceptance-evidence/m13/)；
 - M9 基线标签：`v0.9-3d-game`（指向 M9-05 验收提交）；
 - M10 基线标签：`v0.10-editor`（指向 M10-10 验收提交）；
 
@@ -58,4 +59,5 @@
 - 发布包：`artifacts/builds/release/game/`（约 15MB，加密开启；`game_runner.exe --pack pack`）；3D 性能基线：`docs/acceptance-evidence/m9/`；
 - 里程碑验收证据：`docs/acceptance-evidence/`（`artifacts/` 目录为可再生输出）；
 - M11 性能修复：Game 预览 3D 场景帧率 24→50fps（`cbbb09b`，`PREVIEW_FRAME_INTERVAL` 33ms→16ms）；
-- 后续里程碑：M13 2D 内容生产工作流；若继续补资源闭环深化，则推进 M12-03 资源浏览器生产化、M12-04 校验报告、M12-05 迁移恢复框架。
+- M13 已归档：编辑器当前已具备不手改 scene/prefab 文件完成基础 2D 内容生产的最小闭环；
+- 后续里程碑：M14 端到端样板项目验证；若继续补资源闭环深化，则推进 M12-03 资源浏览器生产化、M12-04 校验报告、M12-05 迁移恢复框架。

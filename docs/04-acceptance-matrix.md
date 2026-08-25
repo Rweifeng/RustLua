@@ -209,3 +209,19 @@ panic（中文 Lua + `scene.load` 组合，接线后由真实文件暴露）。
 
 **M12 归档结论：** 本次已归档 `M12-00 资源状态模型统一`、`M12-01 Importer 注册表 + 增量导入`、`M12-02 依赖图与失效传播`。
 任务总览见 `tasks/done/M12-资源系统闭环.md`，阶段证据见 `docs/acceptance-evidence/m12/m12-milestone-evidence.md`。
+
+## M13 2D 内容生产工作流（已归档 2026-08-25；按当前最小闭环范围）
+
+| ID | 功能 | 前置 | 主要验收 | 自动化证据 | 状态 | 版本 |
+|---|---|---|---|---|---|---|
+| M13-A01 | 2D 数据模型收敛 + Sprite 编辑 | M12-A03 | `SpriteComponent` 统一结构化字段；Inspector 可编辑 texture/size/pivot/tint/sorting；菜单可快速创建 Sprite；批量等间距和排序工具可用 | `cargo test -p engine sprite -- --nocapture`；`cargo test -p editor`（`distribute_targets_preserves_endpoints_and_even_spacing`、`sorted_sprite_order_updates_keep_min_order_and_follow_y`） | PASS | M13 |
+| M13-A02 | Tilemap 编辑器 | M13-A01 | Tilemap 可在 Inspector 编辑，并可在 Scene View 用 `TilePaint` 直接绘制/擦除后写回场景；保存/重开/运行一致 | `cargo test -p editor`（`tilemap_pointer_mapping_round_trips_visible_cells`、`tilemap_pointer_mapping_rejects_outside_and_rotated_maps`） | PASS | M13 |
+| M13-A03 | 2D 动画编辑器 | M13-A02 | `AnimationStateMachine` 默认状态与 Clip 可在 Inspector 编辑；运行时推进、结束与 Lua 切换一致；不需手写动画组件数据 | `cargo test -p engine animation -- --nocapture`（component roundtrip / loop / clamp / Lua switch） | PASS | M13 |
+| M13-A04 | 2D 场景工具和排序 | M13-A03 | Scene View 提供 Select/Move/Rotate/Scale/TilePaint；工具栏支持对齐、等间距、Sprite `order +/-1` 与按 Y 排序；操作可撤销 | `cargo test -p editor`（`distribute_targets_preserves_endpoints_and_even_spacing`、`sorted_sprite_order_updates_keep_min_order_and_follow_y`） | PASS | M13 |
+| M13-A05 | Prefab 与 2D 内容复用 | M13-A04 | 支持 Prefab 创建、实例化、override 展示、断链诊断、重新应用源、写回源并更新实例、打开/保存 `.prefab` | `cargo test -p editor`（Prefab rebuild / override / prefab document roundtrip / single-root guard） | PASS | M13 |
+| M13-A06 | 2D UI 生产最小闭环 | M13-A05 | Text/Image/Button 支持 `Canvas/Screen`、anchor、点击命中一致；编辑器可直接编辑 UI 布局；`editor --check` / `game --check` 通过 | `cargo test -p engine core::ui -- --nocapture`；`cargo run -q -p editor -- --check --project "e:\Codex\p2\game_test"`；`cargo run -q -p game -- --check --project "e:\Codex\p2\game_test"` | PASS | M13 |
+| M13-A07 | M13 里程碑验收 | M13-A01 至 M13-A06 | 不手改 scene/prefab 文件即可完成基础 2D 内容生产；Sprite/Tilemap/Animation/Prefab/UI 形成最小闭环；证据与任务口径一致 | `docs/acceptance-evidence/m13/m13-milestone-evidence.md`；`tasks/done/M13-2D内容生产工作流.md` | PASS | M13 |
+
+**M13 归档结论：** 本次已按当前最小闭环范围归档 `M13-00 ~ M13-06`。编辑器已具备 Sprite、Tilemap、Animation、
+2D 排序、Prefab、UI 的基础生产链路，当前可进入 `M14` 端到端样板项目验证。
+**未纳入本次归档：** 图集区域可视化选择、Tilemap 矩形/吸管/填充、动画事件标记、视图书签/快照、UI 样式资源系统。

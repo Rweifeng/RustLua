@@ -3,6 +3,7 @@
 //! 工具按钮（Select/Move/Rotate/Scale）在 Scene 视图右上角的小面板中（见 scene_view.rs）。
 
 use crate::EditorApp;
+use crate::util::{icon_button, icon_toggle};
 use crate::{AlignMode, SceneViewMode, WorkspaceTab};
 use eframe::egui;
 
@@ -12,10 +13,10 @@ impl EditorApp {
             // Play/Stop：场景与游戏运行控制。
             if self.is_playing() {
                 ui.colored_label(egui::Color32::LIGHT_GREEN, "Play");
-                if ui.button("Stop").clicked() {
+                if icon_button(ui, "■", "停止运行").clicked() {
                     self.stop();
                 }
-            } else if ui.button("Play").clicked() && self.project_loaded {
+            } else if icon_button(ui, "▶", "开始运行").clicked() && self.project_loaded {
                 self.play();
             }
             // 预览分辨率（下次 Play 生效；可自定义增删）。
@@ -45,7 +46,7 @@ impl EditorApp {
                         ui.close();
                     }
                 });
-            if ui.button("删除").clicked() {
+            if icon_button(ui, "×", "删除当前分辨率预设").clicked() {
                 let index = self
                     .preview_resolutions
                     .iter()
@@ -59,11 +60,47 @@ impl EditorApp {
                 self.preview_resolution = self.preview_resolutions[0];
             }
             ui.separator();
-            ui.selectable_value(&mut self.workspace_tab, WorkspaceTab::Scene, "Scene");
-            ui.selectable_value(&mut self.workspace_tab, WorkspaceTab::Game, "Game");
+            if icon_toggle(
+                ui,
+                self.workspace_tab == WorkspaceTab::Scene,
+                "◫",
+                "场景工作区",
+            )
+            .clicked()
+            {
+                self.workspace_tab = WorkspaceTab::Scene;
+            }
+            if icon_toggle(
+                ui,
+                self.workspace_tab == WorkspaceTab::Game,
+                "▣",
+                "游戏工作区",
+            )
+            .clicked()
+            {
+                self.workspace_tab = WorkspaceTab::Game;
+            }
             ui.separator();
-            ui.selectable_value(&mut self.scene_view_mode, SceneViewMode::View2D, "2D");
-            ui.selectable_value(&mut self.scene_view_mode, SceneViewMode::View3D, "3D");
+            if icon_toggle(
+                ui,
+                self.scene_view_mode == SceneViewMode::View2D,
+                "2D",
+                "2D 视图",
+            )
+            .clicked()
+            {
+                self.scene_view_mode = SceneViewMode::View2D;
+            }
+            if icon_toggle(
+                ui,
+                self.scene_view_mode == SceneViewMode::View3D,
+                "3D",
+                "3D 视图",
+            )
+            .clicked()
+            {
+                self.scene_view_mode = SceneViewMode::View3D;
+            }
             ui.separator();
             ui.checkbox(&mut self.snap_enabled, "吸附");
             ui.add(
@@ -72,14 +109,30 @@ impl EditorApp {
                     .speed(0.05)
                     .prefix(" "),
             );
-            if ui.button("对齐网格").clicked() {
+            if icon_button(ui, "⊞", "对齐到网格").clicked() {
                 self.align_selected(AlignMode::Grid);
             }
-            if ui.button("对齐H").clicked() {
+            if icon_button(ui, "↔", "水平对齐").clicked() {
                 self.align_selected(AlignMode::H);
             }
-            if ui.button("对齐V").clicked() {
+            if icon_button(ui, "↕", "垂直对齐").clicked() {
                 self.align_selected(AlignMode::V);
+            }
+            if icon_button(ui, "⇔", "水平等间距").clicked() {
+                self.distribute_selected(true);
+            }
+            if icon_button(ui, "⇕", "垂直等间距").clicked() {
+                self.distribute_selected(false);
+            }
+            ui.separator();
+            if icon_button(ui, "−", "Sprite 排序层级 -1").clicked() {
+                self.nudge_selected_sprite_order(-1);
+            }
+            if icon_button(ui, "＋", "Sprite 排序层级 +1").clicked() {
+                self.nudge_selected_sprite_order(1);
+            }
+            if icon_button(ui, "⇅", "按 Y 重排 Sprite 排序").clicked() {
+                self.sort_selected_sprites_by_y(true);
             }
             ui.separator();
             ui.add(egui::Slider::new(&mut self.scene_zoom, 0.5..=2.5).text("Zoom"));

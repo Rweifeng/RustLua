@@ -1,7 +1,7 @@
 //! 编辑器通用工具函数：路径清理、项目错误格式化、CJK 字体、目录选择。
 
 use editor::ProjectError;
-use eframe::egui::{self, FontData, FontDefinitions, FontFamily};
+use eframe::egui::{self, FontData, FontDefinitions, FontFamily, Response, Ui};
 use std::{
     env,
     path::{Path, PathBuf},
@@ -45,6 +45,18 @@ pub(crate) fn save_recent_projects(projects: &[String]) {
 
 pub(crate) fn format_project_error(path: &Path, error: ProjectError) -> String {
     format!("无法打开项目 {}：{}", path.display(), error)
+}
+
+/// 固定尺寸的图标按钮：以图标为主，说明放到 hover 文本里。
+pub(crate) fn icon_button(ui: &mut Ui, icon: &str, tooltip: &str) -> Response {
+    ui.add_sized([24.0, 24.0], egui::Button::new(icon))
+        .on_hover_text(tooltip)
+}
+
+/// 固定尺寸的图标切换按钮：用于工具条/面板开关。
+pub(crate) fn icon_toggle(ui: &mut Ui, selected: bool, icon: &str, tooltip: &str) -> Response {
+    ui.add_sized([24.0, 24.0], egui::Button::selectable(selected, icon))
+        .on_hover_text(tooltip)
 }
 
 #[cfg(windows)]

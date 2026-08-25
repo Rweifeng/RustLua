@@ -1,7 +1,7 @@
 //! 行3 层级面板（资源面板右侧）：场景切换/新建 + 实体树 + 项目信息。
 
 use crate::EditorApp;
-use crate::util::{display_path, strip_verbatim_prefix};
+use crate::util::{display_path, icon_button, strip_verbatim_prefix};
 use editor::CommandKind;
 use eframe::egui;
 use engine::core::{
@@ -20,7 +20,7 @@ impl EditorApp {
             .show(context, |ui| {
                 // 场景文件集成：标题 + 当前场景保存状态。
                 ui.horizontal(|ui| {
-                    ui.heading("Hierarchy");
+                    ui.heading("层级");
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if let Some(document) = self.current_scene() {
                             if document.dirty {
@@ -108,7 +108,8 @@ impl EditorApp {
         ui.horizontal(|ui| {
             ui.add_space(depth as f32 * 14.0);
             if !children.is_empty() {
-                if ui.small_button(if collapsed { ">" } else { "v" }).clicked() {
+                if icon_button(ui, if collapsed { "▸" } else { "▾" }, "展开或折叠子节点").clicked()
+                {
                     if collapsed {
                         self.scene_state.collapsed.remove(&id);
                     } else {
@@ -118,7 +119,8 @@ impl EditorApp {
             } else {
                 ui.add_space(18.0);
             }
-            if ui.small_button(if hidden { "隐" } else { "显" }).clicked() {
+            if icon_button(ui, if hidden { "◌" } else { "◉" }, "显示或隐藏实体").clicked()
+            {
                 if hidden {
                     self.scene_state.hidden.remove(&id);
                     self.persist_hierarchy_flag(id, "hidden", false);
@@ -127,7 +129,8 @@ impl EditorApp {
                     self.persist_hierarchy_flag(id, "hidden", true);
                 }
             }
-            if ui.small_button(if locked { "L" } else { "U" }).clicked() {
+            if icon_button(ui, if locked { "⊠" } else { "⊡" }, "锁定或解锁实体").clicked()
+            {
                 if locked {
                     self.scene_state.locked.remove(&id);
                     self.persist_hierarchy_flag(id, "locked", false);

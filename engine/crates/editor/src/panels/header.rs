@@ -3,7 +3,7 @@
 use crate::EditorApp;
 use crate::default_engine_path;
 use crate::publish::open_in_explorer;
-use crate::util::{choose_project_directory, display_path, strip_verbatim_prefix};
+use crate::util::{choose_project_directory, display_path, icon_toggle, strip_verbatim_prefix};
 use eframe::egui;
 use std::path::Path;
 
@@ -68,6 +68,26 @@ impl EditorApp {
                         self.add_entity(None);
                         ui.close();
                     }
+                    if ui.button("添加 Sprite").clicked() {
+                        self.add_entity_with_component("Sprite", "Sprite");
+                        ui.close();
+                    }
+                    if ui.button("添加 Tilemap").clicked() {
+                        self.add_entity_with_component("Tilemap", "Tilemap");
+                        ui.close();
+                    }
+                    if ui.button("添加 UI Text").clicked() {
+                        self.add_entity_with_component("UiText", "Text");
+                        ui.close();
+                    }
+                    if ui.button("添加 UI Image").clicked() {
+                        self.add_entity_with_component("UiImage", "Image");
+                        ui.close();
+                    }
+                    if ui.button("添加 UI Button").clicked() {
+                        self.add_entity_with_component("UiButton", "Button");
+                        ui.close();
+                    }
                     if ui.button("添加 3D 实体").clicked() {
                         self.add_3d_entity(None);
                         ui.close();
@@ -115,8 +135,15 @@ impl EditorApp {
                 }
                 // 右侧：状态 + 资源/控制台面板开关。
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.toggle_value(&mut self.show_lua_console, "控制台");
-                    ui.toggle_value(&mut self.show_resources_panel, "资源");
+                    if icon_toggle(ui, self.show_lua_console, "⌨", "显示或隐藏控制台").clicked()
+                    {
+                        self.show_lua_console = !self.show_lua_console;
+                    }
+                    if icon_toggle(ui, self.show_resources_panel, "▤", "显示或隐藏资源面板")
+                        .clicked()
+                    {
+                        self.show_resources_panel = !self.show_resources_panel;
+                    }
                     ui.separator();
                     ui.label(format!("状态：{}", self.status));
                 });
