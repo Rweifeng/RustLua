@@ -8,7 +8,7 @@
 
 use engine::core::{
     import_cache::ImportCache,
-    resource_db::{ImportStatus, ResourceDatabase},
+    resource_db::{ResourceDatabase, ResourceState},
     resource_kind::ResourceKind,
 };
 use std::{
@@ -97,12 +97,17 @@ pub fn collect_data_files(project: &Path) -> Result<Vec<PathBuf>, String> {
     Ok(paths)
 }
 
-fn status_label(status: &ImportStatus) -> &'static str {
+fn status_label(status: &ResourceState) -> &'static str {
     match status {
-        ImportStatus::Registered => "registered",
-        ImportStatus::Imported => "imported",
-        ImportStatus::Failed => "failed",
-        ImportStatus::Missing => "missing",
+        ResourceState::Discovered => "discovered",
+        ResourceState::Ready => "ready",
+        ResourceState::ImportFailed => "import_failed",
+        ResourceState::Stale => "stale",
+        ResourceState::Missing => "missing",
+        ResourceState::Orphaned => "orphaned",
+        // 瞬态状态不会落到数据库，理论上不会出现在 scan 结果中。
+        ResourceState::ImportQueued | ResourceState::Importing => "importing",
+        ResourceState::Removed => "removed",
     }
 }
 
@@ -129,7 +134,7 @@ pub fn scan(project: &Path) -> Result<Vec<ScanEntry>, String> {
             continue;
         }
         let kind_token = kind.token().to_owned();
-        match database.register(&relative, IMPORTER_VERSION) {
+        match database.register(&relative, kind, IMPORTER_VERSION) {
             Ok(id) => {
                 let record = database
                     .get(id)

@@ -1,5 +1,5 @@
 use engine::core::{
-    resource_db::{AssetId, ImportStatus, ResourceDatabase, ResourceDbError},
+    resource_db::{AssetId, ResourceDatabase, ResourceDbError, ResourceState},
     resource_kind::ResourceKind,
 };
 use std::{
@@ -14,7 +14,7 @@ use std::{
 pub struct ResourceEntry {
     pub path: PathBuf,
     pub kind: ResourceKind,
-    pub status: ImportStatus,
+    pub status: ResourceState,
     pub asset_id: Option<AssetId>,
     pub error: Option<String>,
 }
@@ -146,7 +146,7 @@ impl ResourceBrowserState {
                 self.entries.push(ResourceEntry {
                     path: relative,
                     kind,
-                    status: ImportStatus::Failed,
+                    status: ResourceState::ImportFailed,
                     asset_id: None,
                     error: Some("不支持的资源类型".to_owned()),
                 });
@@ -154,7 +154,7 @@ impl ResourceBrowserState {
             }
 
             let importer_version = format!("editor-m5-05-{}", kind.label());
-            match database.register(&relative, &importer_version) {
+            match database.register(&relative, kind, &importer_version) {
                 Ok(asset_id) => {
                     let record = database
                         .get(asset_id)
@@ -162,7 +162,7 @@ impl ResourceBrowserState {
                     self.entries.push(ResourceEntry {
                         path: relative,
                         kind,
-                        status: record.status.clone(),
+                        status: record.status,
                         asset_id: Some(asset_id),
                         error: record.error.clone(),
                     });
@@ -171,7 +171,7 @@ impl ResourceBrowserState {
                     self.entries.push(ResourceEntry {
                         path: relative,
                         kind,
-                        status: ImportStatus::Failed,
+                        status: ResourceState::ImportFailed,
                         asset_id: None,
                         error: Some(error.to_string()),
                     });
@@ -242,7 +242,7 @@ mod tests {
         browser.refresh(&root).unwrap();
         assert_eq!(browser.entries().len(), 3);
         assert_eq!(browser.entries()[0].path_string(), "assets/player.png");
-        assert_eq!(browser.entries()[0].status, ImportStatus::Registered);
+        assert_eq!(browser.entries()[0].status, ResourceState::Discovered);
         assert_eq!(
             browser
                 .entries()
@@ -275,7 +275,7 @@ mod tests {
                 .entries()
                 .iter()
                 .filter(|entry| entry.kind == ResourceKind::Audio)
-                .all(|entry| entry.status == ImportStatus::Registered),
+                .all(|entry| entry.status == ResourceState::Discovered),
             "audio files registered into the resource database"
         );
         let _ = fs::remove_dir_all(root);

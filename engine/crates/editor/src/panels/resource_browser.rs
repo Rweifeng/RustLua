@@ -237,7 +237,7 @@ mod tests {
         ResourceEntry {
             path: PathBuf::from(path),
             kind,
-            status: engine::core::resource_db::ImportStatus::Registered,
+            status: engine::core::resource_db::ResourceState::Discovered,
             asset_id: None,
             error: None,
         }

@@ -1,28 +1,26 @@
-use engine::core::resource_db::{ImportStatus, ResourceDatabase};
+use engine::core::{
+    resource_db::{ResourceDatabase, ResourceState},
+    resource_kind::ResourceKind,
+};
 
 fn main() {
     let root =
         std::env::temp_dir().join(format!("rustlua-resource-db-demo-{}", std::process::id()));
     let mut db = ResourceDatabase::open(&root).expect("open database");
     let texture = db
-        .register("assets/hero.png", "png-1")
+        .register("assets/hero.png", ResourceKind::Texture, "texture-1")
         .expect("register texture");
     let scene = db
-        .register("scenes/main.ron", "scene-1")
+        .register("scenes/main.ron", ResourceKind::Scene, "scene-1")
         .expect("register scene");
     db.set_dependencies(scene, vec![texture])
         .expect("set dependency");
-    db.set_import_result(texture, ImportStatus::Imported, ".p2/cache/hero", None)
+    db.mark_ready(texture, ".p2/cache/hero", "hero-hash")
         .expect("import texture");
     db.move_resource("assets/hero.png", "assets/player.png")
         .expect("move texture");
-    db.set_import_result(
-        scene,
-        ImportStatus::Failed,
-        ".p2/cache/main",
-        Some("missing entity component".into()),
-    )
-    .expect("record failure");
+    db.mark_failed(scene, "missing entity component")
+        .expect("record failure");
     db.save().expect("save database");
     let moved_id = db
         .find_by_path("assets/player.png")
@@ -37,6 +35,10 @@ fn main() {
         stable_id,
         db.get(scene).map(|record| &record.status),
         dependents.len()
+    );
+    assert_eq!(
+        db.get(scene).map(|record| &record.status),
+        Some(&ResourceState::ImportFailed)
     );
     let _ = std::fs::remove_dir_all(root);
 }
