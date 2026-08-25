@@ -122,6 +122,7 @@ fn status_label(status: &ResourceState) -> &'static str {
         ResourceState::Stale => "stale",
         ResourceState::Missing => "missing",
         ResourceState::Orphaned => "orphaned",
+        ResourceState::Invalid => "invalid",
         // 瞬态状态不会落到数据库，理论上不会出现在 scan 结果中。
         ResourceState::ImportQueued | ResourceState::Importing => "importing",
         ResourceState::Removed => "removed",

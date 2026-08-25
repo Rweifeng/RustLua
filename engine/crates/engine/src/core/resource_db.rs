@@ -84,6 +84,9 @@ pub enum ResourceState {
     Missing,
     /// Source moved outside the scanned roots.
     Orphaned,
+    /// Dependency graph is broken: a referenced asset is missing, failed, or
+    /// itself invalid, so re-importing this asset alone cannot fix it.
+    Invalid,
     /// Transient: queued for import in the current session.
     ImportQueued,
     /// Transient: import in progress in the current session.
@@ -104,6 +107,7 @@ impl ResourceState {
                 | Self::Stale
                 | Self::Missing
                 | Self::Orphaned
+                | Self::Invalid
         )
     }
 
@@ -115,6 +119,7 @@ impl ResourceState {
             Self::Stale => "stale",
             Self::Missing => "missing",
             Self::Orphaned => "orphaned",
+            Self::Invalid => "invalid",
             Self::ImportQueued => "import_queued",
             Self::Importing => "importing",
             Self::Removed => "removed",
@@ -129,6 +134,7 @@ impl ResourceState {
             "stale" => Ok(Self::Stale),
             "missing" => Ok(Self::Missing),
             "orphaned" => Ok(Self::Orphaned),
+            "invalid" => Ok(Self::Invalid),
             "import_queued" => Ok(Self::ImportQueued),
             "importing" => Ok(Self::Importing),
             "removed" => Ok(Self::Removed),
@@ -145,7 +151,8 @@ impl ResourceState {
             | Self::ImportFailed
             | Self::Stale
             | Self::Missing
-            | Self::Orphaned => Some(self),
+            | Self::Orphaned
+            | Self::Invalid => Some(self),
             Self::ImportQueued | Self::Importing => Some(Self::Discovered),
             Self::Removed => None,
         }
@@ -344,9 +351,13 @@ impl ResourceDatabase {
                         ResourceState::Ready
                     };
                 }
-                ResourceState::Ready | ResourceState::Stale | ResourceState::ImportFailed
+                ResourceState::Ready
+                | ResourceState::Stale
+                | ResourceState::ImportFailed
+                | ResourceState::Invalid
                     if changed =>
                 {
+                    // Invalid 的源内容变化时物理态优先：转 Stale 重导，传播会重算依赖。
                     record.status = ResourceState::Stale;
                 }
                 _ => {}
@@ -382,6 +393,23 @@ impl ResourceDatabase {
         record.dependencies = dependencies;
         Ok(())
     }
+
+    /// All assets that directly depend on `id` (linear scan; the graph is small).
+    pub fn consumers_of(&self, id: AssetId) -> Vec<AssetId> {
+        self.records
+            .values()
+            .filter(|record| record.dependencies.contains(&id))
+            .map(|record| record.id)
+            .collect()
+    }
+
+    /// Propagates dependency invalidation after a reconcile or import batch.
+    ///
+    /// The caller guarantees statuses already reflect the latest physical state
+    /// (reconcile or `run_import_batch` with `mark_ready`/`mark_failed`).
+    /// Implementation is wired to `dependency::propagate` in M12-02 commit 3;
+    /// a no-op placeholder lives here until then so the API surface is stable.
+    pub fn propagate_invalidation(&mut self) {}
 
     /// Moves/renames a source while preserving its UUID and references.
     pub fn move_resource(
@@ -426,12 +454,28 @@ impl ResourceDatabase {
     pub fn get(&self, id: AssetId) -> Option<&AssetRecord> {
         self.records.get(&id)
     }
+    /// Iterates over every record (extractor/reporting/propagation traversal).
+    pub fn iter(&self) -> impl Iterator<Item = &AssetRecord> {
+        self.records.values()
+    }
     pub fn find_by_path(
         &self,
         source: impl AsRef<Path>,
     ) -> Result<Option<&AssetRecord>, ResourceDbError> {
         let path = self.normalize(source)?;
         Ok(self.by_path.get(&path).and_then(|id| self.records.get(id)))
+    }
+    /// Case-insensitive path lookup, used as a Windows fallback when a reference's
+    /// spelling differs in case from the on-disk path.
+    pub fn find_by_path_ci(&self, source: impl AsRef<Path>) -> Option<AssetId> {
+        let normalized = self
+            .normalize(source)
+            .ok()
+            .map(|path| path.to_string_lossy().to_ascii_lowercase())?;
+        self.by_path
+            .iter()
+            .find(|(path, _)| path.to_string_lossy().to_ascii_lowercase() == normalized)
+            .map(|(_, id)| *id)
     }
     pub fn len(&self) -> usize {
         self.records.len()
@@ -969,6 +1013,107 @@ mod tests {
             ResourceDatabase::open(&root),
             Err(ResourceDbError::UnsupportedSchemaVersion(_))
         ));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn invalid_state_persists_roundtrip() {
+        let root = temp("invalid-persist");
+        let mut db = ResourceDatabase::open(&root).unwrap();
+        let id = db
+            .register("scenes/main.scene", ResourceKind::Scene, "scene-1")
+            .unwrap();
+        db.get_mut_for_test(id).status = ResourceState::Invalid;
+        db.get_mut_for_test(id).error = Some("依赖 assets/textures/player.png 缺失".to_owned());
+        db.save().unwrap();
+        let db = ResourceDatabase::open(&root).unwrap();
+        let record = db.get(id).unwrap();
+        assert_eq!(record.status, ResourceState::Invalid);
+        assert!(
+            record.error.as_deref().unwrap().contains("缺失"),
+            "Invalid 的断链文案随状态持久化"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn iter_returns_all_records() {
+        let root = temp("iter");
+        let mut db = ResourceDatabase::open(&root).unwrap();
+        let a = db
+            .register("a.png", ResourceKind::Texture, "texture-1")
+            .unwrap();
+        let b = db
+            .register("b.png", ResourceKind::Texture, "texture-1")
+            .unwrap();
+        let ids: Vec<_> = db.iter().map(|record| record.id).collect();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&a) && ids.contains(&b));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn consumers_of_reports_dependents() {
+        let root = temp("consumers");
+        let mut db = ResourceDatabase::open(&root).unwrap();
+        let tex = db
+            .register(
+                "assets/textures/player.png",
+                ResourceKind::Texture,
+                "texture-1",
+            )
+            .unwrap();
+        let scene = db
+            .register("scenes/main.scene", ResourceKind::Scene, "scene-1")
+            .unwrap();
+        db.set_dependencies(scene, vec![tex]).unwrap();
+        assert_eq!(db.consumers_of(tex), vec![scene]);
+        assert!(db.consumers_of(scene).is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn find_by_path_ci_falls_back_on_case() {
+        let root = temp("ci");
+        let mut db = ResourceDatabase::open(&root).unwrap();
+        let id = db
+            .register("assets/UI/Button.PNG", ResourceKind::Texture, "texture-1")
+            .unwrap();
+        // 精确路径命中（与 register 键一致）。
+        assert_eq!(
+            db.find_by_path("assets/UI/Button.PNG").unwrap().unwrap().id,
+            id
+        );
+        // 大小写不同：精确查找 miss，CI 兜底命中。
+        assert!(db.find_by_path("assets/ui/button.png").unwrap().is_none());
+        assert_eq!(db.find_by_path_ci("assets/ui/button.png"), Some(id));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reconcile_changed_invalid_becomes_stale() {
+        let root = temp("reconcile-invalid");
+        let mut db = ResourceDatabase::open(&root).unwrap();
+        let id = db
+            .register("scenes/main.scene", ResourceKind::Scene, "scene-1")
+            .unwrap();
+        db.reconcile(
+            &[DiskAsset {
+                path: "scenes/main.scene".into(),
+                modified: 100,
+            }],
+            &[PathBuf::from("scenes")],
+        );
+        db.get_mut_for_test(id).status = ResourceState::Invalid;
+        // 源文件 mtime 变化 → Invalid 转 Stale（物理态优先，传播会重算依赖）。
+        db.reconcile(
+            &[DiskAsset {
+                path: "scenes/main.scene".into(),
+                modified: 200,
+            }],
+            &[PathBuf::from("scenes")],
+        );
+        assert_eq!(db.get(id).unwrap().status, ResourceState::Stale);
         let _ = fs::remove_dir_all(root);
     }
 }
