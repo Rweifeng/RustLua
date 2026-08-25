@@ -12,6 +12,8 @@ pub mod audio;
 pub mod camera3d;
 /// Deferred world mutations for safe ECS system iteration.
 pub mod commands;
+/// Dependency-graph extraction, resolution, propagation, and cycle detection.
+pub mod dependency;
 /// Generational entity handles and allocation.
 pub mod entity;
 /// Typed, frame-bounded event queues.

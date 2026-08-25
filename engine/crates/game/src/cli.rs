@@ -136,23 +136,17 @@ fn extract_key(text: &str, key: &str) -> Option<String> {
 }
 
 /// 提取场景文本中以 `assets/` 开头、到 `;`/`:`/换行为止的资源引用。
+/// 共享 `engine::core::dependency` 提取器，保证运行时校验与依赖图同源。
 fn extract_asset_refs(text: &str) -> Vec<String> {
-    let chars: Vec<char> = text.chars().collect();
-    let mut refs = Vec::new();
-    let mut i = 0;
-    while i < chars.len() {
-        if i + 7 <= chars.len() && chars[i..i + 7].iter().collect::<String>() == "assets/" {
-            let mut end = i;
-            while end < chars.len() && !matches!(chars[end], ';' | ':' | '\n' | '\r') {
-                end += 1;
-            }
-            refs.push(chars[i..end].iter().collect());
-            i = end;
-        } else {
-            i += 1;
-        }
-    }
-    refs
+    use engine::core::dependency::DependencyRef;
+    use engine::core::resource_kind::ResourceKind;
+    engine::core::dependency::extract_refs(text, ResourceKind::Scene)
+        .into_iter()
+        .filter_map(|reference| match reference {
+            DependencyRef::Asset(path) => Some(path.to_string_lossy().into_owned()),
+            _ => None,
+        })
+        .collect()
 }
 
 #[cfg(test)]
