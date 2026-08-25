@@ -182,7 +182,7 @@
 非渲染瓶颈；`PREVIEW_FRAME_INTERVAL` 33ms→16ms 后实机稳定 **50fps**（GT 1030 / 60Hz，见
 `docs/acceptance-evidence/m11/m11-milestone-evidence.md`）。
 
-## M12 资源系统闭环（阶段 1：M12-00 状态模型 + M12-01 Importer 增量导入；阶段 2：M12-02 依赖图与失效传播）
+## M12 资源系统闭环（已归档 2026-08-25；本次归档范围：M12-00 ~ M12-02）
 
 | ID | 功能 | 前置 | 主要验收 | 自动化证据 | 状态 | 版本 |
 |---|---|---|---|---|---|---|
@@ -204,5 +204,8 @@ ImporterRegistry 版本，消除 importer_version 双源漂移）。
 **实机 `assetc --check-deps` PASS（2026-08-25）：** 健康 game_test 输出 `assetc_check_deps_ok`；移走
 `assets/textures/player.png` 后输出 `assetc_check_deps_found=2` 与 `scenes/arena.scene → assets/textures/player.png (缺失)`、
 `scenes/main.scene → assets/textures/player.png (缺失)` 完整链路；恢复后为空。过程修复 `fb7a312` 内 Lua char boundary
-panic（中文 Lua + `scene.load` 组合，接线后由真实文件暴露）。遗留手动项：编辑器 GUI 断链图标/错误红字视觉呈现——
-需负责人实机复核（有自动化测试覆盖，无截图/真实指针环境限制）。
+panic（中文 Lua + `scene.load` 组合，接线后由真实文件暴露）。
+**编辑器 GUI 断链图标 / 错误红字：** 实机复核 PASS（2026-08-25）。
+
+**M12 归档结论：** 本次已归档 `M12-00 资源状态模型统一`、`M12-01 Importer 注册表 + 增量导入`、`M12-02 依赖图与失效传播`。
+任务总览见 `tasks/done/M12-资源系统闭环.md`，阶段证据见 `docs/acceptance-evidence/m12/m12-milestone-evidence.md`。

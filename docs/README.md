@@ -46,7 +46,7 @@
 - `tasks/done/M10-11-*`、`M10-12-*`：`v0.10-editor` 基线之后的编辑器布局、优化与 SDF 字体增量；
 - `tasks/done/M11-*`：M11 编辑器可靠性收口（PlaySession 状态机/输入快照/offscreen 缓存一致性/场景提取统一/恢复与字体内存，任务记录见 [M11-编辑器可靠性收口.md](../tasks/done/M11-编辑器可靠性收口.md)）；
 - `docs/acceptance-evidence/m11/`：M11 实机证据（G01/G04 PASS，G02/G03 待负责人）；
-- `tasks/doing/M12-00-*`、`M12-01-*`、`M12-02-*`：M12 资源系统闭环阶段 1（状态模型 + Importer 增量导入）+ 阶段 2（依赖图与失效传播，`--check-deps` 完整链路与编辑器 GUI 断链图标均实机复核 PASS）；
+- `tasks/done/M12-*`：M12 资源系统闭环已归档（本次归档范围为 M12-00~M12-02：状态模型 + Importer 增量导入 + 依赖图与失效传播），任务总览见 [M12-资源系统闭环](../tasks/done/M12-资源系统闭环.md)，证据见 [docs/acceptance-evidence/m12/](acceptance-evidence/m12/)；
 - M9 基线标签：`v0.9-3d-game`（指向 M9-05 验收提交）；
 - M10 基线标签：`v0.10-editor`（指向 M10-10 验收提交）；
 
@@ -58,4 +58,4 @@
 - 发布包：`artifacts/builds/release/game/`（约 15MB，加密开启；`game_runner.exe --pack pack`）；3D 性能基线：`docs/acceptance-evidence/m9/`；
 - 里程碑验收证据：`docs/acceptance-evidence/`（`artifacts/` 目录为可再生输出）；
 - M11 性能修复：Game 预览 3D 场景帧率 24→50fps（`cbbb09b`，`PREVIEW_FRAME_INTERVAL` 33ms→16ms）；
-- 后续里程碑：M12 资源系统闭环（阶段 1/2 已落地：状态模型 + Importer 增量导入 + 依赖图与失效传播，见 `tasks/doing/M12-*`；阶段 3–5 含资源浏览器生产化/校验报告/迁移恢复框架）。
+- 后续里程碑：M13 2D 内容生产工作流；若继续补资源闭环深化，则推进 M12-03 资源浏览器生产化、M12-04 校验报告、M12-05 迁移恢复框架。
