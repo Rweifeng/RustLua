@@ -1,4 +1,7 @@
-use engine::core::{import_cache::ImportCache, resource_db::AssetId};
+use engine::core::{
+    import_cache::ImportCache, importer::ImporterRegistry, resource_db::AssetId,
+    resource_kind::ResourceKind,
+};
 use std::fs;
 
 fn main() {
@@ -8,17 +11,18 @@ fn main() {
     let source = root.join("scene.ron");
     fs::write(&source, b"Scene(version=1)").expect("write source");
     let id = AssetId::from_seed("scene.ron");
+    let importer = ImporterRegistry::builtin()
+        .get(ResourceKind::Scene)
+        .expect("scene importer");
     let mut cache = ImportCache::open(&root).expect("open cache");
     let first = cache
-        .import_file(id, &source, "scene-1")
+        .import_file(id, &source, importer)
         .expect("first import");
-    let hit = cache
-        .import_file(id, &source, "scene-1")
-        .expect("cache hit");
+    let hit = cache.import_file(id, &source, importer).expect("cache hit");
     fs::write(&source, b"Scene(version=2)").expect("change source");
-    let changed = cache.import_file(id, &source, "scene-1").expect("reimport");
+    let changed = cache.import_file(id, &source, importer).expect("reimport");
     cache.clear().expect("clear cache");
-    let rebuilt = cache.import_file(id, &source, "scene-1").expect("rebuild");
+    let rebuilt = cache.import_file(id, &source, importer).expect("rebuild");
     println!(
         "import_cache_demo_ok first_reused={} hit_reused={} changed_reused={} rebuilt_reused={} cache_files={}",
         first.reused,

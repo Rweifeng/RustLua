@@ -8,6 +8,7 @@
 
 use engine::core::{
     import_cache::ImportCache,
+    importer::{ImporterRegistry, run_import_batch},
     resource_db::{DiskAsset, ResourceDatabase, ResourceState},
     resource_kind::ResourceKind,
 };
@@ -15,10 +16,11 @@ use std::{
     collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
+    sync::atomic::AtomicBool,
 };
 
-/// assetc 的导入器版本；变更会触发全部资源重新导入。
-pub const IMPORTER_VERSION: &str = "assetc-m8-06";
+/// assetc 打包清单格式版本；变更会触发发布脚本重新打包。
+pub const PACKAGE_VERSION: &str = "assetc-package-1";
 
 /// 扫描时跳过的本地工作目录。
 const SKIP_DIRS: &[&str] = &[".cache", ".temp", ".git", "target"];
@@ -155,7 +157,11 @@ pub fn scan(project: &Path) -> Result<Vec<ScanEntry>, String> {
             continue;
         }
         let kind_token = kind.token().to_owned();
-        match database.register(&relative, kind, IMPORTER_VERSION) {
+        let importer_version = ImporterRegistry::builtin()
+            .get(kind)
+            .map(|importer| importer.version())
+            .unwrap_or("none");
+        match database.register(&relative, kind, importer_version) {
             Ok(id) => {
                 let record = database
                     .get(id)
@@ -189,37 +195,46 @@ pub fn scan(project: &Path) -> Result<Vec<ScanEntry>, String> {
 }
 
 /// 增量导入所有已注册资源。
+///
+/// 单坏项不中断整个批次：失败资源在结果中以 `error` 记录，其余资源照常导入。
 pub fn import(project: &Path) -> Result<Vec<ImportOutcome>, String> {
     let entries = scan(project)?;
+    let mut database = ResourceDatabase::open(project).map_err(|error| error.to_string())?;
     let mut cache = ImportCache::open(project).map_err(|error| error.to_string())?;
-    let mut outcomes = Vec::new();
-    for entry in entries {
-        let Some(id) = entry.asset_id else {
-            continue;
-        };
-        let id: engine::core::resource_db::AssetId = id
-            .parse()
-            .map_err(|error| format!("解析资源 ID 失败 {}: {error}", entry.path.display()))?;
-        let source = project.join(&entry.path);
-        match cache.import_file(id, &source, IMPORTER_VERSION) {
-            Ok(report) => outcomes.push(ImportOutcome {
-                path: entry.path,
-                reused: report.reused,
-                cache_path: Some(report.cache_path),
-                error: None,
-            }),
-            Err(error) => outcomes.push(ImportOutcome {
-                path: entry.path,
-                reused: false,
-                cache_path: None,
-                error: Some(error.to_string()),
-            }),
-        }
-    }
-    if let Some(failure) = outcomes.iter().find_map(|outcome| outcome.error.as_deref()) {
-        return Err(format!("资源导入失败: {failure}"));
-    }
-    Ok(outcomes)
+    let registry = ImporterRegistry::builtin();
+    let items: Vec<_> = entries
+        .iter()
+        .filter_map(|entry| {
+            let id = entry.asset_id.as_deref()?.parse().ok()?;
+            Some((id, project.join(&entry.path)))
+        })
+        .collect();
+    let cancel = AtomicBool::new(false);
+    let summary = run_import_batch(
+        project,
+        &mut database,
+        &mut cache,
+        registry,
+        &items,
+        &cancel,
+    );
+    Ok(summary
+        .results
+        .into_iter()
+        .map(|result| {
+            let path = result
+                .source
+                .strip_prefix(project)
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|_| result.source.clone());
+            ImportOutcome {
+                path,
+                reused: result.reused,
+                cache_path: result.cache_path,
+                error: result.error,
+            }
+        })
+        .collect())
 }
 
 /// 清空导入缓存（保留资源数据库）。
@@ -344,7 +359,7 @@ pub fn package(
     files.sort_by(|a, b| a.0.cmp(&b.0));
 
     let mut manifest = BTreeMap::new();
-    let mut lines = vec![format!("assetc_manifest=1\t{IMPORTER_VERSION}")];
+    let mut lines = vec![format!("assetc_manifest=1\t{PACKAGE_VERSION}")];
     for (path, _) in files {
         let relative = path
             .strip_prefix(out)
@@ -473,11 +488,21 @@ mod tests {
     }
 
     #[test]
-    fn import_rejects_invalid_gltf_with_non_success_result() {
+    fn import_does_not_abort_on_single_bad_asset() {
         let root = temp_project("invalid-gltf");
         fs::write(root.join("assets/bad.glb"), b"invalid glb").unwrap();
-        let error = import(&root).unwrap_err();
-        assert!(error.contains("资源导入失败") && error.contains("bad.glb"));
+        let outcomes = import(&root).unwrap();
+        let bad = outcomes
+            .iter()
+            .find(|outcome| outcome.path.ends_with("bad.glb"))
+            .expect("bad item present in outcomes");
+        assert!(bad.error.is_some(), "bad.glb records an error");
+        let good: Vec<_> = outcomes
+            .iter()
+            .filter(|outcome| !outcome.path.ends_with("bad.glb"))
+            .collect();
+        assert!(!good.is_empty(), "other assets still imported");
+        assert!(good.iter().all(|outcome| outcome.error.is_none()));
         cleanup(&root);
     }
 

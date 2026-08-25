@@ -9,7 +9,7 @@ use std::path::Path;
 
 /// Coarse-grained resource family. Kept deliberately small: format-specific
 /// handling lives in the importer, not in the kind.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum ResourceKind {
     /// Rasterized images (PNG/JPG/JPEG).
     Texture,

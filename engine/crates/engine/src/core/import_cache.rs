@@ -1,65 +1,16 @@
 //! Incremental, atomic asset import cache for M4-02.
+//!
+//! The cache stores a content fingerprint per asset UUID and reuses the cached
+//! artifact when neither content nor importer version changed. Validation and
+//! artifact production are delegated to an [`Importer`].
 
-use crate::core::{
-    gltf_asset::GltfAsset,
-    resource_db::AssetId,
-    texture::{TextureAsset, TextureColorSpace},
-};
+use crate::core::{importer::Importer, resource_db::AssetId};
 use std::{
     collections::HashMap,
     error::Error,
     fmt, fs,
     path::{Path, PathBuf},
 };
-
-/// Import formats recognized by the first importer registry.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ImportKind {
-    Png,
-    Wav,
-    Ogg,
-    Gltf,
-    Glb,
-    Lua,
-    Scene,
-    Prefab,
-}
-
-impl ImportKind {
-    pub fn from_path(path: impl AsRef<Path>) -> Result<Self, ImportCacheError> {
-        let extension = path
-            .as_ref()
-            .extension()
-            .and_then(|value| value.to_str())
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-        match extension.as_str() {
-            "png" => Ok(Self::Png),
-            "wav" => Ok(Self::Wav),
-            "ogg" => Ok(Self::Ogg),
-            "gltf" => Ok(Self::Gltf),
-            "glb" => Ok(Self::Glb),
-            "lua" => Ok(Self::Lua),
-            "scene" | "ron" | "json" => Ok(Self::Scene),
-            "prefab" => Ok(Self::Prefab),
-            _ => Err(ImportCacheError::UnsupportedExtension(
-                path.as_ref().display().to_string(),
-            )),
-        }
-    }
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Png => "png",
-            Self::Wav => "wav",
-            Self::Ogg => "ogg",
-            Self::Gltf => "gltf",
-            Self::Glb => "glb",
-            Self::Lua => "lua",
-            Self::Scene => "scene",
-            Self::Prefab => "prefab",
-        }
-    }
-}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct CacheRecord {
@@ -72,10 +23,12 @@ struct CacheRecord {
 /// Result of one incremental import attempt.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ImportReport {
+    /// Project-root-relative path of the primary cached artifact.
     pub cache_path: PathBuf,
+    /// Content fingerprint of the imported source bytes.
     pub fingerprint: String,
+    /// True when the cache hit and no new artifact was written.
     pub reused: bool,
-    pub kind: ImportKind,
 }
 
 /// Persistent cache indexed by asset UUID.
@@ -107,45 +60,62 @@ impl ImportCache {
         &mut self,
         id: AssetId,
         source: impl AsRef<Path>,
-        importer_version: &str,
+        importer: &dyn Importer,
     ) -> Result<ImportReport, ImportCacheError> {
         let source = source.as_ref();
-        let kind = ImportKind::from_path(source)?;
         let bytes = fs::read(source).map_err(|source_error| ImportCacheError::Read {
             path: source.display().to_string(),
             reason: source_error.to_string(),
         })?;
         let fingerprint = crate::core::hash::content_hash(&bytes);
+        let kind = importer.kind();
+        let importer_version = importer.version();
         if let Some(record) = self.records.get(&id)
             && record.fingerprint == fingerprint
             && record.importer_version == importer_version
-            && record.kind == kind.as_str()
+            && record.kind == kind.token()
             && self.root.join(&record.cache_path).is_file()
         {
             return Ok(ImportReport {
                 cache_path: record.cache_path.clone(),
                 fingerprint,
                 reused: true,
-                kind,
             });
         }
-        validate_source(kind, source, &bytes)?;
-        let relative_cache = PathBuf::from(crate::core::PROJECT_WORK_DIR)
-            .join("cache")
-            .join(format!("{}-{fingerprint}.bin", id));
-        let absolute_cache = self.root.join(&relative_cache);
-        if let Some(parent) = absolute_cache.parent() {
-            fs::create_dir_all(parent)?;
+        importer
+            .validate(source, &bytes)
+            .map_err(|reason| ImportCacheError::InvalidSource {
+                path: source.display().to_string(),
+                reason,
+            })?;
+        let artifacts = importer
+            .produce(&bytes, id, &fingerprint)
+            .map_err(|reason| ImportCacheError::InvalidSource {
+                path: source.display().to_string(),
+                reason,
+            })?;
+        if artifacts.is_empty() {
+            return Err(ImportCacheError::InvalidSource {
+                path: source.display().to_string(),
+                reason: "importer 未生成任何产物".to_owned(),
+            });
         }
-        let temporary = absolute_cache.with_extension("tmp");
-        fs::write(&temporary, &bytes)?;
-        fs::rename(&temporary, &absolute_cache)?;
+        let relative_cache = artifacts[0].path.clone();
+        for artifact in &artifacts {
+            let absolute_cache = self.root.join(&artifact.path);
+            if let Some(parent) = absolute_cache.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            let temporary = absolute_cache.with_extension("tmp");
+            fs::write(&temporary, &artifact.bytes)?;
+            fs::rename(&temporary, &absolute_cache)?;
+        }
         self.records.insert(
             id,
             CacheRecord {
                 fingerprint: fingerprint.clone(),
                 importer_version: importer_version.to_owned(),
-                kind: kind.as_str().to_owned(),
+                kind: kind.token().to_owned(),
                 cache_path: relative_cache.clone(),
             },
         );
@@ -154,7 +124,6 @@ impl ImportCache {
             cache_path: relative_cache,
             fingerprint,
             reused: false,
-            kind,
         })
     }
 
@@ -230,33 +199,10 @@ impl ImportCache {
     }
 }
 
-fn validate_source(kind: ImportKind, source: &Path, bytes: &[u8]) -> Result<(), ImportCacheError> {
-    if bytes.is_empty() {
-        return Err(ImportCacheError::EmptySource(source.display().to_string()));
-    }
-    if kind == ImportKind::Png {
-        TextureAsset::from_png_bytes(bytes, TextureColorSpace::Srgb).map_err(|error| {
-            ImportCacheError::InvalidSource {
-                path: source.display().to_string(),
-                reason: error.to_string(),
-            }
-        })?;
-    }
-    if matches!(kind, ImportKind::Gltf | ImportKind::Glb) {
-        GltfAsset::load(source).map_err(|error| ImportCacheError::InvalidSource {
-            path: source.display().to_string(),
-            reason: error.to_string(),
-        })?;
-    }
-    Ok(())
-}
-
 #[derive(Debug)]
 pub enum ImportCacheError {
     Io(std::io::Error),
     Read { path: String, reason: String },
-    UnsupportedExtension(String),
-    EmptySource(String),
     InvalidSource { path: String, reason: String },
     Malformed { line: usize },
 }
@@ -265,8 +211,6 @@ impl fmt::Display for ImportCacheError {
         match self {
             Self::Io(error) => write!(f, "import cache I/O failed: {error}"),
             Self::Read { path, reason } => write!(f, "cannot read source {path}: {reason}"),
-            Self::UnsupportedExtension(path) => write!(f, "unsupported asset extension: {path}"),
-            Self::EmptySource(path) => write!(f, "source is empty: {path}"),
             Self::InvalidSource { path, reason } => write!(f, "invalid source {path}: {reason}"),
             Self::Malformed { line } => write!(f, "malformed import cache line {line}"),
         }
@@ -282,7 +226,9 @@ impl From<std::io::Error> for ImportCacheError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::{importer::Importer, resource_kind::ResourceKind};
     use std::io::Write;
+
     fn root(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
             "rustlua-import-cache-{name}-{}",
@@ -295,44 +241,68 @@ mod tests {
         fs::File::create(&path).unwrap().write_all(bytes).unwrap();
         path
     }
+
+    /// Test-only importer that never rejects a source and reports a fixed version.
+    struct TestImporter {
+        version: &'static str,
+        kind: ResourceKind,
+    }
+    impl Importer for TestImporter {
+        fn version(&self) -> &'static str {
+            self.version
+        }
+        fn kind(&self) -> ResourceKind {
+            self.kind
+        }
+        fn extensions(&self) -> &'static [&'static str] {
+            &["lua", "scene", "png", "glb"]
+        }
+        fn validate(&self, _source: &Path, _bytes: &[u8]) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    fn scene_importer() -> TestImporter {
+        TestImporter {
+            version: "scene-1",
+            kind: ResourceKind::Scene,
+        }
+    }
+
     #[test]
     fn unchanged_source_reuses_cache_and_reload_keeps_hit() {
         let root = root("hit");
         let mut cache = ImportCache::open(&root).unwrap();
         let id = AssetId::from_seed("a");
         let path = source(&root, "script.lua", b"print('a')");
-        let first = cache.import_file(id, &path, "lua-1").unwrap();
+        let importer = scene_importer();
+        let first = cache.import_file(id, &path, &importer).unwrap();
         assert!(!first.reused);
-        let second = cache.import_file(id, &path, "lua-1").unwrap();
+        let second = cache.import_file(id, &path, &importer).unwrap();
         assert!(second.reused);
         let mut reloaded = ImportCache::open(&root).unwrap();
-        assert!(reloaded.import_file(id, &path, "lua-1").unwrap().reused);
+        assert!(reloaded.import_file(id, &path, &importer).unwrap().reused);
         let _ = fs::remove_dir_all(root);
     }
+
     #[test]
-    fn recognizes_scene_extension_as_import_kind() {
-        assert_eq!(
-            ImportKind::from_path("scenes/main.scene").unwrap(),
-            ImportKind::Scene
-        );
-        assert_eq!(
-            ImportKind::from_path("assets/models/hero.glb").unwrap(),
-            ImportKind::Glb
-        );
-        assert!(ImportKind::from_path("assets/unknown.xyz").is_err());
-    }
-    #[test]
-    fn content_or_version_change_reimports() {
+    fn content_or_importer_version_change_reimports() {
         let root = root("change");
         let mut cache = ImportCache::open(&root).unwrap();
         let id = AssetId::from_seed("a");
         let path = source(&root, "scene.ron", b"one");
-        assert!(!cache.import_file(id, &path, "scene-1").unwrap().reused);
-        assert!(!cache.import_file(id, &path, "scene-2").unwrap().reused);
+        let v1 = scene_importer();
+        let v2 = TestImporter {
+            version: "scene-2",
+            kind: ResourceKind::Scene,
+        };
+        assert!(!cache.import_file(id, &path, &v1).unwrap().reused);
+        assert!(!cache.import_file(id, &path, &v2).unwrap().reused);
         fs::write(&path, b"two").unwrap();
-        assert!(!cache.import_file(id, &path, "scene-2").unwrap().reused);
+        assert!(!cache.import_file(id, &path, &v2).unwrap().reused);
         let _ = fs::remove_dir_all(root);
     }
+
     #[test]
     fn failed_import_does_not_replace_previous_valid_cache() {
         let root = root("failure");
@@ -343,25 +313,30 @@ mod tests {
             "hero.png",
             include_bytes!("../../../../../game_test/assets/textures/red-1x1.png"),
         );
-        let first = cache.import_file(id, &path, "png-1").unwrap();
+        let importer = crate::core::importer::ImporterRegistry::builtin()
+            .get(ResourceKind::Texture)
+            .unwrap();
+        let first = cache.import_file(id, &path, importer).unwrap();
         fs::write(&path, b"bad").unwrap();
-        assert!(cache.import_file(id, &path, "png-1").is_err());
+        assert!(cache.import_file(id, &path, importer).is_err());
         fs::write(
             &path,
             include_bytes!("../../../../../game_test/assets/textures/red-1x1.png"),
         )
         .unwrap();
-        let hit = cache.import_file(id, &path, "png-1").unwrap();
+        let hit = cache.import_file(id, &path, importer).unwrap();
         assert!(hit.reused || hit.cache_path == first.cache_path);
         let _ = fs::remove_dir_all(root);
     }
+
     #[test]
     fn clear_removes_artifacts_and_allows_rebuild() {
         let root = root("clear");
         let mut cache = ImportCache::open(&root).unwrap();
         let id = AssetId::from_seed("a");
         let path = source(&root, "scene.json", b"{}");
-        let first = cache.import_file(id, &path, "scene-1").unwrap();
+        let importer = scene_importer();
+        let first = cache.import_file(id, &path, &importer).unwrap();
         assert!(root.join(first.cache_path).exists());
         cache.clear().unwrap();
         assert_eq!(cache.len(), 0);
@@ -371,24 +346,23 @@ mod tests {
                 .join("cache")
                 .exists()
         );
-        let rebuilt = cache.import_file(id, &path, "scene-1").unwrap();
+        let rebuilt = cache.import_file(id, &path, &importer).unwrap();
         assert!(!rebuilt.reused);
         let _ = fs::remove_dir_all(root);
     }
+
     #[test]
-    fn unsupported_and_empty_inputs_are_rejected() {
+    fn empty_sources_are_rejected_before_caching() {
         let root = root("invalid");
         let mut cache = ImportCache::open(&root).unwrap();
         let id = AssetId::from_seed("a");
-        let path = source(&root, "data.bin", b"x");
-        assert!(matches!(
-            cache.import_file(id, &path, "bin-1"),
-            Err(ImportCacheError::UnsupportedExtension(_))
-        ));
         let path = source(&root, "empty.lua", b"");
+        let importer = crate::core::importer::ImporterRegistry::builtin()
+            .get(ResourceKind::LuaScript)
+            .unwrap();
         assert!(matches!(
-            cache.import_file(id, &path, "lua-1"),
-            Err(ImportCacheError::EmptySource(_))
+            cache.import_file(id, &path, importer),
+            Err(ImportCacheError::InvalidSource { .. })
         ));
         let _ = fs::remove_dir_all(root);
     }
@@ -403,12 +377,15 @@ mod tests {
             "m8-test-triangle.glb",
             include_bytes!("../../../../../game_test/assets/models/m8-test-triangle.glb"),
         );
-        let first = cache.import_file(id, &path, "assetc-m8-02").unwrap();
+        let importer = crate::core::importer::ImporterRegistry::builtin()
+            .get(ResourceKind::Model)
+            .unwrap();
+        let first = cache.import_file(id, &path, importer).unwrap();
         assert!(!first.reused);
-        assert!(cache.import_file(id, &path, "assetc-m8-02").unwrap().reused);
+        assert!(cache.import_file(id, &path, importer).unwrap().reused);
         fs::write(&path, b"invalid glb").unwrap();
         assert!(matches!(
-            cache.import_file(id, &path, "assetc-m8-02"),
+            cache.import_file(id, &path, importer),
             Err(ImportCacheError::InvalidSource { .. })
         ));
         let _ = fs::remove_dir_all(root);

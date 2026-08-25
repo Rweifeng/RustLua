@@ -23,6 +23,8 @@ pub mod gltf_asset;
 pub mod hash;
 /// Incremental and atomic asset import cache.
 pub mod import_cache;
+/// Importer trait, builtin registry, and batch runner.
+pub mod importer;
 /// Platform-independent keyboard, mouse, and cursor snapshots.
 pub mod input;
 /// Directional light component for 3D scenes.
