@@ -14,6 +14,7 @@ fn usage() {
          \x20 assetc clean <项目目录>          清空导入缓存\n\
          \x20 assetc list <项目目录>           列出已注册资源\n\
          \x20 assetc package <项目目录> -o <输出目录>   打包发布资源目录并生成清单\n\
+         \x20 assetc --check-deps <项目目录>   检查依赖链路（列出 Invalid 断链）\n\
          \x20 assetc --check                   冒烟检查（临时项目闭环验证）\n\
          \x20 assetc --help                    显示本帮助\n\
          \n\
@@ -30,6 +31,10 @@ fn arg(args: &[String], index: usize, flag: &str) -> Result<PathBuf, String> {
 fn run(args: &[String]) -> Result<String, String> {
     match args.get(1).map(String::as_str) {
         Some("--check") => assetc::check(),
+        Some("--check-deps") => {
+            let project = arg(args, 2, "项目目录")?;
+            assetc::check_dependencies(&project).map(|links| summarize_links(&links))
+        }
         Some("scan") => {
             let project = arg(args, 2, "项目目录")?;
             assetc::scan(&project).map(|entries| summarize_scan(&entries))
@@ -109,6 +114,22 @@ fn main() {
             std::process::exit(1);
         }
     }
+}
+
+fn summarize_links(links: &[assetc::BrokenLink]) -> String {
+    if links.is_empty() {
+        return "assetc_check_deps_ok".to_owned();
+    }
+    let mut out = format!("assetc_check_deps_found={}", links.len());
+    for link in links {
+        let chain: Vec<String> = link
+            .chain
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect();
+        out.push_str(&format!("\n{} ({})", chain.join(" → "), link.reason));
+    }
+    out
 }
 
 fn summarize_scan(entries: &[assetc::ScanEntry]) -> String {

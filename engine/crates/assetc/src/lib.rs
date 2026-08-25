@@ -14,7 +14,7 @@ use engine::core::{
     resource_kind::ResourceKind,
 };
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashSet},
     fs,
     path::{Path, PathBuf},
     sync::atomic::AtomicBool,
@@ -251,6 +251,98 @@ pub fn import(project: &Path) -> Result<Vec<ImportOutcome>, String> {
             }
         })
         .collect())
+}
+
+/// 发布检查发现的断链：`consumer` 是直接消费者，`chain` 是
+/// `消费者 → … → 根断链资源` 的完整链路（含消费者自身）。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BrokenLink {
+    pub consumer: PathBuf,
+    pub chain: Vec<PathBuf>,
+    pub reason: String,
+}
+
+/// 依赖健康度检查：先注册并传播失效，再对每个 Invalid 消费者沿依赖下探到
+/// 断链根，输出完整链路（如 `scenes/main.scene → assets/textures/player.png
+/// (缺失)`）。成环时截断并标注循环依赖。健康项目返回空列表。
+pub fn check_dependencies(project: &Path) -> Result<Vec<BrokenLink>, String> {
+    ensure_project(project)?;
+    // 注册 + reconcile + 依赖重算 + 失效传播，让数据库反映最新状态。
+    scan(project)?;
+    let database = ResourceDatabase::open(project).map_err(|error| error.to_string())?;
+    let mut links = Vec::new();
+    for record in database.iter() {
+        if record.status != ResourceState::Invalid {
+            continue;
+        }
+        let Some((chain, reason)) = walk_broken_chain(&database, record.id) else {
+            continue;
+        };
+        let chain_paths = chain
+            .iter()
+            .map(|id| {
+                database
+                    .get(*id)
+                    .map(|node| node.source_path.clone())
+                    .unwrap_or_else(|| PathBuf::from(id.to_string()))
+            })
+            .collect();
+        links.push(BrokenLink {
+            consumer: record.source_path.clone(),
+            chain: chain_paths,
+            reason,
+        });
+    }
+    links.sort_by(|a, b| a.consumer.cmp(&b.consumer));
+    Ok(links)
+}
+
+/// 断链依赖在链路遍历中的权值（同传播语义：Missing/Orphaned/ImportFailed
+/// 折叠为 broken-link，与 Invalid 同级）。
+fn break_rank(status: ResourceState) -> u8 {
+    match status {
+        ResourceState::Invalid
+        | ResourceState::Missing
+        | ResourceState::Orphaned
+        | ResourceState::ImportFailed => 6,
+        _ => 0,
+    }
+}
+
+/// 沿依赖下探到断链根：只沿 Invalid 依赖继续，遇到 Missing/Orphaned/
+/// ImportFailed 即叶子；依赖健康却仍 Invalid 时保守返回自身。成环截断并
+/// 标注循环依赖，避免无限递归。
+fn walk_broken_chain(db: &ResourceDatabase, start: AssetId) -> Option<(Vec<AssetId>, String)> {
+    let mut chain = vec![start];
+    let mut current = start;
+    let mut seen = HashSet::new();
+    seen.insert(start);
+    loop {
+        let record = db.get(current)?;
+        let worst = record
+            .dependencies
+            .iter()
+            .filter_map(|dep| {
+                let dep_record = db.get(*dep)?;
+                (break_rank(dep_record.status) > 0).then_some((*dep, dep_record.status))
+            })
+            .max_by_key(|(_, status)| break_rank(*status));
+        let Some((next, next_status)) = worst else {
+            return Some((chain, "无效".to_owned()));
+        };
+        if !seen.insert(next) {
+            chain.push(next);
+            return Some((chain, "循环依赖".to_owned()));
+        }
+        chain.push(next);
+        match next_status {
+            ResourceState::Invalid => current = next,
+            ResourceState::Missing => return Some((chain, "缺失".to_owned())),
+            ResourceState::Orphaned => return Some((chain, "已失效".to_owned())),
+            ResourceState::ImportFailed => return Some((chain, "导入失败".to_owned())),
+            _ => return Some((chain, "无效".to_owned())),
+        }
+    }
 }
 
 /// 清空导入缓存（保留资源数据库）。
@@ -546,6 +638,78 @@ mod tests {
             "error 应说明依赖缺失：{:?}",
             scene.error
         );
+        cleanup(&root);
+    }
+
+    #[test]
+    fn check_deps_reports_full_chain_consumer_to_root() {
+        let root = temp_project("checkdeps-chain");
+        // 三层链路：main.scene → hero.prefab → red-1x1.png。
+        fs::create_dir_all(root.join("assets/sprites")).unwrap();
+        fs::write(
+            root.join("scenes/main.scene"),
+            "[scene]\nSprite assets/sprites/hero.prefab;size=32\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("assets/sprites/hero.prefab"),
+            "prefab_version=1\nSprite assets/textures/red-1x1.png;size=32\n",
+        )
+        .unwrap();
+        // 首次 scan 注册并建边。
+        scan(&root).unwrap();
+        // 删除根纹理 → 整个链路失效。
+        fs::remove_file(root.join("assets/textures/red-1x1.png")).unwrap();
+        let links = check_dependencies(&root).unwrap();
+        let scene_link = links
+            .iter()
+            .find(|link| link.consumer.ends_with("main.scene"))
+            .expect("scene 断链存在");
+        assert_eq!(scene_link.chain.len(), 3, "完整链路含消费者与断链根");
+        assert!(scene_link.chain[0].ends_with("main.scene"));
+        assert!(scene_link.chain[1].ends_with("hero.prefab"));
+        assert!(scene_link.chain[2].ends_with("red-1x1.png"));
+        assert_eq!(scene_link.reason, "缺失");
+        cleanup(&root);
+    }
+
+    #[test]
+    fn check_deps_truncates_on_cycle() {
+        let root = temp_project("checkdeps-cycle");
+        // a/b 两个 prefab 互相引用成环；a 依赖会缺失的纹理，依赖顺序让
+        // walk 优先沿环下探（同 rank 取最后一个），从而触发循环截断。
+        fs::write(
+            root.join("assets/a.prefab"),
+            "prefab_version=1\nSprite assets/textures/red-1x1.png;size=32\nSprite assets/b.prefab;size=32\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("assets/b.prefab"),
+            "prefab_version=1\nSprite assets/a.prefab;size=32\n",
+        )
+        .unwrap();
+        scan(&root).unwrap();
+        fs::remove_file(root.join("assets/textures/red-1x1.png")).unwrap();
+        let links = check_dependencies(&root).unwrap();
+        assert!(!links.is_empty(), "断链存在：{links:?}");
+        assert!(
+            links.iter().any(|link| link.reason == "循环依赖"),
+            "成环下探应截断并标注循环依赖：{links:?}"
+        );
+        cleanup(&root);
+    }
+
+    #[test]
+    fn check_deps_empty_when_healthy() {
+        let root = temp_project("checkdeps-ok");
+        // 场景引用已存在的纹理 → 无 Invalid。
+        fs::write(
+            root.join("scenes/main.scene"),
+            "[scene]\nSprite assets/textures/red-1x1.png;size=32\n",
+        )
+        .unwrap();
+        let links = check_dependencies(&root).unwrap();
+        assert!(links.is_empty(), "健康项目无断链：{links:?}");
         cleanup(&root);
     }
 
