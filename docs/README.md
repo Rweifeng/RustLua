@@ -2,7 +2,8 @@
 
 ## 快速入口
 
-- [使用手册](22-使用手册.md)：环境准备、构建、运行 Demo、Lua API、场景脚本和问题排查；`r`n- [工程目录功能说明](23-工程目录功能说明.md)：每个主要目录和源码文件的职责；
+- [使用手册](22-使用手册.md)：环境准备、构建、运行 Demo、Lua API、场景脚本和问题排查；
+- [工程目录功能说明](23-工程目录功能说明.md)：每个主要目录和源码文件的职责；
 - [项目章程](00-project-charter.md)：项目目标、范围和协作规则；
 - [技术决策](02-technical-decisions.md)：关键技术选型和变更记录；
 - [验收矩阵](04-acceptance-matrix.md)：任务级验收标准和证据；
@@ -43,6 +44,8 @@
 - `tasks/done/M9-*`：M9 3D 可玩垂直切片（已验收，计划见 [27-M9-3D可玩垂直切片实施计划.md](27-M9-3D可玩垂直切片实施计划.md)）;
 - `tasks/done/M10-*`：M10 编辑器强化基线与功能任务（计划见 [28-编辑器强化实施计划.md](28-编辑器强化实施计划.md)）；
 - `tasks/done/M10-11-*`、`M10-12-*`：`v0.10-editor` 基线之后的编辑器布局、优化与 SDF 字体增量；
+- `docs/acceptance-evidence/m11/`：M11 编辑器可靠性收口（PlaySession 状态机/输入快照/offscreen 缓存一致性/场景提取统一/恢复与字体内存；实机 G01/G04 PASS，G02/G03 待负责人）；
+- `tasks/doing/M12-00-*`、`M12-01-*`：M12 资源系统闭环阶段 1（资源状态模型 + Importer 增量导入，5 提交已过质量门；编辑器后台导入实机 GUI 待复核）；
 - M9 基线标签：`v0.9-3d-game`（指向 M9-05 验收提交）；
 - M10 基线标签：`v0.10-editor`（指向 M10-10 验收提交）；
 
@@ -53,4 +56,5 @@
 - `v0.10-editor` 之后的增量提交为 M10-11（面板拆分与四行布局）、M10-12（编辑器优化与 TMP 风格 SDF 字体）和 M10-13（质量门与 GUI/GPU 证据规范），任务记录见 [M10-11](../tasks/done/M10-11-编辑器面板拆分与四行布局.md)、[M10-12](../tasks/done/M10-12-编辑器优化与SDF字体.md) 和 [M10-13](../tasks/done/M10-13-质量门与编辑器实机证据.md)，证据见 [docs/acceptance-evidence/m10/](acceptance-evidence/m10/)；M10-13 的真实 GUI/GPU、DPI/resize、Play/Stop 原始产物仍需负责人归档；发布包字体路径为 `fonts/NotoSansSC-VF.ttf`。
 - 发布包：`artifacts/builds/release/p2-game/`（约 15MB，加密开启；`game_runner.exe --pack pack`）；3D 性能基线：`docs/acceptance-evidence/m9/`；
 - 里程碑验收证据：`docs/acceptance-evidence/`（`artifacts/` 目录为可再生输出）；
-- 后续里程碑：待定（编辑器已具备成熟引擎核心编辑能力，可进入游戏深化 / 2D 产品化 / 引擎架构扩展）。
+- M11 性能修复：Game 预览 3D 场景帧率 24→50fps（`cbbb09b`，`PREVIEW_FRAME_INTERVAL` 33ms→16ms）；
+- 后续里程碑：M12 资源系统闭环（阶段 1 已落地，见 `tasks/doing/M12-*`；阶段 2–5 含依赖图失效传播/资源浏览器生产化/校验报告/迁移恢复框架）。

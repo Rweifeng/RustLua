@@ -181,3 +181,15 @@
 **M11 后性能修复（提交 `cbbb09b`）：** 3D 场景 Game 预览帧率低根因为 30fps 硬节流 + vsync 对齐 → 约 24fps，
 非渲染瓶颈；`PREVIEW_FRAME_INTERVAL` 33ms→16ms 后实机稳定 **50fps**（GT 1030 / 60Hz，见
 `docs/acceptance-evidence/m11/m11-milestone-evidence.md`）。
+
+## M12 资源系统闭环（阶段 1：M12-00 状态模型 + M12-01 Importer 增量导入）
+
+| ID | 功能 | 前置 | 主要验收 | 自动化证据 | 状态 | 版本 |
+|---|---|---|---|---|---|---|
+| M12-A01 | 资源状态模型统一 | M11-A06 | `ResourceKind` 9 族统一（engine core）；`ResourceState` 6 持久化 + 3 瞬态；DB TSV v2（12 列）自动迁移 v1；register 修复版本漂移；reconcile 依据 mtime 驱动新增→Discovered/变更→Stale/删除→Missing/恢复→Ready；Windows 反斜杠路径归一化 | `resource_kind` 映射全表/大小写/Other、`ResourceState` roundtrip/瞬态拒绝、DB v2/v1 迁移/损坏重建、`reconcile_normalizes_backslash_scan_paths`、workspace 质量门 | 自动化 PASS；实机待复核 | M12-00 |
+| M12-A02 | Importer 注册表 + 增量导入 | M12-A01 | `Importer` trait + 8 内置 importer（真实校验）；`run_import_batch` 单坏项不 abort、逐项查 cancel、末尾 save；assetc import 回写 DB（`PACKAGE_VERSION`）；编辑器后台导入：refresh 产出 pending → 后台线程跑 batch → ProgressPanel 进度/取消 → 完成后重扫读取最终状态 | 各 importer 好/坏夹具、batch 计数/取消/单坏不阻断、assetc import 后 DB ready（game_test 31 项全 ready，reused=31）、`refresh_produces_pending_imports_for_discovered_files`、`failed_imports_are_not_automatically_retried_after_attempt`、workspace 质量门 | 自动化 PASS；实机 GUI 待复核 | M12-01 |
+
+**M12 阶段 1 结论：** 5 个 C 提交（`f2529a4`/`82a1212`/`9e98deb`/`6d45401`/`38aaf4b`）质量门全过，自动化侧全 PASS；
+assetc 实机验证 game_test 31 资源全部 ready。
+遗留手动项：编辑器资源面板「刷新 → 自动后台导入 → 状态/错误可见、进度窗取消」的实机 GUI 交互——
+需负责人按 `tasks/doing/M12-01-Importer增量导入.md` 指引实机复核后转 PASS。
