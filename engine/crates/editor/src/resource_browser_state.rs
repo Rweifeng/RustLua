@@ -1,4 +1,5 @@
 use engine::core::{
+    dependency::recompute_edges,
     importer::ImporterRegistry,
     resource_db::{AssetId, DiskAsset, ResourceDatabase, ResourceDbError, ResourceState},
     resource_kind::ResourceKind,
@@ -156,6 +157,9 @@ impl ResourceBrowserState {
 
         let mut database = ResourceDatabase::open(project_root)?;
         let mut disk_assets = Vec::with_capacity(found.len());
+        // 已注册到数据库的条目延迟到 reconcile+传播后再重建，确保 UI 展示的
+        // 状态反映最新数据库（依赖断链标 Invalid、文件删除标 Missing 等）。
+        let mut registered: Vec<(PathBuf, ResourceKind, AssetId)> = Vec::new();
         for (path, modified) in found {
             let relative = path
                 .strip_prefix(project_root)
@@ -183,18 +187,7 @@ impl ResourceBrowserState {
                 .map(engine::core::importer::Importer::version)
                 .unwrap_or(kind.token());
             match database.register(&relative, kind, importer_version) {
-                Ok(asset_id) => {
-                    let record = database
-                        .get(asset_id)
-                        .expect("registered asset must be present in database");
-                    self.entries.push(ResourceEntry {
-                        path: relative,
-                        kind,
-                        status: record.status,
-                        asset_id: Some(asset_id),
-                        error: record.error.clone(),
-                    });
-                }
+                Ok(asset_id) => registered.push((relative, kind, asset_id)),
                 Err(error) => {
                     self.entries.push(ResourceEntry {
                         path: relative,
@@ -216,18 +209,42 @@ impl ResourceBrowserState {
         }
         database.reconcile(&disk_assets, &scan_roots);
 
+        // 重算依赖边并传播失效：场景/预制体/脚本引用的资源被删除、导入失败
+        // 或已变更时，消费者标 Invalid/Stale；依赖恢复后撤销回可消费状态。
+        recompute_edges(&mut database, &|path| {
+            fs::read_to_string(project_root.join(path)).ok()
+        });
+        database.propagate_invalidation();
+
         if let Err(error) = database.save() {
             self.last_error = Some(error.to_string());
             return Err(error.into());
         }
+
+        // 用 reconcile+传播后的最新状态重建条目，并恢复按路径排序的展示顺序。
+        for (relative, kind, asset_id) in registered {
+            let record = database
+                .get(asset_id)
+                .expect("registered asset must be present in database");
+            self.entries.push(ResourceEntry {
+                path: relative,
+                kind,
+                status: record.status,
+                asset_id: Some(asset_id),
+                error: record.error.clone(),
+            });
+        }
+        self.entries.sort_by(|a, b| a.path.cmp(&b.path));
+
         // 产出待导入资源：未导入/变更/丢失的总是加入；导入失败的仅当尚未
-        // 尝试过（避免失败项在每次刷新后无限重试）。
+        // 尝试过（避免失败项在每次刷新后无限重试）。Invalid（依赖断链）不
+        // 加入——重导消费者自己无法修复，等依赖恢复后传播自动撤销。
         self.pending_imports = self
             .entries
             .iter()
             .filter_map(|entry| {
                 let id = entry.asset_id?;
-                if entry.kind == ResourceKind::Other {
+                if entry.kind == ResourceKind::Other || entry.status == ResourceState::Invalid {
                     return None;
                 }
                 let needs_import = matches!(
@@ -467,6 +484,96 @@ mod tests {
         let mut browser = ResourceBrowserState::new();
         assert!(browser.refresh(&root).is_err());
         assert!(browser.last_error().unwrap().contains("资源目录不存在"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn refresh_marks_scene_invalid_when_dependency_missing() {
+        let root = temp_root("invalid-dep");
+        file(&root, "assets/player.png", b"png");
+        file(
+            &root,
+            "scenes/main.scene",
+            b"[scene]\nSprite assets/player.png;size=32\n",
+        );
+        let mut browser = ResourceBrowserState::new();
+        browser.refresh(&root).unwrap();
+        // 删除被场景引用的纹理 → 刷新后场景标 Invalid（断链）。
+        fs::remove_file(root.join("assets/player.png")).unwrap();
+        browser.refresh(&root).unwrap();
+        let scene = browser
+            .entries()
+            .iter()
+            .find(|entry| entry.path_string() == "scenes/main.scene")
+            .expect("scene registered");
+        assert_eq!(scene.status, ResourceState::Invalid);
+        assert!(
+            scene.error.as_deref().unwrap_or("").contains("缺失"),
+            "error 应说明依赖缺失：{:?}",
+            scene.error
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn pending_imports_exclude_invalid() {
+        let root = temp_root("pending-invalid");
+        file(&root, "assets/player.png", b"png");
+        file(
+            &root,
+            "scenes/main.scene",
+            b"[scene]\nSprite assets/player.png;size=32\n",
+        );
+        let mut browser = ResourceBrowserState::new();
+        browser.refresh(&root).unwrap();
+        fs::remove_file(root.join("assets/player.png")).unwrap();
+        browser.refresh(&root).unwrap();
+        assert!(
+            browser
+                .pending_imports()
+                .iter()
+                .all(|(_, path)| path != &PathBuf::from("scenes/main.scene")),
+            "Invalid 断链资源不进入待导入队列"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn refresh_restores_ready_when_dependency_returns() {
+        let root = temp_root("restore");
+        file(&root, "assets/player.png", b"png");
+        file(
+            &root,
+            "scenes/main.scene",
+            b"[scene]\nSprite assets/player.png;size=32\n",
+        );
+        let mut browser = ResourceBrowserState::new();
+        browser.refresh(&root).unwrap();
+        // 导入依赖纹理 → Ready。
+        {
+            let mut db = ResourceDatabase::open(&root).unwrap();
+            let record = db.find_by_path("assets/player.png").unwrap().unwrap();
+            db.mark_ready(record.id, "cache/player.png", "h1").unwrap();
+            db.save().unwrap();
+        }
+        // 删除依赖 → 场景 Invalid。
+        fs::remove_file(root.join("assets/player.png")).unwrap();
+        browser.refresh(&root).unwrap();
+        let scene = browser
+            .entries()
+            .iter()
+            .find(|entry| entry.path_string() == "scenes/main.scene")
+            .expect("scene registered");
+        assert_eq!(scene.status, ResourceState::Invalid);
+        // 恢复依赖 → 撤销 Invalid，场景回到可消费状态（依赖重写后为 Stale）。
+        file(&root, "assets/player.png", b"png");
+        browser.refresh(&root).unwrap();
+        let scene = browser
+            .entries()
+            .iter()
+            .find(|entry| entry.path_string() == "scenes/main.scene")
+            .expect("scene registered");
+        assert_ne!(scene.status, ResourceState::Invalid);
         let _ = fs::remove_dir_all(root);
     }
 }

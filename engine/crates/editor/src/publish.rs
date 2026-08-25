@@ -405,14 +405,15 @@ fn spawn_resource_import(
                 .into_iter()
                 .map(|(id, relative)| (id, root.join(relative)))
                 .collect();
-            Ok(run_import_batch(
-                &root,
-                &mut database,
-                &mut cache,
-                registry,
-                &items,
-                &cancel,
-            ))
+            let summary =
+                run_import_batch(&root, &mut database, &mut cache, registry, &items, &cancel);
+            // 导入可能修复/恢复了依赖（如失败的纹理重新就绪）：重新传播失效，
+            // 把消费者从 Invalid/Stale 撤回到可消费状态，再写盘。
+            database.propagate_invalidation();
+            database
+                .save()
+                .map_err(|error| format!("保存资源数据库失败：{error}"))?;
+            Ok(summary)
         })();
         match result {
             Ok(summary) => {

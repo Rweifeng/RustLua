@@ -4,6 +4,7 @@ use crate::EditorApp;
 use crate::util::strip_verbatim_prefix;
 use editor::{ResourceBrowserState, ResourceEntry, ResourceKind};
 use eframe::egui;
+use engine::core::resource_db::ResourceState;
 use engine::core::texture::{TextureAsset, TextureColorSpace};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -91,6 +92,7 @@ impl EditorApp {
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_else(|| path_string.clone());
+        let marker = status_marker(entry.status);
         if matches!(
             entry.kind,
             ResourceKind::Texture | ResourceKind::Prefab | ResourceKind::Model
@@ -108,15 +110,23 @@ impl EditorApp {
                                 egui::vec2(20.0, 20.0),
                             )));
                         }
+                        if let Some((icon, color)) = marker {
+                            ui.colored_label(color, icon);
+                        }
                         ui.label(&file_name);
                     });
                 },
             );
         } else {
-            let response = ui.selectable_label(false, &file_name);
-            if response.double_clicked() && entry.kind == ResourceKind::Scene {
-                *scene_to_open = Some(entry.path.clone());
-            }
+            ui.horizontal(|ui| {
+                if let Some((icon, color)) = marker {
+                    ui.colored_label(color, icon);
+                }
+                let response = ui.selectable_label(false, &file_name);
+                if response.double_clicked() && entry.kind == ResourceKind::Scene {
+                    *scene_to_open = Some(entry.path.clone());
+                }
+            });
         }
         if let Some(error) = &entry.error {
             ui.small(egui::RichText::new(error).color(egui::Color32::RED));
@@ -160,6 +170,20 @@ impl EditorApp {
         }
         // 资源/场景文件可能新增或删除：让场景下拉下次重扫。
         self.scene_files_cache_time = None;
+    }
+}
+
+/// 资源状态图标：健康状态（Ready/Discovered）不打扰，问题状态给彩色标记，
+/// 便于一眼看出「为什么还没导入/为何是断链」。
+fn status_marker(status: ResourceState) -> Option<(&'static str, egui::Color32)> {
+    match status {
+        ResourceState::Ready | ResourceState::Discovered => None,
+        ResourceState::Stale => Some(("▲", egui::Color32::YELLOW)),
+        ResourceState::Missing | ResourceState::Orphaned => Some(("✕", egui::Color32::GRAY)),
+        ResourceState::ImportFailed => Some(("✕", egui::Color32::RED)),
+        ResourceState::Invalid => Some(("断链", egui::Color32::RED)),
+        // 瞬态状态不会出现在浏览器条目中。
+        ResourceState::ImportQueued | ResourceState::Importing | ResourceState::Removed => None,
     }
 }
 

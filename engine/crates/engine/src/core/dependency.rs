@@ -425,6 +425,10 @@ fn extract_scene_assets(text: &str) -> Vec<DependencyRef> {
     refs
 }
 
+/// `scene.load` 的 ASCII 字符序列，用于 chars 切片前缀比较（避免把字符索引
+/// 当字节索引切片）。
+const SCENE_LOAD: [char; 10] = ['s', 'c', 'e', 'n', 'e', '.', 'l', 'o', 'a', 'd'];
+
 /// Scans Lua source with a quote-aware state machine: `--` comments are skipped
 /// to end of line, and references are only read from string literals (or from
 /// `scene.load(<variable>)`, which is recorded as [`DependencyRef::Dynamic`]).
@@ -443,7 +447,9 @@ fn extract_lua_refs(text: &str) -> Vec<DependencyRef> {
             continue;
         }
         // `scene.load(<变量>)` 动态引用（字面量参数由字符串扫描处理）。
-        if text[i..].starts_with("scene.load") {
+        // 用 chars 切片比较而非 `text[i..]`（i 是字符索引，字节切片会因
+        // 中文等非 ASCII 字符错位 panic）。
+        if chars[i..].starts_with(&SCENE_LOAD) {
             if let Some(reference) = scene_load_dynamic(&chars, i)
                 && seen.insert(reference.clone())
             {

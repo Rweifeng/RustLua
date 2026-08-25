@@ -7,9 +7,10 @@
 //! 命令（见 `main.rs`）：`scan` / `import` / `clean` / `list` / `package` / `--check`。
 
 use engine::core::{
+    dependency::recompute_edges,
     import_cache::ImportCache,
     importer::{ImporterRegistry, run_import_batch},
-    resource_db::{DiskAsset, ResourceDatabase, ResourceState},
+    resource_db::{AssetId, DiskAsset, ResourceDatabase, ResourceState},
     resource_kind::ResourceKind,
 };
 use std::{
@@ -136,6 +137,9 @@ pub fn scan(project: &Path) -> Result<Vec<ScanEntry>, String> {
     let mut database = ResourceDatabase::open(project).map_err(|error| error.to_string())?;
     let mut entries = Vec::new();
     let mut disk_assets = Vec::with_capacity(scanned_files.len());
+    // 已注册记录延迟到 reconcile+传播后再重建，让 scan 输出反映最新状态
+    // （依赖断链标 invalid、文件删除标 missing）。
+    let mut registered: Vec<(PathBuf, String, AssetId)> = Vec::new();
     for (path, modified) in scanned_files {
         let relative = path
             .strip_prefix(project)
@@ -163,18 +167,7 @@ pub fn scan(project: &Path) -> Result<Vec<ScanEntry>, String> {
             .map(|importer| importer.version())
             .unwrap_or("none");
         match database.register(&relative, kind, importer_version) {
-            Ok(id) => {
-                let record = database
-                    .get(id)
-                    .expect("registered asset must be present in database");
-                entries.push(ScanEntry {
-                    path: relative,
-                    kind: kind_token,
-                    status: status_label(&record.status).to_owned(),
-                    asset_id: Some(id.to_string()),
-                    error: record.error.clone(),
-                });
-            }
+            Ok(id) => registered.push((relative, kind_token, id)),
             Err(error) => entries.push(ScanEntry {
                 path: relative,
                 kind: kind_token,
@@ -191,7 +184,26 @@ pub fn scan(project: &Path) -> Result<Vec<ScanEntry>, String> {
         }
     }
     database.reconcile(&disk_assets, &scan_roots);
+    // 重算依赖边并传播失效（场景/脚本引用的资源缺失 → 消费者标 invalid）。
+    recompute_edges(&mut database, &|path| {
+        fs::read_to_string(project.join(path)).ok()
+    });
+    database.propagate_invalidation();
     database.save().map_err(|error| error.to_string())?;
+    // 用 reconcile+传播后的最新状态重建条目，保持按路径排序。
+    for (relative, kind_token, id) in registered {
+        let record = database
+            .get(id)
+            .expect("registered asset must be present in database");
+        entries.push(ScanEntry {
+            path: relative,
+            kind: kind_token,
+            status: status_label(&record.status).to_owned(),
+            asset_id: Some(id.to_string()),
+            error: record.error.clone(),
+        });
+    }
+    entries.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(entries)
 }
 
@@ -219,6 +231,9 @@ pub fn import(project: &Path) -> Result<Vec<ImportOutcome>, String> {
         &items,
         &cancel,
     );
+    // 导入后依赖可能已就绪：重新传播失效，让消费者从 invalid 撤销回可消费状态。
+    database.propagate_invalidation();
+    database.save().map_err(|error| error.to_string())?;
     Ok(summary
         .results
         .into_iter()
@@ -504,6 +519,33 @@ mod tests {
             .collect();
         assert!(!good.is_empty(), "other assets still imported");
         assert!(good.iter().all(|outcome| outcome.error.is_none()));
+        cleanup(&root);
+    }
+
+    #[test]
+    fn scan_reports_invalid_when_dependency_missing() {
+        let root = temp_project("invalid");
+        // 场景引用 assets/textures/red-1x1.png。
+        fs::write(
+            root.join("scenes/main.scene"),
+            "[scene]\nSprite assets/textures/red-1x1.png;size=32\n",
+        )
+        .unwrap();
+        // 首次 scan：注册纹理并建立 scene→texture 依赖边。
+        scan(&root).unwrap();
+        // 删除被引用的纹理 → 再次 scan 应把消费者标 invalid（依赖缺失）。
+        fs::remove_file(root.join("assets/textures/red-1x1.png")).unwrap();
+        let entries = scan(&root).unwrap();
+        let scene = entries
+            .iter()
+            .find(|e| e.path.ends_with("main.scene"))
+            .expect("scene present in scan");
+        assert_eq!(scene.status, "invalid");
+        assert!(
+            scene.error.as_deref().unwrap_or("").contains("缺失"),
+            "error 应说明依赖缺失：{:?}",
+            scene.error
+        );
         cleanup(&root);
     }
 
