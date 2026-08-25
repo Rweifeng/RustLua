@@ -2,7 +2,7 @@
 
 ## 状态
 
-ACCEPTED（代码与自动化验证）；编辑器后台导入实机 GUI 观察待专项实机确认（资源面板刷新 → 自动后台导入 → 状态/错误可见）。
+ACCEPTED（代码/自动化/实机验证，2026-08-25）；GUI 视觉呈现与进度窗取消点击仍待负责人实机复核。
 
 ## 目标
 
@@ -64,9 +64,14 @@ git diff --check
 
 ## 验收证据
 
-- 提交：C4 `6d45401`、C5 `38aaf4b`；
+- 提交：C4 `6d45401`、C5 `38aaf4b`、`d39e6fc`（register 改用 ImporterRegistry 版本）；
 - 测试覆盖：各 importer 好/坏夹具、batch 计数/取消/单坏不阻断、`refresh_produces_pending_imports_for_discovered_files`、`staled_files_are_pending_even_after_attempt`、`failed_imports_are_not_automatically_retried_after_attempt`；
-- 实机：game_test 31 个资源全部 Ready（imported=0 reused=31 failed=0）；
+- 实机（assetc）：game_test 31 个资源全部 Ready（imported=0 reused=31 failed=0）；
+- 实机（editor GUI，2026-08-25，4 轮，详见 `docs/acceptance-evidence/m12/m12-01-resource-system-phase1.md`）：
+  - 清空 .cache 后启动：31 项全量 discovered → 后台自动导入 → 全 ready，importer_version 统一为新 registry 版本；
+  - 新增有效文件 → 自动发现导入 ready（hash 复用同内容产物）；
+  - 坏 PNG → import_failed + 完整诊断，失败无半成品缓存，不阻断其余 32 项；
+  - touch 改 mtime → reconcile 识别 stale → 重导 ready，内容未变复用原产物。
 - workspace 测试全绿（engine 262 + editor 90 + game 6 + assetc 等）。
 
 ## 风险
@@ -77,10 +82,10 @@ git diff --check
 
 ## AI 输出
 
-- 已完成：Importer trait/注册表/batch、ImportCache 重构、assetc 闭合（PACKAGE_VERSION）、编辑器后台导入（pending 驱动 + 进度面板 + 取消）；
-- 验证：质量门全过，实机 game_test 全 ready；
-- 未完成：编辑器后台导入的实机 GUI 交互、进度窗取消的实机点击（需负责人实机复核）。
+- 已完成：Importer trait/注册表/batch、ImportCache 重构、assetc 闭合（PACKAGE_VERSION）、编辑器后台导入（pending 驱动 + 进度面板 + 取消）、register 版本来源统一；
+- 验证：质量门全过，实机 game_test 全 ready，editor GUI 4 轮后台导入链路实机 PASS；
+- 未完成：资源面板状态列/进度窗的 GUI 视觉呈现、进度窗关闭取消点击（需负责人实机复核）。
 
 ## 已知限制
 
-不得将未完成内容描述为完成。实机 GUI 验收未做，状态不标 PASS；ImportFailed 自动重试边界为设计取舍，已在测试中固化。
+不得将未完成内容描述为完成。后台导入链路已实机验证（进程真实运行 + 磁盘证据），但 GUI 视觉呈现与取消点击未做，相关状态标注「实机 PASS；GUI 待负责人复核」；ImportFailed 自动重试边界为设计取舍，已在测试中固化。

@@ -8,7 +8,8 @@
 ## 总状态
 
 **代码/自动化侧：PASS（5 提交质量门全过，workspace 测试全绿）。**
-**编辑器后台导入实机 GUI 交互：PENDING（待负责人实机复核「刷新 → 自动后台导入 → 状态/错误可见、进度窗取消」）。**
+**实机后台导入链路：PASS（2026-08-25，4 轮 GUI 实测 + 磁盘证据，见下）。**
+**GUI 视觉呈现与进度窗取消点击：待负责人实机复核（无截图/真实指针环境限制）。**
 
 ## 提交清单（5 个 C）
 
@@ -65,11 +66,26 @@
 | cargo build --workspace --release | 通过 |
 | git diff --check | 通过 |
 
-## 实机待办（PENDING，需负责人）
+## 实机验证记录（2026-08-25，修复 `d39e6fc` 后）
 
-- 编辑器打开 game_test 项目 → 资源面板刷新 → 观察自动后台导入进度窗 → 状态列显示 Ready/错误；
-- 关闭进度窗触发取消（后台任务尽早停止、不写半成品缓存）；
-- 修改/新增资源文件后刷新 → 状态转 Stale/Discovered → 自动重导 → Ready。
+用 release editor（`target/release/editor.exe --project E:/Codex/p2/game_test`）实测 4 轮，
+进程真实运行（eframe 选 wgpu，GT 1030 Vulkan/Dx12 适配器可用，无崩溃），证据为
+`.cache/resources.db` / `import-cache.db` / `.cache/cache/` 磁盘状态：
+
+| 场景 | 结果 |
+|---|---|
+| 清空 .cache 后启动 | 31 项全量 discovered → 后台自动导入 → **31 项全 ready**；`importer_version` 全部为新 registry 版本（audio-1×4 / font-1×1 / model-1×3 / scene-1×5 / script-1×10 / texture-1×8） |
+| 新增有效文件（hero-extra.png） | 自动发现 → 后台导入 → **ready**（与 player.png 同内容，content_hash 一致，复用同产物） |
+| 新增坏 PNG（broken.png） | **import_failed**，error 含完整诊断（路径 + 「图像解码失败: The image format could not be determined」）；validate 失败不写盘 → **cache 无半成品产物**；不阻断其余 32 项 |
+| touch 改 mtime 后重启 | mtime 变化被 reconcile 识别（`last_modified` 更新）→ stale → 重导 → **ready**；内容未变复用原产物（产物数不变）；broken.png 重启重试再次失败保持 import_failed |
+
+实机同时暴露并修复一处遗漏：editor `refresh` 的 `register` 曾硬编码旧版本 `editor-m5-05-{kind}`，
+未按计划统一从 registry 取 importer 版本 → 已修复（提交 `d39e6fc`），实测新版版本号落库。
+
+## 待负责人实机复核（PENDING）
+
+- GUI 视觉：资源面板状态列（Ready/ImportFailed 渲染）与后台导入进度窗的实际显示；
+- 进度窗关闭 → `cancel` 置位 → 后台批次尽早停止（有自动化测试覆盖逐项查 cancel）。
 
 ## 后续阶段（不在本次）
 
