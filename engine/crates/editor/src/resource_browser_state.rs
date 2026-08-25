@@ -1,60 +1,13 @@
-use engine::core::resource_db::{AssetId, ImportStatus, ResourceDatabase, ResourceDbError};
+use engine::core::{
+    resource_db::{AssetId, ImportStatus, ResourceDatabase, ResourceDbError},
+    resource_kind::ResourceKind,
+};
 use std::{
     error::Error,
     fmt, fs,
     path::{Path, PathBuf},
     time::SystemTime,
 };
-
-/// 资源浏览器能够识别的第一批资源类型。
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ResourceKind {
-    Texture,
-    Audio,
-    LuaScript,
-    Scene,
-    Prefab,
-    Atlas,
-    Model,
-    Font,
-    Other,
-}
-
-impl ResourceKind {
-    fn from_path(path: &Path) -> Self {
-        match path
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .unwrap_or_default()
-            .to_ascii_lowercase()
-            .as_str()
-        {
-            "png" | "jpg" | "jpeg" | "webp" => Self::Texture,
-            "ogg" | "wav" | "mp3" => Self::Audio,
-            "lua" => Self::LuaScript,
-            "scene" => Self::Scene,
-            "prefab" => Self::Prefab,
-            "atlas" => Self::Atlas,
-            "glb" | "gltf" => Self::Model,
-            "ttf" | "otf" => Self::Font,
-            _ => Self::Other,
-        }
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Texture => "纹理",
-            Self::Audio => "音频",
-            Self::LuaScript => "Lua",
-            Self::Scene => "场景",
-            Self::Prefab => "预制体",
-            Self::Atlas => "图集",
-            Self::Model => "模型",
-            Self::Font => "字体",
-            Self::Other => "其他",
-        }
-    }
-}
 
 /// 一个资源浏览器条目。路径始终是相对项目根目录的正斜杠路径。
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -7,8 +7,9 @@
 //! 命令（见 `main.rs`）：`scan` / `import` / `clean` / `list` / `package` / `--check`。
 
 use engine::core::{
-    import_cache::{ImportCache, ImportKind},
+    import_cache::ImportCache,
     resource_db::{ImportStatus, ResourceDatabase},
+    resource_kind::ResourceKind,
 };
 use std::{
     collections::BTreeMap,
@@ -96,19 +97,6 @@ pub fn collect_data_files(project: &Path) -> Result<Vec<PathBuf>, String> {
     Ok(paths)
 }
 
-fn kind_label(kind: &ImportKind) -> &'static str {
-    match kind {
-        ImportKind::Png => "png",
-        ImportKind::Wav => "wav",
-        ImportKind::Ogg => "ogg",
-        ImportKind::Gltf => "gltf",
-        ImportKind::Glb => "glb",
-        ImportKind::Lua => "lua",
-        ImportKind::Scene => "scene",
-        ImportKind::Prefab => "prefab",
-    }
-}
-
 fn status_label(status: &ImportStatus) -> &'static str {
     match status {
         ImportStatus::Registered => "registered",
@@ -129,35 +117,38 @@ pub fn scan(project: &Path) -> Result<Vec<ScanEntry>, String> {
             .strip_prefix(project)
             .expect("path must be inside project root")
             .to_path_buf();
-        match ImportKind::from_path(&relative) {
-            Err(_) => entries.push(ScanEntry {
+        let kind = ResourceKind::from_path(&relative);
+        if kind == ResourceKind::Other {
+            entries.push(ScanEntry {
                 path: relative,
-                kind: "unsupported".to_owned(),
+                kind: kind.token().to_owned(),
                 status: "unsupported".to_owned(),
                 asset_id: None,
                 error: Some("不支持的资源类型".to_owned()),
-            }),
-            Ok(kind) => match database.register(&relative, IMPORTER_VERSION) {
-                Ok(id) => {
-                    let record = database
-                        .get(id)
-                        .expect("registered asset must be present in database");
-                    entries.push(ScanEntry {
-                        path: relative,
-                        kind: kind_label(&kind).to_owned(),
-                        status: status_label(&record.status).to_owned(),
-                        asset_id: Some(id.to_string()),
-                        error: record.error.clone(),
-                    });
-                }
-                Err(error) => entries.push(ScanEntry {
+            });
+            continue;
+        }
+        let kind_token = kind.token().to_owned();
+        match database.register(&relative, IMPORTER_VERSION) {
+            Ok(id) => {
+                let record = database
+                    .get(id)
+                    .expect("registered asset must be present in database");
+                entries.push(ScanEntry {
                     path: relative,
-                    kind: kind_label(&kind).to_owned(),
-                    status: "failed".to_owned(),
-                    asset_id: None,
-                    error: Some(error.to_string()),
-                }),
-            },
+                    kind: kind_token,
+                    status: status_label(&record.status).to_owned(),
+                    asset_id: Some(id.to_string()),
+                    error: record.error.clone(),
+                });
+            }
+            Err(error) => entries.push(ScanEntry {
+                path: relative,
+                kind: kind_token,
+                status: "failed".to_owned(),
+                asset_id: None,
+                error: Some(error.to_string()),
+            }),
         }
     }
     database.save().map_err(|error| error.to_string())?;

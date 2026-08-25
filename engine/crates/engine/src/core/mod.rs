@@ -46,6 +46,8 @@ pub mod physics3d;
 pub mod prefab;
 /// Persistent project asset identities, import states, dependencies, and cache metadata.
 pub mod resource_db;
+/// Unified coarse-grained resource families shared by editor, assetc, and engine.
+pub mod resource_kind;
 /// Versioned save-data serialization with corrupt/version rejection.
 pub mod save;
 /// Versioned scene serialization, validation, and migration boundary.

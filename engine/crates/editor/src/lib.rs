@@ -1,8 +1,8 @@
 pub mod resource_browser_state;
 
-pub use resource_browser_state::{
-    ResourceBrowserError, ResourceBrowserState, ResourceEntry, ResourceKind,
-};
+pub use resource_browser_state::{ResourceBrowserError, ResourceBrowserState, ResourceEntry};
+
+pub use engine::core::resource_kind::ResourceKind;
 
 pub mod inspector_state;
 
