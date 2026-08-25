@@ -8,7 +8,7 @@
 
 **代码/自动化侧：PASS（5 提交质量门全过，workspace 测试全绿）。**
 **实机 `assetc --check-deps`：PASS（2026-08-25，game_test 断链完整链路输出，见下）。**
-**编辑器 GUI 断链图标/错误红字视觉呈现：待负责人实机复核（自动化测试已覆盖，无截图/真实指针环境限制）。**
+**编辑器 GUI 断链图标/错误红字视觉呈现：实机复核 PASS（2026-08-25，负责人确认）。**
 
 ## 提交清单（5 个 C）
 
@@ -56,9 +56,9 @@ debug assetc 二进制（`cargo run -q -p assetc`）实测，恢复后项目完�
 | cargo test --workspace --all-features | 通过（engine 288 + game 6 + assetc/editor 全绿） |
 | git diff --check | 通过 |
 
-## 待负责人实机复核（PENDING）
+## 实机复核记录（PASS，2026-08-25）
 
-- 编辑器 GUI：资源面板断链图标（Invalid 红「断链」）与错误红字的实际视觉呈现；删除/恢复依赖后刷新 → Invalid/Ready 切换的实机确认。
+- 编辑器 GUI：资源面板断链图标（Invalid 红「断链」）与错误红字的实际视觉呈现；删除/恢复依赖后刷新 → Invalid/Ready 切换——负责人实机确认通过。
 
 ## 后续阶段（不在本次）
 
