@@ -19,6 +19,8 @@ pub mod events;
 pub mod font;
 /// CPU-side glTF/GLB mesh and scene asset importer.
 pub mod gltf_asset;
+/// Content fingerprinting shared by the import cache and resource database.
+pub mod hash;
 /// Incremental and atomic asset import cache.
 pub mod import_cache;
 /// Platform-independent keyboard, mouse, and cursor snapshots.

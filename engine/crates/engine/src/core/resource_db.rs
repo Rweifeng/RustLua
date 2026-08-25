@@ -152,6 +152,14 @@ impl ResourceState {
     }
 }
 
+/// One file discovered during a scan, with the mtime needed for change detection.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DiskAsset {
+    pub path: PathBuf,
+    /// Source file mtime in unix nanoseconds.
+    pub modified: u64,
+}
+
 /// One source asset and the metadata needed by an importer/editor.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AssetRecord {
@@ -298,6 +306,64 @@ impl ResourceDatabase {
         record.error = Some(error.into());
         record.last_error_at = unix_seconds();
         Ok(())
+    }
+
+    /// Reconciles recorded assets against a fresh scan. New paths are handled by
+    /// `register`; this transitions existing records based on disk state:
+    /// changed sources become `Stale`, deleted files `Missing`, and files that
+    /// moved outside the scanned roots `Orphaned`. Restored files go back to
+    /// `Ready` (or `Discovered` if they never imported successfully).
+    pub fn reconcile(&mut self, scan: &[DiskAsset], scan_roots: &[PathBuf]) {
+        let mut scanned = HashMap::with_capacity(scan.len());
+        for asset in scan {
+            scanned.insert(asset.path.clone(), asset.modified);
+        }
+        let roots: Vec<PathBuf> = scan_roots
+            .iter()
+            .map(|root| PathBuf::from(root.to_string_lossy().replace('\\', "/")))
+            .collect();
+        for asset in scan {
+            let Some(&id) = self.by_path.get(&asset.path) else {
+                continue;
+            };
+            let record = self
+                .records
+                .get_mut(&id)
+                .expect("path index and records stay in sync");
+            let changed = record.last_modified != 0 && record.last_modified != asset.modified;
+            match record.status {
+                ResourceState::Missing | ResourceState::Orphaned => {
+                    record.status = if changed {
+                        ResourceState::Stale
+                    } else if record.content_hash.is_empty() {
+                        ResourceState::Discovered
+                    } else {
+                        ResourceState::Ready
+                    };
+                }
+                ResourceState::Ready | ResourceState::Stale | ResourceState::ImportFailed
+                    if changed =>
+                {
+                    record.status = ResourceState::Stale;
+                }
+                _ => {}
+            }
+            record.last_modified = asset.modified;
+        }
+        for record in self.records.values_mut() {
+            if scanned.contains_key(&record.source_path) || record.status == ResourceState::Missing
+            {
+                continue;
+            }
+            let inside_root = roots
+                .iter()
+                .any(|root| record.source_path.starts_with(root));
+            record.status = if inside_root {
+                ResourceState::Missing
+            } else {
+                ResourceState::Orphaned
+            };
+        }
     }
 
     /// Replaces dependency edges for an asset.
@@ -787,6 +853,84 @@ mod tests {
             .filter_map(|entry| entry.ok())
             .any(|entry| entry.file_name().to_string_lossy().contains("corrupt-"));
         assert!(quarantine, "corrupt database is quarantined");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reconcile_tracks_add_change_delete_and_restore() {
+        let root = temp("reconcile");
+        let mut db = ResourceDatabase::open(&root).unwrap();
+        let id = db
+            .register("assets/hero.png", ResourceKind::Texture, "texture-1")
+            .unwrap();
+        db.reconcile(
+            &[DiskAsset {
+                path: "assets/hero.png".into(),
+                modified: 100,
+            }],
+            &[PathBuf::from("assets")],
+        );
+        assert_eq!(db.get(id).unwrap().status, ResourceState::Discovered);
+        assert_eq!(db.get(id).unwrap().last_modified, 100);
+        db.mark_ready(id, ".cache/cache/hero", "h1").unwrap();
+        // 无变化扫描：保持 Ready。
+        db.reconcile(
+            &[DiskAsset {
+                path: "assets/hero.png".into(),
+                modified: 100,
+            }],
+            &[PathBuf::from("assets")],
+        );
+        assert_eq!(db.get(id).unwrap().status, ResourceState::Ready);
+        // 文件修改：Stale。
+        db.reconcile(
+            &[DiskAsset {
+                path: "assets/hero.png".into(),
+                modified: 200,
+            }],
+            &[PathBuf::from("assets")],
+        );
+        assert_eq!(db.get(id).unwrap().status, ResourceState::Stale);
+        // 文件删除：Missing。
+        db.reconcile(&[], &[PathBuf::from("assets")]);
+        assert_eq!(db.get(id).unwrap().status, ResourceState::Missing);
+        // 文件恢复（mtime 与删除前一致）：Ready。
+        db.reconcile(
+            &[DiskAsset {
+                path: "assets/hero.png".into(),
+                modified: 200,
+            }],
+            &[PathBuf::from("assets")],
+        );
+        assert_eq!(db.get(id).unwrap().status, ResourceState::Ready);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reconcile_marks_out_of_scope_as_orphaned() {
+        let root = temp("orphan");
+        let mut db = ResourceDatabase::open(&root).unwrap();
+        let id = db
+            .register("assets/hero.png", ResourceKind::Texture, "texture-1")
+            .unwrap();
+        // 扫描只覆盖 scenes；assets/hero.png 不再出现在任何扫描根下 → Orphaned。
+        db.reconcile(
+            &[DiskAsset {
+                path: "scenes/main.scene".into(),
+                modified: 5,
+            }],
+            &[PathBuf::from("scenes")],
+        );
+        assert_eq!(db.get(id).unwrap().status, ResourceState::Orphaned);
+        // 移回扫描根：恢复为 Discovered（从未成功导入过）。
+        db.reconcile(
+            &[DiskAsset {
+                path: "assets/hero.png".into(),
+                modified: 9,
+            }],
+            &[PathBuf::from("assets"), PathBuf::from("scenes")],
+        );
+        assert_eq!(db.get(id).unwrap().status, ResourceState::Discovered);
         let _ = fs::remove_dir_all(root);
     }
 

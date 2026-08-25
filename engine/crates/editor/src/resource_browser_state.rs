@@ -1,12 +1,12 @@
 use engine::core::{
-    resource_db::{AssetId, ResourceDatabase, ResourceDbError, ResourceState},
+    resource_db::{AssetId, DiskAsset, ResourceDatabase, ResourceDbError, ResourceState},
     resource_kind::ResourceKind,
 };
 use std::{
     error::Error,
     fmt, fs,
     path::{Path, PathBuf},
-    time::SystemTime,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 /// 一个资源浏览器条目。路径始终是相对项目根目录的正斜杠路径。
@@ -115,32 +115,37 @@ impl ResourceBrowserState {
             return Err(error);
         }
 
-        let mut paths = Vec::new();
-        collect_files(&assets_root, &mut paths).inspect_err(|error| {
+        let mut found = Vec::new();
+        collect_files(&assets_root, &mut found).inspect_err(|error| {
             self.last_error = Some(error.to_string());
         })?;
         // 场景文件目录（scenes/）。
         let scenes_root = project_root.join("scenes");
         if scenes_root.is_dir() {
-            collect_files(&scenes_root, &mut paths).inspect_err(|error| {
+            collect_files(&scenes_root, &mut found).inspect_err(|error| {
                 self.last_error = Some(error.to_string());
             })?;
         }
         // Lua 脚本目录（scripts/）：让脚本也出现在资源浏览器中。
         let scripts_root = project_root.join("scripts");
         if scripts_root.is_dir() {
-            collect_files(&scripts_root, &mut paths).inspect_err(|error| {
+            collect_files(&scripts_root, &mut found).inspect_err(|error| {
                 self.last_error = Some(error.to_string());
             })?;
         }
-        paths.sort();
+        found.sort_by(|a, b| a.0.cmp(&b.0));
 
         let mut database = ResourceDatabase::open(project_root)?;
-        for path in paths {
+        let mut disk_assets = Vec::with_capacity(found.len());
+        for (path, modified) in found {
             let relative = path
                 .strip_prefix(project_root)
                 .expect("asset path must be inside project root")
                 .to_path_buf();
+            disk_assets.push(DiskAsset {
+                path: relative.clone(),
+                modified,
+            });
             let kind = ResourceKind::from_path(&path);
             if kind == ResourceKind::Other {
                 self.entries.push(ResourceEntry {
@@ -179,6 +184,15 @@ impl ResourceBrowserState {
             }
         }
 
+        // 用本次扫描结果协调状态（变更/删除/移出扫描根）。
+        let mut scan_roots = Vec::new();
+        for dir in ["assets", "scenes", "scripts"] {
+            if project_root.join(dir).is_dir() {
+                scan_roots.push(PathBuf::from(dir));
+            }
+        }
+        database.reconcile(&disk_assets, &scan_roots);
+
         if let Err(error) = database.save() {
             self.last_error = Some(error.to_string());
             return Err(error.into());
@@ -188,7 +202,10 @@ impl ResourceBrowserState {
     }
 }
 
-fn collect_files(directory: &Path, output: &mut Vec<PathBuf>) -> Result<(), ResourceBrowserError> {
+fn collect_files(
+    directory: &Path,
+    output: &mut Vec<(PathBuf, u64)>,
+) -> Result<(), ResourceBrowserError> {
     let mut children = fs::read_dir(directory)
         .map_err(|error| ResourceBrowserError::Io {
             path: directory.to_path_buf(),
@@ -211,10 +228,24 @@ fn collect_files(directory: &Path, output: &mut Vec<PathBuf>) -> Result<(), Reso
         if file_type.is_dir() {
             collect_files(&path, output)?;
         } else if file_type.is_file() {
-            output.push(path);
+            let modified = modified_nanos(&path)?;
+            output.push((path, modified));
         }
     }
     Ok(())
+}
+
+fn modified_nanos(path: &Path) -> Result<u64, ResourceBrowserError> {
+    let modified = fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .map_err(|error| ResourceBrowserError::Io {
+            path: path.to_path_buf(),
+            message: error.to_string(),
+        })?;
+    Ok(modified
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos() as u64)
+        .unwrap_or(0))
 }
 
 #[cfg(test)]

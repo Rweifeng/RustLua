@@ -115,7 +115,7 @@ impl ImportCache {
             path: source.display().to_string(),
             reason: source_error.to_string(),
         })?;
-        let fingerprint = fingerprint(&bytes);
+        let fingerprint = crate::core::hash::content_hash(&bytes);
         if let Some(record) = self.records.get(&id)
             && record.fingerprint == fingerprint
             && record.importer_version == importer_version
@@ -249,18 +249,6 @@ fn validate_source(kind: ImportKind, source: &Path, bytes: &[u8]) -> Result<(), 
         })?;
     }
     Ok(())
-}
-
-fn fingerprint(bytes: &[u8]) -> String {
-    let mut a: u64 = 0xcbf29ce484222325;
-    let mut b: u64 = 0x9e3779b185ebca87;
-    for (i, byte) in bytes.iter().enumerate() {
-        a = (a ^ u64::from(*byte)).wrapping_mul(0x100000001b3);
-        b = (b ^ (u64::from(*byte) + i as u64))
-            .rotate_left(7)
-            .wrapping_mul(0x9e3779b185ebca87);
-    }
-    format!("{a:016x}{b:016x}")
 }
 
 #[derive(Debug)]

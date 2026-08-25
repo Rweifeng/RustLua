@@ -8,7 +8,7 @@
 
 use engine::core::{
     import_cache::ImportCache,
-    resource_db::{ResourceDatabase, ResourceState},
+    resource_db::{DiskAsset, ResourceDatabase, ResourceState},
     resource_kind::ResourceKind,
 };
 use std::{
@@ -62,8 +62,8 @@ pub fn ensure_project(project: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// 递归收集目录下所有文件，跳过本地工作目录。
-pub fn collect_files(root: &Path, output: &mut Vec<PathBuf>) -> Result<(), String> {
+/// 递归收集目录下所有文件（含 mtime），跳过本地工作目录。
+pub fn collect_files(root: &Path, output: &mut Vec<(PathBuf, u64)>) -> Result<(), String> {
     let mut children = fs::read_dir(root)
         .map_err(|error| format!("读取目录失败 {}: {error}", root.display()))?
         .collect::<Result<Vec<_>, _>>()
@@ -77,23 +77,38 @@ pub fn collect_files(root: &Path, output: &mut Vec<PathBuf>) -> Result<(), Strin
             }
             collect_files(&path, output)?;
         } else {
-            output.push(path);
+            let modified = modified_nanos(&path)?;
+            output.push((path, modified));
         }
     }
     Ok(())
 }
 
-/// 收集项目的数据文件（清单 + 场景 + 脚本 + 资源）。
-pub fn collect_data_files(project: &Path) -> Result<Vec<PathBuf>, String> {
+fn modified_nanos(path: &Path) -> Result<u64, String> {
+    let modified = fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .map_err(|error| format!("读取文件时间失败 {}: {error}", path.display()))?;
+    Ok(modified
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos() as u64)
+        .unwrap_or(0))
+}
+
+/// 收集项目的数据文件（清单 + 场景 + 脚本 + 资源），含 mtime。
+pub fn collect_data_files(project: &Path) -> Result<Vec<(PathBuf, u64)>, String> {
     let mut paths = Vec::new();
-    paths.push(project.join("project.toml"));
+    let manifest = project.join("project.toml");
+    if manifest.is_file() {
+        let modified = modified_nanos(&manifest)?;
+        paths.push((manifest, modified));
+    }
     for sub in ["scenes", "scripts", "assets"] {
         let dir = project.join(sub);
         if dir.is_dir() {
             collect_files(&dir, &mut paths)?;
         }
     }
-    paths.sort();
+    paths.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(paths)
 }
 
@@ -114,14 +129,20 @@ fn status_label(status: &ResourceState) -> &'static str {
 /// 扫描项目数据文件并注册到 ResourceDatabase。
 pub fn scan(project: &Path) -> Result<Vec<ScanEntry>, String> {
     ensure_project(project)?;
-    let paths = collect_data_files(project)?;
+    let scanned_files = collect_data_files(project)?;
     let mut database = ResourceDatabase::open(project).map_err(|error| error.to_string())?;
     let mut entries = Vec::new();
-    for path in paths {
+    let mut disk_assets = Vec::with_capacity(scanned_files.len());
+    for (path, modified) in scanned_files {
         let relative = path
             .strip_prefix(project)
             .expect("path must be inside project root")
             .to_path_buf();
+        // 即使是不支持的类型也计入扫描结果，避免 reconcile 误判为 Missing。
+        disk_assets.push(DiskAsset {
+            path: relative.clone(),
+            modified,
+        });
         let kind = ResourceKind::from_path(&relative);
         if kind == ResourceKind::Other {
             entries.push(ScanEntry {
@@ -156,6 +177,13 @@ pub fn scan(project: &Path) -> Result<Vec<ScanEntry>, String> {
             }),
         }
     }
+    let mut scan_roots = Vec::new();
+    for sub in ["scenes", "scripts", "assets"] {
+        if project.join(sub).is_dir() {
+            scan_roots.push(PathBuf::from(sub));
+        }
+    }
+    database.reconcile(&disk_assets, &scan_roots);
     database.save().map_err(|error| error.to_string())?;
     Ok(entries)
 }
@@ -225,7 +253,7 @@ fn copy_dir(source: &Path, destination: &Path) -> Result<(), String> {
     }
     let mut files = Vec::new();
     collect_files(source, &mut files)?;
-    for file in files {
+    for (file, _) in files {
         let relative = file
             .strip_prefix(source)
             .expect("file must be inside source dir");
@@ -256,7 +284,7 @@ fn copy_dir_encoded(
     }
     let mut files = Vec::new();
     collect_files(source, &mut files)?;
-    for file in files {
+    for (file, _) in files {
         let relative = file
             .strip_prefix(source)
             .expect("file must be inside source dir");
@@ -312,12 +340,12 @@ pub fn package(
 
     let mut files = Vec::new();
     collect_files(out, &mut files)?;
-    files.retain(|path| path != &out.join("manifest.txt"));
-    files.sort();
+    files.retain(|(path, _)| path != &out.join("manifest.txt"));
+    files.sort_by(|a, b| a.0.cmp(&b.0));
 
     let mut manifest = BTreeMap::new();
     let mut lines = vec![format!("assetc_manifest=1\t{IMPORTER_VERSION}")];
-    for path in files {
+    for (path, _) in files {
         let relative = path
             .strip_prefix(out)
             .expect("file must be inside output dir")
