@@ -620,6 +620,45 @@ mod tests {
     }
 
     #[test]
+    fn sample_project_scene_edit_save_and_reopen_persists_changes() {
+        let root = copy_sample_project("scene-edit");
+        let path = root.join("scenes/production.scene");
+        let mut document = SceneDocument::open(&path).unwrap();
+
+        document
+            .scene
+            .entities
+            .get_mut(&SceneEntityId(2))
+            .unwrap()
+            .name = "SavedPlayer".to_owned();
+        document
+            .scene
+            .metadata
+            .insert("m14.save_reopen".to_owned(), "ok".to_owned());
+        document.mark_dirty();
+        assert!(document.is_dirty());
+
+        document.save().unwrap();
+        assert!(!document.is_dirty());
+
+        let reopened = SceneDocument::open(&path).unwrap();
+        assert_eq!(
+            reopened.scene.entities[&SceneEntityId(2)].name,
+            "SavedPlayer"
+        );
+        assert_eq!(
+            reopened
+                .scene
+                .metadata
+                .get("m14.save_reopen")
+                .map(String::as_str),
+            Some("ok")
+        );
+        assert!(!reopened.is_dirty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn sample_project_prefab_document_roundtrips_cleanly() {
         let root = copy_sample_project("prefab");
         let path = root.join("assets/prefabs/slime_red.prefab");
@@ -668,6 +707,45 @@ mod tests {
         );
         assert!(!original.scene.metadata.contains_key("runtime-only"));
         assert_eq!(session.stop(), original);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sample_project_recovery_roundtrip_preserves_path_and_keeps_main_scene_clean() {
+        let root = copy_sample_project("recovery");
+        let path = root.join("scenes/production.scene");
+        let manager = crate::RecoveryManager::new(root.join(".temp"));
+        let mut document = SceneDocument::open(&path).unwrap();
+        let original = document.clone();
+
+        document
+            .scene
+            .entities
+            .get_mut(&SceneEntityId(2))
+            .unwrap()
+            .name = "RecoveredPlayer".to_owned();
+        document.mark_dirty();
+
+        manager.autosave(&document).unwrap();
+        let scan = manager.scan().unwrap();
+        assert_eq!(scan.candidates.len(), 1);
+        assert!(scan.invalid.is_empty());
+
+        let recovered = manager.recover(&scan.candidates[0]);
+        assert_eq!(recovered.path, Some(path.clone()));
+        assert!(recovered.is_dirty());
+        assert_eq!(
+            recovered.scene.entities[&SceneEntityId(2)].name,
+            "RecoveredPlayer"
+        );
+
+        let reopened = SceneDocument::open(&path).unwrap();
+        assert_eq!(
+            reopened.scene.entities[&SceneEntityId(2)].name,
+            original.scene.entities[&SceneEntityId(2)].name,
+            "autosave must not overwrite the formal scene file"
+        );
+        assert_eq!(reopened, original);
         let _ = fs::remove_dir_all(root);
     }
 }

@@ -167,7 +167,7 @@ impl EditorApp {
 
     /// 恢复一条崩溃快照并清理编辑状态。
     fn recover_candidate(&mut self, candidate: editor::RecoveryCandidate) {
-        self.document.current_scene = Some(self.recovery.recover(&candidate));
+        self.set_current_scene_document(self.recovery.recover(&candidate));
         self.history.clear();
         self.autosave.reset();
         self.tree.clear_selection();
@@ -264,5 +264,119 @@ impl EditorApp {
             .map_err(fs_err)?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use editor::{SceneDocument, open_project};
+    use engine::core::{logging::LogSink, scene::SceneEntityId};
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    fn unique_token() -> u128 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be valid")
+            .as_nanos()
+    }
+
+    fn temp_root(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("m14-03-header-{label}-{}", unique_token()))
+    }
+
+    fn sample_project_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../game_test_2d_production")
+    }
+
+    fn copy_dir(source: &Path, destination: &Path) {
+        if !source.is_dir() {
+            return;
+        }
+        for entry in fs::read_dir(source).unwrap() {
+            let entry = entry.unwrap();
+            let source_path = entry.path();
+            let target_path = destination.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                fs::create_dir_all(&target_path).unwrap();
+                copy_dir(&source_path, &target_path);
+            } else {
+                if let Some(parent) = target_path.parent() {
+                    fs::create_dir_all(parent).unwrap();
+                }
+                fs::copy(&source_path, &target_path).unwrap();
+            }
+        }
+    }
+
+    fn copy_sample_project(label: &str) -> PathBuf {
+        let source = sample_project_root();
+        assert!(
+            source.join("project.toml").is_file(),
+            "sample project missing: {}",
+            source.display()
+        );
+        let root = temp_root(label);
+        fs::create_dir_all(&root).unwrap();
+        fs::copy(source.join("project.toml"), root.join("project.toml")).unwrap();
+        copy_dir(&source.join("scripts"), &root.join("scripts"));
+        copy_dir(&source.join("scenes"), &root.join("scenes"));
+        copy_dir(&source.join("assets"), &root.join("assets"));
+        root
+    }
+
+    #[test]
+    fn app_startup_scans_recovery_and_recover_candidate_restores_scene() {
+        let root = copy_sample_project("recover-menu");
+        let scene_path = root.join("scenes/production.scene");
+        let manager = editor::RecoveryManager::new(root.join(".temp"));
+        let mut modified = SceneDocument::open(&scene_path).unwrap();
+        let original = modified.clone();
+        modified
+            .scene
+            .entities
+            .get_mut(&SceneEntityId(2))
+            .unwrap()
+            .name = "RecoveredViaMenu".to_owned();
+        modified.mark_dirty();
+        manager.autosave(&modified).unwrap();
+
+        let project = open_project(&root).unwrap();
+        let mut app = EditorApp::new(project, None, LogSink::new(64));
+        assert_eq!(app.recovery_scan.candidates.len(), 1);
+
+        app.document.current_scene = Some(SceneDocument::open(&scene_path).unwrap());
+        let current = app.document.current_scene.as_ref().unwrap().clone();
+        app.tree.select(&current, SceneEntityId(2)).unwrap();
+        app.inspector.select(&current, SceneEntityId(2)).unwrap();
+
+        let candidate = app.recovery_scan.candidates[0].clone();
+        app.recover_candidate(candidate.clone());
+
+        let recovered = app.document.current_scene.as_ref().unwrap();
+        assert_eq!(recovered.path, Some(scene_path.clone()));
+        assert!(recovered.is_dirty());
+        assert_eq!(
+            recovered.scene.entities[&SceneEntityId(2)].name,
+            "RecoveredViaMenu"
+        );
+        assert_eq!(app.tree.selected(), None);
+        assert_eq!(app.inspector.selected(), None);
+        assert!(
+            app.status.contains("已恢复崩溃快照"),
+            "status should report recovery result"
+        );
+
+        let reopened = SceneDocument::open(&scene_path).unwrap();
+        assert_eq!(
+            reopened.scene.entities[&SceneEntityId(2)].name,
+            original.scene.entities[&SceneEntityId(2)].name,
+            "recovering a candidate must not overwrite the formal scene file"
+        );
+        let _ = fs::remove_dir_all(root);
     }
 }

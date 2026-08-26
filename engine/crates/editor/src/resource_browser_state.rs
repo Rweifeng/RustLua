@@ -310,6 +310,7 @@ fn modified_nanos(path: &Path) -> Result<u64, ResourceBrowserError> {
 mod tests {
     use super::*;
     use std::io::Write;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_root(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!("rustlua-m5-05-{label}-{}", std::process::id()))
@@ -319,6 +320,71 @@ mod tests {
         let path = root.join(relative);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::File::create(path).unwrap().write_all(contents).unwrap();
+    }
+
+    fn unique_suffix() -> u128 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be valid")
+            .as_nanos()
+    }
+
+    fn sample_project_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../game_test_2d_production")
+    }
+
+    fn copy_file(from: &Path, to: &Path) -> std::io::Result<()> {
+        if let Some(parent) = to.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::copy(from, to)?;
+        Ok(())
+    }
+
+    fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
+        fs::create_dir_all(to)?;
+        for entry in fs::read_dir(from)? {
+            let entry = entry?;
+            let src = entry.path();
+            let dst = to.join(entry.file_name());
+            if entry.file_type()?.is_dir() {
+                copy_dir(&src, &dst)?;
+            } else {
+                copy_file(&src, &dst)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn copy_sample_project(label: &str) -> PathBuf {
+        let source = sample_project_root();
+        assert!(
+            source.join("project.toml").is_file(),
+            "sample project missing: {}",
+            source.display()
+        );
+        let root = std::env::temp_dir().join(format!(
+            "rustlua-m14-02-{label}-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        copy_file(&source.join("project.toml"), &root.join("project.toml")).unwrap();
+        copy_dir(&source.join("scripts"), &root.join("scripts")).unwrap();
+        copy_dir(&source.join("scenes"), &root.join("scenes")).unwrap();
+        copy_dir(&source.join("assets"), &root.join("assets")).unwrap();
+        root
+    }
+
+    fn replace_in_file(path: &Path, from: &str, to: &str) {
+        let text = fs::read_to_string(path).unwrap();
+        assert!(
+            text.contains(from),
+            "expected {} to contain {from}",
+            path.display()
+        );
+        fs::write(path, text.replace(from, to)).unwrap();
     }
 
     #[test]
@@ -574,6 +640,70 @@ mod tests {
             .find(|entry| entry.path_string() == "scenes/main.scene")
             .expect("scene registered");
         assert_ne!(scene.status, ResourceState::Invalid);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sample_project_resource_rename_marks_consumers_invalid_and_recovers_after_fix() {
+        let root = copy_sample_project("rename-fix");
+        let old_path = root.join("assets/textures/slime.png");
+        let new_rel = "assets/textures/slime-renamed.png";
+        let new_path = root.join(new_rel);
+        let mut browser = ResourceBrowserState::new();
+
+        browser.refresh(&root).unwrap();
+        fs::rename(&old_path, &new_path).unwrap();
+        browser.refresh(&root).unwrap();
+
+        let invalid_paths: Vec<_> = browser
+            .entries()
+            .iter()
+            .filter(|entry| entry.status == ResourceState::Invalid)
+            .map(|entry| entry.path_string())
+            .collect();
+        assert!(
+            invalid_paths.contains(&"assets/prefabs/slime_green.prefab".to_owned()),
+            "green prefab should become invalid after texture rename: {invalid_paths:?}"
+        );
+        assert!(
+            invalid_paths.contains(&"assets/prefabs/slime_red.prefab".to_owned()),
+            "red prefab should become invalid after texture rename: {invalid_paths:?}"
+        );
+        assert!(
+            invalid_paths.contains(&"scenes/production.scene".to_owned()),
+            "production scene should become invalid after texture rename: {invalid_paths:?}"
+        );
+
+        replace_in_file(
+            &root.join("assets/prefabs/slime_green.prefab"),
+            "assets/textures/slime.png",
+            new_rel,
+        );
+        replace_in_file(
+            &root.join("assets/prefabs/slime_red.prefab"),
+            "assets/textures/slime.png",
+            new_rel,
+        );
+        replace_in_file(
+            &root.join("scenes/production.scene"),
+            "assets/textures/slime.png",
+            new_rel,
+        );
+
+        browser.refresh(&root).unwrap();
+        let invalid_paths: Vec<_> = browser
+            .entries()
+            .iter()
+            .filter(|entry| entry.status == ResourceState::Invalid)
+            .map(|entry| entry.path_string())
+            .collect();
+        assert!(
+            !invalid_paths.contains(&"assets/prefabs/slime_green.prefab".to_owned())
+                && !invalid_paths.contains(&"assets/prefabs/slime_red.prefab".to_owned())
+                && !invalid_paths.contains(&"scenes/production.scene".to_owned()),
+            "updating consumers should clear invalid state: {invalid_paths:?}"
+        );
+
         let _ = fs::remove_dir_all(root);
     }
 }

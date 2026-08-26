@@ -83,6 +83,9 @@ pub struct UiImage {
 }
 
 /// Screen-space clickable button (`Button` component).
+///
+/// Visuals are rendered as a composed background image plus centered text so
+/// the button shares the same image/text pipeline as the other UI components.
 #[derive(Clone, Debug, PartialEq)]
 pub struct UiButton {
     /// Optional label text drawn centered on the button.

@@ -186,23 +186,6 @@ impl EditorApp {
         {
             self.handle_tilemap_paint(&response, rect, context);
             self.draw_scene_tool_panel(ui, rect);
-            if let Some(message) = &self.preview_diagnostic {
-                painter.rect_filled(
-                    egui::Rect::from_min_size(
-                        rect.left_top() + egui::vec2(8.0, 8.0),
-                        egui::vec2(rect.width() - 16.0, 28.0),
-                    ),
-                    4.0,
-                    egui::Color32::from_rgba_unmultiplied(100, 30, 30, 220),
-                );
-                painter.text(
-                    rect.left_top() + egui::vec2(16.0, 14.0),
-                    egui::Align2::LEFT_TOP,
-                    message,
-                    egui::FontId::proportional(13.0),
-                    egui::Color32::LIGHT_RED,
-                );
-            }
             return;
         }
         if response.drag_started_by(egui::PointerButton::Primary)
@@ -356,23 +339,19 @@ impl EditorApp {
         }
         // 工具小面板（Select/Move/Rotate/Scale）置于场景右上角。
         self.draw_scene_tool_panel(ui, rect);
-        if let Some(message) = &self.preview_diagnostic {
-            painter.rect_filled(
-                egui::Rect::from_min_size(
-                    rect.left_top() + egui::vec2(8.0, 8.0),
-                    egui::vec2(rect.width() - 16.0, 28.0),
-                ),
-                4.0,
-                egui::Color32::from_rgba_unmultiplied(100, 30, 30, 220),
-            );
-            painter.text(
-                rect.left_top() + egui::vec2(16.0, 14.0),
-                egui::Align2::LEFT_TOP,
-                message,
-                egui::FontId::proportional(13.0),
-                egui::Color32::LIGHT_RED,
-            );
+    }
+
+    fn set_scene_view_diagnostic(&mut self, message: impl Into<String>) {
+        let message = message.into();
+        if self.preview_diagnostic.as_deref() == Some(message.as_str()) {
+            return;
         }
+        self.push_console_notice(format!("[scene view] {message}"));
+        self.preview_diagnostic = Some(message);
+    }
+
+    fn clear_scene_view_diagnostic(&mut self) {
+        self.preview_diagnostic = None;
     }
 
     /// 3D 场景视图（M9-03）：XZ 俯视投影绘制 Transform3D 实体，选中实体显示
@@ -433,24 +412,19 @@ impl EditorApp {
         };
         let extracted = extract_serialized_scene_3d(&scene.scene);
         if !extracted.diagnostics.is_empty() {
-            tracing::warn!(
-                target: "editor",
-                diagnostics = extracted.diagnostics.len(),
-                "[scene view] invalid 3D components were skipped"
-            );
             let details = extracted
                 .diagnostics
                 .iter()
                 .take(2)
                 .map(|diagnostic| diagnostic.summary())
                 .collect::<Vec<_>>();
-            self.preview_diagnostic = Some(format!(
+            self.set_scene_view_diagnostic(format!(
                 "{} 个 3D 组件无效：{}",
                 extracted.diagnostics.len(),
                 details.join("；")
             ));
         } else {
-            self.preview_diagnostic = None;
+            self.clear_scene_view_diagnostic();
         }
         let entities3d: Vec<_> = extracted
             .entities
@@ -770,23 +744,6 @@ impl EditorApp {
         }
         // 工具小面板（Select/Move/Rotate/Scale）置于场景右上角。
         self.draw_scene_tool_panel(ui, rect);
-        if let Some(message) = &self.preview_diagnostic {
-            painter.rect_filled(
-                egui::Rect::from_min_size(
-                    rect.left_top() + egui::vec2(8.0, 8.0),
-                    egui::vec2(rect.width() - 16.0, 28.0),
-                ),
-                4.0,
-                egui::Color32::from_rgba_unmultiplied(100, 30, 30, 220),
-            );
-            painter.text(
-                rect.left_top() + egui::vec2(16.0, 14.0),
-                egui::Align2::LEFT_TOP,
-                message,
-                egui::FontId::proportional(13.0),
-                egui::Color32::LIGHT_RED,
-            );
-        }
     }
 
     /// Scene 视图右上角的小工具面板：选择/移动/旋转/缩放。
@@ -1145,18 +1102,13 @@ impl EditorApp {
         let scene = self.current_scene()?;
         let extracted = extract_serialized_scene_3d(&scene.scene);
         if !extracted.diagnostics.is_empty() {
-            tracing::warn!(
-                target: "editor",
-                diagnostics = extracted.diagnostics.len(),
-                "[scene view] invalid 3D components were skipped"
-            );
             let details = extracted
                 .diagnostics
                 .iter()
                 .take(2)
                 .map(|diagnostic| diagnostic.summary())
                 .collect::<Vec<_>>();
-            self.preview_diagnostic = Some(format!(
+            self.set_scene_view_diagnostic(format!(
                 "{} 个 3D 组件无效：{}",
                 extracted.diagnostics.len(),
                 details.join("；")
@@ -1276,7 +1228,7 @@ impl EditorApp {
             ReadbackStatus::Failed(error) => {
                 tracing::warn!(target: "editor", "[scene view] 3D readback failed: {error}");
                 self.scene_view_cache_3d = SceneViewCache3d::default();
-                self.preview_diagnostic = Some(format!("Scene View 3D 回读失败：{error}"));
+                self.set_scene_view_diagnostic(format!("Scene View 3D 回读失败：{error}"));
                 ctx.request_repaint();
             }
         }
@@ -1358,11 +1310,11 @@ impl EditorApp {
                 Ok(mesh) => mesh,
                 Err(error) => {
                     tracing::error!(target: "editor", "[scene view] 2D render failed: {error}");
-                    self.preview_diagnostic = Some(format!("Scene View 渲染失败：{error}"));
+                    self.set_scene_view_diagnostic(format!("Scene View 渲染失败：{error}"));
                     return;
                 }
             };
-            self.preview_diagnostic = None;
+            self.clear_scene_view_diagnostic();
             mesh
         };
         let Some(renderer) = &mut self.scene_renderer else {
@@ -1388,13 +1340,13 @@ impl EditorApp {
                 self.set_scene_2d_texture(pixels, width, height, ctx);
             }
             ReadbackStatus::Pending => {
-                self.preview_diagnostic = Some("Scene View 等待 GPU 回读……显示上一帧".to_owned());
+                self.set_scene_view_diagnostic("Scene View 等待 GPU 回读……显示上一帧");
                 ctx.request_repaint();
             }
             ReadbackStatus::Failed(error) => {
                 tracing::warn!(target: "editor", "[scene view] 2D readback failed: {error}");
                 self.scene_view_cache_2d = SceneViewCache2d::default();
-                self.preview_diagnostic = Some(format!("Scene View 回读失败：{error}"));
+                self.set_scene_view_diagnostic(format!("Scene View 回读失败：{error}"));
                 ctx.request_repaint();
             }
         }

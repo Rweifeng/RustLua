@@ -7,6 +7,7 @@ use eframe::egui;
 use engine::core::resource_db::ResourceState;
 use engine::core::texture::{TextureAsset, TextureColorSpace};
 use std::collections::BTreeMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 impl EditorApp {
@@ -93,6 +94,7 @@ impl EditorApp {
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_else(|| path_string.clone());
         let marker = status_marker(entry.status);
+        let is_selected = self.selected_resource.as_ref() == Some(&entry.path);
         if matches!(
             entry.kind,
             ResourceKind::Texture | ResourceKind::Prefab | ResourceKind::Model
@@ -100,22 +102,27 @@ impl EditorApp {
             // 纹理/模型/预制体：可拖放到场景（纹理/预制体带缩略图）。
             let payload = path_string.clone();
             ui.horizontal(|ui| {
+                if let Some(id) = self.texture_thumbnail(&path_string, context) {
+                    ui.add(egui::Image::new(egui::load::SizedTexture::new(
+                        id,
+                        egui::vec2(20.0, 20.0),
+                    )));
+                }
+                if let Some((icon, color)) = marker {
+                    ui.colored_label(color, icon);
+                }
+                let response = ui.selectable_label(is_selected, &file_name);
+                if response.clicked() {
+                    self.select_resource(entry.path.clone());
+                }
+                if response.double_clicked() && entry.kind == ResourceKind::Prefab {
+                    *resource_to_open = Some(entry.path.clone());
+                }
                 ui.dnd_drag_source(
                     egui::Id::new(("texture_drag", path_string.as_str())),
                     payload,
                     |ui| {
-                        ui.horizontal(|ui| {
-                            if let Some(id) = self.texture_thumbnail(&path_string, context) {
-                                ui.add(egui::Image::new(egui::load::SizedTexture::new(
-                                    id,
-                                    egui::vec2(20.0, 20.0),
-                                )));
-                            }
-                            if let Some((icon, color)) = marker {
-                                ui.colored_label(color, icon);
-                            }
-                            ui.label(&file_name);
-                        });
+                        ui.small("::");
                     },
                 );
                 if entry.kind == ResourceKind::Prefab
@@ -132,7 +139,10 @@ impl EditorApp {
                 if let Some((icon, color)) = marker {
                     ui.colored_label(color, icon);
                 }
-                let response = ui.selectable_label(false, &file_name);
+                let response = ui.selectable_label(is_selected, &file_name);
+                if response.clicked() {
+                    self.select_resource(entry.path.clone());
+                }
                 if response.double_clicked()
                     && matches!(entry.kind, ResourceKind::Scene | ResourceKind::Prefab)
                 {
@@ -175,13 +185,58 @@ impl EditorApp {
         self.resources.set_filter(self.resources_filter.clone());
         if !self.project_loaded {
             self.resources = ResourceBrowserState::new();
+            self.clear_resource_selection();
             return;
         }
         if let Err(error) = self.resources.refresh(&self.project.root) {
             self.status = error.to_string();
         }
+        if self.selected_resource.as_ref().is_some_and(|selected| {
+            self.resources
+                .entries()
+                .iter()
+                .all(|entry| entry.path != *selected)
+        }) {
+            self.clear_resource_selection();
+        }
         // 资源/场景文件可能新增或删除：让场景下拉下次重扫。
         self.scene_files_cache_time = None;
+    }
+
+    pub(crate) fn delete_selected_resource(&mut self) {
+        if self.is_playing() {
+            self.status = "Play mode locks resource deletion; click Stop first".to_owned();
+            return;
+        }
+        let Some(relative_path) = self.selected_resource.clone() else {
+            self.status = "请先在资源面板选中资源".to_owned();
+            return;
+        };
+        let absolute_path = self.project.root.join(&relative_path);
+        if self
+            .document
+            .current_scene
+            .as_ref()
+            .and_then(|document| document.path.as_ref())
+            .is_some_and(|path| {
+                strip_verbatim_prefix(path) == strip_verbatim_prefix(&absolute_path)
+            })
+        {
+            self.status = format!("当前打开的文档不能直接删除：{}", relative_path.display());
+            return;
+        }
+        match fs::remove_file(&absolute_path) {
+            Ok(()) => {
+                self.thumbnails
+                    .remove(&relative_path.to_string_lossy().replace('\\', "/"));
+                self.clear_resource_selection();
+                self.refresh_resources();
+                self.status = format!("已删除资源：{}", relative_path.display());
+            }
+            Err(error) => {
+                self.status = format!("删除资源失败：{}：{error}", relative_path.display());
+            }
+        }
     }
 }
 
@@ -266,8 +321,14 @@ fn downscale_rgba(
 #[cfg(test)]
 mod tests {
     use super::{build_resource_tree, downscale_rgba};
-    use editor::{ResourceEntry, ResourceKind};
-    use std::path::PathBuf;
+    use crate::EditorApp;
+    use editor::{ResourceEntry, ResourceKind, open_project};
+    use engine::core::logging::LogSink;
+    use std::{
+        fs,
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     fn entry(path: &str, kind: ResourceKind) -> ResourceEntry {
         ResourceEntry {
@@ -277,6 +338,32 @@ mod tests {
             asset_id: None,
             error: None,
         }
+    }
+
+    fn unique_suffix() -> u128 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be valid")
+            .as_nanos()
+    }
+
+    fn temp_project_root(label: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "p2-editor-resource-browser-{label}-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        fs::create_dir_all(root.join("assets")).unwrap();
+        fs::create_dir_all(root.join("scripts")).unwrap();
+        fs::create_dir_all(root.join("scenes")).unwrap();
+        fs::write(
+            root.join("project.toml"),
+            "[project]\nname = \"t\"\nversion = \"0.1.0\"\nengine = \"p2\"\nmain_script = \"scripts/main.lua\"\nstartup_scene = \"scenes/main.scene\"\n",
+        )
+        .unwrap();
+        fs::write(root.join("scripts/main.lua"), b"return true\n").unwrap();
+        fs::write(root.join("scenes/main.scene"), b"name = \"main\"\n").unwrap();
+        root
     }
 
     #[test]
@@ -324,5 +411,61 @@ mod tests {
         assert_eq!((width, height), (64, 32), "长边缩到 64，保持比例");
         assert_eq!(out.len(), width * height * 4);
         assert!(out.chunks_exact(4).all(|px| px == [128, 128, 128, 128]));
+    }
+
+    #[test]
+    fn delete_shortcut_removes_selected_resource_from_browser() {
+        let root = temp_project_root("delete-resource");
+        fs::write(root.join("assets/player.png"), b"png").unwrap();
+        let project = open_project(&root).unwrap();
+        let mut app = EditorApp::new(project, None, LogSink::new(64));
+        app.refresh_resources();
+        app.select_resource(PathBuf::from("assets/player.png"));
+
+        app.handle_delete_shortcut();
+
+        assert!(
+            !root.join("assets/player.png").exists(),
+            "Delete should remove selected resource file"
+        );
+        assert!(app.selected_resource.is_none());
+        assert!(app.status.contains("已删除资源"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn delete_shortcut_prefers_hierarchy_when_scene_selection_is_active() {
+        let root = temp_project_root("delete-entity");
+        fs::write(root.join("assets/player.png"), b"png").unwrap();
+        let project = open_project(&root).unwrap();
+        let mut app = EditorApp::new(project, None, LogSink::new(64));
+        app.refresh_resources();
+        app.select_resource(PathBuf::from("assets/player.png"));
+        let scene = app.document.new_scene("main");
+        let id = app.tree.create_entity(scene, "Player", None).unwrap();
+        app.scene_state.selected.clear();
+        app.scene_state.selected.insert(id);
+        app.sync_inspector(id);
+
+        app.handle_delete_shortcut();
+
+        assert!(
+            !app.document
+                .current_scene
+                .as_ref()
+                .unwrap()
+                .scene
+                .entities
+                .contains_key(&id),
+            "Delete should remove the selected hierarchy entity"
+        );
+        assert!(
+            root.join("assets/player.png").exists(),
+            "resource should stay when hierarchy is the active delete target"
+        );
+        assert_eq!(app.tree.selected(), None);
+        assert_eq!(app.delete_target, crate::DeleteTarget::None);
+        assert!(app.status.contains("Entity deleted"));
+        let _ = fs::remove_dir_all(root);
     }
 }

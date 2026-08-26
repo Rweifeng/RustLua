@@ -57,8 +57,11 @@ impl EditorApp {
         };
         self.play_state = PlayState::Stopping;
         self.preview = None;
-        self.document.current_scene = Some(session.stop());
+        self.set_current_scene_document(session.stop());
         self.tree.clear_selection();
+        if matches!(self.delete_target, crate::DeleteTarget::Hierarchy) {
+            self.delete_target = crate::DeleteTarget::None;
+        }
         self.inspector.clear_selection();
         // Play/Stop 清空输入状态，避免下一轮 Play 残留边沿（M11-02）。
         self.preview_input_state.clear_all();

@@ -255,7 +255,7 @@ impl EditorApp {
             self.status = "场景名称不能为空".to_owned();
             return;
         }
-        self.document.new_scene(name.clone());
+        self.set_current_scene_document(editor::SceneDocument::new(name.clone()));
         self.history.clear();
         self.autosave.reset();
         self.tree.clear_selection();

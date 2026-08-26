@@ -2447,7 +2447,7 @@ mod tests {
             .get_mut(&SceneEntityId(1))
             .unwrap()
             .components
-            .insert("Sprite".into(), "assets/red-1x1.png".into());
+            .insert("Sprite".into(), "assets/textures/red-1x1.png".into());
 
         let mut runtime = LuaRuntime::new().unwrap();
         assert_eq!(runtime.instantiate_scene(&scene).unwrap(), 1);
@@ -2465,7 +2465,7 @@ mod tests {
         assert!(runtime.with_world(|world| world.has::<SpriteAsset>(player).unwrap()));
         let asset =
             runtime.with_world(|world| world.get::<SpriteAsset>(player).unwrap().unwrap().clone());
-        assert_eq!(asset.path(), "assets/red-1x1.png");
+        assert_eq!(asset.path(), "assets/textures/red-1x1.png");
         let moved = runtime.with_world(|world| *world.get::<Transform>(player).unwrap().unwrap());
         assert_eq!(moved.position, Vec2::new(10.0, 5.0));
         let _ = fs::remove_file(path);

@@ -1,0 +1,17 @@
+{
+  "report_version": "m2-07-v1",
+  "entities": 10000,
+  "requested_seconds": 10,
+  "elapsed_ms": 10002,
+  "cycles": 5960,
+  "final_entities": 10000,
+  "min_entities": 10000,
+  "max_entities": 10000,
+  "samples": {
+    "create": {"count":1,"min_us":1256,"average_us":1256,"p95_us":1256,"max_us":1256},
+    "query": {"count":5960,"min_us":388,"average_us":441,"p95_us":490,"max_us":1027},
+    "update": {"count":5960,"min_us":903,"average_us":1029,"p95_us":1161,"max_us":2179},
+    "destroy": {"count":5960,"min_us":3,"average_us":4,"p95_us":6,"max_us":51},
+    "command": {"count":5960,"min_us":30,"average_us":33,"p95_us":38,"max_us":354}
+  }
+}

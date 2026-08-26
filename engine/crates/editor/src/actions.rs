@@ -3,14 +3,41 @@
 use crate::AlignMode;
 use crate::EditorApp;
 use crate::geometry::{encode_transform, parse_transform};
-use editor::{CommandKind, TransformFields};
+use editor::{CommandKind, SceneDocument, TransformFields};
 use engine::core::{
     animation::AnimationStateMachine, scene::SceneEntityId, sprite::SpriteComponent,
     tilemap::Tilemap,
 };
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 impl EditorApp {
+    /// 用统一入口替换当前编辑场景文档，确保 Scene View 相关状态同步失效。
+    pub(crate) fn set_current_scene_document(&mut self, document: SceneDocument) {
+        self.document.current_scene = Some(document);
+        self.invalidate_scene_view_state();
+    }
+
+    /// 从磁盘打开一个场景/Prefab 文档，并通过统一入口替换当前文档。
+    pub(crate) fn open_scene_document(&mut self, path: impl AsRef<Path>) -> Result<(), String> {
+        let document = SceneDocument::open(path).map_err(|error| error.to_string())?;
+        self.set_current_scene_document(document);
+        Ok(())
+    }
+
+    /// 场景文档切换后，强制让 Scene View 在下一帧重建运行时并重新渲染。
+    /// 否则两个刚打开的文档都处于 `revision=0` 时，旧缓存可能被误命中。
+    pub(crate) fn invalidate_scene_view_state(&mut self) {
+        self.scene_runtime = None;
+        self.scene_runtime_revision = None;
+        self.scene_view_cache_2d = crate::SceneViewCache2d::default();
+        self.scene_view_cache_3d = crate::SceneViewCache3d::default();
+        self.scene_state.preview.clear();
+        self.scene_state.preview3d_transform.clear();
+        self.scene_state.gizmo_drag = None;
+        self.preview_diagnostic = None;
+        self.scene_view_repaint_pending = true;
+    }
+
     pub(crate) fn undo(&mut self) {
         let label = {
             let h = &mut self.history;
@@ -80,14 +107,15 @@ impl EditorApp {
             return;
         }
         let path = self.project.root.join(&relative_path);
-        match self.document.open_scene(&path) {
+        match self.open_scene_document(&path) {
             Ok(()) => {
                 self.history.clear();
                 self.autosave.reset();
                 self.play_session = None;
                 self.tree.clear_selection();
+                self.delete_target = crate::DeleteTarget::None;
                 self.inspector.clear_selection();
-                self.scene_state.preview.clear();
+                self.clear_resource_selection();
                 self.scene_state.selected.clear();
                 self.scene_state.collapsed.clear();
                 self.sync_hierarchy_metadata();
@@ -109,6 +137,7 @@ impl EditorApp {
             return;
         };
         let scene = scene.clone();
+        self.focus_hierarchy_delete_target();
         if self.inspector.select(&scene, id).is_ok()
             && let Ok(snapshot) = self.inspector.snapshot(&scene)
         {
@@ -579,7 +608,65 @@ fn sorted_sprite_order_updates(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::core::transform::Vec2;
+    use crate::{EditorApp, EditorCamera, SceneViewCache2d, SceneViewCache3d};
+    use editor::open_project;
+    use engine::core::{logging::LogSink, transform::Vec2, transform3d::Transform3D};
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    fn unique_token() -> u128 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be valid")
+            .as_nanos()
+    }
+
+    fn temp_root(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("m15-action-{label}-{}", unique_token()))
+    }
+
+    fn sample_project_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../game_test_2d_production")
+    }
+
+    fn copy_dir(source: &Path, destination: &Path) {
+        if !source.is_dir() {
+            return;
+        }
+        for entry in fs::read_dir(source).unwrap() {
+            let entry = entry.unwrap();
+            let source_path = entry.path();
+            let target_path = destination.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                fs::create_dir_all(&target_path).unwrap();
+                copy_dir(&source_path, &target_path);
+            } else {
+                if let Some(parent) = target_path.parent() {
+                    fs::create_dir_all(parent).unwrap();
+                }
+                fs::copy(&source_path, &target_path).unwrap();
+            }
+        }
+    }
+
+    fn copy_sample_project(label: &str) -> PathBuf {
+        let source = sample_project_root();
+        assert!(
+            source.join("project.toml").is_file(),
+            "sample project missing: {}",
+            source.display()
+        );
+        let root = temp_root(label);
+        fs::create_dir_all(&root).unwrap();
+        fs::copy(source.join("project.toml"), root.join("project.toml")).unwrap();
+        copy_dir(&source.join("scripts"), &root.join("scripts"));
+        copy_dir(&source.join("scenes"), &root.join("scenes"));
+        copy_dir(&source.join("assets"), &root.join("assets"));
+        root
+    }
 
     #[test]
     fn distribute_targets_preserves_endpoints_and_even_spacing() {
@@ -668,5 +755,45 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(orders, vec![5, 6, 7]);
+    }
+
+    #[test]
+    fn open_scene_resource_invalidates_scene_view_state() {
+        let root = copy_sample_project("scene-switch");
+        let project = open_project(&root).unwrap();
+        let mut app = EditorApp::new(project, None, LogSink::new(64));
+        app.refresh_resources();
+        app.scene_runtime_revision = Some(0);
+        app.scene_view_cache_2d = SceneViewCache2d {
+            revision: Some(0),
+            size: (320, 180),
+            camera: (eframe::egui::vec2(12.0, -8.0), 1.5),
+        };
+        app.scene_view_cache_3d = SceneViewCache3d {
+            revision: Some(0),
+            size: (640, 360),
+            camera: EditorCamera::default(),
+        };
+        app.scene_state
+            .preview
+            .insert(SceneEntityId(1), TransformFields::default());
+        app.scene_state
+            .preview3d_transform
+            .insert(SceneEntityId(1), Transform3D::default());
+        app.preview_diagnostic = Some("stale frame".to_owned());
+
+        app.open_scene_resource(PathBuf::from("scenes/menu.scene"));
+
+        assert_eq!(app.scene_runtime_revision, None);
+        assert_eq!(app.scene_view_cache_2d.revision, None);
+        assert_eq!(app.scene_view_cache_2d.size, (0, 0));
+        assert_eq!(app.scene_view_cache_3d.revision, None);
+        assert_eq!(app.scene_view_cache_3d.size, (0, 0));
+        assert!(app.scene_state.preview.is_empty());
+        assert!(app.scene_state.preview3d_transform.is_empty());
+        assert_eq!(app.preview_diagnostic, None);
+        assert!(app.scene_view_repaint_pending);
+
+        let _ = fs::remove_dir_all(root);
     }
 }

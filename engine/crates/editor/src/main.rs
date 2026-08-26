@@ -149,6 +149,7 @@ struct EditorApp {
     document: ProjectDocument,
     tree: SceneTreeState,
     resources: ResourceBrowserState,
+    selected_resource: Option<PathBuf>,
     resources_filter: String,
     lua_runtime: Option<LuaRuntime>,
     console_input: String,
@@ -253,9 +254,13 @@ struct EditorApp {
     scene_files_cache_time: Option<Instant>,
     /// 上次执行 hierarchy 元数据同步的场景标识。
     last_metadata_key: Option<(Option<PathBuf>, u64)>,
-    /// 最近一次 Scene View 的结构化诊断；显示在对应视图 overlay。
+    /// 最近一次 Scene View 的结构化诊断；用于避免重复把同一条提示刷进控制台。
     /// 游戏预览的诊断由 PreviewSession 自己持有（见 preview_session.rs）。
     preview_diagnostic: Option<String>,
+    /// 文档切换后请求一次额外重绘，确保 Scene View 立刻消费新的缓存失效状态。
+    scene_view_repaint_pending: bool,
+    /// Delete 键当前作用的选区来源：资源面板或层级/Scene View。
+    delete_target: DeleteTarget,
     /// Game View 输入快照的跨帧状态（M11-02）：held 按键/鼠标跨帧保留，
     /// `just_pressed`/`just_released` 边沿只在模拟帧边界消费一次，失焦/Play-Stop 时清空。
     preview_input_state: InputSnapshot,
@@ -306,6 +311,14 @@ impl Default for AnimationEditorState {
 enum WorkspaceTab {
     Scene,
     Game,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+enum DeleteTarget {
+    #[default]
+    None,
+    Hierarchy,
+    Resource(PathBuf),
 }
 
 /// Play 运行生命周期状态机（M11-01）：
@@ -456,6 +469,7 @@ impl EditorApp {
             project,
             tree: SceneTreeState::new(),
             resources: ResourceBrowserState::new(),
+            selected_resource: None,
             resources_filter: String::new(),
             lua_runtime: None,
             console_input: String::new(),
@@ -541,6 +555,8 @@ impl EditorApp {
             scene_files_cache: Vec::new(),
             scene_files_cache_time: None,
             preview_diagnostic: None,
+            scene_view_repaint_pending: false,
+            delete_target: DeleteTarget::None,
             last_metadata_key: None,
             preview_input_state: InputSnapshot::default(),
         }
@@ -565,10 +581,51 @@ impl EditorApp {
             .map(|document| document.scene.name.clone())
             .unwrap_or_else(|| "未打开场景".to_owned())
     }
+
+    fn select_resource(&mut self, path: PathBuf) {
+        self.selected_resource = Some(path.clone());
+        self.delete_target = DeleteTarget::Resource(path);
+    }
+
+    fn clear_resource_selection(&mut self) {
+        self.selected_resource = None;
+        if matches!(self.delete_target, DeleteTarget::Resource(_)) {
+            self.delete_target = DeleteTarget::None;
+        }
+    }
+
+    fn focus_hierarchy_delete_target(&mut self) {
+        self.delete_target = DeleteTarget::Hierarchy;
+    }
+
+    fn push_console_notice(&mut self, line: impl Into<String>) {
+        self.console_output.push(line.into());
+        const MAX_CONSOLE_LINES: usize = 500;
+        if self.console_output.len() > MAX_CONSOLE_LINES {
+            let overflow = self.console_output.len() - MAX_CONSOLE_LINES;
+            self.console_output.drain(0..overflow);
+        }
+    }
+
+    fn handle_delete_shortcut(&mut self) {
+        match self.delete_target.clone() {
+            DeleteTarget::Resource(path) => {
+                if self.selected_resource.as_ref() == Some(&path) {
+                    self.delete_selected_resource();
+                }
+            }
+            DeleteTarget::Hierarchy => self.delete_selected_entity(),
+            DeleteTarget::None => {}
+        }
+    }
 }
 
 impl eframe::App for EditorApp {
     fn update(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
+        if self.scene_view_repaint_pending {
+            context.request_repaint();
+            self.scene_view_repaint_pending = false;
+        }
         if self.project_loaded
             && let Some(doc) = self.document.current_scene.as_ref()
         {
@@ -578,9 +635,7 @@ impl eframe::App for EditorApp {
         if std::env::var("P2_EDITOR_AUTOPLAY").is_ok() && !self.is_playing() {
             self.scene_view_mode = SceneViewMode::View3D;
             if self.document.current_scene.is_none() {
-                let _ = self
-                    .document
-                    .open_scene(self.project.root.join("scenes/main.scene"));
+                let _ = self.open_scene_document(self.project.root.join("scenes/main.scene"));
             }
             if self.document.current_scene.is_some() {
                 self.play();
@@ -600,6 +655,12 @@ impl eframe::App for EditorApp {
             && context.input(|i| i.modifiers.command && i.key_pressed(egui::Key::S))
         {
             self.save_scene();
+        }
+        if self.project_loaded
+            && !context.wants_keyboard_input()
+            && context.input(|i| i.key_pressed(egui::Key::Delete))
+        {
+            self.handle_delete_shortcut();
         }
         self.sync_hierarchy_metadata();
         self.poll_progress();

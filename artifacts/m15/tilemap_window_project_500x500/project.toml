@@ -1,0 +1,6 @@
+[project]
+name = "m15_tilemap_window_500x500"
+version = "0.1.0"
+engine = "p2"
+main_script = "scripts/main.lua"
+startup_scene = "scenes/main.scene"

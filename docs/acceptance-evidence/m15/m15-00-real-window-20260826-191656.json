@@ -1,0 +1,60 @@
+﻿{
+    "report_version":  "m15-00-window-v1",
+    "generated_at":  "2026-08-26T19:16:56",
+    "project_root":  "E:\\Codex\\p2\\artifacts\\m15\\tilemap_window_project_500x500",
+    "duration_seconds":  15,
+    "sample_interval_seconds":  3,
+    "metrics":  {
+                    "release_pack_window":  {
+                                                "label":  "game",
+                                                "command":  [
+                                                                "E:\\Codex\\p2\\artifacts\\m15\\window-release\\game.exe",
+                                                                "--pack",
+                                                                "E:\\Codex\\p2\\artifacts\\m15\\window-release\\pack"
+                                                            ],
+                                                "startup":  {
+                                                                "pid":  16148,
+                                                                "input_idle_ms":  null,
+                                                                "main_window_ms":  218.128
+                                                            },
+                                                "duration_seconds":  15,
+                                                "sample_interval_seconds":  3,
+                                                "sample_count":  6,
+                                                "exited_early":  false,
+                                                "exit_code":  null,
+                                                "working_set_mb":  {
+                                                                       "min":  21.734,
+                                                                       "max":  231.02,
+                                                                       "avg":  195.436
+                                                                   },
+                                                "private_mb":  {
+                                                                   "min":  7.555,
+                                                                   "max":  282.27,
+                                                                   "avg":  235.036
+                                                               },
+                                                "paged_mb":  {
+                                                                 "min":  7.555,
+                                                                 "max":  282.27,
+                                                                 "avg":  235.036
+                                                             },
+                                                "virtual_mb":  {
+                                                                   "min":  4239.328,
+                                                                   "max":  4753.055,
+                                                                   "avg":  4664.114
+                                                               },
+                                                "handle_count":  {
+                                                                     "min":  197,
+                                                                     "max":  438,
+                                                                     "avg":  397.5
+                                                                 },
+                                                "window_keepalive":  {
+                                                                         "enabled":  true,
+                                                                         "restore_count":  0,
+                                                                         "minimized_count":  0,
+                                                                         "invisible_count":  0,
+                                                                         "zero_size_count":  0
+                                                                     },
+                                                "csv_report":  "E:\\Codex\\p2\\docs\\acceptance-evidence\\m15\\m15-00-game-memory-20260826-191656.csv"
+                                            }
+                }
+}

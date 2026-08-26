@@ -1,0 +1,97 @@
+﻿{
+    "report_version":  "m15-00-window-v1",
+    "generated_at":  "2026-08-26T16:35:33",
+    "project_root":  "E:\\Codex\\p2\\game_test_2d_production",
+    "duration_seconds":  10,
+    "sample_interval_seconds":  2,
+    "metrics":  {
+                    "editor_window_memory":  {
+                                                 "label":  "editor",
+                                                 "command":  [
+                                                                 "E:\\Codex\\p2\\engine\\target\\release\\editor.exe",
+                                                                 "--project",
+                                                                 "E:\\Codex\\p2\\game_test_2d_production"
+                                                             ],
+                                                 "startup":  {
+                                                                 "pid":  25724,
+                                                                 "input_idle_ms":  null,
+                                                                 "main_window_ms":  851.038
+                                                             },
+                                                 "duration_seconds":  10,
+                                                 "sample_interval_seconds":  2,
+                                                 "sample_count":  6,
+                                                 "exited_early":  false,
+                                                 "exit_code":  null,
+                                                 "working_set_mb":  {
+                                                                        "min":  20.996,
+                                                                        "max":  305.906,
+                                                                        "avg":  258.417
+                                                                    },
+                                                 "private_mb":  {
+                                                                    "min":  7.09,
+                                                                    "max":  351.164,
+                                                                    "avg":  293.818
+                                                                },
+                                                 "paged_mb":  {
+                                                                  "min":  7.09,
+                                                                  "max":  351.164,
+                                                                  "avg":  293.818
+                                                              },
+                                                 "virtual_mb":  {
+                                                                    "min":  4240.457,
+                                                                    "max":  4860.402,
+                                                                    "avg":  4757.078
+                                                                },
+                                                 "handle_count":  {
+                                                                      "min":  196,
+                                                                      "max":  630,
+                                                                      "avg":  557.667
+                                                                  },
+                                                 "csv_report":  "E:\\Codex\\p2\\docs\\acceptance-evidence\\m15\\m15-00-editor-memory-20260826-163532.csv"
+                                             },
+                    "release_pack_window":  {
+                                                "label":  "game",
+                                                "command":  [
+                                                                "E:\\Codex\\p2\\artifacts\\m15\\window-release\\game.exe",
+                                                                "--pack",
+                                                                "E:\\Codex\\p2\\artifacts\\m15\\window-release\\pack"
+                                                            ],
+                                                "startup":  {
+                                                                "pid":  2772,
+                                                                "input_idle_ms":  null,
+                                                                "main_window_ms":  208.428
+                                                            },
+                                                "duration_seconds":  10,
+                                                "sample_interval_seconds":  2,
+                                                "sample_count":  6,
+                                                "exited_early":  false,
+                                                "exit_code":  null,
+                                                "working_set_mb":  {
+                                                                       "min":  21.617,
+                                                                       "max":  230.734,
+                                                                       "avg":  195.406
+                                                                   },
+                                                "private_mb":  {
+                                                                   "min":  7.309,
+                                                                   "max":  281.812,
+                                                                   "avg":  234.816
+                                                               },
+                                                "paged_mb":  {
+                                                                 "min":  7.309,
+                                                                 "max":  281.812,
+                                                                 "avg":  234.816
+                                                             },
+                                                "virtual_mb":  {
+                                                                   "min":  4236.34,
+                                                                   "max":  4733.145,
+                                                                   "avg":  4650.344
+                                                               },
+                                                "handle_count":  {
+                                                                     "min":  197,
+                                                                     "max":  436,
+                                                                     "avg":  396.167
+                                                                 },
+                                                "csv_report":  "E:\\Codex\\p2\\docs\\acceptance-evidence\\m15\\m15-00-game-memory-20260826-163532.csv"
+                                            }
+                }
+}

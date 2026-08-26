@@ -868,7 +868,7 @@ impl EditorApp {
                     self.add_entity(Some(selected));
                 }
                 if ui.button("删除实体").clicked() {
-                    self.delete_selected();
+                    self.delete_selected_entity();
                     self.inspector.clear_selection();
                 }
             });
@@ -1289,7 +1289,7 @@ impl EditorApp {
         }
     }
 
-    fn delete_selected(&mut self) {
+    pub(crate) fn delete_selected_entity(&mut self) {
         if self.is_playing() {
             self.status = "Play mode locks scene editing; click Stop first".into();
             return;
@@ -1314,6 +1314,9 @@ impl EditorApp {
                         .is_none_or(|scene| !scene.scene.entities.contains_key(&id))
                 }) {
                     self.tree.clear_selection();
+                    if matches!(self.delete_target, crate::DeleteTarget::Hierarchy) {
+                        self.delete_target = crate::DeleteTarget::None;
+                    }
                     self.inspector.clear_selection();
                 }
                 self.status = "Entity deleted".into();

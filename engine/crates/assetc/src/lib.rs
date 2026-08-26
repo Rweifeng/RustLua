@@ -596,6 +596,16 @@ mod tests {
         fs::remove_dir_all(root).ok();
     }
 
+    fn replace_in_file(path: &Path, from: &str, to: &str) {
+        let text = fs::read_to_string(path).unwrap();
+        assert!(
+            text.contains(from),
+            "expected {} to contain {from}",
+            path.display()
+        );
+        fs::write(path, text.replace(from, to)).unwrap();
+    }
+
     #[test]
     fn scan_registers_supported_and_marks_unsupported() {
         let root = temp_project("scan");
@@ -826,6 +836,74 @@ mod tests {
             "packaged scripts should be copied"
         );
         fs::remove_dir_all(&out).ok();
+        cleanup(&root);
+    }
+
+    #[test]
+    fn sample_project_rename_breaks_dependencies_until_consumers_are_updated() {
+        let root = copy_sample_project("rename-fix");
+        let old_path = root.join("assets/textures/slime.png");
+        let new_rel = "assets/textures/slime-renamed.png";
+        let new_path = root.join(new_rel);
+
+        let outcomes = import(&root).unwrap();
+        assert!(
+            outcomes.iter().all(|outcome| outcome.error.is_none()),
+            "sample project import should succeed before rename: {outcomes:?}"
+        );
+
+        fs::rename(&old_path, &new_path).unwrap();
+
+        let broken = check_dependencies(&root).unwrap();
+        assert!(
+            !broken.is_empty(),
+            "renaming a referenced texture should surface broken links"
+        );
+        assert!(
+            broken.iter().all(|link| link.reason == "缺失"),
+            "renamed-away texture should report missing root: {broken:?}"
+        );
+        let consumers: Vec<_> = broken.iter().map(|link| link.consumer.clone()).collect();
+        assert!(
+            consumers.contains(&PathBuf::from("assets/prefabs/slime_green.prefab")),
+            "green prefab should become invalid after texture rename: {consumers:?}"
+        );
+        assert!(
+            consumers.contains(&PathBuf::from("assets/prefabs/slime_red.prefab")),
+            "red prefab should become invalid after texture rename: {consumers:?}"
+        );
+        assert!(
+            consumers.contains(&PathBuf::from("scenes/production.scene")),
+            "production scene should become invalid after texture rename: {consumers:?}"
+        );
+
+        replace_in_file(
+            &root.join("assets/prefabs/slime_green.prefab"),
+            "assets/textures/slime.png",
+            new_rel,
+        );
+        replace_in_file(
+            &root.join("assets/prefabs/slime_red.prefab"),
+            "assets/textures/slime.png",
+            new_rel,
+        );
+        replace_in_file(
+            &root.join("scenes/production.scene"),
+            "assets/textures/slime.png",
+            new_rel,
+        );
+
+        let outcomes = import(&root).unwrap();
+        assert!(
+            outcomes.iter().all(|outcome| outcome.error.is_none()),
+            "sample project import should succeed after fix: {outcomes:?}"
+        );
+        let broken = check_dependencies(&root).unwrap();
+        assert!(
+            broken.is_empty(),
+            "updating all consumers should repair broken links: {broken:?}"
+        );
+
         cleanup(&root);
     }
 }

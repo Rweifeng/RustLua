@@ -49,7 +49,10 @@
 - `tasks/done/M12-*`：M12 资源系统闭环已归档（本次归档范围为 M12-00~M12-02：状态模型 + Importer 增量导入 + 依赖图与失效传播），任务总览见 [M12-资源系统闭环](../tasks/done/M12-资源系统闭环.md)，证据见 [docs/acceptance-evidence/m12/](acceptance-evidence/m12/)；
 - `tasks/done/M13-2D内容生产工作流.md`：M13 2D 内容生产工作流已归档（当前范围覆盖 Sprite、Tilemap、Animation、2D 排序、Prefab、UI 的最小生产闭环），证据见 [docs/acceptance-evidence/m13/](acceptance-evidence/m13/)；
 - `tasks/done/M14-00-新建2D生产样板工程.md`：M14-00 已完成，新增独立样板工程 `game_test_2d_production/`，证据见 [docs/acceptance-evidence/m14/](acceptance-evidence/m14/)；
-- `tasks/M14-01-端到端编辑器工作流.md`：M14-01 进行中，已补样板工程自动化工作流回归基线，GUI 实机链路待继续；
+- `tasks/done/M14-01-端到端编辑器工作流.md`：M14-01 阶段性归档，已补样板工程自动化工作流回归基线，GUI 实机链路待继续；
+- `tasks/done/M14-02-资源变更断链修复回归.md`：M14-02 已归档，样板工程上的资源改名、删除、断链传播、恢复原文件与修复引用链路已完成自动化、GUI 与命令行三层验证；
+- `tasks/done/M14-03-PlayStop恢复发布回归.md`：M14-03 已归档，样板工程上的 Play/Stop、保存/关闭/重开、恢复、发布检查与包体验证已完成自动化、命令行与 GUI 实机闭环；
+- `tasks/done/M14-04-垂直验收.md`：M14-04 已归档，`game_test_2d_production/` 已完成最终垂直验收，`M14-00 ~ M14-03` 的结果已收束为统一结论；
 - M9 基线标签：`v0.9-3d-game`（指向 M9-05 验收提交）；
 - M10 基线标签：`v0.10-editor`（指向 M10-10 验收提交）；
 
@@ -63,5 +66,9 @@
 - M11 性能修复：Game 预览 3D 场景帧率 24→50fps（`cbbb09b`，`PREVIEW_FRAME_INTERVAL` 33ms→16ms）；
 - M13 已归档：编辑器当前已具备不手改 scene/prefab 文件完成基础 2D 内容生产的最小闭环；
 - M14 已启动：`game_test_2d_production/` 作为端到端样板工程已创建并完成自动化基线验收；
-- M14-01 已有自动化底座：样板工程已进入 `assetc`、`editor`、`engine runtime` 回归面；
-- 后续里程碑：继续推进 M14-01 ~ M14-04 端到端编辑器/恢复/发布回归；若继续补资源闭环深化，则推进 M12-03 资源浏览器生产化、M12-04 校验报告、M12-05 迁移恢复框架。
+- M14-01 已有自动化底座：样板工程已进入 `assetc`、`editor`、`engine runtime` 回归面，任务记录以阶段性归档形式保留在 `tasks/done/`；
+- M14-02 已完成：资源变更、断链、恢复原文件与修复引用在真实样板工程上均已得到自动化、GUI 与命令行验证；
+- M14-03 已完成：Play/Stop、保存/关闭/重开、恢复、发布检查与包体验证在真实样板工程上均已闭环；
+- M14-04 已完成：`M14` 当前范围的样板工程主链已完成垂直验收；
+- 当前下一步：进入 `M15-00` 性能基线；
+- 后续里程碑：继续推进 `M15-00 ~ M15-04` 的性能、稳定性、干净机器发布与发布候选；若继续补资源闭环深化，则推进 M12-03 资源浏览器生产化、M12-04 校验报告、M12-05 迁移恢复框架。

@@ -225,3 +225,15 @@ panic（中文 Lua + `scene.load` 组合，接线后由真实文件暴露）。
 **M13 归档结论：** 本次已按当前最小闭环范围归档 `M13-00 ~ M13-06`。编辑器已具备 Sprite、Tilemap、Animation、
 2D 排序、Prefab、UI 的基础生产链路，当前可进入 `M14` 端到端样板项目验证。
 **未纳入本次归档：** 图集区域可视化选择、Tilemap 矩形/吸管/填充、动画事件标记、视图书签/快照、UI 样式资源系统。
+
+## M14 2D 生产样板端到端回归
+
+| 验收 ID | 范围 | 前置 | 标准 | 证据 / 命令 | 结果 | 任务 |
+| --- | --- | --- | --- | --- | --- | --- |
+| M14-A00 | 2D 生产样板工程基线 | M13-A07 | `game_test_2d_production/` 独立可打开，`assetc scan/import/check-deps/package`、`editor --check`、`game --check`、`game --pack --check` 均通过 | `docs/acceptance-evidence/m14/m14-00-2d-production-sample.md`；`tasks/done/M14-00-新建2D生产样板工程.md` | PASS | M14-00 |
+| M14-A01 | 端到端编辑器工作流自动化基线 | M14-A00 | 样板工程进入 `assetc`、`editor`、`engine runtime` 回归面；Prefab/TilePaint/动画/UI/Play/Stop 主链具备自动化样板回归 | `docs/acceptance-evidence/m14/m14-01-workflow-automation.md`；`tasks/done/M14-01-端到端编辑器工作流.md` | PHASE ARCHIVED | M14-01 |
+| M14-A02 | 资源变更 / 断链 / 修复回归 | M14-A01 | 资源改名、删除、断链传播、恢复原文件、修复引用在真实样板工程上可稳定触发并撤销；断链在 GUI 中可见；`assetc --check-deps`、`editor --check`、样板工程命令行链路通过 | `docs/acceptance-evidence/m14/m14-02-resource-change-regression.md`；`tasks/done/M14-02-资源变更断链修复回归.md` | PASS | M14-02 |
+| M14-A03 | Play/Stop / 恢复 / 发布回归 | M14-A02 | 真实样板工程上的 `Play/Stop`、保存/关闭/重开、恢复、发布检查、打包与包体验证全部通过；恢复在 GUI 中可见且不覆盖正式场景文件 | `docs/acceptance-evidence/m14/m14-03-play-stop-recovery-publish.md`；`tasks/done/M14-03-PlayStop恢复发布回归.md` | PASS | M14-03 |
+| M14-A04 | M14 垂直验收 | M14-A00 ~ M14-A03 | `game_test_2d_production/` 在资源导入、2D 内容编辑、Play/Stop、恢复、资源修复、发布检查等主链上形成完整闭环；自动化、命令行与 GUI 实机证据口径一致；无未解释 P0/P1 阻塞归档 | `docs/acceptance-evidence/m14/m14-04-vertical-acceptance.md`；`tasks/done/M14-04-垂直验收.md` | PASS | M14-04 |
+
+**M14 当前状态：** `M14-00`、`M14-02`、`M14-03`、`M14-04` 已验收，`M14-01` 以自动化基线阶段性归档。下一步进入 `M15-00` 性能基线。

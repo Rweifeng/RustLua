@@ -533,6 +533,7 @@ impl RuntimeScene {
 
     /// Pushes scene-node UI components (`Text` / `Image` / `Button`) as NDC
     /// overlay quads on top of the Lua UI. Order: images, buttons, then text.
+    /// Buttons render by composing the same image/text helpers used elsewhere.
     fn push_scene_ui(
         &mut self,
         vertices: &mut Vec<OverlayVertex>,
@@ -558,51 +559,7 @@ impl RuntimeScene {
                 .collect()
         });
         for button in buttons {
-            let viewport = [width.max(1) as f32, height.max(1) as f32];
-            let (origin, size) = resolve_ui_rect(
-                button.position,
-                button.size,
-                button.space,
-                button.anchor,
-                viewport,
-            );
-            // 背景矩形（白纹理着色）。
-            let start = vertices.len() as u32;
-            vertices.extend_from_slice(&screen_rect_ndc(
-                origin[0],
-                origin[1],
-                size[0],
-                size[1],
-                [
-                    button.background[0],
-                    button.background[1],
-                    button.background[2],
-                    1.0,
-                ],
-                width,
-                height,
-            ));
-            draws.push(SceneDraw {
-                texture: 0, // white
-                start,
-                count: vertices.len() as u32 - start,
-                sdf: false,
-            });
-            // 居中 label：用真实布局尺寸。
-            if !button.label.is_empty() {
-                let label_scale = match button.space {
-                    crate::core::ui::UiLayoutSpace::Screen => 1.0,
-                    crate::core::ui::UiLayoutSpace::Canvas => (viewport[0]
-                        / crate::core::ui::UI_REFERENCE_SIZE[0])
-                        .min(viewport[1] / crate::core::ui::UI_REFERENCE_SIZE[1]),
-                };
-                let (mesh, is_sdf) =
-                    self.layout_text(&button.label, [0.0, 0.0], label_scale, button.text_color)?;
-                let dx = origin[0] + (size[0] - mesh.size[0]).max(0.0) / 2.0;
-                let dy = origin[1] + (size[1] - mesh.size[1]).max(0.0) / 2.0;
-                let text_vertices = text_to_ndc_with_offset(mesh, is_sdf, [dx, dy], width, height);
-                self.push_text_run(vertices, draws, text_vertices, is_sdf);
-            }
+            self.push_button_quad(vertices, draws, width, height, &button)?;
         }
         let texts: Vec<UiText> = self.script.with_world(|world| {
             world
@@ -634,6 +591,52 @@ impl RuntimeScene {
             let text_vertices = text_to_ndc_with_offset(mesh, is_sdf, origin, width, height);
             self.push_text_run(vertices, draws, text_vertices, is_sdf);
         }
+        Ok(())
+    }
+
+    /// Pushes a `Button` by composing a tinted image quad plus centered text.
+    fn push_button_quad(
+        &mut self,
+        vertices: &mut Vec<OverlayVertex>,
+        draws: &mut Vec<SceneDraw>,
+        width: u32,
+        height: u32,
+        button: &UiButton,
+    ) -> Result<(), String> {
+        let background = UiImage {
+            texture: WHITE_TEXTURE_PATH.to_owned(),
+            position: button.position,
+            size: button.size,
+            color: button.background,
+            space: button.space,
+            anchor: button.anchor,
+        };
+        self.push_image_quad(vertices, draws, width, height, &background)?;
+
+        if button.label.trim().is_empty() {
+            return Ok(());
+        }
+
+        let viewport = [width.max(1) as f32, height.max(1) as f32];
+        let (origin, size) = resolve_ui_rect(
+            button.position,
+            button.size,
+            button.space,
+            button.anchor,
+            viewport,
+        );
+        let label_scale = match button.space {
+            crate::core::ui::UiLayoutSpace::Screen => 1.0,
+            crate::core::ui::UiLayoutSpace::Canvas => (viewport[0]
+                / crate::core::ui::UI_REFERENCE_SIZE[0])
+                .min(viewport[1] / crate::core::ui::UI_REFERENCE_SIZE[1]),
+        };
+        let (mesh, is_sdf) =
+            self.layout_text(&button.label, [0.0, 0.0], label_scale, button.text_color)?;
+        let dx = origin[0] + (size[0] - mesh.size[0]).max(0.0) / 2.0;
+        let dy = origin[1] + (size[1] - mesh.size[1]).max(0.0) / 2.0;
+        let text_vertices = text_to_ndc_with_offset(mesh, is_sdf, [dx, dy], width, height);
+        self.push_text_run(vertices, draws, text_vertices, is_sdf);
         Ok(())
     }
 
@@ -850,7 +853,7 @@ fn load_runtime_scene(project_root: Option<&Path>) -> Scene {
                 .get_mut(&SceneEntityId(1))
                 .unwrap()
                 .components
-                .insert("Sprite".into(), "assets/red-1x1.png".into());
+                .insert("Sprite".into(), "assets/textures/red-1x1.png".into());
             scene
         })
 }
