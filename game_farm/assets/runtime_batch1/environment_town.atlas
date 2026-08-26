@@ -1,0 +1,26 @@
+# runtime_batch1 / environment_town atlas draft
+group = environment_town
+stage = batch1
+source = assets/runtime_batch1/environment_town/
+
+# 当前仅作为 atlas 草案与导入占位文件。
+# 由于当前 importer 对 .atlas 仍只做“非空校验”，这里先保留人可读格式。
+# 后续 atlas 解析器就位后，可据此转成正式结构化 atlas 定义。
+
+texture:
+  - farm_tileset_main_kenney.png
+  - grass_tile_anwar.png
+  - dirt_tile_anwar.png
+  - town_tilemap_kenney_pico8.png
+
+intended_runtime_ids:
+  - farm.ground.main
+  - farm.ground.grass
+  - farm.ground.soil
+  - town.layout.main
+
+notes:
+  - farm_tileset_main_kenney.png 作为农场主结构候选
+  - grass/dirt 作为近景地块补片候选
+  - town_tilemap_kenney_pico8.png 作为小镇主结构候选
+  - 后续需决定哪些区域进入 Tilemap，哪些保留 Sprite 路线

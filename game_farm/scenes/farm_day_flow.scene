@@ -1,0 +1,98 @@
+scene_version=2
+name=farm_day_flow
+entity	1	MorningHomeBackdrop
+component	1	Sprite	assets/textures/interior/indoor_tileset_kenney_roguelike.png;size=200
+component	1	Transform	x=130.000000000;y=120.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity	2	MorningFarmer
+component	2	Sprite	assets/textures/characters/farmer_down_sample_hnnnnnnn.png;size=92
+component	2	Transform	x=62.000000000;y=142.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity	3	MorningTableware
+component	3	Sprite	assets/textures/kitchen/tableware_sheet_32x32_cc0.png;size=92
+component	3	Transform	x=176.000000000;y=170.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity	4	MorningBread
+component	4	Sprite	assets/textures/food/bread_loaf_32x32_cc0.png;size=66
+component	4	Transform	x=102.000000000;y=212.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity	5	MorningMilk
+component	5	Sprite	assets/textures/food/milk_carton_32x32_cc0.png;size=66
+component	5	Transform	x=156.000000000;y=214.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity	6	FieldBackdrop
+component	6	Sprite	assets/textures/environment/farm_tileset_main_kenney.png;size=220
+component	6	Transform	x=382.000000000;y=118.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity	7	FieldGrass
+component	7	Sprite	assets/textures/environment/grass_tile_anwar.png;size=82
+component	7	Transform	x=300.000000000;y=192.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity	8	FieldSoil
+component	8	Sprite	assets/textures/environment/dirt_tile_anwar.png;size=82
+component	8	Transform	x=362.000000000;y=194.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity	9	FieldCrops
+component	9	Sprite	assets/textures/crops/vegetables_sheet_scratchio.png;size=102
+component	9	Transform	x=458.000000000;y=190.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity	10	FieldFarmer
+component	10	Sprite	assets/textures/characters/farmer_down_sample_hnnnnnnn.png;size=86
+component	10	Transform	x=316.000000000;y=90.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity	11	FieldHoe
+component	11	Sprite	assets/textures/items/hoe_anwar.png;size=66
+component	11	Transform	x=402.000000000;y=90.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity	12	FieldWateringCan
+component	12	Sprite	assets/textures/items/watering_can_anwar.png;size=66
+component	12	Transform	x=454.000000000;y=92.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity	13	TownBackdrop
+component	13	Sprite	assets/textures/town/town_tilemap_kenney_pico8.png;size=210
+component	13	Transform	x=666.000000000;y=116.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity	14	TownStand
+component	14	Sprite	assets/textures/town/market_stand_clean_cc0.png;size=100
+component	14	Transform	x=606.000000000;y=190.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity	15	TownSign
+component	15	Sprite	assets/textures/town_props/open_sign_01_32x32_cc0.png;size=72
+component	15	Transform	x=678.000000000;y=190.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity	16	TownLamp
+component	16	Sprite	assets/textures/town_props/lamp_post_32x32_cc0.png;size=76
+component	16	Transform	x=740.000000000;y=186.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity	17	TownFood
+component	17	Sprite	assets/textures/food/apple_32x32_cc0.png;size=60
+component	17	Transform	x=620.000000000;y=88.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity	18	TownCoin
+component	18	Sprite	assets/textures/items/coin_anwar.png;size=56
+component	18	Transform	x=720.000000000;y=88.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity	19	GatheringWater
+component	19	Sprite	assets/textures/fish/water_terrain_kenney.png;size=200
+component	19	Transform	x=130.000000000;y=404.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity	20	GatheringFish
+component	20	Sprite	assets/textures/fish/fish_blue_kenney.png;size=80
+component	20	Transform	x=72.000000000;y=404.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity	21	GatheringFlowers
+component	21	Sprite	assets/textures/foraging/plants_sheet_flowers_cc0.png;size=92
+component	21	Transform	x=216.000000000;y=410.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity	22	GatheringMushroom
+component	22	Sprite	assets/textures/foraging/mushroom_red_cc0.png;size=66
+component	22	Transform	x=90.000000000;y=500.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity	23	GatheringOre
+component	23	Sprite	assets/textures/mining/ore_gold_cc0.png;size=66
+component	23	Transform	x=152.000000000;y=502.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity	24	WorkshopMaterials
+component	24	Sprite	assets/textures/materials/block_texture_tilemap_16x16_cc0.png;size=148
+component	24	Transform	x=430.000000000;y=402.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity	25	WorkshopPallet
+component	25	Sprite	assets/textures/storage/pallet_pile_cc0.png;size=88
+component	25	Transform	x=344.000000000;y=494.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity	26	WorkshopBox
+component	26	Sprite	assets/textures/storage/wooden_box_32x32_cc0.png;size=76
+component	26	Transform	x=408.000000000;y=496.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity	27	WorkshopAxe
+component	27	Sprite	assets/textures/items/stone_axe_scratchio.png;size=74
+component	27	Transform	x=474.000000000;y=496.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity	28	WorkshopHay
+component	28	Sprite	assets/textures/materials/hay_side_16x16_cc0.png;size=74
+component	28	Transform	x=542.000000000;y=496.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity	29	EveningHomeBackdrop
+component	29	Sprite	assets/textures/interior/furniture_and_walls_sheet_cc0.png;size=150
+component	29	Transform	x=724.000000000;y=404.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity	30	EveningFood
+component	30	Sprite	assets/textures/food/salad_32x32_cc0.png;size=68
+component	30	Transform	x=660.000000000;y=492.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity	31	EveningDrink
+component	31	Sprite	assets/textures/food/cafe_latte_32x32_cc0.png;size=68
+component	31	Transform	x=720.000000000;y=492.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity	32	EveningShelf
+component	32	Sprite	assets/textures/shop/bookcase_cc0.png;size=82
+component	32	Transform	x=784.000000000;y=490.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000

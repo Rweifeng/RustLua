@@ -1,0 +1,6 @@
+[project]
+name = "game_farm"
+version = "0.1.0"
+engine = "p2"
+main_script = "scripts/main.lua"
+startup_scene = "scenes/batch1_tilemap_preview.scene"
