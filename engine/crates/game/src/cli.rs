@@ -98,12 +98,11 @@ pub fn resolve_window_title(project: Option<&Path>, explicit: Option<String>) ->
     if let Some(title) = release_title() {
         return title;
     }
-    if let Some(root) = project {
-        if let Ok(text) = fs::read_to_string(root.join("project.toml")) {
-            if let Some(name) = extract_key(&text, "name") {
-                return name;
-            }
-        }
+    if let Some(root) = project
+        && let Ok(text) = fs::read_to_string(root.join("project.toml"))
+        && let Some(name) = extract_key(&text, "name")
+    {
+        return name;
     }
     "RustLua Engine".to_owned()
 }

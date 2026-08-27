@@ -79,6 +79,25 @@ impl RuntimeScene {
         self.camera = camera;
     }
 
+    /// 度量一段场景文本在给定 scale 下的像素尺寸（编辑器 UI 包围框用）。
+    /// 与渲染同路径：SDF 字体存在时用真实字体，否则用内置 5x7 位图。
+    pub fn measure_ui_text(&mut self, text: &str, scale: f32) -> [f32; 2] {
+        let style = TextStyle {
+            scale,
+            ..Default::default()
+        };
+        if let Some(font) = self.font_atlas.as_mut() {
+            TextLayout::build(text, [0.0, 0.0], style, font)
+                .map(|mesh| mesh.size)
+                .unwrap_or([0.0, 0.0])
+        } else {
+            let atlas = TextAtlas::built_in();
+            TextLayout::build_bitmap(text, [0.0, 0.0], style, &atlas)
+                .map(|mesh| mesh.size)
+                .unwrap_or([0.0, 0.0])
+        }
+    }
+
     fn init(project_root: Option<&Path>, scene: Scene, run_script: bool) -> Result<Self, String> {
         let mut script = LuaRuntime::new().map_err(|error| error.to_string())?;
         // Project root must be set before instantiation so scene components that

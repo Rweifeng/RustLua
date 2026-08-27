@@ -8,6 +8,7 @@ use crate::util::icon_toggle;
 use crate::util::strip_verbatim_prefix;
 use crate::{
     GizmoAxis, GizmoDrag, SceneDrag, SceneTool, SceneViewCache2d, SceneViewCache3d, SceneViewMode,
+    UiDragInitial,
 };
 use editor::{CommandKind, TransformFields};
 use eframe::egui;
@@ -17,11 +18,18 @@ use engine::core::{
     math2d::Camera2D,
     math3d::{Quat, Vec3},
     prefab::Prefab,
-    scene::SceneEntityId,
+    scene::{SceneEntity, SceneEntityId},
     scene_extract::extract_serialized_scene_3d,
+    sprite::SpriteComponent,
+    text::{TextAtlas, TextLayout, TextStyle},
+    texture::{TextureAsset, TextureColorSpace},
     tilemap::Tilemap,
     transform::Vec2,
     transform3d::Transform3D,
+    ui::{
+        UiButton, UiImage, UiLayoutSpace, UiText, UI_REFERENCE_SIZE, resolve_ui_rect,
+        resolve_ui_text_origin,
+    },
 };
 use engine::host::{
     BoundsSource, ReadbackStatus, Renderer, RuntimeScene, Scene3d, Scene3dBounds, Scene3dDrawable,
@@ -81,50 +89,12 @@ impl EditorApp {
             egui::Color32::LIGHT_GRAY,
         );
         let filter = self.hierarchy_filter.to_lowercase();
-        let entities: Vec<_> = self
-            .current_scene()
-            .map(|s| {
-                s.scene
-                    .entities
-                    .values()
-                    .filter_map(|e| {
-                        if !filter.trim().is_empty()
-                            && !e.name.to_lowercase().contains(filter.trim())
-                        {
-                            return None;
-                        }
-                        if self.scene_state.hidden.contains(&e.id) {
-                            return None;
-                        }
-                        let transform = self
-                            .scene_state
-                            .preview
-                            .get(&e.id)
-                            .copied()
-                            .or_else(|| {
-                                e.components
-                                    .get("Transform")
-                                    .and_then(|v| parse_transform(v))
-                            })
-                            .unwrap_or_default();
-                        Some((e.id, e.name.clone(), transform))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+        let entities = self.collect_scene_2d_entities(rect, &filter, scale);
         let tilemap_context = self.selected_tilemap_context();
-        for (id, name, transform) in entities.iter() {
-            let center = egui::pos2(
-                rect.center().x + self.scene_state.pan.x + transform.position_x * self.scene_zoom,
-                rect.center().y + self.scene_state.pan.y - transform.position_y * self.scene_zoom,
-            );
-            let size = egui::vec2(
-                (112.0 * transform.scale_x.abs().max(0.25)) * self.scene_zoom,
-                (44.0 * transform.scale_y.abs().max(0.25)) * self.scene_zoom,
-            );
-            let box_rect = egui::Rect::from_center_size(center, size);
-            let selected =
-                self.tree.selected() == Some(*id) || self.scene_state.selected.contains(id);
+        for entity in entities.iter() {
+            let box_rect = egui::Rect::from_center_size(entity.center, entity.size);
+            let selected = self.tree.selected() == Some(entity.id)
+                || self.scene_state.selected.contains(&entity.id);
             // 场景已实时渲染，实体只画选中轮廓 + 名称。
             if selected {
                 painter.rect_stroke(
@@ -134,9 +104,9 @@ impl EditorApp {
                     egui::StrokeKind::Outside,
                 );
                 painter.text(
-                    center + egui::vec2(0.0, -size.y * 0.5 - 6.0),
+                    entity.center + egui::vec2(0.0, -entity.size.y * 0.5 - 6.0),
                     egui::Align2::CENTER_BOTTOM,
-                    name,
+                    &entity.name,
                     egui::FontId::proportional(14.0),
                     egui::Color32::LIGHT_YELLOW,
                 );
@@ -148,20 +118,20 @@ impl EditorApp {
             {
                 let additive = ui.input(|input| input.modifiers.command || input.modifiers.ctrl);
                 if additive {
-                    if self.scene_state.selected.contains(id) {
-                        self.scene_state.selected.remove(id);
+                    if self.scene_state.selected.contains(&entity.id) {
+                        self.scene_state.selected.remove(&entity.id);
                     } else {
-                        self.scene_state.selected.insert(*id);
+                        self.scene_state.selected.insert(entity.id);
                     }
                 } else {
                     self.scene_state.selected.clear();
-                    self.scene_state.selected.insert(*id);
+                    self.scene_state.selected.insert(entity.id);
                 }
                 if let Some(scene) = self.current_scene() {
                     let scene = scene.clone();
-                    let _ = self.tree.select(&scene, *id);
+                    let _ = self.tree.select(&scene, entity.id);
                 }
-                self.sync_inspector(*id);
+                self.sync_inspector(entity.id);
             }
         }
 
@@ -191,32 +161,21 @@ impl EditorApp {
         if response.drag_started_by(egui::PointerButton::Primary)
             && let Some(pos) = pointer
         {
-            let hit = entities.iter().rev().find(|(id, _, transform)| {
-                let center = egui::pos2(
-                    rect.center().x
-                        + self.scene_state.pan.x
-                        + transform.position_x * self.scene_zoom,
-                    rect.center().y + self.scene_state.pan.y
-                        - transform.position_y * self.scene_zoom,
-                );
-                let size = egui::vec2(
-                    (112.0 * transform.scale_x.abs().max(0.25)) * self.scene_zoom,
-                    (44.0 * transform.scale_y.abs().max(0.25)) * self.scene_zoom,
-                );
-                rotated_contains(center, size, transform.rotation, pos)
-                    && !self.scene_state.locked.contains(id)
+            let hit = entities.iter().rev().find(|entity| {
+                rotated_contains(entity.center, entity.size, entity.transform.rotation, pos)
+                    && !self.scene_state.locked.contains(&entity.id)
             });
-            if let Some((id, _, _)) = hit {
+            if let Some(hit) = hit {
                 let additive = ui.input(|input| input.modifiers.command || input.modifiers.ctrl);
-                if !additive && !self.scene_state.selected.contains(id) {
+                if !additive && !self.scene_state.selected.contains(&hit.id) {
                     self.scene_state.selected.clear();
                 }
-                self.scene_state.selected.insert(*id);
+                self.scene_state.selected.insert(hit.id);
                 if let Some(scene) = self.current_scene() {
                     let scene = scene.clone();
-                    let _ = self.tree.select(&scene, *id);
+                    let _ = self.tree.select(&scene, hit.id);
                 }
-                self.sync_inspector(*id);
+                self.sync_inspector(hit.id);
                 let ids: Vec<_> = self
                     .scene_state
                     .selected
@@ -226,13 +185,29 @@ impl EditorApp {
                     .collect();
                 let initial = entities
                     .iter()
-                    .filter(|(entity_id, _, _)| ids.contains(entity_id))
-                    .map(|(entity_id, _, value)| (*entity_id, *value))
+                    .filter(|entity| ids.contains(&entity.id))
+                    .map(|entity| (entity.id, entity.transform))
+                    .collect();
+                let ui_initial = entities
+                    .iter()
+                    .filter(|entity| ids.contains(&entity.id))
+                    .filter_map(|entity| {
+                        entity.ui.map(|ui| {
+                            (
+                                entity.id,
+                                UiDragInitial {
+                                    position: ui.position,
+                                    space: ui.space,
+                                },
+                            )
+                        })
+                    })
                     .collect();
                 self.scene_state.drag = Some(SceneDrag {
                     ids,
                     start: pos,
                     initial,
+                    ui_initial,
                 });
             } else {
                 self.scene_state.box_select_start = Some(pos);
@@ -251,26 +226,15 @@ impl EditorApp {
                 egui::Stroke::new(1.0_f32, egui::Color32::LIGHT_BLUE),
                 egui::StrokeKind::Outside,
             );
-            for (id, _, transform) in &entities {
-                let center = egui::pos2(
-                    rect.center().x
-                        + self.scene_state.pan.x
-                        + transform.position_x * self.scene_zoom,
-                    rect.center().y + self.scene_state.pan.y
-                        - transform.position_y * self.scene_zoom,
-                );
-                let size = egui::vec2(
-                    (112.0 * transform.scale_x.abs().max(0.25)) * self.scene_zoom,
-                    (44.0 * transform.scale_y.abs().max(0.25)) * self.scene_zoom,
-                );
-                let corners = rotated_corners(center, size, transform.rotation);
+            for entity in &entities {
+                let corners = rotated_corners(entity.center, entity.size, entity.transform.rotation);
                 let contained = corners
                     .iter()
                     .all(|corner| selection_rect.contains(*corner));
                 let intersects = polygon_intersects_rect(&corners, selection_rect);
                 let left_to_right = current.x >= start.x;
                 if (left_to_right && contained) || (!left_to_right && intersects) {
-                    self.scene_state.selected.insert(*id);
+                    self.scene_state.selected.insert(entity.id);
                 }
             }
         }
@@ -279,6 +243,13 @@ impl EditorApp {
         {
             let delta = pos - drag.start;
             let mut preview = std::collections::BTreeMap::new();
+            let mut preview_ui = std::collections::BTreeMap::new();
+            // UI 组件坐标是 authored 空间（canvas=参考分辨率 1280x720），拖动增量
+            // 是面板 points，需按 viewport 与参考分辨率的比值换算。
+            let canvas_factor = egui::vec2(
+                rect.width() / UI_REFERENCE_SIZE[0],
+                rect.height() / UI_REFERENCE_SIZE[1],
+            );
             let pivot = {
                 let count = drag.initial.len().max(1) as f32;
                 let x = drag
@@ -298,6 +269,24 @@ impl EditorApp {
             let angle = (delta.x * 0.5).to_radians();
             let factor = (1.0 + delta.x * 0.01).max(0.05);
             for id in &drag.ids {
+                // UI 组件拖拽：只预览组件 x/y（屏幕空间），不写 Transform。
+                if let Some(ui) = drag.ui_initial.get(id) {
+                    // Screen 空间组件坐标是 viewport 像素：面板拖动增量（points）
+                    // 要换算成像素增量，除以 1/ppp 即乘以 ppp。Canvas 空间坐标是
+                    // reference 像素，canvas_factor 已按 points 比例折算，无需再乘 ppp。
+                    let per_axis = match ui.space {
+                        UiLayoutSpace::Screen => egui::Vec2::new(1.0 / scale, 1.0 / scale),
+                        UiLayoutSpace::Canvas => canvas_factor,
+                    };
+                    preview_ui.insert(
+                        *id,
+                        [
+                            ui.position[0] + delta.x / per_axis.x,
+                            ui.position[1] + delta.y / per_axis.y,
+                        ],
+                    );
+                    continue;
+                }
                 let initial = drag.initial[id];
                 let mut next = initial;
                 match self.scene_tool {
@@ -331,6 +320,7 @@ impl EditorApp {
                 preview.insert(*id, next);
             }
             self.scene_state.preview = preview;
+            self.scene_state.preview_ui = preview_ui;
         }
         if response.drag_stopped_by(egui::PointerButton::Primary) {
             self.commit_scene_drag();
@@ -339,6 +329,80 @@ impl EditorApp {
         }
         // 工具小面板（Select/Move/Rotate/Scale）置于场景右上角。
         self.draw_scene_tool_panel(ui, rect);
+    }
+
+    /// 收集 2D 场景视图要绘制的实体包围框（字段级借用，避免与 &mut scene_runtime
+    /// 冲突）。UI 组件实体用组件自身的屏幕空间坐标解析，其余实体按 Transform 世界
+    /// 坐标 + pan/zoom 映射。
+    fn collect_scene_2d_entities(
+        &mut self,
+        rect: egui::Rect,
+        filter: &str,
+        pixels_per_point: f32,
+    ) -> Vec<SceneBoxedEntity> {
+        let scene = self.document.current_scene.as_ref();
+        let mut runtime = self.scene_runtime.as_mut();
+        let scene_state = &self.scene_state;
+        let scene_zoom = self.scene_zoom;
+        let pan = scene_state.pan;
+        let filter = filter.trim();
+        let Some(scene) = scene else {
+            return Vec::new();
+        };
+        let mut entities = Vec::with_capacity(scene.scene.entities.len());
+        for e in scene.scene.entities.values() {
+            if !filter.is_empty() && !e.name.to_lowercase().contains(filter) {
+                continue;
+            }
+            if scene_state.hidden.contains(&e.id) {
+                continue;
+            }
+            let transform = scene_state
+                .preview
+                .get(&e.id)
+                .copied()
+                .or_else(|| {
+                    e.components
+                        .get("Transform")
+                        .and_then(|v| parse_transform(v))
+                })
+                .unwrap_or_default();
+            // UI 组件（Image/Button/Text）在屏幕空间（NDC 覆盖层）渲染，包围框按
+            // 组件自身 x/y/width/height/space/anchor 解析到面板坐标，不受相机
+            // pan/zoom 影响；其余实体（Sprite/图块）按 Transform 世界坐标 + pan/zoom
+            // 映射。空实体回退默认框。
+            if let Some((center, size, ui)) = ui_entity_2d_box(
+                e,
+                rect,
+                scene_state.preview_ui.get(&e.id).copied(),
+                runtime.as_deref_mut(),
+                pixels_per_point,
+            ) {
+                let effective = TransformFields {
+                    rotation: 0.0,
+                    ..transform
+                };
+                entities.push(SceneBoxedEntity {
+                    id: e.id,
+                    name: e.name.clone(),
+                    transform: effective,
+                    center,
+                    size,
+                    ui: Some(ui),
+                });
+            } else {
+                let (center, size) = entity_2d_screen_box(e, rect, pan, scene_zoom, transform);
+                entities.push(SceneBoxedEntity {
+                    id: e.id,
+                    name: e.name.clone(),
+                    transform,
+                    center,
+                    size,
+                    ui: None,
+                });
+            }
+        }
+        entities
     }
 
     fn set_scene_view_diagnostic(&mut self, message: impl Into<String>) {
@@ -978,14 +1042,21 @@ impl EditorApp {
         }
     }
 
-    /// 提交 2D 场景拖拽：写回 Transform 组件。
+    /// 提交 2D 场景拖拽：世界实体写回 Transform 组件，UI 组件实体写回组件 x/y。
     fn commit_scene_drag(&mut self) {
         if self.is_playing() {
             self.scene_state.preview.clear();
+            self.scene_state.preview_ui.clear();
             return;
         }
         let preview = std::mem::take(&mut self.scene_state.preview);
-        let Some(first) = preview.keys().next().copied() else {
+        let preview_ui = std::mem::take(&mut self.scene_state.preview_ui);
+        let first = preview
+            .keys()
+            .next()
+            .copied()
+            .or_else(|| preview_ui.keys().next().copied());
+        let Some(first) = first else {
             return;
         };
         if let Some(scene) = self.document.current_scene.as_mut() {
@@ -999,6 +1070,11 @@ impl EditorApp {
                             entity
                                 .components
                                 .insert("Transform".to_owned(), encode_transform(*transform));
+                        }
+                    }
+                    for (id, position) in &preview_ui {
+                        if let Some(entity) = scene.scene.entities.get_mut(id) {
+                            set_ui_component_position(entity, *position);
                         }
                     }
                     scene.mark_dirty();
@@ -1594,6 +1670,7 @@ impl EditorApp {
             .unwrap_or_else(|| "Sprite".to_owned());
         let tree = self.tree.clone();
         let path = path.to_owned();
+        let root = strip_verbatim_prefix(&self.project.root);
         let Some(scene) = self.document.current_scene.as_mut() else {
             return Ok(());
         };
@@ -1609,9 +1686,15 @@ impl EditorApp {
                             "Transform".into(),
                             "x=0;y=0;rotation=0;scale_x=1;scale_y=1".into(),
                         );
+                        // 新建精灵按源纹理实际像素尺寸生成，编辑器包围框与实际显示一致；
+                        // 纹理读取失败时回退到默认 32×32。
+                        let size =
+                            TextureAsset::load_png(root.join(&path), TextureColorSpace::Srgb)
+                                .map(|asset| Vec2::new(asset.width() as f32, asset.height() as f32))
+                                .unwrap_or_else(|_| Vec2::new(32.0, 32.0));
                         let sprite = engine::core::sprite::SpriteComponent {
                             texture: path.clone(),
-                            size: engine::core::transform::Vec2::new(32.0, 32.0),
+                            size,
                             pivot: engine::core::transform::Vec2::new(0.5, 0.5),
                             tint: [1.0; 4],
                             sorting: engine::core::sprite::SpriteSorting::default(),
@@ -1626,6 +1709,226 @@ impl EditorApp {
             Ok(_) => Ok(()),
             Err(error) => Err(error),
         }
+    }
+}
+
+/// 计算 2D 实体在 Scene 视图中的屏幕空间包围框（中心 + 尺寸）。
+///
+/// 尺寸按实体组件解析：Sprite 用 `size`（含 pivot 偏移，使框与渲染 quad 对齐），
+/// Tilemap 用整张图块网格；无尺寸信息的实体回退到默认框（112×44）。再乘上
+/// Transform 缩放与视图 zoom 得到屏幕尺寸，pivot 偏移同步缩放/旋转并随屏幕 Y
+/// 翻转映射，保证选中轮廓与命中测试贴合实际渲染结果。
+fn entity_2d_screen_box(
+    entity: &SceneEntity,
+    rect: egui::Rect,
+    pan: egui::Vec2,
+    zoom: f32,
+    transform: TransformFields,
+) -> (egui::Pos2, egui::Vec2) {
+    let mut size = egui::vec2(112.0, 44.0);
+    let mut pivot = egui::Vec2::new(0.5, 0.5);
+    if let Some(raw) = entity.components.get("Sprite")
+        && let Ok(sprite) = SpriteComponent::from_component_str(raw)
+    {
+        size = egui::vec2(sprite.size.x, sprite.size.y);
+        pivot = egui::vec2(sprite.pivot.x, sprite.pivot.y);
+    } else if let Some(raw) = entity.components.get("Tilemap")
+        && let Ok(tilemap) = Tilemap::from_component_str(raw)
+    {
+        size = egui::vec2(
+            tilemap.tile_size.x * tilemap.width as f32,
+            tilemap.tile_size.y * tilemap.height as f32,
+        );
+    }
+    let sx = transform.scale_x.abs().max(0.25);
+    let sy = transform.scale_y.abs().max(0.25);
+    let screen_size = egui::vec2(size.x * sx * zoom, size.y * sy * zoom);
+    // Sprite pivot 偏移（世界像素）随缩放/旋转映射到屏幕，使包围框中心贴合渲染 quad。
+    let offset = egui::vec2(
+        size.x * (0.5 - pivot.x) * sx,
+        size.y * (0.5 - pivot.y) * sy,
+    );
+    let rotation = transform.rotation.to_radians();
+    let world_center = egui::pos2(
+        transform.position_x + offset.x * rotation.cos() - offset.y * rotation.sin(),
+        transform.position_y + offset.x * rotation.sin() + offset.y * rotation.cos(),
+    );
+    let center = egui::pos2(
+        rect.center().x + pan.x + world_center.x * zoom,
+        rect.center().y + pan.y - world_center.y * zoom,
+    );
+    (center, screen_size)
+}
+
+/// 2D 场景视图里一个实体的包围框记录（选中轮廓 / 命中 / 框选 / 拖拽共用）。
+struct SceneBoxedEntity {
+    id: SceneEntityId,
+    name: String,
+    /// 生效变换：UI 实体旋转恒为 0（组件在屏幕空间，不受 Transform 旋转影响）。
+    transform: TransformFields,
+    /// 包围框中心（面板逻辑坐标）。
+    center: egui::Pos2,
+    size: egui::Vec2,
+    /// 该实体是否为 UI 组件实体（Image/Button/Text），附组件改写信息。
+    ui: Option<UiEntityInfo>,
+}
+
+/// UI 组件实体的拖拽改写信息。
+#[derive(Clone, Copy)]
+struct UiEntityInfo {
+    position: [f32; 2],
+    space: UiLayoutSpace,
+}
+
+/// 计算 UI 组件实体（Image/Button/Text）在面板坐标系的真实包围框。
+///
+/// UI 组件在运行时渲染为 NDC 屏幕空间覆盖层，位置/尺寸来自组件自身的
+/// `x/y/width/height/space/anchor`（而非 Transform，后者对 UI 实体恒为原点）。
+/// 这里用与运行时相同的 `resolve_ui_rect`/`resolve_ui_text_origin`（viewport 用
+/// 面板像素尺寸）解析，再按 pixels_per_point 折算到面板逻辑坐标，使包围框精确
+/// 贴合实时渲染的 UI；`override_position` 提供拖拽预览位置。
+fn ui_entity_2d_box(
+    entity: &SceneEntity,
+    rect: egui::Rect,
+    override_position: Option<[f32; 2]>,
+    runtime: Option<&mut RuntimeScene>,
+    pixels_per_point: f32,
+) -> Option<(egui::Pos2, egui::Vec2, UiEntityInfo)> {
+    // UI 坐标是 viewport 像素；面板逻辑坐标 = 像素 / pixels_per_point。
+    let ppp = pixels_per_point.max(1.0e-3);
+    let viewport = [rect.width() * ppp, rect.height() * ppp];
+    let inv = 1.0 / ppp;
+    let center_of = |origin: [f32; 2], size: [f32; 2]| {
+        rect.left_top()
+            + egui::vec2(
+                (origin[0] + size[0] * 0.5) * inv,
+                (origin[1] + size[1] * 0.5) * inv,
+            )
+    };
+    if let Some(raw) = entity.components.get("Image")
+        && let Ok(image) = UiImage::from_component_str(raw)
+    {
+        let position = override_position.unwrap_or(image.position);
+        let (origin, size) =
+            resolve_ui_rect(position, image.size, image.space, image.anchor, viewport);
+        return Some((
+            center_of(origin, size),
+            egui::vec2(size[0] * inv, size[1] * inv),
+            UiEntityInfo {
+                position,
+                space: image.space,
+            },
+        ));
+    }
+    if let Some(raw) = entity.components.get("Button")
+        && let Ok(button) = UiButton::from_component_str(raw)
+    {
+        let position = override_position.unwrap_or(button.position);
+        let (origin, size) =
+            resolve_ui_rect(position, button.size, button.space, button.anchor, viewport);
+        return Some((
+            center_of(origin, size),
+            egui::vec2(size[0] * inv, size[1] * inv),
+            UiEntityInfo {
+                position,
+                space: button.space,
+            },
+        ));
+    }
+    if let Some(raw) = entity.components.get("Text")
+        && let Ok(text) = UiText::from_component_str(raw)
+    {
+        let position = override_position.unwrap_or(text.position);
+        // 文本没有尺寸字段：先按运行时同款 resolve 得到缩放后的 glyph scale，
+        // 再度量文本像素尺寸，最后解析文本包围框原点。
+        let (_, resolved_scale) = resolve_ui_text_origin(
+            position,
+            [0.0, 0.0],
+            text.scale,
+            text.space,
+            text.anchor,
+            viewport,
+        );
+        let size = match runtime {
+            Some(runtime) => {
+                let [w, h] = runtime.measure_ui_text(&text.text, resolved_scale);
+                egui::vec2(w, h)
+            }
+            None => {
+                let [w, h] = fallback_measure_text(&text.text, resolved_scale);
+                egui::vec2(w, h)
+            }
+        };
+        let (origin, _) = resolve_ui_text_origin(
+            position,
+            [size.x, size.y],
+            text.scale,
+            text.space,
+            text.anchor,
+            viewport,
+        );
+        return Some((
+            center_of(origin, [size.x, size.y]),
+            egui::vec2(size.x * inv, size.y * inv),
+            UiEntityInfo {
+                position,
+                space: text.space,
+            },
+        ));
+    }
+    None
+}
+
+/// 无运行时时度量文本的兜底：用内置 5x7 位图指标（与运行时无字体回退一致）。
+fn fallback_measure_text(text: &str, scale: f32) -> [f32; 2] {
+    let atlas = TextAtlas::built_in();
+    TextLayout::build_bitmap(
+        text,
+        [0.0, 0.0],
+        TextStyle {
+            scale,
+            ..Default::default()
+        },
+        &atlas,
+    )
+    .map(|mesh| mesh.size)
+    .unwrap_or([0.0, 0.0])
+}
+
+/// 把实体上的 UI 组件（Image/Button/Text）x/y 改写为给定位置（拖拽提交）。
+/// 找到第一个可用 UI 组件改写并返回 `true`；无 UI 组件返回 `false`。
+fn set_ui_component_position(entity: &mut SceneEntity, position: [f32; 2]) -> bool {
+    let Some(key) = ["Image", "Button", "Text"]
+        .into_iter()
+        .find(|key| entity.components.contains_key(*key))
+    else {
+        return false;
+    };
+    let updated = {
+        let Some(raw) = entity.components.get(key) else {
+            return false;
+        };
+        match key {
+            "Image" => UiImage::from_component_str(raw).ok().map(|mut component| {
+                component.position = position;
+                component.to_component_str()
+            }),
+            "Button" => UiButton::from_component_str(raw).ok().map(|mut component| {
+                component.position = position;
+                component.to_component_str()
+            }),
+            "Text" => UiText::from_component_str(raw).ok().map(|mut component| {
+                component.position = position;
+                component.to_component_str()
+            }),
+            _ => None,
+        }
+    };
+    if let Some(updated) = updated {
+        entity.components.insert(key.to_owned(), updated);
+        true
+    } else {
+        false
     }
 }
 
@@ -1875,6 +2178,323 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn entity_2d_box_uses_sprite_size_pivot_and_scale() {
+        let rect = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(400.0, 300.0));
+        let pan = egui::Vec2::ZERO;
+        let zoom = 2.0;
+        let mut scene = engine::core::scene::Scene::new("bounds");
+        let id = SceneEntityId(1);
+        scene.add_entity(id, "Sprite", None).unwrap();
+        // 无尺寸组件：回退默认框，中心即 transform 位置。
+        let (center, size) = entity_2d_screen_box(
+            scene.entities.get(&id).unwrap(),
+            rect,
+            pan,
+            zoom,
+            TransformFields::default(),
+        );
+        assert_eq!(size, egui::vec2(112.0 * zoom, 44.0 * zoom));
+        assert_eq!(center, rect.center());
+        // Sprite：尺寸=64×32、中心 pivot、缩放 2/3 → 尺寸=size×scale×zoom，中心=transform。
+        {
+            let entity = scene.entities.get_mut(&id).unwrap();
+            let sprite = SpriteComponent {
+                texture: "assets/textures/player.png".to_owned(),
+                size: Vec2::new(64.0, 32.0),
+                pivot: Vec2::new(0.5, 0.5),
+                tint: [1.0; 4],
+                sorting: engine::core::sprite::SpriteSorting::default(),
+            };
+            entity
+                .components
+                .insert("Sprite".to_owned(), sprite.to_component_str());
+        }
+        let transform = TransformFields {
+            position_x: 10.0,
+            position_y: 20.0,
+            scale_x: 2.0,
+            scale_y: 3.0,
+            ..Default::default()
+        };
+        let (center, size) = entity_2d_screen_box(
+            scene.entities.get(&id).unwrap(),
+            rect,
+            pan,
+            zoom,
+            transform,
+        );
+        assert_eq!(size, egui::vec2(64.0 * 2.0 * zoom, 32.0 * 3.0 * zoom));
+        assert_eq!(
+            center,
+            egui::pos2(rect.center().x + 10.0 * zoom, rect.center().y - 20.0 * zoom)
+        );
+        // 非中心 pivot(0,1)：quad 在 transform 右侧/下方，包围框中心随之偏移。
+        {
+            let entity = scene.entities.get_mut(&id).unwrap();
+            let sprite = SpriteComponent {
+                texture: "assets/textures/player.png".to_owned(),
+                size: Vec2::new(64.0, 32.0),
+                pivot: Vec2::new(0.0, 1.0),
+                tint: [1.0; 4],
+                sorting: engine::core::sprite::SpriteSorting::default(),
+            };
+            entity
+                .components
+                .insert("Sprite".to_owned(), sprite.to_component_str());
+        }
+        let (center, _) = entity_2d_screen_box(
+            scene.entities.get(&id).unwrap(),
+            rect,
+            pan,
+            zoom,
+            TransformFields::default(),
+        );
+        assert_eq!(
+            center,
+            egui::pos2(rect.center().x + 32.0 * zoom, rect.center().y + 16.0 * zoom)
+        );
+    }
+
+    #[test]
+    fn entity_2d_box_uses_tilemap_grid_extent() {
+        let rect = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(400.0, 300.0));
+        let pan = egui::Vec2::ZERO;
+        let zoom = 1.0;
+        let mut scene = engine::core::scene::Scene::new("bounds-tilemap");
+        let id = SceneEntityId(2);
+        scene.add_entity(id, "Map", None).unwrap();
+        let tilemap = Tilemap::new(Vec2::new(32.0, 32.0), 4, 3).unwrap();
+        {
+            let entity = scene.entities.get_mut(&id).unwrap();
+            entity
+                .components
+                .insert("Tilemap".to_owned(), tilemap.to_component_str());
+        }
+        let transform = TransformFields {
+            scale_x: 2.0,
+            scale_y: 1.0,
+            ..Default::default()
+        };
+        let (center, size) = entity_2d_screen_box(
+            scene.entities.get(&id).unwrap(),
+            rect,
+            pan,
+            zoom,
+            transform,
+        );
+        assert_eq!(size, egui::vec2(32.0 * 4.0 * 2.0, 32.0 * 3.0));
+        assert_eq!(center, rect.center());
+    }
+
+    #[test]
+    fn ui_entity_box_image_canvas_center_anchor() {
+        let rect = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1280.0, 720.0));
+        let mut scene = engine::core::scene::Scene::new("ui-image");
+        let id = SceneEntityId(10);
+        scene.add_entity(id, "LogoCoin", None).unwrap();
+        let image = UiImage {
+            texture: "assets/textures/coin.png".to_owned(),
+            position: [0.0, -180.0],
+            size: [112.0, 112.0],
+            color: [1.0; 3],
+            space: UiLayoutSpace::Canvas,
+            anchor: [0.5, 0.5],
+        };
+        {
+            let entity = scene.entities.get_mut(&id).unwrap();
+            entity
+                .components
+                .insert("Image".to_owned(), image.to_component_str());
+        }
+        let (center, size, info) =
+            ui_entity_2d_box(scene.entities.get(&id).unwrap(), rect, None, None, 1.0).unwrap();
+        // canvas 比例 1.0（1280x720），anchor 0.5,0.5 → 中心 = 面板中心 + (0,-180)。
+        assert_eq!(center, egui::pos2(640.0, 180.0));
+        assert_eq!(size, egui::vec2(112.0, 112.0));
+        assert_eq!(info.position, [0.0, -180.0]);
+        assert!(matches!(info.space, UiLayoutSpace::Canvas));
+        // 拖拽预览 override 位置 → 包围框跟随。
+        let (center, _, _) =
+            ui_entity_2d_box(
+                scene.entities.get(&id).unwrap(),
+                rect,
+                Some([0.0, -360.0]),
+                None,
+                1.0,
+            )
+            .unwrap();
+        assert_eq!(center, egui::pos2(640.0, 0.0));
+    }
+
+    #[test]
+    fn ui_entity_box_button_screen_origin_anchor() {
+        let rect = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(400.0, 300.0));
+        let mut scene = engine::core::scene::Scene::new("ui-button");
+        let id = SceneEntityId(11);
+        scene.add_entity(id, "StartButton", None).unwrap();
+        let button = UiButton {
+            label: "Start".to_owned(),
+            position: [10.0, 20.0],
+            size: [240.0, 56.0],
+            background: [0.2, 0.2, 0.2],
+            text_color: [1.0, 1.0, 1.0],
+            space: UiLayoutSpace::Screen,
+            anchor: [0.0, 0.0],
+        };
+        {
+            let entity = scene.entities.get_mut(&id).unwrap();
+            entity
+                .components
+                .insert("Button".to_owned(), button.to_component_str());
+        }
+        let (center, size, _) =
+            ui_entity_2d_box(scene.entities.get(&id).unwrap(), rect, None, None, 1.0).unwrap();
+        assert_eq!(center, egui::pos2(10.0 + 120.0, 20.0 + 28.0));
+        assert_eq!(size, egui::vec2(240.0, 56.0));
+    }
+
+    #[test]
+    fn ui_entity_box_text_canvas_measures_and_centers() {
+        let rect = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1280.0, 720.0));
+        let mut scene = engine::core::scene::Scene::new("ui-text");
+        let id = SceneEntityId(12);
+        scene.add_entity(id, "Title", None).unwrap();
+        let text = UiText {
+            text: "Start Production".to_owned(),
+            position: [0.0, 0.0],
+            scale: 2.4,
+            color: [1.0; 3],
+            space: UiLayoutSpace::Canvas,
+            anchor: [0.5, 0.5],
+        };
+        {
+            let entity = scene.entities.get_mut(&id).unwrap();
+            entity
+                .components
+                .insert("Text".to_owned(), text.to_component_str());
+        }
+        let (center, size, info) =
+            ui_entity_2d_box(scene.entities.get(&id).unwrap(), rect, None, None, 1.0).unwrap();
+        // 与运行时同款解析：canvas 缩放 = 1.0 → resolved_scale = scale。
+        let (_, resolved_scale) = resolve_ui_text_origin(
+            [0.0, 0.0],
+            [0.0, 0.0],
+            2.4,
+            UiLayoutSpace::Canvas,
+            [0.5, 0.5],
+            [1280.0, 720.0],
+        );
+        assert_eq!(resolved_scale, 2.4);
+        let [w, h] = fallback_measure_text("Start Production", resolved_scale);
+        assert_eq!(size, egui::vec2(w, h));
+        // anchor 0.5,0.5 且位置在原点 → 文本中心 = 面板中心。
+        assert_eq!(center, rect.center());
+        assert_eq!(info.position, [0.0, 0.0]);
+    }
+
+    #[test]
+    fn ui_entity_box_returns_none_for_non_ui_entities() {
+        let rect = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(400.0, 300.0));
+        let mut scene = engine::core::scene::Scene::new("ui-none");
+        let id = SceneEntityId(13);
+        scene.add_entity(id, "Sprite", None).unwrap();
+        {
+            let entity = scene.entities.get_mut(&id).unwrap();
+            let sprite = SpriteComponent {
+                texture: "assets/textures/player.png".to_owned(),
+                size: Vec2::new(64.0, 32.0),
+                pivot: Vec2::new(0.5, 0.5),
+                tint: [1.0; 4],
+                sorting: engine::core::sprite::SpriteSorting::default(),
+            };
+            entity
+                .components
+                .insert("Sprite".to_owned(), sprite.to_component_str());
+        }
+        assert!(ui_entity_2d_box(scene.entities.get(&id).unwrap(), rect, None, None, 1.0).is_none());
+    }
+
+    #[test]
+    fn set_ui_component_position_rewrites_image_and_rejects_others() {
+        let mut scene = engine::core::scene::Scene::new("ui-rewrite");
+        let image_id = SceneEntityId(20);
+        let sprite_id = SceneEntityId(21);
+        scene.add_entity(image_id, "Coin", None).unwrap();
+        scene.add_entity(sprite_id, "Player", None).unwrap();
+        let image = UiImage {
+            texture: "assets/textures/coin.png".to_owned(),
+            position: [0.0, -180.0],
+            size: [112.0, 112.0],
+            color: [1.0; 3],
+            space: UiLayoutSpace::Canvas,
+            anchor: [0.5, 0.5],
+        };
+        {
+            let entity = scene.entities.get_mut(&image_id).unwrap();
+            entity
+                .components
+                .insert("Image".to_owned(), image.to_component_str());
+            let sprite = SpriteComponent {
+                texture: "assets/textures/player.png".to_owned(),
+                size: Vec2::new(64.0, 32.0),
+                pivot: Vec2::new(0.5, 0.5),
+                tint: [1.0; 4],
+                sorting: engine::core::sprite::SpriteSorting::default(),
+            };
+            entity
+                .components
+                .insert("Sprite".to_owned(), sprite.to_component_str());
+        }
+        assert!(set_ui_component_position(
+            scene.entities.get_mut(&image_id).unwrap(),
+            [33.0, 44.0],
+        ));
+        let rewritten = UiImage::from_component_str(
+            scene
+                .entities
+                .get(&image_id)
+                .unwrap()
+                .components
+                .get("Image")
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(rewritten.position, [33.0, 44.0]);
+        assert!(!set_ui_component_position(
+            scene.entities.get_mut(&sprite_id).unwrap(),
+            [1.0, 2.0],
+        ));
+    }
+
+    #[test]
+    fn scene_2d_entities_place_ui_components_at_their_real_rects() {
+        let root = copy_sample_project("ui-bounds");
+        let project = open_project(&root).unwrap();
+        let mut app = EditorApp::new(project, None, LogSink::new(64));
+        app.refresh_resources();
+        app.open_scene_resource(PathBuf::from("scenes/menu.scene"));
+        let rect = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1280.0, 720.0));
+        let entities = app.collect_scene_2d_entities(rect, "", 1.0);
+        let by_id = |id: u64| entities.iter().find(|e| e.id == SceneEntityId(id)).unwrap();
+        // LogoCoin（Image，canvas，anchor 0.5,0.5，x=0,y=-180）：中心 = 面板中心 + (0,-180)。
+        let coin = by_id(2);
+        assert!(coin.ui.is_some());
+        assert_eq!(coin.center, egui::pos2(640.0, 180.0));
+        assert_eq!(coin.size, egui::vec2(112.0, 112.0));
+        // StartButton（Button，x=-120,y=40, 240x56）：中心 = (520,400)。
+        let start = by_id(5);
+        assert_eq!(start.center, egui::pos2(520.0, 400.0));
+        assert_eq!(start.size, egui::vec2(240.0, 56.0));
+        // Title（Text，无尺寸字段，x=0,y=-70）：中心 = 面板中心 + (0,-70)。
+        let title = by_id(3);
+        assert_eq!(title.center, egui::pos2(640.0, 290.0));
+        // MenuBackdrop 是 Sprite 世界实体，不走 UI 分支。
+        let backdrop = by_id(1);
+        assert!(backdrop.ui.is_none());
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

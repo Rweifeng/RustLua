@@ -1018,7 +1018,7 @@ fn read_project_script(path: &Path) -> Result<String, LuaBridgeError> {
 /// 读取模块文件字节 → 解码 → 编译，供 `require` 加载发布包中的模块。
 fn install_encoded_require_searcher(lua: &Lua, script_dir: PathBuf) -> mlua::Result<()> {
     let searcher = lua.create_function(move |lua, module: String| {
-        let relative = module.replace('.', &std::path::MAIN_SEPARATOR.to_string());
+        let relative = module.replace('.', std::path::MAIN_SEPARATOR_STR);
         let file_path = script_dir.join(format!("{relative}.lua"));
         if !file_path.is_file() {
             return Ok(Value::Nil);
