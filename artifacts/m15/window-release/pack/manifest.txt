@@ -1,6 +1,0 @@
-assetc_manifest=1	assetc-package-1
-assets/fonts/NotoSansSC-VF.ttf	242768	af61936b1f68e606
-assets/textures/tileset.png	364	511f7f29078f9361
-project.toml	148	31d67b8b06dd61e8
-scenes/main.scene	500310	93a83ecee852e101
-scripts/main.lua	56	d8f60164173d6b8d
