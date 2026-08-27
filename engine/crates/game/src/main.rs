@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use engine::core::logging::init_logging;
 use winit::event_loop::EventLoop;
 
-use cli::{find_project_root, parse_arguments, verify_project};
+use cli::{find_project_root, parse_arguments, resolve_window_title, verify_project};
 use game_app::GameApp;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -72,8 +72,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let event_loop = EventLoop::new()?;
+    let window_title = resolve_window_title(project.as_deref(), arguments.title);
     event_loop.run_app(&mut GameApp::new(
         project,
+        window_title,
         !arguments.no_cull,
         !arguments.no_instance,
     ))?;

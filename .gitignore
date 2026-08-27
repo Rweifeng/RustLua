@@ -4,6 +4,7 @@ engine/target/
 # Generated release copies and profiling/screenshot output
 **/artifacts/logs/
 artifacts/
+game_test/builds/
 
 # IDE and OS files
 .claude/

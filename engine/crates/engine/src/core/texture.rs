@@ -31,6 +31,10 @@ impl TextureAsset {
             path: path.display().to_string(),
             source: source.to_string(),
         })?;
+        let bytes = crate::core::pack::decode(&bytes).map_err(|source| TextureError::Read {
+            path: path.display().to_string(),
+            source,
+        })?;
         Self::from_png_bytes(&bytes, color_space).map_err(|error| TextureError::Decode {
             path: path.display().to_string(),
             reason: error.to_string(),

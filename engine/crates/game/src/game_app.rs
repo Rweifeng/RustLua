@@ -33,6 +33,7 @@ pub struct GameApp {
     overlay_enabled: bool,
     runtime_scene: Option<RuntimeScene>,
     project_root: Option<PathBuf>,
+    window_title: String,
     /// CPU frustum culling (M8-08); off via `--no-cull` for baselines.
     cull_enabled: bool,
     /// Same mesh/material instancing (M8-08); off via `--no-instance`.
@@ -42,6 +43,7 @@ pub struct GameApp {
 impl GameApp {
     pub fn new(
         project_root: Option<PathBuf>,
+        window_title: String,
         cull_enabled: bool,
         instancing_enabled: bool,
     ) -> Self {
@@ -57,6 +59,7 @@ impl GameApp {
             overlay_enabled: true,
             runtime_scene: None,
             project_root,
+            window_title,
             cull_enabled,
             instancing_enabled,
         }
@@ -210,7 +213,7 @@ impl ApplicationHandler for GameApp {
             return;
         }
         let attributes = Window::default_attributes()
-            .with_title("RustLua Engine - M1-07 Performance Overlay")
+            .with_title(&self.window_title)
             .with_inner_size(PhysicalSize::new(1280, 720));
         let window = Arc::new(event_loop.create_window(attributes).expect("create window"));
         tracing::info!(target: "game", "[window] created: {:?}", window.id());

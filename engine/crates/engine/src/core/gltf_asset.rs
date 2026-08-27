@@ -1,6 +1,6 @@
 //! CPU-side glTF 2.0 and GLB importer for M8.
 
-use crate::core::math3d::Vec3;
+use crate::core::{math3d::Vec3, pack};
 use std::{error::Error, fmt, path::Path};
 
 pub const IMPORTER_VERSION: &str = "gltf-m8-07";
@@ -109,11 +109,27 @@ pub struct GltfMaterial {
 impl GltfAsset {
     pub fn load(path: impl AsRef<Path>) -> Result<Self, GltfAssetError> {
         let path = path.as_ref();
-        let (document, buffers, images) =
+        let raw = std::fs::read(path).map_err(|error| GltfAssetError::Import {
+            path: path.display().to_string(),
+            reason: error.to_string(),
+        })?;
+        let decoded = pack::decode(&raw).map_err(|reason| GltfAssetError::Import {
+            path: path.display().to_string(),
+            reason,
+        })?;
+        let (document, buffers, images) = if decoded.starts_with(pack::PACK_MAGIC) {
+            unreachable!("pack::decode removes pack magic")
+        } else if raw.starts_with(pack::PACK_MAGIC) {
+            gltf::import_slice(&decoded).map_err(|error| GltfAssetError::Import {
+                path: path.display().to_string(),
+                reason: error.to_string(),
+            })?
+        } else {
             gltf::import(path).map_err(|error| GltfAssetError::Import {
                 path: path.display().to_string(),
                 reason: error.to_string(),
-            })?;
+            })?
+        };
         let materials = document
             .materials()
             .map(|material| {

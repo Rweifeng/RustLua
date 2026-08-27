@@ -10,6 +10,7 @@ use std::{
 pub struct Arguments {
     pub project: Option<PathBuf>,
     pub log_filter: Option<String>,
+    pub title: Option<String>,
     /// 发布包模式：目录为 assetc package 生成的发布资源目录，启动期严格校验资源。
     pub pack: bool,
     /// 仅校验资源完整性后退出（不弹窗口），供 CI/打包自测使用。
@@ -46,12 +47,14 @@ pub fn parse_arguments() -> Result<Arguments, String> {
                         .ok_or("--log-filter requires a tracing filter")?,
                 )
             }
+            "--title" => args.title = Some(values.next().ok_or("--title requires a title")?),
             "--help" | "-h" => {
                 println!(
-                    "Usage: game [--project <game-project-root>] [--pack <release-pack>] [--check] [--log-filter <tracing-filter>]\n\
+                    "Usage: game [--project <game-project-root>] [--pack <release-pack>] [--title <window-title>] [--check] [--log-filter <tracing-filter>]\n\
                      \n\
                      --project <root>  加载开发游戏工程（含 .cache 等本地工作目录）\n\
                      --pack <dir>      加载 assetc package 生成的发布资源目录（严格校验资源完整性）\n\
+                     --title <title>   设置窗口标题；未指定时优先读取发布包 release.toml\n\
                      --check           仅校验资源完整性后退出（exit 0/1，不弹窗口）"
                 );
                 std::process::exit(0);
@@ -86,6 +89,29 @@ pub fn find_project_root() -> Option<PathBuf> {
         }
     }
     None
+}
+
+pub fn resolve_window_title(project: Option<&Path>, explicit: Option<String>) -> String {
+    if let Some(title) = explicit.filter(|title| !title.trim().is_empty()) {
+        return title;
+    }
+    if let Some(title) = release_title() {
+        return title;
+    }
+    if let Some(root) = project {
+        if let Ok(text) = fs::read_to_string(root.join("project.toml")) {
+            if let Some(name) = extract_key(&text, "name") {
+                return name;
+            }
+        }
+    }
+    "RustLua Engine".to_owned()
+}
+
+fn release_title() -> Option<String> {
+    let exe_dir = env::current_exe().ok()?.parent().map(Path::to_path_buf)?;
+    let text = fs::read_to_string(exe_dir.join("release.toml")).ok()?;
+    extract_key(&text, "publish_name")
 }
 
 /// 校验项目/发布包资源完整性：项目清单、主脚本、启动场景及场景引用的资源。
@@ -129,7 +155,7 @@ pub fn verify_project(root: &Path) -> Vec<String> {
 /// 从 `key = "value"` 样式的项目清单文本中提取字段值。
 fn extract_key(text: &str, key: &str) -> Option<String> {
     text.lines().find_map(|line| {
-        let line = line.trim();
+        let line = line.trim().trim_start_matches('\u{feff}');
         line.strip_prefix(&format!("{key} ="))
             .map(|rest| rest.trim().trim_matches('"').to_owned())
     })
@@ -151,7 +177,7 @@ fn extract_asset_refs(text: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_asset_refs, extract_key, verify_project};
+    use super::{extract_asset_refs, extract_key, resolve_window_title, verify_project};
 
     #[test]
     fn extract_key_parses_quoted_project_fields() {
@@ -165,6 +191,27 @@ mod tests {
             Some("scenes/main.scene".to_owned())
         );
         assert_eq!(extract_key(text, "missing"), None);
+        assert_eq!(
+            extract_key("\u{feff}publish_name = \"Demo\"", "publish_name"),
+            Some("Demo".to_owned())
+        );
+    }
+
+    #[test]
+    fn resolve_window_title_prefers_explicit_title_then_project_name() {
+        assert_eq!(
+            resolve_window_title(None, Some("Published".to_owned())),
+            "Published"
+        );
+        let root = std::env::temp_dir().join(format!("p2-title-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("project.toml"),
+            "[project]\nname = \"DemoGame\"\n",
+        )
+        .unwrap();
+        assert_eq!(resolve_window_title(Some(&root), None), "DemoGame");
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]

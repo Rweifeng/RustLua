@@ -13,6 +13,7 @@ fn usage() {
          \x20 assetc import <项目目录>         增量导入资源到 ImportCache\n\
          \x20 assetc clean <项目目录>          清空导入缓存\n\
          \x20 assetc list <项目目录>           列出已注册资源\n\
+         \x20 assetc benchmark <项目目录>      输出各类资产压缩/解压基准\n\
          \x20 assetc package <项目目录> -o <输出目录>   打包发布资源目录并生成清单\n\
          \x20 assetc --check-deps <项目目录>   检查依赖链路（列出 Invalid 断链）\n\
          \x20 assetc --check                   冒烟检查（临时项目闭环验证）\n\
@@ -63,6 +64,10 @@ fn run(args: &[String]) -> Result<String, String> {
                 out
             })
         }
+        Some("benchmark") => {
+            let project = arg(args, 2, "项目目录")?;
+            assetc::benchmark_compression(&project).map(|entries| summarize_benchmark(&entries))
+        }
         Some("package") => {
             let project = arg(args, 2, "项目目录")?;
             let mut out = None;
@@ -87,7 +92,7 @@ fn run(args: &[String]) -> Result<String, String> {
             let out = out.ok_or_else(|| "缺少参数: -o <输出目录>".to_owned())?;
             assetc::package(&project, &out, compress, encrypt).map(|manifest| {
                 format!(
-                    "assetc_package_ok files={} compress={compress} encrypt={encrypt}",
+                    "assetc_package_ok files={} compress_assets={compress} encrypt_code={encrypt}",
                     manifest.entries.len()
                 )
             })
@@ -150,6 +155,25 @@ fn summarize_scan(entries: &[assetc::ScanEntry]) -> String {
             entry.kind,
             entry.status,
             entry.asset_id.as_deref().unwrap_or("-")
+        ));
+    }
+    out
+}
+
+fn summarize_benchmark(entries: &[assetc::CompressionBenchmarkEntry]) -> String {
+    let mut out = String::from(
+        "assetc_benchmark_compression\nkind\tfiles\toriginal_bytes\tcompressed_bytes\tratio\tcompress_ms\tdecompress_ms",
+    );
+    for entry in entries {
+        out.push_str(&format!(
+            "\n{}\t{}\t{}\t{}\t{:.3}\t{:.3}\t{:.3}",
+            entry.kind,
+            entry.files,
+            entry.original_bytes,
+            entry.compressed_bytes,
+            entry.ratio(),
+            entry.compress_time.as_secs_f64() * 1000.0,
+            entry.decompress_time.as_secs_f64() * 1000.0,
         ));
     }
     out

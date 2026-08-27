@@ -805,10 +805,12 @@ impl LuaRuntime {
             let _ = package.set("path", module_path);
         }
         // 拦截 require：支持压缩/加密的模块文件（明文模块同样可用）。
-        let _ = install_encoded_require_searcher(&candidate);
+        if let Some(script_dir) = path.parent() {
+            let _ = install_encoded_require_searcher(&candidate, script_dir.to_path_buf());
+        }
         candidate
             .load(source)
-            .set_name(path.to_string_lossy())
+            .set_name("scripts/main.lua")
             .exec()
             .map_err(|error| LuaBridgeError::Load {
                 path: path.to_path_buf(),
@@ -1014,20 +1016,18 @@ fn read_project_script(path: &Path) -> Result<String, LuaBridgeError> {
 
 /// 在 Lua VM 上安装支持压缩/加密的 require 搜索器：
 /// 读取模块文件字节 → 解码 → 编译，供 `require` 加载发布包中的模块。
-fn install_encoded_require_searcher(lua: &Lua) -> mlua::Result<()> {
-    let searcher = lua.create_function(|lua, module: String| {
-        let package: Table = lua.globals().get("package")?;
-        let path: String = package.get("path")?;
-        let searchpath: Function = package.get("searchpath")?;
-        let (resolved, _error): (Option<String>, Option<String>) =
-            searchpath.call((module.as_str(), path.as_str()))?;
-        let Some(file) = resolved else {
+fn install_encoded_require_searcher(lua: &Lua, script_dir: PathBuf) -> mlua::Result<()> {
+    let searcher = lua.create_function(move |lua, module: String| {
+        let relative = module.replace('.', &std::path::MAIN_SEPARATOR.to_string());
+        let file_path = script_dir.join(format!("{relative}.lua"));
+        if !file_path.is_file() {
             return Ok(Value::Nil);
-        };
-        let bytes = fs::read(&file).map_err(mlua::Error::external)?;
+        }
+        let bytes = fs::read(&file_path).map_err(mlua::Error::external)?;
         let decoded = crate::core::pack::decode(&bytes).map_err(mlua::Error::external)?;
         let source = String::from_utf8_lossy(&decoded).into_owned();
-        let chunk = lua.load(&source).set_name(&file).into_function()?;
+        let chunk_name = format!("scripts/{module}.lua");
+        let chunk = lua.load(&source).set_name(chunk_name).into_function()?;
         Ok(Value::Function(chunk))
     })?;
     let package: Table = lua.globals().get("package")?;

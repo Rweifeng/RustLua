@@ -5,6 +5,7 @@ members = [
     "crates/editor",
     "crates/engine",
     "crates/game",
+    "crates/game_web",
 ]
 
 [workspace.package]
@@ -30,3 +31,4 @@ bytemuck = { version = "1", features = ["derive"] }
 tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+getrandom = { version = "0.2", features = ["js"] }

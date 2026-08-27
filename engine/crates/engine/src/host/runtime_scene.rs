@@ -1,7 +1,7 @@
 //! Runtime scene: instantiates the project scene/scripts and produces
 //! per-frame [`SceneMesh`] (2D) and [`Scene3d`] draw data for the renderer.
 
-use std::{collections::HashMap, path::Path};
+use std::{collections::HashMap, fs, path::Path};
 
 use crate::core::{
     animation::AnimationStateMachine,
@@ -113,6 +113,7 @@ impl RuntimeScene {
             .filter(|path| path.is_file())
             .and_then(|path| {
                 let bytes = std::fs::read(&path).ok()?;
+                let bytes = crate::core::pack::decode(&bytes).ok()?;
                 match FontAtlas::load(&bytes) {
                     Ok(atlas) => {
                         tracing::info!(target: "render", path = %path.display(), "[render] font atlas ready");
@@ -905,8 +906,16 @@ fn constrained_camera_center(camera: Camera2D, viewport: Viewport) -> Vec2 {
     let extent_x = half_width * cos.abs() + half_height * sin.abs();
     let extent_y = half_width * sin.abs() + half_height * cos.abs();
     Vec2::new(
-        clamp_center(camera.center.x, bounds.min.x + extent_x, bounds.max.x - extent_x),
-        clamp_center(camera.center.y, bounds.min.y + extent_y, bounds.max.y - extent_y),
+        clamp_center(
+            camera.center.x,
+            bounds.min.x + extent_x,
+            bounds.max.x - extent_x,
+        ),
+        clamp_center(
+            camera.center.y,
+            bounds.min.y + extent_y,
+            bounds.max.y - extent_y,
+        ),
     )
 }
 
@@ -1031,10 +1040,29 @@ fn merge_sprite_meshes(tilemap: SpriteBatchMesh, dynamic: SpriteBatchMesh) -> Sp
     SpriteBatchMesh { vertices, draws }
 }
 
+fn startup_scene_path(project_root: &Path) -> String {
+    let default = "scenes/main.scene".to_owned();
+    let Ok(text) = fs::read_to_string(project_root.join("project.toml")) else {
+        return default;
+    };
+    extract_project_key(&text, "startup_scene").unwrap_or(default)
+}
+
+fn extract_project_key(text: &str, key: &str) -> Option<String> {
+    text.lines().find_map(|line| {
+        let line = line.trim().trim_start_matches('\u{feff}');
+        line.strip_prefix(&format!("{key} ="))
+            .map(|value| value.trim().trim_matches('"').to_owned())
+            .filter(|value| !value.trim().is_empty())
+    })
+}
+
 fn load_runtime_scene(project_root: Option<&Path>) -> Scene {
     project_root
-        .map(|root| root.join("scenes/main.scene"))
-        .and_then(|path| Scene::load(path).ok())
+        .and_then(|root| {
+            let scene_path = startup_scene_path(root);
+            Scene::load(root.join(scene_path)).ok()
+        })
         // Standalone engine mode uses this engine-owned diagnostic scene and never
         // probes the current directory for game files.
         .unwrap_or_else(|| {
@@ -1168,6 +1196,24 @@ mod sdf_tests {
 
     fn production_sample_root() -> std::path::PathBuf {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../game_test_2d_production")
+    }
+
+    #[test]
+    fn load_runtime_scene_uses_project_startup_scene() {
+        let root = std::env::temp_dir().join(format!("p2-startup-scene-{}", std::process::id()));
+        let scenes = root.join("scenes");
+        std::fs::create_dir_all(&scenes).unwrap();
+        std::fs::write(
+            root.join("project.toml"),
+            "[project]\nname = \"test\"\nstartup_scene = \"scenes/custom.scene\"\n",
+        )
+        .unwrap();
+        Scene::new("custom-startup")
+            .save(scenes.join("custom.scene"))
+            .unwrap();
+        let scene = load_runtime_scene(Some(&root));
+        assert_eq!(scene.name, "custom-startup");
+        std::fs::remove_dir_all(root).ok();
     }
 
     #[test]

@@ -234,6 +234,8 @@ struct EditorApp {
     inspector_transform_open: bool,
     progress: ProgressPanel,
     show_publish_panel: bool,
+    publish_platform: crate::publish::PublishPlatform,
+    publish_name: String,
     publish_compress: bool,
     publish_encrypt: bool,
     /// 底部资源浏览器 / Lua 控制台面板的显示开关（收起后 Scene/Game 视图获得最大空间）。
@@ -510,6 +512,7 @@ impl EditorApp {
         log_sink: LogSink,
     ) -> Self {
         let project_loaded = project.root.join("project.toml").is_file();
+        let publish_name = crate::publish::default_publish_name(&project.root);
         let recovery = RecoveryManager::new(project.root.join(".temp"));
         let recovery_scan = recovery.scan().unwrap_or_default();
         Self {
@@ -578,8 +581,10 @@ impl EditorApp {
             inspector_transform_open: true,
             progress: ProgressPanel::default(),
             show_publish_panel: false,
-            publish_compress: true,
-            publish_encrypt: true,
+            publish_platform: crate::publish::PublishPlatform::Pc,
+            publish_name,
+            publish_compress: false,
+            publish_encrypt: false,
             show_resources_panel: true,
             show_lua_console: true,
             log_sink,

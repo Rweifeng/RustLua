@@ -18,6 +18,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::atomic::AtomicBool,
+    time::Duration,
 };
 
 /// assetc 打包清单格式版本；变更会触发发布脚本重新打包。
@@ -50,6 +51,27 @@ pub struct ImportOutcome {
 pub struct FileEntry {
     pub size: u64,
     pub checksum: u64,
+}
+
+/// 单类资源的压缩基准结果。
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct CompressionBenchmarkEntry {
+    pub kind: String,
+    pub files: usize,
+    pub original_bytes: u64,
+    pub compressed_bytes: u64,
+    pub compress_time: Duration,
+    pub decompress_time: Duration,
+}
+
+impl CompressionBenchmarkEntry {
+    pub fn ratio(&self) -> f64 {
+        if self.original_bytes == 0 {
+            0.0
+        } else {
+            self.compressed_bytes as f64 / self.original_bytes as f64
+        }
+    }
 }
 
 /// 验证项目目录存在 `project.toml`。
@@ -370,6 +392,7 @@ fn copy_file(source: &Path, destination: &Path) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(test)]
 fn copy_dir(source: &Path, destination: &Path) -> Result<(), String> {
     if !source.is_dir() {
         return Ok(());
@@ -395,12 +418,14 @@ fn fnv1a(bytes: &[u8]) -> u64 {
     hash
 }
 
-/// 复制目录；`lua`/`scene` 文件在需要时压缩+加密（运行时自动解码）。
+/// 复制目录；可选对文件进行发布编码（运行时自动解码）。
 fn copy_dir_encoded(
     source: &Path,
     destination: &Path,
     compress: bool,
     encrypt: bool,
+    should_compress: fn(&Path) -> bool,
+    should_encrypt: fn(&Path) -> bool,
 ) -> Result<(), String> {
     if !source.is_dir() {
         return Ok(());
@@ -412,16 +437,11 @@ fn copy_dir_encoded(
             .strip_prefix(source)
             .expect("file must be inside source dir");
         let dest = destination.join(relative);
-        let is_text = matches!(
-            file.extension()
-                .and_then(|e| e.to_str())
-                .map(|e| e.to_ascii_lowercase())
-                .as_deref(),
-            Some("lua") | Some("scene")
-        );
-        if is_text && (compress || encrypt) {
+        let compress_file = compress && should_compress(&file);
+        let encrypt_file = encrypt && should_encrypt(&file);
+        if compress_file || encrypt_file {
             let bytes = fs::read(&file).map_err(|e| e.to_string())?;
-            let encoded = engine::core::pack::encode(&bytes, compress, encrypt);
+            let encoded = engine::core::pack::encode(&bytes, compress_file, encrypt_file);
             if let Some(parent) = dest.parent() {
                 fs::create_dir_all(parent).map_err(|e| e.to_string())?;
             }
@@ -433,9 +453,78 @@ fn copy_dir_encoded(
     Ok(())
 }
 
+fn never_encode(_: &Path) -> bool {
+    false
+}
+
+fn is_encryptable_data(path: &Path) -> bool {
+    matches!(extension(path).as_deref(), Some("lua") | Some("scene"))
+}
+
+fn is_compressible_asset(path: &Path) -> bool {
+    matches!(
+        extension(path).as_deref(),
+        Some("png")
+            | Some("jpg")
+            | Some("jpeg")
+            | Some("wav")
+            | Some("ogg")
+            | Some("ttf")
+            | Some("otf")
+            | Some("glb")
+    )
+}
+
+fn extension(path: &Path) -> Option<String> {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+}
+
+/// 按资产类型统计压缩前后大小、压缩耗时和解压耗时。
+pub fn benchmark_compression(project: &Path) -> Result<Vec<CompressionBenchmarkEntry>, String> {
+    ensure_project(project)?;
+    let assets = project.join("assets");
+    if !assets.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut files = Vec::new();
+    collect_files(&assets, &mut files)?;
+    let mut entries = BTreeMap::<String, CompressionBenchmarkEntry>::new();
+    for (file, _) in files {
+        if !is_compressible_asset(&file) {
+            continue;
+        }
+        let bytes =
+            fs::read(&file).map_err(|error| format!("读取失败 {}: {error}", file.display()))?;
+        let kind = ResourceKind::from_path(&file).token().to_owned();
+        let started = std::time::Instant::now();
+        let compressed = engine::core::pack::encode(&bytes, true, false);
+        let compress_time = started.elapsed();
+        let started = std::time::Instant::now();
+        let decompressed = engine::core::pack::decode(&compressed)?;
+        let decompress_time = started.elapsed();
+        if decompressed != bytes {
+            return Err(format!("压缩往返校验失败: {}", file.display()));
+        }
+        let entry = entries
+            .entry(kind.clone())
+            .or_insert_with(|| CompressionBenchmarkEntry {
+                kind,
+                ..CompressionBenchmarkEntry::default()
+            });
+        entry.files += 1;
+        entry.original_bytes += bytes.len() as u64;
+        entry.compressed_bytes += compressed.len() as u64;
+        entry.compress_time += compress_time;
+        entry.decompress_time += decompress_time;
+    }
+    Ok(entries.into_values().collect())
+}
+
 /// 生成发布资源包：复制 `project.toml`、`scenes/`、`scripts/`、`assets/`
 /// 到 `out`，并写入 `manifest.txt`（路径、大小、校验和）。
-/// `compress`/`encrypt` 对 Lua 与场景文件生效（运行时自动解码）。
+/// `compress` 对 `assets/` 下支持压缩的资产生效；`encrypt` 仅对 Lua 与场景文件生效。
 pub fn package(
     project: &Path,
     out: &Path,
@@ -450,16 +539,27 @@ pub fn package(
     copy_dir_encoded(
         &project.join("scenes"),
         &out.join("scenes"),
-        compress,
+        false,
         encrypt,
+        never_encode,
+        is_encryptable_data,
     )?;
     copy_dir_encoded(
         &project.join("scripts"),
         &out.join("scripts"),
-        compress,
+        false,
         encrypt,
+        never_encode,
+        is_encryptable_data,
     )?;
-    copy_dir(&project.join("assets"), &out.join("assets"))?;
+    copy_dir_encoded(
+        &project.join("assets"),
+        &out.join("assets"),
+        compress,
+        false,
+        is_compressible_asset,
+        never_encode,
+    )?;
 
     let mut files = Vec::new();
     collect_files(out, &mut files)?;
@@ -796,6 +896,38 @@ mod tests {
         assert!(manifest_text.contains("red-1x1.png"), "manifest lists png");
         assert!(manifest_text.contains("main.lua"), "manifest lists lua");
         fs::remove_dir_all(&out).ok();
+        cleanup(&root);
+    }
+
+    #[test]
+    fn package_compresses_supported_assets_without_compressing_lua() {
+        let root = temp_project("package-compress-assets");
+        let out = std::env::temp_dir().join(format!(
+            "p2-assetc-compress-out-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        let _ = fs::remove_dir_all(&out);
+        package(&root, &out, true, false).unwrap();
+        let png = fs::read(out.join("assets/textures/red-1x1.png")).unwrap();
+        let lua = fs::read(out.join("scripts/main.lua")).unwrap();
+        assert!(png.starts_with(engine::core::pack::PACK_MAGIC));
+        assert!(!lua.starts_with(engine::core::pack::PACK_MAGIC));
+        fs::remove_dir_all(&out).ok();
+        cleanup(&root);
+    }
+
+    #[test]
+    fn benchmark_compression_reports_asset_kinds() {
+        let root = temp_project("benchmark-compression");
+        let entries = benchmark_compression(&root).unwrap();
+        let texture = entries
+            .iter()
+            .find(|entry| entry.kind == "texture")
+            .unwrap();
+        assert_eq!(texture.files, 1);
+        assert!(texture.original_bytes > 0);
+        assert!(texture.compressed_bytes > 0);
         cleanup(&root);
     }
 

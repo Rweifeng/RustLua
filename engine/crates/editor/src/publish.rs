@@ -4,7 +4,7 @@ use crate::EditorApp;
 use crate::panels::progress::{ProgressEvent, ProgressKind};
 use crate::util::{display_path, strip_verbatim_prefix};
 use std::{
-    env,
+    env, fmt, fs,
     io::BufRead,
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -14,6 +14,39 @@ use std::{
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PublishPlatform {
+    Pc,
+    WebGl,
+    WechatMiniGame,
+}
+
+impl PublishPlatform {
+    pub(crate) const ALL: [Self; 3] = [Self::Pc, Self::WebGl, Self::WechatMiniGame];
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Pc => "PC",
+            Self::WebGl => "WebGL",
+            Self::WechatMiniGame => "微信小游戏",
+        }
+    }
+
+    fn script_value(self) -> &'static str {
+        match self {
+            Self::Pc => "pc",
+            Self::WebGl => "webgl",
+            Self::WechatMiniGame => "wechat-minigame",
+        }
+    }
+}
+
+impl fmt::Display for PublishPlatform {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.label())
+    }
+}
 
 impl EditorApp {
     /// 启动 Release 发布打包（后台执行 scripts/package.ps1，非阻塞、不弹终端窗）。
@@ -33,15 +66,22 @@ impl EditorApp {
         };
         // open_project 会生成 \\?\ 逐字路径，PowerShell -File 不识别，需先去掉前缀。
         let script = strip_verbatim(&found);
-        // 发布脚本位于 <workspace>/scripts/package.ps1，发布包输出到 <workspace>/artifacts/builds/release/game。
-        let workspace_root = script
-            .parent()
-            .and_then(|parent| parent.parent())
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| PathBuf::from("."));
-        let package_dir = workspace_root.join("artifacts/builds/release/game");
+        let project_root = strip_verbatim(&self.project.root);
+        let publish_name = normalize_publish_name(&self.publish_name, &self.project.root);
+        let package_dir = project_root
+            .join("builds")
+            .join(self.publish_platform.script_value())
+            .join(&publish_name);
         let (tx, rx) = channel();
-        spawn_publish(script, self.publish_compress, self.publish_encrypt, tx);
+        spawn_publish(
+            script,
+            project_root,
+            self.publish_platform,
+            publish_name,
+            self.publish_compress,
+            self.publish_encrypt,
+            tx,
+        );
         self.progress.start(
             ProgressKind::Publish,
             "发布打包",
@@ -63,6 +103,36 @@ fn find_publish_script(root: &Path) -> Option<PathBuf> {
 /// 外部工具（如 PowerShell -File）不识别该前缀，会静默失败。
 fn strip_verbatim(path: &Path) -> PathBuf {
     strip_verbatim_prefix(path)
+}
+
+pub(crate) fn default_publish_name(project_root: &Path) -> String {
+    let fallback = project_root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("game")
+        .to_owned();
+    let Ok(text) = fs::read_to_string(project_root.join("project.toml")) else {
+        return fallback;
+    };
+    extract_project_name(&text).unwrap_or(fallback)
+}
+
+fn extract_project_name(text: &str) -> Option<String> {
+    text.lines().find_map(|line| {
+        let line = line.trim();
+        line.strip_prefix("name =")
+            .map(|rest| rest.trim().trim_matches('"').to_owned())
+            .filter(|name| !name.trim().is_empty())
+    })
+}
+
+fn normalize_publish_name(name: &str, project_root: &Path) -> String {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        default_publish_name(project_root)
+    } else {
+        trimmed.to_owned()
+    }
 }
 
 /// 常见的 rustup cargo bin 目录（双击启动时系统 PATH 可能没有 cargo）。
@@ -88,7 +158,15 @@ fn prepend_path(bin: &Path) -> String {
 
 /// 后台执行发布脚本，把 stdout/stderr 行转发给 UI 线程。
 /// CREATE_NO_WINDOW 保证不弹出额外终端窗口。
-fn spawn_publish(script: PathBuf, compress: bool, encrypt: bool, tx: Sender<ProgressEvent>) {
+fn spawn_publish(
+    script: PathBuf,
+    project_root: PathBuf,
+    platform: PublishPlatform,
+    publish_name: String,
+    compress: bool,
+    encrypt: bool,
+    tx: Sender<ProgressEvent>,
+) {
     thread::spawn(move || {
         let mut command = Command::new("powershell");
         command
@@ -96,7 +174,10 @@ fn spawn_publish(script: PathBuf, compress: bool, encrypt: bool, tx: Sender<Prog
             .arg(&script)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        // PowerShell switch 参数：勾选才传 `-Compress`/`-Encrypt`。
+        // PowerShell 参数：项目路径、发布平台必传，switch 参数勾选才传 `-Compress`/`-Encrypt`。
+        command.arg("-ProjectRoot").arg(&project_root);
+        command.arg("-Platform").arg(platform.script_value());
+        command.arg("-PublishName").arg(&publish_name);
         if compress {
             command.arg("-Compress");
         }
@@ -209,6 +290,19 @@ mod publish_tests {
     }
 
     #[test]
+    fn default_publish_name_reads_project_name() {
+        let root = std::env::temp_dir().join(format!("p2-publish-name-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("project.toml"),
+            "[project]\nname = \"DemoGame\"\n",
+        )
+        .unwrap();
+        assert_eq!(default_publish_name(&root), "DemoGame");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
     fn publish_spawn_end_to_end() {
         // 复现编辑器「打包发布」全路径：找到脚本、spawn、收集输出与退出码。
         let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -221,8 +315,17 @@ mod publish_tests {
             eprintln!("未找到发布脚本，跳过");
             return;
         };
+        let project_root = workspace.join("game_test");
         let (tx, rx) = channel();
-        spawn_publish(script, false, false, tx);
+        spawn_publish(
+            script,
+            project_root,
+            PublishPlatform::Pc,
+            "game_test".to_owned(),
+            false,
+            false,
+            tx,
+        );
         let mut output = String::new();
         let mut success = false;
         while let Ok(event) = rx.recv() {

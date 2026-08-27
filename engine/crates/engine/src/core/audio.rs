@@ -169,6 +169,8 @@ impl AudioSystem {
             if path.is_file() {
                 let bytes = std::fs::read(&path)
                     .map_err(|error| AudioError::Io(format!("{}: {error}", path.display())))?;
+                let bytes = crate::core::pack::decode(&bytes)
+                    .map_err(|error| AudioError::Decode(format!("{}: {error}", path.display())))?;
                 loaded = Some(bytes);
                 break;
             }

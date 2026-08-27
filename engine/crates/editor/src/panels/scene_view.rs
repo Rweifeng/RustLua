@@ -929,11 +929,10 @@ impl EditorApp {
                     context.transform,
                     &self.tilemap.map,
                 )
+                && self.scene_state.tile_paint_last_cell != Some((x, y, erase))
             {
-                if self.scene_state.tile_paint_last_cell != Some((x, y, erase)) {
-                    self.apply_tile_paint_cell(x, y, erase);
-                    self.scene_state.tile_paint_last_cell = Some((x, y, erase));
-                }
+                self.apply_tile_paint_cell(x, y, erase);
+                self.scene_state.tile_paint_last_cell = Some((x, y, erase));
             }
         }
         if response.drag_stopped_by(egui::PointerButton::Primary)
