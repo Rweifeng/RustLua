@@ -79,10 +79,10 @@ impl EditorApp {
             let preview_rect = self.preview_rect(response.rect);
             self.update_preview(ui.ctx(), focused, preview_rect);
             if let Some(preview) = &self.preview
-                && let Some(tex) = preview.texture()
+                && let Some(tex) = preview.texture_id()
             {
                 painter.image(
-                    tex.id(),
+                    tex,
                     preview_rect,
                     egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
                     egui::Color32::WHITE,
@@ -159,7 +159,14 @@ impl EditorApp {
         };
         // Windows 逐字前缀 `\\?\` 会破坏 Lua require 的 searchpath 解析，去除后再传运行时。
         let root = strip_verbatim_prefix(&self.project.root);
-        PreviewSession::create(device, queue, &root, scene, self.preview_resolution)
+        PreviewSession::create(
+            device,
+            queue,
+            self.render_state.clone(),
+            &root,
+            scene,
+            self.preview_resolution,
+        )
     }
 
     /// 驱动预览会话：分辨率选择在 Play 期间变更时实时重建离屏纹理，

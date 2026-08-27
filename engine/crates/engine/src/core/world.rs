@@ -35,11 +35,16 @@ trait ComponentStorage: Any {
 
 struct TypedStorage<T> {
     values: HashMap<EntityId, T>,
+    entities: Vec<EntityId>,
 }
 
 impl<T: 'static> ComponentStorage for TypedStorage<T> {
     fn remove_entity(&mut self, entity: EntityId) {
-        self.values.remove(&entity);
+        if self.values.remove(&entity).is_some()
+            && let Ok(index) = self.entities.binary_search(&entity)
+        {
+            self.entities.remove(index);
+        }
     }
 
     fn contains_entity(&self, entity: EntityId) -> bool {
@@ -47,9 +52,7 @@ impl<T: 'static> ComponentStorage for TypedStorage<T> {
     }
 
     fn entity_ids(&self) -> Vec<EntityId> {
-        let mut entities: Vec<_> = self.values.keys().copied().collect();
-        entities.sort_unstable();
-        entities
+        self.entities.clone()
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -123,13 +126,21 @@ impl World {
         let storage = self.components.entry(TypeId::of::<T>()).or_insert_with(|| {
             Box::new(TypedStorage::<T> {
                 values: HashMap::new(),
+                entities: Vec::new(),
             })
         });
         let typed = storage
             .as_any_mut()
             .downcast_mut::<TypedStorage<T>>()
             .expect("component storage type id must match its concrete storage");
-        Ok(typed.values.insert(entity, component))
+        let previous = typed.values.insert(entity, component);
+        if previous.is_none() {
+            match typed.entities.binary_search(&entity) {
+                Ok(_) => {}
+                Err(index) => typed.entities.insert(index, entity),
+            }
+        }
+        Ok(previous)
     }
 
     /// Reads a component attached to an entity.
@@ -187,6 +198,74 @@ impl World {
                 .is_some_and(|storage| storage.contains_entity(*entity))
         });
         entities
+    }
+
+    /// Iterates all live entities with component `T` in sorted entity order.
+    pub fn for_each<T: 'static>(&self, mut f: impl FnMut(EntityId, &T)) {
+        let Some(storage) = self
+            .components
+            .get(&TypeId::of::<T>())
+            .and_then(|storage| storage.as_any().downcast_ref::<TypedStorage<T>>())
+        else {
+            return;
+        };
+        for &entity in &storage.entities {
+            if let Some(component) = storage.values.get(&entity) {
+                f(entity, component);
+            }
+        }
+    }
+
+    /// Iterates all live entities with component `T` mutably in sorted entity order.
+    pub fn for_each_mut<T: 'static>(&mut self, mut f: impl FnMut(EntityId, &mut T)) {
+        let Some(storage) = self
+            .components
+            .get_mut(&TypeId::of::<T>())
+            .and_then(|storage| storage.as_any_mut().downcast_mut::<TypedStorage<T>>())
+        else {
+            return;
+        };
+        let entities = storage.entities.clone();
+        for entity in entities {
+            if let Some(component) = storage.values.get_mut(&entity) {
+                f(entity, component);
+            }
+        }
+    }
+
+    /// Iterates all live entities that have both components `T` and `U`.
+    pub fn for_each2<T: 'static, U: 'static>(&self, mut f: impl FnMut(EntityId, &T, &U)) {
+        let Some(left) = self
+            .components
+            .get(&TypeId::of::<T>())
+            .and_then(|storage| storage.as_any().downcast_ref::<TypedStorage<T>>())
+        else {
+            return;
+        };
+        let Some(right) = self
+            .components
+            .get(&TypeId::of::<U>())
+            .and_then(|storage| storage.as_any().downcast_ref::<TypedStorage<U>>())
+        else {
+            return;
+        };
+        if left.entities.len() <= right.entities.len() {
+            for &entity in &left.entities {
+                if let Some(other) = right.values.get(&entity)
+                    && let Some(component) = left.values.get(&entity)
+                {
+                    f(entity, component, other);
+                }
+            }
+        } else {
+            for &entity in &right.entities {
+                if let Some(component) = left.values.get(&entity)
+                    && let Some(other) = right.values.get(&entity)
+                {
+                    f(entity, component, other);
+                }
+            }
+        }
     }
 
     fn ensure_alive(&self, entity: EntityId) -> Result<(), WorldError> {

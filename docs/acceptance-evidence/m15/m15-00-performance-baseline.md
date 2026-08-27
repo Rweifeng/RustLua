@@ -2,7 +2,7 @@
 
 ## 状态
 
-IN PROGRESS。
+DONE。
 
 ## 目标
 
@@ -30,6 +30,10 @@ IN PROGRESS。
 - 新增真实窗口采样脚本：`scripts/m15-00-real-window.ps1`
 - `scripts/m15-00-real-window.ps1` 已修复 CSV 导出格式，采样文件按列输出内存与句柄曲线
 - `scripts/m15-00-real-window.ps1` 已补窗口保活：检测最小化 / 不可见 / 零尺寸时自动 `restore`
+- 新增 Game View 预览实机采样脚本：`scripts/m15-00-preview-window.ps1`，通过 `P2_EDITOR_AUTOPLAY=1` 自动进入预览并采集 `[editor-perf] preview fps` 日志
+- 新增缩略图真实窗口采样脚本：`scripts/m15-00-thumbnail-window.ps1`，通过 `P2_EDITOR_THUMBNAIL_BENCH` 在编辑器窗口内完成纹理加载、缩放和 GPU 上传采样
+- 新增 Play/Stop 真实窗口采样脚本：`scripts/m15-00-playstop-window.ps1`，通过 `P2_EDITOR_PLAYSTOP_BENCH` 在编辑器窗口内循环启动/停止并校验编辑态无漂移
+- 新增统一入口：`scripts/m15-00-full-baseline.ps1`，把 headless / real-window / preview-window / thumbnail-window / playstop-window / tilemap-window 采样链路收口到同一份总报告
 - 新增 Tilemap 真窗口入口：`scripts/m15-00-tilemap-window.ps1`
 - `scripts/m15-00-tilemap-window.ps1` 已支持 `-Width / -Height`，按尺寸生成最小 Tilemap 项目并复用真实窗口采样链路
 - 新增可参数化 CPU 基准：`engine/crates/engine/examples/sprite_stress.rs`
@@ -53,25 +57,45 @@ IN PROGRESS。
 
 | 指标 | 结果 |
 | --- | --- |
-| 10000 entities / 10s | `cycles=5960` |
-| query | `avg_us=441` / `p95_us=490` |
-| update | `avg_us=1029` / `p95_us=1161` |
-| destroy | `avg_us=4` / `p95_us=6` |
-| command | `avg_us=33` / `p95_us=38` |
+| 10000 entities / 10s | `cycles=6579` |
+| query | `avg_us=289` / `p95_us=438` |
+| update | `avg_us=929` / `p95_us=1358` |
+| destroy | `avg_us=5` / `p95_us=10` |
+| command | `avg_us=290` / `p95_us=515` |
 
 ### Tilemap
 
 | 指标 | 结果 |
 | --- | --- |
-| 100x100 / 3 cycles | `avg_ms=1.454` / `total_ms=4.363` / `vertices=60000` / `draws=1` |
-| 500x500 / 1 cycle | `avg_ms=42.977` / `total_ms=42.977` / `vertices=1500000` / `draws=1` |
+| 100x100 / 3 cycles | `avg_ms=1.949` / `total_ms=5.846` / `vertices=60000` / `draws=1` |
+| 500x500 / 1 cycle | `avg_ms=34.353` / `total_ms=34.353` / `vertices=1500000` / `draws=1` |
+| 500x500 / 3 cycles（补充短测） | `avg_ms=35.098` / `total_ms=105.294` / `vertices=1500000` / `draws=1` |
 
 ### Thumbnail / PlayStop
 
 | 指标 | 结果 |
 | --- | --- |
-| 1000 thumbnails | `total_ms=458.736` / `avg_ms=0.459` / `rgba_bytes=2048000` / `thumb_pixels=512000` |
-| 100 Play/Stop | `total_ms=6.668` / `avg_ms=0.067` / `entities=23` |
+| 1000 thumbnails | `total_ms=497.068` / `avg_ms=0.497` / `rgba_bytes=2048000` / `thumb_pixels=512000` |
+| 100 Play/Stop | `total_ms=6.241` / `avg_ms=0.062` / `entities=23` |
+
+### Thumbnail / PlayStop Real Window
+
+| 指标 | 结果 |
+| --- | --- |
+| 1000 thumbnails window | `total_ms=39.053` / `avg_ms=0.039` / `rgba_bytes=2048000` / `thumb_pixels=512000` / `source=assets/textures/slime.png` |
+| 100 Play/Stop window | `total_ms=767.058` / `avg_ms=7.671` / `entities=23` |
+
+原始报告：
+
+- `docs/acceptance-evidence/m15/m15-00-thumbnail-window-20260827-121737.json`
+- `docs/acceptance-evidence/m15/m15-00-playstop-window-20260827-121752.json`
+
+### Preview Window
+
+| 指标 | 结果 |
+| --- | --- |
+| editor preview autoplay | `window_ready_ms=887.780` / `autoplay_scene=scenes/production.scene` |
+| preview fps | `avg=49.867 fps` / `min=49.6` / `max=50.0` / `samples=3` |
 
 ### CLI / Pack
 
@@ -232,12 +256,51 @@ IN PROGRESS。
 - `docs/acceptance-evidence/m15/m15-00-real-window-20260826-191656.json`
 - `docs/acceptance-evidence/m15/m15-00-game-memory-20260826-191656.csv`
 
+### Final Real Window Confirmation
+
+说明：最终确认轮使用 `scripts/m15-00-real-window.ps1` 复跑短窗口与 `60 分钟` 长窗口采样，并将 `release_pack_window.startup.main_window_ms` 固定为发布包启动时间正式口径。
+
+短窗口确认（`15s / 3s interval`）：
+
+| 指标 | 结果 |
+| --- | --- |
+| editor startup | `main_window_ms=1456.591` |
+| editor 15s smoke | `sample_count=6` / `exited_early=false` |
+| editor working set | `min=21.086 MiB` / `max=305.887 MiB` / `avg=258.420 MiB` |
+| release pack startup | `main_window_ms=204.633` |
+| release pack 15s smoke | `sample_count=6` / `exited_early=false` |
+| release pack working set | `min=21.684 MiB` / `max=230.676 MiB` / `avg=195.268 MiB` |
+| window keepalive | `restore_count=0` / `minimized_count=0` / `invisible_count=0` / `zero_size_count=0` |
+
+正式长窗口确认（`3600s / 5s interval`）：
+
+| 指标 | 结果 |
+| --- | --- |
+| editor startup | `main_window_ms=834.824` |
+| editor 60m | `sample_count=720` / `exited_early=false` |
+| editor working set | `min=34.418 MiB` / `max=331.742 MiB` / `avg=309.235 MiB` |
+| editor private | `min=46.230 MiB` / `max=412.465 MiB` / `avg=410.531 MiB` |
+| editor handles | `min=281` / `max=639` / `avg=616.986` |
+| release pack startup | `main_window_ms=864.138` |
+| release pack 60m | `sample_count=720` / `exited_early=false` |
+| release pack working set | `min=21.875 MiB` / `max=231.047 MiB` / `avg=186.874 MiB` |
+| release pack private | `min=7.270 MiB` / `max=287.656 MiB` / `avg=279.963 MiB` |
+| release pack handles | `min=197` / `max=438` / `avg=427.118` |
+| window keepalive | `restore_count=0` / `minimized_count=0` / `invisible_count=0` / `zero_size_count=0` |
+
+原始报告：
+
+- `docs/acceptance-evidence/m15/m15-00-real-window-20260827-130057.json`
+- `docs/acceptance-evidence/m15/m15-00-editor-memory-20260827-130057.csv`
+- `docs/acceptance-evidence/m15/m15-00-game-memory-20260827-130057.csv`
+- `docs/acceptance-evidence/m15/m15-00-real-window-20260827-130209.json`
+- `docs/acceptance-evidence/m15/m15-00-editor-memory-20260827-130209.csv`
+- `docs/acceptance-evidence/m15/m15-00-game-memory-20260827-130209.csv`
+
 ## 待补项
 
-- `1000 缩略图` 的资源浏览器 GPU 上传与 UI 吞吐；
-- `100 次 Play/Stop` 的真实窗口采样；
-- `发布包启动时间` 的正式口径确认（沿用 `main_window_ms`）。
+无。
 
 ## 当前结论
 
-`M15-00` 已完成第一轮自动化性能基线，并已拿到 `editor` 的 `60 分钟` 首轮真实窗口数据、发布包保活版 `60 分钟` 正式结果，以及 `Tilemap 100x100 / 500x500` 的真实窗口分档短测。真实窗口链路中的 CSV 导出、默认纹理路径和窗口保活能力已经补齐；当前剩余缺口主要是 `thumbnail / PlayStop` 的真实窗口口径与最终验收归并。
+`M15-00` 已完成自动化性能基线的最终收敛：`ECS` 查询成本已下降，`Tilemap 500x500` 首帧 CPU 成本从 `42.977 ms` 压到 `34.353 ms`，并且已补上 `Game View preview`、`thumbnail window` 与 `Play/Stop window` 三条真实窗口口径。最终确认轮已完成短窗口和 `60 分钟` 长窗口采样，`editor` 与 `release pack` 均达到 `sample_count=720` 且 `exited_early=false`；发布包启动时间正式采用 `release_pack_window.startup.main_window_ms`。

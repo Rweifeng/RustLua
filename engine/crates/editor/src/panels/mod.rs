@@ -5,6 +5,8 @@ pub(crate) mod game_view;
 pub(crate) mod header;
 pub(crate) mod hierarchy;
 pub(crate) mod inspector;
+pub(crate) mod progress;
+pub(crate) mod publish;
 pub(crate) mod resource_browser;
 pub(crate) mod scene_view;
 pub(crate) mod toolbar;

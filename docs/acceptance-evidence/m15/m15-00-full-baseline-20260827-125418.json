@@ -1,0 +1,23 @@
+﻿{
+    "report_version":  "m15-00-full-baseline-v1",
+    "generated_at":  "2026-08-27T12:54:18",
+    "project_root":  "e:\\Codex\\p2\\game_test_2d_production",
+    "out_dir":  "e:\\Codex\\p2\\docs\\acceptance-evidence\\m15",
+    "release":  false,
+    "duration_seconds":  600,
+    "sample_interval_seconds":  5,
+    "steps":  {
+                  "thumbnail_window":  {
+                                           "report":  "E:\\Codex\\p2\\docs\\acceptance-evidence\\m15\\m15-00-thumbnail-window-20260827-125418.json",
+                                           "status":  "completed"
+                                       },
+                  "playstop_window":  {
+                                          "report":  "E:\\Codex\\p2\\docs\\acceptance-evidence\\m15\\m15-00-playstop-window-20260827-125422.json",
+                                          "status":  "completed"
+                                      }
+              },
+    "notes":  [
+                  "Unified entry for headless baseline, real-window, preview-window, thumbnail-window, playstop-window, and tilemap-window sampling.",
+                  "Release pack startup confirmation remains the main open formalization gap."
+              ]
+}

@@ -1,12 +1,13 @@
 //! Runtime scene: instantiates the project scene/scripts and produces
 //! per-frame [`SceneMesh`] (2D) and [`Scene3d`] draw data for the renderer.
 
-use std::path::Path;
+use std::{collections::HashMap, path::Path};
 
 use crate::core::{
     animation::AnimationStateMachine,
     animation3d::Animation3D,
     camera3d::Camera3D,
+    entity::EntityId,
     font::FontAtlas,
     input::InputSnapshot,
     light::Light,
@@ -16,7 +17,7 @@ use crate::core::{
     scene::{Scene, SceneEntityId},
     script::LuaRuntime,
     sprite::{Sprite, SpriteAsset, SpriteSorting, SpriteVertex},
-    sprite_batch::{SpriteBatch, SpriteBatchItem},
+    sprite_batch::{SpriteBatch, SpriteBatchItem, SpriteBatchMesh, SpriteDrawBatch},
     text::{TextAtlas, TextLayout, TextMesh, TextStyle},
     tilemap::Tilemap,
     transform::{Transform, Vec2, integrate_velocity},
@@ -36,8 +37,23 @@ pub struct RuntimeScene {
     viewport_width: u32,
     viewport_height: u32,
     texture_paths: Vec<String>,
+    texture_lookup: HashMap<String, u32>,
+    tilemap_cache: HashMap<EntityId, CachedTilemapLayer>,
     font_atlas: Option<FontAtlas>,
     last_font_version: u64,
+}
+
+#[derive(Clone, Copy)]
+struct CachedTileSprite {
+    center_offset: Vec2,
+    uv_min: Vec2,
+    uv_max: Vec2,
+}
+
+struct CachedTilemapLayer {
+    transform: Transform,
+    tilemap: Tilemap,
+    sprites: Vec<CachedTileSprite>,
 }
 
 impl RuntimeScene {
@@ -115,6 +131,8 @@ impl RuntimeScene {
             viewport_width: 1280,
             viewport_height: 720,
             texture_paths: Vec::new(),
+            texture_lookup: HashMap::new(),
+            tilemap_cache: HashMap::new(),
             font_atlas,
             last_font_version: u64::MAX,
         })
@@ -158,16 +176,8 @@ impl RuntimeScene {
         self.script.with_world_mut(|world| {
             let _ = integrate_velocity(world, delta_seconds * steps as f32);
             let elapsed = delta_seconds * steps as f32;
-            for id in world.entities_with::<AnimationStateMachine>() {
-                if let Ok(Some(machine)) = world.get_mut::<AnimationStateMachine>(id) {
-                    machine.advance(elapsed);
-                }
-            }
-            for id in world.entities_with::<Animation3D>() {
-                if let Ok(Some(animation)) = world.get_mut::<Animation3D>(id) {
-                    animation.advance(elapsed);
-                }
-            }
+            world.for_each_mut::<AnimationStateMachine>(|_, machine| machine.advance(elapsed));
+            world.for_each_mut::<Animation3D>(|_, animation| animation.advance(elapsed));
         });
         Ok(())
     }
@@ -192,56 +202,52 @@ impl RuntimeScene {
         // Runtime extraction intentionally reads ECS state so physics, scripts,
         // active camera/light selection, and animation palettes remain live.
         let drawables = self.script.with_world(|world| {
-            world
-                .entities_with2::<Transform3D, MeshRenderer>()
-                .into_iter()
-                .filter_map(|id| {
-                    let transform = world.get::<Transform3D>(id).ok().flatten().copied()?;
-                    let renderer = world.get::<MeshRenderer>(id).ok().flatten()?;
-                    let model = transform.model_matrix().ok()?;
-                    let name = self
-                        .script
-                        .entity_name(id)
-                        .unwrap_or_else(|| format!("Entity {}", id.index()));
-                    let palette = world
-                        .get::<Animation3D>(id)
-                        .ok()
-                        .flatten()
-                        .map(|animation| animation.joint_matrices())
-                        .unwrap_or_default();
-                    let bounds = if renderer.mesh == crate::core::mesh3d::GROUND_PLANE_SENTINEL {
-                        Scene3dBounds {
-                            local_aabb: crate::core::math3d::Aabb3::new(
-                                Vec3::new(-100.0, -0.05, -100.0),
-                                Vec3::new(100.0, 0.05, 100.0),
-                            )
-                            .unwrap_or_else(|_| {
-                                crate::core::math3d::Aabb3 {
-                                    min: Vec3::new(-1.0, -1.0, -1.0),
-                                    max: Vec3::new(1.0, 1.0, 1.0),
-                                }
-                            }),
-                            source: BoundsSource::Fallback,
-                        }
-                    } else {
-                        Scene3dBounds {
-                            local_aabb: crate::core::math3d::Aabb3 {
-                                min: Vec3::new(-0.5, -0.5, -0.5),
-                                max: Vec3::new(0.5, 0.5, 0.5),
-                            },
-                            source: BoundsSource::Fallback,
-                        }
-                    };
-                    Some(Scene3dDrawable {
-                        entity: SceneEntityId(id.index() as u64),
-                        name,
-                        mesh_path: renderer.mesh.clone(),
-                        model,
-                        palette,
-                        bounds,
-                    })
-                })
-                .collect::<Vec<_>>()
+            let mut drawables = Vec::new();
+            world.for_each2::<Transform3D, MeshRenderer>(|id, transform, renderer| {
+                let Ok(model) = transform.model_matrix() else {
+                    return;
+                };
+                let name = self
+                    .script
+                    .entity_name(id)
+                    .unwrap_or_else(|| format!("Entity {}", id.index()));
+                let palette = world
+                    .get::<Animation3D>(id)
+                    .ok()
+                    .flatten()
+                    .map(|animation| animation.joint_matrices())
+                    .unwrap_or_default();
+                let bounds = if renderer.mesh == crate::core::mesh3d::GROUND_PLANE_SENTINEL {
+                    Scene3dBounds {
+                        local_aabb: crate::core::math3d::Aabb3::new(
+                            Vec3::new(-100.0, -0.05, -100.0),
+                            Vec3::new(100.0, 0.05, 100.0),
+                        )
+                        .unwrap_or_else(|_| crate::core::math3d::Aabb3 {
+                            min: Vec3::new(-1.0, -1.0, -1.0),
+                            max: Vec3::new(1.0, 1.0, 1.0),
+                        }),
+                        source: BoundsSource::Fallback,
+                    }
+                } else {
+                    Scene3dBounds {
+                        local_aabb: crate::core::math3d::Aabb3 {
+                            min: Vec3::new(-0.5, -0.5, -0.5),
+                            max: Vec3::new(0.5, 0.5, 0.5),
+                        },
+                        source: BoundsSource::Fallback,
+                    }
+                };
+                drawables.push(Scene3dDrawable {
+                    entity: SceneEntityId(id.index() as u64),
+                    name,
+                    mesh_path: renderer.mesh.clone(),
+                    model,
+                    palette,
+                    bounds,
+                });
+            });
+            drawables
         });
         if drawables.is_empty() {
             return None;
@@ -284,11 +290,17 @@ impl RuntimeScene {
         });
         let selected = self.script.active_camera();
         let mut camera = self.script.with_world(|world| {
-            let candidates = world.entities_with::<Camera3D>();
-            let id = selected
-                .filter(|id| world.has::<Camera3D>(*id).unwrap_or(false))
-                .or_else(|| candidates.first().copied());
-            id.and_then(|id| world.get::<Camera3D>(id).ok().flatten().copied())
+            let mut selected_camera = None;
+            let mut fallback = None;
+            world.for_each::<Camera3D>(|id, camera| {
+                if fallback.is_none() {
+                    fallback = Some(*camera);
+                }
+                if selected == Some(id) {
+                    selected_camera = Some(*camera);
+                }
+            });
+            selected_camera.or(fallback)
         });
         if let Some(camera) = &mut camera {
             camera.aspect_ratio = aspect_ratio;
@@ -303,11 +315,17 @@ impl RuntimeScene {
         let selected = self.script.active_light();
         self.script
             .with_world(|world| {
-                let candidates = world.entities_with::<Light>();
-                let id = selected
-                    .filter(|id| world.has::<Light>(*id).unwrap_or(false))
-                    .or_else(|| candidates.first().copied());
-                id.and_then(|id| world.get::<Light>(id).ok().flatten().copied())
+                let mut selected_light = None;
+                let mut fallback = None;
+                world.for_each::<Light>(|id, light| {
+                    if fallback.is_none() {
+                        fallback = Some(*light);
+                    }
+                    if selected == Some(id) {
+                        selected_light = Some(*light);
+                    }
+                });
+                selected_light.or(fallback)
             })
             .unwrap_or_default()
     }
@@ -319,30 +337,30 @@ impl RuntimeScene {
             .map_err(|error| error.to_string())?;
         self.sprite_batch.clear();
         self.texture_paths.clear();
+        self.texture_lookup.clear();
         let sprites = self.script.with_world(|world| {
-            world
-                .entities_with::<Sprite>()
-                .into_iter()
-                .filter_map(|id| {
-                    let transform = world.get::<Transform>(id).ok().flatten().copied()?;
-                    let sprite = world.get::<Sprite>(id).ok().flatten().copied()?;
-                    let animation = world
-                        .get::<AnimationStateMachine>(id)
-                        .ok()
-                        .flatten()
-                        .cloned();
-                    let asset = world
-                        .get::<SpriteAsset>(id)
-                        .ok()
-                        .flatten()
-                        .map(|entry| entry.path().to_owned());
-                    let sorting = world.get::<SpriteSorting>(id).ok().flatten().cloned();
-                    Some((transform, sprite, animation, asset, sorting))
-                })
-                .collect::<Vec<_>>()
+            let mut sprites = Vec::new();
+            world.for_each::<Sprite>(|id, sprite| {
+                let Ok(Some(transform)) = world.get::<Transform>(id) else {
+                    return;
+                };
+                let animation = world
+                    .get::<AnimationStateMachine>(id)
+                    .ok()
+                    .flatten()
+                    .cloned();
+                let asset = world
+                    .get::<SpriteAsset>(id)
+                    .ok()
+                    .flatten()
+                    .map(|entry| entry.path().to_owned());
+                let sorting = world.get::<SpriteSorting>(id).ok().flatten().cloned();
+                sprites.push((*transform, *sprite, animation, asset, sorting));
+            });
+            sprites
         });
         // Tile maps draw first (layer 0), sprite entities on top (layer 1+).
-        self.push_tiles()?;
+        let tilemap_mesh = self.build_tilemap_mesh(viewport)?;
         for (index, (transform, sprite, animation, asset, sorting)) in
             sprites.into_iter().enumerate()
         {
@@ -371,6 +389,7 @@ impl RuntimeScene {
             .sprite_batch
             .build(self.camera, viewport)
             .map_err(|error| error.to_string())?;
+        let mesh = merge_sprite_meshes(tilemap_mesh, mesh);
         tracing::debug!(
             target: "render",
             "[render] batch items={} vertices={} draw_ranges={}",
@@ -542,31 +561,25 @@ impl RuntimeScene {
         height: u32,
     ) -> Result<(), String> {
         let images: Vec<UiImage> = self.script.with_world(|world| {
-            world
-                .entities_with::<UiImage>()
-                .into_iter()
-                .filter_map(|id| world.get::<UiImage>(id).ok().flatten().cloned())
-                .collect()
+            let mut images = Vec::new();
+            world.for_each::<UiImage>(|_, image| images.push(image.clone()));
+            images
         });
         for image in images {
             self.push_image_quad(vertices, draws, width, height, &image)?;
         }
         let buttons: Vec<UiButton> = self.script.with_world(|world| {
-            world
-                .entities_with::<UiButton>()
-                .into_iter()
-                .filter_map(|id| world.get::<UiButton>(id).ok().flatten().cloned())
-                .collect()
+            let mut buttons = Vec::new();
+            world.for_each::<UiButton>(|_, button| buttons.push(button.clone()));
+            buttons
         });
         for button in buttons {
             self.push_button_quad(vertices, draws, width, height, &button)?;
         }
         let texts: Vec<UiText> = self.script.with_world(|world| {
-            world
-                .entities_with::<UiText>()
-                .into_iter()
-                .filter_map(|id| world.get::<UiText>(id).ok().flatten().cloned())
-                .collect()
+            let mut texts = Vec::new();
+            world.for_each::<UiText>(|_, text| texts.push(text.clone()));
+            texts
         });
         for text in texts {
             let viewport = [width.max(1) as f32, height.max(1) as f32];
@@ -767,67 +780,255 @@ impl RuntimeScene {
 
     /// Deduplicates a texture asset path and returns its id for batch items.
     fn texture_id(&mut self, path: &str) -> u32 {
-        if let Some(index) = self.texture_paths.iter().position(|entry| entry == path) {
-            return index as u32;
+        if let Some(index) = self.texture_lookup.get(path) {
+            return *index;
         }
-        self.texture_paths.push(path.to_owned());
-        (self.texture_paths.len() - 1) as u32
+        let index = self.texture_paths.len() as u32;
+        let path = path.to_owned();
+        self.texture_paths.push(path.clone());
+        self.texture_lookup.insert(path, index);
+        index
     }
 
-    /// Pushes every non-empty tile as a textured quad sampling its tileset
-    /// column. All tiles of a map share texture id and layer, so the whole map
-    /// is one draw range.
-    fn push_tiles(&mut self) -> Result<(), String> {
+    /// Builds the 2D mesh for all Tilemap components using a tilemap-specific
+    /// hot path that precomputes shared camera/rotation terms once per frame.
+    fn build_tilemap_mesh(&mut self, viewport: Viewport) -> Result<SpriteBatchMesh, String> {
         let tilemaps = self.script.with_world(|world| {
-            world
-                .entities_with2::<Transform, Tilemap>()
-                .into_iter()
-                .filter_map(|id| {
-                    let transform = world.get::<Transform>(id).ok().flatten().copied();
-                    let tilemap = world.get::<Tilemap>(id).ok().flatten().cloned();
-                    transform.zip(tilemap)
-                })
-                .collect::<Vec<_>>()
+            let mut tilemaps = Vec::new();
+            world.for_each2::<Transform, Tilemap>(|id, transform, tilemap| {
+                tilemaps.push((id, *transform, tilemap.clone()));
+            });
+            tilemaps
         });
-        for (transform, tilemap) in tilemaps {
+        let mut next_cache = HashMap::with_capacity(tilemaps.len());
+        let mut vertices = Vec::new();
+        let mut draws = Vec::new();
+        let camera = TilemapCamera::new(self.camera, viewport)?;
+        for (entity, transform, tilemap) in tilemaps {
             let texture = self.texture_id(&tilemap.texture);
-            for y in 0..tilemap.height {
-                for x in 0..tilemap.width {
-                    let index = y * tilemap.width + x;
-                    let cell = tilemap.tiles[index];
-                    if cell == 0 {
-                        continue;
-                    }
-                    let (uv_min, uv_max) = Tilemap::tile_uv(cell);
-                    let sprite = Sprite::new(tilemap.tile_size)
-                        .map_err(|error| error.to_string())?
-                        .with_uv(uv_min, uv_max)
-                        .map_err(|error| error.to_string())?;
-                    // Center each tile sprite on its cell so visuals align with
-                    // the tilemap's per-cell colliders (cell center = x*ts + ts/2).
-                    let offset = Vec2::new(
-                        (x as f32 + 0.5) * tilemap.tile_size.x * transform.scale.x,
-                        (y as f32 + 0.5) * tilemap.tile_size.y * transform.scale.y,
-                    );
-                    let tile_transform = Transform {
-                        position: Vec2::new(
-                            transform.position.x + offset.x,
-                            transform.position.y + offset.y,
-                        ),
-                        rotation: transform.rotation,
-                        scale: transform.scale,
-                    };
-                    self.sprite_batch.push(SpriteBatchItem::new(
-                        texture,
-                        0,
-                        sprite,
-                        tile_transform,
-                    ));
-                }
-            }
+            let cached = self.tilemap_cache.remove(&entity);
+            let layer = match cached {
+                Some(layer) if layer.transform == transform && layer.tilemap == tilemap => layer,
+                _ => build_cached_tilemap_layer(transform, tilemap.clone())?,
+            };
+            append_tilemap_layer(&mut vertices, &mut draws, texture, &camera, &layer);
+            next_cache.insert(entity, layer);
         }
-        Ok(())
+        self.tilemap_cache = next_cache;
+        Ok(SpriteBatchMesh { vertices, draws })
     }
+}
+
+fn build_cached_tilemap_layer(
+    transform: Transform,
+    tilemap: Tilemap,
+) -> Result<CachedTilemapLayer, String> {
+    let mut sprites = Vec::new();
+    for y in 0..tilemap.height {
+        for x in 0..tilemap.width {
+            let index = y * tilemap.width + x;
+            let cell = tilemap.tiles[index];
+            if cell == 0 {
+                continue;
+            }
+            let (uv_min, uv_max) = Tilemap::tile_uv(cell);
+            let center_offset = Vec2::new(
+                (x as f32 + 0.5) * tilemap.tile_size.x * transform.scale.x,
+                (y as f32 + 0.5) * tilemap.tile_size.y * transform.scale.y,
+            );
+            sprites.push(CachedTileSprite {
+                center_offset,
+                uv_min,
+                uv_max,
+            });
+        }
+    }
+    Ok(CachedTilemapLayer {
+        transform,
+        tilemap,
+        sprites,
+    })
+}
+
+#[derive(Clone, Copy)]
+struct TilemapCamera {
+    center: Vec2,
+    sin: f32,
+    cos: f32,
+    zoom: f32,
+    half_width: f32,
+    half_height: f32,
+}
+
+impl TilemapCamera {
+    fn new(camera: Camera2D, viewport: Viewport) -> Result<Self, String> {
+        let center = constrained_camera_center(camera, viewport);
+        let (sin, cos) = camera.rotation.sin_cos();
+        Ok(Self {
+            center,
+            sin,
+            cos,
+            zoom: camera.zoom,
+            half_width: viewport.width * 0.5,
+            half_height: viewport.height * 0.5,
+        })
+    }
+
+    fn world_to_screen(self, world: Vec2) -> [f32; 2] {
+        let delta = Vec2::new(world.x - self.center.x, world.y - self.center.y);
+        let view = Vec2::new(
+            delta.x * self.cos + delta.y * self.sin,
+            -delta.x * self.sin + delta.y * self.cos,
+        );
+        [
+            view.x * self.zoom + self.half_width,
+            self.half_height - view.y * self.zoom,
+        ]
+    }
+
+    fn world_offset_to_screen_delta(self, world: Vec2) -> [f32; 2] {
+        let view = Vec2::new(
+            world.x * self.cos + world.y * self.sin,
+            -world.x * self.sin + world.y * self.cos,
+        );
+        [view.x * self.zoom, -view.y * self.zoom]
+    }
+}
+
+fn constrained_camera_center(camera: Camera2D, viewport: Viewport) -> Vec2 {
+    let Some(bounds) = camera.bounds else {
+        return camera.center;
+    };
+    let half_width = viewport.width * 0.5 / camera.zoom;
+    let half_height = viewport.height * 0.5 / camera.zoom;
+    let (sin, cos) = camera.rotation.sin_cos();
+    let extent_x = half_width * cos.abs() + half_height * sin.abs();
+    let extent_y = half_width * sin.abs() + half_height * cos.abs();
+    Vec2::new(
+        clamp_center(camera.center.x, bounds.min.x + extent_x, bounds.max.x - extent_x),
+        clamp_center(camera.center.y, bounds.min.y + extent_y, bounds.max.y - extent_y),
+    )
+}
+
+fn clamp_center(value: f32, minimum: f32, maximum: f32) -> f32 {
+    if minimum > maximum {
+        (minimum + maximum) * 0.5
+    } else {
+        value.clamp(minimum, maximum)
+    }
+}
+
+fn append_tilemap_layer(
+    vertices: &mut Vec<SpriteVertex>,
+    draws: &mut Vec<SpriteDrawBatch>,
+    texture_id: u32,
+    camera: &TilemapCamera,
+    layer: &CachedTilemapLayer,
+) {
+    if layer.sprites.is_empty() {
+        return;
+    }
+    let start = vertices.len();
+    let half = Vec2::new(
+        0.5 * layer.tilemap.tile_size.x * layer.transform.scale.x,
+        0.5 * layer.tilemap.tile_size.y * layer.transform.scale.y,
+    );
+    let (sin, cos) = layer.transform.rotation.sin_cos();
+    let corners = [
+        Vec2::new(-half.x, half.y),
+        Vec2::new(half.x, half.y),
+        Vec2::new(half.x, -half.y),
+        Vec2::new(-half.x, -half.y),
+    ];
+    let screen_offsets = corners.map(|corner| {
+        let rotated = Vec2::new(
+            corner.x * cos - corner.y * sin,
+            corner.x * sin + corner.y * cos,
+        );
+        camera.world_offset_to_screen_delta(rotated)
+    });
+    for tile in &layer.sprites {
+        let center_world = Vec2::new(
+            layer.transform.position.x + tile.center_offset.x,
+            layer.transform.position.y + tile.center_offset.y,
+        );
+        let center = camera.world_to_screen(center_world);
+        let positions = screen_offsets.map(|offset| [center[0] + offset[0], center[1] + offset[1]]);
+        let uv = [
+            [tile.uv_min.x, tile.uv_min.y],
+            [tile.uv_max.x, tile.uv_min.y],
+            [tile.uv_max.x, tile.uv_max.y],
+            [tile.uv_min.x, tile.uv_max.y],
+        ];
+        let tint = [1.0; 4];
+        vertices.extend_from_slice(&[
+            SpriteVertex {
+                position: positions[0],
+                uv: uv[0],
+                color: tint,
+            },
+            SpriteVertex {
+                position: positions[1],
+                uv: uv[1],
+                color: tint,
+            },
+            SpriteVertex {
+                position: positions[2],
+                uv: uv[2],
+                color: tint,
+            },
+            SpriteVertex {
+                position: positions[0],
+                uv: uv[0],
+                color: tint,
+            },
+            SpriteVertex {
+                position: positions[2],
+                uv: uv[2],
+                color: tint,
+            },
+            SpriteVertex {
+                position: positions[3],
+                uv: uv[3],
+                color: tint,
+            },
+        ]);
+    }
+    let count = vertices.len() - start;
+    if let Some(previous) = draws.last_mut()
+        && previous.texture_id == texture_id
+        && previous.layer == 0
+        && previous.vertex_start + previous.vertex_count == start
+    {
+        previous.vertex_count += count;
+    } else {
+        draws.push(SpriteDrawBatch {
+            texture_id,
+            layer: 0,
+            vertex_start: start,
+            vertex_count: count,
+        });
+    }
+}
+
+fn merge_sprite_meshes(tilemap: SpriteBatchMesh, dynamic: SpriteBatchMesh) -> SpriteBatchMesh {
+    if tilemap.vertices.is_empty() {
+        return dynamic;
+    }
+    if dynamic.vertices.is_empty() {
+        return tilemap;
+    }
+    let base = tilemap.vertices.len();
+    let mut vertices = tilemap.vertices;
+    vertices.extend(dynamic.vertices);
+    let mut draws = tilemap.draws;
+    draws.extend(dynamic.draws.into_iter().map(|draw| SpriteDrawBatch {
+        texture_id: draw.texture_id,
+        layer: draw.layer,
+        vertex_start: draw.vertex_start + base,
+        vertex_count: draw.vertex_count,
+    }));
+    SpriteBatchMesh { vertices, draws }
 }
 
 fn load_runtime_scene(project_root: Option<&Path>) -> Scene {

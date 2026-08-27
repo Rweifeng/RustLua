@@ -10,7 +10,12 @@ use std::{
 /// 去除 Windows 逐字路径前缀 `\\?\`（会破坏 Lua require 的 searchpath 解析）。
 pub(crate) fn strip_verbatim_prefix(path: &Path) -> PathBuf {
     let text = path.to_string_lossy();
-    PathBuf::from(text.strip_prefix(r"\\?\").unwrap_or(&text))
+    let text = text
+        .strip_prefix(r"\\?\UNC\")
+        .map(|rest| format!(r"\\{rest}"))
+        .or_else(|| text.strip_prefix(r"\\?\").map(str::to_owned))
+        .unwrap_or_else(|| text.into_owned());
+    PathBuf::from(text)
 }
 
 /// 供 UI 显示：去除 `\\?\` 前缀后的路径字符串（编辑器界面一律用它显示路径）。
@@ -154,3 +159,30 @@ pub(crate) fn configure_cjk_fonts(context: &egui::Context) {
     }
     context.set_fonts(fonts);
 }
+
+/// 在资源管理器中打开目录（ShellExecuteW，比 `explorer <path>` 更可靠）。
+#[cfg(windows)]
+pub(crate) fn open_in_explorer(path: &Path) {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    let path_wide: Vec<u16> = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let op_wide: Vec<u16> = "open".encode_utf16().chain(std::iter::once(0)).collect();
+    unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            op_wide.as_ptr(),
+            path_wide.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            SW_SHOWNORMAL,
+        );
+    }
+}
+
+#[cfg(not(windows))]
+pub(crate) fn open_in_explorer(_path: &Path) {}

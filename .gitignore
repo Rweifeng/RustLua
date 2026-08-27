@@ -3,9 +3,7 @@ engine/target/
 
 # Generated release copies and profiling/screenshot output
 **/artifacts/logs/
-artifacts/builds/*
-artifacts/profiles/
-artifacts/screenshots/
+artifacts/
 
 # IDE and OS files
 .claude/

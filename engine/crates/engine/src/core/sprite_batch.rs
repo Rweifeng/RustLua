@@ -115,6 +115,10 @@ impl SpriteBatch {
         self.items.push(item);
     }
 
+    pub fn extend_from_slice(&mut self, items: &[SpriteBatchItem]) {
+        self.items.extend_from_slice(items);
+    }
+
     /// Builds stable layer-major, texture-minor batches.
     pub fn build(
         &self,

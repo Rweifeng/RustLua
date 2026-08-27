@@ -1,7 +1,7 @@
 //! 通用进度面板：后台任务 + 进度/日志 + 非阻塞窗口。
 //! 可复用于导入、发布等任何耗时操作（任务在线程中执行，UI 不阻塞）。
 
-use crate::publish::open_in_explorer;
+use crate::util::open_in_explorer;
 use eframe::egui;
 use std::{
     path::PathBuf,

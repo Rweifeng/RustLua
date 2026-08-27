@@ -1,0 +1,30 @@
+﻿{
+    "report_version":  "m15-00-preview-window-v1",
+    "generated_at":  "2026-08-27T11:40:04",
+    "project_root":  "e:\\Codex\\p2\\game_test_2d_production",
+    "duration_seconds":  10,
+    "autoplay_scene":  "scenes/production.scene",
+    "editor_exe":  "E:\\Codex\\p2\\engine\\target\\release\\editor.exe",
+    "editor_log":  "E:\\Codex\\p2\\engine\\target\\release\\editor.log",
+    "window_ready_ms":  887.78,
+    "fps_sample_count":  3,
+    "fps":  {
+                "min":  49.6,
+                "max":  50,
+                "avg":  49.867,
+                "samples":  [
+                                {
+                                    "line":  "2026-08-27T03:39:47.957562Z  INFO editor: [editor-perf] preview fps: 119 uploads / 120 ticks = 49.6 fps",
+                                    "fps":  49.6
+                                },
+                                {
+                                    "line":  "2026-08-27T03:39:50.358245Z  INFO editor: [editor-perf] preview fps: 119 uploads / 120 ticks = 50.0 fps",
+                                    "fps":  50
+                                },
+                                {
+                                    "line":  "2026-08-27T03:39:52.757631Z  INFO editor: [editor-perf] preview fps: 119 uploads / 120 ticks = 50.0 fps",
+                                    "fps":  50
+                                }
+                            ]
+            }
+}

@@ -1,0 +1,133 @@
+﻿{
+    "report_version":  "m15-00-v1",
+    "generated_at":  "2026-08-27T11:28:01",
+    "release":  true,
+    "project_root":  "e:\\Codex\\p2\\game_test_2d_production",
+    "metrics":  {
+                    "sprite_1000":  {
+                                        "elapsed_ms":  9231.081,
+                                        "output":  [
+                                                       "sprite_stress_ok sprites=1000 cycles=60 push_ms=0.020 build_ms=0.091 vertices=6000 draw_batches=8"
+                                                   ]
+                                    },
+                    "sprite_10000":  {
+                                         "elapsed_ms":  559.206,
+                                         "output":  [
+                                                        "sprite_stress_ok sprites=10000 cycles=60 push_ms=0.224 build_ms=0.932 vertices=60000 draw_batches=80"
+                                                    ]
+                                     },
+                    "ecs_10000_10s":  {
+                                          "elapsed_ms":  10761.306,
+                                          "output":  [
+                                                         "M2-07 ECS stress baseline (m2-07-v1)",
+                                                         "entities=10000 requested_seconds=10 elapsed_ms=10002",
+                                                         "cycles=6579 final_entities=10000 entity_range=10000..10000",
+                                                         "create: count=1 min_us=2150 avg_us=2150 p95_us=2150 max_us=2150",
+                                                         "query: count=6579 min_us=238 avg_us=289 p95_us=438 max_us=1211",
+                                                         "update: count=6579 min_us=774 avg_us=929 p95_us=1358 max_us=7583",
+                                                         "destroy: count=6579 min_us=3 avg_us=5 p95_us=10 max_us=129",
+                                                         "command: count=6579 min_us=52 avg_us=290 p95_us=515 max_us=835",
+                                                         "report: e:\\Codex\\p2\\docs\\acceptance-evidence\\m15\\m15-00-ecs-stress-20260827-112801.json"
+                                                     ],
+                                          "json_report":  "e:\\Codex\\p2\\docs\\acceptance-evidence\\m15\\m15-00-ecs-stress-20260827-112801.json"
+                                      },
+                    "tilemap_100x100":  {
+                                            "elapsed_ms":  684.187,
+                                            "output":  [
+                                                           "tilemap_stress_ok width=100 height=100 cycles=3 total_ms=5.846 avg_ms=1.949 vertices=60000 draws=1"
+                                                       ]
+                                        },
+                    "tilemap_500x500":  {
+                                            "elapsed_ms":  556.379,
+                                            "output":  [
+                                                           "tilemap_stress_ok width=500 height=500 cycles=1 total_ms=34.353 avg_ms=34.353 vertices=1500000 draws=1"
+                                                       ]
+                                        },
+                    "thumbnail_1000":  {
+                                           "elapsed_ms":  26879.114,
+                                           "output":  [
+                                                          "thumbnail_stress_ok thumbnails=1000 total_ms=497.068 avg_ms=0.497 rgba_bytes=2048000 thumb_bytes=2048000 thumb_pixels=512000"
+                                                      ]
+                                       },
+                    "play_stop_100":  {
+                                          "elapsed_ms":  10147.42,
+                                          "output":  [
+                                                         "play_stop_stress_ok iterations=100 total_ms=6.241 avg_ms=0.062 entities=23"
+                                                     ]
+                                      },
+                    "assetc_import":  {
+                                          "elapsed_ms":  23387.949,
+                                          "output":  [
+                                                         "assetc_import_ok total=26 imported=0 reused=26 failed=0",
+                                                         "assets\\audio\\attack.ogg\treused\t-",
+                                                         "assets\\audio\\bgm.ogg\treused\t-",
+                                                         "assets\\audio\\hit.ogg\treused\t-",
+                                                         "assets\\audio\\pickup.ogg\treused\t-",
+                                                         "assets\\fonts\\NotoSansSC-VF.ttf\treused\t-",
+                                                         "assets\\prefabs\\slime_green.prefab\treused\t-",
+                                                         "assets\\prefabs\\slime_red.prefab\treused\t-",
+                                                         "assets\\textures\\coin.png\treused\t-",
+                                                         "assets\\textures\\hero-attack.png\treused\t-",
+                                                         "assets\\textures\\hero-idle.png\treused\t-",
+                                                         "assets\\textures\\hero-move.png\treused\t-",
+                                                         "assets\\textures\\player.png\treused\t-",
+                                                         "assets\\textures\\red-1x1.png\treused\t-",
+                                                         "assets\\textures\\slime.png\treused\t-",
+                                                         "assets\\textures\\tileset.png\treused\t-",
+                                                         "scenes\\menu.scene\treused\t-",
+                                                         "scenes\\production.scene\treused\t-",
+                                                         "scripts\\coins.lua\treused\t-",
+                                                         "scripts\\enemies.lua\treused\t-",
+                                                         "scripts\\gameplay.lua\treused\t-",
+                                                         "scripts\\hud.lua\treused\t-",
+                                                         "scripts\\main.lua\treused\t-",
+                                                         "scripts\\menu.lua\treused\t-",
+                                                         "scripts\\player.lua\treused\t-",
+                                                         "scripts\\save_manager.lua\treused\t-",
+                                                         "scripts\\state.lua\treused\t-"
+                                                     ]
+                                      },
+                    "assetc_check_deps":  {
+                                              "elapsed_ms":  499.097,
+                                              "output":  [
+                                                             "assetc_check_deps_ok"
+                                                         ]
+                                          },
+                    "editor_check":  {
+                                         "elapsed_ms":  104155.959,
+                                         "output":  [
+                                                        "editor_project_ok root=\\\\?\\E:\\Codex\\p2\\game_test_2d_production baseline=v0.10-editor",
+                                                        "directory=scripts status=present",
+                                                        "directory=scenes status=present",
+                                                        "directory=assets status=present"
+                                                    ]
+                                     },
+                    "game_check":  {
+                                       "elapsed_ms":  74436.165,
+                                       "output":  [
+                                                      "game_check_ok project=e:\\Codex\\p2\\game_test_2d_production"
+                                                  ]
+                                   },
+                    "assetc_package":  {
+                                           "elapsed_ms":  742.323,
+                                           "output":  [
+                                                          "assetc_package_ok files=27 compress=false encrypt=false"
+                                                      ]
+                                       },
+                    "game_pack_check":  {
+                                            "elapsed_ms":  548.342,
+                                            "output":  [
+                                                           "game_check_ok project=E:\\Codex\\p2\\artifacts\\m15\\game_test_2d_production_pack"
+                                                       ]
+                                        },
+                    "pack_size":  {
+                                      "files":  28,
+                                      "bytes":  411596,
+                                      "mib":  0.393
+                                  }
+                },
+    "pending_manual":  [
+                           "editor_game_view_memory_60m",
+                           "release_pack_startup_time_real_window"
+                       ]
+}

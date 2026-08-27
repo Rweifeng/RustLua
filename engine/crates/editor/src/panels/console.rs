@@ -1,6 +1,6 @@
 //! 行4 控制台：实时日志（LogSink）+ Lua 运行输出 + 诊断。
 
-use crate::EditorApp;
+use crate::{ConsoleLogLevelFilter, EditorApp};
 use eframe::egui;
 use engine::core::script::{LuaRuntime, ScriptDiagnostic};
 
@@ -22,6 +22,27 @@ impl EditorApp {
                         .unwrap_or("项目");
                     ui.heading(format!("控制台 — {project_name}"));
                     ui.text_edit_singleline(&mut self.console_filter);
+                    ui.separator();
+                    ui.selectable_value(
+                        &mut self.console_log_level_filter,
+                        ConsoleLogLevelFilter::All,
+                        "全部",
+                    );
+                    ui.selectable_value(
+                        &mut self.console_log_level_filter,
+                        ConsoleLogLevelFilter::Info,
+                        "Info",
+                    );
+                    ui.selectable_value(
+                        &mut self.console_log_level_filter,
+                        ConsoleLogLevelFilter::Warning,
+                        "Warning",
+                    );
+                    ui.selectable_value(
+                        &mut self.console_log_level_filter,
+                        ConsoleLogLevelFilter::Error,
+                        "Error",
+                    );
                     if ui.button("运行选中脚本").clicked() {
                         self.run_selected_script();
                     }
@@ -42,17 +63,35 @@ impl EditorApp {
                     }
                 });
                 let log_lines = self.log_sink.snapshot();
+                let filter = self.console_filter.trim().to_lowercase();
                 egui::ScrollArea::vertical()
                     .max_height(140.0)
                     .show(ui, |ui| {
                         for line in &log_lines {
-                            ui.monospace(line);
+                            let level = log_level(line);
+                            if self.console_log_level_filter.matches(level)
+                                && text_matches_filter(line, &filter)
+                            {
+                                draw_log_line(ui, line, level);
+                            }
                         }
                         for line in &self.console_output {
-                            ui.monospace(line);
+                            let level = output_level(line);
+                            if self.console_log_level_filter.matches(level)
+                                && text_matches_filter(line, &filter)
+                            {
+                                draw_log_line(ui, line, level);
+                            }
                         }
                         for diagnostic in self.console_diagnostics() {
-                            ui.colored_label(egui::Color32::RED, format_diagnostic(&diagnostic));
+                            let line = format_diagnostic(&diagnostic);
+                            if self
+                                .console_log_level_filter
+                                .matches(ConsoleLogLevel::Error)
+                                && text_matches_filter(&line, &filter)
+                            {
+                                ui.colored_label(egui::Color32::RED, line);
+                            }
                         }
                     });
             });
@@ -129,6 +168,57 @@ impl EditorApp {
         runtime.set_debug_filter((!filter.is_empty()).then_some(filter));
         runtime.diagnostics()
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ConsoleLogLevel {
+    Info,
+    Warning,
+    Error,
+}
+
+impl ConsoleLogLevelFilter {
+    fn matches(self, level: ConsoleLogLevel) -> bool {
+        match self {
+            Self::All => true,
+            Self::Info => level == ConsoleLogLevel::Info,
+            Self::Warning => level == ConsoleLogLevel::Warning,
+            Self::Error => level == ConsoleLogLevel::Error,
+        }
+    }
+}
+
+fn log_level(line: &str) -> ConsoleLogLevel {
+    if line.contains(" ERROR ") || line.contains("ERROR") {
+        ConsoleLogLevel::Error
+    } else if line.contains(" WARN ") || line.contains("WARN") || line.contains("WARNING") {
+        ConsoleLogLevel::Warning
+    } else {
+        ConsoleLogLevel::Info
+    }
+}
+
+fn output_level(line: &str) -> ConsoleLogLevel {
+    if line.contains("错误：") || line.contains("Error") || line.contains("error") {
+        ConsoleLogLevel::Error
+    } else if line.contains("警告：") || line.contains("Warning") || line.contains("warning") {
+        ConsoleLogLevel::Warning
+    } else {
+        ConsoleLogLevel::Info
+    }
+}
+
+fn text_matches_filter(line: &str, filter: &str) -> bool {
+    filter.is_empty() || line.to_lowercase().contains(filter)
+}
+
+fn draw_log_line(ui: &mut egui::Ui, line: &str, level: ConsoleLogLevel) {
+    let color = match level {
+        ConsoleLogLevel::Info => ui.visuals().text_color(),
+        ConsoleLogLevel::Warning => egui::Color32::YELLOW,
+        ConsoleLogLevel::Error => egui::Color32::RED,
+    };
+    ui.colored_label(color, egui::RichText::new(line).monospace());
 }
 
 fn format_diagnostic(diagnostic: &ScriptDiagnostic) -> String {

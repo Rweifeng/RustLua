@@ -2,8 +2,9 @@
 
 use crate::EditorApp;
 use crate::default_engine_path;
-use crate::publish::open_in_explorer;
-use crate::util::{choose_project_directory, display_path, icon_toggle, strip_verbatim_prefix};
+use crate::util::{
+    choose_project_directory, display_path, icon_toggle, open_in_explorer, strip_verbatim_prefix,
+};
 use eframe::egui;
 use std::path::Path;
 
@@ -41,10 +42,8 @@ impl EditorApp {
                         ui.close();
                     }
                     ui.separator();
-                    ui.checkbox(&mut self.publish_compress, "压缩");
-                    ui.checkbox(&mut self.publish_encrypt, "加密");
-                    if ui.button("发布项目").clicked() && !self.progress.running {
-                        self.start_publish();
+                    if ui.button("发布项目").clicked() {
+                        self.show_publish_panel = true;
                         ui.close();
                     }
                 });

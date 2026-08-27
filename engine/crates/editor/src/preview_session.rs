@@ -36,9 +36,10 @@ pub(crate) enum PreviewTick {
 pub(crate) struct PreviewSession {
     runtime: RuntimeScene,
     renderer: Renderer,
+    render_state: Option<eframe::egui_wgpu::RenderState>,
     texture: wgpu::Texture,
     texture_view: wgpu::TextureView,
-    egui_tex: Option<egui::TextureHandle>,
+    preview_texture: Option<PreviewTexture>,
     width: u32,
     height: u32,
     /// 距上次步进的时间（~60fps 节流）。
@@ -47,11 +48,17 @@ pub(crate) struct PreviewSession {
     diagnostic: Option<String>,
 }
 
+enum PreviewTexture {
+    Native(egui::TextureId),
+    Managed(egui::TextureHandle),
+}
+
 impl PreviewSession {
     /// 创建预览会话：运行时（当前场景）+ 离屏渲染器 + 预览纹理。
     pub(crate) fn create(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
+        render_state: Option<eframe::egui_wgpu::RenderState>,
         project_root: &Path,
         scene: &Scene,
         size: (u32, u32),
@@ -77,21 +84,26 @@ impl PreviewSession {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
         let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        Ok(Self {
+        let mut session = Self {
             runtime,
             renderer,
+            render_state,
             texture,
             texture_view,
-            egui_tex: None,
+            preview_texture: None,
             width,
             height,
             last_tick: None,
             diagnostic: None,
-        })
+        };
+        session.sync_native_texture(device);
+        Ok(session)
     }
 
     /// 当前分辨率（宽×高）。
@@ -100,8 +112,12 @@ impl PreviewSession {
     }
 
     /// 当前 egui 预览纹理（就绪帧）；`None` 表示尚无回读结果。
-    pub(crate) fn texture(&self) -> Option<&egui::TextureHandle> {
-        self.egui_tex.as_ref()
+    pub(crate) fn texture_id(&self) -> Option<egui::TextureId> {
+        match &self.preview_texture {
+            Some(PreviewTexture::Native(id)) => Some(*id),
+            Some(PreviewTexture::Managed(texture)) => Some(texture.id()),
+            None => None,
+        }
     }
 
     /// 最近一次步进/回读的结构化诊断。
@@ -111,7 +127,11 @@ impl PreviewSession {
 
     /// 回读指标（slot 数、busy/drop/rebuild 等），供视图与诊断显示。
     pub(crate) fn readback_metrics(&self) -> ReadbackMetrics {
-        self.renderer.readback_metrics()
+        if self.uses_native_texture() {
+            ReadbackMetrics::default()
+        } else {
+            self.renderer.readback_metrics()
+        }
     }
 
     /// 每帧调用：先排空在途回读，到 ~60fps 节流周期时步进游戏并渲染提交新回读。
@@ -158,6 +178,13 @@ impl PreviewSession {
             self.width,
             self.height,
         );
+        if self.uses_native_texture() {
+            self.diagnostic = None;
+            self.record_presented_frame();
+            self.record_tick_window();
+            ctx.request_repaint_after(PREVIEW_FRAME_INTERVAL);
+            return PreviewTick::Rendered;
+        }
         // 非阻塞回读：就绪则上传；未就绪沿用上一帧（主线程不阻塞）。
         let tick = match self
             .renderer
@@ -182,6 +209,13 @@ impl PreviewSession {
                 PreviewTick::Failed
             }
         };
+        self.record_tick_window();
+        // 节流到 ~60fps：无论回读是否就绪都排下一帧，保证游戏持续运行且不忙转。
+        ctx.request_repaint_after(PREVIEW_FRAME_INTERVAL);
+        tick
+    }
+
+    fn record_tick_window(&self) {
         // 启动期帧率打点：每 120 个到期 tick 记录一次真实显示帧率（上传数由 upload_frame 累计）。
         let mut window = PERF_WINDOW.lock().expect("preview perf window lock");
         let (ticks, uploads, start) =
@@ -195,9 +229,6 @@ impl PreviewSession {
             );
             *window = None;
         }
-        // 节流到 ~60fps：无论回读是否就绪都排下一帧，保证游戏持续运行且不忙转。
-        ctx.request_repaint_after(PREVIEW_FRAME_INTERVAL);
-        tick
     }
 
     /// 原子替换离屏纹理/视图（新尺寸），保留运行时与渲染器。
@@ -218,7 +249,9 @@ impl PreviewSession {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
         let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -226,6 +259,7 @@ impl PreviewSession {
         self.texture_view = texture_view;
         self.width = width;
         self.height = height;
+        self.sync_native_texture(device);
         tracing::debug!(target: "editor", "[preview] resized {}x{}", width, height);
     }
 
@@ -252,14 +286,51 @@ impl PreviewSession {
         }
         let image =
             egui::ColorImage::from_rgba_unmultiplied([width as usize, height as usize], &pixels);
-        match &mut self.egui_tex {
-            Some(tex) => tex.set(image, egui::TextureOptions::LINEAR),
+        match &mut self.preview_texture {
+            Some(PreviewTexture::Managed(tex)) => tex.set(image, egui::TextureOptions::LINEAR),
             None => {
-                self.egui_tex =
-                    Some(ctx.load_texture("game_preview", image, egui::TextureOptions::LINEAR));
+                self.preview_texture = Some(PreviewTexture::Managed(ctx.load_texture(
+                    "game_preview",
+                    image,
+                    egui::TextureOptions::LINEAR,
+                )));
+            }
+            Some(PreviewTexture::Native(_)) => {}
+        }
+        self.record_presented_frame();
+    }
+
+    fn uses_native_texture(&self) -> bool {
+        matches!(self.preview_texture, Some(PreviewTexture::Native(_)))
+    }
+
+    fn sync_native_texture(&mut self, device: &wgpu::Device) {
+        let Some(render_state) = &self.render_state else {
+            return;
+        };
+        let mut renderer = render_state.renderer.write();
+        match &mut self.preview_texture {
+            Some(PreviewTexture::Native(id)) => {
+                renderer.update_egui_texture_from_wgpu_texture(
+                    device,
+                    &self.texture_view,
+                    wgpu::FilterMode::Linear,
+                    *id,
+                );
+            }
+            Some(PreviewTexture::Managed(_)) => {}
+            None => {
+                let id = renderer.register_native_texture(
+                    device,
+                    &self.texture_view,
+                    wgpu::FilterMode::Linear,
+                );
+                self.preview_texture = Some(PreviewTexture::Native(id));
             }
         }
-        // 累计上传次数作为真实显示帧率依据（帧率打点读取）。
+    }
+
+    fn record_presented_frame(&self) {
         let Ok(mut guard) = PERF_WINDOW.lock() else {
             return;
         };
@@ -272,6 +343,17 @@ impl PreviewSession {
     #[cfg(test)]
     fn force_tick(&mut self) {
         self.last_tick = None;
+    }
+}
+
+impl Drop for PreviewSession {
+    fn drop(&mut self) {
+        let (Some(render_state), Some(PreviewTexture::Native(id))) =
+            (&self.render_state, self.preview_texture.as_ref())
+        else {
+            return;
+        };
+        render_state.renderer.write().free_texture(id);
     }
 }
 
@@ -312,9 +394,15 @@ mod tests {
         let sizes = [(64, 64), (640, 360), (1920, 1080)];
         for cycle in 0..100 {
             let (width, height) = sizes[cycle % sizes.len()];
-            let mut session =
-                PreviewSession::create(&device, &queue, Path::new("."), &scene, (width, height))
-                    .expect("create preview session");
+            let mut session = PreviewSession::create(
+                &device,
+                &queue,
+                None,
+                Path::new("."),
+                &scene,
+                (width, height),
+            )
+            .expect("create preview session");
             assert_eq!(session.size(), (width, height));
             for _ in 0..4 {
                 session.force_tick();
@@ -345,8 +433,9 @@ mod tests {
         };
         let ctx = egui::Context::default();
         let scene = Scene::new("tick");
-        let mut session = PreviewSession::create(&device, &queue, Path::new("."), &scene, (64, 64))
-            .expect("create preview session");
+        let mut session =
+            PreviewSession::create(&device, &queue, None, Path::new("."), &scene, (64, 64))
+                .expect("create preview session");
         session.force_tick();
         let first = session.update(&ctx, &InputSnapshot::default());
         assert!(matches!(
@@ -381,14 +470,14 @@ mod tests {
         let ctx = egui::Context::default();
         let scene = Scene::new("resize");
         let mut session =
-            PreviewSession::create(&device, &queue, Path::new("."), &scene, (320, 180))
+            PreviewSession::create(&device, &queue, None, Path::new("."), &scene, (320, 180))
                 .expect("create preview session");
         // 驱动多帧让 egui 纹理存在（回读异步，故循环强制到期）。
         for _ in 0..8 {
             session.force_tick();
             session.update(&ctx, &InputSnapshot::default());
         }
-        let Some(id_before) = session.texture().map(|tex| tex.id()) else {
+        let Some(id_before) = session.texture_id() else {
             // 回读尚未就绪时跳过句柄断言（环境允许异步延迟）。
             return;
         };
@@ -398,7 +487,7 @@ mod tests {
         assert_eq!(session.size(), (640, 360));
         session.resize(&device, 640, 360); // 幂等。
         assert_eq!(session.size(), (640, 360));
-        let id_after = session.texture().map(|tex| tex.id());
+        let id_after = session.texture_id();
         assert_eq!(Some(id_before), id_after, "resize 应复用 egui 纹理句柄");
     }
 }

@@ -2,14 +2,14 @@
 
 mod actions;
 mod geometry;
+mod import;
 mod panels;
 mod preview_session;
-mod progress;
 mod publish;
 mod util;
 
+use crate::panels::progress::ProgressPanel;
 use crate::preview_session::PreviewSession;
-use crate::progress::ProgressPanel;
 use crate::util::{configure_cjk_fonts, format_project_error};
 
 use std::{
@@ -34,6 +34,7 @@ use engine::core::{
     scene::SceneEntityId,
     script::LuaRuntime,
     sprite::{SpriteComponent, SpriteSorting},
+    texture::{TextureAsset, TextureColorSpace},
     tilemap::Tilemap,
     transform3d::Transform3D,
 };
@@ -73,6 +74,33 @@ fn default_engine_path() -> PathBuf {
         .and_then(|path| path.parent())
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn downscale_rgba_benchmark(
+    pixels: &[u8],
+    width: usize,
+    height: usize,
+    max: usize,
+) -> (Vec<u8>, usize, usize) {
+    if (width <= max && height <= max) || width == 0 || height == 0 {
+        return (pixels.to_vec(), width, height);
+    }
+    let scale = max as f32 / width.max(height) as f32;
+    let new_w = ((width as f32 * scale).round() as usize).max(1);
+    let new_h = ((height as f32 * scale).round() as usize).max(1);
+    let mut out = vec![0u8; new_w * new_h * 4];
+    for y in 0..new_h {
+        let sy = ((y as f32 + 0.5) / new_h as f32 * height as f32) as usize;
+        let sy = sy.min(height - 1);
+        for x in 0..new_w {
+            let sx = ((x as f32 + 0.5) / new_w as f32 * width as f32) as usize;
+            let sx = sx.min(width - 1);
+            let src = (sy * width + sx) * 4;
+            let dst = (y * new_w + x) * 4;
+            out[dst..dst + 4].copy_from_slice(&pixels[src..src + 4]);
+        }
+    }
+    (out, new_w, new_h)
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -131,6 +159,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 gpu,
                 log_sink,
             );
+            app.set_render_state(creation_context.wgpu_render_state.clone());
             app.project_loaded = arguments.project.is_some();
             app.refresh_resources();
             // 启动即把当前项目记入「最近项目」。
@@ -155,6 +184,7 @@ struct EditorApp {
     console_input: String,
     console_output: Vec<String>,
     console_filter: String,
+    console_log_level_filter: ConsoleLogLevelFilter,
     inspector: InspectorState,
     transform: TransformFields,
     transform3d: Transform3DFields,
@@ -203,6 +233,7 @@ struct EditorApp {
     inspector_clipboard: Option<ComponentClipboard>,
     inspector_transform_open: bool,
     progress: ProgressPanel,
+    show_publish_panel: bool,
     publish_compress: bool,
     publish_encrypt: bool,
     /// 底部资源浏览器 / Lua 控制台面板的显示开关（收起后 Scene/Game 视图获得最大空间）。
@@ -218,6 +249,8 @@ struct EditorApp {
     recent_projects: Vec<String>,
     /// eframe 的 wgpu 设备/队列（单一设备，供内嵌游戏预览使用）。
     gpu: Option<(wgpu::Device, wgpu::Queue)>,
+    /// eframe 的 egui_wgpu 渲染状态（用于把离屏纹理直接注册为 egui 原生纹理）。
+    render_state: Option<eframe::egui_wgpu::RenderState>,
     /// Play 时的内嵌游戏预览（M10-03；生命周期见 preview_session.rs）。
     preview: Option<PreviewSession>,
     /// 内嵌游戏预览当前分辨率（宽×高）。
@@ -264,6 +297,12 @@ struct EditorApp {
     /// Game View 输入快照的跨帧状态（M11-02）：held 按键/鼠标跨帧保留，
     /// `just_pressed`/`just_released` 边沿只在模拟帧边界消费一次，失焦/Play-Stop 时清空。
     preview_input_state: InputSnapshot,
+    /// 自动缩略图压测钩子是否已执行，避免每帧重复跑。
+    thumbnail_benchmark_ran: bool,
+    /// 自动 Play/Stop 压测钩子是否已执行，避免每帧重复跑。
+    play_stop_benchmark_ran: bool,
+    /// 自动缩略图压测期间保留纹理句柄，避免上传后立即释放。
+    benchmark_textures: Vec<egui::TextureHandle>,
 }
 
 #[derive(Clone, Debug)]
@@ -311,6 +350,15 @@ impl Default for AnimationEditorState {
 enum WorkspaceTab {
     Scene,
     Game,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum ConsoleLogLevelFilter {
+    #[default]
+    All,
+    Info,
+    Warning,
+    Error,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -475,6 +523,7 @@ impl EditorApp {
             console_input: String::new(),
             console_output: Vec::new(),
             console_filter: String::new(),
+            console_log_level_filter: ConsoleLogLevelFilter::All,
             inspector: InspectorState::new(),
             transform: TransformFields::default(),
             transform3d: Transform3DFields::default(),
@@ -528,6 +577,7 @@ impl EditorApp {
             inspector_clipboard: None,
             inspector_transform_open: true,
             progress: ProgressPanel::default(),
+            show_publish_panel: false,
             publish_compress: true,
             publish_encrypt: true,
             show_resources_panel: true,
@@ -537,6 +587,7 @@ impl EditorApp {
             last_window_title: None,
             recent_projects: crate::util::load_recent_projects(),
             gpu,
+            render_state: None,
             preview: None,
             preview_resolution: (640, 360),
             preview_resolutions: vec![(640, 360), (960, 540), (1280, 720), (1920, 1080)],
@@ -559,6 +610,9 @@ impl EditorApp {
             delete_target: DeleteTarget::None,
             last_metadata_key: None,
             preview_input_state: InputSnapshot::default(),
+            thumbnail_benchmark_ran: false,
+            play_stop_benchmark_ran: false,
+            benchmark_textures: Vec::new(),
         }
     }
 
@@ -567,6 +621,143 @@ impl EditorApp {
             self.play_state,
             PlayState::Starting | PlayState::Playing | PlayState::Stopping
         )
+    }
+
+    fn set_render_state(&mut self, render_state: Option<eframe::egui_wgpu::RenderState>) {
+        self.render_state = render_state;
+    }
+
+    fn autoplay_scene_path(&self) -> PathBuf {
+        std::env::var("P2_EDITOR_AUTOPLAY_SCENE")
+            .ok()
+            .map(|path| self.project.root.join(path))
+            .unwrap_or_else(|| self.project.root.join("scenes/main.scene"))
+    }
+
+    fn maybe_run_auto_benchmarks(&mut self, context: &egui::Context) {
+        if !self.project_loaded {
+            return;
+        }
+        if self.run_thumbnail_window_benchmark(context) {
+            return;
+        }
+        let _ = self.run_play_stop_window_benchmark(context);
+    }
+
+    fn run_thumbnail_window_benchmark(&mut self, context: &egui::Context) -> bool {
+        let Some(raw) = std::env::var("P2_EDITOR_THUMBNAIL_BENCH").ok() else {
+            return false;
+        };
+        if self.thumbnail_benchmark_ran {
+            return true;
+        }
+        self.thumbnail_benchmark_ran = true;
+        let count = raw
+            .parse::<usize>()
+            .ok()
+            .filter(|count| *count > 0)
+            .unwrap_or(1000);
+        let relative = std::env::var("P2_EDITOR_THUMBNAIL_SOURCE")
+            .ok()
+            .unwrap_or_else(|| "assets/textures/slime.png".to_owned());
+        let path = self.project.root.join(&relative);
+        let started = Instant::now();
+        let mut total_rgba_bytes = 0usize;
+        let mut total_thumb_bytes = 0usize;
+        let mut total_pixels = 0usize;
+        self.benchmark_textures.clear();
+        for index in 0..count {
+            let Ok(asset) = TextureAsset::load_png(&path, TextureColorSpace::Srgb) else {
+                tracing::error!(
+                    target: "editor",
+                    "[editor-perf] thumbnail window failed: source={} missing_or_invalid",
+                    path.display()
+                );
+                context.send_viewport_cmd(egui::ViewportCommand::Close);
+                return true;
+            };
+            total_rgba_bytes += asset.pixels().len();
+            let (pixels, width, height) = downscale_rgba_benchmark(
+                asset.pixels(),
+                asset.width() as usize,
+                asset.height() as usize,
+                64,
+            );
+            total_thumb_bytes += pixels.len();
+            total_pixels += width * height;
+            let image = egui::ColorImage::from_rgba_unmultiplied([width, height], &pixels);
+            let handle = context.load_texture(
+                format!("thumb-bench-{index}"),
+                image,
+                egui::TextureOptions::LINEAR,
+            );
+            self.benchmark_textures.push(handle);
+        }
+        let total_ms = started.elapsed().as_secs_f64() * 1000.0;
+        tracing::info!(
+            target: "editor",
+            "[editor-perf] thumbnail window: thumbnails={count} total_ms={total_ms:.3} avg_ms={:.3} rgba_bytes={} thumb_bytes={} thumb_pixels={} source={}",
+            total_ms / count as f64,
+            total_rgba_bytes,
+            total_thumb_bytes,
+            total_pixels,
+            relative
+        );
+        context.send_viewport_cmd(egui::ViewportCommand::Close);
+        true
+    }
+
+    fn run_play_stop_window_benchmark(&mut self, context: &egui::Context) -> bool {
+        let Some(raw) = std::env::var("P2_EDITOR_PLAYSTOP_BENCH").ok() else {
+            return false;
+        };
+        if self.play_stop_benchmark_ran {
+            return true;
+        }
+        self.play_stop_benchmark_ran = true;
+        let iterations = raw
+            .parse::<usize>()
+            .ok()
+            .filter(|count| *count > 0)
+            .unwrap_or(100);
+        if self.document.current_scene.is_none() {
+            let _ = self.open_scene_document(self.autoplay_scene_path());
+        }
+        let Some(original) = self.document.current_scene.clone() else {
+            tracing::error!(target: "editor", "[editor-perf] playstop window failed: no scene");
+            context.send_viewport_cmd(egui::ViewportCommand::Close);
+            return true;
+        };
+        let started = Instant::now();
+        for iteration in 0..iterations {
+            self.play();
+            if !matches!(self.play_state, PlayState::Playing) {
+                tracing::error!(
+                    target: "editor",
+                    "[editor-perf] playstop window failed: start failed at iteration={iteration}"
+                );
+                context.send_viewport_cmd(egui::ViewportCommand::Close);
+                return true;
+            }
+            self.stop();
+            if self.document.current_scene.as_ref() != Some(&original) {
+                tracing::error!(
+                    target: "editor",
+                    "[editor-perf] playstop window failed: drift at iteration={iteration}"
+                );
+                context.send_viewport_cmd(egui::ViewportCommand::Close);
+                return true;
+            }
+        }
+        let total_ms = started.elapsed().as_secs_f64() * 1000.0;
+        tracing::info!(
+            target: "editor",
+            "[editor-perf] playstop window: iterations={iterations} total_ms={total_ms:.3} avg_ms={:.3} entities={}",
+            total_ms / iterations as f64,
+            original.scene.entities.len()
+        );
+        context.send_viewport_cmd(egui::ViewportCommand::Close);
+        true
     }
 
     fn current_scene(&self) -> Option<&editor::SceneDocument> {
@@ -631,16 +822,18 @@ impl eframe::App for EditorApp {
         {
             let _ = self.autosave.tick(&self.recovery, doc, SystemTime::now());
         }
-        // 调试钩子：`P2_EDITOR_AUTOPLAY=1` 打开 main.scene、切 3D 视口并自动 Play。
+        // 调试钩子：`P2_EDITOR_AUTOPLAY=1` 打开指定场景、切 3D 视口并自动 Play。
+        // 可通过 `P2_EDITOR_AUTOPLAY_SCENE=scenes/foo.scene` 覆盖默认场景。
         if std::env::var("P2_EDITOR_AUTOPLAY").is_ok() && !self.is_playing() {
             self.scene_view_mode = SceneViewMode::View3D;
             if self.document.current_scene.is_none() {
-                let _ = self.open_scene_document(self.project.root.join("scenes/main.scene"));
+                let _ = self.open_scene_document(self.autoplay_scene_path());
             }
             if self.document.current_scene.is_some() {
                 self.play();
             }
         }
+        self.maybe_run_auto_benchmarks(context);
         if self.project_loaded
             && context.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Z))
         {
@@ -705,6 +898,7 @@ impl eframe::App for EditorApp {
         });
 
         self.progress.window(context);
+        self.draw_publish_panel(context);
         self.draw_about_window(context);
     }
 }
