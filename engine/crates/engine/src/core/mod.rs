@@ -19,8 +19,12 @@ pub mod entity;
 /// Typed, frame-bounded event queues.
 pub mod events;
 pub mod font;
+/// Gameplay data types for clocks, items, and inventories.
+pub mod gameplay;
 /// CPU-side glTF/GLB mesh and scene asset importer.
 pub mod gltf_asset;
+/// Grid helpers for tile-based world/cell conversion and facing.
+pub mod grid;
 /// Content fingerprinting shared by the import cache and resource database.
 pub mod hash;
 /// Incremental and atomic asset import cache.
