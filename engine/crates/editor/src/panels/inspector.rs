@@ -225,11 +225,8 @@ impl EditorApp {
                     if self.inspector_transform_open {
                         ui.group(|ui| {
                             ui.horizontal(|ui| {
-                                ui.label("位置 X");
+                                ui.label("位置");
                                 ui.add(egui::DragValue::new(&mut self.transform.position_x));
-                            });
-                            ui.horizontal(|ui| {
-                                ui.label("位置 Y");
                                 ui.add(egui::DragValue::new(&mut self.transform.position_y));
                             });
                             ui.horizontal(|ui| {
@@ -237,11 +234,8 @@ impl EditorApp {
                                 ui.add(egui::DragValue::new(&mut self.transform.rotation));
                             });
                             ui.horizontal(|ui| {
-                                ui.label("缩放 X");
+                                ui.label("缩放");
                                 ui.add(egui::DragValue::new(&mut self.transform.scale_x));
-                            });
-                            ui.horizontal(|ui| {
-                                ui.label("缩放 Y");
                                 ui.add(egui::DragValue::new(&mut self.transform.scale_y));
                             });
                             ui.horizontal(|ui| {

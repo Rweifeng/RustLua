@@ -1253,6 +1253,25 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
         })?,
     )?;
     lua.globals().set("entity", entity)?;
+    let sprite = lua.create_table()?;
+    let s = Rc::clone(&state);
+    sprite.set(
+        "set",
+        lua.create_function(move |_, (id, component): (i64, String)| {
+            let id = entity_from_lua(id)?;
+            let component = SpriteComponent::from_component_str(&component)
+                .map_err(|error| api_error(error.to_string()))?;
+            let sprite_value = component
+                .sprite()
+                .map_err(|error| api_error(error.to_string()))?;
+            let mut state = s.borrow_mut();
+            require_alive(&state, id)?;
+            state.world.insert(id, sprite_value).map_err(world_error)?;
+            state.world.insert(id, SpriteAsset(component.texture)).map_err(world_error)?;
+            Ok(())
+        })?,
+    )?;
+    lua.globals().set("sprite", sprite)?;
 
     let transform = lua.create_table()?;
     let s = Rc::clone(&state);
