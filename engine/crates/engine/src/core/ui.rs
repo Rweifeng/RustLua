@@ -118,6 +118,84 @@ pub struct UiButton {
     pub anchor: [f32; 2],
 }
 
+/// Runtime-only screen-space panel created by Lua (`ui.panel`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct UiPanel {
+    pub position: [f32; 2],
+    pub size: [f32; 2],
+    pub color: [f32; 4],
+    pub visible: bool,
+    pub space: UiLayoutSpace,
+    pub anchor: [f32; 2],
+}
+
+/// One rendered cell inside a Lua-created [`UiGrid`].
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct UiGridCell {
+    pub texture: Option<String>,
+    pub color: [f32; 4],
+}
+
+/// Runtime-only inventory-style grid created by Lua (`ui.grid`). Cells are
+/// drawn as tinted quads using `texture` when provided, otherwise a flat color.
+#[derive(Clone, Debug, PartialEq)]
+pub struct UiGrid {
+    pub position: [f32; 2],
+    pub columns: usize,
+    pub rows: usize,
+    pub cell_size: [f32; 2],
+    pub gap: f32,
+    pub background: [f32; 4],
+    pub cells: Vec<UiGridCell>,
+    pub space: UiLayoutSpace,
+    pub anchor: [f32; 2],
+}
+
+impl UiGrid {
+    /// Authored-space total grid size including gaps between cells.
+    #[must_use]
+    pub fn total_size(&self) -> [f32; 2] {
+        let columns = self.columns.max(1) as f32;
+        let rows = self.rows.max(1) as f32;
+        [
+            columns * self.cell_size[0] + self.gap * (columns - 1.0),
+            rows * self.cell_size[1] + self.gap * (rows - 1.0),
+        ]
+    }
+
+    /// Resolves the pixel rect for a 1-based cell index, or `None` when the
+    /// index is outside the grid.
+    #[must_use]
+    pub fn cell_rect(&self, index: usize, viewport: [f32; 2]) -> Option<([f32; 2], [f32; 2])> {
+        if index == 0 || index > self.columns * self.rows {
+            return None;
+        }
+        let authored_total = self.total_size();
+        let (origin, resolved_total) = resolve_ui_rect(
+            self.position,
+            authored_total,
+            self.space,
+            self.anchor,
+            viewport,
+        );
+        let columns = self.columns.max(1) as f32;
+        let rows = self.rows.max(1) as f32;
+        let resolved_gap = self.gap * (resolved_total[0] / authored_total[0].max(f32::EPSILON));
+        let cell_w = (resolved_total[0] - resolved_gap * (columns - 1.0)) / columns;
+        let cell_h = (resolved_total[1] - resolved_gap * (rows - 1.0)) / rows;
+        let zero = index - 1;
+        let col = (zero % self.columns.max(1)) as f32;
+        let row = (zero / self.columns.max(1)) as f32;
+        Some((
+            [
+                origin[0] + col * (cell_w + resolved_gap),
+                origin[1] + row * (cell_h + resolved_gap),
+            ],
+            [cell_w, cell_h],
+        ))
+    }
+}
+
 fn parse_number(raw: &str) -> Result<f32, UiComponentError> {
     let value = raw
         .parse::<f32>()
