@@ -15,8 +15,7 @@ use std::{
 /// 进度面板事件（任务线程 → 主线程）。
 pub(crate) enum ProgressEvent {
     Line(String),
-    // 通用组件 API：供后续进度任务发送确定进度（当前任务未用，保留）。
-    #[allow(dead_code)]
+    /// 确定进度 `0..=1`：任务线程按实际完成量发送，驱动进度条前进。
     Progress(f32),
     Finished {
         success: bool,
@@ -51,6 +50,10 @@ pub(crate) struct ProgressPanel {
     pub(crate) output_dir: Option<PathBuf>,
     /// 用户关闭进度窗时置 true，让后台任务（如资源导入）尽快停止。
     pub(crate) cancel: Option<Arc<AtomicBool>>,
+    /// 首帧锚定：窗口出现时居中到编辑器中心，尺寸稳定后解除锚定（恢复可拖动）。
+    recentering: bool,
+    /// 上一帧窗口尺寸，用于判断窗口尺寸是否已稳定。
+    last_size: egui::Vec2,
 }
 
 impl ProgressPanel {
@@ -74,6 +77,9 @@ impl ProgressPanel {
         self.result = None;
         self.output_dir = output_dir;
         self.cancel = cancel;
+        // 新任务：窗口出现时先居中。
+        self.recentering = true;
+        self.last_size = egui::Vec2::ZERO;
     }
 
     /// 每帧排空事件；返回本帧是否刚完成。
@@ -95,6 +101,10 @@ impl ProgressPanel {
                     finished = true;
                     self.success = success;
                     self.result = result;
+                    // 成功即视为 100%，任务没发最终进度也能显示完成。
+                    if success {
+                        self.progress = Some(1.0);
+                    }
                 }
             }
         }
@@ -111,44 +121,60 @@ impl ProgressPanel {
             return;
         }
         let mut open = true;
-        egui::Window::new(&self.title)
-            .open(&mut open)
-            .show(context, |ui| {
-                let status = if self.running {
-                    "进行中..."
-                } else if self.success {
-                    "✔ 完成"
+        let mut window = egui::Window::new(&self.title).open(&mut open);
+        // 首帧锚定：窗口出现时固定在编辑器中心。egui 首帧是隐藏的测量
+        // （sizing pass），尺寸未定，锚定会以错误的小尺寸为基准居中导致偏位；
+        // 因此锚定保持到尺寸稳定（拿到真实尺寸）再解除，之后用户可自由拖动。
+        if self.recentering {
+            window = window.anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]);
+        }
+        let response = window.show(context, |ui| {
+            let status = if self.running {
+                "进行中..."
+            } else if self.success {
+                "✔ 完成"
+            } else {
+                "✘ 失败"
+            };
+            ui.colored_label(
+                if self.success {
+                    egui::Color32::LIGHT_GREEN
                 } else {
-                    "✘ 失败"
-                };
-                ui.colored_label(
-                    if self.success {
-                        egui::Color32::LIGHT_GREEN
-                    } else {
-                        egui::Color32::LIGHT_RED
-                    },
-                    status,
-                );
-                if let Some(progress) = self.progress {
-                    ui.add(egui::ProgressBar::new(progress).show_percentage());
-                } else if self.running {
-                    ui.add(egui::ProgressBar::new(0.0).animate(true));
+                    egui::Color32::LIGHT_RED
+                },
+                status,
+            );
+            if let Some(progress) = self.progress {
+                ui.add(egui::ProgressBar::new(progress.clamp(0.0, 1.0)).show_percentage());
+            } else if self.running {
+                ui.add(egui::ProgressBar::new(0.0).animate(true));
+            }
+            egui::ScrollArea::vertical()
+                .max_height(320.0)
+                .stick_to_bottom(true)
+                .show(ui, |ui| {
+                    ui.monospace(&self.output);
+                });
+            if self.done
+                && let Some(dir) = &self.output_dir
+            {
+                ui.label(format!("输出：{}", dir.display()));
+                if ui.button("打开目录").clicked() {
+                    open_in_explorer(dir);
                 }
-                egui::ScrollArea::vertical()
-                    .max_height(320.0)
-                    .stick_to_bottom(true)
-                    .show(ui, |ui| {
-                        ui.monospace(&self.output);
-                    });
-                if self.done
-                    && let Some(dir) = &self.output_dir
-                {
-                    ui.label(format!("输出：{}", dir.display()));
-                    if ui.button("打开目录").clicked() {
-                        open_in_explorer(dir);
-                    }
-                }
-            });
+            }
+        });
+        // 尺寸稳定（连续两帧一致）后解除锚定：内容还在增长时保持居中，
+        // 一旦稳定（输出停止/完成）即恢复可拖动。
+        if self.recentering
+            && let Some(response) = response
+        {
+            let size = response.response.rect.size();
+            if size == self.last_size {
+                self.recentering = false;
+            }
+            self.last_size = size;
+        }
         if !open {
             // 用户关闭进度窗：通知后台任务取消（如资源导入）并隐藏窗口。
             if let Some(cancel) = &self.cancel {

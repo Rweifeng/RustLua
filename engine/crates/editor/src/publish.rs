@@ -209,6 +209,10 @@ fn spawn_publish(
             if let Some(pipe) = stdout {
                 for line in std::io::BufReader::new(pipe).lines() {
                     if let Ok(line) = line {
+                        // 按脚本阶段标记推进确定进度；未知行保持当前进度。
+                        if let Some(value) = publish_stage_progress(&line) {
+                            let _ = tx_out.send(ProgressEvent::Progress(value));
+                        }
                         if tx_out.send(ProgressEvent::Line(line + "\n")).is_err() {
                             break;
                         }
@@ -244,6 +248,26 @@ fn spawn_publish(
             result: None,
         });
     });
+}
+
+/// 把发布脚本的阶段标记映射为大致进度 `0..=1`；未知行返回 `None`（保持当前进度）。
+/// 对应 scripts/package.ps1 里的 `==>` 阶段与最终就绪标记。
+fn publish_stage_progress(line: &str) -> Option<f32> {
+    if line.contains("==> Release build") {
+        Some(0.15)
+    } else if line.contains("==> Install wasm-bindgen-cli") {
+        Some(0.4)
+    } else if line.contains("==> assetc package") {
+        Some(0.55)
+    } else if line.contains("==> Copy runner") {
+        Some(0.7)
+    } else if line.contains("==> Directory-isolation self test") {
+        Some(0.85)
+    } else if line.contains("Release package ready") {
+        Some(0.95)
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -340,5 +364,36 @@ mod publish_tests {
         }
         eprintln!("=== 发布输出开始 ===\n{output}=== 发布输出结束 === success={success}");
         assert!(success, "发布应成功；输出：\n{output}");
+    }
+
+    #[test]
+    fn publish_stage_progress_maps_stages_in_order() {
+        // 阶段标记 → 进度；未知行 → None（保持当前进度）。
+        assert_eq!(publish_stage_progress("==> Release build (pc)"), Some(0.15));
+        assert_eq!(
+            publish_stage_progress("==> assetc package (...)"),
+            Some(0.55)
+        );
+        assert_eq!(
+            publish_stage_progress("==> Copy runner and docs"),
+            Some(0.7)
+        );
+        assert_eq!(
+            publish_stage_progress("Release package ready: C:/x"),
+            Some(0.95)
+        );
+        assert_eq!(publish_stage_progress("cargo build finished"), None);
+        // 进度随阶段单调不减。
+        let stages = [
+            publish_stage_progress("==> Release build").unwrap(),
+            publish_stage_progress("==> Install wasm-bindgen-cli").unwrap(),
+            publish_stage_progress("==> assetc package").unwrap(),
+            publish_stage_progress("==> Copy runner").unwrap(),
+            publish_stage_progress("==> Directory-isolation self test").unwrap(),
+            publish_stage_progress("Release package ready").unwrap(),
+        ];
+        for pair in stages.windows(2) {
+            assert!(pair[1] >= pair[0], "阶段进度应单调递增");
+        }
     }
 }

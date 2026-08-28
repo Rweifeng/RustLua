@@ -10,14 +10,19 @@ use eframe::egui;
 impl EditorApp {
     pub(crate) fn draw_workspace_toolbar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            // Play/Stop：场景与游戏运行控制。
-            if self.is_playing() {
-                ui.colored_label(egui::Color32::LIGHT_GREEN, "Play");
-                if icon_button(ui, "■", "停止运行").clicked() {
+            // Play/Stop：场景与游戏运行控制，同一按钮切换，不显示 Play 字样。
+            let playing = self.is_playing();
+            let (icon, tooltip) = if playing {
+                ("■", "停止运行")
+            } else {
+                ("▶", "开始运行")
+            };
+            if icon_button(ui, icon, tooltip).clicked() && (playing || self.project_loaded) {
+                if playing {
                     self.stop();
+                } else {
+                    self.play();
                 }
-            } else if icon_button(ui, "▶", "开始运行").clicked() && self.project_loaded {
-                self.play();
             }
             // 预览分辨率（下次 Play 生效；可自定义增删）。
             let resolutions = self.preview_resolutions.clone();
