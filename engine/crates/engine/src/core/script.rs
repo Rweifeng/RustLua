@@ -16,6 +16,8 @@ use crate::core::{
     audio::AudioSystem,
     camera3d::Camera3D,
     entity::EntityId,
+    gameplay::{GameClock, Inventory, ItemDefinition, ItemStack},
+    grid::{self, Facing},
     input::{InputKey, InputSnapshot, MouseButton},
     light::Light,
     math3d::Vec3,
@@ -30,6 +32,7 @@ use crate::core::{
     tilemap::Tilemap,
     transform::{Transform, Vec2},
     transform3d::Transform3D,
+    ui::{UiGrid, UiGridCell, UiImage, UiPanel},
     world::{World, WorldError},
 };
 
@@ -76,6 +79,27 @@ struct ScriptState {
     active_light: Option<EntityId>,
     /// Persistent entities (name → authored snapshot) that survive scene loads.
     persistent: BTreeMap<String, PersistedEntity>,
+    /// Per-entity string tags used by interact queries and gameplay scripts.
+    tags: BTreeMap<EntityId, BTreeMap<String, String>>,
+    /// Optional on-screen interaction prompt text (`interact.prompt`).
+    interact_prompt: Option<String>,
+    game_clock: GameClock,
+    item_defs: BTreeMap<String, ItemDefinition>,
+    inventories: BTreeMap<String, Inventory>,
+    ui_panels: BTreeMap<String, UiPanel>,
+    ui_images: BTreeMap<String, UiImage>,
+    ui_grids: BTreeMap<String, UiGrid>,
+    data_cache: BTreeMap<String, serde_json::Value>,
+    save_slot: Option<String>,
+    ui_viewport: [f32; 2],
+    ui_drag: Option<UiDrag>,
+}
+
+/// State for a Lua-driven inventory drag (`ui.drag_begin` / `ui.drag_end`).
+#[derive(Clone, Debug)]
+struct UiDrag {
+    from_id: String,
+    from_index: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -607,6 +631,18 @@ impl LuaRuntime {
         self.state.borrow_mut().particles.step(delta_seconds);
     }
 
+    /// Advances the game clock using real `delta_seconds` and the Lua-configured
+    /// rate (`clock.set_rate`). Paused clocks and zero rates do nothing.
+    pub fn step_clock(&mut self, delta_seconds: f32) {
+        self.state.borrow_mut().game_clock.step(delta_seconds);
+    }
+
+    /// Stores the current viewport so Lua `ui.grid_hit` can resolve screen
+    /// coordinates. The host calls this before rendering each frame.
+    pub fn set_ui_viewport(&mut self, width: u32, height: u32) {
+        self.state.borrow_mut().ui_viewport = [width.max(1) as f32, height.max(1) as f32];
+    }
+
     /// Sets the directory audio clips are loaded from.
     pub fn set_audio_asset_dir(&mut self, dir: PathBuf) {
         self.state.borrow_mut().audio.set_asset_dir(dir);
@@ -651,6 +687,12 @@ impl LuaRuntime {
             state.health.clear();
             state.ui.clear();
             state.ui_bars.clear();
+            state.ui_panels.clear();
+            state.ui_images.clear();
+            state.ui_grids.clear();
+            state.ui_drag = None;
+            state.tags.clear();
+            state.interact_prompt = None;
             state.scene_pending_load = None;
             state.scene = Some(name.clone());
             state.active_camera = None;
@@ -697,6 +739,19 @@ impl LuaRuntime {
     ) -> R {
         let state = self.state.borrow();
         f(&state.ui, &state.ui_bars)
+    }
+
+    /// Gives the host a read view of runtime Lua-created UI panels/images/grids.
+    pub fn with_dynamic_ui<R>(
+        &self,
+        f: impl FnOnce(
+            &BTreeMap<String, UiPanel>,
+            &BTreeMap<String, UiImage>,
+            &BTreeMap<String, UiGrid>,
+        ) -> R,
+    ) -> R {
+        let state = self.state.borrow();
+        f(&state.ui_panels, &state.ui_images, &state.ui_grids)
     }
 
     /// Gives the host a read view of the active particles.
@@ -1020,6 +1075,321 @@ fn table_vec(lua: &Lua, x: f32, y: f32) -> LuaResult<Table> {
     Ok(table)
 }
 
+fn table_i32_pair(lua: &Lua, x: i32, y: i32) -> LuaResult<Table> {
+    let table = lua.create_table()?;
+    table.set(1, x)?;
+    table.set(2, y)?;
+    Ok(table)
+}
+
+fn require_positive_tile_size(tile_size: f32) -> Result<(), mlua::Error> {
+    if !tile_size.is_finite() || tile_size <= 0.0 {
+        return Err(api_error("tile_size must be finite and > 0"));
+    }
+    Ok(())
+}
+
+fn finite_ui_rect(x: f32, y: f32, width: f32, height: f32) -> bool {
+    x.is_finite()
+        && y.is_finite()
+        && width.is_finite()
+        && height.is_finite()
+        && width > 0.0
+        && height > 0.0
+}
+
+fn finite_color4(color: [f32; 4]) -> bool {
+    color.iter().all(|channel| channel.is_finite())
+}
+
+/// Resolves the save file path for the active slot. `None` keeps the original
+/// path so existing projects and tests remain compatible.
+fn save_path_for_slot(path: &Path, slot: Option<&str>) -> PathBuf {
+    let Some(slot) = slot else {
+        return path.to_path_buf();
+    };
+    let safe: String = slot
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let safe = if safe.is_empty() {
+        "default".to_owned()
+    } else {
+        safe
+    };
+    path.with_file_name(format!("save_{safe}.sav"))
+}
+
+/// Queues a scene load when the scene file exists; mirrors `scene.load` so
+/// `map.goto` can share the same validation without duplicating it.
+fn request_scene_load(state: &ScriptState, name: &str) -> bool {
+    let exists = state
+        .project_root
+        .as_ref()
+        .is_some_and(|root| root.join("scenes").join(format!("{name}.scene")).is_file());
+    if exists {
+        tracing::info!(target: "scene", name = %name, "[map] scene transition queued");
+    } else {
+        tracing::warn!(target: "scene", name = %name, "[map] scene file not found; load ignored");
+    }
+    exists
+}
+
+/// Converts an arbitrary Lua value into JSON so `save.blob_*` and map state
+/// can round-trip through the existing string-keyed save file.
+fn lua_value_to_json(value: Value) -> Result<serde_json::Value, mlua::Error> {
+    match value {
+        Value::Nil => Ok(serde_json::Value::Null),
+        Value::Boolean(value) => Ok(serde_json::Value::Bool(value)),
+        Value::Integer(value) => Ok(serde_json::Value::Number(value.into())),
+        Value::Number(value) => {
+            if !value.is_finite() {
+                return Err(api_error("blob value must contain finite numbers"));
+            }
+            serde_json::Number::from_f64(value)
+                .map(serde_json::Value::Number)
+                .ok_or_else(|| api_error("blob value contains an invalid number"))
+        }
+        Value::String(value) => value
+            .to_str()
+            .map(|text| serde_json::Value::String(text.to_owned()))
+            .map_err(mlua::Error::external),
+        Value::Table(table) => lua_table_to_json(&table),
+        _ => Err(api_error("unsupported Lua value type for blob storage")),
+    }
+}
+
+fn lua_table_to_json(table: &Table) -> Result<serde_json::Value, mlua::Error> {
+    let len = table.raw_len();
+    let mut array = vec![serde_json::Value::Null; len];
+    let mut array_like = true;
+    for pair in table.clone().pairs() {
+        let (key, value) = pair?;
+        let converted = lua_value_to_json(value)?;
+        match key {
+            Value::Integer(index) if index >= 1 && (index as usize) <= len => {
+                array[(index - 1) as usize] = converted;
+            }
+            _ => {
+                array_like = false;
+                break;
+            }
+        }
+    }
+    if array_like && len > 0 {
+        return Ok(serde_json::Value::Array(array));
+    }
+
+    let mut object = serde_json::Map::new();
+    for pair in table.clone().pairs() {
+        let (key, value) = pair?;
+        let key = match key {
+            Value::Integer(index) => index.to_string(),
+            Value::String(text) => text.to_str()?.to_owned(),
+            _ => return Err(api_error("blob table keys must be strings or integers")),
+        };
+        object.insert(key, lua_value_to_json(value)?);
+    }
+    Ok(serde_json::Value::Object(object))
+}
+
+fn json_to_lua_value(lua: &Lua, value: &serde_json::Value) -> LuaResult<Value> {
+    match value {
+        serde_json::Value::Null => Ok(Value::Nil),
+        serde_json::Value::Bool(value) => Ok(Value::Boolean(*value)),
+        serde_json::Value::Number(value) => {
+            if let Some(integer) = value.as_i64() {
+                Ok(Value::Integer(integer))
+            } else {
+                Ok(Value::Number(value.as_f64().unwrap_or(0.0)))
+            }
+        }
+        serde_json::Value::String(value) => Ok(Value::String(lua.create_string(value)?)),
+        serde_json::Value::Array(values) => {
+            let table = lua.create_table()?;
+            for (index, value) in values.iter().enumerate() {
+                table.set(index + 1, json_to_lua_value(lua, value)?)?;
+            }
+            Ok(Value::Table(table))
+        }
+        serde_json::Value::Object(values) => {
+            let table = lua.create_table()?;
+            for (key, value) in values {
+                table.set(key.as_str(), json_to_lua_value(lua, value)?)?;
+            }
+            Ok(Value::Table(table))
+        }
+    }
+}
+
+fn inventory_index(index: i64) -> Result<usize, mlua::Error> {
+    if index <= 0 {
+        Err(api_error("inventory slot index must be positive"))
+    } else {
+        Ok((index - 1) as usize)
+    }
+}
+
+fn inventory_clone(state: &ScriptState, id: &str) -> Result<Inventory, mlua::Error> {
+    state
+        .inventories
+        .get(id)
+        .cloned()
+        .ok_or_else(|| api_error(format!("inventory {id} not found")))
+}
+
+fn swap_inventories(
+    state: &mut ScriptState,
+    from_id: &str,
+    from_index: i64,
+    to_id: &str,
+    to_index: i64,
+) -> Result<bool, mlua::Error> {
+    let from_index = inventory_index(from_index)?;
+    let to_index = inventory_index(to_index)?;
+    if from_id == to_id {
+        let mut inventory = inventory_clone(state, from_id)?;
+        if from_index >= inventory.capacity || to_index >= inventory.capacity {
+            return Err(api_error("inventory slot out of bounds"));
+        }
+        inventory.slots.swap(from_index, to_index);
+        state.inventories.insert(from_id.to_owned(), inventory);
+        return Ok(true);
+    }
+    let mut from = inventory_clone(state, from_id)?;
+    let mut to = inventory_clone(state, to_id)?;
+    if from_index >= from.capacity || to_index >= to.capacity {
+        return Err(api_error("inventory slot out of bounds"));
+    }
+    let from_slot = from.slots[from_index].clone();
+    let to_slot = to.slots[to_index].clone();
+    from.slots[from_index] = to_slot;
+    to.slots[to_index] = from_slot;
+    state.inventories.insert(from_id.to_owned(), from);
+    state.inventories.insert(to_id.to_owned(), to);
+    Ok(true)
+}
+
+fn move_inventories(
+    state: &mut ScriptState,
+    from_id: &str,
+    from_index: i64,
+    to_id: &str,
+    to_index: Option<i64>,
+    count: Option<i64>,
+) -> Result<i64, mlua::Error> {
+    let from_index = inventory_index(from_index)?;
+    let to_index = to_index.map(inventory_index).transpose()?;
+    if from_id == to_id {
+        let mut inventory = inventory_clone(state, from_id)?;
+        if from_index >= inventory.capacity {
+            return Err(api_error(format!("inventory {from_id} slot out of bounds")));
+        }
+        let source = inventory.slots[from_index].clone();
+        if source.item_id.is_empty() {
+            return Ok(0);
+        }
+        let max_stack = state
+            .item_defs
+            .get(&source.item_id)
+            .map_or(99, |definition| definition.stack);
+        if let Some(to_index) = to_index {
+            if to_index >= inventory.capacity {
+                return Err(api_error(format!("inventory {to_id} slot out of bounds")));
+            }
+            let target = inventory.slots[to_index].clone();
+            let requested = count
+                .unwrap_or(i64::from(source.count))
+                .min(i64::from(source.count))
+                .max(0) as u32;
+            let moved = if target.item_id == source.item_id {
+                max_stack.saturating_sub(target.count).min(requested)
+            } else if target.item_id.is_empty() {
+                requested
+            } else {
+                0
+            };
+            if moved > 0 {
+                inventory.slots[from_index].count -= moved;
+                if inventory.slots[from_index].count == 0 {
+                    inventory.slots[from_index] = ItemStack::default();
+                }
+                if target.item_id == source.item_id {
+                    inventory.slots[to_index].count += moved;
+                } else {
+                    inventory.slots[to_index] = ItemStack::new(source.item_id.clone(), moved);
+                }
+            }
+            state.inventories.insert(from_id.to_owned(), inventory);
+            return Ok(moved as i64);
+        }
+        let requested = count.unwrap_or(i64::from(source.count)).max(1) as u32;
+        let removed = inventory.remove(&source.item_id, requested);
+        let leftover = inventory.add(&source.item_id, removed, max_stack);
+        state.inventories.insert(from_id.to_owned(), inventory);
+        return Ok(removed as i64 - leftover as i64);
+    }
+    let mut from = inventory_clone(state, from_id)?;
+    let mut to = inventory_clone(state, to_id)?;
+    if from_index >= from.capacity {
+        return Err(api_error(format!("inventory {from_id} slot out of bounds")));
+    }
+    let source = from.slots[from_index].clone();
+    if source.item_id.is_empty() {
+        return Ok(0);
+    }
+    let max_stack = state
+        .item_defs
+        .get(&source.item_id)
+        .map_or(99, |definition| definition.stack);
+    if let Some(to_index) = to_index {
+        if to_index >= to.capacity {
+            return Err(api_error(format!("inventory {to_id} slot out of bounds")));
+        }
+        let target = to.slots[to_index].clone();
+        let requested = count
+            .unwrap_or(i64::from(source.count))
+            .min(i64::from(source.count))
+            .max(0) as u32;
+        let moved = if target.item_id == source.item_id {
+            max_stack.saturating_sub(target.count).min(requested)
+        } else if target.item_id.is_empty() {
+            requested
+        } else {
+            0
+        };
+        if moved > 0 {
+            from.slots[from_index].count -= moved;
+            if from.slots[from_index].count == 0 {
+                from.slots[from_index] = ItemStack::default();
+            }
+            if target.item_id == source.item_id {
+                to.slots[to_index].count += moved;
+            } else {
+                to.slots[to_index] = ItemStack::new(source.item_id.clone(), moved);
+            }
+        }
+        state.inventories.insert(from_id.to_owned(), from);
+        state.inventories.insert(to_id.to_owned(), to);
+        return Ok(moved as i64);
+    }
+    let requested = count.unwrap_or(i64::from(source.count)).max(1) as u32;
+    let removed = from.remove(&source.item_id, requested);
+    let leftover = to.add(&source.item_id, removed, max_stack);
+    if leftover > 0 {
+        let _ = from.add(&source.item_id, leftover, max_stack);
+    }
+    state.inventories.insert(from_id.to_owned(), from);
+    state.inventories.insert(to_id.to_owned(), to);
+    Ok(removed as i64 - leftover as i64)
+}
+
 /// 读取项目脚本源码，支持发布包的压缩/加密（明文原样返回）。
 fn read_project_script(path: &Path) -> Result<String, LuaBridgeError> {
     let bytes = fs::read(path).map_err(|error| LuaBridgeError::Load {
@@ -1090,6 +1460,26 @@ fn solid_cell_colliders(tilemap: &Tilemap) -> Vec<ColliderDesc> {
     colliders
 }
 
+/// Rebuilds the fixed physics body for a tile map after Lua changes its solid
+/// layer, so runtime `tilemap.set_solid` immediately affects movement.
+fn refresh_tilemap_physics(state: &mut ScriptState, entity: EntityId) {
+    let position = state
+        .world
+        .get::<Transform>(entity)
+        .ok()
+        .flatten()
+        .map(|transform| transform.position)
+        .unwrap_or_default();
+    let _ = state.physics.remove_body(entity);
+    let Some(tilemap) = state.world.get::<Tilemap>(entity).ok().flatten() else {
+        return;
+    };
+    if tilemap.solid.iter().any(|solid| *solid) {
+        let colliders = solid_cell_colliders(tilemap);
+        let _ = state.physics.add_body(entity, position, false, colliders);
+    }
+}
+
 fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
     let log = lua.create_table()?;
     log.set(
@@ -1122,6 +1512,78 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
         lua.create_function(move |_, ()| Ok(s.borrow().delta_seconds))?,
     )?;
     lua.globals().set("time", time)?;
+
+    let clock = lua.create_table()?;
+    let s = Rc::clone(&state);
+    clock.set(
+        "now",
+        lua.create_function(move |lua, ()| {
+            let clock = &s.borrow().game_clock;
+            let now = lua.create_table()?;
+            now.set("day", clock.day as i64)?;
+            now.set("minute", clock.minute as i64)?;
+            now.set("hour", (clock.minute / 60) as i64)?;
+            now.set("minute_of_day", clock.minute as i64)?;
+            now.set("rate", clock.rate)?;
+            now.set("paused", clock.paused)?;
+            Ok(now)
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    clock.set(
+        "set_rate",
+        lua.create_function(move |_, rate: f32| {
+            if !rate.is_finite() || rate < 0.0 {
+                return Err(api_error("clock.set_rate must be finite and non-negative"));
+            }
+            let mut state = s.borrow_mut();
+            state.game_clock.rate = rate;
+            Ok(())
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    clock.set(
+        "pause",
+        lua.create_function(move |_, paused: bool| {
+            s.borrow_mut().game_clock.paused = paused;
+            Ok(())
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    clock.set(
+        "add",
+        lua.create_function(move |_, minutes: f32| {
+            if !minutes.is_finite() {
+                return Err(api_error("clock.add minutes must be finite"));
+            }
+            s.borrow_mut().game_clock.add_minutes(minutes);
+            Ok(())
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    clock.set(
+        "set",
+        lua.create_function(move |_, (day, minute): (i64, i64)| {
+            if day < 1 || minute < 0 {
+                return Err(api_error("clock.set day must be >= 1 and minute >= 0"));
+            }
+            let mut state = s.borrow_mut();
+            state.game_clock.set(
+                day as u32,
+                minute.min((crate::core::gameplay::MINUTES_PER_DAY - 1) as i64) as u32,
+            );
+            Ok(())
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    clock.set(
+        "sleep_to_morning",
+        lua.create_function(move |_, ()| {
+            let day = s.borrow_mut().game_clock.sleep_to_morning();
+            Ok(day as i64)
+        })?,
+    )?;
+    lua.globals().set("clock", clock)?;
 
     let input = lua.create_table()?;
     for (name, mode) in [("is_down", 0_u8), ("just_pressed", 1), ("just_released", 2)] {
@@ -1267,7 +1729,10 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
             let mut state = s.borrow_mut();
             require_alive(&state, id)?;
             state.world.insert(id, sprite_value).map_err(world_error)?;
-            state.world.insert(id, SpriteAsset(component.texture)).map_err(world_error)?;
+            state
+                .world
+                .insert(id, SpriteAsset(component.texture))
+                .map_err(world_error)?;
             Ok(())
         })?,
     )?;
@@ -1740,7 +2205,238 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
             Ok(map.cell(x, y))
         })?,
     )?;
+    let s = Rc::clone(&state);
+    tilemap.set(
+        "set_cell",
+        lua.create_function(move |_, (id, x, y, value): (i64, usize, usize, u8)| {
+            let id = entity_from_lua(id)?;
+            let mut state = s.borrow_mut();
+            require_alive(&state, id)?;
+            let map = state
+                .world
+                .get_mut::<Tilemap>(id)
+                .map_err(world_error)?
+                .ok_or_else(|| api_error("entity has no tilemap"))?;
+            map.set_cell(x, y, value)
+                .map_err(|error| api_error(error.to_string()))?;
+            Ok(())
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    tilemap.set(
+        "set_solid",
+        lua.create_function(move |_, (id, x, y, solid): (i64, usize, usize, bool)| {
+            let id = entity_from_lua(id)?;
+            let mut state = s.borrow_mut();
+            require_alive(&state, id)?;
+            {
+                let map = state
+                    .world
+                    .get_mut::<Tilemap>(id)
+                    .map_err(world_error)?
+                    .ok_or_else(|| api_error("entity has no tilemap"))?;
+                map.set_solid(x, y, solid)
+                    .map_err(|error| api_error(error.to_string()))?;
+            }
+            refresh_tilemap_physics(&mut state, id);
+            Ok(())
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    tilemap.set(
+        "get_meta",
+        lua.create_function(move |_, (id, x, y, key): (i64, usize, usize, String)| {
+            let id = entity_from_lua(id)?;
+            let state = s.borrow();
+            require_alive(&state, id)?;
+            let Some(map) = state.world.get::<Tilemap>(id).map_err(world_error)? else {
+                return Err(api_error("entity has no tilemap"));
+            };
+            Ok(map.get_meta(x, y, &key).map(str::to_owned))
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    tilemap.set(
+        "set_meta",
+        lua.create_function(
+            move |_, (id, x, y, key, value): (i64, usize, usize, String, String)| {
+                let id = entity_from_lua(id)?;
+                let mut state = s.borrow_mut();
+                require_alive(&state, id)?;
+                let map = state
+                    .world
+                    .get_mut::<Tilemap>(id)
+                    .map_err(world_error)?
+                    .ok_or_else(|| api_error("entity has no tilemap"))?;
+                map.set_meta(x, y, key, value)
+                    .map_err(|error| api_error(error.to_string()))?;
+                Ok(())
+            },
+        )?,
+    )?;
     lua.globals().set("tilemap", tilemap)?;
+
+    let grid_api = lua.create_table()?;
+    grid_api.set(
+        "world_to_cell",
+        lua.create_function(move |lua, (x, y, tile_size): (f32, f32, f32)| {
+            require_positive_tile_size(tile_size)?;
+            let (cx, cy) = grid::world_to_cell(x, y, tile_size);
+            table_i32_pair(lua, cx, cy)
+        })?,
+    )?;
+    grid_api.set(
+        "cell_to_world",
+        lua.create_function(move |lua, (cx, cy, tile_size): (i32, i32, f32)| {
+            require_positive_tile_size(tile_size)?;
+            let pos = grid::cell_to_world(cx, cy, tile_size);
+            table_vec(lua, pos.x, pos.y)
+        })?,
+    )?;
+    grid_api.set(
+        "facing_cell",
+        lua.create_function(
+            move |lua, (x, y, facing, tile_size): (f32, f32, String, f32)| {
+                require_positive_tile_size(tile_size)?;
+                let (cx, cy) = grid::facing_cell(x, y, Facing::parse(&facing), tile_size);
+                table_i32_pair(lua, cx, cy)
+            },
+        )?,
+    )?;
+    grid_api.set(
+        "in_bounds",
+        lua.create_function(
+            move |_, (cx, cy, width, height): (i32, i32, usize, usize)| {
+                Ok(grid::in_bounds(cx, cy, width, height))
+            },
+        )?,
+    )?;
+    lua.globals().set("grid", grid_api)?;
+
+    let tag = lua.create_table()?;
+    let s = Rc::clone(&state);
+    tag.set(
+        "get",
+        lua.create_function(move |_, (id, key): (i64, String)| {
+            let id = entity_from_lua(id)?;
+            let state = s.borrow();
+            require_alive(&state, id)?;
+            Ok(state.tags.get(&id).and_then(|bag| bag.get(&key)).cloned())
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    tag.set(
+        "set",
+        lua.create_function(move |_, (id, key, value): (i64, String, String)| {
+            let id = entity_from_lua(id)?;
+            if key.is_empty() {
+                return Err(api_error("tag key must not be empty"));
+            }
+            let mut state = s.borrow_mut();
+            require_alive(&state, id)?;
+            if value.is_empty() {
+                if let Some(bag) = state.tags.get_mut(&id) {
+                    bag.remove(&key);
+                    if bag.is_empty() {
+                        state.tags.remove(&id);
+                    }
+                }
+            } else {
+                state.tags.entry(id).or_default().insert(key, value);
+            }
+            Ok(())
+        })?,
+    )?;
+    lua.globals().set("tag", tag)?;
+
+    let interact = lua.create_table()?;
+    let s = Rc::clone(&state);
+    interact.set(
+        "query",
+        lua.create_function(move |lua, (x, y, radius): (f32, f32, f32)| {
+            if !radius.is_finite() || radius < 0.0 {
+                return Err(api_error("interact radius must be finite and non-negative"));
+            }
+            let state = s.borrow();
+            let mut hits: Vec<(f32, i32, i64, String, i32)> = Vec::new();
+            for id in state.world.entities_with::<Transform>() {
+                let Some(tags) = state.tags.get(&id) else {
+                    continue;
+                };
+                if !(tags.contains_key("interact") || tags.contains_key("kind")) {
+                    continue;
+                }
+                let Some(t) = state.world.get::<Transform>(id).map_err(world_error)? else {
+                    continue;
+                };
+                let dx = t.position.x - x;
+                let dy = t.position.y - y;
+                let dist_sq = dx * dx + dy * dy;
+                if dist_sq > radius * radius {
+                    continue;
+                }
+                let kind = tags
+                    .get("kind")
+                    .cloned()
+                    .or_else(|| tags.get("interact").cloned())
+                    .unwrap_or_default();
+                let priority = tags
+                    .get("priority")
+                    .and_then(|value| value.parse::<i32>().ok())
+                    .unwrap_or(0);
+                hits.push((dist_sq, -priority, entity_to_lua(id), kind, priority));
+            }
+            hits.sort_by(|a, b| {
+                a.0.partial_cmp(&b.0)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| a.1.cmp(&b.1))
+            });
+            let result = lua.create_table()?;
+            for (index, (_, _, id, kind, priority)) in hits.into_iter().enumerate() {
+                let entry = lua.create_table()?;
+                entry.set("id", id)?;
+                entry.set("kind", kind)?;
+                entry.set("priority", priority)?;
+                result.set(index + 1, entry)?;
+            }
+            Ok(result)
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    interact.set(
+        "prompt",
+        lua.create_function(move |_, text: String| {
+            let mut state = s.borrow_mut();
+            state.interact_prompt = Some(text.clone());
+            state.ui.insert(
+                "__interact_prompt".to_owned(),
+                UiText {
+                    text,
+                    visible: true,
+                    position: [16.0, 48.0],
+                    scale: 1.0,
+                    font_size: Some(18.0),
+                },
+            );
+            Ok(())
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    interact.set(
+        "clear_prompt",
+        lua.create_function(move |_, ()| {
+            let mut state = s.borrow_mut();
+            state.interact_prompt = None;
+            state.ui.remove("__interact_prompt");
+            Ok(())
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    interact.set(
+        "get_prompt",
+        lua.create_function(move |_, ()| Ok(s.borrow().interact_prompt.clone()))?,
+    )?;
+    lua.globals().set("interact", interact)?;
 
     let animation = lua.create_table()?;
     let s = Rc::clone(&state);
@@ -2168,14 +2864,10 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
         "load",
         lua.create_function(move |_, name: String| {
             let state = s.borrow();
-            let exists = state.project_root.as_ref().is_some_and(|root| {
-                root.join("scenes").join(format!("{name}.scene")).is_file()
-            });
+            let exists = request_scene_load(&state, &name);
             if exists {
                 drop(state);
                 s.borrow_mut().scene_pending_load = Some(name);
-            } else {
-                tracing::warn!(target: "scene", name = %name, "[scene] scene file not found; load ignored");
             }
             Ok(exists)
         })?,
@@ -2186,6 +2878,175 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
         lua.create_function(move |_, ()| Ok(s.borrow().scene.clone()))?,
     )?;
     lua.globals().set("scene", scene)?;
+    let map = lua.create_table()?;
+    let s = Rc::clone(&state);
+    map.set(
+        "goto",
+        lua.create_function(move |_, (name, x, y): (String, Option<f32>, Option<f32>)| {
+            let root = {
+                let state = s.borrow();
+                state.project_root.clone()
+            };
+            let exists = root
+                .as_ref()
+                .is_some_and(|root| root.join("scenes").join(format!("{name}.scene")).is_file());
+            if !exists {
+                return Ok(false);
+            }
+            let mut state = s.borrow_mut();
+            state.save_data.insert("__map".to_owned(), name.clone());
+            if let (Some(x), Some(y)) = (x, y) {
+                if !x.is_finite() || !y.is_finite() {
+                    return Err(api_error("map.goto spawn must be finite"));
+                }
+                state
+                    .save_data
+                    .insert("__map:spawn:x".to_owned(), x.to_string());
+                state
+                    .save_data
+                    .insert("__map:spawn:y".to_owned(), y.to_string());
+            }
+            state.scene_pending_load = Some(name);
+            Ok(true)
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    map.set(
+        "go",
+        lua.create_function(move |_, (name, x, y): (String, Option<f32>, Option<f32>)| {
+            let root = {
+                let state = s.borrow();
+                state.project_root.clone()
+            };
+            let exists = root
+                .as_ref()
+                .is_some_and(|root| root.join("scenes").join(format!("{name}.scene")).is_file());
+            if !exists {
+                return Ok(false);
+            }
+            let mut state = s.borrow_mut();
+            state.save_data.insert("__map".to_owned(), name.clone());
+            if let (Some(x), Some(y)) = (x, y) {
+                if !x.is_finite() || !y.is_finite() {
+                    return Err(api_error("map.go spawn must be finite"));
+                }
+                state
+                    .save_data
+                    .insert("__map:spawn:x".to_owned(), x.to_string());
+                state
+                    .save_data
+                    .insert("__map:spawn:y".to_owned(), y.to_string());
+            }
+            state.scene_pending_load = Some(name);
+            Ok(true)
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    map.set(
+        "enter",
+        lua.create_function(move |_, (name, x, y): (String, f32, f32)| {
+            let root = {
+                let state = s.borrow();
+                state.project_root.clone()
+            };
+            let exists = root
+                .as_ref()
+                .is_some_and(|root| root.join("scenes").join(format!("{name}.scene")).is_file());
+            if !exists {
+                return Ok(false);
+            }
+            if !x.is_finite() || !y.is_finite() {
+                return Err(api_error("map.enter spawn must be finite"));
+            }
+            let mut state = s.borrow_mut();
+            state.save_data.insert("__map".to_owned(), name.clone());
+            state
+                .save_data
+                .insert("__map:spawn:x".to_owned(), x.to_string());
+            state
+                .save_data
+                .insert("__map:spawn:y".to_owned(), y.to_string());
+            state.scene_pending_load = Some(name);
+            Ok(true)
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    map.set(
+        "current",
+        lua.create_function(move |lua, ()| {
+            let state = s.borrow();
+            let current = state
+                .save_data
+                .get("__map")
+                .cloned()
+                .or_else(|| state.scene.clone());
+            current
+                .map(|value| lua.create_string(&value).map(Value::String))
+                .transpose()
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    map.set(
+        "spawn",
+        lua.create_function(move |lua, ()| {
+            let state = s.borrow();
+            let Some(x) = state.save_data.get("__map:spawn:x") else {
+                return Ok(Value::Nil);
+            };
+            let Some(y) = state.save_data.get("__map:spawn:y") else {
+                return Ok(Value::Nil);
+            };
+            let Ok(x) = x.parse::<f32>() else {
+                return Ok(Value::Nil);
+            };
+            let Ok(y) = y.parse::<f32>() else {
+                return Ok(Value::Nil);
+            };
+            let result = lua.create_table()?;
+            result.set("x", x)?;
+            result.set("y", y)?;
+            Ok(Value::Table(result))
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    map.set(
+        "set_spawn",
+        lua.create_function(move |_, (x, y): (f32, f32)| {
+            if !x.is_finite() || !y.is_finite() {
+                return Err(api_error("map.set_spawn must be finite"));
+            }
+            let mut state = s.borrow_mut();
+            state
+                .save_data
+                .insert("__map:spawn:x".to_owned(), x.to_string());
+            state
+                .save_data
+                .insert("__map:spawn:y".to_owned(), y.to_string());
+            Ok(())
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    map.set(
+        "state",
+        lua.create_function(move |lua, (name, value): (String, Option<Value>)| {
+            let key = format!("__mapstate:{name}");
+            let mut state = s.borrow_mut();
+            if let Some(value) = value {
+                let json = lua_value_to_json(value)?;
+                let encoded =
+                    serde_json::to_string(&json).map_err(|error| api_error(error.to_string()))?;
+                state.save_data.insert(key, encoded);
+                return Ok(Value::Boolean(true));
+            }
+            let Some(encoded) = state.save_data.get(&key) else {
+                return Ok(Value::Nil);
+            };
+            let json = serde_json::from_str(encoded)
+                .map_err(|error| api_error(format!("map.state {name} is corrupt: {error}")))?;
+            json_to_lua_value(lua, &json)
+        })?,
+    )?;
+    lua.globals().set("map", map)?;
     let asset = lua.create_table()?;
     let s = Rc::clone(&state);
     asset.set(
@@ -2206,6 +3067,72 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
         })?,
     )?;
     lua.globals().set("asset", asset)?;
+    let data = lua.create_table()?;
+    let s = Rc::clone(&state);
+    data.set(
+        "load",
+        lua.create_function(move |lua, path: String| {
+            let root = {
+                let state = s.borrow();
+                state
+                    .project_root
+                    .clone()
+                    .ok_or_else(|| api_error("data.load requires a project root"))?
+            };
+            if let Some(cached) = s.borrow().data_cache.get(&path) {
+                return json_to_lua_value(lua, cached);
+            }
+            let file_path = root.join(&path);
+            let bytes = std::fs::read(&file_path).map_err(|error| {
+                api_error(format!("data.load {}: {error}", file_path.display()))
+            })?;
+            let decoded = crate::core::pack::decode(&bytes).map_err(|error| {
+                api_error(format!("data.load {}: {error}", file_path.display()))
+            })?;
+            let text = String::from_utf8_lossy(&decoded);
+            let json: serde_json::Value = serde_json::from_str(&text).map_err(|error| {
+                api_error(format!("data.load {}: {error}", file_path.display()))
+            })?;
+            s.borrow_mut().data_cache.insert(path, json.clone());
+            json_to_lua_value(lua, &json)
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    data.set(
+        "reload",
+        lua.create_function(move |lua, path: String| {
+            s.borrow_mut().data_cache.remove(&path);
+            let root = {
+                let state = s.borrow();
+                state
+                    .project_root
+                    .clone()
+                    .ok_or_else(|| api_error("data.reload requires a project root"))?
+            };
+            let file_path = root.join(&path);
+            let bytes = std::fs::read(&file_path).map_err(|error| {
+                api_error(format!("data.reload {}: {error}", file_path.display()))
+            })?;
+            let decoded = crate::core::pack::decode(&bytes).map_err(|error| {
+                api_error(format!("data.reload {}: {error}", file_path.display()))
+            })?;
+            let text = String::from_utf8_lossy(&decoded);
+            let json: serde_json::Value = serde_json::from_str(&text).map_err(|error| {
+                api_error(format!("data.reload {}: {error}", file_path.display()))
+            })?;
+            s.borrow_mut().data_cache.insert(path, json.clone());
+            json_to_lua_value(lua, &json)
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    data.set(
+        "cache_clear",
+        lua.create_function(move |_, ()| {
+            s.borrow_mut().data_cache.clear();
+            Ok(())
+        })?,
+    )?;
+    lua.globals().set("data", data)?;
     let ui = lua.create_table()?;
     let s = Rc::clone(&state);
     ui.set(
@@ -2228,7 +3155,8 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
     ui.set(
         "text_at",
         lua.create_function(
-            move |_, (id, x, y, text, scale, font_size): (
+            move |_,
+                  (id, x, y, text, scale, font_size): (
                 String,
                 f32,
                 f32,
@@ -2330,6 +3258,696 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
             Ok(Some(result))
         })?,
     )?;
+    let s = Rc::clone(&state);
+    ui.set(
+        "panel",
+        lua.create_function(
+            move |_,
+                  (id, x, y, width, height, r, g, b, a): (
+                String,
+                f32,
+                f32,
+                f32,
+                f32,
+                f32,
+                f32,
+                f32,
+                f32,
+            )| {
+                if !finite_ui_rect(x, y, width, height) {
+                    return Err(api_error("ui.panel rect must be finite and positive"));
+                }
+                let color = [r, g, b, a];
+                if !finite_color4(color) {
+                    return Err(api_error("ui.panel color must be finite"));
+                }
+                s.borrow_mut().ui_panels.insert(
+                    id,
+                    UiPanel {
+                        position: [x, y],
+                        size: [width, height],
+                        color,
+                        visible: true,
+                        space: crate::core::ui::UiLayoutSpace::Screen,
+                        anchor: [0.0, 0.0],
+                    },
+                );
+                Ok(())
+            },
+        )?,
+    )?;
+    let s = Rc::clone(&state);
+    ui.set(
+        "image",
+        lua.create_function(
+            move |_,
+                  (id, x, y, width, height, texture, r, g, b): (
+                String,
+                f32,
+                f32,
+                f32,
+                f32,
+                String,
+                f32,
+                f32,
+                f32,
+            )| {
+                if !finite_ui_rect(x, y, width, height) {
+                    return Err(api_error("ui.image rect must be finite and positive"));
+                }
+                s.borrow_mut().ui_images.insert(
+                    id,
+                    UiImage {
+                        texture,
+                        position: [x, y],
+                        size: [width, height],
+                        color: [r, g, b],
+                        space: crate::core::ui::UiLayoutSpace::Screen,
+                        anchor: [0.0, 0.0],
+                    },
+                );
+                Ok(())
+            },
+        )?,
+    )?;
+    let s = Rc::clone(&state);
+    ui.set(
+        "grid",
+        lua.create_function(
+            move |_,
+                  (id, x, y, columns, rows, cell_size, gap): (
+                String,
+                f32,
+                f32,
+                i64,
+                i64,
+                f32,
+                f32,
+            )| {
+                if columns <= 0 || rows <= 0 {
+                    return Err(api_error("ui.grid columns/rows must be positive"));
+                }
+                if !finite_ui_rect(x, y, cell_size, cell_size) || !gap.is_finite() || gap < 0.0 {
+                    return Err(api_error("ui.grid rect/gap must be finite and valid"));
+                }
+                let columns = columns as usize;
+                let rows = rows as usize;
+                let cell_count = columns * rows;
+                s.borrow_mut().ui_grids.insert(
+                    id,
+                    UiGrid {
+                        position: [x, y],
+                        columns,
+                        rows,
+                        cell_size: [cell_size, cell_size],
+                        gap,
+                        background: [0.10, 0.10, 0.13, 0.92],
+                        cells: vec![
+                            UiGridCell {
+                                texture: None,
+                                color: [0.22, 0.23, 0.27, 0.95],
+                            };
+                            cell_count
+                        ],
+                        space: crate::core::ui::UiLayoutSpace::Screen,
+                        anchor: [0.0, 0.0],
+                    },
+                );
+                Ok(())
+            },
+        )?,
+    )?;
+    let s = Rc::clone(&state);
+    ui.set(
+        "grid_cell",
+        lua.create_function(
+            move |_,
+                  (id, index, texture, r, g, b, a): (
+                String,
+                i64,
+                Option<String>,
+                f32,
+                f32,
+                f32,
+                f32,
+            )| {
+                let mut state = s.borrow_mut();
+                let Some(grid) = state.ui_grids.get_mut(&id) else {
+                    return Err(api_error(format!("ui.grid {id} not found")));
+                };
+                if index <= 0 || (index as usize) > grid.cells.len() {
+                    return Err(api_error(format!(
+                        "ui.grid_cell index {index} out of bounds for {id}"
+                    )));
+                }
+                let color = [r, g, b, a];
+                if !finite_color4(color) {
+                    return Err(api_error("ui.grid_cell color must be finite"));
+                }
+                grid.cells[(index - 1) as usize] = UiGridCell { texture, color };
+                Ok(())
+            },
+        )?,
+    )?;
+    let s = Rc::clone(&state);
+    ui.set(
+        "grid_clear",
+        lua.create_function(move |_, id: String| {
+            let mut state = s.borrow_mut();
+            let Some(grid) = state.ui_grids.get_mut(&id) else {
+                return Err(api_error(format!("ui.grid {id} not found")));
+            };
+            grid.cells.fill(UiGridCell {
+                texture: None,
+                color: [0.22, 0.23, 0.27, 0.95],
+            });
+            Ok(())
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    ui.set(
+        "grid_hit",
+        lua.create_function(move |_, (id, x, y): (String, f32, f32)| {
+            let state = s.borrow();
+            let Some(grid) = state.ui_grids.get(&id) else {
+                return Err(api_error(format!("ui.grid {id} not found")));
+            };
+            for index in 1..=grid.columns * grid.rows {
+                let Some((origin, size)) = grid.cell_rect(index, state.ui_viewport) else {
+                    continue;
+                };
+                if x >= origin[0]
+                    && x <= origin[0] + size[0]
+                    && y >= origin[1]
+                    && y <= origin[1] + size[1]
+                {
+                    return Ok(Some(index as i64));
+                }
+            }
+            Ok(None)
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    ui.set(
+        "tooltip",
+        lua.create_function(
+            move |_, (id, x, y, text, width, height): (String, f32, f32, String, f32, f32)| {
+                if !finite_ui_rect(x, y, width, height) {
+                    return Err(api_error("ui.tooltip rect must be finite and positive"));
+                }
+                let mut state = s.borrow_mut();
+                state.ui_panels.insert(
+                    id.clone(),
+                    UiPanel {
+                        position: [x, y],
+                        size: [width, height],
+                        color: [0.08, 0.09, 0.12, 0.94],
+                        visible: true,
+                        space: crate::core::ui::UiLayoutSpace::Screen,
+                        anchor: [0.0, 0.0],
+                    },
+                );
+                state.ui.insert(
+                    format!("{id}:tooltip"),
+                    UiText {
+                        text,
+                        visible: true,
+                        position: [x + 8.0, y + 4.0],
+                        scale: 1.0,
+                        font_size: Some(14.0),
+                    },
+                );
+                Ok(())
+            },
+        )?,
+    )?;
+    let s = Rc::clone(&state);
+    ui.set(
+        "tooltip_hide",
+        lua.create_function(move |_, id: String| {
+            let mut state = s.borrow_mut();
+            if let Some(panel) = state.ui_panels.get_mut(&id) {
+                panel.visible = false;
+            }
+            if let Some(text) = state.ui.get_mut(&format!("{id}:tooltip")) {
+                text.visible = false;
+            }
+            Ok(())
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    ui.set(
+        "modal",
+        lua.create_function(
+            move |_, (id, x, y, width, height, title): (String, f32, f32, f32, f32, String)| {
+                if !finite_ui_rect(x, y, width, height) {
+                    return Err(api_error("ui.modal rect must be finite and positive"));
+                }
+                let mut state = s.borrow_mut();
+                state.ui_panels.insert(
+                    id.clone(),
+                    UiPanel {
+                        position: [x, y],
+                        size: [width, height],
+                        color: [0.12, 0.13, 0.17, 0.96],
+                        visible: true,
+                        space: crate::core::ui::UiLayoutSpace::Screen,
+                        anchor: [0.0, 0.0],
+                    },
+                );
+                state.ui.insert(
+                    format!("{id}:title"),
+                    UiText {
+                        text: title,
+                        visible: true,
+                        position: [x + 12.0, y + 8.0],
+                        scale: 1.0,
+                        font_size: Some(20.0),
+                    },
+                );
+                Ok(())
+            },
+        )?,
+    )?;
+    let s = Rc::clone(&state);
+    ui.set(
+        "modal_show",
+        lua.create_function(move |_, id: String| {
+            let mut state = s.borrow_mut();
+            if let Some(panel) = state.ui_panels.get_mut(&id) {
+                panel.visible = true;
+            }
+            if let Some(text) = state.ui.get_mut(&format!("{id}:title")) {
+                text.visible = true;
+            }
+            Ok(())
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    ui.set(
+        "modal_hide",
+        lua.create_function(move |_, id: String| {
+            let mut state = s.borrow_mut();
+            if let Some(panel) = state.ui_panels.get_mut(&id) {
+                panel.visible = false;
+            }
+            if let Some(text) = state.ui.get_mut(&format!("{id}:title")) {
+                text.visible = false;
+            }
+            Ok(())
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    ui.set(
+        "clear",
+        lua.create_function(move |_, id: String| {
+            let mut state = s.borrow_mut();
+            state.ui_panels.remove(&id);
+            state.ui_images.remove(&id);
+            state.ui_grids.remove(&id);
+            state.ui.remove(&format!("{id}:tooltip"));
+            state.ui.remove(&format!("{id}:title"));
+            Ok(())
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    ui.set(
+        "drag_begin",
+        lua.create_function(move |_, (id, index): (String, i64)| {
+            if index <= 0 {
+                return Err(api_error("ui.drag_begin index must be positive"));
+            }
+            let mut state = s.borrow_mut();
+            if !state.ui_grids.contains_key(&id) {
+                return Err(api_error(format!("ui.grid {id} not found")));
+            }
+            state.ui_drag = Some(UiDrag {
+                from_id: id,
+                from_index: index as usize,
+            });
+            Ok(true)
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    ui.set(
+        "drag_end",
+        lua.create_function(move |lua, (id, index): (String, i64)| {
+            if index <= 0 {
+                return Err(api_error("ui.drag_end index must be positive"));
+            }
+            let drag = s.borrow().ui_drag.clone();
+            let Some(drag) = drag else {
+                return Ok(false);
+            };
+            s.borrow_mut().ui_drag = None;
+            let callback: Value = lua.globals().get("on_drag")?;
+            if let Value::Function(function) = callback {
+                function.call::<()>((drag.from_id, drag.from_index as i64, id, index))?;
+            }
+            Ok(true)
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    ui.set(
+        "drag_active",
+        lua.create_function(move |lua, ()| {
+            let state = s.borrow();
+            let Some(drag) = &state.ui_drag else {
+                return Ok(Value::Nil);
+            };
+            let result = lua.create_table()?;
+            result.set("id", drag.from_id.clone())?;
+            result.set("index", drag.from_index as i64)?;
+            Ok(Value::Table(result))
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    ui.set(
+        "drag_cancel",
+        lua.create_function(move |_, ()| {
+            s.borrow_mut().ui_drag = None;
+            Ok(())
+        })?,
+    )?;
+
+    let item = lua.create_table()?;
+    let s = Rc::clone(&state);
+    item.set(
+        "define",
+        lua.create_function(move |_, (id, definition): (String, Table)| {
+            if id.is_empty() {
+                return Err(api_error("item.define id must not be empty"));
+            }
+            let name = definition
+                .get::<Option<String>>("name")?
+                .unwrap_or_else(|| id.clone());
+            let description = definition
+                .get::<Option<String>>("description")?
+                .unwrap_or_default();
+            let kind = definition
+                .get::<Option<String>>("kind")?
+                .unwrap_or_default();
+            let texture = definition
+                .get::<Option<String>>("texture")?
+                .unwrap_or_default();
+            let stack = definition.get::<Option<i64>>("stack")?.unwrap_or(99).max(1) as u32;
+            let buy_price = definition.get::<Option<i64>>("buy")?.unwrap_or(0);
+            let sell_price = definition.get::<Option<i64>>("sell")?.unwrap_or(0);
+            s.borrow_mut().item_defs.insert(
+                id.clone(),
+                ItemDefinition {
+                    id,
+                    name,
+                    description,
+                    stack,
+                    buy_price,
+                    sell_price,
+                    texture,
+                    kind,
+                },
+            );
+            Ok(true)
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    item.set(
+        "def",
+        lua.create_function(move |lua, id: String| {
+            let state = s.borrow();
+            let Some(definition) = state.item_defs.get(&id) else {
+                return Ok(Value::Nil);
+            };
+            let result = lua.create_table()?;
+            result.set("id", definition.id.clone())?;
+            result.set("name", definition.name.clone())?;
+            result.set("description", definition.description.clone())?;
+            result.set("stack", definition.stack as i64)?;
+            result.set("buy", definition.buy_price)?;
+            result.set("sell", definition.sell_price)?;
+            result.set("texture", definition.texture.clone())?;
+            result.set("kind", definition.kind.clone())?;
+            Ok(Value::Table(result))
+        })?,
+    )?;
+    lua.globals().set("item", item)?;
+
+    let inv = lua.create_table()?;
+    let s = Rc::clone(&state);
+    inv.set(
+        "create",
+        lua.create_function(move |_, (id, capacity): (String, Option<i64>)| {
+            if id.is_empty() {
+                return Err(api_error("inv.create id must not be empty"));
+            }
+            let capacity = capacity.unwrap_or(24).max(1) as usize;
+            s.borrow_mut()
+                .inventories
+                .insert(id.clone(), Inventory::new(capacity));
+            Ok(id)
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    inv.set(
+        "hotbar",
+        lua.create_function(move |_, (id, size): (String, Option<i64>)| {
+            if id.is_empty() {
+                return Err(api_error("inv.hotbar id must not be empty"));
+            }
+            let capacity = size.unwrap_or(9).max(1) as usize;
+            s.borrow_mut()
+                .inventories
+                .insert(id.clone(), Inventory::new(capacity));
+            Ok(id)
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    inv.set(
+        "capacity",
+        lua.create_function(move |_, id: String| {
+            let state = s.borrow();
+            state
+                .inventories
+                .get(&id)
+                .map(|inventory| inventory.capacity as i64)
+                .ok_or_else(|| api_error(format!("inventory {id} not found")))
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    inv.set(
+        "exists",
+        lua.create_function(move |_, id: String| Ok(s.borrow().inventories.contains_key(&id)))?,
+    )?;
+    let s = Rc::clone(&state);
+    inv.set(
+        "add",
+        lua.create_function(move |_, (id, item_id, count): (String, String, i64)| {
+            if item_id.is_empty() {
+                return Err(api_error("inv.add item id must not be empty"));
+            }
+            if count <= 0 {
+                return Err(api_error("inv.add count must be positive"));
+            }
+            let mut state = s.borrow_mut();
+            if !state.inventories.contains_key(&id) {
+                state.inventories.insert(id.clone(), Inventory::new(24));
+            }
+            let max_stack = state
+                .item_defs
+                .get(&item_id)
+                .map_or(99, |definition| definition.stack);
+            let inventory = state
+                .inventories
+                .get_mut(&id)
+                .expect("inventory just inserted");
+            Ok(inventory.add(&item_id, count as u32, max_stack) as i64)
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    inv.set(
+        "remove",
+        lua.create_function(move |_, (id, item_id, count): (String, String, i64)| {
+            if count <= 0 {
+                return Err(api_error("inv.remove count must be positive"));
+            }
+            let mut state = s.borrow_mut();
+            let Some(inventory) = state.inventories.get_mut(&id) else {
+                return Ok(0);
+            };
+            Ok(inventory.remove(&item_id, count as u32) as i64)
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    inv.set(
+        "count",
+        lua.create_function(move |_, (id, item_id): (String, String)| {
+            let state = s.borrow();
+            Ok(state
+                .inventories
+                .get(&id)
+                .map_or(0, |inventory| inventory.count(&item_id)) as i64)
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    inv.set(
+        "get",
+        lua.create_function(move |lua, id: String| {
+            let state = s.borrow();
+            let Some(inventory) = state.inventories.get(&id) else {
+                return Err(api_error(format!("inventory {id} not found")));
+            };
+            let result = lua.create_table()?;
+            result.set("id", id.clone())?;
+            result.set("capacity", inventory.capacity as i64)?;
+            let slots = lua.create_table()?;
+            let mut occupied = 0;
+            for (index, stack) in inventory.slots.iter().enumerate() {
+                if stack.item_id.is_empty() {
+                    continue;
+                }
+                let slot = lua.create_table()?;
+                slot.set("item", stack.item_id.clone())?;
+                slot.set("count", stack.count as i64)?;
+                slots.set(index + 1, slot)?;
+                occupied += 1;
+            }
+            result.set("slots", slots)?;
+            result.set("occupied", occupied)?;
+            Ok(result)
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    inv.set(
+        "slot",
+        lua.create_function(move |lua, (id, index): (String, i64)| {
+            if index <= 0 {
+                return Err(api_error("inv.slot index must be positive"));
+            }
+            let state = s.borrow();
+            let Some(inventory) = state.inventories.get(&id) else {
+                return Err(api_error(format!("inventory {id} not found")));
+            };
+            let Some(stack) = inventory.get((index - 1) as usize) else {
+                return Err(api_error(format!(
+                    "inventory {id} slot {index} out of bounds"
+                )));
+            };
+            if stack.item_id.is_empty() {
+                return Ok(Value::Nil);
+            }
+            let slot = lua.create_table()?;
+            slot.set("item", stack.item_id.clone())?;
+            slot.set("count", stack.count as i64)?;
+            Ok(Value::Table(slot))
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    inv.set(
+        "set",
+        lua.create_function(
+            move |_, (id, index, item_id, count): (String, i64, Option<String>, Option<i64>)| {
+                if index <= 0 {
+                    return Err(api_error("inv.set index must be positive"));
+                }
+                let stack = match (item_id, count) {
+                    (Some(item_id), Some(count)) if count > 0 => {
+                        ItemStack::new(item_id, count as u32)
+                    }
+                    _ => ItemStack::default(),
+                };
+                let mut state = s.borrow_mut();
+                let Some(inventory) = state.inventories.get_mut(&id) else {
+                    return Err(api_error(format!("inventory {id} not found")));
+                };
+                inventory
+                    .set((index - 1) as usize, stack)
+                    .map_err(|error| api_error(error.to_string()))?;
+                Ok(())
+            },
+        )?,
+    )?;
+    let s = Rc::clone(&state);
+    inv.set(
+        "swap",
+        lua.create_function(
+            move |_, (from_id, from_index, to_id, to_index): (String, i64, String, i64)| {
+                swap_inventories(&mut s.borrow_mut(), &from_id, from_index, &to_id, to_index)
+            },
+        )?,
+    )?;
+    let s = Rc::clone(&state);
+    inv.set(
+        "move",
+        lua.create_function(
+            move |_,
+                  (from_id, from_index, to_id, to_index, count): (
+                String,
+                i64,
+                String,
+                Option<i64>,
+                Option<i64>,
+            )| {
+                move_inventories(
+                    &mut s.borrow_mut(),
+                    &from_id,
+                    from_index,
+                    &to_id,
+                    to_index,
+                    count,
+                )
+            },
+        )?,
+    )?;
+    lua.globals().set("inv", inv)?;
+
+    let container = lua.create_table()?;
+    let s = Rc::clone(&state);
+    container.set(
+        "open",
+        lua.create_function(move |_, (entity_id, capacity): (i64, Option<i64>)| {
+            let key = format!("container:{entity_id}");
+            let capacity = capacity.unwrap_or(12).max(1) as usize;
+            s.borrow_mut()
+                .inventories
+                .insert(key.clone(), Inventory::new(capacity));
+            Ok(key)
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    container.set(
+        "get",
+        lua.create_function(move |_, entity_id: i64| {
+            let key = format!("container:{entity_id}");
+            let exists = s.borrow().inventories.contains_key(&key);
+            if exists { Ok(Some(key)) } else { Ok(None) }
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    container.set(
+        "close",
+        lua.create_function(move |_, entity_id: i64| {
+            let key = format!("container:{entity_id}");
+            Ok(s.borrow_mut().inventories.remove(&key).is_some())
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    container.set(
+        "move",
+        lua.create_function(
+            move |_, (entity_id, from_index, to_id, to_index): (i64, i64, String, i64)| {
+                let from_id = format!("container:{entity_id}");
+                move_inventories(
+                    &mut s.borrow_mut(),
+                    &from_id,
+                    from_index,
+                    &to_id,
+                    Some(to_index),
+                    None,
+                )
+            },
+        )?,
+    )?;
+    lua.globals().set("container", container)?;
+
     let save = lua.create_table()?;
     let s = Rc::clone(&state);
     save.set(
@@ -2346,6 +3964,52 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
     )?;
     let s = Rc::clone(&state);
     save.set(
+        "blob_write",
+        lua.create_function(move |_, (key, value): (String, Value)| {
+            if key.is_empty() {
+                return Err(api_error("save.blob_write key must not be empty"));
+            }
+            let json = lua_value_to_json(value)?;
+            let encoded =
+                serde_json::to_string(&json).map_err(|error| api_error(error.to_string()))?;
+            s.borrow_mut()
+                .save_data
+                .insert(format!("__blob:{key}"), encoded);
+            Ok(())
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    save.set(
+        "blob_read",
+        lua.create_function(move |lua, key: String| {
+            let state = s.borrow();
+            let Some(encoded) = state.save_data.get(&format!("__blob:{key}")) else {
+                return Ok(Value::Nil);
+            };
+            let json = serde_json::from_str(encoded)
+                .map_err(|error| api_error(format!("save.blob_read {key} is corrupt: {error}")))?;
+            json_to_lua_value(lua, &json)
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    save.set(
+        "slot",
+        lua.create_function(move |_, slot: Option<String>| {
+            s.borrow_mut().save_slot = slot.filter(|value| !value.is_empty());
+            Ok(())
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    save.set(
+        "slot_get",
+        lua.create_function(move |lua, ()| {
+            let slot = s.borrow().save_slot.clone();
+            slot.map(|value| lua.create_string(&value).map(Value::String))
+                .transpose()
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    save.set(
         "commit",
         lua.create_function(move |_, ()| {
             let state = s.borrow();
@@ -2353,6 +4017,7 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
                 tracing::warn!(target: "save", "[save] no save path configured; commit ignored");
                 return Ok(false);
             };
+            let path = save_path_for_slot(&path, state.save_slot.as_deref());
             let text = encode_save(&state.save_data);
             let result = atomic_write(&path, &text);
             match &result {
@@ -2373,6 +4038,7 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
                 tracing::warn!(target: "save", "[save] no save path configured; load ignored");
                 return Ok(false);
             };
+            let path = save_path_for_slot(&path, state.save_slot.as_deref());
             let Ok(text) = std::fs::read_to_string(&path) else {
                 return Ok(false); // no save yet is not an error
             };
@@ -2922,6 +4588,166 @@ mod tests {
         runtime.execute_project_script(&main).unwrap();
         assert_eq!(runtime.call_update().unwrap(), "enc-ok");
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn grid_tilemap_tag_and_interact_lua_api() {
+        use crate::core::scene::{Scene, SceneEntityId};
+
+        let mut scene = Scene::new("farm");
+        scene.add_entity(SceneEntityId(1), "FarmMap", None).unwrap();
+        scene
+            .entities
+            .get_mut(&SceneEntityId(1))
+            .unwrap()
+            .components
+            .insert(
+                "Tilemap".into(),
+                "tile_size=32x32;width=4;height=3;texture=assets/tileset.png;tiles=000000000000;solid=000000000000"
+                    .into(),
+            );
+        scene.add_entity(SceneEntityId(2), "Farmer", None).unwrap();
+        scene
+            .entities
+            .get_mut(&SceneEntityId(2))
+            .unwrap()
+            .components
+            .insert(
+                "Transform".into(),
+                "x=16;y=16;rotation=0;scale_x=1;scale_y=1".into(),
+            );
+        let mut runtime = LuaRuntime::new().unwrap();
+        runtime.instantiate_scene(&scene).unwrap();
+        let path = script(
+            "local map = entity.find('FarmMap')\n\
+             local player = entity.find('Farmer')\n\
+             local cell = grid.world_to_cell(48, 16, 32)\n\
+             assert(cell[1] == 1 and cell[2] == 0)\n\
+             local front = grid.facing_cell(16, 16, 'right', 32)\n\
+             assert(front[1] == 1 and front[2] == 0)\n\
+             assert(grid.cell_to_world(1, 0, 32)[1] == 48)\n\
+             tilemap.set_cell(map, 1, 0, 2)\n\
+             tilemap.set_solid(map, 1, 0, true)\n\
+             tilemap.set_meta(map, 1, 0, 'tilled', 'true')\n\
+             assert(tilemap.get_meta(map, 1, 0, 'tilled') == 'true')\n\
+             assert(tilemap.is_solid(map, 1, 0))\n\
+             tag.set(player, 'kind', 'farmer')\n\
+             local hits = interact.query(16, 16, 100)\n\
+             assert(#hits >= 1 and hits[1].kind == 'farmer')\n\
+             interact.prompt('按 E 使用工具')\n\
+             assert(interact.get_prompt() == '按 E 使用工具')\n\
+             function update() return 'ok' end",
+        );
+        runtime.execute_project_script(&path).unwrap();
+        assert_eq!(runtime.call_update().unwrap(), "ok");
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn clock_save_slots_blobs_map_inventory_and_data_lua_api() {
+        use crate::core::scene::{Scene, SceneEntityId};
+
+        let root = std::env::temp_dir().join(format!("p2-farm-api-{}", std::process::id()));
+        let scenes = root.join("scenes");
+        let data = root.join("data");
+        fs::create_dir_all(&scenes).unwrap();
+        fs::create_dir_all(&data).unwrap();
+        fs::write(
+            data.join("crops.json"),
+            r#"{"tomato":{"name":"Tomato","sell":5,"buy":10,"stack":8}}"#,
+        )
+        .unwrap();
+        let mut town = Scene::new("town");
+        town.add_entity(SceneEntityId(1), "Spawn", None).unwrap();
+        town.save(scenes.join("town.scene")).unwrap();
+
+        let mut runtime = LuaRuntime::new().unwrap();
+        runtime.set_project_root(root.clone());
+        runtime.set_save_path(root.join(".p2").join("save.sav"));
+        runtime.set_ui_viewport(1280, 720);
+        let path = script(
+            "local now = clock.now()\n\
+             assert(now.day == 1 and now.minute == 360)\n\
+             clock.set_rate(60)\n\
+             clock.pause(false)\n\
+             save.slot('slot1')\n\
+             save.write('hp', '42')\n\
+             assert(save.commit())\n\
+             assert(save.slot_get() == 'slot1')\n\
+             save.blob_write('farm', { tilled = { true }, day = 2 })\n\
+             local farm = save.blob_read('farm')\n\
+             assert(farm.tilled[1] == true and farm.day == 2)\n\
+             item.define('tomato', { name = 'Tomato', stack = 8, sell = 5, buy = 10 })\n\
+             assert(item.def('tomato').sell == 5)\n\
+             local bag = inv.create('bag', 4)\n\
+             assert(inv.add('bag', 'tomato', 3) == 0)\n\
+             assert(inv.count('bag', 'tomato') == 3)\n\
+             assert(inv.move('bag', 1, 'bag', 2, nil) == 3)\n\
+             assert(inv.slot('bag', 2).count == 3)\n\
+             assert(inv.move('bag', 2, 'bag', 1, nil) == 3)\n\
+             local box = container.open(88, 2)\n\
+             assert(inv.move('bag', 1, box, 1, nil) == 3)\n\
+             assert(inv.count('bag', 'tomato') == 0)\n\
+             assert(inv.count(box, 'tomato') == 3)\n\
+             assert(inv.swap(box, 1, 'bag', 1))\n\
+             assert(inv.count(box, 'tomato') == 0)\n\
+             assert(map.go('town', 120, 80))\n\
+             assert(map.current() == 'town')\n\
+             local spawn = map.spawn()\n\
+             assert(spawn.x == 120 and spawn.y == 80)\n\
+             map.state('farm', { tilled = true })\n\
+             assert(map.state('farm').tilled == true)\n\
+             local crops = data.load('data/crops.json')\n\
+             assert(crops.tomato.name == 'Tomato' and crops.tomato.sell == 5)\n\
+             assert(data.reload('data/crops.json').tomato.buy == 10)\n\
+             function update() return 'ok' end",
+        );
+        runtime.execute_project_script(&path).unwrap();
+        runtime.step_clock(1.0);
+        runtime
+            .execute_console("assert(clock.now().minute == 420)")
+            .unwrap();
+        assert!(root.join(".p2").join("save_slot1.sav").is_file());
+        assert!(!root.join(".p2").join("save.sav").is_file());
+        runtime.process_scene_transition().unwrap();
+        assert_eq!(runtime.call_update().unwrap(), "ok");
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn ui_panels_images_grids_and_drag_lua_api() {
+        let mut runtime = LuaRuntime::new().unwrap();
+        runtime.set_ui_viewport(1280, 720);
+        let path = script(
+            "ui.panel('bg', 0, 0, 200, 200, 0.1, 0.1, 0.2, 1)\n\
+             ui.image('icon', 10, 10, 32, 32, 'assets/tomato.png', 1, 0, 0)\n\
+             ui.grid('bag', 10, 60, 4, 2, 40, 4)\n\
+             ui.grid_cell('bag', 1, 'assets/tomato.png', 1, 0, 0, 1)\n\
+             assert(ui.grid_hit('bag', 20, 70) == 1)\n\
+             assert(ui.grid_hit('bag', 400, 70) == nil)\n\
+             ui.modal('shop', 300, 100, 220, 140, 'Market')\n\
+             assert(ui.drag_begin('bag', 1))\n\
+             assert(ui.drag_active().index == 1)\n\
+             function on_drag(from_id, from_index, to_id, to_index)\n\
+               dragged = from_id .. ':' .. from_index .. ':' .. to_id .. ':' .. to_index\n\
+             end\n\
+             assert(ui.drag_end('bag', 2))\n\
+             assert(dragged == 'bag:1:bag:2')\n\
+             ui.tooltip('tip', 20, 280, 'Hoe', 120, 28)\n\
+             ui.modal_hide('shop')\n\
+             function update() return 'ok' end",
+        );
+        runtime.execute_project_script(&path).unwrap();
+        assert_eq!(runtime.call_update().unwrap(), "ok");
+        let dynamic = runtime.with_dynamic_ui(|panels, images, grids| {
+            (panels.clone(), images.clone(), grids.clone())
+        });
+        assert!(dynamic.0.contains_key("bg"));
+        assert!(dynamic.1.contains_key("icon"));
+        assert!(dynamic.2.contains_key("bag"));
+        assert_eq!(dynamic.2["bag"].cells.len(), 8);
+        let _ = fs::remove_file(path);
     }
 
     #[test]

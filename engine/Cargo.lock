@@ -1257,6 +1257,7 @@ dependencies = [
  "rapier2d",
  "rapier3d",
  "rodio",
+ "serde_json",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",

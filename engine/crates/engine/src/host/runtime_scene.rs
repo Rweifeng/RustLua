@@ -23,8 +23,7 @@ use crate::core::{
     transform::{Transform, Vec2, integrate_velocity},
     transform3d::Transform3D,
     ui::{
-        UiButton, UiImage, UiText, resolve_ui_rect, resolve_ui_text_origin,
-        ui_text_effective_scale,
+        UiButton, UiImage, UiText, resolve_ui_rect, resolve_ui_text_origin, ui_text_effective_scale,
     },
 };
 
@@ -194,6 +193,7 @@ impl RuntimeScene {
             self.script.step_physics(delta_seconds);
             self.script.step_physics3d(delta_seconds);
             self.script.step_particles(delta_seconds);
+            self.script.step_clock(delta_seconds);
             // Apply a pending scene.load so level switches happen between steps.
             self.script
                 .process_scene_transition()
@@ -365,6 +365,7 @@ impl RuntimeScene {
     pub fn vertices(&mut self, width: u32, height: u32) -> Result<SceneMesh, String> {
         self.viewport_width = width.max(1);
         self.viewport_height = height.max(1);
+        self.script.set_ui_viewport(width, height);
         let viewport = Viewport::new(width.max(1) as f32, height.max(1) as f32)
             .map_err(|error| error.to_string())?;
         self.sprite_batch.clear();
@@ -445,17 +446,14 @@ impl RuntimeScene {
             .map(|vertex| sprite_vertex(vertex, viewport))
             .collect();
         // Screen-space UI (health bars, prompt text) draws last, on top.
+        self.push_ui_panels(&mut vertices, &mut draws, width, height)?;
+        self.push_ui_images(&mut vertices, &mut draws, width, height)?;
+        self.push_ui_grids(&mut vertices, &mut draws, width, height)?;
         self.push_ui_bars(&mut vertices, &mut draws, width, height)?;
         self.push_ui_text(&mut vertices, &mut draws, width, height)?;
         // Scene-node UI components (Text / Image / Button) drawn on very top.
         self.push_scene_ui(&mut vertices, &mut draws, width, height)?;
-        tracing::info!(
-            target: "render",
-            draws = draws.len(),
-            sdf = draws.iter().filter(|d| d.sdf).count(),
-            text_entities = self.script.with_world(|w| w.entities_with::<UiText>().len()),
-            "[render] scene ui"
-        );
+        // 每帧的 UI 指标不再打 INFO 日志（避免持续刷屏）；需要时由下方 debug 级输出。
         tracing::debug!(
             target: "render",
             "[render] mesh vertices={} draws={} paths={}",
@@ -509,6 +507,130 @@ impl RuntimeScene {
             let transform = Transform::from_position(particle.position);
             self.sprite_batch
                 .push(SpriteBatchItem::new(texture, 1, sprite, transform));
+        }
+        Ok(())
+    }
+
+    /// Appends Lua-created `ui.panel` quads using the white texture.
+    fn push_ui_panels(
+        &mut self,
+        vertices: &mut Vec<OverlayVertex>,
+        draws: &mut Vec<SceneDraw>,
+        width: u32,
+        height: u32,
+    ) -> Result<(), String> {
+        let panels = self.script.with_dynamic_ui(|panels, _, _| panels.clone());
+        for panel in panels.values().filter(|panel| panel.visible) {
+            let (origin, size) = resolve_ui_rect(
+                panel.position,
+                panel.size,
+                panel.space,
+                panel.anchor,
+                [width.max(1) as f32, height.max(1) as f32],
+            );
+            let start = vertices.len() as u32;
+            vertices.extend(screen_rect_ndc(
+                origin[0],
+                origin[1],
+                size[0],
+                size[1],
+                panel.color,
+                width,
+                height,
+            ));
+            draws.push(SceneDraw {
+                texture: 0, // white
+                start,
+                count: vertices.len() as u32 - start,
+                sdf: false,
+            });
+        }
+        Ok(())
+    }
+
+    /// Appends Lua-created `ui.image` quads above panels.
+    fn push_ui_images(
+        &mut self,
+        vertices: &mut Vec<OverlayVertex>,
+        draws: &mut Vec<SceneDraw>,
+        width: u32,
+        height: u32,
+    ) -> Result<(), String> {
+        let images = self.script.with_dynamic_ui(|_, images, _| images.clone());
+        for image in images.values() {
+            self.push_image_quad(vertices, draws, width, height, image)?;
+        }
+        Ok(())
+    }
+
+    /// Appends Lua-created `ui.grid` cells and their item icon textures.
+    fn push_ui_grids(
+        &mut self,
+        vertices: &mut Vec<OverlayVertex>,
+        draws: &mut Vec<SceneDraw>,
+        width: u32,
+        height: u32,
+    ) -> Result<(), String> {
+        let grids = self.script.with_dynamic_ui(|_, _, grids| grids.clone());
+        for grid in grids.values() {
+            let (origin, total) = resolve_ui_rect(
+                grid.position,
+                grid.total_size(),
+                grid.space,
+                grid.anchor,
+                [width.max(1) as f32, height.max(1) as f32],
+            );
+            let start = vertices.len() as u32;
+            vertices.extend(screen_rect_ndc(
+                origin[0],
+                origin[1],
+                total[0],
+                total[1],
+                grid.background,
+                width,
+                height,
+            ));
+            draws.push(SceneDraw {
+                texture: 0,
+                start,
+                count: vertices.len() as u32 - start,
+                sdf: false,
+            });
+            for index in 1..=grid.columns * grid.rows {
+                let Some((cell_origin, cell_size)) =
+                    grid.cell_rect(index, [width.max(1) as f32, height.max(1) as f32])
+                else {
+                    continue;
+                };
+                let cell = grid.cells.get(index - 1).cloned().unwrap_or_default();
+                let start = vertices.len() as u32;
+                vertices.extend(screen_rect_ndc(
+                    cell_origin[0],
+                    cell_origin[1],
+                    cell_size[0],
+                    cell_size[1],
+                    cell.color,
+                    width,
+                    height,
+                ));
+                draws.push(SceneDraw {
+                    texture: 0,
+                    start,
+                    count: vertices.len() as u32 - start,
+                    sdf: false,
+                });
+                if let Some(texture) = cell.texture {
+                    let image = UiImage {
+                        texture,
+                        position: cell_origin,
+                        size: cell_size,
+                        color: [cell.color[0], cell.color[1], cell.color[2]],
+                        space: crate::core::ui::UiLayoutSpace::Screen,
+                        anchor: [0.0, 0.0],
+                    };
+                    self.push_image_quad(vertices, draws, width, height, &image)?;
+                }
+            }
         }
         Ok(())
     }
@@ -1234,6 +1356,22 @@ mod sdf_tests {
 
     fn production_sample_root() -> std::path::PathBuf {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../game_test_2d_production")
+    }
+
+    fn farm_root() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../game_farm")
+    }
+
+    #[test]
+    fn farm_sample_runs_with_new_api() {
+        let mut runtime = RuntimeScene::new(Some(&farm_root())).unwrap();
+        runtime
+            .run_script_steps(2, 1.0 / 60.0, &crate::core::input::InputSnapshot::default())
+            .unwrap();
+        let has_hud = runtime
+            .script
+            .with_ui(|texts, _| texts.contains_key("status"));
+        assert!(has_hud, "farm HUD should be created every update");
     }
 
     #[test]

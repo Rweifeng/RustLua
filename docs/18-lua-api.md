@@ -46,6 +46,29 @@
 | `save` | `read/write/load/commit` | 键值存档接口（load 从磁盘载入，commit 原子写入） |
 | `app` | `quit` | 请求退出应用 |
 
+## 农场 API（P0/P1 最小闭环）
+
+以下模块用于把 2D 农场循环下沉为稳定的 Lua API。所有接口都运行在主线程共享状态中，错误转换为 Lua 错误而不是 panic。
+
+| 模块 | API | 说明 |
+|---|---|---|
+| `grid` | `world_to_cell(x,y,tile_size)` / `cell_to_world(cx,cy,tile_size)` / `facing_cell(x,y,facing,tile_size)` / `in_bounds` | 世界坐标与格子坐标互转；`facing` 支持 `up/down/left/right` 及 `n/s/w/e` |
+| `tilemap` | `set_cell(id,x,y,value)` / `set_solid(id,x,y,bool)` / `get_meta(id,x,y,key)` / `set_meta(id,x,y,key,value)` | 运行时写视觉格、碰撞层和每格字符串元数据；`set_meta` 空 value 删除键 |
+| `clock` | `now` / `set_rate` / `pause` / `add` / `set` / `sleep_to_morning` | 独立游戏时钟，默认第 1 天 06:00；`set_rate(n)` 表示每秒推进 n 个游戏分钟，宿主在固定步进时调用 |
+| `tag` | `get` / `set` | 给实体附加字符串标签；空 value 删除标签 |
+| `interact` | `query(x,y,radius)` / `prompt(text)` / `clear_prompt` / `get_prompt` | 按距离和 `priority` 排序查询可交互实体，显示/清除交互提示 |
+| `item` | `define(id,def)` / `def(id)` | 注册和查询物品定义（`name/description/stack/buy/sell/texture/kind`） |
+| `inv` | `create/hotbar/capacity/exists/add/remove/count/get/slot/set/swap/move` | 固定容量背包、堆叠与快捷栏；槽位从 1 开始 |
+| `container` | `open(entity_id,capacity)` / `get` / `close` / `move` | 把实体 ID 关联为箱子背包，并可与玩家背包互转 |
+| `save` | `blob_write(key,value)` / `blob_read(key)` / `slot(name)` / `slot_get` | 任意 Lua 值（表/数字/字符串/布尔）存入现有存档；按槽位写入 `save_<slot>.sav` |
+| `map` | `go(name,x,y)` / `enter(name,x,y)` / `current` / `spawn` / `set_spawn` / `state(name[,value])` | 带出生点切图、当前图查询、分地图 blob 持久化。`map.goto` 保留为 `map["goto"]`（Lua 5.4 保留字），源码推荐用 `map.go` |
+| `ui` | `panel/image/grid/grid_cell/grid_clear/grid_hit/tooltip/modal/modal_show/modal_hide/clear/drag_begin/drag_end/drag_active/drag_cancel` | 运行时动态面板、图片、背包网格、tooltip、模态层与拖拽回调 |
+| `data` | `load(path)` / `reload(path)` / `cache_clear` | 从项目根读取 JSON 数据表并缓存为 Lua 表 |
+
+`ui.drag_end(to_id,to_index)` 会调用全局 `on_drag(from_id,from_index,to_id,to_index)`（若脚本定义了）。`map.state(name)` 读取、`map.state(name,value)` 写入对应地图的持久化状态。
+
+`tilemap.set_solid` 会立即重建该 Tilemap 实体的固定物理碰撞体；当前 tilemap meta 仍为运行时状态，跨场景持久化由 `map.state` / `save.blob_*` 由脚本自行保存。
+
 ## 安全与错误策略
 
 - Entity ID 使用 `index/generation` 编码，销毁后旧 ID 不会指向新实体；
