@@ -88,10 +88,14 @@ local function work()
             say("先按 Q 翻土。")
         elseif state.crops[id] then
             say("这里已经种了作物。")
-        elseif state.seeds <= 0 then
+        elseif inv.count("player", "seed_tomato") <= 0 then
             say("没有种子了。")
         elseif spend_energy(3) then
-            state.seeds = state.seeds - 1
+            if inv.remove("player", "seed_tomato", 1) ~= 1 then
+                say("没有种子了。")
+                return
+            end
+            state.seeds = inv.count("player", "seed_tomato")
             state.crops[id] = { stage = 0, watered = false }
             update_crop_visual(spot, 0)
             say("播种成功。按 R 浇水。")
@@ -112,12 +116,13 @@ local function work()
             state.crops[id] = nil
             state.watered[id] = nil
             state.money = state.money + 60
+            inv.add("player", "tomato", 1)
             local crop_entity = state.crop_entities[id]
             if crop_entity and entity.is_alive(crop_entity) then
                 entity.destroy(crop_entity)
             end
             state.crop_entities[id] = nil
-            say("收获成功！获得 60 金币。")
+            say("收获成功！获得 1 个番茄。")
         else
             say("作物还没有成熟。")
         end
@@ -128,8 +133,8 @@ local function sleep()
     if not input.just_pressed("t") then
         return
     end
-    state.day = state.day + 1
-    state.clock = 6 * 60
+    state.day = clock.sleep_to_morning()
+    state.clock = clock.now().minute_of_day
     state.energy = 100
     for _, spot in ipairs(soil_positions) do
         local id = key(spot.x, spot.y)
@@ -153,14 +158,29 @@ local function visit_market()
     end
     local p = transform.get(player_id)
     if p.x >= 600 and p.x <= 760 and p.y >= 140 and p.y <= 240 then
-        state.money = state.money + 10
-        say("在右侧集市出售杂物，获得 10 金币。")
+        local sold = inv.remove("player", "tomato", inv.count("player", "tomato"))
+        if sold > 0 then
+            state.money = state.money + sold * 60
+            say("在右侧集市卖出 " .. sold .. " 个番茄，获得 " .. sold * 60 .. " 金币。")
+        else
+            say("背包里没有番茄可卖。")
+        end
     else
         say("请到右侧集市摊位附近按 G。")
     end
 end
 
 local function save_game()
+    save.blob_write("farm", {
+        day = state.day,
+        clock = state.clock,
+        energy = state.energy,
+        money = state.money,
+        seeds = inv.count("player", "seed_tomato"),
+        tilled = state.tilled,
+        watered = state.watered,
+        crops = state.crops,
+    })
     save.write("day", tostring(state.day))
     save.write("clock", tostring(state.clock))
     save.write("energy", tostring(state.energy))
@@ -175,11 +195,32 @@ local function load_game()
         say("没有找到存档。")
         return
     end
+    local farm = save.blob_read("farm")
+    if farm then
+        state.day = farm.day or 1
+        state.clock = farm.clock or (6 * 60)
+        state.energy = farm.energy or 100
+        state.money = farm.money or 0
+        state.tilled = farm.tilled or {}
+        state.watered = farm.watered or {}
+        state.crops = farm.crops or {}
+        state.seeds = farm.seeds or 0
+    end
     state.day = math.max(1, tonumber(save.read("day")) or state.day)
     state.clock = tonumber(save.read("clock")) or state.clock
     state.energy = tonumber(save.read("energy")) or state.energy
     state.money = tonumber(save.read("money")) or state.money
     state.seeds = tonumber(save.read("seeds")) or state.seeds
+    clock.set(state.day, state.clock)
+    if not inv.exists("player") then
+        inv.create("player", 24)
+    end
+    local current = inv.count("player", "seed_tomato")
+    if state.seeds > current then
+        inv.add("player", "seed_tomato", state.seeds - current)
+    elseif state.seeds < current then
+        inv.remove("player", "seed_tomato", current - state.seeds)
+    end
     say("已读取存档。")
 end
 
@@ -193,6 +234,19 @@ function on_create()
         player_id = entity.spawn(state.player_name)
         transform.set(player_id, 316, 90)
     end
+    item.define("seed_tomato", { name = "番茄种子", stack = 99, buy = 10, sell = 2, kind = "seed" })
+    item.define("tomato", { name = "番茄", stack = 16, buy = 0, sell = 60, kind = "crop" })
+    if not inv.exists("player") then
+        inv.create("player", 24)
+        inv.add("player", "seed_tomato", state.seeds)
+    end
+    local market = entity.find("MarketStand")
+    if market then
+        tag.set(market, "kind", "market")
+    end
+    local now = clock.now()
+    state.day = now.day
+    state.clock = now.minute_of_day
     say("欢迎来到你的农场！")
 end
 
@@ -219,8 +273,23 @@ function update()
     visit_market()
 
     local p = transform.get(player_id)
+    local now = clock.now()
+    state.day = now.day
+    state.clock = now.minute_of_day
+    local hits = interact.query(p.x, p.y, 90)
+    local near_market = false
+    for _, hit in ipairs(hits) do
+        if hit.kind == "market" then
+            near_market = true
+        end
+    end
+    if near_market then
+        interact.prompt("按 G 出售背包里的番茄")
+    else
+        interact.clear_prompt()
+    end
     ui.text_at("title", 24, 20, "GREENHOLLOW FARM", 2.0)
-    ui.text_at("status", 24, 52, string.format("第 %d 天  %s  体力 %d/100  金币 %d  种子 %d", state.day, format_clock(state.clock), state.energy, state.money, state.seeds), 1.4)
+    ui.text_at("status", 24, 52, string.format("第 %d 天  %s  体力 %d/100  金币 %d  种子 %d", state.day, format_clock(state.clock), state.energy, state.money, inv.count("player", "seed_tomato")), 1.4)
     ui.text_at("help", 24, 82, "WASD 移动 | Q 翻土 | E 播种 | R 浇水 | F 收获 | T 睡觉 | G 集市 | F1/F2 存档", 1.05)
     ui.text_at("goal", 24, 112, "目标：种出成熟作物并在右侧集市出售。", 1.2)
     if state.message_time > 0 then
@@ -228,5 +297,16 @@ function update()
         state.message_time = math.max(0, state.message_time - time.delta())
     end
     ui.text_at("player_pos", 24, 640, string.format("位置 %.0f, %.0f", p.x, p.y), 1.0)
+    ui.grid("hotbar", 24, 600, 8, 1, 34, 4)
+    for i = 1, 8 do
+        local slot = inv.slot("player", i)
+        local def = slot and item.def(slot.item)
+        if def and def.texture and def.texture ~= "" then
+            ui.grid_cell("hotbar", i, def.texture, 1, 1, 1, 1)
+        else
+            ui.grid_cell("hotbar", i, nil, 0.18, 0.20, 0.24, 1)
+        end
+    end
+    ui.text_at("hotbar_hint", 24, 638, "快捷栏（种子 / 番茄）", 0.95)
     return "farm_day_" .. tostring(state.day)
 end
