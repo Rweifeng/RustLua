@@ -164,6 +164,9 @@ pub struct TextFields {
     pub anchor_y: f32,
     pub x: f32,
     pub y: f32,
+    /// 像素字号（px）。None = 旧数据仅用 `scale`。
+    pub font_size: Option<f32>,
+    /// 字形缩放系数（旧字段；`font_size` 提供时被忽略）。
     pub scale: f32,
     pub color_r: f32,
     pub color_g: f32,
@@ -179,6 +182,7 @@ impl Default for TextFields {
             anchor_y: 0.0,
             x: 10.0,
             y: 10.0,
+            font_size: None,
             scale: 1.0,
             color_r: 1.0,
             color_g: 1.0,
@@ -857,6 +861,7 @@ fn encode_text(fields: &TextFields) -> Result<String, InspectorError> {
         text: fields.text.clone(),
         position: [fields.x, fields.y],
         scale: fields.scale,
+        font_size: fields.font_size,
         color: [fields.color_r, fields.color_g, fields.color_b],
         space: parse_ui_layout_space(&fields.space).map_err(InspectorError::InvalidText)?,
         anchor: [fields.anchor_x, fields.anchor_y],
@@ -875,6 +880,7 @@ fn decode_text(value: &str) -> Result<TextFields, InspectorError> {
         x: ui.position[0],
         y: ui.position[1],
         scale: ui.scale,
+        font_size: ui.font_size,
         color_r: ui.color[0],
         color_g: ui.color[1],
         color_b: ui.color[2],

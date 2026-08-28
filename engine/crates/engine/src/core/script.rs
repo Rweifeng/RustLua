@@ -83,7 +83,10 @@ pub struct UiText {
     pub text: String,
     pub visible: bool,
     pub position: [f32; 2],
-    /// Screen-space scale of the built-in glyph atlas (1.0 = 5x7 px glyphs).
+    /// 像素字号（SDF em 高度，px）。提供时优先于 `scale`；
+    /// 换算见 [`crate::core::ui::ui_text_effective_scale`]。
+    pub font_size: Option<f32>,
+    /// 字形缩放系数（`1.0` = SDF 字体 em 12px / 位图 5x7 字形 7px）。
     pub scale: f32,
 }
 
@@ -257,9 +260,25 @@ impl LuaRuntime {
     /// same world through [`LuaRuntime::with_world`], so script-driven movement
     /// is immediately visible.
     pub fn instantiate_scene(&mut self, scene: &Scene) -> Result<usize, LuaBridgeError> {
+        self.instantiate_scene_with_editor_visibility(scene, false)
+    }
+
+    pub fn instantiate_scene_with_editor_visibility(
+        &mut self,
+        scene: &Scene,
+        honor_editor_hidden: bool,
+    ) -> Result<usize, LuaBridgeError> {
         let mut state = self.state.borrow_mut();
         let mut count = 0;
         for entity in scene.entities.values() {
+            if honor_editor_hidden
+                && scene
+                    .metadata
+                    .get(&format!("editor.hidden.{}", entity.id.0))
+                    .is_some_and(|value| value == "true")
+            {
+                continue;
+            }
             Self::spawn_entity_components(
                 &mut state,
                 &entity.name,
@@ -2180,6 +2199,7 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
                     visible: true,
                     position: [10.0, 10.0],
                     scale: 1.0,
+                    font_size: None,
                 },
             );
             Ok(())
@@ -2189,7 +2209,14 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
     ui.set(
         "text_at",
         lua.create_function(
-            move |_, (id, x, y, text, scale): (String, f32, f32, String, Option<f32>)| {
+            move |_, (id, x, y, text, scale, font_size): (
+                String,
+                f32,
+                f32,
+                String,
+                Option<f32>,
+                Option<f32>,
+            )| {
                 s.borrow_mut().ui.insert(
                     id,
                     UiText {
@@ -2197,6 +2224,7 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
                         visible: true,
                         position: [x, y],
                         scale: scale.unwrap_or(1.0),
+                        font_size,
                     },
                 );
                 Ok(())
@@ -2244,6 +2272,7 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
                     visible: false,
                     position: [10.0, 10.0],
                     scale: 1.0,
+                    font_size: None,
                 })
                 .visible = true;
             Ok(())
@@ -2261,6 +2290,7 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
                     visible: false,
                     position: [10.0, 10.0],
                     scale: 1.0,
+                    font_size: None,
                 })
                 .visible = false;
             Ok(())
@@ -2795,10 +2825,10 @@ mod tests {
     }
 
     #[test]
-    fn ui_text_at_accepts_optional_scale() {
+    fn ui_text_at_accepts_optional_scale_and_font_size() {
         let mut runtime = LuaRuntime::new().unwrap();
         let path = script(
-            "ui.text_at('small', 10, 10, 'a')\nui.text_at('big', 10, 30, 'b', 3)\nfunction update() return 'ok' end",
+            "ui.text_at('small', 10, 10, 'a')\nui.text_at('big', 10, 30, 'b', 3)\nui.text_at('huge', 10, 50, 'c', nil, 24)\nfunction update() return 'ok' end",
         );
         runtime.execute_project_script(&path).unwrap();
         runtime.call_update().unwrap();
@@ -2809,9 +2839,21 @@ mod tests {
             "no scale argument defaults to 1.0"
         );
         assert_eq!(
+            texts.get("small").expect("small text stored").font_size,
+            None,
+            "no font_size argument stays None"
+        );
+        assert_eq!(
             texts.get("big").expect("big text stored").scale,
             3.0,
             "optional scale argument is honored"
+        );
+        let huge = texts.get("huge").expect("huge text stored");
+        assert_eq!(huge.scale, 1.0, "scale stays default when font_size given");
+        assert_eq!(
+            huge.font_size,
+            Some(24.0),
+            "optional font_size argument is honored"
         );
         let _ = fs::remove_file(path);
     }

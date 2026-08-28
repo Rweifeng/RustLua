@@ -255,9 +255,6 @@ impl EditorApp {
                                     self.paste_selected_components();
                                 }
                             });
-                            if ui.button("Apply Transform").clicked() {
-                                self.apply_inspector();
-                            }
                         });
                     }
                 }
@@ -462,8 +459,25 @@ impl EditorApp {
                                 ui.label("位置");
                                 ui.add(egui::DragValue::new(&mut self.text.x));
                                 ui.add(egui::DragValue::new(&mut self.text.y));
-                                ui.label("缩放");
-                                ui.add(egui::DragValue::new(&mut self.text.scale).speed(0.1));
+                            });
+                            ui.horizontal(|ui| {
+                                // 字体大小(px)：font_size 优先；旧数据无 font_size 时显示
+                                // scale 换算值，编辑后写入 font_size。
+                                ui.label("字号");
+                                let mut font_size = self
+                                    .text
+                                    .font_size
+                                    .unwrap_or(self.text.scale * engine::core::ui::UI_TEXT_BASE_PX);
+                                if ui
+                                    .add(
+                                        egui::DragValue::new(&mut font_size)
+                                            .suffix("px")
+                                            .speed(1.0),
+                                    )
+                                    .changed()
+                                {
+                                    self.text.font_size = Some(font_size.max(1.0));
+                                }
                             });
                             ui.horizontal(|ui| {
                                 ui.label("颜色");
@@ -860,28 +874,22 @@ impl EditorApp {
                         ui.text_edit_singleline(&mut self.lua_script);
                     });
                 }
-                if ui.button("应用修改").clicked() {
-                    self.apply_inspector();
-                }
                 ui.separator();
                 if ui.button("添加子实体").clicked() {
                     self.add_entity(Some(selected));
                 }
-                if ui.button("删除实体").clicked() {
-                    self.delete_selected_entity();
-                    self.inspector.clear_selection();
-                }
             });
+        self.apply_inspector();
     }
 
-    fn apply_inspector(&mut self) {
+    fn apply_inspector(&mut self) -> bool {
         if self.is_playing() {
             self.status = "Play mode locks scene editing; click Stop first".to_owned();
-            return;
+            return false;
         }
         let Some(selected) = self.inspector.selected() else {
             self.status = "应用修改".to_owned();
-            return;
+            return false;
         };
         let name = self.entity_name.clone();
         let transform = self.transform;
@@ -948,7 +956,7 @@ impl EditorApp {
         let inspector = self.inspector.clone();
         let Some(scene) = self.document.current_scene.as_mut() else {
             self.status = "应用修改".to_owned();
-            return;
+            return false;
         };
         let result =
             self.history
@@ -1018,10 +1026,20 @@ impl EditorApp {
                     }
                     Ok::<(), InspectorError>(())
                 });
-        self.status = match result {
-            Ok(_) => format!("Inspector 已更新：EntityId={}", selected.0),
-            Err(error) => error.to_string(),
+        let changed = match result {
+            Ok(changed) => {
+                if changed {
+                    self.save_scene();
+                }
+                self.status = format!("Inspector 已更新：EntityId={}", selected.0);
+                changed
+            }
+            Err(error) => {
+                self.status = error.to_string();
+                false
+            }
         };
+        changed
     }
 
     /// 为选中实体添加 Collider3d 组件（用当前字段编码，经 history 可撤销）。

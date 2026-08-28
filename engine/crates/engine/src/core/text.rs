@@ -125,6 +125,30 @@ impl Default for TextMesh {
     }
 }
 
+impl TextMesh {
+    /// 字形实际像素范围 `[min_x, min_y, max_x, max_y]`，相对 mesh 原点。
+    ///
+    /// 与 `size` 不同：`size` 含 ascender/descender 空白与尾随 advance 空隙
+    /// （字形在其中不垂直居中）；`pixel_bounds` 是可见字形的紧致包围盒，
+    /// 编辑器 UI 包围框用它贴合实际文字。
+    #[must_use]
+    pub fn pixel_bounds(&self) -> [f32; 4] {
+        let mut min = [f32::INFINITY; 2];
+        let mut max = [f32::NEG_INFINITY; 2];
+        for v in &self.vertices {
+            min[0] = min[0].min(v.position[0]);
+            min[1] = min[1].min(v.position[1]);
+            max[0] = max[0].max(v.position[0]);
+            max[1] = max[1].max(v.position[1]);
+        }
+        if self.vertices.is_empty() {
+            [0.0; 4]
+        } else {
+            [min[0], min[1], max[0], max[1]]
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum TextError {
     InvalidStyle,
@@ -149,7 +173,8 @@ impl From<FontAtlasError> for TextError {
 }
 
 /// Display px of one em at `style.scale == 1` (real-font metrics).
-const EM_PX: f32 = 12.0;
+/// 也是场景 UI `Text` 组件 `font_size`（像素字号）与 `scale` 的换算基准。
+pub const EM_PX: f32 = 12.0;
 /// Line height as a multiple of the em box.
 const LINE_HEIGHT_EM: f32 = 1.2;
 
@@ -430,6 +455,30 @@ mod tests {
                 .all(|v| v.position.iter().all(|p| p.is_finite()))
         );
         assert!(mesh.size[0] > 0.0 && mesh.size[1] > 0.0);
+    }
+
+    #[test]
+    fn sdf_mesh_pixel_bounds_tracks_glyph_pixels_not_metric_box() {
+        let font_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../editor/fonts/NotoSansSC-VF.ttf");
+        let bytes = std::fs::read(&font_path).unwrap_or_else(|error| {
+            panic!("测试字体缺失或不可读 {}: {error}", font_path.display())
+        });
+        let mut font = crate::core::font::FontAtlas::load(&bytes).unwrap();
+        let mesh =
+            TextLayout::build("P2 Production", [0.0, 0.0], TextStyle::default(), &mut font).unwrap();
+        let bounds = mesh.pixel_bounds();
+        assert!(bounds[2] > bounds[0] && bounds[3] > bounds[1], "glyph bbox non-degenerate");
+        // 网格 size[0] 含尾随 advance，字形 bbox 更窄，贴合可见字形。
+        assert!(
+            bounds[2] - bounds[0] < mesh.size[0],
+            "bbox trims trailing advance"
+        );
+        // 垂直方向：网格含 ascender/descender 空白，字形中心与网格中心不重合，
+        // 故编辑器包围框用 pixel_bounds 而非 mesh.size。
+        let glyph_center_y = (bounds[1] + bounds[3]) * 0.5;
+        let mesh_center_y = mesh.size[1] * 0.5;
+        assert!((glyph_center_y - mesh_center_y).abs() > 0.01);
     }
 
     #[test]

@@ -22,7 +22,10 @@ use crate::core::{
     tilemap::Tilemap,
     transform::{Transform, Vec2, integrate_velocity},
     transform3d::Transform3D,
-    ui::{UiButton, UiImage, UiText, resolve_ui_rect, resolve_ui_text_origin},
+    ui::{
+        UiButton, UiImage, UiText, resolve_ui_rect, resolve_ui_text_origin,
+        ui_text_effective_scale,
+    },
 };
 
 use crate::host::frame::{
@@ -79,22 +82,25 @@ impl RuntimeScene {
         self.camera = camera;
     }
 
-    /// 度量一段场景文本在给定 scale 下的像素尺寸（编辑器 UI 包围框用）。
-    /// 与渲染同路径：SDF 字体存在时用真实字体，否则用内置 5x7 位图。
-    pub fn measure_ui_text(&mut self, text: &str, scale: f32) -> [f32; 2] {
+    /// 度量一段场景文本在给定 scale 下的网格尺寸与字形像素范围
+    /// `(size, pixel_bounds)`（编辑器 UI 包围框用）。`size` 含
+    /// ascender/descender 空白（锚点对齐用），`pixel_bounds` 是可见字形的
+    /// 紧致范围（包围框贴合文字用）。与渲染同路径：SDF 字体存在时用真实
+    /// 字体，否则用内置 5x7 位图。
+    pub fn measure_ui_text(&mut self, text: &str, scale: f32) -> ([f32; 2], [f32; 4]) {
         let style = TextStyle {
             scale,
             ..Default::default()
         };
         if let Some(font) = self.font_atlas.as_mut() {
             TextLayout::build(text, [0.0, 0.0], style, font)
-                .map(|mesh| mesh.size)
-                .unwrap_or([0.0, 0.0])
+                .map(|mesh| (mesh.size, mesh.pixel_bounds()))
+                .unwrap_or(([0.0, 0.0], [0.0; 4]))
         } else {
             let atlas = TextAtlas::built_in();
             TextLayout::build_bitmap(text, [0.0, 0.0], style, &atlas)
-                .map(|mesh| mesh.size)
-                .unwrap_or([0.0, 0.0])
+                .map(|mesh| (mesh.size, mesh.pixel_bounds()))
+                .unwrap_or(([0.0, 0.0], [0.0; 4]))
         }
     }
 
@@ -105,9 +111,15 @@ impl RuntimeScene {
         if let Some(root) = project_root {
             script.set_project_root(root.to_path_buf());
         }
-        let instantiated = script
-            .instantiate_scene(&scene)
-            .map_err(|error| error.to_string())?;
+        let instantiated = if run_script {
+            script
+                .instantiate_scene(&scene)
+                .map_err(|error| error.to_string())?
+        } else {
+            script
+                .instantiate_scene_with_editor_visibility(&scene, true)
+                .map_err(|error| error.to_string())?
+        };
         tracing::info!(target: "scene", "[scene] loaded name={} entities={}", scene.name, scene.entities.len());
         tracing::info!(target: "ecs", "[ecs] world initialized entities={instantiated}");
         if run_script && let Some(root) = project_root {
@@ -557,7 +569,13 @@ impl RuntimeScene {
         let visible: Vec<_> = texts
             .values()
             .filter(|text| text.visible)
-            .map(|text| (text.position, text.text.clone(), text.scale))
+            .map(|text| {
+                (
+                    text.position,
+                    text.text.clone(),
+                    ui_text_effective_scale(text.scale, text.font_size),
+                )
+            })
             .collect();
         if visible.is_empty() {
             return Ok(());
@@ -603,10 +621,11 @@ impl RuntimeScene {
         });
         for text in texts {
             let viewport = [width.max(1) as f32, height.max(1) as f32];
+            let effective_scale = text.effective_scale();
             let (_, resolved_scale) = resolve_ui_text_origin(
                 text.position,
                 [0.0, 0.0],
-                text.scale,
+                effective_scale,
                 text.space,
                 text.anchor,
                 viewport,
@@ -616,7 +635,7 @@ impl RuntimeScene {
             let (origin, _) = resolve_ui_text_origin(
                 text.position,
                 mesh.size,
-                text.scale,
+                effective_scale,
                 text.space,
                 text.anchor,
                 viewport,

@@ -27,3 +27,16 @@ cargo run -p game_runner --example scene_format_demo --release
 - `MeshRenderer`：`mesh=assets/models/<file>.glb|gltf`（`__ground_plane__` 为内置地面哨兵路径）
 - `Camera3D`：`position=x,y,z;target=x,y,z;fov=<度>;near=<n>;far=<f>`（`aspect` 由渲染窗口决定）
 - `Light`：`direction=x,y,z;color=r,g,b;intensity=<i>`（方向光）
+
+## UI 组件字符串（屏幕空间）
+
+屏幕空间 UI 组件（`Text` / `Image` / `Button`）同样用 `key=value;` 编码，坐标原点为
+视口左上角。`space` 支持 `screen`（原始像素）与 `canvas`（1280x720 参考分辨率缩放）。
+
+- `Text`：`text=<esc>;x=..;y=..;scale=..;font_size=..;color=r,g,b;space=..;anchor=x,y`
+  - `font_size`（可选，px）：像素字号（SDF 字体下 em 高度），提供时优先于 `scale`；
+    `font_size=24` 等价于 `scale=2`（基准 `UI_TEXT_BASE_PX = 12`）。未配置字体文件的
+    项目走内置位图回退时显示约为字号的 7/12。
+  - `scale`：字形缩放系数（`1.0` = SDF 字体 em 12px / 位图 5x7 字形 7px），旧格式兼容。
+- `Image`：`texture=..;x=..;y=..;width=..;height=..;color=r,g,b;space=..;anchor=x,y`
+- `Button`：`label=<esc>;x=..;y=..;width=..;height=..;bg=r,g,b;text_color=r,g,b;space=..;anchor=x,y`

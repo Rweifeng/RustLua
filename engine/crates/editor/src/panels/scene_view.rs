@@ -61,12 +61,6 @@ impl EditorApp {
         if response.contains_pointer() && scroll.abs() > 0.0 {
             self.scene_zoom = (self.scene_zoom * (1.0 + scroll * 0.001)).clamp(0.25, 4.0);
         }
-        if response.dragged_by(egui::PointerButton::Middle)
-            || (response.dragged_by(egui::PointerButton::Secondary)
-                && self.scene_tool != SceneTool::TilePaint)
-        {
-            self.scene_state.pan += response.drag_delta();
-        }
         painter.rect_filled(rect, 0.0, egui::Color32::from_rgb(28, 32, 40));
         // 实时渲染编辑场景（精灵/图块/文本）作为背景。
         let scale = ui.ctx().pixels_per_point();
@@ -142,6 +136,7 @@ impl EditorApp {
                     rect,
                     self.scene_state.pan,
                     self.scene_zoom,
+                    scale,
                     pos,
                     context.transform,
                     &self.tilemap.map,
@@ -291,8 +286,11 @@ impl EditorApp {
                 let mut next = initial;
                 match self.scene_tool {
                     SceneTool::Move | SceneTool::Select => {
-                        next.position_x += delta.x / self.scene_zoom;
-                        next.position_y -= delta.y / self.scene_zoom;
+                        // 面板拖动增量是逻辑 points；渲染侧 world→面板逻辑 =
+                        // (pan + world*zoom)/ppp，故世界位移须乘 ppp 再除 zoom，
+                        // 否则高 DPI 下实体跟不上鼠标。
+                        next.position_x += delta.x * scale / self.scene_zoom;
+                        next.position_y -= delta.y * scale / self.scene_zoom;
                         if self.snap_enabled {
                             next.position_x =
                                 (next.position_x / self.snap_step).round() * self.snap_step;
@@ -321,6 +319,7 @@ impl EditorApp {
             }
             self.scene_state.preview = preview;
             self.scene_state.preview_ui = preview_ui;
+            self.commit_scene_drag();
         }
         if response.drag_stopped_by(egui::PointerButton::Primary) {
             self.commit_scene_drag();
@@ -391,7 +390,8 @@ impl EditorApp {
                     ui: Some(ui),
                 });
             } else {
-                let (center, size) = entity_2d_screen_box(e, rect, pan, scene_zoom, transform);
+                let (center, size) =
+                    entity_2d_screen_box(e, rect, pan, scene_zoom, transform, pixels_per_point);
                 entities.push(SceneBoxedEntity {
                     id: e.id,
                     name: e.name.clone(),
@@ -878,6 +878,7 @@ impl EditorApp {
         context: &TilemapPaintContext,
         hovered: Option<(usize, usize)>,
     ) {
+        let ppp = painter.ctx().pixels_per_point().max(1.0e-3);
         if context.transform.rotation.abs() > 0.001 {
             painter.text(
                 rect.left_bottom() + egui::vec2(12.0, -12.0),
@@ -901,6 +902,7 @@ impl EditorApp {
                     rect,
                     self.scene_state.pan,
                     self.scene_zoom,
+                    ppp,
                     context.transform,
                     &self.tilemap.map,
                     x,
@@ -942,6 +944,7 @@ impl EditorApp {
         rect: egui::Rect,
         context: &TilemapPaintContext,
     ) {
+        let ppp = response.ctx.pixels_per_point().max(1.0e-3);
         let pointer = response.interact_pointer_pos();
         if response.drag_started_by(egui::PointerButton::Primary)
             || response.drag_started_by(egui::PointerButton::Secondary)
@@ -955,6 +958,7 @@ impl EditorApp {
                 rect,
                 self.scene_state.pan,
                 self.scene_zoom,
+                ppp,
                 pos,
                 context.transform,
                 &self.tilemap.map,
@@ -970,6 +974,7 @@ impl EditorApp {
                 rect,
                 self.scene_state.pan,
                 self.scene_zoom,
+                ppp,
                 pos,
                 context.transform,
                 &self.tilemap.map,
@@ -989,6 +994,7 @@ impl EditorApp {
                     rect,
                     self.scene_state.pan,
                     self.scene_zoom,
+                    ppp,
                     pos,
                     context.transform,
                     &self.tilemap.map,
@@ -1060,7 +1066,7 @@ impl EditorApp {
             return;
         };
         if let Some(scene) = self.document.current_scene.as_mut() {
-            let _ = self.history.execute(
+            let changed = self.history.execute(
                 scene,
                 "Scene Transform",
                 CommandKind::Transform(first),
@@ -1081,6 +1087,10 @@ impl EditorApp {
                     Ok::<(), ()>(())
                 },
             );
+            if matches!(changed, Ok(true)) {
+                self.save_scene();
+                self.sync_inspector(first);
+            }
         }
     }
 
@@ -1099,7 +1109,7 @@ impl EditorApp {
             return;
         };
         if let Some(scene) = self.document.current_scene.as_mut() {
-            let _ = self.history.execute(
+            let changed = self.history.execute(
                 scene,
                 "3D Transform",
                 CommandKind::Transform3D(id),
@@ -1113,6 +1123,10 @@ impl EditorApp {
                     Ok::<(), ()>(())
                 },
             );
+            if matches!(changed, Ok(true)) {
+                self.save_scene();
+                self.sync_inspector(id);
+            }
         }
     }
 
@@ -1724,7 +1738,9 @@ fn entity_2d_screen_box(
     pan: egui::Vec2,
     zoom: f32,
     transform: TransformFields,
+    pixels_per_point: f32,
 ) -> (egui::Pos2, egui::Vec2) {
+    let ppp = pixels_per_point.max(1.0e-3);
     let mut size = egui::vec2(112.0, 44.0);
     let mut pivot = egui::Vec2::new(0.5, 0.5);
     if let Some(raw) = entity.components.get("Sprite")
@@ -1735,14 +1751,21 @@ fn entity_2d_screen_box(
     } else if let Some(raw) = entity.components.get("Tilemap")
         && let Ok(tilemap) = Tilemap::from_component_str(raw)
     {
+        // Tilemap 渲染以 Transform 位置为左上角向右下延伸整张网格（见
+        // append_tilemap_layer：center_world = position + 半格偏移），故 pivot
+        // 取 (0,0) 让包围框中心落在网格中心，而非默认的 (0.5,0.5)（否则偏左上）。
         size = egui::vec2(
             tilemap.tile_size.x * tilemap.width as f32,
             tilemap.tile_size.y * tilemap.height as f32,
         );
+        pivot = egui::Vec2::new(0.0, 0.0);
     }
     let sx = transform.scale_x.abs().max(0.25);
     let sy = transform.scale_y.abs().max(0.25);
-    let screen_size = egui::vec2(size.x * sx * zoom, size.y * sy * zoom);
+    // 与 Scene 视图实时渲染（Camera2D + 离屏纹理贴回面板）共用同一映射：像素坐标
+    // = pan + world*zoom，再除以 pixels_per_point 折回面板逻辑坐标。不除 ppp 会在
+    // 高 DPI 屏上让包围框相对渲染内容偏移并放大（ppp==1 时两者恰好等价）。
+    let screen_size = egui::vec2(size.x * sx * zoom / ppp, size.y * sy * zoom / ppp);
     // Sprite pivot 偏移（世界像素）随缩放/旋转映射到屏幕，使包围框中心贴合渲染 quad。
     let offset = egui::vec2(
         size.x * (0.5 - pivot.x) * sx,
@@ -1754,8 +1777,10 @@ fn entity_2d_screen_box(
         transform.position_y + offset.x * rotation.sin() + offset.y * rotation.cos(),
     );
     let center = egui::pos2(
-        rect.center().x + pan.x + world_center.x * zoom,
-        rect.center().y + pan.y - world_center.y * zoom,
+        rect.center().x + (pan.x + world_center.x * zoom) / ppp,
+        // 渲染侧 Camera2D 屏幕 Y 翻转且 center = -pan/zoom：像素 =
+        // viewport/2 - world.y*zoom - pan.y，故 pan.y 取负（与 X 的 +pan.x 相反）。
+        rect.center().y + (-pan.y - world_center.y * zoom) / ppp,
     );
     (center, screen_size)
 }
@@ -1839,37 +1864,41 @@ fn ui_entity_2d_box(
         && let Ok(text) = UiText::from_component_str(raw)
     {
         let position = override_position.unwrap_or(text.position);
-        // 文本没有尺寸字段：先按运行时同款 resolve 得到缩放后的 glyph scale，
-        // 再度量文本像素尺寸，最后解析文本包围框原点。
+        // 文本没有尺寸字段：先按运行时同款 resolve 得到缩放后的 glyph scale
+        // （font_size 优先于 scale），度量网格尺寸与字形像素范围，再解析文本块
+        // 原点。锚点按网格 size（与运行时渲染一致）；包围框贴合字形 bbox ——
+        // 网格 size 含 ascender/descender 空白，字形在其中不垂直居中，直接用
+        // 网格会让框与文字错位。
+        let effective_scale = text.effective_scale();
         let (_, resolved_scale) = resolve_ui_text_origin(
             position,
             [0.0, 0.0],
-            text.scale,
+            effective_scale,
             text.space,
             text.anchor,
             viewport,
         );
-        let size = match runtime {
-            Some(runtime) => {
-                let [w, h] = runtime.measure_ui_text(&text.text, resolved_scale);
-                egui::vec2(w, h)
-            }
-            None => {
-                let [w, h] = fallback_measure_text(&text.text, resolved_scale);
-                egui::vec2(w, h)
-            }
+        let (text_size, glyph_bounds) = match runtime {
+            Some(runtime) => runtime.measure_ui_text(&text.text, resolved_scale),
+            None => fallback_measure_text(&text.text, resolved_scale),
         };
         let (origin, _) = resolve_ui_text_origin(
             position,
-            [size.x, size.y],
-            text.scale,
+            text_size,
+            effective_scale,
             text.space,
             text.anchor,
             viewport,
         );
+        // 字形相对网格原点的偏移 + 尺寸。
+        let glyph_origin = [origin[0] + glyph_bounds[0], origin[1] + glyph_bounds[1]];
+        let glyph_size = [
+            (glyph_bounds[2] - glyph_bounds[0]).max(0.0),
+            (glyph_bounds[3] - glyph_bounds[1]).max(0.0),
+        ];
         return Some((
-            center_of(origin, [size.x, size.y]),
-            egui::vec2(size.x * inv, size.y * inv),
+            center_of(glyph_origin, glyph_size),
+            egui::vec2(glyph_size[0] * inv, glyph_size[1] * inv),
             UiEntityInfo {
                 position,
                 space: text.space,
@@ -1880,7 +1909,8 @@ fn ui_entity_2d_box(
 }
 
 /// 无运行时时度量文本的兜底：用内置 5x7 位图指标（与运行时无字体回退一致）。
-fn fallback_measure_text(text: &str, scale: f32) -> [f32; 2] {
+/// 返回 `(size, pixel_bounds)`，语义同 `RuntimeScene::measure_ui_text`。
+fn fallback_measure_text(text: &str, scale: f32) -> ([f32; 2], [f32; 4]) {
     let atlas = TextAtlas::built_in();
     TextLayout::build_bitmap(
         text,
@@ -1891,8 +1921,8 @@ fn fallback_measure_text(text: &str, scale: f32) -> [f32; 2] {
         },
         &atlas,
     )
-    .map(|mesh| mesh.size)
-    .unwrap_or([0.0, 0.0])
+    .map(|mesh| (mesh.size, mesh.pixel_bounds()))
+    .unwrap_or(([0.0, 0.0], [0.0; 4]))
 }
 
 /// 把实体上的 UI 组件（Image/Button/Text）x/y 改写为给定位置（拖拽提交）。
@@ -1938,10 +1968,16 @@ struct TilemapPaintContext {
     transform: TransformFields,
 }
 
-fn screen_to_world_2d(rect: egui::Rect, pan: egui::Vec2, zoom: f32, pointer: egui::Pos2) -> Vec2 {
+fn screen_to_world_2d(
+    rect: egui::Rect,
+    pan: egui::Vec2,
+    zoom: f32,
+    ppp: f32,
+    pointer: egui::Pos2,
+) -> Vec2 {
     Vec2::new(
-        (pointer.x - rect.center().x - pan.x) / zoom,
-        -(pointer.y - rect.center().y - pan.y) / zoom,
+        ((pointer.x - rect.center().x) * ppp - pan.x) / zoom,
+        -((pointer.y - rect.center().y) * ppp + pan.y) / zoom,
     )
 }
 
@@ -1949,6 +1985,7 @@ fn tilemap_cell_from_pointer(
     rect: egui::Rect,
     pan: egui::Vec2,
     zoom: f32,
+    ppp: f32,
     pointer: egui::Pos2,
     transform: TransformFields,
     tilemap: &Tilemap,
@@ -1956,7 +1993,7 @@ fn tilemap_cell_from_pointer(
     if transform.rotation.abs() > 0.001 || zoom <= 0.0 {
         return None;
     }
-    let world = screen_to_world_2d(rect, pan, zoom, pointer);
+    let world = screen_to_world_2d(rect, pan, zoom, ppp, pointer);
     let cell_w = tilemap.tile_size.x * transform.scale_x.abs();
     let cell_h = tilemap.tile_size.y * transform.scale_y.abs();
     if cell_w <= 0.0 || cell_h <= 0.0 {
@@ -1976,19 +2013,26 @@ fn tilemap_cell_screen_rect(
     rect: egui::Rect,
     pan: egui::Vec2,
     zoom: f32,
+    ppp: f32,
     transform: TransformFields,
     tilemap: &Tilemap,
     x: usize,
     y: usize,
 ) -> egui::Rect {
-    let cell_w = tilemap.tile_size.x * transform.scale_x.abs() * zoom;
-    let cell_h = tilemap.tile_size.y * transform.scale_y.abs() * zoom;
+    let ppp = ppp.max(1.0e-3);
+    let cell_w = tilemap.tile_size.x * transform.scale_x.abs() * zoom / ppp;
+    let cell_h = tilemap.tile_size.y * transform.scale_y.abs() * zoom / ppp;
     let min_x = rect.center().x
-        + pan.x
-        + (transform.position_x + x as f32 * tilemap.tile_size.x * transform.scale_x.abs()) * zoom;
+        + (pan.x
+            + (transform.position_x + x as f32 * tilemap.tile_size.x * transform.scale_x.abs())
+                * zoom)
+            / ppp;
     let max_x = min_x + cell_w;
-    let max_y = rect.center().y + pan.y
-        - (transform.position_y + y as f32 * tilemap.tile_size.y * transform.scale_y.abs()) * zoom;
+    let max_y = rect.center().y
+        + (-pan.y
+            - (transform.position_y + y as f32 * tilemap.tile_size.y * transform.scale_y.abs())
+                * zoom)
+            / ppp;
     let min_y = max_y - cell_h;
     egui::Rect::from_min_max(egui::pos2(min_x, min_y), egui::pos2(max_x, max_y))
 }
@@ -2139,10 +2183,10 @@ mod tests {
             scale_y: 1.0,
         };
         let map = Tilemap::new(Vec2::new(32.0, 32.0), 4, 3).unwrap();
-        let cell_rect = tilemap_cell_screen_rect(rect, pan, zoom, transform, &map, 2, 1);
+        let cell_rect = tilemap_cell_screen_rect(rect, pan, zoom, 1.0, transform, &map, 2, 1);
         let pointer = cell_rect.center();
         assert_eq!(
-            tilemap_cell_from_pointer(rect, pan, zoom, pointer, transform, &map),
+            tilemap_cell_from_pointer(rect, pan, zoom, 1.0, pointer, transform, &map),
             Some((2, 1))
         );
     }
@@ -2156,6 +2200,7 @@ mod tests {
             tilemap_cell_from_pointer(
                 rect,
                 egui::Vec2::ZERO,
+                1.0,
                 1.0,
                 egui::pos2(-20.0, -20.0),
                 transform,
@@ -2171,6 +2216,7 @@ mod tests {
             tilemap_cell_from_pointer(
                 rect,
                 egui::Vec2::ZERO,
+                1.0,
                 1.0,
                 egui::pos2(200.0, 150.0),
                 rotated,
@@ -2195,6 +2241,7 @@ mod tests {
             pan,
             zoom,
             TransformFields::default(),
+            1.0,
         );
         assert_eq!(size, egui::vec2(112.0 * zoom, 44.0 * zoom));
         assert_eq!(center, rect.center());
@@ -2225,6 +2272,7 @@ mod tests {
             pan,
             zoom,
             transform,
+            1.0,
         );
         assert_eq!(size, egui::vec2(64.0 * 2.0 * zoom, 32.0 * 3.0 * zoom));
         assert_eq!(
@@ -2251,6 +2299,7 @@ mod tests {
             pan,
             zoom,
             TransformFields::default(),
+            1.0,
         );
         assert_eq!(
             center,
@@ -2284,9 +2333,79 @@ mod tests {
             pan,
             zoom,
             transform,
+            1.0,
         );
         assert_eq!(size, egui::vec2(32.0 * 4.0 * 2.0, 32.0 * 3.0));
-        assert_eq!(center, rect.center());
+        // Tilemap 以 Transform 位置为左上角：包围框中心 = position + 网格尺寸/2（含缩放），
+        // 而非 position 本身（旧断言 center==rect.center() 只在 position=0 且无缩放时成立）。
+        assert_eq!(
+            center,
+            egui::pos2(
+                rect.center().x + 32.0 * 4.0 * 2.0 * 0.5,
+                rect.center().y - 32.0 * 3.0 * 1.0 * 0.5,
+            )
+        );
+    }
+
+    #[test]
+    fn entity_2d_box_high_dpi_matches_render_mapping() {
+        // 高 DPI（ppp=2）下包围框必须与 Scene 视图实时渲染共用同一映射：面板逻辑
+        // 坐标 = rect.center() + (pan + world*zoom)/ppp。若漏除 ppp，包围框会相对
+        // 渲染内容偏移并放大 ppp 倍（渲染侧像素经纹理贴回面板时天然除以 ppp）。
+        let rect = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(400.0, 300.0));
+        let pan = egui::vec2(20.0, -10.0);
+        let zoom = 2.0;
+        let ppp = 2.0;
+        let mut scene = engine::core::scene::Scene::new("high-dpi");
+        let id = SceneEntityId(1);
+        scene.add_entity(id, "Sprite", None).unwrap();
+        let sprite = SpriteComponent {
+            texture: "assets/textures/player.png".to_owned(),
+            size: Vec2::new(64.0, 32.0),
+            pivot: Vec2::new(0.5, 0.5),
+            tint: [1.0; 4],
+            sorting: engine::core::sprite::SpriteSorting::default(),
+        };
+        scene
+            .entities
+            .get_mut(&id)
+            .unwrap()
+            .components
+            .insert("Sprite".to_owned(), sprite.to_component_str());
+        let transform = TransformFields {
+            position_x: 10.0,
+            position_y: 20.0,
+            ..Default::default()
+        };
+        let (center, size) = entity_2d_screen_box(
+            scene.entities.get(&id).unwrap(),
+            rect,
+            pan,
+            zoom,
+            transform,
+            ppp,
+        );
+        // (pan + world*zoom)/ppp，Y 方向 pan 取负（渲染屏幕翻转）：x=(20+10*2)/2=20，
+        // y=(-(-10)-20*2)/2=(10-40)/2=-15。
+        assert_eq!(
+            center,
+            egui::pos2(rect.center().x + 20.0, rect.center().y - 15.0)
+        );
+        assert_eq!(size, egui::vec2(64.0 * zoom / ppp, 32.0 * zoom / ppp));
+        // 反函数应精确还原世界坐标。
+        let back = screen_to_world_2d(rect, pan, zoom, ppp, center);
+        assert!((back.x - transform.position_x).abs() < 1.0e-4);
+        assert!((back.y - transform.position_y).abs() < 1.0e-4);
+        // 与运行时渲染路径交叉验证：Scene 视图实时渲染用 Camera2D(-pan/zoom, zoom)
+        // 输出像素，纹理贴回面板时除以 ppp；包围框必须落在同一像素位置。
+        let camera = Camera2D::new(Vec2::new(-pan.x / zoom, -pan.y / zoom), zoom).unwrap();
+        let viewport = engine::core::math2d::Viewport::new(rect.width() * ppp, rect.height() * ppp)
+            .unwrap();
+        let px = camera
+            .world_to_screen(Vec2::new(transform.position_x, transform.position_y), viewport)
+            .unwrap();
+        assert!((rect.left() + px.x / ppp - center.x).abs() < 1.0e-3);
+        assert!((rect.top() + px.y / ppp - center.y).abs() < 1.0e-3);
     }
 
     #[test]
@@ -2366,6 +2485,7 @@ mod tests {
             text: "Start Production".to_owned(),
             position: [0.0, 0.0],
             scale: 2.4,
+            font_size: None,
             color: [1.0; 3],
             space: UiLayoutSpace::Canvas,
             anchor: [0.5, 0.5],
@@ -2388,10 +2508,27 @@ mod tests {
             [1280.0, 720.0],
         );
         assert_eq!(resolved_scale, 2.4);
-        let [w, h] = fallback_measure_text("Start Production", resolved_scale);
-        assert_eq!(size, egui::vec2(w, h));
-        // anchor 0.5,0.5 且位置在原点 → 文本中心 = 面板中心。
-        assert_eq!(center, rect.center());
+        let (text_size, bounds) = fallback_measure_text("Start Production", resolved_scale);
+        let gw = (bounds[2] - bounds[0]).max(0.0);
+        let gh = (bounds[3] - bounds[1]).max(0.0);
+        // 包围框贴合字形 bbox：尺寸 = 字形像素范围（网格 size 含尾随 advance，
+        // 字形框略窄）。
+        assert_eq!(size, egui::vec2(gw, gh));
+        // anchor 0.5,0.5 且位置在原点：网格中心 = 面板中心；字形中心 = 网格中心
+        // + 字形在网格内的偏移。
+        let (origin, _) = resolve_ui_text_origin(
+            [0.0, 0.0],
+            text_size,
+            2.4,
+            UiLayoutSpace::Canvas,
+            [0.5, 0.5],
+            [1280.0, 720.0],
+        );
+        let expected = egui::pos2(
+            origin[0] + bounds[0] + gw * 0.5,
+            origin[1] + bounds[1] + gh * 0.5,
+        );
+        assert_eq!(center, expected);
         assert_eq!(info.position, [0.0, 0.0]);
     }
 
@@ -2488,9 +2625,36 @@ mod tests {
         let start = by_id(5);
         assert_eq!(start.center, egui::pos2(520.0, 400.0));
         assert_eq!(start.size, egui::vec2(240.0, 56.0));
-        // Title（Text，无尺寸字段，x=0,y=-70）：中心 = 面板中心 + (0,-70)。
+        // Title（Text，无尺寸字段，x=0,y=-70, scale=2.4, anchor 0.5,0.5）：包围框
+        // 贴合字形 bbox（去掉 ascender 空白与尾随 advance）。测试未启动场景运行时，
+        // collect 走 fallback 位图路径，这里用同款逻辑重算期望中心。
         let title = by_id(3);
-        assert_eq!(title.center, egui::pos2(640.0, 290.0));
+        let scene = app.document.current_scene.as_ref().unwrap();
+        let raw = &scene.scene.entities[&SceneEntityId(3)].components["Text"];
+        let text = UiText::from_component_str(raw).unwrap();
+        let viewport = [rect.width(), rect.height()];
+        let (_, resolved_scale) = resolve_ui_text_origin(
+            text.position,
+            [0.0, 0.0],
+            text.effective_scale(),
+            text.space,
+            text.anchor,
+            viewport,
+        );
+        let (text_size, bounds) = fallback_measure_text(&text.text, resolved_scale);
+        let (origin, _) = resolve_ui_text_origin(
+            text.position,
+            text_size,
+            text.effective_scale(),
+            text.space,
+            text.anchor,
+            viewport,
+        );
+        let expected_center = egui::pos2(
+            origin[0] + bounds[0] + (bounds[2] - bounds[0]) * 0.5,
+            origin[1] + bounds[1] + (bounds[3] - bounds[1]) * 0.5,
+        );
+        assert_eq!(title.center, expected_center);
         // MenuBackdrop 是 Sprite 世界实体，不走 UI 分支。
         let backdrop = by_id(1);
         assert!(backdrop.ui.is_none());

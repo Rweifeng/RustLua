@@ -51,13 +51,29 @@ impl UiLayoutSpace {
 
 pub const UI_REFERENCE_SIZE: [f32; 2] = [1280.0, 720.0];
 
+/// `scale = 1.0` 对应的像素字号（SDF 字体下 em 高度，见 [`crate::core::text::EM_PX`]）。
+/// `font_size` 字段按此换算为渲染 scale。
+pub const UI_TEXT_BASE_PX: f32 = crate::core::text::EM_PX;
+
+/// 场景 UI `Text` 组件渲染/测量用的最终 glyph scale：`font_size` 提供时优先
+/// （按 [`UI_TEXT_BASE_PX`] 从像素字号换算），否则退回 `scale` 字段。
+#[must_use]
+pub fn ui_text_effective_scale(scale: f32, font_size: Option<f32>) -> f32 {
+    font_size.map_or(scale, |px| px / UI_TEXT_BASE_PX)
+}
+
 /// Screen-space text label (`Text` component).
 #[derive(Clone, Debug, PartialEq)]
 pub struct UiText {
     pub text: String,
     /// Offset from the chosen anchor point.
     pub position: [f32; 2],
-    /// Screen-space glyph scale (1.0 = 5x7 px glyphs).
+    /// 像素字号（SDF em 高度，px）。提供时优先于 `scale`；
+    /// 换算见 [`ui_text_effective_scale`]。
+    pub font_size: Option<f32>,
+    /// 字形缩放系数（`1.0` = SDF 字体 em 12px / 位图 5x7 字形 7px）。
+    /// 无 `font_size` 时的降级因子；两种语义下 `scale=1.0` 的换算见
+    /// [`UI_TEXT_BASE_PX`]。
     pub scale: f32,
     /// RGB tint; default white.
     pub color: [f32; 3],
@@ -275,12 +291,14 @@ fn unescape_text(text: &str) -> String {
 }
 
 impl UiText {
-    /// Parses `text=<esc>;x=..;y=..;scale=..;color=r,g,b;space=..;anchor=x,y`
-    /// (`scale/color/space/anchor` optional).
+    /// Parses
+    /// `text=<esc>;x=..;y=..;scale=..;font_size=..;color=r,g,b;space=..;anchor=x,y`
+    /// (`scale/font_size/color/space/anchor` optional; `font_size` 优先于 `scale`).
     pub fn from_component_str(value: &str) -> Result<Self, UiComponentError> {
         let mut text = String::new();
         let mut position = [0.0; 2];
         let mut scale = 1.0;
+        let mut font_size: Option<f32> = None;
         let mut color = [1.0, 1.0, 1.0];
         let mut space = UiLayoutSpace::Screen;
         let mut anchor = [0.0, 0.0];
@@ -309,6 +327,13 @@ impl UiText {
                     }
                     seen[3] = true;
                 }
+                "font_size" => {
+                    let px = parse_number(raw)?;
+                    if px <= 0.0 {
+                        return Err(UiComponentError::InvalidValue(raw.to_owned()));
+                    }
+                    font_size = Some(px);
+                }
                 "color" => color = parse_rgb(raw)?,
                 "space" => space = parse_layout_space(raw)?,
                 "anchor" => anchor = parse_anchor(raw)?,
@@ -326,6 +351,7 @@ impl UiText {
             text,
             position,
             scale,
+            font_size,
             color,
             space,
             anchor,
@@ -335,8 +361,12 @@ impl UiText {
     /// Encodes back to the component string.
     #[must_use]
     pub fn to_component_str(&self) -> String {
+        let font_size = match self.font_size {
+            Some(px) => format!("font_size={:.2};", px),
+            None => String::new(),
+        };
         format!(
-            "text={};x={:.2};y={:.2};scale={:.2};color={:.3},{:.3},{:.3};space={};anchor={:.3},{:.3}",
+            "text={};x={:.2};y={:.2};scale={:.2};{font_size}color={:.3},{:.3},{:.3};space={};anchor={:.3},{:.3}",
             escape_text(&self.text),
             self.position[0],
             self.position[1],
@@ -348,6 +378,12 @@ impl UiText {
             self.anchor[0],
             self.anchor[1]
         )
+    }
+
+    /// 渲染/测量用的最终 glyph scale：`font_size`（像素字号）优先，否则 `scale`。
+    #[must_use]
+    pub fn effective_scale(&self) -> f32 {
+        ui_text_effective_scale(self.scale, self.font_size)
     }
 }
 
@@ -545,6 +581,7 @@ mod tests {
             text: "Score;1=0 \\ 高".to_owned(),
             position: [12.0, 30.0],
             scale: 2.0,
+            font_size: Some(24.0),
             color: [1.0, 0.5, 0.0],
             space: UiLayoutSpace::Canvas,
             anchor: [0.5, 0.0],
@@ -554,7 +591,26 @@ mod tests {
         assert_eq!(decoded.text, ui.text);
         assert_eq!(decoded.position, ui.position);
         assert_eq!(decoded.scale, ui.scale);
+        assert_eq!(decoded.font_size, ui.font_size);
         assert_eq!(decoded.color, ui.color);
+        // font_size 24px → scale 2.0（UI_TEXT_BASE_PX = 12）。
+        assert_eq!(decoded.effective_scale(), 2.0);
+    }
+
+    #[test]
+    fn text_font_size_takes_priority_over_scale() {
+        // font_size 提供时优先于 scale。
+        let ui = UiText::from_component_str("text=Hi;x=1;y=1;scale=3;font_size=12").expect("valid");
+        assert_eq!(ui.scale, 3.0);
+        assert_eq!(ui.font_size, Some(12.0));
+        assert_eq!(ui.effective_scale(), 1.0);
+        // 仅 scale（旧数据）：effective_scale = scale。
+        let legacy = UiText::from_component_str("text=Hi;x=1;y=1;scale=2").expect("valid");
+        assert_eq!(legacy.font_size, None);
+        assert_eq!(legacy.effective_scale(), 2.0);
+        // 无 font_size 时组件字符串不输出 font_size 字段。
+        assert!(!legacy.to_component_str().contains("font_size"));
+        assert!(ui.to_component_str().contains("font_size=12.00"));
     }
 
     #[test]
@@ -563,6 +619,7 @@ mod tests {
         assert_eq!(ui.text, "Hello");
         assert_eq!(ui.position, [10.0, 20.0]);
         assert_eq!(ui.scale, 1.0);
+        assert_eq!(ui.font_size, None);
         assert_eq!(ui.color, [1.0, 1.0, 1.0]);
     }
 
@@ -578,6 +635,10 @@ mod tests {
         );
         assert_eq!(
             UiText::from_component_str("text=Hi;x=1;y=1;scale=0").unwrap_err(),
+            UiComponentError::InvalidValue("0".to_owned())
+        );
+        assert_eq!(
+            UiText::from_component_str("text=Hi;x=1;y=1;font_size=0").unwrap_err(),
             UiComponentError::InvalidValue("0".to_owned())
         );
     }
@@ -625,6 +686,7 @@ mod tests {
             text: "L1\nL2=大;x".to_owned(),
             position: [1.0, 2.0],
             scale: 1.0,
+            font_size: None,
             color: [1.0, 1.0, 1.0],
             space: UiLayoutSpace::Screen,
             anchor: [0.0, 0.0],
