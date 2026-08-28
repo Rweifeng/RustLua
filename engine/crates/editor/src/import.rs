@@ -10,7 +10,7 @@ use editor::{
 };
 use engine::core::{
     import_cache::ImportCache,
-    importer::{ImportSummary, ImporterRegistry, run_import_batch},
+    importer::{ImportSummary, ImporterRegistry, run_import_batch_with_progress},
     resource_db::{AssetId, ResourceDatabase},
 };
 use std::{
@@ -105,6 +105,9 @@ impl EditorApp {
                     self.recovery = outcome.recovery;
                     self.recovery_scan = outcome.recovery_scan;
                     self.resources = outcome.resources;
+                    // 项目切换：清空旧项目缩略图缓存并让后台解码结果失效。
+                    self.thumbnails.clear();
+                    self.thumbnail_worker.clear();
                     self.history.clear();
                     self.autosave.reset();
                     self.lua_runtime = None;
@@ -118,6 +121,8 @@ impl EditorApp {
                     );
                     let root = self.project.root.clone();
                     self.record_recent_project(&root);
+                    // 导入成功：自动关闭进度面板（失败保留窗口查看原因）。
+                    self.progress.show = false;
                 }
             }
             ProgressKind::Publish => {}
@@ -156,19 +161,25 @@ fn spawn_import(path: PathBuf, tx: Sender<ProgressEvent>) {
             "打开项目 {} ...\n",
             display_path(&path)
         )));
+        let _ = tx.send(ProgressEvent::Progress(0.1));
         let result = (|| -> Result<ImportOutcome, String> {
             let project =
                 open_project(&path).map_err(|error| format_project_error(&path, error))?;
             if !project.root.join("project.toml").is_file() {
                 return Err("不是独立游戏项目：缺少 project.toml".to_owned());
             }
+            let _ = tx.send(ProgressEvent::Progress(0.3));
             let document = ProjectDocument::open(project.clone());
+            let _ = tx.send(ProgressEvent::Progress(0.55));
             let recovery = RecoveryManager::new(project.root.join(".temp"));
             let recovery_scan = recovery.scan().unwrap_or_default();
+            let _ = tx.send(ProgressEvent::Progress(0.7));
             let mut resources = ResourceBrowserState::new();
             if let Err(error) = resources.refresh(&project.root) {
                 return Err(format!("资源扫描失败：{error}"));
             }
+            // 资源扫描是最重的一步，完成后接近收尾。
+            let _ = tx.send(ProgressEvent::Progress(0.9));
             Ok(ImportOutcome {
                 project,
                 document,
@@ -219,8 +230,19 @@ fn spawn_resource_import(
                 .into_iter()
                 .map(|(id, relative)| (id, root.join(relative)))
                 .collect();
-            let summary =
-                run_import_batch(&root, &mut database, &mut cache, registry, &items, &cancel);
+            // 按实际导入数量回报进度，驱动确定进度条。
+            let tx_progress = tx.clone();
+            let summary = run_import_batch_with_progress(
+                &root,
+                &mut database,
+                &mut cache,
+                registry,
+                &items,
+                &cancel,
+                |done, total| {
+                    let _ = tx_progress.send(ProgressEvent::Progress(done as f32 / total as f32));
+                },
+            );
             // 导入可能修复/恢复了依赖（如失败的纹理重新就绪）：重新传播失效，
             // 把消费者从 Invalid/Stale 撤回到可消费状态，再写盘。
             database.propagate_invalidation();
@@ -274,6 +296,7 @@ mod import_tests {
         spawn_import(game, tx);
         let mut output = String::new();
         let mut success = false;
+        let mut max_progress: f32 = 0.0;
         while let Ok(event) = rx.recv() {
             match event {
                 ProgressEvent::Line(text) => output.push_str(&text),
@@ -282,9 +305,16 @@ mod import_tests {
                     assert!(result.is_some(), "导入应带回 ImportOutcome 结果");
                     break;
                 }
-                ProgressEvent::Progress(_) => {}
+                ProgressEvent::Progress(value) => {
+                    assert!((0.0..=1.0).contains(&value), "进度应在 0..=1：{value}");
+                    max_progress = max_progress.max(value);
+                }
             }
         }
         assert!(success, "导入应成功；输出：\n{output}");
+        assert!(
+            max_progress >= 0.9,
+            "导入应按步骤回报真实进度；max={max_progress}"
+        );
     }
 }

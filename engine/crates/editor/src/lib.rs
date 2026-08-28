@@ -148,10 +148,17 @@ pub fn open_project(path: impl AsRef<Path>) -> Result<ProjectInfo, ProjectError>
 }
 
 fn read_baseline_version(root: &Path) -> String {
-    let output = std::process::Command::new("git")
+    let mut command = std::process::Command::new("git");
+    command
         .args(["describe", "--tags", "--abbrev=0"])
-        .current_dir(root)
-        .output();
+        .current_dir(root);
+    #[cfg(windows)]
+    {
+        // 编辑器是 GUI 程序：git 是控制台程序，不设 CREATE_NO_WINDOW 会闪现终端窗口。
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let output = command.output();
     match output {
         Ok(output) if output.status.success() => {
             String::from_utf8_lossy(&output.stdout).trim().to_owned()

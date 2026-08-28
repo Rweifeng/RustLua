@@ -6,7 +6,7 @@ use editor::{ResourceBrowserState, ResourceEntry, ResourceKind};
 use eframe::egui;
 use engine::core::resource_db::ResourceState;
 use engine::core::texture::{TextureAsset, TextureColorSpace};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -33,29 +33,60 @@ impl EditorApp {
                 }
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     // 把资源按目录组织成树（可折叠）；过滤后无可见子项的目录自动隐藏。
-                    let visible: Vec<ResourceEntry> = self
-                        .resources
-                        .visible_entries()
-                        .into_iter()
-                        .cloned()
-                        .collect();
-                    let tree = build_resource_tree(&visible);
+                    // 树按 (filter, refresh_count) 缓存，命中时复用上次构建的树，
+                    // 避免大资源项目每帧 clone 全部条目重建。
                     let mut resource_to_open = None;
-                    self.draw_resource_tree(ui, &tree, "", context, &mut resource_to_open);
+                    let tree = self.resource_tree_for_draw();
+                    self.draw_resource_tree(ui, &tree, "", 1, context, &mut resource_to_open);
                     if let Some(path) = resource_to_open {
                         self.open_scene_resource(path);
                     }
+                    self.resource_tree_cache = Some(ResourceTreeCache {
+                        filter: self.resources_filter.clone(),
+                        refresh_count: self.resources.refresh_count(),
+                        tree,
+                    });
                 });
             });
         refresh_resources
     }
 
+    /// 取本次要绘制的资源树：命中缓存时直接移出缓存（绘制后写回），避免大
+    /// 资源项目每帧 clone 全部条目；过滤词或资源刷新计数变化时才重建。
+    fn resource_tree_for_draw(&mut self) -> ResourceTree {
+        let filter = self.resources_filter.clone();
+        let refresh_count = self.resources.refresh_count();
+        let cache_valid = self
+            .resource_tree_cache
+            .as_ref()
+            .map(|cached| cached.filter == filter && cached.refresh_count == refresh_count)
+            .unwrap_or(false);
+        if cache_valid {
+            return self
+                .resource_tree_cache
+                .take()
+                .expect("valid cache present")
+                .tree;
+        }
+        let visible: Vec<ResourceEntry> = self
+            .resources
+            .visible_entries()
+            .into_iter()
+            .cloned()
+            .collect();
+        build_resource_tree(&visible)
+    }
+
     /// 递归绘制资源目录树：子文件夹用 CollapsingHeader 折叠，叶子是资源条目。
+    /// `depth` 从 1 起（根目录的直接子文件夹）；只有顶层目录默认展开，深层目录
+    /// 默认折叠——大资源项目（如 game_farm 上千张图）全展开会每帧渲染数千行，
+    /// 拖慢整个编辑器。
     fn draw_resource_tree(
         &mut self,
         ui: &mut egui::Ui,
         node: &ResourceTree,
         prefix: &str,
+        depth: usize,
         context: &egui::Context,
         resource_to_open: &mut Option<PathBuf>,
     ) {
@@ -69,9 +100,16 @@ impl EditorApp {
             let id = ui.make_persistent_id(("resource_tree", child_prefix.as_str()));
             egui::CollapsingHeader::new(name)
                 .id_salt(id)
-                .default_open(true)
+                .default_open(depth <= 1)
                 .show(ui, |ui| {
-                    self.draw_resource_tree(ui, child, &child_prefix, context, resource_to_open);
+                    self.draw_resource_tree(
+                        ui,
+                        child,
+                        &child_prefix,
+                        depth + 1,
+                        context,
+                        resource_to_open,
+                    );
                 });
         }
         for entry in &node.files {
@@ -107,6 +145,9 @@ impl EditorApp {
                         id,
                         egui::vec2(20.0, 20.0),
                     )));
+                } else {
+                    // 缩略图后台解码中：用同宽占位，避免行宽随加载进度跳动。
+                    ui.add_space(20.0);
                 }
                 if let Some((icon, color)) = marker {
                     ui.colored_label(color, icon);
@@ -155,8 +196,8 @@ impl EditorApp {
         }
     }
 
-    /// 纹理缩略图（缓存；按项目相对路径）。大图降采样到 ≤64px 再上传，避免
-    /// 全分辨率加载拖慢资源面板与 GPU 上传。
+    /// 纹理缩略图（缓存 + 后台解码）。大图在后台线程降采样到 ≤64px，主线程
+    /// 只接收结果并上传 GPU；未就绪时返回 `None`（本帧不画图，用占位符）。
     fn texture_thumbnail(
         &mut self,
         relative: &str,
@@ -165,19 +206,29 @@ impl EditorApp {
         if let Some(handle) = self.thumbnails.get(relative) {
             return Some(handle.id());
         }
+        // 上传后台已解码的缩略图（每帧限量，避免一帧上传过多）。
+        for result in self.thumbnail_worker.drain(MAX_THUMBNAIL_UPLOADS_PER_FRAME) {
+            let Some(pixels) = result.pixels else {
+                if result.key == relative {
+                    return None; // 当前条目解码失败：不再重试（requested 已记录）。
+                }
+                continue;
+            };
+            let image =
+                egui::ColorImage::from_rgba_unmultiplied([result.width, result.height], &pixels);
+            let handle = ctx.load_texture("thumb", image, egui::TextureOptions::LINEAR);
+            let id = handle.id();
+            if result.key == relative {
+                self.thumbnails.insert(relative.to_owned(), handle);
+                return Some(id);
+            }
+            self.thumbnails.insert(result.key, handle);
+        }
+        // 未缓存且未在解码中：提交后台解码请求（每帧预算内），本帧不画图。
         let root = strip_verbatim_prefix(&self.project.root);
-        let asset = TextureAsset::load_png(root.join(relative), TextureColorSpace::Srgb).ok()?;
-        let (pixels, width, height) = downscale_rgba(
-            asset.pixels(),
-            asset.width() as usize,
-            asset.height() as usize,
-            64,
-        );
-        let image = egui::ColorImage::from_rgba_unmultiplied([width, height], &pixels);
-        let handle = ctx.load_texture("thumb", image, egui::TextureOptions::LINEAR);
-        let id = handle.id();
-        self.thumbnails.insert(relative.to_owned(), handle);
-        Some(id)
+        self.thumbnail_worker
+            .request(root.join(relative), relative.to_owned());
+        None
     }
 
     /// 扫描项目资源并同步到资源数据库。
@@ -256,9 +307,17 @@ fn status_marker(status: ResourceState) -> Option<(&'static str, egui::Color32)>
 
 /// 资源目录树节点：子文件夹（递归）+ 直接文件。
 #[derive(Default)]
-struct ResourceTree {
+pub(crate) struct ResourceTree {
     folders: BTreeMap<String, ResourceTree>,
     files: Vec<ResourceEntry>,
+}
+
+/// 资源目录树缓存：过滤词与资源刷新计数不变时复用上次构建的树，避免大资源
+/// 项目每帧 clone 全部条目重建（树在绘制时移出、绘制后写回）。
+pub(crate) struct ResourceTreeCache {
+    pub(crate) filter: String,
+    pub(crate) refresh_count: u64,
+    pub(crate) tree: ResourceTree,
 }
 
 /// 把资源条目列表组织成目录树（按相对路径逐段分组）。
@@ -316,6 +375,138 @@ fn downscale_rgba(
         }
     }
     (out, new_w, new_h)
+}
+
+/// 后台缩略图解码：主线程只提交请求/接收结果并上传 GPU，PNG 解码与降采样在
+/// 一条后台线程串行执行，避免大资源项目（如 game_farm 上千张图）在 UI 线程
+/// 同步解码导致打开/刷新卡死。
+pub(crate) struct ThumbnailWorker {
+    request_tx: std::sync::mpsc::Sender<ThumbnailRequest>,
+    result_rx: std::sync::mpsc::Receiver<ThumbnailResult>,
+    /// 已提交请求的 key（项目相对路径），避免重复提交。
+    requested: HashSet<String>,
+    /// 本帧已提交的请求数（每帧预算，防止一帧排空整个队列）。
+    submitted_this_frame: usize,
+    /// 项目代际：项目切换时自增，旧代际的请求结果直接丢弃，防错配。
+    generation: u64,
+}
+
+/// 一个缩略图解码请求（主线程 → 后台线程）。
+struct ThumbnailRequest {
+    /// 绝对源路径。
+    path: PathBuf,
+    /// 结果键（项目相对路径，正斜杠）。
+    key: String,
+    generation: u64,
+}
+
+/// 一个解码结果（后台线程 → 主线程）。`pixels: None` 表示解码失败。
+struct ThumbnailResult {
+    key: String,
+    pixels: Option<Vec<u8>>,
+    width: usize,
+    height: usize,
+    generation: u64,
+}
+
+/// 每帧最多新提交的缩略图解码请求数。
+const MAX_THUMBNAIL_SUBMITS_PER_FRAME: usize = 32;
+/// 每帧最多上传到 GPU 的解码结果数。
+const MAX_THUMBNAIL_UPLOADS_PER_FRAME: usize = 64;
+
+impl ThumbnailWorker {
+    pub(crate) fn new() -> Self {
+        let (request_tx, request_rx) = std::sync::mpsc::channel::<ThumbnailRequest>();
+        let (result_tx, result_rx) = std::sync::mpsc::channel::<ThumbnailResult>();
+        std::thread::spawn(move || {
+            // 主线程退出（request_tx 被 Drop）后 recv 返回 Err，线程自然结束。
+            while let Ok(request) = request_rx.recv() {
+                let result = decode_thumbnail(&request);
+                if result_tx.send(result).is_err() {
+                    break;
+                }
+            }
+        });
+        Self {
+            request_tx,
+            result_rx,
+            requested: HashSet::new(),
+            submitted_this_frame: 0,
+            generation: 0,
+        }
+    }
+
+    /// 每帧开头调用：重置提交预算。
+    pub(crate) fn begin_frame(&mut self) {
+        self.submitted_this_frame = 0;
+    }
+
+    /// 提交一个解码请求（同 key 只提交一次；每帧受预算限制）。
+    fn request(&mut self, path: PathBuf, key: String) {
+        if self.requested.contains(&key) {
+            return;
+        }
+        if self.submitted_this_frame >= MAX_THUMBNAIL_SUBMITS_PER_FRAME {
+            return;
+        }
+        self.requested.insert(key.clone());
+        self.submitted_this_frame += 1;
+        let _ = self.request_tx.send(ThumbnailRequest {
+            path,
+            key,
+            generation: self.generation,
+        });
+    }
+
+    /// 取出已完成的解码结果（非阻塞，最多 `max` 条；旧代际直接丢弃）。
+    fn drain(&mut self, max: usize) -> Vec<ThumbnailResult> {
+        let mut out = Vec::new();
+        for _ in 0..max {
+            match self.result_rx.try_recv() {
+                Ok(result) if result.generation == self.generation => out.push(result),
+                Ok(_) => {} // 旧代际结果：丢弃。
+                Err(_) => break,
+            }
+        }
+        out
+    }
+
+    /// 项目切换：自增代际并清空已请求集合，旧项目的结果与请求全部失效。
+    pub(crate) fn clear(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+        self.requested.clear();
+        self.submitted_this_frame = 0;
+    }
+}
+
+/// 后台线程的解码实现：读取 + PNG 解码 + 降采样到 ≤64px。
+fn decode_thumbnail(request: &ThumbnailRequest) -> ThumbnailResult {
+    let generation = request.generation;
+    let key = request.key.clone();
+    match TextureAsset::load_png(&request.path, TextureColorSpace::Srgb) {
+        Ok(asset) => {
+            let (pixels, width, height) = downscale_rgba(
+                asset.pixels(),
+                asset.width() as usize,
+                asset.height() as usize,
+                64,
+            );
+            ThumbnailResult {
+                key,
+                pixels: Some(pixels),
+                width,
+                height,
+                generation,
+            }
+        }
+        Err(_) => ThumbnailResult {
+            key,
+            pixels: None,
+            width: 0,
+            height: 0,
+            generation,
+        },
+    }
 }
 
 #[cfg(test)]
@@ -467,5 +658,38 @@ mod tests {
         assert_eq!(app.delete_target, crate::DeleteTarget::None);
         assert!(app.status.contains("Entity deleted"));
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn thumbnail_worker_decodes_png_and_reports_failure() {
+        let mut worker = super::ThumbnailWorker::new();
+        let png = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../game_test/assets/textures/red-1x1.png");
+        let good_key = "assets/textures/red-1x1.png".to_owned();
+        worker.request(png.clone(), good_key.clone());
+        // 不存在的文件：后台应回传一个 pixels=None 的结果（而非卡住或丢失）。
+        let bad_key = "assets/textures/ghost.png".to_owned();
+        worker.request(png.join("ghost.png"), bad_key.clone());
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut good = None;
+        let mut bad = None;
+        while (good.is_none() || bad.is_none()) && std::time::Instant::now() < deadline {
+            for result in worker.drain(8) {
+                if result.key == good_key && good.is_none() {
+                    good = Some(result);
+                } else if result.key == bad_key && bad.is_none() {
+                    bad = Some(result);
+                }
+            }
+            if good.is_none() || bad.is_none() {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
+        let good = good.expect("red-1x1.png 应解码成功");
+        assert!(good.pixels.is_some());
+        assert_eq!((good.width, good.height), (1, 1));
+        let bad = bad.expect("缺失文件应回传解码失败结果");
+        assert!(bad.pixels.is_none());
     }
 }

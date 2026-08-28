@@ -137,8 +137,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     // 实时日志缓冲：控制台面板读取，游戏/引擎日志自动上屏。
     let log_sink = LogSink::new(500);
     let _ = engine::core::logging::init_logging_with_sink(&log_path, None, Some(log_sink.clone()));
+    // 编辑器主窗口：初始按常规编辑尺寸打开（默认 800x600 过小）。
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
+        viewport: eframe::egui::ViewportBuilder::default().with_inner_size([1280.0, 720.0]),
         ..Default::default()
     };
     eframe::run_native(
@@ -162,7 +164,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             );
             app.set_render_state(creation_context.wgpu_render_state.clone());
             app.project_loaded = arguments.project.is_some();
-            app.refresh_resources();
+            // 资源扫描延后到首帧 update：窗口先绘制，避免启动阻塞。
+            app.refresh_pending = true;
             // 启动即把当前项目记入「最近项目」。
             if app.project_loaded {
                 let root = app.project.root.clone();
@@ -278,6 +281,12 @@ struct EditorApp {
     scene_2d_tex: Option<egui::TextureHandle>,
     /// 资源浏览器纹理缩略图缓存（按资源相对路径）。
     thumbnails: std::collections::HashMap<String, egui::TextureHandle>,
+    /// 后台缩略图解码 worker：避免大资源项目在 UI 线程同步解码导致打开卡死。
+    thumbnail_worker: crate::panels::resource_browser::ThumbnailWorker,
+    /// 资源目录树缓存（按 filter + refresh_count 复用），避免每帧 clone 全部条目重建。
+    resource_tree_cache: Option<crate::panels::resource_browser::ResourceTreeCache>,
+    /// 首次 update 时执行一次资源刷新：启动先绘制窗口，扫描不阻塞首帧。
+    refresh_pending: bool,
     /// 2D Scene 视图渲染缓存（变更检测，避免内容未变化时重复渲染）。
     scene_view_cache_2d: SceneViewCache2d,
     /// 3D Scene 视图渲染缓存（同上）。
@@ -357,10 +366,10 @@ enum WorkspaceTab {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum ConsoleLogLevelFilter {
-    #[default]
     All,
     Info,
     Warning,
+    #[default]
     Error,
 }
 
@@ -543,7 +552,7 @@ impl EditorApp {
             console_input: String::new(),
             console_output: Vec::new(),
             console_filter: String::new(),
-            console_log_level_filter: ConsoleLogLevelFilter::All,
+            console_log_level_filter: ConsoleLogLevelFilter::Error,
             inspector: InspectorState::new(),
             transform: TransformFields::default(),
             transform3d: Transform3DFields::default(),
@@ -622,6 +631,9 @@ impl EditorApp {
             scene_runtime: None,
             scene_2d_tex: None,
             thumbnails: std::collections::HashMap::new(),
+            thumbnail_worker: crate::panels::resource_browser::ThumbnailWorker::new(),
+            resource_tree_cache: None,
+            refresh_pending: false,
             scene_view_cache_2d: SceneViewCache2d::default(),
             scene_view_cache_3d: SceneViewCache3d::default(),
             scene_runtime_revision: None,
@@ -835,6 +847,13 @@ impl EditorApp {
 
 impl eframe::App for EditorApp {
     fn update(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
+        // 重置缩略图 worker 每帧提交预算。
+        self.thumbnail_worker.begin_frame();
+        // 启动时把资源扫描延后到首帧：窗口先绘制，扫描不阻塞首帧展示。
+        if self.refresh_pending {
+            self.refresh_pending = false;
+            self.refresh_resources();
+        }
         if self.scene_view_repaint_pending {
             context.request_repaint();
             self.scene_view_repaint_pending = false;

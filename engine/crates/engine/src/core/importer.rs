@@ -313,19 +313,41 @@ pub struct ImportSummary {
 /// `mark_failed` and the batch continues. `cancel` is checked between items so
 /// a caller can stop the batch cleanly. The database is saved once at the end.
 pub fn run_import_batch(
-    _project: &Path,
+    project: &Path,
     db: &mut ResourceDatabase,
     cache: &mut ImportCache,
     registry: &ImporterRegistry,
     items: &[(AssetId, PathBuf)],
     cancel: &AtomicBool,
 ) -> ImportSummary {
+    run_import_batch_with_progress(project, db, cache, registry, items, cancel, |_, _| {})
+}
+
+/// Runs a batch of imports with a per-item progress callback.
+///
+/// Same behavior as [`run_import_batch`], but `on_progress(processed, total)`
+/// is called after each item so a caller can drive a determinate progress bar
+/// from real work. `processed` is the number of items already examined
+/// (including the current one); `total` is the batch size.
+pub fn run_import_batch_with_progress<F>(
+    _project: &Path,
+    db: &mut ResourceDatabase,
+    cache: &mut ImportCache,
+    registry: &ImporterRegistry,
+    items: &[(AssetId, PathBuf)],
+    cancel: &AtomicBool,
+    mut on_progress: F,
+) -> ImportSummary
+where
+    F: FnMut(usize, usize),
+{
     let started = Instant::now();
     let mut summary = ImportSummary {
         total: items.len(),
         ..Default::default()
     };
-    for (id, source) in items {
+    let total = items.len();
+    for (index, (id, source)) in items.iter().enumerate() {
         if cancel.load(Ordering::Relaxed) {
             break;
         }
@@ -380,6 +402,7 @@ pub fn run_import_batch(
                 }
             }
         }
+        on_progress(index + 1, total);
     }
     summary.elapsed_ms = started.elapsed().as_millis() as u64;
     if let Err(error) = db.save() {
