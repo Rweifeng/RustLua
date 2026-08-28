@@ -1,7 +1,7 @@
 //! Grid-based tile maps: visual cells, a separate collision layer, and a
 //! component-string format that round-trips through scenes.
 
-use std::{error::Error, fmt};
+use std::{collections::BTreeMap, error::Error, fmt};
 
 use crate::core::transform::Vec2;
 
@@ -23,6 +23,9 @@ pub const DEFAULT_TILESET: &str = "assets/tileset.png";
 /// cell (`0` = empty, `1..=6` = tileset column), and `solid` holds the
 /// separate collision layer (`true` = blocks movement). The whole map samples
 /// `texture`; each tile's UV selects its tileset column.
+///
+/// Per-cell string metadata (`meta`) is runtime-only in Phase A and is not
+/// serialized into the scene component string.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Tilemap {
     pub tile_size: Vec2,
@@ -31,6 +34,8 @@ pub struct Tilemap {
     pub tiles: Vec<u8>,
     pub solid: Vec<bool>,
     pub texture: String,
+    /// Per-cell string key/value bags (e.g. `tillable`, `tilled`, `crop`).
+    pub meta: BTreeMap<(usize, usize), BTreeMap<String, String>>,
 }
 
 /// Errors produced while building or parsing a tile map.
@@ -77,6 +82,7 @@ impl Tilemap {
             tiles: vec![0; count],
             solid: vec![false; count],
             texture: DEFAULT_TILESET.to_owned(),
+            meta: BTreeMap::new(),
         })
     }
 
@@ -120,6 +126,42 @@ impl Tilemap {
     pub fn set_solid(&mut self, x: usize, y: usize, solid: bool) -> Result<(), TilemapError> {
         let i = self.index(x, y)?;
         self.solid[i] = solid;
+        Ok(())
+    }
+
+    /// Returns a metadata value for a cell, or `None` when missing / OOB.
+    pub fn get_meta(&self, x: usize, y: usize, key: &str) -> Option<&str> {
+        self.index(x, y).ok()?;
+        self.meta
+            .get(&(x, y))
+            .and_then(|bag| bag.get(key))
+            .map(String::as_str)
+    }
+
+    /// Sets a metadata value for a cell. Empty `value` removes the key.
+    pub fn set_meta(
+        &mut self,
+        x: usize,
+        y: usize,
+        key: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Result<(), TilemapError> {
+        let _ = self.index(x, y)?;
+        let key = key.into();
+        let value = value.into();
+        if key.is_empty() {
+            return Err(TilemapError::Parse("meta key must not be empty".to_owned()));
+        }
+        if value.is_empty() {
+            if let Some(bag) = self.meta.get_mut(&(x, y)) {
+                bag.remove(&key);
+                if bag.is_empty() {
+                    self.meta.remove(&(x, y));
+                }
+            }
+            return Ok(());
+        }
+        self.meta.entry((x, y)).or_default().insert(key, value);
         Ok(())
     }
 
@@ -337,5 +379,21 @@ mod tests {
             Tilemap::from_component_str("tile_size=32x32;width=2;height=2;tiles=0;solid=0000")
                 .is_err()
         );
+    }
+
+    #[test]
+    fn meta_round_trips_per_cell_and_clears_empty() {
+        let mut map = sample();
+        map.set_meta(1, 1, "tillable", "true").unwrap();
+        map.set_meta(1, 1, "crop", "tomato").unwrap();
+        assert_eq!(map.get_meta(1, 1, "tillable"), Some("true"));
+        assert_eq!(map.get_meta(1, 1, "crop"), Some("tomato"));
+        assert_eq!(map.get_meta(0, 0, "tillable"), None);
+        map.set_meta(1, 1, "crop", "").unwrap();
+        assert_eq!(map.get_meta(1, 1, "crop"), None);
+        assert_eq!(map.get_meta(1, 1, "tillable"), Some("true"));
+        map.set_meta(1, 1, "tillable", "").unwrap();
+        assert!(map.meta.is_empty());
+        assert!(map.set_meta(9, 9, "x", "y").is_err());
     }
 }
