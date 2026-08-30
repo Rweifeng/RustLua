@@ -8,7 +8,7 @@ use engine::core::{
     scene::{SceneEntity, SceneEntityId},
     sprite::SpriteComponent,
     transform3d::Transform3D,
-    ui::{UiButton, UiImage, UiText},
+    ui::{UiImage, UiText},
 };
 use std::{error::Error, fmt, path::Path};
 
@@ -205,6 +205,11 @@ pub struct ImageFields {
     pub color_r: f32,
     pub color_g: f32,
     pub color_b: f32,
+    /// 九宫格边框（纹理像素），0 = 不启用。
+    pub nine_slice_l: f32,
+    pub nine_slice_r: f32,
+    pub nine_slice_t: f32,
+    pub nine_slice_b: f32,
 }
 
 impl Default for ImageFields {
@@ -221,46 +226,10 @@ impl Default for ImageFields {
             color_r: 1.0,
             color_g: 1.0,
             color_b: 1.0,
-        }
-    }
-}
-
-/// Inspector 可编辑的 Button（屏幕空间 UI 按钮）字段。
-#[derive(Clone, Debug, PartialEq)]
-pub struct ButtonFields {
-    pub label: String,
-    pub space: String,
-    pub anchor_x: f32,
-    pub anchor_y: f32,
-    pub x: f32,
-    pub y: f32,
-    pub width: f32,
-    pub height: f32,
-    pub bg_r: f32,
-    pub bg_g: f32,
-    pub bg_b: f32,
-    pub text_r: f32,
-    pub text_g: f32,
-    pub text_b: f32,
-}
-
-impl Default for ButtonFields {
-    fn default() -> Self {
-        Self {
-            label: String::new(),
-            space: "canvas".to_owned(),
-            anchor_x: 0.0,
-            anchor_y: 0.0,
-            x: 10.0,
-            y: 10.0,
-            width: 100.0,
-            height: 32.0,
-            bg_r: 0.2,
-            bg_g: 0.45,
-            bg_b: 0.8,
-            text_r: 1.0,
-            text_g: 1.0,
-            text_b: 1.0,
+            nine_slice_l: 0.0,
+            nine_slice_r: 0.0,
+            nine_slice_t: 0.0,
+            nine_slice_b: 0.0,
         }
     }
 }
@@ -282,7 +251,6 @@ pub struct InspectorSnapshot {
     /// UI 组件（屏幕空间）。
     pub text: Option<TextFields>,
     pub image: Option<ImageFields>,
-    pub button: Option<ButtonFields>,
     /// 运行时切场景不销毁。
     pub persistent: bool,
 }
@@ -565,31 +533,6 @@ impl InspectorState {
         Ok(())
     }
 
-    pub fn set_button(
-        &self,
-        document: &mut SceneDocument,
-        button: ButtonFields,
-    ) -> Result<(), InspectorError> {
-        validate_button(&button)?;
-        let id = self.selected.ok_or(InspectorError::NothingSelected)?;
-        let entity = entity_mut(document, id)?;
-        let value = encode_button(&button)?;
-        if entity.components.get("Button") != Some(&value) {
-            entity.components.insert("Button".into(), value);
-            document.mark_dirty();
-        }
-        Ok(())
-    }
-
-    pub fn clear_button(&self, document: &mut SceneDocument) -> Result<(), InspectorError> {
-        let id = self.selected.ok_or(InspectorError::NothingSelected)?;
-        let entity = entity_mut(document, id)?;
-        if entity.components.remove("Button").is_some() {
-            document.mark_dirty();
-        }
-        Ok(())
-    }
-
     /// 设置/清除「运行时不跟随场景切换销毁」标志（实体 metadata）。
     pub fn set_persistent(
         &self,
@@ -668,10 +611,6 @@ fn snapshot_for(entity: &SceneEntity) -> Result<InspectorSnapshot, InspectorErro
             .components
             .get("Image")
             .map_or(Ok(None), |value| decode_image(value).map(Some))?,
-        button: entity
-            .components
-            .get("Button")
-            .map_or(Ok(None), |value| decode_button(value).map(Some))?,
         persistent: entity
             .metadata
             .get("persistent")
@@ -895,6 +834,22 @@ fn validate_text(fields: &TextFields) -> Result<(), InspectorError> {
 }
 
 fn encode_image(fields: &ImageFields) -> Result<String, InspectorError> {
+    // 全部为 0 → None（不编码字段），保证未启用九宫格的 Image 往返字节一致，
+    // 编辑器 set_image 幂等守卫不误标脏。
+    let nine_slice = if fields.nine_slice_l > 0.0
+        || fields.nine_slice_r > 0.0
+        || fields.nine_slice_t > 0.0
+        || fields.nine_slice_b > 0.0
+    {
+        Some([
+            fields.nine_slice_l,
+            fields.nine_slice_r,
+            fields.nine_slice_t,
+            fields.nine_slice_b,
+        ])
+    } else {
+        None
+    };
     Ok(UiImage {
         texture: fields.texture.clone(),
         position: [fields.x, fields.y],
@@ -902,6 +857,7 @@ fn encode_image(fields: &ImageFields) -> Result<String, InspectorError> {
         color: [fields.color_r, fields.color_g, fields.color_b],
         space: parse_ui_layout_space(&fields.space).map_err(InspectorError::InvalidImage)?,
         anchor: [fields.anchor_x, fields.anchor_y],
+        nine_slice,
     }
     .to_component_str())
 }
@@ -909,6 +865,10 @@ fn encode_image(fields: &ImageFields) -> Result<String, InspectorError> {
 fn decode_image(value: &str) -> Result<ImageFields, InspectorError> {
     let ui = UiImage::from_component_str(value)
         .map_err(|error| InspectorError::InvalidImage(error.to_string()))?;
+    let (l, r, t, b) = ui
+        .nine_slice
+        .map(|s| (s[0], s[1], s[2], s[3]))
+        .unwrap_or((0.0, 0.0, 0.0, 0.0));
     Ok(ImageFields {
         texture: ui.texture,
         space: ui.space.as_str().to_owned(),
@@ -921,55 +881,30 @@ fn decode_image(value: &str) -> Result<ImageFields, InspectorError> {
         color_r: ui.color[0],
         color_g: ui.color[1],
         color_b: ui.color[2],
+        nine_slice_l: l,
+        nine_slice_r: r,
+        nine_slice_t: t,
+        nine_slice_b: b,
     })
 }
 
 fn validate_image(fields: &ImageFields) -> Result<(), InspectorError> {
+    for v in [
+        fields.nine_slice_l,
+        fields.nine_slice_r,
+        fields.nine_slice_t,
+        fields.nine_slice_b,
+    ] {
+        if !v.is_finite() || v < 0.0 {
+            return Err(InspectorError::InvalidImage(
+                "nine_slice 边框必须为非负有限数".to_owned(),
+            ));
+        }
+    }
     let value = encode_image(fields)?;
     UiImage::from_component_str(&value)
         .map(|_| ())
         .map_err(|error| InspectorError::InvalidImage(error.to_string()))
-}
-
-fn encode_button(fields: &ButtonFields) -> Result<String, InspectorError> {
-    Ok(UiButton {
-        label: fields.label.clone(),
-        position: [fields.x, fields.y],
-        size: [fields.width, fields.height],
-        background: [fields.bg_r, fields.bg_g, fields.bg_b],
-        text_color: [fields.text_r, fields.text_g, fields.text_b],
-        space: parse_ui_layout_space(&fields.space).map_err(InspectorError::InvalidButton)?,
-        anchor: [fields.anchor_x, fields.anchor_y],
-    }
-    .to_component_str())
-}
-
-fn decode_button(value: &str) -> Result<ButtonFields, InspectorError> {
-    let ui = UiButton::from_component_str(value)
-        .map_err(|error| InspectorError::InvalidButton(error.to_string()))?;
-    Ok(ButtonFields {
-        label: ui.label,
-        space: ui.space.as_str().to_owned(),
-        anchor_x: ui.anchor[0],
-        anchor_y: ui.anchor[1],
-        x: ui.position[0],
-        y: ui.position[1],
-        width: ui.size[0],
-        height: ui.size[1],
-        bg_r: ui.background[0],
-        bg_g: ui.background[1],
-        bg_b: ui.background[2],
-        text_r: ui.text_color[0],
-        text_g: ui.text_color[1],
-        text_b: ui.text_color[2],
-    })
-}
-
-fn validate_button(fields: &ButtonFields) -> Result<(), InspectorError> {
-    let value = encode_button(fields)?;
-    UiButton::from_component_str(&value)
-        .map(|_| ())
-        .map_err(|error| InspectorError::InvalidButton(error.to_string()))
 }
 
 fn parse_ui_layout_space(value: &str) -> Result<engine::core::ui::UiLayoutSpace, String> {
@@ -1635,5 +1570,102 @@ mod tests {
         assert_eq!(decoded.shape, "capsule");
         assert_eq!(decoded.half_height, 1.0);
         assert_eq!(decoded.radius, 0.5);
+    }
+    #[test]
+    fn image_nine_slice_roundtrip_via_snapshot() {
+        let (mut document, inspector, _) = setup();
+        inspector
+            .set_image(
+                &mut document,
+                ImageFields {
+                    texture: "assets/textures/ui/panel.png".to_owned(),
+                    width: 192.0,
+                    height: 64.0,
+                    nine_slice_l: 8.0,
+                    nine_slice_r: 8.0,
+                    nine_slice_t: 16.0,
+                    nine_slice_b: 16.0,
+                    ..ImageFields::default()
+                },
+            )
+            .unwrap();
+        assert!(document.is_dirty());
+        let stored = document.scene.entities[&SceneEntityId(1)]
+            .components
+            .get("Image")
+            .expect("Image written");
+        assert!(stored.contains("nine_slice=8.00,8.00,16.00,16.00"), "{stored}");
+        let snapshot = inspector.snapshot(&document).unwrap();
+        let image = snapshot.image.expect("image snapshot");
+        assert_eq!(image.nine_slice_l, 8.0);
+        assert_eq!(image.nine_slice_r, 8.0);
+        assert_eq!(image.nine_slice_t, 16.0);
+        assert_eq!(image.nine_slice_b, 16.0);
+    }
+    #[test]
+    fn image_nine_slice_absent_for_untouched_image() {
+        let (mut document, inspector, _) = setup();
+        inspector
+            .set_image(
+                &mut document,
+                ImageFields {
+                    texture: "assets/textures/ui/panel.png".to_owned(),
+                    ..ImageFields::default()
+                },
+            )
+            .unwrap();
+        let stored = document.scene.entities[&SceneEntityId(1)]
+            .components
+            .get("Image")
+            .expect("Image written");
+        assert!(!stored.contains("nine_slice"), "{stored}");
+    }
+    #[test]
+    fn image_rejects_negative_nine_slice() {
+        let (mut document, inspector, _) = setup();
+        let value = ImageFields {
+            texture: "assets/textures/ui/panel.png".to_owned(),
+            nine_slice_l: -1.0,
+            ..ImageFields::default()
+        };
+        assert!(matches!(
+            inspector.set_image(&mut document, value),
+            Err(InspectorError::InvalidImage(_))
+        ));
+        assert!(
+            !document.scene.entities[&SceneEntityId(1)]
+                .components
+                .contains_key("Image")
+        );
+    }
+    #[test]
+    fn image_nine_slice_persists_through_scene_text() {
+        let (mut document, inspector, _) = setup();
+        inspector
+            .set_image(
+                &mut document,
+                ImageFields {
+                    texture: "assets/textures/ui/panel.png".to_owned(),
+                    width: 192.0,
+                    height: 64.0,
+                    nine_slice_l: 8.0,
+                    nine_slice_r: 8.0,
+                    nine_slice_t: 16.0,
+                    nine_slice_b: 16.0,
+                    ..ImageFields::default()
+                },
+            )
+            .unwrap();
+        let text = document.scene.to_text();
+        let loaded = engine::core::scene::Scene::from_text(&text).unwrap();
+        let stored = loaded.entities[&SceneEntityId(1)]
+            .components
+            .get("Image")
+            .expect("Image persisted");
+        let decoded = decode_image(stored).unwrap();
+        assert_eq!(decoded.nine_slice_l, 8.0);
+        assert_eq!(decoded.nine_slice_r, 8.0);
+        assert_eq!(decoded.nine_slice_t, 16.0);
+        assert_eq!(decoded.nine_slice_b, 16.0);
     }
 }

@@ -601,7 +601,12 @@ mod tests {
         let (out, width, height) = downscale_rgba(&pixels, 512, 256, 64);
         assert_eq!((width, height), (64, 32), "长边缩到 64，保持比例");
         assert_eq!(out.len(), width * height * 4);
-        assert!(out.chunks_exact(4).all(|px| px == [128, 128, 128, 128]));
+        assert!(
+            out.as_chunks::<4>()
+                .0
+                .iter()
+                .all(|px| *px == [128, 128, 128, 128])
+        );
     }
 
     #[test]
@@ -663,8 +668,7 @@ mod tests {
     #[test]
     fn thumbnail_worker_decodes_png_and_reports_failure() {
         let mut worker = super::ThumbnailWorker::new();
-        let png = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../game_test/assets/textures/red-1x1.png");
+        let png = engine::core::games_dir().join("game_test/assets/textures/red-1x1.png");
         let good_key = "assets/textures/red-1x1.png".to_owned();
         worker.request(png.clone(), good_key.clone());
         // 不存在的文件：后台应回传一个 pixels=None 的结果（而非卡住或丢失）。

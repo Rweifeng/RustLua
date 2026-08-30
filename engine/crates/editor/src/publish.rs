@@ -56,7 +56,7 @@ impl EditorApp {
         }
         let Some(found) = find_publish_script(&self.project.root) else {
             self.progress.output = format!(
-                "未找到发布脚本（向上查找 scripts/package.ps1）：{}",
+                "未找到发布脚本 scripts/package.ps1（项目：{}）",
                 display_path(&self.project.root)
             );
             self.progress.done = true;
@@ -92,9 +92,23 @@ impl EditorApp {
     }
 }
 
-/// 从项目根向上查找 `scripts/package.ps1`（编辑器根可能是游戏目录或工作区根）。
+/// 定位发布脚本 `scripts/package.ps1`。
+///
+/// 发布脚本属于引擎工作区（`C:\GitHub\p2\scripts\package.ps1`），而游戏工程已迁出仓库
+/// （如 `C:\GitHub\games\ui_demo`），从项目根向上查找永远找不到。因此优先从编辑器自身
+/// 定位工作区：
+/// 1. 编译期 `CARGO_MANIFEST_DIR`（编辑器 crate 上溯 3 级 = 工作区根，见 `workspace_root`）；
+/// 2. 运行时 `current_exe()` 所在目录及其祖先（编辑器被复制/安装到别处也有效）；
+/// 3. 回退从项目根向上查找（兼容项目仍位于工作区内的旧布局）。
 fn find_publish_script(root: &Path) -> Option<PathBuf> {
-    root.ancestors()
+    let mut dirs = vec![crate::workspace_root()];
+    if let Ok(exe) = env::current_exe()
+        && let Some(parent) = exe.parent()
+    {
+        dirs.extend(parent.ancestors().map(Path::to_path_buf));
+    }
+    dirs.extend(root.ancestors().map(Path::to_path_buf));
+    dirs.into_iter()
         .map(|dir| dir.join("scripts").join("package.ps1"))
         .find(|path| path.is_file())
 }
@@ -339,7 +353,7 @@ mod publish_tests {
             eprintln!("未找到发布脚本，跳过");
             return;
         };
-        let project_root = workspace.join("game_test");
+        let project_root = engine::core::games_dir().join("game_test");
         let (tx, rx) = channel();
         spawn_publish(
             script,
@@ -364,6 +378,26 @@ mod publish_tests {
         }
         eprintln!("=== 发布输出开始 ===\n{output}=== 发布输出结束 === success={success}");
         assert!(success, "发布应成功；输出：\n{output}");
+    }
+
+    #[test]
+    fn find_publish_script_finds_workspace_script_for_outside_project() {
+        // 项目在工作区之外（如 C:\GitHub\games\ui_demo）：从项目根向上永远找不到脚本，
+        // 应从编辑器所在工作区根解析到 scripts/package.ps1。
+        let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .and_then(Path::parent)
+            .map(Path::to_path_buf)
+            .unwrap();
+        let outside_project = workspace
+            .parent()
+            .map(|github| github.join("games").join("ui_demo"))
+            .unwrap_or_else(|| PathBuf::from(r"C:\GitHub\games\ui_demo"));
+        let script = find_publish_script(&outside_project)
+            .expect("应命中工作区根下的发布脚本");
+        assert!(script.is_file());
+        assert_eq!(script, workspace.join("scripts").join("package.ps1"));
     }
 
     #[test]

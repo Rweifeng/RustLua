@@ -36,6 +36,8 @@ impl EditorApp {
         self.scene_state.gizmo_drag = None;
         self.preview_diagnostic = None;
         self.scene_view_repaint_pending = true;
+        // 新文档打开后把 2D 视图适配到设计分辨率包围框。
+        self.scene_view_fit_pending = true;
     }
 
     pub(crate) fn undo(&mut self) {
@@ -150,7 +152,6 @@ impl EditorApp {
             self.collider3d = snapshot.collider3d.unwrap_or_default();
             self.text = snapshot.text.unwrap_or_default();
             self.image = snapshot.image.unwrap_or_default();
-            self.button = snapshot.button.unwrap_or_default();
             self.sprite_reference = snapshot.sprite_reference.clone().unwrap_or_default();
             self.lua_script = snapshot.lua_script.unwrap_or_default();
             self.sprite_component = snapshot
@@ -493,6 +494,24 @@ impl EditorApp {
             self.sync_inspector(id);
         }
     }
+
+    /// 收集项目用到的字符并写入项目根 `chars.txt`（首包字体预热）。场景视图下次
+    /// 重建图集时读到它并预生成字形，避免首帧文字卡顿。
+    pub(crate) fn collect_font_chars(&mut self) {
+        let root = crate::util::strip_verbatim_prefix(&self.project.root);
+        let chars = engine::core::char_collect::collect_project_chars(&root);
+        match std::fs::write(root.join("chars.txt"), chars.as_bytes()) {
+            Ok(()) => {
+                self.status = format!(
+                    "已收集 {} 个字符写入 chars.txt（场景视图重建后预热）",
+                    chars.chars().count()
+                );
+                // 让场景视图下次重建图集时按新清单预热。
+                self.scene_font_atlas = None;
+            }
+            Err(error) => self.status = format!("收集字符失败: {error}"),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -629,7 +648,7 @@ mod tests {
     }
 
     fn sample_project_root() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../game_test_2d_production")
+        engine::core::games_dir().join("game_test_2d_production")
     }
 
     fn copy_dir(source: &Path, destination: &Path) {

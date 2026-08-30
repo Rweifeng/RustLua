@@ -87,6 +87,47 @@ impl EditorApp {
                     egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
                     egui::Color32::WHITE,
                 );
+                // 右上角徽标：设计分辨率 + 当前显示缩放比（Unity Game 视图风格）。
+                // 面板小于原生分辨率时按比例等比缩小适配，徽标实时反映该缩放比。
+                let (width, height) = preview.size();
+                let ppp = ui.ctx().pixels_per_point();
+                let fit = preview_fit_scale(preview_rect, ppp, width);
+                let label = format!("{width}×{height} · {:.0}%", fit * 100.0);
+                let galley = painter.layout_no_wrap(
+                    label.clone(),
+                    egui::FontId::monospace(11.0),
+                    egui::Color32::from_rgb(215, 230, 245),
+                );
+                let pad = egui::vec2(8.0, 4.0);
+                let badge = egui::Rect::from_min_max(
+                    response.rect.left_top() + egui::vec2(6.0, 6.0),
+                    response.rect.left_top()
+                        + egui::vec2(
+                            6.0 + galley.size().x + pad.x * 2.0,
+                            6.0 + galley.size().y + pad.y * 2.0,
+                        ),
+                );
+                painter.rect_filled(
+                    badge,
+                    4.0,
+                    egui::Color32::from_rgba_unmultiplied(20, 28, 40, 210),
+                );
+                painter.rect_stroke(
+                    badge,
+                    4.0,
+                    egui::Stroke::new(
+                        1.0_f32,
+                        egui::Color32::from_rgba_unmultiplied(130, 170, 220, 140),
+                    ),
+                    egui::StrokeKind::Inside,
+                );
+                painter.text(
+                    badge.left_center() + egui::vec2(pad.x, 0.0),
+                    egui::Align2::LEFT_CENTER,
+                    label,
+                    egui::FontId::monospace(11.0),
+                    egui::Color32::from_rgb(215, 230, 245),
+                );
             } else {
                 let text = if self.is_playing() {
                     "GAME VIEW\n(preview unavailable)"
@@ -182,6 +223,8 @@ impl EditorApp {
             let (width, height) = self.preview_resolution;
             if let Some(preview) = &mut self.preview {
                 preview.resize(device, width, height);
+                // UI 参考分辨率（设计分辨率）随分辨率变更同步更新，保证 Canvas 适配一致。
+                preview.set_ui_reference([width as f32, height as f32]);
             }
         }
         if focused {
@@ -233,8 +276,6 @@ impl EditorApp {
         }
         rect
     }
-
-    /// 把 egui 的键盘/鼠标/滚轮输入桥接到给定的游戏输入快照（复用调用方持有的
     /// 跨帧 held 状态；M11-02）。预览在 Game 视图内纵横比居中后的实际绘制矩形。
     fn bridge_preview_input(
         &self,
@@ -252,6 +293,14 @@ impl EditorApp {
                 (egui::Key::D, InputKey::D),
                 (egui::Key::Space, InputKey::Space),
                 (egui::Key::Escape, InputKey::Escape),
+                // 农场玩法键：按 `InputKey::from_char` 统一到小写 ASCII 码，
+                // 与独立游戏窗口和 `parse_key` 一致（M16 输入修复）。
+                (egui::Key::Q, InputKey::from_char('q')),
+                (egui::Key::E, InputKey::from_char('e')),
+                (egui::Key::R, InputKey::from_char('r')),
+                (egui::Key::T, InputKey::from_char('t')),
+                (egui::Key::F, InputKey::from_char('f')),
+                (egui::Key::G, InputKey::from_char('g')),
             ] {
                 input.key_event(game_key, i.key_down(egui_key));
             }
@@ -272,6 +321,16 @@ impl EditorApp {
             }
         });
     }
+}
+
+/// Game 视图显示缩放比：预览纹理像素宽以物理像素显示时的放大/缩小比例
+/// （面板逻辑宽 × pixels_per_point ÷ 原生宽）。面板小于原生分辨率时 < 1，
+/// 表示按比例等比缩小适配（Unity Game 视图的 Scale 指示）。
+fn preview_fit_scale(preview_rect: egui::Rect, ppp: f32, native_w: u32) -> f32 {
+    if native_w == 0 {
+        return 1.0;
+    }
+    (preview_rect.width() * ppp) / native_w as f32
 }
 
 #[cfg(test)]
@@ -325,7 +384,7 @@ mod tests {
     }
 
     fn sample_project_root() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../game_test_2d_production")
+        engine::core::games_dir().join("game_test_2d_production")
     }
 
     fn copy_dir(source: &Path, destination: &Path) {
@@ -535,6 +594,19 @@ mod tests {
             Some(app.preview_resolution)
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    /// 显示缩放比 = 面板逻辑宽 × pixels_per_point ÷ 原生宽：
+    /// 面板小于原生分辨率时 < 1（等比缩小适配），面板更大或高 DPI 时放大。
+    #[test]
+    fn preview_fit_scale_measures_display_scale() {
+        // 原生 1280，显示宽 640 逻辑像素、ppp 1 → 等比缩小到一半。
+        let preview_rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(640.0, 360.0));
+        assert!((preview_fit_scale(preview_rect, 1.0, 1280) - 0.5).abs() < 1e-6);
+        // 面板逻辑宽不变但 ppp 翻倍（150% DPI 物理像素更多）→ 物理显示 2 倍。
+        assert!((preview_fit_scale(preview_rect, 2.0, 640) - 2.0).abs() < 1e-6);
+        // 原生宽为 0 的退化输入：返回 1.0，避免除零。
+        assert_eq!(preview_fit_scale(preview_rect, 1.0, 0), 1.0);
     }
 
     #[test]

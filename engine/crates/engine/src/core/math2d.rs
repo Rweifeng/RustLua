@@ -11,6 +11,9 @@ use crate::core::transform::Vec2;
 pub const WORLD_UP: Vec2 = Vec2::new(0.0, 1.0);
 /// World-space right direction under the engine's right-handed 2D convention.
 pub const WORLD_RIGHT: Vec2 = Vec2::new(1.0, 0.0);
+/// 2D 游戏相机默认中心（世界坐标）。相机未显式设置时，游戏视图以该点为屏幕中心，
+/// 设计分辨率包围框以它为中心（编辑器 Scene 视图据此定位游戏取景范围）。
+pub const DEFAULT_2D_CAMERA_CENTER: Vec2 = Vec2::new(640.0, 360.0);
 
 /// A positive pixel viewport used by [`Camera2D`] conversions.
 #[derive(Clone, Copy, Debug, PartialEq)]

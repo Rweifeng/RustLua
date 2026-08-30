@@ -7,7 +7,7 @@ pub use engine::core::resource_kind::ResourceKind;
 pub mod inspector_state;
 
 pub use inspector_state::{
-    ButtonFields, Camera3DFields, Collider3dFields, ImageFields, InspectorError, InspectorSnapshot,
+    Camera3DFields, Collider3dFields, ImageFields, InspectorError, InspectorSnapshot,
     InspectorState, LightFields, TextFields, Transform3DFields, TransformFields,
 };
 

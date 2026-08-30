@@ -74,6 +74,17 @@ impl CompressionBenchmarkEntry {
     }
 }
 
+/// 读取 project.toml 的 `font` 键（相对项目根的主字体路径）。
+fn project_font_key(project: &Path) -> Option<String> {
+    let text = fs::read_to_string(project.join("project.toml")).ok()?;
+    text.lines().find_map(|line| {
+        let line = line.trim().trim_start_matches('\u{feff}');
+        line.strip_prefix("font =")
+            .map(|value| value.trim().trim_matches('"').to_owned())
+            .filter(|value| !value.trim().is_empty())
+    })
+}
+
 /// 验证项目目录存在 `project.toml`。
 pub fn ensure_project(project: &Path) -> Result<(), String> {
     let manifest = project.join("project.toml");
@@ -560,6 +571,23 @@ pub fn package(
         is_compressible_asset,
         never_encode,
     )?;
+    // 首包字体：收集项目用到的字符清单，运行时预生成字形（首帧文字不卡）。
+    let chars = engine::core::char_collect::collect_project_chars(project);
+    fs::write(out.join("chars.txt"), &chars).map_err(|e| e.to_string())?;
+    // 发布子集化：把主字体裁剪到用到的字符，缩小体积（原 `subset-font.py` 的 Rust 版）。
+    // 子集化失败（如 CFF 字体）时保留完整字体。
+    if let Some(font_path) = project_font_key(project) {
+        let src = project.join(&font_path);
+        let dst = out.join(&font_path);
+        if src.is_file() && dst.is_file() {
+            if let Ok(bytes) = fs::read(&src)
+                && let Ok(subset) =
+                    engine::core::font_subset::subset_ttf(&bytes, &chars)
+            {
+                fs::write(&dst, subset).map_err(|e| e.to_string())?;
+            }
+        }
+    }
 
     let mut files = Vec::new();
     collect_files(out, &mut files)?;
@@ -668,7 +696,7 @@ mod tests {
     }
 
     fn sample_project_root() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../game_test_2d_production")
+        engine::core::games_dir().join("game_test_2d_production")
     }
 
     fn copy_sample_project(label: &str) -> PathBuf {

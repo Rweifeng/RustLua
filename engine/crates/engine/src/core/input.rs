@@ -14,6 +14,25 @@ pub enum InputKey {
     Other(u32),
 }
 
+impl InputKey {
+    /// Maps a single ASCII letter to an [`InputKey`]. Movement letters
+    /// `w`/`a`/`s`/`d` keep their dedicated variants (used by `input.axis`);
+    /// every other letter maps to `Other(<lowercase ascii code>)` so the game
+    /// window, the editor preview, and `parse_key` agree on one key identity.
+    /// This is what makes gameplay keys such as Q/E/R/T/F/G distinct in both
+    /// the standalone game and the editor's Play preview.
+    #[must_use]
+    pub fn from_char(letter: char) -> InputKey {
+        match letter.to_ascii_lowercase() {
+            'w' => Self::W,
+            'a' => Self::A,
+            's' => Self::S,
+            'd' => Self::D,
+            other => Self::Other(other as u32),
+        }
+    }
+}
+
 /// Mouse buttons exposed by the engine input layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MouseButton {
@@ -194,6 +213,20 @@ impl InputSnapshot {
 #[cfg(test)]
 mod tests {
     use super::{InputKey, InputSnapshot, MouseButton};
+
+    #[test]
+    fn from_char_gives_each_letter_a_distinct_key() {
+        assert_eq!(InputKey::from_char('w'), InputKey::W);
+        assert_eq!(InputKey::from_char('a'), InputKey::A);
+        assert_eq!(InputKey::from_char('s'), InputKey::S);
+        assert_eq!(InputKey::from_char('d'), InputKey::D);
+        // 其余字母键按小写 ASCII 码区分，Q/E/R/T/F/G 互不相同。
+        assert_eq!(InputKey::from_char('q'), InputKey::Other(113));
+        assert_eq!(InputKey::from_char('Q'), InputKey::Other(113));
+        assert_eq!(InputKey::from_char('e'), InputKey::Other(101));
+        assert_eq!(InputKey::from_char('t'), InputKey::Other(116));
+        assert!(InputKey::from_char('q') != InputKey::from_char('e'));
+    }
 
     #[test]
     fn preserves_press_and_release_until_frame_boundary() {

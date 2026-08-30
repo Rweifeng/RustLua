@@ -4,7 +4,7 @@ use crate::ComponentClipboard;
 use crate::EditorApp;
 use crate::util::strip_verbatim_prefix;
 use editor::{
-    ButtonFields, Camera3DFields, Collider3dFields, CommandKind, ImageFields, InspectorError,
+    Camera3DFields, Collider3dFields, CommandKind, ImageFields, InspectorError,
     LightFields, TextFields, Transform3DFields, TransformFields,
 };
 use eframe::egui;
@@ -139,7 +139,11 @@ impl EditorApp {
                 ui.separator();
                 ui.horizontal(|ui| {
                     ui.label("父实体 ID");
-                    ui.text_edit_singleline(&mut self.parent_entity);
+                    // 固定输入框宽度，避免占满整行导致过长。
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.parent_entity)
+                            .desired_width(90.0),
+                    );
                     if ui.button("设置父级").clicked() {
                         let parent = self
                             .parent_entity
@@ -156,7 +160,10 @@ impl EditorApp {
                 }
                 ui.horizontal(|ui| {
                     ui.label("名称");
-                    ui.text_edit_singleline(&mut self.entity_name);
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.entity_name)
+                            .desired_width(150.0),
+                    );
                     if ui.button("重新命名").clicked() {
                         self.rename_selected();
                     }
@@ -179,7 +186,7 @@ impl EditorApp {
                                 "Collider3d",
                                 "Text",
                                 "Image",
-                                "Button",
+                                "clickEvent",
                             ] {
                                 ui.selectable_value(
                                     &mut self.inspector_add_component,
@@ -523,6 +530,25 @@ impl EditorApp {
                                 ui.add(egui::DragValue::new(&mut self.image.height));
                             });
                             ui.horizontal(|ui| {
+                                ui.label("九宫格边框");
+                                ui.add(
+                                    egui::DragValue::new(&mut self.image.nine_slice_l)
+                                        .prefix("左 "),
+                                );
+                                ui.add(
+                                    egui::DragValue::new(&mut self.image.nine_slice_r)
+                                        .prefix("右 "),
+                                );
+                                ui.add(
+                                    egui::DragValue::new(&mut self.image.nine_slice_t)
+                                        .prefix("上 "),
+                                );
+                                ui.add(
+                                    egui::DragValue::new(&mut self.image.nine_slice_b)
+                                        .prefix("下 "),
+                                );
+                            });
+                            ui.horizontal(|ui| {
                                 ui.label("颜色");
                                 ui.add(
                                     egui::DragValue::new(&mut self.image.color_r).range(0.0..=1.0),
@@ -536,65 +562,6 @@ impl EditorApp {
                             });
                             if ui.button("移除 Image").clicked()
                                 && let Err(error) = self.remove_component("Image")
-                            {
-                                self.status = error;
-                            }
-                        });
-                    }
-                }
-                if has("Button") {
-                    let button_header = if self.inspector_button_open {
-                        "Button  v"
-                    } else {
-                        "Button  >"
-                    };
-                    if ui.button(button_header).clicked() {
-                        self.inspector_button_open = !self.inspector_button_open;
-                    }
-                    if self.inspector_button_open {
-                        ui.group(|ui| {
-                            ui.horizontal(|ui| {
-                                ui.label("文字");
-                                ui.text_edit_singleline(&mut self.button.label);
-                            });
-                            draw_ui_layout_fields(
-                                ui,
-                                "button_ui_layout",
-                                &mut self.button.space,
-                                &mut self.button.anchor_x,
-                                &mut self.button.anchor_y,
-                            );
-                            ui.horizontal(|ui| {
-                                ui.label("位置/尺寸");
-                                ui.add(egui::DragValue::new(&mut self.button.x));
-                                ui.add(egui::DragValue::new(&mut self.button.y));
-                                ui.add(egui::DragValue::new(&mut self.button.width));
-                                ui.add(egui::DragValue::new(&mut self.button.height));
-                            });
-                            ui.horizontal(|ui| {
-                                ui.label("背景");
-                                ui.add(
-                                    egui::DragValue::new(&mut self.button.bg_r).range(0.0..=1.0),
-                                );
-                                ui.add(
-                                    egui::DragValue::new(&mut self.button.bg_g).range(0.0..=1.0),
-                                );
-                                ui.add(
-                                    egui::DragValue::new(&mut self.button.bg_b).range(0.0..=1.0),
-                                );
-                                ui.label("文字色");
-                                ui.add(
-                                    egui::DragValue::new(&mut self.button.text_r).range(0.0..=1.0),
-                                );
-                                ui.add(
-                                    egui::DragValue::new(&mut self.button.text_g).range(0.0..=1.0),
-                                );
-                                ui.add(
-                                    egui::DragValue::new(&mut self.button.text_b).range(0.0..=1.0),
-                                );
-                            });
-                            if ui.button("移除 Button").clicked()
-                                && let Err(error) = self.remove_component("Button")
                             {
                                 self.status = error;
                             }
@@ -894,7 +861,6 @@ impl EditorApp {
         let collider3d = self.collider3d.clone();
         let text = self.text.clone();
         let image = self.image.clone();
-        let button = self.button.clone();
         let sprite_component = self.sprite_component.clone();
         let tilemap = self.tilemap.map.clone();
         let animation = self.animation.machine.clone();
@@ -932,10 +898,10 @@ impl EditorApp {
                 .components
                 .contains_key("Image")
         });
-        let had_button = self.current_scene().is_some_and(|scene| {
+        let had_sprite = self.current_scene().is_some_and(|scene| {
             scene.scene.entities[&selected]
                 .components
-                .contains_key("Button")
+                .contains_key("Sprite")
         });
         let had_tilemap = self.current_scene().is_some_and(|scene| {
             scene.scene.entities[&selected]
@@ -980,24 +946,23 @@ impl EditorApp {
                     if had_image {
                         inspector.set_image(scene, image)?;
                     }
-                    if had_button {
-                        inspector.set_button(scene, button)?;
-                    }
-                    if sprite_component.texture.trim().is_empty() {
-                        inspector.clear_sprite_reference(scene)?;
-                    } else {
-                        inspector.set_sprite_reference(scene, sprite.clone())?;
-                        for id in &selected_sprite_ids {
-                            if *id == selected {
-                                continue;
-                            }
-                            if let Some(entity) = scene.scene.entities.get_mut(id)
-                                && entity.components.contains_key("Sprite")
-                            {
-                                entity
-                                    .components
-                                    .insert("Sprite".to_owned(), sprite.clone());
-                                scene.mark_dirty();
+                    if had_sprite {
+                        if sprite_component.texture.trim().is_empty() {
+                            inspector.clear_sprite_reference(scene)?;
+                        } else {
+                            inspector.set_sprite_reference(scene, sprite.clone())?;
+                            for id in &selected_sprite_ids {
+                                if *id == selected {
+                                    continue;
+                                }
+                                if let Some(entity) = scene.scene.entities.get_mut(id)
+                                    && entity.components.contains_key("Sprite")
+                                {
+                                    entity
+                                        .components
+                                        .insert("Sprite".to_owned(), sprite.clone());
+                                    scene.mark_dirty();
+                                }
                             }
                         }
                     }
@@ -1020,7 +985,7 @@ impl EditorApp {
                     }
                     Ok::<(), InspectorError>(())
                 });
-        let changed = match result {
+        match result {
             Ok(changed) => {
                 if changed {
                     self.save_scene();
@@ -1032,8 +997,7 @@ impl EditorApp {
                 self.status = error.to_string();
                 false
             }
-        };
-        changed
+        }
     }
 
     /// 为选中实体添加 Collider3d 组件（用当前字段编码，经 history 可撤销）。
@@ -1193,7 +1157,6 @@ impl EditorApp {
                     "MeshRenderer" => inspector.set_mesh_renderer(scene, "__ground_plane__")?,
                     "Text" => inspector.set_text(scene, TextFields::default())?,
                     "Image" => inspector.set_image(scene, ImageFields::default())?,
-                    "Button" => inspector.set_button(scene, ButtonFields::default())?,
                     other => {
                         if let Some(entity) = scene.scene.entities.get_mut(&selected) {
                             entity.components.insert(other.to_owned(), String::new());
@@ -2034,7 +1997,7 @@ mod tests {
         resource_db::AssetId,
         scene::Scene,
         scene::SceneEntityId,
-        ui::{UiButton, UiLayoutSpace, UiText},
+        ui::{UiLayoutSpace, UiText},
     };
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -2055,7 +2018,7 @@ mod tests {
     }
 
     fn sample_project_root() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../game_test_2d_production")
+        engine::core::games_dir().join("game_test_2d_production")
     }
 
     fn copy_dir(source: &Path, destination: &Path) {
@@ -2485,20 +2448,6 @@ mod tests {
         app.text.scale = 2.8;
         app.apply_inspector();
 
-        select_entity(&mut app, SceneEntityId(5));
-        app.button.label = "Begin Run".to_owned();
-        app.button.space = "screen".to_owned();
-        app.button.anchor_x = 1.0;
-        app.button.anchor_y = 1.0;
-        app.button.x = -260.0;
-        app.button.y = -72.0;
-        app.button.width = 260.0;
-        app.button.height = 64.0;
-        app.button.bg_r = 0.35;
-        app.button.bg_g = 0.28;
-        app.button.bg_b = 0.82;
-        app.apply_inspector();
-
         app.save_scene();
         app.open_scene_resource(PathBuf::from("scenes/menu.scene"));
         let reopened = app.document.current_scene.as_ref().unwrap();
@@ -2511,17 +2460,6 @@ mod tests {
         assert_eq!(title.anchor, [1.0, 0.0]);
         assert_eq!(title.position, [-48.0, 24.0]);
         assert_eq!(title.scale, 2.8);
-
-        let button = UiButton::from_component_str(
-            &reopened.scene.entities[&SceneEntityId(5)].components["Button"],
-        )
-        .unwrap();
-        assert_eq!(button.label, "Begin Run");
-        assert_eq!(button.space, UiLayoutSpace::Screen);
-        assert_eq!(button.anchor, [1.0, 1.0]);
-        assert_eq!(button.position, [-260.0, -72.0]);
-        assert_eq!(button.size, [260.0, 64.0]);
-        assert_eq!(button.background, [0.35, 0.28, 0.82]);
         let _ = fs::remove_dir_all(root);
     }
 }

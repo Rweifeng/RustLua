@@ -2271,6 +2271,80 @@ mod tests {
         );
     }
 
+    /// 俄罗斯方块离屏渲染：方块（white.png 精灵）应实际可见——I 方块起始
+    /// 位于 col 4-7/row 0，其红色调应出现在字段区域的像素上。
+    #[test]
+    fn tetris_blocks_are_visible_pixels() {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let Some(adapter) =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::LowPower,
+                compatible_surface: None,
+                force_fallback_adapter: true,
+            }))
+            .ok()
+        else {
+            return; // no GPU available; skip
+        };
+        let (device, queue) = pollster::block_on(adapter.request_device(&DeviceDescriptor {
+            label: Some("p2-tetris-device"),
+            required_features: wgpu::Features::empty(),
+            experimental_features: wgpu::ExperimentalFeatures::disabled(),
+            required_limits: wgpu::Limits::default(),
+            memory_hints: wgpu::MemoryHints::Performance,
+            trace: wgpu::Trace::Off,
+        }))
+        .expect("request test device");
+        let root = crate::core::games_dir().join("tetris");
+        let mut renderer = Renderer::new_offscreen(device.clone(), queue.clone(), Some(root.clone()), false, false)
+            .expect("offscreen renderer");
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("p2-tetris-preview"),
+            size: wgpu::Extent3d {
+                width: 1280,
+                height: 720,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let scene = crate::core::scene::Scene::load(&root.join("scenes/main.scene")).unwrap();
+        let mut runtime = crate::host::RuntimeScene::from_scene(Some(&root), scene).unwrap();
+        let mesh = runtime.vertices(1280, 720).expect("vertices");
+        renderer.render_into_texture(&mesh, None, &view, 1280, 720);
+        let pixels = renderer
+            .copy_texture_to_cpu(&texture, 1280, 720)
+            .expect("readback");
+        // 扫描全帧找 I 方块（红色调 r 显著大于 g）的可见像素。
+        let mut found = 0usize;
+        let mut first = (0usize, 0usize);
+        for y in 0..720usize {
+            for x in 0..1280usize {
+                let idx = (y * 1280 + x) * 4;
+                let (r, g) = (pixels[idx], pixels[idx + 1]);
+                if r > 200 && i32::from(g) < 160 {
+                    if found == 0 {
+                        first = (x, y);
+                    }
+                    found += 1;
+                }
+            }
+        }
+        assert!(
+            found > 0,
+            "未找到红色方块像素（I 方块应可见），首像素位置样本：{}x{}",
+            first.0,
+            first.1
+        );
+        // 首块 I 方块 cell(5,0) 世界 (655,75) 附近应能看到红色。
+        eprintln!("red block pixels={found} first at {}x{}", first.0, first.1);
+    }
+
     /// Non-blocking readback (`readback_frame`) eventually yields the rendered
     /// pixels without a blocking `device.poll(Wait)` on the first call. Skips
     /// when no GPU is available.
@@ -2439,14 +2513,7 @@ mod tests {
         .expect("request test device");
         let mut renderer = Renderer::new_offscreen(device.clone(), queue, None, false, false)
             .expect("offscreen renderer");
-        let game = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .join("game_test");
+        let game = crate::core::games_dir().join("game_test");
         let scene_text =
             std::fs::read_to_string(game.join("scenes/main.scene")).expect("read main.scene");
         let scene = crate::core::scene::Scene::from_text(&scene_text).expect("parse main.scene");

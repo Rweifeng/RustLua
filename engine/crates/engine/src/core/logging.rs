@@ -8,6 +8,12 @@ use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitEx
 
 static LOG_GUARD: OnceLock<LogGuard> = OnceLock::new();
 
+/// 默认 tracing 过滤器。
+/// `wgpu_hal::vulkan::instance=off`：wgpu Vulkan 后端把 loader 的空内容通用消息
+/// （`GENERAL [Loader Message (0x0)]`）按 error 级记录，属良性启动噪声，整体关闭该目标。
+pub(crate) const DEFAULT_LOG_FILTER: &str =
+    "info,wgpu_hal=warn,wgpu_core=warn,naga=warn,wgpu_hal::vulkan::instance=off";
+
 /// Log modules exposed by the engine runtime.
 #[derive(Debug, Clone, Copy)]
 pub enum LogModule {
@@ -201,8 +207,7 @@ pub fn init_logging_with_sink(
             .with_suggestion("check the log path and file permissions")
         })?;
     let (non_blocking, guard) = tracing_appender::non_blocking(file);
-    let filter =
-        EnvFilter::try_new(filter.unwrap_or("info,wgpu_hal=warn,wgpu_core=warn,naga=warn"))
+    let filter = EnvFilter::try_new(filter.unwrap_or(DEFAULT_LOG_FILTER))
             .map_err(|error| {
                 EngineError::new(
                     LogModule::Engine,
@@ -361,5 +366,37 @@ mod tests {
         assert_eq!(lines, vec!["second line", "third", "fourth"]);
         sink.clear();
         assert!(sink.snapshot().is_empty());
+    }
+
+    /// 默认过滤器关闭 `wgpu_hal::vulkan::instance` 目标（空内容 loader 噪声），
+    /// 其它 wgpu_hal 目标仍按 `wgpu_hal=warn` 过滤。
+    #[test]
+    fn default_filter_suppresses_vulkan_loader_noise() {
+        use tracing_subscriber::layer::SubscriberExt;
+
+        let sink = LogSink::new(64);
+        let layer = tracing_subscriber::fmt::layer()
+            .with_target(true)
+            .with_ansi(false)
+            .with_writer(sink.clone());
+        let subscriber = tracing_subscriber::registry()
+            .with(EnvFilter::new(DEFAULT_LOG_FILTER))
+            .with(layer);
+
+        tracing::subscriber::with_default(subscriber, || {
+            // 空 loader 噪声：该 target 已 off，不应出现。
+            tracing::error!(target: "wgpu_hal::vulkan::instance", "GENERAL [Loader Message (0x0)]");
+            // 其它 wgpu_hal 目标：error 保留，info（warn 以下）过滤。
+            tracing::error!(target: "wgpu_hal::vulkan::device", "real device error");
+            tracing::info!(target: "wgpu_hal::vulkan::device", "device info noise");
+        });
+
+        let lines = sink.snapshot();
+        assert!(lines.iter().all(|line| !line.contains("Loader Message")),
+            "loader 噪声应被过滤：{lines:?}");
+        assert!(lines.iter().any(|line| line.contains("real device error")),
+            "同 crate 其它目标的 error 应保留：{lines:?}");
+        assert!(lines.iter().all(|line| !line.contains("device info noise")),
+            "wgpu_hal=warn 应过滤 info：{lines:?}");
     }
 }

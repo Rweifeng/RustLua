@@ -17,14 +17,17 @@ struct VertexOutput {
     out.sdf = sdf;
     return out;
 }
+fn median(a: f32, b: f32, c: f32) -> f32 {
+    return max(min(a, b), min(max(a, b), c));
+}
+
 @fragment fn fs_main(@location(0) uv: vec2<f32>, @location(1) color: vec4<f32>, @location(2) sdf: u32) -> @location(0) vec4<f32> {
     let sampled = textureSample(tex, samp, uv);
     if sdf == 1u {
-        // 有向距离场：R 通道 = 归一化距离（边缘 0.5），smoothstep 保持锐利。
-        // d + 0.08 偏置让笔画更粗（细字重下划线不过细）。
-        let d = sampled.r + 0.08;
-        let w = max(fwidth(d), 0.01) * 0.5;
-        let a = smoothstep(0.5 - w, 0.5 + w, d);
+        // MSDF：RGB 三通道 = 多通道距离场（边缘 median≈0.5），保留锐利直角。
+        // median 得伪距离，再按屏幕像素导数归一化到覆盖率：缩放不失真。
+        let d = median(sampled.r, sampled.g, sampled.b);
+        let a = clamp((d - 0.5) / max(fwidth(d), 1.0e-3) + 0.5, 0.0, 1.0);
         // 直通 alpha：管线 ALPHA_BLENDING 已按 alpha 预乘源色，不能再乘 a。
         return vec4<f32>(color.rgb, a);
     }

@@ -20,7 +20,7 @@ fn temp_root(label: &str) -> PathBuf {
 }
 
 fn sample_project_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../game_test_2d_production")
+    engine::core::games_dir().join("game_test_2d_production")
 }
 
 fn copy_dir(source: &Path, destination: &Path) {

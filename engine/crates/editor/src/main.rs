@@ -15,12 +15,13 @@ use crate::util::{configure_cjk_fonts, format_project_error};
 use std::{
     env,
     error::Error,
-    path::PathBuf,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
     time::{Duration, Instant, SystemTime},
 };
 
 use editor::{
-    AutoSaveController, ButtonFields, Camera3DFields, Collider3dFields, CommandHistory,
+    AutoSaveController, Camera3DFields, Collider3dFields, CommandHistory,
     ImageFields, InspectorState, LightFields, PlaySession, ProjectDocument, ProjectInfo,
     RecoveryManager, RecoveryScan, ResourceBrowserState, SceneTreeState, TextFields,
     Transform3DFields, TransformFields, check_project, open_project,
@@ -28,16 +29,18 @@ use editor::{
 use eframe::egui;
 use engine::core::{
     animation::{AnimationClip, AnimationStateMachine},
+    font::FontAtlas,
     input::InputSnapshot,
     logging::LogSink,
+    math2d::DEFAULT_2D_CAMERA_CENTER,
     math3d::Vec3,
     scene::SceneEntityId,
     script::LuaRuntime,
     sprite::{SpriteComponent, SpriteSorting},
     texture::{TextureAsset, TextureColorSpace},
     tilemap::Tilemap,
+    transform::Vec2,
     transform3d::Transform3D,
-    ui::UiLayoutSpace,
 };
 use engine::host::{Renderer, RuntimeScene};
 
@@ -73,6 +76,16 @@ fn default_engine_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(|path| path.parent())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// p2 工作区根（含 scripts/、docs/ 等），相对编辑器 crate 上溯 3 级：`C:\GitHub\p2`。
+fn workspace_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::parent)
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."))
 }
@@ -187,8 +200,12 @@ struct EditorApp {
     lua_runtime: Option<LuaRuntime>,
     console_input: String,
     console_output: Vec<String>,
+    /// 编辑器侧提示（如 Scene View 回读状态），与 Lua 控制台输出分开，显示在“编辑器日志”分类。
+    console_notices: Vec<String>,
     console_filter: String,
     console_log_level_filter: ConsoleLogLevelFilter,
+    /// 控制台左侧分类导航当前选中的日志来源。
+    console_tab: ConsoleTab,
     inspector: InspectorState,
     transform: TransformFields,
     transform3d: Transform3DFields,
@@ -198,7 +215,6 @@ struct EditorApp {
     collider3d: Collider3dFields,
     text: TextFields,
     image: ImageFields,
-    button: ButtonFields,
     sprite_reference: String,
     sprite_component: SpriteComponent,
     tilemap: TilemapEditorState,
@@ -208,7 +224,6 @@ struct EditorApp {
     inspector_collider3d_open: bool,
     inspector_text_open: bool,
     inspector_image_open: bool,
-    inspector_button_open: bool,
     inspector_sprite_open: bool,
     inspector_tilemap_open: bool,
     inspector_animation_open: bool,
@@ -259,7 +274,7 @@ struct EditorApp {
     render_state: Option<eframe::egui_wgpu::RenderState>,
     /// Play 时的内嵌游戏预览（M10-03；生命周期见 preview_session.rs）。
     preview: Option<PreviewSession>,
-    /// 内嵌游戏预览当前分辨率（宽×高）。
+    /// 设计分辨率（宽×高）：Game 视图渲染目标 / Scene 视图包围框尺寸（Unity 方式）。
     preview_resolution: (u32, u32),
     /// 可用的预览分辨率列表（可增删）。
     preview_resolutions: Vec<(u32, u32)>,
@@ -267,6 +282,10 @@ struct EditorApp {
     adding_preview_resolution: bool,
     /// 自定义分辨率的输入值。
     custom_preview_resolution: (u32, u32),
+    /// 游戏 2D 相机中心（世界坐标）：设计分辨率包围框的世界中心，使包围框与
+    /// 游戏取景范围一致（默认 `DEFAULT_2D_CAMERA_CENTER`；编辑器场景视图运行时
+    /// 重建时捕获）。
+    game_camera_2d_center: Vec2,
     /// 编辑器轨道相机（3D 透视视口，M10-04）。
     editor_camera: EditorCamera,
     /// 3D 场景视图的离屏渲染器（渲染编辑场景 + 编辑器相机）。
@@ -277,8 +296,19 @@ struct EditorApp {
     scene_preview_tex: Option<egui::TextureHandle>,
     /// 编辑场景的 2D 运行时（不跑 main.lua，用于 2D 场景视图实时渲染）。
     scene_runtime: Option<RuntimeScene>,
+    /// 共享字体图集：运行时随 revision 重建时复用同一实例，避免每帧重新生成
+    /// MSDF 字形（拖动 UI/精灵卡顿的根因）。项目切换时重置。
+    scene_font_atlas: Option<Arc<Mutex<FontAtlas>>>,
     /// 2D 场景视图显示用的 egui 纹理。
     scene_2d_tex: Option<egui::TextureHandle>,
+    /// 游戏画面（设计分辨率 + 游戏相机 + UI 覆盖层）离屏纹理 + 视图：在 Scene 视图
+    /// 的设计分辨率包围框内显示，UI 随包围框缩放/平移。
+    scene_screen_texture: Option<(wgpu::Texture, wgpu::TextureView)>,
+    /// 游戏画面的原生 egui 纹理 ID（经 egui_wgpu 注册，免 CPU 回读，避免与
+    /// 编辑器视图的回读冲突）。
+    scene_screen_tex_id: Option<egui::TextureId>,
+    /// 游戏画面渲染缓存 key：(场景修订, 设计分辨率)，变化时重渲染。
+    scene_screen_cache_key: Option<(u64, (u32, u32))>,
     /// 资源浏览器纹理缩略图缓存（按资源相对路径）。
     thumbnails: std::collections::HashMap<String, egui::TextureHandle>,
     /// 后台缩略图解码 worker：避免大资源项目在 UI 线程同步解码导致打开卡死。
@@ -304,6 +334,9 @@ struct EditorApp {
     preview_diagnostic: Option<String>,
     /// 文档切换后请求一次额外重绘，确保 Scene View 立刻消费新的缓存失效状态。
     scene_view_repaint_pending: bool,
+    /// 打开场景/切入 2D 视图后，把 2D 视图适配到设计分辨率包围框（完整显示、
+    /// 居中，避免大包围框在窄面板下被裁剪到属性面板边缘）。
+    scene_view_fit_pending: bool,
     /// Delete 键当前作用的选区来源：资源面板或层级/Scene View。
     delete_target: DeleteTarget,
     /// Game View 输入快照的跨帧状态（M11-02）：held 按键/鼠标跨帧保留，
@@ -371,6 +404,16 @@ enum ConsoleLogLevelFilter {
     Warning,
     #[default]
     Error,
+}
+
+/// 控制台左侧分类导航：切换“编辑器日志”与“游戏逻辑 Lua 日志”。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum ConsoleTab {
+    /// 编辑器自身日志（tracing LogSink 缓冲）。
+    #[default]
+    Editor,
+    /// 游戏逻辑 Lua 日志（控制台输出 + 脚本诊断）。
+    Lua,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -499,10 +542,9 @@ struct SceneDrag {
 /// （见 `set_ui_component_position`）。
 #[derive(Clone, Copy)]
 struct UiDragInitial {
-    /// 组件 x/y 字段（authored 坐标，未按 space 缩放）。
+    /// 组件 x/y 字段（authored 坐标）。UI 组件绘制在设计分辨率包围框内，
+    /// Screen/Canvas 两空间拖动增量换算同为 zoom/ppp（见 draw_scene_view）。
     position: [f32; 2],
-    /// 组件 authored space（决定屏幕拖动增量到坐标的换算）。
-    space: UiLayoutSpace,
 }
 
 /// 3D 变换 Gizmo 拖拽：约束到哪个轴（Y 为垂直高度，Free 为 XZ 平面；
@@ -551,8 +593,10 @@ impl EditorApp {
             lua_runtime: None,
             console_input: String::new(),
             console_output: Vec::new(),
+            console_notices: Vec::new(),
             console_filter: String::new(),
             console_log_level_filter: ConsoleLogLevelFilter::Error,
+            console_tab: ConsoleTab::Editor,
             inspector: InspectorState::new(),
             transform: TransformFields::default(),
             transform3d: Transform3DFields::default(),
@@ -562,7 +606,6 @@ impl EditorApp {
             collider3d: Collider3dFields::default(),
             text: TextFields::default(),
             image: ImageFields::default(),
-            button: ButtonFields::default(),
             sprite_reference: String::new(),
             sprite_component: SpriteComponent {
                 texture: "assets/textures/player.png".to_owned(),
@@ -578,7 +621,6 @@ impl EditorApp {
             inspector_collider3d_open: false,
             inspector_text_open: true,
             inspector_image_open: true,
-            inspector_button_open: true,
             inspector_sprite_open: true,
             inspector_tilemap_open: true,
             inspector_animation_open: true,
@@ -620,16 +662,21 @@ impl EditorApp {
             gpu,
             render_state: None,
             preview: None,
-            preview_resolution: (640, 360),
+            preview_resolution: (1280, 720),
             preview_resolutions: vec![(640, 360), (960, 540), (1280, 720), (1920, 1080)],
             adding_preview_resolution: false,
-            custom_preview_resolution: (640, 360),
+            custom_preview_resolution: (1280, 720),
+            game_camera_2d_center: DEFAULT_2D_CAMERA_CENTER,
             editor_camera: EditorCamera::default(),
             scene_renderer: None,
             scene_texture: None,
             scene_preview_tex: None,
             scene_runtime: None,
+            scene_font_atlas: None,
             scene_2d_tex: None,
+            scene_screen_texture: None,
+            scene_screen_tex_id: None,
+            scene_screen_cache_key: None,
             thumbnails: std::collections::HashMap::new(),
             thumbnail_worker: crate::panels::resource_browser::ThumbnailWorker::new(),
             resource_tree_cache: None,
@@ -641,6 +688,7 @@ impl EditorApp {
             scene_files_cache_time: None,
             preview_diagnostic: None,
             scene_view_repaint_pending: false,
+            scene_view_fit_pending: true,
             delete_target: DeleteTarget::None,
             last_metadata_key: None,
             preview_input_state: InputSnapshot::default(),
@@ -807,6 +855,11 @@ impl EditorApp {
             .unwrap_or_else(|| "未打开场景".to_owned())
     }
 
+    /// 游戏 2D 相机中心转为 egui 坐标，供设计分辨率包围框 / UI 映射定位。
+    fn game_camera_center_egui(&self) -> egui::Vec2 {
+        egui::vec2(self.game_camera_2d_center.x, self.game_camera_2d_center.y)
+    }
+
     fn select_resource(&mut self, path: PathBuf) {
         self.selected_resource = Some(path.clone());
         self.delete_target = DeleteTarget::Resource(path);
@@ -824,11 +877,12 @@ impl EditorApp {
     }
 
     fn push_console_notice(&mut self, line: impl Into<String>) {
-        self.console_output.push(line.into());
+        // 编辑器侧提示走独立缓冲，避免混进 Lua 控制台输出（“游戏 Lua 日志”分类）。
+        self.console_notices.push(line.into());
         const MAX_CONSOLE_LINES: usize = 500;
-        if self.console_output.len() > MAX_CONSOLE_LINES {
-            let overflow = self.console_output.len() - MAX_CONSOLE_LINES;
-            self.console_output.drain(0..overflow);
+        if self.console_notices.len() > MAX_CONSOLE_LINES {
+            let overflow = self.console_notices.len() - MAX_CONSOLE_LINES;
+            self.console_notices.drain(0..overflow);
         }
     }
 
@@ -941,5 +995,60 @@ impl eframe::App for EditorApp {
         self.progress.window(context);
         self.draw_publish_panel(context);
         self.draw_about_window(context);
+    }
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use eframe::egui;
+
+    /// 面板布局：左侧资源(200)+层级(190)、右侧属性(360)、中央。验证在多种窗口
+    /// 宽度下，中央面板（Scene/Game 视图所在）都不与右侧属性面板重叠。
+    #[test]
+    fn central_panel_does_not_overlap_inspector_at_any_width() {
+        for width in [1280.0, 1024.0, 900.0, 800.0, 700.0, 600.0] {
+            let ctx = egui::Context::default();
+            let raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(width, 720.0),
+                )),
+                ..Default::default()
+            };
+            ctx.begin_pass(raw);
+            egui::SidePanel::left("t_resource")
+                .default_width(200.0)
+                .show(&ctx, |ui| {
+                    ui.label("resource");
+                });
+            egui::SidePanel::left("t_tree")
+                .default_width(190.0)
+                .show(&ctx, |ui| {
+                    ui.label("hierarchy");
+                });
+            let mut inspector_rect = egui::Rect::NOTHING;
+            egui::SidePanel::right("t_inspector")
+                .default_width(360.0)
+                .show(&ctx, |ui| {
+                    inspector_rect = ui.max_rect();
+                });
+            let mut central_rect = egui::Rect::NOTHING;
+            egui::CentralPanel::default().show(&ctx, |ui| {
+                central_rect = ui.max_rect();
+            });
+            let _ = ctx.end_pass();
+
+            assert!(
+                central_rect.right() <= inspector_rect.left() + 1.0,
+                "窗口宽 {width}: 中央面板右缘 {:.1} 越过属性面板左缘 {:.1}（重叠）",
+                central_rect.right(),
+                inspector_rect.left()
+            );
+            assert!(
+                central_rect.width() >= 0.0,
+                "窗口宽 {width}: 中央面板宽度为负：{}",
+                central_rect.width()
+            );
+        }
     }
 }

@@ -1,6 +1,6 @@
 use engine::core::texture::{TextureAsset, TextureColorSpace};
 
-const PNG: &[u8] = include_bytes!("../../../../game_test/assets/textures/red-1x1.png");
+const PNG: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../../games/game_test/assets/textures/red-1x1.png"));
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     pollster::block_on(run())

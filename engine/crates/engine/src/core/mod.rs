@@ -10,8 +10,12 @@ pub mod atlas;
 pub mod audio;
 /// Perspective camera and view-frustum primitives for 3D rendering.
 pub mod camera3d;
+/// 打包时字符收集：扫描场景 Text 与 Lua 字符串，产出去重的字符集供字形预热。
+pub mod char_collect;
 /// Deferred world mutations for safe ECS system iteration.
 pub mod commands;
+/// Lightweight JSON-schema validation for `data` tables loaded via Lua.
+pub mod data_schema;
 /// Dependency-graph extraction, resolution, propagation, and cycle detection.
 pub mod dependency;
 /// Generational entity handles and allocation.
@@ -19,6 +23,8 @@ pub mod entity;
 /// Typed, frame-bounded event queues.
 pub mod events;
 pub mod font;
+/// 打包时 TrueType 字体子集化：把字体裁剪到用到的字符，缩小发布体积。
+pub mod font_subset;
 /// Gameplay data types for clocks, items, and inventories.
 pub mod gameplay;
 /// CPU-side glTF/GLB mesh and scene asset importer.
@@ -41,6 +47,9 @@ pub mod logging;
 pub mod math2d;
 /// Coordinate, quaternion, and matrix primitives for 3D rendering.
 pub mod math3d;
+/// 游戏工程路径解析（已迁至 `C:\GitHub\games`）。
+pub mod paths;
+pub use paths::games_dir;
 /// GPU-friendly CPU mesh and material data for 3D rendering.
 pub mod mesh3d;
 /// 发布资源编解码（压缩 + 加密）。

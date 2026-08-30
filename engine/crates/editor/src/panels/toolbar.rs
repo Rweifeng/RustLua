@@ -9,7 +9,8 @@ use eframe::egui;
 
 impl EditorApp {
     pub(crate) fn draw_workspace_toolbar(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
+        // 自动换行：窗口/面板较窄时控件折行显示，避免溢出到右侧属性面板区域。
+        ui.horizontal_wrapped(|ui| {
             // Play/Stop：场景与游戏运行控制，同一按钮切换，不显示 Play 字样。
             let playing = self.is_playing();
             let (icon, tooltip) = if playing {
@@ -24,7 +25,7 @@ impl EditorApp {
                     self.play();
                 }
             }
-            // 预览分辨率（下次 Play 生效；可自定义增删）。
+            // 设计分辨率：Game 视图渲染目标 / Scene 视图包围框尺寸（下次 Play 生效；可自定义增删）。
             let resolutions = self.preview_resolutions.clone();
             egui::ComboBox::from_id_salt("preview_resolution")
                 .selected_text(format!(
@@ -86,25 +87,25 @@ impl EditorApp {
                 self.workspace_tab = WorkspaceTab::Game;
             }
             ui.separator();
-            if icon_toggle(
-                ui,
-                self.scene_view_mode == SceneViewMode::View2D,
-                "2D",
-                "2D 视图",
-            )
-            .clicked()
-            {
-                self.scene_view_mode = SceneViewMode::View2D;
-            }
+            // 单一 3D 切换：默认 2D，点亮进入 3D，取消回到 2D。
             if icon_toggle(
                 ui,
                 self.scene_view_mode == SceneViewMode::View3D,
                 "3D",
-                "3D 视图",
+                "3D 视图（点亮时显示，取消回到 2D）",
             )
             .clicked()
             {
-                self.scene_view_mode = SceneViewMode::View3D;
+                let was_3d = self.scene_view_mode == SceneViewMode::View3D;
+                self.scene_view_mode = if was_3d {
+                    SceneViewMode::View2D
+                } else {
+                    SceneViewMode::View3D
+                };
+                // 从 3D 切回 2D：把视图适配到设计分辨率包围框。
+                if was_3d {
+                    self.scene_view_fit_pending = true;
+                }
             }
             ui.separator();
             ui.checkbox(&mut self.snap_enabled, "吸附");

@@ -1,24 +1,31 @@
 //! On-demand glyph atlas for ASCII + CJK, rasterized from a TTF font with
-//! `ab_glyph` into **signed-distance-field** cells (R channel = normalized
-//! signed distance, edge = 0.5). The host shader samples R and applies a
-//! `smoothstep` so glyph edges stay crisp at any scale (TMP-style).
+//! `ab_glyph` outlines into **multi-channel signed-distance-field** cells
+//! (RGB = MSDF 三通道，A = 255；边缘处 RGB 的 median ≈ 0.5)。宿主 shader 对
+//! RGB 取 median 再经 fwidth 解码，直角/笔画末梢保持锐利、任意缩放不失真
+//! （TextMeshPro 同源方案）。
 
-use ab_glyph::{Font, FontArc};
+use ab_glyph::{Font, FontArc, Outline, OutlineCurve, Point};
+use bymsdfgen_core::{
+    Bitmap, DistanceMapping, MsdfGeneratorConfig, Projection, Range, SdfTransformation,
+    coloring::edge_coloring_simple,
+    generate_msdf,
+    geometry::{Contour, EdgeSegment, Shape},
+    math::Vector2,
+};
 use std::{collections::HashMap, error::Error, fmt};
 
-/// Rasterize scale in device pixels; each glyph is stored in a `cell` square.
-pub const RASTER_SCALE: f32 = 64.0;
-/// Atlas grid starts at 16x16 cells and grows by doubling when needed.
-const INITIAL_COLS: u32 = 16;
-const INITIAL_ROWS: u32 = 16;
-const MAX_COLS: u32 = 64;
-const MAX_ROWS: u32 = 64;
-/// Signed-distance band around each glyph outline (px). The normalized SDF
-/// maps `±PAD` texels to `[0,1]`, so `smoothstep(0.5-w,0.5+w,d)` stays inside
-/// the linear region for ~1px falloff at any practical scale.
+/// Rasterize scale in device pixels（px/em）。96px/em 在 4096² 打包图集内可容纳
+/// ~1300 个 CJK 字形，锐利度约为旧 64px/em 的 1.5×；如需更锐可上调，但 CJK
+/// 容量会相应下降（128px/em 约 ~900）。
+pub const RASTER_SCALE: f32 = 96.0;
+/// 打包图集初始边长（正方形）。
+const INITIAL_ATLAS_SIZE: u32 = 1024;
+/// 打包图集最大边长（常见 GPU 纹理上限内）。
+const MAX_ATLAS_SIZE: u32 = 4096;
+/// Signed-distance band around each glyph outline (px)。MSDF 映射 `±PAD` texels
+/// 到 `[0,1]`（边缘 median=0.5），shader 的 fwidth 解码在任意字号下都保持
+/// ~1px 渐变。
 const PAD: i32 = 8;
-/// Non-feature cost for the distance transform.
-const BIG: f32 = 1e30;
 
 /// Per-glyph metrics used by text layout: UV rect + cell-space geometry.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -64,60 +71,79 @@ impl fmt::Display for FontAtlasError {
 
 impl Error for FontAtlasError {}
 
-/// A growable-by-slot glyph atlas producing one RGBA8 texture.
+/// A growable packed glyph atlas producing one RGBA8 texture.
 #[derive(Clone, Debug)]
 pub struct FontAtlas {
     font: FontArc,
-    cell: u32,
-    cols: u32,
-    rows: u32,
+    /// 后备字体：主字体缺的字形（glyph_id == 0）用它动态生成补充。
+    fallback: Option<FontArc>,
+    width: u32,
+    height: u32,
     pixels: Vec<u8>,
     used: u32,
     cached: HashMap<char, GlyphMetrics>,
-    slots: HashMap<char, u32>,
+    packer: Packer,
     version: u64,
     dirty: bool,
 }
 
 impl FontAtlas {
-    /// Builds an atlas from TTF font bytes.
+    /// Builds an atlas from TTF font bytes（无后备字体）。
     pub fn load(bytes: &[u8]) -> Result<Self, String> {
-        let font = FontArc::try_from_vec(bytes.to_vec())
-            .map_err(|error| format!("字体解析失败: {error}"))?;
-        Ok(Self::new(font))
+        Self::load_with_fallback(bytes, None)
     }
 
-    fn new(font: FontArc) -> Self {
-        let cell = RASTER_SCALE.ceil() as u32 + PAD as u32 * 2;
-        let cols = INITIAL_COLS;
-        let rows = INITIAL_ROWS;
-        let width = cols * cell;
-        let height = rows * cell;
+    /// 用主字体 + 可选后备字体构建图集。后备字体用于主字体缺失的字形。
+    pub fn load_with_fallback(
+        primary: &[u8],
+        fallback: Option<&[u8]>,
+    ) -> Result<Self, String> {
+        let font = FontArc::try_from_vec(primary.to_vec())
+            .map_err(|error| format!("字体解析失败: {error}"))?;
+        let fallback = fallback
+            .map(|bytes| FontArc::try_from_vec(bytes.to_vec()))
+            .transpose()
+            .map_err(|error| format!("后备字体解析失败: {error}"))?;
+        Ok(Self::new(font, fallback))
+    }
+
+    fn new(font: FontArc, fallback: Option<FontArc>) -> Self {
+        let size = INITIAL_ATLAS_SIZE;
         Self {
             font,
-            cell,
-            cols,
-            rows,
-            pixels: vec![0; (width * height * 4) as usize],
+            fallback,
+            width: size,
+            height: size,
+            pixels: vec![0; (size * size * 4) as usize],
             used: 0,
             cached: HashMap::new(),
-            slots: HashMap::new(),
+            packer: Packer::new(size, size),
             version: 0,
             dirty: false,
         }
     }
 
-    /// Cell size in texels (glyph + padding).
-    pub const fn cell(&self) -> u32 {
-        self.cell
+    /// 字形所属字体：主字体有该字用主字体，否则用后备字体，再否则主字体（.notdef）。
+    fn font_for(&self, character: char) -> (FontArc, ab_glyph::GlyphId) {
+        let primary_id = self.font.glyph_id(character);
+        if primary_id.0 != 0 {
+            return (self.font.clone(), primary_id);
+        }
+        if let Some(fallback) = &self.fallback {
+            let fallback_id = fallback.glyph_id(character);
+            if fallback_id.0 != 0 {
+                return (fallback.clone(), fallback_id);
+            }
+        }
+        (self.font.clone(), primary_id)
     }
 
     pub const fn width(&self) -> u32 {
-        self.cols * self.cell
+        self.width
     }
 
     pub const fn height(&self) -> u32 {
-        self.rows * self.cell
+        self.height
     }
 
     pub fn pixels(&self) -> &[u8] {
@@ -156,101 +182,88 @@ impl FontAtlas {
     /// Horizontal advance in px at `RASTER_SCALE` without rasterizing the glyph
     /// (used for whitespace, which has no outline / SDF cell).
     pub fn advance(&self, character: char) -> f32 {
-        self.font.h_advance_unscaled(self.font.glyph_id(character))
-            / self.font.units_per_em().unwrap_or(1000.0)
-            * RASTER_SCALE
+        let (font, glyph_id) = self.font_for(character);
+        font.h_advance_unscaled(glyph_id) / font.units_per_em().unwrap_or(1000.0) * RASTER_SCALE
     }
 
     fn grow(&mut self) -> bool {
-        if self.cols >= MAX_COLS && self.rows >= MAX_ROWS {
+        if self.width >= MAX_ATLAS_SIZE && self.height >= MAX_ATLAS_SIZE {
             return false;
         }
-        let new_cols = (self.cols * 2).min(MAX_COLS);
-        let new_rows = (self.rows * 2).min(MAX_ROWS);
-        let old_width = self.width();
-        let old_height = self.height();
-        let new_width = new_cols * self.cell;
-        let new_height = new_rows * self.cell;
+        let old_width = self.width;
+        let old_height = self.height;
+        let new_width = (self.width * 2).min(MAX_ATLAS_SIZE);
+        let new_height = (self.height * 2).min(MAX_ATLAS_SIZE);
+        // 打包都在左上区域，增长向右下扩展，已有字形位置/UV 不变（无需重打包）。
         let mut pixels = vec![0; (new_width * new_height * 4) as usize];
         for y in 0..old_height {
             let old_start = (y * old_width * 4) as usize;
             let new_start = (y * new_width * 4) as usize;
             let len = (old_width * 4) as usize;
-            pixels[new_start..new_start + len]
-                .copy_from_slice(&self.pixels[old_start..old_start + len]);
+            pixels[new_start..new_start + len].copy_from_slice(&self.pixels[old_start..old_start + len]);
         }
-        self.cols = new_cols;
-        self.rows = new_rows;
+        self.width = new_width;
+        self.height = new_height;
         self.pixels = pixels;
-        let atlas_width = self.width() as f32;
-        let atlas_height = self.height() as f32;
-        for (character, slot) in &self.slots {
-            if let Some(metrics) = self.cached.get_mut(character) {
-                let col = *slot % self.cols;
-                let row = *slot / self.cols;
-                metrics.uv = [
-                    (col * self.cell) as f32 / atlas_width,
-                    (row * self.cell) as f32 / atlas_height,
-                    ((col + 1) * self.cell) as f32 / atlas_width,
-                    ((row + 1) * self.cell) as f32 / atlas_height,
-                ];
-            }
-        }
+        self.packer.set_size(new_width, new_height);
         self.version = self.version.wrapping_add(1);
         self.dirty = true;
         true
     }
 
-    /// Returns per-glyph metrics, rasterizing the SDF cell on first use.
+    /// Returns per-glyph metrics, rasterizing the MSDF on first use (packed).
     pub fn try_glyph_metrics(&mut self, character: char) -> Result<GlyphMetrics, FontAtlasError> {
         if let Some(metrics) = self.cached.get(&character) {
             return Ok(*metrics);
         }
-        let slot = self.used;
-        if slot >= self.cols * self.rows && !self.grow() {
-            return Err(FontAtlasError::AtlasFull {
-                character,
-                width: self.width(),
-                height: self.height(),
-                capacity: self.cols * self.rows,
-            });
-        }
-        let col = slot % self.cols;
-        let row = slot / self.cols;
-        let cell_x = col * self.cell;
-        let cell_y = row * self.cell;
-        let u_min = cell_x as f32 / self.width() as f32;
-        let v_min = cell_y as f32 / self.height() as f32;
-        let u_max = (cell_x + self.cell) as f32 / self.width() as f32;
-        let v_max = (cell_y + self.cell) as f32 / self.height() as f32;
-        let uv = [u_min, v_min, u_max, v_max];
-
-        let glyph = self.font.glyph_id(character).with_scale(RASTER_SCALE);
-        let (sdf_cell, cell_rect, bounds) = if let Some(outlined) = self.font.outline_glyph(glyph) {
-            rasterize_sdf(&outlined, self.cell)
-        } else {
-            placeholder_sdf(self.cell)
+        let (font, glyph_id) = self.font_for(character);
+        let units_per_em = font.units_per_em().unwrap_or(1000.0);
+        let advance = font.h_advance_unscaled(glyph_id) / units_per_em * RASTER_SCALE;
+        // 打包矩形 = 字形像素包围盒 + 2*PAD 边距。
+        let (rect_w, rect_h) = match font.outline(glyph_id) {
+            Some(outline) => glyph_rect_size(&outline, units_per_em),
+            None => placeholder_rect_size(),
         };
+        // 打包；空间不足则增长图集（已有字形位置不变）。
+        let (x, y) = loop {
+            if let Some(at) = self.packer.pack(rect_w, rect_h) {
+                break at;
+            }
+            if !self.grow() {
+                return Err(FontAtlasError::AtlasFull {
+                    character,
+                    width: self.width,
+                    height: self.height,
+                    capacity: self.used,
+                });
+            }
+        };
+        let (cell_rgba, cell_rect, bounds) = match font.outline(glyph_id) {
+            Some(outline) => rasterize_msdf(&outline, rect_w, rect_h, units_per_em),
+            None => placeholder_msdf(rect_w, rect_h),
+        };
+        // cell_rgba 是 rect_w×rect_h×4 的 RGBA（MSDF 三通道 + alpha=255）。
+        let row_bytes = (rect_w * 4) as usize;
+        for dy in 0..rect_h {
+            let src = (dy as usize * row_bytes) as usize;
+            let dst = (((y + dy) * self.width + x) as usize) * 4;
+            self.pixels[dst..dst + row_bytes].copy_from_slice(&cell_rgba[src..src + row_bytes]);
+        }
+        let uv = [
+            x as f32 / self.width as f32,
+            y as f32 / self.height as f32,
+            (x + rect_w) as f32 / self.width as f32,
+            (y + rect_h) as f32 / self.height as f32,
+        ];
         let metrics = GlyphMetrics {
             uv,
             cell_rect,
             bounds,
-            advance: self.font.h_advance_unscaled(self.font.glyph_id(character))
-                / self.font.units_per_em().unwrap_or(1000.0)
-                * RASTER_SCALE,
+            advance,
         };
-
-        for dy in 0..self.cell {
-            for dx in 0..self.cell {
-                let value = sdf_cell[(dy * self.cell + dx) as usize];
-                let offset = (((cell_y + dy) * self.width() + cell_x + dx) as usize) * 4;
-                self.pixels[offset..offset + 4].copy_from_slice(&[value, 0, 0, 255]);
-            }
-        }
         self.used += 1;
         self.dirty = true;
         self.version = self.version.wrapping_add(1);
-        self.slots.insert(character, slot);
         self.cached.insert(character, metrics);
         Ok(metrics)
     }
@@ -266,149 +279,200 @@ impl FontAtlas {
                     uv: [0.0; 4],
                     cell_rect: [0.0; 4],
                     bounds: [0.0; 4],
-                    advance: self.cell as f32,
+                    advance: self.advance(character),
                 }
             }
         }
     }
 }
 
-/// Rasterizes a glyph into a cell-sized SDF (R values `0..=255`).
-/// Returns `(sdf_cell, cell_rect, bounds)` where `cell_rect` is the glyph's
-/// `[left, top, right, bottom]` in cell texels.
-fn rasterize_sdf(outlined: &ab_glyph::OutlinedGlyph, cell: u32) -> (Vec<u8>, [f32; 4], [f32; 4]) {
-    let cell_i = cell as i32;
-    let bounds = outlined.px_bounds();
-    // 笔原点（把字形设备包围盒居中到 cell 内）。
-    let ox = (cell_i - (bounds.min.x as i32 + bounds.max.x as i32)) / 2;
-    let oy = (cell_i - (bounds.min.y as i32 + bounds.max.y as i32)) / 2;
-    let left = ox + bounds.min.x as i32;
-    let top = oy + bounds.min.y as i32;
-    let right = ox + bounds.max.x as i32;
-    let bottom = oy + bounds.max.y as i32;
-    let mut mask = vec![false; (cell * cell) as usize];
-    outlined.draw(|x, y, coverage| {
-        // draw 的 x/y 是 0 基（相对 bounds.min 的栅格坐标）。
-        let xi = left + x as i32;
-        let yi = top + y as i32;
-        if xi >= 0 && yi >= 0 && xi < cell_i && yi < cell_i && coverage > 0.5 {
-            mask[yi as usize * cell as usize + xi as usize] = true;
-        }
-    });
-    let sdf = sdf_from_mask(&mask, cell);
-    (
-        sdf,
-        [left as f32, top as f32, right as f32, bottom as f32],
-        [bounds.min.x, bounds.min.y, bounds.max.x, bounds.max.y],
-    )
+/// Shelf 打包器：把不同尺寸的字形矩形密排进图集。字形只增不删（缓存后永驻），
+/// 无需释放；空间不足由调用方增长画布（增长向右下扩展，已有位置不变）。
+#[derive(Clone, Debug)]
+struct Packer {
+    width: u32,
+    height: u32,
+    /// 打开的 shelf：(y, shelf_height, 已用 x)。
+    shelves: Vec<(u32, u32, u32)>,
+    next_y: u32,
 }
 
-/// 缺失字形：画一个占位方框（边框为实心），同样走 SDF 抗锯齿。
-fn placeholder_sdf(cell: u32) -> (Vec<u8>, [f32; 4], [f32; 4]) {
-    let cell_i = cell as i32;
-    let inset = cell_i / 5;
-    let mut mask = vec![false; (cell * cell) as usize];
-    for y in 0..cell_i {
-        for x in 0..cell_i {
-            let is_edge = (x >= inset
-                && x < cell_i - inset
-                && (y == inset || y == cell_i - inset - 1))
-                || (y >= inset && y < cell_i - inset && (x == inset || x == cell_i - inset - 1));
-            if is_edge {
-                mask[y as usize * cell as usize + x as usize] = true;
+impl Packer {
+    fn new(width: u32, height: u32) -> Self {
+        Packer {
+            width,
+            height,
+            shelves: Vec::new(),
+            next_y: 0,
+        }
+    }
+
+    fn set_size(&mut self, width: u32, height: u32) {
+        self.width = width;
+        self.height = height;
+    }
+
+    /// 放置 `w×h` 矩形，返回左上角坐标；放不下返回 `None`。
+    fn pack(&mut self, w: u32, h: u32) -> Option<(u32, u32)> {
+        for (y, shelf_h, used_x) in &mut self.shelves {
+            if *shelf_h >= h && *used_x + w <= self.width {
+                let at = (*used_x, *y);
+                *used_x += w;
+                return Some(at);
             }
         }
+        if w <= self.width && self.next_y + h <= self.height {
+            let at = (0, self.next_y);
+            self.next_y += h;
+            self.shelves.push((at.1, h, w));
+            return Some(at);
+        }
+        None
     }
-    let sdf = sdf_from_mask(&mask, cell);
-    (
-        sdf,
-        [
-            inset as f32,
-            inset as f32,
-            (cell_i - inset) as f32,
-            (cell_i - inset) as f32,
-        ],
-        [
-            inset as f32,
-            inset as f32,
-            (cell_i - inset) as f32,
-            (cell_i - inset) as f32,
-        ],
-    )
 }
 
-/// 二值掩码 → 有向距离场（R 值 `0..=255`，边缘归一化为 128）。
-fn sdf_from_mask(mask: &[bool], cell: u32) -> Vec<u8> {
-    let w = cell as usize;
-    let inside = edt_2d(mask, w, w);
-    let inv: Vec<bool> = mask.iter().map(|value| !value).collect();
-    let outside = edt_2d(&inv, w, w);
-    let spread = PAD as f32;
-    mask.iter()
-        .enumerate()
-        .map(|(i, _)| {
-            // 有向距离：字形内部为正（inside 距离小、outside 距离大）。
-            let d = outside[i].sqrt() - inside[i].sqrt();
-            let norm = (0.5 + d / (2.0 * spread)).clamp(0.0, 1.0);
-            (norm * 255.0) as u8
-        })
-        .collect()
+/// 字形在 `RASTER_SCALE` 下的打包矩形尺寸 = 像素包围盒 + `2*PAD` 边距。
+fn glyph_rect_size(outline: &Outline, units_per_em: f32) -> (u32, u32) {
+    let scale = RASTER_SCALE as f64 / units_per_em as f64;
+    let b = &outline.bounds;
+    let w = ((b.max.x - b.min.x) as f64 * scale).ceil() as i64 + PAD as i64 * 2;
+    let h = ((b.min.y - b.max.y) as f64 * scale).ceil() as i64 + PAD as i64 * 2;
+    (w.max(1) as u32, h.max(1) as u32)
 }
 
-/// 精确 L2 距离变换：1D 下包络（Felzenszwalb–Huttenlocher），O(n)。
-fn edt_1d(f: &mut [f32]) {
-    let n = f.len();
-    let mut v = vec![0usize; n];
-    let mut z = vec![f32::NEG_INFINITY; n + 1];
-    z[1] = f32::INFINITY;
-    let mut k = 0usize;
-    v[0] = 0;
-    for q in 1..n {
-        let mut s;
-        loop {
-            let p = v[k];
-            s = ((f[q] + q as f32 * q as f32) - (f[p] + p as f32 * p as f32))
-                / (2.0 * q as f32 - 2.0 * p as f32);
-            if s > z[k] {
-                break;
+/// 占位字形（方框）的打包矩形尺寸。
+fn placeholder_rect_size() -> (u32, u32) {
+    let side = RASTER_SCALE as u32 + PAD as u32 * 2;
+    (side, side)
+}
+
+/// Rasterizes a glyph outline (design space, Y-up) into an MSDF rect
+/// (RGBA8: RGB = 多通道距离场, A = 255；边缘处 median ≈ 128)。返回
+/// `(rgba, cell_rect, bounds)`：`cell_rect` 为字形在 rect 内的
+/// `[left, top, right, bottom]`（Y 向下），`bounds` 为相对笔的设备像素包围盒。
+fn rasterize_msdf(
+    outline: &Outline,
+    width: u32,
+    height: u32,
+    units_per_em: f32,
+) -> (Vec<u8>, [f32; 4], [f32; 4]) {
+    let scale = RASTER_SCALE as f64 / units_per_em as f64;
+    let b = &outline.bounds;
+    // ab_glyph Rect.min = 左上、Rect.max = 右下。设计空间点（Y 向上）：b.min.y = 顶部。
+    let left_px = b.min.x as f64 * scale;
+    let right_px = b.max.x as f64 * scale;
+    let top_up = b.min.y as f64 * scale; // Y-up 顶部（y 大）
+    let bottom_up = b.max.y as f64 * scale; // Y-up 底部（y 小）
+    let wf = width as f64;
+    let hf = height as f64;
+    // 把字形居中到 rect（Y-up 像素坐标，0..height）。
+    let ox = wf / 2.0 - (left_px + right_px) / 2.0;
+    let oy = hf / 2.0 - (top_up + bottom_up) / 2.0;
+
+    let transform = |p: &Point| Vector2::new(p.x as f64 * scale + ox, p.y as f64 * scale + oy);
+    let mut shape = Shape::new();
+    let mut contour = Contour::new();
+    let mut prev_end: Option<[f32; 2]> = None;
+    for curve in &outline.curves {
+        let (start, end, segment) = match curve {
+            OutlineCurve::Line(a, b) => (a, b, EdgeSegment::line(transform(a), transform(b))),
+            OutlineCurve::Quad(a, c, b) => {
+                (a, b, EdgeSegment::quadratic(transform(a), transform(c), transform(b)))
             }
-            k -= 1;
+            OutlineCurve::Cubic(a, c, d, b) => (
+                a,
+                b,
+                EdgeSegment::cubic(transform(a), transform(c), transform(d), transform(b)),
+            ),
+        };
+        if let Some(prev) = prev_end {
+            // move_to 后新轮廓的第一条曲线起点 != 上一条曲线终点 → 新轮廓。
+            if start.x != prev[0] || start.y != prev[1] {
+                if !contour.is_empty() {
+                    shape.add_contour(std::mem::take(&mut contour));
+                }
+            }
         }
-        k += 1;
-        v[k] = q;
-        z[k] = s;
-        z[k + 1] = f32::INFINITY;
+        contour.add_edge(segment);
+        prev_end = Some([end.x, end.y]);
     }
-    k = 0;
-    for q in 0..n {
-        while z[k + 1] < q as f32 {
-            k += 1;
-        }
-        let d = q as f32 - v[k] as f32;
-        f[q] = d * d + f[v[k]];
+    if !contour.is_empty() {
+        shape.add_contour(contour);
     }
+    if shape.contours.is_empty() {
+        return placeholder_msdf(width, height);
+    }
+
+    let rgba = msdf_rect_from_shape(&mut shape, width, height);
+    // cell_rect（Y 向下）：水平不变，垂直把 Y-up 顶部翻到 rect 顶部。
+    let cell_rect = [
+        (left_px + ox) as f32,
+        (hf - (top_up + oy)) as f32,
+        (right_px + ox) as f32,
+        (hf - (bottom_up + oy)) as f32,
+    ];
+    // bounds（Y 向下、相对 pen 的设备像素）：y_down = -y_up。
+    let bounds = [
+        left_px as f32,
+        (-top_up) as f32,
+        right_px as f32,
+        (-bottom_up) as f32,
+    ];
+    (rgba, cell_rect, bounds)
 }
 
-/// 二值掩码 → 精确平方 L2 距离（列趟 + 行趟）。
-fn edt_2d(mask: &[bool], width: usize, height: usize) -> Vec<f32> {
-    let mut dist = vec![BIG; width * height];
-    let mut col = vec![0.0; height];
-    for x in 0..width {
-        for y in 0..height {
-            col[y] = if mask[y * width + x] { 0.0 } else { BIG };
-        }
-        edt_1d(&mut col);
-        for y in 0..height {
-            dist[y * width + x] = col[y];
+/// 从已就绪的 Shape 生成 MSDF 像素（width×height×4 RGBA，行 0 = 顶部）。
+/// bymsdfgen 的 `Bitmap` 行 0 在底部（Y 向上），翻转行序写入以匹配 Y 向下的图集。
+fn msdf_rect_from_shape(shape: &mut Shape, width: u32, height: u32) -> Vec<u8> {
+    shape.normalize();
+    shape.orient_contours();
+    edge_coloring_simple(shape, 3.0, 0);
+    let w = width as usize;
+    let h = height as usize;
+    let mut msdf: Bitmap<f32, 3> = Bitmap::new(w, h);
+    let transformation = SdfTransformation::new(
+        Projection::default(),
+        DistanceMapping::from_range(Range::symmetric(PAD as f64)),
+    );
+    generate_msdf(&mut msdf, shape, &transformation, &MsdfGeneratorConfig::default());
+    let mut pixels = vec![0u8; w * h * 4];
+    for by in 0..h {
+        let ay = h - 1 - by;
+        for bx in 0..w {
+            let c = msdf.pixel(bx, by);
+            let off = (ay * w + bx) * 4;
+            pixels[off] = (c[0].clamp(0.0, 1.0) * 255.0) as u8;
+            pixels[off + 1] = (c[1].clamp(0.0, 1.0) * 255.0) as u8;
+            pixels[off + 2] = (c[2].clamp(0.0, 1.0) * 255.0) as u8;
+            pixels[off + 3] = 255;
         }
     }
-    let mut row = vec![0.0; width];
-    for y in 0..height {
-        row.copy_from_slice(&dist[y * width..y * width + width]);
-        edt_1d(&mut row);
-        dist[y * width..y * width + width].copy_from_slice(&row);
+    pixels
+}
+
+/// 缺失字形：画一个占位方框，同样走 MSDF。
+fn placeholder_msdf(width: u32, height: u32) -> (Vec<u8>, [f32; 4], [f32; 4]) {
+    let wf = width as f32;
+    let hf = height as f32;
+    let inset_x = (wf / 5.0).min(wf / 2.0 - 1.0).max(1.0);
+    let inset_y = (hf / 5.0).min(hf / 2.0 - 1.0).max(1.0);
+    let pts = [
+        [inset_x, inset_y],
+        [wf - inset_x, inset_y],
+        [wf - inset_x, hf - inset_y],
+        [inset_x, hf - inset_y],
+    ];
+    let mut shape = Shape::new();
+    let contour = shape.add_contour_mut();
+    for i in 0..4 {
+        contour.add_edge(EdgeSegment::line(
+            Vector2::new(pts[i][0] as f64, pts[i][1] as f64),
+            Vector2::new(pts[(i + 1) % 4][0] as f64, pts[(i + 1) % 4][1] as f64),
+        ));
     }
-    dist
+    let rgba = msdf_rect_from_shape(&mut shape, width, height);
+    let rect = [inset_x, inset_y, wf - inset_x, hf - inset_y];
+    (rgba, rect, rect)
 }
 
 #[cfg(test)]
@@ -435,29 +499,114 @@ mod tests {
         assert_eq!(atlas.version(), 1);
         let metrics2 = atlas.glyph_metrics('俯');
         assert_eq!(metrics, metrics2, "same glyph is cached");
-        // SDF 符号验证：单元角（远离字形）应为外部 R<128；存在内部像素（R>140）。
-        let (cell_x, cell_y) = (0u32, 0u32); // 第一个字形在 (0,0) 单元。
-        let corner = atlas.pixels()[((cell_y * atlas.width() + cell_x) as usize) * 4];
-        assert!(
-            corner < 128,
-            "cell corner should be outside glyph, got {corner}"
-        );
+        // MSDF 符号验证：打包矩形角落（边距区）应为外部（RGB median<128）；字形
+        // 内部存在 median>140 的像素。median(r,g,b)≈0.5 即边缘。
+        let pixel_median = |offset: usize| -> u8 {
+            let mut v = [
+                atlas.pixels()[offset],
+                atlas.pixels()[offset + 1],
+                atlas.pixels()[offset + 2],
+            ];
+            v.sort_unstable();
+            v[1]
+        };
+        // 第一个字形打包在 (0,0)，矩形尺寸由 uv 换算。
+        let rect_w = ((metrics.uv[2] - metrics.uv[0]) * atlas.width() as f32) as u32;
+        let rect_h = ((metrics.uv[3] - metrics.uv[1]) * atlas.height() as f32) as u32;
+        let corner = pixel_median(0);
+        assert!(corner < 128, "rect corner should be outside glyph, got {corner}");
         let mut inside = 0;
-        for dy in 0..atlas.cell {
-            for dx in 0..atlas.cell {
-                let offset = (((cell_y + dy) * atlas.width() + cell_x + dx) as usize) * 4;
-                if atlas.pixels()[offset] > 140 {
+        for dy in 0..rect_h {
+            for dx in 0..rect_w {
+                let offset = ((dy * atlas.width() + dx) as usize) * 4;
+                if pixel_median(offset) > 140 {
                     inside += 1;
                 }
             }
         }
-        assert!(inside > 0, "glyph stroke must be inside (R>128)");
+        assert!(inside > 0, "glyph stroke must be inside (median>128)");
+        // MSDF 路径的 cell_rect/bounds：落在打包矩形内且非退化。
+        let rect = metrics.cell_rect;
+        assert!(
+            rect[0] >= 0.0 && rect[1] >= 0.0 && rect[2] <= rect_w as f32 && rect[3] <= rect_h as f32,
+            "cell_rect within rect: {rect:?}"
+        );
+        assert!(rect[2] > rect[0] && rect[3] > rect[1], "glyph rect non-degenerate: {rect:?}");
     }
 
     #[test]
     fn rejects_invalid_font_bytes_without_leaking_owned_storage() {
         let error = FontAtlas::load(b"not-a-font").expect_err("invalid bytes must fail");
         assert!(error.contains("字体解析失败"));
+    }
+
+    /// 微软雅黑（msyh.ttc，TTF 集合）应能被 FontArc 解析（face 0），且 MSDF
+    /// 图集对复杂 CJK 字形正常生成（角外部 median<128、存在内部像素 median>140）。
+    #[test]
+    fn msdf_generates_for_msyh_ttc_collection() {
+        let path = crate::core::games_dir().join("ui_demo/assets/fonts/msyh.ttc");
+        let bytes = std::fs::read(&path).expect("msyh.ttc 已拷入 ui_demo assets/fonts");
+        let mut atlas = FontAtlas::load(&bytes).expect("FontArc 应能解析 msyh.ttc 集合");
+        let metrics = atlas.glyph_metrics('腾');
+        assert!(metrics.advance > 0.0);
+        assert!(metrics.bounds[2] > metrics.bounds[0] && metrics.bounds[3] > metrics.bounds[1]);
+        let pixel_median = |offset: usize| -> u8 {
+            let mut v = [
+                atlas.pixels()[offset],
+                atlas.pixels()[offset + 1],
+                atlas.pixels()[offset + 2],
+            ];
+            v.sort_unstable();
+            v[1]
+        };
+        let rect_w = ((metrics.uv[2] - metrics.uv[0]) * atlas.width() as f32) as u32;
+        let rect_h = ((metrics.uv[3] - metrics.uv[1]) * atlas.height() as f32) as u32;
+        let corner = pixel_median(0);
+        assert!(corner < 128, "rect corner outside glyph, got {corner}");
+        let mut inside = 0;
+        for dy in 0..rect_h {
+            for dx in 0..rect_w {
+                let offset = ((dy * atlas.width() + dx) as usize) * 4;
+                if pixel_median(offset) > 140 {
+                    inside += 1;
+                }
+            }
+        }
+        assert!(inside > 0, "msyh 字形应有内部像素（median>128）");
+    }
+
+    /// 后备字体：主字体缺失的字形用后备字体生成（advance/bounds 来自后备字体）。
+    #[test]
+    fn fallback_font_serves_chars_missing_from_primary() {
+        let primary_bytes = std::fs::read(
+            crate::core::games_dir().join("ui_demo/assets/fonts/msyh.ttc"),
+        )
+        .expect("msyh.ttc");
+        let fallback_bytes = test_font(); // Noto Sans SC
+        // 找一个主字体缺失、后备字体存在的字符（msyh 覆盖有限、Noto 更全）。
+        let primary = FontArc::try_from_vec(primary_bytes.clone()).unwrap();
+        let fallback = FontArc::try_from_vec(fallback_bytes.clone()).unwrap();
+        let candidate = (0x4E00u32..0x9FFF)
+            .chain(0x2000..0x2070)
+            .chain(0x20A0..0x20C0)
+            .chain(0x3000..0x3040)
+            .filter_map(char::from_u32)
+            .find(|c| primary.glyph_id(*c).0 == 0 && fallback.glyph_id(*c).0 != 0)
+            .expect("应存在主字体缺而后备字体有的字符");
+        let mut atlas =
+            FontAtlas::load_with_fallback(&primary_bytes, Some(&fallback_bytes)).unwrap();
+        let metrics = atlas.glyph_metrics(candidate);
+        assert!(metrics.advance > 0.0, "后备字形应有 advance");
+        assert!(
+            metrics.bounds[2] > metrics.bounds[0] && metrics.bounds[3] > metrics.bounds[1],
+            "后备字形应有非退化 bounds: {:?}",
+            metrics.bounds
+        );
+        // 主字体有的字符仍由主字体提供（advance 与仅主字体加载一致）。
+        let mut primary_only = FontAtlas::load(&primary_bytes).unwrap();
+        let a = atlas.glyph_metrics('A');
+        let b = primary_only.glyph_metrics('A');
+        assert_eq!(a.advance, b.advance, "主字体字符的 advance 应与单字体一致");
     }
 
     #[test]
@@ -467,17 +616,18 @@ mod tests {
         let first = atlas.glyph_metrics('俯');
         let old_width = atlas.width();
         let old_height = atlas.height();
-        let old_cell = atlas.cell;
-        let old_cell_pixels: Vec<u8> = (0..old_cell)
+        // 捕获首个字形打包矩形（原点在 (0,0)）在旧图集中的像素块。
+        let rect_w = ((first.uv[2] - first.uv[0]) * old_width as f32) as u32;
+        let rect_h = ((first.uv[3] - first.uv[1]) * old_height as f32) as u32;
+        let old_rect_pixels: Vec<u8> = (0..rect_h)
             .flat_map(|y| {
                 let start = (y * old_width * 4) as usize;
-                atlas.pixels()[start..start + (old_cell * 4) as usize].to_vec()
+                atlas.pixels()[start..start + (rect_w * 4) as usize].to_vec()
             })
             .collect();
         let old_version = atlas.version();
         atlas.mark_uploaded();
-        // Fill the initial grid with distinct Unicode glyphs. The final glyph
-        // forces growth and must not invalidate already cached geometry.
+        // 填满初始图集并触发增长；增长不应破坏已缓存字形（打包位置不变 → UV 稳定）。
         for index in 0..=256u32 {
             let character = char::from_u32(0x4e00 + index).unwrap();
             let _ = atlas.glyph_metrics(character);
@@ -488,16 +638,15 @@ mod tests {
         assert_eq!(atlas.glyph_metrics('俯').cell_rect, first.cell_rect);
         assert_eq!(atlas.glyph_metrics('俯').bounds, first.bounds);
         assert_eq!(atlas.glyph_metrics('俯').advance, first.advance);
-        assert_ne!(atlas.glyph_metrics('俯').uv, first.uv);
-        for y in 0..old_cell {
+        assert_eq!(atlas.glyph_metrics('俯').uv, first.uv, "打包 UV 应随增长保持稳定");
+        for y in 0..rect_h {
             let start = (y * atlas.width() * 4) as usize;
-            let end = start + (old_cell * 4) as usize;
-            let expected_start = (y * old_cell * 4) as usize;
-            let expected_end = expected_start + (old_cell * 4) as usize;
+            let end = start + (rect_w * 4) as usize;
+            let expected_start = (y * rect_w * 4) as usize;
             assert_eq!(
                 &atlas.pixels()[start..end],
-                &old_cell_pixels[expected_start..expected_end],
-                "old top-left cell pixels are preserved"
+                &old_rect_pixels[expected_start..expected_start + (rect_w * 4) as usize],
+                "old first-glyph rect pixels are preserved"
             );
         }
     }
@@ -506,11 +655,17 @@ mod tests {
     fn atlas_full_is_reported_structurally() {
         let bytes = test_font();
         let mut atlas = FontAtlas::load(&bytes).unwrap();
-        for index in 0..(MAX_COLS * MAX_ROWS) {
+        // 用不同 Unicode 字形填满打包图集（增长到 4096² 后报满），记录首个失败字形。
+        let mut full = None;
+        for index in 0..(MAX_ATLAS_SIZE as u32 / 2) {
             let character = char::from_u32(0x1000 + index).unwrap();
-            atlas.try_glyph_metrics(character).unwrap();
+            if atlas.try_glyph_metrics(character).is_err() {
+                full = Some(character);
+                break;
+            }
         }
-        let error = atlas.try_glyph_metrics('\u{3000}').unwrap_err();
+        assert!(full.is_some(), "打包图集应在某字形处报满");
+        let error = atlas.try_glyph_metrics(full.unwrap()).unwrap_err();
         assert!(matches!(error, FontAtlasError::AtlasFull { .. }));
         assert!(error.to_string().contains("字体图集已满"));
     }
@@ -525,19 +680,22 @@ mod tests {
         assert!(!atlas.dirty());
     }
 
-    /// M11-05：AtlasFull 之后 glyph 缓存 / 插槽 / 像素缓冲都不再增长——继续请求
-    /// 未缓存字形只会失败（返回 AtlasFull 错误），不会扩张内存。
+    /// M11-05：AtlasFull 之后 glyph 缓存 / 像素缓冲都不再增长——继续请求未缓存
+    /// 字形只会失败（返回 AtlasFull 错误），不会扩张内存。
     #[test]
     fn glyph_cache_and_pixels_stay_bounded_after_atlas_full() {
         let bytes = test_font();
         let mut atlas = FontAtlas::load(&bytes).unwrap();
-        for index in 0..(MAX_COLS * MAX_ROWS) {
+        for index in 0..(MAX_ATLAS_SIZE as u32 / 2) {
             let character = char::from_u32(0x1000 + index).unwrap();
-            let _ = atlas.try_glyph_metrics(character);
+            if atlas.try_glyph_metrics(character).is_err() {
+                break;
+            }
         }
         let cached = atlas.cached.len();
-        let slots = atlas.slots.len();
         let pixels = atlas.pixels.len();
+        let width = atlas.width();
+        let height = atlas.height();
         for index in 0..256u32 {
             let character = char::from_u32(0x8000 + index).unwrap();
             assert!(
@@ -549,13 +707,13 @@ mod tests {
             );
         }
         assert_eq!(atlas.cached.len(), cached, "缓存不应继续增长");
-        assert_eq!(atlas.slots.len(), slots, "插槽不应继续增长");
         assert_eq!(atlas.pixels.len(), pixels, "像素缓冲不应继续增长");
-        let cell = atlas.cell as u64;
+        assert_eq!(atlas.width(), width, "图集宽度不应继续增长");
+        assert_eq!(atlas.height(), height, "图集高度不应继续增长");
         assert_eq!(
-            atlas.width() as u64 * atlas.height() as u64,
-            (MAX_COLS as u64 * cell) * (MAX_ROWS as u64 * cell),
-            "图集尺寸不超过上限"
+            atlas.width(),
+            MAX_ATLAS_SIZE,
+            "打包图集应增长到 4096 上限"
         );
     }
 
@@ -582,13 +740,11 @@ mod tests {
             max_cached <= sample.len(),
             "缓存应 ≤ 输入字形数，实际 {max_cached}"
         );
-        let initial_cell_pixels =
-            (INITIAL_COLS * INITIAL_ROWS * (RASTER_SCALE as u32 + PAD as u32 * 2)) as usize
-                * (RASTER_SCALE as u32 + PAD as u32 * 2) as usize
-                * 4;
+        let initial_atlas_pixels =
+            (INITIAL_ATLAS_SIZE as usize) * (INITIAL_ATLAS_SIZE as usize) * 4;
         assert!(
-            max_pixels <= initial_cell_pixels,
-            "像素缓冲应 ≤ 初始网格，实际 {max_pixels}"
+            max_pixels <= initial_atlas_pixels,
+            "像素缓冲应 ≤ 初始图集（样例未触发增长），实际 {max_pixels}"
         );
     }
 }

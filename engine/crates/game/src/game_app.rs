@@ -411,14 +411,15 @@ fn rect_vertices(x0: f32, y0: f32, x1: f32, y1: f32) -> [OverlayVertex; 6] {
 
 fn map_key(key: &winit::keyboard::Key) -> Option<InputKey> {
     match key {
-        winit::keyboard::Key::Character(value) => match value.as_str() {
-            "w" | "W" => Some(InputKey::W),
-            "a" | "A" => Some(InputKey::A),
-            "s" | "S" => Some(InputKey::S),
-            "d" | "D" => Some(InputKey::D),
-            "r" | "R" => Some(InputKey::Other(99)), // 重玩一局
-            _ => None,
-        },
+        winit::keyboard::Key::Character(value) => {
+            // 单字母键按小写 ASCII 码映射（Q/E/R/T/F/G 互不相同），与
+            // `parse_key` 和编辑器预览输入层保持一致。
+            let mut chars = value.chars();
+            match (chars.next(), chars.next()) {
+                (Some(letter), None) => Some(InputKey::from_char(letter)),
+                _ => None,
+            }
+        }
         winit::keyboard::Key::Named(winit::keyboard::NamedKey::Space) => Some(InputKey::Space),
         winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape) => Some(InputKey::Escape),
         winit::keyboard::Key::Named(winit::keyboard::NamedKey::F1) => Some(InputKey::Other(1)),

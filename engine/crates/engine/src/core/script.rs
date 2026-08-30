@@ -26,9 +26,10 @@ use crate::core::{
     physics::{ColliderDesc, ColliderShape, PhysicsWorld},
     physics3d::{ColliderDesc3d, PhysicsWorld3d},
     resource_db::AssetId,
-    save::{decode as decode_save, encode as encode_save},
+    save::encode as encode_save,
     scene::Scene,
     sprite::{SpriteAsset, SpriteComponent},
+    tilemap::DEFAULT_TILESET as DEFAULT_TILESET_PATH,
     tilemap::Tilemap,
     transform::{Transform, Vec2},
     transform3d::Transform3D,
@@ -90,8 +91,18 @@ struct ScriptState {
     ui_images: BTreeMap<String, UiImage>,
     ui_grids: BTreeMap<String, UiGrid>,
     data_cache: BTreeMap<String, serde_json::Value>,
+    /// Registered `data.schema(path, spec)` validators for data tables.
+    schema_defs: BTreeMap<String, serde_json::Value>,
+    /// Shop catalogs: name -> `{ item_id: { buy, sell } }` (M16-10).
+    shops: BTreeMap<String, serde_json::Value>,
+    /// Save file version last loaded, used by `save.version` and `on_migrate`
+    /// (M16-09). Defaults to current for a fresh session.
+    save_version: u32,
     save_slot: Option<String>,
     ui_viewport: [f32; 2],
+    /// Canvas 空间 UI 参考分辨率（设计分辨率），与运行时渲染保持一致，
+    /// 供 Lua 侧 `process_ui_clicks` / `grid_hit` 命中测试使用。
+    ui_reference: [f32; 2],
     ui_drag: Option<UiDrag>,
 }
 
@@ -259,6 +270,8 @@ impl LuaRuntime {
     pub fn new() -> Result<Self, LuaBridgeError> {
         let lua = Lua::new();
         let state = Rc::new(RefCell::new(ScriptState::default()));
+        state.borrow_mut().save_version = crate::core::save::CURRENT_SAVE_VERSION;
+        state.borrow_mut().ui_reference = crate::core::ui::UI_REFERENCE_SIZE;
         register_api(&lua, Rc::clone(&state))
             .map_err(|error| LuaBridgeError::Init(error.to_string()))?;
         Ok(Self {
@@ -331,50 +344,28 @@ impl LuaRuntime {
         Ok(count)
     }
 
-    /// 按下边沿的 Button 命中测试 → 调用全局 `on_click(name)`（若脚本定义了）。
+    /// 按下边沿的 clickEvent 命中 → 调用全局 `on_click(name)`（若脚本定义了）。
+    /// 命中矩形 `(name, origin, size)` 由 `RuntimeScene::compute_click_targets` 预计算
+    /// （含 Image/Text UI 矩形与 Sprite 相机投影），本方法只做点选与 Lua 分发。
     pub fn process_ui_clicks(
         &self,
         input: &InputSnapshot,
-        viewport_width: u32,
-        viewport_height: u32,
+        targets: &[(String, [f32; 2], [f32; 2])],
     ) -> Result<(), LuaBridgeError> {
         if !input.mouse_just_pressed(MouseButton::Left) {
             return Ok(());
         }
         let (mx, my) = input.cursor_position();
-        let viewport = [viewport_width.max(1) as f32, viewport_height.max(1) as f32];
-        let clicked: Vec<String> = {
-            let state = self.state.borrow();
-            state
-                .world
-                .entities_with::<crate::core::ui::UiButton>()
-                .into_iter()
-                .filter_map(|id| {
-                    let Ok(Some(button)) = state.world.get::<crate::core::ui::UiButton>(id) else {
-                        return None;
-                    };
-                    let (origin, size) = crate::core::ui::resolve_ui_rect(
-                        button.position,
-                        button.size,
-                        button.space,
-                        button.anchor,
-                        viewport,
-                    );
-                    let inside = (mx as f32) >= origin[0]
-                        && (mx as f32) <= origin[0] + size[0]
-                        && (my as f32) >= origin[1]
-                        && (my as f32) <= origin[1] + size[1];
-                    if !inside {
-                        return None;
-                    }
-                    state
-                        .names
-                        .iter()
-                        .find(|(_, entity)| **entity == id)
-                        .map(|(name, _)| name.clone())
-                })
-                .collect()
-        };
+        let clicked: Vec<String> = targets
+            .iter()
+            .filter(|(_, origin, size)| {
+                (mx as f32) >= origin[0]
+                    && (mx as f32) <= origin[0] + size[0]
+                    && (my as f32) >= origin[1]
+                    && (my as f32) <= origin[1] + size[1]
+            })
+            .map(|(name, _, _)| name.clone())
+            .collect();
         for name in clicked {
             let callback: Value =
                 self.lua
@@ -541,13 +532,11 @@ impl LuaRuntime {
                 .insert(id, image)
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
         }
-        if let Some(value) = components.get("Button") {
-            let button = crate::core::ui::UiButton::from_component_str(value).map_err(|error| {
-                LuaBridgeError::Api(format!("entity {name:?} has an invalid Button: {error}"))
-            })?;
+        if components.contains_key("clickEvent") {
+            // 通用点击标记：任意实体（Image/Text/Sprite）可被点击，命中后调 Lua on_click(名字)。
             state
                 .world
-                .insert(id, button)
+                .insert(id, crate::core::ui::ClickEvent)
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
         }
         if !name.is_empty() {
@@ -634,13 +623,32 @@ impl LuaRuntime {
     /// Advances the game clock using real `delta_seconds` and the Lua-configured
     /// rate (`clock.set_rate`). Paused clocks and zero rates do nothing.
     pub fn step_clock(&mut self, delta_seconds: f32) {
-        self.state.borrow_mut().game_clock.step(delta_seconds);
+        let before = self.state.borrow().game_clock.day;
+        let after = {
+            let mut state = self.state.borrow_mut();
+            state.game_clock.step(delta_seconds);
+            state.game_clock.day
+        };
+        // A clock that crosses midnight while auto-advancing fires `on_day_start`
+        // so daily settlement (crops/weather) is not skipped (M16-08).
+        if after > before
+            && let Ok(function) = self.lua.globals().get::<mlua::Function>("on_day_start")
+            && let Err(error) = function.call::<()>(())
+        {
+            tracing::warn!(target: "script", error = %error, "on_day_start callback failed");
+        }
     }
 
     /// Stores the current viewport so Lua `ui.grid_hit` can resolve screen
     /// coordinates. The host calls this before rendering each frame.
     pub fn set_ui_viewport(&mut self, width: u32, height: u32) {
         self.state.borrow_mut().ui_viewport = [width.max(1) as f32, height.max(1) as f32];
+    }
+
+    /// Stores the Canvas 空间 UI 参考分辨率（设计分辨率），供 Lua 侧
+    /// `process_ui_clicks` / `ui.grid_hit` 命中测试与渲染保持一致。
+    pub fn set_ui_reference(&mut self, reference: [f32; 2]) {
+        self.state.borrow_mut().ui_reference = reference;
     }
 
     /// Sets the directory audio clips are loaded from.
@@ -693,6 +701,8 @@ impl LuaRuntime {
             state.ui_drag = None;
             state.tags.clear();
             state.interact_prompt = None;
+            state.schema_defs.clear();
+            state.shops.clear();
             state.scene_pending_load = None;
             state.scene = Some(name.clone());
             state.active_camera = None;
@@ -1045,6 +1055,15 @@ fn call_optional(lua: &Lua, name: &str) -> LuaResult<()> {
 }
 fn api_error(message: impl Into<String>) -> mlua::Error {
     mlua::Error::RuntimeError(message.into())
+}
+
+/// Calls a global Lua hook (`on_day_end` / `on_day_start`) if the script defines
+/// one. Missing hooks are a no-op; a hook that errors propagates the error.
+fn call_optional_day_hook(lua: &mlua::Lua, name: &str) -> Result<(), mlua::Error> {
+    if let Ok(function) = lua.globals().get::<mlua::Function>(name) {
+        function.call::<()>(())?;
+    }
+    Ok(())
 }
 fn entity_from_lua(value: i64) -> Result<EntityId, mlua::Error> {
     if value < 0 {
@@ -1584,6 +1603,79 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
         })?,
     )?;
     lua.globals().set("clock", clock)?;
+
+    // `calendar` derives season/year from the absolute in-game day (M16-08).
+    let calendar = lua.create_table()?;
+    let s = Rc::clone(&state);
+    calendar.set(
+        "now",
+        lua.create_function(move |lua, ()| {
+            let clock = &s.borrow().game_clock;
+            let now = lua.create_table()?;
+            now.set("absolute_day", clock.day as i64)?;
+            now.set("day", clock.day_of_season() as i64)?;
+            now.set("season", clock.season() as i64)?;
+            now.set("year", clock.year() as i64)?;
+            now.set("minute", clock.minute as i64)?;
+            Ok(now)
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    calendar.set(
+        "set",
+        lua.create_function(
+            move |_, (day, season, year, minute): (i64, i64, i64, i64)| {
+                let days = crate::core::gameplay::DAYS_PER_SEASON as i64;
+                if day < 1 || day > days {
+                    return Err(api_error(format!("calendar.set day must be in 1..={days}")));
+                }
+                if !(1..=crate::core::gameplay::SEASONS_PER_YEAR as i64).contains(&season) {
+                    return Err(api_error("calendar.set season must be in 1..=4"));
+                }
+                if year < 1 {
+                    return Err(api_error("calendar.set year must be >= 1"));
+                }
+                let absolute = (year - 1) * crate::core::gameplay::DAYS_PER_YEAR as i64
+                    + (season - 1) * days
+                    + day;
+                let mut state = s.borrow_mut();
+                state
+                    .game_clock
+                    .set_absolute(absolute as u32, minute.max(0) as u32);
+                Ok(())
+            },
+        )?,
+    )?;
+    lua.globals().set("calendar", calendar)?;
+
+    // `day` lifecycle: sleep to the next morning, firing `on_day_end` then
+    // `on_day_start` (M16-08). Gameplay registers those globals for settlement.
+    let day = lua.create_table()?;
+    let s = Rc::clone(&state);
+    day.set(
+        "sleep",
+        lua.create_function(move |lua, ()| {
+            call_optional_day_hook(lua, "on_day_end")?;
+            let new_day = {
+                let mut state = s.borrow_mut();
+                state.game_clock.sleep_to_morning()
+            };
+            call_optional_day_hook(lua, "on_day_start")?;
+            Ok(new_day as i64)
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    day.set(
+        "now",
+        lua.create_function(move |lua, ()| {
+            let clock = &s.borrow().game_clock;
+            let now = lua.create_table()?;
+            now.set("day", clock.day as i64)?;
+            now.set("minute", clock.minute as i64)?;
+            Ok(now)
+        })?,
+    )?;
+    lua.globals().set("day", day)?;
 
     let input = lua.create_table()?;
     for (name, mode) in [("is_down", 0_u8), ("just_pressed", 1), ("just_released", 2)] {
@@ -2178,6 +2270,40 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
             t.set("height", map.height)?;
             Ok(mlua::Value::Table(t))
         })?,
+    )?;
+    // `tilemap.create(width, height, tile_size, texture?, name?)` spawns a new
+    // entity with an empty Tilemap component, so farmland grids can be authored
+    // and rebuilt at runtime (M16-04) and survive scene-less/headless runs.
+    let s = Rc::clone(&state);
+    tilemap.set(
+        "create",
+        lua.create_function(
+            move |_,
+                  (width, height, tile_size, texture, name): (
+                usize,
+                usize,
+                f32,
+                Option<String>,
+                Option<String>,
+            )| {
+                let mut state = s.borrow_mut();
+                let mut map = Tilemap::new(Vec2::new(tile_size, tile_size), width, height)
+                    .map_err(|error| api_error(error.to_string()))?;
+                map.texture = texture.unwrap_or_else(|| DEFAULT_TILESET_PATH.to_owned());
+                let id = state.world.spawn();
+                state
+                    .world
+                    .insert(id, Transform::default())
+                    .map_err(world_error)?;
+                state.world.insert(id, map).map_err(world_error)?;
+                if let Some(name) = name
+                    && !name.is_empty()
+                {
+                    state.names.insert(name, id);
+                }
+                Ok(entity_to_lua(id))
+            },
+        )?,
     )?;
     let s = Rc::clone(&state);
     tilemap.set(
@@ -3067,6 +3193,27 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
         })?,
     )?;
     lua.globals().set("asset", asset)?;
+
+    // Validates a freshly loaded data table against its registered schema
+    // (`data.schema`), rejecting bad content with a located error instead of
+    // silently caching it.
+    fn validate_data_schema(
+        state: &Rc<RefCell<ScriptState>>,
+        path: &str,
+        json: &serde_json::Value,
+        verb: &str,
+    ) -> Result<(), mlua::Error> {
+        let schema = state.borrow().schema_defs.get(path).cloned();
+        if let Some(schema) = schema
+            && let Some(error) = crate::core::data_schema::validate(json, &schema, path)
+        {
+            return Err(api_error(format!(
+                "data.{verb} {path}: schema violation: {error}"
+            )));
+        }
+        Ok(())
+    }
+
     let data = lua.create_table()?;
     let s = Rc::clone(&state);
     data.set(
@@ -3093,6 +3240,7 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
             let json: serde_json::Value = serde_json::from_str(&text).map_err(|error| {
                 api_error(format!("data.load {}: {error}", file_path.display()))
             })?;
+            validate_data_schema(&s, &path, &json, "load")?;
             s.borrow_mut().data_cache.insert(path, json.clone());
             json_to_lua_value(lua, &json)
         })?,
@@ -3120,6 +3268,7 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
             let json: serde_json::Value = serde_json::from_str(&text).map_err(|error| {
                 api_error(format!("data.reload {}: {error}", file_path.display()))
             })?;
+            validate_data_schema(&s, &path, &json, "reload")?;
             s.borrow_mut().data_cache.insert(path, json.clone());
             json_to_lua_value(lua, &json)
         })?,
@@ -3129,6 +3278,22 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
         "cache_clear",
         lua.create_function(move |_, ()| {
             s.borrow_mut().data_cache.clear();
+            Ok(())
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    data.set(
+        "schema",
+        lua.create_function(move |_, (path, spec): (String, Option<Value>)| {
+            let mut state = s.borrow_mut();
+            if let Some(spec) = spec {
+                let json = lua_value_to_json(spec)?;
+                state.schema_defs.insert(path.clone(), json);
+                // A schema change must not be masked by a stale cached table.
+                state.data_cache.remove(&path);
+            } else {
+                state.schema_defs.remove(&path);
+            }
             Ok(())
         })?,
     )?;
@@ -3324,6 +3489,7 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
                         color: [r, g, b],
                         space: crate::core::ui::UiLayoutSpace::Screen,
                         anchor: [0.0, 0.0],
+                        nine_slice: None,
                     },
                 );
                 Ok(())
@@ -3433,7 +3599,9 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
                 return Err(api_error(format!("ui.grid {id} not found")));
             };
             for index in 1..=grid.columns * grid.rows {
-                let Some((origin, size)) = grid.cell_rect(index, state.ui_viewport) else {
+                let Some((origin, size)) =
+                    grid.cell_rect(index, state.ui_viewport, state.ui_reference)
+                else {
                     continue;
                 };
                 if x >= origin[0]
@@ -3897,6 +4065,53 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
             },
         )?,
     )?;
+    // Equipment skeleton (M16-07): named slots holding an item id. No runtime
+    // effect yet — stat/gear systems consume this in M18-00.
+    let s = Rc::clone(&state);
+    inv.set(
+        "equip",
+        lua.create_function(
+            move |_, (id, slot, item_id): (String, String, Option<String>)| {
+                if id.is_empty() || slot.is_empty() {
+                    return Err(api_error(
+                        "inv.equip needs an inventory id and a non-empty slot",
+                    ));
+                }
+                let mut state = s.borrow_mut();
+                let Some(inventory) = state.inventories.get_mut(&id) else {
+                    return Err(api_error(format!("inventory {id} not found")));
+                };
+                inventory.equip(&slot, item_id.as_deref().unwrap_or(""));
+                Ok(())
+            },
+        )?,
+    )?;
+    let s = Rc::clone(&state);
+    inv.set(
+        "equip_get",
+        lua.create_function(move |_, (id, slot): (String, String)| {
+            let state = s.borrow();
+            let Some(inventory) = state.inventories.get(&id) else {
+                return Err(api_error(format!("inventory {id} not found")));
+            };
+            Ok(inventory.equip_get(&slot).map(str::to_owned))
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    inv.set(
+        "equip_list",
+        lua.create_function(move |lua, id: String| {
+            let state = s.borrow();
+            let Some(inventory) = state.inventories.get(&id) else {
+                return Err(api_error(format!("inventory {id} not found")));
+            };
+            let result = lua.create_table()?;
+            for (slot, item) in &inventory.equipment {
+                result.set(slot.clone(), item.clone())?;
+            }
+            Ok(result)
+        })?,
+    )?;
     lua.globals().set("inv", inv)?;
 
     let container = lua.create_table()?;
@@ -3947,6 +4162,46 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
         )?,
     )?;
     lua.globals().set("container", container)?;
+
+    // `shop` catalogs and price queries (M16-10). Catalogs are data-driven from
+    // data/shop.json; buy/sell transactions and the money balance stay in Lua
+    // (game logic), with `shop.price` as the engine's price/catalog service.
+    let shop = lua.create_table()?;
+    let s = Rc::clone(&state);
+    shop.set(
+        "set_catalog",
+        lua.create_function(move |_, (name, spec): (String, Value)| {
+            let json = lua_value_to_json(spec)?;
+            s.borrow_mut().shops.insert(name, json);
+            Ok(true)
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    shop.set(
+        "price",
+        lua.create_function(move |lua, (name, item_id): (String, String)| {
+            let state = s.borrow();
+            let Some(catalog) = state.shops.get(&name) else {
+                return Ok(Value::Nil);
+            };
+            let Some(item) = catalog.get(item_id.as_str()) else {
+                return Ok(Value::Nil);
+            };
+            let buy = item
+                .get("buy")
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or(0);
+            let sell = item
+                .get("sell")
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or(0);
+            let result = lua.create_table()?;
+            result.set("buy", buy)?;
+            result.set("sell", sell)?;
+            Ok(Value::Table(result))
+        })?,
+    )?;
+    lua.globals().set("shop", shop)?;
 
     let save = lua.create_table()?;
     let s = Rc::clone(&state);
@@ -4032,20 +4287,41 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
     let s = Rc::clone(&state);
     save.set(
         "load",
-        lua.create_function(move |_, ()| {
-            let mut state = s.borrow_mut();
-            let Some(path) = state.save_path.clone() else {
+        lua.create_function(move |lua, ()| {
+            let (path, slot) = {
+                let state = s.borrow();
+                (state.save_path.clone(), state.save_slot.clone())
+            };
+            let Some(path) = path else {
                 tracing::warn!(target: "save", "[save] no save path configured; load ignored");
                 return Ok(false);
             };
-            let path = save_path_for_slot(&path, state.save_slot.as_deref());
+            let path = save_path_for_slot(&path, slot.as_deref());
             let Ok(text) = std::fs::read_to_string(&path) else {
                 return Ok(false); // no save yet is not an error
             };
-            match decode_save(&text) {
-                Ok(data) => {
-                    state.save_data = data;
-                    tracing::info!(target: "save", path = %path.display(), "[save] loaded");
+            match crate::core::save::decode_with_version(&text) {
+                Ok((data, version)) => {
+                    let current = crate::core::save::CURRENT_SAVE_VERSION;
+                    {
+                        let mut state = s.borrow_mut();
+                        state.save_data = data;
+                        state.save_version = version;
+                    }
+                    tracing::info!(target: "save", path = %path.display(), version, "[save] loaded");
+                    // 旧版本存档通过 Lua `on_migrate(from, to)` 迁移（M16-09）。
+                    if version < current
+                        && let Ok(function) =
+                            lua.globals().get::<mlua::Function>("on_migrate")
+                    {
+                        function
+                            .call::<()>((version as i64, current as i64))
+                            .map_err(|error| {
+                                api_error(format!(
+                                    "on_migrate({version}->{current}) failed: {error}"
+                                ))
+                            })?;
+                    }
                     Ok(true)
                 }
                 Err(error) => {
@@ -4054,6 +4330,11 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
                 }
             }
         })?,
+    )?;
+    let s = Rc::clone(&state);
+    save.set(
+        "version",
+        lua.create_function(move |_, ()| Ok(s.borrow().save_version as i64))?,
     )?;
     lua.globals().set("save", save)?;
 
@@ -4084,7 +4365,8 @@ fn parse_key(key: &str) -> InputKey {
         "f1" => InputKey::Other(1),
         "f2" => InputKey::Other(2),
         "f4" => InputKey::Other(4),
-        "r" => InputKey::Other(99), // 重玩一局
+        // 单字母键按小写 ASCII 码映射，与窗口/编辑器输入层一致（Q/E/R/T/F/G 互不相同）。
+        one if one.chars().count() == 1 => InputKey::from_char(one.chars().next().unwrap_or(' ')),
         _ => InputKey::Other(0),
     }
 }
@@ -4113,7 +4395,7 @@ mod tests {
     }
 
     fn production_sample_root() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../game_test_2d_production")
+        crate::core::games_dir().join("game_test_2d_production")
     }
 
     #[test]
@@ -4691,6 +4973,11 @@ mod tests {
              assert(inv.count(box, 'tomato') == 3)\n\
              assert(inv.swap(box, 1, 'bag', 1))\n\
              assert(inv.count(box, 'tomato') == 0)\n\
+             inv.equip('bag', 'tool', 'hoe')\n\
+             assert(inv.equip_get('bag', 'tool') == 'hoe')\n\
+             assert(inv.equip_list('bag').tool == 'hoe')\n\
+             inv.equip('bag', 'tool', nil)\n\
+             assert(inv.equip_get('bag', 'tool') == nil)\n\
              assert(map.go('town', 120, 80))\n\
              assert(map.current() == 'town')\n\
              local spawn = map.spawn()\n\
@@ -4712,6 +4999,84 @@ mod tests {
         runtime.process_scene_transition().unwrap();
         assert_eq!(runtime.call_update().unwrap(), "ok");
         let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn data_schema_registration_rejects_invalid_tables_on_load() {
+        let root = std::env::temp_dir().join(format!("p2-data-schema-{}", std::process::id()));
+        let data = root.join("data");
+        fs::create_dir_all(&data).unwrap();
+        fs::write(
+            data.join("items.json"),
+            r#"{"tomato":{"name":"Tomato","stack":8}}"#,
+        )
+        .unwrap();
+        fs::write(data.join("bad.json"), r#"{"tomato":{"stack":"big"}}"#).unwrap();
+
+        let mut runtime = LuaRuntime::new().unwrap();
+        runtime.set_project_root(root.clone());
+        let path = script(
+            "local items_schema = { ['$kind'] = 'map', values = { name = 'string', stack = 'integer' } }\n\
+             data.schema('data/items.json', items_schema)\n\
+             data.schema('data/bad.json', items_schema)\n\
+             local ok = data.load('data/items.json')\n\
+             assert(ok.tomato.name == 'Tomato')\n\
+             assert(not pcall(function() data.load('data/bad.json') end))\n\
+             local err = select(2, pcall(function() data.load('data/bad.json') end))\n\
+             assert(tostring(err):find('schema violation'), err)\n\
+             function update() return 'ok' end",
+        );
+        runtime.execute_project_script(&path).unwrap();
+        assert_eq!(runtime.call_update().unwrap(), "ok");
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn save_load_runs_on_migrate_for_older_versions() {
+        let root = std::env::temp_dir().join(format!("p2-save-migrate-{}", std::process::id()));
+        let dir = root.join(".p2");
+        fs::create_dir_all(&dir).unwrap();
+        let save_path = dir.join("save.sav");
+        fs::write(&save_path, "save_version=0\nhp\t10\n").unwrap();
+
+        let mut runtime = LuaRuntime::new().unwrap();
+        runtime.set_save_path(save_path.clone());
+        let path = script(
+            "migrated_from = nil\nmigrated_to = nil\n\
+             function on_migrate(from, to) migrated_from = from; migrated_to = to end\n\
+             assert(save.load())\n\
+             assert(save.version() == 0)\n\
+             assert(save.read('hp') == '10')\n\
+             assert(migrated_from == 0 and migrated_to == 1)\n\
+             function update() return 'ok' end",
+        );
+        runtime.execute_project_script(&path).unwrap();
+        assert_eq!(runtime.call_update().unwrap(), "ok");
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn calendar_and_day_lifecycle_lua_api() {
+        let mut runtime = LuaRuntime::new().unwrap();
+        let path = script(
+            "local now = calendar.now()\n\
+             assert(now.absolute_day == 1 and now.day == 1 and now.season == 1 and now.year == 1)\n\
+             calendar.set(1, 2, 1, 60)\n\
+             local spring2 = calendar.now()\n\
+             assert(spring2.season == 2 and spring2.day == 1 and spring2.absolute_day == 29)\n\
+             ended = 0\n\
+             started = 0\n\
+             function on_day_end() ended = ended + 1 end\n\
+             function on_day_start() started = started + 1 end\n\
+             local d = day.sleep()\n\
+             assert(d == 30 and ended == 1 and started == 1)\n\
+             function update() return 'ok' end",
+        );
+        runtime.execute_project_script(&path).unwrap();
+        assert_eq!(runtime.call_update().unwrap(), "ok");
         let _ = fs::remove_file(path);
     }
 
@@ -4948,11 +5313,11 @@ mod tests {
     }
 
     #[test]
-    fn button_click_calls_lua_on_click() {
+    fn click_event_dispatches_lua_on_click() {
         use crate::core::input::MouseButton;
         use crate::core::scene::{Scene, SceneEntityId};
 
-        let root = std::env::temp_dir().join(format!("p2-button-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("p2-click-{}", std::process::id()));
         let scenes = root.join("scenes");
         fs::create_dir_all(&scenes).unwrap();
         let mut menu = Scene::new("menu");
@@ -4961,10 +5326,7 @@ mod tests {
             .get_mut(&SceneEntityId(1))
             .unwrap()
             .components
-            .insert(
-                "Button".into(),
-                "label=Start;x=10;y=10;width=100;height=32;bg=0.2,0.45,0.8;text_color=1,1,1".into(),
-            );
+            .insert("clickEvent".into(), String::new());
         menu.save(scenes.join("menu.scene")).unwrap();
 
         let mut runtime = LuaRuntime::new().unwrap();
@@ -4981,12 +5343,18 @@ mod tests {
         let mut input = InputSnapshot::default();
         input.cursor_moved(50.0, 20.0);
         input.mouse_event(MouseButton::Left, true);
-        runtime.process_ui_clicks(&input, 1280, 720).unwrap();
+        // 命中矩形由运行时 compute_click_targets 预计算；此处直接传入覆盖点击点的目标。
+        runtime
+            .process_ui_clicks(
+                &input,
+                &[("Start".to_owned(), [0.0, 0.0], [1280.0, 720.0])],
+            )
+            .unwrap();
 
         let result = runtime.call_update().unwrap();
         assert_eq!(
             result, "Start",
-            "on_click('Start') fired for the clicked button"
+            "on_click('Start') fired for the clicked clickEvent entity"
         );
 
         let _ = fs::remove_dir_all(root);
@@ -4997,7 +5365,7 @@ mod tests {
     #[test]
     fn production_sample_main_script_runs_menu_update() {
         use crate::core::scene::Scene;
-        use crate::core::ui::UiButton;
+        use crate::core::ui::ClickEvent;
 
         let root = production_sample_root();
         let scene = Scene::load(root.join("scenes/menu.scene")).expect("load sample menu");
@@ -5009,8 +5377,9 @@ mod tests {
             .expect("load sample main.lua");
 
         assert_eq!(runtime.call_update().unwrap(), "menu_ready");
-        let buttons = runtime.with_world(|world| world.entities_with::<UiButton>().len());
-        assert_eq!(buttons, 2, "menu scene should expose two buttons");
+        // Button 已移除；menu.scene 按钮已迁移为 clickEvent。
+        let clicks = runtime.with_world(|world| world.entities_with::<ClickEvent>().len());
+        assert_eq!(clicks, 2, "menu scene should expose two clickEvent buttons");
     }
 
     #[test]
@@ -5031,7 +5400,13 @@ mod tests {
         let mut input = InputSnapshot::default();
         input.cursor_moved(520.0, 400.0);
         input.mouse_event(MouseButton::Left, true);
-        runtime.process_ui_clicks(&input, 1280, 720).unwrap();
+        // StartButton 命中矩形（覆盖点击点）→ on_click("StartButton") → 载入生产场景。
+        runtime
+            .process_ui_clicks(
+                &input,
+                &[("StartButton".to_owned(), [300.0, 300.0], [500.0, 200.0])],
+            )
+            .unwrap();
         runtime.process_scene_transition().unwrap();
 
         let result = runtime.call_update().unwrap();
@@ -5054,7 +5429,7 @@ mod tests {
 
     #[test]
     fn production_sample_can_save_and_return_to_menu() {
-        use crate::core::{input::InputKey, scene::Scene, ui::UiButton};
+        use crate::core::{input::InputKey, scene::Scene};
 
         let root = production_sample_root();
         let save_path = std::env::temp_dir().join(format!(
@@ -5077,7 +5452,12 @@ mod tests {
         let mut click = InputSnapshot::default();
         click.cursor_moved(520.0, 400.0);
         click.mouse_event(crate::core::input::MouseButton::Left, true);
-        runtime.process_ui_clicks(&click, 1280, 720).unwrap();
+        runtime
+            .process_ui_clicks(
+                &click,
+                &[("StartButton".to_owned(), [300.0, 300.0], [500.0, 200.0])],
+            )
+            .unwrap();
         runtime.process_scene_transition().unwrap();
 
         let mut save_input = InputSnapshot::default();
@@ -5098,8 +5478,8 @@ mod tests {
         runtime.process_scene_transition().unwrap();
         runtime.set_input(InputSnapshot::default());
         assert_eq!(runtime.call_update().unwrap(), "menu_ready");
-        let buttons = runtime.with_world(|world| world.entities_with::<UiButton>().len());
-        assert_eq!(buttons, 2, "menu scene should be restored after F4");
+        let clicks = runtime.with_world(|world| world.entities_with::<crate::core::ui::ClickEvent>().len());
+        assert_eq!(clicks, 2, "menu scene should restore two clickEvent buttons after F4");
 
         let _ = fs::remove_file(save_path);
     }
@@ -5261,7 +5641,7 @@ mod tests {
     fn lua_3d_animation_queries_and_switches_clips() {
         use crate::core::scene::{Scene, SceneEntityId};
 
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../game_test");
+        let root = crate::core::games_dir().join("game_test");
         let mut scene = Scene::new("3d-anim");
         scene.add_entity(SceneEntityId(1), "Hero", None).unwrap();
         scene

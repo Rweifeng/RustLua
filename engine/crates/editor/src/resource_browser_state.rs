@@ -330,7 +330,7 @@ mod tests {
     }
 
     fn sample_project_root() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../game_test_2d_production")
+        engine::core::games_dir().join("game_test_2d_production")
     }
 
     fn copy_file(from: &Path, to: &Path) -> std::io::Result<()> {

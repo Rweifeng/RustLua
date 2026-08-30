@@ -1,7 +1,7 @@
 //! 标题栏 + 菜单栏 + 崩溃恢复提示（编辑器顶部区域）。
 
 use crate::EditorApp;
-use crate::default_engine_path;
+use crate::workspace_root;
 use crate::util::{
     choose_project_directory, display_path, icon_toggle, open_in_explorer, strip_verbatim_prefix,
 };
@@ -83,10 +83,6 @@ impl EditorApp {
                         self.add_entity_with_component("UiImage", "Image");
                         ui.close();
                     }
-                    if ui.button("添加 UI Button").clicked() {
-                        self.add_entity_with_component("UiButton", "Button");
-                        ui.close();
-                    }
                     if ui.button("添加 3D 实体").clicked() {
                         self.add_3d_entity(None);
                         ui.close();
@@ -94,6 +90,11 @@ impl EditorApp {
                     ui.separator();
                     if ui.button("创建预制体").clicked() {
                         self.create_prefab_from_selected();
+                        ui.close();
+                    }
+                    ui.separator();
+                    if ui.button("收集字体字符").clicked() {
+                        self.collect_font_chars();
                         ui.close();
                     }
                 });
@@ -218,9 +219,9 @@ impl EditorApp {
             });
     }
 
-    /// 菜单：使用手册 —— 在资源管理器中打开 docs 目录。
+    /// 菜单：使用手册 —— 在资源管理器中打开 docs 目录（docs 位于工作区根，不在 engine/ 下）。
     fn open_help(&mut self) {
-        let docs = default_engine_path().join("docs");
+        let docs = workspace_root().join("docs");
         if docs.is_dir() {
             open_in_explorer(&docs);
         } else {
@@ -289,7 +290,7 @@ mod tests {
     }
 
     fn sample_project_root() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../game_test_2d_production")
+        engine::core::games_dir().join("game_test_2d_production")
     }
 
     fn copy_dir(source: &Path, destination: &Path) {

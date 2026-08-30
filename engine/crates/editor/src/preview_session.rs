@@ -64,7 +64,9 @@ impl PreviewSession {
         size: (u32, u32),
     ) -> Result<Self, String> {
         tracing::info!(target: "editor", "[preview] project_root={}", project_root.display());
-        let runtime = RuntimeScene::from_scene(Some(project_root), scene.clone())?;
+        let mut runtime = RuntimeScene::from_scene(Some(project_root), scene.clone())?;
+        // Canvas 空间 UI 参考分辨率 = 设计分辨率（预览渲染尺寸）。
+        runtime.set_ui_reference([size.0 as f32, size.1 as f32]);
         let renderer = Renderer::new_offscreen(
             device.clone(),
             queue.clone(),
@@ -109,6 +111,12 @@ impl PreviewSession {
     /// 当前分辨率（宽×高）。
     pub(crate) fn size(&self) -> (u32, u32) {
         (self.width, self.height)
+    }
+
+    /// 更新 Canvas 空间 UI 参考分辨率（设计分辨率）。运行时在 Play 期间改
+    /// 分辨率时同步调用，保证 UI 适配随设计分辨率变化（与渲染 viewport 解耦）。
+    pub(crate) fn set_ui_reference(&mut self, reference: [f32; 2]) {
+        self.runtime.set_ui_reference(reference);
     }
 
     /// 当前 egui 预览纹理（就绪帧）；`None` 表示尚无回读结果。
@@ -287,12 +295,12 @@ impl PreviewSession {
         let image =
             egui::ColorImage::from_rgba_unmultiplied([width as usize, height as usize], &pixels);
         match &mut self.preview_texture {
-            Some(PreviewTexture::Managed(tex)) => tex.set(image, egui::TextureOptions::LINEAR),
+            Some(PreviewTexture::Managed(tex)) => tex.set(image, egui::TextureOptions::NEAREST),
             None => {
                 self.preview_texture = Some(PreviewTexture::Managed(ctx.load_texture(
                     "game_preview",
                     image,
-                    egui::TextureOptions::LINEAR,
+                    egui::TextureOptions::NEAREST,
                 )));
             }
             Some(PreviewTexture::Native(_)) => {}
@@ -314,7 +322,7 @@ impl PreviewSession {
                 renderer.update_egui_texture_from_wgpu_texture(
                     device,
                     &self.texture_view,
-                    wgpu::FilterMode::Linear,
+                    wgpu::FilterMode::Nearest,
                     *id,
                 );
             }
@@ -323,7 +331,7 @@ impl PreviewSession {
                 let id = renderer.register_native_texture(
                     device,
                     &self.texture_view,
-                    wgpu::FilterMode::Linear,
+                    wgpu::FilterMode::Nearest,
                 );
                 self.preview_texture = Some(PreviewTexture::Native(id));
             }

@@ -1,11 +1,17 @@
 //! 行4 控制台：实时日志（LogSink）+ Lua 运行输出 + 诊断。
 
-use crate::{ConsoleLogLevelFilter, EditorApp};
+use crate::{ConsoleLogLevelFilter, ConsoleTab, EditorApp};
 use eframe::egui;
 use engine::core::script::{LuaRuntime, ScriptDiagnostic};
 
+/// 左侧分类导航图标（egui 内嵌 emoji 字体渲染）。
+const EDITOR_LOG_ICON: &str = "⚙";
+const LUA_LOG_ICON: &str = "🕹";
+
 impl EditorApp {
     /// 行4 控制台面板（全宽底部，先于左右面板显示以获得整行宽度）。
+    ///
+    /// 高度固定：滚动区填满剩余空间，面板不再随日志行数伸缩（M-固定高度）。
     pub(crate) fn draw_lua_console_panel(&mut self, context: &egui::Context) {
         egui::TopBottomPanel::bottom("console")
             .resizable(true)
@@ -13,88 +19,150 @@ impl EditorApp {
             .min_height(60.0)
             .max_height(520.0)
             .show(context, |ui| {
-                ui.horizontal(|ui| {
-                    let project_name = self
-                        .project
-                        .root
-                        .file_name()
-                        .and_then(|name| name.to_str())
-                        .unwrap_or("项目");
-                    ui.heading(format!("控制台 — {project_name}"));
-                    ui.text_edit_singleline(&mut self.console_filter);
+                ui.horizontal_top(|ui| {
+                    // 左侧：日志分类导航（图标按钮，切换编辑器日志 / 游戏 Lua 日志）。
+                    self.console_tab_rail(ui);
                     ui.separator();
-                    ui.selectable_value(
-                        &mut self.console_log_level_filter,
-                        ConsoleLogLevelFilter::All,
-                        "全部",
-                    );
-                    ui.selectable_value(
-                        &mut self.console_log_level_filter,
-                        ConsoleLogLevelFilter::Info,
-                        "Info",
-                    );
-                    ui.selectable_value(
-                        &mut self.console_log_level_filter,
-                        ConsoleLogLevelFilter::Warning,
-                        "Warning",
-                    );
-                    ui.selectable_value(
-                        &mut self.console_log_level_filter,
-                        ConsoleLogLevelFilter::Error,
-                        "Error",
-                    );
-                    if ui.button("运行选中脚本").clicked() {
-                        self.run_selected_script();
-                    }
-                    if ui.button("清空").clicked() {
-                        self.clear_console();
-                        self.log_sink.clear();
-                    }
-                });
-                ui.horizontal(|ui| {
-                    let response = ui.text_edit_singleline(&mut self.console_input);
-                    if response.lost_focus()
-                        && ui.input(|input| input.key_pressed(egui::Key::Enter))
-                    {
-                        self.run_console_command();
-                    }
-                    if ui.button("执行").clicked() {
-                        self.run_console_command();
-                    }
-                });
-                let log_lines = self.log_sink.snapshot();
-                let filter = self.console_filter.trim().to_lowercase();
-                egui::ScrollArea::vertical()
-                    .max_height(140.0)
-                    .show(ui, |ui| {
-                        for line in &log_lines {
-                            let level = log_level(line);
-                            if self.console_log_level_filter.matches(level)
-                                && text_matches_filter(line, &filter)
-                            {
-                                draw_log_line(ui, line, level);
+                    ui.vertical(|ui| {
+                        ui.horizontal(|ui| {
+                            let project_name = self
+                                .project
+                                .root
+                                .file_name()
+                                .and_then(|name| name.to_str())
+                                .unwrap_or("项目");
+                            ui.heading(format!("控制台 — {project_name}"));
+                            ui.text_edit_singleline(&mut self.console_filter);
+                            ui.separator();
+                            ui.selectable_value(
+                                &mut self.console_log_level_filter,
+                                ConsoleLogLevelFilter::All,
+                                "全部",
+                            );
+                            ui.selectable_value(
+                                &mut self.console_log_level_filter,
+                                ConsoleLogLevelFilter::Info,
+                                "Info",
+                            );
+                            ui.selectable_value(
+                                &mut self.console_log_level_filter,
+                                ConsoleLogLevelFilter::Warning,
+                                "Warning",
+                            );
+                            ui.selectable_value(
+                                &mut self.console_log_level_filter,
+                                ConsoleLogLevelFilter::Error,
+                                "Error",
+                            );
+                            if ui.button("运行选中脚本").clicked() {
+                                self.run_selected_script();
                             }
-                        }
-                        for line in &self.console_output {
-                            let level = output_level(line);
-                            if self.console_log_level_filter.matches(level)
-                                && text_matches_filter(line, &filter)
-                            {
-                                draw_log_line(ui, line, level);
+                            if ui.button("清空").clicked() {
+                                self.clear_console();
+                                self.log_sink.clear();
+                                self.console_notices.clear();
                             }
-                        }
-                        for diagnostic in self.console_diagnostics() {
-                            let line = format_diagnostic(&diagnostic);
-                            if self
-                                .console_log_level_filter
-                                .matches(ConsoleLogLevel::Error)
-                                && text_matches_filter(&line, &filter)
+                        });
+                        ui.horizontal(|ui| {
+                            let response = ui.text_edit_singleline(&mut self.console_input);
+                            if response.lost_focus()
+                                && ui.input(|input| input.key_pressed(egui::Key::Enter))
                             {
-                                ui.colored_label(egui::Color32::RED, line);
+                                self.run_console_command();
                             }
-                        }
+                            if ui.button("执行").clicked() {
+                                self.run_console_command();
+                            }
+                        });
+                        // 滚动区填满剩余空间，面板高度保持固定，仅滚动内部内容。
+                        egui::ScrollArea::vertical()
+                            .auto_shrink([false; 2])
+                            .show(ui, |ui| {
+                                self.draw_console_log_body(ui);
+                            });
                     });
+                });
             });
+    }
+
+    /// 左侧日志分类导航（图标按钮 + tooltip）。
+    fn console_tab_rail(&mut self, ui: &mut egui::Ui) {
+        ui.vertical(|ui| {
+            ui.set_min_width(28.0);
+            let editor = egui::Button::new(egui::RichText::new(EDITOR_LOG_ICON).size(20.0))
+                .selected(self.console_tab == ConsoleTab::Editor);
+            if ui.add(editor).on_hover_text("编辑器日志").clicked() {
+                self.console_tab = ConsoleTab::Editor;
+            }
+            ui.add_space(4.0);
+            let lua = egui::Button::new(egui::RichText::new(LUA_LOG_ICON).size(20.0))
+                .selected(self.console_tab == ConsoleTab::Lua);
+            if ui.add(lua).on_hover_text("游戏 Lua 日志").clicked() {
+                self.console_tab = ConsoleTab::Lua;
+            }
+        });
+    }
+
+    /// 按左侧分类绘制日志主体：
+    /// 编辑器日志 = 非 Lua（script target）的 tracing 行 + 编辑器提示；
+    /// Lua 日志 = Lua `log.*`（script target）+ 控制台输出 + 脚本诊断。
+    fn draw_console_log_body(&mut self, ui: &mut egui::Ui) {
+        let filter = self.console_filter.trim().to_lowercase();
+        let log_lines = self.log_sink.snapshot();
+        match self.console_tab {
+            ConsoleTab::Editor => {
+                for line in &log_lines {
+                    if is_lua_log_line(line) {
+                        continue;
+                    }
+                    let level = log_level(line);
+                    if self.console_log_level_filter.matches(level)
+                        && text_matches_filter(line, &filter)
+                    {
+                        draw_log_line(ui, line, level);
+                    }
+                }
+                for line in &self.console_notices {
+                    let level = log_level(line);
+                    if self.console_log_level_filter.matches(level)
+                        && text_matches_filter(line, &filter)
+                    {
+                        draw_log_line(ui, line, level);
+                    }
+                }
+            }
+            ConsoleTab::Lua => {
+                for line in &log_lines {
+                    if !is_lua_log_line(line) {
+                        continue;
+                    }
+                    let level = log_level(line);
+                    if self.console_log_level_filter.matches(level)
+                        && text_matches_filter(line, &filter)
+                    {
+                        draw_log_line(ui, lua_log_message(line), level);
+                    }
+                }
+                for line in &self.console_output {
+                    let level = output_level(line);
+                    if self.console_log_level_filter.matches(level)
+                        && text_matches_filter(line, &filter)
+                    {
+                        draw_log_line(ui, line, level);
+                    }
+                }
+                for diagnostic in self.console_diagnostics() {
+                    let line = format_diagnostic(&diagnostic);
+                    if self
+                        .console_log_level_filter
+                        .matches(ConsoleLogLevel::Error)
+                        && text_matches_filter(&line, &filter)
+                    {
+                        ui.colored_label(egui::Color32::RED, line);
+                    }
+                }
+            }
+        }
     }
 
     fn ensure_lua_runtime(&mut self) -> Result<&mut LuaRuntime, String> {
@@ -185,6 +253,22 @@ impl ConsoleLogLevelFilter {
             Self::Warning => level == ConsoleLogLevel::Warning,
             Self::Error => level == ConsoleLogLevel::Error,
         }
+    }
+}
+
+/// tracing fmt 默认格式：`<timestamp> <LEVEL> <target>: <message>`，第三段即 target。
+/// Lua 游戏逻辑经 `log.info/warn/error` 以 `target: "script"` 输出，据此归入 Lua 日志分类。
+fn is_lua_log_line(line: &str) -> bool {
+    line.split_whitespace().nth(2) == Some("script:")
+}
+
+/// 精简 Lua `log.*` 的 tracing 行：取 `message=` 字段值作为纯消息；
+/// 非 `log.*` 消息（如引擎用 script target 的告警）没有该字段则原样返回。
+fn lua_log_message(line: &str) -> &str {
+    if let Some(index) = line.rfind("message=") {
+        &line[index + "message=".len()..]
+    } else {
+        line
     }
 }
 
@@ -317,5 +401,36 @@ mod tests {
         let formatted = format_diagnostic(&diagnostic);
         assert!(formatted.contains("[mystery] scripts/main.lua 第 7 行"));
         assert!(!formatted.contains("建议"));
+    }
+
+    /// 分类：Lua `log.*`（target `script`）进 Lua 日志；编辑器/引擎日志排除在外。
+    #[test]
+    fn lua_log_lines_are_classified_by_script_target() {
+        assert!(is_lua_log_line(
+            "2026-08-21T15:35:23.670753Z  INFO script: Lua log.info project script loaded"
+        ));
+        assert!(is_lua_log_line(
+            "2026-08-21T15:49:57.358650Z  INFO script: Lua log.info tilemap loaded 6x4"
+        ));
+        assert!(!is_lua_log_line(
+            "2026-08-21T15:35:23.668576Z  INFO game: [render] initialized"
+        ));
+        assert!(!is_lua_log_line(
+            "2026-08-21T15:35:23.669980Z  INFO ecs: [ecs] world initialized"
+        ));
+    }
+
+    /// Lua `log.*` 行取 `message=` 字段值；其他 script target 行原样保留。
+    #[test]
+    fn lua_log_message_extracts_field_value() {
+        assert_eq!(
+            lua_log_message(
+                "2026-08-21T15:35:23.670753Z  INFO script: Lua log.info message=ui_demo scene ready"
+            ),
+            "ui_demo scene ready"
+        );
+        let callback_failure =
+            "2026-08-21T15:35:23.670753Z  WARN script: on_day_start callback failed error=boom";
+        assert_eq!(lua_log_message(callback_failure), callback_failure);
     }
 }

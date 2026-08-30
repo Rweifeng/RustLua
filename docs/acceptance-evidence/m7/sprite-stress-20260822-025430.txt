@@ -1,1 +1,0 @@
-﻿sprite_stress_ok sprites=1000 push_ms=0.024 build_ms=0.199 vertices=6000 draw_batches=8

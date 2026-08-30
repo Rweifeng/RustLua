@@ -465,10 +465,13 @@ mod tests {
             panic!("测试字体缺失或不可读 {}: {error}", font_path.display())
         });
         let mut font = crate::core::font::FontAtlas::load(&bytes).unwrap();
-        let mesh =
-            TextLayout::build("P2 Production", [0.0, 0.0], TextStyle::default(), &mut font).unwrap();
+        let mesh = TextLayout::build("P2 Production", [0.0, 0.0], TextStyle::default(), &mut font)
+            .unwrap();
         let bounds = mesh.pixel_bounds();
-        assert!(bounds[2] > bounds[0] && bounds[3] > bounds[1], "glyph bbox non-degenerate");
+        assert!(
+            bounds[2] > bounds[0] && bounds[3] > bounds[1],
+            "glyph bbox non-degenerate"
+        );
         // 网格 size[0] 含尾随 advance，字形 bbox 更窄，贴合可见字形。
         assert!(
             bounds[2] - bounds[0] < mesh.size[0],

@@ -1,13 +1,19 @@
 //! Small gameplay data types shared by the Lua farm API: a game clock,
 //! item definitions, inventories, and item stacks.
 
-use std::fmt;
+use std::{collections::BTreeMap, fmt};
 
 /// Minutes in one in-game day. `sleep_to_morning` and `now()` use this as the
 /// day boundary.
 pub const MINUTES_PER_DAY: u32 = 24 * 60;
 /// The default wake-up time used by a fresh game clock (06:00).
 pub const DEFAULT_WAKE_MINUTE: u32 = 6 * 60;
+/// Days per season; the farm calendar uses a 28-day season × 4 seasons year.
+pub const DAYS_PER_SEASON: u32 = 28;
+/// Seasons per year.
+pub const SEASONS_PER_YEAR: u32 = 4;
+/// Total days per year (`28 × 4`).
+pub const DAYS_PER_YEAR: u32 = DAYS_PER_SEASON * SEASONS_PER_YEAR;
 
 /// Independent game clock decoupled from wall-clock `time.delta()`.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -69,6 +75,30 @@ impl GameClock {
         self.minute = DEFAULT_WAKE_MINUTE;
         self.day
     }
+
+    /// 1-based season (`1..=4`) derived from the absolute day.
+    #[must_use]
+    pub fn season(&self) -> u32 {
+        ((self.day - 1) / DAYS_PER_SEASON) % SEASONS_PER_YEAR + 1
+    }
+
+    /// 1-based year derived from the absolute day.
+    #[must_use]
+    pub fn year(&self) -> u32 {
+        (self.day - 1) / DAYS_PER_YEAR + 1
+    }
+
+    /// 1-based day within the current season (`1..=DAYS_PER_SEASON`).
+    #[must_use]
+    pub fn day_of_season(&self) -> u32 {
+        (self.day - 1) % DAYS_PER_SEASON + 1
+    }
+
+    /// Sets an absolute day (`>= 1`) and minute-of-day.
+    pub fn set_absolute(&mut self, day: u32, minute: u32) {
+        self.day = day.max(1);
+        self.minute = minute.min(MINUTES_PER_DAY - 1);
+    }
 }
 
 /// Errors produced by inventory operations.
@@ -109,10 +139,13 @@ impl ItemStack {
 }
 
 /// A fixed-capacity list of stacks. Empty slots use an empty `item_id`.
+/// `equipment` is the M16-07 skeleton: named slots holding an item id, no
+/// runtime effect yet (stats land in M18-00).
 #[derive(Clone, Debug)]
 pub struct Inventory {
     pub slots: Vec<ItemStack>,
     pub capacity: usize,
+    pub equipment: BTreeMap<String, String>,
 }
 
 impl Inventory {
@@ -120,7 +153,23 @@ impl Inventory {
         Self {
             slots: vec![ItemStack::default(); capacity],
             capacity,
+            equipment: BTreeMap::new(),
         }
+    }
+
+    /// Sets an equipment slot (empty `item_id` clears it). Empty slot names are
+    /// rejected by the caller; this skeleton only stores the mapping.
+    pub fn equip(&mut self, slot: &str, item_id: &str) {
+        if item_id.is_empty() {
+            self.equipment.remove(slot);
+        } else {
+            self.equipment.insert(slot.to_owned(), item_id.to_owned());
+        }
+    }
+
+    /// Returns the item id equipped in `slot`, or `None`.
+    pub fn equip_get(&self, slot: &str) -> Option<&str> {
+        self.equipment.get(slot).map(String::as_str)
     }
 
     fn slot_mut(&mut self, index: usize) -> Result<&mut ItemStack, InventoryError> {
@@ -263,6 +312,32 @@ mod tests {
     }
 
     #[test]
+    fn calendar_derives_season_year_and_day_of_season() {
+        use super::{DAYS_PER_SEASON, DAYS_PER_YEAR};
+        let mut clock = GameClock::default();
+        assert_eq!(
+            (
+                clock.day,
+                clock.season(),
+                clock.year(),
+                clock.day_of_season()
+            ),
+            (1, 1, 1, 1)
+        );
+        clock.day = DAYS_PER_SEASON;
+        assert_eq!(
+            (clock.season(), clock.day_of_season()),
+            (1, DAYS_PER_SEASON)
+        );
+        clock.day = DAYS_PER_SEASON + 1;
+        assert_eq!((clock.season(), clock.day_of_season()), (2, 1));
+        clock.day = DAYS_PER_YEAR;
+        assert_eq!((clock.season(), clock.year()), (4, 1));
+        clock.day = DAYS_PER_YEAR + 1;
+        assert_eq!((clock.season(), clock.year()), (1, 2));
+    }
+
+    #[test]
     fn inventory_adds_stacks_and_removes() {
         let mut inv = Inventory::new(3);
         assert_eq!(inv.add("tomato", 10, 4), 0);
@@ -275,5 +350,19 @@ mod tests {
         inv.swap(0, 1).unwrap();
         assert_eq!(inv.get(0).unwrap().item_id, "potato");
         assert!(inv.set(9, ItemStack::new("x", 1)).is_err());
+    }
+
+    #[test]
+    fn equipment_skeleton_stores_and_clears_slots() {
+        let mut inv = Inventory::new(3);
+        inv.equip("tool", "hoe");
+        inv.equip("hat", "straw_hat");
+        assert_eq!(inv.equip_get("tool"), Some("hoe"));
+        assert_eq!(inv.equip_get("hat"), Some("straw_hat"));
+        assert_eq!(inv.equip_get("missing"), None);
+        // Empty item id clears the slot.
+        inv.equip("tool", "");
+        assert_eq!(inv.equip_get("tool"), None);
+        assert_eq!(inv.equipment.len(), 1);
     }
 }

@@ -513,7 +513,7 @@ mod tests {
         let png = write_source(
             &root,
             "red.png",
-            include_bytes!("../../../../../game_test/assets/textures/red-1x1.png"),
+            include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../../games/game_test/assets/textures/red-1x1.png")),
         );
         let importer = ImporterRegistry::builtin()
             .get(ResourceKind::Texture)
@@ -560,7 +560,7 @@ mod tests {
         let ogg = write_source(
             &root,
             "attack.ogg",
-            include_bytes!("../../../../../game_test/assets/audio/attack.ogg"),
+            include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../../games/game_test/assets/audio/attack.ogg")),
         );
         let importer = ImporterRegistry::builtin()
             .get(ResourceKind::Audio)
@@ -577,7 +577,7 @@ mod tests {
         let good = write_source(
             &root,
             "NotoSansSC-VF.ttf",
-            include_bytes!("../../../../../game_test/assets/fonts/NotoSansSC-VF.ttf"),
+            include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../../games/game_test/assets/fonts/NotoSansSC-VF.ttf")),
         );
         let importer = ImporterRegistry::builtin().get(ResourceKind::Font).unwrap();
         importer
@@ -594,7 +594,7 @@ mod tests {
         let good = write_source(
             &root,
             "m8-test-triangle.glb",
-            include_bytes!("../../../../../game_test/assets/models/m8-test-triangle.glb"),
+            include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../../games/game_test/assets/models/m8-test-triangle.glb")),
         );
         let importer = ImporterRegistry::builtin()
             .get(ResourceKind::Model)
@@ -698,7 +698,7 @@ mod tests {
         let png = write_source(
             &root,
             "good.png",
-            include_bytes!("../../../../../game_test/assets/textures/red-1x1.png"),
+            include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../../games/game_test/assets/textures/red-1x1.png")),
         );
         let bad = write_source(&root, "bad.png", b"not an image");
         let mut db = ResourceDatabase::open(&root).unwrap();
@@ -732,7 +732,7 @@ mod tests {
         let path = write_source(
             &root,
             "a.png",
-            include_bytes!("../../../../../game_test/assets/textures/red-1x1.png"),
+            include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../../games/game_test/assets/textures/red-1x1.png")),
         );
         let mut db = ResourceDatabase::open(&root).unwrap();
         let id = db

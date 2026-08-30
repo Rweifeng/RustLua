@@ -7,7 +7,7 @@ use engine::core::{
     transform::{Transform, Vec2},
 };
 use wgpu::util::DeviceExt;
-const PNG: &[u8] = include_bytes!("../../../../game_test/assets/textures/red-1x1.png");
+const PNG: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../../games/game_test/assets/textures/red-1x1.png"));
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct GpuVertex {

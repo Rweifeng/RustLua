@@ -38,12 +38,6 @@ Release 质量门：
 ./scripts/test.ps1
 ```
 
-构建并复制 Release 运行器：
-
-```powershell
-./scripts/build-release.ps1
-```
-
 运行最小 Demo：
 
 ```powershell

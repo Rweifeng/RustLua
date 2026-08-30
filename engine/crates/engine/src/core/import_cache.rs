@@ -311,7 +311,7 @@ mod tests {
         let path = source(
             &root,
             "hero.png",
-            include_bytes!("../../../../../game_test/assets/textures/red-1x1.png"),
+            include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../../games/game_test/assets/textures/red-1x1.png")),
         );
         let importer = crate::core::importer::ImporterRegistry::builtin()
             .get(ResourceKind::Texture)
@@ -321,7 +321,7 @@ mod tests {
         assert!(cache.import_file(id, &path, importer).is_err());
         fs::write(
             &path,
-            include_bytes!("../../../../../game_test/assets/textures/red-1x1.png"),
+            include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../../games/game_test/assets/textures/red-1x1.png")),
         )
         .unwrap();
         let hit = cache.import_file(id, &path, importer).unwrap();
@@ -375,7 +375,7 @@ mod tests {
         let path = source(
             &root,
             "m8-test-triangle.glb",
-            include_bytes!("../../../../../game_test/assets/models/m8-test-triangle.glb"),
+            include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../../games/game_test/assets/models/m8-test-triangle.glb")),
         );
         let importer = crate::core::importer::ImporterRegistry::builtin()
             .get(ResourceKind::Model)

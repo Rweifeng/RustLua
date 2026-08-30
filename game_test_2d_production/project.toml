@@ -1,6 +1,0 @@
-[project]
-name = "game_test_2d_production"
-version = "0.1.0"
-engine = "p2"
-main_script = "scripts/main.lua"
-startup_scene = "scenes/menu.scene"

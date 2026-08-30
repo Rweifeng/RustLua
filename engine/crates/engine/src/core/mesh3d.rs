@@ -346,8 +346,7 @@ mod tests {
     }
 
     fn asset_path() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../game_test/assets/models/m8-test-triangle.glb")
+        crate::core::games_dir().join("game_test/assets/models/m8-test-triangle.glb")
     }
 
     #[test]
@@ -368,8 +367,7 @@ mod tests {
 
     #[test]
     fn converts_skinned_gltf_with_bone_influences() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../game_test/assets/models/m8-skin-quad.glb");
+        let path = crate::core::games_dir().join("game_test/assets/models/m8-skin-quad.glb");
         let gltf = GltfAsset::load(&path).unwrap();
         let meshes = MeshAsset::from_gltf(&gltf).unwrap();
         let primitive = &meshes[0].primitives[0];

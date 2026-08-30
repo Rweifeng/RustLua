@@ -15,6 +15,7 @@ Thumbs.db
 
 # Per-project working directory: resource database, import cache, save data
 **/.cache/
+**/.p2/
 
 # Game project runtime temp: editor autosave/crash-recovery snapshots
 **/.temp/

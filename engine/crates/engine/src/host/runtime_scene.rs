@@ -1,7 +1,12 @@
 //! Runtime scene: instantiates the project scene/scripts and produces
 //! per-frame [`SceneMesh`] (2D) and [`Scene3d`] draw data for the renderer.
 
-use std::{collections::HashMap, fs, path::Path};
+use std::{
+    collections::HashMap,
+    fs,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+};
 
 use crate::core::{
     animation::AnimationStateMachine,
@@ -23,7 +28,8 @@ use crate::core::{
     transform::{Transform, Vec2, integrate_velocity},
     transform3d::Transform3D,
     ui::{
-        UiButton, UiImage, UiText, resolve_ui_rect, resolve_ui_text_origin, ui_text_effective_scale,
+        UI_REFERENCE_SIZE, UiImage, UiText, nine_slice_cells, resolve_ui_rect,
+        resolve_ui_text_origin, ui_text_effective_scale,
     },
 };
 
@@ -38,10 +44,22 @@ pub struct RuntimeScene {
     camera: Camera2D,
     viewport_width: u32,
     viewport_height: u32,
+    /// Canvas 空间 UI 参考分辨率（设计分辨率）。发布游戏默认 `UI_REFERENCE_SIZE`；
+    /// 编辑器按设计分辨率显式设置，使 UI 适配 = viewport / reference。
+    ui_reference: [f32; 2],
+    /// 是否渲染屏幕空间 UI 覆盖层。编辑器场景视图置 false：UI 由 egui 在
+    /// 设计分辨率包围框内绘制布局框，避免旧的面板适配覆盖层与之冲突。
+    render_ui_overlay: bool,
+    /// 项目根目录（纹理路径解析用，与渲染器 `project_root.join(path)` 一致）。
+    project_root: Option<PathBuf>,
+    /// 九宫格 UV 计算用的纹理像素尺寸缓存（惰性、按 path）。
+    texture_dims: HashMap<String, (u32, u32)>,
     texture_paths: Vec<String>,
     texture_lookup: HashMap<String, u32>,
     tilemap_cache: HashMap<EntityId, CachedTilemapLayer>,
-    font_atlas: Option<FontAtlas>,
+    /// 共享字体图集：运行时重建（编辑器拖动/编辑场景导致 revision 变化时）复用
+    /// 同一实例，避免每帧重新生成 MSDF 字形。生成字形需可变访问（内部 Mutex）。
+    font_atlas: Option<Arc<Mutex<FontAtlas>>>,
     last_font_version: u64,
 }
 
@@ -81,6 +99,30 @@ impl RuntimeScene {
         self.camera = camera;
     }
 
+    /// 当前 2D 相机中心（世界坐标）。编辑器 Scene 视图用它定位设计分辨率包围框，
+    /// 使包围框与游戏取景范围一致（默认 `DEFAULT_2D_CAMERA_CENTER`）。
+    pub fn camera_center_2d(&self) -> Vec2 {
+        self.camera.center
+    }
+
+    /// 设置 Canvas 空间 UI 的参考分辨率（设计分辨率）。同步给 Lua 侧，
+    /// 保证渲染与按钮命中测试（`process_ui_clicks`）用同一参考。
+    pub fn set_ui_reference(&mut self, reference: [f32; 2]) {
+        self.ui_reference = reference;
+        self.script.set_ui_reference(reference);
+    }
+
+    /// 是否渲染屏幕空间 UI 覆盖层。编辑器场景视图置 false（UI 由 egui 在
+    /// 设计分辨率包围框内绘制）；游戏预览保持 true。
+    pub fn set_render_ui_overlay(&mut self, enabled: bool) {
+        self.render_ui_overlay = enabled;
+    }
+
+    /// 注入共享字体图集（编辑器在运行时重建时复用，避免每帧重新生成 MSDF 字形）。
+    pub fn set_font_atlas(&mut self, font_atlas: Option<Arc<Mutex<FontAtlas>>>) {
+        self.font_atlas = font_atlas;
+    }
+
     /// 度量一段场景文本在给定 scale 下的网格尺寸与字形像素范围
     /// `(size, pixel_bounds)`（编辑器 UI 包围框用）。`size` 含
     /// ascender/descender 空白（锚点对齐用），`pixel_bounds` 是可见字形的
@@ -91,8 +133,9 @@ impl RuntimeScene {
             scale,
             ..Default::default()
         };
-        if let Some(font) = self.font_atlas.as_mut() {
-            TextLayout::build(text, [0.0, 0.0], style, font)
+        if let Some(font) = &self.font_atlas {
+            let mut font = font.lock().expect("font atlas lock");
+            TextLayout::build(text, [0.0, 0.0], style, &mut font)
                 .map(|mesh| (mesh.size, mesh.pixel_bounds()))
                 .unwrap_or(([0.0, 0.0], [0.0; 4]))
         } else {
@@ -133,34 +176,23 @@ impl RuntimeScene {
                 tracing::info!(target: "script", path = %script_path.display(), "[script] game project has no scripts/main.lua; script runtime idle");
             }
         }
-        let camera =
-            Camera2D::new(Vec2::new(640.0, 360.0), 1.0).map_err(|error| error.to_string())?;
+        let camera = Camera2D::new(crate::core::math2d::DEFAULT_2D_CAMERA_CENTER, 1.0)
+            .map_err(|error| error.to_string())?;
         tracing::info!(target: "render", "[render] SpriteBatch and Camera2D initialized");
-        // 加载字体（存在时启用 SDF 文本渲染）。编辑器场景视图同样需要，这样
-        // 场景视图也能显示清晰中文（不再依赖 5x7 位图回退）。
-        let font_atlas = project_root
-            .map(|root| root.join("assets/fonts/NotoSansSC-VF.ttf"))
-            .filter(|path| path.is_file())
-            .and_then(|path| {
-                let bytes = std::fs::read(&path).ok()?;
-                let bytes = crate::core::pack::decode(&bytes).ok()?;
-                match FontAtlas::load(&bytes) {
-                    Ok(atlas) => {
-                        tracing::info!(target: "render", path = %path.display(), "[render] font atlas ready");
-                        Some(atlas)
-                    }
-                    Err(error) => {
-                        tracing::warn!(target: "render", error = %error, "[render] font atlas load failed; text uses placeholders");
-                        None
-                    }
-                }
-            });
+        // 加载共享字体图集（存在时启用 MSDF 文本渲染）。字体路径可由 project.toml
+        // 的 `font` 键指定（相对项目根），缺省用 NotoSansSC-VF.ttf。编辑器场景
+        // 视图同样需要，这样场景视图也能显示清晰中文（不再依赖 5x7 位图回退）。
+        let font_atlas = load_project_font_atlas(project_root);
         Ok(Self {
             script,
             sprite_batch: SpriteBatch::new(),
             camera,
             viewport_width: 1280,
             viewport_height: 720,
+            ui_reference: UI_REFERENCE_SIZE,
+            render_ui_overlay: true,
+            project_root: project_root.map(|root| root.to_path_buf()),
+            texture_dims: HashMap::new(),
             texture_paths: Vec::new(),
             texture_lookup: HashMap::new(),
             tilemap_cache: HashMap::new(),
@@ -184,9 +216,11 @@ impl RuntimeScene {
                 .call_update()
                 .map_err(|error| error.to_string())?;
             tracing::debug!(target: "game", "[simulation] fixed update returned: {result}");
-            // UI Button 点击分发：按下边沿命中矩形 → Lua on_click(name)。
+            // clickEvent 点击分发：预计算命中矩形（Image/Text UI 矩形 + Sprite 相机
+            // 投影）→ 按下边沿命中 → Lua on_click(name)。
+            let targets = self.compute_click_targets();
             self.script
-                .process_ui_clicks(&step_input, self.viewport_width, self.viewport_height)
+                .process_ui_clicks(&step_input, &targets)
                 .map_err(|error| error.to_string())?;
             // Physics advances on the fixed timestep and writes dynamic body
             // positions back into ECS Transforms (2D) / Transform3D (3D).
@@ -212,6 +246,96 @@ impl RuntimeScene {
             world.for_each_mut::<Animation3D>(|_, animation| animation.advance(elapsed));
         });
         Ok(())
+    }
+
+    /// 计算当前所有 clickEvent 实体的命中矩形 `(实体名, origin, size)`（屏幕像素）。
+    ///
+    /// Image/Text 用 UI 解析（viewport=实际渲染尺寸、reference=设计分辨率），
+    /// Sprite 用相机投影到屏幕；供 `process_ui_clicks` 点选分发。
+    fn compute_click_targets(&mut self) -> Vec<(String, [f32; 2], [f32; 2])> {
+        let viewport = Viewport {
+            width: self.viewport_width.max(1) as f32,
+            height: self.viewport_height.max(1) as f32,
+        };
+        let viewport_arr = [viewport.width, viewport.height];
+        let reference = self.ui_reference;
+        // 先提取 clickEvent 实体及其视觉组件（world 借用结束后再计算，避免借用冲突）。
+        let entities: Vec<(
+            EntityId,
+            Option<UiImage>,
+            Option<UiText>,
+            Option<(Sprite, Transform)>,
+        )> = self.script.with_world(|world| {
+            let mut out = Vec::new();
+            for id in world.entities_with::<crate::core::ui::ClickEvent>() {
+                let image = world.get::<UiImage>(id).ok().flatten().cloned();
+                let text = world.get::<UiText>(id).ok().flatten().cloned();
+                let sprite = world.get::<Sprite>(id).ok().flatten().cloned();
+                let transform = world.get::<Transform>(id).ok().flatten().cloned();
+                out.push((id, image, text, sprite.zip(transform)));
+            }
+            out
+        });
+        let camera = self.camera;
+        entities
+            .into_iter()
+            .filter_map(|(id, image, text, sprite)| {
+                let name = self.script.entity_name(id)?;
+                let rect = if let Some(image) = image {
+                    resolve_ui_rect(
+                        image.position,
+                        image.size,
+                        image.space,
+                        image.anchor,
+                        viewport_arr,
+                        reference,
+                    )
+                } else if let Some(text) = text {
+                    self.text_hit_rect(&text, viewport_arr, reference)?
+                } else if let Some((sprite, transform)) = sprite {
+                    sprite_screen_rect(&sprite, &transform, camera, viewport)?
+                } else {
+                    return None;
+                };
+                Some((name, rect.0, rect.1))
+            })
+            .collect()
+    }
+
+    /// 文本 hit 矩形：与编辑器 UI 包围框同款——resolve 出网格原点，度量字形
+    /// bbox，返回 `(glyph_origin, glyph_size)`（屏幕像素）。
+    fn text_hit_rect(
+        &mut self,
+        text: &UiText,
+        viewport: [f32; 2],
+        reference: [f32; 2],
+    ) -> Option<([f32; 2], [f32; 2])> {
+        let effective_scale = text.effective_scale();
+        let (_, resolved_scale) = resolve_ui_text_origin(
+            text.position,
+            [0.0, 0.0],
+            effective_scale,
+            text.space,
+            text.anchor,
+            viewport,
+            reference,
+        );
+        let (text_size, glyph_bounds) = self.measure_ui_text(&text.text, resolved_scale);
+        let (origin, _) = resolve_ui_text_origin(
+            text.position,
+            text_size,
+            effective_scale,
+            text.space,
+            text.anchor,
+            viewport,
+            reference,
+        );
+        let glyph_origin = [origin[0] + glyph_bounds[0], origin[1] + glyph_bounds[1]];
+        let glyph_size = [
+            (glyph_bounds[2] - glyph_bounds[0]).max(0.0),
+            (glyph_bounds[3] - glyph_bounds[1]).max(0.0),
+        ];
+        Some((glyph_origin, glyph_size))
     }
 
     /// Gathers the per-frame 3D render state from the runtime world: the active
@@ -445,14 +569,18 @@ impl RuntimeScene {
             .iter()
             .map(|vertex| sprite_vertex(vertex, viewport))
             .collect();
-        // Screen-space UI (health bars, prompt text) draws last, on top.
-        self.push_ui_panels(&mut vertices, &mut draws, width, height)?;
-        self.push_ui_images(&mut vertices, &mut draws, width, height)?;
-        self.push_ui_grids(&mut vertices, &mut draws, width, height)?;
-        self.push_ui_bars(&mut vertices, &mut draws, width, height)?;
-        self.push_ui_text(&mut vertices, &mut draws, width, height)?;
-        // Scene-node UI components (Text / Image / Button) drawn on very top.
-        self.push_scene_ui(&mut vertices, &mut draws, width, height)?;
+        // Screen-space UI (health bars, prompt text) draws last, on top。
+        // 编辑器场景视图置 render_ui_overlay=false：UI 由 egui 在设计分辨率包围框内
+        // 绘制布局框，跳过此 NDC 覆盖层避免冲突。
+        if self.render_ui_overlay {
+            self.push_ui_panels(&mut vertices, &mut draws, width, height)?;
+            self.push_ui_images(&mut vertices, &mut draws, width, height)?;
+            self.push_ui_grids(&mut vertices, &mut draws, width, height)?;
+            self.push_ui_bars(&mut vertices, &mut draws, width, height)?;
+            self.push_ui_text(&mut vertices, &mut draws, width, height)?;
+            // Scene-node UI components (Text / Image / Button) drawn on very top.
+            self.push_scene_ui(&mut vertices, &mut draws, width, height)?;
+        }
         // 每帧的 UI 指标不再打 INFO 日志（避免持续刷屏）；需要时由下方 debug 级输出。
         tracing::debug!(
             target: "render",
@@ -462,6 +590,7 @@ impl RuntimeScene {
             self.texture_paths.len()
         );
         let font_atlas = if let Some(atlas) = &self.font_atlas {
+            let atlas = atlas.lock().expect("font atlas lock");
             let version = atlas.version();
             let changed = version != self.last_font_version;
             self.last_font_version = version;
@@ -527,6 +656,7 @@ impl RuntimeScene {
                 panel.space,
                 panel.anchor,
                 [width.max(1) as f32, height.max(1) as f32],
+                self.ui_reference,
             );
             let start = vertices.len() as u32;
             vertices.extend(screen_rect_ndc(
@@ -579,6 +709,7 @@ impl RuntimeScene {
                 grid.space,
                 grid.anchor,
                 [width.max(1) as f32, height.max(1) as f32],
+                self.ui_reference,
             );
             let start = vertices.len() as u32;
             vertices.extend(screen_rect_ndc(
@@ -597,9 +728,11 @@ impl RuntimeScene {
                 sdf: false,
             });
             for index in 1..=grid.columns * grid.rows {
-                let Some((cell_origin, cell_size)) =
-                    grid.cell_rect(index, [width.max(1) as f32, height.max(1) as f32])
-                else {
+                let Some((cell_origin, cell_size)) = grid.cell_rect(
+                    index,
+                    [width.max(1) as f32, height.max(1) as f32],
+                    self.ui_reference,
+                ) else {
                     continue;
                 };
                 let cell = grid.cells.get(index - 1).cloned().unwrap_or_default();
@@ -627,6 +760,7 @@ impl RuntimeScene {
                         color: [cell.color[0], cell.color[1], cell.color[2]],
                         space: crate::core::ui::UiLayoutSpace::Screen,
                         anchor: [0.0, 0.0],
+                        nine_slice: None,
                     };
                     self.push_image_quad(vertices, draws, width, height, &image)?;
                 }
@@ -728,14 +862,6 @@ impl RuntimeScene {
         for image in images {
             self.push_image_quad(vertices, draws, width, height, &image)?;
         }
-        let buttons: Vec<UiButton> = self.script.with_world(|world| {
-            let mut buttons = Vec::new();
-            world.for_each::<UiButton>(|_, button| buttons.push(button.clone()));
-            buttons
-        });
-        for button in buttons {
-            self.push_button_quad(vertices, draws, width, height, &button)?;
-        }
         let texts: Vec<UiText> = self.script.with_world(|world| {
             let mut texts = Vec::new();
             world.for_each::<UiText>(|_, text| texts.push(text.clone()));
@@ -751,6 +877,7 @@ impl RuntimeScene {
                 text.space,
                 text.anchor,
                 viewport,
+                self.ui_reference,
             );
             let (mesh, is_sdf) =
                 self.layout_text(&text.text, [0.0, 0.0], resolved_scale, text.color)?;
@@ -761,56 +888,11 @@ impl RuntimeScene {
                 text.space,
                 text.anchor,
                 viewport,
+                self.ui_reference,
             );
             let text_vertices = text_to_ndc_with_offset(mesh, is_sdf, origin, width, height);
             self.push_text_run(vertices, draws, text_vertices, is_sdf);
         }
-        Ok(())
-    }
-
-    /// Pushes a `Button` by composing a tinted image quad plus centered text.
-    fn push_button_quad(
-        &mut self,
-        vertices: &mut Vec<OverlayVertex>,
-        draws: &mut Vec<SceneDraw>,
-        width: u32,
-        height: u32,
-        button: &UiButton,
-    ) -> Result<(), String> {
-        let background = UiImage {
-            texture: WHITE_TEXTURE_PATH.to_owned(),
-            position: button.position,
-            size: button.size,
-            color: button.background,
-            space: button.space,
-            anchor: button.anchor,
-        };
-        self.push_image_quad(vertices, draws, width, height, &background)?;
-
-        if button.label.trim().is_empty() {
-            return Ok(());
-        }
-
-        let viewport = [width.max(1) as f32, height.max(1) as f32];
-        let (origin, size) = resolve_ui_rect(
-            button.position,
-            button.size,
-            button.space,
-            button.anchor,
-            viewport,
-        );
-        let label_scale = match button.space {
-            crate::core::ui::UiLayoutSpace::Screen => 1.0,
-            crate::core::ui::UiLayoutSpace::Canvas => (viewport[0]
-                / crate::core::ui::UI_REFERENCE_SIZE[0])
-                .min(viewport[1] / crate::core::ui::UI_REFERENCE_SIZE[1]),
-        };
-        let (mesh, is_sdf) =
-            self.layout_text(&button.label, [0.0, 0.0], label_scale, button.text_color)?;
-        let dx = origin[0] + (size[0] - mesh.size[0]).max(0.0) / 2.0;
-        let dy = origin[1] + (size[1] - mesh.size[1]).max(0.0) / 2.0;
-        let text_vertices = text_to_ndc_with_offset(mesh, is_sdf, [dx, dy], width, height);
-        self.push_text_run(vertices, draws, text_vertices, is_sdf);
         Ok(())
     }
 
@@ -829,8 +911,9 @@ impl RuntimeScene {
             color: [color[0], color[1], color[2], 1.0],
             ..Default::default()
         };
-        if let Some(font) = self.font_atlas.as_mut() {
-            TextLayout::build(text, position, style, font)
+        if let Some(font) = &self.font_atlas {
+            let mut font = font.lock().expect("font atlas lock");
+            TextLayout::build(text, position, style, &mut font)
                 .map(|mesh| (mesh, true))
                 .map_err(|error| error.to_string())
         } else {
@@ -884,12 +967,62 @@ impl RuntimeScene {
             image.space,
             image.anchor,
             [sw, sh],
+            self.ui_reference,
         );
+        let color = [image.color[0], image.color[1], image.color[2], 1.0];
+        // 九宫格路径：把目标矩形拆成 3×3 格。无切片 / 纹理尺寸取不到时回退单四边形。
+        if let Some(slice) = image
+            .nine_slice
+            .filter(|s| s.iter().all(|v| v.is_finite() && *v >= 0.0) && s.iter().any(|v| *v > 0.0))
+        {
+            if let Some((tw, th)) = self.texture_dimensions(&image.texture) {
+                // 把作者空间边框映射到解析后的目标空间，使角部在 Canvas 缩放下
+                // 保持纹理像素密度（Screen / scale=1 时比值为 1）。
+                let scale_x = if image.size[0] > f32::EPSILON {
+                    size[0] / image.size[0]
+                } else {
+                    1.0
+                };
+                let scale_y = if image.size[1] > f32::EPSILON {
+                    size[1] / image.size[1]
+                } else {
+                    1.0
+                };
+                let slice = [
+                    slice[0] * scale_x,
+                    slice[1] * scale_x,
+                    slice[2] * scale_y,
+                    slice[3] * scale_y,
+                ];
+                let cells = nine_slice_cells(size[0], size[1], tw as f32, th as f32, slice);
+                let start = vertices.len() as u32;
+                for cell in cells {
+                    let cw = cell.dest[2] - cell.dest[0];
+                    let ch = cell.dest[3] - cell.dest[1];
+                    if cw <= 0.0 || ch <= 0.0 {
+                        continue;
+                    }
+                    let x0 = (origin[0] + cell.dest[0]) / sw * 2.0 - 1.0;
+                    let y0 = 1.0 - (origin[1] + cell.dest[1]) / sh * 2.0;
+                    let x1 = (origin[0] + cell.dest[2]) / sw * 2.0 - 1.0;
+                    let y1 = 1.0 - (origin[1] + cell.dest[3]) / sh * 2.0;
+                    vertices.extend(nine_slice_quad(x0, y0, x1, y1, cell.src, color));
+                }
+                if vertices.len() as u32 > start {
+                    draws.push(SceneDraw {
+                        texture: self.texture_id(&image.texture) + 1,
+                        start,
+                        count: vertices.len() as u32 - start,
+                        sdf: false,
+                    });
+                }
+                return Ok(());
+            }
+        }
         let x0 = origin[0] / sw * 2.0 - 1.0;
         let y0 = 1.0 - origin[1] / sh * 2.0;
         let x1 = (origin[0] + size[0]) / sw * 2.0 - 1.0;
         let y1 = 1.0 - (origin[1] + size[1]) / sh * 2.0;
-        let color = [image.color[0], image.color[1], image.color[2], 1.0];
         let quad = [
             OverlayVertex {
                 position: [x0, y0],
@@ -949,6 +1082,35 @@ impl RuntimeScene {
         self.texture_paths.push(path.clone());
         self.texture_lookup.insert(path, index);
         index
+    }
+
+    /// 纹理像素尺寸（惰性、按 path 缓存），仅供九宫格 UV 计算。只读 PNG 头，
+    /// 不做全量解码。路径解析与渲染器一致（`project_root.join(path)`，无根则用
+    /// 原始路径），并走与纹理加载相同的 pack/decode 解包。读取失败 → `None` →
+    /// 回退单四边形。
+    fn texture_dimensions(&mut self, path: &str) -> Option<(u32, u32)> {
+        if let Some(dims) = self.texture_dims.get(path) {
+            return Some(*dims);
+        }
+        let resolved = self
+            .project_root
+            .as_ref()
+            .map(|root| root.join(path))
+            .unwrap_or_else(|| PathBuf::from(path));
+        let dims = fs::read(&resolved)
+            .ok()
+            .and_then(|bytes| crate::core::pack::decode(&bytes).ok())
+            .and_then(|bytes| {
+                image::ImageReader::new(std::io::Cursor::new(bytes))
+                    .with_guessed_format()
+                    .ok()?
+                    .into_dimensions()
+                    .ok()
+            });
+        if let Some(dims) = dims {
+            self.texture_dims.insert(path.to_owned(), dims);
+        }
+        dims
     }
 
     /// Builds the 2D mesh for all Tilemap components using a tilemap-specific
@@ -1208,6 +1370,78 @@ fn startup_scene_path(project_root: &Path) -> String {
     extract_project_key(&text, "startup_scene").unwrap_or(default)
 }
 
+/// project.toml 的 `font` 键：相对项目根的字形文件路径（如
+/// `assets/fonts/msyh.ttc`）。缺省回退 NotoSansSC-VF.ttf。
+fn project_font_path(project_root: &Path) -> Option<String> {
+    let text = fs::read_to_string(project_root.join("project.toml")).ok()?;
+    extract_project_key(&text, "font")
+}
+
+/// project.toml 的 `font_fallback` 键：后备字形文件路径（主字体缺失的字形用）。
+fn project_fallback_font_path(project_root: &Path) -> Option<String> {
+    let text = fs::read_to_string(project_root.join("project.toml")).ok()?;
+    extract_project_key(&text, "font_fallback")
+}
+
+/// 加载项目字体并包装为可跨运行时共享的图集（MSDF 字形按需生成，共享后只生成
+/// 一次）。字体路径取 project.toml `font` 键，缺省 NotoSansSC-VF.ttf。
+pub fn load_project_font_atlas(project_root: Option<&Path>) -> Option<Arc<Mutex<FontAtlas>>> {
+    let root = project_root?;
+    let primary_path = {
+        let font = project_font_path(root)
+            .unwrap_or_else(|| "assets/fonts/NotoSansSC-VF.ttf".to_owned());
+        let path = root.join(font);
+        path.is_file().then_some(path)
+    }?;
+    let primary_bytes = fs::read(&primary_path).ok()?;
+    let primary_bytes = crate::core::pack::decode(&primary_bytes).ok()?;
+    // 可选后备字体（project.toml `font_fallback` 键），用于主字体缺失的字形。
+    let fallback_bytes = project_fallback_font_path(root)
+        .and_then(|font| {
+            let path = root.join(font);
+            path.is_file().then_some(path)
+        })
+        .and_then(|path| {
+            let bytes = fs::read(&path).ok()?;
+            crate::core::pack::decode(&bytes).ok()
+        });
+    let mut atlas =
+        match FontAtlas::load_with_fallback(&primary_bytes, fallback_bytes.as_deref()) {
+            Ok(atlas) => atlas,
+            Err(error) => {
+                tracing::warn!(target: "render", error = %error, "[render] font atlas load failed; text uses placeholders");
+                return None;
+            }
+        };
+    tracing::info!(target: "render", path = %primary_path.display(), "[render] font atlas ready");
+    // 首包预热：把打包时收集的字符清单（chars.txt）预生成进图集，首帧文字不卡。
+    prewarm_font_atlas(root, &mut atlas);
+    Some(Arc::new(Mutex::new(atlas)))
+}
+
+/// 从项目根 `chars.txt`（打包时由 assetc 生成）读取字符并预热字形。
+fn prewarm_font_atlas(root: &Path, atlas: &mut FontAtlas) {
+    let Ok(bytes) = fs::read(root.join("chars.txt")) else {
+        return;
+    };
+    let Ok(bytes) = crate::core::pack::decode(&bytes) else {
+        return;
+    };
+    let text = String::from_utf8_lossy(&bytes);
+    let mut count = 0usize;
+    for ch in text.chars() {
+        if ch.is_whitespace() {
+            continue;
+        }
+        if atlas.try_glyph_metrics(ch).is_ok() {
+            count += 1;
+        }
+    }
+    if count > 0 {
+        tracing::info!(target: "render", count, "[render] font prewarmed {count} chars");
+    }
+}
+
 fn extract_project_key(text: &str, key: &str) -> Option<String> {
     text.lines().find_map(|line| {
         let line = line.trim().trim_start_matches('\u{feff}');
@@ -1215,6 +1449,44 @@ fn extract_project_key(text: &str, key: &str) -> Option<String> {
             .map(|value| value.trim().trim_matches('"').to_owned())
             .filter(|value| !value.trim().is_empty())
     })
+}
+
+/// Sprite 的世界矩形（pivot+缩放+旋转+位移）投影到屏幕的 AABB，供 clickEvent 命中。
+fn sprite_screen_rect(
+    sprite: &Sprite,
+    transform: &Transform,
+    camera: Camera2D,
+    viewport: Viewport,
+) -> Option<([f32; 2], [f32; 2])> {
+    // 局部四角：(-pivot*size) 到 ((1-pivot)*size)，经缩放/旋转/位移后投影。
+    let pivot = sprite.pivot;
+    let size = sprite.size;
+    let local = [
+        Vec2::new(-pivot.x * size.x, -pivot.y * size.y),
+        Vec2::new((1.0 - pivot.x) * size.x, -pivot.y * size.y),
+        Vec2::new((1.0 - pivot.x) * size.x, (1.0 - pivot.y) * size.y),
+        Vec2::new(-pivot.x * size.x, (1.0 - pivot.y) * size.y),
+    ];
+    let (sin, cos) = transform.rotation.sin_cos();
+    let mut min = [f32::INFINITY; 2];
+    let mut max = [f32::NEG_INFINITY; 2];
+    for corner in local {
+        let scaled = Vec2::new(corner.x * transform.scale.x, corner.y * transform.scale.y);
+        let rotated = Vec2::new(
+            scaled.x * cos - scaled.y * sin,
+            scaled.x * sin + scaled.y * cos,
+        );
+        let world = Vec2::new(
+            transform.position.x + rotated.x,
+            transform.position.y + rotated.y,
+        );
+        let screen = camera.world_to_screen(world, viewport).ok()?;
+        min[0] = min[0].min(screen.x);
+        min[1] = min[1].min(screen.y);
+        max[0] = max[0].max(screen.x);
+        max[1] = max[1].max(screen.y);
+    }
+    Some((min, [max[0] - min[0], max[1] - min[1]]))
 }
 
 fn load_runtime_scene(project_root: Option<&Path>) -> Scene {
@@ -1289,6 +1561,27 @@ fn text_to_ndc_with_offset(
 
 /// Builds a quad in NDC from a top-left-origin screen-space rectangle, sampling
 /// the white texture with the given flat color.
+/// 6-vertex textured quad in NDC with a per-cell UV rect (nine-slice cell).
+/// Winding/UV order mirrors the single-quad code in `push_image_quad`.
+fn nine_slice_quad(
+    x0: f32,
+    y0: f32,
+    x1: f32,
+    y1: f32,
+    uv: [f32; 4],
+    color: [f32; 4],
+) -> [OverlayVertex; 6] {
+    let (u0, v0, u1, v1) = (uv[0], uv[1], uv[2], uv[3]);
+    [
+        OverlayVertex { position: [x0, y0], uv: [u0, v0], color, sdf: 0 },
+        OverlayVertex { position: [x1, y0], uv: [u1, v0], color, sdf: 0 },
+        OverlayVertex { position: [x1, y1], uv: [u1, v1], color, sdf: 0 },
+        OverlayVertex { position: [x0, y0], uv: [u0, v0], color, sdf: 0 },
+        OverlayVertex { position: [x1, y1], uv: [u1, v1], color, sdf: 0 },
+        OverlayVertex { position: [x0, y1], uv: [u0, v1], color, sdf: 0 },
+    ]
+}
+
 fn screen_rect_ndc(
     x: f32,
     y: f32,
@@ -1351,15 +1644,15 @@ mod sdf_tests {
     use crate::core::scene::Scene;
 
     fn game_root() -> std::path::PathBuf {
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../game_test")
+        crate::core::games_dir().join("game_test")
     }
 
     fn production_sample_root() -> std::path::PathBuf {
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../game_test_2d_production")
+        crate::core::games_dir().join("game_test_2d_production")
     }
 
     fn farm_root() -> std::path::PathBuf {
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../game_farm")
+        crate::core::games_dir().join("game_farm")
     }
 
     #[test]
@@ -1372,6 +1665,249 @@ mod sdf_tests {
             .script
             .with_ui(|texts, _| texts.contains_key("status"));
         assert!(has_hud, "farm HUD should be created every update");
+    }
+
+    /// ui_demo 测试工程：场景渲染出 UI/世界 draw、clickEvent 目标存在，且点击
+    /// StartButton 会经 main.lua 的 on_click 分发（update 返回带实体名）。
+    #[test]
+    fn ui_demo_project_renders_ui_and_dispatches_clicks() {
+        use crate::core::input::MouseButton;
+        use crate::core::scene::Scene;
+
+        let root = crate::core::games_dir().join("ui_demo");
+        let path = root.join("scenes/main.scene");
+        assert!(path.is_file(), "ui_demo 场景缺失: {}", path.display());
+        let scene = Scene::load(&path).unwrap();
+        let mut runtime = RuntimeScene::from_scene(Some(&root), scene).unwrap();
+        let mesh = runtime.vertices(1280, 720).expect("vertices");
+        assert!(!mesh.draws.is_empty(), "ui_demo 应渲染出可见 draw");
+        let targets = runtime.compute_click_targets();
+        assert!(
+            targets.len() >= 5,
+            "ui_demo 应有多个 clickEvent 目标: {}",
+            targets.len()
+        );
+        let start = targets
+            .iter()
+            .find(|(n, _, _)| n == "StartButton")
+            .expect("StartButton clickEvent 目标");
+        let cx = start.1[0] + start.2[0] / 2.0;
+        let cy = start.1[1] + start.2[1] / 2.0;
+        let mut input = InputSnapshot::default();
+        input.cursor_moved(cx as f64, cy as f64);
+        input.mouse_event(MouseButton::Left, true);
+        runtime
+            .run_script_steps(1, 1.0 / 60.0, &input)
+            .expect("script step");
+        let result = runtime.script.call_update().unwrap();
+        assert!(
+            result.contains("StartButton"),
+            "点击应分发 on_click('StartButton'): {result}"
+        );
+    }
+
+    /// 九宫格：带 `nine_slice` 的 Image 应渲染为 3×3 共 9 格（54 顶点），而非
+    /// 单四边形（6 顶点）。用 ui_demo 真实按钮纹理（192×64）验证 UV 分片路径。
+    #[test]
+    fn nine_slice_image_renders_nine_quads() {
+        use crate::core::scene::{Scene, SceneEntityId};
+
+        let root = crate::core::games_dir().join("ui_demo");
+        assert!(
+            root.join("assets/textures/ui/button_green.png").is_file(),
+            "ui_demo 按钮纹理缺失"
+        );
+        let mut scene = Scene::new("nine-slice");
+        scene.add_entity(SceneEntityId(1), "Panel", None).unwrap();
+        scene.entities.get_mut(&SceneEntityId(1)).unwrap().components.insert(
+            "Image".to_owned(),
+            "texture=assets/textures/ui/button_green.png;x=0;y=0;width=192;height=64;color=1,1,1;space=screen;anchor=0,0;nine_slice=16,16,16,16"
+                .to_owned(),
+        );
+        let mut runtime = RuntimeScene::from_scene_edit(Some(&root), scene).unwrap();
+        let mesh = runtime.vertices(1280, 720).expect("vertices");
+        assert!(
+            mesh.draws.iter().any(|d| d.count == 54),
+            "切片 Image 应产生 54 顶点（9 格 × 6）：{:#?}",
+            mesh.draws.iter().map(|d| d.count).collect::<Vec<_>>()
+        );
+    }
+
+    /// Canvas UI 的渲染位置随 viewport/reference 缩放。场景视图切换设计分辨率时
+    /// 必须同步 `ui_reference`（`render_scene_screen` 已修复）：用旧 reference 渲染
+    /// 会让 UI 与包围框（scale=1）错位。这里验证同步后 StartButton 落在
+    /// 1920×1080 设计位置。
+    #[test]
+    fn canvas_ui_follows_ui_reference_on_resolution_change() {
+        use crate::core::scene::Scene;
+
+        let root = crate::core::games_dir().join("ui_demo");
+        let scene = Scene::load(&root.join("scenes/main.scene")).unwrap();
+        let mut runtime = RuntimeScene::from_scene(Some(&root), scene).unwrap();
+        // 旧参考分辨率（运行时构建时的 1280×720）。
+        runtime.set_ui_reference([1280.0, 720.0]);
+        runtime.vertices(1920, 1080).expect("vertices");
+        let rect = |runtime: &mut RuntimeScene| -> ([f32; 2], [f32; 2]) {
+            let targets = runtime.compute_click_targets();
+            let (_, origin, size) = targets
+                .iter()
+                .find(|(n, _, _)| n == "StartButton")
+                .expect("StartButton click target");
+            (*origin, *size)
+        };
+        // 修复前（不同步 ui_reference）：viewport=1920×1080、reference=1280×720 →
+        // 画布缩放 1.5×，UI 位置/尺寸错误。
+        let (stale_origin, stale_size) = rect(&mut runtime);
+        // 修复后：同步 reference 到当前设计分辨率 → scale=1，落在设计位置。
+        runtime.set_ui_reference([1920.0, 1080.0]);
+        let (origin, size) = rect(&mut runtime);
+        // StartButton：canvas 位置 [-240,20]，尺寸 192×64，anchor 0.5,0.5 →
+        // 1920×1080 下中心 (720,560)，origin (624,528)。
+        assert_eq!(origin, [624.0, 528.0], "同步 reference 后应在设计位置");
+        assert_eq!(size, [192.0, 64.0]);
+        assert_ne!(stale_origin, origin, "旧 reference 会导致 UI 错位（回归防护）");
+        let _ = stale_size;
+    }
+
+    /// 首包预热：`load_project_font_atlas` 读到项目根 `chars.txt` 时预生成字形
+    /// （图集 version 增加）；无 chars.txt 不预热。
+    #[test]
+    fn font_prewarm_from_chars_txt() {
+        let root = std::env::temp_dir().join(format!("p2_font_prewarm_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let font_src = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../crates/editor/fonts/NotoSansSC-VF.ttf");
+        std::fs::create_dir_all(root.join("assets/fonts")).unwrap();
+        std::fs::copy(&font_src, root.join("assets/fonts/font.ttf")).unwrap();
+        std::fs::write(
+            root.join("project.toml"),
+            "[project]\nfont = \"assets/fonts/font.ttf\"\n",
+        )
+        .unwrap();
+        // 无 chars.txt：不预热，version 保持 0。
+        let atlas = load_project_font_atlas(Some(&root)).expect("atlas");
+        assert_eq!(
+            atlas.lock().unwrap().version(),
+            0,
+            "无 chars.txt 不应预热"
+        );
+        // 写 chars.txt：预热后 version > 0（字形已生成）。
+        std::fs::write(root.join("chars.txt"), "测试字体AB").unwrap();
+        let atlas = load_project_font_atlas(Some(&root)).expect("atlas");
+        assert!(atlas.lock().unwrap().version() > 0, "chars.txt 应触发预热");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 俄罗斯方块工程冒烟：加载场景 + 脚本，跑几步（输入驱动），验证精灵/UI
+    /// 渲染与 Lua 脚本不报错。
+    #[test]
+    fn tetris_project_runs_and_renders() {
+        use crate::core::input::InputKey;
+        use crate::core::scene::Scene;
+
+        let root = crate::core::games_dir().join("tetris");
+        let path = root.join("scenes/main.scene");
+        assert!(path.is_file(), "tetris 场景缺失: {}", path.display());
+        assert!(root.join("scripts/main.lua").is_file(), "tetris 脚本缺失");
+        let scene = Scene::load(&path).unwrap();
+        let mut runtime = RuntimeScene::from_scene(Some(&root), scene).unwrap();
+        // on_create 已执行：背景面板 + 首块精灵 + 文字应渲染出 draw。
+        let mesh = runtime.vertices(1280, 720).expect("vertices");
+        assert!(!mesh.draws.is_empty(), "tetris 应渲染出 draw（UI 面板/精灵/文字）");
+        // 关键：必须存在 white.png 的精灵 draw（方块），否则只渲染了 UI。
+        let has_sprite_draw = mesh
+            .draws
+            .iter()
+            .any(|d| mesh.paths.get(d.texture as usize - 1).map(|p| p.as_str()) == Some("assets/textures/white.png"));
+        assert!(has_sprite_draw, "应存在 white.png 精灵 draw（方块）：{:#?}", mesh.paths);
+        // 模拟按键：右移 → 旋转 → 硬降，逐帧驱动。
+        let mut input = InputSnapshot::default();
+        input.key_event(InputKey::D, true);
+        runtime.run_script_steps(1, 1.0 / 60.0, &input).expect("step d");
+        input.key_event(InputKey::W, true);
+        runtime.run_script_steps(1, 1.0 / 60.0, &input).expect("step w");
+        input.key_event(InputKey::Space, true);
+        runtime.run_script_steps(1, 1.0 / 60.0, &input).expect("step space");
+        // 多步后仍能渲染。
+        let mesh = runtime.vertices(1280, 720).expect("vertices after steps");
+        assert!(!mesh.draws.is_empty(), "多步后仍应渲染");
+    }
+
+    /// clickEvent 命中矩形：Image 用 UI 矩形、Text 用 SDF 字形 bbox、Sprite 用
+    /// 相机投影到屏幕的 AABB。验证三类实体都能得到正确的 `(名字, origin, size)`。
+    #[test]
+    fn compute_click_targets_resolves_image_text_sprite() {
+        use crate::core::scene::{Scene, SceneEntityId};
+
+        let root = crate::core::games_dir().join("game_test");
+        let mut scene = Scene::new("click");
+        let add = |scene: &mut Scene, id: u64, name: &str, components: &[(&str, &str)]| {
+            scene.add_entity(SceneEntityId(id), name, None).unwrap();
+            let entity = scene.entities.get_mut(&SceneEntityId(id)).unwrap();
+            for (key, value) in components {
+                entity.components.insert(key.to_string(), value.to_string());
+            }
+        };
+        add(
+            &mut scene,
+            1,
+            "ImgClick",
+            &[
+                (
+                    "Image",
+                    "texture=assets/textures/coin.png;x=10;y=20;width=64;height=32;color=1,1,1;space=screen;anchor=0,0",
+                ),
+                ("clickEvent", ""),
+            ],
+        );
+        add(
+            &mut scene,
+            2,
+            "TxtClick",
+            &[
+                (
+                    "Text",
+                    "text=Go;x=5;y=5;scale=1;color=1,1,1;space=screen;anchor=0,0",
+                ),
+                ("clickEvent", ""),
+            ],
+        );
+        add(
+            &mut scene,
+            3,
+            "SprClick",
+            &[
+                ("Transform", "x=100;y=50;rotation=0;scale_x=1;scale_y=1"),
+                (
+                    "Sprite",
+                    "texture=assets/textures/coin.png;size=32x32;pivot=0.5,0.5;tint=1,1,1,1",
+                ),
+                ("clickEvent", ""),
+            ],
+        );
+        let mut runtime = RuntimeScene::from_scene_edit(Some(&root), scene).unwrap();
+        runtime.set_camera_2d(
+            Camera2D::new(Vec2::new(0.0, 0.0), 1.0).expect("default camera"),
+        );
+        let targets = runtime.compute_click_targets();
+        let img = targets
+            .iter()
+            .find(|(n, _, _)| n == "ImgClick")
+            .expect("image click target");
+        assert_eq!(img.1, [10.0, 20.0], "Image origin 即组件 x/y");
+        assert_eq!(img.2, [64.0, 32.0], "Image size 即组件宽高");
+        assert!(
+            targets.iter().any(|(n, _, _)| n == "TxtClick"),
+            "Text click target 存在"
+        );
+        let spr = targets
+            .iter()
+            .find(|(n, _, _)| n == "SprClick")
+            .expect("sprite click target");
+        // 相机在原点、viewport 1280×720：sprite(100,50) 32×32 pivot 0.5
+        // → 屏幕 AABB 左上 (724, 294)、尺寸 (32, 32)。
+        assert_eq!(spr.1, [724.0, 294.0]);
+        assert_eq!(spr.2, [32.0, 32.0]);
     }
 
     #[test]
@@ -1447,13 +1983,16 @@ mod sdf_tests {
         let mesh = runtime.vertices(1280, 720).expect("vertices");
         let counts = runtime.script.with_world(|world| {
             (
-                world.entities_with::<UiButton>().len(),
+                world.entities_with::<crate::core::ui::ClickEvent>().len(),
                 world.entities_with::<UiImage>().len(),
                 world.entities_with::<UiText>().len(),
             )
         });
-        assert_eq!(counts.0, 2, "menu scene should expose two buttons");
-        assert_eq!(counts.1, 1, "menu scene should expose one image");
+        assert_eq!(counts.0, 2, "menu scene buttons are clickEvent entities");
+        assert!(
+            counts.1 >= 3,
+            "menu scene should expose logo + two button images"
+        );
         assert!(
             counts.2 >= 3,
             "menu scene should expose title/subtitle/help text"
@@ -1483,7 +2022,7 @@ mod sdf_tests {
                 world
                     .entities_with::<crate::core::animation::AnimationStateMachine>()
                     .len(),
-                world.entities_with::<UiButton>().len(),
+                world.entities_with::<crate::core::ui::ClickEvent>().len(),
             )
         });
         assert_eq!(counts.0, 1, "production scene should have one tilemap");
@@ -1491,13 +2030,13 @@ mod sdf_tests {
             counts.1, 11,
             "production scene should have player plus ten animated enemies"
         );
-        assert_eq!(counts.2, 1, "production scene should have one menu button");
+        assert_eq!(counts.2, 0, "production scene (not migrated) has no clickEvent");
         assert!(
             runtime.texture_paths.len() >= 4,
             "production scene should load tilemap/player/enemy/pickup textures"
         );
         assert!(
-            mesh.draws.len() >= 6,
+            mesh.draws.len() >= 4,
             "production scene should render tilemap and gameplay actors"
         );
     }

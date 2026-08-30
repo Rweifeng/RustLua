@@ -26,14 +26,11 @@ use engine::core::{
     tilemap::Tilemap,
     transform::Vec2,
     transform3d::Transform3D,
-    ui::{
-        UiButton, UiImage, UiLayoutSpace, UiText, UI_REFERENCE_SIZE, resolve_ui_rect,
-        resolve_ui_text_origin,
-    },
+    ui::{UiImage, UiText, resolve_ui_rect, resolve_ui_text_origin},
 };
 use engine::host::{
     BoundsSource, ReadbackStatus, Renderer, RuntimeScene, Scene3d, Scene3dBounds, Scene3dDrawable,
-    SceneMesh,
+    SceneMesh, load_project_font_atlas,
 };
 use std::path::Path;
 
@@ -46,6 +43,12 @@ impl EditorApp {
         let (response, painter) =
             ui.allocate_painter(ui.available_size(), egui::Sense::click_and_drag());
         let rect = response.rect;
+        // 打开场景/切入 2D 后，把视图适配到设计分辨率包围框：完整显示并居中，
+        // 避免大包围框在窄面板下被裁剪到属性面板边缘。
+        if self.scene_view_fit_pending {
+            self.scene_view_fit_pending = false;
+            self.fit_scene_view_to_design(rect);
+        }
         // 拖放：把资源浏览器中的纹理拖到场景创建精灵。
         let (_, dropped_texture) = ui
             .dnd_drop_zone::<String, egui::Response>(egui::Frame::default(), |ui| {
@@ -64,6 +67,12 @@ impl EditorApp {
         painter.rect_filled(rect, 0.0, egui::Color32::from_rgb(28, 32, 40));
         // 实时渲染编辑场景（精灵/图块/文本）作为背景。
         let scale = ui.ctx().pixels_per_point();
+        // 中键拖拽平移（内容跟随鼠标）：面板增量（points）× ppp = 世界像素位移。
+        if response.dragged_by(egui::PointerButton::Middle) {
+            let d = response.drag_delta();
+            self.scene_state.pan.x += d.x * scale;
+            self.scene_state.pan.y -= d.y * scale;
+        }
         let view_w = (rect.width() * scale) as u32;
         let view_h = (rect.height() * scale) as u32;
         self.render_scene_view_2d(view_w, view_h, ui.ctx());
@@ -71,6 +80,26 @@ impl EditorApp {
             painter.image(
                 tex.id(),
                 rect,
+                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                egui::Color32::WHITE,
+            );
+        }
+        // 设计分辨率包围框（Unity Camera Preview 风格）：标注游戏取景范围。
+        self.draw_design_resolution_box(&painter, rect, scale);
+        // 在包围框内显示游戏画面（设计分辨率 + 游戏相机 + UI 覆盖层）：
+        // 实际 UI 随包围框缩放/平移（包围框 world 映射）。
+        if let Some(id) = self.scene_screen_tex_id {
+            let frame = design_resolution_frame(
+                rect,
+                self.scene_state.pan,
+                self.scene_zoom,
+                scale,
+                self.game_camera_center_egui(),
+                self.preview_resolution,
+            );
+            painter.image(
+                id,
+                frame,
                 egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
                 egui::Color32::WHITE,
             );
@@ -89,7 +118,7 @@ impl EditorApp {
             let box_rect = egui::Rect::from_center_size(entity.center, entity.size);
             let selected = self.tree.selected() == Some(entity.id)
                 || self.scene_state.selected.contains(&entity.id);
-            // 场景已实时渲染，实体只画选中轮廓 + 名称。
+            // 场景已实时渲染（含实际 UI 覆盖层），实体只画选中轮廓 + 名称。
             if selected {
                 painter.rect_stroke(
                     box_rect,
@@ -188,13 +217,7 @@ impl EditorApp {
                     .filter(|entity| ids.contains(&entity.id))
                     .filter_map(|entity| {
                         entity.ui.map(|ui| {
-                            (
-                                entity.id,
-                                UiDragInitial {
-                                    position: ui.position,
-                                    space: ui.space,
-                                },
-                            )
+                            (entity.id, UiDragInitial { position: ui.position })
                         })
                     })
                     .collect();
@@ -222,7 +245,8 @@ impl EditorApp {
                 egui::StrokeKind::Outside,
             );
             for entity in &entities {
-                let corners = rotated_corners(entity.center, entity.size, entity.transform.rotation);
+                let corners =
+                    rotated_corners(entity.center, entity.size, entity.transform.rotation);
                 let contained = corners
                     .iter()
                     .all(|corner| selection_rect.contains(*corner));
@@ -239,12 +263,6 @@ impl EditorApp {
             let delta = pos - drag.start;
             let mut preview = std::collections::BTreeMap::new();
             let mut preview_ui = std::collections::BTreeMap::new();
-            // UI 组件坐标是 authored 空间（canvas=参考分辨率 1280x720），拖动增量
-            // 是面板 points，需按 viewport 与参考分辨率的比值换算。
-            let canvas_factor = egui::vec2(
-                rect.width() / UI_REFERENCE_SIZE[0],
-                rect.height() / UI_REFERENCE_SIZE[1],
-            );
             let pivot = {
                 let count = drag.initial.len().max(1) as f32;
                 let x = drag
@@ -266,13 +284,10 @@ impl EditorApp {
             for id in &drag.ids {
                 // UI 组件拖拽：只预览组件 x/y（屏幕空间），不写 Transform。
                 if let Some(ui) = drag.ui_initial.get(id) {
-                    // Screen 空间组件坐标是 viewport 像素：面板拖动增量（points）
-                    // 要换算成像素增量，除以 1/ppp 即乘以 ppp。Canvas 空间坐标是
-                    // reference 像素，canvas_factor 已按 points 比例折算，无需再乘 ppp。
-                    let per_axis = match ui.space {
-                        UiLayoutSpace::Screen => egui::Vec2::new(1.0 / scale, 1.0 / scale),
-                        UiLayoutSpace::Canvas => canvas_factor,
-                    };
+                    // UI 组件绘制在设计分辨率包围框内，随 Scene 缩放（world→面板 =
+                    // world*zoom/ppp）：面板拖动增量（points）换算成设计像素增量 =
+                    // delta / (zoom/ppp)。Screen/Canvas 两空间同用此比例。
+                    let per_axis = egui::vec2(self.scene_zoom / scale, self.scene_zoom / scale);
                     preview_ui.insert(
                         *id,
                         [
@@ -344,6 +359,9 @@ impl EditorApp {
         let scene_state = &self.scene_state;
         let scene_zoom = self.scene_zoom;
         let pan = scene_state.pan;
+        // 游戏相机中心（设计分辨率包围框世界中心），在借用前读取为局部值。
+        let camera_center =
+            egui::vec2(self.game_camera_2d_center.x, self.game_camera_2d_center.y);
         let filter = filter.trim();
         let Some(scene) = scene else {
             return Vec::new();
@@ -366,15 +384,19 @@ impl EditorApp {
                         .and_then(|v| parse_transform(v))
                 })
                 .unwrap_or_default();
-            // UI 组件（Image/Button/Text）在屏幕空间（NDC 覆盖层）渲染，包围框按
-            // 组件自身 x/y/width/height/space/anchor 解析到面板坐标，不受相机
-            // pan/zoom 影响；其余实体（Sprite/图块）按 Transform 世界坐标 + pan/zoom
-            // 映射。空实体回退默认框。
+            // UI 组件（Image/Button/Text）在设计分辨率包围框内渲染，包围框按组件
+            // 自身 x/y/width/height/space/anchor 解析后映射进包围框（随 pan/zoom）；
+            // 其余实体（Sprite/图块）按 Transform 世界坐标 + pan/zoom 映射。空实体
+            // 回退默认框。
             if let Some((center, size, ui)) = ui_entity_2d_box(
                 e,
                 rect,
                 scene_state.preview_ui.get(&e.id).copied(),
                 runtime.as_deref_mut(),
+                scene_state.pan,
+                scene_zoom,
+                camera_center,
+                self.preview_resolution,
                 pixels_per_point,
             ) {
                 let effective = TransformFields {
@@ -416,6 +438,61 @@ impl EditorApp {
 
     fn clear_scene_view_diagnostic(&mut self) {
         self.preview_diagnostic = None;
+    }
+
+    /// 把 2D 场景视图适配到设计分辨率包围框：计算使包围框完整显示在面板内并
+    /// 居中的 zoom 与 pan（世界相机中心落在面板中心）。
+    fn fit_scene_view_to_design(&mut self, rect: egui::Rect) {
+        let (w, h) = self.preview_resolution;
+        if w == 0 || h == 0 {
+            return;
+        }
+        let margin = 48.0;
+        let avail_w = (rect.width() - margin * 2.0).max(50.0);
+        let avail_h = (rect.height() - margin * 2.0).max(50.0);
+        let zoom = (avail_w / w as f32)
+            .min(avail_h / h as f32)
+            .clamp(0.2, 4.0);
+        let center = egui::vec2(self.game_camera_2d_center.x, self.game_camera_2d_center.y);
+        self.scene_zoom = zoom;
+        self.scene_state.pan = egui::vec2(-center.x * zoom, -center.y * zoom);
+    }
+
+    /// 在 2D Scene 视图绘制设计分辨率包围框（仿 Unity Camera Preview）：以游戏 2D
+    /// 相机中心为世界中心、设计分辨率为尺寸的半透明矩形，按编辑器 pan/zoom 映射到
+    /// 面板坐标，让设计者在编辑时看到游戏镜头能拍到的取景范围。分辨率标注固定显示
+    /// 在视图左上角标题下方（包围框可能被缩放/平移推出可视区域，固定标注始终可见）。
+    fn draw_design_resolution_box(&self, painter: &egui::Painter, rect: egui::Rect, ppp: f32) {
+        let (w, h) = self.preview_resolution;
+        if w == 0 || h == 0 {
+            return;
+        }
+        let frame = design_resolution_frame(
+            rect,
+            self.scene_state.pan,
+            self.scene_zoom,
+            ppp,
+            self.game_camera_center_egui(),
+            (w, h),
+        );
+        painter.rect_filled(
+            frame,
+            0.0,
+            egui::Color32::from_rgba_unmultiplied(90, 170, 255, 16),
+        );
+        painter.rect_stroke(
+            frame,
+            0.0,
+            egui::Stroke::new(1.5_f32, egui::Color32::from_rgba_unmultiplied(120, 190, 255, 210)),
+            egui::StrokeKind::Outside,
+        );
+        painter.text(
+            rect.left_top() + egui::vec2(12.0, 36.0),
+            egui::Align2::LEFT_TOP,
+            format!("设计分辨率 {w}×{h}"),
+            egui::FontId::proportional(13.0),
+            egui::Color32::from_rgb(150, 205, 255),
+        );
     }
 
     /// 3D 场景视图（M9-03）：XZ 俯视投影绘制 Transform3D 实体，选中实体显示
@@ -1346,8 +1423,25 @@ impl EditorApp {
             return;
         };
         let root = strip_verbatim_prefix(&self.project.root);
+        // 共享字体图集：运行时随 revision 重建时复用同一实例，MSDF 字形只生成一次
+        // （否则拖动 UI/精灵每帧重建运行时都会重新生成所有字形 → 卡顿）。
+        if self.scene_font_atlas.is_none() {
+            self.scene_font_atlas = load_project_font_atlas(Some(&root));
+        }
         match RuntimeScene::from_scene_edit(Some(&root), scene.scene.clone()) {
-            Ok(runtime) => self.scene_runtime = Some(runtime),
+            Ok(mut runtime) => {
+                // 捕获游戏 2D 相机中心（此时相机仍是运行时默认，未被子编辑器覆盖），
+                // 供设计分辨率包围框定位游戏取景范围。
+                self.game_camera_2d_center = runtime.camera_center_2d();
+                // 场景视图渲染实际 UI（Text/Image/Button）覆盖层（默认 render_ui_overlay
+                // = true），与包围框同用设计分辨率作 Canvas 参考。
+                runtime.set_ui_reference([
+                    self.preview_resolution.0 as f32,
+                    self.preview_resolution.1 as f32,
+                ]);
+                runtime.set_font_atlas(self.scene_font_atlas.clone());
+                self.scene_runtime = Some(runtime);
+            }
             Err(error) => {
                 tracing::warn!(target: "editor", "[scene view] 2D runtime rebuild failed: {error}");
             }
@@ -1395,6 +1489,9 @@ impl EditorApp {
                 return;
             };
             runtime.set_camera_2d(camera2d);
+            // 编辑器视图只渲染世界内容；实际 UI（Text/Image/Button）由游戏画面
+            // （设计分辨率 + 游戏相机）渲染进设计分辨率包围框内。
+            runtime.set_render_ui_overlay(false);
             let mesh = match runtime.vertices(width, height) {
                 Ok(mesh) => mesh,
                 Err(error) => {
@@ -1439,6 +1536,8 @@ impl EditorApp {
                 ctx.request_repaint();
             }
         }
+        // 渲染游戏画面（设计分辨率 + 游戏相机 + UI）到设计分辨率包围框内。
+        self.render_scene_screen(ctx);
         // 性能打点：仅当单帧耗时超过阈值时记录，便于对照优化前后。
         let elapsed = started.elapsed();
         if elapsed >= std::time::Duration::from_millis(8) {
@@ -1447,6 +1546,126 @@ impl EditorApp {
                 "[editor-perf] scene view 2D frame: {}ms ({width}x{height})",
                 elapsed.as_millis()
             );
+        }
+    }
+
+    /// 渲染游戏画面（设计分辨率 + 游戏相机 + UI 覆盖层）到离屏纹理，并注册为原生
+    /// egui 纹理，供 Scene 视图在设计分辨率包围框内显示。内容未变化（修订/设计
+    /// 分辨率未动）时跳过渲染；失败时保留上一帧（诊断由编辑器视图负责）。
+    fn render_scene_screen(&mut self, ctx: &egui::Context) {
+        let revision = self.document.current_scene.as_ref().map(|doc| doc.revision);
+        let (dw, dh) = self.preview_resolution;
+        if dw == 0 || dh == 0 {
+            return;
+        }
+        let key = revision.map(|r| (r, self.preview_resolution));
+        if self.scene_screen_cache_key == key && self.scene_screen_tex_id.is_some() {
+            return;
+        }
+        if self.scene_renderer.is_none() || self.scene_runtime.is_none() {
+            return;
+        }
+        self.ensure_scene_screen_texture(dw, dh);
+        if self.scene_screen_texture.is_none() {
+            return;
+        }
+        // 游戏相机 + UI 覆盖层：渲染游戏画面（与预览一致，相机中心 = 默认 2D 相机）。
+        let game_camera = Camera2D::new(
+            Vec2::new(self.game_camera_2d_center.x, self.game_camera_2d_center.y),
+            1.0,
+        )
+        .expect("default camera center is valid");
+        let mesh = {
+            let runtime = self.scene_runtime.as_mut().expect("scene runtime checked");
+            runtime.set_camera_2d(game_camera);
+            runtime.set_render_ui_overlay(true);
+            // 运行时只在场景 revision 变化时重建；切换设计分辨率时需同步 Canvas
+            // 参考分辨率，否则渲染的 UI 用旧 reference 缩放（viewport/reference≠1），
+            // 与包围框（当前设计分辨率、scale=1）错位。这里每帧重渲染前刷新。
+            runtime.set_ui_reference([dw as f32, dh as f32]);
+            match runtime.vertices(dw, dh) {
+                Ok(mesh) => mesh,
+                Err(error) => {
+                    tracing::warn!(
+                        target: "editor",
+                        "[scene view] game screen render failed: {error}"
+                    );
+                    return;
+                }
+            }
+        };
+        let Some(renderer) = &mut self.scene_renderer else {
+            return;
+        };
+        let Some((_, view)) = &self.scene_screen_texture else {
+            return;
+        };
+        renderer.render_into_texture(&mesh, None, view, dw, dh);
+        self.sync_scene_screen_texture();
+        self.scene_screen_cache_key = key;
+        ctx.request_repaint();
+    }
+
+    /// 确保游戏画面离屏纹理存在且尺寸与设计分辨率一致。
+    fn ensure_scene_screen_texture(&mut self, width: u32, height: u32) {
+        let size_changed = self
+            .scene_screen_texture
+            .as_ref()
+            .is_none_or(|(t, _)| t.width() != width || t.height() != height);
+        if !size_changed {
+            return;
+        }
+        let Some((device, _)) = &self.gpu else {
+            return;
+        };
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("p2-scene-screen"),
+            size: wgpu::Extent3d {
+                width: width.max(1),
+                height: height.max(1),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        self.scene_screen_texture = Some((texture, view));
+        self.scene_screen_cache_key = None;
+    }
+
+    /// 把游戏画面纹理注册/更新为原生 egui 纹理（免 CPU 回读，避免与编辑器视图回读混淆）。
+    fn sync_scene_screen_texture(&mut self) {
+        let Some(render_state) = &self.render_state else {
+            return;
+        };
+        let Some((device, _)) = &self.gpu else {
+            return;
+        };
+        let Some((_, view)) = &self.scene_screen_texture else {
+            return;
+        };
+        let mut renderer = render_state.renderer.write();
+        match self.scene_screen_tex_id {
+            Some(id) => {
+                renderer.update_egui_texture_from_wgpu_texture(
+                    device,
+                    view,
+                    wgpu::FilterMode::Nearest,
+                    id,
+                );
+            }
+            None => {
+                let id = renderer.register_native_texture(
+                    device,
+                    view,
+                    wgpu::FilterMode::Nearest,
+                );
+                self.scene_screen_tex_id = Some(id);
+            }
         }
     }
 
@@ -1726,6 +1945,59 @@ impl EditorApp {
     }
 }
 
+/// 设计分辨率包围框在面板坐标中的矩形（中心 + 尺寸）。
+///
+/// 与 `entity_2d_screen_box` 共用同一映射：世界像素坐标 = pan + world*zoom，
+/// 再除以 pixels_per_point 折回面板逻辑坐标；设计分辨率以游戏 2D 相机中心
+/// （`center`，默认 `DEFAULT_2D_CAMERA_CENTER`）为世界中心，包围框即游戏取景范围。
+fn design_resolution_frame(
+    panel: egui::Rect,
+    pan: egui::Vec2,
+    zoom: f32,
+    ppp: f32,
+    center: egui::Vec2,
+    resolution: (u32, u32),
+) -> egui::Rect {
+    let ppp = ppp.max(1.0e-3);
+    let size = egui::vec2(
+        resolution.0 as f32 * zoom / ppp,
+        resolution.1 as f32 * zoom / ppp,
+    );
+    let rect_center = egui::pos2(
+        panel.center().x + (pan.x + center.x * zoom) / ppp,
+        panel.center().y + (-pan.y - center.y * zoom) / ppp,
+    );
+    egui::Rect::from_center_size(rect_center, size)
+}
+
+/// 把设计分辨率像素矩形映射到 Scene 视图面板坐标（设计包围框内）。
+///
+/// 与 `design_resolution_frame` / `entity_2d_screen_box` 共用同一套世界→面板
+/// 变换：设计像素（画布以游戏相机中心 `center` 为世界中心、Y 向下的屏幕坐标）
+/// → 世界（中心为原点、Y 翻转为向上正）→ 面板（pan + world*zoom，再 /ppp）。
+fn design_rect_to_panel(
+    panel: egui::Rect,
+    pan: egui::Vec2,
+    zoom: f32,
+    ppp: f32,
+    center: egui::Vec2,
+    design: (u32, u32),
+    origin: [f32; 2],
+    size: [f32; 2],
+) -> egui::Rect {
+    let ppp = ppp.max(1.0e-3);
+    let dw = design.0 as f32;
+    let dh = design.1 as f32;
+    let world_x = center.x + origin[0] - dw * 0.5;
+    let world_y = center.y + dh * 0.5 - origin[1];
+    let min = egui::pos2(
+        panel.center().x + (pan.x + world_x * zoom) / ppp,
+        panel.center().y + (-pan.y - world_y * zoom) / ppp,
+    );
+    let size = egui::vec2(size[0] * zoom / ppp, size[1] * zoom / ppp);
+    egui::Rect::from_min_size(min, size)
+}
+
 /// 计算 2D 实体在 Scene 视图中的屏幕空间包围框（中心 + 尺寸）。
 ///
 /// 尺寸按实体组件解析：Sprite 用 `size`（含 pivot 偏移，使框与渲染 quad 对齐），
@@ -1767,10 +2039,7 @@ fn entity_2d_screen_box(
     // 高 DPI 屏上让包围框相对渲染内容偏移并放大（ppp==1 时两者恰好等价）。
     let screen_size = egui::vec2(size.x * sx * zoom / ppp, size.y * sy * zoom / ppp);
     // Sprite pivot 偏移（世界像素）随缩放/旋转映射到屏幕，使包围框中心贴合渲染 quad。
-    let offset = egui::vec2(
-        size.x * (0.5 - pivot.x) * sx,
-        size.y * (0.5 - pivot.y) * sy,
-    );
+    let offset = egui::vec2(size.x * (0.5 - pivot.x) * sx, size.y * (0.5 - pivot.y) * sy);
     let rotation = transform.rotation.to_radians();
     let world_center = egui::pos2(
         transform.position_x + offset.x * rotation.cos() - offset.y * rotation.sin(),
@@ -1802,63 +2071,50 @@ struct SceneBoxedEntity {
 #[derive(Clone, Copy)]
 struct UiEntityInfo {
     position: [f32; 2],
-    space: UiLayoutSpace,
 }
 
 /// 计算 UI 组件实体（Image/Button/Text）在面板坐标系的真实包围框。
 ///
-/// UI 组件在运行时渲染为 NDC 屏幕空间覆盖层，位置/尺寸来自组件自身的
-/// `x/y/width/height/space/anchor`（而非 Transform，后者对 UI 实体恒为原点）。
-/// 这里用与运行时相同的 `resolve_ui_rect`/`resolve_ui_text_origin`（viewport 用
-/// 面板像素尺寸）解析，再按 pixels_per_point 折算到面板逻辑坐标，使包围框精确
-/// 贴合实时渲染的 UI；`override_position` 提供拖拽预览位置。
+/// UI 组件的位置/尺寸来自组件自身的 `x/y/width/height/space/anchor`（而非
+/// Transform）。实际 UI 在 Scene 视图的设计分辨率包围框内渲染（游戏画面纹理，
+/// world 映射）。这里以设计分辨率为 viewport + 参考，用与运行时相同的
+/// `resolve_ui_rect`/`resolve_ui_text_origin` 解析出设计像素矩形，再经
+/// `design_rect_to_panel` 映射进包围框（随 Scene 平移/缩放移动），使包围框与
+/// 包围框内渲染的 UI 对齐；`override_position` 提供拖拽预览位置。
 fn ui_entity_2d_box(
     entity: &SceneEntity,
     rect: egui::Rect,
     override_position: Option<[f32; 2]>,
     runtime: Option<&mut RuntimeScene>,
+    pan: egui::Vec2,
+    zoom: f32,
+    center: egui::Vec2,
+    design_resolution: (u32, u32),
     pixels_per_point: f32,
 ) -> Option<(egui::Pos2, egui::Vec2, UiEntityInfo)> {
-    // UI 坐标是 viewport 像素；面板逻辑坐标 = 像素 / pixels_per_point。
-    let ppp = pixels_per_point.max(1.0e-3);
-    let viewport = [rect.width() * ppp, rect.height() * ppp];
-    let inv = 1.0 / ppp;
-    let center_of = |origin: [f32; 2], size: [f32; 2]| {
-        rect.left_top()
-            + egui::vec2(
-                (origin[0] + size[0] * 0.5) * inv,
-                (origin[1] + size[1] * 0.5) * inv,
-            )
+    // UI 坐标是设计分辨率像素（包围框内）；经 design_rect_to_panel 映射到面板逻辑坐标。
+    let viewport = [design_resolution.0 as f32, design_resolution.1 as f32];
+    let reference = viewport;
+    // 直接返回期望尺寸（`egui::Rect::size()` 是 max-min，rect 远离原点时会有浮点
+    // 抵消误差），中心沿用 `design_rect_to_panel` 的映射。
+    let box_of = |origin: [f32; 2], size: [f32; 2]| {
+        let frame = design_rect_to_panel(
+            rect, pan, zoom, pixels_per_point, center, design_resolution, origin, size,
+        );
+        let ppp = pixels_per_point.max(1.0e-3);
+        (
+            frame.center(),
+            egui::vec2(size[0] * zoom / ppp, size[1] * zoom / ppp),
+        )
     };
     if let Some(raw) = entity.components.get("Image")
         && let Ok(image) = UiImage::from_component_str(raw)
     {
         let position = override_position.unwrap_or(image.position);
         let (origin, size) =
-            resolve_ui_rect(position, image.size, image.space, image.anchor, viewport);
-        return Some((
-            center_of(origin, size),
-            egui::vec2(size[0] * inv, size[1] * inv),
-            UiEntityInfo {
-                position,
-                space: image.space,
-            },
-        ));
-    }
-    if let Some(raw) = entity.components.get("Button")
-        && let Ok(button) = UiButton::from_component_str(raw)
-    {
-        let position = override_position.unwrap_or(button.position);
-        let (origin, size) =
-            resolve_ui_rect(position, button.size, button.space, button.anchor, viewport);
-        return Some((
-            center_of(origin, size),
-            egui::vec2(size[0] * inv, size[1] * inv),
-            UiEntityInfo {
-                position,
-                space: button.space,
-            },
-        ));
+            resolve_ui_rect(position, image.size, image.space, image.anchor, viewport, reference);
+        let (center, size) = box_of(origin, size);
+        return Some((center, size, UiEntityInfo { position }));
     }
     if let Some(raw) = entity.components.get("Text")
         && let Ok(text) = UiText::from_component_str(raw)
@@ -1877,6 +2133,7 @@ fn ui_entity_2d_box(
             text.space,
             text.anchor,
             viewport,
+            reference,
         );
         let (text_size, glyph_bounds) = match runtime {
             Some(runtime) => runtime.measure_ui_text(&text.text, resolved_scale),
@@ -1889,6 +2146,7 @@ fn ui_entity_2d_box(
             text.space,
             text.anchor,
             viewport,
+            reference,
         );
         // 字形相对网格原点的偏移 + 尺寸。
         let glyph_origin = [origin[0] + glyph_bounds[0], origin[1] + glyph_bounds[1]];
@@ -1896,14 +2154,8 @@ fn ui_entity_2d_box(
             (glyph_bounds[2] - glyph_bounds[0]).max(0.0),
             (glyph_bounds[3] - glyph_bounds[1]).max(0.0),
         ];
-        return Some((
-            center_of(glyph_origin, glyph_size),
-            egui::vec2(glyph_size[0] * inv, glyph_size[1] * inv),
-            UiEntityInfo {
-                position,
-                space: text.space,
-            },
-        ));
+        let (center, size) = box_of(glyph_origin, glyph_size);
+        return Some((center, size, UiEntityInfo { position }));
     }
     None
 }
@@ -1925,10 +2177,10 @@ fn fallback_measure_text(text: &str, scale: f32) -> ([f32; 2], [f32; 4]) {
     .unwrap_or(([0.0, 0.0], [0.0; 4]))
 }
 
-/// 把实体上的 UI 组件（Image/Button/Text）x/y 改写为给定位置（拖拽提交）。
+/// 把实体上的 UI 组件（Image/Text）x/y 改写为给定位置（拖拽提交）。
 /// 找到第一个可用 UI 组件改写并返回 `true`；无 UI 组件返回 `false`。
 fn set_ui_component_position(entity: &mut SceneEntity, position: [f32; 2]) -> bool {
-    let Some(key) = ["Image", "Button", "Text"]
+    let Some(key) = ["Image", "Text"]
         .into_iter()
         .find(|key| entity.components.contains_key(*key))
     else {
@@ -1940,10 +2192,6 @@ fn set_ui_component_position(entity: &mut SceneEntity, position: [f32; 2]) -> bo
         };
         match key {
             "Image" => UiImage::from_component_str(raw).ok().map(|mut component| {
-                component.position = position;
-                component.to_component_str()
-            }),
-            "Button" => UiButton::from_component_str(raw).ok().map(|mut component| {
                 component.position = position;
                 component.to_component_str()
             }),
@@ -2009,6 +2257,7 @@ fn tilemap_cell_from_pointer(
     Some((local_x.floor() as usize, local_y.floor() as usize))
 }
 
+#[allow(clippy::too_many_arguments)] // tilemap cell rect math keeps its params flat
 fn tilemap_cell_screen_rect(
     rect: egui::Rect,
     pan: egui::Vec2,
@@ -2064,6 +2313,7 @@ mod tests {
     use engine::core::logging::LogSink;
     use engine::core::scene::SceneEntityId;
     use engine::core::transform::Vec2;
+    use engine::core::ui::UiLayoutSpace;
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -2075,6 +2325,76 @@ mod tests {
             .as_nanos()
     }
 
+    /// Headless wgpu 设备/队列（fallback adapter）；无 GPU 时返回 None，测试跳过。
+    fn test_device() -> Option<(wgpu::Device, wgpu::Queue)> {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::LowPower,
+            compatible_surface: None,
+            force_fallback_adapter: true,
+        }))
+        .ok()?;
+        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("p2-scene-view-gpu-test"),
+            required_features: wgpu::Features::empty(),
+            experimental_features: wgpu::ExperimentalFeatures::disabled(),
+            required_limits: wgpu::Limits::default(),
+            memory_hints: wgpu::MemoryHints::Performance,
+            trace: wgpu::Trace::Off,
+        }))
+        .ok()
+    }
+
+    /// 复现 game_test/ui_test.scene 的 GPU 离屏渲染（含 font_size=75 的 SDF 文本、
+    /// Image/Button 覆盖层），若 render_into_texture panic 则测试失败。
+    #[test]
+    fn ui_test_scene_renders_offscreen_with_gpu() {
+        let Some((device, queue)) = test_device() else {
+            return;
+        };
+        let source = engine::core::games_dir().join("game_test");
+        let root = temp_root("ui-test-gpu");
+        fs::create_dir_all(&root).unwrap();
+        fs::copy(source.join("project.toml"), root.join("project.toml")).unwrap();
+        copy_dir(&source.join("scripts"), &root.join("scripts"));
+        copy_dir(&source.join("scenes"), &root.join("scenes"));
+        copy_dir(&source.join("assets"), &root.join("assets"));
+        let project = open_project(&root).unwrap();
+        let mut app = EditorApp::new(project, None, LogSink::new(64));
+        app.refresh_resources();
+        app.open_scene_resource(PathBuf::from("scenes/ui_test.scene"));
+        let scene = app.document.current_scene.as_ref().unwrap().scene.clone();
+        // from_scene_edit 默认 render_ui_overlay=true：vertices 渲染 Text/Image/Button。
+        let mut runtime = RuntimeScene::from_scene_edit(Some(&root), scene).unwrap();
+        let mesh = runtime.vertices(1280, 720).expect("build ui_test mesh");
+        let mut renderer = Renderer::new_offscreen(
+            device.clone(),
+            queue.clone(),
+            Some(root.clone()),
+            false,
+            false,
+        )
+        .expect("offscreen renderer");
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("p2-ui-test"),
+            size: wgpu::Extent3d {
+                width: 1280,
+                height: 720,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        // GPU 渲染 ui_test 网格：若 panic/校验失败则测试失败。
+        renderer.render_into_texture(&mesh, None, &view, 1280, 720);
+        let _ = fs::remove_dir_all(&root);
+    }
+
     fn temp_root(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
             "rustlua-m14-01-scene-view-{label}-{}",
@@ -2083,7 +2403,7 @@ mod tests {
     }
 
     fn sample_project_root() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../game_test_2d_production")
+        engine::core::games_dir().join("game_test_2d_production")
     }
 
     fn copy_dir(source: &Path, destination: &Path) {
@@ -2168,6 +2488,26 @@ mod tests {
             camera,
             false,
         ));
+    }
+
+    /// 设计分辨率包围框映射：以 `center`（游戏相机中心）为世界中心，尺寸按
+    /// zoom/ppp 缩放、按 pan 平移，与 `entity_2d_screen_box` 共用同一世界→面板变换。
+    #[test]
+    fn design_resolution_frame_maps_resolution_to_panel() {
+        let panel = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(800.0, 600.0));
+        // center 0、pan 0、zoom 1、ppp 1：包围框居中于面板，尺寸即设计分辨率。
+        let frame = design_resolution_frame(panel, egui::vec2(0.0, 0.0), 1.0, 1.0, egui::Vec2::ZERO, (1280, 720));
+        assert_eq!(frame.center(), egui::pos2(400.0, 300.0));
+        assert_eq!(frame.size(), egui::vec2(1280.0, 720.0));
+        // zoom 0.5 → 尺寸等比减半。
+        let half = design_resolution_frame(panel, egui::vec2(0.0, 0.0), 0.5, 1.0, egui::Vec2::ZERO, (1280, 720));
+        assert_eq!(half.size(), egui::vec2(640.0, 360.0));
+        // pan 平移：X 加、Y 减（屏幕 Y 翻转），中心随之移动。
+        let panned = design_resolution_frame(panel, egui::vec2(100.0, -50.0), 1.0, 1.0, egui::Vec2::ZERO, (1280, 720));
+        assert_eq!(panned.center(), egui::pos2(500.0, 350.0));
+        // 游戏相机中心（640,360）：包围框中心移到世界 (640,360) 映射的面板位置。
+        let cam = design_resolution_frame(panel, egui::vec2(0.0, 0.0), 1.0, 1.0, egui::vec2(640.0, 360.0), (1280, 720));
+        assert_eq!(cam.center(), egui::pos2(400.0 + 640.0, 300.0 - 360.0));
     }
 
     #[test]
@@ -2399,10 +2739,13 @@ mod tests {
         // 与运行时渲染路径交叉验证：Scene 视图实时渲染用 Camera2D(-pan/zoom, zoom)
         // 输出像素，纹理贴回面板时除以 ppp；包围框必须落在同一像素位置。
         let camera = Camera2D::new(Vec2::new(-pan.x / zoom, -pan.y / zoom), zoom).unwrap();
-        let viewport = engine::core::math2d::Viewport::new(rect.width() * ppp, rect.height() * ppp)
-            .unwrap();
+        let viewport =
+            engine::core::math2d::Viewport::new(rect.width() * ppp, rect.height() * ppp).unwrap();
         let px = camera
-            .world_to_screen(Vec2::new(transform.position_x, transform.position_y), viewport)
+            .world_to_screen(
+                Vec2::new(transform.position_x, transform.position_y),
+                viewport,
+            )
             .unwrap();
         assert!((rect.left() + px.x / ppp - center.x).abs() < 1.0e-3);
         assert!((rect.top() + px.y / ppp - center.y).abs() < 1.0e-3);
@@ -2421,6 +2764,7 @@ mod tests {
             color: [1.0; 3],
             space: UiLayoutSpace::Canvas,
             anchor: [0.5, 0.5],
+            nine_slice: None,
         };
         {
             let entity = scene.entities.get_mut(&id).unwrap();
@@ -2429,49 +2773,76 @@ mod tests {
                 .insert("Image".to_owned(), image.to_component_str());
         }
         let (center, size, info) =
-            ui_entity_2d_box(scene.entities.get(&id).unwrap(), rect, None, None, 1.0).unwrap();
+            ui_entity_2d_box(
+                scene.entities.get(&id).unwrap(),
+                rect,
+                None,
+                None,
+                egui::Vec2::ZERO,
+                1.0,
+                egui::Vec2::ZERO,
+                (1280, 720),
+                1.0,
+            )
+            .unwrap();
         // canvas 比例 1.0（1280x720），anchor 0.5,0.5 → 中心 = 面板中心 + (0,-180)。
         assert_eq!(center, egui::pos2(640.0, 180.0));
         assert_eq!(size, egui::vec2(112.0, 112.0));
         assert_eq!(info.position, [0.0, -180.0]);
-        assert!(matches!(info.space, UiLayoutSpace::Canvas));
         // 拖拽预览 override 位置 → 包围框跟随。
-        let (center, _, _) =
-            ui_entity_2d_box(
-                scene.entities.get(&id).unwrap(),
-                rect,
-                Some([0.0, -360.0]),
-                None,
-                1.0,
-            )
-            .unwrap();
+        let (center, _, _) = ui_entity_2d_box(
+            scene.entities.get(&id).unwrap(),
+            rect,
+            Some([0.0, -360.0]),
+            None,
+            egui::Vec2::ZERO,
+            1.0,
+            egui::Vec2::ZERO,
+            (1280, 720),
+            1.0,
+        )
+        .unwrap();
         assert_eq!(center, egui::pos2(640.0, 0.0));
     }
 
     #[test]
-    fn ui_entity_box_button_screen_origin_anchor() {
+    fn ui_entity_box_image_screen_origin_anchor() {
         let rect = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(400.0, 300.0));
-        let mut scene = engine::core::scene::Scene::new("ui-button");
+        let mut scene = engine::core::scene::Scene::new("ui-image-screen");
         let id = SceneEntityId(11);
-        scene.add_entity(id, "StartButton", None).unwrap();
-        let button = UiButton {
-            label: "Start".to_owned(),
+        scene.add_entity(id, "StartImage", None).unwrap();
+        let image = UiImage {
+            texture: "assets/textures/coin.png".to_owned(),
             position: [10.0, 20.0],
             size: [240.0, 56.0],
-            background: [0.2, 0.2, 0.2],
-            text_color: [1.0, 1.0, 1.0],
+            color: [1.0; 3],
             space: UiLayoutSpace::Screen,
             anchor: [0.0, 0.0],
+            nine_slice: None,
         };
         {
             let entity = scene.entities.get_mut(&id).unwrap();
             entity
                 .components
-                .insert("Button".to_owned(), button.to_component_str());
+                .insert("Image".to_owned(), image.to_component_str());
         }
         let (center, size, _) =
-            ui_entity_2d_box(scene.entities.get(&id).unwrap(), rect, None, None, 1.0).unwrap();
-        assert_eq!(center, egui::pos2(10.0 + 120.0, 20.0 + 28.0));
+            ui_entity_2d_box(
+                scene.entities.get(&id).unwrap(),
+                rect,
+                None,
+                None,
+                egui::Vec2::ZERO,
+                1.0,
+                egui::Vec2::ZERO,
+                (1280, 720),
+                1.0,
+            )
+            .unwrap();
+        // box 映射：Screen 元素按设计分辨率画布解析（位置 (10,20)），再映射进
+        // 400×300 面板上的 1280×720 包围框（画布 (0,0) → 框左上角 (-440,-210)，
+        // 元素左上角 (10,20) → (-430,-190)，中心 (-310,-162)）。
+        assert_eq!(center, egui::pos2(-310.0, -162.0));
         assert_eq!(size, egui::vec2(240.0, 56.0));
     }
 
@@ -2497,7 +2868,18 @@ mod tests {
                 .insert("Text".to_owned(), text.to_component_str());
         }
         let (center, size, info) =
-            ui_entity_2d_box(scene.entities.get(&id).unwrap(), rect, None, None, 1.0).unwrap();
+            ui_entity_2d_box(
+                scene.entities.get(&id).unwrap(),
+                rect,
+                None,
+                None,
+                egui::Vec2::ZERO,
+                1.0,
+                egui::Vec2::ZERO,
+                (1280, 720),
+                1.0,
+            )
+            .unwrap();
         // 与运行时同款解析：canvas 缩放 = 1.0 → resolved_scale = scale。
         let (_, resolved_scale) = resolve_ui_text_origin(
             [0.0, 0.0],
@@ -2506,6 +2888,7 @@ mod tests {
             UiLayoutSpace::Canvas,
             [0.5, 0.5],
             [1280.0, 720.0],
+            [1280.0, 720.0],
         );
         assert_eq!(resolved_scale, 2.4);
         let (text_size, bounds) = fallback_measure_text("Start Production", resolved_scale);
@@ -2513,7 +2896,10 @@ mod tests {
         let gh = (bounds[3] - bounds[1]).max(0.0);
         // 包围框贴合字形 bbox：尺寸 = 字形像素范围（网格 size 含尾随 advance，
         // 字形框略窄）。
-        assert_eq!(size, egui::vec2(gw, gh));
+        assert!(
+            (size.x - gw).abs() < 1e-4 && (size.y - gh).abs() < 1e-4,
+            "size={size:?} expected=({gw}, {gh})"
+        );
         // anchor 0.5,0.5 且位置在原点：网格中心 = 面板中心；字形中心 = 网格中心
         // + 字形在网格内的偏移。
         let (origin, _) = resolve_ui_text_origin(
@@ -2523,12 +2909,17 @@ mod tests {
             UiLayoutSpace::Canvas,
             [0.5, 0.5],
             [1280.0, 720.0],
+            [1280.0, 720.0],
         );
         let expected = egui::pos2(
             origin[0] + bounds[0] + gw * 0.5,
             origin[1] + bounds[1] + gh * 0.5,
         );
-        assert_eq!(center, expected);
+        // 字形 bbox 中心经包围框映射，与同款解析期望一致（浮点路径不同，允许亚像素误差）。
+        assert!(
+            (center.x - expected.x).abs() < 1e-3 && (center.y - expected.y).abs() < 1e-3,
+            "center={center:?} expected={expected:?}"
+        );
         assert_eq!(info.position, [0.0, 0.0]);
     }
 
@@ -2551,7 +2942,20 @@ mod tests {
                 .components
                 .insert("Sprite".to_owned(), sprite.to_component_str());
         }
-        assert!(ui_entity_2d_box(scene.entities.get(&id).unwrap(), rect, None, None, 1.0).is_none());
+        assert!(
+            ui_entity_2d_box(
+                scene.entities.get(&id).unwrap(),
+                rect,
+                None,
+                None,
+                egui::Vec2::ZERO,
+                1.0,
+                egui::Vec2::ZERO,
+                (1280, 720),
+                1.0,
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -2568,6 +2972,7 @@ mod tests {
             color: [1.0; 3],
             space: UiLayoutSpace::Canvas,
             anchor: [0.5, 0.5],
+            nine_slice: None,
         };
         {
             let entity = scene.entities.get_mut(&image_id).unwrap();
@@ -2613,6 +3018,9 @@ mod tests {
         let mut app = EditorApp::new(project, None, LogSink::new(64));
         app.refresh_resources();
         app.open_scene_resource(PathBuf::from("scenes/menu.scene"));
+        // 本测试聚焦"UI 包围框贴合实际渲染矩形"：UI 按面板适配（viewport=面板、
+        // reference=设计分辨率），面板 1280×720 与设计分辨率 1:1，便于断言。
+        app.game_camera_2d_center = Vec2::new(0.0, 0.0);
         let rect = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1280.0, 720.0));
         let entities = app.collect_scene_2d_entities(rect, "", 1.0);
         let by_id = |id: u64| entities.iter().find(|e| e.id == SceneEntityId(id)).unwrap();
@@ -2640,6 +3048,7 @@ mod tests {
             text.space,
             text.anchor,
             viewport,
+            [1280.0, 720.0],
         );
         let (text_size, bounds) = fallback_measure_text(&text.text, resolved_scale);
         let (origin, _) = resolve_ui_text_origin(
@@ -2649,6 +3058,7 @@ mod tests {
             text.space,
             text.anchor,
             viewport,
+            [1280.0, 720.0],
         );
         let expected_center = egui::pos2(
             origin[0] + bounds[0] + (bounds[2] - bounds[0]) * 0.5,
@@ -2659,6 +3069,68 @@ mod tests {
         let backdrop = by_id(1);
         assert!(backdrop.ui.is_none());
         let _ = fs::remove_dir_all(root);
+    }
+
+    /// 复现 game_test/ui_test.scene 的 2D 场景视图渲染：打开场景并走完整的
+    /// 运行时建立（SDF 字体）+ UI 实体收集路径，断言不 panic/不报错。
+    #[test]
+    fn ui_test_scene_2d_view_collect_does_not_panic() {
+        // 复制到临时目录，绝不触碰真实的 game_test 项目。
+        let source = engine::core::games_dir().join("game_test");
+        let root = temp_root("ui-test");
+        fs::create_dir_all(&root).unwrap();
+        fs::copy(source.join("project.toml"), root.join("project.toml")).unwrap();
+        copy_dir(&source.join("scripts"), &root.join("scripts"));
+        copy_dir(&source.join("scenes"), &root.join("scenes"));
+        copy_dir(&source.join("assets"), &root.join("assets"));
+        let project = open_project(&root).unwrap();
+        let mut app = EditorApp::new(project, None, LogSink::new(64));
+        app.refresh_resources();
+        app.open_scene_resource(PathBuf::from("scenes/ui_test.scene"));
+        // 触发场景视图运行时建立（加载 SDF 字体），复现 Text(font_size=75) 度量。
+        let ctx = egui::Context::default();
+        app.render_scene_view_2d(800, 600, &ctx);
+        // 直接构建场景视图网格：复现 runtime.vertices() 是否报错（"Scene View 渲染失败"）。
+        if let Some(runtime) = app.scene_runtime.as_mut() {
+            let mesh = runtime.vertices(800, 600);
+            assert!(
+                mesh.is_ok(),
+                "scene view runtime.vertices() 报错: {:?}",
+                mesh.err()
+            );
+        }
+        let rect = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(800.0, 600.0));
+        app.game_camera_2d_center = Vec2::new(0.0, 0.0);
+        let entities = app.collect_scene_2d_entities(rect, "", 1.0);
+        assert!(
+            entities.iter().any(|e| e.ui.is_some()),
+            "ui_test.scene 应包含 UI 实体"
+        );
+        // 完整执行 2D 场景视图绘制（自动适配/设计框/UI 布局框/实体循环），复现 egui 层 panic。
+        let ctx2 = egui::Context::default();
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 720.0),
+            )),
+            ..Default::default()
+        };
+        ctx2.begin_pass(raw);
+        egui::CentralPanel::default().show(&ctx2, |ui| {
+            app.draw_scene_view(ui);
+        });
+        let _ = ctx2.end_pass();
+        // 带 UI 覆盖层的完整渲染路径（render_ui_overlay=true，默认）：渲染
+        // font_size=75 的 Text / Image / Button，复现 push_scene_ui 报错。
+        let scene = app.document.current_scene.as_ref().unwrap().scene.clone();
+        let mut full_runtime = RuntimeScene::from_scene_edit(Some(&root), scene).unwrap();
+        let mesh = full_runtime.vertices(1280, 720);
+        assert!(
+            mesh.is_ok(),
+            "带 UI 覆盖层的 vertices() 报错: {:?}",
+            mesh.err()
+        );
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

@@ -92,6 +92,9 @@ impl EditorApp {
                 if self.progress.success {
                     self.refresh_resources();
                     self.status = format!("资源导入完成：{}", display_path(&self.project.root));
+                    // 资源导入成功：自动关闭进度面板（失败保留窗口查看原因），
+                    // 与项目导入成功行为一致。
+                    self.progress.show = false;
                 }
             }
             ProgressKind::ImportProject => {
@@ -108,6 +111,8 @@ impl EditorApp {
                     // 项目切换：清空旧项目缩略图缓存并让后台解码结果失效。
                     self.thumbnails.clear();
                     self.thumbnail_worker.clear();
+                    // 字体图集按项目缓存（project.toml `font` 键）：切换项目后重建。
+                    self.scene_font_atlas = None;
                     self.history.clear();
                     self.autosave.reset();
                     self.lua_runtime = None;
@@ -281,17 +286,39 @@ fn spawn_resource_import(
 #[cfg(test)]
 mod import_tests {
     use super::*;
+    use engine::core::logging::LogSink;
+
+    /// 资源导入成功应自动关闭进度面板（与项目导入成功行为一致）；失败保留窗口。
+    #[test]
+    fn resource_import_success_auto_closes_progress_panel() {
+        let project = open_project(engine::core::games_dir().join("game_test")).unwrap();
+        let mut app = EditorApp::new(project, None, LogSink::new(64));
+        // 模拟一个已完成且成功的资源导入。
+        app.progress.kind = ProgressKind::ResourceImport;
+        app.progress.done = true;
+        app.progress.success = true;
+        app.progress.show = true;
+        app.apply_progress_result();
+        assert!(!app.progress.show, "资源导入成功应自动关闭进度面板");
+    }
+
+    /// 资源导入失败应保留进度面板，便于查看失败原因。
+    #[test]
+    fn resource_import_failure_keeps_panel_open() {
+        let project = open_project(engine::core::games_dir().join("game_test")).unwrap();
+        let mut app = EditorApp::new(project, None, LogSink::new(64));
+        app.progress.kind = ProgressKind::ResourceImport;
+        app.progress.done = true;
+        app.progress.success = false;
+        app.progress.show = true;
+        app.apply_progress_result();
+        assert!(app.progress.show, "资源导入失败应保留进度面板查看原因");
+    }
 
     #[test]
     fn import_spawn_end_to_end() {
         // 复现编辑器「导入游戏项目」后台路径：打开 game 项目并扫描资源。
-        let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .and_then(|p| p.parent())
-            .and_then(|p| p.parent())
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| PathBuf::from("."));
-        let game = workspace.join("game_test");
+        let game = engine::core::games_dir().join("game_test");
         let (tx, rx) = channel();
         spawn_import(game, tx);
         let mut output = String::new();
