@@ -11,6 +11,7 @@ use engine::core::{
     input::{InputKey, InputSnapshot, MouseButton},
     scene::Scene,
 };
+use engine::host::load_project_font_atlas;
 
 impl EditorApp {
     /// 进入 Play：创建内嵌游戏预览（运行 Lua + 物理 + 渲染），并把编辑器场景隔离快照。
@@ -25,6 +26,12 @@ impl EditorApp {
             return;
         };
         self.play_state = PlayState::Starting;
+        // 确保共享字体图集已预热：Play 预览复用它，避免进入游戏时再 MSDF 预热
+        // 全部字形（debug 下约 2s/项目），Play 立即响应。
+        if self.scene_font_atlas.is_none() {
+            let root = strip_verbatim_prefix(&self.project.root);
+            self.scene_font_atlas = load_project_font_atlas(Some(&root));
+        }
         match self.create_preview(&document.scene) {
             Ok(preview) => {
                 let (width, height) = preview.size();
@@ -207,6 +214,7 @@ impl EditorApp {
             &root,
             scene,
             self.preview_resolution,
+            self.scene_font_atlas.clone(),
         )
     }
 

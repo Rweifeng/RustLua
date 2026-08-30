@@ -9,6 +9,7 @@
 - WebGL 发布支持（`game_web` + wasm-bindgen，`package.ps1 -Platform webgl`）。
 - 编辑器资源浏览器后台缩略图解码与资源树缓存、启动/导入与 Windows 体验优化。
 - 导入/发布确定进度条与 Play/Stop 单按钮。
+- 编辑器场景操作延迟修复：RuntimeScene 字体图集改惰性加载 + 场景视图/Play 预览共享已预热图集（场景编辑重建不再重复 MSDF 预热 ~2s）；MSDF 预热跨线程并行（debug 下 ~2.3s → ~0.7s）。
 
 ## v0.10-editor — 2026-08-23
 

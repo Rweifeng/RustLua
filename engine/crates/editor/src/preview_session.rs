@@ -5,10 +5,12 @@
 //! Game 视图只负责输入桥接与绘制，Scene 视图可复用 readback 生命周期辅助。
 
 use eframe::egui;
+use engine::core::font::FontAtlas;
 use engine::core::input::InputSnapshot;
 use engine::core::scene::Scene;
 use engine::host::{ReadbackMetrics, ReadbackStatus, Renderer, RuntimeScene};
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 /// 游戏预览的重绘节流：~60fps，保证持续运行而不忙转。
 const PREVIEW_FRAME_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16);
@@ -62,9 +64,15 @@ impl PreviewSession {
         project_root: &Path,
         scene: &Scene,
         size: (u32, u32),
+        shared_font_atlas: Option<Arc<Mutex<FontAtlas>>>,
     ) -> Result<Self, String> {
         tracing::info!(target: "editor", "[preview] project_root={}", project_root.display());
         let mut runtime = RuntimeScene::from_scene(Some(project_root), scene.clone())?;
+        // 复用编辑器共享（已按 chars.txt 预热）的字体图集：Play 无需再次 MSDF 预热
+        // 全部字形（debug 下约 2s/项目）。为 None 时运行时按需惰性加载。
+        if shared_font_atlas.is_some() {
+            runtime.set_font_atlas(shared_font_atlas);
+        }
         // Canvas 空间 UI 参考分辨率 = 设计分辨率（预览渲染尺寸）。
         runtime.set_ui_reference([size.0 as f32, size.1 as f32]);
         let renderer = Renderer::new_offscreen(
@@ -409,6 +417,7 @@ mod tests {
                 Path::new("."),
                 &scene,
                 (width, height),
+                None,
             )
             .expect("create preview session");
             assert_eq!(session.size(), (width, height));
@@ -442,7 +451,7 @@ mod tests {
         let ctx = egui::Context::default();
         let scene = Scene::new("tick");
         let mut session =
-            PreviewSession::create(&device, &queue, None, Path::new("."), &scene, (64, 64))
+            PreviewSession::create(&device, &queue, None, Path::new("."), &scene, (64, 64), None)
                 .expect("create preview session");
         session.force_tick();
         let first = session.update(&ctx, &InputSnapshot::default());
@@ -478,7 +487,7 @@ mod tests {
         let ctx = egui::Context::default();
         let scene = Scene::new("resize");
         let mut session =
-            PreviewSession::create(&device, &queue, None, Path::new("."), &scene, (320, 180))
+            PreviewSession::create(&device, &queue, None, Path::new("."), &scene, (320, 180), None)
                 .expect("create preview session");
         // 驱动多帧让 egui 纹理存在（回读异步，故循环强制到期）。
         for _ in 0..8 {

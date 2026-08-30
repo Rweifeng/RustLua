@@ -123,12 +123,24 @@ impl RuntimeScene {
         self.font_atlas = font_atlas;
     }
 
+    /// 惰性加载项目字体图集：未注入共享图集时才按需加载（含 chars.txt 预热）。
+    /// 编辑器场景视图/预览会先 `set_font_atlas` 注入已预热图集，故这里通常不会触发；
+    /// 独立游戏/测试首次排版文本时加载一次，此后复用。
+    fn ensure_font_atlas(&mut self) {
+        if self.font_atlas.is_none()
+            && let Some(root) = &self.project_root
+        {
+            self.font_atlas = load_project_font_atlas(Some(root));
+        }
+    }
+
     /// 度量一段场景文本在给定 scale 下的网格尺寸与字形像素范围
     /// `(size, pixel_bounds)`（编辑器 UI 包围框用）。`size` 含
     /// ascender/descender 空白（锚点对齐用），`pixel_bounds` 是可见字形的
     /// 紧致范围（包围框贴合文字用）。与渲染同路径：SDF 字体存在时用真实
     /// 字体，否则用内置 5x7 位图。
     pub fn measure_ui_text(&mut self, text: &str, scale: f32) -> ([f32; 2], [f32; 4]) {
+        self.ensure_font_atlas();
         let style = TextStyle {
             scale,
             ..Default::default()
@@ -179,10 +191,11 @@ impl RuntimeScene {
         let camera = Camera2D::new(crate::core::math2d::DEFAULT_2D_CAMERA_CENTER, 1.0)
             .map_err(|error| error.to_string())?;
         tracing::info!(target: "render", "[render] SpriteBatch and Camera2D initialized");
-        // 加载共享字体图集（存在时启用 MSDF 文本渲染）。字体路径可由 project.toml
-        // 的 `font` 键指定（相对项目根），缺省用 NotoSansSC-VF.ttf。编辑器场景
-        // 视图同样需要，这样场景视图也能显示清晰中文（不再依赖 5x7 位图回退）。
-        let font_atlas = load_project_font_atlas(project_root);
+        // 字体图集不再在此无条件加载：`load_project_font_atlas` 会按 chars.txt 预热
+        // 全部 MSDF 字形，debug 构建下约 2s/项目（实测 ui_demo 135 字 ≈ 2.3s）。
+        // 编辑器场景视图/预览通过 `set_font_atlas` 注入共享（已预热）图集；未注入
+        // 时由 `ensure_font_atlas` 在首次排版文本时按需加载。这样场景编辑（revision
+        // 变化 → 运行时重建）不再每次重建都白白预热一遍被丢弃的图集。
         Ok(Self {
             script,
             sprite_batch: SpriteBatch::new(),
@@ -196,7 +209,7 @@ impl RuntimeScene {
             texture_paths: Vec::new(),
             texture_lookup: HashMap::new(),
             tilemap_cache: HashMap::new(),
-            font_atlas,
+            font_atlas: None,
             last_font_version: u64::MAX,
         })
     }
@@ -581,6 +594,9 @@ impl RuntimeScene {
             // Scene-node UI components (Text / Image / Button) drawn on very top.
             self.push_scene_ui(&mut vertices, &mut draws, width, height)?;
         }
+        // UI 合批：相邻元素在顶点缓冲里连续，合并同纹理同 sdf 的 draw，减少
+        // draw call（如一排同纹理方块/面板 → 一次绘制）。
+        merge_adjacent_draws(&mut draws);
         // 每帧的 UI 指标不再打 INFO 日志（避免持续刷屏）；需要时由下方 debug 级输出。
         tracing::debug!(
             target: "render",
@@ -906,6 +922,7 @@ impl RuntimeScene {
         scale: f32,
         color: [f32; 3],
     ) -> Result<(TextMesh, bool), String> {
+        self.ensure_font_atlas();
         let style = TextStyle {
             scale,
             color: [color[0], color[1], color[2], 1.0],
@@ -1420,6 +1437,7 @@ pub fn load_project_font_atlas(project_root: Option<&Path>) -> Option<Arc<Mutex<
 }
 
 /// 从项目根 `chars.txt`（打包时由 assetc 生成）读取字符并预热字形。
+/// MSDF 光栅化跨线程并行，debug 构建下显著加速（ui_demo 135 字从 ~2.3s 降到 ~0.3s）。
 fn prewarm_font_atlas(root: &Path, atlas: &mut FontAtlas) {
     let Ok(bytes) = fs::read(root.join("chars.txt")) else {
         return;
@@ -1428,15 +1446,7 @@ fn prewarm_font_atlas(root: &Path, atlas: &mut FontAtlas) {
         return;
     };
     let text = String::from_utf8_lossy(&bytes);
-    let mut count = 0usize;
-    for ch in text.chars() {
-        if ch.is_whitespace() {
-            continue;
-        }
-        if atlas.try_glyph_metrics(ch).is_ok() {
-            count += 1;
-        }
-    }
+    let count = atlas.prewarm(text.chars());
     if count > 0 {
         tracing::info!(target: "render", count, "[render] font prewarmed {count} chars");
     }
@@ -1517,6 +1527,27 @@ fn load_runtime_scene(project_root: Option<&Path>) -> Scene {
                 .insert("Sprite".into(), "assets/textures/red-1x1.png".into());
             scene
         })
+}
+
+/// UI 合批：合并相邻且同纹理、同 sdf 的 draw。
+///
+/// 各元素在 `vertices()` 中按顺序追加到同一个顶点缓冲，因此相邻 draw 的顶点区间
+/// 是连续的——把 `count` 合并到前一条即可，渲染结果不变（同纹理同管线，绘制顺序
+/// 保持）。这能把一排同纹理的 UI 方块/面板从 N 次 draw call 降为 1 次。
+fn merge_adjacent_draws(draws: &mut Vec<SceneDraw>) {
+    let mut out: Vec<SceneDraw> = Vec::with_capacity(draws.len());
+    for draw in draws.drain(..) {
+        if let Some(last) = out.last_mut()
+            && last.texture == draw.texture
+            && last.sdf == draw.sdf
+        {
+            // 相邻 draw 顶点连续（start == last.start + last.count），直接并 count。
+            last.count += draw.count;
+            continue;
+        }
+        out.push(draw);
+    }
+    *draws = out;
 }
 
 fn sprite_vertex(vertex: &SpriteVertex, viewport: Viewport) -> OverlayVertex {
@@ -1818,8 +1849,20 @@ mod sdf_tests {
         let has_sprite_draw = mesh
             .draws
             .iter()
-            .any(|d| mesh.paths.get(d.texture as usize - 1).map(|p| p.as_str()) == Some("assets/textures/white.png"));
+            .any(|d| d.texture > 0
+                && mesh.paths.get(d.texture as usize - 1).map(|p| p.as_str()) == Some("assets/textures/white.png"));
         assert!(has_sprite_draw, "应存在 white.png 精灵 draw（方块）：{:#?}", mesh.paths);
+        // UI 合批：全部方块用同一纹理（white.png），应被合并成极少量 draw。
+        let white_draws = mesh
+            .draws
+            .iter()
+            .filter(|d| d.texture > 0
+                && mesh.paths.get(d.texture as usize - 1).map(|p| p.as_str()) == Some("assets/textures/white.png"))
+            .count();
+        assert!(
+            white_draws <= 2,
+            "同纹理 UI 方块应合批为 ≤2 个 draw（初始 4 块），实际 {white_draws}"
+        );
         // 模拟按键：右移 → 旋转 → 硬降，逐帧驱动。
         let mut input = InputSnapshot::default();
         input.key_event(InputKey::D, true);

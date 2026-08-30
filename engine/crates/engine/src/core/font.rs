@@ -12,7 +12,7 @@ use bymsdfgen_core::{
     geometry::{Contour, EdgeSegment, Shape},
     math::Vector2,
 };
-use std::{collections::HashMap, error::Error, fmt};
+use std::{collections::{HashMap, HashSet}, error::Error, fmt};
 
 /// Rasterize scale in device pixels（px/em）。96px/em 在 4096² 打包图集内可容纳
 /// ~1300 个 CJK 字形，锐利度约为旧 64px/em 的 1.5×；如需更锐可上调，但 CJK
@@ -216,14 +216,80 @@ impl FontAtlas {
         if let Some(metrics) = self.cached.get(&character) {
             return Ok(*metrics);
         }
-        let (font, glyph_id) = self.font_for(character);
-        let units_per_em = font.units_per_em().unwrap_or(1000.0);
-        let advance = font.h_advance_unscaled(glyph_id) / units_per_em * RASTER_SCALE;
-        // 打包矩形 = 字形像素包围盒 + 2*PAD 边距。
-        let (rect_w, rect_h) = match font.outline(glyph_id) {
-            Some(outline) => glyph_rect_size(&outline, units_per_em),
-            None => placeholder_rect_size(),
-        };
+        let glyph = rasterize_glyph(&self.font, &self.fallback, character);
+        self.insert_rasterized(glyph)
+    }
+
+    /// 并行预热一批字形（chars.txt 收集的字符）：MSDF 光栅化互相独立、跨线程
+    /// 并行（debug 构建下大幅加速），打包/写入图集串行，布局与 `try_glyph_metrics`
+    /// 逐字调用完全一致（顺序 = chars 顺序，UV/图集增长不变）。返回成功加入数。
+    pub fn prewarm(&mut self, chars: impl Iterator<Item = char>) -> usize {
+        // 去重（保持首次出现顺序），跳过空白与已缓存字形。
+        let mut seen = HashSet::new();
+        let mut unique: Vec<char> = Vec::new();
+        for ch in chars.filter(|ch| !ch.is_whitespace()) {
+            if seen.insert(ch) && !self.cached.contains_key(&ch) {
+                unique.push(ch);
+            }
+        }
+        if unique.is_empty() {
+            return 0;
+        }
+        let font = self.font.clone();
+        let fallback = self.fallback.clone();
+        // Phase A（并行）：光栅化全部字形，不触碰图集状态。按核数分块，避免
+        // 每字形一线程的调度开销（CJK 预热数百字形时明显）。
+        let workers = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4)
+            .min(unique.len())
+            .max(1);
+        let chunk = unique.len().div_ceil(workers);
+        let glyphs: Vec<PrewarmedGlyph> = std::thread::scope(|scope| {
+            let mut handles: Vec<std::thread::ScopedJoinHandle<'_, Vec<PrewarmedGlyph>>> =
+                Vec::with_capacity(workers);
+            for block in unique.chunks(chunk) {
+                let font = font.clone();
+                let fallback = fallback.clone();
+                let block = block.to_vec();
+                handles.push(scope.spawn(move || {
+                    block.into_iter().map(|ch| rasterize_glyph(&font, &fallback, ch)).collect()
+                }));
+            }
+            // 按块序 join 后扁平化，保持 chars 原始顺序（打包布局与逐字预热一致）。
+            handles
+                .into_iter()
+                .flat_map(|handle| handle.join().ok().into_iter().flatten())
+                .collect()
+        });
+        // Phase B（串行）：按 chars 顺序打包进图集，布局与逐字预热一致。
+        let mut count = 0;
+        for glyph in glyphs {
+            if self.cached.contains_key(&glyph.character) {
+                continue;
+            }
+            if self.insert_rasterized(glyph).is_ok() {
+                count += 1;
+            }
+        }
+        count
+    }
+
+    /// 把一个已光栅化字形的像素打包进图集（空间不足时增长；放不下则报满）。
+    /// 提取自 `try_glyph_metrics`，供其与 `prewarm` 复用同一打包/写入路径。
+    fn insert_rasterized(
+        &mut self,
+        glyph: PrewarmedGlyph,
+    ) -> Result<GlyphMetrics, FontAtlasError> {
+        let PrewarmedGlyph {
+            character,
+            rgba: cell_rgba,
+            width: rect_w,
+            height: rect_h,
+            cell_rect,
+            bounds,
+            advance,
+        } = glyph;
         // 打包；空间不足则增长图集（已有字形位置不变）。
         let (x, y) = loop {
             if let Some(at) = self.packer.pack(rect_w, rect_h) {
@@ -238,14 +304,10 @@ impl FontAtlas {
                 });
             }
         };
-        let (cell_rgba, cell_rect, bounds) = match font.outline(glyph_id) {
-            Some(outline) => rasterize_msdf(&outline, rect_w, rect_h, units_per_em),
-            None => placeholder_msdf(rect_w, rect_h),
-        };
         // cell_rgba 是 rect_w×rect_h×4 的 RGBA（MSDF 三通道 + alpha=255）。
         let row_bytes = (rect_w * 4) as usize;
         for dy in 0..rect_h {
-            let src = (dy as usize * row_bytes) as usize;
+            let src = dy as usize * row_bytes;
             let dst = (((y + dy) * self.width + x) as usize) * 4;
             self.pixels[dst..dst + row_bytes].copy_from_slice(&cell_rgba[src..src + row_bytes]);
         }
@@ -332,6 +394,60 @@ impl Packer {
 }
 
 /// 字形在 `RASTER_SCALE` 下的打包矩形尺寸 = 像素包围盒 + `2*PAD` 边距。
+/// 单个已光栅化字形（未打包）：供并行预热阶段产出，再由 `insert_rasterized`
+/// 串行打包进图集。`cell_rect`/`bounds` 与 `rasterize_msdf` 返回一致。
+struct PrewarmedGlyph {
+    character: char,
+    rgba: Vec<u8>,
+    width: u32,
+    height: u32,
+    cell_rect: [f32; 4],
+    bounds: [f32; 4],
+    advance: f32,
+}
+
+/// 解析字形所属字体（主字体缺失 → 后备字体 → 主字体 .notdef）并光栅化 MSDF。
+/// 与 `FontAtlas::font_for` 选择逻辑一致；只读字体数据，可跨线程调用。
+fn rasterize_glyph(
+    font: &FontArc,
+    fallback: &Option<FontArc>,
+    character: char,
+) -> PrewarmedGlyph {
+    let primary_id = font.glyph_id(character);
+    let (face, glyph_id) = if primary_id.0 != 0 {
+        (font, primary_id)
+    } else if let Some(fallback) = fallback {
+        let fallback_id = fallback.glyph_id(character);
+        if fallback_id.0 != 0 {
+            (fallback, fallback_id)
+        } else {
+            (font, primary_id)
+        }
+    } else {
+        (font, primary_id)
+    };
+    let units_per_em = face.units_per_em().unwrap_or(1000.0);
+    let advance = face.h_advance_unscaled(glyph_id) / units_per_em * RASTER_SCALE;
+    // 打包矩形 = 字形像素包围盒 + 2*PAD 边距。
+    let (rect_w, rect_h) = match face.outline(glyph_id) {
+        Some(outline) => glyph_rect_size(&outline, units_per_em),
+        None => placeholder_rect_size(),
+    };
+    let (rgba, cell_rect, bounds) = match face.outline(glyph_id) {
+        Some(outline) => rasterize_msdf(&outline, rect_w, rect_h, units_per_em),
+        None => placeholder_msdf(rect_w, rect_h),
+    };
+    PrewarmedGlyph {
+        character,
+        rgba,
+        width: rect_w,
+        height: rect_h,
+        cell_rect,
+        bounds,
+        advance,
+    }
+}
+
 fn glyph_rect_size(outline: &Outline, units_per_em: f32) -> (u32, u32) {
     let scale = RASTER_SCALE as f64 / units_per_em as f64;
     let b = &outline.bounds;
@@ -746,5 +862,43 @@ mod tests {
             max_pixels <= initial_atlas_pixels,
             "像素缓冲应 ≤ 初始图集（样例未触发增长），实际 {max_pixels}"
         );
+    }
+
+    /// 并行预热与逐字顺序预热产出一致：同一批字符下，图集尺寸/像素、字形 UV 与
+    /// 图集版本都相同。这是把光栅化拆出并行（`rasterize_glyph` + 串行打包）的
+    /// 回归防线——布局顺序必须与 `try_glyph_metrics` 逐字调用完全一致。
+    #[test]
+    fn parallel_prewarm_matches_sequential_layout() {
+        let bytes = test_font();
+        let sample: Vec<char> = "并行预热与顺序一致渲染不乱码ABC123，。！？".chars().collect();
+        // 顺序预热：逐字 try_glyph_metrics。
+        let mut sequential = FontAtlas::load(&bytes).unwrap();
+        let mut seq_metrics = Vec::new();
+        for &ch in &sample {
+            let metrics = sequential.try_glyph_metrics(ch).unwrap();
+            seq_metrics.push((ch, metrics));
+        }
+        // 并行预热：prewarm（内部去重、按 chars 顺序串行打包）。
+        let mut parallel = FontAtlas::load(&bytes).unwrap();
+        let count = parallel.prewarm(sample.iter().copied());
+        assert_eq!(count, sample.len(), "prewarm 应成功加入全部样例字形");
+        assert_eq!(
+            parallel.width(),
+            sequential.width(),
+            "并行预热图集宽度应与顺序预热一致"
+        );
+        assert_eq!(
+            parallel.height(),
+            sequential.height(),
+            "并行预热图集高度应与顺序预热一致"
+        );
+        assert_eq!(parallel.pixels(), sequential.pixels(), "图集像素应逐字节一致");
+        for (ch, expected) in seq_metrics {
+            let actual = parallel.try_glyph_metrics(ch).unwrap();
+            assert_eq!(
+                actual, expected,
+                "字形 {ch:?} 的 UV/metrics 应在并行与顺序预热间一致"
+            );
+        }
     }
 }
