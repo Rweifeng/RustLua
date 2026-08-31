@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 fn usage() {
     eprintln!(
-        "assetc — P2 资源构建工具\n\
+        "assetc — RustLua 资源构建工具\n\
          \n\
          用法: assetc <命令> [参数]\n\
          \n\

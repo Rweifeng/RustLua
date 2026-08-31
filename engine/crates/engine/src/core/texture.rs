@@ -206,11 +206,21 @@ impl Error for TextureError {}
 mod tests {
     use super::{TextureAsset, TextureColorSpace, TextureError};
 
-    const RED_PNG: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../../games/game_test/assets/textures/red-1x1.png"));
+    fn red_png() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(1, 1, image::Rgb([255, 0, 0])))
+            .write_to(
+                &mut std::io::Cursor::new(&mut bytes),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+        bytes
+    }
 
     #[test]
     fn decodes_png_to_rgba8_and_preserves_color_space() {
-        let texture = TextureAsset::from_png_bytes(RED_PNG, TextureColorSpace::Srgb).unwrap();
+        let red_png = red_png();
+        let texture = TextureAsset::from_png_bytes(&red_png, TextureColorSpace::Srgb).unwrap();
         assert_eq!(texture.width(), 1);
         assert_eq!(texture.height(), 1);
         assert_eq!(texture.pixels(), &[255, 0, 0, 255]);

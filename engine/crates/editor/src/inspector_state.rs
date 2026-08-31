@@ -1594,7 +1594,10 @@ mod tests {
             .components
             .get("Image")
             .expect("Image written");
-        assert!(stored.contains("nine_slice=8.00,8.00,16.00,16.00"), "{stored}");
+        assert!(
+            stored.contains("nine_slice=8.00,8.00,16.00,16.00"),
+            "{stored}"
+        );
         let snapshot = inspector.snapshot(&document).unwrap();
         let image = snapshot.image.expect("image snapshot");
         assert_eq!(image.nine_slice_l, 8.0);

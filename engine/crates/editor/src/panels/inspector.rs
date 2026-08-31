@@ -4,8 +4,8 @@ use crate::ComponentClipboard;
 use crate::EditorApp;
 use crate::util::strip_verbatim_prefix;
 use editor::{
-    Camera3DFields, Collider3dFields, CommandKind, ImageFields, InspectorError,
-    LightFields, TextFields, Transform3DFields, TransformFields,
+    Camera3DFields, Collider3dFields, CommandKind, ImageFields, InspectorError, LightFields,
+    TextFields, Transform3DFields, TransformFields,
 };
 use eframe::egui;
 use engine::core::{
@@ -140,10 +140,7 @@ impl EditorApp {
                 ui.horizontal(|ui| {
                     ui.label("父实体 ID");
                     // 固定输入框宽度，避免占满整行导致过长。
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.parent_entity)
-                            .desired_width(90.0),
-                    );
+                    ui.add(egui::TextEdit::singleline(&mut self.parent_entity).desired_width(90.0));
                     if ui.button("设置父级").clicked() {
                         let parent = self
                             .parent_entity
@@ -160,10 +157,7 @@ impl EditorApp {
                 }
                 ui.horizontal(|ui| {
                     ui.label("名称");
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.entity_name)
-                            .desired_width(150.0),
-                    );
+                    ui.add(egui::TextEdit::singleline(&mut self.entity_name).desired_width(150.0));
                     if ui.button("重新命名").clicked() {
                         self.rename_selected();
                     }

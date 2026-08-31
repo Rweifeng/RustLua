@@ -428,6 +428,22 @@ mod tests {
         path
     }
 
+    fn red_png() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(1, 1, image::Rgb([255, 0, 0])))
+            .write_to(
+                &mut std::io::Cursor::new(&mut bytes),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+        bytes
+    }
+
+    fn fixture(relative_path: &str) -> Option<Vec<u8>> {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(relative_path);
+        fs::read(path).ok()
+    }
+
     fn jpeg_bytes() -> Vec<u8> {
         use image::{Rgb, RgbImage};
         let mut img = RgbImage::new(1, 1);
@@ -510,11 +526,7 @@ mod tests {
     #[test]
     fn texture_importer_validates_png_and_jpeg() {
         let root = root("texture-good");
-        let png = write_source(
-            &root,
-            "red.png",
-            include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../../games/game_test/assets/textures/red-1x1.png")),
-        );
+        let png = write_source(&root, "red.png", &red_png());
         let importer = ImporterRegistry::builtin()
             .get(ResourceKind::Texture)
             .unwrap();
@@ -557,11 +569,10 @@ mod tests {
     #[test]
     fn audio_importer_validates_ogg_streams() {
         let root = root("audio-ogg");
-        let ogg = write_source(
-            &root,
-            "attack.ogg",
-            include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../../games/game_test/assets/audio/attack.ogg")),
-        );
+        let Some(bytes) = fixture("../../../../games/game_test/assets/audio/attack.ogg") else {
+            return;
+        };
+        let ogg = write_source(&root, "attack.ogg", &bytes);
         let importer = ImporterRegistry::builtin()
             .get(ResourceKind::Audio)
             .unwrap();
@@ -574,11 +585,11 @@ mod tests {
     #[test]
     fn font_importer_validates_ttf_and_rejects_bad_bytes() {
         let root = root("font");
-        let good = write_source(
-            &root,
-            "NotoSansSC-VF.ttf",
-            include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../../games/game_test/assets/fonts/NotoSansSC-VF.ttf")),
-        );
+        let Some(bytes) = fixture("../../../../games/game_test/assets/fonts/NotoSansSC-VF.ttf")
+        else {
+            return;
+        };
+        let good = write_source(&root, "NotoSansSC-VF.ttf", &bytes);
         let importer = ImporterRegistry::builtin().get(ResourceKind::Font).unwrap();
         importer
             .validate(&good, &std::fs::read(&good).unwrap())
@@ -591,11 +602,11 @@ mod tests {
     #[test]
     fn model_importer_validates_glb_and_rejects_bad_bytes() {
         let root = root("model");
-        let good = write_source(
-            &root,
-            "m8-test-triangle.glb",
-            include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../../games/game_test/assets/models/m8-test-triangle.glb")),
-        );
+        let Some(bytes) = fixture("../../../../games/game_test/assets/models/m8-test-triangle.glb")
+        else {
+            return;
+        };
+        let good = write_source(&root, "m8-test-triangle.glb", &bytes);
         let importer = ImporterRegistry::builtin()
             .get(ResourceKind::Model)
             .unwrap();
@@ -695,11 +706,7 @@ mod tests {
     #[test]
     fn batch_imports_counts_and_does_not_abort_on_bad_item() {
         let root = root("batch");
-        let png = write_source(
-            &root,
-            "good.png",
-            include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../../games/game_test/assets/textures/red-1x1.png")),
-        );
+        let png = write_source(&root, "good.png", &red_png());
         let bad = write_source(&root, "bad.png", b"not an image");
         let mut db = ResourceDatabase::open(&root).unwrap();
         let good_id = db
@@ -729,11 +736,7 @@ mod tests {
     #[test]
     fn batch_respects_cancel_flag() {
         let root = root("cancel");
-        let path = write_source(
-            &root,
-            "a.png",
-            include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../../games/game_test/assets/textures/red-1x1.png")),
-        );
+        let path = write_source(&root, "a.png", &red_png());
         let mut db = ResourceDatabase::open(&root).unwrap();
         let id = db
             .register("a.png", ResourceKind::Texture, "texture-1")

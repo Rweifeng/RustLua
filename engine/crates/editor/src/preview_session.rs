@@ -450,9 +450,16 @@ mod tests {
         };
         let ctx = egui::Context::default();
         let scene = Scene::new("tick");
-        let mut session =
-            PreviewSession::create(&device, &queue, None, Path::new("."), &scene, (64, 64), None)
-                .expect("create preview session");
+        let mut session = PreviewSession::create(
+            &device,
+            &queue,
+            None,
+            Path::new("."),
+            &scene,
+            (64, 64),
+            None,
+        )
+        .expect("create preview session");
         session.force_tick();
         let first = session.update(&ctx, &InputSnapshot::default());
         assert!(matches!(
@@ -486,9 +493,16 @@ mod tests {
         };
         let ctx = egui::Context::default();
         let scene = Scene::new("resize");
-        let mut session =
-            PreviewSession::create(&device, &queue, None, Path::new("."), &scene, (320, 180), None)
-                .expect("create preview session");
+        let mut session = PreviewSession::create(
+            &device,
+            &queue,
+            None,
+            Path::new("."),
+            &scene,
+            (320, 180),
+            None,
+        )
+        .expect("create preview session");
         // 驱动多帧让 egui 纹理存在（回读异步，故循环强制到期）。
         for _ in 0..8 {
             session.force_tick();

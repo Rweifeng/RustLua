@@ -1,6 +1,6 @@
-# p2 Engine Workspace
+# RustLua Engine Workspace
 
-这是 Rust + Lua 游戏引擎的 Cargo workspace 基线。
+这是 RustLua（原 p2）Rust + Lua 游戏引擎的 Cargo workspace 基线。
 
 ## 当前内容
 

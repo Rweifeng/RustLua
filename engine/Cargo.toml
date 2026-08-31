@@ -11,7 +11,7 @@ members = [
 [workspace.package]
 edition = "2024"
 version = "0.1.0"
-authors = ["p2 project"]
+authors = ["RustLua project"]
 license = "MIT OR Apache-2.0"
 repository = ""
 

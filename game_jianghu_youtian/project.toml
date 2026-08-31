@@ -1,0 +1,6 @@
+[project]
+name = "jianghu_youtian"
+version = "0.1.0"
+engine = "RustLua"
+main_script = "scripts/main.lua"
+startup_scene = "scenes/main.scene"

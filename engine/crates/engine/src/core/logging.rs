@@ -207,16 +207,15 @@ pub fn init_logging_with_sink(
             .with_suggestion("check the log path and file permissions")
         })?;
     let (non_blocking, guard) = tracing_appender::non_blocking(file);
-    let filter = EnvFilter::try_new(filter.unwrap_or(DEFAULT_LOG_FILTER))
-            .map_err(|error| {
-                EngineError::new(
-                    LogModule::Engine,
-                    "initialize logging",
-                    "invalid log filter",
-                )
-                .with_source(error)
-                .with_suggestion("use tracing filter syntax such as info or debug,game=trace")
-            })?;
+    let filter = EnvFilter::try_new(filter.unwrap_or(DEFAULT_LOG_FILTER)).map_err(|error| {
+        EngineError::new(
+            LogModule::Engine,
+            "initialize logging",
+            "invalid log filter",
+        )
+        .with_source(error)
+        .with_suggestion("use tracing filter syntax such as info or debug,game=trace")
+    })?;
     let console = tracing_subscriber::fmt::layer()
         .with_target(true)
         .with_ansi(false);
@@ -392,11 +391,17 @@ mod tests {
         });
 
         let lines = sink.snapshot();
-        assert!(lines.iter().all(|line| !line.contains("Loader Message")),
-            "loader 噪声应被过滤：{lines:?}");
-        assert!(lines.iter().any(|line| line.contains("real device error")),
-            "同 crate 其它目标的 error 应保留：{lines:?}");
-        assert!(lines.iter().all(|line| !line.contains("device info noise")),
-            "wgpu_hal=warn 应过滤 info：{lines:?}");
+        assert!(
+            lines.iter().all(|line| !line.contains("Loader Message")),
+            "loader 噪声应被过滤：{lines:?}"
+        );
+        assert!(
+            lines.iter().any(|line| line.contains("real device error")),
+            "同 crate 其它目标的 error 应保留：{lines:?}"
+        );
+        assert!(
+            lines.iter().all(|line| !line.contains("device info noise")),
+            "wgpu_hal=warn 应过滤 info：{lines:?}"
+        );
     }
 }

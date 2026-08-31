@@ -217,7 +217,12 @@ impl EditorApp {
                     .filter(|entity| ids.contains(&entity.id))
                     .filter_map(|entity| {
                         entity.ui.map(|ui| {
-                            (entity.id, UiDragInitial { position: ui.position })
+                            (
+                                entity.id,
+                                UiDragInitial {
+                                    position: ui.position,
+                                },
+                            )
                         })
                     })
                     .collect();
@@ -360,8 +365,7 @@ impl EditorApp {
         let scene_zoom = self.scene_zoom;
         let pan = scene_state.pan;
         // 游戏相机中心（设计分辨率包围框世界中心），在借用前读取为局部值。
-        let camera_center =
-            egui::vec2(self.game_camera_2d_center.x, self.game_camera_2d_center.y);
+        let camera_center = egui::vec2(self.game_camera_2d_center.x, self.game_camera_2d_center.y);
         let filter = filter.trim();
         let Some(scene) = scene else {
             return Vec::new();
@@ -450,9 +454,7 @@ impl EditorApp {
         let margin = 48.0;
         let avail_w = (rect.width() - margin * 2.0).max(50.0);
         let avail_h = (rect.height() - margin * 2.0).max(50.0);
-        let zoom = (avail_w / w as f32)
-            .min(avail_h / h as f32)
-            .clamp(0.2, 4.0);
+        let zoom = (avail_w / w as f32).min(avail_h / h as f32).clamp(0.2, 4.0);
         let center = egui::vec2(self.game_camera_2d_center.x, self.game_camera_2d_center.y);
         self.scene_zoom = zoom;
         self.scene_state.pan = egui::vec2(-center.x * zoom, -center.y * zoom);
@@ -483,7 +485,10 @@ impl EditorApp {
         painter.rect_stroke(
             frame,
             0.0,
-            egui::Stroke::new(1.5_f32, egui::Color32::from_rgba_unmultiplied(120, 190, 255, 210)),
+            egui::Stroke::new(
+                1.5_f32,
+                egui::Color32::from_rgba_unmultiplied(120, 190, 255, 210),
+            ),
             egui::StrokeKind::Outside,
         );
         painter.text(
@@ -1659,11 +1664,7 @@ impl EditorApp {
                 );
             }
             None => {
-                let id = renderer.register_native_texture(
-                    device,
-                    view,
-                    wgpu::FilterMode::Nearest,
-                );
+                let id = renderer.register_native_texture(device, view, wgpu::FilterMode::Nearest);
                 self.scene_screen_tex_id = Some(id);
             }
         }
@@ -2099,7 +2100,14 @@ fn ui_entity_2d_box(
     // 抵消误差），中心沿用 `design_rect_to_panel` 的映射。
     let box_of = |origin: [f32; 2], size: [f32; 2]| {
         let frame = design_rect_to_panel(
-            rect, pan, zoom, pixels_per_point, center, design_resolution, origin, size,
+            rect,
+            pan,
+            zoom,
+            pixels_per_point,
+            center,
+            design_resolution,
+            origin,
+            size,
         );
         let ppp = pixels_per_point.max(1.0e-3);
         (
@@ -2111,8 +2119,14 @@ fn ui_entity_2d_box(
         && let Ok(image) = UiImage::from_component_str(raw)
     {
         let position = override_position.unwrap_or(image.position);
-        let (origin, size) =
-            resolve_ui_rect(position, image.size, image.space, image.anchor, viewport, reference);
+        let (origin, size) = resolve_ui_rect(
+            position,
+            image.size,
+            image.space,
+            image.anchor,
+            viewport,
+            reference,
+        );
         let (center, size) = box_of(origin, size);
         return Some((center, size, UiEntityInfo { position }));
     }
@@ -2496,17 +2510,45 @@ mod tests {
     fn design_resolution_frame_maps_resolution_to_panel() {
         let panel = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(800.0, 600.0));
         // center 0、pan 0、zoom 1、ppp 1：包围框居中于面板，尺寸即设计分辨率。
-        let frame = design_resolution_frame(panel, egui::vec2(0.0, 0.0), 1.0, 1.0, egui::Vec2::ZERO, (1280, 720));
+        let frame = design_resolution_frame(
+            panel,
+            egui::vec2(0.0, 0.0),
+            1.0,
+            1.0,
+            egui::Vec2::ZERO,
+            (1280, 720),
+        );
         assert_eq!(frame.center(), egui::pos2(400.0, 300.0));
         assert_eq!(frame.size(), egui::vec2(1280.0, 720.0));
         // zoom 0.5 → 尺寸等比减半。
-        let half = design_resolution_frame(panel, egui::vec2(0.0, 0.0), 0.5, 1.0, egui::Vec2::ZERO, (1280, 720));
+        let half = design_resolution_frame(
+            panel,
+            egui::vec2(0.0, 0.0),
+            0.5,
+            1.0,
+            egui::Vec2::ZERO,
+            (1280, 720),
+        );
         assert_eq!(half.size(), egui::vec2(640.0, 360.0));
         // pan 平移：X 加、Y 减（屏幕 Y 翻转），中心随之移动。
-        let panned = design_resolution_frame(panel, egui::vec2(100.0, -50.0), 1.0, 1.0, egui::Vec2::ZERO, (1280, 720));
+        let panned = design_resolution_frame(
+            panel,
+            egui::vec2(100.0, -50.0),
+            1.0,
+            1.0,
+            egui::Vec2::ZERO,
+            (1280, 720),
+        );
         assert_eq!(panned.center(), egui::pos2(500.0, 350.0));
         // 游戏相机中心（640,360）：包围框中心移到世界 (640,360) 映射的面板位置。
-        let cam = design_resolution_frame(panel, egui::vec2(0.0, 0.0), 1.0, 1.0, egui::vec2(640.0, 360.0), (1280, 720));
+        let cam = design_resolution_frame(
+            panel,
+            egui::vec2(0.0, 0.0),
+            1.0,
+            1.0,
+            egui::vec2(640.0, 360.0),
+            (1280, 720),
+        );
         assert_eq!(cam.center(), egui::pos2(400.0 + 640.0, 300.0 - 360.0));
     }
 
@@ -2772,19 +2814,18 @@ mod tests {
                 .components
                 .insert("Image".to_owned(), image.to_component_str());
         }
-        let (center, size, info) =
-            ui_entity_2d_box(
-                scene.entities.get(&id).unwrap(),
-                rect,
-                None,
-                None,
-                egui::Vec2::ZERO,
-                1.0,
-                egui::Vec2::ZERO,
-                (1280, 720),
-                1.0,
-            )
-            .unwrap();
+        let (center, size, info) = ui_entity_2d_box(
+            scene.entities.get(&id).unwrap(),
+            rect,
+            None,
+            None,
+            egui::Vec2::ZERO,
+            1.0,
+            egui::Vec2::ZERO,
+            (1280, 720),
+            1.0,
+        )
+        .unwrap();
         // canvas 比例 1.0（1280x720），anchor 0.5,0.5 → 中心 = 面板中心 + (0,-180)。
         assert_eq!(center, egui::pos2(640.0, 180.0));
         assert_eq!(size, egui::vec2(112.0, 112.0));
@@ -2826,19 +2867,18 @@ mod tests {
                 .components
                 .insert("Image".to_owned(), image.to_component_str());
         }
-        let (center, size, _) =
-            ui_entity_2d_box(
-                scene.entities.get(&id).unwrap(),
-                rect,
-                None,
-                None,
-                egui::Vec2::ZERO,
-                1.0,
-                egui::Vec2::ZERO,
-                (1280, 720),
-                1.0,
-            )
-            .unwrap();
+        let (center, size, _) = ui_entity_2d_box(
+            scene.entities.get(&id).unwrap(),
+            rect,
+            None,
+            None,
+            egui::Vec2::ZERO,
+            1.0,
+            egui::Vec2::ZERO,
+            (1280, 720),
+            1.0,
+        )
+        .unwrap();
         // box 映射：Screen 元素按设计分辨率画布解析（位置 (10,20)），再映射进
         // 400×300 面板上的 1280×720 包围框（画布 (0,0) → 框左上角 (-440,-210)，
         // 元素左上角 (10,20) → (-430,-190)，中心 (-310,-162)）。
@@ -2867,19 +2907,18 @@ mod tests {
                 .components
                 .insert("Text".to_owned(), text.to_component_str());
         }
-        let (center, size, info) =
-            ui_entity_2d_box(
-                scene.entities.get(&id).unwrap(),
-                rect,
-                None,
-                None,
-                egui::Vec2::ZERO,
-                1.0,
-                egui::Vec2::ZERO,
-                (1280, 720),
-                1.0,
-            )
-            .unwrap();
+        let (center, size, info) = ui_entity_2d_box(
+            scene.entities.get(&id).unwrap(),
+            rect,
+            None,
+            None,
+            egui::Vec2::ZERO,
+            1.0,
+            egui::Vec2::ZERO,
+            (1280, 720),
+            1.0,
+        )
+        .unwrap();
         // 与运行时同款解析：canvas 缩放 = 1.0 → resolved_scale = scale。
         let (_, resolved_scale) = resolve_ui_text_origin(
             [0.0, 0.0],

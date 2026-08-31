@@ -11,7 +11,7 @@
 [project]
 name = "game"                  # 工程名，发布包名默认取此值
 version = "0.1.0"
-engine = "p2"
+engine = "RustLua"
 main_script = "scripts/main.lua"
 startup_scene = "scenes/main.scene"   # 可为空（headless 无场景）
 ```

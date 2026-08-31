@@ -352,8 +352,16 @@ pub fn nine_slice_cells(
     } else {
         1.0
     };
-    let src_cols = [sl * col_f, (texture_width - sl * col_f - sr * col_f).max(0.0), sr * col_f];
-    let src_rows = [st * row_f, (texture_height - st * row_f - sb * row_f).max(0.0), sb * row_f];
+    let src_cols = [
+        sl * col_f,
+        (texture_width - sl * col_f - sr * col_f).max(0.0),
+        sr * col_f,
+    ];
+    let src_rows = [
+        st * row_f,
+        (texture_height - st * row_f - sb * row_f).max(0.0),
+        sb * row_f,
+    ];
 
     // --- Destination columns/rows in dest units -----------------------------
     let dst_col_f = if l + r > dest_width && l + r > 0.0 {
@@ -366,8 +374,16 @@ pub fn nine_slice_cells(
     } else {
         1.0
     };
-    let dst_cols = [l * dst_col_f, (dest_width - l * dst_col_f - r * dst_col_f).max(0.0), r * dst_col_f];
-    let dst_rows = [t * dst_row_f, (dest_height - t * dst_row_f - b * dst_row_f).max(0.0), b * dst_row_f];
+    let dst_cols = [
+        l * dst_col_f,
+        (dest_width - l * dst_col_f - r * dst_col_f).max(0.0),
+        r * dst_col_f,
+    ];
+    let dst_rows = [
+        t * dst_row_f,
+        (dest_height - t * dst_row_f - b * dst_row_f).max(0.0),
+        b * dst_row_f,
+    ];
 
     // --- Emit the 3×3 grid, row-major with cumulative offsets --------------
     let mut cells = Vec::with_capacity(9);
@@ -380,12 +396,7 @@ pub fn nine_slice_cells(
             let cw = src_cols[col];
             let ch = src_rows[row];
             cells.push(NineSliceCell {
-                dest: [
-                    x_dst,
-                    y_dst,
-                    x_dst + dst_cols[col],
-                    y_dst + dst_rows[row],
-                ],
+                dest: [x_dst, y_dst, x_dst + dst_cols[col], y_dst + dst_rows[row]],
                 src: [
                     x_src / texture_width,
                     y_src / texture_height,
@@ -650,7 +661,10 @@ impl UiImage {
     #[must_use]
     pub fn to_component_str(&self) -> String {
         let nine_slice = match self.nine_slice {
-            Some(s) => format!("nine_slice={:.2},{:.2},{:.2},{:.2};", s[0], s[1], s[2], s[3]),
+            Some(s) => format!(
+                "nine_slice={:.2},{:.2},{:.2},{:.2};",
+                s[0], s[1], s[2], s[3]
+            ),
             None => String::new(),
         };
         format!(
@@ -769,7 +783,10 @@ mod tests {
             nine_slice: Some([8.0, 12.0, 16.0, 20.0]),
         };
         let encoded = img.to_component_str();
-        assert!(encoded.contains("nine_slice=8.00,12.00,16.00,20.00"), "{encoded}");
+        assert!(
+            encoded.contains("nine_slice=8.00,12.00,16.00,20.00"),
+            "{encoded}"
+        );
         let decoded = UiImage::from_component_str(&encoded).expect("valid");
         assert_eq!(decoded, img);
     }
@@ -790,7 +807,9 @@ mod tests {
         // Legacy string without the field parses to None.
         let legacy = "texture=assets/ui/panel.png;x=0;y=0;width=64;height=64";
         assert_eq!(
-            UiImage::from_component_str(legacy).expect("valid").nine_slice,
+            UiImage::from_component_str(legacy)
+                .expect("valid")
+                .nine_slice,
             None
         );
     }
@@ -798,16 +817,16 @@ mod tests {
     #[test]
     fn image_rejects_malformed_nine_slice() {
         assert_eq!(
-            UiImage::from_component_str(
-                "texture=a;x=0;y=0;width=10;height=10;nine_slice=1,2,3"
-            )
-            .unwrap_err(),
+            UiImage::from_component_str("texture=a;x=0;y=0;width=10;height=10;nine_slice=1,2,3")
+                .unwrap_err(),
             UiComponentError::InvalidValue("1,2,3".to_owned())
         );
-        assert!(UiImage::from_component_str(
-            "texture=a;x=0;y=0;width=10;height=10;nine_slice=1,2,3,abc"
-        )
-        .is_err());
+        assert!(
+            UiImage::from_component_str(
+                "texture=a;x=0;y=0;width=10;height=10;nine_slice=1,2,3,abc"
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -840,7 +859,10 @@ mod tests {
         assert_eq!(cells[0].dest, [0.0, 0.0, 8.0, 8.0]);
         assert_eq!(cells[1].dest, [8.0, 0.0, 376.0, 8.0]);
         assert_eq!(cells[4].dest, [8.0, 8.0, 376.0, 120.0]);
-        assert_eq!(cells[4].src, [8.0 / 64.0, 8.0 / 64.0, 56.0 / 64.0, 56.0 / 64.0]);
+        assert_eq!(
+            cells[4].src,
+            [8.0 / 64.0, 8.0 / 64.0, 56.0 / 64.0, 56.0 / 64.0]
+        );
     }
 
     #[test]

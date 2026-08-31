@@ -245,7 +245,12 @@ mod tests {
         .unwrap();
         std::fs::write(root.join("scripts/main.lua"), r#"ui.text("t", "暂停")"#).unwrap();
         let chars = collect_project_chars(&root);
-        assert!(chars.contains('开') && chars.contains('始') && chars.contains('游') && chars.contains('戏'));
+        assert!(
+            chars.contains('开')
+                && chars.contains('始')
+                && chars.contains('游')
+                && chars.contains('戏')
+        );
         assert!(chars.contains('暂') && chars.contains('停'));
         let _ = std::fs::remove_dir_all(&root);
     }

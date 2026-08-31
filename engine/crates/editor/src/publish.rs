@@ -394,8 +394,7 @@ mod publish_tests {
             .parent()
             .map(|github| github.join("games").join("ui_demo"))
             .unwrap_or_else(|| PathBuf::from(r"C:\GitHub\games\ui_demo"));
-        let script = find_publish_script(&outside_project)
-            .expect("应命中工作区根下的发布脚本");
+        let script = find_publish_script(&outside_project).expect("应命中工作区根下的发布脚本");
         assert!(script.is_file());
         assert_eq!(script, workspace.join("scripts").join("package.ps1"));
     }

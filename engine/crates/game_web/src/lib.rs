@@ -24,7 +24,7 @@ mod wasm {
             .unwrap_or_else(|| "scenes/main.scene".to_owned());
         let scene = fetch_text(&format!("pack/{startup_scene}")).await?;
         web_sys::console::log_1(&JsValue::from_str(&format!(
-            "P2 WebGL/WASM started: {title}; project bytes={}; manifest files={}; startup_scene={}; scene bytes={}",
+            "RustLua WebGL/WASM started: {title}; project bytes={}; manifest files={}; startup_scene={}; scene bytes={}",
             project.len(),
             manifest.lines().skip(1).count(),
             startup_scene,

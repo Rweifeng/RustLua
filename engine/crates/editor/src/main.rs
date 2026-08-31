@@ -21,10 +21,10 @@ use std::{
 };
 
 use editor::{
-    AutoSaveController, Camera3DFields, Collider3dFields, CommandHistory,
-    ImageFields, InspectorState, LightFields, PlaySession, ProjectDocument, ProjectInfo,
-    RecoveryManager, RecoveryScan, ResourceBrowserState, SceneTreeState, TextFields,
-    Transform3DFields, TransformFields, check_project, open_project,
+    AutoSaveController, Camera3DFields, Collider3dFields, CommandHistory, ImageFields,
+    InspectorState, LightFields, PlaySession, ProjectDocument, ProjectInfo, RecoveryManager,
+    RecoveryScan, ResourceBrowserState, SceneTreeState, TextFields, Transform3DFields,
+    TransformFields, check_project, open_project,
 };
 use eframe::egui;
 use engine::core::{

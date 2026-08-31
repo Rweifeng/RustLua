@@ -1,0 +1,22 @@
+scene_version=2
+name=main
+meta	display_name	江湖有田
+meta	game	jianghu_youtian
+meta	tile_size	32
+meta	ui_reference_height	720
+meta	ui_reference_width	1280
+entity	1	JianghuYoutianRoot
+component	1	Transform	x=0.000000000;y=0.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity_meta	1	role	game_root
+entity	2	GameTitle
+component	2	Text	text=江湖有田：RustLua 原型;x=32.00;y=28.00;scale=2.00;color=1.000,0.850,0.450;space=screen;anchor=0.000,0.000
+component	2	Transform	x=0.000000000;y=0.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity_meta	2	role	hud_title
+entity	3	GameHint
+component	3	Text	text=WASD 移动  E 播种  Q 练功  F 互动;x=32.00;y=82.00;scale=1.00;color=0.850,0.900,1.000;space=screen;anchor=0.000,0.000
+component	3	Transform	x=0.000000000;y=0.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity_meta	3	role	hud_hint
+entity	4	GameStatus
+component	4	Text	text=山庄尚待修复 · 灵芝菌种 5 · 银两 120;x=32.00;y=112.00;scale=1.00;color=0.700,1.000,0.750;space=screen;anchor=0.000,0.000
+component	4	Transform	x=0.000000000;y=0.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity_meta	4	role	hud_status

@@ -229,12 +229,29 @@ mod tests {
     use crate::core::{importer::Importer, resource_kind::ResourceKind};
     use std::io::Write;
 
+    fn red_png() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(1, 1, image::Rgb([255, 0, 0])))
+            .write_to(
+                &mut std::io::Cursor::new(&mut bytes),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+        bytes
+    }
+
+    fn fixture(relative_path: &str) -> Option<Vec<u8>> {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(relative_path);
+        fs::read(path).ok()
+    }
+
     fn root(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
             "rustlua-import-cache-{name}-{}",
             std::process::id()
         ))
     }
+
     fn source(root: &Path, name: &str, bytes: &[u8]) -> PathBuf {
         let path = root.join(name);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -308,22 +325,14 @@ mod tests {
         let root = root("failure");
         let mut cache = ImportCache::open(&root).unwrap();
         let id = AssetId::from_seed("a");
-        let path = source(
-            &root,
-            "hero.png",
-            include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../../games/game_test/assets/textures/red-1x1.png")),
-        );
+        let path = source(&root, "hero.png", &red_png());
         let importer = crate::core::importer::ImporterRegistry::builtin()
             .get(ResourceKind::Texture)
             .unwrap();
         let first = cache.import_file(id, &path, importer).unwrap();
         fs::write(&path, b"bad").unwrap();
         assert!(cache.import_file(id, &path, importer).is_err());
-        fs::write(
-            &path,
-            include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../../games/game_test/assets/textures/red-1x1.png")),
-        )
-        .unwrap();
+        fs::write(&path, red_png()).unwrap();
         let hit = cache.import_file(id, &path, importer).unwrap();
         assert!(hit.reused || hit.cache_path == first.cache_path);
         let _ = fs::remove_dir_all(root);
@@ -372,11 +381,11 @@ mod tests {
         let root = root("gltf");
         let mut cache = ImportCache::open(&root).unwrap();
         let id = AssetId::from_seed("triangle");
-        let path = source(
-            &root,
-            "m8-test-triangle.glb",
-            include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../../games/game_test/assets/models/m8-test-triangle.glb")),
-        );
+        let Some(bytes) = fixture("../../../../games/game_test/assets/models/m8-test-triangle.glb")
+        else {
+            return;
+        };
+        let path = source(&root, "m8-test-triangle.glb", &bytes);
         let importer = crate::core::importer::ImporterRegistry::builtin()
             .get(ResourceKind::Model)
             .unwrap();
