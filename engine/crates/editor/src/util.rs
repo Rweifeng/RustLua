@@ -106,14 +106,18 @@ pub(crate) fn choose_project_directory() -> Option<PathBuf> {
     None
 }
 
-const CJK_FONT_FILE_NAMES: &[&str] = &["NotoSansSC-VF.ttf", "simhei.ttf", "Deng.ttf"];
+const CJK_FONT_FILE_NAMES: &[&str] = &[
+    "NotoSansSC-VF.ttf",
+    "SourceHanSansSC-Regular.otf",
+    "SourceHanSerifSC-Regular.otf",
+    "LXGWWenKaiGB-Regular.ttf",
+    "simhei.ttf",
+    "Deng.ttf",
+];
 
 fn cjk_font_candidates() -> Vec<PathBuf> {
-    let mut candidates = vec![
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("fonts")
-            .join("NotoSansSC-VF.ttf"),
-    ];
+    let mut candidates =
+        vec![PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fonts/NotoSansSC-VF.ttf")];
     if let Ok(executable) = env::current_exe()
         && let Some(parent) = executable.parent()
     {

@@ -181,7 +181,7 @@ impl EditorApp {
         let Some(dir) = choose_project_directory() else {
             return;
         };
-        if let Err(error) = self.scaffold_project(&dir) {
+        if let Err(error) = Self::scaffold_project(&dir) {
             self.status = format!("创建项目骨架失败：{error}");
             return;
         }
@@ -230,10 +230,15 @@ impl EditorApp {
     }
 
     /// 若目录缺少游戏项目结构，补一个最小骨架（project.toml + main.lua + main.scene + assets/）。
-    fn scaffold_project(&self, dir: &Path) -> Result<(), String> {
+    fn scaffold_project(dir: &Path) -> Result<(), String> {
         use std::io::Write;
         let fs_err = |error: std::io::Error| error.to_string();
-        std::fs::create_dir_all(dir.join("assets")).map_err(fs_err)?;
+        std::fs::create_dir_all(dir.join("assets/fonts")).map_err(fs_err)?;
+        let font_path = dir.join("assets/fonts/NotoSansSC-VF.ttf");
+        if !font_path.is_file() {
+            let source_font = Path::new(env!("CARGO_MANIFEST_DIR")).join("fonts/NotoSansSC-VF.ttf");
+            std::fs::copy(source_font, &font_path).map_err(fs_err)?;
+        }
         std::fs::create_dir_all(dir.join("scripts")).map_err(fs_err)?;
         std::fs::create_dir_all(dir.join("scenes")).map_err(fs_err)?;
         if !dir.join("project.toml").is_file() {
@@ -248,6 +253,7 @@ impl EditorApp {
             writeln!(file, "engine = \"p2\"").map_err(fs_err)?;
             writeln!(file, "main_script = \"scripts/main.lua\"").map_err(fs_err)?;
             writeln!(file, "startup_scene = \"scenes/main.scene\"").map_err(fs_err)?;
+            writeln!(file, "font = \"assets/fonts/NotoSansSC-VF.ttf\"").map_err(fs_err)?;
         }
         if !dir.join("scripts/main.lua").is_file() {
             std::fs::write(
@@ -329,6 +335,20 @@ mod tests {
         root
     }
 
+    #[test]
+    fn scaffold_project_creates_font_and_config() {
+        let root = temp_root("scaffold");
+        fs::create_dir_all(&root).unwrap();
+
+        EditorApp::scaffold_project(&root).unwrap();
+
+        let font = root.join("assets/fonts/NotoSansSC-VF.ttf");
+        assert!(font.is_file());
+        let project = fs::read_to_string(root.join("project.toml")).unwrap();
+        assert!(project.contains("font = \"assets/fonts/NotoSansSC-VF.ttf\""));
+
+        let _ = fs::remove_dir_all(root);
+    }
     #[test]
     fn app_startup_scans_recovery_and_recover_candidate_restores_scene() {
         let root = copy_sample_project("recover-menu");
