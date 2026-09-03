@@ -10,7 +10,7 @@ use crate::{
     GizmoAxis, GizmoDrag, SceneDrag, SceneTool, SceneViewCache2d, SceneViewCache3d, SceneViewMode,
     UiDragInitial,
 };
-use editor::{CommandKind, TransformFields};
+use editor::{CommandKind, SelectionSource, TransformFields};
 use eframe::egui;
 use engine::core::{
     camera3d::{Camera3D, Ray3},
@@ -116,8 +116,7 @@ impl EditorApp {
         let tilemap_context = self.selected_tilemap_context();
         for entity in entities.iter() {
             let box_rect = egui::Rect::from_center_size(entity.center, entity.size);
-            let selected = self.tree.selected() == Some(entity.id)
-                || self.scene_state.selected.contains(&entity.id);
+            let selected = self.selection.contains(entity.id);
             // 场景已实时渲染（含实际 UI 覆盖层），实体只画选中轮廓 + 名称。
             if selected {
                 painter.rect_stroke(
@@ -140,19 +139,11 @@ impl EditorApp {
                     .is_some_and(|pos| box_rect.contains(pos))
             {
                 let additive = ui.input(|input| input.modifiers.command || input.modifiers.ctrl);
+                let source = SelectionSource::SceneView2D;
                 if additive {
-                    if self.scene_state.selected.contains(&entity.id) {
-                        self.scene_state.selected.remove(&entity.id);
-                    } else {
-                        self.scene_state.selected.insert(entity.id);
-                    }
+                    self.selection.toggle(entity.id, source);
                 } else {
-                    self.scene_state.selected.clear();
-                    self.scene_state.selected.insert(entity.id);
-                }
-                if let Some(scene) = self.current_scene() {
-                    let scene = scene.clone();
-                    let _ = self.tree.select(&scene, entity.id);
+                    self.selection.set_single(entity.id, source);
                 }
                 self.sync_inspector(entity.id);
             }
@@ -191,20 +182,17 @@ impl EditorApp {
             });
             if let Some(hit) = hit {
                 let additive = ui.input(|input| input.modifiers.command || input.modifiers.ctrl);
-                if !additive && !self.scene_state.selected.contains(&hit.id) {
-                    self.scene_state.selected.clear();
-                }
-                self.scene_state.selected.insert(hit.id);
-                if let Some(scene) = self.current_scene() {
-                    let scene = scene.clone();
-                    let _ = self.tree.select(&scene, hit.id);
+                let source = SelectionSource::SceneView2D;
+                if additive {
+                    self.selection.add(hit.id, source);
+                } else if !self.selection.contains(hit.id) {
+                    self.selection.set_single(hit.id, source);
                 }
                 self.sync_inspector(hit.id);
                 let ids: Vec<_> = self
-                    .scene_state
-                    .selected
-                    .iter()
-                    .copied()
+                    .selection
+                    .ids()
+                    .into_iter()
                     .filter(|selected| !self.scene_state.locked.contains(selected))
                     .collect();
                 let initial = entities
@@ -235,7 +223,7 @@ impl EditorApp {
             } else {
                 self.scene_state.box_select_start = Some(pos);
                 if !ui.input(|input| input.modifiers.command || input.modifiers.ctrl) {
-                    self.scene_state.selected.clear();
+                    self.selection.clear(SelectionSource::SceneView2D);
                 }
             }
         }
@@ -258,7 +246,9 @@ impl EditorApp {
                 let intersects = polygon_intersects_rect(&corners, selection_rect);
                 let left_to_right = current.x >= start.x;
                 if (left_to_right && contained) || (!left_to_right && intersects) {
-                    self.scene_state.selected.insert(entity.id);
+                    // 拖动过程中持续累加；非加选时集合已在框选开始时清空。
+                    self.selection
+                        .add(entity.id, SelectionSource::SceneView2D);
                 }
             }
         }
@@ -599,7 +589,7 @@ impl EditorApp {
                 continue;
             };
             let selected =
-                self.tree.selected() == Some(*id) || self.scene_state.selected.contains(id);
+                self.selection.contains(*id);
             let half = 8.0;
             let stroke = egui::Stroke::new(
                 if selected { 2.0_f32 } else { 1.0_f32 },
@@ -660,24 +650,20 @@ impl EditorApp {
                 });
             if let Some(id) = hit {
                 let additive = ui.input(|input| input.modifiers.command || input.modifiers.ctrl);
-                if !additive {
-                    self.scene_state.selected.clear();
-                }
-                self.scene_state.selected.insert(id);
-                if let Some(scene) = self.current_scene() {
-                    let scene = scene.clone();
-                    let _ = self.tree.select(&scene, id);
+                if additive {
+                    self.selection.add(id, SelectionSource::SceneView3D);
+                } else {
+                    self.selection.set_single(id, SelectionSource::SceneView3D);
                 }
                 self.sync_inspector(id);
             } else {
-                self.scene_state.selected.clear();
+                self.selection.clear(SelectionSource::SceneView3D);
+                self.clear_inspector();
             }
         }
 
         // Gizmo：按工具绘制手柄并拖拽（Move 平移 / Rotate 绕 Y / Scale 等比缩放）。
-        let selected_entity = entities3d.iter().find(|(id, _, _, _)| {
-            self.tree.selected() == Some(*id) || self.scene_state.selected.contains(id)
-        });
+        let selected_entity = entities3d.iter().find(|(id, _, _, _)| self.selection.contains(*id));
         if let Some((id, _, transform, _)) = selected_entity {
             let tool = self.scene_tool;
             if matches!(
@@ -930,7 +916,7 @@ impl EditorApp {
     }
 
     fn selected_tilemap_context(&self) -> Option<TilemapPaintContext> {
-        let selected = self.tree.selected()?;
+        let selected = self.selection.primary()?;
         let scene = self.current_scene()?;
         let entity = scene.scene.entities.get(&selected)?;
         if !entity.components.contains_key("Tilemap") {
@@ -1869,7 +1855,6 @@ impl EditorApp {
         let result =
             self.history
                 .execute(scene, "Create Model", CommandKind::Create, move |scene| {
-                    let mut tree = tree;
                     let id = tree
                         .create_entity(scene, name.clone(), None)
                         .map_err(|error| error.to_string())?;
@@ -1911,7 +1896,6 @@ impl EditorApp {
         let result =
             self.history
                 .execute(scene, "Create Sprite", CommandKind::Create, move |scene| {
-                    let mut tree = tree;
                     let id = tree
                         .create_entity(scene, name.clone(), None)
                         .map_err(|error| error.to_string())?;

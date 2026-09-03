@@ -1,50 +1,22 @@
-use crate::{DocumentError, SceneDocument};
+use crate::DocumentError;
+use crate::SceneDocument;
 use engine::core::scene::{SceneEntity, SceneEntityId};
 use std::{collections::BTreeSet, error::Error, fmt};
 
-/// 编辑器场景树的选择状态和实体编辑操作。
+/// 场景树**文档操作**的无状态助手。
+///
+/// E03 之后本类型不再持有任何“当前选择”：选择状态统一收敛到
+/// [`crate::SelectionModel`]（`EditorApp.selection`）。所有编辑操作显式传入目标
+/// 实体 ID，调用方（面板/命令层）负责从统一选择模型读取主选中/集合。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct SceneTreeState {
-    selected: Option<SceneEntityId>,
-}
+pub struct SceneTreeState {}
 
 impl SceneTreeState {
     pub fn new() -> Self {
         Self::default()
     }
 
-    pub fn selected(&self) -> Option<SceneEntityId> {
-        self.selected
-    }
-
-    pub fn select(
-        &mut self,
-        document: &SceneDocument,
-        id: SceneEntityId,
-    ) -> Result<(), SceneTreeError> {
-        if !document.scene.entities.contains_key(&id) {
-            return Err(SceneTreeError::UnknownEntity(id));
-        }
-        self.selected = Some(id);
-        Ok(())
-    }
-
-    pub fn clear_selection(&mut self) {
-        self.selected = None;
-    }
-
-    pub fn selected_entity<'a>(
-        &self,
-        document: &'a SceneDocument,
-    ) -> Result<&'a SceneEntity, SceneTreeError> {
-        let id = self.selected.ok_or(SceneTreeError::NothingSelected)?;
-        document
-            .scene
-            .entities
-            .get(&id)
-            .ok_or(SceneTreeError::UnknownEntity(id))
-    }
-
+    /// 根实体迭代器（Hierarchy 面板渲染入口）。
     pub fn roots<'a>(&self, document: &'a SceneDocument) -> impl Iterator<Item = &'a SceneEntity> {
         document
             .scene
@@ -53,6 +25,7 @@ impl SceneTreeState {
             .filter(|entity| entity.parent.is_none())
     }
 
+    /// `parent` 的直接子实体（按场景树存储顺序）。
     pub fn children<'a>(
         &self,
         document: &'a SceneDocument,
@@ -70,8 +43,11 @@ impl SceneTreeState {
             .collect())
     }
 
+    /// 创建一个实体并**返回新 ID**（不修改任何选择状态）。
+    ///
+    /// 调用方随后通过 `selection.add(id, …)` 把新实体纳入统一选择模型。
     pub fn create_entity(
-        &mut self,
+        &self,
         document: &mut SceneDocument,
         name: impl Into<String>,
         parent: Option<SceneEntityId>,
@@ -85,21 +61,11 @@ impl SceneTreeState {
             .add_entity(id, name, parent)
             .map_err(SceneTreeError::Scene)?;
         document.mark_dirty();
-        self.selected = Some(id);
         Ok(id)
     }
 
-    pub fn rename_selected(
-        &mut self,
-        document: &mut SceneDocument,
-        name: impl Into<String>,
-    ) -> Result<(), SceneTreeError> {
-        let id = self.selected.ok_or(SceneTreeError::NothingSelected)?;
-        self.rename(document, id, name)
-    }
-
     pub fn rename(
-        &mut self,
+        &self,
         document: &mut SceneDocument,
         id: SceneEntityId,
         name: impl Into<String>,
@@ -120,16 +86,15 @@ impl SceneTreeState {
         Ok(())
     }
 
-    pub fn delete_selected(&mut self, document: &mut SceneDocument) -> Result<(), SceneTreeError> {
-        let id = self.selected.ok_or(SceneTreeError::NothingSelected)?;
-        self.delete(document, id)
-    }
-
+    /// 删除 `id` 及其整棵子树，返回被删除的完整实体 ID 集合。
+    ///
+    /// 调用方应把返回值交给 `SelectionModel::on_entities_removed` 做悬空清理，
+    /// 以便删除后选择回退到父节点。
     pub fn delete(
-        &mut self,
+        &self,
         document: &mut SceneDocument,
         id: SceneEntityId,
-    ) -> Result<(), SceneTreeError> {
+    ) -> Result<BTreeSet<SceneEntityId>, SceneTreeError> {
         ensure_entity(document, id)?;
         let ids = collect_subtree(document, id)?;
         let parent = document
@@ -142,38 +107,16 @@ impl SceneTreeState {
         {
             parent_entity.children.retain(|child| *child != id);
         }
-        for entity_id in ids {
-            document.scene.entities.remove(&entity_id);
-        }
-        if self
-            .selected
-            .is_some_and(|selected| ids_contains(document, selected).is_none())
-        {
-            self.selected = parent;
-        }
-        // 删除后若原选择已被移除，清除选择；保留父节点选择更符合场景树操作习惯。
-        if self.selected == Some(id)
-            || self
-                .selected
-                .is_some_and(|selected| !document.scene.entities.contains_key(&selected))
-        {
-            self.selected = parent;
+        for entity_id in ids.iter() {
+            document.scene.entities.remove(entity_id);
         }
         document.mark_dirty();
-        Ok(())
-    }
-
-    pub fn reparent_selected(
-        &mut self,
-        document: &mut SceneDocument,
-        parent: Option<SceneEntityId>,
-    ) -> Result<(), SceneTreeError> {
-        let id = self.selected.ok_or(SceneTreeError::NothingSelected)?;
-        self.reparent(document, id, parent)
+        let removed = ids.into_iter().collect();
+        Ok(removed)
     }
 
     pub fn reparent(
-        &mut self,
+        &self,
         document: &mut SceneDocument,
         id: SceneEntityId,
         parent: Option<SceneEntityId>,
@@ -272,11 +215,6 @@ fn collect_subtree_inner(
     Ok(())
 }
 
-// 仅用于在删除后判断旧选择是否仍存在；返回值避免借用 document 的复杂生命周期。
-fn ids_contains(document: &SceneDocument, id: SceneEntityId) -> Option<SceneEntityId> {
-    document.scene.entities.contains_key(&id).then_some(id)
-}
-
 #[derive(Debug)]
 pub enum SceneTreeError {
     UnknownEntity(SceneEntityId),
@@ -321,22 +259,21 @@ mod tests {
     }
 
     #[test]
-    fn create_select_and_rename_marks_dirty() {
+    fn create_and_rename_marks_dirty() {
         let mut document = document();
         document.mark_clean();
-        let mut tree = SceneTreeState::new();
+        let tree = SceneTreeState::new();
         let id = tree.create_entity(&mut document, "Player", None).unwrap();
-        assert_eq!(tree.selected(), Some(id));
-        assert_eq!(tree.selected_entity(&document).unwrap().name, "Player");
-        tree.rename_selected(&mut document, "Hero").unwrap();
+        assert_eq!(document.scene.entities[&id].name, "Player");
+        tree.rename(&mut document, id, "Hero").unwrap();
         assert_eq!(document.scene.entities[&id].name, "Hero");
         assert!(document.is_dirty());
     }
 
     #[test]
-    fn delete_removes_complete_subtree_and_selects_parent() {
+    fn delete_removes_complete_subtree_and_reports_ids() {
         let mut document = document();
-        let mut tree = SceneTreeState::new();
+        let tree = SceneTreeState::new();
         let root = tree.create_entity(&mut document, "Root", None).unwrap();
         let child = tree
             .create_entity(&mut document, "Child", Some(root))
@@ -344,18 +281,19 @@ mod tests {
         let grandchild = tree
             .create_entity(&mut document, "Grandchild", Some(child))
             .unwrap();
-        tree.select(&document, root).unwrap();
-        tree.delete_selected(&mut document).unwrap();
+        let removed = tree.delete(&mut document, root).unwrap();
         assert!(!document.scene.entities.contains_key(&root));
         assert!(!document.scene.entities.contains_key(&child));
         assert!(!document.scene.entities.contains_key(&grandchild));
-        assert_eq!(tree.selected(), None);
+        assert!(removed.contains(&root));
+        assert!(removed.contains(&child));
+        assert!(removed.contains(&grandchild));
     }
 
     #[test]
     fn reparent_updates_both_sides_and_roundtrips() {
         let mut document = document();
-        let mut tree = SceneTreeState::new();
+        let tree = SceneTreeState::new();
         let first = tree.create_entity(&mut document, "First", None).unwrap();
         let second = tree.create_entity(&mut document, "Second", None).unwrap();
         tree.reparent(&mut document, second, Some(first)).unwrap();
@@ -367,13 +305,13 @@ mod tests {
     #[test]
     fn rejects_unknown_empty_name_and_cycle() {
         let mut document = document();
-        let mut tree = SceneTreeState::new();
+        let tree = SceneTreeState::new();
         let root = tree.create_entity(&mut document, "Root", None).unwrap();
         let child = tree
             .create_entity(&mut document, "Child", Some(root))
             .unwrap();
         assert!(matches!(
-            tree.select(&document, SceneEntityId(999)),
+            tree.children(&document, SceneEntityId(999)),
             Err(SceneTreeError::UnknownEntity(_))
         ));
         assert!(matches!(

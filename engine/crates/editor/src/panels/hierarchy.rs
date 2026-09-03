@@ -2,7 +2,7 @@
 
 use crate::EditorApp;
 use crate::util::{display_path, icon_button, strip_verbatim_prefix};
-use editor::CommandKind;
+use editor::{CommandKind, SelectionSource};
 use eframe::egui;
 use engine::core::{
     prefab::Prefab, resource_db::AssetId, scene::SceneEntityId, transform3d::Transform3D,
@@ -101,7 +101,7 @@ impl EditorApp {
         {
             return;
         }
-        let selected = self.tree.selected() == Some(id);
+        let selected = self.selection.contains(id);
         let collapsed = self.scene_state.collapsed.contains(&id);
         let hidden = self.scene_state.hidden.contains(&id);
         let locked = self.scene_state.locked.contains(&id);
@@ -147,15 +147,16 @@ impl EditorApp {
                 .clicked()
             {
                 let additive = ui.input(|input| input.modifiers.command || input.modifiers.ctrl);
-                if !additive {
-                    self.scene_state.selected.clear();
+                if additive {
+                    self.selection.toggle(id, SelectionSource::Hierarchy);
+                } else {
+                    self.selection.set_single(id, SelectionSource::Hierarchy);
                 }
-                self.scene_state.selected.insert(id);
-                if let Some(scene) = self.current_scene() {
-                    let scene = scene.clone();
-                    let _ = self.tree.select(&scene, id);
+                if let Some(primary) = self.selection.primary() {
+                    self.sync_inspector(primary);
+                } else {
+                    self.clear_inspector();
                 }
-                self.sync_inspector(id);
             }
         });
         if !collapsed {
@@ -258,8 +259,7 @@ impl EditorApp {
         self.set_current_scene_document(editor::SceneDocument::new(name.clone()));
         self.history.clear();
         self.autosave.reset();
-        self.tree.clear_selection();
-        self.inspector.clear_selection();
+        self.on_document_changed(crate::actions::DocumentChange::Created);
         self.status = format!("已创建场景 {name}（未保存）");
     }
 
@@ -275,6 +275,7 @@ impl EditorApp {
             return;
         }
         let tree = self.tree.clone();
+        let created = std::cell::Cell::new(None::<SceneEntityId>);
         let Some(scene) = self.document.current_scene.as_mut() else {
             self.status = "Create a scene first".into();
             return;
@@ -283,8 +284,7 @@ impl EditorApp {
             scene,
             "Create 3D entity",
             CommandKind::Create,
-            move |scene| {
-                let mut tree = tree;
+            |scene| {
                 let id = tree
                     .create_entity(scene, name.clone(), parent)
                     .map_err(|e| e.to_string())?;
@@ -294,15 +294,14 @@ impl EditorApp {
                         Transform3D::default().to_component_str(),
                     );
                 }
+                created.set(Some(id));
                 Ok::<(), String>(())
             },
         );
         match result {
             Ok(true) => {
-                if let Some(scene) = self.document.current_scene.as_ref()
-                    && let Some(id) = scene.scene.entities.keys().max_by_key(|id| id.0).copied()
-                {
-                    let _ = self.tree.select(scene, id);
+                if let Some(id) = created.get() {
+                    self.selection.add(id, SelectionSource::Command);
                     self.sync_inspector(id);
                 }
                 self.status = "3D entity created".into();
@@ -318,7 +317,7 @@ impl EditorApp {
             self.status = "Play mode locks scene editing; click Stop first".to_owned();
             return;
         }
-        let Some(selected) = self.tree.selected() else {
+        let Some(selected) = self.selection.primary() else {
             self.status = "请先在 Hierarchy 中选中实体".to_owned();
             return;
         };

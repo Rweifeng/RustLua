@@ -69,6 +69,41 @@ impl fmt::Display for TilemapError {
 
 impl Error for TilemapError {}
 
+/// Errors produced by [`Tilemap::find_path`].
+#[derive(Clone, Debug, PartialEq)]
+pub enum PathError {
+    OutOfBounds {
+        x: usize,
+        y: usize,
+    },
+    Blocked {
+        x: usize,
+        y: usize,
+    },
+    Unreachable {
+        from: (usize, usize),
+        to: (usize, usize),
+    },
+}
+
+impl fmt::Display for PathError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::OutOfBounds { x, y } => write!(f, "path endpoint ({x}, {y}) is out of bounds"),
+            Self::Blocked { x, y } => write!(f, "path endpoint ({x}, {y}) is solid"),
+            Self::Unreachable { from, to } => {
+                write!(
+                    f,
+                    "no path from ({}, {}) to ({}, {})",
+                    from.0, from.1, to.0, to.1
+                )
+            }
+        }
+    }
+}
+
+impl Error for PathError {}
+
 impl Tilemap {
     /// Creates a grid with the given size and tile size, all cells empty and
     /// sampling the default tileset.
@@ -163,6 +198,174 @@ impl Tilemap {
         }
         self.meta.entry((x, y)).or_default().insert(key, value);
         Ok(())
+    }
+
+    /// Finds a shortest path from `start` to `goal` through non-solid cells.
+    ///
+    /// Returns the path including both endpoints (`[start, ..., goal]`). With
+    /// `allow_diagonal`, diagonal moves are allowed but never cut a corner
+    /// through a solid cell. `start` and `goal` must be in-bounds and
+    /// non-solid; when no route exists, returns [`PathError::Unreachable`].
+    pub fn find_path(
+        &self,
+        start: (usize, usize),
+        goal: (usize, usize),
+        allow_diagonal: bool,
+    ) -> Result<Vec<(usize, usize)>, PathError> {
+        use std::{cmp::Ordering, collections::BinaryHeap};
+
+        let (sx, sy) = start;
+        let (gx, gy) = goal;
+        self.index(sx, sy)
+            .map_err(|_| PathError::OutOfBounds { x: sx, y: sy })?;
+        self.index(gx, gy)
+            .map_err(|_| PathError::OutOfBounds { x: gx, y: gy })?;
+        if self.solid[sy * self.width + sx] {
+            return Err(PathError::Blocked { x: sx, y: sy });
+        }
+        if self.solid[gy * self.width + gx] {
+            return Err(PathError::Blocked { x: gx, y: gy });
+        }
+        if start == goal {
+            return Ok(vec![start]);
+        }
+
+        // Manhattan (4-directional) or Chebyshev (8-directional) distance; both
+        // are admissible under a uniform per-step cost of 1.
+        let heuristic = |x: usize, y: usize| -> i32 {
+            let dx = (x as i32 - gx as i32).abs();
+            let dy = (y as i32 - gy as i32).abs();
+            if allow_diagonal { dx.max(dy) } else { dx + dy }
+        };
+
+        #[derive(Clone, Copy, Eq, PartialEq)]
+        struct Node {
+            f: i32,
+            g: i32,
+            x: usize,
+            y: usize,
+        }
+        impl Ord for Node {
+            fn cmp(&self, other: &Self) -> Ordering {
+                other.f.cmp(&self.f).then_with(|| other.g.cmp(&self.g))
+            }
+        }
+        impl PartialOrd for Node {
+            fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+                Some(self.cmp(other))
+            }
+        }
+
+        let start_index = sy * self.width + sx;
+        let goal_index = gy * self.width + gx;
+        let mut open = BinaryHeap::new();
+        let mut g_score = vec![i32::MAX; self.width * self.height];
+        let mut came_from: Vec<Option<usize>> = vec![None; self.width * self.height];
+        g_score[start_index] = 0;
+        open.push(Node {
+            f: heuristic(sx, sy),
+            g: 0,
+            x: sx,
+            y: sy,
+        });
+
+        while let Some(current) = open.pop() {
+            if (current.x, current.y) == goal {
+                let mut path = vec![goal];
+                let mut cursor = goal_index;
+                while cursor != start_index {
+                    let Some(previous) = came_from[cursor] else {
+                        return Err(PathError::Unreachable {
+                            from: start,
+                            to: goal,
+                        });
+                    };
+                    cursor = previous;
+                    path.push((cursor % self.width, cursor / self.width));
+                }
+                path.reverse();
+                return Ok(path);
+            }
+            let current_index = current.y * self.width + current.x;
+            if current.g > g_score[current_index] {
+                continue;
+            }
+            for (nx, ny) in self.walkable_neighbors(current.x, current.y, allow_diagonal) {
+                let neighbor_index = ny * self.width + nx;
+                let tentative = current.g + 1;
+                if tentative < g_score[neighbor_index] {
+                    g_score[neighbor_index] = tentative;
+                    came_from[neighbor_index] = Some(current_index);
+                    open.push(Node {
+                        f: tentative + heuristic(nx, ny),
+                        g: tentative,
+                        x: nx,
+                        y: ny,
+                    });
+                }
+            }
+        }
+
+        Err(PathError::Unreachable {
+            from: start,
+            to: goal,
+        })
+    }
+
+    /// Returns the in-bounds, non-solid neighbors of a cell for pathfinding.
+    /// Diagonal moves require both adjacent orthogonal cells to be non-solid so
+    /// a path never cuts a corner.
+    fn walkable_neighbors(&self, x: usize, y: usize, allow_diagonal: bool) -> Vec<(usize, usize)> {
+        let west = x
+            .checked_sub(1)
+            .and_then(|nx| self.is_walkable(nx, y).then_some(nx));
+        let east = self.is_walkable(x + 1, y).then_some(x + 1);
+        let north = y
+            .checked_sub(1)
+            .and_then(|ny| self.is_walkable(x, ny).then_some(ny));
+        let south = self.is_walkable(x, y + 1).then_some(y + 1);
+
+        let mut result = Vec::with_capacity(8);
+        if let Some(nx) = west {
+            result.push((nx, y));
+        }
+        if let Some(nx) = east {
+            result.push((nx, y));
+        }
+        if let Some(ny) = north {
+            result.push((x, ny));
+        }
+        if let Some(ny) = south {
+            result.push((x, ny));
+        }
+        if allow_diagonal {
+            if let (Some(nx), Some(ny)) = (west, north)
+                && self.is_walkable(nx, ny)
+            {
+                result.push((nx, ny));
+            }
+            if let (Some(nx), Some(ny)) = (east, north)
+                && self.is_walkable(nx, ny)
+            {
+                result.push((nx, ny));
+            }
+            if let (Some(nx), Some(ny)) = (west, south)
+                && self.is_walkable(nx, ny)
+            {
+                result.push((nx, ny));
+            }
+            if let (Some(nx), Some(ny)) = (east, south)
+                && self.is_walkable(nx, ny)
+            {
+                result.push((nx, ny));
+            }
+        }
+        result
+    }
+
+    /// A cell is walkable when it is in bounds and non-solid.
+    fn is_walkable(&self, x: usize, y: usize) -> bool {
+        self.index(x, y).is_ok() && !self.solid[y * self.width + x]
     }
 
     /// Serializes the map into a scene `Tilemap` component string:
@@ -395,5 +598,61 @@ mod tests {
         map.set_meta(1, 1, "tillable", "").unwrap();
         assert!(map.meta.is_empty());
         assert!(map.set_meta(9, 9, "x", "y").is_err());
+    }
+
+    #[test]
+    fn find_path_returns_shortest_orthogonal_and_diagonal() {
+        let map = Tilemap::new(Vec2::new(32.0, 32.0), 3, 3).unwrap();
+        // Orthogonal: 3 right/down moves -> 5 cells.
+        assert_eq!(map.find_path((0, 0), (2, 2), false).unwrap().len(), 5);
+        // Diagonal: straight line -> 3 cells.
+        assert_eq!(map.find_path((0, 0), (2, 2), true).unwrap().len(), 3);
+        // Start == goal -> single cell.
+        assert_eq!(map.find_path((1, 1), (1, 1), false).unwrap(), vec![(1, 1)]);
+    }
+
+    #[test]
+    fn find_path_navigates_around_solid_cells() {
+        let mut map = Tilemap::new(Vec2::new(32.0, 32.0), 4, 3).unwrap();
+        map.set_solid(1, 0, true).unwrap();
+        map.set_solid(2, 0, true).unwrap();
+        let path = map.find_path((0, 0), (3, 0), false).unwrap();
+        assert_eq!(path.first(), Some(&(0, 0)));
+        assert_eq!(path.last(), Some(&(3, 0)));
+        // Detour via y=1 is the shortest route (6 cells).
+        assert_eq!(path.len(), 6);
+        for &(x, y) in &path {
+            assert!(!map.is_solid(x, y).unwrap());
+        }
+        assert!(!path.contains(&(1, 0)));
+        assert!(!path.contains(&(2, 0)));
+    }
+
+    #[test]
+    fn find_path_blocks_diagonal_corner_cutting() {
+        let mut map = Tilemap::new(Vec2::new(32.0, 32.0), 2, 2).unwrap();
+        map.set_solid(1, 0, true).unwrap();
+        map.set_solid(0, 1, true).unwrap();
+        assert_eq!(
+            map.find_path((0, 0), (1, 1), true),
+            Err(PathError::Unreachable {
+                from: (0, 0),
+                to: (1, 1)
+            })
+        );
+    }
+
+    #[test]
+    fn find_path_rejects_solid_endpoints_and_out_of_bounds() {
+        let mut map = Tilemap::new(Vec2::new(32.0, 32.0), 2, 2).unwrap();
+        map.set_solid(0, 0, true).unwrap();
+        assert_eq!(
+            map.find_path((0, 0), (1, 1), false),
+            Err(PathError::Blocked { x: 0, y: 0 })
+        );
+        assert_eq!(
+            map.find_path((0, 0), (9, 9), false),
+            Err(PathError::OutOfBounds { x: 9, y: 9 })
+        );
     }
 }

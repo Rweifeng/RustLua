@@ -60,6 +60,12 @@ struct ScriptState {
     world: World,
     names: BTreeMap<String, EntityId>,
     health: BTreeMap<EntityId, f32>,
+    /// Stable project-level entity IDs (`persist_id` → live entity). Distinct
+    /// from `names` (display/authoring name, collision-prone): a persist ID is
+    /// unique across the runtime and is what save/snapshot uses to re-bind
+    /// runtime entities (crops, buildings, containers, NPCs) without
+    /// duplicating or misbinding them.
+    persist: BTreeMap<String, EntityId>,
     scene: Option<String>,
     scene_pending_load: Option<String>,
     project_root: Option<PathBuf>,
@@ -93,6 +99,10 @@ struct ScriptState {
     data_cache: BTreeMap<String, serde_json::Value>,
     /// Registered `data.schema(path, spec)` validators for data tables.
     schema_defs: BTreeMap<String, serde_json::Value>,
+    /// 注册 `map.schema(name, spec)` 的分地图持久状态校验器（B-3）。
+    /// 按地图名索引（而不是按场景索引），并刻意跨过
+    /// `process_scene_transition` 保留；`schema_defs` 则只跟踪数据文件校验器。
+    map_state_schemas: BTreeMap<String, serde_json::Value>,
     /// Shop catalogs: name -> `{ item_id: { buy, sell } }` (M16-10).
     shops: BTreeMap<String, serde_json::Value>,
     /// Save file version last loaded, used by `save.version` and `on_migrate`
@@ -692,6 +702,7 @@ impl LuaRuntime {
             state.physics3d = PhysicsWorld3d::new();
             state.particles = ParticleSystem::new();
             state.names.clear();
+            state.persist.clear();
             state.health.clear();
             state.ui.clear();
             state.ui_bars.clear();
@@ -1766,24 +1777,59 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
     let s = Rc::clone(&state);
     entity.set(
         "spawn",
-        lua.create_function(move |_, name: Option<String>| {
-            let mut state = s.borrow_mut();
-            let id = state.world.spawn();
-            state
-                .world
-                .insert(id, Transform::default())
-                .map_err(world_error)?;
-            if let Some(name) = name {
-                state.names.insert(name, id);
-            }
-            Ok(entity_to_lua(id))
-        })?,
+        lua.create_function(
+            move |_, (name, persist_id): (Option<String>, Option<String>)| {
+                let mut state = s.borrow_mut();
+                let id = state.world.spawn();
+                state
+                    .world
+                    .insert(id, Transform::default())
+                    .map_err(world_error)?;
+                if let Some(name) = name {
+                    state.names.insert(name, id);
+                }
+                if let Some(persist) = persist_id.filter(|value| !value.is_empty()) {
+                    if state
+                        .persist
+                        .get(&persist)
+                        .is_some_and(|existing| state.world.is_alive(*existing))
+                    {
+                        return Err(api_error(format!("persist_id already in use: {persist}")));
+                    }
+                    state.persist.insert(persist, id);
+                }
+                Ok(entity_to_lua(id))
+            },
+        )?,
     )?;
     let s = Rc::clone(&state);
     entity.set(
         "find",
         lua.create_function(move |_, name: String| {
             Ok(s.borrow().names.get(&name).copied().map(entity_to_lua))
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    entity.set(
+        "find_id",
+        lua.create_function(move |_, persist_id: String| {
+            Ok(s.borrow()
+                .persist
+                .get(&persist_id)
+                .copied()
+                .map(entity_to_lua))
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    entity.set(
+        "persist_id",
+        lua.create_function(move |_, id: i64| {
+            let id = entity_from_lua(id)?;
+            Ok(s.borrow()
+                .persist
+                .iter()
+                .find(|(_, entity)| **entity == id)
+                .map(|(key, _)| key.clone()))
         })?,
     )?;
     let s = Rc::clone(&state);
@@ -1800,6 +1846,7 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
             require_alive(&state, id)?;
             state.world.despawn(id).map_err(world_error)?;
             state.names.retain(|_, value| *value != id);
+            state.persist.retain(|_, value| *value != id);
             state.health.remove(&id);
             let _ = state.physics.remove_body(id);
             let _ = state.physics3d.remove_body(id);
@@ -2397,6 +2444,46 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
                 map.set_meta(x, y, key, value)
                     .map_err(|error| api_error(error.to_string()))?;
                 Ok(())
+            },
+        )?,
+    )?;
+    // `tilemap.find_path(id, from_x, from_y, to_x, to_y, diagonal?)` returns a
+    // table of `{x=, y=}` cells (including both endpoints) or `nil, reason`.
+    let s = Rc::clone(&state);
+    tilemap.set(
+        "find_path",
+        lua.create_function(
+            move |lua,
+                  (id, from_x, from_y, to_x, to_y, diagonal): (
+                i64,
+                usize,
+                usize,
+                usize,
+                usize,
+                Option<bool>,
+            )| {
+                let id = entity_from_lua(id)?;
+                let state = s.borrow();
+                require_alive(&state, id)?;
+                let Some(map) = state.world.get::<Tilemap>(id).map_err(world_error)? else {
+                    return Err(api_error("entity has no tilemap"));
+                };
+                match map.find_path((from_x, from_y), (to_x, to_y), diagonal.unwrap_or(false)) {
+                    Ok(cells) => {
+                        let table = lua.create_table()?;
+                        for (index, (x, y)) in cells.into_iter().enumerate() {
+                            let cell = lua.create_table()?;
+                            cell.set("x", x)?;
+                            cell.set("y", y)?;
+                            table.raw_set(index + 1, cell)?;
+                        }
+                        Ok((mlua::Value::Table(table), mlua::Value::Nil))
+                    }
+                    Err(error) => Ok((
+                        mlua::Value::Nil,
+                        mlua::Value::String(lua.create_string(error.to_string())?),
+                    )),
+                }
             },
         )?,
     )?;
@@ -3156,20 +3243,47 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
         "state",
         lua.create_function(move |lua, (name, value): (String, Option<Value>)| {
             let key = format!("__mapstate:{name}");
-            let mut state = s.borrow_mut();
             if let Some(value) = value {
                 let json = lua_value_to_json(value)?;
+                // B-3：注册 `map.schema(name, spec)` 后，写入会先校验，
+                // 让错误在发生处暴露，而不是延迟到读档时才发现。
+                {
+                    let state = s.borrow();
+                    if let Some(schema) = state.map_state_schemas.get(&name)
+                        && let Some(error) = crate::core::data_schema::validate(
+                            &json,
+                            schema,
+                            &format!("map.state {name}"),
+                        )
+                    {
+                        return Err(api_error(error));
+                    }
+                }
                 let encoded =
                     serde_json::to_string(&json).map_err(|error| api_error(error.to_string()))?;
-                state.save_data.insert(key, encoded);
+                s.borrow_mut().save_data.insert(key, encoded);
                 return Ok(Value::Boolean(true));
             }
-            let Some(encoded) = state.save_data.get(&key) else {
+            let Some(encoded) = s.borrow().save_data.get(&key).cloned() else {
                 return Ok(Value::Nil);
             };
-            let json = serde_json::from_str(encoded)
+            let json = serde_json::from_str(&encoded)
                 .map_err(|error| api_error(format!("map.state {name} is corrupt: {error}")))?;
             json_to_lua_value(lua, &json)
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    map.set(
+        "schema",
+        lua.create_function(move |_, (name, spec): (String, Option<Value>)| {
+            let mut state = s.borrow_mut();
+            if let Some(spec) = spec {
+                let json = lua_value_to_json(spec)?;
+                state.map_state_schemas.insert(name, json);
+            } else {
+                state.map_state_schemas.remove(&name);
+            }
+            Ok(())
         })?,
     )?;
     lua.globals().set("map", map)?;
@@ -4348,6 +4462,81 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
         })?,
     )?;
     lua.globals().set("app", app)?;
+
+    // Generic named event bus: `event.emit(name, data?)` dispatches to every
+    // callback registered with `event.on`/`event.subscribe` under `name`.
+    // Subscriptions live in a per-VM map (not in `ScriptState`) because Lua
+    // callbacks are owned by the VM that created them: hot reload builds a fresh
+    // VM and re-runs `on_create`, which re-subscribes on the new VM.
+    let event = lua.create_table()?;
+    let subscribers: Rc<RefCell<BTreeMap<String, Vec<Function>>>> =
+        Rc::new(RefCell::new(BTreeMap::new()));
+
+    let subs = Rc::clone(&subscribers);
+    event.set(
+        "subscribe",
+        lua.create_function(move |_, (name, callback): (String, Function)| {
+            subs.borrow_mut().entry(name).or_default().push(callback);
+            Ok(())
+        })?,
+    )?;
+    let subs = Rc::clone(&subscribers);
+    event.set(
+        "on",
+        lua.create_function(move |_, (name, callback): (String, Function)| {
+            subs.borrow_mut().entry(name).or_default().push(callback);
+            Ok(())
+        })?,
+    )?;
+
+    let subs = Rc::clone(&subscribers);
+    event.set(
+        "emit",
+        lua.create_function(move |_, (name, data): (String, Option<Value>)| {
+            let data = data.unwrap_or(Value::Nil);
+            // Snapshot the listener list first so a callback may itself emit,
+            // subscribe, or unsubscribe without tripping the shared borrow.
+            let callbacks = subs.borrow().get(&name).cloned().unwrap_or_default();
+            for callback in callbacks {
+                callback.call::<Value>((data.clone(),))?;
+            }
+            Ok(())
+        })?,
+    )?;
+
+    let subs = Rc::clone(&subscribers);
+    event.set(
+        "unsubscribe",
+        lua.create_function(move |_, (name, callback): (String, Option<Function>)| {
+            let mut map = subs.borrow_mut();
+            let Some(callback) = callback else {
+                map.remove(&name);
+                return Ok(());
+            };
+            if let Some(listeners) = map.get_mut(&name) {
+                let target = callback.to_pointer();
+                listeners.retain(|listener| listener.to_pointer() != target);
+            }
+            Ok(())
+        })?,
+    )?;
+    let subs = Rc::clone(&subscribers);
+    event.set(
+        "off",
+        lua.create_function(move |_, (name, callback): (String, Option<Function>)| {
+            let mut map = subs.borrow_mut();
+            let Some(callback) = callback else {
+                map.remove(&name);
+                return Ok(());
+            };
+            if let Some(listeners) = map.get_mut(&name) {
+                let target = callback.to_pointer();
+                listeners.retain(|listener| listener.to_pointer() != target);
+            }
+            Ok(())
+        })?,
+    )?;
+    lua.globals().set("event", event)?;
     Ok(())
 }
 
@@ -4418,6 +4607,78 @@ mod tests {
     fn lua_gameplay_api_moves_damages_and_destroys() {
         let path = script(
             "player=entity.spawn('player')\ntransform.set(player,0,0)\ntransform.move(player,2,3)\nlocal p=transform.get(player)\nassert(p.x==2 and p.y==3)\nhealth.set(player,10)\nassert(health.damage(player,4)==6)\nassert(entity.find('player')==player)\nentity.destroy(player)\nassert(not entity.is_alive(player))\nfunction update() return 'ok' end",
+        );
+        let mut runtime = LuaRuntime::new().unwrap();
+        runtime.execute_project_script(&path).unwrap();
+        assert_eq!(runtime.call_update().unwrap(), "ok");
+        let _ = fs::remove_file(path);
+    }
+    #[test]
+    fn entity_persist_id_registers_looks_up_and_rejects_duplicates() {
+        let path = script(
+            "local a = entity.spawn(nil, 'house')\n\
+             assert(entity.find_id('house') == a)\n\
+             assert(entity.persist_id(a) == 'house')\n\
+             assert(not pcall(function() entity.spawn(nil, 'house') end))\n\
+             entity.destroy(a)\n\
+             assert(entity.find_id('house') == nil)\n\
+             function update() return 'ok' end",
+        );
+        let mut runtime = LuaRuntime::new().unwrap();
+        runtime.execute_project_script(&path).unwrap();
+        assert_eq!(runtime.call_update().unwrap(), "ok");
+        let _ = fs::remove_file(path);
+    }
+    #[test]
+    fn tilemap_find_path_returns_path_or_diagnostic() {
+        let path = script(
+            "function on_create()\n\
+             local m = tilemap.create(4, 3, 32)\n\
+             tilemap.set_solid(m, 1, 0, true)\n\
+             tilemap.set_solid(m, 2, 0, true)\n\
+             local cells, err = tilemap.find_path(m, 0, 0, 3, 0, false)\n\
+             assert(err == nil)\n\
+             assert(#cells == 6)\n\
+             assert(cells[1].x == 0 and cells[1].y == 0)\n\
+             assert(cells[#cells].x == 3 and cells[#cells].y == 0)\n\
+             local blocked, reason = tilemap.find_path(m, 0, 0, 1, 0, false)\n\
+             assert(blocked == nil and reason ~= nil)\n\
+             return 'ok' end\n\
+             function update() return 'ok' end",
+        );
+        let mut runtime = LuaRuntime::new().unwrap();
+        runtime.execute_project_script(&path).unwrap();
+        assert_eq!(runtime.call_update().unwrap(), "ok");
+        let _ = fs::remove_file(path);
+    }
+    #[test]
+    fn event_bus_subscribes_emits_and_unsubscribes() {
+        let path = script(
+            "function on_create()\n\
+             local received = {}\n\
+             local cb = function(d) table.insert(received, d) end\n\
+             local cb2 = function(d) table.insert(received, d * 10) end\n\
+             event.on('ItemAdded', cb)\n\
+             event.subscribe('ItemAdded', cb2)\n\
+             event.emit('ItemAdded', 5)\n\
+             assert(#received == 2)\n\
+             assert(received[1] == 5 and received[2] == 50)\n\
+             event.off('ItemAdded', cb)\n\
+             received = {}\n\
+             event.emit('ItemAdded', 7)\n\
+             assert(#received == 1 and received[1] == 70)\n\
+             event.unsubscribe('ItemAdded')\n\
+             received = {}\n\
+             event.emit('ItemAdded', 9)\n\
+             assert(#received == 0)\n\
+             event.emit('AttackHit')\n\
+             local nested = 0\n\
+             event.on('Outer', function() nested = nested + 1; event.emit('Inner') end)\n\
+             event.on('Inner', function() nested = nested + 1 end)\n\
+             event.emit('Outer')\n\
+             assert(nested == 2)\n\
+             return 'ok' end\n\
+             function update() return 'ok' end",
         );
         let mut runtime = LuaRuntime::new().unwrap();
         runtime.execute_project_script(&path).unwrap();
@@ -4945,7 +5206,7 @@ mod tests {
 
         let mut runtime = LuaRuntime::new().unwrap();
         runtime.set_project_root(root.clone());
-        runtime.set_save_path(root.join(".p2").join("save.sav"));
+        runtime.set_save_path(root.join(".data").join("save.sav"));
         runtime.set_ui_viewport(1280, 720);
         let path = script(
             "local now = clock.now()\n\
@@ -4994,12 +5255,208 @@ mod tests {
         runtime
             .execute_console("assert(clock.now().minute == 420)")
             .unwrap();
-        assert!(root.join(".p2").join("save_slot1.sav").is_file());
-        assert!(!root.join(".p2").join("save.sav").is_file());
+        assert!(root.join(".data").join("save_slot1.sav").is_file());
+        assert!(!root.join(".data").join("save.sav").is_file());
         runtime.process_scene_transition().unwrap();
         assert_eq!(runtime.call_update().unwrap(), "ok");
         let _ = fs::remove_dir_all(root);
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn map_state_schema_rejects_invalid_writes_and_can_clear() {
+        let mut runtime = LuaRuntime::new().unwrap();
+        let path = script(
+            "map.schema('farm', { ['$kind'] = 'object', \
+             fields = { version = 'integer', \
+                        tiles = { ['$kind'] = 'array', items = 'integer' }, \
+                        solid = { ['$kind'] = 'array', items = 'boolean' }, \
+                        meta = { ['$kind'] = 'map', values = 'any' } }, \
+             required = { 'version', 'tiles', 'solid' } })\n\
+             assert(map.state('farm', { version = 1, tiles = { 0 }, solid = { false }, meta = {} }))\n\
+             local good = map.state('farm')\n\
+             assert(good.version == 1 and good.tiles[1] == 0 and good.solid[1] == false)\n\
+             local ok1, err1 = pcall(function() map.state('farm', { version = 'x' }) end)\n\
+             assert(not ok1 and tostring(err1):find('map.state farm'), tostring(err1))\n\
+             local ok2, err2 = pcall(function() map.state('farm', { version = 1, tiles = { 'a' }, solid = { false } }) end)\n\
+             assert(not ok2 and tostring(err2):find('tiles'), tostring(err2))\n\
+             local ok3, err3 = pcall(function() map.state('farm', { version = 1, tiles = { 0 } }) end)\n\
+             assert(not ok3 and tostring(err3):find('missing required field'), tostring(err3))\n\
+             map.schema('farm', nil)\n\
+             assert(map.state('farm', { anything = true }))\n\
+             function update() return 'ok' end",
+        );
+        runtime.execute_project_script(&path).unwrap();
+        assert_eq!(runtime.call_update().unwrap(), "ok");
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn map_state_tilemap_snapshot_survives_scene_change_and_restart() {
+        use crate::core::scene::{Scene, SceneEntityId};
+
+        let root = std::env::temp_dir().join(format!("p2-mapstate-b3-{}", std::process::id()));
+        let scenes = root.join("scenes");
+        fs::create_dir_all(&scenes).unwrap();
+        let save_path = root.join("save.sav");
+        let _ = fs::remove_file(&save_path);
+
+        // farm.scene 包含 4x3 Tilemap，初始 tile/solid 全为空。
+        let mut farm = Scene::new("farm");
+        farm.add_entity(SceneEntityId(1), "FarmMap", None).unwrap();
+        let farm_entity = farm.entities.get_mut(&SceneEntityId(1)).unwrap();
+        farm_entity.components.insert(
+            "Transform".into(),
+            "x=0;y=0;rotation=0;scale_x=1;scale_y=1".into(),
+        );
+        farm_entity.components.insert(
+            "Tilemap".into(),
+            "tile_size=32x32;width=4;height=3;tiles=000000000000;solid=000000000000".into(),
+        );
+        farm.save(scenes.join("farm.scene")).unwrap();
+        let mut home = Scene::new("home");
+        home.add_entity(SceneEntityId(1), "Home", None).unwrap();
+        home.save(scenes.join("home.scene")).unwrap();
+
+        // 启动脚本注册分地图 schema 与快照/恢复 helper，模拟游戏侧
+        // `map_state.lua` 的职责：脚本维护 tile/meta/solid 格式，引擎用
+        // `map.schema` 校验，并存入 `__mapstate:<name>`。
+        let boot = "map.schema('farm', { ['$kind'] = 'object', \
+                    fields = { version = 'integer', \
+                               tiles = { ['$kind'] = 'array', items = 'integer' }, \
+                               solid = { ['$kind'] = 'array', items = 'boolean' }, \
+                               meta = { ['$kind'] = 'map', values = 'any' } }, \
+                    required = { 'version', 'tiles', 'solid' } })\n\
+                    function farm_size() return 4, 3 end\n\
+                    function snapshot_farm(m)\n\
+                      local w, h = farm_size()\n\
+                      local st = { version = 1, tiles = {}, solid = {}, meta = {} }\n\
+                      for y = 0, h - 1 do\n\
+                        for x = 0, w - 1 do\n\
+                          local i = y * w + x + 1\n\
+                          st.tiles[i] = tilemap.get_cell(m, x, y)\n\
+                          st.solid[i] = tilemap.is_solid(m, x, y)\n\
+                        end\n\
+                      end\n\
+                      for y = 0, h - 1 do\n\
+                        for x = 0, w - 1 do\n\
+                          local bag = {}\n\
+                          for _, k in ipairs({ 'tilled', 'crop', 'state' }) do\n\
+                            local v = tilemap.get_meta(m, x, y, k)\n\
+                            if v then bag[k] = v end\n\
+                          end\n\
+                          if next(bag) then st.meta[x .. ',' .. y] = bag end\n\
+                        end\n\
+                      end\n\
+                      return st\n\
+                    end\n\
+                    function restore_farm(m, st)\n\
+                      local w, h = farm_size()\n\
+                      for y = 0, h - 1 do\n\
+                        for x = 0, w - 1 do\n\
+                          local i = y * w + x + 1\n\
+                          tilemap.set_cell(m, x, y, st.tiles[i])\n\
+                          tilemap.set_solid(m, x, y, st.solid[i])\n\
+                        end\n\
+                      end\n\
+                      for cell, bag in pairs(st.meta or {}) do\n\
+                        local x, y = cell:match('^(%d+),(%d+)$')\n\
+                        assert(x and y, 'bad meta cell ' .. tostring(cell))\n\
+                        for k, v in pairs(bag) do\n\
+                          tilemap.set_meta(m, tonumber(x), tonumber(y), k, v)\n\
+                        end\n\
+                      end\n\
+                    end\n\
+                    function assert_farm_restored(m)\n\
+                      assert(tilemap.get_cell(m, 1, 2) == 3, 'tile 1,2')\n\
+                      assert(tilemap.is_solid(m, 1, 2) == true, 'solid 1,2')\n\
+                      assert(tilemap.get_meta(m, 0, 0, 'tilled') == 'yes', 'tilled 0,0')\n\
+                      assert(tilemap.get_meta(m, 2, 1, 'crop') == 'tomato', 'crop 2,1')\n\
+                      assert(tilemap.get_meta(m, 1, 1, 'tilled') == nil, 'no stray meta')\n\
+                    end\n\
+                    function update() return 'ok' end";
+
+        // ---- first session: farm -> edit -> store -> home -> farm -> restore.
+        // 启动脚本只加载一次；后续步骤通过 `execute_console` 在同一 VM 中执行，
+        // 因为 `execute_project_script` 会重建 Lua VM，不能依赖跨脚本的全局 helper。
+        // 切图不会重置 VM，因此 snapshot/restore helper 会跨 map.go 保留。
+        let mut runtime = LuaRuntime::new().unwrap();
+        runtime.set_project_root(root.clone());
+        runtime.set_save_path(save_path.clone());
+        let path = script(boot);
+        runtime.execute_project_script(&path).unwrap();
+
+        runtime
+            .execute_console("assert(map.go('farm', 5, 5))")
+            .unwrap();
+        runtime.process_scene_transition().unwrap();
+        runtime
+            .execute_console(
+                "local m = assert(entity.find('FarmMap'), 'FarmMap')\n\
+                 tilemap.set_cell(m, 1, 2, 3)\n\
+                 tilemap.set_solid(m, 1, 2, true)\n\
+                 tilemap.set_meta(m, 0, 0, 'tilled', 'yes')\n\
+                 tilemap.set_meta(m, 2, 1, 'crop', 'tomato')\n\
+                 assert(map.state('farm', snapshot_farm(m)), 'store farm state')\n\
+                 local st = map.state('farm')\n\
+                 assert(st.version == 1, 'version')\n\
+                 assert(st.tiles[10] == 3, 'tiles[10]')\n\
+                 assert(st.solid[10] == true, 'solid[10]')\n\
+                 assert(st.meta['0,0'].tilled == 'yes', 'meta 0,0')\n",
+            )
+            .unwrap();
+        assert_eq!(runtime.call_update().unwrap(), "ok");
+        runtime
+            .execute_console("assert(map.go('home', 5, 5))")
+            .unwrap();
+        runtime.process_scene_transition().unwrap();
+        runtime
+            .execute_console("assert(map.go('farm', 5, 5))")
+            .unwrap();
+        runtime.process_scene_transition().unwrap();
+        // 切回地图时场景中的初始值优先；必须重新应用快照，才能保证
+        // tile/meta/solid 与持久化状态一致。
+        runtime
+            .execute_console(
+                "local m = assert(entity.find('FarmMap'), 'FarmMap')\n\
+                 assert(tilemap.get_cell(m, 1, 2) == 0, 'scene baseline on re-entry')\n\
+                 local st = assert(map.state('farm'), 'state survives scene change')\n\
+                 restore_farm(m, st)\n\
+                 assert_farm_restored(m)\n\
+                 assert(save.commit(), 'commit')\n",
+            )
+            .unwrap();
+        runtime.call_update().unwrap();
+        assert!(save_path.is_file(), "session one should commit a save file");
+
+        // ---- second session: fresh runtime boots on the same project/save.
+        let mut runtime = LuaRuntime::new().unwrap();
+        runtime.set_project_root(root.clone());
+        runtime.set_save_path(save_path.clone());
+        let boot_path = script(boot);
+        runtime.execute_project_script(&boot_path).unwrap();
+        runtime
+            .execute_console(
+                "assert(save.load(), 'load save')\n\
+                 local st = map.state('farm')\n\
+                 assert(st ~= nil and st.version == 1, 'restart state present')\n\
+                 assert(st.tiles[10] == 3, 'restart tiles')\n\
+                 assert(map.go('farm', 5, 5))\n",
+            )
+            .unwrap();
+        runtime.process_scene_transition().unwrap();
+        runtime
+            .execute_console(
+                "local m = assert(entity.find('FarmMap'), 'FarmMap')\n\
+                 restore_farm(m, assert(map.state('farm'), 'restart state'))\n\
+                 assert_farm_restored(m)\n",
+            )
+            .unwrap();
+        assert_eq!(runtime.call_update().unwrap(), "ok");
+
+        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(boot_path);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -5036,7 +5493,7 @@ mod tests {
     #[test]
     fn save_load_runs_on_migrate_for_older_versions() {
         let root = std::env::temp_dir().join(format!("p2-save-migrate-{}", std::process::id()));
-        let dir = root.join(".p2");
+        let dir = root.join(".data");
         fs::create_dir_all(&dir).unwrap();
         let save_path = dir.join("save.sav");
         fs::write(&save_path, "save_version=0\nhp\t10\n").unwrap();
@@ -5144,17 +5601,17 @@ mod tests {
         // save + commit to disk
         let mut runtime = LuaRuntime::new().unwrap();
         runtime.set_project_root(root.clone());
-        runtime.set_save_path(root.join(".p2").join("save.sav"));
+        runtime.set_save_path(root.join(".data").join("save.sav"));
         let first = script(
             "save.write('hp', '75')\nsave.write('scene', 'arena')\nassert(save.commit())\nfunction update() return 'ok' end",
         );
         runtime.execute_project_script(&first).unwrap();
         runtime.call_update().unwrap();
-        assert!(root.join(".p2").join("save.sav").is_file());
+        assert!(root.join(".data").join("save.sav").is_file());
 
         // a fresh runtime loads the save back
         let mut fresh = LuaRuntime::new().unwrap();
-        fresh.set_save_path(root.join(".p2").join("save.sav"));
+        fresh.set_save_path(root.join(".data").join("save.sav"));
         let load_script = script(
             "assert(save.load())\nassert(save.read('hp') == '75')\nfunction update() return 'ok' end",
         );

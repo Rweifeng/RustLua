@@ -27,7 +27,7 @@ impl EditorApp {
                 {
                     ui.label("当前文档：Prefab 编辑模式");
                 }
-                let Some(selected) = self.tree.selected() else {
+                let Some(selected) = self.selection.primary() else {
                     ui.label("请先在 Hierarchy 中选择实体");
                     return;
                 };
@@ -129,7 +129,7 @@ impl EditorApp {
                                 "Toggle Persistent",
                                 CommandKind::Property,
                                 |scene| {
-                                    inspector.set_persistent(scene, persistent)?;
+                                    inspector.set_persistent(scene, selected, persistent)?;
                                     Ok::<(), InspectorError>(())
                                 },
                             );
@@ -842,7 +842,7 @@ impl EditorApp {
             self.status = "Play mode locks scene editing; click Stop first".to_owned();
             return false;
         }
-        let Some(selected) = self.inspector.selected() else {
+        let Some(selected) = self.selection.primary() else {
             self.status = "应用修改".to_owned();
             return false;
         };
@@ -860,7 +860,7 @@ impl EditorApp {
         let animation = self.animation.machine.clone();
         let sprite = self.sprite_component.to_component_str();
         let lua = self.lua_script.clone();
-        let selected_sprite_ids: Vec<_> = self.scene_state.selected.iter().copied().collect();
+        let selected_sprite_ids = self.selection.ids();
         // 3D 组件只在实体已有该组件时更新，避免给普通实体注入默认组件。
         let had_transform3d = self.current_scene().is_some_and(|scene| {
             scene.scene.entities[&selected]
@@ -915,36 +915,36 @@ impl EditorApp {
         let result =
             self.history
                 .execute(scene, "Inspector", CommandKind::Property, move |scene| {
-                    inspector.set_name(scene, name)?;
-                    inspector.set_transform(scene, transform)?;
+                    inspector.set_name(scene, selected, name)?;
+                    inspector.set_transform(scene, selected, transform)?;
                     if had_transform3d {
-                        inspector.set_transform3d(scene, transform3d)?;
+                        inspector.set_transform3d(scene, selected, transform3d)?;
                     }
                     if mesh.trim().is_empty() {
-                        inspector.clear_mesh_renderer(scene)?;
+                        inspector.clear_mesh_renderer(scene, selected)?;
                     } else {
-                        inspector.set_mesh_renderer(scene, mesh)?;
+                        inspector.set_mesh_renderer(scene, selected, mesh)?;
                     }
                     if had_camera3d {
-                        inspector.set_camera3d(scene, camera3d)?;
+                        inspector.set_camera3d(scene, selected, camera3d)?;
                     }
                     if had_light {
-                        inspector.set_light(scene, light)?;
+                        inspector.set_light(scene, selected, light)?;
                     }
                     if had_collider3d {
-                        inspector.set_collider3d(scene, collider3d)?;
+                        inspector.set_collider3d(scene, selected, collider3d)?;
                     }
                     if had_text {
-                        inspector.set_text(scene, text)?;
+                        inspector.set_text(scene, selected, text)?;
                     }
                     if had_image {
-                        inspector.set_image(scene, image)?;
+                        inspector.set_image(scene, selected, image)?;
                     }
                     if had_sprite {
                         if sprite_component.texture.trim().is_empty() {
-                            inspector.clear_sprite_reference(scene)?;
+                            inspector.clear_sprite_reference(scene, selected)?;
                         } else {
-                            inspector.set_sprite_reference(scene, sprite.clone())?;
+                            inspector.set_sprite_reference(scene, selected, sprite.clone())?;
                             for id in &selected_sprite_ids {
                                 if *id == selected {
                                     continue;
@@ -973,9 +973,9 @@ impl EditorApp {
                         scene.mark_dirty();
                     }
                     if lua.trim().is_empty() {
-                        inspector.clear_lua_script(scene)?;
+                        inspector.clear_lua_script(scene, selected)?;
                     } else {
-                        inspector.set_lua_script(scene, lua)?;
+                        inspector.set_lua_script(scene, selected, lua)?;
                     }
                     Ok::<(), InspectorError>(())
                 });
@@ -999,9 +999,9 @@ impl EditorApp {
         if self.is_playing() {
             return Err("Play mode locks scene editing; click Stop first".to_owned());
         }
-        if self.inspector.selected().is_none() {
+        let Some(selected) = self.selection.primary() else {
             return Ok(());
-        }
+        };
         let inspector = self.inspector.clone();
         let collider3d = self.collider3d.clone();
         let Some(scene) = self.document.current_scene.as_mut() else {
@@ -1012,7 +1012,7 @@ impl EditorApp {
             "Add Collider3d",
             CommandKind::Property,
             move |scene| {
-                inspector.set_collider3d(scene, collider3d)?;
+                inspector.set_collider3d(scene, selected, collider3d)?;
                 Ok::<(), InspectorError>(())
             },
         );
@@ -1027,9 +1027,9 @@ impl EditorApp {
         if self.is_playing() {
             return Err("Play mode locks scene editing; click Stop first".to_owned());
         }
-        if self.inspector.selected().is_none() {
+        let Some(selected) = self.selection.primary() else {
             return Ok(());
-        }
+        };
         let inspector = self.inspector.clone();
         let Some(scene) = self.document.current_scene.as_mut() else {
             return Ok(());
@@ -1039,7 +1039,7 @@ impl EditorApp {
             "Remove Collider3d",
             CommandKind::Property,
             move |scene| {
-                inspector.clear_collider3d(scene)?;
+                inspector.clear_collider3d(scene, selected)?;
                 Ok::<(), InspectorError>(())
             },
         );
@@ -1053,7 +1053,7 @@ impl EditorApp {
     fn current_components(&self) -> Vec<String> {
         self.current_scene()
             .and_then(|s| {
-                self.inspector.selected().map(|id| {
+                self.selection.primary().map(|id| {
                     s.scene
                         .entities
                         .get(&id)
@@ -1069,7 +1069,7 @@ impl EditorApp {
         if self.is_playing() {
             return Err("Play mode locks scene editing; click Stop first".to_owned());
         }
-        let Some(selected) = self.inspector.selected() else {
+        let Some(selected) = self.selection.primary() else {
             return Ok(());
         };
         let Some(scene) = self.document.current_scene.as_ref() else {
@@ -1094,6 +1094,7 @@ impl EditorApp {
                 match name.as_str() {
                     "Sprite" => inspector.set_sprite_reference(
                         scene,
+                        selected,
                         engine::core::sprite::SpriteComponent {
                             texture: "assets/textures/player.png".to_owned(),
                             size: engine::core::transform::Vec2::new(128.0, 128.0),
@@ -1143,14 +1144,18 @@ impl EditorApp {
                         }
                     }
                     "Transform3D" => {
-                        inspector.set_transform3d(scene, Transform3DFields::default())?
+                        inspector.set_transform3d(scene, selected, Transform3DFields::default())?
                     }
-                    "Camera3D" => inspector.set_camera3d(scene, Camera3DFields::default())?,
-                    "Light" => inspector.set_light(scene, LightFields::default())?,
-                    "Collider3d" => inspector.set_collider3d(scene, Collider3dFields::default())?,
-                    "MeshRenderer" => inspector.set_mesh_renderer(scene, "__ground_plane__")?,
-                    "Text" => inspector.set_text(scene, TextFields::default())?,
-                    "Image" => inspector.set_image(scene, ImageFields::default())?,
+                    "Camera3D" => inspector.set_camera3d(scene, selected, Camera3DFields::default())?,
+                    "Light" => inspector.set_light(scene, selected, LightFields::default())?,
+                    "Collider3d" => {
+                        inspector.set_collider3d(scene, selected, Collider3dFields::default())?
+                    }
+                    "MeshRenderer" => {
+                        inspector.set_mesh_renderer(scene, selected, "__ground_plane__")?
+                    }
+                    "Text" => inspector.set_text(scene, selected, TextFields::default())?,
+                    "Image" => inspector.set_image(scene, selected, ImageFields::default())?,
                     other => {
                         if let Some(entity) = scene.scene.entities.get_mut(&selected) {
                             entity.components.insert(other.to_owned(), String::new());
@@ -1175,7 +1180,7 @@ impl EditorApp {
         if self.is_playing() {
             return Err("Play mode locks scene editing; click Stop first".to_owned());
         }
-        let Some(selected) = self.inspector.selected() else {
+        let Some(selected) = self.selection.primary() else {
             return Ok(());
         };
         let name = name.to_owned();
@@ -1208,6 +1213,10 @@ impl EditorApp {
             self.status = "Play mode locks scene editing; click Stop first".into();
             return;
         }
+        let Some(selected) = self.selection.primary() else {
+            self.status = "请先在 Hierarchy 中选择实体".into();
+            return;
+        };
         let name = self.entity_name.trim().to_owned();
         let tree = self.tree.clone();
         let Some(scene) = self.document.current_scene.as_mut() else {
@@ -1217,12 +1226,12 @@ impl EditorApp {
         let result =
             self.history
                 .execute(scene, "Rename entity", CommandKind::Rename, move |scene| {
-                    let mut tree = tree;
-                    tree.rename_selected(scene, name).map_err(|e| e.to_string())
+                    tree.rename(scene, selected, name).map_err(|e| e.to_string())
                 });
         match result {
             Ok(true) => {
                 self.status = "Entity renamed".into();
+                self.on_document_changed(crate::actions::DocumentChange::EntityRenamed);
             }
             Ok(false) => self.status = "No change".into(),
             Err(e) => self.status = e,
@@ -1234,6 +1243,10 @@ impl EditorApp {
             self.status = "Play mode locks scene editing; click Stop first".into();
             return;
         }
+        let Some(selected) = self.selection.primary() else {
+            self.status = "请先在 Hierarchy 中选择实体".into();
+            return;
+        };
         let tree = self.tree.clone();
         let Some(scene) = self.document.current_scene.as_mut() else {
             self.status = "Create a scene first".into();
@@ -1244,8 +1257,7 @@ impl EditorApp {
             "Reparent entity",
             CommandKind::Reparent,
             move |scene| {
-                let mut tree = tree;
-                tree.reparent_selected(scene, parent)
+                tree.reparent(scene, selected, parent)
                     .map_err(|e| e.to_string())
             },
         );
@@ -1263,7 +1275,18 @@ impl EditorApp {
             self.status = "Play mode locks scene editing; click Stop first".into();
             return;
         }
+        let Some(selected) = self.selection.primary() else {
+            self.status = "请先在 Hierarchy 中选择实体".into();
+            return;
+        };
+        // 删除前记录父节点，供删除后选择回退（SelectionModel::on_entities_removed）。
+        let parent = self
+            .current_scene()
+            .and_then(|scene| scene.scene.entities.get(&selected))
+            .and_then(|entity| entity.parent);
         let tree = self.tree.clone();
+        let removed = std::rc::Rc::new(std::cell::Cell::new(None::<std::collections::BTreeSet<SceneEntityId>>));
+        let removed_out = removed.clone();
         let Some(scene) = self.document.current_scene.as_mut() else {
             self.status = "Create a scene first".into();
             return;
@@ -1271,23 +1294,19 @@ impl EditorApp {
         let result =
             self.history
                 .execute(scene, "Delete entity", CommandKind::Delete, move |scene| {
-                    let mut tree = tree;
-                    tree.delete_selected(scene).map_err(|e| e.to_string())
+                    let deleted = tree.delete(scene, selected).map_err(|e| e.to_string())?;
+                    removed.set(Some(deleted));
+                    Ok::<(), String>(())
                 });
         match result {
             Ok(true) => {
-                if self.tree.selected().is_some_and(|id| {
-                    self.document
-                        .current_scene
-                        .as_ref()
-                        .is_none_or(|scene| !scene.scene.entities.contains_key(&id))
-                }) {
-                    self.tree.clear_selection();
-                    if matches!(self.delete_target, crate::DeleteTarget::Hierarchy) {
-                        self.delete_target = crate::DeleteTarget::None;
-                    }
-                    self.inspector.clear_selection();
+                if let Some(deleted) = removed_out.take() {
+                    self.selection.on_entities_removed(&deleted, parent);
                 }
+                // E03：删除入口直接复位删除目标（此时选区可能已被清空，on_document_changed
+                // 的 `had_selection` 无法感知“删除前有选中实体”，故在此显式复位）。
+                self.delete_target = crate::DeleteTarget::None;
+                self.on_document_changed(crate::actions::DocumentChange::EntityDeleted);
                 self.status = "Entity deleted".into();
             }
             Ok(false) => self.status = "No change".into(),
@@ -1296,7 +1315,7 @@ impl EditorApp {
     }
 
     fn copy_selected_components(&mut self) {
-        let Some(id) = self.tree.selected() else {
+        let Some(id) = self.selection.primary() else {
             return;
         };
         let Some(entity) = self
@@ -1317,7 +1336,7 @@ impl EditorApp {
         if self.is_playing() {
             return;
         }
-        let Some(id) = self.tree.selected() else {
+        let Some(id) = self.selection.primary() else {
             return;
         };
         let Some(clipboard) = self.inspector_clipboard.clone() else {
@@ -1369,7 +1388,7 @@ impl EditorApp {
             self.status = "Play mode locks scene editing; click Stop first".to_owned();
             return;
         }
-        let Some(selected) = self.tree.selected() else {
+        let Some(selected) = self.selection.primary() else {
             self.status = "请先选中 Prefab 根实例".to_owned();
             return;
         };
@@ -1450,13 +1469,9 @@ impl EditorApp {
         match result {
             Ok(_) => {
                 if let Some(new_root) = new_root_result.get() {
-                    self.scene_state.selected.clear();
-                    self.scene_state.selected.insert(new_root);
-                    if let Some(scene) = self.document.current_scene.as_ref() {
-                        let _ = self.tree.select(scene, new_root);
-                    }
-                    self.sync_hierarchy_metadata();
-                    self.sync_inspector(new_root);
+                    self.selection
+                        .set_single(new_root, editor::SelectionSource::Inspector);
+                    self.on_document_changed(crate::actions::DocumentChange::PrefabApply);
                 }
                 self.status = format!("已重新应用 Prefab：{prefab_source}");
             }
@@ -1469,7 +1484,7 @@ impl EditorApp {
             self.status = "Play mode locks scene editing; click Stop first".to_owned();
             return;
         }
-        let Some(selected) = self.tree.selected() else {
+        let Some(selected) = self.selection.primary() else {
             self.status = "请先选中 Prefab 根实例".to_owned();
             return;
         };
@@ -1572,13 +1587,9 @@ impl EditorApp {
             Ok(_) => {
                 self.refresh_resources();
                 if let Some(new_root) = selected_result.get() {
-                    self.scene_state.selected.clear();
-                    self.scene_state.selected.insert(new_root);
-                    if let Some(scene) = self.document.current_scene.as_ref() {
-                        let _ = self.tree.select(scene, new_root);
-                    }
-                    self.sync_hierarchy_metadata();
-                    self.sync_inspector(new_root);
+                    self.selection
+                        .set_single(new_root, editor::SelectionSource::Inspector);
+                    self.on_document_changed(crate::actions::DocumentChange::PrefabApply);
                 }
                 self.status = format!("已写回 Prefab 源并更新实例：{prefab_source}");
             }
@@ -2070,10 +2081,7 @@ mod tests {
     }
 
     fn select_entity(app: &mut EditorApp, id: SceneEntityId) {
-        let scene = app.document.current_scene.as_ref().unwrap();
-        app.tree.select(scene, id).unwrap();
-        app.scene_state.selected.clear();
-        app.scene_state.selected.insert(id);
+        app.selection.set_single(id, editor::SelectionSource::Hierarchy);
         app.sync_inspector(id);
     }
 
@@ -2305,7 +2313,7 @@ mod tests {
             app.status.contains("已重新应用 Prefab"),
             "status should confirm prefab reapply"
         );
-        let selected = app.tree.selected().unwrap();
+        let selected = app.selection.primary().unwrap();
         let scene = &app.document.current_scene.as_ref().unwrap().scene;
         let entity = scene.entities.get(&selected).unwrap();
         assert_eq!(entity.name, "BossGreen");

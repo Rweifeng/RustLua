@@ -271,7 +271,7 @@ fn press(runtime: &mut LuaRuntime, key: InputKey) -> Result<(), Box<dyn std::err
 }
 
 fn fresh_save_path(project: &Path) -> PathBuf {
-    let dir = project.join(".p2");
+    let dir = project.join(".data");
     let _ = fs::create_dir_all(&dir);
     let path = dir.join("farm_smoke.sav");
     let _ = fs::remove_file(&path);

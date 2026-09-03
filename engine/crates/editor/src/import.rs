@@ -117,8 +117,9 @@ impl EditorApp {
                     self.autosave.reset();
                     self.lua_runtime = None;
                     self.play_session = None;
-                    self.tree.clear_selection();
-                    self.inspector.clear_selection();
+                    // E03 项目切换：整个文档被替换，清空统一选择模型。
+                    self.selection.clear(editor::SelectionSource::Playback);
+                    self.delete_target = crate::DeleteTarget::None;
                     self.project_loaded = true;
                     self.status = format!(
                         "Imported game project: {}",

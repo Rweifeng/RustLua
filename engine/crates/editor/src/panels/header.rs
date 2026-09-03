@@ -170,8 +170,9 @@ impl EditorApp {
         self.set_current_scene_document(self.recovery.recover(&candidate));
         self.history.clear();
         self.autosave.reset();
-        self.tree.clear_selection();
-        self.inspector.clear_selection();
+        // 统一收尾：选择修复 + Inspector 空同步 + Scene View/Game 预览失效 +
+        // Hierarchy 元数据重扫（快照替换后强制隐藏/锁定集合重建）。
+        self.on_document_changed(crate::actions::DocumentChange::Opened);
         self.recovery_scan = self.recovery.scan().unwrap_or_default();
         self.status = format!("已恢复崩溃快照：{}", display_path(&candidate.path));
     }
@@ -370,9 +371,8 @@ mod tests {
         assert_eq!(app.recovery_scan.candidates.len(), 1);
 
         app.document.current_scene = Some(SceneDocument::open(&scene_path).unwrap());
-        let current = app.document.current_scene.as_ref().unwrap().clone();
-        app.tree.select(&current, SceneEntityId(2)).unwrap();
-        app.inspector.select(&current, SceneEntityId(2)).unwrap();
+        app.selection
+            .set_single(SceneEntityId(2), editor::SelectionSource::Hierarchy);
 
         let candidate = app.recovery_scan.candidates[0].clone();
         app.recover_candidate(candidate.clone());
@@ -384,8 +384,7 @@ mod tests {
             recovered.scene.entities[&SceneEntityId(2)].name,
             "RecoveredViaMenu"
         );
-        assert_eq!(app.tree.selected(), None);
-        assert_eq!(app.inspector.selected(), None);
+        assert!(app.selection.is_empty());
         assert!(
             app.status.contains("已恢复崩溃快照"),
             "status should report recovery result"

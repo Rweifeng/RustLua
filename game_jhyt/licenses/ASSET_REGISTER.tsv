@@ -1,0 +1,7 @@
+﻿asset_id	名称	类型	作者	来源URL	下载日期	版本	许可证	可商用	可修改	需署名	禁止再分发	使用位置	备注
+kenney_ui_pack	Kenney UI Pack	UI	Kenney	https://opengameart.org/content/ui-pack	2026-09-02	unknown	CC0	是	是	否	是	assets/art/ui/kenney_ui	430+ PNG、spritesheet、SVG/TTF；用于原型 UI
+kenney_ui_rpg_extension	Kenney UI pack RPG extension	UI	Kenney	https://opengameart.org/content/ui-pack-rpg-extension	2026-09-02	unknown	CC0	是	是	否	是	assets/art/ui/kenney_rpg	RPG/fantasy UI 扩展
+kenney_tiny_town	Kenney Tiny Town	场景/图块	Kenney	https://opengameart.org/content/tiny-town	2026-09-02	unknown	CC0	是	是	否	是	assets/art/tilesets/tiny_town	城镇、房屋、城堡原型
+mushroom_village	Mushroom Village tileset	场景/图块	NettySvit	https://opengameart.org/content/mushroom-village-tileset	2026-09-02	1.0	CC0	是	是	否	是	assets/art/tilesets/mushroom_village	16x16；导入时按项目规范放大至32x32逻辑网格
+farm_topdown	Farm Top-Down Pixel Art Pack	场景/农田	KodaMonroezz Games	https://amadeva.itch.io/farm-top-down-pixel-art-pack-tiles-animals-tractors	待购买/下载	unknown	自定义许可	待确认	待确认	待确认	是	assets/art/tilesets/farm_topdown	仅建立预留目录；itch.io 页面资源需购买后下载
+chinese_garden	Chinese Garden Tileset	场景/中式庭院	BiteMe Games	https://bitemegames.itch.io/chinese-garden-tileset	待购买/下载	1.0	自定义许可	是	是	否	是	assets/art/tilesets/chinese_garden	仅建立预留目录；需购买后下载

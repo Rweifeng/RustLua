@@ -23,8 +23,8 @@ use std::{
 use editor::{
     AutoSaveController, Camera3DFields, Collider3dFields, CommandHistory, ImageFields,
     InspectorState, LightFields, PlaySession, ProjectDocument, ProjectInfo, RecoveryManager,
-    RecoveryScan, ResourceBrowserState, SceneTreeState, TextFields, Transform3DFields,
-    TransformFields, check_project, open_project,
+    RecoveryScan, ResourceBrowserState, SceneTreeState, SelectionModel, TextFields,
+    Transform3DFields, TransformFields, check_project, open_project,
 };
 use eframe::egui;
 use engine::core::{
@@ -339,6 +339,9 @@ struct EditorApp {
     scene_view_fit_pending: bool,
     /// Delete 键当前作用的选区来源：资源面板或层级/Scene View。
     delete_target: DeleteTarget,
+    /// E03 统一选择模型：Hierarchy / Scene View / Inspector / 命令层共享的单一权威选区。
+    /// 原 `SceneTreeState`/`InspectorState`/`SceneEditorState::selected` 三套选择已全部收敛到此。
+    selection: SelectionModel,
     /// Game View 输入快照的跨帧状态（M11-02）：held 按键/鼠标跨帧保留，
     /// `just_pressed`/`just_released` 边沿只在模拟帧边界消费一次，失焦/Play-Stop 时清空。
     preview_input_state: InputSnapshot,
@@ -523,7 +526,6 @@ struct SceneEditorState {
     collapsed: std::collections::BTreeSet<SceneEntityId>,
     hidden: std::collections::BTreeSet<SceneEntityId>,
     locked: std::collections::BTreeSet<SceneEntityId>,
-    selected: std::collections::BTreeSet<SceneEntityId>,
     box_select_start: Option<egui::Pos2>,
     tile_paint_active: bool,
     tile_paint_last_cell: Option<(usize, usize, bool)>,
@@ -690,6 +692,7 @@ impl EditorApp {
             scene_view_repaint_pending: false,
             scene_view_fit_pending: true,
             delete_target: DeleteTarget::None,
+            selection: SelectionModel::new(),
             last_metadata_key: None,
             preview_input_state: InputSnapshot::default(),
             thumbnail_benchmark_ran: false,

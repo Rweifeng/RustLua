@@ -4,7 +4,7 @@ on:
   push:
     paths:
       - "engine/**"
-      - "game/**"
+      - "game_jianghu_youtian/**"
       - "scripts/**"
       - "docs/**"
       - "tasks/**"
@@ -12,7 +12,7 @@ on:
   pull_request:
     paths:
       - "engine/**"
-      - "game/**"
+      - "game_jianghu_youtian/**"
       - "scripts/**"
       - "docs/**"
       - "tasks/**"
@@ -62,8 +62,8 @@ jobs:
 
       - name: Game project check
         working-directory: ${{ github.workspace }}
-        run: cargo run --quiet --manifest-path engine/Cargo.toml -p game -- --project "${{ github.workspace }}\\game" --check
+        run: cargo run --quiet --manifest-path engine/Cargo.toml -p game -- --project "${{ github.workspace }}\\game_jianghu_youtian" --check
 
       - name: Editor project check
         working-directory: ${{ github.workspace }}
-        run: cargo run --quiet --manifest-path engine/Cargo.toml -p editor -- --project "${{ github.workspace }}\\game" --check
+        run: cargo run --quiet --manifest-path engine/Cargo.toml -p editor -- --project "${{ github.workspace }}\\game_jianghu_youtian" --check

@@ -5,6 +5,7 @@
 ## Unreleased（v0.10-editor 之后）
 
 - 引擎动态 UI 数据模型（panel/grid/image）与农场玩法 Lua API（`clock/calendar/day/grid/tilemap/item/inv/container/shop/map/data/save.blob_*`）。
+- B-1 稳定实体 PersistId：`entity.spawn(name?, persist_id?)` / `entity.find_id(id)` / `entity.persist_id(e)`；`persist_id` 项目级唯一、重复注册报错，destroy/切场景自动清理（`game_jhyt/scripts/player.lua` 已用 `"player"` 接入）。
 - Tilemap 单格字符串元数据 `meta`。
 - WebGL 发布支持（`game_web` + wasm-bindgen，`package.ps1 -Platform webgl`）。
 - 编辑器资源浏览器后台缩略图解码与资源树缓存、启动/导入与 Windows 体验优化。

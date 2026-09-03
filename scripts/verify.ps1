@@ -1,4 +1,4 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param(
     [switch]$SkipClippy,
     [switch]$SkipTests,
@@ -10,7 +10,7 @@ param(
 $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $engineRoot = Join-Path $projectRoot "engine"
-$gameRoot = Join-Path $projectRoot "game_test"
+$gameRoot = Join-Path $projectRoot "game_jianghu_youtian"
 $logRoot = Join-Path $projectRoot "artifacts\logs\quality"
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $logPath = Join-Path $logRoot "verify-$timestamp.log"

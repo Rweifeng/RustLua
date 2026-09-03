@@ -15,7 +15,7 @@ fn main() {
         .expect("register scene");
     db.set_dependencies(scene, vec![texture])
         .expect("set dependency");
-    db.mark_ready(texture, ".p2/cache/hero", "hero-hash")
+    db.mark_ready(texture, ".data/cache/hero", "hero-hash")
         .expect("import texture");
     db.move_resource("assets/hero.png", "assets/player.png")
         .expect("move texture");

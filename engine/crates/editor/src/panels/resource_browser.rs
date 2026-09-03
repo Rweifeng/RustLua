@@ -639,8 +639,10 @@ mod tests {
         app.select_resource(PathBuf::from("assets/player.png"));
         let scene = app.document.new_scene("main");
         let id = app.tree.create_entity(scene, "Player", None).unwrap();
-        app.scene_state.selected.clear();
-        app.scene_state.selected.insert(id);
+        app.selection
+            .set_single(id, editor::SelectionSource::Hierarchy);
+        // 选中实体后 Delete 键应作用于场景树（优先级高于已选中的资源）。
+        app.delete_target = crate::DeleteTarget::Hierarchy;
         app.sync_inspector(id);
 
         app.handle_delete_shortcut();
@@ -659,7 +661,7 @@ mod tests {
             root.join("assets/player.png").exists(),
             "resource should stay when hierarchy is the active delete target"
         );
-        assert_eq!(app.tree.selected(), None);
+        assert!(app.selection.is_empty());
         assert_eq!(app.delete_target, crate::DeleteTarget::None);
         assert!(app.status.contains("Entity deleted"));
         let _ = fs::remove_dir_all(root);

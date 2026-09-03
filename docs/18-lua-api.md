@@ -1,4 +1,4 @@
-﻿# M4-05 Lua 游戏 API
+# M4-05 Lua 游戏 API
 
 - 状态：PASS
 - 完成日期：2026-08-20
@@ -36,7 +36,8 @@
 | `log` | `info/warn/error` | 通过 tracing 输出脚本日志 |
 | `time` | `delta` | 获取当前帧 Delta Time |
 | `input` | `action/axis/pressed/released` | 键盘与鼠标输入快照 |
-| `entity` | `find/spawn/is_alive/destroy` | 创建、查找、检查和销毁实体 |
+| `entity` | `find/spawn/is_alive/destroy` | 创建、查找、检查和销毁实体；`find(name)` 按显示名（可冲突）查 |
+| `entity` | `spawn(name?, persist_id?)` / `find_id(persist_id)` / `persist_id(id)` | B-1 稳定实体 ID：`spawn` 第二参注册项目级唯一 `persist_id`，重复注册报错；`find_id` 反向取回活实体（不存在返回 nil），`persist_id(id)` 查询实体绑定的 ID；`destroy` 与切场景清理对应注册 |
 | `sprite` | `set(id, 组件串)` | 设置/替换实体 Sprite 组件（`texture=...;size=...`，与场景组件串同格式） |
 | `transform` | `get/set/move` | 读取和修改位置、旋转、缩放 |
 | `health` | `get/set/damage` | Demo 用生命值与受伤 API |
@@ -67,13 +68,14 @@
 | `container` | `open(entity_id,capacity)` / `get` / `close` / `move` | 把实体 ID 关联为箱子背包，并可与玩家背包互转 |
 | `save` | `blob_write(key,value)` / `blob_read(key)` / `slot(name)` / `slot_get` / `version` | 任意 Lua 值（表/数字/字符串/布尔）存入现有存档；按槽位写入 `save_<slot>.sav`。`version()` 返回最近加载存档的版本号（M16-09）；`load()` 读到旧版本存档时自动调用全局 `on_migrate(from,to)`，无版本头视为 v0 |
 | `shop` | `set_catalog` / `price` | 商店目录与价格服务（M16-10）。`set_catalog(name,spec)` 注册目录（`{item_id:{buy,sell}}`），`price(name,item_id)` 返回 `{buy,sell}` 或 nil；买卖交易与资金在 Lua 玩法层完成 |
-| `map` | `go(name,x,y)` / `enter(name,x,y)` / `current` / `spawn` / `set_spawn` / `state(name[,value])` | 带出生点切图、当前图查询、分地图 blob 持久化。`map.goto` 保留为 `map["goto"]`（Lua 5.4 保留字），源码推荐用 `map.go` |
+| `map` | `go(name,x,y)` / `enter(name,x,y)` / `current` / `spawn` / `set_spawn` / `schema(name,spec)` / `state(name[,value])` | 带出生点切图、当前图查询、分地图 blob 持久化；`schema` 注册分地图状态的轻量结构校验器，`schema(name,nil)` 清除；`state(name,value)` 写入前校验，错误定位到地图名与字段 |
 | `ui` | `panel/image/grid/grid_cell/grid_clear/grid_hit/tooltip/modal/modal_show/modal_hide/clear/drag_begin/drag_end/drag_active/drag_cancel` | 运行时动态面板、图片、背包网格、tooltip、模态层与拖拽回调 |
 | `data` | `load(path)` / `reload(path)` / `cache_clear` / `schema(path,spec)` | 从项目根读取 JSON 数据表并缓存为 Lua 表。`schema(path,spec)` 注册校验器（M16-11）：`spec` 为 `{["$kind"]="map"|"object"|"array", ...}` 的轻量 schema，注册后 `load/reload` 先校验再缓存，非法数据报错定位到文件与字段；`schema(path,nil)` 清除。裸对象 `{name="string",...}` 视为隐式 object schema |
+| `event` | `emit(name,data?)` / `on(name,cb)` / `subscribe(name,cb)` / `off(name,cb?)` / `unsubscribe(name,cb?)` | 通用命名事件总线（B-5）。`emit` 依序调用该事件全部订阅回调（传 `data`，缺省 nil），回调可重入 emit/订阅/取消；`off`/`unsubscribe` 不传回调时清空该事件全部订阅。订阅随 VM 生命周期，热重载后由 `on_create` 重订阅 |
 
-`ui.drag_end(to_id,to_index)` 会调用全局 `on_drag(from_id,from_index,to_id,to_index)`（若脚本定义了）。`map.state(name)` 读取、`map.state(name,value)` 写入对应地图的持久化状态。
+`ui.drag_end(to_id,to_index)` 会调用全局 `on_drag(from_id,from_index,to_id,to_index)`（若脚本定义了）。`map.schema(name,spec)` 注册分地图状态校验器，`map.schema(name,nil)` 清除；`map.state(name)` 读取，`map.state(name,value)` 写入对应地图的持久化状态并在写入前校验。
 
-`tilemap.set_solid` 会立即重建该 Tilemap 实体的固定物理碰撞体；当前 tilemap meta 仍为运行时状态，跨场景持久化由 `map.state` / `save.blob_*` 由脚本自行保存。
+`tilemap.set_solid` 会立即重建该 Tilemap 实体的固定物理碰撞体；Tilemap 的 tile、solid、meta 快照由脚本按约定写入 `map.state`，并可通过 `save.commit/load` 跨场景、重启恢复。
 
 ## 安全与错误策略
 

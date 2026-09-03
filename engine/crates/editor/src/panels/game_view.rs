@@ -65,15 +65,13 @@ impl EditorApp {
         self.play_state = PlayState::Stopping;
         self.preview = None;
         self.set_current_scene_document(session.stop());
-        self.tree.clear_selection();
-        if matches!(self.delete_target, crate::DeleteTarget::Hierarchy) {
-            self.delete_target = crate::DeleteTarget::None;
-        }
-        self.inspector.clear_selection();
         // Play/Stop 清空输入状态，避免下一轮 Play 残留边沿（M11-02）。
         self.preview_input_state.clear_all();
         // 停止后回到 Scene 视图。
         self.workspace_tab = WorkspaceTab::Scene;
+        // 统一收尾：选择修复 + Inspector 空同步 + Scene View/Game 预览失效 +
+        // Hierarchy 元数据重扫（含 delete_target 复位）。
+        self.on_document_changed(crate::actions::DocumentChange::PlaybackStopped);
         self.play_state = PlayState::Editing;
         self.status = "Play stopped; runtime changes were discarded".to_owned();
     }
@@ -539,8 +537,8 @@ mod tests {
         app.play_session = Some(PlaySession::start(&original));
         app.play_state = PlayState::Playing;
         app.workspace_tab = WorkspaceTab::Game;
-        app.tree.select(&original, SceneEntityId(2)).unwrap();
-        app.inspector.select(&original, SceneEntityId(2)).unwrap();
+        app.selection
+            .set_single(SceneEntityId(2), editor::SelectionSource::Hierarchy);
         app.preview_input_state.key_event(InputKey::W, true);
         app.preview_input_state.mouse_event(MouseButton::Left, true);
         app.play_session
@@ -561,12 +559,8 @@ mod tests {
         assert!(!app.preview_input_state.is_down(InputKey::W));
         assert!(!app.preview_input_state.mouse_is_down(MouseButton::Left));
         assert!(
-            app.tree.selected().is_none(),
-            "stop should clear hierarchy selection"
-        );
-        assert!(
-            app.inspector.selected().is_none(),
-            "stop should clear inspector selection"
+            app.selection.is_empty(),
+            "stop should clear scene selection"
         );
         assert_eq!(app.document.current_scene.as_ref().unwrap(), &original);
         assert_eq!(app.status, "Play stopped; runtime changes were discarded");

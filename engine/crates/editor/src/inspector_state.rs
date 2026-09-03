@@ -255,38 +255,25 @@ pub struct InspectorSnapshot {
     pub persistent: bool,
 }
 
+/// Inspector 对单个实体进行读取/编辑的**无状态**文档助手（E03）。
+///
+/// E03 之后本类型不再持有“当前选中实体”：选择状态统一收敛到
+/// [`crate::SelectionModel`]。所有读/写方法显式传入目标实体 ID，
+/// 由调用方（`EditorApp`）从统一选择模型读取主选中后传入。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct InspectorState {
-    selected: Option<SceneEntityId>,
-}
+pub struct InspectorState {}
 
 impl InspectorState {
     pub fn new() -> Self {
-        Self::default()
+        Self {}
     }
 
-    pub fn selected(&self) -> Option<SceneEntityId> {
-        self.selected
-    }
-
-    pub fn select(
-        &mut self,
+    /// 读取 `id` 的 Inspector 快照（Inspector 面板同步字段的单一数据源）。
+    pub fn snapshot(
+        &self,
         document: &SceneDocument,
         id: SceneEntityId,
-    ) -> Result<(), InspectorError> {
-        if !document.scene.entities.contains_key(&id) {
-            return Err(InspectorError::UnknownEntity(id));
-        }
-        self.selected = Some(id);
-        Ok(())
-    }
-
-    pub fn clear_selection(&mut self) {
-        self.selected = None;
-    }
-
-    pub fn snapshot(&self, document: &SceneDocument) -> Result<InspectorSnapshot, InspectorError> {
-        let id = self.selected.ok_or(InspectorError::NothingSelected)?;
+    ) -> Result<InspectorSnapshot, InspectorError> {
         let entity = document
             .scene
             .entities
@@ -298,9 +285,9 @@ impl InspectorState {
     pub fn set_name(
         &self,
         document: &mut SceneDocument,
+        id: SceneEntityId,
         name: impl Into<String>,
     ) -> Result<(), InspectorError> {
-        let id = self.selected.ok_or(InspectorError::NothingSelected)?;
         let name = name.into();
         if name.trim().is_empty() {
             return Err(InspectorError::EmptyName);
@@ -316,10 +303,10 @@ impl InspectorState {
     pub fn set_transform(
         &self,
         document: &mut SceneDocument,
+        id: SceneEntityId,
         transform: TransformFields,
     ) -> Result<(), InspectorError> {
         validate_transform(transform)?;
-        let id = self.selected.ok_or(InspectorError::NothingSelected)?;
         let entity = entity_mut(document, id)?;
         let value = encode_transform(transform);
         if entity.components.get("Transform") != Some(&value) {
@@ -332,11 +319,11 @@ impl InspectorState {
     pub fn set_sprite_reference(
         &self,
         document: &mut SceneDocument,
+        id: SceneEntityId,
         reference: impl Into<String>,
     ) -> Result<(), InspectorError> {
         let reference = reference.into();
         validate_asset_reference(&reference)?;
-        let id = self.selected.ok_or(InspectorError::NothingSelected)?;
         let entity = entity_mut(document, id)?;
         if entity.components.get("Sprite") != Some(&reference) {
             entity.components.insert("Sprite".into(), reference);
@@ -348,8 +335,8 @@ impl InspectorState {
     pub fn clear_sprite_reference(
         &self,
         document: &mut SceneDocument,
+        id: SceneEntityId,
     ) -> Result<(), InspectorError> {
-        let id = self.selected.ok_or(InspectorError::NothingSelected)?;
         let entity = entity_mut(document, id)?;
         if entity.components.remove("Sprite").is_some() {
             document.mark_dirty();
@@ -360,11 +347,11 @@ impl InspectorState {
     pub fn set_lua_script(
         &self,
         document: &mut SceneDocument,
+        id: SceneEntityId,
         script: impl Into<String>,
     ) -> Result<(), InspectorError> {
         let script = script.into();
         validate_lua_script(&script)?;
-        let id = self.selected.ok_or(InspectorError::NothingSelected)?;
         let entity = entity_mut(document, id)?;
         if entity.components.get("LuaScript") != Some(&script) {
             entity.components.insert("LuaScript".into(), script);
@@ -373,8 +360,11 @@ impl InspectorState {
         Ok(())
     }
 
-    pub fn clear_lua_script(&self, document: &mut SceneDocument) -> Result<(), InspectorError> {
-        let id = self.selected.ok_or(InspectorError::NothingSelected)?;
+    pub fn clear_lua_script(
+        &self,
+        document: &mut SceneDocument,
+        id: SceneEntityId,
+    ) -> Result<(), InspectorError> {
         let entity = entity_mut(document, id)?;
         if entity.components.remove("LuaScript").is_some() {
             document.mark_dirty();
@@ -385,10 +375,10 @@ impl InspectorState {
     pub fn set_transform3d(
         &self,
         document: &mut SceneDocument,
+        id: SceneEntityId,
         transform: Transform3DFields,
     ) -> Result<(), InspectorError> {
         validate_transform3d(transform)?;
-        let id = self.selected.ok_or(InspectorError::NothingSelected)?;
         let entity = entity_mut(document, id)?;
         let value = encode_transform3d(transform);
         if entity.components.get("Transform3D") != Some(&value) {
@@ -401,11 +391,11 @@ impl InspectorState {
     pub fn set_mesh_renderer(
         &self,
         document: &mut SceneDocument,
+        id: SceneEntityId,
         reference: impl Into<String>,
     ) -> Result<(), InspectorError> {
         let reference = reference.into();
         validate_mesh_renderer(&reference)?;
-        let id = self.selected.ok_or(InspectorError::NothingSelected)?;
         let entity = entity_mut(document, id)?;
         let value = MeshRenderer::from_component_str(&format!("mesh={reference}"))
             .map_err(|error| InspectorError::InvalidMeshRenderer(error.to_string()))?
@@ -417,8 +407,11 @@ impl InspectorState {
         Ok(())
     }
 
-    pub fn clear_mesh_renderer(&self, document: &mut SceneDocument) -> Result<(), InspectorError> {
-        let id = self.selected.ok_or(InspectorError::NothingSelected)?;
+    pub fn clear_mesh_renderer(
+        &self,
+        document: &mut SceneDocument,
+        id: SceneEntityId,
+    ) -> Result<(), InspectorError> {
         let entity = entity_mut(document, id)?;
         if entity.components.remove("MeshRenderer").is_some() {
             document.mark_dirty();
@@ -429,10 +422,10 @@ impl InspectorState {
     pub fn set_camera3d(
         &self,
         document: &mut SceneDocument,
+        id: SceneEntityId,
         camera: Camera3DFields,
     ) -> Result<(), InspectorError> {
         validate_camera3d(camera)?;
-        let id = self.selected.ok_or(InspectorError::NothingSelected)?;
         let entity = entity_mut(document, id)?;
         let value = encode_camera3d(camera);
         if entity.components.get("Camera3D") != Some(&value) {
@@ -445,10 +438,10 @@ impl InspectorState {
     pub fn set_light(
         &self,
         document: &mut SceneDocument,
+        id: SceneEntityId,
         light: LightFields,
     ) -> Result<(), InspectorError> {
         validate_light(light)?;
-        let id = self.selected.ok_or(InspectorError::NothingSelected)?;
         let entity = entity_mut(document, id)?;
         let value = encode_light(light);
         if entity.components.get("Light") != Some(&value) {
@@ -461,10 +454,10 @@ impl InspectorState {
     pub fn set_collider3d(
         &self,
         document: &mut SceneDocument,
+        id: SceneEntityId,
         collider: Collider3dFields,
     ) -> Result<(), InspectorError> {
         validate_collider3d(&collider)?;
-        let id = self.selected.ok_or(InspectorError::NothingSelected)?;
         let entity = entity_mut(document, id)?;
         let value = encode_collider3d(&collider);
         if entity.components.get("Collider3d") != Some(&value) {
@@ -474,8 +467,11 @@ impl InspectorState {
         Ok(())
     }
 
-    pub fn clear_collider3d(&self, document: &mut SceneDocument) -> Result<(), InspectorError> {
-        let id = self.selected.ok_or(InspectorError::NothingSelected)?;
+    pub fn clear_collider3d(
+        &self,
+        document: &mut SceneDocument,
+        id: SceneEntityId,
+    ) -> Result<(), InspectorError> {
         let entity = entity_mut(document, id)?;
         if entity.components.remove("Collider3d").is_some() {
             document.mark_dirty();
@@ -486,10 +482,10 @@ impl InspectorState {
     pub fn set_text(
         &self,
         document: &mut SceneDocument,
+        id: SceneEntityId,
         text: TextFields,
     ) -> Result<(), InspectorError> {
         validate_text(&text)?;
-        let id = self.selected.ok_or(InspectorError::NothingSelected)?;
         let entity = entity_mut(document, id)?;
         let value = encode_text(&text)?;
         if entity.components.get("Text") != Some(&value) {
@@ -499,8 +495,11 @@ impl InspectorState {
         Ok(())
     }
 
-    pub fn clear_text(&self, document: &mut SceneDocument) -> Result<(), InspectorError> {
-        let id = self.selected.ok_or(InspectorError::NothingSelected)?;
+    pub fn clear_text(
+        &self,
+        document: &mut SceneDocument,
+        id: SceneEntityId,
+    ) -> Result<(), InspectorError> {
         let entity = entity_mut(document, id)?;
         if entity.components.remove("Text").is_some() {
             document.mark_dirty();
@@ -511,10 +510,10 @@ impl InspectorState {
     pub fn set_image(
         &self,
         document: &mut SceneDocument,
+        id: SceneEntityId,
         image: ImageFields,
     ) -> Result<(), InspectorError> {
         validate_image(&image)?;
-        let id = self.selected.ok_or(InspectorError::NothingSelected)?;
         let entity = entity_mut(document, id)?;
         let value = encode_image(&image)?;
         if entity.components.get("Image") != Some(&value) {
@@ -524,8 +523,11 @@ impl InspectorState {
         Ok(())
     }
 
-    pub fn clear_image(&self, document: &mut SceneDocument) -> Result<(), InspectorError> {
-        let id = self.selected.ok_or(InspectorError::NothingSelected)?;
+    pub fn clear_image(
+        &self,
+        document: &mut SceneDocument,
+        id: SceneEntityId,
+    ) -> Result<(), InspectorError> {
         let entity = entity_mut(document, id)?;
         if entity.components.remove("Image").is_some() {
             document.mark_dirty();
@@ -537,9 +539,9 @@ impl InspectorState {
     pub fn set_persistent(
         &self,
         document: &mut SceneDocument,
+        id: SceneEntityId,
         enabled: bool,
     ) -> Result<(), InspectorError> {
-        let id = self.selected.ok_or(InspectorError::NothingSelected)?;
         let entity = entity_mut(document, id)?;
         if enabled {
             if entity.metadata.get("persistent").map(String::as_str) != Some("true") {
@@ -1075,42 +1077,58 @@ mod tests {
         let id = SceneEntityId(1);
         document.scene.add_entity(id, "Player", None).unwrap();
         document.mark_clean();
-        let mut inspector = InspectorState::new();
-        inspector.select(&document, id).unwrap();
-        (document, inspector, id)
+        (document, InspectorState::new(), id)
     }
 
     #[test]
-    fn select_and_snapshot_defaults() {
+    fn snapshot_defaults() {
         let (document, inspector, id) = setup();
-        let snapshot = inspector.snapshot(&document).unwrap();
+        let snapshot = inspector.snapshot(&document, id).unwrap();
         assert_eq!(snapshot.entity_id, id);
         assert_eq!(snapshot.transform, TransformFields::default());
         assert!(snapshot.sprite_reference.is_none());
     }
     #[test]
     fn name_edit_marks_dirty() {
-        let (mut document, inspector, _) = setup();
-        inspector.set_name(&mut document, "Hero").unwrap();
+        let (mut document, inspector, id) = setup();
+        inspector.set_name(&mut document, id, "Hero").unwrap();
         assert!(document.is_dirty());
-        assert_eq!(document.scene.entities[&SceneEntityId(1)].name, "Hero");
+        assert_eq!(document.scene.entities[&id].name, "Hero");
     }
     #[test]
     fn empty_name_rejected_without_mutation() {
-        let (mut document, inspector, _) = setup();
+        let (mut document, inspector, id) = setup();
         assert!(matches!(
-            inspector.set_name(&mut document, " "),
+            inspector.set_name(&mut document, id, " "),
             Err(InspectorError::EmptyName)
         ));
-        assert_eq!(document.scene.entities[&SceneEntityId(1)].name, "Player");
+        assert_eq!(document.scene.entities[&id].name, "Player");
         assert!(!document.is_dirty());
     }
     #[test]
+    fn unknown_entity_rejected() {
+        let (mut document, inspector, _id) = setup();
+        let ghost = SceneEntityId(999);
+        assert!(matches!(
+            inspector.snapshot(&document, ghost),
+            Err(InspectorError::UnknownEntity(_))
+        ));
+        assert!(matches!(
+            inspector.set_name(&mut document, ghost, "X"),
+            Err(InspectorError::UnknownEntity(_))
+        ));
+        assert!(matches!(
+            inspector.clear_sprite_reference(&mut document, ghost),
+            Err(InspectorError::UnknownEntity(_))
+        ));
+    }
+    #[test]
     fn transform_position_x_accepts() {
-        let (mut document, inspector, _) = setup();
+        let (mut document, inspector, id) = setup();
         inspector
             .set_transform(
                 &mut document,
+                id,
                 TransformFields {
                     position_x: 1.0,
                     ..Default::default()
@@ -1121,10 +1139,11 @@ mod tests {
     }
     #[test]
     fn transform_position_y_accepts() {
-        let (mut document, inspector, _) = setup();
+        let (mut document, inspector, id) = setup();
         inspector
             .set_transform(
                 &mut document,
+                id,
                 TransformFields {
                     position_y: -2.0,
                     ..Default::default()
@@ -1132,16 +1151,21 @@ mod tests {
             )
             .unwrap();
         assert_eq!(
-            inspector.snapshot(&document).unwrap().transform.position_y,
+            inspector
+                .snapshot(&document, id)
+                .unwrap()
+                .transform
+                .position_y,
             -2.0
         );
     }
     #[test]
     fn transform_rotation_accepts() {
-        let (mut document, inspector, _) = setup();
+        let (mut document, inspector, id) = setup();
         inspector
             .set_transform(
                 &mut document,
+                id,
                 TransformFields {
                     rotation: 3.0,
                     ..Default::default()
@@ -1149,16 +1173,17 @@ mod tests {
             )
             .unwrap();
         assert_eq!(
-            inspector.snapshot(&document).unwrap().transform.rotation,
+            inspector.snapshot(&document, id).unwrap().transform.rotation,
             3.0
         );
     }
     #[test]
     fn transform_scale_x_accepts() {
-        let (mut document, inspector, _) = setup();
+        let (mut document, inspector, id) = setup();
         inspector
             .set_transform(
                 &mut document,
+                id,
                 TransformFields {
                     scale_x: 2.0,
                     ..Default::default()
@@ -1166,16 +1191,17 @@ mod tests {
             )
             .unwrap();
         assert_eq!(
-            inspector.snapshot(&document).unwrap().transform.scale_x,
+            inspector.snapshot(&document, id).unwrap().transform.scale_x,
             2.0
         );
     }
     #[test]
     fn transform_scale_y_accepts() {
-        let (mut document, inspector, _) = setup();
+        let (mut document, inspector, id) = setup();
         inspector
             .set_transform(
                 &mut document,
+                id,
                 TransformFields {
                     scale_y: 3.0,
                     ..Default::default()
@@ -1183,16 +1209,17 @@ mod tests {
             )
             .unwrap();
         assert_eq!(
-            inspector.snapshot(&document).unwrap().transform.scale_y,
+            inspector.snapshot(&document, id).unwrap().transform.scale_y,
             3.0
         );
     }
     #[test]
     fn nan_transform_rejected() {
-        let (mut document, inspector, _) = setup();
+        let (mut document, inspector, id) = setup();
         assert!(matches!(
             inspector.set_transform(
                 &mut document,
+                id,
                 TransformFields {
                     position_x: f32::NAN,
                     ..Default::default()
@@ -1204,11 +1231,12 @@ mod tests {
     }
     #[test]
     fn infinity_transform_rejected() {
-        let (mut document, inspector, _) = setup();
+        let (mut document, inspector, id) = setup();
         assert!(
             inspector
                 .set_transform(
                     &mut document,
+                    id,
                     TransformFields {
                         rotation: f32::INFINITY,
                         ..Default::default()
@@ -1219,10 +1247,11 @@ mod tests {
     }
     #[test]
     fn zero_scale_rejected() {
-        let (mut document, inspector, _) = setup();
+        let (mut document, inspector, id) = setup();
         assert!(matches!(
             inspector.set_transform(
                 &mut document,
+                id,
                 TransformFields {
                     scale_x: 0.0,
                     ..Default::default()
@@ -1233,11 +1262,12 @@ mod tests {
     }
     #[test]
     fn negative_scale_rejected() {
-        let (mut document, inspector, _) = setup();
+        let (mut document, inspector, id) = setup();
         assert!(
             inspector
                 .set_transform(
                     &mut document,
+                    id,
                     TransformFields {
                         scale_y: -1.0,
                         ..Default::default()
@@ -1248,13 +1278,13 @@ mod tests {
     }
     #[test]
     fn sprite_png_accepts() {
-        let (mut document, inspector, _) = setup();
+        let (mut document, inspector, id) = setup();
         inspector
-            .set_sprite_reference(&mut document, "textures/player.png")
+            .set_sprite_reference(&mut document, id, "textures/player.png")
             .unwrap();
         assert_eq!(
             inspector
-                .snapshot(&document)
+                .snapshot(&document, id)
                 .unwrap()
                 .sprite_reference
                 .as_deref(),
@@ -1263,88 +1293,96 @@ mod tests {
     }
     #[test]
     fn sprite_jpg_accepts() {
-        let (mut document, inspector, _) = setup();
+        let (mut document, inspector, id) = setup();
         inspector
-            .set_sprite_reference(&mut document, "textures/player.jpg")
+            .set_sprite_reference(&mut document, id, "textures/player.jpg")
             .unwrap();
         assert!(document.is_dirty());
     }
     #[test]
     fn sprite_empty_rejected() {
-        let (mut document, inspector, _) = setup();
-        assert!(inspector.set_sprite_reference(&mut document, "").is_err());
+        let (mut document, inspector, id) = setup();
+        assert!(
+            inspector
+                .set_sprite_reference(&mut document, id, "")
+                .is_err()
+        );
         assert!(!document.is_dirty());
     }
     #[test]
     fn sprite_traversal_rejected() {
-        let (mut document, inspector, _) = setup();
+        let (mut document, inspector, id) = setup();
         assert!(
             inspector
-                .set_sprite_reference(&mut document, "../player.png")
+                .set_sprite_reference(&mut document, id, "../player.png")
                 .is_err()
         );
     }
     #[test]
     fn sprite_wrong_extension_rejected() {
-        let (mut document, inspector, _) = setup();
+        let (mut document, inspector, id) = setup();
         assert!(
             inspector
-                .set_sprite_reference(&mut document, "player.txt")
+                .set_sprite_reference(&mut document, id, "player.txt")
                 .is_err()
         );
     }
     #[test]
     fn sprite_clear_marks_dirty() {
-        let (mut document, inspector, _) = setup();
+        let (mut document, inspector, id) = setup();
         inspector
-            .set_sprite_reference(&mut document, "player.png")
+            .set_sprite_reference(&mut document, id, "player.png")
             .unwrap();
         document.mark_clean();
-        inspector.clear_sprite_reference(&mut document).unwrap();
+        inspector.clear_sprite_reference(&mut document, id).unwrap();
         assert!(document.is_dirty());
     }
     #[test]
     fn lua_accepts() {
-        let (mut document, inspector, _) = setup();
+        let (mut document, inspector, id) = setup();
         inspector
-            .set_lua_script(&mut document, "scripts/player.lua")
+            .set_lua_script(&mut document, id, "scripts/player.lua")
             .unwrap();
         assert_eq!(
-            inspector.snapshot(&document).unwrap().lua_script.as_deref(),
+            inspector
+                .snapshot(&document, id)
+                .unwrap()
+                .lua_script
+                .as_deref(),
             Some("scripts/player.lua")
         );
     }
     #[test]
     fn lua_wrong_extension_rejected() {
-        let (mut document, inspector, _) = setup();
+        let (mut document, inspector, id) = setup();
         assert!(
             inspector
-                .set_lua_script(&mut document, "scripts/player.txt")
+                .set_lua_script(&mut document, id, "scripts/player.txt")
                 .is_err()
         );
     }
     #[test]
     fn lua_traversal_rejected() {
-        let (mut document, inspector, _) = setup();
+        let (mut document, inspector, id) = setup();
         assert!(
             inspector
-                .set_lua_script(&mut document, "../player.lua")
+                .set_lua_script(&mut document, id, "../player.lua")
                 .is_err()
         );
     }
     #[test]
     fn lua_clear_marks_dirty() {
-        let (mut document, inspector, _) = setup();
+        let (mut document, inspector, id) = setup();
         inspector
-            .set_lua_script(&mut document, "player.lua")
+            .set_lua_script(&mut document, id, "player.lua")
             .unwrap();
         document.mark_clean();
-        inspector.clear_lua_script(&mut document).unwrap();
+        inspector.clear_lua_script(&mut document, id).unwrap();
         assert!(document.is_dirty());
     }
     #[test]
     fn transform3d_set_and_snapshot() {
-        let (mut document, inspector, _) = setup();
+        let (mut document, inspector, id) = setup();
         let value = Transform3DFields {
             position_x: 1.0,
             position_y: 2.0,
@@ -1354,52 +1392,60 @@ mod tests {
             scale_z: 2.0,
             ..Default::default()
         };
-        inspector.set_transform3d(&mut document, value).unwrap();
+        inspector.set_transform3d(&mut document, id, value).unwrap();
         assert!(document.is_dirty());
         assert_eq!(
-            inspector.snapshot(&document).unwrap().transform3d,
+            inspector.snapshot(&document, id).unwrap().transform3d,
             Some(value)
         );
     }
     #[test]
     fn transform3d_rejects_zero_scale() {
-        let (mut document, inspector, _) = setup();
+        let (mut document, inspector, id) = setup();
         let value = Transform3DFields {
             scale_x: 0.0,
             ..Default::default()
         };
-        assert!(inspector.set_transform3d(&mut document, value).is_err());
+        assert!(
+            inspector
+                .set_transform3d(&mut document, id, value)
+                .is_err()
+        );
         assert!(!document.is_dirty());
     }
     #[test]
     fn transform3d_rejects_non_unit_rotation() {
-        let (mut document, inspector, _) = setup();
+        let (mut document, inspector, id) = setup();
         let value = Transform3DFields {
             rotation_w: 2.0,
             ..Default::default()
         };
-        assert!(inspector.set_transform3d(&mut document, value).is_err());
+        assert!(
+            inspector
+                .set_transform3d(&mut document, id, value)
+                .is_err()
+        );
     }
     #[test]
     fn mesh_renderer_set_and_clear() {
-        let (mut document, inspector, _) = setup();
+        let (mut document, inspector, id) = setup();
         inspector
-            .set_mesh_renderer(&mut document, "models/cube.glb")
+            .set_mesh_renderer(&mut document, id, "models/cube.glb")
             .unwrap();
         assert_eq!(
             inspector
-                .snapshot(&document)
+                .snapshot(&document, id)
                 .unwrap()
                 .mesh_renderer
                 .as_deref(),
             Some("models/cube.glb")
         );
         document.mark_clean();
-        inspector.clear_mesh_renderer(&mut document).unwrap();
+        inspector.clear_mesh_renderer(&mut document, id).unwrap();
         assert!(document.is_dirty());
         assert!(
             inspector
-                .snapshot(&document)
+                .snapshot(&document, id)
                 .unwrap()
                 .mesh_renderer
                 .is_none()
@@ -1407,17 +1453,17 @@ mod tests {
     }
     #[test]
     fn mesh_renderer_rejects_non_glb() {
-        let (mut document, inspector, _) = setup();
+        let (mut document, inspector, id) = setup();
         assert!(
             inspector
-                .set_mesh_renderer(&mut document, "models/cube.obj")
+                .set_mesh_renderer(&mut document, id, "models/cube.obj")
                 .is_err()
         );
         assert!(!document.is_dirty());
     }
     #[test]
     fn camera3d_set_and_snapshot() {
-        let (mut document, inspector, _) = setup();
+        let (mut document, inspector, id) = setup();
         let value = Camera3DFields {
             position_x: 0.0,
             position_y: 3.0,
@@ -1425,50 +1471,55 @@ mod tests {
             fov_degrees: 75.0,
             ..Default::default()
         };
-        inspector.set_camera3d(&mut document, value).unwrap();
-        let snapshot = inspector.snapshot(&document).unwrap();
+        inspector.set_camera3d(&mut document, id, value).unwrap();
+        let snapshot = inspector.snapshot(&document, id).unwrap();
         assert!(snapshot.camera3d.is_some());
         assert!((snapshot.camera3d.unwrap().fov_degrees - 75.0).abs() < 0.01);
     }
     #[test]
     fn camera3d_rejects_invalid_perspective() {
-        let (mut document, inspector, _) = setup();
+        let (mut document, inspector, id) = setup();
         let value = Camera3DFields {
             near: 10.0,
             far: 1.0,
             ..Default::default()
         };
-        assert!(inspector.set_camera3d(&mut document, value).is_err());
+        assert!(
+            inspector
+                .set_camera3d(&mut document, id, value)
+                .is_err()
+        );
     }
     #[test]
     fn light_set_and_snapshot() {
-        let (mut document, inspector, _) = setup();
+        let (mut document, inspector, id) = setup();
         let value = LightFields {
             direction_y: 1.0,
             intensity: 2.0,
             ..Default::default()
         };
-        inspector.set_light(&mut document, value).unwrap();
-        let snapshot = inspector.snapshot(&document).unwrap();
+        inspector.set_light(&mut document, id, value).unwrap();
+        let snapshot = inspector.snapshot(&document, id).unwrap();
         let light = snapshot.light.unwrap();
         assert_eq!(light.direction_y, 1.0);
         assert_eq!(light.intensity, 2.0);
     }
     #[test]
     fn light_rejects_negative_intensity() {
-        let (mut document, inspector, _) = setup();
+        let (mut document, inspector, id) = setup();
         let value = LightFields {
             intensity: -1.0,
             ..Default::default()
         };
-        assert!(inspector.set_light(&mut document, value).is_err());
+        assert!(inspector.set_light(&mut document, id, value).is_err());
     }
     #[test]
     fn save_reload_preserves_fields() {
-        let (mut document, inspector, _) = setup();
+        let (mut document, inspector, id) = setup();
         inspector
             .set_transform(
                 &mut document,
+                id,
                 TransformFields {
                     position_x: 4.0,
                     position_y: 5.0,
@@ -1479,24 +1530,25 @@ mod tests {
             )
             .unwrap();
         inspector
-            .set_sprite_reference(&mut document, "player.png")
+            .set_sprite_reference(&mut document, id, "player.png")
             .unwrap();
         inspector
-            .set_lua_script(&mut document, "player.lua")
+            .set_lua_script(&mut document, id, "player.lua")
             .unwrap();
         let text = document.scene.to_text();
         let loaded = engine::core::scene::Scene::from_text(&text).unwrap();
         assert_eq!(
-            loaded.entities[&SceneEntityId(1)].components,
-            document.scene.entities[&SceneEntityId(1)].components
+            loaded.entities[&id].components,
+            document.scene.entities[&id].components
         );
     }
     #[test]
     fn collider3d_roundtrip_via_snapshot() {
-        let (mut document, inspector, _) = setup();
+        let (mut document, inspector, id) = setup();
         inspector
             .set_collider3d(
                 &mut document,
+                id,
                 Collider3dFields {
                     shape: "cuboid".to_owned(),
                     half_width: 4.0,
@@ -1511,7 +1563,7 @@ mod tests {
                 },
             )
             .unwrap();
-        let snapshot = inspector.snapshot(&document).unwrap();
+        let snapshot = inspector.snapshot(&document, id).unwrap();
         let collider = snapshot.collider3d.expect("Collider3d present");
         assert_eq!(collider.shape, "cuboid");
         assert_eq!(collider.half_width, 4.0);
@@ -1526,7 +1578,7 @@ mod tests {
     }
     #[test]
     fn collider3d_rejects_invalid_size() {
-        let (mut document, inspector, _) = setup();
+        let (mut document, inspector, id) = setup();
         let value = Collider3dFields {
             shape: "ball".to_owned(),
             radius: 0.0,
@@ -1534,23 +1586,22 @@ mod tests {
         };
         assert!(
             matches!(
-                inspector.set_collider3d(&mut document, value),
+                inspector.set_collider3d(&mut document, id, value),
                 Err(InspectorError::InvalidCollider3d(_))
             ),
             "zero radius must be rejected"
         );
         assert!(
-            !document.scene.entities[&SceneEntityId(1)]
-                .components
-                .contains_key("Collider3d")
+            !document.scene.entities[&id].components.contains_key("Collider3d")
         );
     }
     #[test]
     fn collider3d_persists_through_scene_text() {
-        let (mut document, inspector, _) = setup();
+        let (mut document, inspector, id) = setup();
         inspector
             .set_collider3d(
                 &mut document,
+                id,
                 Collider3dFields {
                     shape: "capsule".to_owned(),
                     half_height: 1.0,
@@ -1562,7 +1613,7 @@ mod tests {
             .unwrap();
         let text = document.scene.to_text();
         let loaded = engine::core::scene::Scene::from_text(&text).unwrap();
-        let stored = loaded.entities[&SceneEntityId(1)]
+        let stored = loaded.entities[&id]
             .components
             .get("Collider3d")
             .expect("Collider3d persisted");
@@ -1573,10 +1624,11 @@ mod tests {
     }
     #[test]
     fn image_nine_slice_roundtrip_via_snapshot() {
-        let (mut document, inspector, _) = setup();
+        let (mut document, inspector, id) = setup();
         inspector
             .set_image(
                 &mut document,
+                id,
                 ImageFields {
                     texture: "assets/textures/ui/panel.png".to_owned(),
                     width: 192.0,
@@ -1590,7 +1642,7 @@ mod tests {
             )
             .unwrap();
         assert!(document.is_dirty());
-        let stored = document.scene.entities[&SceneEntityId(1)]
+        let stored = document.scene.entities[&id]
             .components
             .get("Image")
             .expect("Image written");
@@ -1598,7 +1650,7 @@ mod tests {
             stored.contains("nine_slice=8.00,8.00,16.00,16.00"),
             "{stored}"
         );
-        let snapshot = inspector.snapshot(&document).unwrap();
+        let snapshot = inspector.snapshot(&document, id).unwrap();
         let image = snapshot.image.expect("image snapshot");
         assert_eq!(image.nine_slice_l, 8.0);
         assert_eq!(image.nine_slice_r, 8.0);
@@ -1607,17 +1659,18 @@ mod tests {
     }
     #[test]
     fn image_nine_slice_absent_for_untouched_image() {
-        let (mut document, inspector, _) = setup();
+        let (mut document, inspector, id) = setup();
         inspector
             .set_image(
                 &mut document,
+                id,
                 ImageFields {
                     texture: "assets/textures/ui/panel.png".to_owned(),
                     ..ImageFields::default()
                 },
             )
             .unwrap();
-        let stored = document.scene.entities[&SceneEntityId(1)]
+        let stored = document.scene.entities[&id]
             .components
             .get("Image")
             .expect("Image written");
@@ -1625,28 +1678,25 @@ mod tests {
     }
     #[test]
     fn image_rejects_negative_nine_slice() {
-        let (mut document, inspector, _) = setup();
+        let (mut document, inspector, id) = setup();
         let value = ImageFields {
             texture: "assets/textures/ui/panel.png".to_owned(),
             nine_slice_l: -1.0,
             ..ImageFields::default()
         };
         assert!(matches!(
-            inspector.set_image(&mut document, value),
+            inspector.set_image(&mut document, id, value),
             Err(InspectorError::InvalidImage(_))
         ));
-        assert!(
-            !document.scene.entities[&SceneEntityId(1)]
-                .components
-                .contains_key("Image")
-        );
+        assert!(!document.scene.entities[&id].components.contains_key("Image"));
     }
     #[test]
     fn image_nine_slice_persists_through_scene_text() {
-        let (mut document, inspector, _) = setup();
+        let (mut document, inspector, id) = setup();
         inspector
             .set_image(
                 &mut document,
+                id,
                 ImageFields {
                     texture: "assets/textures/ui/panel.png".to_owned(),
                     width: 192.0,
@@ -1661,7 +1711,7 @@ mod tests {
             .unwrap();
         let text = document.scene.to_text();
         let loaded = engine::core::scene::Scene::from_text(&text).unwrap();
-        let stored = loaded.entities[&SceneEntityId(1)]
+        let stored = loaded.entities[&id]
             .components
             .get("Image")
             .expect("Image persisted");
