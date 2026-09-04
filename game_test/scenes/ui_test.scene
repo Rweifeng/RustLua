@@ -10,8 +10,12 @@ entity	3	CoinImage
 component	3	Image	texture=assets/textures/coin.png;x=80;y=90;width=64;height=64;color=1,1,1
 component	3	Transform	x=0;y=0;rotation=0;scale_x=1;scale_y=1
 entity	4	StartButton
-component	4	Button	label=Start;x=150;y=200;width=120;height=40;bg=0.2,0.45,0.8;text_color=1,1,1
+component	4	Image	texture=__white__;x=150.00;y=200.00;width=120.00;height=40.00;color=0.200,0.450,0.800;space=screen;anchor=0.000,0.000
+component	4	clickEvent	
+component	4	Text	text=Start;x=150.00;y=200.00;scale=1.00;color=1.000,1.000,1.000;space=screen;anchor=0.000,0.000
 component	4	Transform	x=0;y=0;rotation=0;scale_x=1;scale_y=1
 entity	5	QuitButton
-component	5	Button	label=Quit;x=150;y=250;width=120;height=40;bg=0.6,0.2,0.2;text_color=1,1,1
+component	5	Image	texture=__white__;x=150.00;y=250.00;width=120.00;height=40.00;color=0.600,0.200,0.200;space=screen;anchor=0.000,0.000
+component	5	clickEvent	
+component	5	Text	text=Quit;x=150.00;y=250.00;scale=1.00;color=1.000,1.000,1.000;space=screen;anchor=0.000,0.000
 component	5	Transform	x=0;y=0;rotation=0;scale_x=1;scale_y=1
