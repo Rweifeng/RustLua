@@ -2140,8 +2140,8 @@ mod sdf_tests {
             "production scene should have player plus ten animated enemies"
         );
         assert_eq!(
-            counts.2, 0,
-            "production scene (not migrated) has no clickEvent"
+            counts.2, 1,
+            "production scene exposes one clickEvent (BackToMenuButton)"
         );
         assert!(
             runtime.texture_paths.len() >= 4,
