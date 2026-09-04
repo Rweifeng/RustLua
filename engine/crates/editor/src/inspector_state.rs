@@ -555,6 +555,102 @@ impl InspectorState {
         }
         Ok(())
     }
+
+    /// E08：把一份完整 Inspector 快照**直写**文档（不建 history、不落盘）。
+    ///
+    /// 语义与 `apply_inspector` 的 `history.execute` 闭包完全一致，供「Scene View
+    /// 拖拽等活动事务进行中」把 Inspector 数值编辑并入事务 after：`before` 已是
+    /// 拖动前快照，undo 一次即可同时回滚拖动与数值编辑。
+    ///
+    /// - `tilemap_component` / `animation_component`：仅当实体已携带对应组件时传入
+    ///   编码串（None = 不改动）。
+    /// - `multi_sprite_ids`：多选时除主选外同样具有 Sprite 的实体（与离散路径一致）。
+    ///
+    /// 返回是否发生了内容变化（调用方据此决定是否需要保存/回读）。
+    #[allow(clippy::too_many_arguments)]
+    pub fn write_inspector(
+        &self,
+        document: &mut SceneDocument,
+        id: SceneEntityId,
+        snapshot: InspectorSnapshot,
+        tilemap_component: Option<&str>,
+        animation_component: Option<&str>,
+        multi_sprite_ids: &[SceneEntityId],
+    ) -> Result<bool, InspectorError> {
+        if snapshot.name.trim().is_empty() {
+            return Err(InspectorError::EmptyName);
+        }
+        let before = document.clone();
+        self.set_name(document, id, snapshot.name)?;
+        self.set_transform(document, id, snapshot.transform)?;
+        if let Some(transform3d) = snapshot.transform3d {
+            self.set_transform3d(document, id, transform3d)?;
+        }
+        match snapshot.mesh_renderer.as_deref() {
+            Some(reference) => self.set_mesh_renderer(document, id, reference)?,
+            None => {
+                self.clear_mesh_renderer(document, id)?;
+            }
+        }
+        if let Some(camera3d) = snapshot.camera3d {
+            self.set_camera3d(document, id, camera3d)?;
+        }
+        if let Some(light) = snapshot.light {
+            self.set_light(document, id, light)?;
+        }
+        if let Some(collider3d) = snapshot.collider3d {
+            self.set_collider3d(document, id, collider3d)?;
+        }
+        if let Some(text) = snapshot.text {
+            self.set_text(document, id, text)?;
+        }
+        if let Some(image) = snapshot.image {
+            self.set_image(document, id, image)?;
+        }
+        match snapshot.sprite_reference.as_deref() {
+            Some(reference) if !reference.trim().is_empty() => {
+                self.set_sprite_reference(document, id, reference)?;
+                let sprite = reference.to_owned();
+                for sid in multi_sprite_ids {
+                    if *sid == id {
+                        continue;
+                    }
+                    if let Some(entity) = document.scene.entities.get_mut(sid)
+                        && entity.components.contains_key("Sprite")
+                    {
+                        entity.components.insert("Sprite".to_owned(), sprite.clone());
+                        document.mark_dirty();
+                    }
+                }
+            }
+            _ => {
+                self.clear_sprite_reference(document, id)?;
+            }
+        }
+        if let Some(tilemap) = tilemap_component
+            && let Some(entity) = document.scene.entities.get_mut(&id)
+        {
+            entity
+                .components
+                .insert("Tilemap".to_owned(), tilemap.to_owned());
+            document.mark_dirty();
+        }
+        if let Some(animation) = animation_component
+            && let Some(entity) = document.scene.entities.get_mut(&id)
+        {
+            entity
+                .components
+                .insert("Animation".to_owned(), animation.to_owned());
+            document.mark_dirty();
+        }
+        match snapshot.lua_script.as_deref() {
+            Some(script) => self.set_lua_script(document, id, script)?,
+            None => {
+                self.clear_lua_script(document, id)?;
+            }
+        }
+        Ok(*document != before)
+    }
 }
 
 fn entity_mut(

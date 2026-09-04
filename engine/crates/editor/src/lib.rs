@@ -249,7 +249,10 @@ mod tests {
 }
 
 pub mod history;
-pub use history::{CommandHistory, CommandKind, EditCommand, HistoryError};
+pub use history::{
+    CommandHistory, CommandKind, EditCommand, EditTransactionState, HistoryError,
+    TransactionError,
+};
 
 pub mod recovery;
 pub use recovery::{

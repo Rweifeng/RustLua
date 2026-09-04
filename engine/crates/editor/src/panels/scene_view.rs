@@ -329,10 +329,12 @@ impl EditorApp {
             }
             self.scene_state.preview = preview;
             self.scene_state.preview_ui = preview_ui;
-            self.commit_scene_drag();
+            // E08：拖动中只把预览写入文档（驱动 revision 重建渲染），不写历史、不写盘；
+            // 松手时由 finish_scene_drag 事务化提交为单条 Undo + 单次保存。
+            self.apply_drag_preview_to_document();
         }
         if response.drag_stopped_by(egui::PointerButton::Primary) {
-            self.commit_scene_drag();
+            self.finish_scene_drag();
             self.scene_state.drag = None;
             self.scene_state.box_select_start = None;
         }
@@ -1116,8 +1118,13 @@ impl EditorApp {
         }
     }
 
-    /// 提交 2D 场景拖拽：世界实体写回 Transform 组件，UI 组件实体写回组件 x/y。
-    fn commit_scene_drag(&mut self) {
+    /// E08：拖动进行中把最新 preview 写入编辑文档并 mark_dirty —— 让场景运行时
+    /// 按 revision 重建、画面实时跟随鼠标，但**不写历史、不写磁盘**。
+    ///
+    /// 首次调用时若尚未处于事务中，自动 begin（事务 before = 拖动前文档快照，
+    /// 保证 undo 能一次性回到拖动前）。若拖动没有净变化（拖回原位等），后续
+    /// commit 会被 diff 判定为空操作，不产生历史。
+    fn apply_drag_preview_to_document(&mut self) {
         if self.is_playing() {
             self.scene_state.preview.clear();
             self.scene_state.preview_ui.clear();
@@ -1133,30 +1140,44 @@ impl EditorApp {
         let Some(first) = first else {
             return;
         };
-        if let Some(scene) = self.document.current_scene.as_mut() {
-            let changed = self.history.execute(
-                scene,
-                "Scene Transform",
-                CommandKind::Transform(first),
-                |scene| {
-                    for (id, transform) in &preview {
-                        if let Some(entity) = scene.scene.entities.get_mut(id) {
-                            entity
-                                .components
-                                .insert("Transform".to_owned(), encode_transform(*transform));
-                        }
-                    }
-                    for (id, position) in &preview_ui {
-                        if let Some(entity) = scene.scene.entities.get_mut(id) {
-                            set_ui_component_position(entity, *position);
-                        }
-                    }
-                    scene.mark_dirty();
-                    Ok::<(), ()>(())
-                },
-            );
-            if matches!(changed, Ok(true)) {
-                self.save_scene();
+        // 写入文档前开启事务（幂等：已开启则直接沿用）。
+        self.begin_edit_transaction("Scene Transform", CommandKind::Transform(first), Some(first));
+        let Some(scene) = self.document.current_scene.as_mut() else {
+            return;
+        };
+        for (id, transform) in &preview {
+            if let Some(entity) = scene.scene.entities.get_mut(id) {
+                entity
+                    .components
+                    .insert("Transform".to_owned(), encode_transform(*transform));
+            }
+        }
+        for (id, position) in &preview_ui {
+            if let Some(entity) = scene.scene.entities.get_mut(id) {
+                set_ui_component_position(entity, *position);
+            }
+        }
+        scene.mark_dirty();
+    }
+
+    /// E08：2D 拖拽松手 —— 先落最后一帧预览，再提交活动事务（单条 Undo +
+    /// 一次保存 + Inspector 同步）。无净变化时为空操作提交，不保存不写历史。
+    fn finish_scene_drag(&mut self) {
+        if self.is_playing() {
+            self.scene_state.preview.clear();
+            self.scene_state.preview_ui.clear();
+            return;
+        }
+        self.apply_drag_preview_to_document();
+        let first = self
+            .scene_state
+            .drag
+            .as_ref()
+            .and_then(|drag| drag.ids.first())
+            .copied();
+        if self.is_edit_transaction_active() && self.commit_edit_transaction() {
+            self.save_scene();
+            if let Some(first) = first {
                 self.sync_inspector(first);
             }
         }

@@ -4,8 +4,8 @@ use crate::ComponentClipboard;
 use crate::EditorApp;
 use crate::util::strip_verbatim_prefix;
 use editor::{
-    Camera3DFields, Collider3dFields, CommandKind, ImageFields, InspectorError, LightFields,
-    TextFields, Transform3DFields, TransformFields,
+    Camera3DFields, Collider3dFields, CommandKind, ImageFields, InspectorError,
+    LightFields, TextFields, Transform3DFields, TransformFields,
 };
 use eframe::egui;
 use engine::core::{
@@ -15,6 +15,11 @@ use engine::core::{
 
 impl EditorApp {
     pub(crate) fn draw_inspector_panel(&mut self, ui: &mut egui::Ui) {
+        // E08：Inspector 缓冲（数值拖动/文本键入）的**直写**由控件编辑帧触发
+        // （`mark_inspector_edit`：相对基线有真实差异才写，仅驱动 Scene View 刷新，
+        // 不提交不落盘）；收敛成一条历史/保存则交给帧末提交边界（本面板内释放、
+        // 顶层 release/Enter/Escape 兜底）。面板绘制前不 mark：控件尚未改动缓冲，
+        // 净差异必然为空。
         ui.set_min_width(340.0);
         // 内容超出面板高度时可滚动。
         egui::ScrollArea::vertical()
@@ -718,6 +723,9 @@ impl EditorApp {
                                                         self.tilemap.map.tiles[index] =
                                                             self.tilemap.brush.min(6);
                                                     }
+                                                    // E08：连续点击/按住连画只在帧内直写文档，
+                                                    // 松手由帧尾提交边界收敛为一条 Undo。
+                                                    self.mark_inspector_edit();
                                                 }
                                             }
                                             ui.end_row();
@@ -834,165 +842,46 @@ impl EditorApp {
                     self.add_entity(Some(selected));
                 }
             });
-        self.apply_inspector();
+        // E08 帧末边界：缓冲差异已在控件编辑帧随 `mark_inspector_edit` 直写文档，
+        // 这里只做提交决策。
+        // - 本帧 primary 指针在 Inspector 面板区域内释放 → 一次拖动/交互结束 →
+        //   收敛为一条历史（无真实差异时 no-op）；
+        // - 否则（拖动/键入进行中）保持直写（mark）但不提交，防止一次拖动被
+        //   逐帧拆成多条历史。
+        // 释放发生在面板外（拖出面板、点击 Scene/其它窗口）或文本 Enter 提交的
+        // 兜底由顶层 `flush_frame_edit_boundary` 统一收敛；本面板先于中央 Scene 面板
+        // 绘制，该顺序保证 Inspector 提交不会打断 Scene View 自身的拖拽收尾。
+        if !self.is_playing() {
+            let released_in_panel = ui.input(|input| input.pointer.primary_released())
+                && ui
+                    .input(|input| input.pointer.latest_pos())
+                    .is_some_and(|pos| ui.min_rect().contains(pos));
+            if released_in_panel {
+                self.finish_inspector_edits_if_dirty();
+            } else {
+                self.mark_inspector_edit();
+            }
+        }
     }
 
-    fn apply_inspector(&mut self) -> bool {
+    /// 选中实体 + 缓冲编辑一次收敛：直写进活动事务并提交为一条历史（净变化才
+    /// 追加 Undo；无差异 no-op），随后回读同步缓冲、刷新基线。旧实现在此处经
+    /// `history.execute` 序列化并保存；E08 后网格直写路径与离散路径收敛为同一
+    /// 提交模型（不自行落盘 —— dirty 由调用点 / autosave 落盘）。
+    #[cfg(test)]
+    pub(crate) fn apply_inspector(&mut self) -> bool {
         if self.is_playing() {
             self.status = "Play mode locks scene editing; click Stop first".to_owned();
             return false;
         }
-        let Some(selected) = self.selection.primary() else {
+        if self.selection.primary().is_none() {
             self.status = "应用修改".to_owned();
             return false;
-        };
-        let name = self.entity_name.clone();
-        let transform = self.transform;
-        let transform3d = self.transform3d;
-        let mesh = self.mesh_renderer.clone();
-        let camera3d = self.camera3d;
-        let light = self.light;
-        let collider3d = self.collider3d.clone();
-        let text = self.text.clone();
-        let image = self.image.clone();
-        let sprite_component = self.sprite_component.clone();
-        let tilemap = self.tilemap.map.clone();
-        let animation = self.animation.machine.clone();
-        let sprite = self.sprite_component.to_component_str();
-        let lua = self.lua_script.clone();
-        let selected_sprite_ids = self.selection.ids();
-        // 3D 组件只在实体已有该组件时更新，避免给普通实体注入默认组件。
-        let had_transform3d = self.current_scene().is_some_and(|scene| {
-            scene.scene.entities[&selected]
-                .components
-                .contains_key("Transform3D")
-        });
-        let had_camera3d = self.current_scene().is_some_and(|scene| {
-            scene.scene.entities[&selected]
-                .components
-                .contains_key("Camera3D")
-        });
-        let had_light = self.current_scene().is_some_and(|scene| {
-            scene.scene.entities[&selected]
-                .components
-                .contains_key("Light")
-        });
-        let had_collider3d = self.current_scene().is_some_and(|scene| {
-            scene.scene.entities[&selected]
-                .components
-                .contains_key("Collider3d")
-        });
-        let had_text = self.current_scene().is_some_and(|scene| {
-            scene.scene.entities[&selected]
-                .components
-                .contains_key("Text")
-        });
-        let had_image = self.current_scene().is_some_and(|scene| {
-            scene.scene.entities[&selected]
-                .components
-                .contains_key("Image")
-        });
-        let had_sprite = self.current_scene().is_some_and(|scene| {
-            scene.scene.entities[&selected]
-                .components
-                .contains_key("Sprite")
-        });
-        let had_tilemap = self.current_scene().is_some_and(|scene| {
-            scene.scene.entities[&selected]
-                .components
-                .contains_key("Tilemap")
-        });
-        let had_animation = self.current_scene().is_some_and(|scene| {
-            scene.scene.entities[&selected]
-                .components
-                .contains_key("Animation")
-        });
-        let inspector = self.inspector.clone();
-        let Some(scene) = self.document.current_scene.as_mut() else {
-            self.status = "应用修改".to_owned();
-            return false;
-        };
-        let result =
-            self.history
-                .execute(scene, "Inspector", CommandKind::Property, move |scene| {
-                    inspector.set_name(scene, selected, name)?;
-                    inspector.set_transform(scene, selected, transform)?;
-                    if had_transform3d {
-                        inspector.set_transform3d(scene, selected, transform3d)?;
-                    }
-                    if mesh.trim().is_empty() {
-                        inspector.clear_mesh_renderer(scene, selected)?;
-                    } else {
-                        inspector.set_mesh_renderer(scene, selected, mesh)?;
-                    }
-                    if had_camera3d {
-                        inspector.set_camera3d(scene, selected, camera3d)?;
-                    }
-                    if had_light {
-                        inspector.set_light(scene, selected, light)?;
-                    }
-                    if had_collider3d {
-                        inspector.set_collider3d(scene, selected, collider3d)?;
-                    }
-                    if had_text {
-                        inspector.set_text(scene, selected, text)?;
-                    }
-                    if had_image {
-                        inspector.set_image(scene, selected, image)?;
-                    }
-                    if had_sprite {
-                        if sprite_component.texture.trim().is_empty() {
-                            inspector.clear_sprite_reference(scene, selected)?;
-                        } else {
-                            inspector.set_sprite_reference(scene, selected, sprite.clone())?;
-                            for id in &selected_sprite_ids {
-                                if *id == selected {
-                                    continue;
-                                }
-                                if let Some(entity) = scene.scene.entities.get_mut(id)
-                                    && entity.components.contains_key("Sprite")
-                                {
-                                    entity
-                                        .components
-                                        .insert("Sprite".to_owned(), sprite.clone());
-                                    scene.mark_dirty();
-                                }
-                            }
-                        }
-                    }
-                    if had_tilemap && let Some(entity) = scene.scene.entities.get_mut(&selected) {
-                        entity
-                            .components
-                            .insert("Tilemap".to_owned(), tilemap.to_component_str());
-                        scene.mark_dirty();
-                    }
-                    if had_animation && let Some(entity) = scene.scene.entities.get_mut(&selected) {
-                        entity
-                            .components
-                            .insert("Animation".to_owned(), animation.to_component_str());
-                        scene.mark_dirty();
-                    }
-                    if lua.trim().is_empty() {
-                        inspector.clear_lua_script(scene, selected)?;
-                    } else {
-                        inspector.set_lua_script(scene, selected, lua)?;
-                    }
-                    Ok::<(), InspectorError>(())
-                });
-        match result {
-            Ok(changed) => {
-                if changed {
-                    self.save_scene();
-                }
-                self.status = format!("Inspector 已更新：EntityId={}", selected.0);
-                changed
-            }
-            Err(error) => {
-                self.status = error.to_string();
-                false
-            }
         }
+        self.finish_inspector_edits_if_dirty()
     }
+    // E08：整面板在每帧末尾统一经帧尾提交边界收敛缓冲并刷新基线；apply_inspector
+    // 保留给测试直接调用（写入 + 收敛为一条历史的一步语义）。
 
     /// 为选中实体添加 Collider3d 组件（用当前字段编码，经 history 可撤销）。
     fn add_collider3d_component(&mut self) -> Result<(), String> {
@@ -2000,8 +1889,7 @@ mod tests {
         logging::LogSink,
         prefab::Prefab,
         resource_db::AssetId,
-        scene::Scene,
-        scene::SceneEntityId,
+        scene::{Scene, SceneEntity, SceneEntityId},
         ui::{UiLayoutSpace, UiText},
     };
     use std::fs;

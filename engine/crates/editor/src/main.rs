@@ -342,6 +342,14 @@ struct EditorApp {
     /// E03 统一选择模型：Hierarchy / Scene View / Inspector / 命令层共享的单一权威选区。
     /// 原 `SceneTreeState`/`InspectorState`/`SceneEditorState::selected` 三套选择已全部收敛到此。
     selection: SelectionModel,
+    /// E07 活动编辑事务：一条连续交互（拖拽等）在释放前只更新 preview，不写
+    /// 磁盘、不追加 History；提交/取消在顶层网关统一处理。
+    edit_transaction: editor::EditTransactionState,
+    /// E08 Inspector 缓冲脏编辑标记 + 已提交基线（见 actions.rs 顶部 EditState/EditSnapshot）。
+    /// Inspector 面板改动 buffer 后与基线 diff，不一致才自动开事务直写文档，
+    /// 从而一次拖动/输入只对应一条历史、不产生空操作。
+    inspector_edit: crate::actions::EditState,
+    inspector_baseline: crate::actions::EditSnapshot,
     /// E06 未保存切换保护：待确认的文档离开操作。挂起时顶层弹「保存并继续 /
     /// 放弃并继续 / 取消」确认窗，确认前**不**改动文档 / 选择 / 视图 / 历史。
     pending_document_change: Option<crate::actions::PendingChange>,
@@ -699,6 +707,9 @@ impl EditorApp {
             scene_view_fit_pending: true,
             delete_target: DeleteTarget::None,
             selection: SelectionModel::new(),
+            edit_transaction: editor::EditTransactionState::default(),
+            inspector_edit: crate::actions::EditState::default(),
+            inspector_baseline: crate::actions::EditSnapshot::empty(),
             pending_document_change: None,
             pending_save_failed: false,
             last_metadata_key: None,
@@ -1030,7 +1041,7 @@ impl eframe::App for EditorApp {
         if self.project_loaded
             && context.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Z))
         {
-            self.undo();
+            self.undo_with_transaction_guard();
         }
         if self.project_loaded
             && context.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Y))
@@ -1040,6 +1051,9 @@ impl eframe::App for EditorApp {
         if self.project_loaded
             && context.input(|i| i.modifiers.command && i.key_pressed(egui::Key::S))
         {
+            // E08：Ctrl+S 前先把 Inspector 挂起缓冲提交为一条历史，保证落盘内容
+            // 与 Undo 栈一致（无挂起编辑时 no-op）。
+            self.commit_inspector_edits_if_dirty();
             self.save_scene();
         }
         if self.project_loaded
@@ -1047,6 +1061,13 @@ impl eframe::App for EditorApp {
             && context.input(|i| i.key_pressed(egui::Key::Delete))
         {
             self.handle_delete_shortcut();
+        }
+        // E08：Escape 取消活动事务（拖动/Inspector 编辑的取消语义，见
+        // cancel_edit_on_escape）。置于 Delete 之后，非键入状态生效。确实执行了
+        // 取消时，顺带清掉 Scene View 拖拽残留（drag/gizmo_drag/preview），防止
+        // 回滚后的 stale preview 在下一帧被重新写回文档。
+        if self.cancel_edit_on_escape(context) {
+            self.clear_active_scene_drag();
         }
         self.sync_hierarchy_metadata();
         self.poll_progress();
@@ -1096,6 +1117,10 @@ impl eframe::App for EditorApp {
         // E06：最后绘制「未保存的更改」确认窗，置于其余窗口之上；仅在 dirty 且
         // 有挂起的离开操作时显示，此时其它面板保持原样、文档不被改动。
         self.draw_pending_change_window(context);
+        // E08：帧末统一提交边界 —— 本帧任意 release/Enter 时收敛 Inspector 挂起
+        // 缓冲为一条历史（Inspector 面板与 Scene View 各自的释放提交已先执行，
+        // 这里只兜底「释放发生在面板外 / 文本 Enter」等漏网情形；无挂起即 no-op）。
+        self.flush_frame_edit_boundary(context);
     }
 }
 

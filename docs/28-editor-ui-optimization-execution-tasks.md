@@ -199,6 +199,25 @@ E20 + E22
 
 **回归测试**：拖拽、数值拖动、颜色编辑、Tilemap 连续绘制和批量属性修改。
 
+**实现状态（E07，批次 A）**：
+
+- ✅ `history.rs` 增加事务核心：`EditTransaction`（label/kind/target/before 快照）、
+  `TransactionError`（`AlreadyActive`/`NotActive`）、`CommandHistory::begin_transaction /
+  commit_transaction / cancel_transaction / finish_transaction / is_transaction_active`。
+  禁止嵌套；提交按 `before == after` diff 检测空操作（不追加 History、不标记 Dirty）；
+  `target` 注入 kind 以保留 Transform/Transform3D 与相邻同对象命令的合并语义。
+- ✅ `EditTransactionState`（active/consumed）导出并在 `EditorApp` 持有；`EditorApp` 提供
+  唯一网关：`begin_edit_transaction / commit_edit_transaction / cancel_edit_transaction /
+  undo_with_transaction_guard / is_edit_transaction_active`。
+- ✅ 顶层快捷键：Ctrl+Z 经 `undo_with_transaction_guard`（活动事务先取消再撤）；
+  `save_scene()` 入口对活动事务兜底 `finish_transaction`（落盘前自动提交单条历史）。
+- ✅ 单测：history 事务 7 项 + actions 层 E07 回归 4 项，全部通过
+  （`cargo test -p editor`：lib 99、bin 81）。
+- ⏳ E08 依赖说明：Scene View 拖拽/Inspector 数值拖动尚未调用 `begin_edit_transaction`
+  （每帧 `commit_scene_drag`/`commit_gizmo_drag3d` 仍即时 execute + save），由 E08 接入。
+  已知取舍：E07 阶段事务 before 取自当时的脏文档，一条事务 Undo 会与事务前最后一条
+  离散编辑合并为一条边界；E08 以“新开独立文档快照隔离编辑”后边界即精确。
+
 ### E08：将 Scene View 和 Inspector 编辑接入事务
 
 **目标**：消除拖拽和 Inspector 编辑过程中的频繁保存与历史污染。
@@ -216,6 +235,27 @@ E20 + E22
 **重点文件**：[scene_view.rs](../engine/crates/editor/src/panels/scene_view.rs)、[inspector.rs](../engine/crates/editor/src/panels/inspector.rs)、[history.rs](../engine/crates/editor/src/history.rs)。
 
 **验收标准**：拖动过程中磁盘文件不持续变化；一次拖动对应一条历史记录；Inspector 输入提交后可恢复且不会产生空操作。
+
+**实现状态（E08，批次 A）**：
+
+- ✅ 统一提交边界模型：`EditorApp` 新增 `inspector_edit`（pending/consumed）与
+  `inspector_baseline`（EditSnapshot 基线）。帧内编辑走 `mark_inspector_edit`
+  （相对基线有真实差异才直写进活动事务并置 pending，不写历史、不写盘）。
+- ✅ 两档提交点：`commit_inspector_edits_if_dirty`（要求 pending，Ctrl+S / Undo 前兜底）
+  与 `finish_inspector_edits_if_dirty`（diff 驱动：无论 pending 是否置位都收敛；
+  返回本边界是否提交了一条净差异历史）。提交后回读 `sync_inspector` + 刷新基线，
+  无净差异自动 no-op（不产生空历史）。
+- ✅ Inspector 面板接入：帧首不再 mark；帧末按“本帧 primary 在面板内释放 →
+  `finish_inspector_edits_if_dirty`，否则 `mark_inspector_edit`”提交决策；顶层
+  `flush_frame_edit_boundary` 兜底（面板外释放 / Enter）；Escape 经
+  `cancel_edit_on_escape` 取消活动事务并 `clear_active_scene_drag` 清拖拽残留。
+- ✅ Scene View 拖拽接入：拖动中多帧直写文档（首帧自动开 Transform 事务），松手
+  `commit_scene_drag` / `commit_gizmo_drag3d` 提交为一条历史 + 落盘；保存入口
+  `save_scene` 对活动事务兜底 finish。
+- ✅ 空引用规范化：Sprite / mesh / Lua 引用清空时按 clear 语义归一化为 None，
+  避免空串被 setter 拒绝导致整组直写失败。
+- ✅ 行为回归：`e08_inspector_mark_then_finish_*`、`e08_scene_drag_*`、
+  `e08_escape_cancel_*` 等新测试 + 既有回归全部通过（`cargo test -p editor`）。
 
 ### E09：完善 Play/Stop 编辑上下文恢复
 

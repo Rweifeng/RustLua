@@ -4,8 +4,8 @@ use crate::AlignMode;
 use crate::EditorApp;
 use crate::geometry::{encode_transform, parse_transform};
 use editor::{
-    Camera3DFields, Collider3dFields, CommandKind, ImageFields, LightFields, SceneDocument,
-    TextFields, Transform3DFields, TransformFields,
+    Camera3DFields, Collider3dFields, CommandKind, ImageFields, InspectorSnapshot, LightFields,
+    SceneDocument, TextFields, Transform3DFields, TransformFields,
 };
 use engine::core::{
     animation::AnimationStateMachine, scene::SceneEntityId, sprite::SpriteComponent,
@@ -13,6 +13,79 @@ use engine::core::{
 };
 use std::path::{Path, PathBuf};
 use eframe::egui;
+
+/// E08 Inspector「脏编辑」标记：用户在一次连续交互中改动了缓冲字段，但
+/// 尚未到提交边界（松手/文本提交/失焦）。编辑帧由 `mark_inspector_edit`
+/// 把最新缓冲同步进一条自动事务并直写文档（驱动 Scene View revision 刷新），
+/// 真正的历史/保存延迟到提交点。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct EditState {
+    pub pending: bool,
+    /// 这条脏编辑是否已被消费进活动事务（防同一次拖动逐帧重复 begin）。
+    pub consumed: bool,
+}
+
+/// E08 Inspector 缓冲基线：与文档上次同步（`sync_inspector`）或提交成功后的
+/// 「已提交快照」。Inspector 面板编辑帧把整组缓冲字段与基线做差异比较，
+/// 有差异才把整组字段直写文档（自动开事务、不写历史、不落盘）。
+///
+/// `InspectorSnapshot` 覆盖 `write_inspector` 的主要参数（name/transform/sprite/
+/// lua/3D/UI 组件），其字段全部从 **EditorApp 当前缓冲**（`entity_name`/
+/// `transform`/`transform3d`/`mesh_renderer`/`camera3d`/…/`text`/`image`）编码而来，
+/// 与 `write_inspector` 写回的内容逐字段一致 —— 缓冲改动因此产生真实净 diff。
+/// 面板显示层的裸引用/组件对象（`mesh_renderer` 的 `mesh=` 前缀、`sprite_component`
+/// 结构体）只作为「编码源」，不直接参与比较，避免显示层噪音造成空操作直写。
+///
+/// 写入端（`update_inspector_write`）要求写入字段与文档实际字段**逐字节一致**
+/// 才能让 `write_inspector` 的 `Ok(*document != before)` 净差异判定正确：
+/// - `mesh_renderer`：文档经 `MeshRenderer::to_component_str` 规范化
+///   （`mesh=<path>`）。缓冲只存裸引用，比较前拼上 `mesh=` 前缀生成待写值；
+///   实体**没有** MeshRenderer 组件时快照为 `None`，write 端会 clear（不会注入）。
+/// - `sprite_reference`：文档组件串与缓冲组件的 `SpriteComponent::to_component_str`
+///   编码可能因键序/尾分号漂移，因此快照用「面板组件编码串」，与 `write_inspector`
+///   判定一致（面板每帧末尾同样把 `SpriteComponent` 编码回引用）。
+/// - `persistent`：`write_inspector` 不写该位，diff 由 `persistent`（文档真值）
+///   单独负责，避免面板残留的 false 在每次直写时把「未变更」判成变更。
+/// - `tilemap`/`animation`：从面板 `TilemapEditorState`/`AnimationEditorState`
+///   实时编码的整串（`Some` 表示应保留/写回组件；None = 实体无该组件时不写）。
+///
+/// 附带实体存在性代理：`editing_entities` 在缓冲编辑期间携带全部被编辑实体
+/// （主选 + Sprite 多选从属），以免目标实体被删除/撤销掉后误伤。
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct EditSnapshot {
+    pub doc_id: SceneEntityId,
+    /// 目标（快照来源）实体是否仍存在于当前编辑文档。
+    pub doc_present: bool,
+    /// 面板主选要写回的实体 ID（可能已被撤销到不存在 —— `editing_entities` 兜底）。
+    pub editing_entities: Vec<SceneEntityId>,
+    pub snapshot: Option<InspectorSnapshot>,
+    /// 直写用 mesh 完整组件串（与文档逐字节一致才判等；面板显示用裸引用）。
+    pub mesh_renderer_raw: Option<String>,
+    /// 面板 buffer 的 persistent 与文档真值一致后才不会误写。
+    pub persistent: bool,
+    pub tilemap: Option<String>,
+    pub animation: Option<String>,
+}
+
+impl EditSnapshot {
+    /// “空”占位：无文档/无主选时使用（doc_id 取 max，保证与任何真实快照不等）。
+    pub fn empty() -> Self {
+        Self {
+            doc_id: SceneEntityId(u64::MAX),
+            doc_present: false,
+            editing_entities: Vec::new(),
+            snapshot: None,
+            mesh_renderer_raw: None,
+            persistent: false,
+            tilemap: None,
+            animation: None,
+        }
+    }
+
+    pub fn clear(&mut self) {
+        *self = Self::empty();
+    }
+}
 
 /// 一次已提交的文档变更类别（E02）：驱动 `on_document_changed` 的统一刷新流程。
 ///
@@ -304,6 +377,420 @@ impl EditorApp {
         self.status = label.map_or_else(|| "Nothing to undo".into(), |x| format!("Undo: {x}"));
     }
 
+    /// E07 事务网关：撤销必须先取消活动事务（取消不产生历史、不改 dirty）；
+    /// 之后 `undo()` 自身走统一入口（on_document_changed(Undo)）。
+    pub(crate) fn undo_with_transaction_guard(&mut self) {
+        // E08：撤销前先把 Inspector 挂起缓冲收敛（diff 驱动：无论 pending 是否
+        // 置位，只要缓冲与文档有差异就直写 + 提交为一条历史），避免残留脏缓冲在
+        // 撤销后仍直写文档覆盖刚回退的内容。无差异时 no-op。
+        self.finish_inspector_edits_if_dirty();
+        if self.edit_transaction.is_active() {
+            self.cancel_edit_transaction();
+        }
+        self.undo();
+    }
+
+    /// E07 事务网关：提交活动事务 —— 从历史记录当前文档状态并标记 dirty，
+    /// 之后触发与 Undo/Redo 一致的统一刷新（无主选中则不同步 Inspector，与
+    /// 现有删除/重命名路径一致）。空操作（内容无差异）自动成为 no-op 提交。
+    ///
+    /// 返回是否有内容差异被真正提交（`true` 表示追加了一条 Undo 并需保存）。
+    pub(crate) fn commit_edit_transaction(&mut self) -> bool {
+        let Some(doc) = self.document.current_scene.as_mut() else {
+            self.edit_transaction.active = false;
+            self.edit_transaction.consumed = true;
+            return false;
+        };
+        let changed = self.history.commit_transaction(doc).unwrap_or(false);
+        if !self.edit_transaction.consumed {
+            self.edit_transaction.active = false;
+            self.edit_transaction.consumed = true;
+        }
+        if changed {
+            doc.mark_dirty();
+            self.on_document_changed(DocumentChange::EntityDeleted);
+            // 提交点（松手/文本提交/失焦）已把缓冲落成历史；此后缓冲与文档一致，
+            // 清空脏标记避免残留直写。若提交是空操作（内容无差异），则缓冲本就与
+            // 文档一致，保留 pending 供随后帧的 commit 收敛复位。
+            if !self.inspector_edit.pending {
+                self.inspector_edit.pending = false;
+                self.inspector_edit.consumed = false;
+            }
+        }
+        changed
+    }
+
+    /// E07 事务网关：取消活动事务 —— 文档还原到事务开始前快照，不追加历史，
+    /// 不标记 dirty；随后走统一入口收敛选择/Inspector/视图。
+    pub(crate) fn cancel_edit_transaction(&mut self) {
+        if let Some(doc) = self.document.current_scene.as_mut() {
+            let _ = self.history.cancel_transaction(doc);
+        }
+        if !self.edit_transaction.consumed {
+            self.edit_transaction.active = false;
+            self.edit_transaction.consumed = true;
+        }
+        self.on_document_changed(DocumentChange::EntityDeleted);
+    }
+
+    /// E07：是否处于活动事务（顶层快捷键/帧结束决策用）。
+    pub(crate) fn is_edit_transaction_active(&self) -> bool {
+        self.edit_transaction.is_active() && self.history.is_transaction_active()
+    }
+
+    /// E08：Inspector 面板在帧内记录了一次缓冲字段编辑（拖动/键入/点击），并
+    /// 把最新整组缓冲**直写**进活动事务（净差异自动开事务；逐帧直写驱动 Scene
+    /// View revision 刷新，但**不写历史、不写盘**）。
+    ///
+    /// 调用点应只在真正改动缓冲时调用（净差异为空自动空操作）；实际提交（历史 +
+    /// 保存 + Inspector 同步 + 基线刷新）由 `commit_inspector_edits_if_dirty` 在
+    /// 提交点（松手/文本提交/失焦/顶层快捷键前）统一执行。
+    pub(crate) fn mark_inspector_edit(&mut self) {
+        let dirty = self.update_inspector_write();
+        // E08：只有当缓冲相对基线有真实差异并完成直写，才置位 pending ——
+        // 之后由提交点收敛为一条历史。无差异（如仅点击/聚焦）不置位，避免
+        // 未提交标记在后续帧把无关活动事务（如 Scene View 拖拽）误收敛。
+        if dirty {
+            self.inspector_edit.pending = true;
+            self.inspector_edit.consumed = false;
+        }
+    }
+
+    /// E08：把当前 Inspector 缓冲相对基线有差异的部分直写文档。若尚未处于活动
+    /// 事务则自动开一条「Inspector」Property 事务（before = 提交前的文档快照），
+    /// 后续提交/取消统一收尾。拖动中每次改动都会进入本路径，因此 net 变化决定
+    /// 是否需要写。
+    ///
+    /// 返回本帧是否有内容差异被直写（区别于“已提交”）。
+    fn update_inspector_write(&mut self) -> bool {
+        if self.is_playing() {
+            self.status = "Play mode locks scene editing; click Stop first".to_owned();
+            return false;
+        }
+        let Some(snapshot) = self.current_inspector_edit_snapshot() else {
+            return false;
+        };
+        // 目标实体已不在编辑文档（被删除/撤销）：无可写对象，直接放弃，避免为
+        // 一个不存在实体的空模板开一条悬挂事务。
+        if !snapshot.doc_present {
+            return false;
+        }
+        // 缓冲与基线一致（无净变化）→ 空操作。
+        if self.inspector_baseline == snapshot && !self.inspector_edit.pending {
+            return false;
+        }
+        // 自动开事务（幂等：拖动中已开则沿用）。Scene View 拖拽的事务不同 ——
+        // 正常 UI 同一物理指针只能操作一个目标，Escape/Undo 的取消在顶层统一处理。
+        let doc_id = snapshot.doc_id;
+        self.begin_edit_transaction(
+            "Inspector",
+            editor::CommandKind::Property,
+            Some(doc_id),
+        );
+        let EditSnapshot {
+            snapshot: Some(InspectorSnapshot {
+                entity_id,
+                name,
+                transform,
+                sprite_reference,
+                lua_script,
+                transform3d,
+                mesh_renderer: _,
+                camera3d,
+                light,
+                collider3d,
+                text,
+                image,
+                ..
+            }),
+            mesh_renderer_raw,
+            tilemap,
+            animation,
+            ..
+        } = snapshot
+        else {
+            return false;
+        };
+        let Some(scene) = self.document.current_scene.as_mut() else {
+            return false;
+        };
+        // 多选批量 Sprite 编辑：其余同带 Sprite 的选中实体一并写入（对齐离散路径
+        // apply_inspector 的 selected_sprite_ids 语义）。
+        let multi_sprite_ids = self.selection.ids();
+        let inspector = self.inspector.clone();
+        // 直写快照使用与文档可判等的字段：mesh 用完整组件串、sprite 沿用组件串
+        // （面板在帧末把 SpriteComponent 编码回引用），persistent 位由离散路径处理。
+        let write = inspector.write_inspector(
+            scene,
+            entity_id,
+            InspectorSnapshot {
+                entity_id,
+                name,
+                transform,
+                sprite_reference,
+                lua_script,
+                transform3d,
+                mesh_renderer: mesh_renderer_raw,
+                camera3d,
+                light,
+                collider3d,
+                text,
+                image,
+                persistent: false,
+            },
+            tilemap.as_deref(),
+            animation.as_deref(),
+            &multi_sprite_ids,
+        );
+        match write {
+            Ok(changed) => {
+                self.status = format!("Inspector 已更新：EntityId={}", entity_id.0);
+                changed
+            }
+            Err(error) => {
+                self.status = error.to_string();
+                false
+            }
+        }
+    }
+
+    /// E08：以「面板当前缓冲」重建一份 `EditSnapshot` —— 即面板要**写回文档**的
+    /// 完整内容，与 `write_inspector` 的参数逐字段一致（编码源见各组件 `encode_*`
+    /// 与 `to_component_str`）。缓冲与基线比较的是这份待写内容，因此任何数值拖动 /
+    /// 文本键入（name/transform/3D/UI/mesh/sprite/tilemap/animation/lua…）都会产生
+    /// 真实净 diff；面板未编辑时快照恰与基线相等 → no-op，不误开事务不误写。
+    fn current_inspector_edit_snapshot(&self) -> Option<EditSnapshot> {
+        let doc = self.document.current_scene.as_ref()?;
+        let primary = self.selection.primary()?;
+        let mut targets = self.selection.ids();
+        if targets.is_empty() {
+            targets.push(primary);
+        }
+        let doc_present = doc.scene.entities.contains_key(&primary);
+        if !doc_present {
+            return Some(EditSnapshot {
+                doc_id: primary,
+                doc_present: false,
+                editing_entities: targets,
+                snapshot: None,
+                mesh_renderer_raw: None,
+                persistent: false,
+                tilemap: None,
+                animation: None,
+            });
+        }
+        // 各 3D/UI 组件的存在性由文档真值决定：实体已有该组件才把缓冲字段编入
+        // 快照（写入端因此不会给普通实体注入默认组件）；缓冲编辑面（拖数值/改文本）
+        // 只作用于已存在的组件，编辑前后快照相应字段都保持 Some，diff 正常生效。
+        //
+        // 带引用的组件（Sprite/mesh/lua）在用户清空缓冲时按「空 → clear」规范化成
+        // None —— 与旧 apply_inspector 的空值移除语义一致，也避免把空串交给 setter
+        //（校验拒绝空引用）而让直写整体失败。
+        let entity = &doc.scene.entities[&primary];
+        let has = |key: &str| entity.components.contains_key(key);
+        let sprite_ref = self.sprite_component.to_component_str();
+        let sprite_reference = has("Sprite").then(|| {
+            (!self.sprite_component.texture.trim().is_empty()).then(|| sprite_ref)
+        }).flatten();
+        let lua_script = has("LuaScript")
+            .then(|| (!self.lua_script.trim().is_empty()).then_some(self.lua_script.clone()))
+            .flatten();
+        let mesh_renderer = has("MeshRenderer")
+            .then(|| (!self.mesh_renderer.trim().is_empty()).then_some(self.mesh_renderer.clone()))
+            .flatten();
+        let snapshot = InspectorSnapshot {
+            entity_id: primary,
+            name: self.entity_name.clone(),
+            transform: self.transform,
+            sprite_reference,
+            lua_script,
+            transform3d: has("Transform3D").then_some(self.transform3d),
+            mesh_renderer,
+            camera3d: has("Camera3D").then_some(self.camera3d),
+            light: has("Light").then_some(self.light),
+            collider3d: has("Collider3d").then_some(self.collider3d.clone()),
+            text: has("Text").then_some(self.text.clone()),
+            image: has("Image").then_some(self.image.clone()),
+            persistent: false,
+        };
+        // 直写用 mesh 完整组件串：缓冲只存 `mesh=` 后的裸引用，直写需拼回前缀
+        // 与 `write_inspector`/文档规范化格式逐字节一致。实体无 MeshRenderer 时
+        // 快照为 None，write 端 clear；这里同样为 None，diff 不受影响。
+        let mesh_renderer_raw = snapshot
+            .mesh_renderer
+            .as_deref()
+            .map(|reference| format!("mesh={reference}"));
+        // Tilemap / Animation：面板编辑器状态实时编码整串。实体没有该组件时保持
+        // None（写入端不写、比较端与基线 None 相等）；面板未编辑时编码串恰与
+        // 文档组件串一致 → 与基线相等 → 不误写。
+        let tilemap = has("Tilemap").then(|| self.tilemap.map.to_component_str());
+        let animation = has("Animation").then(|| self.animation.machine.to_component_str());
+        Some(EditSnapshot {
+            doc_id: primary,
+            doc_present: true,
+            editing_entities: targets,
+            snapshot: Some(snapshot),
+            mesh_renderer_raw,
+            persistent: entity
+                .metadata
+                .get("persistent")
+                .is_some_and(|value| value == "true"),
+            tilemap,
+            animation,
+        })
+    }
+
+    /// E08：提交后/同步后把基线刷新为「当前缓冲」（直写/回读后缓冲即“已提交”
+    /// 状态），供下一轮编辑比较。
+    pub(crate) fn refresh_inspector_baseline(&mut self) {
+        self.inspector_baseline = self
+            .current_inspector_edit_snapshot()
+            .unwrap_or_else(EditSnapshot::empty);
+    }
+
+    /// E08 提交点：Inspector 缓冲挂起编辑到达松手/文本提交/失焦边界。把挂起缓冲
+    /// 直写进活动事务后提交为**一条**历史，净变化才保存；随后同步缓冲回读文档并
+    /// 刷新基线。无净变化时为 no-op（不产生空历史、不落盘）。
+    pub(crate) fn commit_inspector_edits_if_dirty(&mut self) {
+        if !self.inspector_edit.pending {
+            return;
+        }
+        // 先收敛本帧缓冲（同一交互最后一段直写），再提交事务。
+        self.update_inspector_write();
+        if self.is_edit_transaction_active() {
+            self.commit_edit_transaction();
+        }
+        self.inspector_edit.pending = false;
+        self.inspector_edit.consumed = false;
+        if self.selection.primary().is_some() {
+            // 本提交点已把缓冲落成一条历史：回读文档同步缓冲（修正编码规范化
+            // 漂移），下一次编辑从与文档一致的状态重新比较。
+            if let Some(selected) = self.selection.primary() {
+                self.sync_inspector(selected);
+            }
+        }
+        self.refresh_inspector_baseline();
+    }
+
+    /// E08 帧尾提交边界：只要缓冲与基线有**真实差异**就收敛（直写 → 提交 → 同步 →
+    /// 刷新基线），供数值拖动松手、TextEdit 失焦/Enter、Escape 等边界调用。
+    /// 与 [`EditorApp::commit_inspector_edits_if_dirty`] 的差异：后者要求 `pending`
+    /// 已置位（由交互回调同步 mark），而本函数以 diff 为准，即使标记丢失也不会漏提交。
+    ///
+    /// 返回本边界是否把缓冲收敛为了一条**净差异历史**（`true` = 追加了一条 Undo，
+    /// 需保存；空操作/无净差异返回 `false`，不落盘、不产生空历史）。注意该返回值
+    /// 是「提交结果」而非「本帧是否直写」：同一拖拽的最后一段差异通常已由先前
+    /// 帧的 `mark_inspector_edit` 直写进文档，到达本边界时 `update_inspector_write`
+    /// 常为 no-op，但挂起的活动事务仍会被提交为一条历史。
+    pub(crate) fn finish_inspector_edits_if_dirty(&mut self) -> bool {
+        // 无主选/无场景/播放中 → 无内容可提交。
+        if self.is_playing() || self.selection.primary().is_none() {
+            return false;
+        }
+        let pending = self.inspector_edit.pending;
+        // 有真实 diff 才需要进入直写（与 `update_inspector_write` 的净差异判定一致）；
+        // 仅 pending（末段差异已由前帧 mark 直写）也需进入提交。
+        let dirty = self.update_inspector_write();
+        if !dirty && !pending {
+            return false;
+        }
+        let committed = if self.is_edit_transaction_active() {
+            self.commit_edit_transaction()
+        } else {
+            false
+        };
+        self.inspector_edit.pending = false;
+        self.inspector_edit.consumed = false;
+        if dirty && self.selection.primary().is_some() {
+            if let Some(selected) = self.selection.primary() {
+                self.sync_inspector(selected);
+            }
+        }
+        self.refresh_inspector_baseline();
+        committed
+    }
+
+    /// E08：活动事务被其它路径（Scene View 拖动、gizmo、删除快捷键…）接管时，
+    /// Inspector 缓冲编辑已随 mark 直写进各自事务（未开 Inspector 事务时无残留）——
+    /// 调用点负责让 Scene View 侧事务统一提交；本函数只复位缓冲状态供下一条
+    /// Inspector 编辑重新比较。
+    pub(crate) fn clear_inspector_edit_pending(&mut self) {
+        self.inspector_edit.pending = false;
+        self.inspector_edit.consumed = false;
+    }
+
+    /// E08 帧末统一提交边界（update 最末调用）：Inspector 缓冲提交的兜底。
+    /// 只要本帧发生 primary 释放（把 Inspector 编辑拖出面板 / 点击 Scene / 其它
+    /// 窗口离开面板）或 Enter（文本显式提交），就把挂起缓冲收敛为一条历史。
+    /// 正在键入文本（键盘焦点被占用）时鼠标释放不触发，避免 `sync_inspector`
+    /// 回读覆盖仍在编辑的输入框；Enter 是显式提交故除外。无挂起编辑时 no-op。
+    pub(crate) fn flush_frame_edit_boundary(&mut self, context: &egui::Context) {
+        if self.is_playing() {
+            return;
+        }
+        let releasing = context.input(|i| i.pointer.any_released()) && !context.wants_keyboard_input();
+        let entering = context.input(|i| i.key_pressed(egui::Key::Enter));
+        if releasing || entering {
+            self.finish_inspector_edits_if_dirty();
+        }
+    }
+
+    /// E08：Escape 取消活动事务（拖动 / Inspector 编辑的“取消”语义）。文档回滚
+    /// 到事务 before，不追加历史、不保存；由 cancel 的统一入口回读缓冲与视图。
+    /// 正在键入文本时 egui 用 Escape 放弃输入焦点，故不在此打断（等下一交互收敛）。
+    /// 返回是否执行了取消（调用点据此清理 Scene 拖拽残留等）。
+    pub(crate) fn cancel_edit_on_escape(&mut self, context: &egui::Context) -> bool {
+        if context.wants_keyboard_input()
+            || !context.input(|i| i.key_pressed(egui::Key::Escape))
+        {
+            return false;
+        }
+        self.clear_inspector_edit_pending();
+        if self.is_edit_transaction_active() {
+            self.cancel_edit_transaction();
+        } else if let Some(selected) = self.selection.primary() {
+            // 无活动事务但有未收敛的缓冲残留：回读文档，丢弃未提交改动。
+            self.sync_inspector(selected);
+        }
+        true
+    }
+
+    /// E08：Escape 取消后清理 Scene View 拖拽残留 —— 文档已回滚到事务前，若还
+    /// 留着 `drag`/`gizmo_drag`/preview，下一帧会把 stale preview 继续写回文档
+    /// （相当于把已取消的拖动又“复活”）。调用点仅在确实取消后调用。
+    pub(crate) fn clear_active_scene_drag(&mut self) {
+        self.scene_state.drag = None;
+        self.scene_state.gizmo_drag = None;
+        self.scene_state.box_select_start = None;
+        self.scene_state.preview.clear();
+        self.scene_state.preview_ui.clear();
+        self.scene_state.preview3d_transform.clear();
+    }
+
+    /// E07 事务网关：开始一次连续编辑事务 —— 记录当前文档为 before 快照并置位
+    /// 顶层事务状态。后续多帧预览只更新文档、不写历史，由 commit/cancel 收尾。
+    ///
+    /// 返回是否成功开始。已处于事务中时返回 false（禁止嵌套）。
+    pub(crate) fn begin_edit_transaction(
+        &mut self,
+        label: &str,
+        kind: editor::CommandKind,
+        target: Option<SceneEntityId>,
+    ) -> bool {
+        if self.edit_transaction.is_active() {
+            return false;
+        }
+        let Some(doc) = self.document.current_scene.as_ref() else {
+            return false;
+        };
+        if self.history.begin_transaction(doc, label, kind, target).is_err() {
+            return false;
+        }
+        self.edit_transaction.active = true;
+        self.edit_transaction.consumed = false;
+        true
+    }
+
     pub(crate) fn redo(&mut self) {
         let label = {
             let h = &mut self.history;
@@ -324,6 +811,13 @@ impl EditorApp {
     /// E06：返回是否保存成功。失败（如场景无路径、磁盘写入失败、校验失败）时文档
     /// 保持 dirty 且不变更内容，供「保存并继续」确认流判断是否需要停留在当前文档。
     pub(crate) fn save_scene(&mut self) -> bool {
+        // E07：保存前若正处于活动事务，先把最后一条 preview 提交为一条历史命令
+        // （快照来自事务 before），保证落盘内容可被单条 Undo 收回。
+        if self.edit_transaction.is_active() && self.history.is_transaction_active() {
+            self.history.finish_transaction(self.document.current_scene.as_ref().expect("edit requires a scene"));
+            self.edit_transaction.active = false;
+            self.edit_transaction.consumed = true;
+        }
         if !self.project_loaded {
             self.status = "Import a game project before editing".to_owned();
             return false;
@@ -400,10 +894,24 @@ impl EditorApp {
     }
 
     /// 同步 InspectorState ↔ EditorApp 快照字段（以显式 `id` 为准；选择状态在 `self.selection`）。
+    ///
+    /// E08：完成后把缓冲与文档对齐（面板主选为 `id` 的多选目标已与文档写回对齐，
+    /// 无需重读），刷新基线并复位脏标记 —— 下一次缓冲编辑从「与文档一致」开始比较。
     pub(crate) fn sync_inspector(&mut self, id: SceneEntityId) {
+        // E08：同步是「文档 → 缓冲」回读，任何未提交的挂起编辑都已被提交点收敛；
+        // 若仍有未决缓冲（异常路径），先丢弃以免回读后被旧基线误判为脏而反复直写。
+        self.clear_inspector_edit_pending();
         let Some(scene) = self.current_scene() else {
+            self.inspector_baseline.clear();
             return;
         };
+        // E08：目标实体必须存在于当前编辑文档。只有场景而目标不存在时回读会残留
+        // 上一实体的快照字段并被误判为“挂起编辑”，故整组清空（与 `clear_inspector`
+        // 行为一致）并清基线，返回空态。
+        if !scene.scene.entities.contains_key(&id) {
+            self.clear_inspector();
+            return;
+        }
         let scene = scene.clone();
         self.focus_hierarchy_delete_target();
         if let Ok(snapshot) = self.inspector.snapshot(&scene, id)
@@ -459,7 +967,21 @@ impl EditorApp {
                     )
                     .expect("default animation")
                 });
+        } else {
+            // 目标不存在：清空回读字段，避免残留上一实体的快照。
+            let fields = (
+                &mut self.entity_name,
+                &mut self.sprite_reference,
+                &mut self.mesh_renderer,
+                &mut self.lua_script,
+            );
+            fields.0.clear();
+            fields.1.clear();
+            fields.2.clear();
+            fields.3.clear();
         }
+        // 同步完成后刷新基线：当前缓冲（刚刚从 `id` 回读）即“已提交”状态。
+        self.refresh_inspector_baseline();
     }
 
     /// E03：清空 Inspector 的 buffered 显示字段（无主选中 / 点击空白处时调用）。
@@ -492,6 +1014,9 @@ impl EditorApp {
         )
         .expect("default animation");
         self.lua_script.clear();
+        // E08：清空显示缓冲后，基线/脏标记一并复位，防止旧快照残留参与比较。
+        self.inspector_edit = EditState::default();
+        self.inspector_baseline.clear();
     }
 
     /// 对齐选中实体：网格吸附 / 水平 / 垂直。
@@ -1572,6 +2097,340 @@ mod tests {
         // 原文档落盘且不再是 dirty（重新加载磁盘文件应等于保存时的内容）。
         let reloaded = editor::SceneDocument::open(&current_path).unwrap();
         assert!(!reloaded.is_dirty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// E07：App 层事务网关。直接对历史提交事务一次连续编辑（模拟多帧预览写入），
+    /// 最终只产生一条 Undo、dirty 一次、提交/取消状态机正确。
+    #[test]
+    fn e07_commit_transaction_produces_single_undo_and_dirty_once() {
+        let (mut app, root) = open_jhyt_main("e07-commit");
+        let id = SceneEntityId(2);
+        let began = app.begin_edit_transaction(
+            "Scene Transform",
+            editor::CommandKind::Transform(id),
+            Some(id),
+        );
+        assert!(began, "事务应成功开始");
+        assert!(app.is_edit_transaction_active());
+        let before = app.document.current_scene.clone().unwrap();
+
+        // 多次更新（模拟拖拽帧），仅更新文档内容，不调用 save_scene。
+        for frame in 0..5 {
+            let scene = app.document.current_scene.as_mut().unwrap();
+            scene
+                .scene
+                .entities
+                .get_mut(&id)
+                .unwrap()
+                .components
+                .insert("Transform".to_owned(), format!("position={frame},0"));
+            scene.mark_dirty();
+        }
+        assert_eq!(
+            app.history.undo_len(),
+            0,
+            "事务期间不得追加历史（未提交）"
+        );
+
+        app.commit_edit_transaction();
+        assert!(!app.is_edit_transaction_active());
+        assert_eq!(
+            app.history.undo_len(),
+            1,
+            "一次连续编辑只产生一条 Undo"
+        );
+
+        // Undo：整文档回到事务开始前（单条快照模型 = before）。
+        app.undo();
+        assert_eq!(
+            app.document.current_scene.as_ref().unwrap(),
+            &before,
+            "Undo 应回到事务开始前内容"
+        );
+        // Redo：回到事务结束内容。
+        app.redo();
+        let after = app.document.current_scene.as_ref().unwrap();
+        assert_eq!(after.scene.entities[&id].components["Transform"], "position=4,0");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// E07：取消事务 → 无历史、无 dirty（干净文档上取消后仍是 clean），
+    /// 文档内容回退到 begin 前。
+    #[test]
+    fn e07_cancel_transaction_no_history_no_dirty() {
+        let (mut app, root) = open_jhyt_main("e07-cancel");
+        let id = SceneEntityId(2);
+        // 打开文档为 clean，作为 dirty 判定基线。
+        assert!(!app.document.current_scene.as_ref().unwrap().is_dirty());
+        let began = app.begin_edit_transaction(
+            "Scene Transform",
+            editor::CommandKind::Transform(id),
+            Some(id),
+        );
+        assert!(began, "事务应成功开始");
+        let before = app.document.current_scene.clone().unwrap();
+        {
+            let scene = app.document.current_scene.as_mut().unwrap();
+            scene
+                .scene
+                .entities
+                .get_mut(&id)
+                .unwrap()
+                .components
+                .insert("Transform".to_owned(), "position=99,99".to_owned());
+            scene.mark_dirty();
+        }
+
+        app.cancel_edit_transaction();
+        assert!(!app.is_edit_transaction_active());
+        assert_eq!(
+            app.history.undo_len(),
+            0,
+            "取消不产生历史"
+        );
+        assert!(!app.document.current_scene.as_ref().unwrap().is_dirty(), "取消不标记 Dirty");
+        assert_eq!(
+            app.document.current_scene.as_ref().unwrap(),
+            &before,
+            "取消恢复事务开始前状态"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// E07：Undo 快捷键先取消活动事务（不产生历史/不改 dirty），再撤回到上一条
+    /// 历史；活动事务不把预览内容泄漏成一条 Undo。
+    #[test]
+    fn e07_undo_guard_cancels_active_transaction_then_undoes() {
+        let (mut app, root) = open_jhyt_main("e07-undo-guard");
+        let id = SceneEntityId(2);
+        let pristine = app.document.current_scene.clone().unwrap();
+        // 先做一条离散编辑（产生 1 条历史、dirty）。
+        app.selection
+            .set_single(id, editor::SelectionSource::Hierarchy);
+        app.entity_name = "RenamedByTest".to_owned();
+        app.rename_selected();
+        assert_eq!(app.history.undo_len(), 1);
+        let after_rename = app.document.current_scene.clone().unwrap();
+        assert_ne!(&after_rename, &pristine);
+
+        // Begin 事务并写入内容。
+        let began = app.begin_edit_transaction(
+            "Scene Transform",
+            editor::CommandKind::Transform(id),
+            Some(id),
+        );
+        assert!(began, "事务应成功开始");
+        {
+            let scene = app.document.current_scene.as_mut().unwrap();
+            scene
+                .scene
+                .entities
+                .get_mut(&id)
+                .unwrap()
+                .components
+                .insert("Transform".to_owned(), "position=5,5".to_owned());
+            scene.mark_dirty();
+        }
+        assert_eq!(app.history.undo_len(), 1, "事务内容尚未成为历史");
+
+        // 撤销：先取消事务（回到 rename 后），再撤 rename。
+        app.undo_with_transaction_guard();
+        assert!(!app.is_edit_transaction_active());
+        assert_eq!(
+            app.document.current_scene.as_ref().unwrap(),
+            &pristine,
+            "取消事务并撤销 rename 后应回到最开始的文档"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// E07：保存时若仍有活动事务，自动以单条历史落盘（save_scene 前兜底提交）。
+    #[test]
+    fn e07_save_flushes_active_transaction() {
+        let (mut app, root) = open_jhyt_main("e07-save-flush");
+        let id = SceneEntityId(2);
+        let began = app.begin_edit_transaction(
+            "Scene Transform",
+            editor::CommandKind::Transform(id),
+            Some(id),
+        );
+        assert!(began, "事务应成功开始");
+        {
+            let scene = app.document.current_scene.as_mut().unwrap();
+            scene
+                .scene
+                .entities
+                .get_mut(&id)
+                .unwrap()
+                .components
+                .insert("Transform".to_owned(), "position=3,3".to_owned());
+            scene.mark_dirty();
+        }
+        assert!(app.is_edit_transaction_active());
+        assert!(app.save_scene());
+        assert!(!app.is_edit_transaction_active(), "保存后事务必须被消费");
+        assert_eq!(app.history.undo_len(), 1, "保存前自动提交单条历史");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    // ── E08：Inspector 直写/提交边界 ─────────────────────────────────────────
+    // 体验标准：拖动中磁盘不持续变化、一次拖拽一条历史；Inspector 输入提交后
+    // 可撤销、不产生空操作；Escape 取消后不留拖拽残留。
+
+    /// E08：Inspector 缓冲编辑先 `mark`（直写不写历史）再 `finish`（收敛一条
+    /// 历史）；再次 finish 无差异 → no-op 不产生空历史；撤销一次回到编辑前。
+    #[test]
+    fn e08_inspector_mark_then_finish_yields_single_history_and_undo() {
+        let (mut app, root) = open_sample_production("e08-inspector-mark-finish");
+        let id = SceneEntityId(2);
+        app.selection
+            .set_single(id, editor::SelectionSource::Hierarchy);
+        app.sync_inspector(id);
+        let pristine = app.document.current_scene.clone().unwrap();
+        assert_eq!(app.history.undo_len(), 0);
+        let original_x = app.transform.position_x;
+
+        // 帧内拖动/键入：mark 直写文档并置 pending，但不写历史、不落盘。
+        app.transform.position_x = original_x + 40.0;
+        app.mark_inspector_edit();
+        assert!(app.is_edit_transaction_active(), "mark 应已自动开事务");
+        assert!(app.inspector_edit.pending);
+        assert_eq!(app.history.undo_len(), 0, "直写阶段不产生历史");
+
+        // 同一交互多次 mark：不产生多条历史（一次拖拽=一帧一次 mark 的等价）。
+        app.transform.position_x = original_x + 55.0;
+        app.mark_inspector_edit();
+        app.transform.position_x = original_x + 70.0;
+        app.mark_inspector_edit();
+        assert_eq!(app.history.undo_len(), 0, "多次直写仍不产生历史");
+
+        // 提交边界：收敛为一条历史。
+        let changed = app.finish_inspector_edits_if_dirty();
+        assert!(changed, "有真实 diff 时应提交一条历史");
+        assert_eq!(app.history.undo_len(), 1, "一次交互收敛为一条历史");
+        assert!(!app.inspector_edit.pending);
+        assert!(!app.is_edit_transaction_active(), "提交后事务关闭");
+        let committed = app.document.current_scene.clone().unwrap();
+        assert_ne!(&committed, &pristine);
+
+        // 无净差异的再次提交：no-op，不产生空历史。
+        assert!(!app.finish_inspector_edits_if_dirty());
+        assert_eq!(app.history.undo_len(), 1, "空操作不产生空历史");
+
+        // 撤销一步回到编辑前。
+        app.undo_with_transaction_guard();
+        assert_eq!(
+            app.document.current_scene.as_ref().unwrap(),
+            &pristine,
+            "撤销应回到 Inspector 编辑前"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// E08：Scene 拖拽（拖动中多帧直写文档）在松手提交前不写历史；提交后恰
+    /// 一条历史、一次 undo 整体回退（不留逐帧碎片）。
+    #[test]
+    fn e08_scene_drag_direct_writes_commit_once_on_release() {
+        let (mut app, root) = open_sample_production("e08-scene-drag-writes");
+        let id = SceneEntityId(2);
+        app.selection
+            .set_single(id, editor::SelectionSource::Hierarchy);
+        app.sync_inspector(id);
+        let pristine = app.document.current_scene.clone().unwrap();
+        assert_eq!(app.history.undo_len(), 0);
+        let original_x = app.transform.position_x;
+
+        // 拖动首帧：begin 事务；随后多帧在事务内直写（等效 apply_drag_preview 逐帧写）。
+        assert!(app.begin_edit_transaction(
+            "Scene Transform",
+            editor::CommandKind::Transform(id),
+            Some(id),
+        ));
+        for offset in [10.0_f32, 25.0, 42.0] {
+            let scene = app.document.current_scene.as_mut().unwrap();
+            scene
+                .scene
+                .entities
+                .get_mut(&id)
+                .unwrap()
+                .components
+                .insert(
+                    "Transform".to_owned(),
+                    format!("x={};y=0", original_x + offset),
+                );
+            scene.mark_dirty();
+            assert!(app.is_edit_transaction_active());
+            assert_eq!(
+                app.history.undo_len(),
+                0,
+                "拖动直写期间不产生历史（不写盘）"
+            );
+        }
+
+        // 松手：提交为一条历史，dirty（交由 autosave / 保存点落盘）。
+        let committed = app.commit_edit_transaction();
+        assert!(committed, "拖拽有净变化应提交成功");
+        assert_eq!(app.history.undo_len(), 1, "一次拖拽 = 一条历史");
+        assert!(!app.is_edit_transaction_active());
+
+        // 撤销一次 → 全部拖拽位移一次性回退（无碎片）。
+        app.undo_with_transaction_guard();
+        assert_eq!(
+            app.document.current_scene.as_ref().unwrap(),
+            &pristine,
+            "单次 undo 应撤销整段拖动"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// E08：Escape 取消活动事务后清空 Scene View 拖拽残留 —— stale preview /
+    /// gizmo 不留在状态里，避免下一帧把已取消的拖动重新写回文档。
+    #[test]
+    fn e08_escape_cancel_clears_scene_drag_residue() {
+        let (mut app, root) = open_sample_production("e08-escape-clear");
+        let id = SceneEntityId(2);
+        app.selection
+            .set_single(id, editor::SelectionSource::Hierarchy);
+        app.sync_inspector(id);
+        let pristine = app.document.current_scene.clone().unwrap();
+
+        // 模拟一个已开事务的拖拽 + preview / gizmo 残留。
+        assert!(app.begin_edit_transaction(
+            "Scene Transform",
+            editor::CommandKind::Transform(id),
+            Some(id),
+        ));
+        {
+            let scene = app.document.current_scene.as_mut().unwrap();
+            scene
+                .scene
+                .entities
+                .get_mut(&id)
+                .unwrap()
+                .components
+                .insert("Transform".to_owned(), "x=999;y=999".to_owned());
+            scene.mark_dirty();
+        }
+        app.scene_state.preview.insert(id, app.transform);
+        app.scene_state.preview_ui.insert(id, [3.0, -5.0]);
+        app.scene_state.preview3d_transform.insert(id, Transform3D::default());
+        assert!(app.is_edit_transaction_active());
+
+        // Escape 取消：文档回滚 + 残留清理。
+        app.cancel_edit_transaction();
+        app.clear_active_scene_drag();
+
+        assert!(!app.is_edit_transaction_active());
+        assert_eq!(app.history.undo_len(), 0, "取消不产生历史");
+        assert_eq!(
+            app.document.current_scene.as_ref().unwrap(),
+            &pristine,
+            "取消回滚到事务前"
+        );
+        assert!(app.scene_state.preview.is_empty());
+        assert!(app.scene_state.preview_ui.is_empty());
+        assert!(app.scene_state.preview3d_transform.is_empty());
         let _ = fs::remove_dir_all(root);
     }
 
