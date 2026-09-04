@@ -1208,7 +1208,7 @@ impl EditorApp {
         }
     }
 
-    fn rename_selected(&mut self) {
+    pub(crate) fn rename_selected(&mut self) {
         if self.is_playing() {
             self.status = "Play mode locks scene editing; click Stop first".into();
             return;
@@ -1383,7 +1383,7 @@ impl EditorApp {
         Some(Ok(diff_prefab_entity(source_entity, entity)))
     }
 
-    fn reapply_selected_prefab(&mut self) {
+    pub(crate) fn reapply_selected_prefab(&mut self) {
         if self.is_playing() {
             self.status = "Play mode locks scene editing; click Stop first".to_owned();
             return;

@@ -144,10 +144,9 @@ impl EditorApp {
         save_recent_projects(&self.recent_projects);
     }
 
-    /// 打开最近项目（项目菜单用）：走后台导入流程。
+    /// 打开最近项目（项目菜单用）：E06 先经未保存确认网关，确认后走后台导入流程。
     pub(crate) fn open_recent_project(&mut self, path: String) {
-        self.import_path = path;
-        self.start_import();
+        self.request_document_change(crate::actions::PendingChange::SwitchProject { path });
     }
 }
 

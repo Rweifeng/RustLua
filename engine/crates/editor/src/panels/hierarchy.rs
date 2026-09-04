@@ -241,6 +241,9 @@ impl EditorApp {
     }
 
     /// 新建场景（未保存；保存时写入 scenes/<名称>.scene）。
+    ///
+    /// E06：先做项目已加载 / Play 锁 / 名称校验（这些失败不弹确认），随后经
+    /// 「未保存切换保护」网关请求——dirty 时弹确认窗，clean 时直接 `perform_create_scene`。
     pub(crate) fn create_scene(&mut self) {
         if !self.project_loaded {
             self.status = "Import a game project before editing".to_owned();
@@ -250,12 +253,16 @@ impl EditorApp {
             self.status = "Play mode locks scene editing; click Stop first".to_owned();
             return;
         }
-
         let name = self.new_scene_name.trim().to_owned();
         if name.is_empty() {
             self.status = "场景名称不能为空".to_owned();
             return;
         }
+        self.request_document_change(crate::actions::PendingChange::CreateScene { name });
+    }
+
+    /// 实际创建并切换空白场景（仅由确认流或 clean 快速路径调用）。
+    pub(crate) fn perform_create_scene(&mut self, name: String) {
         self.set_current_scene_document(editor::SceneDocument::new(name.clone()));
         self.history.clear();
         self.autosave.reset();

@@ -12,6 +12,7 @@ use engine::core::{
     tilemap::Tilemap,
 };
 use std::path::{Path, PathBuf};
+use eframe::egui;
 
 /// 一次已提交的文档变更类别（E02）：驱动 `on_document_changed` 的统一刷新流程。
 ///
@@ -36,6 +37,150 @@ pub(crate) enum DocumentChange {
     Redo,
     /// 退出 Play：编辑文档恢复为 Stop 时取回的编辑器快照。
     PlaybackStopped,
+}
+
+/// E06：一次待确认的文档离开操作。任何可能离开当前编辑文档的入口
+/// （场景/Prefab 打开、新建场景、崩溃快照恢复、切换项目、关闭编辑器）
+/// 都会经 `request_document_change` 请求。若当前编辑文档 dirty，该操作被挂起，
+/// 等顶层「保存并继续 / 放弃并继续 / 取消」弹窗裁决后再执行对应 perform；
+/// 若 clean 则立即执行，行为与 E06 之前完全一致。
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum PendingChange {
+    /// 打开另一份场景 / Prefab 文档（相对项目根路径）。
+    OpenResource { relative_path: PathBuf },
+    /// 新建空白场景（尚未保存）。
+    CreateScene { name: String },
+    /// 恢复一条崩溃恢复快照。
+    Recover {
+        candidate: editor::RecoveryCandidate,
+    },
+    /// 切换游戏项目（新建 / 打开 / 最近项目；走后台导入）。
+    SwitchProject { path: String },
+    /// 关闭编辑器窗口（用户点窗口 X / 菜单退出）。
+    QuitEditor,
+}
+
+impl PendingChange {
+    /// 弹窗标题下对离开动作的短描述。
+    pub(crate) fn action_label(&self) -> String {
+        match self {
+            Self::OpenResource { relative_path } => {
+                format!("打开 {}", relative_path.display())
+            }
+            Self::CreateScene { name } => format!("新建场景 {name}"),
+            Self::Recover { .. } => "恢复崩溃快照".to_owned(),
+            Self::SwitchProject { path } => format!("切换到项目：{}", path),
+            Self::QuitEditor => "关闭编辑器".to_owned(),
+        }
+    }
+}
+
+/// E06 确认窗的用户决策（由顶层弹窗的按钮触发；独立成枚举便于回归测试）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PendingDecision {
+    /// 「保存并继续」：保存成功才执行离开操作；失败则停留并保留 dirty。
+    Save,
+    /// 「放弃并继续」：不保存，直接执行离开操作。
+    Discard,
+    /// 「取消」：取消挂起的离开操作，文档 / 选择 / 视图 / 历史保持不变。
+    Cancel,
+}
+
+impl EditorApp {
+    /// E06 网关：请求一次文档离开操作。
+    ///
+    /// - 若当前没有任何编辑文档 → 无 dirty 可言，直接执行。
+    /// - 若当前编辑文档 dirty → 挂起 pending（不触碰文档 / 选择 / 视图 / 历史），
+    ///   由顶层确认窗裁决；同一时刻已挂起其他 pending 时直接忽略（防重复弹窗）。
+    /// - 若当前编辑文档 clean → 立即执行（保持 E06 前各入口行为，测试路径不变）。
+    pub(crate) fn request_document_change(&mut self, change: PendingChange) {
+        if self.pending_document_change.is_some() {
+            // 已有待确认操作：防止重复触发切换请求与重复弹窗。
+            return;
+        }
+        let dirty = self
+            .document
+            .current_scene
+            .as_ref()
+            .is_some_and(editor::SceneDocument::is_dirty);
+        if dirty {
+            self.pending_document_change = Some(change);
+            self.pending_save_failed = false;
+            return;
+        }
+        self.perform_pending_change(change);
+    }
+
+    /// 执行一条 pending / 已确认的文档离开操作（唯一的实际切换执行点）。
+    pub(crate) fn perform_pending_change(&mut self, change: PendingChange) {
+        match change {
+            PendingChange::OpenResource { relative_path } => {
+                self.perform_open_scene_resource(relative_path);
+            }
+            PendingChange::CreateScene { name } => self.perform_create_scene(name),
+            PendingChange::Recover { candidate } => self.perform_recover_candidate(candidate),
+            PendingChange::SwitchProject { path } => {
+                self.import_path = path;
+                self.start_import();
+            }
+            PendingChange::QuitEditor => {}
+        }
+    }
+
+    /// 取消挂起的离开操作：清空 pending，文档 / 选择 / 视图 / 历史保持原样。
+    pub(crate) fn cancel_pending_change(&mut self) {
+        self.pending_document_change = None;
+        self.pending_save_failed = false;
+    }
+
+    /// E06：按用户决策推进挂起的离开操作（弹窗按钮 → 此处，便于单测三分支语义）。
+    ///
+    /// - Save：先保存，成功才离开；失败只置 `pending_save_failed`，文档保持 dirty 且不离开。
+    /// - Discard：不保存直接离开。
+    /// - Cancel：取消挂起操作，文档保持不变。
+    /// 返回是否已把 pending 消费掉（Save 失败返回 false，便于弹窗决定是否重绘）。
+    pub(crate) fn resolve_pending_change(
+        &mut self,
+        context: &egui::Context,
+        decision: PendingDecision,
+    ) -> bool {
+        match decision {
+            PendingDecision::Save => {
+                if self.save_scene() {
+                    self.pending_save_failed = false;
+                    self.finish_pending_change(context);
+                    true
+                } else {
+                    // 保存失败：保留 pending，文档保持 dirty，不执行离开操作。
+                    self.pending_save_failed = true;
+                    false
+                }
+            }
+            PendingDecision::Discard => {
+                self.pending_save_failed = false;
+                self.finish_pending_change(context);
+                true
+            }
+            PendingDecision::Cancel => {
+                self.cancel_pending_change();
+                self.status = "已取消：文档保持不变".to_owned();
+                true
+            }
+        }
+    }
+
+    /// 单次消费挂起的离开操作并执行（防重复触发）。QuitEditor 确认后发送 Close，
+    /// 其余交由 `perform_pending_change` 走各自 perform 路径。
+    pub(crate) fn finish_pending_change(&mut self, context: &egui::Context) {
+        if let Some(change) = self.pending_document_change.take() {
+            self.pending_save_failed = false;
+            if matches!(change, PendingChange::QuitEditor) {
+                context.send_viewport_cmd(egui::ViewportCommand::Close);
+            } else {
+                self.perform_pending_change(change);
+            }
+        }
+    }
 }
 
 impl EditorApp {
@@ -175,14 +320,17 @@ impl EditorApp {
     }
 
     /// 保存当前场景（未命名时写入 scenes/<场景名>.scene）。
-    pub(crate) fn save_scene(&mut self) {
+    ///
+    /// E06：返回是否保存成功。失败（如场景无路径、磁盘写入失败、校验失败）时文档
+    /// 保持 dirty 且不变更内容，供「保存并继续」确认流判断是否需要停留在当前文档。
+    pub(crate) fn save_scene(&mut self) -> bool {
         if !self.project_loaded {
             self.status = "Import a game project before editing".to_owned();
-            return;
+            return false;
         }
         let Some(doc) = self.document.current_scene.as_mut() else {
             self.status = "No scene".into();
-            return;
+            return false;
         };
         let is_prefab_document = doc.is_prefab_document();
         let r = if doc.path.is_some() {
@@ -196,6 +344,7 @@ impl EditorApp {
             )
             .map_err(|e| e.to_string())
         };
+        let saved = r.is_ok();
         self.status = match r {
             Ok(()) => {
                 if let Some(doc) = self.document.current_scene.as_ref() {
@@ -211,13 +360,22 @@ impl EditorApp {
             }
             Err(error) => error,
         };
+        saved
     }
 
-    /// 打开场景或 Prefab 资源（资源面板 / 层级面板）。
+    /// 打开场景或 Prefab 资源（资源面板 / 层级面板 / Inspector Prefab 来源链接）。
+    ///
+    /// E06：统一经「未保存切换保护」网关。当前编辑文档 dirty 时挂起 pending 并弹确认
+    /// 窗（确认前不切换）；clean 时直接执行 `perform_open_scene_resource`。
     pub(crate) fn open_scene_resource(&mut self, relative_path: PathBuf) {
         if !self.project_loaded {
             return;
         }
+        self.request_document_change(PendingChange::OpenResource { relative_path });
+    }
+
+    /// 实际打开场景/Prefab（仅由 request 流程在确认后调用，或 clean 时直接调用）。
+    fn perform_open_scene_resource(&mut self, relative_path: PathBuf) {
         let path = self.project.root.join(&relative_path);
         match self.open_scene_document(&path) {
             Ok(()) => {
@@ -980,6 +1138,17 @@ mod tests {
         root
     }
 
+    /// 打开 game_test_2d_production 副本并打开其 scenes/production.scene。
+    /// 与 inspector tests 的 sample_app_with_production_scene 行为保持一致
+    /// （拷贝 assets/scenes 后不依赖资源索引，Prefab 按相对路径加载）。
+    fn open_sample_production(label: &str) -> (EditorApp, PathBuf) {
+        let root = copy_sample_project(label);
+        let project = open_project(&root).expect("production 副本应可打开");
+        let mut app = EditorApp::new(project, None, LogSink::new(64));
+        app.open_scene_resource(PathBuf::from("scenes/production.scene"));
+        (app, root)
+    }
+
     /// 打开 game_jhyt 副本并打开其 scenes/main.scene（4 个根实体）。
     fn open_jhyt_main(label: &str) -> (EditorApp, PathBuf) {
         let root = copy_jhyt_project(label);
@@ -1131,6 +1300,329 @@ mod tests {
         assert!(app.selection.is_empty());
         assert_eq!(app.selection.primary(), None);
         assert_scene_view_and_metadata_invalidated(&app);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// E02 Rename 收敛：重命名走统一入口（同一文档内编辑，不整表切换），
+    /// 选中实体保持有效并随后同步 Inspector，同时清理陈旧 Scene View 缓存与
+    /// Hierarchy 元数据 key。
+    #[test]
+    fn game_production_rename_selected_routes_unified_refresh() {
+        let (mut app, root) = open_sample_production("rename");
+        let scene = app.document.current_scene.clone().unwrap();
+        assert!(scene.scene.entities.contains_key(&SceneEntityId(2)));
+        app.selection
+            .set_single(SceneEntityId(2), editor::SelectionSource::Hierarchy);
+        app.sync_inspector(SceneEntityId(2));
+        poison_scene_view_caches(&mut app);
+
+        app.entity_name = "HeroRenamed".to_owned();
+        app.rename_selected();
+
+        assert_eq!(app.status, "Entity renamed");
+        let scene = app.document.current_scene.as_ref().unwrap();
+        assert_eq!(
+            scene.scene.entities.get(&SceneEntityId(2)).unwrap().name,
+            "HeroRenamed"
+        );
+        // 选中实体仍在同一文档内 → 选择保留而非清空，Inspector 主源已同步新名。
+        assert_eq!(app.selection.primary(), Some(SceneEntityId(2)));
+        assert_eq!(app.entity_name, "HeroRenamed");
+        assert_scene_view_and_metadata_invalidated(&app);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// E02 Prefab Apply 收敛：重新应用源 Prefab 会把整棵实例替换为重建的新实体，
+    /// 统一入口必须让选择指向新的根 ID、保持其仍有效，并清理陈旧缓存与元数据。
+    #[test]
+    fn game_production_reapply_prefab_routes_unified_refresh() {
+        let (mut app, root) = open_sample_production("prefab-apply");
+        let old_root = {
+            let scene = &app.document.current_scene.as_ref().unwrap().scene;
+            scene
+                .entities
+                .values()
+                .find(|entity| {
+                    entity
+                        .metadata
+                        .get("prefab.root")
+                        .is_some_and(|value| value == "true")
+                        && entity
+                            .metadata
+                            .get("prefab.source")
+                            .is_some_and(|value| value == "assets/prefabs/slime_green.prefab")
+                })
+                .unwrap()
+                .id
+        };
+        app.selection
+            .set_single(old_root, editor::SelectionSource::Inspector);
+        app.sync_inspector(old_root);
+        poison_scene_view_caches(&mut app);
+
+        app.reapply_selected_prefab();
+
+        assert!(
+            app.status.contains("已重新应用 Prefab"),
+            "status should confirm prefab reapply, got: {}",
+            app.status
+        );
+        let new_root = app.selection.primary().unwrap();
+        assert_ne!(
+            new_root, old_root,
+            "reapply rebuilds instance so selection must point at the new root"
+        );
+        let scene = &app.document.current_scene.as_ref().unwrap().scene;
+        assert!(scene.entities.contains_key(&new_root));
+        assert_eq!(
+            scene.entities.get(&new_root).unwrap().metadata.get("prefab.source").map(String::as_str),
+            Some("assets/prefabs/slime_green.prefab")
+        );
+        assert!(
+            !scene.entities.contains_key(&old_root),
+            "old instance root must be removed"
+        );
+        assert_scene_view_and_metadata_invalidated(&app);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// E02 运行时修改应用（PlaybackStopped）收敛：Stop 丢弃运行态改动并恢复编辑器
+    /// 快照，选择无条件清空、delete_target 复位，场景/Game 缓存与 Hierarchy 元数据
+    /// 一并失效。
+    #[test]
+    fn game_production_playback_stop_routes_unified_refresh() {
+        use editor::PlaySession;
+        use crate::PlayState;
+        use crate::WorkspaceTab;
+
+        let (mut app, root) = open_sample_production("playback-stop");
+        let original = app.document.current_scene.as_ref().unwrap().clone();
+
+        // 模拟运行中：会话持有编辑器快照，运行时文档被脚本改动（如增删实体）。
+        app.play_session = Some(PlaySession::start(&original));
+        app.play_state = PlayState::Playing;
+        app.workspace_tab = WorkspaceTab::Game;
+        app.preview_input_state.clear_all();
+        // 运行期脚本删掉一个实例（20），并选中一个实例（10）作为运行期选区。
+        app.play_session
+            .as_mut()
+            .unwrap()
+            .runtime_document_mut()
+            .scene
+            .entities
+            .remove(&SceneEntityId(20));
+        app.selection
+            .set_single(SceneEntityId(10), editor::SelectionSource::Playback);
+        poison_scene_view_caches(&mut app);
+
+        app.stop();
+
+        assert_eq!(app.play_state, PlayState::Editing);
+        assert!(app.play_session.is_none());
+        assert_eq!(
+            app.document.current_scene.as_ref().unwrap(),
+            &original,
+            "stop must restore the untouched editor snapshot"
+        );
+        assert!(app.selection.is_empty());
+        assert_eq!(app.selection.primary(), None);
+        assert!(matches!(app.delete_target, crate::DeleteTarget::None));
+        assert_scene_view_and_metadata_invalidated(&app);
+        assert_eq!(app.status, "Play stopped; runtime changes were discarded");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    // ---- E06 未保存切换保护 ----
+
+    /// 弹窗决策仅在 QuitEditor 路径会向原生窗口发送 ViewportCommand；
+    /// OpenResource 等路径不依赖真实窗口，测试用裸 Context 即可驱动。
+    fn test_context() -> egui::Context {
+        egui::Context::default()
+    }
+
+    #[test]
+    fn e06_dirty_open_is_pending_clean_open_is_immediate() {
+        let (mut app, root) = open_sample_production("e06-pending");
+        // 打开 production 时文档 clean：再次请求打开 menu 应立即执行，不挂起。
+        app.open_scene_resource(PathBuf::from("scenes/menu.scene"));
+        assert!(app.pending_document_change.is_none());
+        assert_eq!(app.status, "已打开场景：scenes/menu.scene");
+        assert_eq!(
+            app.document.current_scene.as_ref().unwrap().scene.name,
+            "menu"
+        );
+
+        // 打 dirty：请求「打开 production」被挂起，当前文档不被替换。
+        app.document
+            .current_scene
+            .as_mut()
+            .unwrap()
+            .mark_dirty();
+        app.open_scene_resource(PathBuf::from("scenes/production.scene"));
+        assert!(app.pending_document_change.is_some());
+        assert_eq!(
+            app.document.current_scene.as_ref().unwrap().scene.name,
+            "menu",
+            "确认前不得切换文档"
+        );
+
+        // 已挂起 pending 时再次请求离开：被忽略，不覆盖也不重复弹窗。
+        app.open_scene_resource(PathBuf::from("scenes/menu.scene"));
+        assert!(app.pending_document_change.is_some());
+        assert_eq!(
+            app.document.current_scene.as_ref().unwrap().scene.name,
+            "menu",
+            "重复请求不得覆盖挂起的离开操作"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn e06_cancel_keeps_document_and_state() {
+        let (mut app, root) = open_sample_production("e06-cancel");
+        app.document
+            .current_scene
+            .as_mut()
+            .unwrap()
+            .mark_dirty();
+        // 快照必须在 mark_dirty 之后：取消 = 保留这份 dirty 文档继续编辑。
+        let doc_dirty = app.document.current_scene.as_ref().unwrap().clone();
+        app.open_scene_resource(PathBuf::from("scenes/menu.scene"));
+        assert!(app.pending_document_change.is_some());
+
+        let resolved = app.resolve_pending_change(&test_context(), PendingDecision::Cancel);
+        assert!(resolved);
+        assert!(app.pending_document_change.is_none());
+        assert!(!app.pending_save_failed);
+        assert_eq!(
+            app.document.current_scene.as_ref().unwrap(),
+            &doc_dirty,
+            "取消后应保留 dirty 文档内容与状态（revision/dirty 均不变）"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn e06_discard_leaves_without_saving() {
+        let (mut app, root) = open_sample_production("e06-discard");
+        app.document
+            .current_scene
+            .as_mut()
+            .unwrap()
+            .mark_dirty();
+        app.open_scene_resource(PathBuf::from("scenes/menu.scene"));
+        assert!(app.pending_document_change.is_some());
+
+        // 「放弃并继续」不保存直接切换，且切换后文档 clean（来自磁盘）。
+        let resolved = app.resolve_pending_change(&test_context(), PendingDecision::Discard);
+        assert!(resolved);
+        assert!(app.pending_document_change.is_none());
+        assert_eq!(
+            app.document.current_scene.as_ref().unwrap().scene.name,
+            "menu",
+            "放弃后应切到请求的场景"
+        );
+        assert!(!app
+            .document
+            .current_scene
+            .as_ref()
+            .unwrap()
+            .is_dirty());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn e06_save_success_saves_then_leaves() {
+        let (mut app, root) = open_sample_production("e06-save-ok");
+        // 打开 production（prefab 文档，path 指向磁盘）→ 正常「保存并继续」：
+        // 保存成功 → 原文档 clean 并离开到 menu。
+        let current_path = app
+            .document
+            .current_scene
+            .as_ref()
+            .unwrap()
+            .path
+            .clone()
+            .expect("磁盘打开的文档应有路径");
+        app.document
+            .current_scene
+            .as_mut()
+            .unwrap()
+            .mark_dirty();
+        app.open_scene_resource(PathBuf::from("scenes/menu.scene"));
+        assert!(app.pending_document_change.is_some());
+
+        let resolved = app.resolve_pending_change(&test_context(), PendingDecision::Save);
+        assert!(resolved);
+        assert!(app.pending_document_change.is_none());
+        assert!(!app.pending_save_failed);
+        assert_eq!(
+            app.document.current_scene.as_ref().unwrap().scene.name,
+            "menu",
+            "保存成功后应切到请求的场景"
+        );
+
+        // 原文档落盘且不再是 dirty（重新加载磁盘文件应等于保存时的内容）。
+        let reloaded = editor::SceneDocument::open(&current_path).unwrap();
+        assert!(!reloaded.is_dirty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn e06_save_failure_keeps_dirty_and_pending() {
+        let (mut app, root) = open_sample_production("e06-save-fail");
+        app.document
+            .current_scene
+            .as_mut()
+            .unwrap()
+            .mark_dirty();
+        // 请求离开到 menu（dirty → pending；只挂起，不碰磁盘）。
+        app.open_scene_resource(PathBuf::from("scenes/menu.scene"));
+        assert!(app.pending_document_change.is_some());
+        let doc_before = app.document.current_scene.as_ref().unwrap().clone();
+
+        // 破坏保存目标：scenes 目录替换为同名普通文件 → 原子写 create_dir_all 必失败。
+        let scenes_dir = app.project.root.join("scenes");
+        let _ = fs::remove_dir_all(&scenes_dir);
+        fs::write(&scenes_dir, "not a directory").unwrap();
+
+        // 「保存并继续」保存失败：pending 保留、save_failed 置位、文档停在原地且保持 dirty。
+        let resolved = app.resolve_pending_change(&test_context(), PendingDecision::Save);
+        assert!(!resolved, "保存失败时不得消费 pending");
+        assert!(app.pending_document_change.is_some());
+        assert!(app.pending_save_failed);
+        assert!(app.document.current_scene.as_ref().unwrap().is_dirty());
+        assert_eq!(
+            app.document.current_scene.as_ref().unwrap(),
+            &doc_before,
+            "保存失败后文档不得被改动"
+        );
+
+        // 修复磁盘（恢复 scenes 目录与 menu.scene 副本）后重试「保存并继续」：
+        // 保存成功 → pending 消费、切到 menu、save_failed 复位。
+        let _ = fs::remove_file(&scenes_dir);
+        fs::create_dir_all(&scenes_dir).unwrap();
+        let sample_scenes = sample_project_root().join("scenes");
+        for entry in fs::read_dir(&sample_scenes).unwrap() {
+            let entry = entry.unwrap();
+            fs::copy(entry.path(), scenes_dir.join(entry.file_name())).unwrap();
+        }
+        let resolved = app.resolve_pending_change(&test_context(), PendingDecision::Save);
+        assert!(resolved);
+        assert!(app.pending_document_change.is_none());
+        assert!(!app.pending_save_failed);
+        assert_eq!(
+            app.document.current_scene.as_ref().unwrap().scene.name,
+            "menu",
+            "修复后保存成功应切到请求的场景"
+        );
 
         let _ = fs::remove_dir_all(root);
     }

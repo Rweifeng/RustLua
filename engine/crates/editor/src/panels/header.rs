@@ -165,8 +165,13 @@ impl EditorApp {
         format!("RustLua 编辑器 - {}", root.display())
     }
 
-    /// 恢复一条崩溃快照并清理编辑状态。
+    /// 恢复一条崩溃快照（E06：dirty 时先经确认网关，确认后才替换文档）。
     fn recover_candidate(&mut self, candidate: editor::RecoveryCandidate) {
+        self.request_document_change(crate::actions::PendingChange::Recover { candidate });
+    }
+
+    /// 实际替换为崩溃快照文档（仅由确认流或 clean 快速路径调用）。
+    pub(crate) fn perform_recover_candidate(&mut self, candidate: editor::RecoveryCandidate) {
         self.set_current_scene_document(self.recovery.recover(&candidate));
         self.history.clear();
         self.autosave.reset();
@@ -178,6 +183,7 @@ impl EditorApp {
     }
 
     /// 菜单：新建项目 —— 选目录，缺啥补啥（project.toml/scripts/scenes/assets），再导入。
+    /// E06：目录选定并补齐骨架后，经确认网关切换项目（dirty 时弹确认窗）。
     fn create_new_project(&mut self) {
         let Some(dir) = choose_project_directory() else {
             return;
@@ -186,17 +192,22 @@ impl EditorApp {
             self.status = format!("创建项目骨架失败：{error}");
             return;
         }
-        self.import_path = dir.to_string_lossy().into_owned();
-        self.start_import();
+        self.request_project_switch(dir);
     }
 
-    /// 菜单：打开项目 —— 选目录并走后台导入流程。
+    /// 菜单：打开项目 —— 选目录并走后台导入流程（E06：dirty 时先确认）。
     fn open_project_menu(&mut self) {
         let Some(dir) = choose_project_directory() else {
             return;
         };
-        self.import_path = dir.to_string_lossy().into_owned();
-        self.start_import();
+        self.request_project_switch(dir);
+    }
+
+    /// 把「新建/打开/最近项目」统一为经未保存确认网关注入后台导入路径。
+    fn request_project_switch(&mut self, dir: std::path::PathBuf) {
+        self.request_document_change(crate::actions::PendingChange::SwitchProject {
+            path: dir.to_string_lossy().into_owned(),
+        });
     }
 
     /// 帮助 > 版本说明窗口。

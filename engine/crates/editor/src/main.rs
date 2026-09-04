@@ -342,6 +342,12 @@ struct EditorApp {
     /// E03 统一选择模型：Hierarchy / Scene View / Inspector / 命令层共享的单一权威选区。
     /// 原 `SceneTreeState`/`InspectorState`/`SceneEditorState::selected` 三套选择已全部收敛到此。
     selection: SelectionModel,
+    /// E06 未保存切换保护：待确认的文档离开操作。挂起时顶层弹「保存并继续 /
+    /// 放弃并继续 / 取消」确认窗，确认前**不**改动文档 / 选择 / 视图 / 历史。
+    pending_document_change: Option<crate::actions::PendingChange>,
+    /// 确认窗内「保存并继续」保存失败：保留 pending（文档保持 dirty、不切换），
+    /// 弹窗内显示失败原因并允许重试或放弃。
+    pending_save_failed: bool,
     /// Game View 输入快照的跨帧状态（M11-02）：held 按键/鼠标跨帧保留，
     /// `just_pressed`/`just_released` 边沿只在模拟帧边界消费一次，失焦/Play-Stop 时清空。
     preview_input_state: InputSnapshot,
@@ -693,6 +699,8 @@ impl EditorApp {
             scene_view_fit_pending: true,
             delete_target: DeleteTarget::None,
             selection: SelectionModel::new(),
+            pending_document_change: None,
+            pending_save_failed: false,
             last_metadata_key: None,
             preview_input_state: InputSnapshot::default(),
             thumbnail_benchmark_ran: false,
@@ -900,10 +908,97 @@ impl EditorApp {
             DeleteTarget::None => {}
         }
     }
+
+    /// E06：关闭编辑器入口（窗口 X / Alt+F4 / 系统退出）。
+    ///
+    /// - 当前编辑文档 clean → 放行，正常关闭。
+    /// - dirty 且没有待确认操作 → `CancelClose` 阻止关闭，挂起 `QuitEditor` 弹确认窗。
+    /// - 已有待确认操作（含用户再次按 X）→ 一律先 `CancelClose`，不覆盖现有 pending
+    ///   （防重复触发切换请求与重复弹窗）。
+    fn guard_close_request(&mut self, context: &egui::Context) {
+        let close_requested = context.input(|input| input.viewport().close_requested());
+        if !close_requested {
+            return;
+        }
+        if self.pending_document_change.is_some() {
+            context.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            return;
+        }
+        let dirty = self
+            .document
+            .current_scene
+            .as_ref()
+            .is_some_and(editor::SceneDocument::is_dirty);
+        if !dirty {
+            // 无未保存更改：允许关闭。
+            return;
+        }
+        context.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        self.pending_document_change = Some(crate::actions::PendingChange::QuitEditor);
+        self.pending_save_failed = false;
+    }
+
+    /// E06：顶层「未保存的更改」确认窗。三选项：
+    /// 「保存并继续」（保存成功才继续，失败保留 pending 并提示）、
+    /// 「放弃并继续」、以及「取消」（取消挂起的离开操作，保持文档 / 选择 / 视图 / 历史）。
+    /// 关闭编辑器（QuitEditor）在确认后发送真正的 Close。
+    pub(crate) fn draw_pending_change_window(&mut self, context: &egui::Context) {
+        let Some(change) = self.pending_document_change.clone() else {
+            return;
+        };
+        let scene_name = self
+            .document
+            .current_scene
+            .as_ref()
+            .map(|doc| doc.scene.name.clone())
+            .unwrap_or_else(|| "当前场景".to_owned());
+        let save_failed = self.pending_save_failed;
+        let failure_status = if save_failed {
+            self.status.clone()
+        } else {
+            String::new()
+        };
+        let action = change.action_label();
+
+        let mut decision: Option<crate::actions::PendingDecision> = None;
+        egui::Window::new("未保存的更改")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(context, |ui| {
+                ui.label(format!("场景「{scene_name}」有尚未保存的更改。"));
+                ui.label(format!("操作：{action}"));
+                if save_failed {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(230, 90, 90),
+                        format!("保存失败：{failure_status}"),
+                    );
+                    ui.label("未保存的更改已保留，可重试保存或选择放弃。");
+                }
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if ui.button("保存并继续").clicked() {
+                        decision = Some(crate::actions::PendingDecision::Save);
+                    }
+                    if ui.button("放弃并继续").clicked() {
+                        decision = Some(crate::actions::PendingDecision::Discard);
+                    }
+                    if ui.button("取消").clicked() {
+                        decision = Some(crate::actions::PendingDecision::Cancel);
+                    }
+                });
+            });
+        if let Some(decision) = decision {
+            self.resolve_pending_change(context, decision);
+        }
+    }
 }
 
 impl eframe::App for EditorApp {
     fn update(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
+        // E06：用户点窗口 X / Alt+F4 —— 若当前文档 dirty，阻止关闭并弹确认窗
+        // （确认「保存并继续 / 放弃并继续」后再真正 Close；「取消」保持原状态）。
+        self.guard_close_request(context);
         // 重置缩略图 worker 每帧提交预算。
         self.thumbnail_worker.begin_frame();
         // 启动时把资源扫描延后到首帧：窗口先绘制，扫描不阻塞首帧展示。
@@ -998,6 +1093,9 @@ impl eframe::App for EditorApp {
         self.progress.window(context);
         self.draw_publish_panel(context);
         self.draw_about_window(context);
+        // E06：最后绘制「未保存的更改」确认窗，置于其余窗口之上；仅在 dirty 且
+        // 有挂起的离开操作时显示，此时其它面板保持原样、文档不被改动。
+        self.draw_pending_change_window(context);
     }
 }
 
