@@ -245,11 +245,15 @@ struct EditorApp {
     scene_zoom: f32,
     scene_tool: SceneTool,
     scene_view_mode: SceneViewMode,
+    show_scene_guides: bool,
+    show_safe_area: bool,
+    show_pixel_grid: bool,
     snap_enabled: bool,
     snap_step: f32,
     hierarchy_filter: String,
     scene_state: SceneEditorState,
     inspector_clipboard: Option<ComponentClipboard>,
+    transform_lock_ratio: bool,
     inspector_transform_open: bool,
     progress: ProgressPanel,
     show_publish_panel: bool,
@@ -359,6 +363,10 @@ struct EditorApp {
     /// Game View 输入快照的跨帧状态（M11-02）：held 按键/鼠标跨帧保留，
     /// `just_pressed`/`just_released` 边沿只在模拟帧边界消费一次，失焦/Play-Stop 时清空。
     preview_input_state: InputSnapshot,
+    /// Hierarchy 实体复制剪贴板，保存源实体及其子树快照。
+    hierarchy_clipboard: Option<engine::core::scene::SceneEntity>,
+    /// Play/Stop 前的编辑器上下文快照：恢复时重建选择、工具、视图和分辨率状态。
+    editor_context_snapshot: Option<EditorContextSnapshot>,
     /// 自动缩略图压测钩子是否已执行，避免每帧重复跑。
     thumbnail_benchmark_ran: bool,
     /// 自动 Play/Stop 压测钩子是否已执行，避免每帧重复跑。
@@ -471,7 +479,23 @@ enum SceneTool {
 enum SceneViewMode {
     #[default]
     View2D,
+    Widget,
+    Prefab,
     View3D,
+}
+
+#[derive(Clone, Debug)]
+struct EditorContextSnapshot {
+    selection: SelectionModel,
+    workspace_tab: WorkspaceTab,
+    scene_tool: SceneTool,
+    scene_view_mode: SceneViewMode,
+    scene_zoom: f32,
+    scene_pan: egui::Vec2,
+    /// Hierarchy 折叠状态：Play 期间用户仍可折叠/展开行，Stop 后恢复原状。
+    hierarchy_collapsed: std::collections::BTreeSet<SceneEntityId>,
+    preview_resolution: (u32, u32),
+    game_camera_2d_center: Vec2,
 }
 
 /// 对齐模式：Grid 吸附网格 / H 对齐 Y / V 对齐 X（对齐到首个选中实体）。
@@ -657,11 +681,15 @@ impl EditorApp {
             scene_zoom: 1.0,
             scene_tool: SceneTool::Select,
             scene_view_mode: SceneViewMode::default(),
+            show_scene_guides: false,
+            show_safe_area: false,
+            show_pixel_grid: false,
             snap_enabled: false,
             snap_step: 0.5,
             hierarchy_filter: String::new(),
             scene_state: SceneEditorState::default(),
             inspector_clipboard: None,
+            transform_lock_ratio: false,
             inspector_transform_open: true,
             progress: ProgressPanel::default(),
             show_publish_panel: false,
@@ -714,6 +742,8 @@ impl EditorApp {
             pending_save_failed: false,
             last_metadata_key: None,
             preview_input_state: InputSnapshot::default(),
+            hierarchy_clipboard: None,
+            editor_context_snapshot: None,
             thumbnail_benchmark_ran: false,
             play_stop_benchmark_ran: false,
             benchmark_textures: Vec::new(),
@@ -729,6 +759,33 @@ impl EditorApp {
 
     fn set_render_state(&mut self, render_state: Option<eframe::egui_wgpu::RenderState>) {
         self.render_state = render_state;
+    }
+
+    fn capture_editor_context(&self) -> EditorContextSnapshot {
+        EditorContextSnapshot {
+            selection: self.selection.clone(),
+            workspace_tab: self.workspace_tab,
+            scene_tool: self.scene_tool,
+            scene_view_mode: self.scene_view_mode,
+            scene_zoom: self.scene_zoom,
+            scene_pan: self.scene_state.pan,
+            hierarchy_collapsed: self.scene_state.collapsed.clone(),
+            preview_resolution: self.preview_resolution,
+            game_camera_2d_center: self.game_camera_2d_center,
+        }
+    }
+
+    fn restore_editor_context(&mut self, snapshot: EditorContextSnapshot) {
+        self.selection = snapshot.selection;
+        self.workspace_tab = snapshot.workspace_tab;
+        self.scene_tool = snapshot.scene_tool;
+        self.scene_view_mode = snapshot.scene_view_mode;
+        self.scene_zoom = snapshot.scene_zoom;
+        self.scene_state.pan = snapshot.scene_pan;
+        self.scene_state.collapsed = snapshot.hierarchy_collapsed;
+        self.preview_resolution = snapshot.preview_resolution;
+        self.game_camera_2d_center = snapshot.game_camera_2d_center;
+        self.scene_view_fit_pending = true;
     }
 
     fn autoplay_scene_path(&self) -> PathBuf {
@@ -1061,6 +1118,19 @@ impl eframe::App for EditorApp {
             && context.input(|i| i.key_pressed(egui::Key::Delete))
         {
             self.handle_delete_shortcut();
+        }
+        if self.workspace_tab == WorkspaceTab::Scene && !context.wants_keyboard_input() {
+            context.input(|input| {
+                if input.key_pressed(egui::Key::Q) {
+                    self.scene_tool = SceneTool::Select;
+                } else if input.key_pressed(egui::Key::W) {
+                    self.scene_tool = SceneTool::Move;
+                } else if input.key_pressed(egui::Key::E) {
+                    self.scene_tool = SceneTool::Rotate;
+                } else if input.key_pressed(egui::Key::R) {
+                    self.scene_tool = SceneTool::Scale;
+                }
+            });
         }
         // E08：Escape 取消活动事务（拖动/Inspector 编辑的取消语义，见
         // cancel_edit_on_escape）。置于 Delete 之后，非键入状态生效。确实执行了

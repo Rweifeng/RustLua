@@ -257,6 +257,15 @@ E20 + E22
 - ✅ 行为回归：`e08_inspector_mark_then_finish_*`、`e08_scene_drag_*`、
   `e08_escape_cancel_*` 等新测试 + 既有回归全部通过（`cargo test -p editor`）。
 
+> **批次 A 附带（超越条目范围的实现，登记备查）**：随 E09/E10 同批落地的部分
+> 阶段 2/3 雏形——E12 多选 Inspector（共有组件提示 + Transform/Transform3D
+> 批量写入 + Mixed 标注 + 锁定比例）、E13 组件注册表 `COMPONENT_REGISTRY`
+> （Add Component 改为读取注册表）、E14 工具栏文字标签 + QWER 快捷键 +
+> 辅助线/Safe Area/像素网格开关、E15/E19 雏形（Widget/Prefab 模式切换 +
+> Widget Palette 拖拽生成 Text/Image/Button + `ui.root` 过滤）、E16 雏形
+> （`UiLayout` 共享布局值对象，编辑器与运行时同一 `resolve` 路径）。这些
+> 均为过渡性实现，对应条目正式封板时以其验收标准复核。
+
 ### E09：完善 Play/Stop 编辑上下文恢复
 
 **目标**：Play/Stop 不丢失用户当前编辑上下文。
@@ -271,6 +280,18 @@ E20 + E22
 **依赖**：E03、E04。
 
 **验收标准**：Play/Stop 前后视图、选择和工具状态保持；运行时对象不存在于编辑文档时不会产生悬空引用。
+
+**实现状态（E09，批次 A）**：
+
+- ✅ `EditorContextSnapshot`（main.rs）：Play 前捕获选择、工作区标签页、场景工具、
+  Scene View 模式/缩放/平移、Hierarchy 折叠状态、预览分辨率、Game 相机中心；
+  `play()` 时 `capture_editor_context`，`stop()` 时经 `restore_editor_context` 恢复。
+- ✅ Stop 路径：`on_document_changed(PlaybackStopped)` 先清空/修复选择（沿用 E02
+  网关），随后快照恢复覆盖回原选择/视图/工具；编辑文档与运行时副本继续隔离
+  （`set_current_scene_document(session.stop())` 不变）。
+- ✅ 快照缺失兜底：无快照（异常路径）时以当前视图参数构造等价快照，不产生悬空引用。
+- ✅ 行为回归：`sample_project_stop_restores_editor_context_and_clears_preview_input`
+  验证 Stop 后选择/工具/缩放/平移/标签页与 Play 前一致；全部测试通过。
 
 ### E10：修复 Hierarchy 过滤、重挂载和上下文操作
 
@@ -291,6 +312,29 @@ E20 + E22
 **重点文件**：[hierarchy.rs](../engine/crates/editor/src/panels/hierarchy.rs)。
 
 **验收标准**：可搜索任意深度节点并保留完整祖先路径；非法重挂载无法提交；上下文菜单操作可 Undo/Redo。
+
+**实现状态（E10，批次 A）**：
+
+- ✅ 过滤祖先路径：`hierarchy_filter_matches` 递归 `matches(node) ||
+  has_matching_descendant(node)`；过滤激活时匹配后代的节点强制展开
+  （`force_expand` 覆盖折叠态），祖先链完整可见。
+- ✅ 三位重挂载：Hierarchy 行支持拖拽（`dnd_drag_source` + 内嵌 `dnd_drop_zone`），
+  按指针落点 y 三分位判定 Before / After / Child；合法目标画绿色插入线/子级框，
+  非法目标（自环、子孙、锁定）画红色提示且 `validate_reparent_target` 拒绝提交。
+- ✅ `SceneTreeState::reparent_at(document, id, target, position)`：同层重排序、
+  跨父移动、根层排序（根顺序持久化到场景 `metadata["editor.root_order"]`，
+  保存/重开后顺序保持）；循环/非法目标返回 `SceneTreeError`。
+- ✅ 重挂载事务化：拖放释放经 `begin_edit_transaction → reparent_at →
+  commit_edit_transaction`（E07/E08 事务网关），失败自动 `cancel`。
+- ✅ 上下文菜单（行尾 ⋮）：新建子节点/同级节点、重命名、复制/粘贴为子节点
+  （`hierarchy_clipboard` + `duplicate_subtree` 全新 ID）、创建/重应用 Prefab、
+  聚焦 Scene View（2D 平移居中 / 3D 相机 target）、设为 UI 根节点、移动到根、删除。
+  全部走 History，可 Undo/Redo。
+- ✅ UI Root 标记：实体 `metadata["ui.root"]="true"` 经 History 提交，Hierarchy 行
+  与 Inspector 显示 `[UI Root]` 徽标；Widget Mode（E15 雏形）以此过滤 UI 子树。
+- ✅ 单测：`reparent_at_updates_sibling_order`、`reparent_at_persists_root_order`、
+  `duplicate_subtree_gets_fresh_ids_and_preserves_data`、
+  `hierarchy_filter_keeps_matching_ancestor_path_visible` 等；全部测试通过。
 
 ## 5. 阶段 2：Scene View、Inspector 和日常编辑效率
 

@@ -2,7 +2,7 @@
 
 use crate::EditorApp;
 use crate::util::{display_path, icon_button, strip_verbatim_prefix};
-use editor::{CommandKind, SelectionSource};
+use editor::{CommandKind, ReparentPosition, SelectionSource};
 use eframe::egui;
 use engine::core::{
     prefab::Prefab, resource_db::AssetId, scene::SceneEntityId, transform3d::Transform3D,
@@ -11,6 +11,121 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 impl EditorApp {
+    fn set_ui_root(&mut self, id: SceneEntityId) {
+        if self.is_playing() {
+            self.status = "Play mode locks scene editing; click Stop first".to_owned();
+            return;
+        }
+        let Some(scene) = self.document.current_scene.as_mut() else {
+            self.status = "Create a scene first".to_owned();
+            return;
+        };
+        let result = self.history.execute(
+            scene,
+            "Set UI root",
+            CommandKind::Property,
+            |scene| {
+                for entity in scene.scene.entities.values_mut() {
+                    entity.metadata.remove("ui.root");
+                }
+                let entity = scene
+                    .scene
+                    .entities
+                    .get_mut(&id)
+                    .ok_or_else(|| "当前实体不存在".to_owned())?;
+                entity.metadata.insert("ui.root".to_owned(), "true".to_owned());
+                scene.mark_dirty();
+                Ok::<(), String>(())
+            },
+        );
+        match result {
+            Ok(true) => {
+                self.on_document_changed(crate::actions::DocumentChange::UiRootChanged);
+                self.status = "已设置 UI 根节点".to_owned();
+            }
+            Ok(false) => self.status = "No change".to_owned(),
+            Err(error) => self.status = error,
+        }
+    }
+
+    fn focus_selected_scene_view(&mut self) {
+        let Some(id) = self.selection.primary() else {
+            self.status = "请先在 Hierarchy 中选择实体".to_owned();
+            return;
+        };
+        let Some(entity) = self.current_scene().and_then(|scene| scene.scene.entities.get(&id)) else {
+            self.status = "当前实体不存在".to_owned();
+            return;
+        };
+        if self.scene_view_mode == crate::SceneViewMode::View3D {
+            let target = entity
+                .components
+                .get("Transform3D")
+                .and_then(|value| Transform3D::from_component_str(value).ok())
+                .map(|transform| transform.position)
+                .unwrap_or(engine::core::math3d::Vec3::ZERO);
+            self.editor_camera.target = target;
+            self.status = "3D Scene View 已聚焦实体".to_owned();
+            return;
+        }
+        let transform = entity
+            .components
+            .get("Transform")
+            .and_then(|value| crate::geometry::parse_transform(value))
+            .unwrap_or_default();
+        self.scene_state.pan = egui::vec2(
+            -transform.position_x * self.scene_zoom,
+            transform.position_y * self.scene_zoom,
+        );
+        self.status = "Scene View 已聚焦实体".to_owned();
+    }
+
+    fn copy_selected_entity(&mut self) {
+        let Some(id) = self.selection.primary() else {
+            self.status = "请先在 Hierarchy 中选择实体".to_owned();
+            return;
+        };
+        let Some(entity) = self.current_scene().and_then(|scene| scene.scene.entities.get(&id)) else {
+            self.status = "当前实体不存在".to_owned();
+            return;
+        };
+        self.hierarchy_clipboard = Some(entity.clone());
+        self.status = "Entity copied".to_owned();
+    }
+
+    fn paste_entity(&mut self, parent: Option<SceneEntityId>) {
+        if self.is_playing() {
+            self.status = "Play mode locks scene editing; click Stop first".to_owned();
+            return;
+        }
+        let Some(source) = self.hierarchy_clipboard.clone() else {
+            self.status = "Entity clipboard is empty".to_owned();
+            return;
+        };
+        let tree = self.tree.clone();
+        let created = std::cell::Cell::new(None::<SceneEntityId>);
+        let Some(scene) = self.document.current_scene.as_mut() else {
+            self.status = "Create a scene first".to_owned();
+            return;
+        };
+        let result = self.history.execute(scene, "Paste entity", CommandKind::Create, |scene| {
+            let id = tree.duplicate_subtree(scene, &source, parent).map_err(|error| error.to_string())?;
+            created.set(Some(id));
+            Ok::<(), String>(())
+        });
+        match result {
+            Ok(true) => {
+                if let Some(id) = created.get() {
+                    self.selection.set_single(id, SelectionSource::Hierarchy);
+                    self.sync_inspector(id);
+                }
+                self.status = "Entity pasted".to_owned();
+            }
+            Ok(false) => self.status = "No change".to_owned(),
+            Err(error) => self.status = error,
+        }
+    }
+
     /// 层级面板：整合场景文件切换/新建，位于资源面板右侧。
     pub(crate) fn draw_hierarchy_panel(&mut self, context: &egui::Context) {
         egui::SidePanel::left("scene_tree")
@@ -84,82 +199,257 @@ impl EditorApp {
             });
     }
 
+    fn hierarchy_filter_matches(&self, scene: &editor::SceneDocument, id: SceneEntityId) -> bool {
+        let Some(entity) = scene.scene.entities.get(&id) else {
+            return false;
+        };
+        let query = self.hierarchy_filter.trim();
+        if query.is_empty() {
+            return true;
+        }
+        let query_lower = query.to_lowercase();
+        let name_matches = entity.name.to_lowercase().contains(&query_lower);
+        let descendant_matches = entity
+            .children
+            .iter()
+            .any(|child| self.hierarchy_filter_matches(scene, *child));
+        name_matches || descendant_matches
+    }
+
     /// 递归绘制实体树节点。
     fn draw_entity(&mut self, ui: &mut egui::Ui, id: SceneEntityId, depth: usize) {
-        let Some(scene) = self.current_scene() else {
+        let current_scene = self.document.current_scene.clone();
+        let Some(scene) = current_scene.as_ref() else {
             return;
         };
-        let Some(entity) = scene.scene.entities.get(&id) else {
+        let Some(entity) = scene.scene.entities.get(&id).cloned() else {
             return;
         };
+        let query = self.hierarchy_filter.trim();
         let name = entity.name.clone();
         let children = entity.children.clone();
-        if !self.hierarchy_filter.trim().is_empty()
-            && !name
-                .to_lowercase()
-                .contains(&self.hierarchy_filter.to_lowercase())
-        {
+        let filter_active = !query.is_empty();
+        let visible_subtree = !filter_active || self.hierarchy_filter_matches(scene, id);
+        if filter_active && !visible_subtree {
             return;
         }
         let selected = self.selection.contains(id);
         let collapsed = self.scene_state.collapsed.contains(&id);
+        let force_expand = filter_active && entity.children.iter().any(|child| self.hierarchy_filter_matches(scene, *child));
+        let effective_collapsed = collapsed && !force_expand;
         let hidden = self.scene_state.hidden.contains(&id);
         let locked = self.scene_state.locked.contains(&id);
-        ui.horizontal(|ui| {
-            ui.add_space(depth as f32 * 14.0);
-            if !children.is_empty() {
-                if icon_button(ui, if collapsed { "▸" } else { "▾" }, "展开或折叠子节点").clicked()
-                {
-                    if collapsed {
-                        self.scene_state.collapsed.remove(&id);
+        let ui_root = entity.metadata.get("ui.root").is_some_and(|value| value == "true");
+        let parent = entity.parent;
+        let row_id = egui::Id::new(("hierarchy_entry", id.0));
+        let row = ui.dnd_drag_source(row_id, id, |ui| {
+            ui.dnd_drop_zone::<SceneEntityId, _>(egui::Frame::default(), |ui| {
+                ui.horizontal(|ui| {
+                    ui.add_space(depth as f32 * 14.0);
+                    if !children.is_empty() {
+                        if icon_button(ui, if effective_collapsed { "▸" } else { "▾" }, "展开或折叠子节点").clicked()
+                        {
+                            if effective_collapsed {
+                                self.scene_state.collapsed.remove(&id);
+                            } else {
+                                self.scene_state.collapsed.insert(id);
+                            }
+                        }
                     } else {
-                        self.scene_state.collapsed.insert(id);
+                        ui.add_space(18.0);
+                    }
+                    if icon_button(ui, if hidden { "◌" } else { "◉" }, "显示或隐藏实体").clicked()
+                    {
+                        if hidden {
+                            self.scene_state.hidden.remove(&id);
+                            self.persist_hierarchy_flag(id, "hidden", false);
+                        } else {
+                            self.scene_state.hidden.insert(id);
+                            self.persist_hierarchy_flag(id, "hidden", true);
+                        }
+                    }
+                    if icon_button(ui, if locked { "⊠" } else { "⊡" }, "锁定或解锁实体").clicked()
+                    {
+                        if locked {
+                            self.scene_state.locked.remove(&id);
+                            self.persist_hierarchy_flag(id, "locked", false);
+                        } else {
+                            self.scene_state.locked.insert(id);
+                            self.persist_hierarchy_flag(id, "locked", true);
+                        }
+                    }
+                    if ui
+                        .add_enabled(
+                            !locked,
+                            egui::Button::selectable(
+                                selected,
+                                format!("{}{} [{}]", if ui_root { "[UI Root] " } else { "" }, name, id.0),
+                            ),
+                        )
+                        .clicked()
+                    {
+                        let additive = ui.input(|input| input.modifiers.command || input.modifiers.ctrl);
+                        if additive {
+                            self.selection.toggle(id, SelectionSource::Hierarchy);
+                        } else {
+                            self.selection.set_single(id, SelectionSource::Hierarchy);
+                        }
+                        if let Some(primary) = self.selection.primary() {
+                            self.sync_inspector(primary);
+                        } else {
+                            self.clear_inspector();
+                        }
+                    }
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.menu_button("⋮", |ui| {
+                            if ui.button("新建子节点").clicked() {
+                                self.selection.set_single(id, SelectionSource::Hierarchy);
+                                self.entity_name = "New Entity".to_owned();
+                                self.add_entity(Some(id));
+                                ui.close();
+                            }
+                            if ui.button("新建同级节点").clicked() {
+                                self.selection.set_single(id, SelectionSource::Hierarchy);
+                                self.entity_name = "New Entity".to_owned();
+                                self.add_entity(parent);
+                                ui.close();
+                            }
+                            if ui.button("重命名").clicked() {
+                                self.selection.set_single(id, SelectionSource::Hierarchy);
+                                let next_name = format!("{} Copy", name);
+                                self.entity_name = next_name.clone();
+                                self.rename_selected();
+                                self.status = format!("Renamed to {next_name}");
+                                ui.close();
+                            }
+                            if ui.button("复制").clicked() {
+                                self.selection.set_single(id, SelectionSource::Hierarchy);
+                                self.copy_selected_entity();
+                                ui.close();
+                            }
+                            if ui.button("粘贴为子节点").clicked() {
+                                self.selection.set_single(id, SelectionSource::Hierarchy);
+                                self.paste_entity(Some(id));
+                                ui.close();
+                            }
+                            if ui.button("创建 Prefab").clicked() {
+                                self.selection.set_single(id, SelectionSource::Hierarchy);
+                                self.create_prefab_from_selected();
+                                ui.close();
+                            }
+                            if ui.button("重新应用 Prefab").clicked() {
+                                self.selection.set_single(id, SelectionSource::Hierarchy);
+                                self.reapply_selected_prefab();
+                                ui.close();
+                            }
+                            if ui.button("聚焦 Scene View").clicked() {
+                                self.selection.set_single(id, SelectionSource::Hierarchy);
+                                self.focus_selected_scene_view();
+                                ui.close();
+                            }
+                            if ui.button("设为 UI 根节点").clicked() {
+                                self.selection.set_single(id, SelectionSource::Hierarchy);
+                                self.set_ui_root(id);
+                                ui.close();
+                            }
+                            if ui.button("移动到根节点").clicked() {
+                                self.selection.set_single(id, SelectionSource::Hierarchy);
+                                self.reparent_selected(None);
+                                ui.close();
+                            }
+                            if ui.button("删除").clicked() {
+                                self.selection.set_single(id, SelectionSource::Hierarchy);
+                                if self.is_playing() {
+                                    self.status = "Play mode locks scene editing; click Stop first".to_owned();
+                                } else {
+                                    self.delete_selected_entity();
+                                }
+                                ui.close();
+                            }
+                        });
+                    });
+                })
+            })
+            .1
+        });
+        let drag_target_state = row
+            .inner
+            .as_ref()
+            .map(|dragged_id| **dragged_id)
+            .filter(|dragged_id| *dragged_id != id)
+            .and_then(|dragged_id| {
+                self.document
+                    .current_scene
+                    .as_ref()
+                    .map(|scene| (dragged_id, self.validate_reparent_target(scene, dragged_id, Some(id))))
+            });
+        let drop_valid = matches!(drag_target_state, Some((_, Ok(()))));
+        let drop_invalid = matches!(drag_target_state, Some((_, Err(_))));
+        let drop_position = ui
+            .input(|input| input.pointer.interact_pos().map(|position| position.y))
+            .map(|pointer_y| {
+                let fraction = (pointer_y - row.response.rect.top()) / row.response.rect.height();
+                if fraction < 0.33 {
+                    ReparentPosition::Before
+                } else if fraction > 0.66 {
+                    ReparentPosition::After
+                } else {
+                    ReparentPosition::Child
+                }
+            })
+            .unwrap_or(ReparentPosition::Child);
+        if drop_valid || drop_invalid {
+            let stroke = egui::Stroke::new(
+                2.0_f32,
+                if drop_valid {
+                    egui::Color32::from_rgb(110, 210, 130)
+                } else {
+                    egui::Color32::from_rgb(220, 100, 100)
+                },
+            );
+            let rect = row.response.rect;
+            match drop_position {
+                ReparentPosition::Before => {
+                    ui.painter().line_segment([rect.left_top(), rect.right_top()], stroke);
+                }
+                ReparentPosition::After => {
+                    ui.painter().line_segment([rect.left_bottom(), rect.right_bottom()], stroke);
+                }
+                ReparentPosition::Child => {
+                    ui.painter().rect_stroke(rect, 0.0_f32, stroke, egui::StrokeKind::Inside);
+                }
+            }
+        }
+        if let Some(dropped_id) = row.inner.as_ref().map(|id| **id) {
+            if dropped_id != id {
+                if let Some(scene) = self.document.current_scene.as_ref() {
+                    if let Err(error) = self.validate_reparent_target(scene, dropped_id, Some(id)) {
+                        self.status = error;
+                    } else {
+                        if !self.begin_edit_transaction("Reparent entity", CommandKind::Reparent, Some(dropped_id)) {
+                            self.status = "重挂载事务已激活，无法重复开始".to_owned();
+                        } else if let Some(scene) = self.document.current_scene.as_mut() {
+                            match self.tree.reparent_at(scene, dropped_id, id, drop_position) {
+                                Ok(()) => {
+                                    self.commit_edit_transaction();
+                                    self.on_document_changed(crate::actions::DocumentChange::EntityReparented);
+                                    self.status = "Reparented by drag".to_owned();
+                                }
+                                Err(error) => {
+                                    self.cancel_edit_transaction();
+                                    self.status = error.to_string();
+                                }
+                            }
+                        } else {
+                            self.cancel_edit_transaction();
+                            self.status = "Create a scene first".to_owned();
+                        }
                     }
                 }
-            } else {
-                ui.add_space(18.0);
             }
-            if icon_button(ui, if hidden { "◌" } else { "◉" }, "显示或隐藏实体").clicked()
-            {
-                if hidden {
-                    self.scene_state.hidden.remove(&id);
-                    self.persist_hierarchy_flag(id, "hidden", false);
-                } else {
-                    self.scene_state.hidden.insert(id);
-                    self.persist_hierarchy_flag(id, "hidden", true);
-                }
-            }
-            if icon_button(ui, if locked { "⊠" } else { "⊡" }, "锁定或解锁实体").clicked()
-            {
-                if locked {
-                    self.scene_state.locked.remove(&id);
-                    self.persist_hierarchy_flag(id, "locked", false);
-                } else {
-                    self.scene_state.locked.insert(id);
-                    self.persist_hierarchy_flag(id, "locked", true);
-                }
-            }
-            if ui
-                .add_enabled(
-                    !locked,
-                    egui::Button::selectable(selected, format!("{} [{}]", name, id.0)),
-                )
-                .clicked()
-            {
-                let additive = ui.input(|input| input.modifiers.command || input.modifiers.ctrl);
-                if additive {
-                    self.selection.toggle(id, SelectionSource::Hierarchy);
-                } else {
-                    self.selection.set_single(id, SelectionSource::Hierarchy);
-                }
-                if let Some(primary) = self.selection.primary() {
-                    self.sync_inspector(primary);
-                } else {
-                    self.clear_inspector();
-                }
-            }
-        });
-        if !collapsed {
+        }
+        if !effective_collapsed {
             for child in children {
                 self.draw_entity(ui, child, depth + 1);
             }
@@ -380,4 +670,43 @@ fn scan_scene_files(root: &std::path::Path) -> Vec<PathBuf> {
         }
     }
     files
+}
+
+#[cfg(test)]
+mod tests {
+    use editor::SceneDocument;
+    use engine::core::{
+        logging::LogSink,
+        scene::SceneEntityId,
+    };
+
+    #[test]
+    fn hierarchy_filter_keeps_matching_ancestor_path_visible() {
+        let mut document = SceneDocument::new_scene("main");
+        let root = SceneEntityId(1);
+        let branch = SceneEntityId(2);
+        let leaf = SceneEntityId(3);
+        document.scene.add_entity(root, "Root", None).unwrap();
+        document.scene.add_entity(branch, "Branch", Some(root)).unwrap();
+        document.scene.add_entity(leaf, "Leaf", Some(branch)).unwrap();
+        let mut app = crate::EditorApp::new(
+            editor::ProjectInfo {
+                root: std::env::temp_dir().join(format!("p2-hierarchy-filter-{}", std::process::id())),
+                version: "test".to_owned(),
+                directories: Vec::new(),
+            },
+            None,
+            LogSink::new(64),
+        );
+        app.document.current_scene = Some(document);
+        app.hierarchy_filter = "Leaf".to_owned();
+
+        let root_visible = app.hierarchy_filter_matches(app.current_scene().unwrap(), root);
+        let branch_visible = app.hierarchy_filter_matches(app.current_scene().unwrap(), branch);
+        let leaf_visible = app.hierarchy_filter_matches(app.current_scene().unwrap(), leaf);
+
+        assert!(root_visible);
+        assert!(branch_visible);
+        assert!(leaf_visible);
+    }
 }

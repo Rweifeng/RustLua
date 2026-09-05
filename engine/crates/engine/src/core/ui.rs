@@ -49,6 +49,49 @@ impl UiLayoutSpace {
     }
 }
 
+/// Shared authored layout data for screen-space UI components.
+///
+/// Existing `Text` and `Image` component formats still store these fields
+/// inline; this value object gives editor and runtime code one layout contract
+/// without requiring a scene-format migration.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct UiLayout {
+    pub position: [f32; 2],
+    pub size: [f32; 2],
+    pub space: UiLayoutSpace,
+    pub anchor: [f32; 2],
+}
+
+impl UiLayout {
+    #[must_use]
+    pub fn from_image(image: &UiImage) -> Self {
+        Self {
+            position: image.position,
+            size: image.size,
+            space: image.space,
+            anchor: image.anchor,
+        }
+    }
+
+    #[must_use]
+    pub fn with_position(mut self, position: [f32; 2]) -> Self {
+        self.position = position;
+        self
+    }
+
+    #[must_use]
+    pub fn resolve(self, viewport: [f32; 2], reference: [f32; 2]) -> ([f32; 2], [f32; 2]) {
+        resolve_ui_rect(
+            self.position,
+            self.size,
+            self.space,
+            self.anchor,
+            viewport,
+            reference,
+        )
+    }
+}
+
 /// 默认的 Canvas 参考分辨率（设计分辨率）。发布游戏未显式配置时的回退值；
 /// 编辑器按设计分辨率（preview_resolution）显式传入，见 `resolve_ui_rect`。
 pub const UI_REFERENCE_SIZE: [f32; 2] = [1280.0, 720.0];
@@ -687,6 +730,32 @@ impl UiImage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shared_layout_resolves_image_like_legacy_path() {
+        let image = UiImage {
+            texture: "assets/ui.png".to_owned(),
+            position: [24.0, 36.0],
+            size: [160.0, 48.0],
+            color: [1.0, 0.8, 0.6],
+            space: UiLayoutSpace::Canvas,
+            anchor: [0.5, 0.5],
+            nine_slice: None,
+        };
+        let viewport = [1280.0, 720.0];
+        let reference = [1280.0, 720.0];
+        assert_eq!(
+            UiLayout::from_image(&image).resolve(viewport, reference),
+            resolve_ui_rect(
+                image.position,
+                image.size,
+                image.space,
+                image.anchor,
+                viewport,
+                reference,
+            )
+        );
+    }
 
     #[test]
     fn text_round_trip_preserves_escaped_specials() {

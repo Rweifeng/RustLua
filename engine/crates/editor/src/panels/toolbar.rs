@@ -43,6 +43,7 @@ impl EditorApp {
                             .changed()
                         {
                             self.adding_preview_resolution = false;
+                            self.scene_view_fit_pending = true;
                         }
                     }
                     ui.separator();
@@ -64,6 +65,7 @@ impl EditorApp {
                     self.preview_resolutions.push((640, 360));
                 }
                 self.preview_resolution = self.preview_resolutions[0];
+                self.scene_view_fit_pending = true;
             }
             ui.separator();
             if icon_toggle(
@@ -107,8 +109,72 @@ impl EditorApp {
                     self.scene_view_fit_pending = true;
                 }
             }
+            if icon_toggle(
+                ui,
+                self.scene_view_mode == SceneViewMode::Widget,
+                "UI",
+                "Widget Mode（UI 画布）",
+            )
+            .clicked()
+            {
+                self.scene_view_mode = if self.scene_view_mode == SceneViewMode::Widget {
+                    SceneViewMode::View2D
+                } else {
+                    SceneViewMode::Widget
+                };
+                self.scene_view_fit_pending = true;
+            }
+            if icon_toggle(
+                ui,
+                self.scene_view_mode == SceneViewMode::Prefab,
+                "Prefab",
+                "Prefab Mode",
+            )
+            .clicked()
+            {
+                self.scene_view_mode = if self.scene_view_mode == SceneViewMode::Prefab {
+                    SceneViewMode::View2D
+                } else {
+                    SceneViewMode::Prefab
+                };
+                self.scene_view_fit_pending = true;
+            }
+            if self.scene_view_mode == SceneViewMode::Widget {
+                ui.separator();
+                ui.label("控件");
+                if ui.button("Text").clicked() {
+                    self.add_entity_with_component("New Text", "Text");
+                }
+                ui.dnd_drag_source(
+                    egui::Id::new("widget_palette_text"),
+                    "widget:Text".to_owned(),
+                    |ui| ui.small("↕"),
+                );
+                if ui.button("Image").clicked() {
+                    self.add_entity_with_component("New Image", "Image");
+                }
+                ui.dnd_drag_source(
+                    egui::Id::new("widget_palette_image"),
+                    "widget:Image".to_owned(),
+                    |ui| ui.small("↕"),
+                );
+                if ui.button("Button").clicked() {
+                    self.add_entity_with_component("New Button", "Image");
+                    if let Err(error) = self.add_component("clickEvent") {
+                        self.status = error;
+                    }
+                }
+                ui.dnd_drag_source(
+                    egui::Id::new("widget_palette_button"),
+                    "widget:Button".to_owned(),
+                    |ui| ui.small("↕"),
+                );
+            }
             ui.separator();
             ui.checkbox(&mut self.snap_enabled, "吸附");
+            ui.checkbox(&mut self.show_scene_guides, "辅助线");
+            ui.checkbox(&mut self.show_safe_area, "Safe Area");
+            ui.checkbox(&mut self.show_pixel_grid, "像素网格");
             ui.add(
                 egui::DragValue::new(&mut self.snap_step)
                     .range(0.05..=10.0)
@@ -166,6 +232,7 @@ impl EditorApp {
                             .push(self.custom_preview_resolution);
                     }
                     self.preview_resolution = self.custom_preview_resolution;
+                    self.scene_view_fit_pending = true;
                     self.adding_preview_resolution = false;
                 }
                 if ui.button("取消").clicked() {

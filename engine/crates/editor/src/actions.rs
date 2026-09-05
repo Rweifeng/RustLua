@@ -102,6 +102,10 @@ pub(crate) enum DocumentChange {
     EntityDeleted,
     /// 重命名实体。
     EntityRenamed,
+    /// 变更 UI Canvas 根节点标记。
+    UiRootChanged,
+    /// 重挂载实体到新父节点。
+    EntityReparented,
     /// 重新应用 / 写回 Prefab 源后重建实例（实体整体被替换）。
     PrefabApply,
     /// Undo：整文档回退到历史快照。
@@ -875,6 +879,15 @@ impl EditorApp {
             Ok(()) => {
                 self.history.clear();
                 self.autosave.reset();
+                let opened_prefab = self
+                    .current_scene()
+                    .is_some_and(|document| document.is_prefab_document());
+                self.scene_view_mode = if opened_prefab {
+                    crate::SceneViewMode::Prefab
+                } else {
+                    crate::SceneViewMode::View2D
+                };
+                self.scene_view_fit_pending = true;
                 // 打开文档本身已完成 Scene View 失效；整面板状态收敛到统一入口
                 // （选择修复 / Inspector / Game 预览清理 / Hierarchy 元数据重扫）。
                 self.on_document_changed(DocumentChange::Opened);

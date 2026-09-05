@@ -11,6 +11,8 @@ use std::{collections::BTreeSet, error::Error, fmt};
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SceneTreeState {}
 
+const ROOT_ORDER_META_KEY: &str = "editor.root_order";
+
 impl SceneTreeState {
     pub fn new() -> Self {
         Self::default()
@@ -18,11 +20,15 @@ impl SceneTreeState {
 
     /// 根实体迭代器（Hierarchy 面板渲染入口）。
     pub fn roots<'a>(&self, document: &'a SceneDocument) -> impl Iterator<Item = &'a SceneEntity> {
-        document
-            .scene
-            .entities
-            .values()
-            .filter(|entity| entity.parent.is_none())
+        let mut ordered = root_order(document);
+        for entity in document.scene.entities.values() {
+            if entity.parent.is_none() && !ordered.contains(&entity.id) {
+                ordered.push(entity.id);
+            }
+        }
+        ordered
+            .into_iter()
+            .filter_map(|id| document.scene.entities.get(&id))
     }
 
     /// `parent` 的直接子实体（按场景树存储顺序）。
@@ -62,6 +68,21 @@ impl SceneTreeState {
             .map_err(SceneTreeError::Scene)?;
         document.mark_dirty();
         Ok(id)
+    }
+
+    /// 复制实体及其完整子树，返回新子树根 ID。
+    pub fn duplicate_subtree(
+        &self,
+        document: &mut SceneDocument,
+        source: &SceneEntity,
+        parent: Option<SceneEntityId>,
+    ) -> Result<SceneEntityId, SceneTreeError> {
+        if let Some(parent_id) = parent {
+            ensure_entity(document, parent_id)?;
+        }
+        let root_id = duplicate_entity(document, source, parent)?;
+        document.mark_dirty();
+        Ok(root_id)
     }
 
     pub fn rename(
@@ -157,6 +178,85 @@ impl SceneTreeState {
         document.mark_dirty();
         Ok(())
     }
+
+    /// 将实体移动到目标节点的前面、后面，或作为目标的子节点。
+    pub fn reparent_at(
+        &self,
+        document: &mut SceneDocument,
+        id: SceneEntityId,
+        target: SceneEntityId,
+        position: ReparentPosition,
+    ) -> Result<(), SceneTreeError> {
+        ensure_entity(document, id)?;
+        ensure_entity(document, target)?;
+        if id == target || collect_subtree(document, id)?.contains(&target) {
+            return Err(SceneTreeError::Cycle {
+                entity: id,
+                parent: Some(target),
+            });
+        }
+        if position == ReparentPosition::Child {
+            return self.reparent(document, id, Some(target));
+        }
+
+        let new_parent = document.scene.entities[&target].parent;
+        let old_parent = document.scene.entities[&id].parent;
+        if new_parent.is_none() {
+            let mut roots = root_order(document);
+            roots.retain(|root| *root != id);
+            let target_index = roots
+                .iter()
+                .position(|root| *root == target)
+                .ok_or(SceneTreeError::CannotReorderRoot(target))?;
+            let insert_index = if position == ReparentPosition::Before {
+                target_index
+            } else {
+                target_index + 1
+            };
+            if let Some(old_parent_id) = old_parent {
+                document.scene.entities.get_mut(&old_parent_id).unwrap().children.retain(|child| *child != id);
+                document.scene.entities.get_mut(&id).unwrap().parent = None;
+            }
+            roots.insert(insert_index, id);
+            write_root_order(document, &roots);
+            document.mark_dirty();
+            return Ok(());
+        }
+        let new_parent_id = new_parent.unwrap();
+        if old_parent == new_parent {
+            let siblings = &mut document.scene.entities.get_mut(&new_parent_id).unwrap().children;
+            siblings.retain(|child| *child != id);
+            let target_index = siblings.iter().position(|child| *child == target).unwrap();
+            let insert_index = if position == ReparentPosition::Before {
+                target_index
+            } else {
+                target_index + 1
+            };
+            siblings.insert(insert_index, id);
+        } else {
+            if let Some(old_parent_id) = old_parent {
+                document.scene.entities.get_mut(&old_parent_id).unwrap().children.retain(|child| *child != id);
+            }
+            let siblings = &mut document.scene.entities.get_mut(&new_parent_id).unwrap().children;
+            let target_index = siblings.iter().position(|child| *child == target).unwrap();
+            let insert_index = if position == ReparentPosition::Before {
+                target_index
+            } else {
+                target_index + 1
+            };
+            siblings.insert(insert_index, id);
+            document.scene.entities.get_mut(&id).unwrap().parent = new_parent;
+        }
+        document.mark_dirty();
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReparentPosition {
+    Before,
+    After,
+    Child,
 }
 
 fn ensure_entity(document: &SceneDocument, id: SceneEntityId) -> Result<(), SceneTreeError> {
@@ -181,6 +281,56 @@ fn next_id(document: &SceneDocument) -> SceneEntityId {
         id = id.saturating_add(1);
     }
     SceneEntityId(id)
+}
+
+fn root_order(document: &SceneDocument) -> Vec<SceneEntityId> {
+    let mut ordered: Vec<_> = document
+        .scene
+        .metadata
+        .get(ROOT_ORDER_META_KEY)
+        .into_iter()
+        .flat_map(|value| value.split(',').filter_map(|id| id.parse().ok().map(SceneEntityId)))
+        .filter(|id| document.scene.entities.get(id).is_some_and(|entity| entity.parent.is_none()))
+        .collect();
+    for entity in document.scene.entities.values() {
+        if entity.parent.is_none() && !ordered.contains(&entity.id) {
+            ordered.push(entity.id);
+        }
+    }
+    ordered
+}
+
+fn write_root_order(document: &mut SceneDocument, roots: &[SceneEntityId]) {
+    document.scene.metadata.insert(
+        ROOT_ORDER_META_KEY.to_owned(),
+        roots.iter().map(|id| id.0.to_string()).collect::<Vec<_>>().join(","),
+    );
+}
+
+fn duplicate_entity(
+    document: &mut SceneDocument,
+    source: &SceneEntity,
+    parent: Option<SceneEntityId>,
+) -> Result<SceneEntityId, SceneTreeError> {
+    let id = next_id(document);
+    let mut copy = source.clone();
+    copy.id = id;
+    copy.parent = parent;
+    copy.children.clear();
+    document.scene.entities.insert(id, copy);
+    if let Some(parent_id) = parent {
+        document.scene.entities.get_mut(&parent_id).unwrap().children.push(id);
+    }
+    for child_id in &source.children {
+        let child = document
+            .scene
+            .entities
+            .get(child_id)
+            .cloned()
+            .ok_or(SceneTreeError::UnknownEntity(*child_id))?;
+        duplicate_entity(document, &child, Some(id))?;
+    }
+    Ok(id)
 }
 
 fn collect_subtree(
@@ -225,6 +375,7 @@ pub enum SceneTreeError {
         parent: Option<SceneEntityId>,
     },
     CorruptTree(SceneEntityId),
+    CannotReorderRoot(SceneEntityId),
     Scene(engine::core::scene::SceneError),
     Document(DocumentError),
 }
@@ -242,6 +393,7 @@ impl fmt::Display for SceneTreeError {
                 parent.map(|id| id.0)
             ),
             Self::CorruptTree(id) => write!(f, "实体 {} 的子树包含循环或损坏引用", id.0),
+            Self::CannotReorderRoot(id) => write!(f, "根节点 {} 没有可调整的同级顺序", id.0),
             Self::Scene(error) => write!(f, "场景操作失败：{error}"),
             Self::Document(error) => write!(f, "文档操作失败：{error}"),
         }
@@ -303,6 +455,61 @@ mod tests {
     }
 
     #[test]
+    fn reparent_at_updates_sibling_order() {
+        let mut document = document();
+        let tree = SceneTreeState::new();
+        let root = tree.create_entity(&mut document, "Root", None).unwrap();
+        let first = tree.create_entity(&mut document, "First", Some(root)).unwrap();
+        let second = tree.create_entity(&mut document, "Second", Some(root)).unwrap();
+        let third = tree.create_entity(&mut document, "Third", Some(root)).unwrap();
+
+        tree.reparent_at(&mut document, third, first, ReparentPosition::Before).unwrap();
+        assert_eq!(document.scene.entities[&root].children, vec![third, first, second]);
+        tree.reparent_at(&mut document, first, second, ReparentPosition::After).unwrap();
+        assert_eq!(document.scene.entities[&root].children, vec![third, second, first]);
+    }
+
+    #[test]
+    fn duplicate_subtree_gets_fresh_ids_and_preserves_data() {
+        let mut document = document();
+        let tree = SceneTreeState::new();
+        let source_id = tree.create_entity(&mut document, "Source", None).unwrap();
+        let child_id = tree.create_entity(&mut document, "Child", Some(source_id)).unwrap();
+        document.scene.entities.get_mut(&source_id).unwrap().components.insert("Transform".into(), "x=1".into());
+        let source = document.scene.entities[&source_id].clone();
+
+        let copy_id = tree.duplicate_subtree(&mut document, &source, None).unwrap();
+        let copied_child_id = document.scene.entities[&copy_id].children[0];
+        assert_ne!(copy_id, source_id);
+        assert_ne!(copied_child_id, child_id);
+        assert_eq!(document.scene.entities[&copy_id].name, "Source");
+        assert_eq!(document.scene.entities[&copy_id].parent, None);
+        assert_eq!(document.scene.entities[&copy_id].components["Transform"], "x=1");
+        assert_eq!(document.scene.entities[&copied_child_id].parent, Some(copy_id));
+    }
+
+    #[test]
+    fn reparent_at_persists_root_order() {
+        let mut document = document();
+        let tree = SceneTreeState::new();
+        let first = tree.create_entity(&mut document, "First", None).unwrap();
+        let second = tree.create_entity(&mut document, "Second", None).unwrap();
+        let third = tree.create_entity(&mut document, "Third", None).unwrap();
+
+        tree.reparent_at(&mut document, third, first, ReparentPosition::Before).unwrap();
+        let roots: Vec<_> = tree.roots(&document).map(|entity| entity.id).collect();
+        assert_eq!(roots, vec![third, first, second]);
+        let roundtrip = SceneDocument {
+            path: None,
+            scene: Scene::from_text(&document.scene.to_text()).unwrap(),
+            dirty: false,
+            revision: 0,
+        };
+        let roots: Vec<_> = tree.roots(&roundtrip).map(|entity| entity.id).collect();
+        assert_eq!(roots, vec![third, first, second]);
+    }
+
+    #[test]
     fn rejects_unknown_empty_name_and_cycle() {
         let mut document = document();
         let tree = SceneTreeState::new();
@@ -317,6 +524,10 @@ mod tests {
         assert!(matches!(
             tree.rename(&mut document, root, "  "),
             Err(SceneTreeError::EmptyName)
+        ));
+        assert!(matches!(
+            tree.reparent(&mut document, root, Some(root)),
+            Err(SceneTreeError::Cycle { .. })
         ));
         assert!(matches!(
             tree.reparent(&mut document, root, Some(child)),

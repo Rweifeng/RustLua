@@ -17,7 +17,7 @@ pub use inspector_state::{
 
 pub mod scene_tree_state;
 
-pub use scene_tree_state::{SceneTreeError, SceneTreeState};
+pub use scene_tree_state::{ReparentPosition, SceneTreeError, SceneTreeState};
 
 pub mod document;
 

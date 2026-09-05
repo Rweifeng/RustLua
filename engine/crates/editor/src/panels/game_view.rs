@@ -1,7 +1,10 @@
 //! 行3 Game 视图 + Play/Stop 运行生命周期：内嵌游戏预览。
 
 use crate::EditorApp;
+use crate::EditorContextSnapshot;
 use crate::PlayState;
+use crate::SceneTool;
+use crate::SelectionModel;
 use crate::WorkspaceTab;
 use crate::preview_session::PreviewSession;
 use crate::util::strip_verbatim_prefix;
@@ -25,6 +28,7 @@ impl EditorApp {
             self.status = "Please create or open a scene first".to_owned();
             return;
         };
+        self.editor_context_snapshot = Some(self.capture_editor_context());
         self.play_state = PlayState::Starting;
         // 确保共享字体图集已预热：Play 预览复用它，避免进入游戏时再 MSDF 预热
         // 全部字形（debug 下约 2s/项目），Play 立即响应。
@@ -67,11 +71,23 @@ impl EditorApp {
         self.set_current_scene_document(session.stop());
         // Play/Stop 清空输入状态，避免下一轮 Play 残留边沿（M11-02）。
         self.preview_input_state.clear_all();
-        // 停止后回到 Scene 视图。
-        self.workspace_tab = WorkspaceTab::Scene;
         // 统一收尾：选择修复 + Inspector 空同步 + Scene View/Game 预览失效 +
         // Hierarchy 元数据重扫（含 delete_target 复位）。
         self.on_document_changed(crate::actions::DocumentChange::PlaybackStopped);
+        let snapshot = self.editor_context_snapshot.take().unwrap_or_else(|| {
+            EditorContextSnapshot {
+                selection: SelectionModel::new(),
+                workspace_tab: WorkspaceTab::Scene,
+                scene_tool: SceneTool::Select,
+                scene_view_mode: self.scene_view_mode,
+                scene_zoom: 1.0,
+                scene_pan: egui::Vec2::ZERO,
+                hierarchy_collapsed: self.scene_state.collapsed.clone(),
+                preview_resolution: self.preview_resolution,
+                game_camera_2d_center: self.game_camera_2d_center,
+            }
+        });
+        self.restore_editor_context(snapshot);
         self.play_state = PlayState::Editing;
         self.status = "Play stopped; runtime changes were discarded".to_owned();
     }
@@ -343,6 +359,7 @@ fn preview_fit_scale(preview_rect: egui::Rect, ppp: f32, native_w: u32) -> f32 {
 mod tests {
     use super::*;
     use crate::PlayState;
+    use crate::SceneTool;
     use crate::WorkspaceTab;
     use editor::ProjectInfo;
     use editor::open_project;
@@ -526,19 +543,28 @@ mod tests {
     }
 
     #[test]
-    fn sample_project_stop_restores_scene_tab_and_clears_preview_input() {
+    fn sample_project_stop_restores_editor_context_and_clears_preview_input() {
         let root = copy_sample_project("stop");
         let project = open_project(&root).unwrap();
         let mut app = EditorApp::new(project, None, LogSink::new(64));
         app.refresh_resources();
         app.open_scene_resource(PathBuf::from("scenes/production.scene"));
         let original = app.document.current_scene.as_ref().unwrap().clone();
+        let original_selection = Some(SceneEntityId(2));
+        let original_zoom = app.scene_zoom;
+        let original_pan = app.scene_state.pan;
+        let original_tool = app.scene_tool;
+        let original_tab = app.workspace_tab;
 
+        app.selection
+            .set_single(SceneEntityId(2), editor::SelectionSource::Hierarchy);
+        app.editor_context_snapshot = Some(app.capture_editor_context());
         app.play_session = Some(PlaySession::start(&original));
         app.play_state = PlayState::Playing;
         app.workspace_tab = WorkspaceTab::Game;
-        app.selection
-            .set_single(SceneEntityId(2), editor::SelectionSource::Hierarchy);
+        app.scene_tool = SceneTool::Move;
+        app.scene_zoom = 1.6;
+        app.scene_state.pan = egui::vec2(42.0, -17.0);
         app.preview_input_state.key_event(InputKey::W, true);
         app.preview_input_state.mouse_event(MouseButton::Left, true);
         app.play_session
@@ -554,14 +580,15 @@ mod tests {
         app.stop();
 
         assert_eq!(app.play_state, PlayState::Editing);
-        assert_eq!(app.workspace_tab, WorkspaceTab::Scene);
+        assert_eq!(app.workspace_tab, original_tab);
         assert!(app.play_session.is_none());
         assert!(!app.preview_input_state.is_down(InputKey::W));
         assert!(!app.preview_input_state.mouse_is_down(MouseButton::Left));
-        assert!(
-            app.selection.is_empty(),
-            "stop should clear scene selection"
-        );
+        assert_eq!(app.selection.primary(), original_selection);
+        assert_eq!(app.selection.source(), editor::SelectionSource::Hierarchy);
+        assert_eq!(app.scene_tool, original_tool);
+        assert_eq!(app.scene_zoom, original_zoom);
+        assert_eq!(app.scene_state.pan, original_pan);
         assert_eq!(app.document.current_scene.as_ref().unwrap(), &original);
         assert_eq!(app.status, "Play stopped; runtime changes were discarded");
         let _ = fs::remove_dir_all(root);

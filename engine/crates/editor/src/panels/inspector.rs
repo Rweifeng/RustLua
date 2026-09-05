@@ -11,7 +11,28 @@ use eframe::egui;
 use engine::core::{
     prefab::Prefab,
     scene::{SceneEntity, SceneEntityId},
+    transform3d::Transform3D,
 };
+use std::collections::BTreeSet;
+
+struct ComponentDescriptor {
+    name: &'static str,
+}
+
+const COMPONENT_REGISTRY: &[ComponentDescriptor] = &[
+    ComponentDescriptor { name: "Sprite" },
+    ComponentDescriptor { name: "Tilemap" },
+    ComponentDescriptor { name: "Animation" },
+    ComponentDescriptor { name: "Transform3D" },
+    ComponentDescriptor { name: "MeshRenderer" },
+    ComponentDescriptor { name: "Camera3D" },
+    ComponentDescriptor { name: "Light" },
+    ComponentDescriptor { name: "Collider3d" },
+    ComponentDescriptor { name: "Text" },
+    ComponentDescriptor { name: "Image" },
+    ComponentDescriptor { name: "Button" },
+    ComponentDescriptor { name: "clickEvent" },
+];
 
 impl EditorApp {
     pub(crate) fn draw_inspector_panel(&mut self, ui: &mut egui::Ui) {
@@ -36,6 +57,31 @@ impl EditorApp {
                     ui.label("请先在 Hierarchy 中选择实体");
                     return;
                 };
+                let selected_ids = self.selection.ids();
+                if selected_ids.len() > 1 {
+                    let mut common_components: Option<BTreeSet<String>> = None;
+                    if let Some(scene) = self.current_scene() {
+                        for id in &selected_ids {
+                            let components = scene
+                                .scene
+                                .entities
+                                .get(id)
+                                .map(|entity| entity.components.keys().cloned().collect())
+                                .unwrap_or_default();
+                            common_components = Some(match common_components {
+                                Some(common) => common.intersection(&components).cloned().collect(),
+                                None => components,
+                            });
+                        }
+                    }
+                    let common_components = common_components.unwrap_or_default();
+                    ui.strong(format!("已选择 {} 个实体", selected_ids.len()));
+                    ui.label(if common_components.is_empty() {
+                        "没有共有组件".to_owned()
+                    } else {
+                        format!("共有组件：{}", common_components.into_iter().collect::<Vec<_>>().join("、"))
+                    });
+                }
                 let Some((parent, child_count)) = self.current_scene().and_then(|scene| {
                     scene
                         .scene
@@ -47,6 +93,16 @@ impl EditorApp {
                     return;
                 };
                 ui.label(format!("实体 ID：{}", selected.0));
+                if self.current_scene().is_some_and(|scene| {
+                    scene
+                        .scene
+                        .entities
+                        .get(&selected)
+                        .and_then(|entity| entity.metadata.get("ui.root"))
+                        .is_some_and(|value| value == "true")
+                }) {
+                    ui.colored_label(egui::Color32::from_rgb(100, 190, 230), "UI Root / Canvas");
+                }
                 ui.label(format!(
                     "父实体：{}",
                     parent.map_or_else(|| "无".to_owned(), |id| id.0.to_string())
@@ -174,23 +230,11 @@ impl EditorApp {
                     egui::ComboBox::from_id_salt("inspector_add_component")
                         .selected_text(&self.inspector_add_component)
                         .show_ui(ui, |ui| {
-                            for name in [
-                                "Sprite",
-                                "Tilemap",
-                                "Animation",
-                                "Transform3D",
-                                "MeshRenderer",
-                                "Camera3D",
-                                "Light",
-                                "Collider3d",
-                                "Text",
-                                "Image",
-                                "clickEvent",
-                            ] {
+                            for descriptor in COMPONENT_REGISTRY {
                                 ui.selectable_value(
                                     &mut self.inspector_add_component,
-                                    name.to_owned(),
-                                    name,
+                                    descriptor.name.to_owned(),
+                                    descriptor.name,
                                 );
                             }
                         });
@@ -202,6 +246,14 @@ impl EditorApp {
                     }
                 });
                 let components = self.current_components();
+                let transform_mixed = selected_ids.len() > 1
+                    && self
+                        .current_scene()
+                        .is_some_and(|scene| has_mixed_transform(scene, &selected_ids));
+                let transform3d_mixed = selected_ids.len() > 1
+                    && self
+                        .current_scene()
+                        .is_some_and(|scene| has_mixed_transform3d(scene, &selected_ids));
                 // 只显示实体实际拥有的组件编辑器（空 2D 实体只有 Transform，3D 只有 Transform3D）。
                 let has = |name: &str| components.iter().any(|component| component == name);
                 if !components.is_empty() {
@@ -231,18 +283,30 @@ impl EditorApp {
                     if self.inspector_transform_open {
                         ui.group(|ui| {
                             ui.horizontal(|ui| {
-                                ui.label("位置");
+                                ui.label(if transform_mixed { "位置（混合）" } else { "位置" });
                                 ui.add(egui::DragValue::new(&mut self.transform.position_x));
                                 ui.add(egui::DragValue::new(&mut self.transform.position_y));
                             });
                             ui.horizontal(|ui| {
-                                ui.label("旋转");
+                                ui.label(if transform_mixed { "旋转（混合）" } else { "旋转" });
                                 ui.add(egui::DragValue::new(&mut self.transform.rotation));
                             });
                             ui.horizontal(|ui| {
-                                ui.label("缩放");
-                                ui.add(egui::DragValue::new(&mut self.transform.scale_x));
-                                ui.add(egui::DragValue::new(&mut self.transform.scale_y));
+                                ui.label(if transform_mixed { "缩放（混合）" } else { "缩放" });
+                                let x_changed = ui
+                                    .add(egui::DragValue::new(&mut self.transform.scale_x))
+                                    .changed();
+                                let y_changed = ui
+                                    .add(egui::DragValue::new(&mut self.transform.scale_y))
+                                    .changed();
+                                if self.transform_lock_ratio {
+                                    if x_changed {
+                                        self.transform.scale_y = self.transform.scale_x;
+                                    } else if y_changed {
+                                        self.transform.scale_x = self.transform.scale_y;
+                                    }
+                                }
+                                ui.checkbox(&mut self.transform_lock_ratio, "锁定比例");
                             });
                             ui.horizontal(|ui| {
                                 if ui.button("Reset").clicked() {
@@ -270,23 +334,42 @@ impl EditorApp {
                     if self.inspector_transform3d_open {
                         ui.group(|ui| {
                             ui.horizontal(|ui| {
-                                ui.label("位置");
+                                ui.label(if transform3d_mixed { "位置（混合）" } else { "位置" });
                                 ui.add(egui::DragValue::new(&mut self.transform3d.position_x));
                                 ui.add(egui::DragValue::new(&mut self.transform3d.position_y));
                                 ui.add(egui::DragValue::new(&mut self.transform3d.position_z));
                             });
                             ui.horizontal(|ui| {
-                                ui.label("旋转 Q");
+                                ui.label(if transform3d_mixed { "旋转 Q（混合）" } else { "旋转 Q" });
                                 ui.add(egui::DragValue::new(&mut self.transform3d.rotation_x));
                                 ui.add(egui::DragValue::new(&mut self.transform3d.rotation_y));
                                 ui.add(egui::DragValue::new(&mut self.transform3d.rotation_z));
                                 ui.add(egui::DragValue::new(&mut self.transform3d.rotation_w));
                             });
                             ui.horizontal(|ui| {
-                                ui.label("缩放");
-                                ui.add(egui::DragValue::new(&mut self.transform3d.scale_x));
-                                ui.add(egui::DragValue::new(&mut self.transform3d.scale_y));
-                                ui.add(egui::DragValue::new(&mut self.transform3d.scale_z));
+                                ui.label(if transform3d_mixed { "缩放（混合）" } else { "缩放" });
+                                let x_changed = ui
+                                    .add(egui::DragValue::new(&mut self.transform3d.scale_x))
+                                    .changed();
+                                let y_changed = ui
+                                    .add(egui::DragValue::new(&mut self.transform3d.scale_y))
+                                    .changed();
+                                let z_changed = ui
+                                    .add(egui::DragValue::new(&mut self.transform3d.scale_z))
+                                    .changed();
+                                if self.transform_lock_ratio {
+                                    if x_changed {
+                                        self.transform3d.scale_y = self.transform3d.scale_x;
+                                        self.transform3d.scale_z = self.transform3d.scale_x;
+                                    } else if y_changed {
+                                        self.transform3d.scale_x = self.transform3d.scale_y;
+                                        self.transform3d.scale_z = self.transform3d.scale_y;
+                                    } else if z_changed {
+                                        self.transform3d.scale_x = self.transform3d.scale_z;
+                                        self.transform3d.scale_y = self.transform3d.scale_z;
+                                    }
+                                }
+                                ui.checkbox(&mut self.transform_lock_ratio, "锁定比例");
                             });
                             ui.horizontal(|ui| {
                                 if ui.button("Reset 3D").clicked() {
@@ -958,6 +1041,9 @@ impl EditorApp {
         if self.is_playing() {
             return Err("Play mode locks scene editing; click Stop first".to_owned());
         }
+        if !COMPONENT_REGISTRY.iter().any(|descriptor| descriptor.name == name) {
+            return Err(format!("未注册组件：{name}"));
+        }
         let Some(selected) = self.selection.primary() else {
             return Ok(());
         };
@@ -1127,7 +1213,7 @@ impl EditorApp {
         }
     }
 
-    fn reparent_selected(&mut self, parent: Option<SceneEntityId>) {
+    pub(crate) fn reparent_selected(&mut self, parent: Option<SceneEntityId>) {
         if self.is_playing() {
             self.status = "Play mode locks scene editing; click Stop first".into();
             return;
@@ -1136,27 +1222,62 @@ impl EditorApp {
             self.status = "请先在 Hierarchy 中选择实体".into();
             return;
         };
-        let tree = self.tree.clone();
-        let Some(scene) = self.document.current_scene.as_mut() else {
+        let Some(scene) = self.document.current_scene.as_ref() else {
             self.status = "Create a scene first".into();
             return;
         };
-        let result = self.history.execute(
-            scene,
-            "Reparent entity",
-            CommandKind::Reparent,
-            move |scene| {
-                tree.reparent(scene, selected, parent)
-                    .map_err(|e| e.to_string())
-            },
-        );
+        if let Err(error) = self.validate_reparent_target(scene, selected, parent) {
+            self.status = error;
+            return;
+        }
+
+        if !self.begin_edit_transaction("Reparent entity", CommandKind::Reparent, Some(selected)) {
+            self.status = "重挂载事务已激活，无法重复开始".into();
+            return;
+        }
+        let Some(scene) = self.document.current_scene.as_mut() else {
+            self.cancel_edit_transaction();
+            self.status = "Create a scene first".into();
+            return;
+        };
+        let result = self.tree.reparent(scene, selected, parent);
         match result {
-            Ok(true) => {
+            Ok(()) => {
+                self.commit_edit_transaction();
+                self.on_document_changed(crate::actions::DocumentChange::EntityReparented);
                 self.status = "Parent updated".into();
             }
-            Ok(false) => self.status = "No change".into(),
-            Err(e) => self.status = e,
+            Err(e) => {
+                self.cancel_edit_transaction();
+                self.status = e.to_string();
+            }
         }
+    }
+
+    pub(crate) fn validate_reparent_target(
+        &self,
+        scene: &editor::SceneDocument,
+        moving: SceneEntityId,
+        parent: Option<SceneEntityId>,
+    ) -> Result<(), String> {
+        let Some(target) = parent else {
+            return Ok(());
+        };
+        if target == moving {
+            return Err("不能将实体挂到自己下面".to_owned());
+        }
+        let mut candidate = Some(target);
+        while let Some(current) = candidate {
+            if current == moving {
+                return Err("不能把实体移动到其后代节点下".to_owned());
+            }
+            candidate = scene
+                .scene
+                .entities
+                .get(&current)
+                .and_then(|entity| entity.parent);
+        }
+        Ok(())
     }
 
     pub(crate) fn delete_selected_entity(&mut self) {
@@ -1485,6 +1606,36 @@ impl EditorApp {
             Err(error) => self.status = format!("更新 Prefab 实例失败：{error}"),
         }
     }
+}
+
+fn has_mixed_transform(scene: &editor::SceneDocument, ids: &[SceneEntityId]) -> bool {
+    let mut transforms = ids.iter().filter_map(|id| {
+        scene
+            .scene
+            .entities
+            .get(id)
+            .and_then(|entity| entity.components.get("Transform"))
+            .and_then(|value| crate::geometry::parse_transform(value))
+    });
+    let Some(first) = transforms.next() else {
+        return false;
+    };
+    transforms.any(|transform| transform != first)
+}
+
+fn has_mixed_transform3d(scene: &editor::SceneDocument, ids: &[SceneEntityId]) -> bool {
+    let mut transforms = ids.iter().filter_map(|id| {
+        scene
+            .scene
+            .entities
+            .get(id)
+            .and_then(|entity| entity.components.get("Transform3D"))
+            .and_then(|value| Transform3D::from_component_str(value).ok())
+    });
+    let Some(first) = transforms.next() else {
+        return false;
+    };
+    transforms.any(|transform| transform != first)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

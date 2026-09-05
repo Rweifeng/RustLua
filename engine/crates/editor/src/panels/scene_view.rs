@@ -26,7 +26,7 @@ use engine::core::{
     tilemap::Tilemap,
     transform::Vec2,
     transform3d::Transform3D,
-    ui::{UiImage, UiText, resolve_ui_rect, resolve_ui_text_origin},
+    ui::{UiImage, UiLayout, UiText, resolve_ui_text_origin},
 };
 use engine::host::{
     BoundsSource, ReadbackStatus, Renderer, RuntimeScene, Scene3d, Scene3dBounds, Scene3dDrawable,
@@ -54,10 +54,22 @@ impl EditorApp {
             .dnd_drop_zone::<String, egui::Response>(egui::Frame::default(), |ui| {
                 ui.allocate_rect(rect, egui::Sense::hover())
             });
-        if let Some(path) = dropped_texture
-            && let Err(error) = self.spawn_dropped_resource(&path)
-        {
-            self.status = error;
+        if let Some(path) = dropped_texture {
+            if let Some(widget) = path.strip_prefix("widget:") {
+                match widget {
+                    "Text" => self.add_entity_with_component("New Text", "Text"),
+                    "Image" => self.add_entity_with_component("New Image", "Image"),
+                    "Button" => {
+                        self.add_entity_with_component("New Button", "Image");
+                        if let Err(error) = self.add_component("clickEvent") {
+                            self.status = error;
+                        }
+                    }
+                    _ => self.status = format!("未知 Widget 类型：{widget}"),
+                }
+            } else if let Err(error) = self.spawn_dropped_resource(&path) {
+                self.status = error;
+            }
         }
         // 仅当鼠标悬停在 Scene 视图内时才响应滚轮缩放（避免在其它面板滚动误触发）。
         let scroll = ui.input(|input| input.smooth_scroll_delta.y);
@@ -86,6 +98,56 @@ impl EditorApp {
         }
         // 设计分辨率包围框（Unity Camera Preview 风格）：标注游戏取景范围。
         self.draw_design_resolution_box(&painter, rect, scale);
+        if self.show_safe_area {
+            let safe_frame = design_resolution_frame(
+                rect,
+                self.scene_state.pan,
+                self.scene_zoom,
+                scale,
+                self.game_camera_center_egui(),
+                self.preview_resolution,
+            );
+            let inset = safe_frame.size() * 0.05;
+            let safe_frame = safe_frame.shrink2(inset);
+            painter.rect_stroke(
+                safe_frame,
+                0.0_f32,
+                egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(100, 220, 160, 180)),
+                egui::StrokeKind::Inside,
+            );
+        }
+        if self.show_pixel_grid {
+            let grid_size = 16.0 * self.scene_zoom / scale;
+            if grid_size >= 4.0 {
+                let grid_stroke = egui::Stroke::new(
+                    1.0_f32,
+                    egui::Color32::from_rgba_unmultiplied(150, 170, 190, 45),
+                );
+                let x_origin = rect.center().x + self.scene_state.pan.x / scale;
+                let y_origin = rect.center().y - self.scene_state.pan.y / scale;
+                let mut x = rect.left() + (x_origin - rect.left()).rem_euclid(grid_size);
+                while x < rect.right() {
+                    painter.line_segment([egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())], grid_stroke);
+                    x += grid_size;
+                }
+                let mut y = rect.top() + (y_origin - rect.top()).rem_euclid(grid_size);
+                while y < rect.bottom() {
+                    painter.line_segment([egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)], grid_stroke);
+                    y += grid_size;
+                }
+            }
+        }
+        if self.show_scene_guides {
+            let guide_stroke = egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(120, 190, 220, 110));
+            painter.line_segment(
+                [egui::pos2(rect.center().x, rect.top()), egui::pos2(rect.center().x, rect.bottom())],
+                guide_stroke,
+            );
+            painter.line_segment(
+                [egui::pos2(rect.left(), rect.center().y), egui::pos2(rect.right(), rect.center().y)],
+                guide_stroke,
+            );
+        }
         // 在包围框内显示游戏画面（设计分辨率 + 游戏相机 + UI 覆盖层）：
         // 实际 UI 随包围框缩放/平移（包围框 world 映射）。
         if let Some(id) = self.scene_screen_tex_id {
@@ -107,15 +169,64 @@ impl EditorApp {
         painter.text(
             rect.left_top() + egui::vec2(12.0, 12.0),
             egui::Align2::LEFT_TOP,
-            "Scene View  -  2D",
+            match self.scene_view_mode {
+                crate::SceneViewMode::Widget => "Scene View  -  Widget",
+                crate::SceneViewMode::Prefab => "Scene View  -  Prefab",
+                _ => "Scene View  -  2D",
+            },
             egui::FontId::proportional(16.0),
             egui::Color32::LIGHT_GRAY,
         );
         let filter = self.hierarchy_filter.to_lowercase();
         let entities = self.collect_scene_2d_entities(rect, &filter, scale);
         let tilemap_context = self.selected_tilemap_context();
+        if self.show_scene_guides {
+            if let Some(scene) = self.current_scene() {
+                let connection_stroke = egui::Stroke::new(
+                    1.0_f32,
+                    egui::Color32::from_rgba_unmultiplied(170, 170, 190, 130),
+                );
+                for entity in &entities {
+                    let Some(parent_id) = scene
+                        .scene
+                        .entities
+                        .get(&entity.id)
+                        .and_then(|value| value.parent)
+                    else {
+                        continue;
+                    };
+                    let Some(parent) = entities.iter().find(|value| value.id == parent_id) else {
+                        continue;
+                    };
+                    painter.line_segment([parent.center, entity.center], connection_stroke);
+                }
+            }
+        }
         for entity in entities.iter() {
             let box_rect = egui::Rect::from_center_size(entity.center, entity.size);
+            if self.scene_view_mode == crate::SceneViewMode::Widget
+                && let Some(ui_entity) = entity.ui
+            {
+                let anchor = design_rect_to_panel(
+                    rect,
+                    self.scene_state.pan,
+                    self.scene_zoom,
+                    scale,
+                    self.game_camera_center_egui(),
+                    self.preview_resolution,
+                    [
+                        ui_entity.anchor[0] * self.preview_resolution.0 as f32,
+                        ui_entity.anchor[1] * self.preview_resolution.1 as f32,
+                    ],
+                    [0.0, 0.0],
+                )
+                .center();
+                painter.line_segment(
+                    [anchor, entity.center],
+                    egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(90, 210, 230)),
+                );
+                painter.circle_filled(anchor, 4.0, egui::Color32::from_rgb(90, 210, 230));
+            }
             let selected = self.selection.contains(entity.id);
             // 场景已实时渲染（含实际 UI 覆盖层），实体只画选中轮廓 + 名称。
             if selected {
@@ -131,6 +242,19 @@ impl EditorApp {
                     &entity.name,
                     egui::FontId::proportional(14.0),
                     egui::Color32::LIGHT_YELLOW,
+                );
+                painter.circle_stroke(
+                    entity.center,
+                    4.0,
+                    egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(255, 220, 90)),
+                );
+                painter.line_segment(
+                    [entity.center - egui::vec2(7.0, 0.0), entity.center + egui::vec2(7.0, 0.0)],
+                    egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(255, 220, 90)),
+                );
+                painter.line_segment(
+                    [entity.center - egui::vec2(0.0, 7.0), entity.center + egui::vec2(0.0, 7.0)],
+                    egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(255, 220, 90)),
                 );
             }
             if response.clicked()
@@ -176,19 +300,16 @@ impl EditorApp {
         if response.drag_started_by(egui::PointerButton::Primary)
             && let Some(pos) = pointer
         {
-            let hit = entities.iter().rev().find(|entity| {
-                rotated_contains(entity.center, entity.size, entity.transform.rotation, pos)
-                    && !self.scene_state.locked.contains(&entity.id)
-            });
-            if let Some(hit) = hit {
+            let hit = pick_scene_2d_entity(&entities, pos, &self.scene_state.locked);
+            if let Some(hit_id) = hit {
                 let additive = ui.input(|input| input.modifiers.command || input.modifiers.ctrl);
                 let source = SelectionSource::SceneView2D;
                 if additive {
-                    self.selection.add(hit.id, source);
-                } else if !self.selection.contains(hit.id) {
-                    self.selection.set_single(hit.id, source);
+                    self.selection.add(hit_id, source);
+                } else if !self.selection.contains(hit_id) {
+                    self.selection.set_single(hit_id, source);
                 }
-                self.sync_inspector(hit.id);
+                self.sync_inspector(hit_id);
                 let ids: Vec<_> = self
                     .selection
                     .ids()
@@ -237,19 +358,9 @@ impl EditorApp {
                 egui::Stroke::new(1.0_f32, egui::Color32::LIGHT_BLUE),
                 egui::StrokeKind::Outside,
             );
-            for entity in &entities {
-                let corners =
-                    rotated_corners(entity.center, entity.size, entity.transform.rotation);
-                let contained = corners
-                    .iter()
-                    .all(|corner| selection_rect.contains(*corner));
-                let intersects = polygon_intersects_rect(&corners, selection_rect);
-                let left_to_right = current.x >= start.x;
-                if (left_to_right && contained) || (!left_to_right && intersects) {
-                    // 拖动过程中持续累加；非加选时集合已在框选开始时清空。
-                    self.selection
-                        .add(entity.id, SelectionSource::SceneView2D);
-                }
+            for id in entities_in_selection_rect(&entities, selection_rect, start, current) {
+                // 拖动过程中持续累加；非加选时集合已在框选开始时清空。
+                self.selection.add(id, SelectionSource::SceneView2D);
             }
         }
         if response.dragged_by(egui::PointerButton::Primary)
@@ -293,38 +404,18 @@ impl EditorApp {
                     continue;
                 }
                 let initial = drag.initial[id];
-                let mut next = initial;
-                match self.scene_tool {
-                    SceneTool::Move | SceneTool::Select => {
-                        // 面板拖动增量是逻辑 points；渲染侧 world→面板逻辑 =
-                        // (pan + world*zoom)/ppp，故世界位移须乘 ppp 再除 zoom，
-                        // 否则高 DPI 下实体跟不上鼠标。
-                        next.position_x += delta.x * scale / self.scene_zoom;
-                        next.position_y -= delta.y * scale / self.scene_zoom;
-                        if self.snap_enabled {
-                            next.position_x =
-                                (next.position_x / self.snap_step).round() * self.snap_step;
-                            next.position_y =
-                                (next.position_y / self.snap_step).round() * self.snap_step;
-                        }
-                    }
-                    SceneTool::Rotate => {
-                        let relative_x = initial.position_x - pivot.0;
-                        let relative_y = initial.position_y - pivot.1;
-                        next.position_x =
-                            pivot.0 + relative_x * angle.cos() - relative_y * angle.sin();
-                        next.position_y =
-                            pivot.1 + relative_x * angle.sin() + relative_y * angle.cos();
-                        next.rotation += delta.x * 0.5;
-                    }
-                    SceneTool::Scale => {
-                        next.position_x = pivot.0 + (initial.position_x - pivot.0) * factor;
-                        next.position_y = pivot.1 + (initial.position_y - pivot.1) * factor;
-                        next.scale_x = (initial.scale_x * factor).max(0.05);
-                        next.scale_y = (initial.scale_y * factor).max(0.05);
-                    }
-                    SceneTool::TilePaint => {}
-                }
+                let next = scene_drag_transform(
+                    initial,
+                    pivot,
+                    delta,
+                    self.scene_tool,
+                    self.snap_enabled,
+                    self.snap_step,
+                    scale,
+                    self.scene_zoom,
+                    angle,
+                    factor,
+                );
                 preview.insert(*id, next);
             }
             self.scene_state.preview = preview;
@@ -365,6 +456,9 @@ impl EditorApp {
         let mut entities = Vec::with_capacity(scene.scene.entities.len());
         for e in scene.scene.entities.values() {
             if !filter.is_empty() && !e.name.to_lowercase().contains(filter) {
+                continue;
+            }
+            if self.scene_view_mode == crate::SceneViewMode::Widget && !is_widget_entity(scene, e) {
                 continue;
             }
             if scene_state.hidden.contains(&e.id) {
@@ -629,27 +723,12 @@ impl EditorApp {
             let py = (pos.y - rect.top()) * ui.ctx().pixels_per_point();
             let hit = self
                 .editor_camera_ray(px, py, width as f32, height as f32)
-                .and_then(|ray| {
-                    entities3d
-                        .iter()
-                        .filter(|(id, _, _, _)| !self.scene_state.locked.contains(id))
-                        .filter_map(|(id, _, transform, bounds)| {
-                            let position = self
-                                .scene_state
-                                .preview3d_transform
-                                .get(id)
-                                .map(|value| value.position)
-                                .unwrap_or(transform.position);
-                            let world_bounds = engine::core::math3d::Aabb3 {
-                                min: bounds.min + position,
-                                max: bounds.max + position,
-                            };
-                            ray.intersect_aabb(world_bounds)
-                                .map(|distance| (*id, distance))
-                        })
-                        .min_by(|left, right| left.1.total_cmp(&right.1))
-                        .map(|(id, _)| id)
-                });
+                .and_then(|ray| pick_scene_3d_entity(
+                    ray,
+                    &entities3d,
+                    &self.scene_state.locked,
+                    &self.scene_state.preview3d_transform,
+                ));
             if let Some(id) = hit {
                 let additive = ui.input(|input| input.modifiers.command || input.modifiers.ctrl);
                 if additive {
@@ -681,50 +760,7 @@ impl EditorApp {
                 let axis = if response.drag_started_by(egui::PointerButton::Primary)
                     && let Some(pos) = pointer
                 {
-                    match tool {
-                        SceneTool::Move | SceneTool::Select => {
-                            let hit_radius = 12.0;
-                            if (pos - (screen + egui::vec2(len, 0.0))).length() < hit_radius {
-                                Some(GizmoAxis::X)
-                            } else if (pos - (screen + egui::vec2(0.0, -len))).length() < hit_radius
-                            {
-                                Some(GizmoAxis::Z)
-                            } else if (pos - (screen + egui::vec2(-len * 0.7, -len * 0.7))).length()
-                                < hit_radius
-                            {
-                                Some(GizmoAxis::Y)
-                            } else {
-                                let box_rect =
-                                    egui::Rect::from_center_size(screen, egui::vec2(24.0, 24.0));
-                                if box_rect.contains(pos) && !self.scene_state.locked.contains(id) {
-                                    Some(GizmoAxis::Free)
-                                } else {
-                                    None
-                                }
-                            }
-                        }
-                        SceneTool::Rotate => {
-                            if (pos - (screen + egui::vec2(len, 0.0))).length() < 14.0
-                                || egui::Rect::from_center_size(screen, egui::vec2(24.0, 24.0))
-                                    .contains(pos)
-                            {
-                                Some(GizmoAxis::X)
-                            } else {
-                                None
-                            }
-                        }
-                        SceneTool::Scale => {
-                            if (pos - (screen + egui::vec2(len, len))).length() < 14.0
-                                || egui::Rect::from_center_size(screen, egui::vec2(24.0, 24.0))
-                                    .contains(pos)
-                            {
-                                Some(GizmoAxis::Scale)
-                            } else {
-                                None
-                            }
-                        }
-                        SceneTool::TilePaint => None,
-                    }
+                    pick_gizmo_axis(tool, screen, pos, len, self.scene_state.locked.contains(id))
                 } else {
                     None
                 };
@@ -882,25 +918,25 @@ impl EditorApp {
 
     /// Scene 视图右上角的小工具面板：选择/移动/旋转/缩放。
     fn draw_scene_tool_panel(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
-        let width = 190.0;
+        let width = 280.0;
         let tools_rect = egui::Rect::from_min_size(
             egui::pos2(rect.right() - width - 4.0, rect.top() + 4.0),
             egui::vec2(width, 26.0),
         );
         ui.scope_builder(egui::UiBuilder::new().max_rect(tools_rect), |ui| {
             ui.horizontal(|ui| {
-                if icon_toggle(ui, self.scene_tool == SceneTool::Select, "⌖", "选择").clicked()
+                if icon_toggle(ui, self.scene_tool == SceneTool::Select, "选择", "选择（Q）").clicked()
                 {
                     self.scene_tool = SceneTool::Select;
                 }
-                if icon_toggle(ui, self.scene_tool == SceneTool::Move, "✥", "移动").clicked() {
+                if icon_toggle(ui, self.scene_tool == SceneTool::Move, "移动", "移动（W）").clicked() {
                     self.scene_tool = SceneTool::Move;
                 }
-                if icon_toggle(ui, self.scene_tool == SceneTool::Rotate, "⟳", "旋转").clicked()
+                if icon_toggle(ui, self.scene_tool == SceneTool::Rotate, "旋转", "旋转（E）").clicked()
                 {
                     self.scene_tool = SceneTool::Rotate;
                 }
-                if icon_toggle(ui, self.scene_tool == SceneTool::Scale, "⤢", "缩放").clicked() {
+                if icon_toggle(ui, self.scene_tool == SceneTool::Scale, "缩放", "缩放（R）").clicked() {
                     self.scene_tool = SceneTool::Scale;
                 }
                 if icon_toggle(
@@ -2073,10 +2109,180 @@ struct SceneBoxedEntity {
     ui: Option<UiEntityInfo>,
 }
 
+fn pick_scene_2d_entity(
+    entities: &[SceneBoxedEntity],
+    position: egui::Pos2,
+    locked: &std::collections::BTreeSet<SceneEntityId>,
+) -> Option<SceneEntityId> {
+    entities.iter().rev().find_map(|entity| {
+        (rotated_contains(
+            entity.center,
+            entity.size,
+            entity.transform.rotation,
+            position,
+        ) && !locked.contains(&entity.id))
+            .then_some(entity.id)
+    })
+}
+
+fn entities_in_selection_rect(
+    entities: &[SceneBoxedEntity],
+    selection_rect: egui::Rect,
+    start: egui::Pos2,
+    current: egui::Pos2,
+) -> Vec<SceneEntityId> {
+    let left_to_right = current.x >= start.x;
+    entities
+        .iter()
+        .filter_map(|entity| {
+            let corners = rotated_corners(entity.center, entity.size, entity.transform.rotation);
+            let contained = corners.iter().all(|corner| selection_rect.contains(*corner));
+            let intersects = polygon_intersects_rect(&corners, selection_rect);
+            (left_to_right && contained || !left_to_right && intersects).then_some(entity.id)
+        })
+        .collect()
+}
+
+fn is_widget_entity(scene: &editor::SceneDocument, entity: &SceneEntity) -> bool {
+    if entity
+        .components
+        .keys()
+        .any(|name| matches!(name.as_str(), "Image" | "Text" | "Button"))
+        || entity.metadata.get("ui.root").is_some_and(|value| value == "true")
+    {
+        return true;
+    }
+    let mut parent = entity.parent;
+    while let Some(parent_id) = parent {
+        let Some(parent_entity) = scene.scene.entities.get(&parent_id) else {
+            break;
+        };
+        if parent_entity.metadata.get("ui.root").is_some_and(|value| value == "true") {
+            return true;
+        }
+        parent = parent_entity.parent;
+    }
+    false
+}
+
+fn scene_drag_transform(
+    initial: TransformFields,
+    pivot: (f32, f32),
+    delta: egui::Vec2,
+    tool: SceneTool,
+    snap_enabled: bool,
+    snap_step: f32,
+    pixels_per_point: f32,
+    zoom: f32,
+    angle: f32,
+    factor: f32,
+) -> TransformFields {
+    let mut next = initial;
+    match tool {
+        SceneTool::Move | SceneTool::Select => {
+            next.position_x += delta.x * pixels_per_point / zoom;
+            next.position_y -= delta.y * pixels_per_point / zoom;
+            if snap_enabled {
+                next.position_x = (next.position_x / snap_step).round() * snap_step;
+                next.position_y = (next.position_y / snap_step).round() * snap_step;
+            }
+        }
+        SceneTool::Rotate => {
+            let relative_x = initial.position_x - pivot.0;
+            let relative_y = initial.position_y - pivot.1;
+            next.position_x = pivot.0 + relative_x * angle.cos() - relative_y * angle.sin();
+            next.position_y = pivot.1 + relative_x * angle.sin() + relative_y * angle.cos();
+            next.rotation += delta.x * 0.5;
+        }
+        SceneTool::Scale => {
+            next.position_x = pivot.0 + (initial.position_x - pivot.0) * factor;
+            next.position_y = pivot.1 + (initial.position_y - pivot.1) * factor;
+            next.scale_x = (initial.scale_x * factor).max(0.05);
+            next.scale_y = (initial.scale_y * factor).max(0.05);
+        }
+        SceneTool::TilePaint => {}
+    }
+    next
+}
+
+fn pick_scene_3d_entity(
+    ray: Ray3,
+    entities: &[(SceneEntityId, String, Transform3D, engine::core::math3d::Aabb3)],
+    locked: &std::collections::BTreeSet<SceneEntityId>,
+    preview: &std::collections::BTreeMap<SceneEntityId, Transform3D>,
+) -> Option<SceneEntityId> {
+    entities
+        .iter()
+        .filter(|(id, _, _, _)| !locked.contains(id))
+        .filter_map(|(id, _, transform, bounds)| {
+            let position = preview
+                .get(id)
+                .map(|value| value.position)
+                .unwrap_or(transform.position);
+            let world_bounds = engine::core::math3d::Aabb3 {
+                min: bounds.min + position,
+                max: bounds.max + position,
+            };
+            ray.intersect_aabb(world_bounds).map(|distance| (*id, distance))
+        })
+        .min_by(|left, right| left.1.total_cmp(&right.1))
+        .map(|(id, _)| id)
+}
+
+fn pick_gizmo_axis(
+    tool: SceneTool,
+    center: egui::Pos2,
+    position: egui::Pos2,
+    length: f32,
+    locked: bool,
+) -> Option<GizmoAxis> {
+    match tool {
+        SceneTool::Move | SceneTool::Select => {
+            let hit_radius = 12.0;
+            if (position - (center + egui::vec2(length, 0.0))).length() < hit_radius {
+                Some(GizmoAxis::X)
+            } else if (position - (center + egui::vec2(0.0, -length))).length() < hit_radius {
+                Some(GizmoAxis::Z)
+            } else if (position - (center + egui::vec2(-length * 0.7, -length * 0.7))).length()
+                < hit_radius
+            {
+                Some(GizmoAxis::Y)
+            } else if egui::Rect::from_center_size(center, egui::vec2(24.0, 24.0))
+                .contains(position)
+                && !locked
+            {
+                Some(GizmoAxis::Free)
+            } else {
+                None
+            }
+        }
+        SceneTool::Rotate => {
+            if (position - (center + egui::vec2(length, 0.0))).length() < 14.0
+                || egui::Rect::from_center_size(center, egui::vec2(24.0, 24.0)).contains(position)
+            {
+                Some(GizmoAxis::X)
+            } else {
+                None
+            }
+        }
+        SceneTool::Scale => {
+            if (position - (center + egui::vec2(length, length))).length() < 14.0
+                || egui::Rect::from_center_size(center, egui::vec2(24.0, 24.0)).contains(position)
+            {
+                Some(GizmoAxis::Scale)
+            } else {
+                None
+            }
+        }
+        SceneTool::TilePaint => None,
+    }
+}
+
 /// UI 组件实体的拖拽改写信息。
 #[derive(Clone, Copy)]
 struct UiEntityInfo {
     position: [f32; 2],
+    anchor: [f32; 2],
 }
 
 /// 计算 UI 组件实体（Image/Button/Text）在面板坐标系的真实包围框。
@@ -2124,16 +2330,11 @@ fn ui_entity_2d_box(
         && let Ok(image) = UiImage::from_component_str(raw)
     {
         let position = override_position.unwrap_or(image.position);
-        let (origin, size) = resolve_ui_rect(
-            position,
-            image.size,
-            image.space,
-            image.anchor,
-            viewport,
-            reference,
-        );
+        let (origin, size) = UiLayout::from_image(&image)
+            .with_position(position)
+            .resolve(viewport, reference);
         let (center, size) = box_of(origin, size);
-        return Some((center, size, UiEntityInfo { position }));
+        return Some((center, size, UiEntityInfo { position, anchor: image.anchor }));
     }
     if let Some(raw) = entity.components.get("Text")
         && let Ok(text) = UiText::from_component_str(raw)
@@ -2174,7 +2375,7 @@ fn ui_entity_2d_box(
             (glyph_bounds[3] - glyph_bounds[1]).max(0.0),
         ];
         let (center, size) = box_of(glyph_origin, glyph_size);
-        return Some((center, size, UiEntityInfo { position }));
+        return Some((center, size, UiEntityInfo { position, anchor: text.anchor }));
     }
     None
 }
@@ -2330,6 +2531,71 @@ mod tests {
     use crate::EditorCamera;
     use editor::open_project;
     use engine::core::logging::LogSink;
+
+    #[test]
+    fn pick_scene_2d_entity_uses_topmost_unlocked_hit() {
+        let transform = TransformFields::default();
+        let entities = vec![
+            SceneBoxedEntity {
+                id: SceneEntityId(1),
+                name: "back".to_owned(),
+                transform,
+                center: egui::pos2(100.0, 100.0),
+                size: egui::vec2(80.0, 80.0),
+                ui: None,
+            },
+            SceneBoxedEntity {
+                id: SceneEntityId(2),
+                name: "front".to_owned(),
+                transform,
+                center: egui::pos2(100.0, 100.0),
+                size: egui::vec2(40.0, 40.0),
+                ui: None,
+            },
+        ];
+        let locked = std::collections::BTreeSet::new();
+        assert_eq!(pick_scene_2d_entity(&entities, egui::pos2(100.0, 100.0), &locked), Some(SceneEntityId(2)));
+        let mut locked = std::collections::BTreeSet::new();
+        locked.insert(SceneEntityId(2));
+        assert_eq!(pick_scene_2d_entity(&entities, egui::pos2(100.0, 100.0), &locked), Some(SceneEntityId(1)));
+    }
+
+    #[test]
+    fn box_selection_uses_directional_containment_rules() {
+        let transform = TransformFields::default();
+        let entities = vec![
+            SceneBoxedEntity {
+                id: SceneEntityId(1),
+                name: "contained".to_owned(),
+                transform,
+                center: egui::pos2(20.0, 20.0),
+                size: egui::vec2(10.0, 10.0),
+                ui: None,
+            },
+            SceneBoxedEntity {
+                id: SceneEntityId(2),
+                name: "partial".to_owned(),
+                transform,
+                center: egui::pos2(40.0, 20.0),
+                size: egui::vec2(20.0, 20.0),
+                ui: None,
+            },
+        ];
+        let left_to_right = egui::Rect::from_min_max(egui::pos2(10.0, 10.0), egui::pos2(25.0, 25.0));
+        assert_eq!(entities_in_selection_rect(&entities, left_to_right, egui::pos2(10.0, 10.0), egui::pos2(25.0, 25.0)), vec![SceneEntityId(1)]);
+        let right_to_left = egui::Rect::from_min_max(egui::pos2(25.0, 10.0), egui::pos2(45.0, 30.0));
+        assert_eq!(entities_in_selection_rect(&entities, right_to_left, egui::pos2(45.0, 30.0), egui::pos2(25.0, 10.0)), vec![SceneEntityId(1), SceneEntityId(2)]);
+    }
+
+    #[test]
+    fn gizmo_hit_testing_respects_tool_and_lock_state() {
+        let center = egui::pos2(100.0, 100.0);
+        assert_eq!(pick_gizmo_axis(SceneTool::Move, center, egui::pos2(140.0, 100.0), 40.0, false), Some(GizmoAxis::X));
+        assert_eq!(pick_gizmo_axis(SceneTool::Move, center, center, 40.0, false), Some(GizmoAxis::Free));
+        assert_eq!(pick_gizmo_axis(SceneTool::Move, center, center, 40.0, true), None);
+        assert_eq!(pick_gizmo_axis(SceneTool::Scale, center, egui::pos2(140.0, 140.0), 40.0, false), Some(GizmoAxis::Scale));
+        assert_eq!(pick_gizmo_axis(SceneTool::TilePaint, center, center, 40.0, false), None);
+    }
     use engine::core::scene::SceneEntityId;
     use engine::core::transform::Vec2;
     use engine::core::ui::UiLayoutSpace;

@@ -583,8 +583,34 @@ impl InspectorState {
         let before = document.clone();
         self.set_name(document, id, snapshot.name)?;
         self.set_transform(document, id, snapshot.transform)?;
+        for sid in multi_sprite_ids {
+            if *sid == id {
+                continue;
+            }
+            if document
+                .scene
+                .entities
+                .get(sid)
+                .is_some_and(|entity| entity.components.contains_key("Transform"))
+            {
+                self.set_transform(document, *sid, snapshot.transform)?;
+            }
+        }
         if let Some(transform3d) = snapshot.transform3d {
             self.set_transform3d(document, id, transform3d)?;
+            for sid in multi_sprite_ids {
+                if *sid == id {
+                    continue;
+                }
+                if document
+                    .scene
+                    .entities
+                    .get(sid)
+                    .is_some_and(|entity| entity.components.contains_key("Transform3D"))
+                {
+                    self.set_transform3d(document, *sid, transform3d)?;
+                }
+            }
         }
         match snapshot.mesh_renderer.as_deref() {
             Some(reference) => self.set_mesh_renderer(document, id, reference)?,
@@ -592,20 +618,76 @@ impl InspectorState {
                 self.clear_mesh_renderer(document, id)?;
             }
         }
+        if let Some(reference) = snapshot.mesh_renderer.as_deref() {
+            for sid in multi_sprite_ids {
+                if *sid != id
+                    && document.scene.entities.get(sid).is_some_and(|entity| entity.components.contains_key("MeshRenderer"))
+                {
+                    self.set_mesh_renderer(document, *sid, reference)?;
+                }
+            }
+        }
         if let Some(camera3d) = snapshot.camera3d {
             self.set_camera3d(document, id, camera3d)?;
+            for sid in multi_sprite_ids {
+                if *sid != id
+                    && document.scene.entities.get(sid).is_some_and(|entity| entity.components.contains_key("Camera3D"))
+                {
+                    self.set_camera3d(document, *sid, camera3d)?;
+                }
+            }
         }
         if let Some(light) = snapshot.light {
             self.set_light(document, id, light)?;
+            for sid in multi_sprite_ids {
+                if *sid != id
+                    && document.scene.entities.get(sid).is_some_and(|entity| entity.components.contains_key("Light"))
+                {
+                    self.set_light(document, *sid, light)?;
+                }
+            }
         }
         if let Some(collider3d) = snapshot.collider3d {
-            self.set_collider3d(document, id, collider3d)?;
+            self.set_collider3d(document, id, collider3d.clone())?;
+            for sid in multi_sprite_ids {
+                if *sid != id
+                    && document.scene.entities.get(sid).is_some_and(|entity| entity.components.contains_key("Collider3d"))
+                {
+                    self.set_collider3d(document, *sid, collider3d.clone())?;
+                }
+            }
         }
         if let Some(text) = snapshot.text {
-            self.set_text(document, id, text)?;
+            self.set_text(document, id, text.clone())?;
+            for sid in multi_sprite_ids {
+                if *sid == id {
+                    continue;
+                }
+                if document
+                    .scene
+                    .entities
+                    .get(sid)
+                    .is_some_and(|entity| entity.components.contains_key("Text"))
+                {
+                    self.set_text(document, *sid, text.clone())?;
+                }
+            }
         }
         if let Some(image) = snapshot.image {
-            self.set_image(document, id, image)?;
+            self.set_image(document, id, image.clone())?;
+            for sid in multi_sprite_ids {
+                if *sid == id {
+                    continue;
+                }
+                if document
+                    .scene
+                    .entities
+                    .get(sid)
+                    .is_some_and(|entity| entity.components.contains_key("Image"))
+                {
+                    self.set_image(document, *sid, image.clone())?;
+                }
+            }
         }
         match snapshot.sprite_reference.as_deref() {
             Some(reference) if !reference.trim().is_empty() => {
@@ -647,6 +729,15 @@ impl InspectorState {
             Some(script) => self.set_lua_script(document, id, script)?,
             None => {
                 self.clear_lua_script(document, id)?;
+            }
+        }
+        if let Some(script) = snapshot.lua_script.as_deref() {
+            for sid in multi_sprite_ids {
+                if *sid != id
+                    && document.scene.entities.get(sid).is_some_and(|entity| entity.components.contains_key("LuaScript"))
+                {
+                    self.set_lua_script(document, *sid, script)?;
+                }
             }
         }
         Ok(*document != before)
@@ -1184,6 +1275,52 @@ mod tests {
         assert_eq!(snapshot.transform, TransformFields::default());
         assert!(snapshot.sprite_reference.is_none());
     }
+
+    #[test]
+    fn write_inspector_batches_transform_only_to_matching_entities() {
+        let (mut document, inspector, id) = setup();
+        let matching = SceneEntityId(2);
+        let unrelated = SceneEntityId(3);
+        document.scene.add_entity(matching, "Matching", None).unwrap();
+        document.scene.add_entity(unrelated, "Unrelated", None).unwrap();
+        inspector.set_transform(&mut document, id, TransformFields::default()).unwrap();
+        inspector.set_transform(&mut document, matching, TransformFields::default()).unwrap();
+        document.mark_clean();
+        let mut snapshot = inspector.snapshot(&document, id).unwrap();
+        snapshot.transform.position_x = 12.0;
+
+        inspector
+            .write_inspector(&mut document, id, snapshot, None, None, &[id, matching, unrelated])
+            .unwrap();
+        let matching_transform = inspector.snapshot(&document, matching).unwrap().transform;
+        assert_eq!(matching_transform.position_x, 12.0);
+        assert!(!document.scene.entities[&unrelated].components.contains_key("Transform"));
+    }
+
+    #[test]
+    fn write_inspector_batches_transform3d_only_to_matching_entities() {
+        let (mut document, inspector, id) = setup();
+        let matching = SceneEntityId(2);
+        let unrelated = SceneEntityId(3);
+        document.scene.add_entity(matching, "Matching", None).unwrap();
+        document.scene.add_entity(unrelated, "Unrelated", None).unwrap();
+        inspector.set_transform(&mut document, id, TransformFields::default()).unwrap();
+        inspector.set_transform3d(&mut document, id, Transform3DFields::default()).unwrap();
+        inspector.set_transform3d(&mut document, matching, Transform3DFields::default()).unwrap();
+        document.mark_clean();
+        let mut snapshot = inspector.snapshot(&document, id).unwrap();
+        let mut transform3d = snapshot.transform3d.unwrap();
+        transform3d.position_z = 9.0;
+        snapshot.transform3d = Some(transform3d);
+
+        inspector
+            .write_inspector(&mut document, id, snapshot, None, None, &[id, matching, unrelated])
+            .unwrap();
+        let matching_transform = inspector.snapshot(&document, matching).unwrap().transform3d.unwrap();
+        assert_eq!(matching_transform.position_z, 9.0);
+        assert!(!document.scene.entities[&unrelated].components.contains_key("Transform3D"));
+    }
+
     #[test]
     fn name_edit_marks_dirty() {
         let (mut document, inspector, id) = setup();
