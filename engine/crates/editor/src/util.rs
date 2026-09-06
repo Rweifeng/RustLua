@@ -3,6 +3,7 @@
 use editor::ProjectError;
 use eframe::egui::{self, FontData, FontDefinitions, FontFamily, Response, Ui};
 use std::{
+    collections::BTreeSet,
     env,
     path::{Path, PathBuf},
 };
@@ -46,6 +47,81 @@ pub(crate) fn load_recent_projects() -> Vec<String> {
 /// 落盘最近打开的项目列表。
 pub(crate) fn save_recent_projects(projects: &[String]) {
     let _ = std::fs::write(recent_projects_path(), projects.join("\n"));
+}
+
+/// 项目本地编辑器状态文件（不进入 `.scene`；`.cache` 已被版本控制忽略）。
+fn hierarchy_state_path(project_root: &Path) -> PathBuf {
+    project_root
+        .join(".cache")
+        .join("editor")
+        .join("hierarchy-state.json")
+}
+
+/// 读取指定场景的 Hierarchy 折叠实体 ID。损坏或缺省时返回空集合。
+pub(crate) fn load_hierarchy_collapsed(project_root: &Path, scene_key: &str) -> BTreeSet<u64> {
+    let Ok(text) = std::fs::read_to_string(hierarchy_state_path(project_root)) else {
+        return BTreeSet::new();
+    };
+    let Ok(config) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return BTreeSet::new();
+    };
+    config
+        .get("hierarchy")
+        .and_then(|value| value.get(scene_key))
+        .and_then(|value| value.get("collapsed"))
+        .and_then(|value| value.as_array())
+        .map(|values| values.iter().filter_map(|value| value.as_u64()).collect())
+        .unwrap_or_default()
+}
+
+/// 保存指定场景的 Hierarchy 折叠实体 ID，保留配置文件中的其他键。
+pub(crate) fn save_hierarchy_collapsed(
+    project_root: &Path,
+    scene_key: &str,
+    collapsed: &BTreeSet<u64>,
+) {
+    let path = hierarchy_state_path(project_root);
+    let mut config = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    if !config.is_object() {
+        config = serde_json::json!({});
+    }
+    let object = config
+        .as_object_mut()
+        .expect("config was normalized to an object");
+    object.insert("version".to_owned(), serde_json::json!(1));
+    let hierarchy = object
+        .entry("hierarchy")
+        .or_insert_with(|| serde_json::json!({}));
+    if !hierarchy.is_object() {
+        *hierarchy = serde_json::json!({});
+    }
+    hierarchy[scene_key] = serde_json::json!({
+        "collapsed": collapsed.iter().copied().collect::<Vec<_>>(),
+    });
+
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    if std::fs::create_dir_all(parent).is_err() {
+        return;
+    }
+    let token = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|value| value.as_nanos())
+        .unwrap_or_default();
+    let temp = parent.join(format!(".hierarchy-state.{token}.tmp"));
+    if std::fs::write(
+        &temp,
+        serde_json::to_string_pretty(&config).unwrap_or_default(),
+    )
+    .is_err()
+    {
+        return;
+    }
+    if std::fs::rename(&temp, &path).is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
 }
 
 pub(crate) fn format_project_error(path: &Path, error: ProjectError) -> String {

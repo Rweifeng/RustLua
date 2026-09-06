@@ -3,6 +3,7 @@
 //! 工具按钮（Select/Move/Rotate/Scale）在 Scene 视图右上角的小面板中（见 scene_view.rs）。
 
 use crate::EditorApp;
+use crate::panels::scene_view::{SCENE_ZOOM_MAX, SCENE_ZOOM_MIN};
 use crate::util::{icon_button, icon_toggle};
 use crate::{AlignMode, SceneViewMode, WorkspaceTab};
 use eframe::egui;
@@ -213,7 +214,12 @@ impl EditorApp {
                 self.sort_selected_sprites_by_y(true);
             }
             ui.separator();
-            ui.add(egui::Slider::new(&mut self.scene_zoom, 0.5..=2.5).text("Zoom"));
+            let zoom_before_slider = self.scene_zoom;
+            ui.add(
+                egui::Slider::new(&mut self.scene_zoom, SCENE_ZOOM_MIN..=SCENE_ZOOM_MAX)
+                    .text("Zoom"),
+            );
+            self.set_scene_zoom_centered(zoom_before_slider, self.scene_zoom);
         });
         // 自定义分辨率输入行。
         if self.adding_preview_resolution {

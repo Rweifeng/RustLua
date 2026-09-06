@@ -119,6 +119,8 @@ impl EditorApp {
                     self.play_session = None;
                     // E03 项目切换：整个文档被替换，清空统一选择模型。
                     self.selection.clear(editor::SelectionSource::Playback);
+                    // H06：项目状态文件随新工程根切换；若新工程暂无场景则清空。
+                    self.load_hierarchy_collapsed();
                     self.delete_target = crate::DeleteTarget::None;
                     self.project_loaded = true;
                     self.status = format!(

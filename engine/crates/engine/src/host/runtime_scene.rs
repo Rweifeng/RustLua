@@ -13,7 +13,7 @@ use crate::core::{
     animation3d::Animation3D,
     camera3d::Camera3D,
     entity::EntityId,
-    font::FontAtlas,
+    font::{DEFAULT_FONT_WEIGHT, FontAtlas},
     input::InputSnapshot,
     light::Light,
     math2d::{Camera2D, Viewport},
@@ -926,10 +926,12 @@ impl RuntimeScene {
             if let Some(rect) = self.scene_ui_layout_rect(id, viewport) {
                 let position = [rect.x, rect.y];
                 let effective_scale = text.effective_scale();
+                // `layout_text` already emits absolute screen-space vertices;
+                // adding the layout origin again would displace scene text by
+                // its full top-left position (the visible "text ran away" bug).
                 let (mesh, is_sdf) =
                     self.layout_text(&text.text, position, effective_scale, text.color)?;
-                let origin = position;
-                let text_vertices = text_to_ndc_with_offset(mesh, is_sdf, origin, width, height);
+                let text_vertices = text_to_ndc(mesh, is_sdf, width, height);
                 self.push_text_run(vertices, draws, text_vertices, is_sdf);
             }
         }
@@ -1188,24 +1190,14 @@ impl RuntimeScene {
 fn build_ui_scene_nodes(scene: &Scene, honor_editor_hidden: bool) -> BTreeMap<u64, UiSceneNode> {
     let mut id_to_key = BTreeMap::new();
     for entity in scene.entities.values() {
-        if honor_editor_hidden
-            && scene
-                .metadata
-                .get(&format!("editor.hidden.{}", entity.id.0))
-                .is_some_and(|value| value == "true")
-        {
+        if honor_editor_hidden && scene.is_entity_hidden_with_ancestors(entity.id) {
             continue;
         }
         id_to_key.insert(entity.id.0, id_to_key.len() as u64);
     }
     let mut nodes = BTreeMap::new();
     for entity in scene.entities.values() {
-        if honor_editor_hidden
-            && scene
-                .metadata
-                .get(&format!("editor.hidden.{}", entity.id.0))
-                .is_some_and(|value| value == "true")
-        {
+        if honor_editor_hidden && scene.is_entity_hidden_with_ancestors(entity.id) {
             continue;
         }
         let Some(&entity_key) = id_to_key.get(&entity.id.0) else {
@@ -1481,8 +1473,17 @@ fn project_fallback_font_path(project_root: &Path) -> Option<String> {
     extract_project_key(&text, "font_fallback")
 }
 
+/// project.toml 的 `font_weight` 键；无效配置回退引擎默认值。
+fn project_font_weight(project_root: &Path) -> Option<f32> {
+    let text = fs::read_to_string(project_root.join("project.toml")).ok()?;
+    extract_project_key(&text, "font_weight")
+        .and_then(|weight| weight.parse::<f32>().ok())
+        .filter(|weight| weight.is_finite() && *weight > 0.0)
+}
+
 /// 加载项目字体并包装为可跨运行时共享的图集（MSDF 字形按需生成，共享后只生成
-/// 一次）。字体路径取 project.toml `font` 键，缺省 NotoSansSC-VF.ttf。
+/// 一次）。字体路径取 project.toml `font` 键，字重取 `font_weight` 键；
+/// 缺省路径是 NotoSansSC-VF.ttf，缺省字重是 Regular（400）。
 pub fn load_project_font_atlas(project_root: Option<&Path>) -> Option<Arc<Mutex<FontAtlas>>> {
     let root = project_root?;
     let primary_path = {
@@ -1503,14 +1504,24 @@ pub fn load_project_font_atlas(project_root: Option<&Path>) -> Option<Arc<Mutex<
             let bytes = fs::read(&path).ok()?;
             crate::core::pack::decode(&bytes).ok()
         });
-    let mut atlas = match FontAtlas::load_with_fallback(&primary_bytes, fallback_bytes.as_deref()) {
+    let font_weight = project_font_weight(root).unwrap_or(DEFAULT_FONT_WEIGHT);
+    let mut atlas = match FontAtlas::load_with_fallback_and_weight(
+        &primary_bytes,
+        fallback_bytes.as_deref(),
+        font_weight,
+    ) {
         Ok(atlas) => atlas,
         Err(error) => {
             tracing::warn!(target: "render", error = %error, "[render] font atlas load failed; text uses placeholders");
             return None;
         }
     };
-    tracing::info!(target: "render", path = %primary_path.display(), "[render] font atlas ready");
+    tracing::info!(
+        target: "render",
+        path = %primary_path.display(),
+        weight = font_weight,
+        "[render] font atlas ready"
+    );
     // 首包预热：把打包时收集的字符清单（chars.txt）预生成进图集，首帧文字不卡。
     prewarm_font_atlas(root, &mut atlas);
     Some(Arc::new(Mutex::new(atlas)))
@@ -1919,6 +1930,41 @@ mod sdf_tests {
             mesh.draws.iter().any(|d| d.count == 54),
             "切片 Image 应产生 54 顶点（9 格 × 6）：{:#?}",
             mesh.draws.iter().map(|d| d.count).collect::<Vec<_>>()
+        );
+    }
+
+    /// Scene `Text` layouts already contain absolute screen coordinates. A
+    /// regression used to add the `UiLayout` origin a second time, pushing
+    /// labels below/off their buttons.
+    #[test]
+    fn scene_ui_text_keeps_layout_origin_once() {
+        use crate::core::scene::{Scene, SceneEntityId};
+
+        let root = crate::core::games_dir().join("examples");
+        let mut scene = Scene::new("scene-text-origin");
+        scene.add_entity(SceneEntityId(1), "Label", None).unwrap();
+        let entity = scene.entities.get_mut(&SceneEntityId(1)).unwrap();
+        entity.components.insert(
+            "UiLayout".to_owned(),
+            "anchors=0,0,0,0;offsets=100,600,100,600".to_owned(),
+        );
+        entity.components.insert(
+            "Text".to_owned(),
+            "text=Press;font_size=13;color=1,1,1".to_owned(),
+        );
+        let mut runtime = RuntimeScene::from_scene_edit(Some(&root), scene).unwrap();
+        let mesh = runtime.vertices(1280, 720).expect("vertices");
+        let sdf_y: Vec<f32> = mesh
+            .vertices
+            .iter()
+            .filter(|vertex| vertex.sdf == 1)
+            .map(|vertex| vertex.position[1])
+            .collect();
+        assert!(!sdf_y.is_empty(), "scene text should emit SDF vertices");
+        let minimum_y = sdf_y.iter().copied().fold(f32::INFINITY, f32::min);
+        assert!(
+            minimum_y > -1.0,
+            "layout text must stay on screen, min NDC y={minimum_y}"
         );
     }
 

@@ -46,6 +46,32 @@ impl Scene {
             metadata: BTreeMap::new(),
         }
     }
+
+    /// 实体自身或任一祖先带 `editor.hidden` 标记时返回 true。
+    /// 父实体隐藏会级联遮蔽整棵子树（Unity 语义）；子实体自身的
+    /// 标记保持不变，父级恢复显示后各自状态仍然生效。
+    pub fn is_entity_hidden_with_ancestors(&self, id: SceneEntityId) -> bool {
+        let mut cursor = Some(id);
+        // 环保护：正常层级深度不可能超过实体数。
+        for _ in 0..=self.entities.len() {
+            let Some(entity_id) = cursor else {
+                return false;
+            };
+            let Some(entity) = self.entities.get(&entity_id) else {
+                return false;
+            };
+            if self
+                .metadata
+                .get(&format!("editor.hidden.{}", entity_id.0))
+                .is_some_and(|value| value == "true")
+            {
+                return true;
+            }
+            cursor = entity.parent;
+        }
+        false
+    }
+
     pub fn add_entity(
         &mut self,
         id: SceneEntityId,
@@ -423,6 +449,30 @@ mod tests {
         ))
         .unwrap();
         assert!(!fresh.metadata.contains_key("migrated_from"));
+    }
+
+    #[test]
+    fn hidden_flag_cascades_to_descendants() {
+        let mut s = Scene::new("main");
+        s.add_entity(SceneEntityId(1), "Root", None).unwrap();
+        s.add_entity(SceneEntityId(2), "Parent", Some(SceneEntityId(1)))
+            .unwrap();
+        s.add_entity(SceneEntityId(3), "Child", Some(SceneEntityId(2)))
+            .unwrap();
+        let key = |id: u64| format!("editor.hidden.{id}");
+        assert!(!s.is_entity_hidden_with_ancestors(SceneEntityId(3)));
+        s.metadata.insert(key(2), "true".into());
+        // 父级隐藏：子级级联隐藏，父级自身隐藏，祖父不受影响。
+        assert!(!s.is_entity_hidden_with_ancestors(SceneEntityId(1)));
+        assert!(s.is_entity_hidden_with_ancestors(SceneEntityId(2)));
+        assert!(s.is_entity_hidden_with_ancestors(SceneEntityId(3)));
+        s.metadata.insert(key(2), "false".into());
+        s.metadata.insert(key(3), "true".into());
+        // 子级单独隐藏不影响父级。
+        assert!(!s.is_entity_hidden_with_ancestors(SceneEntityId(2)));
+        assert!(s.is_entity_hidden_with_ancestors(SceneEntityId(3)));
+        s.metadata.insert(key(1), "true".into());
+        assert!(s.is_entity_hidden_with_ancestors(SceneEntityId(3)));
     }
 
     #[test]

@@ -269,6 +269,9 @@ impl EditorApp {
     /// 用统一入口替换当前编辑场景文档，确保 Scene View 相关状态同步失效。
     pub(crate) fn set_current_scene_document(&mut self, document: SceneDocument) {
         self.document.current_scene = Some(document);
+        // H02/H03：文档切换后行内重命名会话与 Shift 锚点立即失效。
+        self.hierarchy_rename = None;
+        self.selection_anchor = None;
         self.invalidate_scene_view_state();
     }
 
@@ -368,7 +371,10 @@ impl EditorApp {
             self.preview_input_state.clear_all();
         }
 
-        // 5. Hierarchy 元数据刷新：置空 key 强制下一帧 sync_hierarchy_metadata 全量重扫，
+        // 5. Hierarchy 折叠状态同步：打开读配置、新建清空、同文档编辑剔除悬空 ID。
+        self.sync_hierarchy_collapsed(change);
+
+        // 6. Hierarchy 元数据刷新：置空 key 强制下一帧 sync_hierarchy_metadata 全量重扫，
         //    避免 (path, revision) 恰好相同的文档复用上一份 hidden/locked 集合。
         self.last_metadata_key = None;
     }
@@ -859,6 +865,10 @@ impl EditorApp {
             .map_err(|e| e.to_string())
         };
         let saved = r.is_ok();
+        if saved {
+            // 未命名场景第一次 save_as 后才获得稳定 key；这里补写当前折叠状态。
+            self.save_hierarchy_collapsed();
+        }
         self.status = match r {
             Ok(()) => {
                 if let Some(doc) = self.document.current_scene.as_ref() {
@@ -909,7 +919,6 @@ impl EditorApp {
                 self.on_document_changed(DocumentChange::Opened);
                 // 打开场景文档后不再指向资源面板的选中项（Delete 快捷键回到 Hierarchy 外）。
                 self.clear_resource_selection();
-                self.scene_state.collapsed.clear();
                 self.status = if relative_path.extension().and_then(|value| value.to_str())
                     == Some("prefab")
                 {
@@ -1664,27 +1673,18 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
-    // E02 回归测试：使用仓库内 game_jhyt 工程（standalone 游戏，project.toml +
+    // E02/E07 回归测试：使用仓库内 examples 工程（project.toml +
     // scripts/scenes；不复制巨大的 assets，也绝不调用 refresh_resources）。
-    fn jhyt_project_root() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .and_then(Path::parent)
-            .and_then(Path::parent)
-            .expect("editor crate 上溯三级应为 p2 工作区根")
-            .join("game_jhyt")
-    }
-
-    fn copy_jhyt_project(label: &str) -> PathBuf {
-        let source = jhyt_project_root();
+    fn copy_examples_project(label: &str) -> PathBuf {
+        let source = sample_project_root();
         assert!(
             source.join("project.toml").is_file(),
-            "game_jhyt 工程缺失: {}",
+            "examples 工程缺失: {}",
             source.display()
         );
         assert!(
             source.join("scenes/main.scene").is_file(),
-            "game_jhyt 缺少 scenes/main.scene"
+            "examples 缺少 scenes/main.scene"
         );
         let root = temp_root(label);
         fs::create_dir_all(&root).unwrap();
@@ -1705,10 +1705,10 @@ mod tests {
         (app, root)
     }
 
-    /// 打开 game_jhyt 副本并打开其 scenes/main.scene（4 个根实体）。
-    fn open_jhyt_main(label: &str) -> (EditorApp, PathBuf) {
-        let root = copy_jhyt_project(label);
-        let project = open_project(&root).expect("game_jhyt 副本应可打开");
+    /// 打开 examples 副本并打开其 scenes/main.scene（8 个根实体）。
+    fn open_examples_main(label: &str) -> (EditorApp, PathBuf) {
+        let root = copy_examples_project(label);
+        let project = open_project(&root).expect("examples 副本应可打开");
         let mut app = EditorApp::new(project, None, LogSink::new(64));
         app.open_scene_resource(PathBuf::from("scenes/main.scene"));
         (app, root)
@@ -1756,11 +1756,11 @@ mod tests {
     }
 
     #[test]
-    fn game_jhyt_open_scene_routes_unified_refresh() {
-        let (mut app, root) = open_jhyt_main("jhyt-open");
+    fn examples_main_open_scene_routes_unified_refresh() {
+        let (mut app, root) = open_examples_main("examples-open");
         {
             let scene = app.document.current_scene.clone().expect("已打开场景");
-            assert_eq!(scene.scene.entities.len(), 4);
+            assert_eq!(scene.scene.entities.len(), 8);
             assert!(scene.scene.entities.contains_key(&SceneEntityId(4)));
         }
         assert_eq!(app.status, "已打开场景：scenes/main.scene");
@@ -1782,7 +1782,7 @@ mod tests {
                 .scene
                 .entities
                 .len(),
-            4
+            8
         );
         assert!(app.selection.is_empty());
         assert_eq!(app.selection.primary(), None);
@@ -1793,8 +1793,8 @@ mod tests {
     }
 
     #[test]
-    fn game_jhyt_delete_selected_root_routes_unified_refresh() {
-        let (mut app, root) = open_jhyt_main("jhyt-delete");
+    fn examples_main_delete_selected_root_routes_unified_refresh() {
+        let (mut app, root) = open_examples_main("examples-delete");
         app.selection
             .set_single(SceneEntityId(4), editor::SelectionSource::Hierarchy);
         app.delete_target = crate::DeleteTarget::Hierarchy;
@@ -1804,7 +1804,7 @@ mod tests {
         app.delete_selected_entity();
         assert_eq!(app.status, "Entity deleted");
         let scene = app.document.current_scene.as_ref().unwrap();
-        assert_eq!(scene.scene.entities.len(), 3);
+        assert_eq!(scene.scene.entities.len(), 7);
         assert!(!scene.scene.entities.contains_key(&SceneEntityId(4)));
         assert!(app.selection.is_empty());
         assert_eq!(app.selection.primary(), None);
@@ -1815,10 +1815,10 @@ mod tests {
     }
 
     #[test]
-    fn game_jhyt_undo_redo_routes_unified_refresh() {
-        let (mut app, root) = open_jhyt_main("jhyt-undo");
+    fn examples_main_undo_redo_routes_unified_refresh() {
+        let (mut app, root) = open_examples_main("examples-undo");
         let scene = app.document.current_scene.clone().unwrap();
-        assert_eq!(scene.scene.entities.len(), 4);
+        assert_eq!(scene.scene.entities.len(), 8);
         app.selection
             .set_single(SceneEntityId(4), editor::SelectionSource::Hierarchy);
         poison_scene_view_caches(&mut app);
@@ -1833,15 +1833,15 @@ mod tests {
                 .scene
                 .entities
                 .len(),
-            3
+            7
         );
         assert_scene_view_and_metadata_invalidated(&app);
 
         // Undo 走统一入口：整文档回到删除前快照，Selection/缓存一并收敛。
         app.undo();
-        assert_eq!(app.status, "Undo: Delete entity");
+        assert_eq!(app.status, "Undo: Delete entities");
         let scene = app.document.current_scene.as_ref().unwrap();
-        assert_eq!(scene.scene.entities.len(), 4);
+        assert_eq!(scene.scene.entities.len(), 8);
         assert!(scene.scene.entities.contains_key(&SceneEntityId(4)));
         assert!(app.selection.is_empty());
         assert_eq!(app.selection.primary(), None);
@@ -1849,9 +1849,9 @@ mod tests {
 
         // Redo 同样经统一入口：删除再次生效。
         app.redo();
-        assert_eq!(app.status, "Redo: Delete entity");
+        assert_eq!(app.status, "Redo: Delete entities");
         let scene = app.document.current_scene.as_ref().unwrap();
-        assert_eq!(scene.scene.entities.len(), 3);
+        assert_eq!(scene.scene.entities.len(), 7);
         assert!(!scene.scene.entities.contains_key(&SceneEntityId(4)));
         assert!(app.selection.is_empty());
         assert_eq!(app.selection.primary(), None);
@@ -2120,7 +2120,7 @@ mod tests {
     /// 最终只产生一条 Undo、dirty 一次、提交/取消状态机正确。
     #[test]
     fn e07_commit_transaction_produces_single_undo_and_dirty_once() {
-        let (mut app, root) = open_jhyt_main("e07-commit");
+        let (mut app, root) = open_examples_main("e07-commit");
         let id = SceneEntityId(2);
         let began = app.begin_edit_transaction(
             "Scene Transform",
@@ -2170,7 +2170,7 @@ mod tests {
     /// 文档内容回退到 begin 前。
     #[test]
     fn e07_cancel_transaction_no_history_no_dirty() {
-        let (mut app, root) = open_jhyt_main("e07-cancel");
+        let (mut app, root) = open_examples_main("e07-cancel");
         let id = SceneEntityId(2);
         // 打开文档为 clean，作为 dirty 判定基线。
         assert!(!app.document.current_scene.as_ref().unwrap().is_dirty());
@@ -2212,7 +2212,7 @@ mod tests {
     /// 历史；活动事务不把预览内容泄漏成一条 Undo。
     #[test]
     fn e07_undo_guard_cancels_active_transaction_then_undoes() {
-        let (mut app, root) = open_jhyt_main("e07-undo-guard");
+        let (mut app, root) = open_examples_main("e07-undo-guard");
         let id = SceneEntityId(2);
         let pristine = app.document.current_scene.clone().unwrap();
         // 先做一条离散编辑（产生 1 条历史、dirty）。
@@ -2258,7 +2258,7 @@ mod tests {
     /// E07：保存时若仍有活动事务，自动以单条历史落盘（save_scene 前兜底提交）。
     #[test]
     fn e07_save_flushes_active_transaction() {
-        let (mut app, root) = open_jhyt_main("e07-save-flush");
+        let (mut app, root) = open_examples_main("e07-save-flush");
         let id = SceneEntityId(2);
         let began = app.begin_edit_transaction(
             "Scene Transform",

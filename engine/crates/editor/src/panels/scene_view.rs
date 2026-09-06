@@ -75,7 +75,7 @@ impl EditorApp {
         // 仅当鼠标悬停在 Scene 视图内时才响应滚轮缩放（避免在其它面板滚动误触发）。
         let scroll = ui.input(|input| input.smooth_scroll_delta.y);
         if response.contains_pointer() && scroll.abs() > 0.0 {
-            self.scene_zoom = (self.scene_zoom * (1.0 + scroll * 0.001)).clamp(0.25, 4.0);
+            self.set_scene_zoom_centered(self.scene_zoom, self.scene_zoom * (1.0 + scroll * 0.001));
         }
         painter.rect_filled(rect, 0.0, egui::Color32::from_rgb(28, 32, 40));
         // 实时渲染编辑场景（精灵/图块/文本）作为背景。
@@ -522,7 +522,23 @@ impl EditorApp {
             if self.scene_view_mode == crate::SceneViewMode::Widget && !is_widget_entity(scene, e) {
                 continue;
             }
-            if scene_state.hidden.contains(&e.id) {
+            // H11：父实体隐藏时整棵子树一并隐藏；子实体自身标记不变。
+            let mut hidden_by_ancestor = false;
+            let mut visibility_cursor = Some(e.id);
+            for _ in 0..=scene.scene.entities.len() {
+                let Some(cursor_id) = visibility_cursor else {
+                    break;
+                };
+                if scene_state.hidden.contains(&cursor_id) {
+                    hidden_by_ancestor = true;
+                    break;
+                }
+                let Some(cursor_entity) = scene.scene.entities.get(&cursor_id) else {
+                    break;
+                };
+                visibility_cursor = cursor_entity.parent;
+            }
+            if hidden_by_ancestor {
                 continue;
             }
             let transform = scene_state
@@ -602,10 +618,23 @@ impl EditorApp {
         let margin = 48.0;
         let avail_w = (rect.width() - margin * 2.0).max(50.0);
         let avail_h = (rect.height() - margin * 2.0).max(50.0);
-        let zoom = (avail_w / w as f32).min(avail_h / h as f32).clamp(0.2, 4.0);
+        let zoom = (avail_w / w as f32)
+            .min(avail_h / h as f32)
+            .clamp(SCENE_ZOOM_MIN, SCENE_ZOOM_MAX);
         let center = egui::vec2(self.game_camera_2d_center.x, self.game_camera_2d_center.y);
         self.scene_zoom = zoom;
         self.scene_state.pan = egui::vec2(-center.x * zoom, -center.y * zoom);
+    }
+
+    /// 以视口中心为锚点调整 Scene 缩放：pan 按新旧 zoom 比例缩放，使当前
+    /// 位于面板中心的世界点（fit 后即设计分辨率包围框中心）保持不动。
+    /// 滚轮缩放与工具栏 Slider 必须共用此入口，否则锚点不一致。
+    pub(crate) fn set_scene_zoom_centered(&mut self, old_zoom: f32, new_zoom: f32) {
+        let new_zoom = new_zoom.clamp(SCENE_ZOOM_MIN, SCENE_ZOOM_MAX);
+        if old_zoom > 0.0 && (new_zoom - old_zoom).abs() > f32::EPSILON {
+            self.scene_state.pan *= new_zoom / old_zoom;
+        }
+        self.scene_zoom = new_zoom;
     }
 
     /// 在 2D Scene 视图绘制设计分辨率包围框（仿 Unity Camera Preview）：以游戏 2D
@@ -2072,6 +2101,11 @@ impl EditorApp {
     }
 }
 
+/// Scene 视图 zoom 范围：fit / 滚轮 / Slider 必须共用同一范围，否则 egui
+/// Slider 会在每帧把 fit 结果 clamp 到自己的范围，导致包围框偏移。
+pub(crate) const SCENE_ZOOM_MIN: f32 = 0.2;
+pub(crate) const SCENE_ZOOM_MAX: f32 = 4.0;
+
 /// 设计分辨率包围框在面板坐标中的矩形（中心 + 尺寸）。
 ///
 /// 与 `entity_2d_screen_box` 共用同一映射：世界像素坐标 = pan + world*zoom，
@@ -2958,6 +2992,78 @@ mod tests {
             (1280, 720),
         );
         assert_eq!(cam.center(), egui::pos2(400.0 + 640.0, 300.0 - 360.0));
+    }
+
+    /// 回归：窄面板 fit 出的 zoom 低于旧 Slider 最小值（0.5）时，Slider 每帧
+    /// 会把 zoom clamp 回 0.5，而 pan 仍按更低 zoom 计算，导致包围框偏移。
+    /// 现在 fit / 滚轮 / Slider 共用 SCENE_ZOOM_MIN/MAX，fit 结果必须始终
+    /// 落在 Slider 范围内，且包围框中心与面板中心重合。
+    #[test]
+    fn fit_zoom_stays_within_slider_range_and_centers_frame() {
+        // 模拟窄面板（约 520×442 逻辑点，对应 1280×720 设计分辨率的常见布局）。
+        let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(520.0, 442.0));
+        let margin = 48.0;
+        let avail_w = (rect.width() - margin * 2.0).max(50.0);
+        let avail_h = (rect.height() - margin * 2.0).max(50.0);
+        let zoom = (avail_w / 1280.0_f32)
+            .min(avail_h / 720.0_f32)
+            .clamp(SCENE_ZOOM_MIN, SCENE_ZOOM_MAX);
+        assert!(
+            (SCENE_ZOOM_MIN..=SCENE_ZOOM_MAX).contains(&zoom),
+            "fit zoom {zoom} 超出 Slider 范围 [{SCENE_ZOOM_MIN}, {SCENE_ZOOM_MAX}]"
+        );
+        // fit 的 pan 公式：pan = -center * zoom。
+        let center = egui::vec2(640.0, 360.0);
+        let pan = egui::vec2(-center.x * zoom, -center.y * zoom);
+        let frame = design_resolution_frame(rect, pan, zoom, 1.0, center, (1280, 720));
+        let frame_center = frame.center();
+        let rect_center = rect.center();
+        assert!(
+            (frame_center.x - rect_center.x).abs() < 0.01,
+            "包围框 X 中心 {} 偏离面板 X 中心 {}",
+            frame_center.x,
+            rect_center.x
+        );
+        assert!(
+            (frame_center.y - rect_center.y).abs() < 0.01,
+            "包围框 Y 中心 {} 偏离面板 Y 中心 {}",
+            frame_center.y,
+            rect_center.y
+        );
+    }
+
+    /// 回归：滚轮/Slider 缩放必须以视口中心为锚点。fit 后放大 2 倍，
+    /// 设计分辨率包围框中心必须仍落在面板中心（旧实现只改 zoom 不调 pan，
+    /// 锚点落在世界原点 = 包围框左下角，导致框飞出视口）。
+    #[test]
+    fn zoom_change_keeps_design_frame_centered() {
+        let root = copy_sample_project("zoom-anchor");
+        let project = open_project(&root).unwrap();
+        let mut app = EditorApp::new(project, None, LogSink::new(64));
+        let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0));
+        // fit 状态：pan = -center * zoom，包围框中心在面板中心。
+        app.fit_scene_view_to_design(rect);
+        let center = egui::vec2(app.game_camera_2d_center.x, app.game_camera_2d_center.y);
+        let frame_of = |app: &EditorApp| {
+            design_resolution_frame(
+                rect,
+                app.scene_state.pan,
+                app.scene_zoom,
+                1.0,
+                center,
+                app.preview_resolution,
+            )
+        };
+        assert!((frame_of(&app).center() - rect.center()).length() < 0.01);
+        // 以中心为锚点放大 2 倍：包围框中心必须不动。
+        let old_zoom = app.scene_zoom;
+        app.set_scene_zoom_centered(old_zoom, old_zoom * 2.0);
+        let frame_center = frame_of(&app).center();
+        assert!(
+            (frame_center - rect.center()).length() < 0.01,
+            "zoom 后包围框中心 {frame_center:?} 偏离面板中心 {:?}",
+            rect.center()
+        );
     }
 
     #[test]

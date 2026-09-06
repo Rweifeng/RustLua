@@ -246,18 +246,14 @@ const TRANSFORM_FIELDS: &[FieldSchema] = &[
 
 const TEXT_FIELDS: &[FieldSchema] = &[
     FieldSchema::new("text", FieldKind::Text, true),
-    FieldSchema::new("x", FieldKind::Number, true),
-    FieldSchema::new("y", FieldKind::Number, true),
-    FieldSchema::new("scale", FieldKind::Number, false),
-    FieldSchema::new("font_size", FieldKind::Number, false),
+    FieldSchema::new("font_size", FieldKind::Number, true),
+    FieldSchema::new("color", FieldKind::Vec3, false),
 ];
 
 const IMAGE_FIELDS: &[FieldSchema] = &[
     FieldSchema::new("texture", FieldKind::Text, true),
-    FieldSchema::new("x", FieldKind::Number, true),
-    FieldSchema::new("y", FieldKind::Number, true),
-    FieldSchema::new("width", FieldKind::Number, true),
-    FieldSchema::new("height", FieldKind::Number, true),
+    FieldSchema::new("color", FieldKind::Vec3, false),
+    FieldSchema::new("nine_slice", FieldKind::Vec4, false),
 ];
 
 const UI_LAYOUT_FIELDS: &[FieldSchema] = &[
@@ -274,8 +270,8 @@ const UI_LAYOUT_FIELDS: &[FieldSchema] = &[
 pub fn builtin_registry() -> BTreeMap<&'static str, ComponentSchema> {
     let schemas = [
         ComponentSchema::new("Transform", 1, TRANSFORM_FIELDS),
-        ComponentSchema::new("Text", 1, TEXT_FIELDS),
-        ComponentSchema::new("Image", 1, IMAGE_FIELDS),
+        ComponentSchema::new("Text", 2, TEXT_FIELDS),
+        ComponentSchema::new("Image", 2, IMAGE_FIELDS),
         ComponentSchema::new("UiLayout", 1, UI_LAYOUT_FIELDS),
     ];
     schemas
@@ -334,6 +330,46 @@ mod tests {
             registry["UiLayout"]
                 .parse("anchors=0,0,1,1;offsets=0,0,0,0")
                 .is_ok()
+        );
+    }
+
+    /// 回归：Text/Image schema 必须与新组件解析器（ui.rs）字段一致——
+    /// 视觉属性 + color/nine_slice；旧内联几何（x/y/scale/width/height）
+    /// 已随 UiLayout 迁移删除，schema 白名单不得再接受。
+    #[test]
+    fn text_and_image_schemas_match_current_visual_only_format() {
+        let registry = builtin_registry();
+        assert!(
+            registry["Text"]
+                .parse("text=Hello;font_size=24;color=1,0.5,0")
+                .is_ok()
+        );
+        assert!(registry["Text"].parse("text=Hello;font_size=24").is_ok());
+        assert!(
+            registry["Text"]
+                .parse("text=Hello;font_size=24;x=1;y=2;scale=1")
+                .is_err()
+        );
+        assert!(
+            registry["Image"]
+                .parse("texture=ui/button.png;color=1,1,1;nine_slice=8,8,8,8")
+                .is_ok()
+        );
+        assert!(
+            registry["Image"]
+                .parse("texture=ui/button.png;width=64;height=32")
+                .is_err()
+        );
+        // 字段类型：color 必须 3 个数，nine_slice 必须 4 个数。
+        assert!(
+            registry["Text"]
+                .parse("text=Hello;font_size=24;color=1,1")
+                .is_err()
+        );
+        assert!(
+            registry["Image"]
+                .parse("texture=ui/button.png;nine_slice=8,8,8")
+                .is_err()
         );
     }
 }

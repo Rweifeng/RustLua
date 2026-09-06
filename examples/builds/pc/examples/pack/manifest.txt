@@ -26,7 +26,7 @@ scenes/demo3d.scene	834	60a569c2eee926cb
 scenes/effects.scene	598	47ac0e0927fe5f8b
 scenes/game3d.scene	2837	af4beff1d53b5884
 scenes/gameplay_api.scene	1014	eb332a8862731661
-scenes/index.scene	7969	386130734cc940a9
+scenes/index.scene	7918	be70d799b7aa2590
 scenes/main.scene	3054	42aaa8010aba47e2
 scenes/menu.scene	2756	6f9e213d1c3233ed
 scenes/persistence.scene	368	81a7d59c656ba5f9

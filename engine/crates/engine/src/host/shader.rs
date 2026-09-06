@@ -25,9 +25,16 @@ fn median(a: f32, b: f32, c: f32) -> f32 {
     let sampled = textureSample(tex, samp, uv);
     if sdf == 1u {
         // MSDF：RGB 三通道 = 多通道距离场（边缘 median≈0.5），保留锐利直角。
-        // median 得伪距离，再按屏幕像素导数归一化到覆盖率：缩放不失真。
+        // Standard MSDF decoding: map the signed distance from atlas texels to
+        // screen pixels. Taking fwidth(median) directly is unstable where the
+        // selected MSDF channel switches, which punches holes out of glyphs.
         let d = median(sampled.r, sampled.g, sampled.b);
-        let a = clamp((d - 0.5) / max(fwidth(d), 1.0e-3) + 0.5, 0.0, 1.0);
+        let texture_size = vec2<f32>(textureDimensions(tex));
+        let screen_texel_size = 1.0 / max(fwidth(uv), vec2<f32>(1.0e-6));
+        // Keep this equal to font::PAD (distance range is +/-PAD atlas texels).
+        let px_range = 8.0;
+        let screen_px_range = max(0.5 * dot(vec2<f32>(px_range) / texture_size, screen_texel_size), 1.0);
+        let a = clamp((d - 0.5) * screen_px_range + 0.5, 0.0, 1.0);
         // 直通 alpha：管线 ALPHA_BLENDING 已按 alpha 预乘源色，不能再乘 a。
         return vec4<f32>(color.rgb, a);
     }

@@ -182,7 +182,9 @@ impl ImportCache {
         match lines.next() {
             Some(header) if header == CURRENT_IMPORT_CACHE_HEADER => {}
             Some(header) => {
-                return Err(ImportCacheError::UnsupportedSchemaVersion(header.to_owned()));
+                return Err(ImportCacheError::UnsupportedSchemaVersion(
+                    header.to_owned(),
+                ));
             }
             None => return Err(ImportCacheError::Malformed { line: 1 }),
         }

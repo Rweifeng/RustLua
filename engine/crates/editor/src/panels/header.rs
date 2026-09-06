@@ -266,6 +266,7 @@ impl EditorApp {
             writeln!(file, "main_script = \"scripts/main.lua\"").map_err(fs_err)?;
             writeln!(file, "startup_scene = \"scenes/main.scene\"").map_err(fs_err)?;
             writeln!(file, "font = \"assets/fonts/NotoSansSC-VF.ttf\"").map_err(fs_err)?;
+            writeln!(file, "font_weight = 400.0").map_err(fs_err)?;
         }
         if !dir.join("scripts/main.lua").is_file() {
             std::fs::write(
@@ -361,6 +362,7 @@ mod tests {
         assert!(font.is_file());
         let project = fs::read_to_string(root.join("project.toml")).unwrap();
         assert!(project.contains("font = \"assets/fonts/NotoSansSC-VF.ttf\""));
+        assert!(project.contains("font_weight = 400.0"));
 
         let _ = fs::remove_dir_all(root);
     }

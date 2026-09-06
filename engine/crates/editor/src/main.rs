@@ -244,7 +244,6 @@ struct EditorApp {
     inspector_add_component: String,
     new_scene_name: String,
     entity_name: String,
-    parent_entity: String,
     status: String,
     /// Play 生命周期状态机（M11-01）；`play_session` 只在实际运行/开始切换时存在。
     play_state: PlayState,
@@ -398,6 +397,10 @@ struct EditorApp {
     preview_input_state: InputSnapshot,
     /// Hierarchy 实体复制剪贴板，保存源实体及其子树快照。
     hierarchy_clipboard: Option<engine::core::scene::SceneEntity>,
+    /// H02 行内重命名会话（目标实体 + 输入缓冲 + 首帧聚焦标记）。
+    hierarchy_rename: Option<HierarchyRename>,
+    /// H03 Shift 范围选择的锚点：最近一次非 Shift 选择/加选的实体。
+    selection_anchor: Option<SceneEntityId>,
     /// Play/Stop 前的编辑器上下文快照：恢复时重建选择、工具、视图和分辨率状态。
     editor_context_snapshot: Option<EditorContextSnapshot>,
     /// 自动缩略图压测钩子是否已执行，避免每帧重复跑。
@@ -480,6 +483,14 @@ enum DeleteTarget {
     None,
     Hierarchy,
     Resource(PathBuf),
+}
+
+/// H02 行内重命名会话：目标实体 + 输入缓冲。
+/// `just_started` 表示刚进入编辑态（或空名被拒后重试），下一帧强制聚焦输入框。
+struct HierarchyRename {
+    id: SceneEntityId,
+    buffer: String,
+    just_started: bool,
 }
 
 /// Play 运行生命周期状态机（M11-01）：
@@ -703,7 +714,6 @@ impl EditorApp {
             inspector_add_component: "Transform3D".to_owned(),
             new_scene_name: "main".to_owned(),
             entity_name: "Entity".to_owned(),
-            parent_entity: String::new(),
             status: "尚未创建场景".to_owned(),
             play_state: PlayState::Editing,
             play_session: None,
@@ -799,6 +809,8 @@ impl EditorApp {
             last_metadata_key: None,
             preview_input_state: InputSnapshot::default(),
             hierarchy_clipboard: None,
+            hierarchy_rename: None,
+            selection_anchor: None,
             editor_context_snapshot: None,
             thumbnail_benchmark_ran: false,
             play_stop_benchmark_ran: false,
@@ -1172,6 +1184,23 @@ impl eframe::App for EditorApp {
             // 与 Undo 栈一致（无挂起编辑时 no-op）。
             self.commit_inspector_edits_if_dirty();
             self.save_scene();
+        }
+        // H04：Ctrl+D 原地复制 / Ctrl+C 复制 / Ctrl+V 粘贴为子节点（Unity 语义）。
+        // 与 Ctrl+S 同级：仅场景工作台、无文本焦点、无活动事务时生效；Play 锁
+        // 由各命令入口自查。
+        if self.project_loaded
+            && self.workspace_tab == WorkspaceTab::Scene
+            && !context.wants_keyboard_input()
+            && !self.is_edit_transaction_active()
+        {
+            if context.input(|i| i.modifiers.command && i.key_pressed(egui::Key::D)) {
+                self.duplicate_selected_entity();
+            } else if context.input(|i| i.modifiers.command && i.key_pressed(egui::Key::C)) {
+                self.copy_selected_entity();
+            } else if context.input(|i| i.modifiers.command && i.key_pressed(egui::Key::V)) {
+                let parent = self.selection.primary();
+                self.paste_entity(parent);
+            }
         }
         if self.project_loaded
             && !context.wants_keyboard_input()

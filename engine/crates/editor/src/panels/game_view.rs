@@ -29,6 +29,8 @@ impl EditorApp {
             self.status = "Please create or open a scene first".to_owned();
             return;
         };
+        // H02：进入 Play 前终止行内重命名会话，避免编辑会话跨运行上下文。
+        self.hierarchy_rename = None;
         self.editor_context_snapshot = Some(self.capture_editor_context());
         self.play_state = PlayState::Starting;
         // 确保共享字体图集已预热：Play 预览复用它，避免进入游戏时再 MSDF 预热

@@ -14,9 +14,14 @@ version = "0.1.0"
 engine = "RustLua"
 main_script = "scripts/main.lua"
 startup_scene = "scenes/main.scene"   # 可为空（headless 无场景）
+font = "assets/fonts/NotoSansSC-VF.ttf"
+font_fallback = "assets/fonts/NotoSansSC-Fallback.ttf"
+font_weight = 400.0
 ```
 
 `startup_scene` 为空时运行器/编辑器只加载脚本不实例化场景。
+`font` 缺省为 `assets/fonts/NotoSansSC-VF.ttf`；可变字体默认使用 `font_weight`
+实例化，缺省 400（Regular），避免 CJK 字体默认 Thin 在小字号下发虚。
 
 ## 2. assetc CLI
 

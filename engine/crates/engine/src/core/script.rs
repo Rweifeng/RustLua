@@ -317,12 +317,7 @@ impl LuaRuntime {
         state.scene = Some(scene.name.clone());
         let mut count = 0;
         for entity in scene.entities.values() {
-            if honor_editor_hidden
-                && scene
-                    .metadata
-                    .get(&format!("editor.hidden.{}", entity.id.0))
-                    .is_some_and(|value| value == "true")
-            {
+            if honor_editor_hidden && scene.is_entity_hidden_with_ancestors(entity.id) {
                 continue;
             }
             Self::spawn_entity_components(

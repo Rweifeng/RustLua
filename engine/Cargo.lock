@@ -1091,6 +1091,7 @@ dependencies = [
  "eframe",
  "engine",
  "pollster",
+ "serde_json",
  "tracing",
  "wgpu",
  "windows-sys 0.61.2",

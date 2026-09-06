@@ -4,7 +4,7 @@
 //! RGB 取 median 再经 fwidth 解码，直角/笔画末梢保持锐利、任意缩放不失真
 //! （TextMeshPro 同源方案）。
 
-use ab_glyph::{Font, FontArc, Outline, OutlineCurve, Point};
+use ab_glyph::{Font, FontArc, FontVec, Outline, OutlineCurve, Point, VariableFont};
 use bymsdfgen_core::{
     Bitmap, DistanceMapping, MsdfGeneratorConfig, Projection, Range, SdfTransformation,
     coloring::edge_coloring_simple,
@@ -22,6 +22,9 @@ use std::{
 /// ~1300 个 CJK 字形，锐利度约为旧 64px/em 的 1.5×；如需更锐可上调，但 CJK
 /// 容量会相应下降（128px/em 约 ~900）。
 pub const RASTER_SCALE: f32 = 96.0;
+/// Default variable-font weight used when a project does not configure one.
+/// Many CJK variable fonts default to Thin, which becomes sub-pixel at UI sizes.
+pub const DEFAULT_FONT_WEIGHT: f32 = 400.0;
 /// 打包图集初始边长（正方形）。
 const INITIAL_ATLAS_SIZE: u32 = 1024;
 /// 打包图集最大边长（常见 GPU 纹理上限内）。
@@ -99,12 +102,19 @@ impl FontAtlas {
 
     /// 用主字体 + 可选后备字体构建图集。后备字体用于主字体缺失的字形。
     pub fn load_with_fallback(primary: &[u8], fallback: Option<&[u8]>) -> Result<Self, String> {
-        let font = FontArc::try_from_vec(primary.to_vec())
-            .map_err(|error| format!("字体解析失败: {error}"))?;
+        Self::load_with_fallback_and_weight(primary, fallback, DEFAULT_FONT_WEIGHT)
+    }
+
+    /// Builds an atlas with an explicit variable-font weight. Static fonts ignore it.
+    pub fn load_with_fallback_and_weight(
+        primary: &[u8],
+        fallback: Option<&[u8]>,
+        weight: f32,
+    ) -> Result<Self, String> {
+        let font = load_font_with_weight(primary, weight, "字体解析失败")?;
         let fallback = fallback
-            .map(|bytes| FontArc::try_from_vec(bytes.to_vec()))
-            .transpose()
-            .map_err(|error| format!("后备字体解析失败: {error}"))?;
+            .map(|bytes| load_font_with_weight(bytes, weight, "后备字体解析失败"))
+            .transpose()?;
         Ok(Self::new(font, fallback))
     }
 
@@ -203,6 +213,17 @@ impl FontAtlas {
         self.height = new_height;
         self.pixels = pixels;
         self.packer.set_size(new_width, new_height);
+        // Existing pixel positions are preserved, but normalized UVs are tied
+        // to the atlas size. Re-scale them or cached glyphs sample the wrong
+        // quadrant after the first growth.
+        let width_scale = old_width as f32 / new_width as f32;
+        let height_scale = old_height as f32 / new_height as f32;
+        for metrics in self.cached.values_mut() {
+            metrics.uv[0] *= width_scale;
+            metrics.uv[1] *= height_scale;
+            metrics.uv[2] *= width_scale;
+            metrics.uv[3] *= height_scale;
+        }
         self.version = self.version.wrapping_add(1);
         self.dirty = true;
         true
@@ -326,6 +347,15 @@ impl FontAtlas {
         self.cached.insert(character, metrics);
         Ok(metrics)
     }
+}
+
+fn load_font_with_weight(bytes: &[u8], weight: f32, error_prefix: &str) -> Result<FontArc, String> {
+    let mut font = FontVec::try_from_vec(bytes.to_vec())
+        .map_err(|error| format!("{error_prefix}: {error}"))?;
+    if weight.is_finite() && weight > 0.0 {
+        font.set_variation(b"wght", weight);
+    }
+    Ok(FontArc::from(font))
 }
 
 /// Shelf 打包器：把不同尺寸的字形矩形密排进图集。字形只增不删（缓存后永驻），
@@ -646,6 +676,22 @@ mod tests {
         assert!(error.contains("字体解析失败"));
     }
 
+    /// CJK variable fonts commonly default to Thin; project loading must pin a
+    /// readable UI weight before layout metrics or MSDF outlines are cached.
+    #[test]
+    fn variable_font_weight_changes_glyph_metrics() {
+        let bytes = test_font();
+        let mut thin = FontAtlas::load_with_fallback_and_weight(&bytes, None, 100.0).unwrap();
+        let mut regular =
+            FontAtlas::load_with_fallback_and_weight(&bytes, None, DEFAULT_FONT_WEIGHT).unwrap();
+        let thin_metrics = thin.try_glyph_metrics('I').unwrap();
+        let regular_metrics = regular.try_glyph_metrics('I').unwrap();
+        assert_ne!(
+            thin_metrics.advance, regular_metrics.advance,
+            "variable weight should change glyph metrics"
+        );
+    }
+
     /// 微软雅黑（msyh.ttc，TTF 集合）应能被 FontArc 解析（face 0），且 MSDF
     /// 图集对复杂 CJK 字形正常生成（角外部 median<128、存在内部像素 median>140）。
     #[test]
@@ -754,11 +800,25 @@ mod tests {
             atlas.try_glyph_metrics('俯').unwrap().advance,
             first.advance
         );
-        assert_eq!(
-            atlas.try_glyph_metrics('俯').unwrap().uv,
-            first.uv,
-            "打包 UV 应随增长保持稳定"
-        );
+        let new_metrics = atlas.try_glyph_metrics('俯').unwrap();
+        let old_uv_texels = [
+            first.uv[0] * old_width as f32,
+            first.uv[1] * old_height as f32,
+            first.uv[2] * old_width as f32,
+            first.uv[3] * old_height as f32,
+        ];
+        let new_uv_texels = [
+            new_metrics.uv[0] * atlas.width() as f32,
+            new_metrics.uv[1] * atlas.height() as f32,
+            new_metrics.uv[2] * atlas.width() as f32,
+            new_metrics.uv[3] * atlas.height() as f32,
+        ];
+        for (old, new) in old_uv_texels.iter().zip(new_uv_texels.iter()) {
+            assert!(
+                (old - new).abs() < 0.01,
+                "growth must preserve absolute glyph texel UVs: {old} != {new}"
+            );
+        }
         for y in 0..rect_h {
             let start = (y * atlas.width() * 4) as usize;
             let end = start + (rect_w * 4) as usize;

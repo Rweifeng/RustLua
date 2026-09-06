@@ -325,24 +325,6 @@ impl EditorApp {
                 }
                 ui.separator();
                 ui.horizontal(|ui| {
-                    ui.label("父实体 ID");
-                    // 固定输入框宽度，避免占满整行导致过长。
-                    ui.add(egui::TextEdit::singleline(&mut self.parent_entity).desired_width(90.0));
-                    if ui.button("设置父级").clicked() {
-                        let parent = self
-                            .parent_entity
-                            .trim()
-                            .parse::<u64>()
-                            .ok()
-                            .map(SceneEntityId);
-                        self.reparent_selected(parent);
-                    }
-                });
-                if ui.button("解除父级").clicked() {
-                    self.parent_entity.clear();
-                    self.reparent_selected(None);
-                }
-                ui.horizontal(|ui| {
                     ui.label("名称");
                     ui.add(egui::TextEdit::singleline(&mut self.entity_name).desired_width(150.0));
                     if ui.button("重新命名").clicked() {
@@ -1933,15 +1915,19 @@ impl EditorApp {
             self.status = "Play mode locks scene editing; click Stop first".into();
             return;
         }
-        let Some(selected) = self.selection.primary() else {
+        // H03：按选中集合删除（仅保留顶层根，子孙随根整棵移除），整批一条历史。
+        let targets = self.top_most_selected_ids();
+        if targets.is_empty() {
             self.status = "请先在 Hierarchy 中选择实体".into();
             return;
-        };
+        }
         // 删除前记录父节点，供删除后选择回退（SelectionModel::on_entities_removed）。
-        let parent = self
-            .current_scene()
-            .and_then(|scene| scene.scene.entities.get(&selected))
-            .and_then(|entity| entity.parent);
+        let parent = self.current_scene().and_then(|scene| {
+            self.selection
+                .primary()
+                .and_then(|primary| scene.scene.entities.get(&primary))
+                .and_then(|entity| entity.parent)
+        });
         let tree = self.tree.clone();
         let removed = std::rc::Rc::new(std::cell::Cell::new(
             None::<std::collections::BTreeSet<SceneEntityId>>,
@@ -1951,13 +1937,20 @@ impl EditorApp {
             self.status = "Create a scene first".into();
             return;
         };
-        let result =
-            self.history
-                .execute(scene, "Delete entity", CommandKind::Delete, move |scene| {
-                    let deleted = tree.delete(scene, selected).map_err(|e| e.to_string())?;
-                    removed.set(Some(deleted));
-                    Ok::<(), String>(())
-                });
+        let result = self.history.execute(
+            scene,
+            "Delete entities",
+            CommandKind::Delete,
+            move |scene| {
+                let mut deleted_all = std::collections::BTreeSet::new();
+                for target in targets {
+                    let deleted = tree.delete(scene, target).map_err(|e| e.to_string())?;
+                    deleted_all.extend(deleted);
+                }
+                removed.set(Some(deleted_all));
+                Ok::<(), String>(())
+            },
+        );
         match result {
             Ok(true) => {
                 if let Some(deleted) = removed_out.take() {
