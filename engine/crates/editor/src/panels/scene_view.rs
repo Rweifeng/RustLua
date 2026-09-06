@@ -27,6 +27,8 @@ use engine::core::{
     transform::Vec2,
     transform3d::Transform3D,
     ui::{UiImage, UiLayout, UiText, resolve_ui_text_origin},
+    ui_layout::UiRect,
+    ui_scene_layout::{UiSceneNode, resolve_scene_ui_layout},
 };
 use engine::host::{
     BoundsSource, ReadbackStatus, Renderer, RuntimeScene, Scene3d, Scene3dBounds, Scene3dDrawable,
@@ -112,7 +114,10 @@ impl EditorApp {
             painter.rect_stroke(
                 safe_frame,
                 0.0_f32,
-                egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(100, 220, 160, 180)),
+                egui::Stroke::new(
+                    1.0_f32,
+                    egui::Color32::from_rgba_unmultiplied(100, 220, 160, 180),
+                ),
                 egui::StrokeKind::Inside,
             );
         }
@@ -127,24 +132,39 @@ impl EditorApp {
                 let y_origin = rect.center().y - self.scene_state.pan.y / scale;
                 let mut x = rect.left() + (x_origin - rect.left()).rem_euclid(grid_size);
                 while x < rect.right() {
-                    painter.line_segment([egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())], grid_stroke);
+                    painter.line_segment(
+                        [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
+                        grid_stroke,
+                    );
                     x += grid_size;
                 }
                 let mut y = rect.top() + (y_origin - rect.top()).rem_euclid(grid_size);
                 while y < rect.bottom() {
-                    painter.line_segment([egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)], grid_stroke);
+                    painter.line_segment(
+                        [egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)],
+                        grid_stroke,
+                    );
                     y += grid_size;
                 }
             }
         }
         if self.show_scene_guides {
-            let guide_stroke = egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(120, 190, 220, 110));
+            let guide_stroke = egui::Stroke::new(
+                1.0_f32,
+                egui::Color32::from_rgba_unmultiplied(120, 190, 220, 110),
+            );
             painter.line_segment(
-                [egui::pos2(rect.center().x, rect.top()), egui::pos2(rect.center().x, rect.bottom())],
+                [
+                    egui::pos2(rect.center().x, rect.top()),
+                    egui::pos2(rect.center().x, rect.bottom()),
+                ],
                 guide_stroke,
             );
             painter.line_segment(
-                [egui::pos2(rect.left(), rect.center().y), egui::pos2(rect.right(), rect.center().y)],
+                [
+                    egui::pos2(rect.left(), rect.center().y),
+                    egui::pos2(rect.right(), rect.center().y),
+                ],
                 guide_stroke,
             );
         }
@@ -177,6 +197,25 @@ impl EditorApp {
             egui::FontId::proportional(16.0),
             egui::Color32::LIGHT_GRAY,
         );
+        if self.show_performance_hud {
+            let stats = *self.ui_layout_cache.stats();
+            let total_hits = stats.hits + stats.misses;
+            let hit_rate = if total_hits == 0 {
+                0.0
+            } else {
+                stats.hits as f32 / total_hits as f32 * 100.0
+            };
+            painter.text(
+                rect.right_top() + egui::vec2(-12.0, 12.0),
+                egui::Align2::RIGHT_TOP,
+                format!(
+                    "layout cache {} entries · {} hits · {} misses · {:.1}% · {} invalidations",
+                    stats.entries, stats.hits, stats.misses, hit_rate, stats.invalidations
+                ),
+                egui::FontId::monospace(11.0),
+                egui::Color32::from_rgb(170, 220, 240),
+            );
+        }
         let filter = self.hierarchy_filter.to_lowercase();
         let entities = self.collect_scene_2d_entities(rect, &filter, scale);
         let tilemap_context = self.selected_tilemap_context();
@@ -249,11 +288,17 @@ impl EditorApp {
                     egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(255, 220, 90)),
                 );
                 painter.line_segment(
-                    [entity.center - egui::vec2(7.0, 0.0), entity.center + egui::vec2(7.0, 0.0)],
+                    [
+                        entity.center - egui::vec2(7.0, 0.0),
+                        entity.center + egui::vec2(7.0, 0.0),
+                    ],
                     egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(255, 220, 90)),
                 );
                 painter.line_segment(
-                    [entity.center - egui::vec2(0.0, 7.0), entity.center + egui::vec2(0.0, 7.0)],
+                    [
+                        entity.center - egui::vec2(0.0, 7.0),
+                        entity.center + egui::vec2(0.0, 7.0),
+                    ],
                     egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(255, 220, 90)),
                 );
             }
@@ -453,6 +498,17 @@ impl EditorApp {
         let Some(scene) = scene else {
             return Vec::new();
         };
+        let canvas_size = [
+            self.preview_resolution.0 as f32,
+            self.preview_resolution.1 as f32,
+        ];
+        let nodes = scene_ui_nodes(&scene.scene);
+        let (mut resolved_ui_layouts, _) = resolve_scene_ui_layout(&nodes, canvas_size);
+        // Keep only explicit Anchor+Offset layouts and container placements;
+        // the resolver's default origin rects must not shift legacy UI.
+        resolved_ui_layouts.retain(|id, resolved| {
+            resolved.container_controlled || nodes.get(id).is_some_and(|node| node.layout.is_some())
+        });
         let mut entities = Vec::with_capacity(scene.scene.entities.len());
         for e in scene.scene.entities.values() {
             if !filter.is_empty() && !e.name.to_lowercase().contains(filter) {
@@ -482,6 +538,9 @@ impl EditorApp {
                 e,
                 rect,
                 scene_state.preview_ui.get(&e.id).copied(),
+                resolved_ui_layouts
+                    .get(&e.id.0)
+                    .map(|resolved| resolved.rect),
                 runtime.as_deref_mut(),
                 scene_state.pan,
                 scene_zoom,
@@ -684,8 +743,7 @@ impl EditorApp {
             let Some(screen) = self.project_to_screen(position, rect) else {
                 continue;
             };
-            let selected =
-                self.selection.contains(*id);
+            let selected = self.selection.contains(*id);
             let half = 8.0;
             let stroke = egui::Stroke::new(
                 if selected { 2.0_f32 } else { 1.0_f32 },
@@ -723,12 +781,14 @@ impl EditorApp {
             let py = (pos.y - rect.top()) * ui.ctx().pixels_per_point();
             let hit = self
                 .editor_camera_ray(px, py, width as f32, height as f32)
-                .and_then(|ray| pick_scene_3d_entity(
-                    ray,
-                    &entities3d,
-                    &self.scene_state.locked,
-                    &self.scene_state.preview3d_transform,
-                ));
+                .and_then(|ray| {
+                    pick_scene_3d_entity(
+                        ray,
+                        &entities3d,
+                        &self.scene_state.locked,
+                        &self.scene_state.preview3d_transform,
+                    )
+                });
             if let Some(id) = hit {
                 let additive = ui.input(|input| input.modifiers.command || input.modifiers.ctrl);
                 if additive {
@@ -744,7 +804,9 @@ impl EditorApp {
         }
 
         // Gizmo：按工具绘制手柄并拖拽（Move 平移 / Rotate 绕 Y / Scale 等比缩放）。
-        let selected_entity = entities3d.iter().find(|(id, _, _, _)| self.selection.contains(*id));
+        let selected_entity = entities3d
+            .iter()
+            .find(|(id, _, _, _)| self.selection.contains(*id));
         if let Some((id, _, transform, _)) = selected_entity {
             let tool = self.scene_tool;
             if matches!(
@@ -925,18 +987,34 @@ impl EditorApp {
         );
         ui.scope_builder(egui::UiBuilder::new().max_rect(tools_rect), |ui| {
             ui.horizontal(|ui| {
-                if icon_toggle(ui, self.scene_tool == SceneTool::Select, "选择", "选择（Q）").clicked()
+                if icon_toggle(
+                    ui,
+                    self.scene_tool == SceneTool::Select,
+                    "选择",
+                    "选择（Q）",
+                )
+                .clicked()
                 {
                     self.scene_tool = SceneTool::Select;
                 }
-                if icon_toggle(ui, self.scene_tool == SceneTool::Move, "移动", "移动（W）").clicked() {
+                if icon_toggle(ui, self.scene_tool == SceneTool::Move, "移动", "移动（W）")
+                    .clicked()
+                {
                     self.scene_tool = SceneTool::Move;
                 }
-                if icon_toggle(ui, self.scene_tool == SceneTool::Rotate, "旋转", "旋转（E）").clicked()
+                if icon_toggle(
+                    ui,
+                    self.scene_tool == SceneTool::Rotate,
+                    "旋转",
+                    "旋转（E）",
+                )
+                .clicked()
                 {
                     self.scene_tool = SceneTool::Rotate;
                 }
-                if icon_toggle(ui, self.scene_tool == SceneTool::Scale, "缩放", "缩放（R）").clicked() {
+                if icon_toggle(ui, self.scene_tool == SceneTool::Scale, "缩放", "缩放（R）")
+                    .clicked()
+                {
                     self.scene_tool = SceneTool::Scale;
                 }
                 if icon_toggle(
@@ -1177,7 +1255,11 @@ impl EditorApp {
             return;
         };
         // 写入文档前开启事务（幂等：已开启则直接沿用）。
-        self.begin_edit_transaction("Scene Transform", CommandKind::Transform(first), Some(first));
+        self.begin_edit_transaction(
+            "Scene Transform",
+            CommandKind::Transform(first),
+            Some(first),
+        );
         let Some(scene) = self.document.current_scene.as_mut() else {
             return;
         };
@@ -2121,7 +2203,7 @@ fn pick_scene_2d_entity(
             entity.transform.rotation,
             position,
         ) && !locked.contains(&entity.id))
-            .then_some(entity.id)
+        .then_some(entity.id)
     })
 }
 
@@ -2136,7 +2218,9 @@ fn entities_in_selection_rect(
         .iter()
         .filter_map(|entity| {
             let corners = rotated_corners(entity.center, entity.size, entity.transform.rotation);
-            let contained = corners.iter().all(|corner| selection_rect.contains(*corner));
+            let contained = corners
+                .iter()
+                .all(|corner| selection_rect.contains(*corner));
             let intersects = polygon_intersects_rect(&corners, selection_rect);
             (left_to_right && contained || !left_to_right && intersects).then_some(entity.id)
         })
@@ -2148,7 +2232,10 @@ fn is_widget_entity(scene: &editor::SceneDocument, entity: &SceneEntity) -> bool
         .components
         .keys()
         .any(|name| matches!(name.as_str(), "Image" | "Text" | "Button"))
-        || entity.metadata.get("ui.root").is_some_and(|value| value == "true")
+        || entity
+            .metadata
+            .get("ui.root")
+            .is_some_and(|value| value == "true")
     {
         return true;
     }
@@ -2157,7 +2244,11 @@ fn is_widget_entity(scene: &editor::SceneDocument, entity: &SceneEntity) -> bool
         let Some(parent_entity) = scene.scene.entities.get(&parent_id) else {
             break;
         };
-        if parent_entity.metadata.get("ui.root").is_some_and(|value| value == "true") {
+        if parent_entity
+            .metadata
+            .get("ui.root")
+            .is_some_and(|value| value == "true")
+        {
             return true;
         }
         parent = parent_entity.parent;
@@ -2207,7 +2298,12 @@ fn scene_drag_transform(
 
 fn pick_scene_3d_entity(
     ray: Ray3,
-    entities: &[(SceneEntityId, String, Transform3D, engine::core::math3d::Aabb3)],
+    entities: &[(
+        SceneEntityId,
+        String,
+        Transform3D,
+        engine::core::math3d::Aabb3,
+    )],
     locked: &std::collections::BTreeSet<SceneEntityId>,
     preview: &std::collections::BTreeMap<SceneEntityId, Transform3D>,
 ) -> Option<SceneEntityId> {
@@ -2223,7 +2319,8 @@ fn pick_scene_3d_entity(
                 min: bounds.min + position,
                 max: bounds.max + position,
             };
-            ray.intersect_aabb(world_bounds).map(|distance| (*id, distance))
+            ray.intersect_aabb(world_bounds)
+                .map(|distance| (*id, distance))
         })
         .min_by(|left, right| left.1.total_cmp(&right.1))
         .map(|(id, _)| id)
@@ -2297,6 +2394,7 @@ fn ui_entity_2d_box(
     entity: &SceneEntity,
     rect: egui::Rect,
     override_position: Option<[f32; 2]>,
+    override_layout: Option<UiRect>,
     runtime: Option<&mut RuntimeScene>,
     pan: egui::Vec2,
     zoom: f32,
@@ -2329,17 +2427,36 @@ fn ui_entity_2d_box(
     if let Some(raw) = entity.components.get("Image")
         && let Ok(image) = UiImage::from_component_str(raw)
     {
-        let position = override_position.unwrap_or(image.position);
-        let (origin, size) = UiLayout::from_image(&image)
-            .with_position(position)
-            .resolve(viewport, reference);
+        let (origin, size, position) = if let Some(resolved) = override_layout {
+            (
+                [resolved.x, resolved.y],
+                [resolved.w, resolved.h],
+                [resolved.x, resolved.y],
+            )
+        } else {
+            let position = override_position.unwrap_or(image.position);
+            let (origin, size) = UiLayout::from_image(&image)
+                .with_position(position)
+                .resolve(viewport, reference);
+            (origin, size, position)
+        };
         let (center, size) = box_of(origin, size);
-        return Some((center, size, UiEntityInfo { position, anchor: image.anchor }));
+        return Some((
+            center,
+            size,
+            UiEntityInfo {
+                position,
+                anchor: image.anchor,
+            },
+        ));
     }
     if let Some(raw) = entity.components.get("Text")
         && let Ok(text) = UiText::from_component_str(raw)
     {
-        let position = override_position.unwrap_or(text.position);
+        let position = override_layout
+            .map(|resolved| [resolved.x, resolved.y])
+            .or(override_position)
+            .unwrap_or(text.position);
         // 文本没有尺寸字段：先按运行时同款 resolve 得到缩放后的 glyph scale
         // （font_size 优先于 scale），度量网格尺寸与字形像素范围，再解析文本块
         // 原点。锚点按网格 size（与运行时渲染一致）；包围框贴合字形 bbox ——
@@ -2375,9 +2492,48 @@ fn ui_entity_2d_box(
             (glyph_bounds[3] - glyph_bounds[1]).max(0.0),
         ];
         let (center, size) = box_of(glyph_origin, glyph_size);
-        return Some((center, size, UiEntityInfo { position, anchor: text.anchor }));
+        return Some((
+            center,
+            size,
+            UiEntityInfo {
+                position,
+                anchor: text.anchor,
+            },
+        ));
     }
     None
+}
+
+fn scene_ui_nodes(
+    scene: &engine::core::scene::Scene,
+) -> std::collections::BTreeMap<u64, UiSceneNode> {
+    scene
+        .entities
+        .values()
+        .map(|entity| {
+            let layout = entity.components.get("UiLayout").and_then(|raw| {
+                engine::core::ui_layout::UiRectLayout::from_component_str(raw).ok()
+            });
+            let container = entity.components.get("Container").and_then(|raw| {
+                engine::core::ui_layout::ContainerStyle::from_component_str(raw).ok()
+            });
+            let preferred_size = entity
+                .components
+                .get("Image")
+                .and_then(|raw| UiImage::from_component_str(raw).ok())
+                .map(|image| image.size)
+                .unwrap_or([64.0, 64.0]);
+            (
+                entity.id.0,
+                UiSceneNode {
+                    parent: entity.parent.map(|id| id.0),
+                    layout,
+                    container,
+                    preferred_size,
+                },
+            )
+        })
+        .collect()
 }
 
 /// 无运行时时度量文本的兜底：用内置 5x7 位图指标（与运行时无字体回退一致）。
@@ -2554,10 +2710,16 @@ mod tests {
             },
         ];
         let locked = std::collections::BTreeSet::new();
-        assert_eq!(pick_scene_2d_entity(&entities, egui::pos2(100.0, 100.0), &locked), Some(SceneEntityId(2)));
+        assert_eq!(
+            pick_scene_2d_entity(&entities, egui::pos2(100.0, 100.0), &locked),
+            Some(SceneEntityId(2))
+        );
         let mut locked = std::collections::BTreeSet::new();
         locked.insert(SceneEntityId(2));
-        assert_eq!(pick_scene_2d_entity(&entities, egui::pos2(100.0, 100.0), &locked), Some(SceneEntityId(1)));
+        assert_eq!(
+            pick_scene_2d_entity(&entities, egui::pos2(100.0, 100.0), &locked),
+            Some(SceneEntityId(1))
+        );
     }
 
     #[test]
@@ -2581,20 +2743,65 @@ mod tests {
                 ui: None,
             },
         ];
-        let left_to_right = egui::Rect::from_min_max(egui::pos2(10.0, 10.0), egui::pos2(25.0, 25.0));
-        assert_eq!(entities_in_selection_rect(&entities, left_to_right, egui::pos2(10.0, 10.0), egui::pos2(25.0, 25.0)), vec![SceneEntityId(1)]);
-        let right_to_left = egui::Rect::from_min_max(egui::pos2(25.0, 10.0), egui::pos2(45.0, 30.0));
-        assert_eq!(entities_in_selection_rect(&entities, right_to_left, egui::pos2(45.0, 30.0), egui::pos2(25.0, 10.0)), vec![SceneEntityId(1), SceneEntityId(2)]);
+        let left_to_right =
+            egui::Rect::from_min_max(egui::pos2(10.0, 10.0), egui::pos2(25.0, 25.0));
+        assert_eq!(
+            entities_in_selection_rect(
+                &entities,
+                left_to_right,
+                egui::pos2(10.0, 10.0),
+                egui::pos2(25.0, 25.0)
+            ),
+            vec![SceneEntityId(1)]
+        );
+        let right_to_left =
+            egui::Rect::from_min_max(egui::pos2(25.0, 10.0), egui::pos2(45.0, 30.0));
+        assert_eq!(
+            entities_in_selection_rect(
+                &entities,
+                right_to_left,
+                egui::pos2(45.0, 30.0),
+                egui::pos2(25.0, 10.0)
+            ),
+            vec![SceneEntityId(1), SceneEntityId(2)]
+        );
     }
 
     #[test]
     fn gizmo_hit_testing_respects_tool_and_lock_state() {
         let center = egui::pos2(100.0, 100.0);
-        assert_eq!(pick_gizmo_axis(SceneTool::Move, center, egui::pos2(140.0, 100.0), 40.0, false), Some(GizmoAxis::X));
-        assert_eq!(pick_gizmo_axis(SceneTool::Move, center, center, 40.0, false), Some(GizmoAxis::Free));
-        assert_eq!(pick_gizmo_axis(SceneTool::Move, center, center, 40.0, true), None);
-        assert_eq!(pick_gizmo_axis(SceneTool::Scale, center, egui::pos2(140.0, 140.0), 40.0, false), Some(GizmoAxis::Scale));
-        assert_eq!(pick_gizmo_axis(SceneTool::TilePaint, center, center, 40.0, false), None);
+        assert_eq!(
+            pick_gizmo_axis(
+                SceneTool::Move,
+                center,
+                egui::pos2(140.0, 100.0),
+                40.0,
+                false
+            ),
+            Some(GizmoAxis::X)
+        );
+        assert_eq!(
+            pick_gizmo_axis(SceneTool::Move, center, center, 40.0, false),
+            Some(GizmoAxis::Free)
+        );
+        assert_eq!(
+            pick_gizmo_axis(SceneTool::Move, center, center, 40.0, true),
+            None
+        );
+        assert_eq!(
+            pick_gizmo_axis(
+                SceneTool::Scale,
+                center,
+                egui::pos2(140.0, 140.0),
+                40.0,
+                false
+            ),
+            Some(GizmoAxis::Scale)
+        );
+        assert_eq!(
+            pick_gizmo_axis(SceneTool::TilePaint, center, center, 40.0, false),
+            None
+        );
     }
     use engine::core::scene::SceneEntityId;
     use engine::core::transform::Vec2;
@@ -3090,6 +3297,7 @@ mod tests {
             rect,
             None,
             None,
+            None,
             egui::Vec2::ZERO,
             1.0,
             egui::Vec2::ZERO,
@@ -3106,6 +3314,7 @@ mod tests {
             scene.entities.get(&id).unwrap(),
             rect,
             Some([0.0, -360.0]),
+            None,
             None,
             egui::Vec2::ZERO,
             1.0,
@@ -3141,6 +3350,7 @@ mod tests {
         let (center, size, _) = ui_entity_2d_box(
             scene.entities.get(&id).unwrap(),
             rect,
+            None,
             None,
             None,
             egui::Vec2::ZERO,
@@ -3181,6 +3391,7 @@ mod tests {
         let (center, size, info) = ui_entity_2d_box(
             scene.entities.get(&id).unwrap(),
             rect,
+            None,
             None,
             None,
             egui::Vec2::ZERO,
@@ -3256,6 +3467,7 @@ mod tests {
             ui_entity_2d_box(
                 scene.entities.get(&id).unwrap(),
                 rect,
+                None,
                 None,
                 None,
                 egui::Vec2::ZERO,

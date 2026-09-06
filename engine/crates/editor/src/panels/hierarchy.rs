@@ -20,11 +20,9 @@ impl EditorApp {
             self.status = "Create a scene first".to_owned();
             return;
         };
-        let result = self.history.execute(
-            scene,
-            "Set UI root",
-            CommandKind::Property,
-            |scene| {
+        let result = self
+            .history
+            .execute(scene, "Set UI root", CommandKind::Property, |scene| {
                 for entity in scene.scene.entities.values_mut() {
                     entity.metadata.remove("ui.root");
                 }
@@ -33,11 +31,12 @@ impl EditorApp {
                     .entities
                     .get_mut(&id)
                     .ok_or_else(|| "当前实体不存在".to_owned())?;
-                entity.metadata.insert("ui.root".to_owned(), "true".to_owned());
+                entity
+                    .metadata
+                    .insert("ui.root".to_owned(), "true".to_owned());
                 scene.mark_dirty();
                 Ok::<(), String>(())
-            },
-        );
+            });
         match result {
             Ok(true) => {
                 self.on_document_changed(crate::actions::DocumentChange::UiRootChanged);
@@ -53,7 +52,10 @@ impl EditorApp {
             self.status = "请先在 Hierarchy 中选择实体".to_owned();
             return;
         };
-        let Some(entity) = self.current_scene().and_then(|scene| scene.scene.entities.get(&id)) else {
+        let Some(entity) = self
+            .current_scene()
+            .and_then(|scene| scene.scene.entities.get(&id))
+        else {
             self.status = "当前实体不存在".to_owned();
             return;
         };
@@ -85,7 +87,10 @@ impl EditorApp {
             self.status = "请先在 Hierarchy 中选择实体".to_owned();
             return;
         };
-        let Some(entity) = self.current_scene().and_then(|scene| scene.scene.entities.get(&id)) else {
+        let Some(entity) = self
+            .current_scene()
+            .and_then(|scene| scene.scene.entities.get(&id))
+        else {
             self.status = "当前实体不存在".to_owned();
             return;
         };
@@ -108,11 +113,15 @@ impl EditorApp {
             self.status = "Create a scene first".to_owned();
             return;
         };
-        let result = self.history.execute(scene, "Paste entity", CommandKind::Create, |scene| {
-            let id = tree.duplicate_subtree(scene, &source, parent).map_err(|error| error.to_string())?;
-            created.set(Some(id));
-            Ok::<(), String>(())
-        });
+        let result = self
+            .history
+            .execute(scene, "Paste entity", CommandKind::Create, |scene| {
+                let id = tree
+                    .duplicate_subtree(scene, &source, parent)
+                    .map_err(|error| error.to_string())?;
+                created.set(Some(id));
+                Ok::<(), String>(())
+            });
         match result {
             Ok(true) => {
                 if let Some(id) = created.get() {
@@ -235,11 +244,18 @@ impl EditorApp {
         }
         let selected = self.selection.contains(id);
         let collapsed = self.scene_state.collapsed.contains(&id);
-        let force_expand = filter_active && entity.children.iter().any(|child| self.hierarchy_filter_matches(scene, *child));
+        let force_expand = filter_active
+            && entity
+                .children
+                .iter()
+                .any(|child| self.hierarchy_filter_matches(scene, *child));
         let effective_collapsed = collapsed && !force_expand;
         let hidden = self.scene_state.hidden.contains(&id);
         let locked = self.scene_state.locked.contains(&id);
-        let ui_root = entity.metadata.get("ui.root").is_some_and(|value| value == "true");
+        let ui_root = entity
+            .metadata
+            .get("ui.root")
+            .is_some_and(|value| value == "true");
         let parent = entity.parent;
         let row_id = egui::Id::new(("hierarchy_entry", id.0));
         let row = ui.dnd_drag_source(row_id, id, |ui| {
@@ -247,7 +263,12 @@ impl EditorApp {
                 ui.horizontal(|ui| {
                     ui.add_space(depth as f32 * 14.0);
                     if !children.is_empty() {
-                        if icon_button(ui, if effective_collapsed { "▸" } else { "▾" }, "展开或折叠子节点").clicked()
+                        if icon_button(
+                            ui,
+                            if effective_collapsed { "▸" } else { "▾" },
+                            "展开或折叠子节点",
+                        )
+                        .clicked()
                         {
                             if effective_collapsed {
                                 self.scene_state.collapsed.remove(&id);
@@ -283,12 +304,18 @@ impl EditorApp {
                             !locked,
                             egui::Button::selectable(
                                 selected,
-                                format!("{}{} [{}]", if ui_root { "[UI Root] " } else { "" }, name, id.0),
+                                format!(
+                                    "{}{} [{}]",
+                                    if ui_root { "[UI Root] " } else { "" },
+                                    name,
+                                    id.0
+                                ),
                             ),
                         )
                         .clicked()
                     {
-                        let additive = ui.input(|input| input.modifiers.command || input.modifiers.ctrl);
+                        let additive =
+                            ui.input(|input| input.modifiers.command || input.modifiers.ctrl);
                         if additive {
                             self.selection.toggle(id, SelectionSource::Hierarchy);
                         } else {
@@ -361,7 +388,8 @@ impl EditorApp {
                             if ui.button("删除").clicked() {
                                 self.selection.set_single(id, SelectionSource::Hierarchy);
                                 if self.is_playing() {
-                                    self.status = "Play mode locks scene editing; click Stop first".to_owned();
+                                    self.status = "Play mode locks scene editing; click Stop first"
+                                        .to_owned();
                                 } else {
                                     self.delete_selected_entity();
                                 }
@@ -379,10 +407,12 @@ impl EditorApp {
             .map(|dragged_id| **dragged_id)
             .filter(|dragged_id| *dragged_id != id)
             .and_then(|dragged_id| {
-                self.document
-                    .current_scene
-                    .as_ref()
-                    .map(|scene| (dragged_id, self.validate_reparent_target(scene, dragged_id, Some(id))))
+                self.document.current_scene.as_ref().map(|scene| {
+                    (
+                        dragged_id,
+                        self.validate_reparent_target(scene, dragged_id, Some(id)),
+                    )
+                })
             });
         let drop_valid = matches!(drag_target_state, Some((_, Ok(()))));
         let drop_invalid = matches!(drag_target_state, Some((_, Err(_))));
@@ -411,13 +441,16 @@ impl EditorApp {
             let rect = row.response.rect;
             match drop_position {
                 ReparentPosition::Before => {
-                    ui.painter().line_segment([rect.left_top(), rect.right_top()], stroke);
+                    ui.painter()
+                        .line_segment([rect.left_top(), rect.right_top()], stroke);
                 }
                 ReparentPosition::After => {
-                    ui.painter().line_segment([rect.left_bottom(), rect.right_bottom()], stroke);
+                    ui.painter()
+                        .line_segment([rect.left_bottom(), rect.right_bottom()], stroke);
                 }
                 ReparentPosition::Child => {
-                    ui.painter().rect_stroke(rect, 0.0_f32, stroke, egui::StrokeKind::Inside);
+                    ui.painter()
+                        .rect_stroke(rect, 0.0_f32, stroke, egui::StrokeKind::Inside);
                 }
             }
         }
@@ -427,13 +460,19 @@ impl EditorApp {
                     if let Err(error) = self.validate_reparent_target(scene, dropped_id, Some(id)) {
                         self.status = error;
                     } else {
-                        if !self.begin_edit_transaction("Reparent entity", CommandKind::Reparent, Some(dropped_id)) {
+                        if !self.begin_edit_transaction(
+                            "Reparent entity",
+                            CommandKind::Reparent,
+                            Some(dropped_id),
+                        ) {
                             self.status = "重挂载事务已激活，无法重复开始".to_owned();
                         } else if let Some(scene) = self.document.current_scene.as_mut() {
                             match self.tree.reparent_at(scene, dropped_id, id, drop_position) {
                                 Ok(()) => {
                                     self.commit_edit_transaction();
-                                    self.on_document_changed(crate::actions::DocumentChange::EntityReparented);
+                                    self.on_document_changed(
+                                        crate::actions::DocumentChange::EntityReparented,
+                                    );
                                     self.status = "Reparented by drag".to_owned();
                                 }
                                 Err(error) => {
@@ -560,6 +599,27 @@ impl EditorApp {
         self.status = format!("已创建场景 {name}（未保存）");
     }
 
+    /// E19: create a Widget document with a Canvas root and enter Widget Mode.
+    pub(crate) fn perform_create_widget(&mut self, name: String) {
+        let mut document = editor::SceneDocument::new_widget(name.clone());
+        let scene = &mut document.scene;
+        scene
+            .add_entity(SceneEntityId(1), "Canvas", None)
+            .expect("a new scene can accept the Canvas root");
+        if let Some(entity) = scene.entities.get_mut(&SceneEntityId(1)) {
+            entity
+                .metadata
+                .insert("ui.root".to_owned(), "true".to_owned());
+        }
+        self.set_current_scene_document(document);
+        self.history.clear();
+        self.autosave.reset();
+        self.scene_view_mode = crate::SceneViewMode::Widget;
+        self.on_document_changed(crate::actions::DocumentChange::Created);
+        self.scene_view_fit_pending = true;
+        self.status = format!("已创建 Widget {name}（未保存）");
+    }
+
     /// 创建一个带 Transform3D 组件的 3D 实体（M9-03）。
     pub(crate) fn add_3d_entity(&mut self, parent: Option<SceneEntityId>) {
         if self.is_playing() {
@@ -577,24 +637,21 @@ impl EditorApp {
             self.status = "Create a scene first".into();
             return;
         };
-        let result = self.history.execute(
-            scene,
-            "Create 3D entity",
-            CommandKind::Create,
-            |scene| {
-                let id = tree
-                    .create_entity(scene, name.clone(), parent)
-                    .map_err(|e| e.to_string())?;
-                if let Some(entity) = scene.scene.entities.get_mut(&id) {
-                    entity.components.insert(
-                        "Transform3D".into(),
-                        Transform3D::default().to_component_str(),
-                    );
-                }
-                created.set(Some(id));
-                Ok::<(), String>(())
-            },
-        );
+        let result =
+            self.history
+                .execute(scene, "Create 3D entity", CommandKind::Create, |scene| {
+                    let id = tree
+                        .create_entity(scene, name.clone(), parent)
+                        .map_err(|e| e.to_string())?;
+                    if let Some(entity) = scene.scene.entities.get_mut(&id) {
+                        entity.components.insert(
+                            "Transform3D".into(),
+                            Transform3D::default().to_component_str(),
+                        );
+                    }
+                    created.set(Some(id));
+                    Ok::<(), String>(())
+                });
         match result {
             Ok(true) => {
                 if let Some(id) = created.get() {
@@ -675,10 +732,7 @@ fn scan_scene_files(root: &std::path::Path) -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use editor::SceneDocument;
-    use engine::core::{
-        logging::LogSink,
-        scene::SceneEntityId,
-    };
+    use engine::core::{logging::LogSink, scene::SceneEntityId};
 
     #[test]
     fn hierarchy_filter_keeps_matching_ancestor_path_visible() {
@@ -687,11 +741,18 @@ mod tests {
         let branch = SceneEntityId(2);
         let leaf = SceneEntityId(3);
         document.scene.add_entity(root, "Root", None).unwrap();
-        document.scene.add_entity(branch, "Branch", Some(root)).unwrap();
-        document.scene.add_entity(leaf, "Leaf", Some(branch)).unwrap();
+        document
+            .scene
+            .add_entity(branch, "Branch", Some(root))
+            .unwrap();
+        document
+            .scene
+            .add_entity(leaf, "Leaf", Some(branch))
+            .unwrap();
         let mut app = crate::EditorApp::new(
             editor::ProjectInfo {
-                root: std::env::temp_dir().join(format!("p2-hierarchy-filter-{}", std::process::id())),
+                root: std::env::temp_dir()
+                    .join(format!("p2-hierarchy-filter-{}", std::process::id())),
                 version: "test".to_owned(),
                 directories: Vec::new(),
             },

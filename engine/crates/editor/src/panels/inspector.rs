@@ -4,34 +4,119 @@ use crate::ComponentClipboard;
 use crate::EditorApp;
 use crate::util::strip_verbatim_prefix;
 use editor::{
-    Camera3DFields, Collider3dFields, CommandKind, ImageFields, InspectorError,
-    LightFields, TextFields, Transform3DFields, TransformFields,
+    Camera3DFields, Collider3dFields, CommandKind, ImageFields, InspectorError, LightFields,
+    TextFields, Transform3DFields, TransformFields,
 };
 use eframe::egui;
 use engine::core::{
     prefab::Prefab,
     scene::{SceneEntity, SceneEntityId},
     transform3d::Transform3D,
+    ui_animation::{UiEasing, UiKeyframe},
 };
 use std::collections::BTreeSet;
 
 struct ComponentDescriptor {
     name: &'static str,
+    /// E13：Add Component 菜单按类别分组显示。
+    category: ComponentCategory,
 }
 
+/// E13：组件类别（Add Component 分组 + 未来按类别过滤的扩展点）。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ComponentCategory {
+    Gameplay,
+    Rendering,
+    ThreeD,
+    Ui,
+}
+
+impl ComponentCategory {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Gameplay => "玩法",
+            Self::Rendering => "渲染",
+            Self::ThreeD => "3D",
+            Self::Ui => "UI",
+        }
+    }
+}
+
+/// E13：注册表驱动 Add Component——新组件只需在此登记名称与类别，
+/// 默认值在 `add_component` 的 match 中补充（类型化 setter 或字面字符串）。
 const COMPONENT_REGISTRY: &[ComponentDescriptor] = &[
-    ComponentDescriptor { name: "Sprite" },
-    ComponentDescriptor { name: "Tilemap" },
-    ComponentDescriptor { name: "Animation" },
-    ComponentDescriptor { name: "Transform3D" },
-    ComponentDescriptor { name: "MeshRenderer" },
-    ComponentDescriptor { name: "Camera3D" },
-    ComponentDescriptor { name: "Light" },
-    ComponentDescriptor { name: "Collider3d" },
-    ComponentDescriptor { name: "Text" },
-    ComponentDescriptor { name: "Image" },
-    ComponentDescriptor { name: "Button" },
-    ComponentDescriptor { name: "clickEvent" },
+    ComponentDescriptor {
+        name: "Sprite",
+        category: ComponentCategory::Rendering,
+    },
+    ComponentDescriptor {
+        name: "Tilemap",
+        category: ComponentCategory::Gameplay,
+    },
+    ComponentDescriptor {
+        name: "Animation",
+        category: ComponentCategory::Gameplay,
+    },
+    ComponentDescriptor {
+        name: "Transform3D",
+        category: ComponentCategory::ThreeD,
+    },
+    ComponentDescriptor {
+        name: "MeshRenderer",
+        category: ComponentCategory::ThreeD,
+    },
+    ComponentDescriptor {
+        name: "Camera3D",
+        category: ComponentCategory::ThreeD,
+    },
+    ComponentDescriptor {
+        name: "Light",
+        category: ComponentCategory::ThreeD,
+    },
+    ComponentDescriptor {
+        name: "Collider3d",
+        category: ComponentCategory::ThreeD,
+    },
+    ComponentDescriptor {
+        name: "Text",
+        category: ComponentCategory::Ui,
+    },
+    ComponentDescriptor {
+        name: "Image",
+        category: ComponentCategory::Ui,
+    },
+    ComponentDescriptor {
+        name: "Button",
+        category: ComponentCategory::Ui,
+    },
+    ComponentDescriptor {
+        name: "clickEvent",
+        category: ComponentCategory::Ui,
+    },
+    ComponentDescriptor {
+        name: "UiLayout",
+        category: ComponentCategory::Ui,
+    },
+    ComponentDescriptor {
+        name: "Container",
+        category: ComponentCategory::Ui,
+    },
+    ComponentDescriptor {
+        name: "UiEvents",
+        category: ComponentCategory::Ui,
+    },
+    ComponentDescriptor {
+        name: "UiBindings",
+        category: ComponentCategory::Ui,
+    },
+    ComponentDescriptor {
+        name: "ButtonStates",
+        category: ComponentCategory::Ui,
+    },
+    ComponentDescriptor {
+        name: "UiAnimation",
+        category: ComponentCategory::Ui,
+    },
 ];
 
 impl EditorApp {
@@ -79,7 +164,10 @@ impl EditorApp {
                     ui.label(if common_components.is_empty() {
                         "没有共有组件".to_owned()
                     } else {
-                        format!("共有组件：{}", common_components.into_iter().collect::<Vec<_>>().join("、"))
+                        format!(
+                            "共有组件：{}",
+                            common_components.into_iter().collect::<Vec<_>>().join("、")
+                        )
                     });
                 }
                 let Some((parent, child_count)) = self.current_scene().and_then(|scene| {
@@ -102,6 +190,46 @@ impl EditorApp {
                         .is_some_and(|value| value == "true")
                 }) {
                     ui.colored_label(egui::Color32::from_rgb(100, 190, 230), "UI Root / Canvas");
+                    ui.label("Canvas");
+                    ui.horizontal(|ui| {
+                        ui.label("参考");
+                        ui.add(
+                            egui::DragValue::new(&mut self.canvas_config.reference[0])
+                                .range(1.0..=7680.0),
+                        );
+                        ui.add(
+                            egui::DragValue::new(&mut self.canvas_config.reference[1])
+                                .range(1.0..=4320.0),
+                        );
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("缩放");
+                        egui::ComboBox::from_id_salt("canvas_scale_mode")
+                            .selected_text(self.canvas_config.scale_mode.as_str())
+                            .show_ui(ui, |ui| {
+                                for mode in [
+                                    engine::core::ui_layout::CanvasScaleMode::None,
+                                    engine::core::ui_layout::CanvasScaleMode::FitWidth,
+                                    engine::core::ui_layout::CanvasScaleMode::FitHeight,
+                                    engine::core::ui_layout::CanvasScaleMode::FitBoth,
+                                ] {
+                                    ui.selectable_value(
+                                        &mut self.canvas_config.scale_mode,
+                                        mode,
+                                        mode.as_str(),
+                                    );
+                                }
+                            });
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Safe Area");
+                        for inset in &mut self.canvas_config.safe_area {
+                            ui.add(egui::DragValue::new(inset).range(0.0..=512.0));
+                        }
+                    });
+                    if ui.button("应用 Canvas 配置").clicked() {
+                        self.apply_canvas_config();
+                    }
                 }
                 ui.label(format!(
                     "父实体：{}",
@@ -140,6 +268,12 @@ impl EditorApp {
                     }
                     if is_prefab_root && ui.button("写回源并更新实例").clicked() {
                         self.save_selected_prefab_to_source();
+                    }
+                    if is_prefab_root && ui.button("Unpack").clicked() {
+                        self.unpack_selected_prefab();
+                    }
+                    if is_prefab_root && ui.button("Revert Overrides").clicked() {
+                        self.revert_selected_prefab_overrides();
                     }
                 }
                 if let Some(prefab_state) = self.prefab_override_summary(selected) {
@@ -230,12 +364,24 @@ impl EditorApp {
                     egui::ComboBox::from_id_salt("inspector_add_component")
                         .selected_text(&self.inspector_add_component)
                         .show_ui(ui, |ui| {
-                            for descriptor in COMPONENT_REGISTRY {
-                                ui.selectable_value(
-                                    &mut self.inspector_add_component,
-                                    descriptor.name.to_owned(),
-                                    descriptor.name,
-                                );
+                            // E13：按类别分组展示注册表（顺序固定，避免漂移）。
+                            for category in [
+                                ComponentCategory::Gameplay,
+                                ComponentCategory::Rendering,
+                                ComponentCategory::ThreeD,
+                                ComponentCategory::Ui,
+                            ] {
+                                ui.weak(category.label());
+                                for descriptor in
+                                    COMPONENT_REGISTRY.iter().filter(|d| d.category == category)
+                                {
+                                    ui.selectable_value(
+                                        &mut self.inspector_add_component,
+                                        descriptor.name.to_owned(),
+                                        descriptor.name,
+                                    );
+                                }
+                                ui.separator();
                             }
                         });
                     if ui.button("添加").clicked() {
@@ -283,16 +429,28 @@ impl EditorApp {
                     if self.inspector_transform_open {
                         ui.group(|ui| {
                             ui.horizontal(|ui| {
-                                ui.label(if transform_mixed { "位置（混合）" } else { "位置" });
+                                ui.label(if transform_mixed {
+                                    "位置（混合）"
+                                } else {
+                                    "位置"
+                                });
                                 ui.add(egui::DragValue::new(&mut self.transform.position_x));
                                 ui.add(egui::DragValue::new(&mut self.transform.position_y));
                             });
                             ui.horizontal(|ui| {
-                                ui.label(if transform_mixed { "旋转（混合）" } else { "旋转" });
+                                ui.label(if transform_mixed {
+                                    "旋转（混合）"
+                                } else {
+                                    "旋转"
+                                });
                                 ui.add(egui::DragValue::new(&mut self.transform.rotation));
                             });
                             ui.horizontal(|ui| {
-                                ui.label(if transform_mixed { "缩放（混合）" } else { "缩放" });
+                                ui.label(if transform_mixed {
+                                    "缩放（混合）"
+                                } else {
+                                    "缩放"
+                                });
                                 let x_changed = ui
                                     .add(egui::DragValue::new(&mut self.transform.scale_x))
                                     .changed();
@@ -334,20 +492,32 @@ impl EditorApp {
                     if self.inspector_transform3d_open {
                         ui.group(|ui| {
                             ui.horizontal(|ui| {
-                                ui.label(if transform3d_mixed { "位置（混合）" } else { "位置" });
+                                ui.label(if transform3d_mixed {
+                                    "位置（混合）"
+                                } else {
+                                    "位置"
+                                });
                                 ui.add(egui::DragValue::new(&mut self.transform3d.position_x));
                                 ui.add(egui::DragValue::new(&mut self.transform3d.position_y));
                                 ui.add(egui::DragValue::new(&mut self.transform3d.position_z));
                             });
                             ui.horizontal(|ui| {
-                                ui.label(if transform3d_mixed { "旋转 Q（混合）" } else { "旋转 Q" });
+                                ui.label(if transform3d_mixed {
+                                    "旋转 Q（混合）"
+                                } else {
+                                    "旋转 Q"
+                                });
                                 ui.add(egui::DragValue::new(&mut self.transform3d.rotation_x));
                                 ui.add(egui::DragValue::new(&mut self.transform3d.rotation_y));
                                 ui.add(egui::DragValue::new(&mut self.transform3d.rotation_z));
                                 ui.add(egui::DragValue::new(&mut self.transform3d.rotation_w));
                             });
                             ui.horizontal(|ui| {
-                                ui.label(if transform3d_mixed { "缩放（混合）" } else { "缩放" });
+                                ui.label(if transform3d_mixed {
+                                    "缩放（混合）"
+                                } else {
+                                    "缩放"
+                                });
                                 let x_changed = ui
                                     .add(egui::DragValue::new(&mut self.transform3d.scale_x))
                                     .changed();
@@ -914,6 +1084,177 @@ impl EditorApp {
                         });
                     }
                 }
+                // E16：UiLayout（四边 Anchor+Offset）编辑组。存在时运行时以
+                // 该布局优先解析 Text/Image 位置（视觉属性仍在原组件上）。
+                if has("UiLayout") {
+                    let header = if self.inspector_ui_layout_open {
+                        "UiLayout  v"
+                    } else {
+                        "UiLayout  >"
+                    };
+                    if ui.button(header).clicked() {
+                        self.inspector_ui_layout_open = !self.inspector_ui_layout_open;
+                    }
+                    if self.inspector_ui_layout_open {
+                        ui.group(|ui| {
+                            ui.horizontal(|ui| {
+                                ui.label("锚点预设");
+                                let current = self.ui_layout.to_layout();
+                                let matched = engine::core::ui_layout::UiLayoutPreset::ALL
+                                    .into_iter()
+                                    .find(|preset| preset.anchors() == current.anchors);
+                                let selected_label = matched
+                                    .map_or("自定义".to_owned(), |preset| {
+                                        preset.label().to_owned()
+                                    });
+                                egui::ComboBox::from_id_salt("ui_layout_preset")
+                                    .selected_text(selected_label)
+                                    .show_ui(ui, |ui| {
+                                        for preset in engine::core::ui_layout::UiLayoutPreset::ALL {
+                                            let chosen = ui
+                                                .selectable_label(
+                                                    matched == Some(preset),
+                                                    preset.label(),
+                                                )
+                                                .clicked();
+                                            if chosen {
+                                                let mut layout = current.clone();
+                                                layout.apply_preset(preset);
+                                                self.ui_layout =
+                                                    editor::UiLayoutFields::from_layout(layout);
+                                            }
+                                        }
+                                    });
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Anchor LTRB");
+                                for anchor in [
+                                    &mut self.ui_layout.anchor_l,
+                                    &mut self.ui_layout.anchor_t,
+                                    &mut self.ui_layout.anchor_r,
+                                    &mut self.ui_layout.anchor_b,
+                                ] {
+                                    ui.add(
+                                        egui::DragValue::new(anchor).range(0.0..=1.0).speed(0.01),
+                                    );
+                                }
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Offset LTRB");
+                                for offset in [
+                                    &mut self.ui_layout.offset_l,
+                                    &mut self.ui_layout.offset_t,
+                                    &mut self.ui_layout.offset_r,
+                                    &mut self.ui_layout.offset_b,
+                                ] {
+                                    ui.add(egui::DragValue::new(offset));
+                                }
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Min/Max");
+                                ui.add(egui::DragValue::new(&mut self.ui_layout.min_w));
+                                ui.add(egui::DragValue::new(&mut self.ui_layout.min_h));
+                                ui.add(egui::DragValue::new(&mut self.ui_layout.max_w));
+                                ui.add(egui::DragValue::new(&mut self.ui_layout.max_h));
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Pivot");
+                                ui.add(
+                                    egui::DragValue::new(&mut self.ui_layout.pivot_x)
+                                        .range(0.0..=1.0)
+                                        .speed(0.01),
+                                );
+                                ui.add(
+                                    egui::DragValue::new(&mut self.ui_layout.pivot_y)
+                                        .range(0.0..=1.0)
+                                        .speed(0.01),
+                                );
+                            });
+                            if ui.button("移除 UiLayout").clicked()
+                                && let Err(error) = self.remove_component("UiLayout")
+                            {
+                                self.status = error;
+                            }
+                        });
+                    }
+                }
+                // E17：Container（自动布局容器）编辑组。
+                if has("Container") {
+                    ui.horizontal(|ui| {
+                        ui.label("Container");
+                        egui::ComboBox::from_id_salt("container_kind")
+                            .selected_text(&self.container.kind)
+                            .show_ui(ui, |ui| {
+                                for (token, label) in [
+                                    ("vbox", "垂直排列 VBox"),
+                                    ("hbox", "水平排列 HBox"),
+                                    ("grid", "网格 Grid"),
+                                    ("margin", "边距 Margin"),
+                                    ("center", "居中 Center"),
+                                ] {
+                                    ui.selectable_value(
+                                        &mut self.container.kind,
+                                        token.to_owned(),
+                                        label,
+                                    );
+                                }
+                            });
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("内边距");
+                        for padding in [
+                            &mut self.container.padding_l,
+                            &mut self.container.padding_t,
+                            &mut self.container.padding_r,
+                            &mut self.container.padding_b,
+                        ] {
+                            ui.add(egui::DragValue::new(padding));
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("间距");
+                        ui.add(egui::DragValue::new(&mut self.container.spacing));
+                        ui.label("列数");
+                        ui.add(egui::DragValue::new(&mut self.container.columns));
+                    });
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut self.container.stretch, "拉伸主轴");
+                        ui.checkbox(&mut self.container.fill, "填满交叉轴");
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("对齐");
+                        egui::ComboBox::from_id_salt("container_align")
+                            .selected_text(&self.container.align)
+                            .show_ui(ui, |ui| {
+                                for (token, label) in
+                                    [("start", "起始"), ("center", "居中"), ("end", "末尾")]
+                                {
+                                    ui.selectable_value(
+                                        &mut self.container.align,
+                                        token.to_owned(),
+                                        label,
+                                    );
+                                }
+                            });
+                    });
+                    if ui.button("移除 Container").clicked()
+                        && let Err(error) = self.remove_component("Container")
+                    {
+                        self.status = error;
+                    }
+                }
+                if has("UiEvents") {
+                    self.draw_ui_events_editor(ui);
+                }
+                if has("UiBindings") {
+                    self.draw_ui_bindings_editor(ui);
+                }
+                if has("ButtonStates") {
+                    self.draw_button_states_editor(ui);
+                }
+                if has("UiAnimation") {
+                    self.draw_ui_animation_editor(ui);
+                }
                 if has("LuaScript") {
                     ui.horizontal(|ui| {
                         ui.label("Lua");
@@ -947,11 +1288,299 @@ impl EditorApp {
         }
     }
 
-    /// 选中实体 + 缓冲编辑一次收敛：直写进活动事务并提交为一条历史（净变化才
-    /// 追加 Undo；无差异 no-op），随后回读同步缓冲、刷新基线。旧实现在此处经
-    /// `history.execute` 序列化并保存；E08 后网格直写路径与离散路径收敛为同一
-    /// 提交模型（不自行落盘 —— dirty 由调用点 / autosave 落盘）。
-    #[cfg(test)]
+    fn draw_ui_events_editor(&mut self, ui: &mut egui::Ui) {
+        ui.separator();
+        ui.strong("UI Events");
+        let mut changed = false;
+        for index in 0..self.events_editor.bindings.len() {
+            let mut binding = self.events_editor.bindings[index].clone();
+            egui::Grid::new(format!("ui_event_{index}")).show(ui, |ui| {
+                let mut event = binding
+                    .event
+                    .unwrap_or(engine::core::ui_events::UiEventType::Click);
+                if egui::ComboBox::from_id_salt(format!("ui_event_type_{index}"))
+                    .selected_text(event.as_str())
+                    .show_ui(ui, |ui| {
+                        for candidate in [
+                            engine::core::ui_events::UiEventType::Click,
+                            engine::core::ui_events::UiEventType::PointerEnter,
+                            engine::core::ui_events::UiEventType::PointerExit,
+                            engine::core::ui_events::UiEventType::PointerDown,
+                            engine::core::ui_events::UiEventType::PointerUp,
+                            engine::core::ui_events::UiEventType::Focus,
+                            engine::core::ui_events::UiEventType::Submit,
+                            engine::core::ui_events::UiEventType::ValueChanged,
+                            engine::core::ui_events::UiEventType::Drag,
+                        ] {
+                            ui.selectable_value(&mut event, candidate, candidate.as_str());
+                        }
+                    })
+                    .response
+                    .changed()
+                {
+                    binding.event = Some(event);
+                    changed = true;
+                }
+                if ui
+                    .add(
+                        egui::TextEdit::singleline(binding.target.get_or_insert_with(String::new))
+                            .hint_text("target"),
+                    )
+                    .changed()
+                {
+                    if binding.target.as_deref().map_or(true, str::is_empty) {
+                        binding.target = None;
+                    }
+                    changed = true;
+                }
+                if ui
+                    .add(egui::TextEdit::singleline(&mut binding.function).hint_text("function"))
+                    .changed()
+                {
+                    changed = true;
+                }
+                let mut args = binding
+                    .arguments
+                    .iter()
+                    .map(|(key, value)| format!("{key}={value}"))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                if ui
+                    .add(egui::TextEdit::singleline(&mut args).hint_text("k=v,k2=v2"))
+                    .changed()
+                {
+                    binding.arguments = args
+                        .split([',', ';'])
+                        .filter_map(|item| item.trim().split_once('='))
+                        .map(|(key, value)| (key.trim().to_owned(), value.trim().to_owned()))
+                        .filter(|(key, _)| !key.is_empty())
+                        .collect();
+                    changed = true;
+                }
+            });
+            ui.horizontal(|ui| {
+                if ui.button("移除").clicked() {
+                    self.events_editor.bindings.remove(index);
+                    changed = true;
+                }
+            });
+            if changed {
+                self.events_editor.bindings[index] = binding;
+            }
+        }
+        ui.horizontal(|ui| {
+            if ui.button("添加 Event").clicked() {
+                self.events_editor
+                    .bindings
+                    .push(engine::core::ui_events::UiEventBinding {
+                        event: Some(engine::core::ui_events::UiEventType::Click),
+                        target: None,
+                        function: "on_click".to_owned(),
+                        arguments: Default::default(),
+                    });
+            }
+            if ui.button("应用 Events").clicked() {
+                self.apply_events_editor();
+            }
+        });
+    }
+
+    fn draw_ui_bindings_editor(&mut self, ui: &mut egui::Ui) {
+        ui.separator();
+        ui.strong("Property Bindings");
+        let mut changed = false;
+        for index in 0..self.bindings_editor.bindings.len() {
+            let mut binding = self.bindings_editor.bindings[index].clone();
+            egui::Grid::new(format!("ui_binding_{index}")).show(ui, |ui| {
+                let property = binding
+                    .property
+                    .unwrap_or(engine::core::ui_binding::BoundProperty::TextText);
+                if egui::ComboBox::from_id_salt(format!("binding_property_{index}"))
+                    .selected_text(property.as_str())
+                    .show_ui(ui, |ui| {
+                        for candidate in [
+                            engine::core::ui_binding::BoundProperty::TextText,
+                            engine::core::ui_binding::BoundProperty::ImageVisible,
+                            engine::core::ui_binding::BoundProperty::ProgressValue,
+                        ] {
+                            ui.selectable_value(
+                                &mut binding.property,
+                                Some(candidate),
+                                candidate.as_str(),
+                            );
+                        }
+                    })
+                    .response
+                    .changed()
+                {
+                    changed = true;
+                }
+                if ui
+                    .add(egui::TextEdit::singleline(&mut binding.target).hint_text("target"))
+                    .changed()
+                {
+                    changed = true;
+                }
+                let mut source = binding.source.0.join(".");
+                if ui
+                    .add(egui::TextEdit::singleline(&mut source).hint_text("data.path"))
+                    .changed()
+                {
+                    if let Ok(path) = engine::core::ui_binding::BindingPath::parse(&source) {
+                        binding.source = path;
+                        changed = true;
+                    }
+                }
+                let mut default = binding.default.clone().unwrap_or_default();
+                if ui
+                    .add(egui::TextEdit::singleline(&mut default).hint_text("default"))
+                    .changed()
+                {
+                    binding.default = (!default.trim().is_empty()).then_some(default);
+                    changed = true;
+                }
+            });
+            ui.horizontal(|ui| {
+                if ui.button("移除").clicked() {
+                    self.bindings_editor.bindings.remove(index);
+                    changed = true;
+                }
+            });
+            if changed {
+                self.bindings_editor.bindings[index] = binding;
+            }
+        }
+        ui.horizontal(|ui| {
+            if ui.button("添加 Binding").clicked() {
+                self.bindings_editor
+                    .bindings
+                    .push(engine::core::ui_binding::PropertyBinding {
+                        property: Some(engine::core::ui_binding::BoundProperty::TextText),
+                        target: String::new(),
+                        source: engine::core::ui_binding::BindingPath(vec![
+                            "data".to_owned(),
+                            "value".to_owned(),
+                        ]),
+                        default: None,
+                    });
+            }
+            if ui.button("应用 Bindings").clicked() {
+                self.apply_bindings_editor();
+            }
+        });
+    }
+
+    fn draw_button_states_editor(&mut self, ui: &mut egui::Ui) {
+        ui.separator();
+        ui.strong("Button States");
+        let states = &mut self.button_states_editor;
+        for (label, value) in [
+            ("Normal", &mut states.normal),
+            ("Hover", &mut states.hover),
+            ("Pressed", &mut states.pressed),
+            ("Disabled", &mut states.disabled),
+            ("Focused", &mut states.focused),
+        ] {
+            let mut text = value.clone().unwrap_or_default();
+            if ui
+                .add(egui::TextEdit::singleline(&mut text).hint_text(label))
+                .changed()
+            {
+                *value = (!text.trim().is_empty()).then(|| text.trim().to_owned());
+            }
+        }
+        if ui
+            .checkbox(&mut self.button_states_editor.disabled_state, "禁用状态")
+            .changed()
+        {
+            self.status = "ButtonStates 已在缓冲中修改".to_owned();
+        }
+        if ui.button("应用 Button States").clicked() {
+            self.apply_button_states_editor();
+        }
+    }
+
+    fn draw_ui_animation_editor(&mut self, ui: &mut egui::Ui) {
+        ui.separator();
+        ui.strong("UI Animation");
+        for (property, track) in self.ui_animation_editor.tracks.clone() {
+            ui.label(format!("轨道：{property}"));
+            for (index, mut keyframe) in track.keyframes.into_iter().enumerate() {
+                ui.horizontal(|ui| {
+                    if ui
+                        .add(egui::DragValue::new(&mut keyframe.time).speed(0.01))
+                        .changed()
+                        || ui
+                            .add(egui::DragValue::new(&mut keyframe.value).speed(0.01))
+                            .changed()
+                    {
+                        if let Some(track) = self.ui_animation_editor.tracks.get_mut(&property) {
+                            track.keyframes[index] = keyframe;
+                        }
+                    }
+                    let mut easing = keyframe.easing;
+                    egui::ComboBox::from_id_salt(format!("animation_easing_{property}_{index}"))
+                        .selected_text(easing.as_str())
+                        .show_ui(ui, |ui| {
+                            for candidate in
+                                [UiEasing::Linear, UiEasing::Step, UiEasing::SmoothStep]
+                            {
+                                ui.selectable_value(&mut easing, candidate, candidate.as_str());
+                            }
+                        });
+                    if easing != keyframe.easing
+                        && let Some(track) = self.ui_animation_editor.tracks.get_mut(&property)
+                    {
+                        track.keyframes[index].easing = easing;
+                    }
+                });
+            }
+            ui.horizontal(|ui| {
+                if ui.button("加关键帧").clicked()
+                    && let Some(track) = self.ui_animation_editor.tracks.get_mut(&property)
+                {
+                    let time = track.keyframes.last().map_or(0.0, |frame| frame.time + 0.5);
+                    track.keyframes.push(UiKeyframe {
+                        time,
+                        value: 0.0,
+                        easing: UiEasing::Linear,
+                    });
+                }
+            });
+        }
+        ui.horizontal(|ui| {
+            if ui.button("添加 opacity 轨道").clicked() {
+                let track = engine::core::ui_animation::UiAnimationTrack::new(
+                    "opacity",
+                    vec![UiKeyframe {
+                        time: 0.0,
+                        value: 0.0,
+                        easing: UiEasing::SmoothStep,
+                    }],
+                );
+                if let Ok(track) = track {
+                    let _ = self.ui_animation_editor.add_track(track);
+                }
+            }
+            if ui.button("播放").clicked() && !self.ui_animation_playing {
+                self.toggle_ui_animation_preview();
+            }
+            if ui.button("停止").clicked() && self.ui_animation_playing {
+                self.toggle_ui_animation_preview();
+            }
+            if ui.button("归零").clicked() {
+                self.reset_ui_animation_preview();
+            }
+            if ui.button("应用动画").clicked() {
+                self.apply_ui_animation_editor();
+            }
+        });
+        if let Some(preview) = &self.ui_animation_preview {
+            ui.label(format!("预览 t={:.2}", preview.time));
+        }
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn apply_inspector(&mut self) -> bool {
         if self.is_playing() {
             self.status = "Play mode locks scene editing; click Stop first".to_owned();
@@ -1041,7 +1670,10 @@ impl EditorApp {
         if self.is_playing() {
             return Err("Play mode locks scene editing; click Stop first".to_owned());
         }
-        if !COMPONENT_REGISTRY.iter().any(|descriptor| descriptor.name == name) {
+        if !COMPONENT_REGISTRY
+            .iter()
+            .any(|descriptor| descriptor.name == name)
+        {
             return Err(format!("未注册组件：{name}"));
         }
         let Some(selected) = self.selection.primary() else {
@@ -1121,7 +1753,9 @@ impl EditorApp {
                     "Transform3D" => {
                         inspector.set_transform3d(scene, selected, Transform3DFields::default())?
                     }
-                    "Camera3D" => inspector.set_camera3d(scene, selected, Camera3DFields::default())?,
+                    "Camera3D" => {
+                        inspector.set_camera3d(scene, selected, Camera3DFields::default())?
+                    }
                     "Light" => inspector.set_light(scene, selected, LightFields::default())?,
                     "Collider3d" => {
                         inspector.set_collider3d(scene, selected, Collider3dFields::default())?
@@ -1131,6 +1765,61 @@ impl EditorApp {
                     }
                     "Text" => inspector.set_text(scene, selected, TextFields::default())?,
                     "Image" => inspector.set_image(scene, selected, ImageFields::default())?,
+                    // E16：UiLayout 默认为中心点锚 200×100 元素（视觉组件存在时
+                    // 由布局接管位置/尺寸）。
+                    "UiLayout" => {
+                        if let Some(entity) = scene.scene.entities.get_mut(&selected) {
+                            entity.components.insert(
+                                "UiLayout".to_owned(),
+                                engine::core::ui_layout::UiRectLayout::from_point(
+                                    [0.5, 0.5],
+                                    [0.0, 0.0],
+                                    [200.0, 100.0],
+                                )
+                                .to_component_str(),
+                            );
+                            scene.mark_dirty();
+                        }
+                    }
+                    // E17：Container 默认 VBox 无内边距。
+                    "Container" => {
+                        if let Some(entity) = scene.scene.entities.get_mut(&selected) {
+                            entity.components.insert(
+                                "Container".to_owned(),
+                                engine::core::ui_layout::ContainerStyle::default()
+                                    .to_component_str(),
+                            );
+                            scene.mark_dirty();
+                        }
+                    }
+                    "UiEvents" => {
+                        if let Some(entity) = scene.scene.entities.get_mut(&selected) {
+                            entity.components.insert(
+                                "UiEvents".to_owned(),
+                                engine::core::ui_events::UiEvents::click("on_click")
+                                    .to_component_str(),
+                            );
+                            scene.mark_dirty();
+                        }
+                    }
+                    "UiBindings" => {
+                        if let Some(entity) = scene.scene.entities.get_mut(&selected) {
+                            entity.components.insert(
+                                "UiBindings".to_owned(),
+                                "property=text.text;target=self;source=data.value".to_owned(),
+                            );
+                            scene.mark_dirty();
+                        }
+                    }
+                    "ButtonStates" => {
+                        if let Some(entity) = scene.scene.entities.get_mut(&selected) {
+                            entity.components.insert(
+                                "ButtonStates".to_owned(),
+                                "normal=assets/textures/player.png".to_owned(),
+                            );
+                            scene.mark_dirty();
+                        }
+                    }
                     other => {
                         if let Some(entity) = scene.scene.entities.get_mut(&selected) {
                             entity.components.insert(other.to_owned(), String::new());
@@ -1201,7 +1890,8 @@ impl EditorApp {
         let result =
             self.history
                 .execute(scene, "Rename entity", CommandKind::Rename, move |scene| {
-                    tree.rename(scene, selected, name).map_err(|e| e.to_string())
+                    tree.rename(scene, selected, name)
+                        .map_err(|e| e.to_string())
                 });
         match result {
             Ok(true) => {
@@ -1295,7 +1985,9 @@ impl EditorApp {
             .and_then(|scene| scene.scene.entities.get(&selected))
             .and_then(|entity| entity.parent);
         let tree = self.tree.clone();
-        let removed = std::rc::Rc::new(std::cell::Cell::new(None::<std::collections::BTreeSet<SceneEntityId>>));
+        let removed = std::rc::Rc::new(std::cell::Cell::new(
+            None::<std::collections::BTreeSet<SceneEntityId>>,
+        ));
         let removed_out = removed.clone();
         let Some(scene) = self.document.current_scene.as_mut() else {
             self.status = "Create a scene first".into();
@@ -1604,6 +2296,55 @@ impl EditorApp {
                 self.status = format!("已写回 Prefab 源并更新实例：{prefab_source}");
             }
             Err(error) => self.status = format!("更新 Prefab 实例失败：{error}"),
+        }
+    }
+
+    pub(crate) fn unpack_selected_prefab(&mut self) {
+        if self.is_playing() {
+            self.status = "Play mode locks scene editing; click Stop first".to_owned();
+            return;
+        }
+        let Some(selected) = self.selection.primary() else {
+            self.status = "请先选中 Prefab 根实例".to_owned();
+            return;
+        };
+        let Some(scene) = self.current_scene() else {
+            return;
+        };
+        let Some(entity) = scene.scene.entities.get(&selected) else {
+            self.status = "Prefab 根实例不存在".to_owned();
+            return;
+        };
+        if entity
+            .metadata
+            .get("prefab.root")
+            .is_none_or(|value| value != "true")
+        {
+            self.status = "只有 Prefab 根实例支持 Unpack".to_owned();
+            return;
+        }
+        let Some(doc) = self.document.current_scene.as_mut() else {
+            return;
+        };
+        let result = self
+            .history
+            .execute(doc, "Unpack Prefab", CommandKind::Property, |scene| {
+                let ids = collect_scene_subtree(&scene.scene, selected)?;
+                for id in ids {
+                    let Some(entity) = scene.scene.entities.get_mut(&id) else {
+                        continue;
+                    };
+                    entity.metadata.retain(|key, _| !key.starts_with("prefab."));
+                }
+                scene.mark_dirty();
+                Ok::<(), String>(())
+            });
+        match result {
+            Ok(_) => {
+                self.on_document_changed(crate::actions::DocumentChange::PrefabApply);
+                self.status = "Prefab 实例已解包为普通实体".to_owned();
+            }
+            Err(error) => self.status = format!("Unpack 失败：{error}"),
         }
     }
 }
@@ -2120,7 +2861,8 @@ mod tests {
     }
 
     fn select_entity(app: &mut EditorApp, id: SceneEntityId) {
-        app.selection.set_single(id, editor::SelectionSource::Hierarchy);
+        app.selection
+            .set_single(id, editor::SelectionSource::Hierarchy);
         app.sync_inspector(id);
     }
 

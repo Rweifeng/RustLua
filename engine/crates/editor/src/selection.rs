@@ -240,11 +240,7 @@ mod tests {
         );
         assert_eq!(selection.primary(), Some(id(2)));
         // preferred_primary 不在集合中时回落到最大 ID。
-        selection.set_many(
-            [id(7), id(3)],
-            Some(id(99)),
-            SelectionSource::SceneView2D,
-        );
+        selection.set_many([id(7), id(3)], Some(id(99)), SelectionSource::SceneView2D);
         assert_eq!(selection.primary(), Some(id(7)));
         // 空集合 → 主选中清空。
         selection.set_many([], Some(id(3)), SelectionSource::SceneView2D);
@@ -255,11 +251,7 @@ mod tests {
     #[test]
     fn toggle_inserts_then_removes_and_refills_primary() {
         let mut selection = SelectionModel::new();
-        selection.set_many(
-            [id(1), id(2)],
-            Some(id(1)),
-            SelectionSource::SceneView2D,
-        );
+        selection.set_many([id(1), id(2)], Some(id(1)), SelectionSource::SceneView2D);
         // 加选新实体 → 成为主选中。
         selection.toggle(id(3), SelectionSource::SceneView2D);
         assert!(selection.contains(id(3)));
@@ -278,11 +270,7 @@ mod tests {
     #[test]
     fn retain_valid_drops_dangling_and_refills_primary() {
         let mut selection = SelectionModel::new();
-        selection.set_many(
-            [id(1), id(2), id(3)],
-            Some(id(1)),
-            SelectionSource::Command,
-        );
+        selection.set_many([id(1), id(2), id(3)], Some(id(1)), SelectionSource::Command);
         selection.retain_valid(|candidate| candidate != id(1) && candidate != id(2));
         assert_eq!(selection.ids(), vec![id(3)]);
         assert_eq!(selection.primary(), Some(id(3)));
@@ -294,11 +282,7 @@ mod tests {
     #[test]
     fn on_entities_removed_falls_back_to_parent_then_to_remaining() {
         let mut selection = SelectionModel::new();
-        selection.set_many(
-            [id(1), id(2), id(3)],
-            Some(id(1)),
-            SelectionSource::Command,
-        );
+        selection.set_many([id(1), id(2), id(3)], Some(id(1)), SelectionSource::Command);
         let removed = BTreeSet::from([id(1)]);
         // 主选中被删除 → 回退父 2（若仍在集合）。
         selection.on_entities_removed(&removed, Some(id(2)));
@@ -343,11 +327,7 @@ mod tests {
     #[test]
     fn clear_resets_everything() {
         let mut selection = SelectionModel::new();
-        selection.set_many(
-            [id(1), id(2)],
-            Some(id(1)),
-            SelectionSource::SceneView2D,
-        );
+        selection.set_many([id(1), id(2)], Some(id(1)), SelectionSource::SceneView2D);
         selection.clear(SelectionSource::Playback);
         assert!(selection.is_empty());
         assert_eq!(selection.primary(), None);

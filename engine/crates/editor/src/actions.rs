@@ -7,12 +7,12 @@ use editor::{
     Camera3DFields, Collider3dFields, CommandKind, ImageFields, InspectorSnapshot, LightFields,
     SceneDocument, TextFields, Transform3DFields, TransformFields,
 };
+use eframe::egui;
 use engine::core::{
     animation::AnimationStateMachine, scene::SceneEntityId, sprite::SpriteComponent,
     tilemap::Tilemap,
 };
 use std::path::{Path, PathBuf};
-use eframe::egui;
 
 /// E08 Inspector「脏编辑」标记：用户在一次连续交互中改动了缓冲字段，但
 /// 尚未到提交边界（松手/文本提交/失焦）。编辑帧由 `mark_inspector_edit`
@@ -127,6 +127,8 @@ pub(crate) enum PendingChange {
     OpenResource { relative_path: PathBuf },
     /// 新建空白场景（尚未保存）。
     CreateScene { name: String },
+    /// E19: create an isolated Widget document.
+    CreateWidget { name: String },
     /// 恢复一条崩溃恢复快照。
     Recover {
         candidate: editor::RecoveryCandidate,
@@ -145,6 +147,7 @@ impl PendingChange {
                 format!("打开 {}", relative_path.display())
             }
             Self::CreateScene { name } => format!("新建场景 {name}"),
+            Self::CreateWidget { name } => format!("新建 Widget {name}"),
             Self::Recover { .. } => "恢复崩溃快照".to_owned(),
             Self::SwitchProject { path } => format!("切换到项目：{}", path),
             Self::QuitEditor => "关闭编辑器".to_owned(),
@@ -195,6 +198,7 @@ impl EditorApp {
                 self.perform_open_scene_resource(relative_path);
             }
             PendingChange::CreateScene { name } => self.perform_create_scene(name),
+            PendingChange::CreateWidget { name } => self.perform_create_widget(name),
             PendingChange::Recover { candidate } => self.perform_recover_candidate(candidate),
             PendingChange::SwitchProject { path } => {
                 self.import_path = path;
@@ -353,6 +357,8 @@ impl EditorApp {
         //    （Open/Undo/Stop 等路径在替换 current_scene 后还会单独调用此函数；
         //    这里在纯编辑变更（删除/重命名/Prefab）时也幂等执行，代价可控。）
         self.invalidate_scene_view_state();
+        self.invalidate_ui_layout_cache();
+        self.refresh_preview_diagnostics();
 
         // 4. Game Preview 失效：整文档替换类变更（打开/新建/恢复）不允许残留运行时预览。
         if change == DocumentChange::Opened || change == DocumentChange::Created {
@@ -486,27 +492,26 @@ impl EditorApp {
         // 自动开事务（幂等：拖动中已开则沿用）。Scene View 拖拽的事务不同 ——
         // 正常 UI 同一物理指针只能操作一个目标，Escape/Undo 的取消在顶层统一处理。
         let doc_id = snapshot.doc_id;
-        self.begin_edit_transaction(
-            "Inspector",
-            editor::CommandKind::Property,
-            Some(doc_id),
-        );
+        self.begin_edit_transaction("Inspector", editor::CommandKind::Property, Some(doc_id));
         let EditSnapshot {
-            snapshot: Some(InspectorSnapshot {
-                entity_id,
-                name,
-                transform,
-                sprite_reference,
-                lua_script,
-                transform3d,
-                mesh_renderer: _,
-                camera3d,
-                light,
-                collider3d,
-                text,
-                image,
-                ..
-            }),
+            snapshot:
+                Some(InspectorSnapshot {
+                    entity_id,
+                    name,
+                    transform,
+                    sprite_reference,
+                    lua_script,
+                    transform3d,
+                    mesh_renderer: _,
+                    camera3d,
+                    light,
+                    collider3d,
+                    text,
+                    image,
+                    ui_layout,
+                    container,
+                    ..
+                }),
             mesh_renderer_raw,
             tilemap,
             animation,
@@ -540,6 +545,8 @@ impl EditorApp {
                 collider3d,
                 text,
                 image,
+                ui_layout,
+                container,
                 persistent: false,
             },
             tilemap.as_deref(),
@@ -593,9 +600,9 @@ impl EditorApp {
         let entity = &doc.scene.entities[&primary];
         let has = |key: &str| entity.components.contains_key(key);
         let sprite_ref = self.sprite_component.to_component_str();
-        let sprite_reference = has("Sprite").then(|| {
-            (!self.sprite_component.texture.trim().is_empty()).then(|| sprite_ref)
-        }).flatten();
+        let sprite_reference = has("Sprite")
+            .then(|| (!self.sprite_component.texture.trim().is_empty()).then(|| sprite_ref))
+            .flatten();
         let lua_script = has("LuaScript")
             .then(|| (!self.lua_script.trim().is_empty()).then_some(self.lua_script.clone()))
             .flatten();
@@ -615,6 +622,8 @@ impl EditorApp {
             collider3d: has("Collider3d").then_some(self.collider3d.clone()),
             text: has("Text").then_some(self.text.clone()),
             image: has("Image").then_some(self.image.clone()),
+            ui_layout: has("UiLayout").then_some(self.ui_layout.clone()),
+            container: has("Container").then_some(self.container.clone()),
             persistent: false,
         };
         // 直写用 mesh 完整组件串：缓冲只存 `mesh=` 后的裸引用，直写需拼回前缀
@@ -732,7 +741,8 @@ impl EditorApp {
         if self.is_playing() {
             return;
         }
-        let releasing = context.input(|i| i.pointer.any_released()) && !context.wants_keyboard_input();
+        let releasing =
+            context.input(|i| i.pointer.any_released()) && !context.wants_keyboard_input();
         let entering = context.input(|i| i.key_pressed(egui::Key::Enter));
         if releasing || entering {
             self.finish_inspector_edits_if_dirty();
@@ -744,9 +754,7 @@ impl EditorApp {
     /// 正在键入文本时 egui 用 Escape 放弃输入焦点，故不在此打断（等下一交互收敛）。
     /// 返回是否执行了取消（调用点据此清理 Scene 拖拽残留等）。
     pub(crate) fn cancel_edit_on_escape(&mut self, context: &egui::Context) -> bool {
-        if context.wants_keyboard_input()
-            || !context.input(|i| i.key_pressed(egui::Key::Escape))
-        {
+        if context.wants_keyboard_input() || !context.input(|i| i.key_pressed(egui::Key::Escape)) {
             return false;
         }
         self.clear_inspector_edit_pending();
@@ -787,7 +795,11 @@ impl EditorApp {
         let Some(doc) = self.document.current_scene.as_ref() else {
             return false;
         };
-        if self.history.begin_transaction(doc, label, kind, target).is_err() {
+        if self
+            .history
+            .begin_transaction(doc, label, kind, target)
+            .is_err()
+        {
             return false;
         }
         self.edit_transaction.active = true;
@@ -818,7 +830,12 @@ impl EditorApp {
         // E07：保存前若正处于活动事务，先把最后一条 preview 提交为一条历史命令
         // （快照来自事务 before），保证落盘内容可被单条 Undo 收回。
         if self.edit_transaction.is_active() && self.history.is_transaction_active() {
-            self.history.finish_transaction(self.document.current_scene.as_ref().expect("edit requires a scene"));
+            self.history.finish_transaction(
+                self.document
+                    .current_scene
+                    .as_ref()
+                    .expect("edit requires a scene"),
+            );
             self.edit_transaction.active = false;
             self.edit_transaction.consumed = true;
         }
@@ -927,8 +944,7 @@ impl EditorApp {
         }
         let scene = scene.clone();
         self.focus_hierarchy_delete_target();
-        if let Ok(snapshot) = self.inspector.snapshot(&scene, id)
-        {
+        if let Ok(snapshot) = self.inspector.snapshot(&scene, id) {
             self.entity_name = snapshot.name;
             self.transform = snapshot.transform;
             self.transform3d = snapshot.transform3d.unwrap_or_default();
@@ -938,8 +954,11 @@ impl EditorApp {
             self.collider3d = snapshot.collider3d.unwrap_or_default();
             self.text = snapshot.text.unwrap_or_default();
             self.image = snapshot.image.unwrap_or_default();
+            self.ui_layout = snapshot.ui_layout.unwrap_or_default();
+            self.container = snapshot.container.unwrap_or_default();
             self.sprite_reference = snapshot.sprite_reference.clone().unwrap_or_default();
             self.lua_script = snapshot.lua_script.unwrap_or_default();
+            self.refresh_ui_editors(id);
             self.sprite_component = snapshot
                 .sprite_reference
                 .as_deref()
@@ -1287,22 +1306,22 @@ impl EditorApp {
             self.status = "Create a scene first".into();
             return;
         };
-        let result =
-            self.history
-                .execute(scene, "Create entity", CommandKind::Create, |scene| {
-                    let id = tree
-                        .create_entity(scene, name.clone(), parent)
-                        .map_err(|e| e.to_string())?;
-                    // 2D 实体默认只带 Transform 组件。
-                    if let Some(entity) = scene.scene.entities.get_mut(&id) {
-                        entity.components.insert(
-                            "Transform".into(),
-                            encode_transform(TransformFields::default()),
-                        );
-                    }
-                    created.set(Some(id));
-                    Ok::<(), String>(())
-                });
+        let result = self
+            .history
+            .execute(scene, "Create entity", CommandKind::Create, |scene| {
+                let id = tree
+                    .create_entity(scene, name.clone(), parent)
+                    .map_err(|e| e.to_string())?;
+                // 2D 实体默认只带 Transform 组件。
+                if let Some(entity) = scene.scene.entities.get_mut(&id) {
+                    entity.components.insert(
+                        "Transform".into(),
+                        encode_transform(TransformFields::default()),
+                    );
+                }
+                created.set(Some(id));
+                Ok::<(), String>(())
+            });
         match result {
             Ok(true) => {
                 if let Some(id) = created.get() {
@@ -1915,7 +1934,13 @@ mod tests {
         let scene = &app.document.current_scene.as_ref().unwrap().scene;
         assert!(scene.entities.contains_key(&new_root));
         assert_eq!(
-            scene.entities.get(&new_root).unwrap().metadata.get("prefab.source").map(String::as_str),
+            scene
+                .entities
+                .get(&new_root)
+                .unwrap()
+                .metadata
+                .get("prefab.source")
+                .map(String::as_str),
             Some("assets/prefabs/slime_green.prefab")
         );
         assert!(
@@ -1932,9 +1957,9 @@ mod tests {
     /// 一并失效。
     #[test]
     fn game_production_playback_stop_routes_unified_refresh() {
-        use editor::PlaySession;
         use crate::PlayState;
         use crate::WorkspaceTab;
+        use editor::PlaySession;
 
         let (mut app, root) = open_sample_production("playback-stop");
         let original = app.document.current_scene.as_ref().unwrap().clone();
@@ -1995,11 +2020,7 @@ mod tests {
         );
 
         // 打 dirty：请求「打开 production」被挂起，当前文档不被替换。
-        app.document
-            .current_scene
-            .as_mut()
-            .unwrap()
-            .mark_dirty();
+        app.document.current_scene.as_mut().unwrap().mark_dirty();
         app.open_scene_resource(PathBuf::from("scenes/production.scene"));
         assert!(app.pending_document_change.is_some());
         assert_eq!(
@@ -2023,11 +2044,7 @@ mod tests {
     #[test]
     fn e06_cancel_keeps_document_and_state() {
         let (mut app, root) = open_sample_production("e06-cancel");
-        app.document
-            .current_scene
-            .as_mut()
-            .unwrap()
-            .mark_dirty();
+        app.document.current_scene.as_mut().unwrap().mark_dirty();
         // 快照必须在 mark_dirty 之后：取消 = 保留这份 dirty 文档继续编辑。
         let doc_dirty = app.document.current_scene.as_ref().unwrap().clone();
         app.open_scene_resource(PathBuf::from("scenes/menu.scene"));
@@ -2049,11 +2066,7 @@ mod tests {
     #[test]
     fn e06_discard_leaves_without_saving() {
         let (mut app, root) = open_sample_production("e06-discard");
-        app.document
-            .current_scene
-            .as_mut()
-            .unwrap()
-            .mark_dirty();
+        app.document.current_scene.as_mut().unwrap().mark_dirty();
         app.open_scene_resource(PathBuf::from("scenes/menu.scene"));
         assert!(app.pending_document_change.is_some());
 
@@ -2066,12 +2079,7 @@ mod tests {
             "menu",
             "放弃后应切到请求的场景"
         );
-        assert!(!app
-            .document
-            .current_scene
-            .as_ref()
-            .unwrap()
-            .is_dirty());
+        assert!(!app.document.current_scene.as_ref().unwrap().is_dirty());
 
         let _ = fs::remove_dir_all(root);
     }
@@ -2089,11 +2097,7 @@ mod tests {
             .path
             .clone()
             .expect("磁盘打开的文档应有路径");
-        app.document
-            .current_scene
-            .as_mut()
-            .unwrap()
-            .mark_dirty();
+        app.document.current_scene.as_mut().unwrap().mark_dirty();
         app.open_scene_resource(PathBuf::from("scenes/menu.scene"));
         assert!(app.pending_document_change.is_some());
 
@@ -2140,19 +2144,11 @@ mod tests {
                 .insert("Transform".to_owned(), format!("position={frame},0"));
             scene.mark_dirty();
         }
-        assert_eq!(
-            app.history.undo_len(),
-            0,
-            "事务期间不得追加历史（未提交）"
-        );
+        assert_eq!(app.history.undo_len(), 0, "事务期间不得追加历史（未提交）");
 
         app.commit_edit_transaction();
         assert!(!app.is_edit_transaction_active());
-        assert_eq!(
-            app.history.undo_len(),
-            1,
-            "一次连续编辑只产生一条 Undo"
-        );
+        assert_eq!(app.history.undo_len(), 1, "一次连续编辑只产生一条 Undo");
 
         // Undo：整文档回到事务开始前（单条快照模型 = before）。
         app.undo();
@@ -2164,7 +2160,10 @@ mod tests {
         // Redo：回到事务结束内容。
         app.redo();
         let after = app.document.current_scene.as_ref().unwrap();
-        assert_eq!(after.scene.entities[&id].components["Transform"], "position=4,0");
+        assert_eq!(
+            after.scene.entities[&id].components["Transform"],
+            "position=4,0"
+        );
         let _ = fs::remove_dir_all(root);
     }
 
@@ -2197,12 +2196,11 @@ mod tests {
 
         app.cancel_edit_transaction();
         assert!(!app.is_edit_transaction_active());
-        assert_eq!(
-            app.history.undo_len(),
-            0,
-            "取消不产生历史"
+        assert_eq!(app.history.undo_len(), 0, "取消不产生历史");
+        assert!(
+            !app.document.current_scene.as_ref().unwrap().is_dirty(),
+            "取消不标记 Dirty"
         );
-        assert!(!app.document.current_scene.as_ref().unwrap().is_dirty(), "取消不标记 Dirty");
         assert_eq!(
             app.document.current_scene.as_ref().unwrap(),
             &before,
@@ -2427,7 +2425,9 @@ mod tests {
         }
         app.scene_state.preview.insert(id, app.transform);
         app.scene_state.preview_ui.insert(id, [3.0, -5.0]);
-        app.scene_state.preview3d_transform.insert(id, Transform3D::default());
+        app.scene_state
+            .preview3d_transform
+            .insert(id, Transform3D::default());
         assert!(app.is_edit_transaction_active());
 
         // Escape 取消：文档回滚 + 残留清理。
@@ -2450,11 +2450,7 @@ mod tests {
     #[test]
     fn e06_save_failure_keeps_dirty_and_pending() {
         let (mut app, root) = open_sample_production("e06-save-fail");
-        app.document
-            .current_scene
-            .as_mut()
-            .unwrap()
-            .mark_dirty();
+        app.document.current_scene.as_mut().unwrap().mark_dirty();
         // 请求离开到 menu（dirty → pending；只挂起，不碰磁盘）。
         app.open_scene_resource(PathBuf::from("scenes/menu.scene"));
         assert!(app.pending_document_change.is_some());

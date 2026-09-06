@@ -6,6 +6,8 @@ mod import;
 mod panels;
 mod preview_session;
 mod publish;
+mod scene_interaction;
+mod ui_editor;
 mod util;
 
 use crate::panels::progress::ProgressPanel;
@@ -29,11 +31,13 @@ use editor::{
 use eframe::egui;
 use engine::core::{
     animation::{AnimationClip, AnimationStateMachine},
+    editor_plugins::PluginRegistry,
     font::FontAtlas,
     input::InputSnapshot,
     logging::LogSink,
     math2d::DEFAULT_2D_CAMERA_CENTER,
     math3d::Vec3,
+    preview_diagnostics::DiagnosticCollector,
     scene::SceneEntityId,
     script::LuaRuntime,
     sprite::{SpriteComponent, SpriteSorting},
@@ -41,6 +45,12 @@ use engine::core::{
     tilemap::Tilemap,
     transform::Vec2,
     transform3d::Transform3D,
+    ui_animation::{UiAnimationClip, UiAnimationPreview},
+    ui_binding::BindingSet,
+    ui_events::UiEvents,
+    ui_layout::CanvasConfig,
+    ui_layout_cache::UiLayoutCache,
+    ui_states::ButtonStateSet,
 };
 use engine::host::{Renderer, RuntimeScene};
 
@@ -176,6 +186,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 log_sink,
             );
             app.set_render_state(creation_context.wgpu_render_state.clone());
+            app.initialize_ui_extensions();
             app.project_loaded = arguments.project.is_some();
             // 资源扫描延后到首帧 update：窗口先绘制，避免启动阻塞。
             app.refresh_pending = true;
@@ -215,6 +226,8 @@ struct EditorApp {
     collider3d: Collider3dFields,
     text: TextFields,
     image: ImageFields,
+    ui_layout: editor::UiLayoutFields,
+    container: editor::ContainerFields,
     sprite_reference: String,
     sprite_component: SpriteComponent,
     tilemap: TilemapEditorState,
@@ -224,6 +237,7 @@ struct EditorApp {
     inspector_collider3d_open: bool,
     inspector_text_open: bool,
     inspector_image_open: bool,
+    inspector_ui_layout_open: bool,
     inspector_sprite_open: bool,
     inspector_tilemap_open: bool,
     inspector_animation_open: bool,
@@ -248,6 +262,7 @@ struct EditorApp {
     show_scene_guides: bool,
     show_safe_area: bool,
     show_pixel_grid: bool,
+    show_performance_hud: bool,
     snap_enabled: bool,
     snap_step: f32,
     hierarchy_filter: String,
@@ -354,6 +369,24 @@ struct EditorApp {
     /// 从而一次拖动/输入只对应一条历史、不产生空操作。
     inspector_edit: crate::actions::EditState,
     inspector_baseline: crate::actions::EditSnapshot,
+    /// E15/E18: Canvas metadata editing buffer for the selected UI root.
+    canvas_config: CanvasConfig,
+    /// E22/E23: structured UI editing buffers loaded from the selected entity.
+    events_editor: UiEvents,
+    bindings_editor: BindingSet,
+    /// E20: five-state button texture configuration for the selected widget.
+    button_states_editor: ButtonStateSet,
+    /// E26: animation editing data plus an isolated preview playback state.
+    ui_animation_editor: UiAnimationClip,
+    ui_animation_preview: Option<UiAnimationPreview>,
+    ui_animation_playing: bool,
+    /// E24: deduplicated Game View / Console diagnostics.
+    preview_diagnostics: DiagnosticCollector,
+    /// E25: layout cache statistics exposed through the performance HUD.
+    ui_layout_cache: UiLayoutCache,
+    /// E27: fault-isolated extension container held by the editor app.
+    plugin_registry: PluginRegistry,
+    plugin_status: Vec<String>,
     /// E06 未保存切换保护：待确认的文档离开操作。挂起时顶层弹「保存并继续 /
     /// 放弃并继续 / 取消」确认窗，确认前**不**改动文档 / 选择 / 视图 / 历史。
     pending_document_change: Option<crate::actions::PendingChange>,
@@ -646,6 +679,8 @@ impl EditorApp {
             collider3d: Collider3dFields::default(),
             text: TextFields::default(),
             image: ImageFields::default(),
+            ui_layout: editor::UiLayoutFields::default(),
+            container: editor::ContainerFields::default(),
             sprite_reference: String::new(),
             sprite_component: SpriteComponent {
                 texture: "assets/textures/player.png".to_owned(),
@@ -661,6 +696,7 @@ impl EditorApp {
             inspector_collider3d_open: false,
             inspector_text_open: true,
             inspector_image_open: true,
+            inspector_ui_layout_open: true,
             inspector_sprite_open: true,
             inspector_tilemap_open: true,
             inspector_animation_open: true,
@@ -684,6 +720,7 @@ impl EditorApp {
             show_scene_guides: false,
             show_safe_area: false,
             show_pixel_grid: false,
+            show_performance_hud: false,
             snap_enabled: false,
             snap_step: 0.5,
             hierarchy_filter: String::new(),
@@ -707,7 +744,15 @@ impl EditorApp {
             render_state: None,
             preview: None,
             preview_resolution: (1280, 720),
-            preview_resolutions: vec![(640, 360), (960, 540), (1280, 720), (1920, 1080)],
+            // E18：多分辨率预设（横屏/竖屏/超宽/小屏），覆盖常见设备比例。
+            preview_resolutions: vec![
+                (800, 600),
+                (1280, 720),
+                (1920, 1080),
+                (2560, 1440),
+                (3440, 1440),
+                (1080, 1920),
+            ],
             adding_preview_resolution: false,
             custom_preview_resolution: (1280, 720),
             game_camera_2d_center: DEFAULT_2D_CAMERA_CENTER,
@@ -738,6 +783,17 @@ impl EditorApp {
             edit_transaction: editor::EditTransactionState::default(),
             inspector_edit: crate::actions::EditState::default(),
             inspector_baseline: crate::actions::EditSnapshot::empty(),
+            canvas_config: CanvasConfig::default(),
+            events_editor: UiEvents::default(),
+            bindings_editor: BindingSet::default(),
+            button_states_editor: ButtonStateSet::default(),
+            ui_animation_editor: UiAnimationClip::new("preview"),
+            ui_animation_preview: None,
+            ui_animation_playing: false,
+            preview_diagnostics: DiagnosticCollector::default(),
+            ui_layout_cache: UiLayoutCache::default(),
+            plugin_registry: PluginRegistry::default(),
+            plugin_status: Vec::new(),
             pending_document_change: None,
             pending_save_failed: false,
             last_metadata_key: None,
@@ -1078,6 +1134,10 @@ impl eframe::App for EditorApp {
             context.request_repaint();
             self.scene_view_repaint_pending = false;
         }
+        // E26: advance the isolated animation preview even while the Inspector
+        // is visible; playback time never writes back to the scene document.
+        let delta_seconds = context.input(|input| input.stable_dt).max(0.0);
+        self.advance_ui_animation_preview(delta_seconds);
         if self.project_loaded
             && let Some(doc) = self.document.current_scene.as_ref()
         {

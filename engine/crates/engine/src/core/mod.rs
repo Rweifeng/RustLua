@@ -14,10 +14,14 @@ pub mod camera3d;
 pub mod char_collect;
 /// Deferred world mutations for safe ECS system iteration.
 pub mod commands;
+/// E21: typed schema registry over the legacy string component format.
+pub mod component_schema;
 /// Lightweight JSON-schema validation for `data` tables loaded via Lua.
 pub mod data_schema;
 /// Dependency-graph extraction, resolution, propagation, and cycle detection.
 pub mod dependency;
+/// E27: versioned, fault-isolated editor plugin registry.
+pub mod editor_plugins;
 /// Generational entity handles and allocation.
 pub mod entity;
 /// Typed, frame-bounded event queues.
@@ -63,6 +67,8 @@ pub mod physics;
 pub mod physics3d;
 /// Prefab extraction, instantiation, overrides, and rebuild policy.
 pub mod prefab;
+/// E24: structured preview diagnostics with stable categories and deduping.
+pub mod preview_diagnostics;
 /// Persistent project asset identities, import states, dependencies, and cache metadata.
 pub mod resource_db;
 /// Unified coarse-grained resource families shared by editor, assetc, and engine.
@@ -94,6 +100,20 @@ pub mod transform;
 pub mod transform3d;
 /// Screen-space UI scene components (Text / Image / Button).
 pub mod ui;
+/// E26: pure UI animation tracks and isolated preview playback.
+pub mod ui_animation;
+/// E23: minimal one-way ViewModel property bindings.
+pub mod ui_binding;
+/// E22: structured UI event bindings with legacy clickEvent conversion.
+pub mod ui_events;
+/// E15/E16/E17 UI layout layer: Anchor+Offset, Container auto-layout, Canvas.
+pub mod ui_layout;
+/// E25: resolved-layout cache with subtree-aware invalidation.
+pub mod ui_layout_cache;
+/// E17: parent-chain and container resolution over serialized UI nodes.
+pub mod ui_scene_layout;
+/// E20: reusable button visual-state configuration.
+pub mod ui_states;
 /// Window and application lifecycle primitives.
 pub mod window;
 /// Entity world and type-erased component storage.

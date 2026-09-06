@@ -141,6 +141,11 @@ impl EditorApp {
             }
             if self.scene_view_mode == SceneViewMode::Widget {
                 ui.separator();
+                if ui.button("New Widget").clicked() {
+                    self.request_document_change(crate::actions::PendingChange::CreateWidget {
+                        name: "New Widget".to_owned(),
+                    });
+                }
                 ui.label("控件");
                 if ui.button("Text").clicked() {
                     self.add_entity_with_component("New Text", "Text");
@@ -175,6 +180,7 @@ impl EditorApp {
             ui.checkbox(&mut self.show_scene_guides, "辅助线");
             ui.checkbox(&mut self.show_safe_area, "Safe Area");
             ui.checkbox(&mut self.show_pixel_grid, "像素网格");
+            ui.checkbox(&mut self.show_performance_hud, "性能");
             ui.add(
                 egui::DragValue::new(&mut self.snap_step)
                     .range(0.05..=10.0)

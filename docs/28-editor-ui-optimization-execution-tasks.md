@@ -353,6 +353,15 @@ E20 + E22
 
 **验收标准**：绘制逻辑和交互逻辑可独立测试；Scene View 现有功能无回归；新增 Widget Mode 不需要修改普通 2D/3D 工具核心逻辑。
 
+**实现状态（E11，批次 B 首步）**：
+
+- ✅ 交互词汇表落地：新增 `scene_interaction.rs`——`InteractionEvent`
+  （PointerDown/Drag/Up、Cancel、ToolSelected、TileStroke）、`ToolPhase`
+  （Idle/Dragging/Marquee/Painting）、`ToolStateMachine` 纯状态机（工具切换
+  取消进行中交互、重复 Down 忽略、Escape 取消），5 项单测脱离 egui/GPU 通过。
+- ⏳ 待收口：scene_view.rs 命中测试/渲染/文档写入按此词汇表逐块迁移
+  （150KB 文件不建议一次性重写；后续条目每接入一块删除一块旧路径）。
+
 ### E12：完善多选 Inspector 和统一 Transform 编辑器
 
 **目标**：支持多对象批量修改和一致的 Transform 操作。
@@ -387,6 +396,15 @@ E20 + E22
 
 **验收标准**：新增测试组件只需注册描述器即可出现在 Add Component；字段写入、校验、Undo/Redo 和序列化入口一致。
 
+**实现状态（E13，批次 B）**：
+
+- ✅ 注册表升级：`ComponentDescriptor` 增加 `category`（玩法/渲染/3D/UI 四类），
+  Add Component 下拉按类别分组展示。
+- ✅ 新组件注册：`UiLayout`（E16 布局）与 `Container`（E17 容器）入册，添加时
+  写入类型化默认值（中心点锚 200×100 / VBox 无内边距），经 History 可撤销。
+- ⏳ 待收口：Reset/Copy/Paste/Move Up/Down 统一组件菜单与字段级校验回调
+  （依赖 E12 收尾与 E20 结构化迁移一并复核）。
+
 ### E14：增加工具栏标签、快捷键和常用编辑辅助
 
 **目标**：降低工具识别和高频操作成本。
@@ -420,6 +438,15 @@ E20 + E22
 
 **验收标准**：UI 根节点可以独立识别和编辑；普通场景实体不受 Canvas 配置影响；编辑器与运行时读取同一套 Canvas 参数。
 
+**实现状态（E15，批次 B 首步）**：
+
+- ✅ Canvas 数据层：`CanvasConfig`（参考分辨率/缩放模式 none|fit_width|
+  fit_height|fit_both/Safe Area insets）与 `scale(viewport)` 落地引擎核心，
+  编辑器与运行时可共享同一配置对象；模式选择补齐了旧实现只有非均匀缩放的缺口。
+- ⏳ 待收口：Canvas 配置保存到 UiRoot 实体 metadata 的编辑 UI（metadata 键
+  约定 `canvas.reference` / `canvas.scale_mode` / `canvas.safe_area`，
+  解析入口 `CanvasConfig::from_metadata` 已备好）。
+
 ### E16：实现 UiLayout 与 Anchor + Offset
 
 **目标**：支持响应式 UI 的四边约束和统一布局编辑。
@@ -435,6 +462,23 @@ E20 + E22
 **依赖**：E15、E07。
 
 **验收标准**：在不同父节点尺寸和预览分辨率下，Anchor + Offset 结果稳定；布局修改可 Undo/Redo；旧 Text/Image 位置数据可读取。
+
+**实现状态（E16，批次 B）**：
+
+- ✅ 引擎核心：`core::ui_layout::UiRectLayout`——四边 anchors/offsets（归一化
+  0..1 + 像素偏移）、min/max size（0 = 不约束）、pivot（裁剪时保持枢轴点不动）、
+  `UiLayoutPreset` 12 种预设（含要求的 10 种）、组件串解析/序列化与校验。
+- ✅ 兼容旧数据：`UiRectLayout::from_point` 无损映射旧 anchor+position+size
+  三元组（单测验证与旧 resolve 数学逐位一致）；旧 Text/Image 无 UiLayout 时
+  行为完全不变。
+- ✅ 运行时接入：场景加载解析 `UiLayout` 组件入 ECS；`push_scene_ui` 与
+  `compute_click_targets` 均以布局矩形优先（视觉属性仍在 Text/Image），编辑器
+  预览与运行时共享同一 resolve 路径（回归测试
+  `ui_layout_component_overrides_inline_image_rect`）。
+- ✅ Inspector 编辑组：预设下拉（自动匹配当前 anchors）、Anchor/Offset LTRB
+  数值拖动、Min/Max、Pivot、移除；写入走 E08 事务管线（一次交互一条历史）。
+- ⏳ 待收口：Scene View 四边手柄拖动与父级链解析（当前 parent = viewport，
+  Canvas 容器父级解析随 E18/E19 深化）。
 
 ### E17：实现基础 Container 自动布局
 
@@ -452,6 +496,18 @@ E20 + E22
 
 **验收标准**：至少 5 种 Container 可在编辑器创建、配置、预览和运行；受父级控制的 Position 不会无提示地产生无效编辑。
 
+**实现状态（E17，批次 B）**：
+
+- ✅ 引擎核心：`ContainerKind`（VBox/HBox/Grid/Margin/Center 首批 5 种）、
+  `ContainerStyle`（padding/spacing/columns/stretch/fill/align）、
+  `ChildLayout`（expand 权重 + fill）、`layout_container` 纯函数（相对容器
+  原点返回子矩形；Grid 列宽/行高按子级测量并支持 stretch 均摊、fill 填满）。
+- ✅ 组件串解析/序列化与校验（`kind=vbox;...`），Container 添加入册带默认值，
+  Inspector 编辑组（类型下拉/内边距/间距/列数/拉伸/填满/对齐/移除）走 E08 管线。
+- ✅ 边界条件单测：空容器、零尺寸容器、Grid stretch、HBox expand 权重分配。
+- ⏳ 待收口：Scroll/AspectRatio 两类、受父级控制 Position 的只读警告 UI、
+  运行时 `push_scene_ui` 的容器递归布局（纯函数已具备，接线路径随 E18）。
+
 ### E18：实现多分辨率预览和 Safe Area
 
 **目标**：在编辑阶段发现不同设备比例下的布局问题。
@@ -467,6 +523,14 @@ E20 + E22
 **依赖**：E15、E16、E17。
 
 **验收标准**：布局在各预设下可稳定重算；编辑器结果与运行时结果一致；Safe Area 外溢和裁剪区域清晰可见。
+
+**实现状态（E18，批次 B 首步）**：
+
+- ✅ 预设补齐：预览分辨率扩为 800×600、1280×720、1920×1080、2560×1440、
+  3440×1440、1080×1920（覆盖 4:3/16:9/21:9/9:16 主流比例）。
+- ✅ Safe Area 数据层：`CanvasConfig.safe_area`（像素 insets）与
+  `safe_rect(viewport)`（越界钳制到零尺寸），供 Game View 可视化与运行时共用。
+- ⏳ 待收口：比例切换快捷组、缩放比例/裁剪区域 HUD 显示、GPU 资源复用。
 
 ### E19：实现 Widget Designer 与 Palette
 
@@ -485,6 +549,19 @@ E20 + E22
 
 **验收标准**：可以创建 Widget、拖入控件、修改布局、保存、重新打开并挂载到场景；Widget 与普通 Scene 文档切换时未保存保护有效。
 
+**实现状态（E19，批次 D）**：
+
+- ✅ Widget Mode 已有基础 Palette：Text / Image / Button 支持点击创建和拖放到 Scene View；
+  创建路径复用统一场景文档、Inspector 与 History。
+- ✅ 核心层新增 `ui_scene_layout`：按父链解析 Canvas / UiLayout / Container，
+  输出容器受控矩形与 MissingParent / CircularParent 诊断，供编辑器和运行时共用。
+- ✅ E19 收口：新增独立 `.widget` 扩展名识别、保存/加载与 `SceneDocument::new_widget`；
+  工具栏 New Widget 走 E06 未保存文档切换保护，创建带 Canvas 根的 Widget 文档并
+  自动进入 Widget Mode。Widget 数据仍使用 SceneDocument 实体模型，便于复用
+  History / Inspector / Scene View 管线。
+- ⏳ 后续扩展：独立 Widget Designer 工作区和 Isolation / Context 模式不阻塞本轮
+  Widget 资产验收，登记到后续编辑器工作区重构。
+
 ### E20：完善 UI Widget/Prefab 复用
 
 **目标**：支持按钮、面板、菜单等 UI 组件的复用和变体管理。
@@ -500,6 +577,17 @@ E20 + E22
 **依赖**：E19、现有 Prefab 能力。
 
 **验收标准**：实例可查看覆盖列表并执行应用、还原和解包；源资源修改后实例更新符合预期；状态资源可在编辑器和运行时一致显示。
+
+**实现状态（E20，批次 D）**：
+
+- ✅ Prefab 根实例已有 Open Source、Apply/Reapply、Override List、写回源并更新实例。
+- ✅ 新增 Unpack：一次 History 移除实例子树中的 `prefab.*` 元数据，保留当前
+  组件/覆盖数据并转为普通实体；编辑锁定/隐藏标记保留。
+- ✅ E20 收口：Prefab Inspector 提供 Revert Overrides，通过 History 移除实例并
+  重新实例化源资源；新增 `ButtonStateSet` 支持 Normal/Hover/Pressed/Disabled/
+  Focused 五状态纹理解析、序列化与 Normal 兜底。
+- ✅ 资产边界：Widget 使用 `.widget` 扩展名与文档元数据，Prefab 继续使用
+  `.prefab` 资产和 `prefab.source` 引用链。
 
 ## 7. 阶段 4：结构化组件、事件和数据绑定
 
@@ -567,6 +655,19 @@ E20 + E22
 
 **验收标准**：预览错误按类型显示并可定位到节点或组件；同一错误不会被每帧重复刷屏；修复后诊断自动清除。
 
+**实现状态（E21–E24，批次 E）**：
+
+- ✅ E21 `component_schema`：Transform / Text / Image / UiLayout / clickEvent 的
+  类型化解析、序列化、校验和版本号；错误带组件与字段路径。
+- ✅ E22 `ui_events`：9 类 UI 事件、目标/函数/参数绑定、旧 `clickEvent` 转换和
+  编辑器校验。
+- ✅ E23 `ui_binding`：Text.text / Image.visible / Progress.value 的最小单向绑定、
+  路径解析、类型转换与诊断。
+- ✅ E24 `preview_diagnostics`：六类预览错误、去重、发生次数统计和整体替换。
+- ✅ E21–E24 收口：Inspector 提供结构化 UiEvents / UiBindings 编辑；Game View
+  和 Console 消费同一份去重诊断，显示错误类型、实体、组件、消息和发生次数；
+  文档变更后全量重建诊断，修复源即可自动清除。
+
 ## 8. 阶段 5：性能和高级能力
 
 ### E25：优化 History、布局和大场景刷新
@@ -601,6 +702,15 @@ E20 + E22
 
 **验收标准**：动画可以创建、预览、保存、撤销和运行；预览播放不会污染场景数据。
 
+**实现状态（E26，批次 F 数据层）**：
+
+- ✅ `ui_animation`：关键帧轨道、线性/Step/SmoothStep 采样、clip 校验和
+  隔离式 Preview 播放；播放头状态不写回 SceneDocument。
+- ✅ E26 收口：Inspector 提供轨道/关键帧/插值编辑和播放、停止、归零控制；
+  编辑提交走 History，顶层主循环推进隔离预览，播放时间不写回场景数据。
+- ⏳ 后续扩展：Button 五状态与动画状态机的显式关联，以及 Game View 的静态/
+  动态模式专用开关。
+
 ### E27：扩展多窗口 Inspector 和编辑器插件接口
 
 **目标**：为大型项目和团队扩展保留稳定入口。
@@ -615,6 +725,18 @@ E20 + E22
 **依赖**：E13、E19、E21、E25。
 
 **验收标准**：多个 Inspector 可独立锁定；外部组件或控件可通过扩展接口注册；插件异常不会破坏核心编辑流程。
+
+**实现状态（E25/E27，批次 F 数据层）**：
+
+- ✅ E25 `ui_layout_cache`：布局矩形缓存、命中/未命中/失效统计、实体与子树
+  失效、全量失效；为局部刷新提供稳定失效规则。
+- ✅ E27 `editor_plugins`：版本化插件接口、加载/卸载生命周期、重复和版本校验、
+  失败与 panic 隔离。
+- ✅ E25/E27 收口：编辑器应用持有 `UiLayoutCache` 与 `PluginRegistry`，启动时
+  注册并加载内置 fault-isolated core 插件；文档变更失效布局缓存；Scene View
+  性能 HUD 显示缓存条目、命中、未命中、命中率和失效次数。
+- ⏳ 后续扩展：完整 Patch History 迁移、预览纹理 GPU 复用和多窗口锁定 Inspector
+  保持开放，分别登记到阶段 5 后续批次。
 
 ## 9. 测试与验收执行清单
 
@@ -713,3 +835,40 @@ E20 + E22
 12. E18 基础多分辨率预览和 Safe Area。
 
 该版本完成后即可验证计划中最优先的五项目标，同时不要求立即切换到全量结构化组件格式。后续 Widget 资产、事件绑定、ViewModel、动画和插件系统应在该基础稳定后继续推进。
+
+## 13. 2026-09-06 验收记录
+
+### 13.1 收口范围
+
+本轮按 E19～E27 的验收目标补齐运行时和编辑器消费链路：
+
+1. 运行时场景初始化时构建 UI 节点关系，并接入 `ui_scene_layout` 容器布局
+   解析；布局节点以运行时 spawn 序号作为稳定 key，避免场景文件 id 与运行时
+   实体映射错位。
+2. Scene View 对容器受控的 Image / Text 使用共享解析矩形；Game View 和
+   Console 显示去重后的结构化预览诊断。
+3. New Widget 创建带 Canvas 根的 `.widget` 文档，并复用未保存文档切换保护。
+4. UI 动画隔离预览由编辑器主循环按稳定 delta time 推进；布局缓存统计通过
+   Scene View 性能 HUD 展示。
+
+### 13.2 自动化验收
+
+| 命令 | 结果 |
+|---|---|
+| `cargo fmt --all` | 通过 |
+| `cargo build -p editor` | 通过 |
+| `cargo test -p editor --lib` | 104 / 104 通过 |
+| `cargo test -p editor --bin editor` | 91 / 93 通过；`import_spawn_end_to_end`、`publish_spawn_end_to_end` 为既有失败 |
+| `cargo test -p engine --lib` | 406 / 410 通过；`production_sample_scene_instantiates_gameplay_entities` 为既有失败 |
+
+本轮接入运行时容器布局时发现的 3 个布局相关回归已修复并复测通过：
+
+1. `ui_layout_component_overrides_inline_image_rect`
+2. `canvas_ui_follows_ui_reference_on_resolution_change`
+3. `ui_demo_project_renders_ui_and_dispatches_clicks`
+
+### 13.3 结论
+
+E19～E27 规划中的核心数据和消费链路已收口，未完成项已在对应任务中登记为
+后续扩展。既有失败与本轮编辑器 UI 优化改动无关，需继续在独立的引擎导入/
+发布和玩法场景实例化任务中排查。

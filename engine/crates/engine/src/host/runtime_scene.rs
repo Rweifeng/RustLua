@@ -2,7 +2,7 @@
 //! per-frame [`SceneMesh`] (2D) and [`Scene3d`] draw data for the renderer.
 
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -31,6 +31,8 @@ use crate::core::{
         UI_REFERENCE_SIZE, UiImage, UiText, nine_slice_cells, resolve_ui_rect,
         resolve_ui_text_origin, ui_text_effective_scale,
     },
+    ui_layout::{UiRect, UiRectLayout},
+    ui_scene_layout::{ResolvedUiNode, UiSceneNode, resolve_scene_ui_layout},
 };
 
 use crate::host::frame::{
@@ -61,6 +63,8 @@ pub struct RuntimeScene {
     /// 同一实例，避免每帧重新生成 MSDF 字形。生成字形需可变访问（内部 Mutex）。
     font_atlas: Option<Arc<Mutex<FontAtlas>>>,
     last_font_version: u64,
+    ui_scene_nodes: BTreeMap<u64, UiSceneNode>,
+    ui_layout_rects: BTreeMap<u64, ResolvedUiNode>,
 }
 
 #[derive(Clone, Copy)]
@@ -196,6 +200,7 @@ impl RuntimeScene {
         // 编辑器场景视图/预览通过 `set_font_atlas` 注入共享（已预热）图集；未注入
         // 时由 `ensure_font_atlas` 在首次排版文本时按需加载。这样场景编辑（revision
         // 变化 → 运行时重建）不再每次重建都白白预热一遍被丢弃的图集。
+        let ui_scene_nodes = build_ui_scene_nodes(&scene, !run_script);
         Ok(Self {
             script,
             sprite_batch: SpriteBatch::new(),
@@ -211,6 +216,8 @@ impl RuntimeScene {
             tilemap_cache: HashMap::new(),
             font_atlas: None,
             last_font_version: u64::MAX,
+            ui_scene_nodes,
+            ui_layout_rects: BTreeMap::new(),
         })
     }
 
@@ -271,6 +278,7 @@ impl RuntimeScene {
             height: self.viewport_height.max(1) as f32,
         };
         let viewport_arr = [viewport.width, viewport.height];
+        self.ensure_scene_ui_layout(viewport_arr);
         let reference = self.ui_reference;
         // 先提取 clickEvent 实体及其视觉组件（world 借用结束后再计算，避免借用冲突）。
         let entities: Vec<(
@@ -295,6 +303,13 @@ impl RuntimeScene {
             .filter_map(|(id, image, text, sprite)| {
                 let name = self.script.entity_name(id)?;
                 let rect = if let Some(image) = image {
+                    let mut image = image;
+                    if let Some(layout_rect) = self.scene_ui_layout_rect(id, viewport_arr) {
+                        image.position = [layout_rect.x, layout_rect.y];
+                        image.size = [layout_rect.w, layout_rect.h];
+                        image.space = crate::core::ui::UiLayoutSpace::Screen;
+                        image.anchor = [0.0, 0.0];
+                    }
                     resolve_ui_rect(
                         image.position,
                         image.size,
@@ -304,6 +319,12 @@ impl RuntimeScene {
                         reference,
                     )
                 } else if let Some(text) = text {
+                    let mut text = text;
+                    if let Some(layout_rect) = self.scene_ui_layout_rect(id, viewport_arr) {
+                        text.position = [layout_rect.x, layout_rect.y];
+                        text.space = crate::core::ui::UiLayoutSpace::Screen;
+                        text.anchor = [0.0, 0.0];
+                    }
                     self.text_hit_rect(&text, viewport_arr, reference)?
                 } else if let Some((sprite, transform)) = sprite {
                     sprite_screen_rect(&sprite, &transform, camera, viewport)?
@@ -656,6 +677,27 @@ impl RuntimeScene {
         Ok(())
     }
 
+    /// E16：实体带 `UiLayout` 组件时，其四边 Anchor+Offset 布局优先于
+    /// Text/Image 的内联位置数据。把解析矩形回写为 Screen/[0,0] 内联值即可
+    /// 复用既有渲染路径——视觉属性（纹理/颜色/文本）仍来自原组件。
+    fn scene_ui_layout_rect(&self, id: EntityId, _viewport: [f32; 2]) -> Option<UiRect> {
+        self.ui_layout_rects
+            .get(&(id.index() as u64))
+            .map(|node| node.rect)
+    }
+
+    fn ensure_scene_ui_layout(&mut self, viewport: [f32; 2]) {
+        let (mut resolved, _) = resolve_scene_ui_layout(&self.ui_scene_nodes, viewport);
+        // The resolver also gives non-layout roots a preferred-size rect at the
+        // origin. That default is for hierarchy traversal; only authored layouts
+        // or container placements may override legacy inline UI positions.
+        resolved.retain(|id, resolved| {
+            resolved.container_controlled
+                || self.ui_scene_nodes.get(id).is_some_and(|node| node.layout.is_some())
+        });
+        self.ui_layout_rects = resolved;
+    }
+
     /// Appends Lua-created `ui.panel` quads using the white texture.
     fn push_ui_panels(
         &mut self,
@@ -870,21 +912,33 @@ impl RuntimeScene {
         width: u32,
         height: u32,
     ) -> Result<(), String> {
-        let images: Vec<UiImage> = self.script.with_world(|world| {
+        let viewport = [width.max(1) as f32, height.max(1) as f32];
+        self.ensure_scene_ui_layout(viewport);
+        let images: Vec<(EntityId, UiImage)> = self.script.with_world(|world| {
             let mut images = Vec::new();
-            world.for_each::<UiImage>(|_, image| images.push(image.clone()));
+            world.for_each::<UiImage>(|id, image| images.push((id, image.clone())));
             images
         });
-        for image in images {
+        for (id, mut image) in images {
+            if let Some(rect) = self.scene_ui_layout_rect(id, viewport) {
+                image.position = [rect.x, rect.y];
+                image.size = [rect.w, rect.h];
+                image.space = crate::core::ui::UiLayoutSpace::Screen;
+                image.anchor = [0.0, 0.0];
+            }
             self.push_image_quad(vertices, draws, width, height, &image)?;
         }
-        let texts: Vec<UiText> = self.script.with_world(|world| {
+        let texts: Vec<(EntityId, UiText)> = self.script.with_world(|world| {
             let mut texts = Vec::new();
-            world.for_each::<UiText>(|_, text| texts.push(text.clone()));
+            world.for_each::<UiText>(|id, text| texts.push((id, text.clone())));
             texts
         });
-        for text in texts {
-            let viewport = [width.max(1) as f32, height.max(1) as f32];
+        for (id, mut text) in texts {
+            if let Some(rect) = self.scene_ui_layout_rect(id, viewport) {
+                text.position = [rect.x, rect.y];
+                text.space = crate::core::ui::UiLayoutSpace::Screen;
+                text.anchor = [0.0, 0.0];
+            }
             let effective_scale = text.effective_scale();
             let (_, resolved_scale) = resolve_ui_text_origin(
                 text.position,
@@ -1157,6 +1211,65 @@ impl RuntimeScene {
         self.tilemap_cache = next_cache;
         Ok(SpriteBatchMesh { vertices, draws })
     }
+}
+
+/// Captures the serialized scene hierarchy and UI layout data once. Runtime
+/// entity slots are allocated in scene iteration order, so layout nodes are
+/// keyed by that order rather than by the scene file's sparse entity ids.
+fn build_ui_scene_nodes(scene: &Scene, honor_editor_hidden: bool) -> BTreeMap<u64, UiSceneNode> {
+    let mut id_to_key = BTreeMap::new();
+    for entity in scene.entities.values() {
+        if honor_editor_hidden
+            && scene
+                .metadata
+                .get(&format!("editor.hidden.{}", entity.id.0))
+                .is_some_and(|value| value == "true")
+        {
+            continue;
+        }
+        id_to_key.insert(entity.id.0, id_to_key.len() as u64);
+    }
+    let mut nodes = BTreeMap::new();
+    for entity in scene.entities.values() {
+        if honor_editor_hidden
+            && scene
+                .metadata
+                .get(&format!("editor.hidden.{}", entity.id.0))
+                .is_some_and(|value| value == "true")
+        {
+            continue;
+        }
+        let Some(&entity_key) = id_to_key.get(&entity.id.0) else {
+            continue;
+        };
+        let layout = entity
+            .components
+            .get("UiLayout")
+            .and_then(|raw| UiRectLayout::from_component_str(raw).ok());
+        let container = entity
+            .components
+            .get("Container")
+            .and_then(|raw| crate::core::ui_layout::ContainerStyle::from_component_str(raw).ok());
+        let preferred_size = entity
+            .components
+            .get("Image")
+            .and_then(|raw| UiImage::from_component_str(raw).ok())
+            .map(|image| image.size)
+            .unwrap_or([64.0, 64.0]);
+        nodes.insert(
+            entity_key,
+            UiSceneNode {
+                parent: entity
+                    .parent
+                    .and_then(|id| id_to_key.get(&id.0))
+                    .copied(),
+                layout,
+                container,
+                preferred_size,
+            },
+        );
+    }
+    nodes
 }
 
 fn build_cached_tilemap_layer(
@@ -2005,6 +2118,46 @@ mod sdf_tests {
         // → 屏幕 AABB 左上 (724, 294)、尺寸 (32, 32)。
         assert_eq!(spr.1, [724.0, 294.0]);
         assert_eq!(spr.2, [32.0, 32.0]);
+    }
+
+    /// E16：实体同时带 `Image` 与 `UiLayout` 时，命中矩形来自四边
+    /// Anchor+Offset 布局（stretch 跟随 viewport），而非 Image 内联 x/y。
+    #[test]
+    fn ui_layout_component_overrides_inline_image_rect() {
+        use crate::core::scene::{Scene, SceneEntityId};
+
+        let root = crate::core::games_dir().join("game_test");
+        let mut scene = Scene::new("layout");
+        scene
+            .add_entity(SceneEntityId(1), "StretchImg", None)
+            .unwrap();
+        let entity = scene.entities.get_mut(&SceneEntityId(1)).unwrap();
+        // 内联 Image 数据故意与 UiLayout 解析结果不同。
+        entity.components.insert(
+            "Image".to_owned(),
+            "texture=assets/textures/coin.png;x=1;y=2;width=8;height=8".to_owned(),
+        );
+        entity.components.insert(
+            "UiLayout".to_owned(),
+            crate::core::ui_layout::UiRectLayout {
+                anchors: [0.0, 0.0, 1.0, 0.0],
+                offsets: [10.0, 20.0, -10.0, 80.0],
+                ..crate::core::ui_layout::UiRectLayout::default()
+            }
+            .to_component_str(),
+        );
+        entity
+            .components
+            .insert("clickEvent".to_owned(), String::new());
+        let mut runtime = RuntimeScene::from_scene_edit(Some(&root), scene).unwrap();
+        let targets = runtime.compute_click_targets();
+        let img = targets
+            .iter()
+            .find(|(n, _, _)| n == "StretchImg")
+            .expect("layout click target");
+        // viewport 1280×720：stretch 水平 → (10, 20, 1260, 60)。
+        assert_eq!(img.1, [10.0, 20.0]);
+        assert_eq!(img.2, [1260.0, 60.0]);
     }
 
     #[test]

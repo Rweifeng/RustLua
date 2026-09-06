@@ -198,10 +198,7 @@ impl CommandHistory {
     /// - 有差异时清空 redo 并追加一条 `EditCommand`（label/kind/target 来自事务元数据，
     ///   target 放入 kind：Transform/Transform3D 可继续与上一条同对象命令相邻合并）。
     /// - 提交后事务被清除。
-    pub fn commit_transaction(
-        &mut self,
-        after: &SceneDocument,
-    ) -> Result<bool, TransactionError> {
+    pub fn commit_transaction(&mut self, after: &SceneDocument) -> Result<bool, TransactionError> {
         let Some(tx) = self.transaction.take() else {
             return Err(TransactionError::NotActive);
         };
@@ -374,7 +371,11 @@ mod tests {
     fn entity_component(id: SceneEntityId, key: &str, value: &str) -> SceneDocument {
         let mut d = doc();
         d.scene.add_entity(id, "A", None).unwrap();
-        d.scene.entities.get_mut(&id).unwrap().components
+        d.scene
+            .entities
+            .get_mut(&id)
+            .unwrap()
+            .components
             .insert(key.to_owned(), value.to_owned());
         d.mark_clean();
         d
@@ -389,30 +390,29 @@ mod tests {
         h.begin_transaction(&d, "Drag", CommandKind::Transform(id), Some(id))
             .unwrap();
         for value in 1..=30 {
-            d.scene.entities.get_mut(&id).unwrap().components
+            d.scene
+                .entities
+                .get_mut(&id)
+                .unwrap()
+                .components
                 .insert("x".into(), value.to_string());
             d.mark_dirty();
         }
         assert!(h.is_transaction_active());
         assert_eq!(h.undo_len(), 0, "事务期间不得追加历史");
-        assert!(
-            h.commit_transaction(&d).unwrap(),
-            "有差异的提交应返回 true"
-        );
+        assert!(h.commit_transaction(&d).unwrap(), "有差异的提交应返回 true");
         assert!(!h.is_transaction_active());
         assert_eq!(h.undo_len(), 1, "一次连续编辑只产生一条 Undo");
 
         h.undo(&mut d).unwrap();
         assert_eq!(
-            d.scene.entities[&id].components["x"],
-            "0",
+            d.scene.entities[&id].components["x"], "0",
             "Undo 应整体回到事务开始前"
         );
         assert_eq!(h.redo_len(), 1);
         h.redo(&mut d).unwrap();
         assert_eq!(
-            d.scene.entities[&id].components["x"],
-            "30",
+            d.scene.entities[&id].components["x"], "30",
             "Redo 应整体回到事务结束后"
         );
     }
@@ -422,8 +422,13 @@ mod tests {
     fn commit_without_changes_is_a_noop() {
         let d = doc();
         let mut h = CommandHistory::new();
-        h.begin_transaction(&d, "Empty Drag", CommandKind::Transform(SceneEntityId(1)), None)
-            .unwrap();
+        h.begin_transaction(
+            &d,
+            "Empty Drag",
+            CommandKind::Transform(SceneEntityId(1)),
+            None,
+        )
+        .unwrap();
         assert!(!h.commit_transaction(&d).unwrap());
         assert!(!h.is_transaction_active());
         assert_eq!(h.undo_len(), 0);
@@ -439,7 +444,11 @@ mod tests {
         let before = d.clone();
         h.begin_transaction(&d, "Drag", CommandKind::Transform(id), Some(id))
             .unwrap();
-        d.scene.entities.get_mut(&id).unwrap().components
+        d.scene
+            .entities
+            .get_mut(&id)
+            .unwrap()
+            .components
             .insert("x".into(), "99".to_owned());
         h.cancel_transaction(&mut d).unwrap();
         assert!(!h.is_transaction_active());
@@ -460,7 +469,11 @@ mod tests {
             Err(TransactionError::AlreadyActive)
         );
         assert!(h.is_transaction_active());
-        d.scene.entities.get_mut(&id).unwrap().components
+        d.scene
+            .entities
+            .get_mut(&id)
+            .unwrap()
+            .components
             .insert("x".into(), "5".to_owned());
         assert!(h.commit_transaction(&d).unwrap());
         assert_eq!(h.undo_len(), 1);
@@ -473,10 +486,7 @@ mod tests {
     fn commit_or_cancel_without_active_transaction_errors() {
         let d = doc();
         let mut h = CommandHistory::new();
-        assert_eq!(
-            h.commit_transaction(&d),
-            Err(TransactionError::NotActive)
-        );
+        assert_eq!(h.commit_transaction(&d), Err(TransactionError::NotActive));
         assert_eq!(
             h.cancel_transaction(&mut d.clone()),
             Err(TransactionError::NotActive)
@@ -503,7 +513,11 @@ mod tests {
         // 事务开始（此时 dirty 来自上一编辑）。
         h.begin_transaction(&d, "Drag", CommandKind::Transform(id), Some(id))
             .unwrap();
-        d.scene.entities.get_mut(&id).unwrap().components
+        d.scene
+            .entities
+            .get_mut(&id)
+            .unwrap()
+            .components
             .insert("x".into(), "9".to_owned());
         assert!(h.commit_transaction(&d).unwrap());
         assert_eq!(h.undo_len(), 2);
@@ -523,7 +537,11 @@ mod tests {
         let mut h = CommandHistory::new();
         h.begin_transaction(&d, "Drag", CommandKind::Transform(id), Some(id))
             .unwrap();
-        d.scene.entities.get_mut(&id).unwrap().components
+        d.scene
+            .entities
+            .get_mut(&id)
+            .unwrap()
+            .components
             .insert("x".into(), "7".to_owned());
         d.mark_dirty();
         assert!(h.is_transaction_active());

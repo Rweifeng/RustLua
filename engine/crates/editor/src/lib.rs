@@ -11,8 +11,9 @@ pub use engine::core::resource_kind::ResourceKind;
 pub mod inspector_state;
 
 pub use inspector_state::{
-    Camera3DFields, Collider3dFields, ImageFields, InspectorError, InspectorSnapshot,
-    InspectorState, LightFields, TextFields, Transform3DFields, TransformFields,
+    Camera3DFields, Collider3dFields, ContainerFields, ImageFields, InspectorError,
+    InspectorSnapshot, InspectorState, LightFields, TextFields, Transform3DFields, TransformFields,
+    UiLayoutFields,
 };
 
 pub mod scene_tree_state;
@@ -250,8 +251,7 @@ mod tests {
 
 pub mod history;
 pub use history::{
-    CommandHistory, CommandKind, EditCommand, EditTransactionState, HistoryError,
-    TransactionError,
+    CommandHistory, CommandKind, EditCommand, EditTransactionState, HistoryError, TransactionError,
 };
 
 pub mod recovery;

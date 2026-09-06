@@ -34,6 +34,7 @@ use crate::core::{
     transform::{Transform, Vec2},
     transform3d::Transform3D,
     ui::{UiGrid, UiGridCell, UiImage, UiPanel},
+    ui_layout::UiRectLayout,
     world::{World, WorldError},
 };
 
@@ -547,6 +548,17 @@ impl LuaRuntime {
             state
                 .world
                 .insert(id, crate::core::ui::ClickEvent)
+                .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
+        }
+        // E16：可选 `UiLayout` 组件——四边 Anchor+Offset 布局，存在时优先于
+        // Text/Image 的内联 x/y/width/height/anchor（编辑器与运行时同一 resolve）。
+        if let Some(value) = components.get("UiLayout") {
+            let layout = UiRectLayout::from_component_str(value).map_err(|error| {
+                LuaBridgeError::Api(format!("entity {name:?} has an invalid UiLayout: {error}"))
+            })?;
+            state
+                .world
+                .insert(id, layout)
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
         }
         if !name.is_empty() {

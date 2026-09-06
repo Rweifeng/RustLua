@@ -214,7 +214,13 @@ impl SceneTreeState {
                 target_index + 1
             };
             if let Some(old_parent_id) = old_parent {
-                document.scene.entities.get_mut(&old_parent_id).unwrap().children.retain(|child| *child != id);
+                document
+                    .scene
+                    .entities
+                    .get_mut(&old_parent_id)
+                    .unwrap()
+                    .children
+                    .retain(|child| *child != id);
                 document.scene.entities.get_mut(&id).unwrap().parent = None;
             }
             roots.insert(insert_index, id);
@@ -224,7 +230,12 @@ impl SceneTreeState {
         }
         let new_parent_id = new_parent.unwrap();
         if old_parent == new_parent {
-            let siblings = &mut document.scene.entities.get_mut(&new_parent_id).unwrap().children;
+            let siblings = &mut document
+                .scene
+                .entities
+                .get_mut(&new_parent_id)
+                .unwrap()
+                .children;
             siblings.retain(|child| *child != id);
             let target_index = siblings.iter().position(|child| *child == target).unwrap();
             let insert_index = if position == ReparentPosition::Before {
@@ -235,9 +246,20 @@ impl SceneTreeState {
             siblings.insert(insert_index, id);
         } else {
             if let Some(old_parent_id) = old_parent {
-                document.scene.entities.get_mut(&old_parent_id).unwrap().children.retain(|child| *child != id);
+                document
+                    .scene
+                    .entities
+                    .get_mut(&old_parent_id)
+                    .unwrap()
+                    .children
+                    .retain(|child| *child != id);
             }
-            let siblings = &mut document.scene.entities.get_mut(&new_parent_id).unwrap().children;
+            let siblings = &mut document
+                .scene
+                .entities
+                .get_mut(&new_parent_id)
+                .unwrap()
+                .children;
             let target_index = siblings.iter().position(|child| *child == target).unwrap();
             let insert_index = if position == ReparentPosition::Before {
                 target_index
@@ -289,8 +311,18 @@ fn root_order(document: &SceneDocument) -> Vec<SceneEntityId> {
         .metadata
         .get(ROOT_ORDER_META_KEY)
         .into_iter()
-        .flat_map(|value| value.split(',').filter_map(|id| id.parse().ok().map(SceneEntityId)))
-        .filter(|id| document.scene.entities.get(id).is_some_and(|entity| entity.parent.is_none()))
+        .flat_map(|value| {
+            value
+                .split(',')
+                .filter_map(|id| id.parse().ok().map(SceneEntityId))
+        })
+        .filter(|id| {
+            document
+                .scene
+                .entities
+                .get(id)
+                .is_some_and(|entity| entity.parent.is_none())
+        })
         .collect();
     for entity in document.scene.entities.values() {
         if entity.parent.is_none() && !ordered.contains(&entity.id) {
@@ -303,7 +335,11 @@ fn root_order(document: &SceneDocument) -> Vec<SceneEntityId> {
 fn write_root_order(document: &mut SceneDocument, roots: &[SceneEntityId]) {
     document.scene.metadata.insert(
         ROOT_ORDER_META_KEY.to_owned(),
-        roots.iter().map(|id| id.0.to_string()).collect::<Vec<_>>().join(","),
+        roots
+            .iter()
+            .map(|id| id.0.to_string())
+            .collect::<Vec<_>>()
+            .join(","),
     );
 }
 
@@ -319,7 +355,13 @@ fn duplicate_entity(
     copy.children.clear();
     document.scene.entities.insert(id, copy);
     if let Some(parent_id) = parent {
-        document.scene.entities.get_mut(&parent_id).unwrap().children.push(id);
+        document
+            .scene
+            .entities
+            .get_mut(&parent_id)
+            .unwrap()
+            .children
+            .push(id);
     }
     for child_id in &source.children {
         let child = document
@@ -459,14 +501,28 @@ mod tests {
         let mut document = document();
         let tree = SceneTreeState::new();
         let root = tree.create_entity(&mut document, "Root", None).unwrap();
-        let first = tree.create_entity(&mut document, "First", Some(root)).unwrap();
-        let second = tree.create_entity(&mut document, "Second", Some(root)).unwrap();
-        let third = tree.create_entity(&mut document, "Third", Some(root)).unwrap();
+        let first = tree
+            .create_entity(&mut document, "First", Some(root))
+            .unwrap();
+        let second = tree
+            .create_entity(&mut document, "Second", Some(root))
+            .unwrap();
+        let third = tree
+            .create_entity(&mut document, "Third", Some(root))
+            .unwrap();
 
-        tree.reparent_at(&mut document, third, first, ReparentPosition::Before).unwrap();
-        assert_eq!(document.scene.entities[&root].children, vec![third, first, second]);
-        tree.reparent_at(&mut document, first, second, ReparentPosition::After).unwrap();
-        assert_eq!(document.scene.entities[&root].children, vec![third, second, first]);
+        tree.reparent_at(&mut document, third, first, ReparentPosition::Before)
+            .unwrap();
+        assert_eq!(
+            document.scene.entities[&root].children,
+            vec![third, first, second]
+        );
+        tree.reparent_at(&mut document, first, second, ReparentPosition::After)
+            .unwrap();
+        assert_eq!(
+            document.scene.entities[&root].children,
+            vec![third, second, first]
+        );
     }
 
     #[test]
@@ -474,18 +530,34 @@ mod tests {
         let mut document = document();
         let tree = SceneTreeState::new();
         let source_id = tree.create_entity(&mut document, "Source", None).unwrap();
-        let child_id = tree.create_entity(&mut document, "Child", Some(source_id)).unwrap();
-        document.scene.entities.get_mut(&source_id).unwrap().components.insert("Transform".into(), "x=1".into());
+        let child_id = tree
+            .create_entity(&mut document, "Child", Some(source_id))
+            .unwrap();
+        document
+            .scene
+            .entities
+            .get_mut(&source_id)
+            .unwrap()
+            .components
+            .insert("Transform".into(), "x=1".into());
         let source = document.scene.entities[&source_id].clone();
 
-        let copy_id = tree.duplicate_subtree(&mut document, &source, None).unwrap();
+        let copy_id = tree
+            .duplicate_subtree(&mut document, &source, None)
+            .unwrap();
         let copied_child_id = document.scene.entities[&copy_id].children[0];
         assert_ne!(copy_id, source_id);
         assert_ne!(copied_child_id, child_id);
         assert_eq!(document.scene.entities[&copy_id].name, "Source");
         assert_eq!(document.scene.entities[&copy_id].parent, None);
-        assert_eq!(document.scene.entities[&copy_id].components["Transform"], "x=1");
-        assert_eq!(document.scene.entities[&copied_child_id].parent, Some(copy_id));
+        assert_eq!(
+            document.scene.entities[&copy_id].components["Transform"],
+            "x=1"
+        );
+        assert_eq!(
+            document.scene.entities[&copied_child_id].parent,
+            Some(copy_id)
+        );
     }
 
     #[test]
@@ -496,7 +568,8 @@ mod tests {
         let second = tree.create_entity(&mut document, "Second", None).unwrap();
         let third = tree.create_entity(&mut document, "Third", None).unwrap();
 
-        tree.reparent_at(&mut document, third, first, ReparentPosition::Before).unwrap();
+        tree.reparent_at(&mut document, third, first, ReparentPosition::Before)
+            .unwrap();
         let roots: Vec<_> = tree.roots(&document).map(|entity| entity.id).collect();
         assert_eq!(roots, vec![third, first, second]);
         let roundtrip = SceneDocument {

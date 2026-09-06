@@ -234,6 +234,125 @@ impl Default for ImageFields {
     }
 }
 
+/// E16：Inspector 可编辑的 `UiLayout`（四边 Anchor+Offset）字段。
+#[derive(Clone, Debug, PartialEq)]
+pub struct UiLayoutFields {
+    pub anchor_l: f32,
+    pub anchor_t: f32,
+    pub anchor_r: f32,
+    pub anchor_b: f32,
+    pub offset_l: f32,
+    pub offset_t: f32,
+    pub offset_r: f32,
+    pub offset_b: f32,
+    pub min_w: f32,
+    pub min_h: f32,
+    pub max_w: f32,
+    pub max_h: f32,
+    pub pivot_x: f32,
+    pub pivot_y: f32,
+}
+
+impl UiLayoutFields {
+    /// Buffer ↔ 引擎值对象转换（Inspector 与运行时共享同一解析）。
+    pub fn to_layout(&self) -> engine::core::ui_layout::UiRectLayout {
+        engine::core::ui_layout::UiRectLayout {
+            anchors: [self.anchor_l, self.anchor_t, self.anchor_r, self.anchor_b],
+            offsets: [self.offset_l, self.offset_t, self.offset_r, self.offset_b],
+            min_size: [self.min_w, self.min_h],
+            max_size: [self.max_w, self.max_h],
+            pivot: [self.pivot_x, self.pivot_y],
+        }
+    }
+
+    pub fn from_layout(layout: engine::core::ui_layout::UiRectLayout) -> Self {
+        Self {
+            anchor_l: layout.anchors[0],
+            anchor_t: layout.anchors[1],
+            anchor_r: layout.anchors[2],
+            anchor_b: layout.anchors[3],
+            offset_l: layout.offsets[0],
+            offset_t: layout.offsets[1],
+            offset_r: layout.offsets[2],
+            offset_b: layout.offsets[3],
+            min_w: layout.min_size[0],
+            min_h: layout.min_size[1],
+            max_w: layout.max_size[0],
+            max_h: layout.max_size[1],
+            pivot_x: layout.pivot[0],
+            pivot_y: layout.pivot[1],
+        }
+    }
+}
+
+impl Default for UiLayoutFields {
+    fn default() -> Self {
+        Self::from_layout(engine::core::ui_layout::UiRectLayout::default())
+    }
+}
+
+/// E17：Inspector 可编辑的 `Container`（自动布局容器）字段。
+#[derive(Clone, Debug, PartialEq)]
+pub struct ContainerFields {
+    /// `vbox|hbox|grid|margin|center`。
+    pub kind: String,
+    pub padding_l: f32,
+    pub padding_t: f32,
+    pub padding_r: f32,
+    pub padding_b: f32,
+    pub spacing: f32,
+    /// Grid 列数；0 = 自动。
+    pub columns: i32,
+    pub stretch: bool,
+    pub fill: bool,
+    /// `start|center|end`。
+    pub align: String,
+}
+
+impl ContainerFields {
+    pub fn to_style(&self) -> Result<engine::core::ui_layout::ContainerStyle, String> {
+        let kind = engine::core::ui_layout::ContainerKind::parse(&self.kind)
+            .ok_or_else(|| format!("未知 Container kind：{}", self.kind))?;
+        let align = engine::core::ui_layout::ChildAlign::parse(&self.align)
+            .ok_or_else(|| format!("未知对齐：{}", self.align))?;
+        Ok(engine::core::ui_layout::ContainerStyle {
+            kind,
+            padding: [
+                self.padding_l,
+                self.padding_t,
+                self.padding_r,
+                self.padding_b,
+            ],
+            spacing: self.spacing,
+            columns: self.columns.max(0) as usize,
+            stretch: self.stretch,
+            fill: self.fill,
+            align,
+        })
+    }
+
+    pub fn from_style(style: engine::core::ui_layout::ContainerStyle) -> Self {
+        Self {
+            kind: style.kind.as_str().to_owned(),
+            padding_l: style.padding[0],
+            padding_t: style.padding[1],
+            padding_r: style.padding[2],
+            padding_b: style.padding[3],
+            spacing: style.spacing,
+            columns: style.columns as i32,
+            stretch: style.stretch,
+            fill: style.fill,
+            align: style.align.as_str().to_owned(),
+        }
+    }
+}
+
+impl Default for ContainerFields {
+    fn default() -> Self {
+        Self::from_style(engine::core::ui_layout::ContainerStyle::default())
+    }
+}
+
 /// Inspector 对一个实体的可编辑快照。
 #[derive(Clone, Debug, PartialEq)]
 pub struct InspectorSnapshot {
@@ -251,6 +370,9 @@ pub struct InspectorSnapshot {
     /// UI 组件（屏幕空间）。
     pub text: Option<TextFields>,
     pub image: Option<ImageFields>,
+    /// E16/E17：布局组件（存在时优先于 Text/Image 内联布局）。
+    pub ui_layout: Option<UiLayoutFields>,
+    pub container: Option<ContainerFields>,
     /// 运行时切场景不销毁。
     pub persistent: bool,
 }
@@ -535,6 +657,44 @@ impl InspectorState {
         Ok(())
     }
 
+    /// E16：写回 `UiLayout` 组件（四边 Anchor+Offset 布局）。
+    pub fn set_ui_layout(
+        &self,
+        document: &mut SceneDocument,
+        id: SceneEntityId,
+        fields: UiLayoutFields,
+    ) -> Result<(), InspectorError> {
+        let layout = fields.to_layout();
+        validate_unit_pair(&layout.pivot, "pivot")?;
+        validate_unit_quadruple(&layout.anchors, "anchor")?;
+        let entity = entity_mut(document, id)?;
+        let value = layout.to_component_str();
+        if entity.components.get("UiLayout") != Some(&value) {
+            entity.components.insert("UiLayout".into(), value);
+            document.mark_dirty();
+        }
+        Ok(())
+    }
+
+    /// E17：写回 `Container` 组件（自动布局样式）。
+    pub fn set_container(
+        &self,
+        document: &mut SceneDocument,
+        id: SceneEntityId,
+        fields: ContainerFields,
+    ) -> Result<(), InspectorError> {
+        let style = fields
+            .to_style()
+            .map_err(InspectorError::InvalidContainer)?;
+        let entity = entity_mut(document, id)?;
+        let value = style.to_component_str();
+        if entity.components.get("Container") != Some(&value) {
+            entity.components.insert("Container".into(), value);
+            document.mark_dirty();
+        }
+        Ok(())
+    }
+
     /// 设置/清除「运行时不跟随场景切换销毁」标志（实体 metadata）。
     pub fn set_persistent(
         &self,
@@ -621,7 +781,11 @@ impl InspectorState {
         if let Some(reference) = snapshot.mesh_renderer.as_deref() {
             for sid in multi_sprite_ids {
                 if *sid != id
-                    && document.scene.entities.get(sid).is_some_and(|entity| entity.components.contains_key("MeshRenderer"))
+                    && document
+                        .scene
+                        .entities
+                        .get(sid)
+                        .is_some_and(|entity| entity.components.contains_key("MeshRenderer"))
                 {
                     self.set_mesh_renderer(document, *sid, reference)?;
                 }
@@ -631,7 +795,11 @@ impl InspectorState {
             self.set_camera3d(document, id, camera3d)?;
             for sid in multi_sprite_ids {
                 if *sid != id
-                    && document.scene.entities.get(sid).is_some_and(|entity| entity.components.contains_key("Camera3D"))
+                    && document
+                        .scene
+                        .entities
+                        .get(sid)
+                        .is_some_and(|entity| entity.components.contains_key("Camera3D"))
                 {
                     self.set_camera3d(document, *sid, camera3d)?;
                 }
@@ -641,7 +809,11 @@ impl InspectorState {
             self.set_light(document, id, light)?;
             for sid in multi_sprite_ids {
                 if *sid != id
-                    && document.scene.entities.get(sid).is_some_and(|entity| entity.components.contains_key("Light"))
+                    && document
+                        .scene
+                        .entities
+                        .get(sid)
+                        .is_some_and(|entity| entity.components.contains_key("Light"))
                 {
                     self.set_light(document, *sid, light)?;
                 }
@@ -651,7 +823,11 @@ impl InspectorState {
             self.set_collider3d(document, id, collider3d.clone())?;
             for sid in multi_sprite_ids {
                 if *sid != id
-                    && document.scene.entities.get(sid).is_some_and(|entity| entity.components.contains_key("Collider3d"))
+                    && document
+                        .scene
+                        .entities
+                        .get(sid)
+                        .is_some_and(|entity| entity.components.contains_key("Collider3d"))
                 {
                     self.set_collider3d(document, *sid, collider3d.clone())?;
                 }
@@ -689,6 +865,14 @@ impl InspectorState {
                 }
             }
         }
+        // E16/E17：布局组件单实体写回（不做多选批量——布局逐实体差异大，
+        // 批量覆盖意义有限，与 Tilemap/Animation 同策略）。
+        if let Some(ui_layout) = snapshot.ui_layout {
+            self.set_ui_layout(document, id, ui_layout)?;
+        }
+        if let Some(container) = snapshot.container {
+            self.set_container(document, id, container)?;
+        }
         match snapshot.sprite_reference.as_deref() {
             Some(reference) if !reference.trim().is_empty() => {
                 self.set_sprite_reference(document, id, reference)?;
@@ -700,7 +884,9 @@ impl InspectorState {
                     if let Some(entity) = document.scene.entities.get_mut(sid)
                         && entity.components.contains_key("Sprite")
                     {
-                        entity.components.insert("Sprite".to_owned(), sprite.clone());
+                        entity
+                            .components
+                            .insert("Sprite".to_owned(), sprite.clone());
                         document.mark_dirty();
                     }
                 }
@@ -734,7 +920,11 @@ impl InspectorState {
         if let Some(script) = snapshot.lua_script.as_deref() {
             for sid in multi_sprite_ids {
                 if *sid != id
-                    && document.scene.entities.get(sid).is_some_and(|entity| entity.components.contains_key("LuaScript"))
+                    && document
+                        .scene
+                        .entities
+                        .get(sid)
+                        .is_some_and(|entity| entity.components.contains_key("LuaScript"))
                 {
                     self.set_lua_script(document, *sid, script)?;
                 }
@@ -800,6 +990,22 @@ fn snapshot_for(entity: &SceneEntity) -> Result<InspectorSnapshot, InspectorErro
             .components
             .get("Image")
             .map_or(Ok(None), |value| decode_image(value).map(Some))?,
+        ui_layout: entity
+            .components
+            .get("UiLayout")
+            .map_or(Ok(None), |value| {
+                engine::core::ui_layout::UiRectLayout::from_component_str(value)
+                    .map(|layout| Some(UiLayoutFields::from_layout(layout)))
+                    .map_err(InspectorError::InvalidUiLayout)
+            })?,
+        container: entity
+            .components
+            .get("Container")
+            .map_or(Ok(None), |value| {
+                engine::core::ui_layout::ContainerStyle::from_component_str(value)
+                    .map(|style| Some(ContainerFields::from_style(style)))
+                    .map_err(InspectorError::InvalidContainer)
+            })?,
         persistent: entity
             .metadata
             .get("persistent")
@@ -1022,6 +1228,30 @@ fn validate_text(fields: &TextFields) -> Result<(), InspectorError> {
         .map_err(|error| InspectorError::InvalidText(error.to_string()))
 }
 
+/// E16：校验归一化二元组（pivot）处于 `0..=1`。
+fn validate_unit_pair(values: &[f32; 2], name: &str) -> Result<(), InspectorError> {
+    for (index, value) in values.iter().enumerate() {
+        if !value.is_finite() || !(0.0..=1.0).contains(value) {
+            return Err(InspectorError::InvalidUiLayout(format!(
+                "{name}[{index}] 必须在 0..=1：{value}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// E16：校验归一化四元组（四边 anchor）处于 `0..=1`。
+fn validate_unit_quadruple(values: &[f32; 4], name: &str) -> Result<(), InspectorError> {
+    for (index, value) in values.iter().enumerate() {
+        if !value.is_finite() || !(0.0..=1.0).contains(value) {
+            return Err(InspectorError::InvalidUiLayout(format!(
+                "{name}[{index}] 必须在 0..=1：{value}"
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn encode_image(fields: &ImageFields) -> Result<String, InspectorError> {
     // 全部为 0 → None（不编码字段），保证未启用九宫格的 Image 往返字节一致，
     // 编辑器 set_image 幂等守卫不误标脏。
@@ -1228,6 +1458,8 @@ pub enum InspectorError {
     InvalidText(String),
     InvalidImage(String),
     InvalidButton(String),
+    InvalidUiLayout(String),
+    InvalidContainer(String),
 }
 
 impl fmt::Display for InspectorError {
@@ -1249,6 +1481,8 @@ impl fmt::Display for InspectorError {
             Self::InvalidText(value) => write!(f, "Text 数据无效：{value}"),
             Self::InvalidImage(value) => write!(f, "Image 数据无效：{value}"),
             Self::InvalidButton(value) => write!(f, "Button 数据无效：{value}"),
+            Self::InvalidUiLayout(value) => write!(f, "UiLayout 数据无效：{value}"),
+            Self::InvalidContainer(value) => write!(f, "Container 数据无效：{value}"),
         }
     }
 }
@@ -1281,20 +1515,41 @@ mod tests {
         let (mut document, inspector, id) = setup();
         let matching = SceneEntityId(2);
         let unrelated = SceneEntityId(3);
-        document.scene.add_entity(matching, "Matching", None).unwrap();
-        document.scene.add_entity(unrelated, "Unrelated", None).unwrap();
-        inspector.set_transform(&mut document, id, TransformFields::default()).unwrap();
-        inspector.set_transform(&mut document, matching, TransformFields::default()).unwrap();
+        document
+            .scene
+            .add_entity(matching, "Matching", None)
+            .unwrap();
+        document
+            .scene
+            .add_entity(unrelated, "Unrelated", None)
+            .unwrap();
+        inspector
+            .set_transform(&mut document, id, TransformFields::default())
+            .unwrap();
+        inspector
+            .set_transform(&mut document, matching, TransformFields::default())
+            .unwrap();
         document.mark_clean();
         let mut snapshot = inspector.snapshot(&document, id).unwrap();
         snapshot.transform.position_x = 12.0;
 
         inspector
-            .write_inspector(&mut document, id, snapshot, None, None, &[id, matching, unrelated])
+            .write_inspector(
+                &mut document,
+                id,
+                snapshot,
+                None,
+                None,
+                &[id, matching, unrelated],
+            )
             .unwrap();
         let matching_transform = inspector.snapshot(&document, matching).unwrap().transform;
         assert_eq!(matching_transform.position_x, 12.0);
-        assert!(!document.scene.entities[&unrelated].components.contains_key("Transform"));
+        assert!(
+            !document.scene.entities[&unrelated]
+                .components
+                .contains_key("Transform")
+        );
     }
 
     #[test]
@@ -1302,11 +1557,23 @@ mod tests {
         let (mut document, inspector, id) = setup();
         let matching = SceneEntityId(2);
         let unrelated = SceneEntityId(3);
-        document.scene.add_entity(matching, "Matching", None).unwrap();
-        document.scene.add_entity(unrelated, "Unrelated", None).unwrap();
-        inspector.set_transform(&mut document, id, TransformFields::default()).unwrap();
-        inspector.set_transform3d(&mut document, id, Transform3DFields::default()).unwrap();
-        inspector.set_transform3d(&mut document, matching, Transform3DFields::default()).unwrap();
+        document
+            .scene
+            .add_entity(matching, "Matching", None)
+            .unwrap();
+        document
+            .scene
+            .add_entity(unrelated, "Unrelated", None)
+            .unwrap();
+        inspector
+            .set_transform(&mut document, id, TransformFields::default())
+            .unwrap();
+        inspector
+            .set_transform3d(&mut document, id, Transform3DFields::default())
+            .unwrap();
+        inspector
+            .set_transform3d(&mut document, matching, Transform3DFields::default())
+            .unwrap();
         document.mark_clean();
         let mut snapshot = inspector.snapshot(&document, id).unwrap();
         let mut transform3d = snapshot.transform3d.unwrap();
@@ -1314,11 +1581,26 @@ mod tests {
         snapshot.transform3d = Some(transform3d);
 
         inspector
-            .write_inspector(&mut document, id, snapshot, None, None, &[id, matching, unrelated])
+            .write_inspector(
+                &mut document,
+                id,
+                snapshot,
+                None,
+                None,
+                &[id, matching, unrelated],
+            )
             .unwrap();
-        let matching_transform = inspector.snapshot(&document, matching).unwrap().transform3d.unwrap();
+        let matching_transform = inspector
+            .snapshot(&document, matching)
+            .unwrap()
+            .transform3d
+            .unwrap();
         assert_eq!(matching_transform.position_z, 9.0);
-        assert!(!document.scene.entities[&unrelated].components.contains_key("Transform3D"));
+        assert!(
+            !document.scene.entities[&unrelated]
+                .components
+                .contains_key("Transform3D")
+        );
     }
 
     #[test]
@@ -1406,7 +1688,11 @@ mod tests {
             )
             .unwrap();
         assert_eq!(
-            inspector.snapshot(&document, id).unwrap().transform.rotation,
+            inspector
+                .snapshot(&document, id)
+                .unwrap()
+                .transform
+                .rotation,
             3.0
         );
     }
@@ -1639,11 +1925,7 @@ mod tests {
             scale_x: 0.0,
             ..Default::default()
         };
-        assert!(
-            inspector
-                .set_transform3d(&mut document, id, value)
-                .is_err()
-        );
+        assert!(inspector.set_transform3d(&mut document, id, value).is_err());
         assert!(!document.is_dirty());
     }
     #[test]
@@ -1653,11 +1935,7 @@ mod tests {
             rotation_w: 2.0,
             ..Default::default()
         };
-        assert!(
-            inspector
-                .set_transform3d(&mut document, id, value)
-                .is_err()
-        );
+        assert!(inspector.set_transform3d(&mut document, id, value).is_err());
     }
     #[test]
     fn mesh_renderer_set_and_clear() {
@@ -1717,11 +1995,7 @@ mod tests {
             far: 1.0,
             ..Default::default()
         };
-        assert!(
-            inspector
-                .set_camera3d(&mut document, id, value)
-                .is_err()
-        );
+        assert!(inspector.set_camera3d(&mut document, id, value).is_err());
     }
     #[test]
     fn light_set_and_snapshot() {
@@ -1825,7 +2099,9 @@ mod tests {
             "zero radius must be rejected"
         );
         assert!(
-            !document.scene.entities[&id].components.contains_key("Collider3d")
+            !document.scene.entities[&id]
+                .components
+                .contains_key("Collider3d")
         );
     }
     #[test]
@@ -1921,7 +2197,11 @@ mod tests {
             inspector.set_image(&mut document, id, value),
             Err(InspectorError::InvalidImage(_))
         ));
-        assert!(!document.scene.entities[&id].components.contains_key("Image"));
+        assert!(
+            !document.scene.entities[&id]
+                .components
+                .contains_key("Image")
+        );
     }
     #[test]
     fn image_nine_slice_persists_through_scene_text() {

@@ -130,6 +130,24 @@ impl EditorApp {
                         draw_log_line(ui, line, level);
                     }
                 }
+                for diagnostic in self.preview_diagnostics.diagnostics() {
+                    let line = diagnostic.summary();
+                    if text_matches_filter(&line, &filter) {
+                        let level = if diagnostic.kind
+                            == engine::core::preview_diagnostics::PreviewErrorKind::Layout
+                        {
+                            ConsoleLogLevel::Warning
+                        } else {
+                            ConsoleLogLevel::Error
+                        };
+                        if self.console_log_level_filter.matches(level) {
+                            ui.colored_label(
+                                egui::Color32::from_rgb(230, 130, 90),
+                                egui::RichText::new(line).monospace(),
+                            );
+                        }
+                    }
+                }
             }
             ConsoleTab::Lua => {
                 for line in &log_lines {

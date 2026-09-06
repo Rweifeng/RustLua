@@ -4,6 +4,29 @@
 
 ## Unreleased（v0.10-editor 之后）
 
+- 编辑器 UI 优化批次 E/F 收口：运行时场景接入共享容器布局解析，New Widget 走
+  未保存保护并创建 Canvas 根文档；Game View / Console 消费去重预览诊断；
+  Scene View 增加布局缓存性能 HUD；UI 动画隔离预览由主循环推进。
+- 编辑器 UI 优化批次 E/F 数据层（E19–E27 部分）：
+  - 新增 `component_schema` / `ui_events` / `ui_binding` / `preview_diagnostics` /
+    `ui_animation`，覆盖类型化组件校验、结构化 UI 事件、单向属性绑定、预览诊断
+    和隔离式动画预览。
+  - 新增 `ui_scene_layout`：Canvas/UiLayout/Container 父链递归解析，容器受控
+    子节点返回完整矩形，并诊断缺失/循环父级。
+  - 新增 `ui_layout_cache`（实体/子树失效与命中统计）和 `editor_plugins`
+    （版本化插件生命周期、加载/卸载与 panic 隔离）。
+  - Prefab Inspector 新增 Unpack：一条 History 清理实例子树 `prefab.*` 元数据并
+    保留当前覆盖数据。
+- 编辑器 UI 优化批次 B（E11–E18 首轮）：
+  - E16 引擎核心 `UiRectLayout`：四边 Anchor+Offset、Min/Max、Pivot、12 种预设；
+    运行时 Text/Image 布局优先走 `UiLayout` 组件（旧内联数据完全兼容），
+    Inspector 提供预设/数值编辑并接入编辑事务。
+  - E17 容器自动布局首批 5 种（VBox/HBox/Grid/Margin/Center）纯函数布局引擎，
+    Expand/Fill/对齐/内边距/间距，Inspector 可视化编辑。
+  - E15 Canvas 数据层：参考分辨率 + 缩放模式（含均匀缩放）+ Safe Area。
+  - E18 预览分辨率补齐 800×600 / 2560×1440 / 3440×1440 / 1080×1920。
+  - E13 组件注册表分组（玩法/渲染/3D/UI）并注册 UiLayout/Container。
+  - E11 交互词汇表与工具状态机抽出为独立单测模块（scene_interaction）。
 - 引擎动态 UI 数据模型（panel/grid/image）与农场玩法 Lua API（`clock/calendar/day/grid/tilemap/item/inv/container/shop/map/data/save.blob_*`）。
 - B-1 稳定实体 PersistId：`entity.spawn(name?, persist_id?)` / `entity.find_id(id)` / `entity.persist_id(e)`；`persist_id` 项目级唯一、重复注册报错，destroy/切场景自动清理（`game_jhyt/scripts/player.lua` 已用 `"player"` 接入）。
 - Tilemap 单格字符串元数据 `meta`。

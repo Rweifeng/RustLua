@@ -12,6 +12,7 @@ use editor::PlaySession;
 use eframe::egui;
 use engine::core::{
     input::{InputKey, InputSnapshot, MouseButton},
+    preview_diagnostics::PreviewErrorKind,
     scene::Scene,
 };
 use engine::host::load_project_font_atlas;
@@ -74,19 +75,20 @@ impl EditorApp {
         // 统一收尾：选择修复 + Inspector 空同步 + Scene View/Game 预览失效 +
         // Hierarchy 元数据重扫（含 delete_target 复位）。
         self.on_document_changed(crate::actions::DocumentChange::PlaybackStopped);
-        let snapshot = self.editor_context_snapshot.take().unwrap_or_else(|| {
-            EditorContextSnapshot {
-                selection: SelectionModel::new(),
-                workspace_tab: WorkspaceTab::Scene,
-                scene_tool: SceneTool::Select,
-                scene_view_mode: self.scene_view_mode,
-                scene_zoom: 1.0,
-                scene_pan: egui::Vec2::ZERO,
-                hierarchy_collapsed: self.scene_state.collapsed.clone(),
-                preview_resolution: self.preview_resolution,
-                game_camera_2d_center: self.game_camera_2d_center,
-            }
-        });
+        let snapshot =
+            self.editor_context_snapshot
+                .take()
+                .unwrap_or_else(|| EditorContextSnapshot {
+                    selection: SelectionModel::new(),
+                    workspace_tab: WorkspaceTab::Scene,
+                    scene_tool: SceneTool::Select,
+                    scene_view_mode: self.scene_view_mode,
+                    scene_zoom: 1.0,
+                    scene_pan: egui::Vec2::ZERO,
+                    hierarchy_collapsed: self.scene_state.collapsed.clone(),
+                    preview_resolution: self.preview_resolution,
+                    game_camera_2d_center: self.game_camera_2d_center,
+                });
         self.restore_editor_context(snapshot);
         self.play_state = PlayState::Editing;
         self.status = "Play stopped; runtime changes were discarded".to_owned();
@@ -211,6 +213,46 @@ impl EditorApp {
                     egui::Color32::from_rgb(230, 180, 180),
                 );
             }
+        }
+        let diagnostics: Vec<_> = self
+            .preview_diagnostics
+            .diagnostics()
+            .into_iter()
+            .cloned()
+            .collect();
+        let diagnostic_y = if self
+            .preview
+            .as_ref()
+            .and_then(PreviewSession::diagnostic)
+            .is_some()
+        {
+            54.0
+        } else {
+            8.0
+        };
+        let visible_diagnostics = diagnostics.iter().take(4);
+        for (index, diagnostic) in visible_diagnostics.enumerate() {
+            let y = diagnostic_y + index as f32 * 24.0;
+            painter.rect_filled(
+                egui::Rect::from_min_size(
+                    response.rect.left_top() + egui::vec2(8.0, y),
+                    egui::vec2(response.rect.width() - 16.0, 20.0),
+                ),
+                3.0,
+                egui::Color32::from_rgba_unmultiplied(20, 28, 40, 210),
+            );
+            let message = format!(
+                "{} (x{})",
+                diagnostic.summary(),
+                self.preview_diagnostics.occurrences(diagnostic)
+            );
+            painter.text(
+                response.rect.left_top() + egui::vec2(14.0, y + 3.0),
+                egui::Align2::LEFT_TOP,
+                message,
+                egui::FontId::monospace(11.0),
+                preview_diagnostic_color(diagnostic.kind),
+            );
         }
     }
 
@@ -353,6 +395,16 @@ fn preview_fit_scale(preview_rect: egui::Rect, ppp: f32, native_w: u32) -> f32 {
         return 1.0;
     }
     (preview_rect.width() * ppp) / native_w as f32
+}
+
+fn preview_diagnostic_color(kind: PreviewErrorKind) -> egui::Color32 {
+    match kind {
+        PreviewErrorKind::SceneLoad | PreviewErrorKind::Layout => egui::Color32::YELLOW,
+        PreviewErrorKind::AssetMissing | PreviewErrorKind::ScriptRuntime => {
+            egui::Color32::LIGHT_RED
+        }
+        PreviewErrorKind::Render | PreviewErrorKind::Input => egui::Color32::LIGHT_BLUE,
+    }
 }
 
 #[cfg(test)]
