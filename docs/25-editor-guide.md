@@ -94,7 +94,7 @@ editor [--project <项目路径>] [--check] [--help]
 - 实体元信息：实体 ID、父实体、子实体数量、Prefab 来源与 Override 列表、**持久实体**（「运行时切场景不销毁」）。
 - Prefab 根实例操作：**重新应用源 Prefab**、**打开源 Prefab**、**写回源并更新实例**。
 - **父级**：输入父实体 ID → **设置父级** / **解除父级**；**重新命名** 改名。
-- **添加组件**：可选 `Sprite, Tilemap, Animation, Transform3D, MeshRenderer, Camera3D, Light, Collider3d, Text, Image, clickEvent`；组件各有 **移除**。
+- **添加组件**：可选 `Sprite, Tilemap, Animation, Transform3D, MeshRenderer, Camera3D, Light, Collider3d, Text, Image, UiLayout, Container, UiEvents, UiBindings, ButtonStates, UiAnimation`；组件各有 **移除**。
 - 可编辑组件：
   - **Transform**：位置/旋转/缩放 + Reset、复制/粘贴组件。
   - **Transform3D**：位置 XYZ、旋转四元数、缩放 XYZ。

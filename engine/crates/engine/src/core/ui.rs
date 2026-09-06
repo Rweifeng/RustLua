@@ -145,12 +145,6 @@ pub struct UiImage {
     pub nine_slice: Option<[f32; 4]>,
 }
 
-/// 通用点击标记组件（`clickEvent`）：挂在任意实体（Image/Text/Sprite）上，该实体
-/// 即可被点击，点击后运行时调用 Lua `on_click(实体名)`。纯标记，无字段；命中矩形
-/// 由实体的视觉组件决定（见 `RuntimeScene::compute_click_targets`）。
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct ClickEvent;
-
 /// Runtime-only screen-space panel created by Lua (`ui.panel`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct UiPanel {
@@ -522,8 +516,8 @@ fn unescape_text(text: &str) -> String {
 
 impl UiText {
     /// Parses
-    /// `text=<esc>;x=..;y=..;scale=..;font_size=..;color=r,g,b;space=..;anchor=x,y`
-    /// (`scale/font_size/color/space/anchor` optional; `font_size` 优先于 `scale`).
+    /// `text=<esc>;x=..;y=..;font_size=..;color=r,g,b;space=..;anchor=x,y`.
+    /// Legacy `scale` is accepted and converted to `font_size`.
     pub fn from_component_str(value: &str) -> Result<Self, UiComponentError> {
         let mut text = String::new();
         let mut position = [0.0; 2];
@@ -588,19 +582,18 @@ impl UiText {
         })
     }
 
-    /// Encodes back to the component string.
+    /// Encodes the canonical component string; legacy `scale` is not written.
     #[must_use]
     pub fn to_component_str(&self) -> String {
-        let font_size = match self.font_size {
-            Some(px) => format!("font_size={:.2};", px),
-            None => String::new(),
-        };
+        let font_size = self
+            .font_size
+            .unwrap_or_else(|| self.scale * UI_TEXT_BASE_PX);
         format!(
-            "text={};x={:.2};y={:.2};scale={:.2};{font_size}color={:.3},{:.3},{:.3};space={};anchor={:.3},{:.3}",
+            "text={};x={:.2};y={:.2};font_size={:.2};color={:.3},{:.3},{:.3};space={};anchor={:.3},{:.3}",
             escape_text(&self.text),
             self.position[0],
             self.position[1],
-            self.scale,
+            font_size,
             self.color[0],
             self.color[1],
             self.color[2],
@@ -772,7 +765,6 @@ mod tests {
         let decoded = UiText::from_component_str(&encoded).expect("valid text");
         assert_eq!(decoded.text, ui.text);
         assert_eq!(decoded.position, ui.position);
-        assert_eq!(decoded.scale, ui.scale);
         assert_eq!(decoded.font_size, ui.font_size);
         assert_eq!(decoded.color, ui.color);
         // font_size 24px → scale 2.0（UI_TEXT_BASE_PX = 12）。
@@ -790,8 +782,11 @@ mod tests {
         let legacy = UiText::from_component_str("text=Hi;x=1;y=1;scale=2").expect("valid");
         assert_eq!(legacy.font_size, None);
         assert_eq!(legacy.effective_scale(), 2.0);
-        // 无 font_size 时组件字符串不输出 font_size 字段。
-        assert!(!legacy.to_component_str().contains("font_size"));
+        // Legacy scale canonicalizes to the latest font_size field.
+        assert_eq!(
+            legacy.to_component_str(),
+            "text=Hi;x=1.00;y=1.00;font_size=24.00;color=1.000,1.000,1.000;space=screen;anchor=0.000,0.000"
+        );
         assert!(ui.to_component_str().contains("font_size=12.00"));
     }
 

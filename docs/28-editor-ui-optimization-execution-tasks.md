@@ -657,10 +657,11 @@ E20 + E22
 
 **实现状态（E21–E24，批次 E）**：
 
-- ✅ E21 `component_schema`：Transform / Text / Image / UiLayout / clickEvent 的
-  类型化解析、序列化、校验和版本号；错误带组件与字段路径。
-- ✅ E22 `ui_events`：9 类 UI 事件、目标/函数/参数绑定、旧 `clickEvent` 转换和
-  编辑器校验。
+- ✅ E21 `component_schema`：Transform / Text / Image / UiLayout 的类型化解析、
+  序列化、校验和版本号；错误带组件与字段路径。
+- ✅ E22 `ui_events`：9 类 UI 事件、目标/函数/参数绑定、编辑器校验；旧
+  `clickEvent` 只在场景实例化边界转换为默认 Click 绑定，运行时只消费
+  `UiEvents`。
 - ✅ E23 `ui_binding`：Text.text / Image.visible / Progress.value 的最小单向绑定、
   路径解析、类型转换与诊断。
 - ✅ E24 `preview_diagnostics`：六类预览错误、去重、发生次数统计和整体替换。

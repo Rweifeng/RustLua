@@ -98,13 +98,13 @@ pub mod time_step;
 pub mod transform;
 /// 3D transform component and model-matrix construction.
 pub mod transform3d;
-/// Screen-space UI scene components (Text / Image / Button).
+/// Screen-space UI scene components (Text / Image).
 pub mod ui;
 /// E26: pure UI animation tracks and isolated preview playback.
 pub mod ui_animation;
 /// E23: minimal one-way ViewModel property bindings.
 pub mod ui_binding;
-/// E22: structured UI event bindings with legacy clickEvent conversion.
+/// E22: structured UI event bindings with one-time legacy clickEvent conversion.
 pub mod ui_events;
 /// E15/E16/E17 UI layout layer: Anchor+Offset, Container auto-layout, Canvas.
 pub mod ui_layout;

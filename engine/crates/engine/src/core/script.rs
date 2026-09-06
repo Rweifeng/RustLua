@@ -34,6 +34,7 @@ use crate::core::{
     transform::{Transform, Vec2},
     transform3d::Transform3D,
     ui::{UiGrid, UiGridCell, UiImage, UiPanel},
+    ui_events::{UiClickTarget, UiEvents},
     ui_layout::UiRectLayout,
     world::{World, WorldError},
 };
@@ -355,50 +356,51 @@ impl LuaRuntime {
         Ok(count)
     }
 
-    /// 按下边沿的 clickEvent 命中 → 调用全局 `on_click(name)`（若脚本定义了）。
-    /// 命中矩形 `(name, origin, size)` 由 `RuntimeScene::compute_click_targets` 预计算
-    /// （含 Image/Text UI 矩形与 Sprite 相机投影），本方法只做点选与 Lua 分发。
+    /// Dispatches click bindings from structured `UiEvents`. Hit targets are
+    /// precomputed by `RuntimeScene::compute_click_targets`; each target may
+    /// declare one or more Lua callbacks.
     pub fn process_ui_clicks(
         &self,
         input: &InputSnapshot,
-        targets: &[(String, [f32; 2], [f32; 2])],
+        targets: &[UiClickTarget],
     ) -> Result<(), LuaBridgeError> {
         if !input.mouse_just_pressed(MouseButton::Left) {
             return Ok(());
         }
         let (mx, my) = input.cursor_position();
-        let clicked: Vec<String> = targets
+        let clicked: Vec<&UiClickTarget> = targets
             .iter()
-            .filter(|(_, origin, size)| {
-                (mx as f32) >= origin[0]
-                    && (mx as f32) <= origin[0] + size[0]
-                    && (my as f32) >= origin[1]
-                    && (my as f32) <= origin[1] + size[1]
+            .filter(|target| {
+                target.origin[0] <= mx as f32
+                    && (mx as f32) < target.origin[0] + target.size[0]
+                    && target.origin[1] <= my as f32
+                    && (my as f32) < target.origin[1] + target.size[1]
             })
-            .map(|(name, _, _)| name.clone())
             .collect();
-        for name in clicked {
-            let callback: Value =
-                self.lua
-                    .globals()
-                    .get("on_click")
-                    .map_err(|error| LuaBridgeError::Runtime {
-                        path: self
-                            .current_path
-                            .clone()
-                            .unwrap_or_else(|| PathBuf::from("<project script>")),
-                        source: error.to_string(),
-                    })?;
-            if let Value::Function(function) = callback {
-                function
-                    .call::<()>((name,))
-                    .map_err(|error| LuaBridgeError::Runtime {
-                        path: self
-                            .current_path
-                            .clone()
-                            .unwrap_or_else(|| PathBuf::from("<project script>")),
-                        source: error.to_string(),
-                    })?;
+        for target in clicked {
+            for function_name in &target.functions {
+                let callback: Value =
+                    self.lua
+                        .globals()
+                        .get(function_name.as_str())
+                        .map_err(|error| LuaBridgeError::Runtime {
+                            path: self
+                                .current_path
+                                .clone()
+                                .unwrap_or_else(|| PathBuf::from("<project script>")),
+                            source: error.to_string(),
+                        })?;
+                if let Value::Function(function) = callback {
+                    function
+                        .call::<()>((target.name.as_str(),))
+                        .map_err(|error| LuaBridgeError::Runtime {
+                            path: self
+                                .current_path
+                                .clone()
+                                .unwrap_or_else(|| PathBuf::from("<project script>")),
+                            source: error.to_string(),
+                        })?;
+                }
             }
         }
         Ok(())
@@ -543,11 +545,20 @@ impl LuaRuntime {
                 .insert(id, image)
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
         }
-        if components.contains_key("clickEvent") {
-            // 通用点击标记：任意实体（Image/Text/Sprite）可被点击，命中后调 Lua on_click(名字)。
+        if let Some(raw) = components.get("UiEvents") {
+            let events = UiEvents::parse(raw).map_err(|error| {
+                LuaBridgeError::Api(format!("entity {name:?} has invalid UiEvents: {error}"))
+            })?;
             state
                 .world
-                .insert(id, crate::core::ui::ClickEvent)
+                .insert(id, events)
+                .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
+        } else if components.contains_key("clickEvent") {
+            // Legacy scenes are converted once at the load boundary; the event
+            // runtime only knows the structured representation.
+            state
+                .world
+                .insert(id, UiEvents::click("on_click"))
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
         }
         // E16：可选 `UiLayout` 组件——四边 Anchor+Offset 布局，存在时优先于
@@ -5814,13 +5825,21 @@ mod tests {
         input.mouse_event(MouseButton::Left, true);
         // 命中矩形由运行时 compute_click_targets 预计算；此处直接传入覆盖点击点的目标。
         runtime
-            .process_ui_clicks(&input, &[("Start".to_owned(), [0.0, 0.0], [1280.0, 720.0])])
+            .process_ui_clicks(
+                &input,
+                &[UiClickTarget {
+                    name: "Start".to_owned(),
+                    origin: [0.0, 0.0],
+                    size: [1280.0, 720.0],
+                    functions: vec!["on_click".to_owned()],
+                }],
+            )
             .unwrap();
 
         let result = runtime.call_update().unwrap();
         assert_eq!(
             result, "Start",
-            "on_click('Start') fired for the clicked clickEvent entity"
+            "on_click('Start') fired for the converted UiEvents entity"
         );
 
         let _ = fs::remove_dir_all(root);
@@ -5831,7 +5850,7 @@ mod tests {
     #[test]
     fn production_sample_main_script_runs_menu_update() {
         use crate::core::scene::Scene;
-        use crate::core::ui::ClickEvent;
+        use crate::core::ui_events::UiEvents;
 
         let root = production_sample_root();
         if !root.join("scenes/menu.scene").is_file() {
@@ -5846,9 +5865,9 @@ mod tests {
             .expect("load sample main.lua");
 
         assert_eq!(runtime.call_update().unwrap(), "menu_ready");
-        // Button 已移除；menu.scene 按钮已迁移为 clickEvent。
-        let clicks = runtime.with_world(|world| world.entities_with::<ClickEvent>().len());
-        assert_eq!(clicks, 2, "menu scene should expose two clickEvent buttons");
+        // Button has been removed; menu buttons use structured UiEvents.
+        let clicks = runtime.with_world(|world| world.entities_with::<UiEvents>().len());
+        assert_eq!(clicks, 2, "menu scene should expose two UiEvents buttons");
     }
 
     #[test]
@@ -5876,7 +5895,12 @@ mod tests {
         runtime
             .process_ui_clicks(
                 &input,
-                &[("StartButton".to_owned(), [300.0, 300.0], [500.0, 200.0])],
+                &[UiClickTarget {
+                    name: "StartButton".to_owned(),
+                    origin: [300.0, 300.0],
+                    size: [500.0, 200.0],
+                    functions: vec!["on_click".to_owned()],
+                }],
             )
             .unwrap();
         runtime.process_scene_transition().unwrap();
@@ -5930,7 +5954,12 @@ mod tests {
         runtime
             .process_ui_clicks(
                 &click,
-                &[("StartButton".to_owned(), [300.0, 300.0], [500.0, 200.0])],
+                &[UiClickTarget {
+                    name: "StartButton".to_owned(),
+                    origin: [300.0, 300.0],
+                    size: [500.0, 200.0],
+                    functions: vec!["on_click".to_owned()],
+                }],
             )
             .unwrap();
         runtime.process_scene_transition().unwrap();
@@ -5953,11 +5982,14 @@ mod tests {
         runtime.process_scene_transition().unwrap();
         runtime.set_input(InputSnapshot::default());
         assert_eq!(runtime.call_update().unwrap(), "menu_ready");
-        let clicks =
-            runtime.with_world(|world| world.entities_with::<crate::core::ui::ClickEvent>().len());
+        let clicks = runtime.with_world(|world| {
+            world
+                .entities_with::<crate::core::ui_events::UiEvents>()
+                .len()
+        });
         assert_eq!(
             clicks, 2,
-            "menu scene should restore two clickEvent buttons after F4"
+            "menu scene should restore two UiEvents buttons after F4"
         );
 
         let _ = fs::remove_file(save_path);

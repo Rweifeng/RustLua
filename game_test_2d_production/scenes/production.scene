@@ -130,6 +130,6 @@ component	39	Sprite	texture=assets/textures/coin.png;size=20x20;pivot=0.5,0.5;ti
 component	39	Transform	x=2784.000000000;y=1504.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
 entity	40	BackToMenuButton
 component	40	Image	texture=__white__;x=-190.00;y=20.00;width=180.00;height=44.00;color=0.190,0.230,0.360;space=screen;anchor=1.000,0.000
-component	40	clickEvent	
-component	40	Text	text=Back to Menu;x=-190.00;y=20.00;scale=1.00;color=1.000,1.000,1.000;space=screen;anchor=1.000,0.000
+component	40	UiEvents	event=click;function=on_click
+component	40	Text	text=Back to Menu;x=-190.00;y=20.00;font_size=12;color=1.000,1.000,1.000;space=screen;anchor=1.000,0.000
 component	40	Transform	x=0.000000000;y=0.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000

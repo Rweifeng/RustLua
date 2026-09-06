@@ -31,6 +31,7 @@ use crate::core::{
         UI_REFERENCE_SIZE, UiImage, UiText, nine_slice_cells, resolve_ui_rect,
         resolve_ui_text_origin, ui_text_effective_scale,
     },
+    ui_events::{UiClickTarget, UiEvents},
     ui_layout::{UiRect, UiRectLayout},
     ui_scene_layout::{ResolvedUiNode, UiSceneNode, resolve_scene_ui_layout},
 };
@@ -236,8 +237,8 @@ impl RuntimeScene {
                 .call_update()
                 .map_err(|error| error.to_string())?;
             tracing::debug!(target: "game", "[simulation] fixed update returned: {result}");
-            // clickEvent 点击分发：预计算命中矩形（Image/Text UI 矩形 + Sprite 相机
-            // 投影）→ 按下边沿命中 → Lua on_click(name)。
+            // Structured UiEvents dispatch: precompute hit rects, then call the
+            // bound Lua function on the press edge.
             let targets = self.compute_click_targets();
             self.script
                 .process_ui_clicks(&step_input, &targets)
@@ -268,11 +269,11 @@ impl RuntimeScene {
         Ok(())
     }
 
-    /// 计算当前所有 clickEvent 实体的命中矩形 `(实体名, origin, size)`（屏幕像素）。
+    /// 计算当前所有 `UiEvents` 实体的命中目标（屏幕像素）。
     ///
     /// Image/Text 用 UI 解析（viewport=实际渲染尺寸、reference=设计分辨率），
     /// Sprite 用相机投影到屏幕；供 `process_ui_clicks` 点选分发。
-    fn compute_click_targets(&mut self) -> Vec<(String, [f32; 2], [f32; 2])> {
+    fn compute_click_targets(&mut self) -> Vec<UiClickTarget> {
         let viewport = Viewport {
             width: self.viewport_width.max(1) as f32,
             height: self.viewport_height.max(1) as f32,
@@ -280,27 +281,33 @@ impl RuntimeScene {
         let viewport_arr = [viewport.width, viewport.height];
         self.ensure_scene_ui_layout(viewport_arr);
         let reference = self.ui_reference;
-        // 先提取 clickEvent 实体及其视觉组件（world 借用结束后再计算，避免借用冲突）。
+        // 先提取 UiEvents 实体及其视觉组件（world 借用结束后再计算，避免借用冲突）。
         let entities: Vec<(
             EntityId,
             Option<UiImage>,
             Option<UiText>,
             Option<(Sprite, Transform)>,
+            Option<crate::core::ui_events::UiEvents>,
         )> = self.script.with_world(|world| {
             let mut out = Vec::new();
-            for id in world.entities_with::<crate::core::ui::ClickEvent>() {
+            for id in world.entities_with::<crate::core::ui_events::UiEvents>() {
                 let image = world.get::<UiImage>(id).ok().flatten().cloned();
                 let text = world.get::<UiText>(id).ok().flatten().cloned();
                 let sprite = world.get::<Sprite>(id).ok().flatten().cloned();
                 let transform = world.get::<Transform>(id).ok().flatten().cloned();
-                out.push((id, image, text, sprite.zip(transform)));
+                let events = world
+                    .get::<crate::core::ui_events::UiEvents>(id)
+                    .ok()
+                    .flatten()
+                    .cloned();
+                out.push((id, image, text, sprite.zip(transform), events));
             }
             out
         });
         let camera = self.camera;
         entities
             .into_iter()
-            .filter_map(|(id, image, text, sprite)| {
+            .filter_map(|(id, image, text, sprite, events)| {
                 let name = self.script.entity_name(id)?;
                 let rect = if let Some(image) = image {
                     let mut image = image;
@@ -331,7 +338,14 @@ impl RuntimeScene {
                 } else {
                     return None;
                 };
-                Some((name, rect.0, rect.1))
+                let functions =
+                    events.map_or_else(Vec::new, |events| UiEvents::click_functions(&events));
+                Some(UiClickTarget {
+                    name,
+                    origin: rect.0,
+                    size: rect.1,
+                    functions,
+                })
             })
             .collect()
     }
@@ -693,7 +707,10 @@ impl RuntimeScene {
         // or container placements may override legacy inline UI positions.
         resolved.retain(|id, resolved| {
             resolved.container_controlled
-                || self.ui_scene_nodes.get(id).is_some_and(|node| node.layout.is_some())
+                || self
+                    .ui_scene_nodes
+                    .get(id)
+                    .is_some_and(|node| node.layout.is_some())
         });
         self.ui_layout_rects = resolved;
     }
@@ -1259,10 +1276,7 @@ fn build_ui_scene_nodes(scene: &Scene, honor_editor_hidden: bool) -> BTreeMap<u6
         nodes.insert(
             entity_key,
             UiSceneNode {
-                parent: entity
-                    .parent
-                    .and_then(|id| id_to_key.get(&id.0))
-                    .copied(),
+                parent: entity.parent.and_then(|id| id_to_key.get(&id.0)).copied(),
                 layout,
                 container,
                 preferred_size,
@@ -1573,7 +1587,7 @@ fn extract_project_key(text: &str, key: &str) -> Option<String> {
     })
 }
 
-/// Sprite 的世界矩形（pivot+缩放+旋转+位移）投影到屏幕的 AABB，供 clickEvent 命中。
+/// Sprite 的世界矩形（pivot+缩放+旋转+位移）投影到屏幕的 AABB，供 UiEvents 命中。
 fn sprite_screen_rect(
     sprite: &Sprite,
     transform: &Transform,
@@ -1844,7 +1858,7 @@ mod sdf_tests {
         assert!(has_hud, "farm HUD should be created every update");
     }
 
-    /// ui_demo 测试工程：场景渲染出 UI/世界 draw、clickEvent 目标存在，且点击
+    /// ui_demo 测试工程：场景渲染出 UI/世界 draw、UiEvents 目标存在，且点击
     /// StartButton 会经 main.lua 的 on_click 分发（update 返回带实体名）。
     #[test]
     fn ui_demo_project_renders_ui_and_dispatches_clicks() {
@@ -1864,15 +1878,15 @@ mod sdf_tests {
         let targets = runtime.compute_click_targets();
         assert!(
             targets.len() >= 5,
-            "ui_demo 应有多个 clickEvent 目标: {}",
+            "ui_demo 应有多个 UiEvents 目标: {}",
             targets.len()
         );
-        let start = targets
+        let target = targets
             .iter()
-            .find(|(n, _, _)| n == "StartButton")
-            .expect("StartButton clickEvent 目标");
-        let cx = start.1[0] + start.2[0] / 2.0;
-        let cy = start.1[1] + start.2[1] / 2.0;
+            .find(|target| target.name == "StartButton")
+            .expect("StartButton UiEvents 目标");
+        let cx = target.origin[0] + target.size[0] / 2.0;
+        let cy = target.origin[1] + target.size[1] / 2.0;
         let mut input = InputSnapshot::default();
         input.cursor_moved(cx as f64, cy as f64);
         input.mouse_event(MouseButton::Left, true);
@@ -1931,11 +1945,11 @@ mod sdf_tests {
         runtime.vertices(1920, 1080).expect("vertices");
         let rect = |runtime: &mut RuntimeScene| -> ([f32; 2], [f32; 2]) {
             let targets = runtime.compute_click_targets();
-            let (_, origin, size) = targets
+            let target = targets
                 .iter()
-                .find(|(n, _, _)| n == "StartButton")
+                .find(|target| target.name == "StartButton")
                 .expect("StartButton click target");
-            (*origin, *size)
+            (target.origin, target.size)
         };
         // 修复前（不同步 ui_reference）：viewport=1920×1080、reference=1280×720 →
         // 画布缩放 1.5×，UI 位置/尺寸错误。
@@ -2045,7 +2059,7 @@ mod sdf_tests {
         assert!(!mesh.draws.is_empty(), "多步后仍应渲染");
     }
 
-    /// clickEvent 命中矩形：Image 用 UI 矩形、Text 用 SDF 字形 bbox、Sprite 用
+    /// UiEvents 命中矩形：Image 用 UI 矩形、Text 用 SDF 字形 bbox、Sprite 用
     /// 相机投影到屏幕的 AABB。验证三类实体都能得到正确的 `(名字, origin, size)`。
     #[test]
     fn compute_click_targets_resolves_image_text_sprite() {
@@ -2069,7 +2083,7 @@ mod sdf_tests {
                     "Image",
                     "texture=assets/textures/coin.png;x=10;y=20;width=64;height=32;color=1,1,1;space=screen;anchor=0,0",
                 ),
-                ("clickEvent", ""),
+                ("UiEvents", "event=click;function=on_click"),
             ],
         );
         add(
@@ -2081,7 +2095,7 @@ mod sdf_tests {
                     "Text",
                     "text=Go;x=5;y=5;scale=1;color=1,1,1;space=screen;anchor=0,0",
                 ),
-                ("clickEvent", ""),
+                ("UiEvents", "event=click;function=on_click"),
             ],
         );
         add(
@@ -2094,7 +2108,7 @@ mod sdf_tests {
                     "Sprite",
                     "texture=assets/textures/coin.png;size=32x32;pivot=0.5,0.5;tint=1,1,1,1",
                 ),
-                ("clickEvent", ""),
+                ("UiEvents", "event=click;function=on_click"),
             ],
         );
         let mut runtime = RuntimeScene::from_scene_edit(Some(&root), scene).unwrap();
@@ -2102,22 +2116,22 @@ mod sdf_tests {
         let targets = runtime.compute_click_targets();
         let img = targets
             .iter()
-            .find(|(n, _, _)| n == "ImgClick")
+            .find(|target| target.name == "ImgClick")
             .expect("image click target");
-        assert_eq!(img.1, [10.0, 20.0], "Image origin 即组件 x/y");
-        assert_eq!(img.2, [64.0, 32.0], "Image size 即组件宽高");
+        assert_eq!(img.origin, [10.0, 20.0], "Image origin 即组件 x/y");
+        assert_eq!(img.size, [64.0, 32.0], "Image size 即组件宽高");
         assert!(
-            targets.iter().any(|(n, _, _)| n == "TxtClick"),
+            targets.iter().any(|target| target.name == "TxtClick"),
             "Text click target 存在"
         );
         let spr = targets
             .iter()
-            .find(|(n, _, _)| n == "SprClick")
+            .find(|target| target.name == "SprClick")
             .expect("sprite click target");
         // 相机在原点、viewport 1280×720：sprite(100,50) 32×32 pivot 0.5
         // → 屏幕 AABB 左上 (724, 294)、尺寸 (32, 32)。
-        assert_eq!(spr.1, [724.0, 294.0]);
-        assert_eq!(spr.2, [32.0, 32.0]);
+        assert_eq!(spr.origin, [724.0, 294.0]);
+        assert_eq!(spr.size, [32.0, 32.0]);
     }
 
     /// E16：实体同时带 `Image` 与 `UiLayout` 时，命中矩形来自四边
@@ -2146,18 +2160,19 @@ mod sdf_tests {
             }
             .to_component_str(),
         );
-        entity
-            .components
-            .insert("clickEvent".to_owned(), String::new());
+        entity.components.insert(
+            "UiEvents".to_owned(),
+            crate::core::ui_events::UiEvents::click("on_click").to_component_str(),
+        );
         let mut runtime = RuntimeScene::from_scene_edit(Some(&root), scene).unwrap();
         let targets = runtime.compute_click_targets();
         let img = targets
             .iter()
-            .find(|(n, _, _)| n == "StretchImg")
+            .find(|target| target.name == "StretchImg")
             .expect("layout click target");
         // viewport 1280×720：stretch 水平 → (10, 20, 1260, 60)。
-        assert_eq!(img.1, [10.0, 20.0]);
-        assert_eq!(img.2, [1260.0, 60.0]);
+        assert_eq!(img.origin, [10.0, 20.0]);
+        assert_eq!(img.size, [1260.0, 60.0]);
     }
 
     #[test]
@@ -2242,12 +2257,14 @@ mod sdf_tests {
         let mesh = runtime.vertices(1280, 720).expect("vertices");
         let counts = runtime.script.with_world(|world| {
             (
-                world.entities_with::<crate::core::ui::ClickEvent>().len(),
+                world
+                    .entities_with::<crate::core::ui_events::UiEvents>()
+                    .len(),
                 world.entities_with::<UiImage>().len(),
                 world.entities_with::<UiText>().len(),
             )
         });
-        assert_eq!(counts.0, 2, "menu scene buttons are clickEvent entities");
+        assert_eq!(counts.0, 2, "menu scene buttons are UiEvents entities");
         assert!(
             counts.1 >= 3,
             "menu scene should expose logo + two button images"
@@ -2284,7 +2301,9 @@ mod sdf_tests {
                 world
                     .entities_with::<crate::core::animation::AnimationStateMachine>()
                     .len(),
-                world.entities_with::<crate::core::ui::ClickEvent>().len(),
+                world
+                    .entities_with::<crate::core::ui_events::UiEvents>()
+                    .len(),
             )
         });
         assert_eq!(counts.0, 1, "production scene should have one tilemap");
@@ -2294,7 +2313,7 @@ mod sdf_tests {
         );
         assert_eq!(
             counts.2, 1,
-            "production scene exposes one clickEvent (BackToMenuButton)"
+            "production scene exposes one UiEvents (BackToMenuButton)"
         );
         assert!(
             runtime.texture_paths.len() >= 4,

@@ -30,13 +30,16 @@ cargo run -p game_runner --example scene_format_demo --release
 
 ## UI 组件字符串（屏幕空间）
 
-屏幕空间 UI 组件（`Text` / `Image` / `Button`）同样用 `key=value;` 编码，坐标原点为
+屏幕空间 UI 组件（`Text` / `Image` / `UiLayout` / `UiEvents`）同样用 `key=value;` 编码，坐标原点为
 视口左上角。`space` 支持 `screen`（原始像素）与 `canvas`（1280x720 参考分辨率缩放）。
 
-- `Text`：`text=<esc>;x=..;y=..;scale=..;font_size=..;color=r,g,b;space=..;anchor=x,y`
-  - `font_size`（可选，px）：像素字号（SDF 字体下 em 高度），提供时优先于 `scale`；
-    `font_size=24` 等价于 `scale=2`（基准 `UI_TEXT_BASE_PX = 12`）。未配置字体文件的
+- `Text`：`text=<esc>;x=..;y=..;font_size=..;color=r,g,b;space=..;anchor=x,y`
+  - `font_size`（px）：像素字号（SDF 字体下 em 高度）；`font_size=24` 表示
+    2 倍渲染 scale（基准 `UI_TEXT_BASE_PX = 12`）。未配置字体文件的
     项目走内置位图回退时显示约为字号的 7/12。
-  - `scale`：字形缩放系数（`1.0` = SDF 字体 em 12px / 位图 5x7 字形 7px），旧格式兼容。
+  - 旧数据的 `scale` 仍可读取，但会在读取时换算为 `font_size`，保存时只写
+    `font_size`。
 - `Image`：`texture=..;x=..;y=..;width=..;height=..;color=r,g,b;space=..;anchor=x,y`
-- `Button`：`label=<esc>;x=..;y=..;width=..;height=..;bg=r,g,b;text_color=r,g,b;space=..;anchor=x,y`
+- `UiLayout`：四边 Anchor + Offset，详见 [28-editor-ui-optimization-execution-tasks.md](28-editor-ui-optimization-execution-tasks.md)。
+- `UiEvents`：`event=click;function=on_click`；多条绑定用 `|` 分隔。
+  旧 `clickEvent` 标记只在场景实例化时转换为默认 Click 绑定，运行时不再使用。

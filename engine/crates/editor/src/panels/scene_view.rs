@@ -63,7 +63,7 @@ impl EditorApp {
                     "Image" => self.add_entity_with_component("New Image", "Image"),
                     "Button" => {
                         self.add_entity_with_component("New Button", "Image");
-                        if let Err(error) = self.add_component("clickEvent") {
+                        if let Err(error) = self.add_component("UiEvents") {
                             self.status = error;
                         }
                     }
@@ -2231,7 +2231,7 @@ fn is_widget_entity(scene: &editor::SceneDocument, entity: &SceneEntity) -> bool
     if entity
         .components
         .keys()
-        .any(|name| matches!(name.as_str(), "Image" | "Text" | "Button"))
+        .any(|name| matches!(name.as_str(), "Image" | "Text" | "UiEvents"))
         || entity
             .metadata
             .get("ui.root")

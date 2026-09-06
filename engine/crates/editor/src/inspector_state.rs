@@ -164,10 +164,8 @@ pub struct TextFields {
     pub anchor_y: f32,
     pub x: f32,
     pub y: f32,
-    /// 像素字号（px）。None = 旧数据仅用 `scale`。
+    /// 像素字号（px）；旧 `scale` 在读取时换算。
     pub font_size: Option<f32>,
-    /// 字形缩放系数（旧字段；`font_size` 提供时被忽略）。
-    pub scale: f32,
     pub color_r: f32,
     pub color_g: f32,
     pub color_b: f32,
@@ -182,8 +180,7 @@ impl Default for TextFields {
             anchor_y: 0.0,
             x: 10.0,
             y: 10.0,
-            font_size: None,
-            scale: 1.0,
+            font_size: Some(engine::core::ui::UI_TEXT_BASE_PX),
             color_r: 1.0,
             color_g: 1.0,
             color_b: 1.0,
@@ -1194,7 +1191,7 @@ fn encode_text(fields: &TextFields) -> Result<String, InspectorError> {
     Ok(UiText {
         text: fields.text.clone(),
         position: [fields.x, fields.y],
-        scale: fields.scale,
+        scale: 1.0,
         font_size: fields.font_size,
         color: [fields.color_r, fields.color_g, fields.color_b],
         space: parse_ui_layout_space(&fields.space).map_err(InspectorError::InvalidText)?,
@@ -1206,6 +1203,7 @@ fn encode_text(fields: &TextFields) -> Result<String, InspectorError> {
 fn decode_text(value: &str) -> Result<TextFields, InspectorError> {
     let ui = UiText::from_component_str(value)
         .map_err(|error| InspectorError::InvalidText(error.to_string()))?;
+    let font_size = ui.effective_scale() * engine::core::ui::UI_TEXT_BASE_PX;
     Ok(TextFields {
         text: ui.text,
         space: ui.space.as_str().to_owned(),
@@ -1213,8 +1211,7 @@ fn decode_text(value: &str) -> Result<TextFields, InspectorError> {
         anchor_y: ui.anchor[1],
         x: ui.position[0],
         y: ui.position[1],
-        scale: ui.scale,
-        font_size: ui.font_size,
+        font_size: Some(font_size),
         color_r: ui.color[0],
         color_g: ui.color[1],
         color_b: ui.color[2],

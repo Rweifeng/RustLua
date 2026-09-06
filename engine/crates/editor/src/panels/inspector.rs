@@ -86,14 +86,6 @@ const COMPONENT_REGISTRY: &[ComponentDescriptor] = &[
         category: ComponentCategory::Ui,
     },
     ComponentDescriptor {
-        name: "Button",
-        category: ComponentCategory::Ui,
-    },
-    ComponentDescriptor {
-        name: "clickEvent",
-        category: ComponentCategory::Ui,
-    },
-    ComponentDescriptor {
         name: "UiLayout",
         category: ComponentCategory::Ui,
     },
@@ -714,13 +706,12 @@ impl EditorApp {
                                 ui.add(egui::DragValue::new(&mut self.text.y));
                             });
                             ui.horizontal(|ui| {
-                                // 字体大小(px)：font_size 优先；旧数据无 font_size 时显示
-                                // scale 换算值，编辑后写入 font_size。
+                                // 字体大小(px)；读取时已完成旧 scale 换算。
                                 ui.label("字号");
                                 let mut font_size = self
                                     .text
                                     .font_size
-                                    .unwrap_or(self.text.scale * engine::core::ui::UI_TEXT_BASE_PX);
+                                    .unwrap_or(engine::core::ui::UI_TEXT_BASE_PX);
                                 if ui
                                     .add(
                                         egui::DragValue::new(&mut font_size)
@@ -3228,7 +3219,7 @@ mod tests {
         app.text.anchor_y = 0.0;
         app.text.x = -48.0;
         app.text.y = 24.0;
-        app.text.scale = 2.8;
+        app.text.font_size = Some(33.6);
         app.apply_inspector();
 
         app.save_scene();
@@ -3242,7 +3233,7 @@ mod tests {
         assert_eq!(title.space, UiLayoutSpace::Screen);
         assert_eq!(title.anchor, [1.0, 0.0]);
         assert_eq!(title.position, [-48.0, 24.0]);
-        assert_eq!(title.scale, 2.8);
+        assert_eq!(title.font_size, Some(33.6));
         let _ = fs::remove_dir_all(root);
     }
 }

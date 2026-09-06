@@ -165,7 +165,7 @@ impl EditorApp {
                 );
                 if ui.button("Button").clicked() {
                     self.add_entity_with_component("New Button", "Image");
-                    if let Err(error) = self.add_component("clickEvent") {
+                    if let Err(error) = self.add_component("UiEvents") {
                         self.status = error;
                     }
                 }

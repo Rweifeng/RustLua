@@ -115,6 +115,15 @@ pub struct UiEvents {
     pub bindings: Vec<UiEventBinding>,
 }
 
+/// A hit-tested target carrying the Lua callbacks to dispatch.
+#[derive(Clone, Debug, Default)]
+pub struct UiClickTarget {
+    pub name: String,
+    pub origin: [f32; 2],
+    pub size: [f32; 2],
+    pub functions: Vec<String>,
+}
+
 impl UiEvents {
     #[must_use]
     pub fn click(function: impl Into<String>) -> Self {
@@ -128,8 +137,22 @@ impl UiEvents {
         }
     }
 
-    /// Converts the existing empty/legacy `clickEvent` component. The runtime
-    /// currently calls global `on_click(entity_name)`, so that is the default.
+    /// Functions bound to the click event; `None` means the default click.
+    #[must_use]
+    pub fn click_functions(&self) -> Vec<String> {
+        self.bindings
+            .iter()
+            .filter(|binding| {
+                binding
+                    .event
+                    .is_none_or(|event| event == UiEventType::Click)
+            })
+            .map(|binding| binding.function.clone())
+            .filter(|function| !function.is_empty())
+            .collect()
+    }
+
+    /// Converts legacy `clickEvent` data once at the load boundary.
     #[must_use]
     pub fn from_legacy_click_event(raw: &str) -> Self {
         let mut events = Self::parse(raw).unwrap_or_default();

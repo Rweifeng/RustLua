@@ -4,6 +4,9 @@
 
 ## Unreleased（v0.10-editor 之后）
 
+- 兼容层收口：新增 `docs/30-compatibility-designs.md` 统一兼容边界；UI 事件
+  运行时只消费 `UiEvents` 并按绑定函数分发，旧 `clickEvent` 仅在场景实例化时
+  转换；`Text.scale` 只读兼容并换算为最新 `font_size`，保存不再输出旧字段。
 - 编辑器 UI 优化批次 E/F 收口：运行时场景接入共享容器布局解析，New Widget 走
   未保存保护并创建 Canvas 根文档；Game View / Console 消费去重预览诊断；
   Scene View 增加布局缓存性能 HUD；UI 动画隔离预览由主循环推进。

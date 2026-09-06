@@ -268,8 +268,6 @@ const UI_LAYOUT_FIELDS: &[FieldSchema] = &[
     FieldSchema::new("pivot", FieldKind::Vec2, false),
 ];
 
-const CLICK_EVENT_FIELDS: &[FieldSchema] = &[];
-
 /// First-phase built-in schemas. Future structured components should be added
 /// here instead of growing ad hoc parsing paths.
 #[must_use]
@@ -279,7 +277,6 @@ pub fn builtin_registry() -> BTreeMap<&'static str, ComponentSchema> {
         ComponentSchema::new("Text", 1, TEXT_FIELDS),
         ComponentSchema::new("Image", 1, IMAGE_FIELDS),
         ComponentSchema::new("UiLayout", 1, UI_LAYOUT_FIELDS),
-        ComponentSchema::new("clickEvent", 1, CLICK_EVENT_FIELDS),
     ];
     schemas
         .into_iter()
@@ -330,9 +327,8 @@ mod tests {
     }
 
     #[test]
-    fn validates_builtin_components_and_click_event_marker() {
+    fn validates_builtin_components() {
         let registry = builtin_registry();
-        assert!(validate_component(&registry, "clickEvent", "").is_ok());
         assert!(validate_component(&registry, "Unknown", "x=1").is_err());
         assert!(
             registry["UiLayout"]
