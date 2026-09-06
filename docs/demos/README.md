@@ -1,40 +1,40 @@
-﻿# RustLua Engine Demo
+# game_showcase Demo 总览
 
-## 当前目标
-
-本 Demo 验证 Rust Cargo workspace、`engine_core`、窗口生命周期、wgpu 清屏、Lua 脚本桥接、结构化日志、固定时间步、输入快照和性能 overlay 已连接为一条可重复运行的最小链路。
+`game_showcase` 是默认能力展示工程。启动后先进入 `scenes/index.scene`，每个菜单按钮对应一个聚焦 Demo；按 `Escape` 返回入口。
 
 ## 运行
 
-在 `C:\GitHub\p2` 执行：
+在仓库根目录执行：
 
 ```powershell
-./scripts/run-demo.ps1
-./scripts/run-demo.ps1 -Release
+.\scripts\run-demo.ps1
+.\scripts\run-demo.ps1 -Release
 ```
 
-窗口标题为 `RustLua Engine - M1-07 Performance Overlay`。按 F3 开关性能 overlay，按 Escape 或关闭窗口退出。
-
-## 性能 overlay
-
-overlay 默认显示在左上角，包含面板和性能条：FPS、Frame ms、Fixed update ms、Lua ms。
-
-性能数值同时以 `[perf] fps=... frame_ms=... update_ms=... lua_ms=... frames=... overlay=...` 结构化日志输出。
-
-## 质量门
+也可以直接指定工程：
 
 ```powershell
-./scripts/verify.ps1
-./scripts/verify.ps1 -Release
+cargo run --manifest-path engine/Cargo.toml -p game -- --project game_showcase
 ```
 
-质量门日志位于 `C:\GitHub\p2\artifacts\logs\quality\`。
+## Demo 地图
 
-## M1-07 验收证据
+| 场景 | 能力 |
+|---|---|
+| `main` / `arena` | 经典 2D 玩法、Tilemap、物理、动画、存档、HUD |
+| `production` / `menu` | 2D 生产工作流与完整玩法闭环 |
+| `demo3d` | 3D Mesh、相机、骨骼动画与实例化 |
+| `game3d` | 3D 玩法垂直切片、轨道相机、拾取与胜负 |
+| `ui_test` | UI 事件与基础控件 |
+| `ui_layout` | Canvas、Anchor/Offset、Container 与按钮状态 |
+| `ui_dynamic` | 动态 Panel/Grid/Tooltip/Modal/拖拽 |
+| `tilemap` | 运行时 Tilemap 创建、编辑、碰撞与元数据 |
+| `effects` | 粒子、音效与背景音乐 |
+| `gameplay_api` | Clock/Grid/Tag/Interact/Item/Inv/Shop/Map |
+| `data_inventory` | JSON 数据、Schema、背包与容器 |
+| `persistence` | Save Blob/Slot、地图状态与事件总线 |
+| `resources` | Asset Load/Release 与运行时 Sprite |
+| `stress` | 大量 Sprite 的 ECS/变换/剔除压力 |
+| `physics3d` | 3D 刚体、碰撞事件与重置 |
 
-- `C:\GitHub\p2\artifacts\logs\M1-07-overlay-session-debug.stdout.log`
-- `C:\GitHub\p2\artifacts\logs\M1-07-overlay-session-debug.stderr.log`
-- `C:\GitHub\p2\artifacts\logs\M1-07-overlay-session-release.stdout.log`
-- `C:\GitHub\p2\artifacts\logs\M1-07-overlay-session-release.stderr.log`
-- `C:\GitHub\p2\artifacts\logs\quality\verify-20260820-164230.log`
-- `C:\GitHub\p2\artifacts\logs\quality\verify-20260820-164231.log`
+单项 Demo 的实现集中在 `game_showcase/scripts/demo_*.lua`。完整玩法示例由 `production_*` 与经典玩法模块承担，`route.lua` 负责场景到模块的分发。

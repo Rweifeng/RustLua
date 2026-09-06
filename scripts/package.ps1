@@ -20,7 +20,7 @@ $ErrorActionPreference = "Stop"
 $workspaceRoot = Split-Path -Parent $PSScriptRoot
 $engineRoot = Join-Path $workspaceRoot "engine"
 if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
-    $ProjectRoot = Join-Path $workspaceRoot "game_jianghu_youtian"
+    $ProjectRoot = Join-Path $workspaceRoot "game_showcase"
 }
 $gameRoot = (Resolve-Path -LiteralPath $ProjectRoot).Path
 $projectToml = Join-Path $gameRoot "project.toml"

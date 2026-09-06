@@ -219,6 +219,7 @@ impl EditorApp {
     /// - Save：先保存，成功才离开；失败只置 `pending_save_failed`，文档保持 dirty 且不离开。
     /// - Discard：不保存直接离开。
     /// - Cancel：取消挂起操作，文档保持不变。
+    ///
     /// 返回是否已把 pending 消费掉（Save 失败返回 false，便于弹窗决定是否重绘）。
     pub(crate) fn resolve_pending_change(
         &mut self,
@@ -601,7 +602,7 @@ impl EditorApp {
         let has = |key: &str| entity.components.contains_key(key);
         let sprite_ref = self.sprite_component.to_component_str();
         let sprite_reference = has("Sprite")
-            .then(|| (!self.sprite_component.texture.trim().is_empty()).then(|| sprite_ref))
+            .then(|| (!self.sprite_component.texture.trim().is_empty()).then_some(sprite_ref))
             .flatten();
         let lua_script = has("LuaScript")
             .then(|| (!self.lua_script.trim().is_empty()).then_some(self.lua_script.clone()))
@@ -714,10 +715,8 @@ impl EditorApp {
         };
         self.inspector_edit.pending = false;
         self.inspector_edit.consumed = false;
-        if dirty && self.selection.primary().is_some() {
-            if let Some(selected) = self.selection.primary() {
-                self.sync_inspector(selected);
-            }
+        if dirty && let Some(selected) = self.selection.primary() {
+            self.sync_inspector(selected);
         }
         self.refresh_inspector_baseline();
         committed
@@ -1497,7 +1496,7 @@ mod tests {
     }
 
     fn sample_project_root() -> PathBuf {
-        engine::core::games_dir().join("game_test_2d_production")
+        engine::core::games_dir().join("game_showcase")
     }
 
     fn copy_dir(source: &Path, destination: &Path) {
@@ -1695,7 +1694,7 @@ mod tests {
         root
     }
 
-    /// 打开 game_test_2d_production 副本并打开其 scenes/production.scene。
+    /// 打开 game_showcase 副本并打开其 scenes/production.scene。
     /// 与 inspector tests 的 sample_app_with_production_scene 行为保持一致
     /// （拷贝 assets/scenes 后不依赖资源索引，Prefab 按相对路径加载）。
     fn open_sample_production(label: &str) -> (EditorApp, PathBuf) {

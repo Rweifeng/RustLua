@@ -65,15 +65,15 @@ pub fn lua_string_literals(text: &str) -> String {
             continue;
         }
         // 长字符串 `[[...]]` / `[=[...]=]`。
-        if c == '[' {
-            if let Some((level, content_start)) = long_bracket(&chars, i) {
-                let end = long_string_end(&chars, content_start, level);
-                for &ch in &chars[content_start..end] {
-                    out.push(ch);
-                }
-                i = (end + 2 + level).min(chars.len());
-                continue;
+        if c == '['
+            && let Some((level, content_start)) = long_bracket(&chars, i)
+        {
+            let end = long_string_end(&chars, content_start, level);
+            for &ch in &chars[content_start..end] {
+                out.push(ch);
             }
+            i = (end + 2 + level).min(chars.len());
+            continue;
         }
         if c != '"' && c != '\'' {
             i += 1;

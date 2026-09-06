@@ -80,7 +80,7 @@ pub fn subset_ttf(source: &[u8], chars: &str) -> Result<Vec<u8>, String> {
             } else {
                 new_glyf.extend_from_slice(data);
             }
-            if new_glyf.len() % 2 != 0 {
+            if !new_glyf.len().is_multiple_of(2) {
                 new_glyf.push(0);
             }
         }
@@ -316,7 +316,7 @@ fn write_ttf(tables: &[(Vec<u8>, Vec<u8>)]) -> Result<Vec<u8>, String> {
 
 fn pad4(data: &[u8]) -> Vec<u8> {
     let mut v = data.to_vec();
-    while v.len() % 4 != 0 {
+    while !v.len().is_multiple_of(4) {
         v.push(0);
     }
     v
@@ -476,7 +476,7 @@ mod tests {
     /// msyh（TTC 集合，face 0）也能子集化，体积显著缩小且字形保留。
     #[test]
     fn subset_works_on_msyh_ttc() {
-        let path = crate::core::games_dir().join("ui_demo/assets/fonts/msyh.ttc");
+        let path = crate::core::legacy_games_dir().join("ui_demo/assets/fonts/msyh.ttc");
         if !path.is_file() {
             return;
         }

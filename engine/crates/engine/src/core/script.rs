@@ -318,6 +318,7 @@ impl LuaRuntime {
         honor_editor_hidden: bool,
     ) -> Result<usize, LuaBridgeError> {
         let mut state = self.state.borrow_mut();
+        state.scene = Some(scene.name.clone());
         let mut count = 0;
         for entity in scene.entities.values() {
             if honor_editor_hidden
@@ -4607,7 +4608,7 @@ mod tests {
     }
 
     fn production_sample_root() -> PathBuf {
-        crate::core::games_dir().join("game_test_2d_production")
+        crate::core::games_dir().join("game_showcase")
     }
 
     #[test]
@@ -5861,8 +5862,8 @@ mod tests {
         runtime.set_project_root(root.clone());
         assert_eq!(runtime.instantiate_scene(&scene).unwrap(), 7);
         runtime
-            .execute_project_script(&root.join("scripts/main.lua"))
-            .expect("load sample main.lua");
+            .execute_project_script(&root.join("scripts/showcase.lua"))
+            .expect("load sample showcase.lua");
 
         assert_eq!(runtime.call_update().unwrap(), "menu_ready");
         // Button has been removed; menu buttons use structured UiEvents.
@@ -5885,8 +5886,8 @@ mod tests {
         runtime.set_project_root(root.clone());
         runtime.instantiate_scene(&scene).unwrap();
         runtime
-            .execute_project_script(&root.join("scripts/main.lua"))
-            .expect("load sample main.lua");
+            .execute_project_script(&root.join("scripts/showcase.lua"))
+            .expect("load sample showcase.lua");
 
         let mut input = InputSnapshot::default();
         input.cursor_moved(520.0, 400.0);
@@ -5945,8 +5946,8 @@ mod tests {
         runtime.set_save_path(save_path.clone());
         runtime.instantiate_scene(&scene).unwrap();
         runtime
-            .execute_project_script(&root.join("scripts/main.lua"))
-            .expect("load sample main.lua");
+            .execute_project_script(&root.join("scripts/showcase.lua"))
+            .expect("load sample showcase.lua");
 
         let mut click = InputSnapshot::default();
         click.cursor_moved(520.0, 400.0);
@@ -6152,7 +6153,7 @@ mod tests {
     fn lua_3d_animation_queries_and_switches_clips() {
         use crate::core::scene::{Scene, SceneEntityId};
 
-        let root = crate::core::games_dir().join("game_test");
+        let root = crate::core::games_dir().join("game_showcase");
         if !root.join("assets/models/m8-skin-quad.glb").is_file() {
             return;
         }

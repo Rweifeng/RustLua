@@ -1,0 +1,20 @@
+{
+  "potion": {
+    "name": "Health Potion",
+    "description": "Restores health",
+    "stack": 20,
+    "buy": 30,
+    "sell": 12,
+    "texture": "assets/textures/red-1x1.png",
+    "kind": "consumable"
+  },
+  "sword": {
+    "name": "Rust Sword",
+    "description": "Reliable and blunt",
+    "stack": 1,
+    "buy": 80,
+    "sell": 35,
+    "texture": "assets/textures/hero-attack.png",
+    "kind": "equipment"
+  }
+}

@@ -1,0 +1,36 @@
+scene_version=2
+name=ui_layout
+entity	1	Backdrop
+component	1	Image	texture=__white__;x=0;y=0;width=1280;height=720;color=0.070,0.085,0.115;space=canvas;anchor=0.500,0.500
+component	1	Transform	x=0;y=0;rotation=0;scale_x=1;scale_y=1
+entity	2	Header
+component	2	Image	texture=__white__;x=0;y=0;width=1280;height=64;color=0.100,0.190,0.310;space=canvas;anchor=0.500,0.500
+component	2	UiLayout	anchors=0.000,0.000,1.000,0.000;offsets=16.00,16.00,-16.00,80.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.5000,0.5000
+component	2	Transform	x=0;y=0;rotation=0;scale_x=1;scale_y=1
+entity	3	HeaderLabel
+component	3	Text	text=Anchor + Offset + Container;x=0;y=0;font_size=22;color=1,1,1;space=canvas;anchor=0.500,0.500
+component	3	Transform	x=0;y=0;rotation=0;scale_x=1;scale_y=1
+entity	4	MenuContainer
+component	4	Image	texture=__white__;x=390;y=120;width=500;height=360;color=0.090,0.110,0.155;space=canvas;anchor=0.500,0.500
+component	4	Container	kind=vbox;padding=24.0000,24.0000,24.0000,24.0000;spacing=16.000000;columns=0;stretch=false;fill=false;align=center
+component	4	Transform	x=0;y=0;rotation=0;scale_x=1;scale_y=1
+entity	5	VBoxButtonA
+component	5	Image	texture=__white__;x=0;y=0;width=320;height=48;color=0.130,0.360,0.640;space=canvas;anchor=0.500,0.500
+component	5	UiEvents	event=click;function=on_click
+component	5	Text	text=Container A;x=0;y=0;font_size=13;color=1,1,1;space=canvas;anchor=0.500,0.500
+component	5	Transform	x=0;y=0;rotation=0;scale_x=1;scale_y=1
+entity	6	VBoxButtonB
+component	6	Image	texture=__white__;x=0;y=0;width=320;height=48;color=0.210,0.260,0.470;space=canvas;anchor=0.500,0.500
+component	6	UiEvents	event=click;function=on_click
+component	6	Text	text=Container B;x=0;y=0;font_size=13;color=1,1,1;space=canvas;anchor=0.500,0.500
+component	6	Transform	x=0;y=0;rotation=0;scale_x=1;scale_y=1
+entity	7	DisabledButton
+component	7	Image	texture=__white__;x=640;y=560;width=320;height=48;color=0.220,0.230,0.270;space=canvas;anchor=0.500,0.500
+component	7	UiEvents	event=click;function=on_click
+component	7	ButtonStates	normal=__white__;disabled=__white__;disabled_state=true
+component	7	Text	text=Disabled State;x=640;y=560;font_size=13;color=0.700,0.700,0.700;space=canvas;anchor=0.500,0.500
+component	7	Transform	x=0;y=0;rotation=0;scale_x=1;scale_y=1
+entity	8	StatusAnchor
+component	8	Text	text=Bottom-right anchor stays pinned on resize;x=0;y=0;font_size=13;color=0.750,0.830,0.950;space=canvas;anchor=0.500,0.500
+component	8	UiLayout	anchors=1.000,1.000,1.000,1.000;offsets=-280.00,-64.00,-40.00,-36.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=1.0000,1.0000
+component	8	Transform	x=0;y=0;rotation=0;scale_x=1;scale_y=1

@@ -454,37 +454,36 @@ impl EditorApp {
                 }
             }
         }
-        if let Some(dropped_id) = row.inner.as_ref().map(|id| **id) {
-            if dropped_id != id {
-                if let Some(scene) = self.document.current_scene.as_ref() {
-                    if let Err(error) = self.validate_reparent_target(scene, dropped_id, Some(id)) {
-                        self.status = error;
-                    } else {
-                        if !self.begin_edit_transaction(
-                            "Reparent entity",
-                            CommandKind::Reparent,
-                            Some(dropped_id),
-                        ) {
-                            self.status = "重挂载事务已激活，无法重复开始".to_owned();
-                        } else if let Some(scene) = self.document.current_scene.as_mut() {
-                            match self.tree.reparent_at(scene, dropped_id, id, drop_position) {
-                                Ok(()) => {
-                                    self.commit_edit_transaction();
-                                    self.on_document_changed(
-                                        crate::actions::DocumentChange::EntityReparented,
-                                    );
-                                    self.status = "Reparented by drag".to_owned();
-                                }
-                                Err(error) => {
-                                    self.cancel_edit_transaction();
-                                    self.status = error.to_string();
-                                }
-                            }
-                        } else {
+        if let Some(dropped_id) = row.inner.as_ref().map(|id| **id)
+            && dropped_id != id
+            && let Some(scene) = self.document.current_scene.as_ref()
+        {
+            if let Err(error) = self.validate_reparent_target(scene, dropped_id, Some(id)) {
+                self.status = error;
+            } else {
+                if !self.begin_edit_transaction(
+                    "Reparent entity",
+                    CommandKind::Reparent,
+                    Some(dropped_id),
+                ) {
+                    self.status = "重挂载事务已激活，无法重复开始".to_owned();
+                } else if let Some(scene) = self.document.current_scene.as_mut() {
+                    match self.tree.reparent_at(scene, dropped_id, id, drop_position) {
+                        Ok(()) => {
+                            self.commit_edit_transaction();
+                            self.on_document_changed(
+                                crate::actions::DocumentChange::EntityReparented,
+                            );
+                            self.status = "Reparented by drag".to_owned();
+                        }
+                        Err(error) => {
                             self.cancel_edit_transaction();
-                            self.status = "Create a scene first".to_owned();
+                            self.status = error.to_string();
                         }
                     }
+                } else {
+                    self.cancel_edit_transaction();
+                    self.status = "Create a scene first".to_owned();
                 }
             }
         }

@@ -83,9 +83,11 @@ pub fn find_project_root() -> Option<PathBuf> {
         if direct.is_file() {
             return Some(dir.to_path_buf());
         }
-        let game = dir.join("game").join("project.toml");
-        if game.is_file() {
-            return Some(dir.join("game"));
+        for project_name in ["game_showcase", "game"] {
+            let project = dir.join(project_name).join("project.toml");
+            if project.is_file() {
+                return Some(dir.join(project_name));
+            }
         }
     }
     None

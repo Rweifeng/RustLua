@@ -579,12 +579,12 @@ pub fn package(
     if let Some(font_path) = project_font_key(project) {
         let src = project.join(&font_path);
         let dst = out.join(&font_path);
-        if src.is_file() && dst.is_file() {
-            if let Ok(bytes) = fs::read(&src)
-                && let Ok(subset) = engine::core::font_subset::subset_ttf(&bytes, &chars)
-            {
-                fs::write(&dst, subset).map_err(|e| e.to_string())?;
-            }
+        if src.is_file()
+            && dst.is_file()
+            && let Ok(bytes) = fs::read(&src)
+            && let Ok(subset) = engine::core::font_subset::subset_ttf(&bytes, &chars)
+        {
+            fs::write(&dst, subset).map_err(|e| e.to_string())?;
         }
     }
 
@@ -695,7 +695,7 @@ mod tests {
     }
 
     fn sample_project_root() -> PathBuf {
-        engine::core::games_dir().join("game_test_2d_production")
+        engine::core::games_dir().join("game_showcase")
     }
 
     fn copy_sample_project(label: &str) -> Option<PathBuf> {
@@ -1050,6 +1050,21 @@ mod tests {
         );
         replace_in_file(
             &root.join("scenes/production.scene"),
+            "assets/textures/slime.png",
+            new_rel,
+        );
+        replace_in_file(
+            &root.join("scenes/main.scene"),
+            "assets/textures/slime.png",
+            new_rel,
+        );
+        replace_in_file(
+            &root.join("scenes/ui_test.scene"),
+            "assets/textures/slime.png",
+            new_rel,
+        );
+        replace_in_file(
+            &root.join("scripts/demo_ui_dynamic.lua"),
             "assets/textures/slime.png",
             new_rel,
         );

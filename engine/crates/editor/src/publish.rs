@@ -353,13 +353,13 @@ mod publish_tests {
             eprintln!("未找到发布脚本，跳过");
             return;
         };
-        let project_root = engine::core::games_dir().join("game_test");
+        let project_root = engine::core::games_dir().join("game_showcase");
         let (tx, rx) = channel();
         spawn_publish(
             script,
             project_root,
             PublishPlatform::Pc,
-            "game_test".to_owned(),
+            "game_showcase".to_owned(),
             false,
             false,
             tx,

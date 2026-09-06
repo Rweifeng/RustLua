@@ -463,7 +463,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn quad_path() -> PathBuf {
-        crate::core::games_dir().join("game_test/assets/models/m8-skin-quad.glb")
+        crate::core::games_dir().join("game_showcase/assets/models/m8-skin-quad.glb")
     }
 
     fn quad_animation() -> Option<Animation3D> {
@@ -547,7 +547,8 @@ mod tests {
 
     #[test]
     fn rejects_non_skinned_asset() {
-        let path = crate::core::games_dir().join("game_test/assets/models/m8-test-triangle.glb");
+        let path =
+            crate::core::games_dir().join("game_showcase/assets/models/m8-test-triangle.glb");
         let Some(asset) = GltfAsset::load(path).ok() else {
             return;
         };

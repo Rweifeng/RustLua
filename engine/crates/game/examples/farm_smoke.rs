@@ -23,7 +23,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let project = env::args()
         .nth(1)
         .map(PathBuf::from)
-        .unwrap_or_else(|| engine::core::games_dir().join("game_farm"));
+        .unwrap_or_else(|| engine::core::legacy_games_dir().join("game_farm"));
     let project = project.canonicalize()?;
     if !project.join("project.toml").is_file() {
         return Err(format!("not a game project: {}", project.display()).into());

@@ -597,7 +597,7 @@ mod tests {
 
     #[test]
     fn scene_refs_sprite_image_animation_tilemap_mesh() {
-        // 用 game_test 真实组件行：Sprite 首字段无 key=、Animation 冒号分隔、
+        // 用 game_showcase 真实组件行：Sprite 首字段无 key=、Animation 冒号分隔、
         // Tilemap texture=、MeshRenderer mesh=。
         let scene = "scene_version=2\nname=main\n\
             component 1 Animation clip:idle:assets/textures/hero-idle.png:4:4:true;clip:move:assets/textures/hero-move.png:4:8:true\n\

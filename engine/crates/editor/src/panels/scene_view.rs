@@ -219,26 +219,26 @@ impl EditorApp {
         let filter = self.hierarchy_filter.to_lowercase();
         let entities = self.collect_scene_2d_entities(rect, &filter, scale);
         let tilemap_context = self.selected_tilemap_context();
-        if self.show_scene_guides {
-            if let Some(scene) = self.current_scene() {
-                let connection_stroke = egui::Stroke::new(
-                    1.0_f32,
-                    egui::Color32::from_rgba_unmultiplied(170, 170, 190, 130),
-                );
-                for entity in &entities {
-                    let Some(parent_id) = scene
-                        .scene
-                        .entities
-                        .get(&entity.id)
-                        .and_then(|value| value.parent)
-                    else {
-                        continue;
-                    };
-                    let Some(parent) = entities.iter().find(|value| value.id == parent_id) else {
-                        continue;
-                    };
-                    painter.line_segment([parent.center, entity.center], connection_stroke);
-                }
+        if self.show_scene_guides
+            && let Some(scene) = self.current_scene()
+        {
+            let connection_stroke = egui::Stroke::new(
+                1.0_f32,
+                egui::Color32::from_rgba_unmultiplied(170, 170, 190, 130),
+            );
+            for entity in &entities {
+                let Some(parent_id) = scene
+                    .scene
+                    .entities
+                    .get(&entity.id)
+                    .and_then(|value| value.parent)
+                else {
+                    continue;
+                };
+                let Some(parent) = entities.iter().find(|value| value.id == parent_id) else {
+                    continue;
+                };
+                painter.line_segment([parent.center, entity.center], connection_stroke);
             }
         }
         for entity in entities.iter() {
@@ -2099,6 +2099,7 @@ fn design_resolution_frame(
 /// 与 `design_resolution_frame` / `entity_2d_screen_box` 共用同一套世界→面板
 /// 变换：设计像素（画布以游戏相机中心 `center` 为世界中心、Y 向下的屏幕坐标）
 /// → 世界（中心为原点、Y 翻转为向上正）→ 面板（pan + world*zoom，再 /ppp）。
+#[allow(clippy::too_many_arguments)]
 fn design_rect_to_panel(
     panel: egui::Rect,
     pan: egui::Vec2,
@@ -2256,6 +2257,7 @@ fn is_widget_entity(scene: &editor::SceneDocument, entity: &SceneEntity) -> bool
     false
 }
 
+#[allow(clippy::too_many_arguments)]
 fn scene_drag_transform(
     initial: TransformFields,
     pivot: (f32, f32),
@@ -2390,6 +2392,7 @@ struct UiEntityInfo {
 /// `resolve_ui_rect`/`resolve_ui_text_origin` 解析出设计像素矩形，再经
 /// `design_rect_to_panel` 映射进包围框（随 Scene 平移/缩放移动），使包围框与
 /// 包围框内渲染的 UI 对齐；`override_position` 提供拖拽预览位置。
+#[allow(clippy::too_many_arguments)]
 fn ui_entity_2d_box(
     entity: &SceneEntity,
     rect: egui::Rect,
@@ -2837,14 +2840,14 @@ mod tests {
         .ok()
     }
 
-    /// 复现 game_test/ui_test.scene 的 GPU 离屏渲染（含 font_size=75 的 SDF 文本、
+    /// 复现 game_showcase/ui_test.scene 的 GPU 离屏渲染（含 font_size=75 的 SDF 文本、
     /// Image/Button 覆盖层），若 render_into_texture panic 则测试失败。
     #[test]
     fn ui_test_scene_renders_offscreen_with_gpu() {
         let Some((device, queue)) = test_device() else {
             return;
         };
-        let source = engine::core::games_dir().join("game_test");
+        let source = engine::core::games_dir().join("game_showcase");
         let root = temp_root("ui-test-gpu");
         fs::create_dir_all(&root).unwrap();
         fs::copy(source.join("project.toml"), root.join("project.toml")).unwrap();
@@ -2895,7 +2898,7 @@ mod tests {
     }
 
     fn sample_project_root() -> PathBuf {
-        engine::core::games_dir().join("game_test_2d_production")
+        engine::core::games_dir().join("game_showcase")
     }
 
     fn copy_dir(source: &Path, destination: &Path) {
@@ -3593,12 +3596,12 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
-    /// 复现 game_test/ui_test.scene 的 2D 场景视图渲染：打开场景并走完整的
+    /// 复现 game_showcase/ui_test.scene 的 2D 场景视图渲染：打开场景并走完整的
     /// 运行时建立（SDF 字体）+ UI 实体收集路径，断言不 panic/不报错。
     #[test]
     fn ui_test_scene_2d_view_collect_does_not_panic() {
-        // 复制到临时目录，绝不触碰真实的 game_test 项目。
-        let source = engine::core::games_dir().join("game_test");
+        // 复制到临时目录，绝不触碰真实的 game_showcase 项目。
+        let source = engine::core::games_dir().join("game_showcase");
         let root = temp_root("ui-test");
         fs::create_dir_all(&root).unwrap();
         fs::copy(source.join("project.toml"), root.join("project.toml")).unwrap();

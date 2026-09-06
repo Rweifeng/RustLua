@@ -569,7 +569,7 @@ mod tests {
     #[test]
     fn audio_importer_validates_ogg_streams() {
         let root = root("audio-ogg");
-        let Some(bytes) = fixture("../../../../games/game_test/assets/audio/attack.ogg") else {
+        let Some(bytes) = fixture("../../../game_showcase/assets/audio/attack.ogg") else {
             return;
         };
         let ogg = write_source(&root, "attack.ogg", &bytes);
@@ -585,8 +585,7 @@ mod tests {
     #[test]
     fn font_importer_validates_ttf_and_rejects_bad_bytes() {
         let root = root("font");
-        let Some(bytes) = fixture("../../../../games/game_test/assets/fonts/NotoSansSC-VF.ttf")
-        else {
+        let Some(bytes) = fixture("../../../game_showcase/assets/fonts/NotoSansSC-VF.ttf") else {
             return;
         };
         let good = write_source(&root, "NotoSansSC-VF.ttf", &bytes);
@@ -602,7 +601,7 @@ mod tests {
     #[test]
     fn model_importer_validates_glb_and_rejects_bad_bytes() {
         let root = root("model");
-        let Some(bytes) = fixture("../../../../games/game_test/assets/models/m8-test-triangle.glb")
+        let Some(bytes) = fixture("../../../game_showcase/assets/models/m8-test-triangle.glb")
         else {
             return;
         };

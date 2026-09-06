@@ -585,9 +585,7 @@ impl UiText {
     /// Encodes the canonical component string; legacy `scale` is not written.
     #[must_use]
     pub fn to_component_str(&self) -> String {
-        let font_size = self
-            .font_size
-            .unwrap_or_else(|| self.scale * UI_TEXT_BASE_PX);
+        let font_size = self.font_size.unwrap_or(self.scale * UI_TEXT_BASE_PX);
         format!(
             "text={};x={:.2};y={:.2};font_size={:.2};color={:.3},{:.3},{:.3};space={};anchor={:.3},{:.3}",
             escape_text(&self.text),

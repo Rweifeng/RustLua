@@ -346,7 +346,7 @@ mod tests {
     }
 
     fn asset_path() -> PathBuf {
-        crate::core::games_dir().join("game_test/assets/models/m8-test-triangle.glb")
+        crate::core::games_dir().join("game_showcase/assets/models/m8-test-triangle.glb")
     }
 
     #[test]
@@ -371,7 +371,7 @@ mod tests {
 
     #[test]
     fn converts_skinned_gltf_with_bone_influences() {
-        let path = crate::core::games_dir().join("game_test/assets/models/m8-skin-quad.glb");
+        let path = crate::core::games_dir().join("game_showcase/assets/models/m8-skin-quad.glb");
         if !path.is_file() {
             return;
         }

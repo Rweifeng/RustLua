@@ -282,13 +282,14 @@ impl RuntimeScene {
         self.ensure_scene_ui_layout(viewport_arr);
         let reference = self.ui_reference;
         // 先提取 UiEvents 实体及其视觉组件（world 借用结束后再计算，避免借用冲突）。
-        let entities: Vec<(
+        type UiEventComponents = (
             EntityId,
             Option<UiImage>,
             Option<UiText>,
             Option<(Sprite, Transform)>,
             Option<crate::core::ui_events::UiEvents>,
-        )> = self.script.with_world(|world| {
+        );
+        let entities: Vec<UiEventComponents> = self.script.with_world(|world| {
             let mut out = Vec::new();
             for id in world.entities_with::<crate::core::ui_events::UiEvents>() {
                 let image = world.get::<UiImage>(id).ok().flatten().cloned();
@@ -1062,50 +1063,49 @@ impl RuntimeScene {
         if let Some(slice) = image
             .nine_slice
             .filter(|s| s.iter().all(|v| v.is_finite() && *v >= 0.0) && s.iter().any(|v| *v > 0.0))
+            && let Some((tw, th)) = self.texture_dimensions(&image.texture)
         {
-            if let Some((tw, th)) = self.texture_dimensions(&image.texture) {
-                // 把作者空间边框映射到解析后的目标空间，使角部在 Canvas 缩放下
-                // 保持纹理像素密度（Screen / scale=1 时比值为 1）。
-                let scale_x = if image.size[0] > f32::EPSILON {
-                    size[0] / image.size[0]
-                } else {
-                    1.0
-                };
-                let scale_y = if image.size[1] > f32::EPSILON {
-                    size[1] / image.size[1]
-                } else {
-                    1.0
-                };
-                let slice = [
-                    slice[0] * scale_x,
-                    slice[1] * scale_x,
-                    slice[2] * scale_y,
-                    slice[3] * scale_y,
-                ];
-                let cells = nine_slice_cells(size[0], size[1], tw as f32, th as f32, slice);
-                let start = vertices.len() as u32;
-                for cell in cells {
-                    let cw = cell.dest[2] - cell.dest[0];
-                    let ch = cell.dest[3] - cell.dest[1];
-                    if cw <= 0.0 || ch <= 0.0 {
-                        continue;
-                    }
-                    let x0 = (origin[0] + cell.dest[0]) / sw * 2.0 - 1.0;
-                    let y0 = 1.0 - (origin[1] + cell.dest[1]) / sh * 2.0;
-                    let x1 = (origin[0] + cell.dest[2]) / sw * 2.0 - 1.0;
-                    let y1 = 1.0 - (origin[1] + cell.dest[3]) / sh * 2.0;
-                    vertices.extend(nine_slice_quad(x0, y0, x1, y1, cell.src, color));
+            // 把作者空间边框映射到解析后的目标空间，使角部在 Canvas 缩放下
+            // 保持纹理像素密度（Screen / scale=1 时比值为 1）。
+            let scale_x = if image.size[0] > f32::EPSILON {
+                size[0] / image.size[0]
+            } else {
+                1.0
+            };
+            let scale_y = if image.size[1] > f32::EPSILON {
+                size[1] / image.size[1]
+            } else {
+                1.0
+            };
+            let slice = [
+                slice[0] * scale_x,
+                slice[1] * scale_x,
+                slice[2] * scale_y,
+                slice[3] * scale_y,
+            ];
+            let cells = nine_slice_cells(size[0], size[1], tw as f32, th as f32, slice);
+            let start = vertices.len() as u32;
+            for cell in cells {
+                let cw = cell.dest[2] - cell.dest[0];
+                let ch = cell.dest[3] - cell.dest[1];
+                if cw <= 0.0 || ch <= 0.0 {
+                    continue;
                 }
-                if vertices.len() as u32 > start {
-                    draws.push(SceneDraw {
-                        texture: self.texture_id(&image.texture) + 1,
-                        start,
-                        count: vertices.len() as u32 - start,
-                        sdf: false,
-                    });
-                }
-                return Ok(());
+                let x0 = (origin[0] + cell.dest[0]) / sw * 2.0 - 1.0;
+                let y0 = 1.0 - (origin[1] + cell.dest[1]) / sh * 2.0;
+                let x1 = (origin[0] + cell.dest[2]) / sw * 2.0 - 1.0;
+                let y1 = 1.0 - (origin[1] + cell.dest[3]) / sh * 2.0;
+                vertices.extend(nine_slice_quad(x0, y0, x1, y1, cell.src, color));
             }
+            if vertices.len() as u32 > start {
+                draws.push(SceneDraw {
+                    texture: self.texture_id(&image.texture) + 1,
+                    start,
+                    count: vertices.len() as u32 - start,
+                    sdf: false,
+                });
+            }
+            return Ok(());
         }
         let x0 = origin[0] / sw * 2.0 - 1.0;
         let y0 = 1.0 - origin[1] / sh * 2.0;
@@ -1831,15 +1831,49 @@ mod sdf_tests {
     use crate::core::scene::Scene;
 
     fn game_root() -> std::path::PathBuf {
-        crate::core::games_dir().join("game_test")
+        crate::core::games_dir().join("game_showcase")
+    }
+
+    #[test]
+    fn showcase_scenes_instantiate_and_step() {
+        let root = game_root();
+        let names = [
+            "arena",
+            "data_inventory",
+            "demo3d",
+            "effects",
+            "game3d",
+            "gameplay_api",
+            "index",
+            "main",
+            "menu",
+            "persistence",
+            "physics3d",
+            "production",
+            "resources",
+            "stress",
+            "tilemap",
+            "ui_dynamic",
+            "ui_layout",
+            "ui_test",
+        ];
+        for name in names {
+            let path = root.join("scenes").join(format!("{name}.scene"));
+            let scene = Scene::load(&path).unwrap_or_else(|error| panic!("load {name}: {error}"));
+            let mut runtime = RuntimeScene::from_scene(Some(&root), scene)
+                .unwrap_or_else(|error| panic!("instantiate {name}: {error}"));
+            runtime
+                .run_script_steps(1, 1.0 / 60.0, &crate::core::input::InputSnapshot::default())
+                .unwrap_or_else(|error| panic!("step {name}: {error}"));
+        }
     }
 
     fn production_sample_root() -> std::path::PathBuf {
-        crate::core::games_dir().join("game_test_2d_production")
+        crate::core::games_dir().join("game_showcase")
     }
 
     fn farm_root() -> std::path::PathBuf {
-        crate::core::games_dir().join("game_farm")
+        crate::core::legacy_games_dir().join("game_farm")
     }
 
     #[test]
@@ -1865,7 +1899,7 @@ mod sdf_tests {
         use crate::core::input::MouseButton;
         use crate::core::scene::Scene;
 
-        let root = crate::core::games_dir().join("ui_demo");
+        let root = crate::core::legacy_games_dir().join("ui_demo");
         if !root.join("scenes/main.scene").is_file() {
             return;
         }
@@ -1906,7 +1940,7 @@ mod sdf_tests {
     fn nine_slice_image_renders_nine_quads() {
         use crate::core::scene::{Scene, SceneEntityId};
 
-        let root = crate::core::games_dir().join("ui_demo");
+        let root = crate::core::legacy_games_dir().join("ui_demo");
         if !root.join("assets/textures/ui/button_green.png").is_file() {
             return;
         }
@@ -1934,11 +1968,11 @@ mod sdf_tests {
     fn canvas_ui_follows_ui_reference_on_resolution_change() {
         use crate::core::scene::Scene;
 
-        let root = crate::core::games_dir().join("ui_demo");
+        let root = crate::core::legacy_games_dir().join("ui_demo");
         if !root.join("scenes/main.scene").is_file() {
             return;
         }
-        let scene = Scene::load(&root.join("scenes/main.scene")).unwrap();
+        let scene = Scene::load(root.join("scenes/main.scene")).unwrap();
         let mut runtime = RuntimeScene::from_scene(Some(&root), scene).unwrap();
         // 旧参考分辨率（运行时构建时的 1280×720）。
         runtime.set_ui_reference([1280.0, 720.0]);
@@ -2000,7 +2034,7 @@ mod sdf_tests {
         use crate::core::input::InputKey;
         use crate::core::scene::Scene;
 
-        let root = crate::core::games_dir().join("tetris");
+        let root = crate::core::legacy_games_dir().join("tetris");
         if !root.join("scenes/main.scene").is_file() {
             return;
         }
@@ -2065,7 +2099,7 @@ mod sdf_tests {
     fn compute_click_targets_resolves_image_text_sprite() {
         use crate::core::scene::{Scene, SceneEntityId};
 
-        let root = crate::core::games_dir().join("game_test");
+        let root = crate::core::games_dir().join("game_showcase");
         let mut scene = Scene::new("click");
         let add = |scene: &mut Scene, id: u64, name: &str, components: &[(&str, &str)]| {
             scene.add_entity(SceneEntityId(id), name, None).unwrap();
@@ -2140,7 +2174,7 @@ mod sdf_tests {
     fn ui_layout_component_overrides_inline_image_rect() {
         use crate::core::scene::{Scene, SceneEntityId};
 
-        let root = crate::core::games_dir().join("game_test");
+        let root = crate::core::games_dir().join("game_showcase");
         let mut scene = Scene::new("layout");
         scene
             .add_entity(SceneEntityId(1), "StretchImg", None)

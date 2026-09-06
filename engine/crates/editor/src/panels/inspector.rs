@@ -1319,7 +1319,7 @@ impl EditorApp {
                     )
                     .changed()
                 {
-                    if binding.target.as_deref().map_or(true, str::is_empty) {
+                    if binding.target.as_deref().is_none_or(str::is_empty) {
                         binding.target = None;
                     }
                     changed = true;
@@ -1416,11 +1416,10 @@ impl EditorApp {
                 if ui
                     .add(egui::TextEdit::singleline(&mut source).hint_text("data.path"))
                     .changed()
+                    && let Ok(path) = engine::core::ui_binding::BindingPath::parse(&source)
                 {
-                    if let Ok(path) = engine::core::ui_binding::BindingPath::parse(&source) {
-                        binding.source = path;
-                        changed = true;
-                    }
+                    binding.source = path;
+                    changed = true;
                 }
                 let mut default = binding.default.clone().unwrap_or_default();
                 if ui
@@ -1498,16 +1497,16 @@ impl EditorApp {
             ui.label(format!("轨道：{property}"));
             for (index, mut keyframe) in track.keyframes.into_iter().enumerate() {
                 ui.horizontal(|ui| {
-                    if ui
+                    let animation_changed = ui
                         .add(egui::DragValue::new(&mut keyframe.time).speed(0.01))
                         .changed()
                         || ui
                             .add(egui::DragValue::new(&mut keyframe.value).speed(0.01))
-                            .changed()
+                            .changed();
+                    if animation_changed
+                        && let Some(track) = self.ui_animation_editor.tracks.get_mut(&property)
                     {
-                        if let Some(track) = self.ui_animation_editor.tracks.get_mut(&property) {
-                            track.keyframes[index] = keyframe;
-                        }
+                        track.keyframes[index] = keyframe;
                     }
                     let mut easing = keyframe.easing;
                     egui::ComboBox::from_id_salt(format!("animation_easing_{property}_{index}"))
@@ -2794,7 +2793,7 @@ mod tests {
     }
 
     fn sample_project_root() -> PathBuf {
-        engine::core::games_dir().join("game_test_2d_production")
+        engine::core::games_dir().join("game_showcase")
     }
 
     fn copy_dir(source: &Path, destination: &Path) {

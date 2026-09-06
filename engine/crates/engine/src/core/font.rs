@@ -503,10 +503,8 @@ fn rasterize_msdf(
         };
         if let Some(prev) = prev_end {
             // move_to 后新轮廓的第一条曲线起点 != 上一条曲线终点 → 新轮廓。
-            if start.x != prev[0] || start.y != prev[1] {
-                if !contour.is_empty() {
-                    shape.add_contour(std::mem::take(&mut contour));
-                }
+            if (start.x != prev[0] || start.y != prev[1]) && !contour.is_empty() {
+                shape.add_contour(std::mem::take(&mut contour));
             }
         }
         contour.add_edge(segment);
@@ -674,7 +672,7 @@ mod tests {
     /// 图集对复杂 CJK 字形正常生成（角外部 median<128、存在内部像素 median>140）。
     #[test]
     fn msdf_generates_for_msyh_ttc_collection() {
-        let path = crate::core::games_dir().join("ui_demo/assets/fonts/msyh.ttc");
+        let path = crate::core::legacy_games_dir().join("ui_demo/assets/fonts/msyh.ttc");
         if !path.is_file() {
             return;
         }
@@ -711,7 +709,7 @@ mod tests {
     /// 后备字体：主字体缺失的字形用后备字体生成（advance/bounds 来自后备字体）。
     #[test]
     fn fallback_font_serves_chars_missing_from_primary() {
-        let path = crate::core::games_dir().join("ui_demo/assets/fonts/msyh.ttc");
+        let path = crate::core::legacy_games_dir().join("ui_demo/assets/fonts/msyh.ttc");
         if !path.is_file() {
             return;
         }
@@ -795,7 +793,7 @@ mod tests {
         let mut atlas = FontAtlas::load(&bytes).unwrap();
         // 用不同 Unicode 字形填满打包图集（增长到 4096² 后报满），记录首个失败字形。
         let mut full = None;
-        for index in 0..(MAX_ATLAS_SIZE as u32 / 2) {
+        for index in 0..(MAX_ATLAS_SIZE / 2) {
             let character = char::from_u32(0x1000 + index).unwrap();
             if atlas.try_glyph_metrics(character).is_err() {
                 full = Some(character);
@@ -824,7 +822,7 @@ mod tests {
     fn glyph_cache_and_pixels_stay_bounded_after_atlas_full() {
         let bytes = test_font();
         let mut atlas = FontAtlas::load(&bytes).unwrap();
-        for index in 0..(MAX_ATLAS_SIZE as u32 / 2) {
+        for index in 0..(MAX_ATLAS_SIZE / 2) {
             let character = char::from_u32(0x1000 + index).unwrap();
             if atlas.try_glyph_metrics(character).is_err() {
                 break;

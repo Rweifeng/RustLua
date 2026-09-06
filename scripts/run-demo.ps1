@@ -1,11 +1,13 @@
 [CmdletBinding()]
 param(
-    [string]$Name = "game",
+    [string]$Project = "game_showcase",
     [switch]$Release
 )
 
 $ErrorActionPreference = "Stop"
-$engineRoot = Join-Path (Split-Path -Parent $PSScriptRoot) "engine"
+$workspaceRoot = Split-Path -Parent $PSScriptRoot
+$engineRoot = Join-Path $workspaceRoot "engine"
+$projectRoot = Join-Path $workspaceRoot $Project
 
 if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
     throw "cargo was not found. Install Rust stable and ensure cargo is on PATH."
@@ -14,10 +16,10 @@ if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
 Push-Location $engineRoot
 try {
     if ($Release) {
-        cargo run --release -p $Name
+        cargo run --release -p game -- --project $projectRoot
     }
     else {
-        cargo run -p $Name
+        cargo run -p game -- --project $projectRoot
     }
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }

@@ -396,7 +396,7 @@ impl EditorApp {
                 let instance = prefab
                     .instantiate(&mut scene.scene, parent, &empty)
                     .map_err(|error| error.to_string())?;
-                for (_, entity_id) in &instance.source_to_instance {
+                for entity_id in instance.source_to_instance.values() {
                     if let Some(entity) = scene.scene.entities.get_mut(entity_id) {
                         entity
                             .metadata

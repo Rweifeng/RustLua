@@ -381,7 +381,7 @@ mod tests {
         let root = root("gltf");
         let mut cache = ImportCache::open(&root).unwrap();
         let id = AssetId::from_seed("triangle");
-        let Some(bytes) = fixture("../../../../games/game_test/assets/models/m8-test-triangle.glb")
+        let Some(bytes) = fixture("../../../game_showcase/assets/models/m8-test-triangle.glb")
         else {
             return;
         };
