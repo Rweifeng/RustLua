@@ -4,7 +4,7 @@
 //! first editor can open projects without requiring a serialization runtime.
 //!
 //! Schema v2 (header `# rustlua-resource-db-v2`) adds the resource family, a
-//! content hash and timing metadata. Schema v1 files are migrated on load.
+//! content hash and timing metadata. Older schemas are rejected.
 
 use crate::core::resource_kind::ResourceKind;
 use std::{
@@ -197,7 +197,6 @@ pub struct ResourceDatabase {
 }
 
 enum SchemaVersion {
-    V1,
     V2,
 }
 
@@ -543,49 +542,7 @@ impl ResourceDatabase {
     fn load(&mut self) -> Result<(), ResourceDbError> {
         let text = fs::read_to_string(&self.db_path)?;
         match header_version(&text)? {
-            SchemaVersion::V1 => self.load_v1(&text)?,
             SchemaVersion::V2 => self.load_v2(&text)?,
-        }
-        Ok(())
-    }
-
-    fn load_v1(&mut self, text: &str) -> Result<(), ResourceDbError> {
-        for (line_no, line) in text.lines().enumerate() {
-            if line.starts_with('#') || line.trim().is_empty() {
-                continue;
-            }
-            let fields: Vec<_> = line.split('\t').collect();
-            if fields.len() != 7 {
-                return Err(ResourceDbError::Malformed { line: line_no + 1 });
-            }
-            let id = fields[0].parse()?;
-            let path = PathBuf::from(unescape(fields[1])?);
-            let status = match fields[2] {
-                "registered" => ResourceState::Discovered,
-                "imported" => ResourceState::Ready,
-                "failed" => ResourceState::ImportFailed,
-                "missing" => ResourceState::Missing,
-                other => return Err(ResourceDbError::InvalidStatus(other.to_owned())),
-            };
-            let record = AssetRecord {
-                id,
-                source_path: path.clone(),
-                kind: ResourceKind::from_path(&path),
-                status,
-                importer_version: unescape(fields[3])?,
-                cache_path: PathBuf::from(unescape(fields[4])?),
-                content_hash: String::new(),
-                last_modified: 0,
-                last_success: 0,
-                last_error_at: 0,
-                dependencies: parse_dependencies(fields[5])?,
-                error: {
-                    let e = unescape(fields[6])?;
-                    (!e.is_empty()).then_some(e)
-                },
-            };
-            self.by_path.insert(path, id);
-            self.records.insert(id, record);
         }
         Ok(())
     }
@@ -637,7 +594,6 @@ fn header_version(text: &str) -> Result<SchemaVersion, ResourceDbError> {
     if let Some(header) = text.lines().find(|line| line.starts_with('#')) {
         return match header {
             "# rustlua-resource-db-v2" => Ok(SchemaVersion::V2),
-            "# rustlua-resource-db-v1" => Ok(SchemaVersion::V1),
             other => Err(ResourceDbError::UnsupportedSchemaVersion(
                 other.trim().to_owned(),
             )),
@@ -865,8 +821,8 @@ mod tests {
     }
 
     #[test]
-    fn v1_database_migrates_on_load() {
-        let root = temp("v1-migrate");
+    fn rejects_v1_database() {
+        let root = temp("v1-reject");
         let db_path = root
             .join(crate::core::PROJECT_WORK_DIR)
             .join("resources.db");
@@ -879,11 +835,10 @@ mod tests {
             ),
         )
         .unwrap();
-        let db = ResourceDatabase::open(&root).unwrap();
-        let record = db.find_by_path("assets/hero.png").unwrap().unwrap();
-        assert_eq!(record.status, ResourceState::Ready);
-        assert_eq!(record.kind, ResourceKind::Texture);
-        assert_eq!(record.content_hash, "");
+        assert!(matches!(
+            ResourceDatabase::open(&root),
+            Err(ResourceDbError::UnsupportedSchemaVersion(_))
+        ));
         let _ = fs::remove_dir_all(root);
     }
 

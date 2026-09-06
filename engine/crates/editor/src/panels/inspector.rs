@@ -693,25 +693,9 @@ impl EditorApp {
                                 ui.label("文本");
                                 ui.text_edit_singleline(&mut self.text.text);
                             });
-                            draw_ui_layout_fields(
-                                ui,
-                                "text_ui_layout",
-                                &mut self.text.space,
-                                &mut self.text.anchor_x,
-                                &mut self.text.anchor_y,
-                            );
                             ui.horizontal(|ui| {
-                                ui.label("位置");
-                                ui.add(egui::DragValue::new(&mut self.text.x));
-                                ui.add(egui::DragValue::new(&mut self.text.y));
-                            });
-                            ui.horizontal(|ui| {
-                                // 字体大小(px)；读取时已完成旧 scale 换算。
                                 ui.label("字号");
-                                let mut font_size = self
-                                    .text
-                                    .font_size
-                                    .unwrap_or(engine::core::ui::UI_TEXT_BASE_PX);
+                                let mut font_size = self.text.font_size;
                                 if ui
                                     .add(
                                         egui::DragValue::new(&mut font_size)
@@ -720,7 +704,7 @@ impl EditorApp {
                                     )
                                     .changed()
                                 {
-                                    self.text.font_size = Some(font_size.max(1.0));
+                                    self.text.font_size = font_size.max(1.0);
                                 }
                             });
                             ui.horizontal(|ui| {
@@ -757,20 +741,6 @@ impl EditorApp {
                             ui.horizontal(|ui| {
                                 ui.label("纹理");
                                 ui.text_edit_singleline(&mut self.image.texture);
-                            });
-                            draw_ui_layout_fields(
-                                ui,
-                                "image_ui_layout",
-                                &mut self.image.space,
-                                &mut self.image.anchor_x,
-                                &mut self.image.anchor_y,
-                            );
-                            ui.horizontal(|ui| {
-                                ui.label("位置/尺寸");
-                                ui.add(egui::DragValue::new(&mut self.image.x));
-                                ui.add(egui::DragValue::new(&mut self.image.y));
-                                ui.add(egui::DragValue::new(&mut self.image.width));
-                                ui.add(egui::DragValue::new(&mut self.image.height));
                             });
                             ui.horizontal(|ui| {
                                 ui.label("九宫格边框");
@@ -1755,19 +1725,17 @@ impl EditorApp {
                     }
                     "Text" => inspector.set_text(scene, selected, TextFields::default())?,
                     "Image" => inspector.set_image(scene, selected, ImageFields::default())?,
-                    // E16：UiLayout 默认为中心点锚 200×100 元素（视觉组件存在时
-                    // 由布局接管位置/尺寸）。
+                    // E16：UiLayout 默认为中心点锚 200×100 元素，由布局统一
+                    // 承担所有 UI 位置与尺寸。
                     "UiLayout" => {
                         if let Some(entity) = scene.scene.entities.get_mut(&selected) {
-                            entity.components.insert(
-                                "UiLayout".to_owned(),
-                                engine::core::ui_layout::UiRectLayout::from_point(
-                                    [0.5, 0.5],
-                                    [0.0, 0.0],
-                                    [200.0, 100.0],
-                                )
-                                .to_component_str(),
-                            );
+                            entity.components.insert("UiLayout".to_owned(), {
+                                let mut layout = engine::core::ui_layout::UiRectLayout::default();
+                                layout
+                                    .apply_preset(engine::core::ui_layout::UiLayoutPreset::Center);
+                                layout.offsets = [-100.0, -50.0, 100.0, 50.0];
+                                layout.to_component_str()
+                            });
                             scene.mark_dirty();
                         }
                     }
@@ -2148,7 +2116,7 @@ impl EditorApp {
                     &prefab_source_for_apply,
                     &instance,
                 );
-                migrate_prefab_editor_flags(
+                preserve_prefab_editor_flags(
                     scene,
                     &rebuild.source_to_instance,
                     &instance.source_to_instance,
@@ -2262,7 +2230,7 @@ impl EditorApp {
                         &prefab_source_for_apply,
                         &instance,
                     );
-                    migrate_prefab_editor_flags(
+                    preserve_prefab_editor_flags(
                         scene,
                         &rebuild.source_to_instance,
                         &instance.source_to_instance,
@@ -2603,7 +2571,7 @@ fn apply_prefab_instance_metadata(
     }
 }
 
-fn migrate_prefab_editor_flags(
+fn preserve_prefab_editor_flags(
     scene: &mut editor::SceneDocument,
     old_map: &std::collections::BTreeMap<SceneEntityId, SceneEntityId>,
     new_map: &std::collections::BTreeMap<SceneEntityId, SceneEntityId>,
@@ -2687,80 +2655,6 @@ fn diff_prefab_entity(source: &SceneEntity, instance: &SceneEntity) -> Vec<Strin
     overrides
 }
 
-fn draw_ui_layout_fields(
-    ui: &mut egui::Ui,
-    id: &str,
-    space: &mut String,
-    anchor_x: &mut f32,
-    anchor_y: &mut f32,
-) {
-    ui.horizontal(|ui| {
-        ui.label("空间");
-        egui::ComboBox::from_id_salt(format!("{id}_space"))
-            .selected_text(if space == "canvas" {
-                "Canvas"
-            } else {
-                "Screen"
-            })
-            .show_ui(ui, |ui| {
-                ui.selectable_value(space, "canvas".to_owned(), "Canvas");
-                ui.selectable_value(space, "screen".to_owned(), "Screen");
-            });
-        ui.label("锚点");
-        egui::ComboBox::from_id_salt(format!("{id}_anchor"))
-            .selected_text(ui_anchor_preset_label(*anchor_x, *anchor_y))
-            .show_ui(ui, |ui| {
-                for (label, x, y) in [
-                    ("左上", 0.0, 0.0),
-                    ("上中", 0.5, 0.0),
-                    ("右上", 1.0, 0.0),
-                    ("左中", 0.0, 0.5),
-                    ("中心", 0.5, 0.5),
-                    ("右中", 1.0, 0.5),
-                    ("左下", 0.0, 1.0),
-                    ("下中", 0.5, 1.0),
-                    ("右下", 1.0, 1.0),
-                ] {
-                    if ui
-                        .selectable_label(
-                            (*anchor_x - x).abs() < 0.001 && (*anchor_y - y).abs() < 0.001,
-                            label,
-                        )
-                        .clicked()
-                    {
-                        *anchor_x = x;
-                        *anchor_y = y;
-                    }
-                }
-            });
-    });
-    ui.horizontal(|ui| {
-        ui.label("Anchor XY");
-        ui.add(egui::DragValue::new(anchor_x).range(0.0..=1.0).speed(0.05));
-        ui.add(egui::DragValue::new(anchor_y).range(0.0..=1.0).speed(0.05));
-    });
-}
-
-fn ui_anchor_preset_label(anchor_x: f32, anchor_y: f32) -> &'static str {
-    const PRESETS: [(&str, f32, f32); 9] = [
-        ("左上", 0.0, 0.0),
-        ("上中", 0.5, 0.0),
-        ("右上", 1.0, 0.0),
-        ("左中", 0.0, 0.5),
-        ("中心", 0.5, 0.5),
-        ("右中", 1.0, 0.5),
-        ("左下", 0.0, 1.0),
-        ("下中", 0.5, 1.0),
-        ("右下", 1.0, 1.0),
-    ];
-    PRESETS
-        .into_iter()
-        .find_map(|(label, x, y)| {
-            ((anchor_x - x).abs() < 0.001 && (anchor_y - y).abs() < 0.001).then_some(label)
-        })
-        .unwrap_or("自定义")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2772,7 +2666,7 @@ mod tests {
         prefab::Prefab,
         resource_db::AssetId,
         scene::{Scene, SceneEntity, SceneEntityId},
-        ui::{UiLayoutSpace, UiText},
+        ui::UiText,
     };
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -2793,7 +2687,7 @@ mod tests {
     }
 
     fn sample_project_root() -> PathBuf {
-        engine::core::games_dir().join("game_showcase")
+        engine::core::games_dir().join("examples")
     }
 
     fn copy_dir(source: &Path, destination: &Path) {
@@ -3213,12 +3107,15 @@ mod tests {
         let (mut app, root) = sample_app_with_menu_scene("ui-adjust");
         select_entity(&mut app, SceneEntityId(3));
         app.text.text = "Production Sample Title".to_owned();
-        app.text.space = "screen".to_owned();
-        app.text.anchor_x = 1.0;
-        app.text.anchor_y = 0.0;
-        app.text.x = -48.0;
-        app.text.y = 24.0;
-        app.text.font_size = Some(33.6);
+        app.text.font_size = 33.6;
+        app.ui_layout.anchor_l = 1.0;
+        app.ui_layout.anchor_t = 0.0;
+        app.ui_layout.anchor_r = 1.0;
+        app.ui_layout.anchor_b = 0.0;
+        app.ui_layout.offset_l = -48.0;
+        app.ui_layout.offset_t = 24.0;
+        app.ui_layout.offset_r = -48.0;
+        app.ui_layout.offset_b = 24.0;
         app.apply_inspector();
 
         app.save_scene();
@@ -3229,10 +3126,13 @@ mod tests {
         )
         .unwrap();
         assert_eq!(title.text, "Production Sample Title");
-        assert_eq!(title.space, UiLayoutSpace::Screen);
-        assert_eq!(title.anchor, [1.0, 0.0]);
-        assert_eq!(title.position, [-48.0, 24.0]);
-        assert_eq!(title.font_size, Some(33.6));
+        assert_eq!(title.font_size, 33.6);
+        let layout = engine::core::ui_layout::UiRectLayout::from_component_str(
+            &reopened.scene.entities[&SceneEntityId(3)].components["UiLayout"],
+        )
+        .unwrap();
+        assert_eq!(layout.anchors, [1.0, 0.0, 1.0, 0.0]);
+        assert_eq!(layout.offsets, [-48.0, 24.0, -48.0, 24.0]);
         let _ = fs::remove_dir_all(root);
     }
 }

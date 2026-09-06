@@ -1,5 +1,0 @@
-scene_version=2
-name=persistence
-entity	1	Instruction
-component	1	Text	text=SPACE emits event, L loads, C commits.;x=20;y=650;font_size=13;color=0.850,0.880,0.950;space=screen;anchor=0.000,0.000
-component	1	Transform	x=0;y=0;rotation=0;scale_x=1;scale_y=1

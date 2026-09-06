@@ -471,19 +471,19 @@ fn layout_diagnostics(scene: &editor::SceneDocument) -> Vec<PreviewDiagnostic> {
             .components
             .get("Container")
             .and_then(|raw| ContainerStyle::from_component_str(raw).ok());
-        let preferred_size = entity
-            .components
-            .get("Image")
-            .and_then(|raw| engine::core::ui::UiImage::from_component_str(raw).ok())
-            .map(|image| image.size)
-            .or_else(|| {
-                entity
-                    .components
-                    .get("Text")
-                    .and_then(|raw| engine::core::ui::UiText::from_component_str(raw).ok())
-                    .map(|_| [128.0, 32.0])
-            })
-            .unwrap_or([64.0, 64.0]);
+        let preferred_size = if entity.components.contains_key("Image") {
+            layout
+                .as_ref()
+                .map(|layout| {
+                    let rect = layout.resolve([0.0, 0.0]);
+                    [rect.w, rect.h]
+                })
+                .unwrap_or([64.0, 64.0])
+        } else if entity.components.contains_key("Text") {
+            [128.0, 32.0]
+        } else {
+            [64.0, 64.0]
+        };
         nodes.insert(
             entity.id.0,
             UiSceneNode {

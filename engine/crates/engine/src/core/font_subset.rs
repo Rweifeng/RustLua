@@ -476,7 +476,7 @@ mod tests {
     /// msyh（TTC 集合，face 0）也能子集化，体积显著缩小且字形保留。
     #[test]
     fn subset_works_on_msyh_ttc() {
-        let path = crate::core::legacy_games_dir().join("ui_demo/assets/fonts/msyh.ttc");
+        let path = crate::core::fixture_games_dir().join("ui_demo/assets/fonts/msyh.ttc");
         if !path.is_file() {
             return;
         }
@@ -498,7 +498,7 @@ mod tests {
         let subset = subset_ttf(&source, chars).expect("subset");
         let mut atlas = crate::core::font::FontAtlas::load(&subset).expect("FontAtlas 加载子集");
         for c in chars.chars() {
-            let metrics = atlas.glyph_metrics(c);
+            let metrics = atlas.try_glyph_metrics(c).unwrap();
             assert!(metrics.advance > 0.0, "{c:?} 应有 advance");
             assert!(
                 metrics.bounds[2] > metrics.bounds[0] && metrics.bounds[3] > metrics.bounds[1],

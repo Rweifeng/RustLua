@@ -6,17 +6,16 @@
 
 当前支持版本为 `2`。
 
-## 版本与迁移
+## 版本
 
-- 版本 `1`：2D 组件（`Transform` / `Sprite` / `Tilemap` / `Animation` / `Collider`）。
-- 版本 `2`：新增 3D 组件（`Transform3D` / `MeshRenderer` / `Camera3D` / `Light`）。
-
-组件负载是不透明字符串，因此 v1 → v2 迁移无需改写数据：`Scene::from_text` 在解析 v1 场景时提升版本为 2，并在 `meta` 中记录 `migrated_from=1` 以便追溯。不支持的旧版本或未来版本会通过 `SceneError::UnsupportedVersion` 明确拒绝。
+- 当前版本是 `2`，包含 2D 组件、3D 组件和分离的 `UiLayout`。
+- `Scene::from_text` 不做版本迁移。低于 `2` 或高于当前版本的文件都会通过
+  `SceneError::UnsupportedVersion` 明确拒绝。
 
 实体行支持 3 字段（无父实体，`entity\t<id>\t<name>`）或 4 字段（含父实体）两种写法；序列化时无父实体不再输出空尾字段，避免场景文件产生尾随空白。
 
 ```powershell
-cargo run -p game_runner --example scene_format_demo --release
+cargo run -p game --example scene_format_demo --release
 ```
 
 ## 3D 组件字符串
@@ -30,16 +29,14 @@ cargo run -p game_runner --example scene_format_demo --release
 
 ## UI 组件字符串（屏幕空间）
 
-屏幕空间 UI 组件（`Text` / `Image` / `UiLayout` / `UiEvents`）同样用 `key=value;` 编码，坐标原点为
-视口左上角。`space` 支持 `screen`（原始像素）与 `canvas`（1280x720 参考分辨率缩放）。
+屏幕空间 UI 组件（`Text` / `Image` / `UiLayout` / `UiEvents`）同样用
+`key=value;` 编码。`Text` / `Image` 只保存视觉属性；几何完全由 `UiLayout`
+的四边 Anchor + Offset 决定。
 
-- `Text`：`text=<esc>;x=..;y=..;font_size=..;color=r,g,b;space=..;anchor=x,y`
-  - `font_size`（px）：像素字号（SDF 字体下 em 高度）；`font_size=24` 表示
-    2 倍渲染 scale（基准 `UI_TEXT_BASE_PX = 12`）。未配置字体文件的
-    项目走内置位图回退时显示约为字号的 7/12。
-  - 旧数据的 `scale` 仍可读取，但会在读取时换算为 `font_size`，保存时只写
-    `font_size`。
-- `Image`：`texture=..;x=..;y=..;width=..;height=..;color=r,g,b;space=..;anchor=x,y`
-- `UiLayout`：四边 Anchor + Offset，详见 [28-editor-ui-optimization-execution-tasks.md](28-editor-ui-optimization-execution-tasks.md)。
+- `Text`：`text=<esc>;font_size=..;color=r,g,b`
+  - `font_size`（px）：像素字号（SDF 字体下 em 高度）；基准
+    `UI_TEXT_BASE_PX = 12`。
+- `Image`：`texture=..;color=r,g,b;nine_slice=l,r,t,b`
+- `UiLayout`：`anchors=l,t,r,b;offsets=l,t,r,b;min_size=w,h;max_size=w,h;pivot=x,y`
+  字段均可省略并使用默认值，但完整几何必须通过本组件表达。
 - `UiEvents`：`event=click;function=on_click`；多条绑定用 `|` 分隔。
-  旧 `clickEvent` 标记只在场景实例化时转换为默认 Click 绑定，运行时不再使用。

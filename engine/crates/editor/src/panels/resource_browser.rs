@@ -670,7 +670,7 @@ mod tests {
     #[test]
     fn thumbnail_worker_decodes_png_and_reports_failure() {
         let mut worker = super::ThumbnailWorker::new();
-        let png = engine::core::games_dir().join("game_showcase/assets/textures/red-1x1.png");
+        let png = engine::core::games_dir().join("examples/assets/textures/red-1x1.png");
         let good_key = "assets/textures/red-1x1.png".to_owned();
         worker.request(png.clone(), good_key.clone());
         // 不存在的文件：后台应回传一个 pixels=None 的结果（而非卡住或丢失）。

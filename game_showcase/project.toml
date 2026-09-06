@@ -1,6 +1,0 @@
-[project]
-name = "game_showcase"
-version = "0.1.0"
-engine = "p2"
-main_script = "scripts/showcase.lua"
-startup_scene = "scenes/index.scene"

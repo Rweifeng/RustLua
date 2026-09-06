@@ -40,11 +40,6 @@ impl SpriteAsset {
 }
 
 /// Editor/runtime-facing Sprite component payload.
-///
-/// Legacy scene files may still store `Sprite` as `<texture>` or
-/// `<texture>;size=<n>` / `<texture>;size=<w>x<h>`. New saves use the explicit
-/// keyed form so size, pivot, tint and sorting can round-trip without
-/// ambiguity.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SpriteComponent {
     pub texture: String,
@@ -153,19 +148,19 @@ impl SpriteComponent {
         if trimmed.is_empty() {
             return Err(SpriteComponentError::MissingTexture);
         }
-        if !trimmed.contains("texture=") {
-            return parse_legacy_component(trimmed);
-        }
         let mut component = SpriteComponent::default();
         let mut seen_texture = false;
-        for field in trimmed.split(';') {
+        for (index, field) in trimmed.split(';').enumerate() {
             let (key, raw) = field
                 .split_once('=')
                 .ok_or_else(|| SpriteComponentError::InvalidField(field.to_owned()))?;
             match key {
-                "texture" => {
+                "texture" if index == 0 => {
                     component.texture = raw.to_owned();
                     seen_texture = true;
+                }
+                "texture" => {
+                    return Err(SpriteComponentError::InvalidField(field.to_owned()));
                 }
                 "size" => component.size = parse_size(raw)?,
                 "pivot" => component.pivot = parse_pair(raw, "pivot")?,
@@ -219,25 +214,6 @@ impl SpriteComponent {
         let _ = self.sprite()?;
         Ok(())
     }
-}
-
-fn parse_legacy_component(value: &str) -> Result<SpriteComponent, SpriteComponentError> {
-    let (texture, params) = match value.split_once(';') {
-        Some((texture, params)) => (texture, Some(params)),
-        None => (value, None),
-    };
-    let mut component = SpriteComponent::new(texture.to_owned(), Vec2::new(128.0, 128.0))?;
-    if let Some(params) = params {
-        for field in params.split(';') {
-            if let Some(raw) = field.strip_prefix("size=") {
-                component.size = parse_size(raw)?;
-            } else if !field.trim().is_empty() {
-                return Err(SpriteComponentError::InvalidField(field.to_owned()));
-            }
-        }
-    }
-    component.validate()?;
-    Ok(component)
 }
 
 fn parse_size(value: &str) -> Result<Vec2, SpriteComponentError> {
@@ -577,18 +553,9 @@ mod tests {
     }
 
     #[test]
-    fn sprite_component_reads_legacy_format() {
-        let decoded =
-            SpriteComponent::from_component_str("assets/textures/player.png;size=32x64").unwrap();
-        assert_eq!(decoded.texture, "assets/textures/player.png");
-        assert_eq!(decoded.size, Vec2::new(32.0, 64.0));
-        assert_eq!(decoded.pivot, Vec2::new(0.5, 0.5));
-        assert_eq!(decoded.tint, [1.0; 4]);
-        assert_eq!(decoded.sorting, SpriteSorting::default());
-    }
-
-    #[test]
     fn sprite_component_rejects_invalid_structured_payload() {
+        assert!(SpriteComponent::from_component_str("size=32;texture=x.png").is_err());
+        assert!(SpriteComponent::from_component_str("assets/textures/player.png;size=32").is_err());
         assert!(SpriteComponent::from_component_str("texture=;size=32").is_err());
         assert!(SpriteComponent::from_component_str("texture=x.png;size=0x32").is_err());
         assert!(SpriteComponent::from_component_str("texture=x.png;pivot=2,0.5").is_err());

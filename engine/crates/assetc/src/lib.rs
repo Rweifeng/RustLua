@@ -672,7 +672,7 @@ mod tests {
         .unwrap();
         fs::write(
             root.join("scenes/main.scene"),
-            "scene_version=1\nname=main\n",
+            "scene_version=2\nname=main\n",
         )
         .unwrap();
         // 1x1 红色 PNG（有效可解码，与 game/assets/textures/red-1x1.png 一致）
@@ -695,7 +695,7 @@ mod tests {
     }
 
     fn sample_project_root() -> PathBuf {
-        engine::core::games_dir().join("game_showcase")
+        engine::core::games_dir().join("examples")
     }
 
     fn copy_sample_project(label: &str) -> Option<PathBuf> {
@@ -788,7 +788,7 @@ mod tests {
         // 场景引用 assets/textures/red-1x1.png。
         fs::write(
             root.join("scenes/main.scene"),
-            "[scene]\nSprite assets/textures/red-1x1.png;size=32\n",
+            "[scene]\nSprite texture=assets/textures/red-1x1.png;size=32\n",
         )
         .unwrap();
         // 首次 scan：注册纹理并建立 scene→texture 依赖边。
@@ -816,12 +816,12 @@ mod tests {
         fs::create_dir_all(root.join("assets/sprites")).unwrap();
         fs::write(
             root.join("scenes/main.scene"),
-            "[scene]\nSprite assets/sprites/hero.prefab;size=32\n",
+            "[scene]\nSprite texture=assets/sprites/hero.prefab;size=32\n",
         )
         .unwrap();
         fs::write(
             root.join("assets/sprites/hero.prefab"),
-            "prefab_version=1\nSprite assets/textures/red-1x1.png;size=32\n",
+            "prefab_version=1\nSprite texture=assets/textures/red-1x1.png;size=32\n",
         )
         .unwrap();
         // 首次 scan 注册并建边。
@@ -848,12 +848,12 @@ mod tests {
         // walk 优先沿环下探（同 rank 取最后一个），从而触发循环截断。
         fs::write(
             root.join("assets/a.prefab"),
-            "prefab_version=1\nSprite assets/textures/red-1x1.png;size=32\nSprite assets/b.prefab;size=32\n",
+            "prefab_version=1\nSprite texture=assets/textures/red-1x1.png;size=32\nSprite texture=assets/b.prefab;size=32\n",
         )
         .unwrap();
         fs::write(
             root.join("assets/b.prefab"),
-            "prefab_version=1\nSprite assets/a.prefab;size=32\n",
+            "prefab_version=1\nSprite texture=assets/a.prefab;size=32\n",
         )
         .unwrap();
         scan(&root).unwrap();
@@ -873,7 +873,7 @@ mod tests {
         // 场景引用已存在的纹理 → 无 Invalid。
         fs::write(
             root.join("scenes/main.scene"),
-            "[scene]\nSprite assets/textures/red-1x1.png;size=32\n",
+            "[scene]\nSprite texture=assets/textures/red-1x1.png;size=32\n",
         )
         .unwrap();
         let links = check_dependencies(&root).unwrap();

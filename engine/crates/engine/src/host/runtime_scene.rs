@@ -28,8 +28,8 @@ use crate::core::{
     transform::{Transform, Vec2, integrate_velocity},
     transform3d::Transform3D,
     ui::{
-        UI_REFERENCE_SIZE, UiImage, UiText, nine_slice_cells, resolve_ui_rect,
-        resolve_ui_text_origin, ui_text_effective_scale,
+        DynamicUiImage, UI_REFERENCE_SIZE, UiImage, UiText, nine_slice_cells, resolve_ui_rect,
+        ui_text_effective_scale,
     },
     ui_events::{UiClickTarget, UiEvents},
     ui_layout::{UiRect, UiRectLayout},
@@ -280,7 +280,6 @@ impl RuntimeScene {
         };
         let viewport_arr = [viewport.width, viewport.height];
         self.ensure_scene_ui_layout(viewport_arr);
-        let reference = self.ui_reference;
         // 先提取 UiEvents 实体及其视觉组件（world 借用结束后再计算，避免借用冲突）。
         type UiEventComponents = (
             EntityId,
@@ -310,30 +309,15 @@ impl RuntimeScene {
             .into_iter()
             .filter_map(|(id, image, text, sprite, events)| {
                 let name = self.script.entity_name(id)?;
-                let rect = if let Some(image) = image {
-                    let mut image = image;
-                    if let Some(layout_rect) = self.scene_ui_layout_rect(id, viewport_arr) {
-                        image.position = [layout_rect.x, layout_rect.y];
-                        image.size = [layout_rect.w, layout_rect.h];
-                        image.space = crate::core::ui::UiLayoutSpace::Screen;
-                        image.anchor = [0.0, 0.0];
-                    }
-                    resolve_ui_rect(
-                        image.position,
-                        image.size,
-                        image.space,
-                        image.anchor,
-                        viewport_arr,
-                        reference,
+                let rect: ([f32; 2], [f32; 2]) = if image.is_some() {
+                    let layout_rect = self.scene_ui_layout_rect(id, viewport_arr)?;
+                    (
+                        [layout_rect.x, layout_rect.y],
+                        [layout_rect.w, layout_rect.h],
                     )
                 } else if let Some(text) = text {
-                    let mut text = text;
-                    if let Some(layout_rect) = self.scene_ui_layout_rect(id, viewport_arr) {
-                        text.position = [layout_rect.x, layout_rect.y];
-                        text.space = crate::core::ui::UiLayoutSpace::Screen;
-                        text.anchor = [0.0, 0.0];
-                    }
-                    self.text_hit_rect(&text, viewport_arr, reference)?
+                    let layout_rect = self.scene_ui_layout_rect(id, viewport_arr)?;
+                    self.text_hit_rect(&layout_rect, &text)?
                 } else if let Some((sprite, transform)) = sprite {
                     sprite_screen_rect(&sprite, &transform, camera, viewport)?
                 } else {
@@ -355,30 +339,12 @@ impl RuntimeScene {
     /// bbox，返回 `(glyph_origin, glyph_size)`（屏幕像素）。
     fn text_hit_rect(
         &mut self,
+        layout_rect: &UiRect,
         text: &UiText,
-        viewport: [f32; 2],
-        reference: [f32; 2],
     ) -> Option<([f32; 2], [f32; 2])> {
-        let effective_scale = text.effective_scale();
-        let (_, resolved_scale) = resolve_ui_text_origin(
-            text.position,
-            [0.0, 0.0],
-            effective_scale,
-            text.space,
-            text.anchor,
-            viewport,
-            reference,
-        );
-        let (text_size, glyph_bounds) = self.measure_ui_text(&text.text, resolved_scale);
-        let (origin, _) = resolve_ui_text_origin(
-            text.position,
-            text_size,
-            effective_scale,
-            text.space,
-            text.anchor,
-            viewport,
-            reference,
-        );
+        let resolved_scale = text.effective_scale();
+        let (_, glyph_bounds) = self.measure_ui_text(&text.text, resolved_scale);
+        let origin = [layout_rect.x, layout_rect.y];
         let glyph_origin = [origin[0] + glyph_bounds[0], origin[1] + glyph_bounds[1]];
         let glyph_size = [
             (glyph_bounds[2] - glyph_bounds[0]).max(0.0),
@@ -705,7 +671,7 @@ impl RuntimeScene {
         let (mut resolved, _) = resolve_scene_ui_layout(&self.ui_scene_nodes, viewport);
         // The resolver also gives non-layout roots a preferred-size rect at the
         // origin. That default is for hierarchy traversal; only authored layouts
-        // or container placements may override legacy inline UI positions.
+        // or container placements may override it.
         resolved.retain(|id, resolved| {
             resolved.container_controlled
                 || self
@@ -829,7 +795,7 @@ impl RuntimeScene {
                     sdf: false,
                 });
                 if let Some(texture) = cell.texture {
-                    let image = UiImage {
+                    let image = DynamicUiImage {
                         texture,
                         position: cell_origin,
                         size: cell_size,
@@ -905,7 +871,7 @@ impl RuntimeScene {
                 (
                     text.position,
                     text.text.clone(),
-                    ui_text_effective_scale(text.scale, text.font_size),
+                    text.font_size.map_or(text.scale, ui_text_effective_scale),
                 )
             })
             .collect();
@@ -937,55 +903,41 @@ impl RuntimeScene {
             world.for_each::<UiImage>(|id, image| images.push((id, image.clone())));
             images
         });
-        for (id, mut image) in images {
+        for (id, image) in images {
             if let Some(rect) = self.scene_ui_layout_rect(id, viewport) {
-                image.position = [rect.x, rect.y];
-                image.size = [rect.w, rect.h];
-                image.space = crate::core::ui::UiLayoutSpace::Screen;
-                image.anchor = [0.0, 0.0];
+                let image = DynamicUiImage {
+                    texture: image.texture,
+                    position: [rect.x, rect.y],
+                    size: [rect.w, rect.h],
+                    color: image.color,
+                    space: crate::core::ui::UiLayoutSpace::Screen,
+                    anchor: [0.0, 0.0],
+                    nine_slice: image.nine_slice,
+                };
+                self.push_image_quad(vertices, draws, width, height, &image)?;
             }
-            self.push_image_quad(vertices, draws, width, height, &image)?;
         }
         let texts: Vec<(EntityId, UiText)> = self.script.with_world(|world| {
             let mut texts = Vec::new();
             world.for_each::<UiText>(|id, text| texts.push((id, text.clone())));
             texts
         });
-        for (id, mut text) in texts {
+        for (id, text) in texts {
             if let Some(rect) = self.scene_ui_layout_rect(id, viewport) {
-                text.position = [rect.x, rect.y];
-                text.space = crate::core::ui::UiLayoutSpace::Screen;
-                text.anchor = [0.0, 0.0];
+                let position = [rect.x, rect.y];
+                let effective_scale = text.effective_scale();
+                let (mesh, is_sdf) =
+                    self.layout_text(&text.text, position, effective_scale, text.color)?;
+                let origin = position;
+                let text_vertices = text_to_ndc_with_offset(mesh, is_sdf, origin, width, height);
+                self.push_text_run(vertices, draws, text_vertices, is_sdf);
             }
-            let effective_scale = text.effective_scale();
-            let (_, resolved_scale) = resolve_ui_text_origin(
-                text.position,
-                [0.0, 0.0],
-                effective_scale,
-                text.space,
-                text.anchor,
-                viewport,
-                self.ui_reference,
-            );
-            let (mesh, is_sdf) =
-                self.layout_text(&text.text, [0.0, 0.0], resolved_scale, text.color)?;
-            let (origin, _) = resolve_ui_text_origin(
-                text.position,
-                mesh.size,
-                effective_scale,
-                text.space,
-                text.anchor,
-                viewport,
-                self.ui_reference,
-            );
-            let text_vertices = text_to_ndc_with_offset(mesh, is_sdf, origin, width, height);
-            self.push_text_run(vertices, draws, text_vertices, is_sdf);
         }
         Ok(())
     }
 
     /// Layouts a string into a pixel-space text mesh using real font metrics.
-    /// Uses the SDF font atlas when available, else the legacy bitmap atlas.
+    /// Uses the SDF font atlas when available, else the built-in bitmap atlas.
     /// Returns `(mesh, is_sdf)`.
     fn layout_text(
         &mut self,
@@ -1046,7 +998,7 @@ impl RuntimeScene {
         draws: &mut Vec<SceneDraw>,
         width: u32,
         height: u32,
-        image: &UiImage,
+        image: &DynamicUiImage,
     ) -> Result<(), String> {
         let sw = width.max(1) as f32;
         let sh = height.max(1) as f32;
@@ -1267,12 +1219,14 @@ fn build_ui_scene_nodes(scene: &Scene, honor_editor_hidden: bool) -> BTreeMap<u6
             .components
             .get("Container")
             .and_then(|raw| crate::core::ui_layout::ContainerStyle::from_component_str(raw).ok());
-        let preferred_size = entity
-            .components
-            .get("Image")
-            .and_then(|raw| UiImage::from_component_str(raw).ok())
-            .map(|image| image.size)
-            .unwrap_or([64.0, 64.0]);
+        let preferred_size = if entity.components.contains_key("Image") {
+            layout
+                .as_ref()
+                .map(|layout| layout.resolve([0.0, 0.0]))
+                .map_or([64.0, 64.0], |rect| [rect.w, rect.h])
+        } else {
+            [64.0, 64.0]
+        };
         nodes.insert(
             entity_key,
             UiSceneNode {
@@ -1831,7 +1785,7 @@ mod sdf_tests {
     use crate::core::scene::Scene;
 
     fn game_root() -> std::path::PathBuf {
-        crate::core::games_dir().join("game_showcase")
+        crate::core::games_dir().join("examples")
     }
 
     #[test]
@@ -1869,56 +1823,49 @@ mod sdf_tests {
     }
 
     fn production_sample_root() -> std::path::PathBuf {
-        crate::core::games_dir().join("game_showcase")
-    }
-
-    fn farm_root() -> std::path::PathBuf {
-        crate::core::legacy_games_dir().join("game_farm")
+        crate::core::games_dir().join("examples")
     }
 
     #[test]
-    fn farm_sample_runs_with_new_api() {
-        let root = farm_root();
-        if !root.is_dir() {
-            return;
-        }
+    fn example_project_runs_with_new_api() {
+        let root = crate::core::games_dir().join("examples");
         let mut runtime = RuntimeScene::new(Some(&root)).unwrap();
         runtime
             .run_script_steps(2, 1.0 / 60.0, &crate::core::input::InputSnapshot::default())
             .unwrap();
-        let has_hud = runtime
-            .script
-            .with_ui(|texts, _| texts.contains_key("status"));
-        assert!(has_hud, "farm HUD should be created every update");
     }
 
-    /// ui_demo 测试工程：场景渲染出 UI/世界 draw、UiEvents 目标存在，且点击
-    /// StartButton 会经 main.lua 的 on_click 分发（update 返回带实体名）。
+    /// ui_test 示例场景：渲染出 UI/世界 draw、UiEvents 目标存在，且点击
+    /// StartButton 会经注入的 on_click 分发（update 返回带实体名）。
     #[test]
-    fn ui_demo_project_renders_ui_and_dispatches_clicks() {
+    fn ui_test_scene_renders_ui_and_dispatches_clicks() {
         use crate::core::input::MouseButton;
         use crate::core::scene::Scene;
 
-        let root = crate::core::legacy_games_dir().join("ui_demo");
-        if !root.join("scenes/main.scene").is_file() {
-            return;
-        }
-        let path = root.join("scenes/main.scene");
-        assert!(path.is_file(), "ui_demo 场景缺失: {}", path.display());
+        let root = crate::core::games_dir().join("examples");
+        let path = root.join("scenes/ui_test.scene");
+        assert!(path.is_file(), "ui_test 示例场景缺失: {}", path.display());
         let scene = Scene::load(&path).unwrap();
         let mut runtime = RuntimeScene::from_scene(Some(&root), scene).unwrap();
         let mesh = runtime.vertices(1280, 720).expect("vertices");
-        assert!(!mesh.draws.is_empty(), "ui_demo 应渲染出可见 draw");
+        assert!(!mesh.draws.is_empty(), "ui_test 应渲染出可见 draw");
         let targets = runtime.compute_click_targets();
         assert!(
-            targets.len() >= 5,
-            "ui_demo 应有多个 UiEvents 目标: {}",
-            targets.len()
+            targets.len() >= 2,
+            "ui_test 应有多个 UiEvents 目标: {targets:#?}"
         );
         let target = targets
             .iter()
             .find(|target| target.name == "StartButton")
             .expect("StartButton UiEvents 目标");
+        let script_path =
+            std::env::temp_dir().join(format!("p2-ui-test-click-{}.lua", std::process::id()));
+        std::fs::write(
+            &script_path,
+            "function on_click(name) clicked = name end\nfunction update() return tostring(clicked or 'nil') end",
+        )
+        .unwrap();
+        runtime.script.execute_project_script(&script_path).unwrap();
         let cx = target.origin[0] + target.size[0] / 2.0;
         let cy = target.origin[1] + target.size[1] / 2.0;
         let mut input = InputSnapshot::default();
@@ -1932,25 +1879,40 @@ mod sdf_tests {
             result.contains("StartButton"),
             "点击应分发 on_click('StartButton'): {result}"
         );
+        let _ = std::fs::remove_file(script_path);
     }
 
     /// 九宫格：带 `nine_slice` 的 Image 应渲染为 3×3 共 9 格（54 顶点），而非
-    /// 单四边形（6 顶点）。用 ui_demo 真实按钮纹理（192×64）验证 UV 分片路径。
+    /// 单四边形（6 顶点）。用真实按钮纹理（192×64）验证 UV 分片路径。
     #[test]
     fn nine_slice_image_renders_nine_quads() {
         use crate::core::scene::{Scene, SceneEntityId};
 
-        let root = crate::core::legacy_games_dir().join("ui_demo");
+        let root = crate::core::games_dir().join("examples");
         if !root.join("assets/textures/ui/button_green.png").is_file() {
             return;
         }
         let mut scene = Scene::new("nine-slice");
         scene.add_entity(SceneEntityId(1), "Panel", None).unwrap();
-        scene.entities.get_mut(&SceneEntityId(1)).unwrap().components.insert(
-            "Image".to_owned(),
-            "texture=assets/textures/ui/button_green.png;x=0;y=0;width=192;height=64;color=1,1,1;space=screen;anchor=0,0;nine_slice=16,16,16,16"
-                .to_owned(),
-        );
+        scene
+            .entities
+            .get_mut(&SceneEntityId(1))
+            .unwrap()
+            .components
+            .insert(
+                "Image".to_owned(),
+                "texture=assets/textures/ui/button_green.png;color=1,1,1;nine_slice=16,16,16,16"
+                    .to_owned(),
+            );
+        scene
+            .entities
+            .get_mut(&SceneEntityId(1))
+            .unwrap()
+            .components
+            .insert(
+                "UiLayout".to_owned(),
+                "anchors=0,0,0,0;offsets=0,0,192,64".to_owned(),
+            );
         let mut runtime = RuntimeScene::from_scene_edit(Some(&root), scene).unwrap();
         let mesh = runtime.vertices(1280, 720).expect("vertices");
         assert!(
@@ -1958,48 +1920,6 @@ mod sdf_tests {
             "切片 Image 应产生 54 顶点（9 格 × 6）：{:#?}",
             mesh.draws.iter().map(|d| d.count).collect::<Vec<_>>()
         );
-    }
-
-    /// Canvas UI 的渲染位置随 viewport/reference 缩放。场景视图切换设计分辨率时
-    /// 必须同步 `ui_reference`（`render_scene_screen` 已修复）：用旧 reference 渲染
-    /// 会让 UI 与包围框（scale=1）错位。这里验证同步后 StartButton 落在
-    /// 1920×1080 设计位置。
-    #[test]
-    fn canvas_ui_follows_ui_reference_on_resolution_change() {
-        use crate::core::scene::Scene;
-
-        let root = crate::core::legacy_games_dir().join("ui_demo");
-        if !root.join("scenes/main.scene").is_file() {
-            return;
-        }
-        let scene = Scene::load(root.join("scenes/main.scene")).unwrap();
-        let mut runtime = RuntimeScene::from_scene(Some(&root), scene).unwrap();
-        // 旧参考分辨率（运行时构建时的 1280×720）。
-        runtime.set_ui_reference([1280.0, 720.0]);
-        runtime.vertices(1920, 1080).expect("vertices");
-        let rect = |runtime: &mut RuntimeScene| -> ([f32; 2], [f32; 2]) {
-            let targets = runtime.compute_click_targets();
-            let target = targets
-                .iter()
-                .find(|target| target.name == "StartButton")
-                .expect("StartButton click target");
-            (target.origin, target.size)
-        };
-        // 修复前（不同步 ui_reference）：viewport=1920×1080、reference=1280×720 →
-        // 画布缩放 1.5×，UI 位置/尺寸错误。
-        let (stale_origin, stale_size) = rect(&mut runtime);
-        // 修复后：同步 reference 到当前设计分辨率 → scale=1，落在设计位置。
-        runtime.set_ui_reference([1920.0, 1080.0]);
-        let (origin, size) = rect(&mut runtime);
-        // StartButton：canvas 位置 [-240,20]，尺寸 192×64，anchor 0.5,0.5 →
-        // 1920×1080 下中心 (720,560)，origin (624,528)。
-        assert_eq!(origin, [624.0, 528.0], "同步 reference 后应在设计位置");
-        assert_eq!(size, [192.0, 64.0]);
-        assert_ne!(
-            stale_origin, origin,
-            "旧 reference 会导致 UI 错位（回归防护）"
-        );
-        let _ = stale_size;
     }
 
     /// 首包预热：`load_project_font_atlas` 读到项目根 `chars.txt` 时预生成字形
@@ -2034,7 +1954,7 @@ mod sdf_tests {
         use crate::core::input::InputKey;
         use crate::core::scene::Scene;
 
-        let root = crate::core::legacy_games_dir().join("tetris");
+        let root = crate::core::fixture_games_dir().join("tetris");
         if !root.join("scenes/main.scene").is_file() {
             return;
         }
@@ -2099,7 +2019,7 @@ mod sdf_tests {
     fn compute_click_targets_resolves_image_text_sprite() {
         use crate::core::scene::{Scene, SceneEntityId};
 
-        let root = crate::core::games_dir().join("game_showcase");
+        let root = crate::core::games_dir().join("examples");
         let mut scene = Scene::new("click");
         let add = |scene: &mut Scene, id: u64, name: &str, components: &[(&str, &str)]| {
             scene.add_entity(SceneEntityId(id), name, None).unwrap();
@@ -2113,10 +2033,8 @@ mod sdf_tests {
             1,
             "ImgClick",
             &[
-                (
-                    "Image",
-                    "texture=assets/textures/coin.png;x=10;y=20;width=64;height=32;color=1,1,1;space=screen;anchor=0,0",
-                ),
+                ("Image", "texture=assets/textures/coin.png;color=1,1,1"),
+                ("UiLayout", "anchors=0,0,0,0;offsets=10,20,74,52"),
                 ("UiEvents", "event=click;function=on_click"),
             ],
         );
@@ -2125,10 +2043,8 @@ mod sdf_tests {
             2,
             "TxtClick",
             &[
-                (
-                    "Text",
-                    "text=Go;x=5;y=5;scale=1;color=1,1,1;space=screen;anchor=0,0",
-                ),
+                ("Text", "text=Go;font_size=24;color=1,1,1"),
+                ("UiLayout", "anchors=0,0,0,0;offsets=5,5,5,5"),
                 ("UiEvents", "event=click;function=on_click"),
             ],
         );
@@ -2152,8 +2068,8 @@ mod sdf_tests {
             .iter()
             .find(|target| target.name == "ImgClick")
             .expect("image click target");
-        assert_eq!(img.origin, [10.0, 20.0], "Image origin 即组件 x/y");
-        assert_eq!(img.size, [64.0, 32.0], "Image size 即组件宽高");
+        assert_eq!(img.origin, [10.0, 20.0], "Image origin 来自 UiLayout");
+        assert_eq!(img.size, [64.0, 32.0], "Image size 来自 UiLayout");
         assert!(
             targets.iter().any(|target| target.name == "TxtClick"),
             "Text click target 存在"
@@ -2168,22 +2084,20 @@ mod sdf_tests {
         assert_eq!(spr.size, [32.0, 32.0]);
     }
 
-    /// E16：实体同时带 `Image` 与 `UiLayout` 时，命中矩形来自四边
-    /// Anchor+Offset 布局（stretch 跟随 viewport），而非 Image 内联 x/y。
+    /// E16：命中矩形完全来自四边 Anchor+Offset 布局；Image 只携带视觉属性。
     #[test]
-    fn ui_layout_component_overrides_inline_image_rect() {
+    fn ui_layout_component_defines_click_rect() {
         use crate::core::scene::{Scene, SceneEntityId};
 
-        let root = crate::core::games_dir().join("game_showcase");
+        let root = crate::core::games_dir().join("examples");
         let mut scene = Scene::new("layout");
         scene
             .add_entity(SceneEntityId(1), "StretchImg", None)
             .unwrap();
         let entity = scene.entities.get_mut(&SceneEntityId(1)).unwrap();
-        // 内联 Image 数据故意与 UiLayout 解析结果不同。
         entity.components.insert(
             "Image".to_owned(),
-            "texture=assets/textures/coin.png;x=1;y=2;width=8;height=8".to_owned(),
+            "texture=assets/textures/coin.png".to_owned(),
         );
         entity.components.insert(
             "UiLayout".to_owned(),

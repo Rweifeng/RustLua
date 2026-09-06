@@ -1,4 +1,4 @@
-//! Versioned, human-readable scene format with validation and migration hooks.
+//! Versioned, human-readable scene format with strict validation.
 
 use crate::core::resource_db::AssetId;
 use std::{
@@ -11,10 +11,8 @@ use std::{
 
 /// The version written by `Scene::save` and required by `Scene::validate`.
 ///
-/// Version 2 introduced the `Transform3D` / `MeshRenderer` / `Camera3D` /
-/// `Light` components. Because component payloads are opaque strings, version 1
-/// scenes migrate without data transformation: the migration only raises the
-/// version and records `meta migrated_from=1` for traceability.
+/// Version 2 requires separate `UiLayout` geometry and also includes the 3D
+/// render components. Older and future versions are rejected.
 pub const CURRENT_SCENE_VERSION: u32 = 2;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -178,7 +176,8 @@ impl Scene {
                 continue;
             }
             if f[0] == "entity" {
-                // 兼容带/不带尾随父实体字段两种写法（3 或 4 字段）。
+                // Parent is optional: an entity is either a root (3 fields) or
+                // a child (4 fields).
                 if f.len() != 3 && f.len() != 4 {
                     return Err(SceneError::Parse {
                         line: n + 1,
@@ -239,30 +238,8 @@ impl Scene {
         if scene.version == 0 || scene.version > CURRENT_SCENE_VERSION {
             return Err(SceneError::UnsupportedVersion(scene.version));
         }
-        if scene.version < CURRENT_SCENE_VERSION {
-            scene.migrate_to_current()?;
-        }
         scene.validate()?;
         Ok(scene)
-    }
-    /// Brings a scene written by an older format up to `CURRENT_SCENE_VERSION`.
-    ///
-    /// Component payloads are opaque strings, so version 1 → 2 needs no data
-    /// rewrite; the migration only raises the version and records the origin
-    /// for traceability. Newer migrations should transform here and must reject
-    /// versions they cannot handle with [`SceneError::UnsupportedVersion`].
-    fn migrate_to_current(&mut self) -> Result<(), SceneError> {
-        let from = self.version;
-        match from {
-            1 => {
-                self.version = CURRENT_SCENE_VERSION;
-                self.metadata
-                    .entry("migrated_from".to_owned())
-                    .or_insert_with(|| from.to_string());
-                Ok(())
-            }
-            _ => Err(SceneError::UnsupportedVersion(from)),
-        }
     }
 
     pub fn validate(&self) -> Result<(), SceneError> {
@@ -424,10 +401,14 @@ mod tests {
         assert!(e.to_string().contains("line 3"));
     }
     #[test]
-    fn rejects_zero_or_future_version() {
+    fn rejects_unsupported_version() {
         assert!(matches!(
             Scene::from_text("scene_version=0\nname=x\n"),
             Err(SceneError::UnsupportedVersion(0))
+        ));
+        assert!(matches!(
+            Scene::from_text("scene_version=1\nname=x\n"),
+            Err(SceneError::UnsupportedVersion(1))
         ));
         assert!(matches!(
             Scene::from_text("scene_version=3\nname=x\n"),
@@ -436,30 +417,7 @@ mod tests {
     }
 
     #[test]
-    fn version_1_scene_migrates_to_current_and_roundtrips() {
-        let text = "scene_version=1\nname=legacy\n\
-                    entity\t1\tPlayer\t\n\
-                    component\t1\tTransform\tx=0;y=0;rotation=0;scale_x=1;scale_y=1\n";
-        let migrated = Scene::from_text(text).unwrap();
-        assert_eq!(migrated.version, CURRENT_SCENE_VERSION);
-        assert_eq!(migrated.name, "legacy");
-        assert_eq!(
-            migrated.metadata.get("migrated_from").map(String::as_str),
-            Some("1")
-        );
-        assert_eq!(migrated.entities.len(), 1);
-        // A migrated scene saves and reloads as the current version.
-        let p = root("migrate").join("main.scene");
-        migrated.save(&p).unwrap();
-        let reloaded = Scene::load(&p).unwrap();
-        assert_eq!(reloaded.version, CURRENT_SCENE_VERSION);
-        assert_eq!(reloaded, migrated);
-        let _ = fs::remove_dir_all(root("migrate"));
-    }
-
-    #[test]
-    fn migration_only_runs_for_older_versions() {
-        // Current-version scenes are untouched: no `migrated_from` marker.
+    fn current_scene_roundtrip_is_not_marked_migrated() {
         let fresh = Scene::from_text(&format!(
             "scene_version={CURRENT_SCENE_VERSION}\nname=fresh\n"
         ))
@@ -491,7 +449,7 @@ mod tests {
         let _ = fs::remove_dir_all(root("v2"));
     }
     #[test]
-    fn resources_and_migration_entry_are_explicit() {
+    fn resources_entry_is_explicit() {
         let mut s = Scene::new("x");
         s.add_entity(SceneEntityId(1), "x", None).unwrap();
         let id = AssetId::from_seed("a");

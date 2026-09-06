@@ -1,9 +1,9 @@
-//! E21: typed schemas for high-value scene components while retaining the
-//! legacy `BTreeMap<String, String>` scene format.
+//! E21: typed schemas for high-value scene components encoded as
+//! `BTreeMap<String, String>`.
 
 use std::{collections::BTreeMap, fmt};
 
-/// A validated component instance decoded from the legacy component string.
+/// A validated component instance decoded from a serialized component string.
 pub type ComponentData = BTreeMap<String, FieldValue>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -169,8 +169,8 @@ impl ComponentSchema {
         }
     }
 
-    /// Parses and validates a legacy component payload. Missing optional
-    /// fields remain absent, which keeps old scene files unchanged on save.
+    /// Parses and validates a component payload. Missing optional fields remain
+    /// absent, so round-trips do not add synthetic defaults.
     pub fn parse(&self, raw: &str) -> Result<ComponentData, SchemaError> {
         let mut data = ComponentData::new();
         for field in raw.split(';') {
@@ -305,7 +305,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_legacy_transform_and_round_trips() {
+    fn parses_transform_and_round_trips() {
         let registry = builtin_registry();
         let data = registry["Transform"]
             .parse("x=1;y=-2;rotation=0;scale_x=2;scale_y=3")

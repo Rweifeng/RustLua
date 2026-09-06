@@ -159,13 +159,8 @@ impl Default for Collider3dFields {
 #[derive(Clone, Debug, PartialEq)]
 pub struct TextFields {
     pub text: String,
-    pub space: String,
-    pub anchor_x: f32,
-    pub anchor_y: f32,
-    pub x: f32,
-    pub y: f32,
-    /// 像素字号（px）；旧 `scale` 在读取时换算。
-    pub font_size: Option<f32>,
+    /// 像素字号（px）。
+    pub font_size: f32,
     pub color_r: f32,
     pub color_g: f32,
     pub color_b: f32,
@@ -175,12 +170,7 @@ impl Default for TextFields {
     fn default() -> Self {
         Self {
             text: String::new(),
-            space: "canvas".to_owned(),
-            anchor_x: 0.0,
-            anchor_y: 0.0,
-            x: 10.0,
-            y: 10.0,
-            font_size: Some(engine::core::ui::UI_TEXT_BASE_PX),
+            font_size: engine::core::ui::UI_TEXT_BASE_PX,
             color_r: 1.0,
             color_g: 1.0,
             color_b: 1.0,
@@ -192,13 +182,6 @@ impl Default for TextFields {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ImageFields {
     pub texture: String,
-    pub space: String,
-    pub anchor_x: f32,
-    pub anchor_y: f32,
-    pub x: f32,
-    pub y: f32,
-    pub width: f32,
-    pub height: f32,
     pub color_r: f32,
     pub color_g: f32,
     pub color_b: f32,
@@ -213,13 +196,6 @@ impl Default for ImageFields {
     fn default() -> Self {
         Self {
             texture: String::new(),
-            space: "canvas".to_owned(),
-            anchor_x: 0.0,
-            anchor_y: 0.0,
-            x: 10.0,
-            y: 10.0,
-            width: 64.0,
-            height: 64.0,
             color_r: 1.0,
             color_g: 1.0,
             color_b: 1.0,
@@ -443,9 +419,12 @@ impl InspectorState {
     ) -> Result<(), InspectorError> {
         let reference = reference.into();
         validate_asset_reference(&reference)?;
+        let sprite = engine::core::sprite::SpriteComponent::from_component_str(&reference)
+            .map_err(|error| InspectorError::InvalidAssetReference(error.to_string()))?;
         let entity = entity_mut(document, id)?;
-        if entity.components.get("Sprite") != Some(&reference) {
-            entity.components.insert("Sprite".into(), reference);
+        let value = sprite.to_component_str();
+        if entity.components.get("Sprite") != Some(&value) {
+            entity.components.insert("Sprite".into(), value);
             document.mark_dirty();
         }
         Ok(())
@@ -1190,12 +1169,8 @@ fn decode_collider3d(value: &str) -> Result<Collider3dFields, InspectorError> {
 fn encode_text(fields: &TextFields) -> Result<String, InspectorError> {
     Ok(UiText {
         text: fields.text.clone(),
-        position: [fields.x, fields.y],
-        scale: 1.0,
         font_size: fields.font_size,
         color: [fields.color_r, fields.color_g, fields.color_b],
-        space: parse_ui_layout_space(&fields.space).map_err(InspectorError::InvalidText)?,
-        anchor: [fields.anchor_x, fields.anchor_y],
     }
     .to_component_str())
 }
@@ -1203,15 +1178,9 @@ fn encode_text(fields: &TextFields) -> Result<String, InspectorError> {
 fn decode_text(value: &str) -> Result<TextFields, InspectorError> {
     let ui = UiText::from_component_str(value)
         .map_err(|error| InspectorError::InvalidText(error.to_string()))?;
-    let font_size = ui.effective_scale() * engine::core::ui::UI_TEXT_BASE_PX;
     Ok(TextFields {
         text: ui.text,
-        space: ui.space.as_str().to_owned(),
-        anchor_x: ui.anchor[0],
-        anchor_y: ui.anchor[1],
-        x: ui.position[0],
-        y: ui.position[1],
-        font_size: Some(font_size),
+        font_size: ui.font_size,
         color_r: ui.color[0],
         color_g: ui.color[1],
         color_b: ui.color[2],
@@ -1268,11 +1237,7 @@ fn encode_image(fields: &ImageFields) -> Result<String, InspectorError> {
     };
     Ok(UiImage {
         texture: fields.texture.clone(),
-        position: [fields.x, fields.y],
-        size: [fields.width, fields.height],
         color: [fields.color_r, fields.color_g, fields.color_b],
-        space: parse_ui_layout_space(&fields.space).map_err(InspectorError::InvalidImage)?,
-        anchor: [fields.anchor_x, fields.anchor_y],
         nine_slice,
     }
     .to_component_str())
@@ -1287,13 +1252,6 @@ fn decode_image(value: &str) -> Result<ImageFields, InspectorError> {
         .unwrap_or((0.0, 0.0, 0.0, 0.0));
     Ok(ImageFields {
         texture: ui.texture,
-        space: ui.space.as_str().to_owned(),
-        anchor_x: ui.anchor[0],
-        anchor_y: ui.anchor[1],
-        x: ui.position[0],
-        y: ui.position[1],
-        width: ui.size[0],
-        height: ui.size[1],
         color_r: ui.color[0],
         color_g: ui.color[1],
         color_b: ui.color[2],
@@ -1321,14 +1279,6 @@ fn validate_image(fields: &ImageFields) -> Result<(), InspectorError> {
     UiImage::from_component_str(&value)
         .map(|_| ())
         .map_err(|error| InspectorError::InvalidImage(error.to_string()))
-}
-
-fn parse_ui_layout_space(value: &str) -> Result<engine::core::ui::UiLayoutSpace, String> {
-    match value {
-        "screen" => Ok(engine::core::ui::UiLayoutSpace::Screen),
-        "canvas" => Ok(engine::core::ui::UiLayoutSpace::Canvas),
-        _ => Err(format!("invalid UI layout space: {value}")),
-    }
 }
 
 fn validate_camera3d(camera: Camera3DFields) -> Result<(), InspectorError> {
@@ -1796,7 +1746,7 @@ mod tests {
     fn sprite_png_accepts() {
         let (mut document, inspector, id) = setup();
         inspector
-            .set_sprite_reference(&mut document, id, "textures/player.png")
+            .set_sprite_reference(&mut document, id, "texture=textures/player.png")
             .unwrap();
         assert_eq!(
             inspector
@@ -1804,14 +1754,16 @@ mod tests {
                 .unwrap()
                 .sprite_reference
                 .as_deref(),
-            Some("textures/player.png")
+            Some(
+                "texture=textures/player.png;size=128x128;pivot=0.500,0.500;tint=1.000,1.000,1.000,1.000;sorting_layer=default;order=0"
+            )
         );
     }
     #[test]
     fn sprite_jpg_accepts() {
         let (mut document, inspector, id) = setup();
         inspector
-            .set_sprite_reference(&mut document, id, "textures/player.jpg")
+            .set_sprite_reference(&mut document, id, "texture=textures/player.jpg")
             .unwrap();
         assert!(document.is_dirty());
     }
@@ -1830,7 +1782,7 @@ mod tests {
         let (mut document, inspector, id) = setup();
         assert!(
             inspector
-                .set_sprite_reference(&mut document, id, "../player.png")
+                .set_sprite_reference(&mut document, id, "texture=../player.png")
                 .is_err()
         );
     }
@@ -1839,7 +1791,7 @@ mod tests {
         let (mut document, inspector, id) = setup();
         assert!(
             inspector
-                .set_sprite_reference(&mut document, id, "player.txt")
+                .set_sprite_reference(&mut document, id, "texture=player.txt")
                 .is_err()
         );
     }
@@ -1847,7 +1799,7 @@ mod tests {
     fn sprite_clear_marks_dirty() {
         let (mut document, inspector, id) = setup();
         inspector
-            .set_sprite_reference(&mut document, id, "player.png")
+            .set_sprite_reference(&mut document, id, "texture=player.png")
             .unwrap();
         document.mark_clean();
         inspector.clear_sprite_reference(&mut document, id).unwrap();
@@ -2034,7 +1986,7 @@ mod tests {
             )
             .unwrap();
         inspector
-            .set_sprite_reference(&mut document, id, "player.png")
+            .set_sprite_reference(&mut document, id, "texture=player.png")
             .unwrap();
         inspector
             .set_lua_script(&mut document, id, "player.lua")
@@ -2137,8 +2089,6 @@ mod tests {
                 id,
                 ImageFields {
                     texture: "assets/textures/ui/panel.png".to_owned(),
-                    width: 192.0,
-                    height: 64.0,
                     nine_slice_l: 8.0,
                     nine_slice_r: 8.0,
                     nine_slice_t: 16.0,
@@ -2209,8 +2159,6 @@ mod tests {
                 id,
                 ImageFields {
                     texture: "assets/textures/ui/panel.png".to_owned(),
-                    width: 192.0,
-                    height: 64.0,
                     nine_slice_l: 8.0,
                     nine_slice_r: 8.0,
                     nine_slice_t: 16.0,

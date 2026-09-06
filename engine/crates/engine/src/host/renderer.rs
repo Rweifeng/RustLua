@@ -2295,7 +2295,7 @@ mod tests {
             trace: wgpu::Trace::Off,
         }))
         .expect("request test device");
-        let root = crate::core::legacy_games_dir().join("tetris");
+        let root = crate::core::fixture_games_dir().join("tetris");
         if !root.join("scenes/main.scene").is_file() {
             return;
         }
@@ -2382,7 +2382,7 @@ mod tests {
             trace: wgpu::Trace::Off,
         }))
         .expect("device");
-        let root = crate::core::legacy_games_dir().join("tetris");
+        let root = crate::core::fixture_games_dir().join("tetris");
         let mut renderer = Renderer::new_offscreen(
             device.clone(),
             queue.clone(),
@@ -2406,7 +2406,7 @@ mod tests {
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let root = crate::core::legacy_games_dir().join("tetris");
+        let root = crate::core::fixture_games_dir().join("tetris");
         if !root.join("scenes/main.scene").is_file() {
             return;
         }
@@ -2619,7 +2619,7 @@ mod tests {
         .expect("request test device");
         let mut renderer = Renderer::new_offscreen(device.clone(), queue, None, false, false)
             .expect("offscreen renderer");
-        let game = crate::core::games_dir().join("game_showcase");
+        let game = crate::core::games_dir().join("examples");
         if !game.join("scenes/main.scene").is_file() {
             return;
         }

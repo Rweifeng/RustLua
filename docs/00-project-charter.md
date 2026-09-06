@@ -235,4 +235,4 @@ docs/02-technical-decisions.md
 
 - 里程碑 M0–M15 已归档至 `tasks/done/`，M16–M20 处于 BACKLOG（见 docs/README 与 CHANGELOG）；
 - 最新发布标签：`v0.10-editor`（编辑器强化）；
-- 当前主线（Unreleased）：运行时动态 UI 数据模型、玩法 Lua API、WebGL 发布、编辑器资源浏览器与导入/发布体验优化；默认能力展示工程为 `game_showcase/`。
+- 当前主线（Unreleased）：运行时动态 UI 数据模型、玩法 Lua API、WebGL 发布、编辑器资源浏览器与导入/发布体验优化；默认能力展示工程为 `examples/`。

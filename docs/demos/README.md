@@ -1,6 +1,6 @@
-# game_showcase Demo 总览
+# examples Demo 总览
 
-`game_showcase` 是默认能力展示工程。启动后先进入 `scenes/index.scene`，每个菜单按钮对应一个聚焦 Demo；按 `Escape` 返回入口。
+`examples` 是默认能力展示工程。启动后先进入 `scenes/index.scene`，每个菜单按钮对应一个聚焦 Demo；按 `Escape` 返回入口。
 
 ## 运行
 
@@ -14,7 +14,7 @@
 也可以直接指定工程：
 
 ```powershell
-cargo run --manifest-path engine/Cargo.toml -p game -- --project game_showcase
+cargo run --manifest-path engine/Cargo.toml -p game -- --project examples
 ```
 
 ## Demo 地图
@@ -37,4 +37,4 @@ cargo run --manifest-path engine/Cargo.toml -p game -- --project game_showcase
 | `stress` | 大量 Sprite 的 ECS/变换/剔除压力 |
 | `physics3d` | 3D 刚体、碰撞事件与重置 |
 
-单项 Demo 的实现集中在 `game_showcase/scripts/demo_*.lua`。完整玩法示例由 `production_*` 与经典玩法模块承担，`route.lua` 负责场景到模块的分发。
+单项 Demo 的实现集中在 `examples/scripts/demo_*.lua`。完整玩法示例由 `production_*` 与经典玩法模块承担，`route.lua` 负责场景到模块的分发。

@@ -277,7 +277,10 @@ impl EditorApp {
         if !dir.join("scenes/main.scene").is_file() {
             std::fs::write(
                 dir.join("scenes/main.scene"),
-                "scene_version=1\nname=main\n",
+                format!(
+                    "scene_version={}\nname=main\n",
+                    engine::core::scene::CURRENT_SCENE_VERSION
+                ),
             )
             .map_err(fs_err)?;
         }
@@ -308,7 +311,7 @@ mod tests {
     }
 
     fn sample_project_root() -> PathBuf {
-        engine::core::games_dir().join("game_showcase")
+        engine::core::games_dir().join("examples")
     }
 
     fn copy_dir(source: &Path, destination: &Path) {

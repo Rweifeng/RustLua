@@ -1,9 +1,9 @@
-//! 游戏工程路径解析。当前默认展示工程是仓库内 `game_showcase`；少量历史
-//! 测试 fixture 仍在仓库外 `games` 目录，使用 `legacy_games_dir` 显式解析。
+//! 游戏工程路径解析。当前默认示例工程是仓库内 `examples`；少量大型字体
+//! 测试 fixture 仍在仓库外 `games` 目录，使用 `fixture_games_dir` 显式解析。
 
 use std::path::PathBuf;
 
-/// 当前游戏工程根目录（仓库内 game_showcase）。
+/// 当前游戏工程根目录（仓库内 examples）。
 ///
 /// 解析顺序：
 /// 1. 环境变量 `P2_GAMES_DIR`（显式指定，最优先）；
@@ -22,9 +22,9 @@ pub fn games_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-/// 历史测试 fixture 所在目录（ui_demo / tetris / game_farm 等）。
-pub fn legacy_games_dir() -> PathBuf {
-    if let Some(dir) = std::env::var_os("P2_LEGACY_GAMES_DIR") {
+/// 仓库外测试 fixture 所在目录（ui_demo / tetris / game_farm 等）。
+pub fn fixture_games_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("P2_FIXTURES_DIR") {
         return PathBuf::from(dir);
     }
     games_dir()

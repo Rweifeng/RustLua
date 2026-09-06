@@ -1,0 +1,356 @@
+﻿
+ab_glyph v0.2.32
+ab_glyph v0.2.32 (*)
+ab_glyph_rasterizer v0.1.10
+accesskit v0.21.1
+accesskit_consumer v0.31.0
+accesskit_windows v0.29.2
+accesskit_winit v0.29.2
+adler2 v2.0.1
+aead v0.5.2
+ahash v0.8.12
+ahash v0.8.12 (*)
+allocator-api2 v0.2.21
+approx v0.5.1
+approx v0.5.1 (*)
+arboard v3.6.1
+arrayvec v0.7.8
+ash v0.38.0+1.3.281
+assetc v0.1.0 (C:\GitHub\p2\engine\crates\assetc)
+base64 v0.13.1
+bitflags v1.3.2
+bitflags v2.13.1
+bit-set v0.8.0
+bit-set v0.8.0 (*)
+bit-vec v0.7.0
+bit-vec v0.8.0
+bstr v1.13.1
+bymsdfgen-core v0.1.1
+bytemuck v1.25.2
+bytemuck v1.25.2 (*)
+bytemuck_derive v1.12.0 (proc-macro)
+byteorder v1.5.0
+byteorder-lite v0.1.0
+cfg-if v1.0.4
+chacha20 v0.9.1
+chacha20poly1305 v0.10.1
+cipher v0.4.4
+cipher v0.4.4 (*)
+claxon v0.4.3
+clipboard-win v5.4.1
+codespan-reporting v0.12.0
+cpal v0.15.3
+cpufeatures v0.2.17
+crc32fast v1.5.0
+crc32fast v1.5.0 (*)
+crossbeam v0.8.4
+crossbeam v0.8.4 (*)
+crossbeam-channel v0.5.16
+crossbeam-channel v0.5.16 (*)
+crossbeam-deque v0.8.7
+crossbeam-deque v0.8.7 (*)
+crossbeam-epoch v0.9.20
+crossbeam-epoch v0.9.20 (*)
+crossbeam-queue v0.3.13
+crossbeam-utils v0.8.22
+crypto-common v0.1.7
+crypto-common v0.1.7 (*)
+cursor-icon v1.2.0
+dasp_sample v0.11.0
+deranged v0.5.8
+displaydoc v0.2.7 (proc-macro)
+displaydoc v0.2.7 (proc-macro) (*)
+document-features v0.2.12 (proc-macro)
+document-features v0.2.12 (proc-macro) (*)
+downcast-rs v1.2.1
+dpi v0.1.2
+ecolor v0.33.3
+editor v0.1.0 (C:\GitHub\p2\engine\crates\editor)
+eframe v0.33.3
+egui v0.33.3
+egui v0.33.3 (*)
+egui_glow v0.33.3
+egui-wgpu v0.33.3
+egui-winit v0.33.3
+either v1.17.0
+emath v0.33.3
+emath v0.33.3 (*)
+ena v0.14.4
+ena v0.14.4 (*)
+encoding_rs v0.8.35
+engine v0.1.0 (C:\GitHub\p2\engine\crates\engine)
+engine v0.1.0 (C:\GitHub\p2\engine\crates\engine) (*)
+epaint v0.33.3
+epaint v0.33.3 (*)
+epaint_default_fonts v0.33.3
+equivalent v1.0.2
+error-code v3.4.0
+fdeflate v0.3.7
+flate2 v1.1.9
+flate2 v1.1.9 (*)
+foldhash v0.1.5
+foldhash v0.2.0
+form_urlencoded v1.2.2
+game v0.1.0 (C:\GitHub\p2\engine\crates\game)
+game_web v0.1.0 (C:\GitHub\p2\engine\crates\game_web)
+generic-array v0.14.7
+generic-array v0.14.7 (*)
+getrandom v0.2.17
+getrandom v0.2.17 (*)
+glow v0.16.0
+gltf v1.4.1
+gltf-derive v1.4.1 (proc-macro)
+gltf-json v1.4.1
+glutin v0.32.3
+glutin v0.32.3 (*)
+glutin_egl_sys v0.7.1
+glutin_wgl_sys v0.6.1
+glutin-winit v0.5.0
+gpu-alloc v0.6.2
+gpu-allocator v0.27.0
+gpu-alloc-types v0.3.1
+gpu-descriptor v0.3.2
+gpu-descriptor-types v0.2.0
+half v2.7.1
+hash32 v0.3.1
+hashbrown v0.15.5
+hashbrown v0.15.5 (*)
+hashbrown v0.16.1
+hashbrown v0.16.1 (*)
+hashbrown v0.17.1
+heapless v0.8.0
+hexf-parse v0.2.1
+hound v3.5.1
+icu_collections v2.3.0
+icu_collections v2.3.0 (*)
+icu_locale_core v2.3.0
+icu_locale_core v2.3.0 (*)
+icu_normalizer v2.3.0
+icu_normalizer_data v2.3.0
+icu_properties v2.3.0
+icu_properties_data v2.3.0
+icu_provider v2.3.0
+icu_provider v2.3.0 (*)
+idna v1.1.0
+idna_adapter v1.2.2
+image v0.25.10
+image v0.25.10 (*)
+indexmap v2.14.0
+indexmap v2.14.0 (*)
+inflections v1.1.1
+inout v0.1.4
+itoa v1.0.18
+khronos-egl v6.0.0
+lazy_static v1.5.0
+lewton v0.10.2
+libc v0.2.189
+libloading v0.8.9
+libloading v0.8.9 (*)
+libm v0.2.16
+litemap v0.8.3
+litrs v1.0.0
+lock_api v0.4.14
+log v0.4.33
+matchers v0.2.0
+matrixmultiply v0.3.11
+memchr v2.8.3
+memoffset v0.9.1
+miniz_oxide v0.8.9
+miniz_oxide v0.8.9 (*)
+mlua v0.11.6
+mlua-sys v0.10.0
+moxcms v0.8.1
+naga v27.0.3
+naga v27.0.3 (*)
+nalgebra v0.33.3
+nalgebra v0.33.3 (*)
+nalgebra-macros v0.2.2 (proc-macro)
+nohash-hasher v0.2.0
+nu-ansi-term v0.50.3
+num-complex v0.4.6
+num-complex v0.4.6 (*)
+num-conv v0.2.2
+num-derive v0.4.2 (proc-macro)
+num-derive v0.4.2 (proc-macro) (*)
+num-integer v0.1.47
+num-rational v0.4.2
+num-traits v0.2.19
+num-traits v0.2.19 (*)
+ogg v0.8.0
+once_cell v1.21.4
+opaque-debug v0.3.1
+ordered-float v4.6.0
+ordered-float v4.6.0 (*)
+ordered-float v5.3.0
+owned_ttf_parser v0.25.1
+parking_lot v0.12.5
+parking_lot v0.12.5 (*)
+parking_lot_core v0.9.12
+parry2d v0.17.6
+parry3d v0.17.6
+paste v1.0.15 (proc-macro)
+percent-encoding v2.3.2
+pin-project-lite v0.2.17
+png v0.18.1
+pollster v0.4.0
+poly1305 v0.8.0
+potential_utf v0.1.6
+powerfmt v0.2.0
+ppv-lite86 v0.2.21
+presser v0.3.1
+proc-macro2 v1.0.107
+proc-macro2 v1.0.107 (*)
+profiling v1.0.18
+pxfm v0.1.30
+quote v1.0.47
+quote v1.0.47 (*)
+rand v0.8.7
+rand_chacha v0.3.1
+rand_core v0.6.4
+rand_core v0.6.4 (*)
+range-alloc v0.1.5
+rapier2d v0.22.0
+rapier3d v0.22.0
+rawpointer v0.2.1
+raw-window-handle v0.6.2
+rayon v1.12.0
+rayon-core v1.13.0
+regex-automata v0.4.18
+regex-automata v0.4.18 (*)
+regex-syntax v0.8.11
+renderdoc-sys v1.1.0
+robust v1.2.0
+rodio v0.19.0
+rstar v0.12.2
+rustc-hash v1.1.0
+rustc-hash v2.1.3
+rustversion v1.0.23 (proc-macro)
+safe_arch v0.7.4
+scopeguard v1.2.0
+serde v1.0.229
+serde_core v1.0.229
+serde_derive v1.0.229 (proc-macro)
+serde_json v1.0.151
+serde_json v1.0.151 (*)
+sharded-slab v0.1.7
+simba v0.9.1
+simba v0.9.1 (*)
+simd-adler32 v0.3.10
+slab v0.4.12
+smallvec v1.15.2
+smol_str v0.2.2
+spade v2.15.1
+spade v2.15.1 (*)
+spirv v0.3.0+sdk-1.3.268.0
+stable_deref_trait v1.2.1
+static_assertions v1.1.0
+subtle v2.6.1
+symlink v0.1.0
+symphonia v0.5.5
+symphonia-bundle-mp3 v0.5.5
+symphonia-core v0.5.5
+symphonia-core v0.5.5 (*)
+symphonia-metadata v0.5.5
+symphonia-metadata v0.5.5 (*)
+syn v2.0.119
+syn v2.0.119 (*)
+syn v3.0.3
+syn v3.0.3 (*)
+synstructure v0.13.2
+synstructure v0.13.2 (*)
+thiserror v1.0.69
+thiserror v1.0.69 (*)
+thiserror v2.0.20
+thiserror v2.0.20 (*)
+thiserror-impl v1.0.69 (proc-macro)
+thiserror-impl v2.0.20 (proc-macro)
+thread_local v1.1.10
+time v0.3.55
+time-core v0.1.9
+tinystr v0.8.4
+tinyvec v1.12.0
+tinyvec_macros v0.1.1
+tracing v0.1.44
+tracing v0.1.44 (*)
+tracing-appender v0.2.5
+tracing-attributes v0.1.31 (proc-macro)
+tracing-core v0.1.36
+tracing-core v0.1.36 (*)
+tracing-log v0.2.0
+tracing-subscriber v0.3.23
+tracing-subscriber v0.3.23 (*)
+ttf-parser v0.25.1
+type-map v0.5.1
+typenum v1.20.1
+unicode-ident v1.0.24
+unicode-segmentation v1.13.3
+unicode-width v0.2.2
+universal-hash v0.5.1
+url v2.5.8
+urlencoding v2.1.3
+utf8_iter v1.0.4
+webbrowser v1.2.4
+web-time v1.1.0
+wgpu v27.0.1
+wgpu v27.0.1 (*)
+wgpu-core v27.0.3
+wgpu-core-deps-windows-linux-android v27.0.0
+wgpu-hal v27.0.4
+wgpu-hal v27.0.4 (*)
+wgpu-types v27.0.1
+wgpu-types v27.0.1 (*)
+wide v0.7.33
+windows v0.54.0
+windows v0.58.0
+windows v0.58.0 (*)
+windows v0.61.3
+windows_x86_64_msvc v0.52.6
+windows-collections v0.2.0
+windows-core v0.54.0
+windows-core v0.58.0
+windows-core v0.58.0 (*)
+windows-core v0.61.2
+windows-core v0.61.2 (*)
+windows-future v0.2.1
+windows-implement v0.58.0 (proc-macro)
+windows-implement v0.60.2 (proc-macro)
+windows-interface v0.58.0 (proc-macro)
+windows-interface v0.59.3 (proc-macro)
+windows-link v0.1.3
+windows-link v0.2.1
+windows-numerics v0.2.0
+windows-result v0.1.2
+windows-result v0.2.0
+windows-result v0.2.0 (*)
+windows-result v0.3.4
+windows-strings v0.1.0
+windows-strings v0.4.2
+windows-sys v0.52.0
+windows-sys v0.52.0 (*)
+windows-sys v0.59.0
+windows-sys v0.61.2
+windows-sys v0.61.2 (*)
+windows-targets v0.52.6
+windows-targets v0.52.6 (*)
+windows-threading v0.1.0
+winit v0.30.13
+winit v0.30.13 (*)
+writeable v0.6.4
+yoke v0.8.3
+yoke v0.8.3 (*)
+yoke-derive v0.8.2 (proc-macro)
+zerocopy v0.8.56
+zerocopy v0.8.56 (*)
+zerocopy-derive v0.8.56 (proc-macro)
+zerofrom v0.1.8
+zerofrom v0.1.8 (*)
+zerofrom-derive v0.1.7 (proc-macro)
+zeroize v1.9.0
+zerotrie v0.2.5
+zerotrie v0.2.5 (*)
+zerovec v0.11.8
+zerovec v0.11.8 (*)
+zerovec-derive v0.11.5 (proc-macro)
+zmij v1.0.23
+zune-core v0.5.3
+zune-jpeg v0.5.15

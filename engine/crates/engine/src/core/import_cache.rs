@@ -12,6 +12,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+const CURRENT_IMPORT_CACHE_HEADER: &str = "# rustlua-import-cache-v1";
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct CacheRecord {
     fingerprint: String,
@@ -155,7 +157,8 @@ impl ImportCache {
             fs::create_dir_all(parent)?;
         }
         let temporary = self.metadata_path.with_extension("tmp");
-        let mut output = String::from("# rustlua-import-cache-v1\n");
+        let mut output = String::from(CURRENT_IMPORT_CACHE_HEADER);
+        output.push('\n');
         let mut records: Vec<_> = self.records.iter().collect();
         records.sort_by_key(|(id, _)| id.to_string());
         for (id, record) in records {
@@ -174,8 +177,17 @@ impl ImportCache {
     }
 
     fn load(&mut self) -> Result<(), ImportCacheError> {
-        for (line_no, line) in fs::read_to_string(&self.metadata_path)?.lines().enumerate() {
-            if line.starts_with('#') || line.trim().is_empty() {
+        let text = fs::read_to_string(&self.metadata_path)?;
+        let mut lines = text.lines();
+        match lines.next() {
+            Some(header) if header == CURRENT_IMPORT_CACHE_HEADER => {}
+            Some(header) => {
+                return Err(ImportCacheError::UnsupportedSchemaVersion(header.to_owned()));
+            }
+            None => return Err(ImportCacheError::Malformed { line: 1 }),
+        }
+        for (line_no, line) in lines.enumerate() {
+            if line.trim().is_empty() {
                 continue;
             }
             let fields: Vec<_> = line.split('\t').collect();
@@ -205,6 +217,7 @@ pub enum ImportCacheError {
     Read { path: String, reason: String },
     InvalidSource { path: String, reason: String },
     Malformed { line: usize },
+    UnsupportedSchemaVersion(String),
 }
 impl fmt::Display for ImportCacheError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -213,6 +226,9 @@ impl fmt::Display for ImportCacheError {
             Self::Read { path, reason } => write!(f, "cannot read source {path}: {reason}"),
             Self::InvalidSource { path, reason } => write!(f, "invalid source {path}: {reason}"),
             Self::Malformed { line } => write!(f, "malformed import cache line {line}"),
+            Self::UnsupportedSchemaVersion(value) => {
+                write!(f, "unsupported import cache schema: {value}")
+            }
         }
     }
 }
@@ -303,6 +319,26 @@ mod tests {
     }
 
     #[test]
+    fn rejects_missing_or_unknown_schema_header() {
+        let root = root("schema");
+        let metadata = root
+            .join(crate::core::PROJECT_WORK_DIR)
+            .join("import-cache.db");
+        fs::create_dir_all(metadata.parent().unwrap()).unwrap();
+        fs::write(&metadata, "# rustlua-import-cache-v0\n").unwrap();
+        assert!(matches!(
+            ImportCache::open(&root),
+            Err(ImportCacheError::UnsupportedSchemaVersion(_))
+        ));
+        fs::write(&metadata, "").unwrap();
+        assert!(matches!(
+            ImportCache::open(&root),
+            Err(ImportCacheError::Malformed { line: 1 })
+        ));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn content_or_importer_version_change_reimports() {
         let root = root("change");
         let mut cache = ImportCache::open(&root).unwrap();
@@ -381,8 +417,7 @@ mod tests {
         let root = root("gltf");
         let mut cache = ImportCache::open(&root).unwrap();
         let id = AssetId::from_seed("triangle");
-        let Some(bytes) = fixture("../../../game_showcase/assets/models/m8-test-triangle.glb")
-        else {
+        let Some(bytes) = fixture("../../../examples/assets/models/m8-test-triangle.glb") else {
             return;
         };
         let path = source(&root, "m8-test-triangle.glb", &bytes);

@@ -587,9 +587,9 @@ struct SceneEditorState {
     pan: egui::Vec2,
     drag: Option<SceneDrag>,
     preview: std::collections::BTreeMap<SceneEntityId, TransformFields>,
-    /// UI 组件拖拽预览（实体 id → 组件 x/y 字段的预览位置）。UI 组件的位置
-    /// 存在组件自身而非 Transform，拖拽时单独预览，提交时写回组件。
-    preview_ui: std::collections::BTreeMap<SceneEntityId, [f32; 2]>,
+    /// UI 组件拖拽预览（实体 id → UiLayout 四边 offset 预览值）。布局与视觉
+    /// 组件分离，拖拽时单独预览，提交时写回 `UiLayout`。
+    preview_ui: std::collections::BTreeMap<SceneEntityId, [f32; 4]>,
     /// 3D 实体变换预览（画布俯视 XZ 投影；M9-03/M10-07）。
     preview3d_transform: std::collections::BTreeMap<SceneEntityId, Transform3D>,
     /// 3D 平移/旋转/缩放 Gizmo 拖拽（M9-03/M10-07）。
@@ -606,8 +606,8 @@ struct SceneDrag {
     ids: Vec<SceneEntityId>,
     start: egui::Pos2,
     initial: std::collections::BTreeMap<SceneEntityId, TransformFields>,
-    /// UI 组件拖拽初始位置（组件 key、初始 x/y、authored space）。仅在选中
-    /// 实体带 Image/Button/Text 组件时填充；拖拽预览与提交均走该路径。
+    /// UI 组件拖拽初始 offsets。仅在选中实体带 UiLayout 视觉组件时填充；
+    /// 拖拽预览与提交均走该路径。
     ui_initial: std::collections::BTreeMap<SceneEntityId, UiDragInitial>,
 }
 
@@ -615,9 +615,9 @@ struct SceneDrag {
 /// （见 `set_ui_component_position`）。
 #[derive(Clone, Copy)]
 struct UiDragInitial {
-    /// 组件 x/y 字段（authored 坐标）。UI 组件绘制在设计分辨率包围框内，
-    /// Screen/Canvas 两空间拖动增量换算同为 zoom/ppp（见 draw_scene_view）。
-    position: [f32; 2],
+    /// `UiLayout` 四边 offset（authored 坐标）。UI 元素绘制在设计分辨率
+    /// 包围框内，拖动增量换算为 zoom/ppp（见 draw_scene_view）。
+    offsets: [f32; 4],
 }
 
 /// 3D 变换 Gizmo 拖拽：约束到哪个轴（Y 为垂直高度，Free 为 XZ 平面；

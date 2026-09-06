@@ -181,8 +181,8 @@ const LINE_HEIGHT_EM: f32 = 1.2;
 /// Deterministic text layout.
 pub struct TextLayout;
 impl TextLayout {
-    /// Legacy bitmap layout using the built-in 5x7 glyph metrics (kept for the
-    /// no-font fallback and standalone examples).
+    /// Bitmap layout using the built-in 5x7 glyph metrics for the no-font
+    /// fallback and standalone examples.
     pub fn build_bitmap(
         text: &str,
         origin: [f32; 2],

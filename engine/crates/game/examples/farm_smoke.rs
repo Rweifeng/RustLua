@@ -23,7 +23,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let project = env::args()
         .nth(1)
         .map(PathBuf::from)
-        .unwrap_or_else(|| engine::core::legacy_games_dir().join("game_farm"));
+        .unwrap_or_else(|| engine::core::fixture_games_dir().join("game_farm"));
     let project = project.canonicalize()?;
     if !project.join("project.toml").is_file() {
         return Err(format!("not a game project: {}", project.display()).into());
@@ -236,13 +236,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if loaded_day.trim() != "3" {
         return Err(format!("expected day 3 after F2 load, got {loaded_day:?}").into());
     }
-    let loaded_version = second.execute_console("return save.version()")?;
-    if loaded_version.trim() != "1" {
-        return Err(format!("expected save.version()==1, got {loaded_version:?}").into());
-    }
-
     println!(
-        "farm_smoke_ok project={} seeds={} plots={} tomato_sell={} tomato_stages={} harvest_tomatoes={} day={} shop_sell={} tomatoes_after={} loaded_day={} save_version={}",
+        "farm_smoke_ok project={} seeds={} plots={} tomato_sell={} tomato_stages={} harvest_tomatoes={} day={} shop_sell={} tomatoes_after={} loaded_day={}",
         project.display(),
         seeds.trim(),
         plots.trim(),
@@ -252,8 +247,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         day.trim(),
         tomato_price.trim(),
         tomatoes_after.trim(),
-        loaded_day.trim(),
-        loaded_version.trim()
+        loaded_day.trim()
     );
     let _ = fs::remove_file(save_path);
     Ok(())

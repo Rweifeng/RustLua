@@ -4,10 +4,7 @@
 //! ([`CanvasConfig`]).
 //!
 //! All computation here is pure logic with no GPU/window dependency, so the
-//! editor preview and the runtime share the same resolve paths. The legacy
-//! single-point anchor model in [`crate::core::ui`] stays untouched for
-//! backward compatibility; [`UiRectLayout::from_point`] maps old data into
-//! the four-edge model losslessly.
+//! editor preview and the runtime share the same resolve paths.
 
 /// A pixel-space rectangle: top-left origin (x, y) plus size (w, h).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -88,22 +85,6 @@ impl Default for UiRectLayout {
 }
 
 impl UiRectLayout {
-    /// Builds a point-anchored layout from the legacy (anchor, position,
-    /// size) triple, where `position` is the legacy pivot offset from the
-    /// anchor point. The result reproduces the legacy resolve math exactly
-    /// (see tests).
-    #[must_use]
-    pub fn from_point(anchor: [f32; 2], position: [f32; 2], size: [f32; 2]) -> Self {
-        let left = position[0] - anchor[0] * size[0];
-        let top = position[1] - anchor[1] * size[1];
-        Self {
-            anchors: [anchor[0], anchor[1], anchor[0], anchor[1]],
-            offsets: [left, top, left + size[0], top + size[1]],
-            pivot: [anchor[0], anchor[1]],
-            ..Self::default()
-        }
-    }
-
     /// Builds a layout from a named preset with explicit offsets.
     #[must_use]
     pub fn from_preset(preset: UiLayoutPreset, offsets: UiOffsets) -> Self {
@@ -842,17 +823,6 @@ mod tests {
     }
 
     // ---- E16: UiRectLayout resolve ---------------------------------------
-
-    #[test]
-    fn point_layout_matches_legacy_anchor_math() {
-        // Legacy: origin = anchor_point + position - size * anchor.
-        let parent = [1920.0, 1080.0];
-        let layout = UiRectLayout::from_point([0.5, 0.0], [-160.0, 20.0], [320.0, 60.0]);
-        let rect = layout.resolve(parent);
-        // left = 960 - 160 = 800; top = 0 + 20 = 20
-        // pivot = anchor = [0.5, 0] → origin = (left - 0.5*320, top - 0) = (640, 20)
-        assert_rect(rect, [640.0, 20.0, 320.0, 60.0]);
-    }
 
     #[test]
     fn stretch_horizontal_tracks_parent_width() {

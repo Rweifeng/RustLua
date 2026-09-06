@@ -1496,7 +1496,7 @@ mod tests {
     }
 
     fn sample_project_root() -> PathBuf {
-        engine::core::games_dir().join("game_showcase")
+        engine::core::games_dir().join("examples")
     }
 
     fn copy_dir(source: &Path, destination: &Path) {
@@ -1694,7 +1694,7 @@ mod tests {
         root
     }
 
-    /// 打开 game_showcase 副本并打开其 scenes/production.scene。
+    /// 打开 examples 副本并打开其 scenes/production.scene。
     /// 与 inspector tests 的 sample_app_with_production_scene 行为保持一致
     /// （拷贝 assets/scenes 后不依赖资源索引，Prefab 按相对路径加载）。
     fn open_sample_production(label: &str) -> (EditorApp, PathBuf) {
@@ -2423,7 +2423,9 @@ mod tests {
             scene.mark_dirty();
         }
         app.scene_state.preview.insert(id, app.transform);
-        app.scene_state.preview_ui.insert(id, [3.0, -5.0]);
+        app.scene_state
+            .preview_ui
+            .insert(id, [3.0, -5.0, 3.0, -5.0]);
         app.scene_state
             .preview3d_transform
             .insert(id, Transform3D::default());

@@ -1,0 +1,8 @@
+﻿RustLua game engine release package
+publish_name: examples
+build_time: 2026-09-06 15:27:34
+platform: pc
+engine version: 0.1.0
+toolchain: rustc 1.98.0 (88d9e12ae 2026-08-18)
+contents: game.exe, fonts/NotoSansSC-VF.ttf, pack/ (data), release.toml, run.txt, deps.txt
+font_check: fonts/NotoSansSC-VF.ttf present and non-empty

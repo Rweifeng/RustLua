@@ -26,8 +26,7 @@ use engine::core::{
     tilemap::Tilemap,
     transform::Vec2,
     transform3d::Transform3D,
-    ui::{UiImage, UiLayout, UiText, resolve_ui_text_origin},
-    ui_layout::UiRect,
+    ui_layout::{UiRect, UiRectLayout},
     ui_scene_layout::{UiSceneNode, resolve_scene_ui_layout},
 };
 use engine::host::{
@@ -244,7 +243,7 @@ impl EditorApp {
         for entity in entities.iter() {
             let box_rect = egui::Rect::from_center_size(entity.center, entity.size);
             if self.scene_view_mode == crate::SceneViewMode::Widget
-                && let Some(ui_entity) = entity.ui
+                && let Some(ref ui_entity) = entity.ui
             {
                 let anchor = design_rect_to_panel(
                     rect,
@@ -254,8 +253,12 @@ impl EditorApp {
                     self.game_camera_center_egui(),
                     self.preview_resolution,
                     [
-                        ui_entity.anchor[0] * self.preview_resolution.0 as f32,
-                        ui_entity.anchor[1] * self.preview_resolution.1 as f32,
+                        (ui_entity.layout.anchors[0] + ui_entity.layout.anchors[2])
+                            * 0.5
+                            * self.preview_resolution.0 as f32,
+                        (ui_entity.layout.anchors[1] + ui_entity.layout.anchors[3])
+                            * 0.5
+                            * self.preview_resolution.1 as f32,
                     ],
                     [0.0, 0.0],
                 )
@@ -370,11 +373,11 @@ impl EditorApp {
                     .iter()
                     .filter(|entity| ids.contains(&entity.id))
                     .filter_map(|entity| {
-                        entity.ui.map(|ui| {
+                        entity.ui.as_ref().map(|ui| {
                             (
                                 entity.id,
                                 UiDragInitial {
-                                    position: ui.position,
+                                    offsets: ui.layout.offsets,
                                 },
                             )
                         })
@@ -433,7 +436,7 @@ impl EditorApp {
             let angle = (delta.x * 0.5).to_radians();
             let factor = (1.0 + delta.x * 0.01).max(0.05);
             for id in &drag.ids {
-                // UI 组件拖拽：只预览组件 x/y（屏幕空间），不写 Transform。
+                // UI 组件拖拽：只预览 UiLayout offsets，不写 Transform。
                 if let Some(ui) = drag.ui_initial.get(id) {
                     // UI 组件绘制在设计分辨率包围框内，随 Scene 缩放（world→面板 =
                     // world*zoom/ppp）：面板拖动增量（points）换算成设计像素增量 =
@@ -442,8 +445,10 @@ impl EditorApp {
                     preview_ui.insert(
                         *id,
                         [
-                            ui.position[0] + delta.x / per_axis.x,
-                            ui.position[1] + delta.y / per_axis.y,
+                            ui.offsets[0] + delta.x / per_axis.x,
+                            ui.offsets[1] + delta.y / per_axis.y,
+                            ui.offsets[2] + delta.x / per_axis.x,
+                            ui.offsets[3] + delta.y / per_axis.y,
                         ],
                     );
                     continue;
@@ -488,7 +493,7 @@ impl EditorApp {
         pixels_per_point: f32,
     ) -> Vec<SceneBoxedEntity> {
         let scene = self.document.current_scene.as_ref();
-        let mut runtime = self.scene_runtime.as_mut();
+        let _runtime = self.scene_runtime.as_mut();
         let scene_state = &self.scene_state;
         let scene_zoom = self.scene_zoom;
         let pan = scene_state.pan;
@@ -505,7 +510,7 @@ impl EditorApp {
         let nodes = scene_ui_nodes(&scene.scene);
         let (mut resolved_ui_layouts, _) = resolve_scene_ui_layout(&nodes, canvas_size);
         // Keep only explicit Anchor+Offset layouts and container placements;
-        // the resolver's default origin rects must not shift legacy UI.
+        // the resolver's default origin rects must not shift the UI.
         resolved_ui_layouts.retain(|id, resolved| {
             resolved.container_controlled || nodes.get(id).is_some_and(|node| node.layout.is_some())
         });
@@ -530,18 +535,16 @@ impl EditorApp {
                         .and_then(|v| parse_transform(v))
                 })
                 .unwrap_or_default();
-            // UI 组件（Image/Button/Text）在设计分辨率包围框内渲染，包围框按组件
-            // 自身 x/y/width/height/space/anchor 解析后映射进包围框（随 pan/zoom）；
+            // UI 组件在设计分辨率包围框内渲染，包围框按 UiLayout 四边
+            // Anchor+Offset 解析后映射进包围框（随 pan/zoom）；
             // 其余实体（Sprite/图块）按 Transform 世界坐标 + pan/zoom 映射。空实体
             // 回退默认框。
             if let Some((center, size, ui)) = ui_entity_2d_box(
                 e,
                 rect,
-                scene_state.preview_ui.get(&e.id).copied(),
                 resolved_ui_layouts
                     .get(&e.id.0)
                     .map(|resolved| resolved.rect),
-                runtime.as_deref_mut(),
                 scene_state.pan,
                 scene_zoom,
                 camera_center,
@@ -1272,7 +1275,7 @@ impl EditorApp {
         }
         for (id, position) in &preview_ui {
             if let Some(entity) = scene.scene.entities.get_mut(id) {
-                set_ui_component_position(entity, *position);
+                set_ui_component_layout(entity, *position);
             }
         }
         scene.mark_dirty();
@@ -2378,27 +2381,20 @@ fn pick_gizmo_axis(
 }
 
 /// UI 组件实体的拖拽改写信息。
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct UiEntityInfo {
-    position: [f32; 2],
-    anchor: [f32; 2],
+    layout: UiRectLayout,
 }
 
 /// 计算 UI 组件实体（Image/Button/Text）在面板坐标系的真实包围框。
 ///
-/// UI 组件的位置/尺寸来自组件自身的 `x/y/width/height/space/anchor`（而非
-/// Transform）。实际 UI 在 Scene 视图的设计分辨率包围框内渲染（游戏画面纹理，
-/// world 映射）。这里以设计分辨率为 viewport + 参考，用与运行时相同的
-/// `resolve_ui_rect`/`resolve_ui_text_origin` 解析出设计像素矩形，再经
-/// `design_rect_to_panel` 映射进包围框（随 Scene 平移/缩放移动），使包围框与
-/// 包围框内渲染的 UI 对齐；`override_position` 提供拖拽预览位置。
+/// `UiLayout` 是唯一几何事实来源；`Image` / `Text` 只提供视觉属性。这里用与
+/// 运行时相同的四边 Anchor+Offset 解析出设计像素矩形，再映射进 Scene 视图。
 #[allow(clippy::too_many_arguments)]
 fn ui_entity_2d_box(
     entity: &SceneEntity,
     rect: egui::Rect,
-    override_position: Option<[f32; 2]>,
     override_layout: Option<UiRect>,
-    runtime: Option<&mut RuntimeScene>,
     pan: egui::Vec2,
     zoom: f32,
     center: egui::Vec2,
@@ -2407,7 +2403,6 @@ fn ui_entity_2d_box(
 ) -> Option<(egui::Pos2, egui::Vec2, UiEntityInfo)> {
     // UI 坐标是设计分辨率像素（包围框内）；经 design_rect_to_panel 映射到面板逻辑坐标。
     let viewport = [design_resolution.0 as f32, design_resolution.1 as f32];
-    let reference = viewport;
     // 直接返回期望尺寸（`egui::Rect::size()` 是 max-min，rect 远离原点时会有浮点
     // 抵消误差），中心沿用 `design_rect_to_panel` 的映射。
     let box_of = |origin: [f32; 2], size: [f32; 2]| {
@@ -2427,84 +2422,28 @@ fn ui_entity_2d_box(
             egui::vec2(size[0] * zoom / ppp, size[1] * zoom / ppp),
         )
     };
-    if let Some(raw) = entity.components.get("Image")
-        && let Ok(image) = UiImage::from_component_str(raw)
+    let raw_layout = entity.components.get("UiLayout")?;
+    let layout = UiRectLayout::from_component_str(raw_layout).ok()?;
+    if !(entity.components.contains_key("Image")
+        || entity.components.contains_key("Button")
+        || entity.components.contains_key("Text"))
     {
-        let (origin, size, position) = if let Some(resolved) = override_layout {
-            (
-                [resolved.x, resolved.y],
-                [resolved.w, resolved.h],
-                [resolved.x, resolved.y],
-            )
-        } else {
-            let position = override_position.unwrap_or(image.position);
-            let (origin, size) = UiLayout::from_image(&image)
-                .with_position(position)
-                .resolve(viewport, reference);
-            (origin, size, position)
-        };
-        let (center, size) = box_of(origin, size);
-        return Some((
-            center,
-            size,
-            UiEntityInfo {
-                position,
-                anchor: image.anchor,
-            },
-        ));
+        return None;
     }
-    if let Some(raw) = entity.components.get("Text")
-        && let Ok(text) = UiText::from_component_str(raw)
+    let resolved = override_layout.unwrap_or_else(|| layout.resolve(viewport));
+    let mut resolved = resolved;
+    if entity.components.contains_key("Text")
+        && resolved.w == 0.0
+        && resolved.h == 0.0
+        && let Some(raw) = entity.components.get("Text")
+        && let Ok(text) = engine::core::ui::UiText::from_component_str(raw)
     {
-        let position = override_layout
-            .map(|resolved| [resolved.x, resolved.y])
-            .or(override_position)
-            .unwrap_or(text.position);
-        // 文本没有尺寸字段：先按运行时同款 resolve 得到缩放后的 glyph scale
-        // （font_size 优先于 scale），度量网格尺寸与字形像素范围，再解析文本块
-        // 原点。锚点按网格 size（与运行时渲染一致）；包围框贴合字形 bbox ——
-        // 网格 size 含 ascender/descender 空白，字形在其中不垂直居中，直接用
-        // 网格会让框与文字错位。
-        let effective_scale = text.effective_scale();
-        let (_, resolved_scale) = resolve_ui_text_origin(
-            position,
-            [0.0, 0.0],
-            effective_scale,
-            text.space,
-            text.anchor,
-            viewport,
-            reference,
-        );
-        let (text_size, glyph_bounds) = match runtime {
-            Some(runtime) => runtime.measure_ui_text(&text.text, resolved_scale),
-            None => fallback_measure_text(&text.text, resolved_scale),
-        };
-        let (origin, _) = resolve_ui_text_origin(
-            position,
-            text_size,
-            effective_scale,
-            text.space,
-            text.anchor,
-            viewport,
-            reference,
-        );
-        // 字形相对网格原点的偏移 + 尺寸。
-        let glyph_origin = [origin[0] + glyph_bounds[0], origin[1] + glyph_bounds[1]];
-        let glyph_size = [
-            (glyph_bounds[2] - glyph_bounds[0]).max(0.0),
-            (glyph_bounds[3] - glyph_bounds[1]).max(0.0),
-        ];
-        let (center, size) = box_of(glyph_origin, glyph_size);
-        return Some((
-            center,
-            size,
-            UiEntityInfo {
-                position,
-                anchor: text.anchor,
-            },
-        ));
+        let (_, bounds) = measure_text_without_runtime(&text.text, text.effective_scale());
+        resolved.w = (bounds[2] - bounds[0]).max(0.0);
+        resolved.h = (bounds[3] - bounds[1]).max(0.0);
     }
-    None
+    let (center, size) = box_of([resolved.x, resolved.y], [resolved.w, resolved.h]);
+    Some((center, size, UiEntityInfo { layout }))
 }
 
 fn scene_ui_nodes(
@@ -2520,12 +2459,17 @@ fn scene_ui_nodes(
             let container = entity.components.get("Container").and_then(|raw| {
                 engine::core::ui_layout::ContainerStyle::from_component_str(raw).ok()
             });
-            let preferred_size = entity
-                .components
-                .get("Image")
-                .and_then(|raw| UiImage::from_component_str(raw).ok())
-                .map(|image| image.size)
-                .unwrap_or([64.0, 64.0]);
+            let preferred_size = if entity.components.contains_key("Image") {
+                layout
+                    .as_ref()
+                    .map(|layout| {
+                        let rect = layout.resolve([0.0, 0.0]);
+                        [rect.w, rect.h]
+                    })
+                    .unwrap_or([64.0, 64.0])
+            } else {
+                [64.0, 64.0]
+            };
             (
                 entity.id.0,
                 UiSceneNode {
@@ -2539,9 +2483,9 @@ fn scene_ui_nodes(
         .collect()
 }
 
-/// 无运行时时度量文本的兜底：用内置 5x7 位图指标（与运行时无字体回退一致）。
+/// 无运行时时度量文本：用内置 5x7 位图指标（与运行时无字体回退一致）。
 /// 返回 `(size, pixel_bounds)`，语义同 `RuntimeScene::measure_ui_text`。
-fn fallback_measure_text(text: &str, scale: f32) -> ([f32; 2], [f32; 4]) {
+fn measure_text_without_runtime(text: &str, scale: f32) -> ([f32; 2], [f32; 4]) {
     let atlas = TextAtlas::built_in();
     TextLayout::build_bitmap(
         text,
@@ -2556,37 +2500,20 @@ fn fallback_measure_text(text: &str, scale: f32) -> ([f32; 2], [f32; 4]) {
     .unwrap_or(([0.0, 0.0], [0.0; 4]))
 }
 
-/// 把实体上的 UI 组件（Image/Text）x/y 改写为给定位置（拖拽提交）。
-/// 找到第一个可用 UI 组件改写并返回 `true`；无 UI 组件返回 `false`。
-fn set_ui_component_position(entity: &mut SceneEntity, position: [f32; 2]) -> bool {
-    let Some(key) = ["Image", "Text"]
-        .into_iter()
-        .find(|key| entity.components.contains_key(*key))
-    else {
+/// 把实体上的 `UiLayout` 四边 offset 改写为拖拽提交值。
+/// 只改写已存在的布局组件；视觉组件保持不变。
+fn set_ui_component_layout(entity: &mut SceneEntity, offsets: [f32; 4]) -> bool {
+    let Some(raw) = entity.components.get("UiLayout") else {
         return false;
     };
-    let updated = {
-        let Some(raw) = entity.components.get(key) else {
-            return false;
-        };
-        match key {
-            "Image" => UiImage::from_component_str(raw).ok().map(|mut component| {
-                component.position = position;
-                component.to_component_str()
-            }),
-            "Text" => UiText::from_component_str(raw).ok().map(|mut component| {
-                component.position = position;
-                component.to_component_str()
-            }),
-            _ => None,
-        }
+    let Ok(mut layout) = UiRectLayout::from_component_str(raw) else {
+        return false;
     };
-    if let Some(updated) = updated {
-        entity.components.insert(key.to_owned(), updated);
-        true
-    } else {
-        false
-    }
+    layout.offsets = offsets;
+    entity
+        .components
+        .insert("UiLayout".to_owned(), layout.to_component_str());
+    true
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -2690,6 +2617,7 @@ mod tests {
     use crate::EditorCamera;
     use editor::open_project;
     use engine::core::logging::LogSink;
+    use engine::core::ui_layout::UiLayoutPreset;
 
     #[test]
     fn pick_scene_2d_entity_uses_topmost_unlocked_hit() {
@@ -2808,7 +2736,6 @@ mod tests {
     }
     use engine::core::scene::SceneEntityId;
     use engine::core::transform::Vec2;
-    use engine::core::ui::UiLayoutSpace;
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -2840,14 +2767,14 @@ mod tests {
         .ok()
     }
 
-    /// 复现 game_showcase/ui_test.scene 的 GPU 离屏渲染（含 font_size=75 的 SDF 文本、
+    /// 复现 examples/ui_test.scene 的 GPU 离屏渲染（含 font_size=75 的 SDF 文本、
     /// Image/Button 覆盖层），若 render_into_texture panic 则测试失败。
     #[test]
     fn ui_test_scene_renders_offscreen_with_gpu() {
         let Some((device, queue)) = test_device() else {
             return;
         };
-        let source = engine::core::games_dir().join("game_showcase");
+        let source = engine::core::games_dir().join("examples");
         let root = temp_root("ui-test-gpu");
         fs::create_dir_all(&root).unwrap();
         fs::copy(source.join("project.toml"), root.join("project.toml")).unwrap();
@@ -2898,7 +2825,7 @@ mod tests {
     }
 
     fn sample_project_root() -> PathBuf {
-        engine::core::games_dir().join("game_showcase")
+        engine::core::games_dir().join("examples")
     }
 
     fn copy_dir(source: &Path, destination: &Path) {
@@ -3280,26 +3207,21 @@ mod tests {
         let mut scene = engine::core::scene::Scene::new("ui-image");
         let id = SceneEntityId(10);
         scene.add_entity(id, "LogoCoin", None).unwrap();
-        let image = UiImage {
-            texture: "assets/textures/coin.png".to_owned(),
-            position: [0.0, -180.0],
-            size: [112.0, 112.0],
-            color: [1.0; 3],
-            space: UiLayoutSpace::Canvas,
-            anchor: [0.5, 0.5],
-            nine_slice: None,
-        };
         {
             let entity = scene.entities.get_mut(&id).unwrap();
+            entity.components.insert(
+                "Image".to_owned(),
+                "texture=assets/textures/coin.png".to_owned(),
+            );
+            let layout =
+                UiRectLayout::from_preset(UiLayoutPreset::Center, [-56.0, -236.0, 56.0, -124.0]);
             entity
                 .components
-                .insert("Image".to_owned(), image.to_component_str());
+                .insert("UiLayout".to_owned(), layout.to_component_str());
         }
         let (center, size, info) = ui_entity_2d_box(
             scene.entities.get(&id).unwrap(),
             rect,
-            None,
-            None,
             None,
             egui::Vec2::ZERO,
             1.0,
@@ -3308,17 +3230,15 @@ mod tests {
             1.0,
         )
         .unwrap();
-        // canvas 比例 1.0（1280x720），anchor 0.5,0.5 → 中心 = 面板中心 + (0,-180)。
+        // 四边 Anchor+Offset 解析出 112×112，中心 = 面板中心 + (0,-180)。
         assert_eq!(center, egui::pos2(640.0, 180.0));
         assert_eq!(size, egui::vec2(112.0, 112.0));
-        assert_eq!(info.position, [0.0, -180.0]);
-        // 拖拽预览 override 位置 → 包围框跟随。
+        assert_eq!(info.layout.offsets, [-56.0, -236.0, 56.0, -124.0]);
+        // 拖拽预览 override UiRect → 包围框跟随。
         let (center, _, _) = ui_entity_2d_box(
             scene.entities.get(&id).unwrap(),
             rect,
-            Some([0.0, -360.0]),
-            None,
-            None,
+            Some(UiRect::new(584.0, -56.0, 112.0, 112.0)),
             egui::Vec2::ZERO,
             1.0,
             egui::Vec2::ZERO,
@@ -3335,26 +3255,21 @@ mod tests {
         let mut scene = engine::core::scene::Scene::new("ui-image-screen");
         let id = SceneEntityId(11);
         scene.add_entity(id, "StartImage", None).unwrap();
-        let image = UiImage {
-            texture: "assets/textures/coin.png".to_owned(),
-            position: [10.0, 20.0],
-            size: [240.0, 56.0],
-            color: [1.0; 3],
-            space: UiLayoutSpace::Screen,
-            anchor: [0.0, 0.0],
-            nine_slice: None,
-        };
         {
             let entity = scene.entities.get_mut(&id).unwrap();
+            entity.components.insert(
+                "Image".to_owned(),
+                "texture=assets/textures/coin.png".to_owned(),
+            );
+            let layout =
+                UiRectLayout::from_preset(UiLayoutPreset::TopLeft, [10.0, 20.0, 250.0, 76.0]);
             entity
                 .components
-                .insert("Image".to_owned(), image.to_component_str());
+                .insert("UiLayout".to_owned(), layout.to_component_str());
         }
         let (center, size, _) = ui_entity_2d_box(
             scene.entities.get(&id).unwrap(),
             rect,
-            None,
-            None,
             None,
             egui::Vec2::ZERO,
             1.0,
@@ -3363,7 +3278,7 @@ mod tests {
             1.0,
         )
         .unwrap();
-        // box 映射：Screen 元素按设计分辨率画布解析（位置 (10,20)），再映射进
+        // box 映射：UiLayout 按设计分辨率解析出 (10,20,240,56)，再映射进
         // 400×300 面板上的 1280×720 包围框（画布 (0,0) → 框左上角 (-440,-210)，
         // 元素左上角 (10,20) → (-430,-190)，中心 (-310,-162)）。
         assert_eq!(center, egui::pos2(-310.0, -162.0));
@@ -3376,26 +3291,20 @@ mod tests {
         let mut scene = engine::core::scene::Scene::new("ui-text");
         let id = SceneEntityId(12);
         scene.add_entity(id, "Title", None).unwrap();
-        let text = UiText {
-            text: "Start Production".to_owned(),
-            position: [0.0, 0.0],
-            scale: 2.4,
-            font_size: None,
-            color: [1.0; 3],
-            space: UiLayoutSpace::Canvas,
-            anchor: [0.5, 0.5],
-        };
         {
             let entity = scene.entities.get_mut(&id).unwrap();
+            entity.components.insert(
+                "Text".to_owned(),
+                "text=Start Production;font_size=28.8".to_owned(),
+            );
+            let layout = UiRectLayout::from_preset(UiLayoutPreset::Center, [0.0, 0.0, 0.0, 0.0]);
             entity
                 .components
-                .insert("Text".to_owned(), text.to_component_str());
+                .insert("UiLayout".to_owned(), layout.to_component_str());
         }
         let (center, size, info) = ui_entity_2d_box(
             scene.entities.get(&id).unwrap(),
             rect,
-            None,
-            None,
             None,
             egui::Vec2::ZERO,
             1.0,
@@ -3404,18 +3313,11 @@ mod tests {
             1.0,
         )
         .unwrap();
-        // 与运行时同款解析：canvas 缩放 = 1.0 → resolved_scale = scale。
-        let (_, resolved_scale) = resolve_ui_text_origin(
-            [0.0, 0.0],
-            [0.0, 0.0],
-            2.4,
-            UiLayoutSpace::Canvas,
-            [0.5, 0.5],
-            [1280.0, 720.0],
-            [1280.0, 720.0],
-        );
-        assert_eq!(resolved_scale, 2.4);
-        let (text_size, bounds) = fallback_measure_text("Start Production", resolved_scale);
+        // 与运行时同款：布局点决定文本网格原点，度量只补齐可见字形包围框。
+        let text =
+            engine::core::ui::UiText::from_component_str("text=Start Production;font_size=28.8")
+                .unwrap();
+        let (_, bounds) = measure_text_without_runtime(&text.text, text.effective_scale());
         let gw = (bounds[2] - bounds[0]).max(0.0);
         let gh = (bounds[3] - bounds[1]).max(0.0);
         // 包围框贴合字形 bbox：尺寸 = 字形像素范围（网格 size 含尾随 advance，
@@ -3424,27 +3326,13 @@ mod tests {
             (size.x - gw).abs() < 1e-4 && (size.y - gh).abs() < 1e-4,
             "size={size:?} expected=({gw}, {gh})"
         );
-        // anchor 0.5,0.5 且位置在原点：网格中心 = 面板中心；字形中心 = 网格中心
-        // + 字形在网格内的偏移。
-        let (origin, _) = resolve_ui_text_origin(
-            [0.0, 0.0],
-            text_size,
-            2.4,
-            UiLayoutSpace::Canvas,
-            [0.5, 0.5],
-            [1280.0, 720.0],
-            [1280.0, 720.0],
-        );
-        let expected = egui::pos2(
-            origin[0] + bounds[0] + gw * 0.5,
-            origin[1] + bounds[1] + gh * 0.5,
-        );
+        let expected = egui::pos2(640.0 + bounds[0] + gw * 0.5, 360.0 + bounds[1] + gh * 0.5);
         // 字形 bbox 中心经包围框映射，与同款解析期望一致（浮点路径不同，允许亚像素误差）。
         assert!(
             (center.x - expected.x).abs() < 1e-3 && (center.y - expected.y).abs() < 1e-3,
             "center={center:?} expected={expected:?}"
         );
-        assert_eq!(info.position, [0.0, 0.0]);
+        assert_eq!(info.layout.anchors, [0.5, 0.5, 0.5, 0.5]);
     }
 
     #[test]
@@ -3471,8 +3359,6 @@ mod tests {
                 scene.entities.get(&id).unwrap(),
                 rect,
                 None,
-                None,
-                None,
                 egui::Vec2::ZERO,
                 1.0,
                 egui::Vec2::ZERO,
@@ -3484,26 +3370,22 @@ mod tests {
     }
 
     #[test]
-    fn set_ui_component_position_rewrites_image_and_rejects_others() {
+    fn set_ui_component_layout_rewrites_ui_and_rejects_others() {
         let mut scene = engine::core::scene::Scene::new("ui-rewrite");
         let image_id = SceneEntityId(20);
         let sprite_id = SceneEntityId(21);
         scene.add_entity(image_id, "Coin", None).unwrap();
         scene.add_entity(sprite_id, "Player", None).unwrap();
-        let image = UiImage {
-            texture: "assets/textures/coin.png".to_owned(),
-            position: [0.0, -180.0],
-            size: [112.0, 112.0],
-            color: [1.0; 3],
-            space: UiLayoutSpace::Canvas,
-            anchor: [0.5, 0.5],
-            nine_slice: None,
-        };
         {
             let entity = scene.entities.get_mut(&image_id).unwrap();
+            entity.components.insert(
+                "Image".to_owned(),
+                "texture=assets/textures/coin.png".to_owned(),
+            );
+            let layout = UiRectLayout::from_preset(UiLayoutPreset::Center, [0.0, 0.0, 0.0, 0.0]);
             entity
                 .components
-                .insert("Image".to_owned(), image.to_component_str());
+                .insert("UiLayout".to_owned(), layout.to_component_str());
             let sprite = SpriteComponent {
                 texture: "assets/textures/player.png".to_owned(),
                 size: Vec2::new(64.0, 32.0),
@@ -3515,24 +3397,24 @@ mod tests {
                 .components
                 .insert("Sprite".to_owned(), sprite.to_component_str());
         }
-        assert!(set_ui_component_position(
+        assert!(set_ui_component_layout(
             scene.entities.get_mut(&image_id).unwrap(),
-            [33.0, 44.0],
+            [33.0, 44.0, 33.0, 44.0],
         ));
-        let rewritten = UiImage::from_component_str(
+        let rewritten = UiRectLayout::from_component_str(
             scene
                 .entities
                 .get(&image_id)
                 .unwrap()
                 .components
-                .get("Image")
+                .get("UiLayout")
                 .unwrap(),
         )
         .unwrap();
-        assert_eq!(rewritten.position, [33.0, 44.0]);
-        assert!(!set_ui_component_position(
+        assert_eq!(rewritten.offsets, [33.0, 44.0, 33.0, 44.0]);
+        assert!(!set_ui_component_layout(
             scene.entities.get_mut(&sprite_id).unwrap(),
-            [1.0, 2.0],
+            [1.0, 2.0, 1.0, 2.0],
         ));
     }
 
@@ -3549,45 +3431,29 @@ mod tests {
         let rect = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1280.0, 720.0));
         let entities = app.collect_scene_2d_entities(rect, "", 1.0);
         let by_id = |id: u64| entities.iter().find(|e| e.id == SceneEntityId(id)).unwrap();
-        // LogoCoin（Image，canvas，anchor 0.5,0.5，x=0,y=-180）：中心 = 面板中心 + (0,-180)。
+        // LogoCoin（Image + UiLayout 四边几何）：中心 = 面板中心 + (0,-180)。
         let coin = by_id(2);
         assert!(coin.ui.is_some());
         assert_eq!(coin.center, egui::pos2(640.0, 180.0));
         assert_eq!(coin.size, egui::vec2(112.0, 112.0));
-        // StartButton（Button，x=-120,y=40, 240x56）：中心 = (520,400)。
+        // StartButton（Button + UiLayout 四边几何 240x56）：中心 = (520,400)。
         let start = by_id(5);
         assert_eq!(start.center, egui::pos2(520.0, 400.0));
         assert_eq!(start.size, egui::vec2(240.0, 56.0));
-        // Title（Text，无尺寸字段，x=0,y=-70, scale=2.4, anchor 0.5,0.5）：包围框
-        // 贴合字形 bbox（去掉 ascender 空白与尾随 advance）。测试未启动场景运行时，
-        // collect 走 fallback 位图路径，这里用同款逻辑重算期望中心。
+        // Title（Text，视觉字段，UiLayout 点锚提供网格原点）：包围框贴合字形
+        // bbox（去掉 ascender 空白与尾随 advance）。测试未启动场景运行时，
+        // collect 走无运行时位图度量，这里用同款逻辑重算期望中心。
         let title = by_id(3);
         let scene = app.document.current_scene.as_ref().unwrap();
-        let raw = &scene.scene.entities[&SceneEntityId(3)].components["Text"];
-        let text = UiText::from_component_str(raw).unwrap();
-        let viewport = [rect.width(), rect.height()];
-        let (_, resolved_scale) = resolve_ui_text_origin(
-            text.position,
-            [0.0, 0.0],
-            text.effective_scale(),
-            text.space,
-            text.anchor,
-            viewport,
-            [1280.0, 720.0],
-        );
-        let (text_size, bounds) = fallback_measure_text(&text.text, resolved_scale);
-        let (origin, _) = resolve_ui_text_origin(
-            text.position,
-            text_size,
-            text.effective_scale(),
-            text.space,
-            text.anchor,
-            viewport,
-            [1280.0, 720.0],
-        );
+        let entity = &scene.scene.entities[&SceneEntityId(3)];
+        let text =
+            engine::core::ui::UiText::from_component_str(&entity.components["Text"]).unwrap();
+        let layout = UiRectLayout::from_component_str(&entity.components["UiLayout"]).unwrap();
+        let origin = layout.resolve([rect.width(), rect.height()]);
+        let (_, bounds) = measure_text_without_runtime(&text.text, text.effective_scale());
         let expected_center = egui::pos2(
-            origin[0] + bounds[0] + (bounds[2] - bounds[0]) * 0.5,
-            origin[1] + bounds[1] + (bounds[3] - bounds[1]) * 0.5,
+            origin.x + bounds[0] + (bounds[2] - bounds[0]) * 0.5,
+            origin.y + bounds[1] + (bounds[3] - bounds[1]) * 0.5,
         );
         assert_eq!(title.center, expected_center);
         // MenuBackdrop 是 Sprite 世界实体，不走 UI 分支。
@@ -3596,12 +3462,12 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
-    /// 复现 game_showcase/ui_test.scene 的 2D 场景视图渲染：打开场景并走完整的
+    /// 复现 examples/ui_test.scene 的 2D 场景视图渲染：打开场景并走完整的
     /// 运行时建立（SDF 字体）+ UI 实体收集路径，断言不 panic/不报错。
     #[test]
     fn ui_test_scene_2d_view_collect_does_not_panic() {
-        // 复制到临时目录，绝不触碰真实的 game_showcase 项目。
-        let source = engine::core::games_dir().join("game_showcase");
+        // 复制到临时目录，绝不触碰真实的 examples 项目。
+        let source = engine::core::games_dir().join("examples");
         let root = temp_root("ui-test");
         fs::create_dir_all(&root).unwrap();
         fs::copy(source.join("project.toml"), root.join("project.toml")).unwrap();

@@ -63,7 +63,8 @@
 - 原因：glTF 2.0 适合运行时分发，`.glb` 可将测试资产和二进制数据封装为单文件，成熟解析库能降低 accessor、buffer、材质和动画边界错误。
 - 支持范围：静态 Mesh 的 POSITION/NORMAL/TEXCOORD_0、索引、基础材质纹理、节点层级；后续增加一个 skin 和动画状态。
 - 非目标：首版不支持任意 glTF 扩展、 morph target、复杂材质扩展、压缩 Mesh 和自研解析器。
-- 兼容：assetc 以导入器版本控制缓存；场景格式通过版本号和迁移保持 `v0.7` 旧 2D 场景可加载；不支持的扩展必须报告文件、节点或 primitive 上下文并返回失败。
+- 格式：assetc 以导入器版本控制缓存；场景、资源库和存档只接受当前版本，
+  不保留旧格式迁移层；不支持的扩展必须报告文件、节点或 primitive 上下文并返回失败。
 - 重新评估条件：目标资产无法由标准 glTF 2.0 表达，或解析库无法在当前许可证和 Windows 发布约束下使用。
 
 ## ADR-0007：M8 3D 坐标、单位和深度约定
@@ -149,7 +150,7 @@
 - 状态：Accepted
 - 日期：2026-08-25
 - 范围：M12 资源系统闭环（ResourceDatabase、ImporterRegistry、依赖图与失效传播）。
-- 决定：资源生命周期用显式状态机建模（`ResourceState`：`Discovered/Ready/ImportFailed/Stale/Missing/Orphaned/Invalid/ImportQueued/Importing/Removed`），数据库以 TSV v2 schema 持久化（含 v1 迁移与损坏恢复）；导入走 `ImporterRegistry` 注册表按 `ResourceKind` 增量导入；依赖图（`dependency.rs`）由引用扫描得到边，任一被引用资产失效会把依赖方标记为 `Invalid`（仅重导入该资产无法修复）。
+- 决定：资源生命周期用显式状态机建模（`ResourceState`：`Discovered/Ready/ImportFailed/Stale/Missing/Orphaned/Invalid/ImportQueued/Importing/Removed`），数据库以 TSV v2 schema 持久化（只接受当前 schema，支持损坏库隔离）；导入走 `ImporterRegistry` 注册表按 `ResourceKind` 增量导入；依赖图（`dependency.rs`）由引用扫描得到边，任一被引用资产失效会把依赖方标记为 `Invalid`（仅重导入该资产无法修复）。
 - 原因：M11 暴露「资源注册版本双源漂移」与「失效传播缺失」问题；显式状态机 + 依赖边使编辑器与 assetc 共享同一套状态判定。
 - 代价：状态数多，校验与迁移逻辑增加；依赖提取器需覆盖文本（scene/script/prefab/toml）引用语法。
 - 非目标：不做增量上传/流式加载、不做远程资源。

@@ -175,11 +175,6 @@ impl FontAtlas {
         self.font.descent_unscaled() / self.font.units_per_em().unwrap_or(1000.0)
     }
 
-    /// Returns the normalized UV rect for a glyph (back-compat shim).
-    pub fn uv(&mut self, character: char) -> [f32; 4] {
-        self.glyph_metrics(character).uv
-    }
-
     /// Horizontal advance in px at `RASTER_SCALE` without rasterizing the glyph
     /// (used for whitespace, which has no outline / SDF cell).
     pub fn advance(&self, character: char) -> f32 {
@@ -330,23 +325,6 @@ impl FontAtlas {
         self.version = self.version.wrapping_add(1);
         self.cached.insert(character, metrics);
         Ok(metrics)
-    }
-
-    /// Returns per-glyph metrics, preserving the legacy non-fallible API.
-    /// New rendering paths should use [`Self::try_glyph_metrics`] instead.
-    pub fn glyph_metrics(&mut self, character: char) -> GlyphMetrics {
-        match self.try_glyph_metrics(character) {
-            Ok(metrics) => metrics,
-            Err(error) => {
-                tracing::warn!(target: "text", character = character.to_string(), error = %error, "字形图集已达到最大容量，回退到占位");
-                GlyphMetrics {
-                    uv: [0.0; 4],
-                    cell_rect: [0.0; 4],
-                    bounds: [0.0; 4],
-                    advance: self.advance(character),
-                }
-            }
-        }
     }
 }
 
@@ -610,13 +588,13 @@ mod tests {
         let bytes = test_font();
         assert!(!bytes.is_empty(), "测试字体为空");
         let mut atlas = FontAtlas::load(&bytes).unwrap();
-        let metrics = atlas.glyph_metrics('俯');
+        let metrics = atlas.try_glyph_metrics('俯').unwrap();
         assert_ne!(metrics.uv, [0.0; 4], "glyph uv is non-zero");
         assert!(metrics.advance > 0.0, "advance is positive");
         assert!(metrics.bounds[0].is_finite() && metrics.bounds[2] > metrics.bounds[0]);
         assert!(atlas.dirty(), "new glyph marks atlas dirty");
         assert_eq!(atlas.version(), 1);
-        let metrics2 = atlas.glyph_metrics('俯');
+        let metrics2 = atlas.try_glyph_metrics('俯').unwrap();
         assert_eq!(metrics, metrics2, "same glyph is cached");
         // MSDF 符号验证：打包矩形角落（边距区）应为外部（RGB median<128）；字形
         // 内部存在 median>140 的像素。median(r,g,b)≈0.5 即边缘。
@@ -672,13 +650,13 @@ mod tests {
     /// 图集对复杂 CJK 字形正常生成（角外部 median<128、存在内部像素 median>140）。
     #[test]
     fn msdf_generates_for_msyh_ttc_collection() {
-        let path = crate::core::legacy_games_dir().join("ui_demo/assets/fonts/msyh.ttc");
+        let path = crate::core::fixture_games_dir().join("ui_demo/assets/fonts/msyh.ttc");
         if !path.is_file() {
             return;
         }
         let bytes = std::fs::read(&path).expect("msyh.ttc 已拷入 ui_demo assets/fonts");
         let mut atlas = FontAtlas::load(&bytes).expect("FontArc 应能解析 msyh.ttc 集合");
-        let metrics = atlas.glyph_metrics('腾');
+        let metrics = atlas.try_glyph_metrics('腾').unwrap();
         assert!(metrics.advance > 0.0);
         assert!(metrics.bounds[2] > metrics.bounds[0] && metrics.bounds[3] > metrics.bounds[1]);
         let pixel_median = |offset: usize| -> u8 {
@@ -709,7 +687,7 @@ mod tests {
     /// 后备字体：主字体缺失的字形用后备字体生成（advance/bounds 来自后备字体）。
     #[test]
     fn fallback_font_serves_chars_missing_from_primary() {
-        let path = crate::core::legacy_games_dir().join("ui_demo/assets/fonts/msyh.ttc");
+        let path = crate::core::fixture_games_dir().join("ui_demo/assets/fonts/msyh.ttc");
         if !path.is_file() {
             return;
         }
@@ -727,7 +705,7 @@ mod tests {
             .expect("应存在主字体缺而后备字体有的字符");
         let mut atlas =
             FontAtlas::load_with_fallback(&primary_bytes, Some(&fallback_bytes)).unwrap();
-        let metrics = atlas.glyph_metrics(candidate);
+        let metrics = atlas.try_glyph_metrics(candidate).unwrap();
         assert!(metrics.advance > 0.0, "后备字形应有 advance");
         assert!(
             metrics.bounds[2] > metrics.bounds[0] && metrics.bounds[3] > metrics.bounds[1],
@@ -736,8 +714,8 @@ mod tests {
         );
         // 主字体有的字符仍由主字体提供（advance 与仅主字体加载一致）。
         let mut primary_only = FontAtlas::load(&primary_bytes).unwrap();
-        let a = atlas.glyph_metrics('A');
-        let b = primary_only.glyph_metrics('A');
+        let a = atlas.try_glyph_metrics('A').unwrap();
+        let b = primary_only.try_glyph_metrics('A').unwrap();
         assert_eq!(a.advance, b.advance, "主字体字符的 advance 应与单字体一致");
     }
 
@@ -745,7 +723,7 @@ mod tests {
     fn atlas_grows_and_preserves_cached_glyph_geometry() {
         let bytes = test_font();
         let mut atlas = FontAtlas::load(&bytes).unwrap();
-        let first = atlas.glyph_metrics('俯');
+        let first = atlas.try_glyph_metrics('俯').unwrap();
         let old_width = atlas.width();
         let old_height = atlas.height();
         // 捕获首个字形打包矩形（原点在 (0,0)）在旧图集中的像素块。
@@ -762,16 +740,22 @@ mod tests {
         // 填满初始图集并触发增长；增长不应破坏已缓存字形（打包位置不变 → UV 稳定）。
         for index in 0..=256u32 {
             let character = char::from_u32(0x4e00 + index).unwrap();
-            let _ = atlas.glyph_metrics(character);
+            let _ = atlas.try_glyph_metrics(character).unwrap();
         }
         assert!(atlas.width() > old_width || atlas.height() > old_height);
         assert!(atlas.version() > old_version);
         assert!(atlas.dirty());
-        assert_eq!(atlas.glyph_metrics('俯').cell_rect, first.cell_rect);
-        assert_eq!(atlas.glyph_metrics('俯').bounds, first.bounds);
-        assert_eq!(atlas.glyph_metrics('俯').advance, first.advance);
         assert_eq!(
-            atlas.glyph_metrics('俯').uv,
+            atlas.try_glyph_metrics('俯').unwrap().cell_rect,
+            first.cell_rect
+        );
+        assert_eq!(atlas.try_glyph_metrics('俯').unwrap().bounds, first.bounds);
+        assert_eq!(
+            atlas.try_glyph_metrics('俯').unwrap().advance,
+            first.advance
+        );
+        assert_eq!(
+            atlas.try_glyph_metrics('俯').unwrap().uv,
             first.uv,
             "打包 UV 应随增长保持稳定"
         );
@@ -810,7 +794,7 @@ mod tests {
     fn atlas_dirty_can_be_cleared_after_upload() {
         let bytes = test_font();
         let mut atlas = FontAtlas::load(&bytes).unwrap();
-        let _ = atlas.glyph_metrics('A');
+        let _ = atlas.try_glyph_metrics('A').unwrap();
         assert!(atlas.dirty());
         atlas.mark_uploaded();
         assert!(!atlas.dirty());

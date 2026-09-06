@@ -498,7 +498,7 @@ fn extract_lua_refs(text: &str) -> Vec<DependencyRef> {
     refs
 }
 
-/// Backward context token for the string starting at `quote_index`: skips
+/// Reverse-scan context token for the string starting at `quote_index`: skips
 /// whitespace and an optional `(` so both `require("x")` and `require "x"`
 /// yield `require`, and `scene.load("x")` yields `scene.load`.
 fn lua_context(chars: &[char], quote_index: usize) -> String {
@@ -597,11 +597,11 @@ mod tests {
 
     #[test]
     fn scene_refs_sprite_image_animation_tilemap_mesh() {
-        // 用 game_showcase 真实组件行：Sprite 首字段无 key=、Animation 冒号分隔、
+        // 用 examples 真实组件行：Sprite 结构化 texture=、Animation 冒号分隔、
         // Tilemap texture=、MeshRenderer mesh=。
         let scene = "scene_version=2\nname=main\n\
             component 1 Animation clip:idle:assets/textures/hero-idle.png:4:4:true;clip:move:assets/textures/hero-move.png:4:8:true\n\
-            component 1 Sprite assets/textures/player.png;size=32\n\
+            component 1 Sprite texture=assets/textures/player.png;size=32x32\n\
             component 2 Tilemap texture=assets/textures/tileset.png;tiles=1111111\n\
             component 4 MeshRenderer mesh=assets/models/m8-test-triangle.glb\n\
             component 6 Animation3D mesh=assets/models/kaykit-warrior.glb;clip=Idle;looped=true\n";
@@ -625,7 +625,8 @@ mod tests {
 
     #[test]
     fn prefab_uses_same_format() {
-        let prefab = "name=demo\ncomponent 1 Sprite assets/textures/player.png;size=32\n";
+        let prefab =
+            "name=demo\ncomponent 1 Sprite texture=assets/textures/player.png;size=32x32\n";
         let refs = extract_refs(prefab, ResourceKind::Prefab);
         assert_eq!(
             asset_paths(&refs),
@@ -703,7 +704,7 @@ mod tests {
 
     #[test]
     fn dedupe_preserves_order() {
-        let scene = "Sprite assets/textures/a.png\nSprite assets/textures/a.png\nSprite assets/textures/b.png\n";
+        let scene = "Sprite texture=assets/textures/a.png\nSprite texture=assets/textures/a.png\nSprite texture=assets/textures/b.png\n";
         let refs = extract_refs(scene, ResourceKind::Scene);
         assert_eq!(
             asset_paths(&refs),
@@ -782,7 +783,7 @@ mod tests {
         let sources = [
             (
                 PathBuf::from("scenes/main.scene"),
-                "component 1 Sprite assets/textures/player.png;size=32\n".to_owned(),
+                "component 1 Sprite texture=assets/textures/player.png;size=32x32\n".to_owned(),
             ),
             (
                 PathBuf::from("scripts/main.lua"),
@@ -815,7 +816,7 @@ mod tests {
             .register("scenes/main.scene", ResourceKind::Scene, "scene-1")
             .unwrap();
         let read = |_path: &Path| {
-            Some("component 1 Sprite assets/textures/player.png;size=32\n".to_owned())
+            Some("component 1 Sprite texture=assets/textures/player.png;size=32x32\n".to_owned())
         };
         let unresolved = recompute_edges(&mut db, &read);
         assert_eq!(unresolved.len(), 1);

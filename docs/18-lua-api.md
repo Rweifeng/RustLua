@@ -66,7 +66,7 @@
 | `item` | `define(id,def)` / `def(id)` | 注册和查询物品定义（`name/description/stack/buy/sell/texture/kind`） |
 | `inv` | `create/hotbar/capacity/exists/add/remove/count/get/slot/set/swap/move/equip/equip_get/equip_list` | 固定容量背包、堆叠与快捷栏；槽位从 1 开始。`equip(inv,slot,item_id)` 写入/清除（nil 清除）装备槽（M16-07 骨架，暂无属性效果），`equip_get` 查询单槽，`equip_list` 返回槽→物品表 |
 | `container` | `open(entity_id,capacity)` / `get` / `close` / `move` | 把实体 ID 关联为箱子背包，并可与玩家背包互转 |
-| `save` | `blob_write(key,value)` / `blob_read(key)` / `slot(name)` / `slot_get` / `version` | 任意 Lua 值（表/数字/字符串/布尔）存入现有存档；按槽位写入 `save_<slot>.sav`。`version()` 返回最近加载存档的版本号（M16-09）；`load()` 读到旧版本存档时自动调用全局 `on_migrate(from,to)`，无版本头视为 v0 |
+| `save` | `blob_write(key,value)` / `blob_read(key)` / `slot(name)` / `slot_get` / `version` | 任意 Lua 值（表/数字/字符串/布尔）存入现有存档；按槽位写入 `save_<slot>.sav`。`version()` 返回最近加载存档的版本号；`load()` 只接受 `save_version=1`，缺失或版本不符时返回失败 |
 | `shop` | `set_catalog` / `price` | 商店目录与价格服务（M16-10）。`set_catalog(name,spec)` 注册目录（`{item_id:{buy,sell}}`），`price(name,item_id)` 返回 `{buy,sell}` 或 nil；买卖交易与资金在 Lua 玩法层完成 |
 | `map` | `go(name,x,y)` / `enter(name,x,y)` / `current` / `spawn` / `set_spawn` / `schema(name,spec)` / `state(name[,value])` | 带出生点切图、当前图查询、分地图 blob 持久化；`schema` 注册分地图状态的轻量结构校验器，`schema(name,nil)` 清除；`state(name,value)` 写入前校验，错误定位到地图名与字段 |
 | `ui` | `panel/image/grid/grid_cell/grid_clear/grid_hit/tooltip/modal/modal_show/modal_hide/clear/drag_begin/drag_end/drag_active/drag_cancel` | 运行时动态面板、图片、背包网格、tooltip、模态层与拖拽回调 |

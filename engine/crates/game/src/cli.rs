@@ -83,7 +83,7 @@ pub fn find_project_root() -> Option<PathBuf> {
         if direct.is_file() {
             return Some(dir.to_path_buf());
         }
-        for project_name in ["game_showcase", "game"] {
+        for project_name in ["examples", "game"] {
             let project = dir.join(project_name).join("project.toml");
             if project.is_file() {
                 return Some(dir.join(project_name));
@@ -217,7 +217,7 @@ mod tests {
 
     #[test]
     fn extract_asset_refs_scans_component_strings() {
-        let scene = "component 1 Sprite assets/textures/player.png;size=32\n\
+        let scene = "component 1 Sprite texture=assets/textures/player.png;size=32\n\
                      component 1 Animation default=idle;clip:idle:assets/textures/hero-idle.png:4:4:true\n\
                      component 2 Tilemap texture=assets/textures/tileset.png;width=2\n";
         let refs = extract_asset_refs(scene);
@@ -239,7 +239,7 @@ mod tests {
         .unwrap();
         std::fs::write(
             root.join("scenes/main.scene"),
-            "component 1 Sprite assets/textures/player.png\ncomponent 2 Sprite assets/textures/player.png\n",
+            "component 1 Sprite texture=assets/textures/player.png\ncomponent 2 Sprite texture=assets/textures/player.png\n",
         )
         .unwrap();
         // 主脚本缺失 + player.png 缺失（引用两次，应去重为一条）
@@ -275,7 +275,7 @@ mod tests {
         .unwrap();
         std::fs::write(
             root.join("scenes/main.scene"),
-            "scene_version=1\nname=main\n",
+            "scene_version=2\nname=main\n",
         )
         .unwrap();
         assert!(verify_project(&root).is_empty());

@@ -10,7 +10,7 @@ pub struct UiSceneNode {
     pub layout: Option<UiRectLayout>,
     pub container: Option<ContainerStyle>,
     /// Measured visual size used by containers when the node has no stretch
-    /// layout. Legacy point-anchored UI maps its authored size here.
+    /// layout. Non-layout entities keep their measured size at the parent origin.
     pub preferred_size: [f32; 2],
 }
 

@@ -1,4 +1,4 @@
-//! E22: structured UI event bindings with legacy `clickEvent` conversion.
+//! E22: structured UI event bindings.
 
 use std::{collections::BTreeMap, fmt};
 
@@ -152,16 +152,6 @@ impl UiEvents {
             .collect()
     }
 
-    /// Converts legacy `clickEvent` data once at the load boundary.
-    #[must_use]
-    pub fn from_legacy_click_event(raw: &str) -> Self {
-        let mut events = Self::parse(raw).unwrap_or_default();
-        if events.bindings.is_empty() {
-            events = Self::click("on_click");
-        }
-        events
-    }
-
     pub fn parse(raw: &str) -> Result<Self, UiEventError> {
         let mut bindings = Vec::new();
         for binding in raw.split('|') {
@@ -248,14 +238,6 @@ pub struct UiEventDiagnostic {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn converts_legacy_click_event_to_structured_binding() {
-        let events = UiEvents::from_legacy_click_event("");
-        assert_eq!(events.bindings.len(), 1);
-        assert_eq!(events.bindings[0].event, Some(UiEventType::Click));
-        assert_eq!(events.bindings[0].function, "on_click");
-    }
 
     #[test]
     fn parses_and_serializes_arguments() {

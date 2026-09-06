@@ -330,7 +330,7 @@ mod tests {
     }
 
     fn sample_project_root() -> PathBuf {
-        engine::core::games_dir().join("game_showcase")
+        engine::core::games_dir().join("examples")
     }
 
     fn copy_file(from: &Path, to: &Path) -> std::io::Result<()> {
@@ -558,7 +558,7 @@ mod tests {
         file(
             &root,
             "scenes/main.scene",
-            b"[scene]\nSprite assets/player.png;size=32\n",
+            b"[scene]\nSprite texture=assets/player.png;size=32\n",
         );
         let mut browser = ResourceBrowserState::new();
         browser.refresh(&root).unwrap();
@@ -586,7 +586,7 @@ mod tests {
         file(
             &root,
             "scenes/main.scene",
-            b"[scene]\nSprite assets/player.png;size=32\n",
+            b"[scene]\nSprite texture=assets/player.png;size=32\n",
         );
         let mut browser = ResourceBrowserState::new();
         browser.refresh(&root).unwrap();
@@ -609,7 +609,7 @@ mod tests {
         file(
             &root,
             "scenes/main.scene",
-            b"[scene]\nSprite assets/player.png;size=32\n",
+            b"[scene]\nSprite texture=assets/player.png;size=32\n",
         );
         let mut browser = ResourceBrowserState::new();
         browser.refresh(&root).unwrap();

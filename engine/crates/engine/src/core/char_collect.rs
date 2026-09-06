@@ -240,7 +240,7 @@ mod tests {
         std::fs::create_dir_all(root.join("scripts")).unwrap();
         std::fs::write(
             root.join("scenes/main.scene"),
-            "scene_version=2\nname=main\nentity\t1\tTitle\ncomponent\t1\tText\ttext=开始游戏;x=0;y=0\n",
+            "scene_version=2\nname=main\nentity\t1\tTitle\ncomponent\t1\tText\ttext=开始游戏;font_size=24\n",
         )
         .unwrap();
         std::fs::write(root.join("scripts/main.lua"), r#"ui.text("t", "暂停")"#).unwrap();

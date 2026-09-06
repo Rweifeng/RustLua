@@ -10,7 +10,7 @@ param(
 $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $engineRoot = Join-Path $projectRoot "engine"
-$gameRoot = Join-Path $projectRoot "game_showcase"
+$gameRoot = Join-Path $projectRoot "examples"
 $logRoot = Join-Path $projectRoot "artifacts\logs\quality"
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $logPath = Join-Path $logRoot "verify-$timestamp.log"

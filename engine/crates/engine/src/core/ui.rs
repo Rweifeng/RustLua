@@ -1,10 +1,8 @@
-//! Screen-space UI scene components: `Text`, `Image`, `Button`.
+//! Screen-space UI visual components and runtime-only dynamic UI state.
 //!
-//! These are ordinary scene-entity components (opaque `k=v;...` strings) that
-//! render as NDC overlay quads on top of the scene. Coordinates use a top-left
-//! pixel origin, but may additionally opt into a reference-resolution
-//! "Canvas" space plus an anchor point so authored UI can scale more cleanly
-//! across preview resolutions.
+//! Scene `Text` / `Image` components hold visual properties only; geometry is
+//! owned by `UiLayout` (four-edge Anchor+Offset). Dynamic Lua UI owns its full
+//! runtime rect and uses the Canvas scale helpers below.
 
 use std::{error::Error, fmt};
 
@@ -49,49 +47,6 @@ impl UiLayoutSpace {
     }
 }
 
-/// Shared authored layout data for screen-space UI components.
-///
-/// Existing `Text` and `Image` component formats still store these fields
-/// inline; this value object gives editor and runtime code one layout contract
-/// without requiring a scene-format migration.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct UiLayout {
-    pub position: [f32; 2],
-    pub size: [f32; 2],
-    pub space: UiLayoutSpace,
-    pub anchor: [f32; 2],
-}
-
-impl UiLayout {
-    #[must_use]
-    pub fn from_image(image: &UiImage) -> Self {
-        Self {
-            position: image.position,
-            size: image.size,
-            space: image.space,
-            anchor: image.anchor,
-        }
-    }
-
-    #[must_use]
-    pub fn with_position(mut self, position: [f32; 2]) -> Self {
-        self.position = position;
-        self
-    }
-
-    #[must_use]
-    pub fn resolve(self, viewport: [f32; 2], reference: [f32; 2]) -> ([f32; 2], [f32; 2]) {
-        resolve_ui_rect(
-            self.position,
-            self.size,
-            self.space,
-            self.anchor,
-            viewport,
-            reference,
-        )
-    }
-}
-
 /// 默认的 Canvas 参考分辨率（设计分辨率）。发布游戏未显式配置时的回退值；
 /// 编辑器按设计分辨率（preview_resolution）显式传入，见 `resolve_ui_rect`。
 pub const UI_REFERENCE_SIZE: [f32; 2] = [1280.0, 720.0];
@@ -100,32 +55,20 @@ pub const UI_REFERENCE_SIZE: [f32; 2] = [1280.0, 720.0];
 /// `font_size` 字段按此换算为渲染 scale。
 pub const UI_TEXT_BASE_PX: f32 = crate::core::text::EM_PX;
 
-/// 场景 UI `Text` 组件渲染/测量用的最终 glyph scale：`font_size` 提供时优先
-/// （按 [`UI_TEXT_BASE_PX`] 从像素字号换算），否则退回 `scale` 字段。
+/// Scene UI `Text` rendering scale derived from the pixel font size.
 #[must_use]
-pub fn ui_text_effective_scale(scale: f32, font_size: Option<f32>) -> f32 {
-    font_size.map_or(scale, |px| px / UI_TEXT_BASE_PX)
+pub fn ui_text_effective_scale(font_size: f32) -> f32 {
+    font_size / UI_TEXT_BASE_PX
 }
 
 /// Screen-space text label (`Text` component).
 #[derive(Clone, Debug, PartialEq)]
 pub struct UiText {
     pub text: String,
-    /// Offset from the chosen anchor point.
-    pub position: [f32; 2],
-    /// 像素字号（SDF em 高度，px）。提供时优先于 `scale`；
-    /// 换算见 [`ui_text_effective_scale`]。
-    pub font_size: Option<f32>,
-    /// 字形缩放系数（`1.0` = SDF 字体 em 12px / 位图 5x7 字形 7px）。
-    /// 无 `font_size` 时的降级因子；两种语义下 `scale=1.0` 的换算见
-    /// [`UI_TEXT_BASE_PX`]。
-    pub scale: f32,
+    /// Pixel font size (`SDF em height`, converted with `UI_TEXT_BASE_PX`).
+    pub font_size: f32,
     /// RGB tint; default white.
     pub color: [f32; 3],
-    /// Screen or canvas authored space.
-    pub space: UiLayoutSpace,
-    /// Anchor in normalized viewport coordinates (`0..=1`).
-    pub anchor: [f32; 2],
 }
 
 /// Screen-space textured quad (`Image` component).
@@ -133,15 +76,25 @@ pub struct UiText {
 pub struct UiImage {
     /// Project-relative texture path.
     pub texture: String,
-    /// Offset from the chosen anchor point.
-    pub position: [f32; 2],
-    /// Quad size in authored space pixels.
-    pub size: [f32; 2],
     /// RGB tint; default white.
+    pub color: [f32; 3],
+    /// 九宫格边框（纹理像素）`[left, right, top, bottom]`；`None` = 单四边形拉伸（默认）。
+    pub nine_slice: Option<[f32; 4]>,
+}
+
+/// Runtime-only screen-space textured quad created by Lua (`ui.image`).
+///
+/// Scene `Image` components are visual-only; scene geometry comes from
+/// `UiLayout`. Dynamic UI owns its full screen-space rect.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DynamicUiImage {
+    /// Project-relative texture path.
+    pub texture: String,
+    pub position: [f32; 2],
+    pub size: [f32; 2],
     pub color: [f32; 3],
     pub space: UiLayoutSpace,
     pub anchor: [f32; 2],
-    /// 九宫格边框（纹理像素）`[left, right, top, bottom]`；`None` = 单四边形拉伸（默认）。
     pub nine_slice: Option<[f32; 4]>,
 }
 
@@ -252,39 +205,6 @@ fn parse_rgb(raw: &str) -> Result<[f32; 3], UiComponentError> {
     ])
 }
 
-fn parse_layout_space(raw: &str) -> Result<UiLayoutSpace, UiComponentError> {
-    match raw {
-        "screen" => Ok(UiLayoutSpace::Screen),
-        "canvas" => Ok(UiLayoutSpace::Canvas),
-        _ => Err(UiComponentError::InvalidValue(raw.to_owned())),
-    }
-}
-
-fn parse_anchor(raw: &str) -> Result<[f32; 2], UiComponentError> {
-    let parts: Vec<&str> = raw.split(',').collect();
-    if parts.len() != 2 {
-        return Err(UiComponentError::InvalidValue(raw.to_owned()));
-    }
-    let anchor = [parse_number(parts[0])?, parse_number(parts[1])?];
-    validate_anchor(anchor)?;
-    Ok(anchor)
-}
-
-fn validate_anchor(anchor: [f32; 2]) -> Result<(), UiComponentError> {
-    if anchor[0].is_finite()
-        && anchor[1].is_finite()
-        && (0.0..=1.0).contains(&anchor[0])
-        && (0.0..=1.0).contains(&anchor[1])
-    {
-        Ok(())
-    } else {
-        Err(UiComponentError::InvalidValue(format!(
-            "{:.3},{:.3}",
-            anchor[0], anchor[1]
-        )))
-    }
-}
-
 /// Canvas 空间 authored → 屏幕像素的每轴缩放：`viewport / reference`。
 /// `reference` 是 Canvas 参考分辨率（设计分辨率，由调用方提供）；Screen 空间恒 1:1。
 fn authored_scale(space: UiLayoutSpace, viewport: [f32; 2], reference: [f32; 2]) -> [f32; 2] {
@@ -315,30 +235,6 @@ pub fn resolve_ui_rect(
         (anchor_point[1] + offset[1] - resolved_size[1] * anchor[1]).round(),
     ];
     (origin, resolved_size)
-}
-
-#[must_use]
-pub fn resolve_ui_text_origin(
-    position: [f32; 2],
-    text_size: [f32; 2],
-    scale: f32,
-    space: UiLayoutSpace,
-    anchor: [f32; 2],
-    viewport: [f32; 2],
-    reference: [f32; 2],
-) -> ([f32; 2], f32) {
-    let canvas_scale = authored_scale(space, viewport, reference);
-    let resolved_scale = match space {
-        UiLayoutSpace::Screen => scale,
-        UiLayoutSpace::Canvas => scale * canvas_scale[0].min(canvas_scale[1]),
-    };
-    let anchor_point = [viewport[0] * anchor[0], viewport[1] * anchor[1]];
-    let offset = [position[0] * canvas_scale[0], position[1] * canvas_scale[1]];
-    let origin = [
-        anchor_point[0] + offset[0] - text_size[0] * anchor[0],
-        anchor_point[1] + offset[1] - text_size[1] * anchor[1],
-    ];
-    (origin, resolved_scale)
 }
 
 /// One 9-slice cell: destination rect (relative to the image top-left, in the
@@ -515,18 +411,12 @@ fn unescape_text(text: &str) -> String {
 }
 
 impl UiText {
-    /// Parses
-    /// `text=<esc>;x=..;y=..;font_size=..;color=r,g,b;space=..;anchor=x,y`.
-    /// Legacy `scale` is accepted and converted to `font_size`.
+    /// Parses `text=<esc>;font_size=..;color=r,g,b`.
     pub fn from_component_str(value: &str) -> Result<Self, UiComponentError> {
         let mut text = String::new();
-        let mut position = [0.0; 2];
-        let mut scale = 1.0;
-        let mut font_size: Option<f32> = None;
+        let mut font_size = None;
         let mut color = [1.0, 1.0, 1.0];
-        let mut space = UiLayoutSpace::Screen;
-        let mut anchor = [0.0, 0.0];
-        let mut seen = [false; 4]; // text, x, y
+        let mut seen = [false; 2]; // text, font_size
         for field in split_fields(value) {
             let (key, raw) = field
                 .split_once('=')
@@ -536,90 +426,58 @@ impl UiText {
                     text = unescape_text(raw);
                     seen[0] = true;
                 }
-                "x" => {
-                    position[0] = parse_number(raw)?;
-                    seen[1] = true;
-                }
-                "y" => {
-                    position[1] = parse_number(raw)?;
-                    seen[2] = true;
-                }
-                "scale" => {
-                    scale = parse_number(raw)?;
-                    if scale <= 0.0 {
-                        return Err(UiComponentError::InvalidValue(raw.to_owned()));
-                    }
-                    seen[3] = true;
-                }
                 "font_size" => {
                     let px = parse_number(raw)?;
                     if px <= 0.0 {
                         return Err(UiComponentError::InvalidValue(raw.to_owned()));
                     }
                     font_size = Some(px);
+                    seen[1] = true;
                 }
                 "color" => color = parse_rgb(raw)?,
-                "space" => space = parse_layout_space(raw)?,
-                "anchor" => anchor = parse_anchor(raw)?,
                 _ => return Err(UiComponentError::MalformedField(field.to_owned())),
             }
         }
         if !seen[0] {
             return Err(UiComponentError::MissingField("text"));
         }
-        if !seen[1] || !seen[2] {
-            return Err(UiComponentError::MissingField("x"));
+        if !seen[1] {
+            return Err(UiComponentError::MissingField("font_size"));
         }
-        let _ = seen[3];
         Ok(Self {
             text,
-            position,
-            scale,
-            font_size,
+            font_size: font_size.unwrap_or_default(),
             color,
-            space,
-            anchor,
         })
     }
 
-    /// Encodes the canonical component string; legacy `scale` is not written.
+    /// Encodes the canonical visual-only component string.
     #[must_use]
     pub fn to_component_str(&self) -> String {
-        let font_size = self.font_size.unwrap_or(self.scale * UI_TEXT_BASE_PX);
         format!(
-            "text={};x={:.2};y={:.2};font_size={:.2};color={:.3},{:.3},{:.3};space={};anchor={:.3},{:.3}",
+            "text={};font_size={:.2};color={:.3},{:.3},{:.3}",
             escape_text(&self.text),
-            self.position[0],
-            self.position[1],
-            font_size,
+            self.font_size,
             self.color[0],
             self.color[1],
             self.color[2],
-            self.space.as_str(),
-            self.anchor[0],
-            self.anchor[1]
         )
     }
 
-    /// 渲染/测量用的最终 glyph scale：`font_size`（像素字号）优先，否则 `scale`。
+    /// Rendering scale for the pixel font size.
     #[must_use]
     pub fn effective_scale(&self) -> f32 {
-        ui_text_effective_scale(self.scale, self.font_size)
+        ui_text_effective_scale(self.font_size)
     }
 }
 
 impl UiImage {
-    /// Parses `texture=..;x=..;y=..;width=..;height=..;color=r,g,b;space=..;anchor=x,y`
-    /// (`color/space/anchor` optional).
+    /// Parses `texture=..;color=r,g,b;nine_slice=l,r,t,b`.
     pub fn from_component_str(value: &str) -> Result<Self, UiComponentError> {
         let mut texture = String::new();
-        let mut position = [0.0; 2];
-        let mut size = [0.0; 2];
         let mut color = [1.0, 1.0, 1.0];
-        let mut space = UiLayoutSpace::Screen;
-        let mut anchor = [0.0, 0.0];
         let mut nine_slice: Option<[f32; 4]> = None;
-        let mut seen = [false; 6];
+        let mut seen = [false; 1];
         for field in split_fields(value) {
             let (key, raw) = field
                 .split_once('=')
@@ -629,31 +487,7 @@ impl UiImage {
                     texture = raw.to_owned();
                     seen[0] = true;
                 }
-                "x" => {
-                    position[0] = parse_number(raw)?;
-                    seen[1] = true;
-                }
-                "y" => {
-                    position[1] = parse_number(raw)?;
-                    seen[2] = true;
-                }
-                "width" => {
-                    size[0] = parse_number(raw)?;
-                    if size[0] <= 0.0 {
-                        return Err(UiComponentError::InvalidValue(raw.to_owned()));
-                    }
-                    seen[3] = true;
-                }
-                "height" => {
-                    size[1] = parse_number(raw)?;
-                    if size[1] <= 0.0 {
-                        return Err(UiComponentError::InvalidValue(raw.to_owned()));
-                    }
-                    seen[4] = true;
-                }
                 "color" => color = parse_rgb(raw)?,
-                "space" => space = parse_layout_space(raw)?,
-                "anchor" => anchor = parse_anchor(raw)?,
                 "nine_slice" => {
                     let parts: Vec<&str> = raw.split(',').collect();
                     if parts.len() != 4 {
@@ -669,24 +503,12 @@ impl UiImage {
                 _ => return Err(UiComponentError::MalformedField(field.to_owned())),
             }
         }
-        for (field, present) in [
-            ("texture", seen[0]),
-            ("x", seen[1]),
-            ("y", seen[2]),
-            ("width", seen[3]),
-            ("height", seen[4]),
-        ] {
-            if !present {
-                return Err(UiComponentError::MissingField(field));
-            }
+        if !seen[0] {
+            return Err(UiComponentError::MissingField("texture"));
         }
         Ok(Self {
             texture,
-            position,
-            size,
             color,
-            space,
-            anchor,
             nine_slice,
         })
     }
@@ -702,18 +524,8 @@ impl UiImage {
             None => String::new(),
         };
         format!(
-            "texture={};x={:.2};y={:.2};width={:.2};height={:.2};{nine_slice}color={:.3},{:.3},{:.3};space={};anchor={:.3},{:.3}",
-            self.texture,
-            self.position[0],
-            self.position[1],
-            self.size[0],
-            self.size[1],
-            self.color[0],
-            self.color[1],
-            self.color[2],
-            self.space.as_str(),
-            self.anchor[0],
-            self.anchor[1]
+            "texture={};{nine_slice}color={:.3},{:.3},{:.3}",
+            self.texture, self.color[0], self.color[1], self.color[2],
         )
     }
 }
@@ -723,46 +535,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn shared_layout_resolves_image_like_legacy_path() {
-        let image = UiImage {
-            texture: "assets/ui.png".to_owned(),
-            position: [24.0, 36.0],
-            size: [160.0, 48.0],
-            color: [1.0, 0.8, 0.6],
-            space: UiLayoutSpace::Canvas,
-            anchor: [0.5, 0.5],
-            nine_slice: None,
-        };
-        let viewport = [1280.0, 720.0];
-        let reference = [1280.0, 720.0];
-        assert_eq!(
-            UiLayout::from_image(&image).resolve(viewport, reference),
-            resolve_ui_rect(
-                image.position,
-                image.size,
-                image.space,
-                image.anchor,
-                viewport,
-                reference,
-            )
-        );
-    }
-
-    #[test]
     fn text_round_trip_preserves_escaped_specials() {
         let ui = UiText {
             text: "Score;1=0 \\ 高".to_owned(),
-            position: [12.0, 30.0],
-            scale: 2.0,
-            font_size: Some(24.0),
+            font_size: 24.0,
             color: [1.0, 0.5, 0.0],
-            space: UiLayoutSpace::Canvas,
-            anchor: [0.5, 0.0],
         };
         let encoded = ui.to_component_str();
         let decoded = UiText::from_component_str(&encoded).expect("valid text");
         assert_eq!(decoded.text, ui.text);
-        assert_eq!(decoded.position, ui.position);
         assert_eq!(decoded.font_size, ui.font_size);
         assert_eq!(decoded.color, ui.color);
         // font_size 24px → scale 2.0（UI_TEXT_BASE_PX = 12）。
@@ -770,50 +551,25 @@ mod tests {
     }
 
     #[test]
-    fn text_font_size_takes_priority_over_scale() {
-        // font_size 提供时优先于 scale。
-        let ui = UiText::from_component_str("text=Hi;x=1;y=1;scale=3;font_size=12").expect("valid");
-        assert_eq!(ui.scale, 3.0);
-        assert_eq!(ui.font_size, Some(12.0));
-        assert_eq!(ui.effective_scale(), 1.0);
-        // 仅 scale（旧数据）：effective_scale = scale。
-        let legacy = UiText::from_component_str("text=Hi;x=1;y=1;scale=2").expect("valid");
-        assert_eq!(legacy.font_size, None);
-        assert_eq!(legacy.effective_scale(), 2.0);
-        // Legacy scale canonicalizes to the latest font_size field.
-        assert_eq!(
-            legacy.to_component_str(),
-            "text=Hi;x=1.00;y=1.00;font_size=24.00;color=1.000,1.000,1.000;space=screen;anchor=0.000,0.000"
-        );
-        assert!(ui.to_component_str().contains("font_size=12.00"));
-    }
-
-    #[test]
-    fn text_defaults_scale_and_color() {
-        let ui = UiText::from_component_str("text=Hello;x=10;y=20").expect("valid");
+    fn text_requires_visual_fields_and_uses_color_default() {
+        let ui = UiText::from_component_str("text=Hello;font_size=14").expect("valid");
         assert_eq!(ui.text, "Hello");
-        assert_eq!(ui.position, [10.0, 20.0]);
-        assert_eq!(ui.scale, 1.0);
-        assert_eq!(ui.font_size, None);
+        assert_eq!(ui.font_size, 14.0);
         assert_eq!(ui.color, [1.0, 1.0, 1.0]);
     }
 
     #[test]
     fn text_rejects_missing_required_field_and_bad_number() {
         assert_eq!(
-            UiText::from_component_str("text=Hi;y=1").unwrap_err(),
-            UiComponentError::MissingField("x")
+            UiText::from_component_str("text=Hi").unwrap_err(),
+            UiComponentError::MissingField("font_size")
         );
         assert_eq!(
-            UiText::from_component_str("text=Hi;x=abc;y=1").unwrap_err(),
+            UiText::from_component_str("text=Hi;font_size=abc").unwrap_err(),
             UiComponentError::InvalidValue("abc".to_owned())
         );
         assert_eq!(
-            UiText::from_component_str("text=Hi;x=1;y=1;scale=0").unwrap_err(),
-            UiComponentError::InvalidValue("0".to_owned())
-        );
-        assert_eq!(
-            UiText::from_component_str("text=Hi;x=1;y=1;font_size=0").unwrap_err(),
+            UiText::from_component_str("text=Hi;font_size=0").unwrap_err(),
             UiComponentError::InvalidValue("0".to_owned())
         );
     }
@@ -822,11 +578,7 @@ mod tests {
     fn image_round_trip() {
         let img = UiImage {
             texture: "assets/ui/panel.png".to_owned(),
-            position: [100.0, 50.0],
-            size: [64.0, 64.0],
             color: [0.5, 0.5, 1.0],
-            space: UiLayoutSpace::Canvas,
-            anchor: [0.5, 0.5],
             nine_slice: None,
         };
         let decoded = UiImage::from_component_str(&img.to_component_str()).expect("valid");
@@ -837,11 +589,7 @@ mod tests {
     fn image_nine_slice_round_trip() {
         let img = UiImage {
             texture: "assets/ui/panel.png".to_owned(),
-            position: [100.0, 50.0],
-            size: [192.0, 64.0],
             color: [1.0, 1.0, 1.0],
-            space: UiLayoutSpace::Canvas,
-            anchor: [0.5, 0.5],
             nine_slice: Some([8.0, 12.0, 16.0, 20.0]),
         };
         let encoded = img.to_component_str();
@@ -857,38 +605,20 @@ mod tests {
     fn image_nine_slice_absent_when_none() {
         let img = UiImage {
             texture: "assets/ui/panel.png".to_owned(),
-            position: [0.0, 0.0],
-            size: [64.0, 64.0],
             color: [1.0, 1.0, 1.0],
-            space: UiLayoutSpace::Screen,
-            anchor: [0.0, 0.0],
             nine_slice: None,
         };
         let encoded = img.to_component_str();
         assert!(!encoded.contains("nine_slice"), "{encoded}");
-        // Legacy string without the field parses to None.
-        let legacy = "texture=assets/ui/panel.png;x=0;y=0;width=64;height=64";
-        assert_eq!(
-            UiImage::from_component_str(legacy)
-                .expect("valid")
-                .nine_slice,
-            None
-        );
     }
 
     #[test]
     fn image_rejects_malformed_nine_slice() {
         assert_eq!(
-            UiImage::from_component_str("texture=a;x=0;y=0;width=10;height=10;nine_slice=1,2,3")
-                .unwrap_err(),
+            UiImage::from_component_str("texture=a;nine_slice=1,2,3").unwrap_err(),
             UiComponentError::InvalidValue("1,2,3".to_owned())
         );
-        assert!(
-            UiImage::from_component_str(
-                "texture=a;x=0;y=0;width=10;height=10;nine_slice=1,2,3,abc"
-            )
-            .is_err()
-        );
+        assert!(UiImage::from_component_str("texture=a;nine_slice=1,2,3,abc").is_err());
     }
 
     #[test]
@@ -960,12 +690,8 @@ mod tests {
         // Multi-line / special text passes through Scene to_text/from_text.
         let ui = UiText {
             text: "L1\nL2=大;x".to_owned(),
-            position: [1.0, 2.0],
-            scale: 1.0,
-            font_size: None,
+            font_size: 14.0,
             color: [1.0, 1.0, 1.0],
-            space: UiLayoutSpace::Screen,
-            anchor: [0.0, 0.0],
         };
         let mut scene = crate::core::scene::Scene::new("ui");
         scene
@@ -987,7 +713,7 @@ mod tests {
     }
 
     #[test]
-    fn canvas_rect_and_text_origin_follow_anchor_and_viewport() {
+    fn canvas_rect_follows_anchor_and_viewport() {
         let viewport = [1920.0, 1080.0];
         // 参考分辨率与视口不同 → canvas 每轴缩放 = viewport / reference。
         let (origin, size) = resolve_ui_rect(
@@ -1000,18 +726,6 @@ mod tests {
         );
         assert_eq!(size, [480.0, 270.0]);
         assert_eq!(origin, [720.0, 405.0]);
-
-        let (text_origin, scale) = resolve_ui_text_origin(
-            [0.0, 0.0],
-            [200.0, 50.0],
-            1.0,
-            UiLayoutSpace::Canvas,
-            [0.5, 0.5],
-            viewport,
-            [1280.0, 720.0],
-        );
-        assert_eq!(text_origin, [860.0, 515.0]);
-        assert!((scale - 1.5).abs() < 0.001);
     }
 
     #[test]

@@ -33,7 +33,7 @@ use crate::core::{
     tilemap::Tilemap,
     transform::{Transform, Vec2},
     transform3d::Transform3D,
-    ui::{UiGrid, UiGridCell, UiImage, UiPanel},
+    ui::{DynamicUiImage, UiGrid, UiGridCell, UiPanel},
     ui_events::{UiClickTarget, UiEvents},
     ui_layout::UiRectLayout,
     world::{World, WorldError},
@@ -96,7 +96,7 @@ struct ScriptState {
     item_defs: BTreeMap<String, ItemDefinition>,
     inventories: BTreeMap<String, Inventory>,
     ui_panels: BTreeMap<String, UiPanel>,
-    ui_images: BTreeMap<String, UiImage>,
+    ui_images: BTreeMap<String, DynamicUiImage>,
     ui_grids: BTreeMap<String, UiGrid>,
     data_cache: BTreeMap<String, serde_json::Value>,
     /// Registered `data.schema(path, spec)` validators for data tables.
@@ -107,9 +107,6 @@ struct ScriptState {
     map_state_schemas: BTreeMap<String, serde_json::Value>,
     /// Shop catalogs: name -> `{ item_id: { buy, sell } }` (M16-10).
     shops: BTreeMap<String, serde_json::Value>,
-    /// Save file version last loaded, used by `save.version` and `on_migrate`
-    /// (M16-09). Defaults to current for a fresh session.
-    save_version: u32,
     save_slot: Option<String>,
     ui_viewport: [f32; 2],
     /// Canvas 空间 UI 参考分辨率（设计分辨率），与运行时渲染保持一致，
@@ -282,7 +279,6 @@ impl LuaRuntime {
     pub fn new() -> Result<Self, LuaBridgeError> {
         let lua = Lua::new();
         let state = Rc::new(RefCell::new(ScriptState::default()));
-        state.borrow_mut().save_version = crate::core::save::CURRENT_SAVE_VERSION;
         state.borrow_mut().ui_reference = crate::core::ui::UI_REFERENCE_SIZE;
         register_api(&lua, Rc::clone(&state))
             .map_err(|error| LuaBridgeError::Init(error.to_string()))?;
@@ -554,13 +550,6 @@ impl LuaRuntime {
                 .world
                 .insert(id, events)
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
-        } else if components.contains_key("clickEvent") {
-            // Legacy scenes are converted once at the load boundary; the event
-            // runtime only knows the structured representation.
-            state
-                .world
-                .insert(id, UiEvents::click("on_click"))
-                .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
         }
         // E16：可选 `UiLayout` 组件——四边 Anchor+Offset 布局，存在时优先于
         // Text/Image 的内联 x/y/width/height/anchor（编辑器与运行时同一 resolve）。
@@ -791,7 +780,7 @@ impl LuaRuntime {
         &self,
         f: impl FnOnce(
             &BTreeMap<String, UiPanel>,
-            &BTreeMap<String, UiImage>,
+            &BTreeMap<String, DynamicUiImage>,
             &BTreeMap<String, UiGrid>,
         ) -> R,
     ) -> R {
@@ -1157,7 +1146,7 @@ fn finite_color4(color: [f32; 4]) -> bool {
 }
 
 /// Resolves the save file path for the active slot. `None` keeps the original
-/// path so existing projects and tests remain compatible.
+/// path.
 fn save_path_for_slot(path: &Path, slot: Option<&str>) -> PathBuf {
     let Some(slot) = slot else {
         return path.to_path_buf();
@@ -3620,7 +3609,7 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
                 }
                 s.borrow_mut().ui_images.insert(
                     id,
-                    UiImage {
+                    DynamicUiImage {
                         texture,
                         position: [x, y],
                         size: [width, height],
@@ -4425,7 +4414,7 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
     let s = Rc::clone(&state);
     save.set(
         "load",
-        lua.create_function(move |lua, ()| {
+        lua.create_function(move |_, ()| {
             let (path, slot) = {
                 let state = s.borrow();
                 (state.save_path.clone(), state.save_slot.clone())
@@ -4438,28 +4427,10 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
             let Ok(text) = std::fs::read_to_string(&path) else {
                 return Ok(false); // no save yet is not an error
             };
-            match crate::core::save::decode_with_version(&text) {
-                Ok((data, version)) => {
-                    let current = crate::core::save::CURRENT_SAVE_VERSION;
-                    {
-                        let mut state = s.borrow_mut();
-                        state.save_data = data;
-                        state.save_version = version;
-                    }
-                    tracing::info!(target: "save", path = %path.display(), version, "[save] loaded");
-                    // 旧版本存档通过 Lua `on_migrate(from, to)` 迁移（M16-09）。
-                    if version < current
-                        && let Ok(function) =
-                            lua.globals().get::<mlua::Function>("on_migrate")
-                    {
-                        function
-                            .call::<()>((version as i64, current as i64))
-                            .map_err(|error| {
-                                api_error(format!(
-                                    "on_migrate({version}->{current}) failed: {error}"
-                                ))
-                            })?;
-                    }
+            match crate::core::save::decode(&text) {
+                Ok(data) => {
+                    s.borrow_mut().save_data = data;
+                    tracing::info!(target: "save", path = %path.display(), "[save] loaded");
                     Ok(true)
                 }
                 Err(error) => {
@@ -4468,11 +4439,6 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
                 }
             }
         })?,
-    )?;
-    let s = Rc::clone(&state);
-    save.set(
-        "version",
-        lua.create_function(move |_, ()| Ok(s.borrow().save_version as i64))?,
     )?;
     lua.globals().set("save", save)?;
 
@@ -4608,7 +4574,7 @@ mod tests {
     }
 
     fn production_sample_root() -> PathBuf {
-        crate::core::games_dir().join("game_showcase")
+        crate::core::games_dir().join("examples")
     }
 
     #[test]
@@ -4729,7 +4695,10 @@ mod tests {
             .get_mut(&SceneEntityId(1))
             .unwrap()
             .components
-            .insert("Sprite".into(), "assets/textures/red-1x1.png".into());
+            .insert(
+                "Sprite".into(),
+                "texture=assets/textures/red-1x1.png;size=32x32".into(),
+            );
 
         let mut runtime = LuaRuntime::new().unwrap();
         assert_eq!(runtime.instantiate_scene(&scene).unwrap(), 1);
@@ -5515,8 +5484,9 @@ mod tests {
     }
 
     #[test]
-    fn save_load_runs_on_migrate_for_older_versions() {
-        let root = std::env::temp_dir().join(format!("p2-save-migrate-{}", std::process::id()));
+    fn save_load_rejects_older_save() {
+        let root =
+            std::env::temp_dir().join(format!("p2-save-version-reject-{}", std::process::id()));
         let dir = root.join(".data");
         fs::create_dir_all(&dir).unwrap();
         let save_path = dir.join("save.sav");
@@ -5524,15 +5494,7 @@ mod tests {
 
         let mut runtime = LuaRuntime::new().unwrap();
         runtime.set_save_path(save_path.clone());
-        let path = script(
-            "migrated_from = nil\nmigrated_to = nil\n\
-             function on_migrate(from, to) migrated_from = from; migrated_to = to end\n\
-             assert(save.load())\n\
-             assert(save.version() == 0)\n\
-             assert(save.read('hp') == '10')\n\
-             assert(migrated_from == 0 and migrated_to == 1)\n\
-             function update() return 'ok' end",
-        );
+        let path = script("assert(not save.load())\nfunction update() return 'ok' end");
         runtime.execute_project_script(&path).unwrap();
         assert_eq!(runtime.call_update().unwrap(), "ok");
         let _ = fs::remove_dir_all(root);
@@ -5619,7 +5581,10 @@ mod tests {
             .get_mut(&SceneEntityId(1))
             .unwrap()
             .components
-            .insert("Sprite".into(), "assets/player.png".into());
+            .insert(
+                "Sprite".into(),
+                "texture=assets/player.png;size=32x32".into(),
+            );
         arena.save(scenes.join("arena.scene")).unwrap();
 
         // save + commit to disk
@@ -5679,12 +5644,19 @@ mod tests {
             .get_mut(&SceneEntityId(1))
             .unwrap()
             .components
-            .insert("Sprite".into(), "assets/player.png".into());
+            .insert(
+                "Sprite".into(),
+                "texture=assets/player.png;size=32x32".into(),
+            );
         arena.add_entity(SceneEntityId(2), "Hud", None).unwrap();
         let hud = arena.entities.get_mut(&SceneEntityId(2)).unwrap();
         hud.components.insert(
             "Text".into(),
-            "text=Score:0;x=10;y=10;scale=2;color=1,1,1".into(),
+            "text=Score:0;font_size=24;color=1,1,1".into(),
+        );
+        hud.components.insert(
+            "UiLayout".into(),
+            "anchors=0,0,0,0;offsets=10,10,10,10".into(),
         );
         hud.metadata.insert("persistent".into(), "true".into());
         arena.save(scenes.join("arena.scene")).unwrap();
@@ -5695,7 +5667,7 @@ mod tests {
             .get_mut(&SceneEntityId(1))
             .unwrap()
             .components
-            .insert("Sprite".into(), "assets/boss.png".into());
+            .insert("Sprite".into(), "texture=assets/boss.png;size=32x32".into());
         hub.save(scenes.join("hub.scene")).unwrap();
 
         let mut runtime = LuaRuntime::new().unwrap();
@@ -5750,16 +5722,28 @@ mod tests {
         let mut arena = Scene::new("arena");
         arena.add_entity(SceneEntityId(1), "Hud", None).unwrap();
         let hud = arena.entities.get_mut(&SceneEntityId(1)).unwrap();
-        hud.components
-            .insert("Text".into(), "text=Score:0;x=10;y=10".into());
+        hud.components.insert(
+            "Text".into(),
+            "text=Score:0;font_size=24;color=1,1,1".into(),
+        );
+        hud.components.insert(
+            "UiLayout".into(),
+            "anchors=0,0,0,0;offsets=10,10,10,10".into(),
+        );
         hud.metadata.insert("persistent".into(), "true".into());
         arena.save(scenes.join("arena.scene")).unwrap();
 
         let mut hub = Scene::new("hub");
         hub.add_entity(SceneEntityId(1), "Hud", None).unwrap();
         let hud = hub.entities.get_mut(&SceneEntityId(1)).unwrap();
-        hud.components
-            .insert("Text".into(), "text=Score:99;x=10;y=10".into());
+        hud.components.insert(
+            "Text".into(),
+            "text=Score:99;font_size=24;color=1,1,1".into(),
+        );
+        hud.components.insert(
+            "UiLayout".into(),
+            "anchors=0,0,0,0;offsets=10,10,10,10".into(),
+        );
         hud.metadata.insert("persistent".into(), "true".into());
         hub.save(scenes.join("hub.scene")).unwrap();
 
@@ -5807,7 +5791,10 @@ mod tests {
             .get_mut(&SceneEntityId(1))
             .unwrap()
             .components
-            .insert("clickEvent".into(), String::new());
+            .insert(
+                "UiEvents".into(),
+                "event=click;function=on_click".to_owned(),
+            );
         menu.save(scenes.join("menu.scene")).unwrap();
 
         let mut runtime = LuaRuntime::new().unwrap();
@@ -5840,7 +5827,7 @@ mod tests {
         let result = runtime.call_update().unwrap();
         assert_eq!(
             result, "Start",
-            "on_click('Start') fired for the converted UiEvents entity"
+            "on_click('Start') fired for the structured UiEvents entity"
         );
 
         let _ = fs::remove_dir_all(root);
@@ -6153,7 +6140,7 @@ mod tests {
     fn lua_3d_animation_queries_and_switches_clips() {
         use crate::core::scene::{Scene, SceneEntityId};
 
-        let root = crate::core::games_dir().join("game_showcase");
+        let root = crate::core::games_dir().join("examples");
         if !root.join("assets/models/m8-skin-quad.glb").is_file() {
             return;
         }

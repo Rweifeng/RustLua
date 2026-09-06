@@ -14,7 +14,7 @@ pub mod camera3d;
 pub mod char_collect;
 /// Deferred world mutations for safe ECS system iteration.
 pub mod commands;
-/// E21: typed schema registry over the legacy string component format.
+/// E21: typed schema registry over serialized component strings.
 pub mod component_schema;
 /// Lightweight JSON-schema validation for `data` tables loaded via Lua.
 pub mod data_schema;
@@ -51,10 +51,10 @@ pub mod logging;
 pub mod math2d;
 /// Coordinate, quaternion, and matrix primitives for 3D rendering.
 pub mod math3d;
-/// 游戏工程路径解析（默认仓库内 game_showcase）。
+/// 游戏工程路径解析（默认仓库内 examples）。
 pub mod paths;
+pub use paths::fixture_games_dir;
 pub use paths::games_dir;
-pub use paths::legacy_games_dir;
 /// GPU-friendly CPU mesh and material data for 3D rendering.
 pub mod mesh3d;
 /// 发布资源编解码（压缩 + 加密）。
@@ -76,7 +76,7 @@ pub mod resource_db;
 pub mod resource_kind;
 /// Versioned save-data serialization with corrupt/version rejection.
 pub mod save;
-/// Versioned scene serialization, validation, and migration boundary.
+/// Versioned scene serialization and strict version validation boundary.
 pub mod scene;
 /// Shared extraction of serialized 3D render components.
 pub mod scene_extract;
@@ -105,7 +105,7 @@ pub mod ui;
 pub mod ui_animation;
 /// E23: minimal one-way ViewModel property bindings.
 pub mod ui_binding;
-/// E22: structured UI event bindings with one-time legacy clickEvent conversion.
+/// E22: structured UI event bindings.
 pub mod ui_events;
 /// E15/E16/E17 UI layout layer: Anchor+Offset, Container auto-layout, Canvas.
 pub mod ui_layout;

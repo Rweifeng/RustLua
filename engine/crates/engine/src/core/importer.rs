@@ -415,6 +415,7 @@ where
 mod tests {
     use super::*;
     use crate::core::resource_db::ResourceState;
+    use crate::core::scene::CURRENT_SCENE_VERSION;
     use std::{fs, io::Write};
 
     fn root(name: &str) -> PathBuf {
@@ -477,7 +478,7 @@ mod tests {
     }
 
     fn scene_bytes() -> Vec<u8> {
-        b"scene_version=1\nname=main\n".to_vec()
+        format!("scene_version={}\nname=main\n", CURRENT_SCENE_VERSION).into_bytes()
     }
 
     fn prefab_bytes() -> Vec<u8> {
@@ -569,7 +570,7 @@ mod tests {
     #[test]
     fn audio_importer_validates_ogg_streams() {
         let root = root("audio-ogg");
-        let Some(bytes) = fixture("../../../game_showcase/assets/audio/attack.ogg") else {
+        let Some(bytes) = fixture("../../../examples/assets/audio/attack.ogg") else {
             return;
         };
         let ogg = write_source(&root, "attack.ogg", &bytes);
@@ -585,7 +586,7 @@ mod tests {
     #[test]
     fn font_importer_validates_ttf_and_rejects_bad_bytes() {
         let root = root("font");
-        let Some(bytes) = fixture("../../../game_showcase/assets/fonts/NotoSansSC-VF.ttf") else {
+        let Some(bytes) = fixture("../../../examples/assets/fonts/NotoSansSC-VF.ttf") else {
             return;
         };
         let good = write_source(&root, "NotoSansSC-VF.ttf", &bytes);
@@ -601,8 +602,7 @@ mod tests {
     #[test]
     fn model_importer_validates_glb_and_rejects_bad_bytes() {
         let root = root("model");
-        let Some(bytes) = fixture("../../../game_showcase/assets/models/m8-test-triangle.glb")
-        else {
+        let Some(bytes) = fixture("../../../examples/assets/models/m8-test-triangle.glb") else {
             return;
         };
         let good = write_source(&root, "m8-test-triangle.glb", &bytes);
@@ -627,10 +627,10 @@ mod tests {
         importer
             .validate(&good, &std::fs::read(&good).unwrap())
             .unwrap();
-        let bad_scene = write_source(&root, "bad.scene", b"scene_version=1\nname\nbad\n");
+        let bad_scene = write_source(&root, "bad.scene", b"scene_version=0\nname\nbad\n");
         assert!(
             importer
-                .validate(&bad_scene, b"scene_version=1\nname\nbad\n")
+                .validate(&bad_scene, b"scene_version=0\nname\nbad\n")
                 .is_err()
         );
         let ron = write_source(&root, "data.ron", b"Scene(version=1)");

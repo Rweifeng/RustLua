@@ -106,6 +106,6 @@ save_version=1
 ```
 
 - 文件命名 `save_<slot>.sav`（`save.slot(name)` 指定槽位）。
-- 头部 `save_version=<n>`，当前 `CURRENT_SAVE_VERSION = 1`；无版本头的旧存档视为 v0。
-- 加载旧版本存档时 Lua 可定义全局 `on_migrate(from, to)` 做迁移（见 [18-lua-api.md](18-lua-api.md) 的 `save` 模块）。
+- 头部 `save_version=<n>`，当前 `CURRENT_SAVE_VERSION = 1`。加载只接受当前
+  版本；无版本头或版本不符的存档会明确失败，没有自动迁移。
 - Lua 任意值经 `save.blob_*` 序列化后按键值写入同一存档。

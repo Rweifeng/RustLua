@@ -21,9 +21,10 @@ v2 由 v1 的 7 列升级为 **12 列 TSV**，文件头为 `# rustlua-resource-d
 | 11 | dependencies | 依赖资源 UUID 逗号分隔 |
 | 12 | error | 最近一次错误信息（无错误为空串） |
 
-### 兼容与恢复
+### 恢复
 
-- `load()` 先读文件头：v2 → 12 列解析；v1 → 自动迁移（状态映射 `registered→discovered`、`imported→ready`、`failed→import_failed`、`missing→missing`，kind 由路径推导，新增字段给默认值）；未知版本 → `UnsupportedSchemaVersion`；列数不符 → `Malformed`。
+- `load()` 先读文件头，只接受 v2 的 12 列 TSV；v1、未知版本 →
+  `UnsupportedSchemaVersion`；列数不符 → `Malformed`。
 - `open_recoverable(root)`：`open` 失败时把损坏库改名 `.corrupt-<时间戳>`，返回空库重建（完整备份/回滚属 M12-05）。
 - `save()` 先写 `.tmp` 再原子替换正式文件，避免半写入。
 
@@ -61,7 +62,7 @@ v2 由 v1 的 7 列升级为 **12 列 TSV**，文件头为 `# rustlua-resource-d
 
 - 数据库只保存项目相对路径，避免机器绝对路径导致项目不可移植；
 - `move_resource` 只更新路径索引，不生成新 UUID，因此场景引用不会丢失；
-- `register(source, kind, importer_version)` 对同一路径幂等，且**已存在路径也会刷新 kind/version**（修复旧版版本漂移）；
+- `register(source, kind, importer_version)` 对同一路径幂等，且**已存在路径也会刷新 kind/version**，保证索引始终反映当前导入器配置；
 - `mark_ready(id, cache_path, content_hash)` / `mark_failed(id, error)` 回写导入结果；
 - 导入失败使用 `import_failed` 和 `error` 字段保留诊断信息；
 - 删除时返回依赖该资源的 UUID，供编辑器阻止删除或显示提示。

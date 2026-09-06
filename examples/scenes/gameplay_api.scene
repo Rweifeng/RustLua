@@ -1,0 +1,13 @@
+scene_version=2
+name=gameplay_api
+entity	1	Farmer
+component	1	Sprite	texture=assets/textures/player.png;size=32x32;pivot=0.500,0.500;tint=1.000,1.000,1.000,1.000;sorting_layer=default;order=0
+component	1	Collider	shape=ball;radius=14;sensor=true
+component	1	Transform	x=128;y=128;rotation=0;scale_x=1;scale_y=1
+entity	2	FarmMap
+component	2	Tilemap	tile_size=32x32;width=10;height=8;texture=assets/textures/tileset.png;tiles=00000000000000000000000000000000000000000000000000000000000000000000000000000000;solid=00000000000000000000000000000000000000000000000000000000000000000000000000000000
+component	2	Transform	x=80;y=120;rotation=0;scale_x=1;scale_y=1
+entity	3	Instruction
+component	3	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=20.00,650.00,20.00,650.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+component	3	Text	text=SPACE advances clock, E queries interaction, D sleeps.;font_size=13;color=0.850,0.880,0.950
+component	3	Transform	x=0;y=0;rotation=0;scale_x=1;scale_y=1
