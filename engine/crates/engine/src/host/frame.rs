@@ -1,8 +1,14 @@
 //! Frame-level data structures shared between the scene layer (which produces
 //! them each frame) and the renderer (which consumes them).
 
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
+
 use crate::core::{
     camera3d::Camera3D,
+    font::FontAtlas,
     light::Light,
     math3d::{Aabb3, Mat4},
 };
@@ -35,6 +41,29 @@ pub const WHITE_TEXTURE_PATH: &str = "__white__";
 pub const ATLAS_TEXTURE_PATH: &str = "__builtin_text_atlas__";
 pub const FONT_ATLAS_TEXTURE_PATH: &str = "__font_atlas__";
 
+/// Namespace for per-Text custom font texture ids so they can never collide
+/// with ordinary png/jpg texture paths in `SceneMesh.paths`.
+pub const FONT_TEXTURE_PREFIX: &str = "font://";
+
+/// The namespaced texture path identifying a custom font atlas in `paths`
+/// (e.g. `font://assets/fonts/x.ttf`).
+#[must_use]
+pub fn font_texture_path(asset: &str) -> String {
+    format!("{FONT_TEXTURE_PREFIX}{asset}")
+}
+
+/// Is this a namespaced custom-font texture path?
+#[must_use]
+pub fn is_font_texture_path(path: &str) -> bool {
+    path.starts_with(FONT_TEXTURE_PREFIX)
+}
+
+/// Strips the namespace, returning the font asset path.
+#[must_use]
+pub fn font_asset_from_texture_path(path: &str) -> &str {
+    path.strip_prefix(FONT_TEXTURE_PREFIX).unwrap_or(path)
+}
+
 /// Scene geometry plus the texture paths its draw ranges reference.
 pub struct SceneMesh {
     pub vertices: Vec<OverlayVertex>,
@@ -42,6 +71,9 @@ pub struct SceneMesh {
     pub paths: Vec<String>,
     /// Current CJK font atlas pixels; `pixels` empty means unchanged since last upload.
     pub font_atlas: Option<FontAtlasPixels>,
+    /// Per-Text custom font atlases touched this frame. `pixels` empty means
+    /// unchanged since the last upload to this renderer.
+    pub custom_font_atlases: Vec<CustomFontAtlasPixels>,
 }
 
 /// RGBA8 pixels of the CJK glyph atlas, with a monotonic revision for uploads.
@@ -51,6 +83,21 @@ pub struct FontAtlasPixels {
     pub pixels: Vec<u8>,
     pub version: u64,
 }
+
+/// Pixels of one custom (per-Text) font atlas. `key` is the namespaced id used
+/// both in `SceneMesh.paths` for SDF runs and by the renderer to key its upload.
+pub struct CustomFontAtlasPixels {
+    pub key: String,
+    pub pixels: FontAtlasPixels,
+}
+
+/// A handle to one font atlas, shared across `RuntimeScene` rebuilds so MSDF
+/// glyphs are rasterized once (editor Scene View / Play reuse the same atlas).
+pub type FontHandle = Arc<Mutex<FontAtlas>>;
+
+/// Editor-injected shared cache of per-Text custom font atlases, keyed by the
+/// namespaced font id (`font://...`). Standalone runtimes use their own fresh map.
+pub type FontAtlasMap = Arc<Mutex<HashMap<String, FontHandle>>>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BoundsSource {

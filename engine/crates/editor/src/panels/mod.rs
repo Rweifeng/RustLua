@@ -6,6 +6,7 @@ pub(crate) mod header;
 pub(crate) mod hierarchy;
 pub(crate) mod inspector;
 pub(crate) mod progress;
+pub(crate) mod project_settings;
 pub(crate) mod publish;
 pub(crate) mod resource_browser;
 pub(crate) mod scene_view;

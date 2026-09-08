@@ -171,6 +171,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         options,
         Box::new(move |creation_context| {
             configure_cjk_fonts(&creation_context.egui_ctx);
+            // 编辑器皮肤默认深色：固定使用 egui 深色主题，不随系统深浅色切换。
+            creation_context.egui_ctx.set_theme(egui::Theme::Dark);
             // 单一 wgpu 设备（ADR-0012）：编辑器与内嵌游戏预览共用 eframe 的设备。
             let gpu = creation_context
                 .wgpu_render_state
@@ -282,6 +284,8 @@ struct EditorApp {
     log_sink: LogSink,
     /// “版本说明”窗口是否打开。
     show_about: bool,
+    /// 「项目设置」窗口缓冲与开关（内容在每次打开时从 project.toml 读取）。
+    project_settings: crate::panels::project_settings::ProjectSettingsUi,
     /// 窗口标题（含项目路径）缓存，避免每帧重复发送标题命令。
     last_window_title: Option<String>,
     /// 最近打开的项目路径列表（最新在前，最多 5 个）。
@@ -317,6 +321,9 @@ struct EditorApp {
     /// 共享字体图集：运行时随 revision 重建时复用同一实例，避免每帧重新生成
     /// MSDF 字形（拖动 UI/精灵卡顿的根因）。项目切换时重置。
     scene_font_atlas: Option<Arc<Mutex<FontAtlas>>>,
+    /// 场景 Text 自定义字体的共享缓存（key = `font://<asset>`）。编辑器注入同一
+    /// 实例给场景视图/预览运行时，跨重建复用字形；项目切换/重新收集字符时清空。
+    custom_font_atlases: engine::host::frame::FontAtlasMap,
     /// 2D 场景视图显示用的 egui 纹理。
     scene_2d_tex: Option<egui::TextureHandle>,
     /// 游戏画面（设计分辨率 + 游戏相机 + UI 覆盖层）离屏纹理 + 视图：在 Scene 视图
@@ -748,6 +755,7 @@ impl EditorApp {
             show_lua_console: true,
             log_sink,
             show_about: false,
+            project_settings: Default::default(),
             last_window_title: None,
             recent_projects: crate::util::load_recent_projects(),
             gpu,
@@ -772,6 +780,7 @@ impl EditorApp {
             scene_preview_tex: None,
             scene_runtime: None,
             scene_font_atlas: None,
+            custom_font_atlases: engine::host::frame::FontAtlasMap::default(),
             scene_2d_tex: None,
             scene_screen_texture: None,
             scene_screen_tex_id: None,
@@ -825,6 +834,20 @@ impl EditorApp {
         )
     }
 
+    /// 当前项目可用的字体资源（项目相对正斜杠路径，如 `assets/fonts/x.ttf`），
+    /// 供 Text 组件的「字体」下拉使用。空项目/未加载项目 → 空列表。
+    pub(crate) fn project_font_paths(&self) -> Vec<String> {
+        use std::collections::BTreeSet;
+        self.resources
+            .entries()
+            .iter()
+            .filter(|entry| entry.kind == editor::ResourceKind::Font)
+            .map(|entry| entry.path_string())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
     fn set_render_state(&mut self, render_state: Option<eframe::egui_wgpu::RenderState>) {
         self.render_state = render_state;
     }
@@ -853,7 +876,8 @@ impl EditorApp {
         self.scene_state.collapsed = snapshot.hierarchy_collapsed;
         self.preview_resolution = snapshot.preview_resolution;
         self.game_camera_2d_center = snapshot.game_camera_2d_center;
-        self.scene_view_fit_pending = true;
+        // 快照里的 zoom/pan 已是权威值：不置 fit_pending，避免下一帧视图适配
+        // 把 Play 前的视图状态覆盖回 fit 值。
     }
 
     fn autoplay_scene_path(&self) -> PathBuf {
@@ -1272,6 +1296,7 @@ impl eframe::App for EditorApp {
 
         self.progress.window(context);
         self.draw_publish_panel(context);
+        self.draw_project_settings_panel(context);
         self.draw_about_window(context);
         // E06：最后绘制「未保存的更改」确认窗，置于其余窗口之上；仅在 dirty 且
         // 有挂起的离开操作时显示，此时其它面板保持原样、文档不被改动。

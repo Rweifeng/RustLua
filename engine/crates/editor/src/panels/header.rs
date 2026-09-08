@@ -41,6 +41,15 @@ impl EditorApp {
                         self.save_scene();
                         ui.close();
                     }
+                    // 项目设置：仅在真正打开项目（有 project.toml）时可用。
+                    if ui
+                        .add_enabled(self.project_loaded, egui::Button::new("项目设置"))
+                        .on_hover_text("编辑 project.toml：名称 / 入口脚本 / 启动场景 / 字体")
+                        .clicked()
+                    {
+                        self.open_project_settings();
+                        ui.close();
+                    }
                     ui.separator();
                     if ui.button("发布项目").clicked() {
                         self.show_publish_panel = true;
@@ -221,7 +230,7 @@ impl EditorApp {
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
             .show(context, |ui| {
-                ui.label("RustLua 引擎编辑器（p2）");
+                ui.label("RustLua 引擎编辑器");
                 ui.label(format!("编辑器版本：{}", env!("CARGO_PKG_VERSION")));
                 ui.label(format!("项目基线：{}", self.project.version));
                 ui.label(format!(
@@ -262,7 +271,7 @@ impl EditorApp {
             writeln!(file, "[project]").map_err(fs_err)?;
             writeln!(file, "name = \"{name}\"").map_err(fs_err)?;
             writeln!(file, "version = \"0.1.0\"").map_err(fs_err)?;
-            writeln!(file, "engine = \"p2\"").map_err(fs_err)?;
+            writeln!(file, "engine = \"RustLua\"").map_err(fs_err)?;
             writeln!(file, "main_script = \"scripts/main.lua\"").map_err(fs_err)?;
             writeln!(file, "startup_scene = \"scenes/main.scene\"").map_err(fs_err)?;
             writeln!(file, "font = \"assets/fonts/NotoSansSC-VF.ttf\"").map_err(fs_err)?;

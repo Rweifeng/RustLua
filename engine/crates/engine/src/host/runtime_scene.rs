@@ -2,7 +2,7 @@
 //! per-frame [`SceneMesh`] (2D) and [`Scene3d`] draw data for the renderer.
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -37,8 +37,9 @@ use crate::core::{
 };
 
 use crate::host::frame::{
-    ATLAS_TEXTURE_PATH, BoundsSource, FONT_ATLAS_TEXTURE_PATH, FontAtlasPixels, OverlayVertex,
-    Scene3d, Scene3dBounds, Scene3dDrawable, SceneDraw, SceneMesh, WHITE_TEXTURE_PATH,
+    ATLAS_TEXTURE_PATH, BoundsSource, CustomFontAtlasPixels, FONT_ATLAS_TEXTURE_PATH, FontAtlasMap,
+    FontAtlasPixels, FontHandle, OverlayVertex, Scene3d, Scene3dBounds, Scene3dDrawable, SceneDraw,
+    SceneMesh, WHITE_TEXTURE_PATH, font_texture_path,
 };
 
 pub struct RuntimeScene {
@@ -64,6 +65,17 @@ pub struct RuntimeScene {
     /// 同一实例，避免每帧重新生成 MSDF 字形。生成字形需可变访问（内部 Mutex）。
     font_atlas: Option<Arc<Mutex<FontAtlas>>>,
     last_font_version: u64,
+    /// 场景 Text 自定义字体缓存（key = `font://<asset>` → 图集句柄）。编辑器注入
+    /// 同一实例供场景视图/预览跨运行时重建复用；独立运行时用各自新鲜的空表。
+    custom_font_atlases: FontAtlasMap,
+    /// 每个自定义字体“上次上报版本”，用于判定本帧像素是否变化（见默认图集的
+    /// `last_font_version` 语义，保证新渲染器首帧一定拿到非空像素）。
+    custom_font_versions: HashMap<String, u64>,
+    /// 本帧布局用到、待上报渲染器的自定义字体 key（`font://...`），`vertices`
+    /// 末尾生成像素快照后清空。
+    frame_font_keys: Vec<String>,
+    /// 已 warn 过的加载失败字体路径（避免文本每帧 layout 时重复刷屏）。
+    missing_fonts: HashSet<String>,
     ui_scene_nodes: BTreeMap<u64, UiSceneNode>,
     ui_layout_rects: BTreeMap<u64, ResolvedUiNode>,
 }
@@ -145,6 +157,47 @@ impl RuntimeScene {
         }
     }
 
+    /// 注入跨运行时重建共享的自定义字体缓存（编辑器场景视图/预览用；独立运行
+    /// 时运行时各自持有新鲜空表）。
+    pub fn set_custom_font_atlases(&mut self, custom_font_atlases: FontAtlasMap) {
+        self.custom_font_atlases = custom_font_atlases;
+    }
+
+    /// 取场景 Text 指定字体的共享图集句柄；未加载则按需从项目根解码（缺文件/
+    /// 不可读返回 None，调用方回退默认字体）。加载失败仅对同一路径 warn 一次。
+    fn ensure_custom_font(&mut self, asset: &str) -> Option<FontHandle> {
+        let key = font_texture_path(asset);
+        if let Ok(map) = self.custom_font_atlases.lock()
+            && let Some(handle) = map.get(&key).cloned()
+        {
+            return Some(handle);
+        }
+        // 已知缺失：直接回退默认，不再每帧尝试读盘。
+        if self.missing_fonts.contains(asset) {
+            return None;
+        }
+        let root = self.project_root.clone();
+        let handle = match load_custom_font_atlas(root.as_deref(), asset) {
+            Some(handle) => handle,
+            None => {
+                if self.missing_fonts.insert(asset.to_owned()) {
+                    tracing::warn!(
+                        target: "render",
+                        path = %asset,
+                        "[render] custom font load failed; text falls back to default font"
+                    );
+                }
+                return None;
+            }
+        };
+        if let Ok(mut map) = self.custom_font_atlases.lock() {
+            let handle = map.entry(key).or_insert_with(|| handle.clone()).clone();
+            Some(handle)
+        } else {
+            None
+        }
+    }
+
     /// 度量一段场景文本在给定 scale 下的网格尺寸与字形像素范围
     /// `(size, pixel_bounds)`（编辑器 UI 包围框用）。`size` 含
     /// ascender/descender 空白（锚点对齐用），`pixel_bounds` 是可见字形的
@@ -223,6 +276,10 @@ impl RuntimeScene {
             tilemap_cache: HashMap::new(),
             font_atlas: None,
             last_font_version: u64::MAX,
+            custom_font_atlases: Arc::new(Mutex::new(HashMap::new())),
+            custom_font_versions: HashMap::new(),
+            frame_font_keys: Vec::new(),
+            missing_fonts: HashSet::new(),
             ui_scene_nodes,
             ui_layout_rects: BTreeMap::new(),
         })
@@ -516,6 +573,8 @@ impl RuntimeScene {
         self.sprite_batch.clear();
         self.texture_paths.clear();
         self.texture_lookup.clear();
+        // 每帧先清空：布局阶段（push_scene_ui 等）再把本帧用到的自定义字体 key 记入。
+        self.frame_font_keys.clear();
         let sprites = self.script.with_world(|world| {
             let mut sprites = Vec::new();
             world.for_each::<Sprite>(|id, sprite| {
@@ -631,12 +690,52 @@ impl RuntimeScene {
         } else {
             None
         };
+        let custom_font_atlases = self.snapshot_custom_fonts();
         Ok(SceneMesh {
             vertices,
             draws,
             paths: self.texture_paths.clone(),
             font_atlas,
+            custom_font_atlases,
         })
+    }
+
+    /// 生成本帧用到（且自上次上报后版本变化）的自定义字体图集像素，随 SceneMesh
+    /// 交给渲染器上传/重绑。`pixels` 空 = 未变化（与默认图集 `font_atlas` 语义一致）。
+    fn snapshot_custom_fonts(&mut self) -> Vec<CustomFontAtlasPixels> {
+        let mut seen: HashSet<String> = HashSet::new();
+        let keys: Vec<String> = std::mem::take(&mut self.frame_font_keys)
+            .into_iter()
+            .filter(|key| seen.insert(key.clone()))
+            .collect();
+        let mut out = Vec::new();
+        for key in keys {
+            let handle = match self.custom_font_atlases.lock() {
+                Ok(map) => map.get(&key).cloned(),
+                Err(_) => None,
+            };
+            let Some(handle) = handle else {
+                continue;
+            };
+            let atlas = handle.lock().expect("font atlas lock");
+            let version = atlas.version();
+            let changed = self.custom_font_versions.get(&key).copied() != Some(version);
+            self.custom_font_versions.insert(key.clone(), version);
+            out.push(CustomFontAtlasPixels {
+                key,
+                pixels: FontAtlasPixels {
+                    width: atlas.width(),
+                    height: atlas.height(),
+                    pixels: if changed {
+                        atlas.pixels().to_vec()
+                    } else {
+                        Vec::new()
+                    },
+                    version,
+                },
+            });
+        }
+        out
     }
 
     /// Pushes every active particle as a small white-texture quad in world
@@ -887,7 +986,13 @@ impl RuntimeScene {
         for (position, text, scale) in visible {
             let (mesh, is_sdf) = self.layout_text(&text, position, scale, [1.0, 1.0, 1.0])?;
             let text_vertices = text_to_ndc(mesh, is_sdf, width, height);
-            self.push_text_run(vertices, draws, text_vertices, is_sdf);
+            // Lua 动态文字始终走默认字体（项目 `font`）。
+            let font_key = if is_sdf {
+                FONT_ATLAS_TEXTURE_PATH.to_owned()
+            } else {
+                ATLAS_TEXTURE_PATH.to_owned()
+            };
+            self.push_text_run(vertices, draws, text_vertices, is_sdf, &font_key);
         }
         Ok(())
     }
@@ -931,14 +1036,12 @@ impl RuntimeScene {
         for (id, text) in texts {
             if let Some(rect) = self.scene_ui_layout_rect(id, viewport) {
                 let position = [rect.x, rect.y];
-                let effective_scale = text.effective_scale();
                 // `layout_text` already emits absolute screen-space vertices;
                 // adding the layout origin again would displace scene text by
                 // its full top-left position (the visible "text ran away" bug).
-                let (mesh, is_sdf) =
-                    self.layout_text(&text.text, position, effective_scale, text.color)?;
+                let (mesh, is_sdf, font_key) = self.layout_scene_text(&text, position)?;
                 let text_vertices = text_to_ndc(mesh, is_sdf, width, height);
-                self.push_text_run(vertices, draws, text_vertices, is_sdf);
+                self.push_text_run(vertices, draws, text_vertices, is_sdf, &font_key);
             }
         }
         Ok(())
@@ -973,20 +1076,59 @@ impl RuntimeScene {
         }
     }
 
-    /// Appends a text run as a single SDF or bitmap draw.
+    /// 场景 Text 组件的布局：指定了自定义字体时用其图集排版（SDF），并把字体 key
+    /// 记入本帧待上报列表；无自定义字体 / 字体缺失不可读时回退默认（默认 SDF 或
+    /// 内置位图）。返回 `(mesh, is_sdf, font_key)`。
+    fn layout_scene_text(
+        &mut self,
+        text: &UiText,
+        position: [f32; 2],
+    ) -> Result<(TextMesh, bool, String), String> {
+        let effective_scale = text.effective_scale();
+        if !text.font.is_empty()
+            && let Some(handle) = self.ensure_custom_font(&text.font)
+        {
+            let mesh = {
+                let mut atlas = handle.lock().expect("font atlas lock");
+                let style = TextStyle {
+                    scale: effective_scale,
+                    color: [text.color[0], text.color[1], text.color[2], 1.0],
+                    ..Default::default()
+                };
+                TextLayout::build(&text.text, position, style, &mut atlas)
+                    .map_err(|error| error.to_string())?
+            };
+            let key = font_texture_path(&text.font);
+            self.frame_font_keys.push(key.clone());
+            return Ok((mesh, true, key));
+        }
+        // 无自定义字体，或自定义字体缺失/不可读：回退默认字体路径。
+        let (mesh, is_sdf) = self.layout_text(&text.text, position, effective_scale, text.color)?;
+        let key = if is_sdf {
+            FONT_ATLAS_TEXTURE_PATH.to_owned()
+        } else {
+            ATLAS_TEXTURE_PATH.to_owned()
+        };
+        Ok((mesh, is_sdf, key))
+    }
+
+    /// Appends a text run as a single SDF or bitmap draw. SDF runs carry their
+    /// font key (`font://...` for a custom font, else the default-atlas sentinel);
+    /// bitmap runs always bind the built-in 5x7 atlas.
     fn push_text_run(
         &mut self,
         vertices: &mut Vec<OverlayVertex>,
         draws: &mut Vec<SceneDraw>,
         text_vertices: Vec<OverlayVertex>,
         is_sdf: bool,
+        font_key: &str,
     ) {
         if text_vertices.is_empty() {
             return;
         }
         let start = vertices.len() as u32;
         let texture = if is_sdf {
-            self.texture_id(FONT_ATLAS_TEXTURE_PATH) + 1
+            self.texture_id(font_key) + 1
         } else {
             self.texture_id(ATLAS_TEXTURE_PATH) + 1
         };
@@ -1547,6 +1689,55 @@ fn prewarm_font_atlas(root: &Path, atlas: &mut FontAtlas) {
     if count > 0 {
         tracing::info!(target: "render", count, "[render] font prewarmed {count} chars");
     }
+}
+
+/// 加载场景 Text 指定的自定义字体并包装为可跨运行时共享的图集句柄：相对项目根
+/// 读取 + pack 解码 + 项目 fallback 字体 + 项目字重。**不做** chars.txt 预热
+/// （字形按需光栅化）。任何失败返回 `None` → 调用方回退默认字体，不中断渲染
+/// （wasm / 发布包缺该字体时自动降级）。
+pub fn load_custom_font_atlas(
+    project_root: Option<&Path>,
+    font_asset: &str,
+) -> Option<FontHandle> {
+    let root = project_root?;
+    if font_asset.trim().is_empty() {
+        return None;
+    }
+    let path = root.join(font_asset);
+    if !path.is_file() {
+        return None;
+    }
+    let bytes = fs::read(&path).ok()?;
+    let bytes = crate::core::pack::decode(&bytes).ok()?;
+    // 与默认字体一致地附上项目后备字体，缺字时回退（如拉丁字体不含 CJK）。
+    let fallback_bytes = project_fallback_font_path(root)
+        .and_then(|font| {
+            let path = root.join(font);
+            path.is_file().then_some(path)
+        })
+        .and_then(|path| {
+            let bytes = fs::read(&path).ok()?;
+            crate::core::pack::decode(&bytes).ok()
+        });
+    let font_weight = project_font_weight(root).unwrap_or(DEFAULT_FONT_WEIGHT);
+    let atlas = match FontAtlas::load_with_fallback_and_weight(
+        &bytes,
+        fallback_bytes.as_deref(),
+        font_weight,
+    ) {
+        Ok(atlas) => atlas,
+        Err(error) => {
+            tracing::warn!(
+                target: "render",
+                error = %error,
+                path = %font_asset,
+                "[render] custom font atlas load failed; text falls back to default"
+            );
+            return None;
+        }
+    };
+    tracing::info!(target: "render", path = %font_asset, "[render] custom font atlas ready");
+    Some(Arc::new(Mutex::new(atlas)))
 }
 
 fn extract_project_key(text: &str, key: &str) -> Option<String> {
@@ -2471,5 +2662,63 @@ mod sdf_tests {
             );
             // drop 释放 Lua/世界/字体资源。
         }
+    }
+
+    /// 场景 Text 指定自定义字体时：该字体 key 出现在 SceneMesh 的自定义图集上报
+    /// 与纹理路径里，且默认文本仍走默认 SDF 哨兵。用临时项目根存放两个字体文件
+    /// （同源，仅验证管线/命名空间，不验证字形差异）。
+    #[test]
+    fn scene_text_custom_font_surfaces_in_mesh() {
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../editor/fonts/NotoSansSC-VF.ttf");
+        if !source.is_file() {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!(
+            "p2-custom-font-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        let fonts_dir = root.join("assets").join("fonts");
+        let _ = fs::create_dir_all(&fonts_dir);
+        fs::copy(&source, fonts_dir.join("NotoSansSC-VF.ttf")).expect("copy default font");
+        fs::copy(&source, fonts_dir.join("Custom.ttf")).expect("copy custom font");
+
+        let mut scene = Scene::new("custom-fonts");
+        scene.add_entity(SceneEntityId(1), "DefaultText", None).unwrap();
+        scene.add_entity(SceneEntityId(2), "CustomText", None).unwrap();
+        let layout = "anchors=0,0,0,0;offsets=0,0,64,16".to_owned();
+        scene.entities.get_mut(&SceneEntityId(1)).unwrap().components.insert("UiLayout".into(), layout.clone());
+        scene.entities.get_mut(&SceneEntityId(1))
+            .unwrap()
+            .components
+            .insert("Text".into(), "text=Default;font_size=24".into());
+        scene.entities.get_mut(&SceneEntityId(2)).unwrap().components.insert("UiLayout".into(), layout);
+        scene.entities.get_mut(&SceneEntityId(2)).unwrap().components.insert(
+            "Text".into(),
+            "text=Custom;font_size=24;font=assets/fonts/Custom.ttf".into(),
+        );
+
+        let result = RuntimeScene::from_scene_edit(Some(&root), scene)
+            .and_then(|mut runtime| runtime.vertices(320, 240));
+        let _ = fs::remove_dir_all(&root);
+        let mesh = result.expect("vertices");
+        assert!(
+            mesh.custom_font_atlases
+                .iter()
+                .any(|font| font.key == "font://assets/fonts/Custom.ttf"),
+            "custom font key should be reported to the renderer"
+        );
+        let paths: Vec<&str> = mesh.paths.iter().map(|path| path.as_str()).collect();
+        assert!(
+            paths.contains(&"font://assets/fonts/Custom.ttf"),
+            "custom font path should be in mesh paths: {paths:?}"
+        );
+        assert!(
+            paths.contains(&FONT_ATLAS_TEXTURE_PATH),
+            "default text should keep the default SDF sentinel: {paths:?}"
+        );
     }
 }

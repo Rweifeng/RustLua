@@ -248,6 +248,8 @@ const TEXT_FIELDS: &[FieldSchema] = &[
     FieldSchema::new("text", FieldKind::Text, true),
     FieldSchema::new("font_size", FieldKind::Number, true),
     FieldSchema::new("color", FieldKind::Vec3, false),
+    // 可选自定义字体（项目相对路径，如 assets/fonts/x.ttf）；空 = 项目默认字体。
+    FieldSchema::new("font", FieldKind::Text, false),
 ];
 
 const IMAGE_FIELDS: &[FieldSchema] = &[
@@ -345,6 +347,11 @@ mod tests {
                 .is_ok()
         );
         assert!(registry["Text"].parse("text=Hello;font_size=24").is_ok());
+        assert!(
+            registry["Text"]
+                .parse("text=Hello;font_size=24;font=assets/fonts/x.ttf")
+                .is_ok()
+        );
         assert!(
             registry["Text"]
                 .parse("text=Hello;font_size=24;x=1;y=2;scale=1")

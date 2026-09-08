@@ -549,7 +549,7 @@ mod tests {
         fs::create_dir_all(root.join("scenes")).unwrap();
         fs::write(
             root.join("project.toml"),
-            "[project]\nname = \"t\"\nversion = \"0.1.0\"\nengine = \"p2\"\nmain_script = \"scripts/main.lua\"\nstartup_scene = \"scenes/main.scene\"\n",
+            "[project]\nname = \"t\"\nversion = \"0.1.0\"\nengine = \"RustLua\"\nmain_script = \"scripts/main.lua\"\nstartup_scene = \"scenes/main.scene\"\n",
         )
         .unwrap();
         fs::write(root.join("scripts/main.lua"), b"return true\n").unwrap();

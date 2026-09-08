@@ -69,6 +69,8 @@ pub struct UiText {
     pub font_size: f32,
     /// RGB tint; default white.
     pub color: [f32; 3],
+    /// 自定义字体：项目相对路径（如 `assets/fonts/MyFont.ttf`）；空 = 项目默认字体。
+    pub font: String,
 }
 
 /// Screen-space textured quad (`Image` component).
@@ -411,11 +413,12 @@ fn unescape_text(text: &str) -> String {
 }
 
 impl UiText {
-    /// Parses `text=<esc>;font_size=..;color=r,g,b`.
+    /// Parses `text=<esc>;font_size=..;color=r,g,b[;font=<esc>]`.
     pub fn from_component_str(value: &str) -> Result<Self, UiComponentError> {
         let mut text = String::new();
         let mut font_size = None;
         let mut color = [1.0, 1.0, 1.0];
+        let mut font = String::new();
         let mut seen = [false; 2]; // text, font_size
         for field in split_fields(value) {
             let (key, raw) = field
@@ -435,6 +438,7 @@ impl UiText {
                     seen[1] = true;
                 }
                 "color" => color = parse_rgb(raw)?,
+                "font" => font = unescape_text(raw),
                 _ => return Err(UiComponentError::MalformedField(field.to_owned())),
             }
         }
@@ -448,14 +452,21 @@ impl UiText {
             text,
             font_size: font_size.unwrap_or_default(),
             color,
+            font,
         })
     }
 
-    /// Encodes the canonical visual-only component string.
+    /// Encodes the canonical visual-only component string. `font` only emitted
+    /// when non-empty so scenes without a custom font round-trip byte-identically.
     #[must_use]
     pub fn to_component_str(&self) -> String {
+        let font = if self.font.is_empty() {
+            String::new()
+        } else {
+            format!(";font={}", escape_text(&self.font))
+        };
         format!(
-            "text={};font_size={:.2};color={:.3},{:.3},{:.3}",
+            "text={};font_size={:.2};color={:.3},{:.3},{:.3}{font}",
             escape_text(&self.text),
             self.font_size,
             self.color[0],
@@ -540,6 +551,7 @@ mod tests {
             text: "Score;1=0 \\ 高".to_owned(),
             font_size: 24.0,
             color: [1.0, 0.5, 0.0],
+            font: String::new(),
         };
         let encoded = ui.to_component_str();
         let decoded = UiText::from_component_str(&encoded).expect("valid text");
@@ -548,6 +560,42 @@ mod tests {
         assert_eq!(decoded.color, ui.color);
         // font_size 24px → scale 2.0（UI_TEXT_BASE_PX = 12）。
         assert_eq!(decoded.effective_scale(), 2.0);
+    }
+
+    #[test]
+    fn text_font_empty_omits_font_key_and_stays_byte_stable() {
+        let ui = UiText {
+            text: "Hi".to_owned(),
+            font_size: 14.0,
+            color: [1.0, 1.0, 1.0],
+            font: String::new(),
+        };
+        let encoded = ui.to_component_str();
+        assert!(!encoded.contains("font="), "{encoded}");
+        assert_eq!(encoded, "text=Hi;font_size=14.00;color=1.000,1.000,1.000");
+    }
+
+    #[test]
+    fn text_legacy_without_font_parses_to_empty() {
+        let ui = UiText::from_component_str("text=Hi;font_size=14").expect("valid");
+        assert_eq!(ui.font, "");
+    }
+
+    #[test]
+    fn text_custom_font_round_trips_with_escaping() {
+        let ui = UiText {
+            text: "Hi".to_owned(),
+            font_size: 14.0,
+            color: [1.0, 1.0, 1.0],
+            font: "assets/fonts/a;b=数字.ttf".to_owned(),
+        };
+        let encoded = ui.to_component_str();
+        assert!(
+            encoded.contains("font=assets/fonts/a\\;b\\=数字.ttf"),
+            "{encoded}"
+        );
+        let decoded = UiText::from_component_str(&encoded).expect("valid");
+        assert_eq!(decoded, ui);
     }
 
     #[test]
@@ -692,6 +740,7 @@ mod tests {
             text: "L1\nL2=大;x".to_owned(),
             font_size: 14.0,
             color: [1.0, 1.0, 1.0],
+            font: String::new(),
         };
         let mut scene = crate::core::scene::Scene::new("ui");
         scene

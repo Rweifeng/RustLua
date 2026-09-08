@@ -273,6 +273,7 @@ impl EditorApp {
             scene,
             self.preview_resolution,
             self.scene_font_atlas.clone(),
+            self.custom_font_atlases.clone(),
         )
     }
 

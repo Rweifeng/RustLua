@@ -1529,6 +1529,7 @@ impl EditorApp {
             draws: Vec::new(),
             paths: Vec::new(),
             font_atlas: None,
+            custom_font_atlases: Vec::new(),
         };
         let Some(renderer) = &mut self.scene_renderer else {
             return;
@@ -1602,6 +1603,7 @@ impl EditorApp {
                     self.preview_resolution.1 as f32,
                 ]);
                 runtime.set_font_atlas(self.scene_font_atlas.clone());
+                runtime.set_custom_font_atlases(self.custom_font_atlases.clone());
                 self.scene_runtime = Some(runtime);
             }
             Err(error) => {

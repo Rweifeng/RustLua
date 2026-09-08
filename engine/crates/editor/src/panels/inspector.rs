@@ -690,6 +690,26 @@ impl EditorApp {
                                 }
                             });
                             ui.horizontal(|ui| {
+                                ui.label("字体");
+                                let selected = if self.text.font.is_empty() {
+                                    "默认字体（不指定）".to_owned()
+                                } else {
+                                    self.text.font.clone()
+                                };
+                                egui::ComboBox::from_id_salt("inspector_text_font")
+                                    .selected_text(selected)
+                                    .show_ui(ui, |ui| {
+                                        ui.selectable_value(
+                                            &mut self.text.font,
+                                            String::new(),
+                                            "默认字体（不指定）",
+                                        );
+                                        for path in self.project_font_paths() {
+                                            ui.selectable_value(&mut self.text.font, path.clone(), path);
+                                        }
+                                    });
+                            });
+                            ui.horizontal(|ui| {
                                 ui.label("颜色");
                                 ui.add(
                                     egui::DragValue::new(&mut self.text.color_r).range(0.0..=1.0),

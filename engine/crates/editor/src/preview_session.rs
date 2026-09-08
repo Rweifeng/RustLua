@@ -8,6 +8,7 @@ use eframe::egui;
 use engine::core::font::FontAtlas;
 use engine::core::input::InputSnapshot;
 use engine::core::scene::Scene;
+use engine::host::frame::FontAtlasMap;
 use engine::host::{ReadbackMetrics, ReadbackStatus, Renderer, RuntimeScene};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -65,6 +66,7 @@ impl PreviewSession {
         scene: &Scene,
         size: (u32, u32),
         shared_font_atlas: Option<Arc<Mutex<FontAtlas>>>,
+        custom_font_atlases: FontAtlasMap,
     ) -> Result<Self, String> {
         tracing::info!(target: "editor", "[preview] project_root={}", project_root.display());
         let mut runtime = RuntimeScene::from_scene(Some(project_root), scene.clone())?;
@@ -73,6 +75,8 @@ impl PreviewSession {
         if shared_font_atlas.is_some() {
             runtime.set_font_atlas(shared_font_atlas);
         }
+        // 复用编辑器共享的自定义字体缓存：跨 Play/Stop 与场景视图重建复用字形。
+        runtime.set_custom_font_atlases(custom_font_atlases);
         // Canvas 空间 UI 参考分辨率 = 设计分辨率（预览渲染尺寸）。
         runtime.set_ui_reference([size.0 as f32, size.1 as f32]);
         let renderer = Renderer::new_offscreen(
@@ -418,6 +422,7 @@ mod tests {
                 &scene,
                 (width, height),
                 None,
+                FontAtlasMap::default(),
             )
             .expect("create preview session");
             assert_eq!(session.size(), (width, height));
@@ -458,6 +463,7 @@ mod tests {
             &scene,
             (64, 64),
             None,
+            FontAtlasMap::default(),
         )
         .expect("create preview session");
         session.force_tick();
@@ -501,6 +507,7 @@ mod tests {
             &scene,
             (320, 180),
             None,
+            FontAtlasMap::default(),
         )
         .expect("create preview session");
         // 驱动多帧让 egui 纹理存在（回读异步，故循环强制到期）。

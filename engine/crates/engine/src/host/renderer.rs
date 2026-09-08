@@ -24,7 +24,7 @@ use winit::{dpi::PhysicalSize, window::Window};
 use crate::host::{
     frame::{
         ATLAS_TEXTURE_PATH, FONT_ATLAS_TEXTURE_PATH, FontAtlasPixels, OverlayVertex, Scene3d,
-        SceneMesh, WHITE_TEXTURE_PATH,
+        SceneMesh, WHITE_TEXTURE_PATH, font_asset_from_texture_path, is_font_texture_path,
     },
     shader::{MESH3D_SHADER, SHADOW_SHADER, TEXTURED_SHADER},
 };
@@ -33,6 +33,15 @@ use crate::host::{
 struct LoadedTexture {
     path: String,
     bind_group: wgpu::BindGroup,
+}
+
+/// GPU upload state for one per-Text custom font atlas, keyed by namespaced
+/// font id (`font://...`). Mirrors the default-atlas fields on `Renderer`.
+struct CustomFontUpload {
+    texture: Option<wgpu::Texture>,
+    bind: Option<wgpu::BindGroup>,
+    sdf_bind: Option<wgpu::BindGroup>,
+    uploaded_version: u64,
 }
 
 /// Shared vertex/index buffers for one mesh primitive, cached by mesh path.
@@ -191,6 +200,8 @@ pub struct Renderer {
     /// Pipeline for SDF text draws (Linear sampling + SDF shader branch).
     pipeline_sdf: wgpu::RenderPipeline,
     font_atlas_uploaded_version: u64,
+    /// Per-Text custom font atlases uploaded on demand (key = `font://...` id).
+    custom_fonts: HashMap<String, CustomFontUpload>,
     project_root: Option<PathBuf>,
     /// Camera uniform buffer, rewritten every frame from the active camera.
     camera_buffer: wgpu::Buffer,
@@ -920,6 +931,7 @@ impl Renderer {
             sdf_sampler,
             pipeline_sdf,
             font_atlas_uploaded_version: u64::MAX,
+            custom_fonts: HashMap::new(),
             project_root,
             camera_buffer,
             light_buffer,
@@ -1883,15 +1895,19 @@ impl Renderer {
                 if let Some(font) = &mesh.font_atlas {
                     let _ = self.ensure_font_atlas(font);
                 }
+                for font in &mesh.custom_font_atlases {
+                    let _ = self.ensure_custom_font(&font.key, &font.pixels);
+                }
                 tracing::debug!(target: "render", sdf_draws = mesh.draws.iter().filter(|d| d.sdf).count(), font_bind = self.font_atlas_sdf_bind.is_some(), "[render] sdf draws");
                 for draw in &mesh.draws {
                     if draw.sdf {
-                        // SDF 文本：Linear 采样 + SDF shader 分支。
-                        let Some(sdf_bind) = &self.font_atlas_sdf_bind else {
+                        // SDF 文本：Linear 采样 + SDF shader 分支。默认字体用全局图集
+                        // bind；自定义字体（font://...）按该字体的 draw 选对应 bind。
+                        let Some(sdf_bind) = self.sdf_bind_for(draw.texture, &mesh.paths) else {
                             continue;
                         };
                         pass.set_pipeline(&self.pipeline_sdf);
-                        pass.set_bind_group(0, sdf_bind, &[]);
+                        pass.set_bind_group(0, &sdf_bind, &[]);
                         pass.draw(draw.start..draw.start + draw.count, 0..1);
                         continue;
                     }
@@ -1906,10 +1922,29 @@ impl Renderer {
         }
     }
 
+    /// Picks the SDF bind group for a draw: the default-atlas bind for the
+    /// `FONT_ATLAS_TEXTURE_PATH` sentinel, or the per-custom-font bind for a
+    /// namespaced `font://...` path. Returns `None` when the target atlas hasn't
+    /// been uploaded this frame yet (caller skips the draw).
+    fn sdf_bind_for(&self, texture: u32, paths: &[String]) -> Option<wgpu::BindGroup> {
+        if texture == 0 {
+            return None;
+        }
+        let index = texture as usize - 1;
+        let path = paths.get(index)?;
+        if path == FONT_ATLAS_TEXTURE_PATH {
+            return self.font_atlas_sdf_bind.clone();
+        }
+        if is_font_texture_path(path) {
+            return self.custom_fonts.get(path).and_then(|font| font.sdf_bind.clone());
+        }
+        None
+    }
+
     /// Returns the bind group for a draw: the white texture for `texture == 0`
     /// or the white sentinel path, the built-in glyph atlas for the atlas
-    /// sentinel path, otherwise the cached (or freshly loaded) asset at
-    /// `paths[texture - 1]`.
+    /// sentinel path, the per-custom-font bind for a `font://...` path, otherwise
+    /// the cached (or freshly loaded) asset at `paths[texture - 1]`.
     fn bind_group_for(&mut self, texture: u32, paths: &[String]) -> Option<wgpu::BindGroup> {
         if texture == 0 {
             return self.ensure_white();
@@ -1923,6 +1958,9 @@ impl Renderer {
         }
         if path == FONT_ATLAS_TEXTURE_PATH {
             return self.font_atlas_bind.clone();
+        }
+        if is_font_texture_path(path) {
+            return self.custom_fonts.get(path).and_then(|font| font.bind.clone());
         }
         if let Some(entry) = self.textures.iter().find(|entry| entry.path == *path) {
             return Some(entry.bind_group.clone());
@@ -2062,6 +2100,108 @@ impl Renderer {
         });
         self.font_atlas_sdf_bind = Some(sdf_bind);
         Some(bind_group)
+    }
+
+    /// Uploads/re-binds one per-Text custom font atlas when its version changed.
+    /// Mirrors [`Self::ensure_font_atlas`] but keyed by the namespaced `font://...`
+    /// id, so each custom font samples its own SDF texture.
+    fn ensure_custom_font(&mut self, key: &str, font: &FontAtlasPixels) -> Option<()> {
+        if font.pixels.is_empty() {
+            return Some(());
+        }
+        if self
+            .custom_fonts
+            .get(key)
+            .is_some_and(|entry| entry.uploaded_version == font.version)
+        {
+            return Some(());
+        }
+        // SDF 距离场不能走 sRGB 解码，用 Rgba8Unorm（与默认图集一致）。
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        // 尺寸未变则复用现有纹理（只重写像素）；尺寸变了重建并丢弃旧 bind。
+        let reuse = self.custom_fonts.get(key).and_then(|entry| {
+            let texture = entry.texture.as_ref()?;
+            let size = texture.size();
+            (size.width == font.width && size.height == font.height).then(|| texture.clone())
+        });
+        let texture = match reuse {
+            Some(texture) => texture,
+            None => self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(&format!(
+                    "p2-custom-font-{}",
+                    font_asset_from_texture_path(key)
+                )),
+                size: wgpu::Extent3d {
+                    width: font.width,
+                    height: font.height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            }),
+        };
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &font.pixels,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(font.width * 4),
+                rows_per_image: Some(font.height),
+            },
+            wgpu::Extent3d {
+                width: font.width,
+                height: font.height,
+                depth_or_array_layers: 1,
+            },
+        );
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("p2-custom-font-bind"),
+            layout: &self.texture_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+            ],
+        });
+        let sdf_bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("p2-custom-font-sdf-bind"),
+            layout: &self.texture_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sdf_sampler),
+                },
+            ],
+        });
+        self.custom_fonts.insert(
+            key.to_owned(),
+            CustomFontUpload {
+                texture: Some(texture),
+                bind: Some(bind),
+                sdf_bind: Some(sdf_bind),
+                uploaded_version: font.version,
+            },
+        );
+        Some(())
     }
 
     fn upload_texture(&self, asset: &TextureAsset, label: &str) -> Option<wgpu::BindGroup> {
@@ -2257,6 +2397,7 @@ mod tests {
             draws: Vec::new(),
             paths: Vec::new(),
             font_atlas: None,
+            custom_font_atlases: Vec::new(),
         };
         let outcome = renderer.render_into_texture(&mesh, None, &view, 64, 64);
         assert!(matches!(outcome, RenderOutcome::Presented));
@@ -2498,6 +2639,7 @@ mod tests {
             draws: Vec::new(),
             paths: Vec::new(),
             font_atlas: None,
+            custom_font_atlases: Vec::new(),
         };
         renderer.render_into_texture(&mesh, None, &view, 64, 64);
         // 首帧提交；随后的调用非阻塞轮询，直到返回就绪像素（不应无限阻塞）。

@@ -178,6 +178,7 @@ impl GameApp {
                 draws: Vec::new(),
                 paths: Vec::new(),
                 font_atlas: None,
+                custom_font_atlases: Vec::new(),
             },
         };
         if self.overlay_enabled {

@@ -273,6 +273,9 @@ impl EditorApp {
         self.hierarchy_rename = None;
         self.selection_anchor = None;
         self.invalidate_scene_view_state();
+        // 仅在文档整表切换（打开/新建/恢复/Stop 取回）时把 2D 视图重新适配到
+        // 设计分辨率包围框；同文档编辑提交不走这里，不会重置用户 zoom/pan。
+        self.scene_view_fit_pending = true;
     }
 
     /// 从磁盘打开一个场景/Prefab 文档，并通过统一入口替换当前文档。
@@ -301,8 +304,10 @@ impl EditorApp {
         self.scene_screen_cache_key = None;
         self.scene_screen_tex_id = None;
         self.scene_view_repaint_pending = true;
-        // 新文档打开后把 2D 视图适配到设计分辨率包围框。
-        self.scene_view_fit_pending = true;
+        // 注意：这里不置 `scene_view_fit_pending`。本函数在**同文档编辑提交**
+        // （Inspector 属性/删除/撤销等）后也会执行，若触发视图适配会把用户
+        // 滚轮/拖拽设置的 zoom/pan 重置回 fit 值。重新适配只在文档整表切换时
+        // 做，见 `set_current_scene_document`。
     }
 
     /// 统一的文档变更入口（E02）：任意一次成功提交的文档变更后调用，
@@ -1365,6 +1370,7 @@ impl EditorApp {
                 );
                 // 让场景视图下次重建图集时按新清单预热。
                 self.scene_font_atlas = None;
+                self.custom_font_atlases.lock().unwrap().clear();
             }
             Err(error) => self.status = format!("收集字符失败: {error}"),
         }
@@ -1753,6 +1759,51 @@ mod tests {
         assert_eq!(app.scene_screen_tex_id, None);
         assert!(app.scene_view_repaint_pending);
         assert_eq!(app.last_metadata_key, None);
+    }
+
+    /// 回归：同文档编辑提交（属性直写的事务提交）不得重置 Scene 视图的 zoom/pan，
+    /// 也不得置 fit_pending 把滚轮设置的视图状态覆盖回 fit 值；文档整表切换
+    /// （重新打开场景）则必须重新适配。
+    #[test]
+    fn edit_commit_preserves_scene_view_camera_but_reopen_refits() {
+        let (mut app, root) = open_examples_main("zoom-preserve");
+        // 清掉打开场景时的初始适配请求，聚焦「编辑提交」是否再次触发。
+        app.scene_view_fit_pending = false;
+        // 用户滚轮/拖拽后的视图状态。
+        app.scene_zoom = 1.6;
+        app.scene_state.pan = egui::vec2(42.0, -17.0);
+
+        // 属性编辑提交路径：开事务 → 直写 → 提交（等价 Inspector 数值编辑松手）。
+        app.selection
+            .set_single(SceneEntityId(2), editor::SelectionSource::Hierarchy);
+        app.begin_edit_transaction("Inspector", editor::CommandKind::Property, Some(SceneEntityId(2)));
+        if let Some(entity) = app
+            .document
+            .current_scene
+            .as_mut()
+            .and_then(|doc| doc.scene.entities.get_mut(&SceneEntityId(2)))
+        {
+            entity.name = "ZoomPreserved".to_owned();
+        }
+        assert!(app.commit_edit_transaction(), "应有净差异提交");
+        assert!(
+            !app.scene_view_fit_pending,
+            "同文档编辑提交不得触发视图适配"
+        );
+        assert_eq!(app.scene_zoom, 1.6, "编辑提交不得重置 zoom");
+        assert_eq!(app.scene_state.pan, egui::vec2(42.0, -17.0));
+
+        // 文档整表切换（重新打开场景）：必须重新适配视图。先撤销恢复 clean，
+        // 否则 open 会走 dirty 挂起确认而不执行。
+        app.undo();
+        app.scene_zoom = 1.6;
+        app.open_scene_resource(std::path::PathBuf::from("scenes/main.scene"));
+        assert!(
+            app.scene_view_fit_pending,
+            "整表切换应触发视图适配"
+        );
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

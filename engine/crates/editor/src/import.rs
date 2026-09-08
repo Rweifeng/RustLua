@@ -113,6 +113,10 @@ impl EditorApp {
                     self.thumbnail_worker.clear();
                     // 字体图集按项目缓存（project.toml `font` 键）：切换项目后重建。
                     self.scene_font_atlas = None;
+                    // 自定义字体缓存按项目路径缓存，同样随项目切换清空。
+                    self.custom_font_atlases.lock().unwrap().clear();
+                    // 项目设置缓冲按项目读取，切换后重置为默认（下次打开再读取）。
+                    self.project_settings = Default::default();
                     self.history.clear();
                     self.autosave.reset();
                     self.lua_runtime = None;

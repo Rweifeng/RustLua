@@ -622,7 +622,7 @@ pub fn check() -> Result<String, String> {
     fs::create_dir_all(root.join("scripts")).map_err(|e| e.to_string())?;
     fs::write(
         root.join("project.toml"),
-        "[project]\nname = \"check\"\nversion = \"0.0.0\"\nengine = \"p2\"\nmain_script = \"scripts/main.lua\"\nstartup_scene = \"\"\n",
+        "[project]\nname = \"check\"\nversion = \"0.0.0\"\nengine = \"RustLua\"\nmain_script = \"scripts/main.lua\"\nstartup_scene = \"\"\n",
     )
     .map_err(|e| e.to_string())?;
     fs::write(
@@ -662,7 +662,7 @@ mod tests {
         fs::create_dir_all(root.join("scripts")).unwrap();
         fs::write(
             root.join("project.toml"),
-            "[project]\nname = \"t\"\nversion = \"0.1.0\"\nengine = \"p2\"\nmain_script = \"scripts/main.lua\"\nstartup_scene = \"scenes/main.scene\"\n",
+            "[project]\nname = \"t\"\nversion = \"0.1.0\"\nengine = \"RustLua\"\nmain_script = \"scripts/main.lua\"\nstartup_scene = \"scenes/main.scene\"\n",
         )
         .unwrap();
         fs::write(

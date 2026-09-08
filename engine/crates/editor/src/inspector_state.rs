@@ -164,6 +164,8 @@ pub struct TextFields {
     pub color_r: f32,
     pub color_g: f32,
     pub color_b: f32,
+    /// 自定义字体（项目相对路径，如 assets/fonts/x.ttf）；空 = 项目默认字体。
+    pub font: String,
 }
 
 impl Default for TextFields {
@@ -174,6 +176,7 @@ impl Default for TextFields {
             color_r: 1.0,
             color_g: 1.0,
             color_b: 1.0,
+            font: String::new(),
         }
     }
 }
@@ -1171,6 +1174,7 @@ fn encode_text(fields: &TextFields) -> Result<String, InspectorError> {
         text: fields.text.clone(),
         font_size: fields.font_size,
         color: [fields.color_r, fields.color_g, fields.color_b],
+        font: fields.font.clone(),
     }
     .to_component_str())
 }
@@ -1184,6 +1188,7 @@ fn decode_text(value: &str) -> Result<TextFields, InspectorError> {
         color_r: ui.color[0],
         color_g: ui.color[1],
         color_b: ui.color[2],
+        font: ui.font,
     })
 }
 
@@ -2178,5 +2183,64 @@ mod tests {
         assert_eq!(decoded.nine_slice_r, 8.0);
         assert_eq!(decoded.nine_slice_t, 16.0);
         assert_eq!(decoded.nine_slice_b, 16.0);
+    }
+    #[test]
+    fn text_font_roundtrips_via_snapshot_and_scene_text() {
+        let (mut document, inspector, id) = setup();
+        inspector
+            .set_text(
+                &mut document,
+                id,
+                TextFields {
+                    text: "Hi".to_owned(),
+                    font_size: 24.0,
+                    font: "assets/fonts/a;b=数字.ttf".to_owned(),
+                    ..TextFields::default()
+                },
+            )
+            .unwrap();
+        assert!(document.is_dirty());
+        let stored = document.scene.entities[&id]
+            .components
+            .get("Text")
+            .expect("Text written");
+        assert!(stored.ends_with(";font=assets/fonts/a\\;b\\=数字.ttf"), "{stored}");
+        // 场景文件文本往返后仍保留字体字段。
+        let text = document.scene.to_text();
+        let loaded = engine::core::scene::Scene::from_text(&text).unwrap();
+        let persisted = loaded.entities[&id]
+            .components
+            .get("Text")
+            .expect("Text persisted");
+        let decoded = decode_text(persisted).unwrap();
+        assert_eq!(decoded.font, "assets/fonts/a;b=数字.ttf");
+        assert_eq!(decoded.text, "Hi");
+        // 快照往返。
+        let snapshot = inspector.snapshot(&document, id).unwrap();
+        assert_eq!(
+            snapshot.text.expect("text snapshot").font,
+            "assets/fonts/a;b=数字.ttf"
+        );
+    }
+    #[test]
+    fn text_empty_font_stores_legacy_string_without_font_key() {
+        let (mut document, inspector, id) = setup();
+        inspector
+            .set_text(
+                &mut document,
+                id,
+                TextFields {
+                    text: "Hi".to_owned(),
+                    ..TextFields::default()
+                },
+            )
+            .unwrap();
+        let stored = document.scene.entities[&id]
+            .components
+            .get("Text")
+            .expect("Text written");
+        assert!(!stored.contains("font="), "{stored}");
+        let decoded = decode_text(stored).unwrap();
+        assert_eq!(decoded.font, "");
     }
 }
