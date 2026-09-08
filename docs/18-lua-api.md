@@ -57,7 +57,7 @@
 | 模块 | API | 说明 |
 |---|---|---|
 | `grid` | `world_to_cell(x,y,tile_size)` / `cell_to_world(cx,cy,tile_size)` / `facing_cell(x,y,facing,tile_size)` / `in_bounds` | 世界坐标与格子坐标互转；`facing` 支持 `up/down/left/right` 及 `n/s/w/e` |
-| `tilemap` | `create(width,height,tile_size[,texture][,name])` / `get(id)` / `is_solid(id,x,y)` / `get_cell(id,x,y)` / `set_cell(id,x,y,value)` / `set_solid(id,x,y,bool)` / `get_meta(id,x,y,key)` / `set_meta(id,x,y,key,value)` | 运行时创建空 Tilemap 实体（用于数据驱动的农田网格，headless 也适用），或对既有 Tilemap 写视觉格、碰撞层和每格字符串元数据；`set_meta` 空 value 删除键；格子值 `0`=空、`1..=6`=贴图集列（纹理列采样，见 `assets/textures/tileset.png`） |
+| `tilemap` | `create(width,height,tile_size[,texture][,name])` / `get(id)` / `is_solid(id,x,y)` / `get_cell(id,x,y)` / `set_cell(id,x,y,value)` / `set_solid(id,x,y,bool)` / `get_meta(id,x,y,key)` / `set_meta(id,x,y,key,value)` / `find_path(id,fx,fy,tx,ty,diagonal?)` | 运行时创建空 Tilemap 实体（用于数据驱动的农田网格，headless 也适用），或对既有 Tilemap 写视觉格、碰撞层和每格字符串元数据；`set_meta` 空 value 删除键；格子值 `0`=空、`1..=6`=贴图集列（纹理列采样，见 `assets/textures/tileset.png`）；`find_path` 以 solid 为阻挡做 A* 四/八向寻路（可选 diagonal，禁穿角），成功返回含两端的 `{x,y}` 路径表，失败返回 `nil, reason` |
 | `clock` | `now` / `set_rate` / `pause` / `add` / `set` / `sleep_to_morning` | 独立游戏时钟，默认第 1 天 06:00；`set_rate(n)` 表示每秒推进 n 个游戏分钟，宿主在固定步进时调用 |
 | `calendar` | `now` / `set` | 日期/季节/年（M16-08）。`now()` 返回 `absolute_day/day/season/year/minute`（`day` 为季节内第几天，1~28，28 天/季 × 4 季/年）；`set(day,season,year,minute)` 按绝对天数写入 |
 | `day` | `sleep` / `now` | 每日生命周期（M16-08）。`sleep()` 推进到次日 06:00 并触发全局 `on_day_end` → `on_day_start` 回调（脚本定义了才调用）；时钟自然跨午夜时宿主也会触发 `on_day_start`。`now()` 返回 `day/minute` |
@@ -66,7 +66,7 @@
 | `item` | `define(id,def)` / `def(id)` | 注册和查询物品定义（`name/description/stack/buy/sell/texture/kind`） |
 | `inv` | `create/hotbar/capacity/exists/add/remove/count/get/slot/set/swap/move/equip/equip_get/equip_list` | 固定容量背包、堆叠与快捷栏；槽位从 1 开始。`equip(inv,slot,item_id)` 写入/清除（nil 清除）装备槽（M16-07 骨架，暂无属性效果），`equip_get` 查询单槽，`equip_list` 返回槽→物品表 |
 | `container` | `open(entity_id,capacity)` / `get` / `close` / `move` | 把实体 ID 关联为箱子背包，并可与玩家背包互转 |
-| `save` | `blob_write(key,value)` / `blob_read(key)` / `slot(name)` / `slot_get` / `version` | 任意 Lua 值（表/数字/字符串/布尔）存入现有存档；按槽位写入 `save_<slot>.sav`。`version()` 返回最近加载存档的版本号；`load()` 只接受 `save_version=1`，缺失或版本不符时返回失败 |
+| `save` | `blob_write(key,value)` / `blob_read(key)` / `slot(name)` / `slot_get` | 任意 Lua 值（表/数字/字符串/布尔）经 `__blob:<key>` JSON 存入键值存档，可用 `slot(name)` 切换 `save_<slot>.sav`。持久化走 `commit()`（原子写盘）、读档走 `load()`（见上表）。注意（兼容层收口后）：**无 `version()`、无 `on_migrate` 迁移钩子**——`load()` 只接受 `save_version=1`，缺失或版本不符返回 false 且不覆盖原文件 |
 | `shop` | `set_catalog` / `price` | 商店目录与价格服务（M16-10）。`set_catalog(name,spec)` 注册目录（`{item_id:{buy,sell}}`），`price(name,item_id)` 返回 `{buy,sell}` 或 nil；买卖交易与资金在 Lua 玩法层完成 |
 | `map` | `go(name,x,y)` / `enter(name,x,y)` / `current` / `spawn` / `set_spawn` / `schema(name,spec)` / `state(name[,value])` | 带出生点切图、当前图查询、分地图 blob 持久化；`schema` 注册分地图状态的轻量结构校验器，`schema(name,nil)` 清除；`state(name,value)` 写入前校验，错误定位到地图名与字段 |
 | `ui` | `panel/image/grid/grid_cell/grid_clear/grid_hit/tooltip/modal/modal_show/modal_hide/clear/drag_begin/drag_end/drag_active/drag_cancel` | 运行时动态面板、图片、背包网格、tooltip、模态层与拖拽回调 |

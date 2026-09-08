@@ -99,6 +99,12 @@ impl RuntimeScene {
         Self::init(project_root, scene, false)
     }
 
+    /// Lua 侧 `app.quit()` 只置引擎的退出请求标记（见 `script.rs`），桌面运行器
+    /// 借此轮询并在帧末真正退出，否则“退出”按钮在窗口环境无效。
+    pub fn quit_requested(&self) -> bool {
+        self.script.quit_requested()
+    }
+
     /// 设置 2D 相机（编辑器场景视图用，匹配编辑器 pan/zoom）。
     pub fn set_camera_2d(&mut self, camera: Camera2D) {
         self.camera = camera;

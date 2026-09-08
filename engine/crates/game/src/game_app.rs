@@ -127,6 +127,13 @@ impl GameApp {
             tracing::error!(target: "script", error = %diagnostic, "fixed-step update failed");
             self.request_exit(event_loop);
         }
+        // Lua `app.quit()`：只在 fixed-step 更新后消费退出标记，避免在无
+        // runtime_scene（初始化/异常）时误退。
+        if let Some(scene) = self.runtime_scene.as_ref() {
+            if scene.quit_requested() {
+                self.request_exit(event_loop);
+            }
+        }
     }
 
     fn redraw(&mut self, event_loop: &ActiveEventLoop) {
