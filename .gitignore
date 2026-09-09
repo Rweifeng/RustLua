@@ -18,3 +18,4 @@ Thumbs.db
 
 # Game project runtime temp: editor autosave/crash-recovery snapshots
 **/.temp/
+**/.builds/
