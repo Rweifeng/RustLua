@@ -127,7 +127,7 @@ ECS：bevy_ecs、hecs 或最小自研实现，需通过基准测试决定
 | M9 | 3D 可玩垂直切片 |
 | M10 | 编辑器强化（内嵌预览、3D 视口、Gizmo、资源缩略图、Prefab 集成） |
 
-M11–M15 已归档至 `tasks/done/`，M16–M20 处于 BACKLOG；完整里程碑状态以 CHANGELOG 为准。
+M11–M15 已归档至 `tasks/done/`，M16–M20 的待做任务统一放在 `tasks/plan/`；完整里程碑状态以 CHANGELOG 为准。
 
 ## 9. AI 开发规则
 
@@ -147,11 +147,12 @@ M11–M15 已归档至 `tasks/done/`，M16–M20 处于 BACKLOG；完整里程�
 
 ### 9.2 开始前必读清单
 
-按优先级读取：项目章程 → 当前任务文件（`tasks/`）→ 相关能力文档（`docs/`）→ 相关技术决策（`docs/02-technical-decisions.md`）。当前阶段以 CHANGELOG 为准，不依赖章程中的历史快照。
+按优先级读取：项目章程 → 当前任务文件（`tasks/plan/` 中的待做任务，或 `tasks/done/` 中的已归档任务）→ 相关能力文档（`docs/`）→ 相关技术决策（`docs/02-technical-decisions.md`）。当前阶段以 CHANGELOG 为准，不依赖章程中的历史快照。
 
 ### 9.3 AI 必须做
 
 - 开始任务前读取 9.2 的必读清单；
+- 只能从 `tasks/plan/` 认领待做任务，认领后将任务状态更新为进行中；
 - 先报告方案、影响文件、风险和验收方式；
 - 只修改当前任务所需范围；
 - 添加测试或可重复 Demo；

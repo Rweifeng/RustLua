@@ -61,6 +61,7 @@ local function enter_farm()
   end
   player.ensure()
   farm.init()
+  state.set_mode("Playing")
   clock.set_rate(2)
   log.info("进入山庄：第 " .. tostring(clock.now().day) .. " 天 (mode=" .. tostring(entry) .. ")")
 end
@@ -81,9 +82,11 @@ function on_click(name)
   end
   if name == "BtnStart" then
     entry = "new"
+    state.set_mode("Transition")
     scene.load("main")
   elseif name == "BtnContinue" then
     entry = "continue"
+    state.set_mode("Transition")
     scene.load("main")
   elseif name == "BtnExit" then
     app.quit()

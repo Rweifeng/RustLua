@@ -1,0 +1,61 @@
+# M6-08：样板游戏增强（BGM / 主菜单 / 方向攻击 / 程序化精灵）
+
+- 状态：ACCEPTED（待 M7 里程碑汇总验收）
+- 验收日期：2026-08-22
+- 前置任务：M6-06（消除其已知限制中的 4 项）
+
+## 目标
+
+补齐样板游戏体验：循环背景音乐、主菜单、有方向的范围攻击、更精致的程序化精灵。
+
+## 实施
+
+### BGM（循环背景音乐）
+- `engine_core::audio`：新增 `play_music`（rodio `repeat_infinite` 循环，替换旧音乐）与 `stop_music`；抽取 `ensure_device` 复用；
+- Lua API：`audio.music(name)` / `audio.stop_music()`；
+- `scripts/gen-bgm.ps1`：Add-Type C# 合成 24s 循环 chiptune `bgm.wav`（A 小调行进）；
+- 游戏启动时 `audio.music("bgm")` 播放一次，跨场景切换保持。
+
+### 主菜单
+- `state.menu` 初始为 `true`；`hud.init_menu` 显示标题/开始提示/操作说明；
+- 菜单期 SPACE 开始（`state.menu=false`）；开始前敌人不追击、不受伤（`handle_events`/`enemies.chase` 均以 `not menu` 门控）。
+
+### 有方向的范围攻击
+- `state.facing` 记录最近非零输入方向（默认向下）；
+- `player.attack`：命中需**距离 ≤ attack_range(56)** 且**朝向点积 ≥ cone(0.707=45°)**，不再全向 48 半径；
+- 攻击特效粒子朝朝向方向喷发。
+
+### 升级程序化精灵
+- `scripts/gen-characters.ps1`：英雄/史莱姆/金币增加暗描边、明暗双色、面部（眼睛/瞳孔/嘴）、剑刃高光、金币内环与反光。
+
+### 死亡/胜利重玩一局
+- `state.fresh_round`：重开当前场景、满血、跳过存档恢复、直接进入游戏；
+- 终局显示"重玩一局 (R)"按钮（ui.bar 背景 + 中文标签），鼠标左键点击或按 R 重开；
+- 引擎：R 键映射到 `InputKey::Other(99)`（map_key + parse_key），`input.just_pressed("r")` 可用；
+- 实测：`player hit: hp=0` → `retry: fresh round` → 满血 100 开局（后续受击 100→80→60 确认）。
+
+### CJK 文本渲染（主菜单中文"?"修复）
+- `engine_core/font.rs`：`FontAtlas` 用 `ab_glyph` 按需栅格化任意字形到动态 RGBA 图集（版本号增量，仅变化时上传）；
+- `TextLayout::build_mixed`：ASCII 走内置 5×7 图集、非 ASCII 走字体图集，返回两个 mesh；
+- `game_runner`：启动加载 `assets/fonts/NotoSansSC-VF.ttf`，字体图集纹理按版本上传；主菜单中文正常显示；
+- 修复渲染坐标三连 bug（否则字形不可见）：
+  1. ab_glyph `draw` 回调的 x/y 已是 0 基位图坐标，不应再减 `bounds.min`（CJK 负 min.y 会把字形推出单元格）；
+  2. 裁剪检查用单元内偏移 x/y（绝对 px/py 与 cell 比会让非首列全部被裁）；
+  3. offset 用绝对像素 `py*width+px`（勿再重复加 row/col*cell，否则字形右移/下移一整格）；
+- 用 dump 示例目视验证：26 个字形各归其位、像素充足；测试断言字形不透明像素 >100 防回归；
+- 测试：`rasterizes_cjk_glyph_and_reports_uv`、`build_mixed_splits_ascii_and_cjk_glyphs`。
+
+## 验收结果
+
+- 实测：启动 `[audio] music started (loop) name="bgm"`；菜单期零伤害（`player hit` 仅出现在 SPACE 开始后）；开始后伤害/追击正常；F4 切场景正常；
+- 精灵 PNG 已重新生成（尺寸更大=细节更多），帧布局不变，动画配置无需改动；
+- fmt / clippy / workspace 测试 196 全过。
+
+## 证据
+
+- `tasks/done/M6-08-样板游戏增强（BGM主菜单方向攻击精灵）.md`
+- `game/assets/audio/bgm.wav`、`game/assets/textures/{hero-idle,hero-move,hero-attack,slime,coin}.png`
+
+## 建议下一步
+
+- 项目负责人实机确认 BGM/菜单/方向攻击手感后，打 `v0.7` 标签。

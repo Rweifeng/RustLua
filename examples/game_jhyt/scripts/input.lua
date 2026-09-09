@@ -34,6 +34,18 @@ local function update_movement()
   end
 end
 
+local function just_pressed(key)
+  return input.just_pressed(key)
+end
+
+local function update_context()
+  if just_pressed("p") then
+    state.toggle_pause()
+  elseif just_pressed("i") then
+    state.toggle_inventory()
+  end
+end
+
 -- 状态栏 HUD 文案（底部固定提示左侧追加当日信息；当前 MVP 只保留控制提示）
 local function hud_text()
   local d = clock.now()
@@ -42,6 +54,13 @@ end
 
 function M.update()
   player.ensure()
+  update_context()
+
+  if not state.is_mode("Playing") then
+    player.stop()
+    return hud_text()
+  end
+
   update_movement()
 
   if input.just_pressed("e") then
@@ -58,7 +77,7 @@ function M.update()
   end
 
   if input.just_pressed("q") then
-    state.inner_power = math.min(100, state.inner_power + 5)
+    state.inner_power = math.min(100, (state.inner_power or 0) + 5)
     state.last_action = "practice_breath"
   end
 
