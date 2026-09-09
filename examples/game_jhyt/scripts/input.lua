@@ -1,6 +1,6 @@
 local state = require("state")
 local player = require("player")
-local farm = require("farm")
+local interaction = require("interaction")
 
 local M = {}
 
@@ -64,7 +64,7 @@ function M.update()
   update_movement()
 
   if input.just_pressed("e") then
-    local result = farm.act(state.facing)
+    local result = interaction.interact(state.facing)
     if result ~= "move" and result ~= "none" then
       state.last_action = result
     end

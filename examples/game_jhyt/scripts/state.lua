@@ -5,6 +5,11 @@ local M = {
   energy = 100,
   inner_power = 50,
   facing = "down",
+  selected_seed = "seed_lingzhi",
+  selected_tool = "hoe",
+  season = "spring",
+  weather = "sunny",
+  labor_minutes = 0,
   last_action = "none",
   mode = "Playing",
   return_mode = "Playing"
@@ -68,6 +73,11 @@ function M.capture()
     energy = M.energy,
     inner_power = M.inner_power,
     facing = M.facing,
+    selected_seed = M.selected_seed,
+    selected_tool = M.selected_tool,
+    season = M.season,
+    weather = M.weather,
+    labor_minutes = M.labor_minutes,
     last_action = M.last_action,
     mode = M.mode
   }
@@ -80,8 +90,13 @@ function M.restore(data)
   M.money = tonumber(data.money) or M.money
   M.energy = tonumber(data.energy) or M.energy
   M.inner_power = tonumber(data.inner_power) or M.inner_power
-  M.facing = tostring(data.facing)
-  M.last_action = tostring(data.last_action)
+  M.facing = tostring(data.facing or M.facing)
+  M.selected_seed = data.selected_seed and tostring(data.selected_seed) or M.selected_seed
+  M.selected_tool = data.selected_tool and tostring(data.selected_tool) or M.selected_tool
+  M.season = data.season and tostring(data.season) or M.season
+  M.weather = data.weather and tostring(data.weather) or M.weather
+  M.labor_minutes = tonumber(data.labor_minutes) or M.labor_minutes
+  M.last_action = tostring(data.last_action or M.last_action)
   if VALID_MODES[data.mode] then
     M.mode = data.mode
   else
@@ -99,6 +114,11 @@ function M.reset()
   M.energy = 100
   M.inner_power = 50
   M.facing = "down"
+  M.selected_seed = "seed_lingzhi"
+  M.selected_tool = "hoe"
+  M.season = "spring"
+  M.weather = "sunny"
+  M.labor_minutes = 0
   M.last_action = "none"
   M.mode = "Playing"
   M.return_mode = "Playing"

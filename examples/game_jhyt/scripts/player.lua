@@ -43,4 +43,34 @@ function M.position()
   return transform.get(pid)
 end
 
+-- 位置快照使用场景中的稳定实体名 JianghuPlayer 重新绑定；引擎当前未暴露
+-- PersistId 查询/设置 API，因此这是最小安全坐标快照，限于 main 场景且不迁移实体。
+function M.capture()
+  local pos = M.position()
+  if not pos then
+    return { mode = "unavailable", entity = "JianghuPlayer" }
+  end
+  return {
+    mode = "entity_name_position",
+    entity = "JianghuPlayer",
+    x = tonumber(pos.x),
+    y = tonumber(pos.y)
+  }
+end
+
+function M.restore(data)
+  if type(data) ~= "table" or data.mode ~= "entity_name_position" then
+    return false, "player position snapshot unavailable"
+  end
+  local pid = M.ensure()
+  if not pid then
+    return false, "JianghuPlayer is not instantiated"
+  end
+  if type(data.x) ~= "number" or type(data.y) ~= "number" then
+    return false, "player position is invalid"
+  end
+  transform.set(pid, data.x, data.y)
+  return true
+end
+
 return M

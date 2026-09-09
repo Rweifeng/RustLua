@@ -13,6 +13,7 @@ function M.setup()
   end
   inv.create(state.inventory, 20)
   inv.add(state.inventory, "seed_lingzhi", 5)
+  inv.add(state.inventory, "seed_rice", 5)
   inv.add(state.inventory, "rice", 2)
   inv.equip(state.inventory, "tool", "hoe")
 end

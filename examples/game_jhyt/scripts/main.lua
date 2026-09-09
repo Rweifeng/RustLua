@@ -9,6 +9,8 @@ local inventory = require("inventory")
 local input = require("input")
 local save_manager = require("save_manager")
 local farm = require("farm")
+local calendar = require("calendar")
+local weather = require("weather")
 
 -- "new" | "continue"：标题按钮点击写入，山庄 on_create 消费
 local entry
@@ -29,11 +31,17 @@ local function register_save_providers()
       clock.set(tonumber(data.day) or 1, tonumber(data.minute) or 0)
     end
   end)
+  save_manager.register("player", player.capture, player.restore)
   save_manager.register("scene", function()
-    return { name = scene.reload() }
+    local farm_snapshot = farm.capture()
+    return {
+      name = scene.reload(),
+      map = "main",
+      map_state = { farm_plots = farm_snapshot.plots }
+    }
   end, function(data)
-    if type(data) == "table" then
-      log.info("[scene] 存档场景：" .. tostring(data.name))
+    if type(data) == "table" and type(data.map_state) == "table" and type(data.map_state.farm_plots) == "table" then
+      map.state("farm_plots", data.map_state.farm_plots)
     end
   end)
   -- 农田地块明细：farm.init 在场景重建后从 map.state 还原，capture/restore
@@ -61,6 +69,8 @@ local function enter_farm()
   end
   player.ensure()
   farm.init()
+  calendar.sync()
+  weather.current()
   state.set_mode("Playing")
   clock.set_rate(2)
   log.info("进入山庄：第 " .. tostring(clock.now().day) .. " 天 (mode=" .. tostring(entry) .. ")")
@@ -108,6 +118,11 @@ function on_day_start()
     return
   end
   farm.settle_day()
+  -- 同步新日期与天气，再重置新一天的行动资源。
+  calendar.sync()
+  weather.current()
+  state.energy = 100
+  state.labor_minutes = 0
   log.info("新的一天：" .. tostring(clock.now().day))
   save_manager.save()
 end

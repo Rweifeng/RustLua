@@ -27,13 +27,14 @@
 - 领域数据 Schema 与加载校验：统一 NPC、日程、对话、任务、商店、配方、地图出口的数据字段、版本和引用诊断。
 - 对应任务：`M17-01` 至 `M17-05`（当前均为待办，见 `tasks/`）。
 
-## v0.12 — 规划（M16）
+## v0.12 — 2026-09-09（M16）
 
-- 游戏输入上下文与玩法状态机：隔离游玩、对话、背包、商店、暂停和场景切换输入。
-- 通用世界交互框架：统一交互目标查询、提示、条件检查和执行协议，覆盖 NPC、建筑、采集点、箱子和农田。
-- 农田规则与日历天气基础：修复重复浇水和多种子选择问题，补齐季节、天气、土地类型、工具校验和劳作时间模型。
-- 游戏级存档增强与长跑验证：保存玩家位置、地图状态、快照版本和存档摘要，验证 30 天循环及 100 次读档稳定性。
-- 对应任务：`M16-01` 至 `M16-04`（当前均为待办，见 `tasks/`）。
+- 游戏输入上下文与玩法状态机：`state.lua` 提供 Playing/Dialogue/Inventory/Shop/Pause/Transition 六态与 `get_mode`/`is_mode`/`set_mode`/`toggle_pause`/`toggle_inventory`；`input.lua` 以 `p/i` 小写边沿键切暂停/背包，非 Playing 状态停止移动与 E/Q/T 交互、睡觉、修炼；状态字段入档并对旧存档回退 Playing。headless 验证：非 Playing 输入屏蔽、切换抑制。
+- 通用世界交互框架：新增 `interaction.lua` 统一目标注册、面向查询、稳定排序、`can_interact`/`prompt`/`interact` 与失败原因；农田目标注册后 E 键统一走 `interaction.interact` → `farm.act`，保持原有翻土/播种/浇水/收获结果。headless 验证：面向农田格按 E 触发劳作并扣体力。
+- 农田规则与日历天气基础：`calendar.lua` 按 28 天周期推导季节；`weather.lua` 支持晴/雨；雨天作物自动浇水且不耗体力、手动重复浇水返回 `already_watered`；种子由 `selected_seed` 决定并按固定快捷栏顺序回退；锄头/水壶/土地类型/作物季节前置校验；劳作时间记入 `labor_minutes` 不推进 clock。headless 验证：灵芝 7 天全流程（翻土→播种→浇水→雨天→成熟→收获 lingzhi×1）。修复：`farm.lua` 工具查询改走引擎 `inv.equip_list`、移除遮蔽引擎全局 `inv` 的局部别名。
+- 游戏级存档增强与长跑验证：快照版本提升至 2，旧版明确拒绝；保存 state/inventory/clock/farm/scene（含地图状态摘要）；`summary`/`last_summary`/`validate_long_run(30,100)` 接口；玩家位置在场景实例化后经 `JianghuPlayer` 名称绑定恢复；commit 失败不更新摘要。headless 验证：day8 存档后第二 runtime 经 title→BtnContinue 恢复 main 场景与数值一致。
+- 质量门：`cargo fmt -p game -- --check`、`cargo clippy -p game --all-targets --all-features`、`cargo test -p game cli::tests`（7/7）、`cargo build -p game` 与 `cargo run -p game --example jhyt_smoke` 全部通过。
+- 对应任务：`M16-01` 至 `M16-04`（已 headless 验收，见 `tasks/`）。
 
 ## v0.11-editor — 2026-09-09
 
