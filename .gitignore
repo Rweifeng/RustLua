@@ -11,6 +11,7 @@ artifacts/
 .idea/
 .DS_Store
 Thumbs.db
+.dbg/
 
 # Per-project working directory: resource database, import cache, save data
 **/.cache/
