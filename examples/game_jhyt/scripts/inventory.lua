@@ -1,9 +1,12 @@
 local state = require("state")
+local items = require("data.items")
 
 local M = {}
 
+local MAX_ENERGY = 100
+local MAX_INNER_POWER = 100
+
 function M.setup()
-  local items = require("data.items")
   for id, definition in pairs(items) do
     item.define(id, definition)
   end
@@ -18,13 +21,57 @@ function M.setup()
   inv.equip(state.inventory, "tool", "hoe")
 end
 
-function M.use(item_id)
-  if inv.count(state.inventory, item_id) <= 0 then
-    return false
+-- 使用效果只存在于 Lua 侧数据（data.items[id].use）：引擎 item.define 会忽略
+-- 未知字段，故不能从 item.def 回读。无 use 字段即不可使用（种子/收获物/工具）。
+local function use_effect(item_id)
+  local def = items[item_id]
+  if def and type(def.use) == "table" then
+    return def.use
   end
+  return nil
+end
+
+-- 使用物品（M17-04 硬风险③）：先确认确实能产生效果，再应用效果，最后消耗 1 个。
+-- 无效果或用满上限时拒绝并保留物品，绝不出现「只删物品不生效」的半完成状态；
+-- 效果结果写入 state，随 state.capture 存档快照一致恢复。
+function M.use(item_id)
+  if type(item_id) ~= "string" or item_id == "" then
+    return false, "unknown_item"
+  end
+  if inv.count(state.inventory, item_id) <= 0 then
+    return false, "not_enough"
+  end
+  local effect = use_effect(item_id)
+  if not effect then
+    return false, "no_effect"
+  end
+
+  local applied = false
+  local energy = tonumber(effect.energy)
+  if energy and energy ~= 0 then
+    local before = tonumber(state.energy) or 0
+    local after = math.max(0, math.min(MAX_ENERGY, before + energy))
+    if after ~= before then
+      state.energy = after
+      applied = true
+    end
+  end
+  local inner_power = tonumber(effect.inner_power)
+  if inner_power and inner_power ~= 0 then
+    local before = tonumber(state.inner_power) or 0
+    local after = math.max(0, math.min(MAX_INNER_POWER, before + inner_power))
+    if after ~= before then
+      state.inner_power = after
+      applied = true
+    end
+  end
+  if not applied then
+    return false, "no_effect"
+  end
+
   inv.remove(state.inventory, item_id, 1)
   state.last_action = "use_" .. item_id
-  return true
+  return true, "ok"
 end
 
 -- 存档快照（save_manager 调用）：槽位 + 命名装备槽整体镜像。

@@ -102,11 +102,28 @@ local function crop_short_id(crop_def)
   return nil
 end
 
+-- 惰性装载作物定义表（crops/crops_by_seed）：restore 可能在非山庄地图
+-- （如 continue 直接进云泽村）先于 farm.init 运行 —— init 只绑定 FarmGrid，
+-- 而地块数据本身与场景无关，不能因为作物表未初始化而丢 short id。
+local function ensure_crops()
+  if crops then
+    return
+  end
+  crops = require("data.crops")
+  crops_by_seed = {}
+  for id, def in pairs(crops or {}) do
+    if def and def.seed_item then
+      crops_by_seed[def.seed_item] = id
+    end
+  end
+end
+
 -- 由地块存值（short id 或历史 seed_item）解析 crop short id；无法识别返回 nil。
 local function crop_id_for(crop)
   if type(crop) ~= "string" then
     return nil
   end
+  ensure_crops()
   if crops[crop] then
     return crop
   end

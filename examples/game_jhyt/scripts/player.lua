@@ -34,6 +34,22 @@ function M.stop()
   end
 end
 
+-- 传送：把动态刚体与 ECS Transform 同步移到世界坐标 (x,y) 并清零速度。
+-- 切图落点 / 读档恢复必须用它（transform.set 只改 ECS，下一帧 step_physics
+-- 会把刚体旧位置写回覆盖）；physics.set_position 为 M17-01 新增的 2D 传送。
+function M.teleport(x, y)
+  local pid = M.ensure()
+  if not pid then
+    return false
+  end
+  if type(x) ~= "number" or type(y) ~= "number" then
+    return false
+  end
+  physics.set_position(pid, x, y)
+  physics.set_velocity(pid, 0, 0)
+  return true
+end
+
 -- 查询位置（farm.act / 面向格计算用）
 function M.position()
   local pid = M.ensure()
@@ -44,7 +60,8 @@ function M.position()
 end
 
 -- 位置快照使用场景中的稳定实体名 JianghuPlayer 重新绑定；引擎当前未暴露
--- PersistId 查询/设置 API，因此这是最小安全坐标快照，限于 main 场景且不迁移实体。
+-- PersistId 查询/设置 API，因此这是最小安全坐标快照：记录所在地图 id 与
+-- 世界坐标，跨地图读档/继续时可定位目标场景。
 function M.capture()
   local pos = M.position()
   if not pos then
@@ -53,6 +70,7 @@ function M.capture()
   return {
     mode = "entity_name_position",
     entity = "JianghuPlayer",
+    map = (map.current() or scene.reload()),
     x = tonumber(pos.x),
     y = tonumber(pos.y)
   }
@@ -69,7 +87,9 @@ function M.restore(data)
   if type(data.x) ~= "number" or type(data.y) ~= "number" then
     return false, "player position is invalid"
   end
-  transform.set(pid, data.x, data.y)
+  -- 读档恢复发生在场景重建之后：用 2D 传送保证刚体与 ECS 同步，
+  -- 避免 transform.set 被下一帧 physics 回写覆盖导致"回到旧位置"。
+  M.teleport(data.x, data.y)
   return true
 end
 

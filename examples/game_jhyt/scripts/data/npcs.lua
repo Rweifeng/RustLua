@@ -1,0 +1,100 @@
+-- data/npcs.lua：《江湖有田》NPC 注册表（M17-02 纯数据）。
+--
+-- 新增一个 NPC = 本文件加一条记录 + data/schedules/<id>.lua 一个日程文件，
+-- 无需改动 npc.lua / schedule.lua / Rust 核心（验收项①）。
+--
+-- 字段：
+--   name       显示名（诊断文案）
+--   persist_id 稳定 PersistId：切图/重载不复制实体的唯一依据
+--   home       兜底地点名（引用 data/places.lua），日程缺失时落位
+--   sprite     SpriteComponent 字符串（texture=__white__ 内建白贴图 + tint；sorting_layer=actor）
+--   speed      逐帧 transform 移动速度（世界单位/秒）
+--   schedule   日程 id → data/schedules/<id>.lua
+--
+-- 表顺序无关；npc.lua 按 persist_id 稳定排序遍历，诊断/存档结果确定。
+local M = {}
+
+M.npcs = {
+  -- 云泽村
+  {
+    name = "沈青萝",
+    persist_id = "npc_shen_qingluo",
+    home = "village_home_west",
+    sprite = "texture=__white__;size=22x22;tint=0.86,0.42,0.55,1.0;sorting_layer=actor",
+    speed = 48,
+    schedule = "shen_qingluo"
+  },
+  {
+    name = "赵铁算盘",
+    persist_id = "npc_zhao_tiesuanpan",
+    home = "village_home_south",
+    sprite = "texture=__white__;size=22x22;tint=0.85,0.68,0.25,1.0;sorting_layer=actor",
+    speed = 44,
+    schedule = "zhao_tiesuanpan"
+  },
+  {
+    name = "林小满",
+    persist_id = "npc_lin_xiaoman",
+    home = "village_home_north",
+    sprite = "texture=__white__;size=22x22;tint=0.42,0.72,0.45,1.0;sorting_layer=actor",
+    speed = 44,
+    schedule = "lin_xiaoman"
+  },
+  {
+    name = "韩铁山",
+    persist_id = "npc_han_tieshan",
+    home = "village_home_forge",
+    sprite = "texture=__white__;size=24x24;tint=0.55,0.55,0.62,1.0;sorting_layer=actor",
+    speed = 40,
+    schedule = "han_tieshan"
+  },
+  -- 山庄
+  {
+    name = "顾长风",
+    persist_id = "npc_gu_changfeng",
+    home = "manor_home",
+    sprite = "texture=__white__;size=24x24;tint=0.28,0.45,0.62,1.0;sorting_layer=actor",
+    speed = 42,
+    schedule = "gu_changfeng"
+  },
+  {
+    name = "苏晚晴",
+    persist_id = "npc_su_wanqing",
+    home = "manor_home_east",
+    sprite = "texture=__white__;size=22x22;tint=0.55,0.72,0.85,1.0;sorting_layer=actor",
+    speed = 52,
+    schedule = "su_wanqing"
+  },
+  -- 云游（跨图：山庄 <-> 云泽村）
+  {
+    name = "玄鹤",
+    persist_id = "npc_xuanhe",
+    home = "manor_home",
+    sprite = "texture=__white__;size=22x22;tint=0.92,0.92,0.96,1.0;sorting_layer=actor",
+    speed = 56,
+    schedule = "xuanhe"
+  }
+}
+
+function M.get(persist_id)
+  for _, npc in ipairs(M.npcs) do
+    if npc.persist_id == persist_id then
+      return npc
+    end
+  end
+  return nil
+end
+
+-- 稳定排序的列表（按 persist_id 升序），供 npc.lua 遍历/存档。
+function M.list()
+  local list = {}
+  for _, npc in ipairs(M.npcs) do
+    list[#list + 1] = npc
+  end
+  table.sort(list, function(a, b)
+    return a.persist_id < b.persist_id
+  end)
+  return list
+end
+
+return M

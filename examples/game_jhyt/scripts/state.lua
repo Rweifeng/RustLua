@@ -12,8 +12,34 @@ local M = {
   labor_minutes = 0,
   last_action = "none",
   mode = "Playing",
-  return_mode = "Playing"
+  return_mode = "Playing",
+  -- 全局 / 剧情变量：对话与任务共用的数据容器，随存档持久化。
+  vars = {},
+  -- 变量副作用事件流水（有界，仅用于存档回溯与调试）。
+  var_events = {}
 }
+
+-- 变量事件流水上限，避免存档无限膨胀。
+local VAR_EVENT_LIMIT = 32
+
+-- 校验变量值类型：仅接受 number / boolean / string（可 JSON 往返）。
+local function var_value_ok(value)
+  local t = type(value)
+  return t == "number" or t == "boolean" or t == "string"
+end
+
+local function record_var_event(name, old, new, source, event)
+  M.var_events[#M.var_events + 1] = {
+    var = name,
+    old = old == nil and "<nil>" or old,
+    new = new == nil and "<nil>" or new,
+    source = tostring(source or "unknown"),
+    event = tostring(event or "")
+  }
+  while #M.var_events > VAR_EVENT_LIMIT do
+    table.remove(M.var_events, 1)
+  end
+end
 
 local VALID_MODES = {
   Playing = true,
@@ -67,7 +93,62 @@ function M.toggle_inventory()
   return false
 end
 
+-- 读取剧情变量；不存在返回 nil。
+function M.get_var(name)
+  if type(name) ~= "string" then
+    return nil
+  end
+  return M.vars[name]
+end
+
+-- 写入剧情变量（值类型非法时返回 false 且不落库）。
+-- source / event 记入事件流水，保证副作用可回溯（来源 + 事件）。
+function M.set_var(name, value, source, event)
+  if type(name) ~= "string" or not var_value_ok(value) then
+    return false
+  end
+  record_var_event(name, M.vars[name], value, source, event)
+  M.vars[name] = value
+  return true
+end
+
+-- 数值型剧情变量自增；缺失或非数值时按 0 起算。
+function M.add_var(name, delta, source, event)
+  if type(name) ~= "string" then
+    return false
+  end
+  local step = tonumber(delta)
+  if not step then
+    return false
+  end
+  local base = tonumber(M.vars[name]) or 0
+  return M.set_var(name, base + step, source, event)
+end
+
+-- 清空剧情变量与事件流水（新档复位 / 调试用）。
+function M.clear_vars()
+  M.vars = {}
+  M.var_events = {}
+end
+
 function M.capture()
+  local vars = {}
+  for name, value in pairs(M.vars) do
+    if type(name) == "string" and var_value_ok(value) then
+      vars[name] = value
+    end
+  end
+  local var_events = {}
+  for i = 1, #M.var_events do
+    local e = M.var_events[i]
+    var_events[i] = {
+      var = e.var,
+      old = e.old,
+      new = e.new,
+      source = e.source,
+      event = e.event
+    }
+  end
   return {
     money = M.money,
     energy = M.energy,
@@ -79,7 +160,9 @@ function M.capture()
     weather = M.weather,
     labor_minutes = M.labor_minutes,
     last_action = M.last_action,
-    mode = M.mode
+    mode = M.mode,
+    vars = vars,
+    var_events = var_events
   }
 end
 
@@ -97,6 +180,31 @@ function M.restore(data)
   M.weather = data.weather and tostring(data.weather) or M.weather
   M.labor_minutes = tonumber(data.labor_minutes) or M.labor_minutes
   M.last_action = tostring(data.last_action or M.last_action)
+  M.vars = {}
+  if type(data.vars) == "table" then
+    for name, value in pairs(data.vars) do
+      if type(name) == "string" and var_value_ok(value) then
+        M.vars[name] = value
+      end
+    end
+  end
+  M.var_events = {}
+  if type(data.var_events) == "table" then
+    for _, e in ipairs(data.var_events) do
+      if type(e) == "table" then
+        M.var_events[#M.var_events + 1] = {
+          var = tostring(e.var or ""),
+          old = e.old,
+          new = e.new,
+          source = tostring(e.source or ""),
+          event = tostring(e.event or "")
+        }
+        if #M.var_events >= VAR_EVENT_LIMIT then
+          break
+        end
+      end
+    end
+  end
   if VALID_MODES[data.mode] then
     M.mode = data.mode
   else
@@ -122,6 +230,8 @@ function M.reset()
   M.last_action = "none"
   M.mode = "Playing"
   M.return_mode = "Playing"
+  M.vars = {}
+  M.var_events = {}
 end
 
 return M

@@ -49,4 +49,4 @@
 
 ## 里程碑记录
 
-各里程碑（M0–M15）的任务与验收记录已归档至 `tasks/done/`；规划中的 M16–M20（BACKLOG）见 `tasks/`。CHANGELOG 规划版本映射为 M16 → v0.12、M17 → v0.13、M18 → v0.14、M19 → v0.15；基线标签：`v0.9-3d-game`（M9）、`v0.10-editor`（M10）。
+各里程碑（M0–M15）以及 M16-01~04、M17-01 的任务与验收记录已归档至 `tasks/done/`；规划中的其余任务（BACKLOG）见 `tasks/`。CHANGELOG 规划版本映射为 M16 → v0.12、M17 → v0.13、M18 → v0.14、M19 → v0.15；基线标签：`v0.9-3d-game`（M9）、`v0.10-editor`（M10）。

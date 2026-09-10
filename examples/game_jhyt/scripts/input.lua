@@ -1,6 +1,8 @@
 local state = require("state")
 local player = require("player")
 local interaction = require("interaction")
+local dialogue = require("dialogue")
+local shop = require("shop")
 
 local M = {}
 
@@ -52,8 +54,70 @@ local function hud_text()
   return "第 " .. tostring(d.day) .. " 天 · 体力 " .. tostring(state.energy)
 end
 
+-- 对话态：冻结移动与移动端交互，Esc 结束、数字键选择选项。
+-- 必须在 `not Playing` 早退之前分发，否则对话输入会被吞掉（M17-03 风险项）。
+local function update_dialogue()
+  player.stop()
+  if just_pressed("escape") then
+    dialogue.close()
+  else
+    for i = 1, dialogue.option_limit() do
+      if just_pressed(tostring(i)) then
+        dialogue.choose(i)
+        break
+      end
+    end
+  end
+  -- 换节点后重绘；若已结束（close 复位 Playing）则不再绘制。
+  if state.is_mode("Dialogue") then
+    dialogue.render()
+  end
+  return hud_text()
+end
+
+-- 商店态：冻结移动，Esc 关闭、F 切换买卖、+/- 调整数量、数字键选择、空格确认。
+-- 同样必须在 `not Playing` 早退之前分发，否则商店输入会被吞掉。
+local function update_shop()
+  player.stop()
+  if just_pressed("escape") then
+    shop.close_ui()
+  else
+    if just_pressed("f") then
+      shop.toggle_tab()
+    end
+    if just_pressed("+") then
+      shop.adjust(1)
+    elseif just_pressed("-") then
+      shop.adjust(-1)
+    end
+    for i = 1, shop.row_limit() do
+      if just_pressed(tostring(i)) then
+        shop.select(i)
+        break
+      end
+    end
+    if just_pressed("space") then
+      shop.confirm()
+    end
+  end
+  -- 换页/交易后重绘；若已关闭（close_ui 复位 Playing）则不再绘制。
+  if state.is_mode("Shop") then
+    shop.render()
+  end
+  return hud_text()
+end
+
 function M.update()
   player.ensure()
+
+  if state.is_mode("Dialogue") then
+    return update_dialogue()
+  end
+
+  if state.is_mode("Shop") then
+    return update_shop()
+  end
+
   update_context()
 
   if not state.is_mode("Playing") then

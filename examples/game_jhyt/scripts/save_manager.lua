@@ -144,22 +144,54 @@ function M.save()
   return true
 end
 
-function M.load()
+-- 只读取盘：把磁盘 save_data 载入内存（含 __map/__mapstate:* 键），返回解码后
+-- 的 snapshot；不做任何 restore。标题页 BtnContinue 用它决定读档后切到哪张地图
+-- （M17-01 多地图继续）；随后场景 on_create 的 boot 阶段会再调 M.load 完成恢复。
+function M.load_raw()
   local loaded, load_reason = pcall(save.load)
   if not loaded or not load_reason then
     log_failure("load", loaded and "load returned false" or load_reason)
-    return false
+    return nil, load_reason
   end
   local ok, snapshot = pcall(save.blob_read, SAVE_KEY)
   if not ok then
     log_failure("read", snapshot)
-    return false
+    return nil, snapshot
   end
-  local restored, reason = M.restore(snapshot)
+  if type(snapshot) ~= "table" then
+    return nil, "snapshot is missing"
+  end
+  return snapshot, nil
+end
+
+-- 存档所在的地图 id（M17-01）：标题页点击「继续」时调用，据此把场景切到
+-- 存档记录的地图而非固定山庄。无存档/坏档返回 nil（调用方降级到 main）。
+function M.peek_map()
+  local snapshot, reason = M.load_raw()
+  if not snapshot then
+    return nil, reason
+  end
+  local scene_data = snapshot.scene
+  if type(scene_data) ~= "table" then
+    return nil, "snapshot has no scene summary"
+  end
+  local map_id = scene_data.map or scene_data.name
+  if type(map_id) ~= "string" then
+    return nil, "snapshot scene has no map"
+  end
+  return map_id, nil
+end
+
+function M.load()
+  local snapshot, reason = M.load_raw()
+  if not snapshot then
+    return false, reason
+  end
+  local restored, restore_reason = M.restore(snapshot)
   if not restored then
-    log_failure("restore", reason)
+    log_failure("restore", restore_reason)
   end
-  return restored
+  return restored, restore_reason
 end
 
 function M.last_summary()
