@@ -131,7 +131,7 @@ impl EditorApp {
                     ui.label("当前文档：Prefab 编辑模式");
                 }
                 let Some(selected) = self.selection.primary() else {
-                    ui.label("请先在 Hierarchy 中选择实体");
+                    ui.label("请先在层级中选择实体");
                     return;
                 };
                 let selected_ids = self.selection.ids();
@@ -705,7 +705,11 @@ impl EditorApp {
                                             "默认字体（不指定）",
                                         );
                                         for path in self.project_font_paths() {
-                                            ui.selectable_value(&mut self.text.font, path.clone(), path);
+                                            ui.selectable_value(
+                                                &mut self.text.font,
+                                                path.clone(),
+                                                path,
+                                            );
                                         }
                                     });
                             });
@@ -1838,7 +1842,7 @@ impl EditorApp {
             return;
         }
         let Some(selected) = self.selection.primary() else {
-            self.status = "请先在 Hierarchy 中选择实体".into();
+            self.status = "请先在层级中选择实体".into();
             return;
         };
         let name = self.entity_name.trim().to_owned();
@@ -1869,7 +1873,7 @@ impl EditorApp {
             return;
         }
         let Some(selected) = self.selection.primary() else {
-            self.status = "请先在 Hierarchy 中选择实体".into();
+            self.status = "请先在层级中选择实体".into();
             return;
         };
         let Some(scene) = self.document.current_scene.as_ref() else {
@@ -1938,7 +1942,7 @@ impl EditorApp {
         // H03：按选中集合删除（仅保留顶层根，子孙随根整棵移除），整批一条历史。
         let targets = self.top_most_selected_ids();
         if targets.is_empty() {
-            self.status = "请先在 Hierarchy 中选择实体".into();
+            self.status = "请先在层级中选择实体".into();
             return;
         }
         // 删除前记录父节点，供删除后选择回退（SelectionModel::on_entities_removed）。

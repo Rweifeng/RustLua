@@ -2,7 +2,12 @@
 //! resources, 2D/3D render passes, and M8-08 culling/instancing. The scene
 //! layer produces [`SceneMesh`]/[`Scene3d`] frames; this module consumes them.
 
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::{
+    collections::HashMap,
+    hash::{Hash, Hasher},
+    path::PathBuf,
+    sync::Arc,
+};
 
 use crate::core::{
     camera3d::Camera3D,
@@ -24,10 +29,17 @@ use winit::{dpi::PhysicalSize, window::Window};
 use crate::host::{
     frame::{
         ATLAS_TEXTURE_PATH, FONT_ATLAS_TEXTURE_PATH, FontAtlasPixels, OverlayVertex, Scene3d,
-        SceneMesh, WHITE_TEXTURE_PATH, font_asset_from_texture_path, is_font_texture_path,
+        SceneMesh, VectorTextVertex, WHITE_TEXTURE_PATH, font_asset_from_texture_path,
+        is_font_texture_path,
     },
-    shader::{MESH3D_SHADER, SHADOW_SHADER, TEXTURED_SHADER},
+    shader::{MESH3D_SHADER, SHADOW_SHADER, TEXTURED_SHADER, VECTOR_TEXT_SHADER},
 };
+
+fn hash_bytes(bytes: &[u8]) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    hasher.finish()
+}
 
 /// A texture uploaded to the GPU and ready to sample.
 struct LoadedTexture {
@@ -199,6 +211,16 @@ pub struct Renderer {
     sdf_sampler: wgpu::Sampler,
     /// Pipeline for SDF text draws (Linear sampling + SDF shader branch).
     pipeline_sdf: wgpu::RenderPipeline,
+    vector_pipeline: wgpu::RenderPipeline,
+    vector_bind_group_layout: wgpu::BindGroupLayout,
+    vector_vertex_buffer: wgpu::Buffer,
+    vector_glyph_buffer: wgpu::Buffer,
+    vector_segment_buffer: wgpu::Buffer,
+    vector_bind_group: Option<wgpu::BindGroup>,
+    vector_glyph_cache: Vec<u8>,
+    vector_segment_cache: Vec<u8>,
+    vector_glyph_hash: u64,
+    vector_segment_hash: u64,
     font_atlas_uploaded_version: u64,
     /// Per-Text custom font atlases uploaded on demand (key = `font://...` id).
     custom_fonts: HashMap<String, CustomFontUpload>,
@@ -550,6 +572,109 @@ impl Renderer {
             multisample: wgpu::MultisampleState::default(),
             multiview: None,
             cache: None,
+        });
+        let vector_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("p2-vector-text-bind-group-layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+        let vector_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("p2-vector-text-pipeline-layout"),
+            bind_group_layouts: &[&vector_bind_group_layout],
+            push_constant_ranges: &[],
+        });
+        let vector_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("p2-vector-text-shader"),
+            source: wgpu::ShaderSource::Wgsl(VECTOR_TEXT_SHADER.into()),
+        });
+        let vector_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("p2-vector-text-pipeline"),
+            layout: Some(&vector_layout),
+            vertex: wgpu::VertexState {
+                module: &vector_shader,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<VectorTextVertex>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &[
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: 0,
+                            shader_location: 0,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: 8,
+                            shader_location: 1,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Uint32,
+                            offset: 16,
+                            shader_location: 2,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x4,
+                            offset: 20,
+                            shader_location: 3,
+                        },
+                    ],
+                }],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &vector_shader,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: Default::default(),
+            multiview: None,
+            cache: None,
+        });
+        let vector_vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("p2-vector-text-vertex-buffer"),
+            size: 1024 * 1024,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let vector_glyph_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("p2-vector-text-glyph-buffer"),
+            size: 64 * 1024,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let vector_segment_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("p2-vector-text-segment-buffer"),
+            size: 1024 * 1024,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
         let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("p2-vertex-buffer"),
@@ -930,6 +1055,16 @@ impl Renderer {
             font_atlas_sdf_bind: None,
             sdf_sampler,
             pipeline_sdf,
+            vector_pipeline,
+            vector_bind_group_layout,
+            vector_vertex_buffer,
+            vector_glyph_buffer,
+            vector_segment_buffer,
+            vector_bind_group: None,
+            vector_glyph_cache: Vec::new(),
+            vector_segment_cache: Vec::new(),
+            vector_glyph_hash: 0,
+            vector_segment_hash: 0,
             font_atlas_uploaded_version: u64::MAX,
             custom_fonts: HashMap::new(),
             project_root,
@@ -1898,7 +2033,6 @@ impl Renderer {
                 for font in &mesh.custom_font_atlases {
                     let _ = self.ensure_custom_font(&font.key, &font.pixels);
                 }
-                tracing::debug!(target: "render", sdf_draws = mesh.draws.iter().filter(|d| d.sdf).count(), font_bind = self.font_atlas_sdf_bind.is_some(), "[render] sdf draws");
                 for draw in &mesh.draws {
                     if draw.sdf {
                         // SDF 文本：Linear 采样 + SDF shader 分支。默认字体用全局图集
@@ -1920,9 +2054,134 @@ impl Renderer {
                 }
             }
         }
+        if !mesh.vector_vertices.is_empty()
+            && !mesh.vector_glyphs.is_empty()
+            && !mesh.vector_segments.is_empty()
+        {
+            let vertex_bytes = bytemuck::cast_slice(&mesh.vector_vertices);
+            let glyph_bytes = bytemuck::cast_slice(&mesh.vector_glyphs);
+            let segment_bytes = bytemuck::cast_slice(&mesh.vector_segments);
+            self.ensure_vector_buffer_capacity(
+                vertex_bytes.len() as u64,
+                glyph_bytes.len() as u64,
+                segment_bytes.len() as u64,
+            );
+            self.queue
+                .write_buffer(&self.vector_vertex_buffer, 0, vertex_bytes);
+            let glyph_hash = hash_bytes(glyph_bytes);
+            if self.vector_glyph_hash != glyph_hash
+                || self.vector_glyph_cache.len() != glyph_bytes.len()
+            {
+                self.queue
+                    .write_buffer(&self.vector_glyph_buffer, 0, glyph_bytes);
+                self.vector_glyph_cache.clear();
+                self.vector_glyph_cache.extend_from_slice(glyph_bytes);
+                self.vector_glyph_hash = glyph_hash;
+            }
+            let segment_hash = hash_bytes(segment_bytes);
+            if self.vector_segment_hash != segment_hash
+                || self.vector_segment_cache.len() != segment_bytes.len()
+            {
+                self.queue
+                    .write_buffer(&self.vector_segment_buffer, 0, segment_bytes);
+                self.vector_segment_cache.clear();
+                self.vector_segment_cache.extend_from_slice(segment_bytes);
+                self.vector_segment_hash = segment_hash;
+            }
+            if self.vector_bind_group.is_none() {
+                self.vector_bind_group =
+                    Some(self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("p2-vector-text-bind-group"),
+                        layout: &self.vector_bind_group_layout,
+                        entries: &[
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: self.vector_glyph_buffer.as_entire_binding(),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: self.vector_segment_buffer.as_entire_binding(),
+                            },
+                        ],
+                    }));
+            }
+            let bind = self.vector_bind_group.as_ref().expect("vector bind group");
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("p2-vector-text-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_pipeline(&self.vector_pipeline);
+            pass.set_bind_group(0, bind, &[]);
+            pass.set_vertex_buffer(0, self.vector_vertex_buffer.slice(..));
+            pass.draw(0..mesh.vector_vertices.len() as u32, 0..1);
+        }
     }
 
-    /// Picks the SDF bind group for a draw: the default-atlas bind for the
+    fn ensure_vector_buffer_capacity(
+        &mut self,
+        vertex_size: u64,
+        glyph_size: u64,
+        segment_size: u64,
+    ) {
+        fn grown(current: u64, required: u64) -> u64 {
+            if required <= current {
+                current
+            } else {
+                required.max(256).next_power_of_two()
+            }
+        }
+        let mut buffers_changed = false;
+        let vertex_capacity = grown(self.vector_vertex_buffer.size(), vertex_size);
+        if vertex_capacity != self.vector_vertex_buffer.size() {
+            self.vector_vertex_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("p2-vector-text-vertex-buffer"),
+                size: vertex_capacity,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            buffers_changed = true;
+        }
+        let glyph_capacity = grown(self.vector_glyph_buffer.size(), glyph_size);
+        if glyph_capacity != self.vector_glyph_buffer.size() {
+            self.vector_glyph_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("p2-vector-text-glyph-buffer"),
+                size: glyph_capacity,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            buffers_changed = true;
+        }
+        let segment_capacity = grown(self.vector_segment_buffer.size(), segment_size);
+        if segment_capacity != self.vector_segment_buffer.size() {
+            self.vector_segment_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("p2-vector-text-segment-buffer"),
+                size: segment_capacity,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            buffers_changed = true;
+        }
+        if buffers_changed {
+            self.vector_bind_group = None;
+            self.vector_glyph_cache.clear();
+            self.vector_segment_cache.clear();
+            self.vector_glyph_hash = 0;
+            self.vector_segment_hash = 0;
+        }
+    }
+
+    /// Picks the SDF bind group for a draw: the default-atlas bind for the the
     /// `FONT_ATLAS_TEXTURE_PATH` sentinel, or the per-custom-font bind for a
     /// namespaced `font://...` path. Returns `None` when the target atlas hasn't
     /// been uploaded this frame yet (caller skips the draw).
@@ -1936,7 +2195,10 @@ impl Renderer {
             return self.font_atlas_sdf_bind.clone();
         }
         if is_font_texture_path(path) {
-            return self.custom_fonts.get(path).and_then(|font| font.sdf_bind.clone());
+            return self
+                .custom_fonts
+                .get(path)
+                .and_then(|font| font.sdf_bind.clone());
         }
         None
     }
@@ -1960,7 +2222,10 @@ impl Renderer {
             return self.font_atlas_bind.clone();
         }
         if is_font_texture_path(path) {
-            return self.custom_fonts.get(path).and_then(|font| font.bind.clone());
+            return self
+                .custom_fonts
+                .get(path)
+                .and_then(|font| font.bind.clone());
         }
         if let Some(entry) = self.textures.iter().find(|entry| entry.path == *path) {
             return Some(entry.bind_group.clone());
@@ -2398,6 +2663,9 @@ mod tests {
             paths: Vec::new(),
             font_atlas: None,
             custom_font_atlases: Vec::new(),
+            vector_vertices: Vec::new(),
+            vector_glyphs: Vec::new(),
+            vector_segments: Vec::new(),
         };
         let outcome = renderer.render_into_texture(&mesh, None, &view, 64, 64);
         assert!(matches!(outcome, RenderOutcome::Presented));
@@ -2640,6 +2908,9 @@ mod tests {
             paths: Vec::new(),
             font_atlas: None,
             custom_font_atlases: Vec::new(),
+            vector_vertices: Vec::new(),
+            vector_glyphs: Vec::new(),
+            vector_segments: Vec::new(),
         };
         renderer.render_into_texture(&mesh, None, &view, 64, 64);
         // 首帧提交；随后的调用非阻塞轮询，直到返回就绪像素（不应无限阻塞）。

@@ -6,9 +6,7 @@
 
 use ab_glyph::{Font, FontArc, FontVec, Outline, OutlineCurve, Point, VariableFont};
 use bymsdfgen_core::{
-    Bitmap, DistanceMapping, MsdfGeneratorConfig, Projection, Range, SdfTransformation,
-    coloring::edge_coloring_simple,
-    generate_msdf,
+    Bitmap, DistanceMapping, GeneratorConfig, Projection, Range, SdfTransformation, generate_sdf,
     geometry::{Contour, EdgeSegment, Shape},
     math::Vector2,
 };
@@ -33,6 +31,211 @@ const MAX_ATLAS_SIZE: u32 = 4096;
 /// 到 `[0,1]`（边缘 median=0.5），shader 的 fwidth 解码在任意字号下都保持
 /// ~1px 渐变。
 const PAD: i32 = 8;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VectorSegment {
+    pub start: [f32; 2],
+    pub end: [f32; 2],
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct VectorGlyph {
+    pub id: u32,
+    pub bounds: [f32; 4],
+    pub advance: f32,
+    pub segments: Vec<VectorSegment>,
+}
+
+#[derive(Clone, Debug)]
+pub struct FontVectorAtlas {
+    font: FontArc,
+    fallback: Option<FontArc>,
+    cached: HashMap<char, VectorGlyph>,
+    by_id: Vec<VectorGlyph>,
+    missing: HashSet<char>,
+}
+
+impl FontVectorAtlas {
+    pub fn load(bytes: &[u8]) -> Result<Self, String> {
+        let font = load_font_with_weight(bytes, DEFAULT_FONT_WEIGHT, "字体解析失败")?;
+        Ok(Self::new(font, None))
+    }
+
+    pub fn load_with_fallback(primary: &[u8], fallback: Option<&[u8]>) -> Result<Self, String> {
+        let font = load_font_with_weight(primary, DEFAULT_FONT_WEIGHT, "字体解析失败")?;
+        let fallback = fallback
+            .map(|bytes| load_font_with_weight(bytes, DEFAULT_FONT_WEIGHT, "后备字体解析失败"))
+            .transpose()?;
+        Ok(Self::new(font, fallback))
+    }
+
+    pub fn new(font: FontArc, fallback: Option<FontArc>) -> Self {
+        Self {
+            font,
+            fallback,
+            cached: HashMap::new(),
+            by_id: Vec::new(),
+            missing: HashSet::new(),
+        }
+    }
+
+    pub fn glyph(&mut self, character: char) -> Option<&VectorGlyph> {
+        if self.missing.contains(&character) {
+            return None;
+        }
+        if !self.cached.contains_key(&character) {
+            let primary = self.font.glyph_id(character);
+            let (font, glyph_id) = if primary.0 != 0 {
+                (&self.font, primary)
+            } else if let Some(fallback) = &self.fallback {
+                let id = fallback.glyph_id(character);
+                if id.0 != 0 {
+                    (fallback, id)
+                } else {
+                    (&self.font, primary)
+                }
+            } else {
+                (&self.font, primary)
+            };
+            let Some(outline) = font.outline(glyph_id) else {
+                self.missing.insert(character);
+                return None;
+            };
+            let units = font.units_per_em().unwrap_or(1000.0);
+            let segments = flatten_outline(&outline, units);
+            if segments.is_empty() {
+                self.missing.insert(character);
+                return None;
+            }
+            let b = outline.bounds;
+            let glyph = VectorGlyph {
+                id: self.by_id.len() as u32,
+                bounds: [
+                    b.min.x / units,
+                    -b.max.y / units,
+                    b.max.x / units,
+                    -b.min.y / units,
+                ],
+                advance: font.h_advance_unscaled(glyph_id) / units,
+                segments,
+            };
+            self.by_id.push(glyph.clone());
+            self.cached.insert(character, glyph);
+        }
+        self.cached.get(&character)
+    }
+
+    pub fn prewarm(&mut self, chars: impl Iterator<Item = char>) -> usize {
+        let before = self.cached.len();
+        for ch in chars.filter(|ch| !ch.is_whitespace()) {
+            let _ = self.glyph(ch);
+        }
+        self.cached.len() - before
+    }
+
+    pub fn glyphs(&self) -> impl Iterator<Item = &VectorGlyph> {
+        self.cached.values()
+    }
+
+    pub fn glyph_by_id(&self, id: u32) -> Option<&VectorGlyph> {
+        self.by_id.get(id as usize)
+    }
+}
+
+#[allow(dead_code)]
+fn flatten_quad(a: Point, c: Point, b: Point, units: f32, out: &mut Vec<VectorSegment>) {
+    flatten_quad_recursive(a, c, b, units, 0, out);
+}
+
+#[allow(dead_code)]
+fn flatten_quad_recursive(
+    a: Point,
+    c: Point,
+    b: Point,
+    units: f32,
+    depth: u32,
+    out: &mut Vec<VectorSegment>,
+) {
+    let flatness = distance_to_line(c, a, b);
+    if depth >= 8 || flatness <= 1.5 {
+        out.push(VectorSegment {
+            start: [a.x / units, -a.y / units],
+            end: [b.x / units, -b.y / units],
+        });
+        return;
+    }
+    let ac = midpoint(a, c);
+    let cb = midpoint(c, b);
+    let m = midpoint(ac, cb);
+    flatten_quad_recursive(a, ac, m, units, depth + 1, out);
+    flatten_quad_recursive(m, cb, b, units, depth + 1, out);
+}
+
+#[allow(dead_code)]
+fn flatten_cubic(a: Point, c: Point, d: Point, b: Point, units: f32, out: &mut Vec<VectorSegment>) {
+    flatten_cubic_recursive(a, c, d, b, units, 0, out);
+}
+
+#[allow(dead_code)]
+fn flatten_cubic_recursive(
+    a: Point,
+    c: Point,
+    d: Point,
+    b: Point,
+    units: f32,
+    depth: u32,
+    out: &mut Vec<VectorSegment>,
+) {
+    let flatness = distance_to_line(c, a, b).max(distance_to_line(d, a, b));
+    if depth >= 9 || flatness <= 1.5 {
+        out.push(VectorSegment {
+            start: [a.x / units, -a.y / units],
+            end: [b.x / units, -b.y / units],
+        });
+        return;
+    }
+    let ac = midpoint(a, c);
+    let cd = midpoint(c, d);
+    let db = midpoint(d, b);
+    let accd = midpoint(ac, cd);
+    let cddb = midpoint(cd, db);
+    let m = midpoint(accd, cddb);
+    flatten_cubic_recursive(a, ac, accd, m, units, depth + 1, out);
+    flatten_cubic_recursive(m, cddb, db, b, units, depth + 1, out);
+}
+
+fn midpoint(a: Point, b: Point) -> Point {
+    Point {
+        x: (a.x + b.x) * 0.5,
+        y: (a.y + b.y) * 0.5,
+    }
+}
+
+#[allow(dead_code)]
+fn distance_to_line(point: Point, a: Point, b: Point) -> f32 {
+    let dx = b.x - a.x;
+    let dy = b.y - a.y;
+    let length = (dx * dx + dy * dy).sqrt();
+    if length <= f32::EPSILON {
+        return ((point.x - a.x).powi(2) + (point.y - a.y).powi(2)).sqrt();
+    }
+    ((point.x - a.x) * dy - (point.y - a.y) * dx).abs() / length
+}
+
+fn flatten_outline(outline: &Outline, units: f32) -> Vec<VectorSegment> {
+    let mut out = Vec::with_capacity(outline.curves.len() * 4);
+    for curve in &outline.curves {
+        match curve {
+            OutlineCurve::Line(a, b) => out.push(VectorSegment {
+                start: [a.x / units, -a.y / units],
+                end: [b.x / units, -b.y / units],
+            }),
+            OutlineCurve::Quad(a, c, b) => flatten_quad(*a, *c, *b, units, &mut out),
+            OutlineCurve::Cubic(a, c, d, b) => flatten_cubic(*a, *c, *d, *b, units, &mut out),
+        }
+    }
+    out
+}
 
 /// Per-glyph metrics used by text layout: UV rect + cell-space geometry.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -147,6 +350,12 @@ impl FontAtlas {
             }
         }
         (self.font.clone(), primary_id)
+    }
+
+    /// 测试用：字符实际使用的字形 id（0 = 主字体缺失且无后备 → 占位方框）。
+    #[cfg(test)]
+    pub(crate) fn test_glyph_id(&self, character: char) -> u32 {
+        self.font_for(character).1.0 as u32
     }
 
     pub const fn width(&self) -> u32 {
@@ -457,8 +666,12 @@ fn rasterize_glyph(font: &FontArc, fallback: &Option<FontArc>, character: char) 
 fn glyph_rect_size(outline: &Outline, units_per_em: f32) -> (u32, u32) {
     let scale = RASTER_SCALE as f64 / units_per_em as f64;
     let b = &outline.bounds;
-    let w = ((b.max.x - b.min.x) as f64 * scale).ceil() as i64 + PAD as i64 * 2;
-    let h = ((b.min.y - b.max.y) as f64 * scale).ceil() as i64 + PAD as i64 * 2;
+    let min_x = b.min.x.min(b.max.x);
+    let max_x = b.min.x.max(b.max.x);
+    let min_y = b.min.y.min(b.max.y);
+    let max_y = b.min.y.max(b.max.y);
+    let w = ((max_x - min_x) as f64 * scale).ceil() as i64 + PAD as i64 * 2;
+    let h = ((max_y - min_y) as f64 * scale).ceil() as i64 + PAD as i64 * 2;
     (w.max(1) as u32, h.max(1) as u32)
 }
 
@@ -480,14 +693,16 @@ fn rasterize_msdf(
 ) -> (Vec<u8>, [f32; 4], [f32; 4]) {
     let scale = RASTER_SCALE as f64 / units_per_em as f64;
     let b = &outline.bounds;
-    // ab_glyph Rect.min = 左上、Rect.max = 右下。设计空间点（Y 向上）：b.min.y = 顶部。
-    let left_px = b.min.x as f64 * scale;
-    let right_px = b.max.x as f64 * scale;
-    let top_up = b.min.y as f64 * scale; // Y-up 顶部（y 大）
-    let bottom_up = b.max.y as f64 * scale; // Y-up 底部（y 小）
+    let min_x = b.min.x.min(b.max.x);
+    let max_x = b.min.x.max(b.max.x);
+    let min_y = b.min.y.min(b.max.y);
+    let max_y = b.min.y.max(b.max.y);
+    let left_px = min_x as f64 * scale;
+    let right_px = max_x as f64 * scale;
+    let top_up = max_y as f64 * scale;
+    let bottom_up = min_y as f64 * scale;
     let wf = width as f64;
     let hf = height as f64;
-    // 把字形居中到 rect（Y-up 像素坐标，0..height）。
     let ox = wf / 2.0 - (left_px + right_px) / 2.0;
     let oy = hf / 2.0 - (top_up + bottom_up) / 2.0;
 
@@ -525,59 +740,71 @@ fn rasterize_msdf(
         return placeholder_msdf(width, height);
     }
 
-    let rgba = msdf_rect_from_shape(&mut shape, width, height);
-    // cell_rect（Y 向下）：水平不变，垂直把 Y-up 顶部翻到 rect 顶部。
+    let rgba = sdf_rect_from_shape(&mut shape, width, height);
+    let cell_y0 = hf - (top_up + oy);
+    let cell_y1 = hf - (bottom_up + oy);
     let cell_rect = [
         (left_px + ox) as f32,
-        (hf - (top_up + oy)) as f32,
+        cell_y0.min(cell_y1) as f32,
         (right_px + ox) as f32,
-        (hf - (bottom_up + oy)) as f32,
+        cell_y0.max(cell_y1) as f32,
     ];
-    // bounds（Y 向下、相对 pen 的设备像素）：y_down = -y_up。
+    let bounds_y0 = (-top_up).min(-bottom_up);
+    let bounds_y1 = (-top_up).max(-bottom_up);
     let bounds = [
         left_px as f32,
-        (-top_up) as f32,
+        bounds_y0 as f32,
         right_px as f32,
-        (-bottom_up) as f32,
+        bounds_y1 as f32,
     ];
     (rgba, cell_rect, bounds)
 }
 
-/// 从已就绪的 Shape 生成 MSDF 像素（width×height×4 RGBA，行 0 = 顶部）。
-/// bymsdfgen 的 `Bitmap` 行 0 在底部（Y 向上），翻转行序写入以匹配 Y 向下的图集。
-fn msdf_rect_from_shape(shape: &mut Shape, width: u32, height: u32) -> Vec<u8> {
+/// 从已就绪的 Shape 生成单通道 SDF 像素（width×height×4 RGBA，行 0 = 顶部）。
+/// 距离值复制到 RGB 三通道，保持现有 atlas 格式；shader 使用 R 通道解码。
+fn sdf_rect_from_shape(shape: &mut Shape, width: u32, height: u32) -> Vec<u8> {
+    // 只做 normalize（单边轮廓三分 + 尖角 deconverge）。
+    //
+    // 这里刻意不调用 `shape.orient_contours()`：bymsdfgen 的
+    // `orient_contours` 依赖扫描线奇偶判定轮廓方向，而它缺少 msdfgen 中
+    // Skia 自相交消解（FULL_PREPROCESS）这一前置步骤（见其 README
+    // "Parity notes"）。CJK 字形普遍存在自相交/重叠轮廓，扫描线奇偶会误判，
+    // 把本已正确的外轮廓反转，导致 SDF 出现大面积实心块（笔画丢失、孔洞被填）。
+    //
+    // TTF/CFF 字体的轮廓本身遵循各自的 winding 约定（外轮廓一方向、孔洞反向），
+    // `generate_sdf` 的 `OverlappingContourCombiner` 正是按每条轮廓的
+    // `winding()` 符号区分内外，因此直接沿用字体原生 winding 即可，无需再修正。
     shape.normalize();
-    shape.orient_contours();
-    edge_coloring_simple(shape, 3.0, 0);
     let w = width as usize;
     let h = height as usize;
-    let mut msdf: Bitmap<f32, 3> = Bitmap::new(w, h);
+    let mut sdf: Bitmap<f32, 1> = Bitmap::new(w, h);
     let transformation = SdfTransformation::new(
         Projection::default(),
         DistanceMapping::from_range(Range::symmetric(PAD as f64)),
     );
-    generate_msdf(
-        &mut msdf,
+    generate_sdf(
+        &mut sdf,
         shape,
         &transformation,
-        &MsdfGeneratorConfig::default(),
+        &GeneratorConfig::default(),
     );
     let mut pixels = vec![0u8; w * h * 4];
     for by in 0..h {
         let ay = h - 1 - by;
         for bx in 0..w {
-            let c = msdf.pixel(bx, by);
+            let distance = sdf.pixel(bx, by)[0].clamp(0.0, 1.0);
+            let value = (distance * 255.0) as u8;
             let off = (ay * w + bx) * 4;
-            pixels[off] = (c[0].clamp(0.0, 1.0) * 255.0) as u8;
-            pixels[off + 1] = (c[1].clamp(0.0, 1.0) * 255.0) as u8;
-            pixels[off + 2] = (c[2].clamp(0.0, 1.0) * 255.0) as u8;
+            pixels[off] = value;
+            pixels[off + 1] = value;
+            pixels[off + 2] = value;
             pixels[off + 3] = 255;
         }
     }
     pixels
 }
 
-/// 缺失字形：画一个占位方框，同样走 MSDF。
+/// 缺失字形：画一个占位方框，同样走单通道 SDF。
 fn placeholder_msdf(width: u32, height: u32) -> (Vec<u8>, [f32; 4], [f32; 4]) {
     let wf = width as f32;
     let hf = height as f32;
@@ -597,7 +824,7 @@ fn placeholder_msdf(width: u32, height: u32) -> (Vec<u8>, [f32; 4], [f32; 4]) {
             Vector2::new(pts[(i + 1) % 4][0] as f64, pts[(i + 1) % 4][1] as f64),
         ));
     }
-    let rgba = msdf_rect_from_shape(&mut shape, width, height);
+    let rgba = sdf_rect_from_shape(&mut shape, width, height);
     let rect = [inset_x, inset_y, wf - inset_x, hf - inset_y];
     (rgba, rect, rect)
 }
@@ -613,6 +840,19 @@ mod tests {
             .unwrap_or_else(|error| panic!("测试字体缺失或不可读 {}: {error}", path.display()))
     }
 
+    #[test]
+    fn vector_cjk_outline_is_non_empty() {
+        let mut atlas = FontVectorAtlas::load(&test_font()).unwrap();
+        let glyph = atlas.glyph('俯').expect("CJK outline");
+        assert!(!glyph.segments.is_empty());
+        assert!(glyph.segments.iter().all(|segment| {
+            segment
+                .start
+                .iter()
+                .chain(segment.end.iter())
+                .all(|value| value.is_finite())
+        }));
+    }
     #[test]
     fn rasterizes_sdf_glyph_and_reports_metrics() {
         let bytes = test_font();

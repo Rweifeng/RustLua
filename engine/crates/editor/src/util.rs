@@ -1,4 +1,4 @@
-//! 编辑器通用工具函数：路径清理、项目错误格式化、CJK 字体、目录选择。
+//! 编辑器通用工具函数：路径清理、项目错误格式化、中文字体回退、目录选择。
 
 use editor::ProjectError;
 use eframe::egui::{self, FontData, FontDefinitions, FontFamily, Response, Ui};
@@ -182,60 +182,26 @@ pub(crate) fn choose_project_directory() -> Option<PathBuf> {
     None
 }
 
-const CJK_FONT_FILE_NAMES: &[&str] = &[
-    "NotoSansSC-VF.ttf",
-    "SourceHanSansSC-Regular.otf",
-    "SourceHanSerifSC-Regular.otf",
-    "LXGWWenKaiGB-Regular.ttf",
-    "simhei.ttf",
-    "Deng.ttf",
-];
-
-fn cjk_font_candidates() -> Vec<PathBuf> {
-    let mut candidates =
-        vec![PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fonts/NotoSansSC-VF.ttf")];
-    if let Ok(executable) = env::current_exe()
-        && let Some(parent) = executable.parent()
-    {
-        candidates.extend(
-            CJK_FONT_FILE_NAMES
-                .iter()
-                .map(|name| parent.join("fonts").join(name)),
-        );
-        candidates.extend(CJK_FONT_FILE_NAMES.iter().map(|name| parent.join(name)));
-    }
-    if cfg!(target_os = "windows") {
-        candidates.extend(
-            CJK_FONT_FILE_NAMES
-                .iter()
-                .map(|name| PathBuf::from("C:/Windows/Fonts").join(name)),
-        );
-    }
-    candidates
-}
-
-pub(crate) fn configure_cjk_fonts(context: &egui::Context) {
-    let Some(path) = cjk_font_candidates()
-        .into_iter()
-        .find(|path| path.is_file())
-    else {
-        eprintln!("editor: no CJK font found; Chinese text may render as tofu boxes");
-        return;
-    };
+/// 为 egui 默认字体追加中文 fallback。
+pub(crate) fn configure_cjk_fallback(context: &egui::Context) {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fonts/NotoSansSC-VF.ttf");
     let Ok(bytes) = std::fs::read(&path) else {
-        eprintln!("editor: failed to read CJK font {}", path.display());
+        eprintln!(
+            "editor: failed to read CJK fallback font {}",
+            path.display()
+        );
         return;
     };
     let mut fonts = FontDefinitions::default();
-    fonts
-        .font_data
-        .insert("p2-cjk".to_owned(), FontData::from_owned(bytes).into());
+    fonts.font_data.insert(
+        "noto-cjk-fallback".to_owned(),
+        FontData::from_owned(bytes).into(),
+    );
     for family in [FontFamily::Proportional, FontFamily::Monospace] {
-        fonts
-            .families
-            .entry(family)
-            .or_default()
-            .insert(0, "p2-cjk".to_owned());
+        let family_fonts = fonts.families.entry(family).or_default();
+        if !family_fonts.iter().any(|name| name == "noto-cjk-fallback") {
+            family_fonts.push("noto-cjk-fallback".to_owned());
+        }
     }
     context.set_fonts(fonts);
 }

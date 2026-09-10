@@ -1776,7 +1776,11 @@ mod tests {
         // 属性编辑提交路径：开事务 → 直写 → 提交（等价 Inspector 数值编辑松手）。
         app.selection
             .set_single(SceneEntityId(2), editor::SelectionSource::Hierarchy);
-        app.begin_edit_transaction("Inspector", editor::CommandKind::Property, Some(SceneEntityId(2)));
+        app.begin_edit_transaction(
+            "Inspector",
+            editor::CommandKind::Property,
+            Some(SceneEntityId(2)),
+        );
         if let Some(entity) = app
             .document
             .current_scene
@@ -1798,10 +1802,7 @@ mod tests {
         app.undo();
         app.scene_zoom = 1.6;
         app.open_scene_resource(std::path::PathBuf::from("scenes/main.scene"));
-        assert!(
-            app.scene_view_fit_pending,
-            "整表切换应触发视图适配"
-        );
+        assert!(app.scene_view_fit_pending, "整表切换应触发视图适配");
 
         let _ = fs::remove_dir_all(root);
     }

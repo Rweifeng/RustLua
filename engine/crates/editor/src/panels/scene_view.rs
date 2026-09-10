@@ -1530,6 +1530,9 @@ impl EditorApp {
             paths: Vec::new(),
             font_atlas: None,
             custom_font_atlases: Vec::new(),
+            vector_vertices: Vec::new(),
+            vector_glyphs: Vec::new(),
+            vector_segments: Vec::new(),
         };
         let Some(renderer) = &mut self.scene_renderer else {
             return;

@@ -25,6 +25,33 @@ pub struct OverlayVertex {
     pub sdf: u32,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+pub struct VectorTextVertex {
+    pub position: [f32; 2],
+    pub local: [f32; 2],
+    pub glyph_id: u32,
+    pub color: [f32; 4],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+pub struct VectorGlyphSnapshot {
+    pub segment_start: u32,
+    pub segment_count: u32,
+    pub _padding: [u32; 2],
+    pub bounds: [f32; 4],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+pub struct VectorSegmentSnapshot {
+    pub start: [f32; 2],
+    pub end: [f32; 2],
+    pub _padding: [u32; 2],
+    pub bounds: [f32; 4],
+}
+
 /// One draw range over the scene vertex buffer, bound to a texture.
 /// `texture == 0` selects the built-in white texture; `texture == i > 0`
 /// selects `paths[i - 1]`. `sdf == true` draws through the Linear SDF pipeline.
@@ -33,6 +60,7 @@ pub struct SceneDraw {
     pub start: u32,
     pub count: u32,
     pub sdf: bool,
+    pub vector: bool,
 }
 
 /// Sentinel paths resolved by the renderer to built-in textures instead of
@@ -74,6 +102,9 @@ pub struct SceneMesh {
     /// Per-Text custom font atlases touched this frame. `pixels` empty means
     /// unchanged since the last upload to this renderer.
     pub custom_font_atlases: Vec<CustomFontAtlasPixels>,
+    pub vector_vertices: Vec<VectorTextVertex>,
+    pub vector_glyphs: Vec<VectorGlyphSnapshot>,
+    pub vector_segments: Vec<VectorSegmentSnapshot>,
 }
 
 /// RGBA8 pixels of the CJK glyph atlas, with a monotonic revision for uploads.

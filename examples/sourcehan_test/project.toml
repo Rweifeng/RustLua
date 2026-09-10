@@ -1,0 +1,7 @@
+[project]
+name = "sourcehan_test"
+version = "0.1.0"
+engine = "RustLua"
+main_script = "scripts/main.lua"
+startup_scene = "scenes/font_check.scene"
+font = "assets/fonts/NotoSansSC-VF.ttf"

@@ -256,9 +256,9 @@ impl EditorApp {
         let fs_err = |error: std::io::Error| error.to_string();
         std::fs::create_dir_all(dir.join("assets/fonts")).map_err(fs_err)?;
         let font_path = dir.join("assets/fonts/NotoSansSC-VF.ttf");
-        if !font_path.is_file() {
-            let source_font = Path::new(env!("CARGO_MANIFEST_DIR")).join("fonts/NotoSansSC-VF.ttf");
-            std::fs::copy(source_font, &font_path).map_err(fs_err)?;
+        if !font_path.exists() {
+            let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("fonts/NotoSansSC-VF.ttf");
+            std::fs::copy(&source, &font_path).map_err(fs_err)?;
         }
         std::fs::create_dir_all(dir.join("scripts")).map_err(fs_err)?;
         std::fs::create_dir_all(dir.join("scenes")).map_err(fs_err)?;

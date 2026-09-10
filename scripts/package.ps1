@@ -502,14 +502,17 @@ end
             -Destination (Join-Path $distRoot "game.exe") -Force
     }
 
-    $fontSource = Join-Path $gameRoot "assets\fonts\NotoSansSC-VF.ttf"
-    if (-not (Test-Path $fontSource)) { throw "Game CJK font resource was not found: $fontSource" }
-    if ((Get-Item $fontSource).Length -le 0) { throw "Game CJK font resource is empty: $fontSource" }
-    $fontTarget = Join-Path $distRoot "fonts\NotoSansSC-VF.ttf"
+    $fontLine = Get-Content -LiteralPath $projectToml | Where-Object { $_ -match '^\s*font\s*=\s*"(.+)"\s*$' } | Select-Object -First 1
+    $fontRelative = if ($fontLine -and $fontLine -match '^\s*font\s*=\s*"(.+)"\s*$') { $Matches[1] } else { "assets/fonts/NotoSansSC-VF.ttf" }
+    $fontSource = Join-Path $gameRoot ($fontRelative -replace '/', '\\')
+    if (-not (Test-Path $fontSource)) { throw "Game font resource was not found: $fontSource" }
+    if ((Get-Item $fontSource).Length -le 0) { throw "Game font resource is empty: $fontSource" }
+    $fontName = Split-Path -Leaf $fontSource
+    $fontTarget = Join-Path $distRoot ("fonts\\" + $fontName)
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $fontTarget) | Out-Null
     Copy-Item -Path $fontSource -Destination $fontTarget -Force
     if (-not (Test-Path $fontTarget) -or (Get-Item $fontTarget).Length -le 0) {
-        throw "Release package font is missing or empty: fonts/NotoSansSC-VF.ttf"
+        throw "Release package font is missing or empty: fonts/$fontName"
     }
 
     @(
@@ -539,9 +542,9 @@ end
     $engineVersion = (Get-Content (Join-Path $engineRoot "Cargo.toml") | Select-String '^version = "0\.' | Select-Object -First 1).ToString().Trim().Split('=')[1].Trim().Trim('"')
     $toolchain = & rustc --version 2>$null
     cargo tree -e normal --prefix none 2>$null | Sort-Object -Unique | Set-Content (Join-Path $distRoot "deps.txt") -Encoding UTF8
-    $packageContents = "game.exe, fonts/NotoSansSC-VF.ttf, pack/ (data), release.toml, run.txt, deps.txt"
+    $packageContents = "game.exe, fonts/$fontName, pack/ (data), release.toml, run.txt, deps.txt"
     if ($Platform -eq "webgl") {
-        $packageContents = "index.html, pkg/game_web.js, pkg/game_web_bg.wasm, fonts/NotoSansSC-VF.ttf, pack/ (data), release.toml, run.txt, deps.txt"
+        $packageContents = "index.html, pkg/game_web.js, pkg/game_web_bg.wasm, fonts/$fontName, pack/ (data), release.toml, run.txt, deps.txt"
     }
     @(
         "RustLua game engine release package",
@@ -551,7 +554,7 @@ end
         "engine version: $engineVersion",
         "toolchain: $toolchain",
         "contents: $packageContents",
-        "font_check: fonts/NotoSansSC-VF.ttf present and non-empty"
+        "font_check: fonts/$fontName present and non-empty"
     ) | Set-Content (Join-Path $distRoot "build-info.txt") -Encoding UTF8
 
     if ($Platform -eq "webgl") {
@@ -602,9 +605,9 @@ if ($SelfTest) {
         $isolatedRunner = Join-Path $isolated ("$PublishName\game.exe")
         $isolatedPack = Join-Path $isolated ("$PublishName\pack")
         if (-not (Test-Path $isolatedRunner)) { throw "isolated dir is missing the runner" }
-        $isolatedFont = Join-Path $isolated ("$PublishName\fonts\NotoSansSC-VF.ttf")
+        $isolatedFont = Join-Path $isolated ("$PublishName\fonts\$fontName")
         if (-not (Test-Path $isolatedFont) -or (Get-Item $isolatedFont).Length -le 0) {
-            throw "isolated dir is missing a non-empty fonts/NotoSansSC-VF.ttf"
+            throw "isolated dir is missing a non-empty fonts/$fontName"
         }
 
         Write-Host "Check: $isolatedRunner --pack $isolatedPack --check" -ForegroundColor DarkGray

@@ -129,10 +129,10 @@ impl GameApp {
         }
         // Lua `app.quit()`：只在 fixed-step 更新后消费退出标记，避免在无
         // runtime_scene（初始化/异常）时误退。
-        if let Some(scene) = self.runtime_scene.as_ref() {
-            if scene.quit_requested() {
-                self.request_exit(event_loop);
-            }
+        if let Some(scene) = self.runtime_scene.as_ref()
+            && scene.quit_requested()
+        {
+            self.request_exit(event_loop);
         }
     }
 
@@ -179,6 +179,9 @@ impl GameApp {
                 paths: Vec::new(),
                 font_atlas: None,
                 custom_font_atlases: Vec::new(),
+                vector_vertices: Vec::new(),
+                vector_glyphs: Vec::new(),
+                vector_segments: Vec::new(),
             },
         };
         if self.overlay_enabled {
@@ -195,6 +198,7 @@ impl GameApp {
                     start,
                     count,
                     sdf: false,
+                    vector: false,
                 });
             }
         }

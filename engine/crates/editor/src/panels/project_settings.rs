@@ -4,8 +4,8 @@
 //! 因此这里也采用同样语义的宽松解析，保存时**保序**替换已存在键并原样保留未知
 //! 键与注释（`[project]` 表头无结构含义，仅作标题）。
 
-use crate::util::strip_verbatim_prefix;
 use crate::EditorApp;
+use crate::util::strip_verbatim_prefix;
 use eframe::egui;
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -110,7 +110,8 @@ pub(crate) fn fmt_font_weight(weight: f32) -> String {
 /// 某行是否为 `key =`（去前导空白/BOM 后判断，注释行以 `#` 开头不会命中）。
 fn line_is_key(line: &str, key: &str) -> bool {
     let trimmed = line.trim().trim_start_matches('\u{feff}');
-    trimmed.strip_prefix(key)
+    trimmed
+        .strip_prefix(key)
         .is_some_and(|rest| rest.starts_with(" ="))
 }
 
@@ -204,10 +205,16 @@ impl EditorApp {
                         ui.text_edit_singleline(&mut self.project_settings.name);
                         ui.end_row();
                         ui.label("版本");
-                        ui.add_enabled(false, egui::TextEdit::singleline(&mut self.project_settings.version));
+                        ui.add_enabled(
+                            false,
+                            egui::TextEdit::singleline(&mut self.project_settings.version),
+                        );
                         ui.end_row();
                         ui.label("引擎");
-                        ui.add_enabled(false, egui::TextEdit::singleline(&mut self.project_settings.engine));
+                        ui.add_enabled(
+                            false,
+                            egui::TextEdit::singleline(&mut self.project_settings.engine),
+                        );
                         ui.end_row();
                         ui.label("入口脚本");
                         ui.text_edit_singleline(&mut self.project_settings.main_script);
@@ -224,7 +231,11 @@ impl EditorApp {
                         ui.label("字重");
                         let mut weight = self.project_settings.font_weight;
                         if ui
-                            .add(egui::DragValue::new(&mut weight).range(1.0..=1000.0).speed(1.0))
+                            .add(
+                                egui::DragValue::new(&mut weight)
+                                    .range(1.0..=1000.0)
+                                    .speed(1.0),
+                            )
                             .changed()
                         {
                             self.project_settings.font_weight = weight;
@@ -236,7 +247,10 @@ impl EditorApp {
                 if !missing.is_empty() {
                     ui.colored_label(
                         egui::Color32::from_rgb(230, 160, 60),
-                        format!("以下路径不存在（保存后运行/发布时按各自回退处理）：{}", missing.join("，")),
+                        format!(
+                            "以下路径不存在（保存后运行/发布时按各自回退处理）：{}",
+                            missing.join("，")
+                        ),
                     );
                 }
                 if !self.project_settings.message.is_empty() {
@@ -329,7 +343,11 @@ mod tests {
     #[test]
     fn parses_missing_name_falls_back_to_directory_name() {
         let mut ui = ProjectSettingsUi::default();
-        parse_into(&mut ui, "[project]\nversion = \"0.1.0\"\n", Path::new("C:\\Games\\MyGame"));
+        parse_into(
+            &mut ui,
+            "[project]\nversion = \"0.1.0\"\n",
+            Path::new("C:\\Games\\MyGame"),
+        );
         assert_eq!(ui.name, "MyGame");
     }
 
@@ -376,7 +394,10 @@ mod tests {
     fn upsert_on_empty_content_builds_skeleton() {
         let out = upsert_project_toml(
             "",
-            &[("name", "a".to_owned(), true), ("font_weight", "400.0".to_owned(), false)],
+            &[
+                ("name", "a".to_owned(), true),
+                ("font_weight", "400.0".to_owned(), false),
+            ],
         );
         assert_eq!(out, "name = \"a\"\nfont_weight = 400.0\n");
     }
@@ -393,7 +414,11 @@ mod tests {
     fn round_trip_preserves_idempotence() {
         let mut edits = vec![
             ("startup_scene", "scenes/other.scene".to_owned(), true),
-            ("font_fallback", "assets/fonts/Fallback.ttf".to_owned(), true),
+            (
+                "font_fallback",
+                "assets/fonts/Fallback.ttf".to_owned(),
+                true,
+            ),
         ];
         let once = upsert_project_toml(SAMPLE, &edits);
         let twice = upsert_project_toml(&once, &edits);

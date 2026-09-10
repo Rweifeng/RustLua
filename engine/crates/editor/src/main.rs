@@ -12,7 +12,7 @@ mod util;
 
 use crate::panels::progress::ProgressPanel;
 use crate::preview_session::PreviewSession;
-use crate::util::{configure_cjk_fonts, format_project_error};
+use crate::util::{configure_cjk_fallback, format_project_error};
 
 use std::{
     env,
@@ -170,10 +170,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         "RustLua 编辑器",
         options,
         Box::new(move |creation_context| {
-            configure_cjk_fonts(&creation_context.egui_ctx);
+            configure_cjk_fallback(&creation_context.egui_ctx);
             // 编辑器皮肤默认深色：固定使用 egui 深色主题，不随系统深浅色切换。
             creation_context.egui_ctx.set_theme(egui::Theme::Dark);
-            // 单一 wgpu 设备（ADR-0012）：编辑器与内嵌游戏预览共用 eframe 的设备。
             let gpu = creation_context
                 .wgpu_render_state
                 .as_ref()

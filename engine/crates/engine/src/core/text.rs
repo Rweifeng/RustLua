@@ -1,6 +1,6 @@
 //! Bitmap text atlas and deterministic CPU-side text layout for the 2D renderer.
 
-use crate::core::font::{FontAtlas, FontAtlasError};
+use crate::core::font::{FontAtlas, FontAtlasError, FontVectorAtlas};
 use std::{error::Error, fmt};
 
 /// The built-in monochrome ASCII glyph atlas used by the first text renderer.
@@ -102,6 +102,14 @@ impl Default for TextStyle {
 pub struct TextVertex {
     pub position: [f32; 2],
     pub uv: [f32; 2],
+    pub color: [f32; 4],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VectorTextVertex {
+    pub position: [f32; 2],
+    pub local: [f32; 2],
+    pub glyph_id: u32,
     pub color: [f32; 4],
 }
 
@@ -260,6 +268,58 @@ impl TextLayout {
         })
     }
 
+    pub fn build_vector(
+        text: &str,
+        origin: [f32; 2],
+        style: TextStyle,
+        font: &mut FontVectorAtlas,
+    ) -> Result<Vec<VectorTextVertex>, TextError> {
+        if !origin.iter().all(|v| v.is_finite())
+            || !style.scale.is_finite()
+            || style.scale <= 0.0
+            || !style.spacing.is_finite()
+            || style.spacing < 0.0
+            || !style.line_spacing.is_finite()
+            || style.line_spacing < 0.0
+            || style.color.iter().any(|v| !v.is_finite())
+        {
+            return Err(TextError::InvalidStyle);
+        }
+        let mut x = origin[0];
+        let mut y = origin[1];
+        let mut out = Vec::new();
+        for ch in text.chars() {
+            if ch == '\n' {
+                x = origin[0];
+                y += EM_PX * style.scale * LINE_HEIGHT_EM + style.line_spacing;
+                continue;
+            }
+            let Some(glyph) = font.glyph(ch).cloned() else {
+                x += style.spacing;
+                continue;
+            };
+            let s = EM_PX * style.scale;
+            let [min_x, min_y, max_x, max_y] = glyph.bounds;
+            let x0 = x + min_x * s;
+            let y0 = y - max_y * s;
+            let x1 = x + max_x * s;
+            let y1 = y - min_y * s;
+            let corners = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+            for &p in &[
+                corners[0], corners[1], corners[2], corners[0], corners[2], corners[3],
+            ] {
+                out.push(VectorTextVertex {
+                    position: p,
+                    local: [(p[0] - x) / s, (p[1] - y) / s],
+                    glyph_id: glyph.id,
+                    color: style.color,
+                });
+            }
+            x += glyph.advance * s + style.spacing;
+        }
+        Ok(out)
+    }
+
     /// SDF text layout using real font metrics (TMP-style, crisp at any scale).
     /// All glyphs (ASCII + CJK) come from the one SDF `FontAtlas`.
     pub fn build(
@@ -322,7 +382,7 @@ impl TextLayout {
             let v1 = metrics.uv[1] + rect[3] / atlas_h;
             let glyph_w = (rect[2] - rect[0]) * tex_scale;
             let glyph_h = (rect[3] - rect[1]) * tex_scale;
-            let x0 = x;
+            let x0 = x + metrics.bounds[0] * tex_scale;
             let y0 = y + metrics.bounds[1] * tex_scale;
             let x1 = x0 + glyph_w;
             let y1 = y0 + glyph_h;

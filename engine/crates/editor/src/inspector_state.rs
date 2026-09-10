@@ -2204,7 +2204,10 @@ mod tests {
             .components
             .get("Text")
             .expect("Text written");
-        assert!(stored.ends_with(";font=assets/fonts/a\\;b\\=数字.ttf"), "{stored}");
+        assert!(
+            stored.ends_with(";font=assets/fonts/a\\;b\\=数字.ttf"),
+            "{stored}"
+        );
         // 场景文件文本往返后仍保留字体字段。
         let text = document.scene.to_text();
         let loaded = engine::core::scene::Scene::from_text(&text).unwrap();

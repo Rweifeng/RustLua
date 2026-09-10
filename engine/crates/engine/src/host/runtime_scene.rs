@@ -13,7 +13,7 @@ use crate::core::{
     animation3d::Animation3D,
     camera3d::Camera3D,
     entity::EntityId,
-    font::{DEFAULT_FONT_WEIGHT, FontAtlas},
+    font::{DEFAULT_FONT_WEIGHT, FontAtlas, FontVectorAtlas},
     input::InputSnapshot,
     light::Light,
     math2d::{Camera2D, Viewport},
@@ -39,7 +39,8 @@ use crate::core::{
 use crate::host::frame::{
     ATLAS_TEXTURE_PATH, BoundsSource, CustomFontAtlasPixels, FONT_ATLAS_TEXTURE_PATH, FontAtlasMap,
     FontAtlasPixels, FontHandle, OverlayVertex, Scene3d, Scene3dBounds, Scene3dDrawable, SceneDraw,
-    SceneMesh, WHITE_TEXTURE_PATH, font_texture_path,
+    SceneMesh, VectorGlyphSnapshot, VectorSegmentSnapshot,
+    VectorTextVertex as FrameVectorTextVertex, WHITE_TEXTURE_PATH, font_texture_path,
 };
 
 pub struct RuntimeScene {
@@ -64,6 +65,8 @@ pub struct RuntimeScene {
     /// 共享字体图集：运行时重建（编辑器拖动/编辑场景导致 revision 变化时）复用
     /// 同一实例，避免每帧重新生成 MSDF 字形。生成字形需可变访问（内部 Mutex）。
     font_atlas: Option<Arc<Mutex<FontAtlas>>>,
+    vector_atlas: Option<Arc<Mutex<FontVectorAtlas>>>,
+    custom_vector_atlases: HashMap<String, Arc<Mutex<FontVectorAtlas>>>,
     last_font_version: u64,
     /// 场景 Text 自定义字体缓存（key = `font://<asset>` → 图集句柄）。编辑器注入
     /// 同一实例供场景视图/预览跨运行时重建复用；独立运行时用各自新鲜的空表。
@@ -76,6 +79,7 @@ pub struct RuntimeScene {
     frame_font_keys: Vec<String>,
     /// 已 warn 过的加载失败字体路径（避免文本每帧 layout 时重复刷屏）。
     missing_fonts: HashSet<String>,
+    missing_vector_fonts: HashSet<String>,
     ui_scene_nodes: BTreeMap<u64, UiSceneNode>,
     ui_layout_rects: BTreeMap<u64, ResolvedUiNode>,
 }
@@ -144,6 +148,14 @@ impl RuntimeScene {
     /// 注入共享字体图集（编辑器在运行时重建时复用，避免每帧重新生成 MSDF 字形）。
     pub fn set_font_atlas(&mut self, font_atlas: Option<Arc<Mutex<FontAtlas>>>) {
         self.font_atlas = font_atlas;
+    }
+
+    fn ensure_vector_atlas(&mut self) {
+        if self.vector_atlas.is_none()
+            && let Some(root) = &self.project_root
+        {
+            self.vector_atlas = load_project_vector_atlas(Some(root));
+        }
     }
 
     /// 惰性加载项目字体图集：未注入共享图集时才按需加载（含 chars.txt 预热）。
@@ -275,11 +287,15 @@ impl RuntimeScene {
             texture_lookup: HashMap::new(),
             tilemap_cache: HashMap::new(),
             font_atlas: None,
+            vector_atlas: None,
+            custom_vector_atlases: HashMap::new(),
+            // 调试插桩：首次 vector text layout 日志状态。
             last_font_version: u64::MAX,
             custom_font_atlases: Arc::new(Mutex::new(HashMap::new())),
             custom_font_versions: HashMap::new(),
             frame_font_keys: Vec::new(),
             missing_fonts: HashSet::new(),
+            missing_vector_fonts: HashSet::new(),
             ui_scene_nodes,
             ui_layout_rects: BTreeMap::new(),
         })
@@ -626,6 +642,9 @@ impl RuntimeScene {
             .sprite_batch
             .build(self.camera, viewport)
             .map_err(|error| error.to_string())?;
+        let mut vector_vertices = Vec::with_capacity(256);
+        let mut vector_glyphs = Vec::with_capacity(64);
+        let mut vector_segments = Vec::with_capacity(1024);
         let mesh = merge_sprite_meshes(tilemap_mesh, mesh);
         tracing::debug!(
             target: "render",
@@ -642,6 +661,7 @@ impl RuntimeScene {
                 start: draw.vertex_start as u32,
                 count: draw.vertex_count as u32,
                 sdf: false,
+                vector: false,
             })
             .collect();
         let mut vertices: Vec<OverlayVertex> = mesh
@@ -657,9 +677,25 @@ impl RuntimeScene {
             self.push_ui_images(&mut vertices, &mut draws, width, height)?;
             self.push_ui_grids(&mut vertices, &mut draws, width, height)?;
             self.push_ui_bars(&mut vertices, &mut draws, width, height)?;
-            self.push_ui_text(&mut vertices, &mut draws, width, height)?;
+            self.push_ui_text(
+                &mut vertices,
+                &mut draws,
+                &mut vector_vertices,
+                &mut vector_glyphs,
+                &mut vector_segments,
+                width,
+                height,
+            )?;
             // Scene-node UI components (Text / Image / Button) drawn on very top.
-            self.push_scene_ui(&mut vertices, &mut draws, width, height)?;
+            self.push_scene_ui(
+                &mut vertices,
+                &mut draws,
+                &mut vector_vertices,
+                &mut vector_glyphs,
+                &mut vector_segments,
+                width,
+                height,
+            )?;
         }
         // UI 合批：相邻元素在顶点缓冲里连续，合并同纹理同 sdf 的 draw，减少
         // draw call（如一排同纹理方块/面板 → 一次绘制）。
@@ -697,6 +733,9 @@ impl RuntimeScene {
             paths: self.texture_paths.clone(),
             font_atlas,
             custom_font_atlases,
+            vector_vertices: vector_vertices,
+            vector_glyphs: vector_glyphs,
+            vector_segments: vector_segments,
         })
     }
 
@@ -820,6 +859,7 @@ impl RuntimeScene {
                 start,
                 count: vertices.len() as u32 - start,
                 sdf: false,
+                vector: false,
             });
         }
         Ok(())
@@ -873,6 +913,7 @@ impl RuntimeScene {
                 start,
                 count: vertices.len() as u32 - start,
                 sdf: false,
+                vector: false,
             });
             for index in 1..=grid.columns * grid.rows {
                 let Some((cell_origin, cell_size)) = grid.cell_rect(
@@ -898,6 +939,7 @@ impl RuntimeScene {
                     start,
                     count: vertices.len() as u32 - start,
                     sdf: false,
+                    vector: false,
                 });
                 if let Some(texture) = cell.texture {
                     let image = DynamicUiImage {
@@ -954,6 +996,7 @@ impl RuntimeScene {
                 start,
                 count,
                 sdf: false,
+                vector: false,
             });
         }
         Ok(())
@@ -965,6 +1008,9 @@ impl RuntimeScene {
         &mut self,
         vertices: &mut Vec<OverlayVertex>,
         draws: &mut Vec<SceneDraw>,
+        vector_vertices: &mut Vec<FrameVectorTextVertex>,
+        vector_glyphs: &mut Vec<VectorGlyphSnapshot>,
+        vector_segments: &mut Vec<VectorSegmentSnapshot>,
         width: u32,
         height: u32,
     ) -> Result<(), String> {
@@ -984,15 +1030,30 @@ impl RuntimeScene {
             return Ok(());
         }
         for (position, text, scale) in visible {
-            let (mesh, is_sdf) = self.layout_text(&text, position, scale, [1.0, 1.0, 1.0])?;
-            let text_vertices = text_to_ndc(mesh, is_sdf, width, height);
-            // Lua 动态文字始终走默认字体（项目 `font`）。
-            let font_key = if is_sdf {
-                FONT_ATLAS_TEXTURE_PATH.to_owned()
-            } else {
-                ATLAS_TEXTURE_PATH.to_owned()
-            };
-            self.push_text_run(vertices, draws, text_vertices, is_sdf, &font_key);
+            let use_vector = scale >= 2.0 && text.chars().count() <= 32;
+            if !use_vector
+                || !self.push_vector_text_run(
+                    vector_vertices,
+                    vector_glyphs,
+                    vector_segments,
+                    &text,
+                    position,
+                    scale,
+                    [1.0, 1.0, 1.0],
+                    None,
+                    width,
+                    height,
+                )?
+            {
+                let (mesh, is_sdf) = self.layout_text(&text, position, scale, [1.0, 1.0, 1.0])?;
+                let text_vertices = text_to_ndc(mesh, is_sdf, width, height);
+                let font_key = if is_sdf {
+                    FONT_ATLAS_TEXTURE_PATH.to_owned()
+                } else {
+                    ATLAS_TEXTURE_PATH.to_owned()
+                };
+                self.push_text_run(vertices, draws, text_vertices, is_sdf, &font_key);
+            }
         }
         Ok(())
     }
@@ -1004,6 +1065,9 @@ impl RuntimeScene {
         &mut self,
         vertices: &mut Vec<OverlayVertex>,
         draws: &mut Vec<SceneDraw>,
+        vector_vertices: &mut Vec<FrameVectorTextVertex>,
+        vector_glyphs: &mut Vec<VectorGlyphSnapshot>,
+        vector_segments: &mut Vec<VectorSegmentSnapshot>,
         width: u32,
         height: u32,
     ) -> Result<(), String> {
@@ -1033,12 +1097,38 @@ impl RuntimeScene {
             world.for_each::<UiText>(|id, text| texts.push((id, text.clone())));
             texts
         });
+        // 关键：先把本帧全部文本的字形预热进图集，再逐条构建网格。若在排版过程
+        // 中才光栅化，图集会增长（1024→2048…）；`FontAtlas::grow` 只重缩放已缓存
+        // 字形的归一化 UV，不会修正已经写进顶点缓冲的 UV，于是同一帧内先构建的
+        // 网格会用旧尺寸的 UV 在更大的图集里采样到 2 倍坐标处的错误字形，表现为
+        // 白块 / 缺笔画。预热后图集尺寸在本帧保持稳定。
+        self.prewarm_frame_glyphs(&texts);
         for (id, text) in texts {
-            if let Some(rect) = self.scene_ui_layout_rect(id, viewport) {
+            let rect = self.scene_ui_layout_rect(id, viewport);
+            if let Some(rect) = rect {
                 let position = [rect.x, rect.y];
                 // `layout_text` already emits absolute screen-space vertices;
                 // adding the layout origin again would displace scene text by
                 // its full top-left position (the visible "text ran away" bug).
+                let use_vector = text.font.is_empty()
+                    && text.effective_scale() >= 2.0
+                    && text.text.chars().count() <= 32;
+                if use_vector
+                    && self.push_vector_text_run(
+                        vector_vertices,
+                        vector_glyphs,
+                        vector_segments,
+                        &text.text,
+                        position,
+                        text.effective_scale(),
+                        text.color,
+                        None,
+                        width,
+                        height,
+                    )?
+                {
+                    continue;
+                }
                 let (mesh, is_sdf, font_key) = self.layout_scene_text(&text, position)?;
                 let text_vertices = text_to_ndc(mesh, is_sdf, width, height);
                 self.push_text_run(vertices, draws, text_vertices, is_sdf, &font_key);
@@ -1076,8 +1166,124 @@ impl RuntimeScene {
         }
     }
 
-    /// 场景 Text 组件的布局：指定了自定义字体时用其图集排版（SDF），并把字体 key
-    /// 记入本帧待上报列表；无自定义字体 / 字体缺失不可读时回退默认（默认 SDF 或
+    fn push_vector_text_run(
+        &mut self,
+        vertices: &mut Vec<FrameVectorTextVertex>,
+        glyphs: &mut Vec<VectorGlyphSnapshot>,
+        segments: &mut Vec<VectorSegmentSnapshot>,
+        text: &str,
+        position: [f32; 2],
+        scale: f32,
+        color: [f32; 3],
+        font_asset: Option<&str>,
+        width: u32,
+        height: u32,
+    ) -> Result<bool, String> {
+        let atlas = if let Some(asset) = font_asset.filter(|asset| !asset.is_empty()) {
+            let key = font_texture_path(asset);
+            if self.missing_vector_fonts.contains(&key) {
+                None
+            } else {
+                if let Some(atlas) = load_custom_vector_atlas(self.project_root.as_deref(), asset) {
+                    self.custom_vector_atlases.insert(key.clone(), atlas);
+                } else {
+                    self.missing_vector_fonts.insert(key.clone());
+                }
+                self.custom_vector_atlases.get(&key).cloned()
+            }
+        } else {
+            self.ensure_vector_atlas();
+            self.vector_atlas.clone()
+        };
+        let Some(atlas) = atlas else {
+            return Ok(false);
+        };
+        let style = TextStyle {
+            scale,
+            color: [color[0], color[1], color[2], 1.0],
+            ..Default::default()
+        };
+        let mut atlas = atlas.lock().expect("vector atlas lock");
+        let layout = TextLayout::build_vector(text, position, style, &mut atlas)
+            .map_err(|error| error.to_string())?;
+        if layout.is_empty() {
+            return Ok(false);
+        }
+        let base_glyph = glyphs.len() as u32;
+        let mut remap = HashMap::new();
+        for vertex in layout {
+            let mapped = if let Some(mapped) = remap.get(&vertex.glyph_id) {
+                *mapped
+            } else {
+                let Some(glyph) = atlas.glyph_by_id(vertex.glyph_id) else {
+                    return Ok(false);
+                };
+                let mapped = base_glyph + remap.len() as u32;
+                let segment_start = segments.len() as u32;
+                segments.extend(glyph.segments.iter().map(|segment| VectorSegmentSnapshot {
+                    start: segment.start,
+                    end: segment.end,
+                    _padding: [0; 2],
+                    bounds: [
+                        segment.start[0].min(segment.end[0]),
+                        segment.start[1].min(segment.end[1]),
+                        segment.start[0].max(segment.end[0]),
+                        segment.start[1].max(segment.end[1]),
+                    ],
+                }));
+                glyphs.push(VectorGlyphSnapshot {
+                    segment_start,
+                    segment_count: segments.len() as u32 - segment_start,
+                    _padding: [0; 2],
+                    bounds: glyph.bounds,
+                });
+                remap.insert(vertex.glyph_id, mapped);
+                mapped
+            };
+            vertices.push(FrameVectorTextVertex {
+                position: [
+                    vertex.position[0] / width.max(1) as f32 * 2.0 - 1.0,
+                    1.0 - vertex.position[1] / height.max(1) as f32 * 2.0,
+                ],
+                local: vertex.local,
+                glyph_id: mapped,
+                color: vertex.color,
+            });
+        }
+        Ok(true)
+    }
+
+    /// 在构建任何文本网格之前，把本帧全部文本所需字形光栅化进各自字体图集，
+    /// 使图集在本帧增长到最终尺寸。见 `push_scene_ui` 调用处注释。
+    fn prewarm_frame_glyphs(&mut self, texts: &[(EntityId, UiText)]) {
+        let mut default_chars: Vec<char> = Vec::new();
+        let mut custom_chars: HashMap<&str, Vec<char>> = HashMap::new();
+        for (_, text) in texts {
+            if text.font.is_empty() {
+                default_chars.extend(text.text.chars());
+            } else {
+                custom_chars
+                    .entry(text.font.as_str())
+                    .or_default()
+                    .extend(text.text.chars());
+            }
+        }
+        if !default_chars.is_empty() {
+            self.ensure_font_atlas();
+            if let Some(font) = &self.font_atlas {
+                let mut font = font.lock().expect("font atlas lock");
+                font.prewarm(default_chars.into_iter());
+            }
+        }
+        for (asset, chars) in custom_chars {
+            if let Some(handle) = self.ensure_custom_font(asset) {
+                let mut atlas = handle.lock().expect("font atlas lock");
+                atlas.prewarm(chars.into_iter());
+            }
+        }
+    }
+
+    /// 记录入本帧待上报列表；无自定义字体 / 字体缺失不可读时回退默认（默认 SDF 或
     /// 内置位图）。返回 `(mesh, is_sdf, font_key)`。
     fn layout_scene_text(
         &mut self,
@@ -1138,6 +1344,7 @@ impl RuntimeScene {
             start,
             count: vertices.len() as u32 - start,
             sdf: is_sdf,
+            vector: false,
         });
     }
 
@@ -1205,6 +1412,7 @@ impl RuntimeScene {
                     start,
                     count: vertices.len() as u32 - start,
                     sdf: false,
+                    vector: false,
                 });
             }
             return Ok(());
@@ -1258,6 +1466,7 @@ impl RuntimeScene {
             start,
             count: vertices.len() as u32 - start,
             sdf: false,
+            vector: false,
         });
         Ok(())
     }
@@ -1629,9 +1838,27 @@ fn project_font_weight(project_root: &Path) -> Option<f32> {
         .filter(|weight| weight.is_finite() && *weight > 0.0)
 }
 
+/// 加载项目字体并包装为可跨运行时共享的矢量轮廓缓存。
+pub fn load_project_vector_atlas(
+    project_root: Option<&Path>,
+) -> Option<Arc<Mutex<FontVectorAtlas>>> {
+    let root = project_root?;
+    let primary =
+        project_font_path(root).unwrap_or_else(|| "assets/fonts/NotoSansSC-VF.ttf".to_owned());
+    let primary = fs::read(root.join(primary)).ok()?;
+    let primary = crate::core::pack::decode(&primary).ok()?;
+    let fallback = project_fallback_font_path(root).and_then(|path| {
+        let bytes = fs::read(root.join(path)).ok()?;
+        crate::core::pack::decode(&bytes).ok()
+    });
+    FontVectorAtlas::load_with_fallback(&primary, fallback.as_deref())
+        .ok()
+        .map(|atlas| Arc::new(Mutex::new(atlas)))
+}
+
 /// 加载项目字体并包装为可跨运行时共享的图集（MSDF 字形按需生成，共享后只生成
-/// 一次）。字体路径取 project.toml `font` 键，字重取 `font_weight` 键；
-/// 缺省路径是 NotoSansSC-VF.ttf，缺省字重是 Regular（400）。
+/// 缺省路径是 NotoSansSC-VF.ttf，项目可通过 `font` 键切换字体；
+/// 缺省字重是 Regular（400）。
 pub fn load_project_font_atlas(project_root: Option<&Path>) -> Option<Arc<Mutex<FontAtlas>>> {
     let root = project_root?;
     let primary_path = {
@@ -1691,14 +1918,29 @@ fn prewarm_font_atlas(root: &Path, atlas: &mut FontAtlas) {
     }
 }
 
-/// 加载场景 Text 指定的自定义字体并包装为可跨运行时共享的图集句柄：相对项目根
+pub fn load_custom_vector_atlas(
+    project_root: Option<&Path>,
+    font_asset: &str,
+) -> Option<Arc<Mutex<FontVectorAtlas>>> {
+    let root = project_root?;
+    if font_asset.trim().is_empty() {
+        return None;
+    }
+    let bytes = fs::read(root.join(font_asset)).ok()?;
+    let bytes = crate::core::pack::decode(&bytes).ok()?;
+    let fallback = project_fallback_font_path(root).and_then(|path| {
+        let bytes = fs::read(root.join(path)).ok()?;
+        crate::core::pack::decode(&bytes).ok()
+    });
+    FontVectorAtlas::load_with_fallback(&bytes, fallback.as_deref())
+        .ok()
+        .map(|atlas| Arc::new(Mutex::new(atlas)))
+}
+
 /// 读取 + pack 解码 + 项目 fallback 字体 + 项目字重。**不做** chars.txt 预热
 /// （字形按需光栅化）。任何失败返回 `None` → 调用方回退默认字体，不中断渲染
 /// （wasm / 发布包缺该字体时自动降级）。
-pub fn load_custom_font_atlas(
-    project_root: Option<&Path>,
-    font_asset: &str,
-) -> Option<FontHandle> {
+pub fn load_custom_font_atlas(project_root: Option<&Path>, font_asset: &str) -> Option<FontHandle> {
     let root = project_root?;
     if font_asset.trim().is_empty() {
         return None;
@@ -1827,7 +2069,9 @@ fn merge_adjacent_draws(draws: &mut Vec<SceneDraw>) {
     for draw in draws.drain(..) {
         if let Some(last) = out.last_mut()
             && last.texture == draw.texture
+            && last.start + last.count == draw.start
             && last.sdf == draw.sdf
+            && last.vector == draw.vector
         {
             // 相邻 draw 顶点连续（start == last.start + last.count），直接并 count。
             last.count += draw.count;
@@ -2669,7 +2913,8 @@ mod sdf_tests {
     /// （同源，仅验证管线/命名空间，不验证字形差异）。
     #[test]
     fn scene_text_custom_font_surfaces_in_mesh() {
-        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../editor/fonts/NotoSansSC-VF.ttf");
+        let source =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../editor/fonts/NotoSansSC-VF.ttf");
         if !source.is_file() {
             return;
         }
@@ -2687,19 +2932,40 @@ mod sdf_tests {
         fs::copy(&source, fonts_dir.join("Custom.ttf")).expect("copy custom font");
 
         let mut scene = Scene::new("custom-fonts");
-        scene.add_entity(SceneEntityId(1), "DefaultText", None).unwrap();
-        scene.add_entity(SceneEntityId(2), "CustomText", None).unwrap();
+        scene
+            .add_entity(SceneEntityId(1), "DefaultText", None)
+            .unwrap();
+        scene
+            .add_entity(SceneEntityId(2), "CustomText", None)
+            .unwrap();
         let layout = "anchors=0,0,0,0;offsets=0,0,64,16".to_owned();
-        scene.entities.get_mut(&SceneEntityId(1)).unwrap().components.insert("UiLayout".into(), layout.clone());
-        scene.entities.get_mut(&SceneEntityId(1))
+        scene
+            .entities
+            .get_mut(&SceneEntityId(1))
+            .unwrap()
+            .components
+            .insert("UiLayout".into(), layout.clone());
+        scene
+            .entities
+            .get_mut(&SceneEntityId(1))
             .unwrap()
             .components
             .insert("Text".into(), "text=Default;font_size=24".into());
-        scene.entities.get_mut(&SceneEntityId(2)).unwrap().components.insert("UiLayout".into(), layout);
-        scene.entities.get_mut(&SceneEntityId(2)).unwrap().components.insert(
-            "Text".into(),
-            "text=Custom;font_size=24;font=assets/fonts/Custom.ttf".into(),
-        );
+        scene
+            .entities
+            .get_mut(&SceneEntityId(2))
+            .unwrap()
+            .components
+            .insert("UiLayout".into(), layout);
+        scene
+            .entities
+            .get_mut(&SceneEntityId(2))
+            .unwrap()
+            .components
+            .insert(
+                "Text".into(),
+                "text=Custom;font_size=24;font=assets/fonts/Custom.ttf".into(),
+            );
 
         let result = RuntimeScene::from_scene_edit(Some(&root), scene)
             .and_then(|mut runtime| runtime.vertices(320, 240));

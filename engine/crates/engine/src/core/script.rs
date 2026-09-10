@@ -2909,6 +2909,28 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
     )?;
     let s = Rc::clone(&state);
     physics.set(
+        "set_position",
+        lua.create_function(move |_, (id, x, y): (i64, f32, f32)| {
+            let id = entity_from_lua(id)?;
+            if !x.is_finite() || !y.is_finite() {
+                return Err(api_error("physics.set_position must be finite"));
+            }
+            let mut state = s.borrow_mut();
+            require_alive(&state, id)?;
+            state
+                .physics
+                .set_position(id, Vec2::new(x, y))
+                .map_err(|error| api_error(error.to_string()))?;
+            // Keep the ECS transform aligned so rendering/Lua reads agree with
+            // the body until the next physics step writes positions back.
+            if let Ok(Some(transform)) = state.world.get_mut::<Transform>(id) {
+                transform.position = Vec2::new(x, y);
+            }
+            Ok(())
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    physics.set(
         "events",
         lua.create_function(move |lua, ()| {
             let mut state = s.borrow_mut();

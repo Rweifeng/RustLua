@@ -363,6 +363,20 @@ impl PhysicsWorld {
         Ok(Vec2::new(v.x, v.y))
     }
 
+    /// Teleports a body to an absolute world position (used for map transitions
+    /// and respawns). Mirrors `PhysicsWorld3d::set_position`: the rigid body is
+    /// moved kinematically; the caller keeps the ECS `Transform` in sync.
+    pub fn set_position(&mut self, entity: EntityId, position: Vec2) -> Result<(), PhysicsError> {
+        let handle = self
+            .entity_bodies
+            .get(&entity)
+            .ok_or(PhysicsError::UnknownBody(entity))?;
+        if let Some(body) = self.bodies.get_mut(*handle) {
+            body.set_translation(Vector::new(position.x, position.y), true);
+        }
+        Ok(())
+    }
+
     /// Advances the simulation by `dt`, collecting contacts and returning the
     /// new positions of every moved dynamic body for ECS sync.
     pub fn step(&mut self, delta_seconds: f32) -> Vec<(EntityId, Vec2)> {
