@@ -72,13 +72,13 @@ end
 -- 注册表（data/dialogues/index.lua）顺序遍历。
 function M.ids()
   local ok, list = pcall(require, "data.dialogues.index")
-  if not ok or type(list) ~= "table" then
+  if not ok or type(list) ~= "table" or type(list.ids) ~= "table" or list.version ~= 1 then
     return {}
   end
   local out = {}
-  for i = 1, #list do
-    if type(list[i]) == "string" then
-      out[#out + 1] = list[i]
+  for _, id in ipairs(list.ids) do
+    if type(id) == "string" then
+      out[#out + 1] = id
     end
   end
   return out
@@ -470,6 +470,23 @@ end
 function M.validate_all()
   local issues = {}
   local seen = {}
+  local ok, index = pcall(require, "data.dialogues.index")
+  if not ok or type(index) ~= "table" then
+    issues[#issues + 1] = "data/dialogues/index.lua: unable to load registry"
+    return false, issues
+  end
+  if index.version ~= 1 then
+    issues[#issues + 1] = "data/dialogues/index.lua:version: unsupported version " .. tostring(index.version)
+  end
+  if type(index.ids) ~= "table" then
+    issues[#issues + 1] = "data/dialogues/index.lua:ids: expected array"
+    return false, issues
+  end
+  for position, value in ipairs(index.ids) do
+    if type(value) ~= "string" or value == "" then
+      issues[#issues + 1] = "data/dialogues/index.lua:ids[" .. tostring(position) .. "]: required non-empty string"
+    end
+  end
   for _, id in ipairs(M.ids()) do
     if seen[id] then
       issues[#issues + 1] = "对话注册表重复 id：" .. id
@@ -480,6 +497,9 @@ function M.validate_all()
     if not def then
       issues[#issues + 1] = "对话定义缺失或加载失败：data.dialogues." .. id
     else
+      if def.version ~= 1 then
+        issues[#issues + 1] = "data/dialogues/" .. id .. ".lua:version: unsupported version " .. tostring(def.version)
+      end
       if def.id ~= id then
         issues[#issues + 1] = "对话 " .. id .. " 的 id 字段不匹配：" .. tostring(def.id)
       end

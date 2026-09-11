@@ -78,6 +78,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_validate(&mut runtime, "shop")?;
     assert_validate(&mut runtime, "quest")?;
     assert_validate(&mut runtime, "dialogue")?;
+    assert_str(
+        &mut runtime,
+        "(function() local d = require('shop').get('zhao_stall'); local old = d.hours; d.hours = nil; local open = require('shop').is_open('zhao_stall'); d.hours = old; return open end)()",
+        "true",
+    )?;
+    assert_str(
+        &mut runtime,
+        "(function() local d = require('quest').get('quest_herb').objectives[1]; local old = d.kind; d.kind = 'invalid'; local ok, issues = require('quest').validate_all(); d.kind = old; return not ok and table.concat(issues, '|'):find('kind 非法', 1, true) ~= nil end)()",
+        "true",
+    )?;
+    assert_str(
+        &mut runtime,
+        "(function() local d = require('shop').get('zhao_stall'); local old = d.hours.close; d.hours.close = 1500; local ok, issues = require('shop').validate_all(); d.hours.close = old; return not ok and table.concat(issues, '|'):find('hours 窗口非法', 1, true) ~= nil end)()",
+        "true",
+    )?;
+    assert_str(
+        &mut runtime,
+        "(function() local d = require('shop').get('zhao_stall'); local old = d.keeper; d.keeper = 'npc_missing'; local ok, issues = require('shop').validate_all(); d.keeper = old; return not ok and table.concat(issues, '|'):find('keeper 引用未知 NPC', 1, true) ~= nil end)()",
+        "true",
+    )?;
 
     banner("M17-04b 营业时间：左闭右开，窗口外拒绝交易");
     lua(&mut runtime, "clock.set(1, 480)")?;

@@ -11,6 +11,7 @@
 --     kind = "item"/"money"/"inner_power"
 --   on_complete            交付后的剧情变量副作用（仅 set_var / add_var）
 return {
+  version = 1,
   id = "quest_herb",
   name = "为医馆采药",
   giver = "npc_shen_qingluo",

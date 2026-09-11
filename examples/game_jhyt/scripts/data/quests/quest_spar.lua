@@ -1,6 +1,7 @@
 -- data/quests/quest_spar.lua：顾长风·木桩三式（M17-03 纯数据）。
 -- 目标用剧情变量计数（sword_drills），由对话选项的 add_var 副作用推进。
 return {
+  version = 1,
   id = "quest_spar",
   name = "木桩三式",
   giver = "npc_gu_changfeng",

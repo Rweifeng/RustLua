@@ -24,6 +24,7 @@ M.TILE = TILE
 
 -- 山庄 → 云泽村：山庄南侧院墙内石路 (16,1)，云泽村南市街 (19,2) 落点。
 -- 云泽村 → 山庄：南市街口 (19,1) 站立触发，回山庄药田前 (16,3)。
+M.version = 1
 M.maps = {
   main = {
     display = "江湖有田·山庄",
@@ -66,6 +67,63 @@ end
 
 function M.get(map_id)
   return M.maps[map_id]
+end
+
+function M.validate_all()
+  local issues = {}
+  if M.version ~= 1 then
+    issues[#issues + 1] = "data/maps.lua: version: unsupported version " .. tostring(M.version)
+  end
+  local seen_exits = {}
+  for map_id, map in pairs(M.maps) do
+    local path = "data/maps.lua:maps." .. tostring(map_id)
+    if type(map) ~= "table" then
+      issues[#issues + 1] = path .. ": expected object"
+    else
+      if type(map.display) ~= "string" or map.display == "" then
+        issues[#issues + 1] = path .. ".display: required non-empty string"
+      end
+      local spawn = map.spawn
+      if type(spawn) ~= "table" or type(spawn.x) ~= "number" or type(spawn.y) ~= "number" then
+        issues[#issues + 1] = path .. ".spawn: expected {x, y} numbers"
+      elseif spawn.x < 0 or spawn.x >= 40 or spawn.y < 0 or spawn.y >= 22 then
+        issues[#issues + 1] = path .. ".spawn: out of map bounds"
+      end
+      if type(map.exits) ~= "table" then
+        issues[#issues + 1] = path .. ".exits: expected array"
+      else
+        for index, exit in ipairs(map.exits) do
+          local epath = path .. ".exits[" .. tostring(index) .. "]"
+          if type(exit) ~= "table" then
+            issues[#issues + 1] = epath .. ": expected object"
+          else
+            if type(exit.id) ~= "string" or exit.id == "" then
+              issues[#issues + 1] = epath .. ".id: required non-empty string"
+            elseif seen_exits[exit.id] then
+              issues[#issues + 1] = epath .. ".id: duplicate object id " .. exit.id
+            else
+              seen_exits[exit.id] = true
+            end
+            if not M.maps[exit.to] then
+              issues[#issues + 1] = epath .. ".to: unknown map " .. tostring(exit.to)
+            end
+            for _, field in ipairs({ "cell", "to_cell" }) do
+              local cell = exit[field]
+              if type(cell) ~= "table" or type(cell.x) ~= "number" or type(cell.y) ~= "number" then
+                issues[#issues + 1] = epath .. "." .. field .. ": expected {x, y} numbers"
+              elseif cell.x < 0 or cell.x >= 40 or cell.y < 0 or cell.y >= 22 then
+                issues[#issues + 1] = epath .. "." .. field .. ": out of map bounds"
+              end
+            end
+            if type(exit.label) ~= "string" or exit.label == "" then
+              issues[#issues + 1] = epath .. ".label: required non-empty string"
+            end
+          end
+        end
+      end
+    end
+  end
+  return #issues == 0, issues
 end
 
 function M.exit_world(exit)

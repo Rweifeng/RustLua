@@ -1,5 +1,6 @@
 -- data/schedules/su_wanqing.lua：苏晚晴（山庄·青云门弟子）日程。
 return {
+  version = 1,
   id = "su_wanqing",
   blocks = {
     { from = 360,  to = 480,  place = "manor_home_east",    activity = "morning" },

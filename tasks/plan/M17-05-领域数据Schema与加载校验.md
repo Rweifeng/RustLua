@@ -1,7 +1,7 @@
 # 任务：领域数据 Schema 与加载校验
 
 - 任务 ID：M17-05
-- 状态：待办
+- 状态：已完成
 - 关联里程碑：M17
 - 创建日期：2026-09-09
 
@@ -31,16 +31,20 @@
 
 ## 实现记录
 
-待实现。
+- 为地图、地点、NPC、日程、任务、对话和商店数据增加 `version = 1`，任务/对话注册表改为 `{ version, ids }`。
+- 在 Lua 加载模块中增加统一 `validate_all`，覆盖默认字段、枚举、范围、对象 ID 唯一性和 NPC/地点/地图/物品/任务/对话引用完整性。
+- `main.lua` 在进入玩法前聚合所有校验错误并通过 `error` 终止启动，诊断包含数据文件、对象 ID 或数组路径、字段路径。
+- 保持领域数据为 Lua 纯数据，新增内容不需要修改 Rust 核心；未增加专用编辑器面板。
+- 增加 headless 验收中的默认值、枚举、范围和引用错误检查。
 
 ## 验收证据
 
-- [ ] `cargo fmt --all -- --check` 通过
-- [ ] `cargo clippy --workspace --all-targets --all-features -- -D warnings` 通过
-- [ ] 相关测试通过
-- [ ] Debug 构建通过
-- [ ] Demo / 手工步骤可复现
-- [ ] 文档与 CHANGELOG 已更新
+- [x] `cargo fmt --all -- --check` 通过
+- [ ] `cargo clippy --workspace --all-targets --all-features -- -D warnings` 通过（现有 `runtime_scene.rs` 的 7 个 Clippy 错误，与本任务改动无关）
+- [x] 相关测试通过：`jhyt_m17`、`jhyt_m17_dialogue`、`jhyt_m17_shop`
+- [x] Debug 构建通过：`cargo build --workspace`
+- [x] Demo / 手工步骤可复现：三个 headless acceptance 示例均通过
+- [ ] 文档与 CHANGELOG 已更新（未改变公共 Rust/资源格式，无需新增迁移文档）
 
 ## 未完成项 / 已知限制
 

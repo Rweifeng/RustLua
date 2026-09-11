@@ -27,6 +27,9 @@ local calendar = require("calendar")
 local weather = require("weather")
 local maps = require("data.maps")
 local map_manager = require("map_manager")
+local npcs = require("data.npcs")
+local places = require("data.places")
+local schedule = require("schedule")
 local npc = require("npc")
 local quest = require("quest")
 local dialogue = require("dialogue")
@@ -92,26 +95,28 @@ local function register_save_providers()
   save_manager.register("shop", shop.capture, shop.restore)
 end
 
--- 加载期校验（M17-03 硬风险①）：任务与对话的数据引用在本处一次性暴露，
--- 不静默失败。校验失败只告警不中断，保证坏数据不阻断已可玩内容。
+-- 加载期校验：所有领域数据在进入玩法前统一校验。错误包含文件、对象 ID 和字段路径。
 local function validate_content()
-  local ok, issues = quest.validate_all()
-  if not ok then
-    for _, issue in ipairs(issues) do
-      log.warn("[quest] " .. issue)
+  local validators = {
+    { "maps", maps.validate_all },
+    { "places", places.validate_all },
+    { "npcs", npcs.validate_all },
+    { "schedule", schedule.validate_all },
+    { "quest", quest.validate_all },
+    { "dialogue", dialogue.validate_all },
+    { "shop", shop.validate_all }
+  }
+  local errors = {}
+  for _, entry in ipairs(validators) do
+    local ok, issues = entry[2]()
+    if not ok then
+      for _, issue in ipairs(issues) do
+        errors[#errors + 1] = "[" .. entry[1] .. "] " .. issue
+      end
     end
   end
-  ok, issues = dialogue.validate_all()
-  if not ok then
-    for _, issue in ipairs(issues) do
-      log.warn("[dialogue] " .. issue)
-    end
-  end
-  ok, issues = shop.validate_all()
-  if not ok then
-    for _, issue in ipairs(issues) do
-      log.warn("[shop] " .. issue)
-    end
+  if #errors > 0 then
+    error("domain data validation failed:\n" .. table.concat(errors, "\n"))
   end
 end
 

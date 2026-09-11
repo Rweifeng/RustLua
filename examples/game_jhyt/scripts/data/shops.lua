@@ -21,6 +21,7 @@
 -- 同一物品不得同时出现在 stock 与 buys 中，shop.validate_all 会报告违规。
 -- 因此本店只卖种子/消耗品、只收收获物，价格方向天然不可套利。
 return {
+  version = 1,
   zhao_stall = {
     id = "zhao_stall",
     name = "云泽村·货摊",

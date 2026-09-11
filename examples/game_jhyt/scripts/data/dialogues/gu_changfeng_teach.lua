@@ -20,6 +20,7 @@
 --       next      跳转节点 id（与 finish 二选一）
 --       finish    true 结束对话
 return {
+  version = 1,
   id = "gu_changfeng_teach",
   speaker = "npc_gu_changfeng",
   start = "greet",

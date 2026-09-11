@@ -1,6 +1,7 @@
 -- data/dialogues/shen_qingluo_herb.lua：沈青萝·为医馆采药（M17-03 纯数据）。
 -- 结构说明见 data/dialogues/gu_changfeng_teach.lua 头注释。
 return {
+  version = 1,
   id = "shen_qingluo_herb",
   speaker = "npc_shen_qingluo",
   start = "greet",

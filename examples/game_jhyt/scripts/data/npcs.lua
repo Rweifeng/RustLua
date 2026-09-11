@@ -13,7 +13,9 @@
 --
 -- 表顺序无关；npc.lua 按 persist_id 稳定排序遍历，诊断/存档结果确定。
 local M = {}
+local places = require("data.places")
 
+M.version = 1
 M.npcs = {
   -- 云泽村
   {
@@ -95,6 +97,49 @@ function M.list()
     return a.persist_id < b.persist_id
   end)
   return list
+end
+
+function M.validate_all()
+  local issues = {}
+  local seen = {}
+  if M.version ~= 1 then
+    issues[#issues + 1] = "data/npcs.lua: version: unsupported version " .. tostring(M.version)
+  end
+  for index, npc in ipairs(M.npcs) do
+    local path = "data/npcs.lua:npcs[" .. tostring(index) .. "]"
+    if type(npc) ~= "table" then
+      issues[#issues + 1] = path .. ": expected object"
+    else
+      local id = npc.persist_id
+      if type(id) ~= "string" or id == "" then
+        issues[#issues + 1] = path .. ".persist_id: required non-empty string"
+      elseif seen[id] then
+        issues[#issues + 1] = path .. ".persist_id: duplicate object id " .. id
+      else
+        seen[id] = true
+      end
+      if type(npc.name) ~= "string" or npc.name == "" then
+        issues[#issues + 1] = path .. ".name: required non-empty string"
+      end
+      if type(npc.home) ~= "string" or not require("data.places").get(npc.home) then
+        issues[#issues + 1] = path .. ".home: unknown place " .. tostring(npc.home)
+      end
+      if type(npc.schedule) ~= "string" or npc.schedule == "" then
+        issues[#issues + 1] = path .. ".schedule: required non-empty string"
+      else
+        local ok, schedule = pcall(require, "data.schedules." .. npc.schedule)
+        if not ok or type(schedule) ~= "table" then
+          issues[#issues + 1] = path .. ".schedule: unknown schedule " .. npc.schedule
+        elseif schedule.version ~= 1 then
+          issues[#issues + 1] = "data/schedules/" .. npc.schedule .. ".lua:version: unsupported version " .. tostring(schedule.version)
+        end
+      end
+      if type(npc.speed) ~= "number" or npc.speed <= 0 then
+        issues[#issues + 1] = path .. ".speed: expected positive number"
+      end
+    end
+  end
+  return #issues == 0, issues
 end
 
 return M

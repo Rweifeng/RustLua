@@ -639,75 +639,80 @@ function M.validate_all()
     issues[#issues + 1] = "data.shops 为空或加载失败"
     return false, issues
   end
+  if reg.version ~= 1 then
+    issues[#issues + 1] = "data/shops.lua:version: unsupported version " .. tostring(reg.version)
+  end
   for shop_id, def in pairs(reg) do
-    local where = "商店 " .. tostring(shop_id)
-    if type(def) ~= "table" then
-      issues[#issues + 1] = where .. " 必须是表"
-    else
-      if def.id ~= shop_id then
-        issues[#issues + 1] = where .. " 的 id 字段不匹配：" .. tostring(def.id)
-      end
-      if type(def.name) ~= "string" or def.name == "" then
-        issues[#issues + 1] = where .. " 缺少 name"
-      end
-      if type(def.keeper) ~= "string" or not npcs.get(def.keeper) then
-        issues[#issues + 1] = where .. " 的 keeper 引用未知 NPC：" .. tostring(def.keeper)
-      end
-      if def.place ~= nil and (type(def.place) ~= "string" or not places.get(def.place)) then
-        issues[#issues + 1] = where .. " 的 place 引用未知地点：" .. tostring(def.place)
-      end
-      if def.hours ~= nil then
-        if type(def.hours) ~= "table" then
-          issues[#issues + 1] = where .. " 的 hours 必须是表"
-        else
-          local open = tonumber(def.hours.open)
-          local close = tonumber(def.hours.close)
-          if not open or not close then
-            issues[#issues + 1] = where .. " 的 hours.open/close 必须是数值"
-          elseif open < 0 or close > MINUTES_PER_DAY or close <= open then
-            issues[#issues + 1] = where .. " 的 hours 窗口非法：" .. tostring(open) .. ".." .. tostring(close)
-          end
-        end
-      end
-
-      local sold = {}
-      if type(def.stock) ~= "table" or #def.stock == 0 then
-        issues[#issues + 1] = where .. " 的 stock 必须是非空表"
+    if shop_id ~= "version" then
+      local where = "商店 " .. tostring(shop_id)
+      if type(def) ~= "table" then
+        issues[#issues + 1] = where .. " 必须是表"
       else
-        for i, entry in ipairs(def.stock) do
-          local ew = where .. " 商品 " .. tostring(i)
-          if type(entry) ~= "table" then
-            issues[#issues + 1] = ew .. " 必须是表"
+        if def.id ~= shop_id then
+          issues[#issues + 1] = where .. " 的 id 字段不匹配：" .. tostring(def.id)
+        end
+        if type(def.name) ~= "string" or def.name == "" then
+          issues[#issues + 1] = where .. " 缺少 name"
+        end
+        if type(def.keeper) ~= "string" or not npcs.get(def.keeper) then
+          issues[#issues + 1] = where .. " 的 keeper 引用未知 NPC：" .. tostring(def.keeper)
+        end
+        if def.place ~= nil and (type(def.place) ~= "string" or not places.get(def.place)) then
+          issues[#issues + 1] = where .. " 的 place 引用未知地点：" .. tostring(def.place)
+        end
+        if def.hours ~= nil then
+          if type(def.hours) ~= "table" then
+            issues[#issues + 1] = where .. " 的 hours 必须是表"
           else
-            if not item_def(entry.item) then
-              issues[#issues + 1] = ew .. " 引用未知物品：" .. tostring(entry.item)
-            elseif sold[entry.item] then
-              issues[#issues + 1] = ew .. " 物品重复上架：" .. tostring(entry.item)
-            else
-              sold[entry.item] = true
-            end
-            if not positive(stock_price(entry)) then
-              issues[#issues + 1] = ew .. " 的 price 必须为正数（或物品 buy > 0）：" .. tostring(entry.item)
-            end
-            if entry.limit ~= nil and not positive(entry.limit) then
-              issues[#issues + 1] = ew .. " 的 limit 必须为正数"
+            local open = tonumber(def.hours.open)
+            local close = tonumber(def.hours.close)
+            if not open or not close then
+              issues[#issues + 1] = where .. " 的 hours.open/close 必须是数值"
+            elseif open < 0 or close > MINUTES_PER_DAY or close <= open then
+              issues[#issues + 1] = where .. " 的 hours 窗口非法：" .. tostring(open) .. ".." .. tostring(close)
             end
           end
         end
-      end
 
-      if type(def.buys) ~= "table" or #def.buys == 0 then
-        issues[#issues + 1] = where .. " 的 buys 必须是非空表"
-      else
-        for i, item_id in ipairs(def.buys) do
-          local bw = where .. " 收购项 " .. tostring(i)
-          if not item_def(item_id) then
-            issues[#issues + 1] = bw .. " 引用未知物品：" .. tostring(item_id)
-          elseif not positive((item_def(item_id) or {}).sell) then
-            issues[#issues + 1] = bw .. " 的物品缺少正数 sell 价：" .. tostring(item_id)
+        local sold = {}
+        if type(def.stock) ~= "table" or #def.stock == 0 then
+          issues[#issues + 1] = where .. " 的 stock 必须是非空表"
+        else
+          for i, entry in ipairs(def.stock) do
+            local ew = where .. " 商品 " .. tostring(i)
+            if type(entry) ~= "table" then
+              issues[#issues + 1] = ew .. " 必须是表"
+            else
+              if not item_def(entry.item) then
+                issues[#issues + 1] = ew .. " 引用未知物品：" .. tostring(entry.item)
+              elseif sold[entry.item] then
+                issues[#issues + 1] = ew .. " 物品重复上架：" .. tostring(entry.item)
+              else
+                sold[entry.item] = true
+              end
+              if not positive(stock_price(entry)) then
+                issues[#issues + 1] = ew .. " 的 price 必须为正数（或物品 buy > 0）：" .. tostring(entry.item)
+              end
+              if entry.limit ~= nil and not positive(entry.limit) then
+                issues[#issues + 1] = ew .. " 的 limit 必须为正数"
+              end
+            end
           end
-          if sold[item_id] then
-            issues[#issues + 1] = bw .. " 与在售商品重复（可套利）：" .. tostring(item_id)
+        end
+
+        if type(def.buys) ~= "table" or #def.buys == 0 then
+          issues[#issues + 1] = where .. " 的 buys 必须是非空表"
+        else
+          for i, item_id in ipairs(def.buys) do
+            local bw = where .. " 收购项 " .. tostring(i)
+            if not item_def(item_id) then
+              issues[#issues + 1] = bw .. " 引用未知物品：" .. tostring(item_id)
+            elseif not positive((item_def(item_id) or {}).sell) then
+              issues[#issues + 1] = bw .. " 的物品缺少正数 sell 价：" .. tostring(item_id)
+            end
+            if sold[item_id] then
+              issues[#issues + 1] = bw .. " 与在售商品重复（可套利）：" .. tostring(item_id)
+            end
           end
         end
       end

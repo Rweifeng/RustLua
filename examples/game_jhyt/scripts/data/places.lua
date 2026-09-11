@@ -14,6 +14,7 @@
 --              y16..17 在 x18..21 断开（池塘）；y18..20 仅 x1/x10..29/x38。
 local M = {}
 
+M.version = 1
 M.places = {
   -- 山庄 main
   manor_gate = { map = "main", cell = { x = 16, y = 2 }, label = "山庄·门廊" },
@@ -48,6 +49,34 @@ M.places = {
 
 function M.get(name)
   return M.places[name]
+end
+
+function M.validate_all()
+  local issues = {}
+  if M.version ~= 1 then
+    issues[#issues + 1] = "data/places.lua: version: unsupported version " .. tostring(M.version)
+  end
+  local maps = require("data.maps")
+  for name, place in pairs(M.places) do
+    local path = "data/places.lua:places." .. tostring(name)
+    if type(place) ~= "table" then
+      issues[#issues + 1] = path .. ": expected object"
+    else
+      if not maps.get(place.map) then
+        issues[#issues + 1] = path .. ".map: unknown map " .. tostring(place.map)
+      end
+      local cell = place.cell
+      if type(cell) ~= "table" or type(cell.x) ~= "number" or type(cell.y) ~= "number" then
+        issues[#issues + 1] = path .. ".cell: expected {x, y} numbers"
+      elseif cell.x < 0 or cell.x >= 40 or cell.y < 0 or cell.y >= 22 then
+        issues[#issues + 1] = path .. ".cell: out of map bounds"
+      end
+      if type(place.label) ~= "string" or place.label == "" then
+        issues[#issues + 1] = path .. ".label: required non-empty string"
+      end
+    end
+  end
+  return #issues == 0, issues
 end
 
 -- 稳定排序的名字列表（诊断/遍历顺序确定）

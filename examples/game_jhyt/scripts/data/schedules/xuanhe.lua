@@ -4,6 +4,7 @@
 -- 08:00 与 21:00 两次跨图（main <-> village），验证"按时间在两张地图间移动"。
 -- 雨天全时段改为山庄室内（研究/后园），不跨图。
 return {
+  version = 1,
   id = "xuanhe",
   blocks = {
     { from = 360,  to = 480,  place = "manor_gate",       activity = "morning" },

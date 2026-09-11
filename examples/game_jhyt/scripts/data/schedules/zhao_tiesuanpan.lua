@@ -1,5 +1,6 @@
 -- data/schedules/zhao_tiesuanpan.lua：赵铁算盘（云泽村·集市商人）日程。
 return {
+  version = 1,
   id = "zhao_tiesuanpan",
   blocks = {
     { from = 360,  to = 480,  place = "village_home_south", activity = "morning" },

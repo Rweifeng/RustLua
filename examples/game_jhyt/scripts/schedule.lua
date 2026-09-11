@@ -105,8 +105,15 @@ function M.validate(id)
     issues[#issues + 1] = tostring(reason)
     return false, issues
   end
+  if schedule.version ~= 1 then
+    issues[#issues + 1] = "data/schedules/" .. tostring(id) .. ".lua:version: unsupported version " .. tostring(schedule.version)
+  end
   local blocks = schedule.blocks
-  if type(blocks) ~= "table" or #blocks == 0 then
+  if type(blocks) ~= "table" then
+    issues[#issues + 1] = "schedule " .. tostring(id) .. " has invalid blocks"
+    return false, issues
+  end
+  if #blocks == 0 then
     issues[#issues + 1] = "schedule " .. tostring(id) .. " has no blocks"
     return false, issues
   end

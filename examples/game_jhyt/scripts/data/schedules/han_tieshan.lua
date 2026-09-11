@@ -1,5 +1,6 @@
 -- data/schedules/han_tieshan.lua：韩铁山（云泽村·铁匠）日程。
 return {
+  version = 1,
   id = "han_tieshan",
   blocks = {
     { from = 360,  to = 480,  place = "village_home_forge", activity = "morning" },

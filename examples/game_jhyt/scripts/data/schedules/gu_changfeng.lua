@@ -1,5 +1,6 @@
 -- data/schedules/gu_changfeng.lua：顾长风（山庄·退隐镖师）日程。
 return {
+  version = 1,
   id = "gu_changfeng",
   blocks = {
     { from = 360,  to = 480,  place = "manor_home",         activity = "morning" },

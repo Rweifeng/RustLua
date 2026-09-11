@@ -4,6 +4,7 @@
 -- place / rain_place 引用 data/places.lua；rain_place 为雨天替代（缺省沿用 place）。
 -- 时段须无缝覆盖 0..1439 且互不重叠，否则 schedule.validate() 报诊断。
 return {
+  version = 1,
   id = "shen_qingluo",
   blocks = {
     { from = 360,  to = 480,  place = "village_home_west", activity = "morning" },

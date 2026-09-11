@@ -1,5 +1,6 @@
 -- data/schedules/lin_xiaoman.lua：林小满（云泽村·茶农）日程。
 return {
+  version = 1,
   id = "lin_xiaoman",
   blocks = {
     { from = 360,  to = 480,  place = "village_home_north", activity = "morning" },
