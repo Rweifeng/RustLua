@@ -285,8 +285,10 @@ impl TextLayout {
         {
             return Err(TextError::InvalidStyle);
         }
+        let base_px = EM_PX * style.scale;
+        let ascent = font.ascent_em();
         let mut x = origin[0];
-        let mut y = origin[1];
+        let mut y = origin[1] + ascent * base_px;
         let mut out = Vec::new();
         for ch in text.chars() {
             if ch == '\n' {
@@ -299,11 +301,12 @@ impl TextLayout {
                 continue;
             };
             let s = EM_PX * style.scale;
+            // bounds 是 y 向下的 [left, top, right, bottom]（相对笔位，em 单位）。
             let [min_x, min_y, max_x, max_y] = glyph.bounds;
             let x0 = x + min_x * s;
-            let y0 = y - max_y * s;
+            let y0 = y + min_y * s;
             let x1 = x + max_x * s;
-            let y1 = y - min_y * s;
+            let y1 = y + max_y * s;
             let corners = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
             for &p in &[
                 corners[0], corners[1], corners[2], corners[0], corners[2], corners[3],
@@ -542,6 +545,34 @@ mod tests {
         let glyph_center_y = (bounds[1] + bounds[3]) * 0.5;
         let mesh_center_y = mesh.size[1] * 0.5;
         assert!((glyph_center_y - mesh_center_y).abs() > 0.01);
+    }
+
+    #[test]
+    fn vector_and_sdf_layouts_share_the_baseline() {
+        let font_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../editor/fonts/NotoSansSC-VF.ttf");
+        let bytes = std::fs::read(&font_path).unwrap();
+        let style = TextStyle {
+            scale: 3.0,
+            ..Default::default()
+        };
+        let mut msdf = crate::core::font::FontAtlas::load(&bytes).unwrap();
+        let mut vector = crate::core::font::FontVectorAtlas::load(&bytes).unwrap();
+        let sdf = TextLayout::build("汉字", [10.0, 20.0], style, &mut msdf).unwrap();
+        let outline = TextLayout::build_vector("汉字", [10.0, 20.0], style, &mut vector).unwrap();
+        let sdf_top = sdf
+            .vertices
+            .iter()
+            .map(|vertex| vertex.position[1])
+            .fold(f32::INFINITY, f32::min);
+        let vector_top = outline
+            .iter()
+            .map(|vertex| vertex.position[1])
+            .fold(f32::INFINITY, f32::min);
+        assert!(
+            (sdf_top - vector_top).abs() < 0.01,
+            "sdf_top={sdf_top}, vector_top={vector_top}"
+        );
     }
 
     #[test]

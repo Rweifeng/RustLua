@@ -54,6 +54,7 @@ struct CustomFontUpload {
     bind: Option<wgpu::BindGroup>,
     sdf_bind: Option<wgpu::BindGroup>,
     uploaded_version: u64,
+    uploaded_hash: u64,
 }
 
 /// Shared vertex/index buffers for one mesh primitive, cached by mesh path.
@@ -222,6 +223,7 @@ pub struct Renderer {
     vector_glyph_hash: u64,
     vector_segment_hash: u64,
     font_atlas_uploaded_version: u64,
+    font_atlas_uploaded_hash: u64,
     /// Per-Text custom font atlases uploaded on demand (key = `font://...` id).
     custom_fonts: HashMap<String, CustomFontUpload>,
     project_root: Option<PathBuf>,
@@ -1066,6 +1068,7 @@ impl Renderer {
             vector_glyph_hash: 0,
             vector_segment_hash: 0,
             font_atlas_uploaded_version: u64::MAX,
+            font_atlas_uploaded_hash: 0,
             custom_fonts: HashMap::new(),
             project_root,
             camera_buffer,
@@ -2282,7 +2285,14 @@ impl Renderer {
 
     /// Uploads the CJK font atlas texture when its version changed.
     fn ensure_font_atlas(&mut self, font: &FontAtlasPixels) -> Option<wgpu::BindGroup> {
-        if font.version == self.font_atlas_uploaded_version || font.pixels.is_empty() {
+        let pixels_hash = if font.pixels.is_empty() {
+            self.font_atlas_uploaded_hash
+        } else {
+            hash_bytes(&font.pixels)
+        };
+        if font.version == self.font_atlas_uploaded_version
+            && pixels_hash == self.font_atlas_uploaded_hash
+        {
             return self.font_atlas_bind.clone();
         }
         // SDF 距离场不能走 sRGB 解码（会非线性化距离斜坡），用 Rgba8Unorm。
@@ -2347,6 +2357,7 @@ impl Renderer {
             ],
         });
         self.font_atlas_uploaded_version = font.version;
+        self.font_atlas_uploaded_hash = pixels_hash;
         self.font_atlas_bind = Some(bind_group.clone());
         // SDF 文本用 Linear 采样绑定（同一纹理，不同采样器）。
         let sdf_bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -2374,11 +2385,10 @@ impl Renderer {
         if font.pixels.is_empty() {
             return Some(());
         }
-        if self
-            .custom_fonts
-            .get(key)
-            .is_some_and(|entry| entry.uploaded_version == font.version)
-        {
+        let pixels_hash = hash_bytes(&font.pixels);
+        if self.custom_fonts.get(key).is_some_and(|entry| {
+            entry.uploaded_version == font.version && entry.uploaded_hash == pixels_hash
+        }) {
             return Some(());
         }
         // SDF 距离场不能走 sRGB 解码，用 Rgba8Unorm（与默认图集一致）。
@@ -2464,6 +2474,7 @@ impl Renderer {
                 bind: Some(bind),
                 sdf_bind: Some(sdf_bind),
                 uploaded_version: font.version,
+                uploaded_hash: pixels_hash,
             },
         );
         Some(())

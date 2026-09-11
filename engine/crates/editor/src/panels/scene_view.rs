@@ -492,8 +492,8 @@ impl EditorApp {
         filter: &str,
         pixels_per_point: f32,
     ) -> Vec<SceneBoxedEntity> {
+        self.ensure_scene_runtime();
         let scene = self.document.current_scene.as_ref();
-        let _runtime = self.scene_runtime.as_mut();
         let scene_state = &self.scene_state;
         let scene_zoom = self.scene_zoom;
         let pan = scene_state.pan;
@@ -551,6 +551,17 @@ impl EditorApp {
                         .and_then(|v| parse_transform(v))
                 })
                 .unwrap_or_default();
+            let measured_text_bounds = e
+                .components
+                .get("Text")
+                .and_then(|raw| engine::core::ui::UiText::from_component_str(raw).ok())
+                .map(|text| {
+                    if let Some(runtime) = self.scene_runtime.as_mut() {
+                        runtime.measure_scene_ui_text(&text).1
+                    } else {
+                        measure_text_without_runtime(&text.text, text.effective_scale()).1
+                    }
+                });
             // UI 组件在设计分辨率包围框内渲染，包围框按 UiLayout 四边
             // Anchor+Offset 解析后映射进包围框（随 pan/zoom）；
             // 其余实体（Sprite/图块）按 Transform 世界坐标 + pan/zoom 映射。空实体
@@ -561,6 +572,7 @@ impl EditorApp {
                 resolved_ui_layouts
                     .get(&e.id.0)
                     .map(|resolved| resolved.rect),
+                measured_text_bounds,
                 scene_state.pan,
                 scene_zoom,
                 camera_center,
@@ -1367,6 +1379,17 @@ impl EditorApp {
                 self.sync_inspector(id);
             }
         }
+    }
+
+    /// 项目根变化时销毁携带旧 root 的 GPU 渲染器。Renderer 会把相对纹理路径
+    /// 解析成 `root + path`；跨项目复用旧实例会让 Scene View 加载上一个项目的
+    /// 同名资源（Play 预览每次新建 renderer，因此不受影响）。
+    pub(crate) fn reset_scene_render_resources(&mut self) {
+        self.scene_renderer = None;
+        self.scene_texture = None;
+        self.scene_screen_texture = None;
+        self.scene_screen_tex_id = None;
+        self.scene_screen_cache_key = None;
     }
 
     /// 确保 3D 场景视图的离屏渲染器存在；按视图尺寸重建纹理（M10-04）。
@@ -2434,6 +2457,7 @@ fn ui_entity_2d_box(
     entity: &SceneEntity,
     rect: egui::Rect,
     override_layout: Option<UiRect>,
+    measured_text_bounds: Option<[f32; 4]>,
     pan: egui::Vec2,
     zoom: f32,
     center: egui::Vec2,
@@ -2471,13 +2495,18 @@ fn ui_entity_2d_box(
     }
     let resolved = override_layout.unwrap_or_else(|| layout.resolve(viewport));
     let mut resolved = resolved;
-    if entity.components.contains_key("Text")
-        && resolved.w == 0.0
-        && resolved.h == 0.0
-        && let Some(raw) = entity.components.get("Text")
-        && let Ok(text) = engine::core::ui::UiText::from_component_str(raw)
-    {
-        let (_, bounds) = measure_text_without_runtime(&text.text, text.effective_scale());
+    if entity.components.contains_key("Text") {
+        let bounds = measured_text_bounds
+            .or_else(|| {
+                let raw = entity.components.get("Text")?;
+                let text = engine::core::ui::UiText::from_component_str(raw).ok()?;
+                Some(measure_text_without_runtime(&text.text, text.effective_scale()).1)
+            })
+            .unwrap_or([0.0; 4]);
+        // Runtime rendering uses the layout rect only as the text origin; the
+        // glyph bbox supplies visible width, height and ascent offset.
+        resolved.x += bounds[0];
+        resolved.y += bounds[1];
         resolved.w = (bounds[2] - bounds[0]).max(0.0);
         resolved.h = (bounds[3] - bounds[1]).max(0.0);
     }
@@ -3334,6 +3363,7 @@ mod tests {
             scene.entities.get(&id).unwrap(),
             rect,
             None,
+            None,
             egui::Vec2::ZERO,
             1.0,
             egui::Vec2::ZERO,
@@ -3350,6 +3380,7 @@ mod tests {
             scene.entities.get(&id).unwrap(),
             rect,
             Some(UiRect::new(584.0, -56.0, 112.0, 112.0)),
+            None,
             egui::Vec2::ZERO,
             1.0,
             egui::Vec2::ZERO,
@@ -3381,6 +3412,7 @@ mod tests {
         let (center, size, _) = ui_entity_2d_box(
             scene.entities.get(&id).unwrap(),
             rect,
+            None,
             None,
             egui::Vec2::ZERO,
             1.0,
@@ -3416,6 +3448,7 @@ mod tests {
         let (center, size, info) = ui_entity_2d_box(
             scene.entities.get(&id).unwrap(),
             rect,
+            None,
             None,
             egui::Vec2::ZERO,
             1.0,
@@ -3469,6 +3502,7 @@ mod tests {
             ui_entity_2d_box(
                 scene.entities.get(&id).unwrap(),
                 rect,
+                None,
                 None,
                 egui::Vec2::ZERO,
                 1.0,

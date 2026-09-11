@@ -79,6 +79,12 @@ impl FontVectorAtlas {
         }
     }
 
+    /// Ascent in em, matching `FontAtlas::ascent_em` so vector and MSDF text
+    /// start layout from the same baseline.
+    pub fn ascent_em(&self) -> f32 {
+        self.font.ascent_unscaled() / self.font.units_per_em().unwrap_or(1000.0)
+    }
+
     pub fn glyph(&mut self, character: char) -> Option<&VectorGlyph> {
         if self.missing.contains(&character) {
             return None;
@@ -108,13 +114,15 @@ impl FontVectorAtlas {
                 return None;
             }
             let b = outline.bounds;
+            // ab_glyph 的 outline.bounds 采用屏幕约定：min=左上、max=右下（y 向下）。
+            // 这里统一转成 y 向下的 [left, top, right, bottom]（top < bottom）。
             let glyph = VectorGlyph {
                 id: self.by_id.len() as u32,
                 bounds: [
                     b.min.x / units,
-                    -b.max.y / units,
-                    b.max.x / units,
                     -b.min.y / units,
+                    b.max.x / units,
+                    -b.max.y / units,
                 ],
                 advance: font.h_advance_unscaled(glyph_id) / units,
                 segments,
@@ -350,12 +358,6 @@ impl FontAtlas {
             }
         }
         (self.font.clone(), primary_id)
-    }
-
-    /// 测试用：字符实际使用的字形 id（0 = 主字体缺失且无后备 → 占位方框）。
-    #[cfg(test)]
-    pub(crate) fn test_glyph_id(&self, character: char) -> u32 {
-        self.font_for(character).1.0 as u32
     }
 
     pub const fn width(&self) -> u32 {

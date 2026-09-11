@@ -80,6 +80,7 @@ pub struct RuntimeScene {
     /// 已 warn 过的加载失败字体路径（避免文本每帧 layout 时重复刷屏）。
     missing_fonts: HashSet<String>,
     missing_vector_fonts: HashSet<String>,
+    text_render_mode: TextRenderMode,
     ui_scene_nodes: BTreeMap<u64, UiSceneNode>,
     ui_layout_rects: BTreeMap<u64, ResolvedUiNode>,
 }
@@ -89,6 +90,28 @@ struct CachedTileSprite {
     center_offset: Vec2,
     uv_min: Vec2,
     uv_max: Vec2,
+}
+
+/// 文本渲染后端的项目级策略。
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
+pub enum TextRenderMode {
+    /// 大号短文本用矢量轮廓，其余用 MSDF/位图。
+    #[default]
+    Auto,
+    /// 全部文本优先用矢量轮廓；字体不可用时仍回退 SDF。
+    Vector,
+    /// 全部文本用 MSDF/内置位图。
+    Sdf,
+}
+
+impl TextRenderMode {
+    fn parse(raw: &str) -> Self {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "vector" | "outline" => Self::Vector,
+            "sdf" | "msdf" => Self::Sdf,
+            _ => Self::Auto,
+        }
+    }
 }
 
 struct CachedTilemapLayer {
@@ -145,6 +168,11 @@ impl RuntimeScene {
         self.render_ui_overlay = enabled;
     }
 
+    /// 覆盖 project.toml 的文本渲染模式（编辑器保存设置后重建运行时可注入）。
+    pub fn set_text_render_mode(&mut self, mode: TextRenderMode) {
+        self.text_render_mode = mode;
+    }
+
     /// 注入共享字体图集（编辑器在运行时重建时复用，避免每帧重新生成 MSDF 字形）。
     pub fn set_font_atlas(&mut self, font_atlas: Option<Arc<Mutex<FontAtlas>>>) {
         self.font_atlas = font_atlas;
@@ -156,6 +184,25 @@ impl RuntimeScene {
         {
             self.vector_atlas = load_project_vector_atlas(Some(root));
         }
+    }
+
+    /// 获取默认或指定字体的矢量轮廓缓存；自定义字体失败返回 `None`，调用方
+    /// 仍可选择回退 SDF。
+    fn ensure_vector_font(&mut self, font_asset: &str) -> Option<Arc<Mutex<FontVectorAtlas>>> {
+        if font_asset.is_empty() {
+            self.ensure_vector_atlas();
+            return self.vector_atlas.clone();
+        }
+        let key = font_texture_path(font_asset);
+        if self.missing_vector_fonts.contains(&key) {
+            return None;
+        }
+        if let Some(atlas) = load_custom_vector_atlas(self.project_root.as_deref(), font_asset) {
+            self.custom_vector_atlases.insert(key.clone(), atlas);
+        } else {
+            self.missing_vector_fonts.insert(key.clone());
+        }
+        self.custom_vector_atlases.get(&key).cloned()
     }
 
     /// 惰性加载项目字体图集：未注入共享图集时才按需加载（含 chars.txt 预热）。
@@ -234,6 +281,68 @@ impl RuntimeScene {
         }
     }
 
+    /// 决定一段文本的首选渲染路径；矢量图集不可用时渲染层仍会回退 SDF。
+    fn should_render_vector(&self, font_asset: Option<&str>, scale: f32, chars: usize) -> bool {
+        match self.text_render_mode {
+            TextRenderMode::Vector => true,
+            TextRenderMode::Sdf => false,
+            TextRenderMode::Auto => {
+                font_asset.is_none_or(str::is_empty) && scale >= 2.0 && chars <= 32
+            }
+        }
+    }
+
+    /// Measures scene-node UI text with the same backend choice as rendering.
+    /// `auto` keeps the default-font heuristic; forced modes apply to every text.
+    pub fn measure_scene_ui_text(
+        &mut self,
+        text: &crate::core::ui::UiText,
+    ) -> ([f32; 2], [f32; 4]) {
+        let scale = text.effective_scale();
+        let use_vector =
+            self.should_render_vector(Some(text.font.as_str()), scale, text.text.chars().count());
+        if use_vector
+            && let Some(measured) = self.measure_vector_text(&text.text, scale, &text.font)
+        {
+            return measured;
+        }
+        self.measure_ui_text(&text.text, scale)
+    }
+
+    fn measure_vector_text(
+        &mut self,
+        text: &str,
+        scale: f32,
+        font_asset: &str,
+    ) -> Option<([f32; 2], [f32; 4])> {
+        let atlas = self.ensure_vector_font(font_asset)?;
+        let style = TextStyle {
+            scale,
+            color: [1.0, 1.0, 1.0, 1.0],
+            ..Default::default()
+        };
+        let mut atlas = atlas.lock().expect("vector atlas lock");
+        let layout = TextLayout::build_vector(text, [0.0, 0.0], style, &mut atlas).ok()?;
+        if layout.is_empty() {
+            return None;
+        }
+        let mut min = [f32::INFINITY; 2];
+        let mut max = [f32::NEG_INFINITY; 2];
+        for vertex in &layout {
+            min[0] = min[0].min(vertex.position[0]);
+            min[1] = min[1].min(vertex.position[1]);
+            max[0] = max[0].max(vertex.position[0]);
+            max[1] = max[1].max(vertex.position[1]);
+        }
+        if !min.iter().all(|value| value.is_finite()) {
+            return None;
+        }
+        Some((
+            [max[0] - min[0], max[1] - min[1]],
+            [min[0], min[1], max[0], max[1]],
+        ))
+    }
+
     fn init(project_root: Option<&Path>, scene: Scene, run_script: bool) -> Result<Self, String> {
         let mut script = LuaRuntime::new().map_err(|error| error.to_string())?;
         // Project root must be set before instantiation so scene components that
@@ -264,6 +373,7 @@ impl RuntimeScene {
                 tracing::info!(target: "script", path = %script_path.display(), "[script] game project has no scripts/main.lua; script runtime idle");
             }
         }
+        let text_render_mode = project_text_render_mode(project_root);
         let camera = Camera2D::new(crate::core::math2d::DEFAULT_2D_CAMERA_CENTER, 1.0)
             .map_err(|error| error.to_string())?;
         tracing::info!(target: "render", "[render] SpriteBatch and Camera2D initialized");
@@ -296,6 +406,7 @@ impl RuntimeScene {
             frame_font_keys: Vec::new(),
             missing_fonts: HashSet::new(),
             missing_vector_fonts: HashSet::new(),
+            text_render_mode,
             ui_scene_nodes,
             ui_layout_rects: BTreeMap::new(),
         })
@@ -421,8 +532,7 @@ impl RuntimeScene {
         layout_rect: &UiRect,
         text: &UiText,
     ) -> Option<([f32; 2], [f32; 2])> {
-        let resolved_scale = text.effective_scale();
-        let (_, glyph_bounds) = self.measure_ui_text(&text.text, resolved_scale);
+        let (_, glyph_bounds) = self.measure_scene_ui_text(&text);
         let origin = [layout_rect.x, layout_rect.y];
         let glyph_origin = [origin[0] + glyph_bounds[0], origin[1] + glyph_bounds[1]];
         let glyph_size = [
@@ -1030,7 +1140,7 @@ impl RuntimeScene {
             return Ok(());
         }
         for (position, text, scale) in visible {
-            let use_vector = scale >= 2.0 && text.chars().count() <= 32;
+            let use_vector = self.should_render_vector(None, scale, text.chars().count());
             if !use_vector
                 || !self.push_vector_text_run(
                     vector_vertices,
@@ -1110,9 +1220,11 @@ impl RuntimeScene {
                 // `layout_text` already emits absolute screen-space vertices;
                 // adding the layout origin again would displace scene text by
                 // its full top-left position (the visible "text ran away" bug).
-                let use_vector = text.font.is_empty()
-                    && text.effective_scale() >= 2.0
-                    && text.text.chars().count() <= 32;
+                let use_vector = self.should_render_vector(
+                    Some(text.font.as_str()),
+                    text.effective_scale(),
+                    text.text.chars().count(),
+                );
                 if use_vector
                     && self.push_vector_text_run(
                         vector_vertices,
@@ -1122,7 +1234,7 @@ impl RuntimeScene {
                         position,
                         text.effective_scale(),
                         text.color,
-                        None,
+                        Some(&text.font),
                         width,
                         height,
                     )?
@@ -1179,22 +1291,7 @@ impl RuntimeScene {
         width: u32,
         height: u32,
     ) -> Result<bool, String> {
-        let atlas = if let Some(asset) = font_asset.filter(|asset| !asset.is_empty()) {
-            let key = font_texture_path(asset);
-            if self.missing_vector_fonts.contains(&key) {
-                None
-            } else {
-                if let Some(atlas) = load_custom_vector_atlas(self.project_root.as_deref(), asset) {
-                    self.custom_vector_atlases.insert(key.clone(), atlas);
-                } else {
-                    self.missing_vector_fonts.insert(key.clone());
-                }
-                self.custom_vector_atlases.get(&key).cloned()
-            }
-        } else {
-            self.ensure_vector_atlas();
-            self.vector_atlas.clone()
-        };
+        let atlas = self.ensure_vector_font(font_asset.unwrap_or_default());
         let Some(atlas) = atlas else {
             return Ok(false);
         };
@@ -1223,7 +1320,6 @@ impl RuntimeScene {
                 segments.extend(glyph.segments.iter().map(|segment| VectorSegmentSnapshot {
                     start: segment.start,
                     end: segment.end,
-                    _padding: [0; 2],
                     bounds: [
                         segment.start[0].min(segment.end[0]),
                         segment.start[1].min(segment.end[1]),
@@ -1259,6 +1355,13 @@ impl RuntimeScene {
         let mut default_chars: Vec<char> = Vec::new();
         let mut custom_chars: HashMap<&str, Vec<char>> = HashMap::new();
         for (_, text) in texts {
+            if self.should_render_vector(
+                Some(text.font.as_str()),
+                text.effective_scale(),
+                text.text.chars().count(),
+            ) {
+                continue;
+            }
             if text.font.is_empty() {
                 default_chars.extend(text.text.chars());
             } else {
@@ -1838,6 +1941,15 @@ fn project_font_weight(project_root: &Path) -> Option<f32> {
         .filter(|weight| weight.is_finite() && *weight > 0.0)
 }
 
+/// project.toml 的 `text_render_mode` 键；无效/缺省回退 `auto`。
+fn project_text_render_mode(project_root: Option<&Path>) -> TextRenderMode {
+    project_root
+        .and_then(|root| fs::read_to_string(root.join("project.toml")).ok())
+        .and_then(|text| extract_project_key(&text, "text_render_mode"))
+        .map(|mode| TextRenderMode::parse(&mode))
+        .unwrap_or(TextRenderMode::Auto)
+}
+
 /// 加载项目字体并包装为可跨运行时共享的矢量轮廓缓存。
 pub fn load_project_vector_atlas(
     project_root: Option<&Path>,
@@ -2381,7 +2493,23 @@ mod sdf_tests {
     fn scene_ui_text_keeps_layout_origin_once() {
         use crate::core::scene::{Scene, SceneEntityId};
 
-        let root = crate::core::games_dir().join("examples");
+        let font_source =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../editor/fonts/NotoSansSC-VF.ttf");
+        if !font_source.is_file() {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!(
+            "p2-scene-text-origin-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        let fonts_dir = root.join("assets").join("fonts");
+        fs::create_dir_all(&fonts_dir).unwrap();
+        fs::copy(&font_source, fonts_dir.join("NotoSansSC-VF.ttf")).unwrap();
+
         let mut scene = Scene::new("scene-text-origin");
         scene.add_entity(SceneEntityId(1), "Label", None).unwrap();
         let entity = scene.entities.get_mut(&SceneEntityId(1)).unwrap();
@@ -2391,18 +2519,18 @@ mod sdf_tests {
         );
         entity.components.insert(
             "Text".to_owned(),
-            "text=Press;font_size=13;color=1,1,1".to_owned(),
+            "text=Press;font_size=48;color=1,1,1".to_owned(),
         );
         let mut runtime = RuntimeScene::from_scene_edit(Some(&root), scene).unwrap();
         let mesh = runtime.vertices(1280, 720).expect("vertices");
-        let sdf_y: Vec<f32> = mesh
-            .vertices
+        let _ = fs::remove_dir_all(&root);
+        let text_y: Vec<f32> = mesh
+            .vector_vertices
             .iter()
-            .filter(|vertex| vertex.sdf == 1)
             .map(|vertex| vertex.position[1])
             .collect();
-        assert!(!sdf_y.is_empty(), "scene text should emit SDF vertices");
-        let minimum_y = sdf_y.iter().copied().fold(f32::INFINITY, f32::min);
+        assert!(!text_y.is_empty(), "scene text should emit vector vertices");
+        let minimum_y = text_y.iter().copied().fold(f32::INFINITY, f32::min);
         assert!(
             minimum_y > -1.0,
             "layout text must stay on screen, min NDC y={minimum_y}"
@@ -2908,9 +3036,9 @@ mod sdf_tests {
         }
     }
 
-    /// 场景 Text 指定自定义字体时：该字体 key 出现在 SceneMesh 的自定义图集上报
-    /// 与纹理路径里，且默认文本仍走默认 SDF 哨兵。用临时项目根存放两个字体文件
-    /// （同源，仅验证管线/命名空间，不验证字形差异）。
+    /// 场景 Text 指定自定义字体时：该字体 key 出现在 SceneMesh 的自定义图集
+    /// 上报与纹理路径里；默认文本在短文本场景改走矢量路径。用临时项目根存放
+    /// 两个字体文件（同源，仅验证管线/命名空间，不验证字形差异）。
     #[test]
     fn scene_text_custom_font_surfaces_in_mesh() {
         let source =
@@ -2983,8 +3111,130 @@ mod sdf_tests {
             "custom font path should be in mesh paths: {paths:?}"
         );
         assert!(
-            paths.contains(&FONT_ATLAS_TEXTURE_PATH),
-            "default text should keep the default SDF sentinel: {paths:?}"
+            !paths.contains(&FONT_ATLAS_TEXTURE_PATH),
+            "default short text should use the vector path: {paths:?}"
+        );
+        assert!(
+            mesh.vector_vertices.len() >= 4,
+            "default short text should emit vector vertices"
+        );
+    }
+
+    #[test]
+    fn text_render_mode_forces_vector_or_sdf_for_custom_fonts() {
+        let source =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../editor/fonts/NotoSansSC-VF.ttf");
+        if !source.is_file() {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!(
+            "p2-text-render-mode-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        let fonts_dir = root.join("assets").join("fonts");
+        fs::create_dir_all(&fonts_dir).unwrap();
+        fs::copy(&source, fonts_dir.join("Custom.ttf")).unwrap();
+
+        let mut scene = Scene::new("render-mode");
+        scene.add_entity(SceneEntityId(1), "Label", None).unwrap();
+        scene
+            .entities
+            .get_mut(&SceneEntityId(1))
+            .unwrap()
+            .components
+            .insert(
+                "UiLayout".into(),
+                "anchors=0,0,0,0;offsets=20,20,240,80".into(),
+            );
+        scene
+            .entities
+            .get_mut(&SceneEntityId(1))
+            .unwrap()
+            .components
+            .insert(
+                "Text".into(),
+                "text=Mode;font_size=48;font=assets/fonts/Custom.ttf".into(),
+            );
+
+        let project = |mode: &str| {
+            fs::write(
+                root.join("project.toml"),
+                format!(
+                    "[project]\nfont = \"assets/fonts/NotoSansSC-VF.ttf\"\ntext_render_mode = \"{mode}\"\n"
+                ),
+            )
+            .unwrap();
+        };
+        project("vector");
+        let vector = RuntimeScene::from_scene_edit(Some(&root), scene.clone())
+            .and_then(|mut runtime| runtime.vertices(320, 240))
+            .expect("vector vertices");
+        assert!(!vector.vector_vertices.is_empty());
+        assert!(
+            vector.custom_font_atlases.is_empty(),
+            "forced vector mode should not build custom SDF atlases"
+        );
+
+        project("sdf");
+        let sdf = RuntimeScene::from_scene_edit(Some(&root), scene)
+            .and_then(|mut runtime| runtime.vertices(320, 240))
+            .expect("sdf vertices");
+        assert!(sdf.vector_vertices.is_empty());
+        assert!(
+            sdf.custom_font_atlases
+                .iter()
+                .any(|font| font.key == "font://assets/fonts/Custom.ttf")
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn text_render_mode_parsing_uses_auto_fallback() {
+        assert_eq!(TextRenderMode::parse("auto"), TextRenderMode::Auto);
+        assert_eq!(TextRenderMode::parse(" Vector "), TextRenderMode::Vector);
+        assert_eq!(TextRenderMode::parse("MSDF"), TextRenderMode::Sdf);
+        assert_eq!(TextRenderMode::parse("bad"), TextRenderMode::Auto);
+    }
+
+    #[test]
+    fn sourcehan_sdf_mode_emits_default_font_draws() {
+        let root = crate::core::games_dir()
+            .join("examples")
+            .join("sourcehan_test");
+        if !root.join("scenes/font_check.scene").is_file() {
+            return;
+        }
+        let path = root.join("scenes/font_check.scene");
+        let scene = Scene::load(&path).unwrap();
+        let font_atlas = load_project_font_atlas(Some(&root)).expect("project font atlas");
+        let mut runtime = RuntimeScene::from_scene_edit(Some(&root), scene).unwrap();
+        runtime.set_font_atlas(Some(font_atlas));
+        runtime.set_text_render_mode(TextRenderMode::Sdf);
+        runtime.set_render_ui_overlay(false);
+        let hidden = runtime.vertices(1280, 720).unwrap();
+        runtime.set_render_ui_overlay(true);
+        let mesh = runtime.vertices(1280, 720).unwrap();
+        let sdf_draws = mesh.draws.iter().filter(|draw| draw.sdf).count();
+        let font_paths = mesh
+            .paths
+            .iter()
+            .filter(|path| path.as_str() == FONT_ATLAS_TEXTURE_PATH)
+            .count();
+        assert!(
+            sdf_draws > 0 && font_paths > 0,
+            "sdf draws={sdf_draws}, font paths={font_paths}, all={:?}",
+            mesh.paths
+        );
+        assert!(
+            hidden
+                .font_atlas
+                .as_ref()
+                .is_some_and(|font| !font.pixels.is_empty()),
+            "first hidden overlay frame must seed the shared default atlas"
         );
     }
 }

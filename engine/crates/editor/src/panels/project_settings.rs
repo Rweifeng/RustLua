@@ -21,6 +21,10 @@ const STRING_KEYS: &[&str] = &[
     "font_fallback",
 ];
 
+/// `text_render_mode` 的可选值与中文展示名。
+const TEXT_RENDER_MODES: &[(&str, &str)] =
+    &[("auto", "自动"), ("vector", "矢量轮廓"), ("sdf", "距离场")];
+
 /// 项目设置面板的缓冲状态（挂在 `EditorApp` 上；关闭窗口时仅在打开时重新读取，
 /// 避免项目切换后残留旧内容）。
 #[derive(Debug)]
@@ -34,6 +38,7 @@ pub(crate) struct ProjectSettingsUi {
     pub(crate) font: String,
     pub(crate) font_fallback: String,
     pub(crate) font_weight: f32,
+    pub(crate) text_render_mode: &'static str,
     /// 最近一次操作提示（读取失败/保存结果）。
     pub(crate) message: String,
 }
@@ -50,6 +55,7 @@ impl Default for ProjectSettingsUi {
             font: String::new(),
             font_fallback: String::new(),
             font_weight: 400.0,
+            text_render_mode: "auto",
             message: String::new(),
         }
     }
@@ -90,6 +96,14 @@ pub(crate) fn parse_into(ui: &mut ProjectSettingsUi, content: &str, root: &Path)
         .filter(|weight| weight.is_finite() && *weight > 0.0)
         .unwrap_or(400.0);
     ui.font_weight = weight;
+    let text_render_mode = value_for(content, "text_render_mode")
+        .unwrap_or_else(|| "auto".to_owned())
+        .to_ascii_lowercase();
+    ui.text_render_mode = TEXT_RENDER_MODES
+        .iter()
+        .find(|(key, _)| *key == text_render_mode)
+        .map(|(key, _)| *key)
+        .unwrap_or("auto");
     if ui.name.is_empty() {
         ui.name = root
             .file_name()
@@ -155,14 +169,16 @@ pub(crate) fn upsert_project_toml(content: &str, edits: &[(&str, String, bool)])
     result
 }
 
-/// 字体相关键旧值（用于保存后判定是否需要重建共享字体图集）。
-fn font_keys_from(content: &str) -> (String, String, Option<f32>) {
+/// 字体/文本渲染相关键旧值（用于保存后判定是否需要重建运行时与图集）。
+fn font_keys_from(content: &str) -> (String, String, Option<f32>, String) {
     let font = value_for(content, "font").unwrap_or_default();
     let fallback = value_for(content, "font_fallback").unwrap_or_default();
     let weight = value_for(content, "font_weight")
         .and_then(|raw| raw.parse::<f32>().ok())
         .filter(|w| w.is_finite() && *w > 0.0);
-    (font, fallback, weight)
+    let text_render_mode =
+        value_for(content, "text_render_mode").unwrap_or_else(|| "auto".to_owned());
+    (font, fallback, weight, text_render_mode)
 }
 
 impl EditorApp {
@@ -241,6 +257,25 @@ impl EditorApp {
                             self.project_settings.font_weight = weight;
                         }
                         ui.end_row();
+                        ui.label("文本渲染模式");
+                        egui::ComboBox::from_id_salt("project_text_render_mode")
+                            .selected_text(
+                                TEXT_RENDER_MODES
+                                    .iter()
+                                    .find(|(key, _)| *key == self.project_settings.text_render_mode)
+                                    .map(|(_, label)| *label)
+                                    .unwrap_or("自动"),
+                            )
+                            .show_ui(ui, |ui| {
+                                for (key, label) in TEXT_RENDER_MODES {
+                                    ui.selectable_value(
+                                        &mut self.project_settings.text_render_mode,
+                                        key,
+                                        *label,
+                                    );
+                                }
+                            });
+                        ui.end_row();
                     });
                 ui.separator();
                 let missing = missing_asset_paths(&self.project_settings, &self.project.root);
@@ -275,7 +310,7 @@ impl EditorApp {
         let path = root.join("project.toml");
         // 项目打开时该文件必存在；万一缺失则从空骨架开始补全。
         let previous = std::fs::read_to_string(&path).unwrap_or_else(|_| "[project]\n".to_owned());
-        let (old_font, old_fallback, old_weight) = font_keys_from(&previous);
+        let (old_font, old_fallback, old_weight, old_text_render_mode) = font_keys_from(&previous);
 
         let settings = &self.project_settings;
         let edits: Vec<(&str, String, bool)> = vec![
@@ -285,6 +320,11 @@ impl EditorApp {
             ("font", settings.font.clone(), true),
             ("font_fallback", settings.font_fallback.clone(), true),
             ("font_weight", fmt_font_weight(settings.font_weight), false),
+            (
+                "text_render_mode",
+                settings.text_render_mode.to_owned(),
+                true,
+            ),
         ];
         let content = upsert_project_toml(&previous, &edits);
         if let Err(error) = std::fs::write(&path, content) {
@@ -294,10 +334,12 @@ impl EditorApp {
         let font_changed = old_font != self.project_settings.font
             || old_fallback != self.project_settings.font_fallback
             || old_weight != Some(self.project_settings.font_weight);
-        if font_changed {
-            // 字体图集按 project.toml `font` 键缓存：改动后重建默认/自定义图集。
-            self.scene_font_atlas = None;
-            self.custom_font_atlases.lock().unwrap().clear();
+        let text_render_mode_changed =
+            old_text_render_mode != self.project_settings.text_render_mode;
+        if font_changed || text_render_mode_changed {
+            // 模式在运行时初始化时读取；字体图集/运行时缓存都按旧配置建立。
+            // 强制重建 Scene View 运行时，避免保存后仍显示旧渲染路径。
+            self.invalidate_font_render_resources();
         }
         self.project_settings.message = "已保存项目设置。".to_owned();
     }
@@ -338,6 +380,7 @@ mod tests {
         assert_eq!(ui.startup_scene, "scenes/main.scene");
         assert_eq!(ui.font_weight, 400.0); // 缺省字重
         assert_eq!(ui.font, ""); // 文件无 font → 空（引擎回退默认）
+        assert_eq!(ui.text_render_mode, "auto"); // 缺省渲染模式
     }
 
     #[test]
@@ -408,6 +451,32 @@ mod tests {
         assert_eq!(fmt_font_weight(412.5), "412.5");
         let back: f32 = "412.5".parse().unwrap();
         assert_eq!(back, 412.5);
+    }
+
+    #[test]
+    fn text_render_mode_is_case_insensitive_and_falls_back_to_auto() {
+        let mut ui = ProjectSettingsUi::default();
+        parse_into(
+            &mut ui,
+            "[project]\ntext_render_mode = \"Vector\"\n",
+            Path::new("/tmp/demo"),
+        );
+        assert_eq!(ui.text_render_mode, "vector");
+
+        ui.text_render_mode = "sdf";
+        let content = upsert_project_toml(
+            "[project]\nname = \"demo\"\ntext_render_mode = \"Auto\"\n",
+            &[("text_render_mode", "sdf".to_owned(), true)],
+        );
+        assert!(content.contains("text_render_mode = \"sdf\""), "{content}");
+
+        let mut ui = ProjectSettingsUi::default();
+        parse_into(
+            &mut ui,
+            "text_render_mode = \"bad\"",
+            Path::new("/tmp/demo"),
+        );
+        assert_eq!(ui.text_render_mode, "auto");
     }
 
     #[test]

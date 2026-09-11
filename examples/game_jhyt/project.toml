@@ -5,3 +5,6 @@ engine = "RustLua"
 main_script = "scripts/main.lua"
 startup_scene = "scenes/title.scene"
 font = "assets/fonts/NotoSansSC-VF.ttf"
+font_fallback = ""
+font_weight = 400.0
+text_render_mode = "sfd"

@@ -310,6 +310,16 @@ impl EditorApp {
         // 做，见 `set_current_scene_document`。
     }
 
+    /// 字体资产/文本渲染策略变化后，丢弃 CPU 图集和 Scene View GPU 端的旧
+    /// 字体状态。Play 预览天然新建渲染器；Scene View 必须显式重置，否则版本号
+    /// 相同的新图集可能被旧纹理缓存误判为未变化。
+    pub(crate) fn invalidate_font_render_resources(&mut self) {
+        self.scene_font_atlas = None;
+        self.custom_font_atlases.lock().unwrap().clear();
+        self.reset_scene_render_resources();
+        self.invalidate_scene_view_state();
+    }
+
     /// 统一的文档变更入口（E02）：任意一次成功提交的文档变更后调用，
     /// 按「选择修复 → Inspector 同步 → Scene View 失效 → Game Preview 失效 →
     /// Hierarchy 元数据重扫」的固定顺序收敛各面板状态，并清掉可能误命中的画面缓存。
@@ -1369,8 +1379,7 @@ impl EditorApp {
                     chars.chars().count()
                 );
                 // 让场景视图下次重建图集时按新清单预热。
-                self.scene_font_atlas = None;
-                self.custom_font_atlases.lock().unwrap().clear();
+                self.invalidate_font_render_resources();
             }
             Err(error) => self.status = format!("收集字符失败: {error}"),
         }

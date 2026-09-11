@@ -48,7 +48,6 @@ pub struct VectorGlyphSnapshot {
 pub struct VectorSegmentSnapshot {
     pub start: [f32; 2],
     pub end: [f32; 2],
-    pub _padding: [u32; 2],
     pub bounds: [f32; 4],
 }
 

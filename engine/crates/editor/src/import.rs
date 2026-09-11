@@ -113,6 +113,9 @@ impl EditorApp {
                     self.thumbnail_worker.clear();
                     // 字体图集按项目缓存（project.toml `font` 键）：切换项目后重建。
                     self.scene_font_atlas = None;
+                    // Scene View renderer 内部缓存项目 root；跨项目必须重建，
+                    // 否则相对纹理路径会解析到上一个项目。
+                    self.reset_scene_render_resources();
                     // 自定义字体缓存按项目路径缓存，同样随项目切换清空。
                     self.custom_font_atlases.lock().unwrap().clear();
                     // 项目设置缓冲按项目读取，切换后重置为默认（下次打开再读取）。
@@ -293,6 +296,41 @@ fn spawn_resource_import(
 mod import_tests {
     use super::*;
     use engine::core::logging::LogSink;
+
+    #[test]
+    fn project_import_resets_scene_render_resources() {
+        let old_project = open_project(engine::core::games_dir().join("examples/sourcehan_test"))
+            .expect("open old project");
+        let new_project = open_project(engine::core::games_dir().join("examples/game_jhyt"))
+            .expect("open new project");
+        let mut app = EditorApp::new(old_project, None, LogSink::new(64));
+        app.scene_screen_cache_key = Some((12, (1280, 720)));
+
+        let document = ProjectDocument::open(new_project.clone());
+        let recovery = RecoveryManager::new(new_project.root.join(".temp"));
+        let recovery_scan = recovery.scan().unwrap_or_default();
+        let resources = ResourceBrowserState::new();
+        app.progress.kind = ProgressKind::ImportProject;
+        app.progress.done = true;
+        app.progress.success = true;
+        app.progress.show = true;
+        app.progress.result = Some(Box::new(ImportOutcome {
+            project: new_project,
+            document,
+            recovery,
+            recovery_scan,
+            resources,
+        }));
+
+        app.apply_progress_result();
+        assert!(
+            app.scene_renderer.is_none(),
+            "renderer root must be rebuilt"
+        );
+        assert!(app.scene_texture.is_none());
+        assert!(app.scene_screen_texture.is_none());
+        assert_eq!(app.scene_screen_cache_key, None);
+    }
 
     /// 资源导入成功应自动关闭进度面板（与项目导入成功行为一致）；失败保留窗口。
     #[test]
