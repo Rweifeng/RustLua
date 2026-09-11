@@ -2285,15 +2285,33 @@ impl Renderer {
 
     /// Uploads the CJK font atlas texture when its version changed.
     fn ensure_font_atlas(&mut self, font: &FontAtlasPixels) -> Option<wgpu::BindGroup> {
-        let pixels_hash = if font.pixels.is_empty() {
-            self.font_atlas_uploaded_hash
-        } else {
-            hash_bytes(&font.pixels)
-        };
+        if font.pixels.is_empty() {
+            // 空像素 = 上游声明"自上次上传未变化"。此时若本渲染器从未上传过该
+            // 版本（新渲染器 / 上次版本被空网格帧消费），不能续用旧 bind（内容
+            // 不匹配），也不得以空数据 write_texture 整张图集（wgpu 校验崩溃）；
+            // 返回 None 让调用方跳过本帧 SDF 绘制，等下一帧全量像素再上传。
+            return if self.font_atlas_uploaded_version == font.version {
+                self.font_atlas_bind.clone()
+            } else {
+                None
+            };
+        }
+        let pixels_hash = hash_bytes(&font.pixels);
         if font.version == self.font_atlas_uploaded_version
             && pixels_hash == self.font_atlas_uploaded_hash
         {
             return self.font_atlas_bind.clone();
+        }
+        // 上传前仍复核像素量与纹理面积一致（纵深防御；上游协议破坏时降级为
+        // 跳过本帧，而不是 wgpu 校验 panic 闪退）。
+        if (font.pixels.len() as u64) != (font.width as u64 * font.height as u64 * 4) {
+            tracing::warn!(
+                target: "render",
+                expected = font.width as u64 * font.height as u64 * 4,
+                actual = font.pixels.len() as u64,
+                "[render] font atlas pixel size mismatch; skipping upload this frame"
+            );
+            return None;
         }
         // SDF 距离场不能走 sRGB 解码（会非线性化距离斜坡），用 Rgba8Unorm。
         let format = wgpu::TextureFormat::Rgba8Unorm;
@@ -2389,6 +2407,17 @@ impl Renderer {
         if self.custom_fonts.get(key).is_some_and(|entry| {
             entry.uploaded_version == font.version && entry.uploaded_hash == pixels_hash
         }) {
+            return Some(());
+        }
+        // 上传前复核像素量与纹理面积一致（纵深防御，见 ensure_font_atlas）。
+        if (font.pixels.len() as u64) != (font.width as u64 * font.height as u64 * 4) {
+            tracing::warn!(
+                target: "render",
+                key,
+                expected = font.width as u64 * font.height as u64 * 4,
+                actual = font.pixels.len() as u64,
+                "[render] custom font atlas pixel size mismatch; skipping upload this frame"
+            );
             return Some(());
         }
         // SDF 距离场不能走 sRGB 解码，用 Rgba8Unorm（与默认图集一致）。

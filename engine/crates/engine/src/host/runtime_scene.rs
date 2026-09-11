@@ -821,8 +821,14 @@ impl RuntimeScene {
         let font_atlas = if let Some(atlas) = &self.font_atlas {
             let atlas = atlas.lock().expect("font atlas lock");
             let version = atlas.version();
-            let changed = version != self.last_font_version;
-            self.last_font_version = version;
+            // 仅当本帧网格会被渲染器实际消费（vertices 非空）时才推进“已上报”
+            // 版本号。空网格帧渲染器整体跳过字体上传；若此刻推进版本号，下一个
+            // 可绘制帧会以“已上报”发送空像素，而渲染器从未上传过该版本 →
+            // write_texture 以空数据写整张图集 → wgpu 校验崩溃。
+            let changed = version != self.last_font_version && !vertices.is_empty();
+            if !vertices.is_empty() {
+                self.last_font_version = version;
+            }
             Some(FontAtlasPixels {
                 width: atlas.width(),
                 height: atlas.height(),
@@ -3229,12 +3235,20 @@ mod sdf_tests {
             "sdf draws={sdf_draws}, font paths={font_paths}, all={:?}",
             mesh.paths
         );
+        // 空网格帧（overlay=false）不得消费版本号：首个可绘制帧必须携带全量
+        // 像素（否则新渲染器会以空数据 write_texture 整张图集 → wgpu 崩溃）。
         assert!(
             hidden
                 .font_atlas
                 .as_ref()
+                .is_some_and(|font| font.pixels.is_empty()),
+            "empty-mesh frame must not consume the atlas version (deferred to drawable frame)"
+        );
+        assert!(
+            mesh.font_atlas
+                .as_ref()
                 .is_some_and(|font| !font.pixels.is_empty()),
-            "first hidden overlay frame must seed the shared default atlas"
+            "first drawable frame must carry full atlas pixels"
         );
     }
 }
