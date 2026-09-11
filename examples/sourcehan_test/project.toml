@@ -7,4 +7,4 @@ startup_scene = "scenes/font_check.scene"
 font = "assets/fonts/NotoSansSC-VF.ttf"
 font_fallback = ""
 font_weight = 400.0
-text_render_mode = "vector"
+text_render_mode = "auto"

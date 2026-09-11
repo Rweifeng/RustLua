@@ -315,7 +315,9 @@ impl EditorApp {
     /// 相同的新图集可能被旧纹理缓存误判为未变化。
     pub(crate) fn invalidate_font_render_resources(&mut self) {
         self.scene_font_atlas = None;
+        self.scene_vector_atlas = None;
         self.custom_font_atlases.lock().unwrap().clear();
+        self.custom_vector_atlases.lock().unwrap().clear();
         self.reset_scene_render_resources();
         self.invalidate_scene_view_state();
     }

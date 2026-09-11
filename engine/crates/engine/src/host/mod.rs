@@ -15,4 +15,4 @@ pub use frame::{
     BoundsSource, OverlayVertex, Scene3d, Scene3dBounds, Scene3dDrawable, SceneDraw, SceneMesh,
 };
 pub use renderer::{ReadbackMetrics, ReadbackStatus, RenderOutcome, Renderer};
-pub use runtime_scene::{RuntimeScene, load_project_font_atlas};
+pub use runtime_scene::{RuntimeScene, load_project_font_atlas, load_project_vector_atlas};

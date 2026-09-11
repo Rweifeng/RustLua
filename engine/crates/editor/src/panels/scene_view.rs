@@ -31,7 +31,7 @@ use engine::core::{
 };
 use engine::host::{
     BoundsSource, ReadbackStatus, Renderer, RuntimeScene, Scene3d, Scene3dBounds, Scene3dDrawable,
-    SceneMesh, load_project_font_atlas,
+    SceneMesh, load_project_font_atlas, load_project_vector_atlas,
 };
 use std::path::Path;
 
@@ -88,6 +88,7 @@ impl EditorApp {
         }
         let view_w = (rect.width() * scale) as u32;
         let view_h = (rect.height() * scale) as u32;
+        self.apply_drag_preview_to_runtime();
         self.render_scene_view_2d(view_w, view_h, ui.ctx());
         if let Some(tex) = &self.scene_2d_tex {
             painter.image(
@@ -470,9 +471,9 @@ impl EditorApp {
             }
             self.scene_state.preview = preview;
             self.scene_state.preview_ui = preview_ui;
-            // E08：拖动中只把预览写入文档（驱动 revision 重建渲染），不写历史、不写盘；
-            // 松手时由 finish_scene_drag 事务化提交为单条 Undo + 单次保存。
-            self.apply_drag_preview_to_document();
+            // 拖动中只把预览写入运行时 ECS，避免每帧重建 Lua/ECS；松手时由
+            // finish_scene_drag 事务化写入文档，生成单条 Undo + 单次保存。
+            self.apply_drag_preview_to_runtime();
         }
         if response.drag_stopped_by(egui::PointerButton::Primary) {
             self.finish_scene_drag();
@@ -514,6 +515,31 @@ impl EditorApp {
         resolved_ui_layouts.retain(|id, resolved| {
             resolved.container_controlled || nodes.get(id).is_some_and(|node| node.layout.is_some())
         });
+        // The game-screen overlay resolves layouts inside RuntimeScene. Reuse
+        // that exact result so selection boxes cannot diverge from rendered UI
+        // when hierarchy/key mappings or in-flight previews differ.
+        let runtime_ui_layouts = self
+            .scene_runtime
+            .as_mut()
+            .map(|runtime| {
+                runtime.scene_entity_ui_layout_rects(
+                    nodes.keys().map(|id| SceneEntityId(*id)),
+                    canvas_size,
+                )
+            })
+            .unwrap_or_default();
+        // Scene View boxes and hit tests must follow the in-flight UI drag even
+        // while the authoritative document still holds the drag-start layout.
+        for (id, offsets) in &scene_state.preview_ui {
+            if let Some(resolved) = resolved_ui_layouts.get_mut(&id.0) {
+                resolved.rect = UiRect::new(
+                    offsets[0],
+                    offsets[1],
+                    (offsets[2] - offsets[0]).max(0.0),
+                    (offsets[3] - offsets[1]).max(0.0),
+                );
+            }
+        }
         let mut entities = Vec::with_capacity(scene.scene.entities.len());
         for e in scene.scene.entities.values() {
             if !filter.is_empty() && !e.name.to_lowercase().contains(filter) {
@@ -569,9 +595,11 @@ impl EditorApp {
             if let Some((center, size, ui)) = ui_entity_2d_box(
                 e,
                 rect,
-                resolved_ui_layouts
-                    .get(&e.id.0)
-                    .map(|resolved| resolved.rect),
+                runtime_ui_layouts.get(&e.id.0).copied().or_else(|| {
+                    resolved_ui_layouts
+                        .get(&e.id.0)
+                        .map(|resolved| resolved.rect)
+                }),
                 measured_text_bounds,
                 scene_state.pan,
                 scene_zoom,
@@ -1276,12 +1304,42 @@ impl EditorApp {
         }
     }
 
-    /// E08：拖动进行中把最新 preview 写入编辑文档并 mark_dirty —— 让场景运行时
-    /// 按 revision 重建、画面实时跟随鼠标，但**不写历史、不写磁盘**。
-    ///
-    /// 首次调用时若尚未处于事务中，自动 begin（事务 before = 拖动前文档快照，
-    /// 保证 undo 能一次性回到拖动前）。若拖动没有净变化（拖回原位等），后续
-    /// commit 会被 diff 判定为空操作，不产生历史。
+    /// Drag preview only mutates the live editor runtime. No revision bump, no
+    /// history, no disk write; `finish_scene_drag` commits the document once.
+    fn apply_drag_preview_to_runtime(&mut self) {
+        if self.is_playing() {
+            self.scene_state.preview.clear();
+            self.scene_state.preview_ui.clear();
+            return;
+        }
+        // A freshly opened scene may not have built its runtime yet. Build it
+        // from the drag-start document before applying the first preview.
+        self.ensure_scene_runtime();
+        if self.scene_runtime.is_none()
+            || (self.scene_state.preview.is_empty() && self.scene_state.preview_ui.is_empty())
+        {
+            return;
+        }
+        let preview = self.scene_state.preview.clone();
+        let preview_ui = self.scene_state.preview_ui.clone();
+        if let Some(runtime) = self.scene_runtime.as_mut() {
+            for (id, transform) in preview {
+                runtime.set_scene_entity_transform_preview(
+                    id,
+                    Vec2::new(transform.position_x, transform.position_y),
+                    transform.rotation,
+                    Vec2::new(transform.scale_x, transform.scale_y),
+                );
+            }
+            for (id, offsets) in preview_ui {
+                runtime.set_scene_entity_ui_layout_preview(id, offsets);
+            }
+        }
+    }
+
+    /// E08：拖动松手后把最新 preview 写入编辑文档并 mark_dirty。首次调用时若尚未
+    /// 处于事务中，自动 begin（事务 before = 拖动前文档快照，保证 undo 能一次性
+    /// 回到拖动前）。若拖动没有净变化，commit 会被 diff 判定为空操作。
     fn apply_drag_preview_to_document(&mut self) {
         if self.is_playing() {
             self.scene_state.preview.clear();
@@ -1617,6 +1675,10 @@ impl EditorApp {
         if self.scene_font_atlas.is_none() {
             self.scene_font_atlas = load_project_font_atlas(Some(&root));
         }
+        // 共享默认矢量图集：拖动/编辑导致运行时重建时，不重新解析大字体文件。
+        if self.scene_vector_atlas.is_none() {
+            self.scene_vector_atlas = load_project_vector_atlas(Some(&root));
+        }
         match RuntimeScene::from_scene_edit(Some(&root), scene.scene.clone()) {
             Ok(mut runtime) => {
                 // 捕获游戏 2D 相机中心（此时相机仍是运行时默认，未被子编辑器覆盖），
@@ -1630,6 +1692,8 @@ impl EditorApp {
                 ]);
                 runtime.set_font_atlas(self.scene_font_atlas.clone());
                 runtime.set_custom_font_atlases(self.custom_font_atlases.clone());
+                runtime.set_vector_atlas(self.scene_vector_atlas.clone());
+                runtime.set_custom_vector_atlases(self.custom_vector_atlases.clone());
                 self.scene_runtime = Some(runtime);
             }
             Err(error) => {
@@ -1648,7 +1712,13 @@ impl EditorApp {
         let revision = self.document.current_scene.as_ref().map(|doc| doc.revision);
         let camera = (self.scene_state.pan, self.scene_zoom);
         let cache = self.scene_view_cache_2d;
-        if cache.size == (width, height) && cache.revision == revision && cache.camera == camera {
+        let previewing =
+            !self.scene_state.preview.is_empty() || !self.scene_state.preview_ui.is_empty();
+        if !previewing
+            && cache.size == (width, height)
+            && cache.revision == revision
+            && cache.camera == camera
+        {
             self.drain_readback_2d(ctx);
             return;
         }
@@ -1749,7 +1819,9 @@ impl EditorApp {
             return;
         }
         let key = revision.map(|r| (r, self.preview_resolution));
-        if self.scene_screen_cache_key == key && self.scene_screen_tex_id.is_some() {
+        let previewing =
+            !self.scene_state.preview.is_empty() || !self.scene_state.preview_ui.is_empty();
+        if !previewing && self.scene_screen_cache_key == key && self.scene_screen_tex_id.is_some() {
             return;
         }
         if self.scene_renderer.is_none() || self.scene_runtime.is_none() {

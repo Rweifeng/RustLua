@@ -8,7 +8,7 @@ use eframe::egui;
 use engine::core::font::FontAtlas;
 use engine::core::input::InputSnapshot;
 use engine::core::scene::Scene;
-use engine::host::frame::FontAtlasMap;
+use engine::host::frame::{FontAtlasMap, VectorAtlasMap, VectorFontHandle};
 use engine::host::{ReadbackMetrics, ReadbackStatus, Renderer, RuntimeScene};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -67,6 +67,8 @@ impl PreviewSession {
         size: (u32, u32),
         shared_font_atlas: Option<Arc<Mutex<FontAtlas>>>,
         custom_font_atlases: FontAtlasMap,
+        shared_vector_atlas: Option<VectorFontHandle>,
+        custom_vector_atlases: VectorAtlasMap,
     ) -> Result<Self, String> {
         tracing::info!(target: "editor", "[preview] project_root={}", project_root.display());
         let mut runtime = RuntimeScene::from_scene(Some(project_root), scene.clone())?;
@@ -76,7 +78,12 @@ impl PreviewSession {
             runtime.set_font_atlas(shared_font_atlas);
         }
         // 复用编辑器共享的自定义字体缓存：跨 Play/Stop 与场景视图重建复用字形。
+        // Vector 模式也复用大字体轮廓缓存，避免 Play 启动时重复解析字体。
+        if shared_vector_atlas.is_some() {
+            runtime.set_vector_atlas(shared_vector_atlas);
+        }
         runtime.set_custom_font_atlases(custom_font_atlases);
+        runtime.set_custom_vector_atlases(custom_vector_atlases);
         // Canvas 空间 UI 参考分辨率 = 设计分辨率（预览渲染尺寸）。
         runtime.set_ui_reference([size.0 as f32, size.1 as f32]);
         let renderer = Renderer::new_offscreen(
@@ -423,6 +430,8 @@ mod tests {
                 (width, height),
                 None,
                 FontAtlasMap::default(),
+                None,
+                VectorAtlasMap::default(),
             )
             .expect("create preview session");
             assert_eq!(session.size(), (width, height));
@@ -464,6 +473,8 @@ mod tests {
             (64, 64),
             None,
             FontAtlasMap::default(),
+            None,
+            VectorAtlasMap::default(),
         )
         .expect("create preview session");
         session.force_tick();
@@ -508,6 +519,8 @@ mod tests {
             (320, 180),
             None,
             FontAtlasMap::default(),
+            None,
+            VectorAtlasMap::default(),
         )
         .expect("create preview session");
         // 驱动多帧让 egui 纹理存在（回读异步，故循环强制到期）。

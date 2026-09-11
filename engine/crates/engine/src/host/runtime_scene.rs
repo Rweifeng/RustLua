@@ -39,7 +39,7 @@ use crate::core::{
 use crate::host::frame::{
     ATLAS_TEXTURE_PATH, BoundsSource, CustomFontAtlasPixels, FONT_ATLAS_TEXTURE_PATH, FontAtlasMap,
     FontAtlasPixels, FontHandle, OverlayVertex, Scene3d, Scene3dBounds, Scene3dDrawable, SceneDraw,
-    SceneMesh, VectorGlyphSnapshot, VectorSegmentSnapshot,
+    SceneMesh, VectorAtlasMap, VectorFontHandle, VectorGlyphSnapshot, VectorSegmentSnapshot,
     VectorTextVertex as FrameVectorTextVertex, WHITE_TEXTURE_PATH, font_texture_path,
 };
 
@@ -66,7 +66,9 @@ pub struct RuntimeScene {
     /// 同一实例，避免每帧重新生成 MSDF 字形。生成字形需可变访问（内部 Mutex）。
     font_atlas: Option<Arc<Mutex<FontAtlas>>>,
     vector_atlas: Option<Arc<Mutex<FontVectorAtlas>>>,
-    custom_vector_atlases: HashMap<String, Arc<Mutex<FontVectorAtlas>>>,
+    /// 场景 Text 自定义字体矢量轮廓缓存（key = `font://<asset>`）。编辑器注入
+    /// 同一实例供场景视图/预览跨运行时重建复用；独立运行时用新鲜空表。
+    custom_vector_atlases: VectorAtlasMap,
     last_font_version: u64,
     /// 场景 Text 自定义字体缓存（key = `font://<asset>` → 图集句柄）。编辑器注入
     /// 同一实例供场景视图/预览跨运行时重建复用；独立运行时用各自新鲜的空表。
@@ -168,6 +170,81 @@ impl RuntimeScene {
         self.render_ui_overlay = enabled;
     }
 
+    /// Updates one authored entity's 2D transform in-place for editor drag
+    /// preview. Avoids rebuilding Lua/ECS for every mouse-move revision.
+    pub fn set_scene_entity_transform_preview(
+        &mut self,
+        id: SceneEntityId,
+        position: Vec2,
+        rotation: f32,
+        scale: Vec2,
+    ) -> bool {
+        let Some(handle) = self.script.scene_entity_handle(id) else {
+            return false;
+        };
+        let mut updated = false;
+        self.script.with_world_mut(|world| {
+            if let Ok(Some(transform)) = world.get_mut::<Transform>(handle) {
+                transform.position = position;
+                transform.rotation = rotation;
+                transform.scale = scale;
+                updated = true;
+            }
+        });
+        updated
+    }
+
+    /// Updates one authored UI entity's four-edge offsets in-place for editor
+    /// drag preview. The document is only committed when the drag ends.
+    pub fn set_scene_entity_ui_layout_preview(
+        &mut self,
+        id: SceneEntityId,
+        offsets: [f32; 4],
+    ) -> bool {
+        let Some(handle) = self.script.scene_entity_handle(id) else {
+            return false;
+        };
+        let mut updated = false;
+        self.script.with_world_mut(|world| {
+            if let Ok(Some(layout)) = world.get_mut::<UiRectLayout>(handle) {
+                layout.offsets = offsets;
+                updated = true;
+            }
+        });
+        if updated {
+            // Runtime UI overlay resolves from this snapshot, not the ECS copy.
+            // `ui_scene_nodes` is keyed by visible entity order, while `id` is
+            // the sparse authoring ID. The live ECS slot index is that order.
+            let layout_key = handle.index() as u64;
+            if let Some(node) = self.ui_scene_nodes.get_mut(&layout_key)
+                && let Some(layout) = node.layout.as_mut()
+            {
+                layout.offsets = offsets;
+            }
+            self.ui_layout_rects.clear();
+        }
+        updated
+    }
+
+    /// Returns exact resolved UI rects by authored entity ID. These are the
+    /// same rects consumed by the next game-screen render, so editor selection
+    /// geometry and rendering share one layout resolution.
+    pub fn scene_entity_ui_layout_rects(
+        &mut self,
+        ids: impl IntoIterator<Item = SceneEntityId>,
+        viewport: [f32; 2],
+    ) -> BTreeMap<u64, UiRect> {
+        self.ensure_scene_ui_layout(viewport);
+        ids.into_iter()
+            .filter_map(|id| {
+                let handle = self.script.scene_entity_handle(id)?;
+                self.ui_layout_rects
+                    .get(&(handle.index() as u64))
+                    .map(|node| (id.0, node.rect))
+            })
+            .collect()
+    }
+
     /// 覆盖 project.toml 的文本渲染模式（编辑器保存设置后重建运行时可注入）。
     pub fn set_text_render_mode(&mut self, mode: TextRenderMode) {
         self.text_render_mode = mode;
@@ -176,6 +253,11 @@ impl RuntimeScene {
     /// 注入共享字体图集（编辑器在运行时重建时复用，避免每帧重新生成 MSDF 字形）。
     pub fn set_font_atlas(&mut self, font_atlas: Option<Arc<Mutex<FontAtlas>>>) {
         self.font_atlas = font_atlas;
+    }
+
+    /// 注入共享默认矢量轮廓图集（编辑器跨运行时重建复用）。
+    pub fn set_vector_atlas(&mut self, vector_atlas: Option<VectorFontHandle>) {
+        self.vector_atlas = vector_atlas;
     }
 
     fn ensure_vector_atlas(&mut self) {
@@ -197,12 +279,20 @@ impl RuntimeScene {
         if self.missing_vector_fonts.contains(&key) {
             return None;
         }
+        if let Ok(map) = self.custom_vector_atlases.lock()
+            && let Some(handle) = map.get(&key).cloned()
+        {
+            return Some(handle);
+        }
         if let Some(atlas) = load_custom_vector_atlas(self.project_root.as_deref(), font_asset) {
-            self.custom_vector_atlases.insert(key.clone(), atlas);
+            if let Ok(mut map) = self.custom_vector_atlases.lock() {
+                map.entry(key.clone()).or_insert_with(|| atlas.clone());
+            }
+            return Some(atlas);
         } else {
             self.missing_vector_fonts.insert(key.clone());
         }
-        self.custom_vector_atlases.get(&key).cloned()
+        None
     }
 
     /// 惰性加载项目字体图集：未注入共享图集时才按需加载（含 chars.txt 预热）。
@@ -220,6 +310,11 @@ impl RuntimeScene {
     /// 时运行时各自持有新鲜空表）。
     pub fn set_custom_font_atlases(&mut self, custom_font_atlases: FontAtlasMap) {
         self.custom_font_atlases = custom_font_atlases;
+    }
+
+    /// 注入跨运行时重建共享的自定义矢量轮廓缓存。
+    pub fn set_custom_vector_atlases(&mut self, custom_vector_atlases: VectorAtlasMap) {
+        self.custom_vector_atlases = custom_vector_atlases;
     }
 
     /// 取场景 Text 指定字体的共享图集句柄；未加载则按需从项目根解码（缺文件/
@@ -398,7 +493,7 @@ impl RuntimeScene {
             tilemap_cache: HashMap::new(),
             font_atlas: None,
             vector_atlas: None,
-            custom_vector_atlases: HashMap::new(),
+            custom_vector_atlases: Arc::new(Mutex::new(HashMap::new())),
             // 调试插桩：首次 vector text layout 日志状态。
             last_font_version: u64::MAX,
             custom_font_atlases: Arc::new(Mutex::new(HashMap::new())),
@@ -2541,6 +2636,102 @@ mod sdf_tests {
             minimum_y > -1.0,
             "layout text must stay on screen, min NDC y={minimum_y}"
         );
+    }
+
+    /// Runtime UI layout nodes are keyed by visible-entity order, not by the
+    /// sparse authoring ID. Dragging entity 2 must never rewrite entity 1.
+    #[test]
+    fn ui_layout_preview_targets_authored_entity() {
+        use crate::core::scene::{Scene, SceneEntityId};
+
+        let mut scene = Scene::new("drag-preview");
+        for id in [1, 2] {
+            scene
+                .add_entity(SceneEntityId(id), format!("Entity{id}"), None)
+                .unwrap();
+            let entity = scene.entities.get_mut(&SceneEntityId(id)).unwrap();
+            entity.components.insert(
+                "Text".to_owned(),
+                format!("text=Text{id};font_size=24").to_owned(),
+            );
+            entity.components.insert(
+                "UiLayout".to_owned(),
+                format!("anchors=0,0,0,0;offsets={id}0,{id}0,{id}0,{id}0"),
+            );
+        }
+        let mut runtime = RuntimeScene::from_scene_edit(None, scene).unwrap();
+        assert!(
+            runtime.set_scene_entity_ui_layout_preview(SceneEntityId(2), [50.0, 60.0, 70.0, 80.0])
+        );
+        let first = runtime.ui_scene_nodes[&0].layout.as_ref().unwrap().offsets;
+        let second = runtime.ui_scene_nodes[&1].layout.as_ref().unwrap().offsets;
+        assert_eq!(first, [10.0, 10.0, 10.0, 10.0]);
+        assert_eq!(second, [50.0, 60.0, 70.0, 80.0]);
+    }
+
+    #[test]
+    fn ui_layout_rects_expose_exact_preview_geometry() {
+        use crate::core::scene::SceneEntityId;
+
+        let mut scene = Scene::new("drag-preview-geometry");
+        scene.add_entity(SceneEntityId(1), "Image", None).unwrap();
+        let entity = scene.entities.get_mut(&SceneEntityId(1)).unwrap();
+        entity.components.insert(
+            "Image".to_owned(),
+            "texture=__white__;color=1,1,1".to_owned(),
+        );
+        entity.components.insert(
+            "UiLayout".to_owned(),
+            "anchors=0,0,0,0;offsets=10,20,30,40".to_owned(),
+        );
+        let mut runtime = RuntimeScene::from_scene_edit(None, scene).unwrap();
+        assert!(
+            runtime.set_scene_entity_ui_layout_preview(SceneEntityId(1), [50.0, 60.0, 90.0, 100.0])
+        );
+        let rects = runtime.scene_entity_ui_layout_rects([SceneEntityId(1)], [1000.0, 1000.0]);
+        assert_eq!(rects.get(&1), Some(&UiRect::new(50.0, 60.0, 40.0, 40.0)));
+    }
+
+    /// The editor drag preview must affect the next rendered mesh, not only the
+    /// internal layout snapshot.
+    #[test]
+    fn ui_layout_preview_changes_rendered_mesh() {
+        use crate::core::scene::{Scene, SceneEntityId};
+
+        let mut scene = Scene::new("drag-preview-render");
+        for id in [1, 2] {
+            scene
+                .add_entity(SceneEntityId(id), format!("Entity{id}"), None)
+                .unwrap();
+            let entity = scene.entities.get_mut(&SceneEntityId(id)).unwrap();
+            entity.components.insert(
+                "Image".to_owned(),
+                "texture=__white__;color=1,1,1".to_owned(),
+            );
+            entity.components.insert(
+                "UiLayout".to_owned(),
+                format!("anchors=0,0,0,0;offsets={id}0,{id}0,{id}0,{id}0"),
+            );
+        }
+        let mut runtime = RuntimeScene::from_scene_edit(None, scene).unwrap();
+        runtime.set_render_ui_overlay(true);
+        let before = runtime.vertices(1000, 1000).unwrap();
+        assert!(
+            runtime
+                .set_scene_entity_ui_layout_preview(SceneEntityId(2), [700.0, 700.0, 740.0, 740.0])
+        );
+        let after = runtime.vertices(1000, 1000).unwrap();
+        let before_x = before
+            .vertices
+            .iter()
+            .map(|vertex| vertex.position[0])
+            .fold(f32::NEG_INFINITY, f32::max);
+        let after_x = after
+            .vertices
+            .iter()
+            .map(|vertex| vertex.position[0])
+            .fold(f32::NEG_INFINITY, f32::max);
+        assert!(after_x > before_x);
     }
 
     /// 首包预热：`load_project_font_atlas` 读到项目根 `chars.txt` 时预生成字形

@@ -274,6 +274,8 @@ impl EditorApp {
             self.preview_resolution,
             self.scene_font_atlas.clone(),
             self.custom_font_atlases.clone(),
+            self.scene_vector_atlas.clone(),
+            self.custom_vector_atlases.clone(),
         )
     }
 

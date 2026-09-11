@@ -320,9 +320,14 @@ struct EditorApp {
     /// 共享字体图集：运行时随 revision 重建时复用同一实例，避免每帧重新生成
     /// MSDF 字形（拖动 UI/精灵卡顿的根因）。项目切换时重置。
     scene_font_atlas: Option<Arc<Mutex<FontAtlas>>>,
+    /// 共享默认矢量轮廓图集：Vector 模式下运行时随 revision 重建时复用，
+    /// 避免每次拖动重新解析大字体文件。项目切换时重置。
+    scene_vector_atlas: Option<engine::host::frame::VectorFontHandle>,
     /// 场景 Text 自定义字体的共享缓存（key = `font://<asset>`）。编辑器注入同一
     /// 实例给场景视图/预览运行时，跨重建复用字形；项目切换/重新收集字符时清空。
     custom_font_atlases: engine::host::frame::FontAtlasMap,
+    /// 场景 Text 自定义字体的矢量轮廓共享缓存（key = `font://<asset>`）。
+    custom_vector_atlases: engine::host::frame::VectorAtlasMap,
     /// 2D 场景视图显示用的 egui 纹理。
     scene_2d_tex: Option<egui::TextureHandle>,
     /// 游戏画面（设计分辨率 + 游戏相机 + UI 覆盖层）离屏纹理 + 视图：在 Scene 视图
@@ -779,7 +784,9 @@ impl EditorApp {
             scene_preview_tex: None,
             scene_runtime: None,
             scene_font_atlas: None,
+            scene_vector_atlas: None,
             custom_font_atlases: engine::host::frame::FontAtlasMap::default(),
+            custom_vector_atlases: engine::host::frame::VectorAtlasMap::default(),
             scene_2d_tex: None,
             scene_screen_texture: None,
             scene_screen_tex_id: None,

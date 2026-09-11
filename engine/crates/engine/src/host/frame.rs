@@ -129,6 +129,14 @@ pub type FontHandle = Arc<Mutex<FontAtlas>>;
 /// namespaced font id (`font://...`). Standalone runtimes use their own fresh map.
 pub type FontAtlasMap = Arc<Mutex<HashMap<String, FontHandle>>>;
 
+/// A handle to one vector-outline font atlas, shared across `RuntimeScene`
+/// rebuilds so outlines are parsed/extracted once.
+pub type VectorFontHandle = Arc<Mutex<crate::core::font::FontVectorAtlas>>;
+
+/// Editor-injected shared cache of per-Text vector outline atlases, keyed by
+/// the namespaced font id (`font://...`).
+pub type VectorAtlasMap = Arc<Mutex<HashMap<String, VectorFontHandle>>>;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BoundsSource {
     Mesh,

@@ -27,7 +27,7 @@ use crate::core::{
     physics3d::{ColliderDesc3d, PhysicsWorld3d},
     resource_db::AssetId,
     save::encode as encode_save,
-    scene::Scene,
+    scene::{Scene, SceneEntityId},
     sprite::{SpriteAsset, SpriteComponent},
     tilemap::DEFAULT_TILESET as DEFAULT_TILESET_PATH,
     tilemap::Tilemap,
@@ -113,6 +113,9 @@ struct ScriptState {
     /// 供 Lua 侧 `process_ui_clicks` / `grid_hit` 命中测试使用。
     ui_reference: [f32; 2],
     ui_drag: Option<UiDrag>,
+    /// Authoring ID → live ECS handle. The editor uses this to preview a drag
+    /// by mutating one component without rebuilding the whole runtime.
+    scene_entities: BTreeMap<SceneEntityId, EntityId>,
 }
 
 /// State for a Lua-driven inventory drag (`ui.drag_begin` / `ui.drag_end`).
@@ -315,17 +318,19 @@ impl LuaRuntime {
     ) -> Result<usize, LuaBridgeError> {
         let mut state = self.state.borrow_mut();
         state.scene = Some(scene.name.clone());
+        state.scene_entities.clear();
         let mut count = 0;
         for entity in scene.entities.values() {
             if honor_editor_hidden && scene.is_entity_hidden_with_ancestors(entity.id) {
                 continue;
             }
-            Self::spawn_entity_components(
+            let handle = Self::spawn_entity_components(
                 &mut state,
                 &entity.name,
                 &entity.components,
                 &entity.resources,
             )?;
+            state.scene_entities.insert(entity.id, handle);
             // 持久实体快照（权威、静态组件），供切场景后重生。
             if entity
                 .metadata
@@ -710,6 +715,7 @@ impl LuaRuntime {
             state.physics3d = PhysicsWorld3d::new();
             state.particles = ParticleSystem::new();
             state.names.clear();
+            state.scene_entities.clear();
             state.persist.clear();
             state.health.clear();
             state.ui.clear();
@@ -797,6 +803,12 @@ impl LuaRuntime {
     /// Gives the host a shared write view of the runtime entity world.
     pub fn with_world_mut<R>(&mut self, f: impl FnOnce(&mut World) -> R) -> R {
         f(&mut self.state.borrow_mut().world)
+    }
+
+    /// Returns the live ECS handle created from an authored scene entity.
+    #[must_use]
+    pub fn scene_entity_handle(&self, id: SceneEntityId) -> Option<EntityId> {
+        self.state.borrow().scene_entities.get(&id).copied()
     }
 
     /// Returns the authored name registered for an entity, if any. Entities
