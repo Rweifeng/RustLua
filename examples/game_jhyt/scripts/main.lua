@@ -28,12 +28,19 @@ local weather = require("weather")
 local maps = require("data.maps")
 local map_manager = require("map_manager")
 local npcs = require("data.npcs")
+local characters = require("data.characters")
 local places = require("data.places")
 local schedule = require("schedule")
 local npc = require("npc")
 local quest = require("quest")
 local dialogue = require("dialogue")
 local shop = require("shop")
+-- 战斗（M18-01）：combat 必须先于 enemy 加载——enemy.lua 在加载期向 combat
+-- 注册目标协议（is_enemy/hit/reset），避免循环依赖。
+local combat = require("combat")
+local enemy = require("enemy")
+local skills_data = require("data.skills")
+local enemies_data = require("data.enemies")
 
 -- "new" | "continue"：标题按钮点击写入，首次进入玩法地图的 on_create 消费。
 local entry
@@ -93,6 +100,10 @@ local function register_save_providers()
   save_manager.register("quest", quest.capture, quest.restore)
   -- 商店经济：当日限购计数随存档恢复（M17-04 验收项③：交易可存档恢复）。
   save_manager.register("shop", shop.capture, shop.restore)
+  -- 战斗账本：玩家气血/战败态随存档恢复（引擎 health 表是内存态不持久化）。
+  save_manager.register("combat", combat.capture, combat.restore)
+  -- 敌人账本：hp/存活/位置随存档恢复（M18-01）。
+  save_manager.register("enemy", enemy.capture, enemy.restore)
 end
 
 -- 加载期校验：所有领域数据在进入玩法前统一校验。错误包含文件、对象 ID 和字段路径。
@@ -101,10 +112,13 @@ local function validate_content()
     { "maps", maps.validate_all },
     { "places", places.validate_all },
     { "npcs", npcs.validate_all },
+    { "characters", characters.validate_all },
     { "schedule", schedule.validate_all },
     { "quest", quest.validate_all },
     { "dialogue", dialogue.validate_all },
-    { "shop", shop.validate_all }
+    { "shop", shop.validate_all },
+    { "skills", skills_data.validate_all },
+    { "enemies", enemies_data.validate_all }
   }
   local errors = {}
   for _, entry in ipairs(validators) do
@@ -125,6 +139,8 @@ local function new_game()
   quest.reset()
   dialogue.reset()
   shop.reset()
+  combat.reset()
+  enemy.reset()
   clock.set(1, 0)
 end
 
@@ -140,6 +156,8 @@ local function enter_playable_map(map_id)
   weather.current()
   -- NPC 日程：绑定本图 GroundMap 并按当前时间/天气落位（须在 weather.current 之后）。
   npc.on_enter(map_id)
+  -- 敌人：绑定本图 GroundMap 并生成/落位（敌人只在演武场灰盒注册，M18-01）。
+  enemy.on_enter(map_id)
   -- 对话交互目标（幂等）：与 NPC 的 E 交互；切图丢弃未结束的对话并复位模式。
   dialogue.ensure_target()
   dialogue.reset()
@@ -219,6 +237,10 @@ end
 function update()
   if is_playable(scene.reload()) then
     npc.tick()
+    -- 战斗固定步推进（帧号/判定窗）→ 敌人 AI → 玩家输入。
+    -- 攻击在注册后第 windup 步开始判定，下一 tick 起算，顺序确定。
+    combat.tick()
+    enemy.tick()
     return input.update()
   end
   return day_label()

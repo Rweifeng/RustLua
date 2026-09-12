@@ -53,6 +53,21 @@ M.maps = {
         label = "返回山庄"
       }
     }
+  },
+  -- 演武场：M18-01 战斗灰盒（20x12 封闭场地，仅服务战斗验收，不接入主线）。
+  combat_arena = {
+    display = "江湖有田·演武场",
+    title = "演武场 · 战斗灰盒",
+    spawn = { x = 9, y = 5 }, -- 与 combat_arena.scene JianghuPlayer Transform 一致
+    exits = {
+      {
+        id = "arena_to_main",
+        cell = { x = 9, y = 10 },
+        to = "main",
+        to_cell = { x = 16, y = 3 },
+        label = "离开演武场 · 返回山庄"
+      }
+    }
   }
 }
 

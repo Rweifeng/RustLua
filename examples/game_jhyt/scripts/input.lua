@@ -3,6 +3,7 @@ local player = require("player")
 local interaction = require("interaction")
 local dialogue = require("dialogue")
 local shop = require("shop")
+local combat = require("combat")
 
 local M = {}
 
@@ -51,7 +52,10 @@ end
 -- 状态栏 HUD 文案（底部固定提示左侧追加当日信息；当前 MVP 只保留控制提示）
 local function hud_text()
   local d = clock.now()
+  local hp_text = combat.is_player_dead() and "气血 0（战败）"
+    or "气血 " .. tostring(combat.player_hp())
   return "第 " .. tostring(d.day) .. " 天 · 体力 " .. tostring(state.energy)
+    .. " · " .. hp_text
 end
 
 -- 对话态：冻结移动与移动端交互，Esc 结束、数字键选择选项。
@@ -125,6 +129,15 @@ function M.update()
     return hud_text()
   end
 
+  -- 战败态：冻结移动与攻击，仅 R 重开（复用 Playing 态，不新增状态机模式）。
+  if combat.is_player_dead() then
+    player.stop()
+    if just_pressed("r") then
+      combat.respawn()
+    end
+    return "战败 · 按 R 重新开始"
+  end
+
   update_movement()
 
   if input.just_pressed("e") then
@@ -132,6 +145,14 @@ function M.update()
     if result ~= "move" and result ~= "none" then
       state.last_action = result
     end
+  end
+
+  -- 战斗输入（M18-01）：J 普攻（随武器加成）、K 武学（消耗内力）。
+  -- 攻击不锁移动（ARPG 习惯）；冷却/前摇/去重由 combat 底座处理。
+  if input.just_pressed("j") then
+    combat.player_attack("strike")
+  elseif input.just_pressed("k") then
+    combat.player_attack("palm_gust")
   end
 
   if input.just_pressed("t") then

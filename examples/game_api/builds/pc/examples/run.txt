@@ -1,5 +1,0 @@
-﻿Run instructions
-1) Double-click game.exe, or run: game.exe --pack pack --title "examples"
-2) Controls: WASD move, SPACE attack, F1 save, F2 load, F4 switch scene
-3) Logs and crash reports are written next to game.exe
-4) This package has no source or toolchain dependency and runs without Rust/IDE

@@ -1,0 +1,756 @@
+{
+  "version": 1,
+  "generated_by": "tools/gen_ui_art.py",
+  "design_doc": "docs/35-江湖有田-UI资源设计.md",
+  "impl_doc": "docs/38-江湖有田-UI资源实现与接入.md",
+  "root": "assets/art/ui/jianghu",
+  "nine_slice_field": "Image 组件 ninth 参数顺序 [left, right, top, bottom]（纹理像素）",
+  "engine_note": "场景 Image 支持 nine_slice；Lua ui.image 目前不支持（nine_slice 写死 None）",
+  "modules": {
+    "common": {
+      "title": "COMMON / 共用控件",
+      "files": [
+        "common/ui_panel_main_9s.png",
+        "common/ui_panel_paper_9s.png",
+        "common/ui_panel_confirm_9s.png",
+        "common/ui_btn_primary_9s.png",
+        "common/ui_btn_primary_pressed_9s.png",
+        "common/ui_btn_secondary_9s.png",
+        "common/ui_btn_danger_9s.png",
+        "common/ui_slot_9s.png",
+        "common/ui_slot_selected_9s.png",
+        "common/ui_input_9s.png",
+        "common/ui_tab_on_9s.png",
+        "common/ui_tab_off_9s.png",
+        "common/ui_key_hint_9s.png",
+        "common/ui_checkbox_off.png",
+        "common/ui_checkbox_on.png",
+        "common/ui_slider_track.png",
+        "common/ui_slider_handle.png",
+        "common/ui_dropdown_arrow.png",
+        "common/ui_scroll_arrow_up.png",
+        "common/ui_scroll_arrow_down.png",
+        "common/ui_btn_close.png",
+        "common/ui_btn_close_hover.png",
+        "common/ui_divider.png",
+        "common/ui_icon_seal.png"
+      ],
+      "uses_common": []
+    },
+    "hud": {
+      "title": "HUD / 主界面 (DOCS35 S7)",
+      "files": [
+        "hud/ui_bar_frame_9s.png",
+        "hud/ui_bar_fill_hp.png",
+        "hud/ui_bar_fill_stamina.png",
+        "hud/ui_bar_fill_neili.png",
+        "hud/ui_icon_hp.png",
+        "hud/ui_icon_stamina.png",
+        "hud/ui_icon_neili.png",
+        "hud/ui_icon_coin.png",
+        "hud/ui_weather_sun.png",
+        "hud/ui_weather_cloud.png",
+        "hud/ui_weather_rain.png",
+        "hud/ui_status_poison.png",
+        "hud/ui_status_buff.png",
+        "hud/ui_hud_avatar_frame.png"
+      ],
+      "uses_common": [
+        "common/ui_panel_main_9s.png",
+        "common/ui_slot_9s.png",
+        "common/ui_slot_selected_9s.png",
+        "common/ui_key_hint_9s.png"
+      ]
+    },
+    "backpack": {
+      "title": "BACKPACK / 背包 (S8.1)",
+      "files": [
+        "backpack/ui_quality_frame_0.png",
+        "backpack/ui_quality_frame_1.png",
+        "backpack/ui_quality_frame_2.png",
+        "backpack/ui_quality_frame_3.png",
+        "backpack/ui_quality_frame_4.png"
+      ],
+      "uses_common": [
+        "common/ui_panel_main_9s.png",
+        "common/ui_panel_confirm_9s.png",
+        "common/ui_slot_9s.png",
+        "common/ui_slot_selected_9s.png",
+        "common/ui_btn_primary_9s.png",
+        "common/ui_btn_secondary_9s.png",
+        "common/ui_btn_danger_9s.png",
+        "common/ui_btn_close.png",
+        "common/ui_icon_seal.png",
+        "common/ui_tab_on_9s.png",
+        "common/ui_tab_off_9s.png"
+      ]
+    },
+    "dialogue": {
+      "title": "DIALOGUE / 对话 (S8.3)",
+      "files": [
+        "dialogue/ui_portrait_frame.png",
+        "dialogue/ui_dialogue_continue.png",
+        "dialogue/ui_dialogue_marker.png"
+      ],
+      "uses_common": [
+        "common/ui_panel_paper_9s.png",
+        "common/ui_slot_9s.png"
+      ]
+    },
+    "shop": {
+      "title": "SHOP / 商店 (S8.2)",
+      "files": [
+        "shop/ui_btn_step_minus.png",
+        "shop/ui_btn_step_plus.png"
+      ],
+      "uses_common": [
+        "common/ui_panel_main_9s.png",
+        "common/ui_panel_confirm_9s.png",
+        "common/ui_slot_9s.png",
+        "common/ui_btn_primary_9s.png",
+        "common/ui_btn_close.png",
+        "common/ui_icon_seal.png",
+        "common/ui_tab_on_9s.png",
+        "common/ui_tab_off_9s.png",
+        "common/ui_scroll_arrow_up.png",
+        "common/ui_scroll_arrow_down.png"
+      ]
+    },
+    "quest": {
+      "title": "QUEST / 任务 (S8.4)",
+      "files": [
+        "quest/ui_quest_bullet_todo.png",
+        "quest/ui_quest_bullet_done.png"
+      ],
+      "uses_common": [
+        "common/ui_panel_main_9s.png",
+        "common/ui_btn_primary_9s.png",
+        "common/ui_btn_close.png",
+        "common/ui_icon_seal.png",
+        "common/ui_tab_on_9s.png",
+        "common/ui_tab_off_9s.png"
+      ]
+    },
+    "skills": {
+      "title": "SKILLS / 武学 (S8.5)",
+      "files": [
+        "skills/ui_skill_card_9s.png"
+      ],
+      "uses_common": [
+        "common/ui_panel_main_9s.png",
+        "common/ui_btn_close.png",
+        "common/ui_icon_seal.png",
+        "common/ui_key_hint_9s.png"
+      ]
+    },
+    "build": {
+      "title": "BUILD / 建筑放置 (S8.6)",
+      "files": [
+        "build/ui_build_ghost_ok.png",
+        "build/ui_build_ghost_bad.png"
+      ],
+      "uses_common": [
+        "common/ui_panel_main_9s.png",
+        "common/ui_btn_primary_9s.png",
+        "common/ui_btn_secondary_9s.png",
+        "common/ui_key_hint_9s.png"
+      ]
+    },
+    "save": {
+      "title": "SAVE / 存档 (S8.7)",
+      "files": [
+        "save/ui_save_slot_9s.png",
+        "save/ui_save_shot_placeholder.png"
+      ],
+      "uses_common": [
+        "common/ui_panel_main_9s.png",
+        "common/ui_panel_confirm_9s.png",
+        "common/ui_btn_primary_9s.png",
+        "common/ui_btn_secondary_9s.png",
+        "common/ui_btn_danger_9s.png",
+        "common/ui_btn_close.png",
+        "common/ui_icon_seal.png"
+      ]
+    },
+    "settings": {
+      "title": "SETTINGS / 设置 (S8.8)",
+      "files": [
+        "settings/ui_toggle_on_9s.png",
+        "settings/ui_toggle_off_9s.png"
+      ],
+      "uses_common": [
+        "common/ui_panel_main_9s.png",
+        "common/ui_slider_track.png",
+        "common/ui_slider_handle.png",
+        "common/ui_dropdown_arrow.png",
+        "common/ui_btn_close.png",
+        "common/ui_icon_seal.png",
+        "common/ui_tab_on_9s.png",
+        "common/ui_tab_off_9s.png"
+      ]
+    }
+  },
+  "assets": [
+    {
+      "module": "common",
+      "name": "ui_panel_main_9s",
+      "path": "assets/art/ui/jianghu/common/ui_panel_main_9s.png",
+      "size": "96x96",
+      "spec": "96x96 9S 16",
+      "nine_slice": [
+        16,
+        16,
+        16,
+        16
+      ]
+    },
+    {
+      "module": "common",
+      "name": "ui_panel_paper_9s",
+      "path": "assets/art/ui/jianghu/common/ui_panel_paper_9s.png",
+      "size": "96x96",
+      "spec": "96x96 9S 16",
+      "nine_slice": [
+        16,
+        16,
+        16,
+        16
+      ]
+    },
+    {
+      "module": "common",
+      "name": "ui_panel_confirm_9s",
+      "path": "assets/art/ui/jianghu/common/ui_panel_confirm_9s.png",
+      "size": "64x64",
+      "spec": "64x64 9S 12",
+      "nine_slice": [
+        12,
+        12,
+        12,
+        12
+      ]
+    },
+    {
+      "module": "common",
+      "name": "ui_btn_primary_9s",
+      "path": "assets/art/ui/jianghu/common/ui_btn_primary_9s.png",
+      "size": "64x48",
+      "spec": "64x48 9S 8",
+      "nine_slice": [
+        8,
+        8,
+        8,
+        8
+      ]
+    },
+    {
+      "module": "common",
+      "name": "ui_btn_primary_pressed_9s",
+      "path": "assets/art/ui/jianghu/common/ui_btn_primary_pressed_9s.png",
+      "size": "64x48",
+      "spec": "64x48 9S 8",
+      "nine_slice": [
+        8,
+        8,
+        8,
+        8
+      ]
+    },
+    {
+      "module": "common",
+      "name": "ui_btn_secondary_9s",
+      "path": "assets/art/ui/jianghu/common/ui_btn_secondary_9s.png",
+      "size": "64x48",
+      "spec": "64x48 9S 8",
+      "nine_slice": [
+        8,
+        8,
+        8,
+        8
+      ]
+    },
+    {
+      "module": "common",
+      "name": "ui_btn_danger_9s",
+      "path": "assets/art/ui/jianghu/common/ui_btn_danger_9s.png",
+      "size": "64x48",
+      "spec": "64x48 9S 8",
+      "nine_slice": [
+        8,
+        8,
+        8,
+        8
+      ]
+    },
+    {
+      "module": "common",
+      "name": "ui_slot_9s",
+      "path": "assets/art/ui/jianghu/common/ui_slot_9s.png",
+      "size": "48x48",
+      "spec": "48x48 9S 6",
+      "nine_slice": [
+        6,
+        6,
+        6,
+        6
+      ]
+    },
+    {
+      "module": "common",
+      "name": "ui_slot_selected_9s",
+      "path": "assets/art/ui/jianghu/common/ui_slot_selected_9s.png",
+      "size": "48x48",
+      "spec": "48x48 9S 6",
+      "nine_slice": [
+        6,
+        6,
+        6,
+        6
+      ]
+    },
+    {
+      "module": "common",
+      "name": "ui_input_9s",
+      "path": "assets/art/ui/jianghu/common/ui_input_9s.png",
+      "size": "48x28",
+      "spec": "48x28 9S 6",
+      "nine_slice": [
+        6,
+        6,
+        6,
+        6
+      ]
+    },
+    {
+      "module": "common",
+      "name": "ui_tab_on_9s",
+      "path": "assets/art/ui/jianghu/common/ui_tab_on_9s.png",
+      "size": "64x28",
+      "spec": "64x28 9S 6",
+      "nine_slice": [
+        6,
+        6,
+        6,
+        6
+      ]
+    },
+    {
+      "module": "common",
+      "name": "ui_tab_off_9s",
+      "path": "assets/art/ui/jianghu/common/ui_tab_off_9s.png",
+      "size": "64x28",
+      "spec": "64x28 9S 6",
+      "nine_slice": [
+        6,
+        6,
+        6,
+        6
+      ]
+    },
+    {
+      "module": "common",
+      "name": "ui_key_hint_9s",
+      "path": "assets/art/ui/jianghu/common/ui_key_hint_9s.png",
+      "size": "24x24",
+      "spec": "24x24 9S 6",
+      "nine_slice": [
+        6,
+        6,
+        6,
+        6
+      ]
+    },
+    {
+      "module": "common",
+      "name": "ui_checkbox_off",
+      "path": "assets/art/ui/jianghu/common/ui_checkbox_off.png",
+      "size": "16x16",
+      "spec": "16x16",
+      "nine_slice": null
+    },
+    {
+      "module": "common",
+      "name": "ui_checkbox_on",
+      "path": "assets/art/ui/jianghu/common/ui_checkbox_on.png",
+      "size": "16x16",
+      "spec": "16x16",
+      "nine_slice": null
+    },
+    {
+      "module": "common",
+      "name": "ui_slider_track",
+      "path": "assets/art/ui/jianghu/common/ui_slider_track.png",
+      "size": "4x12",
+      "spec": "4x12",
+      "nine_slice": null
+    },
+    {
+      "module": "common",
+      "name": "ui_slider_handle",
+      "path": "assets/art/ui/jianghu/common/ui_slider_handle.png",
+      "size": "12x12",
+      "spec": "12x12",
+      "nine_slice": null
+    },
+    {
+      "module": "common",
+      "name": "ui_dropdown_arrow",
+      "path": "assets/art/ui/jianghu/common/ui_dropdown_arrow.png",
+      "size": "8x8",
+      "spec": "8x8",
+      "nine_slice": null
+    },
+    {
+      "module": "common",
+      "name": "ui_scroll_arrow_up",
+      "path": "assets/art/ui/jianghu/common/ui_scroll_arrow_up.png",
+      "size": "8x8",
+      "spec": "8x8",
+      "nine_slice": null
+    },
+    {
+      "module": "common",
+      "name": "ui_scroll_arrow_down",
+      "path": "assets/art/ui/jianghu/common/ui_scroll_arrow_down.png",
+      "size": "8x8",
+      "spec": "8x8",
+      "nine_slice": null
+    },
+    {
+      "module": "common",
+      "name": "ui_btn_close",
+      "path": "assets/art/ui/jianghu/common/ui_btn_close.png",
+      "size": "16x16",
+      "spec": "16x16",
+      "nine_slice": null
+    },
+    {
+      "module": "common",
+      "name": "ui_btn_close_hover",
+      "path": "assets/art/ui/jianghu/common/ui_btn_close_hover.png",
+      "size": "16x16",
+      "spec": "16x16",
+      "nine_slice": null
+    },
+    {
+      "module": "common",
+      "name": "ui_divider",
+      "path": "assets/art/ui/jianghu/common/ui_divider.png",
+      "size": "4x4",
+      "spec": "4x4",
+      "nine_slice": null
+    },
+    {
+      "module": "common",
+      "name": "ui_icon_seal",
+      "path": "assets/art/ui/jianghu/common/ui_icon_seal.png",
+      "size": "24x24",
+      "spec": "24x24",
+      "nine_slice": null
+    },
+    {
+      "module": "hud",
+      "name": "ui_bar_frame_9s",
+      "path": "assets/art/ui/jianghu/hud/ui_bar_frame_9s.png",
+      "size": "48x16",
+      "spec": "48x16 9S 4",
+      "nine_slice": [
+        4,
+        4,
+        4,
+        4
+      ]
+    },
+    {
+      "module": "hud",
+      "name": "ui_bar_fill_hp",
+      "path": "assets/art/ui/jianghu/hud/ui_bar_fill_hp.png",
+      "size": "24x8",
+      "spec": "24x8 9S 4,0",
+      "nine_slice": [
+        4,
+        0,
+        4,
+        0
+      ]
+    },
+    {
+      "module": "hud",
+      "name": "ui_bar_fill_stamina",
+      "path": "assets/art/ui/jianghu/hud/ui_bar_fill_stamina.png",
+      "size": "24x8",
+      "spec": "24x8 9S 4,0",
+      "nine_slice": [
+        4,
+        0,
+        4,
+        0
+      ]
+    },
+    {
+      "module": "hud",
+      "name": "ui_bar_fill_neili",
+      "path": "assets/art/ui/jianghu/hud/ui_bar_fill_neili.png",
+      "size": "24x8",
+      "spec": "24x8 9S 4,0",
+      "nine_slice": [
+        4,
+        0,
+        4,
+        0
+      ]
+    },
+    {
+      "module": "hud",
+      "name": "ui_icon_hp",
+      "path": "assets/art/ui/jianghu/hud/ui_icon_hp.png",
+      "size": "20x20",
+      "spec": "20x20",
+      "nine_slice": null
+    },
+    {
+      "module": "hud",
+      "name": "ui_icon_stamina",
+      "path": "assets/art/ui/jianghu/hud/ui_icon_stamina.png",
+      "size": "20x20",
+      "spec": "20x20",
+      "nine_slice": null
+    },
+    {
+      "module": "hud",
+      "name": "ui_icon_neili",
+      "path": "assets/art/ui/jianghu/hud/ui_icon_neili.png",
+      "size": "20x20",
+      "spec": "20x20",
+      "nine_slice": null
+    },
+    {
+      "module": "hud",
+      "name": "ui_icon_coin",
+      "path": "assets/art/ui/jianghu/hud/ui_icon_coin.png",
+      "size": "16x16",
+      "spec": "16x16",
+      "nine_slice": null
+    },
+    {
+      "module": "hud",
+      "name": "ui_weather_sun",
+      "path": "assets/art/ui/jianghu/hud/ui_weather_sun.png",
+      "size": "32x32",
+      "spec": "32x32",
+      "nine_slice": null
+    },
+    {
+      "module": "hud",
+      "name": "ui_weather_cloud",
+      "path": "assets/art/ui/jianghu/hud/ui_weather_cloud.png",
+      "size": "32x32",
+      "spec": "32x32",
+      "nine_slice": null
+    },
+    {
+      "module": "hud",
+      "name": "ui_weather_rain",
+      "path": "assets/art/ui/jianghu/hud/ui_weather_rain.png",
+      "size": "32x32",
+      "spec": "32x32",
+      "nine_slice": null
+    },
+    {
+      "module": "hud",
+      "name": "ui_status_poison",
+      "path": "assets/art/ui/jianghu/hud/ui_status_poison.png",
+      "size": "16x16",
+      "spec": "16x16",
+      "nine_slice": null
+    },
+    {
+      "module": "hud",
+      "name": "ui_status_buff",
+      "path": "assets/art/ui/jianghu/hud/ui_status_buff.png",
+      "size": "16x16",
+      "spec": "16x16",
+      "nine_slice": null
+    },
+    {
+      "module": "hud",
+      "name": "ui_hud_avatar_frame",
+      "path": "assets/art/ui/jianghu/hud/ui_hud_avatar_frame.png",
+      "size": "48x48",
+      "spec": "48x48",
+      "nine_slice": null
+    },
+    {
+      "module": "backpack",
+      "name": "ui_quality_frame_0",
+      "path": "assets/art/ui/jianghu/backpack/ui_quality_frame_0.png",
+      "size": "40x40",
+      "spec": "40x40 凡品",
+      "nine_slice": null
+    },
+    {
+      "module": "backpack",
+      "name": "ui_quality_frame_1",
+      "path": "assets/art/ui/jianghu/backpack/ui_quality_frame_1.png",
+      "size": "40x40",
+      "spec": "40x40 良品",
+      "nine_slice": null
+    },
+    {
+      "module": "backpack",
+      "name": "ui_quality_frame_2",
+      "path": "assets/art/ui/jianghu/backpack/ui_quality_frame_2.png",
+      "size": "40x40",
+      "spec": "40x40 上品",
+      "nine_slice": null
+    },
+    {
+      "module": "backpack",
+      "name": "ui_quality_frame_3",
+      "path": "assets/art/ui/jianghu/backpack/ui_quality_frame_3.png",
+      "size": "40x40",
+      "spec": "40x40 珍品",
+      "nine_slice": null
+    },
+    {
+      "module": "backpack",
+      "name": "ui_quality_frame_4",
+      "path": "assets/art/ui/jianghu/backpack/ui_quality_frame_4.png",
+      "size": "40x40",
+      "spec": "40x40 传世",
+      "nine_slice": null
+    },
+    {
+      "module": "dialogue",
+      "name": "ui_portrait_frame",
+      "path": "assets/art/ui/jianghu/dialogue/ui_portrait_frame.png",
+      "size": "128x128",
+      "spec": "128x128",
+      "nine_slice": null
+    },
+    {
+      "module": "dialogue",
+      "name": "ui_dialogue_continue",
+      "path": "assets/art/ui/jianghu/dialogue/ui_dialogue_continue.png",
+      "size": "16x16",
+      "spec": "16x16",
+      "nine_slice": null
+    },
+    {
+      "module": "dialogue",
+      "name": "ui_dialogue_marker",
+      "path": "assets/art/ui/jianghu/dialogue/ui_dialogue_marker.png",
+      "size": "8x8",
+      "spec": "8x8",
+      "nine_slice": null
+    },
+    {
+      "module": "shop",
+      "name": "ui_btn_step_minus",
+      "path": "assets/art/ui/jianghu/shop/ui_btn_step_minus.png",
+      "size": "24x24",
+      "spec": "24x24",
+      "nine_slice": null
+    },
+    {
+      "module": "shop",
+      "name": "ui_btn_step_plus",
+      "path": "assets/art/ui/jianghu/shop/ui_btn_step_plus.png",
+      "size": "24x24",
+      "spec": "24x24",
+      "nine_slice": null
+    },
+    {
+      "module": "quest",
+      "name": "ui_quest_bullet_todo",
+      "path": "assets/art/ui/jianghu/quest/ui_quest_bullet_todo.png",
+      "size": "12x12",
+      "spec": "12x12",
+      "nine_slice": null
+    },
+    {
+      "module": "quest",
+      "name": "ui_quest_bullet_done",
+      "path": "assets/art/ui/jianghu/quest/ui_quest_bullet_done.png",
+      "size": "12x12",
+      "spec": "12x12",
+      "nine_slice": null
+    },
+    {
+      "module": "skills",
+      "name": "ui_skill_card_9s",
+      "path": "assets/art/ui/jianghu/skills/ui_skill_card_9s.png",
+      "size": "128x64",
+      "spec": "128x64 9S 8",
+      "nine_slice": [
+        8,
+        8,
+        8,
+        8
+      ]
+    },
+    {
+      "module": "build",
+      "name": "ui_build_ghost_ok",
+      "path": "assets/art/ui/jianghu/build/ui_build_ghost_ok.png",
+      "size": "32x32",
+      "spec": "32x32",
+      "nine_slice": null
+    },
+    {
+      "module": "build",
+      "name": "ui_build_ghost_bad",
+      "path": "assets/art/ui/jianghu/build/ui_build_ghost_bad.png",
+      "size": "32x32",
+      "spec": "32x32",
+      "nine_slice": null
+    },
+    {
+      "module": "save",
+      "name": "ui_save_slot_9s",
+      "path": "assets/art/ui/jianghu/save/ui_save_slot_9s.png",
+      "size": "128x64",
+      "spec": "128x64 9S 8",
+      "nine_slice": [
+        8,
+        8,
+        8,
+        8
+      ]
+    },
+    {
+      "module": "save",
+      "name": "ui_save_shot_placeholder",
+      "path": "assets/art/ui/jianghu/save/ui_save_shot_placeholder.png",
+      "size": "96x54",
+      "spec": "96x54",
+      "nine_slice": null
+    },
+    {
+      "module": "settings",
+      "name": "ui_toggle_on_9s",
+      "path": "assets/art/ui/jianghu/settings/ui_toggle_on_9s.png",
+      "size": "44x20",
+      "spec": "44x20 9S 8",
+      "nine_slice": [
+        8,
+        8,
+        8,
+        8
+      ]
+    },
+    {
+      "module": "settings",
+      "name": "ui_toggle_off_9s",
+      "path": "assets/art/ui/jianghu/settings/ui_toggle_off_9s.png",
+      "size": "44x20",
+      "spec": "44x20 9S 8",
+      "nine_slice": [
+        8,
+        8,
+        8,
+        8
+      ]
+    }
+  ]
+}

@@ -1,6 +1,8 @@
 scene_version=2
 name=title
 meta	display_name	江湖有田·开始画面
+meta	editor.hidden.10	true
+meta	editor.root_order	1,2,5,6,7,8,14,9,10,11,12,13
 meta	ui_reference_height	720
 meta	ui_reference_width	1280
 entity	1	Bg
@@ -29,7 +31,7 @@ component	7	Image	texture=__white__;color=0.765,0.271,0.184
 component	7	Transform	x=0.000000000;y=0.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
 component	7	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=506.00,398.00,774.00,440.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 entity_meta	7	role	button_start_body
-entity	8	BtnStartLabel
+entity	8	BtnStartLabel	7
 component	8	Text	text=开始新游戏;font_size=24.00;color=0.949,0.918,0.847
 component	8	Transform	x=0.000000000;y=0.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
 component	8	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=581.98,403.73,701.98,427.73;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
@@ -40,24 +42,18 @@ component	9	Transform	x=0.000000000;y=0.000000000;rotation=0.000000000;scale_x=1
 component	9	UiEvents	event=click;function=on_click
 component	9	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=500.00,462.00,780.00,516.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 entity_meta	9	role	button_continue
-entity	10	BtnContinueBody
-component	10	Image	texture=__white__;color=0.122,0.137,0.157
-component	10	Transform	x=0.000000000;y=0.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
-component	10	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=506.00,468.00,774.00,510.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
-entity_meta	10	role	button_continue_body
 entity	11	BtnExit
 component	11	Text	text=退出;font_size=22.00;color=0.659,0.624,0.541
 component	11	Transform	x=0.000000000;y=0.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
 component	11	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=618.00,538.00,662.00,560.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 entity_meta	11	role	button_continue_label
-entity	12	BtnExit
-component	12	Text	text=退出;font_size=22.00;color=0.659,0.624,0.541
-component	12	Transform	x=0.000000000;y=0.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
-component	12	UiEvents	event=click;function=on_click
-component	12	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=618.00,538.00,662.00,560.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
-entity_meta	12	role	button_exit
 entity	13	FooterText
 component	13	Text	text=江湖有田 v0.1.0 · RustLua 原型;font_size=14.00;color=0.659,0.624,0.541
 component	13	Transform	x=0.000000000;y=0.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
 component	13	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=24.00,694.00,320.00,708.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 entity_meta	13	role	footer_text
+entity	14	BtnExit	9
+component	14	Text	text=退出;font_size=22.00;color=0.659,0.624,0.541
+component	14	Transform	x=0.000000000;y=0.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+component	14	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=618.00,538.00,662.00,560.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity_meta	14	role	button_start_label

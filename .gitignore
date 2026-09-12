@@ -22,3 +22,7 @@ Thumbs.db
 
 # Game API build output
 examples/**/builds/
+
+# Python bytecode cache
+__pycache__/
+*.py[cod]

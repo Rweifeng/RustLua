@@ -1,6 +1,0 @@
-[project]
-name = "examples"
-version = "0.1.0"
-engine = "RustLua"
-main_script = "scripts/showcase.lua"
-startup_scene = "scenes/index.scene"

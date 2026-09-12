@@ -1,6 +1,0 @@
-scene_version=2
-name=ui_dynamic
-entity	1	Instruction
-component	1	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=20.00,650.00,20.00,650.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
-component	1	Text	text=Drag grid cells. SPACE hides modal, E shows modal, Q clears UI.;font_size=13;color=0.850,0.880,0.950
-component	1	Transform	x=0;y=0;rotation=0;scale_x=1;scale_y=1

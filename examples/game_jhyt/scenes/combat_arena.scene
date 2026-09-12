@@ -1,0 +1,27 @@
+scene_version=2
+name=combat_arena
+meta	display_name	江湖有田·演武场
+meta	game	jianghu_youtian
+meta	tile_size	32
+meta	ui_reference_height	720
+meta	ui_reference_width	1280
+entity	1	GroundMap
+component	1	Transform	x=0.000000000;y=0.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+component	1	Tilemap	tile_size=32x32;width=20;height=12;texture=assets/art/greybox/manor_ground.png;tiles=111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111;solid=111111111111111111111000000000000000000110000000000000000001100000000000000000011000000000000000000110000000000000000001100000000000000000011000000000000000000110000000000000000001100000000000000000011000000000000000000111111111111111111111
+entity_meta	1	role	ground_tilemap
+entity	2	JianghuPlayer
+component	2	Transform	x=304.000000;y=176.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+component	2	Sprite	texture=__white__;size=28x28;tint=0.949,0.918,0.847,1.000
+component	2	Collider	shape=ball;radius=12
+entity_meta	2	role	player_spawn
+entity_meta	2	persistent	true
+entity	3	HudTitle
+component	3	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=24.00,20.00,640.00,44.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+component	3	Text	text=演武场 · 战斗灰盒;font_size=18.00;color=0.949,0.918,0.847
+component	3	Transform	x=0.000000000;y=0.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity_meta	3	role	hud_title
+entity	4	HudHint
+component	4	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=24.00,686.00,1000.00,708.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+component	4	Text	text=WASD 移动 · J 普攻 · K 武学 · R 战败重开;font_size=14.00;color=0.850,0.900,1.000
+component	4	Transform	x=0.000000000;y=0.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity_meta	4	role	hud_hint

@@ -6,22 +6,147 @@ meta	tile_size	32
 meta	ui_reference_height	720
 meta	ui_reference_width	1280
 entity	1	GroundMap
-component	1	Transform	x=0.000000000;y=0.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
-component	1	Tilemap	tile_size=32x32;width=40;height=22;texture=assets/art/greybox/manor_ground.png;tiles=4444444444444444444444444444444444444444411111111111111133333333111111111111111441111111111111113333333311111111111111144111111111111111333333331111111111111114411111111111111133333333111111111111111441111111111111113333333311111111111111144111111111111111333333331111111111111114411111111111111133333333111111111111111441111111111111113333333311111111111111144111111111333333333333333333331111111114413333333311111111111111111111333333331441555555551111111111111111111155555555144155555555111111111111111111115555555514415555555511111111111111111111555555551441555555551111111111111111111155555555144155555555111111111111111111115555555514415555555511111111666611111111555555551441555555551111111166661111111155555555144155555555111111111111111111115555555514415555555511111111111111111111555555551441555555551111111111111111111155555555144444444444444444444444444444444444444444;solid=1111111111111111111111111111111111111111100000000000000000000000000000000000000110000000000000000000000000000000000000011000000000000000000000000000000000000001100000000000000000000000000000000000000110000000000000000000000000000000000000011000000000000000000000000000000000000001100000000000000000000000000000000000000110000000000000000000000000000000000000011000000000000000000000000000000000000001100000000000000000000000000000000000000110111111110000000000000000000011111111011011111111000000000000000000001111111101101111111100000000000000000000111111110110111111110000000000000000000011111111011011111111000000000000000000001111111101101111111100000000111100000000111111110110111111110000000011110000000011111111011011111111000000000000000000001111111101101111111100000000000000000000111111110110111111110000000000000000000011111111011111111111111111111111111111111111111111
+component	1	Transform	x=0.000000;y=0.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+component	1	Tilemap	tile_size=32x32;width=40;height=22;texture=assets/art/tilesets/village/village_ground.png;tiles=4444444444444444444444444444444444444444411111111111111133333333111111111111111441111111111111113333333311111111111111144111111111113333333333333333111111111114411111111111333333333333333311111111111441111111111133333333333333331111111111144111111111111111333333331111111111111114411111111111111133333333111111111111111441111111111111113333333311111111111111144111111111333333333333333333331111111114411111111133333333333333333333111111111441111111112222211111111111111111111111144111111111222221111111111111111111111114413333333322222111111111111111333333331441333333332222211111111111111133333333144111111111111111116666111111111111111114411111111116666666666666336666111111111441111111111666666666666633666611111111144111111111111111111111111111111111111114411111111111111111111111111111111111111441111111111111111111111111111111111111144444444444444444444444444444444444444444;solid=1111111111111111111111111111111111111111100000000000000000101000000000000000000110000000000001100110111100000000000000011000000000000000000000000000000000000001100000000000000100000010000000000000000110000000000000000000000000000000000000011000000000000000000000000000000000000001100000000000000000000000000000000000000110000000000000000000000000000000000000011000000000000000000000000000000000000001100000000000000000000000000000011110000110000000000000000000000001111001111000011000000000000000000000000111100000000001100000000100000000000000000000000000000110000000000000000000000000000000000000011001111110000000001111000000000111111001100111111001111111111111001111011111100110011111100111111111111100111101111110011001111110010000111100000001111111111101100111111000000011110011000111111111100110000100000010001111101100111110010010011111111111111111111111111111111111111111
 entity_meta	1	role	ground_tilemap
-entity	2	JianghuPlayer
-component	2	Transform	x=624.000000;y=80.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
-component	2	Sprite	texture=__white__;size=28x28;tint=0.949,0.918,0.847,1.000
-component	2	Collider	shape=ball;radius=12
-entity_meta	2	role	player_spawn
-entity_meta	2	persistent	true
-entity	3	HudTitle
-component	3	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=24.00,20.00,640.00,44.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
-component	3	Text	text=云泽村 · 南市街;font_size=18.00;color=0.949,0.918,0.847
-component	3	Transform	x=0.000000000;y=0.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
-entity_meta	3	role	hud_title
-entity	4	HudHint
-component	4	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=24.00,686.00,1000.00,708.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
-component	4	Text	text=WASD 移动 · E 交互(对话/商店/出口) · T 睡觉 · Q 吐纳;font_size=14.00;color=0.850,0.900,1.000
-component	4	Transform	x=0.000000000;y=0.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
-entity_meta	4	role	hud_hint
+entity	2	VillageClinic
+component	2	Sprite	texture=assets/art/buildings/village_clinic.png;size=192x160;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=0
+component	2	Transform	x=96.000000;y=480.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity_meta	2	role	building
+entity_meta	2	cell	3,15
+entity	3	VillageShop
+component	3	Sprite	texture=assets/art/buildings/village_shop.png;size=192x160;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=0
+component	3	Transform	x=992.000000;y=480.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity_meta	3	role	building
+entity_meta	3	cell	31,15
+entity	4	VillageForge
+component	4	Sprite	texture=assets/art/buildings/village_forge.png;size=128x64;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=0
+component	4	Transform	x=800.000000;y=352.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity_meta	4	role	building
+entity_meta	4	cell	25,11
+entity	5	VillageTeaStall
+component	5	Sprite	texture=assets/art/buildings/village_teastall.png;size=128x64;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=0
+component	5	Transform	x=992.000000;y=320.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity_meta	5	role	building
+entity_meta	5	cell	31,10
+entity	6	VillageHouseA
+component	6	Sprite	texture=assets/art/buildings/village_house_a.png;size=128x96;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=0
+component	6	Transform	x=512.000000;y=576.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity_meta	6	role	building
+entity_meta	6	cell	16,18
+entity	7	VillageHouseB
+component	7	Sprite	texture=assets/art/buildings/village_house_b.png;size=128x96;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=0
+component	7	Transform	x=864.000000;y=576.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity_meta	7	role	building
+entity_meta	7	cell	27,18
+entity	8	VillageShrine
+component	8	Sprite	texture=assets/art/buildings/village_shrine.png;size=64x64;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=0
+component	8	Transform	x=704.000000;y=608.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity_meta	8	role	building
+entity_meta	8	cell	22,19
+entity	9	VillageGate
+component	9	Sprite	texture=assets/art/buildings/village_gate.png;size=96x96;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=5
+component	9	Transform	x=576.000000;y=0.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity_meta	9	role	building
+entity_meta	9	cell	18,0
+entity	10	VillageBridge
+component	10	Sprite	texture=assets/art/props/village_bridge.png;size=64x64;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=8
+component	10	Transform	x=768.000000;y=512.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity_meta	10	role	prop
+entity_meta	10	cell	24,16
+entity	11	VillagePier
+component	11	Sprite	texture=assets/art/props/village_pier.png;size=96x32;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=8
+component	11	Transform	x=384.000000;y=544.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity_meta	11	role	prop
+entity_meta	11	cell	12,17
+entity	12	VillageStallA
+component	12	Sprite	texture=assets/art/props/village_stall.png;size=64x40;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=10
+component	12	Transform	x=416.000000;y=64.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity_meta	12	role	prop
+entity_meta	12	cell	13,2
+entity	13	VillageStallB
+component	13	Sprite	texture=assets/art/props/village_stall.png;size=64x40;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=10
+component	13	Transform	x=704.000000;y=64.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity_meta	13	role	prop
+entity_meta	13	cell	22,2
+entity	14	VillageBannerA
+component	14	Sprite	texture=assets/art/props/village_banner.png;size=32x56;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=10
+component	14	Transform	x=480.000000;y=128.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity_meta	14	role	prop
+entity_meta	14	cell	15,4
+entity	15	VillageBannerB
+component	15	Sprite	texture=assets/art/props/village_banner.png;size=32x56;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=10
+component	15	Transform	x=704.000000;y=128.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity_meta	15	role	prop
+entity_meta	15	cell	22,4
+entity	16	VillageLanternA
+component	16	Sprite	texture=assets/art/props/village_lantern.png;size=24x64;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=10
+component	16	Transform	x=544.000000;y=64.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity_meta	16	role	prop
+entity_meta	16	cell	17,2
+entity	17	VillageLanternB
+component	17	Sprite	texture=assets/art/props/village_lantern.png;size=24x64;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=10
+component	17	Transform	x=672.000000;y=64.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity_meta	17	role	prop
+entity_meta	17	cell	21,2
+entity	18	VillageJar
+component	18	Sprite	texture=assets/art/props/manor_jar.png;size=24x30;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=10
+component	18	Transform	x=292.000000;y=416.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity_meta	18	role	prop
+entity_meta	18	cell	9,13
+entity	19	VillageRockA
+component	19	Sprite	texture=assets/art/props/village_rock.png;size=64x40;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=20
+component	19	Transform	x=352.000000;y=576.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity_meta	19	role	prop
+entity_meta	19	cell	11,18
+entity	20	VillageRockB
+component	20	Sprite	texture=assets/art/props/village_rock.png;size=64x40;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=20
+component	20	Transform	x=1184.000000;y=576.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity_meta	20	role	prop
+entity_meta	20	cell	37,18
+entity	21	VillageBambooA
+component	21	Sprite	texture=assets/art/props/manor_bamboo.png;size=48x76;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=20
+component	21	Transform	x=384.000000;y=640.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity_meta	21	role	prop
+entity_meta	21	cell	12,20
+entity	22	VillageBambooB
+component	22	Sprite	texture=assets/art/props/manor_bamboo.png;size=48x76;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=20
+component	22	Transform	x=640.000000;y=640.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity_meta	22	role	prop
+entity_meta	22	cell	20,20
+entity	23	VillageBambooC
+component	23	Sprite	texture=assets/art/props/manor_bamboo.png;size=48x76;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=20
+component	23	Transform	x=1056.000000;y=640.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity_meta	23	role	prop
+entity_meta	23	cell	33,20
+entity	24	VillageTreeA
+component	24	Sprite	texture=assets/art/props/manor_tree.png;size=64x88;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=20
+component	24	Transform	x=160.000000;y=640.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity_meta	24	role	prop
+entity_meta	24	cell	5,20
+entity	25	VillageTreeB
+component	25	Sprite	texture=assets/art/props/manor_tree.png;size=64x88;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=20
+component	25	Transform	x=832.000000;y=640.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity_meta	25	role	prop
+entity_meta	25	cell	26,20
+entity	26	VillageTreeC
+component	26	Sprite	texture=assets/art/props/manor_tree.png;size=64x88;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=20
+component	26	Transform	x=1152.000000;y=640.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity_meta	26	role	prop
+entity_meta	26	cell	36,20
+entity	27	JianghuPlayer
+component	27	Sprite	texture=__white__;size=28x28;tint=0.949,0.918,0.847,1.000;sorting_layer=actor
+component	27	Collider	shape=ball;radius=12
+component	27	Transform	x=624.000000;y=80.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity_meta	27	role	player_spawn
+entity_meta	27	persistent	true
+entity	28	HudTitle
+component	28	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=24.00,20.00,640.00,44.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+component	28	Text	text=云泽村 · 南市街;font_size=18.00;color=0.949,0.918,0.847
+component	28	Transform	x=0.000000;y=0.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity_meta	28	role	hud_title
+entity	29	HudHint
+component	29	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=24.00,686.00,1000.00,708.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+component	29	Text	text=WASD 移动 · E 交互(对话/商店/出口) · T 睡觉 · Q 吐纳 · J 普攻 · K 武学;font_size=14.00;color=0.850,0.900,1.000
+component	29	Transform	x=0.000000;y=0.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+entity_meta	29	role	hud_hint
