@@ -48,90 +48,112 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     banner("M17-03a 纯数据注册 + 加载期校验：任务/对话均来自 data/*");
     let mut runtime = new_runtime(&project_arg, &save_path)?;
-    enter_title(&mut runtime, &main_script)?;
+    enter_main_menu(&mut runtime, &main_script)?;
     click_button(&mut runtime, "BtnStart")?;
-    assert_scene_is(&mut runtime, "main")?;
+    assert_scene_is(&mut runtime, "manor")?;
     assert_mode(&mut runtime, "Playing")?;
-    assert_num(&mut runtime, "#(require('quest').ids())", 2.0)?;
-    assert_num(&mut runtime, "#(require('dialogue').ids())", 2.0)?;
+    // 运行时注册表条目数 == 纯数据注册表条目数（数据驱动，内容增长不会顶掉断言）。
+    let quest_registry = query_num(&mut runtime, "return #require('data.quests.index').ids")?;
+    assert_num(
+        &mut runtime,
+        "#(require('world.quest').ids())",
+        quest_registry,
+    )?;
+    let dialogue_registry = query_num(&mut runtime, "return #require('data.dialogues.index').ids")?;
+    assert_num(
+        &mut runtime,
+        "#(require('world.dialogue').ids())",
+        dialogue_registry,
+    )?;
     assert_str(
         &mut runtime,
-        "require('dialogue').get('gu_changfeng_teach').speaker",
+        "require('world.dialogue').get('gu_changfeng_teach').speaker",
         "npc_gu_changfeng",
     )?;
     assert_str(
         &mut runtime,
-        "require('quest').get('quest_herb').giver",
+        "require('world.quest').get('quest_herb').giver",
         "npc_shen_qingluo",
     )?;
-    // 数据条件未被运行时裁剪：顾长风 greet 节点数据侧就是 5 个选项。
-    assert_num(
+    // 数据条件未被运行时裁剪：顾长风 greet 节点仍保留 M17-03 的 5 个数据选项
+    // （M19-01 只追加条件选项，故这里断言「不少于 5」而不是精确数量）。
+    assert_str(
         &mut runtime,
-        "#(require('dialogue').get('gu_changfeng_teach').nodes.greet.options)",
-        5.0,
+        "tostring(#(require('world.dialogue').get('gu_changfeng_teach').nodes.greet.options) >= 5)",
+        "true",
     )?;
     assert_str(
         &mut runtime,
-        "require('dialogue').find_for_npc('npc_shen_qingluo')",
+        "require('world.dialogue').find_for_npc('npc_shen_qingluo')",
         "shen_qingluo_herb",
     )?;
-    assert_validate(&mut runtime, "quest")?;
-    assert_validate(&mut runtime, "dialogue")?;
+    assert_validate(&mut runtime, "world.quest")?;
+    assert_validate(&mut runtime, "world.dialogue")?;
 
     banner("M17-03b NPC 交互开对话 + 条件过滤：quest_spar 未接取");
     assert_str(
         &mut runtime,
-        "require('quest').state('quest_spar')",
+        "require('world.quest').state('quest_spar')",
         "not_started",
     )?;
-    lua(&mut runtime, "return require('weather').set('sunny')")?;
+    lua(&mut runtime, "return require('world.weather').set('sunny')")?;
     lua(&mut runtime, &format!("clock.set(1, {TEN_AM})"))?;
     frames(&mut runtime, 1)?;
     talk(&mut runtime, "npc_gu_changfeng")?;
     assert_mode(&mut runtime, "Dialogue")?;
-    assert_str(&mut runtime, "require('dialogue').is_open()", "true")?;
+    assert_str(&mut runtime, "require('world.dialogue').is_open()", "true")?;
     assert_str(
         &mut runtime,
-        "require('dialogue').dialogue_id()",
+        "require('world.dialogue').dialogue_id()",
         "gu_changfeng_teach",
     )?;
-    assert_str(&mut runtime, "require('dialogue').info().node", "greet")?;
     assert_str(
         &mut runtime,
-        "require('dialogue').info().speaker_name",
+        "require('world.dialogue').info().node",
+        "greet",
+    )?;
+    assert_str(
+        &mut runtime,
+        "require('world.dialogue').info().speaker_name",
         "顾长风",
     )?;
-    // 未接取态只剩「接取」与「告辞」，in_progress/deliverable/completed 选项不可见。
-    assert_num(&mut runtime, "#(require('dialogue').info().options)", 2.0)?;
+    // 未接取态：「接取」仍排第一（脚本按数字键 1 接取），「告辞」可见，
+    // in_progress/deliverable/completed 选项不可见。数量与第 2 项随 M19-01 追加的
+    // 条件选项（主线/订单入口）变化，故只做语义断言。
     assert_str(
         &mut runtime,
-        "require('dialogue').info().options[1]",
+        "require('world.dialogue').info().options[1]",
         "愿随师父走一遍基础三式。",
     )?;
-    assert_str(
-        &mut runtime,
-        "require('dialogue').info().options[2]",
-        "改日再来请教。",
-    )?;
+    assert_option(&mut runtime, "改日再来请教。", true)?;
+    assert_option(&mut runtime, "三式已经走完。", false)?;
 
     banner("M17-03c 选项副作用：接取任务 + add_var 推进目标（in_progress）");
     press(&mut runtime, InputKey::from_char('1'))?;
     assert_str(
         &mut runtime,
-        "require('quest').state('quest_spar')",
+        "require('world.quest').state('quest_spar')",
         "in_progress",
     )?;
-    assert_str(&mut runtime, "require('dialogue').info().node", "accept")?;
+    assert_str(
+        &mut runtime,
+        "require('world.dialogue').info().node",
+        "accept",
+    )?;
     press(&mut runtime, InputKey::from_char('1'))?;
-    assert_str(&mut runtime, "require('dialogue').info().node", "practice")?;
+    assert_str(
+        &mut runtime,
+        "require('world.dialogue').info().node",
+        "practice",
+    )?;
     assert_num(
         &mut runtime,
-        "require('state').get_var('sword_drills')",
+        "require('core.state').get_var('sword_drills')",
         1.0,
     )?;
     assert_str(
         &mut runtime,
-        "require('quest').state('quest_spar')",
+        "require('world.quest').state('quest_spar')",
         "in_progress",
     )?;
 
@@ -140,46 +162,50 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     press(&mut runtime, InputKey::from_char('1'))?;
     assert_num(
         &mut runtime,
-        "require('state').get_var('sword_drills')",
+        "require('core.state').get_var('sword_drills')",
         3.0,
     )?;
     assert_str(
         &mut runtime,
-        "require('quest').state('quest_spar')",
+        "require('world.quest').state('quest_spar')",
         "deliverable",
     )?;
     // 可交付态：in_progress 选项消失，交付选项上浮。
-    assert_num(&mut runtime, "#(require('dialogue').info().options)", 2.0)?;
     assert_str(
         &mut runtime,
-        "require('dialogue').info().options[1]",
+        "require('world.dialogue').info().options[1]",
         "三式已经走完。",
     )?;
+    assert_option(&mut runtime, "愿随师父走一遍基础三式。", false)?;
     press(&mut runtime, InputKey::from_char('1'))?;
     assert_str(
         &mut runtime,
-        "require('quest').state('quest_spar')",
+        "require('world.quest').state('quest_spar')",
         "completed",
     )?;
-    assert_str(&mut runtime, "require('dialogue').info().node", "done")?;
-    assert_num(&mut runtime, "require('state').inner_power", 60.0)?;
     assert_str(
         &mut runtime,
-        "require('state').get_var('sword_basics_learned')",
+        "require('world.dialogue').info().node",
+        "done",
+    )?;
+    assert_num(&mut runtime, "require('core.state').inner_power", 60.0)?;
+    assert_str(
+        &mut runtime,
+        "require('core.state').get_var('sword_basics_learned')",
         "true",
     )?;
 
     banner("M17-03e 幂等：重复交付返回 already_completed，奖励不重复发放");
     assert_str(
         &mut runtime,
-        "select(2, require('quest').deliver('quest_spar'))",
+        "select(2, require('world.quest').deliver('quest_spar'))",
         "already_completed",
     )?;
-    assert_num(&mut runtime, "require('state').inner_power", 60.0)?;
-    assert_num(&mut runtime, "require('state').money", 120.0)?;
+    assert_num(&mut runtime, "require('core.state').inner_power", 60.0)?;
+    assert_num(&mut runtime, "require('core.state').money", 120.0)?;
     // Esc 结束对话，回到 Playing。
     press(&mut runtime, InputKey::Escape)?;
-    assert_str(&mut runtime, "require('dialogue').is_open()", "false")?;
+    assert_str(&mut runtime, "require('world.dialogue').is_open()", "false")?;
     assert_mode(&mut runtime, "Playing")?;
 
     banner("M17-03f item 任务：条件不满足时交付选项不出现 / objectives_unmet");
@@ -195,39 +221,50 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     talk(&mut runtime, "npc_shen_qingluo")?;
     assert_str(
         &mut runtime,
-        "require('dialogue').dialogue_id()",
+        "require('world.dialogue').dialogue_id()",
         "shen_qingluo_herb",
     )?;
-    assert_str(&mut runtime, "require('dialogue').info().node", "greet")?;
-    assert_num(&mut runtime, "#(require('dialogue').info().options)", 2.0)?;
     assert_str(
         &mut runtime,
-        "require('dialogue').info().options[1]",
+        "require('world.dialogue').info().node",
+        "greet",
+    )?;
+    assert_str(
+        &mut runtime,
+        "require('world.dialogue').info().options[1]",
         "愿为医馆采三株灵芝。",
     )?;
     press(&mut runtime, InputKey::from_char('1'))?;
     assert_str(
         &mut runtime,
-        "require('quest').state('quest_herb')",
+        "require('world.quest').state('quest_herb')",
         "in_progress",
     )?;
-    assert_str(&mut runtime, "require('dialogue').info().node", "accept")?;
+    assert_str(
+        &mut runtime,
+        "require('world.dialogue').info().node",
+        "accept",
+    )?;
     press(&mut runtime, InputKey::from_char('1'))?;
-    assert_str(&mut runtime, "require('dialogue').is_open()", "false")?;
+    assert_str(&mut runtime, "require('world.dialogue').is_open()", "false")?;
     // 空背包：目标未达成 → 交付被拒，且对话里只有「催问」与「告辞」。
     assert_str(
         &mut runtime,
-        "select(2, require('quest').deliver('quest_herb'))",
+        "select(2, require('world.quest').deliver('quest_herb'))",
         "objectives_unmet",
     )?;
     talk(&mut runtime, "npc_shen_qingluo")?;
-    assert_num(&mut runtime, "#(require('dialogue').info().options)", 2.0)?;
     assert_str(
         &mut runtime,
-        "require('dialogue').info().options[1]",
+        "require('world.dialogue').info().options[1]",
         "灵芝还在采，稍待。",
     )?;
-    assert_str(&mut runtime, "require('dialogue').info().node", "greet")?;
+    assert_option(&mut runtime, "愿为医馆采三株灵芝。", false)?;
+    assert_str(
+        &mut runtime,
+        "require('world.dialogue').info().node",
+        "greet",
+    )?;
 
     banner("M17-03g item 交付：消耗目标物品 + item/money 奖励 + on_complete");
     press(&mut runtime, InputKey::Escape)?;
@@ -236,38 +273,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_num(&mut runtime, "inv.count('player', 'lingzhi')", 3.0)?;
     assert_str(
         &mut runtime,
-        "require('quest').state('quest_herb')",
+        "require('world.quest').state('quest_herb')",
         "deliverable",
     )?;
     talk(&mut runtime, "npc_shen_qingluo")?;
-    assert_num(&mut runtime, "#(require('dialogue').info().options)", 2.0)?;
     assert_str(
         &mut runtime,
-        "require('dialogue').info().options[1]",
+        "require('world.dialogue').info().options[1]",
         "三株灵芝已备齐。",
     )?;
+    assert_option(&mut runtime, "灵芝还在采，稍待。", false)?;
     press(&mut runtime, InputKey::from_char('1'))?;
     assert_str(
         &mut runtime,
-        "require('quest').state('quest_herb')",
+        "require('world.quest').state('quest_herb')",
         "completed",
     )?;
-    assert_str(&mut runtime, "require('dialogue').info().node", "done")?;
-    assert_num(&mut runtime, "require('state').money", 170.0)?;
+    assert_str(
+        &mut runtime,
+        "require('world.dialogue').info().node",
+        "done",
+    )?;
+    assert_num(&mut runtime, "require('core.state').money", 170.0)?;
     assert_num(&mut runtime, "inv.count('player', 'lingzhi')", 0.0)?;
     assert_num(&mut runtime, "inv.count('player', 'rice')", 4.0)?;
     assert_str(
         &mut runtime,
-        "require('state').get_var('herb_delivered')",
+        "require('core.state').get_var('herb_delivered')",
         "true",
     )?;
     // 幂等：奖励不因再次交付而翻倍。
     assert_str(
         &mut runtime,
-        "select(2, require('quest').deliver('quest_herb'))",
+        "select(2, require('world.quest').deliver('quest_herb'))",
         "already_completed",
     )?;
-    assert_num(&mut runtime, "require('state').money", 170.0)?;
+    assert_num(&mut runtime, "require('core.state').money", 170.0)?;
     assert_num(&mut runtime, "inv.count('player', 'rice')", 4.0)?;
     press(&mut runtime, InputKey::Escape)?;
     assert_mode(&mut runtime, "Playing")?;
@@ -275,7 +316,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     banner("M17-03h 副作用可回溯：变量写入带来源与事件流水");
     let events = query_str(
         &mut runtime,
-        "local s = require('state'); local out = {}; \
+        "local s = require('core.state'); local out = {}; \
          for i, e in ipairs(s.var_events) do \
            out[i] = tostring(e.var) .. '@' .. tostring(e.source) .. '#' .. tostring(e.event) \
          end; return #s.var_events .. '|' .. table.concat(out, ';')",
@@ -294,33 +335,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     banner("M17-03i 读档恢复：任务记录 / 全局变量 / 奖励一致");
     save_game(&mut runtime)?;
     let mut second = new_runtime(&project_arg, &save_path)?;
-    enter_title(&mut second, &main_script)?;
+    enter_main_menu(&mut second, &main_script)?;
     click_button(&mut second, "BtnContinue")?;
     assert_scene_is(&mut second, "village")?;
     assert_map_current(&mut second, "village")?;
-    assert_validate(&mut second, "quest")?;
-    assert_validate(&mut second, "dialogue")?;
+    assert_validate(&mut second, "world.quest")?;
+    assert_validate(&mut second, "world.dialogue")?;
     assert_str(
         &mut second,
-        "require('quest').state('quest_spar')",
+        "require('world.quest').state('quest_spar')",
         "completed",
     )?;
     assert_str(
         &mut second,
-        "require('quest').state('quest_herb')",
+        "require('world.quest').state('quest_herb')",
         "completed",
     )?;
-    assert_num(&mut second, "require('state').money", 170.0)?;
-    assert_num(&mut second, "require('state').inner_power", 60.0)?;
-    assert_num(&mut second, "require('state').get_var('sword_drills')", 3.0)?;
+    assert_num(&mut second, "require('core.state').money", 170.0)?;
+    assert_num(&mut second, "require('core.state').inner_power", 60.0)?;
+    assert_num(
+        &mut second,
+        "require('core.state').get_var('sword_drills')",
+        3.0,
+    )?;
     assert_str(
         &mut second,
-        "require('state').get_var('sword_basics_learned')",
+        "require('core.state').get_var('sword_basics_learned')",
         "true",
     )?;
     assert_str(
         &mut second,
-        "require('state').get_var('herb_delivered')",
+        "require('core.state').get_var('herb_delivered')",
         "true",
     )?;
     assert_num(&mut second, "inv.count('player', 'lingzhi')", 0.0)?;
@@ -328,12 +373,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 读档后重复交付仍被拦截（完成态随存档恢复）。
     assert_str(
         &mut second,
-        "select(2, require('quest').deliver('quest_spar'))",
+        "select(2, require('world.quest').deliver('quest_spar'))",
         "already_completed",
     )?;
     let restored_events = query_str(
         &mut second,
-        "return tostring(#require('state').var_events > 0)",
+        "return tostring(#require('core.state').var_events > 0)",
     )?;
     if restored_events != "true" {
         return Err(format!("var_events not restored: {restored_events}").into());
@@ -341,58 +386,69 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     banner("M17-03j 五态覆盖：failed 态由任务状态机与对话条件共同生效");
     let mut third = new_runtime(&project_arg, &fail_save_path)?;
-    enter_title(&mut third, &main_script)?;
+    enter_main_menu(&mut third, &main_script)?;
     click_button(&mut third, "BtnStart")?;
-    assert_scene_is(&mut third, "main")?;
+    assert_scene_is(&mut third, "manor")?;
     assert_str(
         &mut third,
-        "require('quest').state('quest_spar')",
+        "require('world.quest').state('quest_spar')",
         "not_started",
     )?;
-    lua(&mut third, "return require('weather').set('sunny')")?;
+    lua(&mut third, "return require('world.weather').set('sunny')")?;
     lua(&mut third, &format!("clock.set(1, {TEN_AM})"))?;
     frames(&mut third, 1)?;
     talk(&mut third, "npc_gu_changfeng")?;
     press(&mut third, InputKey::from_char('1'))?; // 接取
     assert_str(
         &mut third,
-        "require('quest').state('quest_spar')",
+        "require('world.quest').state('quest_spar')",
         "in_progress",
     )?;
     press(&mut third, InputKey::from_char('1'))?; // 起手：sword_drills = 1
-    assert_str(&mut third, "require('dialogue').info().node", "practice")?;
     assert_str(
         &mut third,
-        "tostring(require('quest').fail('quest_spar'))",
+        "require('world.dialogue').info().node",
+        "practice",
+    )?;
+    assert_str(
+        &mut third,
+        "tostring(require('world.quest').fail('quest_spar'))",
         "true",
     )?;
-    assert_str(&mut third, "require('quest').state('quest_spar')", "failed")?;
-    // 失败态：practice 节点只剩「今日先到这里。」这一条兜底选项。
-    assert_num(&mut third, "#(require('dialogue').info().options)", 1.0)?;
     assert_str(
         &mut third,
-        "require('dialogue').info().options[1]",
+        "require('world.quest').state('quest_spar')",
+        "failed",
+    )?;
+    // 失败态：practice 节点只剩「今日先到这里。」这一条兜底选项（数量随数据增长
+    // 可能变化，故断言首选项文本而不锁死数量）。
+    assert_str(
+        &mut third,
+        "require('world.dialogue').info().options[1]",
         "今日先到这里。",
     )?;
+    assert_option(&mut third, "再练一遍。", false)?;
     assert_str(
         &mut third,
-        "select(2, require('quest').deliver('quest_spar'))",
+        "select(2, require('world.quest').deliver('quest_spar'))",
         "quest_failed",
     )?;
-    assert_num(&mut third, "require('state').inner_power", 50.0)?;
+    assert_num(&mut third, "require('core.state').inner_power", 50.0)?;
     assert_str(
         &mut third,
-        "select(2, require('quest').fail('quest_spar'))",
+        "select(2, require('world.quest').fail('quest_spar'))",
         "already_failed",
     )?;
 
     println!(
-        "jhyt_m17_dialogue_ok project={} quests=2 dialogues=2 spar={} herb={} money={} inner_power={}",
+        "jhyt_m17_dialogue_ok project={} quests={} dialogues={} spar={} herb={} money={} inner_power={}",
         project.display(),
-        query_str(&mut second, "require('quest').state('quest_spar')")?,
-        query_str(&mut second, "require('quest').state('quest_herb')")?,
-        query_num(&mut second, "return require('state').money")?,
-        query_num(&mut second, "return require('state').inner_power")?,
+        query_num(&mut second, "return #require('world.quest').ids()")?,
+        query_num(&mut second, "return #require('world.dialogue').ids()")?,
+        query_str(&mut second, "require('world.quest').state('quest_spar')")?,
+        query_str(&mut second, "require('world.quest').state('quest_herb')")?,
+        query_num(&mut second, "return require('core.state').money")?,
+        query_num(&mut second, "return require('core.state').inner_power")?,
     );
     let _ = fs::remove_file(&save_path);
     let _ = fs::remove_file(&fail_save_path);
@@ -411,16 +467,16 @@ fn new_runtime(project: &Path, save_path: &Path) -> Result<LuaRuntime, Box<dyn s
     Ok(runtime)
 }
 
-/// Runs the project script, then loads the `title` scene so BtnStart/BtnContinue
+/// Runs the project script, then loads the `main` 门面 scene so BtnStart/BtnContinue
 /// are live (mirrors jhyt_smoke).
-fn enter_title(
+fn enter_main_menu(
     runtime: &mut LuaRuntime,
     main_script: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     runtime.execute_project_script(main_script)?;
-    runtime.execute_console("scene.load('title')")?;
+    runtime.execute_console("scene.load('main')")?;
     runtime.process_scene_transition()?;
-    assert_scene_is(runtime, "title")?;
+    assert_scene_is(runtime, "main")?;
     Ok(())
 }
 
@@ -433,7 +489,10 @@ fn click_button(runtime: &mut LuaRuntime, button: &str) -> Result<(), Box<dyn st
 
 /// Teleports the player to a world position via `player.teleport`.
 fn teleport(runtime: &mut LuaRuntime, pos: (f32, f32)) -> Result<(), Box<dyn std::error::Error>> {
-    runtime.execute_console(&format!("require('player').teleport({}, {})", pos.0, pos.1))?;
+    runtime.execute_console(&format!(
+        "require('player.player').teleport({}, {})",
+        pos.0, pos.1
+    ))?;
     Ok(())
 }
 
@@ -442,9 +501,9 @@ fn talk(runtime: &mut LuaRuntime, persist_id: &str) -> Result<(), Box<dyn std::e
     let got = query_str(
         runtime,
         &format!(
-            "local q = require('npc').query('{persist_id}'); \
+            "local q = require('world.npc').query('{persist_id}'); \
              if not q or not q.live then return 'no_npc' end; \
-             require('player').teleport((q.cell_x + 0.5) * 32, (q.cell_y + 0.5) * 32); \
+             require('player.player').teleport((q.cell_x + 0.5) * 32, (q.cell_y + 0.5) * 32); \
              return 'ok'"
         ),
     )?;
@@ -517,6 +576,27 @@ fn assert_num(
     Ok(())
 }
 
+/// 对话选项语义断言：`text` 是否（不）在当前可选项里。
+///
+/// 选项数量随内容增长（M19-01 追加条件选项）变化，锁死数量会让示例被内容
+/// 增长顶掉；这里只断言「目标选项可见 / 已消失」。
+fn assert_option(
+    runtime: &mut LuaRuntime,
+    text: &str,
+    expected: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let expr = format!(
+        "(function() for _, t in ipairs(require('world.dialogue').info().options) do \
+           if t == '{text}' then return 'visible' end end return 'hidden' end)()"
+    );
+    let got = query_str(runtime, &expr)?;
+    let want = if expected { "visible" } else { "hidden" };
+    if got != want {
+        return Err(format!("dialogue option {text:?} = {got}, want {want}").into());
+    }
+    Ok(())
+}
+
 /// 加载期校验：issues 非空时把全部条目拼进错误信息。
 fn assert_validate(
     runtime: &mut LuaRuntime,
@@ -550,7 +630,7 @@ fn assert_map_current(
     runtime: &mut LuaRuntime,
     expected: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let current = query_str(runtime, "require('map_manager').current()")?;
+    let current = query_str(runtime, "require('world.map_manager').current()")?;
     if current != expected {
         return Err(format!("map.current() = {current:?}, want {expected:?}").into());
     }
@@ -558,11 +638,14 @@ fn assert_map_current(
 }
 
 fn assert_mode(runtime: &mut LuaRuntime, expected: &str) -> Result<(), Box<dyn std::error::Error>> {
-    assert_str(runtime, "require('state').mode", expected)
+    assert_str(runtime, "require('core.state').mode", expected)
 }
 
 fn save_game(runtime: &mut LuaRuntime) -> Result<(), Box<dyn std::error::Error>> {
-    let ok = query_str(runtime, "return tostring(require('save_manager').save())")?;
+    let ok = query_str(
+        runtime,
+        "return tostring(require('core.save_manager').save())",
+    )?;
     if ok != "true" {
         return Err(format!("save() returned {ok:?}").into());
     }

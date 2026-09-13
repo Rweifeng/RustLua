@@ -83,6 +83,7 @@ from gen_manor_art import (  # noqa: E402  复用通用绘制工具与基础色
     tiled_roof,
     wood_post,
 )
+from cjk_text import draw_plaque, prewarm  # noqa: E402  中文匾额（GDI+ 栅格化）
 
 
 def frame(canvas, x0, y0, x1, y1, color, thickness=1):
@@ -377,8 +378,10 @@ def white_wall_house(width, height, *, gable=True, windows=2, door=True, banner=
 
 
 def building_clinic():
-    """药庐 192×160：白墙黛瓦 + 马头墙 + 药幌（不写字）。"""
-    return white_wall_house(192, 160, gable=True, windows=2, door=True, banner=True)
+    """药庐 192×160：白墙黛瓦 + 马头墙 + 门楣匾额「药庐」。"""
+    cv = white_wall_house(192, 160, gable=True, windows=2, door=True, banner=True)
+    draw_plaque(cv, 64, 90, 128, 108, "药庐", size=13)
+    return cv
 
 
 def building_shop():
@@ -401,20 +404,22 @@ def building_shop():
     cv.rect(20, 124, 170, 140, WOOD)
     cv.hline(20, 170, 124, WOOD_LIGHT)
     cv.hline(20, 170, 140, WOOD_DARK)
-    # 货架与货箱
-    cv.rect(28, 94, 80, 120, WOOD_DARK)
-    for y in (100, 110):
+    # 货架与货箱（下移 6px，给门楣匾额让位）
+    cv.rect(28, 100, 80, 126, WOOD_DARK)
+    for y in (108, 118):
         cv.hline(28, 80, y, WOOD)
         for x in range(32, 78, 12):
             cv.rect(x, y - 8, x + 8, y - 1, GOLD if (x // 12) % 2 else CINNABAR)
-    cv.rect(100, 100, 128, 124, WOOD)
-    cv.rect(134, 104, 162, 124, WOOD_LIGHT)
+    cv.rect(100, 102, 128, 128, WOOD)
+    cv.rect(134, 106, 162, 128, WOOD_LIGHT)
     # 招幌
     bx = 156
     cv.vline(bx, 80, 104, WOOD_DARK)
     cv.rect(bx - 8, 100, bx + 8, 130, CINNABAR)
     cv.hline(bx - 8, bx + 8, 100, GOLD)
     cv.hline(bx - 8, bx + 8, 130, GOLD)
+    # 门楣匾额「杂货铺」
+    draw_plaque(cv, 52, 84, 140, 108, "杂货铺", size=13)
     # 台基
     cv.rect(6, 138, 185, 150, STONE)
     cv.hline(6, 185, 138, STONE_LIGHT)
@@ -426,7 +431,7 @@ def building_shop():
 
 
 def building_forge():
-    """铁匠铺 128×64：半开放工棚 + 炉火 + 铁砧 + 柴堆。"""
+    """铁匠铺 128×64：半开放工棚 + 炉火 + 铁砧 + 柴堆 + 匾额「铁匠铺」。"""
     cv = Canvas(128, 64)
     rows = roof_rows(4, 30, 12, 116, 0, 127)
     for y, x0, x1 in rows:
@@ -454,6 +459,7 @@ def building_forge():
         cv.hline(98, 118, y + 3, WOOD_DARK)
     cv.rect(2, 58, 126, 63, STONE)
     cv.hline(2, 126, 58, STONE_LIGHT)
+    draw_plaque(cv, 52, 30, 104, 44, "铁匠铺", size=11)
     cv.outline(INK)
     return cv
 
@@ -687,9 +693,7 @@ def building_gate():
     cv.rect(8, 32, 22, 36, WOOD_DARK)
     cv.rect(74, 32, 88, 36, WOOD_DARK)
     # 匾额（留白，文字运行时渲染）
-    cv.rect(28, 38, 68, 60, WOOD_DARK)
-    cv.rect(30, 40, 66, 58, WHITEWASH)
-    frame(cv, 30, 40, 66, 58, GOLD, 1)
+    draw_plaque(cv, 28, 38, 68, 60, "云泽村", size=13)
     # 灯笼
     for lx in (26, 66):
         cv.vline(lx + 3, 60, 66, WOOD_DARK)
@@ -785,6 +789,9 @@ def build_sprite_preview(sprites, scale=2):
 
 
 def generate(quiet=False):
+    # 中文招牌先批量栅格化（一次 PowerShell 调用）
+    prewarm([("药庐", 13, "pixel", True), ("杂货铺", 13, "pixel", True),
+             ("铁匠铺", 11, "pixel", True), ("云泽村", 13, "pixel", True)])
     tiles = ground_tiles()
     sheet = pack_tileset(tiles)
     write_png(os.path.join(TILE_DIR, "village_ground.png"), sheet)

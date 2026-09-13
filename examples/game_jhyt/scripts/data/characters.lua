@@ -12,7 +12,7 @@
 --   * **NPC 由 entity.spawn 运行时创建，Lua 无"挂 Animation 组件"的 API**，
 --     因此 NPC 现在只能用 static_<dir>.png 单帧；缺口记录见 docs/36 第 6 节。
 --
--- 主角在场景里是静态实体（main.scene/ village.scene 的 JianghuPlayer），
+-- 主角在场景里是静态实体（manor.scene/ village.scene 的 JianghuPlayer），
 -- 可以直接在 .scene 里声明 Animation 组件，用 M.player_animation() 取串。
 
 local M = {}
@@ -287,6 +287,84 @@ M.characters = {
       { name = "talk_n", sheet = "assets/art/characters/xuanhe/talk_n.png", cols = 2, fps = 4, looped = true },
       { name = "talk_e", sheet = "assets/art/characters/xuanhe/talk_e.png", cols = 2, fps = 4, looped = true },
       { name = "talk_w", sheet = "assets/art/characters/xuanhe/talk_w.png", cols = 2, fps = 4, looped = true },
+    },
+  },
+  a_qi = {
+    display = "阿七·年轻镖师",
+    role = "npc",
+    note = "护安镖局短打 + 镖旗纹样护腕 + 腰刀；最年轻、动作最利落（偏矮 + 标准体型）",
+    static_sprite = {
+      s = "texture=assets/art/characters/a_qi/static_s.png;size=32x32;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+      n = "texture=assets/art/characters/a_qi/static_n.png;size=32x32;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+      e = "texture=assets/art/characters/a_qi/static_e.png;size=32x32;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+      w = "texture=assets/art/characters/a_qi/static_w.png;size=32x32;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+    },
+    animation = "default=idle_s;clip:idle_s:assets/art/characters/a_qi/idle_s.png:2:6:true;clip:idle_n:assets/art/characters/a_qi/idle_n.png:2:6:true;clip:idle_e:assets/art/characters/a_qi/idle_e.png:2:6:true;clip:idle_w:assets/art/characters/a_qi/idle_w.png:2:6:true;clip:walk_s:assets/art/characters/a_qi/walk_s.png:4:10:true;clip:walk_n:assets/art/characters/a_qi/walk_n.png:4:10:true;clip:walk_e:assets/art/characters/a_qi/walk_e.png:4:10:true;clip:walk_w:assets/art/characters/a_qi/walk_w.png:4:10:true;clip:talk_s:assets/art/characters/a_qi/talk_s.png:2:4:true;clip:talk_n:assets/art/characters/a_qi/talk_n.png:2:4:true;clip:talk_e:assets/art/characters/a_qi/talk_e.png:2:4:true;clip:talk_w:assets/art/characters/a_qi/talk_w.png:2:4:true",
+    clips = {
+      { name = "idle_s", sheet = "assets/art/characters/a_qi/idle_s.png", cols = 2, fps = 6, looped = true },
+      { name = "idle_n", sheet = "assets/art/characters/a_qi/idle_n.png", cols = 2, fps = 6, looped = true },
+      { name = "idle_e", sheet = "assets/art/characters/a_qi/idle_e.png", cols = 2, fps = 6, looped = true },
+      { name = "idle_w", sheet = "assets/art/characters/a_qi/idle_w.png", cols = 2, fps = 6, looped = true },
+      { name = "walk_s", sheet = "assets/art/characters/a_qi/walk_s.png", cols = 4, fps = 10, looped = true },
+      { name = "walk_n", sheet = "assets/art/characters/a_qi/walk_n.png", cols = 4, fps = 10, looped = true },
+      { name = "walk_e", sheet = "assets/art/characters/a_qi/walk_e.png", cols = 4, fps = 10, looped = true },
+      { name = "walk_w", sheet = "assets/art/characters/a_qi/walk_w.png", cols = 4, fps = 10, looped = true },
+      { name = "talk_s", sheet = "assets/art/characters/a_qi/talk_s.png", cols = 2, fps = 4, looped = true },
+      { name = "talk_n", sheet = "assets/art/characters/a_qi/talk_n.png", cols = 2, fps = 4, looped = true },
+      { name = "talk_e", sheet = "assets/art/characters/a_qi/talk_e.png", cols = 2, fps = 4, looped = true },
+      { name = "talk_w", sheet = "assets/art/characters/a_qi/talk_w.png", cols = 2, fps = 4, looped = true },
+    },
+  },
+  situ_kui = {
+    display = "司徒魁·玄冥会执事",
+    role = "npc",
+    note = "玄冥会墨黑长袍 + 暗紫滚边 + 面罩半遮；反派辨识度靠全黑配紫",
+    static_sprite = {
+      s = "texture=assets/art/characters/situ_kui/static_s.png;size=32x32;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+      n = "texture=assets/art/characters/situ_kui/static_n.png;size=32x32;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+      e = "texture=assets/art/characters/situ_kui/static_e.png;size=32x32;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+      w = "texture=assets/art/characters/situ_kui/static_w.png;size=32x32;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+    },
+    animation = "default=idle_s;clip:idle_s:assets/art/characters/situ_kui/idle_s.png:2:6:true;clip:idle_n:assets/art/characters/situ_kui/idle_n.png:2:6:true;clip:idle_e:assets/art/characters/situ_kui/idle_e.png:2:6:true;clip:idle_w:assets/art/characters/situ_kui/idle_w.png:2:6:true;clip:walk_s:assets/art/characters/situ_kui/walk_s.png:4:10:true;clip:walk_n:assets/art/characters/situ_kui/walk_n.png:4:10:true;clip:walk_e:assets/art/characters/situ_kui/walk_e.png:4:10:true;clip:walk_w:assets/art/characters/situ_kui/walk_w.png:4:10:true;clip:talk_s:assets/art/characters/situ_kui/talk_s.png:2:4:true;clip:talk_n:assets/art/characters/situ_kui/talk_n.png:2:4:true;clip:talk_e:assets/art/characters/situ_kui/talk_e.png:2:4:true;clip:talk_w:assets/art/characters/situ_kui/talk_w.png:2:4:true",
+    clips = {
+      { name = "idle_s", sheet = "assets/art/characters/situ_kui/idle_s.png", cols = 2, fps = 6, looped = true },
+      { name = "idle_n", sheet = "assets/art/characters/situ_kui/idle_n.png", cols = 2, fps = 6, looped = true },
+      { name = "idle_e", sheet = "assets/art/characters/situ_kui/idle_e.png", cols = 2, fps = 6, looped = true },
+      { name = "idle_w", sheet = "assets/art/characters/situ_kui/idle_w.png", cols = 2, fps = 6, looped = true },
+      { name = "walk_s", sheet = "assets/art/characters/situ_kui/walk_s.png", cols = 4, fps = 10, looped = true },
+      { name = "walk_n", sheet = "assets/art/characters/situ_kui/walk_n.png", cols = 4, fps = 10, looped = true },
+      { name = "walk_e", sheet = "assets/art/characters/situ_kui/walk_e.png", cols = 4, fps = 10, looped = true },
+      { name = "walk_w", sheet = "assets/art/characters/situ_kui/walk_w.png", cols = 4, fps = 10, looped = true },
+      { name = "talk_s", sheet = "assets/art/characters/situ_kui/talk_s.png", cols = 2, fps = 4, looped = true },
+      { name = "talk_n", sheet = "assets/art/characters/situ_kui/talk_n.png", cols = 2, fps = 4, looped = true },
+      { name = "talk_e", sheet = "assets/art/characters/situ_kui/talk_e.png", cols = 2, fps = 4, looped = true },
+      { name = "talk_w", sheet = "assets/art/characters/situ_kui/talk_w.png", cols = 2, fps = 4, looped = true },
+    },
+  },
+  lu_guizang = {
+    display = "陆归藏·师父（已失踪）",
+    role = "npc",
+    note = "旧青灰布袍 + 灰白发 + 药篓；轮廓与玄鹤区分：更旧的配色、带背篓",
+    static_sprite = {
+      s = "texture=assets/art/characters/lu_guizang/static_s.png;size=32x32;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+      n = "texture=assets/art/characters/lu_guizang/static_n.png;size=32x32;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+      e = "texture=assets/art/characters/lu_guizang/static_e.png;size=32x32;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+      w = "texture=assets/art/characters/lu_guizang/static_w.png;size=32x32;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+    },
+    animation = "default=idle_s;clip:idle_s:assets/art/characters/lu_guizang/idle_s.png:2:6:true;clip:idle_n:assets/art/characters/lu_guizang/idle_n.png:2:6:true;clip:idle_e:assets/art/characters/lu_guizang/idle_e.png:2:6:true;clip:idle_w:assets/art/characters/lu_guizang/idle_w.png:2:6:true;clip:walk_s:assets/art/characters/lu_guizang/walk_s.png:4:10:true;clip:walk_n:assets/art/characters/lu_guizang/walk_n.png:4:10:true;clip:walk_e:assets/art/characters/lu_guizang/walk_e.png:4:10:true;clip:walk_w:assets/art/characters/lu_guizang/walk_w.png:4:10:true;clip:talk_s:assets/art/characters/lu_guizang/talk_s.png:2:4:true;clip:talk_n:assets/art/characters/lu_guizang/talk_n.png:2:4:true;clip:talk_e:assets/art/characters/lu_guizang/talk_e.png:2:4:true;clip:talk_w:assets/art/characters/lu_guizang/talk_w.png:2:4:true",
+    clips = {
+      { name = "idle_s", sheet = "assets/art/characters/lu_guizang/idle_s.png", cols = 2, fps = 6, looped = true },
+      { name = "idle_n", sheet = "assets/art/characters/lu_guizang/idle_n.png", cols = 2, fps = 6, looped = true },
+      { name = "idle_e", sheet = "assets/art/characters/lu_guizang/idle_e.png", cols = 2, fps = 6, looped = true },
+      { name = "idle_w", sheet = "assets/art/characters/lu_guizang/idle_w.png", cols = 2, fps = 6, looped = true },
+      { name = "walk_s", sheet = "assets/art/characters/lu_guizang/walk_s.png", cols = 4, fps = 10, looped = true },
+      { name = "walk_n", sheet = "assets/art/characters/lu_guizang/walk_n.png", cols = 4, fps = 10, looped = true },
+      { name = "walk_e", sheet = "assets/art/characters/lu_guizang/walk_e.png", cols = 4, fps = 10, looped = true },
+      { name = "walk_w", sheet = "assets/art/characters/lu_guizang/walk_w.png", cols = 4, fps = 10, looped = true },
+      { name = "talk_s", sheet = "assets/art/characters/lu_guizang/talk_s.png", cols = 2, fps = 4, looped = true },
+      { name = "talk_n", sheet = "assets/art/characters/lu_guizang/talk_n.png", cols = 2, fps = 4, looped = true },
+      { name = "talk_e", sheet = "assets/art/characters/lu_guizang/talk_e.png", cols = 2, fps = 4, looped = true },
+      { name = "talk_w", sheet = "assets/art/characters/lu_guizang/talk_w.png", cols = 2, fps = 4, looped = true },
     },
   },
 }

@@ -210,3 +210,39 @@
 - 代价：后台任务与编辑器状态同步需要消息/轮询桥接；脚本输出解析依赖发布脚本的稳定标记。
 - 非目标：不做任务取消恢复、不做多工程并行发布。
 - 重新评估条件：进度映射随发布脚本漂移失准，或后台任务与编辑器状态不一致导致竞态。
+
+## ADR-0020：运行时固定阶段统一接入 Scheduler
+
+- 状态：Accepted
+- 日期：2026-09-10
+- 范围：`core/scheduler.rs`（泛型化）与 `host/runtime_scene.rs`（帧调度管线）。
+- 决定：`RuntimeScene::run_script_steps` 内部的手工固定阶段（输入 → Lua update → UI 点击 → 2D/3D 物理 → 粒子 → 时钟 → 场景切换，调用尾部的速度积分与动画推进）改为注册进 `Scheduler<RuntimeScene>` 执行；Scheduler 的系统上下文从硬编码 `&mut World` 泛型化为 `&mut C`（默认仍为 `World`），并新增 `Simulation` 阶段承载粒子/时钟/场景切换。游戏壳（`game_app.rs`）、编辑器 Play 预览（`preview_session.rs`）与 headless 执行共用这一调度入口；新增玩法系统经 `add_step_system`/`add_frame_system` 按阶段注册，不再扩大手工编排函数。
+- 原因：正式运行时、编辑器预览和 headless 三条路径必须共享一致的系统顺序、依赖/循环/panic 诊断（含 panic payload）与逐系统性能统计（`last_schedule_report`）；顺序不变是硬约束（每步管线与帧级管线的阶段/注册顺序与旧实现逐项对齐）。
+- 代价：Scheduler 回调不再要求 `Send`（运行时单线程，脚本系统捕获非 Send 的 Lua 状态）；每次 `run_script_steps` 重建调度器并做依赖校验（系统数量为个位数，开销可忽略）；系统所有权在调用期间移入调度器、结束后按注册顺序放回。
+- 非目标：不引入并行执行、不改 ECS 存储结构、不引入 archetype ECS。
+- 重新评估条件：出现需要并行调度的负载，或注册系统数量增长到逐帧重建调度器成为可测量开销。
+
+## ADR-0021：命名动作输入映射与设置持久化
+
+- 状态：Accepted
+- 日期：2026-09-13
+- 范围：`core/input.rs`（`ActionMap`/`Binding`）、`core/script.rs`（Lua `input.action*`/`input.pad*`）、
+  `host/runtime_scene.rs` 与 `host/gamepad.rs`（设备帧 → 动作）、设置文件（`<project>/settings.toml`）。
+- 决定：输入分三层——**物理输入**（键盘/鼠标/手柄设备帧）、**命名动作映射**（`ActionMap`，一份实例随
+  `ScriptState` 走，宿主经 setter 注入，保证脚本重绑定与宿主查询同源）、**动作消费**（Lua `input.action*`
+  与游戏脚本）。`Binding::to_text`/`parse` 是绑定的稳定文本形式，设置文件带版本头
+  `rustlua-actions-v1`；方向键序列化为**可读名字** `key:up`/`key:down`/`key:left`/`key:right`
+  （与 Lua 侧 `input.is_down("up")` 同名，便于设置文件阅读与重绑定面板展示；旧的内部码位写法
+  `key:other:1048577`…`1048580` 仍可解析并在重新保存时归一化）；读取失败/版本不符时回退默认映射并记录诊断（不崩溃、不静默丢弃用户绑定），
+  写入采用保序读改写；`ActionMap::merge_missing` 只补缺失动作，用户重绑定不被默认值覆盖。
+  旧物理键 API（`input.is_down`/`just_pressed`/`axis`）语义不变并继续可用。
+- 原因：手柄、键盘与未来重绑定必须共用一套命名动作，否则每加一种设备就要改全部玩法脚本；
+  设置文件与存档分离（`settings.toml` 是工程/玩家偏好，不进存档、不随存档回滚）。
+- 代价：脚本层多一层间接（动作名→绑定）；需要一次性把 `game_jhyt` 从物理键直读迁移到动作名，
+  并保持 headless 用例喂物理键时的等价行为（默认绑定必须让它等价通过）。
+- 备选：把映射只放在宿主（Lua 不可见）——被否，编辑器重绑定面板与脚本调试都需要读绑定；
+  把映射塞进存档——被否，存档回滚会连带回滚键位。
+- 非目标：不做触屏输入、输入录制/回放、多语言原生按键图标；手柄设备轮询见 M20-06（XInput，
+  gilrs 因离线依赖不可解析未落地）。
+- 重新评估条件：绑定文本格式需要破坏性变更（届时升版本头 + 迁移），或手柄型号差异导致固定编号
+  契约不可用（改为按设备映射表）。

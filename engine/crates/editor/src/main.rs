@@ -279,6 +279,19 @@ struct EditorApp {
     /// 底部资源浏览器 / Lua 控制台面板的显示开关（收起后 Scene/Game 视图获得最大空间）。
     show_resources_panel: bool,
     show_lua_console: bool,
+    /// M19-03 领域数据面板（Lua 域校验 + 只读视图 + PersistId 注册表）。
+    show_domain_data_panel: bool,
+    domain_report: Option<crate::panels::domain_data::DomainDataReport>,
+    persist_registry: Option<crate::panels::domain_data::PersistRegistry>,
+    /// M19-03 Scene 视图的出口/地点只读覆盖层开关。
+    show_domain_overlay: bool,
+    /// M19-03 运行时调试面板（只读探针）与最近一次读取结果。
+    show_runtime_debug_panel: bool,
+    runtime_probe_results: Option<Vec<crate::panels::runtime_debug::RuntimeProbeResult>>,
+    runtime_probe_error: Option<String>,
+    /// M19-03 Inspector 的 `entity_meta persist_id` 编辑缓冲与目标实体。
+    persist_id_buffer: String,
+    persist_id_editing: Option<SceneEntityId>,
     /// 实时日志缓冲（tracing 层写入，控制台面板读取显示）。
     log_sink: LogSink,
     /// “版本说明”窗口是否打开。
@@ -427,6 +440,36 @@ struct TilemapEditorState {
     map: Tilemap,
     brush: u8,
     paint_collision: bool,
+    /// M19-03 Tile 编辑模式：单格画笔 / 矩形填充 / 区域复制 / 区域粘贴。
+    mode: TileEditMode,
+    /// 区域复制剪贴板（tile 值 + solid 位；编辑期状态，与文档无关，不产生历史）。
+    clipboard: Option<crate::panels::tilemap_tools::TileRegion>,
+}
+
+/// M19-03 Tilemap 生产工具模式。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum TileEditMode {
+    /// 原有单格画笔（左键画、右键擦）。
+    #[default]
+    Point,
+    /// 拖拽框选 → 一次矩形填充（单条 Undo）。
+    RectFill,
+    /// 拖拽框选 → 复制区域到剪贴板。
+    RegionCopy,
+    /// 单击 → 把剪贴板内容粘贴到该格（越界裁剪，单条 Undo）。
+    RegionPaste,
+}
+
+impl TileEditMode {
+    /// 工具与预览文案（场景视图左上角提示 / 工具栏按钮 tooltip）。
+    fn label(self) -> &'static str {
+        match self {
+            Self::Point => "单格画笔",
+            Self::RectFill => "矩形填充",
+            Self::RegionCopy => "区域复制",
+            Self::RegionPaste => "区域粘贴",
+        }
+    }
 }
 
 impl Default for TilemapEditorState {
@@ -436,6 +479,8 @@ impl Default for TilemapEditorState {
                 .expect("default tilemap should be valid"),
             brush: 1,
             paint_collision: false,
+            mode: TileEditMode::default(),
+            clipboard: None,
         }
     }
 }
@@ -622,6 +667,9 @@ struct SceneEditorState {
     box_select_start: Option<egui::Pos2>,
     tile_paint_active: bool,
     tile_paint_last_cell: Option<(usize, usize, bool)>,
+    /// M19-03 矩形工具拖拽起点/当前格（TilePaint 的矩形填充与区域复制共用）。
+    tile_rect_anchor: Option<(usize, usize)>,
+    tile_rect_current: Option<(usize, usize)>,
 }
 
 struct SceneDrag {
@@ -757,6 +805,15 @@ impl EditorApp {
             publish_encrypt: false,
             show_resources_panel: true,
             show_lua_console: true,
+            show_domain_data_panel: false,
+            domain_report: None,
+            persist_registry: None,
+            show_domain_overlay: true,
+            show_runtime_debug_panel: false,
+            runtime_probe_results: None,
+            runtime_probe_error: None,
+            persist_id_buffer: String::new(),
+            persist_id_editing: None,
             log_sink,
             show_about: false,
             project_settings: Default::default(),
@@ -1176,6 +1233,14 @@ impl eframe::App for EditorApp {
             context.request_repaint();
             self.scene_view_repaint_pending = false;
         }
+        // M19-03：领域数据在首次需要时收集一次（Scene 视图覆盖层默认开启、或打开的
+        // 领域数据面板）；之后的刷新走面板「重新校验」按钮（数据文件可能已改）。
+        if self.project_loaded
+            && self.domain_report.is_none()
+            && (self.show_domain_overlay || self.show_domain_data_panel)
+        {
+            self.refresh_domain_report();
+        }
         // E26: advance the isolated animation preview even while the Inspector
         // is visible; playback time never writes back to the scene document.
         let delta_seconds = context.input(|input| input.stable_dt).max(0.0);
@@ -1197,6 +1262,10 @@ impl eframe::App for EditorApp {
             }
         }
         self.maybe_run_auto_benchmarks(context);
+        // M20-08：输入重绑定捕获。必须在所有编辑器快捷键之前运行——它消费本帧的
+        // 键盘事件（见 `EditorApp::capture_input_binding`），使捕获不会顺手触发
+        // Ctrl+Z / Ctrl+S / Delete / Q/W/E/R 等命令。
+        self.capture_input_binding(context);
         if self.project_loaded
             && context.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Z))
         {
@@ -1303,6 +1372,10 @@ impl eframe::App for EditorApp {
         self.progress.window(context);
         self.draw_publish_panel(context);
         self.draw_project_settings_panel(context);
+        // M19-03：领域数据面板（Lua 校验 / PersistId 注册表）与运行时调试面板
+        // （只读探针）都是可开关的独立窗口。
+        self.draw_domain_data_panel(context);
+        self.draw_runtime_debug_panel(context);
         self.draw_about_window(context);
         // E06：最后绘制「未保存的更改」确认窗，置于其余窗口之上；仅在 dirty 且
         // 有挂起的离开操作时显示，此时其它面板保持原样、文档不被改动。

@@ -182,6 +182,28 @@ impl EditorApp {
             ui.checkbox(&mut self.show_safe_area, "Safe Area");
             ui.checkbox(&mut self.show_pixel_grid, "像素网格");
             ui.checkbox(&mut self.show_performance_hud, "性能");
+            // M19-03：出口/地点只读覆盖层 + 两个可开关的生产工具窗口。
+            ui.checkbox(&mut self.show_domain_overlay, "出口/地点");
+            if icon_toggle(
+                ui,
+                self.show_domain_data_panel,
+                "域",
+                "领域数据面板（Lua 校验 / PersistId / 出口地点）",
+            )
+            .clicked()
+            {
+                self.show_domain_data_panel = !self.show_domain_data_panel;
+            }
+            if icon_toggle(
+                ui,
+                self.show_runtime_debug_panel,
+                "调",
+                "运行时调试面板（只读：地图/NPC/任务/农田/建筑/存档）",
+            )
+            .clicked()
+            {
+                self.show_runtime_debug_panel = !self.show_runtime_debug_panel;
+            }
             ui.add(
                 egui::DragValue::new(&mut self.snap_step)
                     .range(0.05..=10.0)

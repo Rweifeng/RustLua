@@ -52,15 +52,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     banner("M17-02a 纯数据注册：7 个 NPC 全部由 data/npcs.lua + schedule 解析");
     let mut runtime = new_runtime(&project_arg, &save_path)?;
-    enter_title(&mut runtime, &main_script)?;
+    enter_main_menu(&mut runtime, &main_script)?;
     click_button(&mut runtime, "BtnStart")?;
-    assert_scene_is(&mut runtime, "main")?;
+    assert_scene_is(&mut runtime, "manor")?;
     assert_mode(&mut runtime, "Playing")?;
-    assert_str(&mut runtime, "#(require('data.npcs').list())", "7")?;
-    lua(&mut runtime, "return require('weather').set('sunny')")?;
+    // 批次 4：新增阿七 / 司徒魁 / 陆归藏 三名 NPC（原 7 名 → 10 名）
+    assert_str(&mut runtime, "#(require('data.npcs').list())", "10")?;
+    lua(&mut runtime, "return require('world.weather').set('sunny')")?;
     let resolve_check = query_str(
         &mut runtime,
-        "local npcs = require('data.npcs'); local sched = require('schedule'); \
+        "local npcs = require('data.npcs'); local sched = require('world.schedule'); \
          for _, n in ipairs(npcs.list()) do \
            local r = sched.resolve(n.schedule, 600, false); \
            if not r then return 'fail:' .. n.persist_id end \
@@ -72,14 +73,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 00:00（睡觉时段）：山庄 NPC 全部落在住所。
     lua(&mut runtime, "clock.set(1, 0)")?;
     frames(&mut runtime, 5)?;
-    assert_npc(&mut runtime, "npc_gu_changfeng", "map", "main")?;
+    assert_npc(&mut runtime, "npc_gu_changfeng", "map", "manor")?;
     assert_npc(&mut runtime, "npc_gu_changfeng", "live", "true")?;
     assert_npc(&mut runtime, "npc_gu_changfeng", "place", "manor_home")?;
     assert_npc(&mut runtime, "npc_gu_changfeng", "activity", "sleep")?;
     assert_npc(&mut runtime, "npc_gu_changfeng", "cell_x", "12")?;
     assert_npc(&mut runtime, "npc_gu_changfeng", "cell_y", "6")?;
     // 玄鹤 00:00 也在山庄（厢房）。
-    assert_npc(&mut runtime, "npc_xuanhe", "map", "main")?;
+    assert_npc(&mut runtime, "npc_xuanhe", "map", "manor")?;
     assert_npc(&mut runtime, "npc_xuanhe", "live", "true")?;
 
     banner("M17-02b 时间驱动 + A* 路径跟随：顾长风 厢房 → 剑坪");
@@ -96,7 +97,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 从 (12,6) 沿 A* 路径走到 (26,12)。
     run_until(
         &mut runtime,
-        "local q = require('npc').query('npc_gu_changfeng'); return q.cell_x == 26 and q.cell_y == 12",
+        "local q = require('world.npc').query('npc_gu_changfeng'); return q.cell_x == 26 and q.cell_y == 12",
         3600,
     )?;
     assert_npc(&mut runtime, "npc_gu_changfeng", "cell_x", "26")?;
@@ -133,7 +134,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     frames(&mut runtime, 3)?;
     let diag = query_str(
         &mut runtime,
-        "return table.concat(require('npc').diagnostics(), ' | ')",
+        "return table.concat(require('world.npc').diagnostics(), ' | ')",
     )?;
     for needle in [
         "npc=沈青萝",
@@ -173,7 +174,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let stable = query_str(
         &mut runtime,
         &format!(
-            "local npc = require('npc'); \
+            "local npc = require('world.npc'); \
              for _, id in ipairs({{{ids}}}) do \
                local q = npc.query(id); \
                if not q then return 'nocall:' .. id end; \
@@ -197,7 +198,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     save_game(&mut runtime)?;
 
     let mut second = new_runtime(&project_arg, &save_path)?;
-    enter_title(&mut second, &main_script)?;
+    enter_main_menu(&mut second, &main_script)?;
     click_button(&mut second, "BtnContinue")?;
     assert_scene_is(&mut second, "village")?;
     assert_map_current(&mut second, "village")?;
@@ -236,16 +237,16 @@ fn new_runtime(project: &Path, save_path: &Path) -> Result<LuaRuntime, Box<dyn s
     Ok(runtime)
 }
 
-/// Runs the project script, then loads the `title` scene so BtnStart/BtnContinue
+/// Runs the project script, then loads the `main` 门面 scene so BtnStart/BtnContinue
 /// are live (mirrors jhyt_smoke).
-fn enter_title(
+fn enter_main_menu(
     runtime: &mut LuaRuntime,
     main_script: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     runtime.execute_project_script(main_script)?;
-    runtime.execute_console("scene.load('title')")?;
+    runtime.execute_console("scene.load('main')")?;
     runtime.process_scene_transition()?;
-    assert_scene_is(runtime, "title")?;
+    assert_scene_is(runtime, "main")?;
     Ok(())
 }
 
@@ -258,7 +259,10 @@ fn click_button(runtime: &mut LuaRuntime, button: &str) -> Result<(), Box<dyn st
 
 /// Teleports the player to a world position via `player.teleport`.
 fn teleport(runtime: &mut LuaRuntime, pos: (f32, f32)) -> Result<(), Box<dyn std::error::Error>> {
-    runtime.execute_console(&format!("require('player').teleport({}, {})", pos.0, pos.1))?;
+    runtime.execute_console(&format!(
+        "require('player.player').teleport({}, {})",
+        pos.0, pos.1
+    ))?;
     Ok(())
 }
 
@@ -353,7 +357,7 @@ fn assert_map_current(
     runtime: &mut LuaRuntime,
     expected: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let current = query_str(runtime, "require('map_manager').current()")?;
+    let current = query_str(runtime, "require('world.map_manager').current()")?;
     if current != expected {
         return Err(format!("map.current() = {current:?}, want {expected:?}").into());
     }
@@ -361,7 +365,7 @@ fn assert_map_current(
 }
 
 fn assert_mode(runtime: &mut LuaRuntime, expected: &str) -> Result<(), Box<dyn std::error::Error>> {
-    assert_str(runtime, "require('state').mode", expected)
+    assert_str(runtime, "require('core.state').mode", expected)
 }
 
 fn assert_player_at(
@@ -389,7 +393,7 @@ fn npc_field(
     query_str(
         runtime,
         &format!(
-            "local q = require('npc').query('{persist_id}'); return q and tostring(q.{field}) or 'nil'"
+            "local q = require('world.npc').query('{persist_id}'); return q and tostring(q.{field}) or 'nil'"
         ),
     )
 }
@@ -415,7 +419,7 @@ fn sample(
     query_str(
         runtime,
         &format!(
-            "local q = require('npc').query('{persist_id}'); \
+            "local q = require('world.npc').query('{persist_id}'); \
              if not q then return 'missing' end; \
              return string.format('%s|%s|%s|%s,%s|%s', \
                tostring(q.map), tostring(q.place), tostring(q.activity), \
@@ -432,7 +436,10 @@ fn lua_id_list(ids: &[&str]) -> String {
 }
 
 fn save_game(runtime: &mut LuaRuntime) -> Result<(), Box<dyn std::error::Error>> {
-    let ok = query_str(runtime, "return tostring(require('save_manager').save())")?;
+    let ok = query_str(
+        runtime,
+        "return tostring(require('core.save_manager').save())",
+    )?;
     if ok != "true" {
         return Err(format!("save() returned {ok:?}").into());
     }

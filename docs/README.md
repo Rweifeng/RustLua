@@ -36,8 +36,18 @@
 
 - [编辑器使用指南](25-editor-guide.md)：面板、工具栏、Play/Stop、导入/发布、崩溃恢复
 - [资源管线与发布（assetc）](26-assetc-and-publish.md)：`project.toml`、CLI、打包格式、存档格式
+- [编辑器 UI 优化方案](27-editor-ui-optimization-plan.md) / [执行任务](28-editor-ui-optimization-execution-tasks.md) / [E01 状态基线](29-editor-e01-state-baseline.md) / [层级面板优化](31-hierarchy-panel-optimization.md)
+- [兼容性设计](30-compatibility-designs.md)
 - [使用手册](22-使用手册.md)：环境、构建、运行 Demo、Lua 入门
 - [Demos 总览](demos/README.md)
+
+## 质量、平台与输入
+
+- [WebGL 浏览器平台验收](32-webgl-浏览器平台验收.md)：浏览器契约检查页、无头验收脚本与已知限制
+- [手柄设备接入与输入契约](33-手柄设备接入与输入契约.md)：按钮/轴索引契约、XInput 后端、Fake 后端与死区
+- [质量门与发布清单](34-质量门与发布清单.md)：Alpha/Beta/RC 门槛、缺陷分级、性能基线与发布清单
+- [输入动作映射与设置持久化](35-输入动作映射与设置持久化.md)：`ActionMap`、Lua `input.action*`、`[input]` 设置段
+- [游戏级回归与性能基线](36-游戏级回归与性能基线.md)：核心剧本、帧率确定性、长跑/读档与发布目录隔离自测
 
 ## 第三方素材
 
@@ -49,4 +59,4 @@
 
 ## 里程碑记录
 
-各里程碑（M0–M15）以及 M16-01~04、M17-01 的任务与验收记录已归档至 `tasks/done/`；规划中的其余任务（BACKLOG）见 `tasks/`。CHANGELOG 规划版本映射为 M16 → v0.12、M17 → v0.13、M18 → v0.14、M19 → v0.15；基线标签：`v0.9-3d-game`（M9）、`v0.10-editor`（M10）。
+各里程碑（M0–M15）以及 M16-01~04、M17-01~05、M18-01~04、M19-01/02/03、M20-01~04/06/07 的任务与验收记录已归档至 `tasks/done/`；剩余收尾任务（M19-04、M20-05、M20-08）在 `tasks/plan/`。CHANGELOG 版本映射：M16 → v0.12、M17 → v0.13、M18 → v0.14、M19/M20 → v0.15（收口）；基线标签：`v0.9-3d-game`（M9）、`v0.10-editor`（M10）。

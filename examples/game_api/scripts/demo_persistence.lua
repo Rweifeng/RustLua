@@ -30,7 +30,7 @@ function M.update()
         "persistence_ok level=%s visits=%s events=%d",
         tostring(player and player.level),
         tostring(town and town.visits),
-        events,
+        events
     )
 end
 

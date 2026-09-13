@@ -3,10 +3,23 @@
 //! 扁平 `key = value` 逐行解析（见引擎 `runtime_scene.rs` 的 `extract_project_key`），
 //! 因此这里也采用同样语义的宽松解析，保存时**保序**替换已存在键并原样保留未知
 //! 键与注释（`[project]` 表头无结构含义，仅作标题）。
+//!
+//! M20-02 追加「音频」小节：编辑 `<project>/settings.toml` 的 `[audio]` 段四路
+//! 音量（主/BGM/音效/界面），与运行期 `audio` Lua API 共用引擎
+//! `core::settings::ProjectSettings` 的读写实现（保序、未知段原样保留）。
+//!
+//! M20-08 追加「输入」小节：按动作列出绑定文本、捕获式改绑（键盘/手柄按钮/
+//! 手柄轴方向）、跨动作冲突提示与保存前校验、「恢复默认」二次确认、摇杆/扳机
+//! 死区配置。纯逻辑在 `panels/input_bindings.rs`（可单测），本文件只负责绘制与
+//! 保存编排。
 
 use crate::EditorApp;
+use crate::panels::input_bindings::{
+    self, InputBindingsUi, action_label, binding_label, describe_conflicts,
+};
 use crate::util::strip_verbatim_prefix;
 use eframe::egui;
+use engine::core::settings::ProjectSettings;
 use std::collections::BTreeSet;
 use std::path::Path;
 
@@ -39,6 +52,13 @@ pub(crate) struct ProjectSettingsUi {
     pub(crate) font_fallback: String,
     pub(crate) font_weight: f32,
     pub(crate) text_render_mode: &'static str,
+    /// 音频分组音量（M20-02，`settings.toml` 的 `[audio]` 段）；0..=1。
+    pub(crate) audio_master: f32,
+    pub(crate) audio_bgm: f32,
+    pub(crate) audio_sfx: f32,
+    pub(crate) audio_ui: f32,
+    /// 输入小节（M20-08）：动作绑定、死区、捕获模式与冲突缓存。
+    pub(crate) input: InputBindingsUi,
     /// 最近一次操作提示（读取失败/保存结果）。
     pub(crate) message: String,
 }
@@ -56,6 +76,11 @@ impl Default for ProjectSettingsUi {
             font_fallback: String::new(),
             font_weight: 400.0,
             text_render_mode: "auto",
+            audio_master: 1.0,
+            audio_bgm: 1.0,
+            audio_sfx: 1.0,
+            audio_ui: 1.0,
+            input: InputBindingsUi::default(),
             message: String::new(),
         }
     }
@@ -149,11 +174,11 @@ pub(crate) fn upsert_project_toml(content: &str, edits: &[(&str, String, bool)])
             .iter()
             .find(|(key, _, _)| line_is_key(line, key))
             .map(|(key, _, _)| *key);
-        if let Some(key) = key_of_line {
-            if matched.insert(key) {
-                let (_, value, quoted) = edits.iter().find(|(k, _, _)| *k == key).unwrap();
-                *line = render_line(key, value, *quoted);
-            }
+        if let Some(key) = key_of_line
+            && matched.insert(key)
+        {
+            let (_, value, quoted) = edits.iter().find(|(k, _, _)| *k == key).unwrap();
+            *line = render_line(key, value, *quoted);
         }
     }
     for (key, value, quoted) in edits {
@@ -181,6 +206,60 @@ fn font_keys_from(content: &str) -> (String, String, Option<f32>, String) {
     (font, fallback, weight, text_render_mode)
 }
 
+/// 把 `<project>/settings.toml` 的 `[audio]` 段读进面板缓冲。
+///
+/// 文件缺失（可选文件）→ 保持引擎默认 1.0；读取失败 → 返回可读原因（面板提示，
+/// 不 panic）。文件内非法数值由 `ProjectSettings::from_toml` 忽略并回落默认值。
+pub(crate) fn load_audio_into(ui: &mut ProjectSettingsUi, root: &Path) -> Result<(), String> {
+    let root = strip_verbatim_prefix(root);
+    let settings = match ProjectSettings::load_from(&root) {
+        Ok(Some(settings)) => settings,
+        Ok(None) => ProjectSettings::new(),
+        Err(error) => {
+            return Err(format!(
+                "读取 {} 失败：{error}",
+                ProjectSettings::path_in(&root).display()
+            ));
+        }
+    };
+    apply_audio_buffers(ui, &settings);
+    Ok(())
+}
+
+/// 把 `ProjectSettings` 写到面板缓冲（含 0..=1 钳制）。
+fn apply_audio_buffers(ui: &mut ProjectSettingsUi, settings: &ProjectSettings) {
+    use engine::core::audio::AudioBus;
+    ui.audio_master = settings.volume(AudioBus::Master);
+    ui.audio_bgm = settings.volume(AudioBus::Bgm);
+    ui.audio_sfx = settings.volume(AudioBus::Sfx);
+    ui.audio_ui = settings.volume(AudioBus::Ui);
+}
+
+/// 面板缓冲 → `ProjectSettings`（越界/非有限值钳制，写入不会产生非法文件）。
+pub(crate) fn audio_settings_from(ui: &ProjectSettingsUi) -> ProjectSettings {
+    use engine::core::audio::AudioBus;
+    let mut settings = ProjectSettings::new();
+    for (bus, value) in [
+        (AudioBus::Master, ui.audio_master),
+        (AudioBus::Bgm, ui.audio_bgm),
+        (AudioBus::Sfx, ui.audio_sfx),
+        (AudioBus::Ui, ui.audio_ui),
+    ] {
+        let value = if value.is_finite() { value } else { 1.0 };
+        settings.set_volume(bus, value.clamp(0.0, 1.0));
+    }
+    settings
+}
+
+/// 保存音频小节到 `<project>/settings.toml`；失败返回可读原因（面板提示）。
+pub(crate) fn save_audio_settings(ui: &ProjectSettingsUi, root: &Path) -> Result<(), String> {
+    let root = strip_verbatim_prefix(root);
+    let path = ProjectSettings::path_in(&root);
+    audio_settings_from(ui)
+        .save_to(&root)
+        .map_err(|error| format!("保存 {} 失败：{error}", path.display()))
+}
+
 impl EditorApp {
     /// 项目菜单「项目设置…」：读取当前项目 project.toml 到缓冲并打开窗口。
     pub(crate) fn open_project_settings(&mut self) {
@@ -196,6 +275,83 @@ impl EditorApp {
             Err(error) => {
                 settings.message = format!("读取 {} 失败：{error}", path.display());
             }
+        }
+        // M20-02：音频小节来自独立的 settings.toml（缺失即默认值）。
+        if let Err(error) = load_audio_into(settings, &root) {
+            if settings.message.is_empty() {
+                settings.message = error;
+            } else {
+                settings.message.push('\n');
+                settings.message.push_str(&error);
+            }
+        }
+        // M20-08：输入小节（动作绑定 + 死区）同样来自 settings.toml 的 `[input]` 段。
+        // 非法内容会回退默认并给出可定位诊断（追加到同一提示区，不覆盖音频提示）。
+        if let Some(diagnostic) = settings.input.load(&root) {
+            if settings.message.is_empty() {
+                settings.message = diagnostic;
+            } else {
+                settings.message.push('\n');
+                settings.message.push_str(&diagnostic);
+            }
+        }
+    }
+
+    /// M20-08：捕获模式下**先于编辑器快捷键**消费本帧键盘事件并改绑。
+    ///
+    /// 隔离层：命中后把本帧的 `Event::Key` 从输入事件流里移除，因此 `main.rs`
+    /// 的 Ctrl+S/Ctrl+Z/Delete/Q/W/E/R 等快捷键看不到这次按键（捕获不会顺手
+    /// 触发编辑器命令）；指针事件保留，所以「取消」按钮仍可点击。
+    /// 手柄侧只在捕获期间轮询设备（`InputBindingsUi::poll_capture`）。
+    pub(crate) fn capture_input_binding(&mut self, context: &egui::Context) {
+        if !self.project_settings.open || !self.project_settings.input.is_capturing() {
+            return;
+        }
+        // 手柄：新按下/推过阈值 → 立即改绑（去抖见 input_bindings）。
+        if let Some(binding) = self.project_settings.input.poll_capture()
+            && let Err(error) = self.project_settings.input.apply_capture(binding)
+        {
+            self.project_settings.input.message = error;
+        }
+        // 文本框获得焦点时（手动绑定输入中）不抢按键，`Event::Text` 仍会写进文本框。
+        if context.wants_keyboard_input() {
+            return;
+        }
+        let mut captured = None;
+        let mut cancel = false;
+        context.input(|input| {
+            for event in &input.events {
+                let egui::Event::Key {
+                    key,
+                    pressed: true,
+                    repeat: false,
+                    ..
+                } = event
+                else {
+                    continue;
+                };
+                if *key == egui::Key::Escape {
+                    cancel = true;
+                    break;
+                }
+                if captured.is_none() {
+                    captured = input_bindings::binding_from_egui_key(*key);
+                }
+            }
+        });
+        if cancel {
+            self.project_settings.input.cancel_capture();
+        }
+        // 隔离编辑器自身的快捷键：吃掉本帧的按键事件（保留指针/文本事件）。
+        context.input_mut(|input| {
+            input
+                .events
+                .retain(|event| !matches!(event, egui::Event::Key { .. }));
+        });
+        if let Some(binding) = captured
+            && let Err(error) = self.project_settings.input.apply_capture(binding)
+        {
+            self.project_settings.input.message = error;
         }
     }
 
@@ -278,6 +434,36 @@ impl EditorApp {
                         ui.end_row();
                     });
                 ui.separator();
+                // ---- M20-02：音频分组音量（settings.toml 的 [audio] 段） ----
+                ui.label("音频");
+                ui.label(format!(
+                    "{}",
+                    ProjectSettings::path_in(&strip_verbatim_prefix(&self.project.root)).display()
+                ));
+                egui::Grid::new("project_settings_audio_grid")
+                    .num_columns(2)
+                    .spacing([12.0, 6.0])
+                    .show(ui, |ui| {
+                        for (label, value) in [
+                            ("主音量", &mut self.project_settings.audio_master),
+                            ("BGM", &mut self.project_settings.audio_bgm),
+                            ("音效", &mut self.project_settings.audio_sfx),
+                            ("界面音效", &mut self.project_settings.audio_ui),
+                        ] {
+                            let percent = *value * 100.0;
+                            ui.label(format!("{label}  {percent:.0}%"));
+                            ui.add(
+                                egui::Slider::new(value, 0.0..=1.0)
+                                    .fixed_decimals(2)
+                                    .show_value(false),
+                            );
+                            ui.end_row();
+                        }
+                    });
+                ui.separator();
+                // ---- M20-08：输入（动作绑定 + 死区，settings.toml 的 [input] 段）----
+                self.draw_input_bindings_section(ui, &root);
+                ui.separator();
                 let missing = missing_asset_paths(&self.project_settings, &self.project.root);
                 if !missing.is_empty() {
                     ui.colored_label(
@@ -303,11 +489,175 @@ impl EditorApp {
         self.project_settings.open = open;
     }
 
+    /// M20-08「输入」小节：逐动作绑定列表 + 捕获式改绑 + 冲突提示 + 死区 + 恢复默认。
+    ///
+    /// 所有编辑先落在 `ProjectSettingsUi::input` 缓冲里，点「保存」才写
+    /// `<project>/settings.toml` 的 `[input]` 段（保序，见引擎 `upsert_input_settings`）。
+    fn draw_input_bindings_section(&mut self, ui: &mut egui::Ui, root: &Path) {
+        ui.label("输入（按键 / 手柄）");
+        ui.label(input_bindings::settings_path(root));
+        let capturing = self.project_settings.input.is_capturing();
+        // 捕获横幅：提示 + 手动绑定文本框 + 取消。捕获会隔离编辑器快捷键
+        // （见 `capture_input_binding`）。
+        if let Some(target) = self.project_settings.input.capture_target() {
+            let target = target.to_owned();
+            ui.colored_label(
+                egui::Color32::from_rgb(230, 200, 90),
+                format!(
+                    "正在捕获「{}」：按键盘按键 / 手柄按钮 / 推摇杆或扳机；Esc 取消。",
+                    action_label(&target)
+                ),
+            );
+            ui.label(format!(
+                "手柄后端 {}（{}）",
+                self.project_settings.input.backend_name(),
+                if self.project_settings.input.gamepad_connected() {
+                    "已检测到设备"
+                } else {
+                    "未检测到设备：可只用键盘按钮捕获"
+                }
+            ));
+            ui.horizontal(|ui| {
+                ui.label("手动绑定文本");
+                ui.text_edit_singleline(&mut self.project_settings.input.manual_binding);
+                if ui.button("应用").clicked()
+                    && let Err(error) = self.project_settings.input.apply_manual_to(&target)
+                {
+                    self.project_settings.input.message = error;
+                }
+                if ui.button("取消捕获").clicked() {
+                    self.project_settings.input.cancel_capture();
+                }
+            });
+        }
+        // 冲突提示（同一物理输入绑到多个动作）：可读中文 + 阻止保存。
+        let conflicts = self.project_settings.input.conflicts();
+        if !conflicts.is_empty() {
+            let describe = describe_conflicts(conflicts);
+            ui.colored_label(
+                egui::Color32::from_rgb(235, 120, 110),
+                format!("绑定冲突（保存前必须解决）：{describe}"),
+            );
+        }
+        // 动作列表先拷成拥有所有权的字符串：循环体里会改绑/清除（可变借用），
+        // 不能同时持有 `map` 的借用。
+        let actions: Vec<String> = self
+            .project_settings
+            .input
+            .map
+            .actions()
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        egui::ScrollArea::vertical()
+            .id_salt("project_settings_input_bindings")
+            .max_height(220.0)
+            .show(ui, |ui| {
+                egui::Grid::new("project_settings_input_grid")
+                    .num_columns(4)
+                    .spacing([10.0, 4.0])
+                    .striped(true)
+                    .show(ui, |ui| {
+                        for action in actions {
+                            let (list, has_bindings) = {
+                                let bindings = self.project_settings.input.map.bindings(&action);
+                                let list = if bindings.is_empty() {
+                                    "（未绑定）".to_owned()
+                                } else {
+                                    bindings
+                                        .iter()
+                                        .map(|binding| binding_label(*binding))
+                                        .collect::<Vec<_>>()
+                                        .join(" / ")
+                                };
+                                (list, !bindings.is_empty())
+                            };
+                            ui.label(format!("{}({})", action_label(&action), action));
+                            ui.label(list);
+                            if ui
+                                .add_enabled(!capturing, egui::Button::new("捕获"))
+                                .clicked()
+                            {
+                                self.project_settings.input.begin_capture(&action);
+                            }
+                            if ui
+                                .add_enabled(has_bindings, egui::Button::new("清除"))
+                                .clicked()
+                            {
+                                self.project_settings.input.clear_action(&action);
+                            }
+                            ui.end_row();
+                        }
+                    });
+            });
+        // 死区：默认 0.15 / 0.05，写入 [input] 段（引擎侧 `GamepadDeadzone`）。
+        let mut stick = self.project_settings.input.deadzone.stick;
+        let mut trigger = self.project_settings.input.deadzone.trigger;
+        egui::Grid::new("project_settings_input_deadzone")
+            .num_columns(2)
+            .spacing([12.0, 6.0])
+            .show(ui, |ui| {
+                ui.label(format!("摇杆死区  {:.2}", stick));
+                let stick_changed = ui
+                    .add(
+                        egui::Slider::new(&mut stick, 0.0..=0.9)
+                            .fixed_decimals(2)
+                            .show_value(false),
+                    )
+                    .changed();
+                ui.end_row();
+                ui.label(format!("扳机死区  {:.2}", trigger));
+                let trigger_changed = ui
+                    .add(
+                        egui::Slider::new(&mut trigger, 0.0..=0.9)
+                            .fixed_decimals(2)
+                            .show_value(false),
+                    )
+                    .changed();
+                ui.end_row();
+                if stick_changed || trigger_changed {
+                    self.project_settings.input.set_deadzone(stick, trigger);
+                }
+            });
+        if self.project_settings.input.deadzone_changed() {
+            ui.label("死区已改为非默认值（默认 0.15 / 0.05，保存后写入 [input] 段）。");
+        }
+        ui.horizontal(|ui| {
+            if self.project_settings.input.confirm_reset {
+                ui.colored_label(
+                    egui::Color32::from_rgb(235, 120, 110),
+                    "确认放弃当前改动、恢复默认绑定？",
+                );
+                if ui.button("确认恢复默认").clicked() {
+                    self.project_settings.input.reset_defaults();
+                }
+                if ui.button("取消").clicked() {
+                    self.project_settings.input.confirm_reset = false;
+                }
+            } else if ui.button("恢复默认").clicked() {
+                // 二次确认：先进入待确认状态，下一次点击才真正重置。
+                self.project_settings.input.confirm_reset = true;
+            }
+            if capturing && ui.button("取消捕获").clicked() {
+                self.project_settings.input.cancel_capture();
+            }
+        });
+        if !self.project_settings.input.message.is_empty() {
+            ui.label(&self.project_settings.input.message);
+        }
+    }
+
     /// 保存缓冲到 project.toml：保序写回（保留注释/未知键），字体键变化时重建
     /// 共享图集缓存。
     fn save_project_settings(&mut self) {
         let root = strip_verbatim_prefix(&self.project.root);
         let path = root.join("project.toml");
+        // M20-08：先做输入小节校验（跨动作冲突 = 配置错误），校验不通过就整体不落盘，
+        // 避免写出「一半新一半旧」的设置文件。
+        if let Err(error) = self.project_settings.input.save(&root) {
+            self.project_settings.message = error;
+            return;
+        }
         // 项目打开时该文件必存在；万一缺失则从空骨架开始补全。
         let previous = std::fs::read_to_string(&path).unwrap_or_else(|_| "[project]\n".to_owned());
         let (old_font, old_fallback, old_weight, old_text_render_mode) = font_keys_from(&previous);
@@ -341,7 +691,15 @@ impl EditorApp {
             // 强制重建 Scene View 运行时，避免保存后仍显示旧渲染路径。
             self.invalidate_font_render_resources();
         }
-        self.project_settings.message = "已保存项目设置。".to_owned();
+        // M20-02：音频小节写回独立的 settings.toml（保序保留其余段）。
+        match save_audio_settings(&self.project_settings, &root) {
+            Ok(()) => {
+                // M20-08：输入小节已在函数开头写回（校验通过才会走到这里）。
+                self.project_settings.message =
+                    "已保存项目设置（含 [audio] 与 [input] 段）。".to_owned();
+            }
+            Err(error) => self.project_settings.message = error,
+        }
     }
 }
 
@@ -498,5 +856,93 @@ mod tests {
         let count = thrice.matches("font_fallback =").count();
         assert_eq!(count, 1, "{thrice}");
         assert!(thrice.contains("assets/fonts/Changed.ttf"));
+    }
+
+    /// 测试用临时项目目录（进程内唯一，避免并行测试互相覆盖）。
+    fn temp_project(tag: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "rustlua-editor-settings-{tag}-{}-{}",
+            std::process::id(),
+            NEXT_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn audio_section_defaults_when_settings_file_is_missing() {
+        let root = temp_project("missing");
+        // 先塞一个脏值，确认「文件缺失」确实覆盖它为引擎默认（而不是保留旧缓冲）。
+        let mut ui = ProjectSettingsUi {
+            audio_master: 0.1,
+            ..ProjectSettingsUi::default()
+        };
+        load_audio_into(&mut ui, &root).unwrap();
+        // 缺文件 → 引擎默认 1.0（不是保留旧缓冲）。
+        assert_eq!(ui.audio_master, 1.0);
+        assert_eq!(ui.audio_bgm, 1.0);
+        assert_eq!(ui.audio_sfx, 1.0);
+        assert_eq!(ui.audio_ui, 1.0);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn audio_section_loads_parses_and_saves_round_trip() {
+        let root = temp_project("round-trip");
+        std::fs::write(
+            root.join("settings.toml"),
+            "# 玩家设置\n[audio]\nmaster = 0.5\nbgm = 0.25\n# 注释保留\nsfx = 0.75\nui = bad\n\n[input]\nmap = \"keep-me\"\n",
+        )
+        .unwrap();
+        let mut ui = ProjectSettingsUi::default();
+        load_audio_into(&mut ui, &root).unwrap();
+        assert_eq!(ui.audio_master, 0.5);
+        assert_eq!(ui.audio_bgm, 0.25);
+        assert_eq!(ui.audio_sfx, 0.75);
+        // 非法值被忽略 → 默认 1.0，且不 panic。
+        assert_eq!(ui.audio_ui, 1.0);
+
+        ui.audio_bgm = 0.4;
+        ui.audio_ui = 0.6;
+        save_audio_settings(&ui, &root).unwrap();
+        let text = std::fs::read_to_string(root.join("settings.toml")).unwrap();
+        assert!(text.contains("# 玩家设置"), "{text}");
+        assert!(text.contains("# 注释保留"), "{text}");
+        assert!(text.contains("bgm = 0.4"), "{text}");
+        assert!(text.contains("ui = 0.6"), "{text}");
+        assert!(text.contains("map = \"keep-me\""), "{text}");
+        let mut reloaded = ProjectSettingsUi::default();
+        load_audio_into(&mut reloaded, &root).unwrap();
+        assert_eq!(reloaded.audio_bgm, 0.4);
+        assert_eq!(reloaded.audio_ui, 0.6);
+        assert_eq!(reloaded.audio_master, 0.5);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn audio_section_clamps_buffers_and_reports_write_errors() {
+        let root = temp_project("errors");
+        let mut ui = ProjectSettingsUi {
+            audio_master: 3.0,
+            audio_bgm: -2.0,
+            audio_sfx: f32::NAN,
+            audio_ui: 0.5,
+            ..ProjectSettingsUi::default()
+        };
+        let settings = audio_settings_from(&ui);
+        use engine::core::audio::AudioBus;
+        assert_eq!(settings.volume(AudioBus::Master), 1.0);
+        assert_eq!(settings.volume(AudioBus::Bgm), 0.0);
+        assert_eq!(settings.volume(AudioBus::Sfx), 1.0); // 非有限值回落默认
+        assert_eq!(settings.volume(AudioBus::Ui), 0.5);
+        ui.audio_master = 0.8;
+
+        // 写失败（settings.toml 是目录）→ 返回可读原因而不是 panic。
+        std::fs::create_dir_all(root.join("settings.toml")).unwrap();
+        let error = save_audio_settings(&ui, &root).unwrap_err();
+        assert!(error.contains("settings.toml"), "{error}");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

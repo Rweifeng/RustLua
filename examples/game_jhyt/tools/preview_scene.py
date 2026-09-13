@@ -3,8 +3,8 @@
 
 用法（工程根目录 examples/game_jhyt 下运行）：
 
-    python tools/preview_scene.py scenes/main.scene
-    python tools/preview_scene.py scenes/main.scene --out .temp/main.png --scale 1 --grid
+    python tools/preview_scene.py scenes/manor.scene
+    python tools/preview_scene.py scenes/manor.scene --out .temp/main.png --scale 1 --grid
 
 渲染规则（严格照引擎实现，用来发现"数据和美术对不上"的问题）：
 
@@ -117,7 +117,10 @@ def render(scene_path, root, scale=1, grid=False, only_layers=None):
     header, entities = parse_scene(scene_path)
     tilemaps = [e for e in entities if "Tilemap" in e["components"]]
     if not tilemaps:
-        raise SystemExit(f"{scene_path}: 没有 Tilemap 实体（纯 UI 场景，不需要地编预览）")
+        # 纯 UI 场景（如主入口门面 main.scene）：没有地编可预览，属于"跳过"而不是"失败"，
+        # 因此返回 None 由调用方打印 skip（退出码 0），避免验证脚本把它当校验失败。
+        print(f"skip {scene_path}：没有 Tilemap 实体（纯 UI 场景，不需要地编预览）")
+        return None, header, [], []
     first = parse_fields(tilemaps[0]["components"]["Tilemap"])
     width = int(first["width"])
     height = int(first["height"])
@@ -257,6 +260,8 @@ def main():
     scene_name = os.path.splitext(os.path.basename(args.scene))[0]
     out = args.out or os.path.join(".temp", f"scene_preview_{scene_name}.png")
     canvas, header, notes, errors = render(args.scene, args.root, args.scale, args.grid)
+    if canvas is None:
+        return  # 纯 UI 场景：已打印 skip，退出码 0
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
     with open(out, "wb") as handle:
         handle.write(canvas.to_png())

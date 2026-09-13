@@ -301,7 +301,8 @@ mod import_tests {
 
     #[test]
     fn project_import_resets_scene_render_resources() {
-        let old_project = open_project(engine::core::games_dir().join("examples/sourcehan_test"))
+        // 旧项目样例：sourcehan_test 已随示例重组删除，改用 game_api 样例工程。
+        let old_project = open_project(engine::core::games_dir().join("examples").join("game_api"))
             .expect("open old project");
         let new_project = open_project(engine::core::games_dir().join("examples/game_jhyt"))
             .expect("open new project");
@@ -337,7 +338,8 @@ mod import_tests {
     /// 资源导入成功应自动关闭进度面板（与项目导入成功行为一致）；失败保留窗口。
     #[test]
     fn resource_import_success_auto_closes_progress_panel() {
-        let project = open_project(engine::core::games_dir().join("examples")).unwrap();
+        let project =
+            open_project(engine::core::games_dir().join("examples").join("game_api")).unwrap();
         let mut app = EditorApp::new(project, None, LogSink::new(64));
         // 模拟一个已完成且成功的资源导入。
         app.progress.kind = ProgressKind::ResourceImport;
@@ -351,7 +353,8 @@ mod import_tests {
     /// 资源导入失败应保留进度面板，便于查看失败原因。
     #[test]
     fn resource_import_failure_keeps_panel_open() {
-        let project = open_project(engine::core::games_dir().join("examples")).unwrap();
+        let project =
+            open_project(engine::core::games_dir().join("examples").join("game_api")).unwrap();
         let mut app = EditorApp::new(project, None, LogSink::new(64));
         app.progress.kind = ProgressKind::ResourceImport;
         app.progress.done = true;
@@ -364,7 +367,7 @@ mod import_tests {
     #[test]
     fn import_spawn_end_to_end() {
         // 复现编辑器「导入游戏项目」后台路径：打开 game 项目并扫描资源。
-        let game = engine::core::games_dir().join("examples");
+        let game = engine::core::games_dir().join("examples").join("game_api");
         let (tx, rx) = channel();
         spawn_import(game, tx);
         let mut output = String::new();
@@ -375,7 +378,10 @@ mod import_tests {
                 ProgressEvent::Line(text) => output.push_str(&text),
                 ProgressEvent::Finished { success: s, result } => {
                     success = s;
-                    assert!(result.is_some(), "导入应带回 ImportOutcome 结果");
+                    assert!(
+                        result.is_some(),
+                        "导入应带回 ImportOutcome 结果；输出：\n{output}"
+                    );
                     break;
                 }
                 ProgressEvent::Progress(value) => {

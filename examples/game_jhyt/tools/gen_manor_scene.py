@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""《江湖有田》山庄主场景生成（scenes/main.scene）
+"""《江湖有田》山庄主场景生成（scenes/manor.scene）
 
 用法：工程根目录 python tools/gen_manor_scene.py
 
@@ -34,6 +34,12 @@
   manor_garden(10,16) manor_dock(16,19)
 """
 import os
+
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from character_art import player_art  # noqa: E402  主角形象（与 manifest 同源）
 
 # 地图尺寸（maps.lua 的 spawn/exit 边界校验按 40x22 处理，不要改）
 W, H = 40, 22
@@ -93,24 +99,50 @@ PROPS = [
      "size": (64, 88), "cell": (3, 19), "order": 20, "role": "prop",
      "solid": [(3, 19)]},
     {"name": "ManorTreeNorth", "texture": "assets/art/props/manor_tree.png",
-     "size": (64, 88), "cell": (22, 19), "order": 20, "role": "prop",
-     "solid": [(22, 19)]},
+     "size": (64, 88), "cell": (25, 20), "order": 20, "role": "prop",
+     "solid": [(25, 20)]},
     {"name": "ManorTreeEast", "texture": "assets/art/props/manor_tree.png",
-     "size": (64, 88), "cell": (36, 19), "order": 20, "role": "prop",
-     "solid": [(36, 19)]},
+     "size": (64, 88), "cell": (38, 19), "order": 20, "role": "prop",
+     "solid": [(38, 19)]},
     {"name": "ManorBambooWest", "texture": "assets/art/props/manor_bamboo.png",
-     "size": (48, 76), "cell": (12, 19), "order": 20, "role": "prop",
-     "solid": [(12, 19)]},
+     "size": (48, 76), "cell": (9, 20), "order": 20, "role": "prop",
+     "solid": [(9, 20)]},
     {"name": "ManorBambooEast", "texture": "assets/art/props/manor_bamboo.png",
      "size": (48, 76), "cell": (27, 19), "order": 20, "role": "prop",
      "solid": [(27, 19)]},
     # 东南角（池塘南侧空地）补两件，避免右半张地图空荡
+    # 注：位置在批次 3 加可建造建筑时挪过（原 (22,19)/(35,14)/(12,19)/(36,19) 会被建筑压住）
     {"name": "ManorTreeSoutheast", "texture": "assets/art/props/manor_tree.png",
-     "size": (64, 88), "cell": (35, 14), "order": 20, "role": "prop",
-     "solid": [(35, 14)]},
+     "size": (64, 88), "cell": (37, 15), "order": 20, "role": "prop",
+     "solid": [(37, 15)]},
     {"name": "ManorBambooSoutheast", "texture": "assets/art/props/manor_bamboo.png",
      "size": (48, 76), "cell": (32, 16), "order": 20, "role": "prop",
      "solid": [(32, 16)]},
+    # ---- 批次 3：可建造建筑（docs/30 §11.2）----
+    # 这 5 座是"已建成"状态摆进山庄，用来验收美术与 footprint；
+    # 真正的建造玩法（配方/占地规则/施工进度）是独立的玩法任务，见 docs/43。
+    {"name": "BuildTrainingHall", "texture": "assets/art/buildings/build_training_hall.png",
+     "size": (144, 120), "cell": (20, 16), "order": 0, "role": "building",
+     "solid": [(x, y) for y in range(16, 20) for x in range(20, 25)]},
+    {"name": "BuildStorehouse", "texture": "assets/art/buildings/build_storehouse.png",
+     "size": (128, 112), "cell": (26, 15), "order": 0, "role": "building",
+     "solid": [(x, y) for y in range(15, 19) for x in range(26, 30)]},
+    {"name": "BuildHerbHut", "texture": "assets/art/buildings/build_herb_hut.png",
+     "size": (128, 112), "cell": (33, 14), "order": 0, "role": "building",
+     "solid": [(x, y) for y in range(14, 18) for x in range(33, 37)]},
+    {"name": "BuildTeaShed", "texture": "assets/art/buildings/build_tea_shed.png",
+     "size": (112, 96), "cell": (1, 18), "order": 0, "role": "building",
+     "solid": [(x, y) for y in range(18, 21) for x in range(1, 5)]},
+    {"name": "BuildForgeStand", "texture": "assets/art/buildings/build_forge_stand.png",
+     "size": (112, 104), "cell": (12, 18), "order": 0, "role": "building",
+     "solid": [(x, y) for y in range(18, 21) for x in range(12, 16)]},
+    # 施工演示：地基（本体）+ 脚手架（叠加层，order 更大所以画在上面）
+    {"name": "BuildFoundation", "texture": "assets/art/buildings/build_foundation.png",
+     "size": (128, 64), "cell": (33, 19), "order": 0, "role": "building_site",
+     "solid": [(x, y) for y in range(19, 21) for x in range(33, 37)]},
+    {"name": "BuildScaffold", "texture": "assets/art/buildings/build_scaffold.png",
+     "size": (128, 96), "cell": (33, 19), "order": 1, "role": "building_site",
+     "solid": []},
 ]
 
 
@@ -202,7 +234,9 @@ def build_scene(ground, solid):
     solid_str = row_major(solid)
     lines = []
     lines.append("scene_version=2")
-    lines.append("name=main")
+    # 场景名必须等于地图键（data/maps.lua 的 `manor`）：main.lua 用
+    # `is_playable(scene.reload())` 判定玩法地图，写成 main 会导致整局进不去。
+    lines.append("name=manor")
     lines.append("meta\tdisplay_name\t江湖有田·山庄")
     lines.append("meta\tgame\tjianghu_youtian")
     lines.append("meta\ttile_size\t32")
@@ -245,10 +279,13 @@ def build_scene(ground, solid):
     player_id = next_id
     spawn_wx, spawn_wy = cell_to_world(SPAWN["x"], SPAWN["y"])
     lines.append(f"entity\t{player_id}\tJianghuPlayer")
-    lines.append(
-        f"component\t{player_id}\tSprite\ttexture=__white__;size=28x28;"
-        "tint=0.949,0.918,0.847,1.000;sorting_layer=actor"
-    )
+    # 主角形象（M21）：单帧 + 序列帧都从角色美术 manifest 取，与
+    # data/characters.lua 是同一套串；运行期 player.apply() 会按
+    # state.appearance（男/女/未来的自定义）纠正并重挂，此处给的是默认形象。
+    player_sprite, player_animation = player_art("player_male")
+    lines.append(f"component\t{player_id}\tSprite\t{player_sprite}")
+    if player_animation:
+        lines.append(f"component\t{player_id}\tAnimation\t{player_animation}")
     lines.append(f"component\t{player_id}\tCollider\tshape=ball;radius=12")
     lines.append(transform_line(player_id, spawn_wx, spawn_wy))
     lines.append(f"entity_meta\t{player_id}\trole\tplayer_spawn")
@@ -295,8 +332,8 @@ def reachable_from(solid, start):
     return seen
 
 
-def read_main_place_cells(path=os.path.join("scripts", "data", "places.lua")):
-    """从 data/places.lua 里抠出 map = "main" 的地点格（契约校验用，不执行 Lua）。"""
+def read_manor_place_cells(path=os.path.join("scripts", "data", "places.lua")):
+    """从 data/places.lua 里抠出 map = "manor" 的地点格（契约校验用，不执行 Lua）。"""
     import re
 
     cells = []
@@ -305,7 +342,7 @@ def read_main_place_cells(path=os.path.join("scripts", "data", "places.lua")):
     with open(path, encoding="utf-8") as handle:
         for line in handle:
             match = re.match(
-                r'\s*(\w+)\s*=\s*\{\s*map\s*=\s*"main"\s*,\s*cell\s*=\s*\{\s*x\s*=\s*(\d+)\s*,\s*y\s*=\s*(\d+)\s*\}',
+                r'\s*(\w+)\s*=\s*\{\s*map\s*=\s*"manor"\s*,\s*cell\s*=\s*\{\s*x\s*=\s*(\d+)\s*,\s*y\s*=\s*(\d+)\s*\}',
                 line,
             )
             if match:
@@ -328,7 +365,7 @@ def self_check(ground, solid):
             problems.append(f"{name} ({cx},{cy}) tile={ground[cy][cx]} 期望 {want}")
         elif (cx, cy) not in walk:
             problems.append(f"{name} ({cx},{cy}) 从出生点不可达")
-    for name, cx, cy in read_main_place_cells():
+    for name, cx, cy in read_manor_place_cells():
         if solid[cy][cx]:
             problems.append(f"places.lua:{name} ({cx},{cy}) 是 solid（NPC 会走出不来）")
         elif (cx, cy) not in walk:
@@ -348,7 +385,7 @@ def main():
     ground = build_tiles()
     solid = build_solid(ground)
     text = build_scene(ground, solid)
-    out = os.path.join("scenes", "main.scene")
+    out = os.path.join("scenes", "manor.scene")
     with open(out, "w", encoding="utf-8", newline="\n") as f:
         f.write(text)
     print(f"wrote {out} ({W}x{H}, {len(PROPS)} 个建筑/道具实体)")
@@ -357,7 +394,7 @@ def main():
         for problem in problems:
             print("[FAIL]", problem)
         raise SystemExit(1)
-    places = read_main_place_cells()
+    places = read_manor_place_cells()
     print(f"契约自检 ok：出生点/出口/药田/道具占位，places.lua {len(places)} 个山庄地点格全部可走且可达")
 
 

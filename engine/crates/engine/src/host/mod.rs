@@ -7,12 +7,18 @@
 //!   surface (and, in M10-02, an offscreen texture target).
 
 pub mod frame;
+/// 手柄设备轮询适配层（M20-06）。
+pub mod gamepad;
 pub mod renderer;
 pub mod runtime_scene;
 pub mod shader;
 
 pub use frame::{
     BoundsSource, OverlayVertex, Scene3d, Scene3dBounds, Scene3dDrawable, SceneDraw, SceneMesh,
+};
+pub use gamepad::{
+    FakeBackend, GamepadBackend, GamepadDeadzone, GamepadFrame, GamepadPoller,
+    button as gamepad_button,
 };
 pub use renderer::{ReadbackMetrics, ReadbackStatus, RenderOutcome, Renderer};
 pub use runtime_scene::{RuntimeScene, load_project_font_atlas, load_project_vector_atlas};

@@ -1315,6 +1315,80 @@ impl EditorApp {
     }
 
     /// 创建根实体（层级面板 / Inspector）。
+    /// M19-03：写入 / 清除实体的自由 meta `persist_id`（一次提交 = 单条 Undo）。
+    ///
+    /// - `None` 或空白值 → 删除 `entity_meta persist_id` 行；否则写入去空白后的值。
+    /// - 同场景内已存在同名 persist_id 时**拒绝**（编辑器侧防重复；跨场景重复与
+    ///   `data.npcs.persist_id` 冲突由领域数据面板的 PersistId 注册表报告，因为那
+    ///   需要跨文件视野，规则来源仍是 Lua 数据）。
+    /// - 返回值：`Ok(true)` 产生了改动（已入 History），`Ok(false)` 无净变化，
+    ///   `Err` 被拒绝（Play 中 / 无场景 / 重名）。
+    pub(crate) fn set_entity_persist_id(
+        &mut self,
+        entity: SceneEntityId,
+        persist_id: Option<String>,
+    ) -> Result<bool, String> {
+        if self.is_playing() {
+            return Err("Play 模式锁定场景编辑，请先停止运行".to_owned());
+        }
+        let value = persist_id
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty());
+        if let Some(value) = value.as_deref() {
+            let duplicate = self.document.current_scene.as_ref().is_some_and(|scene| {
+                scene.scene.entities.values().any(|candidate| {
+                    candidate.id != entity
+                        && candidate.metadata.get("persist_id").map(String::as_str) == Some(value)
+                })
+            });
+            if duplicate {
+                return Err(format!("本场景已存在 persist_id：「{value}」"));
+            }
+        }
+        let Some(scene) = self.document.current_scene.as_mut() else {
+            return Err("没有打开的场景".to_owned());
+        };
+        let label = match value.as_deref() {
+            Some(value) => format!("PersistId {value}"),
+            None => "Clear PersistId".to_owned(),
+        };
+        let changed = self
+            .history
+            .execute(scene, label, CommandKind::Property, move |scene| {
+                let Some(entity) = scene.scene.entities.get_mut(&entity) else {
+                    return Ok::<(), ()>(());
+                };
+                match value {
+                    Some(value) => {
+                        if entity.metadata.get("persist_id") != Some(&value) {
+                            entity.metadata.insert("persist_id".to_owned(), value);
+                            scene.mark_dirty();
+                        }
+                    }
+                    None => {
+                        if entity.metadata.remove("persist_id").is_some() {
+                            scene.mark_dirty();
+                        }
+                    }
+                }
+                Ok::<(), ()>(())
+            })
+            .unwrap_or(false);
+        Ok(changed)
+    }
+
+    /// M19-03：把 Inspector 的 persist_id 编辑缓冲回读为实体当前 meta 值。
+    pub(crate) fn reload_persist_id_buffer(&mut self, entity: SceneEntityId) {
+        self.persist_id_editing = Some(entity);
+        self.persist_id_buffer = self
+            .document
+            .current_scene
+            .as_ref()
+            .and_then(|scene| scene.scene.entities.get(&entity))
+            .and_then(|entity| entity.metadata.get("persist_id").cloned())
+            .unwrap_or_default();
+    }
+
     pub(crate) fn add_entity(&mut self, parent: Option<SceneEntityId>) {
         if self.is_playing() {
             self.status = "Play mode locks scene editing; click Stop first".into();
@@ -1522,7 +1596,7 @@ mod tests {
     }
 
     fn sample_project_root() -> PathBuf {
-        engine::core::games_dir().join("examples")
+        engine::core::games_dir().join("examples").join("game_api")
     }
 
     fn copy_dir(source: &Path, destination: &Path) {

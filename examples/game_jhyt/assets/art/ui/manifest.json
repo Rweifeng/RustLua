@@ -37,6 +37,25 @@
       ],
       "uses_common": []
     },
+    "menu": {
+      "title": "MENU / 主入口门面（武侠风）",
+      "files": [
+        "menu/ui_menu_vignette.png",
+        "menu/ui_menu_ink_band.png",
+        "menu/ui_menu_btn_wuxia_9s.png",
+        "menu/ui_menu_btn_wuxia_hover_9s.png",
+        "menu/ui_menu_btn_wuxia_pressed_9s.png",
+        "menu/ui_menu_panel_scroll_9s.png",
+        "menu/ui_menu_ornament_corner.png",
+        "menu/ui_menu_ornament_corner_tr.png",
+        "menu/ui_menu_ornament_corner_bl.png",
+        "menu/ui_menu_ornament_corner_br.png",
+        "menu/ui_menu_divider_bamboo.png",
+        "menu/ui_menu_lantern.png",
+        "menu/ui_menu_seal_jianghu.png"
+      ],
+      "uses_common": []
+    },
     "hud": {
       "title": "HUD / 主界面 (DOCS35 S7)",
       "files": [
@@ -53,6 +72,12 @@
         "hud/ui_weather_rain.png",
         "hud/ui_status_poison.png",
         "hud/ui_status_buff.png",
+        "hud/ui_status_bleed.png",
+        "hud/ui_status_debuff.png",
+        "hud/ui_status_sleep.png",
+        "hud/ui_status_stealth.png",
+        "hud/ui_status_weather.png",
+        "hud/ui_status_festival.png",
         "hud/ui_hud_avatar_frame.png"
       ],
       "uses_common": [
@@ -134,7 +159,12 @@
     "skills": {
       "title": "SKILLS / 武学 (S8.5)",
       "files": [
-        "skills/ui_skill_card_9s.png"
+        "skills/ui_skill_card_9s.png",
+        "skills/ui_skill_basic_blade.png",
+        "skills/ui_skill_chase_wind.png",
+        "skills/ui_skill_guard_heart.png",
+        "skills/ui_skill_return_palm.png",
+        "skills/ui_skill_breath_qi.png"
       ],
       "uses_common": [
         "common/ui_panel_main_9s.png",
@@ -449,6 +479,130 @@
       "nine_slice": null
     },
     {
+      "module": "menu",
+      "name": "ui_menu_vignette",
+      "path": "assets/art/ui/jianghu/menu/ui_menu_vignette.png",
+      "size": "1280x720",
+      "spec": "1280x720 暗角+云纹+金框",
+      "nine_slice": null
+    },
+    {
+      "module": "menu",
+      "name": "ui_menu_ink_band",
+      "path": "assets/art/ui/jianghu/menu/ui_menu_ink_band.png",
+      "size": "960x240",
+      "spec": "960x240 墨色横幅",
+      "nine_slice": null
+    },
+    {
+      "module": "menu",
+      "name": "ui_menu_btn_wuxia_9s",
+      "path": "assets/art/ui/jianghu/menu/ui_menu_btn_wuxia_9s.png",
+      "size": "256x72",
+      "spec": "256x72 9S 18 木牌按钮",
+      "nine_slice": [
+        18,
+        18,
+        18,
+        18
+      ]
+    },
+    {
+      "module": "menu",
+      "name": "ui_menu_btn_wuxia_hover_9s",
+      "path": "assets/art/ui/jianghu/menu/ui_menu_btn_wuxia_hover_9s.png",
+      "size": "256x72",
+      "spec": "256x72 9S 18 悬停",
+      "nine_slice": [
+        18,
+        18,
+        18,
+        18
+      ]
+    },
+    {
+      "module": "menu",
+      "name": "ui_menu_btn_wuxia_pressed_9s",
+      "path": "assets/art/ui/jianghu/menu/ui_menu_btn_wuxia_pressed_9s.png",
+      "size": "256x72",
+      "spec": "256x72 9S 18 按下",
+      "nine_slice": [
+        18,
+        18,
+        18,
+        18
+      ]
+    },
+    {
+      "module": "menu",
+      "name": "ui_menu_panel_scroll_9s",
+      "path": "assets/art/ui/jianghu/menu/ui_menu_panel_scroll_9s.png",
+      "size": "192x128",
+      "spec": "192x128 9S 20 卷轴",
+      "nine_slice": [
+        20,
+        20,
+        20,
+        20
+      ]
+    },
+    {
+      "module": "menu",
+      "name": "ui_menu_ornament_corner",
+      "path": "assets/art/ui/jianghu/menu/ui_menu_ornament_corner.png",
+      "size": "64x64",
+      "spec": "64x64 回纹角饰 左上",
+      "nine_slice": null
+    },
+    {
+      "module": "menu",
+      "name": "ui_menu_ornament_corner_tr",
+      "path": "assets/art/ui/jianghu/menu/ui_menu_ornament_corner_tr.png",
+      "size": "64x64",
+      "spec": "64x64 回纹角饰 右上",
+      "nine_slice": null
+    },
+    {
+      "module": "menu",
+      "name": "ui_menu_ornament_corner_bl",
+      "path": "assets/art/ui/jianghu/menu/ui_menu_ornament_corner_bl.png",
+      "size": "64x64",
+      "spec": "64x64 回纹角饰 左下",
+      "nine_slice": null
+    },
+    {
+      "module": "menu",
+      "name": "ui_menu_ornament_corner_br",
+      "path": "assets/art/ui/jianghu/menu/ui_menu_ornament_corner_br.png",
+      "size": "64x64",
+      "spec": "64x64 回纹角饰 右下",
+      "nine_slice": null
+    },
+    {
+      "module": "menu",
+      "name": "ui_menu_divider_bamboo",
+      "path": "assets/art/ui/jianghu/menu/ui_menu_divider_bamboo.png",
+      "size": "320x18",
+      "spec": "320x18 竹节分隔",
+      "nine_slice": null
+    },
+    {
+      "module": "menu",
+      "name": "ui_menu_lantern",
+      "path": "assets/art/ui/jianghu/menu/ui_menu_lantern.png",
+      "size": "72x128",
+      "spec": "72x128 红灯笼",
+      "nine_slice": null
+    },
+    {
+      "module": "menu",
+      "name": "ui_menu_seal_jianghu",
+      "path": "assets/art/ui/jianghu/menu/ui_menu_seal_jianghu.png",
+      "size": "72x72",
+      "spec": "72x72 印章 江湖",
+      "nine_slice": null
+    },
+    {
       "module": "hud",
       "name": "ui_bar_frame_9s",
       "path": "assets/art/ui/jianghu/hud/ui_bar_frame_9s.png",
@@ -574,6 +728,54 @@
     },
     {
       "module": "hud",
+      "name": "ui_status_bleed",
+      "path": "assets/art/ui/jianghu/hud/ui_status_bleed.png",
+      "size": "16x16",
+      "spec": "16x16 流血",
+      "nine_slice": null
+    },
+    {
+      "module": "hud",
+      "name": "ui_status_debuff",
+      "path": "assets/art/ui/jianghu/hud/ui_status_debuff.png",
+      "size": "16x16",
+      "spec": "16x16 减益",
+      "nine_slice": null
+    },
+    {
+      "module": "hud",
+      "name": "ui_status_sleep",
+      "path": "assets/art/ui/jianghu/hud/ui_status_sleep.png",
+      "size": "16x16",
+      "spec": "16x16 睡眠",
+      "nine_slice": null
+    },
+    {
+      "module": "hud",
+      "name": "ui_status_stealth",
+      "path": "assets/art/ui/jianghu/hud/ui_status_stealth.png",
+      "size": "16x16",
+      "spec": "16x16 隐身",
+      "nine_slice": null
+    },
+    {
+      "module": "hud",
+      "name": "ui_status_weather",
+      "path": "assets/art/ui/jianghu/hud/ui_status_weather.png",
+      "size": "16x16",
+      "spec": "16x16 天气",
+      "nine_slice": null
+    },
+    {
+      "module": "hud",
+      "name": "ui_status_festival",
+      "path": "assets/art/ui/jianghu/hud/ui_status_festival.png",
+      "size": "16x16",
+      "spec": "16x16 节日",
+      "nine_slice": null
+    },
+    {
+      "module": "hud",
       "name": "ui_hud_avatar_frame",
       "path": "assets/art/ui/jianghu/hud/ui_hud_avatar_frame.png",
       "size": "48x48",
@@ -688,6 +890,46 @@
         8,
         8
       ]
+    },
+    {
+      "module": "skills",
+      "name": "ui_skill_basic_blade",
+      "path": "assets/art/ui/jianghu/skills/ui_skill_basic_blade.png",
+      "size": "32x32",
+      "spec": "32x32 基础刀法",
+      "nine_slice": null
+    },
+    {
+      "module": "skills",
+      "name": "ui_skill_chase_wind",
+      "path": "assets/art/ui/jianghu/skills/ui_skill_chase_wind.png",
+      "size": "32x32",
+      "spec": "32x32 追风步",
+      "nine_slice": null
+    },
+    {
+      "module": "skills",
+      "name": "ui_skill_guard_heart",
+      "path": "assets/art/ui/jianghu/skills/ui_skill_guard_heart.png",
+      "size": "32x32",
+      "spec": "32x32 守心诀",
+      "nine_slice": null
+    },
+    {
+      "module": "skills",
+      "name": "ui_skill_return_palm",
+      "path": "assets/art/ui/jianghu/skills/ui_skill_return_palm.png",
+      "size": "32x32",
+      "spec": "32x32 回风掌",
+      "nine_slice": null
+    },
+    {
+      "module": "skills",
+      "name": "ui_skill_breath_qi",
+      "path": "assets/art/ui/jianghu/skills/ui_skill_breath_qi.png",
+      "size": "32x32",
+      "spec": "32x32 养气诀",
+      "nine_slice": null
     },
     {
       "module": "build",

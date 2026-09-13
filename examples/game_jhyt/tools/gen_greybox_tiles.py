@@ -12,7 +12,7 @@
   单格世界单位 32（scene meta tile_size=32），灰盒阶段用 32px 像素化
   tileset 直接 1:1 映射，观感朴素、清晰可辨。
 
-列映射（game_jhyt 侧约定，farm.lua / main.scene 共用）：
+列映射（game_jhyt 侧约定，farm.lua / manor.scene 共用）：
   manor_ground:  1=草地  2=夯土  3=石板路  4=院墙  5=青瓦屋檐  6=水(池塘)
   manor_farm:    1=已耕地(翻土)  2=已耕地+浇水(深色)  3=苗期(stage1)
                  4=生长期(stage2)  5=成熟(stage3)  6=保留

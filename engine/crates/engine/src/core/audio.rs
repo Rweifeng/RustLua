@@ -1,10 +1,55 @@
 //! Minimal sound-effect playback backed by rodio: WAV clips loaded from the
 //! project assets, a master volume, and a lazily-opened output device so games
 //! run fine on machines without audio hardware (play degrades to a warning).
+//!
+//! M20-02 追加**音量分组**（总线）：BGM / SFX / UI 各自独立调节，实际音量 =
+//! 主音量 × 分组音量；设置可经 [`AudioSystem::to_settings_text`] 持久化。
 
 use std::{collections::HashMap, error::Error, fmt, io::Cursor, path::PathBuf};
 
 use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
+
+/// 音量总线（M20-02）。`Master` 是总音量，其余为分组音量。
+///
+/// `Ord` 用于设置文件的有序容器（`core/settings.rs` 的 `BTreeMap<AudioBus, f32>`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum AudioBus {
+    Master,
+    Bgm,
+    Sfx,
+    Ui,
+}
+
+impl AudioBus {
+    /// 全部总线（设置面板遍历用）。
+    pub const ALL: [Self; 4] = [Self::Master, Self::Bgm, Self::Sfx, Self::Ui];
+
+    /// 稳定文本键（设置持久化用）。
+    #[must_use]
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::Master => "master",
+            Self::Bgm => "bgm",
+            Self::Sfx => "sfx",
+            Self::Ui => "ui",
+        }
+    }
+
+    /// 从文本键解析。
+    #[must_use]
+    pub fn from_key(key: &str) -> Option<Self> {
+        match key {
+            "master" => Some(Self::Master),
+            "bgm" => Some(Self::Bgm),
+            "sfx" => Some(Self::Sfx),
+            "ui" => Some(Self::Ui),
+            _ => None,
+        }
+    }
+}
+
+/// 音频设置文本的版本头。
+pub const AUDIO_SETTINGS_VERSION: &str = "rustlua-audio-v1";
 
 /// Errors produced while configuring or playing audio.
 #[derive(Debug)]
@@ -12,6 +57,8 @@ pub enum AudioError {
     Io(String),
     Device(String),
     Decode(String),
+    /// 音量设置文本版本不符（M20-02）。
+    Settings(String),
 }
 
 impl fmt::Display for AudioError {
@@ -20,6 +67,7 @@ impl fmt::Display for AudioError {
             Self::Io(reason) => write!(f, "audio I/O failed: {reason}"),
             Self::Device(reason) => write!(f, "audio device failed: {reason}"),
             Self::Decode(reason) => write!(f, "audio decode failed: {reason}"),
+            Self::Settings(reason) => write!(f, "audio settings rejected: {reason}"),
         }
     }
 }
@@ -33,6 +81,8 @@ pub struct AudioSystem {
     asset_dir: Option<PathBuf>,
     sounds: HashMap<String, Vec<u8>>,
     volume: f32,
+    /// 分组音量（M20-02）：主音量之外的 BGM/SFX/UI 各自可调。
+    bus_volumes: HashMap<AudioBus, f32>,
     stream: Option<OutputStream>,
     handle: Option<OutputStreamHandle>,
     sinks: Vec<Sink>,
@@ -45,6 +95,9 @@ impl fmt::Debug for AudioSystem {
             .field("cached_sounds", &self.sounds.len())
             .field("active_sinks", &self.sinks.len())
             .field("volume", &self.volume)
+            .field("bgm_volume", &self.bus_volume(AudioBus::Bgm))
+            .field("sfx_volume", &self.bus_volume(AudioBus::Sfx))
+            .field("ui_volume", &self.bus_volume(AudioBus::Ui))
             .field("device_open", &self.stream.is_some())
             .finish()
     }
@@ -64,6 +117,7 @@ impl AudioSystem {
             asset_dir: None,
             sounds: HashMap::new(),
             volume: 1.0,
+            bus_volumes: HashMap::new(),
             stream: None,
             handle: None,
             sinks: Vec::new(),
@@ -79,6 +133,7 @@ impl AudioSystem {
     /// Sets the master volume in `0..=1`.
     pub fn set_volume(&mut self, volume: f32) {
         self.volume = volume.clamp(0.0, 1.0);
+        self.apply_music_volume();
     }
 
     /// Returns the master volume.
@@ -87,46 +142,133 @@ impl AudioSystem {
         self.volume
     }
 
-    /// Plays `name.wav` from the asset directory. Missing clips or a missing
-    /// audio device are logged and degrade gracefully instead of failing.
+    /// 设置某个总线的音量（`0..=1`）；`Master` 等价于 [`Self::set_volume`]。
+    pub fn set_bus_volume(&mut self, bus: AudioBus, volume: f32) {
+        let clamped = volume.clamp(0.0, 1.0);
+        if bus == AudioBus::Master {
+            self.volume = clamped;
+        } else {
+            self.bus_volumes.insert(bus, clamped);
+        }
+        // BGM 是常驻 sink，改音量要立刻生效（SFX/UI 在播放时取快照）。
+        self.apply_music_volume();
+    }
+
+    /// 返回某个总线的独立音量（不含主音量；`Master` 即主音量）。
+    #[must_use]
+    pub fn bus_volume(&self, bus: AudioBus) -> f32 {
+        if bus == AudioBus::Master {
+            return self.volume;
+        }
+        self.bus_volumes.get(&bus).copied().unwrap_or(1.0)
+    }
+
+    /// 实际生效音量 = 主音量 × 分组音量。
+    #[must_use]
+    pub fn effective_volume(&self, bus: AudioBus) -> f32 {
+        if bus == AudioBus::Master {
+            return self.volume;
+        }
+        self.volume * self.bus_volume(bus)
+    }
+
+    /// 音量设置持久化文本（含版本头）。
+    #[must_use]
+    pub fn to_settings_text(&self) -> String {
+        let mut text = String::from(AUDIO_SETTINGS_VERSION);
+        for bus in AudioBus::ALL {
+            text.push('\n');
+            text.push_str(bus.key());
+            text.push('=');
+            text.push_str(&format!("{:.3}", self.bus_volume(bus)));
+        }
+        text
+    }
+
+    /// 应用音量设置文本；版本头不符返回错误，非法行忽略（保持可用）。
+    pub fn apply_settings_text(&mut self, text: &str) -> Result<(), AudioError> {
+        let mut lines = text.lines();
+        let header = lines.next().unwrap_or_default().trim();
+        if header != AUDIO_SETTINGS_VERSION {
+            return Err(AudioError::Settings(format!(
+                "unsupported audio settings version: {header}"
+            )));
+        }
+        for line in lines {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let Some((key, value)) = line.split_once('=') else {
+                continue;
+            };
+            let Some(bus) = AudioBus::from_key(key.trim()) else {
+                continue;
+            };
+            if let Ok(volume) = value.trim().parse::<f32>() {
+                self.set_bus_volume(bus, volume);
+            }
+        }
+        Ok(())
+    }
+
+    /// 播放音效（SFX 总线）。
     pub fn play(&mut self, name: &str) -> Result<(), AudioError> {
+        self.play_on(AudioBus::Sfx, name)
+    }
+
+    /// 在指定总线上播放一次音效（UI 点击音等用 [`AudioBus::Ui`]）。
+    ///
+    /// 返回 `Ok(())` 表示**播放请求已被接受**：无输出设备时静默降级（M19-02
+    /// 策略，只记日志），不视为失败；只有缺文件/解码失败等才返回错误。
+    pub fn play_on(&mut self, bus: AudioBus, name: &str) -> Result<(), AudioError> {
         let bytes = self.sound_bytes(name)?;
+        let volume = self.effective_volume(bus);
         self.ensure_device()?;
-        let handle = self
-            .handle
-            .as_ref()
-            .ok_or_else(|| AudioError::Device("audio device handle unavailable".to_owned()))?;
+        let Some(handle) = self.handle.as_ref() else {
+            tracing::debug!(target: "audio", name, bus = bus.key(), "[audio] no device; skipped");
+            return Ok(());
+        };
         let sink = Sink::try_new(handle).map_err(|error| AudioError::Device(error.to_string()))?;
         let source = Decoder::new(Cursor::new(bytes))
             .map_err(|error| AudioError::Decode(error.to_string()))?;
-        sink.set_volume(self.volume);
+        sink.set_volume(volume);
         sink.append(source);
         self.sinks.push(sink);
         self.sinks.retain(|sink| !sink.empty());
-        tracing::info!(target: "audio", name, "[audio] played");
+        tracing::info!(target: "audio", name, bus = bus.key(), "[audio] played");
         Ok(())
     }
 
     /// Plays `name.wav` as looping background music, replacing any current music.
+    ///
+    /// 与 [`Self::play_on`] 一致：无输出设备时静默降级（不报错），缺文件才失败。
     pub fn play_music(&mut self, name: &str) -> Result<(), AudioError> {
         let bytes = self.sound_bytes(name)?;
         self.ensure_device()?;
-        let handle = self
-            .handle
-            .as_ref()
-            .ok_or_else(|| AudioError::Device("audio device handle unavailable".to_owned()))?;
         // 停掉当前音乐再起新循环。
         if let Some(music) = self.music_sink.take() {
             music.stop();
         }
+        let Some(handle) = self.handle.as_ref() else {
+            tracing::debug!(target: "audio", name, "[audio] no device; music skipped");
+            return Ok(());
+        };
         let sink = Sink::try_new(handle).map_err(|error| AudioError::Device(error.to_string()))?;
         let source = Decoder::new(Cursor::new(bytes))
             .map_err(|error| AudioError::Decode(error.to_string()))?;
-        sink.set_volume(self.volume);
+        sink.set_volume(self.effective_volume(AudioBus::Bgm));
         sink.append(source.repeat_infinite());
         self.music_sink = Some(sink);
         tracing::info!(target: "audio", name, "[audio] music started (loop)");
         Ok(())
+    }
+
+    /// 把当前 BGM 总线音量应用到常驻音乐 sink（分组/主音量变更时调用）。
+    fn apply_music_volume(&mut self) {
+        if let Some(music) = self.music_sink.as_ref() {
+            music.set_volume(self.effective_volume(AudioBus::Bgm));
+        }
     }
 
     /// Stops any looping background music.
@@ -205,5 +347,58 @@ mod tests {
             audio.stream.is_none(),
             "device must not open on a failed load"
         );
+    }
+
+    #[test]
+    fn bus_volumes_are_independent_and_multiply_with_master() {
+        let mut audio = AudioSystem::new();
+        // 默认全 1.0。
+        for bus in AudioBus::ALL {
+            assert_eq!(audio.bus_volume(bus), 1.0, "bus {bus:?} default");
+        }
+        // 分组独立：调 BGM 不影响 SFX/UI。
+        audio.set_bus_volume(AudioBus::Bgm, 0.4);
+        assert_eq!(audio.bus_volume(AudioBus::Bgm), 0.4);
+        assert_eq!(audio.bus_volume(AudioBus::Sfx), 1.0);
+        assert_eq!(audio.bus_volume(AudioBus::Ui), 1.0);
+        // 实际音量 = 主 × 分组。
+        audio.set_volume(0.5);
+        assert!((audio.effective_volume(AudioBus::Bgm) - 0.2).abs() < 1e-6);
+        assert!((audio.effective_volume(AudioBus::Sfx) - 0.5).abs() < 1e-6);
+        // 钳制与 Master 语义。
+        audio.set_bus_volume(AudioBus::Ui, 2.0);
+        assert_eq!(audio.bus_volume(AudioBus::Ui), 1.0);
+        audio.set_bus_volume(AudioBus::Master, 0.25);
+        assert_eq!(audio.volume(), 0.25);
+        assert!((audio.effective_volume(AudioBus::Bgm) - 0.1).abs() < 1e-6);
+    }
+
+    #[test]
+    fn audio_settings_round_trip_and_reject_unknown_version() {
+        let mut audio = AudioSystem::new();
+        audio.set_volume(0.8);
+        audio.set_bus_volume(AudioBus::Bgm, 0.3);
+        audio.set_bus_volume(AudioBus::Sfx, 0.9);
+        audio.set_bus_volume(AudioBus::Ui, 0.6);
+        let text = audio.to_settings_text();
+        assert!(text.starts_with(AUDIO_SETTINGS_VERSION));
+
+        let mut restored = AudioSystem::new();
+        restored.apply_settings_text(&text).unwrap();
+        assert!((restored.volume() - 0.8).abs() < 1e-3);
+        assert!((restored.bus_volume(AudioBus::Bgm) - 0.3).abs() < 1e-3);
+        assert!((restored.bus_volume(AudioBus::Sfx) - 0.9).abs() < 1e-3);
+        assert!((restored.bus_volume(AudioBus::Ui) - 0.6).abs() < 1e-3);
+
+        // 版本不符 → 明确错误；非法行被忽略而非panic。
+        assert!(matches!(
+            restored.apply_settings_text("rustlua-audio-v0\nbgm=0.5\n"),
+            Err(AudioError::Settings(_))
+        ));
+        let mut tolerant = AudioSystem::new();
+        tolerant
+            .apply_settings_text("rustlua-audio-v1\nunknown=0.5\nbgm=not-a-number\n")
+            .unwrap();
+        assert_eq!(tolerant.bus_volume(AudioBus::Bgm), 1.0);
     }
 }

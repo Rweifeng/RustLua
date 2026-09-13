@@ -323,6 +323,52 @@ impl EditorApp {
                         }
                     }
                 }
+                // M19-03 PersistId：实体自由 meta（`entity_meta persist_id`），是运行期
+                // `entity.spawn(name, persist_id)` 的稳定锚点。增删改都并入 CommandHistory
+                // （一次提交 = 单条 Undo），保存后场景文本只增删该 entity_meta 行，
+                // **不改场景格式版本**。合法性（重名/跨文件冲突）由领域数据面板的
+                // PersistId 注册表与 Lua data.npcs 校验器负责，编辑器不硬编码领域规则。
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.label("PersistId");
+                    if self.persist_id_editing != Some(selected) {
+                        self.reload_persist_id_buffer(selected);
+                    }
+                    let response = ui.add(
+                        egui::TextEdit::singleline(&mut self.persist_id_buffer)
+                            .desired_width(150.0)
+                            .hint_text("npc_shen_qingluo"),
+                    );
+                    let mut commit: Option<Option<String>> = None;
+                    if ui.button("设置").clicked() {
+                        commit = Some(Some(self.persist_id_buffer.clone()));
+                    }
+                    // 失焦（Enter / 点击别处）即提交：一次提交一条 Undo，避免逐键
+                    // 刷屏式历史。
+                    if response.lost_focus() {
+                        commit = Some(Some(self.persist_id_buffer.clone()));
+                    }
+                    if ui.button("清除").clicked() {
+                        commit = Some(None);
+                    }
+                    if let Some(value) = commit {
+                        match self.set_entity_persist_id(selected, value) {
+                            Ok(true) => {
+                                self.reload_persist_id_buffer(selected);
+                                self.status = if self.persist_id_buffer.is_empty() {
+                                    "PersistId 已清除".to_owned()
+                                } else {
+                                    format!("PersistId 已设置：{}", self.persist_id_buffer)
+                                };
+                            }
+                            Ok(false) => {
+                                self.reload_persist_id_buffer(selected);
+                                self.status = "PersistId 无变化".to_owned();
+                            }
+                            Err(error) => self.status = error,
+                        }
+                    }
+                });
                 ui.separator();
                 ui.horizontal(|ui| {
                     ui.label("名称");
@@ -2704,7 +2750,7 @@ mod tests {
     }
 
     fn sample_project_root() -> PathBuf {
-        engine::core::games_dir().join("examples")
+        engine::core::games_dir().join("examples").join("game_api")
     }
 
     fn copy_dir(source: &Path, destination: &Path) {

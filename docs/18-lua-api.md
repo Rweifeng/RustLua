@@ -77,6 +77,105 @@
 
 `tilemap.set_solid` 会立即重建该 Tilemap 实体的固定物理碰撞体；Tilemap 的 tile、solid、meta 快照由脚本按约定写入 `map.state`，并可通过 `save.commit/load` 跨场景、重启恢复。
 
+## M20-02 音频分组、工程设置文件与 UI 焦点/滚动导航
+
+### `audio` 音量分组（总线）
+
+| 模块 | API | 说明 |
+|---|---|---|
+| `audio` | `buses()` | 总线名数组（顺序固定）：`master`、`bgm`、`sfx`、`ui` |
+| `audio` | `set_bus_volume(bus, v)` | 设置某总线音量（`0..=1`，超界钳制）；未知总线名报 Lua 错误（便于定位拼写错误） |
+| `audio` | `bus_volume(bus)` | 该总线的**独立**音量（不含主音量；`master` 即主音量） |
+| `audio` | `effective_volume(bus)` | 实际生效音量 = 主音量 × 分组音量（`master` 等于主音量） |
+| `audio` | `play_on(bus, name)` | 在指定总线播一次音效，返回 `ok, reason`；**无输出设备时静默降级**（返回 `true` 只记日志），缺文件/解码失败才返回 `false` |
+| `audio` | `settings_text()` | 四路音量的版本化文本（版本头 `rustlua-audio-v1`，逐行 `bus=0.000`） |
+| `audio` | `apply_settings(text)` | 应用设置文本；版本头不符返回 `false, reason`，未知总线/非法数值忽略 |
+| `audio` | `settings_path()` | `<project>/settings.toml` 绝对路径（无工程根返回 `nil`） |
+| `audio` | `load_settings()` | 读取 `settings.toml` 的 `[audio]` 段并应用，返回 `ok, detail`；文件缺失返回 `false, "missing"`（不算错误） |
+| `audio` | `save_settings()` | 把当前四路音量**保序**写回 `settings.toml`（保留注释与其他段），返回 `ok, detail` |
+
+`play/volume/music/stop_music` 语义不变：`play` 等价于 SFX 总线，`music` 使用 BGM 总线且改音量即时生效。
+
+### 工程设置文件 `<project>/settings.toml`（可选，M20-02）
+
+```toml
+# RustLua 工程设置（由编辑器「项目设置」面板写入；缺失即默认）
+[audio]
+master = 1.0
+bgm = 1.0
+sfx = 1.0
+ui = 1.0
+
+[input]
+# 命名动作映射（M20-07）。单行转义字符串，首行为版本头；由
+# `input.save_settings()` 写入、`input.load_settings()` 读取。
+map = "rustlua-actions-v1\ninteract=key:e,pad:0\n..."
+```
+
+- 文件**可选**：缺失时全部使用默认值（音频 `1.0`、输入用引擎默认动作表），不影响启动；当前定义 `[audio]` 与 `[input]` 两段。
+- 解析宽松：未知段、未知键、非法数值一律忽略（保留默认），不 panic。
+- 写入保序：只替换/补齐 `[audio]` 段内的四个键与 `[input]` 段内的 `map` 键，注释与其他段原样保留。
+- `game_jhyt` 在 boot（`scripts/core/audio.lua` → `audio.load_settings()`）应用该文件；暂停菜单「设置」页 `-/+` 调整四路音量后按「保存设置」写回。**主音量**同时随存档 provider `audio` 持久化（M19-02 语义），分组音量以本文件为准。
+
+### `ui` 焦点环与滚动（运行时 UI 导航）
+
+焦点环（`core/ui_navigation.rs` 的 `FocusRing`）用于列表/网格的方向键选择，序号统一 **0 基**；滚动状态（`ScrollState`）用于把选中行滚入视口。
+
+| 模块 | API | 说明 |
+|---|---|---|
+| `ui` | `focus_open(id, count[, columns])` | 建立/重建 `id` 的焦点环（`count` 项，按 `columns` 列布局，默认 1 列），返回项数；已有环保留当前焦点（项仍存在时） |
+| `ui` | `focus_select(id, index)` | 按 0 基序号指定焦点；越界返回 `false` |
+| `ui` | `focus_index(id)` | 当前焦点序号（无焦点/无环返回 `nil`） |
+| `ui` | `focus_move(id, "up"\|"down"\|"left"\|"right")` | 方向移动（到边界**环绕**），返回新序号；未知方向报错，无环返回 `nil` |
+| `ui` | `focus_cycle(id[, forward])` | Tab 式循环（默认正向） |
+| `ui` | `focus_count(id)` / `focus_close(id)` | 项数 / 删除焦点环 |
+| `ui` | `scroll_open(id, viewport, content)` / `scroll_close(id)` | 建立/删除滚动状态（像素） |
+| `ui` | `scroll_extents(id, viewport, content)` | 更新视口/内容高度并重新钳制偏移，返回当前偏移 |
+| `ui` | `scroll_by(id, delta)` / `scroll_lines(id, lines, line_h)` / `scroll_page(id, pages)` | 按像素/行/页滚动，返回**实际生效**的增量（已钳制，不会出现空白滚动） |
+| `ui` | `scroll_offset(id)` / `scroll_max(id)` | 当前偏移 / 最大偏移（无该 id 返回 `nil`） |
+| `ui` | `scroll_to_visible(id, item_top, item_height)` | 最小滚动让该项进入视口，返回是否发生滚动 |
+| `ui` | `scroll_visible(id)` | 当前可见区间 `{ start = , stop = }`（字段名避开 Lua 关键字 `end`） |
+
+面板侧的用法见 `examples/game_jhyt/scripts/ui/panel_nav.lua`（1 基 ↔ 0 基换算与降级）与 `inventory_ui/quest_ui/shop/pause_menu/dialogue`。
+
+### 方向键（物理键）
+
+- 宿主把平台的 Arrow Up/Down/Left/Right 映射为引擎物理键 `InputKey::ARROW_UP/DOWN/LEFT/RIGHT`（独立游戏窗口 `game_app.rs` 与编辑器 Play 预览 `game_view.rs` 同源）；Lua 侧用 `input.is_down("up")` / `input.just_pressed("down")` / `"left"` / `"right"` 读取。
+- 这是**物理键**层，与命名动作（`input.action*`、手柄 DPad/摇杆）无关；命名动作见下节。
+
+### `input` 命名动作、手柄与绑定持久化（M20-07）
+
+三层模型：**物理输入**（键鼠 + 宿主每帧喂入的手柄设备帧，见 `docs/33`）→ **命名动作**（`ActionMap`，`ScriptState` 内只有一份实例）→ **动作消费**（下表 API）。动作查询同时考虑键盘与手柄绑定，因此脚本不必区分玩家用哪种设备。
+
+| 模块 | API | 说明 |
+|---|---|---|
+| `input` | `action(name)` | 任一绑定当前按下（含手柄按钮与手柄轴过阈值 0.5），返回布尔 |
+| `input` | `action_pressed(name)` / `action_released(name)` | 本逻辑帧的按下/松开边沿（键盘与手柄边沿都保留到被消费） |
+| `input` | `action_axis(negative, positive)` | 合成轴：手柄摇杆取模拟量（−1..1）、键位取 −1/0/1。**首参为负方向动作**，例如 `input.action_axis("ui_down", "ui_up")`（上为正）、`input.action_axis("ui_left", "ui_right")` |
+| `input` | `pad_button(index)` / `pad_axis(index)` | 原始手柄查询（调试与特殊玩法用）：按钮 0..15、轴 0..5，索引契约见 `docs/33` |
+| `input` | `actions()` | 全部动作名的数组（字典序，1 基表） |
+| `input` | `bindings(action)` | 该动作的绑定文本数组，形如 `{"key:e", "pad:0", "padaxis:1+"}` |
+| `input` | `rebind(action, binding)` | **清空并重设**该动作的绑定，返回 `ok, err`；绑定文本非法时返回 `false, 原因`（原绑定保留） |
+| `input` | `unbind(action, binding)` | 移除单个绑定，返回是否确实移除 |
+| `input` | `reset_bindings()` | 恢复引擎默认动作表 |
+| `input` | `action_map_text()` | 当前映射的持久化文本（首行版本头 `rustlua-actions-v1`，逐行 `动作=绑定,绑定`） |
+| `input` | `set_action_map(text)` | 用文本替换当前映射，返回 `ok, err`；**版本头不符不改动当前映射**，返回 `false, 原因` |
+| `input` | `settings_path()` | `settings.toml` 实际路径（无工程根返回 `nil`） |
+| `input` | `load_settings([path])` | 读取 `[input].map` 并应用；文件缺失返回 `false, "missing"`（保留当前绑定）；版本/绑定非法则**回退默认映射**并记录诊断；缺 `map` 键只诊断、在位绑定保持不变；已有内容用 `merge_missing` 补齐缺失动作（**不覆盖用户重绑定**） |
+| `input` | `save_settings([path])` | 保序读改写 `settings.toml` 的 `[input]` 段（原子写、保留注释与 `[audio]` 段），返回 `ok, err` |
+| `input` | `diagnostics()` | 输入设置加载/保存产生的诊断消息数组（可定位到文件与原因） |
+| `input` | `nav_settings([path])` | 读取 `[input]` 段的菜单导航手感，返回 `{threshold, delay_frames, repeat_frames}`；文件缺失/无工程根返回 `nil`（调用方保留默认 0.5 / 16 / 8）。解析宽松 + 钳制：阈值 0..1、间隔 ≥1、帧数 ≤120，脏值回落默认 |
+
+- 路径规则与 `audio.settings_path/load_settings/save_settings` 一致：缺省为工程根下 `settings.toml`，相对路径相对工程根解析；无工程根时无参调用返回 `false, "no_project_root"`。
+- 绑定文本语法：`key:<字符/名字>`（如 `key:e`、`key:space`、`key:up`）、`pad:<按钮序号>`（如 `pad:0`）、`padaxis:<轴序号><+|->`（如 `padaxis:1+`）。
+- 默认动作表（`ActionMap::with_defaults()`，36 项）：移动 `move_up/down/left/right`；玩法
+  `interact`/`attack`/`skill`/`gift`/`sleep`/`practice`/`inventory`/`pause`/`build`/`place`/`demolish`/
+  `use`/`quest`/`respawn`/`seed`；音量 `volume_up`/`volume_down`；数字直选 `slot_1`…`slot_9`；
+  菜单 `confirm`/`cancel`；焦点导航 `ui_up/down/left/right`。其中 `confirm`/`cancel` 与 `ui_*`
+  额外带手柄默认绑定（`pad:0`/`pad:1`、左摇杆 `padaxis:0±`/`padaxis:1±`、DPad `pad:12..15`）。
+- 旧物理键 API（`input.is_down/just_pressed/just_released/axis/pressed/released`）语义**完全不变**，老脚本继续可用；`input.action` 已从「物理键别名」升级为「命名动作查询」（仓库内除引擎自身测试外无原调用方）。
+- `game_jhyt` 从物理键迁移到命名动作由 **M20-08** 完成；本任务只提供引擎层 API 与持久化。
+
 ## 安全与错误策略
 
 - Entity ID 使用 `index/generation` 编码，销毁后旧 ID 不会指向新实体；

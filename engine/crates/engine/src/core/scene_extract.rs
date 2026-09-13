@@ -141,7 +141,7 @@ mod tests {
     use super::*;
 
     fn game_root() -> std::path::PathBuf {
-        crate::core::games_dir().join("examples")
+        crate::core::games_dir().join("examples").join("game_api")
     }
 
     /// 稳定快照：对 `demo3d.scene` 的实体名称、mesh path、transform、camera/light

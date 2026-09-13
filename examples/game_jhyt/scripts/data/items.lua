@@ -9,11 +9,15 @@
 --   use              可使用物品的效果表（M17-04 硬风险③）：
 --                      energy       使用后体力增减（正数回复）
 --                      inner_power  使用后内力增减
+--                      buff         临时属性 Buff（M18-04）：
+--                                   { stat=, amount=, days= }，经
+--                                   inventory.use → stats.add_buff 入账
 --                    无 use 字段即不可使用（如种子/收获物/工具）。
 return {
   lingzhi = {
     name = "灵芝",
     description = "山庄药田的基础药材。",
+    icon = "assets/art/items/lingzhi.png",
     stack = 99,
     buy = 25,
     sell = 80,
@@ -22,6 +26,7 @@ return {
   rice = {
     name = "稻谷",
     description = "江南常见作物。",
+    icon = "assets/art/items/rice.png",
     stack = 99,
     buy = 10,
     sell = 30,
@@ -30,6 +35,7 @@ return {
   seed_lingzhi = {
     name = "灵芝菌种",
     description = "用于种植灵芝。",
+    icon = "assets/art/items/seed_lingzhi.png",
     stack = 99,
     buy = 25,
     sell = 5,
@@ -38,6 +44,7 @@ return {
   seed_rice = {
     name = "稻种",
     description = "用于种植稻谷。",
+    icon = "assets/art/items/seed_rice.png",
     stack = 99,
     buy = 12,
     sell = 2,
@@ -46,10 +53,33 @@ return {
   heal_pill = {
     name = "回复药",
     description = "云泽村药铺的常备丸药，服下可恢复体力。",
+    icon = "assets/art/items/heal_pill.png",
     stack = 9,
     buy = 60,
     sell = 20,
     kind = "consumable",
     use = { energy = 40 }
+  },
+  -- 行气散（M18-04）：临时 Buff 的具体来源——use.buff 经 inventory.use →
+  -- stats.add_buff 入账（attack+3，2 个游戏日后过期）。
+  herb_tonic = {
+    name = "行气散",
+    description = "以山间草药调配的行气散，服后气血涌动，短期内臂力增强。",
+    icon = "assets/art/items/herb_tonic.png",
+    stack = 9,
+    buy = 40,
+    sell = 12,
+    kind = "consumable",
+    use = { buff = { stat = "attack", amount = 3, days = 2 } }
+  },
+  -- 木料（M18-02）：建筑升级材料，云泽村货摊出售（纯数据新增，无代码改动）。
+  timber = {
+    name = "木料",
+    description = "修缮与扩建山庄建筑所需的木料，云泽村货摊有售。",
+    icon = "assets/art/items/timber.png",
+    stack = 99,
+    buy = 15,
+    sell = 4,
+    kind = "material"
   }
 }

@@ -1,4 +1,4 @@
--- data/dialogues/gu_changfeng_teach.lua：顾长风·木桩三式（M17-03 纯数据）。
+-- data/dialogues/gu_changfeng_teach.lua：顾长风（山庄·退隐镖师）对话（M17-03，M19-01 扩展）。
 --
 -- 对话 schema（dialogue.lua 依据本结构与 quest.lua 协作）：
 --   id        对话标识
@@ -17,8 +17,15 @@
 --         set_var / add_var      剧情变量写入
 --         add_item               背包发放 { {item, count}, ... }
 --         money                  金钱增减
+--         relationship           关系增量 { npc_id = delta }（M18-04）
+--         reputation             声望增量 { faction = delta }（M18-04）
 --       next      跳转节点 id（与 finish 二选一）
 --       finish    true 结束对话
+--
+-- M19-01 扩展：同一文件里再挂两个入口（find_for_npc 每个 speaker 只取第一条对话）：
+--   ① 木桩三式 quest_spar（既有）
+--   ② 主线一段 mainline_arrival（接纳 + 记录顾长风讲规矩）
+--   ③ 订单·山庄丸药 order_pill
 return {
   version = 1,
   id = "gu_changfeng_teach",
@@ -28,10 +35,20 @@ return {
     greet = {
       text = "顾长风负手立于木桩旁：“江湖路远，先把刀法根基打稳。”",
       options = {
-        { text = "愿随师父走一遍基础三式。", cond = { quest = "quest_spar", state = "not_started" }, effects = { accept_quest = "quest_spar" }, next = "accept" },
+        -- ① 木桩三式（既有）
+        { text = "愿随师父走一遍基础三式。", cond = { quest = "quest_spar", state = "not_started" }, effects = { accept_quest = "quest_spar", relationship = { npc_gu_changfeng = 3 } }, next = "accept" },
         { text = "再走一式。", cond = { quest = "quest_spar", state = "in_progress" }, effects = { add_var = { sword_drills = 1 } }, next = "practice" },
         { text = "三式已经走完，请师父指点。", cond = { quest = "quest_spar", state = "deliverable" }, effects = { deliver_quest = "quest_spar" }, next = "done" },
         { text = "三式已成，多谢师父。", cond = { quest = "quest_spar", state = "completed" }, next = "thanks" },
+        -- ② 主线一段
+        { text = "弟子新来乍到，请师父吩咐。", cond = { quest = "mainline_arrival", state = "not_started" }, next = "arrival_offer" },
+        { text = "药田翻好了，规矩也已记下。", cond = { quest = "mainline_arrival", state = "deliverable" }, effects = { deliver_quest = "mainline_arrival" }, next = "arrival_done" },
+        { text = "药田还没翻完。", cond = { quest = "mainline_arrival", state = "in_progress" }, next = "arrival_remind" },
+        -- ③ 订单·山庄丸药
+        { text = "庄中可有要办的差事？", cond = { quest = "order_pill", state = "not_started" }, next = "pill_intro" },
+        { text = "回复药炼好了，请过目。", cond = { quest = "order_pill", state = "deliverable" }, effects = { deliver_quest = "order_pill" }, next = "pill_done" },
+        { text = "丸药还在炉上。", cond = { quest = "order_pill", state = "in_progress" }, next = "pill_remind" },
+        { text = "丸药已经交讫。", cond = { quest = "order_pill", state = "completed" }, next = "pill_thanks" },
         { text = "改日再来请教。", finish = true }
       }
     },
@@ -58,6 +75,69 @@ return {
     },
     thanks = {
       text = "顾长风：“刀在手上，路在脚下。去罢。”",
+      options = {
+        { text = "告辞。", finish = true }
+      }
+    },
+    -- ② 主线一段节点
+    arrival_offer = {
+      text = "顾长风抬眼看了看药田：“既入山庄，先识农桑，再谈刀剑。翻一块地，回来听我讲规矩。”",
+      options = {
+        -- 两条选项都接取任务并给同一个副作用：dialogue.choose 用相对索引对齐
+        -- 下一节点，若只给第 1 条加副作用，玩家按 W/S 选第 2 条就会漏掉 set_var。
+        -- 因此副作用写在 arrival_accept 的选择上（唯一入口），此处只负责接取。
+        { text = "弟子遵命。", effects = { accept_quest = "mainline_arrival", relationship = { npc_gu_changfeng = 3 } }, next = "arrival_accept" },
+        { text = "容后再议。", finish = true }
+      }
+    },
+    arrival_accept = {
+      -- set_var 放在这里而不是 arrival_offer：dialogue.choose 用相对索引，
+      -- 若写在上一个节点，按 W/S 选第 2 条就绕过了副作用（实测踩过）。
+      text = "顾长风：“药田就在南边。锄头在你背上，去罢。”",
+      options = {
+        { text = "是。", effects = { set_var = { gu_taught = true } }, finish = true }
+      }
+    },
+    arrival_remind = {
+      text = "顾长风：“地翻好了，规矩我自然讲给你听。”",
+      options = {
+        { text = "弟子这就去。", finish = true }
+      }
+    },
+    arrival_done = {
+      text = "顾长风：“翻土知节气，练刀知进退。山庄的门，算你进来了。”",
+      options = {
+        { text = "谢师父指点。", finish = true }
+      }
+    },
+    -- ③ 订单·山庄丸药节点
+    pill_intro = {
+      text = "顾长风：“庄中弟子要下山办事，缺一丸回复药。你会种药，也会用炉？”",
+      options = {
+        { text = "愿为山庄炼一丸。", effects = { accept_quest = "order_pill", set_var = { orders_started = true }, relationship = { npc_gu_changfeng = 2 } }, next = "pill_accept" },
+        { text = "再想想。", finish = true }
+      }
+    },
+    pill_accept = {
+      text = "顾长风：“药庐一放，灵芝两株，文火两个时辰。这是八十文的买价。”",
+      options = {
+        { text = "记下了。", finish = true }
+      }
+    },
+    pill_done = {
+      text = "顾长风接过丸药闻了闻：“药香不散，火候到了。这八十文，还有一包行气散，一并拿去。”",
+      options = {
+        { text = "多谢师父。", finish = true }
+      }
+    },
+    pill_remind = {
+      text = "顾长风：“丸药未成，急不得。”",
+      options = {
+        { text = "好。", finish = true }
+      }
+    },
+    pill_thanks = {
+      text = "顾长风：“药已入库，你去忙罢。”",
       options = {
         { text = "告辞。", finish = true }
       }

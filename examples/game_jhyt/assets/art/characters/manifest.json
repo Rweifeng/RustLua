@@ -1472,6 +1472,396 @@
           "dir": "w"
         }
       ]
+    },
+    {
+      "id": "a_qi",
+      "display": "阿七·年轻镖师",
+      "role": "npc",
+      "note": "护安镖局短打 + 镖旗纹样护腕 + 腰刀；最年轻、动作最利落（偏矮 + 标准体型）",
+      "sprite_size": "32x32",
+      "sorting_layer": "actor",
+      "static_sprite": "texture=assets/art/characters/a_qi/static_s.png;size=32x32;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+      "animation": "default=idle_s;clip:idle_s:assets/art/characters/a_qi/idle_s.png:2:6:true;clip:idle_n:assets/art/characters/a_qi/idle_n.png:2:6:true;clip:idle_e:assets/art/characters/a_qi/idle_e.png:2:6:true;clip:idle_w:assets/art/characters/a_qi/idle_w.png:2:6:true;clip:walk_s:assets/art/characters/a_qi/walk_s.png:4:10:true;clip:walk_n:assets/art/characters/a_qi/walk_n.png:4:10:true;clip:walk_e:assets/art/characters/a_qi/walk_e.png:4:10:true;clip:walk_w:assets/art/characters/a_qi/walk_w.png:4:10:true;clip:talk_s:assets/art/characters/a_qi/talk_s.png:2:4:true;clip:talk_n:assets/art/characters/a_qi/talk_n.png:2:4:true;clip:talk_e:assets/art/characters/a_qi/talk_e.png:2:4:true;clip:talk_w:assets/art/characters/a_qi/talk_w.png:2:4:true",
+      "preview": "assets/art/characters/a_qi/preview.png",
+      "palette": {
+        "skin": "#E8C49A",
+        "hair": "#2E2622",
+        "cloth": "#B25A3C",
+        "cloth_alt": "#4A3628",
+        "trim": "#C9A05A",
+        "belt": "#3D444C",
+        "shoe": "#4A3628"
+      },
+      "clips": [
+        {
+          "name": "idle_s",
+          "sheet": "assets/art/characters/a_qi/idle_s.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "s"
+        },
+        {
+          "name": "idle_n",
+          "sheet": "assets/art/characters/a_qi/idle_n.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "n"
+        },
+        {
+          "name": "idle_e",
+          "sheet": "assets/art/characters/a_qi/idle_e.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "e"
+        },
+        {
+          "name": "idle_w",
+          "sheet": "assets/art/characters/a_qi/idle_w.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "w"
+        },
+        {
+          "name": "walk_s",
+          "sheet": "assets/art/characters/a_qi/walk_s.png",
+          "cols": 4,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "s"
+        },
+        {
+          "name": "walk_n",
+          "sheet": "assets/art/characters/a_qi/walk_n.png",
+          "cols": 4,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "n"
+        },
+        {
+          "name": "walk_e",
+          "sheet": "assets/art/characters/a_qi/walk_e.png",
+          "cols": 4,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "e"
+        },
+        {
+          "name": "walk_w",
+          "sheet": "assets/art/characters/a_qi/walk_w.png",
+          "cols": 4,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "w"
+        },
+        {
+          "name": "talk_s",
+          "sheet": "assets/art/characters/a_qi/talk_s.png",
+          "cols": 2,
+          "fps": 4,
+          "looped": true,
+          "action": "talk",
+          "dir": "s"
+        },
+        {
+          "name": "talk_n",
+          "sheet": "assets/art/characters/a_qi/talk_n.png",
+          "cols": 2,
+          "fps": 4,
+          "looped": true,
+          "action": "talk",
+          "dir": "n"
+        },
+        {
+          "name": "talk_e",
+          "sheet": "assets/art/characters/a_qi/talk_e.png",
+          "cols": 2,
+          "fps": 4,
+          "looped": true,
+          "action": "talk",
+          "dir": "e"
+        },
+        {
+          "name": "talk_w",
+          "sheet": "assets/art/characters/a_qi/talk_w.png",
+          "cols": 2,
+          "fps": 4,
+          "looped": true,
+          "action": "talk",
+          "dir": "w"
+        }
+      ]
+    },
+    {
+      "id": "situ_kui",
+      "display": "司徒魁·玄冥会执事",
+      "role": "npc",
+      "note": "玄冥会墨黑长袍 + 暗紫滚边 + 面罩半遮；反派辨识度靠全黑配紫",
+      "sprite_size": "32x32",
+      "sorting_layer": "actor",
+      "static_sprite": "texture=assets/art/characters/situ_kui/static_s.png;size=32x32;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+      "animation": "default=idle_s;clip:idle_s:assets/art/characters/situ_kui/idle_s.png:2:6:true;clip:idle_n:assets/art/characters/situ_kui/idle_n.png:2:6:true;clip:idle_e:assets/art/characters/situ_kui/idle_e.png:2:6:true;clip:idle_w:assets/art/characters/situ_kui/idle_w.png:2:6:true;clip:walk_s:assets/art/characters/situ_kui/walk_s.png:4:10:true;clip:walk_n:assets/art/characters/situ_kui/walk_n.png:4:10:true;clip:walk_e:assets/art/characters/situ_kui/walk_e.png:4:10:true;clip:walk_w:assets/art/characters/situ_kui/walk_w.png:4:10:true;clip:talk_s:assets/art/characters/situ_kui/talk_s.png:2:4:true;clip:talk_n:assets/art/characters/situ_kui/talk_n.png:2:4:true;clip:talk_e:assets/art/characters/situ_kui/talk_e.png:2:4:true;clip:talk_w:assets/art/characters/situ_kui/talk_w.png:2:4:true",
+      "preview": "assets/art/characters/situ_kui/preview.png",
+      "palette": {
+        "skin": "#D9B08C",
+        "hair": "#1E1A1C",
+        "cloth": "#2A2430",
+        "cloth_alt": "#4A3A56",
+        "trim": "#8B6BB8",
+        "belt": "#8B6BB8",
+        "shoe": "#1E1A1C"
+      },
+      "clips": [
+        {
+          "name": "idle_s",
+          "sheet": "assets/art/characters/situ_kui/idle_s.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "s"
+        },
+        {
+          "name": "idle_n",
+          "sheet": "assets/art/characters/situ_kui/idle_n.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "n"
+        },
+        {
+          "name": "idle_e",
+          "sheet": "assets/art/characters/situ_kui/idle_e.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "e"
+        },
+        {
+          "name": "idle_w",
+          "sheet": "assets/art/characters/situ_kui/idle_w.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "w"
+        },
+        {
+          "name": "walk_s",
+          "sheet": "assets/art/characters/situ_kui/walk_s.png",
+          "cols": 4,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "s"
+        },
+        {
+          "name": "walk_n",
+          "sheet": "assets/art/characters/situ_kui/walk_n.png",
+          "cols": 4,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "n"
+        },
+        {
+          "name": "walk_e",
+          "sheet": "assets/art/characters/situ_kui/walk_e.png",
+          "cols": 4,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "e"
+        },
+        {
+          "name": "walk_w",
+          "sheet": "assets/art/characters/situ_kui/walk_w.png",
+          "cols": 4,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "w"
+        },
+        {
+          "name": "talk_s",
+          "sheet": "assets/art/characters/situ_kui/talk_s.png",
+          "cols": 2,
+          "fps": 4,
+          "looped": true,
+          "action": "talk",
+          "dir": "s"
+        },
+        {
+          "name": "talk_n",
+          "sheet": "assets/art/characters/situ_kui/talk_n.png",
+          "cols": 2,
+          "fps": 4,
+          "looped": true,
+          "action": "talk",
+          "dir": "n"
+        },
+        {
+          "name": "talk_e",
+          "sheet": "assets/art/characters/situ_kui/talk_e.png",
+          "cols": 2,
+          "fps": 4,
+          "looped": true,
+          "action": "talk",
+          "dir": "e"
+        },
+        {
+          "name": "talk_w",
+          "sheet": "assets/art/characters/situ_kui/talk_w.png",
+          "cols": 2,
+          "fps": 4,
+          "looped": true,
+          "action": "talk",
+          "dir": "w"
+        }
+      ]
+    },
+    {
+      "id": "lu_guizang",
+      "display": "陆归藏·师父（已失踪）",
+      "role": "npc",
+      "note": "旧青灰布袍 + 灰白发 + 药篓；轮廓与玄鹤区分：更旧的配色、带背篓",
+      "sprite_size": "32x32",
+      "sorting_layer": "actor",
+      "static_sprite": "texture=assets/art/characters/lu_guizang/static_s.png;size=32x32;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+      "animation": "default=idle_s;clip:idle_s:assets/art/characters/lu_guizang/idle_s.png:2:6:true;clip:idle_n:assets/art/characters/lu_guizang/idle_n.png:2:6:true;clip:idle_e:assets/art/characters/lu_guizang/idle_e.png:2:6:true;clip:idle_w:assets/art/characters/lu_guizang/idle_w.png:2:6:true;clip:walk_s:assets/art/characters/lu_guizang/walk_s.png:4:10:true;clip:walk_n:assets/art/characters/lu_guizang/walk_n.png:4:10:true;clip:walk_e:assets/art/characters/lu_guizang/walk_e.png:4:10:true;clip:walk_w:assets/art/characters/lu_guizang/walk_w.png:4:10:true;clip:talk_s:assets/art/characters/lu_guizang/talk_s.png:2:4:true;clip:talk_n:assets/art/characters/lu_guizang/talk_n.png:2:4:true;clip:talk_e:assets/art/characters/lu_guizang/talk_e.png:2:4:true;clip:talk_w:assets/art/characters/lu_guizang/talk_w.png:2:4:true",
+      "preview": "assets/art/characters/lu_guizang/preview.png",
+      "palette": {
+        "skin": "#DCC0A0",
+        "hair": "#B9BDC4",
+        "cloth": "#6E7A72",
+        "cloth_alt": "#57635C",
+        "trim": "#D8CDB2",
+        "belt": "#4A3628",
+        "shoe": "#57635C"
+      },
+      "clips": [
+        {
+          "name": "idle_s",
+          "sheet": "assets/art/characters/lu_guizang/idle_s.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "s"
+        },
+        {
+          "name": "idle_n",
+          "sheet": "assets/art/characters/lu_guizang/idle_n.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "n"
+        },
+        {
+          "name": "idle_e",
+          "sheet": "assets/art/characters/lu_guizang/idle_e.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "e"
+        },
+        {
+          "name": "idle_w",
+          "sheet": "assets/art/characters/lu_guizang/idle_w.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "w"
+        },
+        {
+          "name": "walk_s",
+          "sheet": "assets/art/characters/lu_guizang/walk_s.png",
+          "cols": 4,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "s"
+        },
+        {
+          "name": "walk_n",
+          "sheet": "assets/art/characters/lu_guizang/walk_n.png",
+          "cols": 4,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "n"
+        },
+        {
+          "name": "walk_e",
+          "sheet": "assets/art/characters/lu_guizang/walk_e.png",
+          "cols": 4,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "e"
+        },
+        {
+          "name": "walk_w",
+          "sheet": "assets/art/characters/lu_guizang/walk_w.png",
+          "cols": 4,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "w"
+        },
+        {
+          "name": "talk_s",
+          "sheet": "assets/art/characters/lu_guizang/talk_s.png",
+          "cols": 2,
+          "fps": 4,
+          "looped": true,
+          "action": "talk",
+          "dir": "s"
+        },
+        {
+          "name": "talk_n",
+          "sheet": "assets/art/characters/lu_guizang/talk_n.png",
+          "cols": 2,
+          "fps": 4,
+          "looped": true,
+          "action": "talk",
+          "dir": "n"
+        },
+        {
+          "name": "talk_e",
+          "sheet": "assets/art/characters/lu_guizang/talk_e.png",
+          "cols": 2,
+          "fps": 4,
+          "looped": true,
+          "action": "talk",
+          "dir": "e"
+        },
+        {
+          "name": "talk_w",
+          "sheet": "assets/art/characters/lu_guizang/talk_w.png",
+          "cols": 2,
+          "fps": 4,
+          "looped": true,
+          "action": "talk",
+          "dir": "w"
+        }
+      ]
     }
   ]
 }

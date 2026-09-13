@@ -74,12 +74,15 @@ impl EditorApp {
             .join(&publish_name);
         let (tx, rx) = channel();
         spawn_publish(
-            script,
-            project_root,
-            self.publish_platform,
-            publish_name,
-            self.publish_compress,
-            self.publish_encrypt,
+            PublishRequest {
+                script,
+                project_root,
+                platform: self.publish_platform,
+                publish_name,
+                compress: self.publish_compress,
+                encrypt: self.publish_encrypt,
+                skip_build: false,
+            },
             tx,
         );
         self.progress.start(
@@ -169,17 +172,39 @@ fn prepend_path(bin: &Path) -> String {
     parts.join(";")
 }
 
-/// 后台执行发布脚本，把 stdout/stderr 行转发给 UI 线程。
-/// CREATE_NO_WINDOW 保证不弹出额外终端窗口。
-fn spawn_publish(
+/// 一次发布请求的全部参数（M20-03）。
+///
+/// 打成结构体而不是长参数表：`spawn_publish` 原先有 8 个参数，越过 clippy 的
+/// `too_many_arguments` 阈值，且新增开关（如 `-SkipBuild`）时调用点极易错位。
+#[derive(Debug, Clone)]
+struct PublishRequest {
     script: PathBuf,
     project_root: PathBuf,
     platform: PublishPlatform,
     publish_name: String,
     compress: bool,
     encrypt: bool,
-    tx: Sender<ProgressEvent>,
-) {
+    /// 测试专用：复用 `target/release` 既有产物（`-SkipBuild`），正式发布传 false。
+    skip_build: bool,
+}
+
+/// 后台执行发布脚本，把 stdout/stderr 行转发给 UI 线程。
+/// CREATE_NO_WINDOW 保证不弹出额外终端窗口。
+///
+/// `skip_build`：测试专用——复用 `target/release` 既有产物（`-SkipBuild`），
+/// 使端到端用例只验证「发现脚本 → spawn → 流式输出 → 原子替换」路径，
+/// 不在单元测试里触发整仓 release 构建（正在运行的编辑器/杀毒会占用
+/// `target/release/*.exe`，导致构建阶段被拒而误报失败）。正式发布传 false。
+fn spawn_publish(request: PublishRequest, tx: Sender<ProgressEvent>) {
+    let PublishRequest {
+        script,
+        project_root,
+        platform,
+        publish_name,
+        compress,
+        encrypt,
+        skip_build,
+    } = request;
     thread::spawn(move || {
         let mut command = Command::new("powershell");
         command
@@ -196,6 +221,9 @@ fn spawn_publish(
         }
         if encrypt {
             command.arg("-Encrypt");
+        }
+        if skip_build {
+            command.arg("-SkipBuild");
         }
         #[cfg(windows)]
         command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
@@ -352,15 +380,20 @@ mod publish_tests {
             eprintln!("未找到发布脚本，跳过");
             return;
         };
-        let project_root = engine::core::games_dir().join("examples");
+        let project_root = engine::core::games_dir().join("examples").join("game_api");
         let (tx, rx) = channel();
         spawn_publish(
-            script,
-            project_root,
-            PublishPlatform::Pc,
-            "examples".to_owned(),
-            false,
-            false,
+            PublishRequest {
+                script,
+                project_root,
+                platform: PublishPlatform::Pc,
+                publish_name: "examples".to_owned(),
+                compress: false,
+                encrypt: false,
+                // 测试走 `-SkipBuild`：复用 target/release 产物，避免在单元测试里
+                // 触发整仓 release 构建（运行中的编辑器会占用 target/release/*.exe）。
+                skip_build: true,
+            },
             tx,
         );
         let mut output = String::new();

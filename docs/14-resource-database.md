@@ -109,6 +109,31 @@ rank-max 不动点，单向（依赖→消费者）、幂等、可撤销。状�
 - assetc `scan()`：与编辑器 refresh 同时序，重建条目反映 invalid/missing；`import()` 批次后传播+保存；
 - assetc `--check-deps`：`check_dependencies(project)` 对每个 invalid 消费者沿依赖下探到断链根，输出 `scenes/main.scene → assets/textures/player.png (缺失)` 完整链路；成环截断标注「循环依赖」。
 
+## 导入期校验与诊断（M20-01）
+
+导入器在把资源写进缓存前先校验，错误写入记录的 `error` 列并标记失败；编辑器资源扫描、assetc 导入与发布前检查共用同一套校验器（`ImporterRegistry`），因此三处诊断同源：
+
+| 资源类型 | 校验内容 | 诊断定位 |
+|---|---|---|
+| `script`（`.lua`） | mlua **只编译不执行**的语法校验；UTF-8 编码；UTF-8 BOM 检测 | `<文件>: Lua 语法错误: syntax error: [string "<文件>"]:<行>: <消息>`；BOM 给出「请另存为 UTF-8 无 BOM」 |
+| `scene`（`.scene`） | 场景文本解析（版本/实体/组件） | `<文件>: 场景解析失败: <原因>` |
+| `scene`（`.json`） | `serde_json` 严格解析 | `<文件>: JSON 解析失败: <原因>（含 line/column）` |
+| `scene`（`.ron`） | 结构级校验（分隔符/字符串配平） | `<文件>: RON 结构错误: 第 N 行第 M 列 ...`（完整 RON 语法解析待引入依赖） |
+| `texture` / `audio` / `font` / `model` / `prefab` | 解码/解析可行性 | `<文件>: <类型>解析失败: <原因>` |
+
+发布前检查（`game --check` / `editor --check`）在资源引用检查之外，追加：
+
+1. `scripts/**/*.lua` 全量语法校验（与导入期同一校验器）；
+2. 领域数据校验——工程按约定提供 `scripts/validate_data.lua`（`check({strict=true})` 返回 `""` 或以换行分隔的 `[模块] 文件:对象.字段: 原因` 列表），启动（`main.lua`）与发布前检查共用同一实现，规则仍全部来自各数据模块的 `validate_all`。
+
+`game_jhyt` 的实测输出（故障工程）：
+
+```text
+game_check_failed: ...\scripts\broken.lua: Lua 语法错误: syntax error: [string "..."]:3: 'end' expected (to close 'function' at line 1) near <eof>; \
+[data.demo] data/demo.lua:items[1].name: required non-empty string; \
+[shop] data/shops.lua:zhao_stall.stock[2].item: unknown item ghost_item
+```
+
 ## 示例
 
 ```powershell

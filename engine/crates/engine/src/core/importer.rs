@@ -66,6 +66,145 @@ fn reject_empty(source: &Path, bytes: &[u8]) -> Result<(), String> {
     }
 }
 
+/// M20-01：UTF-8 BOM 检查。
+///
+/// Lua 解析器不接受 BOM（报 `unexpected symbol near '<\239>'`），而文本编辑器
+/// 「另存为 UTF-8」常带 BOM；这里给出可操作的诊断，而不是让错误在运行时以
+/// 乱码形式出现（场景加载器已自带 BOM 容忍，脚本/数据文件按无 BOM 约定）。
+fn reject_bom(source: &Path, bytes: &[u8], label: &str) -> Result<(), String> {
+    if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        return Err(format!(
+            "{}: {label}含 UTF-8 BOM，请另存为「UTF-8 无 BOM」",
+            source.display()
+        ));
+    }
+    Ok(())
+}
+
+/// M20-01：Lua 源文件语法校验（只编译不执行，不改变合法脚本的运行语义）。
+///
+/// 诊断包含文件路径与 Lua 报错定位（`[string "<path>"]:<line>: <message>`），
+/// 因此在导入/资源扫描/发布前检查阶段即可拦下语法错误。
+fn validate_lua_syntax(source: &Path, bytes: &[u8]) -> Result<(), String> {
+    reject_bom(source, bytes, "Lua 源文件")?;
+    let text = std::str::from_utf8(bytes).map_err(|error| {
+        format!(
+            "{}: Lua 源文件编码非法（需 UTF-8）: {error}",
+            source.display()
+        )
+    })?;
+    let lua = mlua::Lua::new();
+    let chunk = lua.load(text).set_name(source.display().to_string());
+    chunk
+        .into_function()
+        .map_err(|error| format!("{}: Lua 语法错误: {error}", source.display()))?;
+    Ok(())
+}
+
+/// M20-01：`.json` 数据表严格校验；serde_json 的错误自带行/列定位。
+fn validate_json_data(source: &Path, bytes: &[u8]) -> Result<(), String> {
+    reject_bom(source, bytes, "JSON 文件")?;
+    let text = std::str::from_utf8(bytes)
+        .map_err(|error| format!("{}: JSON 编码非法（需 UTF-8）: {error}", source.display()))?;
+    serde_json::from_str::<serde_json::Value>(text)
+        .map_err(|error| format!("{}: JSON 解析失败: {error}", source.display()))?;
+    Ok(())
+}
+
+/// M20-01：`.ron` 结构化校验（分隔符/字符串配平 + 定位到行列）。
+///
+/// 说明：工作区未引入 `ron` 依赖（离线环境无法新增 crates），此处做结构级
+/// 校验以拦截截断/损坏文件；完整 RON 语法解析留待引入依赖后替换。
+fn validate_ron_structure(source: &Path, bytes: &[u8]) -> Result<(), String> {
+    reject_bom(source, bytes, "RON 文件")?;
+    let text = std::str::from_utf8(bytes)
+        .map_err(|error| format!("{}: RON 编码非法（需 UTF-8）: {error}", source.display()))?;
+    let mut stack: Vec<(char, usize)> = Vec::new();
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut line = 1usize;
+    let mut column = 1usize;
+    for (index, character) in text.char_indices() {
+        if character == '\n' {
+            line += 1;
+            column = 1;
+            continue;
+        }
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == '"' {
+                in_string = false;
+            }
+            column += 1;
+            continue;
+        }
+        match character {
+            '"' => in_string = true,
+            '(' | '[' | '{' => stack.push((character, index)),
+            ')' | ']' | '}' => {
+                let expected = match character {
+                    ')' => '(',
+                    ']' => '[',
+                    _ => '{',
+                };
+                match stack.pop() {
+                    Some((open, _)) if open == expected => {}
+                    Some((open, open_index)) => {
+                        let (open_line, open_column) = line_column(text, open_index);
+                        return Err(format!(
+                            "{}: RON 结构错误: 第 {line} 行第 {column} 列的 '{character}' 与第 {open_line} 行第 {open_column} 列的 '{open}' 不匹配",
+                            source.display()
+                        ));
+                    }
+                    None => {
+                        return Err(format!(
+                            "{}: RON 结构错误: 第 {line} 行第 {column} 列出现多余的 '{character}'",
+                            source.display()
+                        ));
+                    }
+                }
+            }
+            _ => {}
+        }
+        column += 1;
+    }
+    if in_string {
+        return Err(format!(
+            "{}: RON 结构错误: 字符串未闭合（起始于第 {line} 行）",
+            source.display()
+        ));
+    }
+    if let Some((open, open_index)) = stack.pop() {
+        let (open_line, open_column) = line_column(text, open_index);
+        return Err(format!(
+            "{}: RON 结构错误: 第 {open_line} 行第 {open_column} 列的 '{open}' 未闭合",
+            source.display()
+        ));
+    }
+    Ok(())
+}
+
+/// 由字节偏移估算 (line, column)（仅用于 RON 结构诊断，允许 O(n) 回扫）。
+fn line_column(text: &str, offset: usize) -> (usize, usize) {
+    let mut line = 1usize;
+    let mut column = 1usize;
+    for (index, character) in text.char_indices() {
+        if index >= offset {
+            break;
+        }
+        if character == '\n' {
+            line += 1;
+            column = 1;
+        } else {
+            column += 1;
+        }
+    }
+    (line, column)
+}
+
 struct TextureImporter;
 struct AudioImporter;
 struct ScriptImporter;
@@ -133,8 +272,10 @@ impl Importer for ScriptImporter {
         &["lua"]
     }
     fn validate(&self, source: &Path, bytes: &[u8]) -> Result<(), String> {
-        // 语法校验留 M12-04；此处仅要求非空。
-        reject_empty(source, bytes)
+        // M20-01：导入期 Lua 语法校验（只编译不执行）——错误含文件与行列定位，
+        // 在编辑器资源扫描与发布前检查阶段即可拦下，而非进入运行时才失败。
+        reject_empty(source, bytes)?;
+        validate_lua_syntax(source, bytes)
     }
 }
 
@@ -160,8 +301,13 @@ impl Importer for SceneImporter {
                 .map_err(|error| format!("{}: 场景编码非法: {error}", source.display()))?;
             Scene::from_text(text)
                 .map_err(|error| format!("{}: 场景解析失败: {error}", source.display()))?;
+        } else if extension == "json" {
+            // M20-01：领域数据表按严格 JSON 校验（错误带行列）。
+            validate_json_data(source, bytes)?;
+        } else if extension == "ron" {
+            // M20-01：RON 结构校验（无 ron 依赖，见 validate_ron_structure 说明）。
+            validate_ron_structure(source, bytes)?;
         }
-        // .ron/.json 宽松校验：可能是任意数据文件，本阶段仅要求非空。
         Ok(())
     }
 }
@@ -504,6 +650,99 @@ mod tests {
             assert!(!importer.extensions().is_empty());
         }
         assert!(registry.get(ResourceKind::Other).is_none());
+    }
+
+    #[test]
+    fn script_importer_validates_lua_syntax_with_located_errors() {
+        let root = root("script-syntax");
+        let importer = ImporterRegistry::builtin()
+            .get(ResourceKind::LuaScript)
+            .unwrap();
+
+        let good = write_source(
+            &root,
+            "good.lua",
+            b"local state = require(\"state\")\nfunction update() return state.mode end\n",
+        );
+        importer
+            .validate(&good, &std::fs::read(&good).unwrap())
+            .unwrap();
+
+        // 语法错误：定位必须包含文件路径与行号（EOF 处报第 3 行缺少 `end`）。
+        let bad = write_source(&root, "bad.lua", b"function update()\n  return 1\n");
+        let error = importer
+            .validate(&bad, &std::fs::read(&bad).unwrap())
+            .expect_err("syntax error must be rejected");
+        assert!(error.contains("bad.lua"), "诊断需含文件路径: {error}");
+        assert!(error.contains("语法错误"), "诊断需标明语法错误: {error}");
+        assert!(error.contains(":3:"), "诊断需含行号: {error}");
+
+        // 非 UTF-8 源文件：给出编码诊断而不是进入运行时才失败。
+        let binary = write_source(&root, "binary.lua", &[0xff, 0xfe, 0x00]);
+        let error = importer
+            .validate(&binary, &std::fs::read(&binary).unwrap())
+            .expect_err("non-utf8 lua must be rejected");
+        assert!(error.contains("编码非法"), "诊断需标明编码问题: {error}");
+
+        // UTF-8 BOM：给出可操作诊断（Lua 自身只会报乱码符号）。
+        let bom = write_source(&root, "bom.lua", b"\xEF\xBB\xBFreturn 1\n");
+        let error = importer
+            .validate(&bom, &std::fs::read(&bom).unwrap())
+            .expect_err("bom lua must be rejected with actionable message");
+        assert!(
+            error.contains("BOM") && error.contains("无 BOM"),
+            "诊断需含可操作的 BOM 提示: {error}"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn scene_importer_validates_json_and_ron_structure() {
+        let root = root("data-json-ron");
+        let importer = ImporterRegistry::builtin()
+            .get(ResourceKind::Scene)
+            .unwrap();
+
+        let good_json = write_source(&root, "good.json", b"{\"a\": [1, 2, 3]}");
+        importer
+            .validate(&good_json, &std::fs::read(&good_json).unwrap())
+            .unwrap();
+
+        let bad_json = write_source(&root, "bad.json", b"{\"a\": [1, 2,}");
+        let error = importer
+            .validate(&bad_json, &std::fs::read(&bad_json).unwrap())
+            .expect_err("invalid json must be rejected");
+        assert!(error.contains("bad.json"), "诊断需含文件路径: {error}");
+        assert!(
+            error.contains("JSON 解析失败"),
+            "诊断需标明 JSON 失败: {error}"
+        );
+        assert!(error.contains("line 1"), "诊断需含行列定位: {error}");
+
+        let good_ron = write_source(&root, "good.ron", b"(name: \"demo\", items: [1, 2])");
+        importer
+            .validate(&good_ron, &std::fs::read(&good_ron).unwrap())
+            .unwrap();
+
+        let bad_ron = write_source(&root, "bad.ron", b"(name: \"demo\", items: [1, 2)");
+        let error = importer
+            .validate(&bad_ron, &std::fs::read(&bad_ron).unwrap())
+            .expect_err("unbalanced ron must be rejected");
+        assert!(error.contains("bad.ron"), "诊断需含文件路径: {error}");
+        assert!(
+            error.contains("RON 结构错误"),
+            "诊断需标明结构错误: {error}"
+        );
+        assert!(error.contains("第 1 行"), "诊断需含行列定位: {error}");
+
+        let unclosed = write_source(&root, "unclosed.ron", b"(name: \"demo\"");
+        let error = importer
+            .validate(&unclosed, &std::fs::read(&unclosed).unwrap())
+            .expect_err("unclosed ron must be rejected");
+        assert!(error.contains("未闭合"), "诊断需说明未闭合: {error}");
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

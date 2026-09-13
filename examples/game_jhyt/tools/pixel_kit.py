@@ -90,6 +90,14 @@ class Canvas:
                         out.set(x * factor + sx, y * factor + sy, color)
         return out
 
+    def mirrored(self):
+        """水平镜像（w 朝向由 e 镜像生成，避免左右手画两遍）。"""
+        out = Canvas(self.w, self.h)
+        for y in range(self.h):
+            for x in range(self.w):
+                out.set(self.w - 1 - x, y, self.get(x, y))
+        return out
+
     def to_png(self):
         raw = bytearray()
         stride = self.w * 4

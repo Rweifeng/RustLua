@@ -56,33 +56,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 第一步：真实「开始新游戏」流程 —— 标题按钮 BtnStart -> 山庄 on_create。
     let mut runtime = new_runtime(&project_arg, &save_path)?;
-    enter_title(&mut runtime, &main_script)?;
+    enter_main_menu(&mut runtime, &main_script)?;
     click_button(&mut runtime, "BtnStart")?;
-    assert_scene_is(&mut runtime, "main")?;
+    assert_scene_is(&mut runtime, "manor")?;
 
     banner("M16-01 输入上下文状态机：非 Playing 抑制");
     // 起步能量 100、内力 50。
-    assert_num(&mut runtime, "require('state').energy", 100.0)?;
-    assert_num(&mut runtime, "require('state').inner_power", 50.0)?;
+    assert_num(&mut runtime, "require('core.state').energy", 100.0)?;
+    assert_num(&mut runtime, "require('core.state').inner_power", 50.0)?;
     // Q 吐纳 +5 内力。
     press(&mut runtime, InputKey::from_char('q'))?;
-    assert_num(&mut runtime, "require('state').inner_power", 55.0)?;
+    assert_num(&mut runtime, "require('core.state').inner_power", 55.0)?;
     assert_str(
         &mut runtime,
-        "require('state').last_action",
+        "require('core.state').last_action",
         "practice_breath",
     )?;
 
     // Pause：E/Q/T 均被屏蔽。
     press(&mut runtime, InputKey::from_char('p'))?; // -> Pause
-    assert_str(&mut runtime, "require('state').mode", "Pause")?;
+    assert_str(&mut runtime, "require('core.state').mode", "Pause")?;
     press(&mut runtime, InputKey::from_char('q'))?;
     press(&mut runtime, InputKey::from_char('e'))?;
     press(&mut runtime, InputKey::from_char('t'))?;
-    assert_num(&mut runtime, "require('state').inner_power", 55.0)?;
+    assert_num(&mut runtime, "require('core.state').inner_power", 55.0)?;
     assert_str(
         &mut runtime,
-        "require('state').last_action",
+        "require('core.state').last_action",
         "practice_breath",
     )?;
     assert_day(&mut runtime, 1)?;
@@ -90,14 +90,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Inventory：E/Q/T 均被屏蔽。
     press(&mut runtime, InputKey::from_char('i'))?; // -> Inventory
-    assert_str(&mut runtime, "require('state').mode", "Inventory")?;
+    assert_str(&mut runtime, "require('core.state').mode", "Inventory")?;
     press(&mut runtime, InputKey::from_char('q'))?;
     press(&mut runtime, InputKey::from_char('e'))?;
     press(&mut runtime, InputKey::from_char('t'))?;
-    assert_num(&mut runtime, "require('state').inner_power", 55.0)?;
+    assert_num(&mut runtime, "require('core.state').inner_power", 55.0)?;
     assert_str(
         &mut runtime,
-        "require('state').last_action",
+        "require('core.state').last_action",
         "practice_breath",
     )?;
     assert_day(&mut runtime, 1)?;
@@ -108,10 +108,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     press(&mut runtime, InputKey::from_char('q'))?;
     press(&mut runtime, InputKey::from_char('e'))?;
     press(&mut runtime, InputKey::from_char('t'))?;
-    assert_num(&mut runtime, "require('state').inner_power", 55.0)?;
+    assert_num(&mut runtime, "require('core.state').inner_power", 55.0)?;
     assert_str(
         &mut runtime,
-        "require('state').last_action",
+        "require('core.state').last_action",
         "practice_breath",
     )?;
     assert_day(&mut runtime, 1)?;
@@ -125,8 +125,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert!(in_farm(ax, ay), "起步上方必须是农田格 (got {ax},{ay})");
     // 耕作前需装备锄头（inventory.setup 已装 hoe）。
     press(&mut runtime, InputKey::from_char('e'))?; // 翻土
-    assert_str(&mut runtime, "require('state').last_action", "till")?;
-    assert_num(&mut runtime, "require('state').energy", 92.0)?; // 翻土消耗 8 (100->92)
+    assert_str(&mut runtime, "require('core.state').last_action", "till")?;
+    assert_num(&mut runtime, "require('core.state').energy", 92.0)?; // 翻土消耗 8 (100->92)
 
     banner("M16-03 农田规则：翻土→播种→浇水→成长→收获");
     // 选定灵芝并确保种在药田（当前朝上在药田行上）。
@@ -134,10 +134,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     press(&mut runtime, InputKey::from_char('e'))?; // 播种
     assert_str(
         &mut runtime,
-        "require('state').last_action",
+        "require('core.state').last_action",
         "plant_seed_lingzhi",
     )?;
-    assert_num(&mut runtime, "require('state').energy", 89.0)?; // 播种消耗 3 (92->89)
+    assert_num(&mut runtime, "require('core.state').energy", 89.0)?; // 播种消耗 3 (92->89)
 
     // 种在药田格上的灵芝，地块应记录 short id "lingzhi"（而非 seed_item）。
     let stored = query_str(
@@ -154,24 +154,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     press(&mut runtime, InputKey::from_char('e'))?;
     assert_str(
         &mut runtime,
-        "require('state').last_action",
+        "require('core.state').last_action",
         "water_lingzhi",
     )?;
-    assert_num(&mut runtime, "require('state').energy", 85.0)?; // 浇水消耗 4 (89->85)
+    assert_num(&mut runtime, "require('core.state').energy", 85.0)?; // 浇水消耗 4 (89->85)
     // 同日重复浇水 → already_watered 且不扣体力。
     press(&mut runtime, InputKey::from_char('e'))?;
     assert_str(
         &mut runtime,
-        "require('state').last_action",
+        "require('core.state').last_action",
         "already_watered",
     )?;
-    assert_num(&mut runtime, "require('state').energy", 85.0)?;
+    assert_num(&mut runtime, "require('core.state').energy", 85.0)?;
 
     // 睡到第 2 天清晨：settle_day 把昨日的 watered_today 记为成长 +1，
     // 同时 on_day_start 把体力重置回 100。
     sleep(&mut runtime)?; // -> day 2
     assert_day(&mut runtime, 2)?;
-    assert_num(&mut runtime, "require('state').energy", 100.0)?;
+    assert_num(&mut runtime, "require('core.state').energy", 100.0)?;
     let watered_days = query_num(
         &mut runtime,
         &format!(
@@ -185,8 +185,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // （灌溉当天不计成长 —— 成长永远发生在“浇水次日”的日结算。）
     set_weather(&mut runtime, "rainy")?;
     press(&mut runtime, InputKey::from_char('e'))?;
-    assert_str(&mut runtime, "require('state').last_action", "rain_watered")?;
-    assert_num(&mut runtime, "require('state').energy", 100.0)?;
+    assert_str(
+        &mut runtime,
+        "require('core.state').last_action",
+        "rain_watered",
+    )?;
+    assert_num(&mut runtime, "require('core.state').energy", 100.0)?;
 
     // 灵芝 7 天成熟 = 7 次“当日已浇”跨夜。day2 已浇，还需浇 day3..day7 并
     // 睡过 day2→day8 共 6 晚，day8 清晨 watered_days 才到 7。
@@ -221,12 +225,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     press(&mut runtime, InputKey::from_char('e'))?;
     assert_str(
         &mut runtime,
-        "require('state').last_action",
+        "require('core.state').last_action",
         "harvest_lingzhi",
     )?;
     let lingzhi = query_num(&mut runtime, "inv.count('player', 'lingzhi')")?;
     assert_eq!(lingzhi, 1.0, "收获 1 灵芝");
-    assert_num(&mut runtime, "require('state').energy", 98.0)?;
+    assert_num(&mut runtime, "require('core.state').energy", 98.0)?;
     // 收获后地块恢复空地（crop=nil）。
     let after_harvest = query_str(
         &mut runtime,
@@ -242,13 +246,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     save_game(&mut runtime)?;
 
     let mut second = new_runtime(&project_arg, &save_path)?;
-    enter_title(&mut second, &main_script)?;
+    enter_main_menu(&mut second, &main_script)?;
     click_button(&mut second, "BtnContinue")?;
-    assert_scene_is(&mut second, "main")?;
+    assert_scene_is(&mut second, "manor")?;
     // 读档恢复 day（应为存档的 day8）与内力/金钱。
     assert_day(&mut second, 8)?;
-    assert_num(&mut second, "require('state').inner_power", 55.0)?;
-    assert_num(&mut second, "require('state').money", 120.0)?;
+    assert_num(&mut second, "require('core.state').inner_power", 55.0)?;
+    assert_num(&mut second, "require('core.state').money", 120.0)?;
     // 读档后农田格仍在，且已是空地（灵芝已收）。
     let restored = query_str(
         &mut second,
@@ -262,7 +266,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // validate_long_run: 纯 Lua 快照稳定性。
     let ok = query_str(
         &mut second,
-        "return tostring(select(1, require('save_manager').validate_long_run(30, 100)))",
+        "return tostring(select(1, require('core.save_manager').validate_long_run(30, 100)))",
     )?;
     assert_eq!(ok, "true", "validate_long_run(30,100) 应成功");
 
@@ -272,7 +276,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         8,
         55,
         lingzhi as i64,
-        query_num(&mut second, "require('state').energy")? as i64
+        query_num(&mut second, "require('core.state').energy")? as i64
     );
     let _ = fs::remove_file(&save_path);
     Ok(())
@@ -290,18 +294,18 @@ fn new_runtime(project: &Path, save_path: &Path) -> Result<LuaRuntime, Box<dyn s
     Ok(runtime)
 }
 
-/// Runs the project script, then loads the `title` scene so BtnStart/BtnContinue
+/// Runs the project script, then loads the `main` 门面 scene so BtnStart/BtnContinue
 /// are live. `execute_project_script` already fired `on_create` while
 /// `scene.reload()` was `nil` (the title branch of `main.lua`); switching into
 /// the `title` scene makes `on_click` dispatch valid.
-fn enter_title(
+fn enter_main_menu(
     runtime: &mut LuaRuntime,
     main_script: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     runtime.execute_project_script(main_script)?;
-    runtime.execute_console("scene.load('title')")?;
+    runtime.execute_console("scene.load('main')")?;
     runtime.process_scene_transition()?;
-    assert_scene_is(runtime, "title")?;
+    assert_scene_is(runtime, "main")?;
     Ok(())
 }
 
@@ -384,29 +388,29 @@ fn assert_scene_is(
 }
 
 fn set_mode(runtime: &mut LuaRuntime, mode: &str) -> Result<(), Box<dyn std::error::Error>> {
-    runtime.execute_console(&format!("require('state').set_mode('{mode}')"))?;
+    runtime.execute_console(&format!("require('core.state').set_mode('{mode}')"))?;
     Ok(())
 }
 
 fn set_facing(runtime: &mut LuaRuntime, facing: &str) -> Result<(), Box<dyn std::error::Error>> {
-    runtime.execute_console(&format!("require('state').facing = '{facing}'"))?;
+    runtime.execute_console(&format!("require('core.state').facing = '{facing}'"))?;
     Ok(())
 }
 
 fn set_seed(runtime: &mut LuaRuntime, seed: &str) -> Result<(), Box<dyn std::error::Error>> {
-    runtime.execute_console(&format!("require('state').selected_seed = '{seed}'"))?;
+    runtime.execute_console(&format!("require('core.state').selected_seed = '{seed}'"))?;
     Ok(())
 }
 
 fn equip_tool(runtime: &mut LuaRuntime, tool: &str) -> Result<(), Box<dyn std::error::Error>> {
     runtime.execute_console(&format!(
-        "inv.equip(require('state').inventory, 'tool', '{tool}')"
+        "inv.equip(require('core.state').inventory, 'tool', '{tool}')"
     ))?;
     Ok(())
 }
 
 fn set_weather(runtime: &mut LuaRuntime, weather: &str) -> Result<(), Box<dyn std::error::Error>> {
-    runtime.execute_console(&format!("require('weather').set('{weather}')"))?;
+    runtime.execute_console(&format!("require('world.weather').set('{weather}')"))?;
     Ok(())
 }
 
@@ -416,7 +420,10 @@ fn sleep(runtime: &mut LuaRuntime) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn save_game(runtime: &mut LuaRuntime) -> Result<(), Box<dyn std::error::Error>> {
-    let ok = query_str(runtime, "return tostring(require('save_manager').save())")?;
+    let ok = query_str(
+        runtime,
+        "return tostring(require('core.save_manager').save())",
+    )?;
     if ok != "true" {
         return Err(format!("save() returned {ok:?}").into());
     }

@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>RustLua WebGL 集成契约检查（M20-04）</title>
+  <style>
+    html, body { margin: 0; padding: 16px; background: #151923; color: #d0d7e2; font: 14px/1.5 sans-serif; }
+    h1 { font-size: 16px; margin: 0 0 8px; }
+    #result[data-status="ok"] { color: #7fd18a; }
+    #result[data-status="fail"] { color: #ef8a8a; }
+    pre { background: #10141c; padding: 12px; border-radius: 6px; overflow: auto; max-height: 60vh; }
+    canvas { display: none; }
+  </style>
+</head>
+<body>
+  <h1>WebGL 集成契约检查</h1>
+  <p>结果：<strong id="result" data-status="pending">pending</strong></p>
+  <pre id="details">{}</pre>
+  <canvas id="p2-canvas"></canvas>
+  <script src="./web-check.js"></script>
+</body>
+</html>

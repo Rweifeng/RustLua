@@ -1,111 +1,96 @@
 scene_version=2
 name=main
-meta	display_name	江湖有田·山庄
+meta	display_name	江湖有田·主入口门面
 meta	game	jianghu_youtian
-meta	tile_size	32
 meta	ui_reference_height	720
 meta	ui_reference_width	1280
-entity	1	GroundMap
-component	1	Transform	x=0.000000;y=0.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
-component	1	Tilemap	tile_size=32x32;width=40;height=22;texture=assets/art/tilesets/manor/manor_ground.png;tiles=4444444444444444444444444444444444444444433333333333311131111111111111111111111443333333333331113111111111111111111111144333333333333333333333333333333333111114433333333333312222222222222222222266666441222222211111222222222222222222226666644122222221111122222222222222222222666664412222222111112222222222222222222266666441222222211111222222222222222222226666644122222221111122222222222222222222666664412222222111112222222222222222222211111441222222211111222222222222222222221111144111111111111122222222222222222222111114411111111111112222222222222222222211111441111111111111111111111111111111111111144111222221111111111111111111111111111114411122222111111111111111111111111111111441112222211111111111111111111111111111144111222221111111111111111111111111111114411111111111111111111111111111111111111441111111111111111111111111111111111111144444444444444444444444444444444444444444;solid=1111111111111111111111111111111111111111100000000010010101000000000000000000000110000000000101010100000000000000000000011000000000000000000000000000000000000001100000000000000000000000000000000011111110111111100001000000000000000000001111111011111110000000000000000000000000111111101111111000000000000000000000000011111110111111101000000000000000000000001111111011111110000000000000000000000000111111101111111001100000000000000000000000000110111111100000000000000000000000000000011000000000000000000000000000000000000001100000000000000000000000000000000000000110000000000000000000000000000000000100011000111110000000000000000000000000000001100011111000000000000000000000001000000110001111100000000000000000000000000000011000111110000000000000000000000000000001100100000000100000000010000100000000100110000000000000000000000000000000000000011111111111111111111111111111111111111111
-entity_meta	1	role	ground_tilemap
-entity	2	FarmGrid
-component	2	Transform	x=0.000000;y=0.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
-component	2	Tilemap	tile_size=32x32;width=40;height=22;texture=assets/art/tilesets/manor/manor_farm.png;tiles=0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000;solid=0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-entity_meta	2	role	farm_tilemap
-entity	3	ManorHouse
-component	3	Sprite	texture=assets/art/buildings/manor_house.png;size=224x224;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=0
-component	3	Transform	x=64.000000;y=160.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
-entity_meta	3	role	building
-entity_meta	3	cell	2,5
-entity	4	ManorShed
-component	4	Sprite	texture=assets/art/buildings/manor_shed.png;size=160x128;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=0
-component	4	Transform	x=128.000000;y=480.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
-entity_meta	4	role	building
-entity_meta	4	cell	4,15
-entity	5	ManorGate
-component	5	Sprite	texture=assets/art/buildings/manor_gate.png;size=96x96;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=5
-component	5	Transform	x=480.000000;y=0.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
-entity_meta	5	role	building
-entity_meta	5	cell	15,0
-entity	6	ManorFence
-component	6	Sprite	texture=assets/art/props/manor_fence.png;size=24x64;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=10
-component	6	Transform	x=420.000000;y=32.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
-entity_meta	6	role	prop
-entity_meta	6	cell	13,1
-entity	7	ManorWell
-component	7	Sprite	texture=assets/art/props/manor_well.png;size=32x42;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=10
-component	7	Transform	x=352.000000;y=64.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
-entity_meta	7	role	prop
-entity_meta	7	cell	11,2
-entity	8	ManorJar
-component	8	Sprite	texture=assets/art/props/manor_jar.png;size=24x30;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=10
-component	8	Transform	x=324.000000;y=32.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
-entity_meta	8	role	prop
-entity_meta	8	cell	10,1
-entity	9	ManorHaystack
-component	9	Sprite	texture=assets/art/props/manor_haystack.png;size=36x34;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=10
-component	9	Transform	x=320.000000;y=256.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
-entity_meta	9	role	prop
-entity_meta	9	cell	10,8
-entity	10	ManorRack
-component	10	Sprite	texture=assets/art/props/manor_rack.png;size=64x46;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=10
-component	10	Transform	x=352.000000;y=320.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
-entity_meta	10	role	prop
-entity_meta	10	cell	11,10
-entity	11	ManorSign
-component	11	Sprite	texture=assets/art/props/manor_sign.png;size=32x42;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=10
-component	11	Transform	x=416.000000;y=160.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
-entity_meta	11	role	prop
-entity_meta	11	cell	13,5
-entity	12	ManorTreeWest
-component	12	Sprite	texture=assets/art/props/manor_tree.png;size=64x88;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=20
-component	12	Transform	x=96.000000;y=608.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
-entity_meta	12	role	prop
-entity_meta	12	cell	3,19
-entity	13	ManorTreeNorth
-component	13	Sprite	texture=assets/art/props/manor_tree.png;size=64x88;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=20
-component	13	Transform	x=704.000000;y=608.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
-entity_meta	13	role	prop
-entity_meta	13	cell	22,19
-entity	14	ManorTreeEast
-component	14	Sprite	texture=assets/art/props/manor_tree.png;size=64x88;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=20
-component	14	Transform	x=1152.000000;y=608.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
-entity_meta	14	role	prop
-entity_meta	14	cell	36,19
-entity	15	ManorBambooWest
-component	15	Sprite	texture=assets/art/props/manor_bamboo.png;size=48x76;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=20
-component	15	Transform	x=384.000000;y=608.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
-entity_meta	15	role	prop
-entity_meta	15	cell	12,19
-entity	16	ManorBambooEast
-component	16	Sprite	texture=assets/art/props/manor_bamboo.png;size=48x76;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=20
-component	16	Transform	x=864.000000;y=608.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
-entity_meta	16	role	prop
-entity_meta	16	cell	27,19
-entity	17	ManorTreeSoutheast
-component	17	Sprite	texture=assets/art/props/manor_tree.png;size=64x88;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=20
-component	17	Transform	x=1120.000000;y=448.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
-entity_meta	17	role	prop
-entity_meta	17	cell	35,14
-entity	18	ManorBambooSoutheast
-component	18	Sprite	texture=assets/art/props/manor_bamboo.png;size=48x76;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=20
-component	18	Transform	x=1024.000000;y=512.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
-entity_meta	18	role	prop
-entity_meta	18	cell	32,16
-entity	19	JianghuPlayer
-component	19	Sprite	texture=__white__;size=28x28;tint=0.949,0.918,0.847,1.000;sorting_layer=actor
-component	19	Collider	shape=ball;radius=12
-component	19	Transform	x=528.000000;y=112.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
-entity_meta	19	role	player_spawn
-entity_meta	19	persistent	true
-entity	20	HudTitle
-component	20	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=24.00,20.00,640.00,44.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
-component	20	Text	text=山庄 · 药田垂直切片;font_size=18.00;color=0.949,0.918,0.847
-component	20	Transform	x=0.000000;y=0.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
-entity_meta	20	role	hud_title
-entity	21	HudHint
-component	21	UiLayout	anchors=0.0000,1.0000,0.0000,1.0000;offsets=49.07,-66.11,1025.07,-44.11;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,1.0000
-component	21	Text	text=WASD 移动 · E 朝面前格劳作 · T 睡觉到清晨 · Q 吐纳练功 · J 普攻 · K 武学;font_size=14.00;color=0.850,0.900,1.000
-component	21	Transform	x=0.000000;y=0.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
-entity_meta	21	role	hud_hint
+meta	design_doc	docs/44-江湖有田-主入口门面与山庄场景重构.md
+entity	1	BgNight
+component	1	Image	texture=assets/art/title/title_bg_pixel.png;color=1.000,1.000,1.000
+component	1	Transform	x=0.000000000;y=0.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+component	1	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=0.00,0.00,1280.00,720.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity_meta	1	role	menu_background
+entity	2	BgVignette
+component	2	Image	texture=assets/art/ui/menu/ui_menu_vignette.png;color=1.000,1.000,1.000
+component	2	Transform	x=0.000000000;y=0.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+component	2	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=0.00,0.00,1280.00,720.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity_meta	2	role	menu_vignette
+entity	3	InkBand
+component	3	Image	texture=assets/art/ui/menu/ui_menu_ink_band.png;color=1.000,1.000,1.000
+component	3	Transform	x=0.000000000;y=0.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+component	3	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=160.00,56.00,1120.00,296.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity_meta	3	role	menu_ink_band
+entity	4	Logo
+component	4	Image	texture=assets/art/ui/logo/ui_title_logo.png;color=1.000,1.000,1.000
+component	4	Transform	x=0.000000000;y=0.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+component	4	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=384.00,80.00,896.00,336.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity_meta	4	role	menu_logo
+entity	5	LanternL
+component	5	Image	texture=assets/art/ui/menu/ui_menu_lantern.png;color=1.000,1.000,1.000
+component	5	Transform	x=0.000000000;y=0.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+component	5	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=112.00,168.00,184.00,296.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity_meta	5	role	menu_lantern
+entity	6	LanternR
+component	6	Image	texture=assets/art/ui/menu/ui_menu_lantern.png;color=1.000,1.000,1.000
+component	6	Transform	x=0.000000000;y=0.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+component	6	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=1096.00,168.00,1168.00,296.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity_meta	6	role	menu_lantern
+entity	7	BtnStart
+component	7	Image	texture=assets/art/ui/menu/ui_menu_btn_wuxia_9s.png;color=1.000,1.000,1.000;nine_slice=18,18,18,18
+component	7	Transform	x=0.000000000;y=0.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+component	7	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=480.00,432.00,800.00,496.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity_meta	7	role	menu_button_BtnStart
+component	7	UiEvents	event=click;function=on_click
+entity	8	BtnStartLabel
+component	8	Text	text=开始新游戏;font_size=24.00;color=0.949,0.918,0.847
+component	8	Transform	x=0.000000000;y=0.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+component	8	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=577.00,449.00,702.00,479.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity_meta	8	role	menu_button_label
+entity	9	BtnContinue
+component	9	Image	texture=assets/art/ui/menu/ui_menu_btn_wuxia_9s.png;color=1.000,1.000,1.000;nine_slice=18,18,18,18
+component	9	Transform	x=0.000000000;y=0.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+component	9	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=480.00,504.00,800.00,568.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity_meta	9	role	menu_button_BtnContinue
+component	9	UiEvents	event=click;function=on_click
+entity	10	BtnContinueLabel
+component	10	Text	text=继续江湖;font_size=24.00;color=0.949,0.918,0.847
+component	10	Transform	x=0.000000000;y=0.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+component	10	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=590.00,521.00,690.00,551.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity_meta	10	role	menu_button_label
+entity	11	BtnExit
+component	11	Image	texture=assets/art/ui/menu/ui_menu_btn_wuxia_9s.png;color=1.000,1.000,1.000;nine_slice=18,18,18,18
+component	11	Transform	x=0.000000000;y=0.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+component	11	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=480.00,576.00,800.00,640.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity_meta	11	role	menu_button_BtnExit
+component	11	UiEvents	event=click;function=on_click
+entity	12	BtnExitLabel
+component	12	Text	text=退出江湖;font_size=24.00;color=0.949,0.918,0.847
+component	12	Transform	x=0.000000000;y=0.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+component	12	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=590.00,593.00,690.00,623.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity_meta	12	role	menu_button_label
+entity	13	TipScroll
+component	13	Image	texture=assets/art/ui/menu/ui_menu_panel_scroll_9s.png;color=1.000,1.000,1.000;nine_slice=20,20,20,20
+component	13	Transform	x=0.000000000;y=0.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+component	13	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=32.00,596.00,452.00,692.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity_meta	13	role	menu_tip_panel
+entity	14	TipTitle
+component	14	Text	text=江湖小贴士;font_size=20.00;color=0.145,0.165,0.196
+component	14	Transform	x=0.000000000;y=0.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+component	14	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=52.00,608.00,200.00,632.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity_meta	14	role	menu_tip_title
+entity	15	TipBody
+component	15	Text	text=新档先在药田种下第一株灵芝，;font_size=15.00;color=0.145,0.165,0.196
+component	15	Transform	x=0.000000000;y=0.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+component	15	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=52.00,634.00,440.00,654.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity_meta	15	role	menu_tip_body
+entity	16	TipBody2
+component	16	Text	text=三日后再下山去云泽村换些种子。;font_size=15.00;color=0.145,0.165,0.196
+component	16	Transform	x=0.000000000;y=0.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+component	16	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=52.00,656.00,440.00,676.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity_meta	16	role	menu_tip_body
+entity	17	FooterText
+component	17	Text	text=江湖有田 v0.1.0 · RustLua 原型 · 主入口门面;font_size=14.00;color=0.659,0.624,0.541
+component	17	Transform	x=0.000000000;y=0.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+component	17	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=1010.00,696.00,1256.00,712.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity_meta	17	role	menu_footer
+meta	editor.root_order	1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17

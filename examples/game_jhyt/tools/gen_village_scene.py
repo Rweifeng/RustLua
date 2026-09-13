@@ -31,6 +31,12 @@
 本工具每次生成都会做 flood fill 自检，失败直接非零退出。
 """
 import os
+
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from character_art import player_art  # noqa: E402  主角形象（与 manifest 同源）
 import re
 
 # 地图尺寸（maps.lua 的 spawn/exit 边界校验按 40x22 处理，不要改）
@@ -110,7 +116,7 @@ PROPS = [
      "size": (64, 40), "cell": (37, 18), "order": 20, "solid_cells": [(37, 18)]},
     # 竹丛 / 老树（复用山庄的通用道具，一件多用）
     {"name": "VillageBambooA", "texture": "assets/art/props/manor_bamboo.png",
-     "size": (48, 76), "cell": (12, 20), "order": 20, "solid_cells": [(12, 20)]},
+     "size": (48, 76), "cell": (34, 20), "order": 20, "solid_cells": [(34, 20)]},
     {"name": "VillageBambooB", "texture": "assets/art/props/manor_bamboo.png",
      "size": (48, 76), "cell": (20, 20), "order": 20, "solid_cells": [(20, 20)]},
     {"name": "VillageBambooC", "texture": "assets/art/props/manor_bamboo.png",
@@ -121,6 +127,12 @@ PROPS = [
      "size": (64, 88), "cell": (26, 20), "order": 20, "solid_cells": [(26, 20)]},
     {"name": "VillageTreeC", "texture": "assets/art/props/manor_tree.png",
      "size": (64, 88), "cell": (36, 20), "order": 20, "solid_cells": [(36, 20)]},
+    # 村北山门（通往青云山道）：只挡 y19 两根立柱，门洞 (10,19)(10,20) 可走 = 出口格。
+    # 早期把 (9,20)(12,20) 也标了 solid，结果把北岸 x12..15 那段走廊切断，
+    # 契约自检报出 village_dock 不可达 —— 立柱只留在 y19，y20 保持贯通。
+    {"name": "VillageMountainGate", "texture": "assets/art/buildings/wilds_mountain_gate.png",
+     "size": (128, 96), "cell": (9, 19), "order": 5,
+     "solid_cells": [(9, 19), (12, 19)]},
 ]
 
 
@@ -237,10 +249,13 @@ def build_scene(ground, solid):
     player_id = next_id
     spawn_wx, spawn_wy = cell_to_world(SPAWN["x"], SPAWN["y"])
     lines.append(f"entity\t{player_id}\tJianghuPlayer")
-    lines.append(
-        f"component\t{player_id}\tSprite\ttexture=__white__;size=28x28;"
-        "tint=0.949,0.918,0.847,1.000;sorting_layer=actor"
-    )
+    # 主角形象（M21）：单帧 + 序列帧都从角色美术 manifest 取，与
+    # data/characters.lua 是同一套串；运行期 player.apply() 会按
+    # state.appearance（男/女/未来的自定义）纠正并重挂，此处给的是默认形象。
+    player_sprite, player_animation = player_art("player_male")
+    lines.append(f"component\t{player_id}\tSprite\t{player_sprite}")
+    if player_animation:
+        lines.append(f"component\t{player_id}\tAnimation\t{player_animation}")
     lines.append(f"component\t{player_id}\tCollider\tshape=ball;radius=12")
     lines.append(transform_line(player_id, spawn_wx, spawn_wy))
     lines.append(f"entity_meta\t{player_id}\trole\tplayer_spawn")
@@ -361,6 +376,13 @@ def self_check(ground, solid):
             problems.append(f"{name} ({x},{y}) 从出生点不可达")
         elif ground[y][x] != STONE:
             problems.append(f"{name} ({x},{y}) 地表 tile={ground[y][x]}，村口应为石板(3)")
+    # 批次 2/3 新增出口格：上山门洞 + 药庐门 + 铁匠铺门（必须可走且可达）
+    for name, (x, y) in (("mountain_gate_exit", (10, 20)), ("herb_door", (5, 13)),
+                         ("forge_door", (26, 10))):
+        if solid[y][x]:
+            problems.append(f"{name} ({x},{y}) 是 solid（出口格不可走）")
+        elif (x, y) not in walk:
+            problems.append(f"{name} ({x},{y}) 从出生点不可达")
     for name, x, y in read_village_place_cells():
         if solid[y][x]:
             problems.append(f"places.lua:{name} ({x},{y}) 是 solid（NPC 会走不出来）")

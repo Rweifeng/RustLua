@@ -58,6 +58,7 @@ enum PreviewTexture {
 
 impl PreviewSession {
     /// 创建预览会话：运行时（当前场景）+ 离屏渲染器 + 预览纹理。
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn create(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -72,6 +73,21 @@ impl PreviewSession {
     ) -> Result<Self, String> {
         tracing::info!(target: "editor", "[preview] project_root={}", project_root.display());
         let mut runtime = RuntimeScene::from_scene(Some(project_root), scene.clone())?;
+        // M20-08：把项目 `settings.toml` 的 `[input]` 手柄死区应用到 Play 预览的设备后端
+        // （与独立 game 宿主 `game_app` 同一入口；文件缺失/无 `[input]` 段 → 引擎默认
+        // 0.15/0.05，读取失败只记日志不中断 Play）。
+        let (deadzone, deadzone_diagnostic) =
+            engine::core::settings::load_deadzone_section(project_root);
+        if let Some(diagnostic) = deadzone_diagnostic {
+            tracing::warn!(target: "editor", "[preview][gamepad] {diagnostic}");
+        }
+        runtime.set_gamepad_deadzone(deadzone);
+        tracing::info!(
+            target: "editor",
+            stick = deadzone.stick,
+            trigger = deadzone.trigger,
+            "[preview][gamepad] deadzone applied"
+        );
         // 复用编辑器共享（已按 chars.txt 预热）的字体图集：Play 无需再次 MSDF 预热
         // 全部字形（debug 下约 2s/项目）。为 None 时运行时按需惰性加载。
         if shared_font_atlas.is_some() {
@@ -150,6 +166,16 @@ impl PreviewSession {
     /// 最近一次步进/回读的结构化诊断。
     pub(crate) fn diagnostic(&self) -> Option<&str> {
         self.diagnostic.as_deref()
+    }
+
+    /// M19-03：把预览运行时的 Lua VM 借给运行时调试面板做只读探针读取。
+    /// 与 `RuntimeScene::with_script` 同语义：不创建副本、不修改运行态，
+    /// 调用方负责只做读取。
+    pub(crate) fn with_script<R>(
+        &mut self,
+        visit: impl FnOnce(&mut engine::core::script::LuaRuntime) -> R,
+    ) -> R {
+        self.runtime.with_script(visit)
     }
 
     /// 回读指标（slot 数、busy/drop/rebuild 等），供视图与诊断显示。

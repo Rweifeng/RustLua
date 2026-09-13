@@ -152,7 +152,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !(50.0 < wall_x && wall_x < 80.0) {
         return Err(format!("player should be blocked at the house wall, got x={wall_x}").into());
     }
-    let facing = runtime.execute_console("return require('state').facing")?;
+    let facing = runtime.execute_console("return require('core.state').facing")?;
     if facing.trim() != "right" {
         return Err(format!("expected facing 'right' after moving D, got {facing:?}").into());
     }
@@ -160,7 +160,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ---- M16-02: door TriggerZone fires on_zone_enter ----
     runtime.execute_console("local p = entity.find('FieldFarmer')\ntransform.set(p, 190, 340)")?;
     press(&mut runtime, InputKey::from_char('w'))?;
-    let zone = runtime.execute_console("return tostring(require('state').zone_name)")?;
+    let zone = runtime.execute_console("return tostring(require('core.state').zone_name)")?;
     if zone.trim() != "house_door" {
         return Err(format!("expected house_door zone entry, got {zone:?}").into());
     }
@@ -190,9 +190,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err(format!("expected equipment tool=hoe, got {equip:?}").into());
     }
     runtime.execute_console("inv.set('player', 5, 'bread', 1)")?;
-    runtime.execute_console("require('state').energy = 50")?;
+    runtime.execute_console("require('core.state').energy = 50")?;
     press(&mut runtime, InputKey::from_char('5'))?; // use the bread
-    let energy_after = runtime.execute_console("return tostring(require('state').energy)")?;
+    let energy_after = runtime.execute_console("return tostring(require('core.state').energy)")?;
     let bread_left = runtime.execute_console("return tostring(inv.count('player', 'bread'))")?;
     if energy_after.trim() != "70" || bread_left.trim() != "0" {
         return Err(format!(
@@ -203,13 +203,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     runtime.execute_console("inv.set('player', 9, 'tomato', 1)")?;
     runtime.execute_console("local p = entity.find('FieldFarmer')\ntransform.set(p, 660, 430)")?;
     runtime.call_update()?; // near the crate -> opens the container panel
-    let ckey = runtime.execute_console("return tostring(require('state').container_key)")?;
+    let ckey = runtime.execute_console("return tostring(require('core.state').container_key)")?;
     if ckey.trim() == "nil" {
         return Err("expected container to open near the crate".into());
     }
     runtime.execute_console("ui.drag_begin('bag', 1); ui.drag_end('crate', 1)")?;
     let moved = runtime.execute_console(
-        "local k = require('state').container_key\nlocal s = inv.slot(k, 1)\nreturn tostring(s and s.item)",
+        "local k = require('core.state').container_key\nlocal s = inv.slot(k, 1)\nreturn tostring(s and s.item)",
     )?;
     let bag_cleared = runtime.execute_console("return tostring(inv.slot('player', 9))")?;
     if moved.trim() != "tomato" || bag_cleared.trim() != "nil" {

@@ -150,7 +150,93 @@ pub fn verify_project(root: &Path) -> Vec<String> {
             }
         }
     }
+    // M20-01：脚本语法校验（导入期同一校验器）+ 领域数据校验（复用工程
+    // 自身 validate_data.lua），让发布前检查覆盖启动期会失败的问题。
+    missing.extend(verify_script_syntax(root));
+    missing.extend(verify_domain_data(root));
     missing
+}
+
+/// M20-01：校验 `scripts/**/*.lua` 全部脚本语法（与导入期共用 Importer 校验器，
+/// 错误含文件路径与 Lua 行列定位）。
+fn verify_script_syntax(root: &Path) -> Vec<String> {
+    use engine::core::importer::ImporterRegistry;
+    let mut issues = Vec::new();
+    let scripts_root = root.join("scripts");
+    if !scripts_root.is_dir() {
+        return issues;
+    }
+    let mut files = Vec::new();
+    collect_files(&scripts_root, &mut files);
+    files.sort();
+    let registry = ImporterRegistry::builtin();
+    for file in files {
+        let is_lua = file
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| value.eq_ignore_ascii_case("lua"));
+        if !is_lua {
+            continue;
+        }
+        let Some(importer) = registry.from_path(&file) else {
+            continue;
+        };
+        let Ok(bytes) = fs::read(&file) else {
+            issues.push(format!("无法读取脚本 {}", file.display()));
+            continue;
+        };
+        if let Err(error) = importer.validate(&file, &bytes) {
+            issues.push(error);
+        }
+    }
+    issues
+}
+
+/// M20-01：领域数据校验。约定入口 `scripts/validate_data.lua`（若存在）返回
+/// `check()` 字符串：`""` 通过，否则换行分隔的问题列表。规则全部来自工程
+/// 自身，不在此硬编码任何 NPC/任务语义；未提供该模块的工程跳过此项。
+fn verify_domain_data(root: &Path) -> Vec<String> {
+    let entry = root.join("scripts").join("validate_data.lua");
+    if !entry.is_file() {
+        return Vec::new();
+    }
+    let runtime = match engine::core::script::LuaRuntime::new() {
+        Ok(runtime) => runtime,
+        Err(error) => return vec![format!("Lua 运行时初始化失败: {error}")],
+    };
+    let mut runtime = runtime;
+    runtime.set_project_root(root.to_path_buf());
+    // 以校验入口自身作为工程脚本执行：既建立 require 搜索路径，又不启动游戏。
+    if let Err(error) = runtime.execute_project_script(&entry) {
+        return vec![format!(
+            "领域数据校验入口加载失败 {}: {error}",
+            entry.display()
+        )];
+    }
+    match runtime.execute_console("return require('validate_data').check()") {
+        Ok(report) => report
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(str::to_owned)
+            .collect(),
+        Err(error) => vec![format!("领域数据校验执行失败: {error}")],
+    }
+}
+
+/// 递归收集目录下的全部文件（诊断扫描用；符号链接不跟随）。
+fn collect_files(root: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_files(&path, out);
+        } else if path.is_file() {
+            out.push(path);
+        }
+    }
 }
 
 /// 从 `key = "value"` 样式的项目清单文本中提取字段值。
@@ -279,6 +365,106 @@ mod tests {
         )
         .unwrap();
         assert!(verify_project(&root).is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// M20-01：发布前检查同时覆盖脚本语法与工程自定义领域数据校验，
+    /// 诊断含文件路径（以及 Lua/数据的行或字段定位）。
+    #[test]
+    fn verify_project_reports_script_syntax_and_domain_data_issues() {
+        let root = std::env::temp_dir().join(format!("p2-verify-diag-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("scripts/data")).unwrap();
+        std::fs::create_dir_all(root.join("scenes")).unwrap();
+        std::fs::write(
+            root.join("project.toml"),
+            "[project]\nmain_script = \"scripts/main.lua\"\nstartup_scene = \"scenes/main.scene\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("scripts/main.lua"),
+            "function update() return 'ok' end\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("scenes/main.scene"),
+            "scene_version=2\nname=main\n",
+        )
+        .unwrap();
+        // 故意写坏一个脚本：缺少 end（第 3 行 EOF 报错）。
+        std::fs::write(
+            root.join("scripts/broken.lua"),
+            "function update()\n  return 1\n",
+        )
+        .unwrap();
+        // 工程自定义领域校验入口：报告一条含文件/对象/字段路径的问题。
+        std::fs::write(
+            root.join("scripts/validate_data.lua"),
+            "local M = {}\n\
+             function M.check()\n\
+               return \"[data.demo] data/demo.lua:items[1].name: required non-empty string\"\n\
+             end\n\
+             return M\n",
+        )
+        .unwrap();
+
+        let issues = verify_project(&root);
+        let syntax = issues
+            .iter()
+            .find(|issue| issue.contains("broken.lua"))
+            .unwrap_or_else(|| panic!("缺少脚本语法诊断: {issues:?}"));
+        assert!(
+            syntax.contains("语法错误") && syntax.contains(":3:"),
+            "语法诊断需含类型与行号: {syntax}"
+        );
+        let domain = issues
+            .iter()
+            .find(|issue| issue.contains("data/demo.lua:items[1].name"))
+            .unwrap_or_else(|| panic!("缺少领域数据诊断: {issues:?}"));
+        assert!(
+            domain.contains("[data.demo]"),
+            "领域诊断需含模块归属: {domain}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// M20-01：合法工程（含校验入口返回空）不应产生任何诊断。
+    #[test]
+    fn verify_project_accepts_valid_scripts_and_domain_data() {
+        let root = std::env::temp_dir().join(format!("p2-verify-clean-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("scripts/data")).unwrap();
+        std::fs::create_dir_all(root.join("scenes")).unwrap();
+        std::fs::write(
+            root.join("project.toml"),
+            "[project]\nmain_script = \"scripts/main.lua\"\nstartup_scene = \"scenes/main.scene\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("scripts/main.lua"),
+            "function update() return 'ok' end\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("scripts/data/demo.lua"),
+            "return { version = 1 }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("scripts/validate_data.lua"),
+            "local M = {}\nfunction M.check() return \"\" end\nreturn M\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("scenes/main.scene"),
+            "scene_version=2\nname=main\n",
+        )
+        .unwrap();
+        assert!(
+            verify_project(&root).is_empty(),
+            "clean project must pass: {:?}",
+            verify_project(&root)
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

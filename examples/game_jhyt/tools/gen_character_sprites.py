@@ -141,6 +141,19 @@ class Canvas:
                 out.set(self.w - 1 - x, y, self.get(x, y))
         return out
 
+    def scaled(self, factor):
+        """最近邻整数放大（预览用；与 pixel_kit.Canvas.scaled 同语义）。"""
+        out = Canvas(self.w * factor, self.h * factor)
+        for y in range(self.h):
+            for x in range(self.w):
+                color = self.get(x, y)
+                if color[3] == 0:
+                    continue
+                for sy in range(factor):
+                    for sx in range(factor):
+                        out.set(x * factor + sx, y * factor + sy, color)
+        return out
+
     def to_png(self):
         raw = bytearray()
         stride = self.w * 4
@@ -402,6 +415,67 @@ CHARACTERS = [
             "trim": rgb("#6E7A8A"),
             "belt": rgb("#6E7A8A"),
             "shoe": rgb("#8A8F98"),
+        },
+    },
+    # ---- 批次 4：首发 NPC 扩充（docs/30 §4.2）----
+    {
+        "id": "a_qi",
+        "display": "阿七·年轻镖师",
+        "role": "npc",
+        "note": "护安镖局短打 + 镖旗纹样护腕 + 腰刀；最年轻、动作最利落（偏矮 + 标准体型）",
+        "build": {"head_top": 6, "head_h": 7, "head_w": 7, "half_w": 3, "torso_bottom": 22},
+        "outfit": "shorts",
+        "hair": "band",
+        "beard": "none",
+        "accessory": "saber",
+        "palette": {
+            "skin": rgb("#E8C49A"),
+            "hair": rgb("#2E2622"),
+            "cloth": rgb("#B25A3C"),        # 镖局赭红短打
+            "cloth_alt": rgb("#4A3628"),
+            "trim": rgb("#C9A05A"),         # 旧金镖局纹样
+            "belt": rgb("#3D444C"),
+            "shoe": rgb("#4A3628"),
+        },
+    },
+    {
+        "id": "situ_kui",
+        "display": "司徒魁·玄冥会执事",
+        "role": "npc",
+        "note": "玄冥会墨黑长袍 + 暗紫滚边 + 面罩半遮；反派辨识度靠全黑配紫",
+        "build": {"head_top": 3, "head_h": 7, "head_w": 7, "half_w": 3, "torso_bottom": 22},
+        "outfit": "robe",
+        "hair": "cap",
+        "beard": "goatee",
+        "accessory": "sword_hip",
+        "palette": {
+            "skin": rgb("#D9B08C"),
+            "hair": rgb("#1E1A1C"),
+            "cloth": rgb("#2A2430"),        # 墨黑
+            "cloth_alt": rgb("#4A3A56"),    # 暗紫
+            "trim": rgb("#8B6BB8"),         # 传世紫
+            "belt": rgb("#8B6BB8"),
+            "shoe": rgb("#1E1A1C"),
+        },
+    },
+    {
+        "id": "lu_guizang",
+        "display": "陆归藏·师父（已失踪）",
+        "role": "npc",
+        "note": "旧青灰布袍 + 灰白发 + 药篓；轮廓与玄鹤区分：更旧的配色、带背篓",
+        "build": {"head_top": 4, "head_h": 7, "head_w": 7, "half_w": 3, "torso_bottom": 22},
+        "outfit": "robe",
+        "hair": "dao",
+        "beard": "long",
+        "accessory": "tea_basket",
+        "palette": {
+            "skin": rgb("#DCC0A0"),
+            "hair": rgb("#B9BDC4"),         # 灰白
+            "cloth": rgb("#6E7A72"),        # 旧青灰
+            "cloth_alt": rgb("#57635C"),
+            "trim": rgb("#D8CDB2"),
+            "belt": rgb("#4A3628"),
+            "shoe": rgb("#57635C"),
         },
     },
 ]
@@ -1300,7 +1374,7 @@ LUA_HEADER = '''-- data/characters.lua：《江湖有田》角色形象与序列
 --   * **NPC 由 entity.spawn 运行时创建，Lua 无"挂 Animation 组件"的 API**，
 --     因此 NPC 现在只能用 static_<dir>.png 单帧；缺口记录见 docs/36 第 6 节。
 --
--- 主角在场景里是静态实体（main.scene/ village.scene 的 JianghuPlayer），
+-- 主角在场景里是静态实体（manor.scene / village.scene 的 JianghuPlayer），
 -- 可以直接在 .scene 里声明 Animation 组件，用 M.player_animation() 取串。
 
 local M = {}

@@ -38,6 +38,11 @@ const VILLAGE_SPAWN: (f32, f32) = (624.0, 80.0);
 const VILLAGE_EXIT: (f32, f32) = (624.0, 48.0);
 /// 存档用非出生点（验证 restore 以存档坐标覆盖出生点）。
 const VILLAGE_SAVE_SPOT: (f32, f32) = (624.0, 208.0);
+/// 新档初始灵芝菌种数（`scripts/player/inventory.lua` 的 `inventory.setup()`）。
+/// M19-01 按 MVP 剧本把 5 调到 8；改动新档载荷必须同步本常量与下方断言。
+const START_SEED_LINGZHI: f64 = 8.0;
+/// 种一茬灵芝消耗 1 颗，这是剧本走完后的剩余量。
+const SEED_LINGZHI_AFTER_PLANT: f64 = START_SEED_LINGZHI - 1.0;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let project = env::args()
@@ -57,56 +62,68 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     banner("M17-01a 新档：山庄出生 + 农田链路");
     let mut runtime = new_runtime(&project_arg, &save_path)?;
-    enter_title(&mut runtime, &main_script)?;
+    enter_main_menu(&mut runtime, &main_script)?;
     click_button(&mut runtime, "BtnStart")?;
-    assert_scene_is(&mut runtime, "main")?;
+    assert_scene_is(&mut runtime, "manor")?;
     assert_mode(&mut runtime, "Playing")?;
     assert_day(&mut runtime, 1)?;
-    assert_num(&mut runtime, "require('state').energy", 100.0)?;
+    assert_num(&mut runtime, "require('core.state').energy", 100.0)?;
     assert_player_at(&mut runtime, MAIN_SPAWN)?;
 
     // 出生朝上，面前 (16,4) 是药田 DIRT：翻土 → 种灵芝 → 浇水。
     set_facing(&mut runtime, "up")?;
     press(&mut runtime, InputKey::from_char('e'))?; // till
-    assert_str(&mut runtime, "require('state').last_action", "till")?;
+    assert_str(&mut runtime, "require('core.state').last_action", "till")?;
     set_seed(&mut runtime, "seed_lingzhi")?;
     press(&mut runtime, InputKey::from_char('e'))?; // plant
     assert_str(
         &mut runtime,
-        "require('state').last_action",
+        "require('core.state').last_action",
         "plant_seed_lingzhi",
     )?;
     equip_tool(&mut runtime, "watering_can")?;
     press(&mut runtime, InputKey::from_char('e'))?; // water
     assert_str(
         &mut runtime,
-        "require('state').last_action",
+        "require('core.state').last_action",
         "water_lingzhi",
     )?;
-    assert_num(&mut runtime, "require('state').energy", 85.0)?; // 100-8-3-4
+    assert_num(&mut runtime, "require('core.state').energy", 85.0)?; // 100-8-3-4
     assert_plot_crop(&mut runtime, "16,4", "lingzhi")?;
     // 种地耗 1 颗灵芝种子。
-    assert_num(&mut runtime, "inv.count('player', 'seed_lingzhi')", 4.0)?;
+    assert_num(
+        &mut runtime,
+        "inv.count('player', 'seed_lingzhi')",
+        SEED_LINGZHI_AFTER_PLANT,
+    )?;
 
     // 山庄睡到 day2：main 日结算成长 +1，能量回满。
     sleep(&mut runtime)?;
     assert_day(&mut runtime, 2)?;
-    assert_num(&mut runtime, "require('state').energy", 100.0)?;
+    assert_num(&mut runtime, "require('core.state').energy", 100.0)?;
     assert_plot_days(&mut runtime, "16,4", 1.0)?;
 
     banner("M17-01b 出口交互：山庄 → 云泽村，背包跨图不清空");
     teleport(&mut runtime, MAIN_EXIT)?;
     assert_mode(&mut runtime, "Playing")?;
     press(&mut runtime, InputKey::from_char('e'))?; // exit main_to_village
-    assert_str(&mut runtime, "require('state').last_action", "exit_village")?;
+    assert_str(
+        &mut runtime,
+        "require('core.state').last_action",
+        "exit_village",
+    )?;
     runtime.process_scene_transition()?;
     assert_scene_is(&mut runtime, "village")?;
     assert_map_current(&mut runtime, "village")?;
     assert_mode(&mut runtime, "Playing")?;
     // 入口落点 (19,2)，非山庄出生点。
     assert_player_at(&mut runtime, VILLAGE_SPAWN)?;
-    // 背包仍 4 颗灵芝种子：未二次 inventory.setup 清空。
-    assert_num(&mut runtime, "inv.count('player', 'seed_lingzhi')", 4.0)?;
+    // 背包仍是「新档载荷 - 已播种数」：未二次 inventory.setup 清空。
+    assert_num(
+        &mut runtime,
+        "inv.count('player', 'seed_lingzhi')",
+        SEED_LINGZHI_AFTER_PLANT,
+    )?;
     assert_num(&mut runtime, "inv.count('player', 'lingzhi')", 0.0)?;
     // 农田明细在切图后仍可从 map.state 读到（全量持久键保留）。
     assert_plot_crop(&mut runtime, "16,4", "lingzhi")?;
@@ -117,33 +134,50 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     sleep(&mut runtime)?; // day2 -> day3
     assert_day(&mut runtime, 3)?;
     assert_scene_is(&mut runtime, "village")?;
-    assert_num(&mut runtime, "require('state').energy", 100.0)?;
+    assert_num(&mut runtime, "require('core.state').energy", 100.0)?;
     save_game(&mut runtime)?; // 显式存档：map=village day3 pos=VILLAGE_SAVE_SPOT
-    assert_num(&mut runtime, "inv.count('player', 'seed_lingzhi')", 4.0)?;
+    assert_num(
+        &mut runtime,
+        "inv.count('player', 'seed_lingzhi')",
+        SEED_LINGZHI_AFTER_PLANT,
+    )?;
 
     banner("M17-01d 回山庄：农田 overlay/plots 恢复，作物仍在");
     teleport(&mut runtime, VILLAGE_EXIT)?;
-    press(&mut runtime, InputKey::from_char('e'))?; // exit village_to_main
-    assert_str(&mut runtime, "require('state').last_action", "exit_main")?;
+    press(&mut runtime, InputKey::from_char('e'))?; // exit village_to_manor
+    // 山庄地图键/场景在示例重组后为 manor（M18-02 收口同步断言）。
+    assert_str(
+        &mut runtime,
+        "require('core.state').last_action",
+        "exit_manor",
+    )?;
     runtime.process_scene_transition()?;
-    assert_scene_is(&mut runtime, "main")?;
-    assert_map_current(&mut runtime, "main")?;
+    assert_scene_is(&mut runtime, "manor")?;
+    assert_map_current(&mut runtime, "manor")?;
     assert_player_at(&mut runtime, MAIN_SPAWN)?;
     assert_plot_crop(&mut runtime, "16,4", "lingzhi")?;
     assert_plot_days(&mut runtime, "16,4", 1.0)?; // day3 未浇水不成长
-    assert_num(&mut runtime, "inv.count('player', 'seed_lingzhi')", 4.0)?;
+    assert_num(
+        &mut runtime,
+        "inv.count('player', 'seed_lingzhi')",
+        SEED_LINGZHI_AFTER_PLANT,
+    )?;
 
     // 再次往返验证稳定：main -> village 回村不丢状态。
     teleport(&mut runtime, MAIN_EXIT)?;
     press(&mut runtime, InputKey::from_char('e'))?;
     runtime.process_scene_transition()?;
     assert_scene_is(&mut runtime, "village")?;
-    assert_num(&mut runtime, "inv.count('player', 'seed_lingzhi')", 4.0)?;
+    assert_num(
+        &mut runtime,
+        "inv.count('player', 'seed_lingzhi')",
+        SEED_LINGZHI_AFTER_PLANT,
+    )?;
     assert_plot_crop(&mut runtime, "16,4", "lingzhi")?;
 
     banner("M17-01e continue：第二 runtime 按存档地图回到云泽村");
     let mut second = new_runtime(&project_arg, &save_path)?;
-    enter_title(&mut second, &main_script)?;
+    enter_main_menu(&mut second, &main_script)?;
     click_button(&mut second, "BtnContinue")?;
     // 存档在 village —— continue 应切回 village 而非固定山庄。
     assert_scene_is(&mut second, "village")?;
@@ -152,7 +186,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_mode(&mut second, "Playing")?;
     // restore 以存档坐标覆盖出生点 (624,80) -> (624,208)。
     assert_player_at(&mut second, VILLAGE_SAVE_SPOT)?;
-    assert_num(&mut second, "inv.count('player', 'seed_lingzhi')", 4.0)?;
+    assert_num(
+        &mut second,
+        "inv.count('player', 'seed_lingzhi')",
+        SEED_LINGZHI_AFTER_PLANT,
+    )?;
     assert_num(&mut second, "inv.count('player', 'lingzhi')", 0.0)?;
     // village 档同样携带 main 农田明细；查 map.state 校验 restore 写回。
     assert_plot_crop(&mut second, "16,4", "lingzhi")?;
@@ -160,7 +198,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 长跑：快照在 village 场景名下反复恢复稳定。
     let ok = query_str(
         &mut second,
-        "return tostring(select(1, require('save_manager').validate_long_run(30, 100)))",
+        "return tostring(select(1, require('core.save_manager').validate_long_run(30, 100)))",
     )?;
     assert_eq!(ok, "true", "validate_long_run(30,100) 应成功");
 
@@ -168,7 +206,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     teleport(&mut second, VILLAGE_EXIT)?;
     press(&mut second, InputKey::from_char('e'))?;
     second.process_scene_transition()?;
-    assert_scene_is(&mut second, "main")?;
+    assert_scene_is(&mut second, "manor")?;
     assert_plot_crop(&mut second, "16,4", "lingzhi")?;
 
     println!(
@@ -196,16 +234,16 @@ fn new_runtime(project: &Path, save_path: &Path) -> Result<LuaRuntime, Box<dyn s
     Ok(runtime)
 }
 
-/// Runs the project script, then loads the `title` scene so BtnStart/BtnContinue
+/// Runs the project script, then loads the `main` 门面 scene so BtnStart/BtnContinue
 /// are live (mirrors jhyt_smoke).
-fn enter_title(
+fn enter_main_menu(
     runtime: &mut LuaRuntime,
     main_script: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     runtime.execute_project_script(main_script)?;
-    runtime.execute_console("scene.load('title')")?;
+    runtime.execute_console("scene.load('main')")?;
     runtime.process_scene_transition()?;
-    assert_scene_is(runtime, "title")?;
+    assert_scene_is(runtime, "main")?;
     Ok(())
 }
 
@@ -219,7 +257,10 @@ fn click_button(runtime: &mut LuaRuntime, button: &str) -> Result<(), Box<dyn st
 /// Teleports the player to a world position via `player.teleport`
 /// (physics.set_position + zero velocity, kept in sync with ECS Transform).
 fn teleport(runtime: &mut LuaRuntime, pos: (f32, f32)) -> Result<(), Box<dyn std::error::Error>> {
-    runtime.execute_console(&format!("require('player').teleport({}, {})", pos.0, pos.1))?;
+    runtime.execute_console(&format!(
+        "require('player.player').teleport({}, {})",
+        pos.0, pos.1
+    ))?;
     Ok(())
 }
 
@@ -297,7 +338,7 @@ fn assert_map_current(
     runtime: &mut LuaRuntime,
     expected: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let current = query_str(runtime, "require('map_manager').current()")?;
+    let current = query_str(runtime, "require('world.map_manager').current()")?;
     if current != expected {
         return Err(format!("map.current() = {current:?}, want {expected:?}").into());
     }
@@ -305,7 +346,7 @@ fn assert_map_current(
 }
 
 fn assert_mode(runtime: &mut LuaRuntime, expected: &str) -> Result<(), Box<dyn std::error::Error>> {
-    assert_str(runtime, "require('state').mode", expected)
+    assert_str(runtime, "require('core.state').mode", expected)
 }
 
 fn assert_player_at(
@@ -368,18 +409,18 @@ fn assert_plot_days(
 }
 
 fn set_facing(runtime: &mut LuaRuntime, facing: &str) -> Result<(), Box<dyn std::error::Error>> {
-    runtime.execute_console(&format!("require('state').facing = '{facing}'"))?;
+    runtime.execute_console(&format!("require('core.state').facing = '{facing}'"))?;
     Ok(())
 }
 
 fn set_seed(runtime: &mut LuaRuntime, seed: &str) -> Result<(), Box<dyn std::error::Error>> {
-    runtime.execute_console(&format!("require('state').selected_seed = '{seed}'"))?;
+    runtime.execute_console(&format!("require('core.state').selected_seed = '{seed}'"))?;
     Ok(())
 }
 
 fn equip_tool(runtime: &mut LuaRuntime, tool: &str) -> Result<(), Box<dyn std::error::Error>> {
     runtime.execute_console(&format!(
-        "inv.equip(require('state').inventory, 'tool', '{tool}')"
+        "inv.equip(require('core.state').inventory, 'tool', '{tool}')"
     ))?;
     Ok(())
 }
@@ -390,7 +431,10 @@ fn sleep(runtime: &mut LuaRuntime) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn save_game(runtime: &mut LuaRuntime) -> Result<(), Box<dyn std::error::Error>> {
-    let ok = query_str(runtime, "return tostring(require('save_manager').save())")?;
+    let ok = query_str(
+        runtime,
+        "return tostring(require('core.save_manager').save())",
+    )?;
     if ok != "true" {
         return Err(format!("save() returned {ok:?}").into());
     }

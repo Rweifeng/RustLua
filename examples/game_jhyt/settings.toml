@@ -1,0 +1,18 @@
+# 《江湖有田》手柄绑定（PC 手柄实机测试用）
+# 说明：默认动作表里玩法动作只有键盘绑定，摇杆默认只绑菜单导航 ui_up/down/left/right。
+#       本文件把**左摇杆**绑到移动（padaxis:1+/- 与 padaxis:0+/-），因此推杆即可走位；
+#       同时把交互/攻击/武学/背包/暂停/重开绑到手柄按钮。
+# 改键也可在编辑器「项目设置 → 输入」面板完成（本文件即该面板的落点）。
+# 注意：摇杆改绑给移动后，菜单导航仍由 DPad（pad:12..15，默认绑定）与方向键承担；
+#       若也想用摇杆选菜单，把 ui_up/down/left/right 也绑上 padaxis 即可（会与移动
+#       动作构成冲突，编辑器「项目设置 → 输入」会红字拦下）。
+
+[input]
+map = "rustlua-actions-v1\nmove_up=key:w,padaxis:1+\nmove_down=key:s,padaxis:1-\nmove_left=key:a,padaxis:0-\nmove_right=key:d,padaxis:0+\ninteract=key:e,pad:0\nattack=key:j,pad:2\nskill=key:k,pad:3\ninventory=key:i,pad:4\npause=key:p,pad:5\nquest=key:l,pad:9\nrespawn=key:r,pad:8\n"
+stick_deadzone = 0.15
+trigger_deadzone = 0.05
+# 菜单导航手感（M20-09）：左摇杆阈值 / 按住后首次重复延迟（帧）/ 重复间隔（帧）。
+# 阈值越小越灵敏；延迟与间隔决定长按时的滚动节奏（60fps 下 16/8 ≈ 0.27s/0.13s）。
+nav_threshold = 0.5
+nav_delay_frames = 16
+nav_repeat_frames = 8

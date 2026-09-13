@@ -695,7 +695,7 @@ mod tests {
     }
 
     fn sample_project_root() -> PathBuf {
-        engine::core::games_dir().join("examples")
+        engine::core::games_dir().join("examples").join("game_api")
     }
 
     fn copy_sample_project(label: &str) -> Option<PathBuf> {

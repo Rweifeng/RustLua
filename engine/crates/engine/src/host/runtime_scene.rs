@@ -6,6 +6,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
+    time::Duration,
 };
 
 use crate::core::{
@@ -20,6 +21,9 @@ use crate::core::{
     math3d::Vec3,
     mesh3d::MeshRenderer,
     scene::{Scene, SceneEntityId},
+    scheduler::{
+        ScheduleReport, ScheduleStage, Scheduler, SchedulerError, System, SystemError, SystemTiming,
+    },
     script::LuaRuntime,
     sprite::{Sprite, SpriteAsset, SpriteSorting, SpriteVertex},
     sprite_batch::{SpriteBatch, SpriteBatchItem, SpriteBatchMesh, SpriteDrawBatch},
@@ -42,6 +46,7 @@ use crate::host::frame::{
     SceneMesh, VectorAtlasMap, VectorFontHandle, VectorGlyphSnapshot, VectorSegmentSnapshot,
     VectorTextVertex as FrameVectorTextVertex, WHITE_TEXTURE_PATH, font_texture_path,
 };
+use crate::host::gamepad::{GamepadBackend, GamepadDeadzone, GamepadPoller};
 
 pub struct RuntimeScene {
     script: LuaRuntime,
@@ -85,6 +90,50 @@ pub struct RuntimeScene {
     text_render_mode: TextRenderMode,
     ui_scene_nodes: BTreeMap<u64, UiSceneNode>,
     ui_layout_rects: BTreeMap<u64, ResolvedUiNode>,
+    /// 共享帧调度管线（M18-03）：每个固定步执行一次的系统。系统在
+    /// `run_script_steps` 期间整体移入 Scheduler、结束后按注册顺序放回，
+    /// 因此 `add_step_system`/`add_frame_system` 在两次调用之间始终有效。
+    step_systems: Vec<System<RuntimeScene>>,
+    /// 共享帧调度管线：每次 `run_script_steps` 调用只执行一次的系统。
+    frame_systems: Vec<System<RuntimeScene>>,
+    /// 当前固定步的输入快照：由 `run_script_steps` 注入、`input_apply` 消费，
+    /// `ui_click_dispatch` 复用，步结束即清空。
+    pending_step_input: Option<InputSnapshot>,
+    /// 最近一次 `run_script_steps` 的调度统计（M18-03 性能统计出口）。
+    last_schedule: Option<FrameScheduleReport>,
+    /// 手柄设备轮询（M20-06）：每帧采样后合并进本步输入快照。
+    gamepad: GamepadPoller,
+}
+
+/// Aggregated scheduler statistics of one `run_script_steps` call (M18-03).
+///
+/// Per-system `elapsed` values are accumulated across every fixed step of the
+/// call, so a system that runs `steps` times reports its total time.
+#[derive(Clone, Debug, Default)]
+pub struct FrameScheduleReport {
+    /// Number of fixed steps the per-step pipeline executed.
+    pub steps: u32,
+    /// Accumulated wall time of all scheduled pipeline executions.
+    pub total_elapsed: Duration,
+    /// Per-system timings in first-execution order.
+    pub timings: Vec<SystemTiming>,
+}
+
+impl FrameScheduleReport {
+    fn merge(&mut self, report: &ScheduleReport) {
+        for timing in &report.timings {
+            if let Some(existing) = self
+                .timings
+                .iter_mut()
+                .find(|entry| entry.name == timing.name)
+            {
+                existing.elapsed += timing.elapsed;
+            } else {
+                self.timings.push(timing.clone());
+            }
+        }
+        self.total_elapsed += report.total_elapsed;
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -478,7 +527,7 @@ impl RuntimeScene {
         // 时由 `ensure_font_atlas` 在首次排版文本时按需加载。这样场景编辑（revision
         // 变化 → 运行时重建）不再每次重建都白白预热一遍被丢弃的图集。
         let ui_scene_nodes = build_ui_scene_nodes(&scene, !run_script);
-        Ok(Self {
+        let mut scene = Self {
             script,
             sprite_batch: SpriteBatch::new(),
             camera,
@@ -504,9 +553,170 @@ impl RuntimeScene {
             text_render_mode,
             ui_scene_nodes,
             ui_layout_rects: BTreeMap::new(),
-        })
+            step_systems: Vec::new(),
+            frame_systems: Vec::new(),
+            pending_step_input: None,
+            last_schedule: None,
+            gamepad: GamepadPoller::platform_default(),
+        };
+        scene.register_builtin_frame_systems();
+        Ok(scene)
     }
 
+    /// Registers the built-in fixed-stage systems of the runtime frame
+    /// pipeline (M18-03).
+    ///
+    /// The per-step systems preserve the legacy manual orchestration order:
+    /// input apply → Lua `update()` → UI click dispatch → 2D/3D physics →
+    /// particles → game clock → pending scene transition. The frame systems
+    /// run once per `run_script_steps` call: velocity integration (Simulation
+    /// stage, after the per-step scene transition) then animation state
+    /// machines, matching the legacy post-loop block.
+    fn register_builtin_frame_systems(&mut self) {
+        self.step_systems.push(System::new(
+            "input_apply",
+            ScheduleStage::Input,
+            [] as [&str; 0],
+            |scene: &mut RuntimeScene, _| {
+                if let Some(input) = scene.pending_step_input.clone() {
+                    scene.script.set_input(input);
+                }
+                Ok(())
+            },
+        ));
+        self.step_systems.push(System::new(
+            "lua_update",
+            ScheduleStage::Script,
+            [] as [&str; 0],
+            |scene: &mut RuntimeScene, _| {
+                let result = scene
+                    .script
+                    .call_update()
+                    .map_err(|error| SystemError::new(error.to_string()))?;
+                tracing::debug!(target: "game", "[simulation] fixed update returned: {result}");
+                Ok(())
+            },
+        ));
+        self.step_systems.push(System::new(
+            "ui_click_dispatch",
+            ScheduleStage::Script,
+            ["lua_update"],
+            |scene: &mut RuntimeScene, _| {
+                let Some(input) = scene.pending_step_input.clone() else {
+                    return Err(SystemError::new("pending step input is missing"));
+                };
+                let targets = scene.compute_click_targets();
+                scene
+                    .script
+                    .process_ui_clicks(&input, &targets)
+                    .map_err(|error| SystemError::new(error.to_string()))
+            },
+        ));
+        self.step_systems.push(System::new(
+            "physics2d_step",
+            ScheduleStage::Physics,
+            [] as [&str; 0],
+            |scene: &mut RuntimeScene, delta_seconds: f32| {
+                scene.script.step_physics(delta_seconds);
+                Ok(())
+            },
+        ));
+        self.step_systems.push(System::new(
+            "physics3d_step",
+            ScheduleStage::Physics,
+            [] as [&str; 0],
+            |scene: &mut RuntimeScene, delta_seconds: f32| {
+                scene.script.step_physics3d(delta_seconds);
+                Ok(())
+            },
+        ));
+        self.step_systems.push(System::new(
+            "particles_step",
+            ScheduleStage::Simulation,
+            [] as [&str; 0],
+            |scene: &mut RuntimeScene, delta_seconds: f32| {
+                scene.script.step_particles(delta_seconds);
+                Ok(())
+            },
+        ));
+        self.step_systems.push(System::new(
+            "clock_step",
+            ScheduleStage::Simulation,
+            [] as [&str; 0],
+            |scene: &mut RuntimeScene, delta_seconds: f32| {
+                scene.script.step_clock(delta_seconds);
+                Ok(())
+            },
+        ));
+        self.step_systems.push(System::new(
+            "scene_transition",
+            ScheduleStage::Simulation,
+            [] as [&str; 0],
+            |scene: &mut RuntimeScene, _| {
+                // Apply a pending scene.load so level switches happen between
+                // steps.
+                scene
+                    .script
+                    .process_scene_transition()
+                    .map_err(|error| SystemError::new(error.to_string()))
+            },
+        ));
+        // 以下为每次 run_script_steps 调用只执行一次的帧级系统：原实现里它们
+        // 在固定步循环结束后统一推进（elapsed = delta × steps），顺序保持
+        // integrate_velocity → AnimationStateMachine → Animation3D。
+        self.frame_systems.push(System::new(
+            "integrate_velocity",
+            ScheduleStage::Simulation,
+            [] as [&str; 0],
+            |scene: &mut RuntimeScene, delta_seconds: f32| {
+                scene.script.with_world_mut(|world| {
+                    let _ = integrate_velocity(world, delta_seconds);
+                });
+                Ok(())
+            },
+        ));
+        self.frame_systems.push(System::new(
+            "animation_state_advance",
+            ScheduleStage::Animation,
+            [] as [&str; 0],
+            |scene: &mut RuntimeScene, delta_seconds: f32| {
+                scene.script.with_world_mut(|world| {
+                    world.for_each_mut::<AnimationStateMachine>(|_, machine| {
+                        machine.advance(delta_seconds)
+                    })
+                });
+                Ok(())
+            },
+        ));
+        self.frame_systems.push(System::new(
+            "animation3d_advance",
+            ScheduleStage::Animation,
+            [] as [&str; 0],
+            |scene: &mut RuntimeScene, delta_seconds: f32| {
+                scene.script.with_world_mut(|world| {
+                    world.for_each_mut::<Animation3D>(|_, animation| {
+                        animation.advance(delta_seconds)
+                    })
+                });
+                Ok(())
+            },
+        ));
+    }
+
+    /// Advances the runtime by `steps` fixed steps through the shared frame
+    /// schedule (M18-03).
+    ///
+    /// This is the single scheduling entry used by the standalone game shell,
+    /// the editor Play preview and headless runners. Every fixed step runs the
+    /// per-step pipeline (input → Lua update → UI clicks → physics →
+    /// particles → clock → scene transition); after the loop the frame
+    /// pipeline runs once (velocity integration → animation advance) with the
+    /// accumulated elapsed time, matching the legacy manual orchestration.
+    ///
+    /// Registered systems are validated by the [`Scheduler`]: missing
+    /// dependencies, dependency cycles and system panics surface as errors
+    /// naming the offending system and stage. Per-system timings are merged
+    /// into [`Self::last_schedule_report`].
     pub fn run_script_steps(
         &mut self,
         steps: u32,
@@ -514,30 +724,72 @@ impl RuntimeScene {
         input: &InputSnapshot,
     ) -> Result<(), String> {
         self.script.set_delta(delta_seconds);
+        // M20-06：把真实手柄设备状态合并进本帧输入（只改按钮/轴，不影响键鼠）。
+        // 无设备时 XInput 返回未连接，快照与传入值等价，headless 行为不变。
         let mut step_input = input.clone();
+        self.gamepad.poll_into(&mut step_input);
+        // Move the registered systems into fresh schedulers so the Scheduler
+        // can validate dependencies each call while ownership stays with the
+        // scene between calls (restored below on every path).
+        let mut step_scheduler: Scheduler<RuntimeScene> = Scheduler::new();
+        let mut frame_scheduler: Scheduler<RuntimeScene> = Scheduler::new();
+        let mut build_error = None;
+        for system in self.step_systems.drain(..) {
+            if let Err(error) = step_scheduler.add_system(system) {
+                build_error = Some(error.to_string());
+                break;
+            }
+        }
+        if build_error.is_none() {
+            for system in self.frame_systems.drain(..) {
+                if let Err(error) = frame_scheduler.add_system(system) {
+                    build_error = Some(error.to_string());
+                    break;
+                }
+            }
+        }
+        let outcome = if let Some(error) = build_error {
+            Err(error)
+        } else {
+            self.run_pipelines(
+                &mut step_scheduler,
+                &mut frame_scheduler,
+                steps,
+                delta_seconds,
+                &mut step_input,
+            )
+        };
+        // Always put the systems back so registration survives failed runs.
+        for system in step_scheduler.into_systems() {
+            self.step_systems.push(system);
+        }
+        for system in frame_scheduler.into_systems() {
+            self.frame_systems.push(system);
+        }
+        self.pending_step_input = None;
+        outcome
+    }
+
+    /// Executes the per-step pipeline `steps` times and the frame pipeline
+    /// once, accumulating schedule timings into `last_schedule`.
+    fn run_pipelines(
+        &mut self,
+        step_scheduler: &mut Scheduler<RuntimeScene>,
+        frame_scheduler: &mut Scheduler<RuntimeScene>,
+        steps: u32,
+        delta_seconds: f32,
+        step_input: &mut InputSnapshot,
+    ) -> Result<(), String> {
+        let mut report = FrameScheduleReport {
+            steps,
+            ..FrameScheduleReport::default()
+        };
         for step in 0..steps {
-            self.script.set_input(step_input.clone());
-            let result = self
-                .script
-                .call_update()
+            self.pending_step_input = Some(step_input.clone());
+            let step_report = step_scheduler
+                .run(self, delta_seconds)
                 .map_err(|error| error.to_string())?;
-            tracing::debug!(target: "game", "[simulation] fixed update returned: {result}");
-            // Structured UiEvents dispatch: precompute hit rects, then call the
-            // bound Lua function on the press edge.
-            let targets = self.compute_click_targets();
-            self.script
-                .process_ui_clicks(&step_input, &targets)
-                .map_err(|error| error.to_string())?;
-            // Physics advances on the fixed timestep and writes dynamic body
-            // positions back into ECS Transforms (2D) / Transform3D (3D).
-            self.script.step_physics(delta_seconds);
-            self.script.step_physics3d(delta_seconds);
-            self.script.step_particles(delta_seconds);
-            self.script.step_clock(delta_seconds);
-            // Apply a pending scene.load so level switches happen between steps.
-            self.script
-                .process_scene_transition()
-                .map_err(|error| error.to_string())?;
+            report.merge(&step_report);
             // One-shot edges are consumed by the first fixed step of a frame;
             // clear them so catch-up steps in the same frame don't re-fire
             // just_pressed actions (e.g. F4 switching scenes twice).
@@ -545,12 +797,123 @@ impl RuntimeScene {
                 step_input.finish_frame();
             }
         }
-        self.script.with_world_mut(|world| {
-            let _ = integrate_velocity(world, delta_seconds * steps as f32);
-            let elapsed = delta_seconds * steps as f32;
-            world.for_each_mut::<AnimationStateMachine>(|_, machine| machine.advance(elapsed));
-            world.for_each_mut::<Animation3D>(|_, animation| animation.advance(elapsed));
-        });
+        let elapsed = delta_seconds * steps as f32;
+        let frame_report = frame_scheduler
+            .run(self, elapsed)
+            .map_err(|error| error.to_string())?;
+        report.merge(&frame_report);
+        self.last_schedule = Some(report);
+        if tracing::enabled!(tracing::Level::DEBUG)
+            && let Some(report) = &self.last_schedule
+        {
+            let systems = report
+                .timings
+                .iter()
+                .map(|timing| {
+                    format!(
+                        "{}={:.3}ms",
+                        timing.name,
+                        timing.elapsed.as_secs_f64() * 1000.0
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            tracing::debug!(target: "scene", "[schedule] steps={} total={:.3}ms systems=[{}]", report.steps, report.total_elapsed.as_secs_f64() * 1000.0, systems);
+        }
+        Ok(())
+    }
+
+    /// Returns the aggregated schedule statistics of the most recent
+    /// [`Self::run_script_steps`] call, if any (M18-03 性能统计出口).
+    #[must_use]
+    pub fn last_schedule_report(&self) -> Option<&FrameScheduleReport> {
+        self.last_schedule.as_ref()
+    }
+
+    /// 替换手柄后端（M20-06）：headless 验收用 [`FakeBackend`] 脚本化设备事件，
+    /// 正式运行时用平台默认（Windows XInput）。
+    pub fn set_gamepad_backend(&mut self, backend: Box<dyn GamepadBackend>) {
+        self.gamepad = GamepadPoller::new(backend);
+    }
+
+    /// 应用玩家配置的摇杆/扳机死区（M20-08，来自 `settings.toml` 的 `[input]` 段）。
+    ///
+    /// 实现上是**重建平台默认后端**，因此：
+    /// * 非 Windows 平台无设备后端，调用为 no-op（静默降级语义不变）；
+    /// * 会覆盖此前 `set_gamepad_backend` 注入的后端——宿主启动顺序应是
+    ///   `RuntimeScene::new` → `set_gamepad_deadzone`（headless 再注入 Fake）。
+    pub fn set_gamepad_deadzone(&mut self, deadzone: GamepadDeadzone) {
+        self.gamepad = GamepadPoller::platform_default_with_deadzone(deadzone);
+    }
+
+    /// 当前是否检测到手柄设备（M20-06 诊断/UI 可用）。
+    #[must_use]
+    pub fn gamepad_connected(&self) -> bool {
+        self.gamepad.connected()
+    }
+
+    /// 手柄后端名称（诊断）。
+    #[must_use]
+    pub fn gamepad_backend_name(&self) -> &'static str {
+        self.gamepad.backend_name()
+    }
+
+    /// Grants temporary access to the underlying Lua runtime — the escape
+    /// hatch for registered frame systems (and tests) that need to drive
+    /// script APIs from a `&mut RuntimeScene` context.
+    pub fn with_script<R>(&mut self, visit: impl FnOnce(&mut LuaRuntime) -> R) -> R {
+        visit(&mut self.script)
+    }
+
+    /// Registers an extra system that runs on every fixed step of
+    /// [`Self::run_script_steps`] (M18-03).
+    ///
+    /// The system joins the shared schedule: it declares a
+    /// [`ScheduleStage`] and dependencies on other registered systems, and
+    /// the scheduler validates the resulting order every frame. Duplicate
+    /// names are rejected here; missing dependencies and cycles surface as
+    /// locatable errors from [`Self::run_script_steps`].
+    pub fn add_step_system(&mut self, system: System<RuntimeScene>) -> Result<(), SchedulerError> {
+        self.ensure_unique_system_name(system.name())?;
+        self.step_systems.push(system);
+        Ok(())
+    }
+
+    /// Registers an extra system that runs once per
+    /// [`Self::run_script_steps`] call (M18-03). See [`Self::add_step_system`].
+    pub fn add_frame_system(&mut self, system: System<RuntimeScene>) -> Result<(), SchedulerError> {
+        self.ensure_unique_system_name(system.name())?;
+        self.frame_systems.push(system);
+        Ok(())
+    }
+
+    /// Returns the registered per-step and frame system names in execution
+    /// (registration) order, for diagnostics and tests.
+    #[must_use]
+    pub fn registered_system_names(&self) -> (Vec<String>, Vec<String>) {
+        (
+            self.step_systems
+                .iter()
+                .map(|system| system.name().to_owned())
+                .collect(),
+            self.frame_systems
+                .iter()
+                .map(|system| system.name().to_owned())
+                .collect(),
+        )
+    }
+
+    fn ensure_unique_system_name(&self, name: &str) -> Result<(), SchedulerError> {
+        if self
+            .step_systems
+            .iter()
+            .chain(self.frame_systems.iter())
+            .any(|system| system.name() == name)
+        {
+            return Err(SchedulerError::DuplicateSystem {
+                name: name.to_owned(),
+            });
+        }
         Ok(())
     }
 
@@ -627,7 +990,7 @@ impl RuntimeScene {
         layout_rect: &UiRect,
         text: &UiText,
     ) -> Option<([f32; 2], [f32; 2])> {
-        let (_, glyph_bounds) = self.measure_scene_ui_text(&text);
+        let (_, glyph_bounds) = self.measure_scene_ui_text(text);
         let origin = [layout_rect.x, layout_rect.y];
         let glyph_origin = [origin[0] + glyph_bounds[0], origin[1] + glyph_bounds[1]];
         let glyph_size = [
@@ -944,9 +1307,9 @@ impl RuntimeScene {
             paths: self.texture_paths.clone(),
             font_atlas,
             custom_font_atlases,
-            vector_vertices: vector_vertices,
-            vector_glyphs: vector_glyphs,
-            vector_segments: vector_segments,
+            vector_vertices,
+            vector_glyphs,
+            vector_segments,
         })
     }
 
@@ -1215,6 +1578,7 @@ impl RuntimeScene {
 
     /// Appends screen-space text glyphs (SDF font atlas) as NDC quads. Shares
     /// `layout_text` with the scene-node UI Text component.
+    #[allow(clippy::too_many_arguments)]
     fn push_ui_text(
         &mut self,
         vertices: &mut Vec<OverlayVertex>,
@@ -1272,6 +1636,7 @@ impl RuntimeScene {
     /// Pushes scene-node UI components (`Text` / `Image` / `Button`) as NDC
     /// overlay quads on top of the Lua UI. Order: images, buttons, then text.
     /// Buttons render by composing the same image/text helpers used elsewhere.
+    #[allow(clippy::too_many_arguments)]
     fn push_scene_ui(
         &mut self,
         vertices: &mut Vec<OverlayVertex>,
@@ -1379,6 +1744,7 @@ impl RuntimeScene {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn push_vector_text_run(
         &mut self,
         vertices: &mut Vec<FrameVectorTextVertex>,
@@ -2449,8 +2815,10 @@ mod sdf_tests {
     use super::*;
     use crate::core::scene::Scene;
 
+    // 示例重组后，展示工程从 examples/ 迁入 examples/game_api/（多项目布局）；
+    // 此处路径同步修正，恢复 showcase/ui_test 等测试的真实覆盖（M18-03）。
     fn game_root() -> std::path::PathBuf {
-        crate::core::games_dir().join("examples")
+        crate::core::games_dir().join("examples").join("game_api")
     }
 
     #[test]
@@ -2488,12 +2856,12 @@ mod sdf_tests {
     }
 
     fn production_sample_root() -> std::path::PathBuf {
-        crate::core::games_dir().join("examples")
+        crate::core::games_dir().join("examples").join("game_api")
     }
 
     #[test]
     fn example_project_runs_with_new_api() {
-        let root = crate::core::games_dir().join("examples");
+        let root = crate::core::games_dir().join("examples").join("game_api");
         let mut runtime = RuntimeScene::new(Some(&root)).unwrap();
         runtime
             .run_script_steps(2, 1.0 / 60.0, &crate::core::input::InputSnapshot::default())
@@ -2507,7 +2875,7 @@ mod sdf_tests {
         use crate::core::input::MouseButton;
         use crate::core::scene::Scene;
 
-        let root = crate::core::games_dir().join("examples");
+        let root = crate::core::games_dir().join("examples").join("game_api");
         let path = root.join("scenes/ui_test.scene");
         assert!(path.is_file(), "ui_test 示例场景缺失: {}", path.display());
         let scene = Scene::load(&path).unwrap();
@@ -2553,7 +2921,7 @@ mod sdf_tests {
     fn nine_slice_image_renders_nine_quads() {
         use crate::core::scene::{Scene, SceneEntityId};
 
-        let root = crate::core::games_dir().join("examples");
+        let root = crate::core::games_dir().join("examples").join("game_api");
         if !root.join("assets/textures/ui/button_green.png").is_file() {
             return;
         }
@@ -2756,6 +3124,77 @@ mod sdf_tests {
         std::fs::write(root.join("chars.txt"), "测试字体AB").unwrap();
         let atlas = load_project_font_atlas(Some(&root)).expect("atlas");
         assert!(atlas.lock().unwrap().version() > 0, "chars.txt 应触发预热");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 编辑器 Play 预览每帧重建输入快照（`bridge_preview_input` 只桥接键鼠），
+    /// 而独立 game 宿主跨帧复用同一快照。设备在被按住期间持续上报同一轴值时，
+    /// 运行时必须把**当前**手柄状态写进本帧输入，而不是只写「与上一帧不同」的轴——
+    /// 否则编辑器预览里摇杆推住不动就等于没有输入（回归：编辑器内摇杆无反应）。
+    #[test]
+    fn held_gamepad_stick_reaches_script_with_fresh_input_snapshot_per_frame() {
+        /// 恒定设备帧：始终「按住」左摇杆上推（值不变 → 无变化边沿）。
+        struct HeldStickBackend {
+            frame: crate::host::gamepad::GamepadFrame,
+        }
+
+        impl crate::host::gamepad::GamepadBackend for HeldStickBackend {
+            fn poll(&mut self) -> crate::host::gamepad::GamepadFrame {
+                self.frame
+            }
+
+            fn name(&self) -> &'static str {
+                "held-stick"
+            }
+        }
+
+        let root = std::env::temp_dir().join(format!(
+            "p2-preview-gamepad-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        let scripts = root.join("scripts");
+        std::fs::create_dir_all(&scripts).unwrap();
+        std::fs::write(
+            scripts.join("main.lua"),
+            "args = {}\n\
+             function update()\n\
+               local s = input.pad_axis(1)\n\
+               if type(s) == 'number' and s == s and s ~= 0 then args[#args + 1] = s end\n\
+               return ''\n\
+             end\n",
+        )
+        .unwrap();
+
+        let mut runtime = RuntimeScene::from_scene(Some(&root), Scene::new("preview-gamepad"))
+            .expect("runtime scene");
+        let mut frame = crate::host::gamepad::GamepadFrame::idle();
+        frame.axes[crate::host::gamepad::axis::LEFT_Y] = 0.8;
+        runtime.set_gamepad_backend(Box::new(HeldStickBackend { frame }));
+
+        // 与编辑器预览逐帧一致：每帧都是全新快照（不跨帧保留手柄状态）。
+        for _ in 0..3 {
+            runtime
+                .run_script_steps(1, 1.0 / 60.0, &InputSnapshot::default())
+                .expect("script step");
+        }
+        let sampled = runtime
+            .script
+            .execute_console("return tostring(#args) .. '|' .. tostring(args[1])")
+            .expect("probe lua");
+        let (count, value) = sampled.trim().split_once('|').expect("count|value");
+        assert_eq!(
+            count, "3",
+            "每帧都应读到被按住摇杆的轴值（编辑器预览逐帧重建快照）"
+        );
+        let value: f32 = value.parse().expect("axis value");
+        assert!(
+            (value - 0.8).abs() < 1e-3,
+            "轴值应保持设备上报值 0.8：{value}"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -3441,5 +3880,257 @@ mod sdf_tests {
                 .is_some_and(|font| !font.pixels.is_empty()),
             "first drawable frame must carry full atlas pixels"
         );
+    }
+}
+
+/// M18-03 共享帧调度管线测试：内置阶段顺序、注册 API、依赖/循环/panic 诊断
+/// 与调度性能统计出口。这些测试是 headless 的：直接驱动 RuntimeScene。
+#[cfg(test)]
+mod frame_schedule_tests {
+    use super::*;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    fn sample_root() -> std::path::PathBuf {
+        crate::core::games_dir().join("examples").join("game_api")
+    }
+
+    fn sample_runtime() -> RuntimeScene {
+        let root = sample_root();
+        RuntimeScene::new(Some(&root)).expect("runtime for game_api sample project")
+    }
+
+    /// 固定步顺序必须与原手工编排一致：
+    /// input_apply → lua_update → ui_click_dispatch → physics2d → physics3d →
+    /// particles → clock → scene_transition；帧级系统每调用一次：
+    /// integrate_velocity → animation_state_advance → animation3d_advance。
+    #[test]
+    fn builtin_pipeline_preserves_legacy_stage_order() {
+        let mut runtime = sample_runtime();
+        let order: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let recorder = |name: &'static str, order: Rc<RefCell<Vec<String>>>| {
+            move |_scene: &mut RuntimeScene, _dt: f32| {
+                order.borrow_mut().push(name.to_owned());
+                Ok(())
+            }
+        };
+        runtime
+            .add_step_system(System::new(
+                "user_script_probe",
+                ScheduleStage::Script,
+                ["lua_update"],
+                recorder("user_script_probe", Rc::clone(&order)),
+            ))
+            .unwrap();
+        runtime
+            .add_step_system(System::new(
+                "user_physics_probe",
+                ScheduleStage::Physics,
+                [] as [&str; 0],
+                recorder("user_physics_probe", Rc::clone(&order)),
+            ))
+            .unwrap();
+        runtime
+            .run_script_steps(2, 1.0 / 60.0, &InputSnapshot::default())
+            .expect("scheduled steps");
+        // 两个用户探针各自每步执行一次，且 Script 阶段探针先于 Physics 探针。
+        assert_eq!(
+            order.borrow().as_slice(),
+            [
+                "user_script_probe",
+                "user_physics_probe",
+                "user_script_probe",
+                "user_physics_probe",
+            ]
+        );
+        // 调度统计的 timings 按「首次执行顺序」记录，完整反映共享管线的
+        // 阶段顺序：内置固定步顺序与原手工编排一致，帧级系统在末尾。
+        let report = runtime.last_schedule_report().expect("schedule report");
+        let names: Vec<&str> = report.timings.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "input_apply",
+                "lua_update",
+                "ui_click_dispatch",
+                "user_script_probe",
+                "physics2d_step",
+                "physics3d_step",
+                "user_physics_probe",
+                "particles_step",
+                "clock_step",
+                "scene_transition",
+                "integrate_velocity",
+                "animation_state_advance",
+                "animation3d_advance",
+            ]
+        );
+    }
+
+    #[test]
+    fn schedule_report_collects_steps_and_timings() {
+        let mut runtime = sample_runtime();
+        runtime
+            .run_script_steps(3, 1.0 / 60.0, &InputSnapshot::default())
+            .expect("scheduled steps");
+        let report = runtime
+            .last_schedule_report()
+            .expect("schedule report is recorded");
+        assert_eq!(report.steps, 3);
+        let names: Vec<&str> = report.timings.iter().map(|t| t.name.as_str()).collect();
+        for expected in [
+            "input_apply",
+            "lua_update",
+            "ui_click_dispatch",
+            "physics2d_step",
+            "physics3d_step",
+            "particles_step",
+            "clock_step",
+            "scene_transition",
+            "integrate_velocity",
+            "animation_state_advance",
+            "animation3d_advance",
+        ] {
+            assert!(names.contains(&expected), "missing timing: {expected}");
+        }
+        assert!(report.total_elapsed >= report.timings.iter().map(|t| t.elapsed).sum::<Duration>());
+        // 帧级系统只执行一次：其累计耗时应远小于每步系统（同量级下不可靠，
+        // 仅验证 steps 计数与 timings 覆盖）。
+        assert!(report.total_elapsed.as_nanos() > 0);
+    }
+
+    #[test]
+    fn duplicate_system_names_are_rejected_at_registration() {
+        let mut runtime = sample_runtime();
+        let error = runtime
+            .add_step_system(System::new(
+                "lua_update",
+                ScheduleStage::Script,
+                [] as [&str; 0],
+                |_: &mut RuntimeScene, _| Ok(()),
+            ))
+            .expect_err("duplicate builtin name must be rejected");
+        assert!(matches!(error, SchedulerError::DuplicateSystem { .. }));
+        runtime
+            .add_frame_system(System::new(
+                "frame_probe",
+                ScheduleStage::Animation,
+                [] as [&str; 0],
+                |_: &mut RuntimeScene, _| Ok(()),
+            ))
+            .unwrap();
+        let error = runtime
+            .add_step_system(System::new(
+                "frame_probe",
+                ScheduleStage::Transform,
+                [] as [&str; 0],
+                |_: &mut RuntimeScene, _| Ok(()),
+            ))
+            .expect_err("cross-pipeline duplicate name must be rejected");
+        assert!(matches!(error, SchedulerError::DuplicateSystem { .. }));
+    }
+
+    #[test]
+    fn missing_dependency_is_diagnosed_with_system_names() {
+        let mut runtime = sample_runtime();
+        runtime
+            .add_step_system(System::new(
+                "orphan_probe",
+                ScheduleStage::Script,
+                ["no_such_system"],
+                |_: &mut RuntimeScene, _| Ok(()),
+            ))
+            .unwrap();
+        let error = runtime
+            .run_script_steps(1, 1.0 / 60.0, &InputSnapshot::default())
+            .expect_err("missing dependency must fail the run");
+        assert!(
+            error.contains("orphan_probe") && error.contains("no_such_system"),
+            "diagnostic must name system and dependency: {error}"
+        );
+        // 失败后注册仍在（系统已放回），修复依赖后可重新执行。
+        let (step_names, _) = runtime.registered_system_names();
+        assert!(step_names.contains(&"orphan_probe".to_owned()));
+    }
+
+    #[test]
+    fn dependency_cycle_is_diagnosed_with_the_cycle_members() {
+        let mut runtime = sample_runtime();
+        runtime
+            .add_step_system(System::new(
+                "cycle_a",
+                ScheduleStage::Physics,
+                ["cycle_b"],
+                |_: &mut RuntimeScene, _| Ok(()),
+            ))
+            .unwrap();
+        runtime
+            .add_step_system(System::new(
+                "cycle_b",
+                ScheduleStage::Physics,
+                ["cycle_a"],
+                |_: &mut RuntimeScene, _| Ok(()),
+            ))
+            .unwrap();
+        let error = runtime
+            .run_script_steps(1, 1.0 / 60.0, &InputSnapshot::default())
+            .expect_err("dependency cycle must fail the run");
+        assert!(
+            error.contains("cycle_a") && error.contains("cycle_b"),
+            "cycle diagnostic must name the members: {error}"
+        );
+    }
+
+    #[test]
+    fn system_panic_is_diagnosed_and_registration_survives() {
+        let mut runtime = sample_runtime();
+        runtime
+            .add_step_system(System::new(
+                "panic_probe",
+                ScheduleStage::Transform,
+                [] as [&str; 0],
+                |_: &mut RuntimeScene, _| panic!("probe-boom"),
+            ))
+            .unwrap();
+        let error = runtime
+            .run_script_steps(1, 1.0 / 60.0, &InputSnapshot::default())
+            .expect_err("panicking system must fail the run");
+        assert!(
+            error.contains("panic_probe") && error.contains("probe-boom"),
+            "panic diagnostic must name system and payload: {error}"
+        );
+        let (step_names, _) = runtime.registered_system_names();
+        assert!(step_names.contains(&"panic_probe".to_owned()));
+    }
+
+    #[test]
+    fn systems_owning_script_state_run_inside_the_shared_schedule() {
+        // 通过 with_script 在注册系统内驱动引擎脚本 API（Rust 侧玩法系统
+        // 的官方接入路径），并验证 frame 系统每次调用只执行一次。
+        let mut runtime = sample_runtime();
+        let runs = Rc::new(RefCell::new(0u32));
+        let counter = Rc::clone(&runs);
+        runtime
+            .add_frame_system(System::new(
+                "frame_counter_probe",
+                ScheduleStage::Transform,
+                [] as [&str; 0],
+                move |scene: &mut RuntimeScene, _dt: f32| {
+                    *counter.borrow_mut() += 1;
+                    scene.with_script(|script| {
+                        script.set_delta(0.0);
+                    });
+                    Ok(())
+                },
+            ))
+            .unwrap();
+        runtime
+            .run_script_steps(4, 1.0 / 60.0, &InputSnapshot::default())
+            .expect("scheduled steps");
+        assert_eq!(*runs.borrow(), 1, "frame systems run once per call");
+        runtime
+            .run_script_steps(0, 1.0 / 60.0, &InputSnapshot::default())
+            .expect("zero-step call still runs the frame pipeline");
+        assert_eq!(*runs.borrow(), 2);
     }
 }

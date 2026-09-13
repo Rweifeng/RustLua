@@ -13,14 +13,18 @@ param(
     # Compress supported assets in the release pack (present = on).
     [switch]$Compress,
     # Encrypt Lua/scene resources in the release pack (present = on).
-    [switch]$Encrypt
+    [switch]$Encrypt,
+    # M20-03: reuse existing release binaries (skip cargo builds) so repeated
+    # publishes are fast and the staging/swap/rollback flow can be verified.
+    [switch]$SkipBuild
 )
 
 $ErrorActionPreference = "Stop"
 $workspaceRoot = Split-Path -Parent $PSScriptRoot
 $engineRoot = Join-Path $workspaceRoot "engine"
 if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
-    $ProjectRoot = Join-Path $workspaceRoot "examples"
+    # examples 重组后样板工程在子目录里（根目录已无 project.toml）。
+    $ProjectRoot = Join-Path $workspaceRoot "examples\game_jhyt"
 }
 $gameRoot = (Resolve-Path -LiteralPath $ProjectRoot).Path
 $projectToml = Join-Path $gameRoot "project.toml"
@@ -36,6 +40,19 @@ $PublishName = $PublishName.Trim()
 if ([string]::IsNullOrWhiteSpace($PublishName)) { $PublishName = "game" }
 $distRoot = Join-Path $gameRoot ("builds\" + $Platform + "\" + $PublishName)
 $packRoot = Join-Path $distRoot "pack"
+# M20-03：原子发布。所有内容先写进 staging，全部成功后再原子替换最终目录；
+# 失败时最终目录保持旧版本不变（不会出现半更新状态）。
+. (Join-Path $PSScriptRoot "release-atomic.ps1")
+$finalRoot = $distRoot
+$staleRemoved = Clear-StaleReleaseStaging -FinalRoot $finalRoot -MaxAgeHours 24
+foreach ($stale in $staleRemoved) {
+    Write-Host "==> Removed stale release staging: $stale" -ForegroundColor DarkGray
+}
+$stageRoot = New-ReleaseStaging -FinalRoot $finalRoot
+$distRoot = $stageRoot
+$packRoot = Join-Path $stageRoot "pack"
+$script:swapAttempted = $false
+Write-Host "==> Staging release at $stageRoot (atomic swap on success)" -ForegroundColor Cyan
 $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
 
 if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
@@ -46,7 +63,20 @@ New-Item -ItemType Directory -Force -Path $distRoot | Out-Null
 Push-Location $engineRoot
 try {
     Write-Host "==> Release build ($Platform)" -ForegroundColor Cyan
-    if ($Platform -eq "webgl") {
+    if ($SkipBuild) {
+        # M20-03: repeated publish without rebuilding; require existing artifacts.
+        $required = @(
+            (Join-Path $engineRoot "target\release\assetc.exe"),
+            (Join-Path $engineRoot "target\release\game.exe")
+        )
+        foreach ($artifact in $required) {
+            if (-not (Test-Path -LiteralPath $artifact)) {
+                throw "SkipBuild requires existing release artifact: $artifact"
+            }
+        }
+        Write-Host "==> Skipping cargo build (-SkipBuild): reusing target\release artifacts" -ForegroundColor DarkGray
+    }
+    elseif ($Platform -eq "webgl") {
         rustup target add wasm32-unknown-unknown
         if ($LASTEXITCODE -ne 0) { throw "Install wasm32 target failed." }
         cargo build -p assetc --release
@@ -515,6 +545,17 @@ end
         throw "Release package font is missing or empty: fonts/$fontName"
     }
 
+    # 工程级设置（settings.toml：手柄改键与死区）随包分发：发布包以 pack 目录作为
+    # 工程根，运行器按 `<root>/settings.toml` 读取，否则打包版会回落到键盘默认绑定，
+    # 出现「编辑器里改好的手柄绑定在发布包里失效」。
+    $settingsSource = Join-Path $gameRoot "settings.toml"
+    $settingsPackaged = $false
+    if (Test-Path -LiteralPath $settingsSource) {
+        Copy-Item -Path $settingsSource -Destination (Join-Path $packRoot "settings.toml") -Force
+        $settingsPackaged = $true
+        Write-Host "==> Packaged settings.toml (input bindings / deadzone)" -ForegroundColor DarkGray
+    }
+
     @(
         "publish_name = `"$PublishName`""
     ) | Set-Content (Join-Path $distRoot "release.toml") -Encoding UTF8
@@ -543,8 +584,14 @@ end
     $toolchain = & rustc --version 2>$null
     cargo tree -e normal --prefix none 2>$null | Sort-Object -Unique | Set-Content (Join-Path $distRoot "deps.txt") -Encoding UTF8
     $packageContents = "game.exe, fonts/$fontName, pack/ (data), release.toml, run.txt, deps.txt"
+    if ($settingsPackaged) {
+        $packageContents = "game.exe, fonts/$fontName, pack/ (data, settings.toml), release.toml, run.txt, deps.txt"
+    }
     if ($Platform -eq "webgl") {
         $packageContents = "index.html, pkg/game_web.js, pkg/game_web_bg.wasm, fonts/$fontName, pack/ (data), release.toml, run.txt, deps.txt"
+        if ($settingsPackaged) {
+            $packageContents = "index.html, pkg/game_web.js, pkg/game_web_bg.wasm, fonts/$fontName, pack/ (data, settings.toml), release.toml, run.txt, deps.txt"
+        }
     }
     @(
         "RustLua game engine release package",
@@ -554,7 +601,8 @@ end
         "engine version: $engineVersion",
         "toolchain: $toolchain",
         "contents: $packageContents",
-        "font_check: fonts/$fontName present and non-empty"
+        "font_check: fonts/$fontName present and non-empty",
+        "settings_check: $(if ($settingsPackaged) { 'pack/settings.toml packaged from project root' } else { 'no project settings.toml; engine defaults apply' })"
     ) | Set-Content (Join-Path $distRoot "build-info.txt") -Encoding UTF8
 
     if ($Platform -eq "webgl") {
@@ -570,17 +618,56 @@ end
             "Run instructions",
             "1) Double-click game.exe, or run: game.exe --pack pack --title `"$PublishName`"",
             "2) Controls: WASD move, SPACE attack, F1 save, F2 load, F4 switch scene",
-            "3) Logs and crash reports are written next to game.exe",
-            "4) This package has no source or toolchain dependency and runs without Rust/IDE"
+            "3) F3 toggles the developer fps/latency overlay (off by default in release builds)",
+            "4) Logs and crash reports are written next to game.exe",
+            "5) This package has no source or toolchain dependency and runs without Rust/IDE"
         ) | Set-Content (Join-Path $distRoot "run.txt") -Encoding UTF8
     }
+
+    # M20-03：全部内容与自检通过后，原子替换最终目录（旧版本备份→移入新版本
+    # →清理备份）。交换失败会回滚旧版本并抛错，staging 保留以便诊断。
+    Write-Host "==> Atomic release swap" -ForegroundColor Cyan
+    $script:swapAttempted = $true
+    $swap = Complete-ReleaseSwap -FinalRoot $finalRoot -StageRoot $stageRoot
+    $distRoot = $finalRoot
+    $packRoot = Join-Path $finalRoot "pack"
+    Write-Host ("==> Release swapped in: {0} entries replaced, {1} entries moved aside" -f $swap.MovedIn.Count, $swap.MovedAside.Count) -ForegroundColor Cyan
 
     Write-Host "Release package ready: $distRoot" -ForegroundColor Green
     $total = Get-ChildItem -Recurse -File $distRoot | Measure-Object -Property Length -Sum
     Write-Host ("Package size: {0:N1} KB, {1} files" -f ($total.Sum / 1KB), $total.Count)
 }
+catch {
+    # 交换之前失败：最终目录从未被改动，直接丢弃 staging，并明确告知旧版本仍在。
+    if (-not $script:swapAttempted -and (Test-Path -LiteralPath $stageRoot)) {
+        Write-Warning "==> Release failed before swap; existing release kept at $finalRoot"
+        Write-Warning "==> Discarding staging: $stageRoot"
+        Undo-ReleaseStaging -StageRoot $stageRoot | Out-Null
+    }
+    elseif ($script:swapAttempted -and (Test-Path -LiteralPath $stageRoot)) {
+        Write-Warning "==> Swap failed; old release restored. Staging kept for diagnosis: $stageRoot"
+    }
+    throw
+}
 finally {
     Pop-Location
+}
+
+# M20-03: best-effort removal of the isolated test copy. Windows may still hold
+# the freshly launched runner (AV/indexer), so retry briefly and never fail the
+# publish because of cleanup; leftovers are reported with their path.
+function Remove-IsolatedRelease([string]$Path, [string]$Label) {
+    for ($attempt = 1; $attempt -le 5; $attempt++) {
+        if (-not (Test-Path -LiteralPath $Path)) { return }
+        try {
+            Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
+            return
+        }
+        catch {
+            Start-Sleep -Milliseconds (200 * $attempt)
+        }
+    }
+    Write-Warning "==> Leftover $Label not removed (file in use); remove manually: $Path"
 }
 
 if ($SelfTest) {
@@ -599,7 +686,7 @@ if ($SelfTest) {
         )) {
             if (-not (Test-Path $file)) { throw "isolated WebGL dir is missing: $file" }
         }
-        Remove-Item -LiteralPath $isolated -Recurse -Force
+        Remove-IsolatedRelease -Path $isolated -Label "WebGL self-test copy"
         Write-Host "Directory-isolation self test passed (WebGL static package OK)" -ForegroundColor Green
     } else {
         $isolatedRunner = Join-Path $isolated ("$PublishName\game.exe")
@@ -615,7 +702,7 @@ if ($SelfTest) {
         $checkOutput = & $isolatedRunner --pack $isolatedPack --check 2>&1
         $checkExit = $LASTEXITCODE
         Write-Host $checkOutput
-        Remove-Item -LiteralPath $isolated -Recurse -Force
+        Remove-IsolatedRelease -Path $isolated -Label "self-test copy"
         if ($checkExit -ne 0) {
             throw "isolated check failed (exit $checkExit): package incomplete or path incompatible."
         }

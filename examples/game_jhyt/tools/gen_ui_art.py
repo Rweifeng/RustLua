@@ -49,13 +49,16 @@ from pixel_kit import (  # noqa: E402
     Canvas,
     draw_nine_slice,
     draw_text,
+    hash_stream,
     load_canvas,
+    mix,
     rgb,
     shade,
     text_width,
 )
+from cjk_text import prewarm, text_canvas  # noqa: E402  门面印章的中文
 
-OUT_DIR = os.path.join("assets", "art", "ui", "jianghu")
+OUT_DIR = os.path.join("assets", "art", "ui")  # 模块目录直接挂在 ui/ 下（与资源库现状一致）
 SCENE_PREVIEW = os.path.join(".temp", "scene_preview_main.png")
 
 # docs/35 §3 色板
@@ -81,6 +84,21 @@ INDIGO300 = rgb("#7FA3D4")
 CLOUD = rgb("#C9CCD6")
 CLOUD_DARK = rgb("#8A8F98")
 
+# 批次 4 招式/状态图标用到的补充色（与 gen_manor_art / gen_village_art 同值）
+PAPER_DIM = rgb("#D8CDB2")
+STONE = rgb("#8E8B80")
+STONE_LIGHT = rgb("#A5A197")
+IRON = rgb("#C8CCD4")
+IRON_DARK = rgb("#7E8391")
+BAMBOO_LIGHT = rgb("#A9C28F")
+BAMBOO_DARK = rgb("#5B7048")
+WOOD_MID = rgb("#6B4F3A")
+WOOD_DARK = rgb("#4A3628")
+INK = INK900          # 图标描边别名
+BAMBOO = BAMBOO500    # 与 gen_manor_art 同名的别名
+CINNABAR = CINNABAR500
+GOLD = GOLD500
+
 QUALITY = [rgb("#B9BDC4"), BAMBOO500, GOLD500, CINNABAR500, rgb("#8B6BB8")]
 
 FONT_LABEL = GOLD300
@@ -89,6 +107,7 @@ FONT_DIM = BAMBOO300
 # 模块顺序（预览与 manifest 都按这个顺序，稳定可复现）
 MODULES = [
     ("common", "COMMON / 共用控件"),
+    ("menu", "MENU / 主入口门面（武侠风）"),
     ("hud", "HUD / 主界面 (DOCS35 S7)"),
     ("backpack", "BACKPACK / 背包 (S8.1)"),
     ("dialogue", "DIALOGUE / 对话 (S8.3)"),
@@ -523,9 +542,11 @@ def weather_rain():
 
 
 def status_icon(kind):
-    """16×16：中毒（朱砂框）/ 增益（旧金框 + 上箭头）。"""
+    """16×16 状态图标：中毒/增益为 MVP，其余 6 个在批次 4 补齐（docs/35 §5）。"""
     cv = Canvas(16, 16)
-    border = CINNABAR500 if kind == "poison" else GOLD500
+    border = CINNABAR500 if kind in ("poison", "bleed", "debuff") else GOLD500
+    if kind in ("stealth", "sleep"):
+        border = INDIGO500
     frame(cv, 0, 0, 15, 15, INK900, 1)
     cv.rect(1, 1, 14, 14, INK800)
     frame(cv, 1, 1, 14, 14, border, 1)
@@ -533,12 +554,91 @@ def status_icon(kind):
         fill_ellipse(cv, 8, 9, 3, 4, BAMBOO700)
         cv.set(7, 5, BAMBOO300)
         cv.set(8, 4, BAMBOO300)
-    else:
+    elif kind == "buff":
         for y in range(4, 9):
             half = y - 3
             cv.hline(8 - half, 7 + half, y, GOLD300)
         cv.rect(6, 9, 9, 13, GOLD500)
         cv.hline(6, 9, 13, shade(GOLD500, 0.8))
+    elif kind == "bleed":
+        for index, (x, y) in enumerate(((6, 5), (9, 4), (7, 8), (10, 9))):
+            cv.set(x, y, CINNABAR300 if index % 2 else CINNABAR500)
+            cv.set(x, y + 1, CINNABAR500)
+            cv.set(x, y + 2, CINNABAR900)
+    elif kind == "debuff":
+        purple = rgb("#8B6BB8")
+        for y in range(5, 13):
+            half = 12 - y
+            cv.hline(8 - half, 7 + half, y, purple)
+        cv.rect(6, 5, 9, 9, purple)
+        cv.set(7, 6, rgb("#B79CD8"))
+    elif kind == "sleep":
+        for index, (x, y) in enumerate(((4, 6), (8, 4), (10, 9))):
+            size = 3 + index
+            cv.hline(x, x + size, y, INDIGO300)
+            cv.hline(x, x + size, y + size, INDIGO300)
+            cv.set(x, y + size, INDIGO300)
+    elif kind == "stealth":
+        fill_ellipse(cv, 8, 10, 4, 5, INK700)
+        cv.set(6, 8, INDIGO300)
+        cv.set(10, 8, INDIGO300)
+        cv.hline(5, 11, 13, INK600)
+    elif kind == "weather":
+        fill_ellipse(cv, 6, 7, 3, 3, GOLD300)
+        fill_ellipse(cv, 10, 10, 3, 2, PAPER200)
+        cv.hline(6, 13, 12, PAPER500)
+    elif kind == "festival":
+        cv.rect(5, 5, 11, 12, CINNABAR500)
+        cv.hline(5, 11, 5, GOLD500)
+        cv.hline(5, 11, 12, GOLD500)
+        cv.vline(8, 2, 5, WOOD_DARK)
+        cv.vline(8, 12, 14, CINNABAR500)
+    return cv
+
+
+def skill_icon(kind):
+    """32×32 招式图标（docs/30 §8.2 的五式）。"""
+    cv = Canvas(32, 32)
+    if kind == "basic_blade":
+        for step in range(14):
+            cv.set(8 + step, 24 - step, IRON)
+            cv.set(9 + step, 24 - step, IRON_DARK)
+        cv.rect(6, 22, 10, 26, WOOD_MID)
+        for step in range(6):
+            cv.set(20 + step, 8 + step, PAPER50)
+            cv.set(19 + step, 8 + step, PAPER_DIM)
+    elif kind == "chase_wind":
+        for y in (10, 16, 22):
+            cv.hline(4, 18 - (y % 4), y, PAPER_DIM)
+        fill_ellipse(cv, 22, 16, 5, 7, BAMBOO_LIGHT)
+        fill_ellipse(cv, 22, 22, 4, 3, BAMBOO)
+        cv.set(24, 20, BAMBOO_DARK)
+    elif kind == "guard_heart":
+        for y in range(6, 27):
+            half = 9 - abs(y - 16) // 2
+            cv.hline(16 - half, 16 + half, y, STONE)
+        cv.hline(8, 24, 6, STONE_LIGHT)
+        fill_ellipse(cv, 13, 14, 4, 3, CINNABAR)
+        fill_ellipse(cv, 19, 14, 4, 3, CINNABAR)
+        for y in range(15, 24):
+            half = int((23 - y) * 0.9)
+            cv.hline(16 - half, 16 + half, y, CINNABAR)
+    elif kind == "return_palm":
+        fill_ellipse(cv, 16, 19, 8, 7, rgb("#E8C49A"))
+        for x in (10, 13, 16, 19, 22):
+            cv.vline(x, 9, 16, rgb("#E8C49A"))
+        for step in range(10):
+            cv.set(24 - step // 2, 6 + step % 3, INDIGO300 if step % 2 else INDIGO500)
+        cv.set(8, 10, INDIGO300)
+    elif kind == "breath_qi":
+        import math
+
+        for radius, color in ((11, INDIGO500), (8, INDIGO300), (5, PAPER50)):
+            for step in range(28):
+                angle = step / 28.0 * 6.28318
+                cv.set(16 + int(radius * math.cos(angle)), 16 + int(radius * math.sin(angle)), color)
+        cv.set(16, 16, INDIGO500)
+    cv.outline(INK)
     return cv
 
 
@@ -746,8 +846,265 @@ def toggle(on):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# MENU / 主入口门面：中国武侠风（木牌按钮 + 卷轴 + 云纹 + 灯笼 + 印章）
+#
+# 设计取向（docs/44）：门面是"第一眼"，所以走**墨底金线 + 朱砂点睛**：
+#   底色压暗（夜色 + 暗角）把视线收到中间，主视觉用木匾中文标题，
+#   两侧挂红灯笼，四角云纹，进度/说明用卷轴纸面，按钮做成木牌 + 回纹金边。
+# 所有元素都在 1280×720 参考分辨率下按 4px 网格对齐。
+# ---------------------------------------------------------------------------
+
+
+def meander_corner(cv, x0, y0, size, color, flip_x=False, flip_y=False):
+    """回纹（雷纹）角饰：从外角 (x0,y0) 出发的**方形螺旋**，只走横竖直线。
+
+    flip_x=True → 角在外框右侧；flip_y=True → 角在下侧。两种翻转天然给出镜像对称的螺旋。
+
+    两版踩坑记录：
+      1. 第一版把 x0 当"方框参照角"、竖笔画在横笔**内端** → 左角回纹朝里拐，看着是反的；
+      2. 第二版改成三横三竖的平行格 → 四个角对称了，但成了"井字格"，不像回纹。
+    现在用真正的方形螺旋：横↔竖交替、每两段缩一格，方向随 flip 镜像。
+    """
+    sx = -1 if flip_x else 1
+    sy = -1 if flip_y else 1
+    step = max(2, size // 4)
+    segments = (
+        (sx, 0, size),
+        (0, sy, size),
+        (-sx, 0, size - step),
+        (0, -sy, size - step),
+        (sx, 0, size - 2 * step),
+        (0, sy, size - 2 * step),
+    )
+    x, y = x0, y0
+    cv.set(x, y, color)
+    for dx, dy, length in segments:
+        for _ in range(length):
+            x += dx
+            y += dy
+            cv.set(x, y, color)
+
+
+def cloud_motif(cv, cx, cy, scale, color):
+    """如意云纹：三个卷勾 + 一条拖尾，用像素弧线拼，风格与像素 UI 一致。"""
+    r = scale
+    fill_ellipse(cv, cx, cy, r, max(2, r // 2), color)
+    fill_ellipse(cv, cx - r, cy + r // 3, max(2, r // 2), max(1, r // 3), color)
+    fill_ellipse(cv, cx + r, cy + r // 3, max(2, r // 2), max(1, r // 3), color)
+    for step in range(r * 2):
+        cv.set(cx - r * 2 + step, cy + r, color)
+        cv.set(cx + r * 2 - step, cy + r, color)
+
+
+def menu_button_wuxia(hover=False, pressed=False):
+    """木牌按钮 256×72（9-slice 18）：墨底 + 回纹金边 + 顶部受光。"""
+    cv = Canvas(256, 72)
+    board = INK800 if not hover else rgb("#333C46")
+    if pressed:
+        board = INK900
+    cv.rect(0, 0, 255, 71, board)
+    # 木纹底（横向细纹）
+    for y in range(4, 68, 3):
+        cv.hline(6, 249, y, mix(board, INK900, 0.35))
+    # 金边（外粗内细）+ 四角回纹（传**外角**坐标：左 3 / 右 252 / 上 3 / 下 68）
+    frame(cv, 0, 0, 255, 71, INK900, 1)
+    frame(cv, 1, 1, 254, 70, GOLD500 if not hover else GOLD300, 2)
+    frame(cv, 5, 5, 250, 66, mix(GOLD500, board, 0.45), 1)
+    corner = GOLD300 if hover else GOLD500
+    meander_corner(cv, 3, 3, 16, corner)
+    meander_corner(cv, 252, 3, 16, corner, flip_x=True)
+    meander_corner(cv, 3, 68, 16, corner, flip_y=True)
+    meander_corner(cv, 252, 68, 16, corner, True, True)
+    # 顶部受光 / 底部压暗
+    cv.hline(2, 253, 2, shade(board, 1.5))
+    cv.hline(2, 253, 69, INK900)
+    if hover:  # 悬停：中央暖光
+        for radius in range(30, 0, -6):
+            cv.rect(128 - radius * 3, 36 - radius // 2, 128 + radius * 3, 36 + radius // 2,
+                    mix(board, GOLD500, 0.10))
+    if pressed:  # 按下：整体下沉一格
+        cv.hline(2, 253, 3, INK900)
+    return cv
+
+
+def menu_panel_scroll():
+    """卷轴面板 192×128（9-slice 20）：上下木轴 + 中间宣纸。"""
+    cv = Canvas(192, 128)
+    paper = rgb("#E6DCC4")
+    cv.rect(0, 0, 191, 127, paper)
+    for y in range(0, 128, 4):  # 纸纹
+        cv.hline(4, 187, y, mix(paper, WOOD_MID, 0.08))
+    for x in range(0, 192, 11):  # 纤维
+        cv.vline(x, 4, 123, mix(paper, WOOD_MID, 0.05))
+    frame(cv, 8, 8, 183, 119, mix(GOLD500, paper, 0.55), 1)
+    # 木轴
+    for y0, y1 in ((0, 12), (116, 127)):
+        cv.rect(0, y0, 191, y1, WOOD_MID)
+        cv.hline(0, 191, y0, WOOD_DARK)
+        cv.hline(0, 191, y1, WOOD_DARK)
+        for x in range(2, 190, 6):
+            cv.vline(x, y0 + 2, y1 - 2, mix(WOOD_MID, WOOD_DARK, 0.4))
+    # 轴头金环
+    for x0 in (0, 176):
+        cv.rect(x0, 1, x0 + 15, 11, GOLD500)
+        cv.hline(x0, x0 + 15, 1, GOLD300)
+        cv.rect(x0, 117, x0 + 15, 126, GOLD500)
+        cv.hline(x0, x0 + 15, 126, shade(GOLD500, 0.7))
+    frame(cv, 0, 0, 191, 127, INK900, 1)
+    return cv
+
+
+def menu_vignette():
+    """暗角 + 云纹 + 金线画框（1280×720 透明叠加层）。"""
+    cv = Canvas(1280, 720)
+    # 四周压暗（越靠边越暗）
+    for step in range(150):
+        alpha = int(190 * (1 - step / 150.0) ** 1.6)
+        if alpha <= 0:
+            continue
+        color = (0x0B, 0x0E, 0x14, alpha)
+        cv.hline(step, 1279 - step, step, color)
+        cv.hline(step, 1279 - step, 719 - step, color)
+        cv.vline(step, step, 719 - step, color)
+        cv.vline(1279 - step, step, 719 - step, color)
+    # 顶部与底部的墨色压边
+    for y in range(90):
+        alpha = int(120 * (1 - y / 90.0))
+        cv.hline(0, 1279, y, (0x0B, 0x0E, 0x14, alpha))
+        cv.hline(0, 1279, 719 - y, (0x0B, 0x0E, 0x14, alpha))
+    # 金线画框（内缩 22px，四角回纹；同样传外角坐标）
+    frame(cv, 22, 22, 1257, 697, (0xC9, 0xA0, 0x5A, 150), 2)
+    for x, y, fx, fy in ((22, 22, False, False), (1257, 22, True, False),
+                         (22, 697, False, True), (1257, 697, True, True)):
+        meander_corner(cv, x, y, 24, (0xE4, 0xC0, 0x78, 210), fx, fy)
+    # 四角云纹（金色要够亮才读得出是云纹，压太暗会变成一坨灰）
+    for cx, cy, scale in ((150, 150, 18), (1130, 150, 18), (150, 570, 18), (1130, 570, 18)):
+        cloud_motif(cv, cx, cy, scale, (0xE4, 0xC0, 0x78, 120))
+        cloud_motif(cv, cx, cy - 22, scale // 2, (0xF2, 0xDC, 0xA8, 90))
+        cv.hline(cx - scale, cx + scale, cy + scale + 2, (0xC9, 0xA0, 0x5A, 70))
+    return cv
+
+
+def menu_ink_band():
+    """墨色横幅 960×240：托住标题与菜单（中间实、两端化开）。"""
+    cv = Canvas(960, 240)
+    for y in range(240):
+        t = abs(y - 120) / 120.0
+        half = int(480 * (1 - t ** 2.2))
+        for x in range(480 - half, 480 + half):
+            edge = abs(x - 480) / max(1.0, half)
+            alpha = int(150 * (1 - edge ** 3) * (1 - t ** 1.6))
+            if alpha > 0:
+                cv.set(x, y, (0x0B, 0x0E, 0x14, alpha))
+    # 两端化开的笔触
+    for y in range(20, 220, 7):
+        length = 40 + (y * 7) % 70
+        alpha = 60 + (y * 13) % 60
+        cv.hline(0, length, y, (0x0B, 0x0E, 0x14, alpha))
+        cv.hline(959 - length, 959, y, (0x0B, 0x0E, 0x14, alpha))
+    return cv
+
+
+def menu_ornament_corner(flip_x=False, flip_y=False):
+    """回纹角饰 64×64：四向变体（外角 + 云纹都跟着镜像）。
+
+    只出一种朝向会立刻出问题：门面里用同一张图左右各摆一个，看着就是"左右不对称"。
+    所以四个方向各出一张，场景按"外角朝哪边"选：
+      ui_menu_ornament_corner      外角在左上（臂向右下）
+      _tr                          外角在右上（臂向左下）
+      _bl                          外角在左下（臂向右上）
+      _br                          外角在右下（臂向左上）
+    """
+    cv = Canvas(64, 64)
+    outer_x = 54 if flip_x else 2
+    outer_y = 54 if flip_y else 2
+    meander_corner(cv, outer_x, outer_y, 52, GOLD500, flip_x, flip_y)
+    meander_corner(cv, outer_x + (-8 if flip_x else 8), outer_y + (-8 if flip_y else 8),
+                   34, GOLD300, flip_x, flip_y)
+    cloud_x = 62 - 46 if flip_x else 46
+    cloud_y = 62 - 46 if flip_y else 46
+    cloud_motif(cv, cloud_x, cloud_y, 8, (0xC9, 0xA0, 0x5A, 190))
+    return cv
+
+
+def menu_divider_bamboo():
+    """竹节分隔线 320×18。"""
+    cv = Canvas(320, 18)
+    cv.rect(0, 8, 319, 12, BAMBOO_DARK)
+    cv.hline(0, 319, 8, BAMBOO)
+    cv.hline(0, 319, 12, shade(BAMBOO_DARK, 0.8))
+    for x in (0, 106, 212, 316):  # 竹节
+        cv.rect(x, 6, x + 3, 14, BAMBOO_DARK)
+        cv.vline(x + 1, 6, 14, BAMBOO_LIGHT)
+    for x, flip in ((60, False), (170, True), (270, False)):  # 竹叶
+        for step in range(9):
+            y = 6 - step // 2
+            cv.set(x + (step if flip else -step), y, BAMBOO_LIGHT if step % 2 else BAMBOO)
+    return cv
+
+
+def menu_lantern():
+    """红灯笼 72×128：暖光 + 灯身 + 金盖 + 流苏。"""
+    cv = Canvas(72, 128)
+    # 暖光halo
+    for radius in range(30, 0, -2):
+        alpha = int(70 * (1 - radius / 30.0))
+        fill_ellipse(cv, 36, 54, radius + 6, radius + 10, (0xE0, 0x7B, 0x3A, alpha))
+    cv.vline(36, 0, 18, WOOD_DARK)          # 挂绳
+    cv.rect(28, 16, 44, 22, GOLD500)        # 上盖
+    cv.hline(28, 44, 16, GOLD300)
+    cv.rect(20, 22, 51, 88, CINNABAR500)    # 灯身
+    for x in range(22, 51, 4):              # 灯骨
+        cv.vline(x, 23, 87, mix(CINNABAR500, INK900, 0.35))
+    cv.hline(20, 51, 23, CINNABAR300)
+    cv.hline(20, 51, 87, CINNABAR900)
+    fill_ellipse(cv, 36, 55, 12, 26, mix(CINNABAR500, (255, 240, 200, 255), 0.25))
+    cv.rect(28, 88, 44, 94, GOLD500)        # 下盖
+    for x in range(31, 42, 3):              # 流苏
+        cv.vline(x, 95, 116 + (x % 5), CINNABAR500)
+    cv.rect(30, 95, 42, 99, GOLD500)
+    return cv
+
+
+def menu_seal():
+    """朱砂印章 72×72：内嵌「江湖」（中文走 cjk_text 栅格化）。"""
+    cv = Canvas(72, 72)
+    cv.rect(2, 2, 69, 69, CINNABAR500)
+    cv.rect(4, 4, 67, 67, CINNABAR900)
+    cv.rect(7, 7, 64, 64, CINNABAR500)
+    glyph = text_canvas("江湖", size=26, mode="pixel", color=(0xF6, 0xE6, 0xCE, 255))
+    if glyph.w > 1:
+        cv.blit(glyph, 36 - glyph.w // 2, 36 - glyph.h // 2)
+    # 做旧缺口（固定伪随机，保证可复现）
+    rnd = hash_stream(2971)
+    for _ in range(26):
+        x = 4 + rnd(64)
+        y = 4 + rnd(64)
+        cv.set(x, y, (0x00, 0x00, 0x00, 0))
+    frame(cv, 2, 2, 69, 69, (0x8F, 0x2E, 0x1F, 255), 1)
+    return cv
+
+
 def slice_table():
+    # 门面印章要先有中文字形（GDI+ 批量渲染一次）
+    prewarm([("江湖", 26, "pixel", True)])
     table = {
+        "menu": [
+            ("ui_menu_vignette", menu_vignette(), "1280x720 暗角+云纹+金框", None),
+            ("ui_menu_ink_band", menu_ink_band(), "960x240 墨色横幅", None),
+            ("ui_menu_btn_wuxia_9s", menu_button_wuxia(False), "256x72 9S 18 木牌按钮", (18, 18, 18, 18)),
+            ("ui_menu_btn_wuxia_hover_9s", menu_button_wuxia(True), "256x72 9S 18 悬停", (18, 18, 18, 18)),
+            ("ui_menu_btn_wuxia_pressed_9s", menu_button_wuxia(False, True), "256x72 9S 18 按下", (18, 18, 18, 18)),
+            ("ui_menu_panel_scroll_9s", menu_panel_scroll(), "192x128 9S 20 卷轴", (20, 20, 20, 20)),
+            ("ui_menu_ornament_corner", menu_ornament_corner(), "64x64 回纹角饰 左上", None),
+            ("ui_menu_ornament_corner_tr", menu_ornament_corner(True, False), "64x64 回纹角饰 右上", None),
+            ("ui_menu_ornament_corner_bl", menu_ornament_corner(False, True), "64x64 回纹角饰 左下", None),
+            ("ui_menu_ornament_corner_br", menu_ornament_corner(True, True), "64x64 回纹角饰 右下", None),
+            ("ui_menu_divider_bamboo", menu_divider_bamboo(), "320x18 竹节分隔", None),
+            ("ui_menu_lantern", menu_lantern(), "72x128 红灯笼", None),
+            ("ui_menu_seal_jianghu", menu_seal(), "72x72 印章 江湖", None),
+        ],
         "common": [
             ("ui_panel_main_9s", panel_main(), "96x96 9S 16", (16, 16, 16, 16)),
             ("ui_panel_paper_9s", panel_paper(), "96x96 9S 16", (16, 16, 16, 16)),
@@ -788,6 +1145,13 @@ def slice_table():
             ("ui_weather_rain", weather_rain(), "32x32", None),
             ("ui_status_poison", status_icon("poison"), "16x16", None),
             ("ui_status_buff", status_icon("buff"), "16x16", None),
+            # 批次 4：首发状态图标补齐（docs/35 §5）
+            ("ui_status_bleed", status_icon("bleed"), "16x16 流血", None),
+            ("ui_status_debuff", status_icon("debuff"), "16x16 减益", None),
+            ("ui_status_sleep", status_icon("sleep"), "16x16 睡眠", None),
+            ("ui_status_stealth", status_icon("stealth"), "16x16 隐身", None),
+            ("ui_status_weather", status_icon("weather"), "16x16 天气", None),
+            ("ui_status_festival", status_icon("festival"), "16x16 节日", None),
             ("ui_hud_avatar_frame", hud_avatar_frame(), "48x48", None),
         ],
         "backpack": [
@@ -812,6 +1176,12 @@ def slice_table():
         ],
         "skills": [
             ("ui_skill_card_9s", skill_card(), "128x64 9S 8", (8, 8, 8, 8)),
+            # 批次 4：五式招式图标（docs/30 §8.2）
+            ("ui_skill_basic_blade", skill_icon("basic_blade"), "32x32 基础刀法", None),
+            ("ui_skill_chase_wind", skill_icon("chase_wind"), "32x32 追风步", None),
+            ("ui_skill_guard_heart", skill_icon("guard_heart"), "32x32 守心诀", None),
+            ("ui_skill_return_palm", skill_icon("return_palm"), "32x32 回风掌", None),
+            ("ui_skill_breath_qi", skill_icon("breath_qi"), "32x32 养气诀", None),
         ],
         "build": [
             ("ui_build_ghost_ok", ghost_cell(True), "32x32", None),
@@ -852,11 +1222,21 @@ def asset_path(module, name):
 # ---------------------------------------------------------------------------
 
 
-def build_controls_preview(items, scale=2):
+def build_controls_preview(items, scale=1):
+    """控件总览（1×）：78 张切图用 2× 排版会到 4000×5800 ≈ 2300 万像素，
+    超过引擎读图的显存/内存上限（导入会报 Memory limit exceeded），所以固定 1×。"""
     cols = 6
     pad = 12
     label_h = 22
     group_gap = 14
+    # 满屏/大尺寸底衬（门面的暗角、墨色横幅等）不进"控件总览"：
+    # 一是它们本来就不是控件，二是把 1280×720 放进缩放排版会让成图巨大，
+    # 引擎侧读图直接 "Memory limit exceeded"（导入 failed=1 就是这么来的）。
+    big = [item for item in items if item[2].w > 480 or item[2].h > 320]
+    items = [item for item in items if item not in big]
+    if big:
+        print(f"  控件总览跳过 {len(big)} 张大幅底衬：" +
+              "、".join(item[1] for item in big))
     cell_w = 0
     cell_h = 0
     for _, _, canvas, _, _ in items:

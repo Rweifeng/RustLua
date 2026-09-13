@@ -32,3 +32,9 @@ winit = "0.30"
 
 [dev-dependencies]
 vorbis = "0.1"
+
+# M20-06：桌面手柄设备轮询。原计划的 gilrs 依赖在本机离线环境下无法解析
+# （crates 已缓存但索引不可用，见任务文档），改用已在依赖树中的 windows-sys
+# XInput（Windows 原生），保持 GamepadBackend 抽象以便后续替换为 gilrs。
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Input_XboxController"] }

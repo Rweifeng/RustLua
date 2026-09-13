@@ -3072,7 +3072,7 @@ mod tests {
         .expect("request test device");
         let mut renderer = Renderer::new_offscreen(device.clone(), queue, None, false, false)
             .expect("offscreen renderer");
-        let game = crate::core::games_dir().join("examples");
+        let game = crate::core::games_dir().join("examples").join("game_api");
         if !game.join("scenes/main.scene").is_file() {
             return;
         }

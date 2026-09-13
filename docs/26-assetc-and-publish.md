@@ -114,3 +114,28 @@ save_version=1
 - 头部 `save_version=<n>`，当前 `CURRENT_SAVE_VERSION = 1`。加载只接受当前
   版本；无版本头或版本不符的存档会明确失败，没有自动迁移。
 - Lua 任意值经 `save.blob_*` 序列化后按键值写入同一存档。
+
+## 8. 原子发布与失败回滚（M20-03）
+
+发布流程按「临时目录构建 → 原子替换 → 失败回滚」组织，发布目录不会处于半更新状态：
+
+```
+<release>/                     最终目录（构建期不被触碰）
+  .staging-<时间戳>-<随机>/    本次发布全部内容在此生成与自检
+  .backup-<时间戳>-<随机>/     交换期间暂存旧内容
+```
+
+- **构建阶段**：`scripts/package.ps1` 把所有产物写进 `.staging-*`（assetc 打包、运行器/字体/文档、
+  `release.toml`、`deps.txt`、`build-info.txt`、`run.txt`、pack 自检）。此阶段失败 → 丢弃 staging，
+  打印 `==> Release failed before swap; existing release kept at <dir>`，旧版本原样可用。
+- **替换阶段**：旧内容整体重命名进 `.backup-*`（同卷重命名，原子），再把 staging 顶层项重命名进最终目录，
+  最后删除 backup 与 staging；成功打印 `==> Release swapped in: N entries replaced, M entries moved aside`。
+- **回滚**：替换中任一步失败（文件占用/磁盘错误等）→ 新内容退回 staging、旧内容从 backup 放回原位、
+  删除 backup，并以 `release swap failed (old release restored at <dir>): <原因>` 抛错；staging 保留用于诊断。
+- **遗留清理**：每次发布开始时按 `.staging-`/`.backup-` 前缀 + 24 小时阈值清理中断遗留目录
+  （不触碰发布内容）。`-SelfTest` 的隔离临时目录清理为尽力而为（退避重试 + 告警路径），不阻断发布。
+- **`-SkipBuild`**：复用 `target/release` 既有产物重复发布（缺少产物时明确报错）。
+- **回归**：`scripts/test-release-atomic.ps1` 覆盖成功交换、文件占用回滚、交换前失败丢弃、遗留清理四个场景，
+  输出 `release_atomic_ok cases=4`。
+
+发布目录布局与 P2PK1 资源包格式未变（`game.exe + fonts/ + pack/ + release.toml + run.txt + deps.txt (+ index.html/pkg/web-runtime.js)`）。

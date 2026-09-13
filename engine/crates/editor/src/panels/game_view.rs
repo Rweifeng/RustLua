@@ -322,7 +322,7 @@ impl EditorApp {
         }
     }
 
-    /// 从 egui 输入构建游戏输入快照（键盘 WASD/空格/Esc、鼠标、滚轮）。
+    /// 从 egui 输入构建游戏输入快照（M20-08：**全键位**键盘 + 鼠标 + 滚轮）。
     /// 预览在 Game 视图内纵横比居中后的实际绘制矩形。
     fn preview_rect(&self, rect: egui::Rect) -> egui::Rect {
         let Some(preview) = &self.preview else {
@@ -346,6 +346,12 @@ impl EditorApp {
         rect
     }
     /// 跨帧 held 状态；M11-02）。预览在 Game 视图内纵横比居中后的实际绘制矩形。
+    ///
+    /// M20-08：键盘改为**全键位**桥接——`PREVIEW_KEYS` 覆盖独立游戏窗口
+    /// `game_app::map_key` 的全部键域（单字符键：字母/数字/符号 + 空格/Esc/
+    /// 方向键/F1·F2·F4），因此 Play 里键盘与独立 `game` 运行时逐键一致。
+    /// 列表是固定的：每帧对每个键都调 `key_event`，才能同时送出按下与松开边沿
+    /// （只遍历 `keys_down` 会漏掉松开 → 卡键）。
     fn bridge_preview_input(
         &self,
         input: &mut InputSnapshot,
@@ -355,23 +361,10 @@ impl EditorApp {
         height: u32,
     ) {
         ctx.input(|i| {
-            for (egui_key, game_key) in [
-                (egui::Key::W, InputKey::W),
-                (egui::Key::A, InputKey::A),
-                (egui::Key::S, InputKey::S),
-                (egui::Key::D, InputKey::D),
-                (egui::Key::Space, InputKey::Space),
-                (egui::Key::Escape, InputKey::Escape),
-                // 农场玩法键：按 `InputKey::from_char` 统一到小写 ASCII 码，
-                // 与独立游戏窗口和 `parse_key` 一致（M16 输入修复）。
-                (egui::Key::Q, InputKey::from_char('q')),
-                (egui::Key::E, InputKey::from_char('e')),
-                (egui::Key::R, InputKey::from_char('r')),
-                (egui::Key::T, InputKey::from_char('t')),
-                (egui::Key::F, InputKey::from_char('f')),
-                (egui::Key::G, InputKey::from_char('g')),
-            ] {
-                input.key_event(game_key, i.key_down(egui_key));
+            for &egui_key in PREVIEW_KEYS {
+                if let Some(game_key) = preview_input_key(egui_key) {
+                    input.key_event(game_key, i.key_down(egui_key));
+                }
             }
             input.mouse_event(MouseButton::Left, i.pointer.primary_down());
             input.mouse_event(MouseButton::Right, i.pointer.secondary_down());
@@ -389,6 +382,99 @@ impl EditorApp {
                 input.scroll_event(scroll.x, scroll.y);
             }
         });
+    }
+}
+
+/// Play 预览桥接的 egui 键集合：与独立游戏窗口 `game_app::map_key` 同域。
+///
+/// 含字母 A..Z、数字 0..9、空格、Esc、四个方向键、F1/F2/F4（引擎把 `f1`/`f2`/`f4`
+/// 解析为 `InputKey::Other(1/2/4)`）与常用符号键（`-`/`+`/`=`/`,`/`.`/`;`/`/`/`\`/
+/// `[`/`]`/`` ` ``/`'`/`:`/`|`/`?`/`!`/`{`/`}`）。符号键进表是因为玩家可以把动作
+/// 改绑到它们（编辑器捕获支持同一集合），列表固定才能保证每帧都送松开边沿。
+const PREVIEW_KEYS: &[egui::Key] = &[
+    egui::Key::A,
+    egui::Key::B,
+    egui::Key::C,
+    egui::Key::D,
+    egui::Key::E,
+    egui::Key::F,
+    egui::Key::G,
+    egui::Key::H,
+    egui::Key::I,
+    egui::Key::J,
+    egui::Key::K,
+    egui::Key::L,
+    egui::Key::M,
+    egui::Key::N,
+    egui::Key::O,
+    egui::Key::P,
+    egui::Key::Q,
+    egui::Key::R,
+    egui::Key::S,
+    egui::Key::T,
+    egui::Key::U,
+    egui::Key::V,
+    egui::Key::W,
+    egui::Key::X,
+    egui::Key::Y,
+    egui::Key::Z,
+    egui::Key::Num0,
+    egui::Key::Num1,
+    egui::Key::Num2,
+    egui::Key::Num3,
+    egui::Key::Num4,
+    egui::Key::Num5,
+    egui::Key::Num6,
+    egui::Key::Num7,
+    egui::Key::Num8,
+    egui::Key::Num9,
+    egui::Key::Space,
+    egui::Key::Escape,
+    egui::Key::ArrowUp,
+    egui::Key::ArrowDown,
+    egui::Key::ArrowLeft,
+    egui::Key::ArrowRight,
+    egui::Key::F1,
+    egui::Key::F2,
+    egui::Key::F4,
+    egui::Key::Minus,
+    egui::Key::Plus,
+    egui::Key::Equals,
+    egui::Key::Comma,
+    egui::Key::Period,
+    egui::Key::Semicolon,
+    egui::Key::Slash,
+    egui::Key::Backslash,
+    egui::Key::OpenBracket,
+    egui::Key::CloseBracket,
+    egui::Key::Backtick,
+    egui::Key::Quote,
+    egui::Key::Colon,
+    egui::Key::Pipe,
+    egui::Key::Questionmark,
+    egui::Key::Exclamationmark,
+    egui::Key::OpenCurlyBracket,
+    egui::Key::CloseCurlyBracket,
+];
+
+/// egui 键 → 引擎键身份（Play 预览键盘桥接）。
+///
+/// 字符类键与空格/Esc/方向键复用捕获面板的 `character_key_from_egui` +
+/// `named_key_from_egui`（一份表），与独立游戏窗口的 `winit::Key::Character` 路径和
+/// Lua 侧 `parse_key` **同源**；F1/F2/F4 在这里补齐（与 `game_app::map_key` 一致）。
+/// 返回 `None` 的键（Tab/Enter/F3/F5…）不在引擎键域内，不参与桥接。
+fn preview_input_key(key: egui::Key) -> Option<InputKey> {
+    if let Some(key) = crate::panels::input_bindings::character_key_from_egui(key)
+        .or_else(|| crate::panels::input_bindings::named_key_from_egui(key))
+    {
+        return Some(key);
+    }
+    match key.name() {
+        // 与 `game_app::map_key` 的 F1/F2/F4 一致（F3 未被引擎映射）。
+        "F1" => Some(InputKey::Other(1)),
+        "F2" => Some(InputKey::Other(2)),
+        "F4" => Some(InputKey::Other(4)),
+        _ => None,
     }
 }
 
@@ -464,7 +550,7 @@ mod tests {
     }
 
     fn sample_project_root() -> PathBuf {
-        engine::core::games_dir().join("examples")
+        engine::core::games_dir().join("examples").join("game_api")
     }
 
     fn copy_dir(source: &Path, destination: &Path) {
@@ -742,5 +828,120 @@ mod tests {
             input.scroll_delta().1 > 0.0,
             "mouse wheel should produce positive smooth scroll delta"
         );
+    }
+
+    /// M20-08：Play 预览键盘桥接为**全键位**——覆盖动作表默认绑定用到的键
+    /// （J/K/G/T/Q/I/P/B/F/X/U/L/R/C/1-9/+/-）与独立游戏窗口的键域。
+    #[test]
+    fn bridge_preview_input_covers_full_keyboard() {
+        let app = app_with_scene();
+        let ctx = egui::Context::default();
+        let preview_rect = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(200.0, 100.0));
+        let pressed = [
+            Key::J,
+            Key::K,
+            Key::G,
+            Key::T,
+            Key::Q,
+            Key::I,
+            Key::P,
+            Key::B,
+            Key::F,
+            Key::X,
+            Key::U,
+            Key::L,
+            Key::R,
+            Key::C,
+            Key::Num1,
+            Key::Num9,
+            Key::Minus,
+            Key::Plus,
+            Key::Comma,
+            Key::Backslash,
+            Key::Quote,
+            Key::F4,
+        ];
+        let raw = RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(320.0, 240.0),
+            )),
+            events: pressed
+                .iter()
+                .map(|key| Event::Key {
+                    key: *key,
+                    physical_key: Some(*key),
+                    pressed: true,
+                    repeat: false,
+                    modifiers: Modifiers::default(),
+                })
+                .collect(),
+            ..Default::default()
+        };
+        ctx.begin_pass(raw);
+        let mut input = InputSnapshot::default();
+        app.bridge_preview_input(&mut input, &ctx, preview_rect, 200, 100);
+        let _ = ctx.end_pass();
+
+        // 字母/数字/符号与 `InputKey::from_char`（独立窗口与 `parse_key` 同源）一致。
+        for (egui_key, character) in [
+            (Key::J, 'j'),
+            (Key::K, 'k'),
+            (Key::G, 'g'),
+            (Key::T, 't'),
+            (Key::Q, 'q'),
+            (Key::I, 'i'),
+            (Key::P, 'p'),
+            (Key::B, 'b'),
+            (Key::F, 'f'),
+            (Key::X, 'x'),
+            (Key::U, 'u'),
+            (Key::L, 'l'),
+            (Key::R, 'r'),
+            (Key::C, 'c'),
+            (Key::Num1, '1'),
+            (Key::Num9, '9'),
+            (Key::Minus, '-'),
+            (Key::Plus, '+'),
+            (Key::Comma, ','),
+            (Key::Backslash, '\\'),
+            (Key::Quote, '\''),
+        ] {
+            assert!(
+                input.is_down(InputKey::from_char(character)),
+                "{egui_key:?} 未桥接为 {character:?}（Play 预览键位不完整）"
+            );
+        }
+        // F4：引擎把 `f4` 解析为 `InputKey::Other(4)`（与独立窗口一致）。
+        assert!(input.is_down(InputKey::Other(4)));
+
+        // 松开边沿必须送到：egui 的 held 集合只在收到释放事件时变化，因此这里显式
+        // 送一帧「全部释放」事件（模拟按键抬起），桥接必须把它翻成 released。
+        input.finish_frame();
+        ctx.begin_pass(RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(320.0, 240.0),
+            )),
+            events: pressed
+                .iter()
+                .map(|key| Event::Key {
+                    key: *key,
+                    physical_key: Some(*key),
+                    pressed: false,
+                    repeat: false,
+                    modifiers: Modifiers::default(),
+                })
+                .collect(),
+            ..Default::default()
+        });
+        app.bridge_preview_input(&mut input, &ctx, preview_rect, 200, 100);
+        let _ = ctx.end_pass();
+        assert!(!input.is_down(InputKey::from_char('j')));
+        assert!(
+            input.just_released(InputKey::from_char('j')),
+            "松开边沿必须桥接（否则 Play 里会卡键）"
+        );
+        assert!(!input.is_down(InputKey::from_char('+')));
     }
 }

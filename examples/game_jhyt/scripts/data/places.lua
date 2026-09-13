@@ -8,11 +8,11 @@
 -- 否则 NPC 会输出"路径端点不可达"诊断（这是刻意的失败可见性）。
 --
 -- 可行走格事实（来自 scenes/<map>.scene 的 GroundMap solid 位图，40x22）：
---   * main   ：x1..38 / y1..20。实心块 = 正房 x2..8&y5..11、柴房 x4..8&y15..18、
+--   * manor  ：x1..38 / y1..20。实心块 = 正房 x2..8&y5..11、柴房 x4..8&y15..18、
 --              池塘 x34..38&y4..9、南门立柱 (15,1)(15,2)(17,1)(17,2)，
 --              以及 19 格道具占位（水井/水缸/草堆/晒谷架×2/木牌/竹篱×2/树×4/竹×3）；
 --              x9..13 为贯通南北的走廊，y=3 的田前石路横通东西。
---              main 的 solid 由 tools/gen_manor_scene.py 生成，
+--              manor 的 solid 由 tools/gen_manor_scene.py 生成，
 --              改布局后必须重跑它（自带 places.lua 可达性契约自检）。
 --   * village：整圈白墙黛瓦院墙；主街/市集广场/中街贯通 y1..14（x1..38 基本全通）。
 --              实心块 = 药庐 x3..8&y15..19、杂货铺 x31..36&y15..19、铁匠铺 x25..28&y11..12、
@@ -26,17 +26,36 @@ local M = {}
 
 M.version = 1
 M.places = {
-  -- 山庄 main
-  manor_gate = { map = "main", cell = { x = 16, y = 2 }, label = "山庄·门廊" },
-  manor_home = { map = "main", cell = { x = 12, y = 6 }, label = "山庄·厢房" },
-  manor_home_east = { map = "main", cell = { x = 20, y = 8 }, label = "山庄·东厢" },
-  manor_herb_field = { map = "main", cell = { x = 16, y = 5 }, label = "山庄·药田" },
-  manor_study = { map = "main", cell = { x = 24, y = 10 }, label = "山庄·书房" },
-  manor_sword_ground = { map = "main", cell = { x = 26, y = 12 }, label = "山庄·剑坪" },
-  manor_forge = { map = "main", cell = { x = 28, y = 12 }, label = "山庄·工坊" },
-  manor_practice = { map = "main", cell = { x = 30, y = 14 }, label = "山庄·练功场" },
-  manor_garden = { map = "main", cell = { x = 10, y = 16 }, label = "山庄·后园" },
-  manor_dock = { map = "main", cell = { x = 16, y = 19 }, label = "山庄·渡口" },
+  -- 山庄 manor
+  manor_gate = { map = "manor", cell = { x = 16, y = 2 }, label = "山庄·门廊" },
+  manor_home = { map = "manor", cell = { x = 12, y = 6 }, label = "山庄·厢房" },
+  manor_home_east = { map = "manor", cell = { x = 20, y = 8 }, label = "山庄·东厢" },
+  manor_herb_field = { map = "manor", cell = { x = 16, y = 5 }, label = "山庄·药田" },
+  manor_study = { map = "manor", cell = { x = 24, y = 10 }, label = "山庄·书房" },
+  manor_sword_ground = { map = "manor", cell = { x = 26, y = 12 }, label = "山庄·剑坪" },
+  manor_forge = { map = "manor", cell = { x = 28, y = 12 }, label = "山庄·工坊" },
+  manor_practice = { map = "manor", cell = { x = 30, y = 14 }, label = "山庄·练功场" },
+  manor_garden = { map = "manor", cell = { x = 10, y = 16 }, label = "山庄·后园" },
+  manor_dock = { map = "manor", cell = { x = 16, y = 19 }, label = "山庄·渡口" },
+
+  -- 青云山道 mountain_path（批次 2；由 tools/gen_wilds_scene.py 生成并自检可达性）
+  mountain_gate = { map = "mountain_path", cell = { x = 19, y = 2 }, label = "青云山·山门" },
+  mountain_teashed = { map = "mountain_path", cell = { x = 15, y = 8 }, label = "青云山·茶棚" },
+  mountain_camp = { map = "mountain_path", cell = { x = 31, y = 6 }, label = "青云山·贼寨" },
+  mountain_bridge = { map = "mountain_path", cell = { x = 25, y = 11 }, label = "青云山·溪桥" },
+  mountain_herbs = { map = "mountain_path", cell = { x = 12, y = 12 }, label = "青云山·药草丛" },
+  mountain_ore = { map = "mountain_path", cell = { x = 28, y = 18 }, label = "青云山·矿石堆" },
+  mountain_cave_mouth = { map = "mountain_path", cell = { x = 21, y = 20 }, label = "青云山·洞口" },
+
+  -- 寒泉洞 cold_spring_cave（批次 2）
+  cave_entry = { map = "cold_spring_cave", cell = { x = 10, y = 3 }, label = "寒泉洞·洞口" },
+  cave_pool = { map = "cold_spring_cave", cell = { x = 7, y = 4 }, label = "寒泉洞·暗河" },
+  cave_ore = { map = "cold_spring_cave", cell = { x = 9, y = 8 }, label = "寒泉洞·矿脉" },
+  cave_snow_lotus = { map = "cold_spring_cave", cell = { x = 15, y = 7 }, label = "寒泉洞·雪莲" },
+
+  -- 室内（批次 3）
+  herb_hut_inside = { map = "interior_herb", cell = { x = 10, y = 4 }, label = "药庐内·药炉" },
+  forge_inside = { map = "interior_forge", cell = { x = 10, y = 4 }, label = "铁匠铺内·铁砧" },
 
   -- 云泽村 village
   village_gate = { map = "village", cell = { x = 19, y = 2 }, label = "云泽村·南市街口" },

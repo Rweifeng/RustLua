@@ -21,6 +21,7 @@ M.npcs = {
   {
     name = "沈青萝",
     persist_id = "npc_shen_qingluo",
+    character = "shen_qingluo",
     home = "village_home_west",
     sprite = "texture=__white__;size=22x22;tint=0.86,0.42,0.55,1.0;sorting_layer=actor",
     speed = 48,
@@ -29,6 +30,7 @@ M.npcs = {
   {
     name = "赵铁算盘",
     persist_id = "npc_zhao_tiesuanpan",
+    character = "zhao_tiesuanpan",
     home = "village_home_south",
     sprite = "texture=__white__;size=22x22;tint=0.85,0.68,0.25,1.0;sorting_layer=actor",
     speed = 44,
@@ -37,6 +39,7 @@ M.npcs = {
   {
     name = "林小满",
     persist_id = "npc_lin_xiaoman",
+    character = "lin_xiaoman",
     home = "village_home_north",
     sprite = "texture=__white__;size=22x22;tint=0.42,0.72,0.45,1.0;sorting_layer=actor",
     speed = 44,
@@ -45,6 +48,7 @@ M.npcs = {
   {
     name = "韩铁山",
     persist_id = "npc_han_tieshan",
+    character = "han_tieshan",
     home = "village_home_forge",
     sprite = "texture=__white__;size=24x24;tint=0.55,0.55,0.62,1.0;sorting_layer=actor",
     speed = 40,
@@ -54,6 +58,7 @@ M.npcs = {
   {
     name = "顾长风",
     persist_id = "npc_gu_changfeng",
+    character = "gu_changfeng",
     home = "manor_home",
     sprite = "texture=__white__;size=24x24;tint=0.28,0.45,0.62,1.0;sorting_layer=actor",
     speed = 42,
@@ -62,6 +67,7 @@ M.npcs = {
   {
     name = "苏晚晴",
     persist_id = "npc_su_wanqing",
+    character = "su_wanqing",
     home = "manor_home_east",
     sprite = "texture=__white__;size=22x22;tint=0.55,0.72,0.85,1.0;sorting_layer=actor",
     speed = 52,
@@ -71,10 +77,39 @@ M.npcs = {
   {
     name = "玄鹤",
     persist_id = "npc_xuanhe",
+    character = "xuanhe",
     home = "manor_home",
     sprite = "texture=__white__;size=22x22;tint=0.92,0.92,0.96,1.0;sorting_layer=actor",
     speed = 56,
     schedule = "xuanhe"
+  },
+  -- 批次 4：首发 NPC 扩充（docs/30 §4.2）
+  {
+    name = "阿七",
+    persist_id = "npc_a_qi",
+    character = "a_qi",
+    home = "village_plaza",
+    sprite = "texture=__white__;size=22x22;tint=0.70,0.35,0.24,1.0;sorting_layer=actor",
+    speed = 56,
+    schedule = "a_qi"
+  },
+  {
+    name = "司徒魁",
+    persist_id = "npc_situ_kui",
+    character = "situ_kui",
+    home = "village_alley",
+    sprite = "texture=__white__;size=24x24;tint=0.16,0.14,0.19,1.0;sorting_layer=actor",
+    speed = 38,
+    schedule = "situ_kui"
+  },
+  {
+    name = "陆归藏",
+    persist_id = "npc_lu_guizang",
+    character = "lu_guizang",
+    home = "manor_study",
+    sprite = "texture=__white__;size=24x24;tint=0.43,0.48,0.45,1.0;sorting_layer=actor",
+    speed = 34,
+    schedule = "lu_guizang"
   }
 }
 

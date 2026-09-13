@@ -20,7 +20,7 @@ fn temp_root(label: &str) -> PathBuf {
 }
 
 fn sample_project_root() -> PathBuf {
-    engine::core::games_dir().join("examples")
+    engine::core::games_dir().join("examples").join("game_api")
 }
 
 fn copy_dir(source: &Path, destination: &Path) {

@@ -66,10 +66,10 @@
 | ID | 能力 | 优先级 | 说明 |
 |---|---|---|---|
 | F-1 | 中文本地化基础（溢出/换行/排版检查） | P1 | 🚧：字体子集化（`font_subset.rs`）+ 字符收集（`char_collect`）已具备；**缺文本自动换行/溢出/截断/省略检查工具**（`UiText` 仅手动 `\n` 折行） |
-| F-2 | UI 自动布局/滚动容器/键鼠手柄导航 | P2 | 🚧：自动布局已具备（`UiRectLayout` + `ContainerKind` VBox/HBox/Grid/Margin/Center + `resolve_scene_ui_layout` + 布局缓存）；**缺滚动容器（无 `Scroll` 变体）与键鼠/手柄焦点导航（全引擎无 gamepad/ui_nav）** |
-| F-3 | 音频混音（分组音量） | P2 | ✖：仅单一 master `audio.volume`，无 bus/分组/BGM-SFX 分离 |
-| F-4 | 发布原子替换 + 失败回滚 | P2 | ✖：`assetc package` 直接写目标目录；`package.ps1` 先 `Remove-Item` 再写；仅事后 `game.exe --pack --check` / `Test-Path` 校验，**无临时目录+原子替换+失败回滚** |
-| F-5 | WebGL 真实浏览器集成测试 | P2 | ✖：有 `game_web` WASM 入口但无任何浏览器自动化测试；`web-runtime.js` 是 JS 侧复刻 Lua 运行时，不是对真实 wgpu 渲染路径的集成验证 |
+| F-2 | UI 自动布局/滚动容器/键鼠手柄导航 | P2 | ✔（M20-02/M20-06/M20-07/M20-08）：自动布局（`UiRectLayout` + `ContainerKind` + `resolve_scene_ui_layout` + 布局缓存）、**焦点环与滚动状态** `ui_navigation::{FocusRing,ScrollState}`（Lua `ui.focus_*`/`ui.scroll_*`）、**手柄设备层**（XInput，按钮 0..15 / 轴 0..5 契约，死区可配置）、**命名动作映射**（36 个默认动作、`ActionMap` 持久化到 `settings.toml` 的 `[input]` 段）、**编辑器「项目设置 → 输入」重绑定面板**（捕获式改绑、跨动作冲突提示、死区滑块、恢复默认）。剩余：场景级 `Scroll` 容器变体仍缺（滚动由 `ui.scroll_*` + 面板自绘实现，见 `docs/18-lua-api.md`、`docs/33`、`docs/35`） |
+| F-3 | 音频混音（分组音量） | P2 | ✔（M20-02）：`audio.buses/set_bus_volume/bus_volume/effective_volume`（实际音量＝主×分组）、`play_on(bus,name)`、`[audio]` 段随 `settings.toml` 持久化、暂停菜单「设置」页四路音量增减与保存；`game_jhyt` 已走 BGM/SFX/UI 总线（`docs/18-lua-api.md`） |
+| F-4 | 发布原子替换 + 失败回滚 | P2 | ✔（M20-03）：`package.ps1` staging 优先构建 + `Complete-ReleaseSwap` 原子交换（旧内容整体重命名进 `.backup-*`）+ 失败回滚（旧版本原位恢复）+ 遗留 staging/backup 清理 + `-SkipBuild`；独立回归 `scripts/test-release-atomic.ps1` → `release_atomic_ok cases=4` |
+| F-5 | WebGL 真实浏览器集成测试 | P2 | 🚧（M20-04）：已有**真实浏览器契约检查页**（`examples/game_jhyt/web/`）+ `scripts/verify-webgl.ps1` 无头 Edge 断言（manifest/启动场景/首资源/WebGL2/存储降级/缺失 404，实测 `webgl_browser_ok`）；**仍缺** WASM 模块构建与浏览器内完整玩法（本机离线无法安装 `wasm32-unknown-unknown`，见 `docs/32`） |
 | F-6 | 微信小游戏 | 暂缓 | 仅预留声明（发布枚举/docs 项），无 `wx.*`/game.json 等实现分支，选中按 PC 处理——维持隐藏，不进 MVP |
 
 ## B-2 WorldSnapshot 缺口细化
@@ -98,6 +98,15 @@
 | 旧存档迁移或明确拒绝 | B-2 | 明确拒绝 ✔（引擎 `save_version=1` 门，`warn` 后不覆盖）；游戏侧快照版本迁移由 `save_manager` 处理，尚未有跨版本用例 |
 | 跨会话恢复时钟/背包/装备/玩家 | B-2（游戏侧） | 已具备：`jhyt_smoke`（`E:\Codex\p2\.../game/examples/jhyt_smoke.rs`）验证睡觉 → 存档 → 全新会话读档恢复 day/money/稀疏槽位/装备/PersistId 玩家 |
 | 切图/重启后 tile/meta/solid 一致 | B-3 | 已具备：`map_state_tilemap_snapshot_survives_scene_change_and_restart` |
+
+## 对齐记录（0.4，2026-09-13）
+
+M19/M20 收尾后按实际落地能力复核（证据见 `tasks/done/M19-*`、`M20-*`）：
+
+1. **状态上调**：F-2（自动布局 + 焦点/滚动导航 + 手柄设备层 + 命名动作 + 编辑器重绑定面板）由 🚧 → ✔（仅剩场景级 `Scroll` 容器变体）；F-3（音频分组总线）由 ✖ → ✔；F-4（发布原子替换与回滚）由 ✖ → ✔。
+2. **状态更新**：F-5（WebGL 浏览器集成）由 ✖ → 🚧——真实浏览器契约检查与无头断言已通过（`webgl_browser_ok`），但 WASM 模块构建受离线环境阻塞，浏览器内完整玩法未执行（`docs/32`）。
+3. **能力变更**：输入层从「物理键直读」升级为**命名动作**（`ActionMap` + `settings.toml` 的 `[input]` 段 + `input.action*`/`input.pad*` Lua API）；`game_jhyt` 全部脚本已迁移，键盘行为逐键等价（12 个 `jhyt_*` headless 回归全绿），手柄默认绑定覆盖 `confirm`/`cancel`/`ui_*`，其余动作由玩家在编辑器重绑定。
+4. **新增已知限制（P2）**：发布包内改键写入 `<release>/pack/settings.toml`，重新发布会覆盖（需迁移到用户目录，`docs/35` §6）；天气恒为晴（`weather.set()` 无调用方）；真实手柄实机插拔未验证。
 
 ## 对齐记录（0.3，2026-09-07）
 

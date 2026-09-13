@@ -1,9 +1,9 @@
 # RustLua 游戏引擎项目章程
 
-> 项目目录：`C:\GitHub\p2`
+> 项目目录：`C:\GitHub\RustLua`（历史文档中的 `C:\GitHub\p2` 为同一检出在重命名前的路径）
 > 文档版本：0.1.0
 > 建立日期：2026-08-20
-> 当前阶段：v0.10-editor 之后（M0–M15 已归档、M16–M20 处于 BACKLOG；里程碑状态以 CHANGELOG 与 `tasks/done/` 为准）
+> 当前阶段：v0.15（M0–M18 已归档、M19/M20 收口中；里程碑状态以 CHANGELOG 与 `tasks/done/` 为准）
 
 ## 1. 项目定位
 
@@ -127,7 +127,9 @@ ECS：bevy_ecs、hecs 或最小自研实现，需通过基准测试决定
 | M9 | 3D 可玩垂直切片 |
 | M10 | 编辑器强化（内嵌预览、3D 视口、Gizmo、资源缩略图、Prefab 集成） |
 
-M11–M15 已归档至 `tasks/done/`，M16–M20 的待做任务统一放在 `tasks/plan/`；完整里程碑状态以 CHANGELOG 为准。
+M11–M15 已归档至 `tasks/done/`；M16–M18（编辑器强化、玩法纵切、战斗/建筑/属性系统）与 M19/M20 的
+大部分任务同样已归档，剩余任务在 `tasks/plan/` 中收尾。里程碑与版本映射：M16 → v0.12、M17 → v0.13、
+M18 → v0.14、M19/M20 → v0.15（收口）；完整状态以 CHANGELOG 与 `tasks/done/` 为准。
 
 ## 9. AI 开发规则
 
@@ -234,6 +236,6 @@ docs/02-technical-decisions.md
 
 ## 13. 当前状态
 
-- 里程碑 M0–M15 已归档至 `tasks/done/`，M16–M20 处于 BACKLOG（见 docs/README 与 CHANGELOG）；
+- 里程碑 M0–M18 与 M19/M20 的绝大多数任务已归档至 `tasks/done/`；剩余任务（M19-04、M20-05、M20-08）在 `tasks/plan/` 中收尾（见 docs/README 与 CHANGELOG）；
 - 最新发布标签：`v0.10-editor`（编辑器强化）；
-- 当前主线（Unreleased）：运行时动态 UI 数据模型、玩法 Lua API、WebGL 发布、编辑器资源浏览器与导入/发布体验优化；默认能力展示工程为 `examples/`。
+- 当前主线（Unreleased，v0.15）：`game_jhyt` MVP 垂直切片（三地图 + 种田/任务/采集/战斗/制作/睡觉存档）、游戏级回归与性能基线、命名动作输入映射与手柄接入、资源校验与发布原子替换、WebGL 平台契约与质量门；默认能力展示工程为 `examples/` 与 `examples/game_jhyt`。

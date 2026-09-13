@@ -1,0 +1,107 @@
+{
+  "version": 1,
+  "generated_by": "tools/gen_effects_art.py",
+  "design_doc": "docs/31-江湖有田-美术资源方案.md",
+  "engine": {
+    "sheet_layout": "1xN 横向条带；uv u=frame/cols..(frame+1)/cols, v=0..1",
+    "note": "特效实体由 entity.spawn 创建，Lua 暂无挂 Animation 的 API；补 animation.attach 后可直接播，之前可只用第 0 帧"
+  },
+  "effects": [
+    {
+      "id": "hoe_dust",
+      "display": "锄地尘土",
+      "sheet": "assets/art/effects/hoe_dust.png",
+      "cols": 6,
+      "fps": 12,
+      "looped": false,
+      "frame_px": 32,
+      "world_size": "32x32",
+      "trigger": "farm.lua 翻土成功",
+      "animation": "default=hoe_dust;clip:hoe_dust:assets/art/effects/hoe_dust.png:6:12:false"
+    },
+    {
+      "id": "water_splash",
+      "display": "浇水水花",
+      "sheet": "assets/art/effects/water_splash.png",
+      "cols": 6,
+      "fps": 12,
+      "looped": false,
+      "frame_px": 32,
+      "world_size": "32x32",
+      "trigger": "farm.lua 浇水成功",
+      "animation": "default=water_splash;clip:water_splash:assets/art/effects/water_splash.png:6:12:false"
+    },
+    {
+      "id": "blade_arc",
+      "display": "刀光",
+      "sheet": "assets/art/effects/blade_arc.png",
+      "cols": 5,
+      "fps": 18,
+      "looped": false,
+      "frame_px": 48,
+      "world_size": "48x48",
+      "trigger": "普攻前摇结束/hitbox 生成",
+      "animation": "default=blade_arc;clip:blade_arc:assets/art/effects/blade_arc.png:5:18:false"
+    },
+    {
+      "id": "hit_spark",
+      "display": "命中火花",
+      "sheet": "assets/art/effects/hit_spark.png",
+      "cols": 5,
+      "fps": 18,
+      "looped": false,
+      "frame_px": 32,
+      "world_size": "32x32",
+      "trigger": "combat.lua 产生 AttackHit",
+      "animation": "default=hit_spark;clip:hit_spark:assets/art/effects/hit_spark.png:5:18:false"
+    },
+    {
+      "id": "hurt_flash",
+      "display": "受击闪白",
+      "sheet": "assets/art/effects/hurt_flash.png",
+      "cols": 3,
+      "fps": 20,
+      "looped": false,
+      "frame_px": 32,
+      "world_size": "32x32",
+      "trigger": "玩家/敌人受击",
+      "animation": "default=hurt_flash;clip:hurt_flash:assets/art/effects/hurt_flash.png:3:20:false"
+    },
+    {
+      "id": "heal_motes",
+      "display": "治疗提示",
+      "sheet": "assets/art/effects/heal_motes.png",
+      "cols": 6,
+      "fps": 8,
+      "looped": false,
+      "frame_px": 32,
+      "world_size": "32x32",
+      "trigger": "回复药/睡觉恢复",
+      "animation": "default=heal_motes;clip:heal_motes:assets/art/effects/heal_motes.png:6:8:false"
+    },
+    {
+      "id": "poison_motes",
+      "display": "中毒提示",
+      "sheet": "assets/art/effects/poison_motes.png",
+      "cols": 6,
+      "fps": 6,
+      "looped": true,
+      "frame_px": 32,
+      "world_size": "32x32",
+      "trigger": "中毒状态持续期间",
+      "animation": "default=poison_motes;clip:poison_motes:assets/art/effects/poison_motes.png:6:6:true"
+    },
+    {
+      "id": "dash_streak",
+      "display": "轻功残影",
+      "sheet": "assets/art/effects/dash_streak.png",
+      "cols": 4,
+      "fps": 16,
+      "looped": false,
+      "frame_px": 32,
+      "world_size": "32x32",
+      "trigger": "追风步/轻功位移",
+      "animation": "default=dash_streak;clip:dash_streak:assets/art/effects/dash_streak.png:4:16:false"
+    }
+  ]
+}

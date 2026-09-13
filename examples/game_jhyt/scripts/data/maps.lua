@@ -26,10 +26,10 @@ M.TILE = TILE
 -- 云泽村 → 山庄：南市街口 (19,1) 站立触发，回山庄药田前 (16,3)。
 M.version = 1
 M.maps = {
-  main = {
+  manor = {
     display = "江湖有田·山庄",
     title = "山庄 · 药田垂直切片",
-    spawn = { x = 16, y = 3 }, -- 与 main.scene JianghuPlayer Transform 一致
+    spawn = { x = 16, y = 3 }, -- 与 manor.scene JianghuPlayer Transform 一致
     exits = {
       {
         id = "main_to_village",
@@ -48,22 +48,111 @@ M.maps = {
       {
         id = "village_to_main",
         cell = { x = 19, y = 1 }, -- 南市街口（南门内）
-        to = "main",
+        to = "manor",
         to_cell = { x = 16, y = 3 },
         label = "返回山庄"
+      },
+      -- 批次 2/3：北上青云山、进药庐、进铁匠铺（对应 scenes/village.scene 的三个门洞/门前格）
+      {
+        id = "village_to_mountain",
+        cell = { x = 10, y = 20 }, -- 村北山门门洞
+        to = "mountain_path",
+        to_cell = { x = 19, y = 2 },
+        label = "出村 · 上青云山"
+      },
+      {
+        id = "village_to_herb",
+        cell = { x = 5, y = 13 }, -- 药庐门前
+        to = "interior_herb",
+        to_cell = { x = 10, y = 3 },
+        label = "进入药庐"
+      },
+      {
+        id = "village_to_forge",
+        cell = { x = 26, y = 10 }, -- 铁匠铺门前（东西中街）
+        to = "interior_forge",
+        to_cell = { x = 10, y = 3 },
+        label = "进入铁匠铺"
       }
     }
   },
-  -- 演武场：M18-01 战斗灰盒（20x12 封闭场地，仅服务战斗验收，不接入主线）。
+  -- 青云山道：采集、敌人、护送任务（docs/30 §10.1），由 tools/gen_wilds_scene.py 生成
+  mountain_path = {
+    display = "江湖有田·青云山道",
+    title = "青云山道 · 采药与护送",
+    spawn = { x = 19, y = 2 }, -- 与 mountain_path.scene JianghuPlayer Transform 一致
+    exits = {
+      {
+        id = "mountain_to_village",
+        cell = { x = 19, y = 1 }, -- 南山门内
+        to = "village",
+        to_cell = { x = 10, y = 19 },
+        label = "下山 · 返回云泽村"
+      },
+      {
+        id = "mountain_to_cave",
+        cell = { x = 22, y = 20 }, -- 东北洞口
+        to = "cold_spring_cave",
+        to_cell = { x = 10, y = 3 },
+        label = "进入寒泉洞"
+      }
+    }
+  },
+  -- 寒泉洞：矿石、稀有药材、第一章线索（小型副本 20×12）
+  cold_spring_cave = {
+    display = "江湖有田·寒泉洞",
+    title = "寒泉洞 · 第一章线索",
+    spawn = { x = 10, y = 3 },
+    exits = {
+      {
+        id = "cave_to_mountain",
+        cell = { x = 10, y = 1 }, -- 洞口
+        to = "mountain_path",
+        to_cell = { x = 22, y = 19 },
+        label = "离开寒泉洞"
+      }
+    }
+  },
+  -- 室内（批次 3，20×12）：药庐 / 铁匠铺
+  interior_herb = {
+    display = "云泽村·药庐内",
+    title = "药庐 · 药材与药炉",
+    spawn = { x = 10, y = 3 },
+    exits = {
+      {
+        id = "herb_to_village",
+        cell = { x = 10, y = 1 }, -- 门口
+        to = "village",
+        to_cell = { x = 5, y = 14 },
+        label = "走出药庐"
+      }
+    }
+  },
+  interior_forge = {
+    display = "云泽村·铁匠铺内",
+    title = "铁匠铺 · 铁砧与炉火",
+    spawn = { x = 10, y = 3 },
+    exits = {
+      {
+        id = "forge_to_village",
+        cell = { x = 10, y = 1 },
+        to = "village",
+        to_cell = { x = 26, y = 11 },
+        label = "走出铁匠铺"
+      }
+    }
+  },
+  -- 演武场：山庄练武场（40x22，scenes/combat_arena.scene 由 tools/gen_arena_scene.py 生成；
+  -- 战斗验收锚点几何见该文件头注释，改动需与 jhyt_m18_combat.rs 三方同步）。
   combat_arena = {
     display = "江湖有田·演武场",
-    title = "演武场 · 战斗灰盒",
+    title = "山庄 · 演武场",
     spawn = { x = 9, y = 5 }, -- 与 combat_arena.scene JianghuPlayer Transform 一致
     exits = {
       {
         id = "arena_to_main",
-        cell = { x = 9, y = 10 },
-        to = "main",
+        cell = { x = 9, y = 1 }, -- 南门门洞内（manor_gate x8..10, y0..2，门洞 (9,1)(9,2)）
+        to = "manor",
         to_cell = { x = 16, y = 3 },
         label = "离开演武场 · 返回山庄"
       }

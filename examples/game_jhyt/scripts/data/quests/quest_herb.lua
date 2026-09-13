@@ -8,8 +8,10 @@
 --     kind = "flag"        按剧情变量真值：var
 --     consume = true       交付时消耗（仅 item 有效）
 --   rewards                交付奖励，幂等发放一次
---     kind = "item"/"money"/"inner_power"
---   on_complete            交付后的剧情变量副作用（仅 set_var / add_var）
+--     kind = "item"/"money"/"inner_power"/"relationship"/"reputation"
+--     （relationship: npc + amount；reputation: faction + amount，M18-04）
+--   on_complete            交付后的剧情变量副作用（set_var / add_var /
+--                          relationship / reputation）
 return {
   version = 1,
   id = "quest_herb",
@@ -21,7 +23,9 @@ return {
   },
   rewards = {
     { kind = "money", amount = 50 },
-    { kind = "item", item = "rice", count = 2 }
+    { kind = "item", item = "rice", count = 2 },
+    { kind = "relationship", npc = "npc_shen_qingluo", amount = 10 },
+    { kind = "reputation", faction = "village", amount = 5 }
   },
   on_complete = {
     set_var = { herb_delivered = true }

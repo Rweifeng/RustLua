@@ -13,12 +13,12 @@ use tracing::{error, info, warn};
 use crate::core::{
     animation::AnimationStateMachine,
     animation3d::{Animation3D, Animation3dDescriptor},
-    audio::AudioSystem,
+    audio::{AudioBus, AudioSystem},
     camera3d::Camera3D,
     entity::EntityId,
     gameplay::{GameClock, Inventory, ItemDefinition, ItemStack},
     grid::{self, Facing},
-    input::{InputKey, InputSnapshot, MouseButton},
+    input::{ActionMap, Binding, InputKey, InputSnapshot, MouseButton},
     light::Light,
     math3d::Vec3,
     mesh3d::MeshRenderer,
@@ -28,6 +28,7 @@ use crate::core::{
     resource_db::AssetId,
     save::encode as encode_save,
     scene::{Scene, SceneEntityId},
+    settings::ProjectSettings,
     sprite::{SpriteAsset, SpriteComponent},
     tilemap::DEFAULT_TILESET as DEFAULT_TILESET_PATH,
     tilemap::Tilemap,
@@ -36,6 +37,7 @@ use crate::core::{
     ui::{DynamicUiImage, UiGrid, UiGridCell, UiPanel},
     ui_events::{UiClickTarget, UiEvents},
     ui_layout::UiRectLayout,
+    ui_navigation::{FocusItem, FocusRing, NavDirection, ScrollState},
     world::{World, WorldError},
 };
 
@@ -113,9 +115,29 @@ struct ScriptState {
     /// 供 Lua 侧 `process_ui_clicks` / `grid_hit` 命中测试使用。
     ui_reference: [f32; 2],
     ui_drag: Option<UiDrag>,
+    /// 运行时 UI 焦点环（M20-02）：`ui.focus_open/move/...` 按稳定 id 持有，
+    /// 面板用方向键/摇杆方向驱动选择（`core/ui_navigation.rs::FocusRing`）。
+    focus_rings: BTreeMap<String, FocusRing>,
+    /// 运行时列表滚动状态（M20-02）：面板把选中行滚入视口
+    /// （`core/ui_navigation.rs::ScrollState`）。
+    scroll_states: BTreeMap<String, ScrollState>,
     /// Authoring ID → live ECS handle. The editor uses this to preview a drag
     /// by mutating one component without rebuilding the whole runtime.
     scene_entities: BTreeMap<SceneEntityId, EntityId>,
+    /// 命名动作映射（M20-07）：**唯一实例**随 `ScriptState` 走，脚本重绑定
+    /// （`input.rebind`/`set_action_map`/设置文件）与宿主查询同源；默认绑定见
+    /// [`ActionMap::with_defaults`]。刻意**不**随场景切换或读档重置——绑定是
+    /// 玩家偏好，唯一重置入口是 `input.reset_bindings()`。
+    ///
+    /// 注意：本结构体的 `Default` 由 derive 生成（约 40 个字段逐一手写易漏），
+    /// 而 [`ActionMap::default`] 是**空**映射；因此 [`LuaRuntime::new`] 建好状态
+    /// 后立刻 `merge_missing(with_defaults())` 补齐默认绑定（`merge_missing`
+    /// 语义为空表 → 完整默认表），脚本与测试必须经 `LuaRuntime` 构造才拿到状态。
+    action_map: ActionMap,
+    /// 输入层诊断（M20-07，最近 16 条，最新在后）：设置文件回退默认、版本头
+    /// 不符、非法绑定、写盘失败等都在这里留下可定位的一行说明，脚本可用
+    /// `input.diagnostics()` 读出。不参与存档。
+    input_diagnostics: Vec<String>,
 }
 
 /// State for a Lua-driven inventory drag (`ui.drag_begin` / `ui.drag_end`).
@@ -283,6 +305,11 @@ impl LuaRuntime {
         let lua = Lua::new();
         let state = Rc::new(RefCell::new(ScriptState::default()));
         state.borrow_mut().ui_reference = crate::core::ui::UI_REFERENCE_SIZE;
+        // M20-07：空映射 + 默认表 = 完整默认绑定（见 `ScriptState::action_map`）。
+        state
+            .borrow_mut()
+            .action_map
+            .merge_missing(&ActionMap::with_defaults());
         register_api(&lua, Rc::clone(&state))
             .map_err(|error| LuaBridgeError::Init(error.to_string()))?;
         Ok(Self {
@@ -292,6 +319,29 @@ impl LuaRuntime {
             fingerprint: None,
             debugger: ScriptDebugger::new(),
         })
+    }
+
+    /// 当前命名动作映射（M20-07，只读快照）。
+    ///
+    /// 宿主需要「按动作查询输入」时用它与同一帧的 [`InputSnapshot`] 组合
+    /// （`InputSnapshot::action_is_down(&map, "interact")`），保证与脚本侧
+    /// `input.action("interact")` 结论一致。
+    #[must_use]
+    pub fn action_map(&self) -> ActionMap {
+        self.state.borrow().action_map.clone()
+    }
+
+    /// 注入命名动作映射（M20-07）：宿主设置界面改键、按工程设置文件启动时用，
+    /// 之后脚本查询/重绑定都作用在这一份上。
+    pub fn set_action_map(&mut self, map: ActionMap) {
+        self.state.borrow_mut().action_map = map;
+    }
+
+    /// 输入层诊断（M20-07，最新在后）：设置文件回退默认、版本头不符、非法绑定、
+    /// 写盘失败等。与 `ScriptDiagnostic`（脚本错误）分开，避免污染调试器记录。
+    #[must_use]
+    pub fn input_diagnostics(&self) -> Vec<String> {
+        self.state.borrow().input_diagnostics.clone()
     }
 
     pub fn set_delta(&mut self, delta_seconds: f32) {
@@ -724,6 +774,8 @@ impl LuaRuntime {
             state.ui_images.clear();
             state.ui_grids.clear();
             state.ui_drag = None;
+            state.focus_rings.clear();
+            state.scroll_states.clear();
             state.tags.clear();
             state.interact_prompt = None;
             state.schema_defs.clear();
@@ -982,6 +1034,36 @@ impl LuaRuntime {
             self.record_bridge_error(error);
         }
         result
+    }
+
+    /// Evaluates a Lua expression in the currently loaded VM and converts the
+    /// result to JSON (M19-03: the read-only Lua↔JSON bridge used by editor
+    /// tooling, e.g. the domain-data panel and the runtime debug panel).
+    ///
+    /// Contract:
+    /// - Never mutates engine state by itself; the expression is responsible
+    ///   for its own side effects (callers pass read-only queries).
+    /// - The conversion reuses the same value mapping as `save.blob_*`
+    ///   (`lua_value_to_json`): nil/bool/int/float/string/table. Unsupported
+    ///   Lua types (function/userdata/thread) are reported as an error.
+    /// - Any Lua failure (syntax or runtime) becomes [`LuaBridgeError::Runtime`]
+    ///   with the original Lua message preserved verbatim, so the editor can
+    ///   show the exact `file:line: message` text.
+    pub fn eval_json(&self, expression: &str) -> Result<serde_json::Value, LuaBridgeError> {
+        let path = PathBuf::from("<eval_json>");
+        let value = self
+            .lua
+            .load(expression)
+            .set_name("<eval_json>")
+            .eval::<Value>()
+            .map_err(|error| LuaBridgeError::Runtime {
+                path: path.clone(),
+                source: error.to_string(),
+            })?;
+        lua_value_to_json(value).map_err(|error| LuaBridgeError::Runtime {
+            path,
+            source: error.to_string(),
+        })
     }
 
     fn record_bridge_error(&mut self, error: &LuaBridgeError) {
@@ -1791,6 +1873,276 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
             table_vec(lua, p.0, p.1)
         })?,
     )?;
+    // ---- M20-07：命名动作层 + [input] 设置持久化 ---------------------------
+    // 三层模型：物理输入（键鼠 + 宿主喂入的手柄设备帧）→ 命名动作
+    // （`ScriptState::action_map`，一份实例）→ 动作消费（下面的 `input.action*`）。
+    // 旧物理键 API（`is_down`/`just_pressed`/`just_released`/`axis`/`pressed`/
+    // `released`）语义**不变**并继续可用，老脚本与 headless 用例不受影响；
+    // 只有 `input.action` 从「物理键别名」升级为「命名动作查询」（全仓库除本
+    // 文件外无调用方，见 M20-07 文档的迁移说明）。
+    let s = Rc::clone(&state);
+    input.set(
+        "action",
+        lua.create_function(move |_, name: String| {
+            let state = s.borrow();
+            Ok(state.input.action_is_down(&state.action_map, &name))
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    input.set(
+        "action_pressed",
+        lua.create_function(move |_, name: String| {
+            let state = s.borrow();
+            Ok(state.input.action_just_pressed(&state.action_map, &name))
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    input.set(
+        "action_released",
+        lua.create_function(move |_, name: String| {
+            let state = s.borrow();
+            Ok(state.input.action_just_released(&state.action_map, &name))
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    input.set(
+        "action_axis",
+        lua.create_function(move |_, (negative, positive): (String, String)| {
+            let state = s.borrow();
+            Ok(state
+                .input
+                .action_axis(&state.action_map, &negative, &positive))
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    input.set(
+        "pad_button",
+        lua.create_function(move |_, index: i64| {
+            Ok(s.borrow().input.gamepad_button(index.clamp(0, 255) as u8))
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    input.set(
+        "pad_axis",
+        lua.create_function(move |_, index: i64| {
+            Ok(s.borrow().input.gamepad_axis(index.clamp(0, 255) as u8))
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    input.set(
+        "actions",
+        lua.create_function(move |lua, ()| {
+            let state = s.borrow();
+            let table = lua.create_table()?;
+            for (index, name) in state.action_map.actions().into_iter().enumerate() {
+                table.set(index + 1, name)?;
+            }
+            Ok(table)
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    input.set(
+        "bindings",
+        lua.create_function(move |lua, name: String| {
+            let state = s.borrow();
+            let table = lua.create_table()?;
+            for (index, binding) in state.action_map.bindings(&name).iter().enumerate() {
+                table.set(index + 1, binding.to_text())?;
+            }
+            Ok(table)
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    input.set(
+        "rebind",
+        lua.create_function(move |_, (name, binding): (String, String)| {
+            let parsed = match Binding::parse(binding.trim()) {
+                Ok(parsed) => parsed,
+                Err(error) => return Ok((false, error.to_string())),
+            };
+            let mut state = s.borrow_mut();
+            // 重绑定 = 覆盖该动作的全部旧绑定（单一主绑定语义，与面板 UI 一致）；
+            // 需要一键多绑定时改设置文件的 `[input].map` 文本。
+            state.action_map.clear(&name);
+            match state.action_map.bind(&name, parsed) {
+                Ok(()) => Ok((true, String::new())),
+                Err(error) => Ok((false, error.to_string())),
+            }
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    input.set(
+        "unbind",
+        lua.create_function(move |_, (name, binding): (String, String)| {
+            let Ok(parsed) = Binding::parse(binding.trim()) else {
+                return Ok(false);
+            };
+            Ok(s.borrow_mut().action_map.unbind(&name, parsed))
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    input.set(
+        "reset_bindings",
+        lua.create_function(move |_, ()| {
+            // 唯一重置入口：绑定是玩家偏好，不随场景切换/读档回滚（ADR-0021）。
+            s.borrow_mut().action_map = ActionMap::with_defaults();
+            Ok(())
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    input.set(
+        "action_map_text",
+        lua.create_function(move |_, ()| Ok(s.borrow().action_map.to_text()))?,
+    )?;
+    let s = Rc::clone(&state);
+    input.set(
+        "set_action_map",
+        lua.create_function(move |_, text: String| {
+            match ActionMap::from_text(&text) {
+                Ok(map) => {
+                    s.borrow_mut().action_map = map;
+                    Ok((true, String::new()))
+                }
+                // 版本头不符 → false + 原因，并且**不改动**当前映射（不静默回退）。
+                Err(error) => Ok((false, error.to_string())),
+            }
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    input.set(
+        "diagnostics",
+        lua.create_function(move |lua, ()| {
+            let state = s.borrow();
+            let table = lua.create_table()?;
+            for (index, message) in state.input_diagnostics.iter().enumerate() {
+                table.set(index + 1, message.clone())?;
+            }
+            Ok(table)
+        })?,
+    )?;
+    // 设置文件 `<project>/settings.toml` 的 `[input]` 段（M20-07）。路径规则与
+    // `audio.settings_path/load_settings/save_settings` 一致：缺省用工程根下的
+    // `settings.toml`，给相对路径时相对工程根解析（无工程根则要求绝对路径）。
+    let s = Rc::clone(&state);
+    input.set(
+        "settings_path",
+        lua.create_function(move |_, ()| {
+            let root = s.borrow().project_root.clone();
+            Ok(root.map(|root| {
+                ProjectSettings::path_in(&root)
+                    .to_string_lossy()
+                    .into_owned()
+            }))
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    input.set(
+        "load_settings",
+        lua.create_function(move |_, path: Option<String>| {
+            let resolved = resolve_input_settings_path(&s.borrow(), path.as_deref());
+            let Some(path) = resolved else {
+                return Ok((false, "no_project_root".to_owned()));
+            };
+            let existing = match fs::read_to_string(&path) {
+                Ok(text) => text,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    // 文件不存在：保留当前绑定（不是错误），返回 false + "missing"
+                    //（与 `audio.load_settings` 的既有语义一致）。
+                    return Ok((false, "missing".to_owned()));
+                }
+                Err(error) => {
+                    let message = format!("{}: read failed: {error}", path.display());
+                    push_input_diagnostic(&mut s.borrow_mut(), message);
+                    return Ok((false, error.to_string()));
+                }
+            };
+            let parsed = crate::core::settings::parse_input_section(&existing);
+            match parsed.map {
+                Some(mut map) => {
+                    // 文件里没有的动作用默认绑定补齐（新增动作在旧设置文件上仍可玩），
+                    // 用户重绑定不被覆盖（`merge_missing` 只补缺失动作）。
+                    map.merge_missing(&ActionMap::with_defaults());
+                    s.borrow_mut().action_map = map;
+                    Ok((true, "loaded".to_owned()))
+                }
+                None => {
+                    let reason = parsed
+                        .reason
+                        .unwrap_or_else(|| "invalid_input_section".to_owned());
+                    let missing_key = reason.starts_with("missing_key");
+                    if !missing_key {
+                        // 内容非法（版本头不符 / 绑定文本非法）才是「回退默认」，
+                        // 并留下可定位诊断；缺键只诊断、在位的绑定保持不变。
+                        s.borrow_mut().action_map = ActionMap::with_defaults();
+                    }
+                    let mut state = s.borrow_mut();
+                    let message = if missing_key {
+                        format!("{}: {reason}; keeping current bindings", path.display())
+                    } else {
+                        format!("{}: {reason}; reverting to defaults", path.display())
+                    };
+                    push_input_diagnostic(&mut state, message.clone());
+                    Ok((false, message))
+                }
+            }
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    input.set(
+        "save_settings",
+        lua.create_function(move |_, path: Option<String>| {
+            let (resolved, map) = {
+                let state = s.borrow();
+                (
+                    resolve_input_settings_path(&state, path.as_deref()),
+                    state.action_map.clone(),
+                )
+            };
+            let Some(path) = resolved else {
+                return Ok((false, "no_project_root".to_owned()));
+            };
+            // 保序读改写：只动 `[input]` 段，`[audio]` 段与注释原样保留。
+            let existing = fs::read_to_string(&path).unwrap_or_default();
+            if let Some(parent) = path.parent()
+                && let Err(error) = fs::create_dir_all(parent)
+            {
+                return Ok((false, error.to_string()));
+            }
+            match atomic_write(
+                &path,
+                &crate::core::settings::upsert_input_section(&existing, &map),
+            ) {
+                Ok(()) => Ok((true, "saved".to_owned())),
+                Err(error) => {
+                    let message = format!("{}: save failed: {error}", path.display());
+                    push_input_diagnostic(&mut s.borrow_mut(), message);
+                    Ok((false, error.to_string()))
+                }
+            }
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    input.set(
+        "nav_settings",
+        lua.create_function(move |lua, path: Option<String>| {
+            // M20-09：菜单导航手感（摇杆阈值 + 按住重复节奏）与 `load_settings` 同源
+            // ——同一个 `[input]` 段、同一套宽松解析与钳制。缺省路径 = 工程根。
+            let resolved = resolve_input_settings_path(&s.borrow(), path.as_deref());
+            let Some(path) = resolved else {
+                return Ok(None);
+            };
+            let nav = match fs::read_to_string(&path) {
+                Ok(text) => crate::core::settings::parse_nav_section(&text),
+                // 文件缺失/不可读 → 默认手感（首次运行的正常路径）。
+                Err(_) => crate::core::settings::NavSettings::DEFAULT,
+            };
+            let table = lua.create_table()?;
+            table.set("threshold", nav.threshold)?;
+            table.set("delay_frames", nav.delay_frames)?;
+            table.set("repeat_frames", nav.repeat_frames)?;
+            Ok(Some(table))
+        })?,
+    )?;
     lua.globals().set("input", input)?;
 
     let entity = lua.create_table()?;
@@ -1893,6 +2245,51 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
                 .insert(id, SpriteAsset(component.texture))
                 .map_err(world_error)?;
             Ok(())
+        })?,
+    )?;
+    // 运行期读回渲染用的贴图/尺寸：`sprite.set` 会同时写 Sprite 组件与 SpriteAsset，
+    // 验收驱动与工具需要能确认"实体上现在真的是哪张图"（M21 主角形象切换、
+    // NPC/敌人形象诊断），否则只能间接猜测。纹理解析顺序与渲染一致：
+    // Animation 的当前 clip sheet 优先，没有动画时用 SpriteAsset。
+    let s = Rc::clone(&state);
+    sprite.set(
+        "get",
+        lua.create_function(move |lua, id: i64| {
+            let id = entity_from_lua(id)?;
+            let state = s.borrow();
+            require_alive(&state, id)?;
+            let value = state
+                .world
+                .get::<crate::core::sprite::Sprite>(id)
+                .map_err(world_error)?
+                .ok_or_else(|| api_error("entity has no sprite"))?;
+            let table = lua.create_table()?;
+            table.set("size_x", value.size.x)?;
+            table.set("size_y", value.size.y)?;
+            table.set("pivot_x", value.pivot.x)?;
+            table.set("pivot_y", value.pivot.y)?;
+            table.set("tint_r", value.tint[0])?;
+            table.set("tint_g", value.tint[1])?;
+            table.set("tint_b", value.tint[2])?;
+            table.set("tint_a", value.tint[3])?;
+            table.set(
+                "texture",
+                state
+                    .world
+                    .get::<SpriteAsset>(id)
+                    .map_err(world_error)?
+                    .map(|asset| asset.0.clone()),
+            )?;
+            // 有动画时渲染走 clip 的 sheet（覆盖 Sprite 的 texture），
+            // 一并以 animation_sheet 给出，避免调用方以为"贴图没换"。
+            if let Some(machine) = state
+                .world
+                .get::<AnimationStateMachine>(id)
+                .map_err(world_error)?
+            {
+                table.set("animation_sheet", machine.current_clip().sheet.clone())?;
+            }
+            Ok(table)
         })?,
     )?;
     lua.globals().set("sprite", sprite)?;
@@ -2738,6 +3135,43 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
             Ok(machine.take_ended())
         })?,
     )?;
+    // 运行期挂动画：`entity.spawn` 只插入 Transform，Lua 侧此前无法给实体加
+    // Animation 组件（NPC/敌人/特效因此只能显示单帧）。attach 解析同一套组件串
+    // （`default=..;clip:<name>:<sheet>:<cols>:<fps>:<looped>`）并插入/覆盖组件。
+    let s = Rc::clone(&state);
+    animation.set(
+        "attach",
+        lua.create_function(move |_, (id, component): (i64, String)| {
+            let machine = AnimationStateMachine::from_component_str(&component)
+                .map_err(|error| api_error(error.to_string()))?;
+            let id = entity_from_lua(id)?;
+            let mut state = s.borrow_mut();
+            require_alive(&state, id)?;
+            state.world.insert(id, machine).map_err(world_error)?;
+            Ok(true)
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    animation.set(
+        "clips",
+        lua.create_function(move |lua, id: i64| {
+            let id = entity_from_lua(id)?;
+            let state = s.borrow();
+            require_alive(&state, id)?;
+            let Some(machine) = state
+                .world
+                .get::<AnimationStateMachine>(id)
+                .map_err(world_error)?
+            else {
+                return Err(api_error("entity has no animation"));
+            };
+            let names = lua.create_table()?;
+            for (index, clip) in machine.clips.iter().enumerate() {
+                names.set(index + 1, clip.name.clone())?;
+            }
+            Ok(names)
+        })?,
+    )?;
     lua.globals().set("animation", animation)?;
 
     let animation3d = lua.create_table()?;
@@ -3090,6 +3524,125 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
         lua.create_function(move |_, level: f32| {
             s.borrow_mut().audio.set_volume(level);
             Ok(())
+        })?,
+    )?;
+    // ---- M20-02：音量分组（总线）------------------------------------------
+    // 总线名：master / bgm / sfx / ui；未知名报 Lua 错误（便于定位拼写错误），
+    // 实际音量 = 主音量 × 分组音量（`AudioSystem::effective_volume`）。
+    audio.set(
+        "buses",
+        lua.create_function(move |lua, ()| {
+            let buses = lua.create_table()?;
+            for (index, bus) in AudioBus::ALL.into_iter().enumerate() {
+                buses.set(index + 1, bus.key())?;
+            }
+            Ok(buses)
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    audio.set(
+        "set_bus_volume",
+        lua.create_function(move |_, (bus, level): (String, f32)| {
+            let bus = parse_audio_bus(&bus)?;
+            s.borrow_mut().audio.set_bus_volume(bus, level);
+            Ok(true)
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    audio.set(
+        "bus_volume",
+        lua.create_function(move |_, bus: String| {
+            let bus = parse_audio_bus(&bus)?;
+            Ok(s.borrow().audio.bus_volume(bus))
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    audio.set(
+        "effective_volume",
+        lua.create_function(move |_, bus: String| {
+            let bus = parse_audio_bus(&bus)?;
+            Ok(s.borrow().audio.effective_volume(bus))
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    audio.set(
+        "play_on",
+        lua.create_function(move |_, (bus, name): (String, String)| {
+            let bus = parse_audio_bus(&bus)?;
+            if let Err(error) = s.borrow_mut().audio.play_on(bus, &name) {
+                tracing::warn!(target: "audio", name = %name, bus = bus.key(), error = %error, "[audio] play_on failed");
+                return Ok((false, error.to_string()));
+            }
+            Ok((true, String::new()))
+        })?,
+    )?;
+    // 音量设置文本往返（只覆盖四路音量，不含工程设置文件的其余内容）。
+    let s = Rc::clone(&state);
+    audio.set(
+        "settings_text",
+        lua.create_function(move |_, ()| Ok(s.borrow().audio.to_settings_text()))?,
+    )?;
+    let s = Rc::clone(&state);
+    audio.set(
+        "apply_settings",
+        lua.create_function(move |_, text: String| {
+            match s.borrow_mut().audio.apply_settings_text(&text) {
+                Ok(()) => Ok((true, String::new())),
+                Err(error) => Ok((false, error.to_string())),
+            }
+        })?,
+    )?;
+    // 工程设置文件 `<project>/settings.toml` 的 `[audio]` 段（M20-02）：
+    // 缺失文件用默认值；写入保序保留其余段（后续任务的 [input] 不会被覆盖）。
+    let s = Rc::clone(&state);
+    audio.set(
+        "settings_path",
+        lua.create_function(move |_, ()| {
+            let root = s.borrow().project_root.clone();
+            Ok(root.map(|root| {
+                ProjectSettings::path_in(&root)
+                    .to_string_lossy()
+                    .into_owned()
+            }))
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    audio.set(
+        "load_settings",
+        lua.create_function(move |_, ()| {
+            let root = {
+                let state = s.borrow();
+                state.project_root.clone()
+            };
+            let Some(root) = root else {
+                return Ok((false, "no_project_root".to_owned()));
+            };
+            match ProjectSettings::load_from(&root) {
+                Ok(Some(settings)) => {
+                    settings.apply_to(&mut s.borrow_mut().audio);
+                    Ok((true, "loaded".to_owned()))
+                }
+                Ok(None) => Ok((false, "missing".to_owned())),
+                Err(error) => Ok((false, error.to_string())),
+            }
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    audio.set(
+        "save_settings",
+        lua.create_function(move |_, ()| {
+            let root = {
+                let state = s.borrow();
+                state.project_root.clone()
+            };
+            let Some(root) = root else {
+                return Ok((false, "no_project_root".to_owned()));
+            };
+            let settings = ProjectSettings::from_audio(&s.borrow().audio);
+            match settings.save_to(&root) {
+                Ok(()) => Ok((true, "saved".to_owned())),
+                Err(error) => Ok((false, error.to_string())),
+            }
         })?,
     )?;
     let s = Rc::clone(&state);
@@ -3954,6 +4507,220 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
         })?,
     )?;
 
+    // ---- M20-02：UI 焦点与滚动导航（core/ui_navigation.rs 的运行时接线）----
+    // 面板用方向键/摇杆方向驱动列表选择与滚动；序号统一 0 基（Lua 面板常用 1 基，
+    // 由游戏侧 `panel_nav.lua` 转换）。`focus_open` 按 `columns` 布局项矩形，
+    // 使网格面板（背包 2 列）的左右移动与单列列表的上下移动都可用。
+    let s = Rc::clone(&state);
+    ui.set(
+        "focus_open",
+        lua.create_function(move |_, (id, count, columns): (String, i64, Option<i64>)| {
+            let count = count.clamp(0, 4096) as usize;
+            let columns = columns.unwrap_or(1).clamp(1, 64) as usize;
+            let items: Vec<FocusItem> = (0..count)
+                .map(|index| {
+                    let column = index % columns;
+                    let line = index / columns;
+                    FocusItem {
+                        id: index as u64 + 1,
+                        rect: [column as f32, line as f32, 1.0, 1.0],
+                    }
+                })
+                .collect();
+            let mut state = s.borrow_mut();
+            match state.focus_rings.get_mut(&id) {
+                Some(ring) => ring.set_items(items),
+                None => {
+                    state.focus_rings.insert(id, FocusRing::new(items));
+                }
+            }
+            Ok(count as i64)
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    ui.set(
+        "focus_close",
+        lua.create_function(move |_, id: String| {
+            Ok(s.borrow_mut().focus_rings.remove(&id).is_some())
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    ui.set(
+        "focus_count",
+        lua.create_function(move |_, id: String| {
+            Ok(s.borrow()
+                .focus_rings
+                .get(&id)
+                .map_or(0_i64, |ring| ring.len() as i64))
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    ui.set(
+        "focus_select",
+        lua.create_function(move |_, (id, index): (String, i64)| {
+            if index < 0 {
+                return Ok(false);
+            }
+            let mut state = s.borrow_mut();
+            let Some(ring) = state.focus_rings.get_mut(&id) else {
+                return Ok(false);
+            };
+            Ok(ring.set_current(index as u64 + 1))
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    ui.set(
+        "focus_index",
+        lua.create_function(move |_, id: String| {
+            let state = s.borrow();
+            let Some(ring) = state.focus_rings.get(&id) else {
+                return Ok(None);
+            };
+            Ok(ring
+                .current()
+                .and_then(|item| usize::try_from(item.id).ok())
+                .and_then(|id| id.checked_sub(1))
+                .map(|index| index as i64))
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    ui.set(
+        "focus_move",
+        lua.create_function(move |_, (id, direction): (String, String)| {
+            let direction = match direction.trim().to_ascii_lowercase().as_str() {
+                "up" => NavDirection::Up,
+                "down" => NavDirection::Down,
+                "left" => NavDirection::Left,
+                "right" => NavDirection::Right,
+                other => {
+                    return Err(api_error(format!(
+                        "ui.focus_move direction must be up/down/left/right, got {other}"
+                    )));
+                }
+            };
+            let mut state = s.borrow_mut();
+            let Some(ring) = state.focus_rings.get_mut(&id) else {
+                return Ok(None);
+            };
+            Ok(ring
+                .move_focus(direction)
+                .and_then(|item| usize::try_from(item.id).ok())
+                .and_then(|id| id.checked_sub(1))
+                .map(|index| index as i64))
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    ui.set(
+        "focus_cycle",
+        lua.create_function(move |_, (id, forward): (String, Option<bool>)| {
+            let mut state = s.borrow_mut();
+            let Some(ring) = state.focus_rings.get_mut(&id) else {
+                return Ok(None);
+            };
+            Ok(ring
+                .cycle(forward.unwrap_or(true))
+                .and_then(|item| usize::try_from(item.id).ok())
+                .and_then(|id| id.checked_sub(1))
+                .map(|index| index as i64))
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    ui.set(
+        "scroll_open",
+        lua.create_function(move |_, (id, viewport, content): (String, f32, f32)| {
+            s.borrow_mut()
+                .scroll_states
+                .insert(id, ScrollState::new(viewport, content));
+            Ok(())
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    ui.set(
+        "scroll_close",
+        lua.create_function(move |_, id: String| {
+            Ok(s.borrow_mut().scroll_states.remove(&id).is_some())
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    ui.set(
+        "scroll_extents",
+        lua.create_function(move |_, (id, viewport, content): (String, f32, f32)| {
+            let mut state = s.borrow_mut();
+            let scroll = state.scroll_states.entry(id).or_default();
+            scroll.set_extents(viewport, content);
+            Ok(scroll.offset())
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    ui.set(
+        "scroll_offset",
+        lua.create_function(move |_, id: String| {
+            Ok(s.borrow().scroll_states.get(&id).map(ScrollState::offset))
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    ui.set(
+        "scroll_max",
+        lua.create_function(move |_, id: String| {
+            Ok(s.borrow()
+                .scroll_states
+                .get(&id)
+                .map(ScrollState::max_offset))
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    ui.set(
+        "scroll_by",
+        lua.create_function(move |_, (id, delta): (String, f32)| {
+            let mut state = s.borrow_mut();
+            let scroll = state.scroll_states.entry(id).or_default();
+            Ok(scroll.scroll_by(delta))
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    ui.set(
+        "scroll_lines",
+        lua.create_function(move |_, (id, lines, line_height): (String, f32, f32)| {
+            let mut state = s.borrow_mut();
+            let scroll = state.scroll_states.entry(id).or_default();
+            Ok(scroll.scroll_lines(lines, line_height))
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    ui.set(
+        "scroll_page",
+        lua.create_function(move |_, (id, pages): (String, f32)| {
+            let mut state = s.borrow_mut();
+            let scroll = state.scroll_states.entry(id).or_default();
+            Ok(scroll.page(pages))
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    ui.set(
+        "scroll_to_visible",
+        lua.create_function(move |_, (id, item_top, item_height): (String, f32, f32)| {
+            let mut state = s.borrow_mut();
+            let scroll = state.scroll_states.entry(id).or_default();
+            Ok(scroll.scroll_to_visible(item_top, item_height))
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    ui.set(
+        "scroll_visible",
+        lua.create_function(move |lua, id: String| {
+            let state = s.borrow();
+            let Some(scroll) = state.scroll_states.get(&id) else {
+                return Ok(Value::Nil);
+            };
+            let (start, stop) = scroll.visible_range();
+            let result = lua.create_table()?;
+            // 不能叫 `end`：Lua 里 `range.end` 是关键字，取值必须写 `range['end']`。
+            result.set("start", start)?;
+            result.set("stop", stop)?;
+            Ok(Value::Table(result))
+        })?,
+    )?;
+
     let item = lua.create_table()?;
     let s = Rc::clone(&state);
     item.set(
@@ -4562,6 +5329,40 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
 fn world_error(error: WorldError) -> mlua::Error {
     api_error(error.to_string())
 }
+
+/// 输入层诊断（M20-07）：只保留最近 [`INPUT_DIAGNOSTIC_LIMIT`] 条，最新在后。
+fn push_input_diagnostic(state: &mut ScriptState, message: String) {
+    const INPUT_DIAGNOSTIC_LIMIT: usize = 16;
+    tracing::warn!(target: "input", "{}", message);
+    if state.input_diagnostics.len() >= INPUT_DIAGNOSTIC_LIMIT {
+        state.input_diagnostics.remove(0);
+    }
+    state.input_diagnostics.push(message);
+}
+
+/// 解析 `input.load_settings/save_settings` 的可选路径参数（M20-07）。
+///
+/// * 省略 → `<project_root>/settings.toml`（无工程根返回 `None`，Lua 侧报
+///   `no_project_root`）；
+/// * 相对路径 → 相对工程根解析（无工程根返回 `None`）；
+/// * 绝对路径 → 原样使用（无头/测试场景可给绝对路径）。
+fn resolve_input_settings_path(state: &ScriptState, path: Option<&str>) -> Option<PathBuf> {
+    match path.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(value) => {
+            let candidate = PathBuf::from(value);
+            if candidate.is_absolute() {
+                Some(candidate)
+            } else {
+                state.project_root.as_ref().map(|root| root.join(candidate))
+            }
+        }
+        None => state
+            .project_root
+            .as_ref()
+            .map(|root| ProjectSettings::path_in(root)),
+    }
+}
+
 fn parse_key(key: &str) -> InputKey {
     match key.to_ascii_lowercase().as_str() {
         "w" => InputKey::W,
@@ -4570,6 +5371,11 @@ fn parse_key(key: &str) -> InputKey {
         "d" => InputKey::D,
         "space" => InputKey::Space,
         "escape" => InputKey::Escape,
+        // 方向键（M20-02 UI 焦点/滚动导航）：宿主按 InputKey::ARROW_* 喂入。
+        "up" => InputKey::ARROW_UP,
+        "down" => InputKey::ARROW_DOWN,
+        "left" => InputKey::ARROW_LEFT,
+        "right" => InputKey::ARROW_RIGHT,
         "f1" => InputKey::Other(1),
         "f2" => InputKey::Other(2),
         "f4" => InputKey::Other(4),
@@ -4577,6 +5383,12 @@ fn parse_key(key: &str) -> InputKey {
         one if one.chars().count() == 1 => InputKey::from_char(one.chars().next().unwrap_or(' ')),
         _ => InputKey::Other(0),
     }
+}
+
+/// 音量总线名 → [`AudioBus`]；未知名报 Lua 错误（拼写错误可定位，不静默）。
+fn parse_audio_bus(name: &str) -> LuaResult<AudioBus> {
+    AudioBus::from_key(&name.trim().to_ascii_lowercase())
+        .ok_or_else(|| api_error(format!("unknown audio bus: {name}")))
 }
 fn parse_mouse_button(button: &str) -> MouseButton {
     match button.to_ascii_lowercase().as_str() {
@@ -4593,17 +5405,22 @@ mod tests {
     use crate::core::sprite::Sprite;
     use std::time::{SystemTime, UNIX_EPOCH};
     fn script(contents: &str) -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        // 进程内单调计数 + 纳秒时间戳：并行测试在同一时间刻度内调用时
+        // 也不会拿到同一路径（曾因纯时间戳碰撞互相覆盖脚本导致偶发失败）。
+        static NEXT_ID: AtomicU64 = AtomicU64::new(0);
         let id = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path = std::env::temp_dir().join(format!("p2-lua-{id}.lua"));
+        let unique = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!("p2-lua-{id}-{unique}.lua"));
         fs::write(&path, contents).unwrap();
         path
     }
 
     fn production_sample_root() -> PathBuf {
-        crate::core::games_dir().join("examples")
+        crate::core::games_dir().join("examples").join("game_api")
     }
 
     #[test]
@@ -4882,6 +5699,59 @@ mod tests {
         assert_eq!(runtime.call_update().unwrap(), "done");
         let _ = fs::remove_file(first);
         let _ = fs::remove_file(second);
+    }
+
+    #[test]
+    fn runtime_spawned_entity_can_attach_animation() {
+        // 运行期创建的实体（entity.spawn 只插入 Transform）此前无法播动画：
+        // NPC/敌人/特效只能显示单帧。animation.attach 让 Lua 侧自己挂组件。
+        let first = script(
+            "function on_create()\n\
+             local id = entity.spawn('Effect', 'fx_probe')\n\
+             assert(animation.attach(id, 'default=idle_s;clip:idle_s:assets/fx.png:4:8:true'))\n\
+             assert(animation.get(id) == 'idle_s')\n\
+             local clips = animation.clips(id)\n\
+             assert(#clips == 1 and clips[1] == 'idle_s')\n\
+             assert(animation.set(id, 'idle_s') == false)\n\
+             return 'ok' end\n\
+             function update() return 'ok' end",
+        );
+        let mut runtime = LuaRuntime::new().unwrap();
+        runtime.execute_project_script(&first).unwrap();
+        assert_eq!(runtime.call_update().unwrap(), "ok");
+
+        // 组件确实进了 ECS，且每帧推进（4 帧 @8fps → 0.2s 后到第 2 帧）
+        let machines = runtime.with_world(|world| world.entities_with::<AnimationStateMachine>());
+        assert_eq!(machines.len(), 1);
+        runtime.with_world_mut(|world| {
+            world
+                .get_mut::<AnimationStateMachine>(machines[0])
+                .unwrap()
+                .unwrap()
+                .advance(0.26);
+        });
+        let second = script(
+            "function update()\nlocal id = entity.find_id('fx_probe')\nassert(animation.frame(id) == 2)\nreturn 'frame2' end",
+        );
+        runtime.execute_project_script(&second).unwrap();
+        assert_eq!(runtime.call_update().unwrap(), "frame2");
+
+        // 非法组件串要被拒绝，且不破坏已有组件
+        let third = script(
+            "function update()\n\
+             local id = entity.find_id('fx_probe')\n\
+             local ok = pcall(animation.attach, id, 'clip:broken')\n\
+             assert(not ok, 'malformed component must be rejected')\n\
+             assert(animation.get(id) == 'idle_s')\n\
+             local gone = pcall(animation.attach, 999999, 'default=a;clip:a:assets/fx.png:2:8:true')\n\
+             assert(not gone, 'dead entity must be rejected')\n\
+             return 'guarded' end",
+        );
+        runtime.execute_project_script(&third).unwrap();
+        assert_eq!(runtime.call_update().unwrap(), "guarded");
+        let _ = fs::remove_file(first);
+        let _ = fs::remove_file(second);
+        let _ = fs::remove_file(third);
     }
 
     #[test]
@@ -6169,7 +7039,7 @@ mod tests {
     fn lua_3d_animation_queries_and_switches_clips() {
         use crate::core::scene::{Scene, SceneEntityId};
 
-        let root = crate::core::games_dir().join("examples");
+        let root = crate::core::games_dir().join("examples").join("game_api");
         if !root.join("assets/models/m8-skin-quad.glb").is_file() {
             return;
         }
@@ -6288,6 +7158,56 @@ mod tests {
         );
     }
 
+    /// M19-03：`eval_json` 覆盖表/数组/标量/nil 的转换与非法表达式错误，
+    /// 且错误保留原始 Lua 消息（供编辑器原样显示）。
+    #[test]
+    fn eval_json_converts_tables_arrays_scalars_and_reports_errors() {
+        let runtime = LuaRuntime::new().unwrap();
+        assert_eq!(runtime.eval_json("nil").unwrap(), serde_json::Value::Null);
+        assert_eq!(runtime.eval_json("true").unwrap(), serde_json::json!(true));
+        assert_eq!(runtime.eval_json("42").unwrap(), serde_json::json!(42));
+        assert_eq!(runtime.eval_json("1.5").unwrap(), serde_json::json!(1.5));
+        assert_eq!(
+            runtime.eval_json("'text'").unwrap(),
+            serde_json::json!("text")
+        );
+        // 纯数组表 → JSON 数组。
+        assert_eq!(
+            runtime.eval_json("return { 1, 2, 3 }").unwrap(),
+            serde_json::json!([1, 2, 3])
+        );
+        // 字符串键表（含嵌套数组）→ JSON 对象。
+        assert_eq!(
+            runtime
+                .eval_json("return { ok = true, issues = { 'a', 'b' } }")
+                .unwrap(),
+            serde_json::json!({ "ok": true, "issues": ["a", "b"] })
+        );
+        // 多语句块（编辑器域数据探针用 IIFE，但语句块本身也应可用）。
+        assert_eq!(
+            runtime
+                .eval_json("local out = {}; for i = 1, 3 do out[i] = i * 2 end; return out")
+                .unwrap(),
+            serde_json::json!([2, 4, 6])
+        );
+        // 非法表达式：错误保留原始 Lua 语法消息。
+        let error = runtime.eval_json("this is not lua").unwrap_err();
+        let message = error.to_string();
+        assert!(
+            message.contains("eval_json"),
+            "错误应带求值入口名: {message}"
+        );
+        assert!(
+            message.contains("syntax error"),
+            "错误应保留原始 Lua 消息: {message}"
+        );
+        // 运行期错误同样保留消息。
+        let runtime_error = runtime.eval_json("error('probe boom')").unwrap_err();
+        assert!(runtime_error.to_string().contains("probe boom"));
+        // 不支持的 Lua 类型（函数）报错而不是 panic。
+        assert!(runtime.eval_json("print").is_err());
+    }
+
     #[test]
     fn console_errors_are_recorded_with_console_path() {
         let mut runtime = LuaRuntime::new().unwrap();
@@ -6346,5 +7266,710 @@ mod tests {
         assert!(error.contains("boom"));
         assert!(error.contains(&path.display().to_string()));
         let _ = fs::remove_file(path);
+    }
+
+    /// M20-02：`audio` 表的总线 API——分组独立、主 × 分组、非法总线名报错。
+    #[test]
+    fn audio_bus_lua_api_groups_volumes_and_rejects_unknown_bus() {
+        let mut runtime = LuaRuntime::new().unwrap();
+        runtime
+            .execute_console(
+                "assert(#audio.buses() == 4)\n\
+                 assert(audio.buses()[1] == 'master' and audio.buses()[4] == 'ui')\n\
+                 audio.set_bus_volume('master', 0.5)\n\
+                 audio.set_bus_volume('bgm', 0.4)\n\
+                 audio.set_bus_volume('sfx', 0.8)\n\
+                 audio.set_bus_volume('ui', 0.2)\n\
+                 assert(math.abs(audio.bus_volume('master') - 0.5) < 1e-6)\n\
+                 assert(math.abs(audio.bus_volume('bgm') - 0.4) < 1e-6)\n\
+                 assert(math.abs(audio.bus_volume('sfx') - 0.8) < 1e-6)\n\
+                 assert(math.abs(audio.bus_volume('ui') - 0.2) < 1e-6)\n\
+                 assert(math.abs(audio.effective_volume('bgm') - 0.2) < 1e-6)\n\
+                 assert(math.abs(audio.effective_volume('master') - 0.5) < 1e-6)\n\
+                 assert(math.abs(audio.effective_volume('sfx') - 0.4) < 1e-6)\n\
+                 do local ok = pcall(function() return audio.bus_volume('nope') end)\n\
+                    assert(not ok, 'unknown bus must error') end\n\
+                 do local ok = pcall(function() return audio.set_bus_volume('nope', 0.5) end)\n\
+                    assert(not ok, 'unknown bus must error') end\n\
+                 audio.set_bus_volume('bgm', 5.0)\n\
+                 assert(math.abs(audio.bus_volume('bgm') - 1.0) < 1e-6)\n\
+                 return 'ok'",
+            )
+            .unwrap();
+    }
+
+    /// M20-02：`audio.play_on`（总线播放）与 `settings_text`/`apply_settings` 往返。
+    #[test]
+    fn audio_lua_settings_text_round_trips_and_rejects_bad_version() {
+        let mut runtime = LuaRuntime::new().unwrap();
+        let text = runtime
+            .execute_console(
+                "audio.set_bus_volume('master', 0.6)\n\
+                 audio.set_bus_volume('bgm', 0.3)\n\
+                 audio.set_bus_volume('sfx', 0.9)\n\
+                 audio.set_bus_volume('ui', 0.6)\n\
+                 assert(select(1, audio.apply_settings('rustlua-audio-v0\\nbgm=0.9')) == false)\n\
+                 assert(math.abs(audio.bus_volume('bgm') - 0.3) < 1e-6)\n\
+                 return audio.settings_text()",
+            )
+            .unwrap();
+        assert!(text.starts_with(crate::core::audio::AUDIO_SETTINGS_VERSION));
+        assert!(text.contains("bgm=0.300"), "{text}");
+
+        // 文本经 Lua 长字符串吃进第二个 VM，四路音量按总线路由恢复。
+        let mut restored = LuaRuntime::new().unwrap();
+        let expression = format!(
+            "assert(select(1, audio.apply_settings([==[\n{text}]==])) == true)\n\
+             assert(math.abs(audio.bus_volume('master') - 0.6) < 1e-6)\n\
+             assert(math.abs(audio.bus_volume('bgm') - 0.3) < 1e-6)\n\
+             assert(math.abs(audio.bus_volume('sfx') - 0.9) < 1e-6)\n\
+             assert(math.abs(audio.bus_volume('ui') - 0.6) < 1e-6)\n\
+             assert(math.abs(audio.effective_volume('bgm') - 0.18) < 1e-6)\n\
+             return 'ok'"
+        );
+        assert_eq!(restored.execute_console(&expression).unwrap(), "ok");
+
+        // 播放失败（无 asset_dir）返回 false + 原因，不抛错、不中断玩法。
+        let (ok, why) = {
+            let raw = restored
+                .execute_console(
+                    "local ok, why = audio.play_on('ui', '__definitely_missing__')\n\
+                     return tostring(ok) .. '|' .. tostring(why ~= nil and #why > 0)",
+                )
+                .unwrap();
+            let mut parts = raw.split('|');
+            (
+                parts.next().unwrap_or_default().to_owned(),
+                parts.next().unwrap_or_default().to_owned(),
+            )
+        };
+        assert_eq!(ok, "false");
+        assert_eq!(why, "true");
+    }
+
+    /// M20-02：工程设置文件 `<project>/settings.toml` 的读写入口。
+    #[test]
+    fn audio_lua_project_settings_load_and_save() {
+        let root = std::env::temp_dir().join(format!(
+            "rustlua-lua-settings-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("settings.toml"),
+            "# 说明\n[audio]\nmaster = 0.5\nbgm = 0.25\nsfx = 0.75\nui = 0.5\n\n[input]\nmap = \"keep\"\n",
+        )
+        .unwrap();
+        let mut runtime = LuaRuntime::new().unwrap();
+        runtime.set_project_root(root.clone());
+        let path = runtime
+            .execute_console("assert(audio.settings_path() ~= nil); return audio.settings_path()")
+            .unwrap();
+        assert!(path.ends_with("settings.toml"), "{path}");
+        runtime
+            .execute_console(
+                "assert(select(1, audio.load_settings()) == true)\n\
+                 assert(math.abs(audio.bus_volume('bgm') - 0.25) < 1e-6)\n\
+                 assert(math.abs(audio.effective_volume('bgm') - 0.125) < 1e-6)\n\
+                 audio.set_bus_volume('ui', 0.9)\n\
+                 assert(select(1, audio.save_settings()) == true)\n\
+                 return 'ok'",
+            )
+            .unwrap();
+        let text = fs::read_to_string(root.join("settings.toml")).unwrap();
+        assert!(text.contains("# 说明"), "{text}");
+        assert!(text.contains("map = \"keep\""), "{text}");
+        assert!(text.contains("ui = 0.9"), "{text}");
+        // 缺失文件 → 默认值 + 明确返回 false, "missing"，不报错。
+        let empty = root.join("empty");
+        fs::create_dir_all(&empty).unwrap();
+        let mut bare = LuaRuntime::new().unwrap();
+        bare.set_project_root(empty.clone());
+        assert_eq!(
+            bare.execute_console(
+                "local ok, why = audio.load_settings(); return tostring(ok) .. '|' .. why"
+            )
+            .unwrap(),
+            "false|missing"
+        );
+        // 无工程根：明确失败而不是 panic。
+        let mut rootless = LuaRuntime::new().unwrap();
+        assert_eq!(
+            rootless
+                .execute_console("return select(2, audio.save_settings())")
+                .unwrap(),
+            "no_project_root"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn input_action_map_defaults_are_available_to_lua() {
+        let mut runtime = LuaRuntime::new().unwrap();
+        let raw = runtime
+            .execute_console(
+                "assert(#input.actions() >= 15, 'default actions must be registered')\n\
+                 local text = input.action_map_text()\n\
+                 assert(text:find('rustlua-actions-v1', 1, true) == 1)\n\
+                 assert(text:find('interact=key:e', 1, true) ~= nil)\n\
+                 local list = input.bindings('confirm')\n\
+                 assert(#list == 2 and list[1] == 'key:space' and list[2] == 'pad:0')\n\
+                 assert(#input.bindings('missing_action') == 0)\n\
+                 return tostring(#input.actions())",
+            )
+            .unwrap();
+        assert!(raw.parse::<usize>().unwrap_or_default() >= 15, "{raw}");
+        // 宿主读到的映射与脚本同源（同一份实例）。
+        assert_eq!(
+            runtime.action_map().bindings("interact"),
+            [Binding::Key(InputKey::from_char('e'))]
+        );
+        assert!(runtime.input_diagnostics().is_empty());
+    }
+
+    /// M20-07：键盘键位与抽象手柄按钮触发同一动作，结论一致；
+    /// 摇杆给模拟量、键位给 0/1；原始手柄查询（`pad_*`）与动作层一致。
+    #[test]
+    fn input_action_api_matches_keyboard_and_gamepad_bindings() {
+        let mut runtime = LuaRuntime::new().unwrap();
+        let mut input = InputSnapshot::default();
+        input.key_event(InputKey::from_char('e'), true);
+        runtime.set_input(input);
+        runtime
+            .execute_console(
+                "assert(input.action('interact') == true)\n\
+                 assert(input.action_pressed('interact') == true)\n\
+                 assert(input.action_released('interact') == false)\n\
+                 assert(input.action('move_up') == false)\n\
+                 assert(input.action_axis('move_left', 'move_right') == 0)\n\
+                 assert(input.pad_button(0) == false)\n\
+                 assert(input.pad_axis(1) == 0)\n\
+                 return 'ok'",
+            )
+            .unwrap();
+        // 同一动作改由手柄 A 键（confirm）触发：语义与键盘一致。
+        let mut input = InputSnapshot::default();
+        input.gamepad_button_event(0, true);
+        runtime.set_input(input);
+        let raw = runtime
+            .execute_console(
+                "assert(input.action('confirm') == true)\n\
+                 assert(input.action_pressed('confirm') == true)\n\
+                 assert(input.action_released('confirm') == false)\n\
+                 assert(input.pad_button(0) == true)\n\
+                 assert(input.pad_button(1) == false)\n\
+                 assert(input.axis('horizontal') == 0, 'physical axis unaffected by gamepad')\n\
+                 assert(input.action_axis('move_left', 'move_right') == 0)\n\
+                 return tostring(input.action('confirm'))",
+            )
+            .unwrap();
+        assert_eq!(raw, "true");
+        // 手柄轴：动作过 0.5 阈值，模拟量按方向符号取正。
+        let mut input = InputSnapshot::default();
+        input.set_gamepad_axis(1, 0.8);
+        runtime.set_input(input);
+        runtime
+            .execute_console(
+                "assert(input.action('ui_up') == true, 'stick up drives ui_up')\n\
+                 assert(input.action('ui_down') == false)\n\
+                 assert(input.action('confirm') == false)\n\
+                 assert(math.abs(input.pad_axis(1) - 0.8) < 1e-6)\n\
+                 assert(math.abs(input.action_axis('ui_down', 'ui_up') - 0.8) < 1e-6, 'up is positive')\n\
+                 assert(math.abs(input.action_axis('stick_up', 'stick_down')) < 1e-6)\n\
+                 return 'ok'",
+            )
+            .unwrap();
+        // 自定义摇杆动作（负向在前、正向在后）→ 模拟量而非 0/1。
+        runtime
+            .execute_console(
+                "assert(select(1, input.rebind('stick_down', 'padaxis:1-')) == true)\n\
+                 assert(select(1, input.rebind('stick_up', 'padaxis:1+')) == true)\n\
+                 assert(math.abs(input.action_axis('stick_down', 'stick_up') - 0.8) < 1e-6)\n\
+                 return 'ok'",
+            )
+            .unwrap();
+        // 键位绑定：轴是 0/1（而非手柄模拟量）。
+        let mut input = InputSnapshot::default();
+        input.key_event(InputKey::D, true);
+        runtime.set_input(input);
+        runtime
+            .execute_console(
+                "assert(input.action('move_right') == true)\n\
+                 assert(input.action_axis('move_left', 'move_right') == 1)\n\
+                 return 'ok'",
+            )
+            .unwrap();
+        // 边沿在本逻辑帧内保留，`finish_frame` 后清除（由宿主每帧调用）。
+        let mut input = InputSnapshot::default();
+        input.key_event(InputKey::from_char('e'), true);
+        input.finish_frame();
+        runtime.set_input(input);
+        runtime
+            .execute_console(
+                "assert(input.action('interact') == true)\n\
+                 assert(input.action_pressed('interact') == false)\n\
+                 return 'ok'",
+            )
+            .unwrap();
+    }
+
+    /// M20-07：重绑定 / 解绑 / 重置 / 映射文本往返，含明确错误原因。
+    #[test]
+    fn input_action_map_rebind_unbind_and_text_round_trip() {
+        let mut runtime = LuaRuntime::new().unwrap();
+        runtime
+            .execute_console(
+                "assert(input.rebind('interact', 'key:f') == true)\n\
+                 local list = input.bindings('interact')\n\
+                 assert(#list == 1 and list[1] == 'key:f')\n\
+                 return 'ok'",
+            )
+            .unwrap();
+        // 旧绑定失效、新绑定生效。
+        let mut input = InputSnapshot::default();
+        input.key_event(InputKey::from_char('e'), true);
+        runtime.set_input(input);
+        runtime
+            .execute_console("assert(input.action('interact') == false); return 'ok'")
+            .unwrap();
+        let mut input = InputSnapshot::default();
+        input.key_event(InputKey::from_char('f'), true);
+        runtime.set_input(input);
+        runtime
+            .execute_console(
+                "assert(input.action('interact') == true)\n\
+                 assert(input.action_pressed('interact') == true)\n\
+                 return 'ok'",
+            )
+            .unwrap();
+        // 物理键 API 不受重绑定影响（证明只加了动作层）。
+        runtime
+            .execute_console(
+                "assert(input.is_down('f') == true)\n\
+                 assert(input.is_down('e') == false)\n\
+                 assert(input.pressed('f') == true)\n\
+                 return 'ok'",
+            )
+            .unwrap();
+        // 非法绑定 / 重复绑定 → false + 明确原因，不 panic，也不破坏当前绑定。
+        let raw = runtime
+            .execute_console(
+                "local ok, why = input.rebind('interact', 'joystick:1')\n\
+                 assert(ok == false and why:find('joystick:1') ~= nil, tostring(why))\n\
+                 assert(input.bindings('interact')[1] == 'key:f', 'invalid rebind must not clear bindings')\n\
+                 local dup_ok, dup_why = input.rebind('interact', 'key:f')\n\
+                 assert(dup_ok == true, 'rebind is an overwrite, not a duplicate add')\n\
+                 local bad = input.rebind('interact', 'not-a-binding')\n\
+                 assert(bad == false)\n\
+                 return tostring(ok) .. '|' .. tostring(dup_ok) .. '|' .. tostring(bad)",
+            )
+            .unwrap();
+        assert_eq!(raw, "false|true|false");
+        // 解绑 → 动作不再命中；重置 → 恢复默认绑定。
+        runtime
+            .execute_console(
+                "assert(input.unbind('interact', 'key:f') == true)\n\
+                 assert(input.unbind('interact', 'key:f') == false)\n\
+                 assert(#input.bindings('interact') == 0)\n\
+                 assert(input.unbind('interact', 'key:e') == false)\n\
+                 input.reset_bindings()\n\
+                 local list = input.bindings('interact')\n\
+                 assert(#list == 1 and list[1] == 'key:e')\n\
+                 return 'ok'",
+            )
+            .unwrap();
+        // 映射文本往返：导出 → 改绑 → 导入 → 与导出时一致；版本头不符 → false + 原因。
+        let raw = runtime
+            .execute_console(
+                "local text = input.action_map_text()\n\
+                 input.rebind('interact', 'key:g')\n\
+                 assert(input.bindings('interact')[1] == 'key:g')\n\
+                 assert(select(1, input.set_action_map(text)) == true)\n\
+                 assert(input.bindings('interact')[1] == 'key:e')\n\
+                 local ok, why = input.set_action_map('rustlua-actions-v0\\ninteract=key:e')\n\
+                 assert(ok == false and why:find('rustlua-actions-v0', 1, true) ~= nil, tostring(why))\n\
+                 assert(input.bindings('interact')[1] == 'key:e', 'bad version must not apply')\n\
+                 return tostring(ok)",
+            )
+            .unwrap();
+        assert_eq!(raw, "false");
+        // 宿主注入的映射对脚本立即可见（单一事实来源）。
+        let mut map = ActionMap::with_defaults();
+        map.clear("interact");
+        map.bind("interact", Binding::Key(InputKey::from_char('z')))
+            .unwrap();
+        runtime.set_action_map(map);
+        runtime
+            .execute_console(
+                "assert(input.bindings('interact')[1] == 'key:z')\n\
+                 assert(input.is_down('z') == false)\n\
+                 return 'ok'",
+            )
+            .unwrap();
+    }
+
+    /// M20-07：`[input]` 段设置文件往返 —— 与内存映射相等、保留 `[audio]` 段与
+    /// 注释、版本头不符回退默认并产生可定位诊断、无工程根返回明确错误。
+    #[test]
+    fn input_action_settings_round_trip_and_version_fallback() {
+        let root = std::env::temp_dir().join(format!(
+            "rustlua-lua-input-settings-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let settings_path = root.join("settings.toml");
+        fs::write(
+            &settings_path,
+            "# 玩家设置\n[audio]\nmaster = 0.5\nbgm = 0.25\nsfx = 1.0\nui = 1.0\n",
+        )
+        .unwrap();
+        let mut runtime = LuaRuntime::new().unwrap();
+        runtime.set_project_root(root.clone());
+        let path = runtime
+            .execute_console("assert(input.settings_path() ~= nil); return input.settings_path()")
+            .unwrap();
+        assert!(path.ends_with("settings.toml"), "{path}");
+        // 改绑 → 写盘 → 读盘：设置文件里的映射与内存映射相等。
+        runtime
+            .execute_console(
+                "assert(input.rebind('interact', 'key:f') == true)\n\
+                 assert(select(1, input.save_settings()) == true)\n\
+                 input.reset_bindings()\n\
+                 assert(input.bindings('interact')[1] == 'key:e')\n\
+                 assert(select(1, input.load_settings()) == true)\n\
+                 assert(input.bindings('interact')[1] == 'key:f', 'saved binding must survive round trip')\n\
+                 return 'ok'",
+            )
+            .unwrap();
+        let text = fs::read_to_string(&settings_path).unwrap();
+        // 写入 [input] 后 [audio] 段与注释仍在（保序读改写）。
+        assert!(text.contains("# 玩家设置"), "{text}");
+        assert!(text.contains("master = 0.5"), "{text}");
+        assert!(text.contains("bgm = 0.25"), "{text}");
+        assert!(text.contains("[input]"), "{text}");
+        assert!(text.contains("[audio]"), "{text}");
+        assert!(text.contains("interact=key:f"), "{text}");
+        // 设置文件文本 == 当前内存映射的 to_text（宿主与脚本同源）。
+        assert_eq!(runtime.action_map().to_text(), {
+            let start = text.find("map = \"").expect("map line") + "map = \"".len();
+            let rest = &text[start..];
+            let end = rest.find('"').expect("closing quote");
+            rest[..end].replace("\\n", "\n")
+        });
+        assert!(runtime.input_diagnostics().is_empty());
+        // 旧物理键 API 仍然可用。
+        let mut input = InputSnapshot::default();
+        input.key_event(InputKey::from_char('f'), true);
+        runtime.set_input(input);
+        runtime
+            .execute_console(
+                "assert(input.action('interact') == true)\n\
+                 assert(input.is_down('f') == true)\n\
+                 return 'ok'",
+            )
+            .unwrap();
+        // 版本头不符 → 回退默认 + 可定位诊断，不崩溃、不静默。
+        fs::write(
+            &settings_path,
+            "[input]\nmap = \"rustlua-actions-v0\\ninteract=key:q\"\n",
+        )
+        .unwrap();
+        let raw = runtime
+            .execute_console(
+                "local ok, why = input.load_settings()\n\
+                 assert(ok == false and why:find('rustlua-actions-v0', 1, true) ~= nil, tostring(why))\n\
+                 assert(input.bindings('interact')[1] == 'key:e', 'fallback to defaults')\n\
+                 local list = input.diagnostics()\n\
+                 assert(#list >= 1 and list[#list]:find('reverting to defaults') ~= nil, tostring(#list))\n\
+                 return list[#list]",
+            )
+            .unwrap();
+        assert!(raw.contains("settings.toml"), "{raw}");
+        // 非法绑定文本 → 同样回退默认并给可定位原因。
+        runtime
+            .execute_console(
+                "assert(input.rebind('interact', 'key:r') == true)\n\
+                 return 'ok'",
+            )
+            .unwrap();
+        fs::write(
+            &settings_path,
+            "[input]\nmap = \"rustlua-actions-v1\\ninteract=joystick:1\"\n",
+        )
+        .unwrap();
+        let raw = runtime
+            .execute_console(
+                "local ok, why = input.load_settings()\n\
+                 assert(ok == false and why:find('joystick:1') ~= nil, tostring(why))\n\
+                 assert(input.bindings('interact')[1] == 'key:e')\n\
+                 return why",
+            )
+            .unwrap();
+        assert!(raw.contains("joystick:1"), "{raw}");
+        // 缺 [input] 段（或文件缺失）→ 保留当前绑定 + 诊断，不清空用户改键。
+        fs::write(&settings_path, "[audio]\nmaster = 1.0\n").unwrap();
+        runtime
+            .execute_console(
+                "assert(input.rebind('interact', 'key:v') == true)\n\
+                 local ok, why = input.load_settings()\n\
+                 assert(ok == false and why:find('keeping current bindings') ~= nil, tostring(why))\n\
+                 assert(input.bindings('interact')[1] == 'key:v', 'missing [input] must not wipe bindings')\n\
+                 return 'ok'",
+            )
+            .unwrap();
+        let _ = fs::remove_file(&settings_path);
+        let raw = runtime
+            .execute_console(
+                "local ok, why = input.load_settings()\n\
+                 assert(ok == false and why == 'missing', tostring(why))\n\
+                 assert(input.bindings('interact')[1] == 'key:v')\n\
+                 return why",
+            )
+            .unwrap();
+        assert_eq!(raw, "missing");
+        // 显式绝对路径：无工程根也能读（无头/测试场景）。
+        let alt = root.join("alt.toml");
+        fs::write(
+            &alt,
+            "[input]\nmap = \"rustlua-actions-v1\\ninteract=key:m\"\n",
+        )
+        .unwrap();
+        runtime
+            .execute_console(&format!(
+                "assert(select(1, input.load_settings([==[{}]==])) == true)\n\
+                 assert(input.bindings('interact')[1] == 'key:m')\n\
+                 return 'ok'",
+                alt.display()
+            ))
+            .unwrap();
+        // 无工程根且未给路径 → 明确错误（不 panic）。
+        let mut rootless = LuaRuntime::new().unwrap();
+        assert_eq!(
+            rootless
+                .execute_console("return select(2, input.save_settings())")
+                .unwrap(),
+            "no_project_root"
+        );
+        assert_eq!(
+            rootless
+                .execute_console("return select(2, input.load_settings())")
+                .unwrap(),
+            "no_project_root"
+        );
+        // 绑定不随场景切换/读档回滚：切场景只清 ECS/UI，保留玩家改键。
+        let scene_dir = root.join("scenes");
+        fs::create_dir_all(&scene_dir).unwrap();
+        let mut scene = crate::core::scene::Scene::new("town");
+        scene
+            .add_entity(crate::core::scene::SceneEntityId(1), "Player", None)
+            .unwrap();
+        scene.save(scene_dir.join("town.scene")).unwrap();
+        runtime.set_action_map({
+            let mut map = ActionMap::with_defaults();
+            map.clear("interact");
+            map.bind("interact", Binding::Key(InputKey::from_char('y')))
+                .unwrap();
+            map
+        });
+        runtime
+            .execute_console("assert(select(1, scene.load('town')) == true); return 'ok'")
+            .unwrap();
+        runtime.process_scene_transition().unwrap();
+        runtime
+            .execute_console(
+                "assert(input.bindings('interact')[1] == 'key:y', 'scene switch keeps user bindings')\n\
+                 return 'ok'",
+            )
+            .unwrap();
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// M20-07：动作层可驱动面板导航（`ui.focus_*`）——默认绑定（方向键 + 左摇杆）
+    /// 直接可用，面板不需要自己解析物理键。
+    #[test]
+    fn input_actions_drive_ui_focus_navigation() {
+        let mut runtime = LuaRuntime::new().unwrap();
+        // 左摇杆上推 → `ui_up` 命中，合成轴为 +0.9。
+        let mut input = InputSnapshot::default();
+        input.set_gamepad_axis(1, 0.9);
+        runtime.set_input(input);
+        runtime
+            .execute_console(
+                "assert(input.action('ui_up') == true)\n\
+                 assert(input.action('ui_down') == false)\n\
+                 assert(math.abs(input.action_axis('ui_down', 'ui_up') - 0.9) < 1e-6)\n\
+                 return 'ok'",
+            )
+            .unwrap();
+        // 面板把（过阈值的）动作 + 模拟量接到 M20-02 的焦点 API。
+        runtime
+            .execute_console(
+                "ui.focus_open('bag', 3)\n\
+                 local step = 0\n\
+                 if math.abs(input.action_axis('ui_down', 'ui_up')) >= 0.5 then\n\
+                   step = input.action_axis('ui_down', 'ui_up') > 0 and 1 or -1\n\
+                 end\n\
+                 assert(step == 1)\n\
+                 assert(ui.focus_move('bag', 'down') == 0)\n\
+                 assert(ui.focus_move('bag', 'down') == 1)\n\
+                 assert(ui.focus_index('bag') == 1)\n\
+                 return 'ok'",
+            )
+            .unwrap();
+        // 手柄 A/B → `confirm` / `cancel`：焦点环上确认与取消都成立。
+        let mut input = InputSnapshot::default();
+        input.gamepad_button_event(0, true);
+        runtime.set_input(input);
+        runtime
+            .execute_console(
+                "assert(input.action('confirm') == true)\n\
+                 local confirmed = false\n\
+                 if input.action_pressed('confirm') then confirmed = ui.focus_select('bag', 2) end\n\
+                 assert(confirmed == true and ui.focus_index('bag') == 2)\n\
+                 return 'ok'",
+            )
+            .unwrap();
+        let mut input = InputSnapshot::default();
+        input.gamepad_button_event(1, true);
+        runtime.set_input(input);
+        runtime
+            .execute_console(
+                "assert(input.action('cancel') == true)\n\
+                 local closed = false\n\
+                 if input.action('cancel') then closed = ui.focus_close('bag') end\n\
+                 assert(closed == true and ui.focus_count('bag') == 0)\n\
+                 return 'ok'",
+            )
+            .unwrap();
+        // 方向键走同一动作层：↓ 键 → `ui_down` → 焦点下移（键盘与手柄同源）。
+        let mut input = InputSnapshot::default();
+        input.key_event(InputKey::ARROW_DOWN, true);
+        runtime.set_input(input);
+        runtime
+            .execute_console(
+                "assert(input.is_down('down') == true, 'physical arrow key works')\n\
+                 assert(input.action('ui_down') == true, 'arrows drive the same actions as the stick')\n\
+                 ui.focus_open('arrows', 3)\n\
+                 local first, second = nil, nil\n\
+                 if input.action('ui_down') then first = ui.focus_move('arrows', 'down') end\n\
+                 if input.action('ui_down') then second = ui.focus_move('arrows', 'down') end\n\
+                 assert(first == 0 and second == 1, 'arrow key drives focus through the action layer')\n\
+                 assert(ui.focus_index('arrows') == 1)\n\
+                 return 'ok'",
+            )
+            .unwrap();
+    }
+
+    /// M20-02：`ui.focus_*` 焦点环——方向移动、环绕、网格列、越界与未知方向。
+    #[test]
+    fn ui_focus_lua_api_navigates_lists_and_grids() {
+        let mut runtime = LuaRuntime::new().unwrap();
+        runtime
+            .execute_console(
+                // 单列 3 项：下/上移动 + 边界环绕。
+                "assert(ui.focus_open('list', 3) == 3)\n\
+                 assert(ui.focus_count('list') == 3)\n\
+                 assert(ui.focus_index('list') == nil)\n\
+                 assert(ui.focus_move('list', 'down') == 0)\n\
+                 assert(ui.focus_move('list', 'down') == 1)\n\
+                 assert(ui.focus_move('list', 'down') == 2)\n\
+                 assert(ui.focus_move('list', 'down') == 0)\n\
+                 assert(ui.focus_move('list', 'up') == 2)\n\
+                 assert(ui.focus_select('list', 1) == true)\n\
+                 assert(ui.focus_index('list') == 1)\n\
+                 assert(ui.focus_select('list', 9) == false)\n\
+                 assert(ui.focus_cycle('list', true) == 2)\n\
+                 assert(ui.focus_cycle('list', false) == 1)\n\
+                 do local ok = pcall(function() return ui.focus_move('list', 'sideways') end)\n\
+                    assert(not ok, 'unknown direction must error') end\n\
+                 assert(ui.focus_move('missing', 'down') == nil)\n\
+                 assert(ui.focus_close('list') == true)\n\
+                 assert(ui.focus_count('list') == 0)\n\
+                 return 'ok'",
+            )
+            .unwrap();
+        runtime
+            .execute_console(
+                // 2 列网格：下移同列、右移同行、边界环绕。
+                "ui.focus_open('grid', 4, 2)\n\
+                 assert(ui.focus_select('grid', 0) == true)\n\
+                 assert(ui.focus_move('grid', 'down') == 2)\n\
+                 assert(ui.focus_move('grid', 'down') == 0)\n\
+                 assert(ui.focus_move('grid', 'right') == 1)\n\
+                 assert(ui.focus_move('grid', 'right') == 0)\n\
+                 assert(ui.focus_cycle('grid', true) == 1)\n\
+                 return 'ok'",
+            )
+            .unwrap();
+    }
+
+    /// M20-02：`ui.scroll_*` 滚动状态——钳制、按行、滚入视口与可见区间。
+    #[test]
+    fn ui_scroll_lua_api_clamps_and_reveals_items() {
+        let mut runtime = LuaRuntime::new().unwrap();
+        runtime
+            .execute_console(
+                "ui.scroll_open('s', 100, 250)\n\
+                 assert(math.abs(ui.scroll_max('s') - 150) < 1e-6)\n\
+                 assert(math.abs(ui.scroll_by('s', 30) - 30) < 1e-6)\n\
+                 assert(math.abs(ui.scroll_offset('s') - 30) < 1e-6)\n\
+                 assert(math.abs(ui.scroll_by('s', -100) + 30) < 1e-6)\n\
+                 assert(math.abs(ui.scroll_lines('s', 2, 20) - 40) < 1e-6)\n\
+                 assert(math.abs(ui.scroll_page('s', 1) - 100) < 1e-6)\n\
+                 assert(math.abs(ui.scroll_offset('s') - 140) < 1e-6)\n\
+                 assert(math.abs(ui.scroll_page('s', 1) - 10) < 1e-6)\n\
+                 assert(math.abs(ui.scroll_offset('s') - 150) < 1e-6)\n\
+                 assert(math.abs(ui.scroll_page('s', 1)) < 1e-6)\n\
+                 assert(ui.scroll_to_visible('s', 20, 30) == true)\n\
+                 assert(math.abs(ui.scroll_offset('s') - 20) < 1e-6)\n\
+                 assert(ui.scroll_to_visible('s', 20, 30) == false)\n\
+                 local range = ui.scroll_visible('s')\n\
+                 assert(math.abs(range.start - 20) < 1e-6 and math.abs(range.stop - 120) < 1e-6)\n\
+                 ui.scroll_extents('s', 100, 60)\n\
+                 assert(math.abs(ui.scroll_max('s')) < 1e-6)\n\
+                 assert(math.abs(ui.scroll_offset('s')) < 1e-6)\n\
+                 assert(ui.scroll_offset('missing') == nil)\n\
+                 assert(ui.scroll_close('s') == true)\n\
+                 return 'ok'",
+            )
+            .unwrap();
+    }
+
+    /// M20-02：方向键是物理键（宿主喂入），`parse_key` 认 up/down/left/right。
+    #[test]
+    fn arrow_keys_are_physical_keys_distinct_from_letters() {
+        assert_eq!(parse_key("up"), InputKey::ARROW_UP);
+        assert_eq!(parse_key("DOWN"), InputKey::ARROW_DOWN);
+        assert_eq!(parse_key("Left"), InputKey::ARROW_LEFT);
+        assert_eq!(parse_key("right"), InputKey::ARROW_RIGHT);
+        assert_ne!(parse_key("up"), parse_key("w"));
+        for arrow in [
+            InputKey::ARROW_UP,
+            InputKey::ARROW_DOWN,
+            InputKey::ARROW_LEFT,
+            InputKey::ARROW_RIGHT,
+        ] {
+            assert_ne!(arrow, InputKey::Other(0));
+        }
+        let mut runtime = LuaRuntime::new().unwrap();
+        let mut input = InputSnapshot::default();
+        input.key_event(InputKey::ARROW_DOWN, true);
+        runtime.set_input(input);
+        assert_eq!(
+            runtime
+                .execute_console(
+                    "return tostring(input.just_pressed('down')) .. '|' .. tostring(input.is_down('w'))"
+                )
+                .unwrap(),
+            "true|false"
+        );
     }
 }

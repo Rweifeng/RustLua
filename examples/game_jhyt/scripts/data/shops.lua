@@ -32,7 +32,9 @@ return {
     stock = {
       { item = "seed_rice", price = 12, limit = 10 },
       { item = "seed_lingzhi", price = 25, limit = 5 },
-      { item = "heal_pill", price = 60, limit = 3 }
+      { item = "heal_pill", price = 60, limit = 3 },
+      -- 建筑升级材料（M18-02）：不收购以阻断「买入再卖出」套利。
+      { item = "timber", price = 15, limit = 20 }
     },
     buys = { "rice", "lingzhi" }
   }

@@ -22,7 +22,7 @@
   * `core/tilemap.rs` 的 `TILE_PALETTE` 只有 **6 项**：tile 值 1..6 对应 tileset 的第 1..6 列，
     UV-U = (n-1)/6..n/6，UV-V 恒为 0..1。**所以 tileset 必须正好 6 列、高度 32**，
     第 7 列永远采不到，高度不是 32 会被拉伸。
-  * `scripts/farm.lua` 判定"可开垦"用的是 **GroundMap tile == 2（夯土）**，
+  * `scripts/systems/farm.lua` 判定"可开垦"用的是 **GroundMap tile == 2（夯土）**，
     且 overlay 列语义固定：1=已垦干土 2=已垦湿土 3=苗期 4=生长期 5=成熟。
     这两条不能改，否则农田玩法直接坏掉。
   * 建筑/道具的碰撞来自 GroundMap 的 solid 位（不是 sprite），
@@ -46,6 +46,7 @@ from pixel_kit import (  # noqa: E402  (path 插入后才能 import)
     shade,
     text_width,
 )
+from cjk_text import draw_plaque, prewarm  # noqa: E402  中文匾额（GDI+ 栅格化）
 
 TILE = 32
 TILE_COLUMNS = 6  # 引擎 TILE_PALETTE 长度，不可改
@@ -456,6 +457,8 @@ def building_house():
     cv.set(118, 162, GOLD)
     cv.set(117, 162, GOLD_LIGHT)
     cv.hline(94, 130, 138, WOOD)
+    # 门楣匾额「山庄」（中文，走 cjk_text 的 GDI+ 栅格化）
+    draw_plaque(cv, 84, 122, 140, 138, "山庄", size=12)
     # 灯笼（门两侧）
     for lx in (84, 136):
         cv.vline(lx + 5, 128, 136, WOOD_DARK)
@@ -507,7 +510,7 @@ def building_shed():
 
 
 def building_gate():
-    """南门 96×96（3×3 格）：门楼瓦顶 + 木柱 + 匾额（不写字，文字运行时渲染）。"""
+    """南门 96×96（3×3 格）：门楼瓦顶 + 木柱 + 匾额「山庄」。"""
     cv = Canvas(96, 96)
     rows = roof_rows(8, 34, 14, 82, 0, 95)
     tiled_roof(cv, rows, column=12)
@@ -519,11 +522,8 @@ def building_gate():
     # 立柱
     wood_post(cv, 8, 36, 22, 88)
     wood_post(cv, 74, 36, 88, 88)
-    # 匾额
-    cv.rect(30, 40, 66, 58, WOOD_DARK)
-    cv.rect(32, 42, 64, 56, WOOD_MID)
-    cv.hline(32, 64, 42, GOLD)
-    cv.hline(32, 64, 56, GOLD)
+    # 匾额「山庄」
+    draw_plaque(cv, 26, 38, 70, 60, "山庄", size=13)
     # 灯笼
     cv.vline(28, 58, 64, WOOD_DARK)
     cv.rect(24, 64, 33, 76, CINNABAR)
@@ -616,14 +616,10 @@ def prop_rack():
 
 
 def prop_sign():
+    """药田木牌 32×42：牌子写「药田」。"""
     cv = Canvas(32, 42)
     wood_post(cv, 14, 16, 18, 40)
-    cv.rect(2, 2, 30, 20, WOOD_MID)
-    cv.rect(4, 4, 28, 18, WOOD)
-    cv.hline(4, 28, 4, GOLD)
-    cv.hline(4, 28, 18, GOLD)
-    cv.vline(4, 4, 18, GOLD)
-    cv.vline(28, 4, 18, GOLD)
+    draw_plaque(cv, 2, 2, 30, 20, "药田", size=11)
     cv.outline(INK)
     return cv
 
@@ -767,6 +763,8 @@ def build_prop_preview(sprites, scale=2):
 
 
 def generate(quiet=False):
+    # 中文招牌先批量栅格化（一次 PowerShell 调用，避免逐字调用）
+    prewarm([("山庄", 12, "pixel", True), ("山庄", 13, "pixel", True), ("药田", 11, "pixel", True)])
     ground = ground_tiles()
     farm_tile_list = farm_tiles()
     ground_sheet = pack_tileset(ground)

@@ -11,25 +11,34 @@ use std::{
 use crate::core::world::World;
 
 /// The fixed execution stages of the runtime frame.
+///
+/// Stage order (lower rank runs earlier): Input → Script → Physics →
+/// Simulation → Animation → Transform → Render. `Simulation` (M18-03) hosts
+/// world-advancing steps that are neither collision physics nor animation:
+/// particles, the game clock and pending scene transitions.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum ScheduleStage {
     Input,
     Script,
     Physics,
+    Simulation,
     Animation,
     Transform,
     Render,
 }
 
 impl ScheduleStage {
-    const fn rank(self) -> usize {
+    /// Execution rank: lower runs earlier within a frame.
+    #[must_use]
+    pub const fn rank(self) -> usize {
         match self {
             Self::Input => 0,
             Self::Script => 1,
             Self::Physics => 2,
-            Self::Animation => 3,
-            Self::Transform => 4,
-            Self::Render => 5,
+            Self::Simulation => 3,
+            Self::Animation => 4,
+            Self::Transform => 5,
+            Self::Render => 6,
         }
     }
 }
@@ -40,6 +49,7 @@ impl fmt::Display for ScheduleStage {
             Self::Input => "Input",
             Self::Script => "Script",
             Self::Physics => "Physics",
+            Self::Simulation => "Simulation",
             Self::Animation => "Animation",
             Self::Transform => "Transform",
             Self::Render => "Render",
@@ -101,6 +111,8 @@ pub enum SchedulerError {
     SystemPanicked {
         system: String,
         stage: ScheduleStage,
+        /// Panic payload when it is a `&str`/`String`; empty otherwise.
+        message: String,
     },
 }
 
@@ -138,8 +150,16 @@ impl fmt::Display for SchedulerError {
                 stage,
                 message,
             } => write!(formatter, "system {system} in {stage} failed: {message}"),
-            Self::SystemPanicked { system, stage } => {
-                write!(formatter, "system {system} in {stage} panicked")
+            Self::SystemPanicked {
+                system,
+                stage,
+                message,
+            } => {
+                if message.is_empty() {
+                    write!(formatter, "system {system} in {stage} panicked")
+                } else {
+                    write!(formatter, "system {system} in {stage} panicked: {message}")
+                }
             }
         }
     }
@@ -147,18 +167,24 @@ impl fmt::Display for SchedulerError {
 
 impl std::error::Error for SchedulerError {}
 
-type SystemCallback = Box<dyn FnMut(&mut World, f32) -> Result<(), SystemError> + Send>;
+/// A system callback receives the scheduling context (`&mut World` for the
+/// default [`Scheduler`]; other runtime pipelines may schedule over their own
+/// context type) plus the delta seconds of the current step.
+///
+/// The runtime schedules on a single thread, so callbacks are not required to
+/// be `Send` (M18-03): script-backed systems capture non-`Send` Lua state.
+type SystemCallback<C> = Box<dyn FnMut(&mut C, f32) -> Result<(), SystemError> + 'static>;
 
 /// A named system with a stage, dependencies and executable callback.
-pub struct System {
+pub struct System<C = World> {
     name: String,
     stage: ScheduleStage,
     dependencies: Vec<String>,
-    callback: SystemCallback,
+    callback: SystemCallback<C>,
     registration_order: usize,
 }
 
-impl System {
+impl<C: 'static> System<C> {
     /// Creates a system. Dependencies are names of systems registered in the same scheduler.
     pub fn new<F>(
         name: impl Into<String>,
@@ -167,7 +193,7 @@ impl System {
         callback: F,
     ) -> Self
     where
-        F: FnMut(&mut World, f32) -> Result<(), SystemError> + Send + 'static,
+        F: FnMut(&mut C, f32) -> Result<(), SystemError> + 'static,
     {
         Self {
             name: name.into(),
@@ -182,6 +208,18 @@ impl System {
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// Returns the system stage.
+    #[must_use]
+    pub const fn stage(&self) -> ScheduleStage {
+        self.stage
+    }
+
+    /// Returns the declared dependency names.
+    #[must_use]
+    pub fn dependencies(&self) -> &[String] {
+        &self.dependencies
     }
 }
 
@@ -209,20 +247,59 @@ impl ScheduleReport {
 }
 
 /// Owns systems and executes them in validated deterministic order.
-#[derive(Default)]
-pub struct Scheduler {
-    systems: Vec<System>,
+///
+/// The context type parameter defaults to [`World`]. The runtime frame
+/// pipeline (M18-03) instantiates `Scheduler<RuntimeScene>` so the fixed
+/// script/physics/clock/animation steps share one scheduling entry with
+/// dependency validation and per-system timings.
+pub struct Scheduler<C = World> {
+    systems: Vec<System<C>>,
 }
 
-impl Scheduler {
+impl<C> Default for Scheduler<C> {
+    fn default() -> Self {
+        Self {
+            systems: Vec::new(),
+        }
+    }
+}
+
+impl<C: 'static> Scheduler<C> {
     /// Creates an empty scheduler.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Returns the number of registered systems.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.systems.len()
+    }
+
+    /// Returns `true` when no system is registered.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.systems.is_empty()
+    }
+
+    /// Returns the registered system names in registration order.
+    #[must_use]
+    pub fn system_names(&self) -> Vec<String> {
+        self.systems
+            .iter()
+            .map(|system| system.name.clone())
+            .collect()
+    }
+
+    /// Moves every registered system back out in registration order.
+    #[must_use]
+    pub fn into_systems(self) -> Vec<System<C>> {
+        self.systems
+    }
+
     /// Registers a system and rejects duplicate names.
-    pub fn add_system(&mut self, mut system: System) -> Result<(), SchedulerError> {
+    pub fn add_system(&mut self, mut system: System<C>) -> Result<(), SchedulerError> {
         if self
             .systems
             .iter()
@@ -247,7 +324,7 @@ impl Scheduler {
     /// Executes every registered system once for one simulation step.
     pub fn run(
         &mut self,
-        world: &mut World,
+        context: &mut C,
         delta_seconds: f32,
     ) -> Result<ScheduleReport, SchedulerError> {
         if !delta_seconds.is_finite() || delta_seconds < 0.0 {
@@ -263,7 +340,9 @@ impl Scheduler {
             let system_started = Instant::now();
             let name = system.name.clone();
             let stage = system.stage;
-            let result = catch_unwind(AssertUnwindSafe(|| (system.callback)(world, delta_seconds)));
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                (system.callback)(context, delta_seconds)
+            }));
             match result {
                 Ok(Ok(())) => {}
                 Ok(Err(error)) => {
@@ -273,10 +352,20 @@ impl Scheduler {
                         message: error.to_string(),
                     });
                 }
-                Err(_) => {
+                Err(payload) => {
+                    let message = payload
+                        .downcast_ref::<String>()
+                        .cloned()
+                        .or_else(|| {
+                            payload
+                                .downcast_ref::<&'static str>()
+                                .map(|message| (*message).to_string())
+                        })
+                        .unwrap_or_default();
                     return Err(SchedulerError::SystemPanicked {
                         system: name,
                         stage,
+                        message,
                     });
                 }
             }
@@ -376,10 +465,15 @@ mod tests {
         log: Arc<Mutex<Vec<&'static str>>>,
         dependencies: &'static [&'static str],
     ) -> System {
-        System::new(name, stage, dependencies.iter().copied(), move |_, _| {
-            log.lock().unwrap().push(name);
-            Ok(())
-        })
+        System::new(
+            name,
+            stage,
+            dependencies.iter().copied(),
+            move |_: &mut World, _| {
+                log.lock().unwrap().push(name);
+                Ok(())
+            },
+        )
     }
 
     #[test]
@@ -453,7 +547,7 @@ mod tests {
                 "a",
                 ScheduleStage::Input,
                 std::iter::empty::<&'static str>(),
-                |_, _| Ok(()),
+                |_: &mut World, _| Ok(()),
             ))
             .unwrap();
         assert_eq!(
@@ -461,7 +555,7 @@ mod tests {
                 "a",
                 ScheduleStage::Input,
                 std::iter::empty::<&'static str>(),
-                |_, _| Ok(())
+                |_: &mut World, _| Ok(())
             )),
             Err(SchedulerError::DuplicateSystem { name: "a".into() })
         );
@@ -470,7 +564,7 @@ mod tests {
                 "b",
                 ScheduleStage::Script,
                 ["missing"],
-                |_, _| Ok(()),
+                |_: &mut World, _| Ok(()),
             ))
             .unwrap();
         assert!(matches!(
@@ -482,14 +576,14 @@ mod tests {
             "render",
             ScheduleStage::Render,
             std::iter::empty::<&'static str>(),
-            |_, _| Ok(()),
+            |_: &mut World, _| Ok(()),
         ))
         .unwrap();
         late.add_system(System::new(
             "input",
             ScheduleStage::Input,
             ["render"],
-            |_, _| Ok(()),
+            |_: &mut World, _| Ok(()),
         ))
         .unwrap();
         assert!(matches!(
@@ -502,14 +596,20 @@ mod tests {
     fn detects_dependency_cycles() {
         let mut scheduler = Scheduler::new();
         scheduler
-            .add_system(System::new("a", ScheduleStage::Physics, ["b"], |_, _| {
-                Ok(())
-            }))
+            .add_system(System::new(
+                "a",
+                ScheduleStage::Physics,
+                ["b"],
+                |_: &mut World, _| Ok(()),
+            ))
             .unwrap();
         scheduler
-            .add_system(System::new("b", ScheduleStage::Physics, ["a"], |_, _| {
-                Ok(())
-            }))
+            .add_system(System::new(
+                "b",
+                ScheduleStage::Physics,
+                ["a"],
+                |_: &mut World, _| Ok(()),
+            ))
             .unwrap();
         assert!(matches!(
             scheduler.execution_order(),
@@ -525,7 +625,7 @@ mod tests {
                 "movement",
                 ScheduleStage::Transform,
                 std::iter::empty::<&'static str>(),
-                |_, _| Err(SystemError::new("invalid transform")),
+                |_: &mut World, _| Err(SystemError::new("invalid transform")),
             ))
             .unwrap();
         let mut world = World::new();
@@ -544,7 +644,7 @@ mod tests {
                 "broken",
                 ScheduleStage::Script,
                 std::iter::empty::<&'static str>(),
-                |_, _| panic!("boom"),
+                |_: &mut World, _| panic!("boom"),
             ))
             .unwrap();
         assert_eq!(
@@ -552,7 +652,27 @@ mod tests {
             Err(SchedulerError::SystemPanicked {
                 system: "broken".into(),
                 stage: ScheduleStage::Script,
+                message: "boom".into(),
             })
+        );
+    }
+
+    #[test]
+    fn system_panicked_display_includes_payload_message() {
+        let error = SchedulerError::SystemPanicked {
+            system: "broken".into(),
+            stage: ScheduleStage::Simulation,
+            message: String::new(),
+        };
+        assert_eq!(error.to_string(), "system broken in Simulation panicked");
+        let error = SchedulerError::SystemPanicked {
+            system: "broken".into(),
+            stage: ScheduleStage::Simulation,
+            message: "index out of bounds".into(),
+        };
+        assert_eq!(
+            error.to_string(),
+            "system broken in Simulation panicked: index out of bounds"
         );
     }
 
@@ -564,7 +684,7 @@ mod tests {
                 "input",
                 ScheduleStage::Input,
                 std::iter::empty::<&'static str>(),
-                |_, _| Ok(()),
+                |_: &mut World, _| Ok(()),
             ))
             .unwrap();
         let mut world = World::new();

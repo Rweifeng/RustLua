@@ -84,6 +84,8 @@ pub mod scene_extract;
 pub mod scheduler;
 /// Lua VM and host API bridge.
 pub mod script;
+/// 工程级设置文件 `<project>/settings.toml`（音频分组音量等玩家偏好）。
+pub mod settings;
 /// CPU-side 2D Sprite geometry and UV generation.
 pub mod sprite;
 /// CPU-side batching and sorting for 2D Sprites.
@@ -111,6 +113,8 @@ pub mod ui_events;
 pub mod ui_layout;
 /// E25: resolved-layout cache with subtree-aware invalidation.
 pub mod ui_layout_cache;
+/// UI 焦点与滚动导航原语（键盘/手柄列表导航）。
+pub mod ui_navigation;
 /// E17: parent-chain and container resolution over serialized UI nodes.
 pub mod ui_scene_layout;
 /// E20: reusable button visual-state configuration.
