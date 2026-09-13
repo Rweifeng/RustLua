@@ -599,6 +599,15 @@ def sfx_ui_click():
     return _render_sfx(play, 0.06, highpass_hz=420.0, peak=0.86)
 
 
+def sfx_ui_move():
+    """ui_move 选择移动：0.05s 轻短音（比 ui_click 更低更轻，按住连发时不刺耳）。"""
+    play = Play()
+    _sfx_note(play, 0.0, 1318.51, 0.05, wave="sine", gain=0.44,
+              attack=0.002, decay=0.016, sustain=0.18, release=0.028,
+              layers=((1.0, 1.0), (0.5, 0.22)))
+    return _render_sfx(play, 0.05, highpass_hz=520.0, peak=0.62)
+
+
 def sfx_ui_confirm():
     """ui_confirm 确认：两音上行 0.18s。"""
     play = Play()
@@ -911,6 +920,7 @@ def build_jobs():
         ("bgm_village.wav", build_bgm_village, 14.0, True, True),
         ("bgm_wilds.wav", build_bgm_wilds, 16.0, True, True),
         ("ui_click.wav", sfx_ui_click, 0.06, False, False),
+        ("ui_move.wav", sfx_ui_move, 0.05, False, False),
         ("ui_confirm.wav", sfx_ui_confirm, 0.18, False, False),
         ("ui_cancel.wav", sfx_ui_cancel, 0.18, False, False),
         ("sfx_hoe.wav", sfx_hoe, 0.25, False, False),

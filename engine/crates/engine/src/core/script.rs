@@ -28,6 +28,7 @@ use crate::core::{
     resource_db::AssetId,
     save::encode as encode_save,
     scene::{Scene, SceneEntityId},
+    settings::NavSettings,
     settings::ProjectSettings,
     sprite::{SpriteAsset, SpriteComponent},
     tilemap::DEFAULT_TILESET as DEFAULT_TILESET_PATH,
@@ -138,6 +139,66 @@ struct ScriptState {
     /// 不符、非法绑定、写盘失败等都在这里留下可定位的一行说明，脚本可用
     /// `input.diagnostics()` 读出。不参与存档。
     input_diagnostics: Vec<String>,
+    /// **逻辑时间**（毫秒，M22/W3）：按固定步在 [`ScriptState::set_input`] 里累加
+    /// （每步 + `delta_seconds`），供 `input.action_repeat` 做时间制连发。刻意不用
+    /// `game_clock`（它受游戏内时间倍率/暂停影响，菜单导航必须始终按真实逻辑时间走）。
+    logical_ms: f64,
+    /// 菜单导航手感（阈值 + 重复节奏，M22/W3）：默认 [`NavSettings::DEFAULT`]，
+    /// 由 `input.load_settings()`（读 `[input]` 段）或 Lua `input.set_nav_settings`
+    /// 覆盖；`RuntimeScene` 每帧把 `threshold` 同步给设备轮询器（轴判定阈值同源）。
+    nav: NavSettings,
+    /// 每个动作的按住/连发状态（M22/W3，时间制）：动作名 → 状态。
+    action_repeat: BTreeMap<String, ActionRepeatState>,
+    /// 待处理的震动请求（M22/W2）：Lua `input.rumble(low, high, ms)` 写入，宿主在帧末取走
+    /// 并交给设备层（`GamepadPoller::rumble`）。同一逻辑帧内多次调用以最后一次为准。
+    rumble_request: Option<(f32, f32, u32)>,
+}
+
+/// `input.action_repeat` 的每动作状态（M22/W3）。
+///
+/// * `holding`：上一帧该动作是否处于按下状态（用于识别「首次按下 = 立即一步」）；
+/// * `next_repeat_ms`：下一次允许连发的逻辑时间。
+#[derive(Debug, Clone, Copy, Default)]
+struct ActionRepeatState {
+    holding: bool,
+    next_repeat_ms: f64,
+}
+
+impl ScriptState {
+    /// 时间制连发（M22/W3）——[`LuaRuntime::action_repeat`] 与 Lua `input.action_repeat`
+    /// 同源实现。详见方法内注释与 `docs/35`。
+    fn action_repeat(&mut self, name: &str) -> bool {
+        let now = self.logical_ms;
+        let down = self.input.action_is_down(&self.action_map, name);
+        // 立即走一步只认**真实按下边沿**：轴与键都有边沿（M22），而「已经按住、但本函数
+        // 第一次观察到」不能补一步——否则同一根摇杆同时驱动 `move_*` 与 `ui_*` 时，
+        // 消费了边沿的那一帧走一步、下一帧 ui 路径又补一步（双步）。
+        let edge = self.input.action_just_pressed(&self.action_map, name);
+        // 连发只对「持续保持的模拟量绑定」生效（数字键/DPad 保持一次按下 = 一步）。
+        let analog = down && self.input.action_held_by_analog(&self.action_map, name);
+        let delay_ms = f64::from(self.nav.delay_ms);
+        let repeat_ms = f64::from(self.nav.repeat_ms);
+        let entry = self.action_repeat.entry(name.to_owned()).or_default();
+        if !down {
+            entry.holding = false;
+            return false;
+        }
+        if !entry.holding {
+            // 开始计时；边沿帧立即走一步，非边沿帧只武装计时器。
+            entry.holding = true;
+            entry.next_repeat_ms = now + delay_ms;
+            return edge;
+        }
+        if !analog {
+            return false;
+        }
+        if now >= entry.next_repeat_ms {
+            // 以「当前时间 + 间隔」推进，而不是累加：长卡顿后不爆发式连发。
+            entry.next_repeat_ms = now + repeat_ms;
+            return true;
+        }
+        false
+    }
 }
 
 /// State for a Lua-driven inventory drag (`ui.drag_begin` / `ui.drag_end`).
@@ -349,7 +410,44 @@ impl LuaRuntime {
     }
 
     pub fn set_input(&mut self, input: InputSnapshot) {
-        self.state.borrow_mut().input = input;
+        let mut state = self.state.borrow_mut();
+        // M22/W3：逻辑时间按**每个固定步**累加（`set_input` 每步一次），
+        // 因此 catch-up 帧（一帧多步）也走同样的时间线，连发节奏与帧率无关。
+        state.logical_ms += f64::from(state.delta_seconds) * 1000.0;
+        state.input = input;
+    }
+
+    /// 当前菜单导航手感（M22/W3；`RuntimeScene` 每帧读它同步设备层阈值）。
+    #[must_use]
+    pub fn nav_settings(&self) -> NavSettings {
+        self.state.borrow().nav
+    }
+
+    /// 覆盖菜单导航手感（Lua `input.set_nav_settings` / `load_settings` 用）。
+    pub fn set_nav_settings(&mut self, nav: NavSettings) {
+        self.state.borrow_mut().nav = nav;
+    }
+
+    /// 取走待处理的震动请求（M22/W2；宿主帧末调用一次）。
+    ///
+    /// Lua `input.rumble(low, high, ms)` 只记录请求，真正的设备调用（含到期归零的状态机）
+    /// 在 `host::gamepad::GamepadPoller`，因此需要宿主这一跳。
+    pub fn take_rumble_request(&mut self) -> Option<(f32, f32, u32)> {
+        self.state.borrow_mut().rumble_request.take()
+    }
+
+    /// `input.action_repeat` 的引擎实现（M22/W3，时间制连发）。
+    ///
+    /// 语义（与 M20-08 的 Lua 帧计数等价，但按毫秒）：
+    /// * 动作**本帧刚按下**（键或摇杆轴越过阈值的边沿）→ 立即返回 `true` 一步；
+    /// * 之后只有**模拟量绑定**（摇杆轴）持续按住时，才在超过 `nav.delay_ms` 后每
+    ///   `nav.repeat_ms` 返回一次 `true`；数字量绑定（键盘/DPad）按住**不连发**——
+    ///   保持 M20-08 既有的「一次按下 = 一步」语义（见 `docs/35` 与
+    ///   `jhyt_m20_gamepad` 的验收）；
+    /// * 「已按住但没有边沿」不补步，只开始计时（避免同一根摇杆同时驱动 `move_*`
+    ///   与 `ui_*` 时双步）。
+    pub fn action_repeat(&mut self, name: &str) -> bool {
+        self.state.borrow_mut().action_repeat(name)
     }
 
     /// Spawns every scene entity into the runtime world, parsing the editor's
@@ -1808,11 +1906,6 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
     }
     let s = Rc::clone(&state);
     input.set(
-        "action",
-        lua.create_function(move |_, key: String| Ok(s.borrow().input.is_down(parse_key(&key))))?,
-    )?;
-    let s = Rc::clone(&state);
-    input.set(
         "pressed",
         lua.create_function(move |_, key: String| {
             Ok(s.borrow().input.just_pressed(parse_key(&key)))
@@ -2057,6 +2150,10 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
                 }
             };
             let parsed = crate::core::settings::parse_input_section(&existing);
+            // M22/W3：读改键的同时把同一个 `[input]` 段的**导航手感**应用到引擎
+            //（阈值 + 重复节奏），这样游戏只需 `input.load_settings()` 一次调用即可，
+            // 不必再单独调 `apply_nav_settings()`。文件里没有这些键时就是默认手感。
+            s.borrow_mut().nav = crate::core::settings::parse_nav_section(&existing);
             match parsed.map {
                 Some(mut map) => {
                     // 文件里没有的动作用默认绑定补齐（新增动作在旧设置文件上仍可玩），
@@ -2125,8 +2222,10 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
     input.set(
         "nav_settings",
         lua.create_function(move |lua, path: Option<String>| {
-            // M20-09：菜单导航手感（摇杆阈值 + 按住重复节奏）与 `load_settings` 同源
-            // ——同一个 `[input]` 段、同一套宽松解析与钳制。缺省路径 = 工程根。
+            // M20-09 / M22-W3：菜单导航手感（摇杆阈值 + 按住重复节奏）与
+            // `load_settings` 同源——同一个 `[input]` 段、同一套宽松解析与钳制。
+            // 缺省路径 = 工程根。重复节奏自 M22/W3 起是**毫秒**（旧的帧键仍可读，
+            // 按 60Hz 换算）。
             let resolved = resolve_input_settings_path(&s.borrow(), path.as_deref());
             let Some(path) = resolved else {
                 return Ok(None);
@@ -2134,13 +2233,50 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
             let nav = match fs::read_to_string(&path) {
                 Ok(text) => crate::core::settings::parse_nav_section(&text),
                 // 文件缺失/不可读 → 默认手感（首次运行的正常路径）。
-                Err(_) => crate::core::settings::NavSettings::DEFAULT,
+                Err(_) => NavSettings::DEFAULT,
             };
             let table = lua.create_table()?;
             table.set("threshold", nav.threshold)?;
-            table.set("delay_frames", nav.delay_frames)?;
-            table.set("repeat_frames", nav.repeat_frames)?;
+            table.set("delay_ms", nav.delay_ms)?;
+            table.set("repeat_ms", nav.repeat_ms)?;
             Ok(Some(table))
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    input.set(
+        "set_nav_settings",
+        // M22/W3：把导航手感推给引擎（阈值同时作为设备层轴判定阈值，重复节奏供
+        // `input.action_repeat` 使用）。三个参数都按 `NavSettings::new` 钳制。
+        lua.create_function(
+            move |_, (threshold, delay_ms, repeat_ms): (f32, u32, u32)| {
+                let nav = NavSettings::new(threshold, delay_ms, repeat_ms);
+                s.borrow_mut().nav = nav;
+                Ok((nav.threshold, nav.delay_ms, nav.repeat_ms))
+            },
+        )?,
+    )?;
+    let s = Rc::clone(&state);
+    input.set(
+        "action_repeat",
+        // M22/W3：菜单导航的「首次立即 + 按住连发」。时间制（毫秒），因此键盘、DPad、
+        // 摇杆在不同帧率下手感一致；只有模拟量绑定会连发（数字键保持一次一步）。
+        lua.create_function(move |_, name: String| Ok(s.borrow_mut().action_repeat(&name)))?,
+    )?;
+    let s = Rc::clone(&state);
+    input.set(
+        "last_device",
+        // M22/W3：最近一次产生真实输入的设备类别（"keyboard" / "gamepad"）。
+        // 引擎在边沿发生时记录，因此 Lua 侧不再需要每帧扫描全部绑定来猜设备。
+        lua.create_function(move |_, ()| Ok(s.borrow().input.last_device().to_text()))?,
+    )?;
+    let s = Rc::clone(&state);
+    input.set(
+        "rumble",
+        // M22/W2：请求震动（左右马达 0..1，毫秒）。这里只登记请求，宿主在帧末交给设备层
+        //（`GamepadPoller::rumble` 负责时长上限与到期归零）；无手柄时静默无效。
+        lua.create_function(move |_, (low, high, ms): (f32, f32, u32)| {
+            s.borrow_mut().rumble_request = Some((low, high, ms));
+            Ok(())
         })?,
     )?;
     lua.globals().set("input", input)?;
@@ -4103,9 +4239,10 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
     ui.set(
         "hide",
         lua.create_function(move |_, id: String| {
-            s.borrow_mut()
+            let mut state = s.borrow_mut();
+            state
                 .ui
-                .entry(id)
+                .entry(id.clone())
                 .or_insert(UiText {
                     text: String::new(),
                     visible: false,
@@ -4114,6 +4251,13 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
                     font_size: None,
                 })
                 .visible = false;
+            // M22：`hide` 也作用于**同 id 的动态面板**（`ui.panel` 建的矩形）。
+            // 之前只认文本，于是「先 clear 再重画」的面板类 UI 永远隐藏不掉，
+            // 会留下上一次选中项的残留高亮框（标题菜单的实测缺陷）。
+            // 只改已存在的面板，不凭空创建（保持 `hide` 对未知 id 的宽松语义）。
+            if let Some(panel) = state.ui_panels.get_mut(&id) {
+                panel.visible = false;
+            }
             Ok(())
         })?,
     )?;
@@ -4129,6 +4273,30 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
             let result = lua.create_table()?;
             result.set("text", value.text.clone())?;
             result.set("visible", value.visible)?;
+            Ok(Some(result))
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    ui.set(
+        "panel_get",
+        // M22：读回 `ui.panel` 建的动态面板（几何 + 颜色 + 可见性）；不存在返回 nil。
+        // 用途：UI 动画/可见性的 headless 断言（例如「选中高亮确实画出来了且在弹跳」），
+        // 以及运行期调试面板。只读，不改状态。
+        lua.create_function(move |lua, id: String| {
+            let state = s.borrow();
+            let Some(panel) = state.ui_panels.get(&id) else {
+                return Ok(None);
+            };
+            let result = lua.create_table()?;
+            result.set("x", panel.position[0])?;
+            result.set("y", panel.position[1])?;
+            result.set("width", panel.size[0])?;
+            result.set("height", panel.size[1])?;
+            result.set("r", panel.color[0])?;
+            result.set("g", panel.color[1])?;
+            result.set("b", panel.color[2])?;
+            result.set("a", panel.color[3])?;
+            result.set("visible", panel.visible)?;
             Ok(Some(result))
         })?,
     )?;
@@ -5404,6 +5572,14 @@ mod tests {
     use super::*;
     use crate::core::sprite::Sprite;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// 一帧「左摇杆上推」输入（含数字态，模拟 `GamepadPoller::poll_into` 的产物）。
+    fn held_stick_up(value: f32) -> InputSnapshot {
+        let mut input = InputSnapshot::default();
+        input.set_gamepad_axis(1, value);
+        input.set_gamepad_axis_digital(1, crate::core::input::AxisDirection::Positive, true);
+        input
+    }
     fn script(contents: &str) -> PathBuf {
         use std::sync::atomic::{AtomicU64, Ordering};
         // 进程内单调计数 + 纳秒时间戳：并行测试在同一时间刻度内调用时
@@ -5438,6 +5614,115 @@ mod tests {
         runtime.lua.load("app.quit()").exec().unwrap();
         assert!(runtime.quit_requested());
         let _ = fs::remove_file(path);
+    }
+
+    /// M22/W3：`input.action_repeat` 是**时间制**——同一段按住时长内的步数与帧率
+    /// 无关（旧的帧计数规则在 60 步里只会走 6 步，这里应约 9 步）。输入帧由真实
+    /// [`crate::host::gamepad::GamepadPoller`] 生产：轴按下边沿来自设备层。
+    #[test]
+    fn action_repeat_is_time_based_for_analog_holds() {
+        use crate::host::gamepad::{FakeBackend, GamepadFrame, GamepadPoller};
+
+        fn run_repeat(steps: usize, delay_ms: u32, repeat_ms: u32) -> Vec<usize> {
+            let mut runtime = LuaRuntime::new().unwrap();
+            runtime.set_nav_settings(NavSettings::new(0.5, delay_ms, repeat_ms));
+            runtime.set_delta(1.0 / 60.0);
+
+            // 第 1 帧空闲（建立基线），之后持续推住左摇杆上推。
+            let mut idle = GamepadFrame::idle();
+            idle.axes[crate::host::gamepad::axis::LEFT_Y] = 0.0;
+            let mut held = GamepadFrame::idle();
+            held.axes[crate::host::gamepad::axis::LEFT_Y] = 0.9;
+            let mut poller = GamepadPoller::new(Box::new(FakeBackend::new(vec![idle, held])));
+
+            let mut fired = Vec::new();
+            for step in 1..=steps {
+                let mut input = InputSnapshot::default();
+                poller.poll_into(&mut input);
+                runtime.set_input(input);
+                if runtime.action_repeat("ui_up") {
+                    fired.push(step);
+                }
+            }
+            fired
+        }
+
+        let fired = run_repeat(61, 100, 50);
+        assert_eq!(
+            fired.first(),
+            Some(&2),
+            "轴按下边沿那一帧应立即走一步：{fired:?}"
+        );
+        assert!(
+            !fired.iter().any(|step| (3..=7).contains(step)),
+            "100ms 延迟内不得连发：{fired:?}"
+        );
+        // 1000ms：首次 + (1000-100)/50 ≈ 19 步；旧的帧计数规则只有 6 步。
+        assert!(
+            (15..=22).contains(&fired.len()),
+            "时间制连发步数异常：{} 步 {fired:?}",
+            fired.len()
+        );
+
+        // 间隔改为 500ms 后步数显著下降（证明确实读的是毫秒设置）。
+        let slow = run_repeat(61, 100, 500);
+        assert!(
+            (1..=4).contains(&slow.len()),
+            "500ms 间隔在 1s 内只应有约 3 步，实际 {} 步 {slow:?}",
+            slow.len()
+        );
+    }
+
+    /// M22/W3：「已按住但没有按下边沿」不补步——同一根摇杆同时驱动 `move_*` 与
+    /// `ui_*` 时（玩家把移动改绑到摇杆），消费了边沿的那一帧走一步、下一帧的
+    /// `ui_*` 路径**不得**再补一步（只会按连发延迟继续）。
+    #[test]
+    fn action_repeat_does_not_double_step_without_edge() {
+        let mut runtime = LuaRuntime::new().unwrap();
+        runtime.set_nav_settings(NavSettings::new(0.5, 50, 50));
+        runtime.set_delta(1.0 / 60.0);
+
+        // 边沿已在别处被消费：连续三帧「按住但无边沿」都不得走步。
+        for frame in 1..=3 {
+            runtime.set_input(held_stick_up(0.9));
+            assert!(
+                !runtime.action_repeat("ui_up"),
+                "第 {frame} 帧无边沿不得补步"
+            );
+        }
+        // 第 4 帧（约 50ms 后）到连发延迟 → 正常连发一步。
+        runtime.set_input(held_stick_up(0.9));
+        assert!(runtime.action_repeat("ui_up"), "到延迟后应正常连发");
+
+        // 边沿帧才是「立即一步」（设备层在越过阈值的那一帧调 `gamepad_axis_event`，
+        // 它同时写数字态与边沿）。
+        let mut edge = InputSnapshot::default();
+        edge.set_gamepad_axis(1, 0.9);
+        edge.gamepad_axis_event(1, crate::core::input::AxisDirection::Positive, true);
+        let mut fresh = LuaRuntime::new().unwrap();
+        fresh.set_nav_settings(NavSettings::new(0.5, 50, 50));
+        fresh.set_delta(1.0 / 60.0);
+        fresh.set_input(edge);
+        assert!(fresh.action_repeat("ui_up"), "有边沿立即走一步");
+    }
+
+    /// M22/W3：数字量绑定（键盘/DPad）按住**不连发**——保持 M20-08 的
+    /// 「一次按下 = 一步」菜单语义。
+    #[test]
+    fn action_repeat_does_not_repeat_digital_holds() {
+        let mut runtime = LuaRuntime::new().unwrap();
+        runtime.set_nav_settings(NavSettings::new(0.5, 50, 50));
+        runtime.set_delta(1.0 / 60.0);
+        let mut fires = 0;
+        for _ in 1..=120 {
+            let mut input = InputSnapshot::default();
+            input.key_event(InputKey::ARROW_UP, true);
+            runtime.set_input(input);
+            if runtime.action_repeat("ui_up") {
+                fires += 1;
+            }
+        }
+        assert_eq!(fires, 1, "键盘按住只应走一步");
     }
     #[test]
     fn lua_gameplay_api_moves_damages_and_destroys() {

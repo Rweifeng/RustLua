@@ -726,8 +726,20 @@ impl RuntimeScene {
         self.script.set_delta(delta_seconds);
         // M20-06：把真实手柄设备状态合并进本帧输入（只改按钮/轴，不影响键鼠）。
         // 无设备时 XInput 返回未连接，快照与传入值等价，headless 行为不变。
+        // M22/W3：轴判定阈值与 `[input] nav_threshold` 同源（Lua `input.set_nav_settings`
+        // / `load_settings` 写入 `ScriptState`），每帧同步给设备层，轴的数字边沿因此
+        // 与设置文件里的手感一致。
+        //
+        // M22/W4：**只在真有固定步的帧采样设备**。0 步帧（帧率高于逻辑步，关 vsync 时常见）
+        // 里键鼠边沿会被宿主保留到下一有效帧（`game_app.rs` 只在 `steps > 0` 时
+        // `finish_frame`），若此时仍 poll 手柄，边沿会写进这个随后被丢弃的 clone 而**永久
+        // 丢失**（`poller.last` 已推进，下一帧不会再产生同一变化）。跳过采样后两条路径语义一致。
         let mut step_input = input.clone();
-        self.gamepad.poll_into(&mut step_input);
+        if steps > 0 {
+            self.gamepad
+                .set_axis_threshold(self.script.nav_settings().threshold);
+            self.gamepad.poll_into(&mut step_input);
+        }
         // Move the registered systems into fresh schedulers so the Scheduler
         // can validate dependencies each call while ownership stays with the
         // scene between calls (restored below on every path).
@@ -765,6 +777,13 @@ impl RuntimeScene {
         }
         for system in frame_scheduler.into_systems() {
             self.frame_systems.push(system);
+        }
+        // M22/W2：把本帧的震动请求交给设备层（Lua `input.rumble` 只登记请求；到期归零由
+        // `GamepadPoller` 的状态机负责）。失败路径不取走请求也没问题——下一帧会覆盖。
+        if outcome.is_ok()
+            && let Some((low, high, ms)) = self.script.take_rumble_request()
+        {
+            self.gamepad.rumble(low, high, ms);
         }
         self.pending_step_input = None;
         outcome
@@ -3127,6 +3146,104 @@ mod sdf_tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// 标题场景（`main.scene`）的手柄导航在**真实 RuntimeScene 路径**上可用。
+    ///
+    /// 编辑器 Play 预览走的就是这条路径（每帧全新键鼠快照 + `run_script_steps` 合并手柄），
+    /// 而 M20-08 的验收示例是直接驱动 `LuaRuntime`，覆盖不到 `input_apply` 这一步。
+    #[test]
+    fn title_scene_gamepad_navigation_works_through_runtime_scene() {
+        use crate::host::gamepad::{GamepadFrame, SlotBackend, button};
+
+        let root = crate::core::games_dir().join("examples").join("game_jhyt");
+        let scene_path = root.join("scenes/main.scene");
+        if !scene_path.is_file() {
+            return;
+        }
+        let scene = Scene::load(&scene_path).expect("load main.scene");
+        let mut runtime =
+            RuntimeScene::from_scene(Some(&root), scene).expect("runtime from main.scene");
+
+        let idle = GamepadFrame::idle();
+        let mut dpad_down = GamepadFrame::idle();
+        dpad_down.buttons[button::DPAD_DOWN] = true;
+        // ① 空闲帧（建立设备基线）→ ② 起按住 DPad 下。
+        runtime.set_gamepad_backend(Box::new(SlotBackend::new(vec![
+            [Some(idle), None, None, None],
+            [Some(dpad_down), None, None, None],
+        ])));
+
+        let probe = |runtime: &mut RuntimeScene| -> String {
+            runtime
+                .script
+                .execute_console("return tostring(require('ui.title_menu').selected_id())")
+                .expect("probe title menu")
+                .trim()
+                .to_owned()
+        };
+
+        runtime
+            .run_script_steps(1, 1.0 / 60.0, &InputSnapshot::default())
+            .expect("idle step");
+        let before = probe(&mut runtime);
+        assert_ne!(before, "nil", "标题菜单应在 main.scene 上初始化");
+        for _ in 0..3 {
+            runtime
+                .run_script_steps(1, 1.0 / 60.0, &InputSnapshot::default())
+                .expect("dpad step");
+        }
+        let after = probe(&mut runtime);
+        println!("title selected: before={before} after={after}");
+        assert_ne!(after, before, "DPad 下应改变标题菜单选中项");
+    }
+
+    /// 标题场景（`main.scene`）的**摇杆**菜单导航在真实 RuntimeScene 路径上可用。
+    ///
+    /// 项目 `settings.toml` 把左摇杆绑给了 `move_*`（实机测试用），`ui_*` 未列在 `map` 里
+    /// → `load_settings` 用默认绑定补齐（含 `padaxis:1±`），因此摇杆仍能选菜单。这条路径
+    /// 依赖 **`ui_*` 的轴绑定 + 轴边沿**（M22/W3），与 M20-08 的「Lua 直接读 `pad_axis`」不同。
+    #[test]
+    fn title_scene_stick_navigation_works_through_runtime_scene() {
+        use crate::host::gamepad::{GamepadFrame, SlotBackend};
+
+        let root = crate::core::games_dir().join("examples").join("game_jhyt");
+        let scene_path = root.join("scenes/main.scene");
+        if !scene_path.is_file() {
+            return;
+        }
+        let scene = Scene::load(&scene_path).expect("load main.scene");
+        let mut runtime =
+            RuntimeScene::from_scene(Some(&root), scene).expect("runtime from main.scene");
+
+        let mut stick_down = GamepadFrame::idle();
+        stick_down.axes[crate::host::gamepad::axis::LEFT_Y] = -0.9;
+        runtime.set_gamepad_backend(Box::new(SlotBackend::new(vec![
+            [Some(GamepadFrame::idle()), None, None, None],
+            [Some(stick_down), None, None, None],
+        ])));
+
+        let probe = |runtime: &mut RuntimeScene| -> String {
+            runtime
+                .script
+                .execute_console("return tostring(require('ui.title_menu').selected_id())")
+                .expect("probe title menu")
+                .trim()
+                .to_owned()
+        };
+
+        runtime
+            .run_script_steps(1, 1.0 / 60.0, &InputSnapshot::default())
+            .expect("idle step");
+        let before = probe(&mut runtime);
+        for _ in 0..3 {
+            runtime
+                .run_script_steps(1, 1.0 / 60.0, &InputSnapshot::default())
+                .expect("stick step");
+        }
+        let after = probe(&mut runtime);
+        println!("title selected (stick): before={before} after={after}");
+        assert_ne!(after, before, "摇杆下推应改变标题菜单选中项");
+    }
+
     /// 编辑器 Play 预览每帧重建输入快照（`bridge_preview_input` 只桥接键鼠），
     /// 而独立 game 宿主跨帧复用同一快照。设备在被按住期间持续上报同一轴值时，
     /// 运行时必须把**当前**手柄状态写进本帧输入，而不是只写「与上一帧不同」的轴——
@@ -3195,6 +3312,114 @@ mod sdf_tests {
             (value - 0.8).abs() < 1e-3,
             "轴值应保持设备上报值 0.8：{value}"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// M22/W4：**0 步帧不得吞掉手柄边沿**。
+    ///
+    /// 宿主侧键鼠边沿只在 `steps > 0` 时被 `finish_frame` 清掉（`game_app.rs`），所以 0 步帧
+    /// （帧率高于逻辑步，关 vsync 时常见）里发生的按键会保留到下一有效帧。手柄此前在 0 步帧
+    /// 也会 poll：边沿被写进那个随后丢弃的快照克隆，而 `poller.last` 已推进 → 下一帧不再产生
+    /// 同一变化，边沿**永久丢失**。修复后 0 步帧不采样，两条路径语义一致。
+    #[test]
+    fn zero_step_frame_does_not_drop_gamepad_edges() {
+        use crate::host::gamepad::{FakeBackend, GamepadFrame, button};
+
+        let root = std::env::temp_dir().join(format!(
+            "p2-zero-step-gamepad-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        let scripts = root.join("scripts");
+        std::fs::create_dir_all(&scripts).unwrap();
+        std::fs::write(
+            scripts.join("main.lua"),
+            "presses = 0\n\
+             function update()\n\
+               if input.action_pressed('confirm') then presses = presses + 1 end\n\
+               return ''\n\
+             end\n",
+        )
+        .unwrap();
+
+        let mut runtime = RuntimeScene::from_scene(Some(&root), Scene::new("zero-step-gamepad"))
+            .expect("runtime scene");
+        // 设备从第一帧起就按住 A：唯一一次按下边沿必须被某个**有效**帧看到。
+        let mut held = GamepadFrame::idle();
+        held.buttons[button::A] = true;
+        runtime.set_gamepad_backend(Box::new(FakeBackend::new(vec![held])));
+
+        // 0 步帧（此前会在这里 poll 并丢掉边沿）。
+        runtime
+            .run_script_steps(0, 1.0 / 60.0, &InputSnapshot::default())
+            .expect("zero-step frame");
+        // 第一个有效帧：应看到按下边沿。
+        runtime
+            .run_script_steps(1, 1.0 / 60.0, &InputSnapshot::default())
+            .expect("first script step");
+        // 第二个有效帧：按住不重复边沿。
+        runtime
+            .run_script_steps(1, 1.0 / 60.0, &InputSnapshot::default())
+            .expect("second script step");
+
+        let count = runtime
+            .script
+            .execute_console("return tostring(presses)")
+            .expect("probe lua");
+        assert_eq!(
+            count.trim(),
+            "1",
+            "0 步帧不得吞掉手柄按下边沿；按住也不得重复边沿"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// M22/W2：Lua `input.rumble` 的请求在帧末到达设备层（含槽位与强度）。
+    #[test]
+    fn lua_rumble_reaches_device_layer() {
+        use crate::host::gamepad::{GamepadFrame, SlotBackend};
+
+        let root = std::env::temp_dir().join(format!(
+            "p2-rumble-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        let scripts = root.join("scripts");
+        std::fs::create_dir_all(&scripts).unwrap();
+        std::fs::write(
+            scripts.join("main.lua"),
+            "function update()\n\
+               input.rumble(0.4, 0.6, 120)\n\
+               return ''\n\
+             end\n",
+        )
+        .unwrap();
+
+        let mut runtime =
+            RuntimeScene::from_scene(Some(&root), Scene::new("rumble")).expect("runtime scene");
+        let backend = SlotBackend::new(vec![[Some(GamepadFrame::idle()), None, None, None]]);
+        let log = backend.rumble_log();
+        runtime.set_gamepad_backend(Box::new(backend));
+
+        runtime
+            .run_script_steps(1, 1.0 / 60.0, &InputSnapshot::default())
+            .expect("script step");
+        assert_eq!(
+            log.calls().last().copied(),
+            Some((0, 0.4, 0.6)),
+            "Lua 震动请求应到达设备层"
+        );
+        // 请求取走后不重复触发（下一帧没有新请求）。
+        runtime
+            .run_script_steps(1, 1.0 / 60.0, &InputSnapshot::default())
+            .expect("script step");
+        assert_eq!(log.calls().len(), 2, "每帧一次请求，不做额外重发");
         let _ = std::fs::remove_dir_all(&root);
     }
 

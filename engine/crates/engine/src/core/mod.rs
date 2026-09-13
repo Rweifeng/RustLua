@@ -142,4 +142,69 @@ mod tests {
     fn reports_package_version() {
         assert_eq!(version(), env!("CARGO_PKG_VERSION"));
     }
+
+    /// M22（W5）：core 不得依赖 host。
+    ///
+    /// `core/settings.rs` 曾 `use crate::host::gamepad::GamepadDeadzone`（core 反向
+    /// 依赖桌面/XInput 层，`docs/37` P1-1），这会让 core 无法独立编译到
+    /// wasm/headless-only 目标。死区值类型已下沉到 `core::input`，这里加一条**架构
+    /// 回归**：扫描 `src/core/**/*.rs` 源码，任何**代码行**出现 host 依赖路径的模块
+    /// 都判失败（注释行忽略，便于就地写明原因）。
+    ///
+    /// 局限：只做字面量检查（`super::`/别名 `use` 这类绕法查不到），足以覆盖本仓库的
+    /// 实际写法并防止再次引入。
+    #[test]
+    fn core_does_not_depend_on_host() {
+        fn collect(dir: &std::path::Path, files: &mut Vec<std::path::PathBuf>) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    collect(&path, files);
+                } else if path.extension().is_some_and(|ext| ext == "rs") {
+                    files.push(path);
+                }
+            }
+        }
+
+        // 拼接 needle，避免本测试自己的源码文本被匹配到。
+        let needle = ["crate", "::", "host"].concat();
+        let core_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/core");
+        let mut files = Vec::new();
+        collect(&core_dir, &mut files);
+        assert!(
+            !files.is_empty(),
+            "未找到 core 源文件：{}",
+            core_dir.display()
+        );
+
+        let offenders = files
+            .iter()
+            .filter_map(|path| {
+                let text = std::fs::read_to_string(path).ok()?;
+                let mut in_tests = false;
+                let hit = text.lines().any(|line| {
+                    let code = line.trim_start();
+                    // 只看**生产代码**：注释行与 `#[cfg(test)]` 之后的测试模块都跳过
+                    //（单元测试本来就允许在同一个 crate 内驱动 host 层）。
+                    if code.starts_with("#[cfg(test)]") {
+                        in_tests = true;
+                    }
+                    !in_tests && !code.starts_with("//") && code.contains(&needle)
+                });
+                hit.then(|| {
+                    path.strip_prefix(&core_dir)
+                        .unwrap_or(path)
+                        .display()
+                        .to_string()
+                })
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            offenders.is_empty(),
+            "core 不得依赖 host（把平台类型下沉到 core 或改为泛型参数）：{offenders:?}"
+        );
+    }
 }

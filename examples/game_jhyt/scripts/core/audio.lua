@@ -56,6 +56,53 @@ local current_bgm = nil -- 正在播放的曲目名；nil = 无 BGM
 -- pcall 失败过的调用键（bus:name）：只记录一次，避免每帧刷日志。
 local failed = {}
 
+-- 最近播放过的音效（环形，最多 32 条）：给 `M.played()` 用。
+--
+-- 为什么需要：引擎的音频 API 没有「正在播放/播放次数」查询，headless 验收无法直接断言
+-- 「选中移动时确实响了」。这里只在实际调用成功时记一行字符串，成本可忽略（音效调用本身
+-- 就很少），也让玩家反馈「某个界面没声音」时能一眼看出是没调用还是被静音。
+local played_log = {}
+local PLAYED_LOG_MAX = 32
+
+-- 最近播放的音效名（新→旧；`count` 缺省 = 全部缓存）。
+function M.played(count)
+  local total = #played_log
+  local n = math.floor(tonumber(count) or total)
+  if n < 0 then
+    n = 0
+  end
+  if n > total then
+    n = total
+  end
+  local out = {}
+  for i = 1, n do
+    out[i] = played_log[total - n + i]
+  end
+  return out
+end
+
+-- 是否刚播放过某音效（`within` = 最近几条内命中；缺省全部缓存）。
+function M.played_recently(name, within)
+  local wanted = tostring(name or "")
+  if wanted == "" then
+    return false
+  end
+  local recent = M.played(within or PLAYED_LOG_MAX)
+  for _, entry in ipairs(recent) do
+    if entry == wanted then
+      return true
+    end
+  end
+  return false
+end
+
+local function record_played(name)
+  played_log[#played_log + 1] = name
+  if #played_log > PLAYED_LOG_MAX then
+    table.remove(played_log, 1)
+  end
+end
+
 -- 当前引擎只暴露 log.info/warn/error（无 log.debug）；优先用 log.debug，
 -- 未来引擎补齐后自动升级，仍缺失则回落到 log.info。
 local function debug_log(message)
@@ -352,6 +399,7 @@ function M.play_on(bus, name)
     failed[key] = true
     return false
   end
+  record_played(name)
   return true
 end
 

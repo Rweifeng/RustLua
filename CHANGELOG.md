@@ -4,6 +4,35 @@
 
 ## v0.15 — 规划（M19）
 
+- 修复「标题界面选中高亮/标签看不见，弹跳动画无从谈起」（M22 追加，已实现）：用户实测「手柄选中没有弹跳 + 呼吸动画」，排查发现**动画代码在跑但画不出来**，两个叠加缺陷——① `ui.hide(id)` 只作用于文本（`state.ui`），对 `ui.panel` 建的动态面板无效，于是标题菜单「先 clear 再重画」的写法隐藏不掉面板，**上一次选中项的高亮框会一直留在画面上**；② `main.lua` 的门面分支是 `title_menu.render()` → `title_menu.update()`，而 `update()` 开头的 `clear()` 会把本帧刚画的标签与顶部提示**隐藏**，宿主又是在 `update()` 返回后才取本帧顶点（`RuntimeScene::vertices`），因此最终可见的只有场景按钮贴图本身。修复：`ui.hide` 现在同时隐藏同 id 的动态面板（只改已存在的面板，不凭空创建）+ 门面改为 **update → render**（并在 `on_click` 离开门面时 `title_menu.hide()` 收起动态 UI，`reset()` 也清一次）；新增只读 `ui.panel_get(id)`（几何 + 颜色 + 可见性，返回 nil 表示不存在）用于把「画出来了没有」变成可断言的事实。验收：`jhyt_m20_gamepad` ⑬ 章新增断言——换项当帧 `ui.panel_get('title:hl:BtnContinue').visible == true` 且 `width > 340`（基准 332px）、标签与顶部提示 `ui.get(...).visible == true`、12 帧后 `width == 332` 且非选中项的框 `visible == false`；把顺序改回 `render → update` 该断言立即失败（已实测），说明修复是必要且被锁住的。
+
+- 菜单选中反馈：换项音效 + 标题按钮高亮弹跳（M22 追加，已实现）：此前用方向键/DPad/摇杆换项时只有「高亮框换个位置」，**没有任何声音或动画**，手感上像「按了没选中」（用户实机反馈）。现在补齐两重反馈——**音效**：新增离线合成的 `ui_move.wav`（16-bit/22050Hz/0.05s 轻短音，`tools/gen_audio.py` 确定性生成，许可证登记进 `docs/THIRD_PARTY.md`），接线放在 `scripts/ui/panel_nav.lua`（所有面板的键盘 W/S、方向键、数字直选、DPad、左摇杆五条导航路径都经它），**只在选中项真的变化时播一次**（按住连发不会每帧乱响）；确认音 `ui_confirm` 移到 `main.lua::on_click`，因此标题按钮的**鼠标点击 / 键盘空格 / 手柄 A** 三条路径同一个音，取消音 `ui_cancel` 覆盖标题界面 B/Esc；新增 `audio.played()` / `audio.played_recently(name)`（环形 32 条，诊断「界面没声音是没调用还是被静音」）。**动画**：`scripts/ui/title_menu.lua` 的选中高亮在换项时「弹一下」（`POP_SECONDS = 0.14` 内 ease-out 外扩 + 提亮后收回，标签同步轻移）并带轻微呼吸（`PULSE_SECONDS = 2.4`），按固定步 `time.delta()` 推进、与帧率无关；新增只读 `title_menu.anim()`（`render` 与验收断言同源，避免断言的公式与画面不一致）。验收：`jhyt_m20_gamepad` ⑬ 章新增断言（换项当帧 `ui_move` 已播 + `anim().pop > 0.9` + 外扩峰值，12 帧后 `pop == 0` 且外扩回落到基准 6px；A 确认 `ui_confirm`、B 取消 `ui_cancel`），面板路径（对话 DPad 换项）也断言 `ui_move`；13 个 headless 示例 + `game --check` + `cargo test --workspace --all-features` 全绿。
+
+- 输入层收口·批 2（M22 W4 + W2，已实现）：**管线统一**——修掉「0 步帧吞掉手柄边沿」的真实缺陷：
+  帧率高于逻辑步时（关 vsync 常见）`run_script_steps(0, …)` 仍会 poll 手柄，边沿被写进随后丢弃的
+  快照克隆而**永久丢失**（`poller.last` 已推进，下一帧不再产生同一变化），而键鼠边沿在宿主侧会保留
+  到下一有效帧；现改为**只在 `steps > 0` 时采样设备**，两条路径语义一致（回归
+  `zero_step_frame_does_not_drop_gamepad_edges`，去掉守卫即失败）。新增只读的
+  `GamepadPoller::last_frame()`（不消费后端的一帧，可与 `poll_into` 同帧使用，调试/捕获面板读到的
+  就是当前逻辑帧的设备状态），`poll_frame` 保留为「独立采样」并写清分工——原先「不得与 `poll_into`
+  混用」的约束不再影响数字边沿（轴数字态是独立状态，不被 `poll_frame` 触碰）。
+  **槽位/热插拔**——后端新增 `poll_all() -> [Option<GamepadFrame>; 4]`（默认实现把 `poll()` 放到
+  slot 0，既有后端与 `FakeBackend` 零改动），XInput 后端覆写为逐用户采样（`ERROR_DEVICE_NOT_CONNECTED`
+  按「该槽位无设备」处理）；`GamepadPoller` 改为逐槽位跟踪（`slots` + 逐槽位轴数字态）并维护**粘性**
+  活动槽位（显式指定 → 粘住当前 → 第一个已连接），切换/拔线时**释放旧槽位仍按住的按钮与轴方向**
+  （修掉设备切换时的假释放/假按下），逐槽位打印 `connected`/`disconnected` 日志；`set_active_slot` /
+  `active_slot` 供多设备显式选择。**震动**——`GamepadBackend::set_rumble`（默认空实现）+ XInput
+  `XInputSetState`（强度 0..1 → 0..65535）+ `GamepadPoller::rumble(low, high, ms)`（上限 5000ms、
+  `duration_ms = 0` 立即停止、**到期由 `poll_into` 每帧归零**，因为 XInput 震动是「设置即持续」）+
+  Lua `input.rumble(low, high, ms)`（只登记请求，`RuntimeScene::run_script_steps` 帧末交给设备层）；
+  新增公共测试后端 `SlotBackend`（多槽位脚本帧 + `RumbleLog` 共享记录，供 headless 与示例复用）。
+  验收：`cargo test --workspace --all-features` **783 passed / 0 failed**（engine 505 + editor 148 +
+  editor lib 106 + game 13 + assetc 11），`cargo clippy … -D warnings` 与 `cargo fmt --all -- --check`
+  退出 0，`jhyt_m20_gamepad` 扩到 **14 章**（新增 ⑭槽位切换释放旧状态 + 震动下达/立即停止）。
+  **仍未接线**：本地双人（`InputSnapshot` 仍是单个活动槽位的一份按钮/轴状态）；真实手柄实机步骤未执行。<br>任务文档：[tasks/plan/M22-输入层收口.md](tasks/plan/M22-输入层收口.md)。
+
+- 输入层收口·批 1（M22 W5 + W3，已实现）：**分层修正**——`GamepadDeadzone`/`MAX_DEADZONE`/`STICK_DEADZONE`/`TRIGGER_DEADZONE` 与死区纯函数从 `host::gamepad` **下沉到 `core::input`**（`host` 保留重导出，既有路径不受影响），`core/settings.rs` 不再 `use crate::host::*`，新增架构回归测试 `core_does_not_depend_on_host`（扫描 `src/core/**/*.rs` 生产代码，注释与 `#[cfg(test)]` 之后不计）防止再次倒置；删除 `core/script.rs` 中重复注册的 `input.action` 死代码（保留命名动作语义的那一份）。**轴的数字边沿**——`GamepadPoller` 为每个轴方向维护滞回数字态（进入 `AXIS_DIGITAL_ON`=0.5 可配、退出 = 进入 − `AXIS_HYSTERESIS`=0.1），只在变化帧写按下/松开边沿，因此 `input.action_pressed("ui_up")` 对键盘方向键、DPad 与左摇杆**同义**（M20 起轴只能 `action(name)` 不能取边沿）；没有设备数字态的路径（测试直接 `set_gamepad_axis`）回落 `|value| >= 0.5` 且不产生边沿，既有语义不变；断连时释放仍在数字按下的轴方向并清零轴。**径向死区**——摇杆改为按 `(x, y)` 模长判定并保持方向（`apply_stick_deadzone_radial`），消除逐轴死区造成的「斜向比正向灵敏」；单轴函数保留。**时间制连发**——新增 `input.action_repeat(name)`：真实按下边沿立即一步，模拟量绑定按住超过 `nav_delay_ms` 后每 `nav_repeat_ms` 一步，数字键/DPad 按住**不连发**（保持 M20-08「一次按下 = 一步」），「已按住但无边沿」只在下一帧武装计时器而不补步（否则同一根摇杆同时驱动 `move_*` 与 `ui_*` 时会双步）；逻辑时间按固定步累加（`ScriptState::logical_ms`），与渲染帧率无关。`[input]` 段新增 `nav_delay_ms`/`nav_repeat_ms`（默认 350/90，钳制 0..5000 / 16..5000），旧的 `nav_delay_frames`/`nav_repeat_frames` 仍可读（按 60Hz 换算），毫秒键优先、写入只产毫秒键；`input.nav_settings()` 返回 `{threshold, delay_ms, repeat_ms}`，新增 `input.set_nav_settings(...)` 把阈值与节奏推给引擎（阈值同时成为设备层轴判定阈值，`RuntimeScene` 每帧同步），`input.load_settings()` 现在同时应用导航手感。**设备判定下沉**——`InputSnapshot::last_device()` / Lua `input.last_device()` 在真实按下边沿时切 `keyboard`/`gamepad`（空闲帧不写），`ui/hints.lua` 因此**删掉每帧 36 动作 × `bindings()` + 6 轴 + 16 按钮的全量扫描**（`docs/37` P3 记录的每帧 ~60 次 FFI + ~100 次正则归零）；`ui/input.lua` 的 `ui_step()` 改为调用 `input.action_repeat`，删掉 `nav_hold`/`stick_step` 的帧计数。验收：`cargo test --workspace --all-features` **777 passed / 0 failed**（engine 499 + editor 148 + editor lib 106 + game 13 + assetc 11），`cargo clippy --workspace --all-targets --all-features -- -D warnings` 与 `cargo fmt --all -- --check` 退出 0，`game --check` + 11 个 headless 回归（`jhyt_smoke`/`m17*`/`m18*`/`m19_ui`/`m20_audio`/`m21_appearance`）全 `*_ok`，`jhyt_m20_gamepad` 13 章通过（新增轴边沿/连发节奏章节适配：延迟 350ms 下 19 帧不触发、23 帧恰好一步、之后每 90ms 一步）。**行为变更（需知悉）**：摇杆菜单导航现在**依赖 `ui_*` 的 `padaxis:*` 绑定**（解绑即禁用摇杆导航；示例里为此显式恢复再解除该绑定）；`nav_*` 帧键不再生效于新写入。<br>任务文档：[tasks/plan/M22-输入层收口.md](tasks/plan/M22-输入层收口.md)（批 1 完成，批 2 W4+W2 待做；W1 物理键身份需先确认迁移范围）。
+
 - 调试 overlay 改为带标签的性能面板（已实现）：原先 F3 overlay 只有一块绿色面板 + 四条无标注量条（既不知道哪条是什么，也读不到具体数值）。现改为半透明深色面板 + **逐行标签与实时数值**：`FPS`（1 秒窗口帧率）、`FRAME ms`（上一帧总耗时）、`UPDATE ms`（固定步更新耗时）、`LUA ms`（本帧 Lua 累计）、`FRAMES`（累计帧数），每行下方一条量条（参考上限 120fps / 33.3ms / 16.7ms / 8ms / 心跳；`FRAME/UPDATE/LUA` 超过 20ms 数值变红）。文字用引擎**内置 5x7 位图字模**（`TextAtlas::built_in` + `TextLayout::build_bitmap`）绘制，因此 overlay 不依赖项目字体；顶点分成「面板底 / 量条 / 文字」三段 draw（文字走 `__builtin_text_atlas__` 保留纹理，最后绘制以覆盖在面板上）。顺带修掉量条用像素坐标直接当 NDC 的坐标换算缺失（原先量条会画到屏幕外，只剩面板底色）——由新单测 `debug_overlay_draws_labeled_text_and_bars`（三段范围、文字在末尾、顶点全在 NDC 内）与 `debug_overlay_bars_follow_metrics`（指标变差量条更宽）锁定。
 
 - 发布版默认关闭帧率 overlay（已实现）：独立 `game` 宿主左上角的调试 overlay（`game_app::overlay_enabled`，绿色面板 + 帧率/帧耗时/更新/脚本四条量条）原先**默认开启**，发布包启动即带开发者读数（用户实机截图复现）。现改为**默认关闭**，需要诊断时在窗口内按 **F3** 开启/关闭；关闭只影响绘制，`[perf]` 数值仍每帧统计写日志，因此性能基线（`jhyt_m19_soak`）与开关无关。启动时打印一次 `[perf] overlay disabled (F3 toggles the fps/latency overlay)` 便于发现，`package.ps1` 生成的 `run.txt` 增补该说明，`docs/22-使用手册.md` 新增「帧率/耗时 overlay（默认关闭）」小节。

@@ -1,4 +1,4 @@
--- hints.lua：键鼠 / 手柄两套操作说明与菜单导航手感（M20-09）。
+-- hints.lua：键鼠 / 手柄两套操作说明与菜单导航手感（M20-09 → M22）。
 --
 -- 为什么单独一个模块：顶部 HUD 提示在各模式下由 `ui.input` 画，但**面板底部提示**
 -- 由各面板自己画（`world.dialogue`、`systems.shop`、`ui.inventory_ui`、`ui.quest_ui`、
@@ -7,20 +7,20 @@
 -- `input` API，不依赖任何面板，谁都能安全引用。
 --
 -- 两件事：
---   * 设备判定：按**最近使用的设备**在键鼠/手柄两套说明间切换（推摇杆/按手柄键 →
---     手柄说明；动键盘/鼠标 → 键鼠说明）。只看「哪个输入在动」，不看手柄是否已连接，
---     所以插着手柄用键盘玩仍显示键鼠说明。
+--   * 设备判定：引擎在**真实按下边沿**时记录最近使用的设备
+--     （`input.last_device()` → `"keyboard"` / `"gamepad"`）。M22 前这里是每帧扫描
+--     36 个动作的绑定 + 6 轴 + 16 按钮（约 60 次 FFI + 100 次正则），现在是一次查询。
+--     只看「哪个输入在动」，不看手柄是否已连接，所以插着手柄用键盘玩仍显示键鼠说明。
 --   * 导航手感：摇杆阈值与「按住后首次延迟 + 重复间隔」可从工程 `settings.toml` 的
---     `[input]` 段配置（`nav_threshold` / `nav_delay_frames` / `nav_repeat_frames`），
---     由 `ui.input.apply_nav_settings()` 在启动时应用，`ui.input.ui_step()` 每帧读取。
+--     `[input]` 段配置（`nav_threshold` / `nav_delay_ms` / `nav_repeat_ms`；旧的
+--     `nav_delay_frames` / `nav_repeat_frames` 仍可读，按 60Hz 换算）。M22 起重复节奏
+--     由**引擎**按毫秒执行（`input.action_repeat`），因此 144Hz 与 60Hz 手感一致。
 local M = {}
 
 local DEVICE_KEYBOARD = "keyboard"
 local DEVICE_GAMEPAD = "gamepad"
--- 初始 `nil` = 尚未检测；首个动过的设备决定提示，都没动过时按键鼠显示。
-local active_device = nil
--- 摇杆噪声容限：低于它不算「在用摇杆」（与导航阈值默认 0.5 区分开）。
-local DEVICE_AXIS_THRESHOLD = 0.35
+-- 强制说明设备（测试/调试用）；`nil` = 自动跟随引擎记录的「最近使用的设备」。
+local forced_device = nil
 
 local KEYBOARD_KEY_NAMES = {
   space = "空格",
@@ -65,16 +65,21 @@ local PAD_AXES = {
 
 -- ---------- 导航手感（可在 settings.toml 的 [input] 段配置） ----------
 
-local NAV_DEFAULTS = { threshold = 0.5, delay_frames = 16, repeat_frames = 8 }
-local NAV_MAX_FRAMES = 120
+-- M22：重复节奏用**毫秒**（旧帧键按 60Hz 换算）；默认 350ms / 90ms，与 M20-09 的
+-- 「16 帧 / 8 帧 @60Hz」几乎一致，但不再随帧率漂移。
+local NAV_DEFAULTS = { threshold = 0.5, delay_ms = 350, repeat_ms = 90 }
+local NAV_MAX_MS = 5000
+local NAV_MIN_REPEAT_MS = 16
 local nav = {
   threshold = NAV_DEFAULTS.threshold,
-  delay_frames = NAV_DEFAULTS.delay_frames,
-  repeat_frames = NAV_DEFAULTS.repeat_frames,
+  delay_ms = NAV_DEFAULTS.delay_ms,
+  repeat_ms = NAV_DEFAULTS.repeat_ms,
 }
 
--- 把 `input.nav_settings()`（= 工程 settings.toml 的 [input] 段）应用到导航手感。
--- 引擎未提供该 API（旧引擎）或文件缺失/非法时保持默认；返回生效值。
+-- 把 `input.nav_settings()`（= 工程 settings.toml 的 [input] 段）应用到导航手感，
+-- 并**推给引擎**（`input.set_nav_settings`）：阈值成为设备层轴判定阈值，重复节奏供
+-- `input.action_repeat` 使用。引擎未提供这些 API（旧引擎）或文件缺失/非法时保持默认。
+-- 返回生效值。
 function M.apply_nav_settings()
   if type(input.nav_settings) == "function" then
     local ok, values = pcall(input.nav_settings)
@@ -83,15 +88,27 @@ function M.apply_nav_settings()
       if threshold and threshold >= 0 and threshold <= 1 then
         nav.threshold = threshold
       end
-      local delay = tonumber(values.delay_frames)
-      if delay then
-        nav.delay_frames = math.max(0, math.min(NAV_MAX_FRAMES, math.floor(delay)))
+      local delay = tonumber(values.delay_ms)
+      if not delay then
+        -- 旧字段（帧）→ 毫秒，兼容旧引擎/旧设置文本。
+        local frames = tonumber(values.delay_frames)
+        delay = frames and frames * 1000 / 60 or nil
       end
-      local repeat_frames = tonumber(values.repeat_frames)
-      if repeat_frames then
-        nav.repeat_frames = math.max(1, math.min(NAV_MAX_FRAMES, math.floor(repeat_frames)))
+      if delay then
+        nav.delay_ms = math.max(0, math.min(NAV_MAX_MS, math.floor(delay)))
+      end
+      local repeat_ms = tonumber(values.repeat_ms)
+      if not repeat_ms then
+        local frames = tonumber(values.repeat_frames)
+        repeat_ms = frames and frames * 1000 / 60 or nil
+      end
+      if repeat_ms then
+        nav.repeat_ms = math.max(NAV_MIN_REPEAT_MS, math.min(NAV_MAX_MS, math.floor(repeat_ms)))
       end
     end
+  end
+  if type(input.set_nav_settings) == "function" then
+    pcall(input.set_nav_settings, nav.threshold, nav.delay_ms, nav.repeat_ms)
   end
   return M.nav_settings()
 end
@@ -100,8 +117,8 @@ end
 function M.nav_settings()
   return {
     threshold = nav.threshold,
-    delay_frames = nav.delay_frames,
-    repeat_frames = nav.repeat_frames,
+    delay_ms = nav.delay_ms,
+    repeat_ms = nav.repeat_ms,
   }
 end
 
@@ -109,72 +126,37 @@ function M.nav_threshold()
   return nav.threshold
 end
 
-function M.nav_delay_frames()
-  return nav.delay_frames
+function M.nav_delay_ms()
+  return nav.delay_ms
 end
 
-function M.nav_repeat_frames()
-  return nav.repeat_frames
+function M.nav_repeat_ms()
+  return nav.repeat_ms
 end
 
 -- ---------- 设备判定 ----------
 
--- 一次全量扫描：任一键盘键按下 → 键盘；任一非零轴/按住按钮 → 手柄。
--- 返回值：`"keyboard"` / `"gamepad"` / `nil`（本帧两者都没动，保持上次选择）。
--- 动作表只在启动 `input.load_settings()` 后变化，缓存一次避免每帧重建 Lua 表。
-local cached_actions = nil
-
-local function all_actions()
-  if not cached_actions then
-    cached_actions = input.actions()
-  end
-  return cached_actions
-end
-
-local function detect_device()
-  local pad_axis = input.pad_axis
-  if type(pad_axis) == "function" then
-    for index = 0, 5 do
-      local value = tonumber(pad_axis(index)) or 0
-      if math.abs(value) >= DEVICE_AXIS_THRESHOLD then
-        return DEVICE_GAMEPAD
-      end
-    end
-    local pad_button = input.pad_button
-    if type(pad_button) == "function" then
-      for index = 0, 15 do
-        if pad_button(index) then
-          return DEVICE_GAMEPAD
-        end
-      end
-    end
-  end
-  for _, action in ipairs(all_actions()) do
-    for _, text in ipairs(input.bindings(action) or {}) do
-      local key = tostring(text):match("^key:(.+)$")
-      if key and input.is_down(key) then
-        return DEVICE_KEYBOARD
-      end
-    end
-  end
-  return nil
-end
-
--- 当前生效的操作说明设备（每帧刷新；未检测到输入时保持上一次）。
+-- 最近一次产生真实输入的设备（引擎在边沿发生时记录，见 M22/W3）。
+-- 未动过任何输入 / 引擎缺少该 API 时按键鼠显示（旧引擎兜底）。
 function M.device()
-  local detected = detect_device()
-  if detected then
-    active_device = detected
+  if forced_device then
+    return forced_device
   end
-  return active_device or DEVICE_KEYBOARD
+  if type(input.last_device) == "function" then
+    local ok, device = pcall(input.last_device)
+    if ok and device == DEVICE_GAMEPAD then
+      return DEVICE_GAMEPAD
+    end
+  end
+  return DEVICE_KEYBOARD
 end
 
 -- 测试/调试用：强制某套说明（`"keyboard"`/`"gamepad"`），`nil` 恢复自动检测。
 function M.set_device(device)
   if device == DEVICE_KEYBOARD or device == DEVICE_GAMEPAD then
-    active_device = device
+    forced_device = device
   else
-    active_device = nil
+    forced_device = nil
   end
   return M.device()
 end

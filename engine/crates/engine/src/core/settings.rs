@@ -38,7 +38,7 @@ use std::path::{Path, PathBuf};
 
 use crate::core::audio::{AudioBus, AudioSystem};
 use crate::core::input::ActionMap;
-use crate::host::gamepad::GamepadDeadzone;
+use crate::core::input::GamepadDeadzone;
 
 /// 工程设置文件名（相对项目根）。
 pub const SETTINGS_FILE: &str = "settings.toml";
@@ -61,10 +61,17 @@ pub const INPUT_TRIGGER_DEADZONE_KEY: &str = "trigger_deadzone";
 /// `[input]` 段内的菜单导航摇杆阈值键（M20-09）。
 pub const INPUT_NAV_THRESHOLD_KEY: &str = "nav_threshold";
 
-/// `[input]` 段内的菜单导航「按住后首次重复延迟（帧）」键（M20-09）。
+/// `[input]` 段内的菜单导航「按住后首次重复延迟（毫秒）」键（M22/W3，写入用）。
+pub const INPUT_NAV_DELAY_MS_KEY: &str = "nav_delay_ms";
+
+/// `[input]` 段内的菜单导航「重复间隔（毫秒）」键（M22/W3，写入用）。
+pub const INPUT_NAV_REPEAT_MS_KEY: &str = "nav_repeat_ms";
+
+/// `[input]` 段内的菜单导航「按住后首次重复延迟（帧）」键（M20-09；**兼容读取**，
+/// 按 60Hz 换算成毫秒，写入不再产生）。
 pub const INPUT_NAV_DELAY_FRAMES_KEY: &str = "nav_delay_frames";
 
-/// `[input]` 段内的菜单导航「重复间隔（帧）」键（M20-09）。
+/// `[input]` 段内的菜单导航「重复间隔（帧）」键（M20-09；**兼容读取**）。
 pub const INPUT_NAV_REPEAT_FRAMES_KEY: &str = "nav_repeat_frames";
 
 /// 工程设置（当前只有音频分组音量；缺省全 1.0）。
@@ -199,7 +206,7 @@ pub fn fmt_volume(volume: f32) -> String {
 /// 死区的稳定文本形式（M20-08；与 [`fmt_volume`] 同一套最短化规则）。
 #[must_use]
 pub fn fmt_deadzone(deadzone: f32) -> String {
-    fmt_compact(deadzone, crate::host::gamepad::MAX_DEADZONE)
+    fmt_compact(deadzone, crate::core::input::MAX_DEADZONE)
 }
 
 /// 0..=max 区间内浮点的稳定文本（保留 `.0`，最多三位小数并去尾零）。
@@ -640,16 +647,19 @@ pub fn save_input_settings(
 
 /// 菜单导航手感（左摇杆推杆阈值 + 按住重复节奏）。
 ///
-/// 与死区一样属于**玩家偏好**：只影响面板选中的滚动节奏，不影响玩法移动；
-/// 未配置时用默认值（阈值 0.5、按住 16 帧后每 8 帧重复一步，60fps 下约 0.27s/0.13s）。
+/// 与死区一样属于**玩家偏好**：只影响面板选中的滚动节奏，不影响玩法移动。
+///
+/// **M22/W3 起重复节奏用毫秒**（原 M20-09 是帧数，导致手感随刷新率变化：144Hz 的
+/// 连发速度是 60Hz 的 2.4 倍）。旧的 `nav_delay_frames` / `nav_repeat_frames` 仍可读
+/// （按 60Hz 换算），写入统一用 `nav_delay_ms` / `nav_repeat_ms`。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NavSettings {
-    /// 摇杆推杆阈值（0..=1）：低于它不算导航输入。
+    /// 摇杆推杆阈值（0..=1）：低于它不算导航输入（引擎轴判定阈值同源）。
     pub threshold: f32,
-    /// 首次重复前的按住帧数（0 表示立即进入连发，上限 [`Self::MAX_FRAMES`]）。
-    pub delay_frames: u32,
-    /// 连发间隔帧数（至少 1，上限 [`Self::MAX_FRAMES`]）。
-    pub repeat_frames: u32,
+    /// 首次重复前的按住时长（毫秒，上限 [`Self::MAX_MS`]）。
+    pub delay_ms: u32,
+    /// 连发间隔（毫秒，下限 [`Self::MIN_REPEAT_MS`]，上限 [`Self::MAX_MS`]）。
+    pub repeat_ms: u32,
 }
 
 impl Default for NavSettings {
@@ -659,19 +669,28 @@ impl Default for NavSettings {
 }
 
 impl NavSettings {
-    /// 默认手感：阈值 0.5、延迟 16 帧、间隔 8 帧。
+    /// 默认手感：阈值 0.5、延迟 350ms、间隔 90ms。
+    ///
+    /// 与 M20-09 的「16 帧 / 8 帧 @60Hz」几乎一致（267ms / 133ms → 350ms / 90ms，
+    /// 首次延迟略长、连发略快），这样键盘/手柄在任意帧率下手感一致。
     pub const DEFAULT: Self = Self {
         threshold: 0.5,
-        delay_frames: 16,
-        repeat_frames: 8,
+        delay_ms: 350,
+        repeat_ms: 90,
     };
 
-    /// 帧数上限：再长也没有实用意义，同时防脏数据把导航变成「永不重复」。
-    pub const MAX_FRAMES: u32 = 120;
+    /// 时长上限：再长也没有实用意义，同时防脏数据把导航变成「永不重复」。
+    pub const MAX_MS: u32 = 5000;
 
-    /// 唯一构造入口：非有限/超界值统一钳制（阈值 0..=1、间隔 ≥1、帧数 ≤ 上限）。
+    /// 连发间隔下限（约一个 60Hz 逻辑帧，防止退化成每步连发）。
+    pub const MIN_REPEAT_MS: u32 = 16;
+
+    /// 旧「帧」键换算成毫秒所用的固定步长（60Hz，与引擎默认固定步一致）。
+    pub const LEGACY_FRAME_MS: f32 = 1000.0 / 60.0;
+
+    /// 唯一构造入口：非有限/超界值统一钳制（阈值 0..=1、延迟 ≤ 上限、间隔 ≥ 下限）。
     #[must_use]
-    pub fn new(threshold: f32, delay_frames: u32, repeat_frames: u32) -> Self {
+    pub fn new(threshold: f32, delay_ms: u32, repeat_ms: u32) -> Self {
         let threshold = if threshold.is_finite() {
             threshold.clamp(0.0, 1.0)
         } else {
@@ -679,9 +698,16 @@ impl NavSettings {
         };
         Self {
             threshold,
-            delay_frames: delay_frames.min(Self::MAX_FRAMES),
-            repeat_frames: repeat_frames.clamp(1, Self::MAX_FRAMES),
+            delay_ms: delay_ms.min(Self::MAX_MS),
+            repeat_ms: repeat_ms.clamp(Self::MIN_REPEAT_MS, Self::MAX_MS),
         }
+    }
+
+    /// 旧帧数 → 毫秒（兼容读取用）。非有限/负值按 0 处理（与 M20-09 的
+    /// `v.max(0.0) as u32` 一致），上限由 [`Self::new`] 统一钳制。
+    #[must_use]
+    pub fn frames_to_ms(frames: f32) -> u32 {
+        (frames.max(0.0) * Self::LEGACY_FRAME_MS).round() as u32
     }
 
     /// 是否与默认手感一致（编辑器/诊断用）。
@@ -693,11 +719,15 @@ impl NavSettings {
 
 /// 从设置文本解析 `[input]` 段的导航手感。宽松语义与死区一致：段缺失、键缺失、
 /// 非法数值都保留默认值，段外同名键不生效，同名键只取首次出现。
+///
+/// 毫秒键优先于旧的帧键：两者同时存在时用毫秒键。
 #[must_use]
 pub fn parse_nav_section(text: &str) -> NavSettings {
     let mut threshold: Option<f32> = None;
-    let mut delay: Option<u32> = None;
-    let mut repeat: Option<u32> = None;
+    let mut delay_ms: Option<u32> = None;
+    let mut repeat_ms: Option<u32> = None;
+    let mut delay_frames: Option<u32> = None;
+    let mut repeat_frames: Option<u32> = None;
     let mut section = String::new();
     for raw in text.lines() {
         let line = raw.trim().trim_start_matches('\u{feff}').trim();
@@ -718,30 +748,41 @@ pub fn parse_nav_section(text: &str) -> NavSettings {
             continue;
         };
         let value = value.trim().trim_matches('"');
+        // 允许 `16` 与 `16.0` 两种写法：先试整数，再按浮点取整。
+        let parse_num = |value: &str| -> Option<u32> {
+            value
+                .parse::<u32>()
+                .ok()
+                .or_else(|| value.parse::<f32>().ok().map(|v| v.max(0.0) as u32))
+        };
         match key.trim().to_ascii_lowercase().as_str() {
             INPUT_NAV_THRESHOLD_KEY if threshold.is_none() => {
                 threshold = value.parse::<f32>().ok();
             }
-            INPUT_NAV_DELAY_FRAMES_KEY if delay.is_none() => {
-                // 允许 `16` 与 `16.0` 两种写法：先试整数，再按浮点取整。
-                delay = value
-                    .parse::<u32>()
-                    .ok()
-                    .or_else(|| value.parse::<f32>().ok().map(|v| v.max(0.0) as u32));
+            INPUT_NAV_DELAY_MS_KEY if delay_ms.is_none() => {
+                delay_ms = parse_num(value);
             }
-            INPUT_NAV_REPEAT_FRAMES_KEY if repeat.is_none() => {
-                repeat = value
-                    .parse::<u32>()
-                    .ok()
-                    .or_else(|| value.parse::<f32>().ok().map(|v| v.max(0.0) as u32));
+            INPUT_NAV_REPEAT_MS_KEY if repeat_ms.is_none() => {
+                repeat_ms = parse_num(value);
+            }
+            INPUT_NAV_DELAY_FRAMES_KEY if delay_frames.is_none() => {
+                delay_frames = parse_num(value);
+            }
+            INPUT_NAV_REPEAT_FRAMES_KEY if repeat_frames.is_none() => {
+                repeat_frames = parse_num(value);
             }
             _ => {}
         }
     }
+    // 毫秒键优先；只有旧的帧键时按 60Hz 换算（留诊断由调用方决定，这里只做数值）。
+    let delay =
+        delay_ms.or_else(|| delay_frames.map(|frames| NavSettings::frames_to_ms(frames as f32)));
+    let repeat =
+        repeat_ms.or_else(|| repeat_frames.map(|frames| NavSettings::frames_to_ms(frames as f32)));
     NavSettings::new(
         threshold.unwrap_or(NavSettings::DEFAULT.threshold),
-        delay.unwrap_or(NavSettings::DEFAULT.delay_frames),
-        repeat.unwrap_or(NavSettings::DEFAULT.repeat_frames),
+        delay.unwrap_or(NavSettings::DEFAULT.delay_ms),
+        repeat.unwrap_or(NavSettings::DEFAULT.repeat_ms),
     )
 }
 
@@ -761,12 +802,15 @@ pub fn load_nav_section(root: &Path) -> (NavSettings, Option<String>) {
 }
 
 /// 保序写回导航手感三行（其余段/注释/未知键原样保留）。
+///
+/// M22/W3 起写毫秒键；文件里遗留的 `nav_delay_frames` / `nav_repeat_frames` 行不删
+/// （保序读改写只替换/补齐自己管理的键），但因为毫秒键优先，它们不再生效。
 #[must_use]
 pub fn upsert_nav_settings(existing: &str, nav: NavSettings) -> String {
     let entries: Vec<(&str, String)> = vec![
         (INPUT_NAV_THRESHOLD_KEY, fmt_deadzone(nav.threshold)),
-        (INPUT_NAV_DELAY_FRAMES_KEY, nav.delay_frames.to_string()),
-        (INPUT_NAV_REPEAT_FRAMES_KEY, nav.repeat_frames.to_string()),
+        (INPUT_NAV_DELAY_MS_KEY, nav.delay_ms.to_string()),
+        (INPUT_NAV_REPEAT_MS_KEY, nav.repeat_ms.to_string()),
     ];
     upsert_input_entries(existing, &entries)
 }
@@ -775,10 +819,10 @@ pub fn upsert_nav_settings(existing: &str, nav: NavSettings) -> String {
 mod tests {
     use super::*;
     use crate::core::audio::{AudioBus, AudioSystem};
+    use crate::core::input::GamepadDeadzone;
     use crate::core::input::{
         ACTION_MAP_VERSION, ActionMapError, AxisDirection, Binding, InputKey,
     };
-    use crate::host::gamepad::GamepadDeadzone;
 
     #[test]
     fn defaults_are_all_full_volume() {
@@ -1141,7 +1185,7 @@ mod tests {
         let clamped = parse_deadzone_section(
             "[input]\nstick_deadzone = 5.0\ntrigger_deadzone = -1.0\nstick_deadzone = 0.1\n",
         );
-        assert_eq!(clamped.stick, crate::host::gamepad::MAX_DEADZONE);
+        assert_eq!(clamped.stick, crate::core::input::MAX_DEADZONE);
         assert_eq!(clamped.trigger, 0.0);
         // 文本格式化稳定（整数保留 .0，小数去尾零）。
         assert_eq!(fmt_deadzone(0.15), "0.15");
@@ -1227,12 +1271,26 @@ mod tests {
             parse_nav_section("[audio]\nnav_threshold = 0.9\n"),
             NavSettings::DEFAULT
         );
-        // 正常解析（含整数/浮点两种帧数写法）。
+        // 正常解析（毫秒键）。
+        assert_eq!(
+            parse_nav_section(
+                "[input]\nnav_threshold = 0.65\nnav_delay_ms = 300\nnav_repeat_ms = 80\n"
+            ),
+            NavSettings::new(0.65, 300, 80)
+        );
+        // 旧「帧」键兼容：按 60Hz 换算成毫秒（10 帧 ≈ 167ms、4 帧 ≈ 67ms）。
         assert_eq!(
             parse_nav_section(
                 "[input]\nnav_threshold = 0.65\nnav_delay_frames = 10\nnav_repeat_frames = 4.0\n"
             ),
-            NavSettings::new(0.65, 10, 4)
+            NavSettings::new(0.65, 167, 67)
+        );
+        // 毫秒键优先于旧帧键（同一文件同时存在时）。
+        assert_eq!(
+            parse_nav_section(
+                "[input]\nnav_delay_frames = 10\nnav_delay_ms = 250\nnav_repeat_frames = 4\nnav_repeat_ms = 60\n"
+            ),
+            NavSettings::new(NavSettings::DEFAULT.threshold, 250, 60)
         );
         // 脏值：非有限/超界/缺键各自回落或钳制。
         assert_eq!(
@@ -1240,15 +1298,23 @@ mod tests {
             NavSettings::new(
                 NavSettings::DEFAULT.threshold,
                 0,
-                NavSettings::DEFAULT.repeat_frames
+                NavSettings::DEFAULT.repeat_ms
             )
         );
         let clamped = parse_nav_section(
             "[input]\nnav_threshold = 2.5\nnav_delay_frames = 999\nnav_repeat_frames = 0\n",
         );
         assert_eq!(clamped.threshold, 1.0);
-        assert_eq!(clamped.delay_frames, NavSettings::MAX_FRAMES);
-        assert_eq!(clamped.repeat_frames, 1, "间隔至少 1 帧，否则每帧连发");
+        assert_eq!(
+            clamped.delay_ms,
+            NavSettings::MAX_MS,
+            "999 帧 ≈ 16650ms 应被钳制到上限"
+        );
+        assert_eq!(
+            clamped.repeat_ms,
+            NavSettings::MIN_REPEAT_MS,
+            "间隔下限约一帧，否则每步连发"
+        );
         // 同名键只取首次出现。
         assert_eq!(
             parse_nav_section("[input]\nnav_threshold = 0.2\nnav_threshold = 0.8\n").threshold,
@@ -1268,12 +1334,16 @@ mod tests {
             "# 玩家设置\n[audio]\nmaster = 0.4\n\n[input]\n# 绑定表\nmap = \"rustlua-actions-v1\\ninteract=key:e\"\nstick_deadzone = 0.2\n",
         )
         .expect("seed settings");
-        let nav = NavSettings::new(0.6, 12, 5);
+        let nav = NavSettings::new(0.6, 300, 80);
         let written = upsert_nav_settings(&std::fs::read_to_string(&path).expect("read"), nav);
         std::fs::write(&path, &written).expect("write");
         assert!(written.contains("nav_threshold = 0.6"), "{written}");
-        assert!(written.contains("nav_delay_frames = 12"), "{written}");
-        assert!(written.contains("nav_repeat_frames = 5"), "{written}");
+        assert!(written.contains("nav_delay_ms = 300"), "{written}");
+        assert!(written.contains("nav_repeat_ms = 80"), "{written}");
+        assert!(
+            !written.contains("nav_delay_frames"),
+            "写入不再产生旧的帧键：{written}"
+        );
         // 其余内容与既有键原样保留。
         assert!(written.contains("master = 0.4"), "{written}");
         assert!(written.contains("# 绑定表"), "{written}");
@@ -1285,6 +1355,7 @@ mod tests {
         let map = ActionMap::with_defaults();
         let game_saved = upsert_input_section(&written, &map);
         assert!(game_saved.contains("nav_threshold = 0.6"), "{game_saved}");
+        assert!(game_saved.contains("nav_delay_ms = 300"), "{game_saved}");
         assert_eq!(load_nav_section(&dir), (nav, None));
         // 缺失文件 → 默认手感 + 无诊断。
         let fresh = temp_dir("nav-fresh");

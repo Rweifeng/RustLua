@@ -70,6 +70,11 @@
 | `shop` | `set_catalog` / `price` | 商店目录与价格服务（M16-10）。`set_catalog(name,spec)` 注册目录（`{item_id:{buy,sell}}`），`price(name,item_id)` 返回 `{buy,sell}` 或 nil；买卖交易与资金在 Lua 玩法层完成 |
 | `map` | `go(name,x,y)` / `enter(name,x,y)` / `current` / `spawn` / `set_spawn` / `schema(name,spec)` / `state(name[,value])` | 带出生点切图、当前图查询、分地图 blob 持久化；`schema` 注册分地图状态的轻量结构校验器，`schema(name,nil)` 清除；`state(name,value)` 写入前校验，错误定位到地图名与字段 |
 | `ui` | `panel/image/grid/grid_cell/grid_clear/grid_hit/tooltip/modal/modal_show/modal_hide/clear/drag_begin/drag_end/drag_active/drag_cancel` | 运行时动态面板、图片、背包网格、tooltip、模态层与拖拽回调 |
+| `ui` | `panel_get(id)` | 读回 `ui.panel` 建的动态面板：`{x,y,width,height,r,g,b,a,visible}`；不存在返回 `nil`（M22，UI 动画/可见性的 headless 断言用） |
+
+`ui.hide(id)` 作用于**同 id 的动态面板与文本**（M22 起也隐藏面板；此前只认文本，导致「先 clear 再重画」
+的面板类 UI 隐藏不掉、上一次选中项的残留高亮框会留在画面上）。注意宿主是在脚本 `update()` 返回后
+才取本帧顶点，因此「先 `update()`（内部 clear + 按输入改状态）再 `render()`」才是能看见的绘制顺序。
 | `data` | `load(path)` / `reload(path)` / `cache_clear` / `schema(path,spec)` | 从项目根读取 JSON 数据表并缓存为 Lua 表。`schema(path,spec)` 注册校验器（M16-11）：`spec` 为 `{["$kind"]="map"|"object"|"array", ...}` 的轻量 schema，注册后 `load/reload` 先校验再缓存，非法数据报错定位到文件与字段；`schema(path,nil)` 清除。裸对象 `{name="string",...}` 视为隐式 object schema |
 | `event` | `emit(name,data?)` / `on(name,cb)` / `subscribe(name,cb)` / `off(name,cb?)` / `unsubscribe(name,cb?)` | 通用命名事件总线（B-5）。`emit` 依序调用该事件全部订阅回调（传 `data`，缺省 nil），回调可重入 emit/订阅/取消；`off`/`unsubscribe` 不传回调时清空该事件全部订阅。订阅随 VM 生命周期，热重载后由 `on_create` 重订阅 |
 
@@ -143,16 +148,19 @@ map = "rustlua-actions-v1\ninteract=key:e,pad:0\n..."
 - 宿主把平台的 Arrow Up/Down/Left/Right 映射为引擎物理键 `InputKey::ARROW_UP/DOWN/LEFT/RIGHT`（独立游戏窗口 `game_app.rs` 与编辑器 Play 预览 `game_view.rs` 同源）；Lua 侧用 `input.is_down("up")` / `input.just_pressed("down")` / `"left"` / `"right"` 读取。
 - 这是**物理键**层，与命名动作（`input.action*`、手柄 DPad/摇杆）无关；命名动作见下节。
 
-### `input` 命名动作、手柄与绑定持久化（M20-07）
+### `input` 命名动作、手柄与绑定持久化（M20-07 → M22）
 
 三层模型：**物理输入**（键鼠 + 宿主每帧喂入的手柄设备帧，见 `docs/33`）→ **命名动作**（`ActionMap`，`ScriptState` 内只有一份实例）→ **动作消费**（下表 API）。动作查询同时考虑键盘与手柄绑定，因此脚本不必区分玩家用哪种设备。
 
 | 模块 | API | 说明 |
 |---|---|---|
-| `input` | `action(name)` | 任一绑定当前按下（含手柄按钮与手柄轴过阈值 0.5），返回布尔 |
-| `input` | `action_pressed(name)` / `action_released(name)` | 本逻辑帧的按下/松开边沿（键盘与手柄边沿都保留到被消费） |
+| `input` | `action(name)` | 任一绑定当前按下（含手柄按钮与手柄轴过阈值），返回布尔 |
+| `input` | `action_pressed(name)` / `action_released(name)` | 本逻辑帧的按下/松开边沿（键盘、手柄按钮与**手柄轴越阈值**的边沿都保留到被消费；M22/W3 起轴也有边沿，滞回进入 0.5 / 退出 0.4） |
+| `input` | `action_repeat(name)` | 菜单导航专用（M22/W3）：**按下边沿**立即返回 `true` 一步；模拟量绑定（摇杆）按住超过 `nav_delay_ms` 后每 `nav_repeat_ms` 再返回一次；数字键/DPad 按住不连发（保持「一次按下 = 一步」） |
 | `input` | `action_axis(negative, positive)` | 合成轴：手柄摇杆取模拟量（−1..1）、键位取 −1/0/1。**首参为负方向动作**，例如 `input.action_axis("ui_down", "ui_up")`（上为正）、`input.action_axis("ui_left", "ui_right")` |
 | `input` | `pad_button(index)` / `pad_axis(index)` | 原始手柄查询（调试与特殊玩法用）：按钮 0..15、轴 0..5，索引契约见 `docs/33` |
+| `input` | `last_device()` | `"keyboard"` / `"gamepad"`：最近一次产生**真实按下边沿**的设备（M22/W3）。空闲帧不改变，用它给 UI 提示选文案，不必再每帧扫描绑定 |
+| `input` | `rumble(low, high, ms)` | 手柄震动（M22/W2）：左右马达强度 0..1、时长毫秒（上限 5000，`0` = 立即停止）。只登记请求，宿主在帧末交给设备层；无手柄时静默无效 |
 | `input` | `actions()` | 全部动作名的数组（字典序，1 基表） |
 | `input` | `bindings(action)` | 该动作的绑定文本数组，形如 `{"key:e", "pad:0", "padaxis:1+"}` |
 | `input` | `rebind(action, binding)` | **清空并重设**该动作的绑定，返回 `ok, err`；绑定文本非法时返回 `false, 原因`（原绑定保留） |
@@ -161,10 +169,11 @@ map = "rustlua-actions-v1\ninteract=key:e,pad:0\n..."
 | `input` | `action_map_text()` | 当前映射的持久化文本（首行版本头 `rustlua-actions-v1`，逐行 `动作=绑定,绑定`） |
 | `input` | `set_action_map(text)` | 用文本替换当前映射，返回 `ok, err`；**版本头不符不改动当前映射**，返回 `false, 原因` |
 | `input` | `settings_path()` | `settings.toml` 实际路径（无工程根返回 `nil`） |
-| `input` | `load_settings([path])` | 读取 `[input].map` 并应用；文件缺失返回 `false, "missing"`（保留当前绑定）；版本/绑定非法则**回退默认映射**并记录诊断；缺 `map` 键只诊断、在位绑定保持不变；已有内容用 `merge_missing` 补齐缺失动作（**不覆盖用户重绑定**） |
+| `input` | `load_settings([path])` | 读取 `[input].map` 并应用（M22/W3 起**同时应用导航手感**：阈值 + 连发节奏）；文件缺失返回 `false, "missing"`（保留当前绑定）；版本/绑定非法则**回退默认映射**并记录诊断；缺 `map` 键只诊断、在位绑定保持不变；已有内容用 `merge_missing` 补齐缺失动作（**不覆盖用户重绑定**） |
 | `input` | `save_settings([path])` | 保序读改写 `settings.toml` 的 `[input]` 段（原子写、保留注释与 `[audio]` 段），返回 `ok, err` |
 | `input` | `diagnostics()` | 输入设置加载/保存产生的诊断消息数组（可定位到文件与原因） |
-| `input` | `nav_settings([path])` | 读取 `[input]` 段的菜单导航手感，返回 `{threshold, delay_frames, repeat_frames}`；文件缺失/无工程根返回 `nil`（调用方保留默认 0.5 / 16 / 8）。解析宽松 + 钳制：阈值 0..1、间隔 ≥1、帧数 ≤120，脏值回落默认 |
+| `input` | `nav_settings([path])` | 读取 `[input]` 段的菜单导航手感，返回 `{threshold, delay_ms, repeat_ms}`；文件缺失/无工程根返回 `nil`（调用方保留默认 0.5 / 350ms / 90ms）。解析宽松 + 钳制：阈值 0..1、时长 ≤5000ms、间隔 ≥16ms。旧的 `nav_delay_frames`/`nav_repeat_frames`（M20-09）仍可读，按 60Hz 换算成毫秒（M22/W3） |
+| `input` | `set_nav_settings(threshold, delay_ms, repeat_ms)` | 把导航手感推给引擎（M22/W3）：阈值成为设备层轴判定阈值，两个时长供 `action_repeat` 使用；返回钳制后的生效值 |
 
 - 路径规则与 `audio.settings_path/load_settings/save_settings` 一致：缺省为工程根下 `settings.toml`，相对路径相对工程根解析；无工程根时无参调用返回 `false, "no_project_root"`。
 - 绑定文本语法：`key:<字符/名字>`（如 `key:e`、`key:space`、`key:up`）、`pad:<按钮序号>`（如 `pad:0`）、`padaxis:<轴序号><+|->`（如 `padaxis:1+`）。

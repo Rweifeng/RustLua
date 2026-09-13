@@ -100,9 +100,12 @@ impl EditorApp {
         let (response, painter) = ui.allocate_painter(ui.available_size(), egui::Sense::hover());
         painter.rect_filled(response.rect, 0.0, egui::Color32::from_rgb(18, 20, 24));
         if self.preview.is_some() {
-            let focused = ui.rect_contains_pointer(response.rect);
+            // 鼠标事件要求指针在 Game 视图内；键盘只要求编辑器窗口持有焦点（M22 修复，
+            // 见 `update_preview` 的文档）。
+            let pointer_over = ui.rect_contains_pointer(response.rect);
+            let window_focused = ui.ctx().input(|i| i.focused);
             let preview_rect = self.preview_rect(response.rect);
-            self.update_preview(ui.ctx(), focused, preview_rect);
+            self.update_preview(ui.ctx(), pointer_over, window_focused, preview_rect);
             if let Some(preview) = &self.preview
                 && let Some(tex) = preview.texture_id()
             {
@@ -281,7 +284,24 @@ impl EditorApp {
 
     /// 驱动预览会话：分辨率选择在 Play 期间变更时实时重建离屏纹理，
     /// 并把 egui 输入桥接为游戏输入后交给会话步进（节流/回读/上传在会话内部）。
-    fn update_preview(&mut self, ctx: &egui::Context, focused: bool, preview_rect: egui::Rect) {
+    /// 步进 Play 预览并桥接本帧输入。
+    ///
+    /// * `pointer_over`：鼠标是否在 Game 视图内 —— 只影响**鼠标**事件（按钮/光标/滚轮），
+    ///   否则点击编辑器其它面板会穿透到游戏；
+    /// * `window_focused`：编辑器原生窗口是否持有键盘焦点（`egui::InputState::focused`）。
+    ///
+    /// **M22 修复**：此前两者都按「鼠标悬停在 Game 视图上」判定，于是按下 Play 后只要鼠标不在
+    /// Game 视图上（很常见：用工具栏按钮进 Play 后鼠标还停在工具栏），**键盘输入会被整帧丢弃**；
+    /// 手柄不受影响（它由运行时在步进时轮询合并，与快照无关），因此表现为「键盘没反应、手柄
+    /// 也要把鼠标移进去才像能用」的错觉。现在键盘只要窗口有焦点就桥接；窗口失焦时用
+    /// `set_focused(false)` 清空按键/鼠标/手柄的 held 状态（防卡键）。
+    fn update_preview(
+        &mut self,
+        ctx: &egui::Context,
+        pointer_over: bool,
+        window_focused: bool,
+        preview_rect: egui::Rect,
+    ) {
         // 分辨率实时变更：会话尺寸与工具栏选择不一致时原子重建离屏纹理。
         if self
             .preview
@@ -296,7 +316,7 @@ impl EditorApp {
                 preview.set_ui_reference([width as f32, height as f32]);
             }
         }
-        if focused {
+        if window_focused {
             let (width, height) = self
                 .preview
                 .as_ref()
@@ -306,7 +326,8 @@ impl EditorApp {
             // `just_released` 边沿只在本次模拟帧的 update 消费一次，随后在帧边界清空，
             // 避免按住的键在下一个 tick 重复触发一次性动作。
             let mut input = std::mem::take(&mut self.preview_input_state);
-            self.bridge_preview_input(&mut input, ctx, preview_rect, width, height);
+            input.set_focused(true);
+            self.bridge_preview_input(&mut input, ctx, preview_rect, width, height, pointer_over);
             if let Some(preview) = &mut self.preview {
                 preview.update(ctx, &input);
             }
@@ -314,8 +335,8 @@ impl EditorApp {
             input.finish_frame();
             self.preview_input_state = input;
         } else {
-            // 失焦：清空 held 防止卡键（M11-02）。
-            self.preview_input_state.clear_all();
+            // 窗口失焦（Alt-Tab 等）：清空 held 防止卡键（M11-02，含手柄按住状态与轴数字态）。
+            self.preview_input_state.set_focused(false);
             if let Some(preview) = &mut self.preview {
                 preview.update(ctx, &InputSnapshot::default());
             }
@@ -359,17 +380,25 @@ impl EditorApp {
         preview_rect: egui::Rect,
         width: u32,
         height: u32,
+        pointer_over: bool,
     ) {
         ctx.input(|i| {
+            // 键盘：**只要窗口有键盘焦点**就桥接（M22 修复：不再要求鼠标悬停在 Game 视图上，
+            // 否则「按下 Play 后鼠标停在工具栏」会完全收不到按键）。
             for &egui_key in PREVIEW_KEYS {
                 if let Some(game_key) = preview_input_key(egui_key) {
                     input.key_event(game_key, i.key_down(egui_key));
                 }
             }
-            input.mouse_event(MouseButton::Left, i.pointer.primary_down());
-            input.mouse_event(MouseButton::Right, i.pointer.secondary_down());
-            input.mouse_event(MouseButton::Middle, i.pointer.middle_down());
-            if let Some(pos) = i.pointer.hover_pos() {
+            // 鼠标：只有指针在预览矩形内才桥接（否则点击编辑器其它面板会穿透到游戏）；
+            // 指针离开时送松开边沿，避免「按住左键把鼠标移出」留下卡住的点击。
+            input.mouse_event(MouseButton::Left, pointer_over && i.pointer.primary_down());
+            input.mouse_event(
+                MouseButton::Right,
+                pointer_over && i.pointer.secondary_down(),
+            );
+            input.mouse_event(MouseButton::Middle, pointer_over && i.pointer.middle_down());
+            if pointer_over && let Some(pos) = i.pointer.hover_pos() {
                 // 把 egui 屏幕坐标映射到预览像素坐标，供 Button 命中测试使用。
                 let px = (pos.x - preview_rect.min.x) / preview_rect.width().max(1.0)
                     * width.max(1) as f32;
@@ -377,9 +406,11 @@ impl EditorApp {
                     * height.max(1) as f32;
                 input.cursor_moved(px as f64, py as f64);
             }
-            let scroll = i.smooth_scroll_delta;
-            if scroll.x != 0.0 || scroll.y != 0.0 {
-                input.scroll_event(scroll.x, scroll.y);
+            if pointer_over {
+                let scroll = i.smooth_scroll_delta;
+                if scroll.x != 0.0 || scroll.y != 0.0 {
+                    input.scroll_event(scroll.x, scroll.y);
+                }
             }
         });
     }
@@ -817,7 +848,7 @@ mod tests {
         };
         ctx.begin_pass(raw);
         let mut input = InputSnapshot::default();
-        app.bridge_preview_input(&mut input, &ctx, preview_rect, 200, 100);
+        app.bridge_preview_input(&mut input, &ctx, preview_rect, 200, 100, true);
         let _ = ctx.end_pass();
 
         assert!(input.is_down(InputKey::W));
@@ -880,7 +911,7 @@ mod tests {
         };
         ctx.begin_pass(raw);
         let mut input = InputSnapshot::default();
-        app.bridge_preview_input(&mut input, &ctx, preview_rect, 200, 100);
+        app.bridge_preview_input(&mut input, &ctx, preview_rect, 200, 100, true);
         let _ = ctx.end_pass();
 
         // 字母/数字/符号与 `InputKey::from_char`（独立窗口与 `parse_key` 同源）一致。
@@ -935,7 +966,7 @@ mod tests {
                 .collect(),
             ..Default::default()
         });
-        app.bridge_preview_input(&mut input, &ctx, preview_rect, 200, 100);
+        app.bridge_preview_input(&mut input, &ctx, preview_rect, 200, 100, true);
         let _ = ctx.end_pass();
         assert!(!input.is_down(InputKey::from_char('j')));
         assert!(
@@ -943,5 +974,60 @@ mod tests {
             "松开边沿必须桥接（否则 Play 里会卡键）"
         );
         assert!(!input.is_down(InputKey::from_char('+')));
+    }
+
+    /// M22 回归：**Play 预览的键盘不依赖鼠标悬停**。
+    ///
+    /// 之前 `draw_game_view` 用「鼠标是否在 Game 视图内」当作「是否桥接输入」，于是按下 Play 后
+    /// 鼠标停在工具栏/面板上时键盘完全没有反应（用户实测：Play 里标题界面键盘与手柄都「选不动」，
+    /// 其中键盘就是这个门控造成的）。现在键盘只看窗口焦点；鼠标仍要求指针在预览矩形内，
+    /// 并且指针移出时送松开边沿（不留下卡住的点击）。
+    #[test]
+    fn preview_keyboard_does_not_require_pointer_hover() {
+        let app = app_with_scene();
+        let ctx = egui::Context::default();
+        let preview_rect =
+            egui::Rect::from_min_max(egui::pos2(10.0, 20.0), egui::pos2(210.0, 120.0));
+        let raw = RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(320.0, 240.0),
+            )),
+            events: vec![
+                Event::Key {
+                    key: Key::ArrowDown,
+                    physical_key: Some(Key::ArrowDown),
+                    pressed: true,
+                    repeat: false,
+                    modifiers: Modifiers::default(),
+                },
+                Event::PointerButton {
+                    pos: egui::pos2(60.0, 70.0),
+                    button: PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Modifiers::default(),
+                },
+            ],
+            ..Default::default()
+        };
+        ctx.begin_pass(raw);
+        let mut input = InputSnapshot::default();
+        // `pointer_over = false`：鼠标不在 Game 视图内（指针事件也落在别处）。
+        app.bridge_preview_input(&mut input, &ctx, preview_rect, 200, 100, false);
+        let _ = ctx.end_pass();
+
+        assert!(
+            input.is_down(InputKey::ARROW_DOWN),
+            "鼠标不在 Game 视图内时按键仍必须桥接"
+        );
+        assert!(
+            !input.mouse_is_down(MouseButton::Left),
+            "指针不在预览内时鼠标按下不得进入游戏"
+        );
+        assert_eq!(
+            input.cursor_position(),
+            (0.0, 0.0),
+            "指针在预览外不更新光标"
+        );
     }
 }

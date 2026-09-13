@@ -37,7 +37,7 @@ use engine::core::{
 };
 use engine::host::gamepad::{
     GAMEPAD_BUTTON_COUNT, GamepadBackend, GamepadDeadzone, GamepadFrame, GamepadPoller,
-    axes_from_raw_with, button, triggers_to_buttons,
+    SlotBackend, axes_from_raw_with, button, triggers_to_buttons,
 };
 use std::{
     env, fs,
@@ -234,8 +234,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     lua(&mut runtime, "require('world.dialogue').close(true)")?;
     // 导航手感：settings.toml 的 [input] 三行会被启动 `apply_nav_settings()` 应用。
     assert_num(&mut runtime, "input.nav_settings().threshold", 0.5)?;
-    assert_num(&mut runtime, "input.nav_settings().delay_frames", 16.0)?;
-    assert_num(&mut runtime, "input.nav_settings().repeat_frames", 8.0)?;
+    // M22/W3：重复节奏改成毫秒（旧的帧键仍可读，按 60Hz 换算）。
+    assert_num(&mut runtime, "input.nav_settings().delay_ms", 350.0)?;
+    assert_num(&mut runtime, "input.nav_settings().repeat_ms", 90.0)?;
+    // 旧「帧」键兼容：4 帧 ≈ 67ms、2 帧 ≈ 33ms（阈值同上）。
     fs::write(
         &settings_path,
         "# M20-09 导航手感（示例结束时按原样恢复）\n[input]\nnav_threshold = 0.25\nnav_delay_frames = 4\nnav_repeat_frames = 2\n",
@@ -248,15 +250,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     assert_num(
         &mut runtime,
-        "require('ui.input').nav_settings().delay_frames",
-        4.0,
+        "require('ui.input').nav_settings().delay_ms",
+        67.0,
     )?;
     assert_num(
         &mut runtime,
-        "require('ui.input').nav_settings().repeat_frames",
-        2.0,
+        "require('ui.input').nav_settings().repeat_ms",
+        33.0,
     )?;
-    // 脏值由引擎钳制（间隔至少 1 帧、帧数上限 120、阈值 0..1）。
+    // 新毫秒键可直接配置，并优先于旧帧键。
+    fs::write(
+        &settings_path,
+        "[input]\nnav_threshold = 0.3\nnav_delay_frames = 4\nnav_delay_ms = 120\nnav_repeat_ms = 40\n",
+    )?;
+    lua(&mut runtime, "require('ui.input').apply_nav_settings()")?;
+    assert_num(
+        &mut runtime,
+        "require('ui.input').nav_settings().threshold",
+        0.3,
+    )?;
+    assert_num(
+        &mut runtime,
+        "require('ui.input').nav_settings().delay_ms",
+        120.0,
+    )?;
+    assert_num(
+        &mut runtime,
+        "require('ui.input').nav_settings().repeat_ms",
+        40.0,
+    )?;
+    // 脏值由引擎/解析钳制（间隔下限约一帧、时长上限 5000ms、阈值 0..1）。
     fs::write(
         &settings_path,
         "[input]\nnav_threshold = 5.0\nnav_delay_frames = 999\nnav_repeat_frames = 0\n",
@@ -269,13 +292,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     assert_num(
         &mut runtime,
-        "require('ui.input').nav_settings().delay_frames",
-        120.0,
+        "require('ui.input').nav_settings().delay_ms",
+        5000.0,
     )?;
     assert_num(
         &mut runtime,
-        "require('ui.input').nav_settings().repeat_frames",
-        1.0,
+        "require('ui.input').nav_settings().repeat_ms",
+        16.0,
     )?;
     // 恢复示例模板（后续章节仍按 M20-08 的 settings.toml 预期断言）。
     fs::write(&settings_path, SETTINGS_TEMPLATE)?;
@@ -500,6 +523,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         button::DPAD_DOWN,
     )?;
     assert_num(&mut runtime, "require('world.dialogue').selected()", 2.0)?;
+    // M22：面板导航（对话/商店/背包/任务/暂停）与标题菜单共用 `ui.panel_nav`，
+    // 因此换项反馈音在面板里同样生效。
+    assert_str_why(
+        &mut runtime,
+        "tostring(require('core.audio').played_recently('ui_move'))",
+        "true",
+        "面板换项也应播放 ui_move",
+    )?;
     pad_press(
         &mut runtime,
         &mut poller,
@@ -508,8 +539,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         button::DPAD_UP,
     )?;
     assert_num(&mut runtime, "require('world.dialogue').selected()", 1.0)?;
-    // 摇杆导航：模拟摇杆没有按下边沿，玩法层用「首次立即 + 按住延迟 16 帧 +
-    // 每 8 帧重复」（`input.lua` 的 ui_step/stick_step），避免每帧滚动。
+    // 摇杆导航（M22/W3）：引擎给轴合成按下边沿 + 时间制连发
+    //（`input.action_pressed` / `input.action_repeat`，默认延迟 350ms、间隔 90ms，
+    // 60Hz 下约 21 / 5.4 帧），玩法层不再自己数帧，因此 144Hz 与 60Hz 手感一致。
+    //
+    // 本示例在 M20-08b 里把摇杆轴改绑给移动并**解除了 `ui_*` 上的轴绑定**（保持映射
+    // 无跨动作冲突）。M22 起摇杆菜单导航走的就是 `ui_*` 的轴绑定，所以这里先临时加回
+    // 两条轴绑定来验证导航，章节末再解除，保持后续章节（settings 往返）的映射状态不变。
+    let map_text = query_str(&mut runtime, "input.action_map_text()")?;
+    let restored = map_text
+        .lines()
+        .map(|line| {
+            if let Some((name, list)) = line.split_once('=') {
+                for (action, binding) in [("ui_up", "padaxis:1+"), ("ui_down", "padaxis:1-")] {
+                    if name == action && !list.split(',').any(|item| item == binding) {
+                        return format!("{name}={list},{binding}");
+                    }
+                }
+            }
+            line.to_owned()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    lua(
+        &mut runtime,
+        // `{restored:?}` 产出带 `\n` 转义的 Lua 字符串字面量（映射文本是多行）。
+        &format!("assert(select(1, input.set_action_map({restored:?})))"),
+    )?;
     pad.stick(0.0, -0.9);
     pad_ticks(&mut runtime, &mut poller, &mut snapshot, 2)?;
     assert_num_why(
@@ -518,36 +574,54 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         2.0,
         "摇杆下推应首次立即走一步",
     )?;
-    // 按住 13 帧（累计 15 帧）仍未到重复延迟 → 停在原处。
+    // 累计 15 帧（250ms）仍在 350ms 延迟内 → 停在原处。
     pad_ticks(&mut runtime, &mut poller, &mut snapshot, 13)?;
     assert_num_why(
         &mut runtime,
         "require('world.dialogue').selected()",
         2.0,
-        "未到按住重复延迟不应继续移动",
+        "未到按住连发延迟不应继续移动",
+    )?;
+    // 累计 19 帧（约 317ms）仍未到 350ms。
+    pad_ticks(&mut runtime, &mut poller, &mut snapshot, 4)?;
+    assert_num_why(
+        &mut runtime,
+        "require('world.dialogue').selected()",
+        2.0,
+        "连发延迟按毫秒计时，19 帧（约 317ms）不应触发",
     )?;
     let options = query_num(
         &mut runtime,
         "return require('world.dialogue').option_limit()",
     )?;
     let next = if 2.0 >= options { 1.0 } else { 3.0 };
-    pad_ticks(&mut runtime, &mut poller, &mut snapshot, 1)?;
+    // 累计 23 帧（约 383ms）：跨过 350ms → 恰好再走一步。
+    pad_ticks(&mut runtime, &mut poller, &mut snapshot, 4)?;
     assert_num_why(
         &mut runtime,
         "require('world.dialogue').selected()",
         next,
-        "第 16 帧到达重复延迟应再走一步",
+        "越过 350ms 连发延迟应再走一步（且只走一步）",
     )?;
     let after_repeat = if next >= options { 1.0 } else { next + 1.0 };
-    pad_ticks(&mut runtime, &mut poller, &mut snapshot, 8)?;
+    // 再过 6 帧（100ms > 90ms 间隔）→ 恰好再一步。
+    pad_ticks(&mut runtime, &mut poller, &mut snapshot, 6)?;
     assert_num_why(
         &mut runtime,
         "require('world.dialogue').selected()",
         after_repeat,
-        "按住后每 8 帧重复一步",
+        "按住后按 90ms 间隔重复一步",
     )?;
     pad.stick(0.0, 0.0);
     pad_tick(&mut runtime, &mut poller, &mut snapshot)?;
+    // 解除临时加回的两条轴绑定，恢复 M20-08b 留下的映射状态。
+    for (action, binding) in [("ui_up", "padaxis:1+"), ("ui_down", "padaxis:1-")] {
+        assert_str(
+            &mut runtime,
+            &format!("tostring(input.unbind('{action}', '{binding}'))"),
+            "true",
+        )?;
+    }
     lua(&mut runtime, "require('world.dialogue').select(1)")?;
     pad_press(&mut runtime, &mut poller, &mut snapshot, &pad, button::A)?;
     assert_str(&mut runtime, "require('world.dialogue').node()", "accept")?;
@@ -849,8 +923,74 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "BtnContinue",
         "DPad 下移一次应对齐第二项「继续江湖」",
     )?;
+    // M22 选中反馈①音效：换项时播 `ui_move`（UI 总线；`panel_nav` 统一接线，
+    // 因此键盘 W/S、方向键、数字直选、DPad、摇杆五条路径都会响）。
+    assert_str_why(
+        &mut title,
+        "tostring(require('core.audio').played_recently('ui_move'))",
+        "true",
+        "手柄换项应播放 ui_move",
+    )?;
+    // M22 选中反馈②动画：换项当帧高亮「弹」到最大（pop≈1、外扩最大）。
+    assert_str_why(
+        &mut title,
+        "tostring(require('ui.title_menu').anim().pop > 0.9)",
+        "true",
+        "换项当帧应处于弹跳峰值",
+    )?;
+    // M22 回归：**高亮框与标签必须真的画出来**（宿主在 `update()` 返回后取顶点，因此
+    // `main.lua` 的顺序必须是 update → render；此前 render → update 会让本帧的
+    // 标签/提示被 `clear()` 隐藏，高亮框动画也因而「看不见」）。
+    assert_str_why(
+        &mut title,
+        "tostring((ui.panel_get('title:hl:BtnContinue') or {}).visible == true)",
+        "true",
+        "选中高亮应在本帧可见",
+    )?;
+    assert_str_why(
+        &mut title,
+        "tostring((ui.panel_get('title:hl:BtnContinue') or {}).width > 340)",
+        "true",
+        "换项当帧高亮应外扩（>340px，基准 332px）",
+    )?;
+    assert_str_why(
+        &mut title,
+        "tostring((ui.get('title:label:BtnContinue') or {}).visible == true)",
+        "true",
+        "选中项标签应可见（含 > 箭头）",
+    )?;
+    assert_str_why(
+        &mut title,
+        "tostring((ui.get('title:hint') or {}).visible == true)",
+        "true",
+        "顶部操作说明应可见",
+    )?;
+    let grow_hot = query_num(&mut title, "return require('ui.title_menu').anim().grow_x")?;
     pad.release(button::DPAD_DOWN);
-    pad_tick(&mut title, &mut title_poller, &mut title_snapshot)?;
+    // 松手后 12 帧（0.2s > 0.14s 动画时长）→ 动画收敛：pop 归零、外扩回到基准 6 像素。
+    pad_ticks(&mut title, &mut title_poller, &mut title_snapshot, 12)?;
+    assert_str_why(
+        &mut title,
+        "tostring(require('ui.title_menu').anim().pop == 0)",
+        "true",
+        "动画应在 POP_SECONDS 内收敛",
+    )?;
+    assert_str_why(
+        &mut title,
+        "tostring((ui.panel_get('title:hl:BtnContinue') or {}).width == 332)",
+        "true",
+        "收敛后高亮应回到基准外扩（332px = 320 + 2×6）",
+    )?;
+    assert_str_why(
+        &mut title,
+        "tostring((ui.panel_get('title:hl:BtnStart') or { visible = false }).visible == false)",
+        "true",
+        "非选中项的高亮框不得残留（ui.hide 现在也管面板）",
+    )?;
+    let grow_idle = query_num(&mut title, "return require('ui.title_menu').anim().grow_x")?;
+    if grow_idle >= grow_hot {
+        return Err(format!("弹跳应回落到基准外扩：峰值 {grow_hot} → 静止 {grow_idle}").into());
+    }
     // 再下移一次 → 第三项「退出江湖」。
     pad.press(button::DPAD_DOWN);
     pad_tick(&mut title, &mut title_poller, &mut title_snapshot)?;
@@ -885,10 +1025,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         title.quit_requested(),
         "A 确认应触发 on_click('BtnExit') → app.quit()（宿主侧退出标记）"
     );
+    // M22：确认反馈音走 `main.lua::on_click`（鼠标点击 / 键盘空格 / 手柄 A 同一入口）。
+    assert_str_why(
+        &mut title,
+        "tostring(require('core.audio').played_recently('ui_confirm'))",
+        "true",
+        "确认按钮应播放 ui_confirm",
+    )?;
     assert_scene_is(&mut title, "main")?;
     title_snapshot.finish_frame();
     title.set_input(InputSnapshot::default());
-    // B（cancel）在标题界面 = 退出项。同时验证数字直选 2 → 「继续江湖」。
+    // B（cancel）在标题界面 = 退出项，并播取消音（M22）。
+    let mut cancel_input = InputSnapshot::default();
+    cancel_input.gamepad_button_event(button::B as u8, true);
+    title.set_input(cancel_input);
+    title.call_update()?;
+    assert_str_why(
+        &mut title,
+        "tostring(require('core.audio').played_recently('ui_cancel'))",
+        "true",
+        "B 取消应播放 ui_cancel",
+    )?;
+    title.set_input(InputSnapshot::default());
+    title.call_update()?;
+    // 同时验证数字直选 2 → 「继续江湖」。
     let mut digit_input = InputSnapshot::default();
     digit_input.key_event(InputKey::from_char('2'), true);
     title.set_input(digit_input);
@@ -903,6 +1063,75 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     title.call_update()?;
     let _ = fs::remove_file(&title_save);
 
+    banner("M22-01 槽位/热插拔/震动：切换设备释放旧状态、震动按期下达并可立即停止");
+    // 独立的多槽位后端（不影响前面章节的 ScriptedPad）：① slot0 空闲 → ② slot0 按住 A →
+    // ③ slot0 拔线、slot1 接入（空闲）→ ④ slot1 按住 B。
+    let mut slot0_idle = GamepadFrame::idle();
+    slot0_idle.buttons[button::A] = false;
+    let mut slot0_a = GamepadFrame::idle();
+    slot0_a.buttons[button::A] = true;
+    let mut slot1_idle = GamepadFrame::idle();
+    slot1_idle.buttons[button::B] = false;
+    let mut slot1_b = GamepadFrame::idle();
+    slot1_b.buttons[button::B] = true;
+    let slot_backend = SlotBackend::new(vec![
+        [Some(slot0_idle), None, None, None],
+        [Some(slot0_a), None, None, None],
+        [None, Some(slot1_idle), None, None],
+        [None, Some(slot1_b), None, None],
+    ]);
+    let rumble_log = slot_backend.rumble_log();
+    let mut slot_poller = GamepadPoller::new(Box::new(slot_backend));
+
+    pad_tick(&mut runtime, &mut slot_poller, &mut snapshot)?;
+    assert_eq!(
+        slot_poller.active_slot(),
+        Some(0),
+        "自动选择第一个已连接槽位"
+    );
+    assert_str(&mut runtime, "input.pad_button(0)", "false")?;
+    pad_tick(&mut runtime, &mut slot_poller, &mut snapshot)?;
+    assert_str_why(
+        &mut runtime,
+        "input.pad_button(0)",
+        "true",
+        "slot 0 的 A 应生效",
+    )?;
+    // 切换设备：旧槽位仍按住的 A 被释放（不粘键），且不产生假按下。
+    pad_tick(&mut runtime, &mut slot_poller, &mut snapshot)?;
+    assert_eq!(slot_poller.active_slot(), Some(1), "应接管 slot 1");
+    assert_str_why(
+        &mut runtime,
+        "input.pad_button(0)",
+        "false",
+        "切换槽位应释放旧槽位的按住状态",
+    )?;
+    assert_str(&mut runtime, "input.pad_button(1)", "false")?;
+    pad_tick(&mut runtime, &mut slot_poller, &mut snapshot)?;
+    assert_str_why(
+        &mut runtime,
+        "input.pad_button(1)",
+        "true",
+        "新槽位的 B 应生效",
+    )?;
+    // 震动：Lua 只登记请求，宿主交给设备层；无 `RuntimeScene` 时由调用方取走并下达。
+    lua(&mut runtime, "input.rumble(0.4, 0.6, 120)")?;
+    let request = runtime.take_rumble_request();
+    if let Some((low, high, ms)) = request {
+        slot_poller.rumble(low, high, ms);
+    }
+    assert_eq!(
+        rumble_log.calls().last().copied(),
+        Some((1, 0.4, 0.6)),
+        "震动应下达到活动槽位"
+    );
+    slot_poller.rumble(0.0, 0.0, 0);
+    assert_eq!(
+        rumble_log.calls().last().copied(),
+        Some((1, 0.0, 0.0)),
+        "duration=0 应立即停止"
+    );
+
     // 收尾：恢复 settings.toml（原本不存在则删除），删除临时存档。
     drop(guard);
     if settings_path.exists() != settings_existed {
@@ -916,7 +1145,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = fs::remove_file(&save_path2);
 
     println!(
-        "jhyt_m20_gamepad_ok project={} backend={} bindings={} interact={} move_up={} chapters=13",
+        "jhyt_m20_gamepad_ok project={} backend={} bindings={} interact={} move_up={} chapters=14",
         project.display(),
         poller.backend_name(),
         query_num(&mut runtime, "return #input.actions()")?,

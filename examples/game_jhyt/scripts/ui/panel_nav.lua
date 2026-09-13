@@ -15,6 +15,12 @@
 -- input.lua 的 `ui_step` 里统一成方向字符串，再交给 `M.move`。M20-08 起菜单
 -- 导航走 `ui_up/ui_down/ui_left/ui_right` 命名动作（玩家可改绑），摇杆读设备轴
 -- （`input.pad_axis`，设备层已过死区）并带按住重复，避免每帧滚动。
+--
+-- M22：**选中项真的变化时播一次 `ui_move`**（UI 总线）。放在这里是因为所有面板的
+-- 键盘（W/S/方向键/数字直选）与手柄（DPad/摇杆）导航最终都经本模块 → 一处接线即可
+-- 保证两条输入路径的反馈一致，且不会在「按住不放连发」时每帧乱响。
+local audio = require("core.audio")
+
 local M = {}
 
 local function api(name)
@@ -31,6 +37,14 @@ local function number(value, fallback)
     return fallback
   end
   return math.floor(result)
+end
+
+-- 选中项变化时的反馈音（M22）：只在序号**真的变了**时响一次。
+-- `before` 为 nil（焦点环尚未建立）不响——那是面板刚打开，不是玩家在导航。
+local function play_move(before, after)
+  if before and after and before ~= after then
+    audio.ui("ui_move")
+  end
 end
 
 -- 打开/重建焦点环：`count` 项、`columns` 列（网格面板用）。返回最终项数。
@@ -67,6 +81,7 @@ function M.count(id)
 end
 
 -- 按 1 基序号设置焦点；返回是否成功。
+-- 序号变化时同样播 `ui_move`（数字直选与鼠标点选走这里）。
 function M.select(id, index)
   local fn = api("focus_select")
   if not fn then
@@ -76,8 +91,13 @@ function M.select(id, index)
   if i < 1 then
     return false
   end
+  local before = M.index(id)
   local ok, done = pcall(fn, id, i - 1)
-  return ok and done == true
+  if not (ok and done == true) then
+    return false
+  end
+  play_move(before, i)
+  return true
 end
 
 -- 当前焦点的 1 基序号；无焦点/无 API 返回 nil。
@@ -102,11 +122,14 @@ function M.move(id, direction)
   if not fn or not dir then
     return nil
   end
+  local before = M.index(id)
   local ok, index = pcall(fn, id, dir)
   if not ok or type(index) ~= "number" then
     return nil
   end
-  return math.floor(index) + 1
+  local after = math.floor(index) + 1
+  play_move(before, after)
+  return after
 end
 
 -- Tab 式循环；`forward == false` 反向。返回新的 1 基序号或 nil。
@@ -115,11 +138,14 @@ function M.cycle(id, forward)
   if not fn then
     return nil
   end
+  local before = M.index(id)
   local ok, index = pcall(fn, id, forward ~= false)
   if not ok or type(index) ~= "number" then
     return nil
   end
-  return math.floor(index) + 1
+  local after = math.floor(index) + 1
+  play_move(before, after)
+  return after
 end
 
 -- 把 1 基的选中行滚入视口，返回首个可见行的 1 基序号（滚动窗口起点）。

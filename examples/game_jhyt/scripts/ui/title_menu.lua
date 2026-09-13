@@ -15,6 +15,9 @@
 --   * 手柄 B / Esc（cancel）在标题界面等于「选中退出江湖」。
 local nav = require("ui.panel_nav")
 local hints = require("ui.hints")
+-- `core.audio` 是叶子模块（只依赖 core.save_manager），顶层 require 不会成环；
+-- 选中/确认/取消反馈音都经它（UI 总线）。
+local audio = require("core.audio")
 -- `ui.input` 与 main.lua 同层：模块加载期不能 require（会与 main → title_menu 成环），
 -- 首次使用时惰性取一次（此时 Lua 的 require 缓存里已有它）。
 local input_module = nil
@@ -59,6 +62,44 @@ local selected = 1
 -- 选中高亮的颜色（暖金，与按钮贴图同色系）。
 local HIGHLIGHT = { 0.85, 0.72, 0.42, 0.30 }
 
+-- ---------- 选中反馈（M22） ----------
+--
+-- 手柄/键盘导航原先只有「高亮框换位置」这一个静态变化，按下去没有任何反馈，
+-- 手感上像「没选中」。这里补两件事：
+--   * 换项时高亮框**弹一下**（外扩 + 提亮，`POP_SECONDS` 内 ease-out 收回来）；
+--   * 选中项**呼吸**（很轻的透明度起伏），让「当前选中哪一个」在静止时也一眼可见。
+-- 都用固定步 `time.delta()` 推进，因此与渲染帧率无关，也和引擎固定步一致。
+local POP_SECONDS = 0.14
+local PULSE_SECONDS = 2.4
+local pop_timer = 0
+local pulse_phase = 0
+
+-- 当前动画取值（`render` 与 headless 断言同源，避免「测试断言的公式和画面不一致」）。
+-- `pop` 1 → 0（刚换项时为 1）；`grow_x/grow_y` 高亮框外扩像素；`alpha` 最终透明度。
+function M.anim()
+  local pop = POP_SECONDS > 0 and math.max(0, math.min(1, pop_timer / POP_SECONDS)) or 0
+  local ease = 1 - (1 - pop) * (1 - pop)
+  local breathe = 0.5 + 0.5 * math.cos(pulse_phase / PULSE_SECONDS * math.pi * 2)
+  return {
+    pop = pop,
+    ease = ease,
+    grow_x = 6 + 10 * ease,
+    grow_y = 4 + 6 * ease,
+    alpha = HIGHLIGHT[4] + 0.30 * ease + 0.06 * breathe,
+  }
+end
+
+local function restart_pop()
+  pop_timer = POP_SECONDS
+end
+
+local function advance_anim(delta)
+  if delta and delta > 0 then
+    pop_timer = math.max(0, pop_timer - delta)
+    pulse_phase = (pulse_phase + delta) % PULSE_SECONDS
+  end
+end
+
 function M.count()
   return #OPTIONS
 end
@@ -78,17 +119,25 @@ end
 
 -- 移动选中项（方向字符串 "up"/"down"）；返回是否移动。
 function M.move_dir(direction)
+  local before = M.index()
   local index = nav.move(FOCUS, direction)
   if not index then
     return false
   end
   selected = index
+  if index ~= before then
+    restart_pop()
+  end
   return true
 end
 
 function M.select(index)
+  local before = M.index()
   if nav.select(FOCUS, index) then
     selected = index
+    if index ~= before then
+      restart_pop()
+    end
     return true
   end
   return false
@@ -96,10 +145,18 @@ end
 
 local function clear()
   for _, option in ipairs(OPTIONS) do
+    -- `ui.hide` 自 M22 起同时隐藏同 id 的动态面板与文本，因此高亮框、标签一起收起
+    --（此前它只认文本 → 非选中项的高亮框会残留）。
     ui.hide("title:hl:" .. option.id)
     ui.hide("title:label:" .. option.id)
   end
   ui.hide("title:hint")
+end
+
+-- 收起本模块画的所有动态 UI（离开门面时调用；场景切换也会清空动态 UI，这里是显式兜底）。
+function M.hide()
+  clear()
+  return true
 end
 
 -- 每帧输入：返回被触发的按钮 id（调用方转交 `on_click`）或 nil。
@@ -107,8 +164,10 @@ end
 function M.update()
   clear()
   local game = game_input()
+  advance_anim(select(1, time.delta()))
   if input.action_pressed("cancel") then
     -- 标题界面的「取消」= 退出：直接落在最后一项并触发。
+    audio.ui("ui_cancel")
     M.select(#OPTIONS)
     return OPTIONS[#OPTIONS].id
   end
@@ -130,32 +189,29 @@ end
 -- 绘制选中高亮 + 标签（含选中箭头）+ 顶部操作说明。必须在场景 UI 之后画。
 function M.render()
   local index = M.index()
+  local anim = M.anim()
   for position, option in ipairs(OPTIONS) do
     local x1, y1, x2, y2 = option.panel[1], option.panel[2], option.panel[3], option.panel[4]
     if position == index then
+      -- 换项时外扩 + 提亮（M22）：`grow_*` 是外扩像素，`alpha` 含呼吸项。
       ui.panel(
         "title:hl:" .. option.id,
-        x1 - 6,
-        y1 - 4,
-        (x2 - x1) + 12,
-        (y2 - y1) + 8,
-        HIGHLIGHT[1],
-        HIGHLIGHT[2],
-        HIGHLIGHT[3],
-        HIGHLIGHT[4]
+        x1 - anim.grow_x,
+        y1 - anim.grow_y,
+        (x2 - x1) + anim.grow_x * 2,
+        (y2 - y1) + anim.grow_y * 2,
+        math.min(1.0, HIGHLIGHT[1] + 0.15 * anim.ease),
+        math.min(1.0, HIGHLIGHT[2] + 0.15 * anim.ease),
+        math.min(1.0, HIGHLIGHT[3] + 0.12 * anim.ease),
+        math.min(1.0, anim.alpha)
       )
     else
       ui.hide("title:hl:" .. option.id)
     end
     local text = position == index and ("> " .. option.text) or option.text
-    ui.text_at(
-      "title:label:" .. option.id,
-      option.label[1] - 22,
-      option.label[2],
-      text,
-      1.0,
-      24.0
-    )
+    -- 选中项标签随弹跳轻微左移，与高亮框一起「推出来」。
+    local label_x = option.label[1] - 22 - (position == index and 3.0 * anim.ease or 0.0)
+    ui.text_at("title:label:" .. option.id, label_x, option.label[2], text, 1.0, 24.0)
   end
   ui.text_at("title:hint", 16, 8, M.hint_line(), 1.0, 13.0)
   return true
@@ -180,6 +236,9 @@ end
 -- 进入/离开门面时复位（场景切换会清空动态 UI，选中项也回到第一项）。
 function M.reset()
   selected = 1
+  pop_timer = 0
+  pulse_phase = 0
+  clear()
   nav.open(FOCUS, #OPTIONS, 1)
   nav.select(FOCUS, 1)
   return true

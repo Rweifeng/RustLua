@@ -87,10 +87,46 @@ pub enum AxisDirection {
 }
 
 impl AxisDirection {
-    const fn sign(self) -> f32 {
+    /// 方向符号（+1 / -1）。
+    #[must_use]
+    pub const fn sign(self) -> f32 {
         match self {
             Self::Positive => 1.0,
             Self::Negative => -1.0,
+        }
+    }
+
+    /// 文本形式（诊断与测试用）。
+    #[must_use]
+    pub const fn to_text(self) -> &'static str {
+        match self {
+            Self::Positive => "+",
+            Self::Negative => "-",
+        }
+    }
+}
+
+/// 最近一次产生输入的**设备类别**（M22/W3）。
+///
+/// 键鼠同属 [`InputDevice::Keyboard`]（UI 提示只需要区分「键鼠说明」与「手柄说明」）。
+/// 由宿主/设备层在**真实边沿**发生时写入，而不是每帧根据「有轴值」推断——手柄空闲
+/// 时轴也每帧上报 0.0，按值推断会把提示永远锁在手柄上。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum InputDevice {
+    /// 键盘或鼠标。
+    #[default]
+    Keyboard,
+    /// 抽象手柄（按钮或摇杆）。
+    Gamepad,
+}
+
+impl InputDevice {
+    /// Lua `input.last_device()` 的返回文本。
+    #[must_use]
+    pub const fn to_text(self) -> &'static str {
+        match self {
+            Self::Keyboard => "keyboard",
+            Self::Gamepad => "gamepad",
         }
     }
 }
@@ -550,6 +586,7 @@ fn binding_axis_value(
     held_mouse: &HashSet<MouseButton>,
     gamepad_buttons: &HashSet<u8>,
     gamepad_axes: &HashMap<u8, f32>,
+    axis_digital: &HashMap<(u8, AxisDirection), bool>,
 ) -> f32 {
     match binding {
         Binding::GamepadAxis(index, direction) => {
@@ -562,28 +599,34 @@ fn binding_axis_value(
             held_mouse,
             gamepad_buttons,
             gamepad_axes,
+            axis_digital,
         ))),
     }
 }
 
 /// 谓词：绑定当前是否处于「按下」状态。
+///
+/// 手柄轴优先读**滞回数字态**（设备层每帧写入，见
+/// [`InputSnapshot::set_gamepad_axis_digital`]）；没有该状态时（测试直接
+/// `set_gamepad_axis` 的路径）回落到 `|value| >= AXIS_DIGITAL_ON`，语义与 M20 一致。
 fn binding_is_down(
     binding: Binding,
     held_keys: &HashSet<InputKey>,
     held_mouse: &HashSet<MouseButton>,
     gamepad_buttons: &HashSet<u8>,
     gamepad_axes: &HashMap<u8, f32>,
+    axis_digital: &HashMap<(u8, AxisDirection), bool>,
 ) -> bool {
     match binding {
         Binding::Key(key) => held_keys.contains(&key),
         Binding::Mouse(button) => held_mouse.contains(&button),
         Binding::GamepadButton(index) => gamepad_buttons.contains(&index),
-        Binding::GamepadAxis(index, direction) => {
-            // 轴按 0.5 死区判定方向（基础手柄抽象；死区可后续做成配置）。
-            gamepad_axes
+        Binding::GamepadAxis(index, direction) => match axis_digital.get(&(index, direction)) {
+            Some(down) => *down,
+            None => gamepad_axes
                 .get(&index)
-                .is_some_and(|value| *value * direction.sign() >= 0.5)
-        }
+                .is_some_and(|value| *value * direction.sign() >= AXIS_DIGITAL_ON),
+        },
     }
 }
 
@@ -596,12 +639,22 @@ pub struct InputSnapshot {
     held_mouse: HashSet<MouseButton>,
     pressed_mouse: HashSet<MouseButton>,
     released_mouse: HashSet<MouseButton>,
-    /// 抽象手柄按钮（M20-02：宿主喂入，设备轮询未接入）。
+    /// 抽象手柄按钮（M20-02：宿主喂入，设备轮询见 M20-06）。
     held_gamepad: HashSet<u8>,
     pressed_gamepad: HashSet<u8>,
     released_gamepad: HashSet<u8>,
     /// 抽象手柄轴值（-1..=1）。
     gamepad_axes: HashMap<u8, f32>,
+    /// 轴的**滞回数字态**（M22/W3）：(轴索引, 方向) → 当前是否越过阈值。
+    ///
+    /// 设备层每帧写全量（与按钮的按住状态同一套约定）；没有条目的 (轴, 方向)
+    /// 回落到按模拟值判定，保证直接 `set_gamepad_axis` 的既有调用语义不变。
+    axis_digital: HashMap<(u8, AxisDirection), bool>,
+    /// 轴的数字按下/松开边沿（M22/W3，只在变化帧写入）。
+    pressed_axes: HashSet<(u8, AxisDirection)>,
+    released_axes: HashSet<(u8, AxisDirection)>,
+    /// 最近一次产生真实输入的设备类别（M22/W3）。
+    last_device: InputDevice,
     cursor_position: (f64, f64),
     cursor_delta: (f64, f64),
     scroll_delta: (f32, f32),
@@ -621,6 +674,10 @@ impl Default for InputSnapshot {
             pressed_gamepad: HashSet::new(),
             released_gamepad: HashSet::new(),
             gamepad_axes: HashMap::new(),
+            axis_digital: HashMap::new(),
+            pressed_axes: HashSet::new(),
+            released_axes: HashSet::new(),
+            last_device: InputDevice::default(),
             cursor_position: (0.0, 0.0),
             cursor_delta: (0.0, 0.0),
             scroll_delta: (0.0, 0.0),
@@ -635,6 +692,8 @@ impl InputSnapshot {
         if is_down {
             if self.held_keys.insert(key) {
                 self.pressed_keys.insert(key);
+                // M22/W3：真实按下才切换「最后使用的设备」，供 UI 提示选说明文案。
+                self.last_device = InputDevice::Keyboard;
             }
         } else if self.held_keys.remove(&key) {
             self.released_keys.insert(key);
@@ -646,6 +705,7 @@ impl InputSnapshot {
         if is_down {
             if self.held_mouse.insert(button) {
                 self.pressed_mouse.insert(button);
+                self.last_device = InputDevice::Keyboard;
             }
         } else if self.held_mouse.remove(&button) {
             self.released_mouse.insert(button);
@@ -668,6 +728,11 @@ impl InputSnapshot {
             // M20-02：失焦同时清手柄按住状态，避免焦点回来后「粘键」。
             self.held_gamepad.clear();
             self.gamepad_axes.clear();
+            // M22/W3：轴的数字态同样清空（含边沿）；设备层会在下一帧按实际杆位
+            // 重建数字态，因此回来后仍按住的杆会重新产生一次按下边沿。
+            self.axis_digital.clear();
+            self.pressed_axes.clear();
+            self.released_axes.clear();
         }
     }
 
@@ -681,6 +746,8 @@ impl InputSnapshot {
         if is_down {
             if self.held_gamepad.insert(button) {
                 self.pressed_gamepad.insert(button);
+                // M22/W3：真实按下才切换设备类别（空闲帧不写，避免提示被锁死）。
+                self.last_device = InputDevice::Gamepad;
             }
         } else {
             self.held_gamepad.remove(&button);
@@ -705,8 +772,53 @@ impl InputSnapshot {
     }
 
     /// 喂入抽象手柄轴值（钳制到 -1..=1）。
+    ///
+    /// M22/W3 起轴也有**数字态与边沿**：本方法只写模拟量，
+    /// [`Self::set_gamepad_axis_digital`] / [`Self::gamepad_axis_event`] 负责数字态
+    /// 与边沿（设备层每帧调用，见 `host::gamepad::GamepadPoller`）。只调用本方法的
+    /// 既有测试路径按 `|value| >= AXIS_DIGITAL_ON` 回落判定，语义不变。
     pub fn set_gamepad_axis(&mut self, axis: u8, value: f32) {
         self.gamepad_axes.insert(axis, value.clamp(-1.0, 1.0));
+    }
+
+    /// 直接设置轴的**数字按住状态**（不产生边沿；设备层每帧写全量）。
+    pub fn set_gamepad_axis_digital(&mut self, axis: u8, direction: AxisDirection, down: bool) {
+        self.axis_digital.insert((axis, direction), down);
+    }
+
+    /// 喂入轴的按下/松开**边沿**（M22/W3；设备层只在变化帧调用）。
+    ///
+    /// 同时更新数字按住状态与边沿集合：`is_down = true` 产生 `just_pressed`，
+    /// `false` 产生 `just_released`。语义与 [`Self::gamepad_button_event`] 一致
+    /// （快速推杆/回中不会丢边沿，边沿保留到本逻辑帧被消费）。
+    pub fn gamepad_axis_event(&mut self, axis: u8, direction: AxisDirection, is_down: bool) {
+        if is_down {
+            if !self
+                .axis_digital
+                .get(&(axis, direction))
+                .copied()
+                .unwrap_or(false)
+            {
+                self.pressed_axes.insert((axis, direction));
+            }
+            self.axis_digital.insert((axis, direction), true);
+            self.last_device = InputDevice::Gamepad;
+        } else {
+            self.axis_digital.insert((axis, direction), false);
+            self.released_axes.insert((axis, direction));
+        }
+    }
+
+    /// 当前轴数字态（无条目时为 `None`，表示按模拟值回落判定）。
+    #[must_use]
+    pub fn gamepad_axis_digital(&self, axis: u8, direction: AxisDirection) -> Option<bool> {
+        self.axis_digital.get(&(axis, direction)).copied()
+    }
+
+    /// 最近一次产生真实输入的设备类别（M22/W3）。
+    #[must_use]
+    pub const fn last_device(&self) -> InputDevice {
+        self.last_device
     }
 
     #[must_use]
@@ -729,18 +841,24 @@ impl InputSnapshot {
                 &self.held_mouse,
                 &self.held_gamepad,
                 &self.gamepad_axes,
+                &self.axis_digital,
             )
         })
     }
 
     /// 动作本帧是否刚按下（任一绑定命中）。
+    ///
+    /// M22/W3 起**手柄轴也能产生按下边沿**（设备层按滞回阈值合成），因此
+    /// `input.action_pressed("ui_up")` 对键盘方向键、DPad 与左摇杆同义。
     #[must_use]
     pub fn action_just_pressed(&self, map: &ActionMap, action: &str) -> bool {
         map.bindings(action).iter().any(|binding| match binding {
             Binding::Key(key) => self.pressed_keys.contains(key),
             Binding::Mouse(button) => self.pressed_mouse.contains(button),
             Binding::GamepadButton(index) => self.pressed_gamepad.contains(index),
-            Binding::GamepadAxis(..) => false,
+            Binding::GamepadAxis(index, direction) => {
+                self.pressed_axes.contains(&(*index, *direction))
+            }
         })
     }
 
@@ -751,7 +869,29 @@ impl InputSnapshot {
             Binding::Key(key) => self.released_keys.contains(key),
             Binding::Mouse(button) => self.released_mouse.contains(button),
             Binding::GamepadButton(index) => self.released_gamepad.contains(index),
-            Binding::GamepadAxis(..) => false,
+            Binding::GamepadAxis(index, direction) => {
+                self.released_axes.contains(&(*index, *direction))
+            }
+        })
+    }
+
+    /// 动作是否由**模拟量绑定**（手柄轴过阈值）保持按下（M22/W3）。
+    ///
+    /// `input.action_repeat` 用它区分「摇杆按住 → 连发」与「键盘/DPad 按住 → 只走
+    /// 一步」：数字量没有持续量，保持连发会让一次按键在菜单里连续滚动。
+    #[must_use]
+    pub fn action_held_by_analog(&self, map: &ActionMap, action: &str) -> bool {
+        map.bindings(action).iter().any(|binding| match binding {
+            Binding::GamepadAxis(index, direction) => {
+                match self.axis_digital.get(&(*index, *direction)) {
+                    Some(down) => *down,
+                    None => self
+                        .gamepad_axes
+                        .get(index)
+                        .is_some_and(|value| *value * direction.sign() >= AXIS_DIGITAL_ON),
+                }
+            }
+            _ => false,
         })
     }
 
@@ -766,6 +906,7 @@ impl InputSnapshot {
                 &self.held_mouse,
                 &self.held_gamepad,
                 &self.gamepad_axes,
+                &self.axis_digital,
             );
         }
         for binding in map.bindings(positive) {
@@ -775,6 +916,7 @@ impl InputSnapshot {
                 &self.held_mouse,
                 &self.held_gamepad,
                 &self.gamepad_axes,
+                &self.axis_digital,
             );
         }
         value.clamp(-1.0, 1.0)
@@ -794,6 +936,8 @@ impl InputSnapshot {
         self.released_mouse.clear();
         self.pressed_gamepad.clear();
         self.released_gamepad.clear();
+        self.pressed_axes.clear();
+        self.released_axes.clear();
         self.cursor_delta = (0.0, 0.0);
         self.scroll_delta = (0.0, 0.0);
     }
@@ -804,6 +948,7 @@ impl InputSnapshot {
         self.held_mouse.clear();
         self.held_gamepad.clear();
         self.gamepad_axes.clear();
+        self.axis_digital.clear();
         self.clear_transitions();
     }
 
@@ -815,6 +960,8 @@ impl InputSnapshot {
         self.released_mouse.clear();
         self.pressed_gamepad.clear();
         self.released_gamepad.clear();
+        self.pressed_axes.clear();
+        self.released_axes.clear();
         self.cursor_delta = (0.0, 0.0);
         self.scroll_delta = (0.0, 0.0);
     }
@@ -883,11 +1030,130 @@ impl InputSnapshot {
     }
 }
 
+// ---------------------------------------------------------------------------
+// 手柄死区与轴判定（M22：自 `host::gamepad` 下沉）
+//
+// 这些是**纯值类型与纯函数**，不依赖任何平台 API；原先放在 `host/gamepad.rs`
+// 导致 `core::settings` 反向依赖 `host`（docs/37 P1-1）。下沉后 core 可以独立编译
+// 到 wasm/headless-only 目标，`host::gamepad` 只做重导出以保持既有路径可用。
+// ---------------------------------------------------------------------------
+
+/// 左/右摇杆默认死区。
+pub const STICK_DEADZONE: f32 = 0.15;
+/// 扳机默认死区。
+pub const TRIGGER_DEADZONE: f32 = 0.05;
+/// 死区可配置上限：必须严格小于 1（等于 1 会把满量程也归零）。
+pub const MAX_DEADZONE: f32 = 0.9;
+
+/// 轴判定的按下阈值（模拟量绝对值达到它才算「按下」）。
+///
+/// 与 [`AXIS_DIGITAL_OFF`] 一起构成**滞回**：进入用 ON、退出用 OFF，避免摇杆在
+/// 阈值附近抖动时反复产生按下/松开边沿（M22 起轴也有数字边沿，见
+/// [`InputSnapshot::gamepad_axis_event`]）。
+pub const AXIS_DIGITAL_ON: f32 = 0.5;
+/// 轴判定的松开阈值（严格小于 [`AXIS_DIGITAL_ON`]）。
+pub const AXIS_DIGITAL_OFF: f32 = 0.4;
+/// 滞回宽度：可配置进入阈值时，退出阈值 = 进入阈值 − 本常量（下限 0）。
+pub const AXIS_HYSTERESIS: f32 = AXIS_DIGITAL_ON - AXIS_DIGITAL_OFF;
+
+/// 摇杆/扳机死区（M20-08：可在 `settings.toml` 的 `[input]` 段读写；默认值仍是
+/// [`STICK_DEADZONE`] / [`TRIGGER_DEADZONE`]）。
+///
+/// 语义与 [`apply_stick_deadzone`] / [`apply_stick_deadzone_radial`] /
+/// [`apply_trigger_deadzone`] 一致：死区内归零（消除回中漂移），死区外按比例
+/// 重映射到 0..1。非有限值与超界值在构造时就被钳制，因此从设置文件读进来的脏
+/// 数据不会产生非法曲线。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GamepadDeadzone {
+    /// 左/右摇杆死区（0..=MAX_DEADZONE）。
+    pub stick: f32,
+    /// 扳机死区（0..=MAX_DEADZONE）。
+    pub trigger: f32,
+}
+
+impl GamepadDeadzone {
+    /// 引擎默认死区（0.15 / 0.05）。
+    pub const DEFAULT: Self = Self {
+        stick: STICK_DEADZONE,
+        trigger: TRIGGER_DEADZONE,
+    };
+
+    /// 构造并钳制到 `0..=MAX_DEADZONE`（非有限值回落默认值）。
+    #[must_use]
+    pub fn new(stick: f32, trigger: f32) -> Self {
+        Self {
+            stick: sanitize_deadzone(stick, STICK_DEADZONE),
+            trigger: sanitize_deadzone(trigger, TRIGGER_DEADZONE),
+        }
+    }
+
+    /// 与默认值比较（编辑器「死区是否被改过」判断用）。
+    #[must_use]
+    pub fn is_default(&self) -> bool {
+        *self == Self::DEFAULT
+    }
+}
+
+impl Default for GamepadDeadzone {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
+fn sanitize_deadzone(value: f32, fallback: f32) -> f32 {
+    if value.is_finite() {
+        value.clamp(0.0, MAX_DEADZONE)
+    } else {
+        fallback
+    }
+}
+
+/// 单轴死区：死区内归零，死区外按比例映射到 0..1（保持符号）。
+#[must_use]
+pub fn apply_stick_deadzone(value: f32, deadzone: f32) -> f32 {
+    apply_axis_deadzone(value, deadzone)
+}
+
+/// 扳机死区（输入 0..1）。
+#[must_use]
+pub fn apply_trigger_deadzone(value: f32, deadzone: f32) -> f32 {
+    apply_axis_deadzone(value, deadzone)
+}
+
+fn apply_axis_deadzone(value: f32, deadzone: f32) -> f32 {
+    let clamped = value.clamp(-1.0, 1.0);
+    if clamped.abs() <= deadzone {
+        return 0.0;
+    }
+    let span = (1.0 - deadzone).max(f32::EPSILON);
+    let magnitude = (clamped.abs() - deadzone) / span;
+    magnitude.clamp(0.0, 1.0) * clamped.signum()
+}
+
+/// **径向**摇杆死区（M22）：按 (x, y) 的模长判定，而不是逐轴判定。
+///
+/// 逐轴死区会让斜向比正向灵敏（x、y 各自刚过死区就同时输出），径向死区按杆的
+/// 实际偏移量处理：模长 ≤ `deadzone` 归零，否则以 `(mag - dz) / (1 - dz)` 缩放并
+/// **保持方向**。返回值已钳制到 `-1..=1`。
+#[must_use]
+pub fn apply_stick_deadzone_radial(x: f32, y: f32, deadzone: f32) -> (f32, f32) {
+    let x = x.clamp(-1.0, 1.0);
+    let y = y.clamp(-1.0, 1.0);
+    let magnitude = (x * x + y * y).sqrt();
+    if magnitude <= deadzone {
+        return (0.0, 0.0);
+    }
+    let span = (1.0 - deadzone).max(f32::EPSILON);
+    let scale = ((magnitude - deadzone) / span).clamp(0.0, 1.0) / magnitude;
+    ((x * scale).clamp(-1.0, 1.0), (y * scale).clamp(-1.0, 1.0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        ACTION_MAP_VERSION, ActionMap, ActionMapError, AxisDirection, Binding, InputKey,
-        InputSnapshot, MouseButton,
+        ACTION_MAP_VERSION, AXIS_DIGITAL_OFF, AXIS_DIGITAL_ON, ActionMap, ActionMapError,
+        AxisDirection, Binding, GamepadDeadzone, InputDevice, InputKey, InputSnapshot, MouseButton,
+        apply_stick_deadzone_radial,
     };
 
     #[test]
@@ -1249,5 +1515,130 @@ mod tests {
         assert_eq!(input.action_axis(&map, "move_left", "move_right"), 0.0);
         input.key_event(InputKey::D, false);
         assert_eq!(input.action_axis(&map, "move_left", "move_right"), -1.0);
+    }
+
+    /// M22/W3：轴的**数字态 + 边沿**驱动动作，语义与键盘/按钮一致。
+    #[test]
+    fn axis_digital_state_and_edges_drive_actions() {
+        let map = ActionMap::with_defaults();
+        let mut input = InputSnapshot::default();
+
+        // 设备层：轴值 + 越过阈值的数字态与按下边沿。
+        input.set_gamepad_axis(1, 0.8);
+        input.gamepad_axis_event(1, AxisDirection::Positive, true);
+        assert!(input.action_is_down(&map, "ui_up"));
+        assert!(input.action_just_pressed(&map, "ui_up"));
+        assert!(!input.action_is_down(&map, "ui_down"));
+        assert_eq!(
+            input.gamepad_axis_digital(1, AxisDirection::Positive),
+            Some(true)
+        );
+
+        // 按住期间：边沿只出现一次（快照保留到本逻辑帧被消费）。
+        input.finish_frame();
+        assert!(input.action_is_down(&map, "ui_up"));
+        assert!(!input.action_just_pressed(&map, "ui_up"));
+
+        // 回中：松开边沿，动作不再按下。
+        input.set_gamepad_axis(1, 0.1);
+        input.gamepad_axis_event(1, AxisDirection::Positive, false);
+        assert!(input.action_just_released(&map, "ui_up"));
+        assert!(!input.action_is_down(&map, "ui_up"));
+        input.finish_frame();
+        assert!(!input.action_just_released(&map, "ui_up"));
+
+        // 负方向同理（轴值 -0.9 → ui_down）。
+        input.set_gamepad_axis(1, -0.9);
+        input.gamepad_axis_event(1, AxisDirection::Negative, true);
+        assert!(input.action_is_down(&map, "ui_down"));
+        assert!(input.action_just_pressed(&map, "ui_down"));
+        assert!(!input.action_is_down(&map, "ui_up"));
+    }
+
+    /// 没有设备层数字态时（测试/宿主直接 `set_gamepad_axis`），回落按阈值判定，
+    /// 且**不产生边沿**——M20 的既有语义不变。
+    #[test]
+    fn axis_without_device_state_falls_back_to_analog_threshold() {
+        let map = ActionMap::with_defaults();
+        let mut input = InputSnapshot::default();
+        input.set_gamepad_axis(1, 0.8);
+        assert!(input.action_is_down(&map, "ui_up"));
+        assert!(!input.action_just_pressed(&map, "ui_up"));
+        assert_eq!(input.gamepad_axis_digital(1, AxisDirection::Positive), None);
+
+        input.set_gamepad_axis(1, 0.49);
+        assert!(!input.action_is_down(&map, "ui_up"), "0.49 未过 0.5 阈值");
+        // 阈值常量与 Lua 侧文档一致（编译期断言：避免被当成运行时条件）。
+        const { assert!(AXIS_DIGITAL_ON == 0.5) };
+        const { assert!(AXIS_DIGITAL_OFF < AXIS_DIGITAL_ON) };
+    }
+
+    /// M22/W3：径向死区按 (x, y) 模长判定，消除「斜向比正向灵敏」。
+    #[test]
+    fn radial_deadzone_scales_by_magnitude_and_keeps_direction() {
+        // 死区内（含斜向小位移）归零。
+        assert_eq!(
+            apply_stick_deadzone_radial(0.0, 0.0, GamepadDeadzone::DEFAULT.stick),
+            (0.0, 0.0)
+        );
+        assert_eq!(apply_stick_deadzone_radial(0.1, 0.1, 0.15), (0.0, 0.0));
+        // 正向：与逐轴结果一致（模长 = 单轴绝对值）。
+        let (x, y) = apply_stick_deadzone_radial(0.6, 0.0, 0.15);
+        assert!((x - 0.529_411_8).abs() < 1e-4, "x={x}");
+        assert_eq!(y, 0.0);
+        // 斜向：与同模长的单轴输入得到相同**幅度**（逐轴死区下斜向会更大）。
+        let diagonal = (0.6_f32, 0.6_f32);
+        let magnitude = (diagonal.0 * diagonal.0 + diagonal.1 * diagonal.1).sqrt();
+        let (dx, dy) = apply_stick_deadzone_radial(diagonal.0, diagonal.1, 0.15);
+        let (axis_x, _) = apply_stick_deadzone_radial(magnitude, 0.0, 0.15);
+        let diagonal_magnitude = (dx * dx + dy * dy).sqrt();
+        assert!(
+            (diagonal_magnitude - axis_x).abs() < 1e-4,
+            "斜向模长 {diagonal_magnitude} 应与同模长单轴 {axis_x} 一致"
+        );
+        assert!((dx - dy).abs() < 1e-6, "方向保持（45° 输入仍 45°）");
+        // 极值不越界：满量程斜向仍落在单位圆内。
+        let (mx, my) = apply_stick_deadzone_radial(1.0, 1.0, 0.15);
+        assert!(mx * mx + my * my <= 1.0 + 1e-6, "({mx}, {my}) 不得越界");
+    }
+
+    /// M22/W3：`last_device` 只在**真实边沿**上切换，空闲帧（轴每帧上报 0.0）不改写。
+    #[test]
+    fn last_device_follows_real_input_edges_only() {
+        let mut input = InputSnapshot::default();
+        assert_eq!(input.last_device(), InputDevice::Keyboard, "默认键鼠");
+
+        input.gamepad_button_event(0, true);
+        assert_eq!(input.last_device(), InputDevice::Gamepad);
+
+        input.key_event(InputKey::W, true);
+        assert_eq!(input.last_device(), InputDevice::Keyboard);
+        assert_eq!(input.last_device().to_text(), "keyboard");
+
+        // 轴事件（真实推杆）切到手柄；单纯写模拟量不算输入。
+        input.gamepad_axis_event(1, AxisDirection::Positive, true);
+        assert_eq!(input.last_device(), InputDevice::Gamepad);
+        input.set_gamepad_axis(1, 0.0);
+        input.gamepad_axis_event(1, AxisDirection::Positive, false);
+        assert_eq!(input.last_device(), InputDevice::Gamepad, "松开不切回键鼠");
+        assert_eq!(input.last_device().to_text(), "gamepad");
+
+        input.mouse_event(MouseButton::Left, true);
+        assert_eq!(input.last_device(), InputDevice::Keyboard, "鼠标算键鼠一侧");
+    }
+
+    /// M22/W3：失焦清空轴数字态与边沿（不粘杆）。
+    #[test]
+    fn focus_loss_clears_axis_digital_state() {
+        let map = ActionMap::with_defaults();
+        let mut input = InputSnapshot::default();
+        input.set_gamepad_axis(1, 0.9);
+        input.gamepad_axis_event(1, AxisDirection::Positive, true);
+        assert!(input.action_is_down(&map, "ui_up"));
+
+        input.set_focused(false);
+        assert_eq!(input.gamepad_axis_digital(1, AxisDirection::Positive), None);
+        assert!(!input.action_is_down(&map, "ui_up"), "失焦后不粘杆");
+        assert!(!input.action_just_pressed(&map, "ui_up"));
     }
 }

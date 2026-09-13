@@ -241,13 +241,14 @@ local function boot_game(map_id)
   log.info(
     "[input] settings.toml: " .. tostring(bindings_ok) .. " (" .. tostring(bindings_detail) .. ")"
   )
-  -- M20-09：同一份 `[input]` 段里的菜单导航手感（摇杆阈值 + 按住重复节奏）也在
-  -- 启动应用一次；缺文件/缺键/脏值由引擎钳制后回落默认（阈值 0.5 / 16 帧 / 8 帧）。
+  -- M20-09 / M22：同一份 `[input]` 段里的菜单导航手感（摇杆阈值 + 按住连发节奏）也在
+  -- 启动应用一次，并推给引擎（引擎按毫秒执行连发，与帧率无关）；缺文件/缺键/脏值由
+  -- 引擎钳制后回落默认（阈值 0.5 / 350ms / 90ms）。
   local nav = input.apply_nav_settings()
   log.info(
     "[input] nav: threshold=" .. tostring(nav.threshold)
-      .. " delay=" .. tostring(nav.delay_frames)
-      .. " repeat=" .. tostring(nav.repeat_frames)
+      .. " delay_ms=" .. tostring(nav.delay_ms)
+      .. " repeat_ms=" .. tostring(nav.repeat_ms)
   )
   validate_content()
   if entry == "continue" then
@@ -369,6 +370,14 @@ function on_click(name)
   if scene.reload() ~= "main" then
     return
   end
+  -- M22：标题按钮的确认反馈音放在这里（而不是 `ui.title_menu`），因为鼠标点击走场景
+  -- `UiEvents event=click` → 本函数，键盘/手柄走 `title_menu.update()` → 本函数，
+  -- 三条路径共用同一个入口，音效因此完全一致。
+  if name == "BtnStart" or name == "BtnContinue" or name == "BtnExit" then
+    audio.ui("ui_confirm")
+    -- 离开门面前收起动态 UI（高亮框/标签/提示），避免残留到下一张场景的第一帧。
+    title_menu.hide()
+  end
   if name == "BtnStart" then
     entry = "new"
     state.set_mode("Transition")
@@ -400,8 +409,13 @@ function update()
   end
   -- M20-09：门面（标题界面）的手柄/键盘菜单——确认与鼠标点击同走 `on_click`，
   -- 因此「开始新游戏 / 继续江湖 / 退出江湖」三条分支行为完全一致。
-  title_menu.render()
+  --
+  -- M22 顺序修正：**先 `update()`（内部先 clear 再按输入改选中）再 `render()`**。
+  -- 之前是 render → update，而 `update()` 开头的 `clear()` 会把本帧刚画的标签/提示
+  -- 隐藏掉（面板类高亮此前不受 `hide` 影响，因此只表现为「文字不显示 + 旧高亮框残留」，
+  -- 选中动画也就看不出来）。宿主是在 `update()` 返回后才取顶点，所以必须以此顺序结束本帧。
   local activated = title_menu.update()
+  title_menu.render()
   if activated then
     on_click(activated)
   end

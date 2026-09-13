@@ -29,24 +29,22 @@ local pause_menu = require("ui.pause_menu")
 --   * `main.lua` 启动时调用 `input.load_settings()` 应用玩家改键；文件缺失/未改键
 --     时保持默认，因此既有 headless 回归（直接喂物理键）语义不变。
 --
--- 数字输入（键盘按键 / DPad）有「按下」边沿，菜单导航一次按下 = 一步；模拟摇杆
--- 没有边沿，用「首次立即 + 按住重复」（帧计数，见 `ui_step`）避免每帧滚动。
+-- 数字输入（键盘按键 / DPad / 摇杆）都有「按下」边沿：菜单导航一次按下 = 一步；
+-- 摇杆（模拟量）额外支持「首次立即 + 按住连发」——M22 起这两个语义都由**引擎**按
+-- 毫秒执行（`input.action_repeat`，见 `ui_step`），因此 144Hz 与 60Hz 手感一致。
 
 local M = {}
 
 local MOVE_SPEED = 140 -- 世界单位/秒（32px 格 → 约 4.4 格/秒）
 
--- 摇杆菜单导航：阈值与按住重复节奏由 `ui.hints` 持有（可在工程 settings.toml 的
--- `[input]` 段调 `nav_threshold` / `nav_delay_frames` / `nav_repeat_frames`，启动时
--- `apply_nav_settings()` 应用）。首次立即生效，按住后先等 delay 帧再按 repeat 帧的
--- 间隔重复（默认 60fps 下约 0.27s / 0.13s）。
+-- 导航手感（摇杆阈值 + 按住连发节奏）由 `ui.hints` 持有并可被工程 settings.toml 的
+-- `[input]` 段覆盖（`nav_threshold` / `nav_delay_ms` / `nav_repeat_ms`，旧的帧键仍可读）；
+-- 启动时 `apply_nav_settings()` 把它推给引擎（`input.set_nav_settings`），引擎负责
+-- 轴判定阈值与连发计时，Lua 侧不再自己数帧。
 --
 -- 设备判定（键鼠/手柄两套说明）与「绑定 → 可读名字」也在 `ui.hints`：面板自己画
 -- 底部提示时需要同一套逻辑，而它们不能 require 本模块（`input → dialogue` 会成环）。
 local hints = require("ui.hints")
-
--- 按住帧计数（x/y 各一份；_dir 记录方向，方向反转时重新计时）。
-local nav_hold = { x = 0, y = 0, x_dir = 0, y_dir = 0 }
 
 -- 把 `input.nav_settings()`（= 工程 settings.toml 的 [input] 段）应用到导航手感。
 function M.apply_nav_settings()
@@ -58,66 +56,27 @@ function M.nav_settings()
   return hints.nav_settings()
 end
 
-local function stick_release(key)
-  nav_hold[key] = 0
-  nav_hold[key .. "_dir"] = 0
-end
-
--- 摇杆按住重复：返回本帧是否应当前进一步。
-local function stick_step(key, positive)
-  local dir = positive and 1 or -1
-  if nav_hold[key .. "_dir"] ~= dir then
-    nav_hold[key .. "_dir"] = dir
-    nav_hold[key] = 0
-  end
-  local held = nav_hold[key] + 1
-  nav_hold[key] = held
-  if held == 1 then
-    return true
-  end
-  local delay = hints.nav_delay_frames()
-  local repeat_frames = hints.nav_repeat_frames()
-  if held >= delay and (held - delay) % repeat_frames == 0 then
-    return true
-  end
-  return false
-end
-
 -- 本帧的菜单导航方向（"up"/"down"/"left"/"right"）或 nil。
--- 数字输入（方向键 / DPad，可改绑）优先：一次按下 = 一步。
+--
+-- M22：统一走 `input.action_repeat`——
+--   * 首次按下（键盘方向键 / DPad / 摇杆越阈值）立即返回一步；
+--   * 摇杆继续保持时，由引擎在 delay_ms 后每 repeat_ms 再给一步（时间制）；
+--   * 数字键/DPad 按住**不连发**（一次按下 = 一步），保持 M20-08 的既有手感。
+-- 引擎缺该 API（旧引擎）时回落到 `action_pressed`（只有边沿，没有连发）。
 local function ui_step()
-  if input.action_pressed("ui_up") then
+  local repeat_action = input.action_repeat
+  local step = repeat_action or input.action_pressed
+  if step("ui_up") then
     return "up"
   end
-  if input.action_pressed("ui_down") then
+  if step("ui_down") then
     return "down"
   end
-  if input.action_pressed("ui_left") then
+  if step("ui_left") then
     return "left"
   end
-  if input.action_pressed("ui_right") then
+  if step("ui_right") then
     return "right"
-  end
-  -- 模拟摇杆：设备左摇杆（设备层已过死区），带按住重复。
-  -- 阈值每帧从 `ui.hints` 读（启动时可被 settings.toml 改写）。
-  local threshold = hints.nav_threshold()
-  local horizontal, vertical = input.pad_axis(0), input.pad_axis(1)
-  local vertical_active = math.abs(vertical) >= threshold
-      and math.abs(vertical) >= math.abs(horizontal)
-  if not vertical_active then
-    stick_release("y")
-  end
-  if math.abs(horizontal) < threshold or vertical_active then
-    stick_release("x")
-  end
-  if vertical_active then
-    if stick_step("y", vertical > 0) then
-      return vertical > 0 and "up" or "down"
-    end
-    return nil
-  end
-  if math.abs(horizontal) >= threshold and stick_step("x", horizontal > 0) then
-    return horizontal > 0 and "right" or "left"
   end
   return nil
 end
