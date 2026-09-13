@@ -57,7 +57,7 @@ component	10	Text	text=寒泉洞 · 第一章线索;font_size=18.00;color=0.949,
 component	10	Transform	x=0.000000;y=0.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
 entity_meta	10	role	hud_title
 entity	11	HudHint
-component	11	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=24.00,686.00,1000.00,708.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+component	11	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=24.00,50.00,1000.00,72.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 component	11	Text	text=WASD 移动 · E 交互(采集/出口) · T 睡觉 · Q 吐纳 · J 普攻 · K 武学;font_size=14.00;color=0.850,0.900,1.000
 component	11	Transform	x=0.000000;y=0.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
 entity_meta	11	role	hud_hint

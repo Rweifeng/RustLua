@@ -126,8 +126,12 @@ editor [--project <项目路径>] [--check] [--help]
 
 - 未 Play 时显示 `GAME VIEW / Press Play to run the scene`。
 - **Play（`▶`）**：以内嵌预览（设计分辨率）运行场景，自动切到游戏工作区；状态机 `Editing → Starting → Playing/StartFailed → Stopping → Editing`，启动失败给出可读错误。
-- Play 期间输入桥接进游戏：**WASD、Space、Esc、Q/E/R/T/F/G**、鼠标按键、光标映射到预览像素、滚轮。
-- 预览约 60fps（16ms 节流），步进 Lua + 物理 + 渲染；失败时红色诊断覆盖层 + readback 指标。
+- Play 期间输入桥接进游戏：**全键位**（字母/数字/符号/空格/`Esc`/方向键/`F1·F2·F4`）、鼠标按键、
+  光标映射到预览像素、滚轮；被节流跳过的帧与「同一帧内按下+松开」都不丢边沿（见 docs/35 §7）。
+- 预览按 ~60fps（16ms）节流渲染，逻辑步用与独立 `game` 相同的 `FixedTimeStep`（60Hz、
+  单帧最多补 8 步）**按真实经过时间追帧**：编辑器帧率低于 60fps 时游戏不会慢放
+  （`FixedTimeStep::advance(elapsed)`；丢掉超出上限的步数会打 `[preview] dropped catch-up steps` 日志）。
+- 失败时红色诊断覆盖层 + readback 指标。
 - **Stop（`■`）**：丢弃全部运行时修改，**恢复 Play 前的编辑快照**，清空输入/选中，返回场景工作区。
 - Play 期间锁定编辑（拖拽/Gizmo/Inspector/删除/添加/拖放/导入/发布均提示「Play mode locks scene editing; click Stop first」）。
 

@@ -8,6 +8,7 @@ use eframe::egui;
 use engine::core::font::FontAtlas;
 use engine::core::input::InputSnapshot;
 use engine::core::scene::Scene;
+use engine::core::time_step::FixedTimeStep;
 use engine::host::frame::{FontAtlasMap, VectorAtlasMap, VectorFontHandle};
 use engine::host::{ReadbackMetrics, ReadbackStatus, Renderer, RuntimeScene};
 use std::path::Path;
@@ -15,6 +16,11 @@ use std::sync::{Arc, Mutex};
 
 /// 游戏预览的重绘节流：~60fps，保证持续运行而不忙转。
 const PREVIEW_FRAME_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16);
+
+/// 预览的固定步频率与追帧上限：与独立 `game` 宿主（`game_app`）同一套参数，
+/// 保证编辑器 Play 与发布运行时的逻辑推进一致（60Hz，单帧最多补 8 步）。
+const PREVIEW_STEPS_PER_SECOND: u32 = 60;
+const PREVIEW_MAX_CATCH_UP_STEPS: u32 = 8;
 
 /// 启动期帧率打点：以 120 个到期 tick 为一窗口（tick 数、就绪上传数、窗口起始），
 /// 窗口结束时记录真实显示帧率（上传次数即显示帧率依据）。仅日志证据，不持有会话状态。
@@ -24,7 +30,9 @@ static PERF_WINDOW: std::sync::Mutex<Option<(u32, u32, std::time::Instant)>> =
 /// 一次 `update` 后的状态，供视图决定 overlay 与 repaint 调度。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum PreviewTick {
-    /// 未到节流周期，仅排空在途回读（可能补上传上一滞后帧）。
+    /// 本帧**没有跑任何逻辑步**：未到节流周期（只排空在途回读，可能补上传上一滞后帧），
+    /// 或到期但固定步累加器还没凑够一步（此时仍会渲染当前状态）。
+    /// 两种情况都意味着 Lua 没见过本帧输入，因此调用方**不得**消费一次性输入边沿。
     #[default]
     Idle,
     /// 已步进并渲染新帧，回读就绪并上传。
@@ -33,6 +41,12 @@ pub(crate) enum PreviewTick {
     Pending,
     /// 脚本步进或渲染失败；诊断已更新。
     Failed,
+}
+
+/// 把「本帧是否跑过逻辑步」折进 tick：没跑过就一律报 [`PreviewTick::Idle`]，
+/// 让调用方保留输入边沿（见 `game_view::consumes_input_edges`）。
+fn stepped_tick(stepped: bool, tick: PreviewTick) -> PreviewTick {
+    if stepped { tick } else { PreviewTick::Idle }
 }
 
 /// 内嵌游戏预览会话：运行时 + 离屏渲染器 + 纹理/视图 + egui 纹理。
@@ -47,6 +61,11 @@ pub(crate) struct PreviewSession {
     height: u32,
     /// 距上次步进的时间（~60fps 节流）。
     last_tick: Option<std::time::Instant>,
+    /// 固定步累加器（M22/W4）：按**真实经过时间**决定本帧要跑几个逻辑步。
+    /// 此前每帧固定 `run_script_steps(1, 1/60)`，编辑器帧率低于 60fps 时逻辑时间
+    /// 走得比墙上时钟慢 → 游戏**慢放**（发布 `game.exe` 用同一个 `FixedTimeStep`
+    /// 追帧，所以只有编辑器会这样）。
+    time_step: FixedTimeStep,
     /// 最近一次步进/回读的结构化诊断；Game 视图 overlay 显示。
     diagnostic: Option<String>,
 }
@@ -137,6 +156,8 @@ impl PreviewSession {
             width,
             height,
             last_tick: None,
+            time_step: FixedTimeStep::new(PREVIEW_STEPS_PER_SECOND, PREVIEW_MAX_CATCH_UP_STEPS)
+                .expect("valid preview fixed timestep"),
             diagnostic: None,
         };
         session.sync_native_texture(device);
@@ -187,8 +208,13 @@ impl PreviewSession {
         }
     }
 
-    /// 每帧调用：先排空在途回读，到 ~60fps 节流周期时步进游戏并渲染提交新回读。
-    /// 内部按需请求 repaint，保持游戏匀速而不忙转。
+    /// 每帧调用：先排空在途回读，到 ~60fps 节流周期时按**真实经过时间**步进游戏
+    /// 并渲染提交新回读。内部按需请求 repaint，保持游戏匀速而不忙转。
+    ///
+    /// 逻辑推进用与独立 `game` 宿主同一个 [`FixedTimeStep`]：编辑器渲染帧率低于
+    /// 60fps 时一帧补多步，逻辑时间因此**跟着墙上时钟**走（此前固定 `1` 步，帧率不足
+    /// 时游戏会慢放）。返回的 [`PreviewTick`] 表示本帧是否真的跑过逻辑步——调用方据此
+    /// 决定能不能消费一次性输入边沿（见 `game_view::consumes_input_edges`）。
     pub(crate) fn update(&mut self, ctx: &egui::Context, input: &InputSnapshot) -> PreviewTick {
         let now = std::time::Instant::now();
         let due = self
@@ -203,15 +229,37 @@ impl PreviewSession {
             ctx.request_repaint_after(PREVIEW_FRAME_INTERVAL);
             return PreviewTick::Idle;
         }
+        // 距上次到期帧的真实间隔（首帧按一个固定步起算）。
+        let elapsed = self
+            .last_tick
+            .map_or(1.0 / f64::from(PREVIEW_STEPS_PER_SECOND), |last| {
+                now.duration_since(last).as_secs_f64()
+            });
         self.last_tick = Some(now);
 
-        // 步进游戏运行时（固定 60Hz 逻辑步进；输入由调用方桥接）。
-        if let Err(error) = self.runtime.run_script_steps(1, 1.0 / 60.0, input) {
+        let report = self.time_step.advance(elapsed);
+        if report.dropped_steps > 0 {
+            tracing::warn!(
+                target: "editor",
+                "[preview] dropped catch-up steps: dropped={} total_dropped={} accumulator={:.6}s",
+                report.dropped_steps,
+                report.total_dropped_steps,
+                report.accumulator_seconds
+            );
+        }
+        // 步进游戏运行时（固定 60Hz 逻辑步进，可能多步追帧；输入由调用方桥接）。
+        if let Err(error) = self
+            .runtime
+            .run_script_steps(report.steps, report.delta_seconds, input)
+        {
             tracing::warn!(target: "editor", "[preview] script step failed: {error}");
             self.diagnostic = Some(format!("脚本步进失败：{error}"));
             ctx.request_repaint_after(PREVIEW_FRAME_INTERVAL);
             return PreviewTick::Failed;
         }
+        // 累加器还没凑够一个固定步：本帧没有跑逻辑步（边沿必须留给下一有效帧），
+        // 但仍然渲染当前状态，避免画面停住。
+        let stepped = report.steps > 0;
         // 构建 2D 网格并渲染到离屏纹理；失败时给出用户可见诊断而不是空白帧。
         let mesh = match self.runtime.vertices(self.width, self.height) {
             Ok(mesh) => mesh,
@@ -236,7 +284,7 @@ impl PreviewSession {
             self.record_presented_frame();
             self.record_tick_window();
             ctx.request_repaint_after(PREVIEW_FRAME_INTERVAL);
-            return PreviewTick::Rendered;
+            return stepped_tick(stepped, PreviewTick::Rendered);
         }
         // 非阻塞回读：就绪则上传；未就绪沿用上一帧（主线程不阻塞）。
         let tick = match self
@@ -265,7 +313,7 @@ impl PreviewSession {
         self.record_tick_window();
         // 节流到 ~60fps：无论回读是否就绪都排下一帧，保证游戏持续运行且不忙转。
         ctx.request_repaint_after(PREVIEW_FRAME_INTERVAL);
-        tick
+        stepped_tick(stepped, tick)
     }
 
     fn record_tick_window(&self) {
@@ -394,8 +442,23 @@ impl PreviewSession {
 
     /// 测试辅助：强制下一个 `update` 视为到节流周期（免去真实 16ms 等待）。
     #[cfg(test)]
-    fn force_tick(&mut self) {
+    pub(crate) fn force_tick(&mut self) {
         self.last_tick = None;
+    }
+
+    /// 测试辅助：把上一次步进时间设为「刚刚」，使下一个 `update` **必定**落在节流
+    /// 周期内（返回 [`PreviewTick::Idle`]、不跑逻辑步）。用于确定性地回归
+    /// 「被节流跳过的帧不得消费输入边沿」（见 `game_view::consumes_input_edges`）。
+    #[cfg(test)]
+    pub(crate) fn force_throttled(&mut self) {
+        self.last_tick = Some(std::time::Instant::now());
+    }
+
+    /// 测试辅助：假装距上次到期帧已经过去 `elapsed`，使下一个 `update` 按真实时间
+    /// **补多步**（回归「编辑器帧率低于 60fps 时不再慢放」）。
+    #[cfg(test)]
+    pub(crate) fn force_elapsed(&mut self, elapsed: std::time::Duration) {
+        self.last_tick = Some(std::time::Instant::now() - elapsed);
     }
 }
 
@@ -479,6 +542,45 @@ mod tests {
             assert!(metrics.submitted >= 1, "应至少提交过一次回读");
             // drop 释放 GPU 纹理/视图/渲染器。
         }
+    }
+
+    /// M22/W4：编辑器帧率低于 60fps 时，预览必须按**真实经过时间**补固定步，
+    /// 而不是每帧固定 1 步（旧行为会让游戏慢放：25fps 的编辑器里游戏只有 25/60 速）。
+    #[test]
+    fn preview_catches_up_after_a_slow_editor_frame() {
+        let Some((device, queue)) = test_device() else {
+            return;
+        };
+        let ctx = egui::Context::default();
+        let scene = Scene::new("catchup");
+        let mut session = PreviewSession::create(
+            &device,
+            &queue,
+            None,
+            Path::new("."),
+            &scene,
+            (64, 64),
+            None,
+            FontAtlasMap::default(),
+            None,
+            VectorAtlasMap::default(),
+        )
+        .expect("create preview session");
+        // 假装这一帧离上一帧已经过去 100ms（≈ 编辑器 10fps）→ 60Hz 下应补 ~6 步。
+        session.force_elapsed(std::time::Duration::from_millis(100));
+        let tick = session.update(&ctx, &InputSnapshot::default());
+        assert!(
+            matches!(tick, PreviewTick::Pending | PreviewTick::Rendered),
+            "慢帧仍应完成一次步进渲染：{tick:?}"
+        );
+        let steps = session
+            .runtime
+            .last_schedule_report()
+            .map_or(0, |report| report.steps);
+        assert!(
+            steps >= 5,
+            "慢帧应按真实时间补步（60Hz × 100ms ≈ 6 步），实际 {steps} 步"
+        );
     }
 
     /// 单会话连续 update：到期步进并返回 Rendered/Pending，紧随其后的 update

@@ -306,8 +306,11 @@ def build_scene(ground, solid):
     hint_id = next_id + 1
     lines.append(f"entity\t{hint_id}\tHudHint")
     lines.append(
-        f"component\t{hint_id}\tUiLayout\tanchors=0.0000,1.0000,0.0000,1.0000;"
-        "offsets=49.07,-66.11,1025.07,-44.11;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,1.0000"
+        # 地图自带操作提示放在**地图标题正下方**（与其它地图同一套坐标）：底部 660/686
+        # 两行是 HUD 的动态反馈区（hud:feedback / hud:tutorial），静态提示压在那里会与
+        # 它们叠字；此前山庄还用「贴底锚点」把提示放在 654..676，比其它地图更靠上。
+        f"component\t{hint_id}\tUiLayout\tanchors=0.0000,0.0000,0.0000,0.0000;"
+        "offsets=24.00,50.00,1000.00,72.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000"
     )
     lines.append(
         f"component\t{hint_id}\tText\ttext=WASD 移动 · E 朝面前格劳作 · T 睡觉到清晨 · Q 吐纳练功 · J 普攻 · K 武学"

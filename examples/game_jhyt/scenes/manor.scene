@@ -141,7 +141,7 @@ component	27	Text	text=山庄 · 药田垂直切片;font_size=18.00;color=0.949,
 component	27	Transform	x=0.000000;y=0.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
 entity_meta	27	role	hud_title
 entity	28	HudHint
-component	28	UiLayout	anchors=0.0000,1.0000,0.0000,1.0000;offsets=49.07,-66.11,1025.07,-44.11;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,1.0000
+component	28	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=24.00,50.00,1000.00,72.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 component	28	Text	text=WASD 移动 · E 朝面前格劳作 · T 睡觉到清晨 · Q 吐纳练功 · J 普攻 · K 武学;font_size=14.00;color=0.850,0.900,1.000
 component	28	Transform	x=0.000000;y=0.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
 entity_meta	28	role	hud_hint

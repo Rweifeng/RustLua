@@ -6,7 +6,7 @@ use crate::PlayState;
 use crate::SceneTool;
 use crate::SelectionModel;
 use crate::WorkspaceTab;
-use crate::preview_session::PreviewSession;
+use crate::preview_session::{PreviewSession, PreviewTick};
 use crate::util::strip_verbatim_prefix;
 use editor::PlaySession;
 use eframe::egui;
@@ -328,15 +328,31 @@ impl EditorApp {
             let mut input = std::mem::take(&mut self.preview_input_state);
             input.set_focused(true);
             self.bridge_preview_input(&mut input, ctx, preview_rect, width, height, pointer_over);
-            if let Some(preview) = &mut self.preview {
-                preview.update(ctx, &input);
+            let stepped = self
+                .preview
+                .as_mut()
+                .map(|preview| preview.update(ctx, &input))
+                .is_some_and(consumes_input_edges);
+            // **只有真的跑过逻辑步的帧才消费一次性边沿**（M22/W4 的编辑器侧补漏）。
+            // `PreviewSession::update` 按 ~60fps 节流：未到 16ms 周期的帧返回
+            // `PreviewTick::Idle`，**不跑固定步**（Lua 一次都没看到本帧输入）。此前这里
+            // 无条件 `finish_frame()`，于是落在被节流帧里的按键/点击边沿被清掉而 Lua 从
+            // 未见过它；而 `key_event` 只在「松开 → 按下」的跳变上产生边沿，仍按住的键
+            // **不会补发**，所以那一下是**永久丢失**的——表现为「方向键切换按钮有时响应、
+            // 有时完全没反应」（键按得久也没用，必须松开再按一次）。编辑器渲染帧率越高
+            // （鼠标在动、面板动画等），被节流跳过的帧占比越大 → 丢失概率越高。
+            // 独立 game 宿主早已有同样的守卫（`game_app.rs`：`steps > 0` 才 `finish_frame`）。
+            if stepped {
+                input.finish_frame();
             }
-            // 在模拟帧边界消费 transient edge：清边沿但保留 held 状态。
-            input.finish_frame();
             self.preview_input_state = input;
         } else {
             // 窗口失焦（Alt-Tab 等）：清空 held 防止卡键（M11-02，含手柄按住状态与轴数字态）。
             self.preview_input_state.set_focused(false);
+            // 失焦期间不再桥接输入，本帧的瞬态边沿也不该留到重新获得焦点之后——
+            // 否则「在被节流帧按下 → 还没轮到逻辑步就失焦」的那一下会在回来时补触发
+            // 一次幽灵按键（`set_focused(false)` 只清 held，不清 pressed/released）。
+            self.preview_input_state.finish_frame();
             if let Some(preview) = &mut self.preview {
                 preview.update(ctx, &InputSnapshot::default());
             }
@@ -387,7 +403,18 @@ impl EditorApp {
             // 否则「按下 Play 后鼠标停在工具栏」会完全收不到按键）。
             for &egui_key in PREVIEW_KEYS {
                 if let Some(game_key) = preview_input_key(egui_key) {
-                    input.key_event(game_key, i.key_down(egui_key));
+                    let down = i.key_down(egui_key);
+                    // egui 的 `key_down` 是**帧末按住状态**：一次「按下 + 松开」若都落在同一帧内
+                    // （编辑器卡顿/长帧时常见），帧末已是松开 → 按键对预览**完全不可见**，
+                    // 这跟「被节流跳过的帧吞掉边沿」是同一类丢失。用本帧的**首次按下事件**补一条
+                    // down + up 边沿（egui 已把 OS 连发事件标成 `repeat = true`，这里只认
+                    // 首次按下，保持「一次按下 = 一步」），松开边沿一并送出，按住状态不变。
+                    if !down && preview_key_first_pressed(i, egui_key) {
+                        input.key_event(game_key, true);
+                        input.key_event(game_key, false);
+                    } else {
+                        input.key_event(game_key, down);
+                    }
                 }
             }
             // 鼠标：只有指针在预览矩形内才桥接（否则点击编辑器其它面板会穿透到游戏）；
@@ -517,6 +544,36 @@ fn preview_fit_scale(preview_rect: egui::Rect, ppp: f32, native_w: u32) -> f32 {
         return 1.0;
     }
     (preview_rect.width() * ppp) / native_w as f32
+}
+
+/// 这一 tick 是否真的跑过固定步 —— 也就是**是否允许消费本帧的一次性输入边沿**。
+///
+/// [`PreviewTick::Idle`] 表示「未到 16ms 节流周期，本帧只排空在途回读、不跑逻辑步」：
+/// 此时 Lua 一次都没看到本帧输入，边沿必须**保留**给下一个有效帧（`update_preview`
+/// 据此决定是否 `finish_frame`）。独立 game 宿主用等价的守卫（`steps > 0` 才清边沿），
+/// 编辑器 Play 预览此前漏了这一步，导致被节流帧里的按键/点击被整帧吞掉。
+fn consumes_input_edges(tick: PreviewTick) -> bool {
+    tick != PreviewTick::Idle
+}
+
+/// 本帧是否收到了该键的**首次按下**事件（不含 OS 连发）。
+///
+/// egui 在 `begin_pass` 里把「已按住时再次收到的按下事件」标成 `repeat = true`
+/// （见 egui `InputState::begin_pass`），因此 `repeat == false` 就是真实按下。
+/// 只用于「按下 + 松开落在同一帧」的补齐路径（见 `bridge_preview_input`）：
+/// 此时 `key_down` 已是 false，只看按住状态会漏掉这一下。
+fn preview_key_first_pressed(input: &egui::InputState, egui_key: egui::Key) -> bool {
+    input.events.iter().any(|event| {
+        matches!(
+            event,
+            egui::Event::Key {
+                key,
+                pressed: true,
+                repeat: false,
+                ..
+            } if *key == egui_key
+        )
+    })
 }
 
 fn preview_diagnostic_color(kind: PreviewErrorKind) -> egui::Color32 {
@@ -716,6 +773,26 @@ mod tests {
         assert!(!state.mouse_is_down(MouseButton::Left));
     }
 
+    /// M22/W4：失焦期间不桥接输入，本帧残留的按下边沿也不得留到重新聚焦之后——
+    /// 否则「在被节流帧按下 → 还没轮到逻辑步就 Alt-Tab」的那一下会在回来时补触发一次
+    /// 幽灵按键（`set_focused(false)` 只清 held，不清 pressed/released）。
+    #[test]
+    fn focus_loss_drops_pending_press_edges() {
+        let mut state = InputSnapshot::default();
+        // 被节流帧里按下：边沿已记、held 也在，但还没有逻辑步来消费它。
+        state.key_event(InputKey::ARROW_DOWN, true);
+        assert!(state.just_pressed(InputKey::ARROW_DOWN));
+        // 与 `update_preview` 的失焦分支同序。
+        state.set_focused(false);
+        state.finish_frame();
+        state.set_focused(true);
+        assert!(!state.is_down(InputKey::ARROW_DOWN), "失焦必须清 held");
+        assert!(
+            !state.just_pressed(InputKey::ARROW_DOWN),
+            "重新聚焦后不得补触发失焦前的按下"
+        );
+    }
+
     #[test]
     fn sample_project_stop_restores_editor_context_and_clears_preview_input() {
         let root = copy_sample_project("stop");
@@ -799,6 +876,75 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    /// M22/W4（编辑器侧）端到端回归：**Play 预览被节流跳过的帧不得吞掉按键边沿**。
+    ///
+    /// 预览按 ~60fps 节流：未到周期的帧只排空回读、**不跑固定步**（`PreviewTick::Idle`）。
+    /// 此前 `update_preview` 无条件 `finish_frame()`，于是落在这种帧里的按下被清掉而 Lua
+    /// 从未见过它；`key_event` 只在「松开 → 按下」跳变上产生边沿，仍按住的键不会补发 →
+    /// 那一下**永久丢失**（用户实测：「键盘按上下键切换按钮，有时响应，有时不响应」）。
+    /// 这里用 `force_throttled()` 确定性地制造一个 Idle 帧：边沿必须活到下一个有效帧。
+    #[test]
+    fn play_preview_throttled_frame_preserves_key_edges() {
+        let Some((device, queue)) = test_device() else {
+            return;
+        };
+        let root = copy_sample_project("preview-idle-edge");
+        let project = open_project(&root).unwrap();
+        let mut app = EditorApp::new(project, Some((device, queue)), LogSink::new(64));
+        app.refresh_resources();
+        app.open_scene_resource(PathBuf::from("scenes/menu.scene"));
+        app.play();
+        assert!(app.preview.is_some(), "Play should create a preview session");
+
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(640.0, 360.0));
+        let pass = |events: Vec<Event>| RawInput {
+            screen_rect: Some(screen),
+            events,
+            ..Default::default()
+        };
+        let arrow_down = Event::Key {
+            key: Key::ArrowDown,
+            physical_key: Some(Key::ArrowDown),
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::default(),
+        };
+
+        // 第 1 帧：到期 → 步进（本帧无按键），建立 last_tick。
+        ctx.begin_pass(pass(Vec::new()));
+        app.update_preview(&ctx, true, true, screen);
+        let _ = ctx.end_pass();
+        assert!(app.preview.is_some());
+
+        // 第 2 帧：强制落在节流周期内（Idle，不跑固定步）→ 此时按下方向键。
+        if let Some(preview) = app.preview.as_mut() {
+            preview.force_throttled();
+        }
+        ctx.begin_pass(pass(vec![arrow_down]));
+        app.update_preview(&ctx, true, true, screen);
+        let _ = ctx.end_pass();
+        assert!(
+            app.preview_input_state.just_pressed(InputKey::ARROW_DOWN),
+            "被节流跳过的帧（没跑固定步）不得消费按键边沿"
+        );
+
+        // 第 3 帧：**到期** → 步进 → 边沿被正常消费，不重复触发。
+        // 注意：被节流的那一帧不推进 `last_tick`，所以紧接的下一帧仍在周期内——
+        // 这里显式 `force_tick()` 才能确定性地拿到一个有效帧。
+        if let Some(preview) = app.preview.as_mut() {
+            preview.force_tick();
+        }
+        ctx.begin_pass(pass(Vec::new()));
+        app.update_preview(&ctx, true, true, screen);
+        let _ = ctx.end_pass();
+        assert!(
+            !app.preview_input_state.just_pressed(InputKey::ARROW_DOWN),
+            "有效帧消费边沿后不得重复触发"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
     /// 显示缩放比 = 面板逻辑宽 × pixels_per_point ÷ 原生宽：
     /// 面板小于原生分辨率时 < 1（等比缩小适配），面板更大或高 DPI 时放大。
     #[test]
@@ -810,6 +956,95 @@ mod tests {
         assert!((preview_fit_scale(preview_rect, 2.0, 640) - 2.0).abs() < 1e-6);
         // 原生宽为 0 的退化输入：返回 1.0，避免除零。
         assert_eq!(preview_fit_scale(preview_rect, 1.0, 0), 1.0);
+    }
+
+    /// M22/W4（编辑器侧）：被节流跳过的帧（`PreviewTick::Idle`，没跑固定步）
+    /// **不得**消费一次性输入边沿。
+    #[test]
+    fn idle_preview_frame_must_not_consume_input_edges() {
+        assert!(
+            !consumes_input_edges(PreviewTick::Idle),
+            "Idle = 未到节流周期、没跑固定步 → 边沿必须留到下一有效帧"
+        );
+        // 真正跑过（或尝试跑过）固定步的 tick 才允许清边沿。
+        assert!(consumes_input_edges(PreviewTick::Rendered));
+        assert!(consumes_input_edges(PreviewTick::Pending));
+        assert!(consumes_input_edges(PreviewTick::Failed));
+    }
+
+    /// M22/W4（编辑器侧）：同一帧内「按下 + 松开」也必须产生按下边沿。
+    ///
+    /// `bridge_preview_input` 轮询的是 egui 的 `key_down`（**帧末**按住状态）：一次极短的
+    /// 点按若整个落在同一帧里（编辑器长帧/卡顿时常见），帧末已是松开态 —— 只按轮询结果
+    /// 桥接就会**整帧漏掉**这一次按下（与「被节流帧吞边沿」同类）。这里锁住补齐路径。
+    #[test]
+    fn bridge_preview_input_keeps_same_frame_tap() {
+        let app = app_with_scene();
+        let ctx = egui::Context::default();
+        let preview_rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(200.0, 100.0));
+        let key_event = |pressed: bool| Event::Key {
+            key: Key::ArrowDown,
+            physical_key: Some(Key::ArrowDown),
+            pressed,
+            repeat: false,
+            modifiers: Modifiers::default(),
+        };
+        let raw = RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(320.0, 240.0),
+            )),
+            // 按下与松开都在同一帧内 → `key_down(ArrowDown) == false`。
+            events: vec![key_event(true), key_event(false)],
+            ..Default::default()
+        };
+        ctx.begin_pass(raw);
+        let mut input = InputSnapshot::default();
+        app.bridge_preview_input(&mut input, &ctx, preview_rect, 200, 100, true);
+        let _ = ctx.end_pass();
+
+        assert!(
+            !input.is_down(InputKey::ARROW_DOWN),
+            "帧末已经是松开态（按住状态不应残留）"
+        );
+        assert!(
+            input.just_pressed(InputKey::ARROW_DOWN),
+            "同一帧内的快速点按必须保留按下边沿（否则方向键会偶发无反应）"
+        );
+        assert!(
+            input.just_released(InputKey::ARROW_DOWN),
+            "补齐路径同时要送出松开边沿"
+        );
+    }
+
+    /// 复现「方向键有时没反应」的机制：在没跑固定步的帧里清边沿，这一下按下就
+    /// **永久**丢了——`key_event` 只在「松开 → 按下」跳变上产生边沿，仍按住的键
+    /// 不会补发（时长再长也没用，必须松开重按）。
+    #[test]
+    fn clearing_edges_in_idle_frame_loses_a_press_forever() {
+        // 旧行为（无条件 `finish_frame`）：边沿被吃掉，下一帧只剩 held。
+        let mut old = InputSnapshot::default();
+        old.key_event(InputKey::ARROW_DOWN, true);
+        assert!(old.just_pressed(InputKey::ARROW_DOWN));
+        old.finish_frame();
+        old.key_event(InputKey::ARROW_DOWN, true); // 每帧重喂「仍然按住」
+        assert!(old.is_down(InputKey::ARROW_DOWN));
+        assert!(
+            !old.just_pressed(InputKey::ARROW_DOWN),
+            "机制复现：Idle 帧清边沿后，按住不放也再没有 just_pressed"
+        );
+
+        // 修复后（Idle 帧保留边沿）：下一个有效帧照样把 `just_pressed` 交给 Lua。
+        let mut fixed = InputSnapshot::default();
+        fixed.key_event(InputKey::ARROW_DOWN, true);
+        if consumes_input_edges(PreviewTick::Idle) {
+            fixed.finish_frame();
+        }
+        fixed.key_event(InputKey::ARROW_DOWN, true);
+        assert!(
+            fixed.just_pressed(InputKey::ARROW_DOWN),
+            "Idle 帧必须把按下边沿留到下一有效帧（否则方向键会随机失效）"
+        );
     }
 
     #[test]

@@ -181,7 +181,13 @@ impl ScriptState {
         let entry = self.action_repeat.entry(name.to_owned()).or_default();
         if !down {
             entry.holding = false;
-            return false;
+            // 边沿 = 「刚按下」，与「此刻是否仍按住」无关：**一步之内完成的「按下 + 松开」**
+            // 同样必须走一步——极短点按、编辑器 Play 预览把同帧内的按下/松开发成 down+up
+            // 边沿（`game_view::bridge_preview_input`）、摇杆越过阈值后立刻回中都是这种形态。
+            // 此前这里无条件 `return false`，于是一步内完成的点按被整帧丢掉，表现为
+            // 「按方向键偶发没有反应」。边沿在逻辑步内保留（与 `action_pressed` 同语义），
+            // 宿主在每帧首个固定步之后 `finish_frame` 清边沿，因此不会跨步重复。
+            return edge;
         }
         if !entry.holding {
             // 开始计时；边沿帧立即走一步，非边沿帧只武装计时器。
@@ -5723,6 +5729,39 @@ mod tests {
             }
         }
         assert_eq!(fires, 1, "键盘按住只应走一步");
+    }
+
+    /// M22/W4：**一步之内完成的「按下 + 松开」也必须走一步**。
+    ///
+    /// 边沿就是「刚按下」，与「此刻是否仍按住」无关。编辑器 Play 预览把同一帧内的
+    /// 按下/松开发成 down + up 边沿（`game_view::bridge_preview_input`），若这里要求
+    /// `down` 才认边沿，那一下就会被整帧丢掉——用户实测的「编辑器里按上下键切换按钮
+    /// 有时没反应、发布 game.exe 正常」正是这条路径（game.exe 用事件流，按下与松开
+    /// 通常落在不同逻辑步）。
+    #[test]
+    fn action_repeat_honors_a_tap_released_within_one_step() {
+        let mut runtime = LuaRuntime::new().unwrap();
+        runtime.set_nav_settings(NavSettings::new(0.5, 50, 50));
+        runtime.set_delta(1.0 / 60.0);
+
+        // 一步内：按下 + 松开 → 快照里 `held` 为空、`pressed` 有该键。
+        let mut tap = InputSnapshot::default();
+        tap.key_event(InputKey::ARROW_UP, true);
+        tap.key_event(InputKey::ARROW_UP, false);
+        assert!(!tap.is_down(InputKey::ARROW_UP), "帧末应已是松开态");
+        assert!(tap.just_pressed(InputKey::ARROW_UP));
+        runtime.set_input(tap);
+        assert!(
+            runtime.action_repeat("ui_up"),
+            "有按下边沿就必须走一步（哪怕同一步内已经松开）"
+        );
+
+        // 松开帧（无边沿、未按住）不得再走一步，也不得残留状态。
+        runtime.set_input(InputSnapshot::default());
+        assert!(
+            !runtime.action_repeat("ui_up"),
+            "无边沿的一步不得补步（一次按下 = 一步）"
+        );
     }
     #[test]
     fn lua_gameplay_api_moves_damages_and_destroys() {

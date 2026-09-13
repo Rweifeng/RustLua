@@ -132,7 +132,7 @@ component	25	Text	text=青云山道 · 采药与护送;font_size=18.00;color=0.9
 component	25	Transform	x=0.000000;y=0.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
 entity_meta	25	role	hud_title
 entity	26	HudHint
-component	26	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=24.00,686.00,1000.00,708.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+component	26	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=24.00,50.00,1000.00,72.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 component	26	Text	text=WASD 移动 · E 交互(采集/出口) · T 睡觉 · Q 吐纳 · J 普攻 · K 武学;font_size=14.00;color=0.850,0.900,1.000
 component	26	Transform	x=0.000000;y=0.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
 entity_meta	26	role	hud_hint

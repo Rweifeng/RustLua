@@ -938,9 +938,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "true",
         "换项当帧应处于弹跳峰值",
     )?;
-    // M22 回归：**高亮框与标签必须真的画出来**（宿主在 `update()` 返回后取顶点，因此
+    // M22 回归：**高亮框与选中箭头必须真的画出来**（宿主在 `update()` 返回后取顶点，因此
     // `main.lua` 的顺序必须是 update → render；此前 render → update 会让本帧的
-    // 标签/提示被 `clear()` 隐藏，高亮框动画也因而「看不见」）。
+    // 箭头/提示被 `clear()` 隐藏，高亮框动画也因而「看不见」）。
     assert_str_why(
         &mut title,
         "tostring((ui.panel_get('title:hl:BtnContinue') or {}).visible == true)",
@@ -953,11 +953,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "true",
         "换项当帧高亮应外扩（>340px，基准 332px）",
     )?;
+    // M22 追加修复（按钮文字重影）：脚本**不得**再画标签文字——三行标签由 `main.scene`
+    // 的 Text 实体（entity 8/10/12）绘制，脚本重画一遍会与场景文字错位叠成两层
+    //（不选中项错 22px、选中项只错约 3px），肉眼是「一明一暗两遍字」。
+    // 同时断言选中箭头确实画在标签左侧留白里（原来的 `> ` 前缀位置）。
     assert_str_why(
         &mut title,
-        "tostring((ui.get('title:label:BtnContinue') or {}).visible == true)",
+        "tostring((ui.get('title:label:BtnContinue') or { visible = false }).visible == false)",
         "true",
-        "选中项标签应可见（含 > 箭头）",
+        "脚本不得重画按钮标签（会与场景文字重影）",
+    )?;
+    assert_str_why(
+        &mut title,
+        "tostring((ui.get('title:arrow:BtnContinue') or { visible = false }).visible == true)",
+        "true",
+        "选中箭头应可见（画在标签左侧留白里）",
     )?;
     assert_str_why(
         &mut title,
@@ -986,6 +996,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "tostring((ui.panel_get('title:hl:BtnStart') or { visible = false }).visible == false)",
         "true",
         "非选中项的高亮框不得残留（ui.hide 现在也管面板）",
+    )?;
+    assert_str_why(
+        &mut title,
+        "tostring((ui.get('title:arrow:BtnStart') or { visible = false }).visible == false)",
+        "true",
+        "非选中项的箭头不得残留（否则按钮左边会攒一排 >）",
     )?;
     let grow_idle = query_num(&mut title, "return require('ui.title_menu').anim().grow_x")?;
     if grow_idle >= grow_hot {
@@ -1061,6 +1077,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     title.set_input(InputSnapshot::default());
     title.call_update()?;
+    // M22/W4：W/S 也要能导航——顶部提示写的是「W/S 或 方向键 选择」，而 `title_menu`
+    // 此前只看 `game.ui_step()`（`ui_up`/`ui_down`，默认绑方向键/DPad/左摇杆），
+    // 于是 W/S 在门面上**完全没反应**（提示与行为不一致）。面板都是「先 move_* 再
+    // 退回 ui_step」，这里补齐同一条约定。
+    //
+    // 前置：第 ⑫ 章把移动改绑到左摇杆并写进了 `settings.toml`，本运行时是按那份
+    // 文件启动的（`move_up = padaxis:1+`）。先复位到默认绑定，才谈得上「默认 W/S」。
+    lua(&mut title, "input.reset_bindings()")?;
+    assert_str_why(
+        &mut title,
+        "tostring((input.bindings('move_up') or {})[1])",
+        "key:w",
+        "前提：默认绑定 move_up = W（否则下面的断言测的不是 W/S 通路）",
+    )?;
+    press_key(&mut title, InputKey::from_char('w'))?;
+    assert_str_why(
+        &mut title,
+        "require('ui.title_menu').selected_id()",
+        "BtnStart",
+        "W（move_up）应上移一项：「继续江湖」→「开始新游戏」",
+    )?;
+    // 一次按下只走一步：左摇杆同时驱动 `move_*` 与 `ui_*`，两条路径必须互斥（else）。
+    press_key(&mut title, InputKey::from_char('s'))?;
+    assert_str_why(
+        &mut title,
+        "require('ui.title_menu').selected_id()",
+        "BtnContinue",
+        "S（move_down）应下移一项且只走一步（不得 move_*/ui_* 双步）",
+    )?;
     let _ = fs::remove_file(&title_save);
 
     banner("M22-01 槽位/热插拔/震动：切换设备释放旧状态、震动按期下达并可立即停止");

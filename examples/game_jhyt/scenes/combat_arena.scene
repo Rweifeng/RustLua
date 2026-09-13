@@ -157,7 +157,7 @@ component	30	Text	text=山庄 · 演武场;font_size=18.00;color=0.949,0.918,0.8
 component	30	Transform	x=0.000000;y=0.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
 entity_meta	30	role	hud_title
 entity	31	HudHint
-component	31	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=24.00,686.00,1000.00,708.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+component	31	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=24.00,50.00,1000.00,72.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 component	31	Text	text=WASD 移动 · E 交互(出口) · J 普攻 · K 武学 · R 战败重开;font_size=14.00;color=0.850,0.900,1.000
 component	31	Transform	x=0.000000;y=0.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
 entity_meta	31	role	hud_hint

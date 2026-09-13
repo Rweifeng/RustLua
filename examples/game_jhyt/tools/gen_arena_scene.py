@@ -267,8 +267,10 @@ def build_scene(ground, solid):
     hint_id = next_id + 1
     lines.append(f"entity\t{hint_id}\tHudHint")
     lines.append(
+        # 地图自带操作提示放在**地图标题正下方**（y=50）：底部 660/686 两行是 HUD 的
+        # 动态反馈区（hud:feedback / hud:tutorial），静态提示压在那里会与它们叠字。
         f"component\t{hint_id}\tUiLayout\tanchors=0.0000,0.0000,0.0000,0.0000;"
-        "offsets=24.00,686.00,1000.00,708.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000"
+        "offsets=24.00,50.00,1000.00,72.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000"
     )
     lines.append(
         f"component\t{hint_id}\tText\ttext={HUD_HINT};font_size=14.00;color=0.850,0.900,1.000"
