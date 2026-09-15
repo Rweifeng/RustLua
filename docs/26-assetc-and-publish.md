@@ -42,7 +42,7 @@ font_weight = 400.0
 
 ### 扫描范围
 
-`scan` 覆盖 `project.toml`、`scenes/`、`scripts/`、`assets/`；跳过本地工作目录 `.cache`、`.temp`、`.git`、`target`。资源族统一为 `ResourceKind`（[resource_kind.rs](engine/crates/engine/src/core/resource_kind.rs)）。
+`scan` 覆盖 `project.toml`、`scenes/`、`scripts/`、`assets/`；跳过本地工作目录 `.cache`、`.temp`、`.git`、`target`。资源族统一为 `ResourceKind`（[resource_kind.rs](../engine/crates/engine/src/core/resource_kind.rs)）。
 
 ### 打包内容（`package`）
 
@@ -74,7 +74,7 @@ assetc_manifest=1\tassetc-package-1
 
 ## 3. 发布资源编码（P2PK1）
 
-编码文件布局（[pack.rs](engine/crates/engine/src/core/pack.rs)，ADR-0015）：
+编码文件布局（[pack.rs](../engine/crates/engine/src/core/pack.rs)，ADR-0015）：
 
 ```
 P2PK1 <flags> [12B nonce] <payload>
@@ -102,18 +102,28 @@ PC 发布包是自包含目录，运行方式：`game.exe --pack pack --title "�
 
 ## 5. 存档格式
 
-运行时存档（[save.rs](engine/crates/engine/src/core/save.rs)）：
+运行时存档（[save.rs](../engine/crates/engine/src/core/save.rs)）：
 
 ```
-save_version=1
+save_version=2
 <key>\t<value>
 ...
 ```
 
 - 文件命名 `save_<slot>.sav`（`save.slot(name)` 指定槽位）。
-- 头部 `save_version=<n>`，当前 `CURRENT_SAVE_VERSION = 1`。加载只接受当前
-  版本；无版本头或版本不符的存档会明确失败，没有自动迁移。
+- 头部 `save_version=<n>`，当前 `CURRENT_SAVE_VERSION = 2`；`MIN_READABLE_SAVE_VERSION = 1`。
+  写入 v2（对 `\\`、`\n`、`\r`、`\t` 及其它控制字符做 `\xNN` 转义），因此**多行文本、
+  制表符与 CJK 都能安全往返**，不会再出现"一条带换行的值破坏整档行结构"。
+  读取接受 v1（原始行格式，原样读入、下次保存升级为 v2）与 v2；无版本头、`0`
+  或高于当前版本的存档明确失败且**不覆盖原文件**。
+- `save.load()` 返回 `(ok, reason)`，`reason ∈ {"no_save_path", "missing", "corrupt: <err>"}`，
+  调用方可区分"没有存档"（正常首启动）与"存档损坏"（必须提示、保留文件）。
+- `save.clear()` 丢弃内存中的全部键值；`map.state_clear(name?)` 清理 `__mapstate:*`。
+  新游戏必须用它们（连同 `__map:*`/`__blob:*`）确保上一局状态不残留，见
+  [18-lua-api.md](18-lua-api.md)。
 - Lua 任意值经 `save.blob_*` 序列化后按键值写入同一存档。
+- v1→v2 的读兼容是**读路径**：旧二进制读新档会以 `UnsupportedVersion` 明确拒绝，
+  不会静默误读。
 
 ## 8. 原子发布与失败回滚（M20-03）
 
@@ -139,3 +149,24 @@ save_version=1
   输出 `release_atomic_ok cases=4`。
 
 发布目录布局与 P2PK1 资源包格式未变（`game.exe + fonts/ + pack/ + release.toml + run.txt + deps.txt (+ index.html/pkg/web-runtime.js)`）。
+
+### assetc 打包的输入/输出安全边界（M23）
+
+`assetc package` 只负责"复制 + 编码 + 清单"，因此边界必须自己守住（`engine/crates/assetc/src/lib.rs`）：
+
+- **输出目录与项目目录的关系**：`out == project`、`out` 位于 `scenes/`/`scripts/`/`assets/`
+  之内、以及项目位于 `out` 之内三种情况**明确报错**。前两者会直接覆写项目文件或让
+  `collect_files` 一边遍历一边写入（自我复制，且下次打包把产物当输入）。**允许**
+  `out` 位于项目内的其它位置（如 `builds/`）——`scan`/`collect_data_files` 只遍历
+  `project.toml` 与那三个子目录，`scripts/package.ps1` 的原子发布正是这样布局的
+  （`<project>/builds/<platform>/<name>/.staging-*/pack`）。比较前先规范化路径
+  （`canonical_or_absolute`：输出目录通常不存在，按"最近存在的祖先 + 剩余分量"规范化），
+  因此 `assets/dist/../dist` 这类写法绕不过检查。
+  > 回归记录：这条规则最初写成"输出目录位于项目内部一律拒绝"，`verify.ps1 -Mvp`
+   > 的干净发行目录自测立刻以 `assetc error: 输出目录不能位于项目目录内部` 失败——
+   > 规则必须按**真实发布布局**收窄，而不是按直觉扩大。
+- **符号链接**：`collect_files` 遇到符号链接会先 `canonicalize` 再校验是否仍在被扫描的根目录内；
+  指向项目外的链接**报错而不是跟随**——`fs::copy` 会跟随链接，把项目外文件悄悄塞进发布包。
+  （本机无符号链接权限时对应回归用例自动跳过，纯路径判定 `path_escapes_root` 仍有独立单测。）
+- **清单路径**：`strip_prefix(out)` 失败时返回可定位错误，不再 `expect` panic——打包中途 panic 会
+  留下半成品发布目录。

@@ -30,6 +30,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Project
 # 浏览器集成回归（日志与 DOM 快照写到 artifacts/logs/webgl/）
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-webgl.ps1
 
+# 产物层启动验收：真实发布包在无头浏览器里能否启动到 Lua（M31/P3 新增）
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-webgl-bundle.ps1 `
+    -BundleRoot examples/game_jhyt/builds/webgl/jianghu_youtian
+
 # 本地静态服务（发布目录必须经 HTTP 提供，不能 file:// 打开：浏览器会拦 WASM/资源请求）
 node scripts/serve-static.js examples/game_jhyt/builds/webgl/<name> 8000
 ```
@@ -42,23 +46,56 @@ node scripts/serve-static.js examples/game_jhyt/builds/webgl/<name> 8000
 4. 用 **无头 Edge/Chrome**（`--headless=new --dump-dom`，带 60s 超时兜底）执行契约检查并断言 DOM 结果；
 5. 把浏览器版本、构建产物、DOM 快照、结果 JSON 与日志写入 `artifacts/logs/webgl/`。
 
+`verify-webgl-bundle.ps1`（产物层，M31/P3）的行为：
+
+1. 断言发布产物完整（`index.html`/`web-runtime.js`/`pkg/game_web.js`/`pkg/game_web_bg.wasm`/
+   `pack/manifest.txt`/`fonts/*.ttf`），并校验 wasm 魔数（`\0asm`，不是占位文件）；
+2. 起静态服务器 + 无头浏览器打开 `index.html`，读页面上的机器可读启动标记
+   `data-p2-boot`（`pending`/`booted`/`running`/`ok`/`failed`）与 `data-p2-boot-detail`；
+3. `boot=ok|booted|running` → 退出 0 并写 `bundle-summary-*.json`；`failed` → 退出 1 并把
+   **缺失的引擎宿主 API 全局**列出来；无 node/浏览器 → 退出 2（环境受限，不伪造通过）。
+
 ## 3. 已实测证据（本机 Edge 153.0.4234.32，无头）
 
 `powershell -File scripts/verify-webgl.ps1` → `webgl_browser_ok`：
 
 - WebGL2 可用：`webgl2: true`，渲染器 `ANGLE (Microsoft, Microsoft Basic Render Driver …, D3D11)`
-- 资源可获取：`manifestEntries: 696`、`startupScene` 解析正确并成功取回、manifest 首个资源 `assets/art/buildings/_buildable_preview.png`（16101 字节）
+- 资源可获取：`manifestEntries: 662`、`startupScene` 解析正确并成功取回、manifest 首个资源可取（811 字节）
 - 存储可用性探测：`storage.available: true`（不可用时会降级到内存并标记 `fallback: true`，不抛错）
 - 缺失资源可诊断：请求不存在的资源返回 `404`（不静默成功）
 - 产物：`artifacts/logs/webgl/{verify-webgl-*.log,dom-*.html,summary-*.json,wasm-target-*.txt}`
 
+`package.ps1 -Platform webgl`（M31/P3，本机已具备 `wasm32-unknown-unknown` + `wasm-bindgen`）：
+
+- `webgl_package_ok files=6`，`Package size: 21,522.8 KB, 673 files`
+- 产物：`index.html`、`web-runtime.js`、`pkg/game_web.js`（17.0 KB）、
+  `pkg/game_web_bg.wasm`（39.6 KB，wasm 魔数 `\0asm` 校验通过）、`pack/`（662 项）、`fonts/`
+
+`powershell -File scripts/verify-webgl-bundle.ps1` → **`webgl_bundle_boot_failed`（exit 1）**：
+
+- 好消息：wasm 模块**真实加载**，页面**进入了 Lua 执行**（`scripts/main.lua` 已被加载执行）；
+- 坏消息：`game_jhyt` 的脚本在一个 WebGL 运行时没有实现的宿主 API 上失败——
+  `[string "scripts/main.lua"]:6545: attempt to index a nil value (global 'item')`，
+  失败时页面标记 `data-p2-boot="failed"` 并给出缺失清单：
+
+  `app, asset, calendar, clock, container, data, day, event, grid, interact, inv, item, light,
+  map, shop, sprite, tag`（17 个）
+
+即：`web-runtime.js` 目前实现的是**演示级子集**（`log/time/input/scene/entity/transform/
+transform3d/tilemap/health/physics/physics3d/animation/animation3d/audio/ui/save/particles/
+camera/mesh`），与桌面引擎注册的 36 个顶层全局并不等价。桌面发行（PC）不受影响。
+
 ## 4. 已知限制
 
-- **WASM 模块构建未在本环境执行**：本机为离线环境（`static.rust-lang.org` 不可达），
-  `rustup target add wasm32-unknown-unknown` 报 `component download failed … os error 2`，
-  因此 `cargo build -p game_web --release --target wasm32-unknown-unknown` 与
-  `wasm-bindgen` 输出无法产出；`package.ps1 -Platform webgl` 会在该步明确失败（不会产出
-  半成品包，M20-03 的 staging 机制保证发布目录不被破坏）。联网后按第 2 节命令即可补齐。
-- 浏览器回归验证的是**平台契约**（资源获取/解析、WebGL2 能力、存储降级、缺失资源诊断），
-  不是「WASM 游戏跑通完整剧本」；后者需要先完成 WASM 构建。
+- **WebGL 运行时没有实现桌面引擎的宿主 API（M31/P3 实测，未解决）**：浏览器里能加载 wasm、
+  能进 Lua，但 `game_jhyt` 会在第一个未实现的全局上停下（见第 3 节清单）。要真正"浏览器内可玩"，
+  需要二选一：
+  1. 把宿主 API 编译进 wasm（引擎侧 `core/script.rs` 的 Lua 桥 + `user_dir`/`save`/`input` 的
+     wasm 实现，渲染走 wgpu 的 WebGL2 后端）——工作量最大，但能力与桌面一致；
+  2. 明确"WebGL 只支持演示级子集"，把子集写成契约（允许的全局清单），让游戏工程按平台分叉，
+     并在 `package.ps1 -Platform webgl` 时对不满足子集的工程**构建期报警**（而不是运行期报错）。
+  当前默认按 (1) 规划、(2) 兜底（缺失清单已可机器读取）；本机离线环境下也验证过构建链路可复现。
+- **浏览器回归验证的是平台契约 + 产物启动**，不是「WASM 游戏跑通完整剧本」。
+- WASM 模块依赖 CDN 上的 `fengari-web`（`index.html` 里 `<script src="https://cdn.jsdelivr.net/...">`）：
+  离线或纯内网部署需要把该脚本随包发布（已记入待办）。
 - 不承诺移动端浏览器与触摸设备体验；桌面无头浏览器结果不等同于桌面发行验收结果。

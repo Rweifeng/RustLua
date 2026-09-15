@@ -1,9 +1,9 @@
 # RustLua 游戏引擎项目章程
 
-> 项目目录：`C:\GitHub\RustLua`（历史文档中的 `C:\GitHub\p2` 为同一检出在重命名前的路径）
+> 项目目录：当前检出为 `E:\Codex\RustLua`（历史文档中的 `C:\GitHub\p2`、`E:\Codex\p2`、`C:\GitHub\RustLua` 均为同一检出在改名/搬迁前的路径；文档里其余绝对路径一律按此换算）
 > 文档版本：0.1.0
 > 建立日期：2026-08-20
-> 当前阶段：v0.15（M0–M18 已归档、M19/M20 收口中；里程碑状态以 CHANGELOG 与 `tasks/done/` 为准）
+> 当前阶段：v0.21（**M0–M20 全部归档**至 `tasks/done/`；`tasks/plan/` 现为 `M22-输入层收口` 与 `RustLua-game_jhyt-执行计划`；里程碑状态以 CHANGELOG 与 `tasks/done/` 为准）
 
 ## 1. 项目定位
 
@@ -127,9 +127,11 @@ ECS：bevy_ecs、hecs 或最小自研实现，需通过基准测试决定
 | M9 | 3D 可玩垂直切片 |
 | M10 | 编辑器强化（内嵌预览、3D 视口、Gizmo、资源缩略图、Prefab 集成） |
 
-M11–M15 已归档至 `tasks/done/`；M16–M18（编辑器强化、玩法纵切、战斗/建筑/属性系统）与 M19/M20 的
-大部分任务同样已归档，剩余任务在 `tasks/plan/` 中收尾。里程碑与版本映射：M16 → v0.12、M17 → v0.13、
-M18 → v0.14、M19/M20 → v0.15（收口）；完整状态以 CHANGELOG 与 `tasks/done/` 为准。
+M11–M15 已归档至 `tasks/done/`；M16–M18（编辑器强化、玩法纵切、战斗/建筑/属性系统）与 M19/M20
+（验收信号、数据安全、发布与平台）的任务**全部已归档**，`tasks/plan/` 里不再有 M19/M20 的收尾项。
+里程碑与版本映射：M16 → v0.12、M17 → v0.13、M18 → v0.14、M19/M20 → v0.15–v0.21（收口与实际交付）；
+完整状态以 CHANGELOG 与 `tasks/done/` 为准。`M0–M20` 之后的引擎/游戏改进按 `docs/37` §10 的
+阶段计划推进，任务文件落在 `tasks/plan/`（当前为 `M22-输入层收口`）。
 
 ## 9. AI 开发规则
 
@@ -236,6 +238,6 @@ docs/02-technical-decisions.md
 
 ## 13. 当前状态
 
-- 里程碑 M0–M18 与 M19/M20 的绝大多数任务已归档至 `tasks/done/`；剩余任务（M19-04、M20-05、M20-08）在 `tasks/plan/` 中收尾（见 docs/README 与 CHANGELOG）；
-- 最新发布标签：`v0.10-editor`（编辑器强化）；
-- 当前主线（Unreleased，v0.15）：`game_jhyt` MVP 垂直切片（三地图 + 种田/任务/采集/战斗/制作/睡觉存档）、游戏级回归与性能基线、命名动作输入映射与手柄接入、资源校验与发布原子替换、WebGL 平台契约与质量门；默认能力展示工程为 `examples/` 与 `examples/game_jhyt`。
+- 里程碑 **M0–M20 全部任务已归档**至 `tasks/done/`（132 份），`tasks/plan/` 当前只有 `M22-输入层收口`（**批 1/批 2/批 3 已落地并过质量门**：core 分层与输入 API 收口、0 步帧边沿、手柄槽位/震动、物理键身份与 v1→v2 迁移；W6 裁定不做、留作 backlog）与 `RustLua-game_jhyt-执行计划`（见 docs/README 与 CHANGELOG）；
+- 最新发布标签：`v0.10-editor`（编辑器强化）；发布包形态见 [docs/50 发布包与用户数据目录](50-发布包与用户数据目录.md)；
+- 当前主线（Unreleased，v0.21）：`game_jhyt` MVP 垂直切片（三地图 + 种田/任务/采集/战斗/制作/睡觉存档）、7 日目标与最小战斗闭环、数据校验、季节/天气与资源接线、中文排版契约、PC 干净发布（用户数据目录）与 WebGL 平台验收；默认能力展示工程为 `examples/` 与 `examples/game_jhyt`。

@@ -9,7 +9,9 @@ P2 的当前格式就是唯一运行时格式。加载边界只接受当前版�
 1. `Scene` 只读写 `scene_version=2`。更低或更高版本由
    `SceneError::UnsupportedVersion` 拒绝，没有自动迁移和 `migrated_from` 元数据。
 2. 资源数据库只读取 `# rustlua-resource-db-v2`；v1 或未知版本必须重建或隔离。
-3. 存档必须有 `save_version=1`；缺失、更高或更低版本都加载失败。
+3. 存档头 `save_version=<n>`：当前写入 `save_version=2`（行内 `\n`/`\t`/`\\` 与其它
+   控制字符转义，多行文本不再破坏存档结构）。读取接受 `1`（原始行格式，按需升级）
+   与 `2`；缺失版本头、`0` 或高于当前版本一律失败且不覆盖原文件。
 4. `Sprite` 只接受结构化字段，且首字段必须是 `texture=...`；旧短格式
    `<texture>;size=WxH` 不再识别。
 5. `Text` 只接受 `text`、`font_size`、`color`；旧 `scale`、`x`、`y` 不再读取。
@@ -48,7 +50,8 @@ P2 的当前格式就是唯一运行时格式。加载边界只接受当前版�
 |---|---|
 | `scene_version=1` 自动提升 | 只接受 `scene_version=2` |
 | 资源数据库 v1 | 只接受 v2；旧库明确失败 |
-| 无版本头存档 / Lua `on_migrate` | 必须有 `save_version=1` |
+| 无版本头存档 / Lua `on_migrate` | 必须有 `save_version` 头（当前写入 2，可读 1） |
+| `save_version=1` 原始行格式（值含 `\n`/`\t` 即损坏整档） | 写入升为 `save_version=2` 转义格式；v1 仍可读（零数据丢失），新档不被旧二进制误读（旧版按 `UnsupportedVersion` 拒绝） |
 | Sprite 短格式 | 只接受 `texture=...;size=...` |
 | Text 内联几何和 `scale` | `Text` 只存视觉属性，`font_size` 是像素字号 |
 | Text / Image 内联 `x/y/width/height/space/anchor` | `UiLayout` 四边 Anchor + Offset |
