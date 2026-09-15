@@ -446,6 +446,16 @@ impl PreviewSession {
         self.last_tick = None;
     }
 
+    /// 测试辅助：读取节流基准（上一次**到期帧开始**的时刻）。
+    ///
+    /// 节流判定是 `now - last_tick >= PREVIEW_FRAME_INTERVAL`，所以想确定性地断言
+    /// 「这一次该不该步进」，就必须拿到这个基准本身——用「调用前后测得的墙钟时长」
+    /// 去近似它会在临界点上出错（见 `preview_session_tick_returns_rendered_or_pending`）。
+    #[cfg(test)]
+    pub(crate) fn last_tick(&self) -> Option<std::time::Instant> {
+        self.last_tick
+    }
+
     /// 测试辅助：把上一次步进时间设为「刚刚」，使下一个 `update` **必定**落在节流
     /// 周期内（返回 [`PreviewTick::Idle`]、不跑逻辑步）。用于确定性地回归
     /// 「被节流跳过的帧不得消费输入边沿」（见 `game_view::consumes_input_edges`）。
@@ -612,18 +622,21 @@ mod tests {
             PreviewTick::Pending | PreviewTick::Rendered
         ));
         // 紧随其后的 update 未到期 → Idle（仅排空在途回读）。
-        // 注意：节流用的是**真实时间**（`Instant`），而 `first` 这一步本身要跑一次离屏
-        // 渲染，可能已经吃掉大半个节流周期，因此到期与否必须按「上一次 update 开始 →
-        // 这一次 update 结束」这段**真实间隔**判断。只在确实没到期时断言 Idle，
-        // 否则这条测试会随机器负载随机变红。
-        let interval_start = std::time::Instant::now();
+        //
+        // 节流用的是**真实时间**（`Instant`），而 `first` 这一步本身要跑一次离屏渲染，
+        // 可能已经吃掉大半个节流周期。所以「这一次该不该步进」必须按引擎真正用的判据
+        // ——`本次 update 开头的 now − 上一次到期帧开始时刻`——判断，不能拿「调用前后
+        // 测得的时长」去近似：那个时长既漏掉了 `first` 里 `now` 之后的收尾工作，也把
+        // 本次调用里 `now` 之后的渲染算进了窗口，实测它在临界点上会偶发误判
+        // （曾报「未到期不得步进（实测 1.6765ms）」，即窗口已过 16ms 却仍被判未到期）。
+        let baseline = session.last_tick().expect("first 之后必有节流基准");
         let idle = session.update(&ctx, &InputSnapshot::default());
-        let elapsed = interval_start.elapsed();
-        if elapsed < PREVIEW_FRAME_INTERVAL {
+        let window = baseline.elapsed();
+        if window < PREVIEW_FRAME_INTERVAL {
             assert_eq!(
                 idle,
                 PreviewTick::Idle,
-                "未到期不得步进（实测 {elapsed:?}）"
+                "未到期不得步进（窗口 {window:?} < {PREVIEW_FRAME_INTERVAL:?}）"
             );
         } else {
             assert!(
@@ -631,7 +644,7 @@ mod tests {
                     idle,
                     PreviewTick::Idle | PreviewTick::Pending | PreviewTick::Rendered
                 ),
-                "已到期时只允许步进/待回读，实测 {idle:?}"
+                "已到期时只允许步进/待回读，实测 {idle:?}（窗口 {window:?}）"
             );
         }
         // 二次强制到期：应能排空上一回读并再次渲染。
