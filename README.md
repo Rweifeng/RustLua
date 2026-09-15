@@ -14,7 +14,7 @@ Rust 写的 2D/3D 游戏引擎 + Lua 玩法脚本运行时，配套一个可视�
 | `engine/` | Rust workspace：`crates/engine`（运行时）、`editor`、`game`（桌面运行器）、`assetc`（打包/校验）、`game_web`（WebGL 宿主） |
 | `examples/` | 样板工程；`examples/game_jhyt` 是完整游戏项目（三地图动线、种田/采集/制作/战斗/任务/商店/7 日目标） |
 | `scripts/` | 质量门与发布脚本：`verify.ps1`（总门）、`check-docs.ps1`（文档门）、`package.ps1`（发布）、`run-demo.ps1` 等 |
-| `tasks/` | 任务生命周期：`plan/`（待做）、`done/`（已归档 132 份，M0–M20 全部归档） |
+| `tasks/` | 任务生命周期：`plan/`（待做，当前只剩 game_jhyt 执行台账）、`done/`（已归档 133 份，M0–M20 与 M22 输入层专题全部归档） |
 | `docs/` | 引擎能力、技术决策、质量门与发布契约（索引见 [docs/README.md](docs/README.md)） |
 | `third_party/` | 未接入或已下架的第三方素材（许可证见 [docs/THIRD_PARTY.md](docs/THIRD_PARTY.md)） |
 

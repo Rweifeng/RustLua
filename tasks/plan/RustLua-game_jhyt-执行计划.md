@@ -290,7 +290,7 @@ axes=(0.000,0.000)`；逻辑路径由 `jhyt_m20_gamepad` 的 FakeBackend 覆盖�
 | 编号收口 | 未被任何文档引用的 `game_jhyt/docs/42-江湖有田-演武场场景设计.md` → `50-...`（`git mv` 保留历史），消除同一目录内两份 42 号；**编号命名空间**裁定为"按目录独立"，约定写入 `docs/README.md`「文档编号约定」 | 文档门 ① 项通过；`docs/` 与 `game_jhyt/docs/` 各自编号唯一 |
 | 索引补全 | `docs/README.md` 补 `docs/38`（统一 2D/3D 架构）、`docs/39`（能力等级复核）、`docs/40`（全面重构计划）三条索引（此前 38–40 无人引用、无处可查） | 文档门 ③ 项通过 |
 | 相对链接修复 | `docs/24-3d-rendering.md`（7 条）、`docs/26-assetc-and-publish.md`（3 条）里的 `](engine/crates/...)` 是**相对仓库根**写的，从 `docs/` 出发解析不到 → 改为 `](../engine/crates/...)` | 文档门 ⑤ 项通过（204 条链接全部可解析） |
-| 文档失真清零 | 章程 §0/§8/§13、`docs/README` 里程碑段、`tasks/README`、`engine/README:50`、`game_jhyt/docs/29` §1/§4/§9 全部按实况重写：`tasks/done/` 实为 **132 份、M0–M20 全部归档**（不是"M19/M20 收尾中"），`plan/` 只剩 `M22-输入层收口` 与执行计划 | `docs/37` §5 失真清单 7 项中 6 项标 ✅（仅 `docs/25` 编辑器指南数值校准留给 5-7） |
+| 文档失真清零 | 章程 §0/§8/§13、`docs/README` 里程碑段、`tasks/README`、`engine/README:50`、`game_jhyt/docs/29` §1/§4/§9 全部按实况重写：`tasks/done/` 实为 **133 份、M0–M20 与 M22 输入层专题全部归档**（不是"M19/M20 收尾中"），`plan/` 只剩执行计划 | `docs/37` §5 失真清单 7 项中 6 项标 ✅（仅 `docs/25` 编辑器指南数值校准留给 5-7） |
 | `docs/40` 编码事故 | 该文档部分段落是 GBK 字节（历史写入事故），其中 §8/§9 已不可恢复；按可读的 §0–§7 与 `docs/39` 结论**重建**（含 2D 专项工作表与技术选择原则），并在文件头写明重建说明 | 文档门 ⑥ 项通过（无 U+FFFD）；`docs/40` 同时补上 `docs/README` 索引 |
 | 死代码收口 | ① `lua_ms` 死指标接线：`LuaRuntime::last_update_micros()`（Lua 体内测量）→ 内置系统 `lua_update` 累加 → `RuntimeScene::take_script_micros()`（取走即清零）→ `PerformanceStats::record_lua_millis()`，删掉只能测"两次调用之间墙钟"的 `begin_lua/end_lua` ② `plugin_status` 只写不显示 → 在"帮助 > 版本说明"列出 + `tracing` 记录 ③ `RecoveryManager::clear_all` 无入口 → 接到"⚠ 恢复"菜单的"全部丢弃（N 项）"，状态栏回报清理条数 ④ `AutoSaveController::on_edit` 已不存在 | 新增单测 `script_update_time_is_measured_and_taken_once`（断言 >0 且第二次取为 0）+ `performance` 两条改为累加语义；`cargo clippy -D warnings` 零告警；真实发布包日志从 `lua_ms=0.000` 变为真实值 |
 | 未跟踪文件收口 | 39 个未跟踪项逐个归类：全部是应入库交付物；生成物全部被 `.gitignore` 覆盖；无"该忽略未忽略/该入库被忽略" | 结论写入本文件"环境限制与说明"；不代提交（未获提交指令） |
@@ -299,7 +299,8 @@ axes=(0.000,0.000)`；逻辑路径由 `jhyt_m20_gamepad` 的 FakeBackend 覆盖�
 ### 阶段五 P5（输入层收口 M22 批 3：物理键身份）：已完成
 
 > 输入侧三项专题（W1/W5、W3/W4、W2）的实际落地统一记在
-> [tasks/plan/M22-输入层收口.md](M22-输入层收口.md)（§10 批 1、§11 批 2、§12 批 3），本执行计划只登记
+> [tasks/done/M22-输入层收口.md](M22-输入层收口.md)（§10 批 1、§11 批 2、§12 批 3；该专题已完结并归档到
+> `tasks/done/`，W6 为已裁定不做的 backlog，见该文 §9），本执行计划只登记
 > 它对本工程（`examples/game_jhyt` 与全部 `jhyt_*` 验收示例）的影响与证据。
 
 | 项 | 落地 | 证据 |
@@ -309,7 +310,7 @@ axes=(0.000,0.000)`；逻辑路径由 `jhyt_m20_gamepad` 的 FakeBackend 覆盖�
 | 未知名报错 | Lua `input.is_down/just_pressed/just_released/pressed/released` 的键名解析失败改为**报错并回显原值**（旧实现静默落 `InputKey::Other(0)`）；键名同时接受 v2 物理键名与 v1 可读名，老脚本零改动可用 | `jhyt_m22_input` ② 章：`input.is_down('keye')` 为真、未知名报错且错误里带原值；全部 `jhyt_*` 示例（含 `jhyt_m20_gamepad` 14 章）原样通过 |
 | 示例批量迁移 | 31 个文件从 `InputKey::` 迁到 `KeyCode`（`ARROW_*`→`Arrow*`、`Other(1\|2\|4)`→`F1/F2/F4`、`W/A/S/D`→`KeyW/KeyA/KeyS/KeyD`、`from_char(..)` 补 `.expect(..)`）；示例里「按字符喂键」的 helper 现返回错误而不是静默落其他键 | `cargo test --workspace --all-features` → **850 passed / 0 failed**（改造前 783）；`jhyt_m19_ui`/`jhyt_m26_hud_feedback` 的字符行号 helper 改为显式 `.expect("数字行号必须有对应主键区数字键")` |
 | 端到端验收登记 | 新增 `engine/crates/game/examples/jhyt_m22_input.rs`（三章）并加进 `scripts/verify.ps1` 的 MVP 示例清单（该清单是唯一事实来源，缺项/多项都会 `throw`） | 收尾时补加 ④ 章，见下行 |
-| 顺带修掉 | ① `editor/src/preview_session.rs` 的节流单测按**调用前**起算 `Instant`，而上一次 `update` 的离屏渲染可能吃掉大半个节流周期 → 随负载随机变红（改为按真实间隔判定）② `docs/35` 在 §7 后残留一整份**旧版本 §2~§6 重复段落**（含已被取代的 `InputKey`/`key:up` 说法）→ 删除并重写 ③ 工程 `settings.toml` 的导航手感仍是 M20-09 的帧数键（`nav_delay_frames`/`nav_repeat_frames`），批 1 起毫秒键优先、帧键只读 → 这份工程设置**自那时起就没生效过**；升 v2 时一并改为 `nav_delay_ms = 267`/`nav_repeat_ms = 133`（即原 16/8 帧 @60Hz 的手感） | 三条都留痕在 `tasks/plan/M22-输入层收口.md` §12.7；`cargo fmt --check` / `clippy -D warnings` 退出 0 |
+| 顺带修掉 | ① `editor/src/preview_session.rs` 的节流单测按**调用前**起算 `Instant`，而上一次 `update` 的离屏渲染可能吃掉大半个节流周期 → 随负载随机变红（改为按真实间隔判定）② `docs/35` 在 §7 后残留一整份**旧版本 §2~§6 重复段落**（含已被取代的 `InputKey`/`key:up` 说法）→ 删除并重写 ③ 工程 `settings.toml` 的导航手感仍是 M20-09 的帧数键（`nav_delay_frames`/`nav_repeat_frames`），批 1 起毫秒键优先、帧键只读 → 这份工程设置**自那时起就没生效过**；升 v2 时一并改为 `nav_delay_ms = 267`/`nav_repeat_ms = 133`（即原 16/8 帧 @60Hz 的手感） | 三条都留痕在 `tasks/done/M22-输入层收口.md` §12.7；`cargo fmt --check` / `clippy -D warnings` 退出 0 |
 | 端到端验收登记 | 新增 `engine/crates/game/examples/jhyt_m22_input.rs`（四章）并加进 `scripts/verify.ps1` 的 MVP 示例清单（该清单是唯一事实来源，缺项/多项都会 `throw`） | `cargo run -p game --example jhyt_m22_input` → exit 0、`jhyt_m22_input_ok keys=194 actions=default settings=v1→v2` |
 | 文档同步 | `docs/18`（新增「物理键身份」一节 + `migration_notes`）、`docs/22`（改键面板说明与 `settings.toml` 示例改 v2）、`docs/35`（§1/§2/§3/§4/§6 重写 + **新增 §8 W1 增量表**）、`docs/02`（ADR-0021 后续修订注记）、`docs/33`（双人「已裁定不做」）、`docs/37`（§10 两行标注已完成、P2 缺陷划掉）、`tasks/README`、`docs/README`、章程 §13、`CHANGELOG` | 文档一致性门 `check-docs.ps1` → `check_docs_ok docs=39 game_docs=22 h1=63 links=206`（exit 0）。原先拦门的未跟踪文档 `docs/wechat-minigame.md` 已按「补编号 + 索引」裁定改为 `docs/51-平台插件适配.md`（内容未改），见「环境限制与说明」 |
 | 脚本侧键名显示防漂移 | `examples/game_jhyt/scripts/ui/hints.lua` 的键名表改按**物理键名**索引（原实现把 `key:` 后内容直接 `upper()`，W1 后顶部提示会变成 `KEYW/KEYA/KEYS/KEYD 移动`）；`jhyt_m22_input` **新增 ④ 章**把全部 194 个物理键喂给真实 Lua 运行时，与引擎 `Binding::display_label()` 逐项对照（51 项查表逐字相等、86 项按同一推导规则、57 项白名单内仍显示机器名且条目数必须与白名单**逐项相等**） | `jhyt_m20_gamepad` 第 ⑨ 章的操作提示文案断言（精确到「W/A/S/D 移动 · E 交互」）在 W1 后先红后绿；`jhyt_m22_input` ④ 章另加三条硬断言：v1 老写法映射同一套标签、手柄绑定不受影响、**默认表 36 个键盘绑定无一落到机器名分支** |
