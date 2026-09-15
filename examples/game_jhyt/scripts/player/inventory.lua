@@ -7,22 +7,45 @@ local M = {}
 local MAX_ENERGY = 100
 local MAX_INNER_POWER = 100
 
-function M.setup()
+-- 上限的只读访问口（M28）：跨天重置（`main.on_day_start`）与战败回庄
+-- （`systems/death.lua`）都要把体力/内力拉回上限，不能再各自写死 100。
+function M.max_energy()
+  return MAX_ENERGY
+end
+
+function M.max_inner_power()
+  return MAX_INNER_POWER
+end
+
+-- 物品定义注册（`data/items.lua` + `data/tools.lua` → 引擎注册表）。
+-- **在模块加载时就登记**，而不是等到开新档：引擎 `item.def` 是唯一的显示名查询口
+-- （HUD 的物品名、快捷栏、装备槽都走它），登记必须早于任何显示行为。
+-- `item.define` 幂等（同 id 覆盖），因此热重载后重复登记也无副作用。
+local function register_items()
   for id, definition in pairs(items) do
     item.define(id, definition)
   end
-  local tools = require("data.tools")
-  for id, definition in pairs(tools) do
+  for id, definition in pairs(require("data.tools")) do
     item.define(id, definition)
   end
+end
+
+register_items()
+
+-- 开新档：背包与初始物资（物品定义已在模块加载时登记，这里不再重复）。
+function M.setup()
   inv.create(state.inventory, 20)
-  -- 灵芝菌种（M19-01 调整）：5→8。一茬灵芝收 2，MVP 剧本里灵芝要分四处用：
+  -- 灵芝菌种（M19-01 调整）：5→8。**每块田一茬收 1 灵芝**（`data/crops.lua`
+  -- `yield = 1`，与 docs/33 §4.1 一致；M23 之前这句注释按"收 2"写、而数据里根本没有
+  -- `yield` 字段，实际恒收 1）。MVP 剧本里灵芝要分四处用：
   -- 医馆委托 3（可选支线）+ 药庐订单 2 + 主线二段交药材 2 + 炼回复药 2 = 9，
-  -- 幼苗期 3 块田（6）+ 山道当日采集（3）正好覆盖并留余量；
-  -- 8 粒给出「误种一次仍可完成」的空间（数值校核见 docs/46 §3）。
+  -- 山道当日采集（3）+ 次日刷新的两处采集点（`respawn_days = 1`）是主要来源，
+  -- 8 粒菌种（4 块田 × 1 = 4 灵芝/茬）是多日路线的补足与教学，并留「误种一次
+  -- 仍可完成」的空间（数值校核见 docs/46 §10）。
   inv.add(state.inventory, "seed_lingzhi", 8)
   -- 稻种（M19-01 调整）：3→4。稻谷要同时满足「市集订单 2 斗」与「主线二段的一斗口粮」
-  -- 两处消耗，每种一茬收 2，4 粒留出一次重播余量，也避免一次误种把 MVP 剧本走死。
+  -- 两处消耗，**每块田一茬收 2**（`yield = 2`），4 粒留出一次重播余量，
+  -- 也避免一次误种把 MVP 剧本走死。
   inv.add(state.inventory, "seed_rice", 4)
   inv.add(state.inventory, "rice", 2)
   -- 水壶（M19-02 补齐 MVP 闭环）：farm.act 浇水要求 tool 槽装备 watering_can，

@@ -16,13 +16,19 @@
 --       - 玩家战败后停手（不鞭尸，combat 侧同样拦截）。
 --   * 伤害账本：敌人 hp 以本模块为准（引擎 health 表仅镜像调试），
 --     combat 命中回调 hit() 结算；hp<=0 → 死亡、销毁实体、记战斗日志。
+--   * 受击反馈（M25）：hit() 收到 combat 传来的 { hitstun, knockback, dir_* }，
+--     按敌人自身抵抗（data/enemies.lua 的 knockback_resist/hitstun_resist，
+--     缺省取 data/combat.lua）应用硬直与击退（不穿墙、撤销当前寻路）；
+--     硬直期间 tick 只递减计数，不追击不出手。
 --   * capture/restore：由 main.lua 注册为存档 provider；reset() 供新档与
 --     玩家战败重开（combat.respawn）复活全部敌人。
 local state = require("core.state")
 local player = require("player.player")
 local combat = require("systems.combat")
+local loot = require("systems.loot")
 local enemies = require("data.enemies")
 local enemy_art = require("data.enemy_art")
+local combat_data = require("data.combat")
 local map_manager = require("world.map_manager")
 
 local M = {}
@@ -175,6 +181,52 @@ function M.play_state(persist_id, state_name)
   return pcall(animation.set, actor.id, state_name) == true
 end
 
+-- ------------------------------------------------------------------
+-- 受击反馈（M25）：硬直 + 击退（数值来自招式，抵抗来自敌人数据）
+-- ------------------------------------------------------------------
+
+local function resist_of(actor, field)
+  local value = actor.enemy[field]
+  if type(value) == "number" then
+    return math.max(0, math.min(1, value))
+  end
+  if field == "knockback_resist" then
+    return combat_data.enemy_knockback_resist()
+  end
+  return combat_data.enemy_hitstun_resist()
+end
+
+-- 该格是否被 solid 瓦片占据（击退不穿墙；与 building.lua 同判定）。
+local function cell_solid(cx, cy)
+  if not ground_id then
+    return false
+  end
+  local ok, solid = pcall(tilemap.is_solid, ground_id, cx, cy)
+  if not ok then
+    return false
+  end
+  return solid == true
+end
+
+-- 把敌人推开（沿攻击者 → 目标方向），返回实际位移距离；被墙挡住时不穿墙。
+local function push_actor(actor, distance, dir_x, dir_y)
+  if distance <= 0 or not actor.id or not entity.is_alive(actor.id) then
+    return 0, false
+  end
+  local ok, pos = pcall(transform.get, actor.id)
+  if not ok or type(pos) ~= "table" then
+    return 0, false
+  end
+  local nx, ny = pos.x + dir_x * distance, pos.y + dir_y * distance
+  local cell = grid.world_to_cell(nx, ny, TILE)
+  if cell_solid(cell[1], cell[2]) then
+    return 0, true
+  end
+  transform.set(actor.id, nx, ny)
+  actor.cell = { x = cell[1], y = cell[2] }
+  return distance, false
+end
+
 -- 沿路径推进：与 npc.step_path 相同的预算算法（dt 秒 × speed）。
 local function step_path(actor, dt)
   if not actor.path then
@@ -275,6 +327,15 @@ local function tick_actor(actor, here, dt)
   if not activate(actor) then
     return
   end
+  -- 硬直（M25）：被打断的这段时间既不追击也不出手，也不重算路径。
+  if (actor.stun_frames or 0) > 0 then
+    actor.stun_frames = actor.stun_frames - 1
+    actor.state = "stunned"
+    actor.path = nil
+    actor.path_index = nil
+    update_animation(actor, false)
+    return
+  end
   -- 玩家不在/战败：敌人停手（攻击已被 combat 拦截，这里连追击也停）。
   local pid = player.ensure()
   local player_pos = pid and transform.get(pid) or nil
@@ -368,7 +429,9 @@ function M.tick()
 end
 
 -- combat 命中回调：结算伤害，返回剩余气血（0 = 死亡）；非敌方实体返回 nil。
-function M.hit(id, damage)
+-- meta（M25）：{ hitstun, knockback, dir_x, dir_y } —— 命中后的硬直与击退，
+-- 按敌人自身的抵抗系数（data/enemies.lua，缺省取 data/combat.lua）打折应用。
+function M.hit(id, damage, meta)
   for _, actor in pairs(actors) do
     if actor.id and actor.id == id and entity.is_alive(actor.id) and not actor.dead then
       local hp = math.max(0, (actor.hp or 0) - (tonumber(damage) or 0))
@@ -377,15 +440,37 @@ function M.hit(id, damage)
       if hp <= 0 then
         actor.dead = true
         actor.state = "dead"
+        actor.stun_frames = 0
+        actor.last_knockback = nil
         -- 死亡表现：先播倒地条带，再移除实体（没有动画时直接移除）
         if actor.animated then
           pcall(animation.set, id, "faint_" .. (actor.facing or "s"))
         end
         despawn(actor)
-      elseif actor.animated then
-        -- 受击：切一次 hurt_<dir>（非循环，播完由 step_path/chase 切回 idle/walk）
-        actor.facing = actor.facing or "s"
-        pcall(animation.set, id, "hurt_" .. actor.facing)
+        -- 击杀掉落（M28）：铜钱当场入账、物品进"当日待入库"袋（data/drops.lua）。
+        -- 没有掉落记录的敌人（训练木人）不写任何状态；掉落失败不能影响战斗结算。
+        local enemy_id = actor.enemy and actor.enemy.persist_id or nil
+        if enemy_id then
+          pcall(loot.on_kill, enemy_id)
+        end
+      else
+        local reaction = type(meta) == "table" and meta or {}
+        local stun = math.floor((tonumber(reaction.hitstun) or 0)
+          * (1 - resist_of(actor, "hitstun_resist")))
+        actor.stun_frames = math.max(actor.stun_frames or 0, stun)
+        local pushed, blocked = push_actor(actor,
+          (tonumber(reaction.knockback) or 0) * (1 - resist_of(actor, "knockback_resist")),
+          tonumber(reaction.dir_x) or 0, tonumber(reaction.dir_y) or 0)
+        actor.last_knockback = { distance = pushed, blocked = blocked }
+        -- 被打断：撤销当前寻路，硬直结束后重新决策（否则会沿旧路径滑回去）。
+        actor.path = nil
+        actor.path_index = nil
+        actor.target_cell = nil
+        if actor.animated then
+          -- 受击：切一次 hurt_<dir>（非循环，播完由 step_path/chase 切回 idle/walk）
+          actor.facing = actor.facing or "s"
+          pcall(animation.set, id, "hurt_" .. actor.facing)
+        end
       end
       return hp
     end
@@ -425,6 +510,8 @@ function M.reset()
     actor.cell = { x = enemy.home.x, y = enemy.home.y }
     actor.pending_pos = nil
     actor.next_attack = 0
+    actor.stun_frames = 0
+    actor.last_knockback = nil
     actor.path = nil
     actor.path_index = nil
     actor.target_cell = nil
@@ -465,6 +552,12 @@ function M.query(persist_id)
     state = actor.state,
     cell_x = cell and cell.x or nil,
     cell_y = cell and cell.y or nil,
+    -- 受击反馈（M25）：剩余硬直步数与最近一次被击退的位移。
+    stun_frames = actor.stun_frames or 0,
+    last_knockback = actor.last_knockback and actor.last_knockback.distance or 0,
+    knockback_blocked = actor.last_knockback ~= nil and actor.last_knockback.blocked == true,
+    -- 命中会撤销当前寻路（path_active=false 表示"追击被打断"）。
+    path_active = actor.path ~= nil,
     live = actor.id ~= nil and entity.is_alive(actor.id) == true
   }
 end
@@ -520,6 +613,8 @@ function M.restore(data)
         actor.path_index = nil
         actor.target_cell = nil
         actor.next_attack = 0
+        actor.stun_frames = 0
+        actor.last_knockback = nil
         actor.pending_pos = nil
         if type(entry.cell) == "table" then
           actor.cell = { x = entry.cell.x, y = entry.cell.y }

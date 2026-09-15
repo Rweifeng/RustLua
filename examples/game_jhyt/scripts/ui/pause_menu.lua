@@ -23,6 +23,8 @@ local audio = require("core.audio")
 local nav = require("ui.panel_nav")
 -- M20-09：键鼠/手柄两套操作说明（本模块不 require ui.input，避免 require 环）。
 local hints = require("ui.hints")
+-- M30：面板文字按真实字宽裁剪（设置项/消息/提示行）。
+local ui_text = require("ui.ui_text")
 
 -- 底部提示：按当前设备二选一，按键名从**当前绑定**推导（改键后自动同步）。
 local function hint_line()
@@ -335,21 +337,23 @@ end
 function clear_ui()
   ui.clear("pse:box")
   for _, id in ipairs({ "pse:title", "pse:msg", "pse:hint" }) do
-    ui.hide(id)
+    ui_text.hide("pse", id)
   end
   for i = 1, #ITEMS do
-    ui.hide("pse:row" .. i)
+    ui_text.hide("pse", "pse:row" .. i)
   end
+  ui_text.reset("pse")
 end
 
 function clear_settings_ui()
   ui.clear("pse:s:box")
   for _, id in ipairs({ "pse:s:title", "pse:s:subtitle", "pse:s:msg", "pse:s:hint" }) do
-    ui.hide(id)
+    ui_text.hide("pse", id)
   end
   for i = 1, #SETTINGS_ITEMS do
-    ui.hide("pse:s:row" .. i)
+    ui_text.hide("pse", "pse:s:row" .. i)
   end
+  ui_text.reset("pse")
 end
 
 function M.select(index)
@@ -398,8 +402,12 @@ function M.render()
     return M.render_settings()
   end
   local x, y, w, h = PANEL.x, PANEL.y, PANEL.w, PANEL.h
+  -- 排版预算（M30）：行从 x+44 起（缩进留给焦点符），消息/提示从 x+24 起。
+  local ROW_W = w - 44 - 24
+  local MSG_W = w - 48
+  ui_text.begin("pse")
   ui.panel("pse:box", x, y, w, h, 0.08, 0.09, 0.12, 0.96)
-  ui.text_at("pse:title", x + 24, y + 18, "暂停", 1.0, 24.0)
+  ui_text.draw("pse", "pse:title", x + 24, y + 18, 24.0, w - 48, "暂停")
   local rows = M.rows()
   for i = 1, #ITEMS do
     local id = "pse:row" .. i
@@ -410,10 +418,10 @@ function M.render()
     else
       label = "  " .. label
     end
-    ui.text_at(id, x + 44, y + 72 + (i - 1) * ROW_H, label, 1.0, 18.0)
+    ui_text.draw("pse", id, x + 44, y + 72 + (i - 1) * ROW_H, 18.0, ROW_W, label)
   end
-  ui.text_at("pse:msg", x + 24, y + h - 62, tostring(ui_state.msg or ""), 1.0, 15.0)
-  ui.text_at("pse:hint", x + 24, y + h - 32, hint_line(), 1.0, 14.0)
+  ui_text.draw("pse", "pse:msg", x + 24, y + h - 62, 15.0, MSG_W, tostring(ui_state.msg or ""))
+  ui_text.draw("pse", "pse:hint", x + 24, y + h - 32, 14.0, MSG_W, hint_line())
   return true
 end
 
@@ -423,17 +431,13 @@ function M.render_settings()
     return false
   end
   local x, y, w, h = PANEL.x, PANEL.y, PANEL.w, PANEL.h
+  local ROW_W = w - 44 - 24
+  local MSG_W = w - 48
   sync_settings_focus()
+  ui_text.begin("pse")
   ui.panel("pse:s:box", x, y, w, h, 0.08, 0.09, 0.12, 0.96)
-  ui.text_at("pse:s:title", x + 24, y + 18, "设置", 1.0, 24.0)
-  ui.text_at(
-    "pse:s:subtitle",
-    x + w - 220,
-    y + 26,
-    "音量分组",
-    1.0,
-    15.0
-  )
+  ui_text.draw("pse", "pse:s:title", x + 24, y + 18, 24.0, w - 48, "设置")
+  ui_text.draw_exact("pse", "pse:s:subtitle", x + w - 220, y + 26, 15.0, 196.0, "音量分组")
   local rows = M.settings_rows()
   for i = 1, #SETTINGS_ITEMS do
     local id = "pse:s:row" .. i
@@ -444,17 +448,10 @@ function M.render_settings()
     else
       label = "  " .. label
     end
-    ui.text_at(id, x + 44, y + 72 + (i - 1) * ROW_H, label, 1.0, 18.0)
+    ui_text.draw("pse", id, x + 44, y + 72 + (i - 1) * ROW_H, 18.0, ROW_W, label)
   end
-  ui.text_at("pse:s:msg", x + 24, y + h - 62, tostring(settings_state.msg or ""), 1.0, 15.0)
-  ui.text_at(
-    "pse:s:hint",
-    x + 24,
-    y + h - 32,
-    settings_hint_line(),
-    1.0,
-    14.0
-  )
+  ui_text.draw("pse", "pse:s:msg", x + 24, y + h - 62, 15.0, MSG_W, tostring(settings_state.msg or ""))
+  ui_text.draw("pse", "pse:s:hint", x + 24, y + h - 32, 14.0, MSG_W, settings_hint_line())
   return true
 end
 

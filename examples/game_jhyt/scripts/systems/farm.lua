@@ -482,6 +482,19 @@ function M.restore(data)
   redraw_all()
 end
 
+-- 新档复位（P0：新游戏不得继承上一局农田）。与 building/crafting 的 reset 同构：
+-- 清空内存地块 + 主动写一份空快照到 map.state，再重绘 overlay（把上一局画在
+-- FarmGrid 上的瓦片抹回空）。
+--
+-- 此前 `farm` 没有 reset，「开始新游戏」只复位了 state/quest/... 等模块，农田
+-- 明细留在 map.state("farm_plots") 里 → 同进程内「继续 → 玩 → 返回标题 →
+-- 开始新游戏」会读回旧档的开垦地块、作物与浇水天数。
+function M.reset()
+  plots = {}
+  map.state(STATE_KEY, {})
+  redraw_all()
+end
+
 -- 只读查询：该格是否已有开垦/作物记录（M18-02 建筑占用判定用；不改任何状态）。
 function M.is_plot(cx, cy)
   local p = plots[plot_key(cx, cy)]

@@ -14,6 +14,9 @@ local SNAPSHOT_VERSION = 2
 local providers = {}
 local registration_order = {}
 local last_summary = nil
+-- 最近一次读档的结果（`{ ok, status, reason }`，status ∈ loaded/missing/corrupt/error）：
+-- headless 验收、暂停菜单与诊断面板据此区分"没有存档"与"存档已损坏"。
+local last_load = nil
 
 local function clone(value, seen)
   if type(value) ~= "table" then
@@ -36,19 +39,78 @@ local function log_failure(operation, reason)
 end
 
 -- 同名重复注册是幂等的；只有提供器实现发生变化时才替换。
-function M.register(name, capture, restore)
+-- `validate(data)` 可选：restore 前的**纯只读**预校验（不写任何状态），
+-- 返回 `ok, reason`（ok 为 false 即判定该 provider 的数据不可用）。
+function M.register(name, capture, restore, validate)
   if type(name) ~= "string" or name == "" or type(capture) ~= "function" then
     return false, "invalid provider registration"
   end
+  if validate ~= nil and type(validate) ~= "function" then
+    return false, "provider validate must be a function"
+  end
   local previous = providers[name]
-  if previous and previous.capture == capture and previous.restore == restore then
+  if previous and previous.capture == capture and previous.restore == restore and previous.validate == validate then
     return true
   end
   if not previous then
     registration_order[#registration_order + 1] = name
   end
-  providers[name] = { capture = capture, restore = restore }
+  providers[name] = { capture = capture, restore = restore, validate = validate }
   return true
+end
+
+-- 取某个 provider 在快照里的数据：优先 providers[name]，回退顶层同名字段
+-- （v1 时代顶层直写），两者都没有返回 nil（表示"该 provider 不入档"）。
+local function provider_data(snapshot, name)
+  if type(snapshot.providers) == "table" and snapshot.providers[name] ~= nil then
+    return snapshot.providers[name]
+  end
+  return snapshot[name]
+end
+
+-- v1 → v2 迁移：v1 快照没有 providers 包装，各 provider 数据直接写在顶层。
+-- 迁移只搬运**已注册 provider** 的字段，不做猜测；不做迁移而直接拒绝会让每个
+-- 发布版本都作废玩家存档。
+local function migrate(snapshot)
+  local migrated = {
+    version = SNAPSHOT_VERSION,
+    format = snapshot.format or "jhyt.snapshot",
+    providers = {}
+  }
+  local moved = 0
+  for _, name in ipairs(registration_order) do
+    local data = provider_data(snapshot, name)
+    if data ~= nil then
+      migrated.providers[name] = clone(data)
+      migrated[name] = migrated.providers[name]
+      moved = moved + 1
+    end
+  end
+  log.info("[save] migrated snapshot v" .. tostring(snapshot.version) .. " -> v" .. tostring(SNAPSHOT_VERSION)
+    .. " (" .. tostring(moved) .. " provider(s))")
+  return migrated
+end
+
+-- 逐 provider 应用快照，**收集**全部失败而不是遇到第一个就返回：中途 abort
+-- 会让内存停在半恢复状态（前面的 provider 已写入、后面的完全没跑）。
+local function apply_providers(snapshot, failures)
+  for _, name in ipairs(registration_order) do
+    local provider = providers[name]
+    if provider and provider.restore then
+      local data = provider_data(snapshot, name)
+      if data ~= nil then
+        local ok, reason, detail = pcall(provider.restore, clone(data))
+        if not ok then
+          failures[#failures + 1] = name .. ": " .. tostring(reason)
+        elseif reason == false then
+          -- provider 显式返回 `false, reason`（如 player.restore 找不到实体）
+          -- 也算失败：静默吞掉它会让玩家坐标/装备无声错位。
+          failures[#failures + 1] = name .. ": " .. tostring(detail or "restore rejected")
+        end
+      end
+    end
+  end
+  return failures
 end
 
 function M.capture()
@@ -95,11 +157,15 @@ function M.restore(snapshot)
     return false, "snapshot is not a table"
   end
   local version = tonumber(snapshot.version) or 0
-  if version == 1 then
-    return false, "legacy snapshot version 1 is explicitly rejected; start a new game"
+  if version == 0 then
+    return false, "snapshot has no version"
   end
-  if version ~= SNAPSHOT_VERSION then
+  if version > SNAPSHOT_VERSION then
+    -- 更高版本 = 更新引擎写的档：明确拒绝，绝不用旧解析器猜新格式。
     return false, "unsupported snapshot version: " .. tostring(version)
+  end
+  if version < SNAPSHOT_VERSION then
+    snapshot = migrate(snapshot)
   end
   local scene_data = snapshot.scene
   if type(scene_data) ~= "table" or type(scene_data.name) ~= "string" then
@@ -108,16 +174,44 @@ function M.restore(snapshot)
   if scene.reload() ~= scene_data.name then
     return false, "saved scene is not the instantiated scene: " .. scene_data.name
   end
+
+  -- ① 预校验：只读检查（provider 可选提供 validate），任何一条不通过就整体不恢复。
+  local rejected = {}
   for _, name in ipairs(registration_order) do
     local provider = providers[name]
-    local data = snapshot.providers and snapshot.providers[name] or snapshot[name]
-    if data ~= nil and provider.restore then
-      local ok, reason = pcall(provider.restore, clone(data))
-      if not ok then
-        return false, "restore failed for provider " .. name .. ": " .. tostring(reason)
+    if provider and provider.validate then
+      local data = provider_data(snapshot, name)
+      if data ~= nil then
+        local ok, reason = pcall(provider.validate, data)
+        if not ok then
+          rejected[#rejected + 1] = name .. ": " .. tostring(reason)
+        elseif reason == false then
+          rejected[#rejected + 1] = name .. ": " .. "data rejected by validate"
+        end
       end
     end
   end
+  if #rejected > 0 then
+    return false, "snapshot rejected before restore: " .. table.concat(rejected, "; ")
+  end
+
+  -- ② 记录当前状态，作为应用失败时的回滚点。捕获失败则放弃读档（宁可保持
+  -- 现状也不要赌一个无法回滚的部分恢复）。
+  local rollback, rollback_reason = M.capture()
+  if not rollback then
+    return false, "cannot snapshot current state before restore: " .. tostring(rollback_reason)
+  end
+
+  -- ③ 全部应用；失败则回滚到 ② 的快照，绝不留下半恢复的内存状态。
+  local failures = apply_providers(snapshot, {})
+  if #failures > 0 then
+    local rollback_failures = apply_providers(rollback, {})
+    if #rollback_failures > 0 then
+      log_failure("restore", "rollback incomplete: " .. table.concat(rollback_failures, "; "))
+    end
+    return false, "restore failed (" .. table.concat(failures, "; ") .. ")"
+  end
+
   last_summary = M.summary(snapshot)
   return true
 end
@@ -148,19 +242,40 @@ end
 -- 的 snapshot；不做任何 restore。门面 BtnContinue 用它决定读档后切到哪张地图
 -- （M17-01 多地图继续）；随后场景 on_create 的 boot 阶段会再调 M.load 完成恢复。
 function M.load_raw()
-  local loaded, load_reason = pcall(save.load)
-  if not loaded or not load_reason then
-    log_failure("load", loaded and "load returned false" or load_reason)
-    return nil, load_reason
-  end
-  local ok, snapshot = pcall(save.blob_read, SAVE_KEY)
+  -- save.load 返回 (ok, reason)：reason ∈ {"missing", "no_save_path", "corrupt: ..."}。
+  -- 旧代码只把 pcall 的第一个返回值当结果，"存档不存在"和"存档已损坏"因此无法
+  -- 区分——玩家进度丢了和从没存过，在 UI 与诊断里必须给出不同说法。
+  local ok, loaded, reason = pcall(save.load)
   if not ok then
+    log_failure("load", loaded)
+    last_load = { ok = false, status = "error", reason = tostring(loaded) }
+    return nil, "load error: " .. tostring(loaded)
+  end
+  if not loaded then
+    local text = tostring(reason)
+    if text == "missing" then
+      log.info("[save] 没有存档文件（按首次进入处理）")
+      last_load = { ok = false, status = "missing", reason = text }
+    elseif text:sub(1, 8) == "corrupt:" then
+      log.error("[save] 存档已损坏，原文件保留不覆盖：" .. text)
+      last_load = { ok = false, status = "corrupt", reason = text }
+    else
+      log.warn("[save] 读档失败：" .. text)
+      last_load = { ok = false, status = "error", reason = text }
+    end
+    return nil, reason
+  end
+  local read_ok, snapshot = pcall(save.blob_read, SAVE_KEY)
+  if not read_ok then
     log_failure("read", snapshot)
+    last_load = { ok = false, status = "error", reason = tostring(snapshot) }
     return nil, snapshot
   end
   if type(snapshot) ~= "table" then
+    last_load = { ok = false, status = "error", reason = "snapshot is missing" }
     return nil, "snapshot is missing"
   end
+  last_load = { ok = true, status = "loaded", reason = nil }
   return snapshot, nil
 end
 
@@ -196,6 +311,20 @@ end
 
 function M.last_summary()
   return clone(last_summary)
+end
+
+-- 最近一次读档状态（只读）；`status` 用于把「没有存档」与「存档损坏」分开显示。
+function M.last_load_status()
+  return clone(last_load)
+end
+
+-- 已注册 provider 名单（只读，按注册顺序）：诊断面板与验收用。
+function M.provider_names()
+  local names = {}
+  for index, name in ipairs(registration_order) do
+    names[index] = name
+  end
+  return names
 end
 
 -- 纯 Lua 长跑入口：不伪称替代真实引擎读档，仅验证快照在 30 天/100 次恢复中的稳定性。

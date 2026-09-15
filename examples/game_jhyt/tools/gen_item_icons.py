@@ -8,15 +8,19 @@
 
 产出：`assets/art/items/<id>.png`（32×32）+ `assets/art/items/_preview.png`（3× 预览 + 标签）
 
-覆盖范围（对应批次 1 的 16 个图标）：
+覆盖范围（批次 1 的 16 个图标 + M23 补齐 2 个）：
 
   作物产物    rice 稻米 / lingzhi 灵芝 / tea_leaf 春茶
   种子        seed_rice 稻种 / seed_lingzhi 灵芝菌种
-  药剂        heal_pill 回复药
+  药剂        heal_pill 回复药 / herb_tonic 行气散
   采集物      herb 药草 / wild_fruit 野果 / lotus_seed 莲子 / reed 芦苇 / wood 柴薪 / ore 矿石
+  材料        timber 木料
   工具武器    hoe 锄头 / axe 斧 / pick 镐 / blade 柴刀
 
 命名规则：文件名 = `data/items.lua` 的物件 id（后续加物品只需在本文件补一个画法）。
+**清单必须覆盖 `data/items.lua` 的每个 `icon`**：M23 之前 `herb_tonic`（M18-04）
+与 `timber`（M18-02）两个物品的图标路径指向不存在的文件，背包/商店只会显示缺图
+兜底；现在 `jhyt_m23_data_validation` 会逐个断言图标文件真实存在。
 图标内**不写文字**（docs/35 §5），数量/等级一律走 UiText 角标。
 
 依赖：Python 3 标准库 + pixel_kit.py。
@@ -348,6 +352,116 @@ def icon_blade():
     return cv
 
 
+def icon_timber():
+    """木料（M18-02 建筑升级材料）：三根方料叠放，与柴薪的圆木区分。"""
+    cv = Canvas(SIZE, SIZE)
+    for x0, x1, y0, y1 in ((5, 27, 20, 26), (8, 24, 12, 18), (11, 21, 4, 10)):
+        cv.rect(x0, y0, x1, y1, WOOD)
+        cv.hline(x0, x1, y0, WOOD_LIGHT)
+        cv.hline(x0, x1, y1, WOOD_DARK)
+        cv.vline(x0, y0, y1, WOOD_LIGHT)
+        cv.vline(x1, y0, y1, WOOD_DARK)
+        # 木纹：截面上的两三道短线，读起来是"刨过的方料"而不是圆木
+        mid = (x0 + x1) // 2
+        cv.hline(mid - 4, mid + 4, (y0 + y1) // 2, WOOD_MID)
+    cv.outline(INK)
+    return cv
+
+
+def icon_herb_tonic():
+    """行气散（M18-04 临时 Buff 药）：纸包 + 朱砂印 + 溢出的一撮药末。"""
+    cv = Canvas(SIZE, SIZE)
+    # 纸包主体（上窄下宽的折角袋）
+    cv.rect(9, 12, 23, 28, PAPER)
+    for index, x in enumerate(range(9, 24)):
+        cv.set(x, 11, PAPER_DIM if index % 2 == 0 else PAPER)
+    cv.hline(9, 23, 28, PAPER_DIM)
+    cv.vline(9, 12, 28, PAPER_DIM)
+    cv.vline(23, 12, 28, PAPER_DIM)
+    # 折口：两道斜压痕
+    cv.hline(11, 21, 15, PAPER_DIM)
+    cv.hline(12, 20, 17, PAPER_DIM)
+    # 朱砂印（不写字，docs/35 §5）
+    cv.rect(13, 20, 19, 25, CINNABAR)
+    cv.rect(14, 21, 18, 24, CINNABAR_LIGHT)
+    cv.set(15, 22, CINNABAR_DARK)
+    cv.set(17, 23, CINNABAR_DARK)
+    # 顶上一撮药末 + 一片草叶
+    cv.set(15, 8, BAMBOO_DARK)
+    cv.set(16, 7, BAMBOO)
+    cv.set(17, 8, BAMBOO_LIGHT)
+    cv.set(14, 9, BAMBOO_DARK)
+    cv.hline(13, 19, 10, BAMBOO_DARK)
+    cv.hline(14, 18, 9, BAMBOO)
+    cv.outline(INK)
+    return cv
+
+
+def icon_wolf_pelt():
+    """狼皮（M28 掉落物）：摊开的整皮，四爪 + 尾部，灰白毛边。"""
+    cv = Canvas(SIZE, SIZE)
+    fur = rgb("#8C8F98")
+    fur_light = rgb("#B9BCC4")
+    fur_dark = rgb("#5E6169")
+    # 皮张主体：上窄下宽的梯形
+    for y in range(7, 27):
+        t = (y - 7) / 19.0
+        half = int(round(5 + 8 * t))
+        cv.hline(16 - half, 16 + half, y, fur)
+    cv.hline(11, 21, 8, fur_light)
+    # 四爪：左右各两只小凸起
+    for x, y in ((7, 14), (25, 14), (8, 23), (24, 23)):
+        blob(cv, x, y, 3, 2, fur_dark)
+    # 尾部：右下伸出的一截
+    stick(cv, 22, 24, 28, 27, fur_dark, 2)
+    # 毛边高光
+    for x in range(9, 24, 3):
+        cv.set(x, 9, fur_light)
+        cv.set(x + 1, 26, fur_dark)
+    cv.outline(INK)
+    return cv
+
+
+def icon_boar_meat():
+    """兽肉（M28 掉落物）：带骨的一块鲜肉，白筋膜收边。"""
+    cv = Canvas(SIZE, SIZE)
+    meat = rgb("#B4544A")
+    meat_light = rgb("#D2796B")
+    meat_dark = rgb("#7E3229")
+    blob(cv, 17, 19, 10, 8, meat)
+    cv.hline(9, 25, 13, meat_light)
+    blob(cv, 19, 23, 6, 4, meat_dark)
+    # 骨头：从左上斜插出来
+    stick(cv, 8, 9, 17, 16, PAPER, 3)
+    blob(cv, 7, 8, 3, 2, PAPER)
+    blob(cv, 9, 6, 3, 2, PAPER)
+    # 筋膜纹理
+    for y in (16, 19, 22):
+        cv.hline(10, 24, y, meat_light)
+    cv.outline(INK)
+    return cv
+
+
+def icon_ape_core():
+    """山魈内丹（M28 Boss 掉落）：青碧丹丸 + 灵气环，主线物品。"""
+    cv = Canvas(SIZE, SIZE)
+    core = rgb("#6FA8A0")
+    core_light = rgb("#A7D6CE")
+    core_dark = rgb("#3C6B66")
+    blob(cv, 16, 17, 10, 10, core_dark)
+    blob(cv, 16, 17, 8, 8, core)
+    blob(cv, 13, 14, 4, 3, core_light)
+    # 灵气环：上下两道弧
+    for x in range(6, 27):
+        cv.set(x, 5 + abs(x - 16) // 2, core_light)
+    for x in range(8, 25):
+        cv.set(x, 29 - abs(x - 16) // 3, core_dark)
+    cv.set(9, 22, core_light)
+    cv.set(23, 12, core_light)
+    cv.outline(INK)
+    return cv
+
+
 # ---------------------------------------------------------------------------
 # 清单
 # ---------------------------------------------------------------------------
@@ -359,12 +473,17 @@ ICONS = [
     ("seed_rice", icon_seed_rice, "稻种 / SEED"),
     ("seed_lingzhi", icon_seed_lingzhi, "菌种 / SEED"),
     ("heal_pill", icon_heal_pill, "回复药 / MEDICINE"),
+    ("herb_tonic", icon_herb_tonic, "行气散 / MEDICINE"),
     ("herb", icon_herb, "药草 / GATHER"),
     ("wild_fruit", icon_wild_fruit, "野果 / GATHER"),
     ("lotus_seed", icon_lotus_seed, "莲子 / GATHER"),
     ("reed", icon_reed, "芦苇 / GATHER"),
     ("wood", icon_wood, "柴薪 / GATHER"),
+    ("timber", icon_timber, "木料 / MATERIAL"),
     ("ore", icon_ore, "矿石 / GATHER"),
+    ("wolf_pelt", icon_wolf_pelt, "狼皮 / DROP"),
+    ("boar_meat", icon_boar_meat, "兽肉 / DROP"),
+    ("ape_core", icon_ape_core, "山魈内丹 / DROP"),
     ("hoe", icon_hoe, "锄头 / TOOL"),
     ("axe", icon_axe, "斧 / TOOL"),
     ("pick", icon_pick, "镐 / TOOL"),

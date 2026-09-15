@@ -16,6 +16,8 @@
 --   * 手柄 B / Esc（cancel）在标题界面等于「选中退出江湖」。
 local nav = require("ui.panel_nav")
 local hints = require("ui.hints")
+-- M30：文字统一走 `ui.ui_text`（裁剪 + 登记，验收遍历登记表逐条量宽）。
+local ui_text = require("ui.ui_text")
 -- `core.audio` 是叶子模块（只依赖 core.save_manager），顶层 require 不会成环；
 -- 选中/确认/取消反馈音都经它（UI 总线）。
 local audio = require("core.audio")
@@ -215,6 +217,7 @@ end
 function M.render()
   local index = M.index()
   local anim = M.anim()
+  ui_text.begin("title")
   for position, option in ipairs(OPTIONS) do
     local x1, y1, x2, y2 = option.panel[1], option.panel[2], option.panel[3], option.panel[4]
     if position == index then
@@ -236,14 +239,14 @@ function M.render()
       -- 选中箭头随弹跳轻微左移，与高亮框一起「推出来」；`ARROW_GAP` 让箭头落在
       -- 场景标签左边缘之外，与文字互不重叠。
       local arrow_x = option.label[1] - ARROW_GAP - 3.0 * anim.ease
-      ui.text_at("title:arrow:" .. option.id, arrow_x, option.label[2], ARROW, 1.0, 24.0)
+      ui_text.draw_exact("title", "title:arrow:" .. option.id, arrow_x, option.label[2], 24.0, 48.0, ARROW)
     else
       ui.hide("title:hl:" .. option.id)
       ui.hide("title:arrow:" .. option.id)
       ui.hide("title:label:" .. option.id)
     end
   end
-  ui.text_at("title:hint", 16, 8, M.hint_line(), 1.0, 13.0)
+  ui_text.draw("title", "title:hint", 16, 8, 13.0, 1280 - 32, M.hint_line())
   return true
 end
 

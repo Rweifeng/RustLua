@@ -25,6 +25,8 @@ local save_manager = require("core.save_manager")
 local farm = require("systems.farm")
 local calendar = require("world.calendar")
 local weather = require("world.weather")
+-- 季节可视化（M29 / 阶段五 P1）：按当前季节换地表贴图（四季 tileset 终于在画面上生效）。
+local season_visual = require("world.season_visual")
 local maps = require("data.maps")
 local map_manager = require("world.map_manager")
 local npcs = require("data.npcs")
@@ -58,6 +60,14 @@ local audio = require("core.audio")
 local hud = require("ui.hud")
 local tutorial = require("ui.tutorial")
 local tutorial_data = require("data.tutorial")
+-- 七日目标（M27）：目标表 + 运行时（日结算挂在 on_day_start，进度随 state.vars）
+local goals = require("systems.goals")
+local goals_data = require("data.goals")
+-- 掉落与战败（M28 / 计划 G3）：loot 管"击杀掉落 + 当日待入库"（跨天入库），
+-- death 管战败结算（扣未入库掉落 50% + 铜钱 5%、回山庄、状态回满）。
+local loot = require("systems.loot")
+local death = require("systems.death")
+local drops_data = require("data.drops")
 local inventory_ui = require("ui.inventory_ui")
 local quest_ui = require("ui.quest_ui")
 local pause_menu = require("ui.pause_menu")
@@ -152,6 +162,13 @@ local function validate_content()
 end
 
 local function new_game()
+  -- P0：先丢弃**引擎侧**持久键。`__map` / `__map:spawn:*` / `__mapstate:*` /
+  -- `__blob:*` 不属于任何 Lua provider，`state.reset()` 之类只清 Lua 表，
+  -- 残留会让新档读回上一局的地图、农田、建筑、制作与采集记录
+  -- （同进程内「继续 → 玩 → 返回标题 → 开始新游戏」即可复现）。
+  -- 顺序固定：先清引擎键，再让各模块写自己的空快照（否则会被这次清理抹掉）。
+  save.clear()
+  map.state_clear()
   state.reset()
   quest.reset()
   dialogue.reset()
@@ -164,13 +181,29 @@ local function new_game()
   -- 建筑占用与制作任务清零（M18-02）。
   building.reset()
   crafting.reset()
+  -- 农田与采集（P0 补齐）：farm 此前**没有** reset，gather.reset 已实现却从未被
+  -- 调用 → 新档会继承上一局的开垦地块/作物/浇水天数与已采记录。
+  farm.reset()
+  require("systems.gather").reset()
+  -- 背包：重新发放新档初始物品（灵芝菌种 8 / 稻种 4 / 稻米 2 / 水壶 1 + 锄头装备），
+  -- 避免读档半途失败后残留上一局的物品与装备。
+  inventory.setup()
   -- UI/音频/引导（M19-02）：面板与 HUD 清空、BGM 允许重起、引导从第 0 步开始。
   hud.reset()
   inventory_ui.reset()
   quest_ui.reset()
   pause_menu.reset()
+  title_menu.reset()
   audio.reset()
   tutorial.reset()
+  -- 七日目标（M27）：新档回到第 1 天，清空进度/结算/里程碑锚点。
+  goals.reset()
+  -- 掉落与战败（M28）：清空待入库袋与战败明细，随机序列回默认种子。
+  loot.reset()
+  death.reset()
+  -- 天气与季节表现（M29）：天气抽签种子回默认、季节换图计数清零（贴图由进图时重设）。
+  weather.reset()
+  season_visual.reset()
   audio.init()
   clock.set(1, 0)
 end
@@ -194,6 +227,8 @@ local function enter_playable_map(map_id)
   map_manager.ensure_exits(map_id)
   calendar.sync()
   weather.current()
+  -- 季节地表（M29）：进图时按当前季节换地表贴图（未登记的地图保持基础图）。
+  season_visual.refresh(map_id)
   -- NPC 日程：绑定本图 GroundMap 并按当前时间/天气落位（须在 weather.current 之后）。
   npc.on_enter(map_id)
   -- 敌人：绑定本图 GroundMap 并生成/落位（敌人只在演武场灰盒注册，M18-01）。
@@ -215,6 +250,8 @@ local function enter_playable_map(map_id)
   audio.play_bgm(map_id)
   -- 新手引导（M19-02）：进入地图事件（goto_village 步骤）。
   tutorial.on_enter(map_id)
+  -- 七日目标（M27）：enter_map 类目标的进图事件（与 tutorial 同一套接线）。
+  goals.on_enter(map_id)
   clock.set_rate(2)
 end
 
@@ -258,6 +295,13 @@ local function boot_game(map_id)
       entry = "new"
       new_game()
       enter_playable_map(map_id)
+    else
+      -- M29 顺序修正：进图发生在读档**之前**（那时时钟还是新 VM 的第 1 天），
+      -- 读档会把日期/季节与天气变量改写成存档里的值 ⇒ 必须按恢复后的日期重算
+      -- 一次天气与季节地表。否则「第 30 天的档」会显示春天贴图、天气也停在第 1 天
+      -- （此前季节只影响 HUD 文字，所以这个顺序问题看不出来；地表换图让它显形）。
+      weather.sync()
+      season_visual.refresh(map_id)
     end
   else
     new_game()
@@ -435,8 +479,11 @@ function on_day_start()
     farm.settle_day()
   end
   calendar.sync()
-  weather.current()
-  state.energy = 100
+  -- 天气（M29）：跨天重抽一次（确定性：同档同天同结果），并据此刷新季节地表
+  -- ——第 29/57/85 天季节跳变时，进图时换过的地表要跟着换。
+  weather.on_day_start()
+  season_visual.refresh(current)
+  state.energy = inventory.max_energy()
   state.labor_minutes = 0
   -- 临时 Buff 按游戏日过期（M18-04）：days 递减，归 0 移除。
   stats.on_day_start()
@@ -449,6 +496,14 @@ function on_day_start()
   end)
   -- 新手引导（M19-02）：睡觉步骤在跨天事件里推进。
   tutorial.on_day_start()
+  -- 掉落入库（M28）：昨天/今天打到的猎物在睡前搬回仓库（"未入库"只到跨天为止），
+  -- 必须在目标结算之前入账，否则"炼药/交付"类目标会看到上一帧的旧背包。
+  local banked = loot.bank()
+  if #banked > 0 then
+    log.info("入库战利品：" .. loot.pending_text_of(banked))
+  end
+  -- 七日目标（M27）：日结算 + 推进目标日（奖励与结算结果写 state.vars，随存档）。
+  goals.on_day_start()
   log.info("新的一天：" .. tostring(clock.now().day) .. " @" .. tostring(current))
   save_manager.save()
 end

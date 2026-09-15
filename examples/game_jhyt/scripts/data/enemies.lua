@@ -18,6 +18,9 @@
 --   attack_range    近战攻击距离（世界单位；0 = 不攻击）
 --   attack_cooldown 两次攻击最小间隔（固定步数）
 --   skill           攻击招式 id（引用 data/skills.lua；hitbox 形状/窗口取自招式）
+--   knockback_resist 可选，0..1：被击退距离的抵抗系数（1 = 完全不动；默认取
+--                   data/combat.lua 的 enemy.knockback_resist）
+--   hitstun_resist   可选，0..1：被硬直步数的抵抗系数（1 = 完全不打断；同上默认）
 --
 -- 表顺序无关；enemy.lua 按 persist_id 稳定排序遍历。
 local M = {}
@@ -31,6 +34,10 @@ M.enemies = {
     persist_id = "enemy_dummy",
     map = "combat_arena",
     home = { x = 14, y = 5 },
+    -- art 与 sprite 指向同一套贴图（static_<方向>.png），art 额外挂上序列帧；
+    -- M23 起 art 引用由 data/registry_check.lua 交叉校验（"生成了美术但没接线"
+    -- 会被加载期校验挡住）。
+    art = "training_dummy",
     sprite = "texture=assets/art/enemies/training_dummy/static_s.png;size=32x32;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
     hp = 30,
     speed = 0,
@@ -38,7 +45,11 @@ M.enemies = {
     aggro_radius = 0,
     attack_range = 0,
     attack_cooldown = 0,
-    skill = "strike"
+    skill = "strike",
+    -- 木桩钉在地上：击退/硬直全免疫（M25）。练功房的价值就是"打它它不动"，
+    -- 否则玩家会被自己的普攻推着满场追木人。
+    knockback_resist = 1,
+    hitstun_resist = 1
   },
   -- 演武场：会追击与攻击的灰狼（A* 追击/受击/战败验收对象）。
   {
@@ -46,6 +57,7 @@ M.enemies = {
     persist_id = "enemy_wolf",
     map = "combat_arena",
     home = { x = 2, y = 9 },
+    art = "gray_wolf",
     sprite = "texture=assets/art/enemies/gray_wolf/static_s.png;size=32x32;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
     hp = 20,
     speed = 64,
@@ -209,6 +221,14 @@ function M.validate_all()
       end
       if type(enemy.skill) ~= "string" or not skills.get(enemy.skill) then
         issues[#issues + 1] = path .. ".skill: unknown skill " .. tostring(enemy.skill)
+      end
+      -- 受击抵抗（M25）：可选字段，但一旦写了就必须是 [0,1] 的数字，
+      -- 否则"木人不会被推走"这类手感约定会静默失效。
+      for _, field in ipairs({ "knockback_resist", "hitstun_resist" }) do
+        local value = enemy[field]
+        if value ~= nil and (type(value) ~= "number" or value < 0 or value > 1) then
+          issues[#issues + 1] = path .. "." .. field .. ": expected number in [0, 1]"
+        end
       end
     end
   end

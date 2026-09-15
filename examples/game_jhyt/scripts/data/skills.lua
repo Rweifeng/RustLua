@@ -14,6 +14,11 @@
 --   active      判定窗步数：窗口内每步扫描 hitbox，同一攻击对同一目标只结算一次
 --   range       hitbox 前伸长度（世界单位）
 --   width       hitbox 宽度（垂直于朝向，世界单位）
+--   hitstun     命中后目标的硬直步数（固定步；0 = 不打断）
+--   knockback   命中后目标被推开的距离（世界单位，沿"攻击者 → 目标"方向；0 = 不推）
+--
+-- 受击反馈的全局部分（玩家无敌帧、敌人默认抵抗）在 `data/combat.lua`；
+-- 本文件只描述"这一招打出去造成什么"。
 --
 -- 表顺序无关；skills.lua 按 id 读取。
 local M = {}
@@ -31,7 +36,9 @@ M.skills = {
     windup = 6,
     active = 12,
     range = 44,
-    width = 40
+    width = 40,
+    hitstun = 10,
+    knockback = 8
   },
   palm_gust = {
     name = "千风掌",
@@ -43,7 +50,9 @@ M.skills = {
     windup = 8,
     active = 12,
     range = 56,
-    width = 48
+    width = 48,
+    hitstun = 20,
+    knockback = 64
   }
 }
 
@@ -104,6 +113,16 @@ function M.validate_all()
         if type(skill[field]) ~= "number" or skill[field] <= 0 then
           issues[#issues + 1] = path .. "." .. field .. ": expected positive number"
         end
+      end
+      -- 受击反馈（M25）：两个字段都必填——缺字段会让"这一招有没有击退/硬直"
+      -- 变成隐式默认值，正是 `crop.yield` 那类静默兜底的翻版。
+      local hitstun = skill.hitstun
+      if type(hitstun) ~= "number" or hitstun < 0 or math.floor(hitstun) ~= hitstun then
+        issues[#issues + 1] = path .. ".hitstun: expected non-negative integer (fixed steps)"
+      end
+      local knockback = skill.knockback
+      if type(knockback) ~= "number" or knockback < 0 then
+        issues[#issues + 1] = path .. ".knockback: expected non-negative number (world units)"
       end
     end
   end

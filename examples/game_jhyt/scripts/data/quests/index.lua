@@ -6,6 +6,8 @@
 -- M19-01 追加：
 --   * 三个订单（order_herb / order_rice / order_pill）——可独立完成的买卖
 --   * 三段主线（mainline_arrival / mainline_orders / mainline_seal）
+-- M28 追加：
+--   * 山道猎获（order_hunt）——交付敌人掉落物（狼皮/兽肉），把战斗掉落接进经济
 -- 顺序即任务日志（L 面板）的展示顺序。
 return {
   version = 1,
@@ -15,6 +17,7 @@ return {
     "order_herb",
     "order_rice",
     "order_pill",
+    "order_hunt",
     "mainline_arrival",
     "mainline_orders",
     "mainline_seal"

@@ -22,14 +22,90 @@ local DEVICE_GAMEPAD = "gamepad"
 -- 强制说明设备（测试/调试用）；`nil` = 自动跟随引擎记录的「最近使用的设备」。
 local forced_device = nil
 
+-- M22/W1：键位文本是**物理键名**（`key:keye`、`key:digit1`、`key:arrowup`、`key:shiftleft`），
+-- 与 winit 的 `KeyCode` 变体名同名，所以这张表按**物理键名**索引。
+-- 首次改键前，命中字母/数字分支的键只有 W/A/S/D/J/K/G/T/Q/B/F/X/U/L/R/C/I/P 与 1..9
+-- （默认绑定表），其余条目是为「玩家改绑到任意键」准备的。
 local KEYBOARD_KEY_NAMES = {
   space = "空格",
   escape = "Esc",
-  up = "↑",
-  down = "↓",
-  left = "←",
-  right = "→",
+  enter = "回车",
+  tab = "Tab",
+  backspace = "退格",
+  arrowup = "↑",
+  arrowdown = "↓",
+  arrowleft = "←",
+  arrowright = "→",
+  shiftleft = "Shift 左",
+  shiftright = "Shift 右",
+  controlleft = "Ctrl 左",
+  controlright = "Ctrl 右",
+  altleft = "Alt 左",
+  altright = "Alt 右",
+  superleft = "Win 左",
+  superright = "Win 右",
+  minus = "-",
+  equal = "=",
+  semicolon = ";",
+  quote = "'",
+  comma = ",",
+  period = ".",
+  slash = "/",
+  backslash = "\\",
+  intlbackslash = "\\ (ISO)",
+  intlro = "ろ",
+  intlyen = "¥",
+  backquote = "`",
+  bracketleft = "[",
+  bracketright = "]",
+  capslock = "CapsLock",
+  numlock = "NumLock",
+  scrolllock = "ScrollLock",
+  printscreen = "PrtSc",
+  pause = "Pause",
+  contextmenu = "菜单键",
+  insert = "Ins",
+  delete = "Del",
+  home = "Home",
+  -- `end` 是 Lua 关键字，只能写成方括号形式（`delete`/`insert` 同理为求一致也保留裸名）。
+  ["end"] = "End",
+  pageup = "PgUp",
+  pagedown = "PgDn",
+  numpadadd = "小键盘 +",
+  numpadsubtract = "小键盘 -",
+  numpadmultiply = "小键盘 *",
+  numpaddivide = "小键盘 /",
+  numpaddecimal = "小键盘 .",
+  numpadcomma = "小键盘 ,",
+  numpadequal = "小键盘 =",
+  numpadenter = "小键盘回车",
 }
+
+-- 变体名 → 可读名的**推导规则**（不枚举 194 项）：`keye`→`E`、`digit1`→`1`、
+-- `f35`→`F35`、`numpad1`→`小键盘 1`、`lang1`→`Lang1`、`intlro`→`IntlRo`。
+-- 未识别的形状原样 `upper()`，宁可显示得笨也不显示错。
+local function derive_key_name(key)
+  local letter = key:match("^key([a-z])$")
+  if letter then
+    return letter:upper()
+  end
+  local digit = key:match("^digit([0-9])$")
+  if digit then
+    return digit
+  end
+  local numpad = key:match("^numpad([0-9])$")
+  if numpad then
+    return "小键盘 " .. numpad
+  end
+  local fn = key:match("^f([0-9]+)$")
+  if fn then
+    return "F" .. fn
+  end
+  if key:match("^lang[0-9]+$") or key:match("^intl") then
+    return key:sub(1, 1):upper() .. key:sub(2)
+  end
+  return key:upper()
+end
 
 -- 手柄按键中文名（与编辑器「项目设置 → 输入」面板的 `gamepad_button_name` 同源，
 -- 玩家在两边看到的是同一套名字）。
@@ -167,6 +243,49 @@ end
 
 -- ---------- 绑定 → 可读名字 ----------
 
+-- v1 的可读名（`key:up`/`key:space`/`key:esc`/单字符）只在**兼容入口**出现
+-- （旧设置文件、老脚本的 `input.rebind`），用来把老写法映射到同一套显示名。
+local V1_KEY_ALIASES = {
+  up = "arrowup",
+  down = "arrowdown",
+  left = "arrowleft",
+  right = "arrowright",
+  esc = "escape",
+  ["return"] = "enter",
+  ["+"] = "equal",
+  ["-"] = "minus",
+  ["="] = "equal",
+  [":"] = "semicolon",
+  [";"] = "semicolon",
+  ["'"] = "quote",
+  ['"'] = "quote",
+  [","] = "comma",
+  ["<"] = "comma",
+  ["."] = "period",
+  [">"] = "period",
+  ["/"] = "slash",
+  ["?"] = "slash",
+  ["\\"] = "backslash",
+  ["|"] = "backslash",
+  ["`"] = "backquote",
+  ["~"] = "backquote",
+  ["["] = "bracketleft",
+  ["{"] = "bracketleft",
+  ["]"] = "bracketright",
+  ["}"] = "bracketright",
+  ["_"] = "minus",
+  ["!"] = "digit1",
+  ["@"] = "digit2",
+  ["#"] = "digit3",
+  ["$"] = "digit4",
+  ["%"] = "digit5",
+  ["^"] = "digit6",
+  ["&"] = "digit7",
+  ["*"] = "digit8",
+  ["("] = "digit9",
+  [")"] = "digit0",
+}
+
 function M.binding_hint(text)
   local value = tostring(text or "")
   local key = value:match("^key:(.+)$")
@@ -174,11 +293,15 @@ function M.binding_hint(text)
     if KEYBOARD_KEY_NAMES[key] then
       return KEYBOARD_KEY_NAMES[key]
     end
-    local code = key:match("^other:(%d+)$")
-    if code then
-      return "键" .. code
+    local canonical = V1_KEY_ALIASES[key]
+    if canonical and KEYBOARD_KEY_NAMES[canonical] then
+      return KEYBOARD_KEY_NAMES[canonical]
     end
-    return key:upper()
+    local v1code = key:match("^other:(%d+)$")
+    if v1code then
+      return "键" .. v1code
+    end
+    return derive_key_name(canonical or key)
   end
   local pad = value:match("^pad:(%d+)$")
   if pad then

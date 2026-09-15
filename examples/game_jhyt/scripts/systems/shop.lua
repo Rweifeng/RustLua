@@ -28,6 +28,8 @@ local audio = require("core.audio")
 local nav = require("ui.panel_nav")
 -- M20-09：键鼠/手柄两套操作说明（本模块不 require ui.input，避免 require 环）。
 local hints = require("ui.hints")
+-- M30：面板文字按真实字宽裁剪（长物品名/大额金币不再画到面板外）。
+local ui_text = require("ui.ui_text")
 
 local M = {}
 
@@ -361,11 +363,12 @@ end
 local function clear_ui()
   ui.clear("shp:box")
   for _, id in ipairs({ "shp:title", "shp:money", "shp:tab1", "shp:tab2", "shp:qty", "shp:msg", "shp:hint" }) do
-    ui.hide(id)
+    ui_text.hide("shp", id)
   end
   for i = 1, ROW_LIMIT do
-    ui.hide("shp:row" .. i)
+    ui_text.hide("shp", "shp:row" .. i)
   end
+  ui_text.reset("shp")
 end
 
 -- 新档 / 切图复位：清空限购计数并关闭面板（模式由调用方复位）。
@@ -618,12 +621,33 @@ function M.render()
     return false
   end
   local x, y, w, h = PANEL.x, PANEL.y, PANEL.w, PANEL.h
+  -- 排版预算（M30）：右列金额/数量从 x+w-200 起，故标题只能用左侧 400px；
+  -- 行/提示从 x+24 起，可用 w-48。全部按**真实字宽**裁剪并登记（`ui.ui_text`）。
+  local ROW_W = w - 48
+  local RIGHT_W = 176
+  ui_text.begin("shp")
   ui.panel("shp:box", x, y, w, h, 0.10, 0.11, 0.15, 0.94)
-  ui.text_at("shp:title", x + 24, y + 18, tostring(def.name), 1.0, 22.0)
-  ui.text_at("shp:money", x + w - 200, y + 20, "金币 " .. tostring(state.money) .. " 文", 1.0, 18.0)
-  ui.text_at("shp:tab1", x + 24, y + 58, ui_state.tab == "buy" and "[购买]" or " 购买 ", 1.0, 18.0)
-  ui.text_at("shp:tab2", x + 120, y + 58, ui_state.tab == "sell" and "[出售]" or " 出售 ", 1.0, 18.0)
-  ui.text_at("shp:qty", x + w - 200, y + 58, "数量 × " .. tostring(ui_state.quantity), 1.0, 18.0)
+  ui_text.draw("shp", "shp:title", x + 24, y + 18, 22.0, 400.0, tostring(def.name))
+  ui_text.draw(
+    "shp",
+    "shp:money",
+    x + w - 200,
+    y + 20,
+    18.0,
+    RIGHT_W,
+    "金币 " .. tostring(state.money) .. " 文"
+  )
+  ui_text.draw_exact("shp", "shp:tab1", x + 24, y + 58, 18.0, 96.0, ui_state.tab == "buy" and "[购买]" or " 购买 ")
+  ui_text.draw_exact("shp", "shp:tab2", x + 120, y + 58, 18.0, 80.0, ui_state.tab == "sell" and "[出售]" or " 出售 ")
+  ui_text.draw(
+    "shp",
+    "shp:qty",
+    x + w - 200,
+    y + 58,
+    18.0,
+    RIGHT_W,
+    "数量 × " .. tostring(ui_state.quantity)
+  )
 
   local rows = M.rows()
   -- 行数可能超过可视槽位：按选中行滚动窗口（引擎 ScrollState，M20-02）。
@@ -650,14 +674,14 @@ function M.render()
       else
         label = "  " .. label
       end
-      ui.text_at(id, x + 24, y + 100 + (slot - 1) * ROW_H, label, 1.0, 18.0)
+      ui_text.draw("shp", id, x + 24, y + 100 + (slot - 1) * ROW_H, 18.0, ROW_W, label)
     else
-      ui.hide(id)
+      ui_text.hide("shp", id)
     end
   end
 
-  ui.text_at("shp:msg", x + 24, y + h - 64, tostring(ui_state.msg or ""), 1.0, 16.0)
-  ui.text_at("shp:hint", x + 24, y + h - 32, hint_line(), 1.0, 14.0)
+  ui_text.draw("shp", "shp:msg", x + 24, y + h - 64, 16.0, ROW_W, tostring(ui_state.msg or ""))
+  ui_text.draw("shp", "shp:hint", x + 24, y + h - 32, 14.0, ROW_W, hint_line())
   return true
 end
 

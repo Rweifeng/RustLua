@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""《江湖有田》标题背景像素化（把 assets/art/title/title_bg.png 转成像素画风）
+"""《江湖有田》标题背景像素化（把 assets/art/title/_title_bg_source.png 转成像素画风）
 
 用法（工程根目录 examples/game_jhyt 下运行）：
 
@@ -424,7 +424,7 @@ def build_preview(src_w, src_h, src_channels, src_pixels, pixel_path, preview_pa
 # main
 # ---------------------------------------------------------------------------
 
-DEFAULT_SOURCE = os.path.join("assets", "art", "title", "title_bg.png")
+DEFAULT_SOURCE = os.path.join("assets", "art", "title", "_title_bg_source.png")
 DEFAULT_OUT = os.path.join("assets", "art", "title", "title_bg_pixel.png")
 DEFAULT_PREVIEW = os.path.join("assets", "art", "title", "title_bg_pixel_preview.png")
 

@@ -24,6 +24,8 @@ local audio = require("core.audio")
 local nav = require("ui.panel_nav")
 -- M20-09：键鼠/手柄两套操作说明（本模块不 require ui.input，避免 require 环）。
 local hints = require("ui.hints")
+-- M30：行/详情/提示按真实字宽裁剪并登记（长物品名与长说明不再画到面板外）。
+local ui_text = require("ui.ui_text")
 
 -- 数字直选 1..9 的按键名（默认只有键盘数字键；未绑定该设备的动作自动跳过）。
 local function digits_label()
@@ -202,11 +204,12 @@ end
 local function clear_ui()
   ui.clear("bp:box")
   for _, id in ipairs({ "bp:title", "bp:cap", "bp:msg", "bp:hint", "bp:empty", "bp:detail" }) do
-    ui.hide(id)
+    ui_text.hide("bp", id)
   end
   for i = 1, ROW_LIMIT do
-    ui.hide("bp:row" .. i)
+    ui_text.hide("bp", "bp:row" .. i)
   end
+  ui_text.reset("bp")
 end
 
 -- ---------- 操作 ----------
@@ -361,22 +364,25 @@ function M.render()
   local rows = snapshot.slots
   -- 行数会随物品变化：每次重绘同步焦点环项数（保持当前选择）。
   sync_focus()
+  ui_text.begin("bp")
   ui.panel("bp:box", x, y, w, h, 0.10, 0.11, 0.15, 0.94)
-  ui.text_at("bp:title", x + 24, y + 16, "背包", 1.0, 22.0)
-  ui.text_at(
+  ui_text.draw("bp", "bp:title", x + 24, y + 16, 22.0, w - 48, "背包")
+  -- 右列（容量/负重）从 x+w-300 起：可用宽度 276（面板右内边距 24）。
+  ui_text.draw(
+    "bp",
     "bp:cap",
     x + w - 300,
     y + 20,
+    16.0,
+    276.0,
     "容量 " .. tostring(snapshot.occupied) .. "/" .. tostring(snapshot.capacity)
-      .. " · 负重 " .. tostring(snapshot.weight),
-    1.0,
-    16.0
+      .. " · 负重 " .. tostring(snapshot.weight)
   )
 
   if #rows == 0 then
-    ui.text_at("bp:empty", x + 24, y + 100, "（空）", 1.0, 18.0)
+    ui_text.draw("bp", "bp:empty", x + 24, y + 100, 18.0, w - 48, "（空）")
   else
-    ui.hide("bp:empty")
+    ui_text.hide("bp", "bp:empty")
   end
 
   for i = 0, ROW_LIMIT - 1 do
@@ -390,9 +396,11 @@ function M.render()
       if i == ui_state.index then
         label = "> " .. label
       end
-      ui.text_at(id, x + COL_X[col + 1], y + 60 + line * ROW_H, label, 1.0, 16.0)
+      -- 列宽（M30）：第 1 列从 24 到 336，第 2 列从 336 到 w-24（列尾各留 8/24 白）。
+      local col_w = col == 0 and (COL_X[2] - COL_X[1] - 8) or (w - COL_X[2] - 24)
+      ui_text.draw("bp", id, x + COL_X[col + 1], y + 60 + line * ROW_H, 16.0, col_w, label)
     else
-      ui.hide(id)
+      ui_text.hide("bp", id)
     end
   end
 
@@ -410,13 +418,13 @@ function M.render()
       or ""
     local seed = def.kind == "seed" and (" · 设为种子（" .. tostring(seed_key or "") .. "）") or ""
     local text = tostring(def.description or "") .. effect .. equip .. seed
-    ui.text_at("bp:detail", x + 24, y + h - 96, text, 1.0, 14.0)
+    ui_text.draw("bp", "bp:detail", x + 24, y + h - 96, 14.0, w - 48, text)
   else
-    ui.hide("bp:detail")
+    ui_text.hide("bp", "bp:detail")
   end
 
-  ui.text_at("bp:msg", x + 24, y + h - 64, tostring(ui_state.msg or ""), 1.0, 16.0)
-  ui.text_at("bp:hint", x + 24, y + h - 32, hint_line(), 1.0, 14.0)
+  ui_text.draw("bp", "bp:msg", x + 24, y + h - 64, 16.0, w - 48, tostring(ui_state.msg or ""))
+  ui_text.draw("bp", "bp:hint", x + 24, y + h - 32, 14.0, w - 48, hint_line())
   return true
 end
 

@@ -8,11 +8,14 @@
 #       动作构成冲突，编辑器「项目设置 → 输入」会红字拦下）。
 
 [input]
-map = "rustlua-actions-v1\nmove_up=key:w,padaxis:1+\nmove_down=key:s,padaxis:1-\nmove_left=key:a,padaxis:0-\nmove_right=key:d,padaxis:0+\ninteract=key:e,pad:0\nattack=key:j,pad:2\nskill=key:k,pad:3\ninventory=key:i,pad:4\npause=key:p,pad:5\nquest=key:l,pad:9\nrespawn=key:r,pad:8\n"
+# M22/W1 起为物理键格式 v2：键位名与 winit 的 KeyCode 变体名一一对应
+# （key:w → key:keyw、key:1 → key:digit1、key:up → key:arrowup）。
+map = "rustlua-actions-v2\nmove_up=key:keyw,padaxis:1+\nmove_down=key:keys,padaxis:1-\nmove_left=key:keya,padaxis:0-\nmove_right=key:keyd,padaxis:0+\ninteract=key:keye,pad:0\nattack=key:keyj,pad:2\nskill=key:keyk,pad:3\ninventory=key:keyi,pad:4\npause=key:keyp,pad:5\nquest=key:keyl,pad:9\nrespawn=key:keyr,pad:8\n"
 stick_deadzone = 0.15
 trigger_deadzone = 0.05
-# 菜单导航手感（M20-09）：左摇杆阈值 / 按住后首次重复延迟（帧）/ 重复间隔（帧）。
-# 阈值越小越灵敏；延迟与间隔决定长按时的滚动节奏（60fps 下 16/8 ≈ 0.27s/0.13s）。
+# 菜单导航手感（M22/W3 起用毫秒）：左摇杆阈值 / 按住后首次重复延迟 / 重复间隔。
+# 阈值越小越灵敏；延迟与间隔决定长按时的滚动节奏（这里刻意保留 M20-09 的
+# 60fps 手感：16 帧 ≈ 267ms、8 帧 ≈ 133ms，而不是新的默认 350/90）。
 nav_threshold = 0.5
-nav_delay_frames = 16
-nav_repeat_frames = 8
+nav_delay_ms = 267
+nav_repeat_ms = 133

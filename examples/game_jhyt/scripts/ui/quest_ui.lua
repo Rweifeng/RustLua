@@ -22,6 +22,8 @@ local audio = require("core.audio")
 local nav = require("ui.panel_nav")
 -- M20-09：键鼠/手柄两套操作说明（本模块不 require ui.input，避免 require 环）。
 local hints = require("ui.hints")
+-- M30：任务行/目标行按真实字宽裁剪（长任务名或长目标不再画到面板外）。
+local ui_text = require("ui.ui_text")
 
 -- 数字直选 1..9 的按键名（默认只有键盘数字键；未绑定该设备的动作自动跳过）。
 local function digits_label()
@@ -112,12 +114,13 @@ end
 local function clear_ui()
   ui.clear("qst:box")
   for _, id in ipairs({ "qst:title", "qst:state", "qst:giver", "qst:objtitle", "qst:hint", "qst:empty", "qst:msg" }) do
-    ui.hide(id)
+    ui_text.hide("qst", id)
   end
   for i = 1, ROW_LIMIT do
-    ui.hide("qst:row" .. i)
-    ui.hide("qst:obj" .. i)
+    ui_text.hide("qst", "qst:row" .. i)
+    ui_text.hide("qst", "qst:obj" .. i)
   end
+  ui_text.reset("qst")
 end
 
 function M.select(index)
@@ -210,14 +213,19 @@ function M.render()
   end
   local x, y, w, h = PANEL.x, PANEL.y, PANEL.w, PANEL.h
   local rows = M.rows()
+  -- 排版预算（M30）：右侧「状态 …」从 x+w-220 起，行/提示从 x+24 起，目标行从 x+56 起。
+  local ROW_W = w - 48
+  local STATE_W = 196
+  local OBJ_W = w - 56 - 24
   sync_focus()
+  ui_text.begin("qst")
   ui.panel("qst:box", x, y, w, h, 0.10, 0.11, 0.15, 0.94)
-  ui.text_at("qst:title", x + 24, y + 16, "任务日志", 1.0, 22.0)
+  ui_text.draw("qst", "qst:title", x + 24, y + 16, 22.0, ROW_W, "任务日志")
 
   if #rows == 0 then
-    ui.text_at("qst:empty", x + 24, y + 70, "暂无任务", 1.0, 18.0)
+    ui_text.draw("qst", "qst:empty", x + 24, y + 70, 18.0, ROW_W, "暂无任务")
   else
-    ui.hide("qst:empty")
+    ui_text.hide("qst", "qst:empty")
   end
 
   -- 任务超过一页时按选中行滚动窗口（引擎 ScrollState，M20-02）。
@@ -233,18 +241,34 @@ function M.render()
       else
         label = "  " .. label
       end
-      ui.text_at(id, x + 24, y + 58 + slot * ROW_H, label, 1.0, 17.0)
+      ui_text.draw("qst", id, x + 24, y + 58 + slot * ROW_H, 17.0, ROW_W, label)
     else
-      ui.hide(id)
+      ui_text.hide("qst", id)
     end
   end
 
   -- 选中任务详情：发布者 + 目标进度（只读）。
   local row = rows[ui_state.index + 1]
   if row then
-    ui.text_at("qst:state", x + w - 220, y + 20, "状态 " .. M.state_text(row.state), 1.0, 16.0)
-    ui.text_at("qst:giver", x + 24, y + 58 + ROW_LIMIT * ROW_H, "发布者 " .. tostring(row.giver_name or "未知"), 1.0, 15.0)
-    ui.text_at("qst:objtitle", x + 24, y + 58 + ROW_LIMIT * ROW_H + 26, "目标：", 1.0, 15.0)
+    ui_text.draw(
+      "qst",
+      "qst:state",
+      x + w - 220,
+      y + 20,
+      16.0,
+      STATE_W,
+      "状态 " .. M.state_text(row.state)
+    )
+    ui_text.draw(
+      "qst",
+      "qst:giver",
+      x + 24,
+      y + 58 + ROW_LIMIT * ROW_H,
+      15.0,
+      ROW_W,
+      "发布者 " .. tostring(row.giver_name or "未知")
+    )
+    ui_text.draw_exact("qst", "qst:objtitle", x + 24, y + 58 + ROW_LIMIT * ROW_H + 26, 15.0, ROW_W, "目标：")
     local objectives = M.objectives()
     for i = 1, ROW_LIMIT do
       local objective = objectives[i]
@@ -252,22 +276,38 @@ function M.render()
       if objective then
         local mark = objective.done and "✓" or "…"
         local text = string.format("%s %s %d/%d", mark, tostring(objective.label), objective.current, objective.target)
-        ui.text_at(id, x + 56, y + 58 + ROW_LIMIT * ROW_H + 26 + i * 24, text, 1.0, 15.0)
+        ui_text.draw(
+          "qst",
+          id,
+          x + 56,
+          y + 58 + ROW_LIMIT * ROW_H + 26 + i * 24,
+          15.0,
+          OBJ_W,
+          text
+        )
       else
-        ui.hide(id)
+        ui_text.hide("qst", id)
       end
     end
   else
     for _, id in ipairs({ "qst:state", "qst:giver", "qst:objtitle" }) do
-      ui.hide(id)
+      ui_text.hide("qst", id)
     end
     for i = 1, ROW_LIMIT do
-      ui.hide("qst:obj" .. i)
+      ui_text.hide("qst", "qst:obj" .. i)
     end
   end
 
-  ui.text_at("qst:msg", x + 24, y + h - 56, "只读面板：任务在对话/交互中接取与交付", 1.0, 14.0)
-  ui.text_at("qst:hint", x + 24, y + h - 30, hint_line(), 1.0, 14.0)
+  ui_text.draw(
+    "qst",
+    "qst:msg",
+    x + 24,
+    y + h - 56,
+    14.0,
+    ROW_W,
+    "只读面板：任务在对话/交互中接取与交付"
+  )
+  ui_text.draw("qst", "qst:hint", x + 24, y + h - 30, 14.0, ROW_W, hint_line())
   return true
 end
 

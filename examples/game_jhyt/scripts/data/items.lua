@@ -81,5 +81,36 @@ return {
     buy = 15,
     sell = 4,
     kind = "material"
+  },
+  -- ---- 敌人掉落物（M28 / 计划 G3：掉落表见 data/drops.lua）----
+  -- 狼皮（演武场灰狼）：山道猎获订单（order_hunt）的交付物，也是"打猎"的第一份收获。
+  wolf_pelt = {
+    name = "狼皮",
+    description = "灰狼身上剥下的整皮，村里人拿它换钱。",
+    icon = "assets/art/items/wolf_pelt.png",
+    stack = 99,
+    buy = 0,
+    sell = 22,
+    kind = "material"
+  },
+  -- 兽肉（青云山道野猪）：猎获订单需要两份；卖出价按"打猎比种田更赚一点"定。
+  boar_meat = {
+    name = "兽肉",
+    description = "山道野猪的鲜肉，村中饭桌上常见。",
+    icon = "assets/art/items/boar_meat.png",
+    stack = 99,
+    buy = 0,
+    sell = 12,
+    kind = "material"
+  },
+  -- 山魈内丹（第一章 Boss 掉落）：主线物品，只进不出（buy/sell 都是 0，卖不掉）。
+  ape_core = {
+    name = "山魈内丹",
+    description = "山魈首领体内凝出的内丹，寒气逼人。",
+    icon = "assets/art/items/ape_core.png",
+    stack = 9,
+    buy = 0,
+    sell = 0,
+    kind = "material"
   }
 }

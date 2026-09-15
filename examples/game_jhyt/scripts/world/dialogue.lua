@@ -24,12 +24,23 @@ local nav = require("ui.panel_nav")
 -- M20-09：键鼠/手柄两套操作说明（本模块不 require ui.input，避免 require 环；
 -- 设备判定与绑定命名都在 ui.hints 里，面板自己画底部提示时才不会写死键盘文案）。
 local hints = require("ui.hints")
+-- M30：对话正文按真实字宽换行（此前正文既未换行也未裁剪，长句会直接画到面板外面）。
+local ui_text = require("ui.ui_text")
 
 local M = {}
 
 local TILE = 32
 local INTERACT_RANGE = 56 -- 世界单位，约 1.75 格
 local OPTION_LIMIT = 5   -- 与 UI 展示槽位、数字键 1..5 一致
+
+-- 对话面板几何与正文排版预算（`M.render` 里的固定面板；正文最多两行，之后省略号）。
+local BOX = { x = 140, y = 440, w = 1000, h = 248 }
+local TEXT_FONT = 18.0
+local OPTION_FONT = 18.0
+local PAD = 24
+local TEXT_W = BOX.w - PAD * 2
+-- 正文起点 y+50、选项起点 y+96：46px 足够两行 18px 正文（行高 1.2em + 字距）。
+local TEXT_LINES = 2
 
 local FOCUS = "dlg:focus"
 
@@ -208,12 +219,13 @@ end
 
 local function clear_ui()
   ui.clear("dlg:box")
-  ui.hide("dlg:speaker")
-  ui.hide("dlg:text")
-  ui.hide("dlg:hint")
+  ui_text.hide("dlg", "dlg:speaker")
+  ui_text.hide("dlg", "dlg:text")
+  ui_text.hide("dlg", "dlg:hint")
   for i = 1, OPTION_LIMIT do
-    ui.hide("dlg:opt" .. i)
+    ui_text.hide("dlg", "dlg:opt" .. i)
   end
+  ui_text.reset("dlg")
 end
 
 -- 当前节点可选项（已按 cond 过滤），保持数据顺序。
@@ -349,12 +361,14 @@ function M.render()
     return false
   end
   local speaker = npcs.get(def.speaker)
-  local x, y, w, h = 140, 440, 1000, 248
+  local x, y, w, h = BOX.x, BOX.y, BOX.w, BOX.h
   -- 选项数量随节点/条件变化：重绘时同步焦点环（M20-02）。
   sync_focus()
+  ui_text.begin("dlg")
   ui.panel("dlg:box", x, y, w, h, 0.10, 0.11, 0.15, 0.92)
-  ui.text_at("dlg:speaker", x + 24, y + 16, speaker and speaker.name or "", 1.0, 20.0)
-  ui.text_at("dlg:text", x + 24, y + 50, node.text, 1.0, 18.0)
+  ui_text.draw("dlg", "dlg:speaker", x + PAD, y + 16, 20.0, TEXT_W, speaker and speaker.name or "")
+  -- 正文按面板宽度换行（最多两行，超出加省略号）：长台词不再画到面板外。
+  ui_text.draw_wrapped("dlg", "dlg:text", x + PAD, y + 50, TEXT_FONT, TEXT_W, TEXT_LINES, node.text)
   local options = M.options()
   for i = 1, OPTION_LIMIT do
     local entry = options[i]
@@ -365,12 +379,12 @@ function M.render()
       else
         text = "  " .. text
       end
-      ui.text_at("dlg:opt" .. i, x + 24, y + 96 + (i - 1) * 30, text, 1.0, 18.0)
+      ui_text.draw("dlg", "dlg:opt" .. i, x + PAD, y + 96 + (i - 1) * 30, OPTION_FONT, TEXT_W, text)
     else
-      ui.hide("dlg:opt" .. i)
+      ui_text.hide("dlg", "dlg:opt" .. i)
     end
   end
-  ui.text_at("dlg:hint", x + w - HINT_W, y + h - 28, hint_line(), 1.0, 14.0)
+  ui_text.draw("dlg", "dlg:hint", x + w - HINT_W, y + h - 28, 14.0, HINT_W, hint_line())
   return true
 end
 

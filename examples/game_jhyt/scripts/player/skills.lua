@@ -82,8 +82,9 @@ function M.inner_cost(id)
   return tonumber(skill and skill.inner_cost) or 0
 end
 
-function M.validate_all()
-  return data.validate_all()
-end
+-- 这里**故意不**再暴露 `M.validate_all` 直通 `data.skills`：真正的校验入口只有
+-- 一个（`data/skills.lua`，已登记进 `scripts/validate_data.lua`）。多一个同名
+-- 直通函数会让"带 validate_all 的模块都要登记"这条不变量出现例外，也会让同一份
+-- 数据被校验两次、诊断重复（M23）。
 
 return M

@@ -10,6 +10,8 @@ local relationship = require("player.relationship")
 local audio = require("core.audio")
 local hud = require("ui.hud")
 local tutorial = require("ui.tutorial")
+-- M27：七日目标（与 tutorial 同一套事件接线——每帧喂一次 last_action）。
+local goals = require("systems.goals")
 local inventory_ui = require("ui.inventory_ui")
 local quest_ui = require("ui.quest_ui")
 local pause_menu = require("ui.pause_menu")
@@ -151,6 +153,9 @@ end
 -- 顶部键位提示从**当前绑定**推导（改键后提示同步变化，见 M.key_hints）。
 local function frame()
   tutorial.on_action(state.last_action)
+  -- M27：目标计数只认"动作变化"（goals 内部做边沿检测），
+  -- 因此同一个 last_action 不会在后续每一帧重复计数。
+  goals.on_action(state.last_action)
   hud.draw(M.key_hints())
   return hud.text()
 end
@@ -457,10 +462,24 @@ function M.update()
   if combat.is_player_dead() then
     player.stop()
     if input.action_pressed("respawn") then
-      combat.respawn()
+      -- M28：战败结算（扣未入库掉落 50% + 铜钱 5%）+ 回山庄 + 状态回满，
+      -- 由一个入口负责，避免"复活了但没回庄""回庄了但没扣惩罚"这类半状态。
+      local ok = require("systems.death").apply()
+      if not ok then
+        combat.respawn()
+      end
     end
     hud.draw(M.key_hints())
     return "战败 · 按 R 重新开始"
+  end
+
+  -- 受击硬直（M25）：被打断的这段时间不能移动/攻击/交互，但面板键（I/Q/Esc 等）
+  -- 已在上面各 mode 分支处理完毕，所以不会把玩家锁在战斗里出不来。
+  if not combat.player_can_act() then
+    player.stop()
+    state.last_action = "hurt"
+    hud.draw(M.key_hints())
+    return "受击僵直 · " .. tostring(require("systems.combat").player_hurt_frames()) .. " 步"
   end
 
   update_movement()
@@ -474,10 +493,20 @@ function M.update()
 
   -- 战斗输入（M18-01）：J 普攻（随武器加成）、K 武学（消耗内力）。
   -- 攻击不锁移动（ARPG 习惯）；冷却/前摇/去重由 combat 底座处理。
+  -- M25：失败原因写进 last_action（此前返回值被丢弃 → 内力不足/冷却中按下去
+  -- 毫无反馈，玩家只能猜），HUD 按 last_action 出中文提示。
   if input.action_pressed("attack") then
-    combat.player_attack("strike")
+    local ok, reason = combat.player_attack("strike")
+    if not ok then
+      state.last_action = reason
+      audio.play_on("ui", "ui_cancel")
+    end
   elseif input.action_pressed("skill") then
-    combat.player_attack("palm_gust")
+    local ok, reason = combat.player_attack("palm_gust")
+    if not ok then
+      state.last_action = reason
+      audio.play_on("ui", "ui_cancel")
+    end
   end
 
   -- 送礼输入（M18-04）：G 面向面前 NPC 送出第一件其可收的礼物。
