@@ -97,7 +97,7 @@ impl EditorApp {
 
 /// 定位发布脚本 `scripts/package.ps1`。
 ///
-/// 发布脚本属于引擎工作区（`C:\GitHub\p2\scripts\package.ps1`）。优先从编辑器
+/// 发布脚本属于引擎工作区（`E:\Codex\RustLua\scripts\package.ps1`）。优先从编辑器
 /// 自身定位工作区：
 /// 1. 编译期 `CARGO_MANIFEST_DIR`（编辑器 crate 上溯 3 级 = 工作区根，见 `workspace_root`）；
 /// 2. 运行时 `current_exe()` 所在目录及其祖先（编辑器被复制/安装到别处也有效）；
@@ -340,8 +340,8 @@ mod publish_tests {
     #[test]
     fn strip_verbatim_removes_windows_verbatim_prefix() {
         assert_eq!(
-            strip_verbatim(Path::new(r"\\?\C:\GitHub\p2\scripts\package.ps1")),
-            PathBuf::from(r"C:\GitHub\p2\scripts\package.ps1")
+            strip_verbatim(Path::new(r"\\?\E:\Codex\RustLua\scripts\package.ps1")),
+            PathBuf::from(r"E:\Codex\RustLua\scripts\package.ps1")
         );
         assert_eq!(
             strip_verbatim(Path::new(r"\\?\UNC\server\share\file.ps1")),
@@ -349,8 +349,8 @@ mod publish_tests {
         );
         // 无前缀原样返回
         assert_eq!(
-            strip_verbatim(Path::new(r"C:\GitHub\p2\scripts\package.ps1")),
-            PathBuf::from(r"C:\GitHub\p2\scripts\package.ps1")
+            strip_verbatim(Path::new(r"E:\Codex\RustLua\scripts\package.ps1")),
+            PathBuf::from(r"E:\Codex\RustLua\scripts\package.ps1")
         );
     }
 

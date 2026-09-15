@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [switch]$SkipClippy,
     [switch]$SkipTests,
@@ -83,6 +83,19 @@ if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
 
 $runGates = -not $MvpOnly
 
+# 文档一致性门（P4）：编号唯一、H1、索引可达、相对链接、历史路径、UTF-8 可解码。
+# 放在最前面：它只读文本、约 1 秒，且 `-MvpOnly` 也跑（文档失真不该被快速路径跳过）。
+Write-Step "Documentation consistency"
+$docsScript = Join-Path $projectRoot "scripts/check-docs.ps1"
+if (Test-Path $docsScript) {
+    $docsOutput = & powershell -NoProfile -ExecutionPolicy Bypass -File $docsScript
+    $docsExit = $LASTEXITCODE
+    $docsOutput | ForEach-Object { Write-Host $_ }
+    if ($docsExit -ne 0) {
+        throw "check-docs.ps1 failed (exit code $docsExit)"
+    }
+}
+
 if ($runGates) {
 Push-Location $engineRoot
 try {
@@ -149,6 +162,8 @@ finally {
 
 if ($Mvp -or $MvpOnly) {
     # MVP 退出门（M19-04）：核心剧本/浸泡 headless 回归 + 干净发行目录自测。
+    # 清单是**唯一事实来源**：清单里的样例缺失即失败（此前是打印 skip 后 continue，
+    # 会让"少跑几个样例"看起来仍然绿灯，等于把质量门变成摆设）。
     Write-Step "MVP headless regression suite"
     $examples = @(
         "jhyt_smoke",
@@ -163,22 +178,55 @@ if ($Mvp -or $MvpOnly) {
         "jhyt_m19_soak",
         "jhyt_m19_ui",
         "jhyt_m20_audio",
-        "jhyt_m20_gamepad"
+        "jhyt_m20_gamepad",
+        "jhyt_m21_appearance",
+        "jhyt_m22_input",
+        "jhyt_m22_save_isolation",
+        "jhyt_m23_data_validation",
+        "jhyt_m24_numeric_alignment",
+        "jhyt_m25_combat_feedback",
+        "jhyt_m26_hud_feedback",
+        "jhyt_m27_goals",
+        "jhyt_m28_loop",
+        "jhyt_m29_season_weather",
+        "jhyt_m30_cjk_text",
+        "jhyt_m31_pc_release"
     )
+    $exampleDir = Join-Path $engineRoot "crates\game\examples"
+
+    # 1) 先全量校验清单，缺失/多余都直接失败（缺失 = 回归消失，多余 = 清单漏登记）。
+    $missing = @()
+    foreach ($example in $examples) {
+        $source = Join-Path $exampleDir ($example + ".rs")
+        if (-not (Test-Path -LiteralPath $source)) {
+            $missing += $example
+        }
+    }
+    if ($missing.Count -gt 0) {
+        throw ("MVP example list is missing $($missing.Count) file(s): " + ($missing -join ", ") + " (expected under $exampleDir)")
+    }
+    $onDisk = @(Get-ChildItem -LiteralPath $exampleDir -Filter "jhyt_*.rs" -File | ForEach-Object { $_.BaseName })
+    $unlisted = @($onDisk | Where-Object { $examples -notcontains $_ })
+    if ($unlisted.Count -gt 0) {
+        throw ("jhyt_* example(s) exist but are not in the MVP list: " + ($unlisted -join ", ") + " (add them to verify.ps1 or delete them)")
+    }
+
+    # 2) 逐项执行，并断言"执行数量 == 清单数量"。
+    $executed = 0
     Push-Location $engineRoot
     try {
         foreach ($example in $examples) {
-            $source = Join-Path $engineRoot ("crates\game\examples\" + $example + ".rs")
-            if (-not (Test-Path -LiteralPath $source)) {
-                Write-Host "> skip $example (example not present)" -ForegroundColor DarkGray
-                continue
-            }
             Invoke-Checked cargo @("run", "--quiet", "-p", "game", "--example", $example)
+            $executed++
         }
     }
     finally {
         Pop-Location
     }
+    if ($executed -ne $examples.Count) {
+        throw "MVP gate ran $executed example(s) but the manifest lists $($examples.Count); a silent skip is never acceptable."
+    }
+    Write-Host "MVP headless regression: executed=$executed expected=$($examples.Count)" -ForegroundColor Green
 
     Write-Step "Clean release directory self test"
     Invoke-PackageSelfTest -ProjectRootPath $defaultGameProject

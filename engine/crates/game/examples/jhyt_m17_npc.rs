@@ -13,7 +13,7 @@
 //!   cargo run -p game --example jhyt_m17_npc [-- <game_jhyt-root>]
 
 use engine::core::{
-    input::{InputKey, InputSnapshot},
+    input::{InputSnapshot, KeyCode},
     script::LuaRuntime,
 };
 use std::{
@@ -110,7 +110,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_npc(&mut runtime, "npc_xuanhe", "live", "false")?;
     // 玩家从山庄南出口进入云泽村。
     teleport(&mut runtime, MAIN_EXIT)?;
-    press(&mut runtime, InputKey::from_char('e'))?;
+    press(&mut runtime, KeyCode::KeyE)?;
     runtime.process_scene_transition()?;
     assert_scene_is(&mut runtime, "village")?;
     assert_map_current(&mut runtime, "village")?;
@@ -267,7 +267,7 @@ fn teleport(runtime: &mut LuaRuntime, pos: (f32, f32)) -> Result<(), Box<dyn std
 }
 
 /// Simulates a single key press: one frame with the key down, one clean frame.
-fn press(runtime: &mut LuaRuntime, key: InputKey) -> Result<(), Box<dyn std::error::Error>> {
+fn press(runtime: &mut LuaRuntime, key: KeyCode) -> Result<(), Box<dyn std::error::Error>> {
     let mut input = InputSnapshot::default();
     input.key_event(key, true);
     runtime.set_input(input);

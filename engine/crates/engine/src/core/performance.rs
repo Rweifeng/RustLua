@@ -1,4 +1,4 @@
-﻿//! Lightweight runtime performance sampling for the game loop.
+//! Lightweight runtime performance sampling for the game loop.
 
 use std::time::Instant;
 
@@ -17,7 +17,6 @@ pub struct PerformanceSnapshot {
 pub struct PerformanceStats {
     frame_started: Instant,
     update_started: Option<Instant>,
-    lua_started: Option<Instant>,
     window_started: Instant,
     window_frames: u32,
     snapshot: PerformanceSnapshot,
@@ -30,7 +29,6 @@ impl PerformanceStats {
         Self {
             frame_started: now,
             update_started: None,
-            lua_started: None,
             window_started: now,
             window_frames: 0,
             snapshot: PerformanceSnapshot {
@@ -57,16 +55,6 @@ impl PerformanceStats {
         }
     }
 
-    pub fn begin_lua(&mut self) {
-        self.lua_started = Some(Instant::now());
-    }
-
-    pub fn end_lua(&mut self) {
-        if let Some(started) = self.lua_started.take() {
-            self.snapshot.lua_ms += started.elapsed().as_secs_f32() * 1000.0;
-        }
-    }
-
     pub fn end_frame(&mut self) {
         self.snapshot.frame_ms = self.frame_started.elapsed().as_secs_f32() * 1000.0;
         self.snapshot.frames += 1;
@@ -77,6 +65,14 @@ impl PerformanceStats {
             self.window_frames = 0;
             self.window_started = Instant::now();
         }
+    }
+
+    /// 记账一次 Lua `update()` 的耗时（毫秒）。调用方是宿主：
+    /// `LuaRuntime::last_update_micros()` 在 Lua 体内部测量，宿主把它送进来累加。
+    /// 早先的 `begin_lua/end_lua` 只能测"两次调用之间的墙钟"，跨不过
+    /// `RuntimeScene` 边界，结果真实运行里 `lua_ms` 恒为 `0.000`（P4 接线）。
+    pub fn record_lua_millis(&mut self, millis: f32) {
+        self.snapshot.lua_ms += millis;
     }
 
     #[must_use]
@@ -106,25 +102,25 @@ mod tests {
         stats.begin_frame();
         stats.begin_update();
         thread::sleep(Duration::from_millis(1));
-        stats.begin_lua();
-        thread::sleep(Duration::from_millis(1));
-        stats.end_lua();
+        stats.record_lua_millis(0.75);
+        stats.record_lua_millis(0.25);
         stats.end_update();
         stats.end_frame();
         let snapshot = stats.snapshot();
         assert!(snapshot.frame_ms > 0.0);
         assert!(snapshot.update_ms > 0.0);
-        assert!(snapshot.lua_ms > 0.0);
+        assert!((snapshot.lua_ms - 1.0).abs() < f32::EPSILON);
         assert_eq!(snapshot.frames, 1);
     }
 
     #[test]
     fn lua_sample_can_be_reset_between_frames() {
         let mut stats = PerformanceStats::new();
-        stats.begin_lua();
-        stats.end_lua();
-        assert!(stats.snapshot().lua_ms >= 0.0);
+        stats.record_lua_millis(0.4);
+        assert!(stats.snapshot().lua_ms > 0.0);
         stats.reset_lua_sample();
+        // 每帧清零：`lua_ms` 是"本帧 Lua 耗时"，不是累计值（累计值会让面板
+        // 显示一个只增不减的数，看不出哪一帧卡）。
         assert_eq!(stats.snapshot().lua_ms, 0.0);
     }
 }

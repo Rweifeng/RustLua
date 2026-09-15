@@ -14,7 +14,7 @@ use crate::core::{
     animation3d::Animation3D,
     camera3d::Camera3D,
     entity::EntityId,
-    font::{DEFAULT_FONT_WEIGHT, FontAtlas, FontVectorAtlas},
+    font::{FontAtlas, FontVectorAtlas, project_font},
     input::InputSnapshot,
     light::Light,
     math2d::{Camera2D, Viewport},
@@ -50,6 +50,10 @@ use crate::host::gamepad::{GamepadBackend, GamepadDeadzone, GamepadPoller};
 
 pub struct RuntimeScene {
     script: LuaRuntime,
+    /// 自上次 `take_script_micros` 以来所有固定步里 Lua `update()` 的累计耗时
+    /// （微秒）。宿主把它送进 `PerformanceStats::lua_ms`，性能面板因此显示的是
+    /// "Lua 花了多少"而不是恒为 0（P4 接线）。
+    script_micros: u64,
     sprite_batch: SpriteBatch,
     camera: Camera2D,
     viewport_width: u32,
@@ -90,12 +94,15 @@ pub struct RuntimeScene {
     text_render_mode: TextRenderMode,
     ui_scene_nodes: BTreeMap<u64, UiSceneNode>,
     ui_layout_rects: BTreeMap<u64, ResolvedUiNode>,
-    /// 共享帧调度管线（M18-03）：每个固定步执行一次的系统。系统在
-    /// `run_script_steps` 期间整体移入 Scheduler、结束后按注册顺序放回，
-    /// 因此 `add_step_system`/`add_frame_system` 在两次调用之间始终有效。
-    step_systems: Vec<System<RuntimeScene>>,
+    /// 共享帧调度管线（M18-03）：每个固定步执行一次的系统。调度器实例**跨帧保留**
+    /// （只在 `run_script_steps` 期间临时借出再放回），因此系统的拓扑执行序只算一次，
+    /// 而不是每步重建调度器 + 重算拓扑序——固定步一帧可跑 8 步，这份开销纯属浪费。
+    step_scheduler: Scheduler<RuntimeScene>,
     /// 共享帧调度管线：每次 `run_script_steps` 调用只执行一次的系统。
-    frame_systems: Vec<System<RuntimeScene>>,
+    frame_scheduler: Scheduler<RuntimeScene>,
+    /// 系统注册用**名字**记录，供诊断与重名校验；系统本体归调度器所有。
+    step_system_names: Vec<String>,
+    frame_system_names: Vec<String>,
     /// 当前固定步的输入快照：由 `run_script_steps` 注入、`input_apply` 消费，
     /// `ui_click_dispatch` 复用，步结束即清空。
     pending_step_input: Option<InputSnapshot>,
@@ -174,25 +181,43 @@ struct CachedTilemapLayer {
 impl RuntimeScene {
     pub fn new(project_root: Option<&Path>) -> Result<Self, String> {
         let scene = load_runtime_scene(project_root);
-        Self::from_scene(project_root, scene)
+        Self::init(project_root, scene, true, false)
     }
 
-    /// Instantiates a specific scene (used by the editor to run the scene being
-    /// edited), rather than the project's startup scene.
+    /// P3：显式声明"这是发布包"（`game --pack`）。决定存档与玩家设置写到哪里——
+    /// 发布包 → 用户数据目录（`%APPDATA%\<app>`），开发工程 → 工程内。
+    /// 不显式声明时 `user_dir::is_release_pack` 仍能凭 `<exe>/pack` + `release.toml`
+    /// 认出双击启动的发布包。
+    pub fn new_with_layout(project_root: Option<&Path>, packaged: bool) -> Result<Self, String> {
+        let scene = load_runtime_scene(project_root);
+        Self::init(project_root, scene, true, packaged)
+    }
+
+    /// 实例化一个具体场景（编辑器"运行当前场景"用），而非工程的启动场景。
+    /// 编辑器处理的永远是开发工程：玩家设置留在工程根（面板直接编辑那份）。
     pub fn from_scene(project_root: Option<&Path>, scene: Scene) -> Result<Self, String> {
-        Self::init(project_root, scene, true)
+        Self::init(project_root, scene, true, false)
     }
 
     /// Instantiates a scene WITHOUT running the project script, for the editor's
     /// scene view (render the scene as edited, no game logic).
     pub fn from_scene_edit(project_root: Option<&Path>, scene: Scene) -> Result<Self, String> {
-        Self::init(project_root, scene, false)
+        Self::init(project_root, scene, false, false)
     }
 
     /// Lua 侧 `app.quit()` 只置引擎的退出请求标记（见 `script.rs`），桌面运行器
     /// 借此轮询并在帧末真正退出，否则“退出”按钮在窗口环境无效。
     pub fn quit_requested(&self) -> bool {
         self.script.quit_requested()
+    }
+
+    /// 取走并清零"上次取走以来 Lua `update()` 的累计耗时"（微秒）。
+    ///
+    /// 宿主每次跑完固定步后调用一次，喂给 `PerformanceStats::lua_ms`。用"取走即清零"
+    /// 而不是查询，是为了让 0 步帧（帧率高于逻辑步时）自然得到 0，不会把上一帧的
+    /// Lua 耗时重复计入。
+    pub fn take_script_micros(&mut self) -> u64 {
+        std::mem::take(&mut self.script_micros)
     }
 
     /// 设置 2D 相机（编辑器场景视图用，匹配编辑器 pan/zoom）。
@@ -487,7 +512,12 @@ impl RuntimeScene {
         ))
     }
 
-    fn init(project_root: Option<&Path>, scene: Scene, run_script: bool) -> Result<Self, String> {
+    fn init(
+        project_root: Option<&Path>,
+        scene: Scene,
+        run_script: bool,
+        packaged: bool,
+    ) -> Result<Self, String> {
         let mut script = LuaRuntime::new().map_err(|error| error.to_string())?;
         // Project root must be set before instantiation so scene components that
         // load assets (e.g. Animation3D) can resolve their mesh paths.
@@ -507,7 +537,33 @@ impl RuntimeScene {
         tracing::info!(target: "ecs", "[ecs] world initialized entities={instantiated}");
         if run_script && let Some(root) = project_root {
             script.set_audio_asset_dir(root.join("assets").join("audio"));
-            script.set_save_path(root.join(crate::core::PROJECT_WORK_DIR).join("save.sav"));
+            // P3 用户数据目录：发布包（`<exe>/pack` + `release.toml`，或 `--pack`）
+            // 把存档与玩家设置写到用户目录（`%APPDATA%\<app>`），不写程序目录；
+            // 开发工程保持工程内 `.cache/save.sav` 与工程根 `settings.toml`。
+            let roots = crate::core::user_dir::data_roots(root, packaged);
+            if let Err(error) = crate::core::user_dir::ensure_save_dir(&roots) {
+                tracing::warn!(target: "save", "{}", error);
+            }
+            if roots.packaged {
+                script.set_settings_root(roots.settings_dir.clone());
+                match crate::core::user_dir::seed_settings(&roots, root) {
+                    Ok(true) => tracing::info!(
+                        target: "app",
+                        path = %roots.settings_file().display(),
+                        "[app] player settings seeded from the release package"
+                    ),
+                    Ok(false) => {}
+                    Err(error) => tracing::warn!(target: "app", "{}", error),
+                }
+                tracing::info!(
+                    target: "save",
+                    save = %roots.save_file().display(),
+                    settings = %roots.settings_file().display(),
+                    app = %roots.app_name,
+                    "[save] release layout: user data directory in use"
+                );
+            }
+            script.set_save_path(roots.save_file());
             let script_path = root.join("scripts/main.lua");
             if script_path.is_file() {
                 script
@@ -529,6 +585,7 @@ impl RuntimeScene {
         let ui_scene_nodes = build_ui_scene_nodes(&scene, !run_script);
         let mut scene = Self {
             script,
+            script_micros: 0,
             sprite_batch: SpriteBatch::new(),
             camera,
             viewport_width: 1280,
@@ -553,8 +610,10 @@ impl RuntimeScene {
             text_render_mode,
             ui_scene_nodes,
             ui_layout_rects: BTreeMap::new(),
-            step_systems: Vec::new(),
-            frame_systems: Vec::new(),
+            step_scheduler: Scheduler::new(),
+            frame_scheduler: Scheduler::new(),
+            step_system_names: Vec::new(),
+            frame_system_names: Vec::new(),
             pending_step_input: None,
             last_schedule: None,
             gamepad: GamepadPoller::platform_default(),
@@ -573,7 +632,7 @@ impl RuntimeScene {
     /// stage, after the per-step scene transition) then animation state
     /// machines, matching the legacy post-loop block.
     fn register_builtin_frame_systems(&mut self) {
-        self.step_systems.push(System::new(
+        self.add_builtin_step_system(System::new(
             "input_apply",
             ScheduleStage::Input,
             [] as [&str; 0],
@@ -584,7 +643,7 @@ impl RuntimeScene {
                 Ok(())
             },
         ));
-        self.step_systems.push(System::new(
+        self.add_builtin_step_system(System::new(
             "lua_update",
             ScheduleStage::Script,
             [] as [&str; 0],
@@ -593,11 +652,14 @@ impl RuntimeScene {
                     .script
                     .call_update()
                     .map_err(|error| SystemError::new(error.to_string()))?;
+                scene.script_micros = scene
+                    .script_micros
+                    .saturating_add(scene.script.last_update_micros());
                 tracing::debug!(target: "game", "[simulation] fixed update returned: {result}");
                 Ok(())
             },
         ));
-        self.step_systems.push(System::new(
+        self.add_builtin_step_system(System::new(
             "ui_click_dispatch",
             ScheduleStage::Script,
             ["lua_update"],
@@ -612,7 +674,7 @@ impl RuntimeScene {
                     .map_err(|error| SystemError::new(error.to_string()))
             },
         ));
-        self.step_systems.push(System::new(
+        self.add_builtin_step_system(System::new(
             "physics2d_step",
             ScheduleStage::Physics,
             [] as [&str; 0],
@@ -621,7 +683,7 @@ impl RuntimeScene {
                 Ok(())
             },
         ));
-        self.step_systems.push(System::new(
+        self.add_builtin_step_system(System::new(
             "physics3d_step",
             ScheduleStage::Physics,
             [] as [&str; 0],
@@ -630,7 +692,7 @@ impl RuntimeScene {
                 Ok(())
             },
         ));
-        self.step_systems.push(System::new(
+        self.add_builtin_step_system(System::new(
             "particles_step",
             ScheduleStage::Simulation,
             [] as [&str; 0],
@@ -639,7 +701,7 @@ impl RuntimeScene {
                 Ok(())
             },
         ));
-        self.step_systems.push(System::new(
+        self.add_builtin_step_system(System::new(
             "clock_step",
             ScheduleStage::Simulation,
             [] as [&str; 0],
@@ -648,7 +710,7 @@ impl RuntimeScene {
                 Ok(())
             },
         ));
-        self.step_systems.push(System::new(
+        self.add_builtin_step_system(System::new(
             "scene_transition",
             ScheduleStage::Simulation,
             [] as [&str; 0],
@@ -664,7 +726,7 @@ impl RuntimeScene {
         // 以下为每次 run_script_steps 调用只执行一次的帧级系统：原实现里它们
         // 在固定步循环结束后统一推进（elapsed = delta × steps），顺序保持
         // integrate_velocity → AnimationStateMachine → Animation3D。
-        self.frame_systems.push(System::new(
+        self.add_builtin_frame_system(System::new(
             "integrate_velocity",
             ScheduleStage::Simulation,
             [] as [&str; 0],
@@ -675,7 +737,7 @@ impl RuntimeScene {
                 Ok(())
             },
         ));
-        self.frame_systems.push(System::new(
+        self.add_builtin_frame_system(System::new(
             "animation_state_advance",
             ScheduleStage::Animation,
             [] as [&str; 0],
@@ -688,7 +750,7 @@ impl RuntimeScene {
                 Ok(())
             },
         ));
-        self.frame_systems.push(System::new(
+        self.add_builtin_frame_system(System::new(
             "animation3d_advance",
             ScheduleStage::Animation,
             [] as [&str; 0],
@@ -740,44 +802,20 @@ impl RuntimeScene {
                 .set_axis_threshold(self.script.nav_settings().threshold);
             self.gamepad.poll_into(&mut step_input);
         }
-        // Move the registered systems into fresh schedulers so the Scheduler
-        // can validate dependencies each call while ownership stays with the
-        // scene between calls (restored below on every path).
-        let mut step_scheduler: Scheduler<RuntimeScene> = Scheduler::new();
-        let mut frame_scheduler: Scheduler<RuntimeScene> = Scheduler::new();
-        let mut build_error = None;
-        for system in self.step_systems.drain(..) {
-            if let Err(error) = step_scheduler.add_system(system) {
-                build_error = Some(error.to_string());
-                break;
-            }
-        }
-        if build_error.is_none() {
-            for system in self.frame_systems.drain(..) {
-                if let Err(error) = frame_scheduler.add_system(system) {
-                    build_error = Some(error.to_string());
-                    break;
-                }
-            }
-        }
-        let outcome = if let Some(error) = build_error {
-            Err(error)
-        } else {
-            self.run_pipelines(
-                &mut step_scheduler,
-                &mut frame_scheduler,
-                steps,
-                delta_seconds,
-                &mut step_input,
-            )
-        };
-        // Always put the systems back so registration survives failed runs.
-        for system in step_scheduler.into_systems() {
-            self.step_systems.push(system);
-        }
-        for system in frame_scheduler.into_systems() {
-            self.frame_systems.push(system);
-        }
+        // 调度器实例跨帧保留：借出 → 运行 → 放回。系统本体一直归调度器所有，
+        // 因此这里不存在"注册失败丢系统"的路径（此前用 `drain` + `break`，
+        // 提前退出会让尚未搬迁的系统随 Drain 一起被丢弃）。
+        let mut step_scheduler = std::mem::take(&mut self.step_scheduler);
+        let mut frame_scheduler = std::mem::take(&mut self.frame_scheduler);
+        let outcome = self.run_pipelines(
+            &mut step_scheduler,
+            &mut frame_scheduler,
+            steps,
+            delta_seconds,
+            &mut step_input,
+        );
+        self.step_scheduler = step_scheduler;
+        self.frame_scheduler = frame_scheduler;
         // M22/W2：把本帧的震动请求交给设备层（Lua `input.rumble` 只登记请求；到期归零由
         // `GamepadPoller` 的状态机负责）。失败路径不取走请求也没问题——下一帧会覆盖。
         if outcome.is_ok()
@@ -884,25 +922,59 @@ impl RuntimeScene {
         visit(&mut self.script)
     }
 
+    /// 注册内建 step 系统。名字是静态唯一的；重复只可能是编程错误，而这里的
+    /// 失败路径**不静默吞掉**：记 error 日志，并由 `registered_system_names`
+    /// 相关测试与调度器自身的重复检测兜住。真正面向调用方的
+    /// [`Self::add_step_system`] 会把错误返回给调用者。
+    fn add_builtin_step_system(&mut self, system: System<RuntimeScene>) {
+        let name = system.name().to_owned();
+        if let Err(error) = self.step_scheduler.add_system(system) {
+            tracing::error!(
+                target: "engine",
+                "[runtime] builtin step system `{name}` registration failed: {error}"
+            );
+            return;
+        }
+        self.step_system_names.push(name);
+    }
+
+    /// 注册内建 frame 系统（语义同 [`Self::add_builtin_step_system`]）。
+    fn add_builtin_frame_system(&mut self, system: System<RuntimeScene>) {
+        let name = system.name().to_owned();
+        if let Err(error) = self.frame_scheduler.add_system(system) {
+            tracing::error!(
+                target: "engine",
+                "[runtime] builtin frame system `{name}` registration failed: {error}"
+            );
+            return;
+        }
+        self.frame_system_names.push(name);
+    }
+
     /// Registers an extra system that runs on every fixed step of
     /// [`Self::run_script_steps`] (M18-03).
     ///
     /// The system joins the shared schedule: it declares a
     /// [`ScheduleStage`] and dependencies on other registered systems, and
-    /// the scheduler validates the resulting order every frame. Duplicate
-    /// names are rejected here; missing dependencies and cycles surface as
-    /// locatable errors from [`Self::run_script_steps`].
+    /// the scheduler validates the resulting order (cached until the
+    /// registration changes). Duplicate names are rejected here; missing
+    /// dependencies and cycles surface as locatable errors from
+    /// [`Self::run_script_steps`].
     pub fn add_step_system(&mut self, system: System<RuntimeScene>) -> Result<(), SchedulerError> {
-        self.ensure_unique_system_name(system.name())?;
-        self.step_systems.push(system);
+        let name = system.name().to_owned();
+        self.ensure_unique_system_name(&name)?;
+        self.step_scheduler.add_system(system)?;
+        self.step_system_names.push(name);
         Ok(())
     }
 
     /// Registers an extra system that runs once per
     /// [`Self::run_script_steps`] call (M18-03). See [`Self::add_step_system`].
     pub fn add_frame_system(&mut self, system: System<RuntimeScene>) -> Result<(), SchedulerError> {
-        self.ensure_unique_system_name(system.name())?;
-        self.frame_systems.push(system);
+        let name = system.name().to_owned();
+        self.ensure_unique_system_name(&name)?;
+        self.frame_scheduler.add_system(system)?;
+        self.frame_system_names.push(name);
         Ok(())
     }
 
@@ -911,23 +983,17 @@ impl RuntimeScene {
     #[must_use]
     pub fn registered_system_names(&self) -> (Vec<String>, Vec<String>) {
         (
-            self.step_systems
-                .iter()
-                .map(|system| system.name().to_owned())
-                .collect(),
-            self.frame_systems
-                .iter()
-                .map(|system| system.name().to_owned())
-                .collect(),
+            self.step_system_names.clone(),
+            self.frame_system_names.clone(),
         )
     }
 
     fn ensure_unique_system_name(&self, name: &str) -> Result<(), SchedulerError> {
         if self
-            .step_systems
+            .step_system_names
             .iter()
-            .chain(self.frame_systems.iter())
-            .any(|system| system.name() == name)
+            .chain(self.frame_system_names.iter())
+            .any(|registered| registered == name)
         {
             return Err(SchedulerError::DuplicateSystem {
                 name: name.to_owned(),
@@ -1319,7 +1385,7 @@ impl RuntimeScene {
         } else {
             None
         };
-        let custom_font_atlases = self.snapshot_custom_fonts();
+        let custom_font_atlases = self.snapshot_custom_fonts(!vertices.is_empty());
         Ok(SceneMesh {
             vertices,
             draws,
@@ -1334,7 +1400,12 @@ impl RuntimeScene {
 
     /// 生成本帧用到（且自上次上报后版本变化）的自定义字体图集像素，随 SceneMesh
     /// 交给渲染器上传/重绑。`pixels` 空 = 未变化（与默认图集 `font_atlas` 语义一致）。
-    fn snapshot_custom_fonts(&mut self) -> Vec<CustomFontAtlasPixels> {
+    ///
+    /// `will_draw` 必须与默认图集用同一个判据（本帧 `vertices` 非空）：渲染器在
+    /// `vertices` 为空时**整体跳过** 2D 通道，自定义字体的上传与 bind 建立也随之
+    /// 跳过。若此时仍把版本记为"已上报"，下一个可绘制帧会以"未变化"（空像素）
+    /// 发送，而渲染器从未上传过该版本 → 该自定义字体永久不显示。
+    fn snapshot_custom_fonts(&mut self, will_draw: bool) -> Vec<CustomFontAtlasPixels> {
         let mut seen: HashSet<String> = HashSet::new();
         let keys: Vec<String> = std::mem::take(&mut self.frame_font_keys)
             .into_iter()
@@ -1352,13 +1423,16 @@ impl RuntimeScene {
             let atlas = handle.lock().expect("font atlas lock");
             let version = atlas.version();
             let changed = self.custom_font_versions.get(&key).copied() != Some(version);
-            self.custom_font_versions.insert(key.clone(), version);
+            if will_draw {
+                self.custom_font_versions.insert(key.clone(), version);
+            }
             out.push(CustomFontAtlasPixels {
                 key,
                 pixels: FontAtlasPixels {
                     width: atlas.width(),
                     height: atlas.height(),
-                    pixels: if changed {
+                    // 未被绘制的帧不复制像素：既不浪费内存，也不推进"已上报"版本。
+                    pixels: if changed && will_draw {
                         atlas.pixels().to_vec()
                     } else {
                         Vec::new()
@@ -2399,39 +2473,14 @@ fn merge_sprite_meshes(tilemap: SpriteBatchMesh, dynamic: SpriteBatchMesh) -> Sp
 }
 
 fn startup_scene_path(project_root: &Path) -> String {
-    let default = "scenes/main.scene".to_owned();
-    let Ok(text) = fs::read_to_string(project_root.join("project.toml")) else {
-        return default;
-    };
-    extract_project_key(&text, "startup_scene").unwrap_or(default)
-}
-
-/// project.toml 的 `font` 键：相对项目根的字形文件路径（如
-/// `assets/fonts/msyh.ttc`）。缺省回退 NotoSansSC-VF.ttf。
-fn project_font_path(project_root: &Path) -> Option<String> {
-    let text = fs::read_to_string(project_root.join("project.toml")).ok()?;
-    extract_project_key(&text, "font")
-}
-
-/// project.toml 的 `font_fallback` 键：后备字形文件路径（主字体缺失的字形用）。
-fn project_fallback_font_path(project_root: &Path) -> Option<String> {
-    let text = fs::read_to_string(project_root.join("project.toml")).ok()?;
-    extract_project_key(&text, "font_fallback")
-}
-
-/// project.toml 的 `font_weight` 键；无效配置回退引擎默认值。
-fn project_font_weight(project_root: &Path) -> Option<f32> {
-    let text = fs::read_to_string(project_root.join("project.toml")).ok()?;
-    extract_project_key(&text, "font_weight")
-        .and_then(|weight| weight.parse::<f32>().ok())
-        .filter(|weight| weight.is_finite() && *weight > 0.0)
+    project_font::read_key(project_root, "startup_scene")
+        .unwrap_or_else(|| "scenes/main.scene".to_owned())
 }
 
 /// project.toml 的 `text_render_mode` 键；无效/缺省回退 `auto`。
 fn project_text_render_mode(project_root: Option<&Path>) -> TextRenderMode {
     project_root
-        .and_then(|root| fs::read_to_string(root.join("project.toml")).ok())
-        .and_then(|text| extract_project_key(&text, "text_render_mode"))
+        .and_then(|root| project_font::read_key(root, "text_render_mode"))
         .map(|mode| TextRenderMode::parse(&mode))
         .unwrap_or(TextRenderMode::Auto)
 }
@@ -2441,11 +2490,9 @@ pub fn load_project_vector_atlas(
     project_root: Option<&Path>,
 ) -> Option<Arc<Mutex<FontVectorAtlas>>> {
     let root = project_root?;
-    let primary =
-        project_font_path(root).unwrap_or_else(|| "assets/fonts/NotoSansSC-VF.ttf".to_owned());
-    let primary = fs::read(root.join(primary)).ok()?;
+    let primary = fs::read(root.join(project_font::primary_path(root))).ok()?;
     let primary = crate::core::pack::decode(&primary).ok()?;
-    let fallback = project_fallback_font_path(root).and_then(|path| {
+    let fallback = project_font::fallback_path(root).and_then(|path| {
         let bytes = fs::read(root.join(path)).ok()?;
         crate::core::pack::decode(&bytes).ok()
     });
@@ -2460,15 +2507,13 @@ pub fn load_project_vector_atlas(
 pub fn load_project_font_atlas(project_root: Option<&Path>) -> Option<Arc<Mutex<FontAtlas>>> {
     let root = project_root?;
     let primary_path = {
-        let font =
-            project_font_path(root).unwrap_or_else(|| "assets/fonts/NotoSansSC-VF.ttf".to_owned());
-        let path = root.join(font);
+        let path = root.join(project_font::primary_path(root));
         path.is_file().then_some(path)
     }?;
     let primary_bytes = fs::read(&primary_path).ok()?;
     let primary_bytes = crate::core::pack::decode(&primary_bytes).ok()?;
     // 可选后备字体（project.toml `font_fallback` 键），用于主字体缺失的字形。
-    let fallback_bytes = project_fallback_font_path(root)
+    let fallback_bytes = project_font::fallback_path(root)
         .and_then(|font| {
             let path = root.join(font);
             path.is_file().then_some(path)
@@ -2477,7 +2522,7 @@ pub fn load_project_font_atlas(project_root: Option<&Path>) -> Option<Arc<Mutex<
             let bytes = fs::read(&path).ok()?;
             crate::core::pack::decode(&bytes).ok()
         });
-    let font_weight = project_font_weight(root).unwrap_or(DEFAULT_FONT_WEIGHT);
+    let font_weight = project_font::weight(root);
     let mut atlas = match FontAtlas::load_with_fallback_and_weight(
         &primary_bytes,
         fallback_bytes.as_deref(),
@@ -2526,7 +2571,7 @@ pub fn load_custom_vector_atlas(
     }
     let bytes = fs::read(root.join(font_asset)).ok()?;
     let bytes = crate::core::pack::decode(&bytes).ok()?;
-    let fallback = project_fallback_font_path(root).and_then(|path| {
+    let fallback = project_font::fallback_path(root).and_then(|path| {
         let bytes = fs::read(root.join(path)).ok()?;
         crate::core::pack::decode(&bytes).ok()
     });
@@ -2550,7 +2595,7 @@ pub fn load_custom_font_atlas(project_root: Option<&Path>, font_asset: &str) -> 
     let bytes = fs::read(&path).ok()?;
     let bytes = crate::core::pack::decode(&bytes).ok()?;
     // 与默认字体一致地附上项目后备字体，缺字时回退（如拉丁字体不含 CJK）。
-    let fallback_bytes = project_fallback_font_path(root)
+    let fallback_bytes = project_font::fallback_path(root)
         .and_then(|font| {
             let path = root.join(font);
             path.is_file().then_some(path)
@@ -2559,7 +2604,7 @@ pub fn load_custom_font_atlas(project_root: Option<&Path>, font_asset: &str) -> 
             let bytes = fs::read(&path).ok()?;
             crate::core::pack::decode(&bytes).ok()
         });
-    let font_weight = project_font_weight(root).unwrap_or(DEFAULT_FONT_WEIGHT);
+    let font_weight = project_font::weight(root);
     let atlas = match FontAtlas::load_with_fallback_and_weight(
         &bytes,
         fallback_bytes.as_deref(),
@@ -2578,15 +2623,6 @@ pub fn load_custom_font_atlas(project_root: Option<&Path>, font_asset: &str) -> 
     };
     tracing::info!(target: "render", path = %font_asset, "[render] custom font atlas ready");
     Some(Arc::new(Mutex::new(atlas)))
-}
-
-fn extract_project_key(text: &str, key: &str) -> Option<String> {
-    text.lines().find_map(|line| {
-        let line = line.trim().trim_start_matches('\u{feff}');
-        line.strip_prefix(&format!("{key} ="))
-            .map(|value| value.trim().trim_matches('"').to_owned())
-            .filter(|value| !value.trim().is_empty())
-    })
 }
 
 /// Sprite 的世界矩形（pivot+缩放+旋转+位移）投影到屏幕的 AABB，供 UiEvents 命中。
@@ -2885,6 +2921,21 @@ mod sdf_tests {
         runtime
             .run_script_steps(2, 1.0 / 60.0, &crate::core::input::InputSnapshot::default())
             .unwrap();
+    }
+
+    /// P4：`lua_ms` 指标真的被填了。此前 `begin_lua/end_lua` 只有单测在调，
+    /// 真实运行的 `[perf] lua_ms=` 恒为 `0.000`——一条看着在工作、其实永远为零的指标。
+    #[test]
+    fn script_update_time_is_measured_and_taken_once() {
+        let root = crate::core::games_dir().join("examples").join("game_api");
+        let mut runtime = RuntimeScene::new(Some(&root)).unwrap();
+        runtime
+            .run_script_steps(2, 1.0 / 60.0, &crate::core::input::InputSnapshot::default())
+            .unwrap();
+        let micros = runtime.take_script_micros();
+        assert!(micros > 0, "Lua update 耗时必须被测量到，得到 {micros}µs");
+        // 取走即清零：0 步帧不该重复计入上一帧的耗时。
+        assert_eq!(runtime.take_script_micros(), 0);
     }
 
     /// ui_test 示例场景：渲染出 UI/世界 draw、UiEvents 目标存在，且点击
@@ -3427,7 +3478,7 @@ mod sdf_tests {
     /// 渲染与 Lua 脚本不报错。
     #[test]
     fn tetris_project_runs_and_renders() {
-        use crate::core::input::InputKey;
+        use crate::core::input::KeyCode;
         use crate::core::scene::Scene;
 
         let root = crate::core::fixture_games_dir().join("tetris");
@@ -3472,15 +3523,15 @@ mod sdf_tests {
         );
         // 模拟按键：右移 → 旋转 → 硬降，逐帧驱动。
         let mut input = InputSnapshot::default();
-        input.key_event(InputKey::D, true);
+        input.key_event(KeyCode::KeyD, true);
         runtime
             .run_script_steps(1, 1.0 / 60.0, &input)
             .expect("step d");
-        input.key_event(InputKey::W, true);
+        input.key_event(KeyCode::KeyW, true);
         runtime
             .run_script_steps(1, 1.0 / 60.0, &input)
             .expect("step w");
-        input.key_event(InputKey::Space, true);
+        input.key_event(KeyCode::Space, true);
         runtime
             .run_script_steps(1, 1.0 / 60.0, &input)
             .expect("step space");
@@ -4253,6 +4304,56 @@ mod frame_schedule_tests {
             ))
             .expect_err("cross-pipeline duplicate name must be rejected");
         assert!(matches!(error, SchedulerError::DuplicateSystem { .. }));
+    }
+
+    /// 回归：注册失败绝不能"吃掉"已经注册的系统。
+    ///
+    /// 旧实现每帧把系统 `drain` 进新调度器、遇到 `add_system` 失败就 `break`：
+    /// `Drain` 在提前退出时会连同**尚未搬迁**的系统一起丢弃，一次失败的注册就能
+    /// 让后续的内建系统（物理、时钟、动画）静默消失。现在系统所有权始终在调度器
+    /// 里，被拒绝的注册只影响它自己。
+    #[test]
+    fn rejected_registration_never_drops_registered_systems() {
+        let mut runtime = sample_runtime();
+        let (step_names, frame_names) = runtime.registered_system_names();
+        let builtin_steps = step_names.len();
+        assert!(builtin_steps >= 8, "builtin step systems: {step_names:?}");
+        assert!(!frame_names.is_empty());
+
+        // 重名的注册必须被拒绝。
+        let error = runtime
+            .add_step_system(System::new(
+                "lua_update",
+                ScheduleStage::Script,
+                [] as [&str; 0],
+                |_: &mut RuntimeScene, _| Ok(()),
+            ))
+            .expect_err("duplicate name must be rejected");
+        assert!(matches!(error, SchedulerError::DuplicateSystem { .. }));
+
+        // 被拒绝之后：注册表一个不少，调度仍然完整跑通。
+        let (step_names_after, frame_names_after) = runtime.registered_system_names();
+        assert_eq!(step_names_after, step_names);
+        assert_eq!(frame_names_after, frame_names);
+        runtime
+            .run_script_steps(1, 1.0 / 60.0, &InputSnapshot::default())
+            .expect("schedule must still run after a rejected registration");
+        let names: Vec<&str> = runtime
+            .last_schedule_report()
+            .expect("schedule report is recorded")
+            .timings
+            .iter()
+            .map(|timing| timing.name.as_str())
+            .collect();
+        for expected in [
+            "input_apply",
+            "lua_update",
+            "physics2d_step",
+            "clock_step",
+            "integrate_velocity",
+        ] {
+            assert!(names.contains(&expected), "dropped system: {expected}");
+        }
     }
 
     #[test]

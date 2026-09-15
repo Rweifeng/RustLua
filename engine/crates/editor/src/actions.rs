@@ -892,7 +892,7 @@ impl EditorApp {
                     let _ = self.recovery.clear_for(doc);
                 }
                 self.autosave.reset();
-                self.recovery_scan = self.recovery.scan().unwrap_or_default();
+                self.refresh_recovery_scan();
                 if is_prefab_document {
                     "Prefab 已保存".into()
                 } else {

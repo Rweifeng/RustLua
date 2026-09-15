@@ -10,7 +10,8 @@
 //! - 武学：千风掌消耗内力、固定伤害。
 //! - 击杀：敌人 hp 归零 → 死亡销毁，战斗日志含 kill 事件。
 //! - 敌人 AI：A* 追击进入攻击距离后攻击玩家。
-//! - 战败与重开：玩家 hp 归零 → 冻结输入，按 R 回出生点并复活全部敌人。
+//! - 战败与重开：玩家 hp 归零 → 冻结输入，按 R 结算战败（回山庄出生点 + 状态回满 +
+//!   敌人复活；`systems/death.lua`，M28 落地 docs/33 §6.3）。
 //! - 存档恢复：玩家气血与敌人账本（hp/存活/位置）随存档一致恢复。
 //! - 固定步一致性：战斗逻辑只依赖固定步帧号，同输入不同推进节奏结果一致。
 //!
@@ -18,7 +19,7 @@
 //!   cargo run -p game --example jhyt_m18_combat [-- <game_jhyt-root>]
 
 use engine::core::{
-    input::{InputKey, InputSnapshot},
+    input::{InputSnapshot, KeyCode},
     script::LuaRuntime,
 };
 use std::{
@@ -118,7 +119,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     lua(&mut runtime, "require('core.state').facing = 'right'")?;
     frames(&mut runtime, 2)?;
     // 攻击#1：判定窗（windup 6 + active 12）内目标一直贴着 → 只掉一次血。
-    press(&mut runtime, InputKey::from_char('j'))?;
+    press(
+        &mut runtime,
+        KeyCode::from_char('j').expect("QWERTY 字符必须有对应物理键"),
+    )?;
     frames(&mut runtime, 30)?;
     assert_num(
         &mut runtime,
@@ -126,7 +130,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         28.0,
     )?;
     // 攻击#2（#1 的 24 步冷却已过）：注册后仍在前摇，且再次攻击被冷却拒绝。
-    press(&mut runtime, InputKey::from_char('j'))?;
+    press(
+        &mut runtime,
+        KeyCode::from_char('j').expect("QWERTY 字符必须有对应物理键"),
+    )?;
     assert_str(
         &mut runtime,
         "select(2, require('systems.combat').player_attack('strike'))",
@@ -144,7 +151,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         26.0,
     )?;
     // 攻击#3：冷却结束后再次命中。
-    press(&mut runtime, InputKey::from_char('j'))?;
+    press(
+        &mut runtime,
+        KeyCode::from_char('j').expect("QWERTY 字符必须有对应物理键"),
+    )?;
     frames(&mut runtime, 30)?;
     assert_num(
         &mut runtime,
@@ -177,7 +187,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         10.0,
     )?;
     frames(&mut runtime, 30)?;
-    press(&mut runtime, InputKey::from_char('j'))?;
+    press(
+        &mut runtime,
+        KeyCode::from_char('j').expect("QWERTY 字符必须有对应物理键"),
+    )?;
     frames(&mut runtime, 30)?;
     assert_num(
         &mut runtime,
@@ -187,7 +200,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     banner("M18-01e 武学：千风掌消耗内力 10、固定伤害 6");
     assert_num(&mut runtime, "require('core.state').inner_power", 50.0)?;
-    press(&mut runtime, InputKey::from_char('k'))?;
+    press(
+        &mut runtime,
+        KeyCode::from_char('k').expect("QWERTY 字符必须有对应物理键"),
+    )?;
     frames(&mut runtime, 30)?;
     assert_num(&mut runtime, "require('core.state').inner_power", 40.0)?;
     assert_num(
@@ -212,7 +228,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     banner("M18-01f 击杀：hp 归零 → 死亡销毁，战斗日志含 kill");
     frames(&mut runtime, 24)?;
-    press(&mut runtime, InputKey::from_char('j'))?;
+    press(
+        &mut runtime,
+        KeyCode::from_char('j').expect("QWERTY 字符必须有对应物理键"),
+    )?;
     frames(&mut runtime, 30)?;
     assert_num(
         &mut runtime,
@@ -258,7 +277,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         1.0,
     )?;
 
-    banner("M18-01h 战败与重开：hp 归零冻结输入，R 回出生点并复活全部敌人");
+    banner("M18-01h 战败与重开：hp 归零冻结输入，R 回山庄并复活全部敌人");
     lua(&mut runtime, "require('systems.combat').set_player_hp(3)")?;
     frames(&mut runtime, 240)?;
     assert_num(&mut runtime, "require('systems.combat').player_hp()", 0.0)?;
@@ -271,19 +290,48 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 战败后敌人停手（不鞭尸），气血保持 0。
     frames(&mut runtime, 120)?;
     assert_num(&mut runtime, "require('systems.combat').player_hp()", 0.0)?;
-    // 按 R 重开：气血回满、回到出生点、敌人全部复活。
-    press(&mut runtime, InputKey::from_char('r'))?;
+    // 按 R 重开：走 `systems/death.lua` 的战败结算（M28/计划 G3，docs/33 §6.3）——
+    // 状态回满 + **回山庄出生点**（不再是原地复活），敌人随复活重置。
+    press(
+        &mut runtime,
+        KeyCode::from_char('r').expect("QWERTY 字符必须有对应物理键"),
+    )?;
+    runtime.process_scene_transition()?;
     assert_num(&mut runtime, "require('systems.combat').player_hp()", 100.0)?;
     assert_str(
         &mut runtime,
         "require('systems.combat').is_player_dead()",
         "false",
     )?;
-    assert_num(
+    assert_scene_is(&mut runtime, "manor")?;
+    assert_map_current(&mut runtime, "manor")?;
+    assert_str(
         &mut runtime,
-        "require('player.player').position().x",
-        ARENA_SPAWN.0 as f64,
+        "(function() local d = require('data.maps').get('manor'); \
+         local wx, wy = require('data.maps').to_world({ to_cell = d.spawn }); \
+         local pos = require('player.player').position(); \
+         return tostring(math.floor(pos.x + 0.5) == math.floor(wx + 0.5) \
+           and math.floor(pos.y + 0.5) == math.floor(wy + 0.5)) end)()",
+        "true",
     )?;
+    // 战斗日志含 respawn 与 death 事件。
+    assert_str(
+        &mut runtime,
+        "(function() local seen = {} \
+         for _, e in ipairs(require('systems.combat').log()) do seen[e.event] = true end \
+         return tostring(seen['respawn'] == true and seen['death'] == true) end)()",
+        "true",
+    )?;
+    // 回到演武场：敌人全部复活满血（复活重置的是敌人账本，不是"只重置当前图"）。
+    lua(
+        &mut runtime,
+        &format!(
+            "map['goto']('combat_arena', {}, {})",
+            ARENA_SPAWN.0, ARENA_SPAWN.1
+        ),
+    )?;
+    runtime.process_scene_transition()?;
+    assert_scene_is(&mut runtime, "combat_arena")?;
     assert_str(
         &mut runtime,
         "require('systems.enemy').query('enemy_dummy').alive",
@@ -304,20 +352,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "require('systems.enemy').query('enemy_wolf').hp",
         20.0,
     )?;
-    // 战斗日志含 respawn 与 death 事件。
-    assert_str(
-        &mut runtime,
-        "(function() local seen = {} \
-         for _, e in ipairs(require('systems.combat').log()) do seen[e.event] = true end \
-         return tostring(seen['respawn'] == true and seen['death'] == true) end)()",
-        "true",
-    )?;
 
     banner("M18-01i 存档恢复：玩家气血与敌人账本（hp/位置/装备）随存档一致恢复");
     teleport(&mut runtime, PLAYER_BEFORE_DUMMY)?;
     lua(&mut runtime, "require('core.state').facing = 'right'")?;
     frames(&mut runtime, 24)?;
-    press(&mut runtime, InputKey::from_char('j'))?;
+    press(
+        &mut runtime,
+        KeyCode::from_char('j').expect("QWERTY 字符必须有对应物理键"),
+    )?;
     frames(&mut runtime, 30)?;
     assert_num(
         &mut runtime,
@@ -363,7 +406,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &mut second,
         "return require('systems.enemy').query('enemy_dummy').hp",
     )?;
-    press(&mut second, InputKey::from_char('j'))?;
+    press(
+        &mut second,
+        KeyCode::from_char('j').expect("QWERTY 字符必须有对应物理键"),
+    )?;
     frames(&mut second, 30)?;
     let hp_a = query_num(
         &mut second,
@@ -371,7 +417,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     // 基准 B：等待冷却后同攻击，逐帧推 30 次。
     frames(&mut second, 30)?;
-    press(&mut second, InputKey::from_char('j'))?;
+    press(
+        &mut second,
+        KeyCode::from_char('j').expect("QWERTY 字符必须有对应物理键"),
+    )?;
     for _ in 0..30 {
         frames(&mut second, 1)?;
     }
@@ -457,7 +506,7 @@ fn teleport(runtime: &mut LuaRuntime, pos: (f32, f32)) -> Result<(), Box<dyn std
 }
 
 /// Simulates a single key press: one frame with the key down, one clean frame.
-fn press(runtime: &mut LuaRuntime, key: InputKey) -> Result<(), Box<dyn std::error::Error>> {
+fn press(runtime: &mut LuaRuntime, key: KeyCode) -> Result<(), Box<dyn std::error::Error>> {
     let mut input = InputSnapshot::default();
     input.key_event(key, true);
     runtime.set_input(input);

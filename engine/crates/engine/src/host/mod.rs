@@ -9,6 +9,8 @@
 pub mod frame;
 /// 手柄设备轮询适配层（M20-06）。
 pub mod gamepad;
+/// 平台事件 → 引擎物理键身份的唯一转换层（M22/W1）。
+pub mod keymap;
 pub mod renderer;
 pub mod runtime_scene;
 pub mod shader;

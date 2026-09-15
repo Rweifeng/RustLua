@@ -135,10 +135,31 @@ impl EditorApp {
                                 }
                                 if ui.button("丢弃").clicked() {
                                     let _ = self.recovery.discard(&candidate);
-                                    self.recovery_scan = self.recovery.scan().unwrap_or_default();
+                                    self.refresh_recovery_scan();
                                     ui.close();
                                 }
                             });
+                        }
+                        ui.separator();
+                        // 一次性清空 `.temp/` 下全部恢复快照（P4）：`clear_all` 此前
+                        // 只有定义没有入口，崩溃恢复攒多了只能一个个"丢弃"。
+                        if ui
+                            .button(format!(
+                                "全部丢弃（{} 项）",
+                                self.recovery_scan.candidates.len()
+                            ))
+                            .clicked()
+                        {
+                            match self.recovery.clear_all() {
+                                Ok(removed) => {
+                                    self.status = format!("已清理 {removed} 个恢复快照");
+                                }
+                                Err(error) => {
+                                    self.status = format!("清理恢复快照失败：{error}");
+                                }
+                            }
+                            self.refresh_recovery_scan();
+                            ui.close();
                         }
                     });
                 }
@@ -187,8 +208,33 @@ impl EditorApp {
         // 统一收尾：选择修复 + Inspector 空同步 + Scene View/Game 预览失效 +
         // Hierarchy 元数据重扫（快照替换后强制隐藏/锁定集合重建）。
         self.on_document_changed(crate::actions::DocumentChange::Opened);
-        self.recovery_scan = self.recovery.scan().unwrap_or_default();
+        self.refresh_recovery_scan();
         self.status = format!("已恢复崩溃快照：{}", display_path(&candidate.path));
+    }
+
+    /// 重新扫描崩溃恢复目录。
+    ///
+    /// 失败时**保留上一份扫描结果并把原因写进状态栏**，而不是
+    /// `unwrap_or_default()`：后者会把"恢复目录读不了"伪装成"没有任何待恢复内容"，
+    /// 用户会以为崩溃前的编辑已经丢了，也看不到环境本身出了问题。
+    pub(crate) fn refresh_recovery_scan(&mut self) {
+        match self.recovery.scan() {
+            Ok(scan) => {
+                if !scan.invalid.is_empty() {
+                    tracing::warn!(
+                        target: "editor",
+                        invalid = scan.invalid.len(),
+                        "[editor] recovery scan found {} invalid snapshot(s)",
+                        scan.invalid.len()
+                    );
+                }
+                self.recovery_scan = scan;
+            }
+            Err(error) => {
+                tracing::warn!(target: "editor", error = %error, "[editor] recovery scan failed; keeping the previous result");
+                self.status = format!("扫描崩溃恢复快照失败：{error}");
+            }
+        }
     }
 
     /// 菜单：新建项目 —— 选目录，缺啥补啥（project.toml/scripts/scenes/assets），再导入。
@@ -237,6 +283,15 @@ impl EditorApp {
                     "项目路径：{}",
                     crate::util::display_path(&self.project.root)
                 ));
+                // 插件加载结果（P4）：`plugin_status` 此前只写不显示，注册/加载失败
+                // 在编辑器里完全静默——现在在版本说明里列出来，失败一眼可见。
+                if !self.plugin_status.is_empty() {
+                    ui.separator();
+                    ui.label("插件：");
+                    for line in &self.plugin_status {
+                        ui.label(format!("· {line}"));
+                    }
+                }
             });
     }
 

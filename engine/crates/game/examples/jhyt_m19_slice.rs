@@ -21,7 +21,7 @@
 //!   cargo run -p game --example jhyt_m19_slice [-- <game_jhyt-root>]
 
 use engine::core::{
-    input::{InputKey, InputSnapshot},
+    input::{InputSnapshot, KeyCode},
     script::LuaRuntime,
 };
 use std::{
@@ -157,6 +157,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "require('systems.farm').act('up')",
         "plant_seed_lingzhi",
     )?;
+    // 钉住晴天（M29 起天气按 `(seed, day, 季节)` 抽签）：雨天走 `rain_watered` 免体力
+    // 分支，而本节断言的是体力/劳作账（100-8-3-4 → 85 → 70 → 55）。
+    lua(&mut rt, "require('world.weather').set('sunny')")?;
     lua(
         &mut rt,
         "inv.equip(require('core.state').inventory, 'tool', 'watering_can')",
@@ -199,9 +202,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             (ry as f32 - 0.5) * 32.0
         ),
     )?;
-    press(&mut rt, InputKey::from_char('e'))?;
+    press(&mut rt, KeyCode::KeyE)?;
     assert_str(&mut rt, "require('core.state').last_action", "till")?;
-    press(&mut rt, InputKey::from_char('e'))?;
+    press(&mut rt, KeyCode::KeyE)?;
     assert_str(
         &mut rt,
         "require('core.state').last_action",
@@ -211,7 +214,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &mut rt,
         "inv.equip(require('core.state').inventory, 'tool', 'watering_can')",
     )?;
-    press(&mut rt, InputKey::from_char('e'))?;
+    press(&mut rt, KeyCode::KeyE)?;
     assert_str(&mut rt, "require('core.state').last_action", "water_rice")?;
     assert_num(&mut rt, "require('core.state').energy", 55.0)?;
     assert_num(&mut rt, "require('systems.farm').stats().planted", 3.0)?;
@@ -227,7 +230,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     banner("M19-01③ 进入云泽村：走 manor→village 出口格真实路径，NPC 在场");
     teleport_world(&mut rt, MANOR_TO_VILLAGE)?;
     lua(&mut rt, "require('core.state').facing = 'down'")?;
-    press(&mut rt, InputKey::from_char('e'))?;
+    press(&mut rt, KeyCode::KeyE)?;
     rt.process_scene_transition()?;
     assert_scene_is(&mut rt, "village")?;
     assert_map_current(&mut rt, "village")?;
@@ -370,7 +373,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "E: 采集 灵芝",
     )?;
     // 真实按键路径：E → interaction → gather 目标 → inv/labor/已采记录。
-    press(&mut rt, InputKey::from_char('e'))?;
+    press(&mut rt, KeyCode::KeyE)?;
     assert_str(
         &mut rt,
         "require('core.state').last_action",
@@ -405,7 +408,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "require('systems.interaction').prompt('up')",
         "（已采集 · 灵芝）",
     )?;
-    press(&mut rt, InputKey::from_char('e'))?;
+    press(&mut rt, KeyCode::KeyE)?;
     assert_num(
         &mut rt,
         "inv.count(require('core.state').inventory, 'lingzhi')",
@@ -503,14 +506,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "require('player.player').teleport(304.0, 496.0); require('core.state').facing = 'up'",
     )?;
     frames(&mut rt, 2)?;
-    press(&mut rt, InputKey::from_char('e'))?;
+    press(&mut rt, KeyCode::KeyE)?;
     assert_str(&mut rt, "require('core.state').last_action", "gather_rice")?;
     lua(
         &mut rt,
         "require('player.player').teleport(944.0, 464.0); require('core.state').facing = 'up'",
     )?;
     frames(&mut rt, 2)?;
-    press(&mut rt, InputKey::from_char('e'))?;
+    press(&mut rt, KeyCode::KeyE)?;
     assert_str(
         &mut rt,
         "require('core.state').last_action",
@@ -648,7 +651,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "require('player.player').teleport(400.0, 336.0); require('core.state').facing = 'up'",
     )?;
     frames(&mut rt, 2)?;
-    press(&mut rt, InputKey::from_char('e'))?;
+    press(&mut rt, KeyCode::KeyE)?;
     assert_str(
         &mut rt,
         "require('core.state').last_action",
@@ -780,7 +783,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     banner("M19-01⑧ 睡觉（真实 T 键 → day.sleep）：日计数 +1、体力恢复、自动存档");
     let day_before = query_num(&mut rt, "clock.now().day")?;
     lua(&mut rt, "require('core.state').energy = 42")?;
-    press(&mut rt, InputKey::from_char('t'))?;
+    press(
+        &mut rt,
+        KeyCode::from_char('t').expect("QWERTY 字符必须有对应物理键"),
+    )?;
     assert_str(&mut rt, "require('core.state').last_action", "sleep")?;
     assert_num(&mut rt, "clock.now().day", day_before + 1.0)?;
     assert_num(&mut rt, "require('core.state').energy", 100.0)?;
@@ -984,7 +990,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "#(require('systems.gather').nodes('mountain_path')) >= 3 and 1 or 0",
         1.0,
     )?;
-    assert_num(&mut second, "#(require('world.quest').ids())", 8.0)?;
+    // 任务 9 条 = M19-01 的 8 条 + M28（计划 G3）追加的猎获订单 order_hunt；
+    // 对话仍是 3 条（order_hunt 复用林小满那一条对话文件，不新增 speaker）。
+    assert_num(&mut second, "#(require('world.quest').ids())", 9.0)?;
     assert_num(&mut second, "#(require('world.dialogue').ids())", 3.0)?;
     println!(
         "jhyt_m19_slice_ok project={} day={} orders={} mainline=true money={} lingzhi={} gather_nodes={}",
@@ -1037,7 +1045,7 @@ fn click_button(runtime: &mut LuaRuntime, button: &str) -> Result<(), Box<dyn st
 }
 
 /// Simulates a single key press: one frame with the key down, one clean frame.
-fn press(runtime: &mut LuaRuntime, key: InputKey) -> Result<(), Box<dyn std::error::Error>> {
+fn press(runtime: &mut LuaRuntime, key: KeyCode) -> Result<(), Box<dyn std::error::Error>> {
     let mut input = InputSnapshot::default();
     input.key_event(key, true);
     runtime.set_input(input);
@@ -1200,7 +1208,7 @@ fn talk_to(runtime: &mut LuaRuntime, persist_id: &str) -> Result<(), Box<dyn std
         return Err(format!("npc {persist_id} not interactable: {probe}").into());
     }
     let mut input = InputSnapshot::default();
-    input.key_event(InputKey::from_char('e'), true);
+    input.key_event(KeyCode::KeyE, true);
     runtime.set_input(input);
     lua(runtime, &stick)?;
     runtime.call_update()?;
@@ -1244,7 +1252,10 @@ fn strike_boar(runtime: &mut LuaRuntime) -> Result<(), Box<dyn std::error::Error
         return Err(format!("boar not strikeable: {got}").into());
     }
     frames(runtime, 2)?;
-    press(runtime, InputKey::from_char('j'))?;
+    press(
+        runtime,
+        KeyCode::from_char('j').expect("QWERTY 字符必须有对应物理键"),
+    )?;
     Ok(())
 }
 

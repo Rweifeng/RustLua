@@ -23,7 +23,7 @@
 //!   cargo run -p game --example jhyt_m20_audio [-- <game_jhyt-root>]
 
 use engine::core::{
-    input::{InputKey, InputSnapshot},
+    input::{InputSnapshot, KeyCode},
     script::LuaRuntime,
 };
 use std::{
@@ -188,14 +188,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     banner("M20-02c 暂停菜单「设置」页：四路音量 ± → 保存 settings.toml → 返回");
-    press(&mut runtime, InputKey::from_char('p'))?;
+    press(
+        &mut runtime,
+        KeyCode::from_char('p').expect("QWERTY 字符必须有对应物理键"),
+    )?;
     assert_mode(&mut runtime, "Pause")?;
     // M19-02 回归：主菜单行数（设置页是子页，不改变主菜单行数）。
     // M21 主角形象：主菜单新增「形象」行 → 5 项变 6 项，音量行索引 3 → 4。
     assert_num(&mut runtime, "#(require('ui.pause_menu').rows())", 6.0)?;
     lua(&mut runtime, "require('ui.pause_menu').select(4)")?;
     assert_str(&mut runtime, "require('ui.pause_menu').item()", "volume")?;
-    press(&mut runtime, InputKey::Space)?;
+    press(&mut runtime, KeyCode::Space)?;
     assert_str(
         &mut runtime,
         "tostring(require('ui.pause_menu').settings_active())",
@@ -219,39 +222,54 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "true",
     )?;
     // master 0.5 → +0.05 → 0.55
-    press(&mut runtime, InputKey::from_char('+'))?;
+    press(
+        &mut runtime,
+        KeyCode::from_char('+').expect("QWERTY 字符必须有对应物理键"),
+    )?;
     assert_num(
         &mut runtime,
         "require('core.audio').bus_volume('master')",
         0.55,
     )?;
     // W/S 选择（设置页内部分发）→ bgm → +0.05 → 0.30
-    press(&mut runtime, InputKey::from_char('s'))?;
+    press(
+        &mut runtime,
+        KeyCode::from_char('s').expect("QWERTY 字符必须有对应物理键"),
+    )?;
     assert_str(
         &mut runtime,
         "require('ui.pause_menu').settings_item()",
         "bgm",
     )?;
-    press(&mut runtime, InputKey::from_char('+'))?;
+    press(
+        &mut runtime,
+        KeyCode::from_char('+').expect("QWERTY 字符必须有对应物理键"),
+    )?;
     assert_num(&mut runtime, "require('core.audio').bus_volume('bgm')", 0.3)?;
     // 方向键移两行 → ui → -0.05 → 0.95（主菜单主音量 shortcut 不受影响）
-    press(&mut runtime, InputKey::ARROW_DOWN)?;
-    press(&mut runtime, InputKey::ARROW_DOWN)?;
+    press(&mut runtime, KeyCode::ArrowDown)?;
+    press(&mut runtime, KeyCode::ArrowDown)?;
     assert_str(
         &mut runtime,
         "require('ui.pause_menu').settings_item()",
         "ui",
     )?;
-    press(&mut runtime, InputKey::from_char('-'))?;
+    press(
+        &mut runtime,
+        KeyCode::from_char('-').expect("QWERTY 字符必须有对应物理键"),
+    )?;
     assert_num(&mut runtime, "require('core.audio').bus_volume('ui')", 0.95)?;
     // 方向键上一行 → sfx → -0.05 → 0.70
-    press(&mut runtime, InputKey::ARROW_UP)?;
+    press(&mut runtime, KeyCode::ArrowUp)?;
     assert_str(
         &mut runtime,
         "require('ui.pause_menu').settings_item()",
         "sfx",
     )?;
-    press(&mut runtime, InputKey::from_char('-'))?;
+    press(
+        &mut runtime,
+        KeyCode::from_char('-').expect("QWERTY 字符必须有对应物理键"),
+    )?;
     assert_num(&mut runtime, "require('core.audio').bus_volume('sfx')", 0.7)?;
     // 保存设置（第 5 行）→ 写回 settings.toml，保留注释与 [input] 段。
     lua(&mut runtime, "require('ui.pause_menu').settings_select(4)")?;
@@ -260,7 +278,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "require('ui.pause_menu').settings_item()",
         "save",
     )?;
-    press(&mut runtime, InputKey::Space)?;
+    press(&mut runtime, KeyCode::Space)?;
     assert_str(
         &mut runtime,
         "tostring(require('ui.pause_menu').settings_msg():find('已保存', 1, true) ~= nil)",
@@ -289,7 +307,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "true|true",
     )?;
     // Esc 返回主菜单（不关闭暂停），再确认继续游戏。
-    press(&mut runtime, InputKey::Escape)?;
+    press(&mut runtime, KeyCode::Escape)?;
     assert_str(
         &mut runtime,
         "tostring(require('ui.pause_menu').settings_active())",
@@ -299,7 +317,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // M21：主菜单 6 行（新增「形象」行）。
     assert_num(&mut runtime, "#(require('ui.pause_menu').rows())", 6.0)?;
     lua(&mut runtime, "require('ui.pause_menu').select(0)")?;
-    press(&mut runtime, InputKey::Space)?;
+    press(&mut runtime, KeyCode::Space)?;
     assert_mode(&mut runtime, "Playing")?;
 
     banner("M20-02d 面板焦点导航：方向键/W-S 走引擎焦点环（背包/任务/暂停/对话/商店）");
@@ -309,7 +327,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
          inv.add(require('core.state').inventory, 'rice', 2); \
          inv.add(require('core.state').inventory, 'timber', 3)",
     )?;
-    press(&mut runtime, InputKey::from_char('i'))?;
+    press(
+        &mut runtime,
+        KeyCode::from_char('i').expect("QWERTY 字符必须有对应物理键"),
+    )?;
     assert_mode(&mut runtime, "Inventory")?;
     let inv_rows = query_num(&mut runtime, "return #require('ui.inventory_ui').rows()")?;
     if inv_rows < 4.0 {
@@ -318,13 +339,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_num(&mut runtime, "ui.focus_count('bp:focus')", inv_rows)?;
     assert_num(&mut runtime, "ui.focus_index('bp:focus')", 0.0)?;
     // 2 列网格：右移到同排下一列，再下移到同列下一行。
-    press(&mut runtime, InputKey::ARROW_RIGHT)?;
+    press(&mut runtime, KeyCode::ArrowRight)?;
     assert_num(&mut runtime, "require('ui.inventory_ui').index()", 1.0)?;
     assert_num(&mut runtime, "ui.focus_index('bp:focus')", 1.0)?;
-    press(&mut runtime, InputKey::ARROW_DOWN)?;
+    press(&mut runtime, KeyCode::ArrowDown)?;
     assert_num(&mut runtime, "require('ui.inventory_ui').index()", 3.0)?;
     // W/S 与方向键共用同一焦点环（既有键位仍可用）。
-    press(&mut runtime, InputKey::from_char('w'))?;
+    press(
+        &mut runtime,
+        KeyCode::from_char('w').expect("QWERTY 字符必须有对应物理键"),
+    )?;
     assert_num(&mut runtime, "require('ui.inventory_ui').index()", 1.0)?;
     // 末项再下移 → 环绕回**同列首项**（2 列网格的焦点循环语义）。
     let last = inv_rows - 1.0;
@@ -333,7 +357,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &format!("require('ui.inventory_ui').select({last})"),
     )?;
     assert_num(&mut runtime, "require('ui.inventory_ui').index()", last)?;
-    press(&mut runtime, InputKey::ARROW_DOWN)?;
+    press(&mut runtime, KeyCode::ArrowDown)?;
     let column_wrap = (last as i64 % 2) as f64;
     assert_num(
         &mut runtime,
@@ -341,10 +365,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         column_wrap,
     )?;
     let inv_focus_count = query_num(&mut runtime, "return ui.focus_count('bp:focus')")?;
-    press(&mut runtime, InputKey::from_char('i'))?;
+    press(
+        &mut runtime,
+        KeyCode::from_char('i').expect("QWERTY 字符必须有对应物理键"),
+    )?;
     assert_mode(&mut runtime, "Playing")?;
 
-    press(&mut runtime, InputKey::from_char('l'))?;
+    press(
+        &mut runtime,
+        KeyCode::from_char('l').expect("QWERTY 字符必须有对应物理键"),
+    )?;
     assert_mode(&mut runtime, "Quest")?;
     // 任务日志有 8 条（M19-01 订单/主线）> 可视 7 行 → 滚动窗口生效。
     let quest_rows = query_num(&mut runtime, "return #require('ui.quest_ui').rows()")?;
@@ -352,10 +382,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err(format!("任务行数不足（{quest_rows}），无法验证焦点导航").into());
     }
     assert_num(&mut runtime, "require('ui.quest_ui').index()", 0.0)?;
-    press(&mut runtime, InputKey::ARROW_DOWN)?;
+    press(&mut runtime, KeyCode::ArrowDown)?;
     assert_num(&mut runtime, "require('ui.quest_ui').index()", 1.0)?;
     // 单列列表：逐行下移到末项（选中行被滚入视口），再下一次环绕回第一项。
-    press_many(&mut runtime, InputKey::ARROW_DOWN, quest_rows as usize - 2)?;
+    press_many(&mut runtime, KeyCode::ArrowDown, quest_rows as usize - 2)?;
     assert_num(
         &mut runtime,
         "require('ui.quest_ui').index()",
@@ -381,21 +411,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ),
         "true",
     )?;
-    press(&mut runtime, InputKey::ARROW_DOWN)?;
+    press(&mut runtime, KeyCode::ArrowDown)?;
     assert_num(&mut runtime, "require('ui.quest_ui').index()", 0.0)?;
     assert_num(&mut runtime, "ui.scroll_offset('qst:scroll')", 0.0)?;
-    press(&mut runtime, InputKey::from_char('q'))?;
+    press(
+        &mut runtime,
+        KeyCode::from_char('q').expect("QWERTY 字符必须有对应物理键"),
+    )?;
     assert_mode(&mut runtime, "Playing")?;
 
-    press(&mut runtime, InputKey::from_char('p'))?;
+    press(
+        &mut runtime,
+        KeyCode::from_char('p').expect("QWERTY 字符必须有对应物理键"),
+    )?;
     assert_mode(&mut runtime, "Pause")?;
-    press(&mut runtime, InputKey::ARROW_DOWN)?;
+    press(&mut runtime, KeyCode::ArrowDown)?;
     assert_num(&mut runtime, "require('ui.pause_menu').index()", 1.0)?;
-    press(&mut runtime, InputKey::ARROW_DOWN)?;
+    press(&mut runtime, KeyCode::ArrowDown)?;
     assert_num(&mut runtime, "require('ui.pause_menu').index()", 2.0)?;
-    press(&mut runtime, InputKey::ARROW_UP)?;
+    press(&mut runtime, KeyCode::ArrowUp)?;
     assert_num(&mut runtime, "require('ui.pause_menu').index()", 1.0)?;
-    press(&mut runtime, InputKey::Escape)?;
+    press(&mut runtime, KeyCode::Escape)?;
     assert_mode(&mut runtime, "Playing")?;
 
     assert_str(
@@ -406,12 +442,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_mode(&mut runtime, "Dialogue")?;
     assert_num(&mut runtime, "require('world.dialogue').selected()", 1.0)?;
     assert_num(&mut runtime, "ui.focus_index('dlg:focus')", 0.0)?;
-    press(&mut runtime, InputKey::ARROW_DOWN)?;
+    press(&mut runtime, KeyCode::ArrowDown)?;
     assert_num(&mut runtime, "require('world.dialogue').selected()", 2.0)?;
     assert_num(&mut runtime, "ui.focus_index('dlg:focus')", 1.0)?;
-    press(&mut runtime, InputKey::ARROW_UP)?;
+    press(&mut runtime, KeyCode::ArrowUp)?;
     assert_num(&mut runtime, "require('world.dialogue').selected()", 1.0)?;
-    press(&mut runtime, InputKey::Escape)?;
+    press(&mut runtime, KeyCode::Escape)?;
     assert_mode(&mut runtime, "Playing")?;
 
     assert_str(
@@ -422,7 +458,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_mode(&mut runtime, "Shop")?;
     assert_num(&mut runtime, "require('systems.shop').selected()", 1.0)?;
     assert_num(&mut runtime, "ui.focus_index('shp:focus')", 0.0)?;
-    press(&mut runtime, InputKey::ARROW_DOWN)?;
+    press(&mut runtime, KeyCode::ArrowDown)?;
     assert_num(&mut runtime, "require('systems.shop').selected()", 2.0)?;
 
     banner("M20-02e 列表滚动：库存超过可视槽位时按选中行滚动（ScrollState）");
@@ -449,7 +485,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 回到第 1 行后方向键下移 11 次 → 第 12 行；窗口滚动到让选中行可见。
     lua(&mut runtime, "require('systems.shop').select(1)")?;
     assert_num(&mut runtime, "require('systems.shop').selected()", 1.0)?;
-    press_many(&mut runtime, InputKey::ARROW_DOWN, 11)?;
+    press_many(&mut runtime, KeyCode::ArrowDown, 11)?;
     assert_num(&mut runtime, "require('systems.shop').selected()", 12.0)?;
     assert_num(
         &mut runtime,
@@ -478,7 +514,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "#(require('systems.shop').rows())",
         shop_stock,
     )?;
-    press(&mut runtime, InputKey::Escape)?;
+    press(&mut runtime, KeyCode::Escape)?;
     assert_mode(&mut runtime, "Playing")?;
 
     banner("M20-02f 回归锚点：统一校验 + HUD + 主音量 provider 与分组互不干扰");
@@ -598,7 +634,7 @@ fn enter_playable(
 }
 
 /// Simulates a single key press: one frame with the key down, one clean frame.
-fn press(runtime: &mut LuaRuntime, key: InputKey) -> Result<(), Box<dyn std::error::Error>> {
+fn press(runtime: &mut LuaRuntime, key: KeyCode) -> Result<(), Box<dyn std::error::Error>> {
     let mut input = InputSnapshot::default();
     input.key_event(key, true);
     runtime.set_input(input);
@@ -610,7 +646,7 @@ fn press(runtime: &mut LuaRuntime, key: InputKey) -> Result<(), Box<dyn std::err
 
 fn press_many(
     runtime: &mut LuaRuntime,
-    key: InputKey,
+    key: KeyCode,
     times: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     for _ in 0..times {

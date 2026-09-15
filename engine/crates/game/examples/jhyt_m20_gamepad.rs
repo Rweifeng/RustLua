@@ -32,7 +32,7 @@
 //!   cargo run -p game --example jhyt_m20_gamepad [-- <game_jhyt-root>]
 
 use engine::core::{
-    input::{InputKey, InputSnapshot},
+    input::{InputSnapshot, KeyCode},
     script::LuaRuntime,
 };
 use engine::host::gamepad::{
@@ -181,7 +181,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     pad_tick(&mut runtime, &mut poller, &mut snapshot)?;
     // 键盘侧同理：把 W 喂在输入快照里跑一帧（`input.update()` 同帧看到按键）。
     let mut held_w = InputSnapshot::default();
-    held_w.key_event(InputKey::from_char('w'), true);
+    held_w.key_event(
+        KeyCode::from_char('w').expect("QWERTY 字符必须有对应物理键"),
+        true,
+    );
     runtime.set_input(held_w);
     lua(&mut runtime, "require('ui.input').update()")?;
     assert_str_why(
@@ -306,10 +309,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     banner("M20-08b 默认映射与改绑：默认玩法动作只有键盘绑定，改绑后旧键失效新键生效");
     // 默认表：玩法动作是键盘绑定（手柄默认只覆盖 confirm/cancel/ui_*）。
+    // M22/W1 起键位文本是**物理键名**（`key:keye` 而不是 `key:e`）。
     assert_num(&mut runtime, "#input.bindings('interact')", 1.0)?;
-    assert_str(&mut runtime, "input.bindings('interact')[1]", "key:e")?;
+    assert_str(&mut runtime, "input.bindings('interact')[1]", "key:keye")?;
     assert_num(&mut runtime, "#input.bindings('move_up')", 1.0)?;
-    assert_str(&mut runtime, "input.bindings('move_up')[1]", "key:w")?;
+    assert_str(&mut runtime, "input.bindings('move_up')[1]", "key:keyw")?;
     // 玩家改键（settings.toml 的 [input] 段就是这份映射）：手柄按钮/轴 + 摇杆。
     for (action, binding) in [
         ("move_up", "padaxis:1+"),
@@ -346,7 +350,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_str(&mut runtime, "input.bindings('interact')[1]", "pad:0")?;
     assert_num(&mut runtime, "#input.bindings('interact')", 1.0)?;
     // 旧键失效：键盘 E 不再触发交互，W 不再移动。
-    press_key(&mut runtime, InputKey::from_char('e'))?;
+    press_key(&mut runtime, KeyCode::KeyE)?;
     assert_ne_str(&mut runtime, "require('core.state').last_action", "till")?;
     assert_num(&mut runtime, VELOCITY_X, 0.0)?;
     // 新键生效：手柄 A 触发交互（见下一章的药田断言）。
@@ -674,7 +678,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     // F 键（place）在商店里切换买卖页：手柄侧用同一动作（X 已绑到 attack 无关）。
     assert_str(&mut runtime, "require('systems.shop').tab()", "buy")?;
-    press_key(&mut runtime, InputKey::from_char('f'))?;
+    press_key(&mut runtime, KeyCode::KeyF)?;
     assert_str_why(
         &mut runtime,
         "require('systems.shop').tab()",
@@ -789,7 +793,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_str(&mut booted, "input.bindings('interact')[1]", "pad:0")?;
     assert_str(&mut booted, "input.bindings('move_up')[1]", "padaxis:1+")?;
     assert_num(&mut booted, "#input.bindings('move_up')", 1.0)?;
-    assert_str(&mut booted, "input.bindings('ui_up')[1]", "key:up")?;
+    // 保留的 `ui_up` 键盘绑定是**物理键**（M22/W1：`key:up` → `key:arrowup`）。
+    assert_str(&mut booted, "input.bindings('ui_up')[1]", "key:arrowup")?;
+    // 玩家改键落盘后，文件里的版本头必须是 v2（读 v1 写 v2）。
+    let booted_settings = fs::read_to_string(&settings_path)?;
+    if !booted_settings.contains("rustlua-actions-v2") {
+        return Err(format!("settings.toml 应已升级到 v2 版本头：\n{booted_settings}").into());
+    }
     assert_str(&mut booted, "input.diagnostics()[1]", "nil")?;
     lua(
         &mut booted,
@@ -1066,7 +1076,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     title.call_update()?;
     // 同时验证数字直选 2 → 「继续江湖」。
     let mut digit_input = InputSnapshot::default();
-    digit_input.key_event(InputKey::from_char('2'), true);
+    digit_input.key_event(
+        KeyCode::from_char('2').expect("QWERTY 字符必须有对应物理键"),
+        true,
+    );
     title.set_input(digit_input);
     title.call_update()?;
     assert_str_why(
@@ -1088,10 +1101,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_str_why(
         &mut title,
         "tostring((input.bindings('move_up') or {})[1])",
-        "key:w",
+        "key:keyw",
         "前提：默认绑定 move_up = W（否则下面的断言测的不是 W/S 通路）",
     )?;
-    press_key(&mut title, InputKey::from_char('w'))?;
+    press_key(
+        &mut title,
+        KeyCode::from_char('w').expect("QWERTY 字符必须有对应物理键"),
+    )?;
     assert_str_why(
         &mut title,
         "require('ui.title_menu').selected_id()",
@@ -1099,7 +1115,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "W（move_up）应上移一项：「继续江湖」→「开始新游戏」",
     )?;
     // 一次按下只走一步：左摇杆同时驱动 `move_*` 与 `ui_*`，两条路径必须互斥（else）。
-    press_key(&mut title, InputKey::from_char('s'))?;
+    press_key(
+        &mut title,
+        KeyCode::from_char('s').expect("QWERTY 字符必须有对应物理键"),
+    )?;
     assert_str_why(
         &mut title,
         "require('ui.title_menu').selected_id()",
@@ -1418,7 +1437,7 @@ fn enter_playable(
 }
 
 /// 键盘点按（用于验证「改绑后旧键失效」与上下文动作仍可用）。
-fn press_key(runtime: &mut LuaRuntime, key: InputKey) -> Result<(), Box<dyn std::error::Error>> {
+fn press_key(runtime: &mut LuaRuntime, key: KeyCode) -> Result<(), Box<dyn std::error::Error>> {
     let mut input = InputSnapshot::default();
     input.key_event(key, true);
     runtime.set_input(input);

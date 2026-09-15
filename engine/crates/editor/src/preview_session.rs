@@ -612,8 +612,28 @@ mod tests {
             PreviewTick::Pending | PreviewTick::Rendered
         ));
         // 紧随其后的 update 未到期 → Idle（仅排空在途回读）。
+        // 注意：节流用的是**真实时间**（`Instant`），而 `first` 这一步本身要跑一次离屏
+        // 渲染，可能已经吃掉大半个节流周期，因此到期与否必须按「上一次 update 开始 →
+        // 这一次 update 结束」这段**真实间隔**判断。只在确实没到期时断言 Idle，
+        // 否则这条测试会随机器负载随机变红。
+        let interval_start = std::time::Instant::now();
         let idle = session.update(&ctx, &InputSnapshot::default());
-        assert_eq!(idle, PreviewTick::Idle);
+        let elapsed = interval_start.elapsed();
+        if elapsed < PREVIEW_FRAME_INTERVAL {
+            assert_eq!(
+                idle,
+                PreviewTick::Idle,
+                "未到期不得步进（实测 {elapsed:?}）"
+            );
+        } else {
+            assert!(
+                matches!(
+                    idle,
+                    PreviewTick::Idle | PreviewTick::Pending | PreviewTick::Rendered
+                ),
+                "已到期时只允许步进/待回读，实测 {idle:?}"
+            );
+        }
         // 二次强制到期：应能排空上一回读并再次渲染。
         session.force_tick();
         let second = session.update(&ctx, &InputSnapshot::default());

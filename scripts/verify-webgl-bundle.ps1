@@ -1,0 +1,191 @@
+﻿# verify-webgl-bundle.ps1（M31/P3）：验证**真实发布出来的 WebGL 包**能否在浏览器里启动。
+#
+# 与 verify-webgl.ps1 的分工：
+#   * verify-webgl.ps1  —— 平台契约层（资源获取/解析、WebGL2 能力、存储降级、缺失资源诊断），
+#                          用一张契约检查页跑，不依赖 wasm 模块；
+#   * 本脚本            —— 产物层：直接起静态服务器 + 无头浏览器打开 `builds/webgl/<name>/index.html`，
+#                          断言 wasm 模块加载、页面进入 Lua 执行（`data-p2-boot` 标记）。
+#
+# 用法：
+#   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify-webgl-bundle.ps1 `
+#       [-BundleRoot examples\game_jhyt\builds\webgl\jianghu_youtian] [-Port 8137] [-TimeoutSeconds 90]
+#
+# 退出码：0 = 启动成功（`data-p2-boot=ok`）；1 = 启动失败（含缺失宿主 API 明细）；2 = 环境受限（无 node/浏览器）。
+
+[CmdletBinding()]
+param(
+    [string]$BundleRoot = "",
+    [int]$Port = 8137,
+    [int]$TimeoutSeconds = 90
+)
+
+$ErrorActionPreference = "Stop"
+$workspaceRoot = Split-Path -Parent $PSScriptRoot
+if ([string]::IsNullOrWhiteSpace($BundleRoot)) {
+    $BundleRoot = Join-Path $workspaceRoot "examples\game_jhyt\builds\webgl\jianghu_youtian"
+}
+if (-not (Test-Path -LiteralPath $BundleRoot)) {
+    throw "WebGL bundle was not found: $BundleRoot (先跑 scripts\package.ps1 -Platform webgl)"
+}
+$bundle = (Resolve-Path -LiteralPath $BundleRoot).Path
+
+$logRoot = Join-Path $workspaceRoot "artifacts\logs\webgl"
+New-Item -ItemType Directory -Force -Path $logRoot | Out-Null
+$stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+$logPath = Join-Path $logRoot "bundle-$stamp.log"
+
+function Write-Log([string]$Message, [string]$Color = "Gray") {
+    # 本仓部分运行环境的 `Write-Host` 包装器不支持 `-Color`（会把参数并进文本），
+    # 因此这里只把 RED/YELLOW 作为前缀写进纯文本：日志与证据必须是可比对的无装饰文本。
+    if ($Color -eq "Yellow" -or $Color -eq "Red") {
+        Write-Host ("[{0}] {1}" -f $Color.ToUpperInvariant(), $Message)
+    } else {
+        Write-Host $Message
+    }
+    Add-Content -Path $logPath -Value $Message -Encoding UTF8
+}
+
+Write-Log "==> WebGL bundle verification (bundle=$bundle)" Cyan
+
+# ---------- 1. 产物完整性 ----------
+$required = @(
+    "index.html",
+    "web-runtime.js",
+    "pkg\game_web.js",
+    "pkg\game_web_bg.wasm",
+    "pkg\fengari-web.js",
+    "pack\manifest.txt",
+    "pack\project.toml"
+)
+foreach ($item in $required) {
+    $path = Join-Path $bundle $item
+    if (-not (Test-Path -LiteralPath $path)) { throw "WebGL bundle is missing: $item" }
+    if ((Get-Item -LiteralPath $path).Length -le 0) { throw "WebGL bundle entry is empty: $item" }
+}
+$fontDir = Join-Path $bundle "fonts"
+$font = Get-ChildItem -LiteralPath $fontDir -Filter *.ttf -ErrorAction SilentlyContinue | Select-Object -First 1
+if (-not $font) { throw "WebGL bundle has no fonts/*.ttf" }
+
+# wasm 魔数（\0asm）：产物必须是真 wasm，不是占位文件。
+$wasmPath = Join-Path $bundle "pkg\game_web_bg.wasm"
+if (-not (Test-Path -LiteralPath $wasmPath)) { throw "wasm module missing: $wasmPath" }
+$wasmBytes = [System.IO.File]::ReadAllBytes($wasmPath)
+$magic = -join ($wasmBytes[0..3] | ForEach-Object { [char]$_ })
+if ($magic -ne "`0asm") { throw "pkg/game_web_bg.wasm is not a wasm module (magic=$([int[]]$wasmBytes[0..3] -join ','))" }
+Write-Log "wasm module ok: $([math]::Round($wasmBytes.Length / 1024, 1)) KB, magic=$magic"
+
+# ---------- 2. 浏览器与静态服务器 ----------
+$browser = $null
+foreach ($candidate in @(
+        (Join-Path ${env:ProgramFiles(x86)} "Microsoft\Edge\Application\msedge.exe"),
+        (Join-Path $env:ProgramFiles "Microsoft\Edge\Application\msedge.exe"),
+        (Join-Path $env:ProgramFiles "Google\Chrome\Application\chrome.exe"),
+        (Join-Path ${env:ProgramFiles(x86)} "Google\Chrome\Application\chrome.exe")
+    )) {
+    if ($candidate -and (Test-Path -LiteralPath $candidate)) { $browser = $candidate; break }
+}
+if (-not $browser) {
+    Write-Log "no supported browser found (Edge/Chrome); bundle boot check cannot run here" Yellow
+    exit 2
+}
+$node = Get-Command node -ErrorAction SilentlyContinue
+if (-not $node) {
+    Write-Log "node.js not found; static server for the boot check is unavailable" Yellow
+    exit 2
+}
+
+$server = Start-Process -FilePath $node.Source `
+    -ArgumentList @((Join-Path $PSScriptRoot "serve-static.js"), $bundle, "$Port") `
+    -PassThru -WindowStyle Hidden `
+    -RedirectStandardOutput (Join-Path $logRoot "bundle-serve-$stamp.log") `
+    -RedirectStandardError (Join-Path $logRoot "bundle-serve-$stamp.log.err")
+Start-Sleep -Milliseconds 1200
+
+$url = "http://127.0.0.1:$Port/index.html"
+$domPath = Join-Path $logRoot "bundle-dom-$stamp.html"
+$errPath = Join-Path $logRoot "bundle-dom-$stamp.err"
+
+function Invoke-HeadlessDom([string]$HeadlessFlag) {
+    $arguments = @(
+        $HeadlessFlag,
+        "--disable-gpu-sandbox",
+        "--no-sandbox",
+        "--disable-extensions",
+        "--virtual-time-budget=15000",
+        "--dump-dom",
+        $url
+    )
+    $process = Start-Process -FilePath $browser -ArgumentList $arguments -PassThru -NoNewWindow `
+        -RedirectStandardOutput $domPath -RedirectStandardError $errPath
+    if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+        try { $process.Kill() } catch { }
+        Write-Log "headless browser timed out after ${TimeoutSeconds}s ($HeadlessFlag)" Yellow
+    }
+    if (Test-Path -LiteralPath $domPath) { return Get-Content -LiteralPath $domPath -Raw } else { return "" }
+}
+
+$dom = Invoke-HeadlessDom "--headless=new"
+if (-not $dom -or $dom -notmatch "data-p2-boot") {
+    $dom = Invoke-HeadlessDom "--headless"
+}
+Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
+
+if (-not $dom) {
+    Write-Log "headless browser produced no DOM dump (see $errPath)" Red
+    exit 2
+}
+
+# ---------- 3. 断言 ----------
+$boot = if ($dom -match 'data-p2-boot="([^"]*)"') { $Matches[1] } else { "absent" }
+$detail = if ($dom -match 'data-p2-boot-detail="([^"]*)"') { $Matches[1] } else { "" }
+$statusText = if ($dom -match '<div id="status">([^<]*)</div>') { $Matches[1] } else { "" }
+# 缺失宿主 API 明细：`detail` 里是 `… [missing engine host API: a, b, c]`。单独导出一个
+# **数值**字段给验收样例读（JSON 里逗号与转义引号都会打乱"按字段切割"的朴素解析）。
+$missingNames = @()
+if ($detail -match 'missing engine host API:\s*([^\]]*)') {
+    $missingNames = @($Matches[1].Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+}
+# 画面自检：`data-p2-drawn` 是运行时对 canvas 采样得到的“非背景像素采样点”数量。
+# `-1` = 像素不可读（跨域贴图污染），`0` = 启动了但真的什么都没画出来。
+$drawnRaw = if ($dom -match 'data-p2-drawn="(-?\d+)"') { [int]$Matches[1] } else { $null }
+$uiElements = if ($dom -match 'data-p2-ui-elements="(\d+)"') { [int]$Matches[1] } else { $null }
+
+$summary = [ordered]@{
+    task           = "M31"
+    bundle         = $bundle
+    url            = $url
+    browser        = $browser
+    wasmBytes      = $wasmBytes.Length
+    boot           = $boot
+    detail         = $detail
+    missingCount   = $missingNames.Count
+    missingHostApi = ($missingNames -join ';')
+    statusText     = $statusText
+    drawnSamples   = $drawnRaw
+    uiElements     = $uiElements
+    domDump        = $domPath
+    log            = $logPath
+}
+$summary | ConvertTo-Json | Set-Content -Path (Join-Path $logRoot "bundle-summary-$stamp.json") -Encoding UTF8
+
+Write-Log "boot=$boot missing_host_api=$($missingNames.Count) detail=$detail" $(if ($boot -eq "ok") { "Green" } else { "Yellow" })
+Write-Log "status text: $statusText"
+Write-Log "drawn samples: $(if ($null -eq $drawnRaw) { 'unknown' } else { $drawnRaw }) ui elements: $(if ($null -eq $uiElements) { 'unknown' } else { $uiElements })"
+Write-Log "dom: $domPath"
+
+if ($drawnRaw -eq 0) {
+    # 启动成功但没有画面：这正是“页面能跑却黑屏”的典型症状，必须显式失败。
+    Write-Log "webgl_bundle_blank boot=$boot detail=canvas has no painted pixels" Red
+    exit 1
+}
+
+if ($boot -eq "ok") {
+    Write-Log "webgl_bundle_ok wasm=$([math]::Round($wasmBytes.Length / 1024, 1))KB" Green
+    exit 0
+}
+if ($boot -in @("booted", "running")) {
+    Write-Log "webgl_bundle_ok (booted; status text not final: $statusText)" Green
+    exit 0
+}
+Write-Log "webgl_bundle_boot_failed boot=$boot detail=$detail" Red
+exit 1

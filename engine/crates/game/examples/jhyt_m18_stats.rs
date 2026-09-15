@@ -23,7 +23,7 @@
 //!   cargo run -p game --example jhyt_m18_stats [-- <game_jhyt-root>]
 
 use engine::core::{
-    input::{InputKey, InputSnapshot},
+    input::{InputSnapshot, KeyCode},
     script::LuaRuntime,
 };
 use std::{
@@ -343,7 +343,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
          return tostring(ok) .. '|' .. tostring(why) end)()",
         "false|no_npc_near",
     )?;
-    press(&mut runtime, InputKey::from_char('g'))?;
+    press(
+        &mut runtime,
+        KeyCode::from_char('g').expect("QWERTY 字符必须有对应物理键"),
+    )?;
     assert_str(
         &mut runtime,
         "require('core.state').last_action",
@@ -376,7 +379,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "require('world.dialogue').info().options[1]",
         "愿为医馆采三株灵芝。",
     )?;
-    press(&mut runtime, InputKey::from_char('1'))?;
+    press(
+        &mut runtime,
+        KeyCode::from_char('1').expect("QWERTY 字符必须有对应物理键"),
+    )?;
     assert_str(
         &mut runtime,
         "require('world.quest').state('quest_herb')",
@@ -393,7 +399,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         5.0,
         "dialogue:shen_qingluo_herb",
     )?;
-    press(&mut runtime, InputKey::from_char('1'))?;
+    press(
+        &mut runtime,
+        KeyCode::from_char('1').expect("QWERTY 字符必须有对应物理键"),
+    )?;
     assert_str(&mut runtime, "require('world.dialogue').is_open()", "false")?;
     assert_mode(&mut runtime, "Playing")?;
 
@@ -673,12 +682,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
          return tostring(ok) .. '|' .. tostring(why) end)()",
         "true|nil",
     )?;
-    // 旧档兼容③：version=1 的旧 blob 被 save_manager 明确拒绝（早期版本门）。
+    // 旧档兼容③：v1 快照（providers 还没包装、各字段直接写在顶层）**迁移**后恢复，
+    // 不再硬拒绝——硬拒绝会让每次快照结构演进都作废玩家存档。迁移只搬运已注册
+    // provider 的字段（见 `core/save_manager.lua migrate`），未注册字段一律忽略。
     assert_str(
         &mut runtime,
-        "select(2, require('core.save_manager').restore({ version = 1, format = 'jhyt.snapshot', \
+        "(function() local ok, why = require('core.save_manager').restore({ version = 1, format = 'jhyt.snapshot', \
+         providers = {}, scene = { name = scene.reload() } }); \
+         return tostring(ok) .. '|' .. tostring(why) end)()",
+        "true|nil",
+    )?;
+    // 旧档兼容④：真正的 v1 顶层布局（无 `providers` 表）也能迁移并落值。
+    let money_captured = query_num(&mut runtime, "return __captured.providers.state.money")?;
+    lua(&mut runtime, "require('core.state').money = 7")?;
+    assert_str(
+        &mut runtime,
+        "(function() local ok, why = require('core.save_manager').restore({ version = 1, format = 'jhyt.snapshot', \
+         scene = { name = scene.reload() }, state = __captured.providers.state, \
+         inventory = __captured.providers.inventory, clock = __captured.providers.clock }); \
+         return tostring(ok) .. '|' .. tostring(why) end)()",
+        "true|nil",
+    )?;
+    // 迁移后的 provider 数据必须真的落进内存（顶层 `state` 字段被搬到 `providers.state`）。
+    assert_num(&mut runtime, "require('core.state').money", money_captured)?;
+    // 高版本（更新引擎写的档）仍然明确拒绝：绝不用旧解析器猜新格式。
+    assert_str(
+        &mut runtime,
+        "select(2, require('core.save_manager').restore({ version = 3, format = 'jhyt.snapshot', \
          providers = {}, scene = { name = scene.reload() } }))",
-        "legacy snapshot version 1 is explicitly rejected; start a new game",
+        "unsupported snapshot version: 3",
     )?;
     let rel_shen = query_num(
         &mut runtime,
@@ -802,12 +834,12 @@ fn talk(runtime: &mut LuaRuntime, persist_id: &str) -> Result<(), Box<dyn std::e
     if got != "ok" {
         return Err(format!("npc {persist_id} not interactable: {got}").into());
     }
-    press(runtime, InputKey::from_char('e'))?;
+    press(runtime, KeyCode::KeyE)?;
     Ok(())
 }
 
 /// Simulates a single key press: one frame with the key down, one clean frame.
-fn press(runtime: &mut LuaRuntime, key: InputKey) -> Result<(), Box<dyn std::error::Error>> {
+fn press(runtime: &mut LuaRuntime, key: KeyCode) -> Result<(), Box<dyn std::error::Error>> {
     let mut input = InputSnapshot::default();
     input.key_event(key, true);
     runtime.set_input(input);

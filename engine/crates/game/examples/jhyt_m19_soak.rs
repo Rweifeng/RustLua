@@ -17,7 +17,7 @@
 //!   cargo run -p game --example jhyt_m19_soak [-- <game_jhyt-root>]
 
 use engine::core::{
-    input::{InputKey, InputSnapshot},
+    input::{InputSnapshot, KeyCode},
     script::LuaRuntime,
 };
 use std::{
@@ -97,7 +97,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for day in 1..=30 {
         run_scripted_day(&mut runtime, true)?;
         // 睡觉：day.sleep() → on_day_end（存档）→ 清晨 → on_day_start（日结算+存档）。
-        press(&mut runtime, InputKey::from_char('t'))?;
+        press(
+            &mut runtime,
+            KeyCode::from_char('t').expect("QWERTY 字符必须有对应物理键"),
+        )?;
         let now_day = query_num(&mut runtime, "return clock.now().day")?;
         if now_day <= days_seen {
             return Err(format!("day did not advance on day {day}: {now_day}").into());
@@ -305,7 +308,7 @@ fn click_button(runtime: &mut LuaRuntime, button: &str) -> Result<(), Box<dyn st
 }
 
 /// Simulates a single key press: one frame with the key down, one clean frame.
-fn press(runtime: &mut LuaRuntime, key: InputKey) -> Result<(), Box<dyn std::error::Error>> {
+fn press(runtime: &mut LuaRuntime, key: KeyCode) -> Result<(), Box<dyn std::error::Error>> {
     let mut input = InputSnapshot::default();
     input.key_event(key, true);
     runtime.set_input(input);

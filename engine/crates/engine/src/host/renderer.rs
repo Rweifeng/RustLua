@@ -41,6 +41,19 @@ fn hash_bytes(bytes: &[u8]) -> u64 {
     hasher.finish()
 }
 
+/// 2D 顶点缓冲初始容量（1 MiB ≈ 9700 个 36 字节顶点）。运行时按需增长，
+/// 见 [`next_2d_vertex_capacity`]。
+const INITIAL_2D_VERTEX_BUFFER_BYTES: u64 = 1024 * 1024;
+
+/// 2D 顶点缓冲的目标容量：至少容纳 `required` 字节，且不小于初始容量、按 2 的幂增长。
+///
+/// 按 2 的幂增长是为了避免每帧为多出的几十个顶点重建 buffer（GPU 资源重建会
+/// 造成帧时间尖峰），同时保证扩容次数对数级增长。
+fn next_2d_vertex_capacity(required: u64) -> u64 {
+    let floor = required.max(INITIAL_2D_VERTEX_BUFFER_BYTES);
+    floor.checked_next_power_of_two().unwrap_or(floor)
+}
+
 /// A texture uploaded to the GPU and ready to sample.
 struct LoadedTexture {
     path: String,
@@ -201,6 +214,10 @@ pub struct Renderer {
     texture_bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     vertex_buffer: wgpu::Buffer,
+    /// 2D 顶点缓冲扩容次数（诊断/验收用；正常游戏内应保持很小的值）。
+    vertex_buffer_growths: u64,
+    /// 单帧顶点字节数峰值（诊断用：容量是否接近上限）。
+    vertex_bytes_peak: u64,
     textures: Vec<LoadedTexture>,
     white: Option<wgpu::BindGroup>,
     atlas: Option<wgpu::BindGroup>,
@@ -680,7 +697,7 @@ impl Renderer {
         });
         let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("p2-vertex-buffer"),
-            size: 1024 * 1024,
+            size: INITIAL_2D_VERTEX_BUFFER_BYTES,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -1049,6 +1066,8 @@ impl Renderer {
             texture_bind_group_layout,
             sampler,
             vertex_buffer,
+            vertex_buffer_growths: 0,
+            vertex_bytes_peak: 0,
             textures: Vec::new(),
             white: None,
             atlas: None,
@@ -2011,50 +2030,52 @@ impl Renderer {
         }
         if !mesh.vertices.is_empty() {
             let bytes = bytemuck::cast_slice(&mesh.vertices);
-            if bytes.len() as u64 <= self.vertex_buffer.size() {
-                self.queue.write_buffer(&self.vertex_buffer, 0, bytes);
-                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("p2-scene-pass"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view,
-                        depth_slice: None,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                });
-                pass.set_pipeline(&self.pipeline);
-                pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-                if let Some(font) = &mesh.font_atlas {
-                    let _ = self.ensure_font_atlas(font);
-                }
-                for font in &mesh.custom_font_atlases {
-                    let _ = self.ensure_custom_font(&font.key, &font.pixels);
-                }
-                for draw in &mesh.draws {
-                    if draw.sdf {
-                        // SDF 文本：Linear 采样 + SDF shader 分支。默认字体用全局图集
-                        // bind；自定义字体（font://...）按该字体的 draw 选对应 bind。
-                        let Some(sdf_bind) = self.sdf_bind_for(draw.texture, &mesh.paths) else {
-                            continue;
-                        };
-                        pass.set_pipeline(&self.pipeline_sdf);
-                        pass.set_bind_group(0, &sdf_bind, &[]);
-                        pass.draw(draw.start..draw.start + draw.count, 0..1);
-                        continue;
-                    }
-                    let Some(bind) = self.bind_group_for(draw.texture, &mesh.paths) else {
+            // 2D 顶点缓冲按需增长。此前是固定 1 MiB + `if bytes.len() <= size`
+            // **没有 else 分支**：超限时整个 2D 层（含 UI/文字）静默消失，日志里
+            // 什么线索都没有。现在超限即扩容并留下可诊断的计数与日志。
+            self.ensure_2d_vertex_capacity(bytes.len() as u64);
+            self.queue.write_buffer(&self.vertex_buffer, 0, bytes);
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("p2-scene-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_pipeline(&self.pipeline);
+            pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+            if let Some(font) = &mesh.font_atlas {
+                let _ = self.ensure_font_atlas(font);
+            }
+            for font in &mesh.custom_font_atlases {
+                let _ = self.ensure_custom_font(&font.key, &font.pixels);
+            }
+            for draw in &mesh.draws {
+                if draw.sdf {
+                    // SDF 文本：Linear 采样 + SDF shader 分支。默认字体用全局图集
+                    // bind；自定义字体（font://...）按该字体的 draw 选对应 bind。
+                    let Some(sdf_bind) = self.sdf_bind_for(draw.texture, &mesh.paths) else {
                         continue;
                     };
-                    pass.set_pipeline(&self.pipeline);
-                    pass.set_bind_group(0, &bind, &[]);
+                    pass.set_pipeline(&self.pipeline_sdf);
+                    pass.set_bind_group(0, &sdf_bind, &[]);
                     pass.draw(draw.start..draw.start + draw.count, 0..1);
+                    continue;
                 }
+                let Some(bind) = self.bind_group_for(draw.texture, &mesh.paths) else {
+                    continue;
+                };
+                pass.set_pipeline(&self.pipeline);
+                pass.set_bind_group(0, &bind, &[]);
+                pass.draw(draw.start..draw.start + draw.count, 0..1);
             }
         }
         if !mesh.vector_vertices.is_empty()
@@ -2129,6 +2150,52 @@ impl Renderer {
             pass.set_vertex_buffer(0, self.vector_vertex_buffer.slice(..));
             pass.draw(0..mesh.vector_vertices.len() as u32, 0..1);
         }
+    }
+
+    /// 确保 2D 顶点缓冲能容纳 `required` 字节；不足则按 2 的幂扩容。
+    ///
+    /// 返回扩容后的容量。2D 顶点缓冲不参与任何 bind group（只 `set_vertex_buffer`），
+    /// 因此中途重建是安全的。
+    fn ensure_2d_vertex_capacity(&mut self, required: u64) -> u64 {
+        self.vertex_bytes_peak = self.vertex_bytes_peak.max(required);
+        if required <= self.vertex_buffer.size() {
+            return self.vertex_buffer.size();
+        }
+        let capacity = next_2d_vertex_capacity(required);
+        tracing::warn!(
+            target: "render",
+            required,
+            previous = self.vertex_buffer.size(),
+            capacity,
+            growths = self.vertex_buffer_growths + 1,
+            "[runtime] 2D vertex buffer grew: {} -> {} bytes (required {})",
+            self.vertex_buffer.size(),
+            capacity,
+            required
+        );
+        self.vertex_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("p2-vertex-buffer"),
+            size: capacity,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.vertex_buffer_growths += 1;
+        capacity
+    }
+
+    /// 2D 顶点缓冲扩容次数（诊断/验收：稳定场景不应持续增长）。
+    pub fn vertex_buffer_growths(&self) -> u64 {
+        self.vertex_buffer_growths
+    }
+
+    /// 当前 2D 顶点缓冲容量（字节）。
+    pub fn vertex_buffer_capacity(&self) -> u64 {
+        self.vertex_buffer.size()
+    }
+
+    /// 本进程见过的单帧 2D 顶点字节数峰值。
+    pub fn vertex_bytes_peak(&self) -> u64 {
+        self.vertex_bytes_peak
     }
 
     fn ensure_vector_buffer_capacity(
@@ -2401,6 +2468,30 @@ impl Renderer {
     /// id, so each custom font samples its own SDF texture.
     fn ensure_custom_font(&mut self, key: &str, font: &FontAtlasPixels) -> Option<()> {
         if font.pixels.is_empty() {
+            // 空像素 = 上游声明"自上次上传未变化"。与默认图集同一防线：只有当本
+            // 渲染器**已经上传过该版本**时才可以续用现有 bind。否则（新渲染器、
+            // 或上一帧是空网格帧而被整体跳过）必须丢弃过期 bind，让本帧跳过该字
+            // 体的 SDF 绘制，等下一次全量像素到达再上传——否则会永久画出上一次
+            // 的字形，表现为"改了文案/字号却一直显示旧字"或整段缺字。
+            let stale = self
+                .custom_fonts
+                .get(key)
+                .is_none_or(|entry| entry.uploaded_version != font.version);
+            if stale && let Some(entry) = self.custom_fonts.get_mut(key) {
+                let had_bind = entry.sdf_bind.is_some();
+                entry.bind = None;
+                entry.sdf_bind = None;
+                if had_bind {
+                    tracing::debug!(
+                        target: "render",
+                        key,
+                        version = font.version,
+                        uploaded = entry.uploaded_version,
+                        "[render] custom font atlas version changed without pixels; \
+                         dropping stale bind for this frame"
+                    );
+                }
+            }
             return Some(());
         }
         let pixels_hash = hash_bytes(&font.pixels);
@@ -2654,6 +2745,48 @@ pub enum RenderOutcome {
 mod tests {
     use super::*;
 
+    /// 2D 顶点缓冲容量策略：不小于初始容量、按 2 的幂增长、且总是能容纳请求。
+    /// 回归背景：此前容量固定为 1 MiB 且超限时**没有 else 分支**，超出的帧会
+    /// 静默丢掉整层 2D 绘制（含 UI 与文字），日志里没有任何线索。
+    #[test]
+    fn two_d_vertex_capacity_grows_to_powers_of_two() {
+        assert_eq!(
+            next_2d_vertex_capacity(0),
+            INITIAL_2D_VERTEX_BUFFER_BYTES,
+            "空帧不应缩小缓冲"
+        );
+        assert_eq!(
+            next_2d_vertex_capacity(INITIAL_2D_VERTEX_BUFFER_BYTES),
+            INITIAL_2D_VERTEX_BUFFER_BYTES,
+            "正好装满不扩容"
+        );
+        // 超出一点：直接跳到 2 MiB（而不是 1 MiB + 若干字节），避免逐帧重建。
+        assert_eq!(
+            next_2d_vertex_capacity(INITIAL_2D_VERTEX_BUFFER_BYTES + 36),
+            2 * 1024 * 1024
+        );
+        assert_eq!(next_2d_vertex_capacity(5 * 1024 * 1024), 8 * 1024 * 1024);
+        // 任何请求都必须被容纳（扩容策略的正确性下限）。
+        for required in [
+            1_u64,
+            1024,
+            1024 * 1024 - 1,
+            1024 * 1024 + 1,
+            3 * 1024 * 1024 + 7,
+            17 * 1024 * 1024,
+        ] {
+            let capacity = next_2d_vertex_capacity(required);
+            assert!(
+                capacity >= required,
+                "capacity {capacity} must hold {required} bytes"
+            );
+            assert!(
+                capacity.is_power_of_two(),
+                "{capacity} must be a power of two"
+            );
+        }
+    }
+
     /// Renders an empty frame to an offscreen texture and reads it back,
     /// proving the offscreen path (`render_into_texture` +
     /// `copy_texture_to_cpu`) produces real pixels. Skips when no GPU is
@@ -2808,7 +2941,7 @@ mod tests {
     /// 重开（R）应清屏：初始 4 块 → 硬降后 8 块 → 重开后只剩新方块 4 块。
     #[test]
     fn tetris_restart_clears_field() {
-        use crate::core::input::{InputKey, InputSnapshot};
+        use crate::core::input::{InputSnapshot, KeyCode};
         use crate::core::scene::Scene;
 
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
@@ -2881,7 +3014,7 @@ mod tests {
         let initial = count_blocks(&mut runtime);
         assert_eq!(initial, 4 * 28 * 28, "初始应是 4 块，got {initial}");
         let mut input = InputSnapshot::default();
-        input.key_event(InputKey::Space, true); // 硬降：放置当前块 + 生成新块
+        input.key_event(KeyCode::Space, true); // 硬降：放置当前块 + 生成新块
         runtime.run_script_steps(1, 1.0 / 60.0, &input).unwrap();
         let after_drop = count_blocks(&mut runtime);
         assert_eq!(
@@ -2889,8 +3022,11 @@ mod tests {
             8 * 28 * 28,
             "硬降后应 8 块（4 放置 + 4 新），got {after_drop}"
         );
-        input.key_event(InputKey::Space, false);
-        input.key_event(InputKey::from_char('r'), true); // 重开
+        input.key_event(KeyCode::Space, false);
+        input.key_event(
+            KeyCode::from_char('r').expect("QWERTY 字符必须有对应物理键"),
+            true,
+        ); // 重开
         runtime.run_script_steps(1, 1.0 / 60.0, &input).unwrap();
         let after_restart = count_blocks(&mut runtime);
         assert_eq!(

@@ -17,7 +17,7 @@
 
 use crate::util::strip_verbatim_prefix;
 use eframe::egui;
-use engine::core::input::{ActionConflict, ActionMap, AxisDirection, Binding, InputKey};
+use engine::core::input::{ActionConflict, ActionMap, AxisDirection, Binding};
 use engine::core::settings::{
     ProjectSettings, load_deadzone_section, load_input_section, save_input_settings,
 };
@@ -93,77 +93,20 @@ impl GamepadCaptureTracker {
     }
 }
 
-/// egui 键 → 引擎键身份（**字符类**键：字母 / 数字 / 符号）。
-///
-/// 单字符 `Key::name()`（`A`..`Z`、`0`..`9`）直接走 `InputKey::from_char`；egui 对
-/// 符号键返回的是**符号名**（`"Minus"`/`"Plus"`/`"Quote"`…），因此这里显式翻回字符。
-/// 返回 `None` 的是命名/功能键（空格、Esc、方向键、Tab、F1..），由调用方按自己的
-/// 键域决定是否继续映射——捕获模式排除 Esc 与功能键（Esc 留给「取消捕获」），
-/// Play 预览桥接则包含空格/Esc/方向键/F1·F2·F4（见 `game_view::preview_input_key`）。
-#[must_use]
-pub(crate) fn character_key_from_egui(key: egui::Key) -> Option<InputKey> {
-    let name = key.name();
-    let mut chars = name.chars();
-    if let (Some(single), None) = (chars.next(), chars.next()) {
-        return single
-            .is_ascii_graphic()
-            .then(|| InputKey::from_char(single));
-    }
-    let character = match name {
-        "Minus" => '-',
-        "Plus" => '+',
-        "Equals" => '=',
-        "Comma" => ',',
-        "Period" => '.',
-        "Semicolon" => ';',
-        "Slash" => '/',
-        "Backslash" => '\\',
-        "OpenBracket" => '[',
-        "CloseBracket" => ']',
-        "Backtick" => '`',
-        "Quote" => '\'',
-        "Colon" => ':',
-        "Pipe" => '|',
-        "Questionmark" => '?',
-        "Exclamationmark" => '!',
-        "OpenCurlyBracket" => '{',
-        "CloseCurlyBracket" => '}',
-        _ => return None,
-    };
-    Some(InputKey::from_char(character))
-}
-
-/// egui 键 → 引擎键身份（**命名**键：空格 / Esc / 方向键）。
-///
-/// 与 [`character_key_from_egui`] 互补；两个函数合起来就是引擎绑定语法可表达的
-/// 键盘键域（`key:<字符>` 与 `key:space`/`key:escape`/`key:up|down|left|right`）。
-#[must_use]
-pub(crate) fn named_key_from_egui(key: egui::Key) -> Option<InputKey> {
-    match key.name() {
-        "Space" => Some(InputKey::Space),
-        "Escape" => Some(InputKey::Escape),
-        "Up" => Some(InputKey::ARROW_UP),
-        "Down" => Some(InputKey::ARROW_DOWN),
-        "Left" => Some(InputKey::ARROW_LEFT),
-        "Right" => Some(InputKey::ARROW_RIGHT),
-        _ => None,
-    }
-}
-
 /// `egui::Key` → 引擎 [`Binding`]（捕获键盘输入用）。
 ///
-/// 映射**有稳定引擎身份**的字符类键与空格/方向键（`character_key_from_egui` +
-/// [`named_key_from_egui`]，与游戏窗口、编辑器 Play 预览同一身份）。`Esc` 返回
-/// `None`——它留给「取消捕获」，要绑 Esc 用「手动绑定文本」输入 `key:escape`；
-/// 功能键不在引擎绑定语法内。
+/// M22/W1：键身份来自**唯一**的转换表 [`crate::panels::keymap::egui_input_key`]
+/// （与 Play 预览桥接同一份），因此捕获面板能绑定的键**恰好**是引擎键域里 egui
+/// 表达得了的那些——字母/数字/符号/F1..F12/方向键/空格/Tab/Enter/Backspace 等。
+///
+/// `Esc` 返回 `None`：它留给「取消捕获」；要绑 Esc 用下方「手动绑定文本」输入
+/// `key:escape`（M20-08 既有隔离顺序不变，W1 只替换键身份）。
 #[must_use]
 pub(crate) fn binding_from_egui_key(key: egui::Key) -> Option<Binding> {
     if key == egui::Key::Escape {
         return None;
     }
-    character_key_from_egui(key)
-        .or_else(|| named_key_from_egui(key))
-        .map(Binding::Key)
+    crate::panels::keymap::egui_input_key(key).map(Binding::Key)
 }
 
 /// 手柄按键名的**抽象**通用名（M20-06 设备契约的 0..15 索引；不做 ABXY 机型
@@ -240,10 +183,15 @@ pub(crate) fn action_label(action: &str) -> &str {
     }
 }
 
-/// 绑定文本 → 界面上更易读的短标签（`key:e` → `E`，`pad:0` → `手柄 A（0）`）。
+/// 绑定 → 界面上更易读的短标签（`key:keye` → `E`，`pad:0` → `手柄 A（0）`）。
 ///
-/// 键盘侧复用 [`Binding::to_text`] 的稳定文本再翻译（避免与引擎的键身份逻辑
-/// 出现第二份实现）。
+/// M22/W1：键盘/鼠标标签**完全交给引擎**（[`Binding::display_label`] → 键位的
+/// `KeyCode::display_label`）——旧实现拿 v1 的**字符文本**（`key:space`、`key:up`）
+/// 在这里再翻一遍，既与引擎的键身份逻辑构成第二份实现，也无法表达 v2 的物理键名
+/// （`key:keye` 会被 `to_ascii_uppercase` 显示成「KEYE」）。
+///
+/// 手柄两个分支保留编辑器自己的设备命名（[`gamepad_button_name`] /
+/// [`gamepad_axis_name`] 是 M20-06 的抽象通用名，引擎侧只有索引），因此不走引擎标签。
 #[must_use]
 pub(crate) fn binding_label(binding: Binding) -> String {
     match binding {
@@ -257,24 +205,7 @@ pub(crate) fn binding_label(binding: Binding) -> String {
             };
             format!("手柄 {}{}（轴{}）", gamepad_axis_name(index), sign, index)
         }
-        other => {
-            let text = other.to_text();
-            let Some(value) = text.strip_prefix("key:") else {
-                return text;
-            };
-            match value {
-                "space" => "空格".to_owned(),
-                "escape" => "Esc".to_owned(),
-                "up" => "↑".to_owned(),
-                "down" => "↓".to_owned(),
-                "left" => "←".to_owned(),
-                "right" => "→".to_owned(),
-                value => match value.strip_prefix("other:") {
-                    Some(code) => format!("键码 {code}"),
-                    None => value.to_ascii_uppercase(),
-                },
-            }
-        }
+        Binding::Key(_) | Binding::Mouse(_) => binding.display_label(),
     }
 }
 
@@ -563,7 +494,7 @@ pub(crate) fn settings_path(root: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::core::input::InputSnapshot;
+    use engine::core::input::{InputSnapshot, KeyCode, MouseButton};
     use engine::host::gamepad::{FakeBackend, axis, button};
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -589,49 +520,93 @@ mod tests {
         // 字母/数字与游戏窗口、Play 预览同源（W/A/S/D 是专用变体）。
         assert_eq!(
             binding_from_egui_key(egui::Key::E),
-            Some(Binding::Key(InputKey::from_char('e')))
+            Some(Binding::Key(KeyCode::KeyE))
         );
         assert_eq!(
             binding_from_egui_key(egui::Key::W),
-            Some(Binding::Key(InputKey::W))
+            Some(Binding::Key(KeyCode::KeyW))
         );
         assert_eq!(
             binding_from_egui_key(egui::Key::Num3),
-            Some(Binding::Key(InputKey::from_char('3')))
+            Some(Binding::Key(
+                KeyCode::from_char('3').expect("QWERTY 字符必须有对应物理键")
+            ))
         );
         assert_eq!(
             binding_from_egui_key(egui::Key::Space),
-            Some(Binding::Key(InputKey::Space))
+            Some(Binding::Key(KeyCode::Space))
         );
         assert_eq!(
             binding_from_egui_key(egui::Key::ArrowUp),
-            Some(Binding::Key(InputKey::ARROW_UP))
+            Some(Binding::Key(KeyCode::ArrowUp))
         );
         assert_eq!(
             binding_from_egui_key(egui::Key::Minus),
-            Some(Binding::Key(InputKey::from_char('-')))
+            Some(Binding::Key(
+                KeyCode::from_char('-').expect("QWERTY 字符必须有对应物理键")
+            ))
         );
         assert_eq!(
             binding_from_egui_key(egui::Key::Plus),
-            Some(Binding::Key(InputKey::from_char('+')))
+            Some(Binding::Key(
+                KeyCode::from_char('+').expect("QWERTY 字符必须有对应物理键")
+            ))
         );
-        // 符号键（egui 的 `name()` 是符号名）也要能捕获，并翻成字符身份。
+        // 符号键（egui 的 `name()` 是符号名）也要能捕获，并翻成**物理键**身份。
+        // `Colon` 就是 `;` 那个键的带 Shift 写法 → 落回 `Semicolon`（同一个物理键，
+        // 不能因为玩家按住 Shift 就变成另一个可绑定的键）。
         assert_eq!(
-            character_key_from_egui(egui::Key::Quote),
-            Some(InputKey::from_char('\''))
+            crate::panels::keymap::egui_input_key(egui::Key::Quote),
+            Some(KeyCode::Quote)
         );
         assert_eq!(
-            character_key_from_egui(egui::Key::Backslash),
-            Some(InputKey::from_char('\\'))
+            crate::panels::keymap::egui_input_key(egui::Key::Backslash),
+            Some(KeyCode::Backslash)
         );
         assert_eq!(
-            character_key_from_egui(egui::Key::Colon),
-            Some(InputKey::from_char(':'))
+            crate::panels::keymap::egui_input_key(egui::Key::Colon),
+            Some(KeyCode::Semicolon)
         );
-        // Esc 保留给「取消捕获」；命名/功能键不参与捕获（手动绑定可录入）。
+        // M22/W1 改进：Tab/Enter/Backspace/F5/Delete 现在**在引擎键域内**（旧
+        // `InputKey` 按字符编码，这些键根本无法表达），因此捕获面板能绑定它们。
+        // 只有 Esc 例外——它留给「取消捕获」。
         assert_eq!(binding_from_egui_key(egui::Key::Escape), None);
-        assert_eq!(binding_from_egui_key(egui::Key::F5), None);
-        assert_eq!(binding_from_egui_key(egui::Key::Delete), None);
+        assert_eq!(
+            binding_from_egui_key(egui::Key::Tab),
+            Some(Binding::Key(KeyCode::Tab))
+        );
+        assert_eq!(
+            binding_from_egui_key(egui::Key::Enter),
+            Some(Binding::Key(KeyCode::Enter))
+        );
+        assert_eq!(
+            binding_from_egui_key(egui::Key::Backspace),
+            Some(Binding::Key(KeyCode::Backspace))
+        );
+        assert_eq!(
+            binding_from_egui_key(egui::Key::F5),
+            Some(Binding::Key(KeyCode::F5))
+        );
+        assert_eq!(
+            binding_from_egui_key(egui::Key::Delete),
+            Some(Binding::Key(KeyCode::Delete))
+        );
+        // 捕获结果的**落盘文本**一律是 v2 物理键名（字母/数字带前缀、符号用变体名，
+        // `+` 与 `=` 收敄为同一个 `key:equal`）。
+        for (egui_key, expected) in [
+            (egui::Key::E, "key:keye"),
+            (egui::Key::Num3, "key:digit3"),
+            (egui::Key::Space, "key:space"),
+            (egui::Key::ArrowUp, "key:arrowup"),
+            (egui::Key::Minus, "key:minus"),
+            (egui::Key::Plus, "key:equal"),
+            (egui::Key::Quote, "key:quote"),
+            (egui::Key::Backslash, "key:backslash"),
+            (egui::Key::Colon, "key:semicolon"),
+        ] {
+            let binding = binding_from_egui_key(egui_key).expect("上述键都必须可捕获");
+            assert_eq!(binding.to_text(), expected, "{egui_key:?} 的稳定文本");
+        }
     }
 
     #[test]
@@ -716,7 +691,7 @@ mod tests {
         assert!(!ui.is_capturing());
         assert_eq!(ui.map.bindings("interact"), [Binding::GamepadButton(2)]);
         // 其它动作用默认绑定补齐（只覆盖捕获目标）。
-        assert_eq!(ui.map.bindings("move_up"), [Binding::Key(InputKey::W)]);
+        assert_eq!(ui.map.bindings("move_up"), [Binding::Key(KeyCode::KeyW)]);
         assert!(ui.message.contains("交互"), "{}", ui.message);
         // 取消捕获不改绑定。
         ui.begin_capture("interact");
@@ -731,28 +706,25 @@ mod tests {
     fn rebind_replaces_old_binding_and_engine_queries_follow_it() {
         let mut ui = InputBindingsUi::default();
         let mut input = InputSnapshot::default();
-        input.key_event(InputKey::from_char('e'), true);
+        input.key_event(KeyCode::KeyE, true);
         assert!(input.action_is_down(&ui.map, "interact"));
         // 改绑到 F：旧键失效、新键生效（复用引擎动作查询，证明「改绑真的生效」）。
-        ui.apply_binding_to("interact", Binding::Key(InputKey::from_char('f')))
+        ui.apply_binding_to("interact", Binding::Key(KeyCode::KeyF))
             .unwrap();
         assert!(!input.action_is_down(&ui.map, "interact"));
         let mut input = InputSnapshot::default();
-        input.key_event(InputKey::from_char('f'), true);
+        input.key_event(KeyCode::KeyF, true);
         assert!(input.action_is_down(&ui.map, "interact"));
         assert!(input.action_just_pressed(&ui.map, "interact"));
         assert_eq!(
             ui.map.bindings("interact"),
-            [Binding::Key(InputKey::from_char('f'))],
+            [Binding::Key(KeyCode::KeyF)],
             "改绑 = 覆盖旧绑定（与 input.rebind 同语义）"
         );
         // 非法绑定文本被拒绝且不改变现有映射。
         ui.manual_binding = "joystick:1".to_owned();
         assert!(ui.apply_manual_to("interact").is_err());
-        assert_eq!(
-            ui.map.bindings("interact"),
-            [Binding::Key(InputKey::from_char('f'))]
-        );
+        assert_eq!(ui.map.bindings("interact"), [Binding::Key(KeyCode::KeyF)]);
         // 手动绑定生效。
         ui.manual_binding = "padaxis:1-".to_owned();
         ui.apply_manual_to("interact").unwrap();
@@ -764,7 +736,7 @@ mod tests {
         ui.clear_action("interact");
         assert!(ui.map.bindings("interact").is_empty());
         let mut input = InputSnapshot::default();
-        input.key_event(InputKey::from_char('f'), true);
+        input.key_event(KeyCode::KeyF, true);
         assert!(!input.action_is_down(&ui.map, "interact"));
     }
 
@@ -773,7 +745,7 @@ mod tests {
         let root = temp_project("conflict");
         let mut ui = InputBindingsUi::default();
         // 把 attack 也绑到 E（与 interact 撞车）→ 冲突必须被列出。
-        ui.apply_binding_to("attack", Binding::Key(InputKey::from_char('e')))
+        ui.apply_binding_to("attack", Binding::Key(KeyCode::KeyE))
             .unwrap();
         assert_eq!(ui.conflicts().len(), 1);
         assert_eq!(ui.conflicts()[0].actions, vec!["attack", "interact"]);
@@ -792,19 +764,23 @@ mod tests {
         );
         assert!(!root.join("settings.toml").exists(), "校验失败不得落盘");
         // 解绑冲突项后保存成功。
-        ui.apply_binding_to("attack", Binding::Key(InputKey::from_char('j')))
-            .unwrap();
+        ui.apply_binding_to(
+            "attack",
+            Binding::Key(KeyCode::from_char('j').expect("QWERTY 字符必须有对应物理键")),
+        )
+        .unwrap();
         assert!(ui.conflicts().is_empty());
         ui.save(&root).unwrap();
         let text = std::fs::read_to_string(root.join("settings.toml")).unwrap();
-        assert!(text.contains("attack=key:j"), "{text}");
+        // v2 文本：键位是**物理键名**而不是字符（v1 的 `key:j` 已不再写出）。
+        assert!(text.contains("attack=key:keyj"), "{text}");
         let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
     fn reset_defaults_restores_engine_default_map() {
         let mut ui = InputBindingsUi::default();
-        ui.apply_binding_to("interact", Binding::Key(InputKey::from_char('f')))
+        ui.apply_binding_to("interact", Binding::Key(KeyCode::KeyF))
             .unwrap();
         ui.set_deadzone(0.4, 0.3);
         ui.clear_action("pause");
@@ -814,13 +790,12 @@ mod tests {
         assert_ne!(ui.map, ActionMap::with_defaults());
         ui.reset_defaults();
         assert_eq!(ui.map, ActionMap::with_defaults());
-        assert_eq!(
-            ui.map.bindings("interact"),
-            [Binding::Key(InputKey::from_char('e'))]
-        );
+        assert_eq!(ui.map.bindings("interact"), [Binding::Key(KeyCode::KeyE)]);
         assert_eq!(
             ui.map.bindings("pause"),
-            [Binding::Key(InputKey::from_char('p'))]
+            [Binding::Key(
+                KeyCode::from_char('p').expect("QWERTY 字符必须有对应物理键")
+            )]
         );
         assert!(!ui.confirm_reset, "恢复默认后清除待确认状态");
         assert!(ui.conflicts().is_empty());
@@ -845,8 +820,11 @@ mod tests {
         assert_eq!(ui.map, ActionMap::with_defaults());
         assert_eq!(ui.deadzone, GamepadDeadzone::DEFAULT);
         // V 未被任何默认动作占用（F 是 `place` 的默认键）。
-        ui.apply_binding_to("interact", Binding::Key(InputKey::from_char('v')))
-            .unwrap();
+        ui.apply_binding_to(
+            "interact",
+            Binding::Key(KeyCode::from_char('v').expect("QWERTY 字符必须有对应物理键")),
+        )
+        .unwrap();
         ui.set_deadzone(0.25, 0.08);
         ui.save(&root).unwrap();
 
@@ -857,7 +835,8 @@ mod tests {
             text.contains("master = 0.5"),
             "保序：[audio] 段保留\n{text}"
         );
-        assert!(text.contains("interact=key:v"), "{text}");
+        // v2 文本：键位是**物理键名**而不是字符（v1 的 `key:v` 已不再写出）。
+        assert!(text.contains("interact=key:keyv"), "{text}");
         assert!(text.contains("stick_deadzone = 0.25"), "{text}");
         assert!(text.contains("trigger_deadzone = 0.08"), "{text}");
 
@@ -866,7 +845,9 @@ mod tests {
         assert_eq!(reloaded.load(&root), None);
         assert_eq!(
             reloaded.map.bindings("interact"),
-            [Binding::Key(InputKey::from_char('v'))]
+            [Binding::Key(
+                KeyCode::from_char('v').expect("QWERTY 字符必须有对应物理键")
+            )]
         );
         assert!((reloaded.deadzone.stick - 0.25).abs() < 1e-6);
         assert!((reloaded.deadzone.trigger - 0.08).abs() < 1e-6);
@@ -907,10 +888,10 @@ mod tests {
     fn labels_and_settings_path_are_stable() {
         assert_eq!(action_label("interact"), "交互");
         assert_eq!(action_label("slot_4"), "slot_4", "未知动作回落到动作名");
-        assert_eq!(binding_label(Binding::Key(InputKey::from_char('e'))), "E");
-        assert_eq!(binding_label(Binding::Key(InputKey::Space)), "空格");
-        assert_eq!(binding_label(Binding::Key(InputKey::Escape)), "Esc");
-        assert_eq!(binding_label(Binding::Key(InputKey::ARROW_UP)), "↑");
+        assert_eq!(binding_label(Binding::Key(KeyCode::KeyE)), "E");
+        assert_eq!(binding_label(Binding::Key(KeyCode::Space)), "空格");
+        assert_eq!(binding_label(Binding::Key(KeyCode::Escape)), "Esc");
+        assert_eq!(binding_label(Binding::Key(KeyCode::ArrowUp)), "↑");
         assert_eq!(binding_label(Binding::GamepadButton(0)), "手柄 A（0）");
         assert_eq!(
             binding_label(Binding::GamepadAxis(1, AxisDirection::Negative)),
@@ -919,5 +900,47 @@ mod tests {
         assert_eq!(gamepad_button_name(12), "DPad↑");
         assert_eq!(gamepad_axis_name(5), "RT");
         assert!(settings_path(Path::new("C:\\Games\\Demo")).ends_with("settings.toml"));
+    }
+
+    /// M22/W1：绑定的**稳定文本**（进设置文件）与**展示标签**（进界面）刻意分开。
+    ///
+    /// 文本是物理键名（`key:keye`/`key:digit3`/`key:equal`），标签是人读短名
+    /// （`E`/`1`/`=`）；旧实现把两者混成一份「字符文本 + `to_ascii_uppercase`」，
+    /// 于是 v2 的 `key:keye` 会显示成「KEYE」，而 `+` 与 `=` 会变成两个不同的键。
+    #[test]
+    fn key_binding_text_and_label_follow_physical_key_identity() {
+        for (binding, text, label) in [
+            (Binding::Key(KeyCode::KeyE), "key:keye", "E"),
+            (Binding::Key(KeyCode::Digit3), "key:digit3", "3"),
+            (Binding::Key(KeyCode::Minus), "key:minus", "-"),
+            // `+` 与 `=` 是**同一个物理键**：v1 的两个字符写法在 v2 里收敄成一项。
+            (Binding::Key(KeyCode::Equal), "key:equal", "="),
+            (Binding::Key(KeyCode::Quote), "key:quote", "'"),
+            (Binding::Key(KeyCode::Backslash), "key:backslash", "\\"),
+            (Binding::Key(KeyCode::Semicolon), "key:semicolon", ";"),
+            (Binding::Key(KeyCode::ArrowUp), "key:arrowup", "↑"),
+            (Binding::Key(KeyCode::Space), "key:space", "空格"),
+            (Binding::Key(KeyCode::Escape), "key:escape", "Esc"),
+            (
+                Binding::Key(KeyCode::ShiftLeft),
+                "key:shiftleft",
+                "Shift 左",
+            ),
+            // 鼠标标签同样由引擎给（编辑器不再自己拼字符串）。
+            (Binding::Mouse(MouseButton::Left), "mouse:left", "鼠标左键"),
+        ] {
+            assert_eq!(binding.to_text(), text, "{binding:?} 的稳定文本");
+            assert_eq!(binding_label(binding), label, "{binding:?} 的展示标签");
+        }
+        // `Binding::parse` 同时接受 v2 物理键名与 v1 字符写法（既有 Lua 调用/旧设置文件）。
+        assert_eq!(
+            Binding::parse("key:keye").unwrap(),
+            Binding::Key(KeyCode::KeyE)
+        );
+        assert_eq!(
+            Binding::parse("key:e").unwrap(),
+            Binding::Key(KeyCode::KeyE),
+            "v1 的字符写法仍可读入"
+        );
     }
 }

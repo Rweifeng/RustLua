@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     # Game project root to package.
     [string]$ProjectRoot = "",
@@ -23,7 +23,7 @@ $ErrorActionPreference = "Stop"
 $workspaceRoot = Split-Path -Parent $PSScriptRoot
 $engineRoot = Join-Path $workspaceRoot "engine"
 if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
-    # examples 重组后样板工程在子目录里（根目录已无 project.toml）。
+    # examples 閲嶇粍鍚庢牱鏉垮伐绋嬪湪瀛愮洰褰曢噷锛堟牴鐩綍宸叉棤 project.toml锛夈€?
     $ProjectRoot = Join-Path $workspaceRoot "examples\game_jhyt"
 }
 $gameRoot = (Resolve-Path -LiteralPath $ProjectRoot).Path
@@ -38,11 +38,50 @@ $invalidNameChars = [IO.Path]::GetInvalidFileNameChars()
 foreach ($ch in $invalidNameChars) { $PublishName = $PublishName.Replace([string]$ch, "_") }
 $PublishName = $PublishName.Trim()
 if ([string]::IsNullOrWhiteSpace($PublishName)) { $PublishName = "game" }
+# M31/P3锛氱帺瀹舵暟鎹洰褰曪紙瀛樻。 + 鐜╁璁剧疆锛夈€備笌寮曟搸 `core::user_dir` 鐨勮鍒欎竴鑷达細
+# Windows 涓?`%APPDATA%\<publish_name>`锛屽叾瀹冨钩鍙板彇鍚勮嚜鐨勬暟鎹洰褰曪紱`RUSTLUA_USER_DIR` 鍙鐩栥€?
+# 杩欓噷鍙敤浜?*鏂囨。涓庤嚜妫€鏂█**锛堝彂甯冨寘鐩綍閲屼笉鍐欎换浣曠帺瀹舵暟鎹級銆?
+$PlayerDataDir = if ($env:RUSTLUA_USER_DIR) {
+    $env:RUSTLUA_USER_DIR
+} elseif ($env:APPDATA) {
+    Join-Path $env:APPDATA $PublishName
+} else {
+    Join-Path $env:USERPROFILE (".local\share\" + $PublishName)
+}
 $distRoot = Join-Path $gameRoot ("builds\" + $Platform + "\" + $PublishName)
 $packRoot = Join-Path $distRoot "pack"
-# M20-03：原子发布。所有内容先写进 staging，全部成功后再原子替换最终目录；
-# 失败时最终目录保持旧版本不变（不会出现半更新状态）。
+# M20-03锛氬師瀛愬彂甯冦€傛墍鏈夊唴瀹瑰厛鍐欒繘 staging锛屽叏閮ㄦ垚鍔熷悗鍐嶅師瀛愭浛鎹㈡渶缁堢洰褰曪紱
+# 澶辫触鏃舵渶缁堢洰褰曚繚鎸佹棫鐗堟湰涓嶅彉锛堜笉浼氬嚭鐜板崐鏇存柊鐘舵€侊級銆?
 . (Join-Path $PSScriptRoot "release-atomic.ps1")
+
+# M31/P3锛氬彂甯冪増杩愯鍣ㄦ槸 Windows GUI 瀛愮郴缁熺▼搴忥紝`& exe args` 涓嶇瓑寰呬篃涓嶆崟鑾疯緭鍑?
+# 锛坄$LASTEXITCODE` 浼氫繚鐣欏墠涓€鏉″懡浠ょ殑鍊?鈬?鑷绌鸿窇锛夈€傜粺涓€鐢?Start-Process -Wait +
+# 閲嶅畾鍚戝彇鍥炵湡瀹為€€鍑虹爜涓庤緭鍑恒€傝繑鍥?`[pscustomobject]@{ ExitCode; Output }`銆?
+function Invoke-PackagedCheck {
+    param(
+        [Parameter(Mandatory = $true)][string]$Runner,
+        [Parameter(Mandatory = $true)][string]$PackRoot
+    )
+    $stdoutFile = Join-Path $env:TEMP ("p2-pack-check-" + [guid]::NewGuid().ToString("N") + ".out")
+    $stderrFile = $stdoutFile + ".err"
+    try {
+        # `Start-Process -ArgumentList` 浼氭妸鏁扮粍鎸夌┖鏍兼嫾鎴愬懡浠よ涓?*涓嶅姞寮曞彿**锛屽洜姝ゅ惈绌烘牸鐨?
+        # 璺緞蹇呴』鑷繁甯﹀紩鍙凤紙鑷祴灏辨槸鏁呮剰鐢?"p2 release test 鈥? 杩欑甯︾┖鏍肩殑璺緞锛夈€?
+        $quotedPack = '"' + $PackRoot + '"'
+        $process = Start-Process -FilePath $Runner `
+            -ArgumentList @("--pack", $quotedPack, "--check") `
+            -PassThru -Wait -NoNewWindow `
+            -RedirectStandardOutput $stdoutFile -RedirectStandardError $stderrFile
+        $lines = @()
+        if (Test-Path -LiteralPath $stdoutFile) { $lines += Get-Content -LiteralPath $stdoutFile }
+        if (Test-Path -LiteralPath $stderrFile) { $lines += Get-Content -LiteralPath $stderrFile }
+        return [pscustomobject]@{ ExitCode = $process.ExitCode; Output = $lines }
+    }
+    finally {
+        Remove-Item -LiteralPath $stdoutFile -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $stderrFile -Force -ErrorAction SilentlyContinue
+    }
+}
 $finalRoot = $distRoot
 $staleRemoved = Clear-StaleReleaseStaging -FinalRoot $finalRoot -MaxAgeHours 24
 foreach ($stale in $staleRemoved) {
@@ -76,7 +115,7 @@ try {
         }
         Write-Host "==> Skipping cargo build (-SkipBuild): reusing target\release artifacts" -ForegroundColor DarkGray
     }
-    elseif ($Platform -eq "webgl") {
+    elseif ($Platform -eq "wechat-minigame") {`r`n        cargo build -p assetc --release`r`n        if ($LASTEXITCODE -ne 0) { throw "assetc release build failed." }`r`n        cargo build -p game_web --release --target wasm32-unknown-unknown`r`n        if ($LASTEXITCODE -ne 0) { throw "WeChat WASM build failed." }`r`n    } elseif ($Platform -eq "webgl") {
         rustup target add wasm32-unknown-unknown
         if ($LASTEXITCODE -ne 0) { throw "Install wasm32 target failed." }
         cargo build -p assetc --release
@@ -103,9 +142,16 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "assetc package failed." }
 
     Write-Host "==> Copy runner and docs" -ForegroundColor Cyan
-    # 发布包只含运行器；assetc 为开发工具，不随包分发（并清理历史残留）。
+    # 鍙戝竷鍖呭彧鍚繍琛屽櫒锛沘ssetc 涓哄紑鍙戝伐鍏凤紝涓嶉殢鍖呭垎鍙戯紙骞舵竻鐞嗗巻鍙叉畫鐣欙級銆?
     Remove-Item -Path (Join-Path $distRoot "assetc.exe") -Force -ErrorAction SilentlyContinue
-    if ($Platform -eq "webgl") {
+    if ($Platform -eq "wechat-minigame") {
+        Copy-Item (Join-Path $workspaceRoot "plugins\wechat-minigame\wechat-adapter.js") (Join-Path $distRoot "wechat-adapter.js") -Force
+        Copy-Item (Join-Path $workspaceRoot "plugins\wechat-minigame\game.js") (Join-Path $distRoot "game.js") -Force
+        Copy-Item (Join-Path $workspaceRoot "plugins\wechat-minigame\game.json") (Join-Path $distRoot "game.json") -Force
+        Copy-Item (Join-Path $workspaceRoot "plugins\wechat-minigame\project.config.json") (Join-Path $distRoot "project.config.json") -Force
+        foreach ($f in @("game.js","game.json","project.config.json","wechat-adapter.js","pack\manifest.txt","pack\project.toml")) { if (-not (Test-Path (Join-Path $distRoot $f))) { throw "WeChat package is missing: $f" } }
+        Write-Host "wechat_minigame_package_ok" -ForegroundColor Green
+    } elseif ($Platform -eq "webgl") {
         Remove-Item -Path (Join-Path $distRoot "game.exe") -Force -ErrorAction SilentlyContinue
         $pkgRoot = Join-Path $distRoot "pkg"
         if (Test-Path $pkgRoot) { Remove-Item -LiteralPath $pkgRoot -Recurse -Force }
@@ -113,7 +159,18 @@ try {
         $wasmInput = Join-Path $engineRoot "target\wasm32-unknown-unknown\release\game_web.wasm"
         wasm-bindgen $wasmInput --out-dir $pkgRoot --target web --no-typescript
         if ($LASTEXITCODE -ne 0) { throw "wasm-bindgen failed." }
-        $publishNameJson = $PublishName | ConvertTo-Json -Compress
+        $webRuntimeTemplate = Join-Path $workspaceRoot "plugins\webgl\web-runtime.js"
+        if (Test-Path $webRuntimeTemplate) { Copy-Item $webRuntimeTemplate (Join-Path $distRoot "web-runtime.js") -Force }
+        # Fengari 随包分发（本地依赖）：发布包不再请求 CDN，离线可运行，也不会触发
+        # 浏览器的第三方存储跟踪防护警告。
+        $fengariSource = Join-Path $workspaceRoot "plugins\webgl\pkg\fengari-web.js"
+        if (-not (Test-Path -LiteralPath $fengariSource)) {
+            throw "WebGL package requires the vendored Lua runtime: plugins\webgl\pkg\fengari-web.js"
+        }
+        if ((Get-Item -LiteralPath $fengariSource).Length -le 0) {
+            throw "Vendored Lua runtime is empty: plugins\webgl\pkg\fengari-web.js"
+        }
+        Copy-Item $fengariSource (Join-Path $pkgRoot "fengari-web.js") -Force
         @"
 <!doctype html>
 <html lang="zh-CN">
@@ -127,23 +184,30 @@ try {
     #status { position: fixed; left: 16px; top: 12px; color: #d0d7e2; font: 14px sans-serif; }
   </style>
 </head>
-<body>
+<body data-p2-boot="pending">
   <canvas id="p2-canvas"></canvas>
   <div id="status">Loading $PublishName...</div>
-  <script src="https://cdn.jsdelivr.net/npm/fengari-web@0.1.4/dist/fengari-web.js"></script>
+  <script>window.__P2_FONT = './fonts/$fontName';</script>
+  <script src="./pkg/fengari-web.js"></script>
   <script src="./web-runtime.js"></script>
   <script type="module">
     import init, { start } from './pkg/game_web.js';
     const publishName = $publishNameJson;
     const status = document.getElementById('status');
+    const markBoot = (state, detail) => {
+      document.body.setAttribute('data-p2-boot', state);
+      if (detail) document.body.setAttribute('data-p2-boot-detail', String(detail).slice(0, 400));
+    };
     try {
       await init();
       await start('p2-canvas', publishName);
       await window.p2RunLuaGame(status);
       status.textContent = publishName + ' - Lua running';
+      markBoot('ok', publishName);
     } catch (error) {
       console.error(error);
       status.textContent = 'WebGL startup failed: ' + error;
+      markBoot('failed', (error && error.message) || error);
     }
   </script>
 </body>
@@ -459,6 +523,36 @@ end
     }
   }
 
+  // 妗岄潰寮曟搸娉ㄥ唽鐨勯《灞?Lua 鍏ㄥ眬锛坄engine/src/core/script.rs`锛夈€俉ebGL 杩愯鏃跺彧瀹炵幇
+  // 鍏朵腑涓€閮ㄥ垎锛坉emo 绾у瓙闆嗭級锛屾父鎴忚剼鏈竴鏃︾敤鍒版湭瀹炵幇鐨勯偅涓叏灞€锛屾姤閿欎細鏄竴鍙?
+  // 娣卞湪 Lua 閲岀殑 "attempt to index a nil value"鈥斺€旂帺瀹朵笌楠屾敹閮芥棤娉曟嵁姝ゅ畾浣嶃€?
+  // 杩欓噷鍦ㄥ惎鍔ㄥけ璐ユ椂琛ヤ竴鍙?缂哄摢浜涘涓?API"锛屽苟鍐欒繘 DOM 灞炴€т緵鑷姩鍖栨柇瑷€
+  // 锛堣 docs/32 搂3 涓?scripts/verify-webgl-bundle.ps1锛夈€?
+  const ENGINE_HOST_GLOBALS = [
+    'animation', 'animation3d', 'app', 'asset', 'audio', 'calendar', 'camera', 'clock',
+    'container', 'data', 'day', 'entity', 'event', 'grid', 'health', 'input', 'interact',
+    'inv', 'item', 'light', 'log', 'map', 'mesh', 'particles', 'physics', 'physics3d',
+    'save', 'scene', 'shop', 'sprite', 'tag', 'tilemap', 'time', 'transform', 'transform3d', 'ui'
+  ];
+
+  function missingHostGlobals(L) {
+    const f = window.fengari;
+    const missing = [];
+    for (const name of ENGINE_HOST_GLOBALS) {
+      f.lua.lua_getglobal(L, f.to_luastring(name));
+      if (f.lua.lua_isnil(L, -1)) missing.push(name);
+      f.lua.lua_pop(L, 1);
+    }
+    return missing;
+  }
+
+  function markBoot(state, detail) {
+    const body = document.body || document.documentElement;
+    if (!body) return;
+    body.setAttribute('data-p2-boot', state);
+    if (detail) body.setAttribute('data-p2-boot-detail', String(detail).slice(0, 400));
+  }
+
   function callGlobal(L, name) {
     const f = window.fengari;
     f.lua.lua_getglobal(L, f.to_luastring(name));
@@ -505,7 +599,15 @@ end
     const f = window.fengari;
     const L = f.lauxlib.luaL_newstate();
     f.lualib.luaL_openlibs(L);
-    doString(L, luaPrelude(sceneState) + '\n' + preload + '\n' + main, mainScript);
+    try {
+      doString(L, luaPrelude(sceneState) + '\n' + preload + '\n' + main, mainScript);
+    } catch (error) {
+      // fail fast锛氭妸"缂哄摢浜涘涓?API"鐩存帴璇村嚭鏉ワ紝鑰屼笉鏄妸 Lua 鏍堝洖婧涪缁欑帺瀹躲€?
+      const missing = missingHostGlobals(L);
+      const detail = 'missing engine host API: ' + missing.join(', ');
+      markBoot('failed', detail);
+      throw new Error(String((error && error.message) || error) + ' [' + detail + ']');
+    }
     callGlobal(L, 'on_create');
     drawScene(ctx, sceneState, images, projectName);
     function frame() {
@@ -515,13 +617,16 @@ end
         syncLuaScene(sceneState, callGlobal(L, '__p2_export_state'));
         drawScene(ctx, sceneState, images, projectName);
         if (status && result) status.textContent = result;
+        markBoot('running', sceneState.name);
       } catch (error) {
         console.error(error);
         if (status) status.textContent = 'Lua runtime failed: ' + error;
+        markBoot('failed', (error && error.message) || error);
         return;
       }
       requestAnimationFrame(frame);
     }
+    markBoot('booted', sceneState.name);
     requestAnimationFrame(frame);
     console.log('[lua] WebGL Lua runtime started:', startup, sceneState.name);
   };
@@ -545,9 +650,9 @@ end
         throw "Release package font is missing or empty: fonts/$fontName"
     }
 
-    # 工程级设置（settings.toml：手柄改键与死区）随包分发：发布包以 pack 目录作为
-    # 工程根，运行器按 `<root>/settings.toml` 读取，否则打包版会回落到键盘默认绑定，
-    # 出现「编辑器里改好的手柄绑定在发布包里失效」。
+    # 宸ョ▼绾ц缃紙settings.toml锛氭墜鏌勬敼閿笌姝诲尯锛夐殢鍖呭垎鍙戯細鍙戝竷鍖呬互 pack 鐩綍浣滀负
+    # 宸ョ▼鏍癸紝杩愯鍣ㄦ寜 `<root>/settings.toml` 璇诲彇锛屽惁鍒欐墦鍖呯増浼氬洖钀藉埌閿洏榛樿缁戝畾锛?
+    # 鍑虹幇銆岀紪杈戝櫒閲屾敼濂界殑鎵嬫焺缁戝畾鍦ㄥ彂甯冨寘閲屽け鏁堛€嶃€?
     $settingsSource = Join-Path $gameRoot "settings.toml"
     $settingsPackaged = $false
     if (Test-Path -LiteralPath $settingsSource) {
@@ -560,7 +665,14 @@ end
         "publish_name = `"$PublishName`""
     ) | Set-Content (Join-Path $distRoot "release.toml") -Encoding UTF8
 
-    if ($Platform -eq "webgl") {
+    if ($Platform -eq "wechat-minigame") {
+        Copy-Item (Join-Path $workspaceRoot "plugins\wechat-minigame\wechat-adapter.js") (Join-Path $distRoot "wechat-adapter.js") -Force
+        Copy-Item (Join-Path $workspaceRoot "plugins\wechat-minigame\game.js") (Join-Path $distRoot "game.js") -Force
+        Copy-Item (Join-Path $workspaceRoot "plugins\wechat-minigame\game.json") (Join-Path $distRoot "game.json") -Force
+        Copy-Item (Join-Path $workspaceRoot "plugins\wechat-minigame\project.config.json") (Join-Path $distRoot "project.config.json") -Force
+        foreach ($f in @("game.js","game.json","project.config.json","wechat-adapter.js","pack\manifest.txt","pack\project.toml")) { if (-not (Test-Path (Join-Path $distRoot $f))) { throw "WeChat package is missing: $f" } }
+        Write-Host "wechat_minigame_package_ok" -ForegroundColor Green
+    } elseif ($Platform -eq "webgl") {
         $requiredWebFiles = @(
             (Join-Path $distRoot "index.html"),
                 (Join-Path $distRoot "web-runtime.js"),
@@ -574,10 +686,22 @@ end
         }
         Write-Host "webgl_package_ok files=$($requiredWebFiles.Count)" -ForegroundColor Green
     } else {
-        $packCheckOutput = & (Join-Path $distRoot "game.exe") --pack $packRoot --check 2>&1
-        $packCheckExit = $LASTEXITCODE
-        Write-Host $packCheckOutput
-        if ($packCheckExit -ne 0) { throw "Release package check failed (exit $packCheckExit)." }
+        # 娉ㄦ剰锛氬彂甯冪増 `game.exe` 鏄?**Windows GUI 瀛愮郴缁?*绋嬪簭
+        # 锛坄crates/game/src/main.rs` 鐨?`windows_subsystem = "windows"`锛屽弻鍑绘椂涓嶅脊鎺у埗鍙帮級銆?
+        # 杩欑被绋嬪簭鐢?`& exe args` 璋冪敤鏃?PowerShell **鏃笉绛夊緟涔熶笉鎹曡幏 stdout**锛?
+        # `$LASTEXITCODE` 浼氫繚鐣欎笂涓€鏉″懡浠ょ殑鍊尖€斺€斾簬鏄?鍙戝竷鍖呰嚜妫€"浼氶潤榛樼┖璺戞垚姘歌繙閫氳繃銆?
+        # 蹇呴』鐢?Start-Process -Wait + 閲嶅畾鍚戞枃浠舵潵鐪熷疄鍙栧洖閫€鍑虹爜涓庤緭鍑恒€?
+        $packCheck = Invoke-PackagedCheck -Runner (Join-Path $distRoot "game.exe") -PackRoot $packRoot
+        Write-Host $packCheck.Output
+        if ($packCheck.ExitCode -ne 0) {
+            throw "Release package check failed (exit $($packCheck.ExitCode))."
+        }
+        $packRootsLine = $packCheck.Output | Where-Object { $_ -match "player_data_roots" } | Select-Object -First 1
+        if (-not $packRootsLine) { throw "Release package check did not report player_data_roots." }
+        if ($packRootsLine -notmatch "packaged=true") {
+            throw "Release package did not report packaged=true: $packRootsLine"
+        }
+        Write-Host "Release package player data roots: $packRootsLine" -ForegroundColor DarkGray
     }
 
     $engineVersion = (Get-Content (Join-Path $engineRoot "Cargo.toml") | Select-String '^version = "0\.' | Select-Object -First 1).ToString().Trim().Split('=')[1].Trim().Trim('"')
@@ -587,7 +711,14 @@ end
     if ($settingsPackaged) {
         $packageContents = "game.exe, fonts/$fontName, pack/ (data, settings.toml), release.toml, run.txt, deps.txt"
     }
-    if ($Platform -eq "webgl") {
+    if ($Platform -eq "wechat-minigame") {
+        Copy-Item (Join-Path $workspaceRoot "plugins\wechat-minigame\wechat-adapter.js") (Join-Path $distRoot "wechat-adapter.js") -Force
+        Copy-Item (Join-Path $workspaceRoot "plugins\wechat-minigame\game.js") (Join-Path $distRoot "game.js") -Force
+        Copy-Item (Join-Path $workspaceRoot "plugins\wechat-minigame\game.json") (Join-Path $distRoot "game.json") -Force
+        Copy-Item (Join-Path $workspaceRoot "plugins\wechat-minigame\project.config.json") (Join-Path $distRoot "project.config.json") -Force
+        foreach ($f in @("game.js","game.json","project.config.json","wechat-adapter.js","pack\manifest.txt","pack\project.toml")) { if (-not (Test-Path (Join-Path $distRoot $f))) { throw "WeChat package is missing: $f" } }
+        Write-Host "wechat_minigame_package_ok" -ForegroundColor Green
+    } elseif ($Platform -eq "webgl") {
         $packageContents = "index.html, pkg/game_web.js, pkg/game_web_bg.wasm, fonts/$fontName, pack/ (data), release.toml, run.txt, deps.txt"
         if ($settingsPackaged) {
             $packageContents = "index.html, pkg/game_web.js, pkg/game_web_bg.wasm, fonts/$fontName, pack/ (data, settings.toml), release.toml, run.txt, deps.txt"
@@ -602,10 +733,18 @@ end
         "toolchain: $toolchain",
         "contents: $packageContents",
         "font_check: fonts/$fontName present and non-empty",
-        "settings_check: $(if ($settingsPackaged) { 'pack/settings.toml packaged from project root' } else { 'no project settings.toml; engine defaults apply' })"
+        "settings_check: $(if ($settingsPackaged) { 'pack/settings.toml packaged from project root' } else { 'no project settings.toml; engine defaults apply' })",
+        "player_data: $(if ($Platform -eq 'webgl') { 'browser storage; no filesystem player data' } else { "$PlayerDataDir (override: RUSTLUA_USER_DIR); pack/ is read-only and never written" })"
     ) | Set-Content (Join-Path $distRoot "build-info.txt") -Encoding UTF8
 
-    if ($Platform -eq "webgl") {
+    if ($Platform -eq "wechat-minigame") {
+        Copy-Item (Join-Path $workspaceRoot "plugins\wechat-minigame\wechat-adapter.js") (Join-Path $distRoot "wechat-adapter.js") -Force
+        Copy-Item (Join-Path $workspaceRoot "plugins\wechat-minigame\game.js") (Join-Path $distRoot "game.js") -Force
+        Copy-Item (Join-Path $workspaceRoot "plugins\wechat-minigame\game.json") (Join-Path $distRoot "game.json") -Force
+        Copy-Item (Join-Path $workspaceRoot "plugins\wechat-minigame\project.config.json") (Join-Path $distRoot "project.config.json") -Force
+        foreach ($f in @("game.js","game.json","project.config.json","wechat-adapter.js","pack\manifest.txt","pack\project.toml")) { if (-not (Test-Path (Join-Path $distRoot $f))) { throw "WeChat package is missing: $f" } }
+        Write-Host "wechat_minigame_package_ok" -ForegroundColor Green
+    } elseif ($Platform -eq "webgl") {
         @(
             "Run instructions",
             "1) Serve this directory with an HTTP server, for example: python -m http.server 8000",
@@ -619,13 +758,17 @@ end
             "1) Double-click game.exe, or run: game.exe --pack pack --title `"$PublishName`"",
             "2) Controls: WASD move, SPACE attack, F1 save, F2 load, F4 switch scene",
             "3) F3 toggles the developer fps/latency overlay (off by default in release builds)",
-            "4) Logs and crash reports are written next to game.exe",
-            "5) This package has no source or toolchain dependency and runs without Rust/IDE"
+            "4) Logs and crash reports go to the player data directory: $PlayerDataDir\logs",
+            "   (a release pack never writes into its own directory, so a read-only install is fine)",
+            "5) This package has no source or toolchain dependency and runs without Rust/IDE",
+            "6) Player data (savegames and settings) is written to: $PlayerDataDir",
+            "   The pack/ directory is read-only for the runner and never receives player data;",
+            "   set RUSTLUA_USER_DIR to relocate the player data directory (used by tests and portable installs)"
         ) | Set-Content (Join-Path $distRoot "run.txt") -Encoding UTF8
     }
 
-    # M20-03：全部内容与自检通过后，原子替换最终目录（旧版本备份→移入新版本
-    # →清理备份）。交换失败会回滚旧版本并抛错，staging 保留以便诊断。
+    # M20-03锛氬叏閮ㄥ唴瀹逛笌鑷閫氳繃鍚庯紝鍘熷瓙鏇挎崲鏈€缁堢洰褰曪紙鏃х増鏈浠解啋绉诲叆鏂扮増鏈?
+    # 鈫掓竻鐞嗗浠斤級銆備氦鎹㈠け璐ヤ細鍥炴粴鏃х増鏈苟鎶涢敊锛宻taging 淇濈暀浠ヤ究璇婃柇銆?
     Write-Host "==> Atomic release swap" -ForegroundColor Cyan
     $script:swapAttempted = $true
     $swap = Complete-ReleaseSwap -FinalRoot $finalRoot -StageRoot $stageRoot
@@ -638,7 +781,7 @@ end
     Write-Host ("Package size: {0:N1} KB, {1} files" -f ($total.Sum / 1KB), $total.Count)
 }
 catch {
-    # 交换之前失败：最终目录从未被改动，直接丢弃 staging，并明确告知旧版本仍在。
+    # 浜ゆ崲涔嬪墠澶辫触锛氭渶缁堢洰褰曚粠鏈鏀瑰姩锛岀洿鎺ヤ涪寮?staging锛屽苟鏄庣‘鍛婄煡鏃х増鏈粛鍦ㄣ€?
     if (-not $script:swapAttempted -and (Test-Path -LiteralPath $stageRoot)) {
         Write-Warning "==> Release failed before swap; existing release kept at $finalRoot"
         Write-Warning "==> Discarding staging: $stageRoot"
@@ -671,11 +814,18 @@ function Remove-IsolatedRelease([string]$Path, [string]$Label) {
 }
 
 if ($SelfTest) {
-    Write-Host "`n==> Directory-isolation self test (no source/target/.cache, path with spaces)" -ForegroundColor Cyan
+    Write-Host "`r`n==> Directory-isolation self test (no source/target/.cache, path with spaces)" -ForegroundColor Cyan
     $isolated = Join-Path $env:TEMP ("p2 release test " + (Get-Date -Format "HHmmss"))
     New-Item -ItemType Directory -Force -Path $isolated | Out-Null
     Copy-Item -LiteralPath $distRoot -Destination $isolated -Recurse -Force
-    if ($Platform -eq "webgl") {
+    if ($Platform -eq "wechat-minigame") {
+        Copy-Item (Join-Path $workspaceRoot "plugins\wechat-minigame\wechat-adapter.js") (Join-Path $distRoot "wechat-adapter.js") -Force
+        Copy-Item (Join-Path $workspaceRoot "plugins\wechat-minigame\game.js") (Join-Path $distRoot "game.js") -Force
+        Copy-Item (Join-Path $workspaceRoot "plugins\wechat-minigame\game.json") (Join-Path $distRoot "game.json") -Force
+        Copy-Item (Join-Path $workspaceRoot "plugins\wechat-minigame\project.config.json") (Join-Path $distRoot "project.config.json") -Force
+        foreach ($f in @("game.js","game.json","project.config.json","wechat-adapter.js","pack\manifest.txt","pack\project.toml")) { if (-not (Test-Path (Join-Path $distRoot $f))) { throw "WeChat package is missing: $f" } }
+        Write-Host "wechat_minigame_package_ok" -ForegroundColor Green
+    } elseif ($Platform -eq "webgl") {
         $isolatedRoot = Join-Path $isolated $PublishName
         foreach ($file in @(
             (Join-Path $isolatedRoot "index.html"),
@@ -698,14 +848,38 @@ if ($SelfTest) {
         }
 
         Write-Host "Check: $isolatedRunner --pack $isolatedPack --check" -ForegroundColor DarkGray
-        # 用 --check 做无窗口校验：退出码 0 表示发布包完整（含空格路径 + 无源码环境）。
-        $checkOutput = & $isolatedRunner --pack $isolatedPack --check 2>&1
-        $checkExit = $LASTEXITCODE
-        Write-Host $checkOutput
-        Remove-IsolatedRelease -Path $isolated -Label "self-test copy"
-        if ($checkExit -ne 0) {
-            throw "isolated check failed (exit $checkExit): package incomplete or path incompatible."
+        # 鐢?--check 鍋氭棤绐楀彛鏍￠獙锛氶€€鍑虹爜 0 琛ㄧず鍙戝竷鍖呭畬鏁达紙鍚┖鏍艰矾寰?+ 鏃犳簮鐮佺幆澧冿級銆?
+        # M31/P3锛氬悓鏃舵妸鐜╁鏁版嵁鏍规寚鍒颁竴涓复鏃剁洰褰曪紝鏂█鍙戝竷鍖呭舰鎬佺‘瀹炶В鏋愬埌**鐢ㄦ埛鏁版嵁鐩綍**
+        # 锛堣€屼笉鏄畨瑁呯洰褰曪級锛屽苟鏂█瀹夎鐩綍閲屼笉鍑虹幇 .cache/save/settings 绛夌帺瀹舵暟鎹€?
+        $isolatedUserDir = Join-Path $env:TEMP ("p2 user data test " + (Get-Date -Format "HHmmss"))
+        New-Item -ItemType Directory -Force -Path $isolatedUserDir | Out-Null
+        $env:RUSTLUA_USER_DIR = $isolatedUserDir
+        try {
+            $isolatedCheck = Invoke-PackagedCheck -Runner $isolatedRunner -PackRoot $isolatedPack
+            Write-Host $isolatedCheck.Output
+            if ($isolatedCheck.ExitCode -ne 0) {
+                throw "isolated check failed (exit $($isolatedCheck.ExitCode)): package incomplete or path incompatible."
+            }
+            $rootsLine = $isolatedCheck.Output | Where-Object { $_ -match "player_data_roots" } | Select-Object -First 1
+            if (-not $rootsLine) { throw "isolated check did not report player_data_roots." }
+            Write-Host "Player data roots: $rootsLine" -ForegroundColor DarkGray
+            if ($rootsLine -notmatch "packaged=true") {
+                throw "release package did not report packaged=true: $rootsLine"
+            }
+            if ($rootsLine -notmatch [regex]::Escape($isolatedUserDir)) {
+                throw "release package ignored RUSTLUA_USER_DIR=$isolatedUserDir : $rootsLine"
+            }
+            $strayPlayerData = Get-ChildItem -LiteralPath (Join-Path $isolated $PublishName) -Recurse -Force -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -in @(".cache", ".data") -or $_.Extension -in @(".sav", ".log") }
+            if ($strayPlayerData) {
+                throw "release directory contains player data: $($strayPlayerData.FullName -join ', ')"
+            }
         }
-        Write-Host "Directory-isolation self test passed (spaces path + no-source check OK)" -ForegroundColor Green
+        finally {
+            Remove-Item Env:\RUSTLUA_USER_DIR -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $isolatedUserDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        Remove-IsolatedRelease -Path $isolated -Label "self-test copy"
+        Write-Host "Directory-isolation self test passed (spaces path + no-source check + user data dir OK)" -ForegroundColor Green
     }
 }

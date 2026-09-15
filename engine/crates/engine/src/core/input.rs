@@ -7,69 +7,513 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-/// Keyboard keys currently relevant to the engine's action layer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum InputKey {
-    W,
-    A,
-    S,
-    D,
-    Space,
-    Escape,
-    Other(u32),
+// ---------------------------------------------------------------------------
+// 物理键身份（M22/W1）
+//
+// `KeyCode` 是**物理键**（键盘上那个位置），不是字符：宿主读平台的 physical key
+// （winit `PhysicalKey::Code` / egui `Key`）后经 `host::keymap` 转换成本枚举。
+// 因此 AZERTY 的 `Z` 位置仍解析为 `KeyW`（移动向上），Dvorak 同理；`Shift+1` 得到
+// `Digit1` 而不是某个字符；Tab/Enter/F5/修饰键都能表达（旧 `InputKey` 是按字符编码，
+// 这些键**根本无法表达**）。
+//
+// 变体集合与顺序**逐项对齐 winit 0.30 的 `KeyCode`**（194 项，含平台相关的
+// `Lang1..Lang5`/`IntlRo` 等）：`keymap` 的两张转换表与 `ALL` 全表都由本表生成，
+// 新增键位只需在这里加一项，宿主两张表与编辑器预览键集合自动跟随。
+//
+// 文本形式是变体名的小写（`key:w`、`key:digit1`、`key:arrowup`、`key:space`），
+// 与平台库的 Debug 名一一对应，稳定且无歧义（v1 的字符形式仍在 `from_text` 的
+// 兼容表里，见 `v1_key_code`）。
+macro_rules! define_key_codes {
+    ($( $variant:ident => $text:literal ),* $(,)?) => {
+        /// 物理键身份（与 winit `KeyCode` 一一对应）。
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        pub enum KeyCode {
+            $( $variant, )*
+        }
+
+        impl KeyCode {
+            /// 全表（顺序 = 枚举声明序）。
+            pub const ALL: &'static [Self] = &[
+                $( Self::$variant, )*
+            ];
+
+            /// 稳定文本形式（设置文件与 `Binding::to_text` 用）。
+            ///
+            /// 是变体名的小写字面量（`KeyE` → `"keye"`、`Digit1` → `"digit1"`、
+            /// `ArrowUp` → `"arrowup"`、`Space` → `"space"`）：与 winit 的 Debug 名
+            /// 一一对应，稳定无歧义；小写形式写进 `settings.toml` 后也更接近玩家在
+            /// `input.is_down("keye")` 里手写的名字（解析侧大小写不敏感）。
+            ///
+            /// 文本必须**逐字等于变体名的小写**，由下面的常量断言在编译期强制：
+            /// 想给某个键起别名（例如把 `Equal` 写成 `"equals"`）会编译失败，
+            /// 而不是让文本形式与平台名悄悄分叉。
+            #[must_use]
+            pub const fn to_text(self) -> &'static str {
+                match self {
+                    $( Self::$variant => $text, )*
+                }
+            }
+
+            /// 解析 [`Self::to_text`] 的输出（大小写不敏感）。
+            ///
+            /// 逐项比较 194 项而不是查表：键域很小且解析只发生在读设置文件/`rebind`
+            /// 时，换来的是**表只有一份**（文本由上面的 `to_text` 唯一决定）。
+            #[must_use]
+            pub fn from_text(text: &str) -> Option<Self> {
+                let text = text.trim();
+                Self::ALL
+                    .iter()
+                    .copied()
+                    .find(|candidate| candidate.to_text().eq_ignore_ascii_case(text))
+            }
+        }
+
+        $(
+            const _: () = {
+                let bytes = $text.as_bytes();
+                let mut index = 0;
+                while index < bytes.len() {
+                    assert!(
+                        bytes[index].is_ascii_lowercase() || bytes[index].is_ascii_digit(),
+                        "KeyCode 文本形式必须是小写字母/数字（与 winit 变体名同名）"
+                    );
+                    index += 1;
+                }
+            };
+        )*
+    };
 }
 
-impl InputKey {
-    /// 方向键上（M20-02 UI 焦点/滚动导航）。
-    ///
-    /// 方向键用 ASCII 之外的稳定码位编码进 [`InputKey::Other`]，既有枚举变体
-    /// 语义不变；宿主（game_app / 编辑器预览）把平台的 ArrowUp/Down/Left/Right
-    /// 映射到这里，Lua 侧用 `input.is_down("up")` 等名字读取。绑定文本自
-    /// M20-07 起是可读的 `key:up`/`key:down`/`key:left`/`key:right`（见
-    /// [`InputKey::arrow_name`]；`key:other:<code>` 仍可解析，保证旧设置文件
-    /// 不失效）。命名动作与手柄 DPad 的接线见 M20-07/M20-08。
-    pub const ARROW_UP: Self = Self::Other(0x0010_0001);
-    /// 方向键下。
-    pub const ARROW_DOWN: Self = Self::Other(0x0010_0002);
-    /// 方向键左。
-    pub const ARROW_LEFT: Self = Self::Other(0x0010_0003);
-    /// 方向键右。
-    pub const ARROW_RIGHT: Self = Self::Other(0x0010_0004);
+define_key_codes!(
+    Backquote => "backquote", Backslash => "backslash", BracketLeft => "bracketleft", BracketRight => "bracketright",
+    Comma => "comma", Digit0 => "digit0", Digit1 => "digit1", Digit2 => "digit2",
+    Digit3 => "digit3", Digit4 => "digit4", Digit5 => "digit5", Digit6 => "digit6",
+    Digit7 => "digit7", Digit8 => "digit8", Digit9 => "digit9", Equal => "equal",
+    IntlBackslash => "intlbackslash", IntlRo => "intlro", IntlYen => "intlyen", KeyA => "keya",
+    KeyB => "keyb", KeyC => "keyc", KeyD => "keyd", KeyE => "keye",
+    KeyF => "keyf", KeyG => "keyg", KeyH => "keyh", KeyI => "keyi",
+    KeyJ => "keyj", KeyK => "keyk", KeyL => "keyl", KeyM => "keym",
+    KeyN => "keyn", KeyO => "keyo", KeyP => "keyp", KeyQ => "keyq",
+    KeyR => "keyr", KeyS => "keys", KeyT => "keyt", KeyU => "keyu",
+    KeyV => "keyv", KeyW => "keyw", KeyX => "keyx", KeyY => "keyy",
+    KeyZ => "keyz", Minus => "minus", Period => "period", Quote => "quote",
+    Semicolon => "semicolon", Slash => "slash", AltLeft => "altleft", AltRight => "altright",
+    Backspace => "backspace", CapsLock => "capslock", ContextMenu => "contextmenu", ControlLeft => "controlleft",
+    ControlRight => "controlright", Enter => "enter", SuperLeft => "superleft", SuperRight => "superright",
+    ShiftLeft => "shiftleft", ShiftRight => "shiftright", Space => "space", Tab => "tab",
+    Convert => "convert", KanaMode => "kanamode", Lang1 => "lang1", Lang2 => "lang2",
+    Lang3 => "lang3", Lang4 => "lang4", Lang5 => "lang5", NonConvert => "nonconvert",
+    Delete => "delete", End => "end", Help => "help", Home => "home",
+    Insert => "insert", PageDown => "pagedown", PageUp => "pageup", ArrowDown => "arrowdown",
+    ArrowLeft => "arrowleft", ArrowRight => "arrowright", ArrowUp => "arrowup", NumLock => "numlock",
+    Numpad0 => "numpad0", Numpad1 => "numpad1", Numpad2 => "numpad2", Numpad3 => "numpad3",
+    Numpad4 => "numpad4", Numpad5 => "numpad5", Numpad6 => "numpad6", Numpad7 => "numpad7",
+    Numpad8 => "numpad8", Numpad9 => "numpad9", NumpadAdd => "numpadadd", NumpadBackspace => "numpadbackspace",
+    NumpadClear => "numpadclear", NumpadClearEntry => "numpadclearentry", NumpadComma => "numpadcomma", NumpadDecimal => "numpaddecimal",
+    NumpadDivide => "numpaddivide", NumpadEnter => "numpadenter", NumpadEqual => "numpadequal", NumpadHash => "numpadhash",
+    NumpadMemoryAdd => "numpadmemoryadd", NumpadMemoryClear => "numpadmemoryclear", NumpadMemoryRecall => "numpadmemoryrecall", NumpadMemoryStore => "numpadmemorystore",
+    NumpadMemorySubtract => "numpadmemorysubtract", NumpadMultiply => "numpadmultiply", NumpadParenLeft => "numpadparenleft", NumpadParenRight => "numpadparenright",
+    NumpadStar => "numpadstar", NumpadSubtract => "numpadsubtract", Escape => "escape", Fn => "fn",
+    FnLock => "fnlock", PrintScreen => "printscreen", ScrollLock => "scrolllock", Pause => "pause",
+    BrowserBack => "browserback", BrowserFavorites => "browserfavorites", BrowserForward => "browserforward", BrowserHome => "browserhome",
+    BrowserRefresh => "browserrefresh", BrowserSearch => "browsersearch", BrowserStop => "browserstop", Eject => "eject",
+    LaunchApp1 => "launchapp1", LaunchApp2 => "launchapp2", LaunchMail => "launchmail", MediaPlayPause => "mediaplaypause",
+    MediaSelect => "mediaselect", MediaStop => "mediastop", MediaTrackNext => "mediatracknext", MediaTrackPrevious => "mediatrackprevious",
+    Power => "power", Sleep => "sleep", AudioVolumeDown => "audiovolumedown", AudioVolumeMute => "audiovolumemute",
+    AudioVolumeUp => "audiovolumeup", WakeUp => "wakeup", Meta => "meta", Hyper => "hyper",
+    Turbo => "turbo", Abort => "abort", Resume => "resume", Suspend => "suspend",
+    Again => "again", Copy => "copy", Cut => "cut", Find => "find",
+    Open => "open", Paste => "paste", Props => "props", Select => "select",
+    Undo => "undo", Hiragana => "hiragana", Katakana => "katakana", F1 => "f1",
+    F2 => "f2", F3 => "f3", F4 => "f4", F5 => "f5",
+    F6 => "f6", F7 => "f7", F8 => "f8", F9 => "f9",
+    F10 => "f10", F11 => "f11", F12 => "f12", F13 => "f13",
+    F14 => "f14", F15 => "f15", F16 => "f16", F17 => "f17",
+    F18 => "f18", F19 => "f19", F20 => "f20", F21 => "f21",
+    F22 => "f22", F23 => "f23", F24 => "f24", F25 => "f25",
+    F26 => "f26", F27 => "f27", F28 => "f28", F29 => "f29",
+    F30 => "f30", F31 => "f31", F32 => "f32", F33 => "f33",
+    F34 => "f34", F35 => "f35",
+);
 
-    /// Maps a single ASCII letter to an [`InputKey`]. Movement letters
-    /// `w`/`a`/`s`/`d` keep their dedicated variants (used by `input.axis`);
-    /// every other letter maps to `Other(<lowercase ascii code>)` so the game
-    /// window, the editor preview, and `parse_key` agree on one key identity.
-    /// This is what makes gameplay keys such as Q/E/R/T/F/G distinct in both
-    /// the standalone game and the editor's Play preview.
+impl KeyCode {
+    /// 人可读标签（编辑器捕获面板、日志、`input.bindings()` 的展示列）。    ///
+    /// 与 [`Self::to_text`]（稳定序列化文本）刻意分开：标签可以随排版变化，
+    /// 文本形式进设置文件因此必须稳定。表覆盖全部变体，`key_code_label` 的
+    /// `_ => name` 分支只是兜底（未收录的键显示其文本名，不会 panic 或空白）。
     #[must_use]
-    pub fn from_char(letter: char) -> InputKey {
-        match letter.to_ascii_lowercase() {
-            'w' => Self::W,
-            'a' => Self::A,
-            's' => Self::S,
-            'd' => Self::D,
-            other => Self::Other(other as u32),
+    pub const fn display_label(self) -> &'static str {
+        match self {
+            Self::KeyA => "A",
+            Self::KeyB => "B",
+            Self::KeyC => "C",
+            Self::KeyD => "D",
+            Self::KeyE => "E",
+            Self::KeyF => "F",
+            Self::KeyG => "G",
+            Self::KeyH => "H",
+            Self::KeyI => "I",
+            Self::KeyJ => "J",
+            Self::KeyK => "K",
+            Self::KeyL => "L",
+            Self::KeyM => "M",
+            Self::KeyN => "N",
+            Self::KeyO => "O",
+            Self::KeyP => "P",
+            Self::KeyQ => "Q",
+            Self::KeyR => "R",
+            Self::KeyS => "S",
+            Self::KeyT => "T",
+            Self::KeyU => "U",
+            Self::KeyV => "V",
+            Self::KeyW => "W",
+            Self::KeyX => "X",
+            Self::KeyY => "Y",
+            Self::KeyZ => "Z",
+            Self::Digit0 => "0",
+            Self::Digit1 => "1",
+            Self::Digit2 => "2",
+            Self::Digit3 => "3",
+            Self::Digit4 => "4",
+            Self::Digit5 => "5",
+            Self::Digit6 => "6",
+            Self::Digit7 => "7",
+            Self::Digit8 => "8",
+            Self::Digit9 => "9",
+            Self::Numpad0 => "小键盘 0",
+            Self::Numpad1 => "小键盘 1",
+            Self::Numpad2 => "小键盘 2",
+            Self::Numpad3 => "小键盘 3",
+            Self::Numpad4 => "小键盘 4",
+            Self::Numpad5 => "小键盘 5",
+            Self::Numpad6 => "小键盘 6",
+            Self::Numpad7 => "小键盘 7",
+            Self::Numpad8 => "小键盘 8",
+            Self::Numpad9 => "小键盘 9",
+            Self::F1 => "F1",
+            Self::F2 => "F2",
+            Self::F3 => "F3",
+            Self::F4 => "F4",
+            Self::F5 => "F5",
+            Self::F6 => "F6",
+            Self::F7 => "F7",
+            Self::F8 => "F8",
+            Self::F9 => "F9",
+            Self::F10 => "F10",
+            Self::F11 => "F11",
+            Self::F12 => "F12",
+            Self::F13 => "F13",
+            Self::F14 => "F14",
+            Self::F15 => "F15",
+            Self::F16 => "F16",
+            Self::F17 => "F17",
+            Self::F18 => "F18",
+            Self::F19 => "F19",
+            Self::F20 => "F20",
+            Self::F21 => "F21",
+            Self::F22 => "F22",
+            Self::F23 => "F23",
+            Self::F24 => "F24",
+            Self::F25 => "F25",
+            Self::F26 => "F26",
+            Self::F27 => "F27",
+            Self::F28 => "F28",
+            Self::F29 => "F29",
+            Self::F30 => "F30",
+            Self::F31 => "F31",
+            Self::F32 => "F32",
+            Self::F33 => "F33",
+            Self::F34 => "F34",
+            Self::F35 => "F35",
+            Self::Space => "空格",
+            Self::Escape => "Esc",
+            Self::Enter => "回车",
+            Self::NumpadEnter => "小键盘回车",
+            Self::Tab => "Tab",
+            Self::Backspace => "退格",
+            Self::Delete => "Del",
+            Self::Insert => "Ins",
+            Self::Home => "Home",
+            Self::End => "End",
+            Self::PageUp => "PgUp",
+            Self::PageDown => "PgDn",
+            Self::ArrowUp => "↑",
+            Self::ArrowDown => "↓",
+            Self::ArrowLeft => "←",
+            Self::ArrowRight => "→",
+            Self::ShiftLeft => "Shift 左",
+            Self::ShiftRight => "Shift 右",
+            Self::ControlLeft => "Ctrl 左",
+            Self::ControlRight => "Ctrl 右",
+            Self::AltLeft => "Alt 左",
+            Self::AltRight => "Alt 右",
+            Self::SuperLeft => "Win 左",
+            Self::SuperRight => "Win 右",
+            Self::CapsLock => "CapsLock",
+            Self::NumLock => "NumLock",
+            Self::ScrollLock => "ScrollLock",
+            Self::PrintScreen => "PrtSc",
+            Self::Pause => "Pause",
+            Self::ContextMenu => "菜单键",
+            Self::Backquote => "`",
+            Self::Minus => "-",
+            Self::Equal => "=",
+            Self::BracketLeft => "[",
+            Self::BracketRight => "]",
+            Self::Backslash => "\\",
+            Self::Semicolon => ";",
+            Self::Quote => "'",
+            Self::Comma => ",",
+            Self::Period => ".",
+            Self::Slash => "/",
+            Self::IntlBackslash => "\\ (ISO)",
+            Self::IntlRo => "ろ",
+            Self::IntlYen => "¥",
+            Self::NumpadAdd => "小键盘 +",
+            Self::NumpadSubtract => "小键盘 -",
+            Self::NumpadMultiply => "小键盘 *",
+            Self::NumpadDivide => "小键盘 /",
+            Self::NumpadDecimal => "小键盘 .",
+            Self::NumpadComma => "小键盘 ,",
+            Self::NumpadEqual => "小键盘 =",
+            Self::NumpadStar => "小键盘 *（星号）",
+            other => other.to_text(),
         }
     }
 
-    /// 方向键的可读名字（非方向键返回 `None`）。绑定文本用 `key:up` 这类
-    /// 可读形式（与 Lua 侧 `input.is_down("up")` 同名），而不是内部码位。
+    /// 把**字符**解析为物理键（`input.is_down("w")` 与 v1 设置文件的兼容路径）。
     ///
-    /// [`Self::ARROW_*`] 是 `Other` 关联常量而非独立变体，无法用常量模式直接
-    /// 匹配，因此这里按码位字面量比对（与上面的常量定义保持一一对应）。
+    /// 按 **US-QWERTY 位置**换算：字符是「在那个布局下会产生该字符的键」。因此
+    /// 这条路径**依赖布局假设**，只用于兼容入口；宿主事件一律走物理键
+    /// （[`crate::host::keymap`]），不受玩家布局影响。无法对应到任何物理键时返回
+    /// `None`——调用方必须报错，不得回落到某个「未知键」（旧实现在这里静默落
+    /// `Other(0)`，导致拼错的键名与真实按键无法区分）。
+    ///
+    /// **带 Shift 的字符落回未按 Shift 的物理键**：`'+'`→`Equal`（`=` 那个键）、
+    /// `':'`→`Semicolon`、`'!'`→`Digit1`……因为物理键身份**不含 Shift**（Shift 是
+    /// 独立键位，将来可作修饰）。这与 v1 设置文件迁移（[`Self::v1_key_code`]）同一
+    /// 口径，迁移时会对这种换算产出诊断。
     #[must_use]
-    pub const fn arrow_name(self) -> Option<&'static str> {
+    pub const fn from_char(character: char) -> Option<Self> {
+        match character {
+            'a' | 'A' => Some(Self::KeyA),
+            'b' | 'B' => Some(Self::KeyB),
+            'c' | 'C' => Some(Self::KeyC),
+            'd' | 'D' => Some(Self::KeyD),
+            'e' | 'E' => Some(Self::KeyE),
+            'f' | 'F' => Some(Self::KeyF),
+            'g' | 'G' => Some(Self::KeyG),
+            'h' | 'H' => Some(Self::KeyH),
+            'i' | 'I' => Some(Self::KeyI),
+            'j' | 'J' => Some(Self::KeyJ),
+            'k' | 'K' => Some(Self::KeyK),
+            'l' | 'L' => Some(Self::KeyL),
+            'm' | 'M' => Some(Self::KeyM),
+            'n' | 'N' => Some(Self::KeyN),
+            'o' | 'O' => Some(Self::KeyO),
+            'p' | 'P' => Some(Self::KeyP),
+            'q' | 'Q' => Some(Self::KeyQ),
+            'r' | 'R' => Some(Self::KeyR),
+            's' | 'S' => Some(Self::KeyS),
+            't' | 'T' => Some(Self::KeyT),
+            'u' | 'U' => Some(Self::KeyU),
+            'v' | 'V' => Some(Self::KeyV),
+            'w' | 'W' => Some(Self::KeyW),
+            'x' | 'X' => Some(Self::KeyX),
+            'y' | 'Y' => Some(Self::KeyY),
+            'z' | 'Z' => Some(Self::KeyZ),
+            '0' => Some(Self::Digit0),
+            '1' => Some(Self::Digit1),
+            '2' => Some(Self::Digit2),
+            '3' => Some(Self::Digit3),
+            '4' => Some(Self::Digit4),
+            '5' => Some(Self::Digit5),
+            '6' => Some(Self::Digit6),
+            '7' => Some(Self::Digit7),
+            '8' => Some(Self::Digit8),
+            '9' => Some(Self::Digit9),
+            ' ' => Some(Self::Space),
+            '-' => Some(Self::Minus),
+            '=' | '+' => Some(Self::Equal),
+            '[' | '{' => Some(Self::BracketLeft),
+            ']' | '}' => Some(Self::BracketRight),
+            '\\' | '|' => Some(Self::Backslash),
+            ';' | ':' => Some(Self::Semicolon),
+            '\'' | '"' => Some(Self::Quote),
+            ',' | '<' => Some(Self::Comma),
+            '.' | '>' => Some(Self::Period),
+            '/' | '?' => Some(Self::Slash),
+            '`' | '~' => Some(Self::Backquote),
+            ')' => Some(Self::Digit0),
+            '!' => Some(Self::Digit1),
+            _ => {
+                // `@`/`#`/`$`/`%`/`^`/`&`/`*`/`(` 是 Shift + 数字键。
+                if let Some(digit) = shift_digit_key(character) {
+                    Some(digit)
+                } else if character == '_' {
+                    Some(Self::Minus)
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
+    /// 该物理键在 **US-QWERTY** 下的「未按 Shift」字符（[`Self::from_char`] 的逆）。
+    ///
+    /// 只用于 v1 设置文件迁移的诊断文本，不参与运行期判定。
+    #[must_use]
+    pub const fn qwerty_character(self) -> Option<char> {
         match self {
-            Self::Other(0x0010_0001) => Some("up"),
-            Self::Other(0x0010_0002) => Some("down"),
-            Self::Other(0x0010_0003) => Some("left"),
-            Self::Other(0x0010_0004) => Some("right"),
+            Self::KeyA => Some('a'),
+            Self::KeyB => Some('b'),
+            Self::KeyC => Some('c'),
+            Self::KeyD => Some('d'),
+            Self::KeyE => Some('e'),
+            Self::KeyF => Some('f'),
+            Self::KeyG => Some('g'),
+            Self::KeyH => Some('h'),
+            Self::KeyI => Some('i'),
+            Self::KeyJ => Some('j'),
+            Self::KeyK => Some('k'),
+            Self::KeyL => Some('l'),
+            Self::KeyM => Some('m'),
+            Self::KeyN => Some('n'),
+            Self::KeyO => Some('o'),
+            Self::KeyP => Some('p'),
+            Self::KeyQ => Some('q'),
+            Self::KeyR => Some('r'),
+            Self::KeyS => Some('s'),
+            Self::KeyT => Some('t'),
+            Self::KeyU => Some('u'),
+            Self::KeyV => Some('v'),
+            Self::KeyW => Some('w'),
+            Self::KeyX => Some('x'),
+            Self::KeyY => Some('y'),
+            Self::KeyZ => Some('z'),
+            Self::Digit0 => Some('0'),
+            Self::Digit1 => Some('1'),
+            Self::Digit2 => Some('2'),
+            Self::Digit3 => Some('3'),
+            Self::Digit4 => Some('4'),
+            Self::Digit5 => Some('5'),
+            Self::Digit6 => Some('6'),
+            Self::Digit7 => Some('7'),
+            Self::Digit8 => Some('8'),
+            Self::Digit9 => Some('9'),
+            Self::Space => Some(' '),
+            Self::Minus => Some('-'),
+            Self::Equal => Some('='),
+            Self::BracketLeft => Some('['),
+            Self::BracketRight => Some(']'),
+            Self::Backslash => Some('\\'),
+            Self::Semicolon => Some(';'),
+            Self::Quote => Some('\''),
+            Self::Comma => Some(','),
+            Self::Period => Some('.'),
+            Self::Slash => Some('/'),
+            Self::Backquote => Some('`'),
             _ => None,
         }
     }
+
+    /// v1 设置文件里「字符形式」→ 物理键的**唯一**换算表（M22/W1 迁移路径）。
+    ///
+    /// v1 把键编码成字符：`key:e`、`key:1`、`key:up`、`key:+`、`key:other:1048577`。
+    /// 字符与物理键**不是一一对应**（v1 本身就是这么丢信息的），换算只能按
+    /// US-QWERTY 猜：
+    ///
+    /// * 字母/数字/未按 Shift 的符号 → 对应物理键；
+    /// * `+`/`:`/`?`/`!`/`{`/`}`/`|` 这类**带 Shift 的字符**在同一次迁移里只能落回
+    ///   未按 Shift 的物理键（`+` → `Equal` 即 `=` 那个键）。这是唯一的**有损**
+    ///   映射，返回值第二项是给玩家的中文诊断（见 [`ActionMap::from_text_with_notes`]）；
+    /// * `other:<码位>` 只识别仓库里真实产生过的方向键码位与 F1/F2/F4。
+    ///
+    /// 返回 `None` = 该文本在 v1 里也没有对应物理键 → 调用方报错，**不静默丢弃**。
+    #[must_use]
+    pub fn v1_key_code(text: &str, notes: &mut Vec<String>) -> Option<Self> {
+        let lowered = text.trim().to_ascii_lowercase();
+        // 方向键：v1 的可读名与内部码位两种写法。
+        let named = match lowered.as_str() {
+            "space" => Some(Self::Space),
+            "escape" | "esc" => Some(Self::Escape),
+            "up" => Some(Self::ArrowUp),
+            "down" => Some(Self::ArrowDown),
+            "left" => Some(Self::ArrowLeft),
+            "right" => Some(Self::ArrowRight),
+            "f1" => Some(Self::F1),
+            "f2" => Some(Self::F2),
+            "f4" => Some(Self::F4),
+            _ => None,
+        };
+        if let Some(code) = named {
+            return Some(code);
+        }
+        if let Some(index) = lowered.strip_prefix("other:") {
+            // v1 的内部码位：方向键 0x0010_0001..4 与 F1/F2/F4（1/2/4）。
+            return match index.trim().parse::<u32>().ok() {
+                Some(0x0010_0001) => Some(Self::ArrowUp),
+                Some(0x0010_0002) => Some(Self::ArrowDown),
+                Some(0x0010_0003) => Some(Self::ArrowLeft),
+                Some(0x0010_0004) => Some(Self::ArrowRight),
+                Some(1) => Some(Self::F1),
+                Some(2) => Some(Self::F2),
+                Some(4) => Some(Self::F4),
+                _ => None,
+            };
+        }
+        // 单字符：带 Shift 的字符先记诊断（v1 没有独立的 Shift 键身份），
+        // 其余交给 `from_char` 的 US-QWERTY 换算。
+        let mut chars = lowered.chars();
+        let (Some(character), None) = (chars.next(), chars.next()) else {
+            return None;
+        };
+        let core = Self::from_char(character)?;
+        if shift_digit_key(character).is_some() || matches!(character, '_' | '<' | '>' | '"') {
+            // 这些字符在 US-QWERTY 上**没有**独立的未按 Shift 写法（`_` 是 Shift+`-`，
+            // `<`/`>` 是 Shift+`,`/`.），v1 却把它们当独立键位，只能落回物理键。
+            notes.push(shifted_note(text, core));
+            return Some(core);
+        }
+        if let Some(unshifted) = core.qwerty_character()
+            && unshifted != character
+        {
+            notes.push(shifted_note(text, core));
+        }
+        Some(core)
+    }
 }
 
+/// `v1_key_code` 的迁移诊断文本（`+` 落到 `=` 键这类有损换算）。
+fn shifted_note(text: &str, core: KeyCode) -> String {
+    format!(
+        "key:{text} 是 v1 的带 Shift 字符写法，v2 只记录物理键，已迁移为 key:{}（{} 键）；\
+         如需保留原字符请改绑为 Shift+{} 组合",
+        core.to_text(),
+        core.display_label(),
+        core.display_label(),
+    )
+}
+
+/// Shift + 主键区数字产生的字符 → 对应数字物理键（`!`→`Digit1`、`@`→`Digit2`…）。
+///
+/// US-QWERTY 的固定对应关系；只用于**字符 → 物理键**的兼容换算与迁移诊断。
+#[must_use]
+pub const fn shift_digit_key(character: char) -> Option<KeyCode> {
+    match character {
+        '!' => Some(KeyCode::Digit1),
+        '@' => Some(KeyCode::Digit2),
+        '#' => Some(KeyCode::Digit3),
+        '$' => Some(KeyCode::Digit4),
+        '%' => Some(KeyCode::Digit5),
+        '^' => Some(KeyCode::Digit6),
+        '&' => Some(KeyCode::Digit7),
+        '*' => Some(KeyCode::Digit8),
+        '(' => Some(KeyCode::Digit9),
+        ')' => Some(KeyCode::Digit0),
+        _ => None,
+    }
+}
 /// Mouse buttons exposed by the engine input layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MouseButton {
@@ -131,10 +575,11 @@ impl InputDevice {
     }
 }
 
-/// 一个命名动作的绑定项（M20-02）。
+/// 一个命名动作的绑定项（M20-02；M22/W1 起键位是**物理键**）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Binding {
-    Key(InputKey),
+    /// 物理键（[`KeyCode`]）——不是字符，见 `KeyCode` 的模块说明。
+    Key(KeyCode),
     Mouse(MouseButton),
     /// 抽象手柄按钮索引（宿主喂入；设备轮询未接入）。
     GamepadButton(u8),
@@ -143,29 +588,16 @@ pub enum Binding {
 }
 
 impl Binding {
-    /// 稳定文本形式（用于设置持久化与 UI 展示）。
+    /// 稳定文本形式（设置持久化：`key:KeyE`、`mouse:left`、`pad:0`、`padaxis:1+`）。
+    ///
+    /// M22/W1 起键位文本是**物理键名**（[`KeyCode::to_text`]，即 winit 变体名的小写）
+    /// 而不是字符：v1 的 `key:e` 在 AZERTY 上会被玩家理解成「字符 e 那个键」，而
+    /// 引擎实际需要的是 US-QWERTY 的 E 位置。展示用文本见
+    /// [`Self::display_label`]，两者刻意分开。
     #[must_use]
     pub fn to_text(self) -> String {
         match self {
-            Self::Key(InputKey::W) => "key:w".to_owned(),
-            Self::Key(InputKey::A) => "key:a".to_owned(),
-            Self::Key(InputKey::S) => "key:s".to_owned(),
-            Self::Key(InputKey::D) => "key:d".to_owned(),
-            Self::Key(InputKey::Space) => "key:space".to_owned(),
-            Self::Key(InputKey::Escape) => "key:escape".to_owned(),
-            Self::Key(InputKey::Other(code)) => {
-                // 方向键用可读名字（与 Lua 侧 `input.is_down("up")` 同名），
-                // 而不是内部码位 `key:other:1048577`——设置文件与重绑定面板
-                // 都需要稳定的可读文本（M20-07 / M20-08）。
-                if let Some(name) = InputKey::Other(code).arrow_name() {
-                    return format!("key:{name}");
-                }
-                // 可打印字符按键显示为字符本身（与 InputKey::from_char 对称）。
-                match u8::try_from(code).ok().map(char::from) {
-                    Some(letter) if letter.is_ascii_graphic() => format!("key:{letter}"),
-                    _ => format!("key:other:{code}"),
-                }
-            }
+            Self::Key(key) => format!("key:{}", key.to_text()),
             Self::Mouse(MouseButton::Left) => "mouse:left".to_owned(),
             Self::Mouse(MouseButton::Right) => "mouse:right".to_owned(),
             Self::Mouse(MouseButton::Middle) => "mouse:middle".to_owned(),
@@ -176,39 +608,44 @@ impl Binding {
         }
     }
 
-    /// 解析 [`Binding::to_text`] 的输出。
+    /// 人可读标签（编辑器重绑定面板、冲突提示、日志）。
+    #[must_use]
+    pub fn display_label(self) -> String {
+        match self {
+            Self::Key(key) => key.display_label().to_owned(),
+            Self::Mouse(MouseButton::Left) => "鼠标左键".to_owned(),
+            Self::Mouse(MouseButton::Right) => "鼠标右键".to_owned(),
+            Self::Mouse(MouseButton::Middle) => "鼠标中键".to_owned(),
+            Self::Mouse(MouseButton::Other(index)) => format!("鼠标 {index}"),
+            Self::GamepadButton(index) => format!("手柄按钮 {index}"),
+            Self::GamepadAxis(index, direction) => {
+                format!("手柄轴 {index}{}", direction.to_text())
+            }
+        }
+    }
+
+    /// 解析 [`Self::to_text`] 的输出，同时接受 **v1 的键位写法**。
+    ///
+    /// 键位字段先按 v2 物理键名解析，失败再走 [`KeyCode::v1_key_code`]（`key:e`、
+    /// `key:1`、`key:up`、`key:other:1048577`、`key:+`），因此
+    /// `input.rebind("interact", "key:e")` 这类既有 Lua 调用与 v1 设置文件都能继续
+    /// 工作。v1 的带 Shift 字符（`+`）在迁移时落回未按 Shift 的物理键，诊断文本由
+    /// [`ActionMap::from_text_with_notes`] 产出（本函数静默，因为它是单条绑定的
+    /// 兼容入口，没有「迁移」这个语境）。
     pub fn parse(text: &str) -> Result<Self, ActionMapError> {
         let (kind, rest) = text
             .split_once(':')
             .ok_or_else(|| ActionMapError::InvalidBinding(text.to_owned()))?;
         match (kind, rest) {
-            ("key", value) => match value {
-                "w" => Ok(Self::Key(InputKey::W)),
-                "a" => Ok(Self::Key(InputKey::A)),
-                "s" => Ok(Self::Key(InputKey::S)),
-                "d" => Ok(Self::Key(InputKey::D)),
-                "space" => Ok(Self::Key(InputKey::Space)),
-                "escape" => Ok(Self::Key(InputKey::Escape)),
-                "up" => Ok(Self::Key(InputKey::ARROW_UP)),
-                "down" => Ok(Self::Key(InputKey::ARROW_DOWN)),
-                "left" => Ok(Self::Key(InputKey::ARROW_LEFT)),
-                "right" => Ok(Self::Key(InputKey::ARROW_RIGHT)),
-                other => {
-                    if let Some(index) = other.strip_prefix("other:") {
-                        return index
-                            .parse::<u32>()
-                            .map(|code| Self::Key(InputKey::Other(code)))
-                            .map_err(|_| ActionMapError::InvalidBinding(text.to_owned()));
-                    }
-                    let mut chars = other.chars();
-                    match (chars.next(), chars.next()) {
-                        (Some(letter), None) if letter.is_ascii_graphic() => {
-                            Ok(Self::Key(InputKey::from_char(letter)))
-                        }
-                        _ => Err(ActionMapError::InvalidBinding(text.to_owned())),
-                    }
+            ("key", value) => {
+                if let Some(key) = KeyCode::from_text(value) {
+                    return Ok(Self::Key(key));
                 }
-            },
+                let mut notes = Vec::new();
+                KeyCode::v1_key_code(value, &mut notes)
+                    .map(Self::Key)
+                    .ok_or_else(|| ActionMapError::InvalidBinding(text.to_owned()))
+            }
             ("mouse", value) => match value {
                 "left" => Ok(Self::Mouse(MouseButton::Left)),
                 "right" => Ok(Self::Mouse(MouseButton::Right)),
@@ -304,8 +741,16 @@ impl ActionConflict {
     }
 }
 
-/// 动作映射的持久化版本头。
-pub const ACTION_MAP_VERSION: &str = "rustlua-actions-v1";
+/// 动作映射的持久化版本头（M22/W1：v1 → v2）。
+///
+/// v1 的键位是**字符**（`key:e`、`key:1`、`key:up`、`key:+`、`key:other:1048577`），
+/// v2 是**物理键名**（`key:keye`、`key:digit1`、`key:arrowup`、`key:equal`）。写入
+/// 一律输出 v2；读取同时接受 v1（[`ActionMap::from_text_with_notes`] 给出迁移诊断），
+/// 因此玩家在 v1 里的改键不会静默丢失或错绑。
+pub const ACTION_MAP_VERSION: &str = "rustlua-actions-v2";
+
+/// 兼容读取的 v1 版本头（只读，不再写出）。
+pub const ACTION_MAP_VERSION_V1: &str = "rustlua-actions-v1";
 
 /// 命名动作 → 绑定集合（M20-02）。表内按动作名稳定排序，便于对比与展示。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -339,46 +784,49 @@ impl ActionMap {
     pub fn with_defaults() -> Self {
         let mut map = Self::new();
         let defaults: &[(&str, &[Binding])] = &[
-            ("move_up", &[Binding::Key(InputKey::W)]),
-            ("move_down", &[Binding::Key(InputKey::S)]),
-            ("move_left", &[Binding::Key(InputKey::A)]),
-            ("move_right", &[Binding::Key(InputKey::D)]),
-            ("interact", &[Binding::Key(InputKey::from_char('e'))]),
-            ("attack", &[Binding::Key(InputKey::from_char('j'))]),
-            ("skill", &[Binding::Key(InputKey::from_char('k'))]),
-            ("gift", &[Binding::Key(InputKey::from_char('g'))]),
-            ("sleep", &[Binding::Key(InputKey::from_char('t'))]),
-            ("practice", &[Binding::Key(InputKey::from_char('q'))]),
-            ("inventory", &[Binding::Key(InputKey::from_char('i'))]),
-            ("pause", &[Binding::Key(InputKey::from_char('p'))]),
+            ("move_up", &[key('w')]),
+            ("move_down", &[key('s')]),
+            ("move_left", &[key('a')]),
+            ("move_right", &[key('d')]),
+            ("interact", &[key('e')]),
+            ("attack", &[key('j')]),
+            ("skill", &[key('k')]),
+            ("gift", &[key('g')]),
+            ("sleep", &[key('t')]),
+            ("practice", &[key('q')]),
+            ("inventory", &[key('i')]),
+            ("pause", &[key('p')]),
             // 建造/采集/任务/重开（M20-08）：game_jhyt 迁移动作层后的新动作。
-            ("build", &[Binding::Key(InputKey::from_char('b'))]),
-            ("place", &[Binding::Key(InputKey::from_char('f'))]),
-            ("demolish", &[Binding::Key(InputKey::from_char('x'))]),
-            ("use", &[Binding::Key(InputKey::from_char('u'))]),
-            ("quest", &[Binding::Key(InputKey::from_char('l'))]),
-            ("respawn", &[Binding::Key(InputKey::from_char('r'))]),
-            ("seed", &[Binding::Key(InputKey::from_char('c'))]),
-            ("volume_up", &[Binding::Key(InputKey::from_char('+'))]),
-            ("volume_down", &[Binding::Key(InputKey::from_char('-'))]),
+            ("build", &[key('b')]),
+            ("place", &[key('f')]),
+            ("demolish", &[key('x')]),
+            ("use", &[key('u')]),
+            ("quest", &[key('l')]),
+            ("respawn", &[key('r')]),
+            ("seed", &[key('c')]),
+            // 音量：`+`/`-` 是**字符**语义（v1 的写法），落到 US-QWERTY 的 `=`/`-`
+            // 两个物理键上。玩家在 AZERTY 上按到的是同一个物理位置，这正是 W1 想
+            // 要的：默认绑定不再随布局漂移。
+            ("volume_up", &[key('+')]),
+            ("volume_down", &[key('-')]),
             // 数字键 1..9 直选（对话选项/商店行/面板行）——键盘专属快捷方式，
             // 手柄侧走 ui_* + confirm。
-            ("slot_1", &[Binding::Key(InputKey::from_char('1'))]),
-            ("slot_2", &[Binding::Key(InputKey::from_char('2'))]),
-            ("slot_3", &[Binding::Key(InputKey::from_char('3'))]),
-            ("slot_4", &[Binding::Key(InputKey::from_char('4'))]),
-            ("slot_5", &[Binding::Key(InputKey::from_char('5'))]),
-            ("slot_6", &[Binding::Key(InputKey::from_char('6'))]),
-            ("slot_7", &[Binding::Key(InputKey::from_char('7'))]),
-            ("slot_8", &[Binding::Key(InputKey::from_char('8'))]),
-            ("slot_9", &[Binding::Key(InputKey::from_char('9'))]),
+            ("slot_1", &[key('1')]),
+            ("slot_2", &[key('2')]),
+            ("slot_3", &[key('3')]),
+            ("slot_4", &[key('4')]),
+            ("slot_5", &[key('5')]),
+            ("slot_6", &[key('6')]),
+            ("slot_7", &[key('7')]),
+            ("slot_8", &[key('8')]),
+            ("slot_9", &[key('9')]),
             (
                 "confirm",
-                &[Binding::Key(InputKey::Space), Binding::GamepadButton(0)],
+                &[Binding::Key(KeyCode::Space), Binding::GamepadButton(0)],
             ),
             (
                 "cancel",
-                &[Binding::Key(InputKey::Escape), Binding::GamepadButton(1)],
+                &[Binding::Key(KeyCode::Escape), Binding::GamepadButton(1)],
             ),
             // 菜单/焦点导航（M20-02 面板 + M20-07 动作层）：方向键与左摇杆
             // **按方向拆成四个动作**，这样 `input.action_axis("ui_down","ui_up")`
@@ -388,7 +836,7 @@ impl ActionMap {
             (
                 "ui_up",
                 &[
-                    Binding::Key(InputKey::ARROW_UP),
+                    Binding::Key(KeyCode::ArrowUp),
                     Binding::GamepadAxis(1, AxisDirection::Positive),
                     Binding::GamepadButton(12),
                 ],
@@ -396,7 +844,7 @@ impl ActionMap {
             (
                 "ui_down",
                 &[
-                    Binding::Key(InputKey::ARROW_DOWN),
+                    Binding::Key(KeyCode::ArrowDown),
                     Binding::GamepadAxis(1, AxisDirection::Negative),
                     Binding::GamepadButton(13),
                 ],
@@ -404,7 +852,7 @@ impl ActionMap {
             (
                 "ui_left",
                 &[
-                    Binding::Key(InputKey::ARROW_LEFT),
+                    Binding::Key(KeyCode::ArrowLeft),
                     Binding::GamepadAxis(0, AxisDirection::Negative),
                     Binding::GamepadButton(14),
                 ],
@@ -412,7 +860,7 @@ impl ActionMap {
             (
                 "ui_right",
                 &[
-                    Binding::Key(InputKey::ARROW_RIGHT),
+                    Binding::Key(KeyCode::ArrowRight),
                     Binding::GamepadAxis(0, AxisDirection::Positive),
                     Binding::GamepadButton(15),
                 ],
@@ -554,13 +1002,29 @@ impl ActionMap {
         text
     }
 
-    /// 解析 [`Self::to_text`] 的输出；版本头不符/绑定非法均返回错误。
+    /// 解析 [`Self::to_text`] 的输出（v2 头）或 **v1 设置文本**（`rustlua-actions-v1`）。
+    ///
+    /// v1 会被迁移成物理键并**丢弃迁移诊断**；需要诊断（「`+` 落到了 `=` 键」这类
+    /// 有损换算）请用 [`Self::from_text_with_notes`]，Lua 侧 `input.load_settings()`
+    /// 走的就是带诊断的那条路径。
     pub fn from_text(text: &str) -> Result<Self, ActionMapError> {
+        Self::from_text_with_notes(text).map(|(map, _)| map)
+    }
+
+    /// 同 [`Self::from_text`]，同时返回**迁移诊断**（每条一行中文，v2 输入时为空）。
+    ///
+    /// 版本头判定：`v2` = 当前格式；`v1` = 旧格式，键位按
+    /// [`KeyCode::v1_key_code`] 换算后读入（**读 v1、写 v2**）；其他头一律
+    /// [`ActionMapError::UnsupportedVersion`]。
+    pub fn from_text_with_notes(text: &str) -> Result<(Self, Vec<String>), ActionMapError> {
         let mut lines = text.lines();
         let header = lines.next().unwrap_or_default().trim();
-        if header != ACTION_MAP_VERSION {
-            return Err(ActionMapError::UnsupportedVersion(header.to_owned()));
-        }
+        let legacy = match header {
+            ACTION_MAP_VERSION => false,
+            ACTION_MAP_VERSION_V1 => true,
+            other => return Err(ActionMapError::UnsupportedVersion(other.to_owned())),
+        };
+        let mut notes = Vec::new();
         let mut map = Self::new();
         for line in lines {
             let line = line.trim();
@@ -571,18 +1035,59 @@ impl ActionMap {
                 .split_once('=')
                 .ok_or_else(|| ActionMapError::InvalidBinding(line.to_owned()))?;
             for item in list.split(',').filter(|item| !item.trim().is_empty()) {
-                let binding = Binding::parse(item.trim())?;
+                let item = item.trim();
+                let binding = if legacy {
+                    v1_binding(item, &mut notes)?
+                } else {
+                    Binding::parse(item)?
+                };
                 map.bind(action.trim(), binding)?;
             }
         }
-        Ok(map)
+        if legacy && notes.is_empty() {
+            // 即使没有单项诊断，也要让玩家知道这份文件已经被升级：v1 的键位名
+            // （`key:e`）与 v2（`key:keye`）读起来不同，下次写盘就是 v2 了。
+            notes.push(
+                "输入映射已从 v1 升级到 v2：键位改为物理键名，写盘后即输出 v2 格式".to_owned(),
+            );
+        }
+        Ok((map, notes))
     }
+}
+
+/// v1 绑定文本 → v2 [`Binding`]（迁移路径，见 [`ActionMap::from_text_with_notes`]）。
+///
+/// v1 与 v2 只有**键位**字段不同：`mouse:*`/`pad:*`/`padaxis:*` 三种写法两版一致，
+/// 直接交给 [`Binding::parse`]。键位走 [`KeyCode::v1_key_code`]，无法换算时报
+/// [`ActionMapError::InvalidBinding`]——**不静默丢弃**（旧实现会落 `Other(0)`，
+/// 于是拼错的键名与真按键无法区分）。
+fn v1_binding(text: &str, notes: &mut Vec<String>) -> Result<Binding, ActionMapError> {
+    let Some(value) = text.strip_prefix("key:") else {
+        return Binding::parse(text);
+    };
+    KeyCode::v1_key_code(value, notes)
+        .map(Binding::Key)
+        .ok_or_else(|| ActionMapError::InvalidBinding(text.to_owned()))
+}
+
+/// 默认绑定表用的常量构造助手：把 **US-QWERTY 字符**换算成物理键绑定。
+///
+/// 默认表是常量表，用 `key('e')` 比逐个写 `Binding::Key(KeyCode::KeyE)` 更难写错，
+/// 也把「默认绑定按 QWERTY 位置定义」这一事实写在构造点上。传入的字符全部来自本
+/// 文件里写死的字面量（不是用户输入），因此这里的 `expect` 是**编译期常量错误**
+/// 的运行时兜底，正常路径永不触发；`default_binding_characters_map_to_physical_keys`
+/// 单测逐个验证这些字面量确实能换算。
+fn key(character: char) -> Binding {
+    Binding::Key(
+        KeyCode::from_char(character)
+            .unwrap_or_else(|| panic!("默认绑定表里的字符 {character:?} 没有对应物理键")),
+    )
 }
 
 /// 谓词（模拟量）：手柄轴取模拟值，其余绑定为 0/1。
 fn binding_axis_value(
     binding: Binding,
-    held_keys: &HashSet<InputKey>,
+    held_keys: &HashSet<KeyCode>,
     held_mouse: &HashSet<MouseButton>,
     gamepad_buttons: &HashSet<u8>,
     gamepad_axes: &HashMap<u8, f32>,
@@ -611,7 +1116,7 @@ fn binding_axis_value(
 /// `set_gamepad_axis` 的路径）回落到 `|value| >= AXIS_DIGITAL_ON`，语义与 M20 一致。
 fn binding_is_down(
     binding: Binding,
-    held_keys: &HashSet<InputKey>,
+    held_keys: &HashSet<KeyCode>,
     held_mouse: &HashSet<MouseButton>,
     gamepad_buttons: &HashSet<u8>,
     gamepad_axes: &HashMap<u8, f32>,
@@ -633,9 +1138,9 @@ fn binding_is_down(
 /// A stable input state consumed by simulation and scripts.
 #[derive(Debug, Clone, PartialEq)]
 pub struct InputSnapshot {
-    held_keys: HashSet<InputKey>,
-    pressed_keys: HashSet<InputKey>,
-    released_keys: HashSet<InputKey>,
+    held_keys: HashSet<KeyCode>,
+    pressed_keys: HashSet<KeyCode>,
+    released_keys: HashSet<KeyCode>,
     held_mouse: HashSet<MouseButton>,
     pressed_mouse: HashSet<MouseButton>,
     released_mouse: HashSet<MouseButton>,
@@ -688,7 +1193,7 @@ impl Default for InputSnapshot {
 
 impl InputSnapshot {
     /// Records a keyboard state transition without losing a quick press/release.
-    pub fn key_event(&mut self, key: InputKey, is_down: bool) {
+    pub fn key_event(&mut self, key: KeyCode, is_down: bool) {
         if is_down {
             if self.held_keys.insert(key) {
                 self.pressed_keys.insert(key);
@@ -967,17 +1472,17 @@ impl InputSnapshot {
     }
 
     #[must_use]
-    pub fn is_down(&self, key: InputKey) -> bool {
+    pub fn is_down(&self, key: KeyCode) -> bool {
         self.held_keys.contains(&key)
     }
 
     #[must_use]
-    pub fn just_pressed(&self, key: InputKey) -> bool {
+    pub fn just_pressed(&self, key: KeyCode) -> bool {
         self.pressed_keys.contains(&key)
     }
 
     #[must_use]
-    pub fn just_released(&self, key: InputKey) -> bool {
+    pub fn just_released(&self, key: KeyCode) -> bool {
         self.released_keys.contains(&key)
     }
 
@@ -1000,10 +1505,12 @@ impl InputSnapshot {
     pub fn axis(&self, axis: &str) -> f32 {
         match axis {
             "horizontal" => {
-                self.is_down(InputKey::D) as i32 as f32 - self.is_down(InputKey::A) as i32 as f32
+                self.is_down(KeyCode::KeyD) as i32 as f32
+                    - self.is_down(KeyCode::KeyA) as i32 as f32
             }
             "vertical" => {
-                self.is_down(InputKey::W) as i32 as f32 - self.is_down(InputKey::S) as i32 as f32
+                self.is_down(KeyCode::KeyW) as i32 as f32
+                    - self.is_down(KeyCode::KeyS) as i32 as f32
             }
             _ => 0.0,
         }
@@ -1152,59 +1659,281 @@ pub fn apply_stick_deadzone_radial(x: f32, y: f32, deadzone: f32) -> (f32, f32) 
 mod tests {
     use super::{
         ACTION_MAP_VERSION, AXIS_DIGITAL_OFF, AXIS_DIGITAL_ON, ActionMap, ActionMapError,
-        AxisDirection, Binding, GamepadDeadzone, InputDevice, InputKey, InputSnapshot, MouseButton,
+        AxisDirection, Binding, GamepadDeadzone, InputDevice, InputSnapshot, KeyCode, MouseButton,
         apply_stick_deadzone_radial,
     };
 
+    /// M22/W1：字符 → 物理键是**US-QWERTY 位置**换算，大小写不敏感。
     #[test]
     fn from_char_gives_each_letter_a_distinct_key() {
-        assert_eq!(InputKey::from_char('w'), InputKey::W);
-        assert_eq!(InputKey::from_char('a'), InputKey::A);
-        assert_eq!(InputKey::from_char('s'), InputKey::S);
-        assert_eq!(InputKey::from_char('d'), InputKey::D);
-        // 其余字母键按小写 ASCII 码区分，Q/E/R/T/F/G 互不相同。
-        assert_eq!(InputKey::from_char('q'), InputKey::Other(113));
-        assert_eq!(InputKey::from_char('Q'), InputKey::Other(113));
-        assert_eq!(InputKey::from_char('e'), InputKey::Other(101));
-        assert_eq!(InputKey::from_char('t'), InputKey::Other(116));
-        assert!(InputKey::from_char('q') != InputKey::from_char('e'));
+        let key =
+            |character: char| KeyCode::from_char(character).expect("QWERTY 字符必须有对应物理键");
+        assert_eq!(key('w'), KeyCode::KeyW);
+        assert_eq!(key('a'), KeyCode::KeyA);
+        assert_eq!(key('s'), KeyCode::KeyS);
+        assert_eq!(key('d'), KeyCode::KeyD);
+        // 其余字母键各自对应**独立的物理键**，Q/E/R/T/F/G 互不相同。
+        assert_eq!(key('q'), KeyCode::KeyQ);
+        assert_eq!(key('e'), KeyCode::KeyE);
+        assert_eq!(key('t'), KeyCode::KeyT);
+        assert_ne!(key('q'), key('e'));
+        // 大小写同一物理键。
+        assert_eq!(key('Q'), key('q'));
+        // 数字键走主键区数字（`Digit1`），不再是 ASCII 码位。
+        assert_eq!(key('1'), KeyCode::Digit1);
+        // 无法对应物理键的字符返回 `None`（调用方必须报错，不得回落「未知键」）。
+        assert_eq!(KeyCode::from_char('中'), None);
+        assert_eq!(KeyCode::from_char('\u{1}'), None);
+    }
+
+    /// M22/W1：`to_text` / `from_text` 对**全表 194 项**逐项往返。
+    ///
+    /// 这是「引擎键域 = 表驱动」的直接证据：任何一项的文本形式写错、重复或漏掉，
+    /// 这里立刻失败。
+    #[test]
+    fn every_key_code_round_trips_through_text() {
+        assert_eq!(KeyCode::ALL.len(), 194, "物理键域与 winit 0.30 对齐");
+        let mut texts: Vec<&str> = KeyCode::ALL.iter().map(|key| key.to_text()).collect();
+        texts.sort_unstable();
+        let unique = {
+            let mut deduped = texts.clone();
+            deduped.dedup();
+            deduped.len()
+        };
+        assert_eq!(
+            unique,
+            texts.len(),
+            "文本形式必须两两不同（否则设置文件有歧义）"
+        );
+        for key in KeyCode::ALL {
+            let text = key.to_text();
+            assert_eq!(
+                KeyCode::from_text(text),
+                Some(*key),
+                "{text} 必须解析回自己"
+            );
+            // 解析大小写不敏感（玩家手写 `KeyE` 也要认）。
+            assert_eq!(KeyCode::from_text(&text.to_uppercase()), Some(*key));
+            // 带 `key:` 前缀的完整绑定文本也要往返。
+            let binding = Binding::Key(*key);
+            assert_eq!(Binding::parse(&binding.to_text()), Ok(binding));
+        }
+        assert_eq!(KeyCode::from_text("not-a-key"), None);
+        assert_eq!(KeyCode::from_text(""), None);
+    }
+
+    /// M22/W1：v1 设置文本里的键位名要**逐项**映射到物理键，带 Shift 的字符记诊断。
+    #[test]
+    fn v1_key_texts_migrate_to_physical_keys() {
+        // v1 可读名 → 物理键。
+        for (v1, expected) in [
+            ("w", KeyCode::KeyW),
+            ("E", KeyCode::KeyE),
+            ("1", KeyCode::Digit1),
+            ("up", KeyCode::ArrowUp),
+            ("down", KeyCode::ArrowDown),
+            ("left", KeyCode::ArrowLeft),
+            ("right", KeyCode::ArrowRight),
+            ("space", KeyCode::Space),
+            ("esc", KeyCode::Escape),
+            ("escape", KeyCode::Escape),
+            ("-", KeyCode::Minus),
+            ("=", KeyCode::Equal),
+            (";", KeyCode::Semicolon),
+            ("'", KeyCode::Quote),
+            ("\\", KeyCode::Backslash),
+            // v1 的码位写法（方向键，同 HEAD 里的 `ARROW_UP/DOWN/LEFT/RIGHT`）。
+            ("other:1048577", KeyCode::ArrowUp),
+            ("other:1048578", KeyCode::ArrowDown),
+            ("other:1048579", KeyCode::ArrowLeft),
+            ("other:1048580", KeyCode::ArrowRight),
+            // v1 的 F1/F2/F4 码位。
+            ("other:1", KeyCode::F1),
+            ("other:2", KeyCode::F2),
+            ("other:4", KeyCode::F4),
+            // 带 Shift 的字符 → 未按 Shift 的物理键。
+            ("+", KeyCode::Equal),
+            (":", KeyCode::Semicolon),
+            ("?", KeyCode::Slash),
+            ("!", KeyCode::Digit1),
+            ("{", KeyCode::BracketLeft),
+            ("}", KeyCode::BracketRight),
+            ("|", KeyCode::Backslash),
+            ("~", KeyCode::Backquote),
+            ("<", KeyCode::Comma),
+            (">", KeyCode::Period),
+            ("\"", KeyCode::Quote),
+            ("_", KeyCode::Minus),
+            ("(", KeyCode::Digit9),
+            (")", KeyCode::Digit0),
+        ] {
+            let mut notes = Vec::new();
+            assert_eq!(
+                KeyCode::v1_key_code(v1, &mut notes),
+                Some(expected),
+                "v1 文本 {v1} 必须映射到 {expected:?}"
+            );
+        }
+        // 未知名 → None（不是某种「未知键」）。
+        let mut notes = Vec::new();
+        assert_eq!(KeyCode::v1_key_code("not-a-key", &mut notes), None);
+        assert!(notes.is_empty(), "失败路径不该写诊断：{notes:?}");
+    }
+
+    /// M22/W1：有损换算必须有诊断（`+` 只记 `=` 那个物理键），无有损换算时只提醒升级。
+    #[test]
+    fn v1_migration_reports_lossy_shift_conversions() {
+        let (map, notes) =
+            ActionMap::from_text_with_notes("rustlua-actions-v1\nvolume_up=key:+\n").unwrap();
+        assert_eq!(map.bindings("volume_up"), [Binding::Key(KeyCode::Equal)]);
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(notes[0].contains("key:+"), "{notes:?}");
+        assert!(notes[0].contains("key:equal"), "{notes:?}");
+        assert!(notes[0].contains("Shift"), "诊断要给出补救方式：{notes:?}");
+
+        // 无有损换算：只留一条「已升级到 v2」的提示。
+        let (map, notes) =
+            ActionMap::from_text_with_notes("rustlua-actions-v1\nmove_up=key:w\n").unwrap();
+        assert_eq!(map.bindings("move_up"), [Binding::Key(KeyCode::KeyW)]);
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(
+            notes[0].contains("v1") && notes[0].contains("v2"),
+            "{notes:?}"
+        );
+
+        // v2 输入不产生任何诊断（幂等重读不刷屏）。
+        let (_, notes) = ActionMap::from_text_with_notes(&map.to_text()).unwrap();
+        assert!(notes.is_empty(), "{notes:?}");
+
+        // 未知版本头仍然明确报错，不会被当成 v1/v2。
+        assert_eq!(
+            ActionMap::from_text_with_notes("rustlua-actions-v9\nmove_up=key:w"),
+            Err(ActionMapError::UnsupportedVersion(
+                "rustlua-actions-v9".to_owned()
+            ))
+        );
+    }
+
+    /// M22/W1：**AZERTY/Dvorak 场景**——同一物理位置在不同布局下是同一引擎键。
+    ///
+    /// 引擎层不需要模拟布局：`KeyCode::KeyW` 就是 `KeyW`，`from_char('z')` 只是
+    /// **兼容入口**的 US-QWERTY 假设（AZERTY 玩家按 W 位置，平台报的字符是 `z`，
+    /// 旧实现读字符就会得到「按下 Z」）。这里锁住两件事：
+    /// ① 物理键身份不经过字符；② 兼容路径的假设是文档化的 US-QWERTY。
+    #[test]
+    fn physical_binding_identity_ignores_layout() {
+        // ① 物理键路径：绑定 `KeyW` 只认 `KeyW`，`KeyZ` 不触发。
+        let map = ActionMap::with_defaults();
+        let mut input = InputSnapshot::default();
+        input.key_event(KeyCode::KeyW, true);
+        assert!(input.action_is_down(&map, "move_up"));
+        let mut input = InputSnapshot::default();
+        input.key_event(KeyCode::KeyZ, true);
+        assert!(
+            !input.action_is_down(&map, "move_up"),
+            "AZERTY 的 Z 字符位置不得被当成 W 物理键"
+        );
+        // ② 兼容路径是 US-QWERTY 假设：字符 `z` → 物理键 `KeyZ`（不是 `KeyW`）。
+        assert_eq!(KeyCode::from_char('z'), Some(KeyCode::KeyZ));
+        assert_eq!(KeyCode::from_char('w'), Some(KeyCode::KeyW));
+        // ③ v1 文本同理：`key:z` 迁到 `KeyZ`，不会因为布局而变。
+        let (migrated, _) =
+            ActionMap::from_text_with_notes("rustlua-actions-v1\nmove_up=key:z\n").unwrap();
+        assert_eq!(migrated.bindings("move_up"), [Binding::Key(KeyCode::KeyZ)]);
+    }
+
+    /// M22/W1：默认绑定表里的每个字符键都落在**主键区字母/数字**物理键上，
+    /// 且**键盘侧零跨动作冲突**。
+    ///
+    /// 手柄侧的刻意别名不算冲突（`pad:0` 同时服务 `confirm`/`interact`、左摇杆同时
+    /// 服务 `move_*` 与 `ui_*`，见 [`ActionMap::with_defaults`]），所以这里过滤掉
+    /// 非键盘绑定，只钉住「一个物理键只属于一个动作」这条键盘不变量。
+    #[test]
+    fn default_bindings_use_primary_physical_keys() {
+        let map = ActionMap::with_defaults();
+        for (action, expected) in [
+            ("move_up", KeyCode::KeyW),
+            ("move_down", KeyCode::KeyS),
+            ("move_left", KeyCode::KeyA),
+            ("move_right", KeyCode::KeyD),
+            ("interact", KeyCode::KeyE),
+            ("place", KeyCode::KeyF),
+            ("slot_1", KeyCode::Digit1),
+            ("slot_9", KeyCode::Digit9),
+            ("volume_up", KeyCode::Equal),
+            ("volume_down", KeyCode::Minus),
+            ("confirm", KeyCode::Space),
+            ("cancel", KeyCode::Escape),
+            ("ui_up", KeyCode::ArrowUp),
+            ("ui_down", KeyCode::ArrowDown),
+            ("ui_left", KeyCode::ArrowLeft),
+            ("ui_right", KeyCode::ArrowRight),
+        ] {
+            assert!(
+                map.bindings(action).contains(&Binding::Key(expected)),
+                "{action} 应绑定 {expected:?}，实际 {:?}",
+                map.bindings(action)
+            );
+        }
+        let key_conflicts: Vec<_> = map
+            .conflicts()
+            .into_iter()
+            .filter(|conflict| matches!(conflict.binding, Binding::Key(_)))
+            .collect();
+        assert_eq!(
+            key_conflicts,
+            Vec::new(),
+            "默认表的键盘绑定必须一个物理键只属于一个动作"
+        );
+        // 默认表里不再出现任何「字符码位」痕迹：所有键盘绑定都是 `key:<物理键名>`。
+        for line in map.to_text().lines().skip(1) {
+            for binding in line.split_once('=').expect("k=v").1.split(',') {
+                if let Some(rest) = binding.strip_prefix("key:") {
+                    assert!(
+                        KeyCode::from_text(rest).is_some(),
+                        "默认表写出了无法解析的键位文本：{binding}"
+                    );
+                    assert!(!rest.contains("other:"), "v2 文本不得含 v1 码位：{binding}");
+                }
+            }
+        }
     }
 
     #[test]
     fn preserves_press_and_release_until_frame_boundary() {
         let mut input = InputSnapshot::default();
-        input.key_event(InputKey::Space, true);
-        input.key_event(InputKey::Space, false);
-        assert!(input.just_pressed(InputKey::Space));
-        assert!(input.just_released(InputKey::Space));
-        assert!(!input.is_down(InputKey::Space));
+        input.key_event(KeyCode::Space, true);
+        input.key_event(KeyCode::Space, false);
+        assert!(input.just_pressed(KeyCode::Space));
+        assert!(input.just_released(KeyCode::Space));
+        assert!(!input.is_down(KeyCode::Space));
         input.finish_frame();
-        assert!(!input.just_pressed(InputKey::Space));
-        assert!(!input.just_released(InputKey::Space));
+        assert!(!input.just_pressed(KeyCode::Space));
+        assert!(!input.just_released(KeyCode::Space));
     }
 
     #[test]
     fn computes_wasd_axes_from_held_state() {
         let mut input = InputSnapshot::default();
-        input.key_event(InputKey::D, true);
-        input.key_event(InputKey::S, true);
+        input.key_event(KeyCode::KeyD, true);
+        input.key_event(KeyCode::KeyS, true);
         assert_eq!(input.axis("horizontal"), 1.0);
         assert_eq!(input.axis("vertical"), -1.0);
-        input.key_event(InputKey::A, true);
+        input.key_event(KeyCode::KeyA, true);
         assert_eq!(input.axis("horizontal"), 0.0);
     }
 
     #[test]
     fn focus_loss_clears_held_state_and_pause_clears_edges() {
         let mut input = InputSnapshot::default();
-        input.key_event(InputKey::W, true);
+        input.key_event(KeyCode::KeyW, true);
         input.mouse_event(MouseButton::Left, true);
         input.set_focused(false);
-        assert!(!input.is_down(InputKey::W));
+        assert!(!input.is_down(KeyCode::KeyW));
         assert!(!input.mouse_is_down(MouseButton::Left));
-        input.key_event(InputKey::Space, true);
+        input.key_event(KeyCode::Space, true);
         input.clear_transitions();
-        assert!(!input.just_pressed(InputKey::Space));
+        assert!(!input.just_pressed(KeyCode::Space));
     }
 
     #[test]
@@ -1231,22 +1960,19 @@ mod tests {
     #[test]
     fn default_action_map_covers_game_keys_and_gamepad() {
         let map = ActionMap::with_defaults();
-        assert_eq!(
-            map.bindings("interact"),
-            [Binding::Key(InputKey::from_char('e'))]
-        );
-        assert_eq!(map.bindings("move_up"), [Binding::Key(InputKey::W)]);
+        assert_eq!(map.bindings("interact"), [Binding::Key(KeyCode::KeyE)]);
+        assert_eq!(map.bindings("move_up"), [Binding::Key(KeyCode::KeyW)]);
         // confirm 同时绑定空格与手柄 A 键（基础手柄抽象）。
         assert!(
             map.bindings("confirm")
-                .contains(&Binding::Key(InputKey::Space))
+                .contains(&Binding::Key(KeyCode::Space))
         );
         assert!(map.bindings("confirm").contains(&Binding::GamepadButton(0)));
         // 菜单导航按方向拆成四个动作：方向键 + 左摇杆方向 + DPad（可合成带符号轴）。
         assert_eq!(map.bindings("ui_up").len(), 3);
         assert!(
             map.bindings("ui_up")
-                .contains(&Binding::Key(InputKey::ARROW_UP))
+                .contains(&Binding::Key(KeyCode::ArrowUp))
         );
         assert!(
             map.bindings("ui_up")
@@ -1258,7 +1984,7 @@ mod tests {
         );
         assert!(
             map.bindings("ui_down")
-                .contains(&Binding::Key(InputKey::ARROW_DOWN))
+                .contains(&Binding::Key(KeyCode::ArrowDown))
         );
         assert!(
             map.bindings("ui_down")
@@ -1295,15 +2021,21 @@ mod tests {
         }
         assert_eq!(
             map.bindings("build"),
-            [Binding::Key(InputKey::from_char('b'))]
+            [Binding::Key(
+                KeyCode::from_char('b').expect("QWERTY 字符必须有对应物理键")
+            )]
         );
         assert_eq!(
             map.bindings("volume_up"),
-            [Binding::Key(InputKey::from_char('+'))]
+            [Binding::Key(
+                KeyCode::from_char('+').expect("QWERTY 字符必须有对应物理键")
+            )]
         );
         assert_eq!(
             map.bindings("slot_3"),
-            [Binding::Key(InputKey::from_char('3'))]
+            [Binding::Key(
+                KeyCode::from_char('3').expect("QWERTY 字符必须有对应物理键")
+            )]
         );
         assert_eq!(map.actions().len(), 36, "默认动作总数");
         assert_eq!(map.conflicts(), Vec::new(), "默认绑定不得跨动作重复");
@@ -1315,36 +2047,39 @@ mod tests {
         let mut map = ActionMap::with_defaults();
         // 同动作内重复 → `bind` 直接报 DuplicateBinding（既有语义）。
         assert_eq!(
-            map.bind("interact", Binding::Key(InputKey::from_char('e'))),
+            map.bind("interact", Binding::Key(KeyCode::KeyE)),
             Err(ActionMapError::DuplicateBinding {
                 action: "interact".into(),
-                binding: "key:e".into(),
+                binding: "key:keye".into(),
             })
         );
         // 跨动作重复 → `bind` 允许（一次 rebind 覆盖后可能撞车），但 conflicts/
         // validate_bindings 必须报出来，编辑器据此阻止保存。
-        map.bind("attack", Binding::Key(InputKey::from_char('e')))
+        map.bind("attack", Binding::Key(KeyCode::KeyE))
             .expect("跨动作重复本身不阻止写入");
         let conflicts = map.conflicts();
         assert_eq!(conflicts.len(), 1, "{conflicts:?}");
-        assert_eq!(conflicts[0].binding, Binding::Key(InputKey::from_char('e')));
+        assert_eq!(conflicts[0].binding, Binding::Key(KeyCode::KeyE));
         assert_eq!(conflicts[0].actions, vec!["attack", "interact"]);
-        assert!(conflicts[0].describe().contains("key:e"), "{conflicts:?}");
+        assert!(
+            conflicts[0].describe().contains("key:keye"),
+            "{conflicts:?}"
+        );
         assert_eq!(
             map.validate_bindings(),
             Err(ActionMapError::DuplicateBinding {
                 action: "attack".into(),
-                binding: "key:e".into(),
+                binding: "key:keye".into(),
             })
         );
         // 解绑冲突项后校验恢复通过；输出顺序按绑定文本稳定排序。
-        map.bind("skill", Binding::Key(InputKey::from_char('e')))
+        map.bind("skill", Binding::Key(KeyCode::KeyE))
             .expect("第二处重复");
-        assert!(map.unbind("attack", Binding::Key(InputKey::from_char('e'))));
+        assert!(map.unbind("attack", Binding::Key(KeyCode::KeyE)));
         let conflicts = map.conflicts();
         assert_eq!(conflicts.len(), 1);
         assert_eq!(conflicts[0].actions, vec!["interact", "skill"]);
-        assert!(map.unbind("skill", Binding::Key(InputKey::from_char('e'))));
+        assert!(map.unbind("skill", Binding::Key(KeyCode::KeyE)));
         assert!(map.conflicts().is_empty());
         assert_eq!(map.validate_bindings(), Ok(()));
     }
@@ -1353,30 +2088,29 @@ mod tests {
     fn action_queries_follow_bindings_and_survive_rebinding() {
         let mut map = ActionMap::with_defaults();
         let mut input = InputSnapshot::default();
-        input.key_event(InputKey::from_char('e'), true);
+        input.key_event(KeyCode::KeyE, true);
         assert!(input.action_is_down(&map, "interact"));
         assert!(input.action_just_pressed(&map, "interact"));
         assert!(!input.action_is_down(&map, "attack"));
 
         // 重绑定：把 interact 从 E 改到 F，旧键失效、新键生效。
-        assert!(map.unbind("interact", Binding::Key(InputKey::from_char('e'))));
-        map.bind("interact", Binding::Key(InputKey::from_char('f')))
-            .unwrap();
+        assert!(map.unbind("interact", Binding::Key(KeyCode::KeyE)));
+        map.bind("interact", Binding::Key(KeyCode::KeyF)).unwrap();
         assert!(!input.action_is_down(&map, "interact"));
-        input.key_event(InputKey::from_char('f'), true);
+        input.key_event(KeyCode::KeyF, true);
         assert!(input.action_is_down(&map, "interact"));
         assert!(input.action_just_pressed(&map, "interact"));
 
         // 重复绑定同一输入 → 明确错误。
         assert_eq!(
-            map.bind("interact", Binding::Key(InputKey::from_char('f'))),
+            map.bind("interact", Binding::Key(KeyCode::KeyF)),
             Err(ActionMapError::DuplicateBinding {
                 action: "interact".into(),
-                binding: "key:f".into(),
+                binding: "key:keyf".into(),
             })
         );
         assert_eq!(
-            map.bind("  ", Binding::Key(InputKey::W)),
+            map.bind("  ", Binding::Key(KeyCode::KeyW)),
             Err(ActionMapError::EmptyAction)
         );
     }
@@ -1384,9 +2118,8 @@ mod tests {
     #[test]
     fn action_map_round_trips_through_settings_text() {
         let mut map = ActionMap::with_defaults();
-        map.unbind("interact", Binding::Key(InputKey::from_char('e')));
-        map.bind("interact", Binding::Key(InputKey::Other(102)))
-            .unwrap();
+        map.unbind("interact", Binding::Key(KeyCode::KeyE));
+        map.bind("interact", Binding::Key(KeyCode::KeyF)).unwrap();
         map.bind(
             "menu_confirm",
             Binding::GamepadAxis(1, AxisDirection::Negative),
@@ -1412,36 +2145,43 @@ mod tests {
         // 部分映射 + 默认兜底：用户重绑定不被覆盖。
         let mut partial = ActionMap::new();
         partial
-            .bind("interact", Binding::Key(InputKey::from_char('f')))
+            .bind("interact", Binding::Key(KeyCode::KeyF))
             .unwrap();
         partial.merge_missing(&ActionMap::with_defaults());
-        assert_eq!(
-            partial.bindings("interact"),
-            [Binding::Key(InputKey::from_char('f'))]
-        );
-        assert_eq!(partial.bindings("move_up"), [Binding::Key(InputKey::W)]);
+        assert_eq!(partial.bindings("interact"), [Binding::Key(KeyCode::KeyF)]);
+        assert_eq!(partial.bindings("move_up"), [Binding::Key(KeyCode::KeyW)]);
     }
 
+    /// M22/W1：方向键的绑定文本是**物理键名**（`key:arrowup`），v1 的
+    /// `key:up` / `key:other:1048577` 仍可读入并归一化为同一物理键。
     #[test]
-    fn arrow_keys_use_readable_binding_text_and_round_trip() {
+    fn arrow_keys_use_physical_binding_text_and_round_trip() {
         let map = ActionMap::with_defaults();
-        // 默认表里方向键绑定必须是可读文本，不是内部码位。
-        assert_eq!(map.bindings("ui_up")[0].to_text(), "key:up");
-        assert_eq!(map.bindings("ui_down")[0].to_text(), "key:down");
-        assert_eq!(map.bindings("ui_left")[0].to_text(), "key:left");
-        assert_eq!(map.bindings("ui_right")[0].to_text(), "key:right");
-        assert_eq!(InputKey::ARROW_UP.arrow_name(), Some("up"));
-        assert_eq!(InputKey::from_char('e').arrow_name(), None);
+        assert_eq!(map.bindings("ui_up")[0].to_text(), "key:arrowup");
+        assert_eq!(map.bindings("ui_down")[0].to_text(), "key:arrowdown");
+        assert_eq!(map.bindings("ui_left")[0].to_text(), "key:arrowleft");
+        assert_eq!(map.bindings("ui_right")[0].to_text(), "key:arrowright");
 
         // 文本往返后仍是同一映射（M20-08 起 ui_* 还带 DPad 按钮 12..15）。
         let text = map.to_text();
-        assert!(text.contains("ui_up=key:up,padaxis:1+,pad:12"), "{text}");
+        assert!(text.starts_with(ACTION_MAP_VERSION), "{text}");
+        assert!(
+            text.contains("ui_up=key:arrowup,padaxis:1+,pad:12"),
+            "{text}"
+        );
         assert_eq!(ActionMap::from_text(&text).unwrap(), map);
 
-        // 旧设置文件里的码位写法仍可解析（向后兼容），并归一化为可读文本。
-        let legacy = ActionMap::from_text("rustlua-actions-v1\nui_up=key:other:1048577\n").unwrap();
-        assert_eq!(legacy.bindings("ui_up"), [Binding::Key(InputKey::ARROW_UP)]);
-        assert_eq!(legacy.to_text(), "rustlua-actions-v1\nui_up=key:up");
+        // 旧设置文件（v1）里的两种方向键写法都能解析，并归一化为物理键。
+        let legacy = ActionMap::from_text("rustlua-actions-v1\nui_up=key:up\n").unwrap();
+        assert_eq!(legacy.bindings("ui_up"), [Binding::Key(KeyCode::ArrowUp)]);
+        let legacy_code =
+            ActionMap::from_text("rustlua-actions-v1\nui_up=key:other:1048577\n").unwrap();
+        assert_eq!(
+            legacy_code.bindings("ui_up"),
+            [Binding::Key(KeyCode::ArrowUp)]
+        );
+        // 读 v1、写 v2：迁移后的文本头是新版本。
+        assert_eq!(legacy.to_text(), "rustlua-actions-v2\nui_up=key:arrowup");
     }
 
     #[test]
@@ -1509,11 +2249,11 @@ mod tests {
 
         // 键位轴：相反方向同时按下归零，单方向为 ±1。
         let mut input = InputSnapshot::default();
-        input.key_event(InputKey::D, true);
+        input.key_event(KeyCode::KeyD, true);
         assert_eq!(input.action_axis(&map, "move_left", "move_right"), 1.0);
-        input.key_event(InputKey::A, true);
+        input.key_event(KeyCode::KeyA, true);
         assert_eq!(input.action_axis(&map, "move_left", "move_right"), 0.0);
-        input.key_event(InputKey::D, false);
+        input.key_event(KeyCode::KeyD, false);
         assert_eq!(input.action_axis(&map, "move_left", "move_right"), -1.0);
     }
 
@@ -1611,7 +2351,7 @@ mod tests {
         input.gamepad_button_event(0, true);
         assert_eq!(input.last_device(), InputDevice::Gamepad);
 
-        input.key_event(InputKey::W, true);
+        input.key_event(KeyCode::KeyW, true);
         assert_eq!(input.last_device(), InputDevice::Keyboard);
         assert_eq!(input.last_device().to_text(), "keyboard");
 

@@ -17,7 +17,7 @@
 //!   cargo run -p game --example jhyt_m21_appearance -- <game_jhyt-root>
 
 use engine::core::{
-    input::{InputKey, InputSnapshot},
+    input::{InputSnapshot, KeyCode},
     script::LuaRuntime,
 };
 use std::{
@@ -108,10 +108,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     banner("M21-01c 移动：walk_<dir> ↔ idle_<dir>，朝向按世界 y 向上换算");
     for (key, want_walk) in [
-        (InputKey::D, "walk_e"),
-        (InputKey::A, "walk_w"),
-        (InputKey::W, "walk_n"),
-        (InputKey::S, "walk_s"),
+        (KeyCode::KeyD, "walk_e"),
+        (KeyCode::KeyA, "walk_w"),
+        (KeyCode::KeyW, "walk_n"),
+        (KeyCode::KeyS, "walk_s"),
     ] {
         hold(&mut runtime, key, 4)?;
         let clip = current_clip(&mut runtime)?;
@@ -324,7 +324,7 @@ fn click_button(runtime: &mut LuaRuntime, button: &str) -> Result<(), Box<dyn st
 /// 按住方向键推进 `n` 帧（每帧都带同一个按键状态）。
 fn hold(
     runtime: &mut LuaRuntime,
-    key: InputKey,
+    key: KeyCode,
     n: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     for _ in 0..n {

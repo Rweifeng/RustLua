@@ -17,7 +17,7 @@
 //!   cargo run -p game --example jhyt_m17_shop [-- <game_jhyt-root>]
 
 use engine::core::{
-    input::{InputKey, InputSnapshot},
+    input::{InputSnapshot, KeyCode},
     script::LuaRuntime,
 };
 use std::{
@@ -183,27 +183,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     banner("M17-04d 商店 UI：E 交互开面板 + 键盘选择/数量/确认/切页/关闭");
     teleport(&mut runtime, MAIN_EXIT)?;
-    press(&mut runtime, InputKey::from_char('e'))?;
+    press(&mut runtime, KeyCode::KeyE)?;
     runtime.process_scene_transition()?;
     assert_scene_is(&mut runtime, "village")?;
     assert_map_current(&mut runtime, "village")?;
     lua(&mut runtime, &format!("clock.set(1, {TEN_AM})"))?;
     frames(&mut runtime, 2)?;
     goto_npc(&mut runtime, "npc_zhao_tiesuanpan")?;
-    press(&mut runtime, InputKey::from_char('e'))?;
+    press(&mut runtime, KeyCode::KeyE)?;
     assert_mode(&mut runtime, "Shop")?;
     assert_str(&mut runtime, "require('systems.shop').ui_active()", "true")?;
     assert_str(&mut runtime, "require('systems.shop').tab()", "buy")?;
     assert_num(&mut runtime, "#(require('systems.shop').rows())", 4.0)?;
     assert_str(&mut runtime, "require('core.state').last_action", "shop")?;
     // 选第 2 行（seed_lingzhi），数量 +1。
-    press(&mut runtime, InputKey::from_char('2'))?;
+    press(
+        &mut runtime,
+        KeyCode::from_char('2').expect("QWERTY 字符必须有对应物理键"),
+    )?;
     assert_num(&mut runtime, "require('systems.shop').selected()", 2.0)?;
     assert_num(&mut runtime, "require('systems.shop').quantity()", 1.0)?;
-    press(&mut runtime, InputKey::from_char('+'))?;
+    press(
+        &mut runtime,
+        KeyCode::from_char('+').expect("QWERTY 字符必须有对应物理键"),
+    )?;
     assert_num(&mut runtime, "require('systems.shop').quantity()", 2.0)?;
     let money_before = query_num(&mut runtime, "return require('core.state').money")?;
-    press(&mut runtime, InputKey::Space)?;
+    press(&mut runtime, KeyCode::Space)?;
     assert_num(
         &mut runtime,
         "require('core.state').money",
@@ -221,7 +227,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     assert_str(&mut runtime, "ui.get('shp:msg').text", "购买成功")?;
     // F 切到出售页：只列出本店收购且背包持有的物品（rice 2 件）。
-    press(&mut runtime, InputKey::from_char('f'))?;
+    press(&mut runtime, KeyCode::KeyF)?;
     assert_str(&mut runtime, "require('systems.shop').tab()", "sell")?;
     assert_num(&mut runtime, "#(require('systems.shop').rows())", 1.0)?;
     assert_str(
@@ -230,7 +236,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "rice",
     )?;
     // Esc 关闭面板，模式复位。
-    press(&mut runtime, InputKey::Escape)?;
+    press(&mut runtime, KeyCode::Escape)?;
     assert_str(&mut runtime, "require('systems.shop').ui_active()", "false")?;
     assert_mode(&mut runtime, "Playing")?;
 
@@ -241,9 +247,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 商店面板**；「未营业拒绝交易」由上面的 is_open/buy API 断言覆盖。
     lua(&mut runtime, "clock.set(1, 300)")?;
     goto_npc(&mut runtime, "npc_zhao_tiesuanpan")?;
-    press(&mut runtime, InputKey::from_char('e'))?;
+    press(&mut runtime, KeyCode::KeyE)?;
     if query_str(&mut runtime, "require('core.state').mode")? == "Dialogue" {
-        press(&mut runtime, InputKey::Escape)?;
+        press(&mut runtime, KeyCode::Escape)?;
     }
     assert_str(
         &mut runtime,
@@ -640,7 +646,7 @@ fn goto_npc(runtime: &mut LuaRuntime, persist_id: &str) -> Result<(), Box<dyn st
 }
 
 /// Simulates a single key press: one frame with the key down, one clean frame.
-fn press(runtime: &mut LuaRuntime, key: InputKey) -> Result<(), Box<dyn std::error::Error>> {
+fn press(runtime: &mut LuaRuntime, key: KeyCode) -> Result<(), Box<dyn std::error::Error>> {
     let mut input = InputSnapshot::default();
     input.key_event(key, true);
     runtime.set_input(input);

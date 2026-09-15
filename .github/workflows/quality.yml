@@ -4,7 +4,7 @@ on:
   push:
     paths:
       - "engine/**"
-      - "game_jianghu_youtian/**"
+      - "examples/**"
       - "scripts/**"
       - "docs/**"
       - "tasks/**"
@@ -12,7 +12,7 @@ on:
   pull_request:
     paths:
       - "engine/**"
-      - "game_jianghu_youtian/**"
+      - "examples/**"
       - "scripts/**"
       - "docs/**"
       - "tasks/**"
@@ -62,8 +62,12 @@ jobs:
 
       - name: Game project check
         working-directory: ${{ github.workspace }}
-        run: cargo run --quiet --manifest-path engine/Cargo.toml -p game -- --project "${{ github.workspace }}\\game_jianghu_youtian" --check
+        run: cargo run --quiet --manifest-path engine/Cargo.toml -p game -- --project "${{ github.workspace }}\examples\game_jhyt" --check
 
       - name: Editor project check
         working-directory: ${{ github.workspace }}
-        run: cargo run --quiet --manifest-path engine/Cargo.toml -p editor -- --project "${{ github.workspace }}\\game_jianghu_youtian" --check
+        run: cargo run --quiet --manifest-path engine/Cargo.toml -p editor -- --project "${{ github.workspace }}\examples\game_jhyt" --check
+
+      - name: Game headless regression suite
+        working-directory: ${{ github.workspace }}
+        run: pwsh -NoProfile -File scripts/verify.ps1 -MvpOnly

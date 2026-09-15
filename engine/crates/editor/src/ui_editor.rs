@@ -32,14 +32,21 @@ impl EditorApp {
         if self.plugin_registry.names().is_empty() {
             match self.plugin_registry.register(Box::new(CoreEditorPlugin)) {
                 Ok(()) => match self.plugin_registry.load("core") {
-                    Ok(()) => self
-                        .plugin_status
-                        .push("插件 core 已加载（API v1）".to_owned()),
-                    Err(error) => self
-                        .plugin_status
-                        .push(format!("插件 core 加载失败：{error}")),
+                    Ok(()) => {
+                        self.plugin_status
+                            .push("插件 core 已加载（API v1）".to_owned());
+                        tracing::info!(target: "editor", "[plugin] core loaded (API v1)");
+                    }
+                    Err(error) => {
+                        self.plugin_status
+                            .push(format!("插件 core 加载失败：{error}"));
+                        tracing::error!(target: "editor", "[plugin] core load failed: {error}");
+                    }
                 },
-                Err(error) => self.plugin_status.push(format!("插件注册失败：{error}")),
+                Err(error) => {
+                    self.plugin_status.push(format!("插件注册失败：{error}"));
+                    tracing::error!(target: "editor", "[plugin] core registration failed: {error}");
+                }
             }
         }
     }

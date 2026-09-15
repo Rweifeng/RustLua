@@ -19,19 +19,24 @@
 //!   例如 `[input]`）原样保留；
 //! * 不引入任何新依赖（离线环境无法拉取 crates），逐行手写解析。
 //!
-//! M20-07 追加 `[input]` 段（命名动作映射）：
+//! M20-07 追加 `[input]` 段（命名动作映射）；M22/W1 起键位是**物理键名**：
 //!
 //! ```toml
 //! [input]
-//! map = "rustlua-actions-v1\ninteract=key:e\nmove_up=key:w"
+//! map = "rustlua-actions-v2\ninteract=key:keye\nmove_up=key:keyw"
 //! ```
 //!
-//! `map` 的值是 [`ActionMap::to_text`] 的**文本原样**（含 `rustlua-actions-v1`
+//! `map` 的值是 [`ActionMap::to_text`] 的**文本原样**（含 `rustlua-actions-v2`
 //! 版本头），按 TOML 基本字符串转义换行（`\n`）与反斜杠（`\\`）/引号（`\"`）
 //! 写在一行里——多行基本字符串（`"""`）在本文件的手写解析器里不识别，因此
 //! **不用**它。读取侧与 `[audio]` 一样宽松：文件缺失、段缺失、键缺失都不是
 //! 错误（调用方保留当前映射）；键存在但内容非法（版本头不符 / 绑定文本非法）
 //! 才回退默认映射，并把可定位的原因交给调用方记录诊断。
+//!
+//! **读 v1、写 v2**（M22/W1）：`rustlua-actions-v1` 的字符写法（`key:e`/`key:1`/
+//! `key:up`/`key:+`/`key:other:1048577`）仍可解析并按 US-QWERTY 换算成物理键，
+//! 有损换算（`key:+` → `key:equal`）逐条记进
+//! [`InputSectionParse::migration_notes`]；写回一律是 v2。
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -309,6 +314,11 @@ pub struct InputSectionParse {
     /// 回退/缺失原因（可直接写进诊断）：`missing_key`、`invalid_escape`、
     /// 版本头不符或绑定文本非法的原始错误文本（附 `settings.toml:<行号>`）。
     pub reason: Option<String>,
+    /// **v1 → v2 迁移诊断**（M22/W1）：文件里写的是 `rustlua-actions-v1` 时，
+    /// 每一条有损换算（`key:+` 只能落到 `key:equal`）各一行中文说明；读到 v2 文件
+    /// 时为空。调用方（`input.load_settings()` / 编辑器面板）应把它显示给玩家，
+    /// 而不是让改键静默变形。
+    pub migration_notes: Vec<String>,
 }
 
 impl InputSectionParse {
@@ -319,11 +329,20 @@ impl InputSectionParse {
     }
 }
 
+/// `[input].map` 的解析结果：要么是「映射 + 迁移诊断」，要么是**可定位的原因**。
+///
+/// 抽成别名而不是内联元组，是因为它同时带着行号出现在下面 `found` 的 `Option` 里
+/// （两层嵌套后类型注记会难读）。
+type InputMapParse = Result<(ActionMap, Vec<String>), String>;
+
 /// 从设置文本解析 `[input].map`；非法内容返回原因而不是默认值。
+///
+/// M22/W1：同时接受 `rustlua-actions-v1`（旧格式）与 `v2`（当前格式）版本头，
+/// v1 会被迁移成物理键并把**有损换算**记进 [`InputSectionParse::migration_notes`]。
 #[must_use]
 pub fn parse_input_section(text: &str) -> InputSectionParse {
     let mut section = String::new();
-    let mut found: Option<(usize, Result<ActionMap, String>)> = None;
+    let mut found: Option<(usize, InputMapParse)> = None;
     for (index, raw) in text.lines().enumerate() {
         let line = raw.trim().trim_start_matches('\u{feff}').trim();
         if line.is_empty() || line.starts_with('#') {
@@ -349,22 +368,25 @@ pub fn parse_input_section(text: &str) -> InputSectionParse {
         let parsed = unescape_toml_string(value.trim())
             .ok_or_else(|| "invalid_escape".to_owned())
             .and_then(|map_text| {
-                ActionMap::from_text(&map_text).map_err(|error| error.to_string())
+                ActionMap::from_text_with_notes(&map_text).map_err(|error| error.to_string())
             });
         found = Some((index + 1, parsed));
     }
     match found {
-        Some((_, Ok(map))) => InputSectionParse {
+        Some((_, Ok((map, migration_notes)))) => InputSectionParse {
             map: Some(map),
             reason: None,
+            migration_notes,
         },
         Some((line, Err(reason))) => InputSectionParse {
             map: None,
             reason: Some(format!("settings.toml:{line}: {reason}")),
+            migration_notes: Vec::new(),
         },
         None => InputSectionParse {
             map: None,
             reason: Some(format!("missing_key: {INPUT_SECTION}.{INPUT_MAP_KEY}")),
+            migration_notes: Vec::new(),
         },
     }
 }
@@ -820,9 +842,7 @@ mod tests {
     use super::*;
     use crate::core::audio::{AudioBus, AudioSystem};
     use crate::core::input::GamepadDeadzone;
-    use crate::core::input::{
-        ACTION_MAP_VERSION, ActionMapError, AxisDirection, Binding, InputKey,
-    };
+    use crate::core::input::{ACTION_MAP_VERSION, ActionMapError, AxisDirection, Binding, KeyCode};
 
     #[test]
     fn defaults_are_all_full_volume() {
@@ -971,24 +991,69 @@ mod tests {
     #[test]
     fn input_section_escapes_and_round_trips_in_text() {
         let mut map = ActionMap::with_defaults();
-        assert!(map.unbind("interact", Binding::Key(InputKey::from_char('e'))));
-        map.bind("interact", Binding::Key(InputKey::from_char('f')))
+        assert!(map.unbind("interact", Binding::Key(KeyCode::KeyE)));
+        map.bind("interact", Binding::Key(KeyCode::KeyF))
             .expect("rebind");
         // 完整映射（含版本头）→ 单行转义 → 解析回相等映射。
+        // M22/W1：写出的是 **v2** 物理键文本（`key:keyf`），不是 v1 的字符形式。
         let escaped = escape_toml_string(&map.to_text());
         assert!(escaped.starts_with(ACTION_MAP_VERSION), "{escaped}");
         assert!(!escaped.contains('\n'), "{escaped}");
-        assert!(escaped.contains("interact=key:f"), "{escaped}");
+        assert!(escaped.contains("interact=key:keyf"), "{escaped}");
+        assert!(
+            !escaped.contains("interact=key:f,"),
+            "不得再写出 v1 字符形式"
+        );
         let text = format!("# 输入设置注释\n[{INPUT_SECTION}]\n{INPUT_MAP_KEY} = \"{escaped}\"\n");
         let parsed = parse_input_section(&text);
         assert_eq!(parsed.reason, None);
         assert_eq!(parsed.map.as_ref(), Some(&map));
+        assert!(
+            parsed.migration_notes.is_empty(),
+            "v2 文件不应产生迁移说明：{:?}",
+            parsed.migration_notes
+        );
         // 反斜杠/引号也按 TOML 基本字符串规则转义，不破坏后续段。
         let tricky = "rustlua-actions-v1\ninteract=key:\\\\\nquote=key:\"";
         assert_eq!(
             unescape_toml_string(&escape_toml_string(tricky)).as_deref(),
             Some(tricky)
         );
+    }
+
+    /// M22/W1：读到 **v1** 的 `[input].map` 时迁移成物理键，并给出可显示的诊断。
+    #[test]
+    fn input_section_migrates_v1_keys_and_reports_lossy_conversions() {
+        let text = format!(
+            "[{INPUT_SECTION}]\n{INPUT_MAP_KEY} = \"rustlua-actions-v1\\n\
+             move_up=key:w\\nui_up=key:other:1048577\\nvolume_up=key:+\\nslot_1=key:1\"\n"
+        );
+        let parsed = parse_input_section(&text);
+        let map = parsed.map.expect("v1 必须能读入");
+        assert_eq!(map.bindings("move_up"), [Binding::Key(KeyCode::KeyW)]);
+        assert_eq!(map.bindings("ui_up"), [Binding::Key(KeyCode::ArrowUp)]);
+        assert_eq!(map.bindings("slot_1"), [Binding::Key(KeyCode::Digit1)]);
+        // `+` 是带 Shift 的字符写法 → 只能落回 `=` 那个物理键，必须记一条诊断。
+        assert_eq!(map.bindings("volume_up"), [Binding::Key(KeyCode::Equal)]);
+        assert!(
+            parsed
+                .migration_notes
+                .iter()
+                .any(|note| note.contains("key:+") && note.contains("key:equal")),
+            "有损换算必须给出诊断：{:?}",
+            parsed.migration_notes
+        );
+        // 无有损换算的 v1 文件也要提醒「已升级」（读起来不同）。
+        let clean = parse_input_section(&format!(
+            "[{INPUT_SECTION}]\n{INPUT_MAP_KEY} = \"rustlua-actions-v1\\nmove_up=key:w\"\n"
+        ));
+        assert_eq!(
+            clean.migration_notes.len(),
+            1,
+            "{:?}",
+            clean.migration_notes
+        );
+        assert!(clean.migration_notes[0].contains("v1"));
     }
 
     #[test]
@@ -1030,8 +1095,8 @@ mod tests {
     fn upsert_input_section_preserves_audio_comments_and_other_lines() {
         let existing = "# 顶部注释\n[audio]\nmaster = 0.5\n# 音量注释\nbgm = 0.25\nsfx = 1.0\nui = 1.0\n\n# 输入段注释\n[input]\n# 绑定表\nmap = \"rustlua-actions-v1\\ninteract=key:e\"\n\n[other]\nkey = \"keep\"\n";
         let mut map = ActionMap::with_defaults();
-        assert!(map.unbind("interact", Binding::Key(InputKey::from_char('e'))));
-        map.bind("interact", Binding::Key(InputKey::from_char('f')))
+        assert!(map.unbind("interact", Binding::Key(KeyCode::KeyE)));
+        map.bind("interact", Binding::Key(KeyCode::KeyF))
             .expect("rebind");
         let out = upsert_input_section(existing, &map);
         // `[audio]` 段、注释、未知段与未知键全部原样保留。
@@ -1043,7 +1108,7 @@ mod tests {
         assert!(out.contains("key = \"keep\""), "{out}");
         // 新增一行 `# 绑定表` 注释本身也没被吃掉。
         assert!(out.contains("# 绑定表"), "{out}");
-        assert!(out.contains("interact=key:f"), "{out}");
+        assert!(out.contains("interact=key:keyf"), "{out}");
         // `map` 只有一处，且仍在 [input] 段内、[other] 之前。
         assert_eq!(out.matches("map = ").count(), 1, "{out}");
         let input_pos = out.find("[input]").expect("[input]");
@@ -1095,8 +1160,8 @@ mod tests {
         )
         .expect("seed settings");
         let mut map = ActionMap::with_defaults();
-        assert!(map.unbind("interact", Binding::Key(InputKey::from_char('e'))));
-        map.bind("interact", Binding::Key(InputKey::from_char('f')))
+        assert!(map.unbind("interact", Binding::Key(KeyCode::KeyE)));
+        map.bind("interact", Binding::Key(KeyCode::KeyF))
             .expect("rebind");
         map.bind(
             "menu_cancel",
@@ -1135,15 +1200,12 @@ mod tests {
         .expect("write partial");
         let (loaded, diagnostic) = load_input_section(&dir);
         assert_eq!(diagnostic, None);
-        assert_eq!(
-            loaded.bindings("interact"),
-            [Binding::Key(InputKey::from_char('f'))]
-        );
-        assert_eq!(loaded.bindings("move_up"), [Binding::Key(InputKey::W)]);
+        assert_eq!(loaded.bindings("interact"), [Binding::Key(KeyCode::KeyF)]);
+        assert_eq!(loaded.bindings("move_up"), [Binding::Key(KeyCode::KeyW)]);
         assert_eq!(loaded.bindings("pause").len(), 1);
         assert_eq!(
             ActionMap::with_defaults().bindings("interact"),
-            [Binding::Key(InputKey::from_char('e'))],
+            [Binding::Key(KeyCode::KeyE)],
             "回退/补齐不得改动默认表本身"
         );
         // 非法绑定文本 → 同样回退默认 + 原因（错误类型可定位）。
@@ -1204,8 +1266,8 @@ mod tests {
         )
         .expect("seed settings");
         let mut map = ActionMap::with_defaults();
-        assert!(map.unbind("interact", Binding::Key(InputKey::from_char('e'))));
-        map.bind("interact", Binding::Key(InputKey::from_char('f')))
+        assert!(map.unbind("interact", Binding::Key(KeyCode::KeyE)));
+        map.bind("interact", Binding::Key(KeyCode::KeyF))
             .expect("rebind");
         let deadzone = GamepadDeadzone::new(0.3, 0.12);
         save_input_settings(&dir, &map, deadzone).expect("save input settings");

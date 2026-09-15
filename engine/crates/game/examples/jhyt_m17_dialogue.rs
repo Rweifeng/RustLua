@@ -16,7 +16,7 @@
 //!   cargo run -p game --example jhyt_m17_dialogue [-- <game_jhyt-root>]
 
 use engine::core::{
-    input::{InputKey, InputSnapshot},
+    input::{InputSnapshot, KeyCode},
     script::LuaRuntime,
 };
 use std::{
@@ -129,7 +129,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_option(&mut runtime, "三式已经走完。", false)?;
 
     banner("M17-03c 选项副作用：接取任务 + add_var 推进目标（in_progress）");
-    press(&mut runtime, InputKey::from_char('1'))?;
+    press(
+        &mut runtime,
+        KeyCode::from_char('1').expect("QWERTY 字符必须有对应物理键"),
+    )?;
     assert_str(
         &mut runtime,
         "require('world.quest').state('quest_spar')",
@@ -140,7 +143,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "require('world.dialogue').info().node",
         "accept",
     )?;
-    press(&mut runtime, InputKey::from_char('1'))?;
+    press(
+        &mut runtime,
+        KeyCode::from_char('1').expect("QWERTY 字符必须有对应物理键"),
+    )?;
     assert_str(
         &mut runtime,
         "require('world.dialogue').info().node",
@@ -158,8 +164,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     banner("M17-03d 目标达成 → deliverable → 交付 completed + 奖励 + on_complete");
-    press(&mut runtime, InputKey::from_char('1'))?;
-    press(&mut runtime, InputKey::from_char('1'))?;
+    press(
+        &mut runtime,
+        KeyCode::from_char('1').expect("QWERTY 字符必须有对应物理键"),
+    )?;
+    press(
+        &mut runtime,
+        KeyCode::from_char('1').expect("QWERTY 字符必须有对应物理键"),
+    )?;
     assert_num(
         &mut runtime,
         "require('core.state').get_var('sword_drills')",
@@ -177,7 +189,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "三式已经走完。",
     )?;
     assert_option(&mut runtime, "愿随师父走一遍基础三式。", false)?;
-    press(&mut runtime, InputKey::from_char('1'))?;
+    press(
+        &mut runtime,
+        KeyCode::from_char('1').expect("QWERTY 字符必须有对应物理键"),
+    )?;
     assert_str(
         &mut runtime,
         "require('world.quest').state('quest_spar')",
@@ -204,14 +219,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_num(&mut runtime, "require('core.state').inner_power", 60.0)?;
     assert_num(&mut runtime, "require('core.state').money", 120.0)?;
     // Esc 结束对话，回到 Playing。
-    press(&mut runtime, InputKey::Escape)?;
+    press(&mut runtime, KeyCode::Escape)?;
     assert_str(&mut runtime, "require('world.dialogue').is_open()", "false")?;
     assert_mode(&mut runtime, "Playing")?;
 
     banner("M17-03f item 任务：条件不满足时交付选项不出现 / objectives_unmet");
     // 山庄南口 → 云泽村（复用 M17-02 的跨图路径）。
     teleport(&mut runtime, MAIN_EXIT)?;
-    press(&mut runtime, InputKey::from_char('e'))?;
+    press(&mut runtime, KeyCode::KeyE)?;
     runtime.process_scene_transition()?;
     assert_scene_is(&mut runtime, "village")?;
     assert_map_current(&mut runtime, "village")?;
@@ -234,7 +249,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "require('world.dialogue').info().options[1]",
         "愿为医馆采三株灵芝。",
     )?;
-    press(&mut runtime, InputKey::from_char('1'))?;
+    press(
+        &mut runtime,
+        KeyCode::from_char('1').expect("QWERTY 字符必须有对应物理键"),
+    )?;
     assert_str(
         &mut runtime,
         "require('world.quest').state('quest_herb')",
@@ -245,7 +263,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "require('world.dialogue').info().node",
         "accept",
     )?;
-    press(&mut runtime, InputKey::from_char('1'))?;
+    press(
+        &mut runtime,
+        KeyCode::from_char('1').expect("QWERTY 字符必须有对应物理键"),
+    )?;
     assert_str(&mut runtime, "require('world.dialogue').is_open()", "false")?;
     // 空背包：目标未达成 → 交付被拒，且对话里只有「催问」与「告辞」。
     assert_str(
@@ -267,7 +288,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     banner("M17-03g item 交付：消耗目标物品 + item/money 奖励 + on_complete");
-    press(&mut runtime, InputKey::Escape)?;
+    press(&mut runtime, KeyCode::Escape)?;
     assert_mode(&mut runtime, "Playing")?;
     lua(&mut runtime, "inv.add('player', 'lingzhi', 3)")?;
     assert_num(&mut runtime, "inv.count('player', 'lingzhi')", 3.0)?;
@@ -283,7 +304,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "三株灵芝已备齐。",
     )?;
     assert_option(&mut runtime, "灵芝还在采，稍待。", false)?;
-    press(&mut runtime, InputKey::from_char('1'))?;
+    press(
+        &mut runtime,
+        KeyCode::from_char('1').expect("QWERTY 字符必须有对应物理键"),
+    )?;
     assert_str(
         &mut runtime,
         "require('world.quest').state('quest_herb')",
@@ -310,7 +334,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     assert_num(&mut runtime, "require('core.state').money", 170.0)?;
     assert_num(&mut runtime, "inv.count('player', 'rice')", 4.0)?;
-    press(&mut runtime, InputKey::Escape)?;
+    press(&mut runtime, KeyCode::Escape)?;
     assert_mode(&mut runtime, "Playing")?;
 
     banner("M17-03h 副作用可回溯：变量写入带来源与事件流水");
@@ -398,13 +422,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     lua(&mut third, &format!("clock.set(1, {TEN_AM})"))?;
     frames(&mut third, 1)?;
     talk(&mut third, "npc_gu_changfeng")?;
-    press(&mut third, InputKey::from_char('1'))?; // 接取
+    press(
+        &mut third,
+        KeyCode::from_char('1').expect("QWERTY 字符必须有对应物理键"),
+    )?; // 接取
     assert_str(
         &mut third,
         "require('world.quest').state('quest_spar')",
         "in_progress",
     )?;
-    press(&mut third, InputKey::from_char('1'))?; // 起手：sword_drills = 1
+    press(
+        &mut third,
+        KeyCode::from_char('1').expect("QWERTY 字符必须有对应物理键"),
+    )?; // 起手：sword_drills = 1
     assert_str(
         &mut third,
         "require('world.dialogue').info().node",
@@ -510,12 +540,12 @@ fn talk(runtime: &mut LuaRuntime, persist_id: &str) -> Result<(), Box<dyn std::e
     if got != "ok" {
         return Err(format!("npc {persist_id} not interactable: {got}").into());
     }
-    press(runtime, InputKey::from_char('e'))?;
+    press(runtime, KeyCode::KeyE)?;
     Ok(())
 }
 
 /// Simulates a single key press: one frame with the key down, one clean frame.
-fn press(runtime: &mut LuaRuntime, key: InputKey) -> Result<(), Box<dyn std::error::Error>> {
+fn press(runtime: &mut LuaRuntime, key: KeyCode) -> Result<(), Box<dyn std::error::Error>> {
     let mut input = InputSnapshot::default();
     input.key_event(key, true);
     runtime.set_input(input);

@@ -1599,6 +1599,19 @@ mod tests {
     use std::collections::BTreeMap;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    /// 删除临时夹具目录。Windows 上 `remove_dir_all` 可能在 Lua 运行时还没释放文件
+    /// 句柄时返回「另一个程序正在使用此文件」（错误 32）——清理失败只是留下一个带纳秒
+    /// 后缀的临时目录，绝不该把测试判失败（此前这里是 `expect("cleanup")`，在全量并行
+    /// 跑测试时会偶发失败）。
+    fn cleanup(root: PathBuf) {
+        for _ in 0..20 {
+            if fs::remove_dir_all(&root).is_ok() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+    }
+
     fn temp_root(label: &str) -> PathBuf {
         let suffix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1709,7 +1722,7 @@ mod tests {
         assert_eq!(report.modules[1].relative, "scripts/data/npcs.lua");
         assert!(report.view.map("village").is_some());
         assert_eq!(report.view.tile, Some(32.0));
-        fs::remove_dir_all(root).expect("cleanup");
+        cleanup(root);
     }
 
     /// M20-01：统一入口返回空串 = 全部通过（0 条问题，无问题模块）。
@@ -1726,7 +1739,7 @@ mod tests {
         assert!(report.modules.is_empty());
         assert_eq!(report.issue_count(), 0);
         assert_eq!(report.problem_modules(), 0);
-        fs::remove_dir_all(root).expect("cleanup");
+        cleanup(root);
     }
 
     /// 统一入口加载/执行失败时报告硬错误（不 panic）。
@@ -1741,7 +1754,7 @@ mod tests {
         let report = collect_domain_report(&root);
         let error = report.bootstrap_error.expect("bootstrap error");
         assert!(error.contains("validate_data boom"), "{error}");
-        fs::remove_dir_all(root).expect("cleanup");
+        cleanup(root);
     }
 
     #[test]
@@ -1841,7 +1854,7 @@ mod tests {
             .find(|m| m.module == "systems.nested_check")
             .expect("nested runtime module");
         assert_eq!(nested_runtime.relative, "scripts/systems/nested_check.lua");
-        fs::remove_dir_all(root).expect("cleanup");
+        cleanup(root);
     }
 
     #[test]
@@ -1904,7 +1917,7 @@ mod tests {
             }
             other => panic!("应报告加载失败，实际 {other:?}"),
         }
-        fs::remove_dir_all(root).expect("cleanup");
+        cleanup(root);
     }
 
     #[test]
@@ -1916,7 +1929,7 @@ mod tests {
         assert!(report.bootstrap_error.is_none());
         assert!(report.modules.is_empty());
         assert!(report.view.is_empty());
-        fs::remove_dir_all(root).expect("cleanup");
+        cleanup(root);
     }
 
     #[test]
@@ -2089,7 +2102,7 @@ mod tests {
         // 缺少必需字段的场景文件被记录为备注而不是 panic。
         assert_eq!(errors.len(), 1);
         assert!(errors[0].contains("scenes/broken.scene"));
-        fs::remove_dir_all(root).expect("cleanup");
+        cleanup(root);
     }
 
     #[test]

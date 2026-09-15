@@ -7,6 +7,8 @@ pub(crate) mod header;
 pub(crate) mod hierarchy;
 pub(crate) mod input_bindings;
 pub(crate) mod inspector;
+/// egui 键 ⇄ 引擎物理键的唯一转换层（M22/W1）。
+pub(crate) mod keymap;
 pub(crate) mod progress;
 pub(crate) mod project_settings;
 pub(crate) mod publish;

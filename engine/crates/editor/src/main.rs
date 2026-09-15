@@ -90,7 +90,7 @@ fn default_engine_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-/// p2 工作区根（含 scripts/、docs/ 等），相对编辑器 crate 上溯 3 级：`C:\GitHub\p2`。
+/// p2 工作区根（含 scripts/、docs/ 等），相对编辑器 crate 上溯 3 级：`E:\Codex\RustLua`。
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -253,6 +253,10 @@ struct EditorApp {
     recovery: RecoveryManager,
     autosave: AutoSaveController,
     recovery_scan: RecoveryScan,
+    /// Inspector Override 摘要的源 Prefab 缓存（按文件 (长度, mtime) 失效）。
+    /// 之前每帧都 `Prefab::load`：读文件 + 解析 + 建 BTreeMap。
+    pub(crate) prefab_source_cache:
+        std::collections::HashMap<std::path::PathBuf, crate::panels::inspector::CachedPrefabSource>,
     project_loaded: bool,
     import_path: String,
     workspace_tab: WorkspaceTab,
@@ -725,7 +729,12 @@ impl EditorApp {
         let project_loaded = project.root.join("project.toml").is_file();
         let publish_name = crate::publish::default_publish_name(&project.root);
         let recovery = RecoveryManager::new(project.root.join(".temp"));
-        let recovery_scan = recovery.scan().unwrap_or_default();
+        // 启动扫描失败（权限/IO）不能让编辑器假装"没有待恢复内容"：把原因写进状态栏，
+        // 而不是用 `unwrap_or_default()` 静默吞掉。
+        let (recovery_scan, recovery_scan_error) = match recovery.scan() {
+            Ok(scan) => (scan, None),
+            Err(error) => (RecoveryScan::default(), Some(error.to_string())),
+        };
         Self {
             document: ProjectDocument::open(project.clone()),
             project,
@@ -773,13 +782,17 @@ impl EditorApp {
             inspector_add_component: "Transform3D".to_owned(),
             new_scene_name: "main".to_owned(),
             entity_name: "Entity".to_owned(),
-            status: "尚未创建场景".to_owned(),
+            status: recovery_scan_error.map_or_else(
+                || "尚未创建场景".to_owned(),
+                |error| format!("恢复快照扫描失败：{error}"),
+            ),
             play_state: PlayState::Editing,
             play_session: None,
             history: CommandHistory::new(),
             recovery,
             autosave: AutoSaveController::new(Duration::from_secs(10)),
             recovery_scan,
+            prefab_source_cache: std::collections::HashMap::new(),
             project_loaded,
             import_path: String::new(),
             workspace_tab: WorkspaceTab::Scene,

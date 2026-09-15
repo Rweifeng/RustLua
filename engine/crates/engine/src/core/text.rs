@@ -119,6 +119,9 @@ pub struct TextMesh {
     pub vertices: Vec<TextVertex>,
     pub glyph_count: usize,
     pub line_count: usize,
+    /// `[宽, 高]`：宽度是最宽一行的推进宽度（含行尾 advance 与字间距），
+    /// 高度是 em 盒高度 `ascent + |descent| + (行数-1) × 行高`
+    /// （M30 起修正；此前少算了 descender）。与 [`measure_text`] 完全同口径。
     pub size: [f32; 2],
 }
 
@@ -185,6 +188,88 @@ impl From<FontAtlasError> for TextError {
 pub const EM_PX: f32 = 12.0;
 /// Line height as a multiple of the em box.
 const LINE_HEIGHT_EM: f32 = 1.2;
+
+/// 与渲染同口径的文本度量结果（不生成顶点、不光栅化字形）。
+#[derive(Clone, Debug, PartialEq)]
+pub struct MeasuredText {
+    /// 最宽一行的推进宽度（px），含行尾 advance 与字间距。
+    pub width: f32,
+    /// 行盒高度（px）：`ascent + (行数-1) × 行高 + |descent|`。
+    pub height: f32,
+    /// 计入的字形数（空格与换行不计，缺字仍计——它占一个 `.notdef` 框）。
+    pub glyphs: usize,
+    pub lines: usize,
+    /// 字体（含后备字体）没有字形的字符，去重、按首次出现顺序。
+    pub missing: Vec<char>,
+}
+
+impl MeasuredText {
+    /// 缺字串（便于 Lua/日志直接断言）：`missing` 的字符拼接。
+    #[must_use]
+    pub fn missing_text(&self) -> String {
+        self.missing.iter().collect()
+    }
+}
+
+/// 与 [`TextLayout::build`]（SDF 路径）**同口径**的文本度量。
+///
+/// `size_px` 是像素字号（= `EM_PX * style.scale`，即 `ui.text_at` 的 `font_size`）；
+/// `spacing` 是字间距（`TextStyle::default().spacing = 1.0`）。
+/// 单测 `measure_matches_layout_size` 直接对 `TextLayout::build` 的输出钉住这条一致性。
+#[must_use]
+pub fn measure_text(
+    font: &crate::core::font::FontProbe,
+    text: &str,
+    size_px: f32,
+    spacing: f32,
+) -> MeasuredText {
+    let size = if size_px.is_finite() && size_px > 0.0 {
+        size_px
+    } else {
+        EM_PX
+    };
+    let spacing = if spacing.is_finite() && spacing >= 0.0 {
+        spacing
+    } else {
+        0.0
+    };
+    let line_height = size * LINE_HEIGHT_EM + spacing;
+    let mut width: f32 = 0.0;
+    let mut line_width: f32 = 0.0;
+    let mut lines = 1usize;
+    let mut glyphs = 0usize;
+    let mut missing: Vec<char> = Vec::new();
+    let mut missing_seen = std::collections::HashSet::new();
+    for character in text.chars() {
+        if character == '\n' {
+            width = width.max(line_width);
+            line_width = 0.0;
+            lines += 1;
+            continue;
+        }
+        if !font.covers(character) && missing_seen.insert(character) {
+            missing.push(character);
+        }
+        if character == ' ' {
+            // 空格没有字形：只推进，不绘制（与 `TextLayout::build` 同分支）。
+            line_width += font.advance_px(' ', size) + spacing;
+            width = width.max(line_width);
+            continue;
+        }
+        line_width += font.advance_px(character, size) + spacing;
+        width = width.max(line_width);
+        glyphs += 1;
+    }
+    let ascent = font.ascent_em() * size;
+    let descent = font.descent_em().abs() * size;
+    MeasuredText {
+        width,
+        height: ascent + (lines as f32 - 1.0) * line_height + descent,
+        glyphs,
+        lines,
+        missing,
+    }
+}
 
 /// Deterministic text layout.
 pub struct TextLayout;
@@ -418,7 +503,11 @@ impl TextLayout {
             line_count,
             size: [
                 (max_x - origin[0]).max(0.0),
-                (y + descent * base_px - origin[1]).max(0.0),
+                // em 盒高度 = ascent + |descent|（`descent_em()` 为负值，故用减法）。
+                // M30 修：此前是 `+ descent * base_px`，等于把 descender 从盒子里减掉
+                //（Noto Sans SC 下 0.8em 而非 1.2em），编辑器文字包围框与
+                // `measure_ui_text` 的高度因此都比实际字形矮一截。
+                (y - descent * base_px - origin[1]).max(0.0),
             ],
         })
     }
@@ -573,6 +662,61 @@ mod tests {
             (sdf_top - vector_top).abs() < 0.01,
             "sdf_top={sdf_top}, vector_top={vector_top}"
         );
+    }
+
+    /// 度量必须与渲染布局同口径：同一字体、同一像素字号下，
+    /// `measure_text().width/height` 要等于 `TextLayout::build` 的 `mesh.size`
+    /// （这条断言是"排版预算可信"的根基——度量漂了，溢出检查就是假的）。
+    #[test]
+    fn measure_matches_layout_size() {
+        let font_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../editor/fonts/NotoSansSC-VF.ttf");
+        let bytes = std::fs::read(&font_path).unwrap();
+        let probe = crate::core::font::FontProbe::load(&bytes).unwrap();
+        let mut atlas = crate::core::font::FontAtlas::load(&bytes).unwrap();
+        for size_px in [13.0_f32, 15.0, 18.0, 22.0] {
+            for text in ["江湖有田", "Day 3 · 雨", "灵芝×2", "长数字 99999 文"] {
+                let style = TextStyle {
+                    scale: size_px / EM_PX,
+                    ..Default::default()
+                };
+                let mesh = TextLayout::build(text, [0.0, 0.0], style, &mut atlas).unwrap();
+                let measured = measure_text(&probe, text, size_px, TextStyle::default().spacing);
+                assert!(
+                    (measured.width - mesh.size[0]).abs() < 0.05,
+                    "width {text:?}@{size_px}: measured={} mesh={}",
+                    measured.width,
+                    mesh.size[0]
+                );
+                assert!(
+                    (measured.height - mesh.size[1]).abs() < 0.05,
+                    "height {text:?}@{size_px}: measured={} mesh={}",
+                    measured.height,
+                    mesh.size[1]
+                );
+                assert_eq!(measured.glyphs, mesh.glyph_count);
+                assert_eq!(measured.lines, mesh.line_count);
+            }
+        }
+    }
+
+    /// 缺字检测：字体里没有的字符（emoji）必须被报出来；常用中文/标点不得误报。
+    #[test]
+    fn measure_reports_missing_glyphs() {
+        let font_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../editor/fonts/NotoSansSC-VF.ttf");
+        let bytes = std::fs::read(&font_path).unwrap();
+        let probe = crate::core::font::FontProbe::load(&bytes).unwrap();
+        let ok = measure_text(&probe, "江湖有田·雨，晴。（灵芝）", 15.0, 1.0);
+        assert!(ok.missing.is_empty(), "常用中文缺字: {:?}", ok.missing);
+        let probe_missing = measure_text(&probe, "江湖🙂", 15.0, 1.0);
+        assert_eq!(probe_missing.missing, vec!['🙂']);
+        assert_eq!(probe_missing.missing_text(), "🙂");
+        // 换行：行数与高度按行盒累加。
+        let single = measure_text(&probe, "江湖", 15.0, 1.0);
+        let two = measure_text(&probe, "江湖\n有田", 15.0, 1.0);
+        assert_eq!(two.lines, 2);
+        assert!(two.height > single.height);
     }
 
     #[test]

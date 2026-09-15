@@ -20,7 +20,7 @@
 //!   cargo run -p game --example jhyt_m18_build [-- <game_jhyt-root>]
 
 use engine::core::{
-    input::{InputKey, InputSnapshot},
+    input::{InputSnapshot, KeyCode},
     script::LuaRuntime,
 };
 use std::{
@@ -455,7 +455,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             (ly as f32 - 0.5) * 32.0
         ),
     )?;
-    press(&mut runtime, InputKey::from_char('b'))?;
+    press(
+        &mut runtime,
+        KeyCode::from_char('b').expect("QWERTY 字符必须有对应物理键"),
+    )?;
     assert_str(
         &mut runtime,
         "require('core.state').last_action",
@@ -467,12 +470,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "require('systems.building').preview('up').conflicts[1].reason",
         "building",
     )?;
+    // M26：HUD 状态行不再拼英文 reason（`solid`/`farm_plot`/`building`…），改走
+    // `hud.lua` 的 BUILD_REASON 中文表 —— 断言随之改查中文文案。
     assert_str(
         &mut runtime,
-        "require('ui.input').update():match('building') ~= nil and 'ok' or 'none'",
+        "require('ui.input').update():match('已有建筑') ~= nil and 'ok' or 'none'",
         "ok",
     )?;
-    press(&mut runtime, InputKey::from_char('b'))?;
+    press(
+        &mut runtime,
+        KeyCode::from_char('b').expect("QWERTY 字符必须有对应物理键"),
+    )?;
     assert_str(
         &mut runtime,
         "require('core.state').last_action",
@@ -664,7 +672,7 @@ fn till_plot(runtime: &mut LuaRuntime, cx: i64, cy: i64) -> Result<(), Box<dyn s
 }
 
 /// Simulates a single key press: one frame with the key down, one clean frame.
-fn press(runtime: &mut LuaRuntime, key: InputKey) -> Result<(), Box<dyn std::error::Error>> {
+fn press(runtime: &mut LuaRuntime, key: KeyCode) -> Result<(), Box<dyn std::error::Error>> {
     let mut input = InputSnapshot::default();
     input.key_event(key, true);
     runtime.set_input(input);

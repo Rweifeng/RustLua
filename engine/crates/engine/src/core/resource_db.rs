@@ -13,6 +13,7 @@ use std::{
     fmt, fs,
     path::{Path, PathBuf},
     str::FromStr,
+    sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -198,6 +199,20 @@ pub struct ResourceDatabase {
 
 enum SchemaVersion {
     V2,
+}
+
+/// 原子保存用的临时文件名：**每个写入者唯一**。
+///
+/// 为什么不能用固定的 `resources.tmp`：保存是「写临时文件 → rename 覆盖正式文件」，
+/// 两个写入者（例如编辑器导入后台线程 + `game/editor --check`，或并行跑的测试）同时保存
+/// 同一份数据库时，先完成的那个 rename 会把临时文件**取走**，另一个的 rename 立刻以
+/// 「系统找不到指定的文件（os error 2）」失败——表现为随机失败，与数据本身无关。
+/// 唯一名让两个写入者各写各的临时文件，最后一个 rename 胜出（内容等价，都是完整快照）。
+fn unique_temp_path(db_path: &Path) -> PathBuf {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let sequence = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let token = format!("tmp-{}-{}", std::process::id(), sequence);
+    db_path.with_extension(token)
 }
 
 impl ResourceDatabase {
@@ -496,7 +511,7 @@ impl ResourceDatabase {
         if let Some(parent) = self.db_path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let temp = self.db_path.with_extension("tmp");
+        let temp = unique_temp_path(&self.db_path);
         let mut output = String::from("# rustlua-resource-db-v2\n");
         let mut records: Vec<_> = self.records.values().collect();
         records.sort_by_key(|r| r.id.to_string());
@@ -524,8 +539,15 @@ impl ResourceDatabase {
                 escape(r.error.as_deref().unwrap_or(""))
             ));
         }
-        fs::write(&temp, output)?;
-        fs::rename(temp, &self.db_path)?;
+        // 写临时文件 + rename 才是原子保存；失败时把临时文件收掉，避免留下垃圾。
+        if let Err(error) = fs::write(&temp, output) {
+            let _ = fs::remove_file(&temp);
+            return Err(error.into());
+        }
+        if let Err(error) = fs::rename(&temp, &self.db_path) {
+            let _ = fs::remove_file(&temp);
+            return Err(error.into());
+        }
         Ok(())
     }
 
@@ -722,6 +744,54 @@ mod tests {
         assert_eq!(db.move_resource("hero.png", "player.png").unwrap(), a);
         assert_eq!(db.find_by_path("player.png").unwrap().unwrap().id, a);
         assert_eq!(db.remove("player.png").unwrap(), vec![b]);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// 两个写入者同时保存同一份数据库必须**都成功**。
+    ///
+    /// 复现的是真实随机失败：临时文件用固定名 `resources.tmp` 时，先完成的 rename 会把临时
+    /// 文件取走，后一个 rename 立即以「系统找不到指定的文件（os error 2）」失败。编辑器里
+    /// 「导入项目」后台线程 + `--check` 扫描同一工程就会撞上，表现为偶发的资源扫描失败。
+    #[test]
+    fn concurrent_saves_on_the_same_database_both_succeed() {
+        let root = temp("concurrent-save");
+        let mut first = ResourceDatabase::open(&root).unwrap();
+        let mut second = ResourceDatabase::open(&root).unwrap();
+        first
+            .register("hero.png", ResourceKind::Texture, "texture-1")
+            .unwrap();
+        second
+            .register("hero.png", ResourceKind::Texture, "texture-1")
+            .unwrap();
+        // 每个写入者各自的临时文件名必须唯一（这也是修复点本身）。
+        let db_path = root
+            .join(crate::core::PROJECT_WORK_DIR)
+            .join("resources.db");
+        assert_ne!(unique_temp_path(&db_path), unique_temp_path(&db_path));
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let mut handles = Vec::new();
+        for db in [first, second] {
+            let barrier = std::sync::Arc::clone(&barrier);
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                db.save()
+            }));
+        }
+        for handle in handles {
+            let outcome = handle.join().expect("保存线程不应 panic");
+            assert!(outcome.is_ok(), "并发保存必须都成功，实际：{outcome:?}");
+        }
+        // 落盘结果仍然是一份可读的完整快照，且没有残留临时文件。
+        let reloaded = ResourceDatabase::open(&root).unwrap();
+        assert_eq!(reloaded.len(), 1);
+        let leftovers: Vec<_> = fs::read_dir(db_path.parent().unwrap())
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().to_string())
+            .filter(|name| name.contains("tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "残留临时文件：{leftovers:?}");
         let _ = fs::remove_dir_all(root);
     }
 

@@ -5,7 +5,7 @@
 use std::{path::PathBuf, sync::Arc, time::Instant};
 
 use engine::core::{
-    input::{InputKey, InputSnapshot, MouseButton},
+    input::{InputSnapshot, MouseButton},
     logging::{EngineError, LogModule},
     performance::{PerformanceSnapshot, PerformanceStats},
     time_step::FixedTimeStep,
@@ -35,8 +35,15 @@ pub struct GameApp {
     /// `[perf]` 日志，因此关掉绘制不影响性能基线。
     overlay_enabled: bool,
     runtime_scene: Option<RuntimeScene>,
+    /// 运行期失败原因（Lua 固定步异常 / 渲染致命错误 / 场景或渲染器初始化失败）。
+    /// 非空时宿主进程必须以**非零退出码**结束：这些路径此前只调用
+    /// `event_loop.exit()`，`main` 随后返回 `Ok(())`，于是崩溃在 CI、发布脚本和
+    /// 自动化验收里都表现为成功。
+    failure: Option<String>,
     project_root: Option<PathBuf>,
     window_title: String,
+    /// P3：发布包模式（`--pack`）⇒ 存档与玩家设置写用户数据目录。
+    packaged: bool,
     /// CPU frustum culling (M8-08); off via `--no-cull` for baselines.
     cull_enabled: bool,
     /// Same mesh/material instancing (M8-08); off via `--no-instance`.
@@ -44,11 +51,14 @@ pub struct GameApp {
 }
 
 impl GameApp {
+    /// 构造运行器。`packaged` = 是否发布包（`--pack`）：发布包把存档与玩家设置写到
+    /// 用户数据目录（见 `engine::core::user_dir`），而不是程序目录。
     pub fn new(
         project_root: Option<PathBuf>,
         window_title: String,
         cull_enabled: bool,
         instancing_enabled: bool,
+        packaged: bool,
     ) -> Self {
         Self {
             window: None,
@@ -62,8 +72,10 @@ impl GameApp {
             // 发布默认不带帧率 overlay（F3 可手动开启，见字段注释）。
             overlay_enabled: false,
             runtime_scene: None,
+            failure: None,
             project_root,
             window_title,
+            packaged,
             cull_enabled,
             instancing_enabled,
         }
@@ -85,6 +97,22 @@ impl GameApp {
         if self.lifecycle == AppLifecycle::Exiting {
             self.transition(AppLifecycle::Exited);
         }
+    }
+
+    /// 记录一次**失败**退出：首个原因胜出（后续失败通常是它的连锁反应），然后
+    /// 走正常的退出流程。`main` 在事件循环结束后读取它并返回 `Err`，从而让进程
+    /// 退出码非零。
+    fn fail(&mut self, event_loop: &ActiveEventLoop, reason: impl Into<String>) {
+        let reason = reason.into();
+        if self.failure.is_none() {
+            self.failure = Some(reason);
+        }
+        self.request_exit(event_loop);
+    }
+
+    /// 本次运行的失败原因；`None` 表示正常退出（含 Lua `app.quit()` 与用户关窗）。
+    pub fn failure(&self) -> Option<&str> {
+        self.failure.as_deref()
     }
 
     fn update_pause_state(&mut self, size: PhysicalSize<u32>) {
@@ -120,6 +148,12 @@ impl GameApp {
             .as_mut()
             .map(|scene| scene.run_script_steps(steps, delta_seconds, &input));
         self.performance.end_update();
+        // Lua 耗时：由运行时在 Lua 体内部测量后取走，只含 `update()` 本体
+        // （不含 ECS/物理/渲染），所以 `lua_ms` 与指标名一致。0 步帧取到 0。
+        if let Some(scene) = self.runtime_scene.as_mut() {
+            let micros = scene.take_script_micros();
+            self.performance.record_lua_millis(micros as f32 / 1000.0);
+        }
         if let Some(Err(error)) = result {
             let diagnostic = EngineError::new(
                 LogModule::Script,
@@ -129,7 +163,7 @@ impl GameApp {
             .with_source(&error)
             .with_suggestion("fix the Lua runtime error reported above");
             tracing::error!(target: "script", error = %diagnostic, "fixed-step update failed");
-            self.request_exit(event_loop);
+            self.fail(event_loop, format!("fixed-step Lua update failed: {error}"));
         }
         // Lua `app.quit()`：只在 fixed-step 更新后消费退出标记，避免在无
         // runtime_scene（初始化/异常）时误退。
@@ -169,15 +203,13 @@ impl GameApp {
             self.input.finish_frame();
         }
         let snapshot = self.performance.snapshot();
-        let mut mesh = match self.runtime_scene.as_mut() {
-            Some(scene) => match scene.vertices(renderer.config.width, renderer.config.height) {
-                Ok(mesh) => mesh,
-                Err(error) => {
-                    tracing::error!(target: "render", "[runtime] 2D scene extraction failed: {error}");
-                    return;
-                }
-            },
-            None => SceneMesh {
+        // 先在不借用 `self.runtime_scene` 的作用域里取回结果，再处理失败——
+        // 失败处理需要 `&mut self`（记录失败态并退出），不能在借用期间调用。
+        let mesh_result: Result<SceneMesh, String> = match self.runtime_scene.as_mut() {
+            Some(scene) => scene
+                .vertices(renderer.config.width, renderer.config.height)
+                .map_err(|error| error.to_string()),
+            None => Ok(SceneMesh {
                 vertices: Vec::new(),
                 draws: Vec::new(),
                 paths: Vec::new(),
@@ -186,7 +218,15 @@ impl GameApp {
                 vector_vertices: Vec::new(),
                 vector_glyphs: Vec::new(),
                 vector_segments: Vec::new(),
-            },
+            }),
+        };
+        let mut mesh = match mesh_result {
+            Ok(mesh) => mesh,
+            Err(error) => {
+                tracing::error!(target: "render", "[runtime] 2D scene extraction failed: {error}");
+                self.fail(event_loop, format!("2D scene extraction failed: {error}"));
+                return;
+            }
         };
         if self.overlay_enabled {
             let overlay = build_overlay(snapshot, renderer.config.width, renderer.config.height);
@@ -219,7 +259,7 @@ impl GameApp {
         match renderer.render(&mesh, scene3d.as_ref()) {
             RenderOutcome::Presented => {}
             RenderOutcome::Retry | RenderOutcome::Skipped => {}
-            RenderOutcome::Fatal => self.request_exit(event_loop),
+            RenderOutcome::Fatal => self.fail(event_loop, "renderer reported a fatal outcome"),
         }
         self.performance.end_frame();
         if snapshot.frames.is_multiple_of(60) {
@@ -247,7 +287,10 @@ impl ApplicationHandler for GameApp {
             Ok(renderer) => {
                 self.window = Some(window);
                 self.renderer = Some(renderer);
-                self.runtime_scene = match RuntimeScene::new(self.project_root.as_deref()) {
+                self.runtime_scene = match RuntimeScene::new_with_layout(
+                    self.project_root.as_deref(),
+                    self.packaged,
+                ) {
                     Ok(scene) => Some(scene),
                     Err(error) => {
                         let diagnostic = EngineError::new(
@@ -258,17 +301,24 @@ impl ApplicationHandler for GameApp {
                         .with_source(&error)
                         .with_suggestion("check the project scene and scripts/main.lua");
                         tracing::error!(target: "game", error = %diagnostic, "runtime initialization failed");
-                        self.request_exit(event_loop);
+                        self.fail(
+                            event_loop,
+                            format!("runtime scene initialization failed: {error}"),
+                        );
                         return;
                     }
                 };
-                // M20-08：把手柄死区（`settings.toml` 的 `[input]` 段）应用到
-                // 设备后端。文件缺失 → 引擎默认 0.15/0.05；读取失败只记日志。
+                // M20-08：把手柄死区（`settings.toml` 的 `[input]` 段）应用到设备后端。
+                // 文件缺失 → 引擎默认 0.15/0.05；读取失败只记日志。P3：发布包读的是
+                // **用户数据目录**里的那份设置（`user_dir::data_roots`），与 Lua 侧的
+                // `input.settings_path()` 同源，否则会出现"面板显示一套、设备用另一套"。
                 if let (Some(root), Some(scene)) =
                     (self.project_root.as_deref(), self.runtime_scene.as_mut())
                 {
+                    let settings_root =
+                        engine::core::user_dir::data_roots(root, self.packaged).settings_dir;
                     let (deadzone, diagnostic) =
-                        engine::core::settings::load_deadzone_section(root);
+                        engine::core::settings::load_deadzone_section(&settings_root);
                     if let Some(diagnostic) = diagnostic {
                         tracing::warn!(target: "input", "[gamepad] {diagnostic}");
                     }
@@ -296,7 +346,10 @@ impl ApplicationHandler for GameApp {
             Err(error) => {
                 tracing::error!(target: "engine", error = %EngineError::new(LogModule::Engine, "initialize renderer", "GPU renderer startup failed").with_source(&error).with_suggestion("update the graphics driver or use a compatible GPU"), "renderer initialization failed");
                 self.window = Some(window);
-                self.request_exit(event_loop);
+                self.fail(
+                    event_loop,
+                    format!("renderer initialization failed: {error}"),
+                );
             }
         }
     }
@@ -328,10 +381,17 @@ impl ApplicationHandler for GameApp {
                 self.update_pause_state(size);
             }
             WindowEvent::KeyboardInput { event, .. } => {
-                if let Some(key) = map_key(&event.logical_key) {
+                // M22/W1：**物理键**身份（`PhysicalKey::Code`），经 `host::keymap`
+                // 转换——宿主只做类型转换，不再按 `logical_key` 的字符猜键位。
+                // AZERTY/Dvorak 上「W 位置」因此仍是 `move_up`，而 Tab/Enter/F5/
+                // 修饰键也能表达（字符身份做不到）。
+                if let Some(key) = engine::host::keymap::map_key_event(&event) {
                     self.input
                         .key_event(key, event.state == ElementState::Pressed);
                 }
+                // 下面两条是**宿主自身的界面快捷键**（性能叠加层开关、退出），
+                // 不是玩法输入，因此继续按逻辑键判定：它们不该受改键表影响，
+                // 也不该因为键盘布局而变化。
                 if event.state == ElementState::Pressed
                     && matches!(
                         &event.logical_key,
@@ -595,37 +655,6 @@ fn rect_vertices_colored(
         vertex([x1, y1]),
         vertex([x0, y1]),
     ]
-}
-
-fn map_key(key: &winit::keyboard::Key) -> Option<InputKey> {
-    match key {
-        winit::keyboard::Key::Character(value) => {
-            // 单字母键按小写 ASCII 码映射（Q/E/R/T/F/G 互不相同），与
-            // `parse_key` 和编辑器预览输入层保持一致。
-            let mut chars = value.chars();
-            match (chars.next(), chars.next()) {
-                (Some(letter), None) => Some(InputKey::from_char(letter)),
-                _ => None,
-            }
-        }
-        winit::keyboard::Key::Named(winit::keyboard::NamedKey::Space) => Some(InputKey::Space),
-        winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape) => Some(InputKey::Escape),
-        // M20-02：方向键（UI 焦点/滚动导航）；Lua 侧用 input.is_down("up") 等读取。
-        winit::keyboard::Key::Named(winit::keyboard::NamedKey::ArrowUp) => Some(InputKey::ARROW_UP),
-        winit::keyboard::Key::Named(winit::keyboard::NamedKey::ArrowDown) => {
-            Some(InputKey::ARROW_DOWN)
-        }
-        winit::keyboard::Key::Named(winit::keyboard::NamedKey::ArrowLeft) => {
-            Some(InputKey::ARROW_LEFT)
-        }
-        winit::keyboard::Key::Named(winit::keyboard::NamedKey::ArrowRight) => {
-            Some(InputKey::ARROW_RIGHT)
-        }
-        winit::keyboard::Key::Named(winit::keyboard::NamedKey::F1) => Some(InputKey::Other(1)),
-        winit::keyboard::Key::Named(winit::keyboard::NamedKey::F2) => Some(InputKey::Other(2)),
-        winit::keyboard::Key::Named(winit::keyboard::NamedKey::F4) => Some(InputKey::Other(4)),
-        _ => None,
-    }
 }
 
 fn map_mouse_button(button: winit::event::MouseButton) -> MouseButton {

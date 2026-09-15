@@ -40,6 +40,21 @@ const server = http.createServer((request, response) => {
     return;
   }
   fs.stat(target, (error, stats) => {
+    if (!error && stats.isDirectory()) {
+      const indexTarget = path.join(target, "index.html");
+      fs.stat(indexTarget, (indexError, indexStats) => {
+        if (indexError || !indexStats.isFile()) {
+          response.writeHead(404).end("not found");
+          return;
+        }
+        response.writeHead(200, {
+          "content-type": MIME[".html"],
+          "cache-control": "no-store",
+        });
+        fs.createReadStream(indexTarget).pipe(response);
+      });
+      return;
+    }
     if (error || !stats.isFile()) {
       response.writeHead(404).end("not found");
       return;

@@ -22,7 +22,7 @@
 //!   cargo run -p game --example jhyt_smoke [-- <game_jhyt-root>]
 
 use engine::core::{
-    input::{InputKey, InputSnapshot},
+    input::{InputSnapshot, KeyCode},
     script::LuaRuntime,
 };
 use std::{
@@ -65,7 +65,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_num(&mut runtime, "require('core.state').energy", 100.0)?;
     assert_num(&mut runtime, "require('core.state').inner_power", 50.0)?;
     // Q 吐纳 +5 内力。
-    press(&mut runtime, InputKey::from_char('q'))?;
+    press(
+        &mut runtime,
+        KeyCode::from_char('q').expect("QWERTY 字符必须有对应物理键"),
+    )?;
     assert_num(&mut runtime, "require('core.state').inner_power", 55.0)?;
     assert_str(
         &mut runtime,
@@ -74,11 +77,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     // Pause：E/Q/T 均被屏蔽。
-    press(&mut runtime, InputKey::from_char('p'))?; // -> Pause
+    press(
+        &mut runtime,
+        KeyCode::from_char('p').expect("QWERTY 字符必须有对应物理键"),
+    )?; // -> Pause
     assert_str(&mut runtime, "require('core.state').mode", "Pause")?;
-    press(&mut runtime, InputKey::from_char('q'))?;
-    press(&mut runtime, InputKey::from_char('e'))?;
-    press(&mut runtime, InputKey::from_char('t'))?;
+    press(
+        &mut runtime,
+        KeyCode::from_char('q').expect("QWERTY 字符必须有对应物理键"),
+    )?;
+    press(&mut runtime, KeyCode::KeyE)?;
+    press(
+        &mut runtime,
+        KeyCode::from_char('t').expect("QWERTY 字符必须有对应物理键"),
+    )?;
     assert_num(&mut runtime, "require('core.state').inner_power", 55.0)?;
     assert_str(
         &mut runtime,
@@ -86,14 +98,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "practice_breath",
     )?;
     assert_day(&mut runtime, 1)?;
-    press(&mut runtime, InputKey::from_char('p'))?; // -> Playing
+    press(
+        &mut runtime,
+        KeyCode::from_char('p').expect("QWERTY 字符必须有对应物理键"),
+    )?; // -> Playing
 
     // Inventory：E/Q/T 均被屏蔽。
-    press(&mut runtime, InputKey::from_char('i'))?; // -> Inventory
+    press(
+        &mut runtime,
+        KeyCode::from_char('i').expect("QWERTY 字符必须有对应物理键"),
+    )?; // -> Inventory
     assert_str(&mut runtime, "require('core.state').mode", "Inventory")?;
-    press(&mut runtime, InputKey::from_char('q'))?;
-    press(&mut runtime, InputKey::from_char('e'))?;
-    press(&mut runtime, InputKey::from_char('t'))?;
+    press(
+        &mut runtime,
+        KeyCode::from_char('q').expect("QWERTY 字符必须有对应物理键"),
+    )?;
+    press(&mut runtime, KeyCode::KeyE)?;
+    press(
+        &mut runtime,
+        KeyCode::from_char('t').expect("QWERTY 字符必须有对应物理键"),
+    )?;
     assert_num(&mut runtime, "require('core.state').inner_power", 55.0)?;
     assert_str(
         &mut runtime,
@@ -101,13 +125,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "practice_breath",
     )?;
     assert_day(&mut runtime, 1)?;
-    press(&mut runtime, InputKey::from_char('i'))?; // -> Playing
+    press(
+        &mut runtime,
+        KeyCode::from_char('i').expect("QWERTY 字符必须有对应物理键"),
+    )?; // -> Playing
 
     // Transition：E/Q/T 均被屏蔽（模拟切场景瞬间）。
     set_mode(&mut runtime, "Transition")?;
-    press(&mut runtime, InputKey::from_char('q'))?;
-    press(&mut runtime, InputKey::from_char('e'))?;
-    press(&mut runtime, InputKey::from_char('t'))?;
+    press(
+        &mut runtime,
+        KeyCode::from_char('q').expect("QWERTY 字符必须有对应物理键"),
+    )?;
+    press(&mut runtime, KeyCode::KeyE)?;
+    press(
+        &mut runtime,
+        KeyCode::from_char('t').expect("QWERTY 字符必须有对应物理键"),
+    )?;
     assert_num(&mut runtime, "require('core.state').inner_power", 55.0)?;
     assert_str(
         &mut runtime,
@@ -124,14 +157,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (_, _, ax, ay) = facing_cell_above(528.0, 112.0)?;
     assert!(in_farm(ax, ay), "起步上方必须是农田格 (got {ax},{ay})");
     // 耕作前需装备锄头（inventory.setup 已装 hoe）。
-    press(&mut runtime, InputKey::from_char('e'))?; // 翻土
+    press(&mut runtime, KeyCode::KeyE)?; // 翻土
     assert_str(&mut runtime, "require('core.state').last_action", "till")?;
     assert_num(&mut runtime, "require('core.state').energy", 92.0)?; // 翻土消耗 8 (100->92)
 
     banner("M16-03 农田规则：翻土→播种→浇水→成长→收获");
     // 选定灵芝并确保种在药田（当前朝上在药田行上）。
     set_seed(&mut runtime, "seed_lingzhi")?;
-    press(&mut runtime, InputKey::from_char('e'))?; // 播种
+    press(&mut runtime, KeyCode::KeyE)?; // 播种
     assert_str(
         &mut runtime,
         "require('core.state').last_action",
@@ -149,9 +182,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     assert_eq!(stored, "lingzhi", "地块作物应存 short id");
 
-    // 浇水（需要浇水壶）。
+    // 浇水（需要浇水壶）。先钉住晴天：M29 起天气按 `(seed, day, 季节)` 抽签，
+    // 雨天走的是 `rain_watered`（免体力）分支，数值断言必须先把天气确定下来。
+    runtime.execute_console("require('world.weather').set('sunny')")?;
     equip_tool(&mut runtime, "watering_can")?;
-    press(&mut runtime, InputKey::from_char('e'))?;
+    press(&mut runtime, KeyCode::KeyE)?;
     assert_str(
         &mut runtime,
         "require('core.state').last_action",
@@ -159,7 +194,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     assert_num(&mut runtime, "require('core.state').energy", 85.0)?; // 浇水消耗 4 (89->85)
     // 同日重复浇水 → already_watered 且不扣体力。
-    press(&mut runtime, InputKey::from_char('e'))?;
+    press(&mut runtime, KeyCode::KeyE)?;
     assert_str(
         &mut runtime,
         "require('core.state').last_action",
@@ -184,7 +219,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 雨天验证：设置 rainy，未成熟作物按下 E 应免费 rain_watered 且不耗体力。
     // （灌溉当天不计成长 —— 成长永远发生在“浇水次日”的日结算。）
     set_weather(&mut runtime, "rainy")?;
-    press(&mut runtime, InputKey::from_char('e'))?;
+    press(&mut runtime, KeyCode::KeyE)?;
     assert_str(
         &mut runtime,
         "require('core.state').last_action",
@@ -196,7 +231,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 睡过 day2→day8 共 6 晚，day8 清晨 watered_days 才到 7。
     for _ in 0..5 {
         sleep(&mut runtime)?; // -> day3..day7，各 +1 成长
-        press(&mut runtime, InputKey::from_char('e'))?; // 当天再浇（雨天免费）
+        press(&mut runtime, KeyCode::KeyE)?; // 当天再浇（雨天免费）
     }
     assert_day(&mut runtime, 7)?;
     let watered_days = query_num(
@@ -222,7 +257,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 换上锄头收获（day8 清晨体力 100，收获消耗 2）。
     equip_tool(&mut runtime, "hoe")?;
-    press(&mut runtime, InputKey::from_char('e'))?;
+    press(&mut runtime, KeyCode::KeyE)?;
     assert_str(
         &mut runtime,
         "require('core.state').last_action",
@@ -317,7 +352,7 @@ fn click_button(runtime: &mut LuaRuntime, button: &str) -> Result<(), Box<dyn st
 }
 
 /// Simulates a single key press: one frame with the key down, one clean frame.
-fn press(runtime: &mut LuaRuntime, key: InputKey) -> Result<(), Box<dyn std::error::Error>> {
+fn press(runtime: &mut LuaRuntime, key: KeyCode) -> Result<(), Box<dyn std::error::Error>> {
     let mut input = InputSnapshot::default();
     input.key_event(key, true);
     runtime.set_input(input);

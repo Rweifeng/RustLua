@@ -8,7 +8,7 @@ use std::path::PathBuf;
 /// 解析顺序：
 /// 1. 环境变量 `P2_GAMES_DIR`（显式指定，最优先）；
 /// 2. 按仓库布局推导：`CARGO_MANIFEST_DIR` 向上 3 级到仓库根
-///    （即 `C:\GitHub\p2\engine\crates\engine` -> `C:\GitHub\p2`）。
+///    （即 `E:\Codex\RustLua\engine\crates\engine` -> `E:\Codex\RustLua`）。
 pub fn games_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("P2_GAMES_DIR") {
         return PathBuf::from(dir);

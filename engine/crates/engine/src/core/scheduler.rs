@@ -254,12 +254,19 @@ impl ScheduleReport {
 /// dependency validation and per-system timings.
 pub struct Scheduler<C = World> {
     systems: Vec<System<C>>,
+    /// 缓存的拓扑执行序（索引到 `systems`）。注册变化时失效。
+    ///
+    /// 拓扑排序每次调用都要建名字表 + 算入度，在固定步循环里每步一次是纯浪费：
+    /// 运行期（如 `RuntimeScene::run_script_steps` 一帧多步）会连续调用 `run`
+    /// 很多次，而系统集合只在注册时变化。
+    cached_order: Option<Vec<usize>>,
 }
 
 impl<C> Default for Scheduler<C> {
     fn default() -> Self {
         Self {
             systems: Vec::new(),
+            cached_order: None,
         }
     }
 }
@@ -309,6 +316,8 @@ impl<C: 'static> Scheduler<C> {
         }
         system.registration_order = self.systems.len();
         self.systems.push(system);
+        // 注册变化 → 缓存的执行序失效。
+        self.cached_order = None;
         Ok(())
     }
 
@@ -319,6 +328,16 @@ impl<C: 'static> Scheduler<C> {
             .into_iter()
             .map(|index| self.systems[index].name.clone())
             .collect())
+    }
+
+    /// 缓存的执行序：与 `topological_order` 结果相同，但只在注册变化后重算一次。
+    fn plan(&mut self) -> Result<Vec<usize>, SchedulerError> {
+        if let Some(order) = &self.cached_order {
+            return Ok(order.clone());
+        }
+        let order = self.topological_order()?;
+        self.cached_order = Some(order.clone());
+        Ok(order)
     }
 
     /// Executes every registered system once for one simulation step.
@@ -332,7 +351,7 @@ impl<C: 'static> Scheduler<C> {
                 delta_seconds: delta_seconds.to_string(),
             });
         }
-        let order = self.topological_order()?;
+        let order = self.plan()?;
         let started = Instant::now();
         let mut report = ScheduleReport::default();
         for index in order {
@@ -511,6 +530,125 @@ mod tests {
         assert_eq!(report.executed_systems(), 3);
         assert_eq!(report.timings[0].stage, ScheduleStage::Input);
         assert!(report.total_elapsed >= report.timings[0].elapsed);
+    }
+
+    /// 缓存的执行序必须在注册变化后失效：否则新系统的依赖错误会被旧计划掩盖，
+    /// 调度器会"照旧跑"一个已经不成立的顺序。
+    #[test]
+    fn cached_execution_order_is_invalidated_by_registration() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let mut scheduler = Scheduler::new();
+        scheduler
+            .add_system(recording_system(
+                "a",
+                ScheduleStage::Input,
+                log.clone(),
+                &[],
+            ))
+            .unwrap();
+        let mut world = World::new();
+        // 第一次 run 建立缓存计划。
+        let report = scheduler.run(&mut world, 1.0 / 60.0).unwrap();
+        assert_eq!(report.executed_systems(), 1);
+
+        // 新增一个依赖不存在名字的系统：注册本身合法，问题在计划校验。
+        scheduler
+            .add_system(recording_system(
+                "b",
+                ScheduleStage::Transform,
+                log.clone(),
+                &["does_not_exist"],
+            ))
+            .unwrap();
+        let error = scheduler
+            .run(&mut world, 1.0 / 60.0)
+            .expect_err("新增系统后必须重新校验计划");
+        assert_eq!(
+            error,
+            SchedulerError::MissingDependency {
+                system: "b".to_owned(),
+                dependency: "does_not_exist".to_owned(),
+            }
+        );
+
+        // 错误持续存在（没有用旧计划"蒙混过关"），两个系统都还在注册表里。
+        assert_eq!(scheduler.len(), 2);
+        assert!(matches!(
+            scheduler.run(&mut world, 1.0 / 60.0),
+            Err(SchedulerError::MissingDependency { .. })
+        ));
+
+        // 另一条路径：**合法**注册之后，缓存计划必须反映新的执行序。
+        let repaired = Arc::new(Mutex::new(Vec::new()));
+        let mut scheduler = Scheduler::new();
+        scheduler
+            .add_system(recording_system(
+                "a",
+                ScheduleStage::Input,
+                repaired.clone(),
+                &[],
+            ))
+            .unwrap();
+        scheduler.run(&mut world, 1.0 / 60.0).unwrap();
+        scheduler
+            .add_system(recording_system(
+                "c",
+                ScheduleStage::Render,
+                repaired.clone(),
+                &["a"],
+            ))
+            .unwrap();
+        let report = scheduler.run(&mut world, 1.0 / 60.0).unwrap();
+        assert_eq!(report.executed_systems(), 2);
+        assert_eq!(*repaired.lock().unwrap(), vec!["a", "a", "c"]);
+    }
+
+    /// 被拒绝的注册（重名）不得破坏已有计划，也不得让系统集合"少一个还在跑"。
+    #[test]
+    fn rejected_registration_leaves_the_schedule_intact() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let mut scheduler = Scheduler::new();
+        scheduler
+            .add_system(recording_system(
+                "a",
+                ScheduleStage::Input,
+                log.clone(),
+                &[],
+            ))
+            .unwrap();
+        scheduler
+            .add_system(recording_system(
+                "b",
+                ScheduleStage::Physics,
+                log.clone(),
+                &["a"],
+            ))
+            .unwrap();
+        let mut world = World::new();
+        scheduler.run(&mut world, 1.0 / 60.0).unwrap();
+        assert_eq!(*log.lock().unwrap(), vec!["a", "b"]);
+
+        let error = scheduler
+            .add_system(recording_system(
+                "a",
+                ScheduleStage::Render,
+                log.clone(),
+                &[],
+            ))
+            .expect_err("重名必须被拒绝");
+        assert_eq!(
+            error,
+            SchedulerError::DuplicateSystem {
+                name: "a".to_owned()
+            }
+        );
+
+        // 拒绝之后：系统数不变、执行序不变、两个系统都还在跑。
+        assert_eq!(scheduler.len(), 2);
+        assert_eq!(scheduler.execution_order().unwrap(), vec!["a", "b"]);
+        log.lock().unwrap().clear();
+        scheduler.run(&mut world, 1.0 / 60.0).unwrap();
+        assert_eq!(*log.lock().unwrap(), vec!["a", "b"]);
     }
 
     #[test]

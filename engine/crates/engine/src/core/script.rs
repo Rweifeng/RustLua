@@ -18,7 +18,7 @@ use crate::core::{
     entity::EntityId,
     gameplay::{GameClock, Inventory, ItemDefinition, ItemStack},
     grid::{self, Facing},
-    input::{ActionMap, Binding, InputKey, InputSnapshot, MouseButton},
+    input::{ActionMap, Binding, InputSnapshot, KeyCode, MouseButton},
     light::Light,
     math3d::Vec3,
     mesh3d::MeshRenderer,
@@ -74,7 +74,17 @@ struct ScriptState {
     scene: Option<String>,
     scene_pending_load: Option<String>,
     project_root: Option<PathBuf>,
+    /// 懒加载的字体度量探针（`ui.measure_text` 用）：只读覆盖与 advance、
+    /// 不光栅化字形、不占渲染图集内存。`None` = 从未尝试加载。
+    font_probe: Option<Option<crate::core::font::FontProbe>>,
     save_path: Option<PathBuf>,
+    /// 玩家设置根目录（P3）：发布包 → 用户数据目录（`%APPDATA%\<app>`），
+    /// 开发工程 → 项目根（编辑器与验收样例直接检查工程内的 `settings.toml`）。
+    /// 未设置时退回 `project_root`。
+    settings_root: Option<PathBuf>,
+    /// 上一次 Lua `update()` 的耗时（微秒）。宿主把它累加进 `PerformanceStats::lua_ms`
+    /// ——这个指标此前只有单测在写，真实运行恒为 `0.000`（P4 接线，见 `docs/37` 5-6）。
+    last_update_micros: u64,
     assets: BTreeMap<String, String>,
     ui: BTreeMap<String, UiText>,
     ui_bars: BTreeMap<String, UiBar>,
@@ -139,6 +149,11 @@ struct ScriptState {
     /// 不符、非法绑定、写盘失败等都在这里留下可定位的一行说明，脚本可用
     /// `input.diagnostics()` 读出。不参与存档。
     input_diagnostics: Vec<String>,
+    /// **v1 → v2 改键迁移诊断**（M22/W1）：`input.load_settings()` / `set_action_map`
+    /// 读入 v1（或 v1 写法）的绑定时，每条**有损换算**各一行中文说明
+    /// （`key:+` 只能落到 `key:equal` 这类），脚本用 `input.migration_notes()` 读出。
+    /// 与 `input_diagnostics` 分开：诊断是「出错了」，迁移说明是「变了但没丢」。
+    input_migration_notes: Vec<String>,
     /// **逻辑时间**（毫秒，M22/W3）：按固定步在 [`ScriptState::set_input`] 里累加
     /// （每步 + `delta_seconds`），供 `input.action_repeat` 做时间制连发。刻意不用
     /// `game_clock`（它受游戏内时间倍率/暂停影响，菜单导航必须始终按真实逻辑时间走）。
@@ -165,6 +180,21 @@ struct ActionRepeatState {
 }
 
 impl ScriptState {
+    /// 懒加载字体度量探针（`ui.measure_text`）：要工程根才能找到 `project.toml`
+    /// 里的字体配置，故第一次调用才读盘；失败结果也会缓存（`Some(None)`），
+    /// 避免每帧重复尝试读一个不存在的字体。切工程（`set_project_root`）会清缓存。
+    fn font_probe(&mut self) -> Result<Option<crate::core::font::FontProbe>, LuaBridgeError> {
+        if let Some(cached) = &self.font_probe {
+            return Ok(cached.clone());
+        }
+        let root = self
+            .project_root
+            .clone()
+            .ok_or_else(|| LuaBridgeError::Api("no project root configured".to_owned()))?;
+        let probe = crate::core::font::project_font::load_probe(&root).ok();
+        self.font_probe = Some(probe.clone());
+        Ok(probe)
+    }
     /// 时间制连发（M22/W3）——[`LuaRuntime::action_repeat`] 与 Lua `input.action_repeat`
     /// 同源实现。详见方法内注释与 `docs/35`。
     fn action_repeat(&mut self, name: &str) -> bool {
@@ -836,11 +866,20 @@ impl LuaRuntime {
     /// Sets the project root, used to resolve `scenes/<name>.scene` on load.
     pub fn set_project_root(&mut self, root: PathBuf) {
         self.state.borrow_mut().project_root = Some(root);
+        // 换工程 → 字体也可能换：丢缓存，下次 `ui.measure_text` 重新读盘。
+        self.state.borrow_mut().font_probe = None;
     }
 
     /// Sets the file path save data is committed to / loaded from.
     pub fn set_save_path(&mut self, path: PathBuf) {
         self.state.borrow_mut().save_path = Some(path);
+    }
+
+    /// 设置玩家设置根目录（`settings.toml` 的读写根）。
+    /// 发布包由宿主指向用户数据目录（见 `core::user_dir`），开发工程不调用，
+    /// 于是退回项目根——编辑器与 `jhyt_m20_*` 检查的就是工程内那份。
+    pub fn set_settings_root(&mut self, root: PathBuf) {
+        self.state.borrow_mut().settings_root = Some(root);
     }
 
     /// Applies a pending `scene.load(name)` requested by Lua: clears the ECS
@@ -1102,12 +1141,25 @@ impl LuaRuntime {
         // No script loaded (engine-only diagnostic mode) or the script has no
         // `update` function: the game simply idles instead of erroring out.
         let Some(update) = update else {
+            self.state.borrow_mut().last_update_micros = 0;
             return Ok(String::new());
         };
-        update.call(()).map_err(|error| LuaBridgeError::Runtime {
+        let started = std::time::Instant::now();
+        let result = update.call(()).map_err(|error| LuaBridgeError::Runtime {
             path,
             source: error.to_string(),
-        })
+        });
+        // 失败也要记账：否则"Lua 抛错的那一帧"在性能面板上看起来是零成本。
+        self.state.borrow_mut().last_update_micros =
+            u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+        result
+    }
+
+    /// 上一次 `call_update` 内部 Lua 调用的耗时（微秒）。宿主用它填 `lua_ms`：
+    /// 只算 Lua 体，不含 ECS/物理/渲染，指标名与含义因此一致。
+    #[must_use]
+    pub fn last_update_micros(&self) -> u64 {
+        self.state.borrow().last_update_micros
     }
 
     pub fn call_update_debug(&mut self) -> Result<String, LuaBridgeError> {
@@ -1900,12 +1952,13 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
         input.set(
             name,
             lua.create_function(move |_, key: String| {
-                let input = &s.borrow().input;
-                let key = parse_key(&key);
+                // M22/W1：键名解析失败是**错误**（未知名不再静默落 Other(0)）。
+                let key = parse_key_strict(&key)?;
+                let state = s.borrow();
                 Ok(match mode {
-                    0 => input.is_down(key),
-                    1 => input.just_pressed(key),
-                    _ => input.just_released(key),
+                    0 => state.input.is_down(key),
+                    1 => state.input.just_pressed(key),
+                    _ => state.input.just_released(key),
                 })
             })?,
         )?;
@@ -1914,14 +1967,16 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
     input.set(
         "pressed",
         lua.create_function(move |_, key: String| {
-            Ok(s.borrow().input.just_pressed(parse_key(&key)))
+            let key = parse_key_strict(&key)?;
+            Ok(s.borrow().input.just_pressed(key))
         })?,
     )?;
     let s = Rc::clone(&state);
     input.set(
         "released",
         lua.create_function(move |_, key: String| {
-            Ok(s.borrow().input.just_released(parse_key(&key)))
+            let key = parse_key_strict(&key)?;
+            Ok(s.borrow().input.just_released(key))
         })?,
     )?;
     let s = Rc::clone(&state);
@@ -2097,9 +2152,13 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
     input.set(
         "set_action_map",
         lua.create_function(move |_, text: String| {
-            match ActionMap::from_text(&text) {
-                Ok(map) => {
-                    s.borrow_mut().action_map = map;
+            // M22/W1：接受 v1 与 v2 两种版本头，v1 的键位会被迁移成物理键，并把
+            // 有损换算记进 `input.migration_notes()`。
+            match ActionMap::from_text_with_notes(&text) {
+                Ok((map, notes)) => {
+                    let mut state = s.borrow_mut();
+                    state.action_map = map;
+                    state.input_migration_notes = notes;
                     Ok((true, String::new()))
                 }
                 // 版本头不符 → false + 原因，并且**不改动**当前映射（不静默回退）。
@@ -2119,14 +2178,29 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
             Ok(table)
         })?,
     )?;
-    // 设置文件 `<project>/settings.toml` 的 `[input]` 段（M20-07）。路径规则与
-    // `audio.settings_path/load_settings/save_settings` 一致：缺省用工程根下的
-    // `settings.toml`，给相对路径时相对工程根解析（无工程根则要求绝对路径）。
+    let s = Rc::clone(&state);
+    input.set(
+        "migration_notes",
+        // M22/W1：v1 → v2 改键迁移说明（有损换算逐条）。与 `diagnostics()` 分开：
+        // 诊断 = 「出错了」，迁移说明 = 「变了但没丢」。启动时打印一次即可。
+        lua.create_function(move |lua, ()| {
+            let state = s.borrow();
+            let table = lua.create_table()?;
+            for (index, message) in state.input_migration_notes.iter().enumerate() {
+                table.set(index + 1, message.clone())?;
+            }
+            Ok(table)
+        })?,
+    )?;
+    // 设置文件 `settings.toml` 的 `[input]` 段（M20-07）。路径规则与
+    // `audio.settings_path/load_settings/save_settings` 一致：缺省的根由
+    // `settings_root()` 决定（P3：发布包 → 用户数据目录，开发工程 → 项目根），
+    // 给相对路径时相对该根解析（无根则要求绝对路径）。
     let s = Rc::clone(&state);
     input.set(
         "settings_path",
         lua.create_function(move |_, ()| {
-            let root = s.borrow().project_root.clone();
+            let root = settings_root(&s.borrow());
             Ok(root.map(|root| {
                 ProjectSettings::path_in(&root)
                     .to_string_lossy()
@@ -2160,6 +2234,8 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
             //（阈值 + 重复节奏），这样游戏只需 `input.load_settings()` 一次调用即可，
             // 不必再单独调 `apply_nav_settings()`。文件里没有这些键时就是默认手感。
             s.borrow_mut().nav = crate::core::settings::parse_nav_section(&existing);
+            // M22/W1：v1 → v2 迁移说明（有损换算逐条），供 `input.migration_notes()`。
+            s.borrow_mut().input_migration_notes = parsed.migration_notes.clone();
             match parsed.map {
                 Some(mut map) => {
                     // 文件里没有的动作用默认绑定补齐（新增动作在旧设置文件上仍可玩），
@@ -2874,7 +2950,31 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
             t.set("tile_size", map.tile_size.x)?;
             t.set("width", map.width)?;
             t.set("height", map.height)?;
+            t.set("texture", map.texture.clone())?;
             Ok(mlua::Value::Table(t))
+        })?,
+    )?;
+    // `tilemap.set_texture(id, texture)` swaps the tileset a Tilemap samples.
+    // Needed for data-driven art variants (e.g. per-season ground tilesets):
+    // the renderer re-reads `Tilemap::texture` every frame and rebuilds the
+    // layer when the component changes, so the swap is visible next frame.
+    let s = Rc::clone(&state);
+    tilemap.set(
+        "set_texture",
+        lua.create_function(move |_, (id, texture): (i64, String)| {
+            let id = entity_from_lua(id)?;
+            if texture.trim().is_empty() {
+                return Err(api_error("tilemap texture must not be empty"));
+            }
+            let mut state = s.borrow_mut();
+            require_alive(&state, id)?;
+            let map = state
+                .world
+                .get_mut::<Tilemap>(id)
+                .map_err(world_error)?
+                .ok_or_else(|| api_error("entity has no tilemap"))?;
+            map.texture = texture;
+            Ok(())
         })?,
     )?;
     // `tilemap.create(width, height, tile_size, texture?, name?)` spawns a new
@@ -3734,13 +3834,14 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
             }
         })?,
     )?;
-    // 工程设置文件 `<project>/settings.toml` 的 `[audio]` 段（M20-02）：
+    // 工程设置文件 `settings.toml` 的 `[audio]` 段（M20-02）：
     // 缺失文件用默认值；写入保序保留其余段（后续任务的 [input] 不会被覆盖）。
+    // 路径根由 `settings_root()` 决定（P3：发布包 → 用户数据目录）。
     let s = Rc::clone(&state);
     audio.set(
         "settings_path",
         lua.create_function(move |_, ()| {
-            let root = s.borrow().project_root.clone();
+            let root = settings_root(&s.borrow());
             Ok(root.map(|root| {
                 ProjectSettings::path_in(&root)
                     .to_string_lossy()
@@ -3752,10 +3853,7 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
     audio.set(
         "load_settings",
         lua.create_function(move |_, ()| {
-            let root = {
-                let state = s.borrow();
-                state.project_root.clone()
-            };
+            let root = settings_root(&s.borrow());
             let Some(root) = root else {
                 return Ok((false, "no_project_root".to_owned()));
             };
@@ -3773,10 +3871,7 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
     audio.set(
         "save_settings",
         lua.create_function(move |_, ()| {
-            let root = {
-                let state = s.borrow();
-                state.project_root.clone()
-            };
+            let root = settings_root(&s.borrow());
             let Some(root) = root else {
                 return Ok((false, "no_project_root".to_owned()));
             };
@@ -4007,6 +4102,24 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
             let json = serde_json::from_str(&encoded)
                 .map_err(|error| api_error(format!("map.state {name} is corrupt: {error}")))?;
             json_to_lua_value(lua, &json)
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    map.set(
+        "state_clear",
+        lua.create_function(move |_, name: Option<String>| {
+            let mut state = s.borrow_mut();
+            let before = state.save_data.len();
+            match &name {
+                Some(name) => {
+                    let key = format!("__mapstate:{name}");
+                    state.save_data.remove(&key);
+                }
+                None => state
+                    .save_data
+                    .retain(|key, _| !key.starts_with("__mapstate:")),
+            }
+            Ok(before - state.save_data.len())
         })?,
     )?;
     let s = Rc::clone(&state);
@@ -4284,6 +4397,73 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
     )?;
     let s = Rc::clone(&state);
     ui.set(
+        "text_get",
+        // 读回 `ui.text` / `ui.text_at` 建的动态文本（内容 + 位置 + 字号 + 可见性）；
+        // 不存在返回 nil。用途（M30）：headless 里拿到"画面上真正画出来的那串字"，
+        // 再用 `ui.measure_text` 量它是否超出容器——排版检查不能只查源码字面量。
+        lua.create_function(move |lua, id: String| {
+            let state = s.borrow();
+            let Some(text) = state.ui.get(&id) else {
+                return Ok(None);
+            };
+            let result = lua.create_table()?;
+            result.set("text", text.text.clone())?;
+            result.set("x", text.position[0])?;
+            result.set("y", text.position[1])?;
+            result.set("scale", text.scale)?;
+            // 未显式给 font_size 时，渲染口径是 `scale × EM_PX`（`ui.text_effective_scale`）。
+            result.set(
+                "size",
+                text.font_size
+                    .unwrap_or(text.scale * crate::core::text::EM_PX),
+            )?;
+            result.set("visible", text.visible)?;
+            Ok(Some(result))
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    ui.set(
+        "measure_text",
+        // 与渲染**同口径**的文本度量（M30）：只读字形覆盖与 advance，不光栅化字形。
+        // 返回 `{width, height, lines, glyphs, missing}`；`missing` 是字体（含后备字体）
+        // 没有字形的字符拼接串（无缺字为空串）。
+        // 为什么需要：中文排版不能按"字数 × 系数"估宽（CJK 满宽、ASCII 半宽、
+        // 全角标点又不同），也不能用 `string.len` 数字节；之前 HUD 用的是
+        // "CJK 记 2、其余记 1"的启发式裁剪，遇到宽拉丁字母/长数字仍会溢出。
+        lua.create_function(move |lua, (text, size): (String, Option<f32>)| {
+            let size_px = size.unwrap_or(crate::core::text::EM_PX);
+            if !size_px.is_finite() || size_px <= 0.0 {
+                return Err(api_error("ui.measure_text size must be positive"));
+            }
+            let probe = {
+                let mut state = s.borrow_mut();
+                state
+                    .font_probe()
+                    .map_err(|error| api_error(error.to_string()))?
+            };
+            let Some(probe) = probe else {
+                return Err(api_error(
+                    "ui.measure_text: project font unavailable (check project.toml `font`)",
+                ));
+            };
+            let measured = crate::core::text::measure_text(
+                &probe,
+                &text,
+                size_px,
+                crate::core::text::TextStyle::default().spacing,
+            );
+            let result = lua.create_table()?;
+            result.set("width", measured.width)?;
+            result.set("height", measured.height)?;
+            result.set("lines", measured.lines)?;
+            result.set("glyphs", measured.glyphs)?;
+            result.set("missing", measured.missing_text())?;
+            result.set("missing_count", measured.missing.len())?;
+            Ok(result)
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    ui.set(
         "panel_get",
         // M22：读回 `ui.panel` 建的动态面板（几何 + 颜色 + 可见性）；不存在返回 nil。
         // 用途：UI 动画/可见性的 headless 断言（例如「选中高亮确实画出来了且在弹跳」），
@@ -4378,6 +4558,29 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
                 Ok(())
             },
         )?,
+    )?;
+    let s = Rc::clone(&state);
+    ui.set(
+        "image_get",
+        // M29：读回 `ui.image` 建的动态图片（几何 + 贴图 + 颜色）；不存在返回 nil。
+        // 与 `panel_get` 同一用途：让"确实画出来了"成为可 headless 断言的事实
+        // （第一个真实消费者是雨天的天气图标）。
+        lua.create_function(move |lua, id: String| {
+            let state = s.borrow();
+            let Some(image) = state.ui_images.get(&id) else {
+                return Ok(None);
+            };
+            let result = lua.create_table()?;
+            result.set("x", image.position[0])?;
+            result.set("y", image.position[1])?;
+            result.set("width", image.size[0])?;
+            result.set("height", image.size[1])?;
+            result.set("texture", image.texture.clone())?;
+            result.set("r", image.color[0])?;
+            result.set("g", image.color[1])?;
+            result.set("b", image.color[2])?;
+            Ok(Some(result))
+        })?,
     )?;
     let s = Rc::clone(&state);
     ui.set(
@@ -5305,6 +5508,11 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
     save.set(
         "write",
         lua.create_function(move |_, (key, value): (String, String)| {
+            // 空键会让整份存档在下次 `load` 时无法解析（`decode` 报 empty key），
+            // 因此必须在写入点就拒绝，而不是等到玩家读档时整档报废。
+            if key.is_empty() {
+                return Err(api_error("save.write key must not be empty"));
+            }
             s.borrow_mut().save_data.insert(key, value);
             Ok(())
         })?,
@@ -5313,6 +5521,22 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
     save.set(
         "read",
         lua.create_function(move |_, key: String| Ok(s.borrow().save_data.get(&key).cloned()))?,
+    )?;
+    // 「开始新游戏」必须能丢弃**引擎侧**的持久键（`__map` / `__map:spawn:*` /
+    // `__mapstate:*` / `__blob:*`）。这些键不属于任何游戏侧 provider，若残留，
+    // 新档会读回上一局的地图、农田、建筑与制作状态（同进程内「继续 → 玩 →
+    // 返回标题 → 新游戏」即可复现）。只清内存；磁盘文件在下一次 `commit` 时
+    // 被整体替换。
+    let s = Rc::clone(&state);
+    save.set(
+        "clear",
+        lua.create_function(move |_, ()| {
+            let mut state = s.borrow_mut();
+            let removed = state.save_data.len();
+            state.save_data.clear();
+            tracing::info!(target: "save", "[save] cleared {removed} in-memory key(s)");
+            Ok(removed)
+        })?,
     )?;
     let s = Rc::clone(&state);
     save.set(
@@ -5384,28 +5608,41 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
     let s = Rc::clone(&state);
     save.set(
         "load",
-        lua.create_function(move |_, ()| {
+        lua.create_function(move |lua, ()| {
             let (path, slot) = {
                 let state = s.borrow();
                 (state.save_path.clone(), state.save_slot.clone())
             };
             let Some(path) = path else {
                 tracing::warn!(target: "save", "[save] no save path configured; load ignored");
-                return Ok(false);
+                return Ok((
+                    Value::Boolean(false),
+                    Value::String(lua.create_string("no_save_path")?),
+                ));
             };
             let path = save_path_for_slot(&path, slot.as_deref());
             let Ok(text) = std::fs::read_to_string(&path) else {
-                return Ok(false); // no save yet is not an error
+                // 还没有存档不是错误；但必须与「存档已损坏」区分开，否则玩家与
+                // 诊断面板无法判断进度是真的没了还是从没存过。
+                return Ok((
+                    Value::Boolean(false),
+                    Value::String(lua.create_string("missing")?),
+                ));
             };
             match crate::core::save::decode(&text) {
                 Ok(data) => {
                     s.borrow_mut().save_data = data;
                     tracing::info!(target: "save", path = %path.display(), "[save] loaded");
-                    Ok(true)
+                    Ok((Value::Boolean(true), Value::Nil))
                 }
                 Err(error) => {
+                    // 损坏/版本不符：保留原文件（绝不覆盖），并把原因交给调用方。
                     tracing::warn!(target: "save", path = %path.display(), error = %error, "[save] corrupt save ignored");
-                    Ok(false)
+                    let reason = format!("corrupt: {error}");
+                    Ok((
+                        Value::Boolean(false),
+                        Value::String(lua.create_string(&reason)?),
+                    ))
                 }
             }
         })?,
@@ -5514,11 +5751,21 @@ fn push_input_diagnostic(state: &mut ScriptState, message: String) {
     state.input_diagnostics.push(message);
 }
 
+/// 玩家设置根目录：显式设置的 `settings_root`（发布包 = 用户数据目录）优先，
+/// 否则退回项目根（开发工程形态）。所有 `settings.toml` 读写都必须走这里，
+/// 否则发布包会出现"读用户目录、写程序目录"这种两边不一致的坏行为。
+fn settings_root(state: &ScriptState) -> Option<PathBuf> {
+    state
+        .settings_root
+        .clone()
+        .or_else(|| state.project_root.clone())
+}
+
 /// 解析 `input.load_settings/save_settings` 的可选路径参数（M20-07）。
 ///
-/// * 省略 → `<project_root>/settings.toml`（无工程根返回 `None`，Lua 侧报
+/// * 省略 → `<settings_root>/settings.toml`（无根返回 `None`，Lua 侧报
 ///   `no_project_root`）；
-/// * 相对路径 → 相对工程根解析（无工程根返回 `None`）；
+/// * 相对路径 → 相对设置根解析（无根返回 `None`）；
 /// * 绝对路径 → 原样使用（无头/测试场景可给绝对路径）。
 fn resolve_input_settings_path(state: &ScriptState, path: Option<&str>) -> Option<PathBuf> {
     match path.map(str::trim).filter(|value| !value.is_empty()) {
@@ -5527,36 +5774,44 @@ fn resolve_input_settings_path(state: &ScriptState, path: Option<&str>) -> Optio
             if candidate.is_absolute() {
                 Some(candidate)
             } else {
-                state.project_root.as_ref().map(|root| root.join(candidate))
+                settings_root(state).map(|root| root.join(candidate))
             }
         }
-        None => state
-            .project_root
-            .as_ref()
-            .map(|root| ProjectSettings::path_in(root)),
+        None => settings_root(state).map(|root| ProjectSettings::path_in(&root)),
     }
 }
 
-fn parse_key(key: &str) -> InputKey {
-    match key.to_ascii_lowercase().as_str() {
-        "w" => InputKey::W,
-        "a" => InputKey::A,
-        "s" => InputKey::S,
-        "d" => InputKey::D,
-        "space" => InputKey::Space,
-        "escape" => InputKey::Escape,
-        // 方向键（M20-02 UI 焦点/滚动导航）：宿主按 InputKey::ARROW_* 喂入。
-        "up" => InputKey::ARROW_UP,
-        "down" => InputKey::ARROW_DOWN,
-        "left" => InputKey::ARROW_LEFT,
-        "right" => InputKey::ARROW_RIGHT,
-        "f1" => InputKey::Other(1),
-        "f2" => InputKey::Other(2),
-        "f4" => InputKey::Other(4),
-        // 单字母键按小写 ASCII 码映射，与窗口/编辑器输入层一致（Q/E/R/T/F/G 互不相同）。
-        one if one.chars().count() == 1 => InputKey::from_char(one.chars().next().unwrap_or(' ')),
-        _ => InputKey::Other(0),
+/// Lua `input.is_down/just_pressed/just_released` 的键名解析（M22/W1 起**严格**）。
+///
+/// 接受三种写法，与设置文件 / 编辑器捕获共用同一套键身份：
+///
+/// 1. **v2 物理键名**：`input.is_down("keye")`、`input.is_down("digit1")`、
+///    `input.is_down("arrowup")`、`input.is_down("space")`（即 [`KeyCode::to_text`]
+///    的输出，大小写不敏感，`key:` 前缀可省）；
+/// 2. **v1 兼容名**：`"w"`、`"1"`、`"up"`、`"f1"`、`"space"`、`"escape"`、
+///    `"other:1048577"`——老脚本与既有 headless 用例继续可用，按 US-QWERTY 位置
+///    换算（见 [`KeyCode::v1_key_code`]）；
+/// 3. `"key:<名字>"` 前缀形式（与 `input.rebind` 的绑定文本同源）。
+///
+/// **未知名报 Lua 错误**：旧实现把任何不认识的键静默映射成 `Other(0)`，于是拼错的
+/// 键名与真实按键无法区分（`input.is_down("W ")` 会永远返回 false 且毫无提示）。
+/// 现在与 `Binding::parse` 同一严格度，错误信息里带上原值。
+fn parse_key_strict(name: &str) -> LuaResult<KeyCode> {
+    let raw = name.trim();
+    if raw.is_empty() {
+        return Err(api_error("input key name must not be empty"));
     }
+    let value = raw.strip_prefix("key:").unwrap_or(raw);
+    if let Some(key) = KeyCode::from_text(value) {
+        return Ok(key);
+    }
+    let mut notes = Vec::new();
+    if let Some(key) = KeyCode::v1_key_code(value, &mut notes) {
+        return Ok(key);
+    }
+    Err(api_error(format!(
+        "unknown input key: {raw}（可用物理键名如 keye/digit1/arrowup/space，或旧名如 w/1/up）"
+    )))
 }
 
 /// 音量总线名 → [`AudioBus`]；未知名报 Lua 错误（拼写错误可定位，不静默）。
@@ -5610,7 +5865,7 @@ mod tests {
         let mut runtime = LuaRuntime::new().unwrap();
         runtime.set_delta(0.25);
         let mut input = InputSnapshot::default();
-        input.key_event(InputKey::D, true);
+        input.key_event(KeyCode::KeyD, true);
         runtime.set_input(input);
         let path = script(
             "assert(time.delta() == 0.25)\nassert(input.is_down('d'))\nassert(input.axis('horizontal') == 1.0)\nfunction update() return 'ok' end",
@@ -5722,7 +5977,7 @@ mod tests {
         let mut fires = 0;
         for _ in 1..=120 {
             let mut input = InputSnapshot::default();
-            input.key_event(InputKey::ARROW_UP, true);
+            input.key_event(KeyCode::ArrowUp, true);
             runtime.set_input(input);
             if runtime.action_repeat("ui_up") {
                 fires += 1;
@@ -5746,10 +6001,10 @@ mod tests {
 
         // 一步内：按下 + 松开 → 快照里 `held` 为空、`pressed` 有该键。
         let mut tap = InputSnapshot::default();
-        tap.key_event(InputKey::ARROW_UP, true);
-        tap.key_event(InputKey::ARROW_UP, false);
-        assert!(!tap.is_down(InputKey::ARROW_UP), "帧末应已是松开态");
-        assert!(tap.just_pressed(InputKey::ARROW_UP));
+        tap.key_event(KeyCode::ArrowUp, true);
+        tap.key_event(KeyCode::ArrowUp, false);
+        assert!(!tap.is_down(KeyCode::ArrowUp), "帧末应已是松开态");
+        assert!(tap.just_pressed(KeyCode::ArrowUp));
         runtime.set_input(tap);
         assert!(
             runtime.action_repeat("ui_up"),
@@ -5921,7 +6176,7 @@ mod tests {
 
         // Hold D -> horizontal axis = +1 -> player moves right.
         let mut input = InputSnapshot::default();
-        input.key_event(InputKey::D, true);
+        input.key_event(KeyCode::KeyD, true);
         runtime.set_input(input);
         runtime.call_update().unwrap();
         let position =
@@ -5931,7 +6186,7 @@ mod tests {
 
         // Release D, hold W -> vertical axis = +1 -> player moves up only.
         let mut input = InputSnapshot::default();
-        input.key_event(InputKey::W, true);
+        input.key_event(KeyCode::KeyW, true);
         runtime.set_input(input);
         runtime.call_update().unwrap();
         let position =
@@ -6390,6 +6645,11 @@ mod tests {
              tilemap.set_meta(map, 1, 0, 'tilled', 'true')\n\
              assert(tilemap.get_meta(map, 1, 0, 'tilled') == 'true')\n\
              assert(tilemap.is_solid(map, 1, 0))\n\
+             assert(tilemap.get(map).texture == 'assets/tileset.png')\n\
+             tilemap.set_texture(map, 'assets/art/tilesets/manor/manor_ground_winter.png')\n\
+             assert(tilemap.get(map).texture == 'assets/art/tilesets/manor/manor_ground_winter.png')\n\
+             assert(not pcall(function() tilemap.set_texture(map, '  ') end))\n\
+             assert(not pcall(function() tilemap.set_texture(player, 'assets/tileset.png') end))\n\
              tag.set(player, 'kind', 'farmer')\n\
              local hits = interact.query(16, 16, 100)\n\
              assert(#hits >= 1 and hits[1].kind == 'farmer')\n\
@@ -6706,6 +6966,98 @@ mod tests {
         let _ = fs::remove_file(path);
     }
 
+    /// 「开始新游戏」必须能丢弃引擎侧持久键：`save.clear()` 清空全部内存键，
+    /// `map.state_clear()` 只清 `__mapstate:*`（可指定单个状态名）。
+    /// 这些键不属于任何游戏侧 provider，残留会让新档读回上一局的地图/农田/建筑。
+    #[test]
+    fn save_clear_and_map_state_clear_drop_persisted_keys() {
+        let root = std::env::temp_dir().join(format!("p2-state-clear-{}", std::process::id()));
+        let dir = root.join(".data");
+        fs::create_dir_all(&dir).unwrap();
+        let save_path = dir.join("save.sav");
+
+        let mut runtime = LuaRuntime::new().unwrap();
+        runtime.set_save_path(save_path.clone());
+        let path = script(
+            "save.write('hp', '75')\n\
+             local cleared = save.clear()\n\
+             assert(cleared >= 1, 'clear should report removed keys: ' .. tostring(cleared))\n\
+             assert(save.read('hp') == nil, 'keys are gone after clear')\n\
+             assert(map.state('farm', { tiles = { 1, 2 } }))\n\
+             assert(map.state('buildings', { version = 1, list = {} }))\n\
+             local removed = map.state_clear()\n\
+             assert(removed >= 2, 'state_clear removes every __mapstate key: ' .. tostring(removed))\n\
+             assert(map.state('farm') == nil, 'farm state cleared')\n\
+             assert(map.state('buildings') == nil, 'buildings state cleared')\n\
+             assert(map.state('single', { x = 1 }))\n\
+             map.state_clear('single')\n\
+             assert(map.state('single') == nil, 'named clear removes that state')\n\
+             function update() return 'ok' end",
+        );
+        runtime.execute_project_script(&path).unwrap();
+        assert_eq!(runtime.call_update().unwrap(), "ok");
+
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_file(path);
+    }
+
+    /// 新档清理的端到端语义：写档 → 读回 → `save.clear()` → 再次读回为空，
+    /// 且地图/出生点键同样被丢弃（`map.current()` 回落到当前场景）。
+    #[test]
+    fn new_game_style_clear_removes_map_keys_and_survives_reload() {
+        let root = std::env::temp_dir().join(format!("p2-newgame-clear-{}", std::process::id()));
+        let dir = root.join(".data");
+        fs::create_dir_all(&dir).unwrap();
+        let save_path = dir.join("save.sav");
+
+        let mut runtime = LuaRuntime::new().unwrap();
+        runtime.set_save_path(save_path.clone());
+        let writer = script(
+            "map.set_spawn(120, 240)\n\
+             save.write('hp', '75')\n\
+             assert(save.commit())\n\
+             function update() return 'ok' end",
+        );
+        runtime.execute_project_script(&writer).unwrap();
+        assert_eq!(runtime.call_update().unwrap(), "ok");
+        assert!(save_path.is_file());
+
+        // 第二次会话：读档 → 清档 → 落盘 → 第三次会话读回：什么都不该剩下。
+        let mut fresh = LuaRuntime::new().unwrap();
+        fresh.set_save_path(save_path.clone());
+        let clearer = script(
+            "local ok = save.load()\n\
+             assert(ok, 'save should load')\n\
+             assert(save.read('hp') == '75')\n\
+             assert(map.spawn() ~= nil, 'spawn persisted')\n\
+             save.clear()\n\
+             map.state_clear()\n\
+             assert(save.read('hp') == nil)\n\
+             assert(map.spawn() == nil, 'spawn key dropped by clear')\n\
+             assert(save.commit())\n\
+             function update() return 'ok' end",
+        );
+        fresh.execute_project_script(&clearer).unwrap();
+        assert_eq!(fresh.call_update().unwrap(), "ok");
+
+        let mut third = LuaRuntime::new().unwrap();
+        third.set_save_path(save_path.clone());
+        let reader = script(
+            "local ok = save.load()\n\
+             assert(ok, 'cleared save should still be a valid file')\n\
+             assert(save.read('hp') == nil, 'no keys survive a cleared new game')\n\
+             assert(map.spawn() == nil, 'no spawn survives a cleared new game')\n\
+             function update() return 'ok' end",
+        );
+        third.execute_project_script(&reader).unwrap();
+        assert_eq!(third.call_update().unwrap(), "ok");
+
+        let _ = fs::remove_dir_all(root);
+        for path in [writer, clearer, reader] {
+            let _ = fs::remove_file(path);
+        }
+    }
+
     #[test]
     fn save_load_rejects_older_save() {
         let root =
@@ -6720,6 +7072,152 @@ mod tests {
         let path = script("assert(not save.load())\nfunction update() return 'ok' end");
         runtime.execute_project_script(&path).unwrap();
         assert_eq!(runtime.call_update().unwrap(), "ok");
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_file(path);
+    }
+
+    /// 回归（P0）：多行/含制表符的值曾经写出伪行，使**整个存档**在下次 load
+    /// 时无法解析。现在 `save.write` + `commit` + 新会话 `save.load` 必须无损往返。
+    #[test]
+    fn save_write_round_trips_multiline_and_cjk_values_across_sessions() {
+        let root = std::env::temp_dir().join(format!("p2-save-escape-{}", std::process::id()));
+        let dir = root.join(".data");
+        fs::create_dir_all(&dir).unwrap();
+        let save_path = dir.join("save.sav");
+
+        let mut runtime = LuaRuntime::new().unwrap();
+        runtime.set_save_path(save_path.clone());
+        let writer = script(
+            "save.write('hp', '75')\n\
+             save.write('note', 'line one\\nline two')\n\
+             save.write('tabbed', 'a\\tb')\n\
+             save.write('草药', '灵芝 x2')\n\
+             assert(save.commit(), 'commit')\n\
+             function update() return 'ok' end",
+        );
+        runtime.execute_project_script(&writer).unwrap();
+        assert_eq!(runtime.call_update().unwrap(), "ok");
+        assert!(save_path.is_file(), "save file should exist after commit");
+
+        // 磁盘上每个键值对只占一行（1 行版本头 + 4 行数据）。
+        let text = fs::read_to_string(&save_path).unwrap();
+        assert_eq!(text.lines().count(), 5, "unexpected save text: {text:?}");
+        assert!(text.starts_with("save_version=2\n"));
+
+        let mut fresh = LuaRuntime::new().unwrap();
+        fresh.set_save_path(save_path.clone());
+        let reader = script(
+            "local ok, reason = save.load()\n\
+             assert(ok, tostring(reason))\n\
+             assert(save.read('hp') == '75', 'hp')\n\
+             assert(save.read('note') == 'line one\\nline two', 'note')\n\
+             assert(save.read('tabbed') == 'a\\tb', 'tabbed')\n\
+             assert(save.read('草药') == '灵芝 x2', 'cjk')\n\
+             function update() return 'ok' end",
+        );
+        fresh.execute_project_script(&reader).unwrap();
+        assert_eq!(fresh.call_update().unwrap(), "ok");
+
+        let _ = fs::remove_dir_all(root);
+        for path in [writer, reader] {
+            let _ = fs::remove_file(path);
+        }
+    }
+
+    /// `save.load` 必须区分「没有存档」与「存档已损坏」：两者都返回 false，
+    /// 但第二个返回值给出原因，诊断面板据此才能告诉玩家进度是丢了还是从没存过。
+    #[test]
+    fn save_load_reports_missing_versus_corrupt() {
+        let root = std::env::temp_dir().join(format!("p2-save-reason-{}", std::process::id()));
+        let dir = root.join(".data");
+        fs::create_dir_all(&dir).unwrap();
+        let save_path = dir.join("save.sav");
+
+        // 1) 文件不存在 → "missing"
+        let mut runtime = LuaRuntime::new().unwrap();
+        runtime.set_save_path(save_path.clone());
+        let missing = script(
+            "local ok, reason = save.load()\n\
+             assert(ok == false)\n\
+             assert(reason == 'missing', tostring(reason))\n\
+             function update() return 'ok' end",
+        );
+        runtime.execute_project_script(&missing).unwrap();
+        assert_eq!(runtime.call_update().unwrap(), "ok");
+
+        // 2) 损坏文件 → "corrupt: ..."，且原文件不被覆盖
+        let corrupt_text = "save_version=1\nhp\t75\nbroken row\n";
+        fs::write(&save_path, corrupt_text).unwrap();
+        let mut runtime = LuaRuntime::new().unwrap();
+        runtime.set_save_path(save_path.clone());
+        let corrupt = script(
+            "local ok, reason = save.load()\n\
+             assert(ok == false)\n\
+             assert(reason:sub(1, 8) == 'corrupt:', tostring(reason))\n\
+             function update() return 'ok' end",
+        );
+        runtime.execute_project_script(&corrupt).unwrap();
+        assert_eq!(runtime.call_update().unwrap(), "ok");
+        assert_eq!(
+            fs::read_to_string(&save_path).unwrap(),
+            corrupt_text,
+            "损坏存档必须原样保留，绝不能被覆盖"
+        );
+
+        let _ = fs::remove_dir_all(root);
+        for path in [missing, corrupt] {
+            let _ = fs::remove_file(path);
+        }
+    }
+
+    /// `save.write` 必须拒绝空键：它可以被写进内存，但会让整份存档在下次
+    /// `load` 时解析失败（等于一次误用毁掉玩家进度）。
+    #[test]
+    fn save_write_rejects_empty_key() {
+        let mut runtime = LuaRuntime::new().unwrap();
+        let path = script(
+            "assert(not pcall(function() save.write('', 'x') end))\n\
+             local err = select(2, pcall(function() save.write('', 'x') end))\n\
+             assert(tostring(err):find('must not be empty'), tostring(err))\n\
+             function update() return 'ok' end",
+        );
+        runtime.execute_project_script(&path).unwrap();
+        assert_eq!(runtime.call_update().unwrap(), "ok");
+        let _ = fs::remove_file(path);
+    }
+
+    /// 回归：v1 旧存档（裸行）仍然可读，且读入后能正常 commit 成 v2。
+    #[test]
+    fn legacy_v1_save_still_loads_and_upgrades_on_commit() {
+        let root = std::env::temp_dir().join(format!("p2-save-v1-{}", std::process::id()));
+        let dir = root.join(".data");
+        fs::create_dir_all(&dir).unwrap();
+        let save_path = dir.join("save.sav");
+        fs::write(&save_path, "save_version=1\nhp\t75\nscene\tarena\n").unwrap();
+
+        let mut runtime = LuaRuntime::new().unwrap();
+        runtime.set_save_path(save_path.clone());
+        let path = script(
+            "local ok, reason = save.load()\n\
+             assert(ok, tostring(reason))\n\
+             assert(save.read('hp') == '75')\n\
+             assert(save.read('scene') == 'arena')\n\
+             save.write('note', 'line one\\nline two')\n\
+             assert(save.commit())\n\
+             function update() return 'ok' end",
+        );
+        runtime.execute_project_script(&path).unwrap();
+        assert_eq!(runtime.call_update().unwrap(), "ok");
+        let upgraded = fs::read_to_string(&save_path).unwrap();
+        assert!(
+            upgraded.starts_with("save_version=2\n"),
+            "读入 v1 后应写成 v2: {upgraded:?}"
+        );
+        assert_eq!(
+            crate::core::save::decode(&upgraded).unwrap().get("hp"),
+            Some(&"75".to_owned())
+        );
+
         let _ = fs::remove_dir_all(root);
         let _ = fs::remove_file(path);
     }
@@ -6767,6 +7265,14 @@ mod tests {
              assert(dragged == 'bag:1:bag:2')\n\
              ui.tooltip('tip', 20, 280, 'Hoe', 120, 28)\n\
              ui.modal_hide('shop')\n\
+             local icon = ui.image_get('icon')\n\
+             assert(icon.texture == 'assets/tomato.png')\n\
+             assert(icon.x == 10 and icon.y == 10 and icon.width == 32 and icon.height == 32)\n\
+             assert(icon.r == 1 and icon.g == 0 and icon.b == 0)\n\
+             assert(ui.image_get('missing') == nil)\n\
+             ui.image('tmp', 0, 0, 8, 8, 'assets/tomato.png', 1, 1, 1)\n\
+             ui.clear('tmp')\n\
+             assert(ui.image_get('tmp') == nil)\n\
              function update() return 'ok' end",
         );
         runtime.execute_project_script(&path).unwrap();
@@ -6779,6 +7285,56 @@ mod tests {
         assert!(dynamic.2.contains_key("bag"));
         assert_eq!(dynamic.2["bag"].cells.len(), 8);
         let _ = fs::remove_file(path);
+    }
+
+    /// `ui.measure_text` / `ui.text_get`（M30）：中文排版的度量与读回。
+    #[test]
+    fn measure_text_and_text_get_lua_api() {
+        let root = std::env::temp_dir().join(format!("p2-measure-{}", std::process::id()));
+        let fonts = root.join("assets").join("fonts");
+        fs::create_dir_all(&fonts).unwrap();
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../editor/fonts/NotoSansSC-VF.ttf");
+        fs::copy(&fixture, fonts.join("NotoSansSC-VF.ttf")).unwrap();
+        fs::write(
+            root.join("project.toml"),
+            "font = \"assets/fonts/NotoSansSC-VF.ttf\"\n",
+        )
+        .unwrap();
+
+        let mut runtime = LuaRuntime::new().unwrap();
+        runtime.set_project_root(root.clone());
+        let path = script(
+            "
+             local cjk = ui.measure_text('江湖', 15)
+             assert(cjk.missing == '' and cjk.missing_count == 0)
+             assert(cjk.glyphs == 2 and cjk.lines == 1)
+             assert(cjk.width > 0 and cjk.height > 0)
+             local ascii = ui.measure_text('AB', 15)
+             -- CJK 满宽、ASCII 半宽：这正是按字数裁剪会算错的地方。
+             assert(ascii.width < cjk.width)
+             local long = ui.measure_text('江湖', 30)
+             assert(long.width > cjk.width * 1.9 and long.width < cjk.width * 2.1)
+             local two = ui.measure_text('江湖\\n有田', 15)
+             assert(two.lines == 2 and two.height > cjk.height)
+             local emoji = ui.measure_text('江湖🙂', 15)
+             assert(emoji.missing_count == 1 and emoji.missing == '🙂')
+             assert(not pcall(function() return ui.measure_text('x', 0) end))
+             assert(not pcall(function() return ui.measure_text(nil, 15) end))
+             ui.text_at('hud:line', 12, 30, '江湖有田', 1.0, 15)
+             ui.text_at('hud:scaled', 12, 60, '江湖', 2.0)
+             local line = ui.text_get('hud:line')
+             assert(line.text == '江湖有田' and line.x == 12 and line.y == 30)
+             assert(line.size == 15 and line.scale == 1.0 and line.visible == true)
+             -- 未给 font_size 时按渲染口径回落到 scale × EM_PX(12)。
+             assert(ui.text_get('hud:scaled').size == 24)
+             assert(ui.text_get('missing') == nil)
+             function update() return 'ok' end",
+        );
+        runtime.execute_project_script(&path).unwrap();
+        assert_eq!(runtime.call_update().unwrap(), "ok");
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -7136,7 +7692,7 @@ mod tests {
 
     #[test]
     fn production_sample_can_save_and_return_to_menu() {
-        use crate::core::{input::InputKey, scene::Scene};
+        use crate::core::{input::KeyCode, scene::Scene};
 
         let root = production_sample_root();
         if !root.join("scenes/menu.scene").is_file() {
@@ -7176,7 +7732,7 @@ mod tests {
         runtime.process_scene_transition().unwrap();
 
         let mut save_input = InputSnapshot::default();
-        save_input.key_event(InputKey::Other(1), true);
+        save_input.key_event(KeyCode::F1, true);
         runtime.set_input(save_input);
         let save_result = runtime.call_update().unwrap();
         assert!(
@@ -7186,7 +7742,7 @@ mod tests {
         assert!(save_path.is_file(), "F1 should commit a save file");
 
         let mut menu_input = InputSnapshot::default();
-        menu_input.key_event(InputKey::Other(4), true);
+        menu_input.key_event(KeyCode::F4, true);
         runtime.set_input(menu_input);
         let switch_result = runtime.call_update().unwrap();
         assert_eq!(switch_result, "return_menu");
@@ -7738,8 +8294,8 @@ mod tests {
             .execute_console(
                 "assert(#input.actions() >= 15, 'default actions must be registered')\n\
                  local text = input.action_map_text()\n\
-                 assert(text:find('rustlua-actions-v1', 1, true) == 1)\n\
-                 assert(text:find('interact=key:e', 1, true) ~= nil)\n\
+                 assert(text:find('rustlua-actions-v2', 1, true) == 1)\n\
+                 assert(text:find('interact=key:keye', 1, true) ~= nil)\n\
                  local list = input.bindings('confirm')\n\
                  assert(#list == 2 and list[1] == 'key:space' and list[2] == 'pad:0')\n\
                  assert(#input.bindings('missing_action') == 0)\n\
@@ -7750,7 +8306,7 @@ mod tests {
         // 宿主读到的映射与脚本同源（同一份实例）。
         assert_eq!(
             runtime.action_map().bindings("interact"),
-            [Binding::Key(InputKey::from_char('e'))]
+            [Binding::Key(KeyCode::KeyE)]
         );
         assert!(runtime.input_diagnostics().is_empty());
     }
@@ -7761,7 +8317,7 @@ mod tests {
     fn input_action_api_matches_keyboard_and_gamepad_bindings() {
         let mut runtime = LuaRuntime::new().unwrap();
         let mut input = InputSnapshot::default();
-        input.key_event(InputKey::from_char('e'), true);
+        input.key_event(KeyCode::KeyE, true);
         runtime.set_input(input);
         runtime
             .execute_console(
@@ -7818,7 +8374,7 @@ mod tests {
             .unwrap();
         // 键位绑定：轴是 0/1（而非手柄模拟量）。
         let mut input = InputSnapshot::default();
-        input.key_event(InputKey::D, true);
+        input.key_event(KeyCode::KeyD, true);
         runtime.set_input(input);
         runtime
             .execute_console(
@@ -7829,7 +8385,7 @@ mod tests {
             .unwrap();
         // 边沿在本逻辑帧内保留，`finish_frame` 后清除（由宿主每帧调用）。
         let mut input = InputSnapshot::default();
-        input.key_event(InputKey::from_char('e'), true);
+        input.key_event(KeyCode::KeyE, true);
         input.finish_frame();
         runtime.set_input(input);
         runtime
@@ -7849,19 +8405,22 @@ mod tests {
             .execute_console(
                 "assert(input.rebind('interact', 'key:f') == true)\n\
                  local list = input.bindings('interact')\n\
-                 assert(#list == 1 and list[1] == 'key:f')\n\
+                 assert(#list == 1 and list[1] == 'key:keyf', 'v1 写法键位读回必须是 v2 物理键名')\n\
+                 assert(input.rebind('interact', 'key:keye') == true)\n\
+                 assert(input.bindings('interact')[1] == 'key:keye', 'v2 物理键名也可直接重绑定')\n\
+                 assert(input.rebind('interact', 'key:f') == true)\n\
                  return 'ok'",
             )
             .unwrap();
         // 旧绑定失效、新绑定生效。
         let mut input = InputSnapshot::default();
-        input.key_event(InputKey::from_char('e'), true);
+        input.key_event(KeyCode::KeyE, true);
         runtime.set_input(input);
         runtime
             .execute_console("assert(input.action('interact') == false); return 'ok'")
             .unwrap();
         let mut input = InputSnapshot::default();
-        input.key_event(InputKey::from_char('f'), true);
+        input.key_event(KeyCode::KeyF, true);
         runtime.set_input(input);
         runtime
             .execute_console(
@@ -7870,21 +8429,31 @@ mod tests {
                  return 'ok'",
             )
             .unwrap();
-        // 物理键 API 不受重绑定影响（证明只加了动作层）。
+        // 物理键 API 不受重绑定影响（证明只加了动作层）。M22/W1：键名同时接受
+        // v1 可读名（`f`/`e`）与 v2 物理键名（`keyf`/`keye`），解析到同一物理键。
         runtime
             .execute_console(
                 "assert(input.is_down('f') == true)\n\
                  assert(input.is_down('e') == false)\n\
+                 assert(input.is_down('keyf') == true, 'v2 物理键名与 v1 可读名同源')\n\
                  assert(input.pressed('f') == true)\n\
                  return 'ok'",
             )
             .unwrap();
+        // 未知名报错（旧实现静默落 Other(0)，拼错与真按键无法区分）。
+        let error = runtime
+            .execute_console("return input.is_down('not-a-key')")
+            .expect_err("未知名必须报错");
+        assert!(
+            format!("{error:?}").contains("not-a-key"),
+            "错误信息要带上原值：{error:?}"
+        );
         // 非法绑定 / 重复绑定 → false + 明确原因，不 panic，也不破坏当前绑定。
         let raw = runtime
             .execute_console(
                 "local ok, why = input.rebind('interact', 'joystick:1')\n\
                  assert(ok == false and why:find('joystick:1') ~= nil, tostring(why))\n\
-                 assert(input.bindings('interact')[1] == 'key:f', 'invalid rebind must not clear bindings')\n\
+                 assert(input.bindings('interact')[1] == 'key:keyf', 'invalid rebind must not clear bindings')\n\
                  local dup_ok, dup_why = input.rebind('interact', 'key:f')\n\
                  assert(dup_ok == true, 'rebind is an overwrite, not a duplicate add')\n\
                  local bad = input.rebind('interact', 'not-a-binding')\n\
@@ -7902,7 +8471,7 @@ mod tests {
                  assert(input.unbind('interact', 'key:e') == false)\n\
                  input.reset_bindings()\n\
                  local list = input.bindings('interact')\n\
-                 assert(#list == 1 and list[1] == 'key:e')\n\
+                 assert(#list == 1 and list[1] == 'key:keye')\n\
                  return 'ok'",
             )
             .unwrap();
@@ -7911,12 +8480,12 @@ mod tests {
             .execute_console(
                 "local text = input.action_map_text()\n\
                  input.rebind('interact', 'key:g')\n\
-                 assert(input.bindings('interact')[1] == 'key:g')\n\
+                 assert(input.bindings('interact')[1] == 'key:keyg')\n\
                  assert(select(1, input.set_action_map(text)) == true)\n\
-                 assert(input.bindings('interact')[1] == 'key:e')\n\
+                 assert(input.bindings('interact')[1] == 'key:keye')\n\
                  local ok, why = input.set_action_map('rustlua-actions-v0\\ninteract=key:e')\n\
                  assert(ok == false and why:find('rustlua-actions-v0', 1, true) ~= nil, tostring(why))\n\
-                 assert(input.bindings('interact')[1] == 'key:e', 'bad version must not apply')\n\
+                 assert(input.bindings('interact')[1] == 'key:keye', 'bad version must not apply')\n\
                  return tostring(ok)",
             )
             .unwrap();
@@ -7924,12 +8493,15 @@ mod tests {
         // 宿主注入的映射对脚本立即可见（单一事实来源）。
         let mut map = ActionMap::with_defaults();
         map.clear("interact");
-        map.bind("interact", Binding::Key(InputKey::from_char('z')))
-            .unwrap();
+        map.bind(
+            "interact",
+            Binding::Key(KeyCode::from_char('z').expect("QWERTY 字符必须有对应物理键")),
+        )
+        .unwrap();
         runtime.set_action_map(map);
         runtime
             .execute_console(
-                "assert(input.bindings('interact')[1] == 'key:z')\n\
+                "assert(input.bindings('interact')[1] == 'key:keyz')\n\
                  assert(input.is_down('z') == false)\n\
                  return 'ok'",
             )
@@ -7967,9 +8539,9 @@ mod tests {
                 "assert(input.rebind('interact', 'key:f') == true)\n\
                  assert(select(1, input.save_settings()) == true)\n\
                  input.reset_bindings()\n\
-                 assert(input.bindings('interact')[1] == 'key:e')\n\
+                 assert(input.bindings('interact')[1] == 'key:keye')\n\
                  assert(select(1, input.load_settings()) == true)\n\
-                 assert(input.bindings('interact')[1] == 'key:f', 'saved binding must survive round trip')\n\
+                 assert(input.bindings('interact')[1] == 'key:keyf', 'saved binding must survive round trip')\n\
                  return 'ok'",
             )
             .unwrap();
@@ -7980,7 +8552,9 @@ mod tests {
         assert!(text.contains("bgm = 0.25"), "{text}");
         assert!(text.contains("[input]"), "{text}");
         assert!(text.contains("[audio]"), "{text}");
-        assert!(text.contains("interact=key:f"), "{text}");
+        // M22/W1：写盘的是 v2 物理键文本。
+        assert!(text.contains("rustlua-actions-v2"), "{text}");
+        assert!(text.contains("interact=key:keyf"), "{text}");
         // 设置文件文本 == 当前内存映射的 to_text（宿主与脚本同源）。
         assert_eq!(runtime.action_map().to_text(), {
             let start = text.find("map = \"").expect("map line") + "map = \"".len();
@@ -7991,7 +8565,7 @@ mod tests {
         assert!(runtime.input_diagnostics().is_empty());
         // 旧物理键 API 仍然可用。
         let mut input = InputSnapshot::default();
-        input.key_event(InputKey::from_char('f'), true);
+        input.key_event(KeyCode::KeyF, true);
         runtime.set_input(input);
         runtime
             .execute_console(
@@ -8010,7 +8584,7 @@ mod tests {
             .execute_console(
                 "local ok, why = input.load_settings()\n\
                  assert(ok == false and why:find('rustlua-actions-v0', 1, true) ~= nil, tostring(why))\n\
-                 assert(input.bindings('interact')[1] == 'key:e', 'fallback to defaults')\n\
+                 assert(input.bindings('interact')[1] == 'key:keye', 'fallback to defaults')\n\
                  local list = input.diagnostics()\n\
                  assert(#list >= 1 and list[#list]:find('reverting to defaults') ~= nil, tostring(#list))\n\
                  return list[#list]",
@@ -8033,7 +8607,7 @@ mod tests {
             .execute_console(
                 "local ok, why = input.load_settings()\n\
                  assert(ok == false and why:find('joystick:1') ~= nil, tostring(why))\n\
-                 assert(input.bindings('interact')[1] == 'key:e')\n\
+                 assert(input.bindings('interact')[1] == 'key:keye')\n\
                  return why",
             )
             .unwrap();
@@ -8045,7 +8619,7 @@ mod tests {
                 "assert(input.rebind('interact', 'key:v') == true)\n\
                  local ok, why = input.load_settings()\n\
                  assert(ok == false and why:find('keeping current bindings') ~= nil, tostring(why))\n\
-                 assert(input.bindings('interact')[1] == 'key:v', 'missing [input] must not wipe bindings')\n\
+                 assert(input.bindings('interact')[1] == 'key:keyv', 'missing [input] must not wipe bindings')\n\
                  return 'ok'",
             )
             .unwrap();
@@ -8054,7 +8628,7 @@ mod tests {
             .execute_console(
                 "local ok, why = input.load_settings()\n\
                  assert(ok == false and why == 'missing', tostring(why))\n\
-                 assert(input.bindings('interact')[1] == 'key:v')\n\
+                 assert(input.bindings('interact')[1] == 'key:keyv')\n\
                  return why",
             )
             .unwrap();
@@ -8069,7 +8643,7 @@ mod tests {
         runtime
             .execute_console(&format!(
                 "assert(select(1, input.load_settings([==[{}]==])) == true)\n\
-                 assert(input.bindings('interact')[1] == 'key:m')\n\
+                 assert(input.bindings('interact')[1] == 'key:keym')\n\
                  return 'ok'",
                 alt.display()
             ))
@@ -8099,8 +8673,11 @@ mod tests {
         runtime.set_action_map({
             let mut map = ActionMap::with_defaults();
             map.clear("interact");
-            map.bind("interact", Binding::Key(InputKey::from_char('y')))
-                .unwrap();
+            map.bind(
+                "interact",
+                Binding::Key(KeyCode::from_char('y').expect("QWERTY 字符必须有对应物理键")),
+            )
+            .unwrap();
             map
         });
         runtime
@@ -8109,11 +8686,87 @@ mod tests {
         runtime.process_scene_transition().unwrap();
         runtime
             .execute_console(
-                "assert(input.bindings('interact')[1] == 'key:y', 'scene switch keeps user bindings')\n\
+                "assert(input.bindings('interact')[1] == 'key:keyy', 'scene switch keeps user bindings')\n\
                  return 'ok'",
             )
             .unwrap();
         let _ = fs::remove_dir_all(&root);
+    }
+
+    /// P3：玩家设置根与工程根分离（发布包）。`settings_root` 指向用户数据目录后，
+    /// `input.*` 与 `audio.*` 的 `settings_path/load_settings/save_settings` 全部落到
+    /// 用户目录，**一个字节都不写发布包**；不设置时退回工程根（开发工程形态）。
+    #[test]
+    fn settings_root_redirects_player_settings_out_of_the_release_package() {
+        let base = std::env::temp_dir().join(format!(
+            "rustlua-settings-root-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let pack = base.join("pack");
+        let user = base.join("user");
+        fs::create_dir_all(&pack).unwrap();
+        fs::create_dir_all(&user).unwrap();
+        // 发布包自带一份默认设置（首次运行由宿主播种到用户目录）。
+        fs::write(
+            pack.join("settings.toml"),
+            "[audio]\nmaster = 0.5\nbgm = 0.25\nsfx = 1.0\nui = 1.0\n",
+        )
+        .unwrap();
+
+        let mut runtime = LuaRuntime::new().unwrap();
+        runtime.set_project_root(pack.clone());
+        // 未设置设置根 → 仍是开发工程形态：读写工程内的 settings.toml。
+        assert_eq!(
+            runtime
+                .execute_console("return input.settings_path()")
+                .unwrap(),
+            pack.join("settings.toml").to_string_lossy()
+        );
+        // 指向用户目录（发布包形态）。
+        runtime.set_settings_root(user.clone());
+        assert_eq!(
+            runtime
+                .execute_console("return input.settings_path()")
+                .unwrap(),
+            user.join("settings.toml").to_string_lossy()
+        );
+        assert_eq!(
+            runtime
+                .execute_console("return audio.settings_path()")
+                .unwrap(),
+            user.join("settings.toml").to_string_lossy()
+        );
+        // 改键 + 音量落盘 → 都写进用户目录，发布包目录保持原样。
+        runtime
+            .execute_console(
+                "assert(input.rebind('interact', 'key:f') == true)\n\
+                 assert(select(1, input.save_settings()) == true)\n\
+                 assert(select(1, audio.save_settings()) == true)\n\
+                 return 'ok'",
+            )
+            .unwrap();
+        let user_text = fs::read_to_string(user.join("settings.toml")).unwrap();
+        assert!(user_text.contains("interact=key:keyf"), "{user_text}");
+        assert!(user_text.contains("[audio]"), "{user_text}");
+        assert_eq!(
+            fs::read_to_string(pack.join("settings.toml")).unwrap(),
+            "[audio]\nmaster = 0.5\nbgm = 0.25\nsfx = 1.0\nui = 1.0\n",
+            "发布包不得被写入玩家设置"
+        );
+        // 相对路径参数也相对设置根解析（不是工程根）。
+        runtime
+            .execute_console(
+                "assert(select(1, input.save_settings('player/custom.toml')) == true)\n\
+                 return 'ok'",
+            )
+            .unwrap();
+        assert!(user.join("player").join("custom.toml").is_file());
+        assert!(!pack.join("player").exists(), "不得在发布包里建目录");
+        let _ = fs::remove_dir_all(&base);
     }
 
     /// M20-07：动作层可驱动面板导航（`ui.focus_*`）——默认绑定（方向键 + 左摇杆）
@@ -8175,7 +8828,7 @@ mod tests {
             .unwrap();
         // 方向键走同一动作层：↓ 键 → `ui_down` → 焦点下移（键盘与手柄同源）。
         let mut input = InputSnapshot::default();
-        input.key_event(InputKey::ARROW_DOWN, true);
+        input.key_event(KeyCode::ArrowDown, true);
         runtime.set_input(input);
         runtime
             .execute_console(
@@ -8267,25 +8920,28 @@ mod tests {
             .unwrap();
     }
 
-    /// M20-02：方向键是物理键（宿主喂入），`parse_key` 认 up/down/left/right。
+    /// M20-02 + M22/W1：方向键是物理键（宿主喂入），`parse_key_strict` 同时认
+    /// v1 可读名（`up`/`down`/`left`/`right`）与 v2 物理键名（`arrowup`…）。
     #[test]
     fn arrow_keys_are_physical_keys_distinct_from_letters() {
-        assert_eq!(parse_key("up"), InputKey::ARROW_UP);
-        assert_eq!(parse_key("DOWN"), InputKey::ARROW_DOWN);
-        assert_eq!(parse_key("Left"), InputKey::ARROW_LEFT);
-        assert_eq!(parse_key("right"), InputKey::ARROW_RIGHT);
-        assert_ne!(parse_key("up"), parse_key("w"));
-        for arrow in [
-            InputKey::ARROW_UP,
-            InputKey::ARROW_DOWN,
-            InputKey::ARROW_LEFT,
-            InputKey::ARROW_RIGHT,
-        ] {
-            assert_ne!(arrow, InputKey::Other(0));
-        }
+        assert_eq!(parse_key_strict("up").unwrap(), KeyCode::ArrowUp);
+        assert_eq!(parse_key_strict("DOWN").unwrap(), KeyCode::ArrowDown);
+        assert_eq!(parse_key_strict("Left").unwrap(), KeyCode::ArrowLeft);
+        assert_eq!(parse_key_strict("right").unwrap(), KeyCode::ArrowRight);
+        // v2 物理键名与 v1 可读名必须解析到同一物理键。
+        assert_eq!(parse_key_strict("arrowup").unwrap(), KeyCode::ArrowUp);
+        assert_eq!(parse_key_strict("key:arrowup").unwrap(), KeyCode::ArrowUp);
+        assert_ne!(
+            parse_key_strict("up").unwrap(),
+            parse_key_strict("w").unwrap()
+        );
+        // 未知名报错（旧实现静默落 Other(0)，拼错与真按键无法区分）。
+        let error = parse_key_strict("not-a-key").unwrap_err().to_string();
+        assert!(error.contains("not-a-key"), "{error}");
+        assert!(parse_key_strict("").is_err());
         let mut runtime = LuaRuntime::new().unwrap();
         let mut input = InputSnapshot::default();
-        input.key_event(InputKey::ARROW_DOWN, true);
+        input.key_event(KeyCode::ArrowDown, true);
         runtime.set_input(input);
         assert_eq!(
             runtime

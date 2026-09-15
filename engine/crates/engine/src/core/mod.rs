@@ -70,6 +70,8 @@ pub mod physics3d;
 pub mod prefab;
 /// E24: structured preview diagnostics with stable categories and deduping.
 pub mod preview_diagnostics;
+/// `project.toml` / `release.toml` 的键读取（工程配置解析唯一入口）。
+pub mod project_config;
 /// Persistent project asset identities, import states, dependencies, and cache metadata.
 pub mod resource_db;
 /// Unified coarse-grained resource families shared by editor, assetc, and engine.
@@ -119,6 +121,8 @@ pub mod ui_navigation;
 pub mod ui_scene_layout;
 /// E20: reusable button visual-state configuration.
 pub mod ui_states;
+/// 玩家数据目录（P3）：存档与玩家设置写到哪里（发布包 → 用户目录）。
+pub mod user_dir;
 /// Window and application lifecycle primitives.
 pub mod window;
 /// Entity world and type-erased component storage.

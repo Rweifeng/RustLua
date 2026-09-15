@@ -27,6 +27,35 @@ pub const PACKAGE_VERSION: &str = "assetc-package-1";
 /// 扫描时跳过的本地工作目录。
 const SKIP_DIRS: &[&str] = &[".cache", ".temp", ".git", "target"];
 
+/// 生成器产出的**开发用文件**：预览拼图与美术清单。
+///
+/// 这些文件由 `tools/gen_*.py` 生成、供人看（美术对照图）或供生成器之间共享
+/// （`manifest.json` 里的组件串），**游戏运行期不读它们**（引擎与 Lua 侧都没有
+/// 读取点，`docs/48` 有清单与理由）。它们留在仓库里（生成器就在美术目录旁边写，
+/// 这也是美术期望的位置），但不进发行包：
+///   * `_` 前缀：生成器的"非游戏资源"约定（`_preview.png`、`_overview.png`…）；
+///   * 名字里带 `preview` 的 PNG：不带下划线的预览（`preview.png`、
+///     `season_preview.png`、`title_bg_pixel_preview.png`）；
+///   * `manifest.json`：开发期清单（运行期只认 Lua 数据表与场景文件）。
+///
+/// 打包结果由 `scripts/verify.ps1` 的发布自检打印计数（`assetc_package_ok files=<n>`），
+/// 判定规则本身由本文件的单测 `dev_artifacts_are_not_packaged` 与
+/// `game_jhyt` 的验收样例 `jhyt_m29_season_weather` ⑦（重扫 `assets/**` 并核对
+/// `examples/game_jhyt/docs/48` 的决定表）共同守住，因此"预览图混进发行包"不会再悄悄发生。
+pub fn is_dev_artifact(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let lower = name.to_ascii_lowercase();
+    if lower == "manifest.json" {
+        return true;
+    }
+    if lower.ends_with(".png") && lower.contains("preview") {
+        return true;
+    }
+    name.starts_with('_')
+}
+
 /// 一个被扫描的资源条目。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ScanEntry {
@@ -99,7 +128,21 @@ pub fn ensure_project(project: &Path) -> Result<(), String> {
 }
 
 /// 递归收集目录下所有文件（含 mtime），跳过本地工作目录。
+///
+/// 符号链接：**解析后必须仍位于被扫描的根目录内**。指向项目外的链接（例如
+/// `assets/secret -> C:\Users\...`）会在打包时被 `fs::copy` 跟随，把项目外的
+/// 文件悄悄塞进发布包；这里直接报错而不是静默跟随或静默跳过，避免"发布包里
+/// 多了不该有的文件"这种事后很难查的问题。
 pub fn collect_files(root: &Path, output: &mut Vec<(PathBuf, u64)>) -> Result<(), String> {
+    let anchor = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    collect_files_in(root, &anchor, output)
+}
+
+fn collect_files_in(
+    root: &Path,
+    anchor: &Path,
+    output: &mut Vec<(PathBuf, u64)>,
+) -> Result<(), String> {
     let mut children = fs::read_dir(root)
         .map_err(|error| format!("读取目录失败 {}: {error}", root.display()))?
         .collect::<Result<Vec<_>, _>>()
@@ -107,17 +150,54 @@ pub fn collect_files(root: &Path, output: &mut Vec<(PathBuf, u64)>) -> Result<()
     children.sort_by_key(|entry| entry.path());
     for child in children {
         let path = child.path();
-        if child.file_type().map_err(|e| e.to_string())?.is_dir() {
+        let file_type = child.file_type().map_err(|e| e.to_string())?;
+        if file_type.is_symlink() {
+            ensure_symlink_stays_inside(&path, anchor)?;
+        }
+        let is_dir = if file_type.is_symlink() {
+            fs::metadata(&path)
+                .map(|meta| meta.is_dir())
+                .unwrap_or(false)
+        } else {
+            file_type.is_dir()
+        };
+        if is_dir {
             if SKIP_DIRS.contains(&path.file_name().and_then(|n| n.to_str()).unwrap_or("")) {
                 continue;
             }
-            collect_files(&path, output)?;
-        } else {
+            collect_files_in(&path, anchor, output)?;
+        } else if !is_dev_artifact(&path) {
             let modified = modified_nanos(&path)?;
             output.push((path, modified));
         }
     }
     Ok(())
+}
+
+/// 校验符号链接解析后仍在 `anchor` 内；越界即报错。
+fn ensure_symlink_stays_inside(path: &Path, anchor: &Path) -> Result<(), String> {
+    let resolved = fs::canonicalize(path)
+        .map_err(|error| format!("解析符号链接失败 {}: {error}", path.display()))?;
+    if path_escapes_root(anchor, &resolved) {
+        return Err(format!(
+            "符号链接指向项目目录外，打包被拒绝：{} → {}",
+            path.display(),
+            resolved.display()
+        ));
+    }
+    Ok(())
+}
+
+/// 纯路径判定：`resolved` 是否越出 `anchor`。
+///
+/// `anchor`/`resolved` 期望已规范化（`canonicalize` 的结果不含 `..`）；这里额外把
+/// 任何 `..` 组件一律判为越界，避免调用方传入未规范化的路径时靠词法前缀比较被绕过
+/// （`Path::starts_with` 不做 `..` 归一化）。
+fn path_escapes_root(anchor: &Path, resolved: &Path) -> bool {
+    resolved
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+        || !resolved.starts_with(anchor)
 }
 
 fn modified_nanos(path: &Path) -> Result<u64, String> {
@@ -533,6 +613,79 @@ pub fn benchmark_compression(project: &Path) -> Result<Vec<CompressionBenchmarkE
     Ok(entries.into_values().collect())
 }
 
+/// 打包时复制到输出目录的项目数据子目录。
+const PACKAGE_SOURCE_DIRS: &[&str] = &["scenes", "scripts", "assets"];
+
+/// 校验发布输出目录与项目目录的关系。
+///
+/// 拒绝三类**真会出事**的组合：
+/// 1. `out == project`：直接覆写项目文件；
+/// 2. `out` 位于 `scenes/`、`scripts/`、`assets/` 之内：这几个目录正是打包的输入，
+///    把产物写进去会让 `collect_files` 一边遍历一边写入（自我复制/无限增长），
+///    而且下一次打包会把产物当输入；
+/// 3. `project` 位于 `out` 之内：会把项目连同产物一起递归进包。
+///
+/// **允许** `out` 位于项目内的其它位置（如 `builds/`）：`scan`/`collect_data_files`
+/// 只遍历 `project.toml` 与上述三个子目录，因此 `builds/` 下的发布产物不会被当成
+/// 项目数据；`scripts/package.ps1` 的原子发布正是这样布局的
+/// （`<project>/builds/<platform>/<name>/.staging-*/pack`）。
+fn ensure_distinct_output(project: &Path, out: &Path) -> Result<(), String> {
+    let project_abs = canonical_or_absolute(project)?;
+    let out_abs = canonical_or_absolute(out)?;
+    if out_abs == project_abs {
+        return Err("输出目录不能与项目目录相同".to_owned());
+    }
+    for sub in PACKAGE_SOURCE_DIRS {
+        let source_abs = canonical_or_absolute(&project_abs.join(sub))?;
+        if out_abs.starts_with(&source_abs) {
+            return Err(format!(
+                "输出目录不能位于项目数据目录内部（{}）：{}",
+                sub,
+                out_abs.display()
+            ));
+        }
+    }
+    if project_abs.starts_with(&out_abs) {
+        return Err(format!(
+            "项目目录不能位于输出目录内部：{} ⊂ {}",
+            project_abs.display(),
+            out_abs.display()
+        ));
+    }
+    Ok(())
+}
+
+/// 规范化为绝对路径：已存在则用 `canonicalize`，否则规范化其最近存在的祖先后拼回
+/// 剩余部分（输出目录通常还不存在）。
+fn canonical_or_absolute(path: &Path) -> Result<PathBuf, String> {
+    if let Ok(resolved) = fs::canonicalize(path) {
+        return Ok(resolved);
+    }
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|error| format!("读取当前目录失败: {error}"))?
+            .join(path)
+    };
+    let mut existing = absolute.clone();
+    let mut tail = Vec::new();
+    while !existing.exists() {
+        match (existing.file_name(), existing.parent()) {
+            (Some(name), Some(parent)) => {
+                tail.push(name.to_os_string());
+                existing = parent.to_path_buf();
+            }
+            _ => break,
+        }
+    }
+    let mut resolved = fs::canonicalize(&existing).unwrap_or(existing);
+    for component in tail.iter().rev() {
+        resolved.push(component);
+    }
+    Ok(resolved)
+}
+
 /// 生成发布资源包：复制 `project.toml`、`scenes/`、`scripts/`、`assets/`
 /// 到 `out`，并写入 `manifest.txt`（路径、大小、校验和）。
 /// `compress` 对 `assets/` 下支持压缩的资产生效；`encrypt` 仅对 Lua 与场景文件生效。
@@ -543,9 +696,7 @@ pub fn package(
     encrypt: bool,
 ) -> Result<PackageManifest, String> {
     ensure_project(project)?;
-    if out == project {
-        return Err("输出目录不能与项目目录相同".to_owned());
-    }
+    ensure_distinct_output(project, out)?;
     copy_file(&project.join("project.toml"), &out.join("project.toml"))?;
     copy_dir_encoded(
         &project.join("scenes"),
@@ -596,9 +747,17 @@ pub fn package(
     let mut manifest = BTreeMap::new();
     let mut lines = vec![format!("assetc_manifest=1\t{PACKAGE_VERSION}")];
     for (path, _) in files {
+        // 这里曾经是 `expect`：`collect_files(out)` 的结果理论上一定在 out 下，
+        // 但打包中途 panic 会留下半个发布目录。改成可定位的错误。
         let relative = path
             .strip_prefix(out)
-            .expect("file must be inside output dir")
+            .map_err(|_| {
+                format!(
+                    "清单文件不在输出目录内：{} (out={})",
+                    path.display(),
+                    out.display()
+                )
+            })?
             .to_string_lossy()
             .replace('\\', "/");
         let bytes = fs::read(&path).map_err(|e| e.to_string())?;
@@ -939,6 +1098,170 @@ mod tests {
         assert!(png.starts_with(engine::core::pack::PACK_MAGIC));
         assert!(!lua.starts_with(engine::core::pack::PACK_MAGIC));
         fs::remove_dir_all(&out).ok();
+        cleanup(&root);
+    }
+
+    /// 打包输出目录不得与项目目录相同、也不得位于 `scenes/`/`scripts/`/`assets/`
+    /// 之内：那几个目录正是打包输入，产物写进去会自我复制，下次打包还会把产物当输入。
+    #[test]
+    fn package_rejects_output_inside_data_dirs_or_equal_to_project() {
+        let root = temp_project("package-outguard");
+        let error = package(&root, &root, false, false).expect_err("输出=项目 必须被拒绝");
+        assert!(error.contains("相同"), "{error}");
+
+        for sub in ["assets", "scripts", "scenes"] {
+            let nested = root.join(sub).join("dist");
+            let error = package(&root, &nested, false, false)
+                .expect_err("输出位于项目数据目录内部 必须被拒绝");
+            assert!(error.contains("项目数据目录"), "{error}");
+            assert!(!nested.exists(), "被拒绝的打包不应留下输出目录");
+        }
+
+        // 带 `..` 的等价写法也要被识别（词法比较即可，不需要目录存在）。
+        let dotted = root.join("assets").join("dist").join("..").join("dist");
+        let error = package(&root, &dotted, false, false).expect_err("`..` 绕不过数据目录检查");
+        assert!(error.contains("项目数据目录"), "{error}");
+        cleanup(&root);
+    }
+
+    /// 发布脚本的真实布局（`<project>/builds/<platform>/<name>/.staging-*/pack`）
+    /// 必须**允许**：`scan`/`collect_data_files` 只遍历 `project.toml` 与
+    /// `scenes/`/`scripts/`/`assets/`，因此 `builds/` 下的产物不会被当成项目数据。
+    /// 回归背景：更严格的「输出不能位于项目内部」规则曾让 `package.ps1 -SelfTest`
+    /// 直接失败（`assetc error: 输出目录不能位于项目目录内部`）。
+    #[test]
+    fn package_allows_output_inside_project_builds_dir() {
+        let root = temp_project("package-builds-out");
+        let out = root
+            .join("builds")
+            .join("pc")
+            .join("jianghu_youtian")
+            .join(".staging-20260101-000000-abcdef")
+            .join("pack");
+        package(&root, &out, false, false).expect("builds/ 下的输出必须被允许");
+        assert!(out.join("scripts/main.lua").is_file());
+        assert!(out.join("manifest.txt").is_file());
+        // 项目数据子目录没有被产物污染（打包输入仍是纯项目数据）。
+        assert!(!root.join("assets").join("builds").exists());
+        cleanup(&root);
+    }
+
+    /// `canonical_or_absolute` 在输出目录尚不存在时也要给出可比较的绝对路径。
+    #[test]
+    fn canonical_or_absolute_resolves_missing_paths() {
+        let root = temp_project("canonical");
+        let missing = root.join("does").join("not").join("exist");
+        assert!(!missing.exists());
+        let resolved = canonical_or_absolute(&missing).unwrap();
+        assert!(resolved.is_absolute(), "{}", resolved.display());
+        assert!(resolved.ends_with(Path::new("does/not/exist")));
+        // 已存在的路径解析为规范路径（Windows 上会去掉 8.3 短名/大小写差异）。
+        let existing = canonical_or_absolute(&root).unwrap();
+        assert_eq!(existing, fs::canonicalize(&root).unwrap());
+        cleanup(&root);
+    }
+
+    /// 路径越界判定（纯函数）：符号链接安全校验的核心。
+    #[test]
+    fn path_containment_detects_escapes() {
+        let root = Path::new("/project");
+        assert!(!path_escapes_root(root, Path::new("/project/assets/a.png")));
+        assert!(!path_escapes_root(root, Path::new("/project")));
+        assert!(path_escapes_root(root, Path::new("/project2/assets/a.png")));
+        assert!(path_escapes_root(root, Path::new("/etc/passwd")));
+        assert!(path_escapes_root(
+            root,
+            Path::new("/project/../outside.png")
+        ));
+    }
+
+    /// 指向项目外的符号链接必须在打包时报错，而不是被 `fs::copy` 跟随复制进发布包。
+    /// Windows 上创建符号链接需要开发者模式/管理员权限，无权限时跳过。
+    #[test]
+    fn collect_files_rejects_symlink_escaping_the_project() {
+        let root = temp_project("symlink-escape");
+        let outside = std::env::temp_dir().join(format!(
+            "p2-assetc-outside-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        fs::create_dir_all(&outside).unwrap();
+        let secret = outside.join("secret.txt");
+        fs::write(&secret, "outside the project").unwrap();
+
+        let link = root.join("assets").join("linked-secret.txt");
+        #[cfg(windows)]
+        let created = std::os::windows::fs::symlink_file(&secret, &link).is_ok();
+        #[cfg(not(windows))]
+        let created = std::os::unix::fs::symlink(&secret, &link).is_ok();
+        if !created {
+            // 无符号链接权限：本用例在该环境下无法构造，跳过。
+            fs::remove_dir_all(&outside).ok();
+            cleanup(&root);
+            return;
+        }
+
+        let mut files = Vec::new();
+        let error =
+            collect_files(&root.join("assets"), &mut files).expect_err("越界符号链接必须被拒绝");
+        assert!(error.contains("项目目录外"), "{error}");
+        // 同时确认整条打包路径也会失败（不会写出半个发布目录）。
+        let out = std::env::temp_dir().join(format!(
+            "p2-assetc-symlink-out-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        let error = package(&root, &out, false, false).expect_err("打包必须拒绝越界链接");
+        assert!(error.contains("项目目录外"), "{error}");
+
+        fs::remove_file(&link).ok();
+        fs::remove_dir_all(&out).ok();
+        fs::remove_dir_all(&outside).ok();
+        cleanup(&root);
+    }
+
+    /// 开发用文件（预览拼图 / 美术清单）不进打包清单，游戏资源照常进。
+    #[test]
+    fn dev_artifacts_are_not_packaged() {
+        let root = temp_project("dev-artifacts");
+        let art = root.join("assets").join("art").join("items");
+        fs::create_dir_all(&art).unwrap();
+        fs::write(art.join("lingzhi.png"), b"png").unwrap();
+        fs::write(art.join("_preview.png"), b"png").unwrap();
+        fs::write(art.join("preview.png"), b"png").unwrap();
+        fs::write(art.join("manifest.json"), b"{}").unwrap();
+        let title = root.join("assets").join("art").join("title");
+        fs::create_dir_all(&title).unwrap();
+        fs::write(title.join("season_preview.png"), b"png").unwrap();
+        fs::write(title.join("title_bg_pixel.png"), b"png").unwrap();
+
+        let mut files = Vec::new();
+        collect_files(&root.join("assets"), &mut files).unwrap();
+        let names: Vec<String> = files
+            .iter()
+            .map(|(path, _)| path.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        assert!(names.contains(&"lingzhi.png".to_owned()), "{names:?}");
+        // `title_bg_pixel.png` 里含 "pixel" 不含 "preview"：必须留在包里（不能误伤）。
+        assert!(
+            names.contains(&"title_bg_pixel.png".to_owned()),
+            "{names:?}"
+        );
+        assert!(!names.contains(&"_preview.png".to_owned()), "{names:?}");
+        assert!(!names.contains(&"preview.png".to_owned()), "{names:?}");
+        assert!(!names.contains(&"manifest.json".to_owned()), "{names:?}");
+        assert!(
+            !names.contains(&"season_preview.png".to_owned()),
+            "{names:?}"
+        );
+
+        // 判定函数本身的边界。
+        assert!(is_dev_artifact(Path::new("assets/art/items/_overview.png")));
+        assert!(is_dev_artifact(Path::new("assets/art/ui/manifest.json")));
+        assert!(!is_dev_artifact(Path::new("assets/art/items/wood.png")));
+        assert!(!is_dev_artifact(Path::new(
+            "assets/art/title/title_bg_pixel.png"
+        )));
         cleanup(&root);
     }
 

@@ -14,7 +14,7 @@ use engine::core::{
     transform3d::Transform3D,
     ui_animation::{UiEasing, UiKeyframe},
 };
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, fs, path::Path, time::SystemTime};
 
 struct ComponentDescriptor {
     name: &'static str,
@@ -110,6 +110,19 @@ const COMPONENT_REGISTRY: &[ComponentDescriptor] = &[
         category: ComponentCategory::Ui,
     },
 ];
+
+/// Inspector Override 摘要用的源 Prefab 缓存条目。
+pub(crate) struct CachedPrefabSource {
+    /// (文件长度, mtime)。`None` = 读取元数据失败（例如文件不存在）。
+    stamp: Option<(u64, Option<SystemTime>)>,
+    prefab: Prefab,
+}
+
+/// 源 Prefab 的失效戳：长度 + mtime。任一变化即视为需要重载。
+fn prefab_stamp(path: &Path) -> Option<(u64, Option<SystemTime>)> {
+    let metadata = fs::metadata(path).ok()?;
+    Some((metadata.len(), metadata.modified().ok()))
+}
 
 impl EditorApp {
     pub(crate) fn draw_inspector_panel(&mut self, ui: &mut egui::Ui) {
@@ -2082,27 +2095,55 @@ impl EditorApp {
         self.status = "Components pasted".to_owned();
     }
 
+    /// 确保源 Prefab 已缓存（必要时重新读盘）。返回后不再持有 `&mut self` 借用，
+    /// 调用方随后从 `prefab_source_cache` 取不可变引用即可。
+    fn ensure_prefab_source_cached(&mut self, path: &Path) -> Result<(), String> {
+        let stamp = prefab_stamp(path);
+        let cached_fresh = stamp.is_some()
+            && self
+                .prefab_source_cache
+                .get(path)
+                .is_some_and(|cached| cached.stamp == stamp);
+        if cached_fresh {
+            return Ok(());
+        }
+        let prefab = Prefab::load(path).map_err(|error| format!("无法加载源 Prefab：{error}"))?;
+        self.prefab_source_cache
+            .insert(path.to_path_buf(), CachedPrefabSource { stamp, prefab });
+        Ok(())
+    }
+
     fn prefab_override_summary(
-        &self,
+        &mut self,
         selected: SceneEntityId,
     ) -> Option<Result<Vec<String>, String>> {
-        let scene = self.current_scene()?;
-        let entity = scene.scene.entities.get(&selected)?;
-        let prefab_source = entity.metadata.get("prefab.source")?;
-        let source_id = entity
-            .metadata
-            .get("prefab.source_id")?
-            .parse::<u64>()
-            .ok()
-            .map(SceneEntityId)?;
-        let root = strip_verbatim_prefix(&self.project.root);
-        let prefab = match Prefab::load(root.join(prefab_source)) {
-            Ok(prefab) => prefab,
-            Err(error) => return Some(Err(format!("无法加载源 Prefab：{error}"))),
+        // 先把需要的元数据拷出来，结束对场景的不可变借用。
+        let (prefab_source, source_id) = {
+            let scene = self.current_scene()?;
+            let entity = scene.scene.entities.get(&selected)?;
+            let prefab_source = entity.metadata.get("prefab.source")?.clone();
+            let source_id = entity
+                .metadata
+                .get("prefab.source_id")?
+                .parse::<u64>()
+                .ok()
+                .map(SceneEntityId)?;
+            (prefab_source, source_id)
         };
+        let path = strip_verbatim_prefix(&self.project.root).join(&prefab_source);
+        if let Err(error) = self.ensure_prefab_source_cached(&path) {
+            return Some(Err(error));
+        }
+        // 之后全是不可变借用：缓存里的 Prefab 与当前场景可以同时持有。
+        let prefab = self
+            .prefab_source_cache
+            .get(&path)
+            .map(|cached| &cached.prefab)?;
         let Some(source_entity) = prefab.entities.get(&source_id) else {
             return Some(Err(format!("源 Prefab 中缺少实体 {}", source_id.0)));
         };
+        let scene = self.current_scene()?;
+        let entity = scene.scene.entities.get(&selected)?;
         Some(Ok(diff_prefab_entity(source_entity, entity)))
     }
 
@@ -3014,6 +3055,70 @@ mod tests {
                 .get("designer.note"),
             Some(&"boss".to_owned())
         );
+    }
+
+    /// 源 Prefab 缓存：命中时不再读盘；文件被改动后必须重载，不能显示过期差异。
+    #[test]
+    fn prefab_source_cache_hits_and_invalidates_on_file_change() {
+        let (mut app, root) = sample_app_with_production_scene("prefab-cache");
+        let target = {
+            let scene = &app.document.current_scene.as_ref().unwrap().scene;
+            prefab_root(scene, "assets/prefabs/slime_green.prefab")
+        };
+        // 制造一个 override（改名），让摘要非空。
+        {
+            let scene = app.document.current_scene.as_mut().unwrap();
+            let entity = scene.scene.entities.get_mut(&target).unwrap();
+            entity.name = "CachedGreen".to_owned();
+            scene.mark_dirty();
+        }
+        select_entity(&mut app, target);
+
+        let first = app
+            .prefab_override_summary(target)
+            .expect("prefab instance must produce a summary")
+            .expect("summary must load");
+        assert!(
+            first.iter().any(|field| field.contains("name")),
+            "{first:?}"
+        );
+        assert_eq!(app.prefab_source_cache.len(), 1, "首次读取应填充缓存");
+
+        // 第二次读取应命中缓存（内容一致、不重新读盘）。
+        let second = app
+            .prefab_override_summary(target)
+            .expect("summary again")
+            .expect("cached summary must load");
+        assert_eq!(first, second);
+        assert_eq!(app.prefab_source_cache.len(), 1);
+
+        // 外部改动源 Prefab：mtime/长度变化后必须重新加载并反映新内容。
+        let prefab_path = root.join("assets/prefabs/slime_green.prefab");
+        let mut prefab = Prefab::load(&prefab_path).unwrap();
+        prefab.name = "renamed-by-tool".to_owned();
+        prefab.save(&prefab_path).unwrap();
+        let third = app
+            .prefab_override_summary(target)
+            .expect("summary after external edit")
+            .expect("reloaded summary must load");
+        assert_eq!(app.prefab_source_cache.len(), 1, "同一路径只保留一条缓存");
+        // 缓存键是去掉 `\\?\` 前缀后的绝对路径，这里按文件名断言（两种路径写法等价）。
+        let (cached_path, cached) = app.prefab_source_cache.iter().next().unwrap();
+        assert!(
+            cached_path.ends_with("slime_green.prefab"),
+            "unexpected cache key: {}",
+            cached_path.display()
+        );
+        assert_eq!(
+            cached.prefab.name, "renamed-by-tool",
+            "文件改动后缓存必须重载"
+        );
+        // 差异集合仍然来自源 Prefab 的真实内容（改名 override 依旧列出）。
+        assert!(
+            third.iter().any(|field| field.contains("name")),
+            "{third:?}"
+        );
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

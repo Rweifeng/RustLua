@@ -20,7 +20,7 @@
 //!   cargo run -p game --example jhyt_m17 [-- <game_jhyt-root>]
 
 use engine::core::{
-    input::{InputKey, InputSnapshot},
+    input::{InputSnapshot, KeyCode},
     script::LuaRuntime,
 };
 use std::{
@@ -72,17 +72,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 出生朝上，面前 (16,4) 是药田 DIRT：翻土 → 种灵芝 → 浇水。
     set_facing(&mut runtime, "up")?;
-    press(&mut runtime, InputKey::from_char('e'))?; // till
+    press(&mut runtime, KeyCode::KeyE)?; // till
     assert_str(&mut runtime, "require('core.state').last_action", "till")?;
     set_seed(&mut runtime, "seed_lingzhi")?;
-    press(&mut runtime, InputKey::from_char('e'))?; // plant
+    press(&mut runtime, KeyCode::KeyE)?; // plant
     assert_str(
         &mut runtime,
         "require('core.state').last_action",
         "plant_seed_lingzhi",
     )?;
+    // 钉住晴天（M29 起天气按 `(seed, day, 季节)` 抽签）：雨天会走 `rain_watered`
+    // 免体力分支，而这里断言的是体力账（100-8-3-4）。
+    runtime.execute_console("require('world.weather').set('sunny')")?;
     equip_tool(&mut runtime, "watering_can")?;
-    press(&mut runtime, InputKey::from_char('e'))?; // water
+    press(&mut runtime, KeyCode::KeyE)?; // water
     assert_str(
         &mut runtime,
         "require('core.state').last_action",
@@ -106,7 +109,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     banner("M17-01b 出口交互：山庄 → 云泽村，背包跨图不清空");
     teleport(&mut runtime, MAIN_EXIT)?;
     assert_mode(&mut runtime, "Playing")?;
-    press(&mut runtime, InputKey::from_char('e'))?; // exit main_to_village
+    press(&mut runtime, KeyCode::KeyE)?; // exit main_to_village
     assert_str(
         &mut runtime,
         "require('core.state').last_action",
@@ -144,7 +147,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     banner("M17-01d 回山庄：农田 overlay/plots 恢复，作物仍在");
     teleport(&mut runtime, VILLAGE_EXIT)?;
-    press(&mut runtime, InputKey::from_char('e'))?; // exit village_to_manor
+    press(&mut runtime, KeyCode::KeyE)?; // exit village_to_manor
     // 山庄地图键/场景在示例重组后为 manor（M18-02 收口同步断言）。
     assert_str(
         &mut runtime,
@@ -165,7 +168,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 再次往返验证稳定：main -> village 回村不丢状态。
     teleport(&mut runtime, MAIN_EXIT)?;
-    press(&mut runtime, InputKey::from_char('e'))?;
+    press(&mut runtime, KeyCode::KeyE)?;
     runtime.process_scene_transition()?;
     assert_scene_is(&mut runtime, "village")?;
     assert_num(
@@ -204,7 +207,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     banner("M17-01f continue 后回到山庄农田依旧");
     teleport(&mut second, VILLAGE_EXIT)?;
-    press(&mut second, InputKey::from_char('e'))?;
+    press(&mut second, KeyCode::KeyE)?;
     second.process_scene_transition()?;
     assert_scene_is(&mut second, "manor")?;
     assert_plot_crop(&mut second, "16,4", "lingzhi")?;
@@ -265,7 +268,7 @@ fn teleport(runtime: &mut LuaRuntime, pos: (f32, f32)) -> Result<(), Box<dyn std
 }
 
 /// Simulates a single key press: one frame with the key down, one clean frame.
-fn press(runtime: &mut LuaRuntime, key: InputKey) -> Result<(), Box<dyn std::error::Error>> {
+fn press(runtime: &mut LuaRuntime, key: KeyCode) -> Result<(), Box<dyn std::error::Error>> {
     let mut input = InputSnapshot::default();
     input.key_event(key, true);
     runtime.set_input(input);

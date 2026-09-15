@@ -150,6 +150,152 @@ impl FontVectorAtlas {
     }
 }
 
+/// 字形来源选择：主字体有该字用主字体，否则用后备字体，再否则主字体（`.notdef`）。
+/// `FontAtlas` 与 [`FontProbe`] 共用这一处判定，避免"渲染用一套、度量用另一套"。
+fn select_font(
+    primary: &FontArc,
+    fallback: Option<&FontArc>,
+    character: char,
+) -> (FontArc, ab_glyph::GlyphId) {
+    let primary_id = primary.glyph_id(character);
+    if primary_id.0 != 0 {
+        return (primary.clone(), primary_id);
+    }
+    if let Some(fallback) = fallback {
+        let fallback_id = fallback.glyph_id(character);
+        if fallback_id.0 != 0 {
+            return (fallback.clone(), fallback_id);
+        }
+    }
+    (primary.clone(), primary_id)
+}
+
+/// 字体度量探针：只读**字形覆盖**与 **advance**，不做 MSDF 光栅化、不占图集内存。
+///
+/// 用途：排版预算与缺字检查（`ui.measure_text`）。渲染路径仍然走 [`FontAtlas`]；
+/// 两者的 advance 口径必须一致，因此 `FontAtlas::advance` 直接委托到这里
+/// （单测 `probe_matches_atlas_advance` 钉住这条一致性）。
+#[derive(Clone, Debug)]
+pub struct FontProbe {
+    font: FontArc,
+    fallback: Option<FontArc>,
+}
+
+impl FontProbe {
+    pub fn load(bytes: &[u8]) -> Result<Self, String> {
+        Self::load_with_fallback(bytes, None)
+    }
+
+    pub fn load_with_fallback(primary: &[u8], fallback: Option<&[u8]>) -> Result<Self, String> {
+        Self::load_with_fallback_and_weight(primary, fallback, DEFAULT_FONT_WEIGHT)
+    }
+
+    pub fn load_with_fallback_and_weight(
+        primary: &[u8],
+        fallback: Option<&[u8]>,
+        weight: f32,
+    ) -> Result<Self, String> {
+        let font = load_font_with_weight(primary, weight, "字体解析失败")?;
+        let fallback = fallback
+            .map(|bytes| load_font_with_weight(bytes, weight, "后备字体解析失败"))
+            .transpose()?;
+        Ok(Self { font, fallback })
+    }
+
+    fn font_for(&self, character: char) -> (FontArc, ab_glyph::GlyphId) {
+        select_font(&self.font, self.fallback.as_ref(), character)
+    }
+
+    /// 字体是否覆盖该字符（主字体或后备字体存在非 `.notdef` 字形）。
+    /// 空白字符（`\n`/`\t`）不参与缺字判定——它们不需要字形。
+    #[must_use]
+    pub fn covers(&self, character: char) -> bool {
+        if character.is_whitespace() {
+            return true;
+        }
+        self.font_for(character).1.0 != 0
+    }
+
+    /// 该字符的 em 相对 advance（`advance / units_per_em`）。
+    #[must_use]
+    pub fn advance_em(&self, character: char) -> f32 {
+        let (font, glyph_id) = self.font_for(character);
+        font.h_advance_unscaled(glyph_id) / font.units_per_em().unwrap_or(1000.0)
+    }
+
+    /// 该字符在 `size_px` 像素字号下的水平 advance（px）。
+    #[must_use]
+    pub fn advance_px(&self, character: char, size_px: f32) -> f32 {
+        self.advance_em(character) * size_px
+    }
+
+    /// Ascent / descent（em 相对值，descent 为负），用于行盒高度。
+    #[must_use]
+    pub fn ascent_em(&self) -> f32 {
+        self.font.ascent_unscaled() / self.font.units_per_em().unwrap_or(1000.0)
+    }
+
+    #[must_use]
+    pub fn descent_em(&self) -> f32 {
+        self.font.descent_unscaled() / self.font.units_per_em().unwrap_or(1000.0)
+    }
+}
+
+/// 字体文件读取与探针加载（项目字体配置的消费方；`project.toml` 的解析在
+/// [`crate::core::project_config`]，本模块不再自带一份键解析器）。
+pub mod project_font {
+    use super::{DEFAULT_FONT_WEIGHT, FontProbe};
+    use crate::core::project_config;
+    use std::fs;
+    use std::path::Path;
+
+    /// `project.toml` 的单个键（`key = "value"`，去引号、忽略 BOM 与缩进）。
+    #[must_use]
+    pub fn read_key(root: &Path, key: &str) -> Option<String> {
+        project_config::read_key(root, key)
+    }
+
+    /// 主字体路径（相对项目根）：缺省 `assets/fonts/NotoSansSC-VF.ttf`。
+    #[must_use]
+    pub fn primary_path(root: &Path) -> String {
+        read_key(root, "font").unwrap_or_else(|| "assets/fonts/NotoSansSC-VF.ttf".to_owned())
+    }
+
+    /// 后备字体路径（相对项目根，可选）。
+    #[must_use]
+    pub fn fallback_path(root: &Path) -> Option<String> {
+        read_key(root, "font_fallback")
+    }
+
+    /// 可变字体字重；无效或缺失回退引擎默认值。
+    #[must_use]
+    pub fn weight(root: &Path) -> f32 {
+        read_key(root, "font_weight")
+            .and_then(|weight| weight.parse::<f32>().ok())
+            .filter(|weight| weight.is_finite() && *weight > 0.0)
+            .unwrap_or(DEFAULT_FONT_WEIGHT)
+    }
+
+    /// 读取项目字体字节（`(primary, fallback)`；打包编码会先解码）。
+    /// 主字体缺失返回 `None`。
+    #[must_use]
+    pub fn read_bytes(root: &Path) -> Option<(Vec<u8>, Option<Vec<u8>>)> {
+        let decode = |path: &Path| {
+            let bytes = fs::read(path).ok()?;
+            crate::core::pack::decode(&bytes).ok()
+        };
+        let primary = decode(&root.join(primary_path(root)))?;
+        let fallback = fallback_path(root).and_then(|font| decode(&root.join(font)));
+        Some((primary, fallback))
+    }
+
+    /// 加载只读度量探针（缺字检查 / 排版预算用）。
+    pub fn load_probe(root: &Path) -> Result<FontProbe, String> {
+        let (primary, fallback) = read_bytes(root).ok_or_else(|| "字体文件缺失".to_owned())?;
+        FontProbe::load_with_fallback_and_weight(&primary, fallback.as_deref(), weight(root))
+    }
+}
+
 #[allow(dead_code)]
 fn flatten_quad(a: Point, c: Point, b: Point, units: f32, out: &mut Vec<VectorSegment>) {
     flatten_quad_recursive(a, c, b, units, 0, out);
@@ -347,17 +493,16 @@ impl FontAtlas {
 
     /// 字形所属字体：主字体有该字用主字体，否则用后备字体，再否则主字体（.notdef）。
     fn font_for(&self, character: char) -> (FontArc, ab_glyph::GlyphId) {
-        let primary_id = self.font.glyph_id(character);
-        if primary_id.0 != 0 {
-            return (self.font.clone(), primary_id);
+        select_font(&self.font, self.fallback.as_ref(), character)
+    }
+
+    /// 字体是否覆盖该字符（与 [`FontProbe::covers`] 同一判定）。
+    #[must_use]
+    pub fn covers(&self, character: char) -> bool {
+        if character.is_whitespace() {
+            return true;
         }
-        if let Some(fallback) = &self.fallback {
-            let fallback_id = fallback.glyph_id(character);
-            if fallback_id.0 != 0 {
-                return (fallback.clone(), fallback_id);
-            }
-        }
-        (self.font.clone(), primary_id)
+        self.font_for(character).1.0 != 0
     }
 
     pub const fn width(&self) -> u32 {
@@ -401,6 +546,15 @@ impl FontAtlas {
     pub fn advance(&self, character: char) -> f32 {
         let (font, glyph_id) = self.font_for(character);
         font.h_advance_unscaled(glyph_id) / font.units_per_em().unwrap_or(1000.0) * RASTER_SCALE
+    }
+
+    /// 只读度量探针（同一字体/后备字体，不复制字节、不光栅化）。
+    #[must_use]
+    pub fn probe(&self) -> FontProbe {
+        FontProbe {
+            font: self.font.clone(),
+            fallback: self.fallback.clone(),
+        }
     }
 
     fn grow(&mut self) -> bool {
@@ -840,6 +994,31 @@ mod tests {
             .join("../../crates/editor/fonts/NotoSansSC-VF.ttf");
         std::fs::read(&path)
             .unwrap_or_else(|error| panic!("测试字体缺失或不可读 {}: {error}", path.display()))
+    }
+
+    #[test]
+    fn probe_covers_chars_and_matches_atlas_advance() {
+        let bytes = test_font();
+        let probe = FontProbe::load(&bytes).unwrap();
+        assert!(probe.covers('江'), "CJK 应被覆盖");
+        assert!(probe.covers('A'), "ASCII 应被覆盖");
+        assert!(probe.covers('\n'), "换行不需要字形，视为覆盖");
+        assert!(!probe.covers('🙂'), "emoji 不该被 Noto Sans SC 覆盖");
+        // CJK 满宽 vs ASCII 半宽：这正是"按字数裁剪"会算错的原因。
+        let cjk = probe.advance_em('江');
+        let ascii = probe.advance_em('A');
+        assert!(cjk > ascii * 1.5, "cjk={cjk} ascii={ascii}");
+        // 度量探针与渲染图集的 advance 必须逐字一致（否则排版预算不可信）。
+        let atlas = FontAtlas::load(&bytes).unwrap();
+        for character in ['A', 'W', 'i', '江', '，', ' '] {
+            assert_eq!(
+                probe.advance_px(character, RASTER_SCALE),
+                atlas.advance(character),
+                "{character:?} advance 不一致"
+            );
+        }
+        assert!(atlas.probe().covers('江'));
+        assert!(!atlas.covers('🙂'));
     }
 
     #[test]

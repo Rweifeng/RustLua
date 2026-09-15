@@ -1,5 +1,5 @@
 use engine::core::{
-    input::{InputKey, InputSnapshot},
+    input::{InputSnapshot, KeyCode},
     script::LuaRuntime,
 };
 use std::{
@@ -29,7 +29,7 @@ function update() return "lua-api-ok" end
 "#,
     )?;
     let mut input = InputSnapshot::default();
-    input.key_event(InputKey::D, true);
+    input.key_event(KeyCode::KeyD, true);
     let mut runtime = LuaRuntime::new()?;
     runtime.set_delta(1.0 / 60.0);
     runtime.set_input(input);

@@ -47,7 +47,7 @@ Release 质量门：
 
 ## 本地验证
 
-也可以在 `E:\Codex\p2\engine` 目录执行：
+也可以在 `E:\Codex\RustLua\engine` 目录执行：
 
 ```powershell
 cargo metadata --no-deps --format-version 1

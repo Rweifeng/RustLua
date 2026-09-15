@@ -19,7 +19,7 @@
 //!   cargo run -p game --example jhyt_m19_ui [-- <game_jhyt-root>]
 
 use engine::core::{
-    input::{InputKey, InputSnapshot},
+    input::{InputSnapshot, KeyCode},
     script::LuaRuntime,
 };
 use std::{
@@ -177,7 +177,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &mut runtime,
         "inv.add(require('core.state').inventory, 'heal_pill', 1); require('core.state').energy = 50",
     )?;
-    press(&mut runtime, InputKey::from_char('i'))?;
+    press(
+        &mut runtime,
+        KeyCode::from_char('i').expect("QWERTY 字符必须有对应物理键"),
+    )?;
     assert_mode(&mut runtime, "Inventory")?;
     assert_str(
         &mut runtime,
@@ -192,8 +195,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     // 面板打开期间 UI 输入不得落到世界（位置不变）。
     let (px, py) = player_pos(&mut runtime)?;
-    press(&mut runtime, InputKey::from_char('d'))?;
-    press(&mut runtime, InputKey::from_char('w'))?;
+    press(
+        &mut runtime,
+        KeyCode::from_char('d').expect("QWERTY 字符必须有对应物理键"),
+    )?;
+    press(
+        &mut runtime,
+        KeyCode::from_char('w').expect("QWERTY 字符必须有对应物理键"),
+    )?;
     let (px2, py2) = player_pos(&mut runtime)?;
     if (px - px2).abs() > f64::EPSILON || (py - py2).abs() > f64::EPSILON {
         return Err(format!("UI 面板期间玩家移动了: ({px},{py}) -> ({px2},{py2})").into());
@@ -207,13 +216,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     // 装备：定位水壶行（1 基序号）→ 数字键选中 → E 装备。
     let water_row = row_of(&mut runtime, "ui.inventory_ui", "watering_can")?;
-    press(&mut runtime, InputKey::from_char(digit(water_row)))?;
+    press(
+        &mut runtime,
+        KeyCode::from_char(digit(water_row)).expect("数字行号必须有对应主键区数字键"),
+    )?;
     assert_num(
         &mut runtime,
         "require('ui.inventory_ui').index()",
         (water_row - 1) as f64,
     )?;
-    press(&mut runtime, InputKey::from_char('e'))?;
+    press(&mut runtime, KeyCode::KeyE)?;
     assert_str(
         &mut runtime,
         "inv.equip_list(require('core.state').inventory).tool",
@@ -226,8 +238,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     // 使用：回复药 → 体力 50 → 90（成功路径消耗物品并给反馈文案）。
     let pill_row = row_of(&mut runtime, "ui.inventory_ui", "heal_pill")?;
-    press(&mut runtime, InputKey::from_char(digit(pill_row)))?;
-    press(&mut runtime, InputKey::from_char('u'))?;
+    press(
+        &mut runtime,
+        KeyCode::from_char(digit(pill_row)).expect("数字行号必须有对应主键区数字键"),
+    )?;
+    press(
+        &mut runtime,
+        KeyCode::from_char('u').expect("QWERTY 字符必须有对应物理键"),
+    )?;
     assert_num(&mut runtime, "require('core.state').energy", 90.0)?;
     assert_num(
         &mut runtime,
@@ -242,8 +260,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     // 不可使用物品的失败反馈：稻谷（无 use 字段）→ no_effect。
     let rice_row = row_of(&mut runtime, "ui.inventory_ui", "rice")?;
-    press(&mut runtime, InputKey::from_char(digit(rice_row)))?;
-    press(&mut runtime, InputKey::from_char('u'))?;
+    press(
+        &mut runtime,
+        KeyCode::from_char(digit(rice_row)).expect("数字行号必须有对应主键区数字键"),
+    )?;
+    press(
+        &mut runtime,
+        KeyCode::from_char('u').expect("QWERTY 字符必须有对应物理键"),
+    )?;
     assert_str(
         &mut runtime,
         "(function() local t = ui.get('bp:msg'); \
@@ -251,7 +275,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "true",
     )?;
     // 关闭：面板与动态 UI 一起收起，模式回到 Playing。
-    press(&mut runtime, InputKey::from_char('i'))?;
+    press(
+        &mut runtime,
+        KeyCode::from_char('i').expect("QWERTY 字符必须有对应物理键"),
+    )?;
     assert_mode(&mut runtime, "Playing")?;
     assert_str(
         &mut runtime,
@@ -265,7 +292,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     banner("M19-02d 任务面板（只读）：L 打开 → 列出任务与目标进度 → Q 关闭");
-    press(&mut runtime, InputKey::from_char('l'))?;
+    press(
+        &mut runtime,
+        KeyCode::from_char('l').expect("QWERTY 字符必须有对应物理键"),
+    )?;
     assert_mode(&mut runtime, "Quest")?;
     // 面板行数必须等于任务注册表条目数（数据驱动：M19-01 追加订单/主线后仍有 8 条）。
     let quest_registry = query_num(&mut runtime, "return #require('data.quests.index').ids")?;
@@ -299,7 +329,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "require('world.quest').state('quest_herb')",
         "in_progress",
     )?;
-    press(&mut runtime, InputKey::from_char('q'))?;
+    press(
+        &mut runtime,
+        KeyCode::from_char('q').expect("QWERTY 字符必须有对应物理键"),
+    )?;
     assert_mode(&mut runtime, "Playing")?;
     assert_str(
         &mut runtime,
@@ -309,7 +342,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     banner("M19-02e 暂停菜单：P 打开 → 音量 ± → 继续关闭");
     let volume_before = query_num(&mut runtime, "require('core.audio').volume()")?;
-    press(&mut runtime, InputKey::from_char('p'))?;
+    press(
+        &mut runtime,
+        KeyCode::from_char('p').expect("QWERTY 字符必须有对应物理键"),
+    )?;
     assert_mode(&mut runtime, "Pause")?;
     // M21 主角形象：暂停菜单新增「形象」行（原 5 行 → 6 行），
     // 标签带当前形象的中文名，按确认在该行轮换形象。
@@ -326,12 +362,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
           return tostring(t ~= nil and t.visible == true and t.text == '暂停') end)()",
         "true",
     )?;
-    press(&mut runtime, InputKey::from_char('+'))?;
+    press(
+        &mut runtime,
+        KeyCode::from_char('+').expect("QWERTY 字符必须有对应物理键"),
+    )?;
     let volume_after = query_num(&mut runtime, "require('core.audio').volume()")?;
     if (volume_after - (volume_before + 0.1)).abs() > 1e-6 {
         return Err(format!("音量 + 未生效: {volume_before} -> {volume_after}").into());
     }
-    press(&mut runtime, InputKey::from_char('-'))?;
+    press(
+        &mut runtime,
+        KeyCode::from_char('-').expect("QWERTY 字符必须有对应物理键"),
+    )?;
     assert_num(
         &mut runtime,
         "require('core.audio').volume()",
@@ -365,9 +407,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "false",
     )?;
     // 重新打开 → 继续游戏（首项）→ 关闭。
-    press(&mut runtime, InputKey::from_char('p'))?;
+    press(
+        &mut runtime,
+        KeyCode::from_char('p').expect("QWERTY 字符必须有对应物理键"),
+    )?;
     assert_mode(&mut runtime, "Pause")?;
-    press(&mut runtime, InputKey::Space)?;
+    press(&mut runtime, KeyCode::Space)?;
     assert_mode(&mut runtime, "Playing")?;
     assert_str(
         &mut runtime,
@@ -375,7 +420,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "false",
     )?;
 
-    banner("M19-02f last_action → 可读中文反馈（未知值原样显示）");
+    banner("M19-02f last_action → 可读中文反馈（未知值带中文标签兜底，不再裸露英文键）");
     for (action, expected) in [
         ("not_enough", "材料/数量不足"),
         ("tired", "体力不足"),
@@ -400,18 +445,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "require('ui.hud').feedback('build_blocked_out_of_bounds@-3,-3')",
         "建造受阻：超出地图范围 @ -3,-3",
     )?;
+    // M26：未知取值不再原样露出英文键（docs/37 4-13），改为带中文标签的兜底文案，
+    // 原值仍保留在括号里便于诊断（`jhyt_m26_hud_feedback` 守住这条不变量）。
     assert_str(
         &mut runtime,
         "require('ui.hud').feedback('totally_unknown_action')",
-        "totally_unknown_action",
+        "未知反馈（totally_unknown_action）",
     )?;
-    // 中文不溢出：显示宽度截断（CJK 记 2 单位）。
+    // 中文不溢出：M30 起按**引擎真实字宽**排版（`ui.text_fit` ← `ui.measure_text`），
+    // 不再是"每个 CJK 记 2 单位"的启发式。CJK 在 14px 字号下的推进宽度 = 14 + 1（字距）.
+    assert_num(
+        &mut runtime,
+        "require('ui.text_fit').width('江湖', 14)",
+        30.0,
+    )?;
+    assert_num(
+        &mut runtime,
+        "require('ui.text_fit').width('ab', 14) < require('ui.text_fit').width('江湖', 14) and 1 or 0",
+        1.0,
+    )?;
     assert_str(
         &mut runtime,
-        "require('ui.hud').clip('一二三四五六七八九十', 11)",
-        "一二三四五…",
+        "require('ui.text_fit').fit('一二三四五六七八九十', 14, 60)",
+        "一二三…",
     )?;
-    assert_str(&mut runtime, "require('ui.hud').clip('abc', 10)", "abc")?;
+    // 裁剪结果必须真的放得下（含省略号）：这条不变量由 text_fit 自己保证。
+    assert_str(
+        &mut runtime,
+        "tostring(require('ui.text_fit').width(\
+require('ui.text_fit').fit('一二三四五六七八九十', 14, 60), 14) <= 60)",
+        "true",
+    )?;
+    assert_str(
+        &mut runtime,
+        "require('ui.text_fit').fit('abc', 14, 60)",
+        "abc",
+    )?;
 
     banner("M19-02g 新手引导：幂等推进 + 十步剧本 + 存档往返");
     lua(&mut runtime, "require('ui.tutorial').reset()")?;
@@ -578,9 +647,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "require('systems.building').preview('up').conflicts[1].reason",
         "building",
     )?;
+    // M26：HUD 状态行的建造冲突改为中文（BUILD_REASON 表），不再拼英文 reason 键。
     assert_str(
         &mut runtime,
-        "require('ui.input').update():match('building') ~= nil and 'ok' or 'none'",
+        "require('ui.input').update():match('已有建筑') ~= nil and 'ok' or 'none'",
         "ok",
     )?;
     lua(
@@ -605,6 +675,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "require('systems.farm').act('up'):match('^plant_') ~= nil and 'ok' or 'none'",
         "ok",
     )?;
+    // 钉住晴天（M29 起天气按 `(seed, day, 季节)` 抽签）：雨天浇水的动作值是
+    // `rain_watered`，不匹配下面的 `^water_` 前缀断言。
+    lua(&mut runtime, "require('world.weather').set('sunny')")?;
     lua(
         &mut runtime,
         "inv.equip(require('core.state').inventory, 'tool', 'watering_can')",
@@ -821,7 +894,7 @@ fn player_pos(runtime: &mut LuaRuntime) -> Result<(f64, f64), Box<dyn std::error
 }
 
 /// Simulates a single key press: one frame with the key down, one clean frame.
-fn press(runtime: &mut LuaRuntime, key: InputKey) -> Result<(), Box<dyn std::error::Error>> {
+fn press(runtime: &mut LuaRuntime, key: KeyCode) -> Result<(), Box<dyn std::error::Error>> {
     let mut input = InputSnapshot::default();
     input.key_event(key, true);
     runtime.set_input(input);

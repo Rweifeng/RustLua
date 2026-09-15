@@ -111,6 +111,8 @@ impl EditorApp {
                     // 项目切换：清空旧项目缩略图缓存并让后台解码结果失效。
                     self.thumbnails.clear();
                     self.thumbnail_worker.clear();
+                    // 源 Prefab 缓存按项目根解析出的绝对路径缓存，跨项目清空避免残留。
+                    self.prefab_source_cache.clear();
                     // 字体图集按项目缓存（project.toml `font` 键）：切换项目后重建。
                     self.scene_font_atlas = None;
                     self.scene_vector_atlas = None;
@@ -188,7 +190,17 @@ fn spawn_import(path: PathBuf, tx: Sender<ProgressEvent>) {
             let document = ProjectDocument::open(project.clone());
             let _ = tx.send(ProgressEvent::Progress(0.55));
             let recovery = RecoveryManager::new(project.root.join(".temp"));
-            let recovery_scan = recovery.scan().unwrap_or_default();
+            // 恢复快照扫描失败要**说出来**：静默当作"没有快照"会让用户以为编辑内容
+            // 已经没了，也让"恢复目录不可读"这类环境问题查不出来。
+            let recovery_scan = match recovery.scan() {
+                Ok(scan) => scan,
+                Err(error) => {
+                    let _ = tx.send(ProgressEvent::Line(format!(
+                        "警告：崩溃恢复快照扫描失败（{error}）；本次导入不会列出待恢复内容。\n"
+                    )));
+                    RecoveryScan::default()
+                }
+            };
             let _ = tx.send(ProgressEvent::Progress(0.7));
             let mut resources = ResourceBrowserState::new();
             if let Err(error) = resources.refresh(&project.root) {

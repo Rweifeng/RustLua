@@ -11,7 +11,7 @@ use crate::util::strip_verbatim_prefix;
 use editor::PlaySession;
 use eframe::egui;
 use engine::core::{
-    input::{InputKey, InputSnapshot, MouseButton},
+    input::{InputSnapshot, MouseButton},
     preview_diagnostics::PreviewErrorKind,
     scene::Scene,
 };
@@ -384,9 +384,9 @@ impl EditorApp {
     }
     /// 跨帧 held 状态；M11-02）。预览在 Game 视图内纵横比居中后的实际绘制矩形。
     ///
-    /// M20-08：键盘改为**全键位**桥接——`PREVIEW_KEYS` 覆盖独立游戏窗口
-    /// `game_app::map_key` 的全部键域（单字符键：字母/数字/符号 + 空格/Esc/
-    /// 方向键/F1·F2·F4），因此 Play 里键盘与独立 `game` 运行时逐键一致。
+    /// M22/W1：键盘仍按**全键位**桥接，但键集合不再手写——它等于引擎键表
+    /// [`KeyCode::ALL`] 在 egui 上的像（`panels::keymap::preview_keys()`），
+    /// 因此「引擎支持哪些键」与「预览桥接哪些键」不会再各写一份而漂移。
     /// 列表是固定的：每帧对每个键都调 `key_event`，才能同时送出按下与松开边沿
     /// （只遍历 `keys_down` 会漏掉松开 → 卡键）。
     fn bridge_preview_input(
@@ -401,9 +401,16 @@ impl EditorApp {
         ctx.input(|i| {
             // 键盘：**只要窗口有键盘焦点**就桥接（M22 修复：不再要求鼠标悬停在 Game 视图上，
             // 否则「按下 Play 后鼠标停在工具栏」会完全收不到按键）。
-            for &egui_key in PREVIEW_KEYS {
-                if let Some(game_key) = preview_input_key(egui_key) {
-                    let down = i.key_down(egui_key);
+            let keys = crate::panels::keymap::preview_keys();
+            for &egui_key in &keys {
+                if let Some(game_key) = crate::panels::keymap::egui_input_key(egui_key) {
+                    // 按住判定要带上**别称**：egui 报的是逻辑键，`Shift+``=` 报 `Plus`
+                    // 而不是规范的 `Equals`，只看规范名会把「按住的物理键」判成松开，
+                    // 进而送回一条虚假的释放边沿（见 `keymap::egui_key_aliases`）。
+                    let down = i.key_down(egui_key)
+                        || crate::panels::keymap::egui_key_aliases()
+                            .iter()
+                            .any(|(alias, code)| *code == game_key && i.key_down(*alias));
                     // egui 的 `key_down` 是**帧末按住状态**：一次「按下 + 松开」若都落在同一帧内
                     // （编辑器卡顿/长帧时常见），帧末已是松开 → 按键对预览**完全不可见**，
                     // 这跟「被节流跳过的帧吞掉边沿」是同一类丢失。用本帧的**首次按下事件**补一条
@@ -440,99 +447,6 @@ impl EditorApp {
                 }
             }
         });
-    }
-}
-
-/// Play 预览桥接的 egui 键集合：与独立游戏窗口 `game_app::map_key` 同域。
-///
-/// 含字母 A..Z、数字 0..9、空格、Esc、四个方向键、F1/F2/F4（引擎把 `f1`/`f2`/`f4`
-/// 解析为 `InputKey::Other(1/2/4)`）与常用符号键（`-`/`+`/`=`/`,`/`.`/`;`/`/`/`\`/
-/// `[`/`]`/`` ` ``/`'`/`:`/`|`/`?`/`!`/`{`/`}`）。符号键进表是因为玩家可以把动作
-/// 改绑到它们（编辑器捕获支持同一集合），列表固定才能保证每帧都送松开边沿。
-const PREVIEW_KEYS: &[egui::Key] = &[
-    egui::Key::A,
-    egui::Key::B,
-    egui::Key::C,
-    egui::Key::D,
-    egui::Key::E,
-    egui::Key::F,
-    egui::Key::G,
-    egui::Key::H,
-    egui::Key::I,
-    egui::Key::J,
-    egui::Key::K,
-    egui::Key::L,
-    egui::Key::M,
-    egui::Key::N,
-    egui::Key::O,
-    egui::Key::P,
-    egui::Key::Q,
-    egui::Key::R,
-    egui::Key::S,
-    egui::Key::T,
-    egui::Key::U,
-    egui::Key::V,
-    egui::Key::W,
-    egui::Key::X,
-    egui::Key::Y,
-    egui::Key::Z,
-    egui::Key::Num0,
-    egui::Key::Num1,
-    egui::Key::Num2,
-    egui::Key::Num3,
-    egui::Key::Num4,
-    egui::Key::Num5,
-    egui::Key::Num6,
-    egui::Key::Num7,
-    egui::Key::Num8,
-    egui::Key::Num9,
-    egui::Key::Space,
-    egui::Key::Escape,
-    egui::Key::ArrowUp,
-    egui::Key::ArrowDown,
-    egui::Key::ArrowLeft,
-    egui::Key::ArrowRight,
-    egui::Key::F1,
-    egui::Key::F2,
-    egui::Key::F4,
-    egui::Key::Minus,
-    egui::Key::Plus,
-    egui::Key::Equals,
-    egui::Key::Comma,
-    egui::Key::Period,
-    egui::Key::Semicolon,
-    egui::Key::Slash,
-    egui::Key::Backslash,
-    egui::Key::OpenBracket,
-    egui::Key::CloseBracket,
-    egui::Key::Backtick,
-    egui::Key::Quote,
-    egui::Key::Colon,
-    egui::Key::Pipe,
-    egui::Key::Questionmark,
-    egui::Key::Exclamationmark,
-    egui::Key::OpenCurlyBracket,
-    egui::Key::CloseCurlyBracket,
-];
-
-/// egui 键 → 引擎键身份（Play 预览键盘桥接）。
-///
-/// 字符类键与空格/Esc/方向键复用捕获面板的 `character_key_from_egui` +
-/// `named_key_from_egui`（一份表），与独立游戏窗口的 `winit::Key::Character` 路径和
-/// Lua 侧 `parse_key` **同源**；F1/F2/F4 在这里补齐（与 `game_app::map_key` 一致）。
-/// 返回 `None` 的键（Tab/Enter/F3/F5…）不在引擎键域内，不参与桥接。
-fn preview_input_key(key: egui::Key) -> Option<InputKey> {
-    if let Some(key) = crate::panels::input_bindings::character_key_from_egui(key)
-        .or_else(|| crate::panels::input_bindings::named_key_from_egui(key))
-    {
-        return Some(key);
-    }
-    match key.name() {
-        // 与 `game_app::map_key` 的 F1/F2/F4 一致（F3 未被引擎映射）。
-        "F1" => Some(InputKey::Other(1)),
-        "F2" => Some(InputKey::Other(2)),
-        "F4" => Some(InputKey::Other(4)),
-        _ => None,
     }
 }
 
@@ -595,7 +509,7 @@ mod tests {
     use editor::ProjectInfo;
     use editor::open_project;
     use eframe::egui::{self, Event, Key, Modifiers, MouseWheelUnit, PointerButton, RawInput};
-    use engine::core::input::{InputKey, MouseButton};
+    use engine::core::input::{KeyCode, MouseButton};
     use engine::core::logging::LogSink;
     use engine::core::scene::SceneEntityId;
     use std::fs;
@@ -744,32 +658,32 @@ mod tests {
     fn held_key_reuse_does_not_repeat_just_pressed_across_ticks() {
         let mut state = InputSnapshot::default();
         // 第 1 tick：按下 W。
-        state.key_event(InputKey::W, true);
-        assert!(state.just_pressed(InputKey::W));
+        state.key_event(KeyCode::KeyW, true);
+        assert!(state.just_pressed(KeyCode::KeyW));
         state.finish_frame();
         // 第 2 tick：继续按住 W（模拟 bridge_preview_input 再次写入 true）。
-        state.key_event(InputKey::W, true);
+        state.key_event(KeyCode::KeyW, true);
         assert!(
-            !state.just_pressed(InputKey::W),
+            !state.just_pressed(KeyCode::KeyW),
             "按住期间不得重复触发一次性动作"
         );
-        assert!(state.is_down(InputKey::W));
+        assert!(state.is_down(KeyCode::KeyW));
         state.finish_frame();
         // 松开 W：产生 just_released 且不再 held。
-        state.key_event(InputKey::W, false);
-        assert!(state.just_released(InputKey::W));
+        state.key_event(KeyCode::KeyW, false);
+        assert!(state.just_released(KeyCode::KeyW));
         state.finish_frame();
-        assert!(!state.is_down(InputKey::W));
+        assert!(!state.is_down(KeyCode::KeyW));
     }
 
     /// M11-02：失焦清空 held 状态防止卡键。
     #[test]
     fn focus_loss_clears_held_state_prevents_stuck_input() {
         let mut state = InputSnapshot::default();
-        state.key_event(InputKey::W, true);
+        state.key_event(KeyCode::KeyW, true);
         state.mouse_event(MouseButton::Left, true);
         state.clear_all();
-        assert!(!state.is_down(InputKey::W));
+        assert!(!state.is_down(KeyCode::KeyW));
         assert!(!state.mouse_is_down(MouseButton::Left));
     }
 
@@ -780,15 +694,15 @@ mod tests {
     fn focus_loss_drops_pending_press_edges() {
         let mut state = InputSnapshot::default();
         // 被节流帧里按下：边沿已记、held 也在，但还没有逻辑步来消费它。
-        state.key_event(InputKey::ARROW_DOWN, true);
-        assert!(state.just_pressed(InputKey::ARROW_DOWN));
+        state.key_event(KeyCode::ArrowDown, true);
+        assert!(state.just_pressed(KeyCode::ArrowDown));
         // 与 `update_preview` 的失焦分支同序。
         state.set_focused(false);
         state.finish_frame();
         state.set_focused(true);
-        assert!(!state.is_down(InputKey::ARROW_DOWN), "失焦必须清 held");
+        assert!(!state.is_down(KeyCode::ArrowDown), "失焦必须清 held");
         assert!(
-            !state.just_pressed(InputKey::ARROW_DOWN),
+            !state.just_pressed(KeyCode::ArrowDown),
             "重新聚焦后不得补触发失焦前的按下"
         );
     }
@@ -816,7 +730,7 @@ mod tests {
         app.scene_tool = SceneTool::Move;
         app.scene_zoom = 1.6;
         app.scene_state.pan = egui::vec2(42.0, -17.0);
-        app.preview_input_state.key_event(InputKey::W, true);
+        app.preview_input_state.key_event(KeyCode::KeyW, true);
         app.preview_input_state.mouse_event(MouseButton::Left, true);
         app.play_session
             .as_mut()
@@ -833,7 +747,7 @@ mod tests {
         assert_eq!(app.play_state, PlayState::Editing);
         assert_eq!(app.workspace_tab, original_tab);
         assert!(app.play_session.is_none());
-        assert!(!app.preview_input_state.is_down(InputKey::W));
+        assert!(!app.preview_input_state.is_down(KeyCode::KeyW));
         assert!(!app.preview_input_state.mouse_is_down(MouseButton::Left));
         assert_eq!(app.selection.primary(), original_selection);
         assert_eq!(app.selection.source(), editor::SelectionSource::Hierarchy);
@@ -894,7 +808,10 @@ mod tests {
         app.refresh_resources();
         app.open_scene_resource(PathBuf::from("scenes/menu.scene"));
         app.play();
-        assert!(app.preview.is_some(), "Play should create a preview session");
+        assert!(
+            app.preview.is_some(),
+            "Play should create a preview session"
+        );
 
         let ctx = egui::Context::default();
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(640.0, 360.0));
@@ -925,7 +842,7 @@ mod tests {
         app.update_preview(&ctx, true, true, screen);
         let _ = ctx.end_pass();
         assert!(
-            app.preview_input_state.just_pressed(InputKey::ARROW_DOWN),
+            app.preview_input_state.just_pressed(KeyCode::ArrowDown),
             "被节流跳过的帧（没跑固定步）不得消费按键边沿"
         );
 
@@ -939,7 +856,7 @@ mod tests {
         app.update_preview(&ctx, true, true, screen);
         let _ = ctx.end_pass();
         assert!(
-            !app.preview_input_state.just_pressed(InputKey::ARROW_DOWN),
+            !app.preview_input_state.just_pressed(KeyCode::ArrowDown),
             "有效帧消费边沿后不得重复触发"
         );
         let _ = fs::remove_dir_all(root);
@@ -1004,15 +921,15 @@ mod tests {
         let _ = ctx.end_pass();
 
         assert!(
-            !input.is_down(InputKey::ARROW_DOWN),
+            !input.is_down(KeyCode::ArrowDown),
             "帧末已经是松开态（按住状态不应残留）"
         );
         assert!(
-            input.just_pressed(InputKey::ARROW_DOWN),
+            input.just_pressed(KeyCode::ArrowDown),
             "同一帧内的快速点按必须保留按下边沿（否则方向键会偶发无反应）"
         );
         assert!(
-            input.just_released(InputKey::ARROW_DOWN),
+            input.just_released(KeyCode::ArrowDown),
             "补齐路径同时要送出松开边沿"
         );
     }
@@ -1024,25 +941,25 @@ mod tests {
     fn clearing_edges_in_idle_frame_loses_a_press_forever() {
         // 旧行为（无条件 `finish_frame`）：边沿被吃掉，下一帧只剩 held。
         let mut old = InputSnapshot::default();
-        old.key_event(InputKey::ARROW_DOWN, true);
-        assert!(old.just_pressed(InputKey::ARROW_DOWN));
+        old.key_event(KeyCode::ArrowDown, true);
+        assert!(old.just_pressed(KeyCode::ArrowDown));
         old.finish_frame();
-        old.key_event(InputKey::ARROW_DOWN, true); // 每帧重喂「仍然按住」
-        assert!(old.is_down(InputKey::ARROW_DOWN));
+        old.key_event(KeyCode::ArrowDown, true); // 每帧重喂「仍然按住」
+        assert!(old.is_down(KeyCode::ArrowDown));
         assert!(
-            !old.just_pressed(InputKey::ARROW_DOWN),
+            !old.just_pressed(KeyCode::ArrowDown),
             "机制复现：Idle 帧清边沿后，按住不放也再没有 just_pressed"
         );
 
         // 修复后（Idle 帧保留边沿）：下一个有效帧照样把 `just_pressed` 交给 Lua。
         let mut fixed = InputSnapshot::default();
-        fixed.key_event(InputKey::ARROW_DOWN, true);
+        fixed.key_event(KeyCode::ArrowDown, true);
         if consumes_input_edges(PreviewTick::Idle) {
             fixed.finish_frame();
         }
-        fixed.key_event(InputKey::ARROW_DOWN, true);
+        fixed.key_event(KeyCode::ArrowDown, true);
         assert!(
-            fixed.just_pressed(InputKey::ARROW_DOWN),
+            fixed.just_pressed(KeyCode::ArrowDown),
             "Idle 帧必须把按下边沿留到下一有效帧（否则方向键会随机失效）"
         );
     }
@@ -1086,7 +1003,7 @@ mod tests {
         app.bridge_preview_input(&mut input, &ctx, preview_rect, 200, 100, true);
         let _ = ctx.end_pass();
 
-        assert!(input.is_down(InputKey::W));
+        assert!(input.is_down(KeyCode::KeyW));
         assert!(input.mouse_is_down(MouseButton::Left));
         assert_eq!(input.cursor_position(), (50.0, 50.0));
         assert_eq!(input.scroll_delta().0, 0.0);
@@ -1096,13 +1013,18 @@ mod tests {
         );
     }
 
-    /// M20-08：Play 预览键盘桥接为**全键位**——覆盖动作表默认绑定用到的键
-    /// （J/K/G/T/Q/I/P/B/F/X/U/L/R/C/1-9/+/-）与独立游戏窗口的键域。
+    /// M22/W1：Play 预览键盘桥接为**全键位**，且键集合不再手写——它就是引擎键表
+    /// [`KeyCode::ALL`] 在 egui 上的像（`panels::keymap::preview_keys()`）。
+    ///
+    /// 因此这里直接对**整张预览键集合**断言（旧版本只列出动作表默认绑定用到的
+    /// 20 来个键，与手写的 `PREVIEW_KEYS` 常量为同一份清单，漏项时两边一起错、
+    /// 断言却照样通过）：「引擎支持哪些键 → 预览就桥接哪些键」现在由测试锁住。
     #[test]
     fn bridge_preview_input_covers_full_keyboard() {
         let app = app_with_scene();
         let ctx = egui::Context::default();
         let preview_rect = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(200.0, 100.0));
+        // 动作表默认绑定用到的键 + 会暴露身份换算问题的符号/功能键。
         let pressed = [
             Key::J,
             Key::K,
@@ -1149,37 +1071,70 @@ mod tests {
         app.bridge_preview_input(&mut input, &ctx, preview_rect, 200, 100, true);
         let _ = ctx.end_pass();
 
-        // 字母/数字/符号与 `InputKey::from_char`（独立窗口与 `parse_key` 同源）一致。
-        for (egui_key, character) in [
-            (Key::J, 'j'),
-            (Key::K, 'k'),
-            (Key::G, 'g'),
-            (Key::T, 't'),
-            (Key::Q, 'q'),
-            (Key::I, 'i'),
-            (Key::P, 'p'),
-            (Key::B, 'b'),
-            (Key::F, 'f'),
-            (Key::X, 'x'),
-            (Key::U, 'u'),
-            (Key::L, 'l'),
-            (Key::R, 'r'),
-            (Key::C, 'c'),
-            (Key::Num1, '1'),
-            (Key::Num9, '9'),
-            (Key::Minus, '-'),
-            (Key::Plus, '+'),
-            (Key::Comma, ','),
-            (Key::Backslash, '\\'),
-            (Key::Quote, '\''),
+        // 期望值取自**唯一**的转换表（`keymap::egui_input_key`），而不是测试里
+        // 再写一份字符表：预览桥接与重绑定捕获因此共用同一套键身份。
+        //
+        // 注意这里断言的是**物理键集合**而不是「逐字符一一对应」：`pressed` 里的
+        // `Plus` 与 `Equals` 是同一个物理键 `Equal` 的两种逻辑写法（见下方断言），
+        // egui 的 `keys_down` 只保留其中一种，所以期望值按映射后的 `KeyCode` 去重。
+        let mut expected: Vec<KeyCode> = Vec::new();
+        for egui_key in [
+            Key::J,
+            Key::K,
+            Key::G,
+            Key::T,
+            Key::Q,
+            Key::I,
+            Key::P,
+            Key::B,
+            Key::F,
+            Key::X,
+            Key::U,
+            Key::L,
+            Key::R,
+            Key::C,
+            Key::Num1,
+            Key::Num9,
+            // `=` 是桥接迭代的**规范形式**（`egui_key(KeyCode::Equal) == Equals`）：
+            // 按住它必须落成 `Equal`。`+`（Shift 下的 logical key）是同一个物理键的
+            // 别名，两者都映射到 `key:equal` —— 见下方 `egui_input_key` 的断言。
+            Key::Equals,
+            Key::Plus,
+            Key::Minus,
+            Key::Comma,
+            Key::Backslash,
+            Key::Quote,
+            Key::F4,
         ] {
+            let code = crate::panels::keymap::egui_input_key(egui_key)
+                .unwrap_or_else(|| panic!("{egui_key:?} 必须在引擎键域内"));
+            if !expected.contains(&code) {
+                expected.push(code);
+            }
+        }
+        for code in expected {
             assert!(
-                input.is_down(InputKey::from_char(character)),
-                "{egui_key:?} 未桥接为 {character:?}（Play 预览键位不完整）"
+                input.is_down(code),
+                "{code:?} 未桥接（Play 预览键位不完整）"
             );
         }
-        // F4：引擎把 `f4` 解析为 `InputKey::Other(4)`（与独立窗口一致）。
-        assert!(input.is_down(InputKey::Other(4)));
+        // F4：引擎键身份与独立窗口一致（同一个键在四处宿主里都是 `KeyCode::F4`）。
+        assert!(input.is_down(KeyCode::F4));
+        // `+` 与 `=` 是**同一个物理键**：egui-winit 报的是 logical key（未按 Shift 的 `=`
+        // 是 `Equals`，Shift 下是 `Plus`），两种写法都必须落到 `key:equal`，否则玩家按住
+        // Shift 就会得到第二个「新键」（v1 的字符身份正是这么丢信息的）。
+        assert_eq!(
+            crate::panels::keymap::egui_input_key(Key::Plus),
+            Some(KeyCode::Equal)
+        );
+        assert_eq!(
+            crate::panels::keymap::egui_input_key(Key::Equals),
+            Some(KeyCode::Equal)
+        );
+        assert!(
+            input.is_down(KeyCode::Equal),
+            "Shift+`=` 必须落到 Equal 物理键"
+        );
 
         // 松开边沿必须送到：egui 的 held 集合只在收到释放事件时变化，因此这里显式
         // 送一帧「全部释放」事件（模拟按键抬起），桥接必须把它翻成 released。
@@ -1203,12 +1158,12 @@ mod tests {
         });
         app.bridge_preview_input(&mut input, &ctx, preview_rect, 200, 100, true);
         let _ = ctx.end_pass();
-        assert!(!input.is_down(InputKey::from_char('j')));
+        assert!(!input.is_down(KeyCode::KeyJ));
         assert!(
-            input.just_released(InputKey::from_char('j')),
+            input.just_released(KeyCode::KeyJ),
             "松开边沿必须桥接（否则 Play 里会卡键）"
         );
-        assert!(!input.is_down(InputKey::from_char('+')));
+        assert!(!input.is_down(KeyCode::Equal), "`+` 键松开后不得残留 held");
     }
 
     /// M22 回归：**Play 预览的键盘不依赖鼠标悬停**。
@@ -1252,7 +1207,7 @@ mod tests {
         let _ = ctx.end_pass();
 
         assert!(
-            input.is_down(InputKey::ARROW_DOWN),
+            input.is_down(KeyCode::ArrowDown),
             "鼠标不在 Game 视图内时按键仍必须桥接"
         );
         assert!(
