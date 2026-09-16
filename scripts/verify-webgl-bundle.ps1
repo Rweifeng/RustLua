@@ -10,7 +10,11 @@
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify-webgl-bundle.ps1 `
 #       [-BundleRoot examples\game_jhyt\builds\webgl\jianghu_youtian] [-Port 8137] [-TimeoutSeconds 90]
 #
-# 退出码：0 = 启动成功（`data-p2-boot=ok`）；1 = 启动失败（含缺失宿主 API 明细）；2 = 环境受限（无 node/浏览器）。
+# 省略 -BundleRoot 时自动发现（本机唯一的合格 webgl 产物，见 scripts\bundle-discovery.ps1）：
+# 默认值不再写死某个游戏工程，任何工程发布后都能直接跑。
+#
+# 退出码：0 = 启动成功（`data-p2-boot=ok`）；1 = 启动失败（含缺失宿主 API 明细）；
+#         2 = 环境受限（无 node/浏览器）；3 = 未找到产物（需 -BundleRoot 显式指定）。
 
 [CmdletBinding()]
 param(
@@ -21,8 +25,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 $workspaceRoot = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot "bundle-discovery.ps1")
 if ([string]::IsNullOrWhiteSpace($BundleRoot)) {
-    $BundleRoot = Join-Path $workspaceRoot "examples\game_jhyt\builds\webgl\jianghu_youtian"
+    # 不写死游戏工程：自动发现本机唯一的合格 webgl 产物（诊断由 bundle-discovery 打印）。
+    $BundleRoot = Resolve-GameBundle -Platform "webgl"
+    if (-not $BundleRoot) { exit 3 }
 }
 if (-not (Test-Path -LiteralPath $BundleRoot)) {
     throw "WebGL bundle was not found: $BundleRoot (先跑 scripts\package.ps1 -Platform webgl)"
@@ -149,6 +156,12 @@ if ($detail -match 'missing engine host API:\s*([^\]]*)') {
 # `-1` = 像素不可读（跨域贴图污染），`0` = 启动了但真的什么都没画出来。
 $drawnRaw = if ($dom -match 'data-p2-drawn="(-?\d+)"') { [int]$Matches[1] } else { $null }
 $uiElements = if ($dom -match 'data-p2-ui-elements="(\d+)"') { [int]$Matches[1] } else { $null }
+# 世界状态自报：`scene=/map=/alive=/player=@x,y/clip`（+ 渲染侧 `drawn=`）。
+# 这里只作为**证据**记录，不新增判定：无头浏览器这一次是"打开页面等 15s 后 dump DOM"，
+# 停在启动场景是正常的（玩家要按键才进玩法地图）。真正有牙的那一组断言在
+# `scripts/wechat-minigame-harness.js --drive-new-game ...` 里——两个 web 平台共用同一份
+# `web-runtime.js`，字段含义完全一致，所以这里读到的世界状态可以直接对照它。
+$world = if ($dom -match 'data-p2-world="([^"]*)"') { $Matches[1] } else { "" }
 
 $summary = [ordered]@{
     task           = "M31"
@@ -163,6 +176,7 @@ $summary = [ordered]@{
     statusText     = $statusText
     drawnSamples   = $drawnRaw
     uiElements     = $uiElements
+    world          = $world
     domDump        = $domPath
     log            = $logPath
 }
@@ -171,6 +185,7 @@ $summary | ConvertTo-Json | Set-Content -Path (Join-Path $logRoot "bundle-summar
 Write-Log "boot=$boot missing_host_api=$($missingNames.Count) detail=$detail" $(if ($boot -eq "ok") { "Green" } else { "Yellow" })
 Write-Log "status text: $statusText"
 Write-Log "drawn samples: $(if ($null -eq $drawnRaw) { 'unknown' } else { $drawnRaw }) ui elements: $(if ($null -eq $uiElements) { 'unknown' } else { $uiElements })"
+Write-Log "world: $(if ([string]::IsNullOrWhiteSpace($world)) { '(未自报)' } else { $world })"
 Write-Log "dom: $domPath"
 
 if ($drawnRaw -eq 0) {

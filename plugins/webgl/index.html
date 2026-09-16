@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>__PUBLISH_NAME__</title>
+  <style>
+    html, body { margin: 0; width: 100%; height: 100%; background: #151923; overflow: hidden; }
+    canvas { display: block; width: 100vw; height: 100vh; }
+    #status { position: fixed; left: 16px; top: 12px; color: #d0d7e2; font: 14px sans-serif; }
+  </style>
+</head>
+<body data-p2-boot="pending">
+  <canvas id="p2-canvas"></canvas>
+  <div id="status">Loading __PUBLISH_NAME__...</div>
+  <script>window.__P2_FONT = '__FONT_PATH__';</script>
+  <script src="./pkg/fengari-web.js"></script>
+  <script src="./web-runtime.js"></script>
+  <script type="module">
+    import init, { start } from './pkg/game_web.js';
+    const publishName = __PUBLISH_NAME_JSON__;
+    const status = document.getElementById('status');
+    const markBoot = (state, detail) => {
+      document.body.setAttribute('data-p2-boot', state);
+      if (detail) document.body.setAttribute('data-p2-boot-detail', String(detail).slice(0, 400));
+    };
+    try {
+      await init();
+      await start('p2-canvas', publishName);
+      await window.p2RunLuaGame(status);
+      status.textContent = publishName + ' - Lua running';
+      markBoot('ok', publishName);
+    } catch (error) {
+      console.error(error);
+      status.textContent = 'WebGL startup failed: ' + error;
+      markBoot('failed', (error && error.message) || error);
+    }
+  </script>
+</body>
+</html>

@@ -31,12 +31,25 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Project
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-webgl.ps1
 
 # 产物层启动验收：真实发布包在无头浏览器里能否启动到 Lua（M31/P3 新增）
+# 省略 -BundleRoot 即自动发现本机唯一的合格 webgl 产物（不再写死某个游戏工程）
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-webgl-bundle.ps1
+
+# 显式指定产物（本机有多个合格产物，或想验证某个特定包）
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-webgl-bundle.ps1 `
     -BundleRoot examples/game_jhyt/builds/webgl/jianghu_youtian
+
+# 一条命令试玩：定位产物 → 产物层验收 → 起本地服务（Ctrl-C 退出）
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-bundle.ps1
 
 # 本地静态服务（发布目录必须经 HTTP 提供，不能 file:// 打开：浏览器会拦 WASM/资源请求）
 node scripts/serve-static.js examples/game_jhyt/builds/webgl/<name> 8000
 ```
+
+产物目录由 `scripts/bundle-discovery.ps1` 定位，规则与 `package.ps1` 的产物校验清单逐项一致；
+`test-bundle.ps1` 是**与平台无关**的试玩入口（`-Platform webgl|wechat-minigame`），它自身不做任何
+产物断言，只把产物交给对应平台的验收脚本，因此两边的通过标准不会分叉。
+产物目录里还带一个 `test-webgl.bat`（平台插件模板 `plugins/webgl/test-webgl.bat` 的副本，
+发布时由 `package.ps1` 复制）：双击即验证并起服务，靠向上查找仓库根定位脚本，不依赖目录深度。
 
 `verify-webgl.ps1` 的行为：
 
@@ -53,7 +66,15 @@ node scripts/serve-static.js examples/game_jhyt/builds/webgl/<name> 8000
 2. 起静态服务器 + 无头浏览器打开 `index.html`，读页面上的机器可读启动标记
    `data-p2-boot`（`pending`/`booted`/`running`/`ok`/`failed`）与 `data-p2-boot-detail`；
 3. `boot=ok|booted|running` → 退出 0 并写 `bundle-summary-*.json`；`failed` → 退出 1 并把
-   **缺失的引擎宿主 API 全局**列出来；无 node/浏览器 → 退出 2（环境受限，不伪造通过）。
+   **缺失的引擎宿主 API 全局**列出来；无 node/浏览器 → 退出 2（环境受限，不伪造通过）；
+   省略 `-BundleRoot` 又没能唯一定位产物 → 退出 3（打印候选与被排除项及原因）。
+4. 顺带把运行时的**世界状态自报**（`data-p2-world`：`scene=/map=/alive=/player=@x,y/clip`）
+   写进 summary 与日志。它在这里只是**证据**、不是判定：无头浏览器这一次是"打开页面等 15s
+   再 dump DOM"，停在启动场景是正常的（玩家要按键才进玩法地图）。有牙的那一组断言在
+   `scripts/wechat-minigame-harness.js --drive-new-game --expect-runtime-spawns --drive-move`
+   里——两个 web 平台共用同一份 `web-runtime.js`，字段含义一致，可以直接对照。
+
+同一套退出码由 `test-bundle.ps1` 原样透传（它另外用 4 表示端口不可用）。
 
 ## 3. 已实测证据（本机 Edge 153.0.4234.32，无头）
 
