@@ -1,1 +1,23 @@
-﻿{"description":"RustLua WeChat Mini Game","compileType":"game","libVersion":"2.32.3","appid":"touristappid","projectname":"RustLua"}
+{
+  "description": "RustLua WeChat Mini Game project",
+  "compileType": "game",
+  "libVersion": "2.32.3",
+  "appid": "touristappid",
+  "projectname": "RustLua",
+  "setting": {
+    "urlCheck": false,
+    "es6": false,
+    "postcss": false,
+    "minified": false,
+    "showShadowRootInWxmlPanel": false
+  },
+  "packOptions": {
+    "ignore": [
+      { "type": "file", "value": "run.txt" },
+      { "type": "file", "value": "deps.txt" },
+      { "type": "file", "value": "build-info.txt" },
+      { "type": "file", "value": "release.toml" },
+      { "type": "file", "value": "test-wechat-minigame.bat" }
+    ]
+  }
+}

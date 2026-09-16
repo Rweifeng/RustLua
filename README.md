@@ -43,6 +43,7 @@ cargo run -p editor -- --project ..\examples\game_jhyt --check
 | 文档一致性（编号/索引/链接/历史路径/编码） | `pwsh -File scripts/check-docs.ps1` |
 | 干净目录发布自测 | `pwsh -File scripts/package.ps1 -ProjectRoot examples/game_jhyt -SelfTest` |
 | WebGL 产物层启动验收 | `pwsh -File scripts/verify-webgl-bundle.ps1` |
+| 本地试玩某个 web 平台产物（自动发现 + 验收 + 起服务） | `pwsh -File scripts/test-bundle.ps1`（`-Platform wechat-minigame` 切平台） |
 
 门全绿的含义与逐项通过标准见 [docs/34-质量门与发布清单.md](docs/34-质量门与发布清单.md)；
 `verify.ps1` 会依次跑文档门、cargo 门、`game --check`/`editor --check`、24 项 headless 验收样例与发布隔离自测。

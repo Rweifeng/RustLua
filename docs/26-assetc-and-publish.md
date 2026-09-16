@@ -89,14 +89,70 @@ P2PK1 <flags> [12B nonce] <payload>
 
 编辑器「发布」动作后台启动 [scripts/package.ps1](../scripts/package.ps1)（不弹终端窗，进度解析 `==>` 阶段标记）。脚本执行：
 
-1. Release 构建（`cargo build --workspace --release`）。
+1. Release 构建（`cargo build --workspace --release`；web 平台改为 `cargo build -p game_web --release --target wasm32-unknown-unknown` + `wasm-bindgen`）。
 2. `assetc package` 生成数据包 `pack/`（按平台）。
 3. 复制运行器到发布目录：
    - **pc**：`game.exe` + `pack/` + `fonts/NotoSansSC-VF.ttf` + `release.toml` + `run.txt` + `deps.txt` + `build-info.txt`。
-   - **webgl**：`index.html` + `web-runtime.js` + `pkg/game_web.js` + `pkg/game_web_bg.wasm` + `pack/`（wasm-bindgen 生成）。
-   - **wechat-minigame**：预留平台。
-4. 用 `game.exe --pack <pack> --check` 做无窗口完整性校验（退出码 0 = 通过）；`-SelfTest` 把包复制到带空格的临时目录再校验，验证目录隔离（无源码/无 target 依赖）。
+   - **webgl**：`index.html`（由 `plugins/webgl/index.html` 模板替换工程名/字体路径生成）+ `web-runtime.js` + `pkg/game_web.js` + `pkg/game_web_bg.wasm` + `pkg/fengari-web.js` + `fonts/` + `pack/`。
+   - **wechat-minigame**：`game.js` + `wechat-adapter.js` + `game.json` + `project.config.json` + `web-runtime.js` + `pkg/fengari-web.js` + `pack/` + `release.toml` + `run.txt` + `deps.txt` + `build-info.txt`；
+     默认形态（`-AssetPack subpackage`）下另有 `mainpack.json` + `mainpack/`（主包侧首屏资源）+ `pack/game.js`（分包入口）。
+     平台文件来自 `plugins/wechat-minigame/`；发布脚本会检查入口/配置/资源齐全、拒绝混入 `game.exe`/`index.html`、**拒绝任何非 CommonJS 脚本**（小游戏不支持 ES Module）、并强制**主包 ≤ 4 MB / 单分包 ≤ 4 MB / 总计 ≤ 20 MB**。
+     不发行 wasm-bindgen 产物（浏览器 ESM 胶水，小游戏用不到也解析不了）；字体只分发 assetc 子集化产物。
+     发布脚本还会做**代码包后缀合规**：微信只上传后缀在白名单内的文件（69 个，见
+     `scripts/code-package-rules.js`），`.lua`/`.toml`/`.md` 传不上去（真机上读它们是
+     `permission denied`），因此构建期把这些文件名追加 `.txt` 并把映射写进产物根的
+     `code-package.json`（运行时只查表）；分包 `pack/` 的后缀本来都合规，改名不动分包与 CDN 导出。
+     资源形态三选一，详见 [微信小游戏分包发布](52-微信小游戏分包发布.md) 与
+     [plugins/wechat-minigame/README.md](../plugins/wechat-minigame/README.md)。
+4. 用 `game.exe --pack <pack> --check` 做无窗口完整性校验（退出码 0 = 通过）；`-SelfTest` 把包复制到带空格的临时目录再校验，验证目录隔离（无源码/无 target 依赖）。web 平台的 `-SelfTest` 改为断言静态产物齐全，并（小游戏）在隔离目录里跑一次无头运行时验证。
 5. 生成 `release.toml`（`publish_name`）、`run.txt`（运行说明）、`build-info.txt`（引擎版本、toolchain、内容清单）。
+
+**平台差异**：web 平台共用 `plugins/webgl/web-runtime.js`，该 JS 运行时只读明文 `pack/`，因此 `-Encrypt`/`-Compress` 仅对 PC 有效；对 web 平台传这两个开关会被脚本直接拒绝（避免产出跑不起来的包）。
+
+**主包 + 单分包（小游戏默认形态）**。`-AssetPack subpackage`（微信平台不传时的默认值）先把首屏资源
+从 `pack/` **搬**到兄弟目录 `mainpack/`（搬运依据是 `scripts/first-screen-pack.js` 生成的 `mainpack.json`，
+清单项在 `pack/` 下随即消失——两侧互斥，切分不全过不了字节守恒断言），再把 `pack/`
+写进 `game.json` 的 `subpackages` 并生成分包入口 `pack/game.js`。运行时首屏读主包 `mainpack/`、
+其余读分包 `pack/`（`wx.loadSubpackage` 按需挂载）。产物形态：
+
+```
+examples\<game>\builds\wechat-minigame\<PublishName>\
+└── launcher\            # 代码包：整目录一次上传微信（就是它，没有第二个目录）
+    ├── mainpack.json    # 首屏清单：构建/运行时/harness 三方共用的路由依据
+    ├── mainpack\        # 首屏资源（在**主包**里，启动即用，不等分包）
+    ├── pack\            # 分包 root（含入口 game.js；目录下所有文件都进分包）
+    └── …
+```
+
+**瘦首包 / 资源包放 CDN（小游戏可选形态）**。`-AssetPack remote -RemotePackBaseUrl https://cdn.example.com/games/x`
+会把 `pack/` 的重资源裁掉（包内只留 `project.toml`/`manifest.txt`/`settings.toml`/`chars.txt` 骨架，约 44 KB），
+并把完整资源树导出到发布根下的 `assets/`（形如 `<发布根>/assets/pack/**`，整目录上传 CDN），
+在首包根写入 `remote-assets.json`。微信的发布根此时是 `<PublishName>/{launcher,assets}`：
+
+```
+examples\<game>\builds\wechat-minigame\<PublishName>\
+├── launcher\   # 首包：上传微信 / 导入开发者工具的就是它（含 pack/ 骨架、remote-assets.json）
+└── assets\     # 资源包：整目录上传 CDN（形如 <目录>/pack/**）
+```
+
+两者在**同一个 staging 里生成、由一次原子交换一起落地**，因此不存在"新首包配旧资源包"的半更新状态；
+`launcher\pack\manifest.txt` 与 `assets\pack\manifest.txt` 必须逐字节相同（远端校验用的是包内那份清单）。
+`-CdnPackDir <目录>` 是镜像导出：权威位置仍是 `assets/`，给了它就额外再导出一份（方便 rsync/s3 sync）。
+
+```json
+{ "packBaseUrl": "https://cdn.example.com/games/x/pack/", "verifyChecksum": true, "timeoutMs": 15000 }
+```
+
+语义是**包内优先 + 远端兜底**，不配 `-RemotePackBaseUrl` 时行为完全不变（且会删除陈旧配置，避免真机去拉已经不存在的地址）。
+下载后按 `pack/manifest.txt` 的体积 + FNV-1a 校验和比对，不符即丢弃（校验通过才写入缓存）。
+发布脚本会校验导出目录与包内 manifest 的文件数/字节数逐一相等，不等就报错（避免发出一个"少资源"的包）。
+本地联调：`scripts/serve-pack.ps1 -Root <发布根>\assets -Port 8787`（或直接双击 `scripts\serve-wechat-pack.bat`）
+用 Node 起一个只读静态服务托管资源包（`scripts/pack-server.js`，防目录穿越、带请求日志），
+并在开发者工具勾选「不校验合法域名…」。
+瘦首包的运行时验证默认就能找到资源包（`<发布根>/assets`），也可显式指定
+`scripts/verify-wechat-minigame.ps1 -BundleRoot <发布根>\launcher -AssetPackRoot <资源包目录>`。
+注意这只是**开发者工具侧的自测替身**：真机需要公网 HTTPS + 公众平台 `downloadFile` 白名单，且手机访问不到 `127.0.0.1`。
+平台细节与边界见 [plugins/wechat-minigame/README.md](../plugins/wechat-minigame/README.md)。
 
 PC 发布包是自包含目录，运行方式：`game.exe --pack pack --title "名称"`；无需源码或 Rust 环境。
 
