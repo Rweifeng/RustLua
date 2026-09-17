@@ -22,5 +22,5 @@ pub use gamepad::{
     FakeBackend, GamepadBackend, GamepadDeadzone, GamepadFrame, GamepadPoller,
     button as gamepad_button,
 };
-pub use renderer::{ReadbackMetrics, ReadbackStatus, RenderOutcome, Renderer};
+pub use renderer::{ReadbackMetrics, ReadbackStatus, RenderFrameMetrics, RenderOutcome, Renderer};
 pub use runtime_scene::{RuntimeScene, load_project_font_atlas, load_project_vector_atlas};

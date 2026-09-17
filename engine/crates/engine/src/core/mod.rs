@@ -88,6 +88,8 @@ pub mod scheduler;
 pub mod script;
 /// 工程级设置文件 `<project>/settings.toml`（音频分组音量等玩家偏好）。
 pub mod settings;
+/// WP2 prototype: unified local/global spatial transforms.
+pub mod spatial_transform;
 /// CPU-side 2D Sprite geometry and UV generation.
 pub mod sprite;
 /// CPU-side batching and sorting for 2D Sprites.
@@ -103,6 +105,8 @@ pub mod time_step;
 pub mod transform;
 /// 3D transform component and model-matrix construction.
 pub mod transform3d;
+/// WP1 prototype: typed scene compilation at the load boundary.
+pub mod typed_scene;
 /// Screen-space UI scene components (Text / Image).
 pub mod ui;
 /// E26: pure UI animation tracks and isolated preview playback.

@@ -9,7 +9,9 @@ param(
     # 基线与干净发行目录自测（package.ps1 -SelfTest）。
     [switch]$Mvp,
     # 仅跑 MVP 追加部分（跳过 fmt/clippy/test/build 常规门）。
-    [switch]$MvpOnly
+    [switch]$MvpOnly,
+    # WP0：运行固定 ECS/2D/3D 阶梯基准并写入本地 artifacts/baselines。
+    [switch]$Benchmarks
 )
 
 $ErrorActionPreference = "Stop"
@@ -232,6 +234,68 @@ if ($Mvp -or $MvpOnly) {
     Invoke-PackageSelfTest -ProjectRootPath $defaultGameProject
 
     Write-Host "`nMVP gate passed. Log: $logPath" -ForegroundColor Green
+}
+
+if ($Benchmarks) {
+    Write-Step "WP0 performance baselines"
+    Push-Location $engineRoot
+    try {
+        $baselineRoot = Join-Path $projectRoot "artifacts\baselines"
+        $ecsBaselinePath = Join-Path $baselineRoot "ecs-stairs.json"
+        $spriteBaselinePath = Join-Path $baselineRoot "sprite-10000.json"
+        $tilemapBaselinePath = Join-Path $baselineRoot "tilemap-100x100.json"
+        $threeDBaselinePath = Join-Path $baselineRoot "wp0-3d-stress.json"
+        $threeDGoldenPath = Join-Path $baselineRoot "wp0-3d-golden.json"
+        Invoke-Checked cargo @(
+            "run", "--quiet", "--release", "-p", "engine", "--example", "ecs_stress", "--",
+            "--stairs", "--seconds", "1", "--output", $ecsBaselinePath
+        )
+        Invoke-Checked cargo @(
+            "run", "--quiet", "--release", "-p", "engine", "--example", "sprite_stress", "--",
+            "--sprites", "10000", "--cycles", "30", "--output", $spriteBaselinePath
+        )
+        Invoke-Checked cargo @(
+            "run", "--quiet", "--release", "-p", "engine", "--example", "tilemap_stress", "--",
+            "--width", "100", "--height", "100", "--cycles", "30", "--output", $tilemapBaselinePath
+        )
+        Invoke-Checked cargo @(
+            "run", "--quiet", "--release", "-p", "engine", "--example", "wp0_3d_stress", "--",
+            "--cycles", "30", "--output", $threeDBaselinePath
+        )
+        Invoke-Checked cargo @(
+            "run", "--quiet", "--release", "-p", "engine", "--example", "wp0_3d_golden", "--",
+            "--output", $threeDGoldenPath
+        )
+    }
+    finally {
+        Pop-Location
+    }
+    $threeDReport = Get-Content -LiteralPath $threeDBaselinePath -Raw | ConvertFrom-Json
+    if ($threeDReport.report_version -ne "wp0-v3" -or $threeDReport.stairs.Count -ne 3) {
+        throw "3D WP0 report schema invalid: expected wp0-v3 with three stairs"
+    }
+    foreach ($stair in $threeDReport.stairs) {
+        if ($stair.render.draw_calls -ne 2 -or
+            $stair.render.instances -ne $stair.mesh_count -or
+            $stair.render.triangles -ne $stair.mesh_count -or
+            (($stair.render.gpu_timestamp_supported -and $null -eq $stair.render.gpu_frame_us -and $stair.render.gpu_timestamp_reason -notin @("pending", "resolved")) -or
+             (-not $stair.render.gpu_timestamp_supported -and $null -ne $stair.render.gpu_frame_us)) -or
+            -not $stair.render.gpu_timestamp_reason) {
+            throw "3D WP0 report metrics invalid for mesh_count=$($stair.mesh_count)"
+        }
+    }
+    $goldenReport = Get-Content -LiteralPath $threeDGoldenPath -Raw | ConvertFrom-Json
+    if ($goldenReport.report_version -ne "wp0-golden-v1" -or
+        $goldenReport.scene -ne "demo3d" -or
+        $goldenReport.semantic.drawable_names.Count -ne 3 -or
+        $goldenReport.semantic.draw_calls -lt 4 -or
+        $goldenReport.semantic.instances -lt 3 -or
+        $goldenReport.semantic.triangles -lt 3 -or
+        $goldenReport.semantic.non_background_pixels -le 1000 -or
+        $goldenReport.semantic.center_non_background_pixels -le 100) {
+        throw "3D semantic golden invalid"
+    }
+    Write-Host "WP0 benchmark baselines and semantic golden written and schema-checked: $baselineRoot" -ForegroundColor Green
 }
 
 if (-not $KeepLog) {

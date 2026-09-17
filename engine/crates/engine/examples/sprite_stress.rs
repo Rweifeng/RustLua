@@ -8,21 +8,39 @@ use engine::core::{
     sprite_batch::{SpriteBatch, SpriteBatchItem},
     transform::{Transform, Vec2},
 };
-use std::{env, time::Instant};
+use std::{
+    env, fs,
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 const DEFAULT_SPRITES: usize = 1000;
 const DEFAULT_CYCLES: usize = 60;
+const REPORT_VERSION: &str = "wp0-v2";
+
+#[derive(Debug, Clone, Copy)]
+struct Stats {
+    count: usize,
+    min_us: u128,
+    average_us: u128,
+    p50_us: u128,
+    p95_us: u128,
+    p99_us: u128,
+    max_us: u128,
+}
 
 #[derive(Debug)]
 struct Config {
     sprites: usize,
     cycles: usize,
+    output: Option<PathBuf>,
 }
 
 fn parse_config() -> Config {
     let mut config = Config {
         sprites: DEFAULT_SPRITES,
         cycles: DEFAULT_CYCLES,
+        output: None,
     };
     let mut args = env::args().skip(1);
     while let Some(flag) = args.next() {
@@ -41,8 +59,14 @@ fn parse_config() -> Config {
                     .parse()
                     .expect("--cycles must be an integer")
             }
+            "--output" => {
+                config.output = Some(PathBuf::from(
+                    args.next()
+                        .unwrap_or_else(|| panic!("{flag} requires a value")),
+                ))
+            }
             "--help" | "-h" => {
-                println!("Usage: sprite_stress [--sprites N] [--cycles N]");
+                println!("Usage: sprite_stress [--sprites N] [--cycles N] [--output PATH]");
                 std::process::exit(0);
             }
             _ => panic!("unknown argument: {flag}"),
@@ -85,25 +109,92 @@ fn main() {
 
     // push 吞吐。
     batch.clear();
-    let push_start = Instant::now();
+    let mut push_samples = Vec::with_capacity(config.cycles);
     for _ in 0..config.cycles {
+        let start = Instant::now();
         batch.clear();
         fill(&mut batch, config.sprites);
+        push_samples.push(start.elapsed());
     }
-    let push_ms = push_start.elapsed().as_secs_f64() * 1000.0 / config.cycles as f64;
 
     // build（排序 + 顶点生成）单轮耗时。
     batch.clear();
     fill(&mut batch, config.sprites);
-    let build_start = Instant::now();
-    let mesh = batch.build(camera, viewport).expect("build");
-    let build_ms = build_start.elapsed().as_secs_f64() * 1000.0;
+    let mut build_samples = Vec::with_capacity(config.cycles);
+    let mut mesh = None;
+    for _ in 0..config.cycles {
+        let start = Instant::now();
+        mesh = Some(batch.build(camera, viewport).expect("build"));
+        build_samples.push(start.elapsed());
+    }
+    let mesh = mesh.expect("mesh");
+    let push = summarize(push_samples);
+    let build = summarize(build_samples);
 
     println!(
-        "sprite_stress_ok sprites={} cycles={} push_ms={push_ms:.3} build_ms={build_ms:.3} vertices={} draw_batches={}",
+        "sprite_stress_ok report_version={REPORT_VERSION} sprites={} cycles={} push_p50_us={} push_p95_us={} push_p99_us={} build_p50_us={} build_p95_us={} build_p99_us={} vertices={} draw_batches={} instances={} triangles={}",
         config.sprites,
         config.cycles,
+        push.p50_us,
+        push.p95_us,
+        push.p99_us,
+        build.p50_us,
+        build.p95_us,
+        build.p99_us,
         mesh.vertices.len(),
-        mesh.draws.len()
+        mesh.draws.len(),
+        config.sprites,
+        config.sprites * 2
     );
+    if let Some(path) = config.output.as_ref() {
+        write_report(path, &config, push, build, mesh.draws.len());
+    }
+}
+
+fn summarize(mut values: Vec<Duration>) -> Stats {
+    values.sort_unstable();
+    let percentile =
+        |percent: usize| ((values.len() * percent).saturating_sub(1) / 100).min(values.len() - 1);
+    Stats {
+        count: values.len(),
+        min_us: values[0].as_micros(),
+        average_us: values.iter().map(Duration::as_micros).sum::<u128>() / values.len() as u128,
+        p50_us: values[percentile(50)].as_micros(),
+        p95_us: values[percentile(95)].as_micros(),
+        p99_us: values[percentile(99)].as_micros(),
+        max_us: values[values.len() - 1].as_micros(),
+    }
+}
+
+fn write_report(path: &PathBuf, config: &Config, push: Stats, build: Stats, draws: usize) {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent).expect("create report directory");
+    }
+    let json = format!(
+        "{{\n  \"report_version\": \"{REPORT_VERSION}\",\n  \"benchmark\": \"sprite_stress\",\n  \"sprites\": {},\n  \"cycles\": {},\n  \"metrics\": {{\n    \"push_us\": {},\n    \"build_us\": {},\n    \"render\": {{\"draw_calls\":{},\"instances\":{},\"triangles\":{},\"cpu_frame_us\":null,\"gpu_frame_us\":null}}\n  }}\n}}\n",
+        config.sprites,
+        config.cycles,
+        stats_json(push),
+        stats_json(build),
+        draws,
+        config.sprites,
+        config.sprites * 2
+    );
+    fs::write(path, json).expect("write sprite report");
+}
+
+fn stats_json(stat: Stats) -> String {
+    format!(
+        "{{\"count\":{},\"min_us\":{},\"average_us\":{},\"p50_us\":{},\"p95_us\":{},\"p99_us\":{},\"max_us\":{}}}",
+        stat.count,
+        stat.min_us,
+        stat.average_us,
+        stat.p50_us,
+        stat.p95_us,
+        stat.p99_us,
+        stat.max_us
+    )
 }

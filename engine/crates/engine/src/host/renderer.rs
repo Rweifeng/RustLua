@@ -7,6 +7,7 @@ use std::{
     hash::{Hash, Hasher},
     path::PathBuf,
     sync::Arc,
+    time::Instant,
 };
 
 use crate::core::{
@@ -152,6 +153,41 @@ struct ReadbackSlot {
     generation: u64,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RenderFrameMetrics {
+    pub cpu_frame_us: u64,
+    pub gpu_frame_us: Option<u64>,
+    pub draw_calls: u64,
+    pub instances: u64,
+    pub triangles: u64,
+}
+
+fn record_draw_call(metrics: &mut RenderFrameMetrics) {
+    metrics.draw_calls += 1;
+}
+
+fn record_triangle_draw(metrics: &mut RenderFrameMetrics, vertex_count: u32) {
+    record_draw_call(metrics);
+    metrics.triangles += u64::from(vertex_count) / 3;
+}
+
+fn record_vertex_draw(metrics: &mut RenderFrameMetrics, vertex_count: u32) {
+    record_draw_call(metrics);
+    metrics.instances += u64::from(vertex_count) / 6;
+    metrics.triangles += u64::from(vertex_count) / 3;
+}
+
+fn record_indexed_draw(
+    metrics: &mut RenderFrameMetrics,
+    index_count: u32,
+    instance_count: usize,
+    pass_count: u64,
+) {
+    metrics.draw_calls += pass_count;
+    metrics.instances += instance_count as u64;
+    metrics.triangles += u64::from(index_count) / 3 * instance_count as u64;
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ReadbackMetrics {
     pub slot_count: usize,
@@ -184,6 +220,22 @@ enum ReadbackPoll {
     NotReady,
     Ready(Vec<u8>, u32, u32),
     Failed(String),
+}
+
+/// One asynchronous whole-frame GPU timestamp readback.
+struct TimestampSlot {
+    resolve_buffer: wgpu::Buffer,
+    buffer: wgpu::Buffer,
+    submission: Option<wgpu::SubmissionIndex>,
+    map_result: std::sync::Arc<std::sync::atomic::AtomicU8>,
+    map_error: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GpuTimestampState {
+    Unsupported,
+    Ready,
+    MapError,
 }
 
 /// Largest axis scale of a model matrix (used to inflate culling spheres).
@@ -276,6 +328,12 @@ pub struct Renderer {
     readback_dropped: u64,
     readback_pending_count: u64,
     readback_buffer_rebuilds: u64,
+    timestamp_query_set: Option<wgpu::QuerySet>,
+    timestamp_slots: Vec<TimestampSlot>,
+    timestamp_period_ns: f32,
+    timestamp_state: GpuTimestampState,
+    timestamp_error: Option<String>,
+    last_frame_metrics: RenderFrameMetrics,
 }
 
 impl Renderer {
@@ -337,10 +395,17 @@ impl Renderer {
                 .await
                 .map_err(|error| format!("could not find a compatible GPU adapter: {error}"))?;
             let adapter_name = adapter.get_info().name;
+            let timestamp_features =
+                wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
+            let required_features = if adapter.features().contains(timestamp_features) {
+                timestamp_features
+            } else {
+                wgpu::Features::empty()
+            };
             let (device, queue) = adapter
                 .request_device(&DeviceDescriptor {
                     label: Some("p2-render-device"),
-                    required_features: wgpu::Features::empty(),
+                    required_features,
                     experimental_features: wgpu::ExperimentalFeatures::disabled(),
                     required_limits: wgpu::Limits::default(),
                     memory_hints: wgpu::MemoryHints::Performance,
@@ -1046,8 +1111,19 @@ impl Renderer {
         });
         let depth_view = Self::create_depth_view(&device, config.width, config.height);
         let depth_init = (config.width, config.height);
+        let timestamp_enabled = device.features().contains(
+            wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS,
+        );
+        let timestamp_query_set = timestamp_enabled.then(|| {
+            device.create_query_set(&wgpu::QuerySetDescriptor {
+                label: Some("p2-frame-timestamps"),
+                ty: wgpu::QueryType::Timestamp,
+                count: 2,
+            })
+        });
+        let timestamp_period_ns = queue.get_timestamp_period();
         tracing::info!(target: "game",
-            "[render] initialized: adapter={adapter_name} format={format:?} present_mode={:?}",
+            "[render] initialized: adapter={adapter_name} format={format:?} present_mode={:?} gpu_timestamp={timestamp_enabled}",
             config.present_mode
         );
         Ok(Self {
@@ -1108,6 +1184,16 @@ impl Renderer {
             readback_dropped: 0,
             readback_pending_count: 0,
             readback_buffer_rebuilds: 0,
+            timestamp_query_set,
+            timestamp_slots: Vec::new(),
+            timestamp_period_ns,
+            timestamp_state: if timestamp_enabled {
+                GpuTimestampState::Ready
+            } else {
+                GpuTimestampState::Unsupported
+            },
+            timestamp_error: None,
+            last_frame_metrics: RenderFrameMetrics::default(),
         })
     }
 
@@ -1567,8 +1653,25 @@ impl Renderer {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("p2-clear-encoder"),
             });
-        self.render_passes(&mut encoder, mesh, scene3d, &view);
-        self.queue.submit([encoder.finish()]);
+        let started = Instant::now();
+        let completed_gpu_us = self.poll_gpu_timestamp();
+        let timestamp_slot = self.acquire_timestamp_slot();
+        if timestamp_slot.is_some()
+            && let Some(query_set) = &self.timestamp_query_set
+        {
+            encoder.write_timestamp(query_set, 0);
+        }
+        let mut metrics = self.render_passes(&mut encoder, mesh, scene3d, &view);
+        if let Some(slot) = timestamp_slot {
+            self.finish_gpu_timestamp(&mut encoder, slot);
+        }
+        let submission = self.queue.submit([encoder.finish()]);
+        if let Some(slot) = timestamp_slot {
+            self.arm_timestamp_slot(slot, submission);
+        }
+        metrics.cpu_frame_us = started.elapsed().as_micros() as u64;
+        metrics.gpu_frame_us = completed_gpu_us;
+        self.last_frame_metrics = metrics;
         output.present();
         RenderOutcome::Presented
     }
@@ -1590,8 +1693,25 @@ impl Renderer {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("p2-offscreen-encoder"),
             });
-        self.render_passes(&mut encoder, mesh, scene3d, view);
-        self.queue.submit([encoder.finish()]);
+        let started = Instant::now();
+        let completed_gpu_us = self.poll_gpu_timestamp();
+        let timestamp_slot = self.acquire_timestamp_slot();
+        if timestamp_slot.is_some()
+            && let Some(query_set) = &self.timestamp_query_set
+        {
+            encoder.write_timestamp(query_set, 0);
+        }
+        let mut metrics = self.render_passes(&mut encoder, mesh, scene3d, view);
+        if let Some(slot) = timestamp_slot {
+            self.finish_gpu_timestamp(&mut encoder, slot);
+        }
+        let submission = self.queue.submit([encoder.finish()]);
+        if let Some(slot) = timestamp_slot {
+            self.arm_timestamp_slot(slot, submission);
+        }
+        metrics.cpu_frame_us = started.elapsed().as_micros() as u64;
+        metrics.gpu_frame_us = completed_gpu_us;
+        self.last_frame_metrics = metrics;
         RenderOutcome::Presented
     }
 
@@ -1931,7 +2051,7 @@ impl Renderer {
         mesh: &SceneMesh,
         scene3d: Option<&Scene3d>,
         view: &wgpu::TextureView,
-    ) {
+    ) -> RenderFrameMetrics {
         {
             let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("p2-clear-pass"),
@@ -1960,6 +2080,15 @@ impl Renderer {
         } else {
             Vec::new()
         };
+        let mut metrics = RenderFrameMetrics::default();
+        for draw in &frame_draws {
+            record_indexed_draw(
+                &mut metrics,
+                draw.geometry.index_count,
+                draw.models.len(),
+                2,
+            );
+        }
         if !frame_draws.is_empty() {
             {
                 let mut shadow_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -2068,6 +2197,7 @@ impl Renderer {
                     pass.set_pipeline(&self.pipeline_sdf);
                     pass.set_bind_group(0, &sdf_bind, &[]);
                     pass.draw(draw.start..draw.start + draw.count, 0..1);
+                    record_vertex_draw(&mut metrics, draw.count);
                     continue;
                 }
                 let Some(bind) = self.bind_group_for(draw.texture, &mesh.paths) else {
@@ -2076,6 +2206,7 @@ impl Renderer {
                 pass.set_pipeline(&self.pipeline);
                 pass.set_bind_group(0, &bind, &[]);
                 pass.draw(draw.start..draw.start + draw.count, 0..1);
+                record_vertex_draw(&mut metrics, draw.count);
             }
         }
         if !mesh.vector_vertices.is_empty()
@@ -2149,7 +2280,9 @@ impl Renderer {
             pass.set_bind_group(0, bind, &[]);
             pass.set_vertex_buffer(0, self.vector_vertex_buffer.slice(..));
             pass.draw(0..mesh.vector_vertices.len() as u32, 0..1);
+            record_triangle_draw(&mut metrics, mesh.vector_vertices.len() as u32);
         }
+        metrics
     }
 
     /// 确保 2D 顶点缓冲能容纳 `required` 字节；不足则按 2 的幂扩容。
@@ -2181,6 +2314,154 @@ impl Renderer {
         });
         self.vertex_buffer_growths += 1;
         capacity
+    }
+
+    fn acquire_timestamp_slot(&mut self) -> Option<usize> {
+        if self.timestamp_state != GpuTimestampState::Ready {
+            return None;
+        }
+        if let Some(index) = self
+            .timestamp_slots
+            .iter()
+            .position(|slot| slot.submission.is_none())
+        {
+            return Some(index);
+        }
+        if self.timestamp_slots.len() >= 3 {
+            return None;
+        }
+        let map_result = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0));
+        let map_error = std::sync::Arc::new(std::sync::Mutex::new(None));
+        self.timestamp_slots.push(TimestampSlot {
+            resolve_buffer: self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("p2-frame-timestamp-resolve"),
+                size: 16,
+                usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            }),
+            buffer: self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("p2-frame-timestamp-readback"),
+                size: 16,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            }),
+            submission: None,
+            map_result,
+            map_error,
+        });
+        Some(self.timestamp_slots.len() - 1)
+    }
+
+    fn finish_gpu_timestamp(&self, encoder: &mut wgpu::CommandEncoder, slot_index: usize) {
+        let Some(query_set) = &self.timestamp_query_set else {
+            return;
+        };
+        encoder.write_timestamp(query_set, 1);
+        let slot = &self.timestamp_slots[slot_index];
+        encoder.resolve_query_set(query_set, 0..2, &slot.resolve_buffer, 0);
+        encoder.copy_buffer_to_buffer(&slot.resolve_buffer, 0, &slot.buffer, 0, 16);
+    }
+
+    fn arm_timestamp_slot(&mut self, index: usize, submission: wgpu::SubmissionIndex) {
+        let slot = &mut self.timestamp_slots[index];
+        let result = std::sync::Arc::clone(&slot.map_result);
+        let error = std::sync::Arc::clone(&slot.map_error);
+        slot.buffer
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |mapped| match mapped {
+                Ok(()) => result.store(1, std::sync::atomic::Ordering::Release),
+                Err(cause) => {
+                    result.store(2, std::sync::atomic::Ordering::Release);
+                    if let Ok(mut guard) = error.lock() {
+                        *guard = Some(cause.to_string());
+                    }
+                }
+            });
+        slot.submission = Some(submission);
+    }
+
+    fn poll_gpu_timestamp(&mut self) -> Option<u64> {
+        if self.timestamp_state != GpuTimestampState::Ready {
+            return None;
+        }
+        let _ = self.device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: Some(std::time::Duration::ZERO),
+        });
+        for slot in &mut self.timestamp_slots {
+            if slot.submission.is_none() {
+                continue;
+            }
+            match slot.map_result.load(std::sync::atomic::Ordering::Acquire) {
+                0 => continue,
+                1 => {
+                    let bytes = slot.buffer.slice(..).get_mapped_range();
+                    let begin =
+                        u64::from_le_bytes(bytes[0..8].try_into().expect("timestamp begin"));
+                    let end = u64::from_le_bytes(bytes[8..16].try_into().expect("timestamp end"));
+                    drop(bytes);
+                    slot.buffer.unmap();
+                    slot.submission = None;
+                    slot.map_result
+                        .store(0, std::sync::atomic::Ordering::Release);
+                    let nanos = end.saturating_sub(begin) as f64 * self.timestamp_period_ns as f64;
+                    return Some((nanos / 1_000.0).round() as u64);
+                }
+                _ => {
+                    self.timestamp_error = slot
+                        .map_error
+                        .lock()
+                        .ok()
+                        .and_then(|mut value| value.take());
+                    slot.submission = None;
+                    slot.map_result
+                        .store(0, std::sync::atomic::Ordering::Release);
+                    self.timestamp_state = GpuTimestampState::MapError;
+                    return None;
+                }
+            }
+        }
+        None
+    }
+
+    /// Waits briefly for one timestamp result. Intended for offline benchmark
+    /// collection; the normal render path never blocks on GPU timing.
+    pub fn wait_for_gpu_timestamp(&mut self, timeout: std::time::Duration) -> Option<u64> {
+        if self.timestamp_state != GpuTimestampState::Ready {
+            return None;
+        }
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            if let Some(value) = self.poll_gpu_timestamp() {
+                return Some(value);
+            }
+            if std::time::Instant::now() >= deadline {
+                return None;
+            }
+            let _ = self.device.poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(std::time::Duration::from_millis(1)),
+            });
+        }
+    }
+
+    /// Whether this device was created with timestamp query support.
+    pub fn gpu_timestamp_supported(&self) -> bool {
+        self.timestamp_state != GpuTimestampState::Unsupported
+    }
+
+    /// Stable diagnostic for benchmark reports when no GPU timestamp is available.
+    pub fn gpu_timestamp_reason(&self) -> Option<&str> {
+        match self.timestamp_state {
+            GpuTimestampState::Unsupported => Some("unsupported"),
+            GpuTimestampState::MapError => self.timestamp_error.as_deref().or(Some("map_error")),
+            GpuTimestampState::Ready => None,
+        }
+    }
+
+    /// 最近一次成功提交的帧统计。GPU timestamp 不可用或尚未完成时为 `None`。
+    pub fn last_frame_metrics(&self) -> RenderFrameMetrics {
+        self.last_frame_metrics
     }
 
     /// 2D 顶点缓冲扩容次数（诊断/验收：稳定场景不应持续增长）。
@@ -2744,6 +3025,49 @@ pub enum RenderOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn render_metrics_count_2d_draws_and_geometry() {
+        let mut metrics = RenderFrameMetrics::default();
+        record_vertex_draw(&mut metrics, 60);
+        record_vertex_draw(&mut metrics, 30);
+
+        assert_eq!(metrics.draw_calls, 2);
+        assert_eq!(metrics.instances, 15);
+        assert_eq!(metrics.triangles, 30);
+        assert_eq!(metrics.gpu_frame_us, None);
+    }
+
+    #[test]
+    fn render_metrics_do_not_treat_vector_text_as_sprite_instances() {
+        let mut metrics = RenderFrameMetrics::default();
+        record_triangle_draw(&mut metrics, 12);
+
+        assert_eq!(metrics.draw_calls, 1);
+        assert_eq!(metrics.instances, 0);
+        assert_eq!(metrics.triangles, 4);
+    }
+
+    #[test]
+    fn render_metrics_count_3d_passes_once_per_instance() {
+        let mut metrics = RenderFrameMetrics::default();
+        record_indexed_draw(&mut metrics, 36, 4, 2);
+
+        assert_eq!(metrics.draw_calls, 2);
+        assert_eq!(metrics.instances, 4);
+        assert_eq!(metrics.triangles, 48);
+    }
+
+    #[test]
+    fn render_metrics_count_mixed_2d_and_3d_frame() {
+        let mut metrics = RenderFrameMetrics::default();
+        record_indexed_draw(&mut metrics, 12, 3, 2);
+        record_vertex_draw(&mut metrics, 18);
+
+        assert_eq!(metrics.draw_calls, 3);
+        assert_eq!(metrics.instances, 6);
+        assert_eq!(metrics.triangles, 18);
+    }
 
     /// 2D 顶点缓冲容量策略：不小于初始容量、按 2 的幂增长、且总是能容纳请求。
     /// 回归背景：此前容量固定为 1 MiB 且超限时**没有 else 分支**，超出的帧会

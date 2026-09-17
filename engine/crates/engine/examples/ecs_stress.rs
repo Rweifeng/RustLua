@@ -16,13 +16,14 @@ use engine::core::{
 const DEFAULT_ENTITIES: usize = 10_000;
 const DEFAULT_SECONDS: u64 = 60;
 const REPLACE_BATCH: usize = 100;
-const REPORT_VERSION: &str = "m2-07-v1";
+const REPORT_VERSION: &str = "wp0-v2";
 
 #[derive(Debug)]
 struct Config {
     entities: usize,
     seconds: u64,
     output: Option<PathBuf>,
+    stairs: bool,
 }
 
 #[derive(Default)]
@@ -39,12 +40,18 @@ struct Stats {
     count: usize,
     min_us: u128,
     average_us: u128,
+    p50_us: u128,
     p95_us: u128,
+    p99_us: u128,
     max_us: u128,
 }
 
 fn main() {
     let config = parse_config();
+    if config.stairs {
+        run_stairs(&config);
+        return;
+    }
     let started = Instant::now();
     let (cycles, final_count, min_count, max_count, samples) = run(&config);
     let elapsed = started.elapsed();
@@ -89,6 +96,7 @@ fn parse_config() -> Config {
         entities: DEFAULT_ENTITIES,
         seconds: DEFAULT_SECONDS,
         output: None,
+        stairs: false,
     };
     let mut args = env::args().skip(1);
     while let Some(flag) = args.next() {
@@ -104,8 +112,11 @@ fn parse_config() -> Config {
                     .expect("--seconds must be an integer")
             }
             "--output" => config.output = Some(PathBuf::from(value(&mut args, &flag))),
+            "--stairs" => config.stairs = true,
             "--help" | "-h" => {
-                println!("Usage: ecs_stress [--entities N] [--seconds N] [--output PATH]");
+                println!(
+                    "Usage: ecs_stress [--entities N] [--seconds N] [--output PATH] [--stairs]"
+                );
                 std::process::exit(0);
             }
             _ => panic!("unknown argument: {flag}"),
@@ -118,6 +129,49 @@ fn parse_config() -> Config {
 fn value(args: &mut impl Iterator<Item = String>, flag: &str) -> String {
     args.next()
         .unwrap_or_else(|| panic!("{flag} requires a value"))
+}
+
+fn run_stairs(config: &Config) {
+    const ENTITY_COUNTS: [usize; 4] = [1_000, 10_000, 50_000, 100_000];
+    let mut reports = Vec::with_capacity(ENTITY_COUNTS.len());
+    for entities in ENTITY_COUNTS {
+        let stair = Config {
+            entities,
+            seconds: config.seconds,
+            output: None,
+            stairs: false,
+        };
+        let started = Instant::now();
+        let (cycles, final_count, min_count, max_count, samples) = run(&stair);
+        let elapsed = started.elapsed();
+        let stats = [
+            ("create", summarize(samples.create)),
+            ("query", summarize(samples.query)),
+            ("update", summarize(samples.update)),
+            ("destroy", summarize(samples.destroy)),
+            ("command", summarize(samples.command)),
+        ];
+        println!(
+            "ecs_stress_stair entities={entities} cycles={cycles} elapsed_ms={}",
+            elapsed.as_millis()
+        );
+        for (name, stat) in &stats {
+            print_stats(name, stat);
+        }
+        reports.push((
+            entities,
+            elapsed,
+            cycles,
+            final_count,
+            min_count,
+            max_count,
+            stats,
+        ));
+    }
+    if let Some(path) = &config.output {
+        write_stairs_report(path, config.seconds, &reports);
+        println!("report: {}", path.display());
+    }
 }
 
 fn run(config: &Config) -> (u64, usize, usize, usize, Samples) {
@@ -191,20 +245,29 @@ fn run(config: &Config) -> (u64, usize, usize, usize, Samples) {
 fn summarize(mut values: Vec<Duration>) -> Stats {
     values.sort_unstable();
     let total: u128 = values.iter().map(Duration::as_micros).sum();
-    let p95 = ((values.len() * 95).saturating_sub(1) / 100).min(values.len() - 1);
+    let percentile =
+        |percent: usize| ((values.len() * percent).saturating_sub(1) / 100).min(values.len() - 1);
     Stats {
         count: values.len(),
         min_us: values[0].as_micros(),
         average_us: total / values.len() as u128,
-        p95_us: values[p95].as_micros(),
+        p50_us: values[percentile(50)].as_micros(),
+        p95_us: values[percentile(95)].as_micros(),
+        p99_us: values[percentile(99)].as_micros(),
         max_us: values[values.len() - 1].as_micros(),
     }
 }
 
 fn print_stats(name: &str, stat: &Stats) {
     println!(
-        "{name}: count={} min_us={} avg_us={} p95_us={} max_us={}",
-        stat.count, stat.min_us, stat.average_us, stat.p95_us, stat.max_us
+        "{name}: count={} min_us={} avg_us={} p50_us={} p95_us={} p99_us={} max_us={}",
+        stat.count,
+        stat.min_us,
+        stat.average_us,
+        stat.p50_us,
+        stat.p95_us,
+        stat.p99_us,
+        stat.max_us
     );
 }
 
@@ -233,8 +296,58 @@ fn write_report(
         max_count
     );
     for (index, (name, stat)) in stats.iter().enumerate() {
-        json.push_str(&format!("    \"{name}\": {{\"count\":{},\"min_us\":{},\"average_us\":{},\"p95_us\":{},\"max_us\":{}}}{}\n", stat.count, stat.min_us, stat.average_us, stat.p95_us, stat.max_us, if index == stats.len() - 1 { "" } else { "," }));
+        json.push_str(&format!("    \"{name}\": {{\"count\":{},\"min_us\":{},\"average_us\":{},\"p50_us\":{},\"p95_us\":{},\"p99_us\":{},\"max_us\":{}}}{}\n", stat.count, stat.min_us, stat.average_us, stat.p50_us, stat.p95_us, stat.p99_us, stat.max_us, if index == stats.len() - 1 { "" } else { "," }));
     }
     json.push_str("  }\n}\n");
     fs::write(path, json).expect("write stress report");
+}
+
+#[allow(clippy::type_complexity)]
+fn write_stairs_report(
+    path: &PathBuf,
+    seconds: u64,
+    reports: &[(
+        usize,
+        Duration,
+        u64,
+        usize,
+        usize,
+        usize,
+        [(&str, Stats); 5],
+    )],
+) {
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        fs::create_dir_all(parent).expect("create report directory");
+    }
+    let mut json = format!(
+        "{{\n  \"report_version\": \"{REPORT_VERSION}\",\n  \"mode\": \"stairs\",\n  \"requested_seconds_per_stair\": {seconds},\n  \"stairs\": [\n"
+    );
+    for (report_index, (entities, elapsed, cycles, final_count, min_count, max_count, stats)) in
+        reports.iter().enumerate()
+    {
+        json.push_str(&format!(
+            "    {{\"entities\":{entities},\"elapsed_ms\":{},\"cycles\":{cycles},\"final_entities\":{final_count},\"min_entities\":{min_count},\"max_entities\":{max_count},\"samples\":{{",
+            elapsed.as_millis()
+        ));
+        for (index, (name, stat)) in stats.iter().enumerate() {
+            json.push_str(&format!(
+                "\"{name}\":{{\"count\":{},\"min_us\":{},\"average_us\":{},\"p50_us\":{},\"p95_us\":{},\"p99_us\":{},\"max_us\":{}}}{}",
+                stat.count,
+                stat.min_us,
+                stat.average_us,
+                stat.p50_us,
+                stat.p95_us,
+                stat.p99_us,
+                stat.max_us,
+                if index == stats.len() - 1 { "" } else { "," }
+            ));
+        }
+        json.push_str(if report_index == reports.len() - 1 {
+            "}}\n"
+        } else {
+            "}},\n"
+        });
+    }
+    json.push_str("  ]\n}\n");
+    fs::write(path, json).expect("write stair report");
 }
