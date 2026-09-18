@@ -42,6 +42,9 @@ pub struct ColliderDebugShape {
     pub rotation: f32,
     pub shape: ColliderShape,
     pub sensor: bool,
+    /// 刚体是否**动态**（`;dynamic=false` 的墙/地面为 `false`）。调试绘制用它上色：
+    /// 动态体会被模拟推动、固定体不会——两者画成一个颜色会让"物理到底动了什么"看不出来。
+    pub dynamic: bool,
 }
 
 /// A collider shape.
@@ -49,6 +52,67 @@ pub struct ColliderDebugShape {
 pub enum ColliderShape {
     Ball(f32),
     Cuboid(Vec2),
+}
+
+impl ColliderShape {
+    /// 局部空间的调试轮廓边（docs/54 §8-⑥：2D/3D 的"碰撞体怎么画"各只有一处实现）。
+    ///
+    /// - `Cuboid`：矩形四条边（周长顺序，与旧的宿主内联循环逐点一致）。
+    /// - `Ball`：24 边形近似（段数固定 ⇒ 调试顶点数可断言）。
+    ///
+    /// 与 3D 的 [`crate::core::physics3d::ColliderShape3d::wireframe_edges`] 同义：都是
+    /// "局部空间、段数固定、由姿态变换到世界"，只是维数不同。
+    #[must_use]
+    pub fn wireframe_edges(&self) -> Vec<(Vec2, Vec2)> {
+        match *self {
+            ColliderShape::Cuboid(half) => {
+                let corners = [
+                    Vec2::new(-half.x, -half.y),
+                    Vec2::new(half.x, -half.y),
+                    Vec2::new(half.x, half.y),
+                    Vec2::new(-half.x, half.y),
+                ];
+                (0..corners.len())
+                    .map(|index| (corners[index], corners[(index + 1) % corners.len()]))
+                    .collect()
+            }
+            ColliderShape::Ball(radius) => {
+                // 圆用 24 边形近似：调试轮廓够用，且段数固定 ⇒ 顶点数确定可断言。
+                const SEGMENTS: usize = 24;
+                let point = |step: usize| -> Vec2 {
+                    let angle = step as f32 / SEGMENTS as f32 * std::f32::consts::TAU;
+                    Vec2::new(angle.cos() * radius, angle.sin() * radius)
+                };
+                (0..SEGMENTS)
+                    .map(|step| (point(step), point((step + 1) % SEGMENTS)))
+                    .collect()
+            }
+        }
+    }
+}
+
+impl ColliderDebugShape {
+    /// 世界空间的调试线段（局部轮廓经刚体旋转平移）。非有限的姿态**跳过**该边——
+    /// 宁可少画一条线，也不画一条静默近似出来的线。
+    #[must_use]
+    pub fn wireframe_segments(&self) -> Vec<(Vec2, Vec2)> {
+        let (sin, cos) = self.rotation.sin_cos();
+        let place = |local: Vec2| -> Option<Vec2> {
+            let world = Vec2::new(
+                self.center.x + local.x * cos - local.y * sin,
+                self.center.y + local.x * sin + local.y * cos,
+            );
+            world.is_finite().then_some(world)
+        };
+        let mut segments = Vec::new();
+        for (from, to) in self.shape.wireframe_edges() {
+            let (Some(from), Some(to)) = (place(from), place(to)) else {
+                continue;
+            };
+            segments.push((from, to));
+        }
+        segments
+    }
 }
 
 /// One collider attached to a body, at a local offset. `layer` is the collision
@@ -63,6 +127,11 @@ pub struct ColliderDesc {
     pub shape: ColliderShape,
     pub offset: Vec2,
     pub sensor: bool,
+    /// Whether the owning body is dynamic (default true); `;dynamic=false`
+    /// creates a fixed body (ground, walls). 与 3D 侧 `ColliderDesc3d::dynamic`
+    /// 同义——2D 此前**没有**这个开关，静态墙只能靠 `Tilemap` 或代码里的
+    /// `add_body(.., false, ..)` 表达，场景里写不出来。
+    pub dynamic: bool,
     pub layer: u8,
     pub mask: u8,
     pub ccd: bool,
@@ -71,12 +140,13 @@ pub struct ColliderDesc {
 impl ColliderDesc {
     /// Parses a scene `Collider` component string:
     /// `shape=ball;radius=..` or `shape=cuboid;half_width=..;half_height=..`,
-    /// with optional `;sensor=true`, `;offset=x,y`, `;layer=N`, `;mask=N`, and
-    /// `;ccd=true` (连续碰撞检测，默认关闭).
+    /// with optional `;sensor=true`, `;dynamic=false`, `;offset=x,y`, `;layer=N`,
+    /// `;mask=N`, and `;ccd=true` (连续碰撞检测，默认关闭).
     pub fn from_component_str(value: &str) -> Result<Self, PhysicsError> {
         let mut shape = None;
         let mut offset = Vec2::zero();
         let mut sensor = false;
+        let mut dynamic = true;
         let mut layer = 0xFF;
         let mut mask = 0xFF;
         let mut ccd = false;
@@ -135,6 +205,19 @@ impl ColliderDesc {
                         _ => {
                             return Err(PhysicsError::Malformed(
                                 "sensor must be true/false".to_owned(),
+                            ));
+                        }
+                    };
+                }
+                // 与 3D `Collider3d` 的 `dynamic` 同义：`;dynamic=false` 让该实体成为
+                // **固定刚体**（地面/墙）。同样只接受 true/false——拼错必须报错。
+                "dynamic" => {
+                    dynamic = match raw {
+                        "true" => true,
+                        "false" => false,
+                        _ => {
+                            return Err(PhysicsError::Malformed(
+                                "dynamic must be true/false".to_owned(),
                             ));
                         }
                     };
@@ -198,6 +281,7 @@ impl ColliderDesc {
             shape,
             offset,
             sensor,
+            dynamic,
             layer,
             mask,
             ccd,
@@ -393,6 +477,9 @@ impl PhysicsWorld {
                     .insert_with_parent(builder.build(), body_handle, &mut self.bodies);
             self.collider_entities.insert(collider_handle, entity);
         }
+        // 查询用的 BVH 必须跟着更新：否则 `raycast`/`overlap` 看不到**上一步之后**新增的碰撞体
+        // （与 3D 侧同一处理）。
+        self.query_pipeline.update(&self.colliders);
         Ok(())
     }
 
@@ -411,6 +498,7 @@ impl PhysicsWorld {
             true,
         );
         self.collider_entities.retain(|_, owner| *owner != entity);
+        self.query_pipeline.update(&self.colliders);
         Ok(())
     }
 
@@ -503,6 +591,97 @@ impl PhysicsWorld {
         Ok(())
     }
 
+    /// 射线查询（**与 3D 同构**）：返回最近命中的实体与沿射线方向的距离。
+    ///
+    /// 走 Rapier 的 `QueryPipeline`，因此命中的是**碰撞体**（形状/偏移/是否 sensor 都参与），
+    /// 而不是"实体位置附近的某个点"。此前 Lua 的 `physics.raycast` 是 ECS 位置暴力扫描
+    /// （固定 0.5 的垂距阈值、忽略形状与 layer/mask），同一个名字在 2D/3D 下不是同一个东西。
+    pub fn raycast(
+        &self,
+        origin: Vec2,
+        direction: Vec2,
+        max_distance: f32,
+    ) -> Result<Option<(EntityId, f32)>, PhysicsError> {
+        self.raycast_filtered(origin, direction, max_distance, None)
+    }
+
+    /// 射线查询 + **碰撞分组过滤**（`(layer, mask)`，与 `ColliderDesc` 的同一套位域）。
+    ///
+    /// 为什么需要：碰撞体本来就带 layer/mask，但查询此前一律 `QueryFilter::default()`
+    /// ——于是"只和玩家层碰撞"的墙照样会被一个不该看见它的查询命中，`layer/mask` 在
+    /// **查询**这条路上等于不存在。传 `None` 保持"全收"的老行为。
+    pub fn raycast_filtered(
+        &self,
+        origin: Vec2,
+        direction: Vec2,
+        max_distance: f32,
+        groups: Option<(u8, u8)>,
+    ) -> Result<Option<(EntityId, f32)>, PhysicsError> {
+        if !direction.is_finite() || direction.dot(direction) <= f32::EPSILON {
+            return Err(PhysicsError::Malformed(
+                "ray direction must be non-zero".to_owned(),
+            ));
+        }
+        if !max_distance.is_finite() || max_distance < 0.0 {
+            return Err(PhysicsError::Malformed(
+                "raycast distance must be finite and non-negative".to_owned(),
+            ));
+        }
+        let ray = Ray::new(
+            Point::new(origin.x, origin.y),
+            Vector::new(direction.x, direction.y),
+        );
+        let hit = self.query_pipeline.cast_ray(
+            &self.bodies,
+            &self.colliders,
+            &ray,
+            max_distance,
+            true,
+            query_filter(groups),
+        );
+        Ok(hit.and_then(|(handle, distance)| {
+            self.collider_entities
+                .get(&handle)
+                .map(|entity| (*entity, distance))
+        }))
+    }
+
+    /// 圆形重叠查询（**与 3D 的球重叠同构**）：返回与给定圆相交的实体（按实体排序）。
+    pub fn overlap(&self, center: Vec2, radius: f32) -> Vec<EntityId> {
+        self.overlap_filtered(center, radius, None)
+    }
+
+    /// 圆形重叠查询 + 碰撞分组过滤（见 [`PhysicsWorld::raycast_filtered`]）。
+    pub fn overlap_filtered(
+        &self,
+        center: Vec2,
+        radius: f32,
+        groups: Option<(u8, u8)>,
+    ) -> Vec<EntityId> {
+        if !center.is_finite() || !radius.is_finite() || radius <= 0.0 {
+            return Vec::new();
+        }
+        let shape = SharedShape::ball(radius);
+        let shape_pos = Isometry::translation(center.x, center.y);
+        let mut hits = Vec::new();
+        self.query_pipeline.intersections_with_shape(
+            &self.bodies,
+            &self.colliders,
+            &shape_pos,
+            &*shape,
+            query_filter(groups),
+            |handle| {
+                if let Some(entity) = self.collider_entities.get(&handle) {
+                    hits.push(*entity);
+                }
+                true
+            },
+        );
+        hits.sort_by_key(|entity| *entity);
+        hits.dedup();
+        hits
+    }
+
     /// 调试绘制用：把**物理世界里当前真实**的碰撞体姿态与形状取出来（WP7 ② 的
     /// collider debug draw 数据源）。
     ///
@@ -559,6 +738,7 @@ impl PhysicsWorld {
                     rotation: body_angle + local_angle,
                     shape,
                     sensor: collider.is_sensor(),
+                    dynamic: body.is_dynamic(),
                 });
             }
         }
@@ -636,6 +816,21 @@ impl PhysicsWorld {
     /// Drains the collision contacts collected since the last call.
     pub fn drain_contacts(&mut self) -> Vec<PhysicsContact> {
         std::mem::take(&mut self.contacts)
+    }
+}
+
+/// `(layer, mask)` → Rapier 查询过滤组；`None` = 默认（全收）。
+///
+/// 与碰撞体自身的 `InteractionGroups` 用的是**同一套两位测试**（`collider.memberships &
+/// filter.filter` 且 `filter.memberships & collider.filter`），因此"查询看得见谁"与
+/// "谁能撞到谁"不会变成两条各自演化的规则。
+fn query_filter(groups: Option<(u8, u8)>) -> QueryFilter<'static> {
+    match groups {
+        Some((layer, mask)) => QueryFilter::default().groups(InteractionGroups::new(
+            Group::from_bits_truncate(layer as u32),
+            Group::from_bits_truncate(mask as u32),
+        )),
+        None => QueryFilter::default(),
     }
 }
 
@@ -765,6 +960,7 @@ mod tests {
                     layer: 0xFF,
                     mask: 0xFF,
                     ccd: false,
+                    dynamic: true,
                 }],
             )
             .unwrap();
@@ -796,6 +992,57 @@ mod tests {
         assert!((ball.rotation - std::f32::consts::FRAC_PI_2).abs() < 1e-4);
     }
 
+    /// docs/54 §8-⑥：2D `Collider` 现在与 3D `Collider3d` 一样支持 `;dynamic=false`
+    /// （此前写出来只会得到 "unknown field" 报错，静态墙在场景里无法表达），
+    /// 并且调试绘制会报出"这个刚体是不是动态的"。
+    #[test]
+    fn collider_dynamic_flag_parses_and_reaches_the_body() {
+        let fixed = ColliderDesc::from_component_str(
+            "shape=cuboid;half_width=8;half_height=8;dynamic=false",
+        )
+        .unwrap();
+        assert!(!fixed.dynamic, "dynamic=false 必须产生固定刚体");
+        assert!(
+            ColliderDesc::from_component_str("shape=ball;radius=1")
+                .unwrap()
+                .dynamic,
+            "缺省仍是动态体（老场景行为不变）"
+        );
+        assert!(
+            ColliderDesc::from_component_str("shape=ball;radius=1;dynamic=yes").is_err(),
+            "dynamic 只接受 true/false，拼错必须报错"
+        );
+
+        let mut world = PhysicsWorld::new();
+        let wall = entity(1);
+        let ball = entity(2);
+        world
+            .add_body(wall, Vec2::new(0.0, 0.0), fixed.dynamic, vec![fixed])
+            .unwrap();
+        world
+            .add_body(
+                ball,
+                Vec2::new(100.0, 0.0),
+                true,
+                vec![ColliderDesc {
+                    shape: ColliderShape::Ball(4.0),
+                    offset: Vec2::zero(),
+                    sensor: false,
+                    dynamic: true,
+                    layer: 0xFF,
+                    mask: 0xFF,
+                    ccd: false,
+                }],
+            )
+            .unwrap();
+        let shapes = world.debug_shapes();
+        assert_eq!(shapes.len(), 2);
+        // 顺序按 entity 排序（`debug_shapes` 的确定性保证）。
+        assert_eq!(shapes[0].entity, wall);
+        assert!(!shapes[0].dynamic, "固定体必须在调试数据里报 dynamic=false");
+        assert!(shapes[1].dynamic, "动态体报 dynamic=true");
+    }
+
     #[test]
     fn dynamic_body_integrates_velocity() {
         let mut world = PhysicsWorld::new();
@@ -812,6 +1059,7 @@ mod tests {
                     layer: 0xFF,
                     mask: 0xFF,
                     ccd: false,
+                    dynamic: true,
                 }],
             )
             .unwrap();
@@ -840,6 +1088,7 @@ mod tests {
                     layer: 0x01,
                     mask: 0x01,
                     ccd: false,
+                    dynamic: true,
                 }],
             )
             .unwrap();
@@ -855,6 +1104,7 @@ mod tests {
                     layer: 0x02,
                     mask: 0xFF,
                     ccd: false,
+                    dynamic: true,
                 }],
             )
             .unwrap();
@@ -879,6 +1129,90 @@ mod tests {
         );
     }
 
+    /// docs/54 §8-⑥：2D 的射线/重叠查询必须命中**碰撞体**（与 3D 同构），而不是"实体位置附近的
+    /// 某个点"——形状、偏移与是否 sensor 都参与，且没有 collider 的实体不出现在结果里。
+    #[test]
+    fn queries_hit_colliders_not_entity_positions() {
+        let mut world = PhysicsWorld::new();
+        let wall = entity(1);
+        let ball = entity(2);
+        // 薄墙在 x = 10（半宽 0.1），射线从原点沿 +x 打过去必须命中它。
+        world
+            .add_body(
+                wall,
+                Vec2::new(10.0, 0.0),
+                false,
+                vec![ColliderDesc {
+                    shape: ColliderShape::Cuboid(Vec2::new(0.1, 5.0)),
+                    offset: Vec2::zero(),
+                    sensor: false,
+                    layer: 0xFF,
+                    mask: 0xFF,
+                    ccd: false,
+                    dynamic: true,
+                }],
+            )
+            .unwrap();
+        // 这个实体**没有** collider，只在 x = 1 附近；位置查询能找到它，物理查询找不到。
+        world
+            .add_body(
+                ball,
+                Vec2::new(20.0, 0.0),
+                false,
+                vec![ColliderDesc {
+                    shape: ColliderShape::Ball(0.5),
+                    offset: Vec2::zero(),
+                    sensor: false,
+                    layer: 0xFF,
+                    mask: 0xFF,
+                    ccd: false,
+                    dynamic: true,
+                }],
+            )
+            .unwrap();
+
+        let hit = world
+            .raycast(Vec2::zero(), Vec2::new(1.0, 0.0), 100.0)
+            .expect("raycast")
+            .expect("hit");
+        assert_eq!(hit.0, wall, "射线必须命中碰撞体所在的实体");
+        assert!(
+            (hit.1 - 9.9).abs() < 0.05,
+            "命中距离应贴着墙面，实际 {}",
+            hit.1
+        );
+        assert!(
+            world
+                .raycast(Vec2::zero(), Vec2::new(1.0, 0.0), 5.0)
+                .expect("short raycast")
+                .is_none(),
+            "最大距离之外不得命中"
+        );
+        assert!(
+            world.raycast(Vec2::zero(), Vec2::zero(), 10.0).is_err(),
+            "零方向必须报错而不是返回一个假命中"
+        );
+
+        // 重叠：半径 1 只覆盖墙附近，球体（x=20）不在其中。
+        assert_eq!(
+            world.overlap(Vec2::new(10.0, 0.0), 1.0),
+            vec![wall],
+            "重叠查询应只返回碰撞体相交的实体"
+        );
+        assert_eq!(
+            world.overlap(Vec2::new(20.0, 0.0), 1.0),
+            vec![ball],
+            "同一查询在球体处命中球体"
+        );
+        assert!(
+            world.overlap(Vec2::new(50.0, 0.0), 1.0).is_empty(),
+            "没有碰撞体的区域返回空"
+        );
+        // 退化参数不 panic、也不返回垃圾。
+        assert!(world.overlap(Vec2::new(0.0, 0.0), 0.0).is_empty());
+        assert!(world.overlap(Vec2::new(f32::NAN, 0.0), 1.0).is_empty());
+    }
+
     #[test]
     fn static_wall_blocks_dynamic_body() {
         let mut world = PhysicsWorld::new();
@@ -896,6 +1230,7 @@ mod tests {
                     layer: 0xFF,
                     mask: 0xFF,
                     ccd: false,
+                    dynamic: true,
                 }],
             )
             .unwrap();
@@ -912,6 +1247,7 @@ mod tests {
                     layer: 0xFF,
                     mask: 0xFF,
                     ccd: false,
+                    dynamic: true,
                 }],
             )
             .unwrap();

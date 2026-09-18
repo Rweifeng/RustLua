@@ -102,6 +102,9 @@ struct ScriptState {
     /// WP7 ②：collider 调试绘制的**请求值**。绘制开关属于宿主（渲染在那里发生），
     /// 这里只登记 Lua 的请求、由宿主每帧取走，与 `camera2d` 的请求/消费模式一致。
     collider_debug_request: Option<bool>,
+    /// docs/54 §8-⑥：3D 侧的同一条请求通道，由 `physics3d.debug_draw(...)` 登记。
+    /// 与 2D 分开是刻意的：混合场景里"只画 2D 碰撞体"或"只画 3D"都是常见需求。
+    collider_debug_request_3d: Option<bool>,
     /// WP4 ⑦：本帧已触发、等待 Lua 轮询取走的动画帧事件（`animation.events()`）。
     animation_events: Vec<(EntityId, AnimationFrameEvent)>,
     /// WP4 ⑧：宿主回填的 2D 相机快照（相机 + 视口），供 Lua 做屏幕↔世界换算。
@@ -868,7 +871,7 @@ impl LuaRuntime {
             })?;
             state
                 .physics
-                .add_body(id, position, true, vec![collider])
+                .add_body(id, position, collider.dynamic, vec![collider])
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
         }
         if components.contains_key("Tilemap") {
@@ -967,6 +970,20 @@ impl LuaRuntime {
         let mut synced = 0;
         for (entity, position) in state.physics.kinematic_positions(&state.world) {
             if state.physics.set_position(entity, position).is_ok() {
+                synced += 1;
+            }
+        }
+        synced
+    }
+
+    /// WP7 静态/运动学同步（**3D**，与 2D 同构）：`authority = Script` 时在物理步之前把 ECS 里
+    /// 动态刚体的位置推给 3D 模拟世界。此前 3D 侧没有这一步，"脚本设了位置但刚体没动"在 3D 下
+    /// 无解（只能改用速度或直接 `set_position`）。返回同步的刚体数。
+    pub fn sync_kinematic_bodies_3d(&mut self) -> usize {
+        let mut state = self.state.borrow_mut();
+        let mut synced = 0;
+        for (entity, position) in state.physics3d.kinematic_positions(&state.world) {
+            if state.physics3d.set_position(entity, position).is_ok() {
                 synced += 1;
             }
         }
@@ -1195,6 +1212,15 @@ impl LuaRuntime {
     /// 物理世界里当前所有 2D 碰撞体的姿态与形状，供宿主做 collider 调试绘制。
     pub fn collider_debug_shapes(&self) -> Vec<crate::core::physics::ColliderDebugShape> {
         self.state.borrow().physics.debug_shapes()
+    }
+    /// WP7 ②/docs/54 §8-⑥：取走 Lua 通过 `physics3d.debug_draw(...)` 登记的 3D 请求
+    /// （与 2D 同一条"取走即清空"语义）。
+    pub fn take_collider_debug_request_3d(&mut self) -> Option<bool> {
+        self.state.borrow_mut().collider_debug_request_3d.take()
+    }
+    /// 物理世界里当前所有 3D 碰撞体的姿态与形状，供宿主做 3D collider 调试绘制。
+    pub fn collider_debug_shapes_3d(&self) -> Vec<crate::core::physics3d::ColliderDebugShape3d> {
+        self.state.borrow().physics3d.debug_shapes()
     }
     /// Gives the host a shared write view of the runtime entity world.
     pub fn with_world_mut<R>(&mut self, f: impl FnOnce(&mut World) -> R) -> R {
@@ -1534,6 +1560,34 @@ fn call_optional(lua: &Lua, name: &str) -> LuaResult<()> {
 }
 fn api_error(message: impl Into<String>) -> mlua::Error {
     mlua::Error::RuntimeError(message.into())
+}
+
+/// 解析查询的可选 `{ layer = N, mask = N }` 参数（docs/54 §8-⑥：查询也吃 `layer/mask`）。
+///
+/// - 缺省/空表 = `None`（全收，老行为）。
+/// - 只给一侧时另一侧取 `0xFF`（"我在这一层，谁都看得见"是该侧最常用的意图）。
+/// - 越界或非整数**报错**：位域是 u8，静默截断会让 `layer=256` 变成"全层可见"这种
+///   只在真机上才发现的错。
+fn query_groups(opts: Option<mlua::Table>) -> Result<Option<(u8, u8)>, mlua::Error> {
+    let Some(opts) = opts else {
+        return Ok(None);
+    };
+    let read = |key: &str| -> Result<Option<u8>, mlua::Error> {
+        let Some(raw) = opts.get::<Option<i64>>(key)? else {
+            return Ok(None);
+        };
+        u8::try_from(raw).map(Some).map_err(|_| {
+            api_error(format!(
+                "query {key} must be an integer in 0..=255 (bit field), got {raw}"
+            ))
+        })
+    };
+    let layer = read("layer")?;
+    let mask = read("mask")?;
+    if layer.is_none() && mask.is_none() {
+        return Ok(None);
+    }
+    Ok(Some((layer.unwrap_or(0xFF), mask.unwrap_or(0xFF))))
 }
 
 /// Calls a global Lua hook (`on_day_end` / `on_day_start`) if the script defines
@@ -1999,6 +2053,7 @@ fn solid_cell_colliders(tilemap: &Tilemap) -> Vec<ColliderDesc> {
                         y as f32 * tilemap.tile_size.y + half.y,
                     ),
                     sensor: false,
+                    dynamic: false,
                     layer: 0xFF,
                     mask: 0xFF,
                     ccd: false,
@@ -4297,17 +4352,21 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
 
     let physics = lua.create_table()?;
     let s = Rc::clone(&state);
+    // 场景空间**宽相**：按实体 `Transform` 位置做圆查询。它与 `physics.overlap`（碰撞体查询）
+    // 是**两件事**，因此有各自的名字——`physics.overlap` 以前就是这个位置查询，与 3D 同名不同义；
+    // 现在名字与语义一一对应（docs/54 §8-⑥ 的"查询契约统一"）。
     physics.set(
-        "overlap",
+        "positions_in_radius",
         lua.create_function(move |lua, (x, y, radius): (f32, f32, f32)| {
-            if !radius.is_finite() || radius < 0.0 {
-                return Err(api_error("overlap radius must be finite and non-negative"));
+            if !x.is_finite() || !y.is_finite() || !radius.is_finite() || radius < 0.0 {
+                return Err(api_error(
+                    "physics.positions_in_radius arguments must be finite",
+                ));
             }
             let state = s.borrow();
-            let ids = state.world.entities_with::<Transform>();
             let result = lua.create_table()?;
             let mut n = 1;
-            for id in ids {
+            for id in state.world.entities_with::<Transform>() {
                 if let Some(t) = state.world.get::<Transform>(id).map_err(world_error)? {
                     let dx = t.position.x - x;
                     let dy = t.position.y - y;
@@ -4322,33 +4381,62 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
     )?;
     let s = Rc::clone(&state);
     physics.set(
+        "overlap",
+        lua.create_function(
+            move |lua, (x, y, radius, opts): (f32, f32, f32, Option<mlua::Table>)| {
+                if !radius.is_finite() || radius < 0.0 {
+                    return Err(api_error("overlap radius must be finite and non-negative"));
+                }
+                let groups = query_groups(opts)?;
+                let state = s.borrow();
+                // docs/54 §8-⑥：走 Rapier 的碰撞体查询（形状/偏移/是否 sensor 都参与），与 3D 的
+                // `physics3d.overlap` 是同一个东西。此前这里是"实体位置距离判定"——同一个名字
+                // 在 2D/3D 下语义不同。
+                let ids = state
+                    .physics
+                    .overlap_filtered(Vec2::new(x, y), radius, groups);
+                let result = lua.create_table()?;
+                for (index, id) in ids.into_iter().enumerate() {
+                    result.set(index + 1, entity_to_lua(id))?;
+                }
+                Ok(result)
+            },
+        )?,
+    )?;
+    let s = Rc::clone(&state);
+    physics.set(
         "raycast",
         lua.create_function(
-            move |_, (x, y, dx, dy, max_distance): (f32, f32, f32, f32, f32)| {
+            move |_,
+                  (x, y, dx, dy, max_distance, opts): (
+                f32,
+                f32,
+                f32,
+                f32,
+                f32,
+                Option<mlua::Table>,
+            )| {
                 if !max_distance.is_finite() || max_distance < 0.0 {
                     return Err(api_error(
                         "raycast distance must be finite and non-negative",
                     ));
                 }
-                let state = s.borrow();
-                let mut hit = None;
-                let mut best = max_distance;
-                for id in state.world.entities_with::<Transform>() {
-                    if let Some(t) = state.world.get::<Transform>(id).map_err(world_error)? {
-                        let px = t.position.x - x;
-                        let py = t.position.y - y;
-                        let length = (dx * dx + dy * dy).sqrt();
-                        if length > 0.0 {
-                            let along = (px * dx + py * dy) / length;
-                            let perp = (px * dy - py * dx).abs() / length;
-                            if along >= 0.0 && along <= best && perp <= 0.5 {
-                                best = along;
-                                hit = Some(entity_to_lua(id));
-                            }
-                        }
-                    }
+                if !x.is_finite() || !y.is_finite() || !dx.is_finite() || !dy.is_finite() {
+                    return Err(api_error("raycast arguments must be finite"));
                 }
-                Ok(hit)
+                let groups = query_groups(opts)?;
+                let state = s.borrow();
+                // 与 `physics3d.raycast` 同构：命中**碰撞体**，返回最近的那个实体。
+                match state.physics.raycast_filtered(
+                    Vec2::new(x, y),
+                    Vec2::new(dx, dy),
+                    max_distance,
+                    groups,
+                ) {
+                    Ok(Some((entity, _distance))) => Ok(Some(entity_to_lua(entity))),
+                    Ok(None) => Ok(None),
+                    Err(error) => Err(api_error(error.to_string())),
+                }
             },
         )?,
     )?;
@@ -4377,7 +4465,14 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
                 .physics
                 .velocity(id)
                 .map_err(|error| api_error(error.to_string()))?;
-            table_vec(lua, velocity.x, velocity.y)
+            // docs/54 §8-⑥：2D 与 3D 的速度表**同名同形**（`{x=, y=}`）。数值下标（`[1]`/`[2]`）
+            // 继续可用，因此既有脚本零改动，而两份 API 不再是"一个数组一个命名键"。
+            let table = lua.create_table()?;
+            table.set(1, velocity.x)?;
+            table.set(2, velocity.y)?;
+            table.set("x", velocity.x)?;
+            table.set("y", velocity.y)?;
+            Ok(table)
         })?,
     )?;
     let s = Rc::clone(&state);
@@ -4526,11 +4621,27 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
     physics3d.set(
         "raycast",
         lua.create_function(
-            move |_, (ox, oy, oz, dx, dy, dz, max_distance): (f32, f32, f32, f32, f32, f32, f32)| {
+            move |_,
+                  (ox, oy, oz, dx, dy, dz, max_distance, opts): (
+                f32,
+                f32,
+                f32,
+                f32,
+                f32,
+                f32,
+                f32,
+                Option<mlua::Table>,
+            )| {
+                let groups = query_groups(opts)?;
                 let state = s.borrow();
                 let hit = state
                     .physics3d
-                    .raycast(Vec3::new(ox, oy, oz), Vec3::new(dx, dy, dz), max_distance)
+                    .raycast_filtered(
+                        Vec3::new(ox, oy, oz),
+                        Vec3::new(dx, dy, dz),
+                        max_distance,
+                        groups,
+                    )
                     .map_err(|error| api_error(error.to_string()))?;
                 Ok(hit.map(entity_to_lua))
             },
@@ -4539,15 +4650,20 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
     let s = Rc::clone(&state);
     physics3d.set(
         "overlap",
-        lua.create_function(move |lua, (cx, cy, cz, radius): (f32, f32, f32, f32)| {
-            let state = s.borrow();
-            let hits = state.physics3d.overlap(Vec3::new(cx, cy, cz), radius);
-            let result = lua.create_table()?;
-            for (index, id) in hits.into_iter().enumerate() {
-                result.set(index + 1, entity_to_lua(id))?;
-            }
-            Ok(result)
-        })?,
+        lua.create_function(
+            move |lua, (cx, cy, cz, radius, opts): (f32, f32, f32, f32, Option<mlua::Table>)| {
+                let groups = query_groups(opts)?;
+                let state = s.borrow();
+                let hits = state
+                    .physics3d
+                    .overlap_filtered(Vec3::new(cx, cy, cz), radius, groups);
+                let result = lua.create_table()?;
+                for (index, id) in hits.into_iter().enumerate() {
+                    result.set(index + 1, entity_to_lua(id))?;
+                }
+                Ok(result)
+            },
+        )?,
     )?;
     let s = Rc::clone(&state);
     physics3d.set(
@@ -4574,6 +4690,15 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
                 .physics3d
                 .ccd_enabled(id)
                 .map_err(|error| api_error(error.to_string()))
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    physics3d.set(
+        "debug_draw",
+        lua.create_function(move |_, enabled: bool| {
+            let mut state = s.borrow_mut();
+            state.collider_debug_request_3d = Some(enabled);
+            Ok(enabled)
         })?,
     )?;
     lua.globals().set("physics3d", physics3d)?;
@@ -7509,6 +7634,71 @@ mod tests {
         assert!((shapes[0].center.y - 48.0).abs() < 1e-4);
         let _ = fs::remove_file(path);
     }
+    /// docs/54 §8-⑥：3D 侧的 `physics3d.debug_draw` 与 2D 是同一条"登记请求 → 宿主取走
+    /// 即清空"的通道，但**两条通道互不干扰**（混合场景里只想看一侧是常态）。
+    #[test]
+    fn lua_physics3d_debug_draw_registers_and_consumes_a_request() {
+        let mut runtime = LuaRuntime::new().unwrap();
+        assert_eq!(
+            runtime.take_collider_debug_request_3d(),
+            None,
+            "默认没有请求"
+        );
+        let path = script(
+            "function update()\n\
+             assert(physics3d.debug_draw(true) == true)\n\
+             return 'on' end",
+        );
+        runtime.execute_project_script(&path).unwrap();
+        assert_eq!(runtime.call_update().unwrap(), "on");
+        assert_eq!(runtime.take_collider_debug_request_3d(), Some(true));
+        assert_eq!(runtime.take_collider_debug_request_3d(), None, "取走即清空");
+        assert_eq!(
+            runtime.take_collider_debug_request(),
+            None,
+            "3D 请求不能串到 2D 通道"
+        );
+
+        // 场景里的 `Collider3d` 能变成 3D 调试线框的数据源（读物理世界的当前姿态）。
+        let mut scene = crate::core::scene::Scene::new("collider-debug-3d-probe");
+        scene
+            .add_entity(crate::core::scene::SceneEntityId(1), "Wall", None)
+            .unwrap();
+        scene
+            .entities
+            .get_mut(&crate::core::scene::SceneEntityId(1))
+            .unwrap()
+            .components
+            .insert(
+                "Transform3D".into(),
+                "position=1,2,3;rotation=0,0,0,1;scale=1,1,1".into(),
+            );
+        scene
+            .entities
+            .get_mut(&crate::core::scene::SceneEntityId(1))
+            .unwrap()
+            .components
+            .insert(
+                "Collider3d".into(),
+                "shape=cuboid;half_width=1;half_height=2;half_z=3;sensor=true;dynamic=false".into(),
+            );
+        runtime.instantiate_scene(&scene).unwrap();
+        let shapes = runtime.collider_debug_shapes_3d();
+        assert_eq!(shapes.len(), 1, "每个碰撞体一个调试形状");
+        assert_eq!(
+            shapes[0].shape,
+            crate::core::physics3d::ColliderShape3d::Cuboid(crate::core::math3d::Vec3::new(
+                1.0, 2.0, 3.0
+            ))
+        );
+        assert!(shapes[0].sensor, "sensor 要透出来");
+        assert!(!shapes[0].dynamic, "dynamic=false 要透出来");
+        assert_eq!(
+            shapes[0].center,
+            crate::core::math3d::Vec3::new(1.0, 2.0, 3.0)
+        );
+        let _ = fs::remove_file(path);
+    }
     /// WP2：Lua `transform.get` 读局部、`transform.world` 读**世界**（父链组合结果）。
     /// 场景数据用迁移后的局部值表达，因此两者在开启继承后必然不同——这正是要区分的两件事。
     #[test]
@@ -7720,6 +7910,114 @@ mod tests {
         assert_eq!(cold.call_update().unwrap(), "guarded");
         let _ = fs::remove_file(path);
         let _ = fs::remove_file(cold_path);
+    }
+
+    /// docs/54 §8-⑥：2D 查询是**碰撞体查询**（与 `physics3d.raycast/overlap` 同义），
+    /// 位置宽相另有其名（`physics.positions_in_radius`）。这条把两者的区别钉住：
+    /// 只有碰撞体的实体被物理查询命中，只有 Transform 的实体只被位置查询命中。
+    #[test]
+    fn lua_physics_queries_hit_colliders_and_the_position_broad_phase_is_separate() {
+        // 只有墙有碰撞体；`Deco` 只有 Transform（装饰物）。两者都从场景实例化，
+        // 因此走的是与游戏同一条注册路径。
+        let mut scene = crate::core::scene::Scene::new("lua-physics-queries");
+        let wall = crate::core::scene::SceneEntityId(1);
+        let deco = crate::core::scene::SceneEntityId(2);
+        scene.add_entity(wall, "Wall", None).unwrap();
+        scene.add_entity(deco, "Deco", None).unwrap();
+        scene.entities.get_mut(&wall).unwrap().components.insert(
+            "Transform".into(),
+            "x=10;y=0;rotation=0;scale_x=1;scale_y=1".into(),
+        );
+        scene.entities.get_mut(&deco).unwrap().components.insert(
+            "Transform".into(),
+            "x=12;y=0;rotation=0;scale_x=1;scale_y=1".into(),
+        );
+        scene.entities.get_mut(&wall).unwrap().components.insert(
+            "Collider".into(),
+            "shape=cuboid;half_width=1;half_height=5;sensor=false".into(),
+        );
+        let mut runtime = LuaRuntime::new().unwrap();
+        assert_eq!(runtime.instantiate_scene(&scene).unwrap(), 2);
+        let path = script(
+            "function update()\n\
+             local wall = entity.find('Wall')\n\
+             local deco = entity.find('Deco')\n\
+             local hit = physics.raycast(0, 0, 1, 0, 100)\n\
+             assert(hit == wall, 'raycast must hit the collider body')\n\
+             local near = physics.overlap(10, 0, 3)\n\
+             local found_wall, found_deco = false, false\n\
+             for _, id in ipairs(near) do\n\
+             if id == wall then found_wall = true end\n\
+             if id == deco then found_deco = true end\n\
+             end\n\
+             assert(found_wall, 'overlap must include the collider body')\n\
+             assert(not found_deco, 'overlap must not include a Transform-only entity')\n\
+             local broad = physics.positions_in_radius(12, 0, 0.5)\n\
+             local broad_deco = false\n\
+             for _, id in ipairs(broad) do\n\
+             if id == deco then broad_deco = true end\n\
+             end\n\
+             assert(broad_deco, 'positions_in_radius is the scene-space broad phase')\n\
+             local velocity = physics.get_velocity(wall)\n\
+             assert(math.abs(velocity.x) < 0.001 and math.abs(velocity.y) < 0.001, 'named velocity keys')\n\
+             assert(math.abs(velocity[1]) < 0.001 and math.abs(velocity[2]) < 0.001, 'numeric keys stay')\n\
+             return 'ok' end",
+        );
+        runtime.execute_project_script(&path).unwrap();
+        assert_eq!(runtime.call_update().unwrap(), "ok");
+        let _ = fs::remove_file(path);
+    }
+
+    /// docs/54 §8-⑥：查询也吃 `layer/mask`（可选尾参 `{layer=, mask=}`），2D/3D 同名同义；
+    /// 越界值必须报错——位域是 u8，静默截断会让 `layer=256` 变成"全层可见"，
+    /// 那种错只在真机上才看得出来。
+    #[test]
+    fn lua_query_group_filters_are_shared_between_2d_and_3d() {
+        let mut scene = crate::core::scene::Scene::new("lua-query-groups");
+        let wall2d = crate::core::scene::SceneEntityId(1);
+        let wall3d = crate::core::scene::SceneEntityId(2);
+        scene.add_entity(wall2d, "Wall2d", None).unwrap();
+        scene.add_entity(wall3d, "Wall3d", None).unwrap();
+        scene.entities.get_mut(&wall2d).unwrap().components.insert(
+            "Transform".into(),
+            "x=10;y=0;rotation=0;scale_x=1;scale_y=1".into(),
+        );
+        scene.entities.get_mut(&wall2d).unwrap().components.insert(
+            "Collider".into(),
+            "shape=cuboid;half_width=1;half_height=5;dynamic=false;layer=2;mask=2".into(),
+        );
+        scene.entities.get_mut(&wall3d).unwrap().components.insert(
+            "Transform3D".into(),
+            "position=10,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
+        );
+        scene.entities.get_mut(&wall3d).unwrap().components.insert(
+            "Collider3d".into(),
+            "shape=cuboid;half_width=1;half_height=5;half_z=5;dynamic=false;layer=2;mask=2".into(),
+        );
+        let mut runtime = LuaRuntime::new().unwrap();
+        assert_eq!(runtime.instantiate_scene(&scene).unwrap(), 2);
+        let path = script(
+            "function update()\n\
+             local wall2d = entity.find('Wall2d')\n\
+             local wall3d = entity.find('Wall3d')\n\
+             assert(physics.raycast(0, 0, 1, 0, 100) == wall2d, '默认查询看得见')\n\
+             assert(physics.raycast(0, 0, 1, 0, 100, {layer=1, mask=1}) == nil, '分组不相交就看不见')\n\
+             assert(physics.raycast(0, 0, 1, 0, 100, {layer=2, mask=2}) == wall2d, '分组相交看得见')\n\
+             assert(#physics.overlap(10, 0, 3, {layer=1, mask=1}) == 0, 'overlap 同样吃分组')\n\
+             assert(#physics.overlap(10, 0, 3, {layer=2, mask=2}) == 1)\n\
+             assert(physics3d.raycast(0, 0, 0, 1, 0, 0, 100) == wall3d, '3D 默认查询看得见')\n\
+             assert(physics3d.raycast(0, 0, 0, 1, 0, 0, 100, {layer=1, mask=1}) == nil)\n\
+             assert(physics3d.raycast(0, 0, 0, 1, 0, 0, 100, {layer=2, mask=2}) == wall3d)\n\
+             assert(#physics3d.overlap(10, 0, 0, 3, {layer=1, mask=1}) == 0)\n\
+             assert(#physics3d.overlap(10, 0, 0, 3, {layer=2, mask=2}) == 1)\n\
+             assert(not pcall(physics.raycast, 0, 0, 1, 0, 100, {layer=256}), '越界必须报错')\n\
+             assert(not pcall(physics.raycast, 0, 0, 1, 0, 100, {mask=-1}), '负数必须报错')\n\
+             assert(not pcall(physics3d.overlap, 0, 0, 0, 3, {layer='x'}), '非整数必须报错')\n\
+             return 'ok' end",
+        );
+        runtime.execute_project_script(&path).unwrap();
+        assert_eq!(runtime.call_update().unwrap(), "ok");
+        let _ = fs::remove_file(path);
     }
 
     #[test]

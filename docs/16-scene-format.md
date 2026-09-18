@@ -46,6 +46,19 @@ Sprite/Mesh/文字/UI 一样是实体组件，不再只能由宿主状态或脚�
 `examples/game_api/scenes/unified.scene` 是一份"六类内容同场"的样例：Sprite + Mesh +
 `Camera3D` + `Camera2D` + `ParticleEmitter` + `WorldText` + `Text`/`UiLayout`。
 
+## 物理组件字符串（docs/54 §8-⑥）
+
+2D 与 3D 的物理声明是同构的：`Collider` / `Collider3d` 都吃 `key=value;`，`layer`/`mask`
+是同一套位域，`dynamic=false` 在两侧都表示**固定刚体**（地面、墙）：
+
+- `Collider`：`shape=ball;radius=<r>` 或 `shape=cuboid;half_width=..;half_height=..`，可选
+  `sensor=true`、`dynamic=false`、`offset=x,y`、`layer=N`、`mask=N`、`ccd=true`。
+- `Collider3d`：`shape=ball;radius=<r>` / `shape=cuboid;half_width=..;half_height=..;half_z=..`
+  / `shape=capsule;half_height=..;radius=..`，可选字段与 2D 同名同义，`offset` 为 `x,y,z`。
+
+布尔字段只接受 `true`/`false`，拼错**报错**而不是静默当 false（`ccd` 被静默关掉会让高速子弹
+重新穿墙且毫无线索）。2D 的 `Tilemap` 实体仍会自动生成静态单元格碰撞体，不需要写 `Collider`。
+
 ## UI 组件字符串（屏幕空间）
 
 屏幕空间 UI 组件（`Text` / `Image` / `UiLayout` / `UiEvents`）同样用

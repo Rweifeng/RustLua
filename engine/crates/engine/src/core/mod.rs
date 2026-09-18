@@ -77,6 +77,9 @@ pub mod performance;
 /// Rapier-backed rigid bodies, colliders, sensors, and collision events.
 pub mod physics;
 pub mod physics3d;
+/// docs/54 §8-⑥：2D/3D 物理契约的**对拍**测试（只在测试构建里编译）。
+#[cfg(test)]
+mod physics_parity;
 /// 拾取的共享投影/查询链：屏幕 → 视口 → 相机射线 → 世界查询（docs/54 §8-⑦）。
 pub mod picking;
 /// Prefab extraction, instantiation, overrides, and rebuild policy.

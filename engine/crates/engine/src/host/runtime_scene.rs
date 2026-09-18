@@ -24,7 +24,7 @@ use crate::core::{
     mesh3d::MeshRenderer,
     par::Parallelism,
     particle::{ParticleEmitter, SceneParticleEmitter},
-    physics::{ColliderShape, PhysicsAuthority},
+    physics::PhysicsAuthority,
     scene::{Scene, SceneEntityId},
     scheduler::{
         ScheduleReport, ScheduleStage, Scheduler, SchedulerError, System, SystemError, SystemTiming,
@@ -70,6 +70,9 @@ pub struct RuntimeScene {
     sprite_parallelism: Parallelism,
     /// collider 调试绘制开关（WP7 ②）。默认关闭。
     collider_debug_draw: bool,
+    /// docs/54 §8-⑥：**3D** collider 调试绘制开关（`physics3d.debug_draw`）。默认关闭，
+    /// 与 2D 开关独立——混合场景里只想看一侧是常态。
+    collider_debug_draw_3d: bool,
     /// 视口外瓦片剔除（WP4 ④）。默认开启；关掉即回到整层全画，用于像素对拍与回滚。
     tilemap_culling: bool,
     /// 视口外精灵剔除（WP6 CPU 可见性）。默认开启，同样可关掉做像素对拍。
@@ -149,6 +152,9 @@ pub struct RuntimeScene {
     world_sprite_depth: bool,
     /// docs/54 §8-①：最近一步由**场景声明的发射器**发出的粒子个数（诊断与验收用）。
     last_scene_emission: usize,
+    /// WP7：最近一步 `physics_sync` 同步的刚体数 `(2D, 3D)`。0 表示这一步没做步前同步
+    /// （默认 authority=Physics，或回滚档 `Legacy`）——因此它同时也是"回滚档真的生效"的证据。
+    last_physics_sync: (usize, usize),
 }
 
 /// WP7 阶段顺序（回滚档）。
@@ -446,6 +452,13 @@ impl RuntimeScene {
         self.script.scene_ambiguous_transforms()
     }
 
+    /// WP7：最近一步 `physics_sync` 同步的刚体数 `(2D, 3D)`——0 表示这一步没做步前同步
+    /// （默认 authority=Physics，或回滚档 `Legacy`）。
+    #[must_use]
+    pub const fn last_physics_sync(&self) -> (usize, usize) {
+        self.last_physics_sync
+    }
+
     /// 传播一次世界变换（幂等）。提取入口（`vertices` / `scene_3d`）与本函数的调用点
     /// 都会走它，因此"这一帧看到的世界位置"永远来自同一次传播。
     pub fn propagate_spatial_now(&mut self) {
@@ -530,6 +543,18 @@ impl RuntimeScene {
         self.collider_debug_draw
     }
 
+    /// docs/54 §8-⑥：3D collider 调试绘制开关。默认关闭；Lua 用
+    /// `physics3d.debug_draw(true)` 打开，编辑器/验收也可以直接设。
+    pub fn set_collider_debug_draw_3d(&mut self, enabled: bool) {
+        self.collider_debug_draw_3d = enabled;
+    }
+
+    /// 当前 3D collider 调试绘制开关。
+    #[must_use]
+    pub const fn collider_debug_draw_3d(&self) -> bool {
+        self.collider_debug_draw_3d
+    }
+
     /// WP4 ④：视口外瓦片剔除开关（默认开启）。关掉即"整层全画"，输出像素必须与开启时
     /// **逐字节相同**——这是该优化的回滚档，也是它正确性的对拍基准。
     pub fn set_tilemap_culling(&mut self, enabled: bool) {
@@ -558,7 +583,7 @@ impl RuntimeScene {
     ///
     /// 数据源是**物理世界当前姿态**（`PhysicsWorld::debug_shapes`），不是场景里的组件串：
     /// 组件只在实例化时解析一次，而动态刚体每步都在动，调试绘制要看的正是后者。
-    /// 实心碰撞体画绿、sensor 画黄——sensor 不产生物理响应，颜色不同才不会误判。
+    /// 动态体画绿、固定体画青、sensor 画黄——三者物理响应完全不同，颜色不分辨会误判。
     ///
     /// 全部用白色纹理，因此只追加**一个** draw range；画在世界内容之上、屏幕 UI 之下。
     fn push_collider_debug(
@@ -576,45 +601,18 @@ impl RuntimeScene {
         }
         let start = vertices.len();
         for shape in shapes {
+            // 传感器黄、动态体绿、固定体青：三种响应**不是**同一件事，画成一个颜色会让
+            // "物理到底动了什么"看不出来（docs/54 §8-⑥ 的调试契约）。
             let color = if shape.sensor {
                 [1.0, 0.85, 0.2, 1.0]
-            } else {
+            } else if shape.dynamic {
                 [0.2, 1.0, 0.35, 1.0]
+            } else {
+                [0.25, 0.75, 1.0, 1.0]
             };
-            let (sin, cos) = shape.rotation.sin_cos();
-            // 轮廓折线（首尾相接），再逐段投影成细四边形。
-            let outline: Vec<Vec2> = match shape.shape {
-                ColliderShape::Cuboid(half) => [
-                    Vec2::new(-half.x, -half.y),
-                    Vec2::new(half.x, -half.y),
-                    Vec2::new(half.x, half.y),
-                    Vec2::new(-half.x, half.y),
-                ]
-                .iter()
-                .map(|corner| {
-                    Vec2::new(
-                        shape.center.x + corner.x * cos - corner.y * sin,
-                        shape.center.y + corner.x * sin + corner.y * cos,
-                    )
-                })
-                .collect(),
-                ColliderShape::Ball(radius) => {
-                    // 圆用 24 边形近似：调试轮廓够用，且段数固定 ⇒ 顶点数确定可断言。
-                    const SEGMENTS: usize = 24;
-                    (0..SEGMENTS)
-                        .map(|step| {
-                            let angle = step as f32 / SEGMENTS as f32 * std::f32::consts::TAU;
-                            Vec2::new(
-                                shape.center.x + angle.cos() * radius,
-                                shape.center.y + angle.sin() * radius,
-                            )
-                        })
-                        .collect()
-                }
-            };
-            for index in 0..outline.len() {
-                let from = outline[index];
-                let to = outline[(index + 1) % outline.len()];
+            // 轮廓本身由 `ColliderShape::wireframe_edges` 给出（局部坐标，2D/3D 同一套语义），
+            // 这里只做姿态变换与投影。折线首尾相接，再逐段投影成细四边形。
+            for (from, to) in shape.wireframe_segments() {
                 let (Ok(from), Ok(to)) = (
                     self.camera.world_to_screen(from, viewport),
                     self.camera.world_to_screen(to, viewport),
@@ -641,6 +639,59 @@ impl RuntimeScene {
     #[must_use]
     pub const fn sprite_parallelism(&self) -> Parallelism {
         self.sprite_parallelism
+    }
+
+    /// docs/54 §8-⑥：把 **3D** collider 调试线框追加到 overlay 缓冲。
+    ///
+    /// 与 2D 那条的唯一区别是投影：2D 用 `Camera2D::world_to_screen`，这里用本帧 3D pass
+    /// 实际用的那台相机（`active_camera3d`）+ `picking::screen_from_world_unclipped`——
+    /// 同一份投影数学，因此"看到的位置"和"射线命中的位置"必然一致（§8-⑦ 的要求）。
+    /// 线框的边由 `ColliderShape3d::wireframe_edges` 给出（段数固定，可断言）。
+    fn push_collider_debug_3d(
+        &mut self,
+        vertices: &mut Vec<OverlayVertex>,
+        draws: &mut Vec<SceneDraw>,
+        viewport: Viewport,
+    ) {
+        if !self.collider_debug_draw_3d {
+            return;
+        }
+        let shapes = self.script.collider_debug_shapes_3d();
+        if shapes.is_empty() {
+            return;
+        }
+        let aspect = viewport.width / viewport.height.max(1.0);
+        let camera = self.active_camera3d(aspect);
+        let start = vertices.len();
+        for shape in shapes {
+            let color = if shape.sensor {
+                [1.0, 0.85, 0.2, 1.0]
+            } else if shape.dynamic {
+                [0.2, 1.0, 0.35, 1.0]
+            } else {
+                [0.25, 0.75, 1.0, 1.0]
+            };
+            for (from, to) in shape.wireframe_segments() {
+                let (Some(from), Some(to)) = (
+                    crate::core::picking::screen_from_world_unclipped(camera, from, viewport),
+                    crate::core::picking::screen_from_world_unclipped(camera, to, viewport),
+                ) else {
+                    continue; // 相机背后/远裁剪面之外：不画，也不猜
+                };
+                push_screen_line(vertices, [from.x, from.y], [to.x, to.y], color, viewport);
+            }
+        }
+        let count = vertices.len() - start;
+        if count > 0 {
+            draws.push(SceneDraw {
+                texture: 0, // 0 = 内置白色纹理
+                start: start as u32,
+                count: count as u32,
+                sdf: false,
+                vector: false,
+                render_layer: RenderLayer::Overlay2D,
+            });
+        }
     }
 
     /// Updates one authored entity's 2D transform in-place for editor drag
@@ -1038,6 +1089,7 @@ impl RuntimeScene {
             sprite_batch: SpriteBatch::new(),
             sprite_parallelism: Parallelism::detected(),
             collider_debug_draw: false,
+            collider_debug_draw_3d: false,
             tilemap_culling: true,
             sprite_culling: true,
             camera,
@@ -1079,6 +1131,7 @@ impl RuntimeScene {
             physics_authority: PhysicsAuthority::default(),
             physics_stage_order: PhysicsStageOrder::default(),
             last_scene_emission: 0,
+            last_physics_sync: (0, 0),
         };
         scene.register_builtin_frame_systems();
         Ok(scene)
@@ -1142,8 +1195,16 @@ impl RuntimeScene {
             [] as [&str; 0],
             |scene: &mut RuntimeScene, _| {
                 // WP7：authority = Script 时，物理步之前把 ECS 的权威位置推给模拟世界。
-                if scene.physics_authority.syncs_before_step() {
-                    scene.script.sync_kinematic_bodies();
+                // **2D 与 3D 都推**（此前只推 2D，"3D 脚本权威"实际上不存在）。
+                // `Legacy` 阶段顺序是回滚档：那时没有统一 Sync 格，脚本权威也不做步前同步。
+                if scene.physics_authority.syncs_before_step()
+                    && scene.physics_stage_order == PhysicsStageOrder::Unified
+                {
+                    let synced_2d = scene.script.sync_kinematic_bodies();
+                    let synced_3d = scene.script.sync_kinematic_bodies_3d();
+                    scene.last_physics_sync = (synced_2d, synced_3d);
+                } else {
+                    scene.last_physics_sync = (0, 0);
                 }
                 Ok(())
             },
@@ -1154,6 +1215,10 @@ impl RuntimeScene {
             [] as [&str; 0],
             |scene: &mut RuntimeScene, delta_seconds: f32| {
                 scene.script.step_physics(delta_seconds);
+                // 回滚档：收敛前 2D 是"步进即回写"，且它的回写夹在 3D 推进之前。
+                if scene.physics_stage_order == PhysicsStageOrder::Legacy {
+                    scene.script.writeback_physics();
+                }
                 Ok(())
             },
         ));
@@ -1173,6 +1238,17 @@ impl RuntimeScene {
             |scene: &mut RuntimeScene, _| {
                 // WP7：2D 与 3D 的**所有**推进都发生在**任何**回写之前——此前 2D 的回写夹在
                 // 3D 推进之前。authority = Script 时跳过回写（ECS 才是权威）。
+                //
+                // `Legacy` 阶段顺序是**真回滚档**：那时 2D 已在 `physics2d_step` 里"步进即回写"，
+                // 这里只处理 3D（顺序与收敛前一致：2D 回写 → 3D 推进 → 3D 回写）。
+                if scene.physics_stage_order == PhysicsStageOrder::Legacy {
+                    if scene.physics_authority.writes_back_to_ecs() {
+                        scene.script.writeback_physics3d();
+                    } else {
+                        scene.script.discard_pending_writeback();
+                    }
+                    return Ok(());
+                }
                 if scene.physics_authority.writes_back_to_ecs() {
                     scene.script.writeback_physics();
                     scene.script.writeback_physics3d();
@@ -2037,7 +2113,12 @@ impl RuntimeScene {
         if let Some(enabled) = self.script.take_collider_debug_request() {
             self.collider_debug_draw = enabled;
         }
-        self.push_collider_debug(&mut vertices, &mut draws, viewport); // 世界空间文字：投影锚点后走同一套字形管线；绘制在精灵之上、屏幕 UI 之下。
+        if let Some(enabled) = self.script.take_collider_debug_request_3d() {
+            self.collider_debug_draw_3d = enabled;
+        }
+        self.push_collider_debug(&mut vertices, &mut draws, viewport);
+        self.push_collider_debug_3d(&mut vertices, &mut draws, viewport);
+        // 世界空间文字：投影锚点后走同一套字形管线；绘制在精灵之上、屏幕 UI 之下。
         // 不受 `render_ui_overlay` 开关影响——它是世界内容，不是屏幕 UI。
         self.push_world_text(
             &mut vertices,
@@ -5372,6 +5453,127 @@ mod sdf_tests {
         );
     }
 
+    /// docs/54 §8-⑥：**3D 也有脚本权威**（此前只有 2D 接线，3D 的"authority"字段对 3D 无效）。
+    ///
+    /// 两步都断言：`Script` 下步前把 ECS 位置推给 3D 模拟、步后不回写（脚本设的位置留在 ECS）；
+    /// 默认 `Physics` 下模拟结果回写 ECS（脚本的移动被模拟覆盖）。
+    #[test]
+    fn three_d_physics_authority_syncs_before_step_and_skips_writeback() {
+        let root = game_root();
+        let build = || {
+            let mut scene = Scene::new("authority-3d");
+            let ball = crate::core::scene::SceneEntityId(1);
+            scene.add_entity(ball, "Ball", None).unwrap();
+            let entity = scene.entities.get_mut(&ball).unwrap();
+            entity.components.insert(
+                "Transform3D".into(),
+                "position=0,5,0;rotation=0,0,0,1;scale=1,1,1".into(),
+            );
+            entity.components.insert(
+                "Collider3d".into(),
+                "shape=ball;radius=0.5;dynamic=true".into(),
+            );
+            scene
+        };
+        let input = crate::core::input::InputSnapshot::default();
+        let drop_one_step = 1.0 / 60.0;
+
+        // ① authority = Script：步前同步（3D 计数为 1），步后不回写 ⇒ ECS 保留脚本设的位置。
+        let mut scripted =
+            RuntimeScene::from_scene_edit(Some(root.as_path()), build()).expect("runtime");
+        scripted.set_physics_authority(PhysicsAuthority::Script);
+        let handle = scripted
+            .with_script(|script| script.scene_entity_handle(crate::core::scene::SceneEntityId(1)))
+            .expect("handle");
+        scripted.with_script(|script| {
+            script.with_world_mut(|world| {
+                let transform = world
+                    .get_mut::<Transform3D>(handle)
+                    .expect("get")
+                    .expect("has transform3d");
+                transform.position = Vec3::new(0.0, 9.0, 0.0);
+            });
+        });
+        scripted
+            .run_script_steps(1, drop_one_step, &input)
+            .expect("step");
+        assert_eq!(
+            scripted.last_physics_sync(),
+            (0, 1),
+            "脚本权威下必须在物理步之前同步 3D 刚体（2D 场景里没有 2D 刚体，因此是 (0, 1)）"
+        );
+        let position = scripted
+            .world_transform_3d_of(crate::core::scene::SceneEntityId(1))
+            .expect("world")
+            .position;
+        assert!(
+            (position.y - 9.0).abs() < 1e-4,
+            "脚本权威下 ECS 位置不得被回写覆盖，实际 {position:?}"
+        );
+
+        // ② 默认 authority = Physics：模拟是权威 ⇒ ECS 回到模拟结果（脚本那次移动被覆盖）。
+        let mut simulated =
+            RuntimeScene::from_scene_edit(Some(root.as_path()), build()).expect("runtime");
+        let handle = simulated
+            .with_script(|script| script.scene_entity_handle(crate::core::scene::SceneEntityId(1)))
+            .expect("handle");
+        simulated.with_script(|script| {
+            script.with_world_mut(|world| {
+                let transform = world
+                    .get_mut::<Transform3D>(handle)
+                    .expect("get")
+                    .expect("has transform3d");
+                transform.position = Vec3::new(0.0, 9.0, 0.0);
+            });
+        });
+        simulated
+            .run_script_steps(1, drop_one_step, &input)
+            .expect("step");
+        assert_eq!(
+            simulated.last_physics_sync(),
+            (0, 0),
+            "默认权威不做步前同步"
+        );
+        let position = simulated
+            .world_transform_3d_of(crate::core::scene::SceneEntityId(1))
+            .expect("world")
+            .position;
+        assert!(
+            (position.y - 5.0).abs() < 0.05,
+            "模拟权威下 ECS 应被回写成模拟结果（≈ 5 起落一步），实际 {position:?}"
+        );
+    }
+
+    /// docs/54 §8-⑥ / §7：`PhysicsStageOrder::Legacy` 是**真回滚档**（此前是个没接线、没人读的字段）。
+    #[test]
+    fn legacy_stage_order_actually_changes_the_pipeline() {
+        let root = game_root();
+        let mut scene = Scene::new("legacy-order");
+        let ball = crate::core::scene::SceneEntityId(1);
+        scene.add_entity(ball, "Ball", None).unwrap();
+        let entity = scene.entities.get_mut(&ball).unwrap();
+        entity.components.insert(
+            "Transform3D".into(),
+            "position=0,5,0;rotation=0,0,0,1;scale=1,1,1".into(),
+        );
+        entity
+            .components
+            .insert("Collider3d".into(), "shape=ball;radius=0.5".into());
+
+        let mut runtime =
+            RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("runtime");
+        runtime.set_physics_authority(PhysicsAuthority::Script);
+        runtime.set_physics_stage_order(PhysicsStageOrder::Legacy);
+        runtime
+            .run_script_steps(1, 1.0 / 60.0, &crate::core::input::InputSnapshot::default())
+            .expect("step");
+        assert_eq!(
+            runtime.last_physics_sync(),
+            (0, 0),
+            "回滚档没有统一 Sync 格：脚本权威不做步前同步（与收敛前的单系统顺序一致）"
+        );
+    }
+
     /// docs/54 §8-⑦：**文档 / 运行时 / Lua** 三条路必须对同一个实体给出同一个世界位置。
     ///
     /// 这是本轮"同一空间语义"的收官断言：编辑态用 `scene_space`（文档），运行时用
@@ -5442,6 +5644,61 @@ mod sdf_tests {
             "ok"
         );
         let _ = std::fs::remove_file(path);
+    }
+
+    /// docs/54 §8-⑥：3D collider 调试绘制必须真的把**物理世界当前姿态**投影成 overlay 线框，
+    /// 且用与 3D 主视图同一份投影数学（`picking::screen_from_world_unclipped`）。
+    #[test]
+    fn collider_debug_draw_3d_projects_the_live_physics_pose() {
+        let root = game_root();
+        let mut scene = Scene::new("collider-debug-3d");
+        let cam = crate::core::scene::SceneEntityId(1);
+        let wall = crate::core::scene::SceneEntityId(2);
+        scene.add_entity(cam, "Cam", None).unwrap();
+        scene.add_entity(wall, "Wall", None).unwrap();
+        scene.entities.get_mut(&cam).unwrap().components.insert(
+            "Camera3D".into(),
+            "position=0,0,5;target=0,0,0;fov=60;near=0.1;far=100".into(),
+        );
+        scene.entities.get_mut(&wall).unwrap().components.insert(
+            "Transform3D".into(),
+            "position=0,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
+        );
+        scene.entities.get_mut(&wall).unwrap().components.insert(
+            "Collider3d".into(),
+            "shape=cuboid;half_width=1;half_height=1;half_z=1;dynamic=false".into(),
+        );
+        let mut runtime =
+            RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("runtime");
+        let overlay_draws = |mesh: &SceneMesh| -> usize {
+            mesh.draws
+                .iter()
+                .filter(|draw| draw.render_layer == RenderLayer::Overlay2D)
+                .count()
+        };
+
+        // 关着的时候一条调试线都没有（这个场景里没有精灵/UI，因此顶点缓冲整体为空）。
+        let off = runtime.vertices(320, 180).expect("vertices");
+        assert_eq!(overlay_draws(&off), 0, "默认不画调试线框");
+        assert!(off.vertices.is_empty(), "该场景没有其它 2D 内容");
+
+        // 打开：固定体的 12 条棱各 6 个顶点，合成**一个** draw range（同一张白纹理）。
+        runtime.set_collider_debug_draw_3d(true);
+        let on = runtime.vertices(320, 180).expect("vertices");
+        assert_eq!(overlay_draws(&on), 1, "调试线框合成一个 draw range");
+        assert_eq!(on.vertices.len(), 12 * 6, "cuboid = 12 条棱 × 6 顶点");
+        for vertex in &on.vertices {
+            let [x, y] = vertex.position;
+            assert!(x.is_finite() && y.is_finite(), "投影必须有限");
+            assert!(
+                x.abs() <= 1.0 && y.abs() <= 1.0,
+                "居中的单位立方体必须投到视口内：({x}, {y})"
+            );
+        }
+        // 关掉之后立刻回到"没有线"——开关是每帧的，不留残影。
+        runtime.set_collider_debug_draw_3d(false);
+        let off_again = runtime.vertices(320, 180).expect("vertices");
+        assert_eq!(overlay_draws(&off_again), 0);
     }
 
     #[test]

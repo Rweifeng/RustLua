@@ -17,7 +17,7 @@
 | `mesh` | `set/get/clear` | 设置/读取/清除 `MeshRenderer` 网格路径 |
 | `camera` | `set_active/get_active/get` | 切换/查询活动相机；`get(id)` 返回 `x,y,z,tx,ty,tz,fov,near,far` |
 | `light` | `set_active/get/set` | 设置/读取方向光；`set(id,dx,dy,dz,r,g,b,intensity)` |
-| `physics3d` | `get_velocity/set_position/events/raycast/overlap` | 3D 物理查询：`get_velocity(id)`→`{x,y,z}`；`events()`→碰撞事件数组 `{a,b,started}`；`raycast(ox,oy,oz,dx,dy,dz,max)`→命中实体 id 或 nil；`overlap(cx,cy,cz,r)`→实体 id 数组 |
+| `physics3d` | `get_velocity/set_position/events/raycast/overlap` | 3D 物理查询：`get_velocity(id)`→`{x,y,z}`；`events()`→碰撞事件数组 `{a,b,started}`；`raycast(ox,oy,oz,dx,dy,dz,max[,groups])`→命中实体 id 或 nil；`overlap(cx,cy,cz,r[,groups])`→实体 id 数组。可选尾参 `groups = {layer=N, mask=N}` 按碰撞分组过滤（缺省全收，见下文"物理查询的分组过滤"） |
 
 3D 组件在 `instantiate_scene` 时从场景字符串解析为 World 组件；`camera.set_active` 与 `light.set_active` 由宿主渲染器每帧读取，未选择时回退到首个 `Camera3D` / `Light` 实体。
 
@@ -65,7 +65,7 @@ end
 | `transform` | `get/set/move` | 读取和修改位置、旋转、缩放 |
 | `health` | `get/set/damage` | Demo 用生命值与受伤 API |
 | `particles` | `burst(x,y,count)` | 在 `(x,y)` 爆发 count 个粒子（橙色，扩散速度 120、寿命 0.6s） |
-| `physics` | `overlap/raycast` | 最小圆形重叠和射线查询 |
+| `physics` | `overlap/raycast` | **碰撞体**圆形重叠与射线查询（与 `physics3d` 同义，可选 `{layer=N,mask=N}` 分组过滤）；实体位置宽相另有 `positions_in_radius(x,y,r)` |
 | `scene` | `load/reload` | 场景状态切换接口 |
 | `asset` | `load/release` | 资源句柄生命周期接口 |
 | `ui` | `text/text_at/show/hide/get` | 最小文本 UI 状态接口；`text_at(id,x,y,text[,scale])` 可选缩放 |
@@ -340,12 +340,33 @@ Lua 无法区分尘土、水花、落叶；`opts` 让每次爆发自带观感。
 ### `physics.debug_draw` collider 调试绘制（WP7）
 
 `physics.debug_draw(enabled)` 开关 2D 碰撞体轮廓的绘制（默认关闭，返回传入的布尔值）。轮廓画在
-世界内容之上、屏幕 UI 之下，实心碰撞体绿色、`sensor` 黄色——sensor 不产生物理响应，颜色不同
-才不会误判。开一次即持续生效，不需要每帧调用。
+世界内容之上、屏幕 UI 之下，动态体绿色、固定体（`;dynamic=false`）青色、`sensor` 黄色——
+三者物理响应完全不同，颜色不分辨会误判。开一次即持续生效，不需要每帧调用。
 
-数据源是**物理世界里碰撞体的当前姿态**（`PhysicsWorld::debug_shapes`），不是场景里的组件串：
-后者只在实例化时解析一次，而动态刚体每步都在动——调试绘制要看的正是"物理到底把它放到哪了"。
-球体轮廓用 24 边形近似；认不出的形状（胶囊/多边形）**不画**，不做静默近似。
+3D 侧有**同名的独立开关** `physics3d.debug_draw(enabled)`：混合场景里"只想看一侧"是常态，
+因此两条通道互不干扰（各自取走即清空，与 `camera2d` 的请求/消费模式一致）。3D 线框用本帧
+3D pass 实际使用的那台相机投影（`picking::screen_from_world_unclipped`），因此"看到的位置"
+与 `camera3d.ray` 命中的位置必然一致。球用三条正交圆环（各 16 段）、胶囊用上下圆环加 4 条
+母线——**段数固定**，宿主可以据此断言顶点数。
+
+数据源是**物理世界里碰撞体的当前姿态**（`PhysicsWorld::debug_shapes` /
+`PhysicsWorld3d::debug_shapes`），不是场景里的组件串：后者只在实例化时解析一次，而动态刚体
+每步都在动——调试绘制要看的正是"物理到底把它放到哪了"。球体轮廓用 24 边形（3D 为圆环）近似；
+认不出的形状（胶囊/多边形）**不画**，不做静默近似。
+
+### 物理查询的分组过滤（`layer` / `mask`）
+
+`physics` 与 `physics3d` 的 `raycast` / `overlap` 都接受一个**可选尾参** `{ layer = N, mask = N }`：
+
+```lua
+local wall = physics.raycast(0, 0, 1, 0, 100, { layer = 2, mask = 2 })
+local near = physics3d.overlap(x, y, z, 3.0, { layer = 2 })
+```
+
+缺省（或空表）= 全收，老写法零改动。只给一侧时另一侧取 `0xFF`（"我在这一层，谁都看得见"
+是那一侧最常用的意图）。判定与碰撞体自身的 `layer`/`mask` 用**同一套两位测试**——查询看得见谁
+和谁能撞到谁因此不会变成两条各自演化的规则。位域是 `u8`：越界（如 `layer = 256`）、负数或
+非整数一律**报错**，不静默截断。
 
 ### `physics.set_ccd` / `get_ccd` 连续碰撞检测（WP7）
 

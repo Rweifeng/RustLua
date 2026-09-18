@@ -10,8 +10,10 @@ use rapier3d::prelude::*;
 
 use crate::core::{
     entity::EntityId,
-    math3d::Vec3,
+    math3d::{Quat, Vec3},
     physics::{PhysicsContact, PhysicsError},
+    transform::Transform3D,
+    world::World,
 };
 
 /// A 3D collider shape. `Capsule` is aligned with the local Y axis.
@@ -20,6 +22,119 @@ pub enum ColliderShape3d {
     Ball(f32),
     Cuboid(Vec3),
     Capsule { half_height: f32, radius: f32 },
+}
+
+/// One 3D collider as it currently sits in the physics world, for debug drawing.
+///
+/// 与 2D 的 [`crate::core::physics::ColliderDebugShape`] 同构（同名字段、同一套
+/// "读 Rapier 当前姿态"的来源），docs/54 §8-⑥ 因此可以用一条对拍测试把两侧钉在一起。
+#[derive(Clone, Debug, PartialEq)]
+pub struct ColliderDebugShape3d {
+    pub entity: EntityId,
+    /// World-space centre (the body's translation plus the rotated local offset).
+    pub center: Vec3,
+    /// World-space rotation.
+    pub rotation: Quat,
+    pub shape: ColliderShape3d,
+    pub sensor: bool,
+    /// 刚体是否动态（`;dynamic=false` 的墙/地面为 `false`）。
+    pub dynamic: bool,
+}
+
+impl ColliderShape3d {
+    /// 局部空间的调试线框边：`Ball` 用三条正交圆环（各 16 段）、`Cuboid` 用 12 条棱、
+    /// `Capsule` 用上下两个圆环加 4 条母线。
+    ///
+    /// 段数**固定**（不随半径/尺寸变化）：调试顶点的数量因此可断言，宿主也能据此预留缓冲。
+    /// 圆环是近似——但它只是调试轮廓，碰撞体本身仍是 Rapier 的精确形状。
+    #[must_use]
+    pub fn wireframe_edges(&self) -> Vec<(Vec3, Vec3)> {
+        const SEGMENTS: usize = 16;
+        let mut edges = Vec::new();
+        let ring = |center: Vec3, axis: usize, radius: f32, edges: &mut Vec<(Vec3, Vec3)>| {
+            // axis: 0 = XY（绕 Z）、1 = XZ（绕 Y）、2 = YZ（绕 X）
+            let point = |step: usize| -> Vec3 {
+                let angle = step as f32 / SEGMENTS as f32 * std::f32::consts::TAU;
+                let (sin, cos) = angle.sin_cos();
+                match axis {
+                    0 => center + Vec3::new(cos * radius, sin * radius, 0.0),
+                    1 => center + Vec3::new(cos * radius, 0.0, sin * radius),
+                    _ => center + Vec3::new(0.0, cos * radius, sin * radius),
+                }
+            };
+            for step in 0..SEGMENTS {
+                edges.push((point(step), point((step + 1) % SEGMENTS)));
+            }
+        };
+        match *self {
+            ColliderShape3d::Ball(radius) => {
+                for axis in 0..3 {
+                    ring(Vec3::ZERO, axis, radius, &mut edges);
+                }
+            }
+            ColliderShape3d::Cuboid(half) => {
+                let mut corners = [Vec3::ZERO; 8];
+                for (index, corner) in corners.iter_mut().enumerate() {
+                    *corner = Vec3::new(
+                        if index & 1 == 0 { -half.x } else { half.x },
+                        if index & 2 == 0 { -half.y } else { half.y },
+                        if index & 4 == 0 { -half.z } else { half.z },
+                    );
+                }
+                // 12 条棱：只连"恰好一位不同"的角。
+                for (a, from) in corners.iter().enumerate() {
+                    for (b, to) in corners.iter().enumerate().skip(a + 1) {
+                        if (a ^ b).count_ones() == 1 {
+                            edges.push((*from, *to));
+                        }
+                    }
+                }
+            }
+            ColliderShape3d::Capsule {
+                half_height,
+                radius,
+            } => {
+                let top = Vec3::new(0.0, half_height, 0.0);
+                let bottom = Vec3::new(0.0, -half_height, 0.0);
+                ring(top, 1, radius, &mut edges);
+                ring(bottom, 1, radius, &mut edges);
+                for step in 0..4 {
+                    let angle = step as f32 / 4.0 * std::f32::consts::TAU;
+                    let (sin, cos) = angle.sin_cos();
+                    let offset = Vec3::new(cos * radius, 0.0, sin * radius);
+                    edges.push((top + offset, bottom + offset));
+                }
+            }
+        }
+        edges
+    }
+}
+
+impl ColliderDebugShape3d {
+    /// 世界空间的调试线段（局部边经刚体旋转平移）。旋转不可用时**跳过**该边——宁可少画
+    /// 一条线，也不画一条静默近似出来的线。
+    #[must_use]
+    pub fn wireframe_segments(&self) -> Vec<(Vec3, Vec3)> {
+        let mut segments = Vec::new();
+        for (from, to) in self.shape.wireframe_edges() {
+            let (Ok(from), Ok(to)) = (self.rotation.rotate(from), self.rotation.rotate(to)) else {
+                continue;
+            };
+            segments.push((
+                Vec3::new(
+                    self.center.x + from.x,
+                    self.center.y + from.y,
+                    self.center.z + from.z,
+                ),
+                Vec3::new(
+                    self.center.x + to.x,
+                    self.center.y + to.y,
+                    self.center.z + to.z,
+                ),
+            ));
+        }
+        segments
+    }
 }
 
 /// One collider attached to a body, at a local offset. `layer` is the collision
@@ -560,6 +675,28 @@ impl PhysicsWorld3d {
         std::mem::take(&mut self.contacts)
     }
 
+    /// WP7 静态/运动学同步的数据源（**与 2D 同构**）：把**动态**刚体当前的位置从 ECS 取出来
+    /// （按实体排序，保证确定性），供 `authority = Script` 时在物理步之前推给模拟世界。
+    ///
+    /// 只取动态刚体：静态体是场景数据、运动学体由调用方自己同步（与 `set_position` 的既有语义
+    /// 一致）。没有 `Transform3D` 的实体跳过。
+    pub fn kinematic_positions(&self, world: &World) -> Vec<(EntityId, Vec3)> {
+        let mut out = Vec::new();
+        for (entity, handle) in &self.entity_bodies {
+            let Some(body) = self.bodies.get(*handle) else {
+                continue;
+            };
+            if body.body_type() != RigidBodyType::Dynamic {
+                continue;
+            }
+            if let Ok(Some(transform)) = world.get::<Transform3D>(*entity) {
+                out.push((*entity, transform.position));
+            }
+        }
+        out.sort_by_key(|(entity, _)| *entity);
+        out
+    }
+
     /// Casts a ray and returns the closest hit entity within `max_distance`.
     /// The direction vector must be non-zero.
     pub fn raycast(
@@ -567,6 +704,18 @@ impl PhysicsWorld3d {
         origin: Vec3,
         direction: Vec3,
         max_distance: f32,
+    ) -> Result<Option<EntityId>, PhysicsError> {
+        self.raycast_filtered(origin, direction, max_distance, None)
+    }
+
+    /// 射线查询 + 碰撞分组过滤（与 2D `PhysicsWorld::raycast_filtered` 同一语义：
+    /// 两位测试，`None` 保持"全收"的老行为）。
+    pub fn raycast_filtered(
+        &self,
+        origin: Vec3,
+        direction: Vec3,
+        max_distance: f32,
+        groups: Option<(u8, u8)>,
     ) -> Result<Option<EntityId>, PhysicsError> {
         if !direction.is_finite() || direction.length_squared() <= f32::EPSILON {
             return Err(PhysicsError::Malformed(
@@ -588,7 +737,7 @@ impl PhysicsWorld3d {
             &ray,
             max_distance,
             true,
-            QueryFilter::default(),
+            query_filter3d(groups),
         );
         Ok(hit.and_then(|(handle, _)| self.collider_entities.get(&handle).copied()))
     }
@@ -596,6 +745,16 @@ impl PhysicsWorld3d {
     /// Returns every entity whose collider overlaps a sphere centered at
     /// `center` with the given `radius`.
     pub fn overlap(&self, center: Vec3, radius: f32) -> Vec<EntityId> {
+        self.overlap_filtered(center, radius, None)
+    }
+
+    /// 球重叠查询 + 碰撞分组过滤（见 [`PhysicsWorld3d::raycast_filtered`]）。
+    pub fn overlap_filtered(
+        &self,
+        center: Vec3,
+        radius: f32,
+        groups: Option<(u8, u8)>,
+    ) -> Vec<EntityId> {
         if !center.is_finite() || !radius.is_finite() || radius <= 0.0 {
             return Vec::new();
         }
@@ -607,7 +766,7 @@ impl PhysicsWorld3d {
             &self.colliders,
             &shape_pos,
             &*shape,
-            QueryFilter::default(),
+            query_filter3d(groups),
             |handle| {
                 if let Some(entity) = self.collider_entities.get(&handle) {
                     hits.push(*entity);
@@ -616,6 +775,111 @@ impl PhysicsWorld3d {
             },
         );
         hits
+    }
+
+    /// 调试绘制用：把**物理世界里当前真实**的 3D 碰撞体姿态与形状取出来
+    /// （docs/54 §8-⑥ 的 3D 调试契约；与 2D `PhysicsWorld::debug_shapes` 同源同义）。
+    ///
+    /// 与 2D 一样刻意读 Rapier 而不是场景里的 `Collider3d` 组件串：组件只在实例化时解析一次，
+    /// 而动态刚体的位置/旋转每步都在变。局部偏移取**相对父刚体**的那一份，再按刚体旋转叠加。
+    pub fn debug_shapes(&self) -> Vec<ColliderDebugShape3d> {
+        let mut shapes = Vec::new();
+        for (entity, handle) in &self.entity_bodies {
+            let Some(body) = self.bodies.get(*handle) else {
+                continue;
+            };
+            let body_translation = body.translation();
+            let body_rotation = *body.rotation();
+            let body_quat = Quat {
+                x: body_rotation.coords.x,
+                y: body_rotation.coords.y,
+                z: body_rotation.coords.z,
+                w: body_rotation.coords.w,
+            };
+            for collider_handle in body.colliders() {
+                let Some(collider) = self.colliders.get(*collider_handle) else {
+                    continue;
+                };
+                // Rapier 只给出 `&dyn Shape`，靠 downcast 认形状；认不出的形状不画，
+                // 不做静默近似。
+                let shape_ref = collider.shape();
+                let shape = if let Some(ball) = shape_ref
+                    .as_any()
+                    .downcast_ref::<rapier3d::geometry::Ball>()
+                {
+                    ColliderShape3d::Ball(ball.radius)
+                } else if let Some(cuboid) = shape_ref
+                    .as_any()
+                    .downcast_ref::<rapier3d::geometry::Cuboid>()
+                {
+                    ColliderShape3d::Cuboid(Vec3::new(
+                        cuboid.half_extents.x,
+                        cuboid.half_extents.y,
+                        cuboid.half_extents.z,
+                    ))
+                } else if let Some(capsule) = shape_ref
+                    .as_any()
+                    .downcast_ref::<rapier3d::geometry::Capsule>()
+                {
+                    ColliderShape3d::Capsule {
+                        half_height: capsule.half_height(),
+                        radius: capsule.radius,
+                    }
+                } else {
+                    continue;
+                };
+                let (local_offset, local_rotation) = match collider.position_wrt_parent() {
+                    Some(pose) => (pose.translation.vector, *pose.rotation.quaternion()),
+                    None => (*collider.translation(), *collider.rotation().quaternion()),
+                };
+                let offset = Vec3::new(local_offset.x, local_offset.y, local_offset.z);
+                let Ok(rotated) = body_quat.rotate(offset) else {
+                    continue; // 非单位/非有限旋转：不画，不做静默近似
+                };
+                let center = Vec3::new(
+                    body_translation.x + rotated.x,
+                    body_translation.y + rotated.y,
+                    body_translation.z + rotated.z,
+                );
+                let rotation = body_quat
+                    * Quat {
+                        x: local_rotation.coords.x,
+                        y: local_rotation.coords.y,
+                        z: local_rotation.coords.z,
+                        w: local_rotation.coords.w,
+                    };
+                shapes.push(ColliderDebugShape3d {
+                    entity: *entity,
+                    center,
+                    rotation,
+                    shape,
+                    sensor: collider.is_sensor(),
+                    dynamic: body.is_dynamic(),
+                });
+            }
+        }
+        // 与 2D 同一理由：`entity_bodies` 是 HashMap，顺序必须确定。
+        shapes.sort_by_key(|shape| {
+            (
+                shape.entity,
+                shape.center.x.to_bits(),
+                shape.center.y.to_bits(),
+                shape.center.z.to_bits(),
+            )
+        });
+        shapes
+    }
+}
+
+/// `(layer, mask)` → Rapier 查询过滤组；`None` = 默认（全收）。与 2D 的
+/// `physics::query_filter` 逐字同义（两个 rapier crate 各有自己的类型，因此只能各写一份）。
+fn query_filter3d(groups: Option<(u8, u8)>) -> QueryFilter<'static> {
+    match groups {
+        Some((layer, mask)) => QueryFilter::default().groups(InteractionGroups::new(
+            Group::from_bits_truncate(layer as u32),
+            Group::from_bits_truncate(mask as u32),
+        )),
+        None => QueryFilter::default(),
     }
 }
 
@@ -671,6 +935,77 @@ mod tests {
         assert!(ColliderDesc3d::from_component_str("radius=16").is_err());
         assert!(ColliderDesc3d::from_component_str("shape=cuboid;half_width=1").is_err());
         assert!(ColliderDesc3d::from_component_str("shape=capsule;radius=1").is_err());
+    }
+
+    /// docs/54 §8-⑥：3D 调试数据与 2D 同构——读物理世界当前姿态、报出 sensor/dynamic、
+    /// 线框段数固定（不随尺寸变化，宿主据此可以断言顶点数）。
+    #[test]
+    fn debug_shapes_report_pose_dynamic_and_fixed_wireframes() {
+        // 段数固定：Ball = 3×16、Cuboid = 12、Capsule = 2×16 + 4。
+        assert_eq!(ColliderShape3d::Ball(1.0).wireframe_edges().len(), 48);
+        assert_eq!(
+            ColliderShape3d::Cuboid(Vec3::new(1.0, 1.0, 1.0))
+                .wireframe_edges()
+                .len(),
+            12
+        );
+        assert_eq!(
+            ColliderShape3d::Capsule {
+                half_height: 1.0,
+                radius: 1.0
+            }
+            .wireframe_edges()
+            .len(),
+            36
+        );
+
+        let mut world = PhysicsWorld3d::new_with_gravity(Vec3::ZERO);
+        let wall = entity(1);
+        let ball = entity(2);
+        world
+            .add_body(
+                wall,
+                Vec3::new(0.0, 0.0, 0.0),
+                false,
+                vec![
+                    ColliderDesc3d::from_component_str(
+                        "shape=cuboid;half_width=2;half_height=2;half_z=2;sensor=true",
+                    )
+                    .unwrap(),
+                ],
+            )
+            .unwrap();
+        world
+            .add_body(
+                ball,
+                Vec3::new(10.0, 0.0, 0.0),
+                true,
+                vec![ColliderDesc3d::from_component_str("shape=ball;radius=1").unwrap()],
+            )
+            .unwrap();
+
+        let shapes = world.debug_shapes();
+        assert_eq!(shapes.len(), 2, "每个碰撞体一行");
+        assert_eq!(shapes[0].entity, wall);
+        assert_eq!(
+            shapes[0].shape,
+            ColliderShape3d::Cuboid(Vec3::new(2.0, 2.0, 2.0))
+        );
+        assert!(shapes[0].sensor, "sensor 要透出来，绘制时换色");
+        assert!(!shapes[0].dynamic, "固定体必须报 dynamic=false");
+        assert_eq!(shapes[0].center, Vec3::ZERO);
+        assert_eq!(shapes[1].entity, ball);
+        assert!(shapes[1].dynamic);
+        assert!((shapes[1].center.x - 10.0).abs() < 1e-5);
+
+        // 线框是世界空间的：中心点跟着刚体走，且每条线段都从中心附近展开。
+        let segments = shapes[1].wireframe_segments();
+        assert_eq!(segments.len(), 48);
+        for (from, to) in segments {
+            assert!(from.is_finite() && to.is_finite());
+            assert!((from.x - 10.0).abs() <= 1.0001, "半径 1 的球：{from:?}");
+            assert!((to.x - 10.0).abs() <= 1.0001);
+        }
     }
 
     /// WP7：3D 侧的 `ccd` 与 2D 同义（刚体属性；拼错报错），并且真的阻止高速隧穿。

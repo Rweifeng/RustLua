@@ -321,7 +321,10 @@ local function resolve_hits(atk)
   if not rect then
     return
   end
-  local ok, candidates = pcall(physics.overlap, rect.ax, rect.ay, rect.broad_radius)
+  -- 场景空间宽相：按实体 Transform 位置筛候选，再用精确 hitbox 判定。
+  -- 注意名字：`physics.overlap` 是**碰撞体**查询（与 physics3d 同义），本处要的是位置宽相，
+  -- 因此用 `physics.positions_in_radius`（docs/54 §8-⑥：同名必同义）。
+  local ok, candidates = pcall(physics.positions_in_radius, rect.ax, rect.ay, rect.broad_radius)
   if not ok or type(candidates) ~= "table" then
     return
   end

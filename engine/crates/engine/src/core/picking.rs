@@ -42,6 +42,27 @@ pub fn screen_from_world(
     Some((screen, visible))
 }
 
+/// 世界坐标 → 屏幕像素，**只**按"是否在相机前方"（NDC z ∈ [0, 1]）判定可用性。
+///
+/// 与 [`screen_from_world`] 的区别：这里不要求点落在视口矩形内。调试线段（碰撞体线框、
+/// gizmo）需要"端点在屏幕外但仍在相机前方"时照样连线——视口裁剪由渲染器负责，若在这里
+/// 因为一个端点出屏就丢掉整条线，物体贴近屏幕边缘时线框会整段消失。
+#[must_use]
+pub fn screen_from_world_unclipped(
+    camera: Camera3D,
+    world: Vec3,
+    viewport: Viewport,
+) -> Option<Vec2> {
+    let ndc = camera.world_to_ndc(world).ok()?;
+    if !ndc.is_finite() || !(0.0..=1.0).contains(&ndc.z) {
+        return None; // 相机背后或远裁剪面之外
+    }
+    Some(Vec2::new(
+        (ndc.x * 0.5 + 0.5) * viewport.width,
+        (0.5 - ndc.y * 0.5) * viewport.height,
+    ))
+}
+
 /// 射线与轴对齐包围盒求交，返回沿射线方向的命中距离（`> max_distance` 视为未命中）。
 #[must_use]
 pub fn ray_hits_aabb(ray: Ray3, bounds: Aabb3, max_distance: f32) -> Option<f32> {
