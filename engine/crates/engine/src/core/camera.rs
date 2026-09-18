@@ -60,6 +60,52 @@ impl CameraBounds {
     }
 }
 
+/// `Camera2D` 组件串的解析错误。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Camera2dComponentError {
+    /// 空串不是一个相机。
+    Empty,
+    /// 缺 `center` / `zoom` 这类必填字段。
+    MissingField(&'static str),
+    /// 字段不是 `key=value` 或数值/形状不对。
+    MalformedField(String),
+    /// 未知键：报错而不是忽略。
+    UnknownField(String),
+    /// 通过文法但语义非法（zoom <= 0、非有限、bounds 反转等）。
+    Invalid(String),
+}
+
+impl fmt::Display for Camera2dComponentError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => write!(formatter, "camera2d component is empty"),
+            Self::MissingField(field) => write!(formatter, "missing camera2d field: {field}"),
+            Self::MalformedField(field) => write!(formatter, "malformed camera2d field: {field}"),
+            Self::UnknownField(field) => write!(formatter, "unknown camera2d field: {field}"),
+            Self::Invalid(message) => write!(formatter, "invalid camera2d: {message}"),
+        }
+    }
+}
+
+impl std::error::Error for Camera2dComponentError {}
+
+fn parse_component_number(raw: &str, field: &str) -> Result<f32, Camera2dComponentError> {
+    raw.parse::<f32>()
+        .ok()
+        .filter(|value| value.is_finite())
+        .ok_or_else(|| Camera2dComponentError::MalformedField(field.to_owned()))
+}
+
+fn parse_component_pair(raw: &str, field: &str) -> Result<(f32, f32), Camera2dComponentError> {
+    let (x, y) = raw
+        .split_once(',')
+        .ok_or_else(|| Camera2dComponentError::MalformedField(field.to_owned()))?;
+    Ok((
+        parse_component_number(x.trim(), field)?,
+        parse_component_number(y.trim(), field)?,
+    ))
+}
+
 /// A 2D camera with center, rotation, zoom, and optional world bounds.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Camera2D {
@@ -163,6 +209,93 @@ impl Camera2D {
             Vec2::new(center.x - extent_x, center.y - extent_y),
             Vec2::new(center.x + extent_x, center.y + extent_y),
         )
+    }
+
+    /// 解析场景里的 `Camera2D` 组件串（docs/54 §8-①：正交相机也必须是**实体组件**，
+    /// 而不是只有宿主状态，否则"同一 Entity 模型表达正交/透视相机"不成立）。
+    ///
+    /// 文法：`center=x,y;zoom=z` 必填，`rotation=r`（弧度）与 `bounds=min_x,min_y,max_x,max_y`
+    /// 可选。未知键报错，非法数值走与构造函数同一套校验。
+    pub fn from_component_str(value: &str) -> Result<Self, Camera2dComponentError> {
+        let mut center: Option<Vec2> = None;
+        let mut zoom: Option<f32> = None;
+        let mut rotation = 0.0_f32;
+        let mut bounds: Option<CameraBounds> = None;
+        let mut seen = false;
+        for field in value
+            .trim()
+            .split(';')
+            .filter(|field| !field.trim().is_empty())
+        {
+            seen = true;
+            let (key, raw) = field
+                .split_once('=')
+                .ok_or_else(|| Camera2dComponentError::MalformedField(field.to_owned()))?;
+            let raw = raw.trim();
+            match key.trim() {
+                "center" => {
+                    let (x, y) = parse_component_pair(raw, field)?;
+                    center = Some(Vec2::new(x, y));
+                }
+                "zoom" => zoom = Some(parse_component_number(raw, field)?),
+                "rotation" => rotation = parse_component_number(raw, field)?,
+                "bounds" => {
+                    let parts = raw
+                        .split(',')
+                        .map(str::trim)
+                        .map(|part| parse_component_number(part, field))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    if parts.len() != 4 {
+                        return Err(Camera2dComponentError::MalformedField(field.to_owned()));
+                    }
+                    bounds = Some(
+                        CameraBounds::new(
+                            Vec2::new(parts[0], parts[1]),
+                            Vec2::new(parts[2], parts[3]),
+                        )
+                        .map_err(|error| Camera2dComponentError::Invalid(error.to_string()))?,
+                    );
+                }
+                _ => return Err(Camera2dComponentError::UnknownField(field.to_owned())),
+            }
+        }
+        if !seen {
+            return Err(Camera2dComponentError::Empty);
+        }
+        let (Some(center), Some(zoom)) = (center, zoom) else {
+            return Err(Camera2dComponentError::MissingField(if center.is_none() {
+                "center"
+            } else {
+                "zoom"
+            }));
+        };
+        let camera = Camera2D {
+            center,
+            rotation,
+            zoom,
+            bounds,
+        };
+        camera
+            .validate()
+            .map_err(|error| Camera2dComponentError::Invalid(error.to_string()))?;
+        Ok(camera)
+    }
+
+    /// 写回组件串：只写非默认的可选字段，因此往返稳定且既有场景串不变长。
+    #[must_use]
+    pub fn to_component_str(self) -> String {
+        let mut out = format!("center={:.4},{:.4}", self.center.x, self.center.y);
+        if self.rotation != 0.0 {
+            out.push_str(&format!(";rotation={:.6}", self.rotation));
+        }
+        out.push_str(&format!(";zoom={:.6}", self.zoom));
+        if let Some(bounds) = self.bounds {
+            out.push_str(&format!(
+                ";bounds={:.4},{:.4},{:.4},{:.4}",
+                bounds.min.x, bounds.min.y, bounds.max.x, bounds.max.y
+            ));
+        }
+        out
     }
 
     /// 可见区域在 X/Y 上的半宽半高（世界单位，含旋转外接）。
@@ -1530,6 +1663,58 @@ mod tests {
             Camera3D::from_component_str("position=0,0,5;target=0,0,5;fov=90;near=0.1;far=100",)
                 .is_err()
         );
+    }
+
+    /// docs/54 §8-①：正交（2D）相机也是场景组件，因此组件串必须能往返、且拼错要报错。
+    #[test]
+    fn camera2d_component_string_round_trips_and_rejects_bad_input() {
+        let camera =
+            Camera2D::from_component_str("center=100,50;zoom=2").expect("minimal camera2d");
+        assert_eq!(camera.center, Vec2::new(100.0, 50.0));
+        assert_eq!(camera.zoom, 2.0);
+        assert_eq!(camera.rotation, 0.0);
+        assert!(camera.bounds.is_none());
+
+        let full = Camera2D::from_component_str(
+            "center=640,360;rotation=0.5;zoom=1.5;bounds=0,0,1280,720",
+        )
+        .expect("full camera2d");
+        assert_eq!(full.rotation, 0.5);
+        assert_eq!(full.bounds.expect("bounds").min, Vec2::new(0.0, 0.0));
+        // 往返稳定：解析 → 写回 → 再解析得到同一台相机。
+        assert_eq!(
+            Camera2D::from_component_str(&full.to_component_str()).expect("reparse"),
+            full
+        );
+        assert_eq!(
+            Camera2D::from_component_str(&camera.to_component_str()).expect("reparse minimal"),
+            camera
+        );
+
+        assert_eq!(
+            Camera2D::from_component_str(""),
+            Err(Camera2dComponentError::Empty)
+        );
+        assert_eq!(
+            Camera2D::from_component_str("center=0,0"),
+            Err(Camera2dComponentError::MissingField("zoom"))
+        );
+        assert_eq!(
+            Camera2D::from_component_str("zoom=1"),
+            Err(Camera2dComponentError::MissingField("center"))
+        );
+        assert!(matches!(
+            Camera2D::from_component_str("center=0,0;zoom=1;fov=60"),
+            Err(Camera2dComponentError::UnknownField(_))
+        ));
+        assert!(matches!(
+            Camera2D::from_component_str("center=0,0;zoom=0"),
+            Err(Camera2dComponentError::Invalid(_))
+        ));
+        assert!(matches!(
+            Camera2D::from_component_str("center=0,0;zoom=1;bounds=10,10,0,0"),
+            Err(Camera2dComponentError::Invalid(_))
+        ));
     }
     use crate::core::transform::Vec2;
     fn assert_vec_close(actual: Vec2, expected: Vec2, epsilon: f32) {

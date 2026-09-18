@@ -8,6 +8,7 @@ use crate::core::{
     camera::Camera3D,
     light::Light,
     mesh3d::MeshRenderer,
+    particle::ParticleEmitter,
     physics::ColliderDesc,
     physics3d::ColliderDesc3d,
     resource_db::{AssetId, ResourceDatabase},
@@ -54,6 +55,8 @@ pub enum ComponentId {
     Transform2D,
     Transform3D,
     Camera3D,
+    /// docs/54 §8-①：正交（2D）相机与透视相机一样是**实体组件**。
+    Camera2D,
     Light,
     MeshRenderer,
     UiLayout,
@@ -65,6 +68,7 @@ pub enum ComponentId {
     WorldText,
     Sprite,
     Tilemap,
+    ParticleEmitter,
     Collider,
     Collider3d,
     Animation,
@@ -76,6 +80,7 @@ pub enum TypedComponent {
     Transform2D(Transform),
     Transform3D(Transform3D),
     Camera3D(Camera3D),
+    Camera2D(crate::core::camera::Camera2D),
     Light(Light),
     MeshRenderer {
         renderer: MeshRenderer,
@@ -91,6 +96,9 @@ pub enum TypedComponent {
     WorldText(WorldText),
     Sprite(SpriteComponent),
     Tilemap(Tilemap),
+    /// docs/54 §8-①：粒子发射器是**场景组件**（连续发射由 `rate` 表达），
+    /// 因此"同一场景表达 Sprite/Mesh/相机/粒子/文字/UI"不再需要脚本代劳。
+    ParticleEmitter(ParticleEmitter),
     Collider(ColliderDesc),
     Collider3d(ColliderDesc3d),
     Animation(AnimationStateMachine),
@@ -168,6 +176,10 @@ fn compile_component(
         "Camera3D" => Camera3D::from_component_str(value)
             .map(|component| (ComponentId::Camera3D, TypedComponent::Camera3D(component)))
             .map_err(|error| error.to_string()),
+        // docs/54 §8-①：正交相机不再是"只有宿主和 Lua 才有"的东西。
+        "Camera2D" => crate::core::camera::Camera2D::from_component_str(value)
+            .map(|component| (ComponentId::Camera2D, TypedComponent::Camera2D(component)))
+            .map_err(|error| error.to_string()),
         "Light" => Light::from_component_str(value)
             .map(|component| (ComponentId::Light, TypedComponent::Light(component)))
             .map_err(|error| error.to_string()),
@@ -211,6 +223,15 @@ fn compile_component(
             .map_err(|error| error.to_string()),
         "Tilemap" => Tilemap::from_component_str(value)
             .map(|component| (ComponentId::Tilemap, TypedComponent::Tilemap(component)))
+            .map_err(|error| error.to_string()),
+        // docs/54 §8-①：粒子发射器与其它渲染组件并列，不再是"只有脚本才能造"的东西。
+        "ParticleEmitter" => ParticleEmitter::from_component_str(value)
+            .map(|component| {
+                (
+                    ComponentId::ParticleEmitter,
+                    TypedComponent::ParticleEmitter(component),
+                )
+            })
             .map_err(|error| error.to_string()),
         "Collider" => ColliderDesc::from_component_str(value)
             .map(|component| (ComponentId::Collider, TypedComponent::Collider(component)))
@@ -865,5 +886,57 @@ mod tests {
             }
         }
         assert!(scene_count > 0, "没有找到任何源场景，对拍门实际未执行");
+    }
+
+    /// docs/54 §8-①：**同一个场景**必须能同时表达 Sprite、Mesh、正交与透视相机、粒子、文字和 UI。
+    ///
+    /// 这条用真实场景文件（`examples/game_api/scenes/unified.scene`）而不是内存里拼一个模型：
+    /// 判据要的是"场景格式 + Entity 模型 + typed 编译"三处都表达得出来，任何一处漏了都会在这里判红。
+    #[test]
+    fn one_scene_expresses_every_renderable_category() {
+        let path = crate::core::games_dir().join("examples/game_api/scenes/unified.scene");
+        let scene = Scene::load(&path).expect("load unified scene");
+        let typed = TypedScene::compile_v2(&scene)
+            .unwrap_or_else(|errors| panic!("unified.scene 编译诊断：{errors:?}"));
+
+        let present: std::collections::BTreeSet<ComponentId> = typed
+            .entities
+            .iter()
+            .flat_map(|entity| entity.components.keys().copied())
+            .collect();
+        for required in [
+            // 2D 内容：精灵、文字、UI、粒子发射器
+            ComponentId::Sprite,
+            ComponentId::WorldText,
+            ComponentId::Text,
+            ComponentId::UiLayout,
+            ComponentId::ParticleEmitter,
+            // 3D 内容：网格、透视相机
+            ComponentId::MeshRenderer,
+            ComponentId::Camera3D,
+            // 正交（2D）相机
+            ComponentId::Camera2D,
+            // 空间：两种变换、光源
+            ComponentId::Transform2D,
+            ComponentId::Transform3D,
+            ComponentId::Light,
+        ] {
+            assert!(
+                present.contains(&required),
+                "unified.scene 缺少 {required:?}：一份场景要能同时表达全部渲染类别，实际 {present:?}"
+            );
+        }
+        // 粒子发射器必须是"连续"的，否则"场景表达粒子"就只是声明了一次爆发。
+        let emitter = typed
+            .entities
+            .iter()
+            .find_map(
+                |entity| match entity.components.get(&ComponentId::ParticleEmitter) {
+                    Some(TypedComponent::ParticleEmitter(emitter)) => Some(*emitter),
+                    _ => None,
+                },
+            )
+            .expect("particle emitter component");
+        assert!(emitter.rate > 0.0, "场景声明的发射器应带连续发射速率");
     }
 }

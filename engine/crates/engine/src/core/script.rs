@@ -11,7 +11,7 @@ use crate::core::{
     light::Light,
     math3d::Vec3,
     mesh3d::MeshRenderer,
-    particle::{Particle, ParticleEmitter, ParticleSystem},
+    particle::{Particle, ParticleEmitter, ParticleSystem, SceneParticleEmitter},
     physics::{ColliderDesc, ColliderShape, PhysicsWorld},
     physics3d::{ColliderDesc3d, PhysicsWorld3d},
     resource_db::AssetId,
@@ -671,6 +671,31 @@ impl LuaRuntime {
             state
                 .world
                 .insert(id, tilemap)
+                .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
+        }
+        // docs/54 §8-①：场景可以声明自带的 2D（正交）相机。它作为**初始**相机生效；
+        // 之后 Lua `camera2d.*` 与相机控制器照旧可以移动它（不是第二份姿态真源）。
+        if let Some(value) = components.get("Camera2D") {
+            let camera =
+                crate::core::camera::Camera2D::from_component_str(value).map_err(|error| {
+                    LuaBridgeError::Api(format!("entity {name:?} has an invalid Camera2D: {error}"))
+                })?;
+            state
+                .world
+                .insert(id, camera)
+                .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
+        }
+        // docs/54 §8-①：场景可以**声明**粒子发射器（连续发射由 `rate` 表达）。这里插入的是
+        // 带累计器的运行时形态；发射本身由 `scene_emitters_step` 每步按速率推进。
+        if let Some(value) = components.get("ParticleEmitter") {
+            let emitter = ParticleEmitter::from_component_str(value).map_err(|error| {
+                LuaBridgeError::Api(format!(
+                    "entity {name:?} has an invalid ParticleEmitter: {error}"
+                ))
+            })?;
+            state
+                .world
+                .insert(id, SceneParticleEmitter::new(emitter))
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
         }
         if let Some(value) = components.get("Animation") {

@@ -27,6 +27,25 @@ cargo run -p game --example scene_format_demo --release
 - `Camera3D`：`position=x,y,z;target=x,y,z;fov=<度>;near=<n>;far=<f>`（`aspect` 由渲染窗口决定）
 - `Light`：`direction=x,y,z;color=r,g,b;intensity=<i>`（方向光）
 
+## 2D 相机与粒子（实体组件，docs/54 §8-①）
+
+同一个场景既能声明透视相机（`Camera3D`），也能声明**正交相机**与**粒子发射器**——它们和
+Sprite/Mesh/文字/UI 一样是实体组件，不再只能由宿主状态或脚本表达。
+
+- `Camera2D`：`center=x,y;zoom=<像素/世界单位>` 必填，`rotation=<弧度>`、
+  `bounds=min_x,min_y,max_x,max_y` 可选。声明后它成为运行时的**初始** 2D 相机；Lua
+  `camera2d.*` 与相机控制器之后照旧可以移动它（不是第二份姿态真源）。未声明的场景保持历史默认，
+  因此既有工程逐字节不变。
+- `ParticleEmitter`：`count=<每次爆发的粒子数>`、`rate=<粒子/秒，0=只爆发>`、`speed`、`life`、
+  `size`、`size_end`、`color=r,g,b,a`、`color_end`、`gravity=x,y`、`drag`、`rotation`、
+  `rotation_speed`。`size`/`color` 同时设置曲线起止值，`size_end`/`color_end` 可单独覆盖终点。
+  `rate > 0` 时发射器按 `rate × dt` **连续**发射，位置取实体的世界位置（父链下会跟着父一起动）；
+  累计器保留分数部分，因此帧率变化不改变平均发射量，长帧最多补发 512 个（不会一步倾泻）。
+  未知键与非法数值一律报错，不静默忽略。
+
+`examples/game_api/scenes/unified.scene` 是一份"六类内容同场"的样例：Sprite + Mesh +
+`Camera3D` + `Camera2D` + `ParticleEmitter` + `WorldText` + `Text`/`UiLayout`。
+
 ## UI 组件字符串（屏幕空间）
 
 屏幕空间 UI 组件（`Text` / `Image` / `UiLayout` / `UiEvents`）同样用

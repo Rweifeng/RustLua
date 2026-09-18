@@ -11,6 +11,11 @@ use crate::core::transform::Vec2;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ParticleEmitter {
     pub count: usize,
+    /// **连续发射速率**（粒子/秒，`0` = 只按 burst 发射）。
+    ///
+    /// 场景里声明的发射器用这个字段表达"持续冒烟/冒火"；Lua 的 `particles.burst` 不读它，
+    /// 因此默认值 `0` 让既有脚本与场景的行为逐字节不变。
+    pub rate: f32,
     /// 初速上限（世界单位/秒）。每个粒子在 25%–100% 之间随机取。
     pub speed: f32,
     /// 基准寿命（秒）。每个粒子在 50%–100% 之间随机取。
@@ -35,6 +40,7 @@ impl Default for ParticleEmitter {
     fn default() -> Self {
         Self {
             count: 8,
+            rate: 0.0,
             speed: 120.0,
             life: 0.6,
             size_start: 6.0,
@@ -68,6 +74,9 @@ impl ParticleEmitter {
         if !self.speed.is_finite() || !self.life.is_finite() || self.life <= 0.0 {
             return Err("particle speed/life must be finite and life > 0".to_owned());
         }
+        if !self.rate.is_finite() || self.rate < 0.0 {
+            return Err("particle rate must be finite and >= 0".to_owned());
+        }
         if !self.size_start.is_finite()
             || !self.size_end.is_finite()
             || self.size_start < 0.0
@@ -91,6 +100,213 @@ impl ParticleEmitter {
             return Err("particle drag must be >= 0".to_owned());
         }
         Ok(())
+    }
+
+    /// 解析场景里的 `ParticleEmitter` 组件串。
+    ///
+    /// 文法（`;` 分隔、`key=value`，未知键一律报错而不是静默忽略）：
+    /// `count`、`rate`、`speed`、`life`、`size`、`size_end`、`color`、`color_end`、
+    /// `gravity`、`drag`、`rotation`、`rotation_speed`。`size`/`color` 同时设置曲线的**起止**
+    /// 值，`size_end`/`color_end` 覆盖终点（与书写顺序无关，见下方 `seen_*_end`）。
+    pub fn from_component_str(value: &str) -> Result<Self, ParticleComponentError> {
+        let mut emitter = ParticleEmitter::default();
+        let mut seen = false;
+        let mut seen_size_end = false;
+        let mut seen_color_end = false;
+        for field in value
+            .trim()
+            .split(';')
+            .filter(|field| !field.trim().is_empty())
+        {
+            seen = true;
+            let (key, raw) = field
+                .split_once('=')
+                .ok_or_else(|| ParticleComponentError::InvalidField(field.to_owned()))?;
+            let raw = raw.trim();
+            match key.trim() {
+                "count" => {
+                    emitter.count = raw
+                        .parse::<usize>()
+                        .map_err(|_| ParticleComponentError::InvalidField(field.to_owned()))?
+                }
+                "rate" => emitter.rate = parse_number(raw, field)?,
+                "speed" => emitter.speed = parse_number(raw, field)?,
+                "life" => emitter.life = parse_number(raw, field)?,
+                "size" => {
+                    let value = parse_number(raw, field)?;
+                    emitter.size_start = value;
+                    if !seen_size_end {
+                        emitter.size_end = value;
+                    }
+                }
+                "size_end" => {
+                    seen_size_end = true;
+                    emitter.size_end = parse_number(raw, field)?;
+                }
+                "color" => {
+                    let value = parse_color(raw, field)?;
+                    emitter.color_start = value;
+                    if !seen_color_end {
+                        emitter.color_end = value;
+                    }
+                }
+                "color_end" => {
+                    seen_color_end = true;
+                    emitter.color_end = parse_color(raw, field)?;
+                }
+                "gravity" => {
+                    let (x, y) = parse_pair(raw, field)?;
+                    emitter.gravity = Vec2::new(x, y);
+                }
+                "drag" => emitter.drag = parse_number(raw, field)?,
+                "rotation" => emitter.rotation = parse_number(raw, field)?,
+                "rotation_speed" => emitter.rotation_speed = parse_number(raw, field)?,
+                _ => return Err(ParticleComponentError::UnknownField(field.to_owned())),
+            }
+        }
+        if !seen {
+            return Err(ParticleComponentError::Empty);
+        }
+        emitter
+            .validate()
+            .map_err(ParticleComponentError::Invalid)?;
+        Ok(emitter)
+    }
+
+    /// 写回组件串。只写**非默认**的可选字段，因此 `to_component_str` → 解析 → 写回是稳定的，
+    /// 且既有场景的规范字符串不会因为新增字段而变长。
+    #[must_use]
+    pub fn to_component_str(self) -> String {
+        let mut out = format!("count={}", self.count);
+        if self.rate > 0.0 {
+            out.push_str(&format!(";rate={:.6}", self.rate));
+        }
+        out.push_str(&format!(";speed={:.6};life={:.6}", self.speed, self.life));
+        out.push_str(&format!(";size={:.6}", self.size_start));
+        if self.size_end != self.size_start {
+            out.push_str(&format!(";size_end={:.6}", self.size_end));
+        }
+        out.push_str(&format!(";color={}", format_color(self.color_start)));
+        if self.color_end != self.color_start {
+            out.push_str(&format!(";color_end={}", format_color(self.color_end)));
+        }
+        if self.gravity.x != 0.0 || self.gravity.y != 0.0 {
+            out.push_str(&format!(
+                ";gravity={:.6},{:.6}",
+                self.gravity.x, self.gravity.y
+            ));
+        }
+        if self.drag > 0.0 {
+            out.push_str(&format!(";drag={:.6}", self.drag));
+        }
+        if self.rotation != 0.0 {
+            out.push_str(&format!(";rotation={:.6}", self.rotation));
+        }
+        if self.rotation_speed != 0.0 {
+            out.push_str(&format!(";rotation_speed={:.6}", self.rotation_speed));
+        }
+        out
+    }
+}
+
+/// `ParticleEmitter` 组件串的解析错误。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ParticleComponentError {
+    /// 空串不是一个发射器。
+    Empty,
+    /// 字段不是 `key=value` 或数值非法。
+    InvalidField(String),
+    /// 未知键：**报错**而不是忽略，避免"写了 `rate` 却拼成 `reate`"被静默吞掉。
+    UnknownField(String),
+    /// 数值通过文法但语义非法（非有限、`life <= 0`、`drag < 0` 等）。
+    Invalid(String),
+}
+
+impl std::fmt::Display for ParticleComponentError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Empty => write!(formatter, "particle emitter component is empty"),
+            Self::InvalidField(field) => write!(formatter, "malformed particle field: {field}"),
+            Self::UnknownField(field) => write!(formatter, "unknown particle field: {field}"),
+            Self::Invalid(message) => write!(formatter, "invalid particle emitter: {message}"),
+        }
+    }
+}
+
+impl std::error::Error for ParticleComponentError {}
+
+fn parse_number(raw: &str, field: &str) -> Result<f32, ParticleComponentError> {
+    raw.parse::<f32>()
+        .ok()
+        .filter(|value| value.is_finite())
+        .ok_or_else(|| ParticleComponentError::InvalidField(field.to_owned()))
+}
+
+fn parse_pair(raw: &str, field: &str) -> Result<(f32, f32), ParticleComponentError> {
+    let (x, y) = raw
+        .split_once(',')
+        .ok_or_else(|| ParticleComponentError::InvalidField(field.to_owned()))?;
+    Ok((
+        parse_number(x.trim(), field)?,
+        parse_number(y.trim(), field)?,
+    ))
+}
+
+fn parse_color(raw: &str, field: &str) -> Result<[f32; 4], ParticleComponentError> {
+    let parts = raw
+        .split(',')
+        .map(|part| parse_number(part.trim(), field))
+        .collect::<Result<Vec<_>, _>>()?;
+    if parts.len() != 4 {
+        return Err(ParticleComponentError::InvalidField(field.to_owned()));
+    }
+    Ok([parts[0], parts[1], parts[2], parts[3]])
+}
+
+fn format_color(color: [f32; 4]) -> String {
+    format!(
+        "{:.3},{:.3},{:.3},{:.3}",
+        color[0], color[1], color[2], color[3]
+    )
+}
+
+/// 场景声明的**连续**发射器：组件串给出发射参数，运行时按速率累计发射。
+///
+/// `accumulator` 是"还没攒够一个粒子"的分数部分，**只在内存里**（不序列化），因此
+/// 帧率变化不会改变平均发射量，也不会因为一次长帧就整批补发。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SceneParticleEmitter {
+    pub emitter: ParticleEmitter,
+    pub accumulator: f32,
+}
+
+/// 单步最多补发多少粒子：长暂停/卡顿后不允许一步倾泻成千上万个粒子
+/// （那会把帧时间尖峰变成雪崩）。超出部分丢弃，并在调用方留可诊断计数。
+pub const MAX_PARTICLES_PER_STEP: usize = 512;
+
+impl SceneParticleEmitter {
+    #[must_use]
+    pub const fn new(emitter: ParticleEmitter) -> Self {
+        Self {
+            emitter,
+            accumulator: 0.0,
+        }
+    }
+
+    /// 本步应发射多少粒子。`rate <= 0`（只有 burst）或 `delta_seconds` 非法时返回 0。
+    pub fn take_steps(&mut self, delta_seconds: f32) -> usize {
+        if self.emitter.rate <= 0.0 || !delta_seconds.is_finite() || delta_seconds <= 0.0 {
+            return 0;
+        }
+        self.accumulator += self.emitter.rate * delta_seconds;
+        if !self.accumulator.is_finite() {
+            self.accumulator = 0.0;
+            return 0;
+        }
+        let whole = self.accumulator.floor();
+        let count = (whole as usize).min(MAX_PARTICLES_PER_STEP);
+        self.accumulator -= whole;
+        count
     }
 }
 
@@ -414,5 +630,101 @@ mod tests {
             .validate()
             .is_err()
         );
+        assert!(
+            ParticleEmitter {
+                rate: -1.0,
+                ..ParticleEmitter::default()
+            }
+            .validate()
+            .is_err()
+        );
+    }
+
+    /// docs/54 §8-①：粒子发射器是**场景组件**，因此组件串必须能往返、且拼错要报错。
+    #[test]
+    fn emitter_component_string_round_trips_and_rejects_bad_input() {
+        let emitter = ParticleEmitter::from_component_str(
+            "count=4;rate=30;speed=90;life=0.5;size=3;color=1,0.7,0.3,1",
+        )
+        .expect("parse");
+        assert_eq!(emitter.count, 4);
+        assert_eq!(emitter.rate, 30.0);
+        assert_eq!(emitter.size_start, 3.0);
+        assert_eq!(emitter.size_end, 3.0, "只给 size 时起止同值");
+        assert_eq!(
+            emitter.color_end, emitter.color_start,
+            "只给 color 时起止同色"
+        );
+
+        // 往返稳定：解析 → 写回 → 再解析得到同一个发射器。
+        let text = emitter.to_component_str();
+        assert_eq!(
+            ParticleEmitter::from_component_str(&text).expect("reparse"),
+            emitter
+        );
+        assert_eq!(
+            ParticleEmitter::from_component_str(&ParticleEmitter::default().to_component_str())
+                .expect("default round trip"),
+            ParticleEmitter::default()
+        );
+
+        // 曲线终点可以被单独指定，且与书写顺序无关。
+        for text in ["count=1;size=2;size_end=8", "count=1;size_end=8;size=2"] {
+            let parsed = ParticleEmitter::from_component_str(text).expect(text);
+            assert_eq!(parsed.size_start, 2.0, "{text}");
+            assert_eq!(parsed.size_end, 8.0, "{text}");
+        }
+        assert_eq!(
+            ParticleEmitter::from_component_str("count=1;color=1,0,0,1;color_end=0,0,0,0")
+                .expect("color curve")
+                .color_end,
+            [0.0, 0.0, 0.0, 0.0]
+        );
+
+        // 拼错/未知键/退化数值一律报错，不静默忽略。
+        assert_eq!(
+            ParticleEmitter::from_component_str(""),
+            Err(ParticleComponentError::Empty)
+        );
+        assert!(matches!(
+            ParticleEmitter::from_component_str("count=1;reate=30"),
+            Err(ParticleComponentError::UnknownField(_))
+        ));
+        assert!(matches!(
+            ParticleEmitter::from_component_str("count=abc"),
+            Err(ParticleComponentError::InvalidField(_))
+        ));
+        assert!(matches!(
+            ParticleEmitter::from_component_str("count=1;life=0"),
+            Err(ParticleComponentError::Invalid(_))
+        ));
+        assert!(matches!(
+            ParticleEmitter::from_component_str("count=1;color=1,0,0"),
+            Err(ParticleComponentError::InvalidField(_))
+        ));
+    }
+
+    /// 连续发射按**速率 × 时间**累计：帧率变化不改变平均发射量，长帧也不会整批补发。
+    #[test]
+    fn scene_emitter_accumulates_fractional_steps() {
+        let emitter = ParticleEmitter {
+            count: 1,
+            rate: 30.0,
+            ..ParticleEmitter::default()
+        };
+        let mut scene = SceneParticleEmitter::new(emitter);
+        // 60 Hz：每步 0.5 个 ⇒ 两步发 1 个。
+        assert_eq!(scene.take_steps(1.0 / 60.0), 0);
+        assert_eq!(scene.take_steps(1.0 / 60.0), 1);
+        // 30 Hz：每步 1 个。
+        assert_eq!(scene.take_steps(1.0 / 30.0), 1);
+        // 长帧被上限夹住，不会一步倾泻。
+        assert_eq!(scene.take_steps(60.0), MAX_PARTICLES_PER_STEP);
+        // burst-only（rate = 0）与非法 dt 都不发射，且不动累计器。
+        let mut burst_only = SceneParticleEmitter::new(ParticleEmitter::default());
+        assert_eq!(burst_only.take_steps(1.0), 0);
+        assert_eq!(burst_only.accumulator, 0.0);
+        assert_eq!(scene.take_steps(f32::NAN), 0);
+        assert_eq!(scene.take_steps(0.0), 0);
     }
 }

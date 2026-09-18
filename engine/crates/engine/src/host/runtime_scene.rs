@@ -23,6 +23,7 @@ use crate::core::{
     math3d::{Mat4, Vec3},
     mesh3d::MeshRenderer,
     par::Parallelism,
+    particle::{ParticleEmitter, SceneParticleEmitter},
     physics::{ColliderShape, PhysicsAuthority},
     scene::{Scene, SceneEntityId},
     scheduler::{
@@ -146,6 +147,8 @@ pub struct RuntimeScene {
     /// 打开后精灵以世界坐标产出（`SceneMesh::world_sprites`），由渲染器的世界 Sprite 通道投影
     /// 并参与深度测试；关掉即逐字节回到 overlay 路径——这就是回滚档。
     world_sprite_depth: bool,
+    /// docs/54 §8-①：最近一步由**场景声明的发射器**发出的粒子个数（诊断与验收用）。
+    last_scene_emission: usize,
 }
 
 /// WP7 阶段顺序（回滚档）。
@@ -384,6 +387,57 @@ impl RuntimeScene {
                 .entities_with::<crate::core::mesh3d::MeshRenderer>()
                 .is_empty()
         })
+    }
+
+    /// docs/54 §8-①：推进**场景声明的**粒子发射器。
+    ///
+    /// 每个带 `SceneParticleEmitter` 的实体按 `rate × dt` 累计发射，发射位置取它的**世界**位置
+    /// （父链下的子实体因此跟着父一起动）。累计器写回组件，因此帧率变化不改变平均发射量。
+    ///
+    /// 返回本步发出的粒子数（诊断/验收用）。发射本身复用 Lua `particles.burst` 的同一实现。
+    pub fn step_scene_emitters(&mut self, delta_seconds: f32) -> usize {
+        let pending: Vec<(Vec2, ParticleEmitter)> = self.script.with_world_mut(|world| {
+            let mut pending = Vec::new();
+            for id in world.entities_with::<SceneParticleEmitter>() {
+                let Some(mut scene) = world
+                    .get::<SceneParticleEmitter>(id)
+                    .ok()
+                    .flatten()
+                    .copied()
+                else {
+                    continue;
+                };
+                // 没有变换的发射器没有位置可发，跳过（与"世界变换缺席"的消费端约定一致）。
+                let Some(position) = crate::core::hierarchy::world_transform_2d(world, id)
+                    .ok()
+                    .flatten()
+                    .map(|transform| transform.position)
+                else {
+                    continue;
+                };
+                let count = scene.take_steps(delta_seconds);
+                // 累计器必须写回：否则每步都从 0 开始，低速率发射器永远发不出粒子。
+                let _ = world.insert(id, scene);
+                if count == 0 {
+                    continue;
+                }
+                let mut emitter = scene.emitter;
+                emitter.count = count;
+                pending.push((position, emitter));
+            }
+            pending
+        });
+        let emitted = pending.len();
+        for (position, emitter) in pending {
+            self.script.burst_particles(position, &emitter);
+        }
+        emitted
+    }
+
+    /// 最近一步由场景声明的发射器发出的粒子数。
+    #[must_use]
+    pub const fn last_scene_emission(&self) -> usize {
+        self.last_scene_emission
     }
 
     /// 传播一次世界变换（幂等）。提取入口（`vertices` / `scene_3d`）与本函数的调用点
@@ -943,8 +997,28 @@ impl RuntimeScene {
             }
         }
         let text_render_mode = project_text_render_mode(project_root);
-        let camera = Camera2D::new(crate::core::camera::DEFAULT_2D_CAMERA_CENTER, 1.0)
-            .map_err(|error| error.to_string())?;
+        // docs/54 §8-①：场景声明了自己的 `Camera2D`（正交相机）就用它当**初始**相机；
+        // 没声明则保持历史默认（中心 = 设计分辨率中心、zoom = 1）。之后 Lua `camera2d.*`
+        // 与相机控制器照旧移动它——声明的相机是起点，不是第二份姿态真源。
+        let declared_camera = script.with_world(|world| {
+            world
+                .entities_with::<Camera2D>()
+                .into_iter()
+                .find_map(|id| world.get::<Camera2D>(id).ok().flatten().copied())
+        });
+        let camera = match declared_camera {
+            Some(camera) => camera,
+            None => Camera2D::new(crate::core::camera::DEFAULT_2D_CAMERA_CENTER, 1.0)
+                .map_err(|error| error.to_string())?,
+        };
+        if declared_camera.is_some() {
+            tracing::info!(
+                target: "render",
+                center = ?camera.center,
+                zoom = camera.zoom,
+                "[render] 2D camera comes from the scene's Camera2D component"
+            );
+        }
         tracing::info!(target: "render", "[render] SpriteBatch and Camera2D initialized");
         // 字体图集不再在此无条件加载：`load_project_font_atlas` 会按 chars.txt 预热
         // 全部 MSDF 字形，debug 构建下约 2s/项目（实测 ui_demo 135 字 ≈ 2.3s）。
@@ -998,6 +1072,7 @@ impl RuntimeScene {
             world_sprite_depth: false,
             physics_authority: PhysicsAuthority::default(),
             physics_stage_order: PhysicsStageOrder::default(),
+            last_scene_emission: 0,
         };
         scene.register_builtin_frame_systems();
         Ok(scene)
@@ -1103,9 +1178,19 @@ impl RuntimeScene {
             },
         ));
         self.add_builtin_step_system(System::new(
-            "particles_step",
+            "scene_emitters_step",
             ScheduleStage::Simulation,
             [] as [&str; 0],
+            |scene: &mut RuntimeScene, delta_seconds: f32| {
+                // docs/54 §8-①：场景声明的发射器先发射，再统一推进粒子（见 particles_step 的依赖）。
+                scene.last_scene_emission = scene.step_scene_emitters(delta_seconds);
+                Ok(())
+            },
+        ));
+        self.add_builtin_step_system(System::new(
+            "particles_step",
+            ScheduleStage::Simulation,
+            ["scene_emitters_step"],
             |scene: &mut RuntimeScene, delta_seconds: f32| {
                 scene.script.step_particles(delta_seconds);
                 Ok(())
@@ -3963,6 +4048,7 @@ mod sdf_tests {
             "ui_dynamic",
             "ui_layout",
             "ui_test",
+            "unified",
         ];
         for name in names {
             let path = root.join("scenes").join(format!("{name}.scene"));
@@ -5171,6 +5257,97 @@ mod sdf_tests {
             "有 3D 视图时世界内容不得被 2D 相机剔除（这正是被 golden 抓到的误丢）"
         );
     }
+
+    /// docs/54 §8-①：**场景声明的发射器**要真的持续发射（而不是只被解析出来躺在组件表里）。
+    ///
+    /// 走的是真实固定步流水线（`run_script_steps`），因此覆盖"系统注册顺序 + 累计器写回 +
+    /// 位置取世界变换 + 复用 Lua burst 实现"整条链。
+    #[test]
+    fn scene_declared_emitter_emits_continuously_through_the_step_pipeline() {
+        let root = game_root();
+        let mut scene = Scene::new("scene-emitter");
+        let source = crate::core::scene::SceneEntityId(1);
+        scene.add_entity(source, "Sparks", None).unwrap();
+        let entity = scene.entities.get_mut(&source).unwrap();
+        entity.components.insert(
+            "Transform".into(),
+            "x=640;y=360;rotation=0;scale_x=1;scale_y=1".into(),
+        );
+        // 60 粒子/秒、步长 1/60 秒 ⇒ 每步恰好 1 个。
+        entity.components.insert(
+            "ParticleEmitter".into(),
+            "count=2;rate=60;speed=10;life=0.5;size=2;color=1,1,1,1".into(),
+        );
+        let mut runtime =
+            RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("runtime");
+        let input = crate::core::input::InputSnapshot::default();
+        for _ in 0..3 {
+            runtime
+                .run_script_steps(1, 1.0 / 60.0, &input)
+                .expect("step");
+        }
+        assert_eq!(
+            runtime.last_scene_emission(),
+            1,
+            "60/秒 ÷ 60 步/秒 ⇒ 每步一个粒子"
+        );
+        assert_eq!(
+            runtime.with_script(|script| script.particle_count()),
+            3,
+            "三步应累计三个粒子（寿命 0.5s，期间都还在）"
+        );
+
+        // burst-only（rate = 0）的发射器不参与连续发射。
+        let mut burst_scene = Scene::new("burst-only");
+        let id = crate::core::scene::SceneEntityId(1);
+        burst_scene.add_entity(id, "Puff", None).unwrap();
+        let entity = burst_scene.entities.get_mut(&id).unwrap();
+        entity.components.insert(
+            "Transform".into(),
+            "x=640;y=360;rotation=0;scale_x=1;scale_y=1".into(),
+        );
+        entity
+            .components
+            .insert("ParticleEmitter".into(), "count=8;life=0.5".into());
+        let mut burst_runtime =
+            RuntimeScene::from_scene_edit(Some(root.as_path()), burst_scene).expect("runtime");
+        burst_runtime
+            .run_script_steps(1, 1.0 / 60.0, &input)
+            .expect("step");
+        assert_eq!(burst_runtime.last_scene_emission(), 0);
+        assert_eq!(
+            burst_runtime.with_script(|script| script.particle_count()),
+            0
+        );
+    }
+
+    /// docs/54 §8-①：场景声明的 `Camera2D` 成为**初始** 2D 相机；没声明时保持历史默认。
+    #[test]
+    fn scene_declared_camera2d_becomes_the_initial_runtime_camera() {
+        let root = game_root();
+        let mut scene = Scene::new("scene-camera2d");
+        let id = crate::core::scene::SceneEntityId(1);
+        scene.add_entity(id, "Main2D", None).unwrap();
+        scene
+            .entities
+            .get_mut(&id)
+            .unwrap()
+            .components
+            .insert("Camera2D".into(), "center=100,50;zoom=2".into());
+        let runtime = RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("runtime");
+        let camera = runtime.camera_2d();
+        assert_eq!(camera.center, Vec2::new(100.0, 50.0));
+        assert_eq!(camera.zoom, 2.0);
+
+        let plain = Scene::new("no-camera");
+        let default_runtime =
+            RuntimeScene::from_scene_edit(Some(root.as_path()), plain).expect("runtime");
+        assert_eq!(
+            default_runtime.camera_2d(),
+            Camera2D::new(crate::core::camera::DEFAULT_2D_CAMERA_CENTER, 1.0).unwrap(),
+            "没有声明相机时必须是历史默认（既有工程逐字节不变）"
+        );
+    }
     /// WP2 的关键验收：**迁移无损**——对同一份"子按世界坐标写"的场景跑真实迁移
     /// （`migrate_scene_to_local_space`），再把结果写回去并在**开启空间继承**下渲染；
     /// 两帧顶点必须一致。这条把"迁移 + 继承"的效果钉在**顶点级**证据上。
@@ -6237,6 +6414,7 @@ mod frame_schedule_tests {
                 "physics3d_step",
                 "user_physics_probe",
                 "physics_writeback",
+                "scene_emitters_step",
                 "particles_step",
                 "clock_step",
                 "scene_transition",
