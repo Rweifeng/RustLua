@@ -28,4 +28,12 @@ if ($LASTEXITCODE -ne 2) { throw "p95/p99 over-limit must exit 2, got $LASTEXITC
 if ($LASTEXITCODE -ne 2) { throw "memory over-limit must exit 2, got $LASTEXITCODE" }
 & powershell -NoProfile -ExecutionPolicy Bypass -File $script -Previous $basePath -Current $errorPath
 if ($LASTEXITCODE -ne 2) { throw "geometry regression must exit 2, got $LASTEXITCODE" }
-Write-Host "baseline_compare_tests_ok cases=4" -ForegroundColor Green
+# docs/54 §8-⑩：`-GeometryOnly`（进门时对比**提交进版本库**的基线）跳过机器相关的时间，
+# 但几何量与分配峰值仍然判红——否则这一档就成了"什么都不查"。
+& powershell -NoProfile -ExecutionPolicy Bypass -File $script -Previous $basePath -Current $latencyPath -GeometryOnly
+if ($LASTEXITCODE -ne 0) { throw "geometry-only mode must ignore latency regressions, got $LASTEXITCODE" }
+& powershell -NoProfile -ExecutionPolicy Bypass -File $script -Previous $basePath -Current $memoryPath -GeometryOnly
+if ($LASTEXITCODE -ne 2) { throw "geometry-only mode must still block memory regressions, got $LASTEXITCODE" }
+& powershell -NoProfile -ExecutionPolicy Bypass -File $script -Previous $basePath -Current $errorPath -GeometryOnly
+if ($LASTEXITCODE -ne 2) { throw "geometry-only mode must still block geometry regressions, got $LASTEXITCODE" }
+Write-Host "baseline_compare_tests_ok cases=7" -ForegroundColor Green

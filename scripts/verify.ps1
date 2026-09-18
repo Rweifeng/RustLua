@@ -439,6 +439,21 @@ if ($Benchmarks) {
     finally {
         Pop-Location
     }
+    # docs/54 §8-⑩：把"这一次的 3D 报告"和**提交进版本库**的结构性基线比一次——几何量
+    # （draw/instances/triangles）与分配峰值跨机可比，因此可以进门判红；时间（p95/p99）是机器
+    # 相关的量，这一档只打印不判定（同机 A/B 用完整模式，见 baselines/README.md）。
+    Write-Step "3D baseline comparison (geometry + allocation)"
+    $committedBaseline = Join-Path $projectRoot "baselines\wp0-3d-stress.json"
+    if (-not (Test-Path -LiteralPath $committedBaseline)) {
+        throw "committed 3D baseline is missing: $committedBaseline（见 baselines/README.md）"
+    }
+    Invoke-Checked powershell @(
+        "-NoProfile", "-ExecutionPolicy", "Bypass",
+        "-File", (Join-Path $projectRoot "scripts\compare-baseline.ps1"),
+        "-Current", $threeDBaselinePath,
+        "-Previous", $committedBaseline,
+        "-GeometryOnly"
+    )
     $threeDReport = Get-Content -LiteralPath $threeDBaselinePath -Raw | ConvertFrom-Json
     if ($threeDReport.report_version -ne "wp0-v3" -or $threeDReport.stairs.Count -ne 3) {
         throw "3D WP0 report schema invalid: expected wp0-v3 with three stairs"
