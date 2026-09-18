@@ -63,6 +63,8 @@ struct Arguments {
     migrate_spatial: bool,
     migrate_spatial_write: bool,
     restore_spatial: bool,
+    /// 迁移报告的落盘路径（docs/54 §8-⑧ 的"报告"）：给了就写一份可归档的报告 artifact。
+    migrate_report: Option<PathBuf>,
 }
 
 fn parse_arguments() -> Result<Arguments, String> {
@@ -83,11 +85,18 @@ fn parse_arguments() -> Result<Arguments, String> {
                 arguments.migrate_spatial_write = true;
             }
             "--restore-spatial" => arguments.restore_spatial = true,
+            "--migrate-report" => {
+                let path = values
+                    .next()
+                    .ok_or_else(|| "--migrate-report 需要一个路径参数".to_owned())?;
+                arguments.migrate_report = Some(PathBuf::from(path));
+            }
             "--help" | "-h" => {
                 println!(
                     "用法：editor [--project <项目路径>] [--check]\n\
                      \x20     editor --project <项目路径> --migrate-spatial [--migrate-spatial-write]\n\
-                     \x20     editor --project <项目路径> --restore-spatial"
+                     \x20     editor --project <项目路径> --restore-spatial\n\
+                     \x20     （迁移命令可加 --migrate-report <路径> 把报告落盘；有实体被拒绝或出错时退出码为 2）"
                 );
                 std::process::exit(0);
             }
@@ -145,24 +154,31 @@ fn downscale_rgba_benchmark(
 /// WP2 空间层级迁移命令：对项目 `scenes/**/*.scene` 逐文件 dry-run / 写回 / 回滚。
 ///
 /// - 默认 **dry-run**：只报告每个场景有多少实体会被转成局部坐标、多少无法无损迁移；
-/// - `--migrate-spatial-write`：写回，并给每个文件留 `<file>.bak` 备份与 `<file>.spatial-local`
-///   迁移标记（标记存在则跳过，因此命令可反复运行）；
-/// - `--restore-spatial`：从 `.bak` 一键回滚并删掉标记。
+/// - `--migrate-spatial-write`：写回（备份 `<file>.bak` + 把幂等标记 `meta spatial=local`
+///   写进场景**自身**，因此只有一个提交点），并逐条报出命中 docs/30「已删除的旧设计」的用法；
+/// - `--restore-spatial`：从 `.bak` 一键回滚（标记随备份内容一起消失）。
 ///
-/// 退出码：有实体被拒绝（无法无损迁移）时返回非 0，让脚本能把它当成质量门使用。
-fn run_spatial_migration(project_root: &Path, write: bool, restore: bool) -> String {
+/// 返回值是 `(报告文本, 是否被阻断)`。阻断 = 有实体被拒绝（无法无损迁移）或有权处理失败；
+/// 退出码 2 由调用方给出，让脚本能把它当成质量门使用（**报告仍会打印/落盘**，不是静默失败）。
+fn run_spatial_migration(project_root: &Path, write: bool, restore: bool) -> (String, bool) {
     use engine::core::scene_migration::{
         MigrationOptions, migrate_scene_file, project_scene_files, restore_scene_backup,
     };
 
     let files = project_scene_files(project_root);
     if files.is_empty() {
-        return format!("{}: 没有找到 scenes/**/*.scene\n", project_root.display());
+        return (
+            format!("{}: 没有找到 scenes/**/*.scene\n", project_root.display()),
+            true,
+        );
     }
     let mut out = String::new();
     let mut refused_total = 0usize;
     let mut converted_total = 0usize;
     let mut written_total = 0usize;
+    let mut removed_total = 0usize;
+    let mut skipped_total = 0usize;
+    let mut error_total = 0usize;
     for file in &files {
         let relative = file
             .strip_prefix(project_root)
@@ -173,7 +189,10 @@ fn run_spatial_migration(project_root: &Path, write: bool, restore: bool) -> Str
             match restore_scene_backup(file) {
                 Ok(true) => out.push_str(&format!("restored\t{relative}\n")),
                 Ok(false) => out.push_str(&format!("no-backup\t{relative}\n")),
-                Err(error) => out.push_str(&format!("error\t{relative}\t{error}\n")),
+                Err(error) => {
+                    error_total += 1;
+                    out.push_str(&format!("error\t{relative}\t{error}\n"));
+                }
             }
             continue;
         }
@@ -187,13 +206,19 @@ fn run_spatial_migration(project_root: &Path, write: bool, restore: bool) -> Str
             Ok(outcome) => {
                 refused_total += outcome.refused;
                 converted_total += outcome.converted;
+                removed_total += outcome.removed_designs.len();
                 if outcome.written {
                     written_total += 1;
                 }
+                if outcome.already_migrated {
+                    skipped_total += 1;
+                }
                 out.push_str(&format!(
-                    "{}\t{relative}\tentities={}\tconverted={}\trefused={}\tskipped={}\n",
+                    "{}\t{relative}\tentities={}\tconverted={}\trefused={}\tskipped={}\talready_migrated={}\tverified={}\tremoved={}\n",
                     if outcome.written {
                         "written"
+                    } else if outcome.already_migrated {
+                        "already-migrated"
                     } else {
                         "dry-run"
                     },
@@ -201,17 +226,39 @@ fn run_spatial_migration(project_root: &Path, write: bool, restore: bool) -> Str
                     outcome.converted,
                     outcome.refused,
                     outcome.skipped,
+                    outcome.already_migrated,
+                    outcome.verified,
+                    outcome.removed_designs.len(),
                 ));
+                // docs/54 §8-⑧「弃用告警」：点名旧写法 + 现在该写在哪（docs/30 的表）。
+                for design in &outcome.removed_designs {
+                    out.push_str(&format!(
+                        "removed\t{relative}\tentity={}\t{}.{}\t→ {}\n",
+                        design.entity.0, design.component, design.removed, design.replacement
+                    ));
+                }
             }
-            Err(error) => out.push_str(&format!("error\t{relative}\t{error}\n")),
+            Err(error) => {
+                error_total += 1;
+                out.push_str(&format!("error\t{relative}\t{error}\n"));
+            }
         }
     }
+    let blocked = refused_total > 0 || error_total > 0;
     out.push_str(&format!(
-        "spatial_migration_ok files={} converted={} refused={} written={} mode={}\n",
+        "{} files={} converted={} refused={} removed={} already_migrated={} written={} errors={} mode={}\n",
+        if blocked {
+            "spatial_migration_blocked"
+        } else {
+            "spatial_migration_ok"
+        },
         files.len(),
         converted_total,
         refused_total,
+        removed_total,
+        skipped_total,
         written_total,
+        error_total,
         if restore {
             "restore"
         } else if write {
@@ -220,7 +267,19 @@ fn run_spatial_migration(project_root: &Path, write: bool, restore: bool) -> Str
             "dry-run"
         }
     ));
-    out
+    (out, blocked)
+}
+
+/// 把迁移报告落盘（docs/54 §8-⑧ 的"报告"要能归档，而不是只在终端滚过去）。
+fn write_migration_report(path: &Path, report: &str) -> Result<(), String> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("创建报告目录失败 {}: {error}", parent.display()))?;
+    }
+    std::fs::write(path, report)
+        .map_err(|error| format!("写入迁移报告失败 {}: {error}", path.display()))
 }
 fn main() -> Result<(), Box<dyn Error>> {
     let arguments = parse_arguments().map_err(|message| format!("参数错误：{message}"))?;
@@ -240,14 +299,20 @@ fn main() -> Result<(), Box<dyn Error>> {
         let project_path = arguments
             .project
             .ok_or("--migrate-spatial requires --project <path>")?;
-        print!(
-            "{}",
-            run_spatial_migration(
-                &project_path,
-                arguments.migrate_spatial_write,
-                arguments.restore_spatial
-            )
+        let (report, blocked) = run_spatial_migration(
+            &project_path,
+            arguments.migrate_spatial_write,
+            arguments.restore_spatial,
         );
+        print!("{report}");
+        if let Some(report_path) = &arguments.migrate_report {
+            write_migration_report(report_path, &report)?;
+        }
+        if blocked {
+            // 退出码 2 = 有实体无法无损迁移或有权处理失败：脚本可以把它当质量门，
+            // 而报告已经打印/落盘，不是静默失败。
+            std::process::exit(2);
+        }
         return Ok(());
     }
 
@@ -1600,5 +1665,170 @@ mod layout_tests {
                 central_rect.width()
             );
         }
+    }
+}
+
+/// docs/54 §8-⑧：迁移命令的**报告 / 退出码门 / 弃用告警 / 失败路径**。
+///
+/// 这些是不需要 egui 的纯数据层测试，因此单独一个模块：命令的输出就是质量门要断言的契约
+/// （`spatial_migration_ok` / `refused=` / `removed=`），而不是"跑一下看看"。
+#[cfg(test)]
+mod migration_tests {
+    use super::*;
+    use engine::core::scene::Scene;
+
+    fn temp_project(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "p2-editor-migration-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_nanos())
+                .unwrap_or_default()
+        ));
+        std::fs::create_dir_all(dir.join("scenes")).expect("create project");
+        dir
+    }
+
+    /// 父缩放 + 子按世界坐标写：迁移应当把子转成局部（`converted=1`）。
+    /// 另外塞一个带旧内联几何的 `Text`：迁移报告必须点名它（docs/30 的弃用告警）。
+    fn project_scene(with_legacy_text: bool) -> Scene {
+        let mut scene = Scene::new("hierarchy");
+        let parent = SceneEntityId(1);
+        let child = SceneEntityId(2);
+        scene.add_entity(parent, "Parent", None).unwrap();
+        scene.add_entity(child, "Child", Some(parent)).unwrap();
+        scene.entities.get_mut(&parent).unwrap().components.insert(
+            "Transform".into(),
+            "x=10;y=0;rotation=0;scale_x=2;scale_y=2".into(),
+        );
+        scene.entities.get_mut(&child).unwrap().components.insert(
+            "Transform".into(),
+            "x=3;y=0;rotation=0;scale_x=1;scale_y=1".into(),
+        );
+        if with_legacy_text {
+            let hud = SceneEntityId(3);
+            scene.add_entity(hud, "Hud", None).unwrap();
+            scene.entities.get_mut(&hud).unwrap().components.insert(
+                "Text".into(),
+                "text=hi;font_size=12;color=1,1,1;x=8;y=8".into(),
+            );
+        }
+        scene
+    }
+
+    #[test]
+    fn dry_run_report_is_lossless_and_names_removed_designs() {
+        let root = temp_project("dry-run");
+        project_scene(true)
+            .save(root.join("scenes/main.scene"))
+            .expect("save scene");
+        let (report, blocked) = run_spatial_migration(&root, false, false);
+        assert!(!blocked, "没有拒绝时不得阻断：{report}");
+        assert!(report.contains("spatial_migration_ok"), "{report}");
+        assert!(report.contains("converted=1"), "{report}");
+        assert!(report.contains("refused=0"), "{report}");
+        assert!(report.contains("removed=2"), "两条旧内联几何：{report}");
+        assert!(
+            report.contains("removed\tscenes/main.scene\tentity=3\tText.x\t→ UiLayout"),
+            "弃用告警必须点名组件、字段与去处：{report}"
+        );
+        assert!(report.contains("mode=dry-run"), "{report}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn write_mode_reports_verified_backups_and_is_idempotent() {
+        let root = temp_project("write");
+        let scene_path = root.join("scenes/main.scene");
+        project_scene(false).save(&scene_path).expect("save scene");
+        let (report, blocked) = run_spatial_migration(&root, true, false);
+        assert!(!blocked, "{report}");
+        assert!(report.contains("written\tscenes/main.scene"), "{report}");
+        assert!(report.contains("verified=true"), "{report}");
+        assert!(report.contains("mode=write"), "{report}");
+        assert!(scene_path.with_extension("scene.bak").is_file());
+        // 幂等标记在场景自身里（与组件数据同一次原子写）。
+        let written = std::fs::read_to_string(&scene_path).expect("read written scene");
+        assert!(written.contains("meta\tspatial\tlocal"), "{written}");
+
+        let (again, blocked) = run_spatial_migration(&root, true, false);
+        assert!(!blocked, "{again}");
+        assert!(again.contains("already-migrated"), "{again}");
+        assert!(again.contains("already_migrated=1"), "{again}");
+        assert_eq!(
+            std::fs::read_to_string(&scene_path).expect("read again"),
+            written,
+            "重复运行不得改动文件"
+        );
+
+        // 回滚：内容与标记一起回到原样。
+        let (restore, blocked) = run_spatial_migration(&root, false, true);
+        assert!(!blocked, "{restore}");
+        assert!(restore.contains("restored\tscenes/main.scene"), "{restore}");
+        assert!(restore.contains("mode=restore"), "{restore}");
+        assert!(
+            !std::fs::read_to_string(&scene_path)
+                .expect("read restored")
+                .contains("meta\tspatial\tlocal")
+        );
+        assert!(!scene_path.with_extension("scene.bak").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 有实体无法无损迁移时：报告行变成 `spatial_migration_blocked` 且调用方拿到 `blocked = true`
+    /// （`main` 据此 `exit(2)`，让脚本能把它当质量门）。报告**仍然完整**，不是静默失败。
+    #[test]
+    fn refused_entities_block_the_gate_and_are_reported() {
+        let root = temp_project("refused");
+        let mut scene = Scene::new("shear");
+        let parent = SceneEntityId(1);
+        let child = SceneEntityId(2);
+        scene.add_entity(parent, "Parent", None).unwrap();
+        scene.add_entity(child, "Child", Some(parent)).unwrap();
+        scene.entities.get_mut(&parent).unwrap().components.insert(
+            "Transform".into(),
+            "x=0;y=0;rotation=0;scale_x=2;scale_y=1".into(),
+        );
+        scene.entities.get_mut(&child).unwrap().components.insert(
+            "Transform".into(),
+            "x=4;y=0;rotation=45;scale_x=1;scale_y=1".into(),
+        );
+        scene
+            .save(root.join("scenes/shear.scene"))
+            .expect("save scene");
+        let (report, blocked) = run_spatial_migration(&root, false, false);
+        assert!(blocked, "被拒实体必须阻断：{report}");
+        assert!(report.contains("spatial_migration_blocked"), "{report}");
+        assert!(report.contains("refused=1"), "{report}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 报告 artifact：给定路径就落盘（含自动建目录），内容与终端输出逐字节一致。
+    #[test]
+    fn migration_report_is_written_to_the_requested_path() {
+        let root = temp_project("report");
+        project_scene(false)
+            .save(root.join("scenes/main.scene"))
+            .expect("save scene");
+        let (report, _) = run_spatial_migration(&root, false, false);
+        let report_path = root.join("artifacts/baselines/spatial-migration.txt");
+        write_migration_report(&report_path, &report).expect("write report");
+        assert_eq!(
+            std::fs::read_to_string(&report_path).expect("read report"),
+            report,
+            "落盘的报告必须与终端输出一致（否则归档的证据不是判定用的那一份）"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 空工程也不能静默通过：没有场景可处理时报 `blocked`，否则质量门会把"扫了个寂寞"当成功。
+    #[test]
+    fn empty_project_is_blocked() {
+        let root = temp_project("empty");
+        let (report, blocked) = run_spatial_migration(&root, false, false);
+        assert!(blocked, "没有场景必须阻断：{report}");
+        assert!(report.contains("没有找到"), "{report}");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

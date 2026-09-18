@@ -46,13 +46,18 @@ P2 的当前格式就是唯一运行时格式。加载边界只接受当前版�
 
 ## 已删除的旧设计
 
+下表是**唯一**的旧设计清单。它不只是文档：迁移命令
+（`editor --project <p> --migrate-spatial [--migrate-report <路径>]`）会扫描场景并逐条报出命中本表的
+用法——`removed\t<场景>\tentity=<id>\t<组件>.<旧字段>\t→ <现在写在哪>`——因此"该搬到哪里"是命令
+给的，而不是让作者对着 `malformed field: x=5` 猜。
+
 | 旧设计 | 当前处理 |
 |---|---|
 | `scene_version=1` 自动提升 | 只接受 `scene_version=2` |
 | 资源数据库 v1 | 只接受 v2；旧库明确失败 |
 | 无版本头存档 / Lua `on_migrate` | 必须有 `save_version` 头（当前写入 2，可读 1） |
 | `save_version=1` 原始行格式（值含 `\n`/`\t` 即损坏整档） | 写入升为 `save_version=2` 转义格式；v1 仍可读（零数据丢失），新档不被旧二进制误读（旧版按 `UnsupportedVersion` 拒绝） |
-| Sprite 短格式 | 只接受 `texture=...;size=...` |
+| Sprite 短格式 `<texture>;size=WxH` | 只接受 `texture=...;size=...` |
 | Text 内联几何和 `scale` | `Text` 只存视觉属性，`font_size` 是像素字号 |
 | Text / Image 内联 `x/y/width/height/space/anchor` | `UiLayout` 四边 Anchor + Offset |
 | `UiRectLayout::from_point` | 删除；`UiLayout` 不再有单点布局输入 |

@@ -166,6 +166,37 @@ try {
         Pop-Location
     }
 
+    # docs/54 §8-⑧：空间迁移命令必须**每次**都给出可归档的报告 artifact，并且示例工程里
+    # 一个实体都不该被拒（refused=0）、一处旧设计都不该命中（removed=0）。把报告落盘后逐条断言，
+    # 因此"迁移干净"是每次 verify 重新证明的事实，而不是一次性的手工检查。
+    Write-Step "Spatial migration report"
+    Push-Location $projectRoot
+    try {
+        $migrationReportPath = Join-Path $projectRoot "artifacts\baselines\spatial-migration-report.txt"
+        $migrationOutput = & cargo run --quiet --manifest-path "engine/Cargo.toml" -p editor -- --project $defaultGameProject --migrate-spatial --migrate-report $migrationReportPath 2>&1
+        $migrationExit = $LASTEXITCODE
+        $migrationOutput | ForEach-Object { Write-Host $_ }
+        if ($migrationExit -ne 0) {
+            throw "spatial migration dry-run failed (exit code $migrationExit)"
+        }
+        if (-not (Test-Path -LiteralPath $migrationReportPath)) {
+            throw "spatial migration report was not written: $migrationReportPath"
+        }
+        $migrationText = Get-Content -Raw -LiteralPath $migrationReportPath
+        if ($migrationText -notmatch "spatial_migration_ok") {
+            throw "spatial migration report has no spatial_migration_ok summary line"
+        }
+        if ($migrationText -notmatch "refused=0") {
+            throw "spatial migration report lists refused entities (not losslessly migratable)"
+        }
+        if ($migrationText -notmatch "removed=0") {
+            throw "spatial migration report lists removed legacy designs (docs/30 compatibility table)"
+        }
+    }
+    finally {
+        Pop-Location
+    }
+
     Write-Host "`nQuality gate passed. Log: $logPath" -ForegroundColor Green
 }
 finally {
