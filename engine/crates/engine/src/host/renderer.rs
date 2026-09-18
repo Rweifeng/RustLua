@@ -2738,7 +2738,13 @@ impl Renderer {
             for font in &mesh.custom_font_atlases {
                 let _ = self.ensure_custom_font(&font.key, &font.pixels);
             }
-            for draw in &mesh.draws {
+            // docs/54 §8-⑤：2D 叠加通道按 `RenderLayer` **分桶**后绘制
+            // （World2D → Overlay2D → ScreenUI）。宿主本来就按这个顺序产出顶点，因此像素与
+            // "照缓冲顺序画"逐字节一致；但层的先后从此由渲染器保证——HUD 不会再被一段插到它
+            // 后面的调试线盖住，而这类错序类型检查抓不到。
+            for index in crate::core::layer::layered_indices(&mesh.draws, |draw| draw.render_layer)
+            {
+                let draw = &mesh.draws[index];
                 if draw.sdf {
                     // SDF 文本：Linear 采样 + SDF shader 分支。默认字体用全局图集
                     // bind；自定义字体（font://...）按该字体的 draw 选对应 bind。

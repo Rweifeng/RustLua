@@ -292,6 +292,7 @@ if ($Benchmarks) {
         $ecsStoragePath = Join-Path $baselineRoot "wp0-ecs-storage.json"
         $twoDGoldenPath = Join-Path $baselineRoot "wp0-2d-golden.json"
         $mixedGoldenPath = Join-Path $baselineRoot "wp0-mixed-golden.json"
+        $hudGoldenPath = Join-Path $baselineRoot "wp0-hud-golden.json"
         Invoke-Checked cargo @(
             "run", "--quiet", "--release", "-p", "engine", "--example", "ecs_stress", "--",
             "--stairs", "--seconds", "1", "--output", $ecsBaselinePath
@@ -329,7 +330,14 @@ if ($Benchmarks) {
         Invoke-Checked cargo @(
             "run", "--quiet", "--release", "-p", "engine", "--example", "wp0_mixed_golden", "--",
             "--output", $mixedGoldenPath
-        )        # WP3 存储 A/B（wp0-v5）：现状 HashMap+排序 Vec 对 dense/sparse。用来把"是否替换
+        )
+        # docs/54 §8-⑤：HUD 隔离的像素级证据。2D golden 只看单层内容，看不到"层与层谁盖谁"——
+        # 这条用同一次场景的 A/B 渲染证明 ScreenUI 画在世界内容与 Overlay2D 之后。
+        Invoke-Checked cargo @(
+            "run", "--quiet", "--release", "-p", "engine", "--example", "wp0_hud_golden", "--",
+            "--output", $hudGoldenPath
+        )
+        # WP3 存储 A/B（wp0-v5）：现状 HashMap+排序 Vec 对 dense/sparse。用来把"是否替换
         # ECS 热存储"从意见变成证据。
         Invoke-Checked cargo @(
             "run", "--quiet", "--release", "-p", "engine", "--example", "wp0_ecs_storage", "--",
@@ -490,6 +498,36 @@ if ($Benchmarks) {
     if (-not $occlusion.translucent_blended) {
         throw "mixed golden: 半透明精灵不是叠加结果（深度策略没有按不透明性下发）：$($occlusion.samples.veil -join ',')"
     }
+    # docs/54 §8-⑤：HUD 隔离。ScreenUI 必须画在世界内容与 Overlay2D **之后**——这不是"看起来
+    # 差不多"，而是同一像素在开关屏幕 UI 前后的两次采样：关闭时是调试线的青色（证明那段叠加
+    # 内容确实画在这里），打开后必须变成 HUD 的品红（证明 HUD 盖住了它）。
+    $hudGoldenReport = Get-Content -LiteralPath $hudGoldenPath -Raw | ConvertFrom-Json
+    if ($hudGoldenReport.report_version -ne "wp0-hud-golden-v1") {
+        throw "HUD golden report version invalid: $($hudGoldenReport.report_version)"
+    }
+    if (-not $hudGoldenReport.hud_isolated) {
+        throw "HUD golden declares the HUD is not isolated"
+    }
+    if (($hudGoldenReport.layer_order -join ',') -ne "world2d,overlay2d,screen_ui") {
+        throw "HUD golden layer order changed: $($hudGoldenReport.layer_order -join ',')"
+    }
+    if ($hudGoldenReport.layers.world2d -lt 1 -or $hudGoldenReport.layers.overlay2d -lt 1 -or $hudGoldenReport.layers.screen_ui -lt 1) {
+        throw "HUD golden is missing a layer: world=$($hudGoldenReport.layers.world2d) overlay=$($hudGoldenReport.layers.overlay2d) screen_ui=$($hudGoldenReport.layers.screen_ui)"
+    }
+    $hud = $hudGoldenReport.samples
+    if ($hud.overlay_pixel_without_ui[1] -le 150 -or $hud.overlay_pixel_without_ui[2] -le 180) {
+        throw "HUD golden: 关闭屏幕 UI 时那个像素不是静态碰撞体轮廓的青色（叠加层没画到 HUD 面板的位置）：$($hud.overlay_pixel_without_ui -join ',')"
+    }
+    if ($hud.overlay_pixel_with_ui[0] -le 180 -or $hud.overlay_pixel_with_ui[2] -le 180 -or $hud.overlay_pixel_with_ui[1] -ge 90) {
+        throw "HUD golden: 打开屏幕 UI 后那个像素不是 HUD 的颜色——ScreenUI 没有盖住 Overlay2D：$($hud.overlay_pixel_with_ui -join ',')"
+    }
+    if ($hud.hud_inside_without_ui[0] -le 180 -or $hud.hud_inside_without_ui[1] -ge 70) {
+        throw "HUD golden: 关闭屏幕 UI 时 HUD 区域没有露出下面的世界精灵：$($hud.hud_inside_without_ui -join ',')"
+    }
+    if ($hud.world_only_with_ui[0] -le 180 -or $hud.world_only_with_ui[1] -ge 70 -or $hud.world_only_with_ui[2] -ge 70) {
+        throw "HUD golden: HUD 矩形之外的世界内容被改了颜色（屏幕 UI 不该影响它矩形外的像素）：$($hud.world_only_with_ui -join ',')"
+    }
+
     # 瓦片行序：把 tiles 的两行交换后，上下两半的颜色必须整体对调。这条用像素证明了
     # "tiles 第 0 行画在地图最下方"（2D 世界 Y 向上），不依赖任何具体贴图颜色。
     $rows = $twoD.tile_rows

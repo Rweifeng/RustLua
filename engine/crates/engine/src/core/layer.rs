@@ -52,6 +52,37 @@ impl fmt::Display for RenderLayer {
     }
 }
 
+/// 2D 叠加通道的**绘制顺序**：世界内容 → 叠加内容 → 屏幕 UI。
+///
+/// 为什么要有这个常量：`RenderLayer` 只是类型，如果渲染器照顶点缓冲的先后画，层的次序仍然
+/// 由**调用点排版**决定——某次不小心把 ScreenUI 推到 Overlay2D 之前，HUD 就会被调试线盖住，
+/// 而类型检查不会报错。渲染器现在按这个顺序分桶（[`layered_indices`]），层因此是契约而不是注释。
+///
+/// 宿主本来就按这个顺序产出顶点（世界通道 → 调试绘制/世界文字 → 屏幕 UI），因此分桶不改变任何
+/// 现有画面的像素；它挡住的是"以后悄悄错序"这一类改动。
+pub const OVERLAY_DRAW_ORDER: [RenderLayer; 3] = [
+    RenderLayer::World2D,
+    RenderLayer::Overlay2D,
+    RenderLayer::ScreenUI,
+];
+
+/// 按 [`OVERLAY_DRAW_ORDER`] 把一段几何的 draw 顺序重排成**桶内保持原序**的索引列表。
+///
+/// 返回索引而不是克隆元素：`SceneDraw` 不大，但每帧每 draw 克隆一次没有必要。同一层的 draw
+/// 之间顺序不变（半透明叠加靠的就是这个），因此"分层"与"层内排序"是两件事、不会互相干扰。
+#[must_use]
+pub fn layered_indices<T>(items: &[T], layer_of: impl Fn(&T) -> RenderLayer) -> Vec<usize> {
+    let mut ordered = Vec::with_capacity(items.len());
+    for layer in OVERLAY_DRAW_ORDER {
+        for (index, item) in items.iter().enumerate() {
+            if layer_of(item) == layer {
+                ordered.push(index);
+            }
+        }
+    }
+    ordered
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -67,5 +98,42 @@ mod tests {
         }
         assert_eq!(RenderLayer::default(), RenderLayer::World2D);
         assert_eq!(RenderLayer::ScreenUI.as_str(), "screen_ui");
+    }
+
+    /// 分桶的两条硬性质：**桶内原序** + **桶间按既定层次**。
+    #[test]
+    fn layered_indices_keep_within_layer_order_and_apply_canonical_layer_order() {
+        use RenderLayer::{Overlay2D, ScreenUI, World2D};
+        // 已经排好的输入 → 恒等（宿主当前就是这样产出的，因此像素不该变）。
+        let canonical = [World2D, World2D, Overlay2D, ScreenUI, ScreenUI];
+        assert_eq!(
+            layered_indices(&canonical, |layer| *layer),
+            vec![0, 1, 2, 3, 4]
+        );
+
+        // 错序输入 → 按层次重排，桶内先后不变（同层两个元素的相对顺序保留）。
+        let scrambled = [ScreenUI, Overlay2D, ScreenUI, World2D, Overlay2D];
+        assert_eq!(
+            layered_indices(&scrambled, |layer| *layer),
+            vec![3, 1, 4, 0, 2]
+        );
+
+        // 空输入不产生 draw。
+        assert!(layered_indices(&[], |layer: &RenderLayer| *layer).is_empty());
+    }
+
+    /// 每个层都必须出现在顺序常量里——漏一层就意味着那层的 draw 会被静默丢掉。
+    #[test]
+    fn overlay_draw_order_covers_every_layer_once() {
+        let mut seen = OVERLAY_DRAW_ORDER;
+        seen.sort_by_key(|layer| layer.as_str());
+        let mut expected = [
+            RenderLayer::World2D,
+            RenderLayer::Overlay2D,
+            RenderLayer::ScreenUI,
+        ];
+        expected.sort_by_key(|layer| layer.as_str());
+        assert_eq!(seen, expected);
+        assert_eq!(OVERLAY_DRAW_ORDER.len(), 3, "层数变化必须同步改渲染器分桶");
     }
 }
