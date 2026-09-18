@@ -137,6 +137,17 @@ try {
         Pop-Location
     }
 
+    # docs/54 §7：性能红线的**判定逻辑**本身要有测试。这段自测证明"超出 p95 +5% / p99 +10% /
+    # 内存 +10% / 几何量变化"都会让比较脚本以非零退出（此前它把超阈定义为成功）。
+    Write-Step "Baseline comparison thresholds"
+    Push-Location $projectRoot
+    try {
+        Invoke-Checked powershell @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $projectRoot "scripts/test-compare-baseline.ps1"))
+    }
+    finally {
+        Pop-Location
+    }
+
     Write-Step "Game project check"
     Push-Location $projectRoot
     try {
@@ -249,6 +260,7 @@ if ($Benchmarks) {
         $sceneFramePath = Join-Path $baselineRoot "wp0-scene-frame.json"
         $ecsStoragePath = Join-Path $baselineRoot "wp0-ecs-storage.json"
         $twoDGoldenPath = Join-Path $baselineRoot "wp0-2d-golden.json"
+        $mixedGoldenPath = Join-Path $baselineRoot "wp0-mixed-golden.json"
         Invoke-Checked cargo @(
             "run", "--quiet", "--release", "-p", "engine", "--example", "ecs_stress", "--",
             "--stairs", "--seconds", "1", "--output", $ecsBaselinePath
@@ -280,6 +292,12 @@ if ($Benchmarks) {
         Invoke-Checked cargo @(
             "run", "--quiet", "--release", "-p", "engine", "--example", "wp0_2d_golden", "--",
             "--output", $twoDGoldenPath
+        )
+        # docs/54 §8-④：混合 2D/3D 的像素级遮挡证据。2D golden 只覆盖 overlay 顶点管线、
+        # 3D golden 只覆盖网格 pass，两者都看不到"精灵与网格在同一份深度缓冲上互相遮挡"。
+        Invoke-Checked cargo @(
+            "run", "--quiet", "--release", "-p", "engine", "--example", "wp0_mixed_golden", "--",
+            "--output", $mixedGoldenPath
         )        # WP3 存储 A/B（wp0-v5）：现状 HashMap+排序 Vec 对 dense/sparse。用来把"是否替换
         # ECS 热存储"从意见变成证据。
         Invoke-Checked cargo @(
@@ -302,6 +320,11 @@ if ($Benchmarks) {
              (-not $stair.render.gpu_timestamp_supported -and $null -ne $stair.render.gpu_frame_us)) -or
             -not $stair.render.gpu_timestamp_reason) {
             throw "3D WP0 report metrics invalid for mesh_count=$($stair.mesh_count)"
+        }
+        # docs/54 §7：内存峰值是红线之一（+10% 需评审）。这里先强制"必须报出真实数字"——
+        # 没有测量就没有判定，缺字段比数字难看更危险（阈值对照由 compare-baseline.ps1 负责）。
+        if ($null -eq $stair.cpu_peak_bytes -or $stair.cpu_peak_bytes -le 0) {
+            throw "3D WP0 report is missing cpu_peak_bytes for mesh_count=$($stair.mesh_count)"
         }
     }
     $goldenReport = Get-Content -LiteralPath $threeDGoldenPath -Raw | ConvertFrom-Json
@@ -413,6 +436,28 @@ if ($Benchmarks) {
         if ($region.non_background_pixels -le 0) {
             throw "2D golden region '$($region.name)' rendered nothing"
         }
+    }
+    # docs/54 §8-④：混合 2D/3D 的遮挡契约。三条必须**同时**成立——只断言"精灵可见"会在
+    # 精灵永远画在最上层时也通过；只断言"被遮挡"会在精灵根本没被画出时也通过。
+    $mixedGoldenReport = Get-Content -LiteralPath $mixedGoldenPath -Raw | ConvertFrom-Json
+    if ($mixedGoldenReport.report_version -ne "wp0-mixed-golden-v1") {
+        throw "mixed golden report version invalid: $($mixedGoldenReport.report_version)"
+    }
+    if ($mixedGoldenReport.semantic.meshes -lt 1 -or $mixedGoldenReport.semantic.world_sprites -lt 3) {
+        throw "mixed golden is not mixed: meshes=$($mixedGoldenReport.semantic.meshes) world_sprites=$($mixedGoldenReport.semantic.world_sprites)"
+    }
+    if ($mixedGoldenReport.semantic.draw_calls -lt 4) {
+        throw "mixed golden frame is missing passes: draw_calls=$($mixedGoldenReport.semantic.draw_calls)"
+    }
+    $occlusion = $mixedGoldenReport.occlusion
+    if (-not $occlusion.front_sprite_visible) {
+        throw "mixed golden: 网格前面的不透明精灵不可见（不透明精灵必须写深度）：$($occlusion.samples.front -join ',')"
+    }
+    if (-not $occlusion.behind_sprite_occluded) {
+        throw "mixed golden: 网格后面的精灵没有被遮挡——Sprite 与 Mesh 没有共用同一份深度：$($occlusion.samples.behind -join ',') wall=$($occlusion.samples.wall -join ',')"
+    }
+    if (-not $occlusion.translucent_blended) {
+        throw "mixed golden: 半透明精灵不是叠加结果（深度策略没有按不透明性下发）：$($occlusion.samples.veil -join ',')"
     }
     # 瓦片行序：把 tiles 的两行交换后，上下两半的颜色必须整体对调。这条用像素证明了
     # "tiles 第 0 行画在地图最下方"（2D 世界 Y 向上），不依赖任何具体贴图颜色。

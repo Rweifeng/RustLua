@@ -51,14 +51,18 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
+      # Release 构建放在测试**之前**：`publish_spawn_end_to_end` 用 `-SkipBuild` 复用
+      # `target/release/game.exe` 做真实的发布目录自检，若该产物不存在或是陈旧的，这条
+      # 用例会以"发布应成功"失败——那是环境问题冒充代码问题（本轮就踩到过：9/14 的旧
+      # runner 不含 `player_data_roots`，测试红而代码无辜）。
+      - name: Release build
+        run: cargo build --workspace --release
+
       - name: Tests
         run: cargo test --workspace --all-features
 
       - name: Debug build
         run: cargo build --workspace
-
-      - name: Release build
-        run: cargo build --workspace --release
 
       - name: Game project check
         working-directory: ${{ github.workspace }}
@@ -71,3 +75,16 @@ jobs:
       - name: Game headless regression suite
         working-directory: ${{ github.workspace }}
         run: pwsh -NoProfile -File scripts/verify.ps1 -MvpOnly
+
+      # docs/54 §7/§8-⑩：性能红线的判定逻辑必须有测试（超阈必须非零退出）。
+      - name: Baseline comparison thresholds
+        working-directory: ${{ github.workspace }}
+        run: pwsh -NoProfile -File scripts/test-compare-baseline.ps1
+
+      # docs/54 §8-⑨/⑩：WP0 基准与语义 golden（2D / 3D / **混合 2D/3D**）必须进门，而不是
+      # "只在本机手动跑过"。这一步需要可用的 wgpu 适配器（示例显式请求 fallback adapter，
+      # Windows 上是 WARP）；适配器缺失会让示例**报错退出**而不是静默跳过——宁可判红，也不要
+      # 一份"跑过了但其实没测"的绿灯。
+      - name: WP0 benchmarks and semantic goldens
+        working-directory: ${{ github.workspace }}
+        run: pwsh -NoProfile -File scripts/verify.ps1 -Benchmarks

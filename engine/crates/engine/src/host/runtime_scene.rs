@@ -375,6 +375,17 @@ impl RuntimeScene {
             .ok()
     }
 
+    /// 场景里是否有 3D 内容（网格可见物）。有 ⇒ 宿主会给这一帧声明 3D 主视图，世界通道的
+    /// 可见域因此是 3D 视图而不是 2D 相机（docs/54 §8-④：宁可保守不裁剪，也绝不误丢）。
+    #[must_use]
+    pub fn world_view_has_3d_content(&self) -> bool {
+        self.script.with_world(|world| {
+            !world
+                .entities_with::<crate::core::mesh3d::MeshRenderer>()
+                .is_empty()
+        })
+    }
+
     /// 传播一次世界变换（幂等）。提取入口（`vertices` / `scene_3d`）与本函数的调用点
     /// 都会走它，因此"这一帧看到的世界位置"永远来自同一次传播。
     pub fn propagate_spatial_now(&mut self) {
@@ -1745,7 +1756,14 @@ impl RuntimeScene {
         // WP6：收集阶段的可见域。开着时 `SpriteBatch::push` 直接丢掉不可能落在视口内的精灵，
         // 省下每项 80 字节的写入与后续排序——5 万精灵档实测这部分占掉整帧的大头（docs/53 §3.9）。
         // 世界矩形只看相机，与 `sprite_culling` 同一个开关：关掉即全收，像素不变。
-        let cull_bounds = if self.sprite_culling {
+        //
+        // docs/54 §8-④：**世界通道的可见域是宿主声明的世界视图，不是 2D 相机**。2D 相机活在
+        // 设计分辨率像素空间（默认中心 (640,360)），而 3D 世界视图里 `(-40, 0)` 之类坐标清晰
+        // 可见；场景里有 3D 内容时宿主会声明 3D 主视图，此时按 2D 相机剔除会在**收集阶段**就把
+        // 世界内容丢掉（`wp0_mixed_golden` 抓到的真实误丢）。因此有 3D 内容时世界通道全收：
+        // 保守不剔除，绝不误丢。纯 2D 画面仍按 2D 视口裁剪，5 万精灵档的收益不变。
+        let world_view_is_3d = self.world_sprite_depth && self.world_view_has_3d_content();
+        let cull_bounds = if self.sprite_culling && !world_view_is_3d {
             Some(
                 self.camera
                     .visible_world_bounds(viewport)
@@ -1862,11 +1880,15 @@ impl RuntimeScene {
         if self.world_sprite_depth {
             // WP6：世界 Sprite 走带深度的通道——世界坐标 + `Sprite::z`，投影交给顶点着色器。
             // 排序/分段/剔除与 overlay 路径同源（同一个批处理、同一把剔除量尺）。
+            //
+            // docs/54 §8-④：世界通道的剔除量尺必须与世界视图一致——有 3D 内容时收集阶段
+            // 已经按"全收"处理（见上面的 `world_view_is_3d`），这里同样不再用 2D 矩形过滤。
+            let world_cull_bounds = if world_view_is_3d { None } else { cull_bounds };
             self.sprite_batch
                 .build_world_into(
                     &mut world_sprites,
                     &mut world_sprite_draws,
-                    cull_bounds,
+                    world_cull_bounds,
                     self.sprite_parallelism,
                 )
                 .map_err(|error| error.to_string())?;
@@ -2973,7 +2995,9 @@ impl RuntimeScene {
         // WP6：世界 Sprite 深度通道打开时，瓦片层也产出**世界坐标**顶点（与精灵一致），
         // 因此它同样参与深度测试——此前只有精灵有世界顶点，瓦片会被挡在通道外面。
         let world_pass = self.world_sprite_depth;
-        let cull_bounds = if cull && world_pass {
+        // 与世界 Sprite 同一条规矩：世界通道的可见域由宿主声明的世界视图决定，有 3D 内容时
+        // 一律不按 2D 相机裁剪（宁可多画，绝不误丢）。
+        let cull_bounds = if cull && world_pass && !self.world_view_has_3d_content() {
             self.camera.visible_world_bounds(viewport).ok()
         } else {
             None
@@ -3929,6 +3953,7 @@ mod sdf_tests {
             "index",
             "main",
             "menu",
+            "mixed",
             "persistence",
             "physics3d",
             "production",
@@ -5087,6 +5112,64 @@ mod sdf_tests {
         let back = runtime.vertices(640, 360).expect("overlay vertices again");
         assert_eq!(back.vertices.len(), overlay.vertices.len());
         assert!(back.world_sprites.is_empty());
+    }
+
+    /// docs/54 §8-④：世界通道的可见域是**宿主声明的世界视图**，不是 2D 相机。
+    ///
+    /// 回归背景（`wp0_mixed_golden` 抓到的真实误丢）：2D 相机活在设计分辨率像素空间
+    /// （默认中心 (640,360)），而 3D 世界视图里 `(-40, 0)` 这类坐标清晰可见。场景里有 3D 内容时
+    /// 宿主会声明 3D 主视图，此时若仍按 2D 相机裁剪，世界内容会被**静默丢掉**。
+    #[test]
+    fn world_channel_does_not_cull_by_the_2d_camera_when_the_scene_has_3d_content() {
+        let root = game_root();
+        let mut scene = Scene::new("world-view-cull");
+        let sprite = crate::core::scene::SceneEntityId(1);
+        scene.add_entity(sprite, "FarSprite", None).unwrap();
+        let entity = scene.entities.get_mut(&sprite).unwrap();
+        // 默认 2D 相机中心 (640,360)、zoom 1 ⇒ 世界 (-40,0) 落在 2D 视口之外。
+        entity.components.insert(
+            "Transform".into(),
+            "x=-40;y=0;rotation=0;scale_x=1;scale_y=1".into(),
+        );
+        entity.components.insert(
+            "Sprite".into(),
+            "texture=assets/textures/red-1x1.png;size=2x2;pivot=0.5,0.5;z=0".into(),
+        );
+
+        // ① 纯 2D 画面：世界通道仍按 2D 视口剔除（性能档，既有行为不变）。
+        let mut flat =
+            RuntimeScene::from_scene_edit(Some(root.as_path()), scene.clone()).expect("flat");
+        flat.set_world_sprite_depth(true);
+        assert!(!flat.world_view_has_3d_content());
+        let flat_mesh = flat.vertices(1280, 720).expect("flat vertices");
+        assert!(
+            flat_mesh.world_sprites.is_empty(),
+            "纯 2D 画面应继续按 2D 视口剔除视口外的精灵"
+        );
+
+        // ② 同一个精灵 + 一个网格：世界视图变成 3D，世界通道不得再按 2D 相机剔除。
+        let wall = crate::core::scene::SceneEntityId(2);
+        scene.add_entity(wall, "Wall", None).unwrap();
+        let entity = scene.entities.get_mut(&wall).unwrap();
+        entity.components.insert(
+            "Transform3D".into(),
+            "position=0,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
+        );
+        entity
+            .components
+            .insert("MeshRenderer".into(), "mesh=__ground_plane__".into());
+        let mut mixed = RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("mixed");
+        mixed.set_world_sprite_depth(true);
+        assert!(
+            mixed.world_view_has_3d_content(),
+            "场景里有 MeshRenderer 时必须认定为有 3D 内容"
+        );
+        let mixed_mesh = mixed.vertices(1280, 720).expect("mixed vertices");
+        assert_eq!(
+            mixed_mesh.world_sprites.len(),
+            6,
+            "有 3D 视图时世界内容不得被 2D 相机剔除（这正是被 golden 抓到的误丢）"
+        );
     }
     /// WP2 的关键验收：**迁移无损**——对同一份"子按世界坐标写"的场景跑真实迁移
     /// （`migrate_scene_to_local_space`），再把结果写回去并在**开启空间继承**下渲染；
