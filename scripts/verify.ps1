@@ -11,7 +11,10 @@ param(
     # 仅跑 MVP 追加部分（跳过 fmt/clippy/test/build 常规门）。
     [switch]$MvpOnly,
     # WP0：运行固定 ECS/2D/3D 阶梯基准并写入本地 artifacts/baselines。
-    [switch]$Benchmarks
+    [switch]$Benchmarks,
+    # docs/54 §8-⑨：跑 Web 平台证据（浏览器契约层 + 已发布产物的启动层）。
+    # 环境受限（无浏览器/无 node/无 wasm32 目标）时**显式**跳过并打印原因，不伪造通过。
+    [switch]$Web
 )
 
 $ErrorActionPreference = "Stop"
@@ -197,6 +200,87 @@ try {
         Pop-Location
     }
 
+    # docs/54 §8-⑨：Web 平台的可重复证据。两层，退出码语义严格区分：
+    #   ① 浏览器契约层（verify-webgl.ps1）：真实浏览器 + Node 静态服务器跑资源获取/解析、
+    #      WebGL2 能力、存储降级与缺失资源诊断。不需要 wasm 目标，本机可跑。
+    #   ② 产物层（verify-webgl-bundle.ps1）：真实发布包在浏览器里启动（wasm 模块 + Lua 引导）。
+    #      需要 wasm32 目标与已发布产物。
+    # 0 = 通过；1 = **真失败**（判红）；2/3 = 环境受限（无浏览器/node/产物）——打印原因后跳过，
+    # 绝不把"跳过"说成"通过"。
+    if ($Web) {
+        Write-Step "Web platform evidence"
+        $webEvidenceRoot = Join-Path $projectRoot "artifacts\logs\webgl"
+        New-Item -ItemType Directory -Force -Path $webEvidenceRoot | Out-Null
+        # 子进程 + **独立日志文件**：这两个脚本内部会起 node 静态服务器与无头浏览器（长命孙进程），
+        # 把它们的 stdout 接进本进程的管道会让质量门永远等不到 EOF（本轮实际踩到）。因此让子进程
+        # 自己写文件、只取退出码，再把要点抄进质量日志。
+        $runWebEvidence = {
+            param([string]$Script, [string]$Label)
+            $logFile = Join-Path $webEvidenceRoot ("gate-" + $Label + "-$timestamp.log")
+            # **有界等待**，不用 `-Wait`：`-Wait` 会等到整个进程树结束，而无头浏览器偶尔不自行退出，
+            # 于是质量门会一直挂在那里（本轮实际踩到）。这里自己轮询 + 超时即杀，并把它当失败
+            # ——宁可判红，也不要"卡住"。
+            $timeoutSeconds = 600
+            $process = Start-Process -FilePath "powershell" `
+                -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $Script) `
+                -PassThru -RedirectStandardOutput $logFile -RedirectStandardError "$logFile.err"
+            if (-not $process.WaitForExit($timeoutSeconds * 1000)) {
+                Write-Host "web evidence '$Label' timed out after ${timeoutSeconds}s; killing it" -ForegroundColor Yellow
+                Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+                # 无头浏览器/静态服务器可能是**孙进程**：父进程被杀后仍会占着端口与文件句柄。
+                # 只杀**本脚本那一类**进程（本轮的浏览器 + 只跑 `serve-static.js` 的 node），绝不按
+                # 进程名一网打尽——开发机上还有别的 node（曾把 agent 自己的 node 也杀掉过）。
+                Get-Process msedge, chrome -ErrorAction SilentlyContinue |
+                    Where-Object { $_.StartTime -gt (Get-Date).AddMinutes(-15) } |
+                    Stop-Process -Force -ErrorAction SilentlyContinue
+                Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" -ErrorAction SilentlyContinue |
+                    Where-Object { $_.CommandLine -and $_.CommandLine -like "*serve-static.js*" } |
+                    ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+                return 1
+            }
+            $lines = if (Test-Path -LiteralPath $logFile) { Get-Content -LiteralPath $logFile } else { @() }
+            $lines | Select-Object -Last 12 | ForEach-Object { Write-Host $_ }
+            $lines | ForEach-Object { Add-Content -Path $logPath -Value $_ -Encoding UTF8 }
+            return [int]$process.ExitCode
+        }
+        Push-Location $projectRoot
+        try {
+            $webScript = Join-Path $projectRoot "scripts/verify-webgl.ps1"
+            $webExit = & $runWebEvidence $webScript "browser"
+            if ($webExit -eq 1) {
+                throw "browser contract check FAILED (verify-webgl.ps1 exit 1)"
+            }
+            if ($webExit -ne 0) {
+                Write-Host "webgl_browser_skipped reason=environment_limited exit=$webExit" -ForegroundColor Yellow
+            }
+            else {
+                # 证据必须真的落盘：只有退出码为 0 还不够，摘要 JSON 里的 status 必须也是 ok。
+                $summary = Get-ChildItem -LiteralPath $webEvidenceRoot -Filter "summary-*.json" -ErrorAction SilentlyContinue |
+                    Sort-Object LastWriteTime -Descending | Select-Object -First 1
+                if (-not $summary) {
+                    throw "browser contract check reported success but wrote no summary JSON"
+                }
+                $payload = Get-Content -LiteralPath $summary.FullName -Raw | ConvertFrom-Json
+                if ($payload.status -ne "ok") {
+                    throw "browser contract summary status is '$($payload.status)' (expected ok): $($summary.Name)"
+                }
+                Write-Host "webgl_browser_ok status=$($payload.status) wasm_target=$($payload.wasmTarget) browser=$($payload.browserVersion)" -ForegroundColor Green
+            }
+
+            $bundleScript = Join-Path $projectRoot "scripts/verify-webgl-bundle.ps1"
+            $bundleExit = & $runWebEvidence $bundleScript "bundle"
+            if ($bundleExit -eq 1) {
+                throw "published webgl bundle FAILED to boot (verify-webgl-bundle.ps1 exit 1)"
+            }
+            if ($bundleExit -ne 0) {
+                Write-Host "webgl_bundle_skipped reason=environment_limited_or_no_bundle exit=$bundleExit (先跑 scripts\package.ps1 -Platform webgl)" -ForegroundColor Yellow
+            }
+        }
+        finally {
+            Pop-Location
+        }
+    }
+
     Write-Host "`nQuality gate passed. Log: $logPath" -ForegroundColor Green
 }
 finally {
@@ -293,6 +377,7 @@ if ($Benchmarks) {
         $twoDGoldenPath = Join-Path $baselineRoot "wp0-2d-golden.json"
         $mixedGoldenPath = Join-Path $baselineRoot "wp0-mixed-golden.json"
         $hudGoldenPath = Join-Path $baselineRoot "wp0-hud-golden.json"
+        $editorPreviewPath = Join-Path $baselineRoot "wp0-editor-preview-golden.json"
         Invoke-Checked cargo @(
             "run", "--quiet", "--release", "-p", "engine", "--example", "ecs_stress", "--",
             "--stairs", "--seconds", "1", "--output", $ecsBaselinePath
@@ -342,6 +427,13 @@ if ($Benchmarks) {
         Invoke-Checked cargo @(
             "run", "--quiet", "--release", "-p", "engine", "--example", "wp0_ecs_storage", "--",
             "--cycles", "30", "--output", $ecsStoragePath
+        )
+        # docs/54 §8-⑨：**编辑器路径**的可重复证据。运行时的三种画面都有 golden，但"编辑器里改了
+        # 东西之后预览画成什么样"此前只有人工目测；这条把文档 → 撤销/重做 → 空间语义 → 预览一帧
+        # 整条链在无窗口条件下跑通并逐条断言。
+        Invoke-Checked cargo @(
+            "run", "--quiet", "--release", "-p", "editor", "--example", "editor_preview_golden", "--",
+            "--output", $editorPreviewPath
         )
     }
     finally {
@@ -526,6 +618,30 @@ if ($Benchmarks) {
     }
     if ($hud.world_only_with_ui[0] -le 180 -or $hud.world_only_with_ui[1] -ge 70 -or $hud.world_only_with_ui[2] -ge 70) {
         throw "HUD golden: HUD 矩形之外的世界内容被改了颜色（屏幕 UI 不该影响它矩形外的像素）：$($hud.world_only_with_ui -join ',')"
+    }
+    # docs/54 §8-⑨：编辑器路径。文档 → 撤销/重做 → 空间语义 → 预览一帧，四段都要有牙：
+    # 世界保持的编辑、撤销回原样、重做回同一结果、预览真的画出了像素、两次预览逐字节相同。
+    $editorPreview = Get-Content -LiteralPath $editorPreviewPath -Raw | ConvertFrom-Json
+    if ($editorPreview.report_version -ne "wp0-editor-preview-golden-v1") {
+        throw "editor preview golden report version invalid: $($editorPreview.report_version)"
+    }
+    if ($editorPreview.entities -lt 3) {
+        throw "editor preview golden scene is too small: entities=$($editorPreview.entities)"
+    }
+    if (-not $editorPreview.edit.preserved -or -not $editorPreview.edit.parent_unmoved) {
+        throw "editor preview golden: 世界保持的编辑 / 父实体不动这两条没成立：$($editorPreview.edit | ConvertTo-Json -Compress)"
+    }
+    if (-not $editorPreview.history.executed -or -not $editorPreview.history.undo_restores_original -or -not $editorPreview.history.redo_reapplies) {
+        throw "editor preview golden: 撤销/重做链断了：$($editorPreview.history | ConvertTo-Json -Compress)"
+    }
+    if ($editorPreview.preview.non_background_pixels -le 200) {
+        throw "editor preview golden: 预览几乎什么都没画（$($editorPreview.preview.non_background_pixels) 个非背景像素）"
+    }
+    if (-not $editorPreview.preview.deterministic -or -not $editorPreview.preview.digest) {
+        throw "editor preview golden: 同一份文档的两次预览不是逐字节相同"
+    }
+    if ($editorPreview.timing.p50_us -le 0 -or $editorPreview.timing.p95_us -lt $editorPreview.timing.p50_us) {
+        throw "editor preview golden: 预览耗时采样异常：$($editorPreview.timing | ConvertTo-Json -Compress)"
     }
 
     # 瓦片行序：把 tiles 的两行交换后，上下两半的颜色必须整体对调。这条用像素证明了

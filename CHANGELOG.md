@@ -10,6 +10,24 @@
 主题：按 [docs/54](docs/54-2D3D统一优化方案与现状对比.md) §8「最终完成定义」的 10 条判据逐条收口，
 每条都带可执行证据、可回滚开关与不变量测试。进度对照表见 docs/54 §10。
 
+### 五种配置的可重复质量证据（§8-⑨）
+
+- **编辑器路径有了可重复证据**：新增 `crates/editor/examples/editor_preview_golden.rs`
+  （报告 `wp0-editor-preview-golden-v1`）。它在**无窗口**条件下把编辑器的链跑通：`SceneDocument`
+  → `CommandHistory`（撤销/重做）→ `scene_space`（世界保持的编辑）→ `RuntimeScene` 预览一帧 →
+  像素；断言"世界保持的编辑精确到位且父实体不动""撤销回到逐字节相同的文档""重做回到同一份编辑
+  结果""预览的非背景像素数超阈值""同一份文档的两次预览逐字节相同"，并报告 30 次重建的 p50/p95
+  （编辑器预览的性能证据）。进 `verify.ps1 -Benchmarks` 并逐条判红。
+- **Web 平台证据进门**：`verify.ps1 -Web`（CI 新增同名步骤）依次跑浏览器契约层
+  （`verify-webgl.ps1`：真实 Edge 无头 + Node 静态服务器跑资源获取/解析、WebGL2 能力、存储降级、
+  缺失资源诊断；判据是摘要 JSON 的 `status=ok` 而不只是退出码）与产物启动层
+  （`verify-webgl-bundle.ps1`：真发布包的 wasm 引导）。退出码语义严格区分：1 = 真失败（判红）、
+  2/3 = 环境受限/无产物（打印原因后跳过，绝不把跳过说成通过）。
+- **一个真实的坑**：这两个 Web 脚本会起 node 静态服务器与无头浏览器（长命孙进程），把它们的 stdout
+  接进质量门的管道会让门永远等不到 EOF。门改用 `Start-Process -Wait` + 独立日志文件取退出码。
+- 环境限制（不伪造）：本机 `rustup target add wasm32-unknown-unknown` 因镜像 403 失败，因此
+  **WASM 产物层**只能打印 `webgl_bundle_skipped`；浏览器契约层实测通过。
+
 ### 空间真源与父先序遍历收敛（§8-②）
 
 - **父先序遍历只剩一个驱动**：`spatial_transform::parent_first_plan`（泛型于实体标识类型）负责父链

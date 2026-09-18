@@ -88,3 +88,10 @@ jobs:
       - name: WP0 benchmarks and semantic goldens
         working-directory: ${{ github.workspace }}
         run: pwsh -NoProfile -File scripts/verify.ps1 -Benchmarks
+
+      # docs/54 §8-⑨：Web 平台的可重复证据（浏览器契约层 + 已发布产物的启动层）。runner 上没有
+      # 浏览器/已发布产物时这两层会**显式**打印跳过原因并以 2/3 退出（不是伪造通过）；真失败
+      # （页面能跑却没画面、引导失败）仍是退出码 1，会让这一步判红。
+      - name: Web platform evidence
+        working-directory: ${{ github.workspace }}
+        run: pwsh -NoProfile -File scripts/verify.ps1 -Web
