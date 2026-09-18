@@ -355,15 +355,24 @@ impl RuntimeScene {
 
     /// WP6：本帧世界 Sprite 的投影矩阵（宿主喂给 `Renderer::set_world_sprite_camera`）。
     /// 关闭时返回 `None`（渲染器不会用到它）。
+    ///
+    /// docs/54 §8-③/④：宿主**声明了主视图**时（混合 2D/3D 场景）世界 Sprite 会改用主视图
+    /// 的那份矩阵与深度附件，本函数的值只作为纯 2D 画面的回退。
     #[must_use]
     pub fn sprite_view_projection(&self, width: u32, height: u32) -> Option<Mat4> {
         if !self.world_sprite_depth {
             return None;
         }
         let viewport = Viewport::new(width.max(1) as f32, height.max(1) as f32).ok()?;
-        // 深度范围取 (-1, 1)：精灵默认 `z = 0` 落在深度**中间**，向 -z 靠近相机、向 +z 远离，
-        // 两侧各有 1 个世界单位可用（2D 的层间偏移通常远小于此）。
-        self.camera.view_projection(viewport, -1.0, 1.0).ok()
+        // 深度范围取正交视图的默认区间：精灵默认 `z = 0` 落在深度**中间**，向 -z 靠近相机、
+        // 向 +z 远离（与 `RenderView::overlay_2d` / `main_2d` 用的是同一组常量）。
+        self.camera
+            .view_projection(
+                viewport,
+                crate::core::camera::ORTHO_NEAR,
+                crate::core::camera::ORTHO_FAR,
+            )
+            .ok()
     }
 
     /// 传播一次世界变换（幂等）。提取入口（`vertices` / `scene_3d`）与本函数的调用点
@@ -2554,13 +2563,15 @@ impl RuntimeScene {
                 if let Some(converted) = converted {
                     let start = world_vertices.len();
                     world_vertices.extend(converted);
-                    world_draws.push(SpriteDrawBatch {
-                        texture_id: self.texture_id(&font_key),
-                        layer: 0,
-                        render_layer: RenderLayer::World2D,
-                        vertex_start: start,
-                        vertex_count: world_vertices.len() - start,
-                    });
+                    // 文字是**带 alpha 的字形边缘**：测深度但不写深度（写深度会在字形边缘
+                    // 留下硬边并遮住后面的内容）。
+                    world_draws.push(SpriteDrawBatch::translucent(
+                        self.texture_id(&font_key),
+                        0,
+                        RenderLayer::World2D,
+                        start,
+                        world_vertices.len() - start,
+                    ));
                 }
                 continue;
             }
@@ -3361,13 +3372,14 @@ fn append_tilemap_layer<V: OverlayVertexSink>(
     {
         previous.vertex_count += count;
     } else {
-        draws.push(SpriteDrawBatch {
+        // overlay 版瓦片（NDC 顶点）不进世界深度通道，深度策略恒为"不写"。
+        draws.push(SpriteDrawBatch::translucent(
             texture_id,
-            layer: 0,
-            render_layer: crate::core::layer::RenderLayer::World2D,
-            vertex_start: start,
-            vertex_count: count,
-        });
+            0,
+            crate::core::layer::RenderLayer::World2D,
+            start,
+            count,
+        ));
     }
 }
 
@@ -3455,13 +3467,15 @@ fn append_tilemap_layer_world<V: WorldSpriteVertexSink>(
     {
         previous.vertex_count += count;
     } else {
-        draws.push(SpriteDrawBatch {
+        // 瓦片是**完全不透明**的世界内容：写深度，因此近处的瓦片能挡住远处的网格，
+        // 远处的网格也不会被瓦片层错误地穿出来（docs/54 §8-④）。
+        draws.push(SpriteDrawBatch::opaque(
             texture_id,
-            layer: 0,
-            render_layer: crate::core::layer::RenderLayer::World2D,
-            vertex_start: start,
-            vertex_count: count,
-        });
+            0,
+            crate::core::layer::RenderLayer::World2D,
+            start,
+            count,
+        ));
     }
 }
 

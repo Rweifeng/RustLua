@@ -11,7 +11,7 @@ use std::{
 };
 
 use crate::core::{
-    camera::{Camera3D, ClearPolicy, DEFAULT_3D_CLEAR, FrameViews, Viewport},
+    camera::{Camera3D, ClearPolicy, DEFAULT_3D_CLEAR, FrameViews, RenderView, Viewport},
     light::Light,
     logging::{EngineError, LogModule},
     math3d::{Mat4, Vec3},
@@ -40,7 +40,7 @@ use crate::host::{
 
 /// 需要深度附件的那几条管线（WP6）。把"要不要写深度"从散落的字段字面量收成一处**类型化**
 /// 契约，是因为它曾经被脚本化编辑改错位：三个管线里有两条被误改成不写深度，而 golden 只断言
-/// 可绘制对象与像素非空、**断言不了深度顺序**，于是 3D 深度静默失效。现在有单测把三条管线的
+/// 可绘制对象与像素非空、**断言不了深度顺序**，于是 3D 深度静默失效。现在有单测把每条管线的
 /// 深度策略逐条钉住（见 `tests::depth_policies_are_pinned_per_pass`）。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DepthPass {
@@ -48,9 +48,12 @@ enum DepthPass {
     Mesh3d,
     /// 阴影贴图：**写深度**（它就是不透明物体到光源的距离场）。
     Shadow,
-    /// 世界 Sprite：**测深度但不写深度**——顺序由宿主按 z 排成画家顺序（远→近），
-    /// 因此半透明精灵之间可以正常叠加；深度附件保留是为了将来与 3D 共享深度缓冲时，
-    /// 精灵能被真正写了深度的物体遮挡（那时只需改这里的 `write_depth`）。
+    /// 世界 Sprite（**不透明**）：**写深度**。与 3D 网格共用同一份深度缓冲，并在网格 pass
+    /// **之前**绘制，因此两个方向的遮挡都成立：近处的不透明精灵挡住远处的网格，近处的网格
+    /// 也能挡住远处的精灵（docs/54 §8-④）。
+    WorldSpriteOpaque,
+    /// 世界 Sprite（**半透明**）：**测深度但不写深度**，在网格 pass 之后按画家顺序（远→近）
+    /// 绘制。半透明之间因此可以正常叠加，同时仍被更深的不透明内容正确遮挡。
     WorldSprite,
 }
 
@@ -58,7 +61,7 @@ impl DepthPass {
     /// 该管线是否写深度。
     const fn write_depth(self) -> bool {
         match self {
-            Self::Mesh3d | Self::Shadow => true,
+            Self::Mesh3d | Self::Shadow | Self::WorldSpriteOpaque => true,
             Self::WorldSprite => false,
         }
     }
@@ -71,6 +74,63 @@ fn depth_stencil_state(pass: DepthPass, bias: wgpu::DepthBiasState) -> wgpu::Dep
         depth_compare: wgpu::CompareFunction::LessEqual,
         stencil: wgpu::StencilState::default(),
         bias,
+    }
+}
+
+/// 世界 Sprite 通道本帧用哪个视图、哪个深度附件（docs/54 §8-④）。
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct WorldSpriteView {
+    /// 世界 → 裁剪空间矩阵：共用视图时与 3D 网格**同一份**（来自宿主声明的 `RenderView`）。
+    matrix: Mat4,
+    /// 声明的视口；`None` = 沿用渲染器默认的 overlay 视口（宿主未声明视图的回滚档）。
+    viewport: Option<Viewport>,
+    /// 是否与 3D 网格共用深度附件。共用时精灵与网格互相遮挡；不共用时只有精灵之间的顺序。
+    shared_depth: bool,
+}
+
+/// 一次世界 Sprite 绘制要挑哪些分段。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SpritePassFilter {
+    /// 不透明（写深度）——在网格 pass 之前画。
+    Opaque,
+    /// 半透明（测深度不写）——在网格 pass 之后画。
+    Translucent,
+    /// 全部，忽略深度策略（纯 2D / 回滚档：顺序即一切）。
+    All,
+}
+
+/// 世界 Sprite 通道的视图决策（纯函数，便于在没有 GPU 的环境里把契约钉死）。
+///
+/// 优先级见 [`Renderer::prepare_world_sprites`]：声明了主视图就与它共用相机/视口/深度；
+/// 只有 overlay 时用 overlay 的世界相机但深度独立；什么都没声明才用宿主显式设置的矩阵。
+fn resolve_world_sprite_view(
+    main: Option<RenderView>,
+    overlay: Option<RenderView>,
+    main_matrix: Option<Mat4>,
+    explicit: Mat4,
+    default_viewport: Option<Viewport>,
+) -> WorldSpriteView {
+    if let Some(main) = main {
+        return WorldSpriteView {
+            matrix: main_matrix
+                .or_else(|| main.matrix())
+                .or_else(|| overlay.and_then(RenderView::matrix))
+                .unwrap_or(explicit),
+            viewport: Some(main.viewport),
+            shared_depth: true,
+        };
+    }
+    if let Some(overlay) = overlay {
+        return WorldSpriteView {
+            matrix: overlay.matrix().unwrap_or(explicit),
+            viewport: Some(overlay.viewport),
+            shared_depth: false,
+        };
+    }
+    WorldSpriteView {
+        matrix: explicit,
+        viewport: default_viewport,
+        shared_depth: false,
     }
 }
 
@@ -412,16 +472,21 @@ pub struct Renderer {
     /// WP5：宿主声明的本帧相机侧视图（清屏策略 + 视口）。默认全 `None` ⇒ 渲染器保持
     /// 收敛前的行为（历史默认清屏色、整目标视口），这就是这次接线可回滚的那一档。
     frame_views: FrameViews,
-    /// WP6 世界 Sprite 通道：管线、2D 相机 uniform（视图投影矩阵）、顶点缓冲与独立深度附件。
+    /// WP6 世界 Sprite 通道：管线、相机 uniform（视图投影矩阵）、顶点缓冲与独立深度附件。
     /// `SceneMesh::world_sprites` 为空时这一整套完全不参与渲染，因此不喂数据时零成本。
+    ///
+    /// 两条管线只差深度策略（不透明写深度 / 半透明不写）；共用 3D 深度附件时见
+    /// [`DepthPass::WorldSpriteOpaque`] 的遮挡契约。
     world_sprite_pipeline: wgpu::RenderPipeline,
+    world_sprite_opaque_pipeline: wgpu::RenderPipeline,
     world_sprite_camera_buffer: wgpu::Buffer,
     world_sprite_camera_bind_group: wgpu::BindGroup,
     world_sprite_buffer: wgpu::Buffer,
     world_sprite_capacity: u64,
+    /// 与 3D 网格**不共用**时的世界 Sprite 深度附件（纯 2D 画面 / 宿主未声明视图的回滚档）。
     world_sprite_depth_view: wgpu::TextureView,
     world_sprite_depth_size: (u32, u32),
-    /// 世界 Sprite 的投影（宿主每帧写入 `Camera2D::view_projection`）。
+    /// 世界 Sprite 的投影（宿主每帧写入；已声明主视图时它与主视图同一份矩阵）。
     world_sprite_view_projection: Mat4,
 }
 
@@ -1245,9 +1310,12 @@ impl Renderer {
                 bind_group_layouts: &[&world_sprite_camera_layout, &texture_bind_group_layout],
                 push_constant_ranges: &[],
             });
-        let world_sprite_pipeline =
+        // 世界 Sprite 的两条管线只差深度策略：不透明写深度（可与网格互相遮挡），半透明
+        // 测深度不写深度（画家顺序叠加）。除 `DepthPass` 外必须逐字段相同，否则"同一份几何
+        // 换一个策略"就会变成两条不同的渲染路径。
+        let create_world_sprite_pipeline = |label: &str, pass: DepthPass| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("p2-world-sprite-pipeline"),
+                label: Some(label),
                 layout: Some(&world_sprite_pipeline_layout),
                 vertex: wgpu::VertexState {
                     module: &world_sprite_shader,
@@ -1286,17 +1354,18 @@ impl Renderer {
                     })],
                 }),
                 primitive: wgpu::PrimitiveState::default(),
-                // 世界 Sprite：**测深度但不写深度**——顺序由宿主按 z 排成画家顺序（远→近），
-                // 半透明精灵因此可以正常叠加。深度附件保留是为了将来与 3D 共享深度缓冲时，
-                // 精灵能被真正写了深度的物体遮挡（那时只需改 `DepthPass::WorldSprite`）。
-                depth_stencil: Some(depth_stencil_state(
-                    DepthPass::WorldSprite,
-                    wgpu::DepthBiasState::default(),
-                )),
+                depth_stencil: Some(depth_stencil_state(pass, wgpu::DepthBiasState::default())),
                 multisample: wgpu::MultisampleState::default(),
                 multiview: None,
                 cache: None,
-            });
+            })
+        };
+        let world_sprite_pipeline =
+            create_world_sprite_pipeline("p2-world-sprite-pipeline", DepthPass::WorldSprite);
+        let world_sprite_opaque_pipeline = create_world_sprite_pipeline(
+            "p2-world-sprite-opaque-pipeline",
+            DepthPass::WorldSpriteOpaque,
+        );
         let world_sprite_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("p2-world-sprite-buffer"),
             size: WORLD_SPRITE_BUFFER_BYTES,
@@ -1378,6 +1447,7 @@ impl Renderer {
             last_frame_metrics: RenderFrameMetrics::default(),
             frame_views: FrameViews::new(),
             world_sprite_pipeline,
+            world_sprite_opaque_pipeline,
             world_sprite_camera_buffer,
             world_sprite_camera_bind_group,
             world_sprite_buffer,
@@ -1689,14 +1759,35 @@ impl Renderer {
 
     /// Rewrites the camera, light, and light-space uniform buffers from the
     /// active scene's camera and directional light.
-    fn update_3d_uniforms(&mut self, scene: &Scene3d) {
-        if let Ok(matrix) = scene.camera.view_projection_matrix() {
-            self.queue.write_buffer(
-                &self.camera_buffer,
-                0,
-                bytemuck::cast_slice(&matrix.columns),
+    ///
+    /// `view_projection` 是宿主声明的世界视图矩阵（docs/54 §8-③）。有声明就用声明的那一份，
+    /// 没有才回退到 `Scene3d.camera`——后者是收敛前的老路径，只为"宿主没声明视图"保留。
+    fn update_3d_uniforms(&mut self, scene: &Scene3d, view_projection: Option<Mat4>) {
+        let Some(matrix) = view_projection.or_else(|| scene.camera.view_projection_matrix().ok())
+        else {
+            // 宿主既没声明视图、相机又退化：不写 uniform（保持上一帧的值），并留下诊断。
+            // 这条路径不该在正常帧里出现——世界视图矩阵的唯一来源是宿主声明的 `RenderView`。
+            tracing::warn!(
+                target: "render",
+                "[render] 世界视图矩阵缺失：宿主未声明 RenderView 且场景相机退化，3D pass 使用上一帧矩阵"
             );
+            self.write_light_uniforms(scene);
+            return;
+        };
+        self.queue.write_buffer(
+            &self.camera_buffer,
+            0,
+            bytemuck::cast_slice(&matrix.columns),
+        );
+        if view_projection.is_none() {
+            // 合法回滚档：宿主没声明视图时回退到场景相机。trace 级别，不刷屏。
+            tracing::trace!(target: "render", "[render] 3D view matrix fell back to Scene3d.camera");
         }
+        self.write_light_uniforms(scene);
+    }
+
+    /// 光照与阴影 uniform（与相机矩阵分开写，缺相机时也要更新）。
+    fn write_light_uniforms(&mut self, scene: &Scene3d) {
         let (direction, color_intensity) = scene.light.uniform();
         self.queue.write_buffer(
             &self.light_buffer,
@@ -1709,6 +1800,126 @@ impl Renderer {
             0,
             bytemuck::cast_slice(&light_matrix.columns),
         );
+    }
+
+    /// 决定本帧世界 Sprite 用哪个视图/深度附件，并把顶点与相机 uniform 准备好。
+    ///
+    /// 视图来源优先级（docs/54 §8-③/④）：
+    /// 1. 宿主声明了主视图 ⇒ 与主视图**共用**相机、视口与深度附件（混合 2D/3D 的正确形态）；
+    /// 2. 只有 overlay（纯 2D 画面）⇒ 用 overlay 的世界相机，深度附件独立；
+    /// 3. 什么都没声明 ⇒ 用宿主显式设置的矩阵与默认 overlay 视口（收敛前的回滚档）。
+    fn prepare_world_sprites(
+        &mut self,
+        mesh: &SceneMesh,
+        main_matrix: Option<Mat4>,
+        overlay_viewport: Option<Viewport>,
+        target: (u32, u32),
+    ) -> Option<WorldSpriteView> {
+        let bytes = bytemuck::cast_slice(&mesh.world_sprites);
+        self.ensure_world_sprite_capacity(bytes.len() as u64);
+        self.queue.write_buffer(&self.world_sprite_buffer, 0, bytes);
+        let view = resolve_world_sprite_view(
+            self.frame_views.main,
+            self.frame_views.overlay,
+            main_matrix,
+            self.world_sprite_view_projection,
+            overlay_viewport,
+        );
+        // 深度附件独立时按目标尺寸准备（共用时用 3D 那份，尺寸由 create_depth_view 维护）。
+        if !view.shared_depth && self.world_sprite_depth_size != (target.0.max(1), target.1.max(1))
+        {
+            self.world_sprite_depth_view =
+                Self::create_depth_view(&self.device, target.0.max(1), target.1.max(1));
+            self.world_sprite_depth_size = (target.0.max(1), target.1.max(1));
+        }
+        let uniform = bytemuck::cast_slice(&view.matrix.columns);
+        self.queue
+            .write_buffer(&self.world_sprite_camera_buffer, 0, uniform);
+        // 共用视图时把同一份矩阵也记进宿主字段：诊断读到的永远是"这一帧真正用的那一份"。
+        self.world_sprite_view_projection = view.matrix;
+        Some(view)
+    }
+
+    /// 按 [`SpritePassFilter`] 画世界 Sprite 分段。
+    #[allow(clippy::too_many_arguments)]
+    fn draw_world_sprites(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+        target: (u32, u32),
+        world: WorldSpriteView,
+        pass_kind: DepthPass,
+        draws: &[crate::core::sprite_batch::SpriteDrawBatch],
+        paths: &[String],
+        filter: SpritePassFilter,
+        clear_depth: bool,
+        metrics: &mut RenderFrameMetrics,
+    ) {
+        let selected: Vec<_> = draws
+            .iter()
+            .filter(|draw| match filter {
+                SpritePassFilter::Opaque => draw.depth_write,
+                SpritePassFilter::Translucent => !draw.depth_write,
+                SpritePassFilter::All => true,
+            })
+            .collect();
+        if selected.is_empty() {
+            return;
+        }
+        let depth_view = if world.shared_depth {
+            &self.depth_view
+        } else {
+            &self.world_sprite_depth_view
+        };
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some(if world.shared_depth {
+                "p2-world-sprite-pass"
+            } else {
+                "p2-world-sprite-pass-isolated"
+            }),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load: if clear_depth {
+                        wgpu::LoadOp::Clear(1.0)
+                    } else {
+                        wgpu::LoadOp::Load
+                    },
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        pass.set_pipeline(match pass_kind {
+            DepthPass::WorldSpriteOpaque => &self.world_sprite_opaque_pipeline,
+            _ => &self.world_sprite_pipeline,
+        });
+        pass.set_bind_group(0, &self.world_sprite_camera_bind_group, &[]);
+        pass.set_vertex_buffer(0, self.world_sprite_buffer.slice(..));
+        apply_declared_viewport(&mut pass, world.viewport, target);
+        for draw in selected {
+            let texture = draw.texture_id + 1;
+            let Some(bind) = self.bind_group_for(texture, paths) else {
+                continue;
+            };
+            pass.set_bind_group(1, &bind, &[]);
+            pass.draw(
+                draw.vertex_start as u32..(draw.vertex_start + draw.vertex_count) as u32,
+                0..1,
+            );
+            record_vertex_draw(metrics, draw.vertex_count as u32);
+        }
     }
 
     /// Gathers this frame's 3D draws: every scene entity with both a
@@ -1836,8 +2047,9 @@ impl Renderer {
         self.frame_views
     }
 
-    /// WP6：写入世界 Sprite 通道用的 2D 相机投影（宿主每帧给
-    /// `Camera2D::view_projection(viewport, near, far)` 的结果）。没有世界 Sprite 时不必调用。
+    /// WP6：写入世界 Sprite 通道用的投影矩阵——**只在宿主没有声明任何 [`FrameViews`] 时**
+    /// 才需要（纯 2D 回滚档）。声明了主视图或 overlay 时，世界 Sprite 用声明里的那一份矩阵
+    /// （与网格同一份，见 docs/54 §8-③/④），本函数写入的值会被当帧覆盖。
     pub fn set_world_sprite_camera(&mut self, view_projection: Mat4) {
         self.world_sprite_view_projection = view_projection;
         // uniform 存的是列主序 4×4（与 3D 相机 uniform 同一布局）。
@@ -2348,8 +2560,15 @@ impl Renderer {
                 occlusion_query_set: None,
             });
         }
+        // docs/54 §8-③：本帧世界视图的投影矩阵**只有一份来源**——宿主声明的 `RenderView`。
+        // 渲染器不再自己回查 `Camera3D`（那只是"宿主没声明"时的历史回退）。
+        let main_matrix = self
+            .frame_views
+            .main
+            .and_then(RenderView::matrix)
+            .or_else(|| scene3d.and_then(|scene| scene.camera.view_projection_matrix().ok()));
         let frame_draws = if let Some(scene) = scene3d {
-            self.update_3d_uniforms(scene);
+            self.update_3d_uniforms(scene, main_matrix);
             self.frame_3d_draws(scene)
         } else {
             Vec::new()
@@ -2362,6 +2581,33 @@ impl Renderer {
                 draw.models.len(),
                 2,
             );
+        }
+        // 世界 Sprite 通道（docs/54 §8-④）：与网格**共用相机、视口与深度附件**。
+        let world_view = if mesh.world_sprites.is_empty() {
+            None
+        } else {
+            self.prepare_world_sprites(mesh, main_matrix, overlay_viewport, target)
+        };
+        // 深度附件是否已被本帧某个 pass 清过。共用深度时"谁先画谁清"、后面的 pass 只 Load；
+        // 否则精灵与网格的深度就不是同一个空间里的值。
+        let mut depth_cleared = false;
+        // ① 不透明世界 Sprite：在网格 pass **之前**写深度 ⇒ 不透明精灵可以遮挡网格。
+        if let Some(world) = world_view.filter(|world| world.shared_depth)
+            && mesh.world_sprite_draws.iter().any(|draw| draw.depth_write)
+        {
+            self.draw_world_sprites(
+                encoder,
+                view,
+                target,
+                world,
+                DepthPass::WorldSpriteOpaque,
+                &mesh.world_sprite_draws,
+                &mesh.paths,
+                SpritePassFilter::Opaque,
+                true,
+                &mut metrics,
+            );
+            depth_cleared = true;
         }
         if !frame_draws.is_empty() {
             {
@@ -2410,7 +2656,13 @@ impl Renderer {
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &self.depth_view,
                     depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
+                        // 不透明世界 Sprite 已经清过并写过这份深度；此时只 Load，网格与精灵
+                        // 才在同一个深度空间里互相遮挡。
+                        load: if depth_cleared {
+                            wgpu::LoadOp::Load
+                        } else {
+                            wgpu::LoadOp::Clear(1.0)
+                        },
                         store: wgpu::StoreOp::Store,
                     }),
                     stencil_ops: None,
@@ -2418,6 +2670,7 @@ impl Renderer {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
+            depth_cleared = true;
             pass.set_pipeline(&self.mesh_pipeline);
             pass.set_bind_group(0, &self.camera_bind_group, &[]);
             apply_declared_viewport(&mut pass, main_viewport, target);
@@ -2432,56 +2685,27 @@ impl Renderer {
                 pass.draw_indexed(0..draw.geometry.index_count, 0, 0..draw.models.len() as u32);
             }
         }
-        if !mesh.world_sprites.is_empty() {
-            // WP6 世界 Sprite 通道：在 3D mesh pass 之后、2D overlay 之前。顶点是世界坐标，
-            // 投影由顶点着色器用宿主给的 2D 相机矩阵完成；自身的深度附件只服务于精灵之间
-            // 的深度比较（透明不写深度），因此 overlay 的像素与顺序不受影响。
-            let bytes = bytemuck::cast_slice(&mesh.world_sprites);
-            self.ensure_world_sprite_capacity(bytes.len() as u64);
-            self.queue.write_buffer(&self.world_sprite_buffer, 0, bytes);
-            if self.world_sprite_depth_size != (target.0.max(1), target.1.max(1)) {
-                self.world_sprite_depth_view =
-                    Self::create_depth_view(&self.device, target.0.max(1), target.1.max(1));
-                self.world_sprite_depth_size = (target.0.max(1), target.1.max(1));
-            }
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("p2-world-sprite-pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.world_sprite_depth_view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
-                        store: wgpu::StoreOp::Store,
-                    }),
-                    stencil_ops: None,
-                }),
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            pass.set_pipeline(&self.world_sprite_pipeline);
-            pass.set_bind_group(0, &self.world_sprite_camera_bind_group, &[]);
-            pass.set_vertex_buffer(0, self.world_sprite_buffer.slice(..));
-            apply_declared_viewport(&mut pass, overlay_viewport, target);
-            for draw in &mesh.world_sprite_draws {
-                let texture = draw.texture_id + 1;
-                let Some(bind) = self.bind_group_for(texture, &mesh.paths) else {
-                    continue;
-                };
-                pass.set_bind_group(1, &bind, &[]);
-                pass.draw(
-                    draw.vertex_start as u32..(draw.vertex_start + draw.vertex_count) as u32,
-                    0..1,
-                );
-                record_vertex_draw(&mut metrics, draw.vertex_count as u32);
-            }
+        if let Some(world) = world_view {
+            // ② 共用视图：半透明精灵在网格之后按画家顺序画，测深度但不写深度。
+            // ③ 纯 2D / 宿主未声明视图（回滚档）：只有精灵之间的顺序，深度策略不参与，
+            //    因此整段照旧按宿主排好的顺序画。
+            let filter = if world.shared_depth {
+                SpritePassFilter::Translucent
+            } else {
+                SpritePassFilter::All
+            };
+            self.draw_world_sprites(
+                encoder,
+                view,
+                target,
+                world,
+                DepthPass::WorldSprite,
+                &mesh.world_sprite_draws,
+                &mesh.paths,
+                filter,
+                !depth_cleared,
+                &mut metrics,
+            );
         }
         if !mesh.vertices.is_empty() {
             let bytes = bytemuck::cast_slice(&mesh.vertices);
@@ -3358,6 +3582,7 @@ pub enum RenderOutcome {
 mod tests {
     use super::*;
     use crate::core::camera::{Projection, RenderView};
+    use crate::core::math3d::Quat;
 
     #[test]
     fn render_metrics_count_2d_draws_and_geometry() {
@@ -3581,21 +3806,23 @@ mod tests {
             vector_segments: Vec::new(),
         };
         mesh.world_sprites.extend(quad(-0.5, [0.0, 1.0, 0.0, 1.0]));
+        // 纯 2D 回滚档（宿主没有声明任何视图）：世界 Sprite 只有画家顺序，深度策略不参与，
+        // 因此这里按"不写深度"构造，与本条测试的断言一一对应。
         mesh.world_sprite_draws = vec![
-            crate::core::sprite_batch::SpriteDrawBatch {
-                texture_id: 0,
-                layer: 0,
-                render_layer: crate::core::layer::RenderLayer::World2D,
-                vertex_start: 0,
-                vertex_count: 6,
-            },
-            crate::core::sprite_batch::SpriteDrawBatch {
-                texture_id: 0,
-                layer: 1,
-                render_layer: crate::core::layer::RenderLayer::World2D,
-                vertex_start: 6,
-                vertex_count: 6,
-            },
+            crate::core::sprite_batch::SpriteDrawBatch::translucent(
+                0,
+                0,
+                crate::core::layer::RenderLayer::World2D,
+                0,
+                6,
+            ),
+            crate::core::sprite_batch::SpriteDrawBatch::translucent(
+                0,
+                1,
+                crate::core::layer::RenderLayer::World2D,
+                6,
+                6,
+            ),
         ];
 
         let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -3664,6 +3891,181 @@ mod tests {
         );
     }
 
+    /// docs/54 §8-④ 的核心证明：**同一世界视图**里 Sprite 与 Mesh 按深度策略正确互相遮挡。
+    ///
+    /// 场景只用内建几何（`__ground_plane__` 哨兵），因此不依赖任何示例工程资源：
+    /// - 主视图 = 透视相机（`RenderView::main_3d` 携带视图投影矩阵），世界 Sprite 与网格共用它；
+    /// - 网格是那块地面四边形，绕 X 转 90° 后正对相机、放在 z = -1；
+    /// - 精灵是不透明四边形（alpha = 1 ⇒ 写深度）。
+    ///
+    /// 两个方向各断言一次：精灵在网格**前面**时精灵胜出；精灵在网格**后面**时网格胜出。
+    /// 收敛前这两条都不可能同时成立——精灵有自己的深度附件、且永远在网格之后画。
+    #[test]
+    fn world_sprites_and_meshes_occlude_each_other_in_one_view() {
+        const SIZE: u32 = 64;
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let Some(adapter) =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::LowPower,
+                compatible_surface: None,
+                force_fallback_adapter: true,
+            }))
+            .ok()
+        else {
+            return; // no GPU available; skip
+        };
+        let (device, queue) = pollster::block_on(adapter.request_device(&DeviceDescriptor {
+            label: Some("p2-mixed-occlusion-device"),
+            required_features: wgpu::Features::empty(),
+            experimental_features: wgpu::ExperimentalFeatures::disabled(),
+            required_limits: wgpu::Limits::default(),
+            memory_hints: wgpu::MemoryHints::Performance,
+            trace: wgpu::Trace::Off,
+        }))
+        .expect("request test device");
+        let mut renderer = Renderer::new_offscreen(device.clone(), queue, None, false, false)
+            .expect("offscreen renderer");
+        let viewport = Viewport::new(SIZE as f32, SIZE as f32).unwrap();
+        let camera = Camera3D::perspective(
+            Vec3::new(0.0, 0.0, 4.0),
+            Vec3::ZERO,
+            std::f32::consts::FRAC_PI_2,
+            1.0,
+            0.1,
+            100.0,
+        )
+        .expect("perspective camera");
+        // 宿主声明主视图：世界 Sprite 通道因此与网格共用相机、视口与深度附件。
+        renderer.set_frame_views(FrameViews {
+            main: Some(RenderView::main_3d(camera, viewport, DEFAULT_3D_CLEAR)),
+            overlay: None,
+        });
+
+        // 地面四边形：绕 X 转 90° 后法线朝 +Z，落在 z = -1 的平面上，尺寸 ±4。
+        let facing =
+            Mat4::from_quat(Quat::from_axis_angle(Vec3::X, std::f32::consts::FRAC_PI_2).unwrap());
+        let mesh_model = Mat4::translation(Vec3::new(0.0, 0.0, -1.0)) * facing;
+        let scene = Scene3d {
+            camera,
+            light: Light::default(),
+            drawables: vec![crate::host::frame::Scene3dDrawable {
+                entity: crate::core::scene::SceneEntityId(1),
+                name: "Ground".to_owned(),
+                mesh_path: GROUND_PLANE_SENTINEL.to_owned(),
+                model: mesh_model,
+                palette: Vec::new(),
+                bounds: crate::host::frame::Scene3dBounds {
+                    local_aabb: crate::core::math3d::Aabb3 {
+                        min: Vec3::new(-4.0, -4.0, -0.1),
+                        max: Vec3::new(4.0, 4.0, 0.1),
+                    },
+                    source: crate::host::frame::BoundsSource::Fallback,
+                },
+            }],
+        };
+
+        let quad = |z: f32| {
+            let mut vertices = Vec::new();
+            for (x, y) in [
+                (-0.5_f32, -0.5_f32),
+                (0.5, -0.5),
+                (-0.5, 0.5),
+                (0.5, -0.5),
+                (0.5, 0.5),
+                (-0.5, 0.5),
+            ] {
+                vertices.push(WorldSpriteVertex {
+                    position: [x, y, z],
+                    uv: [0.5, 0.5],
+                    color: [1.0, 0.0, 0.0, 1.0],
+                });
+            }
+            vertices
+        };
+        let mesh_with_sprite = |z: f32| SceneMesh {
+            vertices: Vec::new(),
+            draws: Vec::new(),
+            world_sprites: quad(z),
+            // 不透明（alpha = 1）⇒ 这一段落写深度，因此能与网格互相遮挡。
+            world_sprite_draws: vec![crate::core::sprite_batch::SpriteDrawBatch::opaque(
+                0,
+                0,
+                crate::core::layer::RenderLayer::World2D,
+                0,
+                6,
+            )],
+            paths: vec![WHITE_TEXTURE_PATH.to_owned()],
+            font_atlas: None,
+            custom_font_atlases: Vec::new(),
+            vector_vertices: Vec::new(),
+            vector_glyphs: Vec::new(),
+            vector_segments: Vec::new(),
+        };
+
+        let target = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("p2-mixed-occlusion-target"),
+            size: wgpu::Extent3d {
+                width: SIZE,
+                height: SIZE,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let center_of = |renderer: &mut Renderer, mesh: &SceneMesh| {
+            let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+            renderer.render_into_texture(mesh, Some(&scene), &view, SIZE, SIZE);
+            let pixels = renderer
+                .copy_texture_to_cpu(&target, SIZE, SIZE)
+                .expect("readback");
+            let index = (((SIZE / 2) * SIZE + SIZE / 2) * 4) as usize;
+            [
+                pixels[index],
+                pixels[index + 1],
+                pixels[index + 2],
+                pixels[index + 3],
+            ]
+        };
+        let is_sprite_red = |pixel: [u8; 4]| pixel[0] > 128 && pixel[1] < 96 && pixel[2] < 96;
+
+        // ① 精灵在网格前面（z = 0 > -1）：精灵胜出。
+        let in_front = center_of(&mut renderer, &mesh_with_sprite(0.0));
+        assert!(
+            is_sprite_red(in_front),
+            "网格前面的不透明精灵必须可见，实际 {in_front:?}"
+        );
+
+        // ② 精灵在网格后面（z = -2 < -1）：网格胜出 ⇒ 网格**能遮挡**精灵。
+        let behind = center_of(&mut renderer, &mesh_with_sprite(-2.0));
+        assert!(
+            !is_sprite_red(behind),
+            "网格后面的精灵必须被网格遮住，实际 {behind:?}"
+        );
+
+        // ③ 半透明精灵即使在前也不写深度：它不会反过来遮住网格的深度（策略按分段下发）。
+        let mut translucent = mesh_with_sprite(0.0);
+        translucent.world_sprite_draws =
+            vec![crate::core::sprite_batch::SpriteDrawBatch::translucent(
+                0,
+                0,
+                crate::core::layer::RenderLayer::World2D,
+                0,
+                6,
+            )];
+        for vertex in &mut translucent.world_sprites {
+            vertex.color = [1.0, 0.0, 0.0, 0.5];
+        }
+        let blended = center_of(&mut renderer, &translucent);
+        assert!(
+            blended != behind,
+            "半透明精灵应与'被遮挡'是两种不同的画面（说明它确实画上去了）"
+        );
+    }
+
     /// WP6：三条管线的深度策略逐条钉住。
     ///
     /// 回归背景：这三个设置曾是散落的字段字面量，一次脚本化编辑把 **mesh3d 与 shadow** 的
@@ -3682,15 +4084,96 @@ mod tests {
         );
         assert!(
             !DepthPass::WorldSprite.write_depth(),
-            "世界 Sprite 不写深度：顺序由宿主按 z 排成画家顺序，写深度会让半透明透不出来"
+            "半透明世界 Sprite 不写深度：顺序由宿主按 z 排成画家顺序，写深度会让半透明透不出来"
         );
-        for pass in [DepthPass::Mesh3d, DepthPass::Shadow, DepthPass::WorldSprite] {
+        assert!(
+            DepthPass::WorldSpriteOpaque.write_depth(),
+            "不透明世界 Sprite 必须写深度：否则它无法与 3D 网格在同一世界视图里互相遮挡"
+        );
+        for pass in [
+            DepthPass::Mesh3d,
+            DepthPass::Shadow,
+            DepthPass::WorldSprite,
+            DepthPass::WorldSpriteOpaque,
+        ] {
             assert_eq!(
                 depth_stencil_state(pass, wgpu::DepthBiasState::default()).depth_compare,
                 wgpu::CompareFunction::LessEqual,
                 "{pass:?} 的深度比较应为 LessEqual"
             );
         }
+    }
+
+    /// docs/54 §8-④：世界 Sprite 到底用哪个相机、哪个深度附件，必须由**声明的视图**决定，
+    /// 而不是由"谁最后调了哪个 setter"决定。这条把三种情形逐条钉住（无需 GPU）。
+    #[test]
+    fn world_sprite_view_is_resolved_from_the_declared_views() {
+        let viewport = Viewport::new(640.0, 360.0).unwrap();
+        let half = Viewport::new(640.0, 180.0).unwrap();
+        let camera3d = Camera3D::perspective(
+            Vec3::new(0.0, 0.0, 6.0),
+            Vec3::ZERO,
+            std::f32::consts::FRAC_PI_2,
+            640.0 / 360.0,
+            0.1,
+            100.0,
+        )
+        .unwrap();
+        let camera2d =
+            crate::core::camera::Camera2D::new(crate::core::transform::Vec2::zero(), 1.0).unwrap();
+        let main = RenderView::main_3d(camera3d, viewport, DEFAULT_3D_CLEAR);
+        let overlay = RenderView::overlay_2d(camera2d, half);
+        let explicit = Mat4::identity();
+
+        // ① 声明了主视图：与主视图共用相机、视口与深度（这才是"同一世界视图"）。
+        let shared =
+            resolve_world_sprite_view(Some(main), Some(overlay), main.matrix(), explicit, None);
+        assert!(
+            shared.shared_depth,
+            "声明主视图时世界 Sprite 必须共用深度附件"
+        );
+        assert_eq!(
+            shared.viewport,
+            Some(viewport),
+            "世界 Sprite 用主视图的视口"
+        );
+        assert_eq!(
+            shared.matrix,
+            main.matrix().expect("主 3D 视图应带视图投影矩阵"),
+            "世界 Sprite 与网格必须是同一份投影矩阵"
+        );
+
+        // ② 只有 overlay（纯 2D 画面）：用 overlay 的世界相机，但深度附件独立。
+        let isolated =
+            resolve_world_sprite_view(None, Some(overlay), None, explicit, Some(viewport));
+        assert!(!isolated.shared_depth, "纯 2D 画面没有网格可共享深度");
+        assert_eq!(isolated.viewport, Some(half));
+        assert_eq!(isolated.matrix, overlay.matrix().unwrap());
+
+        // ③ 什么都没声明（回滚档）：用宿主显式设置的矩阵与传入的默认视口。
+        let legacy = resolve_world_sprite_view(None, None, None, explicit, Some(viewport));
+        assert!(!legacy.shared_depth);
+        assert_eq!(legacy.matrix, explicit);
+        assert_eq!(legacy.viewport, Some(viewport));
+    }
+
+    /// 主视图**没有**矩阵（退化相机 / 手工构造的字面量）时，世界 Sprite 退回显式矩阵而不是
+    /// 悄悄用一份单位阵——错的是取景，不该表现为"精灵全在屏幕中央"。
+    #[test]
+    fn world_sprite_view_falls_back_to_the_explicit_matrix_without_a_view_matrix() {
+        let viewport = Viewport::new(320.0, 240.0).unwrap();
+        let matrixless = RenderView {
+            projection: Projection::Orthographic { zoom: 2.0 },
+            viewport,
+            clear: ClearPolicy::None,
+            order: 0,
+            visibility: u32::MAX,
+            view_projection: None,
+        };
+        let explicit = Mat4::translation(Vec3::new(3.0, 4.0, 5.0));
+        let resolved = resolve_world_sprite_view(Some(matrixless), None, None, explicit, None);
+        assert_eq!(resolved.matrix, explicit);
+        assert!(resolved.shared_depth);
     }
     /// WP5 视口夹取：声明的视口必须落在目标内、至少 1×1，且整目标视口与"未声明"等价。
     #[test]
@@ -3803,6 +4286,8 @@ mod tests {
                 clear: ClearPolicy::Color(DEFAULT_3D_CLEAR),
                 order: 0,
                 visibility: u32::MAX,
+                // 这一条只验清屏/视口：不声明矩阵，渲染器走"没有矩阵"的历史回退分支。
+                view_projection: None,
             }),
             overlay: None,
         };
@@ -3915,6 +4400,7 @@ mod tests {
                 clear: ClearPolicy::None,
                 order: 1,
                 visibility: u32::MAX,
+                view_projection: None,
             }),
         });
         let clipped = {

@@ -1255,30 +1255,50 @@ pub struct RenderView {
     pub order: i32,
     /// 可见层遮罩（按位与场景层比较；`u32::MAX` = 全可见）。
     pub visibility: u32,
+    /// 本视图的**视图投影矩阵**（世界 → 裁剪空间）。
+    ///
+    /// docs/54 §8-③：渲染器消费的必须是这一份契约，而不是自己回查 `Camera3D` 或宿主另塞一份
+    /// 矩阵。此前 `RenderView` 只有投影**参数**（fov/near/far）没有视图矩阵，3D pass 因此仍从
+    /// `Scene3d.camera` 取矩阵、世界 Sprite 又从宿主单独拿一份 2D 矩阵——"同一世界视图"没有
+    /// 单一来源，Sprite 与 Mesh 也谈不上共享相机。
+    ///
+    /// `None` = 这台相机当前退化（位置与目标重合、zoom 非正等），无法给出矩阵；渲染器此时
+    /// 退回历史路径并留下诊断，不猜一个矩阵。
+    pub view_projection: Option<Mat4>,
 }
+
+/// 正交视图（2D 主视图 / overlay）的默认裁剪深度范围。
+///
+/// `z = 0` 因此落在深度**中间**，向 -z 靠近相机、向 +z 远离，两侧各 1 个世界单位可用
+/// （2D 的层间偏移通常远小于此）。世界 Sprite 的 `Sprite::z` 也按这个范围解释。
+pub const ORTHO_NEAR: f32 = -1.0;
+/// 见 [`ORTHO_NEAR`]。
+pub const ORTHO_FAR: f32 = 1.0;
 
 impl RenderView {
     /// 2D overlay 视图：正交投影 + 不清屏（叠在 3D pass 之上）。
     #[must_use]
-    pub const fn overlay_2d(camera: Camera2D, viewport: Viewport) -> Self {
+    pub fn overlay_2d(camera: Camera2D, viewport: Viewport) -> Self {
         Self {
             projection: Projection::from_camera2d(camera),
             viewport,
             clear: ClearPolicy::None,
             order: 1,
             visibility: u32::MAX,
+            view_projection: camera.view_projection(viewport, ORTHO_NEAR, ORTHO_FAR).ok(),
         }
     }
 
     /// 主 3D 视图：透视投影 + 用给定颜色清屏。
     #[must_use]
-    pub const fn main_3d(camera: Camera3D, viewport: Viewport, clear: [f32; 4]) -> Self {
+    pub fn main_3d(camera: Camera3D, viewport: Viewport, clear: [f32; 4]) -> Self {
         Self {
             projection: Projection::from_camera3d(camera),
             viewport,
             clear: ClearPolicy::Color(clear),
             order: 0,
             visibility: u32::MAX,
+            view_projection: camera.view_projection_matrix().ok(),
         }
     }
 
@@ -1286,14 +1306,21 @@ impl RenderView {
     ///
     /// "主/叠加"说的是**清屏策略**而不是 2D/3D：2D 画面也可以是这一帧的底，需要先清屏。
     #[must_use]
-    pub const fn main_2d(camera: Camera2D, viewport: Viewport, clear: [f32; 4]) -> Self {
+    pub fn main_2d(camera: Camera2D, viewport: Viewport, clear: [f32; 4]) -> Self {
         Self {
             projection: Projection::from_camera2d(camera),
             viewport,
             clear: ClearPolicy::Color(clear),
             order: 0,
             visibility: u32::MAX,
+            view_projection: camera.view_projection(viewport, ORTHO_NEAR, ORTHO_FAR).ok(),
         }
+    }
+
+    /// 本视图的视图投影矩阵（世界 → 裁剪空间）。退化相机返回 `None`。
+    #[must_use]
+    pub const fn matrix(self) -> Option<Mat4> {
+        self.view_projection
     }
 
     /// 视口宽高比（透视投影需要）。

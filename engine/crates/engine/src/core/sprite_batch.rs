@@ -41,6 +41,80 @@ pub struct SpriteDrawBatch {
     pub render_layer: crate::core::layer::RenderLayer,
     pub vertex_start: usize,
     pub vertex_count: usize,
+    /// docs/54 §8-④：这一段是否**写深度**。只有**完全不透明**（顶点颜色 alpha = 1）的世界内容
+    /// 才写：写深度让不透明精灵与 3D 网格可以互相遮挡；半透明内容测深度但不写，靠宿主排出的
+    /// 画家顺序叠加（写深度会让更远的半透明精灵透不出来）。
+    pub depth_write: bool,
+}
+
+impl SpriteDrawBatch {
+    /// 一个绘制分段。`depth_write` 由调用方按"这一段是否全不透明"决定。
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub const fn new(
+        texture_id: u32,
+        layer: i32,
+        render_layer: crate::core::layer::RenderLayer,
+        vertex_start: usize,
+        vertex_count: usize,
+        depth_write: bool,
+    ) -> Self {
+        Self {
+            texture_id,
+            layer,
+            render_layer,
+            vertex_start,
+            vertex_count,
+            depth_write,
+        }
+    }
+
+    /// 不透明世界内容（瓦片层、alpha=1 的精灵）：写深度，可与 3D 网格互相遮挡。
+    #[must_use]
+    pub const fn opaque(
+        texture_id: u32,
+        layer: i32,
+        render_layer: crate::core::layer::RenderLayer,
+        vertex_start: usize,
+        vertex_count: usize,
+    ) -> Self {
+        Self::new(
+            texture_id,
+            layer,
+            render_layer,
+            vertex_start,
+            vertex_count,
+            true,
+        )
+    }
+
+    /// 半透明世界内容：测深度但不写深度（顺序即叠加顺序）。
+    #[must_use]
+    pub const fn translucent(
+        texture_id: u32,
+        layer: i32,
+        render_layer: crate::core::layer::RenderLayer,
+        vertex_start: usize,
+        vertex_count: usize,
+    ) -> Self {
+        Self::new(
+            texture_id,
+            layer,
+            render_layer,
+            vertex_start,
+            vertex_count,
+            false,
+        )
+    }
+}
+
+/// 顶点颜色是否完全不透明（决定这一段能不能写深度）。
+///
+/// 用 `>= 1.0` 而不是 `== 1.0`：`tint` 来自场景解析，1.0 之外还可能被写成 1.0000001 一类
+/// 的等价不透明值；alpha > 1 在混合里与 1 等价，因此同样可以写深度。
+#[must_use]
+pub fn tint_is_opaque(tint: [f32; 4]) -> bool {
+    tint[3] >= 1.0
 }
 
 /// Result of building a Sprite batch for one camera and viewport.
@@ -257,13 +331,14 @@ impl SpriteBatch {
             {
                 previous.vertex_count += 6;
             } else {
-                draws.push(SpriteDrawBatch {
-                    texture_id: item.texture_id,
-                    layer: item.layer,
-                    render_layer: crate::core::layer::RenderLayer::World2D,
-                    vertex_start: start,
-                    vertex_count: 6,
-                });
+                // 旧路径（`SpriteVertex` 中间层）只被 overlay 用，不参与世界深度。
+                draws.push(SpriteDrawBatch::translucent(
+                    item.texture_id,
+                    item.layer,
+                    crate::core::layer::RenderLayer::World2D,
+                    start,
+                    6,
+                ));
             }
             start += 6;
         }
@@ -347,13 +422,13 @@ impl SpriteBatch {
             {
                 previous.vertex_count += 6;
             } else {
-                draws.push(SpriteDrawBatch {
-                    texture_id: item.texture_id,
-                    layer: item.layer,
-                    render_layer: crate::core::layer::RenderLayer::World2D,
-                    vertex_start: index,
-                    vertex_count: 6,
-                });
+                draws.push(SpriteDrawBatch::translucent(
+                    item.texture_id,
+                    item.layer,
+                    crate::core::layer::RenderLayer::World2D,
+                    index,
+                    6,
+                ));
             }
             index += 6;
         }
@@ -459,24 +534,28 @@ impl SpriteBatch {
         let mut index = start;
         // 分段必须**深度一致**：跨 z 合并会让"一个分段一个 z"的排序/诊断前提失效
         // （分段是渲染器唯一能看到的分组信息，顶点里才带 z）。因此同纹理同层但 z 不同 ⇒ 新分段。
+        // 深度策略同样必须一致：不透明段写深度、半透明段不写，混在一个分段里就无法表达。
         let mut open_z: Option<f32> = None;
         for (_, item) in &ordered {
             let same_z = open_z.is_some_and(|z| z == item.sprite.z);
+            let opaque = tint_is_opaque(item.sprite.tint);
             if let Some(previous) = draws.last_mut()
                 && same_z
+                && previous.depth_write == opaque
                 && previous.texture_id == item.texture_id
                 && previous.layer == item.layer
                 && previous.vertex_start + previous.vertex_count == index
             {
                 previous.vertex_count += 6;
             } else {
-                draws.push(SpriteDrawBatch {
-                    texture_id: item.texture_id,
-                    layer: item.layer,
-                    render_layer: crate::core::layer::RenderLayer::World2D,
-                    vertex_start: index,
-                    vertex_count: 6,
-                });
+                draws.push(SpriteDrawBatch::new(
+                    item.texture_id,
+                    item.layer,
+                    crate::core::layer::RenderLayer::World2D,
+                    index,
+                    6,
+                    opaque,
+                ));
                 open_z = Some(item.sprite.z);
             }
             index += 6;
@@ -672,7 +751,9 @@ mod tests {
                 layer: 3,
                 render_layer: crate::core::layer::RenderLayer::World2D,
                 vertex_start: 0,
-                vertex_count: 12
+                vertex_count: 12,
+                // 默认 tint 完全不透明 ⇒ 这一段写深度（可与网格互相遮挡）。
+                depth_write: true,
             }]
         );
         // 第一个四边形的左上角：世界中心 (100, 50) + 局部 (-5, +10)。
@@ -712,6 +793,53 @@ mod tests {
         assert_eq!(culled[0].position, [95.0, 60.0, -2.5]);
     }
 
+    /// docs/54 §8-④：同纹理、同层、同 z 的精灵，只要**不透明性不同**就必须拆成两个分段——
+    /// 深度策略是按分段下发的，混在一个分段里就没法表达"这一段写不写深度"。
+    #[test]
+    fn world_batches_split_when_the_depth_policy_differs() {
+        let opaque = Sprite::new(Vec2::new(10.0, 10.0))
+            .unwrap()
+            .with_tint([1.0, 1.0, 1.0, 1.0])
+            .expect("opaque tint");
+        let translucent = Sprite::new(Vec2::new(10.0, 10.0))
+            .unwrap()
+            .with_tint([1.0, 1.0, 1.0, 0.5])
+            .expect("translucent tint");
+        let transform = Transform::from_position(Vec2::new(50.0, 50.0));
+        let mut batch = SpriteBatch::new();
+        batch.push(SpriteBatchItem::new(3, 0, opaque, transform));
+        batch.push(SpriteBatchItem::new(3, 0, translucent, transform));
+        batch.push(SpriteBatchItem::new(3, 0, opaque, transform));
+
+        let mut vertices: Vec<WorldSpriteVertex> = Vec::new();
+        let mut draws = Vec::new();
+        batch
+            .build_world_into(&mut vertices, &mut draws, None, Parallelism::SEQUENTIAL)
+            .expect("batch");
+        assert_eq!(vertices.len(), 18);
+        assert_eq!(
+            draws.len(),
+            3,
+            "不透明/半透明/不透明三段不能合并：{draws:?}"
+        );
+        assert_eq!(
+            draws
+                .iter()
+                .map(|draw| draw.depth_write)
+                .collect::<Vec<_>>(),
+            vec![true, false, true]
+        );
+    }
+
+    /// 顶点 alpha ≥ 1 视为不透明（1.0000001 这类等价不透明值同样算），< 1 一律不写深度。
+    #[test]
+    fn tint_opacity_threshold_is_pinned() {
+        assert!(tint_is_opaque([1.0, 1.0, 1.0, 1.0]));
+        assert!(tint_is_opaque([0.2, 0.3, 0.4, 1.000_001]));
+        assert!(!tint_is_opaque([1.0, 1.0, 1.0, 0.999]));
+        assert!(!tint_is_opaque([1.0, 1.0, 1.0, 0.0]));
+    }
+
     fn setup() -> (Camera2D, Viewport) {
         (
             Camera2D::new(Vec2::zero(), 10.0).unwrap(),
@@ -744,14 +872,16 @@ mod tests {
                     layer: 0,
                     render_layer: crate::core::layer::RenderLayer::World2D,
                     vertex_start: 0,
-                    vertex_count: 6
+                    vertex_count: 6,
+                    depth_write: false,
                 },
                 SpriteDrawBatch {
                     texture_id: 2,
                     layer: 0,
                     render_layer: crate::core::layer::RenderLayer::World2D,
                     vertex_start: 6,
-                    vertex_count: 12
+                    vertex_count: 12,
+                    depth_write: false,
                 }
             ]
         );
