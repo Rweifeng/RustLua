@@ -452,6 +452,13 @@ impl RuntimeScene {
         self.script.scene_ambiguous_transforms()
     }
 
+    /// docs/54 §8-②：最近一次场景加载里**坏的 `parent` 边**（悬空父/自环）的可读描述
+    /// （空 = 每条 `parent` 都指向同一文档里的实体且不是自己）。
+    #[must_use]
+    pub fn scene_parent_issues(&self) -> Vec<String> {
+        self.script.scene_parent_issues()
+    }
+
     /// WP7：最近一步 `physics_sync` 同步的刚体数 `(2D, 3D)`——0 表示这一步没做步前同步
     /// （默认 authority=Physics，或回滚档 `Legacy`）。
     #[must_use]
@@ -5644,6 +5651,51 @@ mod sdf_tests {
             "ok"
         );
         let _ = std::fs::remove_file(path);
+    }
+
+    /// docs/54 §8-②：「运行时只有一份权威 LocalTransform」在加载期就要可见：
+    /// 同一实体同时声明 `Transform` 与 `Transform3D` 会被点名，坏 `parent` 边（悬空/自环）
+    /// 同样会被点名——两者都不该只在"开启继承后逐帧传播"时才浮现。
+    #[test]
+    fn loading_a_scene_reports_two_local_truths_and_broken_parent_edges() {
+        let root = game_root();
+        let mut scene = Scene::new("truth-audit");
+        let both = crate::core::scene::SceneEntityId(1);
+        let dangling = crate::core::scene::SceneEntityId(2);
+        scene.add_entity(both, "Both", None).unwrap();
+        scene.add_entity(dangling, "Dangling", None).unwrap();
+        scene.entities.get_mut(&both).unwrap().components.insert(
+            "Transform".into(),
+            "x=1;y=2;rotation=0;scale_x=1;scale_y=1".into(),
+        );
+        scene.entities.get_mut(&both).unwrap().components.insert(
+            "Transform3D".into(),
+            "position=1,2,3;rotation=0,0,0,1;scale=1,1,1".into(),
+        );
+        scene
+            .entities
+            .get_mut(&dangling)
+            .unwrap()
+            .components
+            .insert(
+                "Transform".into(),
+                "x=0;y=0;rotation=0;scale_x=1;scale_y=1".into(),
+            );
+        // 手改成悬空父：`Scene::add_entity` 会拒绝这种边，因此只能直接写字段。
+        scene.entities.get_mut(&dangling).unwrap().parent =
+            Some(crate::core::scene::SceneEntityId(999));
+
+        let runtime = RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("runtime");
+        assert_eq!(
+            runtime.scene_ambiguous_transforms(),
+            vec!["Both".to_owned()],
+            "同存两种局部变换必须点名"
+        );
+        assert_eq!(
+            runtime.scene_parent_issues(),
+            vec!["Dangling → 不存在的父 999".to_owned()],
+            "悬空父必须点名"
+        );
     }
 
     /// docs/54 §8-⑥：3D collider 调试绘制必须真的把**物理世界当前姿态**投影成 overlay 线框，

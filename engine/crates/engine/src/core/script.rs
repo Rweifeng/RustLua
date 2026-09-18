@@ -160,6 +160,9 @@ struct ScriptState {
     /// `Transform3D`）。运行时传播也会报同一条诊断，但那条只在开启继承时逐帧产生，
     /// 加载期这一份保证"编辑一个含歧义实体的场景"立刻能看到问题。
     scene_ambiguous_transforms: Vec<String>,
+    /// docs/54 §8-②：最近一次场景加载里**坏的 `parent` 边**（悬空父/自环）的可读描述。
+    /// 运行时会把这类边当成"没有父"（容错），因此必须同时可发现，否则子树会静默少一层位移。
+    scene_parent_issues: Vec<String>,
     /// 命名动作映射（M20-07）：**唯一实例**随 `ScriptState` 走，脚本重绑定
     /// （`input.rebind`/`set_action_map`/设置文件）与宿主查询同源；默认绑定见
     /// [`ActionMap::with_defaults`]。刻意**不**随场景切换或读档重置——绑定是
@@ -530,21 +533,48 @@ impl LuaRuntime {
         state.scene_entities.clear();
         // docs/54 §8-②：加载期就把"两份局部真源"找出来。运行时的传播诊断只在开启继承时逐帧
         // 产生，而这类问题属于**数据**问题，应该在载入/编辑场景时立刻可见。
-        state.scene_ambiguous_transforms = scene
-            .entities
-            .values()
-            .filter(|entity| {
-                entity.components.contains_key("Transform")
-                    && entity.components.contains_key("Transform3D")
-            })
-            .map(|entity| {
-                if entity.name.is_empty() {
-                    format!("entity {}", entity.id.0)
-                } else {
-                    entity.name.clone()
+        // 判定与文档侧审计共用 `scene_space`（同一份实现）。
+        state.scene_ambiguous_transforms =
+            crate::core::scene_space::ambiguous_local_transform_entities(scene)
+                .into_iter()
+                .map(|id| {
+                    scene
+                        .entities
+                        .get(&id)
+                        .filter(|entity| !entity.name.is_empty())
+                        .map_or_else(|| format!("entity {}", id.0), |entity| entity.name.clone())
+                })
+                .collect();
+        // 坏 parent 边（悬空/自环）同样在这里点名：运行时会把它们当成"没有父"，静默下去就成了
+        // "子树莫名其妙少了一层位移"。
+        state.scene_parent_issues = crate::core::scene_space::parent_link_issues(scene)
+            .into_iter()
+            .map(|issue| match issue {
+                crate::core::scene_space::ParentLinkIssue::Dangling { entity, parent } => {
+                    let name = scene
+                        .entities
+                        .get(&entity)
+                        .filter(|node| !node.name.is_empty())
+                        .map_or_else(|| format!("entity {}", entity.0), |node| node.name.clone());
+                    format!("{name} → 不存在的父 {}", parent.0)
+                }
+                crate::core::scene_space::ParentLinkIssue::SelfParent(entity) => {
+                    let name = scene
+                        .entities
+                        .get(&entity)
+                        .filter(|node| !node.name.is_empty())
+                        .map_or_else(|| format!("entity {}", entity.0), |node| node.name.clone());
+                    format!("{name} 的父指向自己")
                 }
             })
             .collect();
+        for issue in &state.scene_parent_issues {
+            tracing::warn!(
+                target: "scene",
+                issue = %issue,
+                "[scene] 场景里的 parent 边坏了（docs/54 §8-②）"
+            );
+        }
         for name in &state.scene_ambiguous_transforms {
             tracing::warn!(
                 target: "scene",
@@ -1240,6 +1270,15 @@ impl LuaRuntime {
     #[must_use]
     pub fn scene_ambiguous_transforms(&self) -> Vec<String> {
         self.state.borrow().scene_ambiguous_transforms.clone()
+    }
+
+    /// docs/54 §8-②：最近一次场景加载里**坏的 `parent` 边**（悬空父/自环）的可读描述。
+    ///
+    /// 空 = 每条 `parent` 都指向同一文档里的实体且不是自己。非空时调用方应把它当**数据问题**
+    /// 报给作者：运行时会把断链当成链根（世界 = 自己的局部），这正是"子树静默少一层位移"的来源。
+    #[must_use]
+    pub fn scene_parent_issues(&self) -> Vec<String> {
+        self.state.borrow().scene_parent_issues.clone()
     }
 
     /// Returns the authored name registered for an entity, if any. Entities

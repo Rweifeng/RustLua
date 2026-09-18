@@ -56,6 +56,85 @@ pub fn parents(scene: &Scene) -> BTreeMap<SceneEntityId, SceneEntityId> {
     parents
 }
 
+/// 文档里 parent 指针的**诊断**（docs/54 §8-②）：哪些实体的父指向不存在的实体或自己。
+///
+/// [`parents`] 会把这类边当作"没有父"处理（容错，与运行时的断链语义一致），但**必须可发现**：
+/// 一份手改坏了的场景不该表现为"子树莫名其妙少了一层位移"。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ParentLinkIssue {
+    /// 父 id 不在同一文档里。
+    Dangling {
+        entity: SceneEntityId,
+        parent: SceneEntityId,
+    },
+    /// 父指向自己。
+    SelfParent(SceneEntityId),
+}
+
+/// 逐条列出文档里的坏 parent 边（顺序确定）。
+#[must_use]
+pub fn parent_link_issues(scene: &Scene) -> Vec<ParentLinkIssue> {
+    let mut issues = Vec::new();
+    for entity in scene.entities.values() {
+        let Some(parent) = entity.parent else {
+            continue;
+        };
+        if parent == entity.id {
+            issues.push(ParentLinkIssue::SelfParent(entity.id));
+        } else if !scene.entities.contains_key(&parent) {
+            issues.push(ParentLinkIssue::Dangling {
+                entity: entity.id,
+                parent,
+            });
+        }
+    }
+    issues
+}
+
+/// 一条"一个实体有几份局部变换真源"的审计结论（docs/54 §8-②）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LocalTransformTruth {
+    /// 只有 2D 局部变换。
+    Plane2d,
+    /// 只有 3D 局部变换（或 2D 组件的载荷非法——非法载荷由 typed 编译单独诊断）。
+    Space3d,
+    /// 两者都有：**两份局部真源**，没有唯一权威。运行时按 3D 取矩阵并报
+    /// `AmbiguousLocalTransform` 诊断，但正确的做法是作者删掉多余的那一个。
+    Ambiguous,
+}
+
+/// 实体携带哪一份局部变换。
+#[must_use]
+pub fn local_transform_truth(scene: &Scene, entity: SceneEntityId) -> Option<LocalTransformTruth> {
+    let components = &scene.entities.get(&entity)?.components;
+    match (
+        components.contains_key("Transform"),
+        components.contains_key("Transform3D"),
+    ) {
+        (true, true) => Some(LocalTransformTruth::Ambiguous),
+        (false, true) => Some(LocalTransformTruth::Space3d),
+        (true, false) => Some(LocalTransformTruth::Plane2d),
+        (false, false) => None,
+    }
+}
+
+/// 审计整份文档的局部真源：返回所有**同时带 2D 与 3D 局部变换**的实体（顺序确定）。
+///
+/// 这是 docs/54 §8-② "运行时只有一份权威 LocalTransform" 的**文档侧**可执行判据：运行时与文档侧
+/// 各自都会在使用时报告/取 3D，但"作者写了两个"这件事必须在批量检查里能被点出来——仓库内的示例
+/// 场景由 `scene_migration` 的仓库级测试逐份断言为空集。
+#[must_use]
+pub fn ambiguous_local_transform_entities(scene: &Scene) -> Vec<SceneEntityId> {
+    scene
+        .entities
+        .values()
+        .filter(|entity| {
+            local_transform_truth(scene, entity.id) == Some(LocalTransformTruth::Ambiguous)
+        })
+        .map(|entity| entity.id)
+        .collect()
+}
+
 /// 文档里每个实体的**世界矩阵**——与运行时同一套规则：父先序、`Global = Global(parent) * Local`。
 ///
 /// 求解不出来的实体（成环、父不可用、局部非法）不出现在结果里，调用方应退回局部值。

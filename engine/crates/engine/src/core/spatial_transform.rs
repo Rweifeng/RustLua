@@ -358,45 +358,192 @@ impl From<DecomposeError> for ReparentError {
     }
 }
 
+/// 父先序遍历里"这条数据为什么解不了"的分类（docs/54 §8-②）。
+///
+/// 与 [`PropagationError`] 的区别：这是**诊断口径**（运行时逐条报告后继续跑），
+/// 而 `PropagationError` 是**拒绝口径**（加载期直接失败）。两者由同一份遍历得出，
+/// 因此"什么算坏数据"只有一处定义。
+///
+/// `Id` 是实体标识类型：文档侧是 [`SceneEntityId`]，运行时侧是
+/// [`crate::core::entity::EntityId`]——驱动本身对两者都成立，因此不需要两份遍历。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PropagationProblem<Id> {
+    /// 父 id 根本不在实体集合里（手改过的场景可能出现）。**本实体仍按链根求解**，
+    /// 只是这条断链必须被点名——静默当成"没有父"会让子树的位移看起来毫无原因。
+    MissingParent { entity: Id, parent: Id },
+    /// 父在集合里，但父自己没有局部变换：它贡献不了任何变换，**本实体与它的后代都不参与求解**
+    /// （各自保留局部值）。此前这种数据会被报成 `Cycle`，让作者去找一个根本不存在的环。
+    ParentWithoutLocal { entity: Id, parent: Id },
+    /// 环上的全体成员（顺序确定：从进入环的那个实体开始）。
+    Cycle(Vec<Id>),
+    /// 祖先链上有解不了的实体（环 / 父无局部变换）：本实体不参与求解，保留局部值。
+    UnresolvableAncestor { entity: Id, ancestor: Id },
+}
+
+/// 父先序遍历的**唯一驱动**：产出自顶向下可安全求解的顺序，外加逐条的坏数据分类。
+///
+/// 为什么要抽出来：运行时传播（[`crate::core::hierarchy::propagate_spatial`]，容错：保留局部值
+/// 并逐条诊断）与加载期求解（[`propagate_all`]，严格：直接报错）此前**各写了一遍**父链上溯、
+/// 成环判定与破坏传播，于是同一份坏数据在两条路上会给出不同说法（例如"父没有变换"在运行时被
+/// 报成环）。现在两者都调用这里，"谁先算""什么算坏"只有一份实现，差别只剩**遇到问题怎么办**。
+///
+/// 语义（确定性，与实体 id 无关）：
+/// - 缺父 ⇒ 该实体按**链根**求解（世界 = 自己的局部）并报 [`PropagationProblem::MissingParent`]；
+/// - 父无局部变换 ⇒ 该实体与其**后代**都不参与求解（保留局部值）；
+/// - 成环 ⇒ 环上成员与其**后代**都不参与求解（环外的实体照常求解）。
+///
+/// `ordered` 满足"父一定排在子之前"，因此调用方可以一遍线性求解，不需要再自己判环。
+#[must_use]
+pub fn parent_first_plan<Id: Copy + Ord>(
+    ids: impl IntoIterator<Item = Id>,
+    parent_of: impl Fn(Id) -> Option<Id>,
+    has_local: impl Fn(Id) -> bool,
+) -> ParentFirstPlan<Id> {
+    let ids: BTreeSet<Id> = ids.into_iter().collect();
+    let mut ordered = Vec::with_capacity(ids.len());
+    let mut problems = Vec::new();
+    // 0 = 未访问，1 = 当前链上，2 = 已求解，3 = 不可解。
+    let mut state: BTreeMap<Id, u8> = BTreeMap::new();
+    for &start in &ids {
+        if state.get(&start).copied().unwrap_or(0) != 0 {
+            continue;
+        }
+        // 沿父链上溯；`chain` 从 start 一路指向上游。
+        let mut chain: Vec<Id> = Vec::new();
+        let mut cursor = Some(start);
+        // 本次链里第一个"解不了"的实体（环成员或父无局部变换者），以及它的原因。
+        let mut unresolved_from: Option<(usize, Id)> = None;
+        while let Some(entity) = cursor {
+            match state.get(&entity).copied().unwrap_or(0) {
+                2 => break, // 上游已求解：chain 里剩下的全都能排
+                3 => {
+                    // 上游已知不可解：chain 里**全部**都是它的后代。
+                    unresolved_from = Some((chain.len(), entity));
+                    break;
+                }
+                1 => {
+                    // 成环：从 entity 在 chain 里的位置到链尾都是环成员。
+                    let position = chain
+                        .iter()
+                        .position(|candidate| *candidate == entity)
+                        .unwrap_or(0);
+                    let members: Vec<Id> = chain[position..].to_vec();
+                    for member in &members {
+                        state.insert(*member, 3);
+                    }
+                    problems.push(PropagationProblem::Cycle(members.clone()));
+                    // 环**上方**的那一段（更靠近 start）是环的后代：它们同样不参与求解。
+                    chain.truncate(position);
+                    unresolved_from = Some((chain.len(), members[0]));
+                    break;
+                }
+                _ => {}
+            }
+            state.insert(entity, 1);
+            // 链根判定：没有父，或父不在集合里（后一种要报告，但仍按链根求解）。
+            let Some(parent) = parent_of(entity) else {
+                chain.push(entity);
+                break;
+            };
+            if !ids.contains(&parent) {
+                problems.push(PropagationProblem::MissingParent { entity, parent });
+                chain.push(entity);
+                break;
+            }
+            if !has_local(parent) {
+                problems.push(PropagationProblem::ParentWithoutLocal { entity, parent });
+                chain.push(entity);
+                unresolved_from = Some((chain.len() - 1, entity));
+                break;
+            }
+            chain.push(entity);
+            cursor = Some(parent);
+        }
+        match unresolved_from {
+            Some((from, ancestor)) => {
+                for (index, entity) in chain.iter().enumerate() {
+                    if state.get(entity).copied() == Some(3) {
+                        continue; // 环成员已经报过
+                    }
+                    state.insert(*entity, 3);
+                    if index < from {
+                        problems.push(PropagationProblem::UnresolvableAncestor {
+                            entity: *entity,
+                            ancestor,
+                        });
+                    }
+                }
+            }
+            None => {
+                // 出栈顺序 = 上游在前（`chain` 是从 start 往上走的）。
+                for entity in chain.iter().rev() {
+                    if state.get(entity).copied() == Some(1) {
+                        state.insert(*entity, 2);
+                        ordered.push(*entity);
+                    }
+                }
+            }
+        }
+    }
+    ParentFirstPlan { ordered, problems }
+}
+
+/// [`parent_first_plan`] 的结果。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ParentFirstPlan<Id> {
+    /// 父一定排在子之前的求解顺序；只包含祖先链完整可解的实体。
+    pub ordered: Vec<Id>,
+    /// 坏数据，逐条分类（顺序确定）。
+    pub problems: Vec<PropagationProblem<Id>>,
+}
+
 /// 全量父先序求解：正确性参照实现。增量路径的结果必须与它逐实体一致。
+///
+/// 遍历本身走 [`parent_first_plan`]（与运行时传播同一份驱动）；任何坏数据都按
+/// [`PropagationError`] **拒绝**，因此加载期的语义是"要么整棵树可解，要么明确失败"。
 pub fn propagate_all(
     locals: &BTreeMap<SceneEntityId, LocalTransform>,
     parents: &BTreeMap<SceneEntityId, SceneEntityId>,
 ) -> Result<BTreeMap<SceneEntityId, GlobalTransform>, PropagationError> {
-    let mut globals = BTreeMap::new();
-    let mut state = BTreeMap::new();
-    fn visit(
-        entity: SceneEntityId,
-        locals: &BTreeMap<SceneEntityId, LocalTransform>,
-        parents: &BTreeMap<SceneEntityId, SceneEntityId>,
-        globals: &mut BTreeMap<SceneEntityId, GlobalTransform>,
-        state: &mut BTreeMap<SceneEntityId, u8>,
-    ) -> Result<Mat4, PropagationError> {
-        match state.get(&entity).copied() {
-            Some(2) => return Ok(globals[&entity].matrix()),
-            Some(1) => return Err(PropagationError::Cycle(entity)),
-            _ => {}
-        }
-        state.insert(entity, 1);
+    let plan = parent_first_plan(
+        locals.keys().copied(),
+        |entity| parents.get(&entity).copied(),
+        |entity| locals.contains_key(&entity),
+    );
+    if let Some(problem) = plan.problems.first() {
+        return Err(match problem {
+            PropagationProblem::MissingParent { entity, parent }
+            | PropagationProblem::ParentWithoutLocal { entity, parent } => {
+                PropagationError::MissingParent {
+                    entity: *entity,
+                    parent: *parent,
+                }
+            }
+            PropagationProblem::Cycle(members) => {
+                PropagationError::Cycle(members.first().copied().unwrap_or(SceneEntityId(0)))
+            }
+            PropagationProblem::UnresolvableAncestor { entity, .. } => {
+                PropagationError::InvalidLocal(*entity)
+            }
+        });
+    }
+    let mut globals: BTreeMap<SceneEntityId, GlobalTransform> = BTreeMap::new();
+    for entity in plan.ordered {
         let local = locals
             .get(&entity)
             .ok_or(PropagationError::InvalidLocal(entity))?
             .matrix()
             .map_err(|_| PropagationError::InvalidLocal(entity))?;
-        let global = if let Some(parent) = parents.get(&entity).copied() {
-            if !locals.contains_key(&parent) {
-                return Err(PropagationError::MissingParent { entity, parent });
+        let global = match parents.get(&entity).copied() {
+            Some(parent) => {
+                let parent_global = globals
+                    .get(&parent)
+                    .ok_or(PropagationError::MissingParent { entity, parent })?;
+                parent_global.matrix() * local
             }
-            visit(parent, locals, parents, globals, state)? * local
-        } else {
-            local
+            None => local,
         };
         globals.insert(entity, GlobalTransform::from_matrix(global));
-        state.insert(entity, 2);
-        Ok(global)
-    }
-    for entity in locals.keys().copied() {
-        visit(entity, locals, parents, &mut globals, &mut state)?;
     }
     Ok(globals)
 }
@@ -936,6 +1083,146 @@ mod tests {
             propagate_all(&locals, &missing),
             Err(PropagationError::MissingParent { .. })
         ));
+    }
+
+    /// docs/54 §8-②：父先序遍历的**唯一驱动**。这一组把它的语义钉死——运行时传播与加载期
+    /// 求解都建立在它之上，因此"什么算坏数据、坏在哪里"只有这一处定义。
+    #[test]
+    fn parent_first_plan_orders_parents_before_children() {
+        // 3 → 2 → 1（父在前）。
+        let parents = BTreeMap::from([
+            (SceneEntityId(3), SceneEntityId(2)),
+            (SceneEntityId(2), SceneEntityId(1)),
+        ]);
+        let plan = parent_first_plan(
+            [SceneEntityId(1), SceneEntityId(2), SceneEntityId(3)],
+            |id| parents.get(&id).copied(),
+            |_| true,
+        );
+        assert!(plan.problems.is_empty(), "{plan:?}");
+        let position = |id: SceneEntityId| {
+            plan.ordered
+                .iter()
+                .position(|candidate| *candidate == id)
+                .expect("ordered")
+        };
+        assert!(position(SceneEntityId(1)) < position(SceneEntityId(2)));
+        assert!(position(SceneEntityId(2)) < position(SceneEntityId(3)));
+        assert_eq!(plan.ordered.len(), 3);
+    }
+
+    /// 成环：环上成员逐条报出，**后代**报 `UnresolvableAncestor`（不是 `Cycle`——那样会让作者
+    /// 去找一个不存在的环），而且结果与实体 id 的大小顺序**无关**（旧实现是遍历顺序相关的）。
+    #[test]
+    fn parent_first_plan_blocks_the_whole_chain_through_a_cycle_deterministically() {
+        // 环：1 ↔ 2；后代：3 → 1；另一个后代 4 → 3。
+        let plan_for = |ids: [SceneEntityId; 4]| {
+            let parents = BTreeMap::from([
+                (SceneEntityId(1), SceneEntityId(2)),
+                (SceneEntityId(2), SceneEntityId(1)),
+                (SceneEntityId(3), SceneEntityId(1)),
+                (SceneEntityId(4), SceneEntityId(3)),
+            ]);
+            parent_first_plan(ids, |id| parents.get(&id).copied(), |_| true)
+        };
+        let forward = plan_for([
+            SceneEntityId(1),
+            SceneEntityId(2),
+            SceneEntityId(3),
+            SceneEntityId(4),
+        ]);
+        // 后代 id 更小（会先被访问到）也必须得到同样的结论。
+        let reversed = plan_for([
+            SceneEntityId(4),
+            SceneEntityId(3),
+            SceneEntityId(2),
+            SceneEntityId(1),
+        ]);
+        for plan in [&forward, &reversed] {
+            assert!(
+                plan.ordered.is_empty(),
+                "环上成员与其后代都不参与求解：{plan:?}"
+            );
+            let cycles: Vec<&Vec<SceneEntityId>> = plan
+                .problems
+                .iter()
+                .filter_map(|problem| match problem {
+                    PropagationProblem::Cycle(members) => Some(members),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(cycles.len(), 1, "一条环只报一次：{plan:?}");
+            let mut members = cycles[0].clone();
+            members.sort();
+            assert_eq!(members, vec![SceneEntityId(1), SceneEntityId(2)]);
+            let blocked: Vec<SceneEntityId> = plan
+                .problems
+                .iter()
+                .filter_map(|problem| match problem {
+                    PropagationProblem::UnresolvableAncestor { entity, .. } => Some(*entity),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                blocked,
+                vec![SceneEntityId(3), SceneEntityId(4)],
+                "后代（含孙子）逐个报出：{plan:?}"
+            );
+        }
+    }
+
+    /// 父没有局部变换：本实体与后代都不参与求解，原因是 `ParentWithoutLocal`（旧实现报成环）。
+    #[test]
+    fn parent_first_plan_reports_a_transformless_parent_instead_of_a_cycle() {
+        // 2 没有局部变换；3 是 2 的子；4 是 3 的子。
+        let parents = BTreeMap::from([
+            (SceneEntityId(3), SceneEntityId(2)),
+            (SceneEntityId(4), SceneEntityId(3)),
+        ]);
+        let plan = parent_first_plan(
+            [SceneEntityId(2), SceneEntityId(3), SceneEntityId(4)],
+            |id| parents.get(&id).copied(),
+            |id| id != SceneEntityId(2),
+        );
+        assert_eq!(
+            plan.ordered,
+            vec![SceneEntityId(2)],
+            "2 自己没有父，可以求解"
+        );
+        assert_eq!(
+            plan.problems,
+            vec![
+                PropagationProblem::ParentWithoutLocal {
+                    entity: SceneEntityId(3),
+                    parent: SceneEntityId(2),
+                },
+                PropagationProblem::UnresolvableAncestor {
+                    entity: SceneEntityId(4),
+                    ancestor: SceneEntityId(3),
+                },
+            ],
+            "原因与祖先都要点名"
+        );
+    }
+
+    /// 缺父（断链）：**仍然求解**（按链根），只是把断链点名——静默当成"没有父"会让子树位移
+    /// 看起来毫无原因。
+    #[test]
+    fn parent_first_plan_keeps_a_dangling_entity_as_a_chain_root_but_reports_it() {
+        let parents = BTreeMap::from([(SceneEntityId(1), SceneEntityId(9))]);
+        let plan = parent_first_plan(
+            [SceneEntityId(1), SceneEntityId(2)],
+            |id| parents.get(&id).copied(),
+            |_| true,
+        );
+        assert_eq!(plan.ordered, vec![SceneEntityId(1), SceneEntityId(2)]);
+        assert_eq!(
+            plan.problems,
+            vec![PropagationProblem::MissingParent {
+                entity: SceneEntityId(1),
+                parent: SceneEntityId(9),
+            }]
+        );
     }
 
     #[test]

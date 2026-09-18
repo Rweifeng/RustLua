@@ -801,6 +801,61 @@ mod tests {
         );
     }
 
+    /// docs/54 §8-②「运行时只有一份权威 LocalTransform」的**仓库级**判据：随仓库发布的示例场景里
+    ///
+    /// - 没有任何实体同时带 `Transform` 与 `Transform3D`（两份局部真源）；
+    /// - 没有任何实体手写派生组件 `GlobalTransform`（那是传播系统的输出，写进场景就是第二份世界真源）；
+    /// - 没有坏的 `parent` 边（悬空父/自环）。
+    ///
+    /// 任意新场景违反其中一条，这条测试立刻判红——因此"一份权威"是每次 `cargo test` 都重新证明的
+    /// 事实，而不是"我们小心一点"。
+    #[test]
+    fn shipped_scenes_carry_exactly_one_local_transform_truth() {
+        use crate::core::scene_space::{ParentLinkIssue, ambiguous_local_transform_entities};
+        let mut checked_scenes = 0usize;
+        for project in ["game_api", "game_jhyt"] {
+            let root = crate::core::paths::games_dir()
+                .join("examples")
+                .join(project);
+            for file in project_scene_files(&root) {
+                let Ok(scene) = Scene::load(&file) else {
+                    continue;
+                };
+                checked_scenes += 1;
+                let ambiguous = ambiguous_local_transform_entities(&scene);
+                assert!(
+                    ambiguous.is_empty(),
+                    "{}: 实体 {:?} 同时带 Transform 与 Transform3D（两份局部真源）",
+                    file.display(),
+                    ambiguous.iter().map(|id| id.0).collect::<Vec<_>>()
+                );
+                let authored_global: Vec<u64> = scene
+                    .entities
+                    .values()
+                    .filter(|entity| entity.components.contains_key("GlobalTransform"))
+                    .map(|entity| entity.id.0)
+                    .collect();
+                assert!(
+                    authored_global.is_empty(),
+                    "{}: 实体 {authored_global:?} 手写了派生组件 GlobalTransform（世界变换是传播输出）",
+                    file.display()
+                );
+                let issues = crate::core::scene_space::parent_link_issues(&scene);
+                assert!(
+                    !issues
+                        .iter()
+                        .any(|issue| matches!(issue, ParentLinkIssue::Dangling { .. })),
+                    "{}: 有悬空的 parent 边：{issues:?}",
+                    file.display()
+                );
+            }
+        }
+        assert!(
+            checked_scenes >= 20,
+            "审计应覆盖随仓库发布的场景，实际只读到 {checked_scenes} 份"
+        );
+    }
+
     #[test]
     fn project_scene_files_are_sorted_and_recursive() {
         let dir = temp_dir("collect");

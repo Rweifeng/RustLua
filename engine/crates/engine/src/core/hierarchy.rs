@@ -12,7 +12,7 @@
 use crate::core::{
     entity::EntityId,
     math3d::Mat4,
-    spatial_transform::{DecomposeError, LocalTransform},
+    spatial_transform::{DecomposeError, LocalTransform, PropagationProblem},
     transform::{Transform, Transform3D},
     world::{World, WorldError},
 };
@@ -41,8 +41,16 @@ pub struct SpatialDiagnostic {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum SpatialDiagnosticReason {
-    /// 父链成环（含自环）：整条链上的实体都保留局部值。
+    /// 父链成环（含自环）：环上实体与它们的后代都保留局部值。
     Cycle,
+    /// 父 id 不在运行时实体表里（手改过的场景可能出现）：本实体按**链根**处理（世界 = 自己的
+    /// 局部），但这条断链必须被点名——静默当成"没有父"会让整棵子树的位移看起来没有原因。
+    MissingParent { parent: EntityId },
+    /// 父在实体表里但父自己没有局部变换：它贡献不了变换，本实体与它的后代都保留局部值。
+    /// （此前这种情况被报成 `Cycle`，让作者去找一个根本不存在的环。）
+    ParentWithoutLocal { parent: EntityId },
+    /// 祖先链上有解不了的实体（环 / 父无局部变换）：本实体保留局部值。
+    UnresolvableAncestor { ancestor: EntityId },
     /// 局部或组合结果无法无损表达为 TRS（剪切/镜像/退化/奇异）。
     NotRepresentable(DecomposeError),
     /// 同一实体同时带了 2D 与 3D 局部变换（`Transform` + `Transform3D`）＝**两份局部真源**。
@@ -131,7 +139,54 @@ fn propagate_entities(world: &mut World, nodes: &[EntityNode], report: &mut Spat
         .enumerate()
         .map(|(index, node)| (node.id, index))
         .collect::<std::collections::BTreeMap<_, _>>();
-    // `state`: 0 = 未处理，1 = 处理中（在栈上，遇到即为环），2 = 已完成。
+    // docs/54 §8-②：父链上溯、成环判定与"什么算坏数据"的分类走
+    // `spatial_transform::parent_first_plan`——**与加载期求解（`propagate_all`）同一份驱动**，
+    // 因此运行时（容错）与加载期（严格）不会对同一份数据给出两套说法，差别只剩"遇到问题怎么办"。
+    let plan = crate::core::spatial_transform::parent_first_plan(
+        nodes.iter().map(|node| node.id),
+        |id| index_by_id.get(&id).and_then(|index| nodes[*index].parent),
+        |id| {
+            index_by_id.get(&id).is_some_and(|index| {
+                nodes[*index].local_2d.is_some() || nodes[*index].local_3d.is_some()
+            })
+        },
+    );
+    // 坏数据逐条翻译成运行时诊断（顺序确定，每个实体一条）。
+    let mut dangling_parents = std::collections::BTreeSet::new();
+    for problem in &plan.problems {
+        let diagnostic = match problem {
+            PropagationProblem::MissingParent { entity, parent } => {
+                // 断链的实体**仍然求解**（按链根，见下），只是这条链必须被点名。
+                dangling_parents.insert(*entity);
+                SpatialDiagnostic {
+                    entity: *entity,
+                    reason: SpatialDiagnosticReason::MissingParent { parent: *parent },
+                }
+            }
+            PropagationProblem::ParentWithoutLocal { entity, parent } => SpatialDiagnostic {
+                entity: *entity,
+                reason: SpatialDiagnosticReason::ParentWithoutLocal { parent: *parent },
+            },
+            PropagationProblem::Cycle(members) => {
+                // 环上每个成员各一条（不猜测谁是"根"）。
+                for member in members {
+                    report.diagnostics.push(SpatialDiagnostic {
+                        entity: *member,
+                        reason: SpatialDiagnosticReason::Cycle,
+                    });
+                }
+                continue;
+            }
+            PropagationProblem::UnresolvableAncestor { entity, ancestor } => SpatialDiagnostic {
+                entity: *entity,
+                reason: SpatialDiagnosticReason::UnresolvableAncestor {
+                    ancestor: *ancestor,
+                },
+            },
+        };
+        report.diagnostics.push(diagnostic);
+    }
+    // `state[index] == 2` = 该实体已按父先序求解（其余实体保留局部值当世界值）。
     let mut state = vec![0_u8; nodes.len()];
     // 每个空间的**世界矩阵**：`Global(child) = Global(parent) * Local(child)`。矩阵是派生真源，
     // 剪切/镜像时它依然正确，只是压不成 TRS 视图。
@@ -140,58 +195,17 @@ fn propagate_entities(world: &mut World, nodes: &[EntityNode], report: &mut Spat
     // 每个空间的 TRS **视图**：压不平时退回局部值（像素行为与收敛前一致）并记诊断。
     let mut world_2d = vec![None; nodes.len()];
     let mut world_3d = vec![None; nodes.len()];
-    for start in 0..nodes.len() {
-        if state[start] != 0 {
-            continue;
-        }
-        // 显式栈：先沿父链上溯，再自顶向下组合。
-        let mut chain = Vec::new();
-        let mut cursor = Some(start);
-        let mut cycle = false;
-        while let Some(index) = cursor {
-            match state[index] {
-                2 => break,
-                1 => {
-                    cycle = true;
-                    break;
-                }
-                _ => {}
-            }
-            state[index] = 1;
-            chain.push(index);
-            cursor = nodes[index]
-                .parent
-                .and_then(|parent| index_by_id.get(&parent).copied());
-        }
-        if cycle {
-            // 环上的实体全部保留局部值，逐条报告（不猜测谁是"根"）。
-            for &index in &chain {
-                state[index] = 2;
-                // 成环的实体同样保留局部值当世界值（不变量：开启继承 ⇒ 有局部变换就有世界变换）。
-                if nodes[index].local_2d.is_some() {
-                    world_2d[index] = nodes[index].local_2d;
-                    matrix_2d[index] = nodes[index]
-                        .local_2d
-                        .and_then(|local| local_matrix_2d(local).ok());
-                }
-                if nodes[index].local_3d.is_some() {
-                    world_3d[index] = nodes[index].local_3d;
-                    matrix_3d[index] = nodes[index]
-                        .local_3d
-                        .and_then(|local| local.model_matrix().ok());
-                }
-                report.diagnostics.push(SpatialDiagnostic {
-                    entity: nodes[index].id,
-                    reason: SpatialDiagnosticReason::Cycle,
-                });
-            }
-            continue;
-        }
-        for &index in chain.iter().rev() {
+    for &id in &plan.ordered {
+        let index = index_by_id[&id];
+        {
             let node = &nodes[index];
-            let parent_index = node
-                .parent
-                .and_then(|parent| index_by_id.get(&parent).copied());
+            // 断链的父当作"没有父"（链根语义）；其余情况父一定排在前面（`ordered` 的性质）。
+            let parent_index = if dangling_parents.contains(&id) {
+                None
+            } else {
+                node.parent
+                    .and_then(|parent| index_by_id.get(&parent).copied())
+            };
             // 父还没算出世界变换（被拒绝/成环）⇒ 自己也保留局部值。
             let parent_ready = parent_index.is_none_or(|parent| {
                 state[parent] == 2 && (world_2d[parent].is_some() || world_3d[parent].is_some())
@@ -208,7 +222,9 @@ fn propagate_entities(world: &mut World, nodes: &[EntityNode], report: &mut Spat
                 }
                 report.diagnostics.push(SpatialDiagnostic {
                     entity: node.id,
-                    reason: SpatialDiagnosticReason::Cycle,
+                    reason: SpatialDiagnosticReason::UnresolvableAncestor {
+                        ancestor: parent_index.map_or(node.id, |parent| nodes[parent].id),
+                    },
                 });
                 continue;
             }
@@ -294,6 +310,21 @@ fn propagate_entities(world: &mut World, nodes: &[EntityNode], report: &mut Spat
             if ok {
                 report.propagated += 1;
             }
+        }
+    }
+    // 解不了的实体（环成员、以及祖先链上有坏数据的后代）**保留局部值当世界值**：这样
+    // "开启继承 ⇒ 每个有局部变换的实体都有世界变换"仍是一条可靠不变量，提取路径不会漏画。
+    for (index, node) in nodes.iter().enumerate() {
+        if state[index] == 2 {
+            continue;
+        }
+        if node.local_2d.is_some() {
+            world_2d[index] = node.local_2d;
+            matrix_2d[index] = node.local_2d.and_then(|local| local_matrix_2d(local).ok());
+        }
+        if node.local_3d.is_some() {
+            world_3d[index] = node.local_3d;
+            matrix_3d[index] = node.local_3d.and_then(|local| local.model_matrix().ok());
         }
     }
     // 写回**唯一**的派生组件 `GlobalTransform`：矩阵是真相，2D/3D 视图由同一次传播给出。
@@ -671,6 +702,128 @@ mod tests {
         // 两个视图都还在：2D 视图来自 2D 链、3D 视图来自 3D 链。
         assert_eq!(global.plane().expect("plane view").position.x, 3.0);
         assert_eq!(global.space().expect("space view").position.y, 7.0);
+    }
+
+    /// docs/54 §8-②：成环不崩，且**后代**得到的是"祖先不可解"而不是又一条 `Cycle`
+    /// ——把后代报成环会让作者去找一个根本不存在的环。
+    #[test]
+    fn cycle_descendants_are_reported_as_unresolvable_ancestors() {
+        let mut world = World::new();
+        let a = spawn_with(
+            &mut world,
+            None,
+            Transform::from_position(Vec2::new(1.0, 0.0)),
+        );
+        let b = spawn_with(
+            &mut world,
+            Some(a),
+            Transform::from_position(Vec2::new(2.0, 0.0)),
+        );
+        // 让 a 指向 b：a ↔ b 成环；c 是 a 的子，d 是 c 的子。
+        world.insert(a, Parent(b)).unwrap();
+        let c = spawn_with(
+            &mut world,
+            Some(a),
+            Transform::from_position(Vec2::new(3.0, 0.0)),
+        );
+        let d = spawn_with(
+            &mut world,
+            Some(c),
+            Transform::from_position(Vec2::new(4.0, 0.0)),
+        );
+        let report = propagate_spatial(&mut world, true);
+        let reason = |entity: EntityId| {
+            report
+                .diagnostics
+                .iter()
+                .find(|diagnostic| diagnostic.entity == entity)
+                .map(|diagnostic| diagnostic.reason.clone())
+        };
+        assert_eq!(reason(a), Some(SpatialDiagnosticReason::Cycle));
+        assert_eq!(reason(b), Some(SpatialDiagnosticReason::Cycle));
+        assert_eq!(
+            reason(c),
+            Some(SpatialDiagnosticReason::UnresolvableAncestor { ancestor: a }),
+            "后代必须报「祖先不可解」：{report:?}"
+        );
+        assert_eq!(
+            reason(d),
+            Some(SpatialDiagnosticReason::UnresolvableAncestor { ancestor: c }),
+            "{report:?}"
+        );
+        // 不变量仍然成立：有局部变换就有世界变换（值为各自的局部值）。
+        for (entity, position) in [(a, 1.0), (b, 2.0), (c, 3.0), (d, 4.0)] {
+            assert_eq!(
+                world_transform_2d(&world, entity).unwrap(),
+                Some(Transform::from_position(Vec2::new(position, 0.0))),
+                "实体 {entity:?} 必须保留局部值当世界值"
+            );
+        }
+    }
+
+    /// docs/54 §8-②：断链的 `Parent`（指向不存在的实体）此前被**静默**当成"没有父"——子树因此
+    /// 悄悄少一层位移而毫无线索。现在仍按链根求解（世界 = 自己的局部），但必须点名。
+    #[test]
+    fn dangling_parents_are_reported_while_still_solving_as_a_chain_root() {
+        let mut world = World::new();
+        let ghost = EntityId::from_raw(999, 1);
+        let child = spawn_with(
+            &mut world,
+            Some(ghost),
+            Transform::from_position(Vec2::new(3.0, 0.0)),
+        );
+        let report = propagate_spatial(&mut world, true);
+        assert_eq!(
+            report.diagnostics,
+            vec![SpatialDiagnostic {
+                entity: child,
+                reason: SpatialDiagnosticReason::MissingParent { parent: ghost },
+            }],
+            "断链必须被点名"
+        );
+        assert_eq!(
+            world_transform_2d(&world, child).unwrap(),
+            Some(Transform::from_position(Vec2::new(3.0, 0.0)))
+        );
+        assert_eq!(report.propagated, 1, "断链实体仍按链根求解");
+    }
+
+    /// docs/54 §8-②：父在实体表里但父自己没有局部变换：本实体与后代保留局部值，
+    /// 原因必须是 `ParentWithoutLocal` / `UnresolvableAncestor`（此前一律报成 `Cycle`）。
+    #[test]
+    fn a_transformless_parent_is_reported_with_its_real_reason() {
+        let mut world = World::new();
+        let root = spawn_with(
+            &mut world,
+            None,
+            Transform::from_position(Vec2::new(10.0, 0.0)),
+        );
+        // `middle` 有父但没有局部变换：它贡献不了任何变换。
+        let middle = world.spawn();
+        world.insert(middle, Parent(root)).unwrap();
+        let child = spawn_with(
+            &mut world,
+            Some(middle),
+            Transform::from_position(Vec2::new(1.0, 0.0)),
+        );
+        let report = propagate_spatial(&mut world, true);
+        assert_eq!(
+            report.diagnostics,
+            vec![SpatialDiagnostic {
+                entity: child,
+                reason: SpatialDiagnosticReason::ParentWithoutLocal { parent: middle },
+            }],
+            "{report:?}"
+        );
+        assert_eq!(
+            world_transform_2d(&world, child).unwrap(),
+            Some(Transform::from_position(Vec2::new(1.0, 0.0))),
+            "父没有变换 ⇒ 子既不能凭空组合，也不能被当成「父在原点」"
+        );
+        assert!(
+            world.get::<GlobalTransform>(middle).unwrap().is_none(),
+            "没有局部变换的实体不该有派生的世界变换"
+        );
     }
 
     /// 成环不崩：环上实体全部保留局部值并逐条报告。
