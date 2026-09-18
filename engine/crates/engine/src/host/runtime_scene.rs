@@ -1785,8 +1785,11 @@ impl RuntimeScene {
                 // （位置 + -Z 视线 + +Y 上方向），本组件的 position/target 退化为回退值。
                 // 没有 Transform3D 时保持组件姿态（scene_extract 会为此报诊断）。
                 let camera = if camera.pose_from_transform {
-                    match world.get::<Transform3D>(id) {
-                        Ok(Some(pose)) => camera.with_pose(*pose).unwrap_or(*camera),
+                    // docs/54 §8-⑦：姿态取实体的**世界**变换（父链组合后的结果）。取局部值
+                    // 会让挂在父下的相机看不清"它到底在看哪里"；这里用 lazy 版本，因此不依赖
+                    // "调用方本帧已经跑过传播"这个隐含顺序。
+                    match crate::core::hierarchy::world_transform_3d_lazy(world, id) {
+                        Ok(Some(pose)) => camera.with_pose(pose).unwrap_or(*camera),
                         _ => *camera,
                     }
                 } else {
@@ -5366,6 +5369,121 @@ mod sdf_tests {
             default_runtime.camera_2d(),
             Camera2D::new(crate::core::camera::DEFAULT_2D_CAMERA_CENTER, 1.0).unwrap(),
             "没有声明相机时必须是历史默认（既有工程逐字节不变）"
+        );
+    }
+
+    /// docs/54 §8-⑦：**文档 / 运行时 / Lua** 三条路必须对同一个实体给出同一个世界位置。
+    ///
+    /// 这是本轮"同一空间语义"的收官断言：编辑态用 `scene_space`（文档），运行时用
+    /// `RuntimeScene::world_transform_3d_of`（World + GlobalTransform），Lua 用 `transform3d.world`
+    /// ——三处各算一次，任何一处退回局部值都会被这条抓住。
+    #[test]
+    fn document_runtime_and_lua_agree_on_the_world_transform() {
+        let root = game_root();
+        let rig = crate::core::scene::SceneEntityId(1);
+        let child = crate::core::scene::SceneEntityId(2);
+        let mut scene = Scene::new("three-way");
+        scene.add_entity(rig, "Rig", None).unwrap();
+        scene.add_entity(child, "Child", Some(rig)).unwrap();
+        scene.entities.get_mut(&rig).unwrap().components.insert(
+            "Transform3D".into(),
+            "position=10,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
+        );
+        scene.entities.get_mut(&child).unwrap().components.insert(
+            "Transform3D".into(),
+            "position=0,5,0;rotation=0,0,0,1;scale=1,1,1".into(),
+        );
+
+        // ① 文档侧（编辑态，没有 ECS）。
+        let document_world = crate::core::scene_space::world_transform_3d(&scene, child)
+            .expect("document world transform");
+        assert_eq!(document_world.position, Vec3::new(10.0, 5.0, 0.0));
+
+        // ② 运行时侧（World + 传播）。
+        let mut runtime =
+            RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("runtime");
+        runtime.vertices(1280, 720).expect("vertices");
+        let runtime_world = runtime
+            .world_transform_3d_of(child)
+            .expect("runtime world transform");
+        assert_eq!(
+            runtime_world.position, document_world.position,
+            "运行时与文档的世界位置必须一致"
+        );
+
+        // ③ Lua 侧（同一实体，走 `transform3d.world`）。
+        let handle = runtime
+            .with_script(|script| script.scene_entity_handle(child))
+            .map(crate::core::script::entity_lua_id)
+            .expect("runtime entity handle");
+        let source = format!(
+            "function update()\n\
+             local world = transform3d.world({handle})\n\
+             assert(math.abs(world.x - 10) < 0.001, 'x')\n\
+             assert(math.abs(world.y - 5) < 0.001, 'y')\n\
+             assert(math.abs(world.z) < 0.001, 'z')\n\
+             local local_pose = transform3d.get({handle})\n\
+             assert(math.abs(local_pose.x) < 0.001, 'get 仍是局部值')\n\
+             return 'ok' end",
+        );
+        let path = std::env::temp_dir().join(format!(
+            "p2-three-way-{}-{}.lua",
+            std::process::id(),
+            handle
+        ));
+        std::fs::write(&path, source).expect("write lua script");
+        runtime
+            .with_script(|script| script.execute_project_script(&path))
+            .expect("execute script");
+        assert_eq!(
+            runtime
+                .with_script(|script| script.call_update())
+                .expect("lua update"),
+            "ok"
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn camera_pose_follows_the_parent_chain() {
+        let root = game_root();
+        let mut scene = Scene::new("camera-under-parent");
+        let rig = crate::core::scene::SceneEntityId(1);
+        let cam = crate::core::scene::SceneEntityId(2);
+        let ground = crate::core::scene::SceneEntityId(3);
+        scene.add_entity(rig, "Rig", None).unwrap();
+        scene.add_entity(cam, "Cam", Some(rig)).unwrap();
+        scene.add_entity(ground, "Ground", None).unwrap();
+        scene.entities.get_mut(&rig).unwrap().components.insert(
+            "Transform3D".into(),
+            "position=10,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
+        );
+        scene.entities.get_mut(&cam).unwrap().components.insert(
+            "Transform3D".into(),
+            "position=0,0,6;rotation=0,0,0,1;scale=1,1,1".into(),
+        );
+        scene.entities.get_mut(&cam).unwrap().components.insert(
+            "Camera3D".into(),
+            "position=0,0,99;target=0,0,0;fov=60;near=0.1;far=100;pose=transform".into(),
+        );
+        // `scene_3d` 需要至少一个 drawable 才会返回 Some。
+        scene.entities.get_mut(&ground).unwrap().components.insert(
+            "Transform3D".into(),
+            "position=0,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
+        );
+        scene
+            .entities
+            .get_mut(&ground)
+            .unwrap()
+            .components
+            .insert("MeshRenderer".into(), "mesh=__ground_plane__".into());
+
+        let runtime = RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("runtime");
+        let camera = runtime.scene_3d(16.0 / 9.0).expect("3d scene").camera;
+        assert!(
+            (camera.position.x - 10.0).abs() < 1e-4 && (camera.position.z - 6.0).abs() < 1e-4,
+            "相机姿态应取世界变换（父 +10 x 再局部 z=6），实际 {:?}",
+            camera.position
         );
     }
     /// WP2 的关键验收：**迁移无损**——对同一份"子按世界坐标写"的场景跑真实迁移

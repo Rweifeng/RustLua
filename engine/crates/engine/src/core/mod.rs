@@ -77,6 +77,8 @@ pub mod performance;
 /// Rapier-backed rigid bodies, colliders, sensors, and collision events.
 pub mod physics;
 pub mod physics3d;
+/// 拾取的共享投影/查询链：屏幕 → 视口 → 相机射线 → 世界查询（docs/54 §8-⑦）。
+pub mod picking;
 /// Prefab extraction, instantiation, overrides, and rebuild policy.
 pub mod prefab;
 /// E24: structured preview diagnostics with stable categories and deduping.
@@ -93,6 +95,8 @@ pub mod save;
 pub mod scene;
 /// Shared extraction of serialized 3D render components.
 pub mod scene_extract;
+/// 文档（编辑态）的空间语义：文档世界变换与"目标世界 → 新局部"反解（docs/54 §8-⑦）。
+pub mod scene_space;
 /// Deterministic stage-based system scheduling.
 pub mod scheduler;
 /// Lua VM and host API bridge.

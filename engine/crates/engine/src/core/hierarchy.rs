@@ -401,6 +401,60 @@ pub fn world_transform_3d(
     Ok(world.get::<Transform3D>(entity)?.copied())
 }
 
+/// 读实体的**世界**变换（3D），**不要求本帧已经传播过**。
+///
+/// 有 `GlobalTransform` 就直接用（快路径，与提取路径同一份数据）；没有就沿 `Parent` 链现算一次
+/// ——相机姿态这类一帧只问一个实体的消费者，因此不必依赖"调用者先跑过传播"这个隐含顺序
+/// （docs/54 §8-⑦：同一空间语义不该由调用顺序决定）。成环或缺父时退回局部值。
+pub fn world_transform_3d_lazy(
+    world: &World,
+    entity: EntityId,
+) -> Result<Option<Transform3D>, WorldError> {
+    if let Ok(Some(global)) = world.get::<GlobalTransform>(entity)
+        && let Some(space) = global.space()
+    {
+        return Ok(Some(space));
+    }
+    let Some(local) = world.get::<Transform3D>(entity)?.copied() else {
+        return Ok(None);
+    };
+    let Ok(local_matrix) = local.model_matrix() else {
+        return Ok(Some(local));
+    };
+    let mut matrix = local_matrix;
+    let mut seen = std::collections::BTreeSet::new();
+    seen.insert(entity);
+    let mut cursor = world
+        .get::<Parent>(entity)
+        .ok()
+        .flatten()
+        .map(|parent| parent.0);
+    while let Some(parent) = cursor {
+        if !seen.insert(parent) {
+            break; // 成环：停止上溯，用已经组合出来的那一份
+        }
+        let Some(parent_local) = world.get::<Transform3D>(parent).ok().flatten().copied() else {
+            break;
+        };
+        let Ok(parent_matrix) = parent_local.model_matrix() else {
+            break;
+        };
+        matrix = parent_matrix * matrix;
+        cursor = world
+            .get::<Parent>(parent)
+            .ok()
+            .flatten()
+            .map(|parent| parent.0);
+    }
+    Ok(LocalTransform::from_matrix(matrix)
+        .ok()
+        .map(|composed| Transform3D {
+            position: composed.translation,
+            rotation: composed.rotation,
+            scale: composed.scale,
+        }))
+}
+
 /// 读实体的**世界矩阵**（派生真源本身）——渲染提取用。
 ///
 /// 收敛前这里是从分解出来的 `Transform3D` 再算一遍模型矩阵；现在直接返回传播系统算出的

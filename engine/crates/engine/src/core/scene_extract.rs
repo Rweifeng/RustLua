@@ -113,15 +113,12 @@ pub fn extract_serialized_scene_3d(scene: &Scene) -> SerializedScene3d {
         if let Some(value) = entity.components.get("Camera3D") {
             match Camera3D::from_component_str(value) {
                 Ok(camera) => {
-                    // WP5：`pose=transform` 的相机，姿态取实体的 `Transform3D`。取不到就**报诊断**
-                    // 并保持组件姿态——沉默地"看起来没生效"是最难查的一类问题。
+                    // WP5 / docs/54 §8-⑦：`pose=transform` 的相机姿态取实体的**世界**变换
+                    // （父链组合后的结果），而不是局部值——相机挂在父下时才算对得上画面。
+                    // 取不到就**报诊断**并保持组件姿态；沉默地"看起来没生效"是最难查的一类问题。
                     let camera = if camera.pose_from_transform {
-                        match entity
-                            .components
-                            .get("Transform3D")
-                            .map(|raw| Transform3D::from_component_str(raw))
-                        {
-                            Some(Ok(pose)) => match camera.with_pose(pose) {
+                        match crate::core::scene_space::world_transform_3d(scene, entity.id) {
+                            Some(pose) => match camera.with_pose(pose) {
                                 Ok(posed) => posed,
                                 Err(error) => {
                                     result.diagnostics.push(SceneExtractDiagnostic {
@@ -135,21 +132,12 @@ pub fn extract_serialized_scene_3d(scene: &Scene) -> SerializedScene3d {
                                     camera
                                 }
                             },
-                            Some(Err(error)) => {
-                                result.diagnostics.push(SceneExtractDiagnostic {
-                                    entity: entity.id,
-                                    name: entity.name.clone(),
-                                    component: "Transform3D".to_owned(),
-                                    message: error.to_string(),
-                                });
-                                camera
-                            }
                             None => {
                                 result.diagnostics.push(SceneExtractDiagnostic {
                                     entity: entity.id,
                                     name: entity.name.clone(),
                                     component: "Camera3D".to_owned(),
-                                    message: "Camera3D 声明了 pose=transform，但该实体没有 Transform3D，已回退到组件姿态"
+                                    message: "Camera3D 声明了 pose=transform，但该实体没有可用的 Transform3D（或无法无损分解），已回退到组件姿态"
                                         .to_owned(),
                                 });
                                 camera

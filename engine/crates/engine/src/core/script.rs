@@ -1556,8 +1556,16 @@ fn entity_from_lua(value: i64) -> Result<EntityId, mlua::Error> {
     }
     Ok(EntityId::from_raw(index, generation))
 }
-fn entity_to_lua(entity: EntityId) -> i64 {
+/// Lua 侧实体 id 的编码（`index << 32 | generation`）。
+///
+/// 宿主在需要把一个实体交给 Lua（生成脚本、注入参数、测试对拍）时必须用同一份编码；
+/// 这里公开它，避免调用方各写一遍位运算。反向解码见 [`LuaRuntime::with_script`] 里注册的 API。
+#[must_use]
+pub fn entity_lua_id(entity: EntityId) -> i64 {
     ((entity.index() as u64) << 32 | entity.generation() as u64) as i64
+}
+fn entity_to_lua(entity: EntityId) -> i64 {
+    entity_lua_id(entity)
 }
 fn require_alive(state: &ScriptState, entity: EntityId) -> Result<(), mlua::Error> {
     if state.world.is_alive(entity) {
@@ -3117,6 +3125,32 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
             Ok(())
         })?,
     )?;
+    // docs/54 §8-⑦：`transform3d` 也要能读**世界**变换——`transform.world` 只覆盖"实体实际拥有
+    // 的空间"，3D 实体走 `transform3d` 时此前拿不到父链组合后的位置（脚本只能自己推）。
+    let s = Rc::clone(&state);
+    transform3d.set(
+        "world",
+        lua.create_function(move |lua, id: i64| {
+            let id = entity_from_lua(id)?;
+            let state = s.borrow();
+            require_alive(&state, id)?;
+            let world = crate::core::hierarchy::world_transform_3d_lazy(&state.world, id)
+                .map_err(world_error)?
+                .ok_or_else(|| api_error("entity has no transform3d"))?;
+            let table = lua.create_table()?;
+            table.set("x", world.position.x)?;
+            table.set("y", world.position.y)?;
+            table.set("z", world.position.z)?;
+            table.set("rx", world.rotation.x)?;
+            table.set("ry", world.rotation.y)?;
+            table.set("rz", world.rotation.z)?;
+            table.set("rw", world.rotation.w)?;
+            table.set("sx", world.scale.x)?;
+            table.set("sy", world.scale.y)?;
+            table.set("sz", world.scale.z)?;
+            Ok(table)
+        })?,
+    )?;
     lua.globals().set("transform3d", transform3d)?;
 
     let mesh = lua.create_table()?;
@@ -3261,10 +3295,14 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
                 return Err(api_error("camera3d.ray must be finite"));
             }
             let (camera, viewport) = camera3d_view(&s)?;
-            let (origin, direction) = camera
-                .ray_from_screen(x, y, viewport.width, viewport.height)
-                .map_err(|error| api_error(error.to_string()))?;
-            table_ray(lua, origin, direction)
+            // 共享链：`core::picking::ray_from_screen`（编辑器 3D 点选与它同一入口）。
+            let ray = crate::core::picking::ray_from_screen(
+                camera,
+                crate::core::transform::Vec2::new(x, y),
+                viewport,
+            )
+            .map_err(api_error)?;
+            table_ray(lua, ray.origin, ray.direction)
         })?,
     )?;
     let s = Rc::clone(&state);
@@ -3276,15 +3314,41 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
                 let (camera, viewport) = camera3d_view_from(&state)?;
                 (camera, viewport, state.input.cursor_position())
             };
-            let (origin, direction) = camera
-                .ray_from_screen(
-                    cursor.0 as f32,
-                    cursor.1 as f32,
-                    viewport.width,
-                    viewport.height,
-                )
-                .map_err(|error| api_error(error.to_string()))?;
-            table_ray(lua, origin, direction)
+            let ray = crate::core::picking::ray_from_screen(
+                camera,
+                crate::core::transform::Vec2::new(cursor.0 as f32, cursor.1 as f32),
+                viewport,
+            )
+            .map_err(api_error)?;
+            table_ray(lua, ray.origin, ray.direction)
+        })?,
+    )?;
+    // 地面点选是最常见的一步（放置/寻路/点击地面）：给一条共享实现，脚本不必自己解直线与平面。
+    let s = Rc::clone(&state);
+    camera3d.set(
+        "pick_plane",
+        lua.create_function(move |lua, (x, y, plane_y): (f32, f32, f32)| {
+            if !x.is_finite() || !y.is_finite() || !plane_y.is_finite() {
+                return Err(api_error("camera3d.pick_plane must be finite"));
+            }
+            let (camera, viewport) = camera3d_view(&s)?;
+            let ray = crate::core::picking::ray_from_screen(
+                camera,
+                crate::core::transform::Vec2::new(x, y),
+                viewport,
+            )
+            .map_err(api_error)?;
+            match crate::core::picking::ray_plane_point(ray, plane_y) {
+                // 没命中（射线与平面平行或背向）返回 nil 而不是假点。
+                Some(point) => {
+                    let table = lua.create_table()?;
+                    table.set("x", point.x)?;
+                    table.set("y", point.y)?;
+                    table.set("z", point.z)?;
+                    Ok(mlua::Value::Table(table))
+                }
+                None => Ok(mlua::Value::Nil),
+            }
         })?,
     )?;
     let s = Rc::clone(&state);
@@ -3295,19 +3359,16 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
                 return Err(api_error("camera3d.world_to_screen must be finite"));
             }
             let (camera, viewport) = camera3d_view(&s)?;
-            let ndc = camera
-                .world_to_ndc(Vec3::new(x, y, z))
-                .map_err(|error| api_error(error.to_string()))?;
+            let Some((screen, visible)) =
+                crate::core::picking::screen_from_world(camera, Vec3::new(x, y, z), viewport)
+            else {
+                return Ok(mlua::Value::Nil);
+            };
             let table = lua.create_table()?;
-            table.set("x", (ndc.x * 0.5 + 0.5) * viewport.width)?;
-            table.set("y", (0.5 - ndc.y * 0.5) * viewport.height)?;
-            // `visible` 用 z 落在 [0, 1] 判定：相机背后的点在 NDC 里也是"有坐标"的，
-            // 不报这一点会让 HUD 标记在背后画出幽灵。
-            table.set(
-                "visible",
-                (0.0..=1.0).contains(&ndc.z) && ndc.x.abs() <= 1.0 && ndc.y.abs() <= 1.0,
-            )?;
-            Ok(table)
+            table.set("x", screen.x)?;
+            table.set("y", screen.y)?;
+            table.set("visible", visible)?;
+            Ok(mlua::Value::Table(table))
         })?,
     )?;
     let s = Rc::clone(&state);
@@ -7617,7 +7678,7 @@ mod tests {
     fn lua_camera3d_ray_and_screen_conversions_share_the_rendered_projection() {
         let mut runtime = LuaRuntime::new().unwrap();
         let camera = Camera3D::perspective(
-            Vec3::new(0.0, 0.0, 6.0),
+            Vec3::new(0.0, 5.0, 10.0),
             Vec3::ZERO,
             std::f32::consts::FRAC_PI_2,
             4.0 / 3.0,
@@ -7630,16 +7691,18 @@ mod tests {
         let path = script(
             "function update()\n\
              local ray = camera3d.ray(200, 150)\n\
-             assert(ray.oz > 5.9, 'origin sits on the camera')\n\
-             assert(ray.dz < -0.99, 'centre ray points down -Z toward the target')\n\
-             assert(math.abs(ray.dx) < 0.01 and math.abs(ray.dy) < 0.01)\n\
+             assert(ray.oz > 9.9, 'origin sits on the camera')\n\
+             assert(ray.dy < -0.3 and ray.dz < -0.8, 'centre ray points down-forward toward the target')\n\
              local screen = camera3d.world_to_screen(0, 0, 0)\n\
              assert(math.abs(screen.x - 200) < 0.01 and math.abs(screen.y - 150) < 0.01, 'target maps to viewport centre')\n\
              assert(screen.visible, 'target must be visible')\n\
              local behind = camera3d.world_to_screen(0, 0, 20)\n\
              assert(not behind.visible, 'point behind the camera must not be visible')\n\
+             local ground = camera3d.pick_plane(200, 150, 0)\n\
+             assert(ground ~= nil, 'centre ray must hit the ground plane')\n\
+             assert(math.abs(ground.x) < 0.01 and math.abs(ground.z) < 0.01, 'ground hit is the origin')\n\
              local pose = camera3d.get()\n\
-             assert(math.abs(pose.pz - 6) < 0.001 and math.abs(pose.width - 400) < 0.001)\n\
+             assert(math.abs(pose.pz - 10) < 0.001 and math.abs(pose.width - 400) < 0.001)\n\
              return 'ok' end",
         );
         runtime.execute_project_script(&path).unwrap();

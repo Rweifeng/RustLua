@@ -1720,9 +1720,7 @@ impl EditorApp {
                 // 无法无损反解（剪切/镜像/退化）：拒绝写回，不静默近似。
                 continue;
             };
-            let Some(encoded) = editor::document_space::encode_transform_2d(local) else {
-                continue;
-            };
+            let encoded = editor::document_space::encode_transform_2d(local);
             if let Some(entity) = scene.scene.entities.get_mut(id) {
                 entity.components.insert("Transform".to_owned(), encoded);
             }
@@ -1794,7 +1792,7 @@ impl EditorApp {
             match editor::document_space::locals_for_world_targets(&scene.scene, &targets)
                 .get(&id)
                 .copied()
-                .and_then(editor::document_space::encode_transform_3d)
+                .map(editor::document_space::encode_transform_3d)
             {
                 Some(encoded) => {
                     let changed = self.history.execute(
@@ -2458,8 +2456,15 @@ impl EditorApp {
 
     fn editor_camera_ray(&self, x: f32, y: f32, width: f32, height: f32) -> Option<Ray3> {
         let camera = self.editor_camera(width / height.max(1.0));
-        let (origin, direction) = camera.ray_from_screen(x, y, width, height).ok()?;
-        Ray3::new(origin, direction).ok()
+        // docs/54 §8-⑦：与 Lua `camera3d.ray` 走**同一条共享链**（`core::picking`），
+        // 因此"编辑器点中哪个"和"脚本算出的射线"不会各说一套。
+        let viewport = Viewport::new(width.max(1.0), height.max(1.0)).ok()?;
+        engine::core::picking::ray_from_screen(
+            camera,
+            engine::core::transform::Vec2::new(x, y),
+            viewport,
+        )
+        .ok()
     }
 
     /// 把世界坐标投影到屏幕（编辑器相机透视投影）。
