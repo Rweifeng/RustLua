@@ -11,7 +11,7 @@ use std::{
 };
 
 use crate::core::{
-    camera3d::Camera3D,
+    camera::{Camera3D, ClearPolicy, DEFAULT_3D_CLEAR, FrameViews, Viewport},
     light::Light,
     logging::{EngineError, LogModule},
     math3d::{Mat4, Vec3},
@@ -30,11 +30,49 @@ use winit::{dpi::PhysicalSize, window::Window};
 use crate::host::{
     frame::{
         ATLAS_TEXTURE_PATH, FONT_ATLAS_TEXTURE_PATH, FontAtlasPixels, OverlayVertex, Scene3d,
-        SceneMesh, VectorTextVertex, WHITE_TEXTURE_PATH, font_asset_from_texture_path,
-        is_font_texture_path,
+        SceneMesh, VectorTextVertex, WHITE_TEXTURE_PATH, WorldSpriteVertex,
+        font_asset_from_texture_path, is_font_texture_path,
     },
-    shader::{MESH3D_SHADER, SHADOW_SHADER, TEXTURED_SHADER, VECTOR_TEXT_SHADER},
+    shader::{
+        MESH3D_SHADER, SHADOW_SHADER, TEXTURED_SHADER, VECTOR_TEXT_SHADER, WORLD_SPRITE_SHADER,
+    },
 };
+
+/// 需要深度附件的那几条管线（WP6）。把"要不要写深度"从散落的字段字面量收成一处**类型化**
+/// 契约，是因为它曾经被脚本化编辑改错位：三个管线里有两条被误改成不写深度，而 golden 只断言
+/// 可绘制对象与像素非空、**断言不了深度顺序**，于是 3D 深度静默失效。现在有单测把三条管线的
+/// 深度策略逐条钉住（见 `tests::depth_policies_are_pinned_per_pass`）。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DepthPass {
+    /// 3D 网格：**写深度**，前后遮挡靠深度缓冲。
+    Mesh3d,
+    /// 阴影贴图：**写深度**（它就是不透明物体到光源的距离场）。
+    Shadow,
+    /// 世界 Sprite：**测深度但不写深度**——顺序由宿主按 z 排成画家顺序（远→近），
+    /// 因此半透明精灵之间可以正常叠加；深度附件保留是为了将来与 3D 共享深度缓冲时，
+    /// 精灵能被真正写了深度的物体遮挡（那时只需改这里的 `write_depth`）。
+    WorldSprite,
+}
+
+impl DepthPass {
+    /// 该管线是否写深度。
+    const fn write_depth(self) -> bool {
+        match self {
+            Self::Mesh3d | Self::Shadow => true,
+            Self::WorldSprite => false,
+        }
+    }
+}
+
+fn depth_stencil_state(pass: DepthPass, bias: wgpu::DepthBiasState) -> wgpu::DepthStencilState {
+    wgpu::DepthStencilState {
+        format: wgpu::TextureFormat::Depth32Float,
+        depth_write_enabled: pass.write_depth(),
+        depth_compare: wgpu::CompareFunction::LessEqual,
+        stencil: wgpu::StencilState::default(),
+        bias,
+    }
+}
 
 fn hash_bytes(bytes: &[u8]) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -188,6 +226,43 @@ fn record_indexed_draw(
     metrics.triangles += u64::from(index_count) / 3 * instance_count as u64;
 }
 
+/// 把声明的 [`Viewport`]（浮点、世界无关）夹成目标纹理内的整数矩形。
+///
+/// [`Viewport`] 只描述尺寸，因此矩形左上角恒为 `(0, 0)`——渲染器的每张视图本来就渲染进
+/// 自己的附件（窗口或编辑器离屏纹理），不需要在附件内部再偏移。结果**至少 1×1** 且永远
+/// 落在 `target` 之内：越界的 `set_viewport` 会被 wgpu 校验直接判错，而宿主给的是逻辑
+/// 像素，可能与实际附件尺寸有取整差。
+fn clamp_viewport(viewport: Viewport, target: (u32, u32)) -> (u32, u32, u32, u32) {
+    let target_width = target.0.max(1);
+    let target_height = target.1.max(1);
+    let width = (viewport.width.round().max(1.0) as u32)
+        .min(target_width)
+        .max(1);
+    let height = (viewport.height.round().max(1.0) as u32)
+        .min(target_height)
+        .max(1);
+    (0, 0, width, height)
+}
+
+/// 在 pass 上应用声明的视口。
+///
+/// 声明的视口等于整个目标时**不调用** `set_viewport`：wgpu 的默认视口就是整目标，
+/// 因此"没声明"与"声明整目标"两条路径产生完全相同的命令流——收敛不引入像素差异。
+fn apply_declared_viewport(
+    pass: &mut wgpu::RenderPass<'_>,
+    viewport: Option<Viewport>,
+    target: (u32, u32),
+) {
+    let Some(viewport) = viewport else {
+        return;
+    };
+    let (x, y, width, height) = clamp_viewport(viewport, target);
+    if x == 0 && y == 0 && width == target.0.max(1) && height == target.1.max(1) {
+        return;
+    }
+    pass.set_viewport(x as f32, y as f32, width as f32, height as f32, 0.0, 1.0);
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ReadbackMetrics {
     pub slot_count: usize,
@@ -334,6 +409,20 @@ pub struct Renderer {
     timestamp_state: GpuTimestampState,
     timestamp_error: Option<String>,
     last_frame_metrics: RenderFrameMetrics,
+    /// WP5：宿主声明的本帧相机侧视图（清屏策略 + 视口）。默认全 `None` ⇒ 渲染器保持
+    /// 收敛前的行为（历史默认清屏色、整目标视口），这就是这次接线可回滚的那一档。
+    frame_views: FrameViews,
+    /// WP6 世界 Sprite 通道：管线、2D 相机 uniform（视图投影矩阵）、顶点缓冲与独立深度附件。
+    /// `SceneMesh::world_sprites` 为空时这一整套完全不参与渲染，因此不喂数据时零成本。
+    world_sprite_pipeline: wgpu::RenderPipeline,
+    world_sprite_camera_buffer: wgpu::Buffer,
+    world_sprite_camera_bind_group: wgpu::BindGroup,
+    world_sprite_buffer: wgpu::Buffer,
+    world_sprite_capacity: u64,
+    world_sprite_depth_view: wgpu::TextureView,
+    world_sprite_depth_size: (u32, u32),
+    /// 世界 Sprite 的投影（宿主每帧写入 `Camera2D::view_projection`）。
+    world_sprite_view_projection: Mat4,
 }
 
 impl Renderer {
@@ -1029,13 +1118,10 @@ impl Renderer {
                 cull_mode: Some(wgpu::Face::Back),
                 ..Default::default()
             },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::LessEqual,
-                stencil: Default::default(),
-                bias: Default::default(),
-            }),
+            depth_stencil: Some(depth_stencil_state(
+                DepthPass::Mesh3d,
+                wgpu::DepthBiasState::default(),
+            )),
             multisample: Default::default(),
             multiview: None,
             cache: None,
@@ -1094,17 +1180,14 @@ impl Renderer {
                 cull_mode: Some(wgpu::Face::Back),
                 ..Default::default()
             },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::LessEqual,
-                stencil: Default::default(),
-                bias: wgpu::DepthBiasState {
+            depth_stencil: Some(depth_stencil_state(
+                DepthPass::Shadow,
+                wgpu::DepthBiasState {
                     constant: 2,
                     slope_scale: 2.0,
                     clamp: 0.0,
                 },
-            }),
+            )),
             multisample: Default::default(),
             multiview: None,
             cache: None,
@@ -1122,6 +1205,105 @@ impl Renderer {
             })
         });
         let timestamp_period_ns = queue.get_timestamp_period();
+        // WP6 世界 Sprite 通道：独立的一套资源（2D 相机 uniform + 顶点缓冲 + 深度附件）。
+        // 与 overlay 路径互不影响：宿主不喂世界顶点时它一次也不会被用到。
+        let world_sprite_camera_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("p2-world-sprite-camera-layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+            });
+        let world_sprite_camera_buffer =
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("p2-world-sprite-camera"),
+                contents: bytemuck::bytes_of(&IDENTITY_MAT4),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            });
+        let world_sprite_camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("p2-world-sprite-camera-bind-group"),
+            layout: &world_sprite_camera_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: world_sprite_camera_buffer.as_entire_binding(),
+            }],
+        });
+        let world_sprite_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("p2-world-sprite-shader"),
+            source: wgpu::ShaderSource::Wgsl(WORLD_SPRITE_SHADER.into()),
+        });
+        let world_sprite_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("p2-world-sprite-pipeline-layout"),
+                bind_group_layouts: &[&world_sprite_camera_layout, &texture_bind_group_layout],
+                push_constant_ranges: &[],
+            });
+        let world_sprite_pipeline =
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("p2-world-sprite-pipeline"),
+                layout: Some(&world_sprite_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &world_sprite_shader,
+                    entry_point: Some("vs_main"),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    buffers: &[wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<WorldSpriteVertex>() as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &[
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32x3,
+                                offset: 0,
+                                shader_location: 0,
+                            },
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32x2,
+                                offset: 12,
+                                shader_location: 1,
+                            },
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32x4,
+                                offset: 20,
+                                shader_location: 2,
+                            },
+                        ],
+                    }],
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &world_sprite_shader,
+                    entry_point: Some("fs_main"),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                primitive: wgpu::PrimitiveState::default(),
+                // 世界 Sprite：**测深度但不写深度**——顺序由宿主按 z 排成画家顺序（远→近），
+                // 半透明精灵因此可以正常叠加。深度附件保留是为了将来与 3D 共享深度缓冲时，
+                // 精灵能被真正写了深度的物体遮挡（那时只需改 `DepthPass::WorldSprite`）。
+                depth_stencil: Some(depth_stencil_state(
+                    DepthPass::WorldSprite,
+                    wgpu::DepthBiasState::default(),
+                )),
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+                cache: None,
+            });
+        let world_sprite_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("p2-world-sprite-buffer"),
+            size: WORLD_SPRITE_BUFFER_BYTES,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let world_sprite_depth_view = Self::create_depth_view(&device, 1, 1);
         tracing::info!(target: "game",
             "[render] initialized: adapter={adapter_name} format={format:?} present_mode={:?} gpu_timestamp={timestamp_enabled}",
             config.present_mode
@@ -1194,6 +1376,22 @@ impl Renderer {
             },
             timestamp_error: None,
             last_frame_metrics: RenderFrameMetrics::default(),
+            frame_views: FrameViews::new(),
+            world_sprite_pipeline,
+            world_sprite_camera_buffer,
+            world_sprite_camera_bind_group,
+            world_sprite_buffer,
+            world_sprite_capacity: WORLD_SPRITE_BUFFER_BYTES,
+            world_sprite_depth_view,
+            world_sprite_depth_size: (0, 0),
+            world_sprite_view_projection: Mat4 {
+                columns: [
+                    [1.0, 0.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0, 0.0],
+                    [0.0, 0.0, 1.0, 0.0],
+                    [0.0, 0.0, 0.0, 1.0],
+                ],
+            },
         })
     }
 
@@ -1620,6 +1818,59 @@ impl Renderer {
         }
     }
 
+    /// WP5：声明本帧的相机侧视图（清屏策略 + 视口）。
+    ///
+    /// 收敛前渲染器把清屏色**写死在 pass 里**、视口恒为整个目标，宿主想说"这块区域
+    /// 只画 2D overlay"或"这帧不要清屏"都无处可说。现在这两件事都由 [`FrameViews`]
+    /// 声明，渲染器只消费不再自己决定。
+    ///
+    /// 回滚档：**不调用**本函数（或传 [`FrameViews::new`]）即回到收敛前的行为——
+    /// 历史默认清屏色 + 整目标视口，像素逐字节相同。
+    pub fn set_frame_views(&mut self, views: FrameViews) {
+        self.frame_views = views;
+    }
+
+    /// 当前生效的视图声明（诊断/验收用）。
+    #[must_use]
+    pub fn frame_views(&self) -> FrameViews {
+        self.frame_views
+    }
+
+    /// WP6：写入世界 Sprite 通道用的 2D 相机投影（宿主每帧给
+    /// `Camera2D::view_projection(viewport, near, far)` 的结果）。没有世界 Sprite 时不必调用。
+    pub fn set_world_sprite_camera(&mut self, view_projection: Mat4) {
+        self.world_sprite_view_projection = view_projection;
+        // uniform 存的是列主序 4×4（与 3D 相机 uniform 同一布局）。
+        let uniform: [f32; 16] = bytemuck::cast(view_projection.columns);
+        self.queue.write_buffer(
+            &self.world_sprite_camera_buffer,
+            0,
+            bytemuck::bytes_of(&uniform),
+        );
+    }
+
+    /// 确保世界 Sprite 顶点缓冲能容纳 `required` 字节（按 2 的幂增长，与 2D overlay 同思路）。
+    fn ensure_world_sprite_capacity(&mut self, required: u64) -> u64 {
+        if required <= self.world_sprite_buffer.size() {
+            return self.world_sprite_buffer.size();
+        }
+        let mut capacity = self
+            .world_sprite_buffer
+            .size()
+            .max(WORLD_SPRITE_BUFFER_BYTES);
+        while capacity < required {
+            capacity *= 2;
+        }
+        self.world_sprite_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("p2-world-sprite-buffer"),
+            size: capacity,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.world_sprite_capacity = capacity;
+        capacity
+    }
+
     pub fn render(&mut self, mesh: &SceneMesh, scene3d: Option<&Scene3d>) -> RenderOutcome {
         let Some(surface) = &self.surface else {
             tracing::warn!(target: "game", "[render] render() requires a window surface; use render_into_texture");
@@ -1661,7 +1912,13 @@ impl Renderer {
         {
             encoder.write_timestamp(query_set, 0);
         }
-        let mut metrics = self.render_passes(&mut encoder, mesh, scene3d, &view);
+        let mut metrics = self.render_passes(
+            &mut encoder,
+            mesh,
+            scene3d,
+            &view,
+            (self.config.width, self.config.height),
+        );
         if let Some(slot) = timestamp_slot {
             self.finish_gpu_timestamp(&mut encoder, slot);
         }
@@ -1701,7 +1958,7 @@ impl Renderer {
         {
             encoder.write_timestamp(query_set, 0);
         }
-        let mut metrics = self.render_passes(&mut encoder, mesh, scene3d, view);
+        let mut metrics = self.render_passes(&mut encoder, mesh, scene3d, view, (width, height));
         if let Some(slot) = timestamp_slot {
             self.finish_gpu_timestamp(&mut encoder, slot);
         }
@@ -2045,14 +2302,36 @@ impl Renderer {
     /// Shared pass rendering into a given color view (window surface or
     /// offscreen target): clears the view, draws 3D (shadow + mesh into the
     /// depth view), then the 2D overlay.
+    ///
+    /// WP5：清屏与视口不再由本函数写死——它们来自宿主声明的 [`FrameViews`]。
     fn render_passes(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
         mesh: &SceneMesh,
         scene3d: Option<&Scene3d>,
         view: &wgpu::TextureView,
+        target: (u32, u32),
     ) -> RenderFrameMetrics {
-        {
+        // 清屏：宿主声明了主视图就按声明走（`ClearPolicy::None` = 不清，叠在已有内容上）；
+        // 没声明则保持收敛前的历史默认色，因此"不调用 set_frame_views"像素完全不变。
+        let clear = match self.frame_views.clear() {
+            Some(ClearPolicy::Color(color)) => Some(wgpu::Color {
+                r: f64::from(color[0]),
+                g: f64::from(color[1]),
+                b: f64::from(color[2]),
+                a: f64::from(color[3]),
+            }),
+            Some(ClearPolicy::None) => None,
+            None => Some(wgpu::Color {
+                r: f64::from(DEFAULT_3D_CLEAR[0]),
+                g: f64::from(DEFAULT_3D_CLEAR[1]),
+                b: f64::from(DEFAULT_3D_CLEAR[2]),
+                a: f64::from(DEFAULT_3D_CLEAR[3]),
+            }),
+        };
+        let main_viewport = self.frame_views.main.map(|declared| declared.viewport);
+        let overlay_viewport = self.frame_views.overlay.map(|declared| declared.viewport);
+        if let Some(clear) = clear {
             let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("p2-clear-pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -2060,12 +2339,7 @@ impl Renderer {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.04,
-                            g: 0.07,
-                            b: 0.12,
-                            a: 1.0,
-                        }),
+                        load: wgpu::LoadOp::Clear(clear),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -2146,6 +2420,7 @@ impl Renderer {
             });
             pass.set_pipeline(&self.mesh_pipeline);
             pass.set_bind_group(0, &self.camera_bind_group, &[]);
+            apply_declared_viewport(&mut pass, main_viewport, target);
             for draw in &frame_draws {
                 let bind = self.material_bind_group(draw.material, &draw.palette, &draw.models);
                 pass.set_bind_group(1, &bind, &[]);
@@ -2155,6 +2430,57 @@ impl Renderer {
                     wgpu::IndexFormat::Uint32,
                 );
                 pass.draw_indexed(0..draw.geometry.index_count, 0, 0..draw.models.len() as u32);
+            }
+        }
+        if !mesh.world_sprites.is_empty() {
+            // WP6 世界 Sprite 通道：在 3D mesh pass 之后、2D overlay 之前。顶点是世界坐标，
+            // 投影由顶点着色器用宿主给的 2D 相机矩阵完成；自身的深度附件只服务于精灵之间
+            // 的深度比较（透明不写深度），因此 overlay 的像素与顺序不受影响。
+            let bytes = bytemuck::cast_slice(&mesh.world_sprites);
+            self.ensure_world_sprite_capacity(bytes.len() as u64);
+            self.queue.write_buffer(&self.world_sprite_buffer, 0, bytes);
+            if self.world_sprite_depth_size != (target.0.max(1), target.1.max(1)) {
+                self.world_sprite_depth_view =
+                    Self::create_depth_view(&self.device, target.0.max(1), target.1.max(1));
+                self.world_sprite_depth_size = (target.0.max(1), target.1.max(1));
+            }
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("p2-world-sprite-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.world_sprite_depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_pipeline(&self.world_sprite_pipeline);
+            pass.set_bind_group(0, &self.world_sprite_camera_bind_group, &[]);
+            pass.set_vertex_buffer(0, self.world_sprite_buffer.slice(..));
+            apply_declared_viewport(&mut pass, overlay_viewport, target);
+            for draw in &mesh.world_sprite_draws {
+                let texture = draw.texture_id + 1;
+                let Some(bind) = self.bind_group_for(texture, &mesh.paths) else {
+                    continue;
+                };
+                pass.set_bind_group(1, &bind, &[]);
+                pass.draw(
+                    draw.vertex_start as u32..(draw.vertex_start + draw.vertex_count) as u32,
+                    0..1,
+                );
+                record_vertex_draw(&mut metrics, draw.vertex_count as u32);
             }
         }
         if !mesh.vertices.is_empty() {
@@ -2181,6 +2507,7 @@ impl Renderer {
             });
             pass.set_pipeline(&self.pipeline);
             pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+            apply_declared_viewport(&mut pass, overlay_viewport, target);
             if let Some(font) = &mesh.font_atlas {
                 let _ = self.ensure_font_atlas(font);
             }
@@ -2279,6 +2606,7 @@ impl Renderer {
             pass.set_pipeline(&self.vector_pipeline);
             pass.set_bind_group(0, bind, &[]);
             pass.set_vertex_buffer(0, self.vector_vertex_buffer.slice(..));
+            apply_declared_viewport(&mut pass, overlay_viewport, target);
             pass.draw(0..mesh.vector_vertices.len() as u32, 0..1);
             record_triangle_draw(&mut metrics, mesh.vector_vertices.len() as u32);
         }
@@ -2978,6 +3306,10 @@ fn joint_palette_data(palette: &[Mat4]) -> Vec<[f32; 4]> {
     data
 }
 
+/// 世界 Sprite 顶点缓冲初始容量（按需扩容）。4096 个顶点 ≈ 每帧 1000 多个精灵；
+/// 超限时扩容逻辑与 2D overlay 缓冲同思路（2 的幂次增长）。
+const WORLD_SPRITE_BUFFER_BYTES: u64 = 4096 * std::mem::size_of::<WorldSpriteVertex>() as u64;
+
 const IDENTITY_MAT4: [[f32; 4]; 4] = [
     [1.0, 0.0, 0.0, 0.0],
     [0.0, 1.0, 0.0, 0.0],
@@ -3025,6 +3357,7 @@ pub enum RenderOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::camera::{Projection, RenderView};
 
     #[test]
     fn render_metrics_count_2d_draws_and_geometry() {
@@ -3157,6 +3490,8 @@ mod tests {
         let mesh = crate::host::frame::SceneMesh {
             vertices: Vec::new(),
             draws: Vec::new(),
+            world_sprites: Vec::new(),
+            world_sprite_draws: Vec::new(),
             paths: Vec::new(),
             font_atlas: None,
             custom_font_atlases: Vec::new(),
@@ -3174,6 +3509,431 @@ mod tests {
         assert!(
             pixels.iter().any(|&byte| byte > 0),
             "offscreen frame is blank"
+        );
+    }
+
+    /// WP6 世界 Sprite 通道的遮挡契约：**测深度但不写深度**，因此顺序即一切。
+    /// ① 按 z 排成画家顺序（远→近）时近处胜出；② 顺序反过来时远处胜出——两条一起说明
+    /// 深度不会兜底，排序必须由宿主保证（`SpriteBatch::build_world_into` + `sort_world_ranges`）。
+    #[test]
+    fn world_sprite_pass_is_painter_ordered_without_depth_writes() {
+        const SIZE: u32 = 64;
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let Some(adapter) =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::LowPower,
+                compatible_surface: None,
+                force_fallback_adapter: true,
+            }))
+            .ok()
+        else {
+            return; // no GPU available; skip
+        };
+        let (device, queue) = pollster::block_on(adapter.request_device(&DeviceDescriptor {
+            label: Some("p2-world-sprite-device"),
+            required_features: wgpu::Features::empty(),
+            experimental_features: wgpu::ExperimentalFeatures::disabled(),
+            required_limits: wgpu::Limits::default(),
+            memory_hints: wgpu::MemoryHints::Performance,
+            trace: wgpu::Trace::Off,
+        }))
+        .expect("request test device");
+        let mut renderer = Renderer::new_offscreen(device.clone(), queue, None, false, false)
+            .expect("offscreen renderer");
+        let viewport = Viewport::new(SIZE as f32, SIZE as f32).unwrap();
+        // 相机中心 (0,0)、zoom = SIZE（1 世界单位 = SIZE 像素）⇒ 世界 ±0.5 覆盖整个目标。
+        let camera = crate::core::camera::Camera2D::new(
+            crate::core::transform::Vec2::new(0.0, 0.0),
+            SIZE as f32,
+        )
+        .expect("camera");
+        renderer.set_world_sprite_camera(camera.view_projection(viewport, -1.0, 1.0).unwrap());
+
+        let quad = |z: f32, color: [f32; 4]| {
+            let mut vertices = Vec::new();
+            for (x, y) in [
+                (-0.5_f32, -0.5_f32),
+                (0.5, -0.5),
+                (-0.5, 0.5),
+                (0.5, -0.5),
+                (0.5, 0.5),
+                (-0.5, 0.5),
+            ] {
+                vertices.push(WorldSpriteVertex {
+                    position: [x, y, z],
+                    uv: [0.5, 0.5],
+                    color,
+                });
+            }
+            vertices
+        };
+        let mut mesh = SceneMesh {
+            vertices: Vec::new(),
+            draws: Vec::new(),
+            // 画家顺序：先远（红，z=+0.5）、后近（绿，z=-0.5）。
+            world_sprites: quad(0.5, [1.0, 0.0, 0.0, 1.0]),
+            world_sprite_draws: Vec::new(),
+            paths: vec![WHITE_TEXTURE_PATH.to_owned()],
+            font_atlas: None,
+            custom_font_atlases: Vec::new(),
+            vector_vertices: Vec::new(),
+            vector_glyphs: Vec::new(),
+            vector_segments: Vec::new(),
+        };
+        mesh.world_sprites.extend(quad(-0.5, [0.0, 1.0, 0.0, 1.0]));
+        mesh.world_sprite_draws = vec![
+            crate::core::sprite_batch::SpriteDrawBatch {
+                texture_id: 0,
+                layer: 0,
+                render_layer: crate::core::layer::RenderLayer::World2D,
+                vertex_start: 0,
+                vertex_count: 6,
+            },
+            crate::core::sprite_batch::SpriteDrawBatch {
+                texture_id: 0,
+                layer: 1,
+                render_layer: crate::core::layer::RenderLayer::World2D,
+                vertex_start: 6,
+                vertex_count: 6,
+            },
+        ];
+
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("p2-world-sprite-target"),
+            size: wgpu::Extent3d {
+                width: SIZE,
+                height: SIZE,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let center_of = |renderer: &mut Renderer, mesh: &SceneMesh, texture: &wgpu::Texture| {
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            renderer.render_into_texture(mesh, None, &view, SIZE, SIZE);
+            let pixels = renderer
+                .copy_texture_to_cpu(texture, SIZE, SIZE)
+                .expect("readback");
+            let index = (((SIZE / 2) * SIZE + SIZE / 2) * 4) as usize;
+            [
+                pixels[index],
+                pixels[index + 1],
+                pixels[index + 2],
+                pixels[index + 3],
+            ]
+        };
+
+        // ① 画家顺序（远 → 近，宿主排好）：近处的绿色**后画**并盖住红色。这正是
+        //    `sort_world_ranges` 保证的顺序，半透明因此可以正常叠加。
+        let painted = center_of(&mut renderer, &mesh, &texture);
+        assert_eq!(
+            painted,
+            [0, 255, 0, 255],
+            "按 z 排成远→近后，近处的绿色应盖住远处的红色"
+        );
+
+        // ② 顺序反过来（近的先画、远的后画）：远处红色**确实**盖住绿色——这条通道
+        //    **不写深度**，顺序就是一切。这条把"排序是宿主的责任"钉成契约：哪天有人
+        //    以为深度会兜底，这里立刻判红。
+        let mut reversed = SceneMesh {
+            vertices: Vec::new(),
+            draws: Vec::new(),
+            // 反过来的顺序：先近（绿，z=-0.5）、后远（红，z=+0.5）。
+            world_sprites: quad(-0.5, [0.0, 1.0, 0.0, 1.0]),
+            world_sprite_draws: Vec::new(),
+            paths: vec![WHITE_TEXTURE_PATH.to_owned()],
+            font_atlas: None,
+            custom_font_atlases: Vec::new(),
+            vector_vertices: Vec::new(),
+            vector_glyphs: Vec::new(),
+            vector_segments: Vec::new(),
+        };
+        reversed
+            .world_sprites
+            .extend(quad(0.5, [1.0, 0.0, 0.0, 1.0]));
+        reversed.world_sprite_draws = mesh.world_sprite_draws.clone();
+        let unpainted = center_of(&mut renderer, &reversed, &texture);
+        assert_eq!(
+            unpainted,
+            [255, 0, 0, 255],
+            "不写深度时后画的远处红色会盖住绿色——排序必须由宿主保证"
+        );
+    }
+
+    /// WP6：三条管线的深度策略逐条钉住。
+    ///
+    /// 回归背景：这三个设置曾是散落的字段字面量，一次脚本化编辑把 **mesh3d 与 shadow** 的
+    /// `depth_write_enabled` 误改成 `false`——3D 深度静默失效，而当时的 golden 只断言可绘制
+    /// 对象、实例/三角形与非背景像素，**断言不了深度顺序**，因此全门绿灯。现在策略收在
+    /// `DepthPass` 里并由本条测试锁死；要改必须先改这里，改错立刻判红。
+    #[test]
+    fn depth_policies_are_pinned_per_pass() {
+        assert!(
+            DepthPass::Mesh3d.write_depth(),
+            "3D 网格必须写深度：否则前后遮挡不再生效（这正是被误改过的那一处）"
+        );
+        assert!(
+            DepthPass::Shadow.write_depth(),
+            "阴影贴图必须写深度：它本身就是不透明物体到光源的距离场"
+        );
+        assert!(
+            !DepthPass::WorldSprite.write_depth(),
+            "世界 Sprite 不写深度：顺序由宿主按 z 排成画家顺序，写深度会让半透明透不出来"
+        );
+        for pass in [DepthPass::Mesh3d, DepthPass::Shadow, DepthPass::WorldSprite] {
+            assert_eq!(
+                depth_stencil_state(pass, wgpu::DepthBiasState::default()).depth_compare,
+                wgpu::CompareFunction::LessEqual,
+                "{pass:?} 的深度比较应为 LessEqual"
+            );
+        }
+    }
+    /// WP5 视口夹取：声明的视口必须落在目标内、至少 1×1，且整目标视口与"未声明"等价。
+    #[test]
+    fn clamp_viewport_keeps_rects_inside_the_target() {
+        let full = Viewport::new(64.0, 64.0).unwrap();
+        assert_eq!(clamp_viewport(full, (64, 64)), (0, 0, 64, 64));
+        // 超出目标：夹到目标尺寸，而不是让 wgpu 校验报错。
+        assert_eq!(clamp_viewport(full, (32, 16)), (0, 0, 32, 16));
+        // 逻辑像素取整：59.6 → 60。
+        let rounded = Viewport::new(59.6, 10.2).unwrap();
+        assert_eq!(clamp_viewport(rounded, (64, 64)), (0, 0, 60, 10));
+        // 空/非法尺寸（构造器会拒绝，这里兜住手写的 0）：至少 1×1。
+        let zero = Viewport::new(1.0, 1.0).unwrap();
+        assert_eq!(clamp_viewport(zero, (0, 0)), (0, 0, 1, 1));
+    }
+
+    /// WP5：渲染器消费宿主声明的 [`FrameViews`]——清屏色来自声明，且 2D overlay 的视口
+    /// 真的只画在声明的那块区域内。
+    ///
+    /// 同时这是**收敛的对拍**：不声明任何视图时读回的第一像素，必须与"声明历史默认
+    /// 清屏色"的帧逐字节相同（回滚档与接线后行为一致）。
+    #[test]
+    fn declared_frame_views_own_clear_color_and_overlay_viewport() {
+        const SIZE: u32 = 64;
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let Some(adapter) =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::LowPower,
+                compatible_surface: None,
+                force_fallback_adapter: true,
+            }))
+            .ok()
+        else {
+            return; // no GPU available; skip
+        };
+        let (device, queue) = pollster::block_on(adapter.request_device(&DeviceDescriptor {
+            label: Some("p2-view-device"),
+            required_features: wgpu::Features::empty(),
+            experimental_features: wgpu::ExperimentalFeatures::disabled(),
+            required_limits: wgpu::Limits::default(),
+            memory_hints: wgpu::MemoryHints::Performance,
+            trace: wgpu::Trace::Off,
+        }))
+        .expect("request test device");
+        let mut renderer = Renderer::new_offscreen(device.clone(), queue, None, false, false)
+            .expect("offscreen renderer");
+        let empty = crate::host::frame::SceneMesh {
+            vertices: Vec::new(),
+            draws: Vec::new(),
+            world_sprites: Vec::new(),
+            world_sprite_draws: Vec::new(),
+            paths: Vec::new(),
+            font_atlas: None,
+            custom_font_atlases: Vec::new(),
+            vector_vertices: Vec::new(),
+            vector_glyphs: Vec::new(),
+            vector_segments: Vec::new(),
+        };
+        let render_and_read = |renderer: &mut Renderer, target: &wgpu::Texture| {
+            let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+            renderer.render_into_texture(&empty, None, &view, SIZE, SIZE);
+            renderer
+                .copy_texture_to_cpu(target, SIZE, SIZE)
+                .expect("readback")
+        };
+        let new_target = |label: &str| {
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d {
+                    width: SIZE,
+                    height: SIZE,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            })
+        };
+        let pixel = |pixels: &[u8], x: u32, y: u32| -> [u8; 4] {
+            let offset = ((y * SIZE + x) * 4) as usize;
+            [
+                pixels[offset],
+                pixels[offset + 1],
+                pixels[offset + 2],
+                pixels[offset + 3],
+            ]
+        };
+        let viewport = Viewport::new(SIZE as f32, SIZE as f32).unwrap();
+
+        // 1) 不声明任何视图（回滚档）：读回历史默认清屏色。
+        let baseline = render_and_read(&mut renderer, &new_target("p2-view-baseline"));
+        let clear = pixel(&baseline, 0, 0);
+        assert!(
+            clear.iter().any(|&byte| byte > 0),
+            "默认清屏应产生非零像素：{clear:?}"
+        );
+
+        // 2) 声明主视图但用**历史默认色**：必须与回滚档逐字节相同。
+        let declared_default = FrameViews {
+            main: Some(RenderView {
+                projection: Projection::Perspective {
+                    fov_y: 1.0,
+                    near: 0.1,
+                    far: 100.0,
+                },
+                viewport,
+                clear: ClearPolicy::Color(DEFAULT_3D_CLEAR),
+                order: 0,
+                visibility: u32::MAX,
+            }),
+            overlay: None,
+        };
+        renderer.set_frame_views(declared_default);
+        let unplugged = render_and_read(&mut renderer, &new_target("p2-view-declared-default"));
+        assert_eq!(
+            unplugged, baseline,
+            "声明历史默认色与不声明必须是同一帧（回滚档逐字节等价）"
+        );
+
+        // 3) 声明一个不同的清屏色：整帧都必须是该颜色 ⇒ 清屏确实由声明驱动。
+        renderer.set_frame_views(FrameViews {
+            main: Some(RenderView {
+                clear: ClearPolicy::Color([1.0, 0.0, 0.0, 1.0]),
+                ..declared_default.main.expect("main view")
+            }),
+            overlay: None,
+        });
+        let red_target = new_target("p2-view-red");
+        let red = render_and_read(&mut renderer, &red_target);
+        assert_eq!(
+            pixel(&red, 0, 0),
+            [255, 0, 0, 255],
+            "主视图声明的清屏色必须生效"
+        );
+        assert_eq!(pixel(&red, SIZE - 1, SIZE - 1), [255, 0, 0, 255]);
+
+        // 4) 声明"不清屏"：**同一张附件**上再画一帧空场景，红色必须原样留着
+        //    （说明这一帧真的没有清屏，而不是又清成了别的颜色）。
+        renderer.set_frame_views(FrameViews {
+            main: Some(RenderView {
+                clear: ClearPolicy::None,
+                ..declared_default.main.expect("main view")
+            }),
+            overlay: None,
+        });
+        let kept = render_and_read(&mut renderer, &red_target);
+        assert_eq!(
+            pixel(&kept, 0, 0),
+            [255, 0, 0, 255],
+            "声明 ClearPolicy::None 时不应清屏"
+        );
+
+        // 5) 2D overlay 视口：只画左半屏（32×64），白 quad 只应覆盖左半。
+        let half = Viewport::new((SIZE / 2) as f32, SIZE as f32).unwrap();
+        let quad = crate::host::frame::SceneMesh {
+            vertices: vec![
+                OverlayVertex {
+                    position: [-1.0, -1.0],
+                    uv: [0.0, 1.0],
+                    color: [1.0, 1.0, 1.0, 1.0],
+                    sdf: 0,
+                },
+                OverlayVertex {
+                    position: [1.0, -1.0],
+                    uv: [1.0, 1.0],
+                    color: [1.0, 1.0, 1.0, 1.0],
+                    sdf: 0,
+                },
+                OverlayVertex {
+                    position: [-1.0, 1.0],
+                    uv: [0.0, 0.0],
+                    color: [1.0, 1.0, 1.0, 1.0],
+                    sdf: 0,
+                },
+                OverlayVertex {
+                    position: [1.0, -1.0],
+                    uv: [1.0, 1.0],
+                    color: [1.0, 1.0, 1.0, 1.0],
+                    sdf: 0,
+                },
+                OverlayVertex {
+                    position: [1.0, 1.0],
+                    uv: [1.0, 0.0],
+                    color: [1.0, 1.0, 1.0, 1.0],
+                    sdf: 0,
+                },
+                OverlayVertex {
+                    position: [-1.0, 1.0],
+                    uv: [0.0, 0.0],
+                    color: [1.0, 1.0, 1.0, 1.0],
+                    sdf: 0,
+                },
+            ],
+            draws: vec![crate::host::frame::SceneDraw {
+                texture: 0,
+                start: 0,
+                count: 6,
+                sdf: false,
+                vector: false,
+                render_layer: crate::core::layer::RenderLayer::World2D,
+            }],
+            world_sprites: Vec::new(),
+            world_sprite_draws: Vec::new(),
+            paths: Vec::new(),
+            font_atlas: None,
+            custom_font_atlases: Vec::new(),
+            vector_vertices: Vec::new(),
+            vector_glyphs: Vec::new(),
+            vector_segments: Vec::new(),
+        };
+        renderer.set_frame_views(FrameViews {
+            main: Some(RenderView {
+                clear: ClearPolicy::Color(DEFAULT_3D_CLEAR),
+                ..declared_default.main.expect("main view")
+            }),
+            overlay: Some(RenderView {
+                projection: Projection::Orthographic { zoom: 1.0 },
+                viewport: half,
+                clear: ClearPolicy::None,
+                order: 1,
+                visibility: u32::MAX,
+            }),
+        });
+        let clipped = {
+            let target = new_target("p2-view-overlay");
+            let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+            renderer.render_into_texture(&quad, None, &view, SIZE, SIZE);
+            renderer
+                .copy_texture_to_cpu(&target, SIZE, SIZE)
+                .expect("readback")
+        };
+        assert_eq!(
+            pixel(&clipped, 4, SIZE / 2),
+            [255, 255, 255, 255],
+            "声明的 overlay 视口内应画出 quad"
+        );
+        assert_eq!(
+            pixel(&clipped, SIZE - 5, SIZE / 2),
+            clear,
+            "视口之外的右半屏必须保持清屏色（视口确实生效）"
         );
     }
 
@@ -3405,6 +4165,8 @@ mod tests {
         let mesh = crate::host::frame::SceneMesh {
             vertices: Vec::new(),
             draws: Vec::new(),
+            world_sprites: Vec::new(),
+            world_sprite_draws: Vec::new(),
             paths: Vec::new(),
             font_atlas: None,
             custom_font_atlases: Vec::new(),

@@ -107,6 +107,32 @@ fn median(a: f32, b: f32, c: f32) -> f32 {
 }
 "#;
 
+/// WP6 世界 Sprite 通道：顶点是**世界坐标** `(x, y, z)`，投影由顶点着色器用 2D 相机的
+/// `view_projection` 完成（`Camera2D::view_projection`，与 CPU 侧 `world_to_screen` 同源）。
+/// 片元与 [`TEXTURED_SHADER`] 的普通纹理分支一致（采样 × 顶点色），因此世界路径与 overlay
+/// 路径在颜色上不会分叉；两者的差异只有"投影在哪算"和"是否参与深度测试"。
+pub const WORLD_SPRITE_SHADER: &str = r#"
+struct Camera { view_projection: mat4x4<f32> };
+@group(0) @binding(0) var<uniform> camera: Camera;
+@group(1) @binding(0) var tex: texture_2d<f32>;
+@group(1) @binding(1) var samp: sampler;
+struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+    @location(1) color: vec4<f32>,
+};
+@vertex fn vs_main(@location(0) position: vec3<f32>, @location(1) uv: vec2<f32>, @location(2) color: vec4<f32>) -> VertexOutput {
+    var out: VertexOutput;
+    out.position = camera.view_projection * vec4<f32>(position, 1.0);
+    out.uv = uv;
+    out.color = color;
+    return out;
+}
+@fragment fn fs_main(@location(0) uv: vec2<f32>, @location(1) color: vec4<f32>) -> @location(0) vec4<f32> {
+    return textureSample(tex, samp, uv) * color;
+}
+"#;
+
 pub const MESH3D_SHADER: &str = r#"
 struct Camera { view_projection: mat4x4<f32> };
 struct Light { direction: vec4<f32>, color_intensity: vec4<f32> };

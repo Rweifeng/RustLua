@@ -97,17 +97,20 @@ editor [--project <项目路径>] [--check] [--help]
 - 实体元信息：实体 ID、父实体、子实体数量、Prefab 来源与 Override 列表、**持久实体**（「运行时切场景不销毁」）。
 - Prefab 根实例操作：**重新应用源 Prefab**、**打开源 Prefab**、**写回源并更新实例**。
 - **父级**：输入父实体 ID → **设置父级** / **解除父级**；**重新命名** 改名。
-- **添加组件**：可选 `Sprite, Tilemap, Animation, Transform3D, MeshRenderer, Camera3D, Light, Collider3d, Text, Image, UiLayout, Container, UiEvents, UiBindings, ButtonStates, UiAnimation`；组件各有 **移除**。
+- **添加组件**：可选 `Sprite, Tilemap, Animation, Transform3D, MeshRenderer, Camera3D, Light, Collider3d, Text, WorldText, Image, UiLayout, Container, UiEvents, UiBindings, ButtonStates, UiAnimation`；组件各有 **移除**。
 - 可编辑组件：
-  - **Transform**：位置/旋转/缩放 + Reset、复制/粘贴组件。
-  - **Transform3D**：位置 XYZ、旋转四元数、缩放 XYZ。
+  - **变换（Transform）**：**一个**面板，按实体实际拥有的空间显示——只有 2D 就显示 2D（位置 XY/旋转/缩放 +
+    Reset、复制/粘贴组件），只有 3D 就显示 3D（位置 XYZ、旋转四元数、缩放 XYZ + Reset 3D），
+    两种都有时面板顶部给出「编辑：2D / 3D」模式开关，并**始终**标出「空间：2D / 3D / 2D + 3D」，
+    因此被切走的那一种不会被误以为不存在。
   - **MeshRenderer**：mesh 路径。
   - **Camera3D**：位置/目标/FOV/近/远。
   - **Light**：方向/颜色/强度。
   - **Collider3d**：形状 Ball/Cuboid/Capsule、sensor、dynamic、尺寸/半径/偏移。
   - **Text**：文本、空间（Canvas/Screen）、锚点 9 预置、位置、字号、颜色。
+  - **WorldText**：世界空间文字（锚在实体世界位置、相机移动时跟随世界）——文本、字号、字体、颜色、屏幕偏移、水平居中。
   - **Image**：纹理、空间/锚点、位置/尺寸、九宫格边框、颜色。
-  - **Sprite**：纹理、尺寸、Pivot、颜色 tint、排序层、Order。
+  - **Sprite**：纹理、尺寸、Pivot、颜色 tint、水平/垂直翻转、排序层、Order。
   - **Tilemap**：纹理、Tile 尺寸、网格 width×height（1..256）、画笔、碰撞层、内联网格预览（≤24×24）。
   - **Animation**：默认状态、clips（名称/Sheet/列数/FPS/循环）。
   - **LuaScript**：Lua 路径。

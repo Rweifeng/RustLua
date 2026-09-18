@@ -25,6 +25,9 @@ pub enum ColliderShape3d {
 /// One collider attached to a body, at a local offset. `layer` is the collision
 /// group this collider belongs to and `mask` the groups it collides with (both
 /// bit fields, default all bits on).
+///
+/// `ccd` 是连续碰撞检测声明，与 2D 侧同义（Rapier 的 CCD 是**刚体**属性，任一本刚体上的
+/// collider 声明即对该刚体生效），默认关闭。
 #[derive(Clone, Debug, PartialEq)]
 pub struct ColliderDesc3d {
     pub shape: ColliderShape3d,
@@ -35,13 +38,14 @@ pub struct ColliderDesc3d {
     pub dynamic: bool,
     pub layer: u8,
     pub mask: u8,
+    pub ccd: bool,
 }
 
 impl ColliderDesc3d {
     /// Parses a scene `Collider3d` component string:
     /// `shape=ball;radius=..`, `shape=cuboid;half_x=..;half_y=..;half_z=..`, or
     /// `shape=capsule;half_height=..;radius=..`, with optional `;sensor=true`,
-    /// `;dynamic=false`, `;offset=x,y,z`, `;layer=N`, and `;mask=N`.
+    /// `;dynamic=false`, `;offset=x,y,z`, `;layer=N`, `;mask=N`, and `;ccd=true`.
     pub fn from_component_str(value: &str) -> Result<Self, PhysicsError> {
         let mut shape = None;
         let mut offset = Vec3::ZERO;
@@ -49,6 +53,7 @@ impl ColliderDesc3d {
         let mut dynamic = true;
         let mut layer = 0xFF;
         let mut mask = 0xFF;
+        let mut ccd = false;
         for field in value.split(';') {
             let Some((key, raw)) = field.split_once('=') else {
                 return Err(PhysicsError::Malformed(format!("malformed field: {field}")));
@@ -183,6 +188,18 @@ impl ColliderDesc3d {
                         .parse()
                         .map_err(|_| PhysicsError::Malformed("mask must be a number".to_owned()))?;
                 }
+                // WP7：连续碰撞检测（与 2D `Collider` 同义）。拼错报错而不是静默当 false。
+                "ccd" => {
+                    ccd = match raw {
+                        "true" => true,
+                        "false" => false,
+                        _ => {
+                            return Err(PhysicsError::Malformed(
+                                "ccd must be true/false".to_owned(),
+                            ));
+                        }
+                    };
+                }
                 _ => return Err(PhysicsError::Malformed(format!("unknown field: {key}"))),
             }
         }
@@ -225,6 +242,7 @@ impl ColliderDesc3d {
             dynamic,
             layer,
             mask,
+            ccd,
         })
     }
 }
@@ -337,6 +355,8 @@ impl PhysicsWorld3d {
     /// Adds a body (dynamic when `dynamic`, otherwise fixed) at `position`
     /// with the given colliders. Collider handles map back to `entity` so
     /// collision events and queries name it.
+    ///
+    /// 与 2D 侧一致：任一 collider 声明 `ccd` 时给该刚体开启连续碰撞检测。
     pub fn add_body(
         &mut self,
         entity: EntityId,
@@ -352,6 +372,9 @@ impl PhysicsWorld3d {
         } else {
             RigidBodyBuilder::fixed()
         };
+        if colliders.iter().any(|desc| desc.ccd) {
+            builder = builder.ccd_enabled(true);
+        }
         builder = builder.translation(Vector::new(position.x, position.y, position.z));
         let body_handle = self.bodies.insert(builder.build());
         self.entity_bodies.insert(entity, body_handle);
@@ -444,6 +467,32 @@ impl PhysicsWorld3d {
         if let Some(body) = self.bodies.get_mut(*handle) {
             body.set_translation(Vector::new(position.x, position.y, position.z), true);
         }
+        Ok(())
+    }
+
+    /// 刚体当前是否开启连续碰撞检测（读 Rapier 的真实状态）。
+    pub fn ccd_enabled(&self, entity: EntityId) -> Result<bool, PhysicsError> {
+        let handle = self
+            .entity_bodies
+            .get(&entity)
+            .ok_or(PhysicsError::UnknownBody(entity))?;
+        self.bodies
+            .get(*handle)
+            .map(|body| body.is_ccd_enabled())
+            .ok_or(PhysicsError::UnknownBody(entity))
+    }
+
+    /// 运行时开关连续碰撞检测（Lua `physics3d.set_ccd`）。
+    pub fn set_ccd(&mut self, entity: EntityId, enabled: bool) -> Result<(), PhysicsError> {
+        let handle = self
+            .entity_bodies
+            .get(&entity)
+            .ok_or(PhysicsError::UnknownBody(entity))?;
+        let body = self
+            .bodies
+            .get_mut(*handle)
+            .ok_or(PhysicsError::UnknownBody(entity))?;
+        body.enable_ccd(enabled);
         Ok(())
     }
 
@@ -585,6 +634,7 @@ mod tests {
             sensor: false,
             layer: 0xFF,
             mask: 0xFF,
+            ccd: false,
             dynamic: true,
         }
     }
@@ -623,6 +673,66 @@ mod tests {
         assert!(ColliderDesc3d::from_component_str("shape=capsule;radius=1").is_err());
     }
 
+    /// WP7：3D 侧的 `ccd` 与 2D 同义（刚体属性；拼错报错），并且真的阻止高速隧穿。
+    #[test]
+    fn ccd_stops_a_fast_body_from_tunneling_in_3d() {
+        let parsed = ColliderDesc3d::from_component_str("shape=ball;radius=1;ccd=true").unwrap();
+        assert!(parsed.ccd);
+        assert!(
+            ColliderDesc3d::from_component_str("shape=ball;radius=1;ccd=yes").is_err(),
+            "ccd 只接受 true/false"
+        );
+
+        let run = |ccd: bool| -> f32 {
+            let mut world = PhysicsWorld3d::new_with_gravity(Vec3::ZERO);
+            let wall = entity(1);
+            let bullet = entity(2);
+            world
+                .add_body(
+                    wall,
+                    Vec3::ZERO,
+                    false,
+                    vec![
+                        ColliderDesc3d::from_component_str(
+                            "shape=cuboid;half_width=0.05;half_height=50;half_z=50",
+                        )
+                        .unwrap(),
+                    ],
+                )
+                .unwrap();
+            let mut desc = ColliderDesc3d::from_component_str("shape=ball;radius=0.05").unwrap();
+            desc.ccd = ccd;
+            world
+                .add_body(bullet, Vec3::new(-50.0, 0.0, 0.0), true, vec![desc])
+                .unwrap();
+            world.set_velocity(bullet, 60_000.0, 0.0, 0.0).unwrap();
+            assert!(!world.ccd_enabled(wall).unwrap());
+            assert_eq!(world.ccd_enabled(bullet).unwrap(), ccd);
+            let moved = world.step(1.0 / 60.0);
+            moved
+                .iter()
+                .find(|(entity, _)| *entity == bullet)
+                .map(|(_, position)| position.x)
+                .expect("bullet moved")
+        };
+        let without = run(false);
+        let with = run(true);
+        assert!(without > 0.0, "不开 CCD 时应穿墙（对照）：x={without}");
+        assert!(with < 0.0, "开启 CCD 后不应穿过薄墙：x={with}");
+
+        // 运行时开关与未知实体报错。
+        let mut world = PhysicsWorld3d::new_with_gravity(Vec3::ZERO);
+        let id = entity(1);
+        world
+            .add_body(id, Vec3::ZERO, true, vec![ball(1.0)])
+            .unwrap();
+        assert!(!world.ccd_enabled(id).unwrap());
+        world.set_ccd(id, true).unwrap();
+        assert!(world.ccd_enabled(id).unwrap());
+        assert!(world.set_ccd(entity(9), true).is_err());
+        assert!(world.ccd_enabled(entity(9)).is_err());
+    }
+
     #[test]
     fn dynamic_body_integrates_velocity_in_zero_gravity() {
         let mut world = PhysicsWorld3d::new_with_gravity(Vec3::ZERO);
@@ -651,6 +761,7 @@ mod tests {
                     sensor: false,
                     layer: 0xFF,
                     mask: 0xFF,
+                    ccd: false,
                     dynamic: true,
                 }],
             )
@@ -691,6 +802,7 @@ mod tests {
                     dynamic: true,
                     layer: 0x01,
                     mask: 0x01,
+                    ccd: false,
                 }],
             )
             .unwrap();
@@ -705,6 +817,7 @@ mod tests {
                     sensor: false,
                     layer: 0x02,
                     mask: 0xFF,
+                    ccd: false,
                     dynamic: true,
                 }],
             )
@@ -749,6 +862,7 @@ mod tests {
                     sensor: false,
                     layer: 0xFF,
                     mask: 0xFF,
+                    ccd: false,
                     dynamic: true,
                 }],
             )
@@ -790,6 +904,7 @@ mod tests {
                     sensor: true,
                     layer: 0xFF,
                     mask: 0xFF,
+                    ccd: false,
                     dynamic: true,
                 }],
             )

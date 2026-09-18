@@ -14,6 +14,14 @@
 - 非法尺寸、pivot、UV、颜色和非有限 Transform 输入会被拒绝；
 - `game_runner/examples/sprite_demo.rs` 完成 PNG 纹理上传、采样器、WGSL 管线和离屏 Sprite 绘制。
 
+## 翻转（WP4 增补）
+
+`Sprite` 增加 `flip_x` / `flip_y`（默认 `false`），组件串写作可选的 `flip_x=true` / `flip_y=true`。
+
+- 翻转只改变**采样方向**（UV 在四边形上的走向），不改变 UV 范围本身——这样 `uv_min < uv_max` 的校验仍然成立；靠交换 `uv_min`/`uv_max` 表达翻转会被该校验拒绝。
+- `flip_x`/`flip_y` **只在为 true 时**写进组件串，因此既有场景的规范字符串不变（避免存档 churn）；`from_component_str` 只接受 `true`/`false`（含 `1`/`0`），拼错的值报错而不是静默当成 false。
+- 编辑器 Inspector 的 Sprite 面板提供「水平 / 垂直」两个翻转勾选框。
+
 ## 验收
 
 ### 自动化

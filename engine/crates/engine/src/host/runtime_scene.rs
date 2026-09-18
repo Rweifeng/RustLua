@@ -10,27 +10,34 @@ use std::{
 };
 
 use crate::core::{
-    animation::AnimationStateMachine,
+    animation::{AnimationFrameEvent, AnimationStateMachine},
     animation3d::Animation3D,
-    camera3d::Camera3D,
+    camera::Camera3D,
+    camera::{Camera2D, CameraBounds, CameraSelection, RenderView, Viewport},
     entity::EntityId,
     font::{FontAtlas, FontVectorAtlas, project_font},
+    hierarchy::{SpatialReport, WorldTransform, WorldTransform3D},
     input::InputSnapshot,
+    layer::RenderLayer,
     light::Light,
-    math2d::{Camera2D, Viewport},
-    math3d::Vec3,
+    math3d::{Mat4, Vec3},
     mesh3d::MeshRenderer,
+    par::Parallelism,
+    physics::{ColliderShape, PhysicsAuthority},
     scene::{Scene, SceneEntityId},
     scheduler::{
         ScheduleReport, ScheduleStage, Scheduler, SchedulerError, System, SystemError, SystemTiming,
     },
     script::LuaRuntime,
-    sprite::{Sprite, SpriteAsset, SpriteSorting, SpriteVertex},
-    sprite_batch::{SpriteBatch, SpriteBatchItem, SpriteBatchMesh, SpriteDrawBatch},
+    sprite::{Sprite, SpriteAsset, SpriteSorting},
+    sprite_batch::{
+        OverlayVertexSink, SpriteBatch, SpriteBatchItem, SpriteDrawBatch, WorldSpriteVertexSink,
+        ndc_from_screen,
+    },
     text::{TextAtlas, TextLayout, TextMesh, TextStyle},
     tilemap::Tilemap,
+    transform::Transform3D,
     transform::{Transform, Vec2, integrate_velocity},
-    transform3d::Transform3D,
     ui::{
         DynamicUiImage, UI_REFERENCE_SIZE, UiImage, UiText, nine_slice_cells, resolve_ui_rect,
         ui_text_effective_scale,
@@ -38,13 +45,15 @@ use crate::core::{
     ui_events::{UiClickTarget, UiEvents},
     ui_layout::{UiRect, UiRectLayout},
     ui_scene_layout::{ResolvedUiNode, UiSceneNode, resolve_scene_ui_layout},
+    world_text::WorldText,
 };
 
 use crate::host::frame::{
     ATLAS_TEXTURE_PATH, BoundsSource, CustomFontAtlasPixels, FONT_ATLAS_TEXTURE_PATH, FontAtlasMap,
     FontAtlasPixels, FontHandle, OverlayVertex, Scene3d, Scene3dBounds, Scene3dDrawable, SceneDraw,
     SceneMesh, VectorAtlasMap, VectorFontHandle, VectorGlyphSnapshot, VectorSegmentSnapshot,
-    VectorTextVertex as FrameVectorTextVertex, WHITE_TEXTURE_PATH, font_texture_path,
+    VectorTextVertex as FrameVectorTextVertex, WHITE_TEXTURE_PATH, WorldSpriteVertex,
+    font_texture_path,
 };
 use crate::host::gamepad::{GamepadBackend, GamepadDeadzone, GamepadPoller};
 
@@ -55,6 +64,15 @@ pub struct RuntimeScene {
     /// "Lua 花了多少"而不是恒为 0（P4 接线）。
     script_micros: u64,
     sprite_batch: SpriteBatch,
+    /// 每精灵顶点生成的并行度（WP8）。默认取检测到的核数；`Parallelism::SEQUENTIAL`
+    /// 即完全回滚到单线程，输出逐字节相同（见 `core/par.rs` 与 `sprite_batch` 的测试）。
+    sprite_parallelism: Parallelism,
+    /// collider 调试绘制开关（WP7 ②）。默认关闭。
+    collider_debug_draw: bool,
+    /// 视口外瓦片剔除（WP4 ④）。默认开启；关掉即回到整层全画，用于像素对拍与回滚。
+    tilemap_culling: bool,
+    /// 视口外精灵剔除（WP6 CPU 可见性）。默认开启，同样可关掉做像素对拍。
+    sprite_culling: bool,
     camera: Camera2D,
     viewport_width: u32,
     viewport_height: u32,
@@ -110,6 +128,35 @@ pub struct RuntimeScene {
     last_schedule: Option<FrameScheduleReport>,
     /// 手柄设备轮询（M20-06）：每帧采样后合并进本步输入快照。
     gamepad: GamepadPoller,
+    /// WP2：是否把 `parent` 当**局部空间**解释（负责人裁定）。默认关闭 = 旧行为
+    /// （`parent` 只是组织关系，实体位置就是世界位置）；打开后每帧传播世界变换，
+    /// 消费者读 `WorldTransform`。关掉即回滚，且关掉时世界变换组件会被清掉。
+    spatial_inheritance: bool,
+    /// 最近一次空间传播的诊断（环/无法无损表达），供宿主与测试查。
+    last_spatial_report: SpatialReport,
+    /// 本帧是否**真的**在传播世界变换（= 开关打开且场景里存在 `Parent`）。提取路径按它选
+    /// 遍历的组件：为假时读局部值，与"没有层级"的语义完全一致，也不花任何传播成本。
+    spatial_active: bool,
+    /// WP7：谁有权写 `Transform`（默认 `Physics` = 模拟结果回写，与既有行为一致）。
+    physics_authority: PhysicsAuthority,
+    /// WP7：阶段顺序（`Unified` = 脚本→同步→物理→回写→世界变换；`Legacy` = 旧的单系统
+    /// "步进即回写"顺序，作为回滚档）。
+    physics_stage_order: PhysicsStageOrder,
+    /// WP6：世界 Sprite 是否走**带深度**的通道（默认关闭 = 现状"3D 之后的 overlay"）。
+    /// 打开后精灵以世界坐标产出（`SceneMesh::world_sprites`），由渲染器的世界 Sprite 通道投影
+    /// 并参与深度测试；关掉即逐字节回到 overlay 路径——这就是回滚档。
+    world_sprite_depth: bool,
+}
+
+/// WP7 阶段顺序（回滚档）。
+///
+/// - `Unified`（默认）：脚本 → 静态/运动学同步 → 物理 → 动态回写 → 世界变换传播。
+/// - `Legacy`：回到收敛前的单系统顺序（"物理步进时立刻回写"，2D 的回写夹在 3D 推进之前）。
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum PhysicsStageOrder {
+    #[default]
+    Unified,
+    Legacy,
 }
 
 /// Aggregated scheduler statistics of one `run_script_steps` call (M18-03).
@@ -220,15 +267,157 @@ impl RuntimeScene {
         std::mem::take(&mut self.script_micros)
     }
 
+    /// WP2 ④：按**场景实体 id** 读世界变换（2D）。
+    ///
+    /// 编辑器拾取包围框必须与渲染用同一份位置：场景视图渲染走 `vertices()`（父链组合后的
+    /// 世界变换），若包围框仍读文档里的局部值，带父子关系的实体会**框在人不在的地方**。
+    /// 继承未生效（没有 `Parent`）时返回的正是局部值，因此调用方无需分支。
+    pub fn world_transform_2d_of(&self, entity: SceneEntityId) -> Option<Transform> {
+        let runtime = self.script.scene_entity_handle(entity)?;
+        self.script
+            .with_world(|world| crate::core::hierarchy::world_transform_2d(world, runtime))
+            .ok()
+            .flatten()
+    }
+
+    /// WP2 ④：按**场景实体 id** 读世界变换（3D）。
+    pub fn world_transform_3d_of(&self, entity: SceneEntityId) -> Option<Transform3D> {
+        let runtime = self.script.scene_entity_handle(entity)?;
+        self.script
+            .with_world(|world| crate::core::hierarchy::world_transform_3d(world, runtime))
+            .ok()
+            .flatten()
+    }
+
     /// 设置 2D 相机（编辑器场景视图用，匹配编辑器 pan/zoom）。
     pub fn set_camera_2d(&mut self, camera: Camera2D) {
         self.camera = camera;
+    }
+
+    /// WP2 ④ 回滚档：`parent` 是否按**局部空间**解释（默认关闭 = 旧行为）。打开后每帧把
+    /// 局部变换沿父链组合成世界变换（`WorldTransform` / `WorldTransform3D`），渲染与 Lua
+    /// 读到的位置因此是**世界**位置；关掉时这些组件会被清掉，消费者退回局部值。
+    pub fn set_spatial_inheritance(&mut self, enabled: bool) {
+        self.spatial_inheritance = enabled;
+        self.propagate_spatial_now();
+    }
+
+    /// 当前空间继承开关。
+    #[must_use]
+    pub const fn spatial_inheritance(&self) -> bool {
+        self.spatial_inheritance
+    }
+
+    /// 本帧是否真的在传播世界变换（开关打开**且**场景里存在父子关系）。
+    #[must_use]
+    pub const fn spatial_active(&self) -> bool {
+        self.spatial_active
+    }
+
+    /// 最近一次空间传播的诊断（环、无法无损表达为 TRS 的父子组合）。空表示全部建立成功。
+    #[must_use]
+    pub fn last_spatial_report(&self) -> &SpatialReport {
+        &self.last_spatial_report
+    }
+
+    /// WP7：声明谁有权写 `Transform`（默认 `Physics`）。见 [`PhysicsAuthority`]。
+    pub const fn set_physics_authority(&mut self, authority: PhysicsAuthority) {
+        self.physics_authority = authority;
+    }
+
+    /// 当前物理权威。
+    #[must_use]
+    pub const fn physics_authority(&self) -> PhysicsAuthority {
+        self.physics_authority
+    }
+
+    /// WP7 回滚档：阶段顺序。`Legacy` 回到"物理步进即回写"的单系统顺序。
+    pub const fn set_physics_stage_order(&mut self, order: PhysicsStageOrder) {
+        self.physics_stage_order = order;
+    }
+
+    /// 当前阶段顺序。
+    #[must_use]
+    pub const fn physics_stage_order(&self) -> PhysicsStageOrder {
+        self.physics_stage_order
+    }
+
+    /// WP6 回滚档：世界 Sprite 是否走带深度的通道（默认关闭）。
+    pub fn set_world_sprite_depth(&mut self, enabled: bool) {
+        self.world_sprite_depth = enabled;
+    }
+
+    /// 当前世界 Sprite 深度通道开关。
+    #[must_use]
+    pub const fn world_sprite_depth(&self) -> bool {
+        self.world_sprite_depth
+    }
+
+    /// WP6：本帧世界 Sprite 的投影矩阵（宿主喂给 `Renderer::set_world_sprite_camera`）。
+    /// 关闭时返回 `None`（渲染器不会用到它）。
+    #[must_use]
+    pub fn sprite_view_projection(&self, width: u32, height: u32) -> Option<Mat4> {
+        if !self.world_sprite_depth {
+            return None;
+        }
+        let viewport = Viewport::new(width.max(1) as f32, height.max(1) as f32).ok()?;
+        // 深度范围取 (-1, 1)：精灵默认 `z = 0` 落在深度**中间**，向 -z 靠近相机、向 +z 远离，
+        // 两侧各有 1 个世界单位可用（2D 的层间偏移通常远小于此）。
+        self.camera.view_projection(viewport, -1.0, 1.0).ok()
+    }
+
+    /// 传播一次世界变换（幂等）。提取入口（`vertices` / `scene_3d`）与本函数的调用点
+    /// 都会走它，因此"这一帧看到的世界位置"永远来自同一次传播。
+    pub fn propagate_spatial_now(&mut self) {
+        let enabled = self.spatial_inheritance;
+        // 只有**真的存在层级**时才传播：平面场景（每个实体都没有 `Parent`）里世界值恒等于局部值，
+        // 传播纯属白做——而提取路径是按这个布尔量选组件遍历的，所以它必须与实际写入的组件一致。
+        let (report, active) = self.script.with_world_mut(|world| {
+            let active = enabled
+                && !world
+                    .entities_with::<crate::core::hierarchy::Parent>()
+                    .is_empty();
+            let report = crate::core::hierarchy::propagate_spatial(world, active);
+            (report, active)
+        });
+        self.spatial_active = active;
+        if !report.diagnostics.is_empty() && self.last_spatial_report.diagnostics.is_empty() {
+            for diagnostic in &report.diagnostics {
+                tracing::warn!(
+                    target: "scene",
+                    entity = ?diagnostic.entity,
+                    reason = ?diagnostic.reason,
+                    "[scene] 空间继承未能建立：该实体退回局部值（不做近似）"
+                );
+            }
+        }
+        self.last_spatial_report = report;
     }
 
     /// 当前 2D 相机中心（世界坐标）。编辑器 Scene 视图用它定位设计分辨率包围框，
     /// 使包围框与游戏取景范围一致（默认 `DEFAULT_2D_CAMERA_CENTER`）。
     pub fn camera_center_2d(&self) -> Vec2 {
         self.camera.center
+    }
+
+    /// 当前 2D 相机。
+    #[must_use]
+    pub const fn camera_2d(&self) -> Camera2D {
+        self.camera
+    }
+
+    /// WP5：本帧的 2D overlay 视图（相机 + 视口 + 清屏 + 顺序的唯一说法）。
+    ///
+    /// 与 `vertices(width, height)` **同源**（同一个 `self.camera`），因此渲染器不需要
+    /// 再自己从别处拼一个相机；宿主把两份视图交给 `Renderer::set_frame_views` 即可。
+    pub fn render_view_2d(&self, width: u32, height: u32) -> RenderView {
+        // 窗口最小化时宽高可能是 0；`Viewport::new` 拒绝非正数，这里退到 1×1。
+        let viewport =
+            Viewport::new(width.max(1) as f32, height.max(1) as f32).unwrap_or(Viewport {
+                width: 1.0,
+                height: 1.0,
+            });
+        RenderView::overlay_2d(self.camera, viewport)
     }
 
     /// 设置 Canvas 空间 UI 的参考分辨率（设计分辨率）。同步给 Lua 侧，
@@ -242,6 +431,136 @@ impl RuntimeScene {
     /// 设计分辨率包围框内绘制）；游戏预览保持 true。
     pub fn set_render_ui_overlay(&mut self, enabled: bool) {
         self.render_ui_overlay = enabled;
+    }
+
+    /// 设置每精灵顶点生成的并行度（WP8）。`Parallelism::SEQUENTIAL` 即回滚单线程；
+    /// 两条路径的输出逐字节相同，因此这是一个纯粹的性能开关，不是行为开关。
+    pub fn set_sprite_parallelism(&mut self, parallelism: Parallelism) {
+        self.sprite_parallelism = parallelism;
+    }
+
+    /// WP7 ②：collider 调试绘制开关。默认关闭；Lua 可用 `physics.debug_draw(true)` 打开。
+    pub fn set_collider_debug_draw(&mut self, enabled: bool) {
+        self.collider_debug_draw = enabled;
+    }
+
+    /// 当前 collider 调试绘制开关。
+    #[must_use]
+    pub const fn collider_debug_draw(&self) -> bool {
+        self.collider_debug_draw
+    }
+
+    /// WP4 ④：视口外瓦片剔除开关（默认开启）。关掉即"整层全画"，输出像素必须与开启时
+    /// **逐字节相同**——这是该优化的回滚档，也是它正确性的对拍基准。
+    pub fn set_tilemap_culling(&mut self, enabled: bool) {
+        self.tilemap_culling = enabled;
+    }
+
+    /// 当前视口外瓦片剔除开关。
+    #[must_use]
+    pub const fn tilemap_culling(&self) -> bool {
+        self.tilemap_culling
+    }
+
+    /// WP6：视口外精灵剔除开关（默认开启）。关掉即"所有精灵都生成顶点"，像素必须与开启时
+    /// **逐字节相同**——这是回滚档，也是正确性的对拍基准。
+    pub fn set_sprite_culling(&mut self, enabled: bool) {
+        self.sprite_culling = enabled;
+    }
+
+    /// 当前视口外精灵剔除开关。
+    #[must_use]
+    pub const fn sprite_culling(&self) -> bool {
+        self.sprite_culling
+    }
+
+    /// 把 collider 调试绘制追加到 overlay 缓冲（WP7 ②）。
+    ///
+    /// 数据源是**物理世界当前姿态**（`PhysicsWorld::debug_shapes`），不是场景里的组件串：
+    /// 组件只在实例化时解析一次，而动态刚体每步都在动，调试绘制要看的正是后者。
+    /// 实心碰撞体画绿、sensor 画黄——sensor 不产生物理响应，颜色不同才不会误判。
+    ///
+    /// 全部用白色纹理，因此只追加**一个** draw range；画在世界内容之上、屏幕 UI 之下。
+    fn push_collider_debug(
+        &mut self,
+        vertices: &mut Vec<OverlayVertex>,
+        draws: &mut Vec<SceneDraw>,
+        viewport: Viewport,
+    ) {
+        if !self.collider_debug_draw {
+            return;
+        }
+        let shapes = self.script.collider_debug_shapes();
+        if shapes.is_empty() {
+            return;
+        }
+        let start = vertices.len();
+        for shape in shapes {
+            let color = if shape.sensor {
+                [1.0, 0.85, 0.2, 1.0]
+            } else {
+                [0.2, 1.0, 0.35, 1.0]
+            };
+            let (sin, cos) = shape.rotation.sin_cos();
+            // 轮廓折线（首尾相接），再逐段投影成细四边形。
+            let outline: Vec<Vec2> = match shape.shape {
+                ColliderShape::Cuboid(half) => [
+                    Vec2::new(-half.x, -half.y),
+                    Vec2::new(half.x, -half.y),
+                    Vec2::new(half.x, half.y),
+                    Vec2::new(-half.x, half.y),
+                ]
+                .iter()
+                .map(|corner| {
+                    Vec2::new(
+                        shape.center.x + corner.x * cos - corner.y * sin,
+                        shape.center.y + corner.x * sin + corner.y * cos,
+                    )
+                })
+                .collect(),
+                ColliderShape::Ball(radius) => {
+                    // 圆用 24 边形近似：调试轮廓够用，且段数固定 ⇒ 顶点数确定可断言。
+                    const SEGMENTS: usize = 24;
+                    (0..SEGMENTS)
+                        .map(|step| {
+                            let angle = step as f32 / SEGMENTS as f32 * std::f32::consts::TAU;
+                            Vec2::new(
+                                shape.center.x + angle.cos() * radius,
+                                shape.center.y + angle.sin() * radius,
+                            )
+                        })
+                        .collect()
+                }
+            };
+            for index in 0..outline.len() {
+                let from = outline[index];
+                let to = outline[(index + 1) % outline.len()];
+                let (Ok(from), Ok(to)) = (
+                    self.camera.world_to_screen(from, viewport),
+                    self.camera.world_to_screen(to, viewport),
+                ) else {
+                    continue;
+                };
+                push_screen_line(vertices, [from.x, from.y], [to.x, to.y], color, viewport);
+            }
+        }
+        let count = vertices.len() - start;
+        if count > 0 {
+            draws.push(SceneDraw {
+                texture: 0, // 0 = 内置白色纹理
+                start: start as u32,
+                count: count as u32,
+                sdf: false,
+                vector: false,
+                render_layer: RenderLayer::Overlay2D,
+            });
+        }
+    }
+
+    /// 当前每精灵顶点生成的并行度。
+    #[must_use]
+    pub const fn sprite_parallelism(&self) -> Parallelism {
+        self.sprite_parallelism
     }
 
     /// Updates one authored entity's 2D transform in-place for editor drag
@@ -266,6 +585,36 @@ impl RuntimeScene {
             }
         });
         updated
+    }
+
+    /// 宿主侧写入一个瓦片格（WP4 ④）：编辑器画笔的实时预览与基准都要能在**不重建整个运行时**
+    /// 的前提下改一格。走的是与 Lua `tilemap.set_cell` 同一个 `Tilemap::set_cell`，因此校验
+    /// 与边界规则只有一份。返回 `false` 表示该实体不存在或没有 `Tilemap` 组件。
+    pub fn set_tilemap_cell(
+        &mut self,
+        id: SceneEntityId,
+        x: usize,
+        y: usize,
+        value: u8,
+    ) -> Result<bool, String> {
+        let Some(handle) = self.script.scene_entity_handle(id) else {
+            return Ok(false);
+        };
+        let mut updated = false;
+        let mut failure: Option<String> = None;
+        self.script
+            .with_world_mut(|world| match world.get_mut::<Tilemap>(handle) {
+                Ok(Some(tilemap)) => match tilemap.set_cell(x, y, value) {
+                    Ok(()) => updated = true,
+                    Err(error) => failure = Some(error.to_string()),
+                },
+                Ok(None) => {}
+                Err(error) => failure = Some(error.to_string()),
+            });
+        match failure {
+            Some(message) => Err(message),
+            None => Ok(updated),
+        }
     }
 
     /// Updates one authored UI entity's four-edge offsets in-place for editor
@@ -574,7 +923,7 @@ impl RuntimeScene {
             }
         }
         let text_render_mode = project_text_render_mode(project_root);
-        let camera = Camera2D::new(crate::core::math2d::DEFAULT_2D_CAMERA_CENTER, 1.0)
+        let camera = Camera2D::new(crate::core::camera::DEFAULT_2D_CAMERA_CENTER, 1.0)
             .map_err(|error| error.to_string())?;
         tracing::info!(target: "render", "[render] SpriteBatch and Camera2D initialized");
         // 字体图集不再在此无条件加载：`load_project_font_atlas` 会按 chars.txt 预热
@@ -587,6 +936,10 @@ impl RuntimeScene {
             script,
             script_micros: 0,
             sprite_batch: SpriteBatch::new(),
+            sprite_parallelism: Parallelism::detected(),
+            collider_debug_draw: false,
+            tilemap_culling: true,
+            sprite_culling: true,
             camera,
             viewport_width: 1280,
             viewport_height: 720,
@@ -617,6 +970,14 @@ impl RuntimeScene {
             pending_step_input: None,
             last_schedule: None,
             gamepad: GamepadPoller::platform_default(),
+            // WP2 裁定：`parent` 一律按局部空间解释。默认打开；没有 `Parent` 的场景
+            // （现有全部示例场景）不产生任何传播成本，回滚档是 `set_spatial_inheritance(false)`。
+            spatial_inheritance: true,
+            last_spatial_report: SpatialReport::default(),
+            spatial_active: false,
+            world_sprite_depth: false,
+            physics_authority: PhysicsAuthority::default(),
+            physics_stage_order: PhysicsStageOrder::default(),
         };
         scene.register_builtin_frame_systems();
         Ok(scene)
@@ -675,6 +1036,18 @@ impl RuntimeScene {
             },
         ));
         self.add_builtin_step_system(System::new(
+            "physics_sync",
+            ScheduleStage::Sync,
+            [] as [&str; 0],
+            |scene: &mut RuntimeScene, _| {
+                // WP7：authority = Script 时，物理步之前把 ECS 的权威位置推给模拟世界。
+                if scene.physics_authority.syncs_before_step() {
+                    scene.script.sync_kinematic_bodies();
+                }
+                Ok(())
+            },
+        ));
+        self.add_builtin_step_system(System::new(
             "physics2d_step",
             ScheduleStage::Physics,
             [] as [&str; 0],
@@ -689,6 +1062,23 @@ impl RuntimeScene {
             [] as [&str; 0],
             |scene: &mut RuntimeScene, delta_seconds: f32| {
                 scene.script.step_physics3d(delta_seconds);
+                Ok(())
+            },
+        ));
+        self.add_builtin_step_system(System::new(
+            "physics_writeback",
+            ScheduleStage::Writeback,
+            ["physics2d_step", "physics3d_step"],
+            |scene: &mut RuntimeScene, _| {
+                // WP7：2D 与 3D 的**所有**推进都发生在**任何**回写之前——此前 2D 的回写夹在
+                // 3D 推进之前。authority = Script 时跳过回写（ECS 才是权威）。
+                if scene.physics_authority.writes_back_to_ecs() {
+                    scene.script.writeback_physics();
+                    scene.script.writeback_physics3d();
+                } else {
+                    // 不回写也要把暂存清掉，避免它在下一步被误当成"本步的移动"。
+                    scene.script.discard_pending_writeback();
+                }
                 Ok(())
             },
         ));
@@ -738,15 +1128,43 @@ impl RuntimeScene {
             },
         ));
         self.add_builtin_frame_system(System::new(
+            "camera2d_controller",
+            ScheduleStage::Simulation,
+            [] as [&str; 0],
+            |scene: &mut RuntimeScene, delta_seconds: f32| {
+                scene.step_camera2d(delta_seconds);
+                Ok(())
+            },
+        ));
+        self.add_builtin_frame_system(System::new(
+            "spatial_propagate",
+            ScheduleStage::Spatial,
+            [] as [&str; 0],
+            |scene: &mut RuntimeScene, _| {
+                // WP7：`GlobalTransform` 传播是流水线上的显式一格（回写之后、提取之前）。
+                scene.propagate_spatial_now();
+                Ok(())
+            },
+        ));
+        self.add_builtin_frame_system(System::new(
             "animation_state_advance",
             ScheduleStage::Animation,
             [] as [&str; 0],
             |scene: &mut RuntimeScene, delta_seconds: f32| {
-                scene.script.with_world_mut(|world| {
-                    world.for_each_mut::<AnimationStateMachine>(|_, machine| {
-                        machine.advance(delta_seconds)
-                    })
+                // WP4 ⑦：推进的同时把落在本步的**帧事件**收集起来交给 Lua
+                // （`animation.events()` 轮询，和 `physics.events()` 同一套用法）。
+                // 借用顺序：先在 world 借用内收集，借用结束后再写进 Lua 运行时。
+                let fired = scene.script.with_world_mut(|world| {
+                    let mut fired: Vec<(EntityId, AnimationFrameEvent)> = Vec::new();
+                    world.for_each_mut::<AnimationStateMachine>(|id, machine| {
+                        machine.advance(delta_seconds);
+                        for event in machine.take_frame_events() {
+                            fired.push((id, event));
+                        }
+                    });
+                    fired
                 });
+                scene.script.push_animation_events(fired);
                 Ok(())
             },
         ));
@@ -763,6 +1181,41 @@ impl RuntimeScene {
                 Ok(())
             },
         ));
+    }
+
+    /// 每帧推进 2D 相机控制器：解析跟随目标的世界位置 → 控制器算 center → 复用瓦片图
+    /// 那套 `constrained_camera_center` 做 bounds 钳制（避免出现两套夹取规则）。
+    ///
+    /// 不跟随时控制器原样返回当前中心，因此 `camera2d.set` 的效果不会被覆盖。
+    fn step_camera2d(&mut self, delta_seconds: f32) {
+        // WP5：请求消费、跟随、advance、bounds 钳制的**次序**现在固定在
+        // `Camera2dController::resolve_camera` 内部，宿主不再自己拼这套顺序，也不会出现
+        // "宿主与控制器各夹一次 bounds"的分叉。
+        let follow = self
+            .script
+            .camera2d_controller(|controller| controller.follow_target());
+        let desired = follow.and_then(|entity| {
+            self.script.with_world(|world| {
+                // WP2：跟随目标跟的是**世界**位置（父链下的子实体会跟着父一起动）。
+                crate::core::hierarchy::world_transform_2d(world, entity)
+                    .ok()
+                    .flatten()
+                    .map(|transform| transform.position)
+            })
+        });
+        let viewport = Viewport::new(
+            self.viewport_width.max(1) as f32,
+            self.viewport_height.max(1) as f32,
+        )
+        .unwrap_or_else(|_| Viewport::new(1.0, 1.0).expect("1x1 viewport is valid"));
+        let current = self.camera;
+        self.camera = self.script.camera2d_controller_mut(|controller| {
+            controller.resolve_camera(current, desired, viewport, delta_seconds)
+        });
+        // 回填真实状态：`camera2d.get` 必须读到宿主实际在用的值。
+        let (center, zoom) = (self.camera.center, self.camera.zoom);
+        self.script
+            .camera2d_controller_mut(|controller| controller.report(center, zoom));
     }
 
     /// Advances the runtime by `steps` fixed steps through the shared frame
@@ -824,6 +1277,9 @@ impl RuntimeScene {
             self.gamepad.rumble(low, high, ms);
         }
         self.pending_step_input = None;
+        // WP2：本帧脚本/物理都改完局部变换后，统一传播一次世界变换——渲染与 Lua 的世界位置
+        // 因此都来自同一次传播（3D 提取是 `&self`，不能自己触发传播，所以必须在这里做）。
+        self.propagate_spatial_now();
         outcome
     }
 
@@ -1106,10 +1562,10 @@ impl RuntimeScene {
         // active camera/light selection, and animation palettes remain live.
         let drawables = self.script.with_world(|world| {
             let mut drawables = Vec::new();
-            world.for_each2::<Transform3D, MeshRenderer>(|id, transform, renderer| {
-                let Ok(model) = transform.model_matrix() else {
-                    return;
-                };
+            // WP2：与 2D 精灵同一条约定——开关每帧选定一次遍历用的组件（开启继承时是
+            // `WorldTransform3D`，此时每个有 `Transform3D` 的实体都已拿到世界变换），
+            // 因此不必逐实体"先试世界再退回局部"而多付一次 `get`。
+            let mut collect = |id: EntityId, model: Mat4, renderer: &MeshRenderer| {
                 let name = self
                     .script
                     .entity_name(id)
@@ -1149,7 +1605,20 @@ impl RuntimeScene {
                     palette,
                     bounds,
                 });
-            });
+            };
+            if self.spatial_active {
+                world.for_each2::<WorldTransform3D, MeshRenderer>(|id, transform, renderer| {
+                    if let Ok(model) = transform.0.model_matrix() {
+                        collect(id, model, renderer);
+                    }
+                });
+            } else {
+                world.for_each2::<Transform3D, MeshRenderer>(|id, transform, renderer| {
+                    if let Ok(model) = transform.model_matrix() {
+                        collect(id, model, renderer);
+                    }
+                });
+            }
             drawables
         });
         if drawables.is_empty() {
@@ -1190,17 +1659,33 @@ impl RuntimeScene {
             aspect_ratio,
             near: 0.1,
             far: 100.0,
+            pose_from_transform: false,
         });
-        let selected = self.script.active_camera();
+        // WP5：多相机选择只有一条规则（显式选中优先，否则排序序第一个），由
+        // `CameraSelection` 表述；宿主只在遍历候选时套用它，不再自己写一遍判断。
+        let selection = CameraSelection {
+            active: self.script.active_camera().map(|id| id.index() as u64),
+        };
         let mut camera = self.script.with_world(|world| {
             let mut selected_camera = None;
             let mut fallback = None;
             world.for_each::<Camera3D>(|id, camera| {
+                // WP5：声明了 `pose=transform` 的相机，姿态改由**实体的 Transform3D** 提供
+                // （位置 + -Z 视线 + +Y 上方向），本组件的 position/target 退化为回退值。
+                // 没有 Transform3D 时保持组件姿态（scene_extract 会为此报诊断）。
+                let camera = if camera.pose_from_transform {
+                    match world.get::<Transform3D>(id) {
+                        Ok(Some(pose)) => camera.with_pose(*pose).unwrap_or(*camera),
+                        _ => *camera,
+                    }
+                } else {
+                    *camera
+                };
                 if fallback.is_none() {
-                    fallback = Some(*camera);
+                    fallback = Some(camera);
                 }
-                if selected == Some(id) {
-                    selected_camera = Some(*camera);
+                if selection.is_selected(id.index() as u64) {
+                    selected_camera = Some(camera);
                 }
             });
             selected_camera.or(fallback)
@@ -1237,77 +1722,171 @@ impl RuntimeScene {
         self.viewport_width = width.max(1);
         self.viewport_height = height.max(1);
         self.script.set_ui_viewport(width, height);
+        // WP2：提取前先把局部变换传播成世界变换（开启空间继承时才有实际效果；关闭时这一步
+        // 只会清掉遗留的世界变换组件，消费者读到的仍是局部值 = 旧行为）。
+        self.propagate_spatial_now();
         let viewport = Viewport::new(width.max(1) as f32, height.max(1) as f32)
             .map_err(|error| error.to_string())?;
+        // WP4 ⑧：把本帧渲染用的 2D 相机与视口回填给 Lua，供 `camera2d.screen_to_world`
+        // 一类换算使用。帧首回填 ⇒ 脚本看到的是上一帧末相机控制器算出的、也就是玩家刚看到的
+        // 那一帧的投影；脚本在首帧渲染前调用换算会报错而不是猜一个默认相机。
+        self.script
+            .set_camera_view(self.camera, [width.max(1) as f32, height.max(1) as f32]);
         self.sprite_batch.clear();
+        // WP6：收集阶段的可见域。开着时 `SpriteBatch::push` 直接丢掉不可能落在视口内的精灵，
+        // 省下每项 80 字节的写入与后续排序——5 万精灵档实测这部分占掉整帧的大头（docs/53 §3.9）。
+        // 世界矩形只看相机，与 `sprite_culling` 同一个开关：关掉即全收，像素不变。
+        let cull_bounds = if self.sprite_culling {
+            Some(
+                self.camera
+                    .visible_world_bounds(viewport)
+                    .map_err(|error| error.to_string())?,
+            )
+        } else {
+            None
+        };
+        self.sprite_batch.set_cull_bounds(cull_bounds);
         self.texture_paths.clear();
         self.texture_lookup.clear();
         // 每帧先清空：布局阶段（push_scene_ui 等）再把本帧用到的自定义字体 key 记入。
         self.frame_font_keys.clear();
-        let sprites = self.script.with_world(|world| {
-            let mut sprites = Vec::new();
-            world.for_each::<Sprite>(|id, sprite| {
-                let Ok(Some(transform)) = world.get::<Transform>(id) else {
-                    return;
-                };
-                let animation = world
-                    .get::<AnimationStateMachine>(id)
-                    .ok()
-                    .flatten()
-                    .cloned();
-                let asset = world
-                    .get::<SpriteAsset>(id)
-                    .ok()
-                    .flatten()
-                    .map(|entry| entry.path().to_owned());
-                let sorting = world.get::<SpriteSorting>(id).ok().flatten().cloned();
-                sprites.push((*transform, *sprite, animation, asset, sorting));
-            });
-            sprites
-        });
         // Tile maps draw first (layer 0), sprite entities on top (layer 1+).
-        let tilemap_mesh = self.build_tilemap_mesh(viewport)?;
-        for (index, (transform, sprite, animation, asset, sorting)) in
-            sprites.into_iter().enumerate()
+        //
+        // WP6 顶点单趟化：瓦片与精灵的顶点**直接以 NDC 追加进同一个最终缓冲**，不再先各自
+        // 物化一份 `SpriteVertex`（10k 精灵实测 1.9 MB）再由宿主逐顶点转换。draw range 由
+        // 各段按当前缓冲长度自行偏移，因此两段可以连续追加而无需事后再合并。
+        let mut vertices: Vec<OverlayVertex> = Vec::new();
+        let mut draw_ranges: Vec<SpriteDrawBatch> = Vec::new();
+        // WP6：世界 Sprite 深度通道的输出（世界坐标 + z）。关闭时全程为空，渲染器不执行该
+        // 通道；打开时精灵与瓦片层都往这里写。
+        let mut world_sprites: Vec<WorldSpriteVertex> = Vec::new();
+        let mut world_sprite_draws: Vec<SpriteDrawBatch> = Vec::new();
+        self.append_tilemap_vertices(
+            &mut vertices,
+            &mut world_sprites,
+            &mut draw_ranges,
+            &mut world_sprite_draws,
+            viewport,
+        )?;
+        // WP6：精灵直接写进批处理，不再每帧先造一份
+        // `(Transform, Sprite, Option<AnimationStateMachine>, Option<String>, Option<SpriteSorting>)`
+        // 中间表——那份表每帧要搬上兆字节，还要为每个精灵克隆资源路径与排序层字符串。
+        // 纹理注册顺序与旧路径完全一致（同一遍历顺序、同一注册点），因此纹理下标不变。
         {
-            let (texture, sprite) = if let Some(machine) = animation {
-                // Animated sprite: sample the current clip's sheet at its frame UV.
-                let (uv_min, uv_max) = machine.current_frame_uv();
-                let sprite = sprite
-                    .with_uv(uv_min, uv_max)
-                    .map_err(|error| error.to_string())?;
-                let sheet = machine.current_clip().sheet.clone();
-                (self.texture_id(&sheet), sprite)
-            } else if let Some(path) = asset {
-                (self.texture_id(&path), sprite)
-            } else {
-                continue;
-            };
-            let layer = sorting
-                .as_ref()
-                .map(SpriteSorting::effective_layer)
-                .unwrap_or(1 + index as i32);
-            self.sprite_batch
-                .push(SpriteBatchItem::new(texture, layer, sprite, transform));
+            let RuntimeScene {
+                script,
+                sprite_batch,
+                texture_paths,
+                texture_lookup,
+                ..
+            } = self;
+            let mut failure: Option<String> = None;
+            let inherit = self.spatial_active;
+            script.with_world(|world| {
+                let mut index = 0usize;
+                // WP2：提取用的变换来源由空间继承开关**每帧选定一次**：开启时整条换成
+                // `WorldTransform`，关闭时仍走 `Transform`。刻意不做"每个实体先试世界再退回局部"
+                // ——那会给每个精灵多一次 `get`（两层哈希），WP6 已量到那正是 5 万精灵档的大头。
+                // 不变量（见 `core::hierarchy`）：开启继承时**每个有局部变换的实体都有世界变换**
+                // （组合不了或成环的保留局部值当世界值），所以整条替换不会漏画任何一个精灵。
+                let mut collect = |id: EntityId, transform: &Transform, sprite: &Sprite| {
+                    if failure.is_some() {
+                        return;
+                    }
+                    // 与旧实现一致：序号在"通过 Transform 检查"后前进，缺资源的精灵
+                    // 仍然占一个序号（否则默认绘制层会整体前移）。
+                    let layer_index = index;
+                    index += 1;
+                    let (texture, sprite) =
+                        match world.get::<AnimationStateMachine>(id).ok().flatten() {
+                            Some(machine) => {
+                                let (uv_min, uv_max) = machine.current_frame_uv();
+                                let sampled = match sprite.with_uv(uv_min, uv_max) {
+                                    Ok(sampled) => sampled,
+                                    Err(error) => {
+                                        failure = Some(error.to_string());
+                                        return;
+                                    }
+                                };
+                                let sheet = machine.current_clip().sheet.as_str();
+                                (texture_id_of(sheet, texture_paths, texture_lookup), sampled)
+                            }
+                            None => match world.get::<SpriteAsset>(id).ok().flatten() {
+                                Some(asset) => (
+                                    texture_id_of(asset.path(), texture_paths, texture_lookup),
+                                    *sprite,
+                                ),
+                                None => return,
+                            },
+                        };
+                    let layer = world
+                        .get::<SpriteSorting>(id)
+                        .ok()
+                        .flatten()
+                        .map(SpriteSorting::effective_layer)
+                        .unwrap_or(1 + layer_index as i32);
+                    sprite_batch.push(SpriteBatchItem::new(texture, layer, sprite, *transform));
+                };
+                // `for_each2` 把变换直接交到手上，省掉每个精灵一次 `get::<Transform>`——那是一次
+                // `TypeId` 表查询 + 一次实体表查询（两层哈希），5 万精灵档实测就是它的主要成本
+                // （docs/53 §3.10）。两者都按"排序实体序"遍历，且没有变换的精灵本来就被跳过
+                // （不推进序号），因此语义不变。
+                if inherit {
+                    world.for_each2::<WorldTransform, Sprite>(|id, transform, sprite| {
+                        collect(id, &transform.0, sprite);
+                    });
+                } else {
+                    world.for_each2::<Transform, Sprite>(|id, transform, sprite| {
+                        collect(id, transform, sprite);
+                    });
+                }
+            });
+            if let Some(message) = failure {
+                return Err(message);
+            }
         }
         self.push_particles()?;
-        let mesh = self
-            .sprite_batch
-            .build(self.camera, viewport)
-            .map_err(|error| error.to_string())?;
+        // 精灵沿用现有的排序与错误语义，但顶点直接按 NDC 追加到 `vertices` 之后（瓦片之上）。
+        // **必须预留容量**：追加式写入若从零一路翻倍到 6 万顶点，光增长就多分配约一倍字节
+        // （实测 10k 精灵档 4.53 → 7.53 MB，比单趟化省下的还多）。按每精灵 6 个顶点一次开够；
+        // `reserve` 在容量已足时是空操作，不会浪费瓦片层已预留的部分。
+        if self.world_sprite_depth {
+            // WP6：世界 Sprite 走带深度的通道——世界坐标 + `Sprite::z`，投影交给顶点着色器。
+            // 排序/分段/剔除与 overlay 路径同源（同一个批处理、同一把剔除量尺）。
+            self.sprite_batch
+                .build_world_into(
+                    &mut world_sprites,
+                    &mut world_sprite_draws,
+                    cull_bounds,
+                    self.sprite_parallelism,
+                )
+                .map_err(|error| error.to_string())?;
+        } else {
+            vertices.reserve(self.sprite_batch.len() * 6);
+            draw_ranges.reserve(2);
+            self.sprite_batch
+                .build_overlay_into(
+                    self.camera,
+                    viewport,
+                    &mut vertices,
+                    &mut draw_ranges,
+                    self.sprite_parallelism,
+                    self.sprite_culling,
+                )
+                .map_err(|error| error.to_string())?;
+        }
+
         let mut vector_vertices = Vec::with_capacity(256);
         let mut vector_glyphs = Vec::with_capacity(64);
         let mut vector_segments = Vec::with_capacity(1024);
-        let mesh = merge_sprite_meshes(tilemap_mesh, mesh);
         tracing::debug!(
             target: "render",
             "[render] batch items={} vertices={} draw_ranges={}",
             self.sprite_batch.len(),
-            mesh.vertices.len(),
-            mesh.draws.len()
+            vertices.len(),
+            draw_ranges.len()
         );
-        let mut draws: Vec<SceneDraw> = mesh
-            .draws
+        let mut draws: Vec<SceneDraw> = draw_ranges
             .iter()
             .map(|draw| SceneDraw {
                 texture: draw.texture_id + 1, // 0 is reserved for the white texture
@@ -1315,13 +1894,27 @@ impl RuntimeScene {
                 count: draw.vertex_count as u32,
                 sdf: false,
                 vector: false,
+                render_layer: RenderLayer::World2D,
             })
             .collect();
-        let mut vertices: Vec<OverlayVertex> = mesh
-            .vertices
-            .iter()
-            .map(|vertex| sprite_vertex(vertex, viewport))
-            .collect();
+        // WP7 ②：collider 调试绘制（世界内容之上、屏幕 UI 之下）。Lua 的开关请求
+        // 在这里被取走，与 camera2d 的请求/消费模式一致。
+        if let Some(enabled) = self.script.take_collider_debug_request() {
+            self.collider_debug_draw = enabled;
+        }
+        self.push_collider_debug(&mut vertices, &mut draws, viewport); // 世界空间文字：投影锚点后走同一套字形管线；绘制在精灵之上、屏幕 UI 之下。
+        // 不受 `render_ui_overlay` 开关影响——它是世界内容，不是屏幕 UI。
+        self.push_world_text(
+            &mut vertices,
+            &mut world_sprites,
+            &mut draws,
+            &mut world_sprite_draws,
+            &mut vector_vertices,
+            &mut vector_glyphs,
+            &mut vector_segments,
+            width,
+            height,
+        )?;
         // Screen-space UI (health bars, prompt text) draws last, on top。
         // 编辑器场景视图置 render_ui_overlay=false：UI 由 egui 在设计分辨率包围框内
         // 绘制布局框，跳过此 NDC 覆盖层避免冲突。
@@ -1386,9 +1979,16 @@ impl RuntimeScene {
             None
         };
         let custom_font_atlases = self.snapshot_custom_fonts(!vertices.is_empty());
+        // WP6 世界通道的**跨产出者**排序：瓦片层、精灵、世界文字是三个各自有序的产出者
+        // （瓦片与世界文字都在世界平面 z=0，精灵带自己的 z）。不写深度时顺序就是一切，
+        // 因此在交给渲染器之前按"先层、再 z 从远到近、最后原有先后"整体重排一次，
+        // 让半透明走画家算法正确叠加。
+        sort_world_ranges(&mut world_sprites, &mut world_sprite_draws);
         Ok(SceneMesh {
             vertices,
             draws,
+            world_sprites,
+            world_sprite_draws,
             paths: self.texture_paths.clone(),
             font_atlas,
             custom_font_atlases,
@@ -1447,26 +2047,46 @@ impl RuntimeScene {
     /// Pushes every active particle as a small white-texture quad in world
     /// space, so they sit with the scene and fade out with their color alpha.
     fn push_particles(&mut self) -> Result<(), String> {
-        let particles = self.script.with_particles(|particles| particles.to_vec());
-        if particles.is_empty() {
-            return Ok(());
+        // 直接在借用内部写入批次：旧实现先把整条粒子数组 `to_vec()` 拷一份，10k 粒子
+        // 每帧白拷 840 KB（`wp0-v4` 的粒子阶梯）。
+        let RuntimeScene {
+            script,
+            sprite_batch,
+            texture_paths,
+            texture_lookup,
+            ..
+        } = self;
+        let texture = texture_id_of(WHITE_TEXTURE_PATH, texture_paths, texture_lookup);
+        let mut failure: Option<String> = None;
+        script.with_particles(|particles| {
+            for particle in particles {
+                let size = particle.size();
+                // 尺寸曲线收到 0 时该粒子不该再占一个四边形。
+                if size <= 0.0 {
+                    continue;
+                }
+                let color = particle.color();
+                let sprite = match Sprite::new(Vec2::new(size, size))
+                    .and_then(|sprite| sprite.with_tint([color[0], color[1], color[2], color[3]]))
+                {
+                    Ok(sprite) => sprite,
+                    Err(error) => {
+                        failure = Some(error.to_string());
+                        return;
+                    }
+                };
+                // 自转复用 Transform，与精灵走同一条变换路径。
+                let transform = Transform {
+                    rotation: particle.rotation,
+                    ..Transform::from_position(particle.position)
+                };
+                sprite_batch.push(SpriteBatchItem::new(texture, 1, sprite, transform));
+            }
+        });
+        match failure {
+            Some(message) => Err(message),
+            None => Ok(()),
         }
-        let texture = self.texture_id(WHITE_TEXTURE_PATH);
-        for particle in particles {
-            let sprite = Sprite::new(Vec2::new(particle.size, particle.size))
-                .map_err(|error| error.to_string())?
-                .with_tint([
-                    particle.color[0],
-                    particle.color[1],
-                    particle.color[2],
-                    particle.color[3] * particle.fade(),
-                ])
-                .map_err(|error| error.to_string())?;
-            let transform = Transform::from_position(particle.position);
-            self.sprite_batch
-                .push(SpriteBatchItem::new(texture, 1, sprite, transform));
-        }
-        Ok(())
     }
 
     /// E16：实体带 `UiLayout` 组件时，其四边 Anchor+Offset 布局优先于
@@ -1527,6 +2147,7 @@ impl RuntimeScene {
                 count: vertices.len() as u32 - start,
                 sdf: false,
                 vector: false,
+                render_layer: RenderLayer::ScreenUI,
             });
         }
         Ok(())
@@ -1581,6 +2202,7 @@ impl RuntimeScene {
                 count: vertices.len() as u32 - start,
                 sdf: false,
                 vector: false,
+                render_layer: RenderLayer::ScreenUI,
             });
             for index in 1..=grid.columns * grid.rows {
                 let Some((cell_origin, cell_size)) = grid.cell_rect(
@@ -1607,6 +2229,7 @@ impl RuntimeScene {
                     count: vertices.len() as u32 - start,
                     sdf: false,
                     vector: false,
+                    render_layer: RenderLayer::ScreenUI,
                 });
                 if let Some(texture) = cell.texture {
                     let image = DynamicUiImage {
@@ -1664,6 +2287,7 @@ impl RuntimeScene {
                 count,
                 sdf: false,
                 vector: false,
+                render_layer: RenderLayer::ScreenUI,
             });
         }
         Ok(())
@@ -1720,7 +2344,14 @@ impl RuntimeScene {
                 } else {
                     ATLAS_TEXTURE_PATH.to_owned()
                 };
-                self.push_text_run(vertices, draws, text_vertices, is_sdf, &font_key);
+                self.push_text_run(
+                    vertices,
+                    draws,
+                    text_vertices,
+                    is_sdf,
+                    &font_key,
+                    RenderLayer::ScreenUI,
+                );
             }
         }
         Ok(())
@@ -1802,8 +2433,146 @@ impl RuntimeScene {
                 }
                 let (mesh, is_sdf, font_key) = self.layout_scene_text(&text, position)?;
                 let text_vertices = text_to_ndc(mesh, is_sdf, width, height);
-                self.push_text_run(vertices, draws, text_vertices, is_sdf, &font_key);
+                self.push_text_run(
+                    vertices,
+                    draws,
+                    text_vertices,
+                    is_sdf,
+                    &font_key,
+                    RenderLayer::ScreenUI,
+                );
             }
+        }
+        Ok(())
+    }
+
+    /// 世界空间文字（WP4）：把实体的世界位置投影到屏幕后，走与屏幕文字**完全相同**的
+    /// 字形管线（含 vector / SDF 两种模式与自定义字体）。
+    ///
+    /// 绘制层：精灵之上、屏幕 UI 之下，不参与世界深度。字形预热必须在构建任何字形网格
+    /// **之前**完成，理由与 `push_scene_ui` 中的说明相同（图集增长会让先构建的网格 UV 失效）。
+    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
+    fn push_world_text(
+        &mut self,
+        vertices: &mut Vec<OverlayVertex>,
+        world_vertices: &mut Vec<WorldSpriteVertex>,
+        draws: &mut Vec<SceneDraw>,
+        world_draws: &mut Vec<SpriteDrawBatch>,
+        vector_vertices: &mut Vec<FrameVectorTextVertex>,
+        vector_glyphs: &mut Vec<VectorGlyphSnapshot>,
+        vector_segments: &mut Vec<VectorSegmentSnapshot>,
+        width: u32,
+        height: u32,
+    ) -> Result<(), String> {
+        // WP2：世界文字锚在**世界**位置上——继承开启时读传播结果，关闭时读局部值。
+        // 两条路径都是 `for_each2`，因此不额外多做一次 `get`。
+        let inherit = self.spatial_active;
+        let entries = self.script.with_world(|world| {
+            let mut entries = Vec::new();
+            if inherit {
+                world.for_each2::<WorldTransform, WorldText>(|id, transform, text| {
+                    entries.push((id, transform.0, text.clone()));
+                });
+            } else {
+                world.for_each2::<Transform, WorldText>(|id, transform, text| {
+                    entries.push((id, *transform, text.clone()));
+                });
+            }
+            entries
+        });
+        if entries.is_empty() {
+            return Ok(());
+        }
+        let prewarm = entries
+            .iter()
+            .map(|(id, _, text)| (*id, text.text.clone()))
+            .collect::<Vec<_>>();
+        self.prewarm_frame_glyphs(&prewarm);
+
+        let viewport = Viewport::new(width.max(1) as f32, height.max(1) as f32)
+            .map_err(|error| error.to_string())?;
+        let camera = self.camera;
+        for (_, transform, text) in entries {
+            let Ok(screen) = camera.world_to_screen(transform.position, viewport) else {
+                continue;
+            };
+            let mut origin = [screen.x + text.offset[0], screen.y + text.offset[1]];
+            if text.centered {
+                let (size, _) = self.measure_scene_ui_text(&text.text);
+                origin[0] -= size[0] * 0.5;
+            }
+            let use_vector = self.should_render_vector(
+                Some(text.text.font.as_str()),
+                text.text.effective_scale(),
+                text.text.text.chars().count(),
+            );
+            if use_vector
+                && self.push_vector_text_run(
+                    vector_vertices,
+                    vector_glyphs,
+                    vector_segments,
+                    &text.text.text,
+                    origin,
+                    text.text.effective_scale(),
+                    text.text.color,
+                    Some(&text.text.font),
+                    width,
+                    height,
+                )?
+            {
+                continue;
+            }
+            let (mesh, is_sdf, font_key) = self.layout_scene_text(&text.text, origin)?;
+            if self.world_sprite_depth {
+                // WP6：世界文字也进世界坐标深度通道。做法是把**像素空间**的字形顶点经
+                // `view_projection` 的逆映射回世界坐标——因此屏幕上的观感与 overlay 路径
+                // 逐个像素一致（字号仍是像素大小、随 zoom 换算成世界尺寸），但它有了世界
+                // 坐标与 z，可以和精灵/瓦片一起参与深度测试。
+                let Ok(matrix) = camera.view_projection(viewport, -1.0, 1.0) else {
+                    continue;
+                };
+                let Ok(inverse) = matrix.inverse() else {
+                    continue;
+                };
+                let converted = mesh
+                    .vertices
+                    .iter()
+                    .map(|vertex| {
+                        let ndc = ndc_from_screen(vertex.position, viewport);
+                        let Ok(world) = inverse.transform_point(Vec3::new(ndc[0], ndc[1], 0.0))
+                        else {
+                            return None;
+                        };
+                        Some(WorldSpriteVertex {
+                            position: [world.x, world.y, 0.0],
+                            uv: vertex.uv,
+                            color: vertex.color,
+                        })
+                    })
+                    .collect::<Option<Vec<_>>>();
+                if let Some(converted) = converted {
+                    let start = world_vertices.len();
+                    world_vertices.extend(converted);
+                    world_draws.push(SpriteDrawBatch {
+                        texture_id: self.texture_id(&font_key),
+                        layer: 0,
+                        render_layer: RenderLayer::World2D,
+                        vertex_start: start,
+                        vertex_count: world_vertices.len() - start,
+                    });
+                }
+                continue;
+            }
+            let text_vertices = text_to_ndc(mesh, is_sdf, width, height);
+            self.push_text_run(
+                vertices,
+                draws,
+                text_vertices,
+                is_sdf,
+                &font_key,
+                RenderLayer::World2D,
+            );
         }
         Ok(())
     }
@@ -1991,6 +2760,7 @@ impl RuntimeScene {
         text_vertices: Vec<OverlayVertex>,
         is_sdf: bool,
         font_key: &str,
+        render_layer: RenderLayer,
     ) {
         if text_vertices.is_empty() {
             return;
@@ -2008,6 +2778,7 @@ impl RuntimeScene {
             count: vertices.len() as u32 - start,
             sdf: is_sdf,
             vector: false,
+            render_layer,
         });
     }
 
@@ -2076,6 +2847,7 @@ impl RuntimeScene {
                     count: vertices.len() as u32 - start,
                     sdf: false,
                     vector: false,
+                    render_layer: RenderLayer::ScreenUI,
                 });
             }
             return Ok(());
@@ -2130,20 +2902,14 @@ impl RuntimeScene {
             count: vertices.len() as u32 - start,
             sdf: false,
             vector: false,
+            render_layer: RenderLayer::ScreenUI,
         });
         Ok(())
     }
 
     /// Deduplicates a texture asset path and returns its id for batch items.
     fn texture_id(&mut self, path: &str) -> u32 {
-        if let Some(index) = self.texture_lookup.get(path) {
-            return *index;
-        }
-        let index = self.texture_paths.len() as u32;
-        let path = path.to_owned();
-        self.texture_paths.push(path.clone());
-        self.texture_lookup.insert(path, index);
-        index
+        texture_id_of(path, &mut self.texture_paths, &mut self.texture_lookup)
     }
 
     /// 纹理像素尺寸（惰性、按 path 缓存），仅供九宫格 UV 计算。只读 PNG 头，
@@ -2177,37 +2943,172 @@ impl RuntimeScene {
 
     /// Builds the 2D mesh for all Tilemap components using a tilemap-specific
     /// hot path that precomputes shared camera/rotation terms once per frame.
-    fn build_tilemap_mesh(&mut self, viewport: Viewport) -> Result<SpriteBatchMesh, String> {
-        let tilemaps = self.script.with_world(|world| {
-            let mut tilemaps = Vec::new();
-            world.for_each2::<Transform, Tilemap>(|id, transform, tilemap| {
-                tilemaps.push((id, *transform, tilemap.clone()));
-            });
-            tilemaps
-        });
-        let mut next_cache = HashMap::with_capacity(tilemaps.len());
-        let mut vertices = Vec::new();
-        let mut draws = Vec::new();
-        let camera = TilemapCamera::new(self.camera, viewport)?;
-        for (entity, transform, tilemap) in tilemaps {
-            let texture = self.texture_id(&tilemap.texture);
-            let cached = self.tilemap_cache.remove(&entity);
-            let layer = match cached {
-                Some(layer) if layer.transform == transform && layer.tilemap == tilemap => layer,
-                _ => build_cached_tilemap_layer(transform, tilemap.clone())?,
-            };
-            append_tilemap_layer(&mut vertices, &mut draws, texture, &camera, &layer);
-            next_cache.insert(entity, layer);
+    ///
+    /// 缓存命中时**不克隆地图**：把上一帧的缓存整体取出，命中的条目直接移动进新缓存，
+    /// 只有真正变化的地图才克隆重建。旧实现每帧为每个 Tilemap 克隆整张地图，100×100
+    /// 实测每帧 8.5 MB 分配（`wp0-v4` 的 tilemap 阶梯）。
+    fn append_tilemap_vertices(
+        &mut self,
+        vertices: &mut Vec<OverlayVertex>,
+        world_vertices: &mut Vec<WorldSpriteVertex>,
+        overlay_draws: &mut Vec<SpriteDrawBatch>,
+        world_draws: &mut Vec<SpriteDrawBatch>,
+        viewport: Viewport,
+    ) -> Result<(), String> {
+        let camera = TilemapCamera::new(self.camera, viewport);
+        // WP4 ④：视口外瓦片只在 `vertices()` 之外还被用到时不剔除（不存在这种调用），
+        // 因此这里直接取运行时开关；关掉即像素对拍用的"整层全画"档。
+        let cull = self.tilemap_culling;
+        // WP6：世界 Sprite 深度通道打开时，瓦片层也产出**世界坐标**顶点（与精灵一致），
+        // 因此它同样参与深度测试——此前只有精灵有世界顶点，瓦片会被挡在通道外面。
+        let world_pass = self.world_sprite_depth;
+        let cull_bounds = if cull && world_pass {
+            self.camera.visible_world_bounds(viewport).ok()
+        } else {
+            None
+        };
+        {
+            let RuntimeScene {
+                script,
+                tilemap_cache,
+                texture_paths,
+                texture_lookup,
+                ..
+            } = self;
+            let mut previous = std::mem::take(tilemap_cache);
+            let mut next_cache = HashMap::with_capacity(previous.len());
+            let mut failure: Option<String> = None;
+            let inherit = self.spatial_active;
+            script.with_world(|world| {
+                // WP2：瓦片层挂在**世界**位置上（继承开启时读传播结果，关闭时读局部值）。
+                // 缓存比较用的也是同一个值，因此开关切换会让缓存自然失效、不会画在旧位置。
+                let mut collect = |entity: EntityId, transform: &Transform, tilemap: &Tilemap| {
+                    if failure.is_some() {
+                        return;
+                    }
+                    let texture = texture_id_of(&tilemap.texture, texture_paths, texture_lookup);
+                    let layer = match previous.remove(&entity) {
+                        Some(layer)
+                            if layer.transform == *transform && layer.tilemap == *tilemap =>
+                        {
+                            layer
+                        }
+                        _ => match build_cached_tilemap_layer(*transform, tilemap.clone()) {
+                            Ok(layer) => layer,
+                            Err(error) => {
+                                failure = Some(error);
+                                return;
+                            }
+                        },
+                    };
+                    // 预留本层顶点容量：`Vec::new()` 一路翻倍到 6 万顶点会额外搬上兆字节
+                    // （`wp0-v4` tilemap 阶梯实测的每帧分配里，增长churn 占约 1.9 MB）。
+                    if world_pass {
+                        world_vertices.reserve(layer.sprites.len() * 6);
+                        world_draws.reserve(1);
+                        append_tilemap_layer_world(
+                            world_vertices,
+                            world_draws,
+                            texture,
+                            &layer,
+                            cull_bounds,
+                        );
+                    } else {
+                        vertices.reserve(layer.sprites.len() * 6);
+                        overlay_draws.reserve(1);
+                        append_tilemap_layer(
+                            vertices,
+                            overlay_draws,
+                            texture,
+                            &camera,
+                            &layer,
+                            cull,
+                        );
+                    }
+                    next_cache.insert(entity, layer);
+                };
+                if inherit {
+                    world.for_each2::<WorldTransform, Tilemap>(|entity, transform, tilemap| {
+                        collect(entity, &transform.0, tilemap);
+                    });
+                } else {
+                    world.for_each2::<Transform, Tilemap>(|entity, transform, tilemap| {
+                        collect(entity, transform, tilemap);
+                    });
+                }
+            }); // 先提交已处理部分，再报错：出错帧不清空整张缓存，下一帧能继续复用。
+            *tilemap_cache = next_cache;
+            if let Some(message) = failure {
+                return Err(message);
+            }
         }
-        self.tilemap_cache = next_cache;
-        Ok(SpriteBatchMesh { vertices, draws })
+        Ok(())
     }
+}
+
+/// 屏幕空间的一条细线 → 6 个 NDC 顶点（两个三角形）。
+///
+/// 用四边形而不是 `LineStrip`：overlay 管线只有三角形，且这样与精灵/文字走同一条顶点路径。
+fn push_screen_line(
+    vertices: &mut Vec<OverlayVertex>,
+    from: [f32; 2],
+    to: [f32; 2],
+    color: [f32; 4],
+    viewport: Viewport,
+) {
+    const HALF_THICKNESS: f32 = 0.75;
+    let dx = to[0] - from[0];
+    let dy = to[1] - from[1];
+    let length = (dx * dx + dy * dy).sqrt();
+    if length <= f32::EPSILON {
+        return;
+    }
+    let normal = [-dy / length * HALF_THICKNESS, dx / length * HALF_THICKNESS];
+    let corners = [
+        [from[0] - normal[0], from[1] - normal[1]],
+        [from[0] + normal[0], from[1] + normal[1]],
+        [to[0] + normal[0], to[1] + normal[1]],
+        [to[0] - normal[0], to[1] - normal[1]],
+    ];
+    let n = |corner: usize| {
+        OverlayVertex::from_ndc(ndc_from_screen(corners[corner], viewport), [0.0; 2], color)
+    };
+    vertices.extend_from_slice(&[n(0), n(1), n(2), n(0), n(2), n(3)]);
+}
+
+/// 纹理路径 → 每帧下标注册。
+///
+/// 抽成自由函数是为了让 `vertices` 能在 `world` 借用内部直接写入这两张表，而不必先
+/// 克隆一份中间表——那样每帧要为每个精灵克隆一次资源路径（见该处注释）。
+fn texture_id_of(path: &str, paths: &mut Vec<String>, lookup: &mut HashMap<String, u32>) -> u32 {
+    if let Some(index) = lookup.get(path) {
+        return *index;
+    }
+    let index = paths.len() as u32;
+    let owned = path.to_owned();
+    paths.push(owned.clone());
+    lookup.insert(owned, index);
+    index
 }
 
 /// Captures the serialized scene hierarchy and UI layout data once. Runtime
 /// entity slots are allocated in scene iteration order, so layout nodes are
 /// keyed by that order rather than by the scene file's sparse entity ids.
+///
+/// **只为参与场景 UI 的实体建节点**：带 UI 组件的实体，以及它们的祖先与后代。
+/// 祖先用于解析父链，后代是因为容器的子节点自身可能没有 UI 组件却被容器摆放。
+/// 其余实体（例如上万个纯精灵）不建节点——否则每帧的布局解算会随**总实体数**增长
+/// （`wp0-v4` 实测 10k 纯精灵场景每帧多出 3,339 次分配，正是这张全量节点表造成的）。
 fn build_ui_scene_nodes(scene: &Scene, honor_editor_hidden: bool) -> BTreeMap<u64, UiSceneNode> {
+    /// 决定实体是否参与场景 UI 的组件名。
+    const UI_COMPONENTS: [&str; 6] = [
+        "UiLayout",
+        "Container",
+        "Text",
+        "Image",
+        "UiEvents",
+        "ButtonStates",
+    ];
     let mut id_to_key = BTreeMap::new();
     for entity in scene.entities.values() {
         if honor_editor_hidden && scene.is_entity_hidden_with_ancestors(entity.id) {
@@ -2215,9 +3116,44 @@ fn build_ui_scene_nodes(scene: &Scene, honor_editor_hidden: bool) -> BTreeMap<u6
         }
         id_to_key.insert(entity.id.0, id_to_key.len() as u64);
     }
+    // 相关集合：UI 实体 + 祖先 + 后代。
+    let mut relevant = HashSet::new();
+    for entity in scene.entities.values() {
+        if UI_COMPONENTS
+            .iter()
+            .any(|name| entity.components.contains_key(*name))
+        {
+            relevant.insert(entity.id.0);
+        }
+    }
+    let mut children: BTreeMap<u64, Vec<u64>> = BTreeMap::new();
+    for entity in scene.entities.values() {
+        if let Some(parent) = entity.parent {
+            children.entry(parent.0).or_default().push(entity.id.0);
+        }
+    }
+    let mut frontier = relevant.iter().copied().collect::<Vec<_>>();
+    while let Some(id) = frontier.pop() {
+        if let Some(entity) = scene.entities.get(&SceneEntityId(id))
+            && let Some(parent) = entity.parent
+            && relevant.insert(parent.0)
+        {
+            frontier.push(parent.0);
+        }
+        if let Some(kids) = children.get(&id) {
+            for kid in kids {
+                if relevant.insert(*kid) {
+                    frontier.push(*kid);
+                }
+            }
+        }
+    }
     let mut nodes = BTreeMap::new();
     for entity in scene.entities.values() {
         if honor_editor_hidden && scene.is_entity_hidden_with_ancestors(entity.id) {
+            continue;
+        }
+        if !relevant.contains(&entity.id.0) {
             continue;
         }
         let Some(&entity_key) = id_to_key.get(&entity.id.0) else {
@@ -2291,20 +3227,24 @@ struct TilemapCamera {
     zoom: f32,
     half_width: f32,
     half_height: f32,
+    /// 屏幕像素 → NDC 需要视口尺寸；与精灵路径共用 `core::sprite_batch::ndc_from_screen`，
+    /// 保证两条路径的换算永远一致。
+    viewport: Viewport,
 }
 
 impl TilemapCamera {
-    fn new(camera: Camera2D, viewport: Viewport) -> Result<Self, String> {
-        let center = constrained_camera_center(camera, viewport);
+    fn new(camera: Camera2D, viewport: Viewport) -> Self {
+        let center = camera.constrained_center(viewport).unwrap_or(camera.center);
         let (sin, cos) = camera.rotation.sin_cos();
-        Ok(Self {
+        Self {
             center,
             sin,
             cos,
             zoom: camera.zoom,
             half_width: viewport.width * 0.5,
             half_height: viewport.height * 0.5,
-        })
+            viewport,
+        }
     }
 
     fn world_to_screen(self, world: Vec2) -> [f32; 2] {
@@ -2328,43 +3268,21 @@ impl TilemapCamera {
     }
 }
 
-fn constrained_camera_center(camera: Camera2D, viewport: Viewport) -> Vec2 {
-    let Some(bounds) = camera.bounds else {
-        return camera.center;
-    };
-    let half_width = viewport.width * 0.5 / camera.zoom;
-    let half_height = viewport.height * 0.5 / camera.zoom;
-    let (sin, cos) = camera.rotation.sin_cos();
-    let extent_x = half_width * cos.abs() + half_height * sin.abs();
-    let extent_y = half_width * sin.abs() + half_height * cos.abs();
-    Vec2::new(
-        clamp_center(
-            camera.center.x,
-            bounds.min.x + extent_x,
-            bounds.max.x - extent_x,
-        ),
-        clamp_center(
-            camera.center.y,
-            bounds.min.y + extent_y,
-            bounds.max.y - extent_y,
-        ),
-    )
-}
-
-fn clamp_center(value: f32, minimum: f32, maximum: f32) -> f32 {
-    if minimum > maximum {
-        (minimum + maximum) * 0.5
-    } else {
-        value.clamp(minimum, maximum)
-    }
-}
-
-fn append_tilemap_layer(
-    vertices: &mut Vec<SpriteVertex>,
+/// 把一层的瓦片顶点**直接以 NDC**追加进最终 overlay 缓冲（WP6 单趟化：不再先产出
+/// `SpriteVertex` 再转换一遍）。屏幕像素 → NDC 走 `ndc_from_screen` 这唯一一份实现。
+///
+/// `cull` 为真时跳过**完全落在视口外**的瓦片（WP4 ④"可见 chunk 提取"）。判定用的是
+/// "瓦片中心的屏幕坐标 vs 视口矩形外扩一个瓦片包围盒"：外扩量由 4 个角点偏移的 AABB 得出
+/// （`screen_offsets` 对整层是同一组常量），因此旋转、缩放、负缩放都自动算进去，且**跨在
+/// 边缘上的瓦片一律保留**。视口外的瓦片本来就画不出来，所以像素结果必须完全不变——这一点
+/// 由 2D overlay golden 用"开/关两种设置的像素逐字节相同"来证明。
+fn append_tilemap_layer<V: OverlayVertexSink>(
+    vertices: &mut Vec<V>,
     draws: &mut Vec<SpriteDrawBatch>,
     texture_id: u32,
     camera: &TilemapCamera,
     layer: &CachedTilemapLayer,
+    cull: bool,
 ) {
     if layer.sprites.is_empty() {
         return;
@@ -2388,12 +3306,29 @@ fn append_tilemap_layer(
         );
         camera.world_offset_to_screen_delta(rotated)
     });
+    // 整层共用的一组保守外扩量：角点屏幕偏移的 AABB，再加 1px 抹掉亚像素与采样误差。
+    let (mut extent_x, mut extent_y) = (0.0f32, 0.0f32);
+    for offset in &screen_offsets {
+        extent_x = extent_x.max(offset[0].abs());
+        extent_y = extent_y.max(offset[1].abs());
+    }
+    extent_x += 1.0;
+    extent_y += 1.0;
+    let (viewport_w, viewport_h) = (camera.viewport.width, camera.viewport.height);
     for tile in &layer.sprites {
         let center_world = Vec2::new(
             layer.transform.position.x + tile.center_offset.x,
             layer.transform.position.y + tile.center_offset.y,
         );
         let center = camera.world_to_screen(center_world);
+        if cull
+            && (center[0] + extent_x < 0.0
+                || center[0] - extent_x > viewport_w
+                || center[1] + extent_y < 0.0
+                || center[1] - extent_y > viewport_h)
+        {
+            continue;
+        }
         let positions = screen_offsets.map(|offset| [center[0] + offset[0], center[1] + offset[1]]);
         let uv = [
             [tile.uv_min.x, tile.uv_min.y],
@@ -2402,37 +3337,20 @@ fn append_tilemap_layer(
             [tile.uv_min.x, tile.uv_max.y],
         ];
         let tint = [1.0; 4];
+        let vertex = |corner: usize| {
+            V::from_ndc(
+                ndc_from_screen(positions[corner], camera.viewport),
+                uv[corner],
+                tint,
+            )
+        };
         vertices.extend_from_slice(&[
-            SpriteVertex {
-                position: positions[0],
-                uv: uv[0],
-                color: tint,
-            },
-            SpriteVertex {
-                position: positions[1],
-                uv: uv[1],
-                color: tint,
-            },
-            SpriteVertex {
-                position: positions[2],
-                uv: uv[2],
-                color: tint,
-            },
-            SpriteVertex {
-                position: positions[0],
-                uv: uv[0],
-                color: tint,
-            },
-            SpriteVertex {
-                position: positions[2],
-                uv: uv[2],
-                color: tint,
-            },
-            SpriteVertex {
-                position: positions[3],
-                uv: uv[3],
-                color: tint,
-            },
+            vertex(0),
+            vertex(1),
+            vertex(2),
+            vertex(0),
+            vertex(2),
+            vertex(3),
         ]);
     }
     let count = vertices.len() - start;
@@ -2446,30 +3364,150 @@ fn append_tilemap_layer(
         draws.push(SpriteDrawBatch {
             texture_id,
             layer: 0,
+            render_layer: crate::core::layer::RenderLayer::World2D,
             vertex_start: start,
             vertex_count: count,
         });
     }
 }
 
-fn merge_sprite_meshes(tilemap: SpriteBatchMesh, dynamic: SpriteBatchMesh) -> SpriteBatchMesh {
-    if tilemap.vertices.is_empty() {
-        return dynamic;
+/// 世界坐标版瓦片层（WP6 世界 Sprite 深度通道用）：与 [`append_tilemap_layer`] 共用同一份
+/// 几何（中心偏移 + 旋转缩放后的四角 + 瓦片 UV），区别只有两点：
+/// ① 顶点写**世界坐标** `(x, y, 0)`，投影交给顶点着色器的 `Camera2D::view_projection`；
+/// ② 剔除用相机可见域的**世界 AABB**（CPU 侧不需要再算屏幕坐标）。
+///
+/// `z` 固定 0：瓦片层就是世界平面。将来若要"压在瓦片下面/上面"的层，把 `z` 参数化即可。
+fn append_tilemap_layer_world<V: WorldSpriteVertexSink>(
+    vertices: &mut Vec<V>,
+    draws: &mut Vec<SpriteDrawBatch>,
+    texture_id: u32,
+    layer: &CachedTilemapLayer,
+    cull_bounds: Option<CameraBounds>,
+) {
+    if layer.sprites.is_empty() {
+        return;
     }
-    if dynamic.vertices.is_empty() {
-        return tilemap;
+    let start = vertices.len();
+    let half = Vec2::new(
+        0.5 * layer.tilemap.tile_size.x * layer.transform.scale.x,
+        0.5 * layer.tilemap.tile_size.y * layer.transform.scale.y,
+    );
+    let (sin, cos) = layer.transform.rotation.sin_cos();
+    let corners = [
+        Vec2::new(-half.x, half.y),
+        Vec2::new(half.x, half.y),
+        Vec2::new(half.x, -half.y),
+        Vec2::new(-half.x, -half.y),
+    ];
+    let offsets = corners.map(|corner| {
+        Vec2::new(
+            corner.x * cos - corner.y * sin,
+            corner.x * sin + corner.y * cos,
+        )
+    });
+    // 保守剔除半径：外接圆半径（与旋转无关），因此旋转/负缩放都不会误剔。
+    let radius = (half.x * half.x + half.y * half.y).sqrt() + 1.0;
+    for tile in &layer.sprites {
+        let center = Vec2::new(
+            layer.transform.position.x + tile.center_offset.x,
+            layer.transform.position.y + tile.center_offset.y,
+        );
+        if let Some(bounds) = cull_bounds
+            && (center.x + radius < bounds.min.x
+                || center.x - radius > bounds.max.x
+                || center.y + radius < bounds.min.y
+                || center.y - radius > bounds.max.y)
+        {
+            continue;
+        }
+        let positions = offsets.map(|offset| [center.x + offset.x, center.y + offset.y]);
+        let uv = [
+            [tile.uv_min.x, tile.uv_min.y],
+            [tile.uv_max.x, tile.uv_min.y],
+            [tile.uv_max.x, tile.uv_max.y],
+            [tile.uv_min.x, tile.uv_max.y],
+        ];
+        let tint = [1.0; 4];
+        let vertex = |corner: usize| {
+            V::from_world(
+                [positions[corner][0], positions[corner][1], 0.0],
+                uv[corner],
+                tint,
+            )
+        };
+        vertices.extend_from_slice(&[
+            vertex(0),
+            vertex(1),
+            vertex(2),
+            vertex(0),
+            vertex(2),
+            vertex(3),
+        ]);
     }
-    let base = tilemap.vertices.len();
-    let mut vertices = tilemap.vertices;
-    vertices.extend(dynamic.vertices);
-    let mut draws = tilemap.draws;
-    draws.extend(dynamic.draws.into_iter().map(|draw| SpriteDrawBatch {
-        texture_id: draw.texture_id,
-        layer: draw.layer,
-        vertex_start: draw.vertex_start + base,
-        vertex_count: draw.vertex_count,
-    }));
-    SpriteBatchMesh { vertices, draws }
+    let count = vertices.len() - start;
+    if count == 0 {
+        return;
+    }
+    if let Some(previous) = draws.last_mut()
+        && previous.texture_id == texture_id
+        && previous.layer == 0
+        && previous.vertex_start + previous.vertex_count == start
+    {
+        previous.vertex_count += count;
+    } else {
+        draws.push(SpriteDrawBatch {
+            texture_id,
+            layer: 0,
+            render_layer: crate::core::layer::RenderLayer::World2D,
+            vertex_start: start,
+            vertex_count: count,
+        });
+    }
+}
+
+/// 把世界通道的绘制分段整体重排成**画家顺序**（远 → 近），并同步搬移顶点。
+///
+/// 不写深度时顺序是唯一的遮挡依据，而世界内容来自三个各自有序的产出者（瓦片层、精灵、
+/// 世界文字），因此必须在交给渲染器之前统一重排。排序键与 `SpriteBatch::build_world_into`
+/// 保持一致：**先 `layer`（作者声明的排序层必须压过深度）、再 z 从远到近、最后原有先后**
+/// （稳定，因此同一输入每次输出相同）。分段的 z 直接读它第一个顶点的 z——分段由产出者保证
+/// **深度一致**（跨 z 不合并），所以这是准确的，不需要给分段再加一个字段。
+fn sort_world_ranges(vertices: &mut Vec<WorldSpriteVertex>, draws: &mut Vec<SpriteDrawBatch>) {
+    if draws.len() < 2 {
+        return;
+    }
+    let mut order: Vec<usize> = (0..draws.len()).collect();
+    order.sort_by(|left, right| {
+        let (left_draw, right_draw) = (&draws[*left], &draws[*right]);
+        left_draw
+            .layer
+            .cmp(&right_draw.layer)
+            .then_with(|| {
+                let left_z = vertices[left_draw.vertex_start].position[2];
+                let right_z = vertices[right_draw.vertex_start].position[2];
+                // 大 z = 更远 ⇒ 先画。
+                right_z.total_cmp(&left_z)
+            })
+            .then_with(|| left.cmp(right))
+    });
+    if order.iter().copied().eq(0..draws.len()) {
+        return; // 已经是有序的：不做任何搬移，也不分配。
+    }
+    let mut rebuilt: Vec<WorldSpriteVertex> = Vec::with_capacity(vertices.len());
+    let mut rebuilt_draws: Vec<SpriteDrawBatch> = Vec::with_capacity(draws.len());
+    for index in order {
+        let draw = draws[index];
+        let start = rebuilt.len();
+        let end = draw.vertex_start + draw.vertex_count;
+        rebuilt.extend_from_slice(&vertices[draw.vertex_start..end]);
+        rebuilt_draws.push(SpriteDrawBatch {
+            vertex_start: start,
+            vertex_count: draw.vertex_count,
+            ..draw
+        });
+    }
+    *vertices = rebuilt;
+    *draws = rebuilt_draws;
 }
 
 fn startup_scene_path(project_root: &Path) -> String {
@@ -2714,18 +3752,6 @@ fn merge_adjacent_draws(draws: &mut Vec<SceneDraw>) {
         out.push(draw);
     }
     *draws = out;
-}
-
-fn sprite_vertex(vertex: &SpriteVertex, viewport: Viewport) -> OverlayVertex {
-    OverlayVertex {
-        position: [
-            vertex.position[0] / viewport.width * 2.0 - 1.0,
-            1.0 - vertex.position[1] / viewport.height * 2.0,
-        ],
-        uv: vertex.uv,
-        color: vertex.color,
-        sdf: 0,
-    }
 }
 
 /// Converts a pixel-space text mesh into NDC overlay vertices.
@@ -3695,6 +4721,768 @@ mod sdf_tests {
         );
     }
 
+    /// 世界文字（WP4）：锚点跟随实体的世界位置与相机。
+    ///
+    /// 场景里只有 WorldText 实体，因此产出的顶点全部来自文字；相机右移 100 世界单位后，
+    /// 同一个世界锚点必须投影到更靠左的屏幕位置。
+    #[test]
+    fn world_text_anchors_to_world_position_and_follows_camera() {
+        let mut scene = Scene::new("world_text");
+        scene.add_entity(SceneEntityId(1), "Label", None).unwrap();
+        {
+            let entity = scene.entities.get_mut(&SceneEntityId(1)).unwrap();
+            entity.components.insert(
+                "Transform".into(),
+                "x=0;y=0;rotation=0;scale_x=1;scale_y=1".into(),
+            );
+            entity.components.insert(
+                "WorldText".into(),
+                "text=HP;font_size=24;color=1,1,1;offset=0,-20;centered=true".into(),
+            );
+        }
+        let mut runtime = RuntimeScene::from_scene_edit(None, scene).expect("runtime");
+        let base = Camera2D::new(Vec2::new(320.0, 180.0), 1.0).expect("camera");
+        runtime.set_camera_2d(base);
+        let first = runtime.vertices(640, 360).expect("vertices");
+        assert!(!first.vertices.is_empty(), "世界文字应产出顶点");
+
+        runtime.set_camera_2d(Camera2D {
+            center: Vec2::new(base.center.x + 100.0, base.center.y),
+            ..base
+        });
+        let second = runtime.vertices(640, 360).expect("vertices");
+        let leftmost = |mesh: &SceneMesh| {
+            mesh.vertices
+                .iter()
+                .map(|vertex| vertex.position[0])
+                .fold(f32::INFINITY, f32::min)
+        };
+        assert!(
+            leftmost(&second) < leftmost(&first),
+            "相机右移 100 世界单位后文字应左移：{} vs {}",
+            leftmost(&first),
+            leftmost(&second)
+        );
+    }
+
+    /// 2D 相机跟随（WP4）：脚本登记跟随目标后，宿主每帧按控制器结果移动相机，并把真实值
+    /// 回填给 `camera2d.get`（读到的是宿主在用的值，不是脚本的自述）。
+    #[test]
+    fn camera2d_controller_follows_scripted_target() {
+        let mut scene = Scene::new("camera2d");
+        scene.add_entity(SceneEntityId(1), "Player", None).unwrap();
+        scene
+            .entities
+            .get_mut(&SceneEntityId(1))
+            .unwrap()
+            .components
+            .insert(
+                "Transform".into(),
+                "x=400;y=200;rotation=0;scale_x=1;scale_y=1".into(),
+            );
+        let mut runtime = RuntimeScene::from_scene_edit(None, scene).expect("runtime");
+        let player = runtime
+            .script
+            .with_world(|world| world.entities_with::<Transform>().first().copied())
+            .expect("player entity");
+        runtime
+            .script
+            .camera2d_controller_mut(|controller| controller.follow(Some(player)));
+        runtime.set_camera_2d(Camera2D::new(Vec2::zero(), 1.0).expect("camera"));
+
+        let input = InputSnapshot::default();
+        runtime
+            .run_script_steps(1, 1.0 / 60.0, &input)
+            .expect("one frame");
+        let center = runtime.camera_center_2d();
+        assert!(
+            (center.x - 400.0).abs() < 1e-3 && (center.y - 200.0).abs() < 1e-3,
+            "无平滑时相机应在第一帧直接到位：{center:?}"
+        );
+        // 回填一致性：Lua 侧 `camera2d.get` 必须等于宿主实际中心。
+        assert_eq!(
+            runtime.script.camera2d_controller(|c| c.center()),
+            center,
+            "camera2d.get 应读到宿主真实值"
+        );
+
+        // 平滑跟随：目标移动后不应一步到位。
+        runtime
+            .script
+            .camera2d_controller_mut(|controller| controller.set_smoothing(6.0));
+        runtime.script.with_world_mut(|world| {
+            world
+                .get_mut::<Transform>(player)
+                .unwrap()
+                .unwrap()
+                .position = Vec2::new(600.0, 200.0);
+        });
+        runtime
+            .run_script_steps(1, 1.0 / 60.0, &input)
+            .expect("one frame");
+        let smoothed = runtime.camera_center_2d();
+        assert!(
+            smoothed.x > 400.0 && smoothed.x < 600.0,
+            "平滑跟随应逐步推进：{smoothed:?}"
+        );
+    }
+
+    /// WP6 排序契约（"不写深度 + 按 z 排序"）：世界内容必须按**画家顺序**交给渲染器——
+    /// 同层内远的先画、近的后画，且层的先后压过 z。这条钉的是"宿主把顺序排好"这件事：
+    /// 渲染器不写深度，顺序错了就会画错（渲染器侧有自己的像素级测试）。
+    #[test]
+    fn world_channel_is_sorted_far_to_near_within_a_layer() {
+        let root = game_root();
+        let mut scene = crate::core::scene::Scene::new("world-sort");
+        // 三个精灵：刻意让"插入顺序"与 z 顺序相反，并且给两个不同的排序层。
+        let specs = [
+            (1_u64, "Near", "-0.5", "default"),
+            (2, "Far", "0.5", "default"),
+            (3, "BackLayer", "0.9", "background"),
+        ];
+        for (id, name, z, layer) in specs {
+            let entity_id = crate::core::scene::SceneEntityId(id);
+            scene.add_entity(entity_id, name, None).unwrap();
+            let entity = scene.entities.get_mut(&entity_id).unwrap();
+            entity.components.insert(
+                "Transform".into(),
+                "x=640;y=360;rotation=0;scale_x=1;scale_y=1".into(),
+            );
+            entity.components.insert(
+                "Sprite".into(),
+                format!(
+                    "texture=assets/textures/player.png;size=16x16;pivot=0.5,0.5;\
+                     sorting_layer={layer};z={z}"
+                ),
+            );
+        }
+        let mut runtime =
+            RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("runtime scene");
+        runtime.set_world_sprite_depth(true);
+        let mesh = runtime.vertices(640, 360).expect("world vertices");
+        assert_eq!(mesh.world_sprites.len(), 18, "三个精灵各 6 个顶点");
+
+        // 每个四边形第一个顶点的 z，按绘制顺序列出。
+        let quad_starts: Vec<usize> = mesh
+            .world_sprite_draws
+            .iter()
+            .flat_map(|draw| {
+                (0..draw.vertex_count / 6).map(move |quad| draw.vertex_start + quad * 6)
+            })
+            .collect();
+        let quad_zs: Vec<f32> = quad_starts
+            .iter()
+            .map(|start| mesh.world_sprites[*start].position[2])
+            .collect();
+        assert_eq!(
+            quad_zs,
+            vec![0.9, 0.5, -0.5],
+            "应先是 background 层（z=0.9，层优先），再是同层内远→近（0.5 → -0.5）"
+        );
+        // 分段必须深度一致：同一分段内的 z 只能有一个值（否则"分段一个 z"的前提不成立）。
+        for draw in &mesh.world_sprite_draws {
+            let first = mesh.world_sprites[draw.vertex_start].position[2];
+            assert!(
+                (draw.vertex_start..draw.vertex_start + draw.vertex_count)
+                    .all(|index| mesh.world_sprites[index].position[2] == first),
+                "分段内混了不同 z"
+            );
+        }
+    }
+    /// WP6：世界文字也进世界坐标深度通道——它此前是唯一仍留在屏幕空间的世界内容。
+    /// 转换走 `view_projection` 的**逆映射**，因此屏幕观感与 overlay 路径逐个像素一致，
+    /// 但顶点有了世界坐标与 `z`，可以和精灵/瓦片一起参与深度测试。
+    #[test]
+    fn world_sprite_depth_moves_world_text_into_the_world_channel() {
+        // 与 `world_text_anchors_to_world_position_and_follows_camera` 同一套场景/相机参数，
+        // 保证走的是同一条字形管线（否则会因项目根不同而落到矢量字体分支，测不到本路径）。
+        let mut scene = Scene::new("world_text_depth");
+        scene.add_entity(SceneEntityId(1), "Label", None).unwrap();
+        {
+            let entity = scene.entities.get_mut(&SceneEntityId(1)).unwrap();
+            entity.components.insert(
+                "Transform".into(),
+                "x=0;y=0;rotation=0;scale_x=1;scale_y=1".into(),
+            );
+            entity.components.insert(
+                "WorldText".into(),
+                "text=HP;font_size=24;color=1,1,1;offset=0,-20;centered=true".into(),
+            );
+        }
+        let mut runtime = RuntimeScene::from_scene_edit(None, scene).expect("runtime");
+        runtime.set_camera_2d(Camera2D::new(Vec2::new(320.0, 180.0), 1.0).expect("camera"));
+
+        let overlay = runtime.vertices(640, 360).expect("overlay vertices");
+        assert!(!overlay.vertices.is_empty(), "世界文字应产出 overlay 顶点");
+        assert!(overlay.world_sprites.is_empty());
+
+        // 世界通道：顶点落到**实体世界坐标附近**（`WorldText` 的锚点就是实体位置 (0, 0)；
+        // 相机中心只是取景，不改变锚点），并在**世界**绘制列表里登记分段。
+        runtime.set_world_sprite_depth(true);
+        let world = runtime.vertices(640, 360).expect("world vertices");
+        assert!(
+            !world.world_sprites.is_empty(),
+            "世界文字应产出世界坐标顶点"
+        );
+        let (min_x, max_x) = world
+            .world_sprites
+            .iter()
+            .map(|vertex| vertex.position[0])
+            .fold((f32::MAX, f32::MIN), |(min, max), x| {
+                (min.min(x), max.max(x))
+            });
+        assert!(
+            min_x > -60.0 && max_x < 120.0,
+            "文字顶点应落在实体世界坐标 (0, 0) 附近（而不是 NDC）：{min_x}..{max_x}"
+        );
+        assert!(
+            world
+                .world_sprites
+                .iter()
+                .all(|vertex| vertex.position[2] == 0.0),
+            "世界文字在世界平面 z=0"
+        );
+        assert!(
+            !world.world_sprite_draws.is_empty(),
+            "世界文字的绘制分段必须登记在世界列表里（否则渲染器不会画它）"
+        );
+    }
+    /// WP6：开启世界深度通道后，**瓦片层**也要产出世界坐标顶点（此前只有精灵有），
+    /// 否则瓦片会被挡在深度通道之外——世界内容一半有深度、一半没有，遮挡必然错。
+    #[test]
+    fn world_sprite_depth_moves_tilemaps_into_the_world_channel() {
+        let root = game_root();
+        let mut scene = crate::core::scene::Scene::new("tilemap-world-pass");
+        let id = crate::core::scene::SceneEntityId(1);
+        scene.add_entity(id, "Map", None).unwrap();
+        let entity = scene.entities.get_mut(&id).unwrap();
+        entity.components.insert(
+            "Transform".into(),
+            "x=640;y=360;rotation=0;scale_x=1;scale_y=1".into(),
+        );
+        // 2×2 瓦片地图：用真实 tileset 纹理，保证纹理注册与 UV 都走正常路径。
+        entity.components.insert(
+            "Tilemap".into(),
+            "tile_size=32x32;width=2;height=2;texture=assets/textures/tileset.png;\
+             tiles=1111;solid=0000"
+                .into(),
+        );
+        let mut runtime =
+            RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("runtime scene");
+
+        // 默认（overlay 路径）：瓦片是 NDC 顶点，没有世界顶点。
+        let overlay = runtime.vertices(640, 360).expect("overlay vertices");
+        assert!(
+            overlay.vertices.len() >= 24,
+            "4 个瓦片应产出 24 个 overlay 顶点：{}",
+            overlay.vertices.len()
+        );
+        assert!(overlay.world_sprites.is_empty(), "关闭时不应有世界顶点");
+
+        // 打开世界通道：瓦片改为世界坐标（中心 (640, 360) 附近、z = 0），overlay 里不再有瓦片。
+        runtime.set_world_sprite_depth(true);
+        let world = runtime.vertices(640, 360).expect("world vertices");
+        assert!(
+            world.world_sprites.len() >= 24,
+            "瓦片应产出世界顶点：{}",
+            world.world_sprites.len()
+        );
+        assert!(
+            world.vertices.len() < overlay.vertices.len(),
+            "瓦片已从 overlay 路径移出：{} vs {}",
+            world.vertices.len(),
+            overlay.vertices.len()
+        );
+        assert!(
+            !world.world_sprite_draws.is_empty(),
+            "瓦片的世界顶点必须**登记在世界绘制分段里**（否则渲染器根本不会画它）"
+        );
+        assert!(
+            world
+                .world_sprite_draws
+                .iter()
+                .all(|draw| draw.render_layer == crate::core::layer::RenderLayer::World2D),
+            "世界通道的分段必须是 World2D"
+        );
+        assert!(
+            world.draws.iter().all(|draw| draw.count > 0),
+            "overlay 分段必须仍然自洽"
+        );
+        // 世界坐标而不是 NDC：数值应落在千级像素附近，而不是 [-1, 1]。
+        let max_x = world
+            .world_sprites
+            .iter()
+            .map(|vertex| vertex.position[0])
+            .fold(f32::MIN, f32::max);
+        assert!(max_x > 100.0, "顶点应是世界坐标：max_x={max_x}");
+        assert!(
+            world
+                .world_sprites
+                .iter()
+                .all(|vertex| vertex.position[2] == 0.0),
+            "瓦片层就在世界平面 z=0"
+        );
+    }
+    /// WP6 回滚档：开关默认关闭（精灵走 overlay 的 NDC 顶点），打开后精灵改走世界坐标 +
+    /// 深度的通道，两条路径的精灵集合相同（同一个批处理），只是产出形态不同。
+    #[test]
+    fn world_sprite_depth_flag_switches_between_overlay_and_world_vertices() {
+        let root = game_root();
+        let mut scene = crate::core::scene::Scene::new("world-sprite-flag");
+        let id = crate::core::scene::SceneEntityId(1);
+        scene.add_entity(id, "Hero", None).unwrap();
+        let entity = scene.entities.get_mut(&id).unwrap();
+        entity.components.insert(
+            "Transform".into(),
+            "x=640;y=360;rotation=0;scale_x=1;scale_y=1".into(),
+        );
+        entity.components.insert(
+            "Sprite".into(),
+            "texture=assets/textures/player.png;size=16x16;pivot=0.5,0.5;z=-0.25".into(),
+        );
+        let mut runtime =
+            RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("runtime scene");
+
+        // 默认：overlay 路径——有 NDC 顶点、没有世界顶点。
+        assert!(!runtime.world_sprite_depth());
+        assert!(runtime.sprite_view_projection(640, 360).is_none());
+        let overlay = runtime.vertices(640, 360).expect("overlay vertices");
+        assert!(!overlay.vertices.is_empty(), "overlay 应有 NDC 顶点");
+        assert!(overlay.world_sprites.is_empty(), "关闭时不应产出世界顶点");
+
+        // 打开：世界路径——世界坐标顶点（含 `z=-0.25`），overlay 精灵顶点为空。
+        runtime.set_world_sprite_depth(true);
+        assert!(runtime.sprite_view_projection(640, 360).is_some());
+        let world = runtime.vertices(640, 360).expect("world vertices");
+        assert!(!world.world_sprites.is_empty(), "打开时应产出世界顶点");
+        assert_eq!(world.world_sprites.len(), 6, "一个精灵 6 个顶点");
+        assert_eq!(
+            world.world_sprites[0].position[2], -0.25,
+            "z 来自 Sprite::z"
+        );
+        assert!(
+            (world.world_sprites[0].position[0] - 632.0).abs() < 1e-3,
+            "世界坐标应为 640-8：{:?}",
+            world.world_sprites[0].position
+        );
+        assert!(world.world_sprites[0].position[0] > 1.0, "世界坐标不是 NDC");
+        assert!(!world.world_sprite_draws.is_empty(), "应有世界绘制分段");
+
+        // 关回去：逐字节回到 overlay 路径。
+        runtime.set_world_sprite_depth(false);
+        let back = runtime.vertices(640, 360).expect("overlay vertices again");
+        assert_eq!(back.vertices.len(), overlay.vertices.len());
+        assert!(back.world_sprites.is_empty());
+    }
+    /// WP2 的关键验收：**迁移无损**——对同一份"子按世界坐标写"的场景跑真实迁移
+    /// （`migrate_scene_to_local_space`），再把结果写回去并在**开启空间继承**下渲染；
+    /// 两帧顶点必须一致。这条把"迁移 + 继承"的效果钉在**顶点级**证据上。
+    #[test]
+    fn migrated_child_renders_at_the_same_place_with_inheritance_enabled() {
+        let root = game_root();
+        let mut scene = crate::core::scene::Scene::new("hierarchy-render");
+        let parent = crate::core::scene::SceneEntityId(1);
+        let child = crate::core::scene::SceneEntityId(2);
+        scene.add_entity(parent, "Parent", None).unwrap();
+        scene.add_entity(child, "Child", Some(parent)).unwrap();
+        // 相机默认中心是 (640, 360)，精灵放这附近才不会被视口剔除掉（剔除是渲染路径的一部分）。
+        for (id, x, scale, texture) in [
+            (parent, "640", "2", "assets/textures/player.png"),
+            (child, "650", "1", "assets/textures/coin.png"),
+        ] {
+            let entity = scene.entities.get_mut(&id).unwrap();
+            entity.components.insert(
+                "Transform".into(),
+                format!("x={x};y=360;rotation=0;scale_x={scale};scale_y={scale}"),
+            );
+            entity.components.insert(
+                "Sprite".into(),
+                format!("texture={texture};size=16x16;pivot=0.5,0.5"),
+            );
+        }
+
+        // A：旧数据（子按世界坐标写）+ 关闭继承 = 迁移前的画面。
+        let mut legacy =
+            RuntimeScene::from_scene_edit(Some(root.as_path()), scene.clone()).expect("legacy");
+        // A 档刻意关掉继承：它代表"迁移前的数据 + 迁移前的语义"。
+        legacy.set_spatial_inheritance(false);
+        assert!(!legacy.spatial_active(), "关掉后不应再有传播");
+        let legacy_mesh = legacy.vertices(640, 360).expect("legacy vertices");
+        assert!(
+            !legacy_mesh.vertices.is_empty(),
+            "样例场景应画出精灵（否则这条测试是空转）"
+        );
+
+        // B：跑真实迁移并把局部值写回，再开启继承 = 迁移后的画面。
+        let (migration, report) =
+            crate::core::spatial_transform::migrate_scene_to_local_space(&scene);
+        assert!(report.is_lossless(), "{report:?}");
+        assert!(
+            report
+                .converted
+                .contains(&crate::core::scene::SceneEntityId(2)),
+            "子实体应被迁移成局部坐标：{report:?}"
+        );
+        let mut migrated_scene = scene.clone();
+        for (id, value) in &migration.locals {
+            migrated_scene
+                .entities
+                .get_mut(id)
+                .unwrap()
+                .components
+                .insert("Transform".into(), value.clone());
+        }
+        let mut migrated =
+            RuntimeScene::from_scene_edit(Some(root.as_path()), migrated_scene).expect("migrated");
+        migrated.set_spatial_inheritance(true);
+        assert!(
+            migrated.last_spatial_report().diagnostics.is_empty(),
+            "{:?}",
+            migrated.last_spatial_report()
+        );
+        let migrated_mesh = migrated.vertices(640, 360).expect("migrated vertices");
+
+        let positions = |mesh: &SceneMesh| {
+            mesh.vertices
+                .iter()
+                .map(|vertex| (vertex.position, vertex.uv))
+                .collect::<Vec<_>>()
+        };
+        let legacy_positions = positions(&legacy_mesh);
+        let migrated_positions = positions(&migrated_mesh);
+        assert_eq!(
+            legacy_positions.len(),
+            migrated_positions.len(),
+            "两帧顶点数必须相同（迁移不得多画/少画）"
+        );
+        for (index, (left, right)) in legacy_positions.iter().zip(&migrated_positions).enumerate() {
+            assert!(
+                (left.0[0] - right.0[0]).abs() < 1e-4 && (left.0[1] - right.0[1]).abs() < 1e-4,
+                "第 {index} 个顶点位置不一致：{:?} vs {:?}",
+                left.0,
+                right.0
+            );
+            assert_eq!(left.1, right.1, "第 {index} 个顶点 UV 不一致");
+        }
+    }
+    /// WP6：绘制分段必须带上**正确的渲染层**——世界文字/精灵/瓦片是世界内容，
+    /// 屏幕 UI 文本是 `ScreenUI`。这条把"哪段几何属于哪一层"从"看谁调了哪个函数"
+    /// 变成可断言的事实（世界 Sprite 深度通道只吃世界层，靠的就是这个区分）。
+    #[test]
+    fn draw_ranges_carry_the_render_layer_of_their_producer() {
+        let root = game_root();
+        let build = |name: &str, component: (&str, &str)| {
+            let mut scene = crate::core::scene::Scene::new(name);
+            let id = crate::core::scene::SceneEntityId(1);
+            scene.add_entity(id, "E", None).unwrap();
+            let entity = scene.entities.get_mut(&id).unwrap();
+            entity.components.insert(
+                "Transform".into(),
+                "x=640;y=360;rotation=0;scale_x=1;scale_y=1".into(),
+            );
+            entity
+                .components
+                .insert(component.0.into(), component.1.into());
+            scene
+        };
+
+        // 世界文字：世界内容。
+        let mut world_runtime = RuntimeScene::from_scene_edit(
+            Some(root.as_path()),
+            build(
+                "world-text-layer",
+                ("WorldText", "text=HP;font_size=16;color=1,1,1;offset=0,0"),
+            ),
+        )
+        .expect("runtime");
+        let world_mesh = world_runtime.vertices(640, 360).expect("vertices");
+        assert!(!world_mesh.draws.is_empty(), "世界文字应产出绘制分段");
+        assert!(
+            world_mesh
+                .draws
+                .iter()
+                .all(|draw| draw.render_layer == crate::core::layer::RenderLayer::World2D),
+            "世界文字必须标成 World2D：{:?}",
+            world_mesh
+                .draws
+                .iter()
+                .map(|draw| draw.render_layer)
+                .collect::<Vec<_>>()
+        );
+
+        // 屏幕 UI 文本：ScreenUI（不受世界相机影响、不参与深度）。
+        // 屏幕 UI 要参与布局才有绘制分段，因此这里显式给一个 `UiLayout`。
+        let mut ui_scene = crate::core::scene::Scene::new("ui-text-layer");
+        let ui_id = crate::core::scene::SceneEntityId(1);
+        ui_scene.add_entity(ui_id, "E", None).unwrap();
+        let ui_entity = ui_scene.entities.get_mut(&ui_id).unwrap();
+        ui_entity.components.insert(
+            "Transform".into(),
+            "x=0;y=0;rotation=0;scale_x=1;scale_y=1".into(),
+        );
+        ui_entity.components.insert(
+            "UiLayout".into(),
+            "anchors=0,0,0,0;offsets=0,0,160,24".into(),
+        );
+        ui_entity
+            .components
+            .insert("Text".into(), "text=Menu;font_size=16;color=1,1,1".into());
+        let mut ui_runtime =
+            RuntimeScene::from_scene_edit(Some(root.as_path()), ui_scene).expect("runtime");
+        let ui_mesh = ui_runtime.vertices(640, 360).expect("vertices");
+        assert!(!ui_mesh.draws.is_empty(), "屏幕 UI 文本应产出绘制分段");
+        assert!(
+            ui_mesh
+                .draws
+                .iter()
+                .all(|draw| draw.render_layer == crate::core::layer::RenderLayer::ScreenUI),
+            "屏幕 UI 文本必须标成 ScreenUI：{:?}",
+            ui_mesh
+                .draws
+                .iter()
+                .map(|draw| draw.render_layer)
+                .collect::<Vec<_>>()
+        );
+    }
+    /// WP2 ④：编辑器拾取用的"按场景实体 id 读世界变换"必须与渲染同源——带父子关系时给出
+    /// **组合后**的位置，没有父子关系时给出局部值（两种情形都不需要调用方分支）。
+    #[test]
+    fn scene_entity_world_transform_follows_the_parent_chain() {
+        let root = game_root();
+        let mut scene = crate::core::scene::Scene::new("editor-picking");
+        let parent = crate::core::scene::SceneEntityId(1);
+        let child = crate::core::scene::SceneEntityId(2);
+        let lone = crate::core::scene::SceneEntityId(3);
+        scene.add_entity(parent, "Parent", None).unwrap();
+        scene.add_entity(child, "Child", Some(parent)).unwrap();
+        scene.add_entity(lone, "Lone", None).unwrap();
+        scene.entities.get_mut(&parent).unwrap().components.insert(
+            "Transform".into(),
+            "x=10;y=5;rotation=0;scale_x=2;scale_y=2".into(),
+        );
+        scene.entities.get_mut(&child).unwrap().components.insert(
+            "Transform".into(),
+            "x=-3.5;y=0;rotation=0;scale_x=1;scale_y=1".into(),
+        );
+        scene.entities.get_mut(&lone).unwrap().components.insert(
+            "Transform".into(),
+            "x=7;y=9;rotation=0;scale_x=1;scale_y=1".into(),
+        );
+        let mut runtime =
+            RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("runtime scene");
+        runtime.propagate_spatial_now();
+
+        let world = runtime
+            .world_transform_2d_of(child)
+            .expect("child world transform");
+        assert!(
+            (world.position.x - 3.0).abs() < 1e-3 && (world.position.y - 5.0).abs() < 1e-3,
+            "子实体应给出组合后的世界位置 (3, 5)：{world:?}"
+        );
+        assert!((world.scale.x - 2.0).abs() < 1e-3, "父缩放应作用到子");
+        // 没有父的实体：世界值 = 局部值（编辑器因此不需要分支）。
+        let alone = runtime
+            .world_transform_2d_of(lone)
+            .expect("lone world transform");
+        assert!((alone.position.x - 7.0).abs() < 1e-3 && alone.scale.x == 1.0);
+        // 未知场景实体：`None`（而不是编一个 0 位置的框）。
+        assert!(
+            runtime
+                .world_transform_2d_of(crate::core::scene::SceneEntityId(99))
+                .is_none()
+        );
+    }
+    /// WP7：`PhysicsAuthority` 决定"谁有权写 Transform"。
+    ///
+    /// 场景：动态刚体在原点、零重力、无速度；**ECS 侧**把 Transform 改成 (100, 0)（等价于脚本
+    /// 直接改 ECS，而不是改刚体）。两种权威下的结果必须不同：
+    /// - `Physics`（默认）：模拟是权威 ⇒ 回写把 ECS 改回刚体的位置 0（脚本的位置被覆盖）；
+    /// - `Script`：ECS 是权威 ⇒ 步前同步把 100 推给刚体、步后不回写 ⇒ ECS 保持 100。
+    ///
+    /// 这条同时证明「同步」与「回写」两格真的接在流水线上（而不只是注释里的顺序）。
+    #[test]
+    fn physics_authority_decides_who_owns_the_transform() {
+        let root = game_root();
+        let mut scene = crate::core::scene::Scene::new("authority");
+        let id = crate::core::scene::SceneEntityId(1);
+        scene.add_entity(id, "Crate", None).unwrap();
+        let entity = scene.entities.get_mut(&id).unwrap();
+        entity.components.insert(
+            "Transform".into(),
+            "x=0;y=0;rotation=0;scale_x=1;scale_y=1".into(),
+        );
+        entity
+            .components
+            .insert("Collider".into(), "shape=ball;radius=4".into());
+        let mut runtime =
+            RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("runtime scene");
+        let moved = runtime.script.with_world(|world| {
+            world
+                .entities_with::<Transform>()
+                .into_iter()
+                .next()
+                .expect("crate entity")
+        });
+        let input = InputSnapshot::default();
+
+        // 默认：模拟是权威 ⇒ 脚本直接改 ECS 的位置会被回写覆盖。
+        assert_eq!(runtime.physics_authority(), PhysicsAuthority::Physics);
+        runtime.script.with_world_mut(|world| {
+            world.get_mut::<Transform>(moved).unwrap().unwrap().position = Vec2::new(100.0, 0.0);
+        });
+        runtime
+            .run_script_steps(1, 1.0 / 60.0, &input)
+            .expect("steps");
+        let after_physics = runtime
+            .script
+            .with_world(|world| world.get::<Transform>(moved).unwrap().unwrap().position);
+        assert!(
+            after_physics.x.abs() < 1e-3,
+            "Physics 权威下模拟结果应写回 ECS（刚体仍在原点）：{after_physics:?}"
+        );
+
+        // Script 权威：ECS 是权威 ⇒ 步前同步、步后不回写，位置保持脚本写下的值。
+        runtime.set_physics_authority(PhysicsAuthority::Script);
+        runtime.script.with_world_mut(|world| {
+            world.get_mut::<Transform>(moved).unwrap().unwrap().position = Vec2::new(100.0, 0.0);
+        });
+        runtime
+            .run_script_steps(1, 1.0 / 60.0, &input)
+            .expect("steps");
+        let after_script = runtime
+            .script
+            .with_world(|world| world.get::<Transform>(moved).unwrap().unwrap().position);
+        assert!(
+            (after_script.x - 100.0).abs() < 1e-3,
+            "Script 权威下 ECS 位置必须保留（步前同步、步后不回写）：{after_script:?}"
+        );
+    }
+
+    /// WP2：宿主开关 + 提取入口的传播。开启后 `transform.world` 读到的是父子组合结果，
+    /// 关闭（默认）时读到的仍是局部值——这就是回滚档。
+    #[test]
+    fn spatial_inheritance_switches_between_local_and_world_positions() {
+        let root = game_root();
+        let mut scene = crate::core::scene::Scene::new("hierarchy");
+        let parent = crate::core::scene::SceneEntityId(1);
+        let child = crate::core::scene::SceneEntityId(2);
+        scene.add_entity(parent, "Parent", None).unwrap();
+        scene.add_entity(child, "Child", Some(parent)).unwrap();
+        scene.entities.get_mut(&parent).unwrap().components.insert(
+            "Transform".into(),
+            "x=10;y=5;rotation=0;scale_x=2;scale_y=2".into(),
+        );
+        // 迁移后的局部值：世界 x=3 ⇒ 局部 (3-10)/2 = -3.5。
+        scene.entities.get_mut(&child).unwrap().components.insert(
+            "Transform".into(),
+            "x=-3.5;y=0;rotation=0;scale_x=1;scale_y=1".into(),
+        );
+        let mut runtime =
+            RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("runtime scene");
+        let child_entity = runtime.script.with_world(|world| {
+            world.entities_with::<Transform>().into_iter().find(|id| {
+                world
+                    .get::<crate::core::hierarchy::Parent>(*id)
+                    .ok()
+                    .flatten()
+                    .is_some()
+            })
+        });
+        let child_entity = child_entity.expect("child entity has a Parent component");
+
+        let read_world = |runtime: &RuntimeScene| {
+            runtime
+                .script
+                .with_world(|world| crate::core::hierarchy::world_transform_2d(world, child_entity))
+                .unwrap()
+                .expect("child transform")
+        };
+
+        // 场景里**有** Parent：默认开关打开，传播真的在跑，读到的世界位置 = 父 ∘ 子 = (3, 5)。
+        assert!(runtime.spatial_inheritance());
+        runtime.propagate_spatial_now();
+        assert!(runtime.spatial_active());
+        assert!(runtime.last_spatial_report().diagnostics.is_empty());
+        let composed = read_world(&runtime);
+        assert!(
+            (composed.position.x - 3.0).abs() < 1e-3 && (composed.position.y - 5.0).abs() < 1e-3,
+            "开启继承后世界位置应为 (3, 5)：{composed:?}"
+        );
+        assert!((composed.scale.x - 2.0).abs() < 1e-3, "父缩放应作用到子");
+
+        // 回滚档：关掉继承 ⇒ 世界值退回局部值（-3.5, 0），且不再有传播成本。
+        runtime.set_spatial_inheritance(false);
+        assert!(!runtime.spatial_active());
+        let local = read_world(&runtime);
+        assert!(
+            (local.position.x + 3.5).abs() < 1e-3,
+            "关掉继承后应退回局部值：{local:?}"
+        );
+
+        // 再打开：值与第一次开启时完全一致（开关可反复切换）。
+        runtime.set_spatial_inheritance(true);
+        assert_eq!(read_world(&runtime), composed);
+    }
+
+    /// WP2：运行时的 `Parent` 组件来自场景的 `parent`（父子关系真的落到了 ECS 上）。
+    #[test]
+    fn scene_parents_become_runtime_parent_components() {
+        let root = game_root();
+        let mut scene = crate::core::scene::Scene::new("parents");
+        let parent = crate::core::scene::SceneEntityId(1);
+        let child = crate::core::scene::SceneEntityId(2);
+        let orphan = crate::core::scene::SceneEntityId(3);
+        scene.add_entity(parent, "Parent", None).unwrap();
+        scene.add_entity(child, "Child", Some(parent)).unwrap();
+        scene.add_entity(orphan, "Orphan", None).unwrap();
+        for (id, x) in [(parent, 0.0_f32), (child, 4.0), (orphan, 8.0)] {
+            scene.entities.get_mut(&id).unwrap().components.insert(
+                "Transform".into(),
+                format!("x={x};y=0;rotation=0;scale_x=1;scale_y=1"),
+            );
+        }
+        let runtime =
+            RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("runtime scene");
+        let with_parent = runtime.script.with_world(|world| {
+            world
+                .entities_with::<crate::core::hierarchy::Parent>()
+                .len()
+        });
+        assert_eq!(with_parent, 1, "只有子实体带 Parent");
+    }
+    /// WP5：宿主交给渲染器的 2D overlay 视图必须与 `vertices()` 用**同一个相机**——
+    /// 收敛前"取景"（相机）与"清屏/视口"（渲染器写死）是两套说法，这里把它钉住。
+    #[test]
+    fn render_view_2d_shares_the_runtime_camera() {
+        let mut scene = Scene::new("render-view");
+        scene.add_entity(SceneEntityId(1), "Empty", None).unwrap();
+        let runtime = RuntimeScene::from_scene_edit(None, scene).expect("runtime");
+        let mut runtime = runtime;
+        runtime.set_camera_2d(Camera2D::new(Vec2::new(120.0, 80.0), 2.0).expect("camera"));
+
+        let view = runtime.render_view_2d(640, 360);
+        assert_eq!(view.viewport, Viewport::new(640.0, 360.0).unwrap());
+        assert_eq!(
+            view.projection,
+            crate::core::camera::Projection::Orthographic { zoom: 2.0 },
+            "视图的投影必须来自运行时相机的 zoom"
+        );
+        // 2D overlay 是叠加层：不清屏（3D 主视图才清屏）。
+        assert_eq!(view.clear, crate::core::camera::ClearPolicy::None);
+        assert!((view.aspect() - 640.0 / 360.0).abs() < 1e-6);
+        assert_eq!(
+            runtime.camera_2d().center,
+            runtime.camera_center_2d(),
+            "视图相机与宿主相机是同一份状态"
+        );
+
+        // 0 尺寸（最小化窗口）不能造出非法视口。
+        assert_eq!(
+            runtime.render_view_2d(0, 0).viewport,
+            Viewport::new(1.0, 1.0).unwrap()
+        );
+    }
+
     /// 运行态 3D drawable 使用序列化场景的实体名称（而非 `Entity {index}`）；
     /// 未命名的脚本实体才回退到索引名。
     #[test]
@@ -3867,6 +5655,120 @@ mod sdf_tests {
         assert_eq!(runtime_light.intensity, serialized_light.intensity);
     }
 
+    /// WP5：运行时的相机姿态也可以来自实体的 `Transform3D`（`pose=transform`）。
+    /// 同一场景里放两台相机（一台跟随变换、一台 look-at），验证**只有声明的那台**改姿态。
+    #[test]
+    fn runtime_camera_pose_follows_transform_when_declared() {
+        let root = game_root();
+        let mut scene = crate::core::scene::Scene::new("camera-pose");
+        let posed = crate::core::scene::SceneEntityId(1);
+        let plain = crate::core::scene::SceneEntityId(2);
+        let mesh = crate::core::scene::SceneEntityId(3);
+        scene.add_entity(posed, "PosedCamera", None).unwrap();
+        scene.add_entity(plain, "PlainCamera", None).unwrap();
+        scene.add_entity(mesh, "Mesh", None).unwrap();
+        // `scene_3d` 以 drawable 为准：没有网格实体时直接返回 None，放一个网格当锚点。
+        scene.entities.get_mut(&mesh).unwrap().components.insert(
+            "Transform3D".into(),
+            "position=0,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
+        );
+        scene
+            .entities
+            .get_mut(&mesh)
+            .unwrap()
+            .components
+            .insert("MeshRenderer".into(), "mesh=assets/models/test.glb".into());
+        scene.entities.get_mut(&posed).unwrap().components.insert(
+            "Transform3D".into(),
+            "position=20,5,0;rotation=0,0.7071068,0,0.7071068;scale=1,1,1".into(),
+        );
+        scene.entities.get_mut(&posed).unwrap().components.insert(
+            "Camera3D".into(),
+            "position=0,0,6;target=0,0,0;fov=60;near=0.1;far=100;pose=transform".into(),
+        );
+        scene.entities.get_mut(&plain).unwrap().components.insert(
+            "Camera3D".into(),
+            "position=0,0,6;target=0,0,0;fov=60;near=0.1;far=100".into(),
+        );
+        let runtime =
+            RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("runtime scene");
+        let extracted = runtime.scene_3d(16.0 / 9.0).expect("3d scene");
+        // 活动相机 = 排序序第一个（实体 1，即声明了 pose=transform 的那台）。
+        let camera = extracted.camera;
+        assert!(
+            (camera.position.x - 20.0).abs() < 1e-3,
+            "姿态应来自 Transform3D 的位置：{:?}",
+            camera.position
+        );
+        // 绕 Y 转 90° ⇒ 视线朝 -X。
+        let forward = (camera.target - camera.position).normalized().unwrap();
+        assert!(
+            (forward - Vec3::new(-1.0, 0.0, 0.0)).length() < 1e-3,
+            "视线应来自变换的 -Z：{forward:?}"
+        );
+        // 未声明的那台（实体 2）不在 `Scene3d` 里——运行帧只带活动相机；它的 look-at 姿态
+        // 由 `scene_extract` 的对拍测试覆盖（那里两台相机都在列表中，只有声明的那台被改姿态）。
+        assert_eq!(extracted.drawables.len(), 1, "只有网格实体是 drawable");
+
+        // 对照组：同样的 `Transform3D`，但相机没有声明 `pose=transform`，姿态必须保持组件值。
+        let control_camera = crate::core::scene::SceneEntityId(1);
+        let control_mesh = crate::core::scene::SceneEntityId(2);
+        let mut control = crate::core::scene::Scene::new("camera-look-at");
+        control
+            .add_entity(control_camera, "PlainCamera", None)
+            .unwrap();
+        control.add_entity(control_mesh, "Mesh", None).unwrap();
+        control
+            .entities
+            .get_mut(&control_camera)
+            .unwrap()
+            .components
+            .insert(
+                "Transform3D".into(),
+                "position=20,5,0;rotation=0,0.7071068,0,0.7071068;scale=1,1,1".into(),
+            );
+        control
+            .entities
+            .get_mut(&control_camera)
+            .unwrap()
+            .components
+            .insert(
+                "Camera3D".into(),
+                "position=0,0,6;target=0,0,0;fov=60;near=0.1;far=100".into(),
+            );
+        control
+            .entities
+            .get_mut(&control_mesh)
+            .unwrap()
+            .components
+            .insert(
+                "Transform3D".into(),
+                "position=0,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
+            );
+        control
+            .entities
+            .get_mut(&control_mesh)
+            .unwrap()
+            .components
+            .insert("MeshRenderer".into(), "mesh=assets/models/test.glb".into());
+        let control_runtime =
+            RuntimeScene::from_scene_edit(Some(root.as_path()), control).expect("runtime scene");
+        let control_camera = control_runtime
+            .scene_3d(16.0 / 9.0)
+            .expect("3d scene")
+            .camera;
+        assert!(
+            (control_camera.position - Vec3::new(0.0, 0.0, 6.0)).length() < 1e-3,
+            "未声明 pose=transform 时位置必须保持组件值：{:?}",
+            control_camera.position
+        );
+        assert!(
+            control_camera.target.length() < 1e-3,
+            "未声明 pose=transform 时 target 必须保持组件值：{:?}",
+            control_camera.target
+        );
+    }
+
     /// M11-04 / R-05：编辑器 3D 视图相机覆盖（`scene_3d_with_camera`）不修改场景
     /// 数据——传 `Some` 仅覆盖渲染视角（aspect 同步为传入值），传 `None` 走
     /// `active_camera3d`；覆盖前后 drawables 一致，且覆盖后 `scene_3d` 仍回退到
@@ -3890,6 +5792,7 @@ mod sdf_tests {
             aspect_ratio: 2.0,
             near: 0.5,
             far: 200.0,
+            pose_from_transform: false,
         };
         let overridden = runtime
             .scene_3d_with_camera(4.0 / 3.0, Some(override_camera))
@@ -4219,8 +6122,10 @@ mod frame_schedule_tests {
                 "user_physics_probe",
             ]
         );
-        // 调度统计的 timings 按「首次执行顺序」记录，完整反映共享管线的
-        // 阶段顺序：内置固定步顺序与原手工编排一致，帧级系统在末尾。
+        // 调度统计的 timings 按「首次执行顺序」记录，完整反映共享管线的阶段顺序。
+        // WP7 收敛后的统一序（负责人裁定）：脚本 → 静态/运动学同步 → 物理 → 动态回写 →
+        // （模拟/动画）→ 世界变换传播；`spatial_propagate` 在动画之后，因为动画也会改局部变换，
+        // 传播必须是**最后**一步，提取才能看到本帧的最终世界位置。
         let report = runtime.last_schedule_report().expect("schedule report");
         let names: Vec<&str> = report.timings.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(
@@ -4230,15 +6135,19 @@ mod frame_schedule_tests {
                 "lua_update",
                 "ui_click_dispatch",
                 "user_script_probe",
+                "physics_sync",
                 "physics2d_step",
                 "physics3d_step",
                 "user_physics_probe",
+                "physics_writeback",
                 "particles_step",
                 "clock_step",
                 "scene_transition",
                 "integrate_velocity",
+                "camera2d_controller",
                 "animation_state_advance",
                 "animation3d_advance",
+                "spatial_propagate",
             ]
         );
     }

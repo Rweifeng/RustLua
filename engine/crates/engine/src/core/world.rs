@@ -1,12 +1,21 @@
 //! Entity world and type-erased component storage.
+//!
+//! WP3 裁定：组件存储**整体**换成 dense（[`DenseStorage`]）。对外契约逐条不变——
+//! `for_each*` 仍是 `EntityId` 有序、`entities_with` 仍返回有序 `Vec`、`get`/`insert`/`remove`
+//! 语义与原 `HashMap` 实现一致；变化只在内部：查询不再双层哈希（`TypeId` 表 + 实体表）、
+//! 稳态帧遍历零分配、删除不再是排序 `Vec` 的 O(n) memmove。
 
 use std::{
     any::{Any, TypeId},
+    cell::{Cell, RefCell},
     collections::HashMap,
     fmt,
 };
 
-use crate::core::entity::{EntityAllocator, EntityId};
+use crate::core::{
+    dense_storage::DenseStorage,
+    entity::{EntityAllocator, EntityId},
+};
 
 /// Errors returned by world operations that require a live entity.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -33,26 +42,65 @@ trait ComponentStorage: Any {
     fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 
+/// dense 组件存储 + **惰性重建的有序 id 索引**。
+///
+/// 两条契约同时满足：`EntityId` 有序遍历（既有 `for_each*` 契约，见
+/// `queries_component_combinations_in_sorted_entity_order`）与 O(1) 增删查。
+///
+/// `order` 是 dense 当前 id 的升序副本：插入/删除只**标脏**，下一次有序访问时整体重排一次
+/// （O(n log n)）。稳态帧（无增删）因此零分配、零哈希；这与"插入时二分插入"相比代价低得多
+/// （后者每次插入 O(n) memmove）。
 struct TypedStorage<T> {
-    values: HashMap<EntityId, T>,
-    entities: Vec<EntityId>,
+    dense: DenseStorage<T>,
+    order: RefCell<Vec<EntityId>>,
+    order_dirty: Cell<bool>,
+}
+
+impl<T> TypedStorage<T> {
+    const fn new() -> Self {
+        Self {
+            dense: DenseStorage::new(),
+            order: RefCell::new(Vec::new()),
+            order_dirty: Cell::new(false),
+        }
+    }
+
+    /// `&mut self` 路径的重建（不做运行时借用检查）。
+    fn rebuild_order(&mut self) {
+        let order = self.order.get_mut();
+        order.clear();
+        order.extend_from_slice(self.dense.entities());
+        order.sort_unstable();
+        self.order_dirty.set(false);
+    }
+
+    /// `&self` 路径的重建（`for_each` 只拿得到 `&World`）。
+    fn ensure_order(&self) {
+        if !self.order_dirty.get() {
+            return;
+        }
+        let mut order = self.order.borrow_mut();
+        order.clear();
+        order.extend_from_slice(self.dense.entities());
+        order.sort_unstable();
+        self.order_dirty.set(false);
+    }
 }
 
 impl<T: 'static> ComponentStorage for TypedStorage<T> {
     fn remove_entity(&mut self, entity: EntityId) {
-        if self.values.remove(&entity).is_some()
-            && let Ok(index) = self.entities.binary_search(&entity)
-        {
-            self.entities.remove(index);
+        if self.dense.remove(entity).is_some() {
+            self.order_dirty.set(true);
         }
     }
 
     fn contains_entity(&self, entity: EntityId) -> bool {
-        self.values.contains_key(&entity)
+        self.dense.contains(entity)
     }
 
     fn entity_ids(&self) -> Vec<EntityId> {
-        self.entities.clone()
+        self.ensure_order();
+        self.order.borrow().clone()
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -123,22 +171,18 @@ impl World {
         component: T,
     ) -> Result<Option<T>, WorldError> {
         self.ensure_alive(entity)?;
-        let storage = self.components.entry(TypeId::of::<T>()).or_insert_with(|| {
-            Box::new(TypedStorage::<T> {
-                values: HashMap::new(),
-                entities: Vec::new(),
-            })
-        });
+        let storage = self
+            .components
+            .entry(TypeId::of::<T>())
+            .or_insert_with(|| Box::new(TypedStorage::<T>::new()));
         let typed = storage
             .as_any_mut()
             .downcast_mut::<TypedStorage<T>>()
             .expect("component storage type id must match its concrete storage");
-        let previous = typed.values.insert(entity, component);
+        let previous = typed.dense.insert(entity, component);
         if previous.is_none() {
-            match typed.entities.binary_search(&entity) {
-                Ok(_) => {}
-                Err(index) => typed.entities.insert(index, entity),
-            }
+            // 新增（或替换了同槽位的上一世代条目）⇒ 有序索引失效。
+            typed.order_dirty.set(true);
         }
         Ok(previous)
     }
@@ -150,7 +194,7 @@ impl World {
             .components
             .get(&TypeId::of::<T>())
             .and_then(|storage| storage.as_any().downcast_ref::<TypedStorage<T>>())
-            .and_then(|storage| storage.values.get(&entity)))
+            .and_then(|storage| storage.dense.get(entity)))
     }
 
     /// Mutably reads a component attached to an entity.
@@ -160,17 +204,24 @@ impl World {
             .components
             .get_mut(&TypeId::of::<T>())
             .and_then(|storage| storage.as_any_mut().downcast_mut::<TypedStorage<T>>())
-            .and_then(|storage| storage.values.get_mut(&entity)))
+            .and_then(|storage| storage.dense.get_mut(entity)))
     }
 
     /// Removes a component and returns its value, if it was present.
     pub fn remove<T: 'static>(&mut self, entity: EntityId) -> Result<Option<T>, WorldError> {
         self.ensure_alive(entity)?;
-        Ok(self
+        let Some(storage) = self
             .components
             .get_mut(&TypeId::of::<T>())
             .and_then(|storage| storage.as_any_mut().downcast_mut::<TypedStorage<T>>())
-            .and_then(|storage| storage.values.remove(&entity)))
+        else {
+            return Ok(None);
+        };
+        let removed = storage.dense.remove(entity);
+        if removed.is_some() {
+            storage.order_dirty.set(true);
+        }
+        Ok(removed)
     }
 
     /// Returns whether an entity has a component of type `T`.
@@ -209,8 +260,10 @@ impl World {
         else {
             return;
         };
-        for &entity in &storage.entities {
-            if let Some(component) = storage.values.get(&entity) {
+        storage.ensure_order();
+        let order = storage.order.borrow();
+        for &entity in order.iter() {
+            if let Some(component) = storage.dense.get(entity) {
                 f(entity, component);
             }
         }
@@ -225,12 +278,16 @@ impl World {
         else {
             return;
         };
-        let entities = storage.entities.clone();
-        for entity in entities {
-            if let Some(component) = storage.values.get_mut(&entity) {
+        storage.rebuild_order();
+        // 取出有序索引再遍历：避免同时可变借用 `dense` 与不可变借用 `order`。
+        // `mem::take` 是移动而不是克隆，遍历结束后放回，稳态帧因此零分配。
+        let order = std::mem::take(&mut *storage.order.borrow_mut());
+        for &entity in &order {
+            if let Some(component) = storage.dense.get_mut(entity) {
                 f(entity, component);
             }
         }
+        *storage.order.borrow_mut() = order;
     }
 
     /// Iterates all live entities that have both components `T` and `U`.
@@ -249,18 +306,22 @@ impl World {
         else {
             return;
         };
-        if left.entities.len() <= right.entities.len() {
-            for &entity in &left.entities {
-                if let Some(other) = right.values.get(&entity)
-                    && let Some(component) = left.values.get(&entity)
+        if left.dense.len() <= right.dense.len() {
+            left.ensure_order();
+            let order = left.order.borrow();
+            for &entity in order.iter() {
+                if let Some(other) = right.dense.get(entity)
+                    && let Some(component) = left.dense.get(entity)
                 {
                     f(entity, component, other);
                 }
             }
         } else {
-            for &entity in &right.entities {
-                if let Some(component) = left.values.get(&entity)
-                    && let Some(other) = right.values.get(&entity)
+            right.ensure_order();
+            let order = right.order.borrow();
+            for &entity in order.iter() {
+                if let Some(component) = left.dense.get(entity)
+                    && let Some(other) = right.dense.get(entity)
                 {
                     f(entity, component, other);
                 }
@@ -355,6 +416,57 @@ mod tests {
         world.insert(third, Health(20)).unwrap();
         assert_eq!(world.entities_with::<Position>(), vec![first, second]);
         assert_eq!(world.entities_with2::<Position, Health>(), vec![second]);
+    }
+
+    /// WP3：dense 存储的**有序 id 索引是惰性重建**的，因此"插入/删除打乱 dense 数组之后
+    /// 遍历仍按 EntityId 升序"必须有测试钉住（这是替换前后唯一的行为契约风险点）。
+    #[test]
+    fn iteration_stays_sorted_after_interleaved_insert_and_remove() {
+        let mut world = World::new();
+        let ids = (0..8).map(|_| world.spawn()).collect::<Vec<_>>();
+        for id in &ids {
+            world.insert(*id, Health(id.index())).unwrap();
+        }
+        // 删中间几个，再补新实体（dense 会 `swap_remove`，顺序被打乱）。
+        for id in [&ids[1], &ids[4], &ids[6]] {
+            world.remove::<Health>(*id).unwrap();
+        }
+        let late = world.spawn();
+        world.insert(late, Health(99)).unwrap();
+
+        let mut seen: Vec<EntityId> = Vec::new();
+        world.for_each::<Health>(|id, health| {
+            seen.push(id);
+            assert_eq!(health.0, if id == late { 99 } else { id.index() });
+        });
+        let mut expected = vec![ids[0], ids[2], ids[3], ids[5], ids[7], late];
+        expected.sort_unstable();
+        assert_eq!(seen, expected, "for_each 必须仍按 EntityId 升序");
+        assert_eq!(world.entities_with::<Health>(), expected);
+
+        // `for_each_mut` 走的是另一条借用路径，同样要有序。
+        let mut mutated: Vec<EntityId> = Vec::new();
+        world.for_each_mut::<Health>(|id, health| {
+            mutated.push(id);
+            health.0 += 1;
+        });
+        assert_eq!(mutated, expected, "for_each_mut 必须仍按 EntityId 升序");
+        assert_eq!(world.get::<Health>(ids[0]).unwrap().unwrap().0, 1);
+
+        // `for_each2` 在两侧规模不同的两个分支上都要有序。
+        world.insert(ids[3], Position { x: 3.0, y: 0.0 }).unwrap();
+        let mut pairs: Vec<EntityId> = Vec::new();
+        world.for_each2::<Health, Position>(|id, _, _| pairs.push(id));
+        assert_eq!(pairs, vec![ids[3]], "只有 ids[3] 同时有两个组件");
+
+        // 重新插入已删除的组件后，索引同样要重建。
+        world.insert(ids[1], Health(1)).unwrap();
+        let mut restored: Vec<EntityId> = Vec::new();
+        world.for_each::<Health>(|id, _| restored.push(id));
+        let mut expected = expected.clone();
+        expected.push(ids[1]);
+        expected.sort_unstable();
+        assert_eq!(restored, expected);
     }
 
     #[test]

@@ -1,16 +1,57 @@
 use crate::SceneDocument;
 use engine::core::{
-    camera3d::Camera3D,
+    camera::Camera3D,
     light::Light,
     math3d::{Quat, Vec3},
     mesh3d::MeshRenderer,
     physics3d::{ColliderDesc3d, ColliderShape3d},
     scene::{SceneEntity, SceneEntityId},
     sprite::SpriteComponent,
-    transform3d::Transform3D,
+    transform::Transform3D,
     ui::{UiImage, UiText},
 };
 use std::{error::Error, fmt, path::Path};
+
+/// 统一 Transform 面板的两个编辑空间（WP9）。
+///
+/// docs/40 §3 WP9 要求"一个 Transform 面板按 2D/3D 编辑模式展示"，而编辑器此前是两个各自独立的
+/// 折叠块（`Transform` 与 `Transform3D`）——同一件事在两个地方编辑。
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
+pub enum TransformSpace {
+    TwoD,
+    /// 实体同时有两种变换时的默认编辑空间。
+    #[default]
+    ThreeD,
+}
+
+impl TransformSpace {
+    /// 面板实际该编辑哪个空间；`None` = 两种变换都没有，面板不显示。
+    ///
+    /// 规则：只有一种就按拥有者显示（此时模式开关没有意义），两种都有才听用户选。
+    #[must_use]
+    pub const fn resolve(has_2d: bool, has_3d: bool, mode: Self) -> Option<Self> {
+        match (has_2d, has_3d) {
+            (false, false) => None,
+            (true, false) => Some(Self::TwoD),
+            (false, true) => Some(Self::ThreeD),
+            (true, true) => Some(mode),
+        }
+    }
+
+    /// 两种变换是否都在（决定要不要显示模式开关）。
+    #[must_use]
+    pub const fn both_present(has_2d: bool, has_3d: bool) -> bool {
+        has_2d && has_3d
+    }
+
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::TwoD => "2D",
+            Self::ThreeD => "3D",
+        }
+    }
+}
 
 /// 第一批 Inspector 可编辑的 Transform 字段。
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -78,6 +119,9 @@ pub struct Camera3DFields {
     pub fov_degrees: f32,
     pub near: f32,
     pub far: f32,
+    /// WP5：姿态是否由实体的 `Transform3D` 提供（`pose=transform`）。Inspector 必须把这个
+    /// 开关原样带回去，否则改任何一个相机字段都会把姿态来源悄悄复位。
+    pub pose_from_transform: bool,
 }
 
 impl Default for Camera3DFields {
@@ -92,6 +136,7 @@ impl Default for Camera3DFields {
             fov_degrees: 90.0,
             near: 0.1,
             far: 100.0,
+            pose_from_transform: false,
         }
     }
 }
@@ -177,6 +222,38 @@ impl Default for TextFields {
             color_g: 1.0,
             color_b: 1.0,
             font: String::new(),
+        }
+    }
+}
+
+/// Inspector 可编辑的 `WorldText`（世界空间文字）字段。
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorldTextFields {
+    pub text: String,
+    pub font_size: f32,
+    pub color_r: f32,
+    pub color_g: f32,
+    pub color_b: f32,
+    pub font: String,
+    /// 投影到屏幕后的像素偏移（"头顶 12px"）。
+    pub offset_x: f32,
+    pub offset_y: f32,
+    /// 按实测字宽水平居中。
+    pub centered: bool,
+}
+
+impl Default for WorldTextFields {
+    fn default() -> Self {
+        Self {
+            text: "文字".to_owned(),
+            font_size: engine::core::ui::UI_TEXT_BASE_PX,
+            color_r: 1.0,
+            color_g: 1.0,
+            color_b: 1.0,
+            font: String::new(),
+            offset_x: 0.0,
+            offset_y: -20.0,
+            centered: true,
         }
     }
 }
@@ -345,6 +422,8 @@ pub struct InspectorSnapshot {
     pub collider3d: Option<Collider3dFields>,
     /// UI 组件（屏幕空间）。
     pub text: Option<TextFields>,
+    /// WP4：世界空间文字（锚在世界位置，与屏幕 `Text` 是两套组件）。
+    pub world_text: Option<WorldTextFields>,
     pub image: Option<ImageFields>,
     /// E16/E17：布局组件（存在时优先于 Text/Image 内联布局）。
     pub ui_layout: Option<UiLayoutFields>,
@@ -608,6 +687,35 @@ impl InspectorState {
         Ok(())
     }
 
+    /// WP4：写入 `WorldText`（世界空间文字）。与 `set_text` 同样只在内容变化时标脏。
+    pub fn set_world_text(
+        &self,
+        document: &mut SceneDocument,
+        id: SceneEntityId,
+        fields: WorldTextFields,
+    ) -> Result<(), InspectorError> {
+        validate_world_text(&fields)?;
+        let entity = entity_mut(document, id)?;
+        let value = encode_world_text(&fields)?;
+        if entity.components.get("WorldText") != Some(&value) {
+            entity.components.insert("WorldText".into(), value);
+            document.mark_dirty();
+        }
+        Ok(())
+    }
+
+    pub fn clear_world_text(
+        &self,
+        document: &mut SceneDocument,
+        id: SceneEntityId,
+    ) -> Result<(), InspectorError> {
+        let entity = entity_mut(document, id)?;
+        if entity.components.remove("WorldText").is_some() {
+            document.mark_dirty();
+        }
+        Ok(())
+    }
+
     pub fn set_image(
         &self,
         document: &mut SceneDocument,
@@ -828,6 +936,22 @@ impl InspectorState {
                 }
             }
         }
+        if let Some(text) = snapshot.world_text {
+            self.set_world_text(document, id, text.clone())?;
+            for sid in multi_sprite_ids {
+                if *sid == id {
+                    continue;
+                }
+                if document
+                    .scene
+                    .entities
+                    .get(sid)
+                    .is_some_and(|entity| entity.components.contains_key("WorldText"))
+                {
+                    self.set_world_text(document, *sid, text.clone())?;
+                }
+            }
+        }
         if let Some(image) = snapshot.image {
             self.set_image(document, id, image.clone())?;
             for sid in multi_sprite_ids {
@@ -965,6 +1089,10 @@ fn snapshot_for(entity: &SceneEntity) -> Result<InspectorSnapshot, InspectorErro
             .components
             .get("Text")
             .map_or(Ok(None), |value| decode_text(value).map(Some))?,
+        world_text: entity
+            .components
+            .get("WorldText")
+            .map_or(Ok(None), |value| decode_world_text(value).map(Some))?,
         image: entity
             .components
             .get("Image")
@@ -1199,6 +1327,44 @@ fn validate_text(fields: &TextFields) -> Result<(), InspectorError> {
         .map_err(|error| InspectorError::InvalidText(error.to_string()))
 }
 
+fn encode_world_text(fields: &WorldTextFields) -> Result<String, InspectorError> {
+    Ok(engine::core::world_text::WorldText {
+        text: UiText {
+            text: fields.text.clone(),
+            font_size: fields.font_size,
+            color: [fields.color_r, fields.color_g, fields.color_b],
+            font: fields.font.clone(),
+        },
+        offset: [fields.offset_x, fields.offset_y],
+        centered: fields.centered,
+    }
+    .to_component_str())
+}
+
+fn decode_world_text(value: &str) -> Result<WorldTextFields, InspectorError> {
+    let text = engine::core::world_text::WorldText::from_component_str(value)
+        .map_err(|error| InspectorError::InvalidWorldText(error.to_string()))?;
+    Ok(WorldTextFields {
+        text: text.text.text,
+        font_size: text.text.font_size,
+        color_r: text.text.color[0],
+        color_g: text.text.color[1],
+        color_b: text.text.color[2],
+        font: text.text.font,
+        offset_x: text.offset[0],
+        offset_y: text.offset[1],
+        centered: text.centered,
+    })
+}
+
+/// 校验走"编码后重新解析"：这样字号/颜色/偏移的规则只有 `WorldText` 一份。
+fn validate_world_text(fields: &WorldTextFields) -> Result<(), InspectorError> {
+    let value = encode_world_text(fields)?;
+    engine::core::world_text::WorldText::from_component_str(&value)
+        .map(|_| ())
+        .map_err(|error| InspectorError::InvalidWorldText(error.to_string()))
+}
+
 /// E16：校验归一化二元组（pivot）处于 `0..=1`。
 fn validate_unit_pair(values: &[f32; 2], name: &str) -> Result<(), InspectorError> {
     for (index, value) in values.iter().enumerate() {
@@ -1302,6 +1468,7 @@ fn encode_camera3d(camera: Camera3DFields) -> String {
         aspect_ratio: 1.0,
         near: camera.near,
         far: camera.far,
+        pose_from_transform: camera.pose_from_transform,
     }
     .to_component_str()
 }
@@ -1319,6 +1486,7 @@ fn decode_camera3d(value: &str) -> Result<Camera3DFields, InspectorError> {
         fov_degrees: camera.fov_y.to_degrees(),
         near: camera.near,
         far: camera.far,
+        pose_from_transform: camera.pose_from_transform,
     })
 }
 
@@ -1408,6 +1576,7 @@ pub enum InspectorError {
     InvalidLight(String),
     InvalidCollider3d(String),
     InvalidText(String),
+    InvalidWorldText(String),
     InvalidImage(String),
     InvalidButton(String),
     InvalidUiLayout(String),
@@ -1431,6 +1600,7 @@ impl fmt::Display for InspectorError {
             Self::InvalidLight(value) => write!(f, "Light 数据无效：{value}"),
             Self::InvalidCollider3d(value) => write!(f, "Collider3d 数据无效：{value}"),
             Self::InvalidText(value) => write!(f, "Text 数据无效：{value}"),
+            Self::InvalidWorldText(value) => write!(f, "WorldText 数据无效：{value}"),
             Self::InvalidImage(value) => write!(f, "Image 数据无效：{value}"),
             Self::InvalidButton(value) => write!(f, "Button 数据无效：{value}"),
             Self::InvalidUiLayout(value) => write!(f, "UiLayout 数据无效：{value}"),
@@ -1451,6 +1621,43 @@ mod tests {
         document.scene.add_entity(id, "Player", None).unwrap();
         document.mark_clean();
         (document, InspectorState::new(), id)
+    }
+
+    /// WP9 统一 Transform 面板：面板该编哪个空间只由"实体拥有哪些变换"与"用户选的模式"决定。
+    /// 两条关键性质：只有一种时**不听模式**（否则切到 3D 会让 2D-only 实体的面板空掉），
+    /// 两种都没有时面板不显示。
+    #[test]
+    fn unified_transform_panel_resolves_the_edited_space() {
+        assert_eq!(
+            TransformSpace::resolve(false, false, TransformSpace::TwoD),
+            None
+        );
+        assert_eq!(
+            TransformSpace::resolve(false, false, TransformSpace::ThreeD),
+            None
+        );
+        assert_eq!(
+            TransformSpace::resolve(true, false, TransformSpace::ThreeD),
+            Some(TransformSpace::TwoD),
+            "只有 2D 变换时按拥有者显示，不看模式"
+        );
+        assert_eq!(
+            TransformSpace::resolve(false, true, TransformSpace::TwoD),
+            Some(TransformSpace::ThreeD),
+            "只有 3D 变换时按拥有者显示，不看模式"
+        );
+        assert_eq!(
+            TransformSpace::resolve(true, true, TransformSpace::TwoD),
+            Some(TransformSpace::TwoD)
+        );
+        assert_eq!(
+            TransformSpace::resolve(true, true, TransformSpace::ThreeD),
+            Some(TransformSpace::ThreeD)
+        );
+        assert!(TransformSpace::both_present(true, true));
+        assert!(!TransformSpace::both_present(true, false));
+        assert!(!TransformSpace::both_present(false, true));
+        assert_eq!(TransformSpace::default(), TransformSpace::ThreeD);
     }
 
     #[test]
@@ -2153,6 +2360,81 @@ mod tests {
             !document.scene.entities[&id]
                 .components
                 .contains_key("Image")
+        );
+    }
+    #[test]
+    fn world_text_round_trips_through_the_inspector() {
+        let (mut document, inspector, id) = setup();
+        inspector
+            .set_world_text(
+                &mut document,
+                id,
+                WorldTextFields {
+                    text: "受伤-12".to_owned(),
+                    font_size: 18.0,
+                    color_r: 1.0,
+                    color_g: 0.2,
+                    color_b: 0.2,
+                    offset_y: -24.0,
+                    centered: true,
+                    ..WorldTextFields::default()
+                },
+            )
+            .unwrap();
+        let stored = document.scene.entities[&id]
+            .components
+            .get("WorldText")
+            .expect("WorldText written")
+            .clone();
+        assert!(stored.contains("centered=true"), "{stored}");
+
+        // 面板快照解码回同一份字段。
+        let decoded = inspector
+            .snapshot(&document, id)
+            .unwrap()
+            .world_text
+            .expect("world text snapshot");
+        assert_eq!(decoded.text, "受伤-12");
+        assert_eq!(decoded.offset_y, -24.0);
+        assert!(decoded.centered);
+
+        // 存盘再读回：场景文本必须无损往返（组件串里带中文与分号风险）。
+        let text = document.scene.to_text();
+        let loaded = engine::core::scene::Scene::from_text(&text).unwrap();
+        let reloaded = engine::core::world_text::WorldText::from_component_str(
+            loaded.entities[&id]
+                .components
+                .get("WorldText")
+                .expect("WorldText survives the round trip"),
+        )
+        .expect("reloaded component parses");
+        assert_eq!(reloaded.text.text, "受伤-12");
+        assert_eq!(reloaded.offset, [0.0, -24.0]);
+        assert!(reloaded.centered);
+
+        inspector.clear_world_text(&mut document, id).unwrap();
+        assert!(
+            !document.scene.entities[&id]
+                .components
+                .contains_key("WorldText")
+        );
+    }
+
+    #[test]
+    fn world_text_rejects_non_finite_offset() {
+        let (mut document, inspector, id) = setup();
+        let value = WorldTextFields {
+            offset_x: f32::NAN,
+            ..WorldTextFields::default()
+        };
+        assert!(matches!(
+            inspector.set_world_text(&mut document, id, value),
+            Err(InspectorError::InvalidWorldText(_))
+        ));
+        assert!(
+            !document.scene.entities[&id]
+                .components
+                .contains_key("WorldText")
         );
     }
     #[test]

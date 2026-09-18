@@ -1,6 +1,6 @@
 use bytemuck::{Pod, Zeroable};
 use engine::core::{
-    math2d::{Camera2D, Viewport},
+    camera::{Camera2D, Viewport},
     sprite::Sprite,
     texture::{TextureAsset, TextureColorSpace},
     transform::{Transform, Vec2},

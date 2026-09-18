@@ -7,10 +7,12 @@ use std::{
 };
 
 use crate::core::{
-    camera3d::Camera3D,
+    camera::Camera3D,
     font::FontAtlas,
+    layer::RenderLayer,
     light::Light,
     math3d::{Aabb3, Mat4},
+    sprite_batch::SpriteDrawBatch,
 };
 use bytemuck::{Pod, Zeroable};
 
@@ -23,6 +25,56 @@ pub struct OverlayVertex {
     pub color: [f32; 4],
     /// `1` = signed-distance-field glyph (text); shader applies smoothstep.
     pub sdf: u32,
+}
+
+/// WP6 单趟化：让 2D 批处理直接把顶点写成宿主布局，省掉中间那份 `SpriteVertex`。
+/// 核心只提供 NDC 位置/UV/颜色，`sdf` 是宿主自己的字段，因此由这里补 0。
+impl crate::core::sprite_batch::OverlayVertexSink for OverlayVertex {
+    fn placeholder() -> Self {
+        Self {
+            position: [0.0; 2],
+            uv: [0.0; 2],
+            color: [0.0; 4],
+            sdf: 0,
+        }
+    }
+
+    fn from_ndc(position: [f32; 2], uv: [f32; 2], color: [f32; 4]) -> Self {
+        Self {
+            position,
+            uv,
+            color,
+            sdf: 0,
+        }
+    }
+}
+
+/// WP6 世界 Sprite 顶点：位置是**世界坐标** `(x, y, z)`，投影由顶点着色器用
+/// `Camera2D::view_projection` 完成。`z` 来自 `Sprite::z`，深度通道据此做深度测试。
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable, PartialEq)]
+pub struct WorldSpriteVertex {
+    pub position: [f32; 3],
+    pub uv: [f32; 2],
+    pub color: [f32; 4],
+}
+
+impl crate::core::sprite_batch::WorldSpriteVertexSink for WorldSpriteVertex {
+    fn placeholder() -> Self {
+        Self {
+            position: [0.0; 3],
+            uv: [0.0; 2],
+            color: [0.0; 4],
+        }
+    }
+
+    fn from_world(position: [f32; 3], uv: [f32; 2], color: [f32; 4]) -> Self {
+        Self {
+            position,
+            uv,
+            color,
+        }
+    }
 }
 
 #[repr(C)]
@@ -60,6 +112,49 @@ pub struct SceneDraw {
     pub count: u32,
     pub sdf: bool,
     pub vector: bool,
+    /// WP6：这段几何属于哪个渲染层。世界内容与屏幕内容因此可以被区分开——
+    /// 世界 Sprite 深度通道只吃世界层，屏幕 UI 永远留在屏幕空间。
+    pub render_layer: RenderLayer,
+}
+
+impl SceneDraw {
+    /// 世界内容（精灵 / 瓦片 / 世界文字）。
+    #[must_use]
+    pub const fn world(texture: u32, start: u32, count: u32) -> Self {
+        Self {
+            texture,
+            start,
+            count,
+            sdf: false,
+            vector: false,
+            render_layer: RenderLayer::World2D,
+        }
+    }
+
+    /// 屏幕空间 UI 文本/图片（按设计分辨率布局，不受世界相机影响）。
+    #[must_use]
+    pub const fn screen_ui(texture: u32, start: u32, count: u32) -> Self {
+        Self {
+            render_layer: RenderLayer::ScreenUI,
+            ..Self::world(texture, start, count)
+        }
+    }
+
+    /// 世界之上的叠加内容（HUD、调试绘制、性能浮层）。
+    #[must_use]
+    pub const fn overlay(texture: u32, start: u32, count: u32) -> Self {
+        Self {
+            render_layer: RenderLayer::Overlay2D,
+            ..Self::world(texture, start, count)
+        }
+    }
+
+    /// 标记 SDF 文本（字体距离场走 Linear 采样管线）。
+    #[must_use]
+    pub const fn with_sdf(mut self, sdf: bool) -> Self {
+        self.sdf = sdf;
+        self
+    }
 }
 
 /// Sentinel paths resolved by the renderer to built-in textures instead of
@@ -95,6 +190,11 @@ pub fn font_asset_from_texture_path(path: &str) -> &str {
 pub struct SceneMesh {
     pub vertices: Vec<OverlayVertex>,
     pub draws: Vec<SceneDraw>,
+    /// WP6 世界 Sprite（世界坐标 + z）：开关打开时精灵走这条路径，用顶点着色器投影并参与
+    /// 深度测试；关闭时为空，精灵仍走上面的 NDC overlay 路径。
+    pub world_sprites: Vec<WorldSpriteVertex>,
+    /// `world_sprites` 的绘制分段（纹理下标与既有 `SpriteDrawBatch` 同一语义）。
+    pub world_sprite_draws: Vec<SpriteDrawBatch>,
     pub paths: Vec<String>,
     /// Current CJK font atlas pixels; `pixels` empty means unchanged since last upload.
     pub font_atlas: Option<FontAtlasPixels>,

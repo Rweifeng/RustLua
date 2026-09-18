@@ -8,8 +8,9 @@ pub mod animation3d;
 pub mod atlas;
 /// Named sound-effect playback backed by rodio.
 pub mod audio;
+/// WP4：2D 相机控制器（跟随 / 死区 / 平滑 / 抖动）。
+pub mod camera;
 /// Perspective camera and view-frustum primitives for 3D rendering.
-pub mod camera3d;
 /// 打包时字符收集：扫描场景 Text 与 Lua 字符串，产出去重的字符集供字形预热。
 pub mod char_collect;
 /// Deferred world mutations for safe ECS system iteration.
@@ -18,6 +19,8 @@ pub mod commands;
 pub mod component_schema;
 /// Lightweight JSON-schema validation for `data` tables loaded via Lua.
 pub mod data_schema;
+/// WP3 原型：dense 值数组 + sparse 槽位索引的组件存储（待 A/B 基准裁定是否替换）。
+pub mod dense_storage;
 /// Dependency-graph extraction, resolution, propagation, and cycle detection.
 pub mod dependency;
 /// E27: versioned, fault-isolated editor plugin registry.
@@ -37,12 +40,16 @@ pub mod gltf_asset;
 pub mod grid;
 /// Content fingerprinting shared by the import cache and resource database.
 pub mod hash;
+/// WP2：空间父子关系（`Parent`）与世界变换传播（`WorldTransform`）。
+pub mod hierarchy;
 /// Incremental and atomic asset import cache.
 pub mod import_cache;
 /// Importer trait, builtin registry, and batch runner.
 pub mod importer;
 /// Platform-independent keyboard, mouse, and cursor snapshots.
 pub mod input;
+/// WP6：渲染层（World2D / Overlay2D / ScreenUI）的显式说法。
+pub mod layer;
 /// Directional light component for 3D scenes.
 pub mod light;
 /// Logging and context-rich engine errors.
@@ -53,12 +60,16 @@ pub mod math2d;
 pub mod math3d;
 /// 游戏工程路径解析（默认仓库内 examples）。
 pub mod paths;
+/// WP2/WP9：场景空间层级迁移命令（dry-run / 写回 / 备份 / 一键回滚）。
+pub mod scene_migration;
 pub use paths::fixture_games_dir;
 pub use paths::games_dir;
 /// GPU-friendly CPU mesh and material data for 3D rendering.
 pub mod mesh3d;
 /// 发布资源编解码（压缩 + 加密）。
 pub mod pack;
+/// 确定性数据并行执行器（纯分块任务，可回滚为串行）。
+pub mod par;
 /// Pooled particle bursts with spawn/update/recycle.
 pub mod particle;
 /// Runtime frame and update performance sampling.
@@ -88,7 +99,7 @@ pub mod scheduler;
 pub mod script;
 /// 工程级设置文件 `<project>/settings.toml`（音频分组音量等玩家偏好）。
 pub mod settings;
-/// WP2 prototype: unified local/global spatial transforms.
+/// WP2：统一的局部/世界变换与父先序传播。
 pub mod spatial_transform;
 /// CPU-side 2D Sprite geometry and UV generation.
 pub mod sprite;
@@ -104,8 +115,7 @@ pub mod time_step;
 /// 2D transform and velocity components with a minimal integration system.
 pub mod transform;
 /// 3D transform component and model-matrix construction.
-pub mod transform3d;
-/// WP1 prototype: typed scene compilation at the load boundary.
+/// WP1：加载边界的类型化场景编译。
 pub mod typed_scene;
 /// Screen-space UI scene components (Text / Image).
 pub mod ui;
@@ -131,6 +141,8 @@ pub mod user_dir;
 pub mod window;
 /// Entity world and type-erased component storage.
 pub mod world;
+/// WP4 增补：世界空间文字组件（锚在世界位置、走同一套字形管线）。
+pub mod world_text;
 
 /// Returns the engine core package version.
 #[must_use]

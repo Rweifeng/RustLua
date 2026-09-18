@@ -16,13 +16,27 @@ use crate::core::world::World;
 /// Simulation → Animation → Transform → Render. `Simulation` (M18-03) hosts
 /// world-advancing steps that are neither collision physics nor animation:
 /// particles, the game clock and pending scene transitions.
+///
+/// WP7 收敛后的统一帧序（负责人裁定）：脚本 → 控制器 → 静态/运动学同步 → 物理 →
+/// 动态回写 → GlobalTransform → RenderSnapshot。对应到阶段就是
+/// [`ScheduleStage::Script`] → [`ScheduleStage::Sync`] → [`ScheduleStage::Physics`] →
+/// [`ScheduleStage::Writeback`] → [`ScheduleStage::Spatial`] → 提取（宿主在
+/// `Transform`/`Render` 阶段之后自己做）。中间那三段是本轮新增的**类型化术语**：
+/// 此前"同步/回写/世界变换传播"分别散在 `step_physics`、宿主末尾和提取入口里，
+/// 顺序只存在于注释与调用顺序中。
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum ScheduleStage {
     Input,
     Script,
+    /// 物理步之前的静态/运动学同步（把 ECS 侧权威位置推给模拟世界）。
+    Sync,
     Physics,
+    /// 物理步之后的动态回写（把模拟结果写回 ECS）。
+    Writeback,
     Simulation,
     Animation,
+    /// `GlobalTransform` 传播（父链组合世界变换）。
+    Spatial,
     Transform,
     Render,
 }
@@ -34,11 +48,14 @@ impl ScheduleStage {
         match self {
             Self::Input => 0,
             Self::Script => 1,
-            Self::Physics => 2,
-            Self::Simulation => 3,
-            Self::Animation => 4,
-            Self::Transform => 5,
-            Self::Render => 6,
+            Self::Sync => 2,
+            Self::Physics => 3,
+            Self::Writeback => 4,
+            Self::Simulation => 5,
+            Self::Animation => 6,
+            Self::Spatial => 7,
+            Self::Transform => 8,
+            Self::Render => 9,
         }
     }
 }
@@ -48,9 +65,12 @@ impl fmt::Display for ScheduleStage {
         let name = match self {
             Self::Input => "Input",
             Self::Script => "Script",
+            Self::Sync => "Sync",
             Self::Physics => "Physics",
+            Self::Writeback => "Writeback",
             Self::Simulation => "Simulation",
             Self::Animation => "Animation",
+            Self::Spatial => "Spatial",
             Self::Transform => "Transform",
             Self::Render => "Render",
         };

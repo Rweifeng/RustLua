@@ -25,7 +25,7 @@
 
 - `rotation` 是单位四元数（`rx,ry,rz,rw`，非单位长度报错）。
 - `scale` 各分量必须为正。
-- 模型矩阵 `T * R * S`（[transform3d.rs](../engine/crates/engine/src/core/transform3d.rs)）。
+- 模型矩阵 `T * R * S`（WP2/WP5 收敛后 2D 与 3D 变换同址：[transform.rs](../engine/crates/engine/src/core/transform.rs)）。
 
 ### MeshRenderer
 

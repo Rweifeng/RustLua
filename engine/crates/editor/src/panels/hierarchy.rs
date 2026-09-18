@@ -5,7 +5,7 @@ use crate::util::{display_path, strip_verbatim_prefix};
 use editor::{CommandKind, ReparentPosition, SelectionSource};
 use eframe::egui;
 use engine::core::{
-    prefab::Prefab, resource_db::AssetId, scene::SceneEntityId, transform3d::Transform3D,
+    prefab::Prefab, resource_db::AssetId, scene::SceneEntityId, transform::Transform3D,
 };
 use std::path::PathBuf;
 use std::time::{Duration, Instant};

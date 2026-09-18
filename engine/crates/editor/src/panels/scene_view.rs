@@ -8,25 +8,25 @@ use crate::panels::tilemap_tools::{CellRect, TileFill, copy_region, fill_rect, p
 use crate::util::icon_toggle;
 use crate::util::strip_verbatim_prefix;
 use crate::{
-    GizmoAxis, GizmoDrag, SceneDrag, SceneTool, SceneViewCache2d, SceneViewCache3d, SceneViewMode,
-    TileEditMode, UiDragInitial,
+    GizmoAxis, GizmoDrag, SceneDrag, SceneTool, SceneView3dTypedEntity, SceneViewCache2d,
+    SceneViewCache3d, SceneViewMode, TileEditMode, UiDragInitial,
 };
 use editor::{CommandKind, SelectionSource, TransformFields};
 use eframe::egui;
 use engine::core::{
-    camera3d::{Camera3D, Ray3},
+    camera::Camera2D,
+    camera::{Camera3D, DEFAULT_3D_CLEAR, FrameViews, Ray3, RenderView, Viewport},
     light::Light,
-    math2d::Camera2D,
     math3d::{Quat, Vec3},
     prefab::Prefab,
     scene::{SceneEntity, SceneEntityId},
-    scene_extract::extract_serialized_scene_3d,
     sprite::SpriteComponent,
     text::{TextAtlas, TextLayout, TextStyle},
     texture::{TextureAsset, TextureColorSpace},
     tilemap::Tilemap,
+    transform::Transform3D,
     transform::Vec2,
-    transform3d::Transform3D,
+    typed_scene::{ComponentId, TypedComponent, TypedScene},
     ui_layout::{UiRect, UiRectLayout},
     ui_scene_layout::{UiSceneNode, resolve_scene_ui_layout},
 };
@@ -586,6 +586,25 @@ impl EditorApp {
                         .and_then(|v| parse_transform(v))
                 })
                 .unwrap_or_default();
+            // WP2：包围框必须跟**渲染**用同一份位置。场景视图渲染走 `RuntimeScene::vertices()`
+            // （父链组合后的世界变换），而文档里存的是局部值——带父子关系的实体若继续用局部值，
+            // 会出现"框在人不在的地方"。继承未生效（没有父子关系）时这里返回的就是局部值，
+            // 因此两条路径的结果一致；拖动预览（`scene_state.preview`）优先，保持所见即所得。
+            let transform = if scene_state.preview.contains_key(&e.id) {
+                transform
+            } else {
+                self.scene_runtime
+                    .as_ref()
+                    .and_then(|runtime| runtime.world_transform_2d_of(e.id))
+                    .map(|world| TransformFields {
+                        position_x: world.position.x,
+                        position_y: world.position.y,
+                        rotation: world.rotation.to_degrees(),
+                        scale_x: world.scale.x,
+                        scale_y: world.scale.y,
+                    })
+                    .unwrap_or(transform)
+            };
             let measured_text_bounds = e
                 .components
                 .get("Text")
@@ -726,6 +745,66 @@ impl EditorApp {
         );
     }
 
+    /// 确保 3D 视图的 typed 提取与当前文档 revision 一致（WP1-4）。
+    ///
+    /// 组件字符串只在文档变化时解析一次；用宽容编译，坏组件只丢自己并留下诊断，
+    /// 不会让整个 3D 视图空白。
+    pub(crate) fn ensure_scene_view_3d_typed(&mut self) {
+        let revision = self.document.current_scene.as_ref().map(|doc| doc.revision);
+        if self.scene_view_3d_typed.revision == revision {
+            return;
+        }
+        let (entities, diagnostics) = match self.document.current_scene.as_ref() {
+            Some(scene) => {
+                let (typed, diagnostics) = TypedScene::compile_v2_lenient(&scene.scene);
+                let entities = typed
+                    .entities
+                    .iter()
+                    .filter_map(|entity| {
+                        let Some(TypedComponent::Transform3D(transform)) =
+                            entity.components.get(&ComponentId::Transform3D)
+                        else {
+                            return None;
+                        };
+                        let Some(TypedComponent::MeshRenderer { renderer, .. }) =
+                            entity.components.get(&ComponentId::MeshRenderer)
+                        else {
+                            return None;
+                        };
+                        Some(SceneView3dTypedEntity {
+                            id: entity.id,
+                            name: entity.name.clone(),
+                            transform: *transform,
+                            mesh_path: renderer.mesh.clone(),
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                // 只报 3D 相关组件的诊断：其余组件的问题归 Inspector / Console，
+                // 混进 3D 视图提示会误导（旧 serialized 提取也只覆盖这几个组件）。
+                let diagnostics = diagnostics
+                    .iter()
+                    .filter(|diagnostic| {
+                        matches!(
+                            diagnostic.component.as_str(),
+                            "Transform3D" | "MeshRenderer"
+                        )
+                    })
+                    .map(|diagnostic| {
+                        format!(
+                            "{} / {}：{}",
+                            diagnostic.name, diagnostic.component, diagnostic.message
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                (entities, diagnostics)
+            }
+            None => (Vec::new(), Vec::new()),
+        };
+        self.scene_view_3d_typed.revision = revision;
+        self.scene_view_3d_typed.entities = entities;
+        self.scene_view_3d_typed.diagnostics = diagnostics;
+    }
+
     /// 3D 场景视图（M9-03）：XZ 俯视投影绘制 Transform3D 实体，选中实体显示
     /// 平移 Gizmo（X/Z 轴手柄、Y 高度手柄、自由拖拽），拖拽写回 Transform3D。
     fn draw_scene_view_3d(&mut self, ui: &mut egui::Ui) {
@@ -777,30 +856,36 @@ impl EditorApp {
             egui::Color32::LIGHT_GRAY,
         );
 
-        // 收集 3D 实体（Transform3D），投影到屏幕。
-        let filter = self.hierarchy_filter.to_lowercase();
-        let Some(scene) = self.current_scene() else {
+        // 收集 3D 实体（Transform3D），投影到屏幕。typed 提取按文档 revision 缓存，
+        // 不再逐帧解析组件字符串（WP1-4）。
+        if self.current_scene().is_none() {
             return;
-        };
-        let extracted = extract_serialized_scene_3d(&scene.scene);
-        if !extracted.diagnostics.is_empty() {
-            let details = extracted
-                .diagnostics
-                .iter()
-                .take(2)
-                .map(|diagnostic| diagnostic.summary())
-                .collect::<Vec<_>>();
-            self.set_scene_view_diagnostic(format!(
-                "{} 个 3D 组件无效：{}",
-                extracted.diagnostics.len(),
-                details.join("；")
-            ));
-        } else {
-            self.clear_scene_view_diagnostic();
         }
-        let entities3d: Vec<_> = extracted
+        self.ensure_scene_view_3d_typed();
+        let filter = self.hierarchy_filter.to_lowercase();
+        let diagnostic = if self.scene_view_3d_typed.diagnostics.is_empty() {
+            None
+        } else {
+            Some(format!(
+                "{} 个 3D 组件无效：{}",
+                self.scene_view_3d_typed.diagnostics.len(),
+                self.scene_view_3d_typed
+                    .diagnostics
+                    .iter()
+                    .take(2)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join("；")
+            ))
+        };
+        match diagnostic {
+            Some(message) => self.set_scene_view_diagnostic(message),
+            None => self.clear_scene_view_diagnostic(),
+        }
+        let entities3d: Vec<_> = self
+            .scene_view_3d_typed
             .entities
-            .into_iter()
+            .iter()
             .filter(|entity| {
                 filter.trim().is_empty() || entity.name.to_lowercase().contains(filter.trim())
             })
@@ -809,7 +894,7 @@ impl EditorApp {
                     min: Vec3::new(-0.5, -0.5, -0.5),
                     max: Vec3::new(0.5, 0.5, 0.5),
                 };
-                (entity.id, entity.name, entity.transform, bounds)
+                (entity.id, entity.name.clone(), entity.transform, bounds)
             })
             .collect();
 
@@ -1716,37 +1801,36 @@ impl EditorApp {
             }
             return Some(scene3d);
         }
-        // 回退：serialized extractor（无 ECS 场景 / 实例化失败时保持既有行为与诊断）。
-        let scene = self.current_scene()?;
-        let extracted = extract_serialized_scene_3d(&scene.scene);
-        if !extracted.diagnostics.is_empty() {
-            let details = extracted
+        // 回退：typed 提取缓存（无 ECS 场景 / 实例化失败时保持既有行为与诊断）。
+        // 无场景时缓存为空，最终由下面的 `drawables.is_empty()` 统一返回 None——
+        // 不必在这里提前取 `current_scene()`，那会让不可变借用跨过下面的可变调用。
+        self.ensure_scene_view_3d_typed();
+        if !self.scene_view_3d_typed.diagnostics.is_empty() {
+            let details = self
+                .scene_view_3d_typed
                 .diagnostics
                 .iter()
                 .take(2)
-                .map(|diagnostic| diagnostic.summary())
+                .cloned()
                 .collect::<Vec<_>>();
+            let count = self.scene_view_3d_typed.diagnostics.len();
             self.set_scene_view_diagnostic(format!(
-                "{} 个 3D 组件无效：{}",
-                extracted.diagnostics.len(),
+                "{count} 个 3D 组件无效：{}",
                 details.join("；")
             ));
         }
-        let drawables = extracted
+        let preview = &self.scene_state.preview3d_transform;
+        let drawables = self
+            .scene_view_3d_typed
             .entities
-            .into_iter()
+            .iter()
             .filter_map(|entity| {
-                let transform = self
-                    .scene_state
-                    .preview3d_transform
-                    .get(&entity.id)
-                    .copied()
-                    .unwrap_or(entity.transform);
+                let transform = preview.get(&entity.id).copied().unwrap_or(entity.transform);
                 let model = transform.model_matrix().ok()?;
                 Some(Scene3dDrawable {
                     entity: entity.id,
-                    name: entity.name,
-                    mesh_path: entity.mesh.mesh,
+                    name: entity.name.clone(),
+                    mesh_path: entity.mesh_path.clone(),
                     model,
                     palette: Vec::new(),
                     bounds: Scene3dBounds {
@@ -1817,6 +1901,8 @@ impl EditorApp {
         let mesh = SceneMesh {
             vertices: Vec::new(),
             draws: Vec::new(),
+            world_sprites: Vec::new(),
+            world_sprite_draws: Vec::new(),
             paths: Vec::new(),
             font_atlas: None,
             custom_font_atlases: Vec::new(),
@@ -1830,6 +1916,18 @@ impl EditorApp {
         let Some((texture, view)) = &self.scene_texture else {
             return;
         };
+        // WP5：编辑器视图也走统一的视图描述——3D 视图声明主视图（清屏色 + 视口），
+        // 而不是让渲染器自己写死清屏色。
+        if let Some(scene3d) = scene3d.as_ref() {
+            renderer.set_frame_views(FrameViews {
+                main: Some(RenderView::main_3d(
+                    scene3d.camera,
+                    render_viewport(render_w, render_h),
+                    DEFAULT_3D_CLEAR,
+                )),
+                overlay: None,
+            });
+        }
         renderer.render_into_texture(&mesh, scene3d.as_ref(), view, render_w, render_h);
         // 非阻塞回读：就绪则上传并提交缓存；Pending 请求重绘等下帧轮询；
         // 失败清缓存（保持不匹配）让下帧重试，并显示用户可见错误（R-04）。
@@ -1978,6 +2076,16 @@ impl EditorApp {
         let Some((texture, view)) = &self.scene_texture else {
             return;
         };
+        // WP5：2D 视图是这一帧的底 ⇒ 声明为主 2D 视图（清屏 + 自己的 pan/zoom 相机），
+        // 与运行时用的是同一套 `RenderView` 说法。
+        renderer.set_frame_views(FrameViews {
+            main: Some(RenderView::main_2d(
+                camera2d,
+                render_viewport(width, height),
+                DEFAULT_3D_CLEAR,
+            )),
+            overlay: None,
+        });
         renderer.render_into_texture(&mesh, None, view, width, height);
         // 非阻塞回读：就绪则上传并提交缓存；Pending 请求重绘等下帧轮询；
         // 失败清缓存（保持不匹配）让下帧重试，并显示用户可见错误（R-04）。
@@ -2071,6 +2179,15 @@ impl EditorApp {
         let Some((_, view)) = &self.scene_screen_texture else {
             return;
         };
+        // WP5：游戏画面同样是这一帧的底 ⇒ 主 2D 视图（游戏相机 + 设计分辨率视口）。
+        renderer.set_frame_views(FrameViews {
+            main: Some(RenderView::main_2d(
+                game_camera,
+                render_viewport(dw, dh),
+                DEFAULT_3D_CLEAR,
+            )),
+            overlay: None,
+        });
         renderer.render_into_texture(&mesh, None, view, dw, dh);
         self.sync_scene_screen_texture();
         self.scene_screen_cache_key = key;
@@ -2235,6 +2352,8 @@ impl EditorApp {
             aspect_ratio,
             near: 0.1,
             far: 200.0,
+            // 编辑器自己的取景相机永远由面板的 pan/zoom 决定，不跟随实体变换。
+            pose_from_transform: false,
         }
     }
 
@@ -2396,6 +2515,10 @@ impl EditorApp {
                             pivot: engine::core::transform::Vec2::new(0.5, 0.5),
                             tint: [1.0; 4],
                             sorting: engine::core::sprite::SpriteSorting::default(),
+
+                            flip_x: false,
+                            flip_y: false,
+                            z: 0.0,
                         };
                         entity
                             .components
@@ -2420,6 +2543,17 @@ pub(crate) const SCENE_ZOOM_MAX: f32 = 4.0;
 /// 与 `entity_2d_screen_box` 共用同一映射：世界像素坐标 = pan + world*zoom，
 /// 再除以 pixels_per_point 折回面板逻辑坐标；设计分辨率以游戏 2D 相机中心
 /// （`center`，默认 `DEFAULT_2D_CAMERA_CENTER`）为世界中心，包围框即游戏取景范围。
+/// WP5：把渲染目标的像素尺寸变成声明的视口。
+///
+/// 编辑器各视图都渲染进"自己那张离屏纹理"，因此视口恒为整张目标；窗口最小化或
+/// 布局塌缩时可能出现 0，退到 1×1 以免造出非法视口。
+fn render_viewport(width: u32, height: u32) -> Viewport {
+    Viewport::new(width.max(1) as f32, height.max(1) as f32).unwrap_or(Viewport {
+        width: 1.0,
+        height: 1.0,
+    })
+}
+
 fn design_resolution_frame(
     panel: egui::Rect,
     pan: egui::Vec2,
@@ -2433,10 +2567,9 @@ fn design_resolution_frame(
         resolution.0 as f32 * zoom / ppp,
         resolution.1 as f32 * zoom / ppp,
     );
-    let rect_center = egui::pos2(
-        panel.center().x + (pan.x + center.x * zoom) / ppp,
-        panel.center().y + (-pan.y - center.y * zoom) / ppp,
-    );
+    // 包围框中心 = 游戏 2D 相机中心的世界坐标经 WP5 统一映射到面板。
+    let rect_center =
+        scene_view_world_to_panel(panel, pan, zoom, ppp, Vec2::new(center.x, center.y));
     egui::Rect::from_center_size(rect_center, size)
 }
 
@@ -2461,10 +2594,8 @@ fn design_rect_to_panel(
     let dh = design.1 as f32;
     let world_x = center.x + origin[0] - dw * 0.5;
     let world_y = center.y + dh * 0.5 - origin[1];
-    let min = egui::pos2(
-        panel.center().x + (pan.x + world_x * zoom) / ppp,
-        panel.center().y + (-pan.y - world_y * zoom) / ppp,
-    );
+    // 左上角走 WP5 的统一映射（世界 y 向上 ⇒ 设计分辨率的"顶边"映射到面板较小的 y）。
+    let min = scene_view_world_to_panel(panel, pan, zoom, ppp, Vec2::new(world_x, world_y));
     let size = egui::vec2(size[0] * zoom / ppp, size[1] * zoom / ppp);
     egui::Rect::from_min_size(min, size)
 }
@@ -2512,16 +2643,12 @@ fn entity_2d_screen_box(
     // Sprite pivot 偏移（世界像素）随缩放/旋转映射到屏幕，使包围框中心贴合渲染 quad。
     let offset = egui::vec2(size.x * (0.5 - pivot.x) * sx, size.y * (0.5 - pivot.y) * sy);
     let rotation = transform.rotation.to_radians();
-    let world_center = egui::pos2(
+    let world_center = Vec2::new(
         transform.position_x + offset.x * rotation.cos() - offset.y * rotation.sin(),
         transform.position_y + offset.x * rotation.sin() + offset.y * rotation.cos(),
     );
-    let center = egui::pos2(
-        rect.center().x + (pan.x + world_center.x * zoom) / ppp,
-        // 渲染侧 Camera2D 屏幕 Y 翻转且 center = -pan/zoom：像素 =
-        // viewport/2 - world.y*zoom - pan.y，故 pan.y 取负（与 X 的 +pan.x 相反）。
-        rect.center().y + (-pan.y - world_center.y * zoom) / ppp,
-    );
+    // 中心走 WP5 的统一映射（与运行时 `Camera2D::world_to_screen` 同一份投影）。
+    let center = scene_view_world_to_panel(rect, pan, zoom, ppp, world_center);
     (center, screen_size)
 }
 
@@ -2871,6 +2998,62 @@ struct TilemapPaintContext {
     transform: TransformFields,
 }
 
+/// WP5：编辑器 Scene 视图的相机——与运行时**同一个** `Camera2D`（pan 折成世界中心）。
+fn editor_scene_camera(pan: egui::Vec2, zoom: f32) -> Camera2D {
+    Camera2D::new(Vec2::new(-pan.x / zoom, -pan.y / zoom), zoom)
+        .unwrap_or_else(|_| Camera2D::new(Vec2::new(0.0, 0.0), 1.0).expect("zero camera is valid"))
+}
+
+/// WP5：编辑器 Scene 视图的视口——面板逻辑尺寸折成物理像素（`ppp`）。
+fn editor_scene_viewport(rect: egui::Rect, ppp: f32) -> Viewport {
+    let ppp = ppp.max(1.0e-3);
+    let width = rect.width() * ppp;
+    let height = rect.height() * ppp;
+    Viewport::new(width, height).unwrap_or(Viewport {
+        width: 1.0,
+        height: 1.0,
+    })
+}
+
+/// WP5：世界坐标 → 面板逻辑坐标。这是 Scene 视图的**唯一**映射实现——选中轮廓、
+/// 命中测试、框选、瓦片笔刷、设计分辨率包围框全部走这里，与运行时
+/// `Camera2D::world_to_screen` 是同一份投影（此前这些地方各自手写了一遍
+/// `pan + world * zoom` 再除 `ppp`，改一处就要同时改五处）。
+fn scene_view_world_to_panel(
+    rect: egui::Rect,
+    pan: egui::Vec2,
+    zoom: f32,
+    ppp: f32,
+    world: Vec2,
+) -> egui::Pos2 {
+    let ppp = ppp.max(1.0e-3);
+    let camera = editor_scene_camera(pan, zoom);
+    match camera.world_to_screen(world, editor_scene_viewport(rect, ppp)) {
+        Ok(screen) => egui::pos2(rect.min.x + screen.x / ppp, rect.min.y + screen.y / ppp),
+        // 相机非法（zoom 为 0/NaN 的极端输入）：退回面板原点而不是 panic。
+        Err(_) => rect.min,
+    }
+}
+
+/// WP5：面板逻辑坐标 → 世界坐标（`scene_view_world_to_panel` 的逆）。
+fn scene_view_panel_to_world(
+    rect: egui::Rect,
+    pan: egui::Vec2,
+    zoom: f32,
+    ppp: f32,
+    pointer: egui::Pos2,
+) -> Vec2 {
+    let ppp = ppp.max(1.0e-3);
+    let camera = editor_scene_camera(pan, zoom);
+    let screen = Vec2::new(
+        (pointer.x - rect.min.x) * ppp,
+        (pointer.y - rect.min.y) * ppp,
+    );
+    camera
+        .screen_to_world(screen, editor_scene_viewport(rect, ppp))
+        .unwrap_or(Vec2::new(0.0, 0.0))
+}
+
 fn screen_to_world_2d(
     rect: egui::Rect,
     pan: egui::Vec2,
@@ -2878,10 +3061,7 @@ fn screen_to_world_2d(
     ppp: f32,
     pointer: egui::Pos2,
 ) -> Vec2 {
-    Vec2::new(
-        ((pointer.x - rect.center().x) * ppp - pan.x) / zoom,
-        -((pointer.y - rect.center().y) * ppp + pan.y) / zoom,
-    )
+    scene_view_panel_to_world(rect, pan, zoom, ppp, pointer)
 }
 
 fn tilemap_cell_from_pointer(
@@ -2923,22 +3103,21 @@ fn tilemap_cell_screen_rect(
     x: usize,
     y: usize,
 ) -> egui::Rect {
-    let ppp = ppp.max(1.0e-3);
-    let cell_w = tilemap.tile_size.x * transform.scale_x.abs() * zoom / ppp;
-    let cell_h = tilemap.tile_size.y * transform.scale_y.abs() * zoom / ppp;
-    let min_x = rect.center().x
-        + (pan.x
-            + (transform.position_x + x as f32 * tilemap.tile_size.x * transform.scale_x.abs())
-                * zoom)
-            / ppp;
-    let max_x = min_x + cell_w;
-    let max_y = rect.center().y
-        + (-pan.y
-            - (transform.position_y + y as f32 * tilemap.tile_size.y * transform.scale_y.abs())
-                * zoom)
-            / ppp;
-    let min_y = max_y - cell_h;
-    egui::Rect::from_min_max(egui::pos2(min_x, min_y), egui::pos2(max_x, max_y))
+    // 格子的世界 AABB 两角走统一映射，再取外接矩形（世界 y 向上、面板 y 向下，所以
+    // 两个角映射后顺序会翻转，用 min/max 归一）。
+    let cell_w = tilemap.tile_size.x * transform.scale_x.abs();
+    let cell_h = tilemap.tile_size.y * transform.scale_y.abs();
+    let min_world = Vec2::new(
+        transform.position_x + x as f32 * cell_w,
+        transform.position_y + y as f32 * cell_h,
+    );
+    let max_world = Vec2::new(min_world.x + cell_w, min_world.y + cell_h);
+    let a = scene_view_world_to_panel(rect, pan, zoom, ppp, min_world);
+    let b = scene_view_world_to_panel(rect, pan, zoom, ppp, max_world);
+    egui::Rect::from_min_max(
+        egui::pos2(a.x.min(b.x), a.y.min(b.y)),
+        egui::pos2(a.x.max(b.x), a.y.max(b.y)),
+    )
 }
 
 /// 判断 3D Scene 视图是否可直接命中渲染缓存（M11-03 / R-03）：
@@ -3381,6 +3560,140 @@ mod tests {
         );
     }
 
+    /// WP5 编辑器拾取统一（旧新对拍）：收敛后的统一映射必须与收敛前**各处手写**的
+    /// `pan + world*zoom`（再除 `ppp`）公式逐点一致——否则选中轮廓、命中测试、框选、
+    /// 瓦片笔刷与设计分辨率包围框会与渲染内容错位。
+    ///
+    /// 同时钉住三件事：面板 → 世界与 世界 → 面板互为逆、世界 → 面板与旧公式一致、
+    /// 设计分辨率包围框的中心就是游戏相机中心的世界坐标映射。
+    #[test]
+    fn scene_view_projection_matches_the_hand_written_pan_zoom_mapping() {
+        let rect = egui::Rect::from_min_size(egui::pos2(40.0, 20.0), egui::vec2(800.0, 500.0));
+        let pointers = [
+            egui::pos2(40.0, 20.0),
+            egui::pos2(440.0, 270.0),
+            egui::pos2(700.0, 480.0),
+            egui::pos2(123.5, 456.25),
+        ];
+        for ppp in [1.0_f32, 1.25, 2.0] {
+            for zoom in [0.5_f32, 1.0, 2.5, 8.0] {
+                for pan in [egui::vec2(0.0, 0.0), egui::vec2(120.0, -75.0)] {
+                    for pointer in pointers {
+                        // 旧公式（收敛前 `screen_to_world_2d` 的原文）。
+                        let old = Vec2::new(
+                            ((pointer.x - rect.center().x) * ppp - pan.x) / zoom,
+                            -((pointer.y - rect.center().y) * ppp + pan.y) / zoom,
+                        );
+                        let new = screen_to_world_2d(rect, pan, zoom, ppp, pointer);
+                        assert!(
+                            (old.x - new.x).abs() < 1e-3 && (old.y - new.y).abs() < 1e-3,
+                            "面板→世界 与旧公式不一致 ppp={ppp} zoom={zoom} pan={pan:?} \
+                             pointer={pointer:?}: 旧 {old:?} 新 {new:?}"
+                        );
+
+                        // 旧公式的逆（收敛前 `entity_2d_screen_box` 的中心映射）。
+                        let old_panel = egui::pos2(
+                            rect.center().x + (pan.x + old.x * zoom) / ppp,
+                            rect.center().y + (-pan.y - old.y * zoom) / ppp,
+                        );
+                        let new_panel = scene_view_world_to_panel(rect, pan, zoom, ppp, new);
+                        assert!(
+                            (old_panel.x - new_panel.x).abs() < 1e-3
+                                && (old_panel.y - new_panel.y).abs() < 1e-3,
+                            "世界→面板 与旧公式不一致: 旧 {old_panel:?} 新 {new_panel:?}"
+                        );
+                        // 逆映射必须回到原面板点。
+                        assert!(
+                            (new_panel.x - pointer.x).abs() < 1e-3
+                                && (new_panel.y - pointer.y).abs() < 1e-3,
+                            "世界→面板 应是 面板→世界 的逆：{new_panel:?} vs {pointer:?}"
+                        );
+                    }
+                }
+            }
+        }
+
+        // 设计分辨率包围框的中心 = 游戏相机中心的世界坐标映射（与运行时相机同一投影）。
+        let center = egui::vec2(640.0, 360.0);
+        let frame =
+            design_resolution_frame(rect, egui::vec2(30.0, -12.0), 1.5, 2.0, center, (1280, 720));
+        let expected = scene_view_world_to_panel(
+            rect,
+            egui::vec2(30.0, -12.0),
+            1.5,
+            2.0,
+            Vec2::new(center.x, center.y),
+        );
+        assert!((frame.center().x - expected.x).abs() < 1e-3);
+        assert!((frame.center().y - expected.y).abs() < 1e-3);
+        assert!((frame.width() - 1280.0 * 1.5 / 2.0).abs() < 1e-3);
+        assert!((frame.height() - 720.0 * 1.5 / 2.0).abs() < 1e-3);
+    }
+
+    /// WP5 编辑器拾取统一：瓦片格子矩形也必须与收敛前手写的那份公式逐边一致
+    /// （笔刷落点与渲染的格子必须重合）。
+    #[test]
+    fn tilemap_cell_rect_matches_the_hand_written_mapping() {
+        let rect = egui::Rect::from_min_size(egui::pos2(10.0, 5.0), egui::vec2(400.0, 300.0));
+        let pan = egui::vec2(12.0, -9.0);
+        let zoom = 2.0;
+        let ppp = 1.25;
+        let transform = TransformFields {
+            position_x: 16.0,
+            position_y: 8.0,
+            rotation: 0.0,
+            scale_x: 1.5,
+            scale_y: 0.75,
+        };
+        let map = Tilemap::new(Vec2::new(32.0, 32.0), 4, 3).unwrap();
+        let (x, y) = (2usize, 1usize);
+        let cell_w = map.tile_size.x * transform.scale_x.abs();
+        let cell_h = map.tile_size.y * transform.scale_y.abs();
+        // 旧公式（收敛前 `tilemap_cell_screen_rect` 的原文）。
+        let cell_w_px = cell_w * zoom / ppp;
+        let cell_h_px = cell_h * zoom / ppp;
+        let min_x =
+            rect.center().x + (pan.x + (transform.position_x + x as f32 * cell_w) * zoom) / ppp;
+        let max_y =
+            rect.center().y + (-pan.y - (transform.position_y + y as f32 * cell_h) * zoom) / ppp;
+        let expected = egui::Rect::from_min_max(
+            egui::pos2(min_x, max_y - cell_h_px),
+            egui::pos2(min_x + cell_w_px, max_y),
+        );
+        let actual = tilemap_cell_screen_rect(rect, pan, zoom, ppp, transform, &map, x, y);
+        for (name, old, new) in [
+            ("min.x", expected.min.x, actual.min.x),
+            ("min.y", expected.min.y, actual.min.y),
+            ("max.x", expected.max.x, actual.max.x),
+            ("max.y", expected.max.y, actual.max.y),
+        ] {
+            assert!(
+                (old - new).abs() < 1e-3,
+                "格子矩形 {name} 与旧公式不一致：旧 {old} 新 {new}"
+            );
+        }
+
+        // 行序约定：运行时把 `tiles` 的第 0 行画在地图**最下方**（world y 向上，见
+        // `append_tilemap_layer` 与 2D golden 的行序签名）。编辑器面板 y 向下，因此
+        // 第 0 行的格子必须出现在面板里**更大的 y** 上——笔刷格与渲染图必须同一朝向。
+        let row_zero = tilemap_cell_screen_rect(rect, pan, zoom, ppp, transform, &map, 0, 0);
+        let row_one = tilemap_cell_screen_rect(rect, pan, zoom, ppp, transform, &map, 0, 1);
+        assert!(
+            row_zero.center().y > row_one.center().y,
+            "第 0 行应画在最下方：row0.y={} row1.y={}",
+            row_zero.center().y,
+            row_one.center().y
+        );
+        // 同一格：世界中心经统一映射落在格矩形中心（笔刷格与视图投影同源）。
+        let world_center = Vec2::new(
+            transform.position_x + (x as f32 + 0.5) * cell_w,
+            transform.position_y + (y as f32 + 0.5) * cell_h,
+        );
+        let mapped = scene_view_world_to_panel(rect, pan, zoom, ppp, world_center);
+        assert!((mapped.x - actual.center().x).abs() < 1e-3);
+        assert!((mapped.y - actual.center().y).abs() < 1e-3);
+    }
+
     #[test]
     fn tilemap_pointer_mapping_round_trips_visible_cells() {
         let rect = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(400.0, 300.0));
@@ -3465,6 +3778,10 @@ mod tests {
                 pivot: Vec2::new(0.5, 0.5),
                 tint: [1.0; 4],
                 sorting: engine::core::sprite::SpriteSorting::default(),
+
+                flip_x: false,
+                flip_y: false,
+                z: 0.0,
             };
             entity
                 .components
@@ -3499,6 +3816,10 @@ mod tests {
                 pivot: Vec2::new(0.0, 1.0),
                 tint: [1.0; 4],
                 sorting: engine::core::sprite::SpriteSorting::default(),
+
+                flip_x: false,
+                flip_y: false,
+                z: 0.0,
             };
             entity
                 .components
@@ -3576,6 +3897,10 @@ mod tests {
             pivot: Vec2::new(0.5, 0.5),
             tint: [1.0; 4],
             sorting: engine::core::sprite::SpriteSorting::default(),
+
+            flip_x: false,
+            flip_y: false,
+            z: 0.0,
         };
         scene
             .entities
@@ -3611,7 +3936,7 @@ mod tests {
         // 输出像素，纹理贴回面板时除以 ppp；包围框必须落在同一像素位置。
         let camera = Camera2D::new(Vec2::new(-pan.x / zoom, -pan.y / zoom), zoom).unwrap();
         let viewport =
-            engine::core::math2d::Viewport::new(rect.width() * ppp, rect.height() * ppp).unwrap();
+            engine::core::camera::Viewport::new(rect.width() * ppp, rect.height() * ppp).unwrap();
         let px = camera
             .world_to_screen(
                 Vec2::new(transform.position_x, transform.position_y),
@@ -3774,6 +4099,10 @@ mod tests {
                 pivot: Vec2::new(0.5, 0.5),
                 tint: [1.0; 4],
                 sorting: engine::core::sprite::SpriteSorting::default(),
+
+                flip_x: false,
+                flip_y: false,
+                z: 0.0,
             };
             entity
                 .components
@@ -3818,6 +4147,10 @@ mod tests {
                 pivot: Vec2::new(0.5, 0.5),
                 tint: [1.0; 4],
                 sorting: engine::core::sprite::SpriteSorting::default(),
+
+                flip_x: false,
+                flip_y: false,
+                z: 0.0,
             };
             entity
                 .components

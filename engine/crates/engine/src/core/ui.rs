@@ -350,7 +350,11 @@ pub fn nine_slice_cells(
 
 /// Splits a component string on `;` only when NOT preceded by a backslash
 /// escape (so escaped `\;` inside text fields survives intact).
-fn split_fields(value: &str) -> Vec<&str> {
+/// 按 `;` 切分组件字段，但**尊重转义**（`text` 值里的 `\;` 不算分隔符）。
+///
+/// 对 crate 内其它组件公开：任何要复用 `UiText` 字段的外部组件（如 `WorldText`）
+/// 都必须用同一套切分，否则带分号的文字会被切坏。
+pub(crate) fn split_fields(value: &str) -> Vec<&str> {
     let mut fields = Vec::new();
     let bytes = value.as_bytes();
     let mut start = 0;

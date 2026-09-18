@@ -26,16 +26,17 @@ use editor::{
     AutoSaveController, Camera3DFields, Collider3dFields, CommandHistory, ImageFields,
     InspectorState, LightFields, PlaySession, ProjectDocument, ProjectInfo, RecoveryManager,
     RecoveryScan, ResourceBrowserState, SceneTreeState, SelectionModel, TextFields,
-    Transform3DFields, TransformFields, check_project, open_project,
+    Transform3DFields, TransformFields, TransformSpace, WorldTextFields, check_project,
+    open_project,
 };
 use eframe::egui;
 use engine::core::{
     animation::{AnimationClip, AnimationStateMachine},
+    camera::DEFAULT_2D_CAMERA_CENTER,
     editor_plugins::PluginRegistry,
     font::FontAtlas,
     input::InputSnapshot,
     logging::LogSink,
-    math2d::DEFAULT_2D_CAMERA_CENTER,
     math3d::Vec3,
     preview_diagnostics::DiagnosticCollector,
     scene::SceneEntityId,
@@ -43,8 +44,8 @@ use engine::core::{
     sprite::{SpriteComponent, SpriteSorting},
     texture::{TextureAsset, TextureColorSpace},
     tilemap::Tilemap,
+    transform::Transform3D,
     transform::Vec2,
-    transform3d::Transform3D,
     ui_animation::{UiAnimationClip, UiAnimationPreview},
     ui_binding::BindingSet,
     ui_events::UiEvents,
@@ -58,6 +59,10 @@ use engine::host::{Renderer, RuntimeScene};
 struct Arguments {
     project: Option<PathBuf>,
     check: bool,
+    /// WP2 迁移命令：`--migrate-spatial`（dry-run）/ `--migrate-spatial-write` / `--restore-spatial`。
+    migrate_spatial: bool,
+    migrate_spatial_write: bool,
+    restore_spatial: bool,
 }
 
 fn parse_arguments() -> Result<Arguments, String> {
@@ -72,8 +77,18 @@ fn parse_arguments() -> Result<Arguments, String> {
                 arguments.project = Some(PathBuf::from(path));
             }
             "--check" => arguments.check = true,
+            "--migrate-spatial" => arguments.migrate_spatial = true,
+            "--migrate-spatial-write" => {
+                arguments.migrate_spatial = true;
+                arguments.migrate_spatial_write = true;
+            }
+            "--restore-spatial" => arguments.restore_spatial = true,
             "--help" | "-h" => {
-                println!("用法：editor [--project <项目路径>] [--check]");
+                println!(
+                    "用法：editor [--project <项目路径>] [--check]\n\
+                     \x20     editor --project <项目路径> --migrate-spatial [--migrate-spatial-write]\n\
+                     \x20     editor --project <项目路径> --restore-spatial"
+                );
                 std::process::exit(0);
             }
             unknown => return Err(format!("未知参数：{unknown}")),
@@ -127,6 +142,86 @@ fn downscale_rgba_benchmark(
     (out, new_w, new_h)
 }
 
+/// WP2 空间层级迁移命令：对项目 `scenes/**/*.scene` 逐文件 dry-run / 写回 / 回滚。
+///
+/// - 默认 **dry-run**：只报告每个场景有多少实体会被转成局部坐标、多少无法无损迁移；
+/// - `--migrate-spatial-write`：写回，并给每个文件留 `<file>.bak` 备份与 `<file>.spatial-local`
+///   迁移标记（标记存在则跳过，因此命令可反复运行）；
+/// - `--restore-spatial`：从 `.bak` 一键回滚并删掉标记。
+///
+/// 退出码：有实体被拒绝（无法无损迁移）时返回非 0，让脚本能把它当成质量门使用。
+fn run_spatial_migration(project_root: &Path, write: bool, restore: bool) -> String {
+    use engine::core::scene_migration::{
+        MigrationOptions, migrate_scene_file, project_scene_files, restore_scene_backup,
+    };
+
+    let files = project_scene_files(project_root);
+    if files.is_empty() {
+        return format!("{}: 没有找到 scenes/**/*.scene\n", project_root.display());
+    }
+    let mut out = String::new();
+    let mut refused_total = 0usize;
+    let mut converted_total = 0usize;
+    let mut written_total = 0usize;
+    for file in &files {
+        let relative = file
+            .strip_prefix(project_root)
+            .unwrap_or(file)
+            .to_string_lossy()
+            .replace('\\', "/");
+        if restore {
+            match restore_scene_backup(file) {
+                Ok(true) => out.push_str(&format!("restored\t{relative}\n")),
+                Ok(false) => out.push_str(&format!("no-backup\t{relative}\n")),
+                Err(error) => out.push_str(&format!("error\t{relative}\t{error}\n")),
+            }
+            continue;
+        }
+        match migrate_scene_file(
+            file,
+            MigrationOptions {
+                write,
+                backup: true,
+            },
+        ) {
+            Ok(outcome) => {
+                refused_total += outcome.refused;
+                converted_total += outcome.converted;
+                if outcome.written {
+                    written_total += 1;
+                }
+                out.push_str(&format!(
+                    "{}\t{relative}\tentities={}\tconverted={}\trefused={}\tskipped={}\n",
+                    if outcome.written {
+                        "written"
+                    } else {
+                        "dry-run"
+                    },
+                    outcome.entities,
+                    outcome.converted,
+                    outcome.refused,
+                    outcome.skipped,
+                ));
+            }
+            Err(error) => out.push_str(&format!("error\t{relative}\t{error}\n")),
+        }
+    }
+    out.push_str(&format!(
+        "spatial_migration_ok files={} converted={} refused={} written={} mode={}\n",
+        files.len(),
+        converted_total,
+        refused_total,
+        written_total,
+        if restore {
+            "restore"
+        } else if write {
+            "write"
+        } else {
+            "dry-run"
+        }
+    ));
+    out
+}
 fn main() -> Result<(), Box<dyn Error>> {
     let arguments = parse_arguments().map_err(|message| format!("参数错误：{message}"))?;
     if arguments.check {
@@ -137,6 +232,21 @@ fn main() -> Result<(), Box<dyn Error>> {
             "{}",
             check_project(&project_path)
                 .map_err(|error| format_project_error(&project_path, error))?
+        );
+        return Ok(());
+    }
+
+    if arguments.migrate_spatial || arguments.restore_spatial {
+        let project_path = arguments
+            .project
+            .ok_or("--migrate-spatial requires --project <path>")?;
+        print!(
+            "{}",
+            run_spatial_migration(
+                &project_path,
+                arguments.migrate_spatial_write,
+                arguments.restore_spatial
+            )
         );
         return Ok(());
     }
@@ -226,6 +336,8 @@ struct EditorApp {
     light: LightFields,
     collider3d: Collider3dFields,
     text: TextFields,
+    /// WP4：世界空间文字（锚在世界位置，与屏幕 `text` 是两套组件）。
+    world_text: WorldTextFields,
     image: ImageFields,
     ui_layout: editor::UiLayoutFields,
     container: editor::ContainerFields,
@@ -234,9 +346,12 @@ struct EditorApp {
     tilemap: TilemapEditorState,
     animation: AnimationEditorState,
     lua_script: String,
-    inspector_transform3d_open: bool,
+    /// 统一 Transform 面板当前编辑哪个空间（WP9）。只在实体**同时**有 2D 与 3D 变换时才可切换；
+    /// 只有一种时按拥有者显示，不看这个值。
+    inspector_transform_space: TransformSpace,
     inspector_collider3d_open: bool,
     inspector_text_open: bool,
+    inspector_world_text_open: bool,
     inspector_image_open: bool,
     inspector_ui_layout_open: bool,
     inspector_sprite_open: bool,
@@ -367,6 +482,9 @@ struct EditorApp {
     scene_view_cache_2d: SceneViewCache2d,
     /// 3D Scene 视图渲染缓存（同上）。
     scene_view_cache_3d: SceneViewCache3d,
+    /// 3D Scene 视图的 typed 提取缓存（WP1-4）：按文档 revision 失效，避免每帧解析
+    /// 组件字符串。
+    scene_view_3d_typed: SceneView3dTyped,
     /// 2D 场景视图运行时对应的 SceneDocument revision（用于按需重建 scene_runtime）。
     scene_runtime_revision: Option<u64>,
     /// 场景文件列表缓存（避免每帧 read_dir 扫 scenes 目录）。
@@ -505,6 +623,7 @@ impl Default for AnimationEditorState {
                     cols: 1,
                     frame_rate: 1.0,
                     looped: true,
+                    events: Vec::new(),
                 }],
             )
             .expect("default animation should be valid"),
@@ -653,6 +772,28 @@ pub(crate) struct SceneViewCache3d {
     camera: EditorCamera,
 }
 
+/// 3D Scene 视图的 typed 提取缓存（WP1-4）。
+///
+/// 取代了每帧对场景字符串调用 `extract_serialized_scene_3d`：组件字符串只在文档
+/// revision 变化时解析一次。用宽容编译，坏组件只丢自己而不会让整个视图空白。
+#[derive(Clone, Debug, Default)]
+pub(crate) struct SceneView3dTyped {
+    revision: Option<u64>,
+    /// 同时具备 Transform3D 与 MeshRenderer 的实体（与旧 serialized 提取同集合）。
+    entities: Vec<SceneView3dTypedEntity>,
+    /// 3D 相关组件的编译诊断文案。
+    diagnostics: Vec<String>,
+}
+
+/// 3D 视图需要的单个实体数据（不含 GPU 资源，纯 CPU 投影用）。
+#[derive(Clone, Debug)]
+pub(crate) struct SceneView3dTypedEntity {
+    id: SceneEntityId,
+    name: String,
+    transform: Transform3D,
+    mesh_path: String,
+}
+
 #[derive(Default)]
 struct SceneEditorState {
     pan: egui::Vec2,
@@ -701,7 +842,7 @@ struct GizmoDrag {
     axis: GizmoAxis,
     start: egui::Pos2,
     initial: Transform3D,
-    start_ray: Option<engine::core::camera3d::Ray3>,
+    start_ray: Option<engine::core::camera::Ray3>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -757,6 +898,7 @@ impl EditorApp {
             light: LightFields::default(),
             collider3d: Collider3dFields::default(),
             text: TextFields::default(),
+            world_text: WorldTextFields::default(),
             image: ImageFields::default(),
             ui_layout: editor::UiLayoutFields::default(),
             container: editor::ContainerFields::default(),
@@ -767,13 +909,18 @@ impl EditorApp {
                 pivot: engine::core::transform::Vec2::new(0.5, 0.5),
                 tint: [1.0; 4],
                 sorting: SpriteSorting::default(),
+
+                flip_x: false,
+                flip_y: false,
+                z: 0.0,
             },
             tilemap: TilemapEditorState::default(),
             animation: AnimationEditorState::default(),
             lua_script: String::new(),
-            inspector_transform3d_open: true,
+            inspector_transform_space: TransformSpace::ThreeD,
             inspector_collider3d_open: false,
             inspector_text_open: true,
+            inspector_world_text_open: true,
             inspector_image_open: true,
             inspector_ui_layout_open: true,
             inspector_sprite_open: true,
@@ -867,6 +1014,7 @@ impl EditorApp {
             refresh_pending: false,
             scene_view_cache_2d: SceneViewCache2d::default(),
             scene_view_cache_3d: SceneViewCache3d::default(),
+            scene_view_3d_typed: SceneView3dTyped::default(),
             scene_runtime_revision: None,
             scene_files_cache: Vec::new(),
             scene_files_cache_time: None,

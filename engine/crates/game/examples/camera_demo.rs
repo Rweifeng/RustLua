@@ -1,5 +1,5 @@
 use engine::core::{
-    math2d::{Camera2D, CameraBounds, Viewport},
+    camera::{Camera2D, CameraBounds, Viewport},
     transform::Vec2,
 };
 fn main() -> Result<(), Box<dyn std::error::Error>> {

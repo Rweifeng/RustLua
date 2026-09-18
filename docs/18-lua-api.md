@@ -29,6 +29,29 @@
 
 `Animation3D` 场景组件格式：`mesh=<path>;clip=<name>;looped=true|false`，剪辑来自同一 glTF 资产的 animations。
 
+### `animation.events` 帧事件（WP4）
+
+`animation.events()` 返回**本帧**触发的动画帧事件数组，元素为 `{entity, name, frame}`；取走即清空
+（与 `physics.events()` 同一套轮询用法）。命中判定、脚步、尘土这类"挂到具体帧上"的逻辑靠它实现：
+
+```lua
+for _, event in ipairs(animation.events()) do
+  if event.name == "hit" and event.entity == player then apply_damage() end
+end
+```
+
+组件串在原有五段后可选追加第六段：`clip:<名>:<表>:<列数>:<fps>:<looped>:events=<帧>:<事件名>[,<帧>:<事件名>]`。
+**没有事件时不写这一段**，因此既有场景的规范字符串一字不变。
+
+语义（都有单测）：
+
+- **按帧到达触发、每圈每帧一次**：同一步内反复 `advance` 到同一帧不会重复触发；
+- **单步跨多帧时中间的帧事件全部触发**（掉帧追帧不会漏掉命中帧）；
+- **循环片段回绕后同帧事件再次触发**；回绕**跳过**的帧不算到达；
+- **切换状态 = 重播**：新状态第 0 帧的事件在切换后的第一次推进就触发；
+- 帧号越界、事件名为空、格式错误（`events=1`、`events=x:hit`）**一律解析报错**——静默丢弃会让
+  "攻击判定帧"神秘消失，比直接报错难查得多。
+
 ## 第一版 API
 
 | 模块 | API | 说明 |
@@ -219,6 +242,109 @@ map = "rustlua-actions-v2\ninteract=key:keye,pad:0\n..."
   `input.action` 已从「物理键别名」升级为「命名动作查询」（仓库内除引擎自身测试外无原调用方）。
 - `game_jhyt` 从物理键迁移到命名动作由 **M20-08** 完成；物理键身份收口由 **M22/W1** 完成，
   本任务只提供引擎层 API 与持久化。
+
+### `world_text` 世界文字（WP4）
+
+文字锚在实体的世界位置上（相机移动时跟随世界），与屏幕 UI 的 `Text` 是两套东西。
+
+| 调用 | 说明 |
+| --- | --- |
+| `world_text.attach(id, 组件串)` | 给实体挂/覆盖世界文字。组件串：`text=..;font_size=..;color=r,g,b[;font=..][;offset=x,y][;centered=true]`。非法串返回错误且**不破坏已有组件** |
+| `world_text.detach(id)` | 移除世界文字，返回是否真的移除了（重复调用返回 `false`） |
+
+`entity.spawn` 只插入 `Transform`，因此运行期创建的实体（伤害数字、名牌）必须用 `attach`；
+场景文件里也可以直接写 `WorldText` 组件。
+
+### `camera2d` 2D 相机控制（WP4）
+
+此前 Lua **完全无法控制 2D 相机**（`camera` 表只管 3D 的 `Camera3D` 组件）；大地图与跟随镜头
+只能靠宿主代码。相机数据在宿主而不在 Lua 状态里，因此 `set`/`set_zoom` 是**登记请求、宿主下一帧
+消费**；`get`/`get_zoom` 读宿主回填的真实值。
+
+| 调用 | 说明 |
+| --- | --- |
+| `camera2d.set(x, y)` | 设置相机中心（必须有限） |
+| `camera2d.get()` | 返回 `{x, y}`（宿主实际在用的值） |
+| `camera2d.set_zoom(z)` | 缩放，`z > 0` |
+| `camera2d.get_zoom()` | 当前缩放 |
+| `camera2d.follow(id [, opts])` | 跟随实体；`opts = {offset_x, offset_y, dead_zone_x, dead_zone_y, smoothing}`，死区必须 ≥ 0、其余必须有限 |
+| `camera2d.unfollow()` | 取消跟随 |
+| `camera2d.shake(amplitude, duration)` | 抖动，`duration > 0` |
+| `camera2d.screen_to_world(x, y)` | 屏幕像素 → 世界坐标，返回 `{x, y}`（**数组**，与 `input.cursor_position()` 同形） |
+| `camera2d.world_to_screen(x, y)` | 世界坐标 → 屏幕像素，返回 `{x, y}` |
+| `camera2d.mouse_world()` | 鼠标当前位置的世界坐标（等价于对 `input.cursor_position()` 做换算） |
+
+换算用宿主每帧回填的相机快照与 `Camera2D` **自己的**投影函数——与精灵、瓦片、世界文字走的是
+同一份实现（`math2d` 里只有这一份），因此"点到哪"和"看到哪"不会错位；这也满足 docs/40 §3 WP4 ⑧
+"输入统一 screen→world"。脚本在**首帧渲染之前**调用换算会明确报错，而不是拿一个默认相机去猜。
+
+`follow` 期间相机的中心由控制器决定；`unfollow` 之后 `set` 的效果才不会被覆盖。
+
+### `particles` 发射参数（WP4）
+
+`particles.burst(x, y, count [, opts])`。**此前速度/寿命/颜色被写死在引擎里**（120 / 0.6 / 橙色），
+Lua 无法区分尘土、水花、落叶；`opts` 让每次爆发自带观感。缺省的 `opts` 与旧行为一致，
+因此三参数老写法零改动。
+
+| 字段 | 说明 |
+| --- | --- |
+| `speed` | 初速上限（世界单位/秒），每个粒子在 25%–100% 随机 |
+| `life` | 基准寿命（秒），每个粒子在 50%–100% 随机 |
+| `size` / `size_end` | 边长曲线：出生 → 消亡（世界单位）。只给 `size` 即恒定大小；`size` 加 `size_end` 可做收缩/膨胀 |
+| `color` / `color_end` | 颜色曲线（`{r,g,b,a}`，缺省通道为 1）。只给 `color` 即恒定颜色 |
+| `gravity_x` / `gravity_y` | 世界重力（单位/秒²） |
+| `drag` | 每秒速度衰减比例，`>= 0` |
+| `rotation` / `rotation_speed` | 初始弧度与每秒角速度 |
+
+另有只读的 `particles.count()` 返回当前存活粒子数。
+
+参数非有限、`life <= 0`、`drag < 0` 一律**报错且不生成粒子**；粒子按固定步推进（`step_particles`），
+抖动/爆发用确定性 LCG，因此同一脚本序列可复现。
+
+### `transform` 统一 2D/3D 变换（WP9）
+
+同一个 `transform` 表按实体**实际拥有**的组件分派：有 2D `Transform` 走 2D，否则有
+`Transform3D` 走 3D，两者都没有则报错。旧脚本零改动——2D 实体的取值一字不变，
+`space` 只是新增字段；而此前"3D 实体调用 `transform` 直接报错"的情形现在会正常落到 3D 分支。
+
+| API | 说明 |
+| --- | --- |
+| `transform.get(id)` | `{space='2d'\|'3d', x, y[, z, rx, ry, rz, rw], scale_x, scale_y[, scale_z]}`；2D 另有 `rotation`（弧度）。**局部**值 |
+| `transform.world(id)` | 同形，但读**世界**值：开启空间继承（WP2）时是父链组合的结果，否则等于局部值。父子关系下这是唯一能拿到"屏幕上实际在哪"的接口 |
+| `transform.set(id, x, y[, rotation, scale_x, scale_y])` | 位置必填；**3D 下只改 XY，Z 保留** |
+| `transform.move(id, dx, dy)` | 2D/3D 都按 XY 增量移动 |
+| `transform.space(id)` | 返回 `'2d'` / `'3d'` / `nil` |
+| `transform.attach(id, '2d'\|'3d')` | 缺组件时新建并返回 `true`，已存在返回 `false`（**不覆盖**）。新建走**统一的提升/压平**：2D→3D 保留旋转（转成绕 Z 四元数）与缩放；3D→2D 只在**真能无损压平**时才建（四元数只有 z/w 分量、z 位移为 0、z 缩放为 1），否则**报错并且不插入组件**——手抄一个 XY 会把旋转与缩放悄悄丢掉 |
+
+两处刻意报错而非猜测：**3D 下 `set` 带标量 `rotation`**（2D 的弧度与 3D 的四元数不是一回事，
+静默按绕 Z 处理属于语义近似），以及未知的 `space` 名。被拒绝的调用不留半写状态。
+`transform3d` / `camera` 表保持原样，作为空间专属的 facade。
+
+### `physics.debug_draw` collider 调试绘制（WP7）
+
+`physics.debug_draw(enabled)` 开关 2D 碰撞体轮廓的绘制（默认关闭，返回传入的布尔值）。轮廓画在
+世界内容之上、屏幕 UI 之下，实心碰撞体绿色、`sensor` 黄色——sensor 不产生物理响应，颜色不同
+才不会误判。开一次即持续生效，不需要每帧调用。
+
+数据源是**物理世界里碰撞体的当前姿态**（`PhysicsWorld::debug_shapes`），不是场景里的组件串：
+后者只在实例化时解析一次，而动态刚体每步都在动——调试绘制要看的正是"物理到底把它放到哪了"。
+球体轮廓用 24 边形近似；认不出的形状（胶囊/多边形）**不画**，不做静默近似。
+
+### `physics.set_ccd` / `get_ccd` 连续碰撞检测（WP7）
+
+高速物体一步跨过薄墙（隧穿）在 2D 玩法里很常见（子弹、快速下落物）。现在两种声明方式
+（**3D 侧 `physics3d.set_ccd` / `get_ccd` 与 `Collider3d` 的 `;ccd=true` 完全对称**）：
+
+| 方式 | 写法 |
+| --- | --- |
+| 场景组件串 | `Collider`（3D 为 `Collider3d`）加 `;ccd=true`（默认关闭；拼错报错而不是静默当 false） |
+| Lua | `physics.set_ccd(id, enabled)` 运行时开关；`physics.get_ccd(id)` 读**物理世界的真实状态**（不是引擎侧的影子记录），未知实体报错 |
+
+Rapier 的 CCD 是**刚体**属性而不是碰撞体属性，因此一个刚体上只要有任一 `Collider` 声明
+`ccd=true`，该刚体即开启连续碰撞检测（`PhysicsWorld::add_body` 的说明里写明了这一点）。
+行为证据见 2D 的 `ccd_stops_a_fast_body_from_tunneling_through_a_thin_wall` 与 3D 的
+`ccd_stops_a_fast_body_from_tunneling_in_3d`：同样一步跨越整堵墙的高速小球，不开 CCD 时穿过去、
+开了就停在墙前。
 
 ## 安全与错误策略
 

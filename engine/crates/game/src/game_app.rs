@@ -5,6 +5,7 @@
 use std::{path::PathBuf, sync::Arc, time::Instant};
 
 use engine::core::{
+    camera::{DEFAULT_3D_CLEAR, FrameViews, RenderView, Viewport},
     input::{InputSnapshot, MouseButton},
     logging::{EngineError, LogModule},
     performance::{PerformanceSnapshot, PerformanceStats},
@@ -212,6 +213,8 @@ impl GameApp {
             None => Ok(SceneMesh {
                 vertices: Vec::new(),
                 draws: Vec::new(),
+                world_sprites: Vec::new(),
+                world_sprite_draws: Vec::new(),
                 paths: Vec::new(),
                 font_atlas: None,
                 custom_font_atlases: Vec::new(),
@@ -242,6 +245,8 @@ impl GameApp {
                         count: range.count,
                         sdf: false,
                         vector: false,
+                        // 性能浮层是世界之上的叠加内容：屏幕空间、不参与深度。
+                        render_layer: engine::core::layer::RenderLayer::Overlay2D,
                     });
                 }
                 if uses_atlas {
@@ -256,6 +261,33 @@ impl GameApp {
             .runtime_scene
             .as_ref()
             .and_then(|scene| scene.scene_3d(aspect));
+        // WP5：把本帧的相机侧视图交给渲染器——清屏色与 2D overlay 的视口由这些声明决定，
+        // 渲染器不再自己写死。2D 视图与上面 `vertices()` 用的是同一个 `RuntimeScene` 相机，
+        // 因此"取景"和"清屏/视口"不会各说一套。
+        if let Some(scene) = self.runtime_scene.as_ref() {
+            let viewport = Viewport::new(
+                renderer.config.width.max(1) as f32,
+                renderer.config.height.max(1) as f32,
+            )
+            .unwrap_or(Viewport {
+                width: 1.0,
+                height: 1.0,
+            });
+            let overlay = scene.render_view_2d(renderer.config.width, renderer.config.height);
+            let main = scene3d
+                .as_ref()
+                .map(|scene3d| RenderView::main_3d(scene3d.camera, viewport, DEFAULT_3D_CLEAR));
+            renderer.set_frame_views(FrameViews {
+                main,
+                overlay: Some(overlay),
+            });
+            // WP6：世界 Sprite 深度通道打开时把 2D 相机的矩阵喂给渲染器（关闭时为 None）。
+            if let Some(view_projection) =
+                scene.sprite_view_projection(renderer.config.width, renderer.config.height)
+            {
+                renderer.set_world_sprite_camera(view_projection);
+            }
+        }
         match renderer.render(&mesh, scene3d.as_ref()) {
             RenderOutcome::Presented => {}
             RenderOutcome::Retry | RenderOutcome::Skipped => {}

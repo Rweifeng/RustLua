@@ -28,6 +28,12 @@ pub fn collect_project_chars(root: &Path) -> String {
                 {
                     chars.push_str(&ui.text);
                 }
+                // WP4：世界文字的字符同样要进首包字形子集，否则发布包缺字。
+                if let Some(value) = entity.components.get("WorldText")
+                    && let Ok(text) = crate::core::world_text::WorldText::from_component_str(value)
+                {
+                    chars.push_str(&text.text.text);
+                }
             }
         }
     }

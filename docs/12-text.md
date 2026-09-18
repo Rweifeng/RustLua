@@ -27,3 +27,22 @@ cargo run -p game_runner --example text_demo --release
 ```
 
 预期输出包含 `glyphs=17 lines=2 vertices=102 texture=128x48 target=128x128`，表示文本已完成布局、图集上传并提交 GPU 绘制。
+
+## 世界文字（WP4 增补）
+
+新增 `WorldText` 组件：文字锚在实体的**世界位置**上，用 `Camera2D` 投影后走与屏幕 `Text`
+**完全相同**的字形管线（含 vector / SDF 两种模式与自定义字体）。
+
+组件串：`text=..;font_size=..;color=r,g,b[;font=..][;offset=x,y][;centered=true]`
+
+- 文字字段原样转交 `UiText` 解析，因此字号/颜色/字体校验与转义只有一份（切分也复用其
+  **转义感知**的切分器，文字里带分号不会被切坏）；
+- `offset` 是投影到屏幕后的像素偏移（"头顶 12px"）；`centered=true` 按实测字宽水平居中；
+  两者都**只在非默认时**写回组件串；
+- 绘制层：精灵之上、屏幕 UI 之下，不参与世界深度；不受 `render_ui_overlay` 开关影响
+  （它是世界内容，不是屏幕 UI）；
+- 字形预热在构建任何字形网格**之前**完成，理由与屏幕 UI 文本相同（图集增长会让先构建的
+  网格 UV 失效）；
+- Lua 侧 `world_text.attach(id, 组件串)` / `world_text.detach(id)` 供运行期创建的实体使用
+  （`entity.spawn` 只插 Transform）；
+- 打包字符收集（`core/char_collect.rs`）同时扫描 `WorldText`，否则发布包会缺字。

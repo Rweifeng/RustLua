@@ -1,7 +1,7 @@
 use bytemuck::{Pod, Zeroable};
 use engine::core::{
     atlas::SpriteAtlas,
-    math2d::{Camera2D, Viewport},
+    camera::{Camera2D, Viewport},
     sprite::Sprite,
     sprite_batch::{SpriteBatch, SpriteBatchItem},
     text::{TextAtlas, TextLayout, TextStyle},

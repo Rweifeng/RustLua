@@ -3,11 +3,15 @@
 use std::{error::Error, fmt};
 
 use crate::core::{
-    math2d::{Camera2D, CoordinateError, Viewport},
+    camera::{Camera2D, CoordinateError, Viewport},
     transform::{Transform, Vec2},
 };
 
 /// A textured, tinted quad description. `pivot` and UVs are normalized.
+///
+/// `flip_x` / `flip_y` 只翻转**采样方向**（UV 在四边形上的走向），不改变 UV 范围本身。
+/// 这样 `validate` 的 `uv_min < uv_max` 约束仍然成立，也能直接复用 UV 来生成翻转后的
+/// 顶点；如果靠交换 uv_min/uv_max 来表达翻转，就会被该校验拒绝。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Sprite {
     pub size: Vec2,
@@ -15,10 +19,18 @@ pub struct Sprite {
     pub uv_min: Vec2,
     pub uv_max: Vec2,
     pub tint: [f32; 4],
+    pub flip_x: bool,
+    pub flip_y: bool,
+    /// 世界 z（WP6）：四边形所在的世界平面深度。默认 0（世界平面），只在使用
+    /// 世界 Sprite 深度通道时参与深度测试；overlay 路径忽略它。
+    pub z: f32,
 }
 
 /// One CPU-side vertex in screen-pixel space.
-#[derive(Clone, Copy, Debug, PartialEq)]
+///
+/// `Default` 存在的唯一理由是让并行合批能**一次开好输出缓冲**再分块就写入（WP8）；
+/// 全零顶点不表示任何合法几何，只是占位。
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct SpriteVertex {
     pub position: [f32; 2],
     pub uv: [f32; 2],
@@ -47,6 +59,12 @@ pub struct SpriteComponent {
     pub pivot: Vec2,
     pub tint: [f32; 4],
     pub sorting: SpriteSorting,
+    /// 水平翻转（面向左右）。默认关闭。
+    pub flip_x: bool,
+    /// 垂直翻转。默认关闭。
+    pub flip_y: bool,
+    /// 世界 z（组件串可选 `z=`，默认 0）。非 0 时写回组件串，因此既有场景字符串不变。
+    pub z: f32,
 }
 
 /// Stable 2D ordering metadata.
@@ -75,16 +93,30 @@ impl SpriteSorting {
     }
 }
 
+/// 符号层名 → 批处理分层桶。
+///
+/// **不要用 `to_ascii_lowercase()`**：它每个精灵每帧都会造一个 `String`，10k 精灵就是
+/// 1 万次分配/帧（`wp0-v4` 实测的 1.0 次分配/精灵正是这一处）。大小写不敏感比较用
+/// `eq_ignore_ascii_case`，零分配。
 fn sorting_layer_rank(layer: &str) -> i32 {
-    match layer.trim().to_ascii_lowercase().as_str() {
-        "background" => -2,
-        "world" => -1,
-        "default" => 0,
-        "actor" => 1,
-        "foreground" => 2,
-        "ui" => 3,
-        _ => 0,
+    let layer = layer.trim();
+    if layer.eq_ignore_ascii_case("background") {
+        return -2;
     }
+    if layer.eq_ignore_ascii_case("world") {
+        return -1;
+    }
+    if layer.eq_ignore_ascii_case("actor") {
+        return 1;
+    }
+    if layer.eq_ignore_ascii_case("foreground") {
+        return 2;
+    }
+    if layer.eq_ignore_ascii_case("ui") {
+        return 3;
+    }
+    // `default` 与未知值同归 0（与旧实现一致）。
+    0
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -95,6 +127,8 @@ pub enum SpriteComponentError {
     InvalidPivot(String),
     InvalidTint(String),
     InvalidOrder(String),
+    /// 世界 z 不是有限数（WP6：深度必须可比较，NaN 会让整帧深度测试失效）。
+    InvalidDepth(String),
     Sprite(SpriteError),
 }
 
@@ -107,6 +141,7 @@ impl fmt::Display for SpriteComponentError {
             Self::InvalidPivot(value) => write!(f, "invalid sprite pivot: {value}"),
             Self::InvalidTint(value) => write!(f, "invalid sprite tint: {value}"),
             Self::InvalidOrder(value) => write!(f, "invalid sprite order: {value}"),
+            Self::InvalidDepth(value) => write!(f, "invalid sprite z: {value}"),
             Self::Sprite(error) => error.fmt(f),
         }
     }
@@ -128,6 +163,9 @@ impl Default for SpriteComponent {
             pivot: Vec2::new(0.5, 0.5),
             tint: [1.0; 4],
             sorting: SpriteSorting::default(),
+            flip_x: false,
+            flip_y: false,
+            z: 0.0,
         }
     }
 }
@@ -166,6 +204,18 @@ impl SpriteComponent {
                 "pivot" => component.pivot = parse_pair(raw, "pivot")?,
                 "tint" => component.tint = parse_tint(raw)?,
                 "sorting_layer" => component.sorting.layer = raw.trim().to_owned(),
+                "flip_x" => component.flip_x = parse_flag(raw, "flip_x")?,
+                "flip_y" => component.flip_y = parse_flag(raw, "flip_y")?,
+                "z" => {
+                    let value: f32 = raw
+                        .trim()
+                        .parse()
+                        .map_err(|_| SpriteComponentError::InvalidDepth(raw.to_owned()))?;
+                    if !value.is_finite() {
+                        return Err(SpriteComponentError::InvalidDepth(raw.to_owned()));
+                    }
+                    component.z = value;
+                }
                 "order" => {
                     component.sorting.order = raw
                         .trim()
@@ -184,7 +234,7 @@ impl SpriteComponent {
 
     #[must_use]
     pub fn to_component_str(&self) -> String {
-        format!(
+        let mut text = format!(
             "texture={};size={}x{};pivot={:.3},{:.3};tint={:.3},{:.3},{:.3},{:.3};sorting_layer={};order={}",
             self.texture,
             trim_float(self.size.x),
@@ -197,13 +247,26 @@ impl SpriteComponent {
             self.tint[3],
             self.sorting.layer,
             self.sorting.order
-        )
+        );
+        // 只在开启时输出：既有场景的规范字符串保持不变，避免无谓的存档改动。
+        if self.flip_x {
+            text.push_str(";flip_x=true");
+        }
+        if self.flip_y {
+            text.push_str(";flip_y=true");
+        }
+        if self.z != 0.0 {
+            text.push_str(&format!(";z={}", trim_float(self.z)));
+        }
+        text
     }
 
     pub fn sprite(&self) -> Result<Sprite, SpriteComponentError> {
         Sprite::new(self.size)?
             .with_pivot(self.pivot)?
             .with_tint(self.tint)
+            .map(|sprite| sprite.with_flip(self.flip_x, self.flip_y))
+            .map(|sprite| sprite.with_z(self.z))
             .map_err(Into::into)
     }
 
@@ -251,6 +314,18 @@ fn parse_pair(value: &str, name: &str) -> Result<Vec2, SpriteComponentError> {
         .parse()
         .map_err(|_| SpriteComponentError::InvalidPivot(value.to_owned()))?;
     Ok(Vec2::new(x, y))
+}
+
+/// 解析 `flip_x` / `flip_y`。只接受明确的 true/false（含 1/0）；拼错的值必须报错，
+/// 不能静默当成 false——那会让"翻转变成了看不懂就不翻"。
+fn parse_flag(raw: &str, field: &str) -> Result<bool, SpriteComponentError> {
+    match raw.trim() {
+        "true" | "1" => Ok(true),
+        "false" | "0" => Ok(false),
+        other => Err(SpriteComponentError::InvalidField(format!(
+            "{field}={other}"
+        ))),
+    }
 }
 
 fn parse_tint(value: &str) -> Result<[f32; 4], SpriteComponentError> {
@@ -330,9 +405,27 @@ impl Sprite {
             uv_min: Vec2::zero(),
             uv_max: Vec2::new(1.0, 1.0),
             tint: [1.0; 4],
+            flip_x: false,
+            flip_y: false,
+            z: 0.0,
         };
         sprite.validate()?;
         Ok(sprite)
+    }
+
+    /// 设置世界 z（WP6 世界 Sprite 深度通道用）。
+    #[must_use]
+    pub const fn with_z(mut self, z: f32) -> Self {
+        self.z = z;
+        self
+    }
+
+    /// 设置水平/垂直翻转。翻转只影响 UV 走向，不需要额外校验。
+    #[must_use]
+    pub const fn with_flip(mut self, flip_x: bool, flip_y: bool) -> Self {
+        self.flip_x = flip_x;
+        self.flip_y = flip_y;
+        self
     }
 
     pub fn with_uv(mut self, uv_min: Vec2, uv_max: Vec2) -> Result<Self, SpriteError> {
@@ -400,12 +493,17 @@ impl Sprite {
             let screen = camera.world_to_screen(world, viewport)?;
             positions[index] = [screen.x, screen.y];
         }
-        let uv = [
-            [self.uv_min.x, self.uv_min.y],
-            [self.uv_max.x, self.uv_min.y],
-            [self.uv_max.x, self.uv_max.y],
-            [self.uv_min.x, self.uv_max.y],
-        ];
+        let (u0, u1) = if self.flip_x {
+            (self.uv_max.x, self.uv_min.x)
+        } else {
+            (self.uv_min.x, self.uv_max.x)
+        };
+        let (v0, v1) = if self.flip_y {
+            (self.uv_max.y, self.uv_min.y)
+        } else {
+            (self.uv_min.y, self.uv_max.y)
+        };
+        let uv = [[u0, v0], [u1, v0], [u1, v1], [u0, v1]];
         let vertex = |index: usize| SpriteVertex {
             position: positions[index],
             uv: uv[index],
@@ -421,6 +519,52 @@ impl Sprite {
                 vertex(3),
             ],
         })
+    }
+
+    /// 世界空间四边形的 4 个角（WP6 世界 Sprite 深度通道用）。
+    ///
+    /// 与 [`Sprite::quad`] 共用同一份局部角点与变换数学，区别只是**不做投影**：交给顶点着色器
+    /// 用 `Camera2D::view_projection` 去投影，路径因此只有一份（不会出现"CPU 投影"与
+    /// "GPU 投影"两套约定）。返回顺序与 `quad` 一致（左上、右上、右下、左下）。
+    pub fn quad_world(&self, transform: Transform) -> Result<[[f32; 2]; 4], SpriteError> {
+        self.validate()?;
+        if !transform.position.x.is_finite()
+            || !transform.position.y.is_finite()
+            || !transform.rotation.is_finite()
+            || !transform.scale.x.is_finite()
+            || !transform.scale.y.is_finite()
+        {
+            return Err(SpriteError::Coordinate(CoordinateError::NonFiniteVector {
+                name: "transform",
+                value: transform.position,
+            }));
+        }
+        let cos = transform.rotation.cos();
+        let sin = transform.rotation.sin();
+        let local = [
+            Vec2::new(
+                -self.pivot.x * self.size.x,
+                (1.0 - self.pivot.y) * self.size.y,
+            ),
+            Vec2::new(
+                (1.0 - self.pivot.x) * self.size.x,
+                (1.0 - self.pivot.y) * self.size.y,
+            ),
+            Vec2::new(
+                (1.0 - self.pivot.x) * self.size.x,
+                -self.pivot.y * self.size.y,
+            ),
+            Vec2::new(-self.pivot.x * self.size.x, -self.pivot.y * self.size.y),
+        ];
+        let mut positions = [[0.0; 2]; 4];
+        for (index, point) in local.into_iter().enumerate() {
+            let scaled = Vec2::new(point.x * transform.scale.x, point.y * transform.scale.y);
+            positions[index] = [
+                transform.position.x + scaled.x * cos - scaled.y * sin,
+                transform.position.y + scaled.x * sin + scaled.y * cos,
+            ];
+        }
+        Ok(positions)
     }
 
     fn validate(&self) -> Result<(), SpriteError> {
@@ -545,11 +689,104 @@ mod tests {
                 layer: "actor".to_owned(),
                 order: 12,
             },
+            flip_x: false,
+            flip_y: false,
+            z: 0.0,
         };
         let encoded = component.to_component_str();
         let decoded = SpriteComponent::from_component_str(&encoded).unwrap();
         assert_eq!(decoded, component);
         assert_eq!(decoded.sorting.effective_layer(), 1012);
+    }
+
+    /// WP6：Sprite 的世界 z（`z=`）。默认 0 且**不写回**（既有场景字符串逐字节不变）；
+    /// 非有限值报错——NaN 会让整帧深度测试失效，属于"必须拒绝"而不是"静默当 0"。
+    #[test]
+    fn sprite_z_parses_round_trips_and_rejects_non_finite() {
+        let plain =
+            SpriteComponent::from_component_str("texture=a.png;size=32x32;pivot=0.5,0.5").unwrap();
+        assert_eq!(plain.z, 0.0);
+        assert!(
+            !plain.to_component_str().contains(";z="),
+            "默认 z 不得写回组件串：{}",
+            plain.to_component_str()
+        );
+
+        let with_z =
+            SpriteComponent::from_component_str("texture=a.png;size=32x32;z=-2.5").unwrap();
+        assert_eq!(with_z.z, -2.5);
+        let encoded = with_z.to_component_str();
+        assert!(encoded.contains(";z=-2.5"), "{encoded}");
+        assert_eq!(
+            SpriteComponent::from_component_str(&encoded).unwrap(),
+            with_z,
+            "z 必须能原样往返"
+        );
+        // z 传递到运行时 `Sprite`（世界 Sprite 深度通道读它）。
+        assert_eq!(with_z.sprite().unwrap().z, -2.5);
+
+        assert!(SpriteComponent::from_component_str("texture=a.png;z=nan").is_err());
+        assert!(SpriteComponent::from_component_str("texture=a.png;z=inf").is_err());
+        assert!(SpriteComponent::from_component_str("texture=a.png;z=deep").is_err());
+    }
+
+    #[test]
+    fn sprite_flip_parses_round_trips_and_flips_sampled_uvs() {
+        let component = SpriteComponent::from_component_str(
+            "texture=assets/textures/player.png;size=32x32;pivot=0.5,0.5;flip_x=true",
+        )
+        .unwrap();
+        assert!(component.flip_x);
+        assert!(!component.flip_y);
+
+        // 只在开启时输出，且能原样读回。
+        let encoded = component.to_component_str();
+        assert!(encoded.ends_with(";flip_x=true"), "{encoded}");
+        assert_eq!(
+            SpriteComponent::from_component_str(&encoded).unwrap(),
+            component
+        );
+
+        // 未开启时不得改变既有规范字符串（避免存档 churn）。
+        let plain =
+            SpriteComponent::from_component_str("texture=a.png;size=32x32;pivot=0.5,0.5").unwrap();
+        assert!(!plain.to_component_str().contains("flip"));
+
+        // 拼错的布尔值必须报错，不能静默当成 false。
+        assert!(
+            SpriteComponent::from_component_str("texture=a.png;size=32x32;flip_x=maybe").is_err()
+        );
+
+        // 顶点取样方向必须真的翻转，而 UV 范围本身不变。
+        let sprite = component
+            .sprite()
+            .unwrap()
+            .with_uv(Vec2::new(0.25, 0.0), Vec2::new(0.75, 1.0))
+            .unwrap();
+        assert_eq!(sprite.uv_min, Vec2::new(0.25, 0.0));
+        assert_eq!(sprite.uv_max, Vec2::new(0.75, 1.0));
+
+        let quad = sprite
+            .quad(
+                Transform::default(),
+                Camera2D::new(Vec2::new(320.0, 180.0), 1.0).unwrap(),
+                Viewport::new(320.0, 180.0).unwrap(),
+            )
+            .unwrap();
+        // 四边形首顶点是左上角：翻转前取 uv_min.x，翻转后取 uv_max.x。
+        assert_eq!(quad.vertices[0].uv, [0.75, 0.0]);
+        assert_eq!(quad.vertices[1].uv, [0.25, 0.0]);
+
+        let vertical = sprite
+            .with_flip(false, true)
+            .quad(
+                Transform::default(),
+                Camera2D::new(Vec2::new(320.0, 180.0), 1.0).unwrap(),
+                Viewport::new(320.0, 180.0).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(vertical.vertices[0].uv, [0.25, 1.0]);
+        assert_eq!(vertical.vertices[2].uv, [0.75, 0.0]);
     }
 
     #[test]

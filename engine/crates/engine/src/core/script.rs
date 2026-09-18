@@ -1,20 +1,9 @@
-use std::{
-    cell::RefCell,
-    collections::BTreeMap,
-    fmt, fs,
-    path::{Path, PathBuf},
-    rc::Rc,
-    time::SystemTime,
-};
-
-use mlua::{Function, Lua, Result as LuaResult, Table, Value};
-use tracing::{error, info, warn};
-
 use crate::core::{
-    animation::AnimationStateMachine,
+    animation::{AnimationFrameEvent, AnimationStateMachine},
     animation3d::{Animation3D, Animation3dDescriptor},
     audio::{AudioBus, AudioSystem},
-    camera3d::Camera3D,
+    camera::Camera3D,
+    camera::{Camera2D, Viewport},
     entity::EntityId,
     gameplay::{GameClock, Inventory, ItemDefinition, ItemStack},
     grid::{self, Facing},
@@ -22,7 +11,7 @@ use crate::core::{
     light::Light,
     math3d::Vec3,
     mesh3d::MeshRenderer,
-    particle::{Particle, ParticleSystem},
+    particle::{Particle, ParticleEmitter, ParticleSystem},
     physics::{ColliderDesc, ColliderShape, PhysicsWorld},
     physics3d::{ColliderDesc3d, PhysicsWorld3d},
     resource_db::AssetId,
@@ -33,14 +22,24 @@ use crate::core::{
     sprite::{SpriteAsset, SpriteComponent},
     tilemap::DEFAULT_TILESET as DEFAULT_TILESET_PATH,
     tilemap::Tilemap,
+    transform::Transform3D,
     transform::{Transform, Vec2},
-    transform3d::Transform3D,
     ui::{DynamicUiImage, UiGrid, UiGridCell, UiPanel},
     ui_events::{UiClickTarget, UiEvents},
     ui_layout::UiRectLayout,
     ui_navigation::{FocusItem, FocusRing, NavDirection, ScrollState},
     world::{World, WorldError},
 };
+use mlua::{Function, Lua, Result as LuaResult, Table, Value};
+use std::{
+    cell::RefCell,
+    collections::BTreeMap,
+    fmt, fs,
+    path::{Path, PathBuf},
+    rc::Rc,
+    time::SystemTime,
+};
+use tracing::{error, info, warn};
 
 /// `transform3d.set(id, x, y, z, [rx, ry, rz, rw, [sx, sy, sz]])` argument tuple.
 type Transform3dSetArgs = (
@@ -91,7 +90,22 @@ struct ScriptState {
     save_data: BTreeMap<String, String>,
     physics: PhysicsWorld,
     physics3d: PhysicsWorld3d,
+    /// WP7：`Physics` 阶段推进后被移动的动态刚体，等 `Writeback` 阶段再写进 ECS。
+    /// 拆开两个阶段是为了让 2D/3D 的**所有**推进都发生在**任何**回写之前
+    /// （此前 2D 的回写夹在 3D 推进之前，"谁先看到谁"取决于注册顺序）。
+    pending_writeback_2d: Vec<(EntityId, Vec2)>,
+    pending_writeback_3d: Vec<(EntityId, crate::core::math3d::Vec3)>,
+    /// WP4：2D 相机控制器（跟随 / 死区 / 平滑 / 抖动）。相机数据仍在
+    /// `RuntimeScene::camera`，这里只放"center 该怎么算"的控制器状态。
+    camera2d: crate::core::camera::Camera2dController,
     particles: ParticleSystem,
+    /// WP7 ②：collider 调试绘制的**请求值**。绘制开关属于宿主（渲染在那里发生），
+    /// 这里只登记 Lua 的请求、由宿主每帧取走，与 `camera2d` 的请求/消费模式一致。
+    collider_debug_request: Option<bool>,
+    /// WP4 ⑦：本帧已触发、等待 Lua 轮询取走的动画帧事件（`animation.events()`）。
+    animation_events: Vec<(EntityId, AnimationFrameEvent)>,
+    /// WP4 ⑧：宿主回填的 2D 相机快照（相机 + 视口），供 Lua 做屏幕↔世界换算。
+    camera_view: Option<(Camera2D, [f32; 2])>,
     audio: AudioSystem,
     /// Entity whose `Camera3D` component the renderer uses this frame. Lua
     /// selects it with `camera.set_active`; the renderer falls back to the
@@ -515,6 +529,7 @@ impl LuaRuntime {
                 &entity.resources,
             )?;
             state.scene_entities.insert(entity.id, handle);
+
             // 持久实体快照（权威、静态组件），供切场景后重生。
             if entity
                 .metadata
@@ -533,6 +548,27 @@ impl LuaRuntime {
                 );
             }
             count += 1;
+        }
+        // WP2：把场景的 `parent` 落成运行时的 `Parent` 组件。**第二趟**做：子实体可能先于
+        // 父实体出现，第一趟里父的运行时句柄还不存在。父被跳过（编辑器隐藏）时不建立关系——
+        // 宁可不继承，也不要指到一个不存在或错误的实体上。
+        for entity in scene.entities.values() {
+            let Some(&child) = state.scene_entities.get(&entity.id) else {
+                continue;
+            };
+            let Some(parent) = entity
+                .parent
+                .and_then(|parent| state.scene_entities.get(&parent).copied())
+            else {
+                continue;
+            };
+            if parent == child {
+                continue;
+            }
+            state
+                .world
+                .insert(child, crate::core::hierarchy::Parent(parent))
+                .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
         }
         Ok(count)
     }
@@ -726,6 +762,19 @@ impl LuaRuntime {
                 .insert(id, image)
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
         }
+        // WP4：世界空间文字（锚在世界位置，与屏幕 `Text` 是两套组件）。
+        if let Some(value) = components.get("WorldText") {
+            let text =
+                crate::core::world_text::WorldText::from_component_str(value).map_err(|error| {
+                    LuaBridgeError::Api(format!(
+                        "entity {name:?} has an invalid WorldText: {error}"
+                    ))
+                })?;
+            state
+                .world
+                .insert(id, text)
+                .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
+        }
         if let Some(raw) = components.get("UiEvents") {
             let events = UiEvents::parse(raw).map_err(|error| {
                 LuaBridgeError::Api(format!("entity {name:?} has invalid UiEvents: {error}"))
@@ -798,30 +847,88 @@ impl LuaRuntime {
         Ok(id)
     }
 
-    /// Steps the physics world and writes moved dynamic body positions back to
-    /// their ECS Transforms so rendering and Lua see the simulated result.
+    /// 物理一步：**只推进模拟**，把被移动的动态刚体暂存起来等 `Writeback` 阶段回写。
+    ///
+    /// WP7 把"推进"与"回写"拆成两个阶段（`Physics` → `Writeback`），于是 2D 与 3D 的**所有**
+    /// 推进都发生在**任何**回写之前——此前 2D 的回写夹在 3D 推进之前，混合 2D/3D 的场景里
+    /// "谁先看到谁的结果"取决于注册顺序而不是类型化的阶段。
     pub fn step_physics(&mut self, delta_seconds: f32) {
         let mut state = self.state.borrow_mut();
         let moved = state.physics.step(delta_seconds);
+        state.pending_writeback_2d = moved;
+    }
+
+    /// 2D 物理回写：把上一阶段暂存的动态刚体位置写进 ECS `Transform`。
+    pub fn writeback_physics(&mut self) -> usize {
+        let mut state = self.state.borrow_mut();
+        let moved = std::mem::take(&mut state.pending_writeback_2d);
+        let mut written = 0;
         for (entity, position) in moved {
             if let Ok(Some(transform)) = state.world.get_mut::<Transform>(entity) {
                 transform.position = position;
+                written += 1;
             }
         }
+        written
     }
 
-    /// Steps the 3D physics world and writes moved dynamic body positions back
-    /// to their ECS `Transform3D` so rendering and Lua see the simulation.
+    /// 3D 物理一步（只推进，回写见 [`LuaRuntime::writeback_physics3d`]）。
     pub fn step_physics3d(&mut self, delta_seconds: f32) {
         let mut state = self.state.borrow_mut();
         let moved = state.physics3d.step(delta_seconds);
+        state.pending_writeback_3d = moved;
+    }
+
+    /// 3D 物理回写。
+    pub fn writeback_physics3d(&mut self) -> usize {
+        let mut state = self.state.borrow_mut();
+        let moved = std::mem::take(&mut state.pending_writeback_3d);
+        let mut written = 0;
         for (entity, position) in moved {
             if let Ok(Some(transform)) = state.world.get_mut::<Transform3D>(entity) {
                 transform.position = position;
+                written += 1;
             }
         }
+        written
     }
 
+    /// 丢弃暂存的物理回写（authority = Script 时不需要回写；不清掉会被下一步误当成移动）。
+    pub fn discard_pending_writeback(&mut self) {
+        let mut state = self.state.borrow_mut();
+        state.pending_writeback_2d.clear();
+        state.pending_writeback_3d.clear();
+    }
+
+    /// WP7 静态/运动学同步：物理步**之前**把 ECS 里动态刚体的位置推给模拟世界。
+    ///
+    /// 只在 authority = [`PhysicsAuthority::Script`] 时调用：那种模式下脚本/ECS 是权威，
+    /// 若不先同步，物理世界会拿上一帧的位置继续积分（表现为"脚本设了位置但刚体没动"）。
+    /// 返回同步的刚体数。
+    pub fn sync_kinematic_bodies(&mut self) -> usize {
+        let mut state = self.state.borrow_mut();
+        let mut synced = 0;
+        for (entity, position) in state.physics.kinematic_positions(&state.world) {
+            if state.physics.set_position(entity, position).is_ok() {
+                synced += 1;
+            }
+        }
+        synced
+    }
+    /// 读 2D 相机控制器（WP4）。相机数据本身仍在宿主侧，这里只放"center 该怎么算"。
+    pub fn camera2d_controller<R>(
+        &self,
+        visit: impl FnOnce(&crate::core::camera::Camera2dController) -> R,
+    ) -> R {
+        visit(&self.state.borrow().camera2d)
+    }
+    /// 改 2D 相机控制器（Lua `camera2d.*` 与宿主每帧推进共用）。
+    pub fn camera2d_controller_mut<R>(
+        &mut self,
+        visit: impl FnOnce(&mut crate::core::camera::Camera2dController) -> R,
+    ) -> R {
+        visit(&mut self.state.borrow_mut().camera2d)
+    }
     /// Advances the particle system by `dt` seconds.
     pub fn step_particles(&mut self, delta_seconds: f32) {
         self.state.borrow_mut().particles.step(delta_seconds);
@@ -988,13 +1095,44 @@ impl LuaRuntime {
     pub fn with_particles<R>(&self, f: impl FnOnce(&[Particle]) -> R) -> R {
         f(self.state.borrow().particles.particles())
     }
+    /// 当前存活粒子数（宿主侧读取，避免为了拿长度而借用整个切片）。
+    pub fn particle_count(&self) -> usize {
+        self.state.borrow().particles.len()
+    }
+    /// WP4 ⑧：宿主每帧把**本帧实际渲染用的** 2D 相机与视口回填进来，供 Lua 做
+    /// 屏幕↔世界换算。放在帧末（渲染前）回填，因此脚本看到的是玩家刚看到的那一帧。
+    pub fn set_camera_view(&mut self, camera: Camera2D, viewport: [f32; 2]) {
+        self.state.borrow_mut().camera_view = Some((camera, viewport));
+    }
 
+    /// 宿主侧直接生成一次粒子爆发，与 Lua `particles.burst` 走同一实现。
+    ///
+    /// 给宿主/基准用：不必为了发粒子而绕一趟 Lua。参数非法时**不生成粒子**
+    /// （调用方应先用 [`ParticleEmitter::validate`] 报错）。
+    pub fn burst_particles(&mut self, position: Vec2, emitter: &ParticleEmitter) {
+        self.state
+            .borrow_mut()
+            .particles
+            .burst_with(position, emitter);
+    }
     /// Gives the host a shared read view of the runtime entity world, so the
     /// renderer draws the exact entities the Lua script is mutating.
     pub fn with_world<R>(&self, f: impl FnOnce(&World) -> R) -> R {
         f(&self.state.borrow().world)
     }
-
+    /// WP7 ②：取走 Lua 通过 `physics.debug_draw(...)` 登记的请求（取走即清空，与
+    /// `camera2d` 的 pending 请求同一语义：请求只在被消费的那一帧生效）。
+    pub fn take_collider_debug_request(&mut self) -> Option<bool> {
+        self.state.borrow_mut().collider_debug_request.take()
+    }
+    /// WP4 ⑦：宿主推进动画后把本步触发的帧事件交进来，供 Lua `animation.events()` 轮询。
+    pub fn push_animation_events(&mut self, events: Vec<(EntityId, AnimationFrameEvent)>) {
+        self.state.borrow_mut().animation_events.extend(events);
+    }
+    /// 物理世界里当前所有 2D 碰撞体的姿态与形状，供宿主做 collider 调试绘制。
+    pub fn collider_debug_shapes(&self) -> Vec<crate::core::physics::ColliderDebugShape> {
+        self.state.borrow().physics.debug_shapes()
+    }
     /// Gives the host a shared write view of the runtime entity world.
     pub fn with_world_mut<R>(&mut self, f: impl FnOnce(&mut World) -> R) -> R {
         f(&mut self.state.borrow_mut().world)
@@ -1361,6 +1499,21 @@ fn table_vec(lua: &Lua, x: f32, y: f32) -> LuaResult<Table> {
     table.set(1, x)?;
     table.set(2, y)?;
     Ok(table)
+}
+
+/// 取宿主每帧回填的 (2D 相机, 视口)。**还没有渲染过任何一帧时报错**而不是猜一个默认值：
+/// 猜出来的世界坐标会让"点击没反应/点错位置"变成一桩无头案。
+fn camera_view_from(state: &ScriptState) -> LuaResult<(Camera2D, Viewport)> {
+    let (camera, viewport) = state.camera_view.ok_or_else(|| {
+        api_error("camera2d screen/world conversion needs one rendered frame first")
+    })?;
+    let viewport =
+        Viewport::new(viewport[0], viewport[1]).map_err(|error| api_error(error.to_string()))?;
+    Ok((camera, viewport))
+}
+
+fn camera_view(state: &Rc<RefCell<ScriptState>>) -> LuaResult<(Camera2D, Viewport)> {
+    camera_view_from(&state.borrow())
 }
 
 fn table_i32_pair(lua: &Lua, x: i32, y: i32) -> LuaResult<Table> {
@@ -1741,6 +1894,7 @@ fn solid_cell_colliders(tilemap: &Tilemap) -> Vec<ColliderDesc> {
                     sensor: false,
                     layer: 0xFF,
                     mask: 0xFF,
+                    ccd: false,
                 });
             }
         }
@@ -2511,7 +2665,14 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
         })?,
     )?;
     lua.globals().set("sprite", sprite)?;
-
+    // 统一 `transform` 表（WP9）：2D 的 `Transform` 与 3D 的 `Transform3D` 共用同一组读写
+    // 函数，按实体**实际拥有**的组件分派。旧行为完全保留：本来有 2D `Transform` 的实体走的
+    // 还是原来那条分支（`space` 是新增字段，不影响既有取值），而以前"3D 实体调用 transform
+    // 直接报错"的情况现在会落到 3D 分支。
+    //
+    // 刻意不做的一件事：**3D 下不接受标量 `rotation`**。2D 的 rotation 是绕 Z 的弧度，3D 的
+    // rotation 是四元数，把标量悄悄当成绕 Z 旋转属于静默近似，与本项目"不静默改变语义"的
+    // 原则冲突，因此拒绝并指向 `transform3d.set`。
     let transform = lua.create_table()?;
     let s = Rc::clone(&state);
     transform.set(
@@ -2520,18 +2681,169 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
             let id = entity_from_lua(id)?;
             let state = s.borrow();
             require_alive(&state, id)?;
+            let t = lua.create_table()?;
+            if let Some(value) = state.world.get::<Transform>(id).map_err(world_error)? {
+                t.set("space", "2d")?;
+                t.set("x", value.position.x)?;
+                t.set("y", value.position.y)?;
+                t.set("rotation", value.rotation)?;
+                t.set("scale_x", value.scale.x)?;
+                t.set("scale_y", value.scale.y)?;
+                return Ok(t);
+            }
             let value = state
+                .world
+                .get::<Transform3D>(id)
+                .map_err(world_error)?
+                .ok_or_else(|| api_error("entity has no transform (2d or 3d)"))?;
+            t.set("space", "3d")?;
+            t.set("x", value.position.x)?;
+            t.set("y", value.position.y)?;
+            t.set("z", value.position.z)?;
+            t.set("rx", value.rotation.x)?;
+            t.set("ry", value.rotation.y)?;
+            t.set("rz", value.rotation.z)?;
+            t.set("rw", value.rotation.w)?;
+            t.set("scale_x", value.scale.x)?;
+            t.set("scale_y", value.scale.y)?;
+            t.set("scale_z", value.scale.z)?;
+            Ok(t)
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    transform.set(
+        "world",
+        lua.create_function(move |lua, id: i64| {
+            let id = entity_from_lua(id)?;
+            let state = s.borrow();
+            require_alive(&state, id)?;
+            // WP2：世界变换（开启空间继承时是父链组合的结果，否则等于局部值）。
+            let t = lua.create_table()?;
+            if let Some(transform) =
+                crate::core::hierarchy::world_transform_2d(&state.world, id).map_err(world_error)?
+            {
+                t.set("space", "2d")?;
+                t.set("x", transform.position.x)?;
+                t.set("y", transform.position.y)?;
+                t.set("rotation", transform.rotation)?;
+                t.set("scale_x", transform.scale.x)?;
+                t.set("scale_y", transform.scale.y)?;
+                return Ok(t);
+            }
+            if let Some(transform) =
+                crate::core::hierarchy::world_transform_3d(&state.world, id).map_err(world_error)?
+            {
+                t.set("space", "3d")?;
+                t.set("x", transform.position.x)?;
+                t.set("y", transform.position.y)?;
+                t.set("z", transform.position.z)?;
+                t.set("rx", transform.rotation.x)?;
+                t.set("ry", transform.rotation.y)?;
+                t.set("rz", transform.rotation.z)?;
+                t.set("rw", transform.rotation.w)?;
+                t.set("scale_x", transform.scale.x)?;
+                t.set("scale_y", transform.scale.y)?;
+                t.set("scale_z", transform.scale.z)?;
+                return Ok(t);
+            }
+            Err(api_error("entity has no transform"))
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    transform.set(
+        "space",
+        lua.create_function(move |_, id: i64| {
+            let id = entity_from_lua(id)?;
+            let state = s.borrow();
+            require_alive(&state, id)?;
+            if state
                 .world
                 .get::<Transform>(id)
                 .map_err(world_error)?
-                .ok_or_else(|| api_error("entity has no transform"))?;
-            let t = lua.create_table()?;
-            t.set("x", value.position.x)?;
-            t.set("y", value.position.y)?;
-            t.set("rotation", value.rotation)?;
-            t.set("scale_x", value.scale.x)?;
-            t.set("scale_y", value.scale.y)?;
-            Ok(t)
+                .is_some()
+            {
+                return Ok(Some("2d"));
+            }
+            if state
+                .world
+                .get::<Transform3D>(id)
+                .map_err(world_error)?
+                .is_some()
+            {
+                return Ok(Some("3d"));
+            }
+            Ok(None)
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    transform.set(
+        "attach",
+        lua.create_function(move |_, (id, space): (i64, String)| {
+            let id = entity_from_lua(id)?;
+            let mut state = s.borrow_mut();
+            require_alive(&state, id)?;
+            match space.as_str() {
+                "2d" => {
+                    if state
+                        .world
+                        .get::<Transform>(id)
+                        .map_err(world_error)?
+                        .is_some()
+                    {
+                        return Ok(false);
+                    }
+                    // 用统一的**压平**实现（`Transform3D::to_2d`），而不是只手抄一个 XY：
+                    // 手抄会把旋转与缩放悄悄丢掉（3D 里转过 90° 的实体挂上 2D 变换后会突然
+                    // 朝正面）。真能无损压平才建组件，压不平则明确报错——见下面的错误信息。
+                    let flattened = state
+                        .world
+                        .get::<Transform3D>(id)
+                        .map_err(world_error)?
+                        .map(|source| source.to_2d());
+                    match flattened {
+                        Some(Some(flat)) => {
+                            state.world.insert(id, flat).map_err(world_error)?;
+                            Ok(true)
+                        }
+                        Some(None) => Err(api_error(
+                            "entity's 3D transform is not planar (tilt, z offset or z scale); \
+                             flattening to 2d would drop it — clear those first, or keep using \
+                             transform3d",
+                        )),
+                        None => {
+                            state
+                                .world
+                                .insert(id, Transform::default())
+                                .map_err(world_error)?;
+                            Ok(true)
+                        }
+                    }
+                }
+                "3d" => {
+                    if state
+                        .world
+                        .get::<Transform3D>(id)
+                        .map_err(world_error)?
+                        .is_some()
+                    {
+                        return Ok(false);
+                    }
+                    // 同理走统一的**提升**实现（`Transform::to_3d`），因此 2D 的旋转与缩放
+                    // 会被保留成绕 Z 的旋转与 XY 缩放。
+                    let lifted = state
+                        .world
+                        .get::<Transform>(id)
+                        .map_err(world_error)?
+                        .copied()
+                        .map(Transform::to_3d);
+                    let value = lifted.unwrap_or_default();
+                    state.world.insert(id, value).map_err(world_error)?;
+                    Ok(true)
+                }
+                other => Err(api_error(format!(
+                    "transform.attach space must be \"2d\" or \"3d\", got {other:?}"
+                ))),
+            }
         })?,
     )?;
     let s = Rc::clone(&state);
@@ -2550,15 +2862,31 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
                 let id = entity_from_lua(id)?;
                 let mut state = s.borrow_mut();
                 require_alive(&state, id)?;
-                let t = state
-                    .world
-                    .get_mut::<Transform>(id)
-                    .map_err(world_error)?
-                    .ok_or_else(|| api_error("entity has no transform"))?;
+                if let Some(t) = state.world.get_mut::<Transform>(id).map_err(world_error)? {
                 t.position = Vec2::new(x, y);
                 if let Some(v) = rotation {
                     t.rotation = v;
                 }
+                if let Some(v) = scale_x {
+                    t.scale.x = v;
+                }
+                if let Some(v) = scale_y {
+                    t.scale.y = v;
+                }
+                    return Ok(());
+                }
+                let t = state
+                    .world
+                    .get_mut::<Transform3D>(id)
+                    .map_err(world_error)?
+                    .ok_or_else(|| api_error("entity has no transform (2d or 3d)"))?;
+                if rotation.is_some() {
+                    return Err(api_error(
+                        "transform.set rotation is 2d-only (radians around Z); use transform3d.set for a 3d quaternion",
+                    ));
+                }
+                t.position.x = x;
+                t.position.y = y;
                 if let Some(v) = scale_x {
                     t.scale.x = v;
                 }
@@ -2576,11 +2904,16 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
             let id = entity_from_lua(id)?;
             let mut state = s.borrow_mut();
             require_alive(&state, id)?;
+            if let Some(t) = state.world.get_mut::<Transform>(id).map_err(world_error)? {
+                t.position.x += dx;
+                t.position.y += dy;
+                return Ok(());
+            }
             let t = state
                 .world
-                .get_mut::<Transform>(id)
+                .get_mut::<Transform3D>(id)
                 .map_err(world_error)?
-                .ok_or_else(|| api_error("entity has no transform"))?;
+                .ok_or_else(|| api_error("entity has no transform (2d or 3d)"))?;
             t.position.x += dx;
             t.position.y += dy;
             Ok(())
@@ -2817,7 +3150,167 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
         )?,
     )?;
     lua.globals().set("camera", camera)?;
-
+    // WP4：2D 相机控制器（跟随 / 死区 / 平滑 / 抖动）。此前 Lua **完全无法控制 2D 相机**
+    // （`camera` 表只管 3D 的 Camera3D 组件），大地图或跟随镜头只能靠宿主代码。
+    //
+    // 相机数据在宿主（`RuntimeScene::camera`），因此 `set`/`set_zoom` 只是登记请求、由宿主
+    // 下一帧消费；`get`/`get_zoom` 读宿主每帧回填的真实值，不会返回脚本的自述。
+    let camera2d = lua.create_table()?;
+    let s = Rc::clone(&state);
+    camera2d.set(
+        "set",
+        lua.create_function(move |_, (x, y): (f32, f32)| {
+            if !x.is_finite() || !y.is_finite() {
+                return Err(api_error("camera2d.set must be finite"));
+            }
+            s.borrow_mut()
+                .camera2d
+                .request_center(crate::core::transform::Vec2::new(x, y));
+            Ok(true)
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    camera2d.set(
+        "get",
+        lua.create_function(move |lua, ()| {
+            let center = s.borrow().camera2d.center();
+            let table = lua.create_table()?;
+            table.set("x", center.x)?;
+            table.set("y", center.y)?;
+            Ok(table)
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    camera2d.set(
+        "set_zoom",
+        lua.create_function(move |_, zoom: f32| {
+            if !zoom.is_finite() || zoom <= 0.0 {
+                return Err(api_error("camera2d.set_zoom must be > 0"));
+            }
+            s.borrow_mut().camera2d.request_zoom(zoom);
+            Ok(true)
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    camera2d.set(
+        "get_zoom",
+        lua.create_function(move |_, ()| Ok(s.borrow().camera2d.zoom()))?,
+    )?;
+    // WP4 ⑧：输入统一 screen→world。此前 Lua 只能拿到 `input.cursor_position()` 的**屏幕像素**，
+    // 想把点击换成世界坐标就得在脚本里重写一遍相机数学（zoom/center/bounds/rotation 一个都
+    // 不能错）。这里直接用宿主每帧回填的相机快照 + `Camera2D` 自己的投影函数，保证与精灵、
+    // 瓦片、世界文字走的是**同一份**换算（`math2d` 里只有这一份实现）。
+    let s = Rc::clone(&state);
+    camera2d.set(
+        "screen_to_world",
+        lua.create_function(move |lua, (x, y): (f32, f32)| {
+            if !x.is_finite() || !y.is_finite() {
+                return Err(api_error("camera2d.screen_to_world must be finite"));
+            }
+            let (camera, viewport) = camera_view(&s)?;
+            let world = camera
+                .screen_to_world(crate::core::transform::Vec2::new(x, y), viewport)
+                .map_err(|error| api_error(error.to_string()))?;
+            table_vec(lua, world.x, world.y)
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    camera2d.set(
+        "world_to_screen",
+        lua.create_function(move |lua, (x, y): (f32, f32)| {
+            if !x.is_finite() || !y.is_finite() {
+                return Err(api_error("camera2d.world_to_screen must be finite"));
+            }
+            let (camera, viewport) = camera_view(&s)?;
+            let screen = camera
+                .world_to_screen(crate::core::transform::Vec2::new(x, y), viewport)
+                .map_err(|error| api_error(error.to_string()))?;
+            table_vec(lua, screen.x, screen.y)
+        })?,
+    )?;
+    // 鼠标直接换算成世界坐标：2D 游戏里"点到哪个格"是最常见的用法，不该每个脚本都自己拼。
+    let s = Rc::clone(&state);
+    camera2d.set(
+        "mouse_world",
+        lua.create_function(move |lua, ()| {
+            let (camera, viewport, cursor) = {
+                let state = s.borrow();
+                let (camera, viewport) = camera_view_from(&state)?;
+                (camera, viewport, state.input.cursor_position())
+            };
+            let world = camera
+                .screen_to_world(
+                    crate::core::transform::Vec2::new(cursor.0 as f32, cursor.1 as f32),
+                    viewport,
+                )
+                .map_err(|error| api_error(error.to_string()))?;
+            table_vec(lua, world.x, world.y)
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    camera2d.set(
+        "shake",
+        lua.create_function(move |_, (amplitude, duration): (f32, f32)| {
+            if !amplitude.is_finite() || !duration.is_finite() || duration <= 0.0 {
+                return Err(api_error(
+                    "camera2d.shake needs a finite amplitude and duration > 0",
+                ));
+            }
+            s.borrow_mut().camera2d.shake(amplitude, duration);
+            Ok(true)
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    camera2d.set(
+        "follow",
+        lua.create_function(
+            move |_, (id, options): (Option<i64>, Option<mlua::Table>)| {
+                let target = match id {
+                    Some(raw) => {
+                        let entity = entity_from_lua(raw)?;
+                        let state = s.borrow();
+                        require_alive(&state, entity)?;
+                        Some(entity)
+                    }
+                    None => None,
+                };
+                let mut state = s.borrow_mut();
+                state.camera2d.follow(target);
+                if let Some(options) = options {
+                    let offset_x = options.get::<Option<f32>>("offset_x")?.unwrap_or(0.0);
+                    let offset_y = options.get::<Option<f32>>("offset_y")?.unwrap_or(0.0);
+                    let dead_x = options.get::<Option<f32>>("dead_zone_x")?.unwrap_or(0.0);
+                    let dead_y = options.get::<Option<f32>>("dead_zone_y")?.unwrap_or(0.0);
+                    let smoothing = options.get::<Option<f32>>("smoothing")?.unwrap_or(0.0);
+                    for value in [offset_x, offset_y, dead_x, dead_y, smoothing] {
+                        if !value.is_finite() {
+                            return Err(api_error("camera2d.follow options must be finite"));
+                        }
+                    }
+                    if dead_x < 0.0 || dead_y < 0.0 {
+                        return Err(api_error("camera2d.follow dead zone must be >= 0"));
+                    }
+                    state
+                        .camera2d
+                        .set_offset(crate::core::transform::Vec2::new(offset_x, offset_y));
+                    state
+                        .camera2d
+                        .set_dead_zone(crate::core::transform::Vec2::new(dead_x, dead_y));
+                    state.camera2d.set_smoothing(smoothing);
+                }
+                Ok(true)
+            },
+        )?,
+    )?;
+    let s = Rc::clone(&state);
+    camera2d.set(
+        "unfollow",
+        lua.create_function(move |_, ()| {
+            s.borrow_mut().camera2d.follow(None);
+            Ok(true)
+        })?,
+    )?;
+    lua.globals().set("camera2d", camera2d)?;
     let light = lua.create_table()?;
     let s = Rc::clone(&state);
     light.set(
@@ -3414,8 +3907,58 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
             Ok(names)
         })?,
     )?;
+    // WP4 ⑦：轮询本帧触发的动画帧事件（与 `physics.events()` 同一套用法：取走即清空）。
+    // 事件由宿主的 `animation_state_advance` 帧系统在推进动画时收集。
+    let s = Rc::clone(&state);
+    animation.set(
+        "events",
+        lua.create_function(move |lua, ()| {
+            let mut state = s.borrow_mut();
+            let events = std::mem::take(&mut state.animation_events);
+            let result = lua.create_table()?;
+            for (index, (id, event)) in events.into_iter().enumerate() {
+                let entry = lua.create_table()?;
+                entry.set("entity", entity_to_lua(id))?;
+                entry.set("name", event.name)?;
+                entry.set("frame", event.frame)?;
+                result.set(index + 1, entry)?;
+            }
+            Ok(result)
+        })?,
+    )?;
     lua.globals().set("animation", animation)?;
-
+    // WP4：世界空间文字运行期挂载。与 `animation.attach` 同理——`entity.spawn` 只插
+    // Transform，运行期创建的实体（伤害数字、名牌）否则无法带世界文字。
+    let world_text = lua.create_table()?;
+    let s = Rc::clone(&state);
+    world_text.set(
+        "attach",
+        lua.create_function(move |_, (id, component): (i64, String)| {
+            let text = crate::core::world_text::WorldText::from_component_str(&component)
+                .map_err(|error| api_error(error.to_string()))?;
+            let id = entity_from_lua(id)?;
+            let mut state = s.borrow_mut();
+            require_alive(&state, id)?;
+            state.world.insert(id, text).map_err(world_error)?;
+            Ok(true)
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    world_text.set(
+        "detach",
+        lua.create_function(move |_, id: i64| {
+            let id = entity_from_lua(id)?;
+            let mut state = s.borrow_mut();
+            require_alive(&state, id)?;
+            let removed = state
+                .world
+                .remove::<crate::core::world_text::WorldText>(id)
+                .map_err(world_error)?
+                .is_some();
+            Ok(removed)
+        })?,
+    )?;
+    lua.globals().set("world_text", world_text)?;
     let animation3d = lua.create_table()?;
     let s = Rc::clone(&state);
     animation3d.set(
@@ -3619,6 +4162,33 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
     )?;
     let s = Rc::clone(&state);
     physics.set(
+        "set_ccd",
+        lua.create_function(move |_, (id, enabled): (i64, bool)| {
+            let id = entity_from_lua(id)?;
+            let mut state = s.borrow_mut();
+            require_alive(&state, id)?;
+            state
+                .physics
+                .set_ccd(id, enabled)
+                .map_err(|error| api_error(error.to_string()))?;
+            Ok(())
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    physics.set(
+        "get_ccd",
+        lua.create_function(move |_, id: i64| {
+            let id = entity_from_lua(id)?;
+            let state = s.borrow();
+            require_alive(&state, id)?;
+            state
+                .physics
+                .ccd_enabled(id)
+                .map_err(|error| api_error(error.to_string()))
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    physics.set(
         "events",
         lua.create_function(move |lua, ()| {
             let mut state = s.borrow_mut();
@@ -3634,8 +4204,16 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
             Ok(result)
         })?,
     )?;
+    let s = Rc::clone(&state);
+    physics.set(
+        "debug_draw",
+        lua.create_function(move |_, enabled: bool| {
+            let mut state = s.borrow_mut();
+            state.collider_debug_request = Some(enabled);
+            Ok(enabled)
+        })?,
+    )?;
     lua.globals().set("physics", physics)?;
-
     // 3D physics (M9-02): same shape as `physics`, but bodies are created from
     // scene `Collider3d` components and positions sync to `Transform3D`.
     let physics3d = lua.create_table()?;
@@ -3729,25 +4307,111 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
             Ok(result)
         })?,
     )?;
-    lua.globals().set("physics3d", physics3d)?;
-
-    let particles = lua.create_table()?;
     let s = Rc::clone(&state);
-    particles.set(
-        "burst",
-        lua.create_function(move |_, (x, y, count): (f32, f32, u32)| {
-            s.borrow_mut().particles.burst(
-                Vec2::new(x, y),
-                count as usize,
-                120.0,
-                0.6,
-                [1.0, 0.6, 0.2, 1.0],
-            );
+    physics3d.set(
+        "set_ccd",
+        lua.create_function(move |_, (id, enabled): (i64, bool)| {
+            let id = entity_from_lua(id)?;
+            let mut state = s.borrow_mut();
+            require_alive(&state, id)?;
+            state
+                .physics3d
+                .set_ccd(id, enabled)
+                .map_err(|error| api_error(error.to_string()))?;
             Ok(())
         })?,
     )?;
+    let s = Rc::clone(&state);
+    physics3d.set(
+        "get_ccd",
+        lua.create_function(move |_, id: i64| {
+            let id = entity_from_lua(id)?;
+            let state = s.borrow();
+            require_alive(&state, id)?;
+            state
+                .physics3d
+                .ccd_enabled(id)
+                .map_err(|error| api_error(error.to_string()))
+        })?,
+    )?;
+    lua.globals().set("physics3d", physics3d)?;
+    let particles = lua.create_table()?;
+    let s = Rc::clone(&state);
+    // `particles.burst(x, y, count [, opts])`：opts 是可选表，用来给这一次爆发不同的
+    // 观感（此前引擎把速度/寿命/颜色**写死**在 120/0.6/橙色，Lua 完全无法区分尘土、
+    // 水花、落叶）。缺省值与旧行为一致，因此老脚本零改动。
+    particles.set(
+        "burst",
+        lua.create_function(
+            move |_, (x, y, count, options): (f32, f32, u32, Option<mlua::Table>)| {
+                if !x.is_finite() || !y.is_finite() {
+                    return Err(api_error("particles.burst position must be finite"));
+                }
+                let mut emitter =
+                    ParticleEmitter::new(count as usize, 120.0, 0.6, [1.0, 0.6, 0.2, 1.0]);
+                if let Some(options) = options {
+                    let number = |key: &str| -> Result<Option<f32>, mlua::Error> {
+                        options.get::<Option<f32>>(key)
+                    };
+                    let color = |key: &str| -> Result<Option<[f32; 4]>, mlua::Error> {
+                        let Some(table) = options.get::<Option<mlua::Table>>(key)? else {
+                            return Ok(None);
+                        };
+                        Ok(Some([
+                            table.get::<Option<f32>>("r")?.unwrap_or(1.0),
+                            table.get::<Option<f32>>("g")?.unwrap_or(1.0),
+                            table.get::<Option<f32>>("b")?.unwrap_or(1.0),
+                            table.get::<Option<f32>>("a")?.unwrap_or(1.0),
+                        ]))
+                    };
+                    if let Some(value) = number("speed")? {
+                        emitter.speed = value;
+                    }
+                    if let Some(value) = number("life")? {
+                        emitter.life = value;
+                    }
+                    if let Some(value) = number("size")? {
+                        emitter.size_start = value;
+                        emitter.size_end = value;
+                    }
+                    if let Some(value) = number("size_end")? {
+                        emitter.size_end = value;
+                    }
+                    if let Some(value) = color("color")? {
+                        emitter.color_start = value;
+                        emitter.color_end = value;
+                    }
+                    if let Some(value) = color("color_end")? {
+                        emitter.color_end = value;
+                    }
+                    emitter.gravity = Vec2::new(
+                        number("gravity_x")?.unwrap_or(0.0),
+                        number("gravity_y")?.unwrap_or(0.0),
+                    );
+                    if let Some(value) = number("drag")? {
+                        emitter.drag = value;
+                    }
+                    if let Some(value) = number("rotation")? {
+                        emitter.rotation = value;
+                    }
+                    if let Some(value) = number("rotation_speed")? {
+                        emitter.rotation_speed = value;
+                    }
+                }
+                emitter.validate().map_err(api_error)?;
+                s.borrow_mut()
+                    .particles
+                    .burst_with(Vec2::new(x, y), &emitter);
+                Ok(())
+            },
+        )?,
+    )?;
+    let s = Rc::clone(&state);
+    particles.set(
+        "count",
+        lua.create_function(move |_, ()| Ok(s.borrow().particles.len() as u32))?,
+    )?;
     lua.globals().set("particles", particles)?;
-
     let audio = lua.create_table()?;
     let s = Rc::clone(&state);
     audio.set(
@@ -6332,7 +6996,495 @@ mod tests {
         let _ = fs::remove_file(second);
         let _ = fs::remove_file(third);
     }
+    #[test]
+    fn runtime_spawned_entity_can_attach_world_text() {
+        // 与 animation.attach 同理：`entity.spawn` 只插 Transform，运行期创建的实体
+        // （伤害数字、名牌）否则无法带世界文字。
+        let first = script(
+            "function on_create()\n\
+             local id = entity.spawn('Label', 'wt_probe')\n\
+             assert(world_text.attach(id, 'text=HP;font_size=18;color=1,1,1;offset=0,-24'))\n\
+             return 'ok' end\n\
+             function update() return 'ok' end",
+        );
+        let mut runtime = LuaRuntime::new().unwrap();
+        runtime.execute_project_script(&first).unwrap();
+        assert_eq!(runtime.call_update().unwrap(), "ok");
+        let texts =
+            runtime.with_world(|world| world.entities_with::<crate::core::world_text::WorldText>());
+        assert_eq!(texts.len(), 1);
+        let attached = runtime
+            .with_world(|world| {
+                world
+                    .get::<crate::core::world_text::WorldText>(texts[0])
+                    .unwrap()
+                    .cloned()
+            })
+            .expect("world text component");
+        assert_eq!(attached.text.text, "HP");
+        assert_eq!(attached.offset, [0.0, -24.0]);
+        assert!(!attached.centered);
+        // 非法串、失效实体与重复 detach 都必须有确定行为。
+        let second = script(
+            "function update()\n\
+             local id = entity.find_id('wt_probe')\n\
+             local bad = pcall(world_text.attach, id, 'text=x;centered=maybe')\n\
+             assert(not bad, 'malformed component must be rejected')\n\
+             local gone = pcall(world_text.attach, 999999, 'text=x;font_size=12')\n\
+             assert(not gone, 'dead entity must be rejected')\n\
+             assert(world_text.detach(id), 'first detach removes the component')\n\
+             assert(not world_text.detach(id), 'second detach is a no-op')\n\
+             return 'guarded' end",
+        );
+        runtime.execute_project_script(&second).unwrap();
+        assert_eq!(runtime.call_update().unwrap(), "guarded");
+        let _ = fs::remove_file(first);
+        let _ = fs::remove_file(second);
+    }
+    /// 构造一个同时带 2D 与 3D 实体的场景，供统一 `transform` 测试复用。
+    fn unified_transform_scene() -> crate::core::scene::Scene {
+        use crate::core::scene::{Scene, SceneEntityId};
+        let mut scene = Scene::new("unified-transform-probe");
+        scene.add_entity(SceneEntityId(1), "Flat", None).unwrap();
+        scene
+            .entities
+            .get_mut(&SceneEntityId(1))
+            .unwrap()
+            .components
+            .insert(
+                "Transform".into(),
+                "x=0;y=0;rotation=0;scale_x=1;scale_y=1".into(),
+            );
+        scene.add_entity(SceneEntityId(2), "Solid", None).unwrap();
+        scene
+            .entities
+            .get_mut(&SceneEntityId(2))
+            .unwrap()
+            .components
+            .insert(
+                "Transform3D".into(),
+                "position=1,2,3;rotation=0,0,0,1;scale=1,1,1".into(),
+            );
+        scene.add_entity(SceneEntityId(3), "Bare", None).unwrap();
+        scene
+    }
+    /// WP9 统一 `transform` API：同一组函数按实体**实际拥有**的组件分派到 2D / 3D。
+    ///
+    /// 刻意锁住的语义：① 2D 实体的取值一字不变（`space` 只是新增字段）；② 3D 下 `set` 只改
+    /// XY、Z 保留；③ `attach` 不覆盖已有组件，且新建组件时把另一侧的 XY 带过来。
+    #[test]
+    fn lua_transform_api_dispatches_between_2d_and_3d() {
+        let mut runtime = LuaRuntime::new().unwrap();
+        assert_eq!(
+            runtime
+                .instantiate_scene(&unified_transform_scene())
+                .unwrap(),
+            3
+        );
+        let path = script(
+            "function update()\n\
+             local flat = entity.find('Flat')\n\
+             assert(transform.space(flat) == '2d')\n\
+             transform.set(flat, 2, 3, 0.5, 2, 4)\n\
+             local p = transform.get(flat)\n\
+             assert(p.space == '2d' and p.x == 2 and p.y == 3 and p.rotation == 0.5)\n\
+             assert(p.scale_x == 2 and p.scale_y == 4)\n\
+             assert(p.z == nil, '2d 结果不带 z')\n\
+             assert(transform.attach(flat, '2d') == false, '已有 2d 组件时不覆盖')\n\
+             local solid = entity.find('Solid')\n\
+             assert(transform.space(solid) == '3d')\n\
+             transform.set(solid, 10, 20)\n\
+             transform.move(solid, 5, -2)\n\
+             local q = transform.get(solid)\n\
+             assert(q.space == '3d' and q.x == 15 and q.y == 18)\n\
+             assert(q.z == 3, 'set 只改 XY，Z 必须保留')\n\
+             assert(q.rw == 1 and q.scale_z == 1)\n\
+             local bare = entity.find('Bare')\n\
+             assert(transform.space(bare) == nil, '没有任何变换时为 nil')\n\
+             assert(transform.attach(bare, '2d') == true)\n\
+             assert(transform.attach(bare, '3d') == true)\n\
+             return 'unified' end",
+        );
+        runtime.execute_project_script(&path).unwrap();
+        assert_eq!(runtime.call_update().unwrap(), "unified");
+        let _ = fs::remove_file(path);
+        // `attach(flat,'3d')` 必须把 2D 的 XY 带过去，而不是留一个原点上的新组件。
+        let flat = runtime.with_world(|world| world.entities_with::<Transform>());
+        let flat = flat[0];
+        assert_eq!(
+            runtime.with_world(|world| {
+                world
+                    .get::<crate::core::transform::Transform3D>(flat)
+                    .unwrap()
+                    .map(|value| (value.position.x, value.position.y))
+            }),
+            None,
+            "attach 只在调用时才建组件"
+        );
+        let bridge = script(
+            "function update()\n\
+             local flat = entity.find('Flat')\n\
+             assert(transform.attach(flat, '3d') == true)\n\
+             return 'bridged' end",
+        );
+        runtime.execute_project_script(&bridge).unwrap();
+        assert_eq!(runtime.call_update().unwrap(), "bridged");
+        let bridged = runtime
+            .with_world(|world| {
+                world
+                    .get::<crate::core::transform::Transform3D>(flat)
+                    .unwrap()
+                    .cloned()
+            })
+            .unwrap();
+        assert_eq!((bridged.position.x, bridged.position.y), (2.0, 3.0));
+        let _ = fs::remove_file(bridge);
+    }
+    /// 统一 API 的模糊之处必须报错而不是猜：3D 下喂标量 rotation、未知 space 名。
+    /// `transform.attach` 必须走统一的**提升/压平**实现，而不是只手抄一个 XY：
+    /// 手抄会把旋转与缩放悄悄丢掉；压不平的 3D 变换必须**报错而不是丢数据**。
+    #[test]
+    fn lua_transform_attach_preserves_rotation_and_refuses_lossy_flatten() {
+        let mut runtime = LuaRuntime::new().unwrap();
+        // 场景里 Flat 只有 2D、Solid 只有 3D（position=1,2,3 ⇒ z = 3，**非平面**）、Bare 两者皆无。
+        assert_eq!(
+            runtime
+                .instantiate_scene(&unified_transform_scene())
+                .unwrap(),
+            3
+        );
+        let path = script(
+            "function update()\n\
+             -- ① 2D 实体（带旋转与缩放）提升为 3D：两者都要保留成绕 Z 旋转与 XY 缩放\n\
+             local flat = entity.find('Flat')\n\
+             transform.set(flat, 3, 4, 0.5, 2, 4)\n\
+             assert(transform.attach(flat, '3d') == true)\n\
+             local lifted = transform3d.get(flat)\n\
+             assert(math.abs(lifted.x - 3) < 1e-4 and math.abs(lifted.y - 4) < 1e-4)\n\
+             assert(math.abs(lifted.z) < 1e-4)\n\
+             assert(math.abs(lifted.rz - math.sin(0.25)) < 1e-4, 'rotation must survive lifting')\n\
+             assert(math.abs(lifted.rw - math.cos(0.25)) < 1e-4)\n\
+             assert(math.abs(lifted.sx - 2) < 1e-4 and math.abs(lifted.sy - 4) < 1e-4)\n\
+             -- ② 非平面 3D 实体（z = 3）压平必须被拒绝，且不得留下半成品组件\n\
+             local solid = entity.find('Solid')\n\
+             local refused = pcall(transform.attach, solid, '2d')\n\
+             assert(not refused, 'non-planar flatten must be refused')\n\
+             assert(transform.space(solid) == '3d', 'refused attach must not insert a 2d component')\n\
+             -- ③ 把它改成平面（z = 0、绕 Z 旋转、z 缩放 = 1）后压平：旋转与缩放都要保留\n\
+             transform3d.set(solid, 10, 20, 0, 0, 0, math.sin(0.3), math.cos(0.3), 3, 5, 1)\n\
+             assert(transform.attach(solid, '2d') == true)\n\
+             local flattened = transform.get(solid)\n\
+             assert(math.abs(flattened.x - 10) < 1e-4 and math.abs(flattened.y - 20) < 1e-4)\n\
+             assert(math.abs(flattened.rotation - 0.6) < 1e-3, 'rotation must survive flattening')\n\
+             assert(math.abs(flattened.scale_x - 3) < 1e-4 and math.abs(flattened.scale_y - 5) < 1e-4)\n\
+             return 'ok' end",
+        );
+        runtime.execute_project_script(&path).unwrap();
+        assert_eq!(runtime.call_update().unwrap(), "ok");
+        let _ = fs::remove_file(path);
+    }
+    #[test]
+    fn lua_transform_api_refuses_ambiguous_rotation_and_unknown_space() {
+        let mut runtime = LuaRuntime::new().unwrap();
+        assert_eq!(
+            runtime
+                .instantiate_scene(&unified_transform_scene())
+                .unwrap(),
+            3
+        );
+        let path = script(
+            "function update()\n\
+             local solid = entity.find('Solid')\n\
+             local bad = pcall(transform.set, solid, 99, 99, 0.5)\n\
+             assert(not bad, '3d 标量 rotation 必须被拒绝')\n\
+             local after = transform.get(solid)\n\
+             assert(after.x == 1 and after.y == 2 and after.z == 3, '被拒绝的调用不得留下半写状态')\n\
+             local bad_space = pcall(transform.attach, solid, '4d')\n\
+             assert(not bad_space, '未知 space 必须被拒绝')\n\
+             local bare = entity.find('Bare')\n\
+             local missing = pcall(transform.get, bare)\n\
+             assert(not missing, '没有变换的实体 get 必须报错')\n\
+             local missing_set = pcall(transform.set, bare, 1, 1)\n\
+             assert(not missing_set, '没有变换的实体 set 必须报错')\n\
+             return 'guarded' end",
+        );
+        runtime.execute_project_script(&path).unwrap();
+        assert_eq!(runtime.call_update().unwrap(), "guarded");
+        let _ = fs::remove_file(path);
+    }
+    /// WP7 ②：`physics.debug_draw` 只登记请求、由宿主消费，且请求取走即清空
+    /// （与 camera2d 的 pending 语义一致——否则开关会在之后每一帧被重复应用）。
+    #[test]
+    fn lua_physics_debug_draw_registers_and_consumes_a_request() {
+        let mut runtime = LuaRuntime::new().unwrap();
+        assert_eq!(
+            runtime.take_collider_debug_request(),
+            None,
+            "默认没有待消费请求"
+        );
+        let path = script(
+            "function update()\n\
+             assert(physics.debug_draw(true) == true)\n\
+             return 'on' end",
+        );
+        runtime.execute_project_script(&path).unwrap();
+        assert_eq!(runtime.call_update().unwrap(), "on");
+        assert_eq!(runtime.take_collider_debug_request(), Some(true));
+        assert_eq!(runtime.take_collider_debug_request(), None, "取走即清空");
+        // 场景里的 `Collider` 能变成调试绘制用的形状（读物理世界的当前姿态）。
+        let mut scene = crate::core::scene::Scene::new("collider-debug-probe");
+        scene
+            .add_entity(crate::core::scene::SceneEntityId(1), "Wall", None)
+            .unwrap();
+        scene
+            .entities
+            .get_mut(&crate::core::scene::SceneEntityId(1))
+            .unwrap()
+            .components
+            .insert(
+                "Transform".into(),
+                "x=32;y=48;rotation=0;scale_x=1;scale_y=1".into(),
+            );
+        scene
+            .entities
+            .get_mut(&crate::core::scene::SceneEntityId(1))
+            .unwrap()
+            .components
+            .insert(
+                "Collider".into(),
+                "shape=cuboid;half_width=16;half_height=8;sensor=true".into(),
+            );
+        let mut runtime = LuaRuntime::new().unwrap();
+        assert_eq!(runtime.instantiate_scene(&scene).unwrap(), 1);
+        let shapes = runtime.collider_debug_shapes();
+        assert_eq!(shapes.len(), 1, "每个碰撞体一个调试形状");
+        assert_eq!(
+            shapes[0].shape,
+            crate::core::physics::ColliderShape::Cuboid(Vec2::new(16.0, 8.0))
+        );
+        assert!(shapes[0].sensor, "sensor 要透出来，绘制时换色");
+        assert!((shapes[0].center.x - 32.0).abs() < 1e-4);
+        assert!((shapes[0].center.y - 48.0).abs() < 1e-4);
+        let _ = fs::remove_file(path);
+    }
+    /// WP2：Lua `transform.get` 读局部、`transform.world` 读**世界**（父链组合结果）。
+    /// 场景数据用迁移后的局部值表达，因此两者在开启继承后必然不同——这正是要区分的两件事。
+    #[test]
+    fn lua_transform_world_differs_from_local_under_inheritance() {
+        let mut scene = crate::core::scene::Scene::new("world-transform");
+        let parent = crate::core::scene::SceneEntityId(1);
+        let child = crate::core::scene::SceneEntityId(2);
+        scene.add_entity(parent, "Parent", None).unwrap();
+        scene.add_entity(child, "Child", Some(parent)).unwrap();
+        scene.entities.get_mut(&parent).unwrap().components.insert(
+            "Transform".into(),
+            "x=10;y=5;rotation=0;scale_x=2;scale_y=2".into(),
+        );
+        scene.entities.get_mut(&child).unwrap().components.insert(
+            "Transform".into(),
+            "x=-3.5;y=0;rotation=0;scale_x=1;scale_y=1".into(),
+        );
+        let mut runtime = LuaRuntime::new().unwrap();
+        runtime.instantiate_scene(&scene).unwrap();
+        // 宿主侧开启空间继承并传播一次（与 `RuntimeScene::set_spatial_inheritance` 同一条路径）。
+        runtime.with_world_mut(|world| {
+            crate::core::hierarchy::propagate_spatial(world, true);
+        });
+        let path = script(
+            "function update()\n\
+             local c = entity.find('Child')\n\
+             local local_t = transform.get(c)\n\
+             local world_t = transform.world(c)\n\
+             assert(local_t.space == '2d' and world_t.space == '2d')\n\
+             assert(math.abs(local_t.x + 3.5) < 1e-3, 'local x should stay -3.5: ' .. tostring(local_t.x))\n\
+             assert(math.abs(world_t.x - 3.0) < 1e-3, 'world x should be 3: ' .. tostring(world_t.x))\n\
+             assert(math.abs(world_t.y - 5.0) < 1e-3, 'world y should be 5: ' .. tostring(world_t.y))\n\
+             assert(math.abs(world_t.scale_x - 2.0) < 1e-3, 'parent scale applies')\n\
+             assert(not pcall(transform.world, 999999), 'unknown entity must error')\n\
+             return 'ok' end",
+        );
+        runtime.execute_project_script(&path).unwrap();
+        assert_eq!(runtime.call_update().unwrap(), "ok");
+        let _ = fs::remove_file(path);
+    }
+    /// WP7：场景里的 `Collider` 声明 `ccd=true` 会落到 Rapier 刚体上，Lua 侧可读写该开关
+    /// （`physics.get_ccd` 读的是物理世界的真实状态）。
+    #[test]
+    fn lua_physics_ccd_flag_reaches_the_rigid_body() {
+        let mut scene = crate::core::scene::Scene::new("ccd");
+        for (index, (name, collider)) in [
+            ("CcdBody", "shape=ball;radius=4;ccd=true"),
+            ("PlainBody", "shape=ball;radius=4"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let id = crate::core::scene::SceneEntityId(index as u64 + 1);
+            scene.add_entity(id, name, None).unwrap();
+            let entity = scene.entities.get_mut(&id).unwrap();
+            entity.components.insert(
+                "Transform".into(),
+                format!("x={};y=0;rotation=0;scale_x=1;scale_y=1", index * 100),
+            );
+            entity
+                .components
+                .insert("Collider".into(), collider.to_owned());
+        }
+        let mut runtime = LuaRuntime::new().unwrap();
+        assert_eq!(runtime.instantiate_scene(&scene).unwrap(), 2);
+        let path = script(
+            "function update()\n\
+             local a = entity.find('CcdBody')\n\
+             local b = entity.find('PlainBody')\n\
+             assert(physics.get_ccd(a) == true, 'scene ccd=true should reach the body')\n\
+             assert(physics.get_ccd(b) == false, 'default is off')\n\
+             physics.set_ccd(b, true)\n\
+             assert(physics.get_ccd(b) == true)\n\
+             physics.set_ccd(a, false)\n\
+             assert(physics.get_ccd(a) == false)\n\
+             assert(not pcall(physics.get_ccd, 999999), 'unknown entity must error')\n\
+             assert(not pcall(physics.set_ccd, 999999, true), 'unknown entity must error')\n\
+             return 'ok' end",
+        );
+        runtime.execute_project_script(&path).unwrap();
+        assert_eq!(runtime.call_update().unwrap(), "ok");
+        let _ = fs::remove_file(path);
+    }
+    /// WP4 ⑦：动画帧事件从宿主收集到 Lua 轮询的整条链路。
+    #[test]
+    fn lua_animation_events_drain_after_host_advances() {
+        let mut runtime = LuaRuntime::new().unwrap();
+        // 宿主侧推进一步动画后把事件交进来；Lua 侧取走即清空。
+        let id = runtime.with_world_mut(|world| world.spawn());
+        runtime.with_world_mut(|world| {
+            world
+                .insert(
+                    id,
+                    AnimationStateMachine::from_component_str(
+                        "default=attack;clip:attack:s.png:2:2:false:events=1:hit",
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+        });
+        let path = script(
+            "function update()\n\
+             local events = animation.events()\n\
+             assert(#events == 1, 'expected one frame event')\n\
+             assert(events[1].name == 'hit')\n\
+             assert(events[1].frame == 1)\n\
+             assert(animation.events()[1] == nil, 'drained on read')\n\
+             return 'ok' end",
+        );
+        runtime.execute_project_script(&path).unwrap();
+        // 模拟宿主的 `animation_state_advance`：推进并收集事件。
+        let fired = runtime.with_world_mut(|world| {
+            let mut fired = Vec::new();
+            world.for_each_mut::<AnimationStateMachine>(|entity, machine| {
+                machine.advance(0.6); // 2 fps -> 跨到帧 1
+                for event in machine.take_frame_events() {
+                    fired.push((entity, event));
+                }
+            });
+            fired
+        });
+        runtime.push_animation_events(fired);
+        assert_eq!(runtime.call_update().unwrap(), "ok");
+        let _ = fs::remove_file(path);
+    }
 
+    /// WP4 ⑧：屏幕↔世界换算必须和渲染走**同一份**投影，否则"点到哪"会与"看到哪"错位。
+    /// 这里断言三件事：视口中心 → 相机中心；往返一致；没渲染过就报错而不是猜。
+    #[test]
+    fn lua_camera_conversions_use_the_rendered_projection() {
+        let mut runtime = LuaRuntime::new().unwrap();
+        let camera = Camera2D::new(Vec2::new(100.0, 50.0), 2.0).unwrap();
+        runtime.set_camera_view(camera, [400.0, 300.0]);
+
+        let path = script(
+            "function update()\n\
+             local center = camera2d.screen_to_world(200, 150)\n\
+             assert(math.abs(center[1] - 100) < 0.001, 'viewport centre maps to camera centre x')\n\
+             assert(math.abs(center[2] - 50) < 0.001, 'viewport centre maps to camera centre y')\n\
+             local back = camera2d.world_to_screen(center[1], center[2])\n\
+             assert(math.abs(back[1] - 200) < 0.001 and math.abs(back[2] - 150) < 0.001)\n\
+             local corner = camera2d.screen_to_world(0, 0)\n\
+             assert(math.abs(corner[1] - 0) < 0.001 and math.abs(corner[2] - 125) < 0.001)\n\
+             return 'ok' end",
+        );
+        runtime.execute_project_script(&path).unwrap();
+        assert_eq!(runtime.call_update().unwrap(), "ok");
+
+        // 还没渲染过任何一帧：必须报错。
+        let cold = LuaRuntime::new().unwrap();
+        let mut cold = cold;
+        let cold_path = script(
+            "function update()\n\
+             local ok = pcall(camera2d.screen_to_world, 1, 1)\n\
+             assert(not ok, 'no rendered frame yet must be an error')\n\
+             return 'guarded' end",
+        );
+        cold.execute_project_script(&cold_path).unwrap();
+        assert_eq!(cold.call_update().unwrap(), "guarded");
+        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(cold_path);
+    }
+
+    #[test]
+    fn camera2d_lua_api_requests_and_validates() {
+        // 相机数据在宿主，Lua 侧只登记请求（set/set_zoom）与控制器配置（follow/shake）；
+        // 非法参数必须报错，不能悄悄写进去。
+        let first = script(
+            "function on_create()\n\
+             assert(camera2d.set(120, 80))\n\
+             assert(camera2d.set_zoom(2))\n\
+             assert(camera2d.follow(nil, {offset_x=0, offset_y=-16, dead_zone_x=8, dead_zone_y=8, smoothing=5}))\n\
+             assert(camera2d.shake(6, 0.2))\n\
+             return 'ok' end\n\
+             function update() return 'ok' end",
+        );
+        let mut runtime = LuaRuntime::new().unwrap();
+        runtime.execute_project_script(&first).unwrap();
+        assert_eq!(runtime.call_update().unwrap(), "ok");
+        runtime.camera2d_controller(|controller| {
+            assert_eq!(
+                controller.offset(),
+                crate::core::transform::Vec2::new(0.0, -16.0)
+            );
+            assert_eq!(
+                controller.dead_zone(),
+                crate::core::transform::Vec2::new(8.0, 8.0)
+            );
+            assert!((controller.smoothing() - 5.0).abs() < 1e-6);
+            assert!(controller.is_shaking());
+        });
+        assert_eq!(
+            runtime.camera2d_controller_mut(|controller| controller.take_pending_center()),
+            Some(crate::core::transform::Vec2::new(120.0, 80.0))
+        );
+        assert_eq!(
+            runtime.camera2d_controller_mut(|controller| controller.take_pending_zoom()),
+            Some(2.0)
+        );
+        // 取走一次即清空，避免宿主每帧重复应用同一次请求。
+        assert_eq!(
+            runtime.camera2d_controller_mut(|controller| controller.take_pending_center()),
+            None
+        );
+        let second = script(
+            "function update()\n\
+             assert(not pcall(camera2d.set, 0/0, 0), 'nan center')\n\
+             assert(not pcall(camera2d.set_zoom, 0), 'zoom must be > 0')\n\
+             assert(not pcall(camera2d.shake, 4, 0), 'duration must be > 0')\n\
+             assert(not pcall(camera2d.follow, nil, {dead_zone_x=-1}), 'dead zone >= 0')\n\
+             assert(not pcall(camera2d.follow, 999999), 'dead entity')\n\
+             return 'guarded' end",
+        );
+        runtime.execute_project_script(&second).unwrap();
+        assert_eq!(runtime.call_update().unwrap(), "guarded");
+        let _ = fs::remove_file(first);
+        let _ = fs::remove_file(second);
+    }
     #[test]
     fn physics_blocks_player_on_tilemap_wall_and_emits_events() {
         use crate::core::scene::{Scene, SceneEntityId};
@@ -6409,6 +7561,45 @@ mod tests {
         let _ = fs::remove_file(events);
     }
 
+    /// WP7：3D 场景的 `Collider3d` 声明 `ccd=true` 同样落到刚体上，Lua `physics3d` 侧可读写。
+    #[test]
+    fn lua_physics3d_ccd_flag_reaches_the_rigid_body() {
+        let mut scene = crate::core::scene::Scene::new("ccd3d");
+        for (index, (name, collider)) in [
+            ("Fast", "shape=ball;radius=0.2;ccd=true"),
+            ("Slow", "shape=ball;radius=0.2"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let id = crate::core::scene::SceneEntityId(index as u64 + 1);
+            scene.add_entity(id, name, None).unwrap();
+            let entity = scene.entities.get_mut(&id).unwrap();
+            entity.components.insert(
+                "Transform3D".into(),
+                format!("position={},0,0;rotation=0,0,0,1;scale=1,1,1", index * 10),
+            );
+            entity
+                .components
+                .insert("Collider3d".into(), collider.to_owned());
+        }
+        let mut runtime = LuaRuntime::new().unwrap();
+        assert_eq!(runtime.instantiate_scene(&scene).unwrap(), 2);
+        let path = script(
+            "function update()\n\
+             local a = entity.find('Fast')\n\
+             local b = entity.find('Slow')\n\
+             assert(physics3d.get_ccd(a) == true, 'scene ccd=true should reach the 3D body')\n\
+             assert(physics3d.get_ccd(b) == false, 'default is off')\n\
+             physics3d.set_ccd(b, true)\n\
+             assert(physics3d.get_ccd(b) == true)\n\
+             assert(not pcall(physics3d.get_ccd, 999999), 'unknown entity must error')\n\
+             return 'ok' end",
+        );
+        runtime.execute_project_script(&path).unwrap();
+        assert_eq!(runtime.call_update().unwrap(), "ok");
+        let _ = fs::remove_file(path);
+    }
     #[test]
     fn physics3d_body_falls_onto_static_ground_and_syncs_transform3d() {
         use crate::core::scene::{Scene, SceneEntityId};
@@ -6462,6 +7653,7 @@ mod tests {
         runtime.call_update().unwrap();
         for _ in 0..180 {
             runtime.step_physics3d(1.0 / 60.0);
+            runtime.writeback_physics3d();
         }
 
         let positions: Vec<_> = runtime.with_world(|world| {
@@ -6522,7 +7714,54 @@ mod tests {
         assert_eq!(bar.ratio, 0.5);
         let _ = fs::remove_file(path);
     }
-
+    #[test]
+    fn particles_burst_options_control_look_and_validate() {
+        // 此前速度/寿命/颜色写死在引擎里，Lua 无法区分尘土、水花、落叶。
+        let mut runtime = LuaRuntime::new().unwrap();
+        let path = script(
+            "particles.burst(1, 2, 4, {\n\
+             speed=20, life=2, size=8, size_end=0,\n\
+             color={r=0.2,g=0.4,b=1.0,a=0.8}, color_end={r=1,g=1,b=1,a=0},\n\
+             gravity_x=0, gravity_y=-60, drag=1.5, rotation=0.25, rotation_speed=3 })\n\
+             function update() return 'ok' end",
+        );
+        runtime.execute_project_script(&path).unwrap();
+        runtime.call_update().unwrap();
+        assert_eq!(runtime.with_particles(|particles| particles.len()), 4);
+        let (speed_max, size_start, gravity, color, rotation_speed, drag) =
+            runtime.with_particles(|particles| {
+                let particle = particles[0];
+                (
+                    particle.velocity.length(),
+                    particle.size_start,
+                    particle.gravity,
+                    particle.color_start,
+                    particle.rotation_speed,
+                    particle.drag,
+                )
+            });
+        // 初速在 25%–100% 之间：上界 20。
+        assert!(speed_max <= 20.0 + 1e-3, "speed={speed_max}");
+        // 尺寸抖动 [0.75,1.25] × 8。
+        assert!((6.0..=10.0).contains(&size_start), "size={size_start}");
+        assert_eq!(gravity, Vec2::new(0.0, -60.0));
+        assert_eq!(color, [0.2, 0.4, 1.0, 0.8]);
+        assert!((rotation_speed - 3.0).abs() < 1e-6);
+        assert!((drag - 1.5).abs() < 1e-6);
+        // 退化参数必须报错，且不生成粒子。
+        let bad = script(
+            "function update()\n\
+             assert(not pcall(particles.burst, 0, 0, 3, {life=0}), 'life must be > 0')\n\
+             assert(not pcall(particles.burst, 0, 0, 3, {drag=-1}), 'drag >= 0')\n\
+             assert(not pcall(particles.burst, 0/0, 0, 3), 'position must be finite')\n\
+             return 'guarded' end",
+        );
+        runtime.execute_project_script(&bad).unwrap();
+        assert_eq!(runtime.call_update().unwrap(), "guarded");
+        assert_eq!(runtime.with_particles(|particles| particles.len()), 4);
+        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(bad);
+    }
     #[test]
     fn ui_text_at_accepts_optional_scale_and_font_size() {
         let mut runtime = LuaRuntime::new().unwrap();
@@ -7689,11 +8928,9 @@ mod tests {
             "production scene should load player plus ten animated enemies"
         );
     }
-
     #[test]
     fn production_sample_can_save_and_return_to_menu() {
         use crate::core::{input::KeyCode, scene::Scene};
-
         let root = production_sample_root();
         if !root.join("scenes/menu.scene").is_file() {
             return;

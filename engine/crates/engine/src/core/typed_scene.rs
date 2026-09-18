@@ -1,17 +1,54 @@
-//! WP1 prototype: compile the human-readable v2 scene into typed runtime data.
+//! WP1 原型：在加载边界把可读的 v2 场景编译成类型化运行时数据。
 
 use std::{collections::BTreeMap, fmt};
 
 use crate::core::{
-    camera3d::Camera3D,
+    animation::AnimationStateMachine,
+    animation3d::Animation3dDescriptor,
+    camera::Camera3D,
     light::Light,
     mesh3d::MeshRenderer,
-    resource_db::AssetId,
+    physics::ColliderDesc,
+    physics3d::ColliderDesc3d,
+    resource_db::{AssetId, ResourceDatabase},
     scene::{Scene, SceneEntityId},
+    sprite::SpriteComponent,
+    tilemap::Tilemap,
     transform::Transform,
-    transform3d::Transform3D,
+    transform::Transform3D,
+    ui::{UiImage, UiText},
+    ui_events::UiEvents,
+    ui_layout::{ContainerStyle, UiRectLayout},
+    ui_states::ButtonStateSet,
+    world_text::WorldText,
 };
 
+/// 把组件里的资源路径解析成资源库身份。
+///
+/// 只返回库中**已有记录**的 ID；解析不到就必须返回 `None`。刻意不提供"按路径现编
+/// 一个 ID"的兜底：资源身份的唯一真源是资源库（它按 `path:importer_version` 播种，
+/// 见 `core/resource_db.rs` 的 `register`），另编一套会让调用方把"未解析"误当成
+/// 真实身份。
+pub trait AssetResolver {
+    fn asset_id(&self, source_path: &str) -> Option<AssetId>;
+}
+
+impl AssetResolver for ResourceDatabase {
+    fn asset_id(&self, source_path: &str) -> Option<AssetId> {
+        // 先按规范化路径精确命中；Windows 上引用大小写与磁盘不一致时退化为大小写
+        // 不敏感查找（与 core/dependency.rs 的解析口径一致）。
+        if let Ok(Some(record)) = self.find_by_path(source_path) {
+            return Some(record.id);
+        }
+        self.find_by_path_ci(source_path)
+    }
+}
+
+/// 场景组件名对应的类型化键。
+///
+/// 2D/3D 变体刻意分开：同一场景里 `Transform` 与 `Transform3D`、`Collider` 与
+/// `Collider3d` 是**两套**独立真源，合并会让"哪个是权威"变成隐式推断（docs/40
+/// §5 禁止把两个组件当成一个兼容槽）。
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum ComponentId {
     Transform2D,
@@ -19,6 +56,19 @@ pub enum ComponentId {
     Camera3D,
     Light,
     MeshRenderer,
+    UiLayout,
+    Container,
+    Text,
+    Image,
+    UiEvents,
+    ButtonStates,
+    WorldText,
+    Sprite,
+    Tilemap,
+    Collider,
+    Collider3d,
+    Animation,
+    Animation3d,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -29,8 +79,22 @@ pub enum TypedComponent {
     Light(Light),
     MeshRenderer {
         renderer: MeshRenderer,
-        asset: AssetId,
+        /// `None` = 未解析（没有资源库或库里没有这条记录）。不要用编造的 ID 顶替。
+        asset: Option<AssetId>,
     },
+    UiLayout(UiRectLayout),
+    Container(ContainerStyle),
+    Text(UiText),
+    Image(UiImage),
+    UiEvents(UiEvents),
+    ButtonStates(ButtonStateSet),
+    WorldText(WorldText),
+    Sprite(SpriteComponent),
+    Tilemap(Tilemap),
+    Collider(ColliderDesc),
+    Collider3d(ColliderDesc3d),
+    Animation(AnimationStateMachine),
+    Animation3d(Animation3dDescriptor),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -69,111 +133,133 @@ impl fmt::Display for TypedSceneDiagnostic {
 
 impl std::error::Error for TypedSceneDiagnostic {}
 
+/// 编译一条 v2 组件记录。
+///
+/// 返回 `None` 表示组件名不在已知集合内——未知、平台自定义与 Lua 动态组件都留在
+/// 源场景里，这里刻意不解释，避免把它们静默当成已知组件。`Some(Err)` 是已知组件
+/// 但内容非法，必须按实体/组件上报诊断而不是跳过。
+///
+/// 覆盖面按**真实源场景用量**排序（26 个源场景普查，2026-09-17）：Transform 24、
+/// UiLayout 23、Text 23、Sprite 15、Tilemap 12、Collider 11、Animation 10、
+/// UiEvents/Image 各 6、Light/Camera3D/Transform3D/MeshRenderer 各 3、
+/// Collider3d/Animation3D 各 2、ButtonStates/Container 各 1。
+fn compile_component(
+    name: &str,
+    value: &str,
+    assets: Option<&dyn AssetResolver>,
+) -> Option<Result<(ComponentId, TypedComponent), String>> {
+    let parsed = match name {
+        "Transform" => Transform::from_component_str(value)
+            .map(|component| {
+                (
+                    ComponentId::Transform2D,
+                    TypedComponent::Transform2D(component),
+                )
+            })
+            .map_err(|error| error.to_string()),
+        "Transform3D" => Transform3D::from_component_str(value)
+            .map(|component| {
+                (
+                    ComponentId::Transform3D,
+                    TypedComponent::Transform3D(component),
+                )
+            })
+            .map_err(|error| error.to_string()),
+        "Camera3D" => Camera3D::from_component_str(value)
+            .map(|component| (ComponentId::Camera3D, TypedComponent::Camera3D(component)))
+            .map_err(|error| error.to_string()),
+        "Light" => Light::from_component_str(value)
+            .map(|component| (ComponentId::Light, TypedComponent::Light(component)))
+            .map_err(|error| error.to_string()),
+        "MeshRenderer" => MeshRenderer::from_component_str(value)
+            .map(|renderer| {
+                // 资源身份一律问资源库。库里没有该路径时保持 `None`：`mesh` 也可能是
+                // 引擎内置哨兵（如地面平面），不是每个值都有资源记录。断链的可见性由
+                // 资源库自己的依赖图与校验负责，这里不重复报诊断。
+                let asset = assets.and_then(|resolver| resolver.asset_id(&renderer.mesh));
+                (
+                    ComponentId::MeshRenderer,
+                    TypedComponent::MeshRenderer { renderer, asset },
+                )
+            })
+            .map_err(|error| error.to_string()),
+        "UiLayout" => UiRectLayout::from_component_str(value)
+            .map(|component| (ComponentId::UiLayout, TypedComponent::UiLayout(component))),
+        "Container" => ContainerStyle::from_component_str(value)
+            .map(|component| (ComponentId::Container, TypedComponent::Container(component))),
+        "Text" => UiText::from_component_str(value)
+            .map(|component| (ComponentId::Text, TypedComponent::Text(component)))
+            .map_err(|error| error.to_string()),
+        "Image" => UiImage::from_component_str(value)
+            .map(|component| (ComponentId::Image, TypedComponent::Image(component)))
+            .map_err(|error| error.to_string()),
+        "UiEvents" => UiEvents::parse(value)
+            .map(|component| (ComponentId::UiEvents, TypedComponent::UiEvents(component)))
+            .map_err(|error| error.to_string()),
+        "ButtonStates" => ButtonStateSet::from_component_str(value).map(|component| {
+            (
+                ComponentId::ButtonStates,
+                TypedComponent::ButtonStates(component),
+            )
+        }),
+        // WP4：世界空间文字（锚在世界位置）。
+        "WorldText" => WorldText::from_component_str(value)
+            .map(|component| (ComponentId::WorldText, TypedComponent::WorldText(component)))
+            .map_err(|error| error.to_string()),
+        "Sprite" => SpriteComponent::from_component_str(value)
+            .map(|component| (ComponentId::Sprite, TypedComponent::Sprite(component)))
+            .map_err(|error| error.to_string()),
+        "Tilemap" => Tilemap::from_component_str(value)
+            .map(|component| (ComponentId::Tilemap, TypedComponent::Tilemap(component)))
+            .map_err(|error| error.to_string()),
+        "Collider" => ColliderDesc::from_component_str(value)
+            .map(|component| (ComponentId::Collider, TypedComponent::Collider(component)))
+            .map_err(|error| error.to_string()),
+        "Collider3d" => ColliderDesc3d::from_component_str(value)
+            .map(|component| {
+                (
+                    ComponentId::Collider3d,
+                    TypedComponent::Collider3d(component),
+                )
+            })
+            .map_err(|error| error.to_string()),
+        "Animation" => AnimationStateMachine::from_component_str(value)
+            .map(|component| (ComponentId::Animation, TypedComponent::Animation(component)))
+            .map_err(|error| error.to_string()),
+        "Animation3D" => Animation3dDescriptor::from_component_str(value)
+            .map(|component| {
+                (
+                    ComponentId::Animation3d,
+                    TypedComponent::Animation3d(component),
+                )
+            })
+            .map_err(|error| error.to_string()),
+        _ => return None,
+    };
+    Some(parsed)
+}
+
 impl TypedScene {
-    /// Compiles known v2 components once at the load boundary. Unknown/dynamic
-    /// components stay in the source scene and are deliberately not interpreted.
+    /// 无资源库的编译：`MeshRenderer` 的资源身份保持未解析。
     pub fn compile_v2(scene: &Scene) -> Result<Self, Vec<TypedSceneDiagnostic>> {
-        let mut diagnostics = Vec::new();
-        let mut entities = Vec::with_capacity(scene.entities.len());
-        for source in scene.entities.values() {
-            let mut components = BTreeMap::new();
-            for (name, value) in &source.components {
-                let parsed = match name.as_str() {
-                    "Transform" => Transform::from_component_str(value)
-                        .map(TypedComponent::Transform2D)
-                        .map(|value| (ComponentId::Transform2D, value))
-                        .map_err(|error| error.to_string()),
-                    "Transform3D" => Transform3D::from_component_str(value)
-                        .map(TypedComponent::Transform3D)
-                        .map(|value| (ComponentId::Transform3D, value))
-                        .map_err(|error| error.to_string()),
-                    "Camera3D" => Camera3D::from_component_str(value)
-                        .map(TypedComponent::Camera3D)
-                        .map(|value| (ComponentId::Camera3D, value))
-                        .map_err(|error| error.to_string()),
-                    "Light" => Light::from_component_str(value)
-                        .map(TypedComponent::Light)
-                        .map(|value| (ComponentId::Light, value))
-                        .map_err(|error| error.to_string()),
-                    "MeshRenderer" => MeshRenderer::from_component_str(value)
-                        .map(|renderer| {
-                            let asset = AssetId::from_seed(&renderer.mesh);
-                            (
-                                ComponentId::MeshRenderer,
-                                TypedComponent::MeshRenderer { renderer, asset },
-                            )
-                        })
-                        .map_err(|error| error.to_string()),
-                    _ => continue,
-                };
-                match parsed {
-                    Ok((id, component)) => {
-                        components.insert(id, component);
-                    }
-                    Err(message) => diagnostics.push(TypedSceneDiagnostic {
-                        entity: source.id,
-                        name: source.name.clone(),
-                        component: name.clone(),
-                        message,
-                    }),
-                }
-            }
-            entities.push(TypedEntity {
-                id: source.id,
-                name: source.name.clone(),
-                parent: source.parent,
-                components,
-            });
-        }
+        Self::compile_v2_with_assets(scene, None)
+    }
+
+    /// 在加载边界一次性编译已知的 v2 组件。未知/动态组件仍留在源场景里，
+    /// 这里刻意不解释它们——否则 Lua 自定义组件会被静默当成已知组件。
+    ///
+    /// 传入资源库时按真实身份解析资源引用；不传则资源字段为 `None`（未解析）。
+    pub fn compile_v2_with_assets(
+        scene: &Scene,
+        assets: Option<&dyn AssetResolver>,
+    ) -> Result<Self, Vec<TypedSceneDiagnostic>> {
+        let (entities, mut diagnostics) = compile_entities(scene, assets);
         if !diagnostics.is_empty() {
             return Err(diagnostics);
         }
-        let mut parent_first = Vec::with_capacity(entities.len());
-        let by_id = entities
-            .iter()
-            .map(|entity| (entity.id, entity))
-            .collect::<BTreeMap<_, _>>();
-        let mut states = BTreeMap::new();
-        fn visit(
-            id: SceneEntityId,
-            by_id: &BTreeMap<SceneEntityId, &TypedEntity>,
-            states: &mut BTreeMap<SceneEntityId, u8>,
-            order: &mut Vec<SceneEntityId>,
-        ) -> Result<(), TypedSceneDiagnostic> {
-            match states.get(&id).copied() {
-                Some(2) => return Ok(()),
-                Some(1) => {
-                    let entity = by_id[&id];
-                    return Err(TypedSceneDiagnostic {
-                        entity: id,
-                        name: entity.name.clone(),
-                        component: "parent".to_owned(),
-                        message: "parent cycle".to_owned(),
-                    });
-                }
-                _ => {}
-            }
-            states.insert(id, 1);
-            let entity = by_id[&id];
-            if let Some(parent) = entity.parent {
-                if !by_id.contains_key(&parent) {
-                    return Err(TypedSceneDiagnostic {
-                        entity: id,
-                        name: entity.name.clone(),
-                        component: "parent".to_owned(),
-                        message: format!("missing parent {}", parent.0),
-                    });
-                }
-                visit(parent, by_id, states, order)?;
-            }
-            states.insert(id, 2);
-            order.push(id);
-            Ok(())
-        }
-        for id in by_id.keys().copied() {
-            if let Err(error) = visit(id, &by_id, &mut states, &mut parent_first) {
-                return Err(vec![error]);
-            }
+        let parent_first = parent_first_order(&entities, &mut diagnostics);
+        if !diagnostics.is_empty() {
+            return Err(diagnostics);
         }
         Ok(Self {
             source_version: scene.version,
@@ -182,11 +268,224 @@ impl TypedScene {
             parent_first,
         })
     }
+
+    /// 宽容编译：非法组件被丢弃并记为诊断，父链错误只记录不中断。
+    ///
+    /// 与 `compile_v2` 的全有或全无并存：编辑器场景视图需要"坏一个组件不至于整屏
+    /// 空白"，关卡装载则需要 fail-fast。
+    pub fn compile_v2_lenient(scene: &Scene) -> (Self, Vec<TypedSceneDiagnostic>) {
+        let (entities, mut diagnostics) = compile_entities(scene, None);
+        let parent_first = parent_first_order(&entities, &mut diagnostics);
+        (
+            Self {
+                source_version: scene.version,
+                name: scene.name.clone(),
+                entities,
+                parent_first,
+            },
+            diagnostics,
+        )
+    }
+}
+
+/// 逐实体编译组件：未知组件跳过，非法组件记诊断但不中断。
+fn compile_entities(
+    scene: &Scene,
+    assets: Option<&dyn AssetResolver>,
+) -> (Vec<TypedEntity>, Vec<TypedSceneDiagnostic>) {
+    let mut diagnostics = Vec::new();
+    let mut entities = Vec::with_capacity(scene.entities.len());
+    for source in scene.entities.values() {
+        let mut components = BTreeMap::new();
+        for (name, value) in &source.components {
+            let Some(parsed) = compile_component(name, value, assets) else {
+                continue;
+            };
+            match parsed {
+                Ok((id, component)) => {
+                    components.insert(id, component);
+                }
+                Err(message) => diagnostics.push(TypedSceneDiagnostic {
+                    entity: source.id,
+                    name: source.name.clone(),
+                    component: name.clone(),
+                    message,
+                }),
+            }
+        }
+        entities.push(TypedEntity {
+            id: source.id,
+            name: source.name.clone(),
+            parent: source.parent,
+            components,
+        });
+    }
+    (entities, diagnostics)
+}
+
+/// 父先序实体顺序。父链错误记入诊断并跳过出错实体，其余实体继续入序——宽容模式
+/// 需要一个可用的（可能不完整的）顺序，而严格模式在这之后按诊断非空直接失败。
+///
+/// 出错实体在回退时标记为"已完成"，避免同一处错误被外层循环重复上报。
+fn parent_first_order(
+    entities: &[TypedEntity],
+    diagnostics: &mut Vec<TypedSceneDiagnostic>,
+) -> Vec<SceneEntityId> {
+    let mut order = Vec::with_capacity(entities.len());
+    let by_id = entities
+        .iter()
+        .map(|entity| (entity.id, entity))
+        .collect::<BTreeMap<_, _>>();
+    let mut states = BTreeMap::new();
+    fn visit(
+        id: SceneEntityId,
+        by_id: &BTreeMap<SceneEntityId, &TypedEntity>,
+        states: &mut BTreeMap<SceneEntityId, u8>,
+        order: &mut Vec<SceneEntityId>,
+        diagnostics: &mut Vec<TypedSceneDiagnostic>,
+    ) -> Result<(), ()> {
+        match states.get(&id).copied() {
+            Some(2) => return Ok(()),
+            Some(1) => {
+                let entity = by_id[&id];
+                diagnostics.push(TypedSceneDiagnostic {
+                    entity: id,
+                    name: entity.name.clone(),
+                    component: "parent".to_owned(),
+                    message: "parent cycle".to_owned(),
+                });
+                return Err(());
+            }
+            _ => {}
+        }
+        states.insert(id, 1);
+        let entity = by_id[&id];
+        if let Some(parent) = entity.parent {
+            if !by_id.contains_key(&parent) {
+                diagnostics.push(TypedSceneDiagnostic {
+                    entity: id,
+                    name: entity.name.clone(),
+                    component: "parent".to_owned(),
+                    message: format!("missing parent {}", parent.0),
+                });
+                states.insert(id, 2);
+                return Err(());
+            }
+            if visit(parent, by_id, states, order, diagnostics).is_err() {
+                states.insert(id, 2);
+                return Err(());
+            }
+        }
+        states.insert(id, 2);
+        order.push(id);
+        Ok(())
+    }
+    for id in by_id.keys().copied() {
+        // 单个实体的父链错误不阻断其余实体；错误已记入诊断。
+        let _ = visit(id, &by_id, &mut states, &mut order, diagnostics);
+    }
+    order
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::{
+        math3d::Mat4, resource_db::ResourceDatabase, resource_kind::ResourceKind,
+        scene_extract::extract_serialized_scene_3d,
+    };
+
+    const MESH: &str = "mesh=assets/models/cube.glb";
+
+    fn scene_with(id: SceneEntityId, name: &str, components: &[(&str, &str)]) -> Scene {
+        let mut scene = Scene::new("typed");
+        scene.add_entity(id, name, None).unwrap();
+        let entity = scene.entities.get_mut(&id).unwrap();
+        for (key, value) in components {
+            entity
+                .components
+                .insert((*key).to_owned(), (*value).to_owned());
+        }
+        scene
+    }
+
+    /// 每个真实源场景出现过的组件名各取一个合法样例；这张表同时锁定"名字 →
+    /// ComponentId"的映射，改名或漏接会在编译期或断言处暴露。
+    const SOURCE_SCENE_COMPONENTS: &[(&str, &str, ComponentId)] = &[
+        (
+            "Transform",
+            "x=1;y=2;rotation=0;scale_x=1;scale_y=1",
+            ComponentId::Transform2D,
+        ),
+        (
+            "Transform3D",
+            "position=1,2,3;rotation=0,0,0,1;scale=1,1,1",
+            ComponentId::Transform3D,
+        ),
+        (
+            "Camera3D",
+            "position=0,0,5;target=0,0,0;fov=90;near=0.1;far=100",
+            ComponentId::Camera3D,
+        ),
+        (
+            "Light",
+            "direction=0.4,0.8,0.5;color=1,1,1;intensity=2",
+            ComponentId::Light,
+        ),
+        (
+            "MeshRenderer",
+            "mesh=assets/models/cube.glb",
+            ComponentId::MeshRenderer,
+        ),
+        (
+            "UiLayout",
+            "anchors=0,0,0,0;offsets=0,0,0,0;min_size=0,0;max_size=100,100;pivot=0.5,0.5",
+            ComponentId::UiLayout,
+        ),
+        (
+            "Container",
+            "kind=vbox;padding=0,0,0,0;spacing=4;columns=1;stretch=true;fill=false;align=center",
+            ComponentId::Container,
+        ),
+        ("Text", "text=Hello;font_size=24", ComponentId::Text),
+        (
+            "Image",
+            "texture=assets/textures/coin.png;color=1,1,1",
+            ComponentId::Image,
+        ),
+        (
+            "UiEvents",
+            "event=click;function=on_click",
+            ComponentId::UiEvents,
+        ),
+        ("ButtonStates", "normal=base.png", ComponentId::ButtonStates),
+        (
+            "Sprite",
+            "texture=assets/textures/player.png;size=32x32;pivot=0.500,0.500;tint=1.000,1.000,1.000,1.000;sorting_layer=default;order=0",
+            ComponentId::Sprite,
+        ),
+        (
+            "Tilemap",
+            "tile_size=32x32;width=2;height=2;tiles=0000;solid=0000",
+            ComponentId::Tilemap,
+        ),
+        ("Collider", "shape=ball;radius=16", ComponentId::Collider),
+        (
+            "Collider3d",
+            "shape=ball;radius=16",
+            ComponentId::Collider3d,
+        ),
+        (
+            "Animation",
+            "default=idle;clip:idle:assets/textures/hero-idle.png:4:4:true",
+            ComponentId::Animation,
+        ),
+        (
+            "Animation3D",
+            "mesh=assets/models/warrior.glb;clip=Walk;looped=true",
+            ComponentId::Animation3d,
+        ),
+    ];
 
     #[test]
     fn compiles_known_components_and_parent_topology_once() {
@@ -241,5 +540,330 @@ mod tests {
         assert_eq!(error[0].entity, SceneEntityId(7));
         assert_eq!(error[0].component, "Transform3D");
         assert!(error[0].to_string().contains("Broken"));
+    }
+
+    /// 覆盖门：源场景里出现过的 17 个组件名必须全部编译成对应的 `ComponentId`，
+    /// 且载荷确实是解析结果（不只是键存在）。
+    #[test]
+    fn covers_every_component_name_used_in_source_scenes() {
+        let components: Vec<(&str, &str)> = SOURCE_SCENE_COMPONENTS
+            .iter()
+            .map(|(name, value, _)| (*name, *value))
+            .collect();
+        let scene = scene_with(SceneEntityId(1), "All", &components);
+        let typed = TypedScene::compile_v2(&scene).expect("all source components must compile");
+        let entity = &typed.entities[0];
+        for (name, _, id) in SOURCE_SCENE_COMPONENTS {
+            assert!(entity.components.contains_key(id), "{name} 未编译为 {id:?}");
+        }
+        assert_eq!(entity.components.len(), SOURCE_SCENE_COMPONENTS.len());
+
+        // 抽样确认载荷是真正的解析结果。
+        assert_eq!(
+            entity.components[&ComponentId::Sprite],
+            TypedComponent::Sprite(
+                SpriteComponent::from_component_str(
+                    "texture=assets/textures/player.png;size=32x32;pivot=0.500,0.500;tint=1.000,1.000,1.000,1.000;sorting_layer=default;order=0"
+                )
+                .unwrap()
+            )
+        );
+        assert_eq!(
+            entity.components[&ComponentId::Text],
+            TypedComponent::Text(UiText::from_component_str("text=Hello;font_size=24").unwrap())
+        );
+    }
+
+    /// 资源身份必须来自资源库，且与"仅按路径播种"不同——这条断言锁定 prototype
+    /// 早期的 seed fallback 不会被重新引入。
+    #[test]
+    fn mesh_asset_resolves_through_the_resource_database() {
+        let source_path = "assets/models/cube.glb";
+        let root = std::env::temp_dir().join(format!("rustlua-wp1-02-{}", std::process::id()));
+        let mut db = ResourceDatabase::open(&root).expect("opens an empty database");
+        let registered = db
+            .register(source_path, ResourceKind::Model, "gltf-1")
+            .expect("registers the mesh source");
+        assert_ne!(
+            registered,
+            AssetId::from_seed(source_path),
+            "资源库按 path:importer_version 播种，与仅按路径播种必然不同"
+        );
+
+        let scene = scene_with(SceneEntityId(1), "Mesh", &[("MeshRenderer", MESH)]);
+        let expected_renderer = MeshRenderer::from_component_str(MESH).unwrap();
+        let typed =
+            TypedScene::compile_v2_with_assets(&scene, Some(&db as &dyn AssetResolver)).unwrap();
+        assert_eq!(
+            typed.entities[0].components[&ComponentId::MeshRenderer],
+            TypedComponent::MeshRenderer {
+                renderer: expected_renderer.clone(),
+                asset: Some(registered),
+            }
+        );
+
+        // 没有资源库时保持"未解析"，不得编造一个 ID 顶上。
+        let typed = TypedScene::compile_v2(&scene).unwrap();
+        assert_eq!(
+            typed.entities[0].components[&ComponentId::MeshRenderer],
+            TypedComponent::MeshRenderer {
+                renderer: expected_renderer,
+                asset: None,
+            }
+        );
+    }
+
+    /// 未知与 Lua 动态组件留在源场景，既不解释也不报诊断——它们不是"非法已知组件"。
+    #[test]
+    fn unknown_components_are_left_in_the_source_scene() {
+        let scene = scene_with(
+            SceneEntityId(1),
+            "Custom",
+            &[
+                ("Transform", "x=1;y=2;rotation=0;scale_x=1;scale_y=1"),
+                ("MyGameHealth", "hp=10"),
+                ("LuaTable", "{}"),
+            ],
+        );
+        let typed = TypedScene::compile_v2(&scene).unwrap();
+        let entity = &typed.entities[0];
+        assert_eq!(entity.components.len(), 1);
+        assert!(entity.components.contains_key(&ComponentId::Transform2D));
+        // 源场景原样保留，供 Lua / 编辑器回写使用。
+        assert_eq!(
+            scene.entities[&SceneEntityId(1)].components["MyGameHealth"],
+            "hp=10"
+        );
+    }
+
+    /// 每个新增组件族的非法载荷都必须报诊断，且带上组件名；不能静默丢弃。
+    #[test]
+    fn invalid_payload_of_any_known_component_is_diagnosed() {
+        for (name, bad_value) in [
+            ("Sprite", "texture=;size=32"),
+            ("Tilemap", "width=2;height=2"),
+            ("Collider", "shape=ball"),
+            ("UiLayout", "anchors=2,0,0,0"),
+            ("Container", "kind=unknown"),
+            ("Text", "text=Hi;font_size=0"),
+            ("UiEvents", "event=bogus;function=f"),
+            ("ButtonStates", "bad=1"),
+            ("Animation", "clip=Walk"),
+            ("Animation3D", "clip=Walk"),
+            ("Collider3d", "shape=ball"),
+        ] {
+            let scene = scene_with(SceneEntityId(1), "Broken", &[(name, bad_value)]);
+            let errors = match TypedScene::compile_v2(&scene) {
+                Ok(_) => panic!("{name} 的非法载荷必须报错"),
+                Err(errors) => errors,
+            };
+            assert_eq!(errors[0].component, name);
+            assert!(!errors[0].message.is_empty(), "{name} 的诊断必须带可读原因");
+        }
+    }
+
+    /// 宽容编译：坏组件只丢自己并记诊断，同场景的好实体照常可用——编辑器场景视图
+    /// 依赖这一点，否则一个坏的 Sprite 就会让整个 3D 视图空白。
+    #[test]
+    fn lenient_compile_keeps_good_entities_and_reports_bad_ones() {
+        let mut scene = Scene::new("lenient");
+        scene.add_entity(SceneEntityId(1), "Good", None).unwrap();
+        scene
+            .entities
+            .get_mut(&SceneEntityId(1))
+            .unwrap()
+            .components
+            .insert(
+                "Transform3D".into(),
+                "position=1,2,3;rotation=0,0,0,1;scale=1,1,1".into(),
+            );
+        scene
+            .entities
+            .get_mut(&SceneEntityId(1))
+            .unwrap()
+            .components
+            .insert("MeshRenderer".into(), MESH.into());
+        scene.add_entity(SceneEntityId(2), "Bad", None).unwrap();
+        scene
+            .entities
+            .get_mut(&SceneEntityId(2))
+            .unwrap()
+            .components
+            .insert("Sprite".into(), "texture=;size=32".into());
+        scene
+            .add_entity(SceneEntityId(3), "Child", Some(SceneEntityId(2)))
+            .unwrap();
+
+        // 严格模式按既有语义失败。
+        assert!(TypedScene::compile_v2(&scene).is_err());
+
+        let (typed, diagnostics) = TypedScene::compile_v2_lenient(&scene);
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].entity, SceneEntityId(2));
+        assert_eq!(diagnostics[0].component, "Sprite");
+
+        let good = typed
+            .entities
+            .iter()
+            .find(|entity| entity.id == SceneEntityId(1))
+            .unwrap();
+        assert!(good.components.contains_key(&ComponentId::Transform3D));
+        assert!(good.components.contains_key(&ComponentId::MeshRenderer));
+        // 坏组件的实体本身保留（只是丢了那个组件），父子拓扑仍然完整。
+        assert!(typed.parent_first.contains(&SceneEntityId(1)));
+        assert!(typed.parent_first.contains(&SceneEntityId(2)));
+        assert!(typed.parent_first.contains(&SceneEntityId(3)));
+    }
+
+    fn matrices_match(left: Mat4, right: Mat4) -> bool {
+        left.columns
+            .iter()
+            .flatten()
+            .zip(right.columns.iter().flatten())
+            .all(|(a, b)| (a - b).abs() < 1e-5)
+    }
+
+    /// WP1-3 对拍门：把项目里**全部真实源场景**编译一遍并与旧提取路径逐项对拍。
+    ///
+    /// 断言三件事：① 每个场景都能无诊断编译；② 场景中的已知组件数与源组件数一致
+    /// （若某个组件名未被 typed 覆盖，这里会差出来——覆盖缺口必须补，不能跳过）；
+    /// ③ 3D drawable 与 `extract_serialized_scene_3d` 的数量、名称、模型矩阵、mesh
+    /// 路径以及相机/光源集合完全一致。
+    ///
+    /// 场景目录缺失时**不静默通过**：本门的意义就是真的跑过全部工程场景。
+    #[test]
+    fn compiles_every_project_scene_and_matches_serialized_extraction() {
+        let roots = [
+            crate::core::games_dir().join("examples/game_api/scenes"),
+            crate::core::games_dir().join("examples/game_jhyt/scenes"),
+        ];
+        let mut scene_count = 0;
+        for root in roots {
+            let entries = std::fs::read_dir(&root)
+                .unwrap_or_else(|error| panic!("读取场景目录失败 {}: {error}", root.display()));
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|ext| ext.to_str()) != Some("scene") {
+                    continue;
+                }
+                let label = path.display().to_string();
+                let scene = Scene::load(&path).unwrap_or_else(|error| panic!("{label}: {error}"));
+                scene_count += 1;
+
+                // ① 无诊断编译。
+                let typed = TypedScene::compile_v2(&scene)
+                    .unwrap_or_else(|errors| panic!("{label} 编译诊断：{errors:?}"));
+
+                // ② 覆盖完整性：源组件总数必须与 typed 组件总数相等。
+                let source_components: usize = scene
+                    .entities
+                    .values()
+                    .map(|entity| entity.components.len())
+                    .sum();
+                let typed_components: usize = typed
+                    .entities
+                    .iter()
+                    .map(|entity| entity.components.len())
+                    .sum();
+                assert_eq!(
+                    typed_components, source_components,
+                    "{label} 存在未被 typed 覆盖的组件名（源 {source_components} ≠ typed {typed_components}）"
+                );
+
+                // ③ 3D 对拍。
+                let serialized = extract_serialized_scene_3d(&scene);
+                assert!(
+                    serialized.diagnostics.is_empty(),
+                    "{label} 旧提取产生诊断：{:?}",
+                    serialized.diagnostics
+                );
+                let old_3d: BTreeMap<&str, (Mat4, &str)> = serialized
+                    .entities
+                    .iter()
+                    .map(|entity| {
+                        (
+                            entity.name.as_str(),
+                            (entity.model, entity.mesh.mesh.as_str()),
+                        )
+                    })
+                    .collect();
+                let typed_3d: BTreeMap<&str, (Mat4, &str)> = typed
+                    .entities
+                    .iter()
+                    .filter_map(|entity| {
+                        let Some(TypedComponent::Transform3D(transform)) =
+                            entity.components.get(&ComponentId::Transform3D)
+                        else {
+                            return None;
+                        };
+                        let Some(TypedComponent::MeshRenderer { renderer, .. }) =
+                            entity.components.get(&ComponentId::MeshRenderer)
+                        else {
+                            return None;
+                        };
+                        // 与旧提取一致：非法变换的实体在旧路径会变成诊断而不是 drawable，
+                        // 上面的诊断断言已保证这里不会静默丢实体。
+                        let model = transform.model_matrix().ok()?;
+                        Some((entity.name.as_str(), (model, renderer.mesh.as_str())))
+                    })
+                    .collect();
+                assert_eq!(
+                    typed_3d.len(),
+                    old_3d.len(),
+                    "{label} 新旧 3D drawable 数量不一致（typed {} ≠ 旧 {}）",
+                    typed_3d.len(),
+                    old_3d.len()
+                );
+                assert_eq!(
+                    typed_3d.len(),
+                    typed
+                        .entities
+                        .iter()
+                        .filter(|entity| {
+                            entity.components.contains_key(&ComponentId::Transform3D)
+                                && entity.components.contains_key(&ComponentId::MeshRenderer)
+                        })
+                        .count(),
+                    "{label} 3D 实体名重复，无法逐名对拍"
+                );
+                for (name, (model, mesh)) in &old_3d {
+                    let (typed_model, typed_mesh) = typed_3d
+                        .get(name)
+                        .unwrap_or_else(|| panic!("{label} typed 缺少 3D 实体 {name}"));
+                    assert!(
+                        matrices_match(*model, *typed_model),
+                        "{label} {name} 模型矩阵不一致"
+                    );
+                    assert_eq!(*mesh, *typed_mesh, "{label} {name} mesh 路径不一致");
+                }
+
+                // 相机与光源集合必须一致（旧路径按同一实体顺序收集）。
+                let old_cameras: Vec<SceneEntityId> = serialized
+                    .cameras
+                    .iter()
+                    .map(|(entity, _)| *entity)
+                    .collect();
+                let typed_cameras: Vec<SceneEntityId> = typed
+                    .entities
+                    .iter()
+                    .filter(|entity| entity.components.contains_key(&ComponentId::Camera3D))
+                    .map(|entity| entity.id)
+                    .collect();
+                assert_eq!(typed_cameras, old_cameras, "{label} 相机集合不一致");
+                let old_lights: Vec<SceneEntityId> = serialized
+                    .lights
+                    .iter()
+                    .map(|(entity, _)| *entity)
+                    .collect();
+                let typed_lights: Vec<SceneEntityId> = typed
+                    .entities
+                    .iter()
+                    .filter(|entity| entity.components.contains_key(&ComponentId::Light))
+                    .map(|entity| entity.id)
+                    .collect();
+                assert_eq!(typed_lights, old_lights, "{label} 光源集合不一致");
+            }
+        }
+        assert!(scene_count > 0, "没有找到任何源场景，对拍门实际未执行");
     }
 }

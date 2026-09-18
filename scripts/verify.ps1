@@ -246,6 +246,9 @@ if ($Benchmarks) {
         $tilemapBaselinePath = Join-Path $baselineRoot "tilemap-100x100.json"
         $threeDBaselinePath = Join-Path $baselineRoot "wp0-3d-stress.json"
         $threeDGoldenPath = Join-Path $baselineRoot "wp0-3d-golden.json"
+        $sceneFramePath = Join-Path $baselineRoot "wp0-scene-frame.json"
+        $ecsStoragePath = Join-Path $baselineRoot "wp0-ecs-storage.json"
+        $twoDGoldenPath = Join-Path $baselineRoot "wp0-2d-golden.json"
         Invoke-Checked cargo @(
             "run", "--quiet", "--release", "-p", "engine", "--example", "ecs_stress", "--",
             "--stairs", "--seconds", "1", "--output", $ecsBaselinePath
@@ -265,6 +268,23 @@ if ($Benchmarks) {
         Invoke-Checked cargo @(
             "run", "--quiet", "--release", "-p", "engine", "--example", "wp0_3d_golden", "--",
             "--output", $threeDGoldenPath
+        )
+        # WP0 增量（wp0-v4）：场景装载 / typed 编译 / 运行时帧分配。帧内分配是 WP1-5、
+        # WP3、WP6 的前后对照量尺——运行帧本就不解析字符串，真正要替换的是分配与克隆。
+        Invoke-Checked cargo @(
+            "run", "--quiet", "--release", "-p", "engine", "--example", "wp0_scene_frame", "--",
+            "--cycles", "30", "--output", $sceneFramePath
+        )
+        # WP0 增量（wp0-2d-golden-v1）：2D overlay 的语义 golden。WP6 要把 2D 顶点改成单趟
+        # 生成，改动的风险是"画歪/少画/顺序错"——3D golden 与 CPU 顶点计数都发现不了。
+        Invoke-Checked cargo @(
+            "run", "--quiet", "--release", "-p", "engine", "--example", "wp0_2d_golden", "--",
+            "--output", $twoDGoldenPath
+        )        # WP3 存储 A/B（wp0-v5）：现状 HashMap+排序 Vec 对 dense/sparse。用来把"是否替换
+        # ECS 热存储"从意见变成证据。
+        Invoke-Checked cargo @(
+            "run", "--quiet", "--release", "-p", "engine", "--example", "wp0_ecs_storage", "--",
+            "--cycles", "30", "--output", $ecsStoragePath
         )
     }
     finally {
@@ -294,6 +314,219 @@ if ($Benchmarks) {
         $goldenReport.semantic.non_background_pixels -le 1000 -or
         $goldenReport.semantic.center_non_background_pixels -le 100) {
         throw "3D semantic golden invalid"
+    }
+    # wp0-v4：场景/帧报告契约。场景数下界防止"扫不到场景却报绿"；帧阶梯必须三档且
+    # 每档都有非零时间、非零分配——分配为 0 只可能意味着计数没生效，而不是"优化到位"。
+    $sceneFrameReport = Get-Content -LiteralPath $sceneFramePath -Raw | ConvertFrom-Json
+    if ($sceneFrameReport.report_version -ne "wp0-v4" -or
+        $sceneFrameReport.benchmark -ne "scene_frame" -or
+        $sceneFrameReport.scene_load.scenes -lt 26 -or
+        $sceneFrameReport.frame_stairs.Count -ne 3) {
+        throw "wp0-v4 scene/frame report schema invalid"
+    }
+    foreach ($entry in $sceneFrameReport.scene_load.entries) {
+        if ($entry.diagnostics -ne 0 -or $entry.typed_components -le 0 -or
+            $entry.load_us.p50_us -le 0 -or $entry.typed_compile_us.p50_us -le 0) {
+            throw "wp0-v4 typed compile entry invalid: $($entry.project)/$($entry.scene)"
+        }
+    }
+    foreach ($stair in $sceneFrameReport.frame_stairs) {
+        if ($stair.frame_us.p50_us -le 0 -or $stair.alloc_count_p50 -le 0 -or
+            $stair.alloc_bytes_p50 -le 0 -or $stair.vertices -le 0) {
+            throw "wp0-v4 frame metrics invalid for sprites=$($stair.sprites)"
+        }
+    }
+    # 深度阶梯：增量传播的不变量必须成立——叶子变动只重算 1 个节点，根变动重算整条链。
+    # 任一条不成立就说明脏标记或父先序求解已经错了。
+    if ($sceneFrameReport.transform_depth.Count -ne 3) {
+        throw "wp0-v4 transform depth stairs invalid: expected three depths"
+    }
+    foreach ($stair in $sceneFrameReport.transform_depth) {
+        if ($stair.full_ns.p50_ns -le 0 -or $stair.incremental_leaf_ns.p50_ns -le 0 -or
+            $stair.incremental_root_ns.p50_ns -le 0 -or
+            $stair.full_recomputes -ne $stair.depth -or
+            $stair.leaf_recomputes -ne 1 -or
+            $stair.root_recomputes -ne $stair.depth -or
+            $stair.leaf_alloc_p50 -le 0) {
+            throw "wp0-v4 transform depth metrics invalid for depth=$($stair.depth)"
+        }
+    }
+    # Tilemap 阶梯：WP4 ④ 起顶点数**不再**等于格数 × 6——视口外的瓦片会被剔除，这正是要证明
+    # 的事。因此改断言"顶点数是 6 的倍数、非零、且确实少于整层"：最后一条证明剔除在生效，
+    # 而"没有漏画任何可见瓦片"由 2D golden 的像素等价证明负责（关/开剔除像素逐字节相同）。
+    if ($sceneFrameReport.tilemap_stairs.Count -ne 2) {
+        throw "wp0-v4 tilemap stairs invalid: expected two sides"
+    }
+    foreach ($stair in $sceneFrameReport.tilemap_stairs) {
+        if ($stair.frame_us.p50_us -le 0 -or $stair.alloc_bytes_p50 -le 0 -or
+            $stair.tiles -ne ($stair.side * $stair.side) -or
+            $stair.vertices -le 0 -or
+            ($stair.vertices % 6) -ne 0 -or
+            $stair.vertices -ge ($stair.tiles * 6)) {
+            throw "wp0-v4 tilemap metrics invalid for side=$($stair.side): vertices=$($stair.vertices) tiles=$($stair.tiles)"
+        }
+    }
+    # WP4 ④ 编辑阶梯：改一格之后再渲染一帧的成本必须可测（两侧非零），否则这把量尺失效。
+    if ($sceneFrameReport.tilemap_edit_stairs.Count -ne 2) {
+        throw "wp0-v4 tilemap edit stairs invalid: expected two sides"
+    }
+    foreach ($stair in $sceneFrameReport.tilemap_edit_stairs) {
+        if ($stair.steady_frame_us.p50_us -le 0 -or $stair.edited_frame_us.p50_us -le 0 -or
+            $stair.edit_cost_p50_us -lt 0 -or $stair.vertices -le 0) {
+            throw "wp0-v4 tilemap edit metrics invalid for side=$($stair.side)"
+        }
+    }
+    # 粒子阶梯：docs/40 §8 的目标是 1 万 CPU 粒子帧 < 4 ms，这里把该目标直接纳入门。活粒子数
+    # 必须等于请求数（发射器没补满说明补发逻辑或统计已错），顶点数必须是粒子的 6 倍。
+    if ($sceneFrameReport.particle_stairs.Count -ne 2) {
+        throw "wp0-v4 particle stairs invalid: expected two scales"
+    }
+    foreach ($stair in $sceneFrameReport.particle_stairs) {
+        if ($stair.particles -ne $stair.live -or
+            $stair.frame_us.p50_us -le 0 -or $stair.alloc_count_p50 -le 0 -or
+            $stair.alloc_bytes_p50 -le 0 -or
+            $stair.vertices -ne ($stair.particles * 6)) {
+            throw "wp0-v4 particle metrics invalid for particles=$($stair.particles)"
+        }
+        if ($stair.frame_us.p50_us -ge 4000) {
+            throw "wp0-v4 particle budget exceeded: $($stair.frame_us.p50_us) us at particles=$($stair.particles)"
+        }
+    }
+    # wp0-2d-golden-v1：2D overlay 语义契约。场景是基准自己合成的固定场景（2 精灵 + 8 瓦片），
+    # 因此这些数字是**精确**契约而不是"下界"：顶点数、draw range、实例与三角形数一变就说明
+    # 提取路径动了结构；leaked_pixels 必须为 0，它是"投影或合批顺序错了"最灵敏的一条。
+    $twoDGoldenReport = Get-Content -LiteralPath $twoDGoldenPath -Raw | ConvertFrom-Json
+    if ($twoDGoldenReport.report_version -ne "wp0-2d-golden-v1") {
+        throw "2D golden report version invalid: $($twoDGoldenReport.report_version)"
+    }
+    $twoD = $twoDGoldenReport.semantic
+    if ($twoD.vertices -ne 60 -or $twoD.draw_ranges -lt 3 -or $twoD.instances -ne 10 -or $twoD.triangles -ne 20) {
+        throw "2D golden overlay structure changed: vertices=$($twoD.vertices) draws=$($twoD.draw_ranges) instances=$($twoD.instances) triangles=$($twoD.triangles)"
+    }
+    if ($twoD.leaked_pixels -ne 0) {
+        throw "2D golden leaked $($twoD.leaked_pixels) pixels outside the expected rects: projection or batching order is wrong"
+    }
+    if ($twoD.center_pixel[0] -lt 200 -or $twoD.center_pixel[1] -gt 40 -or $twoD.center_pixel[2] -gt 40) {
+        throw "2D golden solid sprite is not red: $($twoD.center_pixel -join ',')"
+    }
+    foreach ($region in $twoD.regions) {
+        if ($region.non_background_pixels -le 0) {
+            throw "2D golden region '$($region.name)' rendered nothing"
+        }
+    }
+    # 瓦片行序：把 tiles 的两行交换后，上下两半的颜色必须整体对调。这条用像素证明了
+    # "tiles 第 0 行画在地图最下方"（2D 世界 Y 向上），不依赖任何具体贴图颜色。
+    $rows = $twoD.tile_rows
+    if (-not $rows.row_zero_is_bottom) {
+        throw "2D golden declares tile row 0 not at the bottom"
+    }
+    if (($rows.in_order_lower -join ',') -ne ($rows.swapped_upper -join ',') -or
+        ($rows.in_order_upper -join ',') -ne ($rows.swapped_lower -join ',')) {
+        throw "2D golden tile row order changed: swapping the tiles rows no longer swaps the rendered halves"
+    }
+    # WP7 ② collider 调试绘制：默认关闭，开启后**只多出轮廓**（box 4 段 × 6 顶点 = 24），
+    # 且轮廓必须压在碰撞体的真实位置（绿占优）——这条把"世界→屏幕投影与碰撞体位置一致"
+    # 变成了像素级契约。
+    $debug = $twoD.collider_debug
+    if ($null -eq $debug) {
+        throw "2D golden report has no collider_debug block"
+    }
+    if ($debug.default_enabled) {
+        throw "collider debug draw must default to off"
+    }
+    if ($debug.extra_vertices -ne 24) {
+        throw "collider debug outline vertex count changed: extra=$($debug.extra_vertices) (expected 24)"
+    }
+    if ($debug.total_vertices -ne 84) {
+        throw "collider debug total vertex count changed: $($debug.total_vertices) (expected 60 + 24)"
+    }
+    if ($debug.outline_pixel[1] -le ($debug.outline_pixel[0] + 60) -or
+        $debug.outline_pixel[1] -le ($debug.outline_pixel[2] + 40)) {
+        throw "collider debug outline pixel is not green: $($debug.outline_pixel -join ',')"
+    }
+    if ($debug.leaked_pixels -ne 0) {
+        throw "collider debug outline drew $($debug.leaked_pixels) pixels outside the expected rects"
+    }
+    # WP4 ④ 视口外瓦片剔除：默认开启、确实剔掉了瓦片、且**像素逐字节不变**（这条是它正确性的
+    # 全部依据：被剔掉的瓦片本就不该影响任何像素）。
+    $culling = $twoD.tilemap_culling
+    if ($null -eq $culling) {
+        throw "2D golden report has no tilemap_culling block"
+    }
+    if (-not $culling.default_enabled) {
+        throw "tilemap culling must default to on"
+    }
+    if (-not $culling.pixels_identical) {
+        throw "tilemap culling changed the rendered pixels"
+    }
+    if (($culling.full_vertices % 6) -ne 0 -or
+        ($culling.tiles_only_vertices % 6) -ne 0 -or
+        ($culling.both_culled_vertices % 6) -ne 0) {
+        throw "culling vertex counts are not whole quads: full=$($culling.full_vertices) tiles=$($culling.tiles_only_vertices) both=$($culling.both_culled_vertices)"
+    }
+    if ($culling.tiles_only_vertices -ge $culling.full_vertices -or
+        $culling.both_culled_vertices -ge $culling.tiles_only_vertices) {
+        throw "sprite culling removed nothing: full=$($culling.full_vertices) tiles=$($culling.tiles_only_vertices) both=$($culling.both_culled_vertices)"
+    }
+    # WP6 精灵剔除的同进程交替 A/B：必须确实减少顶点。帧时间刻意**不**断言——跨运行噪声
+    # ±15–25%，同进程交替实测 -36.7%，但写成门会在负载波动时假红。
+    $spriteCulling = $sceneFrameReport.sprite_culling_ab
+    if ($spriteCulling.Count -ne 2) {
+        throw "wp0-v4 sprite culling A/B invalid: expected two scales (10k vertex stage, 50k collection stage)"
+    }
+    foreach ($stair in $spriteCulling) {
+        if ($stair.full_frame_us.p50_us -le 0 -or $stair.culled_frame_us.p50_us -le 0) {
+            throw "sprite culling A/B frame timings invalid for sprites=$($stair.sprites)"
+        }
+        if ($stair.culled_vertices -le 0 -or
+            $stair.culled_vertices -ge $stair.full_vertices -or
+            ($stair.culled_vertices % 6) -ne 0) {
+            throw "sprite culling removed nothing (or removed badly) for sprites=$($stair.sprites): full=$($stair.full_vertices) culled=$($stair.culled_vertices)"
+        }
+    }
+    # WP8 并行合批契约（sprite_stress 的 parallel_ab）：**唯一硬要求是"并行 == 串行"**。
+    # 这里刻意不断言"并行更快"——收益随规模变化（10k 档实测在噪声内），把它写成门会在负载
+    # 波动时假红。判定提速请用同一进程内交替采样的 A/B 数据（见 docs/53 §3.6）。
+    $spriteAbReport = Get-Content -LiteralPath $spriteBaselinePath -Raw | ConvertFrom-Json
+    $ab = $spriteAbReport.parallel_ab
+    if ($null -eq $ab) {
+        throw "sprite report has no parallel_ab block: $spriteBaselinePath"
+    }
+    if (-not $ab.used) {
+        throw "WP8 parallel A/B did not exercise the parallel path (used=false)"
+    }
+    if (-not $ab.identical) {
+        throw "WP8 parallel build output differs from sequential byte-for-byte (digest=$($ab.digest))"
+    }
+    if ($ab.threads -lt 2) {
+        throw "WP8 parallel A/B reports threads=$($ab.threads)"
+    }
+    $sequentialBuild = $ab.sequential_build_us.p50_us
+    $parallelBuild = $ab.parallel_build_us.p50_us
+    if ($sequentialBuild -le 0 -or $parallelBuild -le 0) {
+        throw "WP8 parallel A/B build timings invalid: sequential=$sequentialBuild parallel=$parallelBuild"
+    }
+    # 只有"灾难性变慢"才判红：并行慢到 2 倍以上说明退化逻辑或线程使用已经错了。
+    if ($parallelBuild -gt ($sequentialBuild * 2)) {
+        throw "WP8 parallel build is catastrophically slower: parallel=${parallelBuild}us sequential=${sequentialBuild}us"
+    }
+    # wp0-v5：存储 A/B 契约。dense 侧必须在四个操作上都非零，且"全量可变遍历"必须快于
+    # 现状——现状每次调用克隆整份实体表，若 dense 连这一点都不占优，说明前提判断错了。
+    $ecsStorageReport = Get-Content -LiteralPath $ecsStoragePath -Raw | ConvertFrom-Json
+    if ($ecsStorageReport.report_version -ne "wp0-v5" -or
+        $ecsStorageReport.benchmark -ne "ecs_storage" -or
+        $ecsStorageReport.stairs.Count -ne 3) {
+        throw "wp0-v5 storage report schema invalid"
+    }
+    foreach ($stair in $ecsStorageReport.stairs) {
+        foreach ($op in @("insert", "get", "for_each_mut", "remove_half")) {
+            if ($stair.hash.$op.p50_ns -le 0 -or $stair.dense.$op.p50_ns -le 0) {
+                throw "wp0-v5 $op metrics invalid for entities=$($stair.entities)"
+            }
+        }
+        if ($stair.speedup.for_each_mut -le 1 -or $stair.speedup.remove_half -le 1) {
+            throw "wp0-v5 storage speedup invalid for entities=$($stair.entities): dense 未占优"
+        }
     }
     Write-Host "WP0 benchmark baselines and semantic golden written and schema-checked: $baselineRoot" -ForegroundColor Green
 }

@@ -13,7 +13,7 @@ pub mod inspector_state;
 pub use inspector_state::{
     Camera3DFields, Collider3dFields, ContainerFields, ImageFields, InspectorError,
     InspectorSnapshot, InspectorState, LightFields, TextFields, Transform3DFields, TransformFields,
-    UiLayoutFields,
+    TransformSpace, UiLayoutFields, WorldTextFields,
 };
 
 pub mod scene_tree_state;

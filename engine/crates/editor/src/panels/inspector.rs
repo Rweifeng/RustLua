@@ -5,13 +5,15 @@ use crate::EditorApp;
 use crate::util::strip_verbatim_prefix;
 use editor::{
     Camera3DFields, Collider3dFields, CommandKind, ImageFields, InspectorError, LightFields,
-    TextFields, Transform3DFields, TransformFields,
+    TextFields, Transform3DFields, TransformFields, TransformSpace, WorldTextFields,
 };
 use eframe::egui;
 use engine::core::{
+    camera::{Camera3D, Projection},
+    math3d::Vec3,
     prefab::Prefab,
-    scene::{SceneEntity, SceneEntityId},
-    transform3d::Transform3D,
+    scene::{Scene, SceneEntity, SceneEntityId},
+    transform::Transform3D,
     ui_animation::{UiEasing, UiKeyframe},
 };
 use std::{collections::BTreeSet, fs, path::Path, time::SystemTime};
@@ -80,6 +82,10 @@ const COMPONENT_REGISTRY: &[ComponentDescriptor] = &[
     ComponentDescriptor {
         name: "Text",
         category: ComponentCategory::Ui,
+    },
+    ComponentDescriptor {
+        name: "WorldText",
+        category: ComponentCategory::Rendering,
     },
     ComponentDescriptor {
         name: "Image",
@@ -435,6 +441,10 @@ impl EditorApp {
                         .is_some_and(|scene| has_mixed_transform3d(scene, &selected_ids));
                 // 只显示实体实际拥有的组件编辑器（空 2D 实体只有 Transform，3D 只有 Transform3D）。
                 let has = |name: &str| components.iter().any(|component| component == name);
+                // WP5/WP9：Camera 面板的**只读摘要**——投影来自统一的 `Projection`，`pose=transform`
+                // 时给出**生效**姿态（或"回退到组件姿态"的警告）。两边都用引擎自己的解析器读组件串
+                // 原文，因此面板显示的就是渲染器真正会用的值，而不是编辑器另算一遍。
+                let camera_summary = self.camera3d_panel_summary();
                 if !components.is_empty() {
                     ui.label("组件：");
                     for key in &components {
@@ -450,17 +460,45 @@ impl EditorApp {
                     }
                 }
                 ui.separator();
-                if has("Transform") {
+                // WP9：**一个** Transform 面板。此前 2D 与 3D 是两个各自独立的折叠块，同一件事
+                // 要在两个地方编辑；现在按实体实际拥有的空间显示，两种都有时给一个 2D/3D 模式开关，
+                // 并且**始终**在标题下方写明存在哪些空间——被切走的那一种不是消失了，只是没在编辑。
+                let has_2d = has("Transform");
+                let has_3d = has("Transform3D");
+                let transform_space =
+                    TransformSpace::resolve(has_2d, has_3d, self.inspector_transform_space);
+                if let Some(space) = transform_space {
                     let transform_header = if self.inspector_transform_open {
-                        "Transform  v"
+                        "变换（Transform）  v"
                     } else {
-                        "Transform  >"
+                        "变换（Transform）  >"
                     };
                     if ui.button(transform_header).clicked() {
                         self.inspector_transform_open = !self.inspector_transform_open;
                     }
                     if self.inspector_transform_open {
+                        let spaces = match (has_2d, has_3d) {
+                            (true, true) => "空间：2D + 3D",
+                            (true, false) => "空间：2D",
+                            _ => "空间：3D",
+                        };
+                        ui.label(spaces);
+                        if TransformSpace::both_present(has_2d, has_3d) {
+                            ui.horizontal(|ui| {
+                                ui.label("编辑：");
+                                for candidate in [TransformSpace::TwoD, TransformSpace::ThreeD] {
+                                    ui.radio_value(
+                                        &mut self.inspector_transform_space,
+                                        candidate,
+                                        candidate.label(),
+                                    );
+                                }
+                            });
+                        }
+                    }
+                    if self.inspector_transform_open && space == TransformSpace::TwoD {
                         ui.group(|ui| {
+                            ui.label("2D");
                             ui.horizontal(|ui| {
                                 ui.label(if transform_mixed {
                                     "位置（混合）"
@@ -513,74 +551,65 @@ impl EditorApp {
                         });
                     }
                 }
-                if has("Transform3D") {
-                    let transform3d_header = if self.inspector_transform3d_open {
-                        "Transform3D  v"
-                    } else {
-                        "Transform3D  >"
-                    };
-                    if ui.button(transform3d_header).clicked() {
-                        self.inspector_transform3d_open = !self.inspector_transform3d_open;
-                    }
-                    if self.inspector_transform3d_open {
-                        ui.group(|ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(if transform3d_mixed {
-                                    "位置（混合）"
-                                } else {
-                                    "位置"
-                                });
-                                ui.add(egui::DragValue::new(&mut self.transform3d.position_x));
-                                ui.add(egui::DragValue::new(&mut self.transform3d.position_y));
-                                ui.add(egui::DragValue::new(&mut self.transform3d.position_z));
+                if transform_space == Some(TransformSpace::ThreeD) {
+                    ui.group(|ui| {
+                        ui.label("3D");
+                        ui.horizontal(|ui| {
+                            ui.label(if transform3d_mixed {
+                                "位置（混合）"
+                            } else {
+                                "位置"
                             });
-                            ui.horizontal(|ui| {
-                                ui.label(if transform3d_mixed {
-                                    "旋转 Q（混合）"
-                                } else {
-                                    "旋转 Q"
-                                });
-                                ui.add(egui::DragValue::new(&mut self.transform3d.rotation_x));
-                                ui.add(egui::DragValue::new(&mut self.transform3d.rotation_y));
-                                ui.add(egui::DragValue::new(&mut self.transform3d.rotation_z));
-                                ui.add(egui::DragValue::new(&mut self.transform3d.rotation_w));
-                            });
-                            ui.horizontal(|ui| {
-                                ui.label(if transform3d_mixed {
-                                    "缩放（混合）"
-                                } else {
-                                    "缩放"
-                                });
-                                let x_changed = ui
-                                    .add(egui::DragValue::new(&mut self.transform3d.scale_x))
-                                    .changed();
-                                let y_changed = ui
-                                    .add(egui::DragValue::new(&mut self.transform3d.scale_y))
-                                    .changed();
-                                let z_changed = ui
-                                    .add(egui::DragValue::new(&mut self.transform3d.scale_z))
-                                    .changed();
-                                if self.transform_lock_ratio {
-                                    if x_changed {
-                                        self.transform3d.scale_y = self.transform3d.scale_x;
-                                        self.transform3d.scale_z = self.transform3d.scale_x;
-                                    } else if y_changed {
-                                        self.transform3d.scale_x = self.transform3d.scale_y;
-                                        self.transform3d.scale_z = self.transform3d.scale_y;
-                                    } else if z_changed {
-                                        self.transform3d.scale_x = self.transform3d.scale_z;
-                                        self.transform3d.scale_y = self.transform3d.scale_z;
-                                    }
-                                }
-                                ui.checkbox(&mut self.transform_lock_ratio, "锁定比例");
-                            });
-                            ui.horizontal(|ui| {
-                                if ui.button("Reset 3D").clicked() {
-                                    self.transform3d = Transform3DFields::default();
-                                }
-                            });
+                            ui.add(egui::DragValue::new(&mut self.transform3d.position_x));
+                            ui.add(egui::DragValue::new(&mut self.transform3d.position_y));
+                            ui.add(egui::DragValue::new(&mut self.transform3d.position_z));
                         });
-                    }
+                        ui.horizontal(|ui| {
+                            ui.label(if transform3d_mixed {
+                                "旋转 Q（混合）"
+                            } else {
+                                "旋转 Q"
+                            });
+                            ui.add(egui::DragValue::new(&mut self.transform3d.rotation_x));
+                            ui.add(egui::DragValue::new(&mut self.transform3d.rotation_y));
+                            ui.add(egui::DragValue::new(&mut self.transform3d.rotation_z));
+                            ui.add(egui::DragValue::new(&mut self.transform3d.rotation_w));
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label(if transform3d_mixed {
+                                "缩放（混合）"
+                            } else {
+                                "缩放"
+                            });
+                            let x_changed = ui
+                                .add(egui::DragValue::new(&mut self.transform3d.scale_x))
+                                .changed();
+                            let y_changed = ui
+                                .add(egui::DragValue::new(&mut self.transform3d.scale_y))
+                                .changed();
+                            let z_changed = ui
+                                .add(egui::DragValue::new(&mut self.transform3d.scale_z))
+                                .changed();
+                            if self.transform_lock_ratio {
+                                if x_changed {
+                                    self.transform3d.scale_y = self.transform3d.scale_x;
+                                    self.transform3d.scale_z = self.transform3d.scale_x;
+                                } else if y_changed {
+                                    self.transform3d.scale_x = self.transform3d.scale_y;
+                                    self.transform3d.scale_z = self.transform3d.scale_y;
+                                } else if z_changed {
+                                    self.transform3d.scale_x = self.transform3d.scale_z;
+                                    self.transform3d.scale_y = self.transform3d.scale_z;
+                                }
+                            }
+                            ui.checkbox(&mut self.transform_lock_ratio, "锁定比例");
+                        });
+                        ui.horizontal(|ui| {
+                            if ui.button("Reset 3D").clicked() {
+                                self.transform3d = Transform3DFields::default();
+                            }
+                        });
+                    });
                 }
                 if has("MeshRenderer") {
                     ui.horizontal(|ui| {
@@ -610,6 +639,30 @@ impl EditorApp {
                             ui.add(egui::DragValue::new(&mut self.camera3d.near));
                             ui.add(egui::DragValue::new(&mut self.camera3d.far));
                         });
+                        // WP5：姿态来源。打开后位置/目标退化为"该实体没有 Transform3D 时的
+                        // 回退值"，上方向与视线来自实体的变换——所以在面板里直接说明，
+                        // 并给出**实际生效**的姿态（下面的摘要）。
+                        ui.checkbox(
+                            &mut self.camera3d.pose_from_transform,
+                            "姿态来自实体的 Transform3D（pose=transform）",
+                        );
+                        if self.camera3d.pose_from_transform {
+                            ui.label("位置/目标仅在实体没有 Transform3D 时生效");
+                        }
+                        if let Some(summary) = &camera_summary {
+                            ui.separator();
+                            ui.label(&summary.projection);
+                            if let Some(pose) = &summary.pose {
+                                if pose.warning {
+                                    ui.colored_label(
+                                        egui::Color32::from_rgb(220, 150, 60),
+                                        &pose.text,
+                                    );
+                                } else {
+                                    ui.label(&pose.text);
+                                }
+                            }
+                        }
                     });
                 }
                 if has("Light") {
@@ -792,6 +845,93 @@ impl EditorApp {
                         });
                     }
                 }
+                if has("WorldText") {
+                    let world_text_header = if self.inspector_world_text_open {
+                        "WorldText  v"
+                    } else {
+                        "WorldText  >"
+                    };
+                    if ui.button(world_text_header).clicked() {
+                        self.inspector_world_text_open = !self.inspector_world_text_open;
+                    }
+                    if self.inspector_world_text_open {
+                        ui.group(|ui| {
+                            ui.label("世界空间文字：锚在实体世界位置上，相机移动时跟随世界");
+                            ui.horizontal(|ui| {
+                                ui.label("文本");
+                                ui.text_edit_singleline(&mut self.world_text.text);
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("字号");
+                                let mut font_size = self.world_text.font_size;
+                                if ui
+                                    .add(
+                                        egui::DragValue::new(&mut font_size)
+                                            .suffix("px")
+                                            .speed(1.0),
+                                    )
+                                    .changed()
+                                {
+                                    self.world_text.font_size = font_size.max(1.0);
+                                }
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("字体");
+                                let selected = if self.world_text.font.is_empty() {
+                                    "默认字体（不指定）".to_owned()
+                                } else {
+                                    self.world_text.font.clone()
+                                };
+                                egui::ComboBox::from_id_salt("inspector_world_text_font")
+                                    .selected_text(selected)
+                                    .show_ui(ui, |ui| {
+                                        ui.selectable_value(
+                                            &mut self.world_text.font,
+                                            String::new(),
+                                            "默认字体（不指定）",
+                                        );
+                                        for path in self.project_font_paths() {
+                                            ui.selectable_value(
+                                                &mut self.world_text.font,
+                                                path.clone(),
+                                                path,
+                                            );
+                                        }
+                                    });
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("颜色");
+                                ui.add(
+                                    egui::DragValue::new(&mut self.world_text.color_r)
+                                        .range(0.0..=1.0),
+                                );
+                                ui.add(
+                                    egui::DragValue::new(&mut self.world_text.color_g)
+                                        .range(0.0..=1.0),
+                                );
+                                ui.add(
+                                    egui::DragValue::new(&mut self.world_text.color_b)
+                                        .range(0.0..=1.0),
+                                );
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("屏幕偏移");
+                                ui.add(
+                                    egui::DragValue::new(&mut self.world_text.offset_x).speed(1.0),
+                                );
+                                ui.add(
+                                    egui::DragValue::new(&mut self.world_text.offset_y).speed(1.0),
+                                );
+                                ui.checkbox(&mut self.world_text.centered, "水平居中");
+                            });
+                            if ui.button("移除 WorldText").clicked()
+                                && let Err(error) = self.remove_component("WorldText")
+                            {
+                                self.status = error;
+                            }
+                        });
+                    }
+                }
                 if has("Image") {
                     let image_header = if self.inspector_image_open {
                         "Image  v"
@@ -909,6 +1049,11 @@ impl EditorApp {
                                 ui.add(egui::DragValue::new(
                                     &mut self.sprite_component.sorting.order,
                                 ));
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("翻转");
+                                ui.checkbox(&mut self.sprite_component.flip_x, "水平");
+                                ui.checkbox(&mut self.sprite_component.flip_y, "垂直");
                             });
                             if ui.button("移除 Sprite").clicked()
                                 && let Err(error) = self.remove_component("Sprite")
@@ -1073,6 +1218,7 @@ impl EditorApp {
                                             cols: 1,
                                             frame_rate: 1.0,
                                             looped: true,
+                                            events: Vec::new(),
                                         },
                                     );
                                 }
@@ -1098,6 +1244,7 @@ impl EditorApp {
                                         cols: 1,
                                         frame_rate: 8.0,
                                         looped: true,
+                                        events: Vec::new(),
                                     },
                                 );
                             }
@@ -1690,6 +1837,15 @@ impl EditorApp {
             .unwrap_or_default()
     }
 
+    /// Camera 面板的只读摘要（WP5/WP9：按统一 `Projection` 展示，并给出**生效**姿态）。
+    ///
+    /// 两条信息都用引擎自己的解析器从组件串原文得到：`Projection::from_camera3d` 是"这台相机
+    /// 怎么投影"的唯一说法，`Camera3D::with_pose` 与运行时用的是同一条姿态换算。因此面板里
+    /// 写的不是编辑器的推测，而是渲染器真正会用的值。
+    fn camera3d_panel_summary(&self) -> Option<CameraPanelSummary> {
+        camera_panel_summary(&self.current_scene()?.scene, self.selection.primary()?)
+    }
+
     /// 为选中实体添加组件（默认值，经 history 可撤销）。
     pub(crate) fn add_component(&mut self, name: &str) -> Result<(), String> {
         if self.is_playing() {
@@ -1733,6 +1889,10 @@ impl EditorApp {
                             pivot: engine::core::transform::Vec2::new(0.5, 0.5),
                             tint: [1.0; 4],
                             sorting: engine::core::sprite::SpriteSorting::default(),
+
+                            flip_x: false,
+                            flip_y: false,
+                            z: 0.0,
                         }
                         .to_component_str(),
                     )?,
@@ -1765,6 +1925,7 @@ impl EditorApp {
                                         cols: 1,
                                         frame_rate: 1.0,
                                         looped: true,
+                                        events: Vec::new(),
                                     }],
                                 )
                                 .map_err(|error| {
@@ -1789,6 +1950,9 @@ impl EditorApp {
                         inspector.set_mesh_renderer(scene, selected, "__ground_plane__")?
                     }
                     "Text" => inspector.set_text(scene, selected, TextFields::default())?,
+                    "WorldText" => {
+                        inspector.set_world_text(scene, selected, WorldTextFields::default())?
+                    }
                     "Image" => inspector.set_image(scene, selected, ImageFields::default())?,
                     // E16：UiLayout 默认为中心点锚 200×100 元素，由布局统一
                     // 承担所有 UI 位置与尺寸。
@@ -2411,6 +2575,87 @@ impl EditorApp {
     }
 }
 
+/// Camera 面板的只读摘要（WP5/WP9）。
+struct CameraPanelSummary {
+    /// 统一 `Projection` 的说法（透视/正交 + 参数 + 深度与前向约定）。
+    projection: String,
+    /// `pose=transform` 时的生效姿态；`warning` 为真表示渲染会回退到组件姿态。
+    pose: Option<CameraPanelPose>,
+}
+
+/// Camera 面板里的一行姿态说明。
+struct CameraPanelPose {
+    text: String,
+    warning: bool,
+}
+
+/// Camera 面板的只读摘要（纯函数，便于单测）。
+///
+/// 投影来自统一 [`Projection`]，`pose=transform` 时给出**生效**姿态——用的都是引擎自己的
+/// 解析器与姿态换算，因此面板显示的就是渲染器真正会用的值。
+fn camera_panel_summary(scene: &Scene, id: SceneEntityId) -> Option<CameraPanelSummary> {
+    let entity = scene.entities.get(&id)?;
+    let raw = entity.components.get("Camera3D")?;
+    let camera = match Camera3D::from_component_str(raw) {
+        Ok(camera) => camera,
+        Err(error) => {
+            return Some(CameraPanelSummary {
+                projection: format!("组件串无法解析：{error}"),
+                pose: None,
+            });
+        }
+    };
+    let projection = match Projection::from_camera3d(camera) {
+        Projection::Perspective { fov_y, near, far } => format!(
+            "投影：透视（垂直 FOV {:.1}°，近 {near:.3}，远 {far:.3}；深度 0..1，前向 -Z）",
+            fov_y.to_degrees()
+        ),
+        Projection::Orthographic { zoom } => format!("投影：正交（{zoom:.3} px/单位）"),
+    };
+    if !camera.pose_from_transform {
+        return Some(CameraPanelSummary {
+            projection,
+            pose: None,
+        });
+    }
+    let pose = match entity.components.get("Transform3D") {
+        None => CameraPanelPose {
+            text: "警告：实体没有 Transform3D —— 渲染回退到上面的组件姿态".to_owned(),
+            warning: true,
+        },
+        Some(raw) => match Transform3D::from_component_str(raw)
+            .map_err(|error| error.to_string())
+            .and_then(|pose| camera.with_pose(pose).map_err(|error| error.to_string()))
+        {
+            Ok(posed) => {
+                let forward = (posed.target - posed.position)
+                    .normalized()
+                    .unwrap_or(Vec3::new(0.0, 0.0, -1.0));
+                CameraPanelPose {
+                    text: format!(
+                        "生效姿态（来自 Transform3D）：位置 ({:.3}, {:.3}, {:.3})，视线 -Z → ({:.3}, {:.3}, {:.3})",
+                        posed.position.x,
+                        posed.position.y,
+                        posed.position.z,
+                        forward.x,
+                        forward.y,
+                        forward.z
+                    ),
+                    warning: false,
+                }
+            }
+            Err(error) => CameraPanelPose {
+                text: format!("警告：Transform3D 不可用（{error}）—— 渲染回退到组件姿态"),
+                warning: true,
+            },
+        },
+    };
+    Some(CameraPanelSummary {
+        projection,
+        pose: Some(pose),
+    })
+}
+
 fn has_mixed_transform(scene: &editor::SceneDocument, ids: &[SceneEntityId]) -> bool {
     let mut transforms = ids.iter().filter_map(|id| {
         scene
@@ -2870,6 +3115,63 @@ mod tests {
             })
             .map(|entity| entity.id)
             .expect("sample scene should contain prefab root")
+    }
+
+    /// WP5/WP9：Camera 面板按统一 `Projection` 展示，并在 `pose=transform` 时给出**生效**姿态
+    /// （而不是只显示"实际不生效"的组件值）——缺 `Transform3D` 时必须显示会回退的警告。
+    #[test]
+    fn camera_panel_summary_shows_projection_and_effective_pose() {
+        let mut scene = Scene::new("camera-panel");
+        let camera = SceneEntityId(1);
+        scene.add_entity(camera, "Camera", None).unwrap();
+        let components = &mut scene.entities.get_mut(&camera).unwrap().components;
+        components.insert(
+            "Camera3D".into(),
+            "position=0,0,6;target=0,0,0;fov=60;near=0.1;far=100".into(),
+        );
+
+        // 未声明 pose=transform：只有投影一行，没有姿态说明（组件值就是渲染值）。
+        let summary = camera_panel_summary(&scene, camera).expect("summary");
+        assert!(
+            summary.projection.contains("透视") && summary.projection.contains("60.0°"),
+            "投影行应给出统一 Projection 的参数：{}",
+            summary.projection
+        );
+        assert!(summary.pose.is_none());
+
+        // 声明 pose=transform 但没有 Transform3D：必须给出"回退到组件姿态"的警告。
+        scene.entities.get_mut(&camera).unwrap().components.insert(
+            "Camera3D".into(),
+            "position=0,0,6;target=0,0,0;fov=60;near=0.1;far=100;pose=transform".into(),
+        );
+        let missing = camera_panel_summary(&scene, camera).expect("summary");
+        let pose = missing.pose.expect("pose line");
+        assert!(pose.warning, "缺 Transform3D 时应是警告：{}", pose.text);
+        assert!(pose.text.contains("没有 Transform3D"), "{}", pose.text);
+
+        // 补上绕 Y 转 90° 的 Transform3D：生效姿态必须显示变换后的位置与视线（-X）。
+        scene.entities.get_mut(&camera).unwrap().components.insert(
+            "Transform3D".into(),
+            "position=20,5,0;rotation=0,0.7071068,0,0.7071068;scale=1,1,1".into(),
+        );
+        let posed = camera_panel_summary(&scene, camera).expect("summary");
+        let pose = posed.pose.expect("pose line");
+        assert!(!pose.warning, "{}", pose.text);
+        assert!(
+            pose.text.contains("20.000") && pose.text.contains("-1.000"),
+            "生效姿态应来自 Transform3D 且视线为 -X：{}",
+            pose.text
+        );
+
+        // 非法的 Transform3D 串同样是警告（不静默当作可用）。
+        scene
+            .entities
+            .get_mut(&camera)
+            .unwrap()
+            .components
+            .insert("Transform3D".into(), "position=oops".into());
+        let broken = camera_panel_summary(&scene, camera).expect("summary");
+        assert!(broken.pose.expect("pose line").warning);
     }
 
     fn entity() -> SceneEntity {

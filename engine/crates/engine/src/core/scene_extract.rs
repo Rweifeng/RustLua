@@ -1,12 +1,12 @@
 //! Shared extraction of serialized scene render components.
 
 use crate::core::{
-    camera3d::Camera3D,
+    camera::Camera3D,
     light::Light,
     math3d::Mat4,
     mesh3d::MeshRenderer,
     scene::{Scene, SceneEntityId},
-    transform3d::Transform3D,
+    transform::Transform3D,
 };
 use std::{error::Error, fmt};
 
@@ -112,7 +112,54 @@ pub fn extract_serialized_scene_3d(scene: &Scene) -> SerializedScene3d {
         }
         if let Some(value) = entity.components.get("Camera3D") {
             match Camera3D::from_component_str(value) {
-                Ok(camera) => result.cameras.push((entity.id, camera)),
+                Ok(camera) => {
+                    // WP5：`pose=transform` 的相机，姿态取实体的 `Transform3D`。取不到就**报诊断**
+                    // 并保持组件姿态——沉默地"看起来没生效"是最难查的一类问题。
+                    let camera = if camera.pose_from_transform {
+                        match entity
+                            .components
+                            .get("Transform3D")
+                            .map(|raw| Transform3D::from_component_str(raw))
+                        {
+                            Some(Ok(pose)) => match camera.with_pose(pose) {
+                                Ok(posed) => posed,
+                                Err(error) => {
+                                    result.diagnostics.push(SceneExtractDiagnostic {
+                                        entity: entity.id,
+                                        name: entity.name.clone(),
+                                        component: "Camera3D".to_owned(),
+                                        message: format!(
+                                            "pose=transform 无法应用（{error}），已回退到组件姿态"
+                                        ),
+                                    });
+                                    camera
+                                }
+                            },
+                            Some(Err(error)) => {
+                                result.diagnostics.push(SceneExtractDiagnostic {
+                                    entity: entity.id,
+                                    name: entity.name.clone(),
+                                    component: "Transform3D".to_owned(),
+                                    message: error.to_string(),
+                                });
+                                camera
+                            }
+                            None => {
+                                result.diagnostics.push(SceneExtractDiagnostic {
+                                    entity: entity.id,
+                                    name: entity.name.clone(),
+                                    component: "Camera3D".to_owned(),
+                                    message: "Camera3D 声明了 pose=transform，但该实体没有 Transform3D，已回退到组件姿态"
+                                        .to_owned(),
+                                });
+                                camera
+                            }
+                        }
+                    } else {
+                        camera
+                    };
+                    result.cameras.push((entity.id, camera));
+                }
                 Err(error) => result.diagnostics.push(SceneExtractDiagnostic {
                     entity: entity.id,
                     name: entity.name.clone(),
@@ -291,5 +338,74 @@ mod tests {
         assert_eq!(extracted.entities[0].id, SceneEntityId(1));
         assert_eq!(extracted.diagnostics.len(), 1);
         assert_eq!(extracted.diagnostics[0].entity, SceneEntityId(2));
+    }
+
+    /// WP5：`pose=transform` 的相机，姿态取实体的 `Transform3D`；取不到时**必须报诊断**
+    /// 并回退到组件姿态——沉默地"看起来没生效"是最难查的一类问题。
+    #[test]
+    fn camera_pose_from_transform_is_extracted_and_diagnosed_when_missing() {
+        let mut scene = Scene::new("3d");
+        // ① 同时有 Transform3D 与 Camera3D(pose=transform)：位置取变换位置。
+        scene.add_entity(SceneEntityId(1), "Posed", None).unwrap();
+        scene
+            .entities
+            .get_mut(&SceneEntityId(1))
+            .unwrap()
+            .components
+            .insert(
+                "Transform3D".into(),
+                "position=7,8,9;rotation=0,0,0,1;scale=1,1,1".into(),
+            );
+        scene
+            .entities
+            .get_mut(&SceneEntityId(1))
+            .unwrap()
+            .components
+            .insert(
+                "Camera3D".into(),
+                "position=0,0,6;target=0,0,0;fov=60;near=0.1;far=100;pose=transform".into(),
+            );
+        // ② 声明了 pose=transform 但没有 Transform3D：必须报诊断。
+        scene.add_entity(SceneEntityId(2), "Unposed", None).unwrap();
+        scene
+            .entities
+            .get_mut(&SceneEntityId(2))
+            .unwrap()
+            .components
+            .insert(
+                "Camera3D".into(),
+                "position=1,2,3;target=0,0,0;fov=60;near=0.1;far=100;pose=transform".into(),
+            );
+
+        let extracted = extract_serialized_scene_3d(&scene);
+        assert_eq!(extracted.cameras.len(), 2);
+        let posed = extracted
+            .cameras
+            .iter()
+            .find(|(id, _)| *id == SceneEntityId(1))
+            .map(|(_, camera)| *camera)
+            .expect("posed camera");
+        assert!((posed.position.x - 7.0).abs() < 1e-4);
+        assert!((posed.position.y - 8.0).abs() < 1e-4);
+        assert!((posed.position.z - 9.0).abs() < 1e-4);
+        assert!(posed.pose_from_transform);
+
+        let unposed = extracted
+            .cameras
+            .iter()
+            .find(|(id, _)| *id == SceneEntityId(2))
+            .map(|(_, camera)| *camera)
+            .expect("unposed camera");
+        assert!(
+            (unposed.position.z - 3.0).abs() < 1e-4,
+            "没有 Transform3D 时保持组件姿态"
+        );
+        assert_eq!(extracted.diagnostics.len(), 1);
+        assert_eq!(extracted.diagnostics[0].entity, SceneEntityId(2));
+        assert!(
+            extracted.diagnostics[0].message.contains("pose=transform"),
+            "诊断必须点名 pose=transform：{}",
+            extracted.diagnostics[0].message
+        );
     }
 }

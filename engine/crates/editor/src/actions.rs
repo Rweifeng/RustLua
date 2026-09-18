@@ -297,6 +297,9 @@ impl EditorApp {
         self.scene_runtime_revision = None;
         self.scene_view_cache_2d = crate::SceneViewCache2d::default();
         self.scene_view_cache_3d = crate::SceneViewCache3d::default();
+        // WP1-4：typed 提取也按 revision 缓存，切文档时必须一并失效，否则新文档会沿用
+        // 上一份文档的 3D 实体列表（两个文档 revision 可能都是 0）。
+        self.scene_view_3d_typed = crate::SceneView3dTyped::default();
         self.scene_state.preview.clear();
         self.scene_state.preview3d_transform.clear();
         self.scene_state.gizmo_drag = None;
@@ -531,6 +534,7 @@ impl EditorApp {
                     light,
                     collider3d,
                     text,
+                    world_text,
                     image,
                     ui_layout,
                     container,
@@ -568,6 +572,7 @@ impl EditorApp {
                 light,
                 collider3d,
                 text,
+                world_text,
                 image,
                 ui_layout,
                 container,
@@ -645,6 +650,7 @@ impl EditorApp {
             light: has("Light").then_some(self.light),
             collider3d: has("Collider3d").then_some(self.collider3d.clone()),
             text: has("Text").then_some(self.text.clone()),
+            world_text: has("WorldText").then_some(self.world_text.clone()),
             image: has("Image").then_some(self.image.clone()),
             ui_layout: has("UiLayout").then_some(self.ui_layout.clone()),
             container: has("Container").then_some(self.container.clone()),
@@ -978,6 +984,7 @@ impl EditorApp {
             self.light = snapshot.light.unwrap_or_default();
             self.collider3d = snapshot.collider3d.unwrap_or_default();
             self.text = snapshot.text.unwrap_or_default();
+            self.world_text = snapshot.world_text.unwrap_or_default();
             self.image = snapshot.image.unwrap_or_default();
             self.ui_layout = snapshot.ui_layout.unwrap_or_default();
             self.container = snapshot.container.unwrap_or_default();
@@ -994,6 +1001,10 @@ impl EditorApp {
                     pivot: engine::core::transform::Vec2::new(0.5, 0.5),
                     tint: [1.0; 4],
                     sorting: engine::core::sprite::SpriteSorting::default(),
+
+                    flip_x: false,
+                    flip_y: false,
+                    z: 0.0,
                 });
             self.tilemap.map = scene
                 .scene
@@ -1020,6 +1031,7 @@ impl EditorApp {
                             cols: 1,
                             frame_rate: 1.0,
                             looped: true,
+                            events: Vec::new(),
                         }],
                     )
                     .expect("default animation")
@@ -1067,6 +1079,7 @@ impl EditorApp {
                 cols: 1,
                 frame_rate: 1.0,
                 looped: true,
+                events: Vec::new(),
             }],
         )
         .expect("default animation");
@@ -1577,7 +1590,7 @@ mod tests {
     use super::*;
     use crate::{EditorApp, EditorCamera, SceneViewCache2d, SceneViewCache3d};
     use editor::open_project;
-    use engine::core::{logging::LogSink, transform::Vec2, transform3d::Transform3D};
+    use engine::core::{logging::LogSink, transform::Transform3D, transform::Vec2};
     use std::{
         fs,
         path::{Path, PathBuf},
@@ -1687,6 +1700,10 @@ mod tests {
                 layer: "world".to_owned(),
                 order,
             },
+
+            flip_x: false,
+            flip_y: false,
+            z: 0.0,
         };
         let targets = vec![
             SpriteOrderTarget {
@@ -1760,6 +1777,61 @@ mod tests {
         assert!(app.scene_state.preview3d_transform.is_empty());
         assert_eq!(app.preview_diagnostic, None);
         assert!(app.scene_view_repaint_pending);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// WP1-4：3D 视图的 typed 提取按文档 revision 缓存，并且切文档后必须失效——
+    /// 否则新文档会沿用上一份文档的 3D 实体列表（两个文档 revision 都可能为 0）。
+    #[test]
+    fn scene_view_3d_typed_cache_follows_document_and_resets_on_switch() {
+        let root = copy_sample_project("wp1-04-typed");
+        let project = open_project(&root).unwrap();
+        let mut app = EditorApp::new(project, None, LogSink::new(64));
+        app.refresh_resources();
+        app.open_scene_resource(PathBuf::from("scenes/demo3d.scene"));
+
+        app.ensure_scene_view_3d_typed();
+        assert!(
+            !app.scene_view_3d_typed.entities.is_empty(),
+            "demo3d 应提取出 3D 实体"
+        );
+        assert!(app.scene_view_3d_typed.diagnostics.is_empty());
+        assert_eq!(
+            app.scene_view_3d_typed.revision,
+            app.document.current_scene.as_ref().map(|doc| doc.revision)
+        );
+
+        // 同一 revision 下不重算：清空缓存内容当探针，再调用必须保持清空。
+        app.scene_view_3d_typed.entities.clear();
+        app.ensure_scene_view_3d_typed();
+        assert!(
+            app.scene_view_3d_typed.entities.is_empty(),
+            "revision 未变时必须命中缓存，不得重新提取"
+        );
+
+        // 切换文档 → 缓存整体失效。文档此时是干净的，否则会被 E06 未保存保护拦下、
+        // 实际不切文档（那样断言的就是另一回事）。
+        app.open_scene_resource(PathBuf::from("scenes/menu.scene"));
+        assert_eq!(app.scene_view_3d_typed.revision, None);
+        assert!(app.scene_view_3d_typed.entities.is_empty());
+
+        // 重新打开 demo3d 并编辑：revision 自增后必须重新提取（同样清空当探针）。
+        app.open_scene_resource(PathBuf::from("scenes/demo3d.scene"));
+        app.ensure_scene_view_3d_typed();
+        assert!(!app.scene_view_3d_typed.entities.is_empty());
+        let before = app.scene_view_3d_typed.revision;
+        app.scene_view_3d_typed.entities.clear();
+        app.document.current_scene.as_mut().unwrap().mark_dirty();
+        assert_ne!(
+            app.document.current_scene.as_ref().map(|doc| doc.revision),
+            before
+        );
+        app.ensure_scene_view_3d_typed();
+        assert!(
+            !app.scene_view_3d_typed.entities.is_empty(),
+            "revision 变化后必须重新提取"
+        );
 
         let _ = fs::remove_dir_all(root);
     }
