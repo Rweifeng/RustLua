@@ -186,10 +186,67 @@ impl Default for LocalTransform {
     }
 }
 
+/// 派生出来的**世界变换**（docs/54 §8-②）：唯一真源，由统一传播系统写入。
+///
+/// 存的是**矩阵**而不是"2D/3D 各一份组件"：世界变换只有一个，2D 与 3D 只是它的两种视图
+/// （`plane` / `space`）。此前 2D/3D 各有自己的派生组件（`WorldTransform` /
+/// `WorldTransform3D`），"谁是权威"取决于消费端读哪一个；现在两者都是同一份矩阵的视图。
+///
+/// 视图字段是 `Option`：剪切/镜像这类组合**矩阵本身完全正确**（`Global(child) =
+/// Global(parent) * Local(child)`），但压不成 TRS。此时视图退回局部值并记诊断，而矩阵仍是真相
+/// ——提取路径可以直接用矩阵，不必因为"压不平"而丢掉世界变换。
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct GlobalTransform(pub Mat4);
+pub struct GlobalTransform {
+    matrix: Mat4,
+    /// 平面（2D）视图：该实体有 2D 局部变换时一定有值（压不平时退回局部值）。
+    plane: Option<Transform>,
+    /// 空间（3D）视图：该实体有 3D 局部变换时一定有值。
+    space: Option<Transform3D>,
+}
 
 impl GlobalTransform {
+    /// 由矩阵构造（没有视图：纯数学用途，例如迁移与换父）。
+    #[must_use]
+    pub const fn from_matrix(matrix: Mat4) -> Self {
+        Self {
+            matrix,
+            plane: None,
+            space: None,
+        }
+    }
+
+    /// 同时给出两种视图（传播使用；视图为 `None` 表示该实体没有对应空间的局部变换）。
+    #[must_use]
+    pub const fn with_views(
+        matrix: Mat4,
+        plane: Option<Transform>,
+        space: Option<Transform3D>,
+    ) -> Self {
+        Self {
+            matrix,
+            plane,
+            space,
+        }
+    }
+
+    /// 世界矩阵——派生真源。
+    #[must_use]
+    pub const fn matrix(self) -> Mat4 {
+        self.matrix
+    }
+
+    /// 平面（2D）视图。
+    #[must_use]
+    pub const fn plane(self) -> Option<Transform> {
+        self.plane
+    }
+
+    /// 空间（3D）视图。
+    #[must_use]
+    pub const fn space(self) -> Option<Transform3D> {
+        self.space
+    }
+
     /// 求相对给定父世界变换的局部变换——"换父保持世界位置"的核心一步。
     pub fn local_relative_to(
         self,
@@ -198,12 +255,12 @@ impl GlobalTransform {
         let relative = match parent {
             Some(parent) => {
                 parent
-                    .0
+                    .matrix
                     .inverse()
                     .map_err(|_| DecomposeError::NotInvertible)?
-                    * self.0
+                    * self.matrix
             }
-            None => self.0,
+            None => self.matrix,
         };
         LocalTransform::from_matrix(relative)
     }
@@ -316,7 +373,7 @@ pub fn propagate_all(
         state: &mut BTreeMap<SceneEntityId, u8>,
     ) -> Result<Mat4, PropagationError> {
         match state.get(&entity).copied() {
-            Some(2) => return Ok(globals[&entity].0),
+            Some(2) => return Ok(globals[&entity].matrix()),
             Some(1) => return Err(PropagationError::Cycle(entity)),
             _ => {}
         }
@@ -334,7 +391,7 @@ pub fn propagate_all(
         } else {
             local
         };
-        globals.insert(entity, GlobalTransform(global));
+        globals.insert(entity, GlobalTransform::from_matrix(global));
         state.insert(entity, 2);
         Ok(global)
     }
@@ -479,12 +536,13 @@ impl TransformTree {
                             entity: current,
                             parent,
                         })?
-                        .0
+                        .matrix()
                         * local
                 }
                 None => local,
             };
-            self.globals.insert(current, GlobalTransform(global));
+            self.globals
+                .insert(current, GlobalTransform::from_matrix(global));
             self.dirty.remove(&current);
             self.recomputes += 1;
         }
@@ -494,7 +552,7 @@ impl TransformTree {
 
     /// 世界位置（平移分量）。便捷入口，2D/3D 共用。
     pub fn world_position(&mut self, entity: SceneEntityId) -> Result<Vec3, PropagationError> {
-        let global = self.global(entity)?.0;
+        let global = self.global(entity)?.matrix();
         Ok(Vec3::new(
             global.columns[3][0],
             global.columns[3][1],
@@ -647,7 +705,9 @@ pub fn migrate_v2_hierarchy(scene: &Scene) -> (TransformTree, MigrationReport) {
             let _ = error;
             continue;
         }
-        match GlobalTransform(own_world).local_relative_to(Some(GlobalTransform(parent_world))) {
+        match GlobalTransform::from_matrix(own_world)
+            .local_relative_to(Some(GlobalTransform::from_matrix(parent_world)))
+        {
             Ok(local) => {
                 tree.set_local(entity.id, local);
                 report.converted.push(entity.id);
@@ -715,7 +775,9 @@ pub fn migrate_scene_to_local_space(scene: &Scene) -> (SpatialMigration, Migrati
             report.skipped.push(entity.id);
             continue;
         };
-        match GlobalTransform(own_world).local_relative_to(Some(GlobalTransform(parent_world))) {
+        match GlobalTransform::from_matrix(own_world)
+            .local_relative_to(Some(GlobalTransform::from_matrix(parent_world)))
+        {
             Ok(local) => match encode_local_checked(kind, local) {
                 Some(encoded) => {
                     migrated.locals.insert(entity.id, encoded);
@@ -850,7 +912,7 @@ mod tests {
         }
         let globals = propagate_all(&locals, &parents).unwrap();
         let point = globals[&SceneEntityId(100)]
-            .0
+            .matrix()
             .transform_point(Vec3::ZERO)
             .unwrap();
         assert!((point.x - 100.0).abs() < 1e-4);
@@ -1313,9 +1375,9 @@ mod tests {
         parents.insert(SceneEntityId(2), SceneEntityId(1));
         let globals = propagate_all(&locals, &parents).expect("propagate migrated locals");
         let world = Vec3::new(
-            globals[&SceneEntityId(2)].0.columns[3][0],
-            globals[&SceneEntityId(2)].0.columns[3][1],
-            globals[&SceneEntityId(2)].0.columns[3][2],
+            globals[&SceneEntityId(2)].matrix().columns[3][0],
+            globals[&SceneEntityId(2)].matrix().columns[3][1],
+            globals[&SceneEntityId(2)].matrix().columns[3][2],
         );
         assert!(
             (world.x - 3.0).abs() < 1e-3 && (world.y - 5.0).abs() < 1e-3,

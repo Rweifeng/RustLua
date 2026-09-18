@@ -21,14 +21,16 @@ use crate::core::{
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Parent(pub EntityId);
 
-/// 传播算出来的世界变换（2D 空间）。**只有开启空间继承时才会存在**——继承关闭时消费者退回
-/// 局部 `Transform`，因此关掉开关就是"逐字节回到旧行为"的回滚档。
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct WorldTransform(pub Transform);
-
-/// 传播算出来的世界变换（3D 空间）。
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct WorldTransform3D(pub Transform3D);
+/// 传播算出来的**世界变换**——doc 意义上的 `GlobalTransform`，由本模块的传播系统唯一派生
+/// （docs/54 §8-②）。
+///
+/// 收敛前这里是**两个**组件（`WorldTransform(Transform)` / `WorldTransform3D(Transform3D)`），
+/// 谁是权威取决于消费端读哪一个。现在只有一个组件，且它直接带**矩阵**：剪切/镜像的父子组合
+/// 矩阵依然正确，只是 2D/3D 的 TRS 视图退化为局部值（同时记诊断，像素行为与收敛前一致）。
+///
+/// **只有开启空间继承时才会存在**——继承关闭时消费者退回局部 `Transform`/`Transform3D`，
+/// 因此关掉开关就是"逐字节回到旧行为"的回滚档。
+pub use crate::core::spatial_transform::GlobalTransform;
 
 /// 一个没能建立空间继承的实体：保留局部值当世界值。
 #[derive(Clone, Debug, PartialEq)]
@@ -43,6 +45,11 @@ pub enum SpatialDiagnosticReason {
     Cycle,
     /// 局部或组合结果无法无损表达为 TRS（剪切/镜像/退化/奇异）。
     NotRepresentable(DecomposeError),
+    /// 同一实体同时带了 2D 与 3D 局部变换（`Transform` + `Transform3D`）＝**两份局部真源**。
+    ///
+    /// docs/54 §8-② 要求"运行时只有一份权威 LocalTransform"；这种数据没有唯一权威，因此明确
+    /// 报告而不是静默挑一个（矩阵按 3D 视图取，因为 3D 是 2D 的超集空间）。
+    AmbiguousLocalTransform,
 }
 
 /// 传播结果。
@@ -64,17 +71,12 @@ pub fn propagate_spatial(world: &mut World, enabled: bool) -> SpatialReport {
     let mut report = SpatialReport::default();
     if !enabled {
         // 关掉继承时通常**没有**世界变换组件（从没打开过）：此时直接返回，不做任何遍历。
-        // 逐帧的关闭路径因此是"两次组件表查询"，而不是"遍历所有实体再删一遍"。
-        if world.entities_with::<WorldTransform>().is_empty()
-            && world.entities_with::<WorldTransform3D>().is_empty()
-        {
+        // 逐帧的关闭路径因此是"一次组件表查询"，而不是"遍历所有实体再删一遍"。
+        if world.entities_with::<GlobalTransform>().is_empty() {
             return report;
         }
-        for entity in world.entities_with::<WorldTransform>() {
-            let _ = world.remove::<WorldTransform>(entity);
-        }
-        for entity in world.entities_with::<WorldTransform3D>() {
-            let _ = world.remove::<WorldTransform3D>(entity);
+        for entity in world.entities_with::<GlobalTransform>() {
+            let _ = world.remove::<GlobalTransform>(entity);
         }
         return report;
     }
@@ -131,6 +133,11 @@ fn propagate_entities(world: &mut World, nodes: &[EntityNode], report: &mut Spat
         .collect::<std::collections::BTreeMap<_, _>>();
     // `state`: 0 = 未处理，1 = 处理中（在栈上，遇到即为环），2 = 已完成。
     let mut state = vec![0_u8; nodes.len()];
+    // 每个空间的**世界矩阵**：`Global(child) = Global(parent) * Local(child)`。矩阵是派生真源，
+    // 剪切/镜像时它依然正确，只是压不成 TRS 视图。
+    let mut matrix_2d: Vec<Option<Mat4>> = vec![None; nodes.len()];
+    let mut matrix_3d: Vec<Option<Mat4>> = vec![None; nodes.len()];
+    // 每个空间的 TRS **视图**：压不平时退回局部值（像素行为与收敛前一致）并记诊断。
     let mut world_2d = vec![None; nodes.len()];
     let mut world_3d = vec![None; nodes.len()];
     for start in 0..nodes.len() {
@@ -163,9 +170,15 @@ fn propagate_entities(world: &mut World, nodes: &[EntityNode], report: &mut Spat
                 // 成环的实体同样保留局部值当世界值（不变量：开启继承 ⇒ 有局部变换就有世界变换）。
                 if nodes[index].local_2d.is_some() {
                     world_2d[index] = nodes[index].local_2d;
+                    matrix_2d[index] = nodes[index]
+                        .local_2d
+                        .and_then(|local| local_matrix_2d(local).ok());
                 }
                 if nodes[index].local_3d.is_some() {
                     world_3d[index] = nodes[index].local_3d;
+                    matrix_3d[index] = nodes[index]
+                        .local_3d
+                        .and_then(|local| local.model_matrix().ok());
                 }
                 report.diagnostics.push(SpatialDiagnostic {
                     entity: nodes[index].id,
@@ -187,9 +200,11 @@ fn propagate_entities(world: &mut World, nodes: &[EntityNode], report: &mut Spat
                 state[index] = 2;
                 if node.local_2d.is_some() {
                     world_2d[index] = node.local_2d;
+                    matrix_2d[index] = node.local_2d.and_then(|local| local_matrix_2d(local).ok());
                 }
                 if node.local_3d.is_some() {
                     world_3d[index] = node.local_3d;
+                    matrix_3d[index] = node.local_3d.and_then(|local| local.model_matrix().ok());
                 }
                 report.diagnostics.push(SpatialDiagnostic {
                     entity: node.id,
@@ -199,11 +214,23 @@ fn propagate_entities(world: &mut World, nodes: &[EntityNode], report: &mut Spat
             }
             let (parent_2d, parent_3d) =
                 parent_index.map_or((None, None), |parent| (world_2d[parent], world_3d[parent]));
+            let (parent_matrix_2d, parent_matrix_3d) = parent_index
+                .map_or((None, None), |parent| {
+                    (matrix_2d[parent], matrix_3d[parent])
+                });
             let mut ok = false;
             if let Some(local) = node.local_2d {
+                // 矩阵先算准：`Global(child) = Global(parent) * Local(child)`，剪切/镜像时
+                // 矩阵依然正确（只是压不成 TRS）。
+                if let Ok(local_matrix) = local_matrix_2d(local) {
+                    matrix_2d[index] = Some(match parent_matrix_2d {
+                        Some(parent) => parent * local_matrix,
+                        None => local_matrix,
+                    });
+                }
                 // 有父就组合；组合不了（剪切/镜像）或没有父就**保留局部值当世界值**并记诊断——
                 // 这样"开启继承 ⇒ 每个有局部变换的实体都有世界变换"是一条可靠不变量，
-                // 提取路径因此可以整条换成 `for_each2::<WorldTransform, _>`，不必在每个实体上
+                // 提取路径因此可以整条换成 `for_each2::<GlobalTransform, _>`，不必在每个实体上
                 // 多做一次 `get`（WP6 量到那正是热点）。
                 match parent_2d {
                     Some(parent) => match compose_2d(parent, local) {
@@ -227,6 +254,12 @@ fn propagate_entities(world: &mut World, nodes: &[EntityNode], report: &mut Spat
                 }
             }
             if let Some(local) = node.local_3d {
+                if let Ok(local_matrix) = local.model_matrix() {
+                    matrix_3d[index] = Some(match parent_matrix_3d {
+                        Some(parent) => parent * local_matrix,
+                        None => local_matrix,
+                    });
+                }
                 match parent_3d {
                     Some(parent) => match compose_3d(parent, local) {
                         Ok(composed) => {
@@ -248,31 +281,45 @@ fn propagate_entities(world: &mut World, nodes: &[EntityNode], report: &mut Spat
                     }
                 }
             }
+            // docs/54 §8-②：一个实体同时有 2D 与 3D 局部变换 = **两份局部真源**。
+            // 不静默挑一个当权威：明确报告，让作者去删掉多余的那个（世界矩阵此时按 3D 视图取，
+            // 因为 3D 是 2D 的超集空间）。
+            if node.local_2d.is_some() && node.local_3d.is_some() {
+                report.diagnostics.push(SpatialDiagnostic {
+                    entity: node.id,
+                    reason: SpatialDiagnosticReason::AmbiguousLocalTransform,
+                });
+            }
             state[index] = 2;
             if ok {
                 report.propagated += 1;
             }
         }
     }
-    // 写回组件：只在真的算出世界变换时插入。
+    // 写回**唯一**的派生组件 `GlobalTransform`：矩阵是真相，2D/3D 视图由同一次传播给出。
+    // 没有局部变换的实体不写（也不残留上一帧的值）。
     for (index, node) in nodes.iter().enumerate() {
-        match world_2d[index] {
-            Some(transform) => {
-                let _ = world.insert(node.id, WorldTransform(transform));
+        let matrix = matrix_3d[index].or(matrix_2d[index]);
+        match matrix {
+            Some(matrix) => {
+                let _ = world.insert(
+                    node.id,
+                    GlobalTransform::with_views(matrix, world_2d[index], world_3d[index]),
+                );
             }
             None => {
-                let _ = world.remove::<WorldTransform>(node.id);
-            }
-        }
-        match world_3d[index] {
-            Some(transform) => {
-                let _ = world.insert(node.id, WorldTransform3D(transform));
-            }
-            None => {
-                let _ = world.remove::<WorldTransform3D>(node.id);
+                let _ = world.remove::<GlobalTransform>(node.id);
             }
         }
     }
+}
+
+/// 2D 局部变换的矩阵。非法（非有限/退化）时返回错误——此时矩阵不写，视图按既有规则退回局部值。
+fn local_matrix_2d(local: Transform) -> Result<Mat4, DecomposeError> {
+    LocalTransform::from_2d(local)
+        .map_err(|_| DecomposeError::NotAffine)?
+        .matrix()
+        .map_err(|_| DecomposeError::NotAffine)
 }
 
 /// 2D 组合：`world = parent ∘ local`，用矩阵算再分解（剪切/镜像一律拒绝）。
@@ -328,31 +375,44 @@ fn rotation_z(local: LocalTransform) -> f32 {
     2.0 * local.rotation.z.atan2(local.rotation.w)
 }
 
-/// 读实体的**世界**变换（2D）：有传播结果就用它，否则退回局部 `Transform`。
+/// 读实体的**世界**变换（2D）：有传播结果就用它的平面视图，否则退回局部 `Transform`。
 pub fn world_transform_2d(
     world: &World,
     entity: EntityId,
 ) -> Result<Option<Transform>, WorldError> {
-    if let Ok(Some(world)) = world.get::<WorldTransform>(entity) {
-        return Ok(Some(world.0));
+    if let Ok(Some(global)) = world.get::<GlobalTransform>(entity)
+        && let Some(plane) = global.plane()
+    {
+        return Ok(Some(plane));
     }
     Ok(world.get::<Transform>(entity)?.copied())
 }
 
-/// 读实体的**世界**变换（3D）：有传播结果就用它，否则退回局部 `Transform3D`。
+/// 读实体的**世界**变换（3D）：有传播结果就用它的空间视图，否则退回局部 `Transform3D`。
 pub fn world_transform_3d(
     world: &World,
     entity: EntityId,
 ) -> Result<Option<Transform3D>, WorldError> {
-    if let Ok(Some(world)) = world.get::<WorldTransform3D>(entity) {
-        return Ok(Some(world.0));
+    if let Ok(Some(global)) = world.get::<GlobalTransform>(entity)
+        && let Some(space) = global.space()
+    {
+        return Ok(Some(space));
     }
     Ok(world.get::<Transform3D>(entity)?.copied())
 }
 
-/// 世界矩阵（3D）——渲染提取用。没有 3D 变换时返回 `None`。
+/// 读实体的**世界矩阵**（派生真源本身）——渲染提取用。
+///
+/// 收敛前这里是从分解出来的 `Transform3D` 再算一遍模型矩阵；现在直接返回传播系统算出的
+/// `Global(parent) * Local(child)`，因此**剪切/镜像的父子组合也能拿到正确的世界矩阵**
+/// （旧路径此时只能退回局部值）。没有 3D 局部变换时返回 `None`。
 pub fn world_matrix_3d(world: &World, entity: EntityId) -> Result<Option<Mat4>, WorldError> {
-    let Some(transform) = world_transform_3d(world, entity)? else {
+    if let Ok(Some(global)) = world.get::<GlobalTransform>(entity)
+        && global.space().is_some()
+    {
+        return Ok(Some(global.matrix()));
+    }
+    let Some(transform) = world.get::<Transform3D>(entity)?.copied() else {
         return Ok(None);
     };
     Ok(transform.model_matrix().ok())
@@ -361,6 +421,7 @@ pub fn world_matrix_3d(world: &World, entity: EntityId) -> Result<Option<Mat4>, 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::math3d::{Quat, Vec3};
     use crate::core::transform::Vec2;
 
     fn spawn_with(world: &mut World, parent: Option<EntityId>, transform: Transform) -> EntityId {
@@ -389,7 +450,7 @@ mod tests {
         let report = propagate_spatial(&mut world, false);
         assert_eq!(report.propagated, 0);
         assert!(report.diagnostics.is_empty());
-        assert!(world.get::<WorldTransform>(child).unwrap().is_none());
+        assert!(world.get::<GlobalTransform>(child).unwrap().is_none());
         assert_eq!(
             world_transform_2d(&world, child).unwrap(),
             Some(Transform::from_position(Vec2::new(3.0, 5.0))),
@@ -431,7 +492,7 @@ mod tests {
 
         // 再关掉继承：世界变换组件被清掉，退回局部值。
         propagate_spatial(&mut world, false);
-        assert!(world.get::<WorldTransform>(child).unwrap().is_none());
+        assert!(world.get::<GlobalTransform>(child).unwrap().is_none());
     }
 
     /// 非均匀父缩放 + 子旋转 = 剪切，TRS 表达不了 ⇒ **拒绝**并保留局部值，不近似。
@@ -467,9 +528,12 @@ mod tests {
             SpatialDiagnosticReason::NotRepresentable(_)
         ));
         // 被拒绝的实体**仍然**有世界变换，但值等于它自己的局部值（不变量：开启继承 ⇒
-        // 有局部变换就有世界变换；提取路径因此整条换成 `for_each2::<WorldTransform, _>` 也不会漏画）。
+        // 有局部变换就有世界变换；提取路径因此整条换成 `for_each2::<GlobalTransform, _>` 也不会漏画）。
         assert_eq!(
-            world.get::<WorldTransform>(child).unwrap().map(|w| w.0),
+            world
+                .get::<GlobalTransform>(child)
+                .unwrap()
+                .and_then(|g| g.plane()),
             Some(Transform {
                 position: Vec2::new(1.0, 0.0),
                 rotation: std::f32::consts::FRAC_PI_4,
@@ -477,6 +541,82 @@ mod tests {
             }),
             "含剪切的实体保留局部值当世界值"
         );
+        // docs/54 §8-②：**矩阵不受影响**——`Global(child) = Global(parent) * Local(child)` 在
+        // 剪切下依然精确。派生真源因此比"退化后的 TRS 视图"更强：3D 提取直接用它。
+        let global = world
+            .get::<GlobalTransform>(child)
+            .unwrap()
+            .expect("child has a global transform");
+        let expected = {
+            let parent = LocalTransform::from_2d(Transform {
+                position: Vec2::zero(),
+                rotation: 0.0,
+                scale: Vec2::new(2.0, 1.0),
+            })
+            .unwrap()
+            .matrix()
+            .unwrap();
+            let local = LocalTransform::from_2d(Transform {
+                position: Vec2::new(1.0, 0.0),
+                rotation: std::f32::consts::FRAC_PI_4,
+                scale: Vec2::new(1.0, 1.0),
+            })
+            .unwrap()
+            .matrix()
+            .unwrap();
+            parent * local
+        };
+        assert_eq!(
+            global.matrix(),
+            expected,
+            "剪切组合下的世界矩阵必须仍是 parent ∘ local（而不是退回局部值）"
+        );
+    }
+
+    /// docs/54 §8-②：同一实体同时带 `Transform` 与 `Transform3D` ＝两份局部真源，必须**报告**
+    /// 而不是静默挑一个；世界矩阵此时按 3D 视图（超集空间）取。
+    #[test]
+    fn ambiguous_local_transforms_are_reported_and_the_3d_matrix_wins() {
+        let mut world = World::new();
+        let entity = world.spawn();
+        world
+            .insert(entity, Transform::from_position(Vec2::new(3.0, 0.0)))
+            .unwrap();
+        world
+            .insert(
+                entity,
+                Transform3D {
+                    position: Vec3::new(0.0, 7.0, 0.0),
+                    rotation: Quat::identity(),
+                    scale: Vec3::new(1.0, 1.0, 1.0),
+                },
+            )
+            .unwrap();
+        // 有 `Parent` 才会走传播（与运行时的 `spatial_active` 判据一致）。
+        let parent = world.spawn();
+        world
+            .insert(parent, Transform::from_position(Vec2::zero()))
+            .unwrap();
+        world.insert(entity, Parent(parent)).unwrap();
+
+        let report = propagate_spatial(&mut world, true);
+        assert!(
+            report.diagnostics.iter().any(|d| d.entity == entity
+                && d.reason == SpatialDiagnosticReason::AmbiguousLocalTransform),
+            "同存两种局部变换必须被点名：{report:?}"
+        );
+        let global = world
+            .get::<GlobalTransform>(entity)
+            .unwrap()
+            .expect("global transform");
+        assert_eq!(
+            global.matrix().columns[3][1],
+            7.0,
+            "矩阵按 3D 视图取（3D 是 2D 的超集空间）"
+        );
+        // 两个视图都还在：2D 视图来自 2D 链、3D 视图来自 3D 链。
+        assert_eq!(global.plane().expect("plane view").position.x, 3.0);
+        assert_eq!(global.space().expect("space view").position.y, 7.0);
     }
 
     /// 成环不崩：环上实体全部保留局部值并逐条报告。
@@ -547,5 +687,90 @@ mod tests {
             "绕 Y 转 90° 后局部 +X 应指向 -Z：{:?}",
             world_child.position
         );
+    }
+
+    /// docs/54 §8-②：世界侧的传播（`hierarchy`，容错、逐帧、面向 `World`）与加载侧的求解
+    /// （`spatial_transform::propagate_all`，严格、面向场景字典）**必须给出同一份世界矩阵**。
+    ///
+    /// 两者是同一套语义的两个入口（一个容忍坏数据并记诊断，一个直接报错），因此"它们算得一样"
+    /// 是要被测试钉住的不变量：任何一侧改了组合规则，这条立刻判红。
+    #[test]
+    fn runtime_propagation_agrees_with_the_scene_side_solver() {
+        use crate::core::scene::SceneEntityId;
+        use crate::core::spatial_transform::{LocalTransform as MathLocal, propagate_all};
+        use std::collections::BTreeMap;
+
+        let mut world = World::new();
+        // 深度 3 的 3D 链：父旋转 + **等比**缩放（非均匀缩放 × 子旋转会产生剪切，
+        // 那是另一条测试覆盖的拒绝路径），子再平移。
+        let root = world.spawn();
+        let mid = world.spawn();
+        let leaf = world.spawn();
+        let chain = [
+            (
+                root,
+                Transform3D {
+                    position: Vec3::new(1.0, 0.0, 0.0),
+                    rotation: Quat::from_axis_angle(Vec3::Y, 0.5).unwrap(),
+                    scale: Vec3::new(2.0, 2.0, 2.0),
+                },
+            ),
+            (
+                mid,
+                Transform3D {
+                    position: Vec3::new(0.0, 1.0, 0.0),
+                    rotation: Quat::from_axis_angle(Vec3::X, 0.25).unwrap(),
+                    scale: Vec3::new(1.0, 1.0, 1.0),
+                },
+            ),
+            (
+                leaf,
+                Transform3D {
+                    position: Vec3::new(0.0, 0.0, 2.0),
+                    rotation: Quat::identity(),
+                    scale: Vec3::new(1.0, 1.0, 1.0),
+                },
+            ),
+        ];
+        for (entity, transform) in chain {
+            world.insert(entity, transform).unwrap();
+        }
+        world.insert(mid, Parent(root)).unwrap();
+        world.insert(leaf, Parent(mid)).unwrap();
+
+        let report = propagate_spatial(&mut world, true);
+        assert!(report.diagnostics.is_empty(), "{report:?}");
+
+        let mut locals: BTreeMap<SceneEntityId, MathLocal> = BTreeMap::new();
+        let mut parents: BTreeMap<SceneEntityId, SceneEntityId> = BTreeMap::new();
+        for (index, (_entity, transform)) in chain.iter().enumerate() {
+            locals.insert(
+                SceneEntityId(index as u64 + 1),
+                MathLocal::from_3d(*transform),
+            );
+        }
+        parents.insert(SceneEntityId(2), SceneEntityId(1));
+        parents.insert(SceneEntityId(3), SceneEntityId(2));
+        let solved = propagate_all(&locals, &parents).expect("scene-side solve");
+
+        for (index, (entity, _)) in chain.iter().enumerate() {
+            let scene_id = SceneEntityId(index as u64 + 1);
+            let runtime_matrix = world
+                .get::<GlobalTransform>(*entity)
+                .unwrap()
+                .expect("global transform")
+                .matrix();
+            let scene_matrix = solved[&scene_id].matrix();
+            for column in 0..4 {
+                for row in 0..4 {
+                    assert!(
+                        (runtime_matrix.columns[column][row] - scene_matrix.columns[column][row])
+                            .abs()
+                            < 1e-5,
+                        "第 {index} 层的世界矩阵两侧不一致：运行时 {runtime_matrix:?} vs 场景侧 {scene_matrix:?}"
+                    );
+                }
+            }
+        }
     }
 }

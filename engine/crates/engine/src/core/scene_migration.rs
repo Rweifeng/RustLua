@@ -406,7 +406,7 @@ mod tests {
                 let globals = crate::core::spatial_transform::propagate_all(&locals, &parents)
                     .expect("scene hierarchy propagates");
                 for (id, local) in &locals {
-                    let world = globals[id].0;
+                    let world = globals[id].matrix();
                     let world_translation = crate::core::math3d::Vec3::new(
                         world.columns[3][0],
                         world.columns[3][1],

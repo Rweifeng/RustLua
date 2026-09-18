@@ -149,6 +149,10 @@ struct ScriptState {
     /// Authoring ID → live ECS handle. The editor uses this to preview a drag
     /// by mutating one component without rebuilding the whole runtime.
     scene_entities: BTreeMap<SceneEntityId, EntityId>,
+    /// docs/54 §8-②：**加载期**发现的"两份局部真源"实体名（同时带 `Transform` 与
+    /// `Transform3D`）。运行时传播也会报同一条诊断，但那条只在开启继承时逐帧产生，
+    /// 加载期这一份保证"编辑一个含歧义实体的场景"立刻能看到问题。
+    scene_ambiguous_transforms: Vec<String>,
     /// 命名动作映射（M20-07）：**唯一实例**随 `ScriptState` 走，脚本重绑定
     /// （`input.rebind`/`set_action_map`/设置文件）与宿主查询同源；默认绑定见
     /// [`ActionMap::with_defaults`]。刻意**不**随场景切换或读档重置——绑定是
@@ -517,6 +521,30 @@ impl LuaRuntime {
         let mut state = self.state.borrow_mut();
         state.scene = Some(scene.name.clone());
         state.scene_entities.clear();
+        // docs/54 §8-②：加载期就把"两份局部真源"找出来。运行时的传播诊断只在开启继承时逐帧
+        // 产生，而这类问题属于**数据**问题，应该在载入/编辑场景时立刻可见。
+        state.scene_ambiguous_transforms = scene
+            .entities
+            .values()
+            .filter(|entity| {
+                entity.components.contains_key("Transform")
+                    && entity.components.contains_key("Transform3D")
+            })
+            .map(|entity| {
+                if entity.name.is_empty() {
+                    format!("entity {}", entity.id.0)
+                } else {
+                    entity.name.clone()
+                }
+            })
+            .collect();
+        for name in &state.scene_ambiguous_transforms {
+            tracing::warn!(
+                target: "scene",
+                entity = %name,
+                "[scene] 该实体同时带 Transform 与 Transform3D：局部变换真源不唯一（docs/54 §8-②）"
+            );
+        }
         let mut count = 0;
         for entity in scene.entities.values() {
             if honor_editor_hidden && scene.is_entity_hidden_with_ancestors(entity.id) {
@@ -1167,6 +1195,15 @@ impl LuaRuntime {
     #[must_use]
     pub fn scene_entity_handle(&self, id: SceneEntityId) -> Option<EntityId> {
         self.state.borrow().scene_entities.get(&id).copied()
+    }
+
+    /// docs/54 §8-②：最近一次场景加载里"同时带 2D 与 3D 局部变换"的实体名。
+    ///
+    /// 空 = 每个实体都只有一份权威局部变换。非空时调用方应把它当成**数据问题**报给作者
+    /// （运行时会把世界矩阵按 3D 视图取，但那是权宜，不是语义）。
+    #[must_use]
+    pub fn scene_ambiguous_transforms(&self) -> Vec<String> {
+        self.state.borrow().scene_ambiguous_transforms.clone()
     }
 
     /// Returns the authored name registered for an entity, if any. Entities

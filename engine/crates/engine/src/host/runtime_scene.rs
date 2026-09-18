@@ -16,7 +16,7 @@ use crate::core::{
     camera::{Camera2D, CameraBounds, CameraSelection, RenderView, Viewport},
     entity::EntityId,
     font::{FontAtlas, FontVectorAtlas, project_font},
-    hierarchy::{SpatialReport, WorldTransform, WorldTransform3D},
+    hierarchy::{GlobalTransform, SpatialReport},
     input::InputSnapshot,
     layer::RenderLayer,
     light::Light,
@@ -438,6 +438,12 @@ impl RuntimeScene {
     #[must_use]
     pub const fn last_scene_emission(&self) -> usize {
         self.last_scene_emission
+    }
+
+    /// docs/54 §8-②：最近一次场景加载里"同时带 2D 与 3D 局部变换"的实体名（空 = 无歧义）。
+    #[must_use]
+    pub fn scene_ambiguous_transforms(&self) -> Vec<String> {
+        self.script.scene_ambiguous_transforms()
     }
 
     /// 传播一次世界变换（幂等）。提取入口（`vertices` / `scene_3d`）与本函数的调用点
@@ -1712,10 +1718,10 @@ impl RuntimeScene {
                 });
             };
             if self.spatial_active {
-                world.for_each2::<WorldTransform3D, MeshRenderer>(|id, transform, renderer| {
-                    if let Ok(model) = transform.0.model_matrix() {
-                        collect(id, model, renderer);
-                    }
+                world.for_each2::<GlobalTransform, MeshRenderer>(|id, global, renderer| {
+                    // 直接用派生矩阵：它是 `Global(parent) * Local(child)` 的真值，因此剪切/镜像的
+                    // 父子组合也能拿到正确的世界矩阵（旧路径此时只能退回局部值）。
+                    collect(id, global.matrix(), renderer);
                 });
             } else {
                 world.for_each2::<Transform3D, MeshRenderer>(|id, transform, renderer| {
@@ -1944,8 +1950,11 @@ impl RuntimeScene {
                 // （docs/53 §3.10）。两者都按"排序实体序"遍历，且没有变换的精灵本来就被跳过
                 // （不推进序号），因此语义不变。
                 if inherit {
-                    world.for_each2::<WorldTransform, Sprite>(|id, transform, sprite| {
-                        collect(id, &transform.0, sprite);
+                    world.for_each2::<GlobalTransform, Sprite>(|id, global, sprite| {
+                        // 平面视图：不开继承时走局部值，开启时走派生结果（压不平时已退回局部值）。
+                        if let Some(plane) = global.plane() {
+                            collect(id, &plane, sprite);
+                        }
                     });
                 } else {
                     world.for_each2::<Transform, Sprite>(|id, transform, sprite| {
@@ -2587,8 +2596,10 @@ impl RuntimeScene {
         let entries = self.script.with_world(|world| {
             let mut entries = Vec::new();
             if inherit {
-                world.for_each2::<WorldTransform, WorldText>(|id, transform, text| {
-                    entries.push((id, transform.0, text.clone()));
+                world.for_each2::<GlobalTransform, WorldText>(|id, global, text| {
+                    if let Some(plane) = global.plane() {
+                        entries.push((id, plane, text.clone()));
+                    }
                 });
             } else {
                 world.for_each2::<Transform, WorldText>(|id, transform, text| {
@@ -3148,8 +3159,10 @@ impl RuntimeScene {
                     next_cache.insert(entity, layer);
                 };
                 if inherit {
-                    world.for_each2::<WorldTransform, Tilemap>(|entity, transform, tilemap| {
-                        collect(entity, &transform.0, tilemap);
+                    world.for_each2::<GlobalTransform, Tilemap>(|entity, global, tilemap| {
+                        if let Some(plane) = global.plane() {
+                            collect(entity, &plane, tilemap);
+                        }
                     });
                 } else {
                     world.for_each2::<Transform, Tilemap>(|entity, transform, tilemap| {
