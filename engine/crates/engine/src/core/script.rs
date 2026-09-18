@@ -106,6 +106,10 @@ struct ScriptState {
     animation_events: Vec<(EntityId, AnimationFrameEvent)>,
     /// WP4 ⑧：宿主回填的 2D 相机快照（相机 + 视口），供 Lua 做屏幕↔世界换算。
     camera_view: Option<(Camera2D, [f32; 2])>,
+    /// docs/54 §8-⑦：宿主回填的 **3D 相机快照**（本帧 3D pass 实际用的那台 + 视口），
+    /// 供 Lua 做屏幕→射线、世界→屏幕换算（`camera3d.*`）。与编辑器 picking 共用
+    /// `Camera3D::ray_from_screen` / `world_to_ndc`，因此两侧不会各写一套投影数学。
+    camera3d_view: Option<(Camera3D, [f32; 2])>,
     audio: AudioSystem,
     /// Entity whose `Camera3D` component the renderer uses this frame. Lua
     /// selects it with `camera.set_active`; the renderer falls back to the
@@ -1158,6 +1162,12 @@ impl LuaRuntime {
         self.state.borrow_mut().camera_view = Some((camera, viewport));
     }
 
+    /// docs/54 §8-⑦：宿主每帧把**3D pass 实际用的那台相机**与视口回填进来，供 Lua
+    /// `camera3d.ray` / `camera3d.world_to_screen` 使用（与编辑器 picking 同一套投影函数）。
+    pub fn set_camera3d_view(&mut self, camera: Camera3D, viewport: [f32; 2]) {
+        self.state.borrow_mut().camera3d_view = Some((camera, viewport));
+    }
+
     /// 宿主侧直接生成一次粒子爆发，与 Lua `particles.burst` 走同一实现。
     ///
     /// 给宿主/基准用：不必为了发粒子而绕一趟 Lua。参数非法时**不生成粒子**
@@ -1576,6 +1586,33 @@ fn camera_view_from(state: &ScriptState) -> LuaResult<(Camera2D, Viewport)> {
 
 fn camera_view(state: &Rc<RefCell<ScriptState>>) -> LuaResult<(Camera2D, Viewport)> {
     camera_view_from(&state.borrow())
+}
+
+/// 取宿主每帧回填的 (3D 相机, 视口)。还没渲染过任何一帧时报错——与 2D 同样的理由：
+/// 猜一台相机做射线，会让"点不中/点错"变成无头案。
+fn camera3d_view_from(state: &ScriptState) -> LuaResult<(Camera3D, Viewport)> {
+    let (camera, viewport) = state.camera3d_view.ok_or_else(|| {
+        api_error("camera3d ray/screen conversion needs one rendered frame first")
+    })?;
+    let viewport =
+        Viewport::new(viewport[0], viewport[1]).map_err(|error| api_error(error.to_string()))?;
+    Ok((camera, viewport))
+}
+
+fn camera3d_view(state: &Rc<RefCell<ScriptState>>) -> LuaResult<(Camera3D, Viewport)> {
+    camera3d_view_from(&state.borrow())
+}
+
+/// 屏幕像素 → 世界射线（六个分量：ox,oy,oz,dx,dy,dz）——可直接喂给 `physics3d.raycast`。
+fn table_ray(lua: &Lua, origin: Vec3, direction: Vec3) -> LuaResult<Table> {
+    let table = lua.create_table()?;
+    table.set("ox", origin.x)?;
+    table.set("oy", origin.y)?;
+    table.set("oz", origin.z)?;
+    table.set("dx", direction.x)?;
+    table.set("dy", direction.y)?;
+    table.set("dz", direction.z)?;
+    Ok(table)
 }
 
 fn table_i32_pair(lua: &Lua, x: i32, y: i32) -> LuaResult<Table> {
@@ -3212,6 +3249,88 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
         )?,
     )?;
     lua.globals().set("camera", camera)?;
+    // docs/54 §8-⑦：3D 侧的**屏↔世界**投影链。此前 Lua 只有 `physics3d.raycast`（自己拼一条
+    // 射线），没有"屏幕坐标 → 相机射线"，编辑器 3D 点选用的 `Camera3D::ray_from_screen` 脚本够不着。
+    // 这里复用同一份 `Camera3D` 投影数学，于是运行时、Lua 与编辑器 picking 走同一条链。
+    let camera3d = lua.create_table()?;
+    let s = Rc::clone(&state);
+    camera3d.set(
+        "ray",
+        lua.create_function(move |lua, (x, y): (f32, f32)| {
+            if !x.is_finite() || !y.is_finite() {
+                return Err(api_error("camera3d.ray must be finite"));
+            }
+            let (camera, viewport) = camera3d_view(&s)?;
+            let (origin, direction) = camera
+                .ray_from_screen(x, y, viewport.width, viewport.height)
+                .map_err(|error| api_error(error.to_string()))?;
+            table_ray(lua, origin, direction)
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    camera3d.set(
+        "mouse_ray",
+        lua.create_function(move |lua, ()| {
+            let (camera, viewport, cursor) = {
+                let state = s.borrow();
+                let (camera, viewport) = camera3d_view_from(&state)?;
+                (camera, viewport, state.input.cursor_position())
+            };
+            let (origin, direction) = camera
+                .ray_from_screen(
+                    cursor.0 as f32,
+                    cursor.1 as f32,
+                    viewport.width,
+                    viewport.height,
+                )
+                .map_err(|error| api_error(error.to_string()))?;
+            table_ray(lua, origin, direction)
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    camera3d.set(
+        "world_to_screen",
+        lua.create_function(move |lua, (x, y, z): (f32, f32, f32)| {
+            if !x.is_finite() || !y.is_finite() || !z.is_finite() {
+                return Err(api_error("camera3d.world_to_screen must be finite"));
+            }
+            let (camera, viewport) = camera3d_view(&s)?;
+            let ndc = camera
+                .world_to_ndc(Vec3::new(x, y, z))
+                .map_err(|error| api_error(error.to_string()))?;
+            let table = lua.create_table()?;
+            table.set("x", (ndc.x * 0.5 + 0.5) * viewport.width)?;
+            table.set("y", (0.5 - ndc.y * 0.5) * viewport.height)?;
+            // `visible` 用 z 落在 [0, 1] 判定：相机背后的点在 NDC 里也是"有坐标"的，
+            // 不报这一点会让 HUD 标记在背后画出幽灵。
+            table.set(
+                "visible",
+                (0.0..=1.0).contains(&ndc.z) && ndc.x.abs() <= 1.0 && ndc.y.abs() <= 1.0,
+            )?;
+            Ok(table)
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    camera3d.set(
+        "get",
+        lua.create_function(move |lua, ()| {
+            let (camera, viewport) = camera3d_view(&s)?;
+            let table = lua.create_table()?;
+            table.set("px", camera.position.x)?;
+            table.set("py", camera.position.y)?;
+            table.set("pz", camera.position.z)?;
+            table.set("tx", camera.target.x)?;
+            table.set("ty", camera.target.y)?;
+            table.set("tz", camera.target.z)?;
+            table.set("fov", camera.fov_y.to_degrees())?;
+            table.set("near", camera.near)?;
+            table.set("far", camera.far)?;
+            table.set("width", viewport.width)?;
+            table.set("height", viewport.height)?;
+            Ok(table)
+        })?,
+    )?;
+    lua.globals().set("camera3d", camera3d)?;
     // WP4：2D 相机控制器（跟随 / 死区 / 平滑 / 抖动）。此前 Lua **完全无法控制 2D 相机**
     // （`camera` 表只管 3D 的 Camera3D 组件），大地图或跟随镜头只能靠宿主代码。
     //
@@ -7483,6 +7602,54 @@ mod tests {
         let cold_path = script(
             "function update()\n\
              local ok = pcall(camera2d.screen_to_world, 1, 1)\n\
+             assert(not ok, 'no rendered frame yet must be an error')\n\
+             return 'guarded' end",
+        );
+        cold.execute_project_script(&cold_path).unwrap();
+        assert_eq!(cold.call_update().unwrap(), "guarded");
+        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(cold_path);
+    }
+
+    /// docs/54 §8-⑦：3D 侧的屏↔世界投影链。断言四件事：屏幕中心 → 指向相机目标的射线；
+    /// `world_to_screen` 把目标投回屏幕中心；相机背后的点 `visible=false`；没渲染过就报错。
+    #[test]
+    fn lua_camera3d_ray_and_screen_conversions_share_the_rendered_projection() {
+        let mut runtime = LuaRuntime::new().unwrap();
+        let camera = Camera3D::perspective(
+            Vec3::new(0.0, 0.0, 6.0),
+            Vec3::ZERO,
+            std::f32::consts::FRAC_PI_2,
+            4.0 / 3.0,
+            0.1,
+            100.0,
+        )
+        .unwrap();
+        runtime.set_camera3d_view(camera, [400.0, 300.0]);
+
+        let path = script(
+            "function update()\n\
+             local ray = camera3d.ray(200, 150)\n\
+             assert(ray.oz > 5.9, 'origin sits on the camera')\n\
+             assert(ray.dz < -0.99, 'centre ray points down -Z toward the target')\n\
+             assert(math.abs(ray.dx) < 0.01 and math.abs(ray.dy) < 0.01)\n\
+             local screen = camera3d.world_to_screen(0, 0, 0)\n\
+             assert(math.abs(screen.x - 200) < 0.01 and math.abs(screen.y - 150) < 0.01, 'target maps to viewport centre')\n\
+             assert(screen.visible, 'target must be visible')\n\
+             local behind = camera3d.world_to_screen(0, 0, 20)\n\
+             assert(not behind.visible, 'point behind the camera must not be visible')\n\
+             local pose = camera3d.get()\n\
+             assert(math.abs(pose.pz - 6) < 0.001 and math.abs(pose.width - 400) < 0.001)\n\
+             return 'ok' end",
+        );
+        runtime.execute_project_script(&path).unwrap();
+        assert_eq!(runtime.call_update().unwrap(), "ok");
+
+        // 还没渲染过任何一帧：必须报错（猜一台相机做射线会让"点不中"变成无头案）。
+        let mut cold = LuaRuntime::new().unwrap();
+        let cold_path = script(
+            "function update()\n\
+             local ok = pcall(camera3d.ray, 1, 1)\n\
              assert(not ok, 'no rendered frame yet must be an error')\n\
              return 'guarded' end",
         );

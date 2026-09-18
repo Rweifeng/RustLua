@@ -280,6 +280,23 @@ map = "rustlua-actions-v2\ninteract=key:keye,pad:0\n..."
 
 `follow` 期间相机的中心由控制器决定；`unfollow` 之后 `set` 的效果才不会被覆盖。
 
+### `camera3d` 3D 屏↔世界投影链（WP9 / docs/54 §8-⑦）
+
+此前 Lua 只能自己拼一条射线喂给 `physics3d.raycast`——"屏幕坐标 → 相机射线"这段投影数学
+（fov / 视口 / 姿态）脚本够不着，而编辑器 3D 点选早就在用 `Camera3D::ray_from_screen`。
+现在两侧共用同一条链：
+
+| 接口 | 说明 |
+| --- | --- |
+| `camera3d.ray(x, y)` | 屏幕像素 → 世界射线，返回 `{ox, oy, oz, dx, dy, dz}`（可直接喂 `physics3d.raycast`） |
+| `camera3d.mouse_ray()` | 鼠标当前位置的射线（等价于对 `input.cursor_position()` 做换算） |
+| `camera3d.world_to_screen(x, y, z)` | 世界坐标 → 屏幕像素，返回 `{x, y, visible}`；相机背后的点 `visible = false` |
+| `camera3d.get()` | 本帧生效的相机姿态与参数：`{px, py, pz, tx, ty, tz, fov, near, far, width, height}` |
+
+宿主每帧把 **3D pass 实际用的那台相机**（Lua `camera.set_active` 选中，否则排序序第一台，
+再否则默认相机）与视口回填进来，因此"点中哪个"和"画了哪个"用的是同一台相机。脚本在
+**首帧渲染之前**调用这些接口会明确报错，而不是拿一台默认相机去猜。
+
 ### `particles` 发射参数（WP4）
 
 `particles.burst(x, y, count [, opts])`。**此前速度/寿命/颜色被写死在引擎里**（120 / 0.6 / 橙色），

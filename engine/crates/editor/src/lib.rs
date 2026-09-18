@@ -24,6 +24,9 @@ pub mod document;
 
 pub use document::{DocumentError, PlaySession, ProjectDocument, SceneDocument};
 
+/// docs/54 §8-⑦：编辑态的空间语义（文档世界变换、目标世界→新局部、换父 keep-world）。
+pub mod document_space;
+
 use std::{
     error::Error,
     fmt, fs,

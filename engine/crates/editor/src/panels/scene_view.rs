@@ -2,7 +2,7 @@
 
 use crate::EditorApp;
 use crate::geometry::{
-    encode_transform, parse_transform, polygon_intersects_rect, rotated_contains, rotated_corners,
+    parse_transform, polygon_intersects_rect, rotated_contains, rotated_corners,
 };
 use crate::panels::tilemap_tools::{CellRect, TileFill, copy_region, fill_rect, paste_region};
 use crate::util::icon_toggle;
@@ -894,7 +894,12 @@ impl EditorApp {
                     min: Vec3::new(-0.5, -0.5, -0.5),
                     max: Vec3::new(0.5, 0.5, 0.5),
                 };
-                (entity.id, entity.name.clone(), entity.transform, bounds)
+                // docs/54 §8-⑦：标记 / 点选 / Gizmo 初值必须与**3D 画面同源**（世界变换）。
+                // 用文档里的局部值会让父链下的实体"手柄在人不在的地方"。
+                let transform = self
+                    .scene_view_3d_world_transform(entity.id)
+                    .unwrap_or(entity.transform);
+                (entity.id, entity.name.clone(), transform, bounds)
             })
             .collect();
 
@@ -1142,6 +1147,51 @@ impl EditorApp {
         }
         // 工具小面板（Select/Move/Rotate/Scale）置于场景右上角。
         self.draw_scene_tool_panel(ui, rect);
+    }
+
+    /// 3D 实体的**世界**变换：与 3D 画面同源——运行时可用时取它（渲染用的就是它），否则按文档
+    /// 层级求解（dev 文档与运行时是同一套父先序规则）。
+    ///
+    /// docs/54 §8-⑦：标记、点选与 Gizmo 的**初值**都必须用它；用文档里的局部值会让父链下的实体
+    /// "手柄在人不在的地方"（画面用世界值、覆层用局部值）。
+    fn scene_view_3d_world_transform(
+        &self,
+        id: engine::core::scene::SceneEntityId,
+    ) -> Option<engine::core::transform::Transform3D> {
+        if let Some(runtime) = &self.scene_runtime
+            && let Some(world) = runtime.world_transform_3d_of(id)
+        {
+            return Some(world);
+        }
+        let scene = self.document.current_scene.as_ref()?;
+        editor::document_space::world_transform_3d(&scene.scene, id)
+    }
+
+    /// 本帧 2D 拖拽预览（`scene_state.preview` 里存的是**世界**值）换算成**局部**值。
+    ///
+    /// 运行时预览与文档写回共用这一条换算，因此"看到的"和"写进去的"不会再各算一套；
+    /// 父与子同批移动时也由 `locals_for_world_targets` 的父先序处理，不会二次叠加。
+    fn scene_drag_locals(
+        &self,
+    ) -> std::collections::BTreeMap<
+        engine::core::scene::SceneEntityId,
+        engine::core::spatial_transform::LocalTransform,
+    > {
+        let Some(scene) = self.document.current_scene.as_ref() else {
+            return std::collections::BTreeMap::new();
+        };
+        let mut targets = std::collections::BTreeMap::new();
+        for (id, fields) in &self.scene_state.preview {
+            let transform = engine::core::transform::Transform {
+                position: Vec2::new(fields.position_x, fields.position_y),
+                rotation: fields.rotation,
+                scale: Vec2::new(fields.scale_x, fields.scale_y),
+            };
+            if let Ok(local) = engine::core::spatial_transform::LocalTransform::from_2d(transform) {
+                targets.insert(*id, local);
+            }
+        }
+        editor::document_space::locals_for_world_targets(&scene.scene, &targets)
     }
 
     /// Scene 视图右上角的小工具面板：选择/移动/旋转/缩放。
@@ -1614,15 +1664,17 @@ impl EditorApp {
         {
             return;
         }
-        let preview = self.scene_state.preview.clone();
         let preview_ui = self.scene_state.preview_ui.clone();
+        // docs/54 §8-⑦：预览值是世界变换，但运行时存的是**局部**变换——换算后再推进去，
+        // 否则父链下的实体在拖动中会跳到错误的位置（拖完再"弹一下"）。
+        let locals = self.scene_drag_locals();
         if let Some(runtime) = self.scene_runtime.as_mut() {
-            for (id, transform) in preview {
+            for (id, local) in &locals {
                 runtime.set_scene_entity_transform_preview(
-                    id,
-                    Vec2::new(transform.position_x, transform.position_y),
-                    transform.rotation,
-                    Vec2::new(transform.scale_x, transform.scale_y),
+                    *id,
+                    Vec2::new(local.translation.x, local.translation.y),
+                    2.0 * local.rotation.z.atan2(local.rotation.w),
+                    Vec2::new(local.scale.x, local.scale.y),
                 );
             }
             for (id, offsets) in preview_ui {
@@ -1656,15 +1708,25 @@ impl EditorApp {
             CommandKind::Transform(first),
             Some(first),
         );
+        // 世界 → 局部：必须在取 `current_scene` 的**可变**借用之前算好（换算只读文档）。
+        let locals = self.scene_drag_locals();
         let Some(scene) = self.document.current_scene.as_mut() else {
             return;
         };
         for (id, transform) in &preview {
+            // docs/54 §8-⑦：`preview` 是**世界**变换，文档里的 `Transform` 是**局部**值；
+            // 直接用世界值覆盖会让父链下的实体拖完跳一下（父的变换被叠加两次）。
+            let Some(local) = locals.get(id).copied() else {
+                // 无法无损反解（剪切/镜像/退化）：拒绝写回，不静默近似。
+                continue;
+            };
+            let Some(encoded) = editor::document_space::encode_transform_2d(local) else {
+                continue;
+            };
             if let Some(entity) = scene.scene.entities.get_mut(id) {
-                entity
-                    .components
-                    .insert("Transform".to_owned(), encode_transform(*transform));
+                entity.components.insert("Transform".to_owned(), encoded);
             }
+            let _ = transform;
         }
         for (id, position) in &preview_ui {
             if let Some(entity) = scene.scene.entities.get_mut(id) {
@@ -1698,6 +1760,10 @@ impl EditorApp {
     }
 
     /// 提交 3D 平移 Gizmo 拖拽：只改 Transform3D 的 position，保留旋转/缩放。
+    ///
+    /// docs/54 §8-⑦：Gizmo 的初值与目标都是**世界**变换，而文档里存的是**局部**值。这里按父链
+    /// 反解后再写回，因此父链下的实体不再"拖完跳一下"；反解不了（剪切/镜像/退化）时**拒绝写回**
+    /// 并给出提示，不静默近似。
     fn commit_gizmo_drag3d(&mut self) {
         if self.is_playing() {
             self.scene_state.preview3d_transform.clear();
@@ -1711,25 +1777,58 @@ impl EditorApp {
         else {
             return;
         };
-        if let Some(scene) = self.document.current_scene.as_mut() {
-            let changed = self.history.execute(
-                scene,
-                "3D Transform",
-                CommandKind::Transform3D(id),
-                |scene| {
-                    if let Some(entity) = scene.scene.entities.get_mut(&id) {
-                        entity
-                            .components
-                            .insert("Transform3D".to_owned(), transform.to_component_str());
-                    }
-                    scene.mark_dirty();
-                    Ok::<(), ()>(())
-                },
+        enum Outcome {
+            Written,
+            Rejected,
+            Unchanged,
+        }
+        let outcome = {
+            let Some(scene) = self.document.current_scene.as_mut() else {
+                return;
+            };
+            let mut targets = std::collections::BTreeMap::new();
+            targets.insert(
+                id,
+                engine::core::spatial_transform::LocalTransform::from_3d(transform),
             );
-            if matches!(changed, Ok(true)) {
+            match editor::document_space::locals_for_world_targets(&scene.scene, &targets)
+                .get(&id)
+                .copied()
+                .and_then(editor::document_space::encode_transform_3d)
+            {
+                Some(encoded) => {
+                    let changed = self.history.execute(
+                        scene,
+                        "3D Transform",
+                        CommandKind::Transform3D(id),
+                        |scene| {
+                            if let Some(entity) = scene.scene.entities.get_mut(&id) {
+                                entity
+                                    .components
+                                    .insert("Transform3D".to_owned(), encoded.clone());
+                            }
+                            scene.mark_dirty();
+                            Ok::<(), ()>(())
+                        },
+                    );
+                    if matches!(changed, Ok(true)) {
+                        Outcome::Written
+                    } else {
+                        Outcome::Unchanged
+                    }
+                }
+                None => Outcome::Rejected,
+            }
+        };
+        match outcome {
+            Outcome::Written => {
                 self.save_scene();
                 self.sync_inspector(id);
             }
+            Outcome::Rejected => self.set_scene_view_diagnostic(
+                "该实体的世界变换无法在父链下无损反解（剪切/镜像/退化），已拒绝写回".to_owned(),
+            ),
+            Outcome::Unchanged => {}
         }
     }
 

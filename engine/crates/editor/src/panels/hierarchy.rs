@@ -727,6 +727,16 @@ impl EditorApp {
             return;
         };
         let mut error = None;
+        // docs/54 §8-⑦（§4.1）：换父提供 **keep-world** 语义——先记下移动方的世界矩阵，改完父
+        // 再按新父反解局部值，因此"拖进新父"不会让实体在画面上跳走。反解不了（剪切/镜像/退化）
+        // 时整笔事务取消，绝不静默近似。
+        let worlds: Vec<(SceneEntityId, engine::core::math3d::Mat4)> = {
+            let matrices = editor::document_space::world_matrices(&scene.scene);
+            batch
+                .iter()
+                .filter_map(|id| matrices.get(id).map(|matrix| (*id, *matrix)))
+                .collect()
+        };
         for moving_id in &batch {
             if let Err(failure) = self
                 .tree
@@ -734,6 +744,18 @@ impl EditorApp {
             {
                 error = Some(failure.to_string());
                 break;
+            }
+        }
+        if error.is_none() {
+            for (id, world) in worlds {
+                match editor::document_space::keep_world_after_reparent(&mut scene.scene, id, world)
+                {
+                    Ok(_) => {}
+                    Err(reason) => {
+                        error = Some(format!("换父无法保持世界位置：{reason}"));
+                        break;
+                    }
+                }
             }
         }
         if let Some(error) = error {

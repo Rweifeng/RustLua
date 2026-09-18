@@ -1843,6 +1843,13 @@ impl RuntimeScene {
         // 那一帧的投影；脚本在首帧渲染前调用换算会报错而不是猜一个默认相机。
         self.script
             .set_camera_view(self.camera, [width.max(1) as f32, height.max(1) as f32]);
+        // docs/54 §8-⑦：把本帧 **3D pass 实际用的那台相机**回填给 Lua，于是 `camera3d.ray`
+        // 与编辑器 3D 点选走的是同一份投影数学（同一条 `Camera3D::ray_from_screen`）。
+        let aspect = width.max(1) as f32 / height.max(1) as f32;
+        self.script.set_camera3d_view(
+            self.active_camera3d(aspect),
+            [width.max(1) as f32, height.max(1) as f32],
+        );
         self.sprite_batch.clear();
         // WP6：收集阶段的可见域。开着时 `SpriteBatch::push` 直接丢掉不可能落在视口内的精灵，
         // 省下每项 80 字节的写入与后续排序——5 万精灵档实测这部分占掉整帧的大头（docs/53 §3.9）。
