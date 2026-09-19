@@ -11,6 +11,34 @@
 每条都带可执行证据、可回滚开关与不变量测试。进度对照表见 docs/54 §10。
 §8 十条全部达成后转入 §4「目标架构」逐条对齐（批 A 起，见同表末尾各批记录）。
 
+### 目标架构批 E：per-entity `Script` 组件（docs/54 §4.1）
+
+- **脚本归属从"工程级一份"下放到实体**：新增 `Script` 组件——场景写
+  `component 9 Script file=scripts/ai/patrol.lua` 即可，不必再在 `scripts/main.lua` 里遍历实体、
+  按名字查、自己维护分派表。`file` 必填，可选 `enabled=false`（启用时不写出字段，既有场景串不变）。
+- **一个文件一份 Lua 状态、实体是实例**：同文件的实体共享顶层局部变量，脚本用收到的实体 `id`
+  区分自己（`on_spawn(id)` / `on_update(id, dt)`）。上万实体因此不会变成上万份 Lua 状态。钩子名与
+  工程级脚本**不重名**（工程级仍是 `on_create/update/on_destroy`），同一个文件被两边加载也不互相踩。
+- **加载期就报错**：场景实例化末尾读入脚本并调用 `on_spawn(id)`；文件缺失、编译失败、以及"有脚本
+  却没有工程根"都在**加载期**报错，否则"脚本没跑"会变成没有线索的谜题。运行时新生成的实体下一帧
+  自动补上钩子。
+- **路径限制在工程根内**：绝对路径与含 `..` 的路径在解析期报错——脚本是可执行代码，场景文件不该
+  能把可执行代码指到工程外。
+- **进固定步流水线**：新增内建 step 系统 `entity_scripts`（`ScheduleStage::Script`，依赖
+  `ui_click_dispatch`，在工程级 `update()` 之后按实体 id 升序调用），
+  `RuntimeScene::last_entity_script_calls()` 让"这一步驱动了几个实体"可断言。内建系统名单测试已同步。
+- **热重载覆盖两者**：`RuntimeScene::reload_scripts()` 返回 `(工程级脚本状态, 重载的实体脚本文件数)`
+  ——工程级没变而实体脚本改了时前者是 `Unchanged`、后者 `> 0`，两个数字分开报；已生成过的实体不会
+  因重载重复触发 `on_spawn`。
+- **证据**：`core::entity_script` 三条单测；`entity_script_component_drives_its_own_entity`；
+  `entity_script_reports_missing_files_and_missing_project_root`；
+  `entity_script_component_runs_inside_the_step_pipeline`；`typed_scene` 的来源组件集合加入
+  `ComponentId::Script`。引擎 750 → 756，编辑器 170+111 不变。
+- **仍未达成**：`LocalTransform` 作为唯一运行时局部变换存储、v2 `parent` 组织语义、运行时
+  `AssetId`/`Handle`、统一动画轨道抽象、§4.4 输入边界收口。
+- 文档：docs/16（`Script` 组件）、docs/18（每实体脚本钩子）、docs/19（热重载边界）、docs/54
+  §4.1 现状与 §10 批 E 记录。
+
 ### 目标架构批 D：一等 `Quad`（docs/54 §4.3）
 
 - **§4.3 的分解第一次有了独立类型**：`Sprite = Quad Geometry + TextureRegion + Material +

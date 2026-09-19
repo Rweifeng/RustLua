@@ -27,6 +27,8 @@ pub mod dependency;
 pub mod editor_plugins;
 /// Generational entity handles and allocation.
 pub mod entity;
+/// docs/54 §4.1：每实体 `Script` 组件（场景声明"这个实体跑哪个脚本文件"）。
+pub mod entity_script;
 /// Typed, frame-bounded event queues.
 pub mod events;
 pub mod font;

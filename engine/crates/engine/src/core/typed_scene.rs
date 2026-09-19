@@ -6,6 +6,7 @@ use crate::core::{
     animation::AnimationStateMachine,
     animation3d::Animation3dDescriptor,
     camera::Camera3D,
+    entity_script::EntityScript,
     light::Light,
     mesh3d::MeshRenderer,
     particle::ParticleEmitter,
@@ -76,6 +77,8 @@ pub enum ComponentId {
     Collider3d,
     Animation,
     Animation3d,
+    /// docs/54 §4.1：每实体 `Script` 组件（脚本归属从工程级下放到实体）。
+    Script,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -109,6 +112,8 @@ pub enum TypedComponent {
     Collider3d(ColliderDesc3d),
     Animation(AnimationStateMachine),
     Animation3d(Animation3dDescriptor),
+    /// docs/54 §4.1：每实体脚本（文件 + 启用开关）。
+    Script(EntityScript),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -265,6 +270,10 @@ fn compile_component(
                     TypedComponent::Animation3d(component),
                 )
             })
+            .map_err(|error| error.to_string()),
+        // docs/54 §4.1：脚本归属从"工程级一份"下放到实体。
+        "Script" => EntityScript::from_component_str(value)
+            .map(|component| (ComponentId::Script, TypedComponent::Script(component)))
             .map_err(|error| error.to_string()),
         _ => return None,
     };
@@ -497,6 +506,7 @@ mod tests {
             ComponentId::Sprite,
         ),
         ("Quad", "size=32,32;color=1,0,0,0.5", ComponentId::Quad),
+        ("Script", "file=scripts/ai/patrol.lua", ComponentId::Script),
         (
             "Tilemap",
             "tile_size=32x32;width=2;height=2;tiles=0000;solid=0000",

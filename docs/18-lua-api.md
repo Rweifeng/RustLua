@@ -367,6 +367,42 @@ UI 不是实体，永远照画。缺组件 = 全可见，既有场景与脚本�
 渲染上它走与精灵完全相同的批处理路径（同一个 `RenderPlan` 通道、同一套排序/剔除/深度/可见遮罩），
 因此"把血条底从 `Sprite` 改成 `Quad`"不会改变它在画面里的层次规则。
 
+### 每实体脚本的钩子（`Script` 组件，docs/54 §4.1）
+
+场景里给实体写 `Script  file=scripts/ai/patrol.lua` 之后，那个文件会被加载并收到两个钩子
+（都可以只实现一个）：
+
+```lua
+-- scripts/ai/patrol.lua
+local state = {}           -- 注意：这是**按文件**共享的（同文件的所有实体共用一份）
+
+function on_spawn(id)      -- 实体生成时调用一次
+  state[id] = { dir = 1 }
+end
+
+function on_update(id, dt) -- 每个固定步一次（在工程级 update() 之后，按实体 id 升序）
+  local s = state[id]
+  local t = transform.get(id)
+  transform.set(id, t.x + s.dir * 60 * dt, t.y)
+end
+```
+
+| 钩子 | 何时调用 | 参数 |
+| --- | --- | --- |
+| `on_spawn(id)` | 实体（或它所属的场景）生成时一次 | 实体 id |
+| `on_update(id, dt)` | 每个固定步一次 | 实体 id、本步秒数 |
+
+- `id` 与 `transform`/`quad`/`physics` 这些表收的实体 id 是**同一套编码**，脚本因此可以直接用
+  这些表操作"自己"。
+- **一个文件一份 Lua 状态、实体是实例**：同文件的所有实体共享顶层局部变量，每实体状态请写成上面
+  那种以 `id` 为键的表（或放在实体组件里）。这样上万实体不会变成上万份 Lua 状态。
+- 钩子名与工程级脚本**不重名**：工程级仍是 `on_create()` / `update()` / `on_destroy()`。
+- 钩子里报错会带上脚本路径与钩子名，运行时会中止当步并报出来，不静默吞掉。
+- `enabled=false` 的 `Script` 组件既不加载也不调用；文件缺失或编译失败在**场景加载期**报错。
+- 热重载：`RuntimeScene::reload_scripts()` 同时处理工程级脚本与每实体脚本，返回
+  `(状态, 重载的文件数)`；重载会清掉该文件的 Lua 状态（顶层局部变量/模块缓存），已生成过的实体
+  不会重复触发 `on_spawn`。详见 [docs/19](19-lua-hot-reload.md)。
+
 ### `physics.debug_draw` collider 调试绘制（WP7）
 
 `physics.debug_draw(enabled)` 开关 2D 碰撞体轮廓的绘制（默认关闭，返回传入的布尔值）。轮廓画在

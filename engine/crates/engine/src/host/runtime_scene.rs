@@ -30,7 +30,7 @@ use crate::core::{
     scheduler::{
         ScheduleReport, ScheduleStage, Scheduler, SchedulerError, System, SystemError, SystemTiming,
     },
-    script::LuaRuntime,
+    script::{LuaRuntime, ReloadStatus},
     sprite::{Sprite, SpriteAsset, SpriteSorting},
     sprite_batch::{
         OverlayVertexSink, SpriteBatch, SpriteBatchItem, SpriteDrawBatch, WorldSpriteVertexSink,
@@ -156,6 +156,11 @@ pub struct RuntimeScene {
     /// WP7：最近一步 `physics_sync` 同步的刚体数 `(2D, 3D)`。0 表示这一步没做步前同步
     /// （默认 authority=Physics，或回滚档 `Legacy`）——因此它同时也是"回滚档真的生效"的证据。
     last_physics_sync: (usize, usize),
+    /// docs/54 §4.1：最近一步**每实体脚本**实际调用的实体数（诊断与验收用）。
+    ///
+    /// 0 既可能是"没有脚本实体"，也可能是"这一步没跑脚本格"——它与
+    /// [`Self::last_schedule`] 一起看才能区分，因此诊断里两个都报。
+    last_entity_script_calls: usize,
     /// docs/54 §4.2：宿主声明的**视图可见遮罩**（`world`, `overlay`），分别对应
     /// `FrameViews::{main, overlay}.visibility`。默认 `u32::MAX` = 全可见，因此不声明时行为不变。
     view_world_mask: u32,
@@ -474,6 +479,12 @@ impl RuntimeScene {
     #[must_use]
     pub const fn last_physics_sync(&self) -> (usize, usize) {
         self.last_physics_sync
+    }
+
+    /// docs/54 §4.1：最近一步每实体脚本调用的实体数（诊断/验收用）。
+    #[must_use]
+    pub const fn last_entity_script_calls(&self) -> usize {
+        self.last_entity_script_calls
     }
 
     /// docs/54 §4.2：声明本帧两个视图的**可见遮罩**（`world` 对应 `FrameViews::main.visibility`、
@@ -1188,6 +1199,7 @@ impl RuntimeScene {
             physics_stage_order: PhysicsStageOrder::default(),
             last_scene_emission: 0,
             last_physics_sync: (0, 0),
+            last_entity_script_calls: 0,
         };
         scene.register_builtin_frame_systems();
         Ok(scene)
@@ -1243,6 +1255,22 @@ impl RuntimeScene {
                     .script
                     .process_ui_clicks(&input, &targets)
                     .map_err(|error| SystemError::new(error.to_string()))
+            },
+        ));
+        // docs/54 §4.1：每实体脚本在**工程级脚本之后**跑（`lua_update` 先跑，它会做全局的输入/
+        // 相机等准备），按实体 id 升序调用，因此"谁先动"是确定的。挂在 `Script` 格而不是新开一个
+        // 阶段：它与工程级脚本共享同一套脚本侧状态（世界、输入、逻辑时钟）。
+        self.add_builtin_step_system(System::new(
+            "entity_scripts",
+            ScheduleStage::Script,
+            ["ui_click_dispatch"],
+            |scene: &mut RuntimeScene, delta_seconds: f32| {
+                let called = scene
+                    .script
+                    .call_entity_scripts(delta_seconds)
+                    .map_err(|error| SystemError::new(error.to_string()))?;
+                scene.last_entity_script_calls = called;
+                Ok(())
             },
         ));
         self.add_builtin_step_system(System::new(
@@ -1619,6 +1647,20 @@ impl RuntimeScene {
     /// script APIs from a `&mut RuntimeScene` context.
     pub fn with_script<R>(&mut self, visit: impl FnOnce(&mut LuaRuntime) -> R) -> R {
         visit(&mut self.script)
+    }
+
+    /// docs/54 §4.1：热重载**脚本层的全部内容**——工程级脚本 + 每实体脚本。
+    ///
+    /// 宿主此前只调 `reload_if_changed()`，那只会看到 `scripts/main.lua`；实体脚本改了却"状态
+    /// 未变"会让"热重载不生效"变成一个没有线索的问题。这个入口一次返回两件事：
+    /// 工程级脚本的状态与**被重载的实体脚本文件数**。
+    pub fn reload_scripts(&mut self) -> Result<(ReloadStatus, usize), String> {
+        let status = self.script.reload_if_changed().map_err(|e| e.to_string())?;
+        let entity_scripts = self
+            .script
+            .reload_entity_scripts()
+            .map_err(|e| e.to_string())?;
+        Ok((status, entity_scripts))
     }
 
     /// 注册内建 step 系统。名字是静态唯一的；重复只可能是编程错误，而这里的
@@ -5382,6 +5424,67 @@ mod sdf_tests {
         );
     }
 
+    /// docs/54 §4.1：每实体脚本必须**真的在固定步流水线里跑**——只断言"能手动调用"是不够的，
+    /// 组件化脚本要替代的正是"工程脚本自己遍历实体"的那套手工分派。
+    #[test]
+    fn entity_script_component_runs_inside_the_step_pipeline() {
+        let root = std::env::temp_dir().join(format!("p2-rs-entity-script-{}", std::process::id()));
+        let scripts = root.join("scripts");
+        std::fs::create_dir_all(&scripts).expect("create scripts dir");
+        std::fs::write(
+            scripts.join("spin.lua"),
+            "function on_spawn(id) spawn_seen = (spawn_seen or 0) + 1 end\n\
+             function on_update(id, dt)\n\
+               local t = transform.get(id)\n\
+               transform.set(id, t.x, t.y + 20 * dt)\n\
+             end\n",
+        )
+        .expect("write script");
+
+        let mut scene = Scene::new("entity_script_pipeline");
+        scene.add_entity(SceneEntityId(1), "Spinner", None).unwrap();
+        {
+            let entity = scene.entities.get_mut(&SceneEntityId(1)).unwrap();
+            entity.components.insert(
+                "Transform".into(),
+                "x=0;y=0;rotation=0;scale_x=1;scale_y=1".into(),
+            );
+            entity
+                .components
+                .insert("Script".into(), "file=scripts/spin.lua".into());
+        }
+        let mut runtime =
+            RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("runtime scene");
+        let scripted_position = |runtime: &RuntimeScene| -> Vec2 {
+            runtime.script.with_world(|world| {
+                let mut position = None;
+                world.for_each2::<Transform, crate::core::entity_script::EntityScript>(
+                    |_, transform, _| position = Some(transform.position),
+                );
+                position.expect("带 Script 的实体必须有 Transform")
+            })
+        };
+        assert!(
+            scripted_position(&runtime).y.abs() < 1e-6,
+            "脚本不该在实例化时就动实体：{:?}",
+            scripted_position(&runtime)
+        );
+        runtime
+            .run_script_steps(1, 0.5, &crate::core::input::InputSnapshot::default())
+            .expect("step runtime");
+        assert_eq!(
+            runtime.last_entity_script_calls(),
+            1,
+            "这一步应有 1 个实体脚本被调用"
+        );
+        let after = scripted_position(&runtime);
+        assert!(
+            (after.y - 10.0).abs() < 1e-4,
+            "脚本应按 20*dt 移动实体（dt=0.5）：实际 {after:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// WP6：世界文字也进世界坐标深度通道——它此前是唯一仍留在屏幕空间的世界内容。    /// 转换走 `view_projection` 的**逆映射**，因此屏幕观感与 overlay 路径逐个像素一致，
     /// 但顶点有了世界坐标与 `z`，可以和精灵/瓦片一起参与深度测试。
     #[test]
@@ -7280,6 +7383,8 @@ mod frame_schedule_tests {
                 "input_apply",
                 "lua_update",
                 "ui_click_dispatch",
+                // docs/54 §4.1：每实体脚本紧跟工程级脚本（`ui_click_dispatch` 之后、用户系统之前）
+                "entity_scripts",
                 "user_script_probe",
                 "physics_sync",
                 "physics2d_step",

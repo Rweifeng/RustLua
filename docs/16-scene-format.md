@@ -72,6 +72,28 @@ Sprite/Mesh/文字/UI 一样是实体组件，不再只能由宿主状态或脚�
 `examples/game_api/scenes/unified.scene` 是一份"七类内容同场"的样例：Sprite + `Quad` + Mesh +
 `Camera3D` + `Camera2D` + `ParticleEmitter` + `WorldText` + `Text`/`UiLayout`。
 
+## 每实体脚本 `Script`（docs/54 §4.1）
+
+```text
+entity  9  Patrol
+component  9  Transform  x=640;y=360;rotation=0;scale_x=1;scale_y=1
+component  9  Script     file=scripts/ai/patrol.lua
+```
+
+- `Script`：`file=<相对工程根的路径>` 必填，可选 `enabled=false`（组件仍在，只是不加载也不调用；
+  启用时不写出该字段，因此既有场景串不变）。
+- **路径只能在工程根内**：绝对路径与含 `..` 的路径在解析期就报错。脚本是可执行代码，场景文件
+  能让它去读工程外的任何文件就不是"配置"而是"漏洞"。
+- 脚本归属因此从"工程级一份"下放到实体：不必再在 `scripts/main.lua` 里遍历实体、按名字查、
+  自己维护分派表。**一个脚本文件一份 Lua 状态，实体是实例**：`file` 相同的实体共享同一份 Lua
+  状态（顶层局部变量因此按文件共享），脚本用收到的实体 `id` 区分自己。
+- 钩子与工程级脚本**不重名**：每实体用 `on_spawn(id)` / `on_update(id, dt)`（都可省略），工程级仍是
+  `on_create()` / `update()` / `on_destroy()`。详见 [docs/18](18-lua-api.md) 与
+  [docs/19](19-lua-hot-reload.md)（热重载入口 `RuntimeScene::reload_scripts()`）。
+- 加载时机：场景实例化末尾就会把脚本读进来并调用 `on_spawn(id)`，因此**文件不存在/编译失败在
+  加载期报错**，而不是等到第一次 update 才发现脚本没跑。运行时新生成的实体下一帧自动补上
+  `on_spawn`/`on_update`。调用顺序是确定的：每步在工程级 `update()` 之后按实体 id 升序各调用一次。
+
 ## 可见性组件 `Visibility`（docs/54 §4.2）
 
 `RenderView::visibility`（可见层遮罩）过去是个**没有消费者**的字段；现在由实体侧组件驱动：

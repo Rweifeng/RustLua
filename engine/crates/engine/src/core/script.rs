@@ -33,7 +33,7 @@ use crate::core::{
 use mlua::{Function, Lua, Result as LuaResult, Table, Value};
 use std::{
     cell::RefCell,
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap, HashSet},
     fmt, fs,
     path::{Path, PathBuf},
     rc::Rc,
@@ -424,6 +424,17 @@ pub struct LuaRuntime {
     current_path: Option<PathBuf>,
     fingerprint: Option<ScriptFingerprint>,
     debugger: ScriptDebugger,
+    /// docs/54 §4.1：**每实体脚本**。一个脚本**文件**一份 Lua 状态（实体是实例，脚本用收到的
+    /// `id` 区分自己），按文件路径缓存——上万实体共享同一个文件时不会变成上万份 Lua 状态。
+    entity_scripts: HashMap<String, EntityScriptState>,
+    /// 已经调用过 `on_spawn(id)` 的实体：每个实体只生成一次，重载脚本不会重复触发生成。
+    entity_scripts_spawned: HashSet<EntityId>,
+}
+
+/// 一份每实体脚本的运行时状态：Lua 状态 + 用于热重载比对的指纹。
+struct EntityScriptState {
+    lua: Lua,
+    fingerprint: ScriptFingerprint,
 }
 impl LuaRuntime {
     pub fn new() -> Result<Self, LuaBridgeError> {
@@ -443,6 +454,8 @@ impl LuaRuntime {
             current_path: None,
             fingerprint: None,
             debugger: ScriptDebugger::new(),
+            entity_scripts: HashMap::new(),
+            entity_scripts_spawned: HashSet::new(),
         })
     }
 
@@ -635,6 +648,11 @@ impl LuaRuntime {
                 .insert(child, crate::core::hierarchy::Parent(parent))
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
         }
+        drop(state);
+        // docs/54 §4.1：每实体脚本在这里落地——场景加载时就把声明了 `Script` 的脚本读进来并调用
+        // `on_spawn(id)`。放在实例化末尾（而不是第一次 update）是为了让"脚本文件不存在/编译失败"
+        // 在**加载期**就报出来；没有脚本实体的场景一次哈希都不用碰。
+        self.sync_entity_scripts()?;
         Ok(count)
     }
 
@@ -857,6 +875,18 @@ impl LuaRuntime {
             state
                 .world
                 .insert(id, visibility)
+                .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
+        }
+        // docs/54 §4.1：每实体脚本。这里只把组件写进世界；真正的加载与 `on_spawn(id)`
+        // 在场景实例化的末尾统一做一次（见 `sync_entity_scripts`），因为脚本需要工程根。
+        if let Some(value) = components.get("Script") {
+            let script = crate::core::entity_script::EntityScript::from_component_str(value)
+                .map_err(|error| {
+                    LuaBridgeError::Api(format!("entity {name:?} has an invalid Script: {error}"))
+                })?;
+            state
+                .world
+                .insert(id, script)
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
         }
         // UI scene components (screen-space overlays).
@@ -1402,6 +1432,129 @@ impl LuaRuntime {
         Ok(())
     }
 
+    /// docs/54 §4.1：把世界里的 `Script` 组件同步成"已加载的每实体脚本"。
+    ///
+    /// 三件事，顺序固定：
+    /// ① 收集**启用**的 `Script` 组件（按实体 id 排序，因此加载顺序确定）；
+    /// ② 尚未加载的文件读进来、编译成各自独立的 Lua 状态（同文件只加载一次）；
+    /// ③ 对每个**还没生成过**的实体调用一次 `on_spawn(id)`。
+    ///
+    /// 返回本次新生成（调用过 `on_spawn`）的实体数。**没有脚本实体时直接返回 0**，不碰项目根，
+    /// 因此既有工程与无工程根的诊断模式一字未改。有脚本却没有工程根时报错——那说明场景声明了
+    /// 一个无法解析的路径，静默跳过只会让"脚本没跑"变成谜题。
+    pub fn sync_entity_scripts(&mut self) -> Result<usize, LuaBridgeError> {
+        let requests = self.pending_entity_scripts();
+        if requests.is_empty() {
+            return Ok(0);
+        }
+        let root = self.state.borrow().project_root.clone().ok_or_else(|| {
+            LuaBridgeError::Api(
+                "entity scripts require a project root (set_project_root)".to_owned(),
+            )
+        })?;
+        for (_, file) in &requests {
+            if self.entity_scripts.contains_key(file) {
+                continue;
+            }
+            let path = root.join(file);
+            let source = read_project_script(&path)?;
+            let lua = self.load_candidate(&path, &source)?;
+            let fingerprint = file_fingerprint(&path, &source)?;
+            self.entity_scripts
+                .insert(file.clone(), EntityScriptState { lua, fingerprint });
+        }
+        let mut spawned = 0;
+        for (id, file) in requests {
+            if !self.entity_scripts_spawned.insert(id) {
+                continue;
+            }
+            let state = self
+                .entity_scripts
+                .get(&file)
+                .expect("脚本刚刚已加载（同文件只加载一次）");
+            call_entity_hook(&state.lua, "on_spawn", id, None, Path::new(&file))?;
+            spawned += 1;
+        }
+        Ok(spawned)
+    }
+
+    /// 每步调用所有启用脚本的 `on_update(id, dt)`，返回实际调用的实体数。
+    ///
+    /// 先做一次 [`Self::sync_entity_scripts`]，因此**运行时新生成的实体**（Lua `entity.spawn`、
+    /// 预制体实例化）下一帧就会拿到自己的 `on_spawn`/`on_update`，不需要宿主额外接线。
+    pub fn call_entity_scripts(&mut self, delta_seconds: f32) -> Result<usize, LuaBridgeError> {
+        self.sync_entity_scripts()?;
+        let requests = self.pending_entity_scripts();
+        let mut called = 0;
+        for (id, file) in requests {
+            let Some(state) = self.entity_scripts.get(&file) else {
+                continue;
+            };
+            call_entity_hook(
+                &state.lua,
+                "on_update",
+                id,
+                Some(delta_seconds),
+                Path::new(&file),
+            )?;
+            called += 1;
+        }
+        Ok(called)
+    }
+
+    /// 热重载：文件指纹变了的脚本重新读入并替换 Lua 状态（返回重载的文件数）。
+    ///
+    /// 重载会**清掉该文件 Lua 状态里的一切**（顶层局部变量、模块缓存），因此文档写明：每实体
+    /// 状态要么放在实体组件里，要么放在脚本内以 `id` 为键的表里，并接受重载时重建。
+    pub fn reload_entity_scripts(&mut self) -> Result<usize, LuaBridgeError> {
+        let root = match self.state.borrow().project_root.clone() {
+            Some(root) => root,
+            None => return Ok(0),
+        };
+        let files: Vec<String> = self.entity_scripts.keys().cloned().collect();
+        let mut reloaded = 0;
+        for file in files {
+            let path = root.join(&file);
+            let source = read_project_script(&path)?;
+            let fingerprint = file_fingerprint(&path, &source)?;
+            let unchanged = self
+                .entity_scripts
+                .get(&file)
+                .is_some_and(|state| state.fingerprint == fingerprint);
+            if unchanged {
+                continue;
+            }
+            let lua = self.load_candidate(&path, &source)?;
+            self.entity_scripts
+                .insert(file, EntityScriptState { lua, fingerprint });
+            reloaded += 1;
+        }
+        Ok(reloaded)
+    }
+
+    /// 当前已加载的每实体脚本文件（诊断/验收用，按路径排序）。
+    #[must_use]
+    pub fn entity_script_files(&self) -> Vec<String> {
+        let mut files: Vec<String> = self.entity_scripts.keys().cloned().collect();
+        files.sort();
+        files
+    }
+
+    /// 世界里启用的每实体脚本请求，按实体 id 排序（加载与调用顺序因此确定）。
+    fn pending_entity_scripts(&self) -> Vec<(EntityId, String)> {
+        let state = self.state.borrow();
+        let mut requests: Vec<(EntityId, String)> = Vec::new();
+        state
+            .world
+            .for_each::<crate::core::entity_script::EntityScript>(|id, script| {
+                if script.enabled {
+                    requests.push((id, script.file.clone()));
+                }
+            });
+        requests.sort_by_key(|(id, _)| *id);
+        requests
+    }
+
     fn load_candidate(&self, path: &Path, source: &str) -> Result<Lua, LuaBridgeError> {
         let candidate = Lua::new();
         register_api(&candidate, Rc::clone(&self.state))
@@ -1622,6 +1775,37 @@ fn call_optional(lua: &Lua, name: &str) -> LuaResult<()> {
         function.call::<()>(())?;
     }
     Ok(())
+}
+
+/// 每实体脚本的钩子：`on_spawn(id)` / `on_update(id, dt)`。没有定义就跳过（脚本可以只实现一个）。
+///
+/// 参数用的是 **Lua 侧的实体句柄**（整数），与 `transform`/`quad`/`physics` 这些表收的 id 同一套；
+/// 报错时带上脚本路径，否则"哪个实体的哪个脚本炸了"只能靠猜。
+fn call_entity_hook(
+    lua: &Lua,
+    name: &str,
+    id: EntityId,
+    delta_seconds: Option<f32>,
+    path: &Path,
+) -> Result<(), LuaBridgeError> {
+    let callback: Value = lua
+        .globals()
+        .get(name)
+        .map_err(|error| LuaBridgeError::Runtime {
+            path: path.to_path_buf(),
+            source: error.to_string(),
+        })?;
+    let Value::Function(function) = callback else {
+        return Ok(());
+    };
+    let result = match delta_seconds {
+        Some(delta) => function.call::<()>((entity_lua_id(id), delta)),
+        None => function.call::<()>((entity_lua_id(id),)),
+    };
+    result.map_err(|error| LuaBridgeError::Runtime {
+        path: path.to_path_buf(),
+        source: format!("{name}: {error}"),
+    })
 }
 fn api_error(message: impl Into<String>) -> mlua::Error {
     mlua::Error::RuntimeError(message.into())
@@ -8611,6 +8795,174 @@ mod tests {
             "optional font_size argument is honored"
         );
         let _ = fs::remove_file(path);
+    }
+
+    /// docs/54 §4.1：场景声明的**每实体脚本**在加载期读入、`on_spawn` 一次、每步 `on_update`
+    /// 一次，并且能改自己那个实体。判据要的是"脚本归属真的下放到实体"，所以断言的是**实体位置**
+    /// 而不是"脚本被调用了"。
+    #[test]
+    fn entity_script_component_drives_its_own_entity() {
+        let root = std::env::temp_dir().join(format!("p2-entity-script-{}", std::process::id()));
+        let scripts = root.join("scripts");
+        fs::create_dir_all(&scripts).unwrap();
+        fs::write(
+            scripts.join("patrol.lua"),
+            "spawned = {}\n\
+             function on_spawn(id) spawned[id] = true end\n\
+             function on_update(id, dt)\n\
+               local t = transform.get(id)\n\
+               transform.set(id, t.x + 10 * dt, t.y)\n\
+               speed_seen = dt\n\
+             end\n",
+        )
+        .unwrap();
+
+        let mut scene = crate::core::scene::Scene::new("entity-script");
+        let walker = crate::core::scene::SceneEntityId(1);
+        let idle = crate::core::scene::SceneEntityId(2);
+        scene.add_entity(walker, "Walker", None).unwrap();
+        scene.add_entity(idle, "Idle", None).unwrap();
+        for id in [walker, idle] {
+            scene.entities.get_mut(&id).unwrap().components.insert(
+                "Transform".into(),
+                "x=0;y=0;rotation=0;scale_x=1;scale_y=1".into(),
+            );
+        }
+        scene
+            .entities
+            .get_mut(&walker)
+            .unwrap()
+            .components
+            .insert("Script".into(), "file=scripts/patrol.lua".into());
+        // 停用的脚本组件：既不加载也不调用。
+        scene.entities.get_mut(&idle).unwrap().components.insert(
+            "Script".into(),
+            "file=scripts/missing.lua;enabled=false".into(),
+        );
+
+        let mut runtime = LuaRuntime::new().unwrap();
+        runtime.set_project_root(root.clone());
+        assert_eq!(
+            runtime.instantiate_scene(&scene).unwrap(),
+            2,
+            "两个实体都实例化了"
+        );
+        assert_eq!(
+            runtime.entity_script_files(),
+            vec!["scripts/patrol.lua".to_owned()],
+            "只应加载启用的那个脚本；enabled=false 的不许被读（否则文件不存在就会误报）"
+        );
+
+        // 每次 `call_entity_scripts` 只驱动声明了脚本的那个实体。
+        let called = runtime.call_entity_scripts(0.5).unwrap();
+        assert_eq!(called, 1, "只有 Walker 有启用脚本");
+        let walker_id = *runtime
+            .state
+            .borrow()
+            .scene_entities
+            .get(&walker)
+            .expect("Walker 的运行时实体");
+        let idle_id = *runtime
+            .state
+            .borrow()
+            .scene_entities
+            .get(&idle)
+            .expect("Idle 的运行时实体");
+        runtime.call_entity_scripts(0.5).unwrap();
+        {
+            let state = runtime.state.borrow();
+            let walker_transform = state
+                .world
+                .get::<Transform>(walker_id)
+                .unwrap()
+                .expect("Walker 有 Transform");
+            assert!(
+                (walker_transform.position.x - 10.0).abs() < 1e-4,
+                "脚本应把实体移动 10*dt*2 次：实际 {}",
+                walker_transform.position.x
+            );
+            let idle_transform = state
+                .world
+                .get::<Transform>(idle_id)
+                .unwrap()
+                .expect("Idle 有 Transform");
+            assert_eq!(idle_transform.position.x, 0.0, "停用的脚本不该动实体");
+        }
+
+        // 热重载：文件没变 → 0；改过 → 1，且重载后仍能继续驱动。
+        assert_eq!(
+            runtime.reload_entity_scripts().unwrap(),
+            0,
+            "未改动不该重载"
+        );
+        fs::write(
+            scripts.join("patrol.lua"),
+            "function on_update(id, dt)\n\
+               local t = transform.get(id)\n\
+               transform.set(id, t.x + 100 * dt, t.y)\n\
+             end\n",
+        )
+        .unwrap();
+        assert_eq!(
+            runtime.reload_entity_scripts().unwrap(),
+            1,
+            "改动后应重载一次"
+        );
+        runtime.call_entity_scripts(0.5).unwrap();
+        {
+            let state = runtime.state.borrow();
+            let walker_transform = state
+                .world
+                .get::<Transform>(walker_id)
+                .unwrap()
+                .expect("Walker 有 Transform");
+            assert!(
+                (walker_transform.position.x - 60.0).abs() < 1e-4,
+                "重载后应走新逻辑（+100*0.5）：实际 {}",
+                walker_transform.position.x
+            );
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// 脚本文件不存在必须**在加载期报错**（而不是悄悄少跑一个脚本）：这是"场景声明了脚本"
+    /// 与"脚本真的在跑"之间唯一的防线。
+    #[test]
+    fn entity_script_reports_missing_files_and_missing_project_root() {
+        let root =
+            std::env::temp_dir().join(format!("p2-entity-script-miss-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let mut scene = crate::core::scene::Scene::new("entity-script-missing");
+        let id = crate::core::scene::SceneEntityId(1);
+        scene.add_entity(id, "Walker", None).unwrap();
+        scene
+            .entities
+            .get_mut(&id)
+            .unwrap()
+            .components
+            .insert("Script".into(), "file=scripts/nope.lua".into());
+
+        // 没有工程根：明确报错，而不是"脚本没跑"。
+        let mut bare = LuaRuntime::new().unwrap();
+        let error = bare
+            .instantiate_scene(&scene)
+            .expect_err("没有工程根时应报错");
+        assert!(
+            error.to_string().contains("project root"),
+            "错误信息应指向工程根：{error}"
+        );
+
+        // 有工程根但文件不存在：同样是加载期错误。
+        let mut runtime = LuaRuntime::new().unwrap();
+        runtime.set_project_root(root.clone());
+        let error = runtime
+            .instantiate_scene(&scene)
+            .expect_err("文件不存在时应报错");
+        assert!(
+            error.to_string().contains("nope.lua"),
+            "错误信息应点名缺失的脚本：{error}"
+        );
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
