@@ -79,6 +79,8 @@ pub enum ComponentId {
     Animation3d,
     /// docs/54 §4.1：每实体 `Script` 组件（脚本归属从工程级下放到实体）。
     Script,
+    /// docs/54 §4.3：显式 2D 显示模式（world / overlay / screen）。
+    RenderMode,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -114,6 +116,8 @@ pub enum TypedComponent {
     Animation3d(Animation3dDescriptor),
     /// docs/54 §4.1：每实体脚本（文件 + 启用开关）。
     Script(EntityScript),
+    /// docs/54 §4.3：显式 2D 显示模式。
+    RenderMode(crate::core::render_mode::RenderMode),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -274,6 +278,15 @@ fn compile_component(
         // docs/54 §4.1：脚本归属从"工程级一份"下放到实体。
         "Script" => EntityScript::from_component_str(value)
             .map(|component| (ComponentId::Script, TypedComponent::Script(component)))
+            .map_err(|error| error.to_string()),
+        // docs/54 §4.3：显式 2D 显示模式——"这段几何走哪条路"从全局开关下放到实体。
+        "RenderMode" => crate::core::render_mode::RenderMode::from_component_str(value)
+            .map(|component| {
+                (
+                    ComponentId::RenderMode,
+                    TypedComponent::RenderMode(component),
+                )
+            })
             .map_err(|error| error.to_string()),
         _ => return None,
     };
@@ -507,6 +520,7 @@ mod tests {
         ),
         ("Quad", "size=32,32;color=1,0,0,0.5", ComponentId::Quad),
         ("Script", "file=scripts/ai/patrol.lua", ComponentId::Script),
+        ("RenderMode", "mode=screen", ComponentId::RenderMode),
         (
             "Tilemap",
             "tile_size=32x32;width=2;height=2;tiles=0000;solid=0000",

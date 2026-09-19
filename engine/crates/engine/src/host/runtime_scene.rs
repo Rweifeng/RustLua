@@ -104,6 +104,12 @@ pub struct RuntimeScene {
     assets: std::cell::RefCell<AssetStore<AssetRecord>>,
     /// 本帧与 `texture_paths` **同序**的句柄（交给渲染器做 O(1) 的贴图缓存查找）。
     texture_handles: Vec<AssetHandle>,
+    /// docs/54 §4.3：声明了 `mode=overlay` 的实体（屏幕空间，落 `Overlay2D` 桶）。
+    overlay_batch: SpriteBatch,
+    /// docs/54 §4.3：声明了 `mode=screen` 的实体（屏幕空间，落 `ScreenUI` 桶）。
+    screen_batch: SpriteBatch,
+    /// 本帧三种显式模式各路由了几个实体 `(world, overlay, screen)`（诊断/验收用）。
+    render_mode_routed: (usize, usize, usize),
     tilemap_cache: HashMap<EntityId, CachedTilemapLayer>,
     /// 共享字体图集：运行时重建（编辑器拖动/编辑场景导致 revision 变化时）复用
     /// 同一实例，避免每帧重新生成 MSDF 字形。生成字形需可变访问（内部 Mutex）。
@@ -521,6 +527,15 @@ impl RuntimeScene {
             .into_iter()
             .map(|(_, record)| record.clone())
             .collect()
+    }
+
+    /// docs/54 §4.3：本帧三种显式显示模式各路由了几个实体 `(world, overlay, screen)`。
+    ///
+    /// 未声明模式的实体不计数（它们跟随全局开关），因此这三个数只在场景真的用了显式模式时非零——
+    /// 也就是"这段几何走哪条路"变成可断言的事实。
+    #[must_use]
+    pub const fn render_mode_routed(&self) -> (usize, usize, usize) {
+        self.render_mode_routed
     }
 
     /// 某个路径当前的运行时句柄（未登记则 `None`）。
@@ -1219,6 +1234,9 @@ impl RuntimeScene {
             texture_lookup: HashMap::new(),
             assets: std::cell::RefCell::new(AssetStore::new()),
             texture_handles: Vec::new(),
+            overlay_batch: SpriteBatch::with_capacity(16),
+            screen_batch: SpriteBatch::with_capacity(16),
+            render_mode_routed: (0, 0, 0),
             tilemap_cache: HashMap::new(),
             font_atlas: None,
             vector_atlas: None,
@@ -2135,6 +2153,12 @@ impl RuntimeScene {
         // docs/54 §4.4：本帧的路径与去重表重建，但**身份表不清空**——句柄因此跨帧稳定。
         self.texture_lookup.clear();
         self.texture_handles.clear();
+        // docs/54 §4.3：显式模式的批次每帧重建；没有实体声明模式时它们恒为空（零成本）。
+        self.overlay_batch.clear();
+        self.screen_batch.clear();
+        self.overlay_batch.set_cull_bounds(cull_bounds);
+        self.screen_batch.set_cull_bounds(cull_bounds);
+        self.render_mode_routed = (0, 0, 0);
         // 每帧先清空：布局阶段（push_scene_ui 等）再把本帧用到的自定义字体 key 记入。
         self.frame_font_keys.clear();
         // Tile maps draw first (layer 0), sprite entities on top (layer 1+).
@@ -2163,6 +2187,8 @@ impl RuntimeScene {
             let RuntimeScene {
                 script,
                 sprite_batch,
+                overlay_batch,
+                screen_batch,
                 texture_paths,
                 texture_lookup,
                 assets,
@@ -2175,6 +2201,7 @@ impl RuntimeScene {
             // "不在这个视图里"不是"透明"。
             let view_mask = self.view_world_mask;
             let mut filtered = 0usize;
+            let mut routed = (0usize, 0usize, 0usize);
             script.with_world(|world| {
                 let mut index = 0usize;
                 // WP2：提取用的变换来源由空间继承开关**每帧选定一次**：开启时整条换成
@@ -2237,7 +2264,28 @@ impl RuntimeScene {
                         .flatten()
                         .map(SpriteSorting::effective_layer)
                         .unwrap_or(1 + layer_index as i32);
-                    sprite_batch.push(SpriteBatchItem::new(texture, layer, sprite, *transform));
+                    // docs/54 §4.3：显式显示模式把这段几何路由到对应通道；未声明 = 跟随全局开关。
+                    let item = SpriteBatchItem::new(texture, layer, sprite, *transform);
+                    match world
+                        .get::<crate::core::render_mode::RenderMode>(id)
+                        .ok()
+                        .flatten()
+                        .copied()
+                    {
+                        Some(crate::core::render_mode::RenderMode::Overlay) => {
+                            routed.1 += 1;
+                            overlay_batch.push(item);
+                        }
+                        Some(crate::core::render_mode::RenderMode::Screen) => {
+                            routed.2 += 1;
+                            screen_batch.push(item);
+                        }
+                        Some(crate::core::render_mode::RenderMode::World) => {
+                            routed.0 += 1;
+                            sprite_batch.push(item);
+                        }
+                        None => sprite_batch.push(item),
+                    }
                 };
                 // `for_each2` 把变换直接交到手上，省掉每个精灵一次 `get::<Transform>`——那是一次
                 // `TypeId` 表查询 + 一次实体表查询（两层哈希），5 万精灵档实测就是它的主要成本
@@ -2260,6 +2308,7 @@ impl RuntimeScene {
                 return Err(message);
             }
             self.view_filtered.set(self.view_filtered.get() + filtered);
+            self.render_mode_routed = routed;
         }
         // docs/54 §4.3：一等 Quad（几何 + 材质，贴图可选）。**刻意走与精灵完全相同的那条路**：
         // Quad 在提取阶段降级成 `Sprite`（`Quad::to_sprite`：几何/材质/深度原样带过去，纹理区域
@@ -2269,6 +2318,8 @@ impl RuntimeScene {
             let RuntimeScene {
                 script,
                 sprite_batch,
+                overlay_batch,
+                screen_batch,
                 texture_paths,
                 texture_lookup,
                 assets,
@@ -2280,6 +2331,7 @@ impl RuntimeScene {
             let view_mask = self.view_world_mask;
             let mut filtered = 0usize;
             let white = crate::core::quad::QUAD_DEFAULT_TEXTURE;
+            let mut routed = (0usize, 0usize, 0usize);
             script.with_world(|world| {
                 let mut index = 0usize;
                 let mut collect = |id: EntityId, transform: &Transform, quad: &Quad| {
@@ -2311,7 +2363,28 @@ impl RuntimeScene {
                     } else {
                         quad.sorting.effective_layer()
                     };
-                    sprite_batch.push(SpriteBatchItem::new(texture, layer, sprite, *transform));
+                    // docs/54 §4.3：显式显示模式把这段几何路由到对应通道；未声明 = 跟随全局开关。
+                    let mode = world
+                        .get::<crate::core::render_mode::RenderMode>(id)
+                        .ok()
+                        .flatten()
+                        .copied();
+                    let item = SpriteBatchItem::new(texture, layer, sprite, *transform);
+                    match mode {
+                        Some(crate::core::render_mode::RenderMode::Overlay) => {
+                            routed.1 += 1;
+                            overlay_batch.push(item);
+                        }
+                        Some(crate::core::render_mode::RenderMode::Screen) => {
+                            routed.2 += 1;
+                            screen_batch.push(item);
+                        }
+                        Some(crate::core::render_mode::RenderMode::World) => {
+                            routed.0 += 1;
+                            sprite_batch.push(item);
+                        }
+                        None => sprite_batch.push(item),
+                    }
                 };
                 if inherit {
                     world.for_each2::<GlobalTransform, Quad>(|id, global, quad| {
@@ -2329,13 +2402,26 @@ impl RuntimeScene {
                 return Err(message);
             }
             self.view_filtered.set(self.view_filtered.get() + filtered);
+            self.render_mode_routed = (
+                self.render_mode_routed.0 + routed.0,
+                self.render_mode_routed.1 + routed.1,
+                self.render_mode_routed.2 + routed.2,
+            );
         }
         self.push_particles()?;
         // 精灵沿用现有的排序与错误语义，但顶点直接按 NDC 追加到 `vertices` 之后（瓦片之上）。
         // **必须预留容量**：追加式写入若从零一路翻倍到 6 万顶点，光增长就多分配约一倍字节
         // （实测 10k 精灵档 4.53 → 7.53 MB，比单趟化省下的还多）。按每精灵 6 个顶点一次开够；
         // `reserve` 在容量已足时是空操作，不会浪费瓦片层已预留的部分。
-        if self.world_sprite_depth {
+        // docs/54 §4.3：**显式显示模式**让同一场景混用世界通道与屏幕空间内容。
+        //
+        // `mode=world` 是请求世界通道：只要场景里有实体这样声明，这一帧就走世界通道（与宿主开关
+        // 同一效果，通道是帧级的——默认实体也跟着进，这条写进 docs/16 避免意外）。
+        // `mode=overlay` / `mode=screen` 是退出世界通道：它们**永远**走 NDC overlay 通道，
+        // 分别落在 `Overlay2D` 与 `ScreenUI` 桶里（HUD 语义：画在世界内容之上）。
+        let explicit_world = self.render_mode_routed.0 > 0;
+        let world_channel = self.world_sprite_depth || explicit_world;
+        if world_channel {
             // WP6：世界 Sprite 走带深度的通道——世界坐标 + `Sprite::z`，投影交给顶点着色器。
             // 排序/分段/剔除与 overlay 路径同源（同一个批处理、同一把剔除量尺）。
             //
@@ -2364,6 +2450,33 @@ impl RuntimeScene {
                 )
                 .map_err(|error| error.to_string())?;
         }
+        // 显式屏幕空间的批次：无论这一帧走不走世界通道都走 overlay 通道。
+        let mut overlay_ranges: Vec<SpriteDrawBatch> = Vec::new();
+        let mut screen_ranges: Vec<SpriteDrawBatch> = Vec::new();
+        if !self.overlay_batch.is_empty() {
+            self.overlay_batch
+                .build_overlay_into(
+                    self.camera,
+                    viewport,
+                    &mut vertices,
+                    &mut overlay_ranges,
+                    self.sprite_parallelism,
+                    self.sprite_culling,
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        if !self.screen_batch.is_empty() {
+            self.screen_batch
+                .build_overlay_into(
+                    self.camera,
+                    viewport,
+                    &mut vertices,
+                    &mut screen_ranges,
+                    self.sprite_parallelism,
+                    self.sprite_culling,
+                )
+                .map_err(|error| error.to_string())?;
+        }
 
         let mut vector_vertices = Vec::with_capacity(256);
         let mut vector_glyphs = Vec::with_capacity(64);
@@ -2386,6 +2499,22 @@ impl RuntimeScene {
                 render_layer: RenderLayer::World2D,
             })
             .collect();
+        // docs/54 §4.3：显式屏幕空间的批次接在默认批次之后，桶分别是 `Overlay2D` 与 `ScreenUI`
+        // （分桶顺序由渲染器保证：World2D → Overlay2D → ScreenUI），因此声明了模式的实体画在世界
+        // 内容之上，而 `mode=screen` 又被其它 2D 内容盖不住。
+        for (ranges, layer) in [
+            (&overlay_ranges, RenderLayer::Overlay2D),
+            (&screen_ranges, RenderLayer::ScreenUI),
+        ] {
+            draws.extend(ranges.iter().map(|draw| SceneDraw {
+                texture: draw.texture_id + 1,
+                start: draw.vertex_start as u32,
+                count: draw.vertex_count as u32,
+                sdf: false,
+                vector: false,
+                render_layer: layer,
+            }));
+        }
         // WP7 ②：collider 调试绘制（世界内容之上、屏幕 UI 之下）。Lua 的开关请求
         // 在这里被取走，与 camera2d 的请求/消费模式一致。
         if let Some(enabled) = self.script.take_collider_debug_request() {
@@ -4309,6 +4438,10 @@ fn merge_adjacent_draws(draws: &mut Vec<SceneDraw>) {
             && last.start + last.count == draw.start
             && last.sdf == draw.sdf
             && last.vector == draw.vector
+            // docs/54 §4.3：**层必须一起比**。曾经漏了这一项：相邻两段纹理相同、顶点连续时会被
+            // 并成一段，并沿用前一段的 `render_layer`——于是 ScreenUI 的几何悄悄变成 Overlay2D，
+            // HUD 隔离（§8-⑤ 的像素门）在有显式显示模式后会失效。
+            && last.render_layer == draw.render_layer
         {
             // 相邻 draw 顶点连续（start == last.start + last.count），直接并 count。
             last.count += draw.count;
@@ -5737,6 +5870,124 @@ mod sdf_tests {
         );
     }
 
+    /// docs/54 §4.3：`merge_adjacent_draws` **必须把 `render_layer` 一起比**。
+    ///
+    /// 回归背景：合并条件是"纹理相同 + 顶点连续"，漏了层以后，相邻的 ScreenUI 段会被并进前一段
+    /// 并沿用它的 `render_layer`——几何还在、层却变了，HUD 隔离（§8-⑤）会静默失效。
+    #[test]
+    fn merging_adjacent_draws_never_crosses_render_layers() {
+        let mut draws = vec![
+            SceneDraw::overlay(1, 0, 6),
+            // 与上一段纹理相同、顶点连续，但层不同：不许并。
+            SceneDraw::screen_ui(1, 6, 6),
+            // 同层且连续：应当并成一段。
+            SceneDraw::screen_ui(1, 12, 6),
+        ];
+        merge_adjacent_draws(&mut draws);
+        assert_eq!(
+            draws
+                .iter()
+                .map(|draw| (draw.render_layer, draw.start, draw.count))
+                .collect::<Vec<_>>(),
+            vec![
+                (RenderLayer::Overlay2D, 0, 6),
+                (RenderLayer::ScreenUI, 6, 12),
+            ],
+            "跨层不许合并，同层连续才合并"
+        );
+    }
+    /// docs/54 §4.3：**三种显式 2D 显示模式**让同一场景混用世界通道与屏幕空间内容。
+    ///
+    /// 判据是"几何真的走了哪条路"：默认实体进世界通道；`mode=overlay` / `mode=screen` 留在屏幕
+    /// 空间（分别落 `Overlay2D` / `ScreenUI` 桶，因此画在世界内容之上）；`mode=world` 请求世界
+    /// 通道——即使宿主开关是关的，只要场景里有实体这样声明，这一帧就走世界通道。
+    #[test]
+    fn explicit_render_modes_route_geometry_to_the_right_channel() {
+        let root = crate::core::games_dir().join("examples").join("game_api");
+        if !root.join("scenes/main.scene").is_file() {
+            return;
+        }
+        let mut scene = Scene::new("render_modes");
+        for (id, name, mode) in [
+            (SceneEntityId(1), "Default", None),
+            (SceneEntityId(2), "Hud", Some("mode=overlay")),
+            (SceneEntityId(3), "ScreenUi", Some("mode=screen")),
+        ] {
+            scene.add_entity(id, name, None).unwrap();
+            let entity = scene.entities.get_mut(&id).unwrap();
+            entity.components.insert(
+                "Transform".into(),
+                "x=640;y=360;rotation=0;scale_x=1;scale_y=1".into(),
+            );
+            entity.components.insert(
+                "Sprite".into(),
+                "texture=assets/textures/player.png;size=32x32".into(),
+            );
+            if let Some(mode) = mode {
+                entity.components.insert("RenderMode".into(), mode.into());
+            }
+        }
+        let mut runtime =
+            RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("runtime scene");
+        // 宿主打开世界通道：默认实体进世界通道，显式屏幕空间的两个留下。
+        runtime.set_world_sprite_depth(true);
+        let mesh = runtime.vertices(640, 360).expect("vertices");
+        assert_eq!(
+            runtime.render_mode_routed(),
+            (0, 1, 1),
+            "本帧应路由 1 个 overlay、1 个 screen，且没有显式 world"
+        );
+        assert_eq!(
+            mesh.world_sprites.len(),
+            6,
+            "只有默认实体进了世界通道（6 顶点）"
+        );
+        let layers: Vec<RenderLayer> = mesh.draws.iter().map(|draw| draw.render_layer).collect();
+        assert!(
+            layers.contains(&RenderLayer::Overlay2D),
+            "`mode=overlay` 的实体必须落在 Overlay2D 桶：{layers:?}"
+        );
+        assert!(
+            layers.contains(&RenderLayer::ScreenUI),
+            "`mode=screen` 的实体必须落在 ScreenUI 桶：{layers:?}"
+        );
+        assert_eq!(
+            layers
+                .iter()
+                .filter(|layer| **layer == RenderLayer::World2D)
+                .count(),
+            0,
+            "世界通道那一帧里不该再有 World2D 的 NDC 绘制"
+        );
+
+        // 宿主**关掉**世界通道，但场景里有实体声明 `mode=world` ⇒ 这一帧照样走世界通道。
+        let mut scene = Scene::new("render_modes_world");
+        scene.add_entity(SceneEntityId(1), "Forced", None).unwrap();
+        {
+            let entity = scene.entities.get_mut(&SceneEntityId(1)).unwrap();
+            entity.components.insert(
+                "Transform".into(),
+                "x=640;y=360;rotation=0;scale_x=1;scale_y=1".into(),
+            );
+            entity.components.insert(
+                "Sprite".into(),
+                "texture=assets/textures/player.png;size=32x32".into(),
+            );
+            entity
+                .components
+                .insert("RenderMode".into(), "mode=world".into());
+        }
+        let mut runtime =
+            RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("runtime scene");
+        assert!(!runtime.world_sprite_depth(), "宿主开关刻意保持关闭");
+        let mesh = runtime.vertices(640, 360).expect("vertices");
+        assert_eq!(runtime.render_mode_routed(), (1, 0, 0));
+        assert_eq!(
+            mesh.world_sprites.len(),
+            6,
+            "`mode=world` 必须让这一帧走世界通道"
+        );
+    }
     /// WP6：世界文字也进世界坐标深度通道——它此前是唯一仍留在屏幕空间的世界内容。    /// 转换走 `view_projection` 的**逆映射**，因此屏幕观感与 overlay 路径逐个像素一致，
     /// 但顶点有了世界坐标与 `z`，可以和精灵/瓦片一起参与深度测试。
     #[test]

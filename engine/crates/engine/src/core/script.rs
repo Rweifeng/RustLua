@@ -889,6 +889,21 @@ impl LuaRuntime {
                 .insert(id, script)
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
         }
+        // docs/54 §4.3：显式 2D 显示模式（world/overlay/screen）。运行时不插入 = 跟随全局开关，
+        // 因此既有场景一字不改；声明了的实体在提取时被路由到对应通道。
+        if let Some(value) = components.get("RenderMode") {
+            let mode = crate::core::render_mode::RenderMode::from_component_str(value).map_err(
+                |error| {
+                    LuaBridgeError::Api(format!(
+                        "entity {name:?} has an invalid RenderMode: {error}"
+                    ))
+                },
+            )?;
+            state
+                .world
+                .insert(id, mode)
+                .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
+        }
         // UI scene components (screen-space overlays).
         if let Some(value) = components.get("Text") {
             let text = crate::core::ui::UiText::from_component_str(value).map_err(|error| {

@@ -98,6 +98,8 @@ pub mod preview_diagnostics;
 pub mod project_config;
 /// docs/54 §4.3：一等 Quad（Sprite 的几何本体：几何 + 材质，贴图可选）。
 pub mod quad;
+/// docs/54 §4.3：三种显式 2D 显示模式（world / overlay / screen）。
+pub mod render_mode;
 /// docs/54 §4.3：一帧的渲染通道计划（`RenderPlan`），把"跑哪些通道、按什么顺序"从
 /// 渲染循环里的 `if` 抽成可单测的纯函数。
 pub mod render_plan;

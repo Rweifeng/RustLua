@@ -112,6 +112,31 @@ component  9  Script     file=scripts/ai/patrol.lua
   加载期报错**，而不是等到第一次 update 才发现脚本没跑。运行时新生成的实体下一帧自动补上
   `on_spawn`/`on_update`。调用顺序是确定的：每步在工程级 `update()` 之后按实体 id 升序各调用一次。
 
+## 显式 2D 显示模式 `RenderMode`（docs/54 §4.3）
+
+```text
+entity  7  HudIcon
+component  7  Transform   x=640;y=360;rotation=0;scale_x=1;scale_y=1
+component  7  Sprite      texture=assets/textures/hud.png;size=24x24
+component  7  RenderMode  mode=screen
+```
+
+- `RenderMode`：`mode=world|overlay|screen` 必填，未知取值**报错**（`mode=wrold` 被当成 overlay 会让
+  "我写了 world 却没进世界通道"无从查起）。
+- 三种模式的含义（§4.3 的三个名字）：
+  - `world`：世界坐标 + 世界相机（可选深度）；
+  - `overlay`：旧 2D overlay，屏幕空间、保持旧排序与像素行为；
+  - `screen`：屏幕空间 UI，不受世界相机与世界 Transform 影响。
+- **不声明 = 跟随全局开关**（`RuntimeScene::set_world_sprite_depth`），因此既有场景一字不改、像素
+  不变——这是回滚档。
+- `overlay` / `screen` 是**退出世界通道**：即使这一帧走世界通道，它们也留在屏幕空间，分别落在
+  `Overlay2D` 与 `ScreenUI` 桶（HUD 画在世界内容之上，且 ScreenUI 又被其它 2D 内容盖不住）。
+- `world` 是**请求世界通道**：只要场景里有实体这样声明，这一帧就走世界通道（与宿主开关打开同一
+  效果）。注意通道是**帧级**的——默认实体（没写模式的）也会跟着进世界通道；这条是刻意的，写在这里
+  免得"我只给一个实体开了 world，怎么别的也变了"变成意外。
+- 三种模式只影响**产出路径**，不改变排序/深度/可见遮罩的既有规则（那些仍由 `SpriteSorting`、`z`
+  与 `Visibility` 表达）。
+
 ## 可见性组件 `Visibility`（docs/54 §4.2）
 
 `RenderView::visibility`（可见层遮罩）过去是个**没有消费者**的字段；现在由实体侧组件驱动：
