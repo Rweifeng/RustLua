@@ -4,6 +4,8 @@
 pub mod animation;
 /// 3D skeletal animation component driven by glTF skins and clips.
 pub mod animation3d;
+/// docs/54 §4.4：统一的动画轨道抽象（属性轨道 + 事件轨道）。
+pub mod animation_track;
 /// docs/54 §4.4：运行时资源身份（`AssetHandle` 稳定句柄 + `AssetStore` 注册表）。
 pub mod asset_handle;
 /// Texture atlas regions and named Sprite sub-assets.

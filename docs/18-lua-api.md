@@ -52,6 +52,16 @@ end
 - 帧号越界、事件名为空、格式错误（`events=1`、`events=x:hit`）**一律解析报错**——静默丢弃会让
   "攻击判定帧"神秘消失，比直接报错难查得多。
 
+### `animation.time` 播放时刻（docs/54 §4.4）
+
+`animation.time(id)` 返回当前片段的播放时刻（秒），与 `animation3d.time(id)` 同名同义，也返回报错
+（`entity has no animation`）而不是 0。它的用处是"轨道采样是**时刻 → 值**的函数"：想在脚本里按时间轴
+推理（做动画工具、按时间对齐特效）需要一个可读的时钟，此前 2D 侧只能靠帧号间接猜。
+
+引擎侧同一份时间轴由统一轨道抽象表达：`AnimationClip::tracks()` 给出一条 `SpriteRegion` 属性轨道
+（Step 插值）与一条事件轨道，"帧 → UV"与"事件落在哪一步"因此各自只有一处定义（帧事件的区间语义在
+`EventTrack::events_in_interval`）。详见 [docs/54](54-2D3D统一优化方案与现状对比.md) §4.4 现状。
+
 ## 第一版 API
 
 | 模块 | API | 说明 |
@@ -354,7 +364,6 @@ Lua 无法区分尘土、水花、落叶；`opts` 让每次爆发自带观感。
 UI 不是实体，永远照画。缺组件 = 全可见，既有场景与脚本零改动。
 
 ### `quad` 一等矩形（docs/54 §4.3）
-
 `Quad` 是几何（`size`/`pivot`）+ 材质（`color` + 可选 `texture`）+ 深度/排序（`z`/`layer`/`order`）
 的一等声明，位置/旋转/缩放来自实体的 `Transform`。与 `sprite` 表分开是刻意的：两者语义不同
 （`Quad` 没有纹理区域、不参与帧动画），脚本想要"一个纯色矩形"时不该被迫写 `texture=__white__`。

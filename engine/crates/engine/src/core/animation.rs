@@ -33,6 +33,72 @@ pub struct AnimationFrameEvent {
     pub name: String,
 }
 
+impl AnimationClip {
+    /// docs/54 §4.4：把帧动画表达成**统一的轨道视图**——一条 `SpriteRegion` 属性轨道（Step）
+    /// 加一条事件轨道。
+    ///
+    /// 这样"帧 → UV 区域"与"事件落在哪个时刻"各自只有一处定义：`AnimationStateMachine` 的采样与
+    /// 触发都走它（见 `current_frame_uv` / `advance`）。离散目标的插值方式必须是 Step——对 UV 区域
+    /// 插值没有意义，校验会拒绝。
+    #[must_use]
+    pub fn tracks(&self) -> crate::core::animation_track::AnimationTracks {
+        use crate::core::animation_track::{
+            AnimationTracks, EventMarker, EventTrack, Interpolation, Keyframe, PropertyTrack,
+            Track, TrackTarget, TrackValue,
+        };
+        let cols = self.cols.max(1);
+        let frame_rate = if self.frame_rate.is_finite() && self.frame_rate > 0.0 {
+            self.frame_rate
+        } else {
+            // 解析期已经拒绝非正帧率；真走到这里按 1 FPS 处理而不是除以 0。
+            1.0
+        };
+        let keyframes: Vec<Keyframe> = (0..cols)
+            .map(|frame| {
+                let start = frame as f32 / cols as f32;
+                let end = (frame + 1) as f32 / cols as f32;
+                Keyframe {
+                    time: frame as f32 / frame_rate,
+                    value: TrackValue::Region {
+                        uv_min: Vec2::new(start, 0.0),
+                        uv_max: Vec2::new(end, 1.0),
+                    },
+                }
+            })
+            .collect();
+        let events: Vec<EventMarker> = self
+            .events
+            .iter()
+            .enumerate()
+            .map(|(order, event)| EventMarker {
+                time: event.frame as f32 / frame_rate,
+                name: event.name.clone(),
+                order,
+            })
+            .collect();
+        AnimationTracks::new(vec![
+            Track::Property(PropertyTrack {
+                target: TrackTarget::SpriteRegion,
+                interpolation: Interpolation::Step,
+                keyframes,
+            }),
+            Track::Event(EventTrack { events }),
+        ])
+    }
+
+    /// 一段片段的总时长（秒）。
+    #[must_use]
+    pub fn duration(&self) -> f32 {
+        let cols = self.cols.max(1) as f32;
+        let frame_rate = if self.frame_rate.is_finite() && self.frame_rate > 0.0 {
+            self.frame_rate
+        } else {
+            1.0
+        };
+        cols / frame_rate
+    }
+}
+
 /// A set of named clips and the currently playing state.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AnimationStateMachine {
@@ -174,12 +240,7 @@ impl AnimationStateMachine {
         }
         let (looped, duration, cols, frame_rate) = {
             let clip = self.current_clip();
-            (
-                clip.looped,
-                clip.cols as f32 / clip.frame_rate,
-                clip.cols,
-                clip.frame_rate,
-            )
+            (clip.looped, clip.duration(), clip.cols, clip.frame_rate)
         };
         let from_frame = self.current_frame();
         let from_cycle = (self.time * frame_rate).floor() as u64 / u64::from(cols.max(1));
@@ -191,37 +252,31 @@ impl AnimationStateMachine {
             }
             self.time = self.time.min(duration);
         }
-        let to_frame = self.current_frame();
         let to_cycle = (self.time * frame_rate).floor() as u64 / u64::from(cols.max(1));
         if to_cycle != from_cycle {
             // 回绕（可能一次跨多圈）：新一轮从头算，本圈尚未触发过任何事件。
             self.fired.clear();
         }
-        // 本步覆盖的帧区间：不循环时夹在 [from, to]（含），循环时可能回绕。
-        let events: Vec<(usize, AnimationEvent)> = self
-            .current_clip()
-            .events
-            .iter()
-            .cloned()
-            .enumerate()
-            .collect();
-        for (index, event) in events {
-            if self.fired.contains(&index) {
+        // docs/54 §4.4：帧事件的区间判定也走统一轨道——本条实现只负责"量化粒度"（起始帧对应的
+        // 时刻）与"本圈是否已触发过"（`fired` 按源数据序号去重），区间语义在 `EventTrack` 里。
+        //
+        // 起始下界刻意用**起始帧的时刻**（`from_frame / frame_rate`）而不是 `self.time` 之前的
+        // 值：帧事件挂在帧上，一步跨多帧时中间的帧事件必须全部触发（滑步/漏掉命中帧都属于真实
+        // 缺陷）。循环回绕时按"两段都到达过"处理。
+        let from_time = from_frame as f32 / frame_rate.max(f32::EPSILON);
+        let clip_tracks = self.current_clip().tracks();
+        let due = clip_tracks.events_in_interval(from_time, self.time, looped, duration);
+        for marker in due {
+            if self.fired.contains(&marker.order) {
                 continue;
             }
-            let reached = if to_cycle != from_cycle {
-                // 回绕：末尾到 cols-1 与开头到 to_frame 都算到达过。
-                event.frame >= from_frame || event.frame <= to_frame
-            } else {
-                event.frame >= from_frame && event.frame <= to_frame
-            };
-            if reached {
-                self.fired.push(index);
-                self.pending.push(AnimationFrameEvent {
-                    frame: event.frame,
-                    name: event.name,
-                });
-            }
+            self.fired.push(marker.order);
+            // 帧号由事件时刻反推（事件就挂在帧上），因此 Lua/宿主看到的仍是帧号。
+            let frame = (marker.time * frame_rate).round().max(0.0) as u32;
+            self.pending.push(AnimationFrameEvent {
+                frame: frame.min(cols.saturating_sub(1)),
+                name: marker.name,
+            });
         }
     }
 
@@ -242,16 +297,32 @@ impl AnimationStateMachine {
         }
     }
 
+    /// 当前片段的播放时刻（秒）。与 `Animation3D::time` 同名同义，供宿主/测试对拍轨道采样。
+    #[must_use]
+    pub const fn time(&self) -> f32 {
+        self.time
+    }
+
     /// Returns the normalized UV rectangle of the current frame.
+    ///
+    /// docs/54 §4.4：帧 → UV 这条规则现在只有一处定义——`AnimationClip::tracks()` 的
+    /// `SpriteRegion` 轨道。这里采样它，因此"轨道视图"与"渲染真正用的 UV"不可能分家。
     #[must_use]
     pub fn current_frame_uv(&self) -> (Vec2, Vec2) {
         let clip = self.current_clip();
-        let cols = clip.cols.max(1) as f32;
-        let frame = self.current_frame() as f32;
-        (
-            Vec2::new(frame / cols, 0.0),
-            Vec2::new((frame + 1.0) / cols, 1.0),
-        )
+        let time = self.time;
+        if let Some(crate::core::animation_track::TrackValue::Region { uv_min, uv_max }) = clip
+            .tracks()
+            .sample(
+                crate::core::animation_track::TrackTarget::SpriteRegion,
+                time,
+            )
+            .as_deref()
+        {
+            return (*uv_min, *uv_max);
+        }
+        // 轨道为空（`cols == 0` 之类的坏数据）：退回整张贴图，与"没有区域信息"一致。
+        (Vec2::new(0.0, 0.0), Vec2::new(1.0, 1.0))
     }
 
     /// Returns whether the current non-looping clip completed, firing once per
@@ -378,6 +449,91 @@ fn parse_frame_events(raw: &str) -> Result<Vec<AnimationEvent>, AnimationError> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// docs/54 §4.4：**轨道视图与真正渲染用的值必须一致**。
+    ///
+    /// `current_frame_uv` 现在采样 `SpriteRegion` 轨道，因此这条测试是对"单一规则"的回归保护：
+    /// 时间扫描（含帧边界、循环回绕）逐点比对轨道采样与机器自己算出的帧，两者任何一处改口径都会
+    /// 在这里失败。
+    #[test]
+    fn clip_tracks_agree_with_the_state_machine() {
+        let mut machine = machine();
+        let clip = machine.current_clip().clone();
+        let tracks = clip.tracks();
+        let track = tracks
+            .property(crate::core::animation_track::TrackTarget::SpriteRegion)
+            .expect("region track");
+        assert_eq!(track.keyframes.len(), clip.cols as usize);
+        assert_eq!(
+            track.interpolation,
+            crate::core::animation_track::Interpolation::Step,
+            "帧动画是离散目标"
+        );
+        assert!(
+            tracks.validate().is_ok(),
+            "由片段生成的轨道必须自洽：{:?}",
+            tracks.validate()
+        );
+
+        // 时间扫描：按固定步推进（步长刻意取 1/32 秒，比帧长短，因此帧边界两侧都被覆盖到，
+        // 也会跨过两圈回绕），每步比对轨道采样与渲染真正用的 UV。
+        let mut steps = 0;
+        while machine.time() < 2.5 {
+            machine.advance(1.0 / 32.0);
+            steps += 1;
+            assert!(steps < 1000, "advance 没有推进时间（测试自身失效）");
+            let time = machine.time();
+            let (uv_min, uv_max) = machine.current_frame_uv();
+            match tracks
+                .sample(
+                    crate::core::animation_track::TrackTarget::SpriteRegion,
+                    time,
+                )
+                .expect("sample")
+                .as_ref()
+            {
+                crate::core::animation_track::TrackValue::Region {
+                    uv_min: track_min,
+                    uv_max: track_max,
+                } => {
+                    assert_eq!(
+                        (uv_min.x, uv_min.y, uv_max.x, uv_max.y),
+                        (track_min.x, track_min.y, track_max.x, track_max.y),
+                        "t={time} 时轨道采样与渲染用的 UV 必须一致"
+                    );
+                }
+                other => panic!("expected region, got {other:?}"),
+            }
+        }
+        // 片段是 4 帧 @4fps = 1 秒一圈；1/32 秒步长 ⇒ 每圈 32 步，2.5 秒因此跨过两圈以上。
+        assert!(steps >= 64, "扫描至少要跨两圈循环（实际 {steps} 步）");
+    }
+
+    /// 事件轨道承载的就是片段里的帧事件（顺序与名称一致），因此"第几帧触发"只有一处定义。
+    #[test]
+    fn clip_tracks_carry_the_frame_events_in_order() {
+        let machine = machine_with_events();
+        let clip = machine.current_clip();
+        let tracks = clip.tracks();
+        let sampled: Vec<(f32, String, usize)> = tracks
+            .events_in_interval(0.0, clip.duration(), clip.looped, clip.duration())
+            .into_iter()
+            .map(|event| (event.time, event.name, event.order))
+            .collect();
+        let expected: Vec<(f32, String, usize)> = clip
+            .events
+            .iter()
+            .enumerate()
+            .map(|(order, event)| {
+                (
+                    event.frame as f32 / clip.frame_rate,
+                    event.name.clone(),
+                    order,
+                )
+            })
+            .collect();
+        assert_eq!(sampled, expected);
+    }
 
     fn machine() -> AnimationStateMachine {
         let clips = vec![

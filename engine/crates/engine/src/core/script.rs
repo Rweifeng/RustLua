@@ -4518,6 +4518,26 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
             Ok(result)
         })?,
     )?;
+    // docs/54 §4.4：与 `animation3d.time` 同名同义——当前片段的播放时刻（秒）。
+    // 轨道采样是"时刻 → 值"的函数，脚本要自己按时间轴推理（或做动画工具）时需要一个可读的时钟；
+    // 此前 2D 侧只能靠帧号间接猜。
+    let s = Rc::clone(&state);
+    animation.set(
+        "time",
+        lua.create_function(move |_, id: i64| {
+            let id = entity_from_lua(id)?;
+            let state = s.borrow();
+            require_alive(&state, id)?;
+            let Some(machine) = state
+                .world
+                .get::<AnimationStateMachine>(id)
+                .map_err(world_error)?
+            else {
+                return Err(api_error("entity has no animation"));
+            };
+            Ok(machine.time())
+        })?,
+    )?;
     lua.globals().set("animation", animation)?;
     // WP4：世界空间文字运行期挂载。与 `animation.attach` 同理——`entity.spawn` 只插
     // Transform，运行期创建的实体（伤害数字、名牌）否则无法带世界文字。
