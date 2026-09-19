@@ -11,6 +11,7 @@ use crate::core::{
     particle::ParticleEmitter,
     physics::ColliderDesc,
     physics3d::ColliderDesc3d,
+    quad::Quad,
     resource_db::{AssetId, ResourceDatabase},
     scene::{Scene, SceneEntityId},
     sprite::SpriteComponent,
@@ -67,6 +68,8 @@ pub enum ComponentId {
     ButtonStates,
     WorldText,
     Sprite,
+    /// docs/54 §4.3：一等 Quad（几何 + 材质，贴图可选）。
+    Quad,
     Tilemap,
     ParticleEmitter,
     Collider,
@@ -95,6 +98,9 @@ pub enum TypedComponent {
     ButtonStates(ButtonStateSet),
     WorldText(WorldText),
     Sprite(SpriteComponent),
+    /// docs/54 §4.3：一等 Quad。它不走 `Sprite` 那个槽——两者的差别是**有没有纹理区域**，
+    /// 合并成一个类型会让"这个矩形到底会不会被帧动画改 UV"变成隐式推断。
+    Quad(Quad),
     Tilemap(Tilemap),
     /// docs/54 §8-①：粒子发射器是**场景组件**（连续发射由 `rate` 表达），
     /// 因此"同一场景表达 Sprite/Mesh/相机/粒子/文字/UI"不再需要脚本代劳。
@@ -220,6 +226,11 @@ fn compile_component(
             .map_err(|error| error.to_string()),
         "Sprite" => SpriteComponent::from_component_str(value)
             .map(|component| (ComponentId::Sprite, TypedComponent::Sprite(component)))
+            .map_err(|error| error.to_string()),
+        // docs/54 §4.3：一等 Quad（几何 + 材质，贴图可选）。它与 `Sprite` 是两个独立组件而不是
+        // 同一个槽的两个写法：Quad 没有纹理区域、也不参与帧动画，语义上就是"一个矩形"。
+        "Quad" => Quad::from_component_str(value)
+            .map(|component| (ComponentId::Quad, TypedComponent::Quad(component)))
             .map_err(|error| error.to_string()),
         "Tilemap" => Tilemap::from_component_str(value)
             .map(|component| (ComponentId::Tilemap, TypedComponent::Tilemap(component)))
@@ -485,6 +496,7 @@ mod tests {
             "texture=assets/textures/player.png;size=32x32;pivot=0.500,0.500;tint=1.000,1.000,1.000,1.000;sorting_layer=default;order=0",
             ComponentId::Sprite,
         ),
+        ("Quad", "size=32,32;color=1,0,0,0.5", ComponentId::Quad),
         (
             "Tilemap",
             "tile_size=32x32;width=2;height=2;tiles=0000;solid=0000",
@@ -905,8 +917,9 @@ mod tests {
             .flat_map(|entity| entity.components.keys().copied())
             .collect();
         for required in [
-            // 2D 内容：精灵、文字、UI、粒子发射器
+            // 2D 内容：精灵、一等 Quad、文字、UI、粒子发射器
             ComponentId::Sprite,
+            ComponentId::Quad,
             ComponentId::WorldText,
             ComponentId::Text,
             ComponentId::UiLayout,

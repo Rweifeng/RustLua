@@ -25,6 +25,7 @@ use crate::core::{
     par::Parallelism,
     particle::{ParticleEmitter, SceneParticleEmitter},
     physics::PhysicsAuthority,
+    quad::Quad,
     scene::{Scene, SceneEntityId},
     scheduler::{
         ScheduleReport, ScheduleStage, Scheduler, SchedulerError, System, SystemError, SystemTiming,
@@ -2124,6 +2125,72 @@ impl RuntimeScene {
                 } else {
                     world.for_each2::<Transform, Sprite>(|id, transform, sprite| {
                         collect(id, transform, sprite);
+                    });
+                }
+            });
+            if let Some(message) = failure {
+                return Err(message);
+            }
+            self.view_filtered.set(self.view_filtered.get() + filtered);
+        }
+        // docs/54 §4.3：一等 Quad（几何 + 材质，贴图可选）。**刻意走与精灵完全相同的那条路**：
+        // Quad 在提取阶段降级成 `Sprite`（`Quad::to_sprite`：几何/材质/深度原样带过去，纹理区域
+        // 取整张贴图），因此排序、剔除、深度、可见遮罩、世界/overlay 两条通道全部与精灵同源——
+        // "Sprite 与 Quad 共享 RenderWorld 语义"是结构上成立的，而不是两套并行实现靠约定对齐。
+        {
+            let RuntimeScene {
+                script,
+                sprite_batch,
+                texture_paths,
+                texture_lookup,
+                ..
+            } = self;
+            let mut failure: Option<String> = None;
+            let inherit = self.spatial_active;
+            let view_mask = self.view_world_mask;
+            let mut filtered = 0usize;
+            let white = crate::core::quad::QUAD_DEFAULT_TEXTURE;
+            script.with_world(|world| {
+                let mut index = 0usize;
+                let mut collect = |id: EntityId, transform: &Transform, quad: &Quad| {
+                    if failure.is_some() {
+                        return;
+                    }
+                    if !crate::core::visibility::entity_visible_in(world, id, view_mask) {
+                        filtered += 1;
+                        return;
+                    }
+                    let layer_index = index;
+                    index += 1;
+                    let sprite = match quad.to_sprite() {
+                        Ok(sprite) => sprite,
+                        Err(error) => {
+                            failure = Some(error.to_string());
+                            return;
+                        }
+                    };
+                    // 贴图注册与精灵同一张表：同一个路径只会得到一个下标，因此 Quad 与 Sprite
+                    // 引用同一张贴图时能合进同一个绘制段（不会因为"类型不同"而多一次 draw）。
+                    let path = quad.texture.as_deref().unwrap_or(white);
+                    let texture = texture_id_of(path, texture_paths, texture_lookup);
+                    let layer = if quad.sorting == crate::core::sprite::SpriteSorting::default() {
+                        // 与精灵同一套默认层规则（按序号）。两个集合的序号各自从 0 起，因此同层时
+                        // 后收集的 Quad 画在精灵之上——色块/进度条底这类用途本来就该压在上面。
+                        1 + layer_index as i32
+                    } else {
+                        quad.sorting.effective_layer()
+                    };
+                    sprite_batch.push(SpriteBatchItem::new(texture, layer, sprite, *transform));
+                };
+                if inherit {
+                    world.for_each2::<GlobalTransform, Quad>(|id, global, quad| {
+                        if let Some(plane) = global.plane() {
+                            collect(id, &plane, quad);
+                        }
+                    });
+                } else {
+                    world.for_each2::<Transform, Quad>(|id, transform, quad| {
+                        collect(id, transform, quad);
                     });
                 }
             });
@@ -5215,8 +5282,107 @@ mod sdf_tests {
             );
         }
     }
-    /// WP6：世界文字也进世界坐标深度通道——它此前是唯一仍留在屏幕空间的世界内容。
-    /// 转换走 `view_projection` 的**逆映射**，因此屏幕观感与 overlay 路径逐个像素一致，
+    /// docs/54 §4.3：**一等 Quad** 走的是与精灵完全相同的那条路。
+    ///
+    /// 判据有三条，缺一条"Quad 是一等可绘制对象"就不成立：
+    /// ① 一个没有贴图的 Quad 也能产几何（`texture` 省略 ⇒ 内置白纹理，纯色矩形不再需要内部哨兵）；
+    /// ② 几何/材质/深度/排序与精灵同源（同一个批处理 ⇒ 顶点数、z、分段规则一致）；
+    /// ③ `Quad` 组件真的留在 ECS 里（不是实例化时被悄悄降级成 `Sprite`），因此运行时可查可改。
+    #[test]
+    fn quad_is_a_first_class_renderable_sharing_the_sprite_path() {
+        let root = crate::core::games_dir().join("examples").join("game_api");
+        if !root.join("scenes/main.scene").is_file() {
+            return;
+        }
+        let mut scene = Scene::new("quad_primitives");
+        // ① 纯色矩形：连 texture 都不写。
+        scene
+            .add_entity(SceneEntityId(1), "Backdrop", None)
+            .unwrap();
+        // ② 带贴图 + 显式排序层的矩形。
+        scene.add_entity(SceneEntityId(2), "Bar", None).unwrap();
+        {
+            let backdrop = scene.entities.get_mut(&SceneEntityId(1)).unwrap();
+            backdrop.components.insert(
+                "Transform".into(),
+                "x=640;y=360;rotation=0;scale_x=1;scale_y=1".into(),
+            );
+            backdrop
+                .components
+                .insert("Quad".into(), "size=64,32;color=0.25,0.5,1,1".into());
+            let bar = scene.entities.get_mut(&SceneEntityId(2)).unwrap();
+            bar.components.insert(
+                "Transform".into(),
+                "x=640;y=360;rotation=0;scale_x=1;scale_y=1".into(),
+            );
+            bar.components.insert(
+                "Quad".into(),
+                "size=120,8;color=1,1,1,1;texture=assets/textures/ui.png;z=-0.5;layer=actor;order=2"
+                    .into(),
+            );
+        }
+        let mut runtime =
+            RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("runtime scene");
+        runtime.set_world_sprite_depth(true);
+        let mesh = runtime.vertices(640, 360).expect("world vertices");
+        assert_eq!(
+            mesh.world_sprites.len(),
+            12,
+            "两个 Quad 各 6 个顶点（与精灵同一套几何）"
+        );
+        // 没有贴图的 Quad 采样内置白纹理；有贴图的注册进同一张纹理表（因此两者能合段）。
+        assert!(
+            mesh.paths
+                .iter()
+                .any(|path| path == crate::core::quad::QUAD_DEFAULT_TEXTURE),
+            "缺省贴图必须解析到内置白纹理：{:?}",
+            mesh.paths
+        );
+        assert!(
+            mesh.paths
+                .iter()
+                .any(|path| path == "assets/textures/ui.png"),
+            "显式贴图必须注册：{:?}",
+            mesh.paths
+        );
+        // ②/③ 组件留在 ECS 里，且几何/材质按组件串生效。
+        runtime.script.with_world(|world| {
+            let mut quads: Vec<Quad> = Vec::new();
+            world.for_each2::<Transform, Quad>(|id, _, quad| {
+                assert!(
+                    world.get::<Sprite>(id).expect("world read").is_none(),
+                    "Quad 不该同时被写成 Sprite（否则会画两遍）"
+                );
+                quads.push(quad.clone());
+            });
+            assert_eq!(
+                quads.len(),
+                2,
+                "两个 Quad 都必须留在 ECS 里（不能被降级成 Sprite）"
+            );
+            let plain = quads
+                .iter()
+                .find(|quad| quad.texture.is_none())
+                .expect("应有那个没写 texture 的 Quad");
+            assert_eq!(plain.color, [0.25, 0.5, 1.0, 1.0]);
+            assert_eq!(plain.size, Vec2::new(64.0, 32.0));
+        });
+        // 分段按**层升序**绘制（层越大越靠上，与精灵同一套规则）：默认层的矩形先画，
+        // `layer=actor;order=2` 的那个后画，因此压在上面。
+        assert!(
+            mesh.world_sprite_draws.len() >= 2,
+            "两个不同层的 Quad 应落在不同分段：{:?}",
+            mesh.world_sprite_draws.len()
+        );
+        let last = mesh.world_sprite_draws.last().expect("至少一个分段");
+        let last_z = mesh.world_sprites[last.vertex_start].position[2];
+        assert!(
+            (last_z - -0.5).abs() < 1e-6,
+            "显式排序层的 Quad 应画在后面（更靠上），实际末段 z={last_z}"
+        );
+    }
+
+    /// WP6：世界文字也进世界坐标深度通道——它此前是唯一仍留在屏幕空间的世界内容。    /// 转换走 `view_projection` 的**逆映射**，因此屏幕观感与 overlay 路径逐个像素一致，
     /// 但顶点有了世界坐标与 `z`，可以和精灵/瓦片一起参与深度测试。
     #[test]
     fn world_sprite_depth_moves_world_text_into_the_world_channel() {

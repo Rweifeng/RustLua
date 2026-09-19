@@ -353,6 +353,20 @@ Lua 无法区分尘土、水花、落叶；`opts` 让每次爆发自带观感。
 身份的内容：世界精灵/瓦片/3D Mesh 看 world 遮罩，`UiImage`/`UiText` 看 overlay 遮罩；按名字注册的画布
 UI 不是实体，永远照画。缺组件 = 全可见，既有场景与脚本零改动。
 
+### `quad` 一等矩形（docs/54 §4.3）
+
+`Quad` 是几何（`size`/`pivot`）+ 材质（`color` + 可选 `texture`）+ 深度/排序（`z`/`layer`/`order`）
+的一等声明，位置/旋转/缩放来自实体的 `Transform`。与 `sprite` 表分开是刻意的：两者语义不同
+（`Quad` 没有纹理区域、不参与帧动画），脚本想要"一个纯色矩形"时不该被迫写 `texture=__white__`。
+
+| API | 说明 |
+| --- | --- |
+| `quad.get(id)` | `{size_x, size_y, pivot_x, pivot_y, color_r, color_g, color_b, color_a, texture, z, component}`；缺组件或未知实体报错。`texture` 给出**实际会采样**的路径——没写贴图时是内置白纹理哨兵 `__white__` |
+| `quad.set(id, "<组件串>")` | 与场景里的 `Quad` 组件串**同一套语法**（`size=120,8;color=1,0,0,0.5;texture=..;z=..;layer=..;order=..`）；拼错字段、缺 `size`、零尺寸、非法数值一律报错 |
+
+渲染上它走与精灵完全相同的批处理路径（同一个 `RenderPlan` 通道、同一套排序/剔除/深度/可见遮罩），
+因此"把血条底从 `Sprite` 改成 `Quad`"不会改变它在画面里的层次规则。
+
 ### `physics.debug_draw` collider 调试绘制（WP7）
 
 `physics.debug_draw(enabled)` 开关 2D 碰撞体轮廓的绘制（默认关闭，返回传入的布尔值）。轮廓画在

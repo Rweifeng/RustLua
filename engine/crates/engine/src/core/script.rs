@@ -729,6 +729,18 @@ impl LuaRuntime {
                 .insert(id, component.sorting)
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
         }
+        // docs/54 §4.3：一等 Quad（几何 + 材质，**贴图可选**）。它插入自己的组件而不是被降级成
+        // `Sprite`，因为"这个实体是一个矩形"要在运行时可查、可改（`quad.get/set`），而且
+        // Quad 不参与帧动画——那是 `Sprite` 的纹理区域才有的语义。
+        if let Some(value) = components.get("Quad") {
+            let quad = crate::core::quad::Quad::from_component_str(value).map_err(|error| {
+                LuaBridgeError::Api(format!("entity {name:?} has an invalid Quad: {error}"))
+            })?;
+            state
+                .world
+                .insert(id, quad)
+                .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
+        }
         if let Some(value) = components.get("Tilemap") {
             let tilemap = Tilemap::from_component_str(value).map_err(|error| {
                 LuaBridgeError::Api(format!("entity {name:?} has an invalid Tilemap: {error}"))
@@ -2880,6 +2892,52 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
         })?,
     )?;
     lua.globals().set("sprite", sprite)?;
+    // docs/54 §4.3：一等 Quad 的运行时入口。与 `sprite` 分开是因为两者语义不同（Quad 没有纹理
+    // 区域、不参与帧动画），而不是同一个东西的两种写法——脚本要"一个纯色矩形"时不该被迫写
+    // `texture=__white__` 这种内部哨兵。
+    let quad = lua.create_table()?;
+    let s = Rc::clone(&state);
+    quad.set(
+        "set",
+        lua.create_function(move |_, (id, component): (i64, String)| {
+            let id = entity_from_lua(id)?;
+            let parsed = crate::core::quad::Quad::from_component_str(&component)
+                .map_err(|error| api_error(error.to_string()))?;
+            let mut state = s.borrow_mut();
+            require_alive(&state, id)?;
+            state.world.insert(id, parsed).map_err(world_error)?;
+            Ok(())
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    quad.set(
+        "get",
+        lua.create_function(move |lua, id: i64| {
+            let id = entity_from_lua(id)?;
+            let state = s.borrow();
+            require_alive(&state, id)?;
+            let value = state
+                .world
+                .get::<crate::core::quad::Quad>(id)
+                .map_err(world_error)?
+                .ok_or_else(|| api_error("entity has no quad"))?;
+            let table = lua.create_table()?;
+            table.set("size_x", value.size.x)?;
+            table.set("size_y", value.size.y)?;
+            table.set("pivot_x", value.pivot.x)?;
+            table.set("pivot_y", value.pivot.y)?;
+            table.set("color_r", value.color[0])?;
+            table.set("color_g", value.color[1])?;
+            table.set("color_b", value.color[2])?;
+            table.set("color_a", value.color[3])?;
+            // 缺省贴图时给出实际会采样到的路径（内置白纹理哨兵），调用方不必自己知道这个约定。
+            table.set("texture", value.texture_path())?;
+            table.set("z", value.z)?;
+            table.set("component", value.to_component_str())?;
+            Ok(table)
+        })?,
+    )?;
+    lua.globals().set("quad", quad)?;
     // 统一 `transform` 表（WP9）：2D 的 `Transform` 与 3D 的 `Transform3D` 共用同一组读写
     // 函数，按实体**实际拥有**的组件分派。旧行为完全保留：本来有 2D `Transform` 的实体走的
     // 还是原来那条分支（`space` 是新增字段，不影响既有取值），而以前"3D 实体调用 transform
@@ -8144,6 +8202,44 @@ mod tests {
              assert(not pcall(visibility.set, panel, -1), '负数必须报错')\n\
              assert(not pcall(visibility.set, panel, 4294967296), '越界必须报错')\n\
              assert(not pcall(visibility.get, 999999), '未知实体必须报错')\n\
+             return 'ok' end",
+        );
+        runtime.execute_project_script(&path).unwrap();
+        assert_eq!(runtime.call_update().unwrap(), "ok");
+        let _ = fs::remove_file(path);
+    }
+
+    /// docs/54 §4.3：`quad` 表读写一等 Quad（几何 + 材质，贴图可选）。判据有三条：
+    /// 场景里写的 Quad 能读回、运行时能改、非法串必须报错（不静默忽略）。
+    #[test]
+    fn lua_quad_round_trips_and_validates() {
+        let mut scene = crate::core::scene::Scene::new("lua-quad");
+        let bar = crate::core::scene::SceneEntityId(1);
+        scene.add_entity(bar, "Bar", None).unwrap();
+        scene
+            .entities
+            .get_mut(&bar)
+            .unwrap()
+            .components
+            .insert("Quad".into(), "size=120,8;color=1,0,0,0.5".into());
+        let mut runtime = LuaRuntime::new().unwrap();
+        assert_eq!(runtime.instantiate_scene(&scene).unwrap(), 1);
+        let path = script(
+            "function update()\n\
+             local bar = entity.find('Bar')\n\
+             local q = quad.get(bar)\n\
+             assert(q.size_x == 120 and q.size_y == 8, '场景声明的尺寸必须能读回')\n\
+             assert(q.color_a == 0.5, 'alpha 必须能读回')\n\
+             assert(q.texture == '__white__', '没写 texture 时用内置白纹理')\n\
+             quad.set(bar, 'size=60,4;color=0,1,0,1;texture=assets/textures/ui.png;z=2')\n\
+             local updated = quad.get(bar)\n\
+             assert(updated.size_x == 60 and updated.size_y == 4)\n\
+             assert(updated.color_g == 1 and updated.color_r == 0)\n\
+             assert(updated.texture == 'assets/textures/ui.png')\n\
+             assert(updated.z == 2)\n\
+             assert(not pcall(quad.set, bar, 'colour=1,0,0'), '拼错字段必须报错')\n\
+             assert(not pcall(quad.set, bar, 'size=0,4'), '零尺寸必须报错')\n\
+             assert(not pcall(quad.get, 999999), '未知实体必须报错')\n\
              return 'ok' end",
         );
         runtime.execute_project_script(&path).unwrap();

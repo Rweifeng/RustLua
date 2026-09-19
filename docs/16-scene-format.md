@@ -50,7 +50,26 @@ Sprite/Mesh/文字/UI 一样是实体组件，不再只能由宿主状态或脚�
   累计器保留分数部分，因此帧率变化不改变平均发射量，长帧最多补发 512 个（不会一步倾泻）。
   未知键与非法数值一律报错，不静默忽略。
 
-`examples/game_api/scenes/unified.scene` 是一份"六类内容同场"的样例：Sprite + Mesh +
+## 一等矩形 `Quad`（docs/54 §4.3）
+
+`Quad` 是**几何 + 材质**的一等声明：`size=w,h` 必填，可选 `pivot=x,y`（默认 `0.5,0.5`）、
+`color=r,g,b[,a]`、`texture=<路径>`、`z=<f32>`、`layer=<名>`、`order=<i32>`、`flip_x`/`flip_y`。
+
+与 `Sprite` 的分工只有一句话：**`Quad` 没有纹理区域**。
+
+- 不给 `texture` 就用内置 1×1 白纹理，于是 `color` 就是最终颜色——纯色矩形、血条底、进度条、
+  调试色块不再需要写 `texture=__white__` 这种内部哨兵（那个哨兵只在渲染器内部有定义）。
+- 反过来它**不参与 `Animation`**：帧动画动的是 UV 区域，而矩形恰恰没有区域。需要帧动画就用 `Sprite`。
+- 位置/旋转/缩放来自实体的 `Transform`（与精灵同源），`Quad` 只描述几何与材质。
+
+渲染上它**不是第二条通道**：提取阶段降级成与精灵完全相同的批处理项，因此排序、剔除、深度、
+可见遮罩、世界/overlay 两条路径都与精灵同源；分段按层升序绘制（层越大越靠上），未写 `layer`/`order`
+时用与精灵同一套"按场景顺序"的默认层。
+
+未知键、缺 `size`、零或非有限尺寸、轴心越界、颜色分量数不对、`texture=` 为空等一律**报错**——
+把 `color` 拼成 `colour` 被静默忽略，与"颜色没生效"在画面上完全一样。
+
+`examples/game_api/scenes/unified.scene` 是一份"七类内容同场"的样例：Sprite + `Quad` + Mesh +
 `Camera3D` + `Camera2D` + `ParticleEmitter` + `WorldText` + `Text`/`UiLayout`。
 
 ## 可见性组件 `Visibility`（docs/54 §4.2）

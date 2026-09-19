@@ -21,3 +21,6 @@ component	7	WorldText	text=World label;font_size=14;color=1.000,1.000,1.000
 entity	8	Hud
 component	8	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=20.00,650.00,20.00,650.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 component	8	Text	text=Unified 2D/3D;font_size=13;color=1.000,1.000,1.000
+entity	9	HealthBar
+component	9	Transform	x=640;y=300;rotation=0;scale_x=1;scale_y=1
+component	9	Quad	size=120,8;color=0.900,0.200,0.200,1.000
