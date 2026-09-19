@@ -1019,7 +1019,8 @@ impl Renderer {
         });
         let light_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("p2-directional-light-buffer"),
-            contents: bytemuck::cast_slice(&[[0.4_f32, 0.8, 0.5, 0.0], [1.0_f32, 1.0, 1.0, 1.0]]),
+            // 与 `Light::default()` 一致：`direction` 是**光传播方向**，所以天空里的太阳 y 分量为负。
+            contents: bytemuck::cast_slice(&[[0.4_f32, -0.8, 0.5, 0.0], [1.0_f32, 1.0, 1.0, 1.0]]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
         let shadow_camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -3551,15 +3552,26 @@ fn identity_palette_data() -> Vec<[f32; 4]> {
     joint_palette_data(&[])
 }
 
-/// Light-space view-projection used by the shadow map: an orthographic-style
-/// projection from a camera placed along the light direction, looking at the
-/// origin. Mirrors the fixed matrix used by the M8-05 shadow pass.
+/// Light-space view-projection used by the shadow map: an orthographic-style projection from a camera
+/// placed **on the light's side**, looking at the origin.
+///
+/// `Light::direction` is the direction the light **travels** (`core/light.rs` 与 docs/24 的约定，
+/// 着色器用 `-direction` 求表面→光源向量），因此"光源所在的一侧"是 `-direction`：
+///
+/// ```text
+/// light.direction = (0, -1, 0)   // 光自上而下 ⇒ 阴影相机在 +Y（天空一侧）
+/// ```
+///
+/// 这里曾经写成 `+direction`——与着色器**符号相反**：示例场景的 `direction=0.4,0.8,0.5`（按约定
+/// 是"光往上照"）因此把阴影相机放到地面之上、而光照却来自下方，结果是所有朝上的表面 `diffuse = 0`
+/// （只剩 0.15 环境光）、阴影完全不可见。docs/54 §10 第 ⑩ 行记着这次量测（地面像素恒为环境色、
+/// 阴影落点与受光点像素相同）。
 fn light_view_projection(light: Light) -> Mat4 {
     let direction = light
         .direction
         .normalized()
         .unwrap_or(Vec3::new(0.0, -1.0, 0.0));
-    let Ok(camera) = Camera3D::perspective(direction * 12.0, Vec3::ZERO, 1.3, 1.0, 0.1, 30.0)
+    let Ok(camera) = Camera3D::perspective(-direction * 12.0, Vec3::ZERO, 1.3, 1.0, 0.1, 30.0)
     else {
         return Mat4::identity();
     };
@@ -3610,6 +3622,51 @@ mod tests {
         assert_eq!(metrics.draw_calls, 1);
         assert_eq!(metrics.instances, 0);
         assert_eq!(metrics.triangles, 4);
+    }
+
+    /// docs/54 §10 第 ⑩ 行登记过的那条符号缺陷：阴影相机必须放在**光源那一侧**（`-direction`），
+    /// 与着色器 `l = normalize(-light.direction)` 同源。
+    ///
+    /// 判据用"深度"而不是相机位置本身：阴影相机在光源一侧时，**离光源更近**的点（也就是更高、
+    /// 更靠上的表面）在光空间里深度更小。光传播方向朝下时，位于地面上方的点必须比地面更接近光源。
+    #[test]
+    fn shadow_camera_sits_on_the_light_side_of_the_documented_direction() {
+        // 天空里的太阳：光传播方向朝下（y < 0）。
+        let sun = Light {
+            direction: Vec3::new(0.4, -0.8, 0.5),
+            color: [1.0, 1.0, 1.0],
+            intensity: 1.0,
+        };
+        let matrix = light_view_projection(sun);
+        let depth = |point: Vec3| -> f32 {
+            let clip = matrix
+                .transform_point(point)
+                .expect("light-space projection of a finite point");
+            clip.z
+        };
+        let ground = depth(Vec3::ZERO);
+        let above = depth(Vec3::new(0.0, 1.0, 0.0));
+        assert!(
+            above < ground,
+            "光朝下时，地面上方的点必须更接近阴影相机：above={above} ground={ground}"
+        );
+        // 反例（曾经的写法）：把相机放到 `+direction` 一侧会让上面的关系反过来——把光方向
+        // 反号就应当得到相反的结论，这条同时钉住"符号真的起作用"。
+        let flipped = Light {
+            direction: -sun.direction,
+            ..sun
+        };
+        let flipped_matrix = light_view_projection(flipped);
+        let flipped_clip = flipped_matrix
+            .transform_point(Vec3::new(0.0, 1.0, 0.0))
+            .expect("clip");
+        let flipped_ground = flipped_matrix.transform_point(Vec3::ZERO).expect("clip");
+        assert!(
+            flipped_clip.z > flipped_ground.z,
+            "光方向取反后，上方的点必须变得**更远**：{} vs {}",
+            flipped_clip.z,
+            flipped_ground.z
+        );
     }
 
     #[test]

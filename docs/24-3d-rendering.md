@@ -46,8 +46,16 @@
 
 `direction=x,y,z;color=r,g,b;intensity=<i>`
 
-- 方向光，`direction` 是光照方向（着色器取反得到表面→光源向量）；`color` 为线性 RGB 分量 `0..1`；`intensity` 非负。
-- 默认 `direction=0.4,0.8,0.5`、`color=1,1,1`、`intensity=1`。
+- 方向光，`direction` 是**光传播方向**（着色器取反得到表面→光源向量 `l = normalize(-direction)`）；`color` 为线性 RGB 分量 `0..1`；`intensity` 非负。
+- **符号约定（写反的代价很大，因此在这里写死）**：天空里的太阳是**自上而下**照，所以
+  `direction` 的 **y 分量为负**：`direction=0.4,-0.8,0.5`。写成 y 为正等于"光往上照"，
+  朝上的表面 `diffuse = 0`，整个场景只剩 `0.15` 环境光（而且阴影也看不见）。
+- **阴影相机与光照同源**：`renderer::light_view_projection` 把阴影相机放在 **`-direction`**
+  一侧（光源那一侧）。两处符号必须一致，否则"阴影贴图算出的遮挡关系"和"着色器算出的明暗"
+  互相打架。这两个约定由单测
+  `host::renderer::tests::shadow_camera_sits_on_the_light_side_of_the_documented_direction`
+  与像素门 `engine/crates/engine/examples/wp0_lighting_golden.rs` 同时钉住。
+- 默认 `direction=0.4,-0.8,0.5`、`color=1,1,1`、`intensity=1`。
 - 未设置活动灯时回退到首个 `Light` 实体。
 
 ### Animation3D
@@ -72,7 +80,7 @@
 
 宿主渲染器（[host/renderer.rs](../engine/crates/engine/src/host/renderer.rs)、[host/shader.rs](../engine/crates/engine/src/host/shader.rs)）在每帧按顺序执行：
 
-1. **阴影 pass**（`SHADOW_SHADER`）：从活动方向光位置渲染深度到阴影贴图（`texture_depth_2d`）。
+1. **阴影 pass**（`SHADOW_SHADER`）：从**光源那一侧**（`-light.direction`）渲染深度到阴影贴图（`texture_depth_2d`）。
 2. **3D pass**（`MESH3D_SHADER`）：
    - 实例化绘制：所有 3D 网格用同一个绘制调用，实例模型矩阵存在 `instance_models` storage buffer。
    - 材质 uniform：`base_color`（RGBA）、`surface`（`x=metallic`、`y=roughness`、`z=skinned`）。

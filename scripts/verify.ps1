@@ -447,6 +447,7 @@ if ($Benchmarks) {
         $twoDGoldenPath = Join-Path $baselineRoot "wp0-2d-golden.json"
         $mixedGoldenPath = Join-Path $baselineRoot "wp0-mixed-golden.json"
         $hudGoldenPath = Join-Path $baselineRoot "wp0-hud-golden.json"
+        $lightingGoldenPath = Join-Path $baselineRoot "wp0-lighting-golden.json"
         $editorPreviewPath = Join-Path $baselineRoot "wp0-editor-preview-golden.json"
         Invoke-Checked cargo @(
             "run", "--quiet", "--release", "-p", "engine", "--example", "ecs_stress", "--",
@@ -492,8 +493,13 @@ if ($Benchmarks) {
             "run", "--quiet", "--release", "-p", "engine", "--example", "wp0_hud_golden", "--",
             "--output", $hudGoldenPath
         )
-        # WP3 存储 A/B（wp0-v5）：现状 HashMap+排序 Vec 对 dense/sparse。用来把"是否替换
-        # ECS 热存储"从意见变成证据。
+        # docs/54 §8-⑩：**材质/光照与阴影**的像素级证据。3D golden 只断言"有内容、几何量对"，
+        # 材质颜色错、`Light` 方向反了、阴影贴图没被采样都能蒙过去——这条门就是为它们立的，
+        # 也是本轮量出 `Light::direction` 符号缺陷的那个探针。
+        Invoke-Checked cargo @(
+            "run", "--quiet", "--release", "-p", "engine", "--example", "wp0_lighting_golden", "--",
+            "--output", $lightingGoldenPath
+        )
         Invoke-Checked cargo @(
             "run", "--quiet", "--release", "-p", "engine", "--example", "wp0_ecs_storage", "--",
             "--cycles", "30", "--output", $ecsStoragePath
@@ -703,6 +709,33 @@ if ($Benchmarks) {
     }
     if ($hud.world_only_with_ui[0] -le 180 -or $hud.world_only_with_ui[1] -ge 70 -or $hud.world_only_with_ui[2] -ge 70) {
         throw "HUD golden: HUD 矩形之外的世界内容被改了颜色（屏幕 UI 不该影响它矩形外的像素）：$($hud.world_only_with_ui -join ',')"
+    }
+    # docs/54 §8-⑩：材质/光照与阴影。三条都必须成立，任何一条不成立都说明 3D 着色链断了：
+    # ① 漫反射随光照方向变化（光反向 → 地面只剩环境光）；② 阴影把地面压暗；③ 阴影足迹落在
+    # "遮挡物足迹 + 光照偏移"处（落点算错/遮挡物尺寸写错都会在这里显形）。
+    $lighting = Get-Content -LiteralPath $lightingGoldenPath -Raw | ConvertFrom-Json
+    if ($lighting.report_version -ne "wp0-lighting-golden-v1") {
+        throw "lighting golden report version invalid: $($lighting.report_version)"
+    }
+    if (-not $lighting.diffuse_responds_to_light_direction) {
+        throw "lighting golden: 漫反射没有随光照方向变化（光反向时地面仍是 $($lighting.luminance.opposite_light)）——`Light::direction` 的符号或光照 uniform 有问题"
+    }
+    if (-not $lighting.shadow_darkens_ground) {
+        throw "lighting golden: 阴影没有把地面压暗：lit=$($lighting.luminance.lit) shadow=$($lighting.luminance.shadow)"
+    }
+    if ($lighting.luminance.lit -le ($lighting.luminance.shadow + 8)) {
+        throw "lighting golden: 受光与阴影的亮度差太小：$($lighting.luminance.lit) vs $($lighting.luminance.shadow)"
+    }
+    if ($lighting.luminance.lit -le ($lighting.luminance.opposite_light + 20)) {
+        throw "lighting golden: 受光地面没比「只有环境光」亮多少：$($lighting.luminance.lit) vs $($lighting.luminance.opposite_light)"
+    }
+    if ($lighting.shadow_samples -lt 100) {
+        throw "lighting golden: 被遮暗的地面采样点太少（$($lighting.shadow_samples)）——阴影几乎不存在"
+    }
+    $shadowBbox = $lighting.shadow_world_bbox
+    if ([math]::Abs($shadowBbox[0] - -0.7) -gt 0.35 -or [math]::Abs($shadowBbox[2] - 1.3) -gt 0.35 -or
+        [math]::Abs($shadowBbox[1] - -0.8) -gt 0.35 -or [math]::Abs($shadowBbox[3] - 1.2) -gt 0.35) {
+        throw "lighting golden: 阴影世界足迹不对：[$(($shadowBbox) -join ',')]，期望≈(-0.7,-0.8,1.3,1.2)（遮挡物 2×2 + 光照偏移 (0.30,0.20)）"
     }
     # docs/54 §8-⑨：编辑器路径。文档 → 撤销/重做 → 空间语义 → 预览一帧，四段都要有牙：
     # 世界保持的编辑、撤销回原样、重做回同一结果、预览真的画出了像素、两次预览逐字节相同。

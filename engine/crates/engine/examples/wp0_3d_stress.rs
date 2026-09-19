@@ -290,7 +290,7 @@ fn build_scene(mesh_count: usize) -> Scene {
         .components
         .insert(
             "Light".into(),
-            "direction=0.4,0.8,0.5;color=1,1,1;intensity=1".into(),
+            "direction=0.4,-0.8,0.5;color=1,1,1;intensity=1".into(),
         );
     for index in 0..mesh_count {
         let id = SceneEntityId(index as u64 + 3);

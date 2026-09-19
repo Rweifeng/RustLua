@@ -1944,7 +1944,7 @@ impl EditorApp {
             return None;
         }
         let light = Light {
-            direction: Vec3::new(0.4, 0.8, 0.5),
+            direction: Vec3::new(0.4, -0.8, 0.5),
             color: [1.0, 1.0, 1.0],
             intensity: 1.0,
         };

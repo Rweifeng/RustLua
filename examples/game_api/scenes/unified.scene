@@ -5,7 +5,7 @@ component	1	Camera3D	position=0,0,6;target=0,0,0;fov=60;near=0.1;far=100
 entity	2	Camera2D
 component	2	Camera2D	center=640.0000,360.0000;zoom=1.000000
 entity	3	Sun
-component	3	Light	direction=0.2,0.1,0.9;color=1,1,1;intensity=1
+component	3	Light	direction=0.2,0.1,-0.9;color=1,1,1;intensity=1
 entity	4	Ground
 component	4	Transform3D	position=0,0,0;rotation=0,0,0,1;scale=1,1,1
 component	4	MeshRenderer	mesh=__ground_plane__

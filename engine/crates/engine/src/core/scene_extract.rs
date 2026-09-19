@@ -241,12 +241,18 @@ mod tests {
         assert!((first_camera.fov_y - 60f32.to_radians()).abs() < 1e-5);
         assert!((first_camera.aspect_ratio - 1.0).abs() < 1e-6);
 
-        // Light：唯一方向光。
+        // Light：唯一方向光。`direction` 是**光传播方向**，太阳因此是 y 为负（自上而下）——
+        // 快照在这里钉住这个符号：写反会导致朝上的表面 `diffuse = 0`、场景只剩环境光，
+        // 而这类错误在"有内容/无量纲断言"的 golden 里看不出来（docs/54 §10 第 ⑩ 行记着这次教训）。
         assert_eq!(extracted.lights.len(), 1);
         assert_eq!(extracted.lights[0].0, crate::core::scene::SceneEntityId(3));
         assert_eq!(
             extracted.lights[0].1.direction,
-            crate::core::math3d::Vec3::new(0.4, 0.8, 0.5)
+            crate::core::math3d::Vec3::new(0.4, -0.8, 0.5)
+        );
+        assert!(
+            extracted.lights[0].1.direction.y < 0.0,
+            "太阳必须是自上而下照（y < 0）：direction 是光传播方向"
         );
 
         // 合法场景不应有提取诊断。

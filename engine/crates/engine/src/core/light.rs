@@ -10,6 +10,14 @@ use crate::core::math3d::Vec3;
 /// `direction` is the direction the light shines toward (the renderer
 /// negates it to compute the surface-to-light vector), `color` is the
 /// linear RGB tint, and `intensity` scales the contribution.
+///
+/// **符号约定（容易写反，因此在这里写死）**：`direction` 是**光传播方向**，
+/// 表面→光源向量 = `-direction`（着色器 `l = normalize(-light.direction)`）。因此：
+///
+/// - 天空里的太阳（自上而下照）写作 `direction=0.4,-0.8,0.5`——**y 为负**；
+///   写成 y 为正等于"光往上照"，朝上的表面 `diffuse = 0`，场景只剩 0.15 环境光。
+/// - 阴影相机（`renderer::light_view_projection`）放在 **`-direction`** 一侧（光源那一侧），
+///   与上式同源；两处符号必须一致，否则阴影贴图与光照方向互相打架。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Light {
     pub direction: Vec3,
@@ -20,7 +28,8 @@ pub struct Light {
 impl Default for Light {
     fn default() -> Self {
         Self {
-            direction: Vec3::new(0.4, 0.8, 0.5),
+            // 太阳在天空：光传播方向朝下。
+            direction: Vec3::new(0.4, -0.8, 0.5),
             color: [1.0, 1.0, 1.0],
             intensity: 1.0,
         }

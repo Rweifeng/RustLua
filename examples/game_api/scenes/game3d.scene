@@ -46,4 +46,4 @@ component	11	Collider3d	shape=ball;radius=0.4;dynamic=false;sensor=true
 entity	12	Camera3d
 component	12	Camera3D	position=0,6,8;target=0,0,0;fov=60;near=0.1;far=100
 entity	13	Sun
-component	13	Light	direction=0.4,0.8,0.5;color=1,1,1;intensity=1
+component	13	Light	direction=0.4,-0.8,0.5;color=1,1,1;intensity=1

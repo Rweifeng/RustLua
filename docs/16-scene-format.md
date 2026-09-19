@@ -25,7 +25,9 @@ cargo run -p game --example scene_format_demo --release
 - `Transform3D`：`position=x,y,z;rotation=rx,ry,rz,rw;scale=sx,sy,sz`
 - `MeshRenderer`：`mesh=assets/models/<file>.glb|gltf`（`__ground_plane__` 为内置地面哨兵路径）
 - `Camera3D`：`position=x,y,z;target=x,y,z;fov=<度>;near=<n>;far=<f>`（`aspect` 由渲染窗口决定）
-- `Light`：`direction=x,y,z;color=r,g,b;intensity=<i>`（方向光）
+- `Light`：`direction=x,y,z;color=r,g,b;intensity=<i>`（方向光）。`direction` 是**光传播方向**：
+  天空里的太阳自上而下照，因此写作 `direction=0.4,-0.8,0.5`（**y 为负**）；写成 y 为正等于
+  "光往上照"，朝上的表面拿不到漫反射（只剩 0.15 环境光）。详见 [docs/24](24-3d-rendering.md#light)。
 
 ## 2D 相机与粒子（实体组件，docs/54 §8-①）
 
