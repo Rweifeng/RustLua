@@ -97,6 +97,29 @@ impl AnimationClip {
         };
         cols / frame_rate
     }
+
+    /// docs/54 §4.4：这段片段在**运行时资源身份**里的键。
+    ///
+    /// 片段本身是场景数据（没有文件路径），它的身份由"内容签名"给出：贴图 + 帧数 + 帧率 + 是否循环 +
+    /// 帧事件。同一段片段在进程内因此恒同键——"动画片段也有资源身份"由此成为可判定的说法
+    /// （`RuntimeScene` 在推进动画时把它 intern 进与贴图/网格同一张身份表）。
+    #[must_use]
+    pub fn resource_key(&self) -> String {
+        let events: Vec<String> = self
+            .events
+            .iter()
+            .map(|event| format!("{}:{}", event.frame, event.name))
+            .collect();
+        format!(
+            "animation:{}:{}:{}:{}:{}",
+            self.sheet,
+            self.cols,
+            // 帧率用**位模式**：`1.0` 与 `1.00` 在十进制下同串，但只有逐位相同的片段才算同一身份。
+            self.frame_rate.to_bits(),
+            self.looped,
+            events.join(",")
+        )
+    }
 }
 
 /// A set of named clips and the currently playing state.
@@ -115,6 +138,12 @@ pub struct AnimationStateMachine {
     fired: Vec<usize>,
     /// 本步触发、等待宿主取走的帧事件。
     pending: Vec<AnimationFrameEvent>,
+    /// docs/54 §4.4：当前片段的**轨道视图缓存**。轨道是 `(clip)` 的纯函数，而 `current_frame_uv`
+    /// 与 `advance` 每次调用都要用它——每次现算就是每帧每实体一次 Vec 分配（批 H 引入过这个回归，
+    /// 批 N 修掉）。缓存只在**当前片段变化**时重建。
+    tracks: crate::core::animation_track::AnimationTracks,
+    /// 当前片段在运行时资源身份表里的键（同样是 `(clip)` 的纯函数）。
+    clip_key: String,
 }
 
 /// Errors produced while building or driving an animation state machine.
@@ -181,6 +210,12 @@ impl AnimationStateMachine {
             return Err(AnimationError::MissingDefault);
         }
         let current = default.clone();
+        let clip = clips
+            .iter()
+            .find(|clip| clip.name == current)
+            .expect("default state must reference a known clip");
+        let tracks = clip.tracks();
+        let clip_key = clip.resource_key();
         Ok(Self {
             default,
             clips,
@@ -190,7 +225,31 @@ impl AnimationStateMachine {
             completed: false,
             fired: Vec::new(),
             pending: Vec::new(),
+            tracks,
+            clip_key,
         })
+    }
+
+    /// docs/54 §4.4：当前片段的轨道视图（**借用**缓存，不重新构建）。
+    #[must_use]
+    pub fn tracks(&self) -> &crate::core::animation_track::AnimationTracks {
+        &self.tracks
+    }
+
+    /// docs/54 §4.4：当前片段在运行时资源身份表里的键（`sheet` + 帧数 + 帧率 + 循环 + 事件）。
+    #[must_use]
+    pub fn clip_resource_key(&self) -> &str {
+        &self.clip_key
+    }
+
+    /// 重建轨道缓存与身份键。**任何**改动当前片段的地方都要调它（状态切换、重播）。
+    fn refresh_clip_caches(&mut self) {
+        let (tracks, clip_key) = {
+            let clip = self.current_clip();
+            (clip.tracks(), clip.resource_key())
+        };
+        self.tracks = tracks;
+        self.clip_key = clip_key;
     }
 
     /// Returns the name of the currently playing state.
@@ -218,6 +277,8 @@ impl AnimationStateMachine {
             return Err(AnimationError::UnknownState(name.to_owned()));
         }
         self.current = name.to_owned();
+        // docs/54 §4.4：轨道视图与身份键都是 `(当前片段)` 的纯函数，换片段必须重建缓存。
+        self.refresh_clip_caches();
         self.time = 0.0;
         self.ended = false;
         self.completed = false;
@@ -264,8 +325,13 @@ impl AnimationStateMachine {
         // 值：帧事件挂在帧上，一步跨多帧时中间的帧事件必须全部触发（滑步/漏掉命中帧都属于真实
         // 缺陷）。循环回绕时按"两段都到达过"处理。
         let from_time = from_frame as f32 / frame_rate.max(f32::EPSILON);
-        let clip_tracks = self.current_clip().tracks();
-        let due = clip_tracks.events_in_interval(from_time, self.time, looped, duration);
+        // 没有帧事件时整段跳过：绝大多数片段都没有事件，省掉每帧一次 Vec 分配。
+        let due = if self.current_clip().events.is_empty() {
+            Vec::new()
+        } else {
+            self.tracks
+                .events_in_interval(from_time, self.time, looped, duration)
+        };
         for marker in due {
             if self.fired.contains(&marker.order) {
                 continue;
@@ -309,10 +375,10 @@ impl AnimationStateMachine {
     /// `SpriteRegion` 轨道。这里采样它，因此"轨道视图"与"渲染真正用的 UV"不可能分家。
     #[must_use]
     pub fn current_frame_uv(&self) -> (Vec2, Vec2) {
-        let clip = self.current_clip();
         let time = self.time;
-        if let Some(crate::core::animation_track::TrackValue::Region { uv_min, uv_max }) = clip
-            .tracks()
+        // 采样**缓存**的轨道（不再每次现算）：帧 → UV 这条规则仍然只有一处定义。
+        if let Some(crate::core::animation_track::TrackValue::Region { uv_min, uv_max }) = self
+            .tracks
             .sample(
                 crate::core::animation_track::TrackTarget::SpriteRegion,
                 time,
@@ -509,6 +575,85 @@ mod tests {
         assert!(steps >= 64, "扫描至少要跨两圈循环（实际 {steps} 步）");
     }
 
+    /// docs/54 §4.4：轨道视图**按片段缓存**——`advance` 与 `current_frame_uv` 都不再每帧重建它。
+    ///
+    /// 回归背景：批 H 把"帧 → UV"与帧事件都改成走轨道视图，但每次调用都现算一次
+    /// （`cols` 个关键帧 + 事件的 Vec）。对一群动画实体就是每帧每实体一次分配，而 WP0 的
+    /// 基准场景恰好都是静态精灵，因此性能门没抓到。这条用例用**数据指针**证明缓存真的在复用。
+    #[test]
+    fn clip_track_cache_is_reused_across_frames() {
+        let mut machine = machine();
+        let keyframes_ptr = |machine: &AnimationStateMachine| {
+            machine
+                .tracks()
+                .property(crate::core::animation_track::TrackTarget::SpriteRegion)
+                .expect("region track")
+                .keyframes
+                .as_ptr()
+        };
+        let first = keyframes_ptr(&machine);
+        for _ in 0..10 {
+            machine.advance(1.0 / 60.0);
+        }
+        assert_eq!(
+            keyframes_ptr(&machine),
+            first,
+            "advance 不该重建轨道（缓存必须复用）"
+        );
+        // 换状态 ⇒ 片段变了 ⇒ 缓存必须重建，且身份键跟着变。
+        let before_key = machine.clip_resource_key().to_owned();
+        machine.set_state("attack").expect("switch to attack");
+        assert_ne!(
+            keyframes_ptr(&machine),
+            first,
+            "换片段后轨道缓存必须重建（否则采样的是上一段的帧）"
+        );
+        assert_ne!(machine.clip_resource_key(), before_key);
+        // 同一状态再切回去：键回到原值（内容寻址，不含时间/瞬时状态）。
+        machine.set_state("idle").expect("switch back");
+        assert_eq!(machine.clip_resource_key(), before_key);
+    }
+
+    /// 片段身份是**内容寻址**的：内容相同 ⇒ 同键；帧数/帧率/循环/事件任一不同 ⇒ 不同键。
+    #[test]
+    fn clip_resource_key_is_content_addressed() {
+        let base = AnimationClip {
+            name: "idle".into(),
+            sheet: "assets/idle.png".into(),
+            cols: 4,
+            frame_rate: 8.0,
+            looped: true,
+            events: Vec::new(),
+        };
+        let mut same = base.clone();
+        same.name = "renamed".into();
+        assert_eq!(
+            base.resource_key(),
+            same.resource_key(),
+            "名字是本地标签，不参与身份"
+        );
+
+        for mutate in [
+            |clip: &mut AnimationClip| clip.cols = 5,
+            |clip: &mut AnimationClip| clip.frame_rate = 12.0,
+            |clip: &mut AnimationClip| clip.looped = false,
+            |clip: &mut AnimationClip| clip.sheet = "assets/other.png".into(),
+            |clip: &mut AnimationClip| {
+                clip.events.push(AnimationEvent {
+                    frame: 1,
+                    name: "hit".into(),
+                })
+            },
+        ] {
+            let mut changed = base.clone();
+            mutate(&mut changed);
+            assert_ne!(
+                base.resource_key(),
+                changed.resource_key(),
+                "内容不同的片段不能共用身份"
+            );
+        }
+    }
     /// 事件轨道承载的就是片段里的帧事件（顺序与名称一致），因此"第几帧触发"只有一处定义。
     #[test]
     fn clip_tracks_carry_the_frame_events_in_order() {

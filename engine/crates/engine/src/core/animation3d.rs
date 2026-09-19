@@ -313,7 +313,15 @@ impl Animation3D {
         }
     }
 
+    /// docs/54 §4.4：这套骨骼动画在**运行时资源身份**里的键。
+    ///
+    /// 3D 片段来自 glTF mesh 资产（`Animation3D` 自己不存路径，路径在实体的 `MeshRenderer` 上），
+    /// 因此身份 = `mesh + clip`：换网格或换片段都会得到不同的键，"这份骨骼动画是哪一个"可判定。
     #[must_use]
+    pub fn resource_key(&self, mesh_path: &str) -> String {
+        format!("animation3d:{}:{}", mesh_path, self.current_name())
+    }
+
     pub fn time(&self) -> f32 {
         self.time
     }

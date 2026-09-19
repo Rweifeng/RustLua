@@ -27,6 +27,9 @@ pub enum ResourceKind {
     Model,
     /// Vector fonts (TTF/OTF).
     Font,
+    /// 场景内声明的动画片段：没有文件路径，身份来自内容签名
+    /// （`AnimationClip::resource_key`，docs/54 §4.4）。
+    Animation,
     /// Anything the pipeline does not yet understand.
     Other,
 }
@@ -66,6 +69,7 @@ impl ResourceKind {
             Self::Atlas => "图集",
             Self::Model => "模型",
             Self::Font => "字体",
+            Self::Animation => "动画",
             Self::Other => "其他",
         }
     }
@@ -81,6 +85,7 @@ impl ResourceKind {
             Self::Atlas => "atlas",
             Self::Model => "model",
             Self::Font => "font",
+            Self::Animation => "animation",
             Self::Other => "other",
         }
     }
@@ -96,6 +101,7 @@ impl ResourceKind {
             "atlas" => Self::Atlas,
             "model" => Self::Model,
             "font" => Self::Font,
+            "animation" => Self::Animation,
             "other" => Self::Other,
             _ => return None,
         })

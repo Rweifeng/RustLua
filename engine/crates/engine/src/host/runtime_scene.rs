@@ -1581,6 +1581,30 @@ impl RuntimeScene {
                     fired
                 });
                 scene.script.push_animation_events(fired);
+                // docs/54 §4.4：动画片段也进运行时身份表。键是片段的**内容签名**（贴图 + 帧数 +
+                // 帧率 + 循环 + 事件），因此同一段片段在进程内恒同句柄——"这份动画是哪一个"跨帧可比。
+                // 先查后插：热路径上只有一次哈希查找，不分配字符串。
+                let keys = scene.script.with_world(|world| {
+                    let mut keys: Vec<String> = Vec::new();
+                    world.for_each::<AnimationStateMachine>(|_, machine| {
+                        keys.push(machine.clip_resource_key().to_owned());
+                    });
+                    keys
+                });
+                {
+                    let mut assets = scene.assets.borrow_mut();
+                    for key in keys {
+                        if assets.handle_of(&key).is_none() {
+                            assets.intern(
+                                key.clone(),
+                                AssetRecord {
+                                    path: key,
+                                    kind: crate::core::resource_kind::ResourceKind::Animation,
+                                },
+                            );
+                        }
+                    }
+                }
                 Ok(())
             },
         ));
@@ -1594,6 +1618,30 @@ impl RuntimeScene {
                         animation.advance(delta_seconds)
                     })
                 });
+                // docs/54 §4.4：3D 骨骼动画的片段身份 = `mesh + clip`（路径在实体的 `MeshRenderer`
+                // 上，`Animation3D` 自己不存）。先推进、再只读地收集身份：两趟遍历同一小撮骨骼实体，
+                // 换来的是不必为"读一个组件 + 改另一个"新增一套可变双组件遍历 API。
+                let keys = scene.script.with_world(|world| {
+                    let mut keys: Vec<String> = Vec::new();
+                    world.for_each2::<MeshRenderer, Animation3D>(|_, renderer, animation| {
+                        keys.push(animation.resource_key(&renderer.mesh));
+                    });
+                    keys
+                });
+                {
+                    let mut assets = scene.assets.borrow_mut();
+                    for key in keys {
+                        if assets.handle_of(&key).is_none() {
+                            assets.intern(
+                                key.clone(),
+                                AssetRecord {
+                                    path: key,
+                                    kind: crate::core::resource_kind::ResourceKind::Animation,
+                                },
+                            );
+                        }
+                    }
+                }
                 Ok(())
             },
         ));
@@ -6051,6 +6099,77 @@ mod sdf_tests {
             .expect("局部变换仍在");
         assert!((unchanged.translation.z).abs() < 1e-6);
         assert!((runtime.local_transform_of(SceneEntityId(99))).is_none());
+    }
+    /// docs/54 §4.4：**动画片段也有运行时身份**——推进动画时把片段的内容签名 intern 进与贴图/网格
+    /// 同一张身份表，因此"这份动画是哪一个"跨帧可比，而 `ResourceKind::Animation` 让它在诊断里
+    /// 一眼可辨。
+    #[test]
+    fn animation_clip_identity_is_stable_across_frames() {
+        let root = crate::core::games_dir().join("examples").join("game_api");
+        if !root.join("scenes/main.scene").is_file() {
+            return;
+        }
+        let mut scene = Scene::new("clip_identity");
+        scene.add_entity(SceneEntityId(1), "Hero", None).unwrap();
+        {
+            let entity = scene.entities.get_mut(&SceneEntityId(1)).unwrap();
+            entity.components.insert(
+                "Transform".into(),
+                "x=640;y=360;rotation=0;scale_x=1;scale_y=1".into(),
+            );
+            entity.components.insert(
+                "Sprite".into(),
+                "texture=assets/textures/player.png;size=32x32".into(),
+            );
+            entity.components.insert(
+                "Animation".into(),
+                "default=idle;clip:idle:assets/textures/hero-idle.png:4:4:true".into(),
+            );
+        }
+        let mut runtime =
+            RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("runtime scene");
+        // 第一步：推进动画时把片段身份 intern 进身份表。
+        runtime
+            .run_script_steps(1, 1.0 / 60.0, &crate::core::input::InputSnapshot::default())
+            .expect("step");
+        let clip_key = |runtime: &RuntimeScene| -> String {
+            let mut found = None;
+            runtime.script.with_world(|world| {
+                world.for_each::<crate::core::animation::AnimationStateMachine>(|_, machine| {
+                    found = Some(machine.clip_resource_key().to_owned());
+                });
+            });
+            found.expect("场景里的实体应当有动画状态机")
+        };
+        let key = clip_key(&runtime);
+        let first = runtime
+            .asset_handle(&key)
+            .expect("推进动画后片段身份应已登记");
+        let record = runtime
+            .asset_entries()
+            .into_iter()
+            .find(|record| record.path == key)
+            .expect("身份表里应有这条片段");
+        assert_eq!(
+            record.kind,
+            crate::core::resource_kind::ResourceKind::Animation,
+            "片段身份必须标成动画资源"
+        );
+        let sizes = runtime.asset_entries().len();
+        runtime
+            .run_script_steps(1, 1.0 / 60.0, &crate::core::input::InputSnapshot::default())
+            .expect("second step");
+        assert_eq!(clip_key(&runtime), key, "片段内容没变，身份键也不该变");
+        assert_eq!(
+            runtime.asset_handle(&key),
+            Some(first),
+            "同一段片段在相邻两步必须同句柄"
+        );
+        assert_eq!(
+            runtime.asset_entries().len(),
+            sizes,
+            "已登记过的片段不该在第二帧重复登记"
+        );
     }
     /// docs/54 §4.3：**一个实体只有一种可绘制表达**。
     ///
