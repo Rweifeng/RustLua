@@ -61,11 +61,14 @@ pub enum RenderPass {
     ScreenUI,
     /// 矢量文字轮廓（独立管线 + 独立顶点/字形/线段缓冲）。
     VectorText,
+    /// 后处理（[`crate::core::post_process`]）：场景先画进离屏颜色纹理，再由全屏 pass 采样写进
+    /// 目标附件。永远是最后一条——它消费的是"本帧已经画完的颜色"。
+    PostProcess,
 }
 
 impl RenderPass {
     /// 规范执行顺序。渲染器按这个顺序执行，计划也必须按这个顺序列出通道。
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Clear,
         Self::WorldSpriteOpaque,
         Self::Shadow,
@@ -74,6 +77,7 @@ impl RenderPass {
         Self::Legacy2DOverlay,
         Self::ScreenUI,
         Self::VectorText,
+        Self::PostProcess,
     ];
 
     /// 稳定短名（日志与诊断用）。
@@ -88,6 +92,7 @@ impl RenderPass {
             Self::Legacy2DOverlay => "legacy_2d_overlay",
             Self::ScreenUI => "screen_ui",
             Self::VectorText => "vector_text",
+            Self::PostProcess => "post_process",
         }
     }
 
@@ -125,6 +130,11 @@ pub struct FrameFacts {
     pub screen_ui_draws: usize,
     /// 本帧有矢量文字轮廓。
     pub vector_text: bool,
+    /// 本帧开后处理（宿主 `set_post_process(Some(..))`）。
+    ///
+    /// 开后处理时场景画进离屏颜色纹理，因此**本帧一定会清屏**（离屏 pass 没有"上一帧内容"可叠）
+    /// ——见 [`RenderPlan::for_frame`] 里对 `clear` 的处理。
+    pub post_process: bool,
 }
 
 /// 本帧要跑的通道，按规范顺序排列。
@@ -144,7 +154,9 @@ impl RenderPlan {
     #[must_use]
     pub fn for_frame(facts: FrameFacts) -> Self {
         let mut passes = Vec::with_capacity(Self::ALL_LEN);
-        if facts.clear {
+        // 开后处理时场景先画进**离屏**颜色纹理，那张附件上没有"上一帧留下的内容"，
+        // 因此 `ClearPolicy::None` 无法照原义执行：本帧必须清屏（渲染器会就此告警一次）。
+        if facts.clear || facts.post_process {
             passes.push(RenderPass::Clear);
         }
         // 不透明世界 Sprite 只有在"与网格共用深度"时才有意义：独立深度附件下精灵与网格本来
@@ -170,6 +182,9 @@ impl RenderPlan {
         }
         if facts.vector_text {
             passes.push(RenderPass::VectorText);
+        }
+        if facts.post_process {
+            passes.push(RenderPass::PostProcess);
         }
         Self { passes }
     }
@@ -255,6 +270,7 @@ mod tests {
             overlay_2d_draws: 1,
             screen_ui_draws: 3,
             vector_text: true,
+            post_process: true,
         }
     }
 
@@ -273,10 +289,16 @@ mod tests {
                 RenderPass::Legacy2DOverlay,
                 RenderPass::ScreenUI,
                 RenderPass::VectorText,
+                RenderPass::PostProcess,
             ]
         );
         assert!(plan.is_canonical());
-        assert_eq!(RenderPlan::ALL_LEN, 8, "通道数变化必须同步改渲染器");
+        assert_eq!(
+            RenderPlan::ALL_LEN,
+            RenderPass::ALL.len(),
+            "ALL_LEN 必须与规范顺序一致"
+        );
+        assert_eq!(RenderPass::ALL.len(), 9, "通道数变化必须同步改渲染器");
     }
 
     /// 空帧：什么都不跑（连清屏都没有 ⇒ 宿主声明了 `ClearPolicy::None`）。
@@ -286,6 +308,27 @@ mod tests {
         assert!(plan.is_empty());
         assert!(plan.is_canonical());
         assert_eq!(plan, RenderPlan::empty());
+    }
+
+    /// 开后处理 ⇒ 场景画进离屏附件，那张附件上没有"上一帧内容"可叠，因此**必须清屏**，
+    /// 即使宿主声明了 `ClearPolicy::None`（渲染器会就此告警一次）。
+    #[test]
+    fn post_process_forces_a_clear_and_is_always_last() {
+        let plan = RenderPlan::for_frame(FrameFacts {
+            clear: false,
+            post_process: true,
+            world_2d_draws: 1,
+            ..FrameFacts::default()
+        });
+        assert_eq!(
+            plan.passes(),
+            [
+                RenderPass::Clear,
+                RenderPass::Legacy2DOverlay,
+                RenderPass::PostProcess
+            ],
+            "后处理必须清屏且永远排在最后"
+        );
     }
 
     /// 三条容易写错的边界：不透明段需要共用深度、2D 桶各自独立成通道、World2D/Overlay2D 合成一条。
@@ -339,7 +382,7 @@ mod tests {
     /// 计划恒为规范顺序：把 bool 事实穷举一遍，`is_canonical` 必须无例外成立。
     #[test]
     fn every_fact_combination_yields_a_canonical_plan() {
-        for bits in 0u32..(1 << 6) {
+        for bits in 0u32..(1 << 7) {
             let facts = FrameFacts {
                 clear: bits & 1 != 0,
                 has_3d_draws: bits & 2 != 0,
@@ -350,6 +393,7 @@ mod tests {
                 overlay_2d_draws: 0,
                 screen_ui_draws: 0,
                 vector_text: false,
+                post_process: bits & 64 != 0,
             };
             let plan = RenderPlan::for_frame(facts);
             assert!(plan.is_canonical(), "{facts:?} ⇒ {:?}", plan.passes());

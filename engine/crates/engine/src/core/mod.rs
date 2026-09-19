@@ -82,6 +82,8 @@ pub mod physics3d;
 mod physics_parity;
 /// 拾取的共享投影/查询链：屏幕 → 视口 → 相机射线 → 世界查询（docs/54 §8-⑦）。
 pub mod picking;
+/// docs/54 §4.3：后处理参数（`RenderPlan` 的最后一条通道）。
+pub mod post_process;
 /// Prefab extraction, instantiation, overrides, and rebuild policy.
 pub mod prefab;
 /// E24: structured preview diagnostics with stable categories and deduping.

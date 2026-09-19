@@ -216,3 +216,46 @@ struct Material { base_color: vec4<f32>, surface: vec4<f32> };
     return camera.view_projection * model * local_position;
 }
 "#;
+
+/// docs/54 §4.3：后处理通道的全屏 pass。
+///
+/// 顶点从 `@builtin(vertex_index)` 生成一个覆盖全屏的三角形（不需要顶点缓冲），片元采样场景
+/// 颜色纹理后施加曝光、色调与暗角。`uv` 的 y 需要翻转：纹理坐标原点在左上，而 NDC 的 +y 朝上。
+pub const POST_PROCESS_SHADER: &str = r#"
+struct Params {
+    exposure: f32,
+    vignette: f32,
+    _pad0: f32,
+    _pad1: f32,
+    tint: vec4<f32>,
+};
+@group(0) @binding(0) var source: texture_2d<f32>;
+@group(0) @binding(1) var source_sampler: sampler;
+@group(0) @binding(2) var<uniform> params: Params;
+
+struct Out {
+    @builtin(position) position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+};
+
+@vertex fn vs_main(@builtin(vertex_index) index: u32) -> Out {
+    var positions = array<vec2<f32>, 3>(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>(3.0, -1.0),
+        vec2<f32>(-1.0, 3.0),
+    );
+    let corner = positions[index];
+    var out: Out;
+    out.position = vec4<f32>(corner, 0.0, 1.0);
+    out.uv = vec2<f32>((corner.x + 1.0) * 0.5, (1.0 - corner.y) * 0.5);
+    return out;
+}
+
+@fragment fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
+    let sampled = textureSample(source, source_sampler, uv);
+    let tinted = sampled.rgb * params.exposure * params.tint.rgb;
+    let centered = uv - vec2<f32>(0.5, 0.5);
+    let falloff = 1.0 - params.vignette * clamp(dot(centered, centered) * 4.0, 0.0, 1.0);
+    return vec4<f32>(tinted * falloff, sampled.a * params.tint.a);
+}
+"#;

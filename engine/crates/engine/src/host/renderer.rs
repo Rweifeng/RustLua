@@ -17,6 +17,7 @@ use crate::core::{
     logging::{EngineError, LogModule},
     math3d::{Mat4, Vec3},
     mesh3d::{GROUND_PLANE_SENTINEL, MeshAsset},
+    post_process::PostProcess,
     render_plan::{FrameFacts, RenderPass, RenderPlan},
     text::TextAtlas,
     texture::{TextureAsset, TextureColorSpace},
@@ -36,7 +37,8 @@ use crate::host::{
         font_asset_from_texture_path, is_font_texture_path,
     },
     shader::{
-        MESH3D_SHADER, SHADOW_SHADER, TEXTURED_SHADER, VECTOR_TEXT_SHADER, WORLD_SPRITE_SHADER,
+        MESH3D_SHADER, POST_PROCESS_SHADER, SHADOW_SHADER, TEXTURED_SHADER, VECTOR_TEXT_SHADER,
+        WORLD_SPRITE_SHADER,
     },
 };
 
@@ -505,6 +507,17 @@ pub struct Renderer {
     world_sprite_depth_size: (u32, u32),
     /// 世界 Sprite 的投影（宿主每帧写入；已声明主视图时它与主视图同一份矩阵）。
     world_sprite_view_projection: Mat4,
+    /// docs/54 §4.3 后处理：宿主声明（`None` = 关闭，也就是回滚档）。
+    post_process: Option<PostProcess>,
+    post_process_pipeline: wgpu::RenderPipeline,
+    post_process_layout: wgpu::BindGroupLayout,
+    post_process_sampler: wgpu::Sampler,
+    post_process_params: wgpu::Buffer,
+    /// 场景离屏颜色纹理（打开后处理时才创建）。视图单独存一份，好让每帧"取出 → 用完放回"，
+    /// 从而不必在 `render_passes` 里同时持有 `&self` 与 `&mut self`。
+    post_process_texture: Option<wgpu::Texture>,
+    post_process_scene_view: Option<wgpu::TextureView>,
+    post_process_size: (u32, u32),
 }
 
 impl Renderer {
@@ -1391,6 +1404,93 @@ impl Renderer {
             mapped_at_creation: false,
         });
         let world_sprite_depth_view = Self::create_depth_view(&device, 1, 1);
+        // docs/54 §4.3：后处理通道的管线与资源。宿主不打开时这些都只是闲置对象（不产生 pass、
+        // 不产生离屏纹理），因此"没开后处理"的运行时代价与收敛前一致。
+        let post_process_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("p2-post-process-shader"),
+            source: wgpu::ShaderSource::Wgsl(POST_PROCESS_SHADER.into()),
+        });
+        let post_process_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("p2-post-process-bind-group-layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+        let post_process_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("p2-post-process-pipeline-layout"),
+                bind_group_layouts: &[&post_process_layout],
+                push_constant_ranges: &[],
+            });
+        let post_process_pipeline =
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("p2-post-process-pipeline"),
+                layout: Some(&post_process_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &post_process_shader,
+                    entry_point: Some("vs_main"),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    // 全屏三角形由 `@builtin(vertex_index)` 生成，因此没有顶点缓冲。
+                    buffers: &[],
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &post_process_shader,
+                    entry_point: Some("fs_main"),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+                cache: None,
+            });
+        let post_process_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("p2-post-process-sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let post_process_params = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("p2-post-process-params"),
+            // 32 字节：exposure + vignette + 两个填充位，随后是一个 vec4 着色（见 core::post_process）。
+            size: 32,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         tracing::info!(target: "game",
             "[render] initialized: adapter={adapter_name} format={format:?} present_mode={:?} gpu_timestamp={timestamp_enabled}",
             config.present_mode
@@ -1482,6 +1582,14 @@ impl Renderer {
                     [0.0, 0.0, 0.0, 1.0],
                 ],
             },
+            post_process: None,
+            post_process_pipeline,
+            post_process_layout,
+            post_process_sampler,
+            post_process_params,
+            post_process_texture: None,
+            post_process_scene_view: None,
+            post_process_size: (0, 0),
         })
     }
 
@@ -2049,6 +2157,94 @@ impl Renderer {
         }
     }
 
+    /// docs/54 §4.3：确保后处理的场景离屏颜色纹理与目标同尺寸。
+    ///
+    /// 尺寸变化才重建（与深度附件同一策略）。视图单独存进 `self.post_process_scene_view`，
+    /// 渲染时被"取出 → 用完放回"，因此渲染循环里不需要同时借 `&self` 与 `&mut self`。
+    fn ensure_post_process_scene_view(&mut self, width: u32, height: u32) {
+        let width = width.max(1);
+        let height = height.max(1);
+        if self.post_process_size == (width, height) && self.post_process_scene_view.is_some() {
+            return;
+        }
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("p2-post-process-scene"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            // 与目标附件同格式：采样时 sRGB 自动线性化、写回时再编码，恒等参数因此近似不变。
+            format: self.config.format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        self.post_process_scene_view =
+            Some(texture.create_view(&wgpu::TextureViewDescriptor::default()));
+        self.post_process_texture = Some(texture);
+        self.post_process_size = (width, height);
+    }
+
+    /// 执行后处理通道：把离屏场景颜色按曝光/色调/暗角写进目标附件。
+    fn draw_post_process(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        source: &wgpu::TextureView,
+        target: &wgpu::TextureView,
+        settings: PostProcess,
+        target_size: (u32, u32),
+    ) -> u64 {
+        self.queue.write_buffer(
+            &self.post_process_params,
+            0,
+            bytemuck::bytes_of(&settings.uniform()),
+        );
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("p2-post-process-bind-group"),
+            layout: &self.post_process_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(source),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.post_process_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.post_process_params.as_entire_binding(),
+                },
+            ],
+        });
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("p2-post-process-pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    // 全屏三角形覆盖整个附件，但 Load 会保留附件上原有内容；显式 Clear 让结果
+                    // 与"上一帧残留"无关（同一张附件被复用时才看得出来）。
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        pass.set_pipeline(&self.post_process_pipeline);
+        pass.set_bind_group(0, &bind_group, &[]);
+        // 整目标：场景离屏纹理与目标同尺寸，而场景本身的视口只影响它写进离屏的那部分。
+        apply_declared_viewport(&mut pass, None, target_size);
+        pass.draw(0..3, 0..1);
+        3
+    }
+
     /// WP5：声明本帧的相机侧视图（清屏策略 + 视口）。
     ///
     /// 收敛前渲染器把清屏色**写死在 pass 里**、视口恒为整个目标，宿主想说"这块区域
@@ -2065,6 +2261,24 @@ impl Renderer {
     #[must_use]
     pub fn frame_views(&self) -> FrameViews {
         self.frame_views
+    }
+
+    /// docs/54 §4.3：打开 / 关闭后处理通道。
+    ///
+    /// - `Some(settings)`：场景先画进离屏颜色纹理，再由全屏 pass 施加曝光/色调/暗角写进目标附件。
+    /// - `None`（默认，也是**回滚档**）：这一套完全不存在——不创建离屏纹理、不产生额外 pass，
+    ///   像素与收敛前逐字节相同。
+    ///
+    /// 参数非法（非有限、负曝光/负色调、暗角越界）由 [`PostProcess::new`] 拒绝；本函数接受的是
+    /// 已经校验过的值，因此不会在渲染中途失败。
+    pub fn set_post_process(&mut self, settings: Option<PostProcess>) {
+        self.post_process = settings;
+    }
+
+    /// 当前后处理设置（诊断/验收用）。
+    #[must_use]
+    pub fn post_process(&self) -> Option<PostProcess> {
+        self.post_process
     }
 
     /// WP6：写入世界 Sprite 通道用的投影矩阵——**只在宿主没有声明任何 [`FrameViews`] 时**
@@ -2563,6 +2777,24 @@ impl Renderer {
         };
         let main_viewport = self.frame_views.main.map(|declared| declared.viewport);
         let overlay_viewport = self.frame_views.overlay.map(|declared| declared.viewport);
+        // docs/54 §4.3：打开后处理后场景先画进**离屏**附件，那张附件上没有"上一帧留下的内容"
+        // 可叠，因此 `ClearPolicy::None` 无法照原义执行。这里显式改成历史默认清屏色并告警一次
+        // ——静默把 `None` 当 `Color(默认)` 会让"我声明了不清屏却没生效"变成无从查起的问题。
+        let clear = match clear {
+            None if self.post_process.is_some() => {
+                tracing::warn!(
+                    target: "render",
+                    "[runtime] post-process需要确定的基色：本帧的 ClearPolicy::None 按默认清屏色执行"
+                );
+                Some(wgpu::Color {
+                    r: f64::from(DEFAULT_3D_CLEAR[0]),
+                    g: f64::from(DEFAULT_3D_CLEAR[1]),
+                    b: f64::from(DEFAULT_3D_CLEAR[2]),
+                    a: f64::from(DEFAULT_3D_CLEAR[3]),
+                })
+            }
+            clear => clear,
+        };
         // docs/54 §8-③：本帧世界视图的投影矩阵**只有一份来源**——宿主声明的 `RenderView`。
         // 渲染器不再自己回查 `Camera3D`（那只是"宿主没声明"时的历史回退）。
         let main_matrix = self
@@ -2593,6 +2825,17 @@ impl Renderer {
         } else {
             self.prepare_world_sprites(mesh, main_matrix, overlay_viewport, target)
         };
+        // docs/54 §4.3：打开后处理时本帧所有场景通道都画进**离屏场景颜色纹理**，最后由
+        // `PostProcess` 通道采样它写进目标附件。视图在这里"取出"、渲染完放回——这样渲染循环里
+        // 不必同时持有 `&self`（画目标）与 `&mut self`（各通道的准备与状态）。
+        let post_process = self.post_process;
+        let scene_view = if post_process.is_some() {
+            self.ensure_post_process_scene_view(target.0, target.1);
+            self.post_process_scene_view.take()
+        } else {
+            None
+        };
+        let draw_target: &wgpu::TextureView = scene_view.as_ref().unwrap_or(view);
         // docs/54 §4.3：本帧跑哪些通道由**计划**决定，而不是散在下面的 `if` 里。
         // 计划是纯函数（`RenderPlan::for_frame`）⇒ 顺序与取舍可以在不启动 GPU 的单测里断言。
         let plan = RenderPlan::for_frame(FrameFacts {
@@ -2608,6 +2851,7 @@ impl Renderer {
             overlay_2d_draws: count_layer_draws(mesh, RenderLayer::Overlay2D),
             screen_ui_draws: count_layer_draws(mesh, RenderLayer::ScreenUI),
             vector_text: !mesh.vector_vertices.is_empty(),
+            post_process: post_process.is_some(),
         });
         let mut executed: Vec<RenderPass> = Vec::with_capacity(plan.len());
         if plan.contains(RenderPass::Clear)
@@ -2616,7 +2860,7 @@ impl Renderer {
             let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("p2-clear-pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view,
+                    view: draw_target,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -2639,7 +2883,7 @@ impl Renderer {
         {
             self.draw_world_sprites(
                 encoder,
-                view,
+                draw_target,
                 target,
                 world,
                 DepthPass::WorldSpriteOpaque,
@@ -2689,7 +2933,7 @@ impl Renderer {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("p2-mesh3d-pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view,
+                    view: draw_target,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -2743,7 +2987,7 @@ impl Renderer {
             };
             self.draw_world_sprites(
                 encoder,
-                view,
+                draw_target,
                 target,
                 world,
                 DepthPass::WorldSprite,
@@ -2765,7 +3009,7 @@ impl Renderer {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("p2-scene-pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view,
+                    view: draw_target,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -2882,7 +3126,7 @@ impl Renderer {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("p2-vector-text-pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view,
+                    view: draw_target,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -2902,6 +3146,16 @@ impl Renderer {
             record_triangle_draw(&mut metrics, mesh.vector_vertices.len() as u32);
             executed.push(RenderPass::VectorText);
         }
+        // docs/54 §4.3：最后一条通道——把离屏场景颜色按曝光/色调/暗角写进**目标附件**。
+        if plan.contains(RenderPass::PostProcess)
+            && let (Some(source), Some(settings)) = (scene_view.as_ref(), post_process)
+        {
+            let vertices = self.draw_post_process(encoder, source, view, settings, target);
+            record_triangle_draw(&mut metrics, vertices as u32);
+            executed.push(RenderPass::PostProcess);
+        }
+        // 把离屏视图放回（下一帧复用；纹理本体一直在 `self` 里，视图只是个句柄）。
+        self.post_process_scene_view = scene_view;
         // 计划与执行核对（docs/54 §4.3）：计划驱动的开关如果被运行时条件绕开，就在这里留下
         // 明确的告警与可断言的差异。`last_frame_passes` 与 `last_frame_plan` 都是公开的，
         // 因此"这一帧到底跑了哪些通道"可以在测试里直接断言，不用去数 draw call 反推。
@@ -4974,8 +5228,7 @@ mod tests {
         );
     }
 
-    /// docs/54 §4.3：**计划就是实际执行的那一份**。
-    ///
+    /// docs/54 §4.3：**计划就是实际执行的那一份**。    ///
     /// 单测（`core::render_plan`）只证明计划函数本身的顺序与取舍；这条测试在真实（离屏）渲染
     /// 帧上证明渲染器跑的就是计划里列的通道，一条不多一条不少。此前"这一帧跑了哪些通道"只能
     /// 靠读渲染循环的 `if` 猜——现在可以直接断言，而且漏跑会立刻在这里失败。
@@ -5125,6 +5378,151 @@ mod tests {
             renderer.last_frame_metrics().draw_calls,
             2,
             "两条通道各应产出一个 draw"
+        );
+    }
+
+    /// docs/54 §4.3：后处理通道写像素的**方向性**证据。
+    ///
+    /// 恒等参数不该把画面弄花（离屏 sRGB 往返最多差几个 LSB），而曝光、色调与暗角三个参数各自
+    /// 必须产生**可判定方向**的变化——否则"通道跑了"与"通道真的生效"是两件事。
+    #[test]
+    fn post_process_pass_changes_pixels_in_the_documented_way() {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let Some(adapter) =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::LowPower,
+                compatible_surface: None,
+                force_fallback_adapter: true,
+            }))
+            .ok()
+        else {
+            return; // no GPU available; skip
+        };
+        let (device, queue) = pollster::block_on(adapter.request_device(&DeviceDescriptor {
+            label: Some("p2-test-device"),
+            required_features: wgpu::Features::empty(),
+            experimental_features: wgpu::ExperimentalFeatures::disabled(),
+            required_limits: wgpu::Limits::default(),
+            memory_hints: wgpu::MemoryHints::Performance,
+            trace: wgpu::Trace::Off,
+        }))
+        .expect("request test device");
+        let mut renderer =
+            Renderer::new_offscreen(device.clone(), queue.clone(), None, false, false)
+                .expect("offscreen renderer");
+        let size = 32u32;
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("p2-test-post-process"),
+            size: wgpu::Extent3d {
+                width: size,
+                height: size,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let mesh = crate::host::frame::SceneMesh {
+            vertices: Vec::new(),
+            draws: Vec::new(),
+            world_sprites: Vec::new(),
+            world_sprite_draws: Vec::new(),
+            paths: Vec::new(),
+            font_atlas: None,
+            custom_font_atlases: Vec::new(),
+            vector_vertices: Vec::new(),
+            vector_glyphs: Vec::new(),
+            vector_segments: Vec::new(),
+        };
+        let render_and_read = |renderer: &mut Renderer| -> Vec<u8> {
+            renderer.render_into_texture(&mesh, None, &view, size, size);
+            renderer
+                .copy_texture_to_cpu(&texture, size, size)
+                .expect("post-process readback")
+        };
+        let pixel = |pixels: &[u8], x: u32, y: u32| -> [u8; 4] {
+            let offset = ((y * size + x) * 4) as usize;
+            [
+                pixels[offset],
+                pixels[offset + 1],
+                pixels[offset + 2],
+                pixels[offset + 3],
+            ]
+        };
+
+        // 回滚档：不开后处理时，计划里没有 PostProcess，整条离屏路径不存在。
+        let baseline = render_and_read(&mut renderer);
+        assert!(
+            !renderer.last_frame_plan().contains(RenderPass::PostProcess),
+            "没开后处理时计划里不该有 PostProcess"
+        );
+        assert_eq!(
+            renderer.last_frame_passes(),
+            renderer.last_frame_plan().passes()
+        );
+
+        // 恒等参数：画面必须基本不变（离屏 sRGB 往返允许多个 LSB 的量化差）。
+        renderer.set_post_process(Some(PostProcess::default()));
+        let identity = render_and_read(&mut renderer);
+        assert!(
+            renderer.last_frame_plan().contains(RenderPass::PostProcess),
+            "开了后处理，计划必须多出 PostProcess"
+        );
+        assert_eq!(
+            renderer.last_frame_passes(),
+            renderer.last_frame_plan().passes()
+        );
+        assert_eq!(
+            renderer.last_frame_passes().last(),
+            Some(&RenderPass::PostProcess),
+            "后处理永远是最后一条通道"
+        );
+        for (index, (before, after)) in baseline.iter().zip(&identity).enumerate() {
+            assert!(
+                before.abs_diff(*after) <= 2,
+                "恒等参数不该改变像素（第 {index} 字节：{before} → {after}）"
+            );
+        }
+
+        // 曝光 0.5：整体压暗。
+        renderer.set_post_process(Some(
+            PostProcess::new(0.5, [1.0; 4], 0.0).expect("exposure"),
+        ));
+        let darker = render_and_read(&mut renderer);
+        let centre_before = pixel(&identity, size / 2, size / 2);
+        let centre_darker = pixel(&darker, size / 2, size / 2);
+        assert!(
+            centre_darker[0] < centre_before[0] && centre_darker[2] < centre_before[2],
+            "曝光 0.5 必须压暗：{centre_before:?} → {centre_darker:?}"
+        );
+
+        // 色调（只留红）：绿/蓝分量必须被压到接近 0。
+        renderer.set_post_process(Some(
+            PostProcess::new(1.0, [1.0, 0.0, 0.0, 1.0], 0.0).expect("tint"),
+        ));
+        let tinted = render_and_read(&mut renderer);
+        let centre_tinted = pixel(&tinted, size / 2, size / 2);
+        assert!(
+            centre_tinted[1] <= 1 && centre_tinted[2] <= 1,
+            "tint=[1,0,0] 必须把绿蓝压掉：{centre_tinted:?}"
+        );
+        assert!(centre_tinted[0] > 0, "红色分量必须保留：{centre_tinted:?}");
+
+        // 暗角 1.0：四角全黑、中心不受影响。
+        renderer.set_post_process(Some(
+            PostProcess::new(1.0, [1.0; 4], 1.0).expect("vignette"),
+        ));
+        let vignetted = render_and_read(&mut renderer);
+        let corner = pixel(&vignetted, 0, 0);
+        let centre = pixel(&vignetted, size / 2, size / 2);
+        assert_eq!(corner, [0, 0, 0, 255], "暗角 1.0 时角落必须是黑的");
+        assert!(
+            centre[0] > corner[0],
+            "暗角只压边缘：centre={centre:?} corner={corner:?}"
         );
     }
 }
