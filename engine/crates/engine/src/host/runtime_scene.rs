@@ -101,7 +101,7 @@ pub struct RuntimeScene {
     /// 与每帧重建的 `texture_paths` 不同，它**不清空**：同一路径因此在进程内恒同句柄，
     /// "这一帧的 draw 引用的是哪个资源"跨帧可比；资源释放后旧句柄失效，而不是悄悄指向别人
     /// 放在同一个下标上的贴图。
-    assets: AssetStore<AssetRecord>,
+    assets: std::cell::RefCell<AssetStore<AssetRecord>>,
     /// 本帧与 `texture_paths` **同序**的句柄（交给渲染器做 O(1) 的贴图缓存查找）。
     texture_handles: Vec<AssetHandle>,
     tilemap_cache: HashMap<EntityId, CachedTilemapLayer>,
@@ -511,19 +511,22 @@ impl RuntimeScene {
     /// docs/54 §4.4：当前登记在身份表里的运行时资源（按句柄排序）。
     ///
     /// 这是**跨帧**的表（不像 `texture_paths` 每帧重建），因此可以直接断言"同一路径恒同句柄"。
+    /// 返回克隆而不是引用：身份表在 `RefCell` 里（3D 提取是 `&self`，也要能登记网格身份），
+    /// 借用作用域没法延长到调用方。
     #[must_use]
-    pub fn asset_entries(&self) -> Vec<&AssetRecord> {
+    pub fn asset_entries(&self) -> Vec<AssetRecord> {
         self.assets
+            .borrow()
             .entries()
             .into_iter()
-            .map(|(_, record)| record)
+            .map(|(_, record)| record.clone())
             .collect()
     }
 
     /// 某个路径当前的运行时句柄（未登记则 `None`）。
     #[must_use]
     pub fn asset_handle(&self, path: &str) -> Option<AssetHandle> {
-        self.assets.handle_of(path)
+        self.assets.borrow().handle_of(path)
     }
 
     /// docs/54 §4.2：声明本帧两个视图的**可见遮罩**（`world` 对应 `FrameViews::main.visibility`、
@@ -1214,7 +1217,7 @@ impl RuntimeScene {
             texture_dims: HashMap::new(),
             texture_paths: Vec::new(),
             texture_lookup: HashMap::new(),
-            assets: AssetStore::new(),
+            assets: std::cell::RefCell::new(AssetStore::new()),
             texture_handles: Vec::new(),
             tilemap_cache: HashMap::new(),
             font_atlas: None,
@@ -1942,6 +1945,21 @@ impl RuntimeScene {
                     entity: SceneEntityId(id.index() as u64),
                     name,
                     mesh_path: renderer.mesh.clone(),
+                    // docs/54 §4.4：网格也走同一套运行时身份（`ResourceKind::Model`）。3D 提取是
+                    // `&self`，因此身份表在 `RefCell` 里——同一网格跨帧恒同句柄，渲染器据此做
+                    // O(1) 的网格缓存查找并认出失效引用。
+                    mesh_handle: Some(
+                        self.assets
+                            .borrow_mut()
+                            .intern(
+                                renderer.mesh.as_str(),
+                                AssetRecord {
+                                    path: renderer.mesh.clone(),
+                                    kind: crate::core::resource_kind::ResourceKind::Model,
+                                },
+                            )
+                            .0,
+                    ),
                     model,
                     palette,
                     bounds,
@@ -3418,7 +3436,7 @@ impl RuntimeScene {
     fn texture_id(&mut self, path: &str) -> u32 {
         texture_id_of(
             path,
-            &mut self.assets,
+            &self.assets,
             &mut self.texture_paths,
             &mut self.texture_lookup,
             &mut self.texture_handles,
@@ -3611,7 +3629,7 @@ fn push_screen_line(
 /// 不清空，而 `paths`/`handles` 每帧重建）。
 fn texture_id_of(
     path: &str,
-    assets: &mut AssetStore<AssetRecord>,
+    assets: &std::cell::RefCell<AssetStore<AssetRecord>>,
     paths: &mut Vec<String>,
     lookup: &mut HashMap<String, u32>,
     handles: &mut Vec<AssetHandle>,
@@ -3621,7 +3639,7 @@ fn texture_id_of(
     }
     // 身份表（跨帧）与路径表（本帧）各查一次哈希，都是 O(1)：批量精灵档因此不会因为引入身份
     // 而多出任何线性扫描。
-    let (handle, _) = assets.intern(
+    let (handle, _) = assets.borrow_mut().intern(
         path,
         AssetRecord {
             path: path.to_owned(),
@@ -5597,6 +5615,54 @@ mod sdf_tests {
             "脚本应按 20*dt 移动实体（dt=0.5）：实际 {after:?}"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// docs/54 §4.4：**网格也走同一套运行时身份**——3D 提取是 `&self`，因此身份表在 `RefCell`
+    /// 里；同一网格跨帧恒同句柄、不同网格不同句柄，且身份表记录的 `ResourceKind` 是 `Model`。
+    #[test]
+    fn mesh_identity_is_stable_across_frames() {
+        let root = crate::core::games_dir().join("examples").join("game_api");
+        if !root.join("scenes/main.scene").is_file() {
+            return;
+        }
+        let mut scene = Scene::new("mesh_identity");
+        for (id, mesh) in [
+            (SceneEntityId(1), crate::core::mesh3d::GROUND_PLANE_SENTINEL),
+            (SceneEntityId(2), "assets/models/missing.glb"),
+        ] {
+            scene.add_entity(id, format!("Mesh{}", id.0), None).unwrap();
+            let entity = scene.entities.get_mut(&id).unwrap();
+            entity.components.insert(
+                "Transform3D".into(),
+                "position=0,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
+            );
+            entity
+                .components
+                .insert("MeshRenderer".into(), format!("mesh={mesh}"));
+        }
+        let runtime =
+            RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("runtime scene");
+        let first = runtime.scene_3d(16.0 / 9.0).expect("first frame 3d");
+        assert_eq!(first.drawables.len(), 2, "两个网格都应在 drawable 里");
+        let handles: Vec<_> = first
+            .drawables
+            .iter()
+            .map(|drawable| drawable.mesh_handle.expect("运行时必须给网格身份"))
+            .collect();
+        assert_ne!(handles[0], handles[1], "不同网格必须是不同句柄");
+        let second = runtime.scene_3d(16.0 / 9.0).expect("second frame 3d");
+        let second_handles: Vec<_> = second
+            .drawables
+            .iter()
+            .map(|drawable| drawable.mesh_handle.expect("身份"))
+            .collect();
+        assert_eq!(handles, second_handles, "同一网格在相邻两帧必须同句柄");
+        let record = runtime
+            .asset_entries()
+            .into_iter()
+            .find(|record| record.path == crate::core::mesh3d::GROUND_PLANE_SENTINEL)
+            .expect("网格身份应在表里");
+        assert_eq!(record.kind, crate::core::resource_kind::ResourceKind::Model);
     }
 
     /// docs/54 §4.4：运行时资源身份**跨帧稳定**——同一个路径在相邻两帧必须是同一个句柄，

@@ -461,6 +461,12 @@ pub struct Renderer {
     identity_palette: wgpu::Buffer,
     /// GPU geometry + file materials cached by mesh path.
     mesh_cache: HashMap<String, CachedMesh>,
+    /// docs/54 §4.4：网格资源身份 → `mesh_cache` 的键。运行时给了句柄就按句柄查（O(1)），
+    /// 并且同一网格跨帧恒同键——路径字符串重新解析、或两个不同路径互相顶替，都不会发生。
+    mesh_slots: HashMap<AssetHandle, String>,
+    /// 网格身份缓存命中/未命中次数（诊断/验收用）。
+    mesh_identity_hits: u64,
+    mesh_identity_misses: u64,
     /// Base-color textures uploaded from glTF materials (sRGB), indexed by
     /// `GpuMaterial::albedo`. Index 0 is reserved for the white fallback.
     albedo_textures: Vec<CachedAlbedoTexture>,
@@ -1550,6 +1556,9 @@ impl Renderer {
             shadow_camera_buffer,
             identity_palette,
             mesh_cache: HashMap::new(),
+            mesh_slots: HashMap::new(),
+            mesh_identity_hits: 0,
+            mesh_identity_misses: 0,
             albedo_textures: Vec::new(),
             albedo_sampler,
             white_albedo_view,
@@ -1645,7 +1654,32 @@ impl Renderer {
     /// Returns the cached geometry + materials for a mesh path, loading it from
     /// the project on first use. Missing or unloadable meshes are skipped with
     /// a warning so a bad reference never crashes the renderer.
-    fn cached_mesh(&mut self, path: &str) -> Option<&CachedMesh> {
+    /// docs/54 §4.4：按**资源身份**取网格缓存。
+    ///
+    /// 有句柄时先查身份表（O(1)），未命中才按路径加载并记下映射；路径键的 `mesh_cache` 保持不变，
+    /// 因此"同一网格被两个路径引用"也不会加载两遍。没有句柄的调用（宿主手写 `Scene3d`）仍按路径。
+    fn cached_mesh(&mut self, handle: Option<AssetHandle>, path: &str) -> Option<&CachedMesh> {
+        if let Some(handle) = handle {
+            if let Some(mapped) = self.mesh_slots.get(&handle)
+                && self.mesh_cache.contains_key(mapped.as_str())
+            {
+                self.mesh_identity_hits += 1;
+                let key = mapped.clone();
+                return self.mesh_cache.get(&key);
+            }
+            self.mesh_identity_misses += 1;
+            if !self.mesh_cache.contains_key(path)
+                && let Some(cached) = self.load_cached_mesh(path)
+            {
+                self.mesh_cache.insert(path.to_owned(), cached);
+                tracing::info!(target: "render", path = %path, "[render] 3D mesh cached");
+            }
+            if self.mesh_cache.contains_key(path) {
+                self.mesh_slots.insert(handle, path.to_owned());
+            }
+            return self.mesh_cache.get(path);
+        }
+        // 没有身份：旧路径（行为与收敛前一致）。
         if !self.mesh_cache.contains_key(path)
             && let Some(cached) = self.load_cached_mesh(path)
         {
@@ -2075,7 +2109,7 @@ impl Renderer {
         let mut draws: Vec<FrameDraw> = Vec::new();
         let instancing_enabled = self.instancing_enabled;
         for drawable in &scene.drawables {
-            let Some(cached) = self.cached_mesh(&drawable.mesh_path) else {
+            let Some(cached) = self.cached_mesh(drawable.mesh_handle, &drawable.mesh_path) else {
                 continue;
             };
             for (prim_index, primitive) in cached.primitives.iter().enumerate() {
@@ -3395,6 +3429,18 @@ impl Renderer {
         self.textures.len()
     }
 
+    /// docs/54 §4.4：网格身份缓存的 `(命中, 未命中)` 次数。
+    #[must_use]
+    pub fn mesh_identity_stats(&self) -> (u64, u64) {
+        (self.mesh_identity_hits, self.mesh_identity_misses)
+    }
+
+    /// 已缓存的网格条数（诊断：同一资源不该被解析两次）。
+    #[must_use]
+    pub fn cached_mesh_count(&self) -> usize {
+        self.mesh_cache.len()
+    }
+
     /// 2D 顶点缓冲扩容次数（诊断/验收：稳定场景不应持续增长）。
     pub fn vertex_buffer_growths(&self) -> u64 {
         self.vertex_buffer_growths
@@ -4417,6 +4463,8 @@ mod tests {
                 entity: crate::core::scene::SceneEntityId(1),
                 name: "Ground".to_owned(),
                 mesh_path: GROUND_PLANE_SENTINEL.to_owned(),
+                // 测试手写场景：给一个本地句柄即可（渲染器只把它当缓存键）。
+                mesh_handle: Some(AssetHandle::new(0, 1)),
                 model: mesh_model,
                 palette: Vec::new(),
                 bounds: crate::host::frame::Scene3dBounds {
@@ -5422,6 +5470,117 @@ mod tests {
             "没有身份时按路径解析，身份统计不应变化"
         );
         assert_eq!(renderer.loaded_texture_count(), 1);
+    }
+
+    /// docs/54 §4.4：网格解析同样走**资源身份**——同一句柄第二帧命中缓存（O(1)），同一网格只
+    /// 解析一次；宿主没给身份（编辑器预览/测试夹具）时按路径解析，行为与收敛前一致。
+    #[test]
+    fn mesh_identity_cache_is_hit_on_the_second_frame() {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let Some(adapter) =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::LowPower,
+                compatible_surface: None,
+                force_fallback_adapter: true,
+            }))
+            .ok()
+        else {
+            return; // no GPU available; skip
+        };
+        let (device, queue) = pollster::block_on(adapter.request_device(&DeviceDescriptor {
+            label: Some("p2-test-device"),
+            required_features: wgpu::Features::empty(),
+            experimental_features: wgpu::ExperimentalFeatures::disabled(),
+            required_limits: wgpu::Limits::default(),
+            memory_hints: wgpu::MemoryHints::Performance,
+            trace: wgpu::Trace::Off,
+        }))
+        .expect("request test device");
+        let mut renderer =
+            Renderer::new_offscreen(device.clone(), queue.clone(), None, false, false)
+                .expect("offscreen renderer");
+        let camera = Camera3D::perspective(
+            Vec3::new(0.0, 0.0, 4.0),
+            Vec3::ZERO,
+            std::f32::consts::FRAC_PI_2,
+            1.0,
+            0.1,
+            100.0,
+        )
+        .expect("perspective camera");
+        let handle = AssetHandle::new(7, 3);
+        let scene = |handle: Option<AssetHandle>| Scene3d {
+            camera,
+            light: Light::default(),
+            drawables: vec![crate::host::frame::Scene3dDrawable {
+                entity: crate::core::scene::SceneEntityId(1),
+                name: "Ground".to_owned(),
+                mesh_path: GROUND_PLANE_SENTINEL.to_owned(),
+                mesh_handle: handle,
+                model: Mat4::translation(Vec3::new(0.0, 0.0, -1.0)),
+                palette: Vec::new(),
+                bounds: crate::host::frame::Scene3dBounds {
+                    local_aabb: crate::core::math3d::Aabb3 {
+                        min: Vec3::new(-4.0, -4.0, -0.1),
+                        max: Vec3::new(4.0, 4.0, 0.1),
+                    },
+                    source: crate::host::frame::BoundsSource::Fallback,
+                },
+            }],
+        };
+        let size = 32u32;
+        let target = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("p2-test-mesh-identity"),
+            size: wgpu::Extent3d {
+                width: size,
+                height: size,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+        let mesh = crate::host::frame::SceneMesh {
+            vertices: Vec::new(),
+            draws: Vec::new(),
+            world_sprites: Vec::new(),
+            world_sprite_draws: Vec::new(),
+            paths: Vec::new(),
+            path_handles: Vec::new(),
+            font_atlas: None,
+            custom_font_atlases: Vec::new(),
+            vector_vertices: Vec::new(),
+            vector_glyphs: Vec::new(),
+            vector_segments: Vec::new(),
+        };
+
+        renderer.render_into_texture(&mesh, Some(&scene(Some(handle))), &view, size, size);
+        assert_eq!(
+            renderer.mesh_identity_stats(),
+            (0, 1),
+            "第一帧句柄还没进缓存：记一次未命中"
+        );
+        assert_eq!(renderer.cached_mesh_count(), 1, "同一网格只解析一次");
+        renderer.render_into_texture(&mesh, Some(&scene(Some(handle))), &view, size, size);
+        assert_eq!(
+            renderer.mesh_identity_stats(),
+            (1, 1),
+            "第二帧同句柄必须命中网格缓存"
+        );
+        assert_eq!(renderer.cached_mesh_count(), 1, "命中不该重复解析");
+
+        // 没有身份：按路径解析（旧路径），身份统计不应变化。
+        renderer.render_into_texture(&mesh, Some(&scene(None)), &view, size, size);
+        assert_eq!(
+            renderer.mesh_identity_stats(),
+            (1, 1),
+            "宿主没给身份时不该动身份统计"
+        );
+        assert_eq!(renderer.cached_mesh_count(), 1);
     }
 
     /// docs/54 §4.3：**计划就是实际执行的那一份**。    ///

@@ -262,6 +262,12 @@ pub struct Scene3dDrawable {
     pub entity: crate::core::scene::SceneEntityId,
     pub name: String,
     pub mesh_path: String,
+    /// docs/54 §4.4：与 `mesh_path` 对应的运行时资源身份。渲染器用它做 O(1) 的网格缓存查找，
+    /// 因此"同一个网格"跨帧可比、也不会因为路径字符串相同而重复解析。
+    ///
+    /// `None` = 宿主自己拼的 `Scene3d`（编辑器预览、测试夹具）：渲染器回退到按路径解析，行为与
+    /// 收敛前一致。
+    pub mesh_handle: Option<crate::core::asset_handle::AssetHandle>,
     pub model: Mat4,
     pub palette: Vec<Mat4>,
     pub bounds: Scene3dBounds,

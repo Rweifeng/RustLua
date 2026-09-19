@@ -1928,6 +1928,8 @@ impl EditorApp {
                     entity: entity.id,
                     name: entity.name.clone(),
                     mesh_path: entity.mesh_path.clone(),
+                    // 编辑器预览自己拼 drawable（没有运行时身份表）：渲染器按路径解析。
+                    mesh_handle: None,
                     model,
                     palette: Vec::new(),
                     bounds: Scene3dBounds {
