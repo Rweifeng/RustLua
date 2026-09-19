@@ -311,6 +311,75 @@ impl RuntimeScene {
         std::mem::take(&mut self.script_micros)
     }
 
+    /// docs/54 §4.1：按**场景实体 id** 读运行时局部变换，**用统一的 `LocalTransform` 表示**。
+    ///
+    /// 运行时 ECS 里存的是 `Transform`（2D）与 `Transform3D`（3D）——它们是**序列化边界格式**，也是
+    /// 2D 快路径（平面 f32 弧度比四元数便宜，10k 精灵档实测过）。跨空间、跨系统要"一个局部变换"
+    /// 时就该走这里：`LocalTransform` 是引擎内**唯一的规范表示**（组合、反解、换父、迁移都基于它，
+    /// 见 docs/40 WP2 与 docs/54 §8-②），这个读法把它暴露出来，而不是让每个调用方各写一次转换。
+    #[must_use]
+    pub fn local_transform_of(
+        &self,
+        entity: SceneEntityId,
+    ) -> Option<crate::core::spatial_transform::LocalTransform> {
+        let runtime = self.script.scene_entity_handle(entity)?;
+        self.script.with_world(|world| {
+            if let Ok(Some(transform)) = world.get::<Transform3D>(runtime) {
+                return Some(crate::core::spatial_transform::LocalTransform::from_3d(
+                    *transform,
+                ));
+            }
+            world
+                .get::<Transform>(runtime)
+                .ok()
+                .flatten()
+                .and_then(|transform| {
+                    crate::core::spatial_transform::LocalTransform::from_2d(*transform).ok()
+                })
+        })
+    }
+
+    /// docs/54 §4.1：把统一的 `LocalTransform` 写回该实体**自己的空间**。
+    ///
+    /// 三条明确的出口（都不猜）：
+    /// - 实体有 `Transform3D` ⇒ 原样写回；
+    /// - 实体只有 2D `Transform` ⇒ 只在**真能无损压平**时才写（四元数只有 z/w 分量、z 位移为 0、
+    ///   z 缩放为 1），否则**报错**——手抄一个 XY 会把旋转与缩放悄悄丢掉（docs/54 §1.2）；
+    /// - 两种都没有 ⇒ `Ok(false)`（没有局部变换可更新，调用方自己决定要不要新建组件）。
+    pub fn set_local_transform(
+        &mut self,
+        entity: SceneEntityId,
+        value: crate::core::spatial_transform::LocalTransform,
+    ) -> Result<bool, String> {
+        let Some(runtime) = self.script.scene_entity_handle(entity) else {
+            return Ok(false);
+        };
+        self.script.with_world_mut(|world| {
+            if world.get::<Transform3D>(runtime).ok().flatten().is_some() {
+                let transform = Transform3D {
+                    position: value.translation,
+                    rotation: value.rotation,
+                    scale: value.scale,
+                };
+                world
+                    .insert(runtime, transform)
+                    .map_err(|error| error.to_string())?;
+                return Ok(true);
+            }
+            if world.get::<Transform>(runtime).ok().flatten().is_some() {
+                let flat = crate::core::spatial_transform::plane_local(value).ok_or_else(|| {
+                    "this entity only has a 2D Transform; the value is not planar \
+                         (tilt, z offset or z scale) — flattening would drop it"
+                        .to_owned()
+                })?;
+                world
+                    .insert(runtime, flat)
+                    .map_err(|error| error.to_string())?;
+                return Ok(true);
+            }
+            Ok(false)
+        })
+    }
     /// WP2 ④：按**场景实体 id** 读世界变换（2D）。
     ///
     /// 编辑器拾取包围框必须与渲染用同一份位置：场景视图渲染走 `vertices()`（父链组合后的
@@ -5881,6 +5950,108 @@ mod sdf_tests {
         );
     }
 
+    /// docs/54 §4.1：**文档侧与运行时侧的局部变换必须是同一份规范表示**。
+    ///
+    /// 这条是"运行时只有一份权威 `LocalTransform`"在**表示层**的可执行判据：对一个真实场景，逐实体
+    /// 比对 `RuntimeScene::local_transform_of`（运行时从 ECS 的边界格式转出来的 `LocalTransform`）
+    /// 与 `scene_space::local_transforms`（文档侧直接解析出来的 `LocalTransform`）。两者任何一处改了
+    /// 转换口径都会在这里失败——这正是"两份真源"最容易被引入的地方。
+    #[test]
+    fn runtime_and_document_agree_on_the_canonical_local_transform() {
+        let root = crate::core::games_dir().join("examples").join("game_api");
+        let path = root.join("scenes/index.scene");
+        if !path.is_file() {
+            return;
+        }
+        let scene = Scene::load(&path).expect("load shipped scene");
+        let document = crate::core::scene_space::local_transforms(&scene);
+        let mut runtime =
+            RuntimeScene::from_scene_edit(Some(root.as_path()), scene.clone()).expect("runtime");
+        assert!(!document.is_empty(), "场景应当带局部变换");
+        for entity in scene.entities.values() {
+            let Some(expected) = document.get(&entity.id).copied() else {
+                continue;
+            };
+            let actual = runtime
+                .local_transform_of(entity.id)
+                .unwrap_or_else(|| panic!("运行时缺少 {} 的局部变换", entity.name));
+            assert!(
+                (actual.translation - expected.translation).length() < 1e-5
+                    && (actual.scale - expected.scale).length() < 1e-5,
+                "{} 的局部变换两侧不一致：文档={expected:?} 运行时={actual:?}",
+                entity.name
+            );
+        }
+
+        // 写回：统一表示写进实体自己的空间，round-trip 必须回到同一个值。
+        let target = scene
+            .entities
+            .values()
+            .find(|entity| document.contains_key(&entity.id))
+            .expect("至少一个带变换的实体")
+            .id;
+        let mut moved = document[&target];
+        moved.translation = moved.translation + crate::core::math3d::Vec3::new(3.0, 4.0, 0.0);
+        assert!(
+            runtime
+                .set_local_transform(target, moved)
+                .expect("写回平坦值"),
+            "实体本来就有局部变换，应当写回成功"
+        );
+        let read_back = runtime.local_transform_of(target).expect("读回");
+        assert!(
+            (read_back.translation - moved.translation).length() < 1e-5,
+            "写回后读到的应是同一个值：{read_back:?} vs {moved:?}"
+        );
+    }
+
+    /// docs/54 §4.1：写回非平面值到**只有 2D `Transform`** 的实体必须**报错**，而不是悄悄压平
+    /// （手抄 XY 会把旋转与缩放丢掉）。
+    #[test]
+    fn non_planar_local_transform_is_refused_for_2d_entities() {
+        let root = crate::core::games_dir().join("examples").join("game_api");
+        if !root.join("scenes/main.scene").is_file() {
+            return;
+        }
+        let mut scene = Scene::new("local_transform_write");
+        scene.add_entity(SceneEntityId(1), "Flat", None).unwrap();
+        scene
+            .entities
+            .get_mut(&SceneEntityId(1))
+            .unwrap()
+            .components
+            .insert(
+                "Transform".into(),
+                "x=1;y=2;rotation=0;scale_x=1;scale_y=1".into(),
+            );
+        let mut runtime =
+            RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("runtime scene");
+        let planar = crate::core::spatial_transform::LocalTransform {
+            translation: crate::core::math3d::Vec3::new(5.0, 6.0, 0.0),
+            rotation: crate::core::math3d::Quat::identity(),
+            scale: crate::core::math3d::Vec3::new(2.0, 2.0, 1.0),
+        };
+        assert!(
+            runtime
+                .set_local_transform(SceneEntityId(1), planar)
+                .unwrap()
+        );
+        let tilted = crate::core::spatial_transform::LocalTransform {
+            // 沿 z 抬起：2D 平面装不下。
+            translation: crate::core::math3d::Vec3::new(5.0, 6.0, 3.0),
+            ..planar
+        };
+        let error = runtime
+            .set_local_transform(SceneEntityId(1), tilted)
+            .expect_err("非平面值必须被拒绝");
+        assert!(error.contains("not planar"), "{error}");
+        // 拒绝之后原值必须原样保留（不留半写状态）。
+        let unchanged = runtime
+            .local_transform_of(SceneEntityId(1))
+            .expect("局部变换仍在");
+        assert!((unchanged.translation.z).abs() < 1e-6);
+        assert!((runtime.local_transform_of(SceneEntityId(99))).is_none());
+    }
     /// docs/54 §4.3：**一个实体只有一种可绘制表达**。
     ///
     /// 同时挂 `Sprite` 与 `Quad` 时：① 加载期点名（否则"为什么另一个没画出来"无从解释）；
