@@ -12,10 +12,12 @@ use std::{
 
 use crate::core::{
     camera::{Camera3D, ClearPolicy, DEFAULT_3D_CLEAR, FrameViews, RenderView, Viewport},
+    layer::{RenderLayer, layer_indices},
     light::Light,
     logging::{EngineError, LogModule},
     math3d::{Mat4, Vec3},
     mesh3d::{GROUND_PLANE_SENTINEL, MeshAsset},
+    render_plan::{FrameFacts, RenderPass, RenderPlan},
     text::TextAtlas,
     texture::{TextureAsset, TextureColorSpace},
     window::has_renderable_size,
@@ -264,6 +266,14 @@ fn record_draw_call(metrics: &mut RenderFrameMetrics) {
     metrics.draw_calls += 1;
 }
 
+/// 本帧某一层有多少段几何（`RenderPlan` 的输入事实之一）。
+fn count_layer_draws(mesh: &SceneMesh, layer: RenderLayer) -> usize {
+    mesh.draws
+        .iter()
+        .filter(|draw| draw.render_layer == layer)
+        .count()
+}
+
 fn record_triangle_draw(metrics: &mut RenderFrameMetrics, vertex_count: u32) {
     record_draw_call(metrics);
     metrics.triangles += u64::from(vertex_count) / 3;
@@ -469,6 +479,13 @@ pub struct Renderer {
     timestamp_state: GpuTimestampState,
     timestamp_error: Option<String>,
     last_frame_metrics: RenderFrameMetrics,
+    /// docs/54 §4.3：上一帧的**渲染通道计划**与**实际执行的通道**（按进入顺序）。
+    ///
+    /// 计划的开关条件不再散在渲染循环里，而是 `RenderPlan::for_frame` 从帧内容算出；执行完
+    /// 立刻与本计划核对（[`RenderPlan::mismatch`]），不一致就告警——"少画一个通道"因此不会
+    /// 静默发生。
+    last_frame_plan: RenderPlan,
+    last_frame_passes: Vec<RenderPass>,
     /// WP5：宿主声明的本帧相机侧视图（清屏策略 + 视口）。默认全 `None` ⇒ 渲染器保持
     /// 收敛前的行为（历史默认清屏色、整目标视口），这就是这次接线可回滚的那一档。
     frame_views: FrameViews,
@@ -1446,6 +1463,8 @@ impl Renderer {
             },
             timestamp_error: None,
             last_frame_metrics: RenderFrameMetrics::default(),
+            last_frame_plan: RenderPlan::empty(),
+            last_frame_passes: Vec::new(),
             frame_views: FrameViews::new(),
             world_sprite_pipeline,
             world_sprite_opaque_pipeline,
@@ -2544,23 +2563,6 @@ impl Renderer {
         };
         let main_viewport = self.frame_views.main.map(|declared| declared.viewport);
         let overlay_viewport = self.frame_views.overlay.map(|declared| declared.viewport);
-        if let Some(clear) = clear {
-            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("p2-clear-pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(clear),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-        }
         // docs/54 §8-③：本帧世界视图的投影矩阵**只有一份来源**——宿主声明的 `RenderView`。
         // 渲染器不再自己回查 `Camera3D`（那只是"宿主没声明"时的历史回退）。
         let main_matrix = self
@@ -2584,17 +2586,56 @@ impl Renderer {
             );
         }
         // 世界 Sprite 通道（docs/54 §8-④）：与网格**共用相机、视口与深度附件**。
+        // 这一段只做 CPU 侧准备（uniform + 缓冲容量），不碰 encoder，因此可以排在清屏之前，
+        // 好让下面的通道计划拿到 `shared_depth` 这个事实。
         let world_view = if mesh.world_sprites.is_empty() {
             None
         } else {
             self.prepare_world_sprites(mesh, main_matrix, overlay_viewport, target)
         };
+        // docs/54 §4.3：本帧跑哪些通道由**计划**决定，而不是散在下面的 `if` 里。
+        // 计划是纯函数（`RenderPlan::for_frame`）⇒ 顺序与取舍可以在不启动 GPU 的单测里断言。
+        let plan = RenderPlan::for_frame(FrameFacts {
+            clear: clear.is_some(),
+            has_3d_draws: !frame_draws.is_empty(),
+            world_sprites: mesh.world_sprites.len(),
+            world_sprite_opaque_segment: mesh
+                .world_sprite_draws
+                .iter()
+                .any(|draw| draw.depth_write),
+            world_sprite_shared_depth: world_view.is_some_and(|world| world.shared_depth),
+            world_2d_draws: count_layer_draws(mesh, RenderLayer::World2D),
+            overlay_2d_draws: count_layer_draws(mesh, RenderLayer::Overlay2D),
+            screen_ui_draws: count_layer_draws(mesh, RenderLayer::ScreenUI),
+            vector_text: !mesh.vector_vertices.is_empty(),
+        });
+        let mut executed: Vec<RenderPass> = Vec::with_capacity(plan.len());
+        if plan.contains(RenderPass::Clear)
+            && let Some(clear) = clear
+        {
+            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("p2-clear-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(clear),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            executed.push(RenderPass::Clear);
+        }
         // 深度附件是否已被本帧某个 pass 清过。共用深度时"谁先画谁清"、后面的 pass 只 Load；
         // 否则精灵与网格的深度就不是同一个空间里的值。
         let mut depth_cleared = false;
         // ① 不透明世界 Sprite：在网格 pass **之前**写深度 ⇒ 不透明精灵可以遮挡网格。
-        if let Some(world) = world_view.filter(|world| world.shared_depth)
-            && mesh.world_sprite_draws.iter().any(|draw| draw.depth_write)
+        if plan.contains(RenderPass::WorldSpriteOpaque)
+            && let Some(world) = world_view.filter(|world| world.shared_depth)
         {
             self.draw_world_sprites(
                 encoder,
@@ -2609,40 +2650,42 @@ impl Renderer {
                 &mut metrics,
             );
             depth_cleared = true;
+            executed.push(RenderPass::WorldSpriteOpaque);
         }
-        if !frame_draws.is_empty() {
-            {
-                let mut shadow_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("p2-shadow-pass"),
-                    color_attachments: &[],
-                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                        view: &self.shadow_view,
-                        depth_ops: Some(wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(1.0),
-                            store: wgpu::StoreOp::Store,
-                        }),
-                        stencil_ops: None,
+        if plan.contains(RenderPass::Shadow) {
+            let mut shadow_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("p2-shadow-pass"),
+                color_attachments: &[],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.shadow_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
                     }),
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                });
-                shadow_pass.set_pipeline(&self.shadow_pipeline);
-                shadow_pass.set_bind_group(0, &self.shadow_bind_group, &[]);
-                for draw in &frame_draws {
-                    let bind = self.material_bind_group(draw.material, &draw.palette, &draw.models);
-                    shadow_pass.set_bind_group(1, &bind, &[]);
-                    shadow_pass.set_vertex_buffer(0, draw.geometry.vertex_buffer.slice(..));
-                    shadow_pass.set_index_buffer(
-                        draw.geometry.index_buffer.slice(..),
-                        wgpu::IndexFormat::Uint32,
-                    );
-                    shadow_pass.draw_indexed(
-                        0..draw.geometry.index_count,
-                        0,
-                        0..draw.models.len() as u32,
-                    );
-                }
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            shadow_pass.set_pipeline(&self.shadow_pipeline);
+            shadow_pass.set_bind_group(0, &self.shadow_bind_group, &[]);
+            for draw in &frame_draws {
+                let bind = self.material_bind_group(draw.material, &draw.palette, &draw.models);
+                shadow_pass.set_bind_group(1, &bind, &[]);
+                shadow_pass.set_vertex_buffer(0, draw.geometry.vertex_buffer.slice(..));
+                shadow_pass.set_index_buffer(
+                    draw.geometry.index_buffer.slice(..),
+                    wgpu::IndexFormat::Uint32,
+                );
+                shadow_pass.draw_indexed(
+                    0..draw.geometry.index_count,
+                    0,
+                    0..draw.models.len() as u32,
+                );
             }
+            executed.push(RenderPass::Shadow);
+        }
+        if plan.contains(RenderPass::DepthOpaque) {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("p2-mesh3d-pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -2685,8 +2728,11 @@ impl Renderer {
                 );
                 pass.draw_indexed(0..draw.geometry.index_count, 0, 0..draw.models.len() as u32);
             }
+            executed.push(RenderPass::DepthOpaque);
         }
-        if let Some(world) = world_view {
+        if plan.contains(RenderPass::WorldSprite)
+            && let Some(world) = world_view
+        {
             // ② 共用视图：半透明精灵在网格之后按画家顺序画，测深度但不写深度。
             // ③ 纯 2D / 宿主未声明视图（回滚档）：只有精灵之间的顺序，深度策略不参与，
             //    因此整段照旧按宿主排好的顺序画。
@@ -2707,8 +2753,9 @@ impl Renderer {
                 !depth_cleared,
                 &mut metrics,
             );
+            executed.push(RenderPass::WorldSprite);
         }
-        if !mesh.vertices.is_empty() {
+        if plan.contains(RenderPass::Legacy2DOverlay) || plan.contains(RenderPass::ScreenUI) {
             let bytes = bytemuck::cast_slice(&mesh.vertices);
             // 2D 顶点缓冲按需增长。此前是固定 1 MiB + `if bytes.len() <= size`
             // **没有 else 分支**：超限时整个 2D 层（含 UI/文字）静默消失，日志里
@@ -2743,31 +2790,44 @@ impl Renderer {
             // （World2D → Overlay2D → ScreenUI）。宿主本来就按这个顺序产出顶点，因此像素与
             // "照缓冲顺序画"逐字节一致；但层的先后从此由渲染器保证——HUD 不会再被一段插到它
             // 后面的调试线盖住，而这类错序类型检查抓不到。
-            for index in crate::core::layer::layered_indices(&mesh.draws, |draw| draw.render_layer)
-            {
-                let draw = &mesh.draws[index];
-                if draw.sdf {
-                    // SDF 文本：Linear 采样 + SDF shader 分支。默认字体用全局图集
-                    // bind；自定义字体（font://...）按该字体的 draw 选对应 bind。
-                    let Some(sdf_bind) = self.sdf_bind_for(draw.texture, &mesh.paths) else {
-                        continue;
-                    };
-                    pass.set_pipeline(&self.pipeline_sdf);
-                    pass.set_bind_group(0, &sdf_bind, &[]);
-                    pass.draw(draw.start..draw.start + draw.count, 0..1);
-                    record_vertex_draw(&mut metrics, draw.count);
+            //
+            // docs/54 §4.3：`Legacy2DOverlay`（World2D + Overlay2D 两个桶）与 `ScreenUI` 是计划里
+            // 两条**独立通道**，因此这里按通道分桶；两者共用一次 `begin_render_pass`（同一条管线，
+            // 拆成两个 pass 只多 CPU 开销、不写像素）。
+            for stage in [RenderPass::Legacy2DOverlay, RenderPass::ScreenUI] {
+                if !plan.contains(stage) {
                     continue;
                 }
-                let Some(bind) = self.bind_group_for(draw.texture, &mesh.paths) else {
-                    continue;
-                };
-                pass.set_pipeline(&self.pipeline);
-                pass.set_bind_group(0, &bind, &[]);
-                pass.draw(draw.start..draw.start + draw.count, 0..1);
-                record_vertex_draw(&mut metrics, draw.count);
+                for layer in stage.overlay_layers() {
+                    for index in layer_indices(&mesh.draws, |draw| draw.render_layer, *layer) {
+                        let draw = &mesh.draws[index];
+                        if draw.sdf {
+                            // SDF 文本：Linear 采样 + SDF shader 分支。默认字体用全局图集
+                            // bind；自定义字体（font://...）按该字体的 draw 选对应 bind。
+                            let Some(sdf_bind) = self.sdf_bind_for(draw.texture, &mesh.paths)
+                            else {
+                                continue;
+                            };
+                            pass.set_pipeline(&self.pipeline_sdf);
+                            pass.set_bind_group(0, &sdf_bind, &[]);
+                            pass.draw(draw.start..draw.start + draw.count, 0..1);
+                            record_vertex_draw(&mut metrics, draw.count);
+                            continue;
+                        }
+                        let Some(bind) = self.bind_group_for(draw.texture, &mesh.paths) else {
+                            continue;
+                        };
+                        pass.set_pipeline(&self.pipeline);
+                        pass.set_bind_group(0, &bind, &[]);
+                        pass.draw(draw.start..draw.start + draw.count, 0..1);
+                        record_vertex_draw(&mut metrics, draw.count);
+                    }
+                }
+                executed.push(stage);
             }
         }
-        if !mesh.vector_vertices.is_empty()
+        if plan.contains(RenderPass::VectorText)
+            && !mesh.vector_vertices.is_empty()
             && !mesh.vector_glyphs.is_empty()
             && !mesh.vector_segments.is_empty()
         {
@@ -2840,7 +2900,19 @@ impl Renderer {
             apply_declared_viewport(&mut pass, overlay_viewport, target);
             pass.draw(0..mesh.vector_vertices.len() as u32, 0..1);
             record_triangle_draw(&mut metrics, mesh.vector_vertices.len() as u32);
+            executed.push(RenderPass::VectorText);
         }
+        // 计划与执行核对（docs/54 §4.3）：计划驱动的开关如果被运行时条件绕开，就在这里留下
+        // 明确的告警与可断言的差异。`last_frame_passes` 与 `last_frame_plan` 都是公开的，
+        // 因此"这一帧到底跑了哪些通道"可以在测试里直接断言，不用去数 draw call 反推。
+        if let Some(mismatch) = plan.mismatch(&executed) {
+            tracing::warn!(
+                target: "render",
+                "[runtime] render plan mismatch: {mismatch}"
+            );
+        }
+        self.last_frame_plan = plan;
+        self.last_frame_passes = executed;
         metrics
     }
 
@@ -3021,6 +3093,22 @@ impl Renderer {
     /// 最近一次成功提交的帧统计。GPU timestamp 不可用或尚未完成时为 `None`。
     pub fn last_frame_metrics(&self) -> RenderFrameMetrics {
         self.last_frame_metrics
+    }
+
+    /// 上一帧的渲染通道计划（docs/54 §4.3）。
+    #[must_use]
+    pub fn last_frame_plan(&self) -> &RenderPlan {
+        &self.last_frame_plan
+    }
+
+    /// 上一帧**实际进入**的通道，按进入顺序。
+    ///
+    /// 与 [`Self::last_frame_plan`] 不等即意味着某个通道被跳过或顺序变了——渲染器每帧核对一次
+    /// 并告警。注意"进入"不等于"产出了 draw call"（`bind_group_for` 找不到纹理时仍可能空转），
+    /// 产出量由 [`Self::last_frame_metrics`] 单独计数。
+    #[must_use]
+    pub fn last_frame_passes(&self) -> &[RenderPass] {
+        &self.last_frame_passes
     }
 
     /// 2D 顶点缓冲扩容次数（诊断/验收：稳定场景不应持续增长）。
@@ -3599,8 +3687,11 @@ pub enum RenderOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::camera::{Projection, RenderView};
+    use crate::core::camera::{Camera2D, Projection, RenderView};
     use crate::core::math3d::Quat;
+    use crate::core::transform::Vec2;
+
+    use crate::host::frame::OverlayVertex;
 
     #[test]
     fn render_metrics_count_2d_draws_and_geometry() {
@@ -4880,6 +4971,160 @@ mod tests {
         assert!(
             pixels.iter().any(|&byte| byte > 0),
             "preview frame is blank"
+        );
+    }
+
+    /// docs/54 §4.3：**计划就是实际执行的那一份**。
+    ///
+    /// 单测（`core::render_plan`）只证明计划函数本身的顺序与取舍；这条测试在真实（离屏）渲染
+    /// 帧上证明渲染器跑的就是计划里列的通道，一条不多一条不少。此前"这一帧跑了哪些通道"只能
+    /// 靠读渲染循环的 `if` 猜——现在可以直接断言，而且漏跑会立刻在这里失败。
+    #[test]
+    fn render_plan_matches_the_executed_passes_on_a_real_frame() {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let Some(adapter) =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::LowPower,
+                compatible_surface: None,
+                force_fallback_adapter: true,
+            }))
+            .ok()
+        else {
+            return; // no GPU available; skip
+        };
+        let (device, queue) = pollster::block_on(adapter.request_device(&DeviceDescriptor {
+            label: Some("p2-test-device"),
+            required_features: wgpu::Features::empty(),
+            experimental_features: wgpu::ExperimentalFeatures::disabled(),
+            required_limits: wgpu::Limits::default(),
+            memory_hints: wgpu::MemoryHints::Performance,
+            trace: wgpu::Trace::Off,
+        }))
+        .expect("request test device");
+        let mut renderer =
+            Renderer::new_offscreen(device.clone(), queue.clone(), None, false, false)
+                .expect("offscreen renderer");
+        let size = 64u32;
+        let target = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("p2-test-plan"),
+            size: wgpu::Extent3d {
+                width: size,
+                height: size,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+        let empty_mesh = || crate::host::frame::SceneMesh {
+            vertices: Vec::new(),
+            draws: Vec::new(),
+            world_sprites: Vec::new(),
+            world_sprite_draws: Vec::new(),
+            paths: Vec::new(),
+            font_atlas: None,
+            custom_font_atlases: Vec::new(),
+            vector_vertices: Vec::new(),
+            vector_glyphs: Vec::new(),
+            vector_segments: Vec::new(),
+        };
+        // 空帧 + 未声明视图 ⇒ 只有回滚档的清屏（历史默认色）。
+        renderer.render_into_texture(&empty_mesh(), None, &view, size, size);
+        assert_eq!(
+            renderer.last_frame_plan().passes(),
+            [RenderPass::Clear],
+            "空帧 + 未声明视图只应清屏"
+        );
+        assert_eq!(
+            renderer.last_frame_passes(),
+            renderer.last_frame_plan().passes(),
+            "空帧：执行必须与计划逐条一致"
+        );
+
+        // 声明 `ClearPolicy::None` ⇒ 计划里连清屏都不该有（清屏也是一条被计划管着的通道）。
+        let declared = RenderView::main_2d(
+            Camera2D::new(Vec2::new(size as f32 / 2.0, size as f32 / 2.0), 1.0).expect("camera2d"),
+            Viewport::new(size as f32, size as f32).expect("viewport"),
+            [0.0, 0.0, 0.0, 1.0],
+        );
+        renderer.set_frame_views(FrameViews {
+            main: Some(RenderView {
+                clear: ClearPolicy::None,
+                ..declared
+            }),
+            overlay: Some(declared),
+        });
+        let quad = crate::host::frame::SceneMesh {
+            vertices: vec![
+                OverlayVertex {
+                    position: [-1.0, -1.0],
+                    uv: [0.0, 1.0],
+                    color: [1.0, 1.0, 1.0, 1.0],
+                    sdf: 0,
+                },
+                OverlayVertex {
+                    position: [1.0, -1.0],
+                    uv: [1.0, 1.0],
+                    color: [1.0, 1.0, 1.0, 1.0],
+                    sdf: 0,
+                },
+                OverlayVertex {
+                    position: [-1.0, 1.0],
+                    uv: [0.0, 0.0],
+                    color: [1.0, 1.0, 1.0, 1.0],
+                    sdf: 0,
+                },
+                OverlayVertex {
+                    position: [1.0, -1.0],
+                    uv: [1.0, 1.0],
+                    color: [1.0, 1.0, 1.0, 1.0],
+                    sdf: 0,
+                },
+                OverlayVertex {
+                    position: [1.0, 1.0],
+                    uv: [1.0, 0.0],
+                    color: [1.0, 1.0, 1.0, 1.0],
+                    sdf: 0,
+                },
+                OverlayVertex {
+                    position: [-1.0, 1.0],
+                    uv: [0.0, 0.0],
+                    color: [1.0, 1.0, 1.0, 1.0],
+                    sdf: 0,
+                },
+            ],
+            draws: vec![
+                crate::host::frame::SceneDraw {
+                    texture: 0,
+                    start: 0,
+                    count: 6,
+                    sdf: false,
+                    vector: false,
+                    render_layer: RenderLayer::World2D,
+                },
+                crate::host::frame::SceneDraw::screen_ui(0, 0, 6),
+            ],
+            ..empty_mesh()
+        };
+        renderer.render_into_texture(&quad, None, &view, size, size);
+        assert_eq!(
+            renderer.last_frame_plan().passes(),
+            [RenderPass::Legacy2DOverlay, RenderPass::ScreenUI],
+            "世界层与屏幕 UI 是两条独立通道，且不清屏时不该有 Clear"
+        );
+        assert_eq!(
+            renderer.last_frame_passes(),
+            renderer.last_frame_plan().passes(),
+            "2D 帧：执行必须与计划逐条一致"
+        );
+        assert_eq!(
+            renderer.last_frame_metrics().draw_calls,
+            2,
+            "两条通道各应产出一个 draw"
         );
     }
 }

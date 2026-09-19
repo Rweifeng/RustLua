@@ -88,6 +88,9 @@ pub mod prefab;
 pub mod preview_diagnostics;
 /// `project.toml` / `release.toml` 的键读取（工程配置解析唯一入口）。
 pub mod project_config;
+/// docs/54 §4.3：一帧的渲染通道计划（`RenderPlan`），把"跑哪些通道、按什么顺序"从
+/// 渲染循环里的 `if` 抽成可单测的纯函数。
+pub mod render_plan;
 /// Persistent project asset identities, import states, dependencies, and cache metadata.
 pub mod resource_db;
 /// Unified coarse-grained resource families shared by editor, assetc, and engine.

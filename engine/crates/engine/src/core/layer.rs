@@ -66,6 +66,24 @@ pub const OVERLAY_DRAW_ORDER: [RenderLayer; 3] = [
     RenderLayer::ScreenUI,
 ];
 
+/// 只取**一个层**的 draw 索引（桶内保持原序）。
+///
+/// `RenderPlan` 里 `Legacy2DOverlay` 与 `ScreenUI` 是两条独立通道，渲染器因此按通道取桶；
+/// 这条函数与 [`layered_indices`] 共用同一套"层怎么比"的规则，不会各自演化。
+#[must_use]
+pub fn layer_indices<T>(
+    items: &[T],
+    layer_of: impl Fn(&T) -> RenderLayer,
+    layer: RenderLayer,
+) -> Vec<usize> {
+    items
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| layer_of(item) == layer)
+        .map(|(index, _)| index)
+        .collect()
+}
+
 /// 按 [`OVERLAY_DRAW_ORDER`] 把一段几何的 draw 顺序重排成**桶内保持原序**的索引列表。
 ///
 /// 返回索引而不是克隆元素：`SceneDraw` 不大，但每帧每 draw 克隆一次没有必要。同一层的 draw
@@ -74,11 +92,7 @@ pub const OVERLAY_DRAW_ORDER: [RenderLayer; 3] = [
 pub fn layered_indices<T>(items: &[T], layer_of: impl Fn(&T) -> RenderLayer) -> Vec<usize> {
     let mut ordered = Vec::with_capacity(items.len());
     for layer in OVERLAY_DRAW_ORDER {
-        for (index, item) in items.iter().enumerate() {
-            if layer_of(item) == layer {
-                ordered.push(index);
-            }
-        }
+        ordered.extend(layer_indices(items, &layer_of, layer));
     }
     ordered
 }
