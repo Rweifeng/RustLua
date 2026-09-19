@@ -148,6 +148,9 @@ pub struct RuntimeScene {
     /// （`parent` 只是组织关系，实体位置就是世界位置）；打开后每帧传播世界变换，
     /// 消费者读 `WorldTransform`。关掉即回滚，且关掉时世界变换组件会被清掉。
     spatial_inheritance: bool,
+    /// docs/54 §4.1：**场景声明的** `parent` 语义（与 `spatial_inheritance` 区分：后者是当前
+    /// 生效的开关，宿主可覆盖；这一份是场景自己说的，用于诊断与验收）。
+    spatial_mode: crate::core::scene_space::SpatialMode,
     /// 最近一次空间传播的诊断（环/无法无损表达），供宿主与测试查。
     last_spatial_report: SpatialReport,
     /// 本帧是否**真的**在传播世界变换（= 开关打开且场景里存在 `Parent`）。提取路径按它选
@@ -341,6 +344,13 @@ impl RuntimeScene {
     #[must_use]
     pub const fn spatial_inheritance(&self) -> bool {
         self.spatial_inheritance
+    }
+
+    /// docs/54 §4.1：**场景声明的** `parent` 语义（未声明 ⇒ 组织关系）。宿主开关可以覆盖生效值，
+    /// 但这一份永远是场景自己说的，因此"运行时为什么继承/不继承"有据可查。
+    #[must_use]
+    pub const fn spatial_mode(&self) -> crate::core::scene_space::SpatialMode {
+        self.spatial_mode
     }
 
     /// 本帧是否真的在传播世界变换（开关打开**且**场景里存在父子关系）。
@@ -1082,6 +1092,13 @@ impl RuntimeScene {
         run_script: bool,
         packaged: bool,
     ) -> Result<Self, String> {
+        // docs/54 §4.1：`parent` 的默认语义由**场景自身**声明，而不是由宿主猜。未声明 ⇒ 组织
+        // 关系（v2 历史语义），`spatial=local` ⇒ 父子参与空间组合（迁移后的场景）。宿主仍可用
+        // `set_spatial_inheritance` 覆盖这次判断（回滚档）。
+        let spatial_mode = crate::core::scene_space::spatial_mode(&scene);
+        if let Some(issue) = crate::core::scene_space::spatial_mode_issue(&scene) {
+            tracing::warn!(target: "scene", scene = %scene.name, "{issue}");
+        }
         let mut script = LuaRuntime::new().map_err(|error| error.to_string())?;
         // Project root must be set before instantiation so scene components that
         // load assets (e.g. Animation3D) can resolve their mesh paths.
@@ -1222,7 +1239,8 @@ impl RuntimeScene {
             gamepad: GamepadPoller::platform_default(),
             // WP2 裁定：`parent` 一律按局部空间解释。默认打开；没有 `Parent` 的场景
             // （现有全部示例场景）不产生任何传播成本，回滚档是 `set_spatial_inheritance(false)`。
-            spatial_inheritance: true,
+            spatial_inheritance: spatial_mode.inherits(),
+            spatial_mode,
             last_spatial_report: SpatialReport::default(),
             spatial_active: false,
             world_sprite_depth: false,
@@ -6119,6 +6137,9 @@ mod sdf_tests {
         let rig = crate::core::scene::SceneEntityId(1);
         let child = crate::core::scene::SceneEntityId(2);
         let mut scene = Scene::new("three-way");
+        // docs/54 §4.1：这条测试断言的是"父子参与空间组合"，因此场景必须**显式声明**它
+        // （未声明 ⇒ 组织关系，运行时不会组合）。
+        scene.metadata.insert("spatial".into(), "local".into());
         scene.add_entity(rig, "Rig", None).unwrap();
         scene.add_entity(child, "Child", Some(rig)).unwrap();
         scene.entities.get_mut(&rig).unwrap().components.insert(
@@ -6666,6 +6687,8 @@ mod sdf_tests {
     fn scene_entity_world_transform_follows_the_parent_chain() {
         let root = game_root();
         let mut scene = crate::core::scene::Scene::new("editor-picking");
+        // docs/54 §4.1：断言的是父链组合，所以场景显式声明局部空间语义。
+        scene.metadata.insert("spatial".into(), "local".into());
         let parent = crate::core::scene::SceneEntityId(1);
         let child = crate::core::scene::SceneEntityId(2);
         let lone = crate::core::scene::SceneEntityId(3);
@@ -6774,12 +6797,15 @@ mod sdf_tests {
         );
     }
 
-    /// WP2：宿主开关 + 提取入口的传播。开启后 `transform.world` 读到的是父子组合结果，
-    /// 关闭（默认）时读到的仍是局部值——这就是回滚档。
+    /// WP2 + docs/54 §4.1：空间继承**默认由场景声明决定**，宿主开关只是覆盖。
+    ///
+    /// 场景声明 `spatial=local` ⇒ 默认就组合父子；显式关掉 ⇒ 退回局部值（回滚档）；再打开 ⇒
+    /// 与第一次完全一致。未声明的场景默认是**组织关系**（另一条测试钉住）。
     #[test]
     fn spatial_inheritance_switches_between_local_and_world_positions() {
         let root = game_root();
         let mut scene = crate::core::scene::Scene::new("hierarchy");
+        scene.metadata.insert("spatial".into(), "local".into());
         let parent = crate::core::scene::SceneEntityId(1);
         let child = crate::core::scene::SceneEntityId(2);
         scene.add_entity(parent, "Parent", None).unwrap();
@@ -6814,7 +6840,7 @@ mod sdf_tests {
                 .expect("child transform")
         };
 
-        // 场景里**有** Parent：默认开关打开，传播真的在跑，读到的世界位置 = 父 ∘ 子 = (3, 5)。
+        // 场景声明了 `spatial=local`：默认就开，传播真的在跑，世界位置 = 父 ∘ 子 = (3, 5)。
         assert!(runtime.spatial_inheritance());
         runtime.propagate_spatial_now();
         assert!(runtime.spatial_active());
@@ -6838,6 +6864,86 @@ mod sdf_tests {
         // 再打开：值与第一次开启时完全一致（开关可反复切换）。
         runtime.set_spatial_inheritance(true);
         assert_eq!(read_world(&runtime), composed);
+    }
+
+    /// docs/54 §4.1：**未声明空间语义的 v2 场景里，`parent` 只是组织关系**。
+    ///
+    /// 这条是本批的核心判据：此前运行时开关默认是开的，于是任何带 `parent` 边的 v2 场景都会被
+    /// 自动按父子组合解释——旧场景（`parent` 只用于编辑器分组）会因此**静默改变画面**。
+    /// 现在默认值来自场景自身：未声明 ⇒ 不组合，子实体读到的就是它自己的局部值。
+    #[test]
+    fn unmarked_v2_scenes_treat_parent_as_organizational_only() {
+        let root = game_root();
+        let parent = crate::core::scene::SceneEntityId(1);
+        let child = crate::core::scene::SceneEntityId(2);
+        let mut scene = crate::core::scene::Scene::new("organizational");
+        scene.add_entity(parent, "Group", None).unwrap();
+        scene.add_entity(child, "Member", Some(parent)).unwrap();
+        scene.entities.get_mut(&parent).unwrap().components.insert(
+            "Transform".into(),
+            "x=10;y=5;rotation=0;scale_x=2;scale_y=2".into(),
+        );
+        scene.entities.get_mut(&child).unwrap().components.insert(
+            "Transform".into(),
+            "x=1;y=2;rotation=0;scale_x=1;scale_y=1".into(),
+        );
+        let runtime =
+            RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("runtime scene");
+
+        assert_eq!(
+            runtime.spatial_mode(),
+            crate::core::scene_space::SpatialMode::Organizational,
+            "未声明时场景语义应是组织关系"
+        );
+        assert!(
+            !runtime.spatial_inheritance(),
+            "未声明的 v2 场景默认不该建立父子空间继承"
+        );
+        let child_world = runtime
+            .world_transform_2d_of(child)
+            .expect("child world transform");
+        assert!(
+            (child_world.position.x - 1.0).abs() < 1e-6
+                && (child_world.position.y - 2.0).abs() < 1e-6
+                && (child_world.scale.x - 1.0).abs() < 1e-6,
+            "组织关系下子实体的世界值就是它自己的局部值：{child_world:?}"
+        );
+        // 但 `parent` 边本身仍然落到 ECS 上（层级信息不丢，只是不参与空间组合）。
+        let has_parent = runtime.script.with_world(|world| {
+            world
+                .entities_with::<crate::core::hierarchy::Parent>()
+                .len()
+        });
+        assert_eq!(has_parent, 1, "组织关系不等于丢掉父子边");
+    }
+
+    /// docs/54 §4.1：显式声明与非法声明各有一条出口——`spatial=organizational` 等同未声明，
+    /// 认不出的值按默认处理但**会被点名**（不静默吞掉）。
+    #[test]
+    fn explicit_and_invalid_spatial_declarations_are_reported() {
+        let mut scene = crate::core::scene::Scene::new("declared");
+        scene
+            .metadata
+            .insert("spatial".into(), "organizational".into());
+        assert_eq!(
+            crate::core::scene_space::spatial_mode(&scene),
+            crate::core::scene_space::SpatialMode::Organizational
+        );
+        assert!(crate::core::scene_space::spatial_mode_issue(&scene).is_none());
+        scene.metadata.insert("spatial".into(), "inherit".into());
+        assert_eq!(
+            crate::core::scene_space::spatial_mode(&scene),
+            crate::core::scene_space::SpatialMode::Inherit
+        );
+        scene.metadata.insert("spatial".into(), "world".into());
+        assert_eq!(
+            crate::core::scene_space::spatial_mode(&scene),
+            crate::core::scene_space::SpatialMode::Organizational,
+            "认不出的值按 v2 默认处理"
+        );
+        let issue =
+            crate::core::scene_space::spatial_mode_issue(&scene).expect("非法取值必须被点名");
+        assert!(issue.contains("spatial=world"), "{issue}");
     }
 
     /// WP2：运行时的 `Parent` 组件来自场景的 `parent`（父子关系真的落到了 ECS 上）。

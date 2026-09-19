@@ -17,6 +17,78 @@ use crate::core::{
     transform::{Transform, Transform3D},
 };
 
+/// 场景元数据里声明空间语义的键（迁移工具写入的就是它，见 `scene_migration`）。
+pub const SPATIAL_META_KEY: &str = "spatial";
+
+/// 场景声明的 `parent` 语义（docs/54 §4.1）。
+///
+/// §4.1 的原文是"旧 v2 `parent` 默认仍是组织关系，不自动解释为局部空间"。此前运行时**没有**读
+/// 这个声明：`RuntimeScene` 的继承开关默认是开的，于是任何一个带 `parent` 边的 v2 场景都会被
+/// 自动按"父子组合"解释——正是这条要求要挡住的静默语义变化。现在默认值来自场景自身：
+///
+/// - 未声明 ⇒ [`Self::Organizational`]（v2 的历史语义：`parent` 只表达层级/分组）；
+/// - `spatial=organizational` ⇒ 显式声明同一件事；
+/// - `spatial=local` ⇒ [`Self::Inherit`]（迁移后的场景：局部值就是局部空间的值，父子参与组合）。
+///
+/// 宿主仍可用 `RuntimeScene::set_spatial_inheritance` 覆盖（回滚档），但**默认不再由宿主猜**。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SpatialMode {
+    /// `parent` 只是组织关系：子实体的局部变换**不**参与父子组合。
+    Organizational,
+    /// `parent` 是空间关系：`Global(child) = Global(parent) * Local(child)`。
+    Inherit,
+}
+
+impl SpatialMode {
+    /// 元数据里的取值。
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Organizational => "organizational",
+            Self::Inherit => "local",
+        }
+    }
+
+    /// 是否要建立父子空间继承。
+    #[must_use]
+    pub const fn inherits(self) -> bool {
+        matches!(self, Self::Inherit)
+    }
+
+    /// 解析元数据取值。`None` = 未声明（走 v2 默认）。
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim() {
+            "local" | "inherit" => Some(Self::Inherit),
+            "organizational" | "organize" => Some(Self::Organizational),
+            _ => None,
+        }
+    }
+}
+
+/// 读场景声明的 `parent` 语义。未声明或值非法都按 v2 历史默认（组织关系）处理；非法值另外由
+/// [`spatial_mode_issue`] 点名，不是静默吞掉。
+#[must_use]
+pub fn spatial_mode(scene: &Scene) -> SpatialMode {
+    scene
+        .metadata
+        .get(SPATIAL_META_KEY)
+        .and_then(|value| SpatialMode::parse(value))
+        .unwrap_or(SpatialMode::Organizational)
+}
+
+/// 场景的空间声明是否有问题（未声明是正常的，非法值不是）。
+#[must_use]
+pub fn spatial_mode_issue(scene: &Scene) -> Option<String> {
+    let value = scene.metadata.get(SPATIAL_META_KEY)?;
+    if SpatialMode::parse(value).is_some() {
+        return None;
+    }
+    Some(format!(
+        "{SPATIAL_META_KEY}={value} 不是已知取值（应为 local 或 organizational），已按 v2 默认（组织关系）处理"
+    ))
+}
+
 /// 文档里每个实体的**局部**变换（2D 的 `Transform` 升维成平面 TRS，3D 的 `Transform3D` 直取）。
 ///
 /// 同时带 2D 与 3D 局部变换的实体取 3D（超集空间）——与运行时"两份真源会被点名、矩阵按 3D 取"
@@ -138,9 +210,19 @@ pub fn ambiguous_local_transform_entities(scene: &Scene) -> Vec<SceneEntityId> {
 /// 文档里每个实体的**世界矩阵**——与运行时同一套规则：父先序、`Global = Global(parent) * Local`。
 ///
 /// 求解不出来的实体（成环、父不可用、局部非法）不出现在结果里，调用方应退回局部值。
+///
+/// docs/54 §4.1：场景声明为**组织关系**（v2 默认）时 `parent` 不参与空间组合，世界矩阵就是各实体
+/// 自己的局部矩阵——文档侧与运行时侧因此由**同一份声明**决定，不会一个组合一个不组合（那正是
+/// "手柄在人不在的地方"的来源）。
 #[must_use]
 pub fn world_matrices(scene: &Scene) -> BTreeMap<SceneEntityId, Mat4> {
     let locals = local_transforms(scene);
+    if spatial_mode(scene) == SpatialMode::Organizational {
+        return locals
+            .iter()
+            .filter_map(|(entity, local)| local.matrix().ok().map(|matrix| (*entity, matrix)))
+            .collect();
+    }
     let parents = parents(scene);
     match crate::core::spatial_transform::propagate_all(&locals, &parents) {
         Ok(globals) => globals
@@ -187,8 +269,14 @@ pub fn world_transform_2d(scene: &Scene, entity: SceneEntityId) -> Option<Transf
 }
 
 /// 实体父节点的世界矩阵（没有父/父不可解 ⇒ `None`）。
+///
+/// 组织关系（v2 默认）下恒为 `None`：父不参与空间组合，因此"在父之下保持世界矩阵"在这里就是
+/// "保持自己的局部值"。调用方（Gizmo 提交、换父 keep-world）因此不需要自己判断场景模式。
 #[must_use]
 pub fn parent_world_matrix(scene: &Scene, entity: SceneEntityId) -> Option<Mat4> {
+    if spatial_mode(scene) == SpatialMode::Organizational {
+        return None;
+    }
     let parent = scene.entities.get(&entity)?.parent?;
     world_matrices(scene).get(&parent).copied()
 }
@@ -342,6 +430,9 @@ mod tests {
 
     fn scene_with_parent_child() -> Scene {
         let mut scene = Scene::new("space");
+        // docs/54 §4.1：这组用例断言的是"父子参与空间组合"，因此场景必须显式声明它；
+        // 未声明的场景默认是组织关系（另一条用例 `organizational_mode_ignores_parents` 钉住）。
+        scene.metadata.insert("spatial".into(), "local".into());
         let parent = SceneEntityId(1);
         let child = SceneEntityId(2);
         scene.add_entity(parent, "Parent", None).unwrap();
@@ -511,10 +602,39 @@ mod tests {
         }
     }
 
+    /// docs/54 §4.1：**未声明**（v2 默认）时 `parent` 只是组织关系——文档侧也不能组合。
+    ///
+    /// 文档与运行时必须由同一份声明决定，否则编辑器手柄会框在"组合后"的位置、而画面画在局部
+    /// 位置（§8-⑦ 修掉的正是这一类分裂）。
+    #[test]
+    fn organizational_mode_ignores_parents_on_both_sides() {
+        let mut scene = scene_with_parent_child();
+        scene.metadata.remove("spatial");
+        assert_eq!(spatial_mode(&scene), SpatialMode::Organizational);
+        assert!(parent_world_matrix(&scene, SceneEntityId(2)).is_none());
+        let child = world_matrices(&scene)[&SceneEntityId(2)];
+        assert!(
+            (child.columns[3][0]).abs() < 1e-5 && (child.columns[3][1] - 5.0).abs() < 1e-5,
+            "组织关系下子实体的世界矩阵就是它自己的局部矩阵（0, 5）：{child:?}"
+        );
+        assert_eq!(
+            world_transform_3d(&scene, SceneEntityId(2))
+                .expect("child local")
+                .position,
+            Vec3::new(0.0, 5.0, 0.0)
+        );
+        // 显式声明同一件事与未声明等价。
+        scene
+            .metadata
+            .insert("spatial".into(), "organizational".into());
+        assert_eq!(world_matrices(&scene)[&SceneEntityId(2)].columns[3][0], 0.0);
+    }
+
     /// 2D 平面视图：平面层级给出世界位置，非平面（含 z 位移）**不硬压平**。
     #[test]
     fn plane_view_is_offered_only_for_planar_hierarchies() {
         let mut scene = Scene::new("plane");
+        scene.metadata.insert("spatial".into(), "local".into());
         let parent = SceneEntityId(1);
         let child = SceneEntityId(2);
         scene.add_entity(parent, "Parent", None).unwrap();

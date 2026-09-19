@@ -14,6 +14,24 @@
 
 实体行支持 3 字段（无父实体，`entity\t<id>\t<name>`）或 4 字段（含父实体）两种写法；序列化时无父实体不再输出空尾字段，避免场景文件产生尾随空白。
 
+### `parent` 的语义：`meta spatial`（docs/54 §4.1）
+
+`parent` 有两种可能的意思，场景必须**自己声明**是哪一种（元数据行）：
+
+```text
+meta	spatial	local            # parent 是空间关系：Global(child) = Global(parent) * Local(child)
+meta	spatial	organizational   # parent 只是组织关系（层级/分组），不参与空间组合
+```
+
+- **未声明 = 组织关系**（v2 的历史语义）。因此一个老场景加上 `parent` 边不会突然被按父子组合
+  解释——那正是"静默改变画面"最容易发生的地方。
+- `spatial=local` 是**迁移工具**（`--migrate-spatial`）写进去的标记：迁移把世界坐标换算成局部
+  坐标并写上它，运行时据此建立继承。
+- 宿主可以覆盖（`RuntimeScene::set_spatial_inheritance`）作为回滚档，但**默认值来自场景**。
+- 认不出的取值按"组织关系"处理并**告警点名**，不静默吞掉。
+- 文档侧（编辑器、Gizmo、keep-world 换父）读**同一份声明**，因此编辑器手柄与画面不会一个按
+  组合算、一个按局部值画。
+
 ```powershell
 cargo run -p game --example scene_format_demo --release
 ```

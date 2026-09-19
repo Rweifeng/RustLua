@@ -21,6 +21,8 @@ mod tests {
     #[test]
     fn editor_reexports_the_engine_document_space() {
         let mut scene = engine::core::scene::Scene::new("reexport");
+        // docs/54 §4.1：断言的是父子组合，因此文档必须声明局部空间语义（未声明 ⇒ 组织关系）。
+        scene.metadata.insert("spatial".into(), "local".into());
         let parent = engine::core::scene::SceneEntityId(1);
         let child = engine::core::scene::SceneEntityId(2);
         scene.add_entity(parent, "Parent", None).unwrap();

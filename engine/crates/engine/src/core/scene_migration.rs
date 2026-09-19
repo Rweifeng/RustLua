@@ -32,7 +32,10 @@ use crate::core::{
 };
 
 /// 场景内嵌迁移标记的键（`meta\tspatial\tlocal`）。见模块头"幂等标记"。
-pub const MIGRATION_META_KEY: &str = "spatial";
+///
+/// 与运行时读取的是**同一个键**（`scene_space::SPATIAL_META_KEY`）：迁移写入的标记就是运行时
+/// 判断"这个场景的局部值是不是局部空间的值"的依据，两者共用常量因此不会各自漂移。
+pub const MIGRATION_META_KEY: &str = crate::core::scene_space::SPATIAL_META_KEY;
 /// 场景内嵌迁移标记的值。
 pub const MIGRATION_META_VALUE: &str = "local";
 

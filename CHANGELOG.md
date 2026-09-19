@@ -11,6 +11,30 @@
 每条都带可执行证据、可回滚开关与不变量测试。进度对照表见 docs/54 §10。
 §8 十条全部达成后转入 §4「目标架构」逐条对齐（批 A 起，见同表末尾各批记录）。
 
+### 目标架构批 G：v2 `parent` 的组织语义（docs/54 §4.1）
+
+- **默认语义从"宿主猜"改成"场景说"**：新增 `meta spatial=local | organizational` 声明
+  （`core::scene_space::SpatialMode`）。**未声明 ⇒ 组织关系**（v2 历史语义）：`parent` 只表达
+  层级/分组，不参与空间组合；`spatial=local` ⇒ `Global(child) = Global(parent) * Local(child)`
+  （迁移工具写入的就是它，`MIGRATION_META_KEY` 现在与运行时读同一个常量）。
+- **修掉一处真实的静默语义变化**：此前 `RuntimeScene` 的继承开关默认是**开**的，判据只看"场景里
+  有没有 `Parent`"——任何带 `parent` 边的旧场景都会被自动按父子组合解释。现在默认值来自场景声明，
+  宿主 `set_spatial_inheritance` 退化为覆盖（回滚档），`RuntimeScene::spatial_mode()` 让"为什么
+  继承/不继承"有据可查；认不出的取值按默认处理并**告警点名**。
+- **文档侧读同一份声明**：`scene_space::world_matrices` 在组织关系下返回各实体的局部矩阵，
+  `parent_world_matrix` 返回 `None`（"在父之下保持世界矩阵"自然退化为"保持局部值"）。编辑器
+  Gizmo / keep-world 换父 / 运行时因此不会一个按组合算、一个按局部值画。
+- **代价是显式**：断言父子组合的测试夹具必须声明 `spatial=local`（本批改了 4 处）。仓库里唯一带
+  `parent` 边的示例场景（`game_api/index.scene`）子实体局部变换为 0，两种解释数值等价 ⇒ 画面不变。
+- **证据**：`unmarked_v2_scenes_treat_parent_as_organizational_only`（未声明 ⇒ 不组合、子实体世界
+  值 = 局部值、`Parent` 边仍在 ECS 里）、`explicit_and_invalid_spatial_declarations_are_reported`、
+  `organizational_mode_ignores_parents_on_both_sides`、
+  `spatial_inheritance_switches_between_local_and_world_positions`。引擎 762 → 765，
+  编辑器 170+111、assetc 19、game 13 全绿。
+- **仍未达成**：`LocalTransform` 作为唯一运行时局部变换存储（`Transform`/`Transform3D` 仍是边界
+  格式与 2D 快路径）；Mesh/Material/AnimationClip/Skeleton 的运行时身份；统一动画轨道抽象。
+- 文档：docs/16（`meta spatial` 语义）、docs/54 §4.1 现状与 §10 批 G 记录、CHANGELOG。
+
 ### 目标架构批 F：运行时 `AssetId`/`Handle` 资源身份（docs/54 §4.4）
 
 - **运行时第一次有了资源身份**：`core/asset_handle.rs` 的 `AssetHandle`（`(下标, 世代)`）+

@@ -252,6 +252,9 @@ fn main() {
 /// 因为这是编辑器场景视图最常见的预览形态（世界内容也真的会被画出来）。
 fn editable_document() -> (SceneDocument, SceneEntityId, SceneEntityId) {
     let mut scene = Scene::new("editor-preview-golden");
+    // docs/54 §4.1：这份夹具断言的是"父子组合 + 世界保持的编辑"，因此必须显式声明局部空间语义
+    // （未声明 ⇒ 组织关系，父子不参与组合，keep-world 编辑也就没有意义）。
+    scene.metadata.insert("spatial".into(), "local".into());
     let rig = SceneEntityId(1);
     let part = SceneEntityId(2);
     scene.add_entity(rig, "Rig", None).unwrap();
