@@ -217,12 +217,14 @@ try {
         $runWebEvidence = {
             param([string]$Script, [string]$Label)
             $logFile = Join-Path $webEvidenceRoot ("gate-" + $Label + "-$timestamp.log")
+            $statusFile = "$logFile.status"
             # **有界等待**，不用 `-Wait`：`-Wait` 会等到整个进程树结束，而无头浏览器偶尔不自行退出，
             # 于是质量门会一直挂在那里（本轮实际踩到）。这里自己轮询 + 超时即杀，并把它当失败
             # ——宁可判红，也不要"卡住"。
             $timeoutSeconds = 600
+            $startedAt = Get-Date
             $process = Start-Process -FilePath "powershell" `
-                -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $Script) `
+                -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $Script, "-StatusFile", $statusFile) `
                 -PassThru -RedirectStandardOutput $logFile -RedirectStandardError "$logFile.err"
             if (-not $process.WaitForExit($timeoutSeconds * 1000)) {
                 Write-Host "web evidence '$Label' timed out after ${timeoutSeconds}s; killing it" -ForegroundColor Yellow
@@ -236,17 +238,45 @@ try {
                 Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" -ErrorAction SilentlyContinue |
                     Where-Object { $_.CommandLine -and $_.CommandLine -like "*serve-static.js*" } |
                     ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
-                return 1
+                return [pscustomobject]@{ ExitCode = 1; StartedAt = $startedAt }
             }
             $lines = if (Test-Path -LiteralPath $logFile) { Get-Content -LiteralPath $logFile } else { @() }
             $lines | Select-Object -Last 12 | ForEach-Object { Write-Host $_ }
             $lines | ForEach-Object { Add-Content -Path $logPath -Value $_ -Encoding UTF8 }
-            return [int]$process.ExitCode
+            if (Test-Path -LiteralPath "$logFile.err") {
+                $errLines = Get-Content -LiteralPath "$logFile.err" -ErrorAction SilentlyContinue
+                if ($errLines) {
+                    # 子脚本的错误写在 stderr：**必须**抄进门日志。本轮实际踩到："子脚本自己没 BOM、
+                    # WinPS 按 GBK 解码后把字符串终止符吃掉"→ 解析失败、stdout 空、若只看退出码与
+                    # 目录里最新摘要，就会读到上一轮的陈旧证据。
+                    Write-Host "web evidence '$Label' stderr:" -ForegroundColor Yellow
+                    $errLines | Select-Object -First 8 | ForEach-Object {
+                        Write-Host "  $_"
+                        Add-Content -Path $logPath -Value "  $_" -Encoding UTF8
+                    }
+                }
+            }
+            # 退出码**只**认子进程自己写的状态文件：`Start-Process -PassThru -RedirectStandardOutput`
+            # 返回的进程对象上 `ExitCode` 是 `$null`（本轮实测），`[int]$null` 静默变 0，于是"子进程
+            # 失败"会被当成"通过"——本轮的陈旧摘要事件就是这么发生的。缺失状态文件即判失败。
+            $exitCode = 1
+            if (Test-Path -LiteralPath $statusFile) {
+                $raw = (Get-Content -LiteralPath $statusFile -Raw).Trim()
+                $parsed = 0
+                if ([int]::TryParse(($raw -replace '^exit=', ''), [ref]$parsed)) {
+                    $exitCode = $parsed
+                }
+            }
+            else {
+                Write-Host "web evidence '$Label' wrote no status file (treated as failure)" -ForegroundColor Yellow
+            }
+            return [pscustomobject]@{ ExitCode = $exitCode; StartedAt = $startedAt }
         }
         Push-Location $projectRoot
         try {
             $webScript = Join-Path $projectRoot "scripts/verify-webgl.ps1"
-            $webExit = & $runWebEvidence $webScript "browser"
+            $webRun = & $runWebEvidence $webScript "browser"
+            $webExit = $webRun.ExitCode
             if ($webExit -eq 1) {
                 throw "browser contract check FAILED (verify-webgl.ps1 exit 1)"
             }
@@ -254,11 +284,14 @@ try {
                 Write-Host "webgl_browser_skipped reason=environment_limited exit=$webExit" -ForegroundColor Yellow
             }
             else {
-                # 证据必须真的落盘：只有退出码为 0 还不够，摘要 JSON 里的 status 必须也是 ok。
+                # 证据必须**这一次**真的落盘：退出码 0 不够，摘要 JSON 的 status 必须是 ok，而且这份
+                # 摘要必须是本轮子进程写的（`LastWriteTime >= 子进程启动时刻`）——否则读到的可能是上
+                # 一轮遗留的摘要，"通过"就变成了陈旧证据的复读（本轮实际踩到过）。
                 $summary = Get-ChildItem -LiteralPath $webEvidenceRoot -Filter "summary-*.json" -ErrorAction SilentlyContinue |
+                    Where-Object { $_.LastWriteTime -ge $webRun.StartedAt } |
                     Sort-Object LastWriteTime -Descending | Select-Object -First 1
                 if (-not $summary) {
-                    throw "browser contract check reported success but wrote no summary JSON"
+                    throw "browser contract check reported success but wrote no FRESH summary JSON (stale evidence is not evidence)"
                 }
                 $payload = Get-Content -LiteralPath $summary.FullName -Raw | ConvertFrom-Json
                 if ($payload.status -ne "ok") {
@@ -268,12 +301,49 @@ try {
             }
 
             $bundleScript = Join-Path $projectRoot "scripts/verify-webgl-bundle.ps1"
-            $bundleExit = & $runWebEvidence $bundleScript "bundle"
+            # 产物层的证据要求"真的有产物"：本机**一个 webgl 产物都没有**时就地发布一份
+            # （wasm 构建 + wasm-bindgen 胶水）。否则 CI 上这一步永远是 skip，"Web 有可重复质量
+            # 证据"就只剩契约层。已存在产物（哪怕有多个候选）时不动它——"拿 A 的包验证 B 并报出
+            # 通过"比跳过更糟（与 bundle-discovery 的既有口径一致）。
+            . (Join-Path $projectRoot "scripts/bundle-discovery.ps1")
+            $existingBundle = Resolve-GameBundle -Platform "webgl" -WorkspaceRoot $projectRoot
+            $webglBuilds = @(
+                Get-ChildItem -Path (Join-Path $projectRoot "examples") -Recurse -Directory -ErrorAction SilentlyContinue |
+                    Where-Object { $_.Parent -and $_.Parent.Name -eq "webgl" }
+            )
+            if (-not $existingBundle -and $webglBuilds.Count -eq 0) {
+                Write-Step "Publish WebGL bundle (no published artifact found)"
+                Invoke-Checked powershell @(
+                    "-NoProfile", "-ExecutionPolicy", "Bypass",
+                    "-File", (Join-Path $projectRoot "scripts\package.ps1"),
+                    "-ProjectRoot", $defaultGameProject, "-Platform", "webgl"
+                )
+            }
+            $bundleRun = & $runWebEvidence $bundleScript "bundle"
+            $bundleExit = $bundleRun.ExitCode
             if ($bundleExit -eq 1) {
                 throw "published webgl bundle FAILED to boot (verify-webgl-bundle.ps1 exit 1)"
             }
             if ($bundleExit -ne 0) {
                 Write-Host "webgl_bundle_skipped reason=environment_limited_or_no_bundle exit=$bundleExit (先跑 scripts\package.ps1 -Platform webgl)" -ForegroundColor Yellow
+            }
+            else {
+                # 产物层同样要**新鲜**的摘要：`boot` 必须是可接受状态，且画面采样必须 > 0
+                # （`drawnSamples == 0` 就是"页面能跑却黑屏"）。
+                $bundleSummary = Get-ChildItem -LiteralPath $webEvidenceRoot -Filter "bundle-summary-*.json" -ErrorAction SilentlyContinue |
+                    Where-Object { $_.LastWriteTime -ge $bundleRun.StartedAt } |
+                    Sort-Object LastWriteTime -Descending | Select-Object -First 1
+                if (-not $bundleSummary) {
+                    throw "webgl bundle check reported success but wrote no FRESH bundle-summary JSON"
+                }
+                $bundlePayload = Get-Content -LiteralPath $bundleSummary.FullName -Raw | ConvertFrom-Json
+                if ($bundlePayload.boot -notin @("ok", "booted", "running")) {
+                    throw "webgl bundle boot state is '$($bundlePayload.boot)' (expected ok/booted/running): $($bundleSummary.Name)"
+                }
+                if ($null -eq $bundlePayload.drawnSamples -or $bundlePayload.drawnSamples -le 0) {
+                    throw "webgl bundle reports no painted canvas samples (blank frame): drawn=$($bundlePayload.drawnSamples)"
+                }
+                Write-Host "webgl_bundle_ok boot=$($bundlePayload.boot) wasm_bytes=$($bundlePayload.wasmBytes) drawn=$($bundlePayload.drawnSamples) ui=$($bundlePayload.uiElements) missing_host_api=$($bundlePayload.missingCount)" -ForegroundColor Green
             }
         }
         finally {

@@ -108,15 +108,25 @@ camera/mesh`），与桌面引擎注册的 36 个顶层全局并不等价。桌�
 
 ## 4. 已知限制
 
-- **WebGL 运行时没有实现桌面引擎的宿主 API（M31/P3 实测，未解决）**：浏览器里能加载 wasm、
-  能进 Lua，但 `game_jhyt` 会在第一个未实现的全局上停下（见第 3 节清单）。要真正"浏览器内可玩"，
-  需要二选一：
+- **宿主 API 子集**（原"M31/P3 实测未解决"一条已推进，2026-09-19 复测）：真发布包在无头 Edge 里
+  `missing_host_api=0`、`boot=running`、canvas 有 15,987 个非背景采样点、世界自报
+  `scene=17 map=main alive=17`，即**启动路径不再因缺失全局停下**。但这只证明"启动 + 进入 Lua +
+  画出画面"，**不等于**"WASM 跑通完整剧本"（见下一条）。
+  真正"浏览器内可玩"的两条路仍是：
   1. 把宿主 API 编译进 wasm（引擎侧 `core/script.rs` 的 Lua 桥 + `user_dir`/`save`/`input` 的
      wasm 实现，渲染走 wgpu 的 WebGL2 后端）——工作量最大，但能力与桌面一致；
   2. 明确"WebGL 只支持演示级子集"，把子集写成契约（允许的全局清单），让游戏工程按平台分叉，
      并在 `package.ps1 -Platform webgl` 时对不满足子集的工程**构建期报警**（而不是运行期报错）。
-  当前默认按 (1) 规划、(2) 兜底（缺失清单已可机器读取）；本机离线环境下也验证过构建链路可复现。
+  当前默认按 (1) 规划、(2) 兜底（缺失清单已可机器读取：`bundle-summary-*.json` 的
+  `missingHostApi`/`missingCount`）。
 - **浏览器回归验证的是平台契约 + 产物启动**，不是「WASM 游戏跑通完整剧本」。
-- WASM 模块依赖 CDN 上的 `fengari-web`（`index.html` 里 `<script src="https://cdn.jsdelivr.net/...">`）：
-  离线或纯内网部署需要把该脚本随包发布（已记入待办）。
+- **Lua VM 已随包分发**：`index.html` 引 `./pkg/fengari-web.js`（由 `package.ps1` 从
+  `plugins/webgl/pkg/fengari-web.js` 复制），不再依赖 CDN，离线/纯内网可运行。
+- **本机曾装不上 wasm32 目标**，原因不是网络不通：`rustup target add wasm32-unknown-unknown` 用的是
+  **已装 toolchain 的 manifest 里烘死的绝对 URL**（`~/.rustup/toolchains/<tc>/lib/rustlib/
+  multirust-channel-manifest.toml`），那份 manifest 指向的镜像对该文件返回 403，而
+  `RUSTUP_DIST_SERVER` 对已装 toolchain 的组件下载无效。把 manifest 里的镜像前缀改成
+  `https://static.rust-lang.org/dist/` 再 `rustup target add` 即成功（2026-09-19 实测；
+  同样的提示写进了 `scripts/verify-webgl.ps1` 的诊断文件）。`wasm-bindgen-cli 0.2.127`
+  由 `package.ps1` 在缺失时自动 `cargo install`。
 - 不承诺移动端浏览器与触摸设备体验；桌面无头浏览器结果不等同于桌面发行验收结果。

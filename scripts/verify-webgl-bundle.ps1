@@ -20,10 +20,28 @@
 param(
     [string]$BundleRoot = "",
     [int]$Port = 8137,
-    [int]$TimeoutSeconds = 90
+    [int]$TimeoutSeconds = 90,
+    # 调用方（`verify.ps1 -Web`）用它拿退出码：`Start-Process -PassThru -RedirectStandardOutput`
+    # 返回的进程对象上 `ExitCode` 是 **$null**（本轮实测），而 `[int]$null` 会静默变成 0——
+    # "包起不来"于是被当成"通过"。因此由子进程自己把结果写进这个文件。
+    [string]$StatusFile = ""
 )
 
 $ErrorActionPreference = "Stop"
+# 所有退出点都走它：写状态文件（若有）再退出，退出码对调用方始终可见。
+function Exit-With([int]$Code) {
+    if (-not [string]::IsNullOrWhiteSpace($StatusFile)) {
+        "exit=$Code" | Set-Content -LiteralPath $StatusFile -Encoding ASCII
+    }
+    exit $Code
+}
+
+# 未捕获的终止错误（本脚本里大量 `throw`）也必须是"失败且**可见**"：调用方只看状态文件，
+# 没有 trap 时它只剩"没写状态文件"这条模糊线索（真实原因还压在 stderr 里，不该靠人肉去捞）。
+trap {
+    Write-Host "[RED] webgl bundle verification aborted: $($_.Exception.Message)"
+    Exit-With 1
+}
 $workspaceRoot = Split-Path -Parent $PSScriptRoot
 . (Join-Path $PSScriptRoot "bundle-discovery.ps1")
 if ([string]::IsNullOrWhiteSpace($BundleRoot)) {
@@ -93,12 +111,12 @@ foreach ($candidate in @(
 }
 if (-not $browser) {
     Write-Log "no supported browser found (Edge/Chrome); bundle boot check cannot run here" Yellow
-    exit 2
+    Exit-With 2
 }
 $node = Get-Command node -ErrorAction SilentlyContinue
 if (-not $node) {
     Write-Log "node.js not found; static server for the boot check is unavailable" Yellow
-    exit 2
+    Exit-With 2
 }
 
 $server = Start-Process -FilePath $node.Source `
@@ -139,7 +157,7 @@ Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
 
 if (-not $dom) {
     Write-Log "headless browser produced no DOM dump (see $errPath)" Red
-    exit 2
+    Exit-With 2
 }
 
 # ---------- 3. 断言 ----------
@@ -191,16 +209,16 @@ Write-Log "dom: $domPath"
 if ($drawnRaw -eq 0) {
     # 启动成功但没有画面：这正是“页面能跑却黑屏”的典型症状，必须显式失败。
     Write-Log "webgl_bundle_blank boot=$boot detail=canvas has no painted pixels" Red
-    exit 1
+    Exit-With 1
 }
 
 if ($boot -eq "ok") {
     Write-Log "webgl_bundle_ok wasm=$([math]::Round($wasmBytes.Length / 1024, 1))KB" Green
-    exit 0
+    Exit-With 0
 }
 if ($boot -in @("booted", "running")) {
     Write-Log "webgl_bundle_ok (booted; status text not final: $statusText)" Green
-    exit 0
+    Exit-With 0
 }
 Write-Log "webgl_bundle_boot_failed boot=$boot detail=$detail" Red
-exit 1
+Exit-With 1

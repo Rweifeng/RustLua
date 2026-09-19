@@ -17,10 +17,28 @@
 param(
     [string]$ProjectRoot = "",
     [int]$Port = 8123,
-    [switch]$KeepBundle
+    [switch]$KeepBundle,
+    # 调用方（`verify.ps1 -Web`）用它拿退出码：`Start-Process -PassThru -RedirectStandardOutput`
+    # 返回的进程对象上 `ExitCode` 是 **$null**（本轮实测），而 `[int]$null` 会静默变成 0——
+    # "子进程失败"于是被当成"通过"。因此由子进程自己把结果写进这个文件。
+    [string]$StatusFile = ""
 )
 
 $ErrorActionPreference = "Stop"
+# 所有退出点都走它：写状态文件（若有）再退出，退出码对调用方始终可见。
+function Exit-With([int]$Code) {
+    if (-not [string]::IsNullOrWhiteSpace($StatusFile)) {
+        "exit=$Code" | Set-Content -LiteralPath $StatusFile -Encoding ASCII
+    }
+    exit $Code
+}
+
+# 未捕获的终止错误（本脚本里大量 `throw`）也必须是"失败且**可见**"：调用方只看状态文件，
+# 没有 trap 时它只剩"没写状态文件"这条模糊线索（真实原因还压在 stderr 里，不该靠人肉去捞）。
+trap {
+    Write-Host "[RED] webgl verification aborted: $($_.Exception.Message)"
+    Exit-With 1
+}
 $workspaceRoot = Split-Path -Parent $PSScriptRoot
 $engineRoot = Join-Path $workspaceRoot "engine"
 if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
@@ -53,7 +71,11 @@ $rustupPath = Join-Path $logRoot "wasm-target-$stamp.txt"
     ($wasmTargets -join "`n"),
     "",
     "wasm32-unknown-unknown available: $hasWasm",
-    "note: 本环境为离线环境（static.rust-lang.org 不可达），如需构建 WASM 请先联网执行：rustup target add wasm32-unknown-unknown"
+    "note: 目标缺失时先执行 rustup target add wasm32-unknown-unknown。若下载报 403 且 URL 指向",
+    "      某个镜像（例如 mirrors.tuna.tsinghua.edu.cn/rustup/dist/...），注意 rustup 用的是**已装",
+    "      toolchain 的 manifest 里烘死的绝对 URL**，RUSTUP_DIST_SERVER 对它无效；把 manifest",
+    "      (~/.rustup/toolchains/<tc>/lib/rustlib/multirust-channel-manifest.toml) 里的镜像前缀换成",
+    "      https://static.rust-lang.org/dist/ 再重试即可（本仓库 2026-09-19 就是这么做通的）。"
 ) | Set-Content -Path $rustupPath -Encoding UTF8
 Write-Log "wasm32 target available: $hasWasm (details: $rustupPath)"
 
@@ -68,7 +90,7 @@ foreach ($candidate in @(
 }
 if (-not $browser) {
     Write-Log "no supported browser found (Edge/Chrome); browser integration cannot run in this environment" Yellow
-    exit 2
+    Exit-With 2
 }
 $browserVersion = (Get-Item -LiteralPath $browser).VersionInfo.ProductVersion
 Write-Log "browser: $browser (version $browserVersion)"
@@ -76,7 +98,7 @@ Write-Log "browser: $browser (version $browserVersion)"
 $node = Get-Command node -ErrorAction SilentlyContinue
 if (-not $node) {
     Write-Log "node.js not found; static server for the browser check is unavailable" Yellow
-    exit 2
+    Exit-With 2
 }
 
 # ---------- 2. 组装 web 包 ----------
@@ -187,7 +209,7 @@ if (-not $status) {
 }
 if (-not $status) {
     Write-Log "browser DOM is missing the result marker; dump kept at $dumpPath" Red
-    exit 1
+    Exit-With 1
 }
 Write-Log "browser check status: $status"
 Write-Log $details
@@ -210,11 +232,11 @@ if (-not $KeepBundle) {
 
 if ($status -ne "ok") {
     Write-Log "webgl browser integration check FAILED (see $dumpPath)" Red
-    exit 1
+    Exit-With 1
 }
 if (-not $hasWasm) {
-    Write-Log "webgl_browser_ok (WASM module build SKIPPED: wasm32-unknown-unknown target unavailable offline; browser contract check passed)" Yellow
-    exit 0
+    Write-Log "webgl_browser_ok (WASM module build SKIPPED: wasm32-unknown-unknown target unavailable; browser contract check passed)" Yellow
+    Exit-With 0
 }
 Write-Log "webgl_browser_ok (browser contract check; wasm target available - run package.ps1 -Platform webgl for the full bundle)" Green
-exit 0
+Exit-With 0
