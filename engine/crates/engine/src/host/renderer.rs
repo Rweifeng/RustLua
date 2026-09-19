@@ -11,6 +11,7 @@ use std::{
 };
 
 use crate::core::{
+    asset_handle::AssetHandle,
     camera::{Camera3D, ClearPolicy, DEFAULT_3D_CLEAR, FrameViews, RenderView, Viewport},
     layer::{RenderLayer, layer_indices},
     light::Light,
@@ -418,6 +419,12 @@ pub struct Renderer {
     /// 单帧顶点字节数峰值（诊断用：容量是否接近上限）。
     vertex_bytes_peak: u64,
     textures: Vec<LoadedTexture>,
+    /// docs/54 §4.4：资源身份 → `textures` 下标。句柄由运行时保证"同路径恒同句柄"，因此这张表
+    /// 一旦建立就不会指错资源；命中即 O(1) 取 bind group（此前是每 draw 一次线性路径扫描）。
+    texture_slots: HashMap<AssetHandle, usize>,
+    /// 身份缓存命中/未命中次数（诊断/验收用：证明身份这条路真的被走到了）。
+    texture_identity_hits: u64,
+    texture_identity_misses: u64,
     white: Option<wgpu::BindGroup>,
     atlas: Option<wgpu::BindGroup>,
     font_atlas_texture: Option<wgpu::Texture>,
@@ -1514,6 +1521,9 @@ impl Renderer {
             vertex_buffer_growths: 0,
             vertex_bytes_peak: 0,
             textures: Vec::new(),
+            texture_slots: HashMap::new(),
+            texture_identity_hits: 0,
+            texture_identity_misses: 0,
             white: None,
             atlas: None,
             font_atlas_texture: None,
@@ -1979,6 +1989,7 @@ impl Renderer {
         pass_kind: DepthPass,
         draws: &[crate::core::sprite_batch::SpriteDrawBatch],
         paths: &[String],
+        handles: &[AssetHandle],
         filter: SpritePassFilter,
         clear_depth: bool,
         metrics: &mut RenderFrameMetrics,
@@ -2038,7 +2049,7 @@ impl Renderer {
         apply_declared_viewport(&mut pass, world.viewport, target);
         for draw in selected {
             let texture = draw.texture_id + 1;
-            let Some(bind) = self.bind_group_for(texture, paths) else {
+            let Some(bind) = self.bind_group_for(texture, paths, handles) else {
                 continue;
             };
             pass.set_bind_group(1, &bind, &[]);
@@ -2889,6 +2900,7 @@ impl Renderer {
                 DepthPass::WorldSpriteOpaque,
                 &mesh.world_sprite_draws,
                 &mesh.paths,
+                &mesh.path_handles,
                 SpritePassFilter::Opaque,
                 true,
                 &mut metrics,
@@ -2993,6 +3005,7 @@ impl Renderer {
                 DepthPass::WorldSprite,
                 &mesh.world_sprite_draws,
                 &mesh.paths,
+                &mesh.path_handles,
                 filter,
                 !depth_cleared,
                 &mut metrics,
@@ -3058,7 +3071,9 @@ impl Renderer {
                             record_vertex_draw(&mut metrics, draw.count);
                             continue;
                         }
-                        let Some(bind) = self.bind_group_for(draw.texture, &mesh.paths) else {
+                        let Some(bind) =
+                            self.bind_group_for(draw.texture, &mesh.paths, &mesh.path_handles)
+                        else {
                             continue;
                         };
                         pass.set_pipeline(&self.pipeline);
@@ -3365,6 +3380,21 @@ impl Renderer {
         &self.last_frame_passes
     }
 
+    /// docs/54 §4.4：资源身份缓存的 `(命中, 未命中)` 次数。
+    ///
+    /// 命中 = 本帧某次贴图解析走的是**句柄**（O(1)），未命中 = 句柄还没进过缓存（首次加载或
+    /// 宿主没给身份）。因此这个数字同时是"身份这条路真的被走到"的证据与诊断。
+    #[must_use]
+    pub fn texture_identity_stats(&self) -> (u64, u64) {
+        (self.texture_identity_hits, self.texture_identity_misses)
+    }
+
+    /// 已加载的贴图条数（诊断：同一资源不该被加载两次）。
+    #[must_use]
+    pub fn loaded_texture_count(&self) -> usize {
+        self.textures.len()
+    }
+
     /// 2D 顶点缓冲扩容次数（诊断/验收：稳定场景不应持续增长）。
     pub fn vertex_buffer_growths(&self) -> u64 {
         self.vertex_buffer_growths
@@ -3459,7 +3489,12 @@ impl Renderer {
     /// or the white sentinel path, the built-in glyph atlas for the atlas
     /// sentinel path, the per-custom-font bind for a `font://...` path, otherwise
     /// the cached (or freshly loaded) asset at `paths[texture - 1]`.
-    fn bind_group_for(&mut self, texture: u32, paths: &[String]) -> Option<wgpu::BindGroup> {
+    fn bind_group_for(
+        &mut self,
+        texture: u32,
+        paths: &[String],
+        handles: &[AssetHandle],
+    ) -> Option<wgpu::BindGroup> {
         if texture == 0 {
             return self.ensure_white();
         }
@@ -3479,8 +3514,23 @@ impl Renderer {
                 .get(path)
                 .and_then(|font| font.bind.clone());
         }
-        if let Some(entry) = self.textures.iter().find(|entry| entry.path == *path) {
-            return Some(entry.bind_group.clone());
+        // docs/54 §4.4：宿主给了资源身份就按**句柄**查缓存（O(1)，并保证"同路径恒同句柄"）。
+        // 宿主手写 `SceneMesh` 时没有身份（`path_handles` 为空/短），此时回退到按路径线性扫描，
+        // 行为与收敛前完全一致。
+        if let Some(handle) = handles.get(texture as usize - 1).copied() {
+            if let Some(slot) = self.texture_slots.get(&handle).copied()
+                && let Some(entry) = self.textures.get(slot)
+            {
+                self.texture_identity_hits += 1;
+                return Some(entry.bind_group.clone());
+            }
+            self.texture_identity_misses += 1;
+        }
+        if let Some(slot) = self.textures.iter().position(|entry| entry.path == *path) {
+            if let Some(handle) = handles.get(texture as usize - 1).copied() {
+                self.texture_slots.insert(handle, slot);
+            }
+            return Some(self.textures[slot].bind_group.clone());
         }
         let resolved = self
             .project_root
@@ -3495,10 +3545,14 @@ impl Renderer {
             }
         };
         let bind = self.upload_texture(&asset, path)?;
+        let slot = self.textures.len();
         self.textures.push(LoadedTexture {
             path: path.to_owned(),
             bind_group: bind.clone(),
         });
+        if let Some(handle) = handles.get(texture as usize - 1).copied() {
+            self.texture_slots.insert(handle, slot);
+        }
         tracing::info!(target: "render", path = %path, dimensions = ?(asset.width(), asset.height()), "[render] texture loaded");
         Some(bind)
     }
@@ -4126,6 +4180,7 @@ mod tests {
             world_sprites: Vec::new(),
             world_sprite_draws: Vec::new(),
             paths: Vec::new(),
+            path_handles: Vec::new(),
             font_atlas: None,
             custom_font_atlases: Vec::new(),
             vector_vertices: Vec::new(),
@@ -4207,6 +4262,7 @@ mod tests {
             world_sprites: quad(0.5, [1.0, 0.0, 0.0, 1.0]),
             world_sprite_draws: Vec::new(),
             paths: vec![WHITE_TEXTURE_PATH.to_owned()],
+            path_handles: Vec::new(),
             font_atlas: None,
             custom_font_atlases: Vec::new(),
             vector_vertices: Vec::new(),
@@ -4281,6 +4337,7 @@ mod tests {
             world_sprites: quad(-0.5, [0.0, 1.0, 0.0, 1.0]),
             world_sprite_draws: Vec::new(),
             paths: vec![WHITE_TEXTURE_PATH.to_owned()],
+            path_handles: Vec::new(),
             font_atlas: None,
             custom_font_atlases: Vec::new(),
             vector_vertices: Vec::new(),
@@ -4403,6 +4460,7 @@ mod tests {
                 6,
             )],
             paths: vec![WHITE_TEXTURE_PATH.to_owned()],
+            path_handles: Vec::new(),
             font_atlas: None,
             custom_font_atlases: Vec::new(),
             vector_vertices: Vec::new(),
@@ -4634,6 +4692,7 @@ mod tests {
             world_sprites: Vec::new(),
             world_sprite_draws: Vec::new(),
             paths: Vec::new(),
+            path_handles: Vec::new(),
             font_atlas: None,
             custom_font_atlases: Vec::new(),
             vector_vertices: Vec::new(),
@@ -4791,6 +4850,7 @@ mod tests {
             world_sprites: Vec::new(),
             world_sprite_draws: Vec::new(),
             paths: Vec::new(),
+            path_handles: Vec::new(),
             font_atlas: None,
             custom_font_atlases: Vec::new(),
             vector_vertices: Vec::new(),
@@ -5062,6 +5122,7 @@ mod tests {
             world_sprites: Vec::new(),
             world_sprite_draws: Vec::new(),
             paths: Vec::new(),
+            path_handles: Vec::new(),
             font_atlas: None,
             custom_font_atlases: Vec::new(),
             vector_vertices: Vec::new(),
@@ -5228,6 +5289,141 @@ mod tests {
         );
     }
 
+    /// docs/54 §4.4：贴图解析走**资源身份**（句柄）而不是每 draw 一次线性路径扫描。
+    ///
+    /// 判据是三条可观测事实：第一帧按句柄未命中（首次加载）、第二帧同句柄命中（O(1) 复用）、
+    /// 同一资源**只加载一次**。宿主手写 `SceneMesh`（没有身份）时仍然按路径解析，行为不变。
+    #[test]
+    fn texture_identity_cache_is_hit_on_the_second_frame() {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let Some(adapter) =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::LowPower,
+                compatible_surface: None,
+                force_fallback_adapter: true,
+            }))
+            .ok()
+        else {
+            return; // no GPU available; skip
+        };
+        let (device, queue) = pollster::block_on(adapter.request_device(&DeviceDescriptor {
+            label: Some("p2-test-device"),
+            required_features: wgpu::Features::empty(),
+            experimental_features: wgpu::ExperimentalFeatures::disabled(),
+            required_limits: wgpu::Limits::default(),
+            memory_hints: wgpu::MemoryHints::Performance,
+            trace: wgpu::Trace::Off,
+        }))
+        .expect("request test device");
+        let root = crate::core::games_dir().join("examples").join("game_api");
+        let texture_path = "assets/textures/player.png";
+        if !root.join(texture_path).is_file() {
+            return; // 没有示例资源就跳过（与"没有 GPU 就跳过"同一策略）
+        }
+        let mut renderer =
+            Renderer::new_offscreen(device.clone(), queue.clone(), Some(root), false, false)
+                .expect("offscreen renderer");
+        let size = 32u32;
+        let target = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("p2-test-identity"),
+            size: wgpu::Extent3d {
+                width: size,
+                height: size,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+
+        // 宿主给出身份（运行时提取就是这条路径）。
+        let quad = |handle: AssetHandle| SceneMesh {
+            vertices: vec![
+                OverlayVertex {
+                    position: [-1.0, -1.0],
+                    uv: [0.0, 1.0],
+                    color: [1.0; 4],
+                    sdf: 0,
+                },
+                OverlayVertex {
+                    position: [1.0, -1.0],
+                    uv: [1.0, 0.0],
+                    color: [1.0; 4],
+                    sdf: 0,
+                },
+                OverlayVertex {
+                    position: [-1.0, 1.0],
+                    uv: [0.0, 0.0],
+                    color: [1.0; 4],
+                    sdf: 0,
+                },
+                OverlayVertex {
+                    position: [1.0, -1.0],
+                    uv: [1.0, 0.0],
+                    color: [1.0; 4],
+                    sdf: 0,
+                },
+                OverlayVertex {
+                    position: [1.0, 1.0],
+                    uv: [1.0, 0.0],
+                    color: [1.0; 4],
+                    sdf: 0,
+                },
+                OverlayVertex {
+                    position: [-1.0, 1.0],
+                    uv: [0.0, 0.0],
+                    color: [1.0; 4],
+                    sdf: 0,
+                },
+            ],
+            draws: vec![crate::host::frame::SceneDraw::world(1, 0, 6)],
+            world_sprites: Vec::new(),
+            world_sprite_draws: Vec::new(),
+            paths: vec![texture_path.to_owned()],
+            path_handles: vec![handle],
+            font_atlas: None,
+            custom_font_atlases: Vec::new(),
+            vector_vertices: Vec::new(),
+            vector_glyphs: Vec::new(),
+            vector_segments: Vec::new(),
+        };
+
+        let handle = AssetHandle::new(0, 1);
+        renderer.render_into_texture(&quad(handle), None, &view, size, size);
+        assert_eq!(
+            renderer.texture_identity_stats(),
+            (0, 1),
+            "第一帧句柄还没进缓存：应记一次未命中"
+        );
+        assert_eq!(renderer.loaded_texture_count(), 1, "同一资源只应加载一次");
+        renderer.render_into_texture(&quad(handle), None, &view, size, size);
+        assert_eq!(
+            renderer.texture_identity_stats(),
+            (1, 1),
+            "第二帧同句柄必须命中缓存（O(1) 复用，不再扫路径）"
+        );
+        assert_eq!(
+            renderer.loaded_texture_count(),
+            1,
+            "命中缓存不该重复加载同一资源"
+        );
+
+        // 没有身份（宿主手写网格）时走旧路径：仍能画，但句柄统计不动。
+        let mut legacy = quad(handle);
+        legacy.path_handles.clear();
+        renderer.render_into_texture(&legacy, None, &view, size, size);
+        assert_eq!(
+            renderer.texture_identity_stats(),
+            (1, 1),
+            "没有身份时按路径解析，身份统计不应变化"
+        );
+        assert_eq!(renderer.loaded_texture_count(), 1);
+    }
+
     /// docs/54 §4.3：**计划就是实际执行的那一份**。    ///
     /// 单测（`core::render_plan`）只证明计划函数本身的顺序与取舍；这条测试在真实（离屏）渲染
     /// 帧上证明渲染器跑的就是计划里列的通道，一条不多一条不少。此前"这一帧跑了哪些通道"只能
@@ -5279,6 +5475,7 @@ mod tests {
             world_sprites: Vec::new(),
             world_sprite_draws: Vec::new(),
             paths: Vec::new(),
+            path_handles: Vec::new(),
             font_atlas: None,
             custom_font_atlases: Vec::new(),
             vector_vertices: Vec::new(),
@@ -5432,6 +5629,7 @@ mod tests {
             world_sprites: Vec::new(),
             world_sprite_draws: Vec::new(),
             paths: Vec::new(),
+            path_handles: Vec::new(),
             font_atlas: None,
             custom_font_atlases: Vec::new(),
             vector_vertices: Vec::new(),

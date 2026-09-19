@@ -11,6 +11,30 @@
 每条都带可执行证据、可回滚开关与不变量测试。进度对照表见 docs/54 §10。
 §8 十条全部达成后转入 §4「目标架构」逐条对齐（批 A 起，见同表末尾各批记录）。
 
+### 目标架构批 F：运行时 `AssetId`/`Handle` 资源身份（docs/54 §4.4）
+
+- **运行时第一次有了资源身份**：`core/asset_handle.rs` 的 `AssetHandle`（`(下标, 世代)`）+
+  `AssetStore`（`路径 → 句柄` 注册表）。`intern` 幂等 ⇒ 同一路径在进程内恒同句柄；释放后世代前进
+  ⇒ **旧句柄失效**（`get` 返回 `None`），而不是拿到别人放在同一个下标上的资源——那正是最危险的
+  一类错误（画面上出现一张"莫名其妙"的贴图）。此前 `RuntimeScene::texture_paths` 每帧清空重建、
+  `texture = 下标`，同一个下标在相邻两帧可以指两个不同的资源。
+- **身份有真实消费方**：`SceneMesh::path_handles`（与 `paths` 同序）把身份交给渲染器，渲染器按
+  句柄查贴图缓存（**O(1)**，此前是每 draw 一次线性路径扫描），`Renderer::texture_identity_stats()`
+  与 `loaded_texture_count()` 把命中/未命中、以及"同一资源只加载一次"变成可断言的事实。
+  宿主**手写** `SceneMesh`（没有身份）时回退到按路径解析，行为与收敛前一致。
+- **两张表各司其职**：`assets`（跨帧、不清空）是身份；`texture_paths` + `texture_lookup`（每帧
+  重建）是本帧的注册顺序与去重，两者都是 O(1) 哈希——批量精灵档不会因为引入身份而多出线性扫描
+  （精灵/Quad/瓦片/粒子四条产出路径都走同一入口 `texture_id_of`）。
+- **与工程身份分开**：`core::resource_db` 的 `AssetId` 是 16 字节内容指纹（编辑器/assetc 的工程
+  身份），运行时句柄回答"这一帧引用的是哪个已加载资源"；两者都不是对方的副本。
+- **证据**：`core::asset_handle` 四条单测（幂等、释放后失效且复用下标也不别名、重复释放 no-op、
+  顺序稳定）；`texture_identity_is_stable_across_frames`（真实场景两帧同句柄、不同资源不同句柄、
+  身份表记录路径与 `ResourceKind`）；`texture_identity_cache_is_hit_on_the_second_frame`（第一帧
+  未命中、第二帧命中、同一资源只加载一次、没有身份时统计不动）。引擎 756 → 762。
+- **仍未达成**：Mesh / Material / AnimationClip / Skeleton 仍以路径字符串为运行时身份；动画的统一
+  轨道抽象尚未落地；输入边界已由 `core/picking` 统一，但还不是类型强制的。
+- 文档：docs/54 §4.4 现状与 §10 批 F 记录、CHANGELOG。
+
 ### 目标架构批 E：per-entity `Script` 组件（docs/54 §4.1）
 
 - **脚本归属从"工程级一份"下放到实体**：新增 `Script` 组件——场景写

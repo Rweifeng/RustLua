@@ -196,6 +196,14 @@ pub struct SceneMesh {
     /// `world_sprites` 的绘制分段（纹理下标与既有 `SpriteDrawBatch` 同一语义）。
     pub world_sprite_draws: Vec<SpriteDrawBatch>,
     pub paths: Vec<String>,
+    /// docs/54 §4.4：与 [`Self::paths`] **同序**的运行时资源身份。
+    ///
+    /// `paths` 每帧按注册顺序重建，因此下标本身不是身份——同一个下标在相邻两帧可以指两个不同的
+    /// 资源。句柄由 [`crate::core::asset_handle::AssetStore`] 保证"同路径恒同句柄"，渲染器因此
+    /// 可以用它做 O(1) 的贴图缓存查找，并在资源被释放后认出失效引用。
+    ///
+    /// 空 = 这是宿主**手写**的 `SceneMesh`（没有身份）：渲染器回退到按路径解析，行为与收敛前一致。
+    pub path_handles: Vec<crate::core::asset_handle::AssetHandle>,
     /// Current CJK font atlas pixels; `pixels` empty means unchanged since last upload.
     pub font_atlas: Option<FontAtlasPixels>,
     /// Per-Text custom font atlases touched this frame. `pixels` empty means

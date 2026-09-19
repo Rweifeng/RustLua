@@ -216,6 +216,8 @@ impl GameApp {
                 world_sprites: Vec::new(),
                 world_sprite_draws: Vec::new(),
                 paths: Vec::new(),
+                // 无场景时的空网格：没有资源身份（渲染器回退到按路径解析）。
+                path_handles: Vec::new(),
                 font_atlas: None,
                 custom_font_atlases: Vec::new(),
                 vector_vertices: Vec::new(),

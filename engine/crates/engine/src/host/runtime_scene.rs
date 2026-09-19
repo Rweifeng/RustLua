@@ -12,6 +12,7 @@ use std::{
 use crate::core::{
     animation::{AnimationFrameEvent, AnimationStateMachine},
     animation3d::Animation3D,
+    asset_handle::{AssetHandle, AssetRecord, AssetStore},
     camera::Camera3D,
     camera::{Camera2D, CameraBounds, CameraSelection, RenderView, Viewport},
     entity::EntityId,
@@ -26,6 +27,7 @@ use crate::core::{
     particle::{ParticleEmitter, SceneParticleEmitter},
     physics::PhysicsAuthority,
     quad::Quad,
+    resource_kind::ResourceKind,
     scene::{Scene, SceneEntityId},
     scheduler::{
         ScheduleReport, ScheduleStage, Scheduler, SchedulerError, System, SystemError, SystemTiming,
@@ -92,7 +94,16 @@ pub struct RuntimeScene {
     /// 九宫格 UV 计算用的纹理像素尺寸缓存（惰性、按 path）。
     texture_dims: HashMap<String, (u32, u32)>,
     texture_paths: Vec<String>,
+    /// 本帧的路径去重表（每帧清空）：把"同一路径只注册一次"保持成 O(1)，与身份表分开。
     texture_lookup: HashMap<String, u32>,
+    /// docs/54 §4.4：**跨帧稳定**的运行时资源身份表（`路径 → 句柄`）。
+    ///
+    /// 与每帧重建的 `texture_paths` 不同，它**不清空**：同一路径因此在进程内恒同句柄，
+    /// "这一帧的 draw 引用的是哪个资源"跨帧可比；资源释放后旧句柄失效，而不是悄悄指向别人
+    /// 放在同一个下标上的贴图。
+    assets: AssetStore<AssetRecord>,
+    /// 本帧与 `texture_paths` **同序**的句柄（交给渲染器做 O(1) 的贴图缓存查找）。
+    texture_handles: Vec<AssetHandle>,
     tilemap_cache: HashMap<EntityId, CachedTilemapLayer>,
     /// 共享字体图集：运行时重建（编辑器拖动/编辑场景导致 revision 变化时）复用
     /// 同一实例，避免每帧重新生成 MSDF 字形。生成字形需可变访问（内部 Mutex）。
@@ -485,6 +496,24 @@ impl RuntimeScene {
     #[must_use]
     pub const fn last_entity_script_calls(&self) -> usize {
         self.last_entity_script_calls
+    }
+
+    /// docs/54 §4.4：当前登记在身份表里的运行时资源（按句柄排序）。
+    ///
+    /// 这是**跨帧**的表（不像 `texture_paths` 每帧重建），因此可以直接断言"同一路径恒同句柄"。
+    #[must_use]
+    pub fn asset_entries(&self) -> Vec<&AssetRecord> {
+        self.assets
+            .entries()
+            .into_iter()
+            .map(|(_, record)| record)
+            .collect()
+    }
+
+    /// 某个路径当前的运行时句柄（未登记则 `None`）。
+    #[must_use]
+    pub fn asset_handle(&self, path: &str) -> Option<AssetHandle> {
+        self.assets.handle_of(path)
     }
 
     /// docs/54 §4.2：声明本帧两个视图的**可见遮罩**（`world` 对应 `FrameViews::main.visibility`、
@@ -1168,6 +1197,8 @@ impl RuntimeScene {
             texture_dims: HashMap::new(),
             texture_paths: Vec::new(),
             texture_lookup: HashMap::new(),
+            assets: AssetStore::new(),
+            texture_handles: Vec::new(),
             tilemap_cache: HashMap::new(),
             font_atlas: None,
             vector_atlas: None,
@@ -2065,7 +2096,9 @@ impl RuntimeScene {
         };
         self.sprite_batch.set_cull_bounds(cull_bounds);
         self.texture_paths.clear();
+        // docs/54 §4.4：本帧的路径与去重表重建，但**身份表不清空**——句柄因此跨帧稳定。
         self.texture_lookup.clear();
+        self.texture_handles.clear();
         // 每帧先清空：布局阶段（push_scene_ui 等）再把本帧用到的自定义字体 key 记入。
         self.frame_font_keys.clear();
         // Tile maps draw first (layer 0), sprite entities on top (layer 1+).
@@ -2096,6 +2129,8 @@ impl RuntimeScene {
                 sprite_batch,
                 texture_paths,
                 texture_lookup,
+                assets,
+                texture_handles,
                 ..
             } = self;
             let mut failure: Option<String> = None;
@@ -2135,11 +2170,26 @@ impl RuntimeScene {
                                     }
                                 };
                                 let sheet = machine.current_clip().sheet.as_str();
-                                (texture_id_of(sheet, texture_paths, texture_lookup), sampled)
+                                (
+                                    texture_id_of(
+                                        sheet,
+                                        assets,
+                                        texture_paths,
+                                        texture_lookup,
+                                        texture_handles,
+                                    ),
+                                    sampled,
+                                )
                             }
                             None => match world.get::<SpriteAsset>(id).ok().flatten() {
                                 Some(asset) => (
-                                    texture_id_of(asset.path(), texture_paths, texture_lookup),
+                                    texture_id_of(
+                                        asset.path(),
+                                        assets,
+                                        texture_paths,
+                                        texture_lookup,
+                                        texture_handles,
+                                    ),
                                     *sprite,
                                 ),
                                 None => return,
@@ -2185,6 +2235,8 @@ impl RuntimeScene {
                 sprite_batch,
                 texture_paths,
                 texture_lookup,
+                assets,
+                texture_handles,
                 ..
             } = self;
             let mut failure: Option<String> = None;
@@ -2214,7 +2266,8 @@ impl RuntimeScene {
                     // 贴图注册与精灵同一张表：同一个路径只会得到一个下标，因此 Quad 与 Sprite
                     // 引用同一张贴图时能合进同一个绘制段（不会因为"类型不同"而多一次 draw）。
                     let path = quad.texture.as_deref().unwrap_or(white);
-                    let texture = texture_id_of(path, texture_paths, texture_lookup);
+                    let texture =
+                        texture_id_of(path, assets, texture_paths, texture_lookup, texture_handles);
                     let layer = if quad.sorting == crate::core::sprite::SpriteSorting::default() {
                         // 与精灵同一套默认层规则（按序号）。两个集合的序号各自从 0 起，因此同层时
                         // 后收集的 Quad 画在精灵之上——色块/进度条底这类用途本来就该压在上面。
@@ -2395,6 +2448,8 @@ impl RuntimeScene {
             world_sprites,
             world_sprite_draws,
             paths: self.texture_paths.clone(),
+            // docs/54 §4.4：与 `paths` 同序的稳定身份，交给渲染器做 O(1) 的贴图缓存查找。
+            path_handles: self.texture_handles.clone(),
             font_atlas,
             custom_font_atlases,
             vector_vertices,
@@ -2459,9 +2514,17 @@ impl RuntimeScene {
             sprite_batch,
             texture_paths,
             texture_lookup,
+            assets,
+            texture_handles,
             ..
         } = self;
-        let texture = texture_id_of(WHITE_TEXTURE_PATH, texture_paths, texture_lookup);
+        let texture = texture_id_of(
+            WHITE_TEXTURE_PATH,
+            assets,
+            texture_paths,
+            texture_lookup,
+            texture_handles,
+        );
         let mut failure: Option<String> = None;
         script.with_particles(|particles| {
             for particle in particles {
@@ -3335,7 +3398,13 @@ impl RuntimeScene {
 
     /// Deduplicates a texture asset path and returns its id for batch items.
     fn texture_id(&mut self, path: &str) -> u32 {
-        texture_id_of(path, &mut self.texture_paths, &mut self.texture_lookup)
+        texture_id_of(
+            path,
+            &mut self.assets,
+            &mut self.texture_paths,
+            &mut self.texture_lookup,
+            &mut self.texture_handles,
+        )
     }
 
     /// 纹理像素尺寸（惰性、按 path 缓存），仅供九宫格 UV 计算。只读 PNG 头，
@@ -3401,6 +3470,8 @@ impl RuntimeScene {
                 tilemap_cache,
                 texture_paths,
                 texture_lookup,
+                assets,
+                texture_handles,
                 ..
             } = self;
             let mut previous = std::mem::take(tilemap_cache);
@@ -3414,7 +3485,13 @@ impl RuntimeScene {
                     if failure.is_some() {
                         return;
                     }
-                    let texture = texture_id_of(&tilemap.texture, texture_paths, texture_lookup);
+                    let texture = texture_id_of(
+                        &tilemap.texture,
+                        assets,
+                        texture_paths,
+                        texture_lookup,
+                        texture_handles,
+                    );
                     let layer = match previous.remove(&entity) {
                         Some(layer)
                             if layer.transform == *transform && layer.tilemap == *tilemap =>
@@ -3508,16 +3585,35 @@ fn push_screen_line(
 
 /// 纹理路径 → 每帧下标注册。
 ///
-/// 抽成自由函数是为了让 `vertices` 能在 `world` 借用内部直接写入这两张表，而不必先
+/// 抽成自由函数是为了让 `vertices` 能在 `world` 借用内部直接写入这几张表，而不必先
 /// 克隆一份中间表——那样每帧要为每个精灵克隆一次资源路径（见该处注释）。
-fn texture_id_of(path: &str, paths: &mut Vec<String>, lookup: &mut HashMap<String, u32>) -> u32 {
+///
+/// docs/54 §4.4：返回的是**本帧路径下标**（渲染器据此取路径）。同时把该路径的**稳定句柄**追加进
+/// `handles`（与 `paths` 同序），并保证同一路径在进程内恒同句柄——身份因此跨帧可比（`assets`
+/// 不清空，而 `paths`/`handles` 每帧重建）。
+fn texture_id_of(
+    path: &str,
+    assets: &mut AssetStore<AssetRecord>,
+    paths: &mut Vec<String>,
+    lookup: &mut HashMap<String, u32>,
+    handles: &mut Vec<AssetHandle>,
+) -> u32 {
     if let Some(index) = lookup.get(path) {
         return *index;
     }
+    // 身份表（跨帧）与路径表（本帧）各查一次哈希，都是 O(1)：批量精灵档因此不会因为引入身份
+    // 而多出任何线性扫描。
+    let (handle, _) = assets.intern(
+        path,
+        AssetRecord {
+            path: path.to_owned(),
+            kind: ResourceKind::from_path(path),
+        },
+    );
     let index = paths.len() as u32;
-    let owned = path.to_owned();
-    paths.push(owned.clone());
-    lookup.insert(owned, index);
+    paths.push(path.to_owned());
+    handles.push(handle);
+    lookup.insert(path.to_owned(), index);
     index
 }
 
@@ -5483,6 +5579,78 @@ mod sdf_tests {
             "脚本应按 20*dt 移动实体（dt=0.5）：实际 {after:?}"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// docs/54 §4.4：运行时资源身份**跨帧稳定**——同一个路径在相邻两帧必须是同一个句柄，
+    /// 这正是"这一帧的 draw 引用的是哪个资源"可以跨帧比较的前提（`texture_paths` 的下标每帧
+    /// 重建，本身不是身份）。
+    #[test]
+    fn texture_identity_is_stable_across_frames() {
+        let root = crate::core::games_dir().join("examples").join("game_api");
+        if !root.join("scenes/main.scene").is_file() {
+            return;
+        }
+        let mut scene = Scene::new("asset_identity");
+        scene.add_entity(SceneEntityId(1), "Hero", None).unwrap();
+        {
+            let entity = scene.entities.get_mut(&SceneEntityId(1)).unwrap();
+            entity.components.insert(
+                "Transform".into(),
+                "x=640;y=360;rotation=0;scale_x=1;scale_y=1".into(),
+            );
+            entity.components.insert(
+                "Sprite".into(),
+                "texture=assets/textures/player.png;size=32x32".into(),
+            );
+        }
+        scene.add_entity(SceneEntityId(2), "Bar", None).unwrap();
+        {
+            let entity = scene.entities.get_mut(&SceneEntityId(2)).unwrap();
+            entity.components.insert(
+                "Transform".into(),
+                "x=640;y=300;rotation=0;scale_x=1;scale_y=1".into(),
+            );
+            // 第二个资源（内置白纹理）：必须与贴图拿到**不同**的句柄。
+            entity
+                .components
+                .insert("Quad".into(), "size=64,8;color=1,1,1,1".into());
+        }
+        let mut runtime =
+            RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("runtime scene");
+        let first = runtime.vertices(640, 360).expect("first frame");
+        assert_eq!(
+            first.path_handles.len(),
+            first.paths.len(),
+            "句柄必须与路径同序同长"
+        );
+        assert_eq!(first.paths.len(), 2, "本帧应注册两个资源：贴图 + 白纹理");
+        let second = runtime.vertices(640, 360).expect("second frame");
+        assert_eq!(
+            first.path_handles, second.path_handles,
+            "同一路径在相邻两帧必须拿到同一个句柄"
+        );
+        assert_eq!(first.paths, second.paths);
+        assert_ne!(
+            first.path_handles[0], first.path_handles[1],
+            "不同资源必须是不同句柄"
+        );
+        // 身份表里的记录确实是路径本体（不是"每帧重新编号"的副本）。
+        let entries = runtime.asset_entries();
+        assert_eq!(entries.len(), 2, "身份表应恰好登记两个资源");
+        let mut paths: Vec<&str> = entries.iter().map(|record| record.path.as_str()).collect();
+        paths.sort_unstable();
+        assert_eq!(
+            paths,
+            vec!["__white__", "assets/textures/player.png"],
+            "身份表记录的就是资源路径"
+        );
+        assert_eq!(
+            entries
+                .iter()
+                .find(|record| record.path == "assets/textures/player.png")
+                .map(|record| record.kind),
+            Some(ResourceKind::Texture)
+        );
     }
 
     /// WP6：世界文字也进世界坐标深度通道——它此前是唯一仍留在屏幕空间的世界内容。    /// 转换走 `view_projection` 的**逆映射**，因此屏幕观感与 overlay 路径逐个像素一致，
