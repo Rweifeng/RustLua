@@ -163,6 +163,9 @@ struct ScriptState {
     /// docs/54 §8-②：最近一次场景加载里**坏的 `parent` 边**（悬空父/自环）的可读描述。
     /// 运行时会把这类边当成"没有父"（容错），因此必须同时可发现，否则子树会静默少一层位移。
     scene_parent_issues: Vec<String>,
+    /// docs/54 §4.3：一个实体挂了多种可绘制组件的点名（渲染只按优先级画一种，但没有诊断的话
+    /// "为什么另一个没画出来"无从解释）。
+    scene_renderable_conflicts: Vec<String>,
     /// 命名动作映射（M20-07）：**唯一实例**随 `ScriptState` 走，脚本重绑定
     /// （`input.rebind`/`set_action_map`/设置文件）与宿主查询同源；默认绑定见
     /// [`ActionMap::with_defaults`]。刻意**不**随场景切换或读档重置——绑定是
@@ -581,6 +584,32 @@ impl LuaRuntime {
                 }
             })
             .collect();
+        // docs/54 §4.3：一个实体只能有一种可绘制表达。冲突在这里点名（与"两份局部真源"同一套
+        // 做法：数据问题要在载入时可见，而不是等到画面上出现两遍或只出现一遍）。
+        state.scene_renderable_conflicts = scene
+            .entities
+            .values()
+            .filter_map(|entity| {
+                let renderable = crate::core::renderable::Renderable::classify(
+                    entity.components.keys().map(String::as_str),
+                );
+                renderable.describe().map(|message| {
+                    let name = if entity.name.is_empty() {
+                        format!("entity {}", entity.id.0)
+                    } else {
+                        entity.name.clone()
+                    };
+                    format!("{name}: {message}")
+                })
+            })
+            .collect();
+        for issue in &state.scene_renderable_conflicts {
+            tracing::warn!(
+                target: "render",
+                issue = %issue,
+                "[render] 实体的可绘制表达不唯一（docs/54 §4.3）"
+            );
+        }
         for issue in &state.scene_parent_issues {
             tracing::warn!(
                 target: "scene",
@@ -1350,6 +1379,12 @@ impl LuaRuntime {
     #[must_use]
     pub fn scene_parent_issues(&self) -> Vec<String> {
         self.state.borrow().scene_parent_issues.clone()
+    }
+
+    /// docs/54 §4.3：加载期点名的"多种可绘制组件"冲突（诊断/验收用）。
+    #[must_use]
+    pub fn scene_renderable_conflicts(&self) -> Vec<String> {
+        self.state.borrow().scene_renderable_conflicts.clone()
     }
 
     /// Returns the authored name registered for an entity, if any. Entities

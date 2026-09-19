@@ -11,6 +11,25 @@
 每条都带可执行证据、可回滚开关与不变量测试。进度对照表见 docs/54 §10。
 §8 十条全部达成后转入 §4「目标架构」逐条对齐（批 A 起，见同表末尾各批记录）。
 
+### 目标架构批 K：单一 `Renderable` / `Material`（docs/54 §4.3）
+
+- **`Renderable` 是单一的**：`core/renderable.rs` 的 `Renderable::classify` 从一个实体的组件名集合
+  给出 `Single` / `None` / `Conflict`；冲突带**优先级**（`Sprite → Quad → Mesh → 文字 → 图片 → 粒子`），
+  因此"两者都挂时画哪一个"可预测、可断言。此前"`Sprite` + `Quad` 同挂"会**画两遍**，既没有诊断也
+  没有优先级。
+- **冲突被点名两次**：加载期收集进 `scene_renderable_conflicts`
+  （`RuntimeScene::renderable_conflicts()` 读回并 warn），提取阶段按优先级只画一种（Quad 收集时若该
+  实体还有 Sprite 就跳过）。
+- **`Material` 是单一的**：`Material { base_color, texture, metallic, roughness, unlit }`，精灵/Quad 用
+  `unlit(...)`、网格用 glTF `pbr(...)`；渲染器 `CachedPrimitive` 直接持有它，`GpuMaterial` 由
+  `from_material` 构造——"缺省材质"（基色/金属度/粗糙度）从此只有一处定义。
+- **刻意的边界**：`Renderable` 是**分类视图**，不是第二份真源（不序列化、不参与渲染决策）；精灵 tint
+  仍在顶点里烘焙，`Material` 统一的是**描述**而非 bind group 参数。
+- **证据**：`core::renderable` 三条单测（分类、冲突消解与参数顺序无关、材质校验与缺省）；
+  `conflicting_renderables_are_reported_and_only_one_draws`（真实场景：冲突被点名、只画精灵 6 顶点）。
+  引擎 779 → 783，编辑器 170+111、assetc 19、game 13 全绿。
+- **仍未达成**：`LocalTransform` 作为唯一运行时局部变换存储；精灵 tint 的材质化。
+- 文档：docs/54 §4.3 现状与 §10 批 K 记录、CHANGELOG。
 ### 目标架构批 J：三种显式 2D 显示模式（docs/54 §4.3）
 
 - **显示模式从"宿主选路径"下放到实体**：新增 `RenderMode` 组件 `mode=world|overlay|screen`。

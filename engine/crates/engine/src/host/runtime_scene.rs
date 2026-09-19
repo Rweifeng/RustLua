@@ -538,6 +538,12 @@ impl RuntimeScene {
         self.render_mode_routed
     }
 
+    /// docs/54 §4.3：加载期点名的"多种可绘制组件"冲突。
+    #[must_use]
+    pub fn renderable_conflicts(&self) -> Vec<String> {
+        self.script.scene_renderable_conflicts()
+    }
+
     /// 某个路径当前的运行时句柄（未登记则 `None`）。
     #[must_use]
     pub fn asset_handle(&self, path: &str) -> Option<AssetHandle> {
@@ -2340,6 +2346,11 @@ impl RuntimeScene {
                     }
                     if !crate::core::visibility::entity_visible_in(world, id, view_mask) {
                         filtered += 1;
+                        return;
+                    }
+                    // docs/54 §4.3：一个实体只能有一种可绘制表达。同时挂 `Sprite` 与 `Quad` 时按
+                    // 写下来的优先级只画 `Sprite`（否则会画两遍）；加载期已经就这个冲突点过名。
+                    if world.get::<Sprite>(id).ok().flatten().is_some() {
                         return;
                     }
                     let layer_index = index;
@@ -5870,6 +5881,48 @@ mod sdf_tests {
         );
     }
 
+    /// docs/54 §4.3：**一个实体只有一种可绘制表达**。
+    ///
+    /// 同时挂 `Sprite` 与 `Quad` 时：① 加载期点名（否则"为什么另一个没画出来"无从解释）；
+    /// ② 渲染只按写下来的优先级画一种（`Sprite` 优先）——此前两条收集路径各自 push，会**画两遍**。
+    #[test]
+    fn conflicting_renderables_are_reported_and_only_one_draws() {
+        let root = crate::core::games_dir().join("examples").join("game_api");
+        if !root.join("scenes/main.scene").is_file() {
+            return;
+        }
+        let mut scene = Scene::new("renderable_conflict");
+        scene.add_entity(SceneEntityId(1), "Both", None).unwrap();
+        {
+            let entity = scene.entities.get_mut(&SceneEntityId(1)).unwrap();
+            entity.components.insert(
+                "Transform".into(),
+                "x=640;y=360;rotation=0;scale_x=1;scale_y=1".into(),
+            );
+            entity.components.insert(
+                "Sprite".into(),
+                "texture=assets/textures/player.png;size=32x32".into(),
+            );
+            entity
+                .components
+                .insert("Quad".into(), "size=64,64;color=1,0,0,1".into());
+        }
+        let mut runtime =
+            RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("runtime scene");
+        let conflicts = runtime.renderable_conflicts();
+        assert_eq!(conflicts.len(), 1, "冲突必须被点名：{conflicts:?}");
+        assert!(
+            conflicts[0].contains("Both") && conflicts[0].contains("sprite + quad"),
+            "诊断要点名实体与冲突项：{conflicts:?}"
+        );
+        runtime.set_world_sprite_depth(true);
+        let mesh = runtime.vertices(640, 360).expect("vertices");
+        assert_eq!(
+            mesh.world_sprites.len(),
+            6,
+            "只应画精灵那一种（6 顶点），Quad 不许再画一遍"
+        );
+    }
     /// docs/54 §4.3：`merge_adjacent_draws` **必须把 `render_layer` 一起比**。
     ///
     /// 回归背景：合并条件是"纹理相同 + 顶点连续"，漏了层以后，相邻的 ScreenUI 段会被并进前一段

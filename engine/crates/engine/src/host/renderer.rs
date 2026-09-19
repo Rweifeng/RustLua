@@ -208,11 +208,29 @@ struct CachedMesh {
     primitives: Vec<CachedPrimitive>,
 }
 
+impl GpuMaterial {
+    /// docs/54 §4.3：GPU 材质由统一的 [`crate::core::renderable::Material`] 构造——金属度/粗糙度/
+    /// 基色的默认值从此只有一处，精灵与网格不会各自演化出一套"缺省材质"。
+    fn from_material(
+        material: &crate::core::renderable::Material,
+        skinned: bool,
+        albedo: Option<u32>,
+    ) -> Self {
+        Self {
+            base_color: material.base_color,
+            metallic: material.metallic,
+            roughness: material.roughness,
+            skinned,
+            albedo,
+        }
+    }
+}
+
 struct CachedPrimitive {
     geometry: GpuGeometry,
-    base_color: [f32; 4],
-    metallic: f32,
-    roughness: f32,
+    /// docs/54 §4.3：网格的材质与精灵/Quad 共用同一个 `Material` 类型（"材质是什么"只有一处
+    /// 定义）；`albedo` 是它的贴图在 GPU 底图表里的下标，`None` = 白底。
+    material: crate::core::renderable::Material,
     /// Index into `Renderer::albedo_textures`; `None` samples a white fallback.
     albedo: Option<u32>,
     /// Local-space bounding sphere (center, radius) used for frustum culling.
@@ -1715,11 +1733,18 @@ impl Renderer {
                     .map(|image| self.upload_albedo(&image.rgba, image.width, image.height));
                 primitives.push(CachedPrimitive {
                     geometry: self.upload_geometry(&primitive.vertices, &primitive.indices),
-                    base_color: material
-                        .map(|value| value.base_color_factor)
-                        .unwrap_or([0.55, 0.7, 1.0, 1.0]),
-                    metallic: material.map(|value| value.metallic_factor).unwrap_or(0.0),
-                    roughness: material.map(|value| value.roughness_factor).unwrap_or(0.6),
+                    // docs/54 §4.3：glTF 的 PBR 参数装进**统一的** `Material`（精灵/Quad 用的是同一个
+                    // 类型的无光照变体），因此"缺省材质"只有一处定义。
+                    material: crate::core::renderable::Material::pbr(
+                        material
+                            .map(|value| value.base_color_factor)
+                            .unwrap_or([0.55, 0.7, 1.0, 1.0]),
+                        // glTF 的底图内嵌在资产里（没有独立路径）：材质里记 `None`，真实贴图身份由
+                        // 网格身份 + `albedo` 下标表达（批 I 的结论）。
+                        None,
+                        material.map(|value| value.metallic_factor).unwrap_or(0.0),
+                        material.map(|value| value.roughness_factor).unwrap_or(0.6),
+                    ),
                     albedo,
                     bounds: compute_mesh_bounds(&primitive.vertices),
                 });
@@ -1817,9 +1842,12 @@ impl Renderer {
         CachedMesh {
             primitives: vec![CachedPrimitive {
                 geometry: self.upload_geometry(&vertices, &[0, 2, 1, 0, 3, 2]),
-                base_color: [0.25, 0.3, 0.38, 1.0],
-                metallic: 0.0,
-                roughness: 0.9,
+                material: crate::core::renderable::Material::pbr(
+                    [0.25, 0.3, 0.38, 1.0],
+                    None,
+                    0.0,
+                    0.9,
+                ),
                 albedo: None,
                 bounds: compute_mesh_bounds(&vertices),
             }],
@@ -2123,13 +2151,11 @@ impl Renderer {
                         continue;
                     }
                 }
-                let material = GpuMaterial {
-                    base_color: primitive.base_color,
-                    metallic: primitive.metallic,
-                    roughness: primitive.roughness,
-                    skinned: !drawable.palette.is_empty(),
-                    albedo: primitive.albedo,
-                };
+                let material = GpuMaterial::from_material(
+                    &primitive.material,
+                    !drawable.palette.is_empty(),
+                    primitive.albedo,
+                );
                 if drawable.palette.is_empty() && instancing_enabled {
                     groups
                         .entry((drawable.mesh_path.clone(), prim_index))

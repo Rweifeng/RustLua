@@ -103,6 +103,8 @@ pub mod render_mode;
 /// docs/54 §4.3：一帧的渲染通道计划（`RenderPlan`），把"跑哪些通道、按什么顺序"从
 /// 渲染循环里的 `if` 抽成可单测的纯函数。
 pub mod render_plan;
+/// docs/54 §4.3：单一 `Renderable` 分类与单一 `Material`（几何与材质从渲染路径里分出来）。
+pub mod renderable;
 /// Persistent project asset identities, import states, dependencies, and cache metadata.
 pub mod resource_db;
 /// Unified coarse-grained resource families shared by editor, assetc, and engine.
