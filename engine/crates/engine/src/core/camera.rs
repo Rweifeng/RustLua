@@ -1557,13 +1557,19 @@ impl FrameViews {
         }
     }
 
-    /// 主视图声明的清屏策略；`None` = 宿主没声明主视图（渲染器用历史默认）。
+    /// 本帧的清屏策略：**顺序最前**的那个已声明视图说了算（`order` 小的先；相等时 `main` 优先）。
+    ///
+    /// docs/54 §4.2：`RenderView::order` 此前是个**没有读者**的字段（清屏硬编码取 `main`）——与 §4.2
+    /// 要求的"视图包含 render order"不符。现在顺序规则只有一处（[`Self::ordered`]），清屏由它推出：
+    /// 声明一个 `order = -1` 的 2D 背景视图并给它 `ClearPolicy::Color`，这一帧就由它清屏。
+    /// 既有宿主不受影响（`main.order = 0` 恒为最小，除非宿主显式声明更小的顺序）。
     #[must_use]
-    pub const fn clear(self) -> Option<ClearPolicy> {
-        match self.main {
-            Some(view) => Some(view.clear),
-            None => None,
-        }
+    pub fn clear(self) -> Option<ClearPolicy> {
+        self.ordered()
+            .into_iter()
+            .flatten()
+            .next()
+            .map(|view| view.clear)
     }
 
     /// 按 `order` 升序排列的已声明视图（未声明的排在最后并被跳过）。
@@ -2154,8 +2160,13 @@ mod tests {
         assert!(camera.view_projection(viewport, 10.0, 10.0).is_err());
         assert!(camera.view_projection(viewport, 0.0, f32::NAN).is_err());
     }
-    /// WP5 接线：渲染器消费的是 [`FrameViews`]——清屏色来自主视图的声明，绘制顺序由
-    /// `order` 决定；**没声明主视图**时清屏策略为 `None`，渲染器据此回退到历史默认。
+    /// WP5 接线：渲染器消费的是 [`FrameViews`]——清屏由**顺序最前**的已声明视图给出，绘制顺序由
+    /// `order` 决定；**什么都没声明**时清屏策略为 `None`，渲染器据此回退到历史默认。
+    ///
+    /// docs/54 §4.2：本批之前清屏硬编码取 `main`，`order` 因此是个没有读者的字段。现在两者共用
+    /// [`FrameViews::ordered`] 一处规则：声明一个 `order` 更小的视图就能接管清屏。唯一的语义变化是
+    /// **只声明 overlay** 的场景（此前退回历史默认色、现在由该视图的 `ClearPolicy` 决定）——仓库里
+    /// 没有这样的宿主（编辑器与运行时都是"声明 main"），下面这条断言把这个变化钉住。
     #[test]
     fn frame_views_declare_clear_and_draw_order() {
         let viewport = Viewport::new(320.0, 180.0).unwrap();
@@ -2166,9 +2177,10 @@ mod tests {
         assert_eq!(FrameViews::new().clear(), None);
         assert_eq!(FrameViews::default().clear(), None);
 
-        // 纯 2D：只有 overlay 视图，没人声明清屏 ⇒ 仍然走历史默认。
+        // 纯 2D：只有 overlay 视图 ⇒ **由它决定清屏**（`overlay_2d` 声明的是"不清屏"，因此渲染器
+        // 不再清屏——这是"清屏由顺序最前的视图说了算"的直接后果，见上面的测试说明）。
         let two_d = FrameViews::overlay_only(overlay);
-        assert_eq!(two_d.clear(), None);
+        assert_eq!(two_d.clear(), Some(ClearPolicy::None));
         assert_eq!(two_d.ordered(), [Some(overlay), None]);
 
         // 2D + 3D：清屏色由主视图给出，顺序固定为"主视图先、overlay 后"。
@@ -2192,10 +2204,23 @@ mod tests {
             main,
             RenderView {
                 order: -1,
+                // 显式声明清屏色：证明"谁清屏"真的跟着 `order` 走（而不是永远取 main）。
+                clear: ClearPolicy::Color([0.0, 1.0, 0.0, 1.0]),
                 ..overlay
             },
         );
         assert_eq!(early_overlay.ordered()[0].map(|view| view.order), Some(-1));
+        // docs/54 §4.2：`order` 现在真的有消费者——清屏由**顺序最前**的视图说了算。
+        assert_eq!(
+            early_overlay.clear(),
+            Some(ClearPolicy::Color([0.0, 1.0, 0.0, 1.0])),
+            "order 更小的 overlay 应当拥有本帧的清屏策略"
+        );
+        assert_eq!(
+            layered.clear(),
+            Some(ClearPolicy::Color(DEFAULT_3D_CLEAR)),
+            "顺序相等时 main 优先（既有宿主行为不变）"
+        );
     }
 }
 
