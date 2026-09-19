@@ -115,6 +115,13 @@ pub struct Camera2D {
     /// Pixels per world unit.
     pub zoom: f32,
     pub bounds: Option<CameraBounds>,
+    /// docs/54 §4.2：相机是否**启用**（组件串里的 `enabled=false`）。默认启用。
+    ///
+    /// 禁用的相机不参与选择：`camera.set_active` 选中一台禁用相机会回退到下一台可用相机并记
+    /// 一条 warning；场景里第一台 `Camera2D` 若被禁用，也不会成为运行时的初始 2D 相机。
+    /// 之所以要有这个字段而不是"把组件删掉"：相机常常是**预置体/模板**的一部分，动画或脚本
+    /// 需要临时关掉它而不丢配置。
+    pub enabled: bool,
 }
 
 impl Camera2D {
@@ -151,6 +158,7 @@ impl Camera2D {
             rotation,
             zoom,
             bounds,
+            enabled: true,
         };
         camera.validate()?;
         Ok(camera)
@@ -221,6 +229,7 @@ impl Camera2D {
         let mut zoom: Option<f32> = None;
         let mut rotation = 0.0_f32;
         let mut bounds: Option<CameraBounds> = None;
+        let mut enabled = true;
         let mut seen = false;
         for field in value
             .trim()
@@ -239,6 +248,18 @@ impl Camera2D {
                 }
                 "zoom" => zoom = Some(parse_component_number(raw, field)?),
                 "rotation" => rotation = parse_component_number(raw, field)?,
+                // docs/54 §4.2：`enabled=false` 让这台相机退出选择（预置体/模板里"留着但关掉"）。
+                "enabled" => {
+                    enabled = match raw {
+                        "true" => true,
+                        "false" => false,
+                        _ => {
+                            return Err(Camera2dComponentError::Invalid(format!(
+                                "enabled must be true/false: {field}"
+                            )));
+                        }
+                    };
+                }
                 "bounds" => {
                     let parts = raw
                         .split(',')
@@ -274,6 +295,7 @@ impl Camera2D {
             rotation,
             zoom,
             bounds,
+            enabled,
         };
         camera
             .validate()
@@ -294,6 +316,9 @@ impl Camera2D {
                 ";bounds={:.4},{:.4},{:.4},{:.4}",
                 bounds.min.x, bounds.min.y, bounds.max.x, bounds.max.y
             ));
+        }
+        if !self.enabled {
+            out.push_str(";enabled=false");
         }
         out
     }
@@ -611,6 +636,9 @@ pub struct Camera3D {
     /// 打开后本组件的 position/target/up 变成"没有 Transform3D 时的回退值"，实体若无
     /// `Transform3D` 则报诊断（见 `scene_extract`）——姿态来源只有一处，不再两边各说各话。
     pub pose_from_transform: bool,
+    /// docs/54 §4.2：相机是否**启用**（组件串里的 `enabled=false`）。默认启用；禁用的相机不参与
+    /// 选择（`camera.set_active` 选中禁用相机会回退到下一台可用相机并记 warning）。
+    pub enabled: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -644,6 +672,7 @@ impl Camera3D {
             near,
             far,
             pose_from_transform: false,
+            enabled: true,
         };
         camera.validate()?;
         Ok(camera)
@@ -692,6 +721,7 @@ impl Camera3D {
             near: 0.0,
             far: 0.0,
             pose_from_transform: false,
+            enabled: true,
         };
         let mut seen = [false; 5];
         for field in value.split(';') {
@@ -726,6 +756,12 @@ impl Camera3D {
                     "look_at" => camera.pose_from_transform = false,
                     _ => return Err(Camera3dComponentError::InvalidValue(field.to_owned())),
                 },
+                // docs/54 §4.2：`enabled=false` 让这台相机退出选择（与 Camera2D 同义）。
+                "enabled" => match raw {
+                    "true" => camera.enabled = true,
+                    "false" => camera.enabled = false,
+                    _ => return Err(Camera3dComponentError::InvalidValue(field.to_owned())),
+                },
                 _ => return Err(Camera3dComponentError::MalformedField(field.to_owned())),
             }
         }
@@ -758,8 +794,9 @@ impl Camera3D {
         } else {
             ""
         };
+        let enabled = if self.enabled { "" } else { ";enabled=false" };
         format!(
-            "position={:.9},{:.9},{:.9};target={:.9},{:.9},{:.9};fov={:.4};near={:.9};far={:.9}{pose}",
+            "position={:.9},{:.9},{:.9};target={:.9},{:.9},{:.9};fov={:.4};near={:.9};far={:.9}{pose}{enabled}",
             self.position.x,
             self.position.y,
             self.position.z,
@@ -1362,8 +1399,25 @@ impl CameraSelection {
     /// 候选顺序由调用方给出（引擎里是 ECS 的排序实体序），因此结果**确定**。
     #[must_use]
     pub fn resolve<T: Copy>(&self, candidates: impl IntoIterator<Item = (u64, T)>) -> Option<T> {
+        self.resolve_enabled(candidates, |_| true)
+    }
+
+    /// [`CameraSelection::resolve`] 的**只挑启用项**版本（docs/54 §4.2 的 `enabled=false`）。
+    ///
+    /// `enabled` 为假的候选直接跳过：既不参与"第一个"回退，也不响应显式选中。
+    /// 显式选中了一台被禁用的相机时返回下一个可用相机（或 `None`）——调用方据此记一条 warning：
+    /// 静默用一台被关掉的相机（或静默什么都不画），会让"我明明关了它"变成一个查不出原因的现象。
+    #[must_use]
+    pub fn resolve_enabled<T: Copy>(
+        &self,
+        candidates: impl IntoIterator<Item = (u64, T)>,
+        enabled: impl Fn(&T) -> bool,
+    ) -> Option<T> {
         let mut fallback = None;
         for (entity, value) in candidates {
+            if !enabled(&value) {
+                continue;
+            }
             if Some(entity) == self.active {
                 return Some(value);
             }
@@ -2063,6 +2117,7 @@ mod tests {
                     rotation,
                     zoom,
                     bounds: None,
+                    enabled: true,
                 };
                 let matrix = camera.view_projection(viewport, 0.0, 100.0).unwrap();
                 for world in [

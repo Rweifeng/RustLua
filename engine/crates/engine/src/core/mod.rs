@@ -144,6 +144,8 @@ pub mod ui_scene_layout;
 pub mod ui_states;
 /// 玩家数据目录（P3）：存档与玩家设置写到哪里（发布包 → 用户目录）。
 pub mod user_dir;
+/// docs/54 §4.2：视图可见遮罩（`RenderView::visibility`）的实体侧（`Visibility` 组件）。
+pub mod visibility;
 /// Window and application lifecycle primitives.
 pub mod window;
 /// Entity world and type-erased component storage.

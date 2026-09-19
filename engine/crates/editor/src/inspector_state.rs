@@ -122,6 +122,9 @@ pub struct Camera3DFields {
     /// WP5：姿态是否由实体的 `Transform3D` 提供（`pose=transform`）。Inspector 必须把这个
     /// 开关原样带回去，否则改任何一个相机字段都会把姿态来源悄悄复位。
     pub pose_from_transform: bool,
+    /// docs/54 §4.2：相机是否启用（`enabled=false`）。同样必须原样带回——否则在 Inspector
+    /// 里改任何一个相机字段都会把「我明明关掉了它」悄悄复位。
+    pub enabled: bool,
 }
 
 impl Default for Camera3DFields {
@@ -137,6 +140,7 @@ impl Default for Camera3DFields {
             near: 0.1,
             far: 100.0,
             pose_from_transform: false,
+            enabled: true,
         }
     }
 }
@@ -1469,6 +1473,7 @@ fn encode_camera3d(camera: Camera3DFields) -> String {
         near: camera.near,
         far: camera.far,
         pose_from_transform: camera.pose_from_transform,
+        enabled: camera.enabled,
     }
     .to_component_str()
 }
@@ -1487,6 +1492,7 @@ fn decode_camera3d(value: &str) -> Result<Camera3DFields, InspectorError> {
         near: camera.near,
         far: camera.far,
         pose_from_transform: camera.pose_from_transform,
+        enabled: camera.enabled,
     })
 }
 
@@ -2147,6 +2153,32 @@ mod tests {
         let snapshot = inspector.snapshot(&document, id).unwrap();
         assert!(snapshot.camera3d.is_some());
         assert!((snapshot.camera3d.unwrap().fov_degrees - 75.0).abs() < 0.01);
+    }
+    #[test]
+    fn camera3d_enabled_round_trips() {
+        // docs/54 §4.2：`enabled` 必须能穿过 Inspector 编解码而不丢失，否则在面板里改任意
+        // 相机字段都会把"我关掉了这台相机"悄悄复位。
+        let (mut document, inspector, id) = setup();
+        let value = Camera3DFields {
+            enabled: false,
+            ..Default::default()
+        };
+        inspector.set_camera3d(&mut document, id, value).unwrap();
+        let raw = document.scene.entities[&id]
+            .components
+            .get("Camera3D")
+            .expect("Camera3D 组件应已写入");
+        assert!(raw.contains("enabled=false"), "禁用状态必须显式落盘：{raw}");
+        let snapshot = inspector.snapshot(&document, id).unwrap();
+        assert!(!snapshot.camera3d.unwrap().enabled);
+        // 默认（启用）不写字段，保证既有场景串字节不变。
+        let value = Camera3DFields::default();
+        inspector.set_camera3d(&mut document, id, value).unwrap();
+        let raw = document.scene.entities[&id].components["Camera3D"].clone();
+        assert!(
+            !raw.contains("enabled"),
+            "启用时不应写出 enabled 字段：{raw}"
+        );
     }
     #[test]
     fn camera3d_rejects_invalid_perspective() {

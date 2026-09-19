@@ -337,6 +337,22 @@ Lua 无法区分尘土、水花、落叶；`opts` 让每次爆发自带观感。
 静默按绕 Z 处理属于语义近似），以及未知的 `space` 名。被拒绝的调用不留半写状态。
 `transform3d` / `camera` 表保持原样，作为空间专属的 facade。
 
+### `visibility` 实体可见层（docs/54 §4.2）
+
+`RenderView.visibility` 以前是个没有消费者的字段；现在视图侧的遮罩由宿主声明，Lua 只读写**实体侧**，
+于是"脚本把东西藏起来"和"视图决定看哪些层"不会演化成两件事。判定是相交：
+`实体 layers ∩ 视图 visibility != 0` 才画。
+
+| API | 说明 |
+| --- | --- |
+| `visibility.get(id)` | 该实体的 `layers`；**没有组件时返回 `visibility.all()`**（4294967295），不是 0 |
+| `visibility.set(id, layers)` | 写入并返回新值；缺组件时**补上**组件。负数、越界（> 4294967295）、非整数与未知实体一律**报错** |
+| `visibility.all()` | 全可见常量（`u32::MAX`），用来表达"恢复默认" |
+
+被遮掉的实体是**不存在于这个视图**（不产顶点、不占默认绘制层序号），不是"透明"。遮罩只作用于有实体
+身份的内容：世界精灵/瓦片/3D Mesh 看 world 遮罩，`UiImage`/`UiText` 看 overlay 遮罩；按名字注册的画布
+UI 不是实体，永远照画。缺组件 = 全可见，既有场景与脚本零改动。
+
 ### `physics.debug_draw` collider 调试绘制（WP7）
 
 `physics.debug_draw(enabled)` 开关 2D 碰撞体轮廓的绘制（默认关闭，返回传入的布尔值）。轮廓画在

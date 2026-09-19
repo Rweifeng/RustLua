@@ -155,6 +155,15 @@ pub struct RuntimeScene {
     /// WP7：最近一步 `physics_sync` 同步的刚体数 `(2D, 3D)`。0 表示这一步没做步前同步
     /// （默认 authority=Physics，或回滚档 `Legacy`）——因此它同时也是"回滚档真的生效"的证据。
     last_physics_sync: (usize, usize),
+    /// docs/54 §4.2：宿主声明的**视图可见遮罩**（`world`, `overlay`），分别对应
+    /// `FrameViews::{main, overlay}.visibility`。默认 `u32::MAX` = 全可见，因此不声明时行为不变。
+    view_world_mask: u32,
+    view_overlay_mask: u32,
+    /// 最近一次提取里被视图遮罩拦掉的实体数（诊断用：区分"被遮罩拦住"与"根本没提取到"）。
+    ///
+    /// 用 `Cell` 是因为 `scene_3d` 是 `&self`（编辑器与宿主都只借用），而它同样要记这个数。
+    /// 语义与 `take_script_micros` 一致：**取走即清空**。
+    view_filtered: std::cell::Cell<usize>,
 }
 
 /// WP7 阶段顺序（回滚档）。
@@ -464,6 +473,33 @@ impl RuntimeScene {
     #[must_use]
     pub const fn last_physics_sync(&self) -> (usize, usize) {
         self.last_physics_sync
+    }
+
+    /// docs/54 §4.2：声明本帧两个视图的**可见遮罩**（`world` 对应 `FrameViews::main.visibility`、
+    /// `overlay` 对应 `FrameViews::overlay.visibility`）。传同一个 `FrameViews` 值给渲染器与本函数，
+    /// 因此不存在第二份真源；不调用则全可见（既有行为与像素不变）。
+    pub const fn set_view_visibility(&mut self, world: u32, overlay: u32) {
+        self.view_world_mask = world;
+        self.view_overlay_mask = overlay;
+    }
+
+    /// 本帧两个视图的可见遮罩。
+    #[must_use]
+    pub const fn view_visibility(&self) -> (u32, u32) {
+        (self.view_world_mask, self.view_overlay_mask)
+    }
+
+    /// 最近一次提取里被视图遮罩拦掉的实体数（世界遮罩与 overlay 遮罩合计）。
+    ///
+    /// 取走即清空（与 `take_script_micros` 同一语义），因此调用方拿到的是"自上次取走以来"的数量。
+    pub fn take_view_filtered(&self) -> usize {
+        self.view_filtered.replace(0)
+    }
+
+    /// 看一眼当前累计值（不清空）。
+    #[must_use]
+    pub fn view_filtered(&self) -> usize {
+        self.view_filtered.get()
     }
 
     /// 传播一次世界变换（幂等）。提取入口（`vertices` / `scene_3d`）与本函数的调用点
@@ -1068,7 +1104,16 @@ impl RuntimeScene {
             world
                 .entities_with::<Camera2D>()
                 .into_iter()
-                .find_map(|id| world.get::<Camera2D>(id).ok().flatten().copied())
+                // docs/54 §4.2：被禁用的相机不当"初始相机"（与 3D 侧同一条规则）；
+                // 过滤放在 `find_map` **里面**，因此"第一台被禁用"不会挡掉后面启用的那台。
+                .find_map(|id| {
+                    world
+                        .get::<Camera2D>(id)
+                        .ok()
+                        .flatten()
+                        .copied()
+                        .filter(|camera| camera.enabled)
+                })
         });
         let camera = match declared_camera {
             Some(camera) => camera,
@@ -1097,6 +1142,9 @@ impl RuntimeScene {
             sprite_parallelism: Parallelism::detected(),
             collider_debug_draw: false,
             collider_debug_draw_3d: false,
+            view_world_mask: crate::core::visibility::ALL_LAYERS,
+            view_overlay_mask: crate::core::visibility::ALL_LAYERS,
+            view_filtered: std::cell::Cell::new(0),
             tilemap_culling: true,
             sprite_culling: true,
             camera,
@@ -1754,12 +1802,19 @@ impl RuntimeScene {
     ) -> Option<Scene3d> {
         // Runtime extraction intentionally reads ECS state so physics, scripts,
         // active camera/light selection, and animation palettes remain live.
+        // docs/54 §4.2：3D 网格同样吃**世界视图**的可见遮罩。
+        let view_mask = self.view_world_mask;
+        let mut filtered = 0usize;
         let drawables = self.script.with_world(|world| {
             let mut drawables = Vec::new();
             // WP2：与 2D 精灵同一条约定——开关每帧选定一次遍历用的组件（开启继承时是
             // `WorldTransform3D`，此时每个有 `Transform3D` 的实体都已拿到世界变换），
             // 因此不必逐实体"先试世界再退回局部"而多付一次 `get`。
             let mut collect = |id: EntityId, model: Mat4, renderer: &MeshRenderer| {
+                if !crate::core::visibility::entity_visible_in(world, id, view_mask) {
+                    filtered += 1;
+                    return;
+                }
                 let name = self
                     .script
                     .entity_name(id)
@@ -1815,6 +1870,7 @@ impl RuntimeScene {
             }
             drawables
         });
+        self.view_filtered.set(self.view_filtered.get() + filtered);
         if drawables.is_empty() {
             return None;
         }
@@ -1854,16 +1910,22 @@ impl RuntimeScene {
             near: 0.1,
             far: 100.0,
             pose_from_transform: false,
+            enabled: true,
         });
         // WP5：多相机选择只有一条规则（显式选中优先，否则排序序第一个），由
         // `CameraSelection` 表述；宿主只在遍历候选时套用它，不再自己写一遍判断。
+        // docs/54 §4.2：`enabled=false` 的相机不参与选择（既不当"第一个"，也不响应显式选中）。
         let selection = CameraSelection {
             active: self.script.active_camera().map(|id| id.index() as u64),
         };
         let mut camera = self.script.with_world(|world| {
-            let mut selected_camera = None;
-            let mut fallback = None;
+            let mut candidates: Vec<(u64, Camera3D)> = Vec::new();
+            let mut selected_disabled = false;
             world.for_each::<Camera3D>(|id, camera| {
+                if !camera.enabled {
+                    selected_disabled |= selection.is_selected(id.index() as u64);
+                    return;
+                }
                 // WP5：声明了 `pose=transform` 的相机，姿态改由**实体的 Transform3D** 提供
                 // （位置 + -Z 视线 + +Y 上方向），本组件的 position/target 退化为回退值。
                 // 没有 Transform3D 时保持组件姿态（scene_extract 会为此报诊断）。
@@ -1878,14 +1940,16 @@ impl RuntimeScene {
                 } else {
                     *camera
                 };
-                if fallback.is_none() {
-                    fallback = Some(camera);
-                }
-                if selection.is_selected(id.index() as u64) {
-                    selected_camera = Some(camera);
-                }
+                candidates.push((id.index() as u64, camera));
             });
-            selected_camera.or(fallback)
+            if selected_disabled {
+                tracing::warn!(
+                    target: "render",
+                    "[render] `camera.set_active` 选中的相机 `enabled=false`，已回退到下一台可用相机"
+                );
+            }
+            // 已经按"启用 + 姿态解析"筛过一遍，因此这里用普通 `resolve`。
+            selection.resolve(candidates)
         });
         if let Some(camera) = &mut camera {
             camera.aspect_ratio = aspect_ratio;
@@ -1993,6 +2057,10 @@ impl RuntimeScene {
             } = self;
             let mut failure: Option<String> = None;
             let inherit = self.spatial_active;
+            // docs/54 §4.2：世界视图的可见遮罩。被拦掉的精灵**不占序号、不产顶点**——
+            // "不在这个视图里"不是"透明"。
+            let view_mask = self.view_world_mask;
+            let mut filtered = 0usize;
             script.with_world(|world| {
                 let mut index = 0usize;
                 // WP2：提取用的变换来源由空间继承开关**每帧选定一次**：开启时整条换成
@@ -2002,6 +2070,10 @@ impl RuntimeScene {
                 // （组合不了或成环的保留局部值当世界值），所以整条替换不会漏画任何一个精灵。
                 let mut collect = |id: EntityId, transform: &Transform, sprite: &Sprite| {
                     if failure.is_some() {
+                        return;
+                    }
+                    if !crate::core::visibility::entity_visible_in(world, id, view_mask) {
+                        filtered += 1;
                         return;
                     }
                     // 与旧实现一致：序号在"通过 Transform 检查"后前进，缺资源的精灵
@@ -2058,6 +2130,7 @@ impl RuntimeScene {
             if let Some(message) = failure {
                 return Err(message);
             }
+            self.view_filtered.set(self.view_filtered.get() + filtered);
         }
         self.push_particles()?;
         // 精灵沿用现有的排序与错误语义，但顶点直接按 NDC 追加到 `vertices` 之后（瓦片之上）。
@@ -2596,9 +2669,19 @@ impl RuntimeScene {
     ) -> Result<(), String> {
         let viewport = [width.max(1) as f32, height.max(1) as f32];
         self.ensure_scene_ui_layout(viewport);
+        // docs/54 §4.2：实体身份的 UI 吃 **overlay 视图**的可见遮罩；按名字注册的画布 UI
+        // （面板/血条/网格）不是实体，因此不受遮罩影响。
+        let overlay_mask = self.view_overlay_mask;
+        let mut filtered = 0usize;
         let images: Vec<(EntityId, UiImage)> = self.script.with_world(|world| {
             let mut images = Vec::new();
-            world.for_each::<UiImage>(|id, image| images.push((id, image.clone())));
+            world.for_each::<UiImage>(|id, image| {
+                if crate::core::visibility::entity_visible_in(world, id, overlay_mask) {
+                    images.push((id, image.clone()));
+                } else {
+                    filtered += 1;
+                }
+            });
             images
         });
         for (id, image) in images {
@@ -2617,9 +2700,16 @@ impl RuntimeScene {
         }
         let texts: Vec<(EntityId, UiText)> = self.script.with_world(|world| {
             let mut texts = Vec::new();
-            world.for_each::<UiText>(|id, text| texts.push((id, text.clone())));
+            world.for_each::<UiText>(|id, text| {
+                if crate::core::visibility::entity_visible_in(world, id, overlay_mask) {
+                    texts.push((id, text.clone()));
+                } else {
+                    filtered += 1;
+                }
+            });
             texts
         });
+        self.view_filtered.set(self.view_filtered.get() + filtered);
         // 关键：先把本帧全部文本的字形预热进图集，再逐条构建网格。若在排版过程
         // 中才光栅化，图集会增长（1024→2048…）；`FontAtlas::grow` 只重缩放已缓存
         // 字形的归一化 UV，不会修正已经写进顶点缓冲的 UV，于是同一帧内先构建的
@@ -5698,6 +5788,174 @@ mod sdf_tests {
         );
     }
 
+    /// docs/54 §4.2：`RenderView::visibility` 的实体侧**真的被消费**——被遮掉的实体不产顶点，
+    /// 且计数能区分"被遮罩拦住"与"根本没提取到"。
+    #[test]
+    fn view_visibility_mask_filters_world_sprites() {
+        use crate::core::visibility::ALL_LAYERS;
+        let root = game_root();
+        let masked = crate::core::scene::SceneEntityId(1);
+        let plain = crate::core::scene::SceneEntityId(2);
+        let mut scene = Scene::new("visibility-sprite");
+        for (id, name) in [(masked, "Masked"), (plain, "Plain")] {
+            scene.add_entity(id, name, None).unwrap();
+            let entity = scene.entities.get_mut(&id).unwrap();
+            // 放在默认 2D 相机中心（`DEFAULT_2D_CAMERA_CENTER`）附近：否则它们会被
+            // **视口外剔除**挡掉，测出来的 0 顶点就不是遮罩造成的了。
+            entity.components.insert(
+                "Transform".into(),
+                "x=640;y=360;rotation=0;scale_x=1;scale_y=1".into(),
+            );
+            entity.components.insert(
+                "Sprite".into(),
+                "texture=assets/textures/red-1x1.png;size=2x2;pivot=0.500,0.500;\
+                 tint=1.000,1.000,1.000,1.000;sorting_layer=default;order=0"
+                    .into(),
+            );
+        }
+        scene
+            .entities
+            .get_mut(&masked)
+            .unwrap()
+            .components
+            .insert("Visibility".into(), "layers=0b10".into());
+        let mut runtime =
+            RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("runtime");
+
+        // 不声明视图遮罩 ⇒ 全可见，且没有任何实体被拦下（既有行为与像素不变）。
+        assert_eq!(runtime.view_visibility(), (ALL_LAYERS, ALL_LAYERS));
+        assert_eq!(
+            runtime.vertices(320, 180).expect("vertices").vertices.len(),
+            12,
+            "两个精灵各 6 个顶点"
+        );
+        assert_eq!(runtime.view_filtered(), 0);
+
+        // 世界视图只收 0b01：`layers=0b10` 的精灵被拦下，**没有声明 Visibility 的实体照画**。
+        runtime.set_view_visibility(0b01, ALL_LAYERS);
+        assert_eq!(
+            runtime.vertices(320, 180).expect("vertices").vertices.len(),
+            6,
+            "被遮罩拦下的精灵不该产顶点"
+        );
+        assert_eq!(runtime.take_view_filtered(), 1, "被拦下的实体数要能报出来");
+        assert_eq!(runtime.take_view_filtered(), 0, "取走即清空");
+
+        // 只收 0b10：声明为 0b10 的实体可见；未声明的实体（全可见）同样可见。
+        runtime.set_view_visibility(0b10, ALL_LAYERS);
+        assert_eq!(
+            runtime.vertices(320, 180).expect("vertices").vertices.len(),
+            12
+        );
+    }
+
+    /// docs/54 §4.2：3D 网格吃**世界**视图的遮罩（与 2D 世界内容同一条规则）。
+    #[test]
+    fn view_visibility_mask_filters_3d_meshes() {
+        use crate::core::visibility::ALL_LAYERS;
+        let root = game_root();
+        let camera = crate::core::scene::SceneEntityId(1);
+        let mesh = crate::core::scene::SceneEntityId(2);
+        let mut scene = Scene::new("visibility-mesh");
+        scene.add_entity(camera, "Cam", None).unwrap();
+        scene.add_entity(mesh, "Box", None).unwrap();
+        scene.entities.get_mut(&camera).unwrap().components.insert(
+            "Camera3D".into(),
+            "position=0,0,5;target=0,0,0;fov=60;near=0.1;far=100".into(),
+        );
+        scene.entities.get_mut(&mesh).unwrap().components.insert(
+            "Transform3D".into(),
+            "position=0,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
+        );
+        scene
+            .entities
+            .get_mut(&mesh)
+            .unwrap()
+            .components
+            .insert("MeshRenderer".into(), "mesh=__ground_plane__".into());
+        scene
+            .entities
+            .get_mut(&mesh)
+            .unwrap()
+            .components
+            .insert("Visibility".into(), "layers=0b10".into());
+        let mut runtime =
+            RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("runtime");
+
+        let visible = runtime.scene_3d(1.0).expect("mesh visible by default");
+        assert_eq!(visible.drawables.len(), 1);
+
+        runtime.set_view_visibility(0b01, ALL_LAYERS);
+        assert!(
+            runtime.scene_3d(1.0).is_none(),
+            "被世界遮罩排除的网格不该出现在提取结果里"
+        );
+        assert_eq!(runtime.take_view_filtered(), 1);
+
+        runtime.set_view_visibility(0b10, ALL_LAYERS);
+        assert_eq!(
+            runtime
+                .scene_3d(1.0)
+                .expect("mesh visible again")
+                .drawables
+                .len(),
+            1
+        );
+    }
+
+    /// docs/54 §4.2：实体身份的 UI 吃 **overlay** 遮罩（世界遮罩管不着它），
+    /// 而按名字注册的画布 UI 不是实体、不受遮罩影响。
+    #[test]
+    fn view_visibility_mask_filters_entity_backed_ui_only() {
+        use crate::core::visibility::ALL_LAYERS;
+        let root = game_root();
+        let panel = crate::core::scene::SceneEntityId(1);
+        let mut scene = Scene::new("visibility-ui");
+        scene.add_entity(panel, "Panel", None).unwrap();
+        let entity = scene.entities.get_mut(&panel).unwrap();
+        entity.components.insert(
+            "Transform".into(),
+            "x=0;y=0;rotation=0;scale_x=1;scale_y=1".into(),
+        );
+        entity.components.insert(
+            "Image".into(),
+            "texture=__white__;color=1.000,0.000,1.000".into(),
+        );
+        entity.components.insert(
+            "UiLayout".into(),
+            "anchors=0.5,0.5,0.5,0.5;offsets=-32.00,-32.00,32.00,32.00;\
+             min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.5000,0.5000"
+                .into(),
+        );
+        entity
+            .components
+            .insert("Visibility".into(), "layers=0b01".into());
+        let mut runtime =
+            RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("runtime");
+
+        let all = runtime.vertices(320, 180).expect("vertices");
+        assert_eq!(all.vertices.len(), 6, "一个 UI 面板 = 一个四边形");
+
+        // 世界遮罩排除它、overlay 遮罩收它 ⇒ 仍然要画（UI 归 overlay 管）。
+        runtime.set_view_visibility(0b10, ALL_LAYERS);
+        assert_eq!(
+            runtime.vertices(320, 180).expect("vertices").vertices.len(),
+            6,
+            "UI 不受世界遮罩影响"
+        );
+
+        // overlay 遮罩排除它 ⇒ 不产顶点，并被计数。
+        runtime.set_view_visibility(ALL_LAYERS, 0b10);
+        assert!(
+            runtime
+                .vertices(320, 180)
+                .expect("vertices")
+                .vertices
+                .is_empty()
+        );
+        assert_eq!(runtime.take_view_filtered(), 1);
+    }
+
     /// docs/54 §8-⑥：3D collider 调试绘制必须真的把**物理世界当前姿态**投影成 overlay 线框，
     /// 且用与 3D 主视图同一份投影数学（`picking::screen_from_world_unclipped`）。
     #[test]
@@ -6514,6 +6772,7 @@ mod sdf_tests {
             near: 0.5,
             far: 200.0,
             pose_from_transform: false,
+            enabled: true,
         };
         let overridden = runtime
             .scene_3d_with_camera(4.0 / 3.0, Some(override_camera))

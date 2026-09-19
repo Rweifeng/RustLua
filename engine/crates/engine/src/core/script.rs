@@ -833,6 +833,20 @@ impl LuaRuntime {
                 .insert(id, light)
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
         }
+        // docs/54 §4.2：可见层遮罩（`RenderView::visibility` 的实体侧）。缺组件 = 全可见，
+        // 因此既有场景一字不改。
+        if let Some(value) = components.get("Visibility") {
+            let visibility = crate::core::visibility::Visibility::from_component_str(value)
+                .map_err(|error| {
+                    LuaBridgeError::Api(format!(
+                        "entity {name:?} has an invalid Visibility: {error}"
+                    ))
+                })?;
+            state
+                .world
+                .insert(id, visibility)
+                .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
+        }
         // UI scene components (screen-space overlays).
         if let Some(value) = components.get("Text") {
             let text = crate::core::ui::UiText::from_component_str(value).map_err(|error| {
@@ -4388,6 +4402,46 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
         })?,
     )?;
     lua.globals().set("animation3d", animation3d)?;
+
+    // docs/54 §4.2：可见层遮罩。**视图侧**的遮罩由宿主声明（`RenderView::visibility`），
+    // Lua 只读写实体侧，因此"脚本把东西藏起来"与"视图决定看哪些层"不会变成两件事。
+    let visibility = lua.create_table()?;
+    let s = Rc::clone(&state);
+    visibility.set(
+        "set",
+        lua.create_function(move |_, (id, layers): (i64, i64)| {
+            let id = entity_from_lua(id)?;
+            let layers = u32::try_from(layers).map_err(|_| {
+                api_error("visibility.set layers must be an integer in 0..=4294967295")
+            })?;
+            let mut state = s.borrow_mut();
+            require_alive(&state, id)?;
+            state
+                .world
+                .insert(id, crate::core::visibility::Visibility::new(layers))
+                .map_err(world_error)?;
+            Ok(layers)
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    visibility.set(
+        "get",
+        lua.create_function(move |_, id: i64| {
+            let id = entity_from_lua(id)?;
+            let state = s.borrow();
+            require_alive(&state, id)?;
+            Ok(state
+                .world
+                .get::<crate::core::visibility::Visibility>(id)
+                .map_err(world_error)?
+                .map_or(crate::core::visibility::ALL_LAYERS, |value| value.layers))
+        })?,
+    )?;
+    visibility.set(
+        "all",
+        lua.create_function(|_, ()| Ok(crate::core::visibility::ALL_LAYERS))?,
+    )?;
+    lua.globals().set("visibility", visibility)?;
 
     let physics = lua.create_table()?;
     let s = Rc::clone(&state);
@@ -8052,6 +8106,44 @@ mod tests {
              assert(not pcall(physics.raycast, 0, 0, 1, 0, 100, {layer=256}), '越界必须报错')\n\
              assert(not pcall(physics.raycast, 0, 0, 1, 0, 100, {mask=-1}), '负数必须报错')\n\
              assert(not pcall(physics3d.overlap, 0, 0, 0, 3, {layer='x'}), '非整数必须报错')\n\
+             return 'ok' end",
+        );
+        runtime.execute_project_script(&path).unwrap();
+        assert_eq!(runtime.call_update().unwrap(), "ok");
+        let _ = fs::remove_file(path);
+    }
+
+    /// docs/54 §4.2：`visibility` 表读写**实体侧**的可见层遮罩——场景组件同源、缺组件=全可见、
+    /// 非法值报错（负数/越界/未知实体都不许静默通过）。
+    #[test]
+    fn lua_visibility_round_trips_and_validates() {
+        let mut scene = crate::core::scene::Scene::new("lua-visibility");
+        let panel = crate::core::scene::SceneEntityId(1);
+        let plain = crate::core::scene::SceneEntityId(2);
+        scene.add_entity(panel, "Panel", None).unwrap();
+        scene.add_entity(plain, "Plain", None).unwrap();
+        scene
+            .entities
+            .get_mut(&panel)
+            .unwrap()
+            .components
+            .insert("Visibility".into(), "layers=0x0F".into());
+        let mut runtime = LuaRuntime::new().unwrap();
+        assert_eq!(runtime.instantiate_scene(&scene).unwrap(), 2);
+        let path = script(
+            "function update()\n\
+             local panel = entity.find('Panel')\n\
+             local plain = entity.find('Plain')\n\
+             assert(visibility.get(panel) == 15, 'scene component must be readable')\n\
+             assert(visibility.get(plain) == 4294967295, '缺组件 = 全可见')\n\
+             assert(visibility.set(panel, 0x10) == 16, 'set 返回新值')\n\
+             assert(visibility.get(panel) == 16)\n\
+             assert(visibility.set(plain, 1) == 1, '缺组件时 set 会补上组件')\n\
+             assert(visibility.get(plain) == 1)\n\
+             assert(visibility.all() == 4294967295)\n\
+             assert(not pcall(visibility.set, panel, -1), '负数必须报错')\n\
+             assert(not pcall(visibility.set, panel, 4294967296), '越界必须报错')\n\
+             assert(not pcall(visibility.get, 999999), '未知实体必须报错')\n\
              return 'ok' end",
         );
         runtime.execute_project_script(&path).unwrap();

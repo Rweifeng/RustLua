@@ -2451,6 +2451,8 @@ impl EditorApp {
             far: 200.0,
             // 编辑器自己的取景相机永远由面板的 pan/zoom 决定，不跟随实体变换。
             pose_from_transform: false,
+            // 编辑器取景相机永远启用（`enabled` 是场景相机参与选帧的开关，见 docs/54 §4.2）。
+            enabled: true,
         }
     }
 

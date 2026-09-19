@@ -646,6 +646,11 @@ impl EditorApp {
                             &mut self.camera3d.pose_from_transform,
                             "姿态来自实体的 Transform3D（pose=transform）",
                         );
+                        // docs/54 §4.2：相机启用开关。关掉后这台相机不参与选帧。
+                        ui.checkbox(&mut self.camera3d.enabled, "启用（enabled）");
+                        if !self.camera3d.enabled {
+                            ui.label("已禁用：不参与相机选帧，渲染回退到默认相机");
+                        }
                         if self.camera3d.pose_from_transform {
                             ui.label("位置/目标仅在实体没有 Transform3D 时生效");
                         }
@@ -2611,6 +2616,13 @@ fn camera_panel_summary(scene: &Scene, id: SceneEntityId) -> Option<CameraPanelS
             fov_y.to_degrees()
         ),
         Projection::Orthographic { zoom } => format!("投影：正交（{zoom:.3} px/单位）"),
+    };
+    // docs/54 §4.2：`enabled=false` 的相机不参与选帧。面板必须说明这一点，否则用户会看到
+    // 一台"参数正常"的相机却完全不参与渲染。
+    let projection = if camera.enabled {
+        projection
+    } else {
+        format!("已禁用（enabled=false）—— 不参与相机选帧，渲染回退到默认相机。{projection}")
     };
     if !camera.pose_from_transform {
         return Some(CameraPanelSummary {

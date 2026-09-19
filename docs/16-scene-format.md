@@ -24,7 +24,8 @@ cargo run -p game --example scene_format_demo --release
 
 - `Transform3D`：`position=x,y,z;rotation=rx,ry,rz,rw;scale=sx,sy,sz`
 - `MeshRenderer`：`mesh=assets/models/<file>.glb|gltf`（`__ground_plane__` 为内置地面哨兵路径）
-- `Camera3D`：`position=x,y,z;target=x,y,z;fov=<度>;near=<n>;far=<f>`（`aspect` 由渲染窗口决定）
+- `Camera3D`：`position=x,y,z;target=x,y,z;fov=<度>;near=<n>;far=<f>`（`aspect` 由渲染窗口决定），
+  可选 `pose=transform`（姿态改用实体的 `Transform3D`）与 `enabled=false`（见下）
 - `Light`：`direction=x,y,z;color=r,g,b;intensity=<i>`（方向光）。`direction` 是**光传播方向**：
   天空里的太阳自上而下照，因此写作 `direction=0.4,-0.8,0.5`（**y 为负**）；写成 y 为正等于
   "光往上照"，朝上的表面拿不到漫反射（只剩 0.15 环境光）。详见 [docs/24](24-3d-rendering.md#light)。
@@ -35,9 +36,13 @@ cargo run -p game --example scene_format_demo --release
 Sprite/Mesh/文字/UI 一样是实体组件，不再只能由宿主状态或脚本表达。
 
 - `Camera2D`：`center=x,y;zoom=<像素/世界单位>` 必填，`rotation=<弧度>`、
-  `bounds=min_x,min_y,max_x,max_y` 可选。声明后它成为运行时的**初始** 2D 相机；Lua
+  `bounds=min_x,min_y,max_x,max_y`、`enabled=false` 可选。声明后它成为运行时的**初始** 2D 相机；Lua
   `camera2d.*` 与相机控制器之后照旧可以移动它（不是第二份姿态真源）。未声明的场景保持历史默认，
   因此既有工程逐字节不变。
+- **`enabled=false`**（docs/54 §4.2，`Camera2D`/`Camera3D` 同义）：这台相机**不参与选帧**——既不会
+  成为初始相机，也不会被 `camera.set_active` 选中（选中一台已禁用的相机时渲染会告警并回退到其它
+  候选）。开关默认 `true`，且**启用时不写出该字段**，所以既有场景串逐字节不变；只有显式禁用才会
+  写成 `;enabled=false`。
 - `ParticleEmitter`：`count=<每次爆发的粒子数>`、`rate=<粒子/秒，0=只爆发>`、`speed`、`life`、
   `size`、`size_end`、`color=r,g,b,a`、`color_end`、`gravity=x,y`、`drag`、`rotation`、
   `rotation_speed`。`size`/`color` 同时设置曲线起止值，`size_end`/`color_end` 可单独覆盖终点。
@@ -47,6 +52,31 @@ Sprite/Mesh/文字/UI 一样是实体组件，不再只能由宿主状态或脚�
 
 `examples/game_api/scenes/unified.scene` 是一份"六类内容同场"的样例：Sprite + Mesh +
 `Camera3D` + `Camera2D` + `ParticleEmitter` + `WorldText` + `Text`/`UiLayout`。
+
+## 可见性组件 `Visibility`（docs/54 §4.2）
+
+`RenderView::visibility`（可见层遮罩）过去是个**没有消费者**的字段；现在由实体侧组件驱动：
+
+- `Visibility`：`layers=<遮罩>`，接受十进制、`0x` 十六进制与 `0b` 二进制（位遮罩写十六进制最可读）。
+  未知键、空串、非整数一律**报错**——静默当"全可见"会让遮罩看起来失效，静默当 0 会让内容整体消失，
+  两种都只在真机上才看得出来。
+
+判定是**相交**而非相等：
+
+```text
+实体 Visibility.layers  ∩  视图 RenderView.visibility  != 0  ⇒  本视图画它
+```
+
+边界（刻意的几条）：
+
+- 实体**没有** `Visibility` 组件 ⇒ 全可见。既有场景因此不用改一个字、像素不变。
+- 位怎么分配由项目决定，引擎不预设"第 0 位是世界内容"。需要的是视图与实体用**同一套位**。
+- 被遮掉的实体是**不存在于这个视图**（视口剔除），不是"透明"：不产顶点、不占默认绘制层序号、不参与计数。
+  每帧被遮掉的实体数记在 `RuntimeScene::view_filtered`，所以"东西没画出来"能一眼分清是遮罩拦的还是没提取到。
+- 遮罩只作用于**有实体身份**的内容：世界精灵/瓦片/3D Mesh 用 world 遮罩，`UiImage`/`UiText` 用 overlay 遮罩；
+  按名字注册的画布 UI（面板、血条、调试网格）不是实体，永远照画。
+- 宿主用 `RuntimeScene::set_view_visibility(world, overlay)` 设置视图遮罩，`view_visibility()` 读回。
+  默认 `u32::MAX`（全可见），遮罩为 0 表示"这个视图什么都不画"。
 
 ## 物理组件字符串（docs/54 §8-⑥）
 
