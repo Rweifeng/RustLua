@@ -5,7 +5,7 @@ use engine::core::{
     resource_kind::ResourceKind,
 };
 use std::{
-    collections::HashSet,
+    collections::HashMap,
     error::Error,
     fmt, fs,
     path::{Path, PathBuf},
@@ -65,9 +65,16 @@ pub struct ResourceBrowserState {
     refresh_count: u64,
     /// 需要后台导入的资源（asset id + 项目相对路径），由 `refresh` 产出。
     pending_imports: Vec<(AssetId, PathBuf)>,
-    /// 已启动导入的路径；`ImportFailed` 的资源不再自动重试，直到内容再次
-    /// 变化（reconcile 转 `Stale`）或用户重新导入，避免失败项无限循环重试。
-    import_attempted: HashSet<PathBuf>,
+    /// 已启动导入的路径 → **尝试时**该文件的签名（mtime；文件不存在记 0）。
+    ///
+    /// 规则：**同一份内容只自动尝试一次**。文件内容再次变化后签名不同，才重新排队
+    /// （`reconcile` 会把变更的文件转 `Stale`）。这条守卫对**所有**未完成状态生效，不只是
+    /// `ImportFailed`——否则一个永远到不了 `Ready` 的资源（类型没有真正注册、文件已缺失等）
+    /// 会让 `pending_imports` 每次刷新都非空，而 `start_resource_import` 是**每帧**调用的，
+    /// 于是"导入资源"弹窗会不停重开、每轮还起一个后台线程。
+    import_attempted: HashMap<PathBuf, u64>,
+    /// 最近一次 `refresh` 看到的文件签名（相对路径 → mtime；不在盘上的记 0）。
+    current_signatures: HashMap<PathBuf, u64>,
 }
 
 impl ResourceBrowserState {
@@ -114,11 +121,23 @@ impl ResourceBrowserState {
         &self.pending_imports
     }
 
-    /// 记录本次已启动导入的路径；被标记的 `ImportFailed` 资源不再自动重试，
-    /// 直到内容再次变化触发 reconcile 转 `Stale`。
+    /// 记录本次已启动导入的路径**及其当时的文件签名**；同一签名的资源不再自动重试，
+    /// 直到内容变化（签名不同）或用户显式刷新（`clear_import_attempts`）。
     pub fn record_import_attempts(&mut self, items: &[(AssetId, PathBuf)]) {
-        self.import_attempted
-            .extend(items.iter().map(|(_, path)| path.clone()));
+        for (_, path) in items {
+            let signature = self.signature_of(path);
+            self.import_attempted.insert(path.clone(), signature);
+        }
+    }
+
+    /// 用户显式刷新（资源面板「刷新」/菜单「刷新资源」）时清空尝试记录，强制重新排队。
+    pub fn clear_import_attempts(&mut self) {
+        self.import_attempted.clear();
+    }
+
+    /// 该路径在**最近一次刷新**里的签名（不在盘上 = 0）。
+    fn signature_of(&self, path: &Path) -> u64 {
+        self.current_signatures.get(path).copied().unwrap_or(0)
     }
 
     /// 扫描项目 assets 目录，并同步已识别资源到 ResourceDatabase。
@@ -160,11 +179,14 @@ impl ResourceBrowserState {
         // 已注册到数据库的条目延迟到 reconcile+传播后再重建，确保 UI 展示的
         // 状态反映最新数据库（依赖断链标 Invalid、文件删除标 Missing 等）。
         let mut registered: Vec<(PathBuf, ResourceKind, AssetId)> = Vec::new();
+        // 本轮看到的文件签名：判断"已尝试过的资源内容是否又变了"。
+        self.current_signatures.clear();
         for (path, modified) in found {
             let relative = path
                 .strip_prefix(project_root)
                 .expect("asset path must be inside project root")
                 .to_path_buf();
+            self.current_signatures.insert(relative.clone(), modified);
             disk_assets.push(DiskAsset {
                 path: relative.clone(),
                 modified,
@@ -236,9 +258,12 @@ impl ResourceBrowserState {
         }
         self.entries.sort_by(|a, b| a.path.cmp(&b.path));
 
-        // 产出待导入资源：未导入/变更/丢失的总是加入；导入失败的仅当尚未
-        // 尝试过（避免失败项在每次刷新后无限重试）。Invalid（依赖断链）不
-        // 加入——重导消费者自己无法修复，等依赖恢复后传播自动撤销。
+        // 产出待导入资源：未导入/变更/丢失的都算，但**同一内容只自动尝试一次**
+        // （`import_attempted` 存的是尝试时的签名）——否则一个永远到不了 `Ready` 的资源会让
+        // `start_resource_import` 每帧重开"导入资源"弹窗（见字段注释）。内容变了签名就变，
+        // 自然重新排队。Invalid（依赖断链）不加入——重导消费者自己无法修复，等依赖恢复后
+        // 传播自动撤销。
+        let attempted = &self.import_attempted;
         self.pending_imports = self
             .entries
             .iter()
@@ -249,9 +274,11 @@ impl ResourceBrowserState {
                 }
                 let needs_import = matches!(
                     entry.status,
-                    ResourceState::Discovered | ResourceState::Stale | ResourceState::Missing
-                ) || (entry.status == ResourceState::ImportFailed
-                    && !self.import_attempted.contains(&entry.path));
+                    ResourceState::Discovered
+                        | ResourceState::Stale
+                        | ResourceState::Missing
+                        | ResourceState::ImportFailed
+                ) && attempted.get(&entry.path) != Some(&self.signature_of(&entry.path));
                 needs_import.then_some((id, entry.path.clone()))
             })
             .collect();
@@ -500,6 +527,54 @@ mod tests {
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].1, PathBuf::from("assets/player.png"));
         assert_eq!(pending[0].0, browser.entries()[0].asset_id.unwrap());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// **回归**（第 49 轮）：一个永远到不了 `Ready` 的资源不得让"导入资源"弹窗每帧重开。
+    ///
+    /// 触发链：`start_resource_import` 每帧检查 `pending_imports`；只要它非空就再起一次导入，
+    /// 弹窗随之重开。旧实现只对 `ImportFailed` 记住"已尝试"，于是 `Discovered`/`Stale`/
+    /// `Missing` 的资源每次刷新都重新排队 → 弹窗（和后台线程）无限重复。
+    /// 现在按**文件签名**记：同一内容只自动尝试一次；内容变化或用户显式刷新才重排。
+    #[test]
+    fn unchanged_assets_are_not_retried_after_attempt() {
+        let root = temp_root("no-loop");
+        file(&root, "assets/player.png", b"png");
+        let mut browser = ResourceBrowserState::new();
+        browser.refresh(&root).unwrap();
+        let pending = browser.pending_imports().to_vec();
+        assert_eq!(pending.len(), 1);
+
+        // 模拟"导入跑完了但状态没变"（该资源类型没真正注册 / 文件已缺失等）。
+        browser.record_import_attempts(&pending);
+        browser.refresh(&root).unwrap();
+        assert!(
+            browser.pending_imports().is_empty(),
+            "同一内容不得自动重试，否则导入弹窗每帧重开"
+        );
+        // 再刷新几次也必须保持空（弹窗不会自己回来）。
+        browser.refresh(&root).unwrap();
+        assert!(browser.pending_imports().is_empty());
+
+        // 用户显式刷新（资源面板「刷新」/菜单「刷新资源」）→ 强制重新排队。
+        browser.clear_import_attempts();
+        browser.refresh(&root).unwrap();
+        assert_eq!(
+            browser.pending_imports().len(),
+            1,
+            "显式刷新必须能强制重试"
+        );
+
+        // 文件内容变化 → 签名变化 → 自动重新排队（与 staled_files 那条门一致）。
+        let pending = browser.pending_imports().to_vec();
+        browser.record_import_attempts(&pending);
+        file(&root, "assets/player.png", b"png3");
+        browser.refresh(&root).unwrap();
+        assert_eq!(
+            browser.pending_imports().len(),
+            1,
+            "内容变了就该自动再试一次"
+        );
         let _ = fs::remove_dir_all(root);
     }
 

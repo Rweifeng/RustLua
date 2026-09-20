@@ -37,7 +37,10 @@ pub enum RefreshPoll {
     /// A result arrived for a superseded generation and was discarded.
     Stale,
     /// A result for the current generation, ready to be applied.
-    Ready(RefreshResult),
+    ///
+    /// 载荷是 `Box`：`ResourceBrowserState` 自带若干哈希表/向量，直接内联会让这个枚举
+    /// 每个值都背上几百字节（clippy `large_enum_variant`），而 `Pending`/`Stale` 是热路径。
+    Ready(Box<RefreshResult>),
 }
 
 impl RefreshHandle {
@@ -61,7 +64,7 @@ impl RefreshHandle {
         match self.receiver.try_recv() {
             Err(_) => RefreshPoll::Pending,
             Ok(result) if result.generation != current_generation => RefreshPoll::Stale,
-            Ok(result) => RefreshPoll::Ready(result),
+            Ok(result) => RefreshPoll::Ready(Box::new(result)),
         }
     }
 }

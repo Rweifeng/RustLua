@@ -392,7 +392,7 @@ impl EditorApp {
                 self.profiler.bump("resource_refresh_stale_dropped");
                 return;
             }
-            editor::RefreshPoll::Ready(result) => result,
+            editor::RefreshPoll::Ready(result) => *result,
         };
         self.resource_refresh_job = None;
         self.profiler.bump("resource_refresh_applied");

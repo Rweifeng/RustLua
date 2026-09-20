@@ -560,7 +560,11 @@ impl EditorApp {
                 self.dispatch(editor::EditorCommand::StepPlay { frames: 1 });
             }
             // ---- 资源 ----
-            MenuAction::RefreshResources => self.refresh_resources(),
+            MenuAction::RefreshResources => {
+                // 菜单刷新是**用户显式**动作：清空"已尝试"记录，允许重新排队导入。
+                self.resources.clear_import_attempts();
+                self.refresh_resources();
+            }
             MenuAction::CreatePrefab => self.create_prefab_from_selected(),
             MenuAction::CollectFontChars => self.collect_font_chars(),
             MenuAction::RevealProjectRoot => {

@@ -1878,6 +1878,9 @@ impl eframe::App for EditorApp {
             self.profiler
                 .record_panel("resource_browser", started.elapsed());
             if refresh {
+                // 用户显式刷新：清空"已尝试"记录，让上次没能导入成功的资源重新排队
+                // （自动路径不会清，见 `ResourceBrowserState::import_attempted`）。
+                self.resources.clear_import_attempts();
                 self.refresh_resources();
             }
         }
