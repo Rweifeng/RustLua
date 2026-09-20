@@ -151,10 +151,18 @@ fn main() {
         .unwrap_or(0);
     let worst_spatial_share = hierarchy_stairs
         .iter()
-        .filter_map(|entry| json_number_field(entry, "spatial_share_pct"))
+        .flat_map(|entry| json_number_fields(entry, "spatial_share_pct"))
         .fold(0.0_f64, f64::max);
+    // 静态相位的跳过次数（每档两个相位，静态在前、其值为第一个）：非零才说明批 R 的
+    // "没变就不传播"真的生效，而不是世界值对、成本照付。
+    let static_skips_min = hierarchy_stairs
+        .iter()
+        .filter_map(|entry| json_number_field(entry, "spatial_skips_p50"))
+        .map(|value| value as u64)
+        .min()
+        .unwrap_or(0);
     println!(
-        "wp0_scene_frame_ok report_version={REPORT_VERSION} scenes={scenes} stairs={} depth_stairs={} animation_stairs={} animation_alloc_p50_max={worst_animation_alloc} hierarchy_stairs={} hierarchy_spatial_share_pct_max={worst_spatial_share:.2}",
+        "wp0_scene_frame_ok report_version={REPORT_VERSION} scenes={scenes} stairs={} depth_stairs={} animation_stairs={} animation_alloc_p50_max={worst_animation_alloc} hierarchy_stairs={} hierarchy_spatial_share_pct_max={worst_spatial_share:.2} hierarchy_static_skips_min={static_skips_min}",
         frame_stairs.len(),
         depth_stairs.len(),
         animation_stairs.len(),
@@ -450,12 +458,100 @@ fn measure_animation_frame(examples: &std::path::Path, count: usize, cycles: usi
     )
 }
 
+/// 层级帧阶梯的一次采样（静态相位与运动相位各一次）。
+struct HierarchyPhase {
+    frames: Vec<Duration>,
+    propagate_us: Vec<u64>,
+    allocs: Vec<u64>,
+    skips: Vec<u64>,
+    vertices: usize,
+}
+
+impl HierarchyPhase {
+    fn frame_p50_us(&self) -> u64 {
+        let samples = self
+            .frames
+            .iter()
+            .map(|elapsed| elapsed.as_micros() as u64)
+            .collect::<Vec<_>>();
+        median_u64(&samples)
+    }
+
+    /// 相位字段。`entities`/`chains`/`chain_depth` 由调用方补：它们描述场景，不属于相位。
+    fn json_body(&self) -> String {
+        let frame_p50 = self.frame_p50_us();
+        let propagate_p50 = median_u64(&self.propagate_us);
+        let share = if frame_p50 == 0 {
+            0.0
+        } else {
+            propagate_p50 as f64 * 100.0 / frame_p50 as f64
+        };
+        format!(
+            "\"samples\":{},\"frame_us\":{},\"spatial_propagate_us\":{propagate_p50},\
+             \"spatial_share_pct\":{share:.3},\"spatial_skips_p50\":{},\"alloc_count_p50\":{},\
+             \"vertices\":{}",
+            self.frames.len(),
+            stats_json(&summarize(self.frames.clone())),
+            median_u64(&self.skips),
+            median_u64(&self.allocs),
+            self.vertices,
+        )
+    }
+}
+
+/// 跑 `cycles` 帧并采样。`mover` 在每帧开跑**之前**调用一次（不计入帧耗时），用来制造
+/// "这一帧确实有东西变了"。
+fn sample_hierarchy_phase(
+    runtime: &mut RuntimeScene,
+    input: &InputSnapshot,
+    cycles: usize,
+    mut mover: impl FnMut(&mut RuntimeScene, usize),
+) -> HierarchyPhase {
+    let mut phase = HierarchyPhase {
+        frames: Vec::with_capacity(cycles),
+        propagate_us: Vec::with_capacity(cycles),
+        allocs: Vec::with_capacity(cycles),
+        skips: Vec::with_capacity(cycles),
+        vertices: 0,
+    };
+    for cycle in 0..cycles {
+        mover(runtime, cycle);
+        let sample = run_frame(runtime, input);
+        phase.frames.push(sample.elapsed);
+        phase.allocs.push(sample.alloc_count);
+        // docs/54 §10 批 R：取走"因为输入没变而跳过传播"的次数。静态相位里它应当非零，否则
+        // "跳过"就是没生效（世界值仍对，但成本没省）；运动相位里它必须为 0，否则指纹把"变了"
+        // 误判成"没变"，世界值会悄悄过期。
+        phase.skips.push(runtime.take_spatial_skipped_frames());
+        // 每帧的调度报告里 `spatial_propagate` 那一格就是传播本身（帧系统，含父先序传播）。
+        phase.propagate_us.push(
+            runtime
+                .last_schedule_report()
+                .and_then(|report| {
+                    report
+                        .timings
+                        .iter()
+                        .find(|timing| timing.name == "spatial_propagate")
+                        .map(|timing| timing.elapsed.as_micros() as u64)
+                })
+                .unwrap_or(0),
+        );
+        phase.vertices = sample.vertices;
+    }
+    phase
+}
+
 /// 层级帧阶梯：`count` 个实体按 `HIERARCHY_CHAIN_DEPTH` 组成父链（`spatial=local`）。
 ///
-/// 关注点：**世界变换传播在真实帧里占多少**。docs/54 §11.1 把 dirty/version 增量传播登记成
-/// "有意未实施"，理由是"全量传播未被证明是瓶颈"——这条阶梯把那个理由变成数字：同一帧里
-/// `spatial_propagate` 这一格的耗时除以整帧耗时就是它的占比，深度又与最坏情况（根变动要重算
-/// 整条链）一致。
+/// 关注点：**世界变换传播在真实帧里占多少，以及"没变就不算"能省掉多少**。docs/54 §11.1 把
+/// dirty/version 增量传播登记成"有意未实施"，理由是"全量传播未被证明是瓶颈"——这条阶梯把那个
+/// 理由变成数字，并且批 R 之后必须量出两件事：
+/// - **静态相位**（整棵层级不动）：走"输入没变就跳过传播"的快路径，量到的是指纹检查的成本；
+///   `spatial_skips_p50` 就是跳过生效的证据。
+/// - **运动相位**（每帧挪动所有链根）：逼出真实的父先序全量传播，这是最坏情况（根变动要重算
+///   整条链）；此时 `spatial_skips_p50` 必须为 0。
+///
+/// 两个相位都用同一帧里 `spatial_propagate` 这一格的耗时除以整帧耗时作为占比。
 fn measure_hierarchy_frame(examples: &std::path::Path, count: usize, cycles: usize) -> String {
     let root = examples.join("game_api");
     let mut runtime = RuntimeScene::from_scene_edit(Some(root.as_path()), hierarchy_scene(count))
@@ -464,59 +560,74 @@ fn measure_hierarchy_frame(examples: &std::path::Path, count: usize, cycles: usi
     for _ in 0..FRAME_WARMUP {
         run_frame(&mut runtime, &input);
     }
-    let mut frame_samples = Vec::with_capacity(cycles);
-    let mut propagate_us = Vec::with_capacity(cycles);
-    let mut alloc_counts = Vec::with_capacity(cycles);
-    let mut vertices = 0usize;
-    for _ in 0..cycles {
-        let sample = run_frame(&mut runtime, &input);
-        frame_samples.push(sample.elapsed);
-        alloc_counts.push(sample.alloc_count);
-        // 每帧的调度报告里 `spatial_propagate` 那一格就是传播本身（帧系统，含父先序传播）。
-        let micros = runtime
-            .last_schedule_report()
-            .and_then(|report| {
-                report
-                    .timings
-                    .iter()
-                    .find(|timing| timing.name == "spatial_propagate")
-                    .map(|timing| timing.elapsed.as_micros() as u64)
-            })
-            .unwrap_or(0);
-        propagate_us.push(micros);
-        vertices = sample.vertices;
-    }
-    let frame_p50 = median_u64(
-        &frame_samples
-            .iter()
-            .map(|d| d.as_micros() as u64)
-            .collect::<Vec<_>>(),
-    );
-    let propagate_p50 = median_u64(&propagate_us);
-    let share = if frame_p50 == 0 {
-        0.0
-    } else {
-        propagate_p50 as f64 * 100.0 / frame_p50 as f64
-    };
+    // 世界矩阵在预热帧里已经收敛，此后静态相位再无输入变化。
+    let static_phase = sample_hierarchy_phase(&mut runtime, &input, cycles, |_, _| {});
+    // 单叶相位：每帧只挪链尾那一个叶子。`TransformTree` 的按需路径在这种改动下只重算 1 个节点
+    // （深度阶梯的 `leaf_recomputes` 就是证据）；运行时帧系统若仍是全量重算，这一档的传播耗时会
+    // 和"所有链根全动"几乎一样——那正是 docs/54 §11.1"逐实体 dirty/version 待实施"的数字。
+    let leaf = SceneEntityId(count as u64);
+    let moving_one_phase =
+        sample_hierarchy_phase(&mut runtime, &input, cycles, |runtime, cycle| {
+            let value = LocalTransform {
+                translation: Vec3::new(1.0 + cycle as f32 * 0.25, 0.0, 0.0),
+                ..LocalTransform::identity()
+            };
+            runtime
+                .set_local_transform(leaf, value)
+                .expect("move one hierarchy leaf");
+        });
+    // 全动相位：每帧挪动所有链根，父链必须整条重算（最坏情况）。
+    let moving_phase = sample_hierarchy_phase(&mut runtime, &input, cycles, |runtime, cycle| {
+        let offset = cycle as f32 * 0.25;
+        for index in (0..count).step_by(HIERARCHY_CHAIN_DEPTH) {
+            let (x, y) = hierarchy_root_position(index / HIERARCHY_CHAIN_DEPTH);
+            let value = LocalTransform {
+                translation: Vec3::new(x + offset, y, 0.0),
+                ..LocalTransform::identity()
+            };
+            runtime
+                .set_local_transform(SceneEntityId(index as u64 + 1), value)
+                .expect("move hierarchy chain root");
+        }
+    });
     format!(
-        "{{\"entities\":{count},\"chains\":{},\"chain_depth\":{HIERARCHY_CHAIN_DEPTH},\"samples\":{},\
-         \"frame_us\":{},\"spatial_propagate_us\":{},\"spatial_share_pct\":{share:.3},\
-         \"alloc_count_p50\":{},\"vertices\":{vertices}}}",
+        "{{\"entities\":{count},\"chains\":{},\"chain_depth\":{HIERARCHY_CHAIN_DEPTH},{},\
+         \"moving_one\":{{{}}},\"moving\":{{{}}}}}",
         count.div_ceil(HIERARCHY_CHAIN_DEPTH),
-        frame_samples.len(),
-        stats_json(&summarize(frame_samples)),
-        propagate_p50,
-        median_u64(&alloc_counts),
+        static_phase.json_body(),
+        moving_one_phase.json_body(),
+        moving_phase.json_body(),
     )
 }
 
-/// 从一行 JSON 里读一个数值字段（门与 ok 行复用同一份报告，不另算一遍）。
+/// 从一行 JSON 里读一个数值字段（门与 ok 行复用同一份报告，不另算一遍）。同名字段出现多次时
+/// 取第一个（本报告里静态相位在前、运动相位在后）。
 fn json_number_field(entry: &str, field: &str) -> Option<f64> {
+    json_number_fields(entry, field).first().copied()
+}
+
+/// 读出某个数值字段的**全部**出现值（层级阶梯一个档位有静态与运动两个相位）。
+fn json_number_fields(entry: &str, field: &str) -> Vec<f64> {
     let marker = format!("\"{field}\":");
-    let start = entry.find(&marker)? + marker.len();
-    let rest = &entry[start..];
-    let end = rest.find([',', '}']).unwrap_or(rest.len());
-    rest[..end].parse().ok()
+    let mut values = Vec::new();
+    let mut rest = entry;
+    while let Some(start) = rest.find(&marker) {
+        let after = &rest[start + marker.len()..];
+        let end = after.find([',', '}']).unwrap_or(after.len());
+        if let Ok(value) = after[..end].parse() {
+            values.push(value);
+        }
+        rest = &after[end.min(after.len())..];
+    }
+    values
+}
+
+/// 链根在网格里的落位。静态与运动相位必须用同一套坐标，否则运动相位会把根挪到别处去。
+fn hierarchy_root_position(root_index: usize) -> (f32, f32) {
+    (
+        (root_index % 40) as f32 * 34.0 - 600.0,
+        (root_index / 40) as f32 * 34.0 - 300.0,
+    )
 }
 
 /// 合成 `count` 个实体、每 `HIERARCHY_CHAIN_DEPTH` 个一串父链的精灵场景。
@@ -537,8 +648,7 @@ fn hierarchy_scene(count: usize) -> Scene {
             .add_entity(id, format!("Node{index}"), parent)
             .expect("add hierarchy entity");
         let root_index = index / HIERARCHY_CHAIN_DEPTH;
-        let x = (root_index % 40) as f32 * 34.0 - 600.0;
-        let y = (root_index / 40) as f32 * 34.0 - 300.0;
+        let (x, y) = hierarchy_root_position(root_index);
         let entity = scene.entities.get_mut(&id).expect("hierarchy entity");
         // 子节点只带一点局部偏移：世界位置由父链组合出来（这正是要量的东西）。
         entity.components.insert(

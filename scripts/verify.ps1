@@ -605,10 +605,14 @@ if ($Benchmarks) {
             $animationEntities[0], $animationAlloc[0], $animationEntities[1], $animationAlloc[1])
     }
     # docs/54 §11.1：`spatial=local` 场景里的**世界变换传播**必须有实测数字（此前那条"不做
-    # dirty/version 增量"的理由只是判断；现在它由这份报告给出占比）。这里只判"测量是活的"：
-    # 阶梯恰为 2 档、`spatial_propagate_us` 非零、占比落在 0..100。**时间阈值不进门**（跨机不可比，
-    # 与 `compare-baseline -GeometryOnly` 同一口径）；占比的改善由批 Q 的修复给出，数字记在
-    # docs/53 §3.4c。
+    # dirty/version 增量"的理由只是判断；现在它由这份报告给出占比）。每档三个相位：
+    #   静态（顶层字段，整棵层级不动，应走批 R 的"没变就跳过"）／`moving_one`（只挪一个叶子）／
+    #   `moving`（挪动所有链根，最坏情况）。
+    # 这里只判"测量是活的 + 跳过真的发生 + 有改动就不会被跳过"：阶梯恰为 2 档、静态
+    # `spatial_propagate_us` 非零、静态 `spatial_skips_p50` 非零（跳过生效的证据）、占比落在
+    # 0..100、三个相位里"有改动"的传播耗时**严格大于**静态档（指纹不能把真改动吞掉）。
+    # **时间阈值不进门**（跨机不可比，与 `compare-baseline -GeometryOnly` 同一口径）；
+    # 占比与省下的量记在 docs/53 §3.4c/§3.4e。
     if ($sceneFrameReport.hierarchy_stairs.Count -ne 2) {
         throw "wp0-v4 hierarchy stairs missing: expected two entity counts"
     }
@@ -616,17 +620,40 @@ if ($Benchmarks) {
         $share = [double]$stair.spatial_share_pct
         if ([int]$stair.entities -le 0 -or [int]$stair.chains -le 0 -or
             [int]$stair.chain_depth -le 0 -or [int]$stair.spatial_propagate_us -le 0 -or
-            $share -le 0 -or $share -gt 100) {
-            throw ("hierarchy stair metrics invalid for entities={0}: propagate_us={1} share={2}" -f `
-                $stair.entities, $stair.spatial_propagate_us, $stair.spatial_share_pct)
+            [int]$stair.spatial_skips_p50 -le 0 -or $share -le 0 -or $share -gt 100) {
+            throw ("hierarchy stair metrics invalid for entities={0}: propagate_us={1} skips={2} share={3}" -f `
+                $stair.entities, $stair.spatial_propagate_us, $stair.spatial_skips_p50, `
+                $stair.spatial_share_pct)
+        }
+        foreach ($phase in @('moving_one', 'moving')) {
+            $moving = $stair.$phase
+            if ($null -eq $moving) {
+                throw ("hierarchy stair missing {0} phase for entities={1}" -f $phase, $stair.entities)
+            }
+            $movingShare = [double]$moving.spatial_share_pct
+            if ([int]$moving.spatial_propagate_us -le 0 -or $movingShare -le 0 -or $movingShare -gt 100) {
+                throw ("hierarchy {0} phase metrics invalid for entities={1}: propagate_us={2} share={3}" -f `
+                    $phase, $stair.entities, $moving.spatial_propagate_us, $moving.spatial_share_pct)
+            }
+            if ([int]$moving.spatial_propagate_us -le [int]$stair.spatial_propagate_us) {
+                throw ("hierarchy {0} phase does not cost more than the skipped static phase for entities={1}: " +
+                    "{2} <= {3} (fingerprint may be swallowing a real change)" -f `
+                    $phase, $stair.entities, $moving.spatial_propagate_us, $stair.spatial_propagate_us)
+            }
         }
     }
-    # docs/54 §10 批 Q：传播路径的**每帧分配不许随实体数增长**。修前 1 万实体是 4.5 万次/帧
-    # （`BTreeSet`/`BTreeMap` 逐实体树节点），修后实测 138 / 155；门槛留约三倍余量。
+    # docs/54 §10 批 Q/R：传播路径的**每帧分配不许随实体数增长**，三个相位都算。修前 1 万实体是
+    # 4.5 万次/帧（`BTreeSet`/`BTreeMap` 逐实体树节点），批 Q 修成 138/155，批 R 的静态档实测
+    # 75/80（运动档 95/104）；门槛留约四倍余量。分配次数是确定量，不受跨机速度影响。
     $hierarchyAlloc = @($sceneFrameReport.hierarchy_stairs | ForEach-Object { [int]$_.alloc_count_p50 })
     $hierarchyEntities = @($sceneFrameReport.hierarchy_stairs | ForEach-Object { [int]$_.entities })
-    if (($hierarchyAlloc | Measure-Object -Maximum).Maximum -gt 400) {
-        throw ("hierarchy frame allocations too high: {0}" -f ($hierarchyAlloc -join ','))
+    $hierarchyPhaseAlloc = @($sceneFrameReport.hierarchy_stairs | ForEach-Object {
+            [int]$_.alloc_count_p50
+            [int]$_.moving_one.alloc_count_p50
+            [int]$_.moving.alloc_count_p50
+        })
+    if (($hierarchyPhaseAlloc | Measure-Object -Maximum).Maximum -gt 400) {
+        throw ("hierarchy frame allocations too high: {0}" -f ($hierarchyPhaseAlloc -join ','))
     }
     if (($hierarchyAlloc[1] - $hierarchyAlloc[0]) -gt 100) {
         throw ("hierarchy frame allocations scale with entities: {0}->{1} vs {2}->{3}" -f `

@@ -93,6 +93,60 @@ pub fn propagate_spatial(world: &mut World, enabled: bool) -> SpatialReport {
     report
 }
 
+/// **局部真源指纹**：一帧里"传播的输入有没有变"的廉价判据（docs/54 §10 批 R）。
+///
+/// 传播的输出只取决于四件事：参与集合（哪些实体有 `Parent`/`Transform`/`Transform3D`）、它们的
+/// 局部值、父子边，以及"是否启用继承"。把前三者哈希成一个 `u64`（外加两个计数），宿主就能在
+/// **什么都没变**的帧整趟跳过传播——静态层级场景（绝大多数场景）因此不再为"每实体 3 次组件查找 +
+/// 矩阵组合 + 写入"付三成帧成本。
+///
+/// 刻意不引入第二份真值：这份指纹只是"上一帧算出来的世界值还有效吗"的判据，**不参与渲染**，
+/// 也不是权威数据。任何一个输入位变了（包括组件被增删、实体重生、换父）都会得到不同指纹，
+/// 于是退回全量传播——宁可贵一次，不可漏一次。
+///
+/// 返回 `(指纹, 组件实例数, `Parent` 数量)`；`Parent` 数量就是"这帧该不该传播"的判据。
+#[must_use]
+pub fn local_fingerprint(world: &World) -> (u64, usize, usize) {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let mut components = 0usize;
+    let mut parents = 0usize;
+    world.for_each::<Parent>(|id, parent| {
+        components += 1;
+        parents += 1;
+        (id.index(), id.generation()).hash(&mut hasher);
+        (parent.0.index(), parent.0.generation()).hash(&mut hasher);
+    });
+    world.for_each::<Transform>(|id, transform| {
+        components += 1;
+        (id.index(), id.generation()).hash(&mut hasher);
+        transform.position.x.to_bits().hash(&mut hasher);
+        transform.position.y.to_bits().hash(&mut hasher);
+        transform.rotation.to_bits().hash(&mut hasher);
+        transform.scale.x.to_bits().hash(&mut hasher);
+        transform.scale.y.to_bits().hash(&mut hasher);
+    });
+    world.for_each::<Transform3D>(|id, transform| {
+        components += 1;
+        (id.index(), id.generation()).hash(&mut hasher);
+        for component in [
+            transform.position.x,
+            transform.position.y,
+            transform.position.z,
+            transform.rotation.x,
+            transform.rotation.y,
+            transform.rotation.z,
+            transform.rotation.w,
+            transform.scale.x,
+            transform.scale.y,
+            transform.scale.z,
+        ] {
+            component.to_bits().hash(&mut hasher);
+        }
+    });
+    (hasher.finish(), components, parents)
+}
+
 /// 运行时看到的层级快照：实体 + 父 + 两个空间的局部值。
 struct EntityNode {
     id: EntityId,

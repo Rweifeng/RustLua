@@ -157,6 +157,13 @@ pub struct RuntimeScene {
     /// docs/54 §4.1：**场景声明的** `parent` 语义（与 `spatial_inheritance` 区分：后者是当前
     /// 生效的开关，宿主可覆盖；这一份是场景自己说的，用于诊断与验收）。
     spatial_mode: crate::core::scene_space::SpatialMode,
+    /// docs/54 §10 批 R：上一帧传播用的**局部真源指纹**（`(hash, 组件数, Parent 数)`）。
+    /// 与上一帧相同 ⇒ 世界值仍然是上一帧算出来的那一份，整趟跳过传播。
+    spatial_fingerprint: Option<(u64, usize, usize)>,
+    /// 跳过策略的开关（回滚档：`false` = 每帧全量传播，与收敛前逐字节一致）。
+    spatial_skip_unchanged: bool,
+    /// 累计"因为输入没变而跳过传播"的帧数（诊断/验收用）。
+    spatial_skipped_frames: u64,
     /// 最近一次空间传播的诊断（环/无法无损表达），供宿主与测试查。
     last_spatial_report: SpatialReport,
     /// 本帧是否**真的**在传播世界变换（= 开关打开且场景里存在 `Parent`）。提取路径按它选
@@ -421,6 +428,39 @@ impl RuntimeScene {
         self.spatial_inheritance
     }
 
+    /// docs/54 §10 批 R：开关"输入没变就跳过传播"。返回先前是否启用。
+    ///
+    /// - `true`（默认）：静态层级场景整趟跳过传播（世界值仍是上一帧算出来的那一份）。
+    /// - `false`：**回滚档**——每帧全量传播，与批 R 之前逐字节一致。
+    ///
+    /// 跳过只依据"局部真源指纹 + 是否启用继承"，因此任何局部值/父子边/组件增删都会让下一帧退回
+    /// 全量传播；指纹不参与渲染，也不是第二份真值。
+    pub fn set_spatial_skip_unchanged(&mut self, enabled: bool) -> bool {
+        let previous = self.spatial_skip_unchanged;
+        self.spatial_skip_unchanged = enabled;
+        if !enabled {
+            // 关掉时清掉指纹：打开开关后第一帧必须重新全量传播一次（不能靠旧指纹跳过）。
+            self.spatial_fingerprint = None;
+        }
+        previous
+    }
+
+    /// 当前是否启用"输入没变就跳过传播"。
+    #[must_use]
+    pub const fn spatial_skip_unchanged(&self) -> bool {
+        self.spatial_skip_unchanged
+    }
+
+    /// 自上次取走以来"因为输入没变而跳过传播"的帧数（取走即清零）。
+    pub fn take_spatial_skipped_frames(&mut self) -> u64 {
+        std::mem::take(&mut self.spatial_skipped_frames)
+    }
+
+    /// 累计跳过帧数（不清零）。
+    #[must_use]
+    pub const fn spatial_skipped_frames(&self) -> u64 {
+        self.spatial_skipped_frames
+    }
     /// docs/54 §4.1：**场景声明的** `parent` 语义（未声明 ⇒ 组织关系）。宿主开关可以覆盖生效值，
     /// 但这一份永远是场景自己说的，因此"运行时为什么继承/不继承"有据可查。
     #[must_use]
@@ -652,14 +692,30 @@ impl RuntimeScene {
         let enabled = self.spatial_inheritance;
         // 只有**真的存在层级**时才传播：平面场景（每个实体都没有 `Parent`）里世界值恒等于局部值，
         // 传播纯属白做——而提取路径是按这个布尔量选组件遍历的，所以它必须与实际写入的组件一致。
+        //
+        // docs/54 §10 批 R：传播的输入只有四样（参与集合、局部值、父子边、是否启用）。前三样哈希成
+        // 一个指纹，**与上一帧相同就整趟跳过**——静态层级场景因此不再付"每实体 3 次组件查找 + 矩阵
+        // 组合 + 写入"那三成帧成本。指纹只是"上一帧算出来的世界值还有效吗"的判据，不参与渲染，
+        // 也不是第二份真值；任何一位变了（组件增删/实体重生/换父/局部值改动）都会退回全量传播。
+        let fingerprint = self
+            .script
+            .with_world(crate::core::hierarchy::local_fingerprint);
+        let (_, _, parents) = fingerprint;
+        let active_now = enabled && parents > 0;
+        if self.spatial_skip_unchanged
+            && self.spatial_fingerprint == Some(fingerprint)
+            && self.spatial_active == active_now
+        {
+            self.spatial_skipped_frames = self.spatial_skipped_frames.saturating_add(1);
+            return;
+        }
         let (report, active) = self.script.with_world_mut(|world| {
-            let active = enabled
-                && !world
-                    .entities_with::<crate::core::hierarchy::Parent>()
-                    .is_empty();
-            let report = crate::core::hierarchy::propagate_spatial(world, active);
-            (report, active)
+            (
+                crate::core::hierarchy::propagate_spatial(world, active_now),
+                active_now,
+            )
         });
+        self.spatial_fingerprint = Some(fingerprint);
         self.spatial_active = active;
         if !report.diagnostics.is_empty() && self.last_spatial_report.diagnostics.is_empty() {
             for diagnostic in &report.diagnostics {
@@ -1337,6 +1393,9 @@ impl RuntimeScene {
             // （现有全部示例场景）不产生任何传播成本，回滚档是 `set_spatial_inheritance(false)`。
             spatial_inheritance: spatial_mode.inherits(),
             spatial_mode,
+            spatial_fingerprint: None,
+            spatial_skip_unchanged: true,
+            spatial_skipped_frames: 0,
             last_spatial_report: SpatialReport::default(),
             spatial_active: false,
             world_sprite_depth: false,
@@ -5994,6 +6053,134 @@ mod sdf_tests {
         );
     }
 
+    /// docs/54 §10 批 R：**输入没变就跳过传播**——静态层级场景不再付那三成帧成本，而任何一处
+    /// 局部真源变化都必须立刻退回全量传播。
+    ///
+    /// 判据分四段，缺一段这条优化就不成立：① 不动的帧确实在跳过（世界值仍正确）；② 改**自己**的局部值
+    /// 会传播；③ 改**父**的局部值也会传播（子自己的局部没变，但世界值必须跟着父走——这一条最容易漏）；
+    /// ④ 回滚档（`set_spatial_skip_unchanged(false)`）每帧都传播。
+    #[test]
+    fn static_hierarchy_skips_propagation_until_something_changes() {
+        let root = crate::core::games_dir().join("examples").join("game_api");
+        if !root.join("scenes/main.scene").is_file() {
+            return;
+        }
+        let parent = SceneEntityId(1);
+        let child = SceneEntityId(2);
+        let mut scene = Scene::new("spatial_skip");
+        scene.metadata.insert("spatial".into(), "local".into());
+        scene.add_entity(parent, "Rig", None).unwrap();
+        scene.add_entity(child, "Part", Some(parent)).unwrap();
+        scene.entities.get_mut(&parent).unwrap().components.insert(
+            "Transform".into(),
+            "x=10;y=0;rotation=0;scale_x=1;scale_y=1".into(),
+        );
+        scene.entities.get_mut(&child).unwrap().components.insert(
+            "Transform".into(),
+            "x=2;y=0;rotation=0;scale_x=1;scale_y=1".into(),
+        );
+        let mut runtime =
+            RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("runtime scene");
+        let input = crate::core::input::InputSnapshot::default();
+        let child_world_x = |runtime: &RuntimeScene| {
+            runtime
+                .world_transform_2d_of(child)
+                .expect("child world transform")
+                .position
+                .x
+        };
+
+        // ① 连跑三步：除第一帧外都应跳过，世界值保持 (12, 0)。
+        runtime
+            .run_script_steps(1, 1.0 / 60.0, &input)
+            .expect("step");
+        assert_eq!(child_world_x(&runtime), 12.0);
+        let skipped_before = runtime.spatial_skipped_frames();
+        for _ in 0..3 {
+            runtime
+                .run_script_steps(1, 1.0 / 60.0, &input)
+                .expect("step");
+        }
+        // 每步会调用两次传播（步末一次 + `spatial_propagate` 帧系统一次），因此用下界断言：
+        // "不动的帧确实在跳过"这件事不依赖调用次数。
+        assert!(
+            runtime.spatial_skipped_frames() >= skipped_before + 3,
+            "输入没变的帧必须整趟跳过传播（实际 {}，起点 {skipped_before}）",
+            runtime.spatial_skipped_frames()
+        );
+        assert_eq!(child_world_x(&runtime), 12.0, "跳过不等于世界值失效");
+
+        // ② 改自己的局部值 ⇒ 必须传播。
+        let moved = crate::core::spatial_transform::LocalTransform {
+            translation: crate::core::math3d::Vec3::new(5.0, 0.0, 0.0),
+            ..crate::core::spatial_transform::LocalTransform::identity()
+        };
+        runtime
+            .set_local_transform(child, moved)
+            .expect("write child local");
+        let skipped = runtime.spatial_skipped_frames();
+        runtime
+            .run_script_steps(1, 1.0 / 60.0, &input)
+            .expect("step");
+        // 一步里有两次传播调用（步末 + 帧系统）：变化后的**第一次**必须真传播，第二次才可以跳过。
+        // 因此这里判两件事：世界值真的更新了（说明没跳过），且跳过增量至多 1。
+        assert_eq!(child_world_x(&runtime), 15.0, "10 + 5：局部值变了必须传播");
+        assert!(
+            runtime.spatial_skipped_frames() - skipped <= 1,
+            "变化后的第一次传播不许跳过（跳过增量 {}）",
+            runtime.spatial_skipped_frames() - skipped
+        );
+
+        // ③ 改**父**的局部值：子自己的局部没变，但世界值必须跟着父走。
+        let parent_moved = crate::core::spatial_transform::LocalTransform {
+            translation: crate::core::math3d::Vec3::new(20.0, 0.0, 0.0),
+            ..crate::core::spatial_transform::LocalTransform::identity()
+        };
+        runtime
+            .set_local_transform(parent, parent_moved)
+            .expect("write parent local");
+        runtime
+            .run_script_steps(1, 1.0 / 60.0, &input)
+            .expect("step");
+        assert_eq!(
+            child_world_x(&runtime),
+            25.0,
+            "父的局部值变化必须传到子的世界值（指纹覆盖父链，不只是自己的局部）"
+        );
+
+        // ④ 回滚档：关掉跳过 ⇒ 每帧都传播。
+        assert!(
+            runtime.set_spatial_skip_unchanged(false),
+            "默认是开启的（返回前一个值）"
+        );
+        assert!(!runtime.spatial_skip_unchanged());
+        let skipped = runtime.spatial_skipped_frames();
+        for _ in 0..3 {
+            runtime
+                .run_script_steps(1, 1.0 / 60.0, &input)
+                .expect("step");
+        }
+        assert_eq!(
+            runtime.spatial_skipped_frames(),
+            skipped,
+            "回滚档下不许跳过任何一帧"
+        );
+        assert_eq!(child_world_x(&runtime), 25.0);
+        // 再打开：第一帧必须重新全量传播一次（清过指纹），之后才允许跳过。
+        assert!(!runtime.set_spatial_skip_unchanged(true));
+        runtime
+            .run_script_steps(1, 1.0 / 60.0, &input)
+            .expect("step");
+        let skipped = runtime.spatial_skipped_frames();
+        runtime
+            .run_script_steps(1, 1.0 / 60.0, &input)
+            .expect("step");
+        assert!(
+            runtime.spatial_skipped_frames() > skipped,
+            "重新打开后第一帧全量传播、之后允许跳过"
+        );
+        assert_eq!(child_world_x(&runtime), 25.0);
+    }
     /// docs/54 §4.1：**文档侧与运行时侧的局部变换必须是同一份规范表示**。
     ///
     /// 这条是"运行时只有一份权威 `LocalTransform`"在**表示层**的可执行判据：对一个真实场景，逐实体
