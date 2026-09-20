@@ -40,6 +40,10 @@ const KNOWN_TABS: &[&str] = &["scene", "game"];
 const KNOWN_VIEW_MODES: &[&str] = &["2d", "3d", "prefab", "widget"];
 const KNOWN_TOOLS: &[&str] = &["select", "move", "rotate", "scale"];
 const KNOWN_DENSITIES: &[&str] = &["compact", "comfortable"];
+/// Gizmo 变换空间（docs/55 P1 的 Local/World）。
+const KNOWN_GIZMO_SPACES: &[&str] = &["world", "local"];
+/// Gizmo 轴心模式（docs/55 P1 的 Pivot/Center）。
+const KNOWN_GIZMO_PIVOTS: &[&str] = &["pivot", "center"];
 
 /// One persisted layout.
 #[derive(Clone, Debug, PartialEq)]
@@ -52,6 +56,10 @@ pub struct EditorLayout {
     pub workspace_tab: String,
     pub scene_view_mode: String,
     pub scene_tool: String,
+    /// Gizmo 变换空间：`world` / `local`。
+    pub gizmo_space: String,
+    /// Gizmo 轴心模式：`pivot` / `center`。
+    pub gizmo_pivot: String,
     pub scene_zoom: f32,
     pub preview_resolution: (u32, u32),
     pub density: String,
@@ -76,6 +84,8 @@ impl Default for EditorLayout {
             workspace_tab: "scene".to_owned(),
             scene_view_mode: "2d".to_owned(),
             scene_tool: "select".to_owned(),
+            gizmo_space: "world".to_owned(),
+            gizmo_pivot: "pivot".to_owned(),
             scene_zoom: 1.0,
             preview_resolution: (1280, 720),
             density: "compact".to_owned(),
@@ -140,6 +150,12 @@ impl EditorLayout {
         if !KNOWN_TOOLS.contains(&self.scene_tool.as_str()) {
             self.scene_tool = "select".to_owned();
         }
+        if !KNOWN_GIZMO_SPACES.contains(&self.gizmo_space.as_str()) {
+            self.gizmo_space = "world".to_owned();
+        }
+        if !KNOWN_GIZMO_PIVOTS.contains(&self.gizmo_pivot.as_str()) {
+            self.gizmo_pivot = "pivot".to_owned();
+        }
         if !KNOWN_DENSITIES.contains(&self.density.as_str()) {
             self.density = "compact".to_owned();
         }
@@ -175,6 +191,8 @@ impl EditorLayout {
             "workspace_tab": self.workspace_tab,
             "scene_view_mode": self.scene_view_mode,
             "scene_tool": self.scene_tool,
+            "gizmo_space": self.gizmo_space,
+            "gizmo_pivot": self.gizmo_pivot,
             "scene_zoom": self.scene_zoom,
             "preview_resolution": [self.preview_resolution.0, self.preview_resolution.1],
             "density": self.density,
@@ -210,6 +228,12 @@ impl EditorLayout {
         }
         if let Some(tool) = value.get("scene_tool").and_then(|v| v.as_str()) {
             layout.scene_tool = tool.to_owned();
+        }
+        if let Some(space) = value.get("gizmo_space").and_then(|v| v.as_str()) {
+            layout.gizmo_space = space.to_owned();
+        }
+        if let Some(pivot) = value.get("gizmo_pivot").and_then(|v| v.as_str()) {
+            layout.gizmo_pivot = pivot.to_owned();
         }
         if let Some(zoom) = value.get("scene_zoom").and_then(serde_json::Value::as_f64) {
             layout.scene_zoom = zoom as f32;
@@ -371,6 +395,41 @@ mod tests {
         assert_eq!(load, LayoutLoad::Missing);
         assert!(!load.is_fallback());
         assert_eq!(load.layout(), EditorLayout::default());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Gizmo 变换空间（第 43 轮 P1）随布局持久化；未知/损坏值收敛回 `world`。
+    #[test]
+    fn gizmo_space_persists_and_converges() {
+        let root = temp_root("gizmo-space");
+        let layout = EditorLayout {
+            gizmo_space: "local".to_owned(),
+            gizmo_pivot: "center".to_owned(),
+            ..EditorLayout::default()
+        };
+        save_layout(&root, &layout).expect("save");
+        match load_layout(&root) {
+            LayoutLoad::Loaded(loaded) => {
+                assert_eq!(loaded.gizmo_space, "local", "局部空间必须被记住");
+                assert_eq!(loaded.gizmo_pivot, "center", "中心轴心必须被记住");
+                assert_eq!(loaded, layout);
+            }
+            other => panic!("加载失败：{other:?}"),
+        }
+        // 损坏值（手改/降级）不得让编辑器进入未知模式。
+        let mut broken = layout.clone();
+        broken.gizmo_space = "pivot".to_owned();
+        broken.gizmo_pivot = "world".to_owned();
+        broken.clamp();
+        assert_eq!(broken.gizmo_space, "world");
+        assert_eq!(broken.gizmo_pivot, "pivot");
+        // 缺字段的老布局文件 → 默认值（前向兼容）。
+        let mut value = layout.to_json();
+        value.as_object_mut().expect("object").remove("gizmo_space");
+        value.as_object_mut().expect("object").remove("gizmo_pivot");
+        let restored = EditorLayout::from_json(&value);
+        assert_eq!(restored.gizmo_space, "world");
+        assert_eq!(restored.gizmo_pivot, "pivot");
         let _ = std::fs::remove_dir_all(root);
     }
 

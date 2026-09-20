@@ -1,9 +1,6 @@
 //! 行3 Game 视图 + Play/Stop 运行生命周期：内嵌游戏预览。
 
 use crate::EditorApp;
-use crate::EditorContextSnapshot;
-use crate::SceneTool;
-use crate::SelectionModel;
 use crate::WorkspaceTab;
 use crate::preview_session::{PreviewSession, PreviewTick};
 use crate::util::strip_verbatim_prefix;
@@ -103,44 +100,8 @@ impl EditorApp {
         }
     }
 
-    /// 停止 Play：丢弃运行态变更，恢复编辑器快照。
-    /// M11-01 状态机：`Playing → Stopping → Editing`，Stop 期间释放临时世界/GPU 纹理/Lua 状态。
-    pub(crate) fn stop(&mut self) {
-        let Some(session) = self.play_session.take() else {
-            self.status = "Not currently in Play mode".to_owned();
-            return;
-        };
-        if let Err(error) = self.play.begin_stop() {
-            self.status = error.to_string();
-            return;
-        }
-        self.preview = None;
-        self.set_current_scene_document(session.stop());
-        // Play/Stop 清空输入状态，避免下一轮 Play 残留边沿（M11-02）。
-        self.preview_input_state.clear_all();
-        // 统一收尾：选择修复 + Inspector 空同步 + Scene View/Game 预览失效 +
-        // Hierarchy 元数据重扫（含 delete_target 复位）。
-        self.on_document_changed(crate::actions::DocumentChange::PlaybackStopped);
-        let snapshot =
-            self.editor_context_snapshot
-                .take()
-                .unwrap_or_else(|| EditorContextSnapshot {
-                    selection: SelectionModel::new(),
-                    workspace_tab: WorkspaceTab::Scene,
-                    scene_tool: SceneTool::Select,
-                    scene_view_mode: self.scene_view_mode,
-                    scene_zoom: 1.0,
-                    scene_pan: egui::Vec2::ZERO,
-                    hierarchy_collapsed: self.scene_state.collapsed.clone(),
-                    preview_resolution: self.preview_resolution,
-                    game_camera_2d_center: self.game_camera_2d_center,
-                });
-        self.restore_editor_context(snapshot);
-        if let Err(error) = self.play.finish_stop() {
-            tracing::warn!(target: "editor", "[preview] state machine: {error}");
-        }
-        self.status = "Play stopped; runtime changes were discarded".to_owned();
-    }
+    // `stop()` **已搬到 shell**（`actions.rs`，第 28 轮）：Stop 会替换当前文档，属于提交边界。
+    // 面板只发 `EditorCommand::StopPlay`（docs/55 §4.1 规则 1：View 只发 typed action）。
 
     pub(crate) fn draw_game_view(&mut self, ui: &mut egui::Ui) {
         let (response, painter) = ui.allocate_painter(ui.available_size(), egui::Sense::hover());

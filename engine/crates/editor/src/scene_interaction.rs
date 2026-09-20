@@ -64,6 +64,110 @@ impl fmt::Display for SceneTool {
     }
 }
 
+/// Gizmo 的**变换空间**（docs/55 P1："Gizmo 完成 Local/World"）。
+///
+/// 它只影响 Gizmo 的**语义**（拖哪根轴、绕哪根轴转），不影响工具/相位状态机：
+/// 这就是它单独成类型、而不是塞进 [`ToolStateMachine`] 的原因——状态机管"现在在做什么"，
+/// 空间管"沿着什么方向做"。
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum GizmoSpace {
+    /// 世界轴（编辑器一直以来的行为，默认值）。
+    #[default]
+    World,
+    /// 实体自身的局部轴（跟随它的旋转）。
+    Local,
+}
+
+impl GizmoSpace {
+    /// 布局持久化用的字符串。
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::World => "world",
+            Self::Local => "local",
+        }
+    }
+
+    /// 宽松解析：未知字符串 → `None`（调用方回落到默认值）。
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim() {
+            "world" => Some(Self::World),
+            "local" => Some(Self::Local),
+            _ => None,
+        }
+    }
+
+    /// 工具面板上的短标签。
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::World => "世界",
+            Self::Local => "局部",
+        }
+    }
+
+    /// 切换（工具面板的按钮用它；刻意不做快捷键，避免与现有 W/E/R 冲突）。
+    #[must_use]
+    pub const fn toggled(self) -> Self {
+        match self {
+            Self::World => Self::Local,
+            Self::Local => Self::World,
+        }
+    }
+}
+
+/// Gizmo 的**轴心模式**（docs/55 P1："Gizmo 完成 Local/World/**Pivot/Center**"）。
+///
+/// 与 [`GizmoSpace`] 正交：空间管"沿哪个方向"，轴心管"绕哪一点"。
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum GizmoPivot {
+    /// 实体自身的原点（默认；与迁移前的行为一致）。
+    #[default]
+    Pivot,
+    /// 选中内容的**包围盒中心**（单个实体就是它自己 AABB 的中心——
+    /// 对原点在脚下/左上角的资源，这与 `Pivot` 差得很明显）。
+    Center,
+}
+
+impl GizmoPivot {
+    /// 布局持久化用的字符串。
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Pivot => "pivot",
+            Self::Center => "center",
+        }
+    }
+
+    /// 宽松解析：未知字符串 → `None`（调用方回落到默认值）。
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim() {
+            "pivot" => Some(Self::Pivot),
+            "center" => Some(Self::Center),
+            _ => None,
+        }
+    }
+
+    /// 工具面板上的短标签。
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Pivot => "轴心",
+            Self::Center => "中心",
+        }
+    }
+
+    #[must_use]
+    pub const fn toggled(self) -> Self {
+        match self {
+            Self::Pivot => Self::Center,
+            Self::Center => Self::Pivot,
+        }
+    }
+}
+
 /// 交互阶段状态机：Idle → (Down) → Dragging/Marquee/Painting → (Up) → Idle。
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum ToolPhase {
@@ -206,6 +310,38 @@ mod tests {
         );
         sm.handle(InteractionEvent::PointerUp { pos: [30.0, 40.0] });
         assert_eq!(sm.phase(), ToolPhase::Idle);
+    }
+
+    /// Gizmo 变换空间（第 43 轮 P1）：默认世界、字符串往返、未知值不吞、切换可逆。
+    #[test]
+    fn gizmo_space_round_trips_and_toggles() {
+        use super::GizmoSpace;
+        assert_eq!(GizmoSpace::default(), GizmoSpace::World, "默认保持既有行为");
+        assert_eq!(GizmoSpace::World.as_str(), "world");
+        assert_eq!(GizmoSpace::Local.as_str(), "local");
+        assert_eq!(GizmoSpace::parse(" local "), Some(GizmoSpace::Local));
+        assert_eq!(GizmoSpace::parse("world"), Some(GizmoSpace::World));
+        assert_eq!(GizmoSpace::parse("pivot"), None, "未知值由调用方回落到默认");
+        assert_eq!(GizmoSpace::World.toggled(), GizmoSpace::Local);
+        assert_eq!(GizmoSpace::Local.toggled(), GizmoSpace::World);
+        assert_eq!(GizmoSpace::World.label(), "世界");
+        assert_eq!(GizmoSpace::Local.label(), "局部");
+    }
+
+    /// Gizmo 轴心模式（第 46 轮 P1）：默认轴心、字符串往返、未知值不吞、切换可逆。
+    #[test]
+    fn gizmo_pivot_round_trips_and_toggles() {
+        use super::GizmoPivot;
+        assert_eq!(GizmoPivot::default(), GizmoPivot::Pivot, "默认保持既有行为");
+        assert_eq!(GizmoPivot::Pivot.as_str(), "pivot");
+        assert_eq!(GizmoPivot::Center.as_str(), "center");
+        assert_eq!(GizmoPivot::parse(" center "), Some(GizmoPivot::Center));
+        assert_eq!(GizmoPivot::parse("pivot"), Some(GizmoPivot::Pivot));
+        assert_eq!(GizmoPivot::parse("origin"), None, "未知值由调用方回落");
+        assert_eq!(GizmoPivot::Pivot.toggled(), GizmoPivot::Center);
+        assert_eq!(GizmoPivot::Center.toggled(), GizmoPivot::Pivot);
+        assert_eq!(GizmoPivot::Pivot.label(), "轴心");
+        assert_eq!(GizmoPivot::Center.label(), "中心");
     }
 
     /// 按在空白处 → 框选（**任何工具**下都成立，修饰键不参与判定）。

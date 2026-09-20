@@ -94,6 +94,15 @@ impl UiRectLayout {
         layout
     }
 
+    /// 新建 `UiLayout` 组件的默认值：中心锚点、200×100 的元素矩形。
+    ///
+    /// 编辑器「添加组件 ▸ UiLayout」直接用它的编码——这份产品默认值只在这里定义一处，
+    /// 编辑器不再自己拼 `from_preset` + 手写 offsets（docs/55 阶段 2 的"默认值只有引擎一处"）。
+    #[must_use]
+    pub fn default_element() -> Self {
+        Self::from_preset(UiLayoutPreset::Center, [-100.0, -50.0, 100.0, 50.0])
+    }
+
     /// Overwrites the anchors (and resets the pivot) for a named preset.
     pub fn apply_preset(&mut self, preset: UiLayoutPreset) {
         self.anchors = preset.anchors();

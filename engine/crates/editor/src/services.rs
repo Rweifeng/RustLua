@@ -69,6 +69,40 @@ pub enum EditorCommand {
     SelectEntity {
         id: SceneEntityId,
     },
+    /// 为实体添加注册表里的组件（默认值；一次提交 = 一条 Undo）。
+    ///
+    /// 目标实体由命令**显式携带**：Inspector 不再"偷偷读选区"，也不在自己文件里写文档。
+    AddComponent {
+        entity: SceneEntityId,
+        component: String,
+    },
+    /// 移除实体上的组件（一次提交 = 一条 Undo）。
+    RemoveComponent {
+        entity: SceneEntityId,
+        component: String,
+    },
+    /// 用 Inspector 当前的 Collider3d 字段缓冲为实体写入 Collider3d 组件。
+    AddCollider3d {
+        entity: SceneEntityId,
+    },
+    /// 移除实体上的 Collider3d 组件。
+    RemoveCollider3d {
+        entity: SceneEntityId,
+    },
+    /// 重命名实体。名称随命令一起给出，避免命令层反过来依赖面板的名称缓冲。
+    RenameSelection {
+        entity: SceneEntityId,
+        name: String,
+    },
+    /// 把编辑器组件剪贴板粘贴到指定实体（一次提交 = 一条 Undo）。
+    PasteComponents {
+        entity: SceneEntityId,
+    },
+    /// 设置"运行时切场景不销毁"（Inspector 的持久实体复选框）。
+    SetEntityPersistent {
+        entity: SceneEntityId,
+        persistent: bool,
+    },
     /// docs/55 阶段 2：按 schema/PropertyPath 改一个组件字段（一次提交 = 一条 Undo）。
     ///
     /// 通用（schema 驱动）Inspector 只发这个 action，不直接写组件串；取值校验、
@@ -78,6 +112,27 @@ pub enum EditorCommand {
         component: String,
         field: String,
         value: String,
+    },
+    /// **原子多字段**写入（一次提交 = 一条 Undo）：组件级动作（如 `UiLayout` 的锚点预设）
+    /// 会同时改多个字段，逐字段提交会留下多条历史。
+    SetComponentFields {
+        entity: SceneEntityId,
+        component: String,
+        fields: Vec<(String, String)>,
+    },
+    /// **多选批量**：把取值写到**所有选中且拥有该组件**的实体上（一次提交 = 一条 Undo）。
+    ///
+    /// 这是唯一一对"读选区"的命令，理由是"批量改写"本身就是选区语义（旧手写面板的行为）；
+    /// 目标集合仍来自 `SelectionService`（选择的唯一事实源），面板不自己算。
+    SetComponentFieldOnSelection {
+        component: String,
+        field: String,
+        value: String,
+    },
+    /// 多选批量的多字段版本（组件级动作 + 多选）。
+    SetComponentFieldsOnSelection {
+        component: String,
+        fields: Vec<(String, String)>,
     },
     /// Prefab 实例的字段级覆盖：把实例取值写回源 Prefab 并更新全部实例。
     ApplyPrefabOverride {
@@ -374,7 +429,17 @@ impl WorkspaceController {
             | EditorCommand::DeleteSelection
             | EditorCommand::ReparentSelection { .. }
             | EditorCommand::SelectEntity { .. }
+            | EditorCommand::AddComponent { .. }
+            | EditorCommand::RemoveComponent { .. }
+            | EditorCommand::AddCollider3d { .. }
+            | EditorCommand::RemoveCollider3d { .. }
+            | EditorCommand::RenameSelection { .. }
+            | EditorCommand::PasteComponents { .. }
+            | EditorCommand::SetEntityPersistent { .. }
             | EditorCommand::SetComponentField { .. }
+            | EditorCommand::SetComponentFields { .. }
+            | EditorCommand::SetComponentFieldOnSelection { .. }
+            | EditorCommand::SetComponentFieldsOnSelection { .. }
             | EditorCommand::ApplyPrefabOverride { .. }
             | EditorCommand::RevertPrefabOverride { .. }
             | EditorCommand::ReapplyPrefab { .. }

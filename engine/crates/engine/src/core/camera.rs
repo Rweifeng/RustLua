@@ -654,6 +654,27 @@ impl std::fmt::Display for Camera3dError {
 }
 impl std::error::Error for Camera3dError {}
 
+impl Default for Camera3D {
+    /// 新建相机的默认参数：位置 `(0,0,5)` 看向原点、FOV 90°、near 0.1、far 100。
+    ///
+    /// 编辑器「添加组件 ▸ Camera3D」直接用这个类型的编码，编辑器里不再手写这份默认值
+    /// （与迁移后的其它组件同一条规则：默认值只有引擎一处定义）。
+    /// `aspect_ratio` 只是占位——宿主每帧用窗口比例覆盖它。
+    fn default() -> Self {
+        Self {
+            position: Vec3::new(0.0, 0.0, 5.0),
+            target: Vec3::ZERO,
+            up: Vec3::Y,
+            fov_y: std::f32::consts::FRAC_PI_2,
+            aspect_ratio: 1.0,
+            near: 0.1,
+            far: 100.0,
+            pose_from_transform: false,
+            enabled: true,
+        }
+    }
+}
+
 impl Camera3D {
     pub fn perspective(
         position: Vec3,

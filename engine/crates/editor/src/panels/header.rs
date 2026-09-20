@@ -2,7 +2,7 @@
 
 use crate::EditorApp;
 use crate::util::{
-    choose_project_directory, display_path, icon_toggle, open_in_explorer, strip_verbatim_prefix,
+    choose_project_directory, icon_toggle, open_in_explorer, strip_verbatim_prefix,
 };
 use crate::workspace_root;
 use eframe::egui;
@@ -58,17 +58,8 @@ impl EditorApp {
         self.request_document_change(crate::actions::PendingChange::Recover { candidate });
     }
 
-    /// 实际替换为崩溃快照文档（仅由确认流或 clean 快速路径调用）。
-    pub(crate) fn perform_recover_candidate(&mut self, candidate: editor::RecoveryCandidate) {
-        self.set_current_scene_document(self.recovery.recover(&candidate));
-        self.history.clear();
-        self.autosave.reset();
-        // 统一收尾：选择修复 + Inspector 空同步 + Scene View/Game 预览失效 +
-        // Hierarchy 元数据重扫（快照替换后强制隐藏/锁定集合重建）。
-        self.on_document_changed(crate::actions::DocumentChange::Opened);
-        self.refresh_recovery_scan();
-        self.status = format!("已恢复崩溃快照：{}", display_path(&candidate.path));
-    }
+    // `perform_recover_candidate` **已搬到 shell**（`actions.rs`，第 28 轮）：它会替换当前文档，
+    // 属于提交边界。面板只发确认/typed action。
 
     /// 重新扫描崩溃恢复目录。
     ///

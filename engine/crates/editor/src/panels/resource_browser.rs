@@ -30,6 +30,9 @@ impl EditorApp {
                     ui.label(format!("{} 项", self.resources.visible_entries().len()));
                 });
                 ui.text_edit_singleline(&mut self.resources_filter);
+                // P1：重命名（引用保持）。改名走 shell 的 `perform_resource_move`：
+                // 搬文件 + 改写工程里所有引用（当前文档走内存 + Undo）。
+                self.draw_resource_rename_row(ui);
                 if let Some(error) = self.resources.last_error() {
                     ui.colored_label(egui::Color32::RED, format!("错误：{error}"));
                 }
@@ -121,6 +124,66 @@ impl EditorApp {
 
     /// 绘制单个资源条目：纹理/模型/预制体可拖放到场景，其余为文件名标签。
     /// 只展示资源名（不显示「类型 Registered」状态行）。
+    /// 资源右键菜单：目前只有"重命名…"（引用保持）。
+    fn draw_resource_context_menu(&mut self, ui: &mut egui::Ui, entry: &ResourceEntry) {
+        let file_name = entry
+            .path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if ui.button("重命名…").clicked() {
+            self.resource_rename = Some((entry.path.clone(), file_name));
+            ui.close();
+        }
+    }
+
+    /// 重命名输入行（只在右键"重命名…"之后出现）。确认时调用 shell 的
+    /// `perform_resource_move`——面板不自己碰磁盘与文档。
+    fn draw_resource_rename_row(&mut self, ui: &mut egui::Ui) {
+        let Some((path, buffer)) = self.resource_rename.clone() else {
+            return;
+        };
+        let directory = path.parent().map(Path::to_path_buf).unwrap_or_default();
+        let mut buffer = buffer;
+        let mut confirm = false;
+        let mut cancel = false;
+        ui.horizontal(|ui| {
+            ui.small("重命名");
+            let response = ui.add(
+                egui::TextEdit::singleline(&mut buffer)
+                    .desired_width((ui.available_width() - 96.0).max(60.0))
+                    .hint_text("新文件名"),
+            );
+            if response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)) {
+                confirm = true;
+            }
+            if ui.small_button("确定").clicked() {
+                confirm = true;
+            }
+            if ui.small_button("取消").clicked() {
+                cancel = true;
+            }
+        });
+        if confirm {
+            let target = directory.join(buffer.trim());
+            match self.perform_resource_move(&path, &target) {
+                Ok(status) => {
+                    self.status = status;
+                    self.resource_rename = None;
+                }
+                Err(error) => {
+                    // 失败时保留输入行，让作者改个名字再试（并给出拒绝原因）。
+                    self.status = error;
+                    self.resource_rename = Some((path.clone(), buffer));
+                }
+            }
+        } else if cancel {
+            self.resource_rename = None;
+        } else if self.resource_rename.is_some() {
+            self.resource_rename = Some((path, buffer));
+        }
+    }
+
     fn draw_resource_entry(
         &mut self,
         ui: &mut egui::Ui,
@@ -191,6 +254,9 @@ impl EditorApp {
                 {
                     *resource_to_open = Some(entry.path.clone());
                 }
+                response.context_menu(|ui| {
+                    self.draw_resource_context_menu(ui, entry);
+                });
             });
         }
         if let Some(error) = &entry.error {
@@ -704,6 +770,97 @@ mod tests {
                 .iter()
                 .all(|px| *px == [128, 128, 128, 128])
         );
+    }
+
+    /// **资源重命名 + 引用保持**（第 44 轮，docs/55 P1 的 Project Browser 一条）：
+    /// 磁盘文件改名、其它文档里的引用被改写、当前打开的文档在内存里改写并可 Undo、
+    /// 坏文件原样保留（由 lib 侧的 `resource_ops` 测试覆盖），越界/已存在的目标被拒绝。
+    #[test]
+    fn rename_resource_keeps_references_and_refuses_unsafe_targets() {
+        let root = temp_project_root("rename-resource");
+        fs::write(root.join("assets/player.png"), b"png").unwrap();
+        // 另一个引用了该纹理的文档（磁盘上，非当前打开）。
+        let mut other = engine::core::scene::Scene::new("other");
+        other
+            .add_entity(engine::core::scene::SceneEntityId(1), "Hero", None)
+            .unwrap();
+        other
+            .entities
+            .get_mut(&engine::core::scene::SceneEntityId(1))
+            .unwrap()
+            .components
+            .insert(
+                "Sprite".to_owned(),
+                "texture=assets/player.png;size=1x1;tint=1,1,1,1;sorting_layer=default".to_owned(),
+            );
+        other.save(root.join("scenes/other.scene")).unwrap();
+
+        let project = open_project(&root).unwrap();
+        let mut app = EditorApp::new(project, None, LogSink::new(64));
+        app.refresh_resources();
+        // 当前打开的文档：同样引用这张纹理（应走"内存改写 + Undo"，不写盘）。
+        let scene = app.document.new_scene("main");
+        let id = app.tree.create_entity(scene, "Hero", None).unwrap();
+        // 给当前文档一个盘上路径（`scenes/main.scene` 本身不存在）：这样它会走
+        // "内存改写 + Undo、不写盘"那条路，与真实打开文档的行为一致。
+        app.document.current_scene.as_mut().unwrap().path = Some(root.join("scenes/main.scene"));
+        app.document
+            .current_scene
+            .as_mut()
+            .unwrap()
+            .scene
+            .entities
+            .get_mut(&id)
+            .unwrap()
+            .components
+            .insert(
+                "Sprite".to_owned(),
+                "texture=assets/player.png;size=1x1;tint=1,1,1,1;sorting_layer=default".to_owned(),
+            );
+        app.document.current_scene.as_mut().unwrap().mark_dirty();
+        let undo_before = app.history.undo_len();
+
+        // 越界目标（绝对路径）与已存在的目标都必须被拒绝，且不产生任何副作用。
+        assert!(
+            app.perform_resource_move(
+                std::path::Path::new("assets/player.png"),
+                std::path::Path::new("C:/windows/system32/evil.png")
+            )
+            .is_err()
+        );
+        assert!(
+            app.perform_resource_move(
+                std::path::Path::new("assets/player.png"),
+                std::path::Path::new("scenes/main.scene")
+            )
+            .is_err()
+        );
+        assert!(root.join("assets/player.png").exists(), "被拒绝时不得搬动文件");
+
+        let status = app
+            .perform_resource_move(
+                std::path::Path::new("assets/player.png"),
+                std::path::Path::new("assets/hero.png"),
+            )
+            .expect("合法重命名必须成功");
+        assert!(status.contains("已重命名资源"), "{status}");
+        assert!(!root.join("assets/player.png").exists());
+        assert!(root.join("assets/hero.png").exists());
+        // 其它文档：磁盘上已改写。
+        let reloaded = engine::core::scene::Scene::load(root.join("scenes/other.scene")).unwrap();
+        assert!(
+            reloaded.entities[&engine::core::scene::SceneEntityId(1)].components["Sprite"]
+                .contains("assets/hero.png"),
+            "其它文档的引用必须跟着改"
+        );
+        // 当前文档：内存改写 + 一条 Undo。
+        assert!(
+            app.document.current_scene.as_ref().unwrap().scene.entities[&id].components["Sprite"]
+                .contains("assets/hero.png")
+        );
+        assert_eq!(app.history.undo_len(), undo_before + 1, "引用改写必须可撤销");
+        assert_eq!(app.selected_resource, Some(PathBuf::from("assets/hero.png")));
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

@@ -73,6 +73,20 @@ pub struct UiText {
     pub font: String,
 }
 
+impl Default for UiText {
+    /// 新建 `Text` 组件的默认值：空文本 + 基准字号 + 白色 + 项目默认字体。
+    ///
+    /// 编辑器「添加组件 ▸ Text」直接用这个类型的编码，编辑器里不再手写这份默认值。
+    fn default() -> Self {
+        Self {
+            text: String::new(),
+            font_size: UI_TEXT_BASE_PX,
+            color: [1.0, 1.0, 1.0],
+            font: String::new(),
+        }
+    }
+}
+
 /// Screen-space textured quad (`Image` component).
 #[derive(Clone, Debug, PartialEq)]
 pub struct UiImage {
@@ -380,7 +394,11 @@ pub(crate) fn split_fields(value: &str) -> Vec<&str> {
 
 /// Escapes `\`, `;`, `=` inside a free-form text field so it survives the
 /// `;`-separated component encoding.
-fn escape_text(text: &str) -> String {
+///
+/// 对 crate 内其它模块公开：`ComponentSchema` 的 `FieldSchema::escaped` 字段与
+/// `property_path` 的按字段写入都复用**同一份**转义实现（否则"schema 写出的串引擎读不回"
+/// 会变成静默的数据损坏）。
+pub(crate) fn escape_text(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for ch in text.chars() {
         match ch {
@@ -394,7 +412,9 @@ fn escape_text(text: &str) -> String {
 }
 
 /// Inverse of [`escape_text`]; unknown `\X` sequences pass through unchanged.
-fn unescape_text(text: &str) -> String {
+///
+/// 与 [`escape_text`] 一样对 crate 内公开（见其说明）。
+pub(crate) fn unescape_text(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars();
     while let Some(ch) = chars.next() {

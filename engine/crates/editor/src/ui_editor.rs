@@ -8,7 +8,9 @@ use engine::core::{
     editor_plugins::EditorPlugin,
     preview_diagnostics::{DiagnosticCollector, PreviewDiagnostic, PreviewErrorKind},
     scene::SceneEntityId,
-    ui_animation::{UiAnimationPreview, UiEasing, UiKeyframe},
+    // `UiEasing`/`UiKeyframe` 不再从这里导入：`UiAnimation` 的解析/编码已搬进引擎
+    // （`UiAnimationClip::tracks_from_component_str`/`tracks_to_component_str`）。
+    ui_animation::UiAnimationPreview,
     ui_binding::BindingSet,
     ui_events::UiEvents,
     ui_layout::{CanvasConfig, ContainerStyle, UiRectLayout},
@@ -229,24 +231,12 @@ impl EditorApp {
             self.set_ui_component("UiAnimation", None);
             return;
         }
-        let mut fields = Vec::new();
-        for (property, track) in &self.ui_animation_editor.tracks {
-            let keyframes = track
-                .keyframes
-                .iter()
-                .map(|keyframe| {
-                    format!(
-                        "{:.3}:{:.3}:{}",
-                        keyframe.time,
-                        keyframe.value,
-                        keyframe.easing.as_str()
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join(",");
-            fields.push(format!("track.{property}={keyframes}"));
-        }
-        self.set_ui_component("UiAnimation", Some(fields.join("|")));
+        // 编码同样来自引擎（唯一事实源）：编辑器不再自己拼 `track.<属性>=…`。
+        let payload =
+            engine::core::ui_animation::UiAnimationClip::tracks_to_component_str(
+                &self.ui_animation_editor.tracks,
+            );
+        self.set_ui_component("UiAnimation", Some(payload));
     }
 
     pub(crate) fn advance_ui_animation_preview(&mut self, delta_seconds: f32) {
@@ -426,42 +416,17 @@ impl EditorApp {
     }
 }
 
+/// `UiAnimation` 组件串 → 预览用的 `UiAnimationClip`。
+///
+/// **解析本身住在引擎**（`UiAnimationClip::tracks_from_component_str`，第 40 轮搬过去）：
+/// 编辑器和审计必须用同一份格式定义，否则又是"两份事实源"。这里只负责把轨道装进
+/// 预览用的 clip（`name` 是预览概念，不属于组件契约）。
 pub(crate) fn parse_ui_animation_component(
     raw: &str,
 ) -> Result<engine::core::ui_animation::UiAnimationClip, String> {
+    let tracks = engine::core::ui_animation::UiAnimationClip::tracks_from_component_str(raw)?;
     let mut clip = engine::core::ui_animation::UiAnimationClip::new("preview");
-    for field in raw.split('|') {
-        let field = field.trim();
-        if field.is_empty() {
-            continue;
-        }
-        let Some((key, value)) = field.split_once('=') else {
-            return Err(format!("malformed animation field: {field}"));
-        };
-        let Some(property) = key.strip_prefix("track.") else {
-            return Err(format!("unknown animation field: {key}"));
-        };
-        let mut keyframes = Vec::new();
-        for item in value.split(',') {
-            let parts = item.split(':').collect::<Vec<_>>();
-            if parts.len() != 3 {
-                return Err(format!("malformed keyframe: {item}"));
-            }
-            keyframes.push(UiKeyframe {
-                time: parts[0]
-                    .trim()
-                    .parse()
-                    .map_err(|_| format!("bad time: {item}"))?,
-                value: parts[1]
-                    .trim()
-                    .parse()
-                    .map_err(|_| format!("bad value: {item}"))?,
-                easing: UiEasing::parse(parts[2]).ok_or_else(|| format!("bad easing: {item}"))?,
-            });
-        }
-        let track = engine::core::ui_animation::UiAnimationTrack::new(property, keyframes)?;
-        clip.add_track(track)?;
-    }
+    clip.tracks = tracks;
     Ok(clip)
 }
 

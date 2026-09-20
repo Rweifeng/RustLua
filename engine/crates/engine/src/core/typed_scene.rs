@@ -83,6 +83,75 @@ pub enum ComponentId {
     RenderMode,
 }
 
+impl ComponentId {
+    /// 运行时认识的**全部**组件名（[`Self::as_str`] 的返回值就是场景/Prefab 里写的那个名字）。
+    ///
+    /// 存在的理由：`EntityScript`/`Script` 与 `Particle`/`ParticleEmitter` 是两代**键名漂移**
+    /// ——注册表描述的名字没人消费，而真实工程里的组件被审计报"没有 schema"。
+    /// 逐个写断言挡不住第三例，所以把枚举与运行时名字放在一处，
+    /// 让 `component_schema` 的 `every_component_id_the_runtime_knows_has_a_schema`
+    /// **机械化**地断言"运行时认识的每个组件名都有 schema"。
+    ///
+    /// 新增组件时的顺序：先在这里加变体与名字，再在 `compile_component` 加深分支，
+    /// 最后在 `component_schema::builtin_registry` 注册（漏了最后一步上面那条测试会判红）。
+    pub const ALL: &'static [Self] = &[
+        Self::Transform2D,
+        Self::Transform3D,
+        Self::Camera3D,
+        Self::Camera2D,
+        Self::Light,
+        Self::MeshRenderer,
+        Self::UiLayout,
+        Self::Container,
+        Self::Text,
+        Self::Image,
+        Self::UiEvents,
+        Self::ButtonStates,
+        Self::WorldText,
+        Self::Sprite,
+        Self::Quad,
+        Self::Tilemap,
+        Self::ParticleEmitter,
+        Self::Collider,
+        Self::Collider3d,
+        Self::Animation,
+        Self::Animation3d,
+        Self::Script,
+        Self::RenderMode,
+    ];
+
+    /// 场景/Prefab 文件里写的组件名（与 `compile_component` 的 match 分支一一对应）。
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            // 2D 变换在磁盘上就叫 `Transform`（`Transform3D` 才是带后缀的那个）。
+            Self::Transform2D => "Transform",
+            Self::Transform3D => "Transform3D",
+            Self::Camera3D => "Camera3D",
+            Self::Camera2D => "Camera2D",
+            Self::Light => "Light",
+            Self::MeshRenderer => "MeshRenderer",
+            Self::UiLayout => "UiLayout",
+            Self::Container => "Container",
+            Self::Text => "Text",
+            Self::Image => "Image",
+            Self::UiEvents => "UiEvents",
+            Self::ButtonStates => "ButtonStates",
+            Self::WorldText => "WorldText",
+            Self::Sprite => "Sprite",
+            Self::Quad => "Quad",
+            Self::Tilemap => "Tilemap",
+            Self::ParticleEmitter => "ParticleEmitter",
+            Self::Collider => "Collider",
+            Self::Collider3d => "Collider3d",
+            Self::Animation => "Animation",
+            Self::Animation3d => "Animation3D",
+            Self::Script => "Script",
+            Self::RenderMode => "RenderMode",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum TypedComponent {
     Transform2D(Transform),
@@ -291,6 +360,22 @@ fn compile_component(
         _ => return None,
     };
     Some(parsed)
+}
+
+/// 组件载荷的**引擎校验**（唯一事实源，供编辑器在字段写入后兜底）。
+///
+/// 返回值三态：
+/// - `None`：组件名不在引擎的已知集合里（Lua/平台自定义组件），引擎刻意不解释它；
+/// - `Some(Ok(()))`：引擎自己的 typed 解析器能读这条载荷；
+/// - `Some(Err(reason))`：已知组件但载荷非法，`reason` 是引擎解析器的原文。
+///
+/// 为什么需要这条入口：schema 描述的是**字符串契约**（字段类型 + 声明式规则），而引擎
+/// 解析器还管着 schema 表达不了的**跨字段/几何不变量**（`Camera3D` 的 `near < far`、
+/// look-at 非退化、`Transform` 的缩放非零……）。编辑器允许写入的载荷至少必须是引擎能读的，
+/// 因此字段写入后跑一次这里——校验逻辑只有解析器一处定义，编辑器不另写一份，也不会漂移。
+#[must_use]
+pub fn validate_component_payload(name: &str, value: &str) -> Option<Result<(), String>> {
+    compile_component(name, value, None).map(|parsed| parsed.map(|_| ()))
 }
 
 impl TypedScene {
@@ -719,6 +804,43 @@ mod tests {
         assert_eq!(
             scene.entities[&SceneEntityId(1)].components["MyGameHealth"],
             "hp=10"
+        );
+    }
+
+    /// 编辑器字段写入的兜底门：三态语义（不认识的组件 / 引擎能读 / 引擎读不了），
+    /// 且"引擎读不了"必须给出解析器原文——相机的 `near >= far` 就是 schema 的字段规则
+    /// 表达不了、只能由解析器拦下的那类不变量。
+    #[test]
+    fn payload_validation_reports_unknown_and_engine_rejected_components() {
+        // 自定义/Lua 组件：引擎刻意不解释（不是错误）。
+        assert_eq!(validate_component_payload("MyGameHealth", "hp=10"), None);
+        // 引擎能读。
+        assert_eq!(
+            validate_component_payload(
+                "Camera3D",
+                "position=0,0,5;target=0,0,0;fov=90;near=0.1;far=100"
+            ),
+            Some(Ok(()))
+        );
+        // 已知组件但载荷非法：必须带原因，编辑器据此拒绝写入。
+        let rejected = validate_component_payload(
+            "Camera3D",
+            "position=0,0,5;target=0,0,0;fov=90;near=10;far=1",
+        )
+        .expect("Camera3D 是已知组件");
+        assert!(rejected.is_err(), "near > far 必须被判红");
+        assert!(
+            !rejected.unwrap_err().is_empty(),
+            "拒绝原因不能是空串（编辑器要把它显示给用户）"
+        );
+        // 落点退化（position == target）同样只有解析器拦得住。
+        assert!(
+            validate_component_payload(
+                "Camera3D",
+                "position=0,0,5;target=0,0,5;fov=90;near=0.1;far=100"
+            )
+            .expect("known")
+            .is_err()
         );
     }
 

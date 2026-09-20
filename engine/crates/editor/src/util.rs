@@ -314,7 +314,12 @@ pub(crate) fn configure_cjk_fallback(context: &egui::Context) {
 }
 
 /// 在资源管理器中打开目录（ShellExecuteW，比 `explorer <path>` 更可靠）。
-#[cfg(windows)]
+///
+/// **测试下是 no-op**：`menu.rs::every_menu_action_is_executable_without_panicking` 会逐个执行
+/// 菜单动作（含「帮助 ▸ 使用手册」→ `open_help`），真去 ShellExecuteW 会让 `cargo test`
+/// 每次凭空弹出资源管理器窗口（用户看到的"docs 目录自己打开"就是这个）。副作用只在
+/// `cfg(test)` 关掉，生产行为一字未变。
+#[cfg(all(windows, not(test)))]
 pub(crate) fn open_in_explorer(path: &Path) {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::UI::Shell::ShellExecuteW;
@@ -337,5 +342,5 @@ pub(crate) fn open_in_explorer(path: &Path) {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(any(not(windows), test))]
 pub(crate) fn open_in_explorer(_path: &Path) {}

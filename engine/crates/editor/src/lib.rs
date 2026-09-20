@@ -3,6 +3,7 @@ pub mod file_watcher;
 pub mod layout;
 pub mod perf_fixture;
 pub mod play_control;
+pub mod prefab_graph;
 pub mod schema_audit;
 
 pub use play_control::{
@@ -21,14 +22,25 @@ pub use file_watcher::{
 pub use schema_audit::{SchemaAudit, SchemaFinding, audit_project};
 pub mod profiler;
 pub mod resource_browser_state;
+pub mod resource_ops;
 pub mod resource_refresh;
 pub mod schema_fields;
 pub mod services;
 
+pub use resource_ops::{
+    RewriteReport, normalize_relative, paths_match, rewrite_component_reference,
+    rewrite_project_references, rewrite_scene_references, strip_verbatim_prefix,
+};
+
+pub use prefab_graph::{MAX_NESTING_DEPTH, PrefabNesting, scan_prefab_nesting};
+
 pub use schema_fields::{
-    ChoiceSource, FieldEdit, FieldUnit, HANDWRITTEN_PANEL_COMPONENTS, SchemaFieldError,
-    SchemaFieldRow, driven_components, edit_component_field, field_choice_source, field_unit,
-    is_schema_driven, preview_field_edit, rows_for_component, rows_for_entity,
+    ChoiceSource, FieldEdit, FieldUnit, HANDWRITTEN_PANEL_COMPONENTS, SORTING_LAYERS,
+    SchemaComponentAction, SchemaComponentNote, SchemaComponentToggle, SchemaFieldError,
+    SchemaFieldRow, component_actions, component_notes, component_toggles, driven_components,
+    edit_component_field, edit_component_payload, field_choice_source, field_unit,
+    filter_field_rows, is_schema_driven, mark_missing_assets, mirror_fields, picker_candidates,
+    preview_field_edit, rows_for_component, rows_for_entity, rows_for_selection,
 };
 
 pub use diagnostics::{DiagnosticLocation, parse_location};
@@ -60,9 +72,8 @@ pub use engine::core::resource_kind::ResourceKind;
 pub mod inspector_state;
 
 pub use inspector_state::{
-    Camera3DFields, Collider3dFields, ContainerFields, InspectorError,
-    InspectorSnapshot, InspectorState, TextFields, Transform3DFields, TransformFields,
-    TransformSpace, UiLayoutFields,
+    Collider3dFields, ContainerFields, InspectorError, InspectorSnapshot, InspectorState,
+    Transform3DFields, TransformFields,
 };
 
 pub mod scene_tree_state;

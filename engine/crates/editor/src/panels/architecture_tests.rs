@@ -32,22 +32,27 @@ const WRITE_NEEDLES: &[&str] = &[
 /// 数值就是"还没迁移完的家底"：`0` 表示该面板已经完全只发 action。
 /// 非 0 的几项都是**已知欠账**，每一条都要在 docs/56 §7 的迁移清单里有对应工作项：
 ///
-/// - `inspector.rs`：手写组件面板各写各的（`self.inspector.set_*` + `history.execute`），
-///   以及 Prefab Apply/Revert/写回的实现体（它们现在由 dispatch 调用，但仍住在这个文件里）；
-/// - `hierarchy.rs`：创建/删除/重命名/换父/粘贴等实体操作；
-/// - `scene_view.rs`：Tile 绘制与拖放生成实体的写入点（拖拽/Gizmo 的提交层已搬到
-///   `crate::scene_drag`，本文件从 16 处降到 8 处；其中 4 处是**跨行链式**
-///   `self.history\n.execute(...)`，正是"逐行 grep 抓不到、去空白扫描才抓得到"的那类）；
-/// - `game_view.rs`：`stop()` 取回编辑器快照（Play 生命周期实现住在这个文件里）；
-/// - `header.rs`：文档切换的实现体。
+/// - `inspector.rs`：**已清零**（第 27 轮）——手写组件面板的提交、实体操作、Prefab 逐字段
+///   Apply/Revert/写回/解包/重建实例整条路径都搬到了 shell（`actions.rs`），面板只发
+///   typed action；剩下的辅助函数（`insert_default_component`、`prefab_instance_source` 等）
+///   是**纯函数/只读**，不写文档。
+/// - `hierarchy.rs`：**已清零**（第 28 轮）——创建/删除/重命名/换父/粘贴/复制/隐藏锁定标记
+///   落盘/场景与 Widget 新建都搬到了 `crate::hierarchy_ops`（面板只发 typed action）；
+/// - `scene_view.rs`：**已清零**（第 29 轮）——Tile 绘制落盘与拖放生成实体（prefab/model/sprite）
+///   搬到了 `crate::scene_ops`；拖拽/Gizmo 的提交层更早已在 `crate::scene_drag`。
+///
+/// 至此 `panels/` 下**所有**文件的直接写入计数都是 0：新增一处就会判红并给出"改用
+/// `self.dispatch(...)`"的修复提示（这条规则现在是**不变量**，不再是欠账表）。
+/// - `game_view.rs` / `header.rs`：**已清零**（第 28 轮）——Play 的 Stop 收尾与崩溃快照替换
+///   都搬到了 shell（`actions.rs`），面板只发 typed action / 请求确认；
 const PINNED_WRITES: &[(&str, usize)] = &[
     ("console.rs", 0),
     ("domain_data.rs", 0),
-    ("game_view.rs", 1),
-    ("header.rs", 1),
-    ("hierarchy.rs", 14),
+    ("game_view.rs", 0),
+    ("header.rs", 0),
+    ("hierarchy.rs", 0),
     ("input_bindings.rs", 0),
-    ("inspector.rs", 25),
+    ("inspector.rs", 0),
     ("keymap.rs", 0),
     ("mod.rs", 0),
     ("progress.rs", 0),
@@ -55,7 +60,7 @@ const PINNED_WRITES: &[(&str, usize)] = &[
     ("publish.rs", 0),
     ("resource_browser.rs", 0),
     ("runtime_debug.rs", 0),
-    ("scene_view.rs", 8),
+    ("scene_view.rs", 0),
     ("schema_inspector.rs", 0),
     ("tilemap_tools.rs", 0),
     ("toolbar.rs", 0),

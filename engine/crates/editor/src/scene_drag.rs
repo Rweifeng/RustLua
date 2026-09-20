@@ -66,6 +66,11 @@ impl EditorApp {
             self.scene_state.preview_ui.clear();
             return;
         }
+        // 世界 → 局部**必须在 take 之前算**：`scene_drag_locals()` 读的就是
+        // `scene_state.preview`（先 take 会让 locals 恒为空 → 文档写入被静默跳过）。
+        // 这个顺序错误由 `scene_view::tests::synthetic_pointer_drag_commits_exactly_one_undo`
+        // （帧级合成拖动）当场抓出：拖动全程有预览、松手也提交了事务，但文档一字未改。
+        let locals = self.scene_drag_locals();
         let preview = std::mem::take(&mut self.scene_state.preview);
         let preview_ui = std::mem::take(&mut self.scene_state.preview_ui);
         let first = preview
@@ -82,8 +87,6 @@ impl EditorApp {
             CommandKind::Transform(first),
             Some(first),
         );
-        // 世界 → 局部：必须在取 `current_scene` 的**可变**借用之前算好（换算只读文档）。
-        let locals = self.scene_drag_locals();
         let Some(scene) = self.document.current_scene.as_mut() else {
             return;
         };

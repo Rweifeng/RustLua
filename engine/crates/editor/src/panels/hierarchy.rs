@@ -2,7 +2,7 @@
 
 use crate::EditorApp;
 use crate::util::{display_path, strip_verbatim_prefix};
-use editor::{CommandKind, ReparentPosition, SelectionSource};
+use editor::{ReparentPosition, SelectionSource};
 use eframe::egui;
 use engine::core::{
     prefab::Prefab, resource_db::AssetId, scene::SceneEntityId, transform::Transform3D,
@@ -86,8 +86,10 @@ pub(crate) struct HierarchyVisibleCache {
     entity_count: usize,
     filter: String,
     collapsed: Vec<SceneEntityId>,
-    /// 过滤词命中自身名称的实体数（过滤框计数提示，随扁平化一次算出）。
-    name_match_count: usize,
+    /// 过滤词**自身命中**的实体数（过滤框计数提示，随扁平化一次算出）。
+    match_count: usize,
+    /// 上一次扁平化用的解析结果：绘制行时复用，避免每行重新解析过滤串。
+    parsed_filter: HierarchyFilter,
     /// 行模型用 `Arc` 共享：绘制期间持有它不借用 `self`，重入查询（Shift 范围选等）
     /// 也能拿到同一份数据，且每次取用只是引用计数 +1。
     rows: std::sync::Arc<Vec<HierarchyRow>>,
@@ -103,46 +105,126 @@ impl HierarchyVisibleCache {
 /// 单个实体在过滤下的匹配状态（一次遍历算出，供扁平化整体复用）。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct MatchState {
-    /// 实体自身名称命中过滤词。
-    pub name_matches: bool,
+    /// 实体自身命中过滤查询（名称词 + `type:` 词都满足）。
+    pub self_matches: bool,
     /// 自身或任意后代命中（决定该行是否可见）。
     pub subtree_matches: bool,
 }
 
-/// 小写化名称缓存：只在文档内容变化时重建。
+/// Hierarchy 过滤查询（第 41 轮，docs/55 ER-04 的"类型过滤"）。
 ///
-/// 过滤匹配的真正热点不是"遍历"，而是每次按键都对 10k 个名字做 `to_lowercase()`
-/// （Debug 下每次都是新分配）。名字只随文档修订变化，因此把"小写化"与"匹配"拆开：
+/// 语法刻意最小：空白分隔多个词，**全部为 AND**；
+/// - `type:<模式>` / `component:<模式>`：实体必须有**至少一个组件名**包含该模式；
+/// - 其余词：实体**名称**必须包含该词。
+///
+/// 三条刻意行为：
+/// 1. 全部大小写不敏感（与既有的名称过滤一致）；
+/// 2. `type:` 后为空（刚输入到一半）时该词被忽略——否则每敲一个前缀就会瞬间清空整棵树；
+/// 3. `type:` 用的是**子串**匹配而不是精确名：`type:ui` 能一次找出 `UiLayout`/`UiEvents`/
+///    `UiAnimation`/`UiBindings`，这是这个过滤器最有用的用法。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct HierarchyFilter {
+    name_terms: Vec<String>,
+    type_terms: Vec<String>,
+}
+
+impl HierarchyFilter {
+    pub(crate) fn parse(raw: &str) -> Self {
+        let mut filter = Self::default();
+        for term in raw.split_whitespace() {
+            let term = term.to_lowercase();
+            if let Some(pattern) = term
+                .strip_prefix("type:")
+                .or_else(|| term.strip_prefix("component:"))
+            {
+                if !pattern.is_empty() {
+                    filter.type_terms.push(pattern.to_owned());
+                }
+            } else {
+                filter.name_terms.push(term);
+            }
+        }
+        filter
+    }
+
+    /// 无有效词（空串与只有 `type:` 的输入都算"没有过滤"）。
+    pub(crate) fn is_empty(&self) -> bool {
+        self.name_terms.is_empty() && self.type_terms.is_empty()
+    }
+
+    /// 自身是否命中：名称词全部命中，且每个 `type:` 词都能在组件名里找到。
+    pub(crate) fn matches_self(&self, lower_name: &str, lower_components: &[String]) -> bool {
+        self.name_terms
+            .iter()
+            .all(|term| lower_name.contains(term.as_str()))
+            && self.type_terms.iter().all(|pattern| {
+                lower_components
+                    .iter()
+                    .any(|component| component.contains(pattern.as_str()))
+            })
+    }
+
+    /// 只按名称词匹配（Scene View 的高亮过滤用它：类型词管 Hierarchy 的行可见性，
+    /// 不该让 3D 视口里的对象凭空消失）。
+    pub(crate) fn matches_name(&self, lower_name: &str) -> bool {
+        self.name_terms
+            .iter()
+            .all(|term| lower_name.contains(term.as_str()))
+    }
+}
+
+/// 小写化缓存（名称 + 组件名）：只在文档内容变化时重建。
+///
+/// 过滤匹配的真正热点不是"遍历"，而是每次按键都对 10k 个实体做 `to_lowercase()`
+/// （Debug 下每次都是新分配）。名字与组件名只随文档修订变化，因此把"小写化"与"匹配"拆开：
 /// 改过滤词只做 `contains`，不再重新小写化。
 #[derive(Default)]
-pub(crate) struct HierarchyNameCache {
+pub(crate) struct HierarchyLowerCache {
     valid: bool,
     revision: u64,
     entity_count: usize,
-    lower: std::collections::HashMap<SceneEntityId, String>,
+    names: std::collections::HashMap<SceneEntityId, String>,
+    components: std::collections::HashMap<SceneEntityId, Vec<String>>,
 }
 
-impl HierarchyNameCache {
-    /// 取（必要时重建）当前文档的小写化名称表。
-    pub(crate) fn ensure(
-        &mut self,
-        document: &editor::SceneDocument,
-    ) -> &std::collections::HashMap<SceneEntityId, String> {
+impl HierarchyLowerCache {
+    /// 取（必要时重建）当前文档的小写化名称/组件名表。
+    pub(crate) fn ensure(&mut self, document: &editor::SceneDocument) -> &Self {
         let entity_count = document.scene.entities.len();
         if !self.valid || self.revision != document.revision || self.entity_count != entity_count {
-            self.lower.clear();
-            self.lower.extend(
+            self.names.clear();
+            self.names.extend(
                 document
                     .scene
                     .entities
                     .values()
                     .map(|entity| (entity.id, entity.name.to_lowercase())),
             );
+            self.components.clear();
+            self.components.extend(document.scene.entities.values().map(|entity| {
+                (
+                    entity.id,
+                    entity
+                        .components
+                        .keys()
+                        .map(|name| name.to_lowercase())
+                        .collect::<Vec<_>>(),
+                )
+            }));
             self.revision = document.revision;
             self.entity_count = entity_count;
             self.valid = true;
         }
-        &self.lower
+        self
+    }
+
+    pub(crate) fn name(&self, id: SceneEntityId) -> Option<&str> {
+        self.names.get(&id).map(String::as_str)
+    }
+
+    /// 该实体的小写化组件名（无记录时为空切片）。
+    pub(crate) fn components(&self, id: SceneEntityId) -> &[String] {
+        self.components.get(&id).map_or(&[], Vec::as_slice)
     }
 }
 
@@ -150,7 +232,7 @@ impl HierarchyNameCache {
 ///
 /// 旧实现 `hierarchy_filter_matches` 每行都要重新小写化自己的名字并递归整棵子树，
 /// 10k 实体下一次过滤变化是 O(n·depth) 的字符串工作；索引把它压成 O(n) 遍历，
-/// 并且复用 [`HierarchyNameCache`] 的小写化结果，不改变任何可见性语义（单测锁定等价）。
+/// 并且复用 [`HierarchyLowerCache`] 的小写化结果，不改变任何可见性语义（单测锁定等价）。
 #[derive(Debug, Default)]
 pub(crate) struct HierarchyMatchIndex {
     /// 实体 ID 已派生 `Hash`，用哈希表以获得 O(1) 查询（10k 实体下与有序表差一个量级）。
@@ -163,27 +245,27 @@ impl HierarchyMatchIndex {
         self.states.get(&id).copied().unwrap_or_default()
     }
 
-    /// 自身名称命中的实体数量（过滤框下的计数提示，无需再扫一遍）。
-    pub(crate) fn name_match_count(&self) -> usize {
+    /// **自身命中**的实体数量（过滤框下的计数提示，无需再扫一遍）。
+    pub(crate) fn match_count(&self) -> usize {
         self.states
             .values()
-            .filter(|state| state.name_matches)
+            .filter(|state| state.self_matches)
             .count()
     }
 
-    /// 用预计算的小写化名称表构建索引，`query_lower` 由调用方一次性小写化。
+    /// 用预计算的小写化缓存构建索引（名称词与 `type:` 词都走 [`HierarchyFilter`]）。
     pub(crate) fn build(
         document: &editor::SceneDocument,
-        query_lower: &str,
-        lower_names: &std::collections::HashMap<SceneEntityId, String>,
+        filter: &HierarchyFilter,
+        lower: &HierarchyLowerCache,
     ) -> Self {
         let mut states = std::collections::HashMap::with_capacity(document.scene.entities.len());
-        if query_lower.is_empty() {
+        if filter.is_empty() {
             for id in document.scene.entities.keys().copied() {
                 states.insert(
                     id,
                     MatchState {
-                        name_matches: true,
+                        self_matches: true,
                         subtree_matches: true,
                     },
                 );
@@ -212,9 +294,9 @@ impl HierarchyMatchIndex {
                 }
                 continue;
             }
-            let name_matches = lower_names
-                .get(&id)
-                .is_some_and(|name| name.contains(query_lower));
+            let self_matches = lower
+                .name(id)
+                .is_some_and(|name| filter.matches_self(name, lower.components(id)));
             let child_matches = entity
                 .children
                 .iter()
@@ -222,8 +304,8 @@ impl HierarchyMatchIndex {
             states.insert(
                 id,
                 MatchState {
-                    name_matches,
-                    subtree_matches: name_matches || child_matches,
+                    self_matches,
+                    subtree_matches: self_matches || child_matches,
                 },
             );
         }
@@ -275,41 +357,7 @@ fn triangle_disclosure_button(ui: &mut egui::Ui, expanded: bool, tooltip: &str) 
 }
 
 impl EditorApp {
-    fn set_ui_root(&mut self, id: SceneEntityId) {
-        if self.is_playing() {
-            self.status = "Play mode locks scene editing; click Stop first".to_owned();
-            return;
-        }
-        let Some(scene) = self.document.current_scene.as_mut() else {
-            self.status = "Create a scene first".to_owned();
-            return;
-        };
-        let result = self
-            .history
-            .execute(scene, "Set UI root", CommandKind::Property, |scene| {
-                for entity in scene.scene.entities.values_mut() {
-                    entity.metadata.remove("ui.root");
-                }
-                let entity = scene
-                    .scene
-                    .entities
-                    .get_mut(&id)
-                    .ok_or_else(|| "当前实体不存在".to_owned())?;
-                entity
-                    .metadata
-                    .insert("ui.root".to_owned(), "true".to_owned());
-                scene.mark_dirty();
-                Ok::<(), String>(())
-            });
-        match result {
-            Ok(true) => {
-                self.on_document_changed(crate::actions::DocumentChange::UiRootChanged);
-                self.status = "已设置 UI 根节点".to_owned();
-            }
-            Ok(false) => self.status = "No change".to_owned(),
-            Err(error) => self.status = error,
-        }
-    }
+    // `set_ui_root` **已搬到 shell**（`crate::hierarchy_ops`，第 28 轮）。
 
     fn focus_selected_scene_view(&mut self) {
         let Some(id) = self.selection.primary() else {
@@ -362,42 +410,7 @@ impl EditorApp {
         self.status = "Entity copied".to_owned();
     }
 
-    pub(crate) fn paste_entity(&mut self, parent: Option<SceneEntityId>) {
-        if self.is_playing() {
-            self.status = "Play mode locks scene editing; click Stop first".to_owned();
-            return;
-        }
-        let Some(source) = self.hierarchy_clipboard.clone() else {
-            self.status = "Entity clipboard is empty".to_owned();
-            return;
-        };
-        let tree = self.tree.clone();
-        let created = std::cell::Cell::new(None::<SceneEntityId>);
-        let Some(scene) = self.document.current_scene.as_mut() else {
-            self.status = "Create a scene first".to_owned();
-            return;
-        };
-        let result = self
-            .history
-            .execute(scene, "Paste entity", CommandKind::Create, |scene| {
-                let id = tree
-                    .duplicate_subtree(scene, &source, parent)
-                    .map_err(|error| error.to_string())?;
-                created.set(Some(id));
-                Ok::<(), String>(())
-            });
-        match result {
-            Ok(true) => {
-                if let Some(id) = created.get() {
-                    self.selection.set_single(id, SelectionSource::Hierarchy);
-                    self.sync_inspector(id);
-                }
-                self.status = "Entity pasted".to_owned();
-            }
-            Ok(false) => self.status = "No change".to_owned(),
-            Err(error) => self.status = error,
-        }
-    }
+    // `paste_entity` **已搬到 shell**（`crate::hierarchy_ops`，第 28 轮）：提交边界不在面板里。
 
     /// 层级面板：整合场景文件切换/新建，位于资源面板右侧。
     pub(crate) fn draw_hierarchy_panel(&mut self, context: &egui::Context) {
@@ -468,7 +481,8 @@ impl EditorApp {
                     let edit_width = (ui.available_width() - 34.0).max(60.0);
                     ui.add(
                         egui::TextEdit::singleline(&mut self.hierarchy_filter)
-                            .hint_text("搜索实体")
+                            // 语法提示直接写在占位文本里：`type:`/`component:` 是 ER-04 的"类型过滤"。
+                            .hint_text("搜索实体（type:Sprite 或 component:ui 按组件过滤）")
                             .desired_width(edit_width),
                     );
                     if !self.hierarchy_filter.is_empty()
@@ -478,7 +492,7 @@ impl EditorApp {
                     }
                 });
                 if !self.hierarchy_filter.trim().is_empty() {
-                    ui.small(format!("匹配 {} 项", self.hierarchy_name_match_count()));
+                    ui.small(format!("匹配 {} 项", self.hierarchy_match_count()));
                 }
                 ui.separator();
                 // 扁平化 + 虚拟滚动：只绘制视口内的行（10k 实体保持可交互）。
@@ -528,24 +542,23 @@ impl EditorApp {
         scene: &editor::SceneDocument,
         id: SceneEntityId,
     ) -> bool {
-        let query = self.hierarchy_filter.trim();
-        if query.is_empty() {
+        let filter = HierarchyFilter::parse(&self.hierarchy_filter);
+        if filter.is_empty() {
             return scene.scene.entities.contains_key(&id);
         }
-        let query_lower = query.to_lowercase();
-        let lower_names = self.hierarchy_names.ensure(scene);
-        HierarchyMatchIndex::build(scene, &query_lower, lower_names)
+        let lower = self.hierarchy_lower.ensure(scene);
+        HierarchyMatchIndex::build(scene, &filter, lower)
             .state(id)
             .subtree_matches
     }
 
-    /// H05：按名称（不含后代）命中的实体数，用于过滤框下的计数提示。
+    /// H05：**自身命中**过滤查询的实体数，用于过滤框下的计数提示。
     ///
     /// 先确保扁平化缓存与**当前**状态一致（过滤词/折叠/修订都属于缓存键），
     /// 再取一次性算好的计数：过滤时每帧一次全量小写化扫描已无必要。
-    fn hierarchy_name_match_count(&mut self) -> usize {
+    fn hierarchy_match_count(&mut self) -> usize {
         self.ensure_hierarchy_rows();
-        self.hierarchy_visible_cache.name_match_count
+        self.hierarchy_visible_cache.match_count
     }
 
     /// H03：单选并更新 Shift 锚点（Hierarchy 内统一入口）。
@@ -594,9 +607,10 @@ impl EditorApp {
         let mut collapsed: Vec<_> = self.scene_state.collapsed.iter().copied().collect();
         collapsed.sort_unstable_by_key(|id| id.0);
         let filter = self.hierarchy_filter.trim().to_owned();
-        let filter_active = !filter.is_empty();
+        let parsed_filter = HierarchyFilter::parse(&filter);
+        let filter_active = !parsed_filter.is_empty();
         let mut out = Vec::new();
-        let (revision, entity_count, name_match_count) = {
+        let (revision, entity_count, match_count) = {
             let Some(document) = self.document.current_scene.as_ref() else {
                 self.hierarchy_visible_cache = HierarchyVisibleCache::default();
                 return;
@@ -616,30 +630,26 @@ impl EditorApp {
             let roots: Vec<SceneEntityId> =
                 self.tree.roots(document).map(|entity| entity.id).collect();
             // 一次遍历算出过滤匹配索引，扁平化与计数共用（取代逐行递归 + 重复小写化）。
-            // 小写化名称表按文档修订缓存：改过滤词只做 `contains`，不再重算 10k 个名字。
+            // 小写化名称/组件名表按文档修订缓存：改过滤词只做 `contains`，不再重算 10k 条。
             let index = if filter_active {
-                let query_lower = filter.to_lowercase();
-                let lower_names = self.hierarchy_names.ensure(document);
-                Some(HierarchyMatchIndex::build(
-                    document,
-                    &query_lower,
-                    lower_names,
-                ))
+                let lower = self.hierarchy_lower.ensure(document);
+                Some(HierarchyMatchIndex::build(document, &parsed_filter, lower))
             } else {
                 None
             };
-            let name_match_count = index
+            let match_count = index
                 .as_ref()
-                .map_or(entity_count, HierarchyMatchIndex::name_match_count);
+                .map_or(entity_count, HierarchyMatchIndex::match_count);
             self.collect_visible_rows(document, &roots, index.as_ref(), 0, &mut out);
-            (revision, entity_count, name_match_count)
+            (revision, entity_count, match_count)
         };
         self.hierarchy_visible_cache.valid = true;
         self.hierarchy_visible_cache.revision = revision;
         self.hierarchy_visible_cache.entity_count = entity_count;
         self.hierarchy_visible_cache.filter = filter;
         self.hierarchy_visible_cache.collapsed = collapsed;
-        self.hierarchy_visible_cache.name_match_count = name_match_count;
+        self.hierarchy_visible_cache.match_count = match_count;
+        self.hierarchy_visible_cache.parsed_filter = parsed_filter;
         self.hierarchy_visible_cache.rows = std::sync::Arc::new(out);
     }
 
@@ -708,46 +718,7 @@ impl EditorApp {
         });
     }
 
-    /// H02：提交行内重命名。空名拒绝并重新聚焦；Esc 取消不产生历史。
-    fn commit_hierarchy_rename(&mut self, id: SceneEntityId) {
-        let session = self.hierarchy_rename.take();
-        let Some(session) = session.filter(|session| session.id == id) else {
-            return;
-        };
-        let name = session.buffer.trim().to_owned();
-        if name.is_empty() {
-            self.hierarchy_rename = Some(crate::HierarchyRename {
-                id,
-                buffer: session.buffer,
-                just_started: true,
-            });
-            self.status = "实体名称不能为空".to_owned();
-            return;
-        }
-        if self.is_playing() {
-            self.status = "Play mode locks scene editing; click Stop first".to_owned();
-            return;
-        }
-        let tree = self.tree.clone();
-        let Some(scene) = self.document.current_scene.as_mut() else {
-            self.status = "Create a scene first".to_owned();
-            return;
-        };
-        let result =
-            self.history
-                .execute(scene, "Rename entity", CommandKind::Rename, move |scene| {
-                    tree.rename(scene, id, name)
-                        .map_err(|error| error.to_string())
-                });
-        match result {
-            Ok(true) => {
-                self.on_document_changed(crate::actions::DocumentChange::EntityRenamed);
-                self.status = "Entity renamed".to_owned();
-            }
-            Ok(false) => self.status = "No change".to_owned(),
-            Err(error) => self.status = error,
-        }
-    }
+    // `commit_hierarchy_rename` **已搬到 shell**（`crate::hierarchy_ops`，第 28 轮）。
 
     /// H02：行内重命名输入框。Enter 提交，Esc 取消，点击其他区域提交（Unity 习惯）。
     ///
@@ -995,87 +966,8 @@ impl EditorApp {
         out
     }
 
-    /// H03：拖拽落点结算。多选时移动选中集合的顶层根，整批校验、整批一个事务；
-    /// 任一目标非法整批取消（事务快照回滚）。
-    pub(crate) fn handle_hierarchy_drop(
-        &mut self,
-        dropped_id: SceneEntityId,
-        target_id: SceneEntityId,
-        position: ReparentPosition,
-    ) {
-        let Some(scene) = self.document.current_scene.as_ref() else {
-            self.status = "Create a scene first".to_owned();
-            return;
-        };
-        let batch: Vec<SceneEntityId> =
-            if self.selection.len() > 1 && self.selection.contains(dropped_id) {
-                self.top_most_selected_ids()
-            } else {
-                vec![dropped_id]
-            };
-        // Before/After 的有效父级是目标的父级；「目标不是移动方后代」检查同时
-        // 覆盖两种情况（若目标的父级在移动方子树内，目标本身也在其中）。
-        for moving_id in &batch {
-            if let Err(error) = self.validate_reparent_target(scene, *moving_id, Some(target_id)) {
-                self.status = error;
-                return;
-            }
-        }
-        let primary = batch[0];
-        if !self.begin_edit_transaction("Reparent entities", CommandKind::Reparent, Some(primary)) {
-            self.status = "重挂载事务已激活，无法重复开始".to_owned();
-            return;
-        }
-        let Some(scene) = self.document.current_scene.as_mut() else {
-            self.cancel_edit_transaction();
-            self.status = "Create a scene first".to_owned();
-            return;
-        };
-        let mut error = None;
-        // docs/54 §8-⑦（§4.1）：换父提供 **keep-world** 语义——先记下移动方的世界矩阵，改完父
-        // 再按新父反解局部值，因此"拖进新父"不会让实体在画面上跳走。反解不了（剪切/镜像/退化）
-        // 时整笔事务取消，绝不静默近似。
-        let worlds: Vec<(SceneEntityId, engine::core::math3d::Mat4)> = {
-            let matrices = editor::document_space::world_matrices(&scene.scene);
-            batch
-                .iter()
-                .filter_map(|id| matrices.get(id).map(|matrix| (*id, *matrix)))
-                .collect()
-        };
-        for moving_id in &batch {
-            if let Err(failure) = self
-                .tree
-                .reparent_at(scene, *moving_id, target_id, position)
-            {
-                error = Some(failure.to_string());
-                break;
-            }
-        }
-        if error.is_none() {
-            for (id, world) in worlds {
-                match editor::document_space::keep_world_after_reparent(&mut scene.scene, id, world)
-                {
-                    Ok(_) => {}
-                    Err(reason) => {
-                        error = Some(format!("换父无法保持世界位置：{reason}"));
-                        break;
-                    }
-                }
-            }
-        }
-        if let Some(error) = error {
-            self.cancel_edit_transaction();
-            self.status = error;
-        } else {
-            self.commit_edit_transaction();
-            self.on_document_changed(crate::actions::DocumentChange::EntityReparented);
-            self.status = if batch.len() > 1 {
-                format!("已移动 {} 个实体", batch.len())
-            } else {
-                "Reparented by drag".to_owned()
-            };
-        }
-    }
+    // `handle_hierarchy_drop` **已搬到 shell**（`crate::hierarchy_ops`，第 28 轮）：
+    // 换父的事务/keep-world 提交边界不在面板里（面板只把命中的行与落点发出来）。
 
     /// H03：选中集合中的顶层根 —— 祖先也在选中集合内的子孙剔除，
     /// 用于批量删除/拖拽（整棵子树随根移动或删除）。
@@ -1111,56 +1003,7 @@ impl EditorApp {
         result
     }
 
-    /// H04：Ctrl+D 原地复制 —— 复制到原父节点并紧随源节点之后，名称与源一致，
-    /// 一个 Create 事务（Undo 一步整体回滚）。
-    pub(crate) fn duplicate_selected_entity(&mut self) {
-        if self.is_playing() {
-            self.status = "Play mode locks scene editing; click Stop first".to_owned();
-            return;
-        }
-        let Some(source_id) = self.selection.primary() else {
-            self.status = "请先在 Hierarchy 中选择实体".to_owned();
-            return;
-        };
-        let Some(source) = self
-            .current_scene()
-            .and_then(|scene| scene.scene.entities.get(&source_id))
-            .cloned()
-        else {
-            self.status = "当前实体不存在".to_owned();
-            return;
-        };
-        let parent = source.parent;
-        let tree = self.tree.clone();
-        let created = std::cell::Cell::new(None::<SceneEntityId>);
-        let Some(scene) = self.document.current_scene.as_mut() else {
-            self.status = "Create a scene first".to_owned();
-            return;
-        };
-        let result =
-            self.history
-                .execute(scene, "Duplicate entity", CommandKind::Create, |scene| {
-                    let copy_id = tree
-                        .duplicate_subtree(scene, &source, parent)
-                        .map_err(|error| error.to_string())?;
-                    tree.reparent_at(scene, copy_id, source_id, ReparentPosition::After)
-                        .map_err(|error| error.to_string())?;
-                    created.set(Some(copy_id));
-                    Ok::<(), String>(())
-                });
-        match result {
-            Ok(true) => {
-                if let Some(id) = created.get() {
-                    self.selection.add(id, SelectionSource::Command);
-                    self.selection_anchor = Some(id);
-                    self.sync_inspector(id);
-                }
-                self.status = "Entity duplicated".to_owned();
-            }
-            Ok(false) => self.status = "No change".to_owned(),
-            Err(error) => self.status = error,
-        }
-    }
+    // `duplicate_selected_entity` **已搬到 shell**（`crate::hierarchy_ops`，第 28 轮）。
 
     /// H01：实体行右键 / `⋮` 共用菜单。Play 模式的锁定提示由各命令入口自查。
     fn draw_entity_context_menu(&mut self, ui: &mut egui::Ui, id: SceneEntityId) {
@@ -1316,7 +1159,8 @@ impl EditorApp {
             has_children,
         } = row;
         // 只提取本行需要的字段（旧实现整份文档 clone，10k 行即 10k 次全量克隆）。
-        let (name, ui_root, is_3d) = {
+        // 组件名也一起取：`type:` 过滤词要参与"这一行自己是否命中"的高亮判断。
+        let (name, ui_root, is_3d, lower_components) = {
             let Some(entity) = self
                 .document
                 .current_scene
@@ -1332,10 +1176,19 @@ impl EditorApp {
                     .get("ui.root")
                     .is_some_and(|value| value == "true"),
                 entity.components.contains_key("Transform3D"),
+                entity
+                    .components
+                    .keys()
+                    .map(|component| component.to_lowercase())
+                    .collect::<Vec<_>>(),
             )
         };
-        let query = self.hierarchy_filter.trim().to_lowercase();
-        let name_matches = !query.is_empty() && name.to_lowercase().contains(&query);
+        // 过滤高亮用**上一次扁平化的解析结果**（缓存里带着它），不再逐行重新解析过滤串。
+        let self_matches = !self.hierarchy_visible_cache.parsed_filter.is_empty()
+            && self
+                .hierarchy_visible_cache
+                .parsed_filter
+                .matches_self(&name.to_lowercase(), &lower_components);
         let selected = self.selection.contains(id);
         let hidden = self.scene_state.hidden.contains(&id);
         let locked = self.scene_state.locked.contains(&id);
@@ -1437,10 +1290,10 @@ impl EditorApp {
                         // 高度受限于行高：虚拟滚动要求行高统一，重命名不能把行撑高。
                         self.draw_hierarchy_rename_edit(ui, id, rename_row_height);
                     } else {
-                        // H05：过滤命中高亮。
+                        // H05：过滤命中高亮（名称词或 `type:` 词命中都算）。
                         let mut text =
                             egui::RichText::new(format!("{type_prefix}{name} [{}]", id.0));
-                        if name_matches {
+                        if self_matches {
                             text = text.color(egui::Color32::from_rgb(255, 200, 100));
                         }
                         let name_response =
@@ -1588,17 +1441,8 @@ impl EditorApp {
         }
     }
 
-    fn persist_hierarchy_flag(&mut self, id: SceneEntityId, kind: &str, enabled: bool) {
-        if let Some(scene) = self.document.current_scene.as_mut() {
-            let key = format!("editor.{kind}.{}", id.0);
-            if enabled {
-                scene.scene.metadata.insert(key, "true".to_owned());
-            } else {
-                scene.scene.metadata.remove(&key);
-            }
-            scene.mark_dirty();
-        }
-    }
+    // `persist_hierarchy_flag` **已搬到 shell**（`crate::hierarchy_ops`，第 28 轮）：
+    // 隐藏/锁定标记是场景 metadata，属于文档写入。
 
     /// 场景切换下拉框的选中文本：场景名 + 未保存标记。
     fn scene_selector_label(&self) -> String {
@@ -1675,80 +1519,8 @@ impl EditorApp {
         format!("main{stamp}")
     }
 
-    /// 实际创建并切换空白场景（仅由确认流或 clean 快速路径调用）。
-    pub(crate) fn perform_create_scene(&mut self, name: String) {
-        self.set_current_scene_document(editor::SceneDocument::new(name.clone()));
-        self.history.clear();
-        self.autosave.reset();
-        self.on_document_changed(crate::actions::DocumentChange::Created);
-        self.status = format!("已创建场景 {name}（未保存）");
-    }
-
-    /// E19: create a Widget document with a Canvas root and enter Widget Mode.
-    pub(crate) fn perform_create_widget(&mut self, name: String) {
-        let mut document = editor::SceneDocument::new_widget(name.clone());
-        let scene = &mut document.scene;
-        scene
-            .add_entity(SceneEntityId(1), "Canvas", None)
-            .expect("a new scene can accept the Canvas root");
-        if let Some(entity) = scene.entities.get_mut(&SceneEntityId(1)) {
-            entity
-                .metadata
-                .insert("ui.root".to_owned(), "true".to_owned());
-        }
-        self.set_current_scene_document(document);
-        self.history.clear();
-        self.autosave.reset();
-        self.scene_view_mode = crate::SceneViewMode::Widget;
-        self.on_document_changed(crate::actions::DocumentChange::Created);
-        self.scene_view_fit_pending = true;
-        self.status = format!("已创建 Widget {name}（未保存）");
-    }
-
-    /// 创建一个带 Transform3D 组件的 3D 实体（M9-03）。
-    pub(crate) fn add_3d_entity(&mut self, parent: Option<SceneEntityId>) {
-        if self.is_playing() {
-            self.status = "Play mode locks scene editing; click Stop first".into();
-            return;
-        }
-        let name = self.entity_name.trim().to_owned();
-        if name.is_empty() {
-            self.status = "Entity name cannot be empty".into();
-            return;
-        }
-        let tree = self.tree.clone();
-        let created = std::cell::Cell::new(None::<SceneEntityId>);
-        let Some(scene) = self.document.current_scene.as_mut() else {
-            self.status = "Create a scene first".into();
-            return;
-        };
-        let result =
-            self.history
-                .execute(scene, "Create 3D entity", CommandKind::Create, |scene| {
-                    let id = tree
-                        .create_entity(scene, name.clone(), parent)
-                        .map_err(|e| e.to_string())?;
-                    if let Some(entity) = scene.scene.entities.get_mut(&id) {
-                        entity.components.insert(
-                            "Transform3D".into(),
-                            Transform3D::default().to_component_str(),
-                        );
-                    }
-                    created.set(Some(id));
-                    Ok::<(), String>(())
-                });
-        match result {
-            Ok(true) => {
-                if let Some(id) = created.get() {
-                    self.selection.add(id, SelectionSource::Command);
-                    self.sync_inspector(id);
-                }
-                self.status = "3D entity created".into();
-            }
-            Ok(false) => self.status = "No change".into(),
-            Err(e) => self.status = e,
-        }
-    }
+    // `perform_create_scene` / `perform_create_widget` / `add_3d_entity` **已搬到 shell**
+    // （`crate::hierarchy_ops`，第 28 轮）：它们都会替换/写入当前文档。
 
     /// 把选中实体保存为预制体（assets/prefabs/<name>.prefab）。
     pub(crate) fn create_prefab_from_selected(&mut self) {
@@ -1763,6 +1535,16 @@ impl EditorApp {
         let Some(scene) = self.current_scene() else {
             return;
         };
+        // **嵌套 Prefab 尚不支持**（第 47 轮）：从"已经是 Prefab 实例"的实体（或包含实例的
+        // 子树）创建 Prefab 会写出一份**嵌套源**——根/后代带着 `prefab.source`，此后
+        // `reapply_prefab` / 写回源都会把它当成另一个 Prefab 的实例来重建。
+        // 与其悄悄生成这种数据，不如拒绝并让作者先 Unpack（编辑器里有这个动作）。
+        if let Some(nested) = subtree_prefab_source(&scene.scene, selected) {
+            self.status = format!(
+                "所选实体里包含 Prefab 实例（{nested}）：嵌套 Prefab 尚不支持，请先 Unpack 再创建"
+            );
+            return;
+        }
         let name = scene
             .scene
             .entities
@@ -1795,6 +1577,29 @@ impl EditorApp {
     }
 }
 
+/// 子树里出现的第一个 `prefab.source`（含根自己）：非 `None` 说明这份子树里已经有
+/// Prefab 实例，从它创建 Prefab 会产生**嵌套**（编辑器目前不支持）。
+fn subtree_prefab_source(
+    scene: &engine::core::scene::Scene,
+    root: SceneEntityId,
+) -> Option<String> {
+    let mut stack = vec![root];
+    while let Some(id) = stack.pop() {
+        let Some(entity) = scene.entities.get(&id) else {
+            continue;
+        };
+        if let Some(source) = entity
+            .metadata
+            .get("prefab.source")
+            .filter(|source| !source.trim().is_empty())
+        {
+            return Some(source.clone());
+        }
+        stack.extend(entity.children.iter().copied());
+    }
+    None
+}
+
 /// 扫描项目 `scenes/` 目录下的场景文件（相对路径，按名称排序）。
 fn scan_scene_files(root: &std::path::Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
@@ -1816,13 +1621,126 @@ fn scan_scene_files(root: &std::path::Path) -> Vec<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{HIERARCHY_ROW_HEIGHT, HierarchyMatchIndex, RowHeightProbe, hierarchy_row_height};
+    use super::{
+        HIERARCHY_ROW_HEIGHT, HierarchyFilter, HierarchyMatchIndex, RowHeightProbe,
+        hierarchy_row_height,
+    };
     use editor::SceneDocument;
     use eframe::egui;
-    use engine::core::{logging::LogSink, scene::SceneEntityId};
+    use engine::core::{logging::LogSink, resource_db::AssetId, scene::SceneEntityId};
 
     /// 新建场景的默认名：`main` 可用就用它；`scenes/main.scene` 已存在则 `main2`…
     /// 菜单里没有名字输入框，名字必须由这里保证"不覆盖已有场景"。
+    /// **嵌套 Prefab 的创建边界**（第 47 轮）：从 Prefab 实例（或含实例的子树）创建 Prefab
+    /// 必须被拒绝——那会写出一份嵌套源，之后的 reapply/写回都会把它当成两份实例；
+    /// 平实体照常创建成功。
+    #[test]
+    fn creating_a_prefab_from_a_prefab_instance_is_refused() {
+        let root = std::env::temp_dir().join(format!(
+            "p2-create-prefab-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(root.join("assets/prefabs")).unwrap();
+        std::fs::create_dir_all(root.join("scenes")).unwrap();
+        std::fs::create_dir_all(root.join("scripts")).unwrap();
+        std::fs::write(
+            root.join("project.toml"),
+            "[project]\nname = \"t\"\nversion = \"0.1.0\"\nengine = \"RustLua\"\nmain_script = \"scripts/main.lua\"\nstartup_scene = \"scenes/main.scene\"\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("scripts/main.lua"), b"return true\n").unwrap();
+        let project = editor::open_project(&root).expect("project opens");
+        let mut app = crate::EditorApp::new(project, None, LogSink::new(64));
+        let scene = app.document.new_scene("main");
+        let instance_root = app.tree.create_entity(scene, "Hero", None).unwrap();
+        let child = app
+            .tree
+            .create_entity(scene, "Child", Some(instance_root))
+            .unwrap();
+        // 子树里带 `prefab.source` = 这一支是 Prefab 实例（含后代的情况）。
+        app.document
+            .current_scene
+            .as_mut()
+            .unwrap()
+            .scene
+            .entities
+            .get_mut(&child)
+            .unwrap()
+            .metadata
+            .insert("prefab.source".to_owned(), "assets/prefabs/hero.prefab".to_owned());
+        app.selection
+            .set_single(instance_root, editor::SelectionSource::Hierarchy);
+
+        app.create_prefab_from_selected();
+        assert!(
+            app.status.contains("嵌套 Prefab 尚不支持"),
+            "必须明确拒绝并说明原因：{}",
+            app.status
+        );
+        assert!(
+            !root.join("assets/prefabs/Hero.prefab").exists(),
+            "被拒绝时不得写出嵌套源"
+        );
+
+        // 平实体（去掉实例标记）照常创建。
+        app.document
+            .current_scene
+            .as_mut()
+            .unwrap()
+            .scene
+            .entities
+            .get_mut(&child)
+            .unwrap()
+            .metadata
+            .remove("prefab.source");
+        app.create_prefab_from_selected();
+        // 注：创建成功会触发后台资源刷新，`status` 会被刷新的提示覆盖，所以这里断言产物。
+        assert!(
+            root.join("assets/prefabs/Hero.prefab").exists(),
+            "平实体照常创建（status={}）",
+            app.status
+        );
+        let prefab =
+            engine::core::prefab::Prefab::load(root.join("assets/prefabs/Hero.prefab")).unwrap();
+        assert!(
+            prefab.nested_sources().is_empty(),
+            "平 Prefab 不该带任何嵌套引用"
+        );
+        assert!(!prefab.entities.is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// 扫出"这份 Prefab 里嵌了谁"（引擎侧事实源 `Prefab::nested_sources`）。
+    #[test]
+    fn nested_sources_report_every_prefab_reference_in_the_file() {
+        let mut scene = engine::core::scene::Scene::new("hero");
+        let root = SceneEntityId(1);
+        scene.add_entity(root, "Hero", None).unwrap();
+        let child = SceneEntityId(2);
+        scene.add_entity(child, "Weapon", Some(root)).unwrap();
+        scene
+            .entities
+            .get_mut(&child)
+            .unwrap()
+            .metadata
+            .insert("prefab.source".to_owned(), "assets/prefabs/sword.prefab".to_owned());
+        let prefab = engine::core::prefab::Prefab::from_scene(
+            &scene,
+            root,
+            AssetId::from_seed("hero"),
+            "hero",
+        )
+        .unwrap();
+        assert_eq!(
+            prefab.nested_sources(),
+            vec!["assets/prefabs/sword.prefab".to_owned()]
+        );
+    }
+
     #[test]
     fn new_scene_name_avoids_overwriting_existing_scenes() {
         let root = std::env::temp_dir().join(format!(
@@ -1932,6 +1850,68 @@ mod tests {
         );
         app.document.current_scene = Some(document);
         app
+    }
+
+    /// ER-04 的"类型过滤"（第 41 轮）：`type:` / `component:` 按**组件名**过滤（子串、
+    /// 大小写不敏感），与名称词是 AND 关系；`type:` 只输入到一半不算过滤。
+    #[test]
+    fn type_filter_matches_components_and_combines_with_name_terms() {
+        let mut document = sample_document();
+        {
+            let entities = &mut document.scene.entities;
+            entities
+                .get_mut(&SceneEntityId(2))
+                .unwrap()
+                .components
+                .insert("Sprite".to_owned(), "texture=;size=1x1".to_owned());
+            entities
+                .get_mut(&SceneEntityId(3))
+                .unwrap()
+                .components
+                .insert("Light".to_owned(), "direction=0,1,0;color=1,1,1;intensity=1".to_owned());
+            let solo = entities.get_mut(&SceneEntityId(4)).unwrap();
+            solo.components
+                .insert("UiLayout".to_owned(), "pivot=0,0".to_owned());
+            solo.components
+                .insert("UiEvents".to_owned(), "event=click;function=f".to_owned());
+        }
+        let mut app = make_app(document);
+
+        // 组件名命中 → 该行与它的祖先路径可见（祖先自身不算命中）。
+        app.hierarchy_filter = "type:sprite".to_owned();
+        assert_eq!(
+            app.hierarchy_visible_ids(),
+            vec![SceneEntityId(1), SceneEntityId(2)]
+        );
+        assert_eq!(app.hierarchy_match_count(), 1, "计数只算**自身**命中的实体");
+
+        // 子串匹配一次命中多个 UI 组件（`UiLayout`/`UiEvents` 都算）——这是最有用的用法。
+        app.hierarchy_filter = "type:ui".to_owned();
+        assert_eq!(app.hierarchy_visible_ids(), vec![SceneEntityId(4)]);
+        assert_eq!(app.hierarchy_match_count(), 1);
+
+        // 大小写不敏感；`component:` 与 `type:` 同义。
+        app.hierarchy_filter = "component:SPRITE".to_owned();
+        assert_eq!(app.hierarchy_match_count(), 1);
+
+        // 名称词与类型词是 AND：`A` 有 Sprite → 命中；`Leaf` 只有 Light → 不命中。
+        app.hierarchy_filter = "a type:sprite".to_owned();
+        assert_eq!(app.hierarchy_match_count(), 1);
+        app.hierarchy_filter = "Leaf type:sprite".to_owned();
+        assert_eq!(app.hierarchy_match_count(), 0);
+        assert!(
+            app.hierarchy_visible_ids().is_empty(),
+            "没有任何实体命中时不应留下祖先行"
+        );
+
+        // 只输入到一半的 `type:` → 视为没有过滤（否则每敲一个前缀就清空整棵树）。
+        app.hierarchy_filter = "type:".to_owned();
+        assert_eq!(app.hierarchy_visible_ids().len(), 4);
+        assert_eq!(app.hierarchy_match_count(), 4);
+        // 类型词不认识任何组件 → 空结果（不是"没有过滤"）。
+        app.hierarchy_filter = "type:nope".to_owned();
+        assert!(app.hierarchy_visible_ids().is_empty());
+        assert_eq!(app.hierarchy_match_count(), 0);
     }
 
     #[test]
@@ -2051,6 +2031,21 @@ mod tests {
                         .scene
                         .add_entity(id, name, Some(parents[0]))
                         .unwrap();
+                    // 混入组件名，让 `type:` 词也在这条等价性门里被覆盖（每个实体两种组件）。
+                    let entity = document.scene.entities.get_mut(&id).unwrap();
+                    entity.components.insert(
+                        if slot % 2 == 0 { "Sprite" } else { "Light" }.to_owned(),
+                        "x=1".to_owned(),
+                    );
+                    entity.components.insert(
+                        if depth % 2 == 0 {
+                            "UiLayout"
+                        } else {
+                            "Transform3D"
+                        }
+                        .to_owned(),
+                        "x=1".to_owned(),
+                    );
                     children.push(id);
                     ids.push(id);
                 }
@@ -2059,12 +2054,27 @@ mod tests {
         }
         let mut app = make_app(document);
 
-        for query in ["leaf", "LEAF_1", "branch", "Group2", "missing", "other_2_0"] {
+        for query in [
+            "leaf",
+            "LEAF_1",
+            "branch",
+            "Group2",
+            "missing",
+            "other_2_0",
+            // 类型词、类型词 + 名称词、大小写、以及"刚输入到一半的 type:"。
+            "type:sprite",
+            "type:ui",
+            "component:transform3d",
+            "leaf type:sprite",
+            "branch component:UiLayout",
+            "type:",
+        ] {
             app.hierarchy_filter = query.to_owned();
             let scene = app.current_scene().cloned().expect("scene");
+            let filter = HierarchyFilter::parse(query);
             let index = {
-                let lower = app.hierarchy_names.ensure(&scene);
-                HierarchyMatchIndex::build(&scene, &query.to_lowercase(), lower)
+                let lower = app.hierarchy_lower.ensure(&scene);
+                HierarchyMatchIndex::build(&scene, &filter, lower)
             };
             for id in &ids {
                 let reference = app.hierarchy_filter_matches(&scene, *id);
@@ -2079,14 +2089,14 @@ mod tests {
 
     /// H05：过滤命中计数取扁平化时一次算出的结果（不再每帧全量扫描）。
     #[test]
-    fn name_match_count_matches_manual_scan() {
+    fn match_count_matches_manual_scan() {
         let mut app = make_app(sample_document());
         app.hierarchy_filter = "Leaf".to_owned();
         let _ = app.hierarchy_rows();
-        assert_eq!(app.hierarchy_name_match_count(), 1);
+        assert_eq!(app.hierarchy_match_count(), 1);
         app.hierarchy_filter = "o".to_owned();
         // Root(1)/Solo(4) 的名称含 'o'（大小写不敏感），A(2)/Leaf(3) 不含。
-        assert_eq!(app.hierarchy_name_match_count(), 2);
+        assert_eq!(app.hierarchy_match_count(), 2);
     }
 
     /// 布局探针语义：取最大值、可重置、能计数（门槛判定依赖这三点）。

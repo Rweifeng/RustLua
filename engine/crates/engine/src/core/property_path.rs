@@ -160,6 +160,34 @@ fn split_fields(payload: &str) -> Vec<(&str, &str)> {
         .collect()
 }
 
+/// 与 [`split_fields`] 相同，但**尊重 `UiText` 的转义**（`text=a\;b` 里的 `\;` 不是分隔符）。
+///
+/// 只在组件**有自由文本字段**（`FieldSchema::escaped`）时使用：其它组件的引擎解析器是朴素
+/// 按 `;` 切分的，跟着转义会让 schema 比运行时更松。
+fn split_fields_escaped(payload: &str) -> Vec<(&str, &str)> {
+    crate::core::ui::split_fields(payload)
+        .into_iter()
+        .filter_map(|segment| {
+            let segment = segment.trim();
+            if segment.is_empty() {
+                return None;
+            }
+            segment
+                .split_once('=')
+                .map(|(key, value)| (key.trim(), value))
+        })
+        .collect()
+}
+
+/// 按组件是否含自由文本字段选择切分口径。
+fn split_for_schema<'a>(schema: &ComponentSchema, payload: &'a str) -> Vec<(&'a str, &'a str)> {
+    if schema.has_escaped_fields() {
+        split_fields_escaped(payload)
+    } else {
+        split_fields(payload)
+    }
+}
+
 /// Read one field (or one tuple element) as a typed value.
 pub fn read_field(
     registry: &BTreeMap<&'static str, ComponentSchema>,
@@ -220,11 +248,21 @@ pub fn write_field(
     let current = schema.parse(payload)?;
     let current_value = current.get(&path.field).cloned();
 
+    // 自由文本字段：编辑器的输入是**人看到的文本**，而组件串里是转义形式
+    // （`read_field_display_text` 已反转义）。这里统一按"入参是转义文本"处理：
+    // 先反转义再走校验/比较/写回，于是 `read_field_text`（保留原样）与编辑器输入两条路径
+    // 都得到同一个结果，也不会二次转义。
+    let incoming: String = if field_schema.escaped && path.index.is_none() {
+        crate::core::ui::unescape_text(raw_value)
+    } else {
+        raw_value.to_owned()
+    };
+
     let updated_raw = match path.index {
         None => {
             // 只校验目标字段本身：写一个字段时其它必填字段不该参与判定。
             let new_value = field_schema
-                .validate(raw_value, &path.component)
+                .validate(&incoming, &path.component)
                 .map_err(|error| PropertyError::InvalidValue {
                     field: path.field.clone(),
                     reason: error.reason,
@@ -232,7 +270,12 @@ pub fn write_field(
             if current_value.as_ref() == Some(&new_value) {
                 return Ok(payload.to_owned());
             }
-            new_value.to_component_value()
+            let raw = new_value.to_component_value();
+            if field_schema.escaped {
+                crate::core::ui::escape_text(&raw)
+            } else {
+                raw
+            }
         }
         Some(index) => {
             let Some(FieldValue::Tuple(values)) = current_value.clone() else {
@@ -289,7 +332,7 @@ pub fn write_field(
     // 重建负载：目标字段就地替换，其余字段逐字保留；缺失则追加到末尾。
     let mut segments: Vec<String> = Vec::new();
     let mut replaced = false;
-    for (key, value) in split_fields(payload) {
+    for (key, value) in split_for_schema(schema, payload) {
         if key == path.field {
             segments.push(format!("{}={updated_raw}", path.field));
             replaced = true;
@@ -310,8 +353,53 @@ pub fn write_field(
 ///
 /// Used when recording a Prefab override: "keep this value" must not rewrite `77` into
 /// `77.000000`, otherwise re-applying a Prefab would churn unrelated characters.
+///
+/// 注意：**自由文本字段**在这里返回的是组件串里的**转义原文**（`a\;b`）。要显示给人看
+/// 请用 [`read_field_display_text`]；`write_field` 会把入参当转义文本处理，因此
+/// "`read_field_text` → `write_field`"这条 Prefab 回退路径仍然是原样往返。
 pub fn read_field_text(payload: &str, path: &PropertyPath) -> Result<String, PropertyError> {
-    let raw = split_fields(payload)
+    let registry = builtin_registry();
+    let split = splitter_for(registry.get(path.component.as_str()));
+    read_field_text_with(split, payload, path)
+}
+
+/// 读取字段的**显示文本**：自由文本字段（`FieldSchema::escaped`）先反转义，其它字段与
+/// [`read_field_text`] 相同。
+///
+/// 编辑器的输入框用它：人在框里看到的、以及编辑后提交的，都是**真实文本**（不含 `\;` 这类
+/// 转义），转义只在组件串这一层存在（`ComponentSchema` 负责两个方向的换算）。
+pub fn read_field_display_text(
+    registry: &BTreeMap<&'static str, ComponentSchema>,
+    payload: &str,
+    path: &PropertyPath,
+) -> Result<String, PropertyError> {
+    let schema = registry.get(path.component.as_str());
+    let raw = read_field_text_with(splitter_for(schema), payload, path)?;
+    let escaped = schema
+        .and_then(|schema| schema.fields.iter().find(|field| field.name == path.field))
+        .is_some_and(|field| field.escaped);
+    if escaped && path.index.is_none() {
+        Ok(crate::core::ui::unescape_text(&raw))
+    } else {
+        Ok(raw)
+    }
+}
+
+/// 该组件该用哪种切分：有自由文本字段就尊重转义，否则与它自己的引擎解析器口径一致。
+fn splitter_for(schema: Option<&ComponentSchema>) -> for<'a> fn(&'a str) -> Vec<(&'a str, &'a str)> {
+    if schema.is_some_and(ComponentSchema::has_escaped_fields) {
+        split_fields_escaped
+    } else {
+        split_fields
+    }
+}
+
+fn read_field_text_with(
+    split: for<'a> fn(&'a str) -> Vec<(&'a str, &'a str)>,
+    payload: &str,
+    path: &PropertyPath,
+) -> Result<String, PropertyError> {
+    let raw = split(payload)
         .into_iter()
         .find(|(key, _)| *key == path.field)
         .map(|(_, value)| value.trim().to_owned())

@@ -3,13 +3,18 @@
 use crate::AlignMode;
 use crate::EditorApp;
 use crate::geometry::{encode_transform, parse_transform};
+use crate::panels::inspector::diff_prefab_entity;
+use crate::util::strip_verbatim_prefix;
 use editor::{
-    Camera3DFields, Collider3dFields, CommandKind, CommandResult, InspectorSnapshot,
-    SceneDocument, TextFields, Transform3DFields, TransformFields,
+    Collider3dFields, CommandKind, CommandResult, InspectorError, InspectorSnapshot, SceneDocument,
+    TransformFields,
 };
 use eframe::egui;
 use engine::core::{
-    animation::AnimationStateMachine, scene::SceneEntityId, sprite::SpriteComponent,
+    animation::AnimationStateMachine,
+    prefab::Prefab,
+    scene::{SceneEntity, SceneEntityId},
+    sprite::SpriteComponent,
     tilemap::Tilemap,
 };
 use std::path::{Path, PathBuf};
@@ -33,17 +38,16 @@ pub(crate) struct EditState {
 /// lua/3D/UI 组件），其字段全部从 **EditorApp 当前缓冲**（`entity_name`/
 /// `transform`/`transform3d`/`mesh_renderer`/`camera3d`/…/`text`/`image`）编码而来，
 /// 与 `write_inspector` 写回的内容逐字段一致 —— 缓冲改动因此产生真实净 diff。
-/// 面板显示层的裸引用/组件对象（`mesh_renderer` 的 `mesh=` 前缀、`sprite_component`
-/// 结构体）只作为「编码源」，不直接参与比较，避免显示层噪音造成空操作直写。
+/// 面板显示层的裸引用/组件对象（`mesh_renderer` 的 `mesh=` 前缀）只作为「编码源」，
+/// 不直接参与比较，避免显示层噪音造成空操作直写。
 ///
 /// 写入端（`update_inspector_write`）要求写入字段与文档实际字段**逐字节一致**
 /// 才能让 `write_inspector` 的 `Ok(*document != before)` 净差异判定正确：
 /// - `mesh_renderer`：文档经 `MeshRenderer::to_component_str` 规范化
 ///   （`mesh=<path>`）。缓冲只存裸引用，比较前拼上 `mesh=` 前缀生成待写值；
 ///   实体**没有** MeshRenderer 组件时快照为 `None`，write 端会 clear（不会注入）。
-/// - `sprite_reference`：文档组件串与缓冲组件的 `SpriteComponent::to_component_str`
-///   编码可能因键序/尾分号漂移，因此快照用「面板组件编码串」，与 `write_inspector`
-///   判定一致（面板每帧末尾同样把 `SpriteComponent` 编码回引用）。
+/// - `Sprite` / `Light` / `Text` / `Image` / `UiLayout` / `Camera3D` / `WorldText` 都已迁到
+///   schema 生成的字段编辑器（第 20–34 轮），因此**不在**这条缓冲直写路径里。
 /// - `persistent`：`write_inspector` 不写该位，diff 由 `persistent`（文档真值）
 ///   单独负责，避免面板残留的 false 在每次直写时把「未变更」判成变更。
 /// - `tilemap`/`animation`：从面板 `TilemapEditorState`/`AnimationEditorState`
@@ -164,6 +168,67 @@ pub(crate) enum PendingDecision {
 }
 
 impl EditorApp {
+    /// 停止 Play：丢弃运行态变更，恢复编辑器快照。
+    ///
+    /// M11-01 状态机：`Playing → Stopping → Editing`，Stop 期间释放临时世界/GPU 纹理/Lua 状态。
+    /// **实现住在 shell**（第 28 轮从 `panels/game_view.rs` 搬来）：Stop 会替换当前文档，
+    /// 属于提交边界；面板只发 `EditorCommand::StopPlay`（docs/55 §4.1 规则 1）。
+    pub(crate) fn stop(&mut self) {
+        let Some(session) = self.play_session.take() else {
+            self.status = "Not currently in Play mode".to_owned();
+            return;
+        };
+        if let Err(error) = self.play.begin_stop() {
+            self.status = error.to_string();
+            return;
+        }
+        self.preview = None;
+        self.set_current_scene_document(session.stop());
+        // Play/Stop 清空输入状态，避免下一轮 Play 残留边沿（M11-02）。
+        self.preview_input_state.clear_all();
+        // 统一收尾：选择修复 + Inspector 空同步 + Scene View/Game 预览失效 +
+        // Hierarchy 元数据重扫（含 delete_target 复位）。
+        self.on_document_changed(DocumentChange::PlaybackStopped);
+        let snapshot = self
+            .editor_context_snapshot
+            .take()
+            .unwrap_or_else(|| crate::EditorContextSnapshot {
+                selection: editor::SelectionModel::new(),
+                workspace_tab: crate::WorkspaceTab::Scene,
+                scene_tool: crate::scene_interaction::SceneTool::Select,
+                gizmo_space: crate::scene_interaction::GizmoSpace::default(),
+                gizmo_pivot: crate::scene_interaction::GizmoPivot::default(),
+                scene_view_mode: self.scene_view_mode,
+                scene_zoom: 1.0,
+                scene_pan: egui::Vec2::ZERO,
+                hierarchy_collapsed: self.scene_state.collapsed.clone(),
+                preview_resolution: self.preview_resolution,
+                game_camera_2d_center: self.game_camera_2d_center,
+            });
+        self.restore_editor_context(snapshot);
+        if let Err(error) = self.play.finish_stop() {
+            tracing::warn!(target: "editor", "[preview] state machine: {error}");
+        }
+        self.status = "Play stopped; runtime changes were discarded".to_owned();
+    }
+
+    /// 实际替换为崩溃快照文档（仅由确认流或 clean 快速路径调用）。
+    ///
+    /// **实现住在 shell**（第 28 轮从 `panels/header.rs` 搬来）：它会替换当前文档。
+    pub(crate) fn perform_recover_candidate(&mut self, candidate: editor::RecoveryCandidate) {
+        self.set_current_scene_document(self.recovery.recover(&candidate));
+        self.history.clear();
+        self.autosave.reset();
+        // 统一收尾：选择修复 + Inspector 空同步 + Scene View/Game 预览失效 +
+        // Hierarchy 元数据重扫（快照替换后强制隐藏/锁定集合重建）。
+        self.on_document_changed(DocumentChange::Opened);
+        self.refresh_recovery_scan();
+        self.status = format!(
+            "已恢复崩溃快照：{}",
+            crate::util::display_path(&candidate.path)
+        );
+    }
+
     /// E06 网关：请求一次文档离开操作。
     ///
     /// - 若当前没有任何编辑文档 → 无 dirty 可言，直接执行。
@@ -286,6 +351,219 @@ impl EditorApp {
     /// 放在 shell（而不是面板模块）是刻意的：它握着提交边界（`history.execute`），
     /// 属于"命令执行"而不是"绘制"。`panels/architecture_tests.rs` 的棘轮测试要求
     /// 面板里不出现直接写文档的调用点。
+    ///
+    /// 多选批量：把**一个字段**写到所有选中且拥有该组件的实体上（一条 Undo）。
+    pub(crate) fn apply_component_field_edit_on_selection(
+        &mut self,
+        component: &str,
+        field: &str,
+        value: &str,
+    ) -> CommandResult {
+        self.apply_component_edit_on_selection(component, &[(field.to_owned(), value.to_owned())])
+    }
+
+    /// 多选批量：把**一组字段原子地**写到所有选中且拥有该组件的实体上（一条 Undo）。
+    pub(crate) fn apply_component_fields_edit_on_selection(
+        &mut self,
+        component: &str,
+        fields: &[(String, String)],
+    ) -> CommandResult {
+        self.apply_component_edit_on_selection(component, fields)
+    }
+
+    /// 多选批量的共同实现：
+    ///
+    /// - 目标 = 选中集合里**确实拥有该组件**的实体（与旧手写面板一致；缺组件的实体不动）；
+    /// - 每个目标独立走 schema/PropertyPath 校验（`edit_component_payload`），
+    ///   **任一目标失败就整体不写**（不会写一半实体）；
+    /// - 全部无净变化 → `NoOp`；否则**一条**历史（多选一次操作 = 一条 Undo）。
+    fn apply_component_edit_on_selection(
+        &mut self,
+        component: &str,
+        fields: &[(String, String)],
+    ) -> CommandResult {
+        if self.is_playing() {
+            self.status = "Play mode locks scene editing; click Stop first".to_owned();
+            return CommandResult::Rejected(self.status.clone());
+        }
+        let selected = self.selection.ids();
+        if selected.is_empty() {
+            self.status = "请先选择实体".to_owned();
+            return CommandResult::Rejected(self.status.clone());
+        }
+        let Some(document) = self.document.current_scene.as_ref() else {
+            self.status = "没有打开的场景".to_owned();
+            return CommandResult::Rejected(self.status.clone());
+        };
+        // 目标集合：顺序与选择一致（主选中在前），只保留拥有该组件的实体。
+        let targets: Vec<SceneEntityId> = selected
+            .iter()
+            .copied()
+            .filter(|id| {
+                document
+                    .scene
+                    .entities
+                    .get(id)
+                    .is_some_and(|entity| entity.components.contains_key(component))
+            })
+            .collect();
+        if targets.is_empty() {
+            self.status = format!("选中的实体都没有组件 {component}");
+            return CommandResult::Rejected(self.status.clone());
+        }
+        let mut updated: Vec<(SceneEntityId, String)> = Vec::new();
+        for id in &targets {
+            let Some(original) = document
+                .scene
+                .entities
+                .get(id)
+                .and_then(|entity| entity.components.get(component))
+                .cloned()
+            else {
+                continue;
+            };
+            let mut payload = original.clone();
+            for (field, value) in fields {
+                match editor::edit_component_payload(component, &payload, field, value) {
+                    Ok(Some(next)) => payload = next,
+                    Ok(None) => {}
+                    Err(error) => {
+                        self.status = error.to_string();
+                        return CommandResult::Rejected(self.status.clone());
+                    }
+                }
+            }
+            if payload != original {
+                updated.push((*id, payload));
+            }
+        }
+        if updated.is_empty() {
+            self.status = format!("{component} 无变化");
+            return CommandResult::NoOp;
+        }
+        let label = format!("Set {component}（{} 个实体）", updated.len());
+        let written = updated.len();
+        let key = component.to_owned();
+        let document = self
+            .document
+            .current_scene
+            .as_mut()
+            .expect("已确认存在当前文档");
+        let result = self
+            .history
+            .execute(document, label, CommandKind::Property, move |document| {
+                for (id, payload) in &updated {
+                    if let Some(instance) = document.scene.entities.get_mut(id) {
+                        instance.components.insert(key.clone(), payload.clone());
+                    }
+                }
+                document.mark_dirty();
+                Ok::<(), String>(())
+            });
+        match result {
+            Ok(true) => {
+                self.status = format!("已批量写入 {component}（{written} 个实体）");
+                CommandResult::Applied
+            }
+            Ok(false) => {
+                self.status = format!("{component} 无变化");
+                CommandResult::NoOp
+            }
+            Err(error) => {
+                self.status = error.clone();
+                CommandResult::Rejected(error)
+            }
+        }
+    }
+
+    /// **原子多字段**写入（组件级动作的落点，如 `UiLayout` 的锚点预设）：
+    ///
+    /// - 逐字段走同一条 schema/PropertyPath 校验路径（`edit_component_payload`），
+    ///   中间结果只在内存里滚动，**任何一步失败就整体不写**（不会留下半套取值）；
+    /// - 全部无变化 → `NoOp`（不产生历史）；
+    /// - 有变化 → **恰好一条** `CommandKind::Property` 历史（逐字段提交会留下多条）。
+    pub(crate) fn apply_component_fields_edit(
+        &mut self,
+        entity: SceneEntityId,
+        component: &str,
+        fields: &[(String, String)],
+    ) -> CommandResult {
+        if self.is_playing() {
+            self.status = "Play mode locks scene editing; click Stop first".to_owned();
+            return CommandResult::Rejected(self.status.clone());
+        }
+        let Some(document) = self.document.current_scene.as_ref() else {
+            self.status = "没有打开的场景".to_owned();
+            return CommandResult::Rejected(self.status.clone());
+        };
+        let Some(instance) = document.scene.entities.get(&entity) else {
+            self.status = format!("实体不存在：{}", entity.0);
+            return CommandResult::Rejected(self.status.clone());
+        };
+        let Some(original) = instance.components.get(component).cloned() else {
+            self.status = format!("实体 {} 没有组件 {component}", entity.0);
+            return CommandResult::Rejected(self.status.clone());
+        };
+        let mut payload = original.clone();
+        let mut changed_fields = Vec::new();
+        for (field, value) in fields {
+            match editor::edit_component_payload(component, &payload, field, value) {
+                Ok(Some(updated)) => {
+                    payload = updated;
+                    changed_fields.push(field.clone());
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    self.status = error.to_string();
+                    return CommandResult::Rejected(self.status.clone());
+                }
+            }
+        }
+        if payload == original {
+            self.status = format!("{component} 无变化");
+            return CommandResult::NoOp;
+        }
+        let label = format!("Set {component}.{}", changed_fields.join("+"));
+        let key = component.to_owned();
+        let document = self
+            .document
+            .current_scene
+            .as_mut()
+            .expect("已确认存在当前文档");
+        let result = self
+            .history
+            .execute(document, label, CommandKind::Property, move |document| {
+                let Some(instance) = document.scene.entities.get_mut(&entity) else {
+                    return Err(format!("实体不存在：{}", entity.0));
+                };
+                instance.components.insert(key, payload);
+                document.mark_dirty();
+                Ok::<(), String>(())
+            });
+        match result {
+            Ok(true) => {
+                self.status = format!(
+                    "已写入 {component}（{}）",
+                    if changed_fields.is_empty() {
+                        "无字段变化".to_owned()
+                    } else {
+                        changed_fields.join("+")
+                    }
+                );
+                CommandResult::Applied
+            }
+            Ok(false) => {
+                self.status = format!("{component} 无变化");
+                CommandResult::NoOp
+            }
+            Err(error) => {
+                self.status = error.clone();
+                CommandResult::Rejected(error)
+            }
+        }
+    }
+
+    /// 应用一次字段编辑（单字段入口；多字段原子写入见 [`Self::apply_component_fields_edit`]）。
     pub(crate) fn apply_component_field_edit(
         &mut self,
         entity: SceneEntityId,
@@ -597,14 +875,8 @@ impl EditorApp {
                 Some(InspectorSnapshot {
                     entity_id,
                     name,
-                    transform,
-                    sprite_reference,
                     lua_script,
-                    transform3d,
-                    camera3d,
                     collider3d,
-                    text,
-                    ui_layout,
                     container,
                     ..
                 }),
@@ -618,12 +890,10 @@ impl EditorApp {
         let Some(scene) = self.document.current_scene.as_mut() else {
             return false;
         };
-        // 多选批量 Sprite 编辑：其余同带 Sprite 的选中实体一并写入（对齐离散路径
-        // apply_inspector 的 selected_sprite_ids 语义）。
+        // 多选批量由通用编辑器的批量命令承担（第 33 轮）；这条缓冲直写路径只处理剩下的
+        // 手写面板（Transform/Collider3d/Container/Tilemap/Animation/Script）。
         let multi_sprite_ids = self.selection.ids();
         let inspector = self.inspector.clone();
-        // 直写快照使用与文档可判等的字段：sprite 沿用组件串
-        // （面板在帧末把 SpriteComponent 编码回引用），persistent 位由离散路径处理。
         // 注：`Light` / `MeshRenderer` 已迁到 schema 生成的字段编辑器（走 SetComponentField），
         // 因此不再出现在这条缓冲直写路径里。
         let write = inspector.write_inspector(
@@ -632,14 +902,8 @@ impl EditorApp {
             InspectorSnapshot {
                 entity_id,
                 name,
-                transform,
-                sprite_reference,
                 lua_script,
-                transform3d,
-                camera3d,
                 collider3d,
-                text,
-                ui_layout,
                 container,
                 persistent: false,
             },
@@ -692,24 +956,14 @@ impl EditorApp {
         //（校验拒绝空引用）而让直写整体失败。
         let entity = &doc.scene.entities[&primary];
         let has = |key: &str| entity.components.contains_key(key);
-        let sprite_ref = self.sprite_component.to_component_str();
-        let sprite_reference = has("Sprite")
-            .then(|| (!self.sprite_component.texture.trim().is_empty()).then_some(sprite_ref))
-            .flatten();
         let lua_script = has("Script")
             .then(|| (!self.lua_script.trim().is_empty()).then_some(self.lua_script.clone()))
             .flatten();
         let snapshot = InspectorSnapshot {
             entity_id: primary,
             name: self.entity_name.clone(),
-            transform: self.transform,
-            sprite_reference,
             lua_script,
-            transform3d: has("Transform3D").then_some(self.transform3d),
-            camera3d: has("Camera3D").then_some(self.camera3d),
             collider3d: has("Collider3d").then_some(self.collider3d.clone()),
-            text: has("Text").then_some(self.text.clone()),
-            ui_layout: has("UiLayout").then_some(self.ui_layout.clone()),
             container: has("Container").then_some(self.container.clone()),
             persistent: false,
         };
@@ -1033,31 +1287,10 @@ impl EditorApp {
         self.focus_hierarchy_delete_target();
         if let Ok(snapshot) = self.inspector.snapshot(&scene, id) {
             self.entity_name = snapshot.name;
-            self.transform = snapshot.transform;
-            self.transform3d = snapshot.transform3d.unwrap_or_default();
-            self.camera3d = snapshot.camera3d.unwrap_or_default();
             self.collider3d = snapshot.collider3d.unwrap_or_default();
-            self.text = snapshot.text.unwrap_or_default();
-            self.ui_layout = snapshot.ui_layout.unwrap_or_default();
             self.container = snapshot.container.unwrap_or_default();
-            self.sprite_reference = snapshot.sprite_reference.clone().unwrap_or_default();
             self.lua_script = snapshot.lua_script.unwrap_or_default();
             self.refresh_ui_editors(id);
-            self.sprite_component = snapshot
-                .sprite_reference
-                .as_deref()
-                .and_then(|value| SpriteComponent::from_component_str(value).ok())
-                .unwrap_or_else(|| SpriteComponent {
-                    texture: "assets/textures/player.png".to_owned(),
-                    size: engine::core::transform::Vec2::new(128.0, 128.0),
-                    pivot: engine::core::transform::Vec2::new(0.5, 0.5),
-                    tint: [1.0; 4],
-                    sorting: engine::core::sprite::SpriteSorting::default(),
-
-                    flip_x: false,
-                    flip_y: false,
-                    z: 0.0,
-                });
             self.tilemap.map = scene
                 .scene
                 .entities
@@ -1079,7 +1312,7 @@ impl EditorApp {
                         "idle",
                         vec![engine::core::animation::AnimationClip {
                             name: "idle".to_owned(),
-                            sheet: self.sprite_component.texture.clone(),
+                            sheet: self.selected_sprite_texture(),
                             cols: 1,
                             frame_rate: 1.0,
                             looped: true,
@@ -1092,14 +1325,12 @@ impl EditorApp {
             // 目标不存在：清空回读字段，避免残留上一实体的快照。
             let fields = (
                 &mut self.entity_name,
-                &mut self.sprite_reference,
                 &mut self.mesh_renderer,
                 &mut self.lua_script,
             );
             fields.0.clear();
             fields.1.clear();
             fields.2.clear();
-            fields.3.clear();
         }
         // 同步完成后刷新基线：当前缓冲（刚刚从 `id` 回读）即“已提交”状态。
         self.refresh_inspector_baseline();
@@ -1111,21 +1342,15 @@ impl EditorApp {
     pub(crate) fn clear_inspector(&mut self) {
         self.focus_hierarchy_delete_target();
         self.entity_name.clear();
-        self.transform = TransformFields::default();
-        self.transform3d = Transform3DFields::default();
         self.mesh_renderer.clear();
-        self.camera3d = Camera3DFields::default();
         self.collider3d = Collider3dFields::default();
-        self.text = TextFields::default();
-        self.sprite_reference.clear();
-        self.sprite_component = SpriteComponent::default();
         self.tilemap.map = Tilemap::new(engine::core::transform::Vec2::new(32.0, 32.0), 8, 8)
             .expect("default tilemap");
         self.animation.machine = AnimationStateMachine::new(
             "idle",
             vec![engine::core::animation::AnimationClip {
                 name: "idle".to_owned(),
-                sheet: self.sprite_component.texture.clone(),
+                sheet: self.selected_sprite_texture(),
                 cols: 1,
                 frame_rate: 1.0,
                 looped: true,
@@ -1213,6 +1438,104 @@ impl EditorApp {
                 Ok::<(), ()>(())
             });
         self.status = "已完成对齐".to_owned();
+    }
+
+    /// **资源重命名/移动 + 引用保持**（第 44 轮，docs/55 P1 的 Project Browser 一条）。
+    ///
+    /// 顺序是刻意的：**先校验、再搬文件、最后改引用**。
+    /// - 目标已存在 / 越出工程根 / 正在 Play / 目标是当前打开的文档 → 直接拒绝（不做半截操作）；
+    /// - 文件搬完再改引用：即使改引用失败，磁盘上也是"文件已改名 + 部分文档仍指向旧路径"
+    ///   这种**可诊断**的状态（审计会把断链报出来），而不是"文档指向一个不存在的文件却没人知道"；
+    /// - 其它文档的磁盘改写由 `editor::rewrite_project_references` 负责：**解析成功才写回**，
+    ///   坏文件原样保留并进报告；
+    /// - 当前打开的文档**不写磁盘**（保住用户未保存的编辑），而是在内存里改写并进 history
+    ///   （一条 Undo 可回退引用改写；文件改名本身不回退，与 Unity 的取舍一致）。
+    pub(crate) fn perform_resource_move(
+        &mut self,
+        from: &std::path::Path,
+        to: &std::path::Path,
+    ) -> Result<String, String> {
+        if self.is_playing() {
+            return Err("Play mode locks resource moves; click Stop first".to_owned());
+        }
+        let root = self.project.root.clone();
+        let from_relative = editor::normalize_relative(from)
+            .ok_or_else(|| format!("资源路径必须是工程内相对路径：{}", from.display()))?;
+        let to_relative = editor::normalize_relative(to)
+            .ok_or_else(|| format!("目标路径必须是工程内相对路径：{}", to.display()))?;
+        if from_relative == to_relative {
+            return Err("源与目标是同一个路径".to_owned());
+        }
+        let from_absolute = root.join(&from_relative);
+        let to_absolute = root.join(&to_relative);
+        if !from_absolute.is_file() {
+            return Err(format!("源资源不存在：{}", from_relative.display()));
+        }
+        if to_absolute.exists() {
+            return Err(format!("目标已存在：{}", to_relative.display()));
+        }
+        let open_document = self
+            .document
+            .current_scene
+            .as_ref()
+            .and_then(|document| document.path.clone());
+        if open_document.as_ref().is_some_and(|path| {
+            editor::paths_match(path, &from_absolute) || editor::paths_match(path, &to_absolute)
+        }) {
+            return Err(format!(
+                "当前打开的文档不能重命名或移动：{}",
+                from_relative.display()
+            ));
+        }
+        if let Some(parent) = to_absolute.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|error| format!("创建目标目录失败：{error}"))?;
+        }
+        std::fs::rename(&from_absolute, &to_absolute)
+            .map_err(|error| format!("移动资源失败：{error}"))?;
+
+        let from_text = from_relative.to_string_lossy().replace('\\', "/");
+        let to_text = to_relative.to_string_lossy().replace('\\', "/");
+        let report = editor::rewrite_project_references(
+            &root,
+            &from_text,
+            &to_text,
+            open_document.as_deref(),
+        );
+
+        // 当前打开的文档：内存改写 + 一条 Undo（不写盘）。
+        let mut open_document_components = 0;
+        if let Some(scene) = self.document.current_scene.as_mut() {
+            let label = format!("资源引用：{from_text} → {to_text}");
+            let counter = &mut open_document_components;
+            let _ = self
+                .history
+                .execute(scene, label, CommandKind::Rename, |scene| {
+                    let changed =
+                        editor::rewrite_scene_references(&mut scene.scene, &from_text, &to_text);
+                    if changed > 0 {
+                        scene.mark_dirty();
+                    }
+                    *counter = changed;
+                    Ok::<(), ()>(())
+                });
+        }
+
+        self.thumbnails.remove(&from_text);
+        self.refresh_resources();
+        self.selected_resource = Some(to_relative.clone());
+        let mut status = format!(
+            "已重命名资源：{from_text} → {to_text}（改写 {} 个文档 / {} 处组件引用）",
+            report.rewritten_files.len(),
+            report.rewritten_components
+        );
+        if open_document_components > 0 {
+            status.push_str(&format!("；当前文档内 {open_document_components} 处（未保存，可 Undo）"));
+        }
+        if !report.failures.is_empty() {
+            status.push_str(&format!("；{} 个文档未改写：{}", report.failures.len(), report.failures.join("、")));
+        }
+        Ok(status)
     }
 
     /// 让选中的 2D 实体在水平或垂直方向上按首末锚点等间距分布。
@@ -1525,6 +1848,379 @@ impl EditorApp {
     }
 }
 
+/// Inspector 的**实体级 typed action**实现（shell 层，docs/55 §4.1 规则 1）。
+///
+/// 面板只发 `EditorCommand`：提交边界（`history.execute`）、Play 锁定、状态文案都住在这里。
+/// `panels/architecture_tests.rs` 的棘轮测试扫描 `panels/*.rs` 的**生产代码**，面板里再出现
+/// `self.history.execute(` / `self.document.current_scene.as_mut()` 就会判红。
+///
+/// 命令一律携带**显式目标实体**（不偷偷读选区）；菜单/工具栏/快捷键用的"选中实体"入口
+/// 保留 `*_selected` 包装，行为与迁移前逐字一致。
+impl EditorApp {
+    /// 用当前 Inspector 的 Collider3d 字段缓冲为实体添加/更新 Collider3d（一条历史）。
+    pub(crate) fn add_collider3d_component(&mut self, entity: SceneEntityId) -> Result<(), String> {
+        if self.is_playing() {
+            return Err("Play mode locks scene editing; click Stop first".to_owned());
+        }
+        let inspector = self.inspector.clone();
+        let collider3d = self.collider3d.clone();
+        let Some(scene) = self.document.current_scene.as_mut() else {
+            return Ok(());
+        };
+        let result = self.history.execute(
+            scene,
+            "Add Collider3d",
+            CommandKind::Property,
+            move |scene| {
+                inspector.set_collider3d(scene, entity, collider3d)?;
+                Ok::<(), InspectorError>(())
+            },
+        );
+        match result {
+            Ok(_) => Ok(()),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
+    /// 移除实体的 Collider3d 组件（经 history 可撤销）。
+    pub(crate) fn remove_collider3d_component(
+        &mut self,
+        entity: SceneEntityId,
+    ) -> Result<(), String> {
+        if self.is_playing() {
+            return Err("Play mode locks scene editing; click Stop first".to_owned());
+        }
+        let inspector = self.inspector.clone();
+        let Some(scene) = self.document.current_scene.as_mut() else {
+            return Ok(());
+        };
+        let result = self.history.execute(
+            scene,
+            "Remove Collider3d",
+            CommandKind::Property,
+            move |scene| {
+                inspector.clear_collider3d(scene, entity)?;
+                Ok::<(), InspectorError>(())
+            },
+        );
+        match result {
+            Ok(_) => Ok(()),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
+    /// 为**当前选中**实体添加组件（菜单/工具栏/场景视图的既有入口）。
+    ///
+    /// 判定顺序与迁移前一致：Play 锁定 → 注册表校验 → 选区；真正的提交在
+    /// [`Self::add_component_to`]（typed action 的落点）。
+    pub(crate) fn add_component(&mut self, name: &str) -> Result<(), String> {
+        if self.is_playing() {
+            return Err("Play mode locks scene editing; click Stop first".to_owned());
+        }
+        if !Self::component_registered(name) {
+            return Err(format!("未注册组件：{name}"));
+        }
+        let Some(selected) = self.selection.primary() else {
+            return Ok(());
+        };
+        self.add_component_to(selected, name)
+    }
+
+    /// 为 `entity` 添加组件（默认值，经 history 可撤销）。目标由 typed action 显式给出。
+    pub(crate) fn add_component_to(
+        &mut self,
+        entity: SceneEntityId,
+        name: &str,
+    ) -> Result<(), String> {
+        if self.is_playing() {
+            return Err("Play mode locks scene editing; click Stop first".to_owned());
+        }
+        if !Self::component_registered(name) {
+            return Err(format!("未注册组件：{name}"));
+        }
+        let Some(scene) = self.document.current_scene.as_ref() else {
+            return Ok(());
+        };
+        if scene.scene.entities[&entity].components.contains_key(name) {
+            return Err(format!("实体已有 {name} 组件"));
+        }
+        let inspector = self.inspector.clone();
+        let name = name.to_owned();
+        let Some(scene) = self.document.current_scene.as_mut() else {
+            return Ok(());
+        };
+        let result = self.history.execute(
+            scene,
+            format!("Add {name}"),
+            CommandKind::Property,
+            move |scene| Self::insert_default_component(scene, &inspector, entity, &name),
+        );
+        match result {
+            Ok(_) => {
+                self.sync_inspector(entity);
+                Ok(())
+            }
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
+    /// 移除 `entity` 上的组件（经 history 可撤销）。
+    pub(crate) fn remove_component(
+        &mut self,
+        entity: SceneEntityId,
+        name: &str,
+    ) -> Result<(), String> {
+        if self.is_playing() {
+            return Err("Play mode locks scene editing; click Stop first".to_owned());
+        }
+        let name = name.to_owned();
+        let Some(scene) = self.document.current_scene.as_mut() else {
+            return Ok(());
+        };
+        let result = self.history.execute(
+            scene,
+            format!("Remove {name}"),
+            CommandKind::Property,
+            move |scene| {
+                if let Some(entity) = scene.scene.entities.get_mut(&entity) {
+                    entity.components.remove(&name);
+                    scene.mark_dirty();
+                }
+                Ok::<(), InspectorError>(())
+            },
+        );
+        match result {
+            Ok(_) => {
+                self.sync_inspector(entity);
+                Ok(())
+            }
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
+    /// 设置实体的"运行时切场景不销毁"标记（Inspector 复选框；一次提交 = 一条历史）。
+    ///
+    /// 与迁移前的面板内联实现一致：**不做** Play 锁定（复选框本来就没有这道前置判断），
+    /// 组件写入失败也不改状态栏。
+    pub(crate) fn set_entity_persistent(&mut self, entity: SceneEntityId, persistent: bool) {
+        let inspector = self.inspector.clone();
+        if let Some(scene) = self.document.current_scene.as_mut() {
+            let _ = self.history.execute(
+                scene,
+                "Toggle Persistent",
+                CommandKind::Property,
+                |scene| {
+                    inspector.set_persistent(scene, entity, persistent)?;
+                    Ok::<(), InspectorError>(())
+                },
+            );
+        }
+    }
+
+    /// 用 Inspector 的名称缓冲重命名**当前选中**实体（菜单「重命名」入口）。
+    pub(crate) fn rename_selected(&mut self) {
+        if self.is_playing() {
+            self.status = "Play mode locks scene editing; click Stop first".into();
+            return;
+        }
+        let Some(selected) = self.selection.primary() else {
+            self.status = "请先在层级中选择实体".into();
+            return;
+        };
+        let name = self.entity_name.trim().to_owned();
+        self.rename_entity(selected, name);
+    }
+
+    /// 重命名 `entity`（目标与名称都由 typed action 显式携带）。
+    pub(crate) fn rename_entity(&mut self, entity: SceneEntityId, name: String) {
+        if self.is_playing() {
+            self.status = "Play mode locks scene editing; click Stop first".into();
+            return;
+        }
+        let tree = self.tree.clone();
+        let Some(scene) = self.document.current_scene.as_mut() else {
+            self.status = "Create a scene first".into();
+            return;
+        };
+        let result =
+            self.history
+                .execute(scene, "Rename entity", CommandKind::Rename, move |scene| {
+                    tree.rename(scene, entity, name)
+                        .map_err(|e| e.to_string())
+                });
+        match result {
+            Ok(true) => {
+                self.status = "Entity renamed".into();
+                self.on_document_changed(DocumentChange::EntityRenamed);
+            }
+            Ok(false) => self.status = "No change".into(),
+            Err(e) => self.status = e,
+        }
+    }
+
+    /// 把**当前选中**实体重挂到 `parent` 下（Hierarchy 拖放与命令层共用）。
+    pub(crate) fn reparent_selected(&mut self, parent: Option<SceneEntityId>) {
+        if self.is_playing() {
+            self.status = "Play mode locks scene editing; click Stop first".into();
+            return;
+        }
+        let Some(selected) = self.selection.primary() else {
+            self.status = "请先在层级中选择实体".into();
+            return;
+        };
+        let Some(scene) = self.document.current_scene.as_ref() else {
+            self.status = "Create a scene first".into();
+            return;
+        };
+        if let Err(error) = self.validate_reparent_target(scene, selected, parent) {
+            self.status = error;
+            return;
+        }
+
+        if !self.begin_edit_transaction("Reparent entity", CommandKind::Reparent, Some(selected)) {
+            self.status = "重挂载事务已激活，无法重复开始".into();
+            return;
+        }
+        let Some(scene) = self.document.current_scene.as_mut() else {
+            self.cancel_edit_transaction();
+            self.status = "Create a scene first".into();
+            return;
+        };
+        let result = self.tree.reparent(scene, selected, parent);
+        match result {
+            Ok(()) => {
+                self.commit_edit_transaction();
+                self.on_document_changed(DocumentChange::EntityReparented);
+                self.status = "Parent updated".into();
+            }
+            Err(e) => {
+                self.cancel_edit_transaction();
+                self.status = e.to_string();
+            }
+        }
+    }
+
+    pub(crate) fn validate_reparent_target(
+        &self,
+        scene: &editor::SceneDocument,
+        moving: SceneEntityId,
+        parent: Option<SceneEntityId>,
+    ) -> Result<(), String> {
+        let Some(target) = parent else {
+            return Ok(());
+        };
+        if target == moving {
+            return Err("不能将实体挂到自己下面".to_owned());
+        }
+        let mut candidate = Some(target);
+        while let Some(current) = candidate {
+            if current == moving {
+                return Err("不能把实体移动到其后代节点下".to_owned());
+            }
+            candidate = scene
+                .scene
+                .entities
+                .get(&current)
+                .and_then(|entity| entity.parent);
+        }
+        Ok(())
+    }
+
+    /// 删除当前选中的实体集合（仅保留顶层根，整批一条历史）。
+    pub(crate) fn delete_selected_entity(&mut self) {
+        if self.is_playing() {
+            self.status = "Play mode locks scene editing; click Stop first".into();
+            return;
+        }
+        // H03：按选中集合删除（仅保留顶层根，子孙随根整棵移除），整批一条历史。
+        let targets = self.top_most_selected_ids();
+        if targets.is_empty() {
+            self.status = "请先在层级中选择实体".into();
+            return;
+        }
+        // 删除前记录父节点，供删除后选择回退（SelectionModel::on_entities_removed）。
+        let parent = self.current_scene().and_then(|scene| {
+            self.selection
+                .primary()
+                .and_then(|primary| scene.scene.entities.get(&primary))
+                .and_then(|entity| entity.parent)
+        });
+        let tree = self.tree.clone();
+        let removed = std::rc::Rc::new(std::cell::Cell::new(
+            None::<std::collections::BTreeSet<SceneEntityId>>,
+        ));
+        let removed_out = removed.clone();
+        let Some(scene) = self.document.current_scene.as_mut() else {
+            self.status = "Create a scene first".into();
+            return;
+        };
+        let result = self.history.execute(
+            scene,
+            "Delete entities",
+            CommandKind::Delete,
+            move |scene| {
+                let mut deleted_all = std::collections::BTreeSet::new();
+                for target in targets {
+                    let deleted = tree.delete(scene, target).map_err(|e| e.to_string())?;
+                    deleted_all.extend(deleted);
+                }
+                removed.set(Some(deleted_all));
+                Ok::<(), String>(())
+            },
+        );
+        match result {
+            Ok(true) => {
+                if let Some(deleted) = removed_out.take() {
+                    self.selection.on_entities_removed(&deleted, parent);
+                }
+                // E03：删除入口直接复位删除目标（此时选区可能已被清空，on_document_changed
+                // 的 `had_selection` 无法感知“删除前有选中实体”，故在此显式复位）。
+                self.delete_target = crate::DeleteTarget::None;
+                self.on_document_changed(DocumentChange::EntityDeleted);
+                self.status = "Entity deleted".into();
+            }
+            Ok(false) => self.status = "No change".into(),
+            Err(e) => self.status = e,
+        }
+    }
+
+    /// 粘贴编辑器剪贴板里的组件到**当前选中**实体（菜单「编辑 ▸ 粘贴组件」）。
+    pub(crate) fn paste_selected_components(&mut self) {
+        let Some(id) = self.selection.primary() else {
+            return;
+        };
+        self.paste_components_to(id);
+    }
+
+    /// 粘贴编辑器剪贴板里的组件到 `entity`（目标由 typed action 显式携带）。
+    pub(crate) fn paste_components_to(&mut self, entity: SceneEntityId) {
+        if self.is_playing() {
+            return;
+        }
+        let Some(clipboard) = self.inspector_clipboard.clone() else {
+            self.status = "Component clipboard is empty".to_owned();
+            return;
+        };
+        if let Some(scene) = self.document.current_scene.as_mut() {
+            let _ = self.history.execute(
+                scene,
+                "Paste Components",
+                CommandKind::Property,
+                |scene| {
+                    let target = scene.scene.entities.get_mut(&entity).ok_or(())?;
+                    target.components = clipboard.components.clone();
+                    target.resources = clipboard.resources.clone();
+                    target.metadata = clipboard.metadata.clone();
+                    scene.mark_dirty();
+                    Ok::<(), ()>(())
+                },
+            );
+        }
+        self.sync_inspector(entity);
+        self.status = "Components pasted".to_owned();
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DistributionAxis {
     Horizontal,
@@ -1633,6 +2329,802 @@ fn sorted_sprite_order_updates(
             (target.id, target.sprite.to_component_str())
         })
         .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Prefab typed action（shell 层）：面板只发命令，写盘与重建实例的提交边界在这里。
+// ---------------------------------------------------------------------------
+
+impl EditorApp {
+    /// 把**单个字段**还原为源 Prefab 的取值（docs/55 阶段 3：选择性 Revert）。
+    ///
+    /// 走统一的 history 网关：一条 Undo 即可收回；Play 中拒绝；不触碰其它覆盖字段。
+    pub(crate) fn revert_prefab_override_field(&mut self, selected: SceneEntityId, field: &str) {
+        if self.is_playing() {
+            self.status = "Play mode locks scene editing; click Stop first".to_owned();
+            return;
+        }
+        let Some((prefab_source, source_id, parent)) = (|| {
+            let scene = self.document.current_scene.as_ref()?;
+            let entity = scene.scene.entities.get(&selected)?;
+            Some((
+                entity.metadata.get("prefab.source")?.clone(),
+                entity
+                    .metadata
+                    .get("prefab.source_id")?
+                    .parse::<u64>()
+                    .ok()
+                    .map(SceneEntityId)?,
+                entity.parent,
+            ))
+        })() else {
+            self.status = "当前实体不是 Prefab 实例".to_owned();
+            return;
+        };
+        let path = strip_verbatim_prefix(&self.project.root).join(&prefab_source);
+        if let Err(error) = self.ensure_prefab_source_cached(&path) {
+            self.status = format!("加载源 Prefab 失败：{error}");
+            return;
+        }
+        let Some(source_entity) = self
+            .prefab_source_cache
+            .get(&path)
+            .and_then(|cached| cached.prefab.entities.get(&source_id))
+            .cloned()
+        else {
+            self.status = format!("源 Prefab 中缺少实体 {}", source_id.0);
+            return;
+        };
+        let field = field.to_owned();
+        let field_label = field.clone();
+        let Some(doc) = self.document.current_scene.as_mut() else {
+            return;
+        };
+        let result = self.history.execute(
+            doc,
+            format!("Revert Override {field_label}"),
+            CommandKind::Property,
+            move |scene| {
+                let entity = scene
+                    .scene
+                    .entities
+                    .get_mut(&selected)
+                    .ok_or_else(|| format!("场景中不存在实体 {}", selected.0))?;
+                if field == "name" {
+                    entity.name = source_entity.name.clone();
+                } else if let Some(key) = field.strip_prefix("component:") {
+                    let payload = source_entity
+                        .components
+                        .get(key)
+                        .cloned()
+                        .ok_or_else(|| format!("源 Prefab 缺少组件 {key}"))?;
+                    entity.components.insert(key.to_owned(), payload);
+                } else if let Some(raw_path) = field.strip_prefix("property:") {
+                    let path = engine::core::property_path::PropertyPath::parse(raw_path)
+                        .map_err(|error| error.to_string())?;
+                    let source_payload = source_entity
+                        .components
+                        .get(&path.component)
+                        .ok_or_else(|| format!("源 Prefab 缺少组件 {}", path.component))?;
+                    let value = engine::core::property_path::read_field_text(source_payload, &path)
+                        .map_err(|error| error.to_string())?;
+                    let current = entity
+                        .components
+                        .get(&path.component)
+                        .cloned()
+                        .ok_or_else(|| format!("实例缺少组件 {}", path.component))?;
+                    let updated =
+                        engine::core::property_path::write_builtin(&current, &path, &value)
+                            .map_err(|error| error.to_string())?;
+                    entity.components.insert(path.component.clone(), updated);
+                } else if let Some(key) = field.strip_prefix("metadata:") {
+                    match source_entity.metadata.get(key) {
+                        Some(value) => {
+                            entity.metadata.insert(key.to_owned(), value.clone());
+                        }
+                        None => {
+                            entity.metadata.remove(key);
+                        }
+                    }
+                } else {
+                    return Err(format!("不支持的 Prefab override 字段 {field}"));
+                }
+                scene.mark_dirty();
+                Ok::<(), String>(())
+            },
+        );
+        match result {
+            Ok(true) => {
+                self.on_document_changed(DocumentChange::PrefabApply);
+                self.status = format!("已回退覆盖字段：{field_label}（父节点 {parent:?}）");
+            }
+            Ok(false) => self.status = format!("字段已是源取值：{field_label}"),
+            Err(error) => self.status = format!("回退覆盖失败：{error}"),
+        }
+    }
+
+    /// 重新应用源 Prefab（docs/55 §4.1：**目标由 typed action 显式给出**，不再偷偷读选区）。
+    ///
+    /// 之前这里读 `selection.primary()`，于是 Hierarchy 的右键菜单必须先"设为单选"才能调用——
+    /// 一个隐藏的选区依赖。现在目标作为参数传进来，视图侧只负责发命令。
+    pub(crate) fn reapply_prefab(&mut self, selected: SceneEntityId) {
+        if self.is_playing() {
+            self.status = "Play mode locks scene editing; click Stop first".to_owned();
+            return;
+        }
+        let Some(scene) = self.current_scene() else {
+            return;
+        };
+        let Some(entity) = scene.scene.entities.get(&selected) else {
+            self.status = "Prefab 根实例不存在".to_owned();
+            return;
+        };
+        if entity
+            .metadata
+            .get("prefab.root")
+            .is_none_or(|value| value != "true")
+        {
+            self.status = "只有 Prefab 根实例支持重新应用源".to_owned();
+            return;
+        }
+        let Some(prefab_source) = entity.metadata.get("prefab.source").cloned() else {
+            self.status = "当前实体没有 Prefab 来源".to_owned();
+            return;
+        };
+        let root = strip_verbatim_prefix(&self.project.root);
+        let prefab = match Prefab::load(root.join(&prefab_source)) {
+            Ok(prefab) => prefab,
+            Err(error) => {
+                self.status = format!("重新加载 Prefab 失败：{error}");
+                return;
+            }
+        };
+        let rebuild =
+            match collect_prefab_rebuild_state(&scene.scene, selected, &prefab_source, &prefab) {
+                Ok(rebuild) => rebuild,
+                Err(error) => {
+                    self.status = error;
+                    return;
+                }
+            };
+        let new_root = std::rc::Rc::new(std::cell::Cell::new(None));
+        let new_root_result = new_root.clone();
+        let prefab_source_for_apply = prefab_source.clone();
+        let Some(scene) = self.document.current_scene.as_mut() else {
+            return;
+        };
+        let result = self.history.execute(
+            scene,
+            "Reapply Prefab Source",
+            CommandKind::Property,
+            move |scene| {
+                if let Some(parent_id) = rebuild.parent
+                    && let Some(parent) = scene.scene.entities.get_mut(&parent_id)
+                {
+                    parent
+                        .children
+                        .retain(|child| *child != rebuild.instance_root);
+                }
+                for entity_id in &rebuild.instance_entities {
+                    scene.scene.entities.remove(entity_id);
+                }
+                let instance = prefab
+                    .instantiate(&mut scene.scene, rebuild.parent, &rebuild.overrides)
+                    .map_err(|error| error.to_string())?;
+                apply_prefab_instance_metadata(
+                    &mut scene.scene,
+                    &prefab_source_for_apply,
+                    &instance,
+                );
+                preserve_prefab_editor_flags(
+                    scene,
+                    &rebuild.source_to_instance,
+                    &instance.source_to_instance,
+                );
+                new_root.set(Some(instance.instance_root));
+                scene.mark_dirty();
+                Ok::<(), String>(())
+            },
+        );
+        match result {
+            Ok(_) => {
+                if let Some(new_root) = new_root_result.get() {
+                    self.selection
+                        .set_single(new_root, editor::SelectionSource::Inspector);
+                    self.on_document_changed(DocumentChange::PrefabApply);
+                }
+                self.status = format!("已重新应用 Prefab：{prefab_source}");
+            }
+            Err(error) => self.status = format!("重新应用 Prefab 失败：{error}"),
+        }
+    }
+
+    /// 把实例写回源 Prefab 文件（目标由 typed action 显式给出）。
+    pub(crate) fn save_prefab_to_source(&mut self, selected: SceneEntityId) {
+        if self.is_playing() {
+            self.status = "Play mode locks scene editing; click Stop first".to_owned();
+            return;
+        }
+        let Some(scene) = self.current_scene() else {
+            return;
+        };
+        let Some(entity) = scene.scene.entities.get(&selected) else {
+            self.status = "Prefab 根实例不存在".to_owned();
+            return;
+        };
+        if entity
+            .metadata
+            .get("prefab.root")
+            .is_none_or(|value| value != "true")
+        {
+            self.status = "只有 Prefab 根实例支持写回源 Prefab".to_owned();
+            return;
+        }
+        let Some(prefab_source) = entity.metadata.get("prefab.source").cloned() else {
+            self.status = "当前实体没有 Prefab 来源".to_owned();
+            return;
+        };
+        let root = strip_verbatim_prefix(&self.project.root);
+        let prefab_path = root.join(&prefab_source);
+        let existing_prefab = match Prefab::load(&prefab_path) {
+            Ok(prefab) => prefab,
+            Err(error) => {
+                self.status = format!("加载源 Prefab 失败：{error}");
+                return;
+            }
+        };
+        let new_prefab =
+            match build_prefab_from_instance_root(&scene.scene, selected, &existing_prefab) {
+                Ok(prefab) => prefab,
+                Err(error) => {
+                    self.status = format!("生成源 Prefab 失败：{error}");
+                    return;
+                }
+            };
+        let new_selected_root = std::rc::Rc::new(std::cell::Cell::new(None));
+        let selected_result = new_selected_root.clone();
+        let prefab_source_for_apply = prefab_source.clone();
+        let Some(scene) = self.document.current_scene.as_mut() else {
+            return;
+        };
+        let result = Self::write_prefab_and_rebuild_instances(
+            &mut self.history,
+            scene,
+            PrefabWriteRequest {
+                source: &prefab_source_for_apply,
+                path: &prefab_path,
+                prefab: new_prefab,
+                selected,
+                label: "Save Prefab Source",
+            },
+            &new_selected_root,
+        );
+        match result {
+            Ok(()) => {
+                self.refresh_resources();
+                if let Some(new_root) = selected_result.get() {
+                    self.selection
+                        .set_single(new_root, editor::SelectionSource::Inspector);
+                    self.on_document_changed(DocumentChange::PrefabApply);
+                }
+                self.status = format!("已写回 Prefab 源并更新实例：{prefab_source}");
+            }
+            Err(error) => self.status = format!("更新 Prefab 实例失败：{error}"),
+        }
+    }
+
+    /// 把一个字段的**实例取值**应用回源 Prefab 文件，并同步更新场景里的全部实例
+    /// （docs/55 阶段 3：逐字段 Apply）。应用后该字段不再是覆盖。
+    pub(crate) fn apply_prefab_override_field(&mut self, selected: SceneEntityId, field: &str) {
+        if self.is_playing() {
+            self.status = "Play mode locks scene editing; click Stop first".to_owned();
+            return;
+        }
+        let Some((prefab_source, source_id)) = self.prefab_instance_source(selected) else {
+            self.status = "当前实体不是 Prefab 实例".to_owned();
+            return;
+        };
+        let Some(instance_value) = self.prefab_override_instance_value(selected, field) else {
+            self.status = format!("无法读取实例取值：{field}");
+            return;
+        };
+        let prefab_path = strip_verbatim_prefix(&self.project.root).join(&prefab_source);
+        let mut prefab = match Prefab::load(&prefab_path) {
+            Ok(prefab) => prefab,
+            Err(error) => {
+                self.status = format!("加载源 Prefab 失败：{error}");
+                return;
+            }
+        };
+        // 只改源 Prefab 里的目标字段；失败则**不落盘、不改场景**。
+        let Some(source_entity) = prefab.entities.get_mut(&source_id) else {
+            self.status = format!("源 Prefab 中缺少实体 {}", source_id.0);
+            return;
+        };
+        if field == "name" {
+            source_entity.name = instance_value;
+        } else if let Some(key) = field.strip_prefix("component:") {
+            source_entity
+                .components
+                .insert(key.to_owned(), instance_value);
+        } else if let Some(raw_path) = field.strip_prefix("property:") {
+            let Ok(path) = engine::core::property_path::PropertyPath::parse(raw_path) else {
+                self.status = format!("非法属性路径：{raw_path}");
+                return;
+            };
+            let Some(payload) = source_entity.components.get(&path.component).cloned() else {
+                self.status = format!("源 Prefab 缺少组件 {}", path.component);
+                return;
+            };
+            match engine::core::property_path::write_builtin(&payload, &path, &instance_value) {
+                Ok(updated) => {
+                    source_entity.components.insert(path.component, updated);
+                }
+                Err(error) => {
+                    self.status = format!("应用覆盖失败：{error}");
+                    return;
+                }
+            }
+        } else if let Some(key) = field.strip_prefix("metadata:") {
+            source_entity
+                .metadata
+                .insert(key.to_owned(), instance_value);
+        } else {
+            self.status = format!("不支持的 Prefab override 字段 {field}");
+            return;
+        }
+
+        let new_selected_root = std::rc::Rc::new(std::cell::Cell::new(None));
+        let selected_result = new_selected_root.clone();
+        let field_label = field.to_owned();
+        let Some(scene) = self.document.current_scene.as_mut() else {
+            return;
+        };
+        let result = Self::write_prefab_and_rebuild_instances(
+            &mut self.history,
+            scene,
+            PrefabWriteRequest {
+                source: &prefab_source,
+                path: &prefab_path,
+                prefab,
+                selected,
+                label: &format!("Apply Override {field_label}"),
+            },
+            &new_selected_root,
+        );
+        match result {
+            Ok(()) => {
+                self.refresh_resources();
+                if let Some(new_root) = selected_result.get() {
+                    self.selection
+                        .set_single(new_root, editor::SelectionSource::Inspector);
+                    self.on_document_changed(DocumentChange::PrefabApply);
+                }
+                self.status = format!("已把字段应用到源 Prefab 并更新全部实例：{field_label}");
+            }
+            Err(error) => self.status = format!("应用覆盖失败：{error}"),
+        }
+    }
+
+    /// 解包 Prefab 实例（目标由 typed action 显式给出）。
+    pub(crate) fn unpack_prefab(&mut self, selected: SceneEntityId) {
+        if self.is_playing() {
+            self.status = "Play mode locks scene editing; click Stop first".to_owned();
+            return;
+        }
+        let Some(scene) = self.current_scene() else {
+            return;
+        };
+        let Some(entity) = scene.scene.entities.get(&selected) else {
+            self.status = "Prefab 根实例不存在".to_owned();
+            return;
+        };
+        if entity
+            .metadata
+            .get("prefab.root")
+            .is_none_or(|value| value != "true")
+        {
+            self.status = "只有 Prefab 根实例支持 Unpack".to_owned();
+            return;
+        }
+        let Some(doc) = self.document.current_scene.as_mut() else {
+            return;
+        };
+        let result = self
+            .history
+            .execute(doc, "Unpack Prefab", CommandKind::Property, |scene| {
+                let ids = collect_scene_subtree(&scene.scene, selected)?;
+                for id in ids {
+                    let Some(entity) = scene.scene.entities.get_mut(&id) else {
+                        continue;
+                    };
+                    entity.metadata.retain(|key, _| !key.starts_with("prefab."));
+                }
+                scene.mark_dirty();
+                Ok::<(), String>(())
+            });
+        match result {
+            Ok(_) => {
+                self.on_document_changed(DocumentChange::PrefabApply);
+                self.status = "Prefab 实例已解包为普通实体".to_owned();
+            }
+            Err(error) => self.status = format!("Unpack 失败：{error}"),
+        }
+    }
+
+    /// 把（可能已改动的）Prefab 落盘，并在**一条历史**里重建场景内全部同源实例。
+    ///
+    /// 整体写回与逐字段应用共用这条路径：覆盖集合由「实例 vs 新源」重新 diff 得出，
+    /// 因此刚被应用的字段会自动从覆盖列表中消失。
+    ///
+    /// 作为关联函数接收 `history` 与 `scene` 两个**互不相干**的可变借用，
+    /// 避免「持有 current_scene 借用时再调用 &mut self 方法」的借用冲突。
+    fn write_prefab_and_rebuild_instances(
+        history: &mut editor::CommandService,
+        scene: &mut editor::SceneDocument,
+        request: PrefabWriteRequest<'_>,
+        new_selected_root: &std::rc::Rc<std::cell::Cell<Option<SceneEntityId>>>,
+    ) -> Result<(), String> {
+        let PrefabWriteRequest {
+            source: prefab_source,
+            path: prefab_path,
+            prefab: new_prefab,
+            selected,
+            label,
+        } = request;
+        let roots = prefab_root_ids(&scene.scene, prefab_source);
+        let mut rebuilds = Vec::new();
+        for root_id in roots {
+            rebuilds.push(collect_prefab_rebuild_state(
+                &scene.scene,
+                root_id,
+                prefab_source,
+                &new_prefab,
+            )?);
+        }
+        new_prefab
+            .save(prefab_path)
+            .map_err(|error| format!("写回源 Prefab 失败：{error}"))?;
+
+        let prefab_source_owned = prefab_source.to_owned();
+        let selected_root = new_selected_root.clone();
+        let new_prefab_for_apply = new_prefab.clone();
+        let result = history.execute(scene, label, CommandKind::Property, move |scene| {
+            for rebuild in &rebuilds {
+                if let Some(parent_id) = rebuild.parent
+                    && let Some(parent) = scene.scene.entities.get_mut(&parent_id)
+                {
+                    parent
+                        .children
+                        .retain(|child| *child != rebuild.instance_root);
+                }
+                for entity_id in &rebuild.instance_entities {
+                    scene.scene.entities.remove(entity_id);
+                }
+                let instance = new_prefab_for_apply
+                    .instantiate(&mut scene.scene, rebuild.parent, &rebuild.overrides)
+                    .map_err(|error| error.to_string())?;
+                apply_prefab_instance_metadata(&mut scene.scene, &prefab_source_owned, &instance);
+                preserve_prefab_editor_flags(
+                    scene,
+                    &rebuild.source_to_instance,
+                    &instance.source_to_instance,
+                );
+                if rebuild.instance_root == selected {
+                    selected_root.set(Some(instance.instance_root));
+                }
+            }
+            scene.mark_dirty();
+            Ok::<(), String>(())
+        });
+        result.map(|_| ())
+    }
+}
+
+/// 重建一个 Prefab 实例所需的全部信息（写回/重新应用共用）。
+///
+/// 写路径辅助是**纯函数**：只吃显式传入的场景/Prefab，不持有 `EditorApp`
+/// （面板棘轮扫描的是 `self.document` / `self.history` 这类直写）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PrefabRebuildState {
+    pub(crate) instance_root: SceneEntityId,
+    pub(crate) parent: Option<SceneEntityId>,
+    pub(crate) instance_entities: Vec<SceneEntityId>,
+    pub(crate) source_to_instance: std::collections::BTreeMap<SceneEntityId, SceneEntityId>,
+    pub(crate) overrides: std::collections::BTreeMap<(SceneEntityId, String), String>,
+}
+
+pub(crate) fn collect_prefab_rebuild_state(
+    scene: &engine::core::scene::Scene,
+    instance_root: SceneEntityId,
+    prefab_source: &str,
+    prefab: &Prefab,
+) -> Result<PrefabRebuildState, String> {
+    let root = scene
+        .entities
+        .get(&instance_root)
+        .ok_or_else(|| format!("场景中不存在 Prefab 根实例 {}", instance_root.0))?;
+    let instance_entities = collect_scene_subtree(scene, instance_root)?;
+    let mut source_to_instance = std::collections::BTreeMap::new();
+    for entity_id in &instance_entities {
+        let entity = scene
+            .entities
+            .get(entity_id)
+            .ok_or_else(|| format!("场景中不存在实体 {}", entity_id.0))?;
+        if entity
+            .metadata
+            .get("prefab.source")
+            .is_none_or(|value| value != prefab_source)
+        {
+            return Err("Prefab 实例子树包含非同源节点，暂不支持自动重建".to_owned());
+        }
+        let source_id = entity
+            .metadata
+            .get("prefab.source_id")
+            .ok_or_else(|| format!("实体 {} 缺少 prefab.source_id", entity_id.0))?
+            .parse::<u64>()
+            .map(SceneEntityId)
+            .map_err(|_| format!("实体 {} 的 prefab.source_id 非法", entity_id.0))?;
+        if source_to_instance.insert(source_id, *entity_id).is_some() {
+            return Err(format!("Prefab 实例中出现重复的源实体 {}", source_id.0));
+        }
+    }
+    let prefab_ids = prefab
+        .entities
+        .keys()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
+    let instance_ids = source_to_instance
+        .keys()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
+    if prefab_ids != instance_ids {
+        return Err("Prefab 实例子树和源 Prefab 结构不一致，暂不支持自动重建".to_owned());
+    }
+    let overrides = collect_prefab_overrides(scene, prefab, &source_to_instance)?;
+    Ok(PrefabRebuildState {
+        instance_root,
+        parent: root.parent,
+        instance_entities,
+        source_to_instance,
+        overrides,
+    })
+}
+
+pub(crate) fn build_prefab_from_instance_root(
+    scene: &engine::core::scene::Scene,
+    instance_root: SceneEntityId,
+    existing_prefab: &Prefab,
+) -> Result<Prefab, String> {
+    let mut prefab = Prefab::from_scene(
+        scene,
+        instance_root,
+        existing_prefab.asset_id,
+        existing_prefab.name.clone(),
+    )
+    .map_err(|error| error.to_string())?;
+    let mut source_ids = std::collections::BTreeMap::new();
+    for entity_id in prefab.entities.keys().copied().collect::<Vec<_>>() {
+        let scene_entity = scene
+            .entities
+            .get(&entity_id)
+            .ok_or_else(|| format!("场景中不存在实体 {}", entity_id.0))?;
+        let source_id = scene_entity
+            .metadata
+            .get("prefab.source_id")
+            .ok_or_else(|| format!("实体 {} 缺少 prefab.source_id", entity_id.0))?
+            .parse::<u64>()
+            .map(SceneEntityId)
+            .map_err(|_| format!("实体 {} 的 prefab.source_id 非法", entity_id.0))?;
+        if source_ids.insert(entity_id, source_id).is_some() {
+            return Err(format!("实例实体 {} 出现重复映射", entity_id.0));
+        }
+    }
+    let root = *source_ids
+        .get(&prefab.root)
+        .ok_or_else(|| format!("实例根实体 {} 缺少 source_id 映射", prefab.root.0))?;
+    let mut remapped = std::collections::BTreeMap::new();
+    for (_, mut entity) in prefab.entities {
+        let source_id = *source_ids
+            .get(&entity.id)
+            .ok_or_else(|| format!("实体 {} 缺少 source_id 映射", entity.id.0))?;
+        entity.id = source_id;
+        entity.parent = entity.parent.and_then(|id| source_ids.get(&id).copied());
+        entity.children = entity
+            .children
+            .into_iter()
+            .filter_map(|id| source_ids.get(&id).copied())
+            .collect();
+        if remapped.insert(source_id, entity).is_some() {
+            return Err(format!("Prefab 写回时出现重复源实体 {}", source_id.0));
+        }
+    }
+    prefab.root = root;
+    prefab.entities = remapped;
+    prefab.metadata = existing_prefab.metadata.clone();
+    for entity in prefab.entities.values_mut() {
+        entity.metadata.retain(|key, _| !key.starts_with("prefab."));
+    }
+    Ok(prefab)
+}
+
+fn prefab_root_ids(scene: &engine::core::scene::Scene, prefab_source: &str) -> Vec<SceneEntityId> {
+    scene
+        .entities
+        .values()
+        .filter(|entity| {
+            entity
+                .metadata
+                .get("prefab.root")
+                .is_some_and(|value| value == "true")
+                && entity
+                    .metadata
+                    .get("prefab.source")
+                    .is_some_and(|value| value == prefab_source)
+        })
+        .map(|entity| entity.id)
+        .collect()
+}
+
+fn collect_prefab_overrides(
+    scene: &engine::core::scene::Scene,
+    prefab: &Prefab,
+    source_to_instance: &std::collections::BTreeMap<SceneEntityId, SceneEntityId>,
+) -> Result<std::collections::BTreeMap<(SceneEntityId, String), String>, String> {
+    let mut overrides = std::collections::BTreeMap::new();
+    for (source_id, source_entity) in &prefab.entities {
+        let instance_id = source_to_instance
+            .get(source_id)
+            .ok_or_else(|| format!("实例缺少源实体 {}", source_id.0))?;
+        let instance_entity = scene
+            .entities
+            .get(instance_id)
+            .ok_or_else(|| format!("场景中不存在实体 {}", instance_id.0))?;
+        for field in diff_prefab_entity(source_entity, instance_entity) {
+            let value = prefab_override_value(instance_entity, &field)?;
+            overrides.insert((*source_id, field), value);
+        }
+    }
+    Ok(overrides)
+}
+
+fn prefab_override_value(instance: &SceneEntity, field: &str) -> Result<String, String> {
+    if field == "name" {
+        Ok(instance.name.clone())
+    } else if let Some(key) = field.strip_prefix("component:") {
+        instance
+            .components
+            .get(key)
+            .cloned()
+            .ok_or_else(|| format!("实例缺少组件 {key}"))
+    } else if let Some(path) = field.strip_prefix("property:") {
+        // 逐字段覆盖：值取该字段（或元组分量）的**原始文本**，
+        // 由 `PrefabInstance::apply_overrides` 用 property_path 做最小改写。
+        // 取原始文本而不是规范化数值，避免把 `77` 写成 `77.000000`。
+        let path = engine::core::property_path::PropertyPath::parse(path)
+            .map_err(|error| format!("{field}: {error}"))?;
+        let payload = instance
+            .components
+            .get(&path.component)
+            .ok_or_else(|| format!("实例缺少组件 {}", path.component))?;
+        engine::core::property_path::read_field_text(payload, &path)
+            .map_err(|error| format!("{field}: {error}"))
+    } else if let Some(key) = field.strip_prefix("metadata:") {
+        instance
+            .metadata
+            .get(key)
+            .cloned()
+            .ok_or_else(|| format!("实例缺少元数据 {key}"))
+    } else {
+        Err(format!("不支持的 Prefab override 字段 {field}"))
+    }
+}
+
+fn collect_scene_subtree(
+    scene: &engine::core::scene::Scene,
+    root: SceneEntityId,
+) -> Result<Vec<SceneEntityId>, String> {
+    fn visit(
+        scene: &engine::core::scene::Scene,
+        id: SceneEntityId,
+        out: &mut Vec<SceneEntityId>,
+        visiting: &mut std::collections::BTreeSet<SceneEntityId>,
+    ) -> Result<(), String> {
+        if !visiting.insert(id) {
+            return Err(format!("实体 {} 的子树存在循环", id.0));
+        }
+        let entity = scene
+            .entities
+            .get(&id)
+            .ok_or_else(|| format!("场景中不存在实体 {}", id.0))?;
+        for child in &entity.children {
+            visit(scene, *child, out, visiting)?;
+        }
+        out.push(id);
+        Ok(())
+    }
+
+    let mut out = Vec::new();
+    let mut visiting = std::collections::BTreeSet::new();
+    visit(scene, root, &mut out, &mut visiting)?;
+    Ok(out)
+}
+
+pub(crate) fn apply_prefab_instance_metadata(
+    scene: &mut engine::core::scene::Scene,
+    prefab_source: &str,
+    instance: &engine::core::prefab::PrefabInstance,
+) {
+    for (source_id, entity_id) in &instance.source_to_instance {
+        if let Some(entity) = scene.entities.get_mut(entity_id) {
+            entity
+                .metadata
+                .insert("prefab.source".to_owned(), prefab_source.to_owned());
+            entity
+                .metadata
+                .insert("prefab.source_id".to_owned(), source_id.0.to_string());
+            entity.metadata.insert(
+                "prefab.root".to_owned(),
+                (entity.id == instance.instance_root).to_string(),
+            );
+        }
+    }
+}
+
+fn preserve_prefab_editor_flags(
+    scene: &mut editor::SceneDocument,
+    old_map: &std::collections::BTreeMap<SceneEntityId, SceneEntityId>,
+    new_map: &std::collections::BTreeMap<SceneEntityId, SceneEntityId>,
+) {
+    let mut hidden = std::collections::BTreeSet::new();
+    let mut locked = std::collections::BTreeSet::new();
+    for (source_id, instance_id) in old_map {
+        let hidden_key = format!("editor.hidden.{}", instance_id.0);
+        let locked_key = format!("editor.locked.{}", instance_id.0);
+        if scene
+            .scene
+            .metadata
+            .remove(&hidden_key)
+            .is_some_and(|value| value == "true")
+        {
+            hidden.insert(*source_id);
+        }
+        if scene
+            .scene
+            .metadata
+            .remove(&locked_key)
+            .is_some_and(|value| value == "true")
+        {
+            locked.insert(*source_id);
+        }
+    }
+    for source_id in hidden {
+        if let Some(instance_id) = new_map.get(&source_id) {
+            scene.scene.metadata.insert(
+                format!("editor.hidden.{}", instance_id.0),
+                "true".to_owned(),
+            );
+        }
+    }
+    for source_id in locked {
+        if let Some(instance_id) = new_map.get(&source_id) {
+            scene.scene.metadata.insert(
+                format!("editor.locked.{}", instance_id.0),
+                "true".to_owned(),
+            );
+        }
+    }
+}
+
+/// 一次「落盘 Prefab + 重建实例」请求（整体写回与逐字段应用共用）。
+struct PrefabWriteRequest<'a> {
+    source: &'a str,
+    path: &'a std::path::Path,
+    prefab: Prefab,
+    /// 需要在重建后重新选中的实例根（通常是用户当前选中的那个）。
+    selected: SceneEntityId,
+    /// Undo/Redo 菜单里显示的命令名。
+    label: &'a str,
 }
 
 #[cfg(test)]
@@ -2557,19 +4049,21 @@ mod tests {
         app.sync_inspector(id);
         let pristine = app.document.current_scene.clone().unwrap();
         assert_eq!(app.history.undo_len(), 0);
-        let original_x = app.transform.position_x;
+        // `Transform` 已迁到 schema 字段编辑器（第 36 轮），不再有缓冲字段；这条缓冲事务测试
+        // 改用**仍在缓冲里的** `Animation` 组件（entity 2 有 idle/move/attack 三个 clip）。
+        assert_eq!(app.animation.machine.default, "idle");
 
         // 帧内拖动/键入：mark 直写文档并置 pending，但不写历史、不落盘。
-        app.transform.position_x = original_x + 40.0;
+        app.animation.machine.default = "move".to_owned();
         app.mark_inspector_edit();
         assert!(app.is_edit_transaction_active(), "mark 应已自动开事务");
         assert!(app.inspector_edit.pending);
         assert_eq!(app.history.undo_len(), 0, "直写阶段不产生历史");
 
         // 同一交互多次 mark：不产生多条历史（一次拖拽=一帧一次 mark 的等价）。
-        app.transform.position_x = original_x + 55.0;
+        app.animation.machine.default = "attack".to_owned();
         app.mark_inspector_edit();
-        app.transform.position_x = original_x + 70.0;
+        app.animation.machine.default = "move".to_owned();
         app.mark_inspector_edit();
         assert_eq!(app.history.undo_len(), 0, "多次直写仍不产生历史");
 
@@ -2607,7 +4101,13 @@ mod tests {
         app.sync_inspector(id);
         let pristine = app.document.current_scene.clone().unwrap();
         assert_eq!(app.history.undo_len(), 0);
-        let original_x = app.transform.position_x;
+        // `Transform` 缓冲已随迁移删除（第 36 轮）：初值直接从**文档**读。
+        let original_x = crate::geometry::parse_transform(
+            &app.document.current_scene.as_ref().unwrap().scene.entities[&id].components
+                ["Transform"],
+        )
+        .expect("Transform 可解析")
+        .position_x;
 
         // 拖动首帧：begin 事务；随后多帧在事务内直写（等效 apply_drag_preview 逐帧写）。
         assert!(app.begin_edit_transaction(
@@ -2680,7 +4180,13 @@ mod tests {
                 .insert("Transform".to_owned(), "x=999;y=999".to_owned());
             scene.mark_dirty();
         }
-        app.scene_state.preview.insert(id, app.transform);
+        // 拖拽预览值从**文档**读（`Transform` 缓冲已随迁移删除，第 36 轮）。
+        let preview_transform = crate::geometry::parse_transform(
+            &app.document.current_scene.as_ref().unwrap().scene.entities[&id].components
+                ["Transform"],
+        )
+        .expect("Transform 可解析");
+        app.scene_state.preview.insert(id, preview_transform);
         app.scene_state
             .preview_ui
             .insert(id, [3.0, -5.0, 3.0, -5.0]);

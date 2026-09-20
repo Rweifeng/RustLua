@@ -14,6 +14,9 @@ use std::{
 
 pub const CURRENT_PREFAB_VERSION: u32 = 1;
 
+/// 实体元数据键：该实体是哪个 Prefab 源的实例（编辑器与运行时共用这个约定）。
+pub const PREFAB_SOURCE_META_KEY: &str = "prefab.source";
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Prefab {
     pub version: u32,
@@ -129,6 +132,26 @@ impl Prefab {
         };
         instance.apply_overrides(scene)?;
         Ok(instance)
+    }
+
+    /// 这份 Prefab **内部**引用的其它 Prefab 源（`prefab.source` 元数据的去重值）。
+    ///
+    /// 非空就表示它是一份**嵌套 Prefab**：根节点自己带 `prefab.source`（本 Prefab 的根是另一个
+    /// Prefab 的实例），或者树里某个后代是别的 Prefab 的实例。
+    /// 编辑器目前**不支持嵌套**，所以这条信息是"该拒绝什么、该警告什么"的事实源
+    /// （见 `editor::prefab_graph` 的扫描器）。
+    #[must_use]
+    pub fn nested_sources(&self) -> Vec<String> {
+        let mut sources: Vec<String> = self
+            .entities
+            .values()
+            .filter_map(|entity| entity.metadata.get(PREFAB_SOURCE_META_KEY))
+            .filter(|source| !source.trim().is_empty())
+            .cloned()
+            .collect();
+        sources.sort();
+        sources.dedup();
+        sources
     }
 
     pub fn save(&self, path: impl AsRef<Path>) -> Result<(), PrefabError> {

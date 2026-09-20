@@ -1,58 +1,15 @@
 use crate::SceneDocument;
 use engine::core::{
-    camera::Camera3D,
     entity_script::{EntityScript, SCRIPT_COMPONENT},
-    math3d::{Quat, Vec3},
     physics3d::{ColliderDesc3d, ColliderShape3d},
     scene::{SceneEntity, SceneEntityId},
-    sprite::SpriteComponent,
-    transform::Transform3D,
-    ui::{UiText},
 };
 use std::{error::Error, fmt, path::Path};
 
-/// 统一 Transform 面板的两个编辑空间（WP9）。
-///
-/// docs/40 §3 WP9 要求"一个 Transform 面板按 2D/3D 编辑模式展示"，而编辑器此前是两个各自独立的
-/// 折叠块（`Transform` 与 `Transform3D`）——同一件事在两个地方编辑。
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
-pub enum TransformSpace {
-    TwoD,
-    /// 实体同时有两种变换时的默认编辑空间。
-    #[default]
-    ThreeD,
-}
-
-impl TransformSpace {
-    /// 面板实际该编辑哪个空间；`None` = 两种变换都没有，面板不显示。
-    ///
-    /// 规则：只有一种就按拥有者显示（此时模式开关没有意义），两种都有才听用户选。
-    #[must_use]
-    pub const fn resolve(has_2d: bool, has_3d: bool, mode: Self) -> Option<Self> {
-        match (has_2d, has_3d) {
-            (false, false) => None,
-            (true, false) => Some(Self::TwoD),
-            (false, true) => Some(Self::ThreeD),
-            (true, true) => Some(mode),
-        }
-    }
-
-    /// 两种变换是否都在（决定要不要显示模式开关）。
-    #[must_use]
-    pub const fn both_present(has_2d: bool, has_3d: bool) -> bool {
-        has_2d && has_3d
-    }
-
-    #[must_use]
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::TwoD => "2D",
-            Self::ThreeD => "3D",
-        }
-    }
-}
-
 /// 第一批 Inspector 可编辑的 Transform 字段。
+///
+/// **注意**：这不是 Inspector 的缓冲字段了（第 36 轮 `Transform` 已迁到 schema 编辑器）——
+/// 它现在是 `scene_view`/`geometry`/`actions` 共用的**数据载体**（收集 2D 包围框、编码局部变换）。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TransformFields {
     pub position_x: f32,
@@ -106,44 +63,14 @@ impl Default for Transform3DFields {
     }
 }
 
-/// Inspector 可编辑的 Camera3D 字段（aspect 由渲染窗口决定，不存储）。
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Camera3DFields {
-    pub position_x: f32,
-    pub position_y: f32,
-    pub position_z: f32,
-    pub target_x: f32,
-    pub target_y: f32,
-    pub target_z: f32,
-    pub fov_degrees: f32,
-    pub near: f32,
-    pub far: f32,
-    /// WP5：姿态是否由实体的 `Transform3D` 提供（`pose=transform`）。Inspector 必须把这个
-    /// 开关原样带回去，否则改任何一个相机字段都会把姿态来源悄悄复位。
-    pub pose_from_transform: bool,
-    /// docs/54 §4.2：相机是否启用（`enabled=false`）。同样必须原样带回——否则在 Inspector
-    /// 里改任何一个相机字段都会把「我明明关掉了它」悄悄复位。
-    pub enabled: bool,
-}
-
-impl Default for Camera3DFields {
-    fn default() -> Self {
-        Self {
-            position_x: 0.0,
-            position_y: 0.0,
-            position_z: 5.0,
-            target_x: 0.0,
-            target_y: 0.0,
-            target_z: 0.0,
-            fov_degrees: 90.0,
-            near: 0.1,
-            far: 100.0,
-            pose_from_transform: false,
-            enabled: true,
-        }
-    }
-}
-
+// `Camera3D` 的 Inspector 缓冲管线（`Camera3DFields` + `set_camera3d` +
+// `validate/encode/decode_camera3d`）**已删除**（第 24 轮）：该组件迁到 schema 生成的
+// 字段编辑器（position/target = DragValue×3、fov = 以**角度**为单位的 DragValue、
+// near/far、pose = 下拉、enabled = 勾选框），提交走 `EditorCommand::SetComponentField`。
+// 面板里"不是字段"的那部分（统一 `Projection` 的只读投影摘要、`pose=transform` 时的生效姿态）
+// 搬到了 `schema_fields::component_notes`，由通用编辑器在字段行下方呈现。
+// **默认值**取引擎类型（`Camera3D::default()`），编辑器里不再有这份默认值。
+//
 // `Light` 的 Inspector 缓冲管线（`LightFields` + `set_light` + `encode/decode_light`）
 // **已删除**：docs/55 阶段 2 把该组件迁到 **schema 生成**的字段编辑器
 // （`panels/schema_inspector.rs` 按 `FieldKind` 选控件：方向 = DragValue×3、
@@ -186,31 +113,12 @@ impl Default for Collider3dFields {
     }
 }
 
-/// Inspector 可编辑的 Text（屏幕空间 UI 文本标签）字段。
-#[derive(Clone, Debug, PartialEq)]
-pub struct TextFields {
-    pub text: String,
-    /// 像素字号（px）。
-    pub font_size: f32,
-    pub color_r: f32,
-    pub color_g: f32,
-    pub color_b: f32,
-    /// 自定义字体（项目相对路径，如 assets/fonts/x.ttf）；空 = 项目默认字体。
-    pub font: String,
-}
-
-impl Default for TextFields {
-    fn default() -> Self {
-        Self {
-            text: String::new(),
-            font_size: engine::core::ui::UI_TEXT_BASE_PX,
-            color_r: 1.0,
-            color_g: 1.0,
-            color_b: 1.0,
-            font: String::new(),
-        }
-    }
-}
+// `Text` 的 Inspector 缓冲管线（`TextFields` + `set_text`/`clear_text` +
+// `encode/decode/validate_text`）**已删除**（第 25 轮）：该组件迁到 schema 生成的字段编辑器
+// （文本 = 输入框、字号 = DragValue、字体 = **项目字体下拉**、颜色 = 取色器）。
+// 自由文本里的 `;`/`=`/`\` 由 schema 的转义字段负责（`FieldSchema::escaped`），
+// 因此"文字里带分号"不会再写坏组件串，审计也不再把它判成漂移。
+// 默认值取引擎类型（`engine::core::ui::UiText::default()`）。
 
 // `WorldText` 的 Inspector 缓冲管线（`WorldTextFields` + `set_world_text`/`clear_world_text` +
 // `encode/decode/validate_world_text`）**已删除**（第 23 轮）：该组件迁到 schema 生成的字段编辑器，
@@ -226,62 +134,14 @@ impl Default for TextFields {
 // 因此**审计**也一并获得这条校验；全零与省略的等价性由渲染侧的过滤
 // （`any(|v| *v > 0.0)`）保证。
 
-/// E16：Inspector 可编辑的 `UiLayout`（四边 Anchor+Offset）字段。
-#[derive(Clone, Debug, PartialEq)]
-pub struct UiLayoutFields {
-    pub anchor_l: f32,
-    pub anchor_t: f32,
-    pub anchor_r: f32,
-    pub anchor_b: f32,
-    pub offset_l: f32,
-    pub offset_t: f32,
-    pub offset_r: f32,
-    pub offset_b: f32,
-    pub min_w: f32,
-    pub min_h: f32,
-    pub max_w: f32,
-    pub max_h: f32,
-    pub pivot_x: f32,
-    pub pivot_y: f32,
-}
-
-impl UiLayoutFields {
-    /// Buffer ↔ 引擎值对象转换（Inspector 与运行时共享同一解析）。
-    pub fn to_layout(&self) -> engine::core::ui_layout::UiRectLayout {
-        engine::core::ui_layout::UiRectLayout {
-            anchors: [self.anchor_l, self.anchor_t, self.anchor_r, self.anchor_b],
-            offsets: [self.offset_l, self.offset_t, self.offset_r, self.offset_b],
-            min_size: [self.min_w, self.min_h],
-            max_size: [self.max_w, self.max_h],
-            pivot: [self.pivot_x, self.pivot_y],
-        }
-    }
-
-    pub fn from_layout(layout: engine::core::ui_layout::UiRectLayout) -> Self {
-        Self {
-            anchor_l: layout.anchors[0],
-            anchor_t: layout.anchors[1],
-            anchor_r: layout.anchors[2],
-            anchor_b: layout.anchors[3],
-            offset_l: layout.offsets[0],
-            offset_t: layout.offsets[1],
-            offset_r: layout.offsets[2],
-            offset_b: layout.offsets[3],
-            min_w: layout.min_size[0],
-            min_h: layout.min_size[1],
-            max_w: layout.max_size[0],
-            max_h: layout.max_size[1],
-            pivot_x: layout.pivot[0],
-            pivot_y: layout.pivot[1],
-        }
-    }
-}
-
-impl Default for UiLayoutFields {
-    fn default() -> Self {
-        Self::from_layout(engine::core::ui_layout::UiRectLayout::default())
-    }
-}
+// `UiLayout` 的 Inspector 缓冲管线（`UiLayoutFields` + `set_ui_layout` +
+// `validate_unit_pair/quadruple`）**已删除**（第 31 轮）：该组件迁到 schema 生成的字段编辑器
+// （`anchors`/`offsets`/`min_size`/`max_size`/`pivot` = 向量 DragValue 连排），
+// **锚点预设**改由组件级动作下拉（`SchemaComponentAction` + `ACTION_PROVIDERS`）承担——
+// 一次改 `anchors`+`pivot` 仍是一条 Undo（`EditorCommand::SetComponentFields`）。
+// anchors/pivot 的 `0..=1` 约束不再由编辑器自己校验：**引擎解析器兜底门**
+// （`UiRectLayout::from_component_str` 里的 `validate_anchors`/`validate_unit`）就是同一条规则。
+// 默认值取引擎类型（`UiRectLayout::default()`）。
 
 /// E17：Inspector 可编辑的 `Container`（自动布局容器）字段。
 #[derive(Clone, Debug, PartialEq)]
@@ -350,22 +210,18 @@ impl Default for ContainerFields {
 pub struct InspectorSnapshot {
     pub entity_id: SceneEntityId,
     pub name: String,
-    pub transform: TransformFields,
-    pub sprite_reference: Option<String>,
+    // `Transform`/`Transform3D`（第 36 轮）与 `Sprite`（第 34 轮）**不在快照里**：
+    // 字段都由 schema 生成，提交走 `EditorCommand::SetComponentField(s)`。
     pub lua_script: Option<String>,
-    /// 3D 组件（仅在实体携带对应组件时存在）。
-    pub transform3d: Option<Transform3DFields>,
     // `MeshRenderer`（mesh 字段）**不在快照里**：它已迁到 schema 生成的通用字段编辑器
     // （走 `EditorCommand::SetComponentField`，语义规则见 `FieldRule::ProjectPath`）。
-    pub camera3d: Option<Camera3DFields>,
+    // `Camera3D` 同样**不在快照里**（第 24 轮）：字段由 schema 生成，只读摘要见
+    // `schema_fields::component_notes`。
     /// `Light` **不在快照里**：它已迁到 schema 生成的通用字段编辑器，提交走
     /// `EditorCommand::SetComponentField`（见 `LightFields` 删除处的说明）。
     pub collider3d: Option<Collider3dFields>,
-    /// UI 组件（屏幕空间）。
-    pub text: Option<TextFields>,
-    /// `WorldText` 与 `Image` **不在快照里**：两者都已迁到 schema 生成的字段编辑器
-    /// （第 22/23 轮），提交走 `EditorCommand::SetComponentField`。
-    pub ui_layout: Option<UiLayoutFields>,
+    /// `Text` / `WorldText` / `Image` / `UiLayout` **不在快照里**：都已迁到 schema 生成的
+    /// 字段编辑器（第 22/23/25/31 轮），提交走 `EditorCommand::SetComponentField(s)`。
     pub container: Option<ContainerFields>,
     /// 运行时切场景不销毁。
     pub persistent: bool,
@@ -416,52 +272,14 @@ impl InspectorState {
         Ok(())
     }
 
-    pub fn set_transform(
-        &self,
-        document: &mut SceneDocument,
-        id: SceneEntityId,
-        transform: TransformFields,
-    ) -> Result<(), InspectorError> {
-        validate_transform(transform)?;
-        let entity = entity_mut(document, id)?;
-        let value = encode_transform(transform);
-        if entity.components.get("Transform") != Some(&value) {
-            entity.components.insert("Transform".into(), value);
-            document.mark_dirty();
-        }
-        Ok(())
-    }
+    // `set_transform` / `set_transform3d` **已删除**（第 36 轮）：`Transform`/`Transform3D`
+    // 迁到 schema 生成的字段编辑器（等比锁 = 编辑器态开关 + 字段镜像、重置 = 组件级动作），
+    // 提交走 `EditorCommand::SetComponentField(s)`。两个 `*Fields` 类型仍保留：
+    // `scene_view`/`geometry`/`actions` 把它们当**数据载体**（收集包围框、编码变换）用。
 
-    pub fn set_sprite_reference(
-        &self,
-        document: &mut SceneDocument,
-        id: SceneEntityId,
-        reference: impl Into<String>,
-    ) -> Result<(), InspectorError> {
-        let reference = reference.into();
-        validate_asset_reference(&reference)?;
-        let sprite = engine::core::sprite::SpriteComponent::from_component_str(&reference)
-            .map_err(|error| InspectorError::InvalidAssetReference(error.to_string()))?;
-        let entity = entity_mut(document, id)?;
-        let value = sprite.to_component_str();
-        if entity.components.get("Sprite") != Some(&value) {
-            entity.components.insert("Sprite".into(), value);
-            document.mark_dirty();
-        }
-        Ok(())
-    }
-
-    pub fn clear_sprite_reference(
-        &self,
-        document: &mut SceneDocument,
-        id: SceneEntityId,
-    ) -> Result<(), InspectorError> {
-        let entity = entity_mut(document, id)?;
-        if entity.components.remove("Sprite").is_some() {
-            document.mark_dirty();
-        }
-        Ok(())
-    }
+    // `set_sprite_reference` / `clear_sprite_reference` **已删除**（第 34 轮）：`Sprite` 迁到
+    // schema 生成的字段编辑器（纹理文本框带图片扩展名规则、排序层下拉、多选批量由第 33 轮的
+    // 批量命令承担），提交走 `EditorCommand::SetComponentField(s)`。
 
     pub fn set_lua_script(        &self,
         document: &mut SceneDocument,
@@ -499,22 +317,6 @@ impl InspectorState {
         Ok(())
     }
 
-    pub fn set_transform3d(
-        &self,
-        document: &mut SceneDocument,
-        id: SceneEntityId,
-        transform: Transform3DFields,
-    ) -> Result<(), InspectorError> {
-        validate_transform3d(transform)?;
-        let entity = entity_mut(document, id)?;
-        let value = encode_transform3d(transform);
-        if entity.components.get("Transform3D") != Some(&value) {
-            entity.components.insert("Transform3D".into(), value);
-            document.mark_dirty();
-        }
-        Ok(())
-    }
-
     // `set_mesh_renderer` / `clear_mesh_renderer` **已删除**（第 21 轮）：
     // `MeshRenderer` 与 `Light` 一样迁到 schema 生成的字段编辑器。
     // mesh 字段的语义规则（非空 / 工程内相对 / `.glb`|`.gltf` / 内置哨兵
@@ -522,21 +324,11 @@ impl InspectorState {
     // 表达，并且与 `mesh3d::validate_mesh_path` 由对拍测试盯住——比"编辑器里再写一遍校验"
     // 更严格，因为它同时作用于**审计**（真实场景文件）。
 
-    pub fn set_camera3d(
-        &self,
-        document: &mut SceneDocument,
-        id: SceneEntityId,
-        camera: Camera3DFields,
-    ) -> Result<(), InspectorError> {
-        validate_camera3d(camera)?;
-        let entity = entity_mut(document, id)?;
-        let value = encode_camera3d(camera);
-        if entity.components.get("Camera3D") != Some(&value) {
-            entity.components.insert("Camera3D".into(), value);
-            document.mark_dirty();
-        }
-        Ok(())
-    }
+    // `set_camera3d` / `validate_camera3d` / `encode_camera3d` **已删除**（第 24 轮）：
+    // `Camera3D` 与 `Light`/`MeshRenderer`/`Image`/`WorldText` 一样迁到 schema 生成的
+    // 字段编辑器。相机跨字段的不变量（`near < far`、look-at 非退化、fov 开区间）由
+    // **引擎解析器**在字段写入后兜底（`typed_scene::validate_component_payload`），
+    // 因此编辑器里不再有第二份相机校验。
 
     pub fn set_collider3d(
         &self,
@@ -566,33 +358,8 @@ impl InspectorState {
         Ok(())
     }
 
-    pub fn set_text(
-        &self,
-        document: &mut SceneDocument,
-        id: SceneEntityId,
-        text: TextFields,
-    ) -> Result<(), InspectorError> {
-        validate_text(&text)?;
-        let entity = entity_mut(document, id)?;
-        let value = encode_text(&text)?;
-        if entity.components.get("Text") != Some(&value) {
-            entity.components.insert("Text".into(), value);
-            document.mark_dirty();
-        }
-        Ok(())
-    }
-
-    pub fn clear_text(
-        &self,
-        document: &mut SceneDocument,
-        id: SceneEntityId,
-    ) -> Result<(), InspectorError> {
-        let entity = entity_mut(document, id)?;
-        if entity.components.remove("Text").is_some() {
-            document.mark_dirty();
-        }
-        Ok(())
-    }
+    // `set_text` / `clear_text` **已删除**（第 25 轮）：`Text` 迁到 schema 生成的字段编辑器，
+    // 提交走 `EditorCommand::SetComponentField`（自由文本的转义在 schema/property_path 一侧）。
 
     // `set_world_text` / `clear_world_text` **已删除**（第 23 轮）：`WorldText` 迁到 schema
     // 生成的字段编辑器——`font` 字段用**项目字体下拉**（`ChoiceSource::ProjectFonts`），
@@ -602,24 +369,8 @@ impl InspectorState {
     // 一样迁到 schema 生成的字段编辑器（`texture` 文本框、`color` 取色器、`nine_slice` 四个
     // DragValue），提交走 `EditorCommand::SetComponentField`。
 
-    /// E16：写回 `UiLayout` 组件（四边 Anchor+Offset 布局）。
-    pub fn set_ui_layout(
-        &self,
-        document: &mut SceneDocument,
-        id: SceneEntityId,
-        fields: UiLayoutFields,
-    ) -> Result<(), InspectorError> {
-        let layout = fields.to_layout();
-        validate_unit_pair(&layout.pivot, "pivot")?;
-        validate_unit_quadruple(&layout.anchors, "anchor")?;
-        let entity = entity_mut(document, id)?;
-        let value = layout.to_component_str();
-        if entity.components.get("UiLayout") != Some(&value) {
-            entity.components.insert("UiLayout".into(), value);
-            document.mark_dirty();
-        }
-        Ok(())
-    }
+    // `set_ui_layout` **已删除**（第 31 轮）：`UiLayout` 迁到 schema 生成的字段编辑器 +
+    // 组件级动作（锚点预设），提交走 `EditorCommand::SetComponentField(s)`。
 
     /// E17：写回 `Container` 组件（自动布局样式）。
     pub fn set_container(
@@ -687,50 +438,6 @@ impl InspectorState {
         }
         let before = document.clone();
         self.set_name(document, id, snapshot.name)?;
-        self.set_transform(document, id, snapshot.transform)?;
-        for sid in multi_sprite_ids {
-            if *sid == id {
-                continue;
-            }
-            if document
-                .scene
-                .entities
-                .get(sid)
-                .is_some_and(|entity| entity.components.contains_key("Transform"))
-            {
-                self.set_transform(document, *sid, snapshot.transform)?;
-            }
-        }
-        if let Some(transform3d) = snapshot.transform3d {
-            self.set_transform3d(document, id, transform3d)?;
-            for sid in multi_sprite_ids {
-                if *sid == id {
-                    continue;
-                }
-                if document
-                    .scene
-                    .entities
-                    .get(sid)
-                    .is_some_and(|entity| entity.components.contains_key("Transform3D"))
-                {
-                    self.set_transform3d(document, *sid, transform3d)?;
-                }
-            }
-        }
-        if let Some(camera3d) = snapshot.camera3d {
-            self.set_camera3d(document, id, camera3d)?;
-            for sid in multi_sprite_ids {
-                if *sid != id
-                    && document
-                        .scene
-                        .entities
-                        .get(sid)
-                        .is_some_and(|entity| entity.components.contains_key("Camera3D"))
-                {
-                    self.set_camera3d(document, *sid, camera3d)?;
-                }
-            }
-        }
         if let Some(collider3d) = snapshot.collider3d {
             self.set_collider3d(document, id, collider3d.clone())?;
             for sid in multi_sprite_ids {
@@ -745,51 +452,10 @@ impl InspectorState {
                 }
             }
         }
-        if let Some(text) = snapshot.text {
-            self.set_text(document, id, text.clone())?;
-            for sid in multi_sprite_ids {
-                if *sid == id {
-                    continue;
-                }
-                if document
-                    .scene
-                    .entities
-                    .get(sid)
-                    .is_some_and(|entity| entity.components.contains_key("Text"))
-                {
-                    self.set_text(document, *sid, text.clone())?;
-                }
-            }
-        }
-        // E16/E17：布局组件单实体写回（不做多选批量——布局逐实体差异大，
+        // E17：Container 单实体写回（不做多选批量——布局逐实体差异大，
         // 批量覆盖意义有限，与 Tilemap/Animation 同策略）。
-        if let Some(ui_layout) = snapshot.ui_layout {
-            self.set_ui_layout(document, id, ui_layout)?;
-        }
         if let Some(container) = snapshot.container {
             self.set_container(document, id, container)?;
-        }
-        match snapshot.sprite_reference.as_deref() {
-            Some(reference) if !reference.trim().is_empty() => {
-                self.set_sprite_reference(document, id, reference)?;
-                let sprite = reference.to_owned();
-                for sid in multi_sprite_ids {
-                    if *sid == id {
-                        continue;
-                    }
-                    if let Some(entity) = document.scene.entities.get_mut(sid)
-                        && entity.components.contains_key("Sprite")
-                    {
-                        entity
-                            .components
-                            .insert("Sprite".to_owned(), sprite.clone());
-                        document.mark_dirty();
-                    }
-                }
-            }
-            _ => {
-                self.clear_sprite_reference(document, id)?;
-            }
         }
         if let Some(tilemap) = tilemap_component
             && let Some(entity) = document.scene.entities.get_mut(&id)
@@ -842,44 +508,14 @@ fn entity_mut(
 }
 
 fn snapshot_for(entity: &SceneEntity) -> Result<InspectorSnapshot, InspectorError> {
-    let transform = entity
-        .components
-        .get("Transform")
-        .map_or(Ok(TransformFields::default()), |value| {
-            decode_transform(value)
-        })?;
-    let transform3d = entity
-        .components
-        .get("Transform3D")
-        .map_or(Ok(None), |value| decode_transform3d(value).map(Some))?;
-    let camera3d = entity
-        .components
-        .get("Camera3D")
-        .map_or(Ok(None), |value| decode_camera3d(value).map(Some))?;
     Ok(InspectorSnapshot {
         entity_id: entity.id,
         name: entity.name.clone(),
-        transform,
-        sprite_reference: entity.components.get("Sprite").cloned(),
         lua_script: read_lua_script(entity),
-        transform3d,
-        camera3d,
         collider3d: entity
             .components
             .get("Collider3d")
             .map_or(Ok(None), |value| decode_collider3d(value).map(Some))?,
-        text: entity
-            .components
-            .get("Text")
-            .map_or(Ok(None), |value| decode_text(value).map(Some))?,
-        ui_layout: entity
-            .components
-            .get("UiLayout")
-            .map_or(Ok(None), |value| {
-                engine::core::ui_layout::UiRectLayout::from_component_str(value)
-                    .map(|layout| Some(UiLayoutFields::from_layout(layout)))
-                    .map_err(InspectorError::InvalidUiLayout)
-            })?,
         container: entity
             .components
             .get("Container")
@@ -892,117 +528,6 @@ fn snapshot_for(entity: &SceneEntity) -> Result<InspectorSnapshot, InspectorErro
             .metadata
             .get("persistent")
             .is_some_and(|value| value == "true"),
-    })
-}
-
-fn validate_transform(transform: TransformFields) -> Result<(), InspectorError> {
-    let values = [
-        transform.position_x,
-        transform.position_y,
-        transform.rotation,
-        transform.scale_x,
-        transform.scale_y,
-    ];
-    if values.iter().any(|value| !value.is_finite()) {
-        return Err(InspectorError::NonFiniteTransform);
-    }
-    if transform.scale_x <= 0.0 || transform.scale_y <= 0.0 {
-        return Err(InspectorError::InvalidScale);
-    }
-    Ok(())
-}
-
-fn encode_transform(transform: TransformFields) -> String {
-    format!(
-        "x={:.9};y={:.9};rotation={:.9};scale_x={:.9};scale_y={:.9}",
-        transform.position_x,
-        transform.position_y,
-        transform.rotation,
-        transform.scale_x,
-        transform.scale_y
-    )
-}
-
-fn decode_transform(value: &str) -> Result<TransformFields, InspectorError> {
-    let mut transform = TransformFields::default();
-    let mut seen = [false; 5];
-    for field in value.split(';') {
-        let (key, raw) = field
-            .split_once('=')
-            .ok_or_else(|| InspectorError::InvalidTransform(value.to_owned()))?;
-        let number: f32 = raw
-            .parse()
-            .map_err(|_| InspectorError::InvalidTransform(value.to_owned()))?;
-        match key {
-            "x" => {
-                transform.position_x = number;
-                seen[0] = true;
-            }
-            "y" => {
-                transform.position_y = number;
-                seen[1] = true;
-            }
-            "rotation" => {
-                transform.rotation = number;
-                seen[2] = true;
-            }
-            "scale_x" => {
-                transform.scale_x = number;
-                seen[3] = true;
-            }
-            "scale_y" => {
-                transform.scale_y = number;
-                seen[4] = true;
-            }
-            _ => return Err(InspectorError::InvalidTransform(value.to_owned())),
-        }
-    }
-    if seen.iter().any(|value| !value) {
-        return Err(InspectorError::InvalidTransform(value.to_owned()));
-    }
-    validate_transform(transform)?;
-    Ok(transform)
-}
-
-fn validate_transform3d(transform: Transform3DFields) -> Result<(), InspectorError> {
-    let value = encode_transform3d(transform);
-    Transform3D::from_component_str(&value)
-        .map(|_| ())
-        .map_err(|error| InspectorError::InvalidTransform3d(error.to_string()))
-}
-
-fn encode_transform3d(transform: Transform3DFields) -> String {
-    Transform3D {
-        position: Vec3::new(
-            transform.position_x,
-            transform.position_y,
-            transform.position_z,
-        ),
-        rotation: Quat {
-            x: transform.rotation_x,
-            y: transform.rotation_y,
-            z: transform.rotation_z,
-            w: transform.rotation_w,
-        },
-        scale: Vec3::new(transform.scale_x, transform.scale_y, transform.scale_z),
-    }
-    .to_component_str()
-}
-
-fn decode_transform3d(value: &str) -> Result<Transform3DFields, InspectorError> {
-    let transform = Transform3D::from_component_str(value)
-        .map_err(|error| InspectorError::InvalidTransform3d(error.to_string()))?;
-    Ok(Transform3DFields {
-        position_x: transform.position.x,
-        position_y: transform.position.y,
-        position_z: transform.position.z,
-        rotation_x: transform.rotation.x,
-        rotation_y: transform.rotation.y,
-        rotation_z: transform.rotation.z,
-        rotation_w: transform.rotation.w,
-        scale_x: transform.scale.x,
-        scale_y: transform.scale.y,
-        scale_z: transform.scale.z,
     })
 }
 
@@ -1070,119 +595,6 @@ fn decode_collider3d(value: &str) -> Result<Collider3dFields, InspectorError> {
         }
     }
     Ok(fields)
-}
-
-fn encode_text(fields: &TextFields) -> Result<String, InspectorError> {
-    Ok(UiText {
-        text: fields.text.clone(),
-        font_size: fields.font_size,
-        color: [fields.color_r, fields.color_g, fields.color_b],
-        font: fields.font.clone(),
-    }
-    .to_component_str())
-}
-
-fn decode_text(value: &str) -> Result<TextFields, InspectorError> {
-    let ui = UiText::from_component_str(value)
-        .map_err(|error| InspectorError::InvalidText(error.to_string()))?;
-    Ok(TextFields {
-        text: ui.text,
-        font_size: ui.font_size,
-        color_r: ui.color[0],
-        color_g: ui.color[1],
-        color_b: ui.color[2],
-        font: ui.font,
-    })
-}
-
-fn validate_text(fields: &TextFields) -> Result<(), InspectorError> {
-    let value = encode_text(fields)?;
-    UiText::from_component_str(&value)
-        .map(|_| ())
-        .map_err(|error| InspectorError::InvalidText(error.to_string()))
-}
-
-/// E16：校验归一化二元组（pivot）处于 `0..=1`。
-fn validate_unit_pair(values: &[f32; 2], name: &str) -> Result<(), InspectorError> {
-    for (index, value) in values.iter().enumerate() {
-        if !value.is_finite() || !(0.0..=1.0).contains(value) {
-            return Err(InspectorError::InvalidUiLayout(format!(
-                "{name}[{index}] 必须在 0..=1：{value}"
-            )));
-        }
-    }
-    Ok(())
-}
-
-/// E16：校验归一化四元组（四边 anchor）处于 `0..=1`。
-fn validate_unit_quadruple(values: &[f32; 4], name: &str) -> Result<(), InspectorError> {
-    for (index, value) in values.iter().enumerate() {
-        if !value.is_finite() || !(0.0..=1.0).contains(value) {
-            return Err(InspectorError::InvalidUiLayout(format!(
-                "{name}[{index}] 必须在 0..=1：{value}"
-            )));
-        }
-    }
-    Ok(())
-}
-
-fn validate_camera3d(camera: Camera3DFields) -> Result<(), InspectorError> {
-    let value = encode_camera3d(camera);
-    Camera3D::from_component_str(&value)
-        .map(|_| ())
-        .map_err(|error| InspectorError::InvalidCamera3d(error.to_string()))
-}
-
-fn encode_camera3d(camera: Camera3DFields) -> String {
-    Camera3D {
-        position: Vec3::new(camera.position_x, camera.position_y, camera.position_z),
-        target: Vec3::new(camera.target_x, camera.target_y, camera.target_z),
-        up: Vec3::Y,
-        fov_y: camera.fov_degrees.to_radians(),
-        aspect_ratio: 1.0,
-        near: camera.near,
-        far: camera.far,
-        pose_from_transform: camera.pose_from_transform,
-        enabled: camera.enabled,
-    }
-    .to_component_str()
-}
-
-fn decode_camera3d(value: &str) -> Result<Camera3DFields, InspectorError> {
-    let camera = Camera3D::from_component_str(value)
-        .map_err(|error| InspectorError::InvalidCamera3d(error.to_string()))?;
-    Ok(Camera3DFields {
-        position_x: camera.position.x,
-        position_y: camera.position.y,
-        position_z: camera.position.z,
-        target_x: camera.target.x,
-        target_y: camera.target.y,
-        target_z: camera.target.z,
-        fov_degrees: camera.fov_y.to_degrees(),
-        near: camera.near,
-        far: camera.far,
-        pose_from_transform: camera.pose_from_transform,
-        enabled: camera.enabled,
-    })
-}
-
-fn validate_asset_reference(reference: &str) -> Result<(), InspectorError> {
-    let reference = reference.trim();
-    let component = SpriteComponent::from_component_str(reference)
-        .map_err(|error| InspectorError::InvalidAssetReference(error.to_string()))?;
-    let texture = component.texture.trim();
-    if Path::new(texture).is_absolute() || texture.split(['/', '\\']).any(|part| part == "..") {
-        return Err(InspectorError::InvalidAssetReference(texture.to_owned()));
-    }
-    let extension = Path::new(texture)
-        .extension()
-        .and_then(|value| value.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    if extension != "png" && extension != "jpg" && extension != "jpeg" && extension != "webp" {
-        return Err(InspectorError::InvalidAssetReference(texture.to_owned()));
-    }
-    Ok(())
 }
 
 /// 面板输入校验：**安全规则复用引擎**（工程内相对路径），**项目约定额外要求 `.lua`**。
@@ -1254,14 +666,11 @@ pub enum InspectorError {
     InvalidLuaScript(String),
     InvalidTransform3d(String),
     InvalidMeshRenderer(String),
-    InvalidCamera3d(String),
     InvalidLight(String),
     InvalidCollider3d(String),
-    InvalidText(String),
     InvalidWorldText(String),
     InvalidImage(String),
     InvalidButton(String),
-    InvalidUiLayout(String),
     InvalidContainer(String),
 }
 
@@ -1278,14 +687,11 @@ impl fmt::Display for InspectorError {
             Self::InvalidLuaScript(value) => write!(f, "Lua 脚本路径无效：{value}"),
             Self::InvalidTransform3d(value) => write!(f, "Transform3D 数据无效：{value}"),
             Self::InvalidMeshRenderer(value) => write!(f, "MeshRenderer 资源引用无效：{value}"),
-            Self::InvalidCamera3d(value) => write!(f, "Camera3D 数据无效：{value}"),
             Self::InvalidLight(value) => write!(f, "Light 数据无效：{value}"),
             Self::InvalidCollider3d(value) => write!(f, "Collider3d 数据无效：{value}"),
-            Self::InvalidText(value) => write!(f, "Text 数据无效：{value}"),
             Self::InvalidWorldText(value) => write!(f, "WorldText 数据无效：{value}"),
             Self::InvalidImage(value) => write!(f, "Image 数据无效：{value}"),
             Self::InvalidButton(value) => write!(f, "Button 数据无效：{value}"),
-            Self::InvalidUiLayout(value) => write!(f, "UiLayout 数据无效：{value}"),
             Self::InvalidContainer(value) => write!(f, "Container 数据无效：{value}"),
         }
     }
@@ -1305,143 +711,25 @@ mod tests {
         (document, InspectorState::new(), id)
     }
 
-    /// WP9 统一 Transform 面板：面板该编哪个空间只由"实体拥有哪些变换"与"用户选的模式"决定。
-    /// 两条关键性质：只有一种时**不听模式**（否则切到 3D 会让 2D-only 实体的面板空掉），
-    /// 两种都没有时面板不显示。
-    #[test]
-    fn unified_transform_panel_resolves_the_edited_space() {
-        assert_eq!(
-            TransformSpace::resolve(false, false, TransformSpace::TwoD),
-            None
-        );
-        assert_eq!(
-            TransformSpace::resolve(false, false, TransformSpace::ThreeD),
-            None
-        );
-        assert_eq!(
-            TransformSpace::resolve(true, false, TransformSpace::ThreeD),
-            Some(TransformSpace::TwoD),
-            "只有 2D 变换时按拥有者显示，不看模式"
-        );
-        assert_eq!(
-            TransformSpace::resolve(false, true, TransformSpace::TwoD),
-            Some(TransformSpace::ThreeD),
-            "只有 3D 变换时按拥有者显示，不看模式"
-        );
-        assert_eq!(
-            TransformSpace::resolve(true, true, TransformSpace::TwoD),
-            Some(TransformSpace::TwoD)
-        );
-        assert_eq!(
-            TransformSpace::resolve(true, true, TransformSpace::ThreeD),
-            Some(TransformSpace::ThreeD)
-        );
-        assert!(TransformSpace::both_present(true, true));
-        assert!(!TransformSpace::both_present(true, false));
-        assert!(!TransformSpace::both_present(false, true));
-        assert_eq!(TransformSpace::default(), TransformSpace::ThreeD);
-    }
+    // `Transform`/`Transform3D` 的 Inspector 管线测试（`unified_transform_panel_resolves_the_edited_space`、
+    // `write_inspector_batches_transform*`、`transform_*_accepts`、`zero/negative/infinity/nan_*_rejected`、
+    // `transform3d_set_and_snapshot`、`transform3d_rejects_*`）随管线**一并删除**（第 36 轮）：
+    // - 空间切换这条特性被刻意去掉（两个组件现在同时在通用编辑器里显示，没有"切换"这件事）；
+    // - 批量语义由通用编辑器的 `SetComponentField(s)OnSelection` 承担，
+    //   门在 `panels::schema_inspector::tests::multi_selection_edit_writes_all_targets_in_one_undo`
+    //   与迁移测试里；
+    // - "缩放必须为正 / 非有限值拒绝 / 四元数必须单位化"由**引擎解析器**保证
+    //   （`Transform::from_component_str`/`Transform3D::from_component_str`），
+    //   编辑器侧还有 `typed_scene::validate_component_payload` 兜底门。
 
     #[test]
     fn snapshot_defaults() {
         let (document, inspector, id) = setup();
         let snapshot = inspector.snapshot(&document, id).unwrap();
         assert_eq!(snapshot.entity_id, id);
-        assert_eq!(snapshot.transform, TransformFields::default());
-        assert!(snapshot.sprite_reference.is_none());
-    }
-
-    #[test]
-    fn write_inspector_batches_transform_only_to_matching_entities() {
-        let (mut document, inspector, id) = setup();
-        let matching = SceneEntityId(2);
-        let unrelated = SceneEntityId(3);
-        document
-            .scene
-            .add_entity(matching, "Matching", None)
-            .unwrap();
-        document
-            .scene
-            .add_entity(unrelated, "Unrelated", None)
-            .unwrap();
-        inspector
-            .set_transform(&mut document, id, TransformFields::default())
-            .unwrap();
-        inspector
-            .set_transform(&mut document, matching, TransformFields::default())
-            .unwrap();
-        document.mark_clean();
-        let mut snapshot = inspector.snapshot(&document, id).unwrap();
-        snapshot.transform.position_x = 12.0;
-
-        inspector
-            .write_inspector(
-                &mut document,
-                id,
-                snapshot,
-                None,
-                None,
-                &[id, matching, unrelated],
-            )
-            .unwrap();
-        let matching_transform = inspector.snapshot(&document, matching).unwrap().transform;
-        assert_eq!(matching_transform.position_x, 12.0);
-        assert!(
-            !document.scene.entities[&unrelated]
-                .components
-                .contains_key("Transform")
-        );
-    }
-
-    #[test]
-    fn write_inspector_batches_transform3d_only_to_matching_entities() {
-        let (mut document, inspector, id) = setup();
-        let matching = SceneEntityId(2);
-        let unrelated = SceneEntityId(3);
-        document
-            .scene
-            .add_entity(matching, "Matching", None)
-            .unwrap();
-        document
-            .scene
-            .add_entity(unrelated, "Unrelated", None)
-            .unwrap();
-        inspector
-            .set_transform(&mut document, id, TransformFields::default())
-            .unwrap();
-        inspector
-            .set_transform3d(&mut document, id, Transform3DFields::default())
-            .unwrap();
-        inspector
-            .set_transform3d(&mut document, matching, Transform3DFields::default())
-            .unwrap();
-        document.mark_clean();
-        let mut snapshot = inspector.snapshot(&document, id).unwrap();
-        let mut transform3d = snapshot.transform3d.unwrap();
-        transform3d.position_z = 9.0;
-        snapshot.transform3d = Some(transform3d);
-
-        inspector
-            .write_inspector(
-                &mut document,
-                id,
-                snapshot,
-                None,
-                None,
-                &[id, matching, unrelated],
-            )
-            .unwrap();
-        let matching_transform = inspector
-            .snapshot(&document, matching)
-            .unwrap()
-            .transform3d
-            .unwrap();
-        assert_eq!(matching_transform.position_z, 9.0);
-        assert!(
-            !document.scene.entities[&unrelated]
-                .components
-                .contains_key("Transform3D")
-        );
+        // `Transform`/`Transform3D`/`Sprite` 都已迁走：快照里不再有它们的字段。
+        assert!(!format!("{snapshot:?}").contains("transform"));
+        assert!(!format!("{snapshot:?}").contains("sprite"));
     }
 
     #[test]
@@ -1474,231 +762,19 @@ mod tests {
             Err(InspectorError::UnknownEntity(_))
         ));
         assert!(matches!(
-            inspector.clear_sprite_reference(&mut document, ghost),
+            inspector.set_container(
+                &mut document,
+                ghost,
+                ContainerFields::default()
+            ),
             Err(InspectorError::UnknownEntity(_))
         ));
     }
-    #[test]
-    fn transform_position_x_accepts() {
-        let (mut document, inspector, id) = setup();
-        inspector
-            .set_transform(
-                &mut document,
-                id,
-                TransformFields {
-                    position_x: 1.0,
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-        assert!(document.is_dirty());
-    }
-    #[test]
-    fn transform_position_y_accepts() {
-        let (mut document, inspector, id) = setup();
-        inspector
-            .set_transform(
-                &mut document,
-                id,
-                TransformFields {
-                    position_y: -2.0,
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-        assert_eq!(
-            inspector
-                .snapshot(&document, id)
-                .unwrap()
-                .transform
-                .position_y,
-            -2.0
-        );
-    }
-    #[test]
-    fn transform_rotation_accepts() {
-        let (mut document, inspector, id) = setup();
-        inspector
-            .set_transform(
-                &mut document,
-                id,
-                TransformFields {
-                    rotation: 3.0,
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-        assert_eq!(
-            inspector
-                .snapshot(&document, id)
-                .unwrap()
-                .transform
-                .rotation,
-            3.0
-        );
-    }
-    #[test]
-    fn transform_scale_x_accepts() {
-        let (mut document, inspector, id) = setup();
-        inspector
-            .set_transform(
-                &mut document,
-                id,
-                TransformFields {
-                    scale_x: 2.0,
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-        assert_eq!(
-            inspector.snapshot(&document, id).unwrap().transform.scale_x,
-            2.0
-        );
-    }
-    #[test]
-    fn transform_scale_y_accepts() {
-        let (mut document, inspector, id) = setup();
-        inspector
-            .set_transform(
-                &mut document,
-                id,
-                TransformFields {
-                    scale_y: 3.0,
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-        assert_eq!(
-            inspector.snapshot(&document, id).unwrap().transform.scale_y,
-            3.0
-        );
-    }
-    #[test]
-    fn nan_transform_rejected() {
-        let (mut document, inspector, id) = setup();
-        assert!(matches!(
-            inspector.set_transform(
-                &mut document,
-                id,
-                TransformFields {
-                    position_x: f32::NAN,
-                    ..Default::default()
-                }
-            ),
-            Err(InspectorError::NonFiniteTransform)
-        ));
-        assert!(!document.is_dirty());
-    }
-    #[test]
-    fn infinity_transform_rejected() {
-        let (mut document, inspector, id) = setup();
-        assert!(
-            inspector
-                .set_transform(
-                    &mut document,
-                    id,
-                    TransformFields {
-                        rotation: f32::INFINITY,
-                        ..Default::default()
-                    }
-                )
-                .is_err()
-        );
-    }
-    #[test]
-    fn zero_scale_rejected() {
-        let (mut document, inspector, id) = setup();
-        assert!(matches!(
-            inspector.set_transform(
-                &mut document,
-                id,
-                TransformFields {
-                    scale_x: 0.0,
-                    ..Default::default()
-                }
-            ),
-            Err(InspectorError::InvalidScale)
-        ));
-    }
-    #[test]
-    fn negative_scale_rejected() {
-        let (mut document, inspector, id) = setup();
-        assert!(
-            inspector
-                .set_transform(
-                    &mut document,
-                    id,
-                    TransformFields {
-                        scale_y: -1.0,
-                        ..Default::default()
-                    }
-                )
-                .is_err()
-        );
-    }
-    #[test]
-    fn sprite_png_accepts() {
-        let (mut document, inspector, id) = setup();
-        inspector
-            .set_sprite_reference(&mut document, id, "texture=textures/player.png")
-            .unwrap();
-        assert_eq!(
-            inspector
-                .snapshot(&document, id)
-                .unwrap()
-                .sprite_reference
-                .as_deref(),
-            Some(
-                "texture=textures/player.png;size=128x128;pivot=0.500,0.500;tint=1.000,1.000,1.000,1.000;sorting_layer=default;order=0"
-            )
-        );
-    }
-    #[test]
-    fn sprite_jpg_accepts() {
-        let (mut document, inspector, id) = setup();
-        inspector
-            .set_sprite_reference(&mut document, id, "texture=textures/player.jpg")
-            .unwrap();
-        assert!(document.is_dirty());
-    }
-    #[test]
-    fn sprite_empty_rejected() {
-        let (mut document, inspector, id) = setup();
-        assert!(
-            inspector
-                .set_sprite_reference(&mut document, id, "")
-                .is_err()
-        );
-        assert!(!document.is_dirty());
-    }
-    #[test]
-    fn sprite_traversal_rejected() {
-        let (mut document, inspector, id) = setup();
-        assert!(
-            inspector
-                .set_sprite_reference(&mut document, id, "texture=../player.png")
-                .is_err()
-        );
-    }
-    #[test]
-    fn sprite_wrong_extension_rejected() {
-        let (mut document, inspector, id) = setup();
-        assert!(
-            inspector
-                .set_sprite_reference(&mut document, id, "texture=player.txt")
-                .is_err()
-        );
-    }
-    #[test]
-    fn sprite_clear_marks_dirty() {
-        let (mut document, inspector, id) = setup();
-        inspector
-            .set_sprite_reference(&mut document, id, "texture=player.png")
-            .unwrap();
-        document.mark_clean();
-        inspector.clear_sprite_reference(&mut document, id).unwrap();
-        assert!(document.is_dirty());
-    }
+    // `Sprite` 的缓冲管线与它的 6 个校验测试**已随面板迁移删除**（第 34 轮）：
+    // "纹理必须是工程内相对路径 + png/jpg/jpeg/webp"这条规则现在由引擎 schema 的
+    // `TEXTURE_RULE`/`REQUIRED_TEXTURE_RULE` 表达（覆盖迁移前 `validate_asset_reference`
+    // 的全部样本），门在 `component_schema::tests::field_rules_match_engine_validators` 与
+    // `panels::schema_inspector::tests::texture_reference_rule_is_enforced_through_the_generic_editor`。
     #[test]
     fn lua_accepts() {
         let (mut document, inspector, id) = setup();
@@ -1787,44 +863,6 @@ mod tests {
         inspector.clear_lua_script(&mut document, id).unwrap();
         assert!(document.is_dirty());
     }
-    #[test]
-    fn transform3d_set_and_snapshot() {
-        let (mut document, inspector, id) = setup();
-        let value = Transform3DFields {
-            position_x: 1.0,
-            position_y: 2.0,
-            position_z: 3.0,
-            scale_x: 2.0,
-            scale_y: 2.0,
-            scale_z: 2.0,
-            ..Default::default()
-        };
-        inspector.set_transform3d(&mut document, id, value).unwrap();
-        assert!(document.is_dirty());
-        assert_eq!(
-            inspector.snapshot(&document, id).unwrap().transform3d,
-            Some(value)
-        );
-    }
-    #[test]
-    fn transform3d_rejects_zero_scale() {
-        let (mut document, inspector, id) = setup();
-        let value = Transform3DFields {
-            scale_x: 0.0,
-            ..Default::default()
-        };
-        assert!(inspector.set_transform3d(&mut document, id, value).is_err());
-        assert!(!document.is_dirty());
-    }
-    #[test]
-    fn transform3d_rejects_non_unit_rotation() {
-        let (mut document, inspector, id) = setup();
-        let value = Transform3DFields {
-            rotation_w: 2.0,
-            ..Default::default()
-        };
-        assert!(inspector.set_transform3d(&mut document, id, value).is_err());
-    }
     /// `MeshRenderer` 的缓冲管线已随面板迁移删除；这里验证**迁移后的语义**：
     /// 快照不再携带 mesh 字段，而 `.glb/.gltf/哨兵` 与 `.obj`/穿越路径的判定
     /// 由 schema 规则与引擎解析器共同保证（对拍测试在 `component_schema`）。
@@ -1851,56 +889,37 @@ mod tests {
             engine::core::mesh3d::GROUND_PLANE_SENTINEL
         );
     }
+    /// `Camera3D` 的缓冲管线已随面板迁移删除（第 24 轮）；这里验证**迁移后的路径**：
+    /// 快照里不再有相机字段（编辑由通用字段编辑器负责），组件串仍是引擎编码器认得的
+    /// 形式，默认值来自引擎类型（`Camera3D::default()`）。
     #[test]
-    fn camera3d_set_and_snapshot() {
+    fn camera3d_is_edited_through_the_schema_path() {
         let (mut document, inspector, id) = setup();
-        let value = Camera3DFields {
-            position_x: 0.0,
-            position_y: 3.0,
-            position_z: 8.0,
-            fov_degrees: 75.0,
-            ..Default::default()
-        };
-        inspector.set_camera3d(&mut document, id, value).unwrap();
-        let snapshot = inspector.snapshot(&document, id).unwrap();
-        assert!(snapshot.camera3d.is_some());
-        assert!((snapshot.camera3d.unwrap().fov_degrees - 75.0).abs() < 0.01);
-    }
-    #[test]
-    fn camera3d_enabled_round_trips() {
-        // docs/54 §4.2：`enabled` 必须能穿过 Inspector 编解码而不丢失，否则在面板里改任意
-        // 相机字段都会把"我关掉了这台相机"悄悄复位。
-        let (mut document, inspector, id) = setup();
-        let value = Camera3DFields {
-            enabled: false,
-            ..Default::default()
-        };
-        inspector.set_camera3d(&mut document, id, value).unwrap();
-        let raw = document.scene.entities[&id]
+        document
+            .scene
+            .entities
+            .get_mut(&id)
+            .unwrap()
             .components
-            .get("Camera3D")
-            .expect("Camera3D 组件应已写入");
-        assert!(raw.contains("enabled=false"), "禁用状态必须显式落盘：{raw}");
+            .insert(
+                "Camera3D".to_owned(),
+                engine::core::camera::Camera3D::default().to_component_str(),
+            );
         let snapshot = inspector.snapshot(&document, id).unwrap();
-        assert!(!snapshot.camera3d.unwrap().enabled);
-        // 默认（启用）不写字段，保证既有场景串字节不变。
-        let value = Camera3DFields::default();
-        inspector.set_camera3d(&mut document, id, value).unwrap();
-        let raw = document.scene.entities[&id].components["Camera3D"].clone();
         assert!(
-            !raw.contains("enabled"),
-            "启用时不应写出 enabled 字段：{raw}"
+            !format!("{snapshot:?}").contains("camera3d"),
+            "迁移后快照不得再携带相机缓冲字段"
         );
-    }
-    #[test]
-    fn camera3d_rejects_invalid_perspective() {
-        let (mut document, inspector, id) = setup();
-        let value = Camera3DFields {
-            near: 10.0,
-            far: 1.0,
-            ..Default::default()
-        };
-        assert!(inspector.set_camera3d(&mut document, id, value).is_err());
+        let camera = engine::core::camera::Camera3D::from_component_str(
+            &document.scene.entities[&id].components["Camera3D"],
+        )
+        .expect("引擎解析器必须认得 Camera3D");
+        assert!(
+            (camera.fov_y.to_degrees() - 90.0).abs() < 0.01,
+            "默认相机 FOV 是 90°（组件串里存角度）：{}",
+            camera.fov_y.to_degrees()
+        );
+        assert!(camera.enabled, "默认相机是启用的");
     }
     /// `Light` 的缓冲管线已随面板迁移删除；这里改为验证**迁移后的路径**：
     /// 通用字段编辑器通过 `SetComponentField` 写入，快照里不再有 light 字段，
@@ -1925,22 +944,17 @@ mod tests {
     #[test]
     fn save_reload_preserves_fields() {
         let (mut document, inspector, id) = setup();
-        inspector
-            .set_transform(
-                &mut document,
-                id,
-                TransformFields {
-                    position_x: 4.0,
-                    position_y: 5.0,
-                    rotation: 0.5,
-                    scale_x: 2.0,
-                    scale_y: 3.0,
-                },
-            )
-            .unwrap();
-        inspector
-            .set_sprite_reference(&mut document, id, "texture=player.png")
-            .unwrap();
+        // `Transform` 的写入路径已迁到 typed 命令（第 36 轮）；这里保留场景文本往返这条断言，
+        // 变换值用**引擎编码器**写入（与迁移前的落盘格式一致）。
+        document.scene.entities.get_mut(&id).unwrap().components.insert(
+            "Transform".to_owned(),
+            engine::core::transform::Transform {
+                position: engine::core::transform::Vec2::new(4.0, 5.0),
+                rotation: 0.5,
+                scale: engine::core::transform::Vec2::new(2.0, 3.0),
+            }
+            .to_component_str(),
+        );
         inspector
             .set_lua_script(&mut document, id, "player.lua")
             .unwrap();
@@ -2117,66 +1131,33 @@ mod tests {
         let parsed = engine::core::ui::UiImage::from_component_str(stored).expect("引擎解析器");
         assert_eq!(parsed.nine_slice, Some([8.0, 8.0, 16.0, 16.0]));
     }
+    /// `Text` 的缓冲管线已随面板迁移删除（第 25 轮）；这里验证**迁移后的路径**：
+    /// 快照里不再有 text 字段（编辑由通用字段编辑器负责），组件串仍是引擎编码器认得的
+    /// 形式，"文字里带分号"的转义由 schema 的 `FieldSchema::escaped` 负责
+    /// （`schema_fields`/`property_path` 侧有专门测试）。
     #[test]
-    fn text_font_roundtrips_via_snapshot_and_scene_text() {
+    fn text_is_edited_through_the_schema_path() {
         let (mut document, inspector, id) = setup();
-        inspector
-            .set_text(
-                &mut document,
-                id,
-                TextFields {
-                    text: "Hi".to_owned(),
-                    font_size: 24.0,
-                    font: "assets/fonts/a;b=数字.ttf".to_owned(),
-                    ..TextFields::default()
-                },
-            )
-            .unwrap();
-        assert!(document.is_dirty());
-        let stored = document.scene.entities[&id]
+        document
+            .scene
+            .entities
+            .get_mut(&id)
+            .unwrap()
             .components
-            .get("Text")
-            .expect("Text written");
-        assert!(
-            stored.ends_with(";font=assets/fonts/a\\;b\\=数字.ttf"),
-            "{stored}"
-        );
-        // 场景文件文本往返后仍保留字体字段。
-        let text = document.scene.to_text();
-        let loaded = engine::core::scene::Scene::from_text(&text).unwrap();
-        let persisted = loaded.entities[&id]
-            .components
-            .get("Text")
-            .expect("Text persisted");
-        let decoded = decode_text(persisted).unwrap();
-        assert_eq!(decoded.font, "assets/fonts/a;b=数字.ttf");
-        assert_eq!(decoded.text, "Hi");
-        // 快照往返。
+            .insert(
+                "Text".to_owned(),
+                engine::core::ui::UiText::default().to_component_str(),
+            );
         let snapshot = inspector.snapshot(&document, id).unwrap();
-        assert_eq!(
-            snapshot.text.expect("text snapshot").font,
-            "assets/fonts/a;b=数字.ttf"
+        assert!(
+            !format!("{snapshot:?}").contains("text: Some"),
+            "迁移后快照不得再携带 Text 缓冲字段"
         );
-    }
-    #[test]
-    fn text_empty_font_stores_legacy_string_without_font_key() {
-        let (mut document, inspector, id) = setup();
-        inspector
-            .set_text(
-                &mut document,
-                id,
-                TextFields {
-                    text: "Hi".to_owned(),
-                    ..TextFields::default()
-                },
-            )
-            .unwrap();
-        let stored = document.scene.entities[&id]
-            .components
-            .get("Text")
-            .expect("Text written");
-        assert!(!stored.contains("font="), "{stored}");
-        let decoded = decode_text(stored).unwrap();
-        assert_eq!(decoded.font, "");
+        let parsed = engine::core::ui::UiText::from_component_str(
+            &document.scene.entities[&id].components["Text"],
+        )
+        .expect("引擎解析器必须认得 Text");
+        assert_eq!(parsed.font_size, engine::core::ui::UI_TEXT_BASE_PX);
+        assert_eq!(parsed.font, "", "默认不写 font 字段");
     }
 }

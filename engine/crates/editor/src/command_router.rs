@@ -222,6 +222,50 @@ impl EditorApp {
                 field,
                 value,
             } => self.apply_component_field_edit(entity, &component, &field, &value),
+            EditorCommand::SetComponentFields {
+                entity,
+                component,
+                fields,
+            } => self.apply_component_fields_edit(entity, &component, &fields),
+            EditorCommand::SetComponentFieldOnSelection {
+                component,
+                field,
+                value,
+            } => self.apply_component_field_edit_on_selection(&component, &field, &value),
+            EditorCommand::SetComponentFieldsOnSelection { component, fields } => {
+                self.apply_component_fields_edit_on_selection(&component, &fields)
+            }
+            // Inspector 的组件管理：目标实体随命令携带，实现体住在 shell（`actions.rs`），
+            // 面板只发命令。失败原因仍按既有惯例落回 `status`（与面板原来的直调路径一致）。
+            EditorCommand::AddComponent { entity, component } => self.document_edit(|app| {
+                if let Err(error) = app.add_component_to(entity, &component) {
+                    app.status = error;
+                }
+            }),
+            EditorCommand::RemoveComponent { entity, component } => self.document_edit(|app| {
+                if let Err(error) = app.remove_component(entity, &component) {
+                    app.status = error;
+                }
+            }),
+            EditorCommand::AddCollider3d { entity } => self.document_edit(|app| {
+                if let Err(error) = app.add_collider3d_component(entity) {
+                    app.status = error;
+                }
+            }),
+            EditorCommand::RemoveCollider3d { entity } => self.document_edit(|app| {
+                if let Err(error) = app.remove_collider3d_component(entity) {
+                    app.status = error;
+                }
+            }),
+            EditorCommand::RenameSelection { entity, name } => {
+                self.document_edit(|app| app.rename_entity(entity, name))
+            }
+            EditorCommand::PasteComponents { entity } => {
+                self.document_edit(|app| app.paste_components_to(entity))
+            }
+            EditorCommand::SetEntityPersistent { entity, persistent } => {
+                self.document_edit(|app| app.set_entity_persistent(entity, persistent))
+            }
             // Prefab 的 action：目标实体由命令显式携带，视图不再依赖"当前选区"。
             //
             // 前置条件在**命令层**统一判定（实体在场、是实例/根实例、非 Play），

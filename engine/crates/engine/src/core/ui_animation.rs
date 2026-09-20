@@ -132,6 +132,81 @@ impl UiAnimationClip {
             .filter_map(|track| track.keyframes.last().map(|keyframe| keyframe.time))
             .fold(0.0_f32, f32::max)
     }
+
+    /// `UiAnimation` 组件串 → 轨道表：**这份格式的唯一事实源**（第 40 轮从编辑器搬进引擎）。
+    ///
+    /// 串形如 `track.<属性>=<时间>:<值>:<缓动>[,<时间>:<值>:<缓动>…]`，
+    /// 多条轨道用 `|` 连接（与 `UiEvents`/`UiBindings` 的多记录分隔符一致）。
+    /// **名字不在串里**：`UiAnimationClip::name` 是编辑器预览的概念，不属于组件契约。
+    ///
+    /// 为什么把它搬进引擎：迁进之前这份编码/解码只有编辑器实现
+    /// （`ui_editor::parse_ui_animation_component` / `apply_ui_animation_editor`），
+    /// 于是引擎与审计都无法校验 `UiAnimation`——注册 schema 就等于凭空造一份事实源。
+    /// 现在引擎有了解析器，schema 的 `ListModel`（动态键 `track.`）才有对拍对象。
+    pub fn tracks_from_component_str(raw: &str) -> Result<BTreeMap<String, UiAnimationTrack>, String> {
+        let mut tracks = BTreeMap::new();
+        for field in raw.split('|') {
+            let field = field.trim();
+            if field.is_empty() {
+                continue;
+            }
+            let Some((key, value)) = field.split_once('=') else {
+                return Err(format!("malformed animation field: {field}"));
+            };
+            let Some(property) = key.strip_prefix("track.") else {
+                return Err(format!("unknown animation field: {key}"));
+            };
+            let mut keyframes = Vec::new();
+            for item in value.split(',') {
+                let parts = item.split(':').collect::<Vec<_>>();
+                if parts.len() != 3 {
+                    return Err(format!("malformed keyframe: {item}"));
+                }
+                keyframes.push(UiKeyframe {
+                    time: parts[0]
+                        .trim()
+                        .parse()
+                        .map_err(|_| format!("bad time: {item}"))?,
+                    value: parts[1]
+                        .trim()
+                        .parse()
+                        .map_err(|_| format!("bad value: {item}"))?,
+                    easing: UiEasing::parse(parts[2]).ok_or_else(|| format!("bad easing: {item}"))?,
+                });
+            }
+            let track = UiAnimationTrack::new(property, keyframes)?;
+            tracks.insert(track.property.clone(), track);
+        }
+        Ok(tracks)
+    }
+
+    /// 轨道表 → 组件串（[`Self::tracks_from_component_str`] 的逆运算）。
+    ///
+    /// 数字按编辑器一直以来的写法定长 3 位小数（`{:.3}`）：这是**磁盘上既有数据的形态**
+    /// （`examples/` 与编辑器预览都写这个格式），改精度会让所有旧串在"读→写"后变形。
+    #[must_use]
+    pub fn tracks_to_component_str(tracks: &BTreeMap<String, UiAnimationTrack>) -> String {
+        tracks
+            .values()
+            .map(|track| {
+                let keyframes = track
+                    .keyframes
+                    .iter()
+                    .map(|keyframe| {
+                        format!(
+                            "{:.3}:{:.3}:{}",
+                            keyframe.time,
+                            keyframe.value,
+                            keyframe.easing.as_str()
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!("track.{}={keyframes}", track.property)
+            })
+            .collect::<Vec<_>>()
+            .join("|")
+    }
 }
 
 /// Preview-only playback state. It never writes to a `SceneDocument`.
@@ -225,6 +300,63 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    /// 组件串语法：**唯一事实源**的门（第 40 轮）。
+    ///
+    /// 逐字节要求在这里成立的理由：数字格式（`{:.3}`）与轨道顺序（`BTreeMap` 字典序，
+    /// 与 `UiEvents`/`UiBindings` 的多记录格式一致）都是**磁盘上既有数据的形态**，
+    /// 编辑器一直在写它。这条门同时守住"编辑器不再自己编码"这件事——
+    /// 编辑器现在调用的是 [`UiAnimationClip::tracks_to_component_str`]。
+    #[test]
+    fn component_str_round_trips_and_rejects_malformed_input() {
+        let sample = "track.opacity=0.000:0.000:linear|track.scale=0.000:1.000:smoothstep";
+        let tracks = UiAnimationClip::tracks_from_component_str(sample).expect("编辑器一直写这个格式");
+        assert_eq!(tracks.len(), 2);
+        assert_eq!(
+            tracks["opacity"].keyframes,
+            vec![UiKeyframe {
+                time: 0.0,
+                value: 0.0,
+                easing: UiEasing::Linear
+            }]
+        );
+        assert_eq!(
+            UiAnimationClip::tracks_to_component_str(&tracks),
+            sample,
+            "引擎写回必须与编辑器写过的串逐字节一致"
+        );
+        // 多关键帧 + 三种缓动都能往返。
+        let multi = "track.opacity=0.000:0.000:linear,0.250:0.500:step,0.500:1.000:smoothstep";
+        let tracks = UiAnimationClip::tracks_from_component_str(multi).expect("多关键帧");
+        assert_eq!(tracks["opacity"].keyframes.len(), 3);
+        assert_eq!(UiAnimationClip::tracks_to_component_str(&tracks), multi);
+        // 空串 = 没有轨道（编辑器删除组件时写的形态），解析成功、写回为空。
+        assert!(
+            UiAnimationClip::tracks_from_component_str("")
+                .expect("空串合法")
+                .is_empty()
+        );
+
+        for bad in [
+            // 缺 `=`。
+            "track.opacity",
+            // 键名不是 `track.`。
+            "opacity=0.000:0.000:linear",
+            // 键帧不是三元组。
+            "track.opacity=0.000:0.000",
+            // 缓动名不认识。
+            "track.opacity=0.000:0.000:bounce",
+            // 时间不是数。
+            "track.opacity=x:0.000:linear",
+            // 时间不严格递增（`UiAnimationTrack::new` 的校验）。
+            "track.opacity=0.500:0.000:linear,0.500:1.000:linear",
+        ] {
+            assert!(
+                UiAnimationClip::tracks_from_component_str(bad).is_err(),
+                "{bad:?} 必须被拒"
+            );
+        }
     }
 
     #[test]

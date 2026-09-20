@@ -3,6 +3,7 @@
 mod actions;
 mod command_router;
 mod geometry;
+mod hierarchy_ops;
 mod import;
 mod menu;
 mod panels;
@@ -11,6 +12,7 @@ mod preview_session;
 mod publish;
 mod scene_drag;
 mod scene_interaction;
+mod scene_ops;
 mod ui_editor;
 mod util;
 
@@ -29,9 +31,9 @@ use std::{
 };
 
 use editor::{
-    AutoSaveController, Camera3DFields, Collider3dFields, InspectorState,
+    AutoSaveController, Collider3dFields, InspectorState,
     PlaySession, ProjectDocument, ProjectInfo, RecoveryManager, RecoveryScan, ResourceBrowserState,
-    SceneTreeState, SelectionModel, TextFields, Transform3DFields, TransformFields, TransformSpace,
+    SceneTreeState, SelectionModel, TransformFields,
     check_project, open_project,
 };
 use eframe::egui;
@@ -46,7 +48,6 @@ use engine::core::{
     preview_diagnostics::DiagnosticCollector,
     scene::SceneEntityId,
     script::LuaRuntime,
-    sprite::{SpriteComponent, SpriteSorting},
     texture::{TextureAsset, TextureColorSpace},
     tilemap::Tilemap,
     transform::Transform3D,
@@ -412,6 +413,8 @@ struct EditorApp {
     tree: SceneTreeState,
     resources: ResourceBrowserState,
     selected_resource: Option<PathBuf>,
+    /// 资源右键"重命名…"的进行中状态：`(原路径, 输入缓冲)`（第 44 轮 P1）。
+    resource_rename: Option<(PathBuf, String)>,
     resources_filter: String,
     lua_runtime: Option<LuaRuntime>,
     console_input: String,
@@ -425,26 +428,13 @@ struct EditorApp {
     /// 控制台左侧分类导航当前选中的日志来源。
     console_tab: ConsoleTab,
     inspector: InspectorState,
-    transform: TransformFields,
-    transform3d: Transform3DFields,
     mesh_renderer: String,
-    camera3d: Camera3DFields,
     collider3d: Collider3dFields,
-    text: TextFields,
-    ui_layout: editor::UiLayoutFields,
     container: editor::ContainerFields,
-    sprite_reference: String,
-    sprite_component: SpriteComponent,
     tilemap: TilemapEditorState,
     animation: AnimationEditorState,
     lua_script: String,
-    /// 统一 Transform 面板当前编辑哪个空间（WP9）。只在实体**同时**有 2D 与 3D 变换时才可切换；
-    /// 只有一种时按拥有者显示，不看这个值。
-    inspector_transform_space: TransformSpace,
     inspector_collider3d_open: bool,
-    inspector_text_open: bool,
-    inspector_ui_layout_open: bool,
-    inspector_sprite_open: bool,
     inspector_tilemap_open: bool,
     inspector_animation_open: bool,
     inspector_add_component: String,
@@ -480,10 +470,14 @@ struct EditorApp {
     snap_enabled: bool,
     snap_step: f32,
     hierarchy_filter: String,
+    /// Inspector 的**字段搜索**（第 42 轮 P1）：只影响 schema 字段行的呈现，不改文档。
+    inspector_field_filter: String,
+    /// Gizmo 的**变换空间**（第 43 轮 P1：世界/局部）：只影响拖拽语义，不改文档。
+    gizmo_space: crate::scene_interaction::GizmoSpace,
+    /// Gizmo 的**轴心模式**（第 46 轮 P1：轴心/中心）：只影响手柄原点与 2D 旋转缩放中心。
+    gizmo_pivot: crate::scene_interaction::GizmoPivot,
     scene_state: SceneEditorState,
     inspector_clipboard: Option<ComponentClipboard>,
-    transform_lock_ratio: bool,
-    inspector_transform_open: bool,
     progress: ProgressPanel,
     show_publish_panel: bool,
     publish_platform: crate::publish::PublishPlatform,
@@ -588,7 +582,7 @@ struct EditorApp {
     profiler: editor::EditorProfiler,
     hierarchy_visible_cache: crate::panels::hierarchy::HierarchyVisibleCache,
     /// Hierarchy 小写化名称缓存（按文档修订失效）：搜索改词不再重算 10k 个名字。
-    hierarchy_names: crate::panels::hierarchy::HierarchyNameCache,
+    hierarchy_lower: crate::panels::hierarchy::HierarchyLowerCache,
     /// Hierarchy 行内容高度探针（docs/55 §8 的"不得重叠/裁字"门槛用测量而非肉眼）。
     hierarchy_row_probe: crate::panels::hierarchy::RowHeightProbe,
     /// Console 行内容高度探针（同上）。
@@ -828,6 +822,10 @@ struct EditorContextSnapshot {
     selection: SelectionModel,
     workspace_tab: WorkspaceTab,
     scene_tool: SceneTool,
+    /// Gizmo 的变换空间（世界/局部）：编辑器态，随布局持久化。
+    gizmo_space: crate::scene_interaction::GizmoSpace,
+    /// Gizmo 的轴心模式（轴心/中心）：编辑器态，随布局持久化。
+    gizmo_pivot: crate::scene_interaction::GizmoPivot,
     scene_view_mode: SceneViewMode,
     scene_zoom: f32,
     scene_pan: egui::Vec2,
@@ -957,6 +955,8 @@ struct GizmoDrag {
     axis: GizmoAxis,
     start: egui::Pos2,
     initial: Transform3D,
+    /// 轴心模式 `Center` 时的**公转中心**（手柄起点）；`None` = 原地旋转/缩放。
+    pivot: Option<engine::core::math3d::Vec3>,
     start_ray: Option<engine::core::camera::Ray3>,
 }
 
@@ -997,6 +997,7 @@ impl EditorApp {
             tree: SceneTreeState::new(),
             resources: ResourceBrowserState::new(),
             selected_resource: None,
+            resource_rename: None,
             resources_filter: String::new(),
             lua_runtime: None,
             console_input: String::new(),
@@ -1007,34 +1008,13 @@ impl EditorApp {
             console_log_level_filter: ConsoleLogLevelFilter::Error,
             console_tab: ConsoleTab::Editor,
             inspector: InspectorState::new(),
-            transform: TransformFields::default(),
-            transform3d: Transform3DFields::default(),
             mesh_renderer: String::new(),
-            camera3d: Camera3DFields::default(),
             collider3d: Collider3dFields::default(),
-            text: TextFields::default(),
-            ui_layout: editor::UiLayoutFields::default(),
             container: editor::ContainerFields::default(),
-            sprite_reference: String::new(),
-            sprite_component: SpriteComponent {
-                texture: "assets/textures/player.png".to_owned(),
-                size: engine::core::transform::Vec2::new(128.0, 128.0),
-                pivot: engine::core::transform::Vec2::new(0.5, 0.5),
-                tint: [1.0; 4],
-                sorting: SpriteSorting::default(),
-
-                flip_x: false,
-                flip_y: false,
-                z: 0.0,
-            },
             tilemap: TilemapEditorState::default(),
             animation: AnimationEditorState::default(),
             lua_script: String::new(),
-            inspector_transform_space: TransformSpace::ThreeD,
             inspector_collider3d_open: false,
-            inspector_text_open: true,
-            inspector_ui_layout_open: true,
-            inspector_sprite_open: true,
             inspector_tilemap_open: true,
             inspector_animation_open: true,
             inspector_add_component: "Transform3D".to_owned(),
@@ -1055,6 +1035,8 @@ impl EditorApp {
             workspace_tab: WorkspaceTab::Scene,
             scene_zoom: 1.0,
             interaction: crate::scene_interaction::ToolStateMachine::new(),
+            gizmo_space: crate::scene_interaction::GizmoSpace::default(),
+            gizmo_pivot: crate::scene_interaction::GizmoPivot::default(),
             scene_view_mode: SceneViewMode::default(),
             show_scene_guides: false,
             show_safe_area: false,
@@ -1063,10 +1045,9 @@ impl EditorApp {
             snap_enabled: false,
             snap_step: 0.5,
             hierarchy_filter: String::new(),
+            inspector_field_filter: String::new(),
             scene_state: SceneEditorState::default(),
             inspector_clipboard: None,
-            transform_lock_ratio: false,
-            inspector_transform_open: true,
             progress: ProgressPanel::default(),
             show_publish_panel: false,
             publish_platform: crate::publish::PublishPlatform::Pc,
@@ -1130,7 +1111,7 @@ impl EditorApp {
             layout_load: editor::LayoutLoad::Missing,
             profiler: editor::EditorProfiler::new(editor::DEFAULT_FRAME_BUDGET_MS),
             hierarchy_visible_cache: Default::default(),
-            hierarchy_names: Default::default(),
+            hierarchy_lower: Default::default(),
             hierarchy_row_probe: Default::default(),
             console_row_probe: Default::default(),
             scene_view_cache_2d: SceneViewCache2d::default(),
@@ -1195,6 +1176,20 @@ impl EditorApp {
             .collect()
     }
 
+    /// 当前项目里**符合该字段扩展名白名单**的资源路径（供 Inspector 的"引用选择器"下拉）。
+    ///
+    /// 候选规则本身在 `editor::picker_candidates`（纯函数，可单测）：这里只负责把资源索引
+    /// 的路径喂进去。索引为空 → 空列表（此时视图不画选择器，作者仍可手打路径）。
+    pub(crate) fn picker_candidates_for(&self, extensions: &[&str], current: &str) -> Vec<String> {
+        let paths: Vec<String> = self
+            .resources
+            .entries()
+            .iter()
+            .map(editor::ResourceEntry::path_string)
+            .collect();
+        editor::picker_candidates(&paths, extensions, current)
+    }
+
     fn set_render_state(&mut self, render_state: Option<eframe::egui_wgpu::RenderState>) {
         self.render_state = render_state;
     }
@@ -1204,6 +1199,8 @@ impl EditorApp {
             selection: self.selection.clone(),
             workspace_tab: self.workspace_tab,
             scene_tool: self.scene_tool(),
+            gizmo_space: self.gizmo_space,
+            gizmo_pivot: self.gizmo_pivot,
             scene_view_mode: self.scene_view_mode,
             scene_zoom: self.scene_zoom,
             scene_pan: self.scene_state.pan,
@@ -1217,6 +1214,8 @@ impl EditorApp {
         self.selection = snapshot.selection;
         self.workspace_tab = snapshot.workspace_tab;
         self.set_scene_tool(snapshot.scene_tool);
+        self.gizmo_space = snapshot.gizmo_space;
+        self.gizmo_pivot = snapshot.gizmo_pivot;
         self.scene_view_mode = snapshot.scene_view_mode;
         self.scene_zoom = snapshot.scene_zoom;
         self.scene_state.pan = snapshot.scene_pan;
@@ -1430,6 +1429,10 @@ impl EditorApp {
             _ => SceneTool::Select,
         });
         self.scene_zoom = self.layout.scene_zoom;
+        self.gizmo_space = crate::scene_interaction::GizmoSpace::parse(&self.layout.gizmo_space)
+            .unwrap_or_default();
+        self.gizmo_pivot = crate::scene_interaction::GizmoPivot::parse(&self.layout.gizmo_pivot)
+            .unwrap_or_default();
         self.preview_resolution = self.layout.preview_resolution;
     }
 
@@ -1463,6 +1466,8 @@ impl EditorApp {
         }
         .to_owned();
         self.layout.scene_zoom = self.scene_zoom;
+        self.layout.gizmo_space = self.gizmo_space.as_str().to_owned();
+        self.layout.gizmo_pivot = self.gizmo_pivot.as_str().to_owned();
         self.layout.preview_resolution = self.preview_resolution;
         self.layout.clamp();
     }
@@ -1503,6 +1508,8 @@ impl EditorApp {
         }
         .to_owned();
         current.scene_zoom = self.scene_zoom;
+        current.gizmo_space = self.gizmo_space.as_str().to_owned();
+        current.gizmo_pivot = self.gizmo_pivot.as_str().to_owned();
         current.preview_resolution = self.preview_resolution;
         current.clamp();
         let changed = current.panel_is_visible(editor::PANEL_RESOURCE) != visible_resource
@@ -1510,6 +1517,8 @@ impl EditorApp {
             || current.workspace_tab != saved.workspace_tab
             || current.scene_view_mode != saved.scene_view_mode
             || current.scene_tool != saved.scene_tool
+            || current.gizmo_space != saved.gizmo_space
+            || current.gizmo_pivot != saved.gizmo_pivot
             || (current.scene_zoom - saved.scene_zoom).abs() > f32::EPSILON
             || current.preview_resolution != saved.preview_resolution;
         self.layout = current;
