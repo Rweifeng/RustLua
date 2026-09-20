@@ -21,6 +21,8 @@ pub mod char_collect;
 pub mod commands;
 /// 打开场景时把**旧组件名**改写成运行时真正读取的名字（幂等、不写盘）。
 pub mod component_migration;
+/// 摄像机组件的统一迁移（`Camera2D`/`Camera3D` → 单一 `Camera`）。
+pub mod camera_migration;
 /// E21: typed schema registry over serialized component strings.
 pub mod component_schema;
 /// Lightweight JSON-schema validation for `data` tables loaded via Lua.
