@@ -102,18 +102,17 @@ struct EntityNode {
 }
 
 fn collect_hierarchy(world: &World) -> Vec<EntityNode> {
-    let mut ids: std::collections::BTreeSet<EntityId> = std::collections::BTreeSet::new();
-    world.for_each::<Parent>(|id, _| {
-        ids.insert(id);
-    });
+    // 排序 `Vec` + 去重，而不是 `BTreeSet`：后者每个实体一次树节点分配，运行时传播因此每帧每实体
+    // 多付一次分配（docs/53 §3.4c 实测：1 万实体层级帧每帧 4.5 万次分配、传播占一帧三成）。
+    // 顺序与 `BTreeSet`（按 id 升序）完全一致，因此下游的确定性不变。
+    let mut ids: Vec<EntityId> = Vec::new();
+    world.for_each::<Parent>(|id, _| ids.push(id));
     // 没有 `Parent` 但有变换的实体同样要纳入：3D 实体的父节点常常自己不是任何人的子节点，
     // 漏掉它就会让子实体把局部值当世界值（父的旋转/缩放全部丢失）。
-    world.for_each::<Transform>(|id, _| {
-        ids.insert(id);
-    });
-    world.for_each::<Transform3D>(|id, _| {
-        ids.insert(id);
-    });
+    world.for_each::<Transform>(|id, _| ids.push(id));
+    world.for_each::<Transform3D>(|id, _| ids.push(id));
+    ids.sort_unstable();
+    ids.dedup();
     let mut nodes = Vec::with_capacity(ids.len());
     for id in ids {
         let parent = world
@@ -134,20 +133,18 @@ fn collect_hierarchy(world: &World) -> Vec<EntityNode> {
 }
 
 fn propagate_entities(world: &mut World, nodes: &[EntityNode], report: &mut SpatialReport) {
-    let index_by_id = nodes
-        .iter()
-        .enumerate()
-        .map(|(index, node)| (node.id, index))
-        .collect::<std::collections::BTreeMap<_, _>>();
+    // `nodes` 已按 id 升序（`collect_hierarchy` 的性质），因此父/自身的定位用二分而不是
+    // `BTreeMap`：每实体零分配，语义不变。
+    let index_of = |id: EntityId| nodes.binary_search_by_key(&id, |node| node.id).ok();
     // docs/54 §8-②：父链上溯、成环判定与"什么算坏数据"的分类走
     // `spatial_transform::parent_first_plan`——**与加载期求解（`propagate_all`）同一份驱动**，
     // 因此运行时（容错）与加载期（严格）不会对同一份数据给出两套说法，差别只剩"遇到问题怎么办"。
     let plan = crate::core::spatial_transform::parent_first_plan(
         nodes.iter().map(|node| node.id),
-        |id| index_by_id.get(&id).and_then(|index| nodes[*index].parent),
+        |id| index_of(id).and_then(|index| nodes[index].parent),
         |id| {
-            index_by_id.get(&id).is_some_and(|index| {
-                nodes[*index].local_2d.is_some() || nodes[*index].local_3d.is_some()
+            index_of(id).is_some_and(|index| {
+                nodes[index].local_2d.is_some() || nodes[index].local_3d.is_some()
             })
         },
     );
@@ -196,15 +193,16 @@ fn propagate_entities(world: &mut World, nodes: &[EntityNode], report: &mut Spat
     let mut world_2d = vec![None; nodes.len()];
     let mut world_3d = vec![None; nodes.len()];
     for &id in &plan.ordered {
-        let index = index_by_id[&id];
+        let Some(index) = index_of(id) else {
+            continue; // 理论上不可能：`ordered` 只包含 `nodes` 里的 id
+        };
         {
             let node = &nodes[index];
             // 断链的父当作"没有父"（链根语义）；其余情况父一定排在前面（`ordered` 的性质）。
             let parent_index = if dangling_parents.contains(&id) {
                 None
             } else {
-                node.parent
-                    .and_then(|parent| index_by_id.get(&parent).copied())
+                node.parent.and_then(index_of)
             };
             // 父还没算出世界变换（被拒绝/成环）⇒ 自己也保留局部值。
             let parent_ready = parent_index.is_none_or(|parent| {

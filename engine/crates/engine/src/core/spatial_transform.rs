@@ -399,22 +399,32 @@ pub fn parent_first_plan<Id: Copy + Ord>(
     parent_of: impl Fn(Id) -> Option<Id>,
     has_local: impl Fn(Id) -> bool,
 ) -> ParentFirstPlan<Id> {
-    let ids: BTreeSet<Id> = ids.into_iter().collect();
+    // 排序 `Vec` + 平行 `state`，而不是 `BTreeSet`/`BTreeMap`：后者的**每个实体一次树节点分配**
+    // 在运行时传播里是热点（docs/53 §3.4c 实测：1 万实体的层级帧每帧 4.5 万次分配、传播占一帧
+    // 三成）。排序 + 二分把每实体的分配降到 0，且顺序与原来的 `BTreeSet`（按 id 升序）**完全一致**，
+    // 因此 `ordered` 与 `problems` 的确定性不变。
+    let mut ids: Vec<Id> = ids.into_iter().collect();
+    ids.sort_unstable();
+    ids.dedup();
     let mut ordered = Vec::with_capacity(ids.len());
     let mut problems = Vec::new();
-    // 0 = 未访问，1 = 当前链上，2 = 已求解，3 = 不可解。
-    let mut state: BTreeMap<Id, u8> = BTreeMap::new();
-    for &start in &ids {
-        if state.get(&start).copied().unwrap_or(0) != 0 {
+    // 0 = 未访问，1 = 当前链上，2 = 已求解，3 = 不可解。下标与 `ids` 一一对应。
+    let mut state: Vec<u8> = vec![0; ids.len()];
+    let index_of = |ids: &[Id], id: Id| ids.binary_search(&id).ok();
+    // 链上暂存**只分配一次**：此前每条链一个 `Vec`（1,250 条链就是每帧 1,250 次分配）。
+    let mut chain: Vec<Id> = Vec::new();
+    for start_index in 0..ids.len() {
+        let start = ids[start_index];
+        if state[start_index] != 0 {
             continue;
         }
         // 沿父链上溯；`chain` 从 start 一路指向上游。
-        let mut chain: Vec<Id> = Vec::new();
-        let mut cursor = Some(start);
+        chain.clear();
+        let mut cursor = Some((start_index, start));
         // 本次链里第一个"解不了"的实体（环成员或父无局部变换者），以及它的原因。
         let mut unresolved_from: Option<(usize, Id)> = None;
-        while let Some(entity) = cursor {
-            match state.get(&entity).copied().unwrap_or(0) {
+        while let Some((entity_index, entity)) = cursor {
+            match state[entity_index] {
                 2 => break, // 上游已求解：chain 里剩下的全都能排
                 3 => {
                     // 上游已知不可解：chain 里**全部**都是它的后代。
@@ -429,7 +439,9 @@ pub fn parent_first_plan<Id: Copy + Ord>(
                         .unwrap_or(0);
                     let members: Vec<Id> = chain[position..].to_vec();
                     for member in &members {
-                        state.insert(*member, 3);
+                        if let Some(index) = index_of(&ids, *member) {
+                            state[index] = 3;
+                        }
                     }
                     problems.push(PropagationProblem::Cycle(members.clone()));
                     // 环**上方**的那一段（更靠近 start）是环的后代：它们同样不参与求解。
@@ -439,17 +451,17 @@ pub fn parent_first_plan<Id: Copy + Ord>(
                 }
                 _ => {}
             }
-            state.insert(entity, 1);
+            state[entity_index] = 1;
             // 链根判定：没有父，或父不在集合里（后一种要报告，但仍按链根求解）。
             let Some(parent) = parent_of(entity) else {
                 chain.push(entity);
                 break;
             };
-            if !ids.contains(&parent) {
+            let Some(parent_index) = index_of(&ids, parent) else {
                 problems.push(PropagationProblem::MissingParent { entity, parent });
                 chain.push(entity);
                 break;
-            }
+            };
             if !has_local(parent) {
                 problems.push(PropagationProblem::ParentWithoutLocal { entity, parent });
                 chain.push(entity);
@@ -457,15 +469,17 @@ pub fn parent_first_plan<Id: Copy + Ord>(
                 break;
             }
             chain.push(entity);
-            cursor = Some(parent);
+            cursor = Some((parent_index, parent));
         }
         match unresolved_from {
             Some((from, ancestor)) => {
                 for (index, entity) in chain.iter().enumerate() {
-                    if state.get(entity).copied() == Some(3) {
+                    if index_of(&ids, *entity).is_some_and(|slot| state[slot] == 3) {
                         continue; // 环成员已经报过
                     }
-                    state.insert(*entity, 3);
+                    if let Some(slot) = index_of(&ids, *entity) {
+                        state[slot] = 3;
+                    }
                     if index < from {
                         problems.push(PropagationProblem::UnresolvableAncestor {
                             entity: *entity,
@@ -477,8 +491,10 @@ pub fn parent_first_plan<Id: Copy + Ord>(
             None => {
                 // 出栈顺序 = 上游在前（`chain` 是从 start 往上走的）。
                 for entity in chain.iter().rev() {
-                    if state.get(entity).copied() == Some(1) {
-                        state.insert(*entity, 2);
+                    if let Some(slot) = index_of(&ids, *entity)
+                        && state[slot] == 1
+                    {
+                        state[slot] = 2;
                         ordered.push(*entity);
                     }
                 }

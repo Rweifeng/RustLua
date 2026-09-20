@@ -621,6 +621,17 @@ if ($Benchmarks) {
                 $stair.entities, $stair.spatial_propagate_us, $stair.spatial_share_pct)
         }
     }
+    # docs/54 §10 批 Q：传播路径的**每帧分配不许随实体数增长**。修前 1 万实体是 4.5 万次/帧
+    # （`BTreeSet`/`BTreeMap` 逐实体树节点），修后实测 138 / 155；门槛留约三倍余量。
+    $hierarchyAlloc = @($sceneFrameReport.hierarchy_stairs | ForEach-Object { [int]$_.alloc_count_p50 })
+    $hierarchyEntities = @($sceneFrameReport.hierarchy_stairs | ForEach-Object { [int]$_.entities })
+    if (($hierarchyAlloc | Measure-Object -Maximum).Maximum -gt 400) {
+        throw ("hierarchy frame allocations too high: {0}" -f ($hierarchyAlloc -join ','))
+    }
+    if (($hierarchyAlloc[1] - $hierarchyAlloc[0]) -gt 100) {
+        throw ("hierarchy frame allocations scale with entities: {0}->{1} vs {2}->{3}" -f `
+            $hierarchyEntities[0], $hierarchyAlloc[0], $hierarchyEntities[1], $hierarchyAlloc[1])
+    }
     # 深度阶梯：增量传播的不变量必须成立——叶子变动只重算 1 个节点，根变动重算整条链。
     # 任一条不成立就说明脏标记或父先序求解已经错了。
     if ($sceneFrameReport.transform_depth.Count -ne 3) {
