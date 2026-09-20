@@ -16,6 +16,7 @@ use crate::core::{
     resource_db::{AssetId, ResourceDatabase},
     scene::{Scene, SceneEntityId},
     sprite::SpriteComponent,
+    spatial_transform::LocalTransform,
     tilemap::Tilemap,
     transform::Transform,
     transform::Transform3D,
@@ -241,14 +242,29 @@ fn compile_component(
     assets: Option<&dyn AssetResolver>,
 ) -> Option<Result<(ComponentId, TypedComponent), String>> {
     let parsed = match name {
-        "Transform" => Transform::from_component_str(value)
-            .map(|component| {
-                (
+        // **统一 `Transform`**（第 53 轮）：同一个组件名现在承载两种历史形态——
+        // 2D 旧写法（`x/y/rotation/scale_x/scale_y`，既有行为一字不改）与统一写法
+        // （`position/rotation/scale`）。按**形态**落到已有的两个类型化变体，
+        // 因此 2D 渲染 / 3D 渲染 / Lua 的消费方一行都不用改。
+        "Transform" => {
+            if let Ok(component) = Transform::from_component_str(value) {
+                Ok((
                     ComponentId::Transform2D,
                     TypedComponent::Transform2D(component),
-                )
-            })
-            .map_err(|error| error.to_string()),
+                ))
+            } else {
+                LocalTransform::from_unified_component_str(value).map(|local| {
+                    (
+                        ComponentId::Transform3D,
+                        TypedComponent::Transform3D(Transform3D {
+                            position: local.translation,
+                            rotation: local.rotation,
+                            scale: local.scale,
+                        }),
+                    )
+                })
+            }
+        }
         "Transform3D" => Transform3D::from_component_str(value)
             .map(|component| {
                 (
@@ -257,6 +273,19 @@ fn compile_component(
                 )
             })
             .map_err(|error| error.to_string()),
+        // **统一 `Camera`**（第 53 轮）：按显式投影判别字段落到已有的两个类型化变体
+        // （缺判别字段的兼容判定也在这里生效）。消费方仍按 `Camera2D`/`Camera3D` 分支。
+        "Camera" => crate::core::camera_migration::CameraComponent::from_component_str(
+            "Camera", value,
+        )
+        .map(|component| match component {
+            crate::core::camera_migration::CameraComponent::Orthographic(camera) => {
+                (ComponentId::Camera2D, TypedComponent::Camera2D(camera))
+            }
+            crate::core::camera_migration::CameraComponent::Perspective(camera) => {
+                (ComponentId::Camera3D, TypedComponent::Camera3D(camera))
+            }
+        }),
         "Camera3D" => Camera3D::from_component_str(value)
             .map(|component| (ComponentId::Camera3D, TypedComponent::Camera3D(component)))
             .map_err(|error| error.to_string()),
@@ -711,6 +740,79 @@ mod tests {
         assert_eq!(error[0].entity, SceneEntityId(7));
         assert_eq!(error[0].component, "Transform3D");
         assert!(error[0].to_string().contains("Broken"));
+    }
+
+    /// **统一 `Transform` / `Camera` 的编译**（第 53 轮）：同一个组件名按**形态/投影**分流到已有的
+    /// 2D/3D 类型化变体，因此消费方不用改。每个用例单独一个实体——不能塞进
+    /// `SOURCE_SCENE_COMPONENTS` 那种"一个实体挂全部组件"的表（同名同行会互相覆盖）。
+    #[test]
+    fn unified_transform_and_camera_compile_to_the_existing_typed_variants() {
+        let cases: &[(&str, &str, ComponentId)] = &[
+            (
+                "Transform",
+                "x=1.000000000;y=2.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000",
+                ComponentId::Transform2D,
+            ),
+            (
+                "Transform",
+                "position=1.000000000,2.000000000,3.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000",
+                ComponentId::Transform3D,
+            ),
+            (
+                "Camera",
+                "projection=orthographic;center=10.0000,20.0000;zoom=2.000000",
+                ComponentId::Camera2D,
+            ),
+            (
+                "Camera",
+                "projection=perspective;position=0.000000000,1.000000000,5.000000000;target=0.000000000,0.000000000,0.000000000;fov=60.0000;near=0.100000000;far=100.000000000",
+                ComponentId::Camera3D,
+            ),
+            // 缺判别字段的兼容路径：按字段集合判定。
+            (
+                "Camera",
+                "center=0.0000,0.0000;zoom=1.000000",
+                ComponentId::Camera2D,
+            ),
+        ];
+        for (name, value, expected) in cases {
+            let scene = scene_with(SceneEntityId(1), "Unified", &[(name, value)]);
+            let typed = TypedScene::compile_v2(&scene)
+                .unwrap_or_else(|error| panic!("{name} {value:?} 必须能编译：{error:?}"));
+            let entity = &typed.entities[0];
+            assert!(
+                entity.components.contains_key(expected),
+                "{name} {value:?} 应编译成 {expected:?}，实际 {:?}",
+                entity.components.keys().collect::<Vec<_>>()
+            );
+            assert_eq!(entity.components.len(), 1, "{name} 只应产出一个类型化组件");
+        }
+        // 统一写法下的 3D 取值必须真的读进来（不是空壳）。
+        let scene = scene_with(
+            SceneEntityId(1),
+            "Unified",
+            &[(
+                "Transform",
+                "position=1.000000000,2.000000000,3.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000",
+            )],
+        );
+        let typed = TypedScene::compile_v2(&scene).expect("编译");
+        match &typed.entities[0].components[&ComponentId::Transform3D] {
+            TypedComponent::Transform3D(transform) => {
+                assert_eq!(transform.position, crate::core::math3d::Vec3::new(1.0, 2.0, 3.0))
+            }
+            other => panic!("期望 Transform3D，实际 {other:?}"),
+        }
+        // 判别字段与字段体不匹配 → 编译报错（不猜）。
+        let scene = scene_with(
+            SceneEntityId(1),
+            "Unified",
+            &[(
+                "Camera",
+                "projection=orthographic;position=0,0,5;target=0,0,0;fov=60;near=0.1;far=100",
+            )],
+        );
+        assert!(TypedScene::compile_v2(&scene).is_err());
     }
 
     /// 覆盖门：源场景里出现过的 17 个组件名必须全部编译成对应的 `ComponentId`，

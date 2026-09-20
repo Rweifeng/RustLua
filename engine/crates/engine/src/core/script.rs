@@ -745,7 +745,31 @@ impl LuaRuntime {
         _resources: &BTreeMap<String, AssetId>,
     ) -> Result<EntityId, LuaBridgeError> {
         let id = state.world.spawn();
-        if let Some(value) = components.get("Transform") {
+        // **统一 `Transform`**（第 53 轮）：同一个组件名可能是 2D 旧形态，也可能是统一 3D 形态；
+        // `Transform3D` 是旧的 3D 名。这里按形态分流到既有的两条插入路径，语义与原实现一致；
+        // 两种形态都解析不了时仍然报错（不静默丢组件）。
+        let transform_2d = components
+            .get("Transform")
+            .filter(|value| Transform::from_component_str(value).is_ok())
+            .cloned();
+        let transform_3d = components
+            .get("Transform3D")
+            .cloned()
+            .or_else(|| {
+                components
+                    .get("Transform")
+                    .filter(|value| Transform::from_component_str(value).is_err())
+                    .cloned()
+            });
+        if let Some(value) = components.get("Transform")
+            && crate::core::spatial_transform::LocalTransform::from_unified_component_str(value)
+                .is_err()
+        {
+            return Err(LuaBridgeError::Api(format!(
+                "entity {name:?} has an invalid Transform"
+            )));
+        }
+        if let Some(value) = transform_2d.as_deref() {
             let transform = Transform::from_component_str(value).map_err(|error| {
                 LuaBridgeError::Api(format!("entity {name:?} has an invalid Transform: {error}"))
             })?;
@@ -799,11 +823,27 @@ impl LuaRuntime {
         }
         // docs/54 §8-①：场景可以声明自带的 2D（正交）相机。它作为**初始**相机生效；
         // 之后 Lua `camera2d.*` 与相机控制器照旧可以移动它（不是第二份姿态真源）。
-        if let Some(value) = components.get("Camera2D") {
-            let camera =
-                crate::core::camera::Camera2D::from_component_str(value).map_err(|error| {
+        //
+        // 第 53 轮：统一 `Camera` 组件按**投影判别字段**落回这两条既有路径，
+        // 因此旧名（`Camera2D`/`Camera3D`）与统一名可以同时存在、互不干扰。
+        let unified_camera = components
+            .get("Camera")
+            .map(|value| crate::core::camera_migration::CameraComponent::from_component_str("Camera", value))
+            .transpose()
+            .map_err(|error| {
+                LuaBridgeError::Api(format!("entity {name:?} has an invalid Camera: {error}"))
+            })?;
+        let camera_2d = components
+            .get("Camera2D")
+            .cloned()
+            .map(|value| {
+                crate::core::camera::Camera2D::from_component_str(&value).map_err(|error| {
                     LuaBridgeError::Api(format!("entity {name:?} has an invalid Camera2D: {error}"))
-                })?;
+                })
+            })
+            .transpose()?
+            .or_else(|| unified_camera.and_then(crate::core::camera_migration::CameraComponent::as_orthographic));
+        if let Some(camera) = camera_2d {
             state
                 .world
                 .insert(id, camera)
@@ -831,7 +871,7 @@ impl LuaRuntime {
                 .insert(id, animation)
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
         }
-        if let Some(value) = components.get("Transform3D") {
+        if let Some(value) = transform_3d.as_deref() {
             let transform = Transform3D::from_component_str(value).map_err(|error| {
                 LuaBridgeError::Api(format!(
                     "entity {name:?} has an invalid Transform3D: {error}"
@@ -874,10 +914,19 @@ impl LuaRuntime {
                 .insert(id, renderer)
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
         }
-        if let Some(value) = components.get("Camera3D") {
-            let camera = Camera3D::from_component_str(value).map_err(|error| {
-                LuaBridgeError::Api(format!("entity {name:?} has an invalid Camera3D: {error}"))
-            })?;
+        let camera_3d = components
+            .get("Camera3D")
+            .cloned()
+            .map(|value| {
+                Camera3D::from_component_str(&value).map_err(|error| {
+                    LuaBridgeError::Api(format!("entity {name:?} has an invalid Camera3D: {error}"))
+                })
+            })
+            .transpose()?
+            .or_else(|| {
+                unified_camera.and_then(crate::core::camera_migration::CameraComponent::as_perspective)
+            });
+        if let Some(camera) = camera_3d {
             state
                 .world
                 .insert(id, camera)
@@ -7581,6 +7630,101 @@ mod tests {
         let moved = runtime.with_world(|world| *world.get::<Transform>(player).unwrap().unwrap());
         assert_eq!(moved.position, Vec2::new(10.0, 5.0));
         let _ = fs::remove_file(path);
+    }
+
+    /// **Lua 桥接读统一组件**（第 53 轮）：`Transform` 的两种形态与统一 `Camera` 都必须能实例化，
+    /// 且落进世界的是对应的类型化组件（2D → `Transform` / `Camera2D`，3D → `Transform3D` / `Camera3D`）。
+    /// 坏串仍然报错——不能因为"现在支持两种形态"就把解析失败静默吞掉。
+    #[test]
+    fn lua_bridge_accepts_unified_transform_and_camera_components() {
+        use crate::core::camera::{Camera2D, Camera3D};
+        use crate::core::scene::{Scene, SceneEntityId};
+        use crate::core::transform::Transform3D;
+
+        let instantiate = |components: &[(&str, &str)]| {
+            let mut scene = Scene::new("unified");
+            scene.add_entity(SceneEntityId(1), "Cam", None).unwrap();
+            for (name, value) in components {
+                scene
+                    .entities
+                    .get_mut(&SceneEntityId(1))
+                    .unwrap()
+                    .components
+                    .insert((*name).to_owned(), (*value).to_owned());
+            }
+            LuaRuntime::new().unwrap().instantiate_scene(&scene)
+        };
+
+        // 2D 旧形态（既有行为）+ 2D 相机旧名。
+        assert_eq!(
+            instantiate(&[
+                ("Transform", "x=1;y=2;rotation=0;scale_x=1;scale_y=1"),
+                ("Camera2D", "center=0.0000,0.0000;zoom=1.000000"),
+            ])
+            .unwrap(),
+            1
+        );
+        // 统一 3D 形态 + 统一 Camera（透视）。
+        assert_eq!(
+            instantiate(&[
+                (
+                    "Transform",
+                    "position=1.000000000,2.000000000,3.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000",
+                ),
+                (
+                    "Camera",
+                    "projection=perspective;position=0.000000000,1.000000000,5.000000000;target=0.000000000,0.000000000,0.000000000;fov=60.0000;near=0.100000000;far=100.000000000",
+                ),
+            ])
+            .unwrap(),
+            1
+        );
+        // 统一 Camera（正交）与缺判别字段的兼容写法。
+        assert_eq!(
+            instantiate(&[(
+                "Camera",
+                "projection=orthographic;center=1.0000,2.0000;zoom=4.000000",
+            )])
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            instantiate(&[("Camera", "center=1.0000,2.0000;zoom=4.000000")]).unwrap(),
+            1
+        );
+
+        // 世界里的取值确实是 3D 那份（不是空壳），并且相机落到了 3D 分支。
+        let mut scene = Scene::new("unified");
+        scene.add_entity(SceneEntityId(1), "Cam", None).unwrap();
+        {
+            let components = &mut scene.entities.get_mut(&SceneEntityId(1)).unwrap().components;
+            components.insert(
+                "Transform".to_owned(),
+                "position=1.000000000,2.000000000,3.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000".to_owned(),
+            );
+            components.insert(
+                "Camera".to_owned(),
+                "projection=perspective;position=0.000000000,0.000000000,5.000000000;target=0.000000000,0.000000000,0.000000000;fov=60.0000;near=0.100000000;far=100.000000000".to_owned(),
+            );
+        }
+        let mut runtime = LuaRuntime::new().unwrap();
+        assert_eq!(runtime.instantiate_scene(&scene).unwrap(), 1);
+        let entity = runtime.with_world(|world| {
+            world
+                .entities_with::<Transform3D>()
+                .first()
+                .copied()
+                .expect("统一 Transform 应作为 Transform3D 落进世界")
+        });
+        let transform = runtime.with_world(|world| *world.get::<Transform3D>(entity).unwrap().unwrap());
+        assert_eq!(transform.position, crate::core::math3d::Vec3::new(1.0, 2.0, 3.0));
+        assert!(runtime.with_world(|world| world.has::<Camera3D>(entity).unwrap()));
+        assert!(!runtime.with_world(|world| world.has::<Camera2D>(entity).unwrap()));
+
+        // 坏串必须报错（两种形态都读不了）。
+        assert!(instantiate(&[("Transform", "x=oops")]).is_err());
+        assert!(instantiate(&[("Transform", "position=1,2")]).is_err());
+        assert!(instantiate(&[("Camera", "projection=orthographic;fov=60")]).is_err());
     }
 
     #[test]

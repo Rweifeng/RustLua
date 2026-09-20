@@ -56,16 +56,12 @@ const COMPONENT_REGISTRY: &[ComponentDescriptor] = &[
         name: "Animation",
         category: ComponentCategory::Gameplay,
     },
-    ComponentDescriptor {
-        name: "Transform3D",
-        category: ComponentCategory::ThreeD,
-    },
+    // 第 53 轮：**取消 `Transform3D` / `Camera3D` 作为可添加组件**——变换与相机正在统一成
+    // 单一 `Transform` / `Camera`（见 `core::transform_migration`、`core::camera_migration`），
+    // 这里不再提供带 3D 后缀的重复项。这两个旧名**仍然可以加载与显示**（旧场景不会变得不能编辑），
+    // 只是不再作为"新加一个组件"的入口；统一名会在 schema 注册表跟上后加入本表。
     ComponentDescriptor {
         name: "MeshRenderer",
-        category: ComponentCategory::ThreeD,
-    },
-    ComponentDescriptor {
-        name: "Camera3D",
         category: ComponentCategory::ThreeD,
     },
     ComponentDescriptor {

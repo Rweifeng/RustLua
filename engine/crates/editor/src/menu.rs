@@ -825,6 +825,20 @@ mod tests {
             .collect();
         assert!(names.contains(&"Sprite"), "注册表里应有 Sprite");
         assert!(names.contains(&"Light"), "注册表里应有 Light");
+        // 第 53 轮：变换与相机正在统一成单一组件，**带 3D 后缀的重复项不再作为可添加组件**
+        // （它们仍能加载与显示，只是不该出现在"新加一个组件"的入口里）。
+        assert!(
+            !names.contains(&"Transform3D"),
+            "统一化后不应再提供 Transform3D 作为可添加组件：{names:?}"
+        );
+        assert!(
+            !names.contains(&"Camera3D"),
+            "统一化后不应再提供 Camera3D 作为可添加组件：{names:?}"
+        );
+        assert!(
+            !names.contains(&"Camera2D"),
+            "相机不分 2D/3D：不应把 Camera2D 也摆成可添加项（统一名 `Camera` 由 schema 注册表跟上后加入）"
+        );
         let mut sorted = names.clone();
         sorted.sort_unstable();
         sorted.dedup();
