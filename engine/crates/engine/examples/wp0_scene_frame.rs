@@ -52,6 +52,9 @@ const TILEMAP_STAIRS: [usize; 2] = [32, 100];
 const PARTICLE_STAIRS: [usize; 2] = [1_000, 10_000];
 const PARTICLE_ORIGIN: SceneVec2 = SceneVec2::new(640.0, 360.0);
 const DEPTH_STAIRS: [usize; 3] = [1, 10, 100];
+/// 动画精灵阶梯：**每帧每实体分配**是动画路径最容易退化的地方（批 N 就抓到过一次：轨道视图
+/// 每帧现算）。静态精灵阶梯量不到它，因此单列一档。
+const ANIMATION_STAIRS: [usize; 2] = [500, 5_000];
 /// 精灵剔除 A/B 的规模：1 万档看顶点生成，5 万档看**收集阶段**（剔除前那 5 万次 push
 /// 与随后对 5 万项的排序才是大头）。
 const SPRITE_CULLING_AB_SPRITES: [usize; 2] = [10_000, 50_000];
@@ -104,6 +107,10 @@ fn main() {
         .iter()
         .map(|count| measure_particle_frame(&examples, *count, config.cycles))
         .collect::<Vec<_>>();
+    let animation_stairs = ANIMATION_STAIRS
+        .iter()
+        .map(|count| measure_animation_frame(&examples, *count, config.cycles))
+        .collect::<Vec<_>>();
     let json = format_report(
         &scene_entries,
         &frame_stairs,
@@ -111,6 +118,7 @@ fn main() {
         &tilemap_stairs,
         &particle_stairs,
         &tilemap_edit_stairs,
+        &animation_stairs,
         &sprite_culling_ab,
         &config,
     );
@@ -124,10 +132,16 @@ fn main() {
         print!("{json}");
     }
     let scenes = scene_entries.len();
+    let worst_animation_alloc = animation_stairs
+        .iter()
+        .filter_map(|entry| animation_alloc_p50(entry))
+        .max()
+        .unwrap_or(0);
     println!(
-        "wp0_scene_frame_ok report_version={REPORT_VERSION} scenes={scenes} stairs={} depth_stairs={}",
+        "wp0_scene_frame_ok report_version={REPORT_VERSION} scenes={scenes} stairs={} depth_stairs={} animation_stairs={} animation_alloc_p50_max={worst_animation_alloc}",
         frame_stairs.len(),
-        depth_stairs.len()
+        depth_stairs.len(),
+        animation_stairs.len()
     );
 }
 
@@ -380,6 +394,90 @@ fn sprite_scene(sprites: usize) -> Scene {
     scene
 }
 
+/// 动画精灵帧阶梯：`count` 个实体，每个都带同一条 `Animation` 片段。
+///
+/// 关注点：**每帧每实体的分配次数**。静态精灵阶梯看不到动画路径（状态机推进 + 轨道采样），
+/// 而那里最容易退化成"每次调用重建一份轨道"（批 H 引入、批 N 修掉的那次回归正是如此）。
+fn measure_animation_frame(examples: &std::path::Path, count: usize, cycles: usize) -> String {
+    let root = examples.join("game_api");
+    let mut runtime = RuntimeScene::from_scene_edit(Some(root.as_path()), animation_scene(count))
+        .expect("runtime scene for the animation stair");
+    let input = InputSnapshot::default();
+    for _ in 0..FRAME_WARMUP {
+        run_frame(&mut runtime, &input);
+    }
+    let mut frame_samples = Vec::with_capacity(cycles);
+    let mut alloc_counts = Vec::with_capacity(cycles);
+    let mut script_alloc_counts = Vec::with_capacity(cycles);
+    let mut vertices_alloc_counts = Vec::with_capacity(cycles);
+    let mut vertices = 0usize;
+    let mut draws = 0usize;
+    for _ in 0..cycles {
+        let sample = run_frame(&mut runtime, &input);
+        frame_samples.push(sample.elapsed);
+        alloc_counts.push(sample.alloc_count);
+        script_alloc_counts.push(sample.script_alloc_count);
+        vertices_alloc_counts.push(sample.vertices_alloc_count);
+        vertices = sample.vertices;
+        draws = sample.draws;
+    }
+    let per_entity_script = median_f64(&script_alloc_counts, count);
+    format!(
+        "{{\"entities\":{count},\"samples\":{},\"frame_us\":{},\
+         \"alloc_count_p50\":{},\"script_alloc_count_p50\":{},\"script_alloc_per_entity_p50\":{per_entity_script:.4},\
+         \"vertices\":{vertices},\"draws\":{draws}}}",
+        frame_samples.len(),
+        stats_json(&summarize(frame_samples)),
+        median_u64(&alloc_counts),
+        median_u64(&script_alloc_counts),
+    )
+}
+
+/// 读出动画阶梯一行里的 `alloc_count_p50`（门用同一份报告判定，不另算一遍）。
+fn animation_alloc_p50(entry: &str) -> Option<u64> {
+    let marker = "\"alloc_count_p50\":";
+    let start = entry.find(marker)? + marker.len();
+    let rest = &entry[start..];
+    let end = rest.find([',', '}']).unwrap_or(rest.len());
+    rest[..end].parse().ok()
+}
+
+/// 中位数 ÷ 实体数（每实体分配次数；实体数为 0 时返回 0）。
+fn median_f64(values: &[u64], divisor: usize) -> f64 {
+    if divisor == 0 {
+        return 0.0;
+    }
+    median_u64(values) as f64 / divisor as f64
+}
+
+/// 合成 `count` 个**动画**精灵实体（同一片段，因此身份表里只有一条片段）。
+fn animation_scene(count: usize) -> Scene {
+    let mut scene = Scene::new(format!("wp0-animation-{count}"));
+    for index in 0..count {
+        let id = SceneEntityId(index as u64 + 1);
+        scene
+            .add_entity(id, format!("Animated{index}"), None)
+            .expect("add animated entity");
+        let x = (index % 40) as f32 * 34.0 - 600.0;
+        let y = (index / 40) as f32 * 34.0 - 300.0;
+        let entity = scene.entities.get_mut(&id).expect("animated entity");
+        entity.components.insert(
+            "Transform".into(),
+            format!("x={x};y={y};rotation=0;scale_x=1;scale_y=1"),
+        );
+        entity.components.insert(
+            "Sprite".into(),
+            "texture=assets/textures/player.png;size=32x32;pivot=0.500,0.500;\
+             tint=1.000,1.000,1.000,1.000;sorting_layer=default;order=0"
+                .into(),
+        );
+        entity.components.insert(
+            "Animation".into(),
+            "default=idle;clip:idle:assets/textures/hero-idle.png:4:4:true".into(),
+        );
+    }
+    scene
+}
 /// Tilemap 帧阶梯：一张 `side × side` 的地图，测稳态帧的时间与分配。
 ///
 /// 关注点：缓存命中时不应为整张地图付克隆代价（地图越大越明显）。
@@ -599,6 +697,7 @@ fn format_report(
     tilemap_stairs: &[String],
     particle_stairs: &[String],
     tilemap_edit_stairs: &[String],
+    animation_stairs: &[String],
     sprite_culling_ab: &str,
     config: &Config,
 ) -> String {
@@ -632,6 +731,10 @@ fn format_report(
     json.push_str(&format!(
         "  \"tilemap_edit_stairs\": [\n    {}\n  ],\n",
         tilemap_edit_stairs.join(",\n    ")
+    ));
+    json.push_str(&format!(
+        "  \"animation_stairs\": [\n    {}\n  ],\n",
+        animation_stairs.join(",\n    ")
     ));
     json.push_str(&format!(
         "  \"sprite_culling_ab\": [{sprite_culling_ab}]\n}}\n"

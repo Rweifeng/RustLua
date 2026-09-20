@@ -1583,27 +1583,26 @@ impl RuntimeScene {
                 scene.script.push_animation_events(fired);
                 // docs/54 §4.4：动画片段也进运行时身份表。键是片段的**内容签名**（贴图 + 帧数 +
                 // 帧率 + 循环 + 事件），因此同一段片段在进程内恒同句柄——"这份动画是哪一个"跨帧可比。
-                // 先查后插：热路径上只有一次哈希查找，不分配字符串。
-                let keys = scene.script.with_world(|world| {
-                    let mut keys: Vec<String> = Vec::new();
-                    world.for_each::<AnimationStateMachine>(|_, machine| {
-                        keys.push(machine.clip_resource_key().to_owned());
-                    });
-                    keys
-                });
+                //
+                // 这里**就地**先查后插（而不是先收集 Vec<String>）：每帧每实体只有一次哈希查找，
+                // 且只在**首次**登记时才分配字符串。收集一轮键的做法本身就会给每帧每实体各来一次
+                // String 分配——那正是本批要修掉的那类开销。
                 {
                     let mut assets = scene.assets.borrow_mut();
-                    for key in keys {
-                        if assets.handle_of(&key).is_none() {
-                            assets.intern(
-                                key.clone(),
-                                AssetRecord {
-                                    path: key,
-                                    kind: crate::core::resource_kind::ResourceKind::Animation,
-                                },
-                            );
-                        }
-                    }
+                    scene.script.with_world(|world| {
+                        world.for_each::<AnimationStateMachine>(|_, machine| {
+                            let key = machine.clip_resource_key();
+                            if assets.handle_of(key).is_none() {
+                                assets.intern(
+                                    key,
+                                    AssetRecord {
+                                        path: key.to_owned(),
+                                        kind: crate::core::resource_kind::ResourceKind::Animation,
+                                    },
+                                );
+                            }
+                        });
+                    });
                 }
                 Ok(())
             },
@@ -1619,28 +1618,25 @@ impl RuntimeScene {
                     })
                 });
                 // docs/54 §4.4：3D 骨骼动画的片段身份 = `mesh + clip`（路径在实体的 `MeshRenderer`
-                // 上，`Animation3D` 自己不存）。先推进、再只读地收集身份：两趟遍历同一小撮骨骼实体，
-                // 换来的是不必为"读一个组件 + 改另一个"新增一套可变双组件遍历 API。
-                let keys = scene.script.with_world(|world| {
-                    let mut keys: Vec<String> = Vec::new();
-                    world.for_each2::<MeshRenderer, Animation3D>(|_, renderer, animation| {
-                        keys.push(animation.resource_key(&renderer.mesh));
-                    });
-                    keys
-                });
+                // 上，`Animation3D` 自己不存）。这里**每帧**组合一次键：骨骼实体数量少（一帧几个到
+                // 几十个），而 `Animation3D` 不知道网格路径、没有可缓存的完整键——这条与 2D 热路径
+                // （成千上万精灵）刻意不同，2D 那边是缓存键 + 就地查表、零分配。
                 {
                     let mut assets = scene.assets.borrow_mut();
-                    for key in keys {
-                        if assets.handle_of(&key).is_none() {
-                            assets.intern(
-                                key.clone(),
-                                AssetRecord {
-                                    path: key,
-                                    kind: crate::core::resource_kind::ResourceKind::Animation,
-                                },
-                            );
-                        }
-                    }
+                    scene.script.with_world(|world| {
+                        world.for_each2::<MeshRenderer, Animation3D>(|_, renderer, animation| {
+                            let key = animation.resource_key(&renderer.mesh);
+                            if assets.handle_of(&key).is_none() {
+                                assets.intern(
+                                    key.clone(),
+                                    AssetRecord {
+                                        path: key,
+                                        kind: crate::core::resource_kind::ResourceKind::Animation,
+                                    },
+                                );
+                            }
+                        });
+                    });
                 }
                 Ok(())
             },

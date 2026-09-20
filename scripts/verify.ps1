@@ -581,6 +581,29 @@ if ($Benchmarks) {
             throw "wp0-v4 frame metrics invalid for sprites=$($stair.sprites)"
         }
     }
+    # docs/54 §4.4 批 N：**动画路径的每帧分配不许随实体数增长**。
+    #
+    # 背景：批 H 把"帧 → UV"与帧事件改成走轨道视图，但每次调用都现算一遍——对一群动画实体就是
+    # 每帧每实体一次分配。**静态精灵阶梯完全看不见它**（WP0 的场景里没有动画实体），所以这条
+    # 回归是读代码时发现的，不是门发现的。现在单列一档动画阶梯，并在这里判红两件事：
+    # ① 两档实体数相差 10 倍时每帧分配次数几乎不变（差值上限 20 次）；② 绝对上限 200 次兜住
+    # "两档一起退化"（5000 实体若每实体一次分配就是 5000，远超门槛）。
+    if ($sceneFrameReport.animation_stairs.Count -ne 2) {
+        throw "wp0-v4 animation stairs missing: expected two entity counts"
+    }
+    $animationAlloc = @($sceneFrameReport.animation_stairs | ForEach-Object { [int]$_.alloc_count_p50 })
+    $animationEntities = @($sceneFrameReport.animation_stairs | ForEach-Object { [int]$_.entities })
+    $maxAnimationAlloc = ($animationAlloc | Measure-Object -Maximum).Maximum
+    if ($animationEntities[0] -ge $animationEntities[1]) {
+        throw "animation stairs must increase in entity count: $($animationEntities -join ',')"
+    }
+    if ($maxAnimationAlloc -gt 200) {
+        throw "animation frame allocations too high: max=$maxAnimationAlloc per frame"
+    }
+    if (($animationAlloc[1] - $animationAlloc[0]) -gt 20) {
+        throw ("animation frame allocations scale with entities: {0}->{1} vs {2}->{3}" -f `
+            $animationEntities[0], $animationAlloc[0], $animationEntities[1], $animationAlloc[1])
+    }
     # 深度阶梯：增量传播的不变量必须成立——叶子变动只重算 1 个节点，根变动重算整条链。
     # 任一条不成立就说明脏标记或父先序求解已经错了。
     if ($sceneFrameReport.transform_depth.Count -ne 3) {
