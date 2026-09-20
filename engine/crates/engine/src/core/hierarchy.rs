@@ -89,7 +89,8 @@ pub fn propagate_spatial(world: &mut World, enabled: bool) -> SpatialReport {
         return report;
     }
     let entities = collect_hierarchy(world);
-    propagate_entities(world, &entities, &mut report);
+    let plan = plan_hierarchy(&entities, &mut report);
+    propagate_entities(world, &entities, &plan, &mut report);
     report
 }
 
@@ -148,6 +149,7 @@ pub fn local_fingerprint(world: &World) -> (u64, usize, usize) {
 }
 
 /// 运行时看到的层级快照：实体 + 父 + 两个空间的局部值。
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct EntityNode {
     id: EntityId,
     parent: Option<EntityId>,
@@ -186,7 +188,17 @@ fn collect_hierarchy(world: &World) -> Vec<EntityNode> {
     nodes
 }
 
-fn propagate_entities(world: &mut World, nodes: &[EntityNode], report: &mut SpatialReport) {
+/// 一次传播的**求解计划**：父先序顺序 + 断链实体（它们的父当作"没有父"）。
+///
+/// 由 [`plan_hierarchy`] 从节点快照算出，`ordered` 保证"父排在子之前"。批 S 的增量路径会把
+/// 这份计划缓存下来：结构没变时它每帧都一样，重算它纯属白做。
+struct HierarchyPlan {
+    ordered: Vec<EntityId>,
+    dangling_parents: std::collections::BTreeSet<EntityId>,
+}
+
+/// 算出求解计划，并把坏数据逐条翻译成运行时诊断（顺序确定，每个实体一条）。
+fn plan_hierarchy(nodes: &[EntityNode], report: &mut SpatialReport) -> HierarchyPlan {
     // `nodes` 已按 id 升序（`collect_hierarchy` 的性质），因此父/自身的定位用二分而不是
     // `BTreeMap`：每实体零分配，语义不变。
     let index_of = |id: EntityId| nodes.binary_search_by_key(&id, |node| node.id).ok();
@@ -237,6 +249,21 @@ fn propagate_entities(world: &mut World, nodes: &[EntityNode], report: &mut Spat
         };
         report.diagnostics.push(diagnostic);
     }
+    HierarchyPlan {
+        ordered: plan.ordered,
+        dangling_parents,
+    }
+}
+
+fn propagate_entities(
+    world: &mut World,
+    nodes: &[EntityNode],
+    plan: &HierarchyPlan,
+    report: &mut SpatialReport,
+) {
+    // `nodes` 已按 id 升序（`collect_hierarchy` 的性质），因此父/自身的定位用二分而不是
+    // `BTreeMap`：每实体零分配，语义不变。
+    let index_of = |id: EntityId| nodes.binary_search_by_key(&id, |node| node.id).ok();
     // `state[index] == 2` = 该实体已按父先序求解（其余实体保留局部值当世界值）。
     let mut state = vec![0_u8; nodes.len()];
     // 每个空间的**世界矩阵**：`Global(child) = Global(parent) * Local(child)`。矩阵是派生真源，
@@ -253,7 +280,7 @@ fn propagate_entities(world: &mut World, nodes: &[EntityNode], report: &mut Spat
         {
             let node = &nodes[index];
             // 断链的父当作"没有父"（链根语义）；其余情况父一定排在前面（`ordered` 的性质）。
-            let parent_index = if dangling_parents.contains(&id) {
+            let parent_index = if plan.dangling_parents.contains(&id) {
                 None
             } else {
                 node.parent.and_then(index_of)
@@ -394,6 +421,311 @@ fn propagate_entities(world: &mut World, nodes: &[EntityNode], report: &mut Spat
                 let _ = world.remove::<GlobalTransform>(node.id);
             }
         }
+    }
+}
+
+/// 这一帧的传播走了哪条路径（门与验收的判据，不参与渲染）。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SpatialPath {
+    /// 输入与上一帧逐字节相同：整趟跳过，世界值原样有效。
+    Skipped,
+    /// 结构变了（组件增删/换父/实体重生）或上一帧有诊断：全量传播，与批 S 之前逐字节一致。
+    Full,
+    /// 只有局部**值**变了：只重算变化实体的子树。
+    Incremental,
+}
+
+/// 一次传播的路径 + 报告 + 真正重算的实体数。
+#[derive(Clone, Debug, PartialEq)]
+pub struct SpatialOutcome {
+    pub report: SpatialReport,
+    pub path: SpatialPath,
+    /// 本帧**真正重算**的实体数（增量路径 = 脏子树大小；全量路径 = 求解数；跳过路径 = 0）。
+    pub recomputed: usize,
+}
+
+/// 逐实体增量传播的状态（docs/54 §10 批 S）。
+///
+/// 与 [`local_fingerprint`] 的分工：指纹只回答"整棵树一动不动吗"（一行哈希，最便宜）；
+/// 这份状态回答"**哪些**实体动了"，从而只重算那些实体的子树。它缓存两样东西：
+/// - `previous`：上一帧的输入快照（逐实体，**精确比较**而不是哈希——不引入碰撞导致的漏算）；
+/// - `ordered`：上一帧的父先序求解顺序（结构没变时它逐字节相同，重算纯属白做）。
+///
+/// 它**不是第二份真值**：世界值仍只存在 `GlobalTransform` 组件里；这里只有"输入长什么样 +
+/// 求解顺序"，用来决定"哪些实体必须重算"。
+#[derive(Default)]
+pub struct SpatialIncremental {
+    previous: Vec<EntityNode>,
+    ordered: Vec<EntityId>,
+    /// 上一次传播"结构稳定且无任何诊断"——只有这时才允许走增量。
+    ///
+    /// 有诊断的场景（环、父无局部变换、剪切/镜像压不成 TRS）意味着"哪些实体求解不了"这件事本身
+    /// 依赖数据，值变化可能改变诊断集合；这类场景一律走全量，**不为省时间冒语义风险**。
+    clean: bool,
+    /// 上一次的传播报告（跳过路径原样返回它，消费端因此看到稳定一致的数）。
+    last_report: SpatialReport,
+}
+
+impl SpatialIncremental {
+    /// 当前是否处于"可以走增量"的状态（上一次传播干净且结构已知）。
+    #[must_use]
+    pub const fn is_ready(&self) -> bool {
+        self.clean
+    }
+
+    /// 放弃缓存：下一次传播必定全量。回滚档与场景重载用。
+    pub fn reset(&mut self) {
+        self.previous.clear();
+        self.ordered.clear();
+        self.clean = false;
+        self.last_report = SpatialReport::default();
+    }
+}
+
+/// 增量传播：**结构不变时只重算值变了的实体的子树**。
+///
+/// 三条路径（`SpatialPath`）：
+/// - 结构与上一帧相同、且没有任何局部值变化 ⇒ [`SpatialPath::Skipped`]，不碰任何组件；
+/// - 结构变了、或上一帧有诊断 ⇒ [`SpatialPath::Full`]，与 [`propagate_spatial`] 逐字节同一份
+///   代码路径（`propagate_entities`）；
+/// - 只有局部值变了 ⇒ [`SpatialPath::Incremental`]：脏集合 = 变化的实体 + 它们的后代，
+///   按缓存的父先序顺序逐个重算（父的世界值从 `GlobalTransform` 组件读，脏父在本趟前面刚写过，
+///   因此读到的永远是当前值）。
+///
+/// 为什么"脏集合要闭包到后代"：世界值是沿父链组合出来的，父的世界值一变，整棵子树都过期。
+/// 为什么"结构变了就全量"：`parent_first_plan` 的 `ordered`/诊断集合是结构的函数，结构一变
+/// 缓存就失效；而结构变化（换父、增删组件、重生）在真实帧里远比"值变化"稀少。
+///
+/// `enabled` 为假时退回 [`propagate_spatial`] 关闭继承的语义（清掉世界变换、状态失效）。
+pub fn propagate_spatial_incremental(
+    world: &mut World,
+    state: &mut SpatialIncremental,
+    enabled: bool,
+) -> SpatialOutcome {
+    if !enabled {
+        let report = propagate_spatial(world, false);
+        state.reset();
+        return SpatialOutcome {
+            report,
+            path: SpatialPath::Full,
+            recomputed: 0,
+        };
+    }
+    let nodes = collect_hierarchy(world);
+    // "结构"= 参与集合（id 序列）+ 父边 + 两个空间的局部变换**存在性**。只有这三样都没变，
+    // 缓存的 `ordered` 才仍然有效、诊断集合才仍然是空的。
+    let structure_same = state.clean
+        && state.ordered.len() == nodes.len()
+        && state.previous.len() == nodes.len()
+        && state
+            .previous
+            .iter()
+            .zip(&nodes)
+            .all(|(previous, current)| {
+                previous.id == current.id
+                    && previous.parent == current.parent
+                    && previous.local_2d.is_some() == current.local_2d.is_some()
+                    && previous.local_3d.is_some() == current.local_3d.is_some()
+            });
+    if !structure_same {
+        let mut report = SpatialReport::default();
+        let plan = plan_hierarchy(&nodes, &mut report);
+        propagate_entities(world, &nodes, &plan, &mut report);
+        let recomputed = report.propagated;
+        state.clean = report.diagnostics.is_empty();
+        state.ordered = plan.ordered;
+        state.previous = nodes;
+        state.last_report = report.clone();
+        return SpatialOutcome {
+            report,
+            path: SpatialPath::Full,
+            recomputed,
+        };
+    }
+    // 结构相同：只有局部值可能变。逐实体**精确**比较（没有哈希，也就没有碰撞导致的漏算）。
+    let mut dirty = vec![false; nodes.len()];
+    let mut changed = 0usize;
+    for (index, (previous, current)) in state.previous.iter().zip(&nodes).enumerate() {
+        if previous.local_2d != current.local_2d || previous.local_3d != current.local_3d {
+            dirty[index] = true;
+            changed += 1;
+        }
+    }
+    if changed == 0 {
+        return SpatialOutcome {
+            report: state.last_report.clone(),
+            path: SpatialPath::Skipped,
+            recomputed: 0,
+        };
+    }
+    let index_of = |id: EntityId| nodes.binary_search_by_key(&id, |node| node.id).ok();
+    // 脏闭包一遍线性求出：`ordered` 保证父排在子之前，因此"父脏 ⇒ 子脏"在单趟里就能传播到底。
+    for position in 0..state.ordered.len() {
+        let id = state.ordered[position];
+        let Some(index) = index_of(id) else {
+            continue;
+        };
+        let Some(parent) = nodes[index].parent.and_then(index_of) else {
+            continue;
+        };
+        if dirty[parent] {
+            dirty[index] = true;
+        }
+    }
+    let mut report = SpatialReport::default();
+    let mut recomputed = 0usize;
+    for position in 0..state.ordered.len() {
+        let id = state.ordered[position];
+        let Some(index) = index_of(id) else {
+            continue;
+        };
+        if !dirty[index] {
+            continue;
+        }
+        let node = nodes[index];
+        recomputed += 1;
+        // 没有局部变换的实体**没有**世界变换（全量路径会 `remove` 它）。它自己不需要重算，但
+        // 它的后代已经在脏闭包里——世界值的组合只用到"有局部变换的父"。
+        if node.local_2d.is_none() && node.local_3d.is_none() {
+            let _ = world.remove::<GlobalTransform>(node.id);
+            continue;
+        }
+        // 父的世界值从 ECS 读：干净父读到的是上一帧算出来的那一份，脏父在本趟前面刚写过。
+        let parent_index = node.parent.and_then(index_of);
+        let parent_global = parent_index.and_then(|parent| {
+            world
+                .get::<GlobalTransform>(nodes[parent].id)
+                .ok()
+                .flatten()
+                .copied()
+        });
+        let mut parent_2d: Option<Transform> = None;
+        let mut parent_3d: Option<Transform3D> = None;
+        let mut parent_matrix_2d: Option<Mat4> = None;
+        let mut parent_matrix_3d: Option<Mat4> = None;
+        if let (Some(parent), Some(global)) = (parent_index, parent_global) {
+            // 只有**同一空间**的父才参与组合（与全量路径一致：跨空间不继承）。
+            if nodes[parent].local_2d.is_some() {
+                parent_2d = global.plane();
+                parent_matrix_2d = Some(global.matrix());
+            }
+            if nodes[parent].local_3d.is_some() {
+                parent_3d = global.space();
+                parent_matrix_3d = Some(global.matrix());
+            }
+        }
+        // 父在实体表里却读不到世界值：与全量路径的 `parent_ready == false` 分支**逐字一致**——
+        // 保留局部值当世界值并记诊断（下一位读者不会以为这是"算出来的世界值"）。
+        let parent_unready = parent_index.is_some() && parent_global.is_none();
+        let mut world_2d = None;
+        let mut world_3d = None;
+        let mut matrix_2d = None;
+        let mut matrix_3d = None;
+        let mut ok = false;
+        if let Some(local) = node.local_2d {
+            if let Ok(local_matrix) = local_matrix_2d(local) {
+                matrix_2d = Some(match parent_matrix_2d {
+                    Some(parent) => parent * local_matrix,
+                    None => local_matrix,
+                });
+            }
+            if parent_unready {
+                world_2d = Some(local);
+            } else {
+                match parent_2d {
+                    Some(parent) => match compose_2d(parent, local) {
+                        Ok(composed) => {
+                            world_2d = Some(composed);
+                            ok = true;
+                        }
+                        Err(error) => {
+                            world_2d = Some(local);
+                            ok = true;
+                            report.diagnostics.push(SpatialDiagnostic {
+                                entity: node.id,
+                                reason: SpatialDiagnosticReason::NotRepresentable(error),
+                            });
+                        }
+                    },
+                    None => {
+                        world_2d = Some(local);
+                        ok = true;
+                    }
+                }
+            }
+        }
+        if let Some(local) = node.local_3d {
+            if let Ok(local_matrix) = local.model_matrix() {
+                matrix_3d = Some(match parent_matrix_3d {
+                    Some(parent) => parent * local_matrix,
+                    None => local_matrix,
+                });
+            }
+            if parent_unready {
+                world_3d = Some(local);
+            } else {
+                match parent_3d {
+                    Some(parent) => match compose_3d(parent, local) {
+                        Ok(composed) => {
+                            world_3d = Some(composed);
+                            ok = true;
+                        }
+                        Err(error) => {
+                            world_3d = Some(local);
+                            ok = true;
+                            report.diagnostics.push(SpatialDiagnostic {
+                                entity: node.id,
+                                reason: SpatialDiagnosticReason::NotRepresentable(error),
+                            });
+                        }
+                    },
+                    None => {
+                        world_3d = Some(local);
+                        ok = true;
+                    }
+                }
+            }
+        }
+        if parent_unready {
+            report.diagnostics.push(SpatialDiagnostic {
+                entity: node.id,
+                reason: SpatialDiagnosticReason::UnresolvableAncestor {
+                    ancestor: parent_index.map_or(node.id, |parent| nodes[parent].id),
+                },
+            });
+        }
+        match matrix_3d.or(matrix_2d) {
+            Some(matrix) => {
+                let _ = world.insert(
+                    node.id,
+                    GlobalTransform::with_views(matrix, world_2d, world_3d),
+                );
+            }
+            None => {
+                let _ = world.remove::<GlobalTransform>(node.id);
+            }
+        }
+        if ok {
+            report.propagated += 1;
+        }
+    }
+    // 干净实体保持上一帧的世界值不动，因此"这一帧有有效世界变换的实体数"= 上一帧的数 − 脏子树里
+    // 上一帧算过的 + 这一帧重算成功的（`report.propagated` 到这里只统计了脏子树）。
+    let clean_propagated = state.last_report.propagated;
+    let dirty_previous = state
+        .previous
+        .iter()
+        .zip(dirty.iter())
+        .filter(|(node, dirty)| **dirty && (node.local_2d.is_some() || node.local_3d.is_some()))
+        .count();
+    report.propagated += clean_propagated.saturating_sub(dirty_previous);
+    state.clean = report.diagnostics.is_empty();
+    state.previous = nodes;
+    state.last_report = report.clone();
+    SpatialOutcome {
+        report,
+        path: SpatialPath::Incremental,
+        recomputed,
     }
 }
 
@@ -1031,5 +1363,259 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// docs/54 §10 批 S：**逐实体增量**只重算"变化的实体 + 它的后代"。
+    ///
+    /// 这条是"增量真的发生了"的最小判据：一条 6 层链上，动链尾 ⇒ 重算 1 个；动中间 ⇒ 重算
+    /// 中间到链尾；动链根 ⇒ 整条链。数字不合就说明脏闭包算错了（少算会留下过期世界值，
+    /// 多算只是慢）。
+    #[test]
+    fn incremental_recomputes_only_the_changed_subtree() {
+        let mut world = World::new();
+        let mut chain = Vec::new();
+        let mut parent = None;
+        for _ in 0..6 {
+            let id = spawn_with(
+                &mut world,
+                parent,
+                Transform::from_position(Vec2::new(1.0, 0.0)),
+            );
+            chain.push(id);
+            parent = Some(id);
+        }
+        let mut state = SpatialIncremental::default();
+        // 第一趟必定全量（没有缓存可比）。
+        let first = propagate_spatial_incremental(&mut world, &mut state, true);
+        assert_eq!(first.path, SpatialPath::Full, "{first:?}");
+        assert!(state.is_ready());
+
+        // ① 链尾动 ⇒ 脏集合 = {链尾}。
+        let tail = chain[5];
+        world
+            .insert(tail, Transform::from_position(Vec2::new(2.0, 0.0)))
+            .unwrap();
+        let tail_outcome = propagate_spatial_incremental(&mut world, &mut state, true);
+        assert_eq!(
+            tail_outcome.path,
+            SpatialPath::Incremental,
+            "{tail_outcome:?}"
+        );
+        assert_eq!(tail_outcome.recomputed, 1, "链尾动只该重算 1 个实体");
+
+        // ② 中间（第 3 层）动 ⇒ 脏集合 = {它, 它的两个后代}。
+        let middle = chain[2];
+        world
+            .insert(middle, Transform::from_position(Vec2::new(4.0, 0.0)))
+            .unwrap();
+        let middle_outcome = propagate_spatial_incremental(&mut world, &mut state, true);
+        assert_eq!(middle_outcome.path, SpatialPath::Incremental);
+        assert_eq!(middle_outcome.recomputed, 4, "中间动要连带 3 个后代");
+
+        // ③ 链根动 ⇒ 整条链。
+        world
+            .insert(chain[0], Transform::from_position(Vec2::new(8.0, 0.0)))
+            .unwrap();
+        let root_outcome = propagate_spatial_incremental(&mut world, &mut state, true);
+        assert_eq!(root_outcome.path, SpatialPath::Incremental);
+        assert_eq!(root_outcome.recomputed, 6, "链根动要重算整条链");
+
+        // ④ 什么都不动 ⇒ 整趟跳过。
+        let idle = propagate_spatial_incremental(&mut world, &mut state, true);
+        assert_eq!(idle.path, SpatialPath::Skipped, "{idle:?}");
+        assert_eq!(idle.recomputed, 0);
+    }
+
+    /// docs/54 §10 批 S：增量与全量**必须给出同一份世界值**。
+    ///
+    /// 这是本批最重要的一条不变量：增量路径是第二套求解代码，一旦与全量分叉，症状就是"某些
+    /// 实体的世界位置悄悄过期"。做法是让增量路径跑一串变更，再把同一份数据交给全量 `propagate_spatial`
+    /// 重算一遍，逐实体比对视图。
+    #[test]
+    fn incremental_matches_full_recompute_after_value_changes() {
+        let mut world = World::new();
+        // 两条链 + 一个 3D 分支：覆盖"2D 组合 + 3D 组合 + 无局部的中间节点"。
+        let mut chain = Vec::new();
+        let mut parent = None;
+        for _ in 0..5 {
+            let id = spawn_with(
+                &mut world,
+                parent,
+                Transform::from_position(Vec2::new(1.0, 0.5)),
+            );
+            chain.push(id);
+            parent = Some(id);
+        }
+        let mut state = SpatialIncremental::default();
+        let _ = propagate_spatial_incremental(&mut world, &mut state, true);
+
+        // 交替改动：链尾、链中、链根、再加缩放与旋转（组合要用矩阵而不是加法）。
+        let moves = [
+            (chain[4], Transform::from_position(Vec2::new(2.0, 0.0))),
+            (chain[2], Transform::from_position(Vec2::new(-1.5, 2.0))),
+            (chain[0], Transform::from_position(Vec2::new(10.0, -3.0))),
+            (
+                chain[1],
+                Transform {
+                    position: Vec2::new(0.5, 0.25),
+                    rotation: 0.5,
+                    scale: Vec2::new(2.0, 2.0),
+                },
+            ),
+            (chain[3], Transform::from_position(Vec2::new(0.75, -0.25))),
+        ];
+        for (id, value) in moves {
+            world.insert(id, value).unwrap();
+            let outcome = propagate_spatial_incremental(&mut world, &mut state, true);
+            assert!(
+                matches!(outcome.path, SpatialPath::Incremental),
+                "只有值变化，应当走增量：{outcome:?}"
+            );
+        }
+        let incremental_views = chain
+            .iter()
+            .map(|id| world_transform_2d(&world, *id).unwrap())
+            .collect::<Vec<_>>();
+        // 全量重算一遍：它是权威实现，增量必须与它逐实体一致。
+        let full = propagate_spatial(&mut world, true);
+        assert!(full.diagnostics.is_empty(), "{full:?}");
+        let full_views = chain
+            .iter()
+            .map(|id| world_transform_2d(&world, *id).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            incremental_views, full_views,
+            "增量与全量的世界视图必须一致"
+        );
+        // 世界矩阵（派生真源）同样必须一致：视图相等但矩阵不同 = 仍有分叉。
+        let mut matrices = Vec::new();
+        for id in &chain {
+            matrices.push(world.get::<GlobalTransform>(*id).unwrap().unwrap().matrix());
+        }
+        let _ = propagate_spatial_incremental(&mut world, &mut state, true);
+        for (index, id) in chain.iter().enumerate() {
+            let after = world.get::<GlobalTransform>(*id).unwrap().unwrap().matrix();
+            for column in 0..4 {
+                for row in 0..4 {
+                    assert!(
+                        (after.columns[column][row] - matrices[index].columns[column][row]).abs()
+                            < 1e-6,
+                        "第 {index} 层在增量路径下被改写成了另一份世界矩阵"
+                    );
+                }
+            }
+        }
+    }
+
+    /// docs/54 §10 批 S：**结构变了就退回全量**——缓存的父先序顺序与诊断集合都是结构的函数。
+    #[test]
+    fn structural_changes_fall_back_to_full_propagation() {
+        let mut world = World::new();
+        let root = spawn_with(
+            &mut world,
+            None,
+            Transform::from_position(Vec2::new(10.0, 0.0)),
+        );
+        let child = spawn_with(
+            &mut world,
+            Some(root),
+            Transform::from_position(Vec2::new(1.0, 0.0)),
+        );
+        let mut state = SpatialIncremental::default();
+        assert_eq!(
+            propagate_spatial_incremental(&mut world, &mut state, true).path,
+            SpatialPath::Full
+        );
+        // 新增一个实体（参与集合变了）⇒ 全量。
+        let extra = spawn_with(
+            &mut world,
+            Some(child),
+            Transform::from_position(Vec2::new(1.0, 0.0)),
+        );
+        assert_eq!(
+            propagate_spatial_incremental(&mut world, &mut state, true).path,
+            SpatialPath::Full,
+            "参与集合变了必须全量"
+        );
+        // 换父（父边变了）⇒ 全量。
+        world.insert(extra, Parent(root)).unwrap();
+        assert_eq!(
+            propagate_spatial_incremental(&mut world, &mut state, true).path,
+            SpatialPath::Full,
+            "换父必须全量"
+        );
+        // 去掉局部变换（存在性变了）⇒ 全量。
+        world.remove::<Transform>(child).unwrap();
+        assert_eq!(
+            propagate_spatial_incremental(&mut world, &mut state, true).path,
+            SpatialPath::Full,
+            "组件增删必须全量"
+        );
+    }
+
+    /// docs/54 §10 批 S：有诊断的场景**一律全量**。
+    ///
+    /// 剪切/镜像这类"压不成 TRS"的判定是**数据**的函数：值一变，诊断集合就可能变。这类场景走
+    /// 增量省不了多少时间（数量很少），却要冒"诊断与全量不一致"的风险，因此明确退回全量。
+    #[test]
+    fn diagnosed_scenes_stay_on_the_full_path() {
+        let mut world = World::new();
+        // 非均匀父缩放 + 子旋转 ⇒ 组合出剪切，压不成 TRS。
+        let root = spawn_with(
+            &mut world,
+            None,
+            Transform {
+                position: Vec2::new(0.0, 0.0),
+                rotation: 0.0,
+                scale: Vec2::new(2.0, 1.0),
+            },
+        );
+        let child = spawn_with(
+            &mut world,
+            Some(root),
+            Transform {
+                position: Vec2::new(1.0, 0.0),
+                rotation: 0.75,
+                scale: Vec2::new(1.0, 1.0),
+            },
+        );
+        let mut state = SpatialIncremental::default();
+        let first = propagate_spatial_incremental(&mut world, &mut state, true);
+        assert_eq!(first.path, SpatialPath::Full);
+        assert!(
+            !first.report.diagnostics.is_empty(),
+            "这条场景本身就该有诊断：{first:?}"
+        );
+        assert!(!state.is_ready(), "有诊断的场景不许进入增量状态");
+        // 只改值：仍然全量（诊断集合可能随之变化，不冒险）。
+        world
+            .insert(child, Transform::from_position(Vec2::new(1.5, 0.0)))
+            .unwrap();
+        let second = propagate_spatial_incremental(&mut world, &mut state, true);
+        assert_eq!(second.path, SpatialPath::Full, "{second:?}");
+    }
+
+    /// docs/54 §10 批 S：`enabled == false` 与 [`propagate_spatial`] 的关闭路径逐字一致，并清掉缓存。
+    #[test]
+    fn disabled_incremental_matches_disabled_full_propagation() {
+        let mut world = World::new();
+        let root = spawn_with(
+            &mut world,
+            None,
+            Transform::from_position(Vec2::new(1.0, 0.0)),
+        );
+        let child = spawn_with(
+            &mut world,
+            Some(root),
+            Transform::from_position(Vec2::new(2.0, 0.0)),
+        );
+        let mut state = SpatialIncremental::default();
+        let _ = propagate_spatial_incremental(&mut world, &mut state, true);
+        assert!(state.is_ready());
+        let outcome = propagate_spatial_incremental(&mut world, &mut state, false);
+        assert_eq!(outcome.report.propagated, 0);
+        assert!(!state.is_ready(), "关闭时缓存必须失效");
+        assert!(world.get::<GlobalTransform>(child).unwrap().is_none());
+        assert!(world.get::<GlobalTransform>(root).unwrap().is_none());
     }
 }

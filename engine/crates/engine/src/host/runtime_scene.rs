@@ -164,6 +164,19 @@ pub struct RuntimeScene {
     spatial_skip_unchanged: bool,
     /// 累计"因为输入没变而跳过传播"的帧数（诊断/验收用）。
     spatial_skipped_frames: u64,
+    /// docs/54 §10 批 S：**逐实体增量**传播的状态（上一帧的输入快照 + 父先序求解顺序）。
+    spatial_incremental: crate::core::hierarchy::SpatialIncremental,
+    /// 增量策略的开关（回滚档：`false` = 指纹变化后一律全量传播，与批 S 之前逐字节一致）。
+    spatial_incremental_enabled: bool,
+    /// 最近一次传播走的路径（`Skipped` / `Full` / `Incremental`）——门与验收读它。
+    last_spatial_path: crate::core::hierarchy::SpatialPath,
+    /// 最近一次传播**真正重算**的实体数（增量路径 = 脏子树大小）。这是"增量真的生效"的证据：
+    /// 只挪一个叶子时它必须是 1，而不是实体总数。
+    last_spatial_recomputed: usize,
+    /// 累计的三条路径调用次数 `[跳过, 全量, 增量]`（取走即清零；一步里传播会被调用多次）。
+    spatial_path_counts: [u64; 3],
+    /// 累计"真正重算的实体数"（取走即清零）——一帧里只挪一个叶子时它应当是 1。
+    spatial_recomputed_total: u64,
     /// 最近一次空间传播的诊断（环/无法无损表达），供宿主与测试查。
     last_spatial_report: SpatialReport,
     /// 本帧是否**真的**在传播世界变换（= 开关打开且场景里存在 `Parent`）。提取路径按它选
@@ -697,6 +710,10 @@ impl RuntimeScene {
         // 一个指纹，**与上一帧相同就整趟跳过**——静态层级场景因此不再付"每实体 3 次组件查找 + 矩阵
         // 组合 + 写入"那三成帧成本。指纹只是"上一帧算出来的世界值还有效吗"的判据，不参与渲染，
         // 也不是第二份真值；任何一位变了（组件增删/实体重生/换父/局部值改动）都会退回全量传播。
+        //
+        // docs/54 §10 批 S：指纹只说"**有东西**变了"，增量路径再说"**哪些**实体变了"，于是只重算
+        // 那些实体的子树。两级判据分工明确：一级是最便宜的哈希（静态帧 0.48 ms/万实体），二级是
+        // 逐实体精确快照比较（只在指纹变化时才付）。回滚档是 `set_spatial_incremental(false)`。
         let fingerprint = self
             .script
             .with_world(crate::core::hierarchy::local_fingerprint);
@@ -707,16 +724,43 @@ impl RuntimeScene {
             && self.spatial_active == active_now
         {
             self.spatial_skipped_frames = self.spatial_skipped_frames.saturating_add(1);
+            self.spatial_path_counts[0] = self.spatial_path_counts[0].saturating_add(1);
+            self.last_spatial_path = crate::core::hierarchy::SpatialPath::Skipped;
+            self.last_spatial_recomputed = 0;
             return;
         }
-        let (report, active) = self.script.with_world_mut(|world| {
-            (
-                crate::core::hierarchy::propagate_spatial(world, active_now),
-                active_now,
-            )
-        });
+        let incremental = self.spatial_incremental_enabled;
+        let (outcome, active) = {
+            // 分字段借用：`script` 与增量状态是两个不相干的字段。
+            let script = &mut self.script;
+            let state = &mut self.spatial_incremental;
+            let outcome = script.with_world_mut(|world| {
+                if incremental {
+                    crate::core::hierarchy::propagate_spatial_incremental(world, state, active_now)
+                } else {
+                    crate::core::hierarchy::SpatialOutcome {
+                        report: crate::core::hierarchy::propagate_spatial(world, active_now),
+                        path: crate::core::hierarchy::SpatialPath::Full,
+                        recomputed: 0,
+                    }
+                }
+            });
+            (outcome, active_now)
+        };
+        let report = outcome.report;
         self.spatial_fingerprint = Some(fingerprint);
         self.spatial_active = active;
+        self.last_spatial_path = outcome.path;
+        self.last_spatial_recomputed = outcome.recomputed;
+        let slot = match outcome.path {
+            crate::core::hierarchy::SpatialPath::Skipped => 0,
+            crate::core::hierarchy::SpatialPath::Full => 1,
+            crate::core::hierarchy::SpatialPath::Incremental => 2,
+        };
+        self.spatial_path_counts[slot] = self.spatial_path_counts[slot].saturating_add(1);
+        self.spatial_recomputed_total = self
+            .spatial_recomputed_total
+            .saturating_add(outcome.recomputed as u64);
         if !report.diagnostics.is_empty() && self.last_spatial_report.diagnostics.is_empty() {
             for diagnostic in &report.diagnostics {
                 tracing::warn!(
@@ -728,6 +772,61 @@ impl RuntimeScene {
             }
         }
         self.last_spatial_report = report;
+    }
+
+    /// docs/54 §10 批 S：**逐实体增量传播**的开关（默认开启）。返回前一个值。
+    ///
+    /// 关掉就是回滚档：指纹变化后一律全量传播（与批 S 之前逐字节一致），世界值不变、只是更慢。
+    /// 两个方向都会清空缓存，因此重新打开后的第一帧必定全量传播一次。
+    pub fn set_spatial_incremental(&mut self, enabled: bool) -> bool {
+        let previous = self.spatial_incremental_enabled;
+        self.spatial_incremental_enabled = enabled;
+        self.spatial_incremental.reset();
+        previous
+    }
+
+    /// 当前是否启用逐实体增量传播。
+    #[must_use]
+    pub const fn spatial_incremental(&self) -> bool {
+        self.spatial_incremental_enabled
+    }
+
+    /// 最近一次传播走的路径（`Skipped` / `Full` / `Incremental`）。
+    #[must_use]
+    pub const fn last_spatial_path(&self) -> crate::core::hierarchy::SpatialPath {
+        self.last_spatial_path
+    }
+
+    /// 最近一次传播**真正重算**的实体数（增量路径 = 脏子树大小）。
+    #[must_use]
+    pub const fn last_spatial_recomputed(&self) -> usize {
+        self.last_spatial_recomputed
+    }
+
+    /// 累计的三条路径调用次数 `[跳过, 全量, 增量]`（不清零）。
+    ///
+    /// 一步里传播会被调用多次（步末 + `spatial_propagate` 帧系统），因此"最后一帧走了哪条路"
+    /// 需要看计数而不是看 `last_spatial_path`。
+    #[must_use]
+    pub const fn spatial_path_counts(&self) -> [u64; 3] {
+        self.spatial_path_counts
+    }
+
+    /// 取走三条路径的调用次数（取走即清零）。
+    pub fn take_spatial_path_counts(&mut self) -> [u64; 3] {
+        std::mem::take(&mut self.spatial_path_counts)
+    }
+
+    /// 累计"真正重算的实体数"（不清零）。
+    #[must_use]
+    pub const fn spatial_recomputed_total(&self) -> u64 {
+        self.spatial_recomputed_total
+    }
+
+    /// 取走"真正重算的实体数"（取走即清零）。**这是逐实体增量的判据**：一帧里只挪一个叶子时，
+    /// 一整个窗口里重算的实体数应该等于帧数，而不是帧数 × 实体数。
+    pub fn take_spatial_recomputed_total(&mut self) -> u64 {
+        std::mem::take(&mut self.spatial_recomputed_total)
     }
 
     /// 当前 2D 相机中心（世界坐标）。编辑器 Scene 视图用它定位设计分辨率包围框，
@@ -1396,6 +1495,12 @@ impl RuntimeScene {
             spatial_fingerprint: None,
             spatial_skip_unchanged: true,
             spatial_skipped_frames: 0,
+            spatial_incremental: crate::core::hierarchy::SpatialIncremental::default(),
+            spatial_incremental_enabled: true,
+            last_spatial_path: crate::core::hierarchy::SpatialPath::Full,
+            last_spatial_recomputed: 0,
+            spatial_path_counts: [0; 3],
+            spatial_recomputed_total: 0,
             last_spatial_report: SpatialReport::default(),
             spatial_active: false,
             world_sprite_depth: false,
@@ -6181,6 +6286,159 @@ mod sdf_tests {
         );
         assert_eq!(child_world_x(&runtime), 25.0);
     }
+
+    /// docs/54 §10 批 S：**逐实体增量**在真实帧里只重算变了的子树。
+    ///
+    /// 判据分四段：① 首帧全量（建立缓存）；② 只挪链尾 ⇒ 路径是增量且**重算数 = 1**（不是实体
+    /// 总数）；③ 挪链根 ⇒ 重算整条链（世界值是沿父链组合的，父一变整棵子树过期）；④ 回滚档
+    /// （`set_spatial_incremental(false)`）每帧全量、世界值一致。
+    #[test]
+    fn incremental_propagation_recomputes_only_changed_subtrees() {
+        let root = crate::core::games_dir().join("examples").join("game_api");
+        if !root.join("scenes/main.scene").is_file() {
+            return;
+        }
+        // 一条 3 层的链 root → middle → leaf，每层局部 x 偏移。
+        let (ring, middle, leaf) = (SceneEntityId(1), SceneEntityId(2), SceneEntityId(3));
+        let mut scene = Scene::new("spatial_incremental");
+        scene.metadata.insert("spatial".into(), "local".into());
+        scene.add_entity(ring, "Rig", None).unwrap();
+        scene.add_entity(middle, "Arm", Some(ring)).unwrap();
+        scene.add_entity(leaf, "Hand", Some(middle)).unwrap();
+        for (id, x) in [(ring, 10.0), (middle, 2.0), (leaf, 1.0)] {
+            scene.entities.get_mut(&id).unwrap().components.insert(
+                "Transform".into(),
+                format!("x={x};y=0;rotation=0;scale_x=1;scale_y=1"),
+            );
+        }
+        let mut runtime =
+            RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("runtime scene");
+        let input = InputSnapshot::default();
+        let world_x = |runtime: &RuntimeScene, entity: SceneEntityId| {
+            runtime
+                .world_transform_2d_of(entity)
+                .unwrap_or_else(|| panic!("entity {entity:?} 没有世界变换"))
+                .position
+                .x
+        };
+        runtime
+            .run_script_steps(1, 1.0 / 60.0, &input)
+            .expect("step");
+        assert_eq!(world_x(&runtime, leaf), 13.0);
+        // ① 首帧没有缓存可比 ⇒ 全量。
+        assert!(
+            runtime.spatial_path_counts()[1] >= 1,
+            "首帧必须全量传播一次（计数 {:?}）",
+            runtime.spatial_path_counts()
+        );
+
+        // ② 只挪链尾：一帧里重算的实体数应当是 1。
+        let moved_leaf = crate::core::spatial_transform::LocalTransform {
+            translation: crate::core::math3d::Vec3::new(5.0, 0.0, 0.0),
+            ..crate::core::spatial_transform::LocalTransform::identity()
+        };
+        runtime
+            .set_local_transform(leaf, moved_leaf)
+            .expect("write leaf local");
+        let _ = runtime.take_spatial_path_counts();
+        let _ = runtime.take_spatial_recomputed_total();
+        runtime
+            .run_script_steps(1, 1.0 / 60.0, &input)
+            .expect("step");
+        assert_eq!(world_x(&runtime, leaf), 17.0, "10 + 2 + 5");
+        assert_eq!(
+            runtime.take_spatial_recomputed_total(),
+            1,
+            "只挪一个叶子必须只重算 1 个实体（步末那次；帧系统那次看到指纹没变会跳过）"
+        );
+        let counts = runtime.take_spatial_path_counts();
+        assert!(counts[2] >= 1, "本步应当走过增量路径（计数 {counts:?}）");
+
+        // ③ 挪链根：整条链都要重算（3 个实体）。
+        let moved_root = crate::core::spatial_transform::LocalTransform {
+            translation: crate::core::math3d::Vec3::new(20.0, 0.0, 0.0),
+            ..crate::core::spatial_transform::LocalTransform::identity()
+        };
+        runtime
+            .set_local_transform(ring, moved_root)
+            .expect("write root local");
+        let _ = runtime.take_spatial_recomputed_total();
+        runtime
+            .run_script_steps(1, 1.0 / 60.0, &input)
+            .expect("step");
+        assert_eq!(world_x(&runtime, leaf), 27.0, "20 + 2 + 5");
+        assert_eq!(
+            runtime.take_spatial_recomputed_total(),
+            3,
+            "挪链根必须重算整条链（父的世界值一变，整棵子树过期）"
+        );
+
+        // ④ 回滚档（`set_spatial_incremental(false)`）：值变化后一律全量，不再走增量。
+        //    （"每帧都传播"是另一个开关 `set_spatial_skip_unchanged` 的语义，批 R 的测试管它。）
+        assert!(
+            runtime.set_spatial_incremental(false),
+            "默认开启（返回前一个值）"
+        );
+        assert!(!runtime.spatial_incremental());
+        let _ = runtime.take_spatial_path_counts();
+        for step in 0..3 {
+            let moved = crate::core::spatial_transform::LocalTransform {
+                translation: crate::core::math3d::Vec3::new(1.0 + step as f32, 0.0, 0.0),
+                ..crate::core::spatial_transform::LocalTransform::identity()
+            };
+            runtime
+                .set_local_transform(leaf, moved)
+                .expect("write leaf local");
+            runtime
+                .run_script_steps(1, 1.0 / 60.0, &input)
+                .expect("step");
+        }
+        let counts = runtime.take_spatial_path_counts();
+        assert_eq!(counts[2], 0, "回滚档下不许走增量路径（计数 {counts:?}）");
+        assert!(
+            counts[1] >= 3,
+            "回滚档下每次值变化都要全量（计数 {counts:?}）"
+        );
+        assert_eq!(world_x(&runtime, leaf), 25.0, "20 + 2 + 3");
+        // 重新打开：缓存被清，因此**下一次值变化**必须全量一次（此后又能走增量）。
+        assert!(!runtime.set_spatial_incremental(true));
+        let _ = runtime.take_spatial_path_counts();
+        runtime
+            .set_local_transform(leaf, moved_leaf)
+            .expect("write leaf local");
+        runtime
+            .run_script_steps(1, 1.0 / 60.0, &input)
+            .expect("step");
+        assert_eq!(world_x(&runtime, leaf), 27.0, "20 + 2 + 5");
+        let counts = runtime.spatial_path_counts();
+        assert!(
+            counts[1] >= 1,
+            "重开后的第一次值变化必须全量（计数 {counts:?}）"
+        );
+        assert_eq!(
+            counts[2], 0,
+            "缓存刚建好，这一步还走不了增量（计数 {counts:?}）"
+        );
+        // 再改一次值 ⇒ 走增量，且只重算那一个叶子。
+        let moved_again = crate::core::spatial_transform::LocalTransform {
+            translation: crate::core::math3d::Vec3::new(6.0, 0.0, 0.0),
+            ..crate::core::spatial_transform::LocalTransform::identity()
+        };
+        runtime
+            .set_local_transform(leaf, moved_again)
+            .expect("write leaf local");
+        let _ = runtime.take_spatial_recomputed_total();
+        runtime
+            .run_script_steps(1, 1.0 / 60.0, &input)
+            .expect("step");
+        assert_eq!(world_x(&runtime, leaf), 28.0, "20 + 2 + 6");
+        assert_eq!(
+            runtime.take_spatial_recomputed_total(),
+            1,
+            "缓存建好之后的第二次值变化又只重算那个叶子"
+        );
+    }
+
     /// docs/54 §4.1：**文档侧与运行时侧的局部变换必须是同一份规范表示**。
     ///
     /// 这条是"运行时只有一份权威 `LocalTransform`"在**表示层**的可执行判据：对一个真实场景，逐实体

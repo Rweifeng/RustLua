@@ -641,10 +641,38 @@ if ($Benchmarks) {
                     $phase, $stair.entities, $moving.spatial_propagate_us, $stair.spatial_propagate_us)
             }
         }
+        # docs/54 §10 批 S：**逐实体增量**的判据（都是确定量，不受跨机速度影响）。
+        # - 静态相位不许重算任何实体（整趟跳过 ⇒ 0）；
+        # - 只挪一个叶子时重算数必须**恰好是 1**：这是"增量真的生效"的核心证据——批 R 时代它是
+        #   实体总数（"单叶动与全动同价"就是这么量出来的）；
+        # - 挪动所有链根时必须重算到**几乎每个实体**（父的世界值一变，整棵子树过期；少算就是错）。
+        if ([int]$stair.spatial_recomputed_p50 -ne 0) {
+            throw ("hierarchy static phase recomputed entities: expected 0, got {0} (entities={1})" -f `
+                $stair.spatial_recomputed_p50, $stair.entities)
+        }
+        if ([int]$stair.moving_one.spatial_recomputed_p50 -ne 1) {
+            throw ("hierarchy single-leaf phase must recompute exactly 1 entity (entities={0}, got {1}, " +
+                "incremental_calls={2})" -f $stair.entities, $stair.moving_one.spatial_recomputed_p50, `
+                $stair.moving_one.spatial_incremental_calls_p50)
+        }
+        if ([int]$stair.moving_one.spatial_incremental_calls_p50 -le 0) {
+            throw ("hierarchy single-leaf phase never took the incremental path (entities={0})" -f `
+                $stair.entities)
+        }
+        if ([int]$stair.moving.spatial_recomputed_p50 -lt ([int]$stair.entities / 2)) {
+            throw ("hierarchy all-roots phase recomputed too few entities (entities={0}, got {1})" -f `
+                $stair.entities, $stair.moving.spatial_recomputed_p50)
+        }
+        # 时间比值**同进程内**可比：单叶动至少要比全动省一半（批 S 实测 2.8×/3.0×，留约四成余量）。
+        if ([int]$stair.moving_one.spatial_propagate_us * 2 -gt [int]$stair.moving.spatial_propagate_us) {
+            throw ("hierarchy incremental path did not pay off for entities={0}: single-leaf {1} us vs " +
+                "all-roots {2} us" -f $stair.entities, $stair.moving_one.spatial_propagate_us, `
+                $stair.moving.spatial_propagate_us)
+        }
     }
-    # docs/54 §10 批 Q/R：传播路径的**每帧分配不许随实体数增长**，三个相位都算。修前 1 万实体是
-    # 4.5 万次/帧（`BTreeSet`/`BTreeMap` 逐实体树节点），批 Q 修成 138/155，批 R 的静态档实测
-    # 75/80（运动档 95/104）；门槛留约四倍余量。分配次数是确定量，不受跨机速度影响。
+    # docs/54 §10 批 Q/R/S：传播路径的**每帧分配不许随实体数增长**，三个相位都算。修前 1 万实体是
+    # 4.5 万次/帧（`BTreeSet`/`BTreeMap` 逐实体树节点），批 Q 修成 138/155，批 R 静态档 75/80，
+    # 批 S 三档实测 75/87/87 与 80/96/96；门槛留约四倍余量。分配次数是确定量，不受跨机速度影响。
     $hierarchyAlloc = @($sceneFrameReport.hierarchy_stairs | ForEach-Object { [int]$_.alloc_count_p50 })
     $hierarchyEntities = @($sceneFrameReport.hierarchy_stairs | ForEach-Object { [int]$_.entities })
     $hierarchyPhaseAlloc = @($sceneFrameReport.hierarchy_stairs | ForEach-Object {

@@ -464,6 +464,10 @@ struct HierarchyPhase {
     propagate_us: Vec<u64>,
     allocs: Vec<u64>,
     skips: Vec<u64>,
+    /// 每帧"真正重算的实体数"（批 S 的逐实体增量判据）。
+    recomputed: Vec<u64>,
+    /// 每帧走过增量路径的传播调用次数（一步里传播会被调用多次）。
+    incremental_calls: Vec<u64>,
     vertices: usize,
 }
 
@@ -488,11 +492,13 @@ impl HierarchyPhase {
         };
         format!(
             "\"samples\":{},\"frame_us\":{},\"spatial_propagate_us\":{propagate_p50},\
-             \"spatial_share_pct\":{share:.3},\"spatial_skips_p50\":{},\"alloc_count_p50\":{},\
-             \"vertices\":{}",
+             \"spatial_share_pct\":{share:.3},\"spatial_skips_p50\":{},\"spatial_recomputed_p50\":{},\
+             \"spatial_incremental_calls_p50\":{},\"alloc_count_p50\":{},\"vertices\":{}",
             self.frames.len(),
             stats_json(&summarize(self.frames.clone())),
             median_u64(&self.skips),
+            median_u64(&self.recomputed),
+            median_u64(&self.incremental_calls),
             median_u64(&self.allocs),
             self.vertices,
         )
@@ -512,6 +518,8 @@ fn sample_hierarchy_phase(
         propagate_us: Vec::with_capacity(cycles),
         allocs: Vec::with_capacity(cycles),
         skips: Vec::with_capacity(cycles),
+        recomputed: Vec::with_capacity(cycles),
+        incremental_calls: Vec::with_capacity(cycles),
         vertices: 0,
     };
     for cycle in 0..cycles {
@@ -519,11 +527,19 @@ fn sample_hierarchy_phase(
         let sample = run_frame(runtime, input);
         phase.frames.push(sample.elapsed);
         phase.allocs.push(sample.alloc_count);
-        // docs/54 §10 批 R：取走"因为输入没变而跳过传播"的次数。静态相位里它应当非零，否则
-        // "跳过"就是没生效（世界值仍对，但成本没省）；运动相位里它必须为 0，否则指纹把"变了"
-        // 误判成"没变"，世界值会悄悄过期。
+        // docs/54 §10 批 R：取走"因为输入没变而跳过传播"的次数。静态相位里它必须非零，否则
+        // "跳过"就是没生效（世界值仍对，但成本没省）；运动相位里它也有 2（一帧传播被调用三次，
+        // 第一次吃掉改动、后两次看到的是"已经算过"的新指纹）——所以门的判据不是"运动相位为 0"，
+        // 而是"运动相位的传播耗时严格大于静态相位"（指纹不许把真改动吞掉）。
         phase.skips.push(runtime.take_spatial_skipped_frames());
-        // 每帧的调度报告里 `spatial_propagate` 那一格就是传播本身（帧系统，含父先序传播）。
+        // docs/54 §10 批 S：**真正重算的实体数**。这是"逐实体增量生效"的判据——只挪一个叶子时
+        // 它必须是 1，而不是实体总数；全动时它必须≈实体总数（该算的一个都不能少）。
+        phase
+            .recomputed
+            .push(runtime.take_spatial_recomputed_total());
+        phase
+            .incremental_calls
+            .push(runtime.take_spatial_path_counts()[2]);
         phase.propagate_us.push(
             runtime
                 .last_schedule_report()
