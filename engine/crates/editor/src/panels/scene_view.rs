@@ -5,6 +5,7 @@ use crate::geometry::{
     parse_transform, polygon_intersects_rect, rotated_contains, rotated_corners,
 };
 use crate::panels::tilemap_tools::{CellRect, TileFill, copy_region, fill_rect, paste_region};
+use crate::scene_interaction::{InteractionEvent, ToolPhase};
 use crate::util::icon_toggle;
 use crate::util::strip_verbatim_prefix;
 use crate::{
@@ -216,6 +217,61 @@ impl EditorApp {
                 egui::FontId::monospace(11.0),
                 egui::Color32::from_rgb(170, 220, 240),
             );
+            // Editor Profiler（docs/55 P0）：帧分布 + 最热面板 + 队列/缓存计数。
+            let profiler = self.profiler.report();
+            let hottest = profiler
+                .panels
+                .iter()
+                .max_by(|left, right| left.p95_ms.total_cmp(&right.p95_ms))
+                .map(|panel| format!("{} {:.1}ms", panel.name, panel.p95_ms))
+                .unwrap_or_else(|| "n/a".to_owned());
+            let hud_color = if profiler.frame_budget_exceeded() {
+                egui::Color32::from_rgb(240, 180, 90)
+            } else {
+                egui::Color32::from_rgb(170, 220, 240)
+            };
+            painter.text(
+                rect.right_top() + egui::vec2(-12.0, 26.0),
+                egui::Align2::RIGHT_TOP,
+                format!(
+                    "frame {:.1}/{:.1}ms p50/p95 (budget {:.1}) · worst {hottest} · over {}/{}",
+                    profiler.frame_p50_ms,
+                    profiler.frame_p95_ms,
+                    profiler.frame_budget_ms,
+                    profiler.over_budget_frames,
+                    profiler.frame_samples
+                ),
+                egui::FontId::monospace(11.0),
+                hud_color,
+            );
+            painter.text(
+                rect.right_top() + egui::vec2(-12.0, 40.0),
+                egui::Align2::RIGHT_TOP,
+                format!(
+                    "undo {} (dropped {}) · rows {} · entities {} · resources {} · pending import {} · scans {}",
+                    self.history.undo_len(),
+                    self.history.dropped_entries(),
+                    self.hierarchy_visible_cache.len(),
+                    profiler
+                        .gauges
+                        .iter()
+                        .find(|(name, _)| name == "scene_entities")
+                        .map_or(0.0, |(_, value)| *value),
+                    profiler
+                        .gauges
+                        .iter()
+                        .find(|(name, _)| name == "resource_entries")
+                        .map_or(0.0, |(_, value)| *value),
+                    profiler
+                        .gauges
+                        .iter()
+                        .find(|(name, _)| name == "resource_pending_imports")
+                        .map_or(0.0, |(_, value)| *value),
+                    self.profiler.counter("resource_refresh_applied"),
+                ),
+                egui::FontId::monospace(11.0),
+                egui::Color32::from_rgb(150, 200, 170),
+            );
         }
         let filter = self.hierarchy_filter.to_lowercase();
         let entities = self.collect_scene_2d_entities(rect, &filter, scale);
@@ -349,66 +405,43 @@ impl EditorApp {
         // Tile 网格之上、实体选中框之下，与既有 UI 布局/网格共用同一坐标换算。
         self.draw_domain_overlay(&painter, rect, scale);
         if let Some(context) = tilemap_context.as_ref()
-            && self.scene_tool == SceneTool::TilePaint
+            && self.scene_tool() == SceneTool::TilePaint
         {
+            // E11：TilePaint 同样走交互状态机（按下 → `Painting`，笔触 → `TileStroke`，
+            // 松手 → `Idle`），这样"连续绘制"的相位也有单一事实源。
+            if let Some(pos) = pointer
+                && response.drag_started_by(egui::PointerButton::Primary)
+            {
+                self.interaction.handle(InteractionEvent::PointerDown {
+                    pos: [pos.x, pos.y],
+                    hit: true,
+                });
+            }
             self.handle_tilemap_paint(&response, rect, context);
+            if response.drag_stopped_by(egui::PointerButton::Primary) {
+                self.interaction.handle(InteractionEvent::PointerUp {
+                    pos: pointer.map_or([0.0, 0.0], |pos| [pos.x, pos.y]),
+                });
+            }
             self.draw_scene_tool_panel(ui, rect);
             return;
         }
         if response.drag_started_by(egui::PointerButton::Primary)
             && let Some(pos) = pointer
         {
-            let hit = pick_scene_2d_entity(&entities, pos, &self.scene_state.locked);
-            if let Some(hit_id) = hit {
-                let additive = ui.input(|input| input.modifiers.command || input.modifiers.ctrl);
-                let source = SelectionSource::SceneView2D;
-                if additive {
-                    self.selection.add(hit_id, source);
-                } else if !self.selection.contains(hit_id) {
-                    self.selection.set_single(hit_id, source);
-                }
-                self.sync_inspector(hit_id);
-                let ids: Vec<_> = self
-                    .selection
-                    .ids()
-                    .into_iter()
-                    .filter(|selected| !self.scene_state.locked.contains(selected))
-                    .collect();
-                let initial = entities
-                    .iter()
-                    .filter(|entity| ids.contains(&entity.id))
-                    .map(|entity| (entity.id, entity.transform))
-                    .collect();
-                let ui_initial = entities
-                    .iter()
-                    .filter(|entity| ids.contains(&entity.id))
-                    .filter_map(|entity| {
-                        entity.ui.as_ref().map(|ui| {
-                            (
-                                entity.id,
-                                UiDragInitial {
-                                    offsets: ui.layout.offsets,
-                                },
-                            )
-                        })
-                    })
-                    .collect();
-                self.scene_state.drag = Some(SceneDrag {
-                    ids,
-                    start: pos,
-                    initial,
-                    ui_initial,
-                });
-            } else {
-                self.scene_state.box_select_start = Some(pos);
-                if !ui.input(|input| input.modifiers.command || input.modifiers.ctrl) {
-                    self.selection.clear(SelectionSource::SceneView2D);
-                }
-            }
+            let additive = ui.input(|input| input.modifiers.command || input.modifiers.ctrl);
+            self.scene_pointer_down(pos, &entities, additive);
         }
-        if let (Some(start), Some(current)) = (self.scene_state.box_select_start, pointer)
+        if response.dragged_by(egui::PointerButton::Primary)
+            && let Some(current) = pointer
+        {
+            self.scene_pointer_drag(current);
+        }
+        if let (ToolPhase::Marquee { start, .. }, Some(current)) =
+            (self.interaction.phase(), pointer)
             && response.dragged_by(egui::PointerButton::Primary)
         {
+            let start = egui::pos2(start[0], start[1]);
             let selection_rect = egui::Rect::from_two_pos(start, current);
             painter.rect_stroke(
                 selection_rect,
@@ -468,7 +501,7 @@ impl EditorApp {
                     initial,
                     pivot,
                     delta,
-                    self.scene_tool,
+                    self.scene_tool(),
                     self.snap_enabled,
                     self.snap_step,
                     scale,
@@ -485,12 +518,98 @@ impl EditorApp {
             self.apply_drag_preview_to_runtime();
         }
         if response.drag_stopped_by(egui::PointerButton::Primary) {
-            self.finish_scene_drag();
-            self.scene_state.drag = None;
-            self.scene_state.box_select_start = None;
+            self.scene_pointer_up(pointer.unwrap_or(egui::Pos2::ZERO));
         }
         // 工具小面板（Select/Move/Rotate/Scale）置于场景右上角。
         self.draw_scene_tool_panel(ui, rect);
+    }
+
+    // ---- E11：2D 交互的三个入口（从 `draw_scene_2d` 抽出来，便于脱离绘制单测） ----
+    //
+    // docs/55 阶段 2 的验收条款之一是"绘制与交互可独立测试"。把"指针按下/拖动/释放"
+    // 抽成方法后，交互决策可以在**没有 egui 帧、没有 GPU** 的情况下直接调用与断言；
+    // 绘制函数只负责把输入喂进来、并把相位画出来。
+
+    /// 指针按下：喂状态机 → 按相位决定"开始拖动"（命中实体）还是"开始框选"（空白处）。
+    ///
+    /// 返回按下后的相位，便于调用方/测试直接断言。
+    pub(crate) fn scene_pointer_down(
+        &mut self,
+        pos: egui::Pos2,
+        entities: &[SceneBoxedEntity],
+        additive: bool,
+    ) -> ToolPhase {
+        let hit = pick_scene_2d_entity(entities, pos, &self.scene_state.locked);
+        // E11：把指针事件交给交互状态机，由它决定阶段（拖动 / 框选）。
+        self.interaction.handle(InteractionEvent::PointerDown {
+            pos: [pos.x, pos.y],
+            hit: hit.is_some(),
+        });
+        // 阶段语义由状态机给出：`affects_selection()` = 框选（起点在阶段里），
+        // 否则就是拖动（按在实体上）。这里不再自己判断"有没有 box_select_start"。
+        if self.interaction.phase().affects_selection() {
+            if !additive {
+                self.selection.clear(SelectionSource::SceneView2D);
+            }
+        } else if let Some(hit_id) = hit {
+            let source = SelectionSource::SceneView2D;
+            if additive {
+                self.selection.add(hit_id, source);
+            } else if !self.selection.contains(hit_id) {
+                self.selection.set_single(hit_id, source);
+            }
+            self.sync_inspector(hit_id);
+            let ids: Vec<_> = self
+                .selection
+                .ids()
+                .into_iter()
+                .filter(|selected| !self.scene_state.locked.contains(selected))
+                .collect();
+            let initial = entities
+                .iter()
+                .filter(|entity| ids.contains(&entity.id))
+                .map(|entity| (entity.id, entity.transform))
+                .collect();
+            let ui_initial = entities
+                .iter()
+                .filter(|entity| ids.contains(&entity.id))
+                .filter_map(|entity| {
+                    entity.ui.as_ref().map(|ui| {
+                        (
+                            entity.id,
+                            UiDragInitial {
+                                offsets: ui.layout.offsets,
+                            },
+                        )
+                    })
+                })
+                .collect();
+            self.scene_state.drag = Some(SceneDrag {
+                ids,
+                start: pos,
+                initial,
+                ui_initial,
+            });
+        }
+        self.interaction.phase()
+    }
+
+    /// 指针拖动：推进状态机（相位里的 `current` 就是框选矩形的另一端）。
+    pub(crate) fn scene_pointer_drag(&mut self, pos: egui::Pos2) -> ToolPhase {
+        self.interaction.handle(InteractionEvent::PointerDrag {
+            pos: [pos.x, pos.y],
+        });
+        self.interaction.phase()
+    }
+
+    /// 指针释放：提交拖动（一条 Undo）并让状态机回到 Idle。
+    pub(crate) fn scene_pointer_up(&mut self, pos: egui::Pos2) -> ToolPhase {
+        self.finish_scene_drag();
+        self.scene_state.drag = None;
+        self.interaction.handle(InteractionEvent::PointerUp {
+            pos: [pos.x, pos.y],
+        });
+        self.interaction.phase()
     }
 
     /// 收集 2D 场景视图要绘制的实体包围框（字段级借用，避免与 &mut scene_runtime
@@ -663,7 +782,8 @@ impl EditorApp {
         entities
     }
 
-    fn set_scene_view_diagnostic(&mut self, message: impl Into<String>) {
+    /// 诊断提示（`pub(crate)`：拖拽/框选的提交层在 `crate::scene_drag` 里也要报诊断）。
+    pub(crate) fn set_scene_view_diagnostic(&mut self, message: impl Into<String>) {
         let message = message.into();
         if self.preview_diagnostic.as_deref() == Some(message.as_str()) {
             return;
@@ -979,7 +1099,7 @@ impl EditorApp {
             .iter()
             .find(|(id, _, _, _)| self.selection.contains(*id));
         if let Some((id, _, transform, _)) = selected_entity {
-            let tool = self.scene_tool;
+            let tool = self.scene_tool();
             if matches!(
                 tool,
                 SceneTool::Move | SceneTool::Select | SceneTool::Rotate | SceneTool::Scale
@@ -1054,6 +1174,14 @@ impl EditorApp {
                     SceneTool::TilePaint => {}
                 }
                 if let Some(axis) = axis {
+                    // E11：Gizmo 抓取也走同一个交互状态机（命中手柄 = 拖动开始）。
+                    // 相机导航（未命中手柄的拖动）**不是**文档交互，因此不喂事件。
+                    if let Some(position) = pointer {
+                        self.interaction.handle(InteractionEvent::PointerDown {
+                            pos: [position.x, position.y],
+                            hit: true,
+                        });
+                    }
                     self.scene_state.gizmo_drag = Some(GizmoDrag {
                         id: *id,
                         axis,
@@ -1070,6 +1198,8 @@ impl EditorApp {
                 if response.dragged_by(egui::PointerButton::Primary)
                     && let (Some(drag), Some(pos)) = (self.scene_state.gizmo_drag.as_ref(), pointer)
                 {
+                    self.interaction
+                        .handle(InteractionEvent::PointerDrag { pos: [pos.x, pos.y] });
                     let delta = pos - drag.start;
                     let mut next = drag.initial;
                     match tool {
@@ -1142,6 +1272,9 @@ impl EditorApp {
                 if response.drag_stopped_by(egui::PointerButton::Primary) {
                     self.commit_gizmo_drag3d();
                     self.scene_state.gizmo_drag = None;
+                    self.interaction.handle(InteractionEvent::PointerUp {
+                        pos: pointer.map_or([0.0, 0.0], |pos| [pos.x, pos.y]),
+                    });
                 }
             }
         }
@@ -1167,86 +1300,54 @@ impl EditorApp {
         editor::document_space::world_transform_3d(&scene.scene, id)
     }
 
-    /// 本帧 2D 拖拽预览（`scene_state.preview` 里存的是**世界**值）换算成**局部**值。
-    ///
-    /// 运行时预览与文档写回共用这一条换算，因此"看到的"和"写进去的"不会再各算一套；
-    /// 父与子同批移动时也由 `locals_for_world_targets` 的父先序处理，不会二次叠加。
-    fn scene_drag_locals(
-        &self,
-    ) -> std::collections::BTreeMap<
-        engine::core::scene::SceneEntityId,
-        engine::core::spatial_transform::LocalTransform,
-    > {
-        let Some(scene) = self.document.current_scene.as_ref() else {
-            return std::collections::BTreeMap::new();
-        };
-        let mut targets = std::collections::BTreeMap::new();
-        for (id, fields) in &self.scene_state.preview {
-            let transform = engine::core::transform::Transform {
-                position: Vec2::new(fields.position_x, fields.position_y),
-                rotation: fields.rotation,
-                scale: Vec2::new(fields.scale_x, fields.scale_y),
-            };
-            if let Ok(local) = engine::core::spatial_transform::LocalTransform::from_2d(transform) {
-                targets.insert(*id, local);
-            }
-        }
-        editor::document_space::locals_for_world_targets(&scene.scene, &targets)
-    }
+    // 本帧 2D 拖拽预览（`scene_state.preview` 里存的是**世界**值）换算成**局部**值：
+    // 实现搬到 `crate::scene_drag::scene_drag_locals`（运行时预览与文档写回共用同一条换算，
+    // 因此"看到的"和"写进去的"不会再各算一套；父与子同批移动时由
+    // `locals_for_world_targets` 的父先序处理，不会二次叠加）。
 
     /// Scene 视图右上角的小工具面板：选择/移动/旋转/缩放。
+    ///
+    /// E11：面板只**收集**用户意图，最后一次性交给状态机（`set_scene_tool`），
+    /// 因此这里不再有 5 处 `self.scene_tool = …` 的散落赋值。
     fn draw_scene_tool_panel(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
         let width = 280.0;
         let tools_rect = egui::Rect::from_min_size(
             egui::pos2(rect.right() - width - 4.0, rect.top() + 4.0),
             egui::vec2(width, 26.0),
         );
+        let tool = self.scene_tool();
+        let mut requested: Option<SceneTool> = None;
         ui.scope_builder(egui::UiBuilder::new().max_rect(tools_rect), |ui| {
             ui.horizontal(|ui| {
                 if icon_toggle(
                     ui,
-                    self.scene_tool == SceneTool::Select,
+                    tool == SceneTool::Select,
                     "选择",
                     "选择（Q）",
                 )
                 .clicked()
                 {
-                    self.scene_tool = SceneTool::Select;
+                    requested = Some(SceneTool::Select);
                 }
-                if icon_toggle(ui, self.scene_tool == SceneTool::Move, "移动", "移动（W）")
-                    .clicked()
-                {
-                    self.scene_tool = SceneTool::Move;
+                if icon_toggle(ui, tool == SceneTool::Move, "移动", "移动（W）").clicked() {
+                    requested = Some(SceneTool::Move);
                 }
-                if icon_toggle(
-                    ui,
-                    self.scene_tool == SceneTool::Rotate,
-                    "旋转",
-                    "旋转（E）",
-                )
-                .clicked()
-                {
-                    self.scene_tool = SceneTool::Rotate;
+                if icon_toggle(ui, tool == SceneTool::Rotate, "旋转", "旋转（E）").clicked() {
+                    requested = Some(SceneTool::Rotate);
                 }
-                if icon_toggle(ui, self.scene_tool == SceneTool::Scale, "缩放", "缩放（R）")
-                    .clicked()
-                {
-                    self.scene_tool = SceneTool::Scale;
+                if icon_toggle(ui, tool == SceneTool::Scale, "缩放", "缩放（R）").clicked() {
+                    requested = Some(SceneTool::Scale);
                 }
-                if icon_toggle(
-                    ui,
-                    self.scene_tool == SceneTool::TilePaint,
-                    "▦",
-                    "Tile 画笔",
-                )
-                .clicked()
-                {
-                    self.scene_tool = SceneTool::TilePaint;
+                if icon_toggle(ui, tool == SceneTool::TilePaint, "▦", "Tile 画笔").clicked() {
+                    requested = Some(SceneTool::TilePaint);
                 }
             });
         });
+        if let Some(tool) = requested {
+            self.set_scene_tool(tool);
+        }
         // M19-03 Tile 生产工具第二行：编辑模式 + 区域剪贴板状态（仅 TilePaint 工具下显示）。
-        if self.scene_tool != SceneTool::TilePaint {
+        if self.scene_tool() != SceneTool::TilePaint {
             return;
         }
         let tile_tools_rect = egui::Rect::from_min_size(
@@ -1463,6 +1564,10 @@ impl EditorApp {
                         && let Some((x, y)) = pointer.and_then(|pos| cell_at(self, pos))
                         && self.scene_state.tile_paint_last_cell != Some((x, y, erase))
                     {
+                        // E11：每个新格 = 一次笔触（`Painting` 相位下的 `TileStroke`）。
+                        self.interaction.handle(InteractionEvent::TileStroke {
+                            cell: [x as i32, y as i32],
+                        });
                         self.apply_tile_paint_cell(x, y, erase);
                         self.scene_state.tile_paint_last_cell = Some((x, y, erase));
                     }
@@ -1648,187 +1753,16 @@ impl EditorApp {
         }
     }
 
-    /// Drag preview only mutates the live editor runtime. No revision bump, no
-    /// history, no disk write; `finish_scene_drag` commits the document once.
-    fn apply_drag_preview_to_runtime(&mut self) {
-        if self.is_playing() {
-            self.scene_state.preview.clear();
-            self.scene_state.preview_ui.clear();
-            return;
-        }
-        // A freshly opened scene may not have built its runtime yet. Build it
-        // from the drag-start document before applying the first preview.
-        self.ensure_scene_runtime();
-        if self.scene_runtime.is_none()
-            || (self.scene_state.preview.is_empty() && self.scene_state.preview_ui.is_empty())
-        {
-            return;
-        }
-        let preview_ui = self.scene_state.preview_ui.clone();
-        // docs/54 §8-⑦：预览值是世界变换，但运行时存的是**局部**变换——换算后再推进去，
-        // 否则父链下的实体在拖动中会跳到错误的位置（拖完再"弹一下"）。
-        let locals = self.scene_drag_locals();
-        if let Some(runtime) = self.scene_runtime.as_mut() {
-            for (id, local) in &locals {
-                runtime.set_scene_entity_transform_preview(
-                    *id,
-                    Vec2::new(local.translation.x, local.translation.y),
-                    2.0 * local.rotation.z.atan2(local.rotation.w),
-                    Vec2::new(local.scale.x, local.scale.y),
-                );
-            }
-            for (id, offsets) in preview_ui {
-                runtime.set_scene_entity_ui_layout_preview(id, offsets);
-            }
-        }
-    }
-
-    /// E08：拖动松手后把最新 preview 写入编辑文档并 mark_dirty。首次调用时若尚未
-    /// 处于事务中，自动 begin（事务 before = 拖动前文档快照，保证 undo 能一次性
-    /// 回到拖动前）。若拖动没有净变化，commit 会被 diff 判定为空操作。
-    fn apply_drag_preview_to_document(&mut self) {
-        if self.is_playing() {
-            self.scene_state.preview.clear();
-            self.scene_state.preview_ui.clear();
-            return;
-        }
-        let preview = std::mem::take(&mut self.scene_state.preview);
-        let preview_ui = std::mem::take(&mut self.scene_state.preview_ui);
-        let first = preview
-            .keys()
-            .next()
-            .copied()
-            .or_else(|| preview_ui.keys().next().copied());
-        let Some(first) = first else {
-            return;
-        };
-        // 写入文档前开启事务（幂等：已开启则直接沿用）。
-        self.begin_edit_transaction(
-            "Scene Transform",
-            CommandKind::Transform(first),
-            Some(first),
-        );
-        // 世界 → 局部：必须在取 `current_scene` 的**可变**借用之前算好（换算只读文档）。
-        let locals = self.scene_drag_locals();
-        let Some(scene) = self.document.current_scene.as_mut() else {
-            return;
-        };
-        for (id, transform) in &preview {
-            // docs/54 §8-⑦：`preview` 是**世界**变换，文档里的 `Transform` 是**局部**值；
-            // 直接用世界值覆盖会让父链下的实体拖完跳一下（父的变换被叠加两次）。
-            let Some(local) = locals.get(id).copied() else {
-                // 无法无损反解（剪切/镜像/退化）：拒绝写回，不静默近似。
-                continue;
-            };
-            let encoded = editor::document_space::encode_transform_2d(local);
-            if let Some(entity) = scene.scene.entities.get_mut(id) {
-                entity.components.insert("Transform".to_owned(), encoded);
-            }
-            let _ = transform;
-        }
-        for (id, position) in &preview_ui {
-            if let Some(entity) = scene.scene.entities.get_mut(id) {
-                set_ui_component_layout(entity, *position);
-            }
-        }
-        scene.mark_dirty();
-    }
-
-    /// E08：2D 拖拽松手 —— 先落最后一帧预览，再提交活动事务（单条 Undo +
-    /// 一次保存 + Inspector 同步）。无净变化时为空操作提交，不保存不写历史。
-    fn finish_scene_drag(&mut self) {
-        if self.is_playing() {
-            self.scene_state.preview.clear();
-            self.scene_state.preview_ui.clear();
-            return;
-        }
-        self.apply_drag_preview_to_document();
-        let first = self
-            .scene_state
-            .drag
-            .as_ref()
-            .and_then(|drag| drag.ids.first())
-            .copied();
-        if self.is_edit_transaction_active() && self.commit_edit_transaction() {
-            self.save_scene();
-            if let Some(first) = first {
-                self.sync_inspector(first);
-            }
-        }
-    }
-
-    /// 提交 3D 平移 Gizmo 拖拽：只改 Transform3D 的 position，保留旋转/缩放。
-    ///
-    /// docs/54 §8-⑦：Gizmo 的初值与目标都是**世界**变换，而文档里存的是**局部**值。这里按父链
-    /// 反解后再写回，因此父链下的实体不再"拖完跳一下"；反解不了（剪切/镜像/退化）时**拒绝写回**
-    /// 并给出提示，不静默近似。
-    fn commit_gizmo_drag3d(&mut self) {
-        if self.is_playing() {
-            self.scene_state.preview3d_transform.clear();
-            return;
-        }
-        let preview = std::mem::take(&mut self.scene_state.preview3d_transform);
-        let Some((id, transform)) = preview
-            .iter()
-            .next()
-            .map(|(id, transform)| (*id, *transform))
-        else {
-            return;
-        };
-        enum Outcome {
-            Written,
-            Rejected,
-            Unchanged,
-        }
-        let outcome = {
-            let Some(scene) = self.document.current_scene.as_mut() else {
-                return;
-            };
-            let mut targets = std::collections::BTreeMap::new();
-            targets.insert(
-                id,
-                engine::core::spatial_transform::LocalTransform::from_3d(transform),
-            );
-            match editor::document_space::locals_for_world_targets(&scene.scene, &targets)
-                .get(&id)
-                .copied()
-                .map(editor::document_space::encode_transform_3d)
-            {
-                Some(encoded) => {
-                    let changed = self.history.execute(
-                        scene,
-                        "3D Transform",
-                        CommandKind::Transform3D(id),
-                        |scene| {
-                            if let Some(entity) = scene.scene.entities.get_mut(&id) {
-                                entity
-                                    .components
-                                    .insert("Transform3D".to_owned(), encoded.clone());
-                            }
-                            scene.mark_dirty();
-                            Ok::<(), ()>(())
-                        },
-                    );
-                    if matches!(changed, Ok(true)) {
-                        Outcome::Written
-                    } else {
-                        Outcome::Unchanged
-                    }
-                }
-                None => Outcome::Rejected,
-            }
-        };
-        match outcome {
-            Outcome::Written => {
-                self.save_scene();
-                self.sync_inspector(id);
-            }
-            Outcome::Rejected => self.set_scene_view_diagnostic(
-                "该实体的世界变换无法在父链下无损反解（剪切/镜像/退化），已拒绝写回".to_owned(),
-            ),
-            Outcome::Unchanged => {}
-        }
-    }
+    // 拖拽/框选/Gizmo 的**提交层**（预览 → 事务 → 一条 Undo → 保存）已搬到
+    // `crate::scene_drag`：
+    //
+    // - `apply_drag_preview_to_runtime`：拖动中只推进运行时 ECS；
+    // - `apply_drag_preview_to_document` / `finish_scene_drag`：松手时落文档并提交事务；
+    // - `commit_gizmo_drag3d`：3D Gizmo 的世界 → 局部反解后写回；
+    // - `scene_drag_locals`：世界变换 → 文档局部值的换算。
+    //
+    // 这样面板文件里不再出现 `history.execute` / `current_scene.as_mut()`，
+    // "View 只发 action"由 `panels/architecture_tests.rs` 的棘轮守住。
 
     /// 项目根变化时销毁携带旧 root 的 GPU 渲染器。Renderer 会把相对纹理路径
     /// 解析成 `root + path`；跨项目复用旧实例会让 Scene View 加载上一个项目的
@@ -2066,7 +2000,9 @@ impl EditorApp {
 
     /// 确保编辑场景的 2D 运行时存在，且反映当前文档 revision 的场景内容。
     /// 场景编辑（revision 变化）时重建运行时，让背景随编辑更新。
-    fn ensure_scene_runtime(&mut self) {
+    ///
+    /// `pub(crate)`：拖动预览的提交层（`crate::scene_drag`）在推进第一帧预览前也要它。
+    pub(crate) fn ensure_scene_runtime(&mut self) {
         let revision = self.document.current_scene.as_ref().map(|doc| doc.revision);
         // 已按此 revision 尝试过（无论成功失败）则不再重建，避免持久失败时每帧重试。
         if self.scene_runtime_revision == revision {
@@ -2763,7 +2699,7 @@ fn entity_2d_screen_box(
 }
 
 /// 2D 场景视图里一个实体的包围框记录（选中轮廓 / 命中 / 框选 / 拖拽共用）。
-struct SceneBoxedEntity {
+pub(crate) struct SceneBoxedEntity {
     id: SceneEntityId,
     name: String,
     /// 生效变换：UI 实体旋转恒为 0（组件在屏幕空间，不受 Transform 旋转影响）。
@@ -3088,19 +3024,7 @@ fn measure_text_without_runtime(text: &str, scale: f32) -> ([f32; 2], [f32; 4]) 
 
 /// 把实体上的 `UiLayout` 四边 offset 改写为拖拽提交值。
 /// 只改写已存在的布局组件；视觉组件保持不变。
-fn set_ui_component_layout(entity: &mut SceneEntity, offsets: [f32; 4]) -> bool {
-    let Some(raw) = entity.components.get("UiLayout") else {
-        return false;
-    };
-    let Ok(mut layout) = UiRectLayout::from_component_str(raw) else {
-        return false;
-    };
-    layout.offsets = offsets;
-    entity
-        .components
-        .insert("UiLayout".to_owned(), layout.to_component_str());
-    true
-}
+    /// 把 UiLayout 的 offsets 写回组件串（实现见 `crate::scene_drag`）。
 
 #[derive(Clone, Copy, Debug)]
 struct TilemapPaintContext {
@@ -3256,6 +3180,86 @@ mod tests {
     use editor::open_project;
     use engine::core::logging::LogSink;
     use engine::core::ui_layout::UiLayoutPreset;
+
+    // ---- E11：交互入口（`scene_pointer_*`）的独立单测 ----
+    //
+    // 这三个方法是从 `draw_scene_2d` 里抽出来的，就是为了让"绘制与交互可独立测试"落地：
+    // 不需要 egui 帧、不需要 GPU，直接给定实体包围框与指针位置即可断言相位与副作用。
+
+    fn interaction_entity(id: u64, center: egui::Pos2) -> SceneBoxedEntity {
+        SceneBoxedEntity {
+            id: SceneEntityId(id),
+            name: format!("E{id}"),
+            transform: TransformFields::default(),
+            center,
+            size: egui::vec2(40.0, 40.0),
+            ui: None,
+        }
+    }
+
+    /// 按在实体上 → 拖动相位 + 单选中该实体 + 记录拖动载荷。
+    #[test]
+    fn pointer_down_on_entity_starts_drag_with_selection() {
+        let mut app = interaction_app();
+        let entities = vec![
+            interaction_entity(7, egui::pos2(100.0, 100.0)),
+            interaction_entity(8, egui::pos2(300.0, 300.0)),
+        ];
+        let phase = app.scene_pointer_down(egui::pos2(100.0, 100.0), &entities, false);
+        assert!(matches!(phase, ToolPhase::Dragging { .. }), "{phase:?}");
+        assert_eq!(app.selection.primary(), Some(SceneEntityId(7)));
+        let drag = app.scene_state.drag.as_ref().expect("拖动载荷");
+        assert_eq!(drag.start, egui::pos2(100.0, 100.0));
+        assert_eq!(drag.ids, vec![SceneEntityId(7)]);
+    }
+
+    /// 按在空白处 → 框选相位 + 清空选择（且不产生拖动载荷）。
+    #[test]
+    fn pointer_down_on_empty_space_starts_marquee_and_clears_selection() {
+        let mut app = interaction_app();
+        app.selection
+            .set_single(SceneEntityId(7), editor::SelectionSource::Hierarchy);
+        let entities = vec![interaction_entity(7, egui::pos2(100.0, 100.0))];
+        let phase = app.scene_pointer_down(egui::pos2(500.0, 500.0), &entities, false);
+        assert!(phase.affects_selection(), "{phase:?}");
+        assert!(app.selection.is_empty(), "非加选框选必须先清空选择");
+        assert!(app.scene_state.drag.is_none());
+    }
+
+    /// 加选（Ctrl/Shift）按在实体上 → 选择变多而不是被替换。
+    #[test]
+    fn additive_pointer_down_adds_to_selection() {
+        let mut app = interaction_app();
+        app.selection
+            .set_single(SceneEntityId(7), editor::SelectionSource::Hierarchy);
+        let entities = vec![
+            interaction_entity(7, egui::pos2(100.0, 100.0)),
+            interaction_entity(8, egui::pos2(300.0, 300.0)),
+        ];
+        app.scene_pointer_down(egui::pos2(300.0, 300.0), &entities, true);
+        let mut ids = app.selection.ids();
+        ids.sort_unstable();
+        assert_eq!(ids, vec![SceneEntityId(7), SceneEntityId(8)]);
+    }
+
+    /// 拖动推进相位里的 `current`（框选矩形的另一端），释放后回到 Idle 且清掉载荷。
+    #[test]
+    fn pointer_drag_updates_phase_and_release_returns_to_idle() {
+        let mut app = interaction_app();
+        let entities = vec![interaction_entity(7, egui::pos2(100.0, 100.0))];
+        app.scene_pointer_down(egui::pos2(100.0, 100.0), &entities, false);
+        let phase = app.scene_pointer_drag(egui::pos2(140.0, 160.0));
+        assert_eq!(
+            phase,
+            ToolPhase::Dragging {
+                start: [100.0, 100.0],
+                current: [140.0, 160.0]
+            }
+        );
+        let phase = app.scene_pointer_up(egui::pos2(140.0, 160.0));
+        assert_eq!(phase, ToolPhase::Idle);
+        assert!(app.scene_state.drag.is_none(), "释放后不得残留拖动载荷");
+    }
 
     #[test]
     fn pick_scene_2d_entity_uses_topmost_unlocked_hit() {
@@ -3502,11 +3506,81 @@ mod tests {
         root
     }
 
+    // ---- E11：交互状态机是生产路径的事实源（docs/55 ER-07 首批接线） ----
+
+    fn interaction_app() -> EditorApp {
+        let root = copy_sample_project("interaction-state");
+        let project = open_project(&root).unwrap();
+        let mut app = EditorApp::new(project, None, LogSink::new(64));
+        app.refresh_resources();
+        app.open_scene_resource(PathBuf::from("scenes/ui_test.scene"));
+        app
+    }
+
+    /// 工具切换走状态机：切换工具会**取消进行中的交互**（不再要求调用方自己清场）。
+    #[test]
+    fn tool_switch_cancels_active_interaction_state() {
+        let mut app = interaction_app();
+        assert_eq!(app.scene_tool(), SceneTool::Select);
+        assert_eq!(app.interaction.phase(), ToolPhase::Idle);
+        // 模拟 Scene View 收到一次"按在实体上"的指针事件。
+        app.interaction.handle(InteractionEvent::PointerDown {
+            pos: [10.0, 10.0],
+            hit: true,
+        });
+        assert!(app.interaction.phase().is_active());
+        app.set_scene_tool(SceneTool::Move);
+        assert_eq!(app.scene_tool(), SceneTool::Move);
+        assert_eq!(
+            app.interaction.phase(),
+            ToolPhase::Idle,
+            "切换工具必须取消进行中的交互"
+        );
+    }
+
+    /// Escape 取消（`clear_active_scene_drag`）必须让状态机回到 Idle：
+    /// 否则下一帧还会按"仍在框选/拖动"处理指针，出现取消后残留的框。
+    #[test]
+    fn escape_cancel_resets_interaction_phase() {
+        let mut app = interaction_app();
+        app.interaction.handle(InteractionEvent::PointerDown {
+            pos: [4.0, 8.0],
+            hit: false,
+        });
+        assert!(app.interaction.phase().affects_selection(), "空白处按下 = 框选");
+        app.clear_active_scene_drag();
+        assert_eq!(app.interaction.phase(), ToolPhase::Idle);
+        assert!(app.scene_state.drag.is_none());
+    }
+
+    /// 空白处按下 = 框选、实体上按下 = 拖动：这条规则由状态机判定，
+    /// 面板不再自己写 `box_select_start`（该字段已删除）。
+    #[test]
+    fn pointer_down_phase_follows_hit_test() {
+        let mut app = interaction_app();
+        app.interaction.handle(InteractionEvent::PointerDown {
+            pos: [1.0, 1.0],
+            hit: false,
+        });
+        assert!(matches!(
+            app.interaction.phase(),
+            ToolPhase::Marquee { .. }
+        ));
+        app.interaction.handle(InteractionEvent::PointerUp { pos: [1.0, 1.0] });
+        app.interaction.handle(InteractionEvent::PointerDown {
+            pos: [1.0, 1.0],
+            hit: true,
+        });
+        assert!(matches!(
+            app.interaction.phase(),
+            ToolPhase::Dragging { .. }
+        ));
+    }
+
     /// R-03：3D 缓存 key 记录实际渲染尺寸。拖拽期渲染半分辨率并写入缓存；
     /// 拖拽结束后视口恢复全分辨率，缓存不匹配 → 必然重渲染，不会沿用模糊帧。
     #[test]
-    fn scene_view_3d_cache_records_actual_render_size() {
-        let camera = EditorCamera::default();
+    fn scene_view_3d_cache_records_actual_render_size() {        let camera = EditorCamera::default();
         let revision = Some(7u64);
         let view_w = 1280u32;
         let view_h = 720u32;
@@ -4236,6 +4310,7 @@ mod tests {
 
     #[test]
     fn set_ui_component_layout_rewrites_ui_and_rejects_others() {
+        use crate::scene_drag::set_ui_component_layout;
         let mut scene = engine::core::scene::Scene::new("ui-rewrite");
         let image_id = SceneEntityId(20);
         let sprite_id = SceneEntityId(21);

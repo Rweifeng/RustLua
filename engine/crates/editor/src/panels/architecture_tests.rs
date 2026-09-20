@@ -1,0 +1,215 @@
+//! 架构守卫：**面板只发 action，不直接写文档**（docs/55 §4.1 规则 1）。
+//!
+//! 计划里那条"View 只发出 typed action"如果只写在文档里，第一次赶进度就会被绕过。这里把它
+//! 变成一条**棘轮测试**：扫描 `panels/*.rs` 里"直接改动文档"的调用点，与一张钉住的计数表比较。
+//!
+//! - 计数**只能变少**：新增一处直接写入就会红，提示走 `EditorApp::dispatch`；
+//! - 变少（迁移完成）也必须更新这张表——这是刻意的：迁移进度要显式记在代码里；
+//! - 扫描前把源码里的空白全部去掉，所以跨行链式调用（`self\n.history\n.execute(`）同样能被抓到。
+//!
+//! 为什么用源码扫描而不是类型系统：Rust 没有"只在 shell 层可见"的可见性粒度，
+//! 而这条规则的价值恰恰是**防止未来的增量破坏**，不是证明现在绝对干净。
+
+#![cfg(test)]
+
+use std::collections::BTreeMap;
+use std::path::Path;
+
+/// 直接改动文档/历史的调用点特征（已去空白后比较）。
+///
+/// 注意**不要**同时列 `self.history.execute(` 与 `.history.execute(`：
+/// 后者是前者的子串，会同一个调用点被数两次（第一版就是这样，把 4 处 execute
+/// 数成了 8 处）。只保留更短的那个。
+const WRITE_NEEDLES: &[&str] = &[
+    ".history.execute(",
+    "self.history.push(",
+    "self.document.current_scene.as_mut()",
+    "self.set_current_scene_document(",
+];
+
+/// 每个面板文件允许的直接写入次数（只能不增；减少时必须同步改这里）。
+///
+/// 数值就是"还没迁移完的家底"：`0` 表示该面板已经完全只发 action。
+/// 非 0 的几项都是**已知欠账**，每一条都要在 docs/56 §7 的迁移清单里有对应工作项：
+///
+/// - `inspector.rs`：手写组件面板各写各的（`self.inspector.set_*` + `history.execute`），
+///   以及 Prefab Apply/Revert/写回的实现体（它们现在由 dispatch 调用，但仍住在这个文件里）；
+/// - `hierarchy.rs`：创建/删除/重命名/换父/粘贴等实体操作；
+/// - `scene_view.rs`：Tile 绘制与拖放生成实体的写入点（拖拽/Gizmo 的提交层已搬到
+///   `crate::scene_drag`，本文件从 16 处降到 8 处；其中 4 处是**跨行链式**
+///   `self.history\n.execute(...)`，正是"逐行 grep 抓不到、去空白扫描才抓得到"的那类）；
+/// - `game_view.rs`：`stop()` 取回编辑器快照（Play 生命周期实现住在这个文件里）；
+/// - `header.rs`：文档切换的实现体。
+const PINNED_WRITES: &[(&str, usize)] = &[
+    ("console.rs", 0),
+    ("domain_data.rs", 0),
+    ("game_view.rs", 1),
+    ("header.rs", 1),
+    ("hierarchy.rs", 14),
+    ("input_bindings.rs", 0),
+    ("inspector.rs", 25),
+    ("keymap.rs", 0),
+    ("mod.rs", 0),
+    ("progress.rs", 0),
+    ("project_settings.rs", 0),
+    ("publish.rs", 0),
+    ("resource_browser.rs", 0),
+    ("runtime_debug.rs", 0),
+    ("scene_view.rs", 8),
+    ("schema_inspector.rs", 0),
+    ("tilemap_tools.rs", 0),
+    ("toolbar.rs", 0),
+];
+
+fn normalized(source: &str) -> String {
+    source.chars().filter(|ch| !ch.is_whitespace()).collect()
+}
+
+fn panel_sources() -> BTreeMap<String, String> {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/panels");
+    let mut sources = BTreeMap::new();
+    for entry in std::fs::read_dir(&dir).expect("panels dir") {
+        let entry = entry.expect("dir entry");
+        let path = entry.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("rs") {
+            continue;
+        }
+        let name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .expect("file name")
+            .to_owned();
+        // 守卫自己带着"反面样例"字符串，当然会命中——不扫它。
+        if name == "architecture_tests.rs" {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).expect("panel source");
+        sources.insert(name, text);
+    }
+    sources
+}
+
+fn count_writes(source: &str) -> Vec<String> {
+    // 只统计**生产代码**：面板文件的测试模块按惯例放在文件末尾（顶格 `#[cfg(test)]` +
+    // `mod …`）。测试里直接写文档是正当的，不该被算成"视图越权"。
+    // 用"顶格属性 + 下一行是 mod"来识别，而不是最后一个 `#[cfg(test)]`——测试模块内部
+    // 自己也会出现这个属性。
+    let lines: Vec<&str> = source.lines().collect();
+    let mut cut = lines.len();
+    for (index, line) in lines.iter().enumerate() {
+        let is_attribute = line.trim_end() == "#[cfg(test)]" && !line.starts_with(char::is_whitespace);
+        let next_is_module = lines
+            .get(index + 1)
+            .is_some_and(|next| next.trim_start().starts_with("mod "));
+        if is_attribute && next_is_module {
+            cut = index;
+            break;
+        }
+    }
+    let text = normalized(&lines[..cut].join("\n"));
+    let mut hits = Vec::new();
+    for needle in WRITE_NEEDLES {
+        let count = text.matches(needle).count();
+        for _ in 0..count {
+            hits.push((*needle).to_owned());
+        }
+    }
+    hits
+}
+
+#[test]
+fn panels_only_emit_actions() {
+    let sources = panel_sources();
+    let pinned: BTreeMap<&str, usize> = PINNED_WRITES.iter().copied().collect();
+    let mut actual: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (name, source) in &sources {
+        let hits = count_writes(source);
+        if !hits.is_empty() {
+            actual.insert(name.clone(), hits);
+        }
+    }
+
+    // 1) 新增的直接写入：任何未钉住的命中都算违规。
+    let mut violations = Vec::new();
+    for (name, hits) in &actual {
+        let allowed = pinned.get(name.as_str()).copied().unwrap_or(0);
+        if hits.len() > allowed {
+            violations.push(format!(
+                "{name}: 实测 {} 处，允许 {allowed} 处 → {:?}",
+                hits.len(),
+                hits
+            ));
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "面板里出现了**直接写文档**的新调用点（docs/55 §4.1：View 只发 typed action）。\n\
+         请改为 `self.dispatch(editor::EditorCommand::…)`，把提交边界留在 shell：\n  {}",
+        violations.join("\n  ")
+    );
+
+    // 2) 家底变少：迁移完成必须同步更新计数表（否则棘轮会失去意义）。
+    let mut stale = Vec::new();
+    for (name, allowed) in &pinned {
+        if *allowed == 0 {
+            continue;
+        }
+        let found = actual.get(*name).map_or(0, Vec::len);
+        if found < *allowed {
+            stale.push(format!("{name}: 表里 {allowed} 处，实测 {found} 处"));
+        }
+    }
+    assert!(
+        stale.is_empty(),
+        "面板直接写入的家底变小了，请更新 PINNED_WRITES（这是迁移进度的显式记录）：\n  {}",
+        stale.join("\n  ")
+    );
+
+    // 3) 计数表必须覆盖所有面板文件（新增面板文件时强制登记）。
+    let mut missing = Vec::new();
+    for name in sources.keys() {
+        if !pinned.contains_key(name.as_str()) {
+            missing.push(name.clone());
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "新面板文件必须在 PINNED_WRITES 里登记（哪怕填 0）：{missing:?}"
+    );
+}
+
+/// 守卫本身必须能判红：给它一段"直接写文档"的样例源码，它要能抓出来。
+#[test]
+fn ratchet_detects_direct_document_writes() {
+    let sample = r#"
+        impl EditorApp {
+            fn draw(&mut self) {
+                let scene = self.document.current_scene.as_mut().unwrap();
+                self.history
+                    .execute(scene, "x", CommandKind::Property, |_| Ok(()))
+                    .unwrap();
+            }
+        }
+    "#;
+    let hits = count_writes(sample);
+    assert!(
+        hits.iter()
+            .any(|needle| needle == "self.document.current_scene.as_mut()"),
+        "跨行链式调用也必须被抓到：{hits:?}"
+    );
+    assert!(
+        hits.iter().any(|needle| needle == ".history.execute("),
+        "跨行链式调用也必须被抓到：{hits:?}"
+    );
+    // 反例：只发 action 的面板代码不得命中。
+    let clean = r#"
+        impl EditorApp {
+            fn draw(&mut self) {
+                if ui.button("x").clicked() {
+                    self.dispatch(editor::EditorCommand::Save);
+                }
+            }
+        }
+    "#;
+    assert!(count_writes(clean).is_empty());
+}

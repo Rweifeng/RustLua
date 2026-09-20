@@ -1,14 +1,13 @@
 use crate::SceneDocument;
 use engine::core::{
     camera::Camera3D,
-    light::Light,
+    entity_script::{EntityScript, SCRIPT_COMPONENT},
     math3d::{Quat, Vec3},
-    mesh3d::MeshRenderer,
     physics3d::{ColliderDesc3d, ColliderShape3d},
     scene::{SceneEntity, SceneEntityId},
     sprite::SpriteComponent,
     transform::Transform3D,
-    ui::{UiImage, UiText},
+    ui::{UiText},
 };
 use std::{error::Error, fmt, path::Path};
 
@@ -145,31 +144,14 @@ impl Default for Camera3DFields {
     }
 }
 
-/// Inspector 可编辑的方向光字段。
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct LightFields {
-    pub direction_x: f32,
-    pub direction_y: f32,
-    pub direction_z: f32,
-    pub color_r: f32,
-    pub color_g: f32,
-    pub color_b: f32,
-    pub intensity: f32,
-}
-
-impl Default for LightFields {
-    fn default() -> Self {
-        Self {
-            direction_x: 0.4,
-            direction_y: 0.8,
-            direction_z: 0.5,
-            color_r: 1.0,
-            color_g: 1.0,
-            color_b: 1.0,
-            intensity: 1.0,
-        }
-    }
-}
+// `Light` 的 Inspector 缓冲管线（`LightFields` + `set_light` + `encode/decode_light`）
+// **已删除**：docs/55 阶段 2 把该组件迁到 **schema 生成**的字段编辑器
+// （`panels/schema_inspector.rs` 按 `FieldKind` 选控件：方向 = DragValue×3、
+// 颜色 = 取色器、强度 = DragValue），提交走 `EditorCommand::SetComponentField`
+// → `PropertyPath` 写入，与其它组件同一条路径、同样"一次提交一条 Undo"。
+//
+// 保留这段说明是刻意的：下一次要给某个组件再加一套缓冲字段前，先确认它有没有 schema——
+// 有 schema 就该走通用编辑器，而不是再写一遍手写面板。
 
 /// Inspector 可编辑的 Collider3d 字段（M9-03）。
 #[derive(Clone, Debug, PartialEq)]
@@ -230,66 +212,19 @@ impl Default for TextFields {
     }
 }
 
-/// Inspector 可编辑的 `WorldText`（世界空间文字）字段。
-#[derive(Clone, Debug, PartialEq)]
-pub struct WorldTextFields {
-    pub text: String,
-    pub font_size: f32,
-    pub color_r: f32,
-    pub color_g: f32,
-    pub color_b: f32,
-    pub font: String,
-    /// 投影到屏幕后的像素偏移（"头顶 12px"）。
-    pub offset_x: f32,
-    pub offset_y: f32,
-    /// 按实测字宽水平居中。
-    pub centered: bool,
-}
+// `WorldText` 的 Inspector 缓冲管线（`WorldTextFields` + `set_world_text`/`clear_world_text` +
+// `encode/decode/validate_world_text`）**已删除**（第 23 轮）：该组件迁到 schema 生成的字段编辑器，
+// `font` 字段用**项目字体下拉**（`ChoiceSource::ProjectFonts`），其余用文本框/DragValue/取色器/勾选框。
+// 注意：`WorldText` 的默认值（`text=文字;font_size=…;offset=0,-20;centered=true`）现在由
+// `add_component` 直接用**引擎类型**的编码给出（`engine::core::world_text::WorldText`），
+// 编辑器里不再有这份默认值。
 
-impl Default for WorldTextFields {
-    fn default() -> Self {
-        Self {
-            text: "文字".to_owned(),
-            font_size: engine::core::ui::UI_TEXT_BASE_PX,
-            color_r: 1.0,
-            color_g: 1.0,
-            color_b: 1.0,
-            font: String::new(),
-            offset_x: 0.0,
-            offset_y: -20.0,
-            centered: true,
-        }
-    }
-}
-
-/// Inspector 可编辑的 Image（屏幕空间 UI 贴图）字段。
-#[derive(Clone, Debug, PartialEq)]
-pub struct ImageFields {
-    pub texture: String,
-    pub color_r: f32,
-    pub color_g: f32,
-    pub color_b: f32,
-    /// 九宫格边框（纹理像素），0 = 不启用。
-    pub nine_slice_l: f32,
-    pub nine_slice_r: f32,
-    pub nine_slice_t: f32,
-    pub nine_slice_b: f32,
-}
-
-impl Default for ImageFields {
-    fn default() -> Self {
-        Self {
-            texture: String::new(),
-            color_r: 1.0,
-            color_g: 1.0,
-            color_b: 1.0,
-            nine_slice_l: 0.0,
-            nine_slice_r: 0.0,
-            nine_slice_t: 0.0,
-            nine_slice_b: 0.0,
-        }
-    }
-}
+// `Image` 的 Inspector 缓冲管线（`ImageFields` + `set_image`/`clear_image` +
+// `encode/decode/validate_image`）**已删除**（第 22 轮）：该组件迁到 schema 生成的字段编辑器
+// （`texture` 文本框、`color` 取色器、`nine_slice` 四个 DragValue）。
+// 九宫格"非负"这条规则现在由 `FieldRule::NonNegative` 表达（对向量要求每个分量非负），
+// 因此**审计**也一并获得这条校验；全零与省略的等价性由渲染侧的过滤
+// （`any(|v| *v > 0.0)`）保证。
 
 /// E16：Inspector 可编辑的 `UiLayout`（四边 Anchor+Offset）字段。
 #[derive(Clone, Debug, PartialEq)]
@@ -420,16 +355,16 @@ pub struct InspectorSnapshot {
     pub lua_script: Option<String>,
     /// 3D 组件（仅在实体携带对应组件时存在）。
     pub transform3d: Option<Transform3DFields>,
-    pub mesh_renderer: Option<String>,
+    // `MeshRenderer`（mesh 字段）**不在快照里**：它已迁到 schema 生成的通用字段编辑器
+    // （走 `EditorCommand::SetComponentField`，语义规则见 `FieldRule::ProjectPath`）。
     pub camera3d: Option<Camera3DFields>,
-    pub light: Option<LightFields>,
+    /// `Light` **不在快照里**：它已迁到 schema 生成的通用字段编辑器，提交走
+    /// `EditorCommand::SetComponentField`（见 `LightFields` 删除处的说明）。
     pub collider3d: Option<Collider3dFields>,
     /// UI 组件（屏幕空间）。
     pub text: Option<TextFields>,
-    /// WP4：世界空间文字（锚在世界位置，与屏幕 `Text` 是两套组件）。
-    pub world_text: Option<WorldTextFields>,
-    pub image: Option<ImageFields>,
-    /// E16/E17：布局组件（存在时优先于 Text/Image 内联布局）。
+    /// `WorldText` 与 `Image` **不在快照里**：两者都已迁到 schema 生成的字段编辑器
+    /// （第 22/23 轮），提交走 `EditorCommand::SetComponentField`。
     pub ui_layout: Option<UiLayoutFields>,
     pub container: Option<ContainerFields>,
     /// 运行时切场景不销毁。
@@ -528,17 +463,19 @@ impl InspectorState {
         Ok(())
     }
 
-    pub fn set_lua_script(
-        &self,
+    pub fn set_lua_script(        &self,
         document: &mut SceneDocument,
         id: SceneEntityId,
         script: impl Into<String>,
     ) -> Result<(), InspectorError> {
         let script = script.into();
         validate_lua_script(&script)?;
+        // 加载器/运行时读的是 `Script` + `file=<路径>`；这里写出**同一个**名字与载荷形式
+        // （旧写法 `LuaScript` + 裸路径运行时根本不认，见 `core::component_migration`）。
+        let value = entity_script_value(&script);
         let entity = entity_mut(document, id)?;
-        if entity.components.get("LuaScript") != Some(&script) {
-            entity.components.insert("LuaScript".into(), script);
+        if entity.components.get(SCRIPT_COMPONENT) != Some(&value) {
+            entity.components.insert(SCRIPT_COMPONENT.to_owned(), value);
             document.mark_dirty();
         }
         Ok(())
@@ -550,7 +487,13 @@ impl InspectorState {
         id: SceneEntityId,
     ) -> Result<(), InspectorError> {
         let entity = entity_mut(document, id)?;
-        if entity.components.remove("LuaScript").is_some() {
+        let mut changed = entity.components.remove(SCRIPT_COMPONENT).is_some();
+        // 旧键也顺手清掉，避免"清了脚本但旧键还在"。
+        changed |= entity
+            .components
+            .remove(engine::core::component_migration::LEGACY_LUA_SCRIPT_COMPONENT)
+            .is_some();
+        if changed {
             document.mark_dirty();
         }
         Ok(())
@@ -572,36 +515,12 @@ impl InspectorState {
         Ok(())
     }
 
-    pub fn set_mesh_renderer(
-        &self,
-        document: &mut SceneDocument,
-        id: SceneEntityId,
-        reference: impl Into<String>,
-    ) -> Result<(), InspectorError> {
-        let reference = reference.into();
-        validate_mesh_renderer(&reference)?;
-        let entity = entity_mut(document, id)?;
-        let value = MeshRenderer::from_component_str(&format!("mesh={reference}"))
-            .map_err(|error| InspectorError::InvalidMeshRenderer(error.to_string()))?
-            .to_component_str();
-        if entity.components.get("MeshRenderer") != Some(&value) {
-            entity.components.insert("MeshRenderer".into(), value);
-            document.mark_dirty();
-        }
-        Ok(())
-    }
-
-    pub fn clear_mesh_renderer(
-        &self,
-        document: &mut SceneDocument,
-        id: SceneEntityId,
-    ) -> Result<(), InspectorError> {
-        let entity = entity_mut(document, id)?;
-        if entity.components.remove("MeshRenderer").is_some() {
-            document.mark_dirty();
-        }
-        Ok(())
-    }
+    // `set_mesh_renderer` / `clear_mesh_renderer` **已删除**（第 21 轮）：
+    // `MeshRenderer` 与 `Light` 一样迁到 schema 生成的字段编辑器。
+    // mesh 字段的语义规则（非空 / 工程内相对 / `.glb`|`.gltf` / 内置哨兵
+    // `__ground_plane__`）现在由 `ComponentSchema` 的 `FieldRule::ProjectPath`
+    // 表达，并且与 `mesh3d::validate_mesh_path` 由对拍测试盯住——比"编辑器里再写一遍校验"
+    // 更严格，因为它同时作用于**审计**（真实场景文件）。
 
     pub fn set_camera3d(
         &self,
@@ -614,22 +533,6 @@ impl InspectorState {
         let value = encode_camera3d(camera);
         if entity.components.get("Camera3D") != Some(&value) {
             entity.components.insert("Camera3D".into(), value);
-            document.mark_dirty();
-        }
-        Ok(())
-    }
-
-    pub fn set_light(
-        &self,
-        document: &mut SceneDocument,
-        id: SceneEntityId,
-        light: LightFields,
-    ) -> Result<(), InspectorError> {
-        validate_light(light)?;
-        let entity = entity_mut(document, id)?;
-        let value = encode_light(light);
-        if entity.components.get("Light") != Some(&value) {
-            entity.components.insert("Light".into(), value);
             document.mark_dirty();
         }
         Ok(())
@@ -691,62 +594,13 @@ impl InspectorState {
         Ok(())
     }
 
-    /// WP4：写入 `WorldText`（世界空间文字）。与 `set_text` 同样只在内容变化时标脏。
-    pub fn set_world_text(
-        &self,
-        document: &mut SceneDocument,
-        id: SceneEntityId,
-        fields: WorldTextFields,
-    ) -> Result<(), InspectorError> {
-        validate_world_text(&fields)?;
-        let entity = entity_mut(document, id)?;
-        let value = encode_world_text(&fields)?;
-        if entity.components.get("WorldText") != Some(&value) {
-            entity.components.insert("WorldText".into(), value);
-            document.mark_dirty();
-        }
-        Ok(())
-    }
+    // `set_world_text` / `clear_world_text` **已删除**（第 23 轮）：`WorldText` 迁到 schema
+    // 生成的字段编辑器——`font` 字段用**项目字体下拉**（`ChoiceSource::ProjectFonts`），
+    // 其余字段用文本框 / DragValue / 取色器 / 勾选框。提交走 `EditorCommand::SetComponentField`。
 
-    pub fn clear_world_text(
-        &self,
-        document: &mut SceneDocument,
-        id: SceneEntityId,
-    ) -> Result<(), InspectorError> {
-        let entity = entity_mut(document, id)?;
-        if entity.components.remove("WorldText").is_some() {
-            document.mark_dirty();
-        }
-        Ok(())
-    }
-
-    pub fn set_image(
-        &self,
-        document: &mut SceneDocument,
-        id: SceneEntityId,
-        image: ImageFields,
-    ) -> Result<(), InspectorError> {
-        validate_image(&image)?;
-        let entity = entity_mut(document, id)?;
-        let value = encode_image(&image)?;
-        if entity.components.get("Image") != Some(&value) {
-            entity.components.insert("Image".into(), value);
-            document.mark_dirty();
-        }
-        Ok(())
-    }
-
-    pub fn clear_image(
-        &self,
-        document: &mut SceneDocument,
-        id: SceneEntityId,
-    ) -> Result<(), InspectorError> {
-        let entity = entity_mut(document, id)?;
-        if entity.components.remove("Image").is_some() {
-            document.mark_dirty();
-        }
-        Ok(())
-    }
+    // `set_image` / `clear_image` **已删除**（第 22 轮）：`Image` 与 `Light`/`MeshRenderer`
+    // 一样迁到 schema 生成的字段编辑器（`texture` 文本框、`color` 取色器、`nine_slice` 四个
+    // DragValue），提交走 `EditorCommand::SetComponentField`。
 
     /// E16：写回 `UiLayout` 组件（四边 Anchor+Offset 布局）。
     pub fn set_ui_layout(
@@ -863,25 +717,6 @@ impl InspectorState {
                 }
             }
         }
-        match snapshot.mesh_renderer.as_deref() {
-            Some(reference) => self.set_mesh_renderer(document, id, reference)?,
-            None => {
-                self.clear_mesh_renderer(document, id)?;
-            }
-        }
-        if let Some(reference) = snapshot.mesh_renderer.as_deref() {
-            for sid in multi_sprite_ids {
-                if *sid != id
-                    && document
-                        .scene
-                        .entities
-                        .get(sid)
-                        .is_some_and(|entity| entity.components.contains_key("MeshRenderer"))
-                {
-                    self.set_mesh_renderer(document, *sid, reference)?;
-                }
-            }
-        }
         if let Some(camera3d) = snapshot.camera3d {
             self.set_camera3d(document, id, camera3d)?;
             for sid in multi_sprite_ids {
@@ -893,20 +728,6 @@ impl InspectorState {
                         .is_some_and(|entity| entity.components.contains_key("Camera3D"))
                 {
                     self.set_camera3d(document, *sid, camera3d)?;
-                }
-            }
-        }
-        if let Some(light) = snapshot.light {
-            self.set_light(document, id, light)?;
-            for sid in multi_sprite_ids {
-                if *sid != id
-                    && document
-                        .scene
-                        .entities
-                        .get(sid)
-                        .is_some_and(|entity| entity.components.contains_key("Light"))
-                {
-                    self.set_light(document, *sid, light)?;
                 }
             }
         }
@@ -937,38 +758,6 @@ impl InspectorState {
                     .is_some_and(|entity| entity.components.contains_key("Text"))
                 {
                     self.set_text(document, *sid, text.clone())?;
-                }
-            }
-        }
-        if let Some(text) = snapshot.world_text {
-            self.set_world_text(document, id, text.clone())?;
-            for sid in multi_sprite_ids {
-                if *sid == id {
-                    continue;
-                }
-                if document
-                    .scene
-                    .entities
-                    .get(sid)
-                    .is_some_and(|entity| entity.components.contains_key("WorldText"))
-                {
-                    self.set_world_text(document, *sid, text.clone())?;
-                }
-            }
-        }
-        if let Some(image) = snapshot.image {
-            self.set_image(document, id, image.clone())?;
-            for sid in multi_sprite_ids {
-                if *sid == id {
-                    continue;
-                }
-                if document
-                    .scene
-                    .entities
-                    .get(sid)
-                    .is_some_and(|entity| entity.components.contains_key("Image"))
-                {
-                    self.set_image(document, *sid, image.clone())?;
                 }
             }
         }
@@ -1031,7 +820,7 @@ impl InspectorState {
                         .scene
                         .entities
                         .get(sid)
-                        .is_some_and(|entity| entity.components.contains_key("LuaScript"))
+                        .is_some_and(|entity| entity.components.contains_key(SCRIPT_COMPONENT))
                 {
                     self.set_lua_script(document, *sid, script)?;
                 }
@@ -1067,24 +856,14 @@ fn snapshot_for(entity: &SceneEntity) -> Result<InspectorSnapshot, InspectorErro
         .components
         .get("Camera3D")
         .map_or(Ok(None), |value| decode_camera3d(value).map(Some))?;
-    let light = entity
-        .components
-        .get("Light")
-        .map_or(Ok(None), |value| decode_light(value).map(Some))?;
     Ok(InspectorSnapshot {
         entity_id: entity.id,
         name: entity.name.clone(),
         transform,
         sprite_reference: entity.components.get("Sprite").cloned(),
-        lua_script: entity.components.get("LuaScript").cloned(),
+        lua_script: read_lua_script(entity),
         transform3d,
-        mesh_renderer: entity
-            .components
-            .get("MeshRenderer")
-            .and_then(|value| value.strip_prefix("mesh="))
-            .map(str::to_owned),
         camera3d,
-        light,
         collider3d: entity
             .components
             .get("Collider3d")
@@ -1093,14 +872,6 @@ fn snapshot_for(entity: &SceneEntity) -> Result<InspectorSnapshot, InspectorErro
             .components
             .get("Text")
             .map_or(Ok(None), |value| decode_text(value).map(Some))?,
-        world_text: entity
-            .components
-            .get("WorldText")
-            .map_or(Ok(None), |value| decode_world_text(value).map(Some))?,
-        image: entity
-            .components
-            .get("Image")
-            .map_or(Ok(None), |value| decode_image(value).map(Some))?,
         ui_layout: entity
             .components
             .get("UiLayout")
@@ -1331,44 +1102,6 @@ fn validate_text(fields: &TextFields) -> Result<(), InspectorError> {
         .map_err(|error| InspectorError::InvalidText(error.to_string()))
 }
 
-fn encode_world_text(fields: &WorldTextFields) -> Result<String, InspectorError> {
-    Ok(engine::core::world_text::WorldText {
-        text: UiText {
-            text: fields.text.clone(),
-            font_size: fields.font_size,
-            color: [fields.color_r, fields.color_g, fields.color_b],
-            font: fields.font.clone(),
-        },
-        offset: [fields.offset_x, fields.offset_y],
-        centered: fields.centered,
-    }
-    .to_component_str())
-}
-
-fn decode_world_text(value: &str) -> Result<WorldTextFields, InspectorError> {
-    let text = engine::core::world_text::WorldText::from_component_str(value)
-        .map_err(|error| InspectorError::InvalidWorldText(error.to_string()))?;
-    Ok(WorldTextFields {
-        text: text.text.text,
-        font_size: text.text.font_size,
-        color_r: text.text.color[0],
-        color_g: text.text.color[1],
-        color_b: text.text.color[2],
-        font: text.text.font,
-        offset_x: text.offset[0],
-        offset_y: text.offset[1],
-        centered: text.centered,
-    })
-}
-
-/// 校验走"编码后重新解析"：这样字号/颜色/偏移的规则只有 `WorldText` 一份。
-fn validate_world_text(fields: &WorldTextFields) -> Result<(), InspectorError> {
-    let value = encode_world_text(fields)?;
-    engine::core::world_text::WorldText::from_component_str(&value)
-        .map(|_| ())
-        .map_err(|error| InspectorError::InvalidWorldText(error.to_string()))
-}
-
 /// E16：校验归一化二元组（pivot）处于 `0..=1`。
 fn validate_unit_pair(values: &[f32; 2], name: &str) -> Result<(), InspectorError> {
     for (index, value) in values.iter().enumerate() {
@@ -1391,69 +1124,6 @@ fn validate_unit_quadruple(values: &[f32; 4], name: &str) -> Result<(), Inspecto
         }
     }
     Ok(())
-}
-
-fn encode_image(fields: &ImageFields) -> Result<String, InspectorError> {
-    // 全部为 0 → None（不编码字段），保证未启用九宫格的 Image 往返字节一致，
-    // 编辑器 set_image 幂等守卫不误标脏。
-    let nine_slice = if fields.nine_slice_l > 0.0
-        || fields.nine_slice_r > 0.0
-        || fields.nine_slice_t > 0.0
-        || fields.nine_slice_b > 0.0
-    {
-        Some([
-            fields.nine_slice_l,
-            fields.nine_slice_r,
-            fields.nine_slice_t,
-            fields.nine_slice_b,
-        ])
-    } else {
-        None
-    };
-    Ok(UiImage {
-        texture: fields.texture.clone(),
-        color: [fields.color_r, fields.color_g, fields.color_b],
-        nine_slice,
-    }
-    .to_component_str())
-}
-
-fn decode_image(value: &str) -> Result<ImageFields, InspectorError> {
-    let ui = UiImage::from_component_str(value)
-        .map_err(|error| InspectorError::InvalidImage(error.to_string()))?;
-    let (l, r, t, b) = ui
-        .nine_slice
-        .map(|s| (s[0], s[1], s[2], s[3]))
-        .unwrap_or((0.0, 0.0, 0.0, 0.0));
-    Ok(ImageFields {
-        texture: ui.texture,
-        color_r: ui.color[0],
-        color_g: ui.color[1],
-        color_b: ui.color[2],
-        nine_slice_l: l,
-        nine_slice_r: r,
-        nine_slice_t: t,
-        nine_slice_b: b,
-    })
-}
-
-fn validate_image(fields: &ImageFields) -> Result<(), InspectorError> {
-    for v in [
-        fields.nine_slice_l,
-        fields.nine_slice_r,
-        fields.nine_slice_t,
-        fields.nine_slice_b,
-    ] {
-        if !v.is_finite() || v < 0.0 {
-            return Err(InspectorError::InvalidImage(
-                "nine_slice 边框必须为非负有限数".to_owned(),
-            ));
-        }
-    }
-    let value = encode_image(fields)?;
-    UiImage::from_component_str(&value)
-        .map(|_| ())
-        .map_err(|error| InspectorError::InvalidImage(error.to_string()))
 }
 
 fn validate_camera3d(camera: Camera3DFields) -> Result<(), InspectorError> {
@@ -1496,42 +1166,6 @@ fn decode_camera3d(value: &str) -> Result<Camera3DFields, InspectorError> {
     })
 }
 
-fn validate_light(light: LightFields) -> Result<(), InspectorError> {
-    let value = encode_light(light);
-    Light::from_component_str(&value)
-        .map(|_| ())
-        .map_err(|error| InspectorError::InvalidLight(error.to_string()))
-}
-
-fn encode_light(light: LightFields) -> String {
-    Light {
-        direction: Vec3::new(light.direction_x, light.direction_y, light.direction_z),
-        color: [light.color_r, light.color_g, light.color_b],
-        intensity: light.intensity,
-    }
-    .to_component_str()
-}
-
-fn decode_light(value: &str) -> Result<LightFields, InspectorError> {
-    let light = Light::from_component_str(value)
-        .map_err(|error| InspectorError::InvalidLight(error.to_string()))?;
-    Ok(LightFields {
-        direction_x: light.direction.x,
-        direction_y: light.direction.y,
-        direction_z: light.direction.z,
-        color_r: light.color[0],
-        color_g: light.color[1],
-        color_b: light.color[2],
-        intensity: light.intensity,
-    })
-}
-
-fn validate_mesh_renderer(reference: &str) -> Result<(), InspectorError> {
-    MeshRenderer::from_component_str(&format!("mesh={reference}"))
-        .map(|_| ())
-        .map_err(|error| InspectorError::InvalidMeshRenderer(error.to_string()))
-}
-
 fn validate_asset_reference(reference: &str) -> Result<(), InspectorError> {
     let reference = reference.trim();
     let component = SpriteComponent::from_component_str(reference)
@@ -1551,19 +1185,61 @@ fn validate_asset_reference(reference: &str) -> Result<(), InspectorError> {
     Ok(())
 }
 
+/// 面板输入校验：**安全规则复用引擎**（工程内相对路径），**项目约定额外要求 `.lua`**。
+///
+/// 这两层刻意分开：引擎的 `EntityScript::validate` 只管"能不能逃出工程根"（运行时是
+/// `root.join(file)` 后直接编译，扩展名不参与加载），编辑器则要求脚本目录的 `.lua` 约定。
+/// 差异由 `lua_wrong_extension_rejected` 与引擎侧 `field_rules_match_engine_validators`
+/// 两侧测试分别钉住，避免"以为两边一样"。
 fn validate_lua_script(script: &str) -> Result<(), InspectorError> {
     let script = script.trim();
-    if script.is_empty()
-        || Path::new(script).is_absolute()
-        || script.split(['/', '\\']).any(|part| part == "..")
-        || Path::new(script)
-            .extension()
-            .and_then(|value| value.to_str())
-            != Some("lua")
-    {
+    let path_is_safe = EntityScript {
+        file: script.to_owned(),
+        enabled: true,
+    }
+    .validate()
+    .is_ok();
+    let extension_is_lua = Path::new(script)
+        .extension()
+        .and_then(|value| value.to_str())
+        == Some("lua");
+    if !path_is_safe || !extension_is_lua {
         return Err(InspectorError::InvalidLuaScript(script.to_owned()));
     }
     Ok(())
+}
+
+/// Inspector 里的"Lua"文本框 ↔ `Script` 组件载荷（`file=<路径>`）。
+///
+/// 面板显示**裸路径**（用户关心的是文件），组件串按运行时格式写；这样两边的差异只在这两个
+/// 函数里，不会再出现"面板写裸路径、运行时读不懂"的分裂。
+fn entity_script_value(script: &str) -> String {
+    EntityScript {
+        file: script.trim().to_owned(),
+        enabled: true,
+    }
+    .to_component_str()
+}
+
+/// 读回脚本路径：优先 `Script`（含 `file=` 形式），兼容旧的 `LuaScript` 裸路径写法
+/// （正常路径下 [`engine::core::component_migration`] 已经在打开场景时迁移过，
+/// 这里只是不让"未经迁移的实体内存对象"显示成空）。
+fn read_lua_script(entity: &SceneEntity) -> Option<String> {
+    if let Some(value) = entity.components.get(SCRIPT_COMPONENT) {
+        return match EntityScript::from_component_str(value) {
+            Ok(script) => Some(script.file),
+            // 解析不了就原样显示，让用户看到问题而不是空白。
+            Err(_) => Some(value.clone()),
+        };
+    }
+    entity
+        .components
+        .get(engine::core::component_migration::LEGACY_LUA_SCRIPT_COMPONENT)
+        .map(|value| {
+            value
+                .strip_prefix("file=")
+                .map_or_else(|| value.clone(), str::to_owned)
+        })
 }
 
 #[derive(Debug)]
@@ -2029,6 +1705,27 @@ mod tests {
         inspector
             .set_lua_script(&mut document, id, "scripts/player.lua")
             .unwrap();
+        // 写出的必须是运行时真正读的组件名与载荷形式：`Script` + `file=<路径>`。
+        // （历史的 `LuaScript` + 裸路径运行时根本不读，这条断言就是那个缺陷的回归守卫。）
+        let raw = &document.scene.entities[&id].components;
+        assert_eq!(
+            raw.get(engine::core::entity_script::SCRIPT_COMPONENT)
+                .map(String::as_str),
+            Some("file=scripts/player.lua"),
+            "面板必须按运行时格式写 Script 组件"
+        );
+        assert!(
+            !raw.contains_key("LuaScript"),
+            "旧键名不得再被写进场景"
+        );
+        // 运行时解析器读得回来（"不是换个名字了事"）。
+        let parsed = engine::core::entity_script::EntityScript::from_component_str(
+            &raw[engine::core::entity_script::SCRIPT_COMPONENT],
+        )
+        .expect("runtime parser");
+        assert_eq!(parsed.file, "scripts/player.lua");
+        assert!(parsed.enabled);
+        // 面板显示的是裸路径（用户关心的是文件），不是 `file=` 形式。
         assert_eq!(
             inspector
                 .snapshot(&document, id)
@@ -2046,6 +1743,30 @@ mod tests {
                 .set_lua_script(&mut document, id, "scripts/player.txt")
                 .is_err()
         );
+        // 这一条是**编辑器比引擎更严**的刻意差异：引擎只要求"工程内相对路径"
+        // （运行时 `root.join(file)` 后直接编译，扩展名不参与判定），
+        // 所以同样的载荷在引擎侧是合法的（见 `component_schema::field_rules_match_engine_validators`）。
+        assert!(
+            engine::core::entity_script::EntityScript::from_component_str(
+                "file=scripts/player.txt"
+            )
+            .is_ok(),
+            "引擎侧必须仍然接受它（否则运行时行为被编辑器约定改掉了）"
+        );
+    }
+
+    /// Windows 上的"根相对"路径（`/etc/passwd.lua`）没有盘符，`Path::is_absolute()` 会返回
+    /// `false`——编辑器曾经因此放行、而运行时拒绝，写出一个运行时不加载的脚本。
+    /// 现在两边共用 `core::paths` 的判定。
+    #[test]
+    fn lua_windows_root_relative_path_rejected() {
+        let (mut document, inspector, id) = setup();
+        for script in ["/etc/passwd.lua", r"C:\windows\x.lua", "scripts/../../x.lua"] {
+            assert!(
+                inspector.set_lua_script(&mut document, id, script).is_err(),
+                "{script} 必须被拒绝"
+            );
+        }
     }
     #[test]
     fn lua_traversal_rejected() {
@@ -2104,40 +1825,31 @@ mod tests {
         };
         assert!(inspector.set_transform3d(&mut document, id, value).is_err());
     }
+    /// `MeshRenderer` 的缓冲管线已随面板迁移删除；这里验证**迁移后的语义**：
+    /// 快照不再携带 mesh 字段，而 `.glb/.gltf/哨兵` 与 `.obj`/穿越路径的判定
+    /// 由 schema 规则与引擎解析器共同保证（对拍测试在 `component_schema`）。
     #[test]
-    fn mesh_renderer_set_and_clear() {
+    fn mesh_renderer_is_edited_through_the_schema_path() {
         let (mut document, inspector, id) = setup();
-        inspector
-            .set_mesh_renderer(&mut document, id, "models/cube.glb")
-            .unwrap();
+        let entity = document.scene.entities.get_mut(&id).unwrap();
+        entity.components.insert(
+            "MeshRenderer".to_owned(),
+            format!(
+                "mesh={}",
+                engine::core::mesh3d::GROUND_PLANE_SENTINEL
+            ),
+        );
+        let snapshot = inspector.snapshot(&document, id).unwrap();
+        assert!(!format!("{snapshot:?}").contains("mesh_renderer"));
+        // 引擎解析器仍认得哨兵（迁移不改数据格式、也不放松引擎校验）。
         assert_eq!(
-            inspector
-                .snapshot(&document, id)
-                .unwrap()
-                .mesh_renderer
-                .as_deref(),
-            Some("models/cube.glb")
+            engine::core::mesh3d::MeshRenderer::from_component_str(
+                &document.scene.entities[&id].components["MeshRenderer"]
+            )
+            .expect("引擎解析器")
+            .mesh,
+            engine::core::mesh3d::GROUND_PLANE_SENTINEL
         );
-        document.mark_clean();
-        inspector.clear_mesh_renderer(&mut document, id).unwrap();
-        assert!(document.is_dirty());
-        assert!(
-            inspector
-                .snapshot(&document, id)
-                .unwrap()
-                .mesh_renderer
-                .is_none()
-        );
-    }
-    #[test]
-    fn mesh_renderer_rejects_non_glb() {
-        let (mut document, inspector, id) = setup();
-        assert!(
-            inspector
-                .set_mesh_renderer(&mut document, id, "models/cube.obj")
-                .is_err()
-        );
-        assert!(!document.is_dirty());
     }
     #[test]
     fn camera3d_set_and_snapshot() {
@@ -2190,28 +1902,25 @@ mod tests {
         };
         assert!(inspector.set_camera3d(&mut document, id, value).is_err());
     }
+    /// `Light` 的缓冲管线已随面板迁移删除；这里改为验证**迁移后的路径**：
+    /// 通用字段编辑器通过 `SetComponentField` 写入，快照里不再有 light 字段，
+    /// 但实体上的 `Light` 组件串仍是引擎编码器认得的形式。
     #[test]
-    fn light_set_and_snapshot() {
+    fn light_is_edited_through_the_schema_path() {
         let (mut document, inspector, id) = setup();
-        let value = LightFields {
-            direction_y: 1.0,
-            intensity: 2.0,
-            ..Default::default()
-        };
-        inspector.set_light(&mut document, id, value).unwrap();
+        let entity = document.scene.entities.get_mut(&id).unwrap();
+        entity
+            .components
+            .insert("Light".to_owned(), "direction=0,1,0;color=1,1,1;intensity=2".to_owned());
+        // 快照不再携带 light（面板迁移后由通用编辑器负责）。
         let snapshot = inspector.snapshot(&document, id).unwrap();
-        let light = snapshot.light.unwrap();
-        assert_eq!(light.direction_y, 1.0);
+        assert!(!format!("{snapshot:?}").contains("light"));
+        // 组件串必须仍能被引擎解析器读回（迁移不得改变数据格式）。
+        let light = engine::core::light::Light::from_component_str(
+            &document.scene.entities[&id].components["Light"],
+        )
+        .expect("引擎解析器必须认得 Light");
         assert_eq!(light.intensity, 2.0);
-    }
-    #[test]
-    fn light_rejects_negative_intensity() {
-        let (mut document, inspector, id) = setup();
-        let value = LightFields {
-            intensity: -1.0,
-            ..Default::default()
-        };
-        assert!(inspector.set_light(&mut document, id, value).is_err());
     }
     #[test]
     fn save_reload_preserves_fields() {
@@ -2324,111 +2033,50 @@ mod tests {
         assert_eq!(decoded.half_height, 1.0);
         assert_eq!(decoded.radius, 0.5);
     }
+    /// `Image` 的缓冲管线已随面板迁移删除；这里验证**迁移后的语义**：
+    /// 负九宫格仍被拒绝（改由 schema 规则表达），全零与省略语义相同（渲染侧过滤），
+    /// 快照不再携带 image 字段。
     #[test]
-    fn image_nine_slice_roundtrip_via_snapshot() {
+    fn image_is_edited_through_the_schema_path() {
         let (mut document, inspector, id) = setup();
-        inspector
-            .set_image(
-                &mut document,
-                id,
-                ImageFields {
-                    texture: "assets/textures/ui/panel.png".to_owned(),
-                    nine_slice_l: 8.0,
-                    nine_slice_r: 8.0,
-                    nine_slice_t: 16.0,
-                    nine_slice_b: 16.0,
-                    ..ImageFields::default()
-                },
-            )
-            .unwrap();
-        assert!(document.is_dirty());
-        let stored = document.scene.entities[&id]
-            .components
-            .get("Image")
-            .expect("Image written");
-        assert!(
-            stored.contains("nine_slice=8.00,8.00,16.00,16.00"),
-            "{stored}"
+        let registry = engine::core::component_schema::builtin_registry();
+        // 负九宫格：schema 规则拒绝（原来由编辑器 set_image 拒绝）。
+        assert!(registry["Image"]
+            .parse("texture=a.png;color=1,1,1;nine_slice=-1,0,0,0")
+            .is_err());
+        // 全零与省略都合法，且渲染侧用 `any(|v| *v > 0.0)` 过滤 → 语义相同。
+        assert!(registry["Image"]
+            .parse("texture=a.png;color=1,1,1;nine_slice=0,0,0,0")
+            .is_ok());
+        assert!(registry["Image"].parse("texture=a.png").is_ok());
+
+        let entity = document.scene.entities.get_mut(&id).unwrap();
+        entity.components.insert(
+            "Image".to_owned(),
+            "texture=a.png;color=1,1,1;nine_slice=8,8,16,16".to_owned(),
         );
         let snapshot = inspector.snapshot(&document, id).unwrap();
-        let image = snapshot.image.expect("image snapshot");
-        assert_eq!(image.nine_slice_l, 8.0);
-        assert_eq!(image.nine_slice_r, 8.0);
-        assert_eq!(image.nine_slice_t, 16.0);
-        assert_eq!(image.nine_slice_b, 16.0);
+        assert!(!format!("{snapshot:?}").contains("image"));
+        // 引擎解析器仍能读回九宫格（迁移不改格式）。
+        let parsed = engine::core::ui::UiImage::from_component_str(
+            &document.scene.entities[&id].components["Image"],
+        )
+        .expect("引擎解析器");
+        assert_eq!(parsed.nine_slice, Some([8.0, 8.0, 16.0, 16.0]));
     }
+    /// `WorldText` 的缓冲管线已随面板迁移删除（第 23 轮）；这里验证**迁移后的语义**：
+    /// 快照不再携带 world_text 字段，而组件串（含中文与分号风险）在存盘往返后仍能由引擎解析器读回，
+    /// 非有限的 offset 仍被 schema 规则拒绝。
     #[test]
-    fn image_nine_slice_absent_for_untouched_image() {
+    fn world_text_is_edited_through_the_schema_path() {
         let (mut document, inspector, id) = setup();
-        inspector
-            .set_image(
-                &mut document,
-                id,
-                ImageFields {
-                    texture: "assets/textures/ui/panel.png".to_owned(),
-                    ..ImageFields::default()
-                },
-            )
-            .unwrap();
-        let stored = document.scene.entities[&id]
-            .components
-            .get("Image")
-            .expect("Image written");
-        assert!(!stored.contains("nine_slice"), "{stored}");
-    }
-    #[test]
-    fn image_rejects_negative_nine_slice() {
-        let (mut document, inspector, id) = setup();
-        let value = ImageFields {
-            texture: "assets/textures/ui/panel.png".to_owned(),
-            nine_slice_l: -1.0,
-            ..ImageFields::default()
-        };
-        assert!(matches!(
-            inspector.set_image(&mut document, id, value),
-            Err(InspectorError::InvalidImage(_))
-        ));
-        assert!(
-            !document.scene.entities[&id]
-                .components
-                .contains_key("Image")
+        let entity = document.scene.entities.get_mut(&id).unwrap();
+        entity.components.insert(
+            "WorldText".to_owned(),
+            "text=受伤-12;font_size=18;color=1,0.2,0.2;offset=0,-24;centered=true".to_owned(),
         );
-    }
-    #[test]
-    fn world_text_round_trips_through_the_inspector() {
-        let (mut document, inspector, id) = setup();
-        inspector
-            .set_world_text(
-                &mut document,
-                id,
-                WorldTextFields {
-                    text: "受伤-12".to_owned(),
-                    font_size: 18.0,
-                    color_r: 1.0,
-                    color_g: 0.2,
-                    color_b: 0.2,
-                    offset_y: -24.0,
-                    centered: true,
-                    ..WorldTextFields::default()
-                },
-            )
-            .unwrap();
-        let stored = document.scene.entities[&id]
-            .components
-            .get("WorldText")
-            .expect("WorldText written")
-            .clone();
-        assert!(stored.contains("centered=true"), "{stored}");
-
-        // 面板快照解码回同一份字段。
-        let decoded = inspector
-            .snapshot(&document, id)
-            .unwrap()
-            .world_text
-            .expect("world text snapshot");
-        assert_eq!(decoded.text, "受伤-12");
-        assert_eq!(decoded.offset_y, -24.0);
-        assert!(decoded.centered);
+        let snapshot = inspector.snapshot(&document, id).unwrap();
+        assert!(!format!("{snapshot:?}").contains("world_text"));
 
         // 存盘再读回：场景文本必须无损往返（组件串里带中文与分号风险）。
         let text = document.scene.to_text();
@@ -2444,59 +2092,30 @@ mod tests {
         assert_eq!(reloaded.offset, [0.0, -24.0]);
         assert!(reloaded.centered);
 
-        inspector.clear_world_text(&mut document, id).unwrap();
-        assert!(
-            !document.scene.entities[&id]
-                .components
-                .contains_key("WorldText")
-        );
+        // 非有限 offset：schema 规则仍拒绝（原来由编辑器 validate_world_text 拦）。
+        let registry = engine::core::component_schema::builtin_registry();
+        assert!(registry["WorldText"]
+            .parse("text=x;font_size=18;offset=NaN,0")
+            .is_err());
     }
-
-    #[test]
-    fn world_text_rejects_non_finite_offset() {
-        let (mut document, inspector, id) = setup();
-        let value = WorldTextFields {
-            offset_x: f32::NAN,
-            ..WorldTextFields::default()
-        };
-        assert!(matches!(
-            inspector.set_world_text(&mut document, id, value),
-            Err(InspectorError::InvalidWorldText(_))
-        ));
-        assert!(
-            !document.scene.entities[&id]
-                .components
-                .contains_key("WorldText")
-        );
-    }
+    /// `Image` 的缓冲管线已随面板迁移删除（第 22 轮）；见
+    /// `image_is_edited_through_the_schema_path` 对迁移后语义的验证。
     #[test]
     fn image_nine_slice_persists_through_scene_text() {
-        let (mut document, inspector, id) = setup();
-        inspector
-            .set_image(
-                &mut document,
-                id,
-                ImageFields {
-                    texture: "assets/textures/ui/panel.png".to_owned(),
-                    nine_slice_l: 8.0,
-                    nine_slice_r: 8.0,
-                    nine_slice_t: 16.0,
-                    nine_slice_b: 16.0,
-                    ..ImageFields::default()
-                },
-            )
-            .unwrap();
+        let (mut document, _inspector, id) = setup();
+        let entity = document.scene.entities.get_mut(&id).unwrap();
+        entity.components.insert(
+            "Image".to_owned(),
+            "texture=assets/textures/ui/panel.png;color=1,1,1;nine_slice=8,8,16,16".to_owned(),
+        );
         let text = document.scene.to_text();
         let loaded = engine::core::scene::Scene::from_text(&text).unwrap();
         let stored = loaded.entities[&id]
             .components
             .get("Image")
             .expect("Image persisted");
-        let decoded = decode_image(stored).unwrap();
-        assert_eq!(decoded.nine_slice_l, 8.0);
-        assert_eq!(decoded.nine_slice_r, 8.0);
-        assert_eq!(decoded.nine_slice_t, 16.0);
-        assert_eq!(decoded.nine_slice_b, 16.0);
+        let parsed = engine::core::ui::UiImage::from_component_str(stored).expect("引擎解析器");
+        assert_eq!(parsed.nine_slice, Some([8.0, 8.0, 16.0, 16.0]));
     }
     #[test]
     fn text_font_roundtrips_via_snapshot_and_scene_text() {

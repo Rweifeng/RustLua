@@ -1,17 +1,23 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 mod actions;
+mod command_router;
 mod geometry;
 mod import;
+mod menu;
 mod panels;
+mod perf_baseline;
 mod preview_session;
 mod publish;
+mod scene_drag;
 mod scene_interaction;
 mod ui_editor;
 mod util;
 
 use crate::panels::progress::ProgressPanel;
 use crate::preview_session::PreviewSession;
+// E11：场景工具枚举只有**一处**定义（交互词汇表里），main.rs 不再自带一份。
+use crate::scene_interaction::SceneTool;
 use crate::util::{configure_cjk_fallback, format_project_error};
 
 use std::{
@@ -23,11 +29,10 @@ use std::{
 };
 
 use editor::{
-    AutoSaveController, Camera3DFields, Collider3dFields, CommandHistory, ImageFields,
-    InspectorState, LightFields, PlaySession, ProjectDocument, ProjectInfo, RecoveryManager,
-    RecoveryScan, ResourceBrowserState, SceneTreeState, SelectionModel, TextFields,
-    Transform3DFields, TransformFields, TransformSpace, WorldTextFields, check_project,
-    open_project,
+    AutoSaveController, Camera3DFields, Collider3dFields, InspectorState,
+    PlaySession, ProjectDocument, ProjectInfo, RecoveryManager, RecoveryScan, ResourceBrowserState,
+    SceneTreeState, SelectionModel, TextFields, Transform3DFields, TransformFields, TransformSpace,
+    check_project, open_project,
 };
 use eframe::egui;
 use engine::core::{
@@ -65,6 +70,10 @@ struct Arguments {
     restore_spatial: bool,
     /// 迁移报告的落盘路径（docs/54 §8-⑧ 的"报告"）：给了就写一份可归档的报告 artifact。
     migrate_report: Option<PathBuf>,
+    /// ER-01 基线：无窗口、无 GPU 的编辑器性能基线报告（docs/55 阶段 0）。
+    perf_baseline: bool,
+    /// 基线报告落盘路径（可选；同时始终打印到 stdout）。
+    perf_report: Option<PathBuf>,
 }
 
 fn parse_arguments() -> Result<Arguments, String> {
@@ -91,12 +100,21 @@ fn parse_arguments() -> Result<Arguments, String> {
                     .ok_or_else(|| "--migrate-report 需要一个路径参数".to_owned())?;
                 arguments.migrate_report = Some(PathBuf::from(path));
             }
+            "--perf-baseline" => arguments.perf_baseline = true,
+            "--perf-report" => {
+                let path = values
+                    .next()
+                    .ok_or_else(|| "--perf-report 需要一个路径参数".to_owned())?;
+                arguments.perf_report = Some(PathBuf::from(path));
+            }
             "--help" | "-h" => {
                 println!(
                     "用法：editor [--project <项目路径>] [--check]\n\
                      \x20     editor --project <项目路径> --migrate-spatial [--migrate-spatial-write]\n\
                      \x20     editor --project <项目路径> --restore-spatial\n\
-                     \x20     （迁移命令可加 --migrate-report <路径> 把报告落盘；有实体被拒绝或出错时退出码为 2）"
+                     \x20     editor --perf-baseline [--perf-report <路径>]\n\
+                     \x20     （迁移命令可加 --migrate-report <路径> 把报告落盘；有实体被拒绝或出错时退出码为 2）\n\
+                     \x20     （--perf-baseline 无窗口运行 docs/55 ER-01 基线场景；有场景不达标时退出码为 2）"
                 );
                 std::process::exit(0);
             }
@@ -316,6 +334,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
+    if arguments.perf_baseline {
+        // ER-01：无窗口基线报告；有场景不达标时退出码 2（可当质量门）。
+        let ok = perf_baseline::run_and_write_report(arguments.perf_report.as_deref())?;
+        if !ok {
+            std::process::exit(2);
+        }
+        return Ok(());
+    }
+
     let project = arguments
         .project
         .as_ref()
@@ -370,6 +397,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             if app.project_loaded {
                 let root = app.project.root.clone();
                 app.record_recent_project(&root);
+                // 读取持久化布局（缺失/损坏回落默认，损坏不覆盖源文件）。
+                app.load_layout_for_project();
             }
             Ok(Box::new(app))
         }),
@@ -389,6 +418,8 @@ struct EditorApp {
     console_output: Vec<String>,
     /// 编辑器侧提示（如 Scene View 回读状态），与 Lua 控制台输出分开，显示在“编辑器日志”分类。
     console_notices: Vec<String>,
+    /// 控制台行索引缓存（按分类/过滤/级别/来源代数失效），配合固定行高虚拟滚动。
+    console_rows_cache: crate::panels::console::ConsoleRowCache,
     console_filter: String,
     console_log_level_filter: ConsoleLogLevelFilter,
     /// 控制台左侧分类导航当前选中的日志来源。
@@ -398,12 +429,8 @@ struct EditorApp {
     transform3d: Transform3DFields,
     mesh_renderer: String,
     camera3d: Camera3DFields,
-    light: LightFields,
     collider3d: Collider3dFields,
     text: TextFields,
-    /// WP4：世界空间文字（锚在世界位置，与屏幕 `text` 是两套组件）。
-    world_text: WorldTextFields,
-    image: ImageFields,
     ui_layout: editor::UiLayoutFields,
     container: editor::ContainerFields,
     sprite_reference: String,
@@ -416,20 +443,18 @@ struct EditorApp {
     inspector_transform_space: TransformSpace,
     inspector_collider3d_open: bool,
     inspector_text_open: bool,
-    inspector_world_text_open: bool,
-    inspector_image_open: bool,
     inspector_ui_layout_open: bool,
     inspector_sprite_open: bool,
     inspector_tilemap_open: bool,
     inspector_animation_open: bool,
     inspector_add_component: String,
-    new_scene_name: String,
     entity_name: String,
     status: String,
     /// Play 生命周期状态机（M11-01）；`play_session` 只在实际运行/开始切换时存在。
-    play_state: PlayState,
+    /// Play 模式状态机（Pause/Step/Restart + 固定步计划，docs/55 ER-10）。
+    play: editor::PlayController,
     play_session: Option<PlaySession>,
-    history: CommandHistory,
+    history: editor::CommandService,
     recovery: RecoveryManager,
     autosave: AutoSaveController,
     recovery_scan: RecoveryScan,
@@ -441,7 +466,12 @@ struct EditorApp {
     import_path: String,
     workspace_tab: WorkspaceTab,
     scene_zoom: f32,
-    scene_tool: SceneTool,
+    /// Scene View 交互状态机（E11）：**工具与交互阶段的唯一事实源**。
+    ///
+    /// 以前这里是裸的 `scene_tool: SceneTool` 字段 + `scene_state` 里的
+    /// `box_select_start`，工具的判断散落在各处；现在工具切换与指针事件都走这里，
+    /// 阶段（Idle/Dragging/Marquee/Painting）由状态机推导。
+    interaction: crate::scene_interaction::ToolStateMachine,
     scene_view_mode: SceneViewMode,
     show_scene_guides: bool,
     show_safe_area: bool,
@@ -543,6 +573,26 @@ struct EditorApp {
     resource_tree_cache: Option<crate::panels::resource_browser::ResourceTreeCache>,
     /// 首次 update 时执行一次资源刷新：启动先绘制窗口，扫描不阻塞首帧。
     refresh_pending: bool,
+    /// 资源刷新任务代际；只允许最新任务提交结果。
+    resource_refresh_generation: u64,
+    resource_refresh_job: Option<editor::RefreshHandle>,
+    /// 文件监听句柄（worker 线程扫描 + 通道回传）：外部改动 2 秒预算内触发后台刷新。
+    file_watcher: Option<editor::WatchHandle>,
+    /// 文件轮询间隔（默认 500 ms：预算 2 秒，留足余量给后台扫描与提交）。
+    file_watch_interval: std::time::Duration,
+    /// 持久化布局（docs/55 P1）：面板宽度/可见性、工作台标签、视图模式与缩放。
+    layout: editor::EditorLayout,
+    /// 布局加载结果（缺失/损坏时的原因，用于状态栏提示与"重置布局"）。
+    layout_load: editor::LayoutLoad,
+    /// Editor Profiler（docs/55 P0）：帧/面板/命令耗时、计数器与 gauge。
+    profiler: editor::EditorProfiler,
+    hierarchy_visible_cache: crate::panels::hierarchy::HierarchyVisibleCache,
+    /// Hierarchy 小写化名称缓存（按文档修订失效）：搜索改词不再重算 10k 个名字。
+    hierarchy_names: crate::panels::hierarchy::HierarchyNameCache,
+    /// Hierarchy 行内容高度探针（docs/55 §8 的"不得重叠/裁字"门槛用测量而非肉眼）。
+    hierarchy_row_probe: crate::panels::hierarchy::RowHeightProbe,
+    /// Console 行内容高度探针（同上）。
+    console_row_probe: crate::panels::console::RowHeightProbe,
     /// 2D Scene 视图渲染缓存（变更检测，避免内容未变化时重复渲染）。
     scene_view_cache_2d: SceneViewCache2d,
     /// 3D Scene 视图渲染缓存（同上）。
@@ -743,23 +793,24 @@ struct HierarchyRename {
 /// 关键约束：初始化全部成功（运行时 + 离屏渲染器 + 预览纹理）后才能进入
 /// `Playing`；任一初始化失败进入 `StartFailed` 并保持编辑态；`Stopping` 期间
 /// 释放临时世界/输入/GPU 纹理/Lua 状态后回到 `Editing`。
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum PlayState {
-    #[default]
-    Editing,
-    Starting,
-    Playing,
-    StartFailed,
-    Stopping,
-}
+/// Play 模式由 `editor::PlayController` 持有状态机（含 Pause/Step/Restart，docs/55 ER-10）；
+/// 这里只保留一个转发访问器，避免"状态两处各写一份"。
+impl EditorApp {
+    fn play_state(&self) -> editor::PlayState {
+        self.play.state()
+    }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SceneTool {
-    Select,
-    Move,
-    Rotate,
-    Scale,
-    TilePaint,
+    /// 当前场景工具（E11：由交互状态机持有，不再是一个裸字段）。
+    pub(crate) fn scene_tool(&self) -> SceneTool {
+        self.interaction.tool()
+    }
+
+    /// 切换场景工具：走状态机，因此**切换工具会取消进行中的交互**
+    /// （`ToolStateMachine::handle(ToolSelected)` 的既有语义，不再需要调用方自己清场）。
+    pub(crate) fn set_scene_tool(&mut self, tool: SceneTool) {
+        self.interaction
+            .handle(crate::scene_interaction::InteractionEvent::ToolSelected(tool));
+    }
 }
 
 /// 场景视图投影模式：2D 画布（俯视 XY）或 3D 画布（俯视 XZ）。
@@ -874,7 +925,6 @@ struct SceneEditorState {
     collapsed: std::collections::BTreeSet<SceneEntityId>,
     hidden: std::collections::BTreeSet<SceneEntityId>,
     locked: std::collections::BTreeSet<SceneEntityId>,
-    box_select_start: Option<egui::Pos2>,
     tile_paint_active: bool,
     tile_paint_last_cell: Option<(usize, usize, bool)>,
     /// M19-03 矩形工具拖拽起点/当前格（TilePaint 的矩形填充与区域复制共用）。
@@ -952,6 +1002,7 @@ impl EditorApp {
             console_input: String::new(),
             console_output: Vec::new(),
             console_notices: Vec::new(),
+            console_rows_cache: Default::default(),
             console_filter: String::new(),
             console_log_level_filter: ConsoleLogLevelFilter::Error,
             console_tab: ConsoleTab::Editor,
@@ -960,11 +1011,8 @@ impl EditorApp {
             transform3d: Transform3DFields::default(),
             mesh_renderer: String::new(),
             camera3d: Camera3DFields::default(),
-            light: LightFields::default(),
             collider3d: Collider3dFields::default(),
             text: TextFields::default(),
-            world_text: WorldTextFields::default(),
-            image: ImageFields::default(),
             ui_layout: editor::UiLayoutFields::default(),
             container: editor::ContainerFields::default(),
             sprite_reference: String::new(),
@@ -985,22 +1033,19 @@ impl EditorApp {
             inspector_transform_space: TransformSpace::ThreeD,
             inspector_collider3d_open: false,
             inspector_text_open: true,
-            inspector_world_text_open: true,
-            inspector_image_open: true,
             inspector_ui_layout_open: true,
             inspector_sprite_open: true,
             inspector_tilemap_open: true,
             inspector_animation_open: true,
             inspector_add_component: "Transform3D".to_owned(),
-            new_scene_name: "main".to_owned(),
             entity_name: "Entity".to_owned(),
             status: recovery_scan_error.map_or_else(
                 || "尚未创建场景".to_owned(),
                 |error| format!("恢复快照扫描失败：{error}"),
             ),
-            play_state: PlayState::Editing,
+            play: editor::PlayController::new(),
             play_session: None,
-            history: CommandHistory::new(),
+            history: editor::CommandService::new(editor::CommandService::DEFAULT_MAX_ENTRIES),
             recovery,
             autosave: AutoSaveController::new(Duration::from_secs(10)),
             recovery_scan,
@@ -1009,7 +1054,7 @@ impl EditorApp {
             import_path: String::new(),
             workspace_tab: WorkspaceTab::Scene,
             scene_zoom: 1.0,
-            scene_tool: SceneTool::Select,
+            interaction: crate::scene_interaction::ToolStateMachine::new(),
             scene_view_mode: SceneViewMode::default(),
             show_scene_guides: false,
             show_safe_area: false,
@@ -1077,6 +1122,17 @@ impl EditorApp {
             thumbnail_worker: crate::panels::resource_browser::ThumbnailWorker::new(),
             resource_tree_cache: None,
             refresh_pending: false,
+            resource_refresh_generation: 0,
+            resource_refresh_job: None,
+            file_watcher: None,
+            file_watch_interval: std::time::Duration::from_millis(500),
+            layout: editor::EditorLayout::default(),
+            layout_load: editor::LayoutLoad::Missing,
+            profiler: editor::EditorProfiler::new(editor::DEFAULT_FRAME_BUDGET_MS),
+            hierarchy_visible_cache: Default::default(),
+            hierarchy_names: Default::default(),
+            hierarchy_row_probe: Default::default(),
+            console_row_probe: Default::default(),
             scene_view_cache_2d: SceneViewCache2d::default(),
             scene_view_cache_3d: SceneViewCache3d::default(),
             scene_view_3d_typed: SceneView3dTyped::default(),
@@ -1116,11 +1172,13 @@ impl EditorApp {
         }
     }
 
+    /// 编辑器是否处于 Play 模式（含启动中/停止中的过渡态）。
+    ///
+    /// 工具栏的 Play/Stop 按钮、实体编辑的拒绝判断都走这个口径：`Starting` 期间
+    /// 快照已经隔离，必须显示"停止"而不是"开始"，否则双击会重复启动。
+    /// 与 `PlayController::is_playing()`（是否真的持有运行时会话）刻意区分开。
     fn is_playing(&self) -> bool {
-        matches!(
-            self.play_state,
-            PlayState::Starting | PlayState::Playing | PlayState::Stopping
-        )
+        self.play.state().is_in_play_mode()
     }
 
     /// 当前项目可用的字体资源（项目相对正斜杠路径，如 `assets/fonts/x.ttf`），
@@ -1145,7 +1203,7 @@ impl EditorApp {
         EditorContextSnapshot {
             selection: self.selection.clone(),
             workspace_tab: self.workspace_tab,
-            scene_tool: self.scene_tool,
+            scene_tool: self.scene_tool(),
             scene_view_mode: self.scene_view_mode,
             scene_zoom: self.scene_zoom,
             scene_pan: self.scene_state.pan,
@@ -1158,7 +1216,7 @@ impl EditorApp {
     fn restore_editor_context(&mut self, snapshot: EditorContextSnapshot) {
         self.selection = snapshot.selection;
         self.workspace_tab = snapshot.workspace_tab;
-        self.scene_tool = snapshot.scene_tool;
+        self.set_scene_tool(snapshot.scene_tool);
         self.scene_view_mode = snapshot.scene_view_mode;
         self.scene_zoom = snapshot.scene_zoom;
         self.scene_state.pan = snapshot.scene_pan;
@@ -1273,7 +1331,7 @@ impl EditorApp {
         let started = Instant::now();
         for iteration in 0..iterations {
             self.play();
-            if !matches!(self.play_state, PlayState::Playing) {
+            if !self.play_state().is_running() {
                 tracing::error!(
                     target: "editor",
                     "[editor-perf] playstop window failed: start failed at iteration={iteration}"
@@ -1334,6 +1392,226 @@ impl EditorApp {
 
     fn focus_hierarchy_delete_target(&mut self) {
         self.delete_target = DeleteTarget::Hierarchy;
+    }
+
+    /// 从项目读取持久化布局并应用到当前会话（docs/55 P1：可保存布局 + 损坏恢复）。
+    ///
+    /// 缺失/损坏都回落到默认布局；损坏时**不覆盖**源文件，并把原因写进状态栏，
+    /// 用户可据此修复或显式「重置布局」。
+    pub(crate) fn load_layout_for_project(&mut self) {
+        let load = editor::load_layout(&crate::util::strip_verbatim_prefix(&self.project.root));
+        if let Some(reason) = load.reason() {
+            self.push_console_notice(format!("布局文件损坏，已回落到默认布局：{reason}"));
+            self.status = format!("布局文件损坏，已用默认布局：{reason}");
+        }
+        self.layout = load.layout();
+        self.layout_load = load;
+        self.apply_layout();
+    }
+
+    /// 把布局字段映射到编辑器状态（面板可见性、工作台标签、视图模式/工具/缩放/分辨率）。
+    fn apply_layout(&mut self) {
+        self.show_resources_panel = self.layout.panel_is_visible(editor::PANEL_RESOURCE);
+        self.show_lua_console = self.layout.panel_is_visible(editor::PANEL_CONSOLE);
+        self.workspace_tab = match self.layout.workspace_tab.as_str() {
+            "game" => WorkspaceTab::Game,
+            _ => WorkspaceTab::Scene,
+        };
+        self.scene_view_mode = match self.layout.scene_view_mode.as_str() {
+            "3d" => SceneViewMode::View3D,
+            "prefab" => SceneViewMode::Prefab,
+            "widget" => SceneViewMode::Widget,
+            _ => SceneViewMode::View2D,
+        };
+        self.set_scene_tool(match self.layout.scene_tool.as_str() {
+            "move" => SceneTool::Move,
+            "rotate" => SceneTool::Rotate,
+            "scale" => SceneTool::Scale,
+            _ => SceneTool::Select,
+        });
+        self.scene_zoom = self.layout.scene_zoom;
+        self.preview_resolution = self.layout.preview_resolution;
+    }
+
+    /// 把当前会话状态写回布局字段（保存前调用）。
+    pub(crate) fn capture_layout(&mut self) {
+        self.layout
+            .panel_visible
+            .insert(editor::PANEL_RESOURCE.to_owned(), self.show_resources_panel);
+        self.layout
+            .panel_visible
+            .insert(editor::PANEL_CONSOLE.to_owned(), self.show_lua_console);
+        self.layout.workspace_tab = match self.workspace_tab {
+            WorkspaceTab::Scene => "scene",
+            WorkspaceTab::Game => "game",
+        }
+        .to_owned();
+        self.layout.scene_view_mode = match self.scene_view_mode {
+            SceneViewMode::View2D => "2d",
+            SceneViewMode::View3D => "3d",
+            SceneViewMode::Prefab => "prefab",
+            SceneViewMode::Widget => "widget",
+        }
+        .to_owned();
+        self.layout.scene_tool = match self.scene_tool() {
+            SceneTool::Select => "select",
+            SceneTool::Move => "move",
+            SceneTool::Rotate => "rotate",
+            SceneTool::Scale => "scale",
+            // TilePaint 是模式化工具（进入/离开由瓦片地图工具条驱动），不持久化。
+            SceneTool::TilePaint => "select",
+        }
+        .to_owned();
+        self.layout.scene_zoom = self.scene_zoom;
+        self.layout.preview_resolution = self.preview_resolution;
+        self.layout.clamp();
+    }
+
+    /// 面板可见性/工作台/视图模式变化后自动保存布局（无变化时不写盘）。
+    fn maybe_persist_layout_on_change(&mut self) {
+        if !self.project_loaded {
+            return;
+        }
+        let mut current = self.layout.clone();
+        let saved = current.clone();
+        let visible_resource = current.panel_is_visible(editor::PANEL_RESOURCE);
+        let visible_console = current.panel_is_visible(editor::PANEL_CONSOLE);
+        current
+            .panel_visible
+            .insert(editor::PANEL_RESOURCE.to_owned(), self.show_resources_panel);
+        current
+            .panel_visible
+            .insert(editor::PANEL_CONSOLE.to_owned(), self.show_lua_console);
+        let tab = match self.workspace_tab {
+            WorkspaceTab::Scene => "scene",
+            WorkspaceTab::Game => "game",
+        };
+        current.workspace_tab = tab.to_owned();
+        let view_mode = match self.scene_view_mode {
+            SceneViewMode::View2D => "2d",
+            SceneViewMode::View3D => "3d",
+            SceneViewMode::Prefab => "prefab",
+            SceneViewMode::Widget => "widget",
+        };
+        current.scene_view_mode = view_mode.to_owned();
+        current.scene_tool = match self.scene_tool() {
+            SceneTool::Select => "select",
+            SceneTool::Move => "move",
+            SceneTool::Rotate => "rotate",
+            SceneTool::Scale => "scale",
+            SceneTool::TilePaint => "select",
+        }
+        .to_owned();
+        current.scene_zoom = self.scene_zoom;
+        current.preview_resolution = self.preview_resolution;
+        current.clamp();
+        let changed = current.panel_is_visible(editor::PANEL_RESOURCE) != visible_resource
+            || current.panel_is_visible(editor::PANEL_CONSOLE) != visible_console
+            || current.workspace_tab != saved.workspace_tab
+            || current.scene_view_mode != saved.scene_view_mode
+            || current.scene_tool != saved.scene_tool
+            || (current.scene_zoom - saved.scene_zoom).abs() > f32::EPSILON
+            || current.preview_resolution != saved.preview_resolution;
+        self.layout = current;
+        if !changed {
+            return;
+        }
+        let root = crate::util::strip_verbatim_prefix(&self.project.root);
+        match editor::save_layout(&root, &self.layout) {
+            Ok(()) => self.profiler.bump("layout_auto_saved"),
+            Err(error) => {
+                self.profiler.bump("layout_save_failed");
+                tracing::warn!(target: "editor", "[layout] auto-save failed: {error}");
+            }
+        }
+    }
+
+    /// 保存布局（原子写；失败只提示，不中断编辑）。
+    pub(crate) fn persist_layout(&mut self) {
+        if !self.project_loaded {
+            return;
+        }
+        self.capture_layout();
+        let root = crate::util::strip_verbatim_prefix(&self.project.root);
+        match editor::save_layout(&root, &self.layout) {
+            Ok(()) => {
+                self.profiler.bump("layout_saved");
+                self.status = "已保存布局".to_owned();
+            }
+            Err(error) => {
+                self.profiler.bump("layout_save_failed");
+                self.status = format!("保存布局失败：{error}");
+            }
+        }
+    }
+
+    /// 重置为默认布局并落盘（布局重置）。
+    pub(crate) fn reset_layout_to_default(&mut self) {
+        let root = crate::util::strip_verbatim_prefix(&self.project.root);
+        match editor::reset_layout(&root) {
+            Ok(layout) => {
+                self.layout = layout;
+                self.layout_load = editor::LayoutLoad::Loaded(self.layout.clone());
+                self.apply_layout();
+                self.profiler.bump("layout_reset");
+                self.status = "已重置为默认布局".to_owned();
+            }
+            Err(error) => self.status = format!("重置布局失败：{error}"),
+        }
+    }
+
+    /// 帧末刷新 profiler gauge：历史深度、日志/输出行数、资源条目数与后台队列长度。
+    fn update_profiler_gauges(&mut self) {
+        if !self.profiler.enabled() {
+            return;
+        }
+        let undo_len = self.history.undo_len() as f64;
+        let redo_len = self.history.redo_len() as f64;
+        let dropped = self.history.dropped_entries() as f64;
+        let log_lines = self.log_sink.snapshot().len() as f64;
+        let console_lines = self.console_output.len() as f64;
+        let notices = self.console_notices.len() as f64;
+        let console_rows = self.console_rows_cache.len() as f64;
+        let resource_entries = self.resources.entries().len() as f64;
+        let pending_imports = self.resources.pending_imports().len() as f64;
+        let refresh_in_flight = f64::from(self.resource_refresh_job.is_some());
+        let scene_entities = self
+            .document
+            .current_scene
+            .as_ref()
+            .map_or(0.0, |document| document.scene.entities.len() as f64);
+        let visible_entities = self.hierarchy_visible_cache.len() as f64;
+        let profiler = &mut self.profiler;
+        profiler.set_gauge("history_undo_len", undo_len);
+        profiler.set_gauge("history_redo_len", redo_len);
+        profiler.set_gauge("history_dropped_entries", dropped);
+        profiler.set_gauge("log_sink_lines", log_lines);
+        profiler.set_gauge("console_output_lines", console_lines);
+        profiler.set_gauge("console_notice_lines", notices);
+        profiler.set_gauge("console_rows_indexed", console_rows);
+        profiler.set_gauge("resource_entries", resource_entries);
+        profiler.set_gauge("resource_pending_imports", pending_imports);
+        profiler.set_gauge("resource_refresh_in_flight", refresh_in_flight);
+        profiler.set_gauge("scene_entities", scene_entities);
+        profiler.set_gauge("hierarchy_visible_rows", visible_entities);
+        profiler.set_gauge(
+            "hierarchy_row_content_height",
+            f64::from(self.hierarchy_row_probe.max_content_height()),
+        );
+        profiler.set_gauge(
+            "console_row_content_height",
+            f64::from(self.console_row_probe.max_content_height()),
+        );
+        profiler.set_gauge("thumbnail_cache_entries", self.thumbnails.len() as f64);
+    }
+
+    fn push_console_output(&mut self, line: impl Into<String>) {
+        const MAX_CONSOLE_LINES: usize = 10_000;
+        self.console_output.push(line.into());
+        if self.console_output.len() > MAX_CONSOLE_LINES {
+            let overflow = self.console_output.len() - MAX_CONSOLE_LINES;
+            self.console_output.drain(..overflow);
+        }
     }
 
     fn push_console_notice(&mut self, line: impl Into<String>) {
@@ -1445,6 +1723,9 @@ impl EditorApp {
 
 impl eframe::App for EditorApp {
     fn update(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
+        // Editor Profiler（docs/55 P0）：帧起点 + 本帧各面板/命令耗时。
+        let frame_started = Instant::now();
+        self.profiler.begin_frame(frame_started);
         // E06：用户点窗口 X / Alt+F4 —— 若当前文档 dirty，阻止关闭并弹确认窗
         // （确认「保存并继续 / 放弃并继续」后再真正 Close；「取消」保持原状态）。
         self.guard_close_request(context);
@@ -1492,23 +1773,29 @@ impl eframe::App for EditorApp {
         // 键盘事件（见 `EditorApp::capture_input_binding`），使捕获不会顺手触发
         // Ctrl+Z / Ctrl+S / Delete / Q/W/E/R 等命令。
         self.capture_input_binding(context);
+        // 快捷键统一走 typed 命令入口（docs/55 §4.1 规则 1：视图只发 action，
+        // 提交边界由 dispatch 统一编排）。Ctrl+Z 仍先做事务网关。
         if self.project_loaded
             && context.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Z))
         {
-            self.undo_with_transaction_guard();
+            self.dispatch(editor::EditorCommand::Undo);
         }
         if self.project_loaded
             && context.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Y))
         {
-            self.redo();
+            self.dispatch(editor::EditorCommand::Redo);
         }
         if self.project_loaded
             && context.input(|i| i.modifiers.command && i.key_pressed(egui::Key::S))
         {
-            // E08：Ctrl+S 前先把 Inspector 挂起缓冲提交为一条历史，保证落盘内容
-            // 与 Undo 栈一致（无挂起编辑时 no-op）。
-            self.commit_inspector_edits_if_dirty();
-            self.save_scene();
+            self.dispatch(editor::EditorCommand::Save);
+        }
+        // Ctrl+Shift+L：保存布局（docs/55 P1：可保存布局；重置在菜单里）。
+        if self.project_loaded
+            && context
+                .input(|i| i.modifiers.command && i.modifiers.shift && i.key_pressed(egui::Key::L))
+        {
+            self.persist_layout();
         }
         // H04：Ctrl+D 原地复制 / Ctrl+C 复制 / Ctrl+V 粘贴为子节点（Unity 语义）。
         // 与 Ctrl+S 同级：仅场景工作台、无文本焦点、无活动事务时生效；Play 锁
@@ -1519,7 +1806,7 @@ impl eframe::App for EditorApp {
             && !self.is_edit_transaction_active()
         {
             if context.input(|i| i.modifiers.command && i.key_pressed(egui::Key::D)) {
-                self.duplicate_selected_entity();
+                self.dispatch(editor::EditorCommand::DuplicateSelection);
             } else if context.input(|i| i.modifiers.command && i.key_pressed(egui::Key::C)) {
                 self.copy_selected_entity();
             } else if context.input(|i| i.modifiers.command && i.key_pressed(egui::Key::V)) {
@@ -1534,17 +1821,22 @@ impl eframe::App for EditorApp {
             self.handle_delete_shortcut();
         }
         if self.workspace_tab == WorkspaceTab::Scene && !context.wants_keyboard_input() {
+            let mut requested = None;
             context.input(|input| {
                 if input.key_pressed(egui::Key::Q) {
-                    self.scene_tool = SceneTool::Select;
+                    requested = Some(SceneTool::Select);
                 } else if input.key_pressed(egui::Key::W) {
-                    self.scene_tool = SceneTool::Move;
+                    requested = Some(SceneTool::Move);
                 } else if input.key_pressed(egui::Key::E) {
-                    self.scene_tool = SceneTool::Rotate;
+                    requested = Some(SceneTool::Rotate);
                 } else if input.key_pressed(egui::Key::R) {
-                    self.scene_tool = SceneTool::Scale;
+                    requested = Some(SceneTool::Scale);
                 }
             });
+            // 走状态机：切换工具会自动取消进行中的拖拽/框选（E11 既有语义）。
+            if let Some(tool) = requested {
+                self.set_scene_tool(tool);
+            }
         }
         // E08：Escape 取消活动事务（拖动/Inspector 编辑的取消语义，见
         // cancel_edit_on_escape）。置于 Delete 之后，非键入状态生效。确实执行了
@@ -1555,6 +1847,9 @@ impl eframe::App for EditorApp {
         }
         self.sync_hierarchy_metadata();
         self.poll_progress();
+        self.poll_resource_refresh();
+        // 外部文件变化（保存/生成器/其它工具）：轮询监听 → 触发后台资源刷新。
+        self.poll_file_watcher();
         // 待导入资源非空且无进行中任务时，启动后台资源导入（不阻塞 UI）。
         self.start_resource_import();
         // 行1 标题栏 + 行2 菜单栏（含崩溃恢复「⚠ 恢复」下拉）。
@@ -1562,38 +1857,55 @@ impl eframe::App for EditorApp {
 
         // 行4 控制台：先占底部以获得全宽。
         if self.show_lua_console {
+            let started = Instant::now();
             self.draw_lua_console_panel(context);
+            self.profiler.record_panel("console", started.elapsed());
         }
 
         // 行3 资源面板（最左侧）。
         if self.show_resources_panel {
+            let started = Instant::now();
             let refresh = self.draw_resource_browser_panel(context);
+            self.profiler
+                .record_panel("resource_browser", started.elapsed());
             if refresh {
                 self.refresh_resources();
             }
         }
         // 行3 层级面板（资源面板右侧）。
-        self.draw_hierarchy_panel(context);
+        {
+            let started = Instant::now();
+            self.draw_hierarchy_panel(context);
+            self.profiler.record_panel("hierarchy", started.elapsed());
+        }
 
         // 行3 属性面板（右侧，先于中央绘制，确保 Scene 视图 rect 不延伸到其下方，
         // 避免在属性面板操作鼠标时误触发 Scene 视图的缩放/平移）。
-        egui::SidePanel::right("inspector")
-            .resizable(true)
-            .default_width(360.0)
-            .min_width(260.0)
-            .show(context, |ui| {
-                self.draw_inspector_panel(ui);
-            });
+        {
+            let started = Instant::now();
+            egui::SidePanel::right("inspector")
+                .resizable(true)
+                .default_width(self.layout.panel_width(editor::PANEL_INSPECTOR))
+                .min_width(260.0)
+                .show(context, |ui| {
+                    self.draw_inspector_panel(ui);
+                });
+            self.profiler.record_panel("inspector", started.elapsed());
+        }
 
         // 行3 Scene+Game（中央）+ 工具栏。
-        egui::CentralPanel::default().show(context, |ui| {
-            self.draw_workspace_toolbar(ui);
-            ui.separator();
-            match self.workspace_tab {
-                WorkspaceTab::Scene => self.draw_scene_view(ui),
-                WorkspaceTab::Game => self.draw_game_view(ui),
-            }
-        });
+        {
+            let started = Instant::now();
+            egui::CentralPanel::default().show(context, |ui| {
+                self.draw_workspace_toolbar(ui);
+                ui.separator();
+                match self.workspace_tab {
+                    WorkspaceTab::Scene => self.draw_scene_view(ui),
+                    WorkspaceTab::Game => self.draw_game_view(ui),
+                }
+            });
+            self.profiler.record_panel("workspace", started.elapsed());
+        }
 
         self.progress.window(context);
         self.draw_publish_panel(context);
@@ -1610,12 +1922,98 @@ impl eframe::App for EditorApp {
         // 缓冲为一条历史（Inspector 面板与 Scene View 各自的释放提交已先执行，
         // 这里只兜底「释放发生在面板外 / 文本 Enter」等漏网情形；无挂起即 no-op）。
         self.flush_frame_edit_boundary(context);
+        // 面板可见性/工作台/视图变化后自动落盘布局（一次小文件原子写，仅在真正变化时发生）。
+        self.maybe_persist_layout_on_change();
+        // 帧末汇总：帧耗时 + 会话级 gauge（历史深度/日志行数/资源条目/队列）。
+        self.profiler.end_frame(Instant::now());
+        self.update_profiler_gauges();
     }
 }
 
 #[cfg(test)]
 mod layout_tests {
+    use crate::{EditorApp, SceneTool, SceneViewMode, WorkspaceTab};
     use eframe::egui;
+    use engine::core::logging::LogSink;
+
+    /// 布局持久化的**接线**测试（不只是模块单测）：保存 → 重启 → 恢复同一状态；
+    /// 损坏文件回落默认且不改动源文件；重置写回默认。
+    #[test]
+    fn layout_round_trips_through_the_editor_shell() {
+        let root = std::env::temp_dir().join(format!(
+            "p2-editor-layout-shell-{}-{:?}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("temp root");
+
+        let project = || editor::ProjectInfo {
+            root: root.clone(),
+            version: "test".to_owned(),
+            directories: Vec::new(),
+        };
+        let mut app = EditorApp::new(project(), None, LogSink::new(64));
+        app.project_loaded = true;
+        // 改一批布局字段并保存。
+        app.show_lua_console = false;
+        app.workspace_tab = WorkspaceTab::Game;
+        app.scene_view_mode = SceneViewMode::View3D;
+        app.set_scene_tool(SceneTool::Rotate);
+        app.scene_zoom = 3.25;
+        app.preview_resolution = (1920, 1080);
+        app.layout
+            .panel_widths
+            .insert(editor::PANEL_INSPECTOR.to_owned(), 420.0);
+        app.persist_layout();
+        assert!(
+            editor::layout_path(&root).exists(),
+            "保存布局必须落盘：{}",
+            editor::layout_path(&root).display()
+        );
+
+        // 「重启」：新 App 读取同一项目。
+        let mut reloaded = EditorApp::new(project(), None, LogSink::new(64));
+        reloaded.project_loaded = true;
+        reloaded.load_layout_for_project();
+        assert!(!reloaded.show_lua_console, "面板可见性必须恢复");
+        assert_eq!(reloaded.workspace_tab, WorkspaceTab::Game);
+        assert_eq!(reloaded.scene_view_mode, SceneViewMode::View3D);
+        assert_eq!(reloaded.scene_tool(), SceneTool::Rotate);
+        assert!((reloaded.scene_zoom - 3.25).abs() < 1e-6);
+        assert_eq!(reloaded.preview_resolution, (1920, 1080));
+        assert_eq!(reloaded.layout.panel_width(editor::PANEL_INSPECTOR), 420.0);
+
+        // 损坏恢复：写入垃圾后加载必须回落默认，且**不覆盖**源文件。
+        let garbage = "{ this is not json";
+        std::fs::write(editor::layout_path(&root), garbage).expect("write garbage");
+        let mut broken = EditorApp::new(project(), None, LogSink::new(64));
+        broken.project_loaded = true;
+        broken.load_layout_for_project();
+        assert!(broken.show_lua_console, "损坏时必须回落默认布局");
+        assert_eq!(broken.workspace_tab, WorkspaceTab::Scene);
+        assert!(
+            broken.status.contains("损坏"),
+            "状态栏应说明原因：{}",
+            broken.status
+        );
+        assert_eq!(
+            std::fs::read_to_string(editor::layout_path(&root)).expect("read"),
+            garbage,
+            "损坏文件不得被静默覆盖"
+        );
+
+        // 重置：写回默认布局。
+        broken.reset_layout_to_default();
+        assert_eq!(
+            editor::load_layout(&root).layout(),
+            editor::EditorLayout::default()
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     /// 面板布局：左侧资源(200)+层级(190)、右侧属性(360)、中央。验证在多种窗口
     /// 宽度下，中央面板（Scene/Game 视图所在）都不与右侧属性面板重叠。

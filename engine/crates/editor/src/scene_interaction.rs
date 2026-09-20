@@ -1,25 +1,34 @@
 //! E11：Scene View 交互事件与工具状态机的可测试核心。
 //!
-//! 现阶段（批次 B 首步）把交互**词汇表**从 1500+ 行的 `scene_view.rs` 抽出：
-//! 输入采集层产生 [`InteractionEvent`]，工具状态机按事件流转
-//! [`ToolPhase`]，命中测试与实际文档写入仍留在 scene_view（后续条目
-//! 逐块迁移）。这样"事件 → 状态"的流转可以脱离 egui/GPU 独立单测。
-
-// 过渡性实现（E11 批次 B 首步）：事件词汇表与状态机已落地并单测，
-// scene_view.rs 尚未改写为事件驱动；接入前允许暂未消费的类型。
-#![allow(dead_code)]
+//! 交互**词汇表**（[`InteractionEvent`]）与工具状态机（[`ToolStateMachine`]）在这里，
+//! 命中测试与文档写入留在 `scene_view.rs` / shell。这样"事件 → 状态"的流转可以脱离
+//! egui/GPU 独立单测。
+//!
+//! **已接入生产路径**（docs/55 `ER-07` 首批接线）：`EditorApp` 用
+//! [`ToolStateMachine`] 持有"当前工具 + 交互阶段"，工具切换（快捷键/工具面板/布局恢复）
+//! 与 Scene View 的指针事件都走它；`scene_view` 不再自己维护 `box_select_start`，
+//! 框选起点直接读 [`ToolPhase::Marquee`]。
+//!
+//! 阶段判定的规则（由输入采集层提供 `hit`，状态机不自己做命中测试）：
+//!
+//! | 工具 | 按在实体上 | 按在空白处 |
+//! |---|---|---|
+//! | TilePaint | `Painting` | `Painting` |
+//! | 其它 | `Dragging` | `Marquee` |
+//!
+//! 修饰键（Ctrl/Shift）**不**参与阶段判定：它们只决定选择是"加入"还是"替换"，
+//! 属于选择语义；早期版本把它们编码进事件里，结果状态机与生产行为不一致。
 
 use std::fmt;
 
 /// Scene View 统一交互事件（输入采集层的输出词汇表）。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum InteractionEvent {
-    /// 主键按下（含修饰键状态与画布坐标）。
-    PointerDown {
-        pos: [f32; 2],
-        ctrl: bool,
-        shift: bool,
-    },
+    /// 主键按下（画布坐标 + 是否命中实体）。
+    ///
+    /// `hit` 由采集层做命中测试后给出：状态机只关心"按在了东西上还是空白处"，
+    /// 不重复实现 picking。
+    PointerDown { pos: [f32; 2], hit: bool },
     /// 主键拖动（已按下期间的位置更新）。
     PointerDrag { pos: [f32; 2] },
     /// 主键释放（结束拖拽/框选）。
@@ -124,17 +133,19 @@ impl ToolStateMachine {
                     false
                 }
             }
-            InteractionEvent::PointerDown { pos, ctrl, shift } => {
+            InteractionEvent::PointerDown { pos, hit } => {
                 if self.phase.is_active() {
                     return false; // 已在交互中：忽略重复 Down。
                 }
                 self.phase = match self.tool {
-                    SceneTool::Select if ctrl || shift => ToolPhase::Marquee {
+                    // TilePaint 是模式化工具：按下即进入连续绘制。
+                    SceneTool::TilePaint => ToolPhase::Painting,
+                    // 按在实体上 = 拖动；按在空白处 = 框选（任何工具下都成立）。
+                    _ if hit => ToolPhase::Dragging {
                         start: pos,
                         current: pos,
                     },
-                    SceneTool::TilePaint => ToolPhase::Painting,
-                    _ => ToolPhase::Dragging {
+                    _ => ToolPhase::Marquee {
                         start: pos,
                         current: pos,
                     },
@@ -176,14 +187,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn select_tool_click_starts_dragging_and_release_idles() {
+    fn click_on_entity_drags_and_release_idles() {
         let mut sm = ToolStateMachine::new();
         assert_eq!(sm.tool(), SceneTool::Select);
         assert!(!sm.phase().is_active());
         sm.handle(InteractionEvent::PointerDown {
             pos: [10.0, 20.0],
-            ctrl: false,
-            shift: false,
+            hit: true,
         });
         assert!(sm.phase().is_active());
         sm.handle(InteractionEvent::PointerDrag { pos: [30.0, 40.0] });
@@ -198,17 +208,29 @@ mod tests {
         assert_eq!(sm.phase(), ToolPhase::Idle);
     }
 
+    /// 按在空白处 → 框选（**任何工具**下都成立，修饰键不参与判定）。
     #[test]
-    fn modifier_click_select_starts_marquee() {
-        let mut sm = ToolStateMachine::new();
-        sm.handle(InteractionEvent::PointerDown {
-            pos: [0.0, 0.0],
-            ctrl: true,
-            shift: false,
-        });
-        assert!(sm.phase().affects_selection());
-        sm.handle(InteractionEvent::Cancel);
-        assert_eq!(sm.phase(), ToolPhase::Idle);
+    fn empty_space_click_starts_marquee_for_every_tool() {
+        for tool in [
+            SceneTool::Select,
+            SceneTool::Move,
+            SceneTool::Rotate,
+            SceneTool::Scale,
+        ] {
+            let mut sm = ToolStateMachine::new();
+            sm.handle(InteractionEvent::ToolSelected(tool));
+            sm.handle(InteractionEvent::PointerDown {
+                pos: [0.0, 0.0],
+                hit: false,
+            });
+            assert!(
+                sm.phase().affects_selection(),
+                "{tool} 按空白处必须是框选，实际 {:?}",
+                sm.phase()
+            );
+            sm.handle(InteractionEvent::Cancel);
+            assert_eq!(sm.phase(), ToolPhase::Idle);
+        }
     }
 
     #[test]
@@ -217,8 +239,7 @@ mod tests {
         sm.handle(InteractionEvent::ToolSelected(SceneTool::TilePaint));
         sm.handle(InteractionEvent::PointerDown {
             pos: [5.0, 5.0],
-            ctrl: false,
-            shift: false,
+            hit: false,
         });
         assert_eq!(sm.phase(), ToolPhase::Painting);
         assert!(sm.handle(InteractionEvent::TileStroke { cell: [2, 3] }));
@@ -231,8 +252,7 @@ mod tests {
         let mut sm = ToolStateMachine::new();
         sm.handle(InteractionEvent::PointerDown {
             pos: [0.0, 0.0],
-            ctrl: false,
-            shift: false,
+            hit: true,
         });
         assert!(sm.phase().is_active());
         sm.handle(InteractionEvent::ToolSelected(SceneTool::Rotate));
@@ -248,13 +268,11 @@ mod tests {
         assert!(!sm.handle(InteractionEvent::Cancel));
         sm.handle(InteractionEvent::PointerDown {
             pos: [1.0, 1.0],
-            ctrl: false,
-            shift: false,
+            hit: true,
         });
         assert!(!sm.handle(InteractionEvent::PointerDown {
             pos: [2.0, 2.0],
-            ctrl: false,
-            shift: false,
+            hit: true,
         }));
     }
 }

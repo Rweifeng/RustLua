@@ -350,15 +350,12 @@ impl EditorApp {
         self.preview_diagnostics.replace_all(diagnostics);
     }
 
-    pub(crate) fn revert_selected_prefab_overrides(&mut self) {
+    /// 回退 Prefab 实例上的所有覆盖（目标由 typed action 显式给出）。
+    pub(crate) fn revert_prefab_overrides(&mut self, selected: SceneEntityId) {
         if self.is_playing() {
             self.status = "Play mode locks scene editing; click Stop first".to_owned();
             return;
         }
-        let Some(selected) = self.selection.primary() else {
-            self.status = "请先选中 Prefab 根实例".to_owned();
-            return;
-        };
         let Some(scene) = self.current_scene().cloned() else {
             return;
         };

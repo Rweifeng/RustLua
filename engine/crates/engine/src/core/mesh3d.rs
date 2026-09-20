@@ -77,7 +77,11 @@ fn validate_mesh_path(mesh: &str) -> Result<(), MeshRendererError> {
     if mesh == GROUND_PLANE_SENTINEL {
         return Ok(());
     }
-    if Path::new(mesh).is_absolute() || mesh.split(['/', '\\']).any(|part| part == "..") {
+    // 与 `entity_script::EntityScript::validate` 共用 `core::paths` 的权威判定：
+    // 只用 `Path::is_absolute()` 会放行 Windows 上的 `/etc/x.glb`（根相对但没有盘符），
+    // schema 侧的 `FieldRule::ProjectPath` 用的是同一份实现（两边由对拍测试盯住）。
+    if crate::core::paths::is_absolute_path(mesh) || crate::core::paths::escapes_project_root(mesh)
+    {
         return Err(MeshRendererError::InvalidMeshPath(mesh.to_owned()));
     }
     let extension = Path::new(mesh)

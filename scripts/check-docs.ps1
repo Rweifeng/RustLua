@@ -152,6 +152,22 @@ foreach ($file in $scanTargets) {
     }
 }
 
+# ---------------------------------------------------------------- PowerShell 脚本编码
+# ⑦ 仓库里的 .ps1 必须带 UTF-8 BOM：Windows PowerShell 5.1 在中文区域设置下按 ANSI 读
+#    **没有 BOM** 的脚本，里面的中文注释/字符串会变成乱码并直接解析失败——整条质量门失效。
+#    这条检查是有来历的：编辑器重构期间用文件工具改写 scripts/verify.ps1 时 BOM 被静默剥掉，
+#    脚本随即无法解析（详见 docs/56 §3.14）。
+$ps1BomMissing = New-Object System.Collections.Generic.List[string]
+foreach ($file in Get-ChildItem (Join-Path $repoRoot "scripts") -Filter "*.ps1" -File -ErrorAction SilentlyContinue) {
+    $bytes = [System.IO.File]::ReadAllBytes($file.FullName)
+    $hasBom = $bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF
+    if (-not $hasBom) {
+        $rel = $file.FullName.Substring($repoRoot.Length).TrimStart("\")
+        $ps1BomMissing.Add("$rel")
+        $issues.Add("${rel}: 缺少 UTF-8 BOM（PowerShell 5.1 会按 ANSI 读，中文脚本会解析失败）")
+    }
+}
+
 # ---------------------------------------------------------------- 汇总
 $docTotal = 0
 foreach ($key in $docCounts.Keys) { $docTotal += $docCounts[$key] }
@@ -160,5 +176,5 @@ if ($issues.Count -gt 0) {
     foreach ($issue in $issues) { Write-Host "  - $issue" }
     exit 1
 }
-Write-Host "check_docs_ok docs=$($docCounts['docs']) game_docs=$($docCounts['examples\game_jhyt\docs']) h1=$h1Count links=$linkCount"
+Write-Host "check_docs_ok docs=$($docCounts['docs']) game_docs=$($docCounts['examples\game_jhyt\docs']) h1=$h1Count links=$linkCount ps1_bom_ok=$((Get-ChildItem (Join-Path $repoRoot 'scripts') -Filter '*.ps1' -File).Count)"
 exit 0

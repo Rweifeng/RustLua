@@ -21,7 +21,16 @@
 //!   它去读工程外的任何文件就不是"配置"而是"漏洞"了。
 //! - **`enabled=false` 不写出字段**：与 `Camera2D/Camera3D` 的 `enabled` 同一口径，既有场景串不变。
 
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
+
+/// 实体级脚本组件的**唯一权威名字**。
+///
+/// 场景里这个组件的键就叫 `Script`（见模块文档与 `typed_scene` 的组件表）。历史上编辑器
+/// 写的是 `LuaScript`（裸路径）、schema 注册表写的是 `EntityScript`，而运行时只读 `Script`——
+/// 三处名字不一致意味着"Inspector 里设了脚本路径，运行时永不加载"。现在运行时、加载器、
+/// schema 注册表与编辑器都从这里取名字，旧写法由
+/// [`crate::core::component_migration`] 在打开场景时迁移。
+pub const SCRIPT_COMPONENT: &str = "Script";
 
 /// 实体级脚本组件的负载。
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -98,20 +107,17 @@ impl EntityScript {
     }
 
     /// 路径必须是工程根内的**相对**路径：绝对路径与含 `..` 的路径都拒绝。
+    ///
+    /// 判定本身来自 `core::paths`（schema 的 `FieldRule::ProjectPath` 用同一份实现）——
+    /// 两边各写一遍时曾经不一致：只查 `Path::is_absolute()` 会放行 Windows 上的 `/etc/passwd`。
     pub fn validate(&self) -> Result<(), EntityScriptError> {
         if self.file.trim().is_empty() {
             return Err(EntityScriptError::EmptyFile);
         }
-        let path = Path::new(&self.file);
-        if path.is_absolute() {
+        if crate::core::paths::is_absolute_path(&self.file) {
             return Err(EntityScriptError::AbsolutePath(self.file.clone()));
         }
-        if path.components().any(|component| {
-            matches!(
-                component,
-                Component::ParentDir | Component::RootDir | Component::Prefix(_)
-            )
-        }) {
+        if crate::core::paths::escapes_project_root(&self.file) {
             return Err(EntityScriptError::EscapesProjectRoot(self.file.clone()));
         }
         Ok(())

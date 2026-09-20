@@ -9,6 +9,7 @@ use engine::core::texture::{TextureAsset, TextureColorSpace};
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 impl EditorApp {
     /// 资源面板：返回是否需要触发一次资源刷新。
@@ -17,7 +18,8 @@ impl EditorApp {
         self.resources.set_filter(self.resources_filter.clone());
         egui::SidePanel::left("resource_panel")
             .resizable(true)
-            .default_width(200.0)
+            // 宽度来自持久化布局（docs/55 P1：可保存布局）。
+            .default_width(self.layout.panel_width(editor::PANEL_RESOURCE))
             .min_width(110.0)
             .show(context, |ui| {
                 ui.horizontal(|ui| {
@@ -231,7 +233,8 @@ impl EditorApp {
         None
     }
 
-    /// 扫描项目资源并同步到资源数据库。
+    /// 请求资源扫描。递归扫描、数据库协调和依赖重算全部在后台完成；主线程只在
+    /// `poll_resource_refresh` 中提交完整结果。
     pub(crate) fn refresh_resources(&mut self) {
         self.resources.set_filter(self.resources_filter.clone());
         if !self.project_loaded {
@@ -239,9 +242,101 @@ impl EditorApp {
             self.clear_resource_selection();
             return;
         }
-        if let Err(error) = self.resources.refresh(&self.project.root) {
-            self.status = error.to_string();
+        self.resource_refresh_generation = self.resource_refresh_generation.wrapping_add(1);
+        if let Some(job) = self.resource_refresh_job.take() {
+            job.cancel();
+            self.profiler.bump("resource_refresh_cancelled");
         }
+        self.resource_refresh_job = Some(editor::spawn_refresh(editor::RefreshRequest {
+            root: self.project.root.clone(),
+            generation: self.resource_refresh_generation,
+        }));
+        self.profiler.bump("resource_refresh_started");
+        self.status = "正在后台刷新资源…".to_owned();
+    }
+
+    /// 轮询文件监听器：外部改动（保存、生成器、其它工具）在 2 秒预算内反映到 Project。
+    ///
+    /// 扫描在 worker 线程完成（2k 文件 Debug 下约 10 ms，放 UI 线程会吃掉半帧预算）；
+    /// 主线程每帧只从通道取一次结果，发现变化即启动既有的**后台**资源刷新
+    /// （代际号让连续多次变化自然合并）。
+    pub(crate) fn poll_file_watcher(&mut self) {
+        if !self.project_loaded {
+            self.file_watcher = None;
+            return;
+        }
+        let root = strip_verbatim_prefix(&self.project.root);
+        let matches_project = self
+            .file_watcher
+            .as_ref()
+            .is_some_and(|handle| handle.project_root() == root.as_path());
+        if !matches_project {
+            // 项目切换：旧句柄 drop 后其 worker 退出；这里重建并建立基线。
+            self.file_watcher = Some(editor::spawn_watcher(
+                root,
+                editor::WatchScope::default(),
+                self.file_watch_interval,
+            ));
+        }
+        let started = std::time::Instant::now();
+        let diff = self
+            .file_watcher
+            .as_ref()
+            .and_then(editor::WatchHandle::try_take);
+        // UI 线程侧的每帧成本：应为微秒级（扫描成本记在 worker 侧 gauge）。
+        self.profiler
+            .record_command("file_watch_ui_poll", started.elapsed());
+        if let Some(stats) = self
+            .file_watcher
+            .as_ref()
+            .map(editor::WatchHandle::stats)
+            .filter(|stats| stats.polls() > 0)
+        {
+            self.profiler
+                .set_gauge("file_watch_scanned_entries", stats.entries() as f64);
+            self.profiler.set_gauge(
+                "file_watch_last_scan_ms",
+                stats.last_scan_cost().as_secs_f64() * 1000.0,
+            );
+            self.profiler
+                .set_gauge("file_watch_worker_scans", stats.polls() as f64);
+            self.profiler
+                .set_gauge("file_watch_worker_events", stats.events() as f64);
+        }
+        if let Some(diff) = diff.filter(|diff| !diff.is_empty()) {
+            self.profiler.bump("file_watch_events");
+            self.profiler
+                .add("file_watch_changed_files", diff.len() as u64);
+            let summary = diff.summary();
+            self.push_console_notice(format!("检测到外部文件变化（{summary}），正在后台刷新资源"));
+            self.status = format!("外部文件变化：{summary}");
+            self.refresh_resources();
+        }
+    }
+
+    pub(crate) fn poll_resource_refresh(&mut self) {
+        let generation = self.resource_refresh_generation;
+        let Some(job) = self.resource_refresh_job.as_ref() else {
+            return;
+        };
+        let result = match job.poll(generation) {
+            editor::RefreshPoll::Pending => return,
+            editor::RefreshPoll::Stale => {
+                self.resource_refresh_job = None;
+                self.profiler.bump("resource_refresh_stale_dropped");
+                return;
+            }
+            editor::RefreshPoll::Ready(result) => result,
+        };
+        self.resource_refresh_job = None;
+        self.profiler.bump("resource_refresh_applied");
+        if let Some(error) = result.error {
+            self.profiler.bump("resource_refresh_failed");
+            self.status = error;
+            return;
+        }
+        let started = Instant::now();
+        self.resources = result.state;
         if self.selected_resource.as_ref().is_some_and(|selected| {
             self.resources
                 .entries()
@@ -250,8 +345,10 @@ impl EditorApp {
         }) {
             self.clear_resource_selection();
         }
-        // 资源/场景文件可能新增或删除：让场景下拉下次重扫。
         self.scene_files_cache_time = None;
+        self.profiler
+            .record_command("resource_refresh_apply", started.elapsed());
+        self.status = format!("资源刷新完成：{} 项", self.resources.entries().len());
     }
 
     pub(crate) fn delete_selected_resource(&mut self) {

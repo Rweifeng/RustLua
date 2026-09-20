@@ -908,7 +908,7 @@ impl LuaRuntime {
         }
         // docs/54 §4.1：每实体脚本。这里只把组件写进世界；真正的加载与 `on_spawn(id)`
         // 在场景实例化的末尾统一做一次（见 `sync_entity_scripts`），因为脚本需要工程根。
-        if let Some(value) = components.get("Script") {
+        if let Some(value) = components.get(crate::core::entity_script::SCRIPT_COMPONENT) {
             let script = crate::core::entity_script::EntityScript::from_component_str(value)
                 .map_err(|error| {
                     LuaBridgeError::Api(format!("entity {name:?} has an invalid Script: {error}"))

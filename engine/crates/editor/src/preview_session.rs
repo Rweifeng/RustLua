@@ -446,6 +446,14 @@ impl PreviewSession {
         self.last_tick = None;
     }
 
+    /// 请求「下一次 `update` 恰好执行一个固定步」。
+    ///
+    /// 编辑器的 Play 暂停/单帧步进（docs/55 ER-10）用它把预览从墙钟节流里接管过来：
+    /// 把节流基准设为「恰好过去一个固定步」，下一次 `update` 就会到期并只跑一步。
+    pub(crate) fn request_single_step(&mut self, delta: std::time::Duration) {
+        self.last_tick = Some(std::time::Instant::now() - delta);
+    }
+
     /// 测试辅助：读取节流基准（上一次**到期帧开始**的时刻）。
     ///
     /// 节流判定是 `now - last_tick >= PREVIEW_FRAME_INTERVAL`，所以想确定性地断言

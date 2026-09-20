@@ -15,7 +15,11 @@ use std::{
 /// render components. Older and future versions are rejected.
 pub const CURRENT_SCENE_VERSION: u32 = 2;
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// 稳定实体标识。
+///
+/// 派生 `Hash`：编辑器需要按实体 ID 建立哈希索引（如 Hierarchy 过滤匹配索引），
+/// 场景内部的存储顺序仍由 `BTreeMap` 保证，与哈希无关。
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct SceneEntityId(pub u64);
 
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -117,6 +117,15 @@ impl CommandHistory {
     pub fn redo_len(&self) -> usize {
         self.redo.len()
     }
+    /// Keep at most `max_entries` undo snapshots, dropping the oldest checkpoints first.
+    pub fn enforce_undo_limit(&mut self, max_entries: usize) -> usize {
+        let limit = max_entries.max(1);
+        let excess = self.undo.len().saturating_sub(limit);
+        if excess > 0 {
+            self.undo.drain(..excess);
+        }
+        excess
+    }
     pub fn clear(&mut self) {
         self.undo.clear();
         self.redo.clear();

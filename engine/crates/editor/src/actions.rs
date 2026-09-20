@@ -4,7 +4,7 @@ use crate::AlignMode;
 use crate::EditorApp;
 use crate::geometry::{encode_transform, parse_transform};
 use editor::{
-    Camera3DFields, Collider3dFields, CommandKind, ImageFields, InspectorSnapshot, LightFields,
+    Camera3DFields, Collider3dFields, CommandKind, CommandResult, InspectorSnapshot,
     SceneDocument, TextFields, Transform3DFields, TransformFields,
 };
 use eframe::egui;
@@ -59,8 +59,6 @@ pub(crate) struct EditSnapshot {
     /// 面板主选要写回的实体 ID（可能已被撤销到不存在 —— `editing_entities` 兜底）。
     pub editing_entities: Vec<SceneEntityId>,
     pub snapshot: Option<InspectorSnapshot>,
-    /// 直写用 mesh 完整组件串（与文档逐字节一致才判等；面板显示用裸引用）。
-    pub mesh_renderer_raw: Option<String>,
     /// 面板 buffer 的 persistent 与文档真值一致后才不会误写。
     pub persistent: bool,
     pub tilemap: Option<String>,
@@ -75,7 +73,6 @@ impl EditSnapshot {
             doc_present: false,
             editing_entities: Vec::new(),
             snapshot: None,
-            mesh_renderer_raw: None,
             persistent: false,
             tilemap: None,
             animation: None,
@@ -278,10 +275,83 @@ impl EditorApp {
         self.scene_view_fit_pending = true;
     }
 
+    /// 应用一次字段编辑（docs/55 阶段 2 typed action 的目标实现）。
+    ///
+    /// 语义：
+    /// - Play 中拒绝（运行态与编辑态隔离）；
+    /// - 取值非法 / 目标不存在 → `Rejected` + 状态栏原因，**不改文档、不产生历史**；
+    /// - 取值与当前等价（含 `1` vs `1.000000`）→ `NoOp`，**不产生历史**（幂等提交不污染 Undo）；
+    /// - 真正改了就写进文档并产生**恰好一条** `CommandKind::Property` 历史。
+    ///
+    /// 放在 shell（而不是面板模块）是刻意的：它握着提交边界（`history.execute`），
+    /// 属于"命令执行"而不是"绘制"。`panels/architecture_tests.rs` 的棘轮测试要求
+    /// 面板里不出现直接写文档的调用点。
+    pub(crate) fn apply_component_field_edit(
+        &mut self,
+        entity: SceneEntityId,
+        component: &str,
+        field: &str,
+        value: &str,
+    ) -> CommandResult {
+        if self.is_playing() {
+            self.status = "Play mode locks scene editing; click Stop first".to_owned();
+            return CommandResult::Rejected(self.status.clone());
+        }
+        let Some(document) = self.document.current_scene.as_mut() else {
+            self.status = "没有打开的场景".to_owned();
+            return CommandResult::Rejected(self.status.clone());
+        };
+        // 先在**不动文档**的前提下算出新组件串：校验失败与"无变化"都在这里收口。
+        let preview =
+            match editor::preview_field_edit(&document.scene, entity, component, field, value) {
+                Ok(preview) => preview,
+                Err(error) => {
+                    self.status = error.to_string();
+                    return CommandResult::Rejected(self.status.clone());
+                }
+            };
+        let editor::FieldEdit::Changed { path, payload } = preview else {
+            self.status = format!("{component}.{field} 无变化");
+            return CommandResult::NoOp;
+        };
+        let label = format!("Set {path}");
+        let key = component.to_owned();
+        let result = self
+            .history
+            .execute(document, label, CommandKind::Property, move |document| {
+                let Some(instance) = document.scene.entities.get_mut(&entity) else {
+                    return Err(format!("实体不存在：{}", entity.0));
+                };
+                instance.components.insert(key, payload);
+                document.mark_dirty();
+                Ok::<(), String>(())
+            });
+        match result {
+            Ok(true) => {
+                self.status = format!("已写入 {component}.{field}");
+                CommandResult::Applied
+            }
+            Ok(false) => {
+                self.status = format!("{component}.{field} 无变化");
+                CommandResult::NoOp
+            }
+            Err(error) => {
+                self.status = error.clone();
+                CommandResult::Rejected(error)
+            }
+        }
+    }
+
     /// 从磁盘打开一个场景/Prefab 文档，并通过统一入口替换当前文档。
     pub(crate) fn open_scene_document(&mut self, path: impl AsRef<Path>) -> Result<(), String> {
-        let document = SceneDocument::open(path).map_err(|error| error.to_string())?;
+        let display = path.as_ref().display().to_string();
+        let (document, migration) =
+            SceneDocument::open_with_migration(path).map_err(|error| error.to_string())?;
         self.set_current_scene_document(document);
+        // 旧组件名迁移过就明说：独立游戏读的是场景文件，不保存运行时仍看不到脚本。
+        if !migration.is_empty() {
+            self.status = format!("{}（保存后对运行时生效）：{display}", migration.describe());
+        }
         Ok(())
     }
 
@@ -400,6 +470,7 @@ impl EditorApp {
     }
 
     pub(crate) fn undo(&mut self) {
+        let started = std::time::Instant::now();
         let label = {
             let h = &mut self.history;
             let d = &mut self.document;
@@ -408,6 +479,7 @@ impl EditorApp {
                 .and_then(|x| h.undo(x).ok())
                 .map(str::to_owned)
         };
+        self.profiler.record_command("undo", started.elapsed());
         if label.is_some() {
             self.on_document_changed(DocumentChange::Undo);
         }
@@ -529,18 +601,13 @@ impl EditorApp {
                     sprite_reference,
                     lua_script,
                     transform3d,
-                    mesh_renderer: _,
                     camera3d,
-                    light,
                     collider3d,
                     text,
-                    world_text,
-                    image,
                     ui_layout,
                     container,
                     ..
                 }),
-            mesh_renderer_raw,
             tilemap,
             animation,
             ..
@@ -555,8 +622,10 @@ impl EditorApp {
         // apply_inspector 的 selected_sprite_ids 语义）。
         let multi_sprite_ids = self.selection.ids();
         let inspector = self.inspector.clone();
-        // 直写快照使用与文档可判等的字段：mesh 用完整组件串、sprite 沿用组件串
+        // 直写快照使用与文档可判等的字段：sprite 沿用组件串
         // （面板在帧末把 SpriteComponent 编码回引用），persistent 位由离散路径处理。
+        // 注：`Light` / `MeshRenderer` 已迁到 schema 生成的字段编辑器（走 SetComponentField），
+        // 因此不再出现在这条缓冲直写路径里。
         let write = inspector.write_inspector(
             scene,
             entity_id,
@@ -567,13 +636,9 @@ impl EditorApp {
                 sprite_reference,
                 lua_script,
                 transform3d,
-                mesh_renderer: mesh_renderer_raw,
                 camera3d,
-                light,
                 collider3d,
                 text,
-                world_text,
-                image,
                 ui_layout,
                 container,
                 persistent: false,
@@ -613,7 +678,6 @@ impl EditorApp {
                 doc_present: false,
                 editing_entities: targets,
                 snapshot: None,
-                mesh_renderer_raw: None,
                 persistent: false,
                 tilemap: None,
                 animation: None,
@@ -632,11 +696,8 @@ impl EditorApp {
         let sprite_reference = has("Sprite")
             .then(|| (!self.sprite_component.texture.trim().is_empty()).then_some(sprite_ref))
             .flatten();
-        let lua_script = has("LuaScript")
+        let lua_script = has("Script")
             .then(|| (!self.lua_script.trim().is_empty()).then_some(self.lua_script.clone()))
-            .flatten();
-        let mesh_renderer = has("MeshRenderer")
-            .then(|| (!self.mesh_renderer.trim().is_empty()).then_some(self.mesh_renderer.clone()))
             .flatten();
         let snapshot = InspectorSnapshot {
             entity_id: primary,
@@ -645,24 +706,13 @@ impl EditorApp {
             sprite_reference,
             lua_script,
             transform3d: has("Transform3D").then_some(self.transform3d),
-            mesh_renderer,
             camera3d: has("Camera3D").then_some(self.camera3d),
-            light: has("Light").then_some(self.light),
             collider3d: has("Collider3d").then_some(self.collider3d.clone()),
             text: has("Text").then_some(self.text.clone()),
-            world_text: has("WorldText").then_some(self.world_text.clone()),
-            image: has("Image").then_some(self.image.clone()),
             ui_layout: has("UiLayout").then_some(self.ui_layout.clone()),
             container: has("Container").then_some(self.container.clone()),
             persistent: false,
         };
-        // 直写用 mesh 完整组件串：缓冲只存 `mesh=` 后的裸引用，直写需拼回前缀
-        // 与 `write_inspector`/文档规范化格式逐字节一致。实体无 MeshRenderer 时
-        // 快照为 None，write 端 clear；这里同样为 None，diff 不受影响。
-        let mesh_renderer_raw = snapshot
-            .mesh_renderer
-            .as_deref()
-            .map(|reference| format!("mesh={reference}"));
         // Tilemap / Animation：面板编辑器状态实时编码整串。实体没有该组件时保持
         // None（写入端不写、比较端与基线 None 相等）；面板未编辑时编码串恰与
         // 文档组件串一致 → 与基线相等 → 不误写。
@@ -673,7 +723,6 @@ impl EditorApp {
             doc_present: true,
             editing_entities: targets,
             snapshot: Some(snapshot),
-            mesh_renderer_raw,
             persistent: entity
                 .metadata
                 .get("persistent")
@@ -799,9 +848,12 @@ impl EditorApp {
     /// 留着 `drag`/`gizmo_drag`/preview，下一帧会把 stale preview 继续写回文档
     /// （相当于把已取消的拖动又“复活”）。调用点仅在确实取消后调用。
     pub(crate) fn clear_active_scene_drag(&mut self) {
+        // E11：交互阶段由状态机持有，取消时必须让它回到 Idle，
+        // 否则下一帧还会按"仍在框选/拖动"处理指针。
+        self.interaction
+            .handle(crate::scene_interaction::InteractionEvent::Cancel);
         self.scene_state.drag = None;
         self.scene_state.gizmo_drag = None;
-        self.scene_state.box_select_start = None;
         self.scene_state.preview.clear();
         self.scene_state.preview_ui.clear();
         self.scene_state.preview3d_transform.clear();
@@ -836,6 +888,7 @@ impl EditorApp {
     }
 
     pub(crate) fn redo(&mut self) {
+        let started = std::time::Instant::now();
         let label = {
             let h = &mut self.history;
             let d = &mut self.document;
@@ -844,6 +897,7 @@ impl EditorApp {
                 .and_then(|x| h.redo(x).ok())
                 .map(str::to_owned)
         };
+        self.profiler.record_command("redo", started.elapsed());
         if label.is_some() {
             self.on_document_changed(DocumentChange::Redo);
         }
@@ -855,6 +909,7 @@ impl EditorApp {
     /// E06：返回是否保存成功。失败（如场景无路径、磁盘写入失败、校验失败）时文档
     /// 保持 dirty 且不变更内容，供「保存并继续」确认流判断是否需要停留在当前文档。
     pub(crate) fn save_scene(&mut self) -> bool {
+        let started = std::time::Instant::now();
         // E07：保存前若正处于活动事务，先把最后一条 preview 提交为一条历史命令
         // （快照来自事务 before），保证落盘内容可被单条 Undo 收回。
         if self.edit_transaction.is_active() && self.history.is_transaction_active() {
@@ -907,6 +962,7 @@ impl EditorApp {
             }
             Err(error) => error,
         };
+        self.profiler.record_command("save_scene", started.elapsed());
         saved
     }
 
@@ -979,13 +1035,9 @@ impl EditorApp {
             self.entity_name = snapshot.name;
             self.transform = snapshot.transform;
             self.transform3d = snapshot.transform3d.unwrap_or_default();
-            self.mesh_renderer = snapshot.mesh_renderer.unwrap_or_default();
             self.camera3d = snapshot.camera3d.unwrap_or_default();
-            self.light = snapshot.light.unwrap_or_default();
             self.collider3d = snapshot.collider3d.unwrap_or_default();
             self.text = snapshot.text.unwrap_or_default();
-            self.world_text = snapshot.world_text.unwrap_or_default();
-            self.image = snapshot.image.unwrap_or_default();
             self.ui_layout = snapshot.ui_layout.unwrap_or_default();
             self.container = snapshot.container.unwrap_or_default();
             self.sprite_reference = snapshot.sprite_reference.clone().unwrap_or_default();
@@ -1063,10 +1115,8 @@ impl EditorApp {
         self.transform3d = Transform3DFields::default();
         self.mesh_renderer.clear();
         self.camera3d = Camera3DFields::default();
-        self.light = LightFields::default();
         self.collider3d = Collider3dFields::default();
         self.text = TextFields::default();
-        self.image = ImageFields::default();
         self.sprite_reference.clear();
         self.sprite_component = SpriteComponent::default();
         self.tilemap.map = Tilemap::new(engine::core::transform::Vec2::new(32.0, 32.0), 8, 8)
@@ -1594,14 +1644,11 @@ mod tests {
     use std::{
         fs,
         path::{Path, PathBuf},
-        time::{SystemTime, UNIX_EPOCH},
     };
 
     fn unique_token() -> u128 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be valid")
-            .as_nanos()
+        // 进程内唯一：避免并行测试临时目录互撞（详见 editor::test_token）。
+        crate::util::test_token()
     }
 
     fn temp_root(label: &str) -> PathBuf {
@@ -2127,8 +2174,10 @@ mod tests {
         app.sync_inspector(old_root);
         poison_scene_view_caches(&mut app);
 
-        app.reapply_selected_prefab();
-
+        assert_eq!(
+            app.dispatch(editor::EditorCommand::ReapplyPrefab { entity: old_root }),
+            editor::CommandResult::Applied
+        );
         assert!(
             app.status.contains("已重新应用 Prefab"),
             "status should confirm prefab reapply, got: {}",
@@ -2165,16 +2214,16 @@ mod tests {
     /// 一并失效。
     #[test]
     fn game_production_playback_stop_routes_unified_refresh() {
-        use crate::PlayState;
         use crate::WorkspaceTab;
         use editor::PlaySession;
+        use editor::PlayState;
 
         let (mut app, root) = open_sample_production("playback-stop");
         let original = app.document.current_scene.as_ref().unwrap().clone();
 
         // 模拟运行中：会话持有编辑器快照，运行时文档被脚本改动（如增删实体）。
         app.play_session = Some(PlaySession::start(&original));
-        app.play_state = PlayState::Playing;
+        app.play.set_state_for_test(PlayState::Playing);
         app.workspace_tab = WorkspaceTab::Game;
         app.preview_input_state.clear_all();
         // 运行期脚本删掉一个实例（20），并选中一个实例（10）作为运行期选区。
@@ -2191,7 +2240,7 @@ mod tests {
 
         app.stop();
 
-        assert_eq!(app.play_state, PlayState::Editing);
+        assert_eq!(app.play_state(), PlayState::Editing);
         assert!(app.play_session.is_none());
         assert_eq!(
             app.document.current_scene.as_ref().unwrap(),

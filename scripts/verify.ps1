@@ -160,10 +160,40 @@ try {
         Pop-Location
     }
 
-    Write-Step "Editor project check"
+    # docs/55 §1 第 3 条：组件 schema 审计。`editor --check` 现在会逐个校验真实场景/Prefab 里的
+    # 组件负载；已注册组件的字段级漂移（schema_errors）必须为 0，未注册组件按 component_no_schema
+    # 单独计数（扩展组件本来就可以没有 schema，不算失败）。
+    Write-Step "Editor project check + component schema audit"
     Push-Location $projectRoot
     try {
-        Invoke-Checked cargo @("run", "--quiet", "--manifest-path", "engine/Cargo.toml", "-p", "editor", "--", "--project", $defaultGameProject, "--check")
+        $editorCheckOutput = & cargo run --quiet --manifest-path "engine/Cargo.toml" -p editor -- --project $defaultGameProject --check 2>&1
+        $editorCheckExit = $LASTEXITCODE
+        $editorCheckOutput | ForEach-Object { Write-Host $_ }
+        if ($editorCheckExit -ne 0) {
+            throw "editor project check failed (exit code $editorCheckExit)"
+        }
+        $editorCheckText = $editorCheckOutput -join "`n"
+        if ($editorCheckText -notmatch "editor_project_ok") {
+            throw "editor project check output has no editor_project_ok line"
+        }
+        if ($editorCheckText -notmatch "schema_errors=0") {
+            throw "editor project check reports component schema drift (schema_errors != 0)"
+        }
+        # Second real project (2D + 3D + UI + prefabs): auditing ONE project is how "required
+        # field is wrong" drift stayed invisible. example game_api is the 3D-heavy one.
+        $secondProject = Join-Path $gameRoot "game_api"
+        if (Test-Path (Join-Path $secondProject "project.toml")) {
+            $secondOutput = & cargo run --quiet --manifest-path "engine/Cargo.toml" -p editor -- --project $secondProject --check 2>&1
+            $secondExit = $LASTEXITCODE
+            $secondOutput | ForEach-Object { Write-Host $_ }
+            if ($secondExit -ne 0) {
+                throw "editor project check failed for game_api (exit code $secondExit)"
+            }
+            $secondText = $secondOutput -join "`n"
+            if ($secondText -notmatch "schema_errors=0") {
+                throw "editor project check reports component schema drift on game_api (schema_errors != 0)"
+            }
+        }
     }
     finally {
         Pop-Location
@@ -194,6 +224,34 @@ try {
         }
         if ($migrationText -notmatch "removed=0") {
             throw "spatial migration report lists removed legacy designs (docs/30 compatibility table)"
+        }
+    }
+    finally {
+        Pop-Location
+    }
+
+    # docs/55 阶段 0 / ER-01：编辑器自身的性能基线必须**每次**给出可归档报告，并且每个场景的
+    # 不变量（10k 实体扁平化、100k 日志有界、历史预算、后台扫描、保存/加载往返一致）都要通过。
+    # 命令在有场景不达标时以退出码 2 结束，因此这里既拿到数字也拿到判定。
+    Write-Step "Editor performance baseline"
+    Push-Location $projectRoot
+    try {
+        $editorBaselinePath = Join-Path $projectRoot "artifacts\baselines\editor-baseline.txt"
+        $editorBaselineOutput = & cargo run --quiet --manifest-path "engine/Cargo.toml" -p editor -- --perf-baseline --perf-report $editorBaselinePath 2>&1
+        $editorBaselineExit = $LASTEXITCODE
+        $editorBaselineOutput | ForEach-Object { Write-Host $_ }
+        if ($editorBaselineExit -ne 0) {
+            throw "editor performance baseline failed (exit code $editorBaselineExit); report: $editorBaselinePath"
+        }
+        if (-not (Test-Path -LiteralPath $editorBaselinePath)) {
+            throw "editor performance baseline report was not written: $editorBaselinePath"
+        }
+        $editorBaselineText = Get-Content -Raw -LiteralPath $editorBaselinePath
+        if ($editorBaselineText -notmatch "result=ok") {
+            throw "editor performance baseline report has no result=ok summary line"
+        }
+        if ($editorBaselineText -notmatch "failed=0") {
+            throw "editor performance baseline report lists failed scenarios"
         }
     }
     finally {

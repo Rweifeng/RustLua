@@ -10,6 +10,227 @@ use engine::core::{
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+/// One flattened Hierarchy row: everything the row renderer needs, captured at flatten time
+/// so drawing never walks the tree and never clones the document.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct HierarchyRow {
+    pub id: SceneEntityId,
+    pub depth: usize,
+    /// False when a filter forces this node's children to stay visible while it is collapsed.
+    pub effective_collapsed: bool,
+    pub has_children: bool,
+}
+
+/// Base height of one Hierarchy row. Rows are uniform so the panel can virtualize scrolling
+/// and only render the rows inside the viewport (10k entities stay interactive).
+///
+/// The effective height is derived from the live style by [`hierarchy_row_height`] so user
+/// zoom / larger fonts cannot make the content taller than the row it is drawn into
+/// (docs/55 §8: 新 UI 在 100/150/200% DPI 存在重叠或裁字不得封板).
+pub(crate) const HIERARCHY_ROW_HEIGHT: f32 = 22.0;
+
+/// Effective Hierarchy row height for the current style.
+///
+/// Row controls are 18×18 point widgets (`interact_size`), so the row needs that plus a
+/// little breathing room; the base constant is the floor.
+pub(crate) fn hierarchy_row_height(ui: &egui::Ui) -> f32 {
+    // 必须跟随样式：硬编码 22 pt 会让 comfortable/large-text 密度下内容（23.25/26.75 pt）
+    // 高于行高 → 相邻行重叠、文字被裁。该结论由 `layout_row_height_gate` 实测锁定
+    // （负向对照：把这里改回常量即判红）。
+    let spacing = ui.spacing();
+    (spacing.interact_size.y + spacing.item_spacing.y + 2.0).max(HIERARCHY_ROW_HEIGHT * 0.5)
+}
+
+/// Layout probe: the tallest row content actually produced in a frame.
+///
+/// The virtualization gate is "content never exceeds the row height" (otherwise rows overlap
+/// or get clipped). Measured in points, so it is checked under DPI and zoom variations by
+/// tests instead of by eyeballing screenshots.
+#[derive(Default)]
+pub(crate) struct RowHeightProbe {
+    max_content_height: f32,
+    rows: usize,
+}
+
+impl RowHeightProbe {
+    pub(crate) fn observe(&mut self, content_height: f32) {
+        self.max_content_height = self.max_content_height.max(content_height);
+        self.rows += 1;
+    }
+
+    pub(crate) fn reset(&mut self) {
+        self.max_content_height = 0.0;
+        self.rows = 0;
+    }
+
+    /// Tallest content height seen since the last reset (0 before any row was drawn).
+    pub(crate) fn max_content_height(&self) -> f32 {
+        self.max_content_height
+    }
+
+    pub(crate) fn rows(&self) -> usize {
+        self.rows
+    }
+}
+
+/// Cached flattened hierarchy rows. The key includes document revision, entity count, filter,
+/// and collapse state so navigation, range selection, and drawing share one flatten per state.
+#[derive(Default)]
+pub(crate) struct HierarchyVisibleCache {
+    /// False until the first successful build, so a default-constructed cache can never be
+    /// mistaken for a hit on a fresh document whose revision is also 0.
+    valid: bool,
+    revision: u64,
+    /// Entity count guards against structural changes that did not bump the revision
+    /// (for example direct scene mutation from tooling or tests).
+    entity_count: usize,
+    filter: String,
+    collapsed: Vec<SceneEntityId>,
+    /// 过滤词命中自身名称的实体数（过滤框计数提示，随扁平化一次算出）。
+    name_match_count: usize,
+    /// 行模型用 `Arc` 共享：绘制期间持有它不借用 `self`，重入查询（Shift 范围选等）
+    /// 也能拿到同一份数据，且每次取用只是引用计数 +1。
+    rows: std::sync::Arc<Vec<HierarchyRow>>,
+}
+
+impl HierarchyVisibleCache {
+    /// Number of rows in the last successful flatten (0 before the first build).
+    pub(crate) fn len(&self) -> usize {
+        if self.valid { self.rows.len() } else { 0 }
+    }
+}
+
+/// 单个实体在过滤下的匹配状态（一次遍历算出，供扁平化整体复用）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct MatchState {
+    /// 实体自身名称命中过滤词。
+    pub name_matches: bool,
+    /// 自身或任意后代命中（决定该行是否可见）。
+    pub subtree_matches: bool,
+}
+
+/// 小写化名称缓存：只在文档内容变化时重建。
+///
+/// 过滤匹配的真正热点不是"遍历"，而是每次按键都对 10k 个名字做 `to_lowercase()`
+/// （Debug 下每次都是新分配）。名字只随文档修订变化，因此把"小写化"与"匹配"拆开：
+/// 改过滤词只做 `contains`，不再重新小写化。
+#[derive(Default)]
+pub(crate) struct HierarchyNameCache {
+    valid: bool,
+    revision: u64,
+    entity_count: usize,
+    lower: std::collections::HashMap<SceneEntityId, String>,
+}
+
+impl HierarchyNameCache {
+    /// 取（必要时重建）当前文档的小写化名称表。
+    pub(crate) fn ensure(
+        &mut self,
+        document: &editor::SceneDocument,
+    ) -> &std::collections::HashMap<SceneEntityId, String> {
+        let entity_count = document.scene.entities.len();
+        if !self.valid || self.revision != document.revision || self.entity_count != entity_count {
+            self.lower.clear();
+            self.lower.extend(
+                document
+                    .scene
+                    .entities
+                    .values()
+                    .map(|entity| (entity.id, entity.name.to_lowercase())),
+            );
+            self.revision = document.revision;
+            self.entity_count = entity_count;
+            self.valid = true;
+        }
+        &self.lower
+    }
+}
+
+/// 过滤匹配索引：一次后序遍历算出每个实体的 (自身命中, 子树命中)。
+///
+/// 旧实现 `hierarchy_filter_matches` 每行都要重新小写化自己的名字并递归整棵子树，
+/// 10k 实体下一次过滤变化是 O(n·depth) 的字符串工作；索引把它压成 O(n) 遍历，
+/// 并且复用 [`HierarchyNameCache`] 的小写化结果，不改变任何可见性语义（单测锁定等价）。
+#[derive(Debug, Default)]
+pub(crate) struct HierarchyMatchIndex {
+    /// 实体 ID 已派生 `Hash`，用哈希表以获得 O(1) 查询（10k 实体下与有序表差一个量级）。
+    states: std::collections::HashMap<SceneEntityId, MatchState>,
+}
+
+impl HierarchyMatchIndex {
+    /// 查询单个实体的匹配状态；未收录（理论上不会发生）视为不匹配。
+    pub(crate) fn state(&self, id: SceneEntityId) -> MatchState {
+        self.states.get(&id).copied().unwrap_or_default()
+    }
+
+    /// 自身名称命中的实体数量（过滤框下的计数提示，无需再扫一遍）。
+    pub(crate) fn name_match_count(&self) -> usize {
+        self.states
+            .values()
+            .filter(|state| state.name_matches)
+            .count()
+    }
+
+    /// 用预计算的小写化名称表构建索引，`query_lower` 由调用方一次性小写化。
+    pub(crate) fn build(
+        document: &editor::SceneDocument,
+        query_lower: &str,
+        lower_names: &std::collections::HashMap<SceneEntityId, String>,
+    ) -> Self {
+        let mut states = std::collections::HashMap::with_capacity(document.scene.entities.len());
+        if query_lower.is_empty() {
+            for id in document.scene.entities.keys().copied() {
+                states.insert(
+                    id,
+                    MatchState {
+                        name_matches: true,
+                        subtree_matches: true,
+                    },
+                );
+            }
+            return Self { states };
+        }
+        // 迭代式后序遍历：显式栈避免深树递归爆栈（10k 实体的链式场景过去踩过）。
+        let roots: Vec<SceneEntityId> = document
+            .scene
+            .entities
+            .values()
+            .filter(|entity| entity.parent.is_none())
+            .map(|entity| entity.id)
+            .collect();
+        let mut stack: Vec<(SceneEntityId, bool)> = roots.iter().map(|id| (*id, false)).collect();
+        while let Some((id, expanded)) = stack.pop() {
+            let Some(entity) = document.scene.entities.get(&id) else {
+                continue;
+            };
+            if !expanded {
+                stack.push((id, true));
+                for child in entity.children.iter().rev() {
+                    if !states.contains_key(child) {
+                        stack.push((*child, false));
+                    }
+                }
+                continue;
+            }
+            let name_matches = lower_names
+                .get(&id)
+                .is_some_and(|name| name.contains(query_lower));
+            let child_matches = entity
+                .children
+                .iter()
+                .any(|child| states.get(child).is_some_and(|state| state.subtree_matches));
+            states.insert(
+                id,
+                MatchState {
+                    name_matches,
+                    subtree_matches: name_matches || child_matches,
+                },
+            );
+        }
+        Self { states }
+    }
+}
+
 /// H04：Hierarchy 键盘导航动作。
 #[derive(Clone, Copy)]
 enum HierarchyNav {
@@ -182,7 +403,8 @@ impl EditorApp {
     pub(crate) fn draw_hierarchy_panel(&mut self, context: &egui::Context) {
         egui::SidePanel::left("scene_tree")
             .resizable(true)
-            .default_width(190.0)
+            // 宽度来自持久化布局（docs/55 P1：可保存布局）。
+            .default_width(self.layout.panel_width(editor::PANEL_HIERARCHY))
             .min_width(110.0)
             .show(context, |ui| {
                 // 场景文件集成：标题 + 「+」创建菜单 + 当前场景保存状态。
@@ -259,13 +481,23 @@ impl EditorApp {
                     ui.small(format!("匹配 {} 项", self.hierarchy_name_match_count()));
                 }
                 ui.separator();
-                let roots: Vec<_> = self
-                    .current_scene()
-                    .map(|document| self.tree.roots(document).map(|entity| entity.id).collect())
-                    .unwrap_or_default();
-                for id in roots {
-                    self.draw_entity(ui, id, 0);
-                }
+                // 扁平化 + 虚拟滚动：只绘制视口内的行（10k 实体保持可交互）。
+                // 行模型按 (修订, 实体数, 过滤词, 折叠集合) 缓存，绘制不再递归、不再克隆文档。
+                let rows = self.hierarchy_rows();
+                let row_count = rows.len();
+                let body_height = ui.available_height().max(48.0);
+                let row_height = hierarchy_row_height(ui);
+                self.hierarchy_row_probe.reset();
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false; 2])
+                    .max_height(body_height)
+                    .show_rows(ui, row_height, row_count, |ui, visible| {
+                        for index in visible {
+                            if let Some(row) = rows.get(index).copied() {
+                                self.draw_entity_row(ui, row, row_height);
+                            }
+                        }
+                    });
                 if self.current_scene().is_none() {
                     ui.label("请先新建场景");
                 }
@@ -286,42 +518,38 @@ impl EditorApp {
             });
     }
 
-    fn hierarchy_filter_matches(&self, scene: &editor::SceneDocument, id: SceneEntityId) -> bool {
-        let Some(entity) = scene.scene.entities.get(&id) else {
-            return false;
-        };
+    /// 过滤匹配（单实体语义入口）。
+    ///
+    /// 面板绘制与扁平化都走 [`HierarchyMatchIndex`]（一次遍历 + O(1) 查询），
+    /// 此函数仅作为"自身或后代命中"语义的测试基准保留在测试构建中。
+    #[cfg(test)]
+    fn hierarchy_filter_matches(
+        &mut self,
+        scene: &editor::SceneDocument,
+        id: SceneEntityId,
+    ) -> bool {
         let query = self.hierarchy_filter.trim();
         if query.is_empty() {
-            return true;
+            return scene.scene.entities.contains_key(&id);
         }
         let query_lower = query.to_lowercase();
-        let name_matches = entity.name.to_lowercase().contains(&query_lower);
-        let descendant_matches = entity
-            .children
-            .iter()
-            .any(|child| self.hierarchy_filter_matches(scene, *child));
-        name_matches || descendant_matches
+        let lower_names = self.hierarchy_names.ensure(scene);
+        HierarchyMatchIndex::build(scene, &query_lower, lower_names)
+            .state(id)
+            .subtree_matches
     }
 
     /// H05：按名称（不含后代）命中的实体数，用于过滤框下的计数提示。
-    fn hierarchy_name_match_count(&self) -> usize {
-        let Some(document) = self.current_scene() else {
-            return 0;
-        };
-        let query = self.hierarchy_filter.trim().to_lowercase();
-        if query.is_empty() {
-            return document.scene.entities.len();
-        }
-        document
-            .scene
-            .entities
-            .values()
-            .filter(|entity| entity.name.to_lowercase().contains(&query))
-            .count()
+    ///
+    /// 先确保扁平化缓存与**当前**状态一致（过滤词/折叠/修订都属于缓存键），
+    /// 再取一次性算好的计数：过滤时每帧一次全量小写化扫描已无必要。
+    fn hierarchy_name_match_count(&mut self) -> usize {
+        self.ensure_hierarchy_rows();
+        self.hierarchy_visible_cache.name_match_count
     }
 
     /// H03：单选并更新 Shift 锚点（Hierarchy 内统一入口）。
-    fn select_single_hierarchy(&mut self, id: SceneEntityId) {
+    pub(crate) fn select_single_hierarchy(&mut self, id: SceneEntityId) {
         self.selection.set_single(id, SelectionSource::Hierarchy);
         self.selection_anchor = Some(id);
         self.sync_inspector(id);
@@ -351,42 +579,110 @@ impl EditorApp {
         self.status = format!("已选择 {} 个实体", self.selection.len());
     }
 
-    /// H03/H04：当前帧可见顺序表（过滤 + 折叠后的先序遍历）。
-    fn hierarchy_visible_ids(&self) -> Vec<SceneEntityId> {
-        let Some(document) = self.current_scene() else {
-            return Vec::new();
-        };
-        let filter_active = !self.hierarchy_filter.trim().is_empty();
-        let roots: Vec<SceneEntityId> = self.tree.roots(document).map(|entity| entity.id).collect();
-        let mut out = Vec::new();
-        self.collect_visible_ids(document, &roots, filter_active, &mut out);
-        out
+    /// H03/H04：当前帧可见顺序表（过滤 + 折叠后的先序遍历，含每行缩进深度）。
+    ///
+    /// 结果按 (文档修订, 实体数, 过滤词, 折叠集合) 缓存：导航、Shift 范围选与虚拟滚动绘制
+    /// 在同一帧内共享**同一次**扁平化，既不再重复递归整棵树，也不再逐行克隆文档。
+    /// 返回值是共享句柄（`Arc`），命中缓存时只做引用计数 +1，不复制行数据。
+    pub(crate) fn hierarchy_rows(&mut self) -> std::sync::Arc<Vec<HierarchyRow>> {
+        self.ensure_hierarchy_rows();
+        self.hierarchy_visible_cache.rows.clone()
     }
 
-    fn collect_visible_ids(
+    /// 重建（必要时）扁平化缓存；不返回数据、不复制，供绘制与计数使用。
+    fn ensure_hierarchy_rows(&mut self) {
+        let mut collapsed: Vec<_> = self.scene_state.collapsed.iter().copied().collect();
+        collapsed.sort_unstable_by_key(|id| id.0);
+        let filter = self.hierarchy_filter.trim().to_owned();
+        let filter_active = !filter.is_empty();
+        let mut out = Vec::new();
+        let (revision, entity_count, name_match_count) = {
+            let Some(document) = self.document.current_scene.as_ref() else {
+                self.hierarchy_visible_cache = HierarchyVisibleCache::default();
+                return;
+            };
+            let revision = document.revision;
+            let entity_count = document.scene.entities.len();
+            if self.hierarchy_visible_cache.valid
+                && self.hierarchy_visible_cache.revision == revision
+                && self.hierarchy_visible_cache.entity_count == entity_count
+                && self.hierarchy_visible_cache.filter == filter
+                && self.hierarchy_visible_cache.collapsed == collapsed
+            {
+                self.profiler.bump("hierarchy_cache_hit");
+                return;
+            }
+            self.profiler.bump("hierarchy_cache_miss");
+            let roots: Vec<SceneEntityId> =
+                self.tree.roots(document).map(|entity| entity.id).collect();
+            // 一次遍历算出过滤匹配索引，扁平化与计数共用（取代逐行递归 + 重复小写化）。
+            // 小写化名称表按文档修订缓存：改过滤词只做 `contains`，不再重算 10k 个名字。
+            let index = if filter_active {
+                let query_lower = filter.to_lowercase();
+                let lower_names = self.hierarchy_names.ensure(document);
+                Some(HierarchyMatchIndex::build(
+                    document,
+                    &query_lower,
+                    lower_names,
+                ))
+            } else {
+                None
+            };
+            let name_match_count = index
+                .as_ref()
+                .map_or(entity_count, HierarchyMatchIndex::name_match_count);
+            self.collect_visible_rows(document, &roots, index.as_ref(), 0, &mut out);
+            (revision, entity_count, name_match_count)
+        };
+        self.hierarchy_visible_cache.valid = true;
+        self.hierarchy_visible_cache.revision = revision;
+        self.hierarchy_visible_cache.entity_count = entity_count;
+        self.hierarchy_visible_cache.filter = filter;
+        self.hierarchy_visible_cache.collapsed = collapsed;
+        self.hierarchy_visible_cache.name_match_count = name_match_count;
+        self.hierarchy_visible_cache.rows = std::sync::Arc::new(out);
+    }
+
+    /// 可见实体 id 顺序（键盘导航、Shift 范围选、测试入口）。
+    pub(crate) fn hierarchy_visible_ids(&mut self) -> Vec<SceneEntityId> {
+        self.hierarchy_rows().iter().map(|row| row.id).collect()
+    }
+
+    fn collect_visible_rows(
         &self,
         document: &editor::SceneDocument,
         ids: &[SceneEntityId],
-        filter_active: bool,
-        out: &mut Vec<SceneEntityId>,
+        index: Option<&HierarchyMatchIndex>,
+        depth: usize,
+        out: &mut Vec<HierarchyRow>,
     ) {
         for id in ids {
-            if filter_active && !self.hierarchy_filter_matches(document, *id) {
+            if let Some(index) = index
+                && !index.state(*id).subtree_matches
+            {
                 continue;
             }
-            out.push(*id);
             let Some(entity) = document.scene.entities.get(id) else {
                 continue;
             };
+            let has_children = !entity.children.is_empty();
             let collapsed = self.scene_state.collapsed.contains(id);
-            let force_expand = filter_active
-                && entity
+            let force_expand = index.is_some_and(|index| {
+                entity
                     .children
                     .iter()
-                    .any(|child| self.hierarchy_filter_matches(document, *child));
-            if !collapsed || force_expand {
+                    .any(|child| index.state(*child).subtree_matches)
+            });
+            let effective_collapsed = collapsed && !force_expand;
+            out.push(HierarchyRow {
+                id: *id,
+                depth,
+                effective_collapsed,
+                has_children,
+            });
+            if !effective_collapsed && has_children {
                 let children = entity.children.clone();
-                self.collect_visible_ids(document, &children, filter_active, out);
+                self.collect_visible_rows(document, &children, index, depth + 1, out);
             }
         }
     }
@@ -454,7 +750,15 @@ impl EditorApp {
     }
 
     /// H02：行内重命名输入框。Enter 提交，Esc 取消，点击其他区域提交（Unity 习惯）。
-    fn draw_hierarchy_rename_edit(&mut self, ui: &mut egui::Ui, id: SceneEntityId) {
+    ///
+    /// `row_height` 由调用方按当前样式传入：输入框必须落在行高内，
+    /// 否则虚拟滚动的统一行高会被撑破（相邻行重叠 / 文字被裁）。
+    fn draw_hierarchy_rename_edit(
+        &mut self,
+        ui: &mut egui::Ui,
+        id: SceneEntityId,
+        row_height: f32,
+    ) {
         let Some(session) = self.hierarchy_rename.as_mut() else {
             return;
         };
@@ -466,7 +770,8 @@ impl EditorApp {
             .id(edit_id)
             .desired_width(ui.available_width().max(60.0))
             .cursor_at_end(false);
-        let response = ui.add(edit);
+        let size = egui::vec2(ui.available_width().max(60.0), row_height);
+        let response = ui.add_sized(size, edit);
         if session.just_started {
             response.request_focus();
             session.just_started = false;
@@ -692,7 +997,7 @@ impl EditorApp {
 
     /// H03：拖拽落点结算。多选时移动选中集合的顶层根，整批校验、整批一个事务；
     /// 任一目标非法整批取消（事务快照回滚）。
-    fn handle_hierarchy_drop(
+    pub(crate) fn handle_hierarchy_drop(
         &mut self,
         dropped_id: SceneEntityId,
         target_id: SceneEntityId,
@@ -868,13 +1173,19 @@ impl EditorApp {
             .and_then(|scene| scene.scene.entities.get(&id))
             .and_then(|entity| entity.parent);
         if ui.button("新建子节点").clicked() {
-            self.entity_name = "New Entity".to_owned();
-            self.add_entity(Some(id));
+            self.dispatch(editor::EditorCommand::CreateEntity {
+                name: "New Entity".to_owned(),
+                parent: Some(id),
+                transform_3d: false,
+            });
             ui.close();
         }
         if ui.button("新建同级节点").clicked() {
-            self.entity_name = "New Entity".to_owned();
-            self.add_entity(parent);
+            self.dispatch(editor::EditorCommand::CreateEntity {
+                name: "New Entity".to_owned(),
+                parent,
+                transform_3d: false,
+            });
             ui.close();
         }
         if ui.button("重命名").clicked() {
@@ -900,7 +1211,8 @@ impl EditorApp {
         }
         if ui.button("重新应用 Prefab").clicked() {
             self.selection.set_single(id, SelectionSource::Hierarchy);
-            self.reapply_selected_prefab();
+            // typed action：目标显式携带（菜单不再依赖"先改选区"这个隐藏前提）。
+            self.dispatch(editor::EditorCommand::ReapplyPrefab { entity: id });
             ui.close();
         }
         ui.separator();
@@ -918,7 +1230,10 @@ impl EditorApp {
             if !self.selection.contains(id) {
                 self.select_single_hierarchy(id);
             }
-            self.reparent_selected(None);
+            self.dispatch(editor::EditorCommand::ReparentSelection {
+                target: None,
+                position: editor::ReparentPosition::Child,
+            });
             ui.close();
         }
         // H03：多选批量操作。
@@ -928,7 +1243,7 @@ impl EditorApp {
                 .button(format!("删除全部选中（{}）", self.selection.len()))
                 .clicked()
             {
-                self.delete_selected_entity();
+                self.dispatch(editor::EditorCommand::DeleteSelection);
                 ui.close();
             }
             if ui.button("隐藏全部选中").clicked() {
@@ -951,7 +1266,7 @@ impl EditorApp {
             if !self.selection.contains(id) {
                 self.select_single_hierarchy(id);
             }
-            self.delete_selected_entity();
+            self.dispatch(editor::EditorCommand::DeleteSelection);
             ui.close();
         }
     }
@@ -964,13 +1279,19 @@ impl EditorApp {
             return;
         }
         if ui.button("新建空实体").clicked() {
-            self.entity_name = "New Entity".to_owned();
-            self.add_entity(parent);
+            self.dispatch(editor::EditorCommand::CreateEntity {
+                name: "New Entity".to_owned(),
+                parent,
+                transform_3d: false,
+            });
             ui.close();
         }
         if ui.button("新建 3D 实体").clicked() {
-            self.entity_name = "3D Entity".to_owned();
-            self.add_3d_entity(parent);
+            self.dispatch(editor::EditorCommand::CreateEntity {
+                name: "3D Entity".to_owned(),
+                parent,
+                transform_3d: true,
+            });
             ui.close();
         }
         let has_clipboard = self.hierarchy_clipboard.is_some();
@@ -983,47 +1304,55 @@ impl EditorApp {
         }
     }
 
-    /// 递归绘制实体树节点。
-    fn draw_entity(&mut self, ui: &mut egui::Ui, id: SceneEntityId, depth: usize) {
-        let current_scene = self.document.current_scene.clone();
-        let Some(scene) = current_scene.as_ref() else {
-            return;
+    /// 绘制一行扁平化实体行（虚拟滚动调用）。
+    ///
+    /// 与旧递归实现相比：不再 clone 整个文档、不再递归子节点、不再重算过滤可见性
+    /// （三件事都由 `hierarchy_rows()` 的缓存行模型提供），每行只做一次轻量字段提取。
+    fn draw_entity_row(&mut self, ui: &mut egui::Ui, row: HierarchyRow, row_height: f32) {
+        let HierarchyRow {
+            id,
+            depth,
+            effective_collapsed,
+            has_children,
+        } = row;
+        // 只提取本行需要的字段（旧实现整份文档 clone，10k 行即 10k 次全量克隆）。
+        let (name, ui_root, is_3d) = {
+            let Some(entity) = self
+                .document
+                .current_scene
+                .as_ref()
+                .and_then(|scene| scene.scene.entities.get(&id))
+            else {
+                return;
+            };
+            (
+                entity.name.clone(),
+                entity
+                    .metadata
+                    .get("ui.root")
+                    .is_some_and(|value| value == "true"),
+                entity.components.contains_key("Transform3D"),
+            )
         };
-        let Some(entity) = scene.scene.entities.get(&id).cloned() else {
-            return;
-        };
-        let query = self.hierarchy_filter.trim();
-        let name = entity.name.clone();
-        let children = entity.children.clone();
-        let filter_active = !query.is_empty();
-        let name_matches = filter_active && name.to_lowercase().contains(&query.to_lowercase());
-        let visible_subtree = !filter_active || self.hierarchy_filter_matches(scene, id);
-        if filter_active && !visible_subtree {
-            return;
-        }
+        let query = self.hierarchy_filter.trim().to_lowercase();
+        let name_matches = !query.is_empty() && name.to_lowercase().contains(&query);
         let selected = self.selection.contains(id);
-        let collapsed = self.scene_state.collapsed.contains(&id);
-        let force_expand = filter_active
-            && entity
-                .children
-                .iter()
-                .any(|child| self.hierarchy_filter_matches(scene, *child));
-        let effective_collapsed = collapsed && !force_expand;
         let hidden = self.scene_state.hidden.contains(&id);
         let locked = self.scene_state.locked.contains(&id);
-        let ui_root = entity
-            .metadata
-            .get("ui.root")
-            .is_some_and(|value| value == "true");
-        let is_3d = entity.components.contains_key("Transform3D");
+        // 行高固定（由当前样式推导，见 `hierarchy_row_height`）：虚拟滚动依赖统一行高，
+        // 同时保证内容不会比行更高（否则相邻行重叠 / 文字被裁）。
+        ui.set_min_height(row_height);
+        // 虚拟滚动的直接证据：实际绘制的行数（基线场景断言它远小于实体总数）。
+        self.profiler.bump("hierarchy_rows_drawn");
         let row_id = egui::Id::new(("hierarchy_entry", id.0));
         let renaming = self
             .hierarchy_rename
             .as_ref()
             .is_some_and(|session| session.id == id);
+        let rename_row_height = (row_height - 4.0).max(14.0);
         let (row_zone, drop_payload) =
             ui.dnd_drop_zone::<SceneEntityId, _>(egui::Frame::default(), |ui| {
-                ui.horizontal(|ui| {
+                let inner = ui.horizontal(|ui| {
                     // H06：缩进参考线（每层一条淡色竖线）。
                     let row_left = ui.cursor().left();
                     let row_top = ui.cursor().top();
@@ -1047,7 +1376,7 @@ impl EditorApp {
                     let weak_color = ui.visuals().weak_text_color();
                     ui.scope(|ui| {
                         ui.spacing_mut().item_spacing.x = 1.0;
-                        if !children.is_empty() {
+                        if has_children {
                             let arrow_response = triangle_disclosure_button(
                                 ui,
                                 !effective_collapsed,
@@ -1105,7 +1434,8 @@ impl EditorApp {
                     );
                     if renaming {
                         // H02：行内重命名输入框（Enter 提交 / Esc 取消）。
-                        self.draw_hierarchy_rename_edit(ui, id);
+                        // 高度受限于行高：虚拟滚动要求行高统一，重命名不能把行撑高。
+                        self.draw_hierarchy_rename_edit(ui, id, rename_row_height);
                     } else {
                         // H05：过滤命中高亮。
                         let mut text =
@@ -1146,8 +1476,13 @@ impl EditorApp {
                             self.draw_entity_context_menu(ui, id);
                         });
                     }
-                })
+                });
+                // 布局探针：记录本行**自然**内容高度，供"内容不得高于行高"的门槛断言。
+                inner.response.rect.height()
             });
+        // 布局探针：记录本行**自然**内容高度（不含 drop-zone 外框），
+        // 供"内容不得高于行高"的门槛断言使用。
+        self.hierarchy_row_probe.observe(row_zone.inner);
         let row_rect = row_zone.response.rect;
         // H07：行级拖拽检测——hover overlay 不抢 click/drag，移动阈值后才设 payload，
         // 消除 dnd_drag_source 的按下即拖 + Grab 强制光标。
@@ -1214,11 +1549,6 @@ impl EditorApp {
         {
             // H03：落点结算移入 helper —— 多选拖拽批量移动 + 单事务原子回滚。
             self.handle_hierarchy_drop(dropped_id, id, drop_position);
-        }
-        if !effective_collapsed {
-            for child in children {
-                self.draw_entity(ui, child, depth + 1);
-            }
         }
     }
 
@@ -1300,6 +1630,10 @@ impl EditorApp {
     ///
     /// E06：先做项目已加载 / Play 锁 / 名称校验（这些失败不弹确认），随后经
     /// 「未保存切换保护」网关请求——dirty 时弹确认窗，clean 时直接 `perform_create_scene`。
+    /// 新建场景（菜单「文件 ▸ 新建场景」）。
+    ///
+    /// 菜单里**没有场景名输入框**（与 Unity 的 File ▸ New Scene 一致）：名字由这里决定，
+    /// 并在冲突时自动去重（见 [`Self::next_new_scene_name`]），因此不会默默覆盖已有场景文件。
     pub(crate) fn create_scene(&mut self) {
         if !self.project_loaded {
             self.status = "Import a game project before editing".to_owned();
@@ -1309,12 +1643,36 @@ impl EditorApp {
             self.status = "Play mode locks scene editing; click Stop first".to_owned();
             return;
         }
-        let name = self.new_scene_name.trim().to_owned();
-        if name.is_empty() {
-            self.status = "场景名称不能为空".to_owned();
-            return;
-        }
+        let name = self.next_new_scene_name();
         self.request_document_change(crate::actions::PendingChange::CreateScene { name });
+    }
+
+    /// 新建场景的默认名：`main`；若 `scenes/main.scene` 已存在（或当前文档已叫这个名字）
+    /// 则依次尝试 `main2`、`main3`…，避免"新建两次都在写同一个文件"。
+    pub(crate) fn next_new_scene_name(&self) -> String {
+        let scenes = strip_verbatim_prefix(&self.project.root).join("scenes");
+        let current = self
+            .current_scene()
+            .map(|document| document.scene.name.clone());
+        let taken = |candidate: &str| {
+            current.as_deref() == Some(candidate)
+                || scenes.join(format!("{candidate}.scene")).exists()
+        };
+        if !taken("main") {
+            return "main".to_owned();
+        }
+        for index in 2..1000 {
+            let candidate = format!("main{index}");
+            if !taken(&candidate) {
+                return candidate;
+            }
+        }
+        // 极端情况下（1000 个同名场景）退回时间戳，保证一定拿到一个可用名字。
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_millis())
+            .unwrap_or_default();
+        format!("main{stamp}")
     }
 
     /// 实际创建并切换空白场景（仅由确认流或 clean 快速路径调用）。
@@ -1458,8 +1816,48 @@ fn scan_scene_files(root: &std::path::Path) -> Vec<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    use super::{HIERARCHY_ROW_HEIGHT, HierarchyMatchIndex, RowHeightProbe, hierarchy_row_height};
     use editor::SceneDocument;
+    use eframe::egui;
     use engine::core::{logging::LogSink, scene::SceneEntityId};
+
+    /// 新建场景的默认名：`main` 可用就用它；`scenes/main.scene` 已存在则 `main2`…
+    /// 菜单里没有名字输入框，名字必须由这里保证"不覆盖已有场景"。
+    #[test]
+    fn new_scene_name_avoids_overwriting_existing_scenes() {
+        let root = std::env::temp_dir().join(format!(
+            "p2-new-scene-name-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_nanos())
+                .unwrap_or_default()
+        ));
+        std::fs::create_dir_all(root.join("scenes")).unwrap();
+        let mut app = crate::EditorApp::new(
+            editor::ProjectInfo {
+                root: root.clone(),
+                version: "test".to_owned(),
+                directories: Vec::new(),
+            },
+            None,
+            LogSink::new(64),
+        );
+        // 空项目：直接叫 main。
+        assert_eq!(app.next_new_scene_name(), "main");
+
+        // 磁盘上已有 main.scene → 退到 main2；再占掉 main2 → main3。
+        std::fs::write(root.join("scenes/main.scene"), "placeholder").unwrap();
+        assert_eq!(app.next_new_scene_name(), "main2");
+        std::fs::write(root.join("scenes/main2.scene"), "placeholder").unwrap();
+        assert_eq!(app.next_new_scene_name(), "main3");
+
+        // 当前文档即使还没落盘也要占位，避免"新建两次同名"。
+        app.document.current_scene = Some(SceneDocument::new_scene("main3"));
+        assert_eq!(app.next_new_scene_name(), "main4");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn hierarchy_filter_keeps_matching_ancestor_path_visible() {
@@ -1489,9 +1887,10 @@ mod tests {
         app.document.current_scene = Some(document);
         app.hierarchy_filter = "Leaf".to_owned();
 
-        let root_visible = app.hierarchy_filter_matches(app.current_scene().unwrap(), root);
-        let branch_visible = app.hierarchy_filter_matches(app.current_scene().unwrap(), branch);
-        let leaf_visible = app.hierarchy_filter_matches(app.current_scene().unwrap(), leaf);
+        let scene = app.current_scene().cloned().expect("scene present");
+        let root_visible = app.hierarchy_filter_matches(&scene, root);
+        let branch_visible = app.hierarchy_filter_matches(&scene, branch);
+        let leaf_visible = app.hierarchy_filter_matches(&scene, leaf);
 
         assert!(root_visible);
         assert!(branch_visible);
@@ -1548,6 +1947,182 @@ mod tests {
         assert_eq!(
             app.hierarchy_visible_ids(),
             vec![SceneEntityId(1), SceneEntityId(3)]
+        );
+    }
+
+    #[test]
+    fn visible_cache_invalidates_on_structure_and_collapse_changes() {
+        let mut app = make_app(sample_document());
+        let first = app.hierarchy_visible_ids();
+        assert_eq!(
+            first,
+            vec![
+                SceneEntityId(1),
+                SceneEntityId(2),
+                SceneEntityId(3),
+                SceneEntityId(4)
+            ]
+        );
+        // Repeat call is a cache hit with identical content.
+        assert_eq!(app.hierarchy_visible_ids(), first);
+        // Structural addition without an explicit revision bump must still invalidate.
+        app.document
+            .current_scene
+            .as_mut()
+            .unwrap()
+            .scene
+            .add_entity(SceneEntityId(5), "Added", None)
+            .unwrap();
+        assert!(app.hierarchy_visible_ids().contains(&SceneEntityId(5)));
+        // Collapse state is part of the key.
+        app.scene_state.collapsed.insert(SceneEntityId(1));
+        assert_eq!(
+            app.hierarchy_visible_ids(),
+            vec![SceneEntityId(1), SceneEntityId(4), SceneEntityId(5)]
+        );
+    }
+
+    #[test]
+    fn hierarchy_rows_carry_depth_and_effective_collapse() {
+        // 行模型是虚拟滚动的唯一数据源：这里锁定深度与折叠语义，防止"少画/错缩进"退化。
+        let mut app = make_app(sample_document());
+        let rows = app.hierarchy_rows();
+        assert_eq!(
+            rows.iter()
+                .map(|row| (row.id, row.depth))
+                .collect::<Vec<_>>(),
+            vec![
+                (SceneEntityId(1), 0),
+                (SceneEntityId(2), 1),
+                (SceneEntityId(3), 1),
+                (SceneEntityId(4), 0),
+            ]
+        );
+        assert!(rows[0].has_children, "Root 有子节点");
+        assert!(!rows[1].has_children, "A 是叶子");
+
+        // 折叠 Root：子节点不再进入行模型，且 Root 行标记为折叠。
+        app.scene_state.collapsed.insert(SceneEntityId(1));
+        let rows = app.hierarchy_rows();
+        assert_eq!(
+            rows.iter().map(|row| row.id).collect::<Vec<_>>(),
+            vec![SceneEntityId(1), SceneEntityId(4)]
+        );
+        assert!(rows[0].effective_collapsed);
+
+        // 过滤命中子节点时强制展开：折叠状态被 effective_collapsed=false 覆盖。
+        app.hierarchy_filter = "Leaf".to_owned();
+        let rows = app.hierarchy_rows();
+        assert_eq!(
+            rows.iter().map(|row| row.id).collect::<Vec<_>>(),
+            vec![SceneEntityId(1), SceneEntityId(3)]
+        );
+        assert!(!rows[0].effective_collapsed, "过滤强制展开时箭头显示为展开");
+        assert_eq!(rows[1].depth, 1);
+    }
+
+    /// 索引化过滤必须与"逐行递归"参考实现逐实体等价（防止优化改变可见性语义）。
+    #[test]
+    fn match_index_is_equivalent_to_recursive_reference() {
+        // 构造一个更深、更宽的树：4 个根，每根 3 层，名称里混入大小写与部分匹配词。
+        let mut document = SceneDocument::new_scene("equivalent");
+        let mut next = 1_u64;
+        let mut ids = Vec::new();
+        for root in 0..4_u64 {
+            let root_id = SceneEntityId(next);
+            next += 1;
+            document
+                .scene
+                .add_entity(root_id, format!("Group{root}"), None)
+                .unwrap();
+            ids.push(root_id);
+            let mut parents = vec![root_id];
+            for depth in 0..3_u64 {
+                let mut children = Vec::new();
+                for slot in 0..3_u64 {
+                    let id = SceneEntityId(next);
+                    next += 1;
+                    let name = match (depth + slot) % 3 {
+                        0 => format!("Leaf_{depth}_{slot}"),
+                        1 => format!("Branch_{depth}_{slot}"),
+                        _ => format!("other_{depth}_{slot}"),
+                    };
+                    document
+                        .scene
+                        .add_entity(id, name, Some(parents[0]))
+                        .unwrap();
+                    children.push(id);
+                    ids.push(id);
+                }
+                parents = children;
+            }
+        }
+        let mut app = make_app(document);
+
+        for query in ["leaf", "LEAF_1", "branch", "Group2", "missing", "other_2_0"] {
+            app.hierarchy_filter = query.to_owned();
+            let scene = app.current_scene().cloned().expect("scene");
+            let index = {
+                let lower = app.hierarchy_names.ensure(&scene);
+                HierarchyMatchIndex::build(&scene, &query.to_lowercase(), lower)
+            };
+            for id in &ids {
+                let reference = app.hierarchy_filter_matches(&scene, *id);
+                assert_eq!(
+                    index.state(*id).subtree_matches,
+                    reference,
+                    "query={query:?} entity={id:?} 索引与递归参考实现必须一致"
+                );
+            }
+        }
+    }
+
+    /// H05：过滤命中计数取扁平化时一次算出的结果（不再每帧全量扫描）。
+    #[test]
+    fn name_match_count_matches_manual_scan() {
+        let mut app = make_app(sample_document());
+        app.hierarchy_filter = "Leaf".to_owned();
+        let _ = app.hierarchy_rows();
+        assert_eq!(app.hierarchy_name_match_count(), 1);
+        app.hierarchy_filter = "o".to_owned();
+        // Root(1)/Solo(4) 的名称含 'o'（大小写不敏感），A(2)/Leaf(3) 不含。
+        assert_eq!(app.hierarchy_name_match_count(), 2);
+    }
+
+    /// 布局探针语义：取最大值、可重置、能计数（门槛判定依赖这三点）。
+    #[test]
+    fn row_height_probe_tracks_max_content_and_resets() {
+        let mut probe = RowHeightProbe::default();
+        assert_eq!(probe.rows(), 0);
+        assert_eq!(probe.max_content_height(), 0.0);
+        probe.observe(18.0);
+        probe.observe(21.5);
+        probe.observe(19.0);
+        assert_eq!(probe.rows(), 3);
+        assert_eq!(probe.max_content_height(), 21.5);
+        probe.reset();
+        assert_eq!(probe.rows(), 0);
+        assert_eq!(probe.max_content_height(), 0.0);
+    }
+
+    /// 行高必须由样式推导，且不小于基础值（DPI/缩放下不塌陷）。
+    #[test]
+    fn hierarchy_row_height_follows_style_and_never_collapses() {
+        let context = egui::Context::default();
+        let raw = egui::RawInput::default();
+        let mut height = 0.0_f32;
+        let _ = context.run(raw, |context| {
+            egui::CentralPanel::default().show(context, |ui| {
+                height = hierarchy_row_height(ui);
+            });
+        });
+        assert!(
+            height >= HIERARCHY_ROW_HEIGHT * 0.5,
+            "行高不得塌陷：{height}"
+        );
+        assert!(
+            height >= 14.0,
+            "行高必须容纳 18×18 行首控件与文本：{height}"
         );
     }
 

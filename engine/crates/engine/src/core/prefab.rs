@@ -361,6 +361,20 @@ impl PrefabInstance {
                 e.name = value.clone();
             } else if let Some(key) = field.strip_prefix("component:") {
                 e.components.insert(key.to_owned(), value.clone());
+            } else if let Some(path) = field.strip_prefix("property:") {
+                // docs/55 阶段 3：逐字段 Override。只重写目标字段，其余字段保持逐字不变，
+                // 因此"改了一个字段"不会把整个组件串换掉（也不会把别人的覆盖一起吞掉）。
+                let path = crate::core::property_path::PropertyPath::parse(path)
+                    .map_err(|error| PrefabError::InvalidOverride(format!("{field}: {error}")))?;
+                let Some(current) = e.components.get(&path.component).cloned() else {
+                    return Err(PrefabError::InvalidOverride(format!(
+                        "{field}: 实例缺少组件 {}",
+                        path.component
+                    )));
+                };
+                let updated = crate::core::property_path::write_builtin(&current, &path, value)
+                    .map_err(|error| PrefabError::InvalidOverride(format!("{field}: {error}")))?;
+                e.components.insert(path.component, updated);
             } else if let Some(key) = field.strip_prefix("metadata:") {
                 e.metadata.insert(key.to_owned(), value.clone());
             } else {
@@ -531,6 +545,46 @@ mod tests {
         );
         assert_eq!(Prefab::from_text(&p.to_text()).unwrap(), p);
     }
+    #[test]
+    fn property_overrides_rewrite_one_field_only() {
+        // 逐字段 Override：只改 Sprite.tint[1]，其余字段（含 size 的 `x` 形式与其它分量）
+        // 必须逐字保留，且写回同一个值时不产生任何变化。
+        let mut s = Scene::new("source");
+        s.add_entity(SceneEntityId(1), "Root", None).unwrap();
+        s.entities.get_mut(&SceneEntityId(1)).unwrap().components.insert(
+            "Sprite".into(),
+            "texture=a.png;size=16x16;pivot=0.500,0.500;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=3"
+                .into(),
+        );
+        let p = Prefab::from_scene(&s, SceneEntityId(1), AssetId::from_seed("p"), "P").unwrap();
+        let mut target = Scene::new("t");
+        let mut instance = p.instantiate(&mut target, None, &BTreeMap::new()).unwrap();
+
+        instance.set_override(SceneEntityId(1), "property:Sprite.tint[1]", "0.25");
+        instance.apply_overrides(&mut target).unwrap();
+        let payload =
+            target.entities[&instance.source_to_instance[&SceneEntityId(1)]].components["Sprite"]
+                .clone();
+        assert_eq!(
+            payload,
+            "texture=a.png;size=16x16;pivot=0.500,0.500;tint=1.000,0.25,1.000,1.000;sorting_layer=world;order=3"
+        );
+
+        // 再应用同一个覆盖：结果完全一致（幂等，无格式抖动）。
+        instance.apply_overrides(&mut target).unwrap();
+        let again =
+            target.entities[&instance.source_to_instance[&SceneEntityId(1)]].components["Sprite"]
+                .clone();
+        assert_eq!(payload, again);
+
+        // 非法字段值不会被写进场景。
+        instance.set_override(SceneEntityId(1), "property:Sprite.order", "not-a-number");
+        assert!(instance.apply_overrides(&mut target).is_err());
+        // 未注册组件没有 schema：明确报错而不是静默忽略。
+        instance.set_override(SceneEntityId(1), "property:Nope.x", "1");
+        assert!(instance.apply_overrides(&mut target).is_err());
+    }
+
     #[test]
     fn multiple_instances_get_unique_ids_and_rebuild_policy_preserves_override() {
         let s = scene();

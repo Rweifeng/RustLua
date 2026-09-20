@@ -8,6 +8,123 @@ use engine::core::script::{LuaRuntime, ScriptDiagnostic};
 const EDITOR_LOG_ICON: &str = "⚙";
 const LUA_LOG_ICON: &str = "🕹";
 
+/// Base console row height (single line, no wrapping): a uniform height is what lets
+/// `show_rows` draw only the rows inside the viewport, which is what keeps 100k-entry logs
+/// from freezing the main thread.
+const CONSOLE_ROW_HEIGHT: f32 = 16.0;
+
+/// Effective console row height for the current style: the monospace line height plus a
+/// small margin, so raised zoom / larger fonts cannot make text taller than its row.
+pub(crate) fn console_row_height(ui: &egui::Ui) -> f32 {
+    let text_height = ui.text_style_height(&egui::TextStyle::Monospace);
+    (text_height + 2.0).max(CONSOLE_ROW_HEIGHT * 0.5)
+}
+
+/// Layout probe: tallest console row content produced in a frame (see
+/// [`crate::panels::hierarchy::RowHeightProbe`]).
+pub(crate) type RowHeightProbe = crate::panels::hierarchy::RowHeightProbe;
+
+/// 控制台行来源。索引只记来源与序号，不复制文本。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ConsoleSource {
+    /// tracing `LogSink` 行。
+    Sink,
+    /// 编辑器侧提示。
+    Notice,
+    /// Lua 控制台输出。
+    Output,
+    /// Game View / UI 预览诊断。
+    Preview,
+    /// 脚本诊断。
+    Script,
+}
+
+/// 一行控制台内容：来源 + 源行号 + 该源行内的子行号（源行含换行时按物理行拆开）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ConsoleRowRef {
+    source: ConsoleSource,
+    index: usize,
+    sub: usize,
+}
+
+impl ConsoleRowRef {
+    fn new(source: ConsoleSource, index: usize, sub: usize) -> Self {
+        Self { source, index, sub }
+    }
+}
+
+/// 控制台行索引缓存键：任一影响可见集合的输入变化都要重建。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct ConsoleRowKey {
+    tab: Option<ConsoleTab>,
+    filter: String,
+    level: Option<ConsoleLogLevelFilter>,
+    sink_generation: u64,
+    notice_len: usize,
+    output_len: usize,
+    preview_len: usize,
+    script_len: usize,
+}
+
+/// 缓存的行索引。文本本身仍留在各自的有界缓冲里，这里只持有 (来源, 序号)。
+#[derive(Default)]
+pub(crate) struct ConsoleRowCache {
+    key: ConsoleRowKey,
+    rows: Vec<ConsoleRowRef>,
+    valid: bool,
+}
+
+impl ConsoleRowCache {
+    /// 上次构建的行数（远端行数为 0 表示还没构建过）。
+    pub(crate) fn len(&self) -> usize {
+        if self.valid { self.rows.len() } else { 0 }
+    }
+}
+
+/// 控制台本帧的文本来源快照（诊断需要 `&mut` 解析，故先收集为自有字符串）。
+#[derive(Default)]
+struct ConsoleSources {
+    sink: Vec<String>,
+    notices: Vec<String>,
+    output: Vec<String>,
+    preview: Vec<(String, ConsoleLogLevel)>,
+    script: Vec<String>,
+}
+
+impl ConsoleSources {
+    fn line(&self, source: ConsoleSource, index: usize) -> Option<&str> {
+        match source {
+            ConsoleSource::Sink => self.sink.get(index).map(String::as_str),
+            ConsoleSource::Notice => self.notices.get(index).map(String::as_str),
+            ConsoleSource::Output => self.output.get(index).map(String::as_str),
+            ConsoleSource::Preview => self.preview.get(index).map(|(line, _)| line.as_str()),
+            ConsoleSource::Script => self.script.get(index).map(String::as_str),
+        }
+    }
+
+    fn level(&self, source: ConsoleSource, index: usize) -> ConsoleLogLevel {
+        match source {
+            ConsoleSource::Sink => self
+                .sink
+                .get(index)
+                .map_or(ConsoleLogLevel::Info, |line| log_level(line)),
+            ConsoleSource::Notice => self
+                .notices
+                .get(index)
+                .map_or(ConsoleLogLevel::Info, |line| log_level(line)),
+            ConsoleSource::Output => self
+                .output
+                .get(index)
+                .map_or(ConsoleLogLevel::Info, |line| output_level(line)),
+            ConsoleSource::Preview => self
+                .preview
+                .get(index)
+                .map_or(ConsoleLogLevel::Info, |(_, level)| *level),
+            ConsoleSource::Script => ConsoleLogLevel::Error,
+        }
+    }
+}
+
 impl EditorApp {
     /// 行4 控制台面板（全宽底部，先于左右面板显示以获得整行宽度）。
     ///
@@ -15,7 +132,8 @@ impl EditorApp {
     pub(crate) fn draw_lua_console_panel(&mut self, context: &egui::Context) {
         egui::TopBottomPanel::bottom("console")
             .resizable(true)
-            .default_height(150.0)
+            // 高度来自持久化布局（console 面板在布局里复用 PANEL_CONSOLE 的宽度槽位记录高度）。
+            .default_height(self.layout.panel_width(editor::PANEL_CONSOLE))
             .min_height(60.0)
             .max_height(520.0)
             .show(context, |ui| {
@@ -103,84 +221,119 @@ impl EditorApp {
         });
     }
 
-    /// 按左侧分类绘制日志主体：
-    /// 编辑器日志 = 非 Lua（script target）的 tracing 行 + 编辑器提示；
-    /// Lua 日志 = Lua `log.*`（script target）+ 控制台输出 + 脚本诊断。
+    /// 按左侧分类绘制日志主体。
+    ///
+    /// 做法与 Hierarchy 一致：先算出**行索引**（按来源+序号，不复制文本），再按固定行高
+    /// 虚拟滚动，只绘制视口内的行。索引按 (分类, 过滤词, 级别, 各来源代数/长度) 缓存，
+    /// 因此 100k 级日志下滚动与过滤都不会每帧重建整表。
     fn draw_console_log_body(&mut self, ui: &mut egui::Ui) {
         let filter = self.console_filter.trim().to_lowercase();
-        let log_lines = self.log_sink.snapshot();
-        match self.console_tab {
-            ConsoleTab::Editor => {
-                for line in &log_lines {
-                    if is_lua_log_line(line) {
+        let tab = self.console_tab;
+        let level_filter = self.console_log_level_filter;
+        // 诊断需要 &mut 解析，先收集成自有文本（数量远小于日志行）。
+        let script_diagnostics: Vec<String> = self
+            .console_diagnostics()
+            .iter()
+            .map(format_diagnostic)
+            .collect();
+        let preview_diagnostics: Vec<(String, ConsoleLogLevel)> = self
+            .preview_diagnostics
+            .diagnostics()
+            .iter()
+            .map(|diagnostic| {
+                let level = if diagnostic.kind
+                    == engine::core::preview_diagnostics::PreviewErrorKind::Layout
+                {
+                    ConsoleLogLevel::Warning
+                } else {
+                    ConsoleLogLevel::Error
+                };
+                (diagnostic.summary(), level)
+            })
+            .collect();
+        let sources = ConsoleSources {
+            sink: self.log_sink.snapshot(),
+            notices: self.console_notices.clone(),
+            output: self.console_output.clone(),
+            preview: preview_diagnostics,
+            script: script_diagnostics,
+        };
+        let key = ConsoleRowKey {
+            tab: Some(tab),
+            filter: filter.clone(),
+            level: Some(level_filter),
+            sink_generation: self.log_sink.generation(),
+            notice_len: sources.notices.len(),
+            output_len: sources.output.len(),
+            preview_len: sources.preview.len(),
+            script_len: sources.script.len(),
+        };
+        let row_count =
+            self.rebuild_console_rows_if_needed(&key, &sources, tab, &filter, level_filter);
+        // 取出（而非借用）行索引：绘制期间还需要不可变借用各来源文本。
+        let rows = std::mem::take(&mut self.console_rows_cache.rows);
+        let row_height = console_row_height(ui);
+        let body_height = ui.available_height().max(row_height);
+        self.console_row_probe.reset();
+        // 点击跳转在帧末统一执行：跳转可能切换文档，不能在绘制中途改状态。
+        let mut pending_jump: Option<editor::DiagnosticLocation> = None;
+        egui::ScrollArea::vertical()
+            .id_salt("console_log_body")
+            .auto_shrink([false; 2])
+            .max_height(body_height)
+            .show_rows(ui, row_height, row_count, |ui, visible| {
+                for index in visible {
+                    if pending_jump.is_some() {
+                        break;
+                    }
+                    let Some(row) = rows.get(index).copied() else {
                         continue;
-                    }
-                    let level = log_level(line);
-                    if self.console_log_level_filter.matches(level)
-                        && text_matches_filter(line, &filter)
-                    {
-                        draw_log_line(ui, line, level);
-                    }
-                }
-                for line in &self.console_notices {
-                    let level = log_level(line);
-                    if self.console_log_level_filter.matches(level)
-                        && text_matches_filter(line, &filter)
-                    {
-                        draw_log_line(ui, line, level);
-                    }
-                }
-                for diagnostic in self.preview_diagnostics.diagnostics() {
-                    let line = diagnostic.summary();
-                    if text_matches_filter(&line, &filter) {
-                        let level = if diagnostic.kind
-                            == engine::core::preview_diagnostics::PreviewErrorKind::Layout
-                        {
-                            ConsoleLogLevel::Warning
-                        } else {
-                            ConsoleLogLevel::Error
-                        };
-                        if self.console_log_level_filter.matches(level) {
-                            ui.colored_label(
-                                egui::Color32::from_rgb(230, 130, 90),
-                                egui::RichText::new(line).monospace(),
-                            );
+                    };
+                    let Some(text) = console_row_text(&sources, tab, row) else {
+                        continue;
+                    };
+                    let level = sources.level(row.source, row.index);
+                    let response = draw_log_line(ui, text, level);
+                    self.console_row_probe.observe(response.rect.height());
+                    // 可定位的行可点击：解析出的 路径/行号/实体 交给统一跳转入口。
+                    if let Some(location) = editor::parse_location(text) {
+                        let response = response.interact(egui::Sense::click());
+                        if response.hovered() {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                        }
+                        if response.clicked() {
+                            pending_jump = Some(location);
                         }
                     }
                 }
-            }
-            ConsoleTab::Lua => {
-                for line in &log_lines {
-                    if !is_lua_log_line(line) {
-                        continue;
-                    }
-                    let level = log_level(line);
-                    if self.console_log_level_filter.matches(level)
-                        && text_matches_filter(line, &filter)
-                    {
-                        draw_log_line(ui, lua_log_message(line), level);
-                    }
-                }
-                for line in &self.console_output {
-                    let level = output_level(line);
-                    if self.console_log_level_filter.matches(level)
-                        && text_matches_filter(line, &filter)
-                    {
-                        draw_log_line(ui, line, level);
-                    }
-                }
-                for diagnostic in self.console_diagnostics() {
-                    let line = format_diagnostic(&diagnostic);
-                    if self
-                        .console_log_level_filter
-                        .matches(ConsoleLogLevel::Error)
-                        && text_matches_filter(&line, &filter)
-                    {
-                        ui.colored_label(egui::Color32::RED, line);
-                    }
-                }
-            }
+            });
+        self.console_rows_cache.rows = rows;
+        if let Some(location) = pending_jump {
+            self.profiler.bump("console_diagnostic_jump");
+            self.jump_to_diagnostic(&location);
         }
+    }
+
+    /// 当索引键变化时重建控制台行索引（过滤 + 级别 + 分类 + 物理行拆分）。
+    fn rebuild_console_rows_if_needed(
+        &mut self,
+        key: &ConsoleRowKey,
+        sources: &ConsoleSources,
+        tab: ConsoleTab,
+        filter: &str,
+        level_filter: ConsoleLogLevelFilter,
+    ) -> usize {
+        if self.console_rows_cache.valid && self.console_rows_cache.key == *key {
+            self.profiler.bump("console_index_cache_hit");
+            return self.console_rows_cache.rows.len();
+        }
+        self.profiler.bump("console_index_cache_miss");
+        let rows = build_console_rows(sources, tab, filter, level_filter);
+        let row_count = rows.len();
+        self.console_rows_cache.key = key.clone();
+        self.console_rows_cache.rows = rows;
+        self.console_rows_cache.valid = true;
+        row_count
     }
 
     fn ensure_lua_runtime(&mut self) -> Result<&mut LuaRuntime, String> {
@@ -203,11 +356,10 @@ impl EditorApp {
                 .map_err(|error| error.to_string())
         });
         match result {
-            Ok(value) => self.console_output.push(format!("> {source}\n{value}")),
+            Ok(value) => self.push_console_output(format!("> {source}\n{value}")),
             Err(error) => {
                 self.status = error.clone();
-                self.console_output
-                    .push(format!("> {source}\n错误：{error}"));
+                self.push_console_output(format!("> {source}\n错误：{error}"));
             }
         }
         self.console_input.clear();
@@ -236,12 +388,11 @@ impl EditorApp {
         match result {
             Ok(value) => {
                 self.status = format!("Lua 脚本运行成功：{script}");
-                self.console_output.push(format!("运行 {script}\n{value}"));
+                self.push_console_output(format!("运行 {script}\n{value}"));
             }
             Err(error) => {
                 self.status = error.clone();
-                self.console_output
-                    .push(format!("运行 {script}\n错误：{error}"));
+                self.push_console_output(format!("运行 {script}\n错误：{error}"));
             }
         }
     }
@@ -300,6 +451,79 @@ fn log_level(line: &str) -> ConsoleLogLevel {
     }
 }
 
+/// 构建控制台行索引：按分类与级别筛选来源行，按过滤词匹配，并把多行源行拆成物理行。
+///
+/// 生产路径（`rebuild_console_rows_if_needed`）与单元测试共用这一个实现，
+/// 避免"测试里复刻一份索引逻辑"造成的假绿灯。
+fn build_console_rows(
+    sources: &ConsoleSources,
+    tab: ConsoleTab,
+    filter: &str,
+    level_filter: ConsoleLogLevelFilter,
+) -> Vec<ConsoleRowRef> {
+    let mut rows = Vec::new();
+    for (source, count) in [
+        (ConsoleSource::Sink, sources.sink.len()),
+        (ConsoleSource::Notice, sources.notices.len()),
+        (ConsoleSource::Output, sources.output.len()),
+        (ConsoleSource::Preview, sources.preview.len()),
+        (ConsoleSource::Script, sources.script.len()),
+    ] {
+        for index in 0..count {
+            let Some(line) = sources.line(source, index) else {
+                continue;
+            };
+            // 分类过滤（与重构前逐分支语义一一对应，全部 10 种组合都显式列出）：
+            // - 编辑器日志：非 Lua 的 tracing 行 + 编辑器提示 + 预览诊断；
+            // - Lua 日志：Lua target 的 tracing 行 + 控制台输出 + 脚本诊断。
+            let lua_line = is_lua_log_line(line);
+            let included = match (tab, source) {
+                (ConsoleTab::Editor, ConsoleSource::Sink) => !lua_line,
+                (ConsoleTab::Lua, ConsoleSource::Sink) => lua_line,
+                (ConsoleTab::Editor, ConsoleSource::Notice) => true,
+                (ConsoleTab::Lua, ConsoleSource::Notice) => false,
+                (ConsoleTab::Editor, ConsoleSource::Preview) => true,
+                (ConsoleTab::Lua, ConsoleSource::Preview) => false,
+                (ConsoleTab::Editor, ConsoleSource::Output) => false,
+                (ConsoleTab::Lua, ConsoleSource::Output) => true,
+                (ConsoleTab::Editor, ConsoleSource::Script) => false,
+                (ConsoleTab::Lua, ConsoleSource::Script) => true,
+            };
+            if !included || !level_filter.matches(sources.level(source, index)) {
+                continue;
+            }
+            // Lua sink 行按 `message=` 后的纯消息匹配与显示（与旧行为一致）。
+            let searchable = if tab == ConsoleTab::Lua && source == ConsoleSource::Sink {
+                lua_log_message(line)
+            } else {
+                line
+            };
+            if !text_matches_filter(searchable, filter) {
+                continue;
+            }
+            let multiline = searchable.contains('\n');
+            for (sub, physical) in searchable.split('\n').enumerate() {
+                if multiline && physical.trim().is_empty() {
+                    continue;
+                }
+                rows.push(ConsoleRowRef::new(source, index, sub));
+            }
+        }
+    }
+    rows
+}
+
+/// 解析一行控制台行的显示文本（含分类相关的裁剪与物理行拆分）。
+fn console_row_text(sources: &ConsoleSources, tab: ConsoleTab, row: ConsoleRowRef) -> Option<&str> {
+    let line = sources.line(row.source, row.index)?;
+    let text = if tab == ConsoleTab::Lua && row.source == ConsoleSource::Sink {
+        lua_log_message(line)
+    } else {
+        line
+    };
+    text.split('\n').nth(row.sub)
+}
+
 fn output_level(line: &str) -> ConsoleLogLevel {
     if line.contains("错误：") || line.contains("Error") || line.contains("error") {
         ConsoleLogLevel::Error
@@ -314,13 +538,24 @@ fn text_matches_filter(line: &str, filter: &str) -> bool {
     filter.is_empty() || line.to_lowercase().contains(filter)
 }
 
-fn draw_log_line(ui: &mut egui::Ui, line: &str, level: ConsoleLogLevel) {
+/// 绘制一行日志；返回该行响应（`rect.height()` 供布局探针，`interact` 供点击跳转）。
+fn draw_log_line(ui: &mut egui::Ui, line: &str, level: ConsoleLogLevel) -> egui::Response {
     let color = match level {
         ConsoleLogLevel::Info => ui.visuals().text_color(),
         ConsoleLogLevel::Warning => egui::Color32::YELLOW,
         ConsoleLogLevel::Error => egui::Color32::RED,
     };
-    ui.colored_label(color, egui::RichText::new(line).monospace());
+    // 单行行高固定：不换行（超出宽度裁切），完整内容经悬停提示查看。
+    // 这是虚拟滚动的前提——换行会让行高不一致，无法按固定行高跳转绘制。
+    let response = ui.add(
+        egui::Label::new(egui::RichText::new(line).monospace().color(color))
+            .wrap_mode(egui::TextWrapMode::Extend)
+            .selectable(false),
+    );
+    if line.chars().count() > 80 {
+        response.clone().on_hover_text(line);
+    }
+    response
 }
 
 fn format_diagnostic(diagnostic: &ScriptDiagnostic) -> String {
@@ -419,6 +654,143 @@ mod tests {
         let formatted = format_diagnostic(&diagnostic);
         assert!(formatted.contains("[mystery] scripts/main.lua 第 7 行"));
         assert!(!formatted.contains("建议"));
+    }
+
+    /// 索引构建：分类 + 级别 + 过滤 + 物理行拆分的组合语义。
+    #[test]
+    fn console_row_index_respects_tab_level_filter_and_multiline() {
+        let sources = ConsoleSources {
+            sink: vec![
+                "2026-01-01T00:00:00Z  INFO editor: [editor] ready".to_owned(),
+                "2026-01-01T00:00:00Z  WARN script: Lua log.warn message=low health".to_owned(),
+                "2026-01-01T00:00:01Z ERROR editor: [editor] failed".to_owned(),
+            ],
+            notices: vec!["Scene View 回读完成".to_owned()],
+            output: vec!["> print(1)\n1".to_owned()],
+            preview: vec![("layout overflow".to_owned(), ConsoleLogLevel::Warning)],
+            script: vec!["[runtime] scripts/main.lua 第 3 行：boom（重复 1 次）".to_owned()],
+        };
+
+        // 编辑器分类 + 全部级别：sink 的非 Lua 行 ×2 + notice + Game View 预览诊断；
+        // 控制台输出与脚本诊断不进该分类（与重构前的分类语义一致）。
+        let editor =
+            build_console_rows(&sources, ConsoleTab::Editor, "", ConsoleLogLevelFilter::All);
+        assert_eq!(editor.len(), 4, "editor tab: 2 sink + 1 notice + 1 preview");
+        assert_eq!(editor[0], ConsoleRowRef::new(ConsoleSource::Sink, 0, 0));
+        assert_eq!(editor[1], ConsoleRowRef::new(ConsoleSource::Sink, 2, 0));
+        assert_eq!(editor[2], ConsoleRowRef::new(ConsoleSource::Notice, 0, 0));
+        assert_eq!(editor[3], ConsoleRowRef::new(ConsoleSource::Preview, 0, 0));
+
+        // Lua 分类：script sink 行 + 输出（多行拆 2 行）+ 脚本诊断；
+        // 编辑器提示与预览诊断只在编辑器分类出现（保持重构前的分类语义）。
+        let lua = build_console_rows(&sources, ConsoleTab::Lua, "", ConsoleLogLevelFilter::All);
+        assert_eq!(lua.len(), 4, "lua tab: 1 sink + 2 output + 1 script");
+        assert_eq!(lua[0], ConsoleRowRef::new(ConsoleSource::Sink, 1, 0));
+        assert_eq!(lua[1], ConsoleRowRef::new(ConsoleSource::Output, 0, 0));
+        assert_eq!(lua[2], ConsoleRowRef::new(ConsoleSource::Output, 0, 1));
+        assert_eq!(lua[3], ConsoleRowRef::new(ConsoleSource::Script, 0, 0));
+        // 多行源行的第二行文本按子行解析。
+        assert_eq!(
+            console_row_text(&sources, ConsoleTab::Lua, lua[2]),
+            Some("1")
+        );
+        // Lua sink 行显示时裁掉 tracing 前缀。
+        assert_eq!(
+            console_row_text(&sources, ConsoleTab::Lua, lua[0]),
+            Some("low health")
+        );
+
+        // 级别过滤：Lua 分类只看 Error → 只剩脚本诊断。
+        let errors =
+            build_console_rows(&sources, ConsoleTab::Lua, "", ConsoleLogLevelFilter::Error);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].source, ConsoleSource::Script);
+
+        // 过滤词命中 Lua 消息体（而不是整条 tracing 前缀）。
+        let filtered = build_console_rows(
+            &sources,
+            ConsoleTab::Lua,
+            "health",
+            ConsoleLogLevelFilter::All,
+        );
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0], ConsoleRowRef::new(ConsoleSource::Sink, 1, 0));
+    }
+
+    /// 缓存键覆盖所有影响可见集合的输入。
+    #[test]
+    fn console_row_key_tracks_every_input() {
+        let base = ConsoleRowKey {
+            tab: Some(ConsoleTab::Editor),
+            filter: String::new(),
+            level: Some(ConsoleLogLevelFilter::All),
+            sink_generation: 1,
+            notice_len: 0,
+            output_len: 0,
+            preview_len: 0,
+            script_len: 0,
+        };
+        assert_eq!(
+            base,
+            ConsoleRowKey {
+                sink_generation: 1,
+                ..base.clone()
+            }
+        );
+        for changed in [
+            ConsoleRowKey {
+                sink_generation: 2,
+                ..base.clone()
+            },
+            ConsoleRowKey {
+                tab: Some(ConsoleTab::Lua),
+                ..base.clone()
+            },
+            ConsoleRowKey {
+                filter: "x".to_owned(),
+                ..base.clone()
+            },
+            ConsoleRowKey {
+                level: Some(ConsoleLogLevelFilter::Error),
+                ..base.clone()
+            },
+            ConsoleRowKey {
+                output_len: 1,
+                ..base.clone()
+            },
+        ] {
+            assert_ne!(base, changed, "任一输入变化都必须视为缓存失效");
+        }
+    }
+
+    #[test]
+    fn console_row_height_never_collapses_below_control_needs() {
+        let context = egui::Context::default();
+        let raw = egui::RawInput::default();
+        let mut height = 0.0_f32;
+        let _ = context.run(raw, |context| {
+            egui::CentralPanel::default().show(context, |ui| {
+                height = console_row_height(ui);
+            });
+        });
+        assert!(
+            height >= CONSOLE_ROW_HEIGHT * 0.5,
+            "控制台行高不得塌陷：{height}"
+        );
+        assert!(height >= 14.0, "行高必须容纳 monospace 文本：{height}");
+    }
+
+    /// 布局探针语义：取最大值、可重置（门槛判定依赖这三点）。
+    #[test]
+    fn console_row_probe_tracks_max_and_resets() {
+        let mut probe = RowHeightProbe::default();
+        probe.observe(15.0);
+        probe.observe(18.25);
+        assert_eq!(probe.max_content_height(), 18.25);
+        assert_eq!(probe.rows(), 2);
+        probe.reset();
+        assert_eq!(probe.max_content_height(), 0.0);
+        assert_eq!(probe.rows(), 0);
     }
 
     /// 分类：Lua `log.*`（target `script`）进 Lua 日志；编辑器/引擎日志排除在外。

@@ -1,4 +1,53 @@
+pub mod diagnostics;
+pub mod file_watcher;
+pub mod layout;
+pub mod perf_fixture;
+pub mod play_control;
+pub mod schema_audit;
+
+pub use play_control::{
+    FramePlan, MAX_CATCH_UP_STEPS, PlayControlError, PlayController, PlayState, STEPS_PER_SECOND,
+};
+
+pub use layout::{
+    EditorLayout, LAYOUT_VERSION, LayoutLoad, PANEL_CONSOLE, PANEL_HIERARCHY, PANEL_INSPECTOR,
+    PANEL_RESOURCE, layout_path, load_layout, reset_layout, save_layout,
+};
+
+pub use file_watcher::{
+    FileSignature, FileWatcher, Snapshot, WatchDiff, WatchError, WatchHandle, WatchScope,
+    WatchStats, diff_snapshots, scan_tree, spawn_watcher,
+};
+pub use schema_audit::{SchemaAudit, SchemaFinding, audit_project};
+pub mod profiler;
 pub mod resource_browser_state;
+pub mod resource_refresh;
+pub mod schema_fields;
+pub mod services;
+
+pub use schema_fields::{
+    ChoiceSource, FieldEdit, FieldUnit, HANDWRITTEN_PANEL_COMPONENTS, SchemaFieldError,
+    SchemaFieldRow, driven_components, edit_component_field, field_choice_source, field_unit,
+    is_schema_driven, preview_field_edit, rows_for_component, rows_for_entity,
+};
+
+pub use diagnostics::{DiagnosticLocation, parse_location};
+pub use perf_fixture::{
+    FixtureSize, FixtureSpec, SceneFixture, build_console_fixture, build_scene_fixture,
+};
+pub use profiler::{
+    DEFAULT_FRAME_BUDGET_MS, EditorProfiler, Percentiles, ProfilerReport, TimingSummary,
+    percentiles_ms,
+};
+pub use resource_refresh::{
+    RefreshHandle, RefreshPoll, RefreshRequest, RefreshResult, spawn_refresh,
+};
+
+pub use services::{
+    CancellationToken, CommandResult, CommandService, Diagnostic, DiagnosticBuffer,
+    DiagnosticLevel, EditorCommand, JobError, JobProgress, JobReport, SelectionService,
+    WorkspaceController, WorkspaceService, run_cancellable_job,
+};
 
 pub use resource_browser_state::{ResourceBrowserError, ResourceBrowserState, ResourceEntry};
 
@@ -11,9 +60,9 @@ pub use engine::core::resource_kind::ResourceKind;
 pub mod inspector_state;
 
 pub use inspector_state::{
-    Camera3DFields, Collider3dFields, ContainerFields, ImageFields, InspectorError,
-    InspectorSnapshot, InspectorState, LightFields, TextFields, Transform3DFields, TransformFields,
-    TransformSpace, UiLayoutFields, WorldTextFields,
+    Camera3DFields, Collider3dFields, ContainerFields, InspectorError,
+    InspectorSnapshot, InspectorState, TextFields, Transform3DFields, TransformFields,
+    TransformSpace, UiLayoutFields,
 };
 
 pub mod scene_tree_state;
@@ -185,23 +234,46 @@ pub fn check_project(path: impl AsRef<Path>) -> Result<String, ProjectError> {
     for directory in info.directories {
         output.push_str(&format!("directory={} status=present\n", directory.name));
     }
+    // 组件 schema 审计（docs/55 §1 第 3 条）：已注册组件的字段级漂移会被逐条列出，
+    // 未注册组件单独计数（不是错误——扩展组件本来就可以没有 schema）。
+    match schema_audit::audit_project(&info.root) {
+        Ok(audit) => {
+            for line in audit.report_lines() {
+                output.push_str(&line);
+                output.push('\n');
+            }
+        }
+        Err(error) => output.push_str(&format!("schema_audit_failed reason={error}\n")),
+    }
     Ok(output)
+}
+
+/// 测试用唯一令牌：进程 ID + 原子计数 + 时间戳。
+///
+/// 只取时间戳是不够的——Windows 的时钟粒度下，并行运行的测试可能拿到**同一个**
+/// 纳秒值，于是临时目录互撞（`opens_project_and_reports_required_directories`
+/// 曾因此在一次全量测试里偶发失败：另一个测试先在同一目录写了 `project.toml`，
+/// 于是它被识别成独立游戏工程，目录数断言随之失败）。
+#[cfg(test)]
+pub(crate) fn test_token() -> u128 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let counter = u128::from(COUNTER.fetch_add(1, Ordering::Relaxed));
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    (u128::from(std::process::id()) << 96) ^ (counter << 64) ^ (nanos & 0xFFFF_FFFF_FFFF_FFFF)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{
-        fs,
-        time::{SystemTime, UNIX_EPOCH},
-    };
+    use std::fs;
 
     fn temp_project() -> PathBuf {
-        let suffix = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be valid")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("p2-editor-test-{suffix}"));
+        // 用 crate 级唯一令牌：并行测试下也不会有两个测试拿到同一目录。
+        let root = std::env::temp_dir().join(format!("p2-editor-test-{}", crate::test_token()));
         fs::create_dir_all(&root).expect("temporary project should be created");
         root
     }

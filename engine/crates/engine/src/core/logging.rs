@@ -98,6 +98,8 @@ struct LogGuard {
 pub struct LogSink {
     buffer: Arc<Mutex<Vec<String>>>,
     capacity: usize,
+    /// 每次写入或清空自增；UI 侧据此判断"内容是否变化"，无需逐帧比较全部行。
+    generation: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl LogSink {
@@ -106,7 +108,25 @@ impl LogSink {
         Self {
             buffer: Arc::new(Mutex::new(Vec::new())),
             capacity: capacity.max(1),
+            generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
+    }
+
+    /// 内容代数：每次写入或清空自增。UI 用它做增量重建的失效判断。
+    pub fn generation(&self) -> u64 {
+        self.generation.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// 当前保留行数（不 clone 内容）。
+    pub fn len(&self) -> usize {
+        self.buffer
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     /// 当前全部日志行（按时间先后）。
@@ -122,6 +142,16 @@ impl LogSink {
         if let Ok(mut buffer) = self.buffer.lock() {
             buffer.clear();
         }
+        self.generation
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// 直接写入一行（容量上限与 tracing 写入一致，超出丢弃最旧）。
+    ///
+    /// 供宿主程序（编辑器控制台、基准测试、诊断工具）注入自带日志行，
+    /// 无需安装全局 subscriber 也能复用同一有界缓冲语义。
+    pub fn push(&self, line: impl Into<String>) {
+        self.push_line(line.into());
     }
 
     fn push_line(&self, line: String) {
@@ -132,6 +162,8 @@ impl LogSink {
                 buffer.drain(..overflow);
             }
         }
+        self.generation
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 }
 

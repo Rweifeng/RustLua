@@ -4,7 +4,7 @@
 
 use crate::EditorApp;
 use crate::panels::scene_view::{SCENE_ZOOM_MAX, SCENE_ZOOM_MIN};
-use crate::util::{icon_button, icon_toggle};
+use crate::util::{icon_button, icon_toggle, pause_resume_icon, pause_resume_icon_button};
 use crate::{AlignMode, SceneViewMode, WorkspaceTab};
 use eframe::egui;
 
@@ -20,11 +20,57 @@ impl EditorApp {
                 ("▶", "开始运行")
             };
             if icon_button(ui, icon, tooltip).clicked() && (playing || self.project_loaded) {
-                if playing {
-                    self.stop();
+                // typed 命令入口：Play/Stop 的状态机与提交边界统一在 dispatch 内。
+                self.dispatch(if playing {
+                    editor::EditorCommand::StopPlay
                 } else {
-                    self.play();
-                }
+                    editor::EditorCommand::StartPlay
+                });
+            }
+            // ER-10：暂停/继续 + 单帧步进 + 重启（仅运行/暂停时可用）。
+            // 按钮只发 typed 命令，真正的状态迁移在 `PlayController` 内完成。
+            let play_state = self.play_state();
+            let paused = play_state == editor::PlayState::Paused;
+            let in_play = play_state.is_in_play_mode();
+            // 暂停/继续只在 Playing ↔ Paused 之间有定义；启动中/停止中禁用而不静默失败。
+            let pausable = matches!(
+                play_state,
+                editor::PlayState::Playing | editor::PlayState::Paused
+            );
+            // 暂停/继续：图标由画笔绘制（`pause_resume_icon_button`），
+            // 不再用 `❚❚` 这类字形——字体缺字形时会渲染成"豆腐块"。
+            let pause_tooltip = if paused {
+                "继续运行"
+            } else {
+                "暂停运行（逻辑时间冻结）"
+            };
+            if pause_resume_icon_button(
+                ui,
+                pause_resume_icon(paused),
+                pausable,
+                pause_tooltip,
+            )
+            .clicked()
+            {
+                self.dispatch(if paused {
+                    editor::EditorCommand::ResumePlay
+                } else {
+                    editor::EditorCommand::PausePlay
+                });
+            }
+            if ui
+                .add_enabled(in_play, egui::Button::new("⏭").small())
+                .on_hover_text("单帧步进（推进一个逻辑帧后保持暂停）")
+                .clicked()
+            {
+                self.dispatch(editor::EditorCommand::StepPlay { frames: 1 });
+            }
+            if ui
+                .add_enabled(in_play, egui::Button::new("⟲").small())
+                .on_hover_text("重新开始运行（丢弃运行态后按编辑器快照重启）")
+                .clicked()
+            {
+                self.dispatch(editor::EditorCommand::RestartPlay);
             }
             // 设计分辨率：Game 视图渲染目标 / Scene 视图包围框尺寸（下次 Play 生效；可自定义增删）。
             let resolutions = self.preview_resolutions.clone();

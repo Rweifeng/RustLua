@@ -2,7 +2,6 @@
 
 use crate::EditorApp;
 use crate::EditorContextSnapshot;
-use crate::PlayState;
 use crate::SceneTool;
 use crate::SelectionModel;
 use crate::WorkspaceTab;
@@ -32,7 +31,10 @@ impl EditorApp {
         // H02：进入 Play 前终止行内重命名会话，避免编辑会话跨运行上下文。
         self.hierarchy_rename = None;
         self.editor_context_snapshot = Some(self.capture_editor_context());
-        self.play_state = PlayState::Starting;
+        if let Err(error) = self.play.begin_start() {
+            self.status = error.to_string();
+            return;
+        }
         // 确保共享字体图集已预热：Play 预览复用它，避免进入游戏时再 MSDF 预热
         // 全部字形（debug 下约 2s/项目），Play 立即响应。
         if self.scene_font_atlas.is_none() {
@@ -45,7 +47,9 @@ impl EditorApp {
                 tracing::info!(target: "editor", "[preview] created {}x{}", width, height);
                 self.preview = Some(preview);
                 self.play_session = Some(PlaySession::start(&document));
-                self.play_state = PlayState::Playing;
+                if let Err(error) = self.play.mark_running() {
+                    tracing::warn!(target: "editor", "[preview] state machine: {error}");
+                }
                 // 运行预览时自动切到 Game 视图。
                 self.workspace_tab = WorkspaceTab::Game;
                 self.status = "Play mode started; runtime changes stay isolated".to_owned();
@@ -56,9 +60,46 @@ impl EditorApp {
                 self.preview = None;
                 self.play_session = None;
                 self.preview_input_state.clear_all();
-                self.play_state = PlayState::StartFailed;
+                self.play.fail_start(format!("游戏预览启动失败：{error}"));
                 self.status = format!("游戏预览启动失败：{error}");
             }
+        }
+    }
+
+    /// 暂停 / 恢复运行（docs/55 ER-10）：暂停时逻辑时间冻结，画面停在当前帧。
+    pub(crate) fn toggle_play_pause(&mut self) {
+        match self.play.toggle_pause() {
+            Ok(editor::PlayState::Paused) => {
+                self.status = "已暂停（可单帧步进或继续）".to_owned();
+            }
+            Ok(state) => {
+                self.status = format!("已恢复到{}", state.label());
+            }
+            Err(error) => self.status = error.to_string(),
+        }
+    }
+
+    /// 单帧步进（暂停语义）：跑固定数量的逻辑帧后再次冻结。
+    ///
+    /// 真正的推进在下一帧由 `update_preview` 的计划执行（`request_single_step`）。
+    pub(crate) fn step_play_frames(&mut self, frames: u32) {
+        match self.play.request_step(frames) {
+            Ok(()) => self.status = format!("单帧步进 {frames} 帧"),
+            Err(error) => self.status = error.to_string(),
+        }
+    }
+
+    /// 重启运行：释放当前会话后按原编辑器快照重新开始。
+    pub(crate) fn restart_play(&mut self) {
+        match self.play.request_restart() {
+            Ok(true) => {
+                // 运行/暂停中：先走既有 stop 网关（释放 GPU/Lua/临时世界并恢复编辑快照），
+                // 再重新开始，保证两次运行之间没有残留状态。
+                self.stop();
+                self.play();
+            }
+            Ok(false) => self.play(),
+            Err(error) => self.status = error.to_string(),
         }
     }
 
@@ -69,7 +110,10 @@ impl EditorApp {
             self.status = "Not currently in Play mode".to_owned();
             return;
         };
-        self.play_state = PlayState::Stopping;
+        if let Err(error) = self.play.begin_stop() {
+            self.status = error.to_string();
+            return;
+        }
         self.preview = None;
         self.set_current_scene_document(session.stop());
         // Play/Stop 清空输入状态，避免下一轮 Play 残留边沿（M11-02）。
@@ -92,7 +136,9 @@ impl EditorApp {
                     game_camera_2d_center: self.game_camera_2d_center,
                 });
         self.restore_editor_context(snapshot);
-        self.play_state = PlayState::Editing;
+        if let Err(error) = self.play.finish_stop() {
+            tracing::warn!(target: "editor", "[preview] state machine: {error}");
+        }
         self.status = "Play stopped; runtime changes were discarded".to_owned();
     }
 
@@ -328,6 +374,35 @@ impl EditorApp {
             let mut input = std::mem::take(&mut self.preview_input_state);
             input.set_focused(true);
             self.bridge_preview_input(&mut input, ctx, preview_rect, width, height, pointer_over);
+            // 本帧的固定步计划来自 Play 状态机（docs/55 ER-10）：
+            // 暂停时 0 步（画面冻结，一次性边沿留在缓冲里等下一步），单帧步进跑恰好请求的步数。
+            let elapsed = ctx.input(|i| i.stable_dt.max(0.0));
+            let plan = self.play.plan_frame(elapsed);
+            if plan.paused && !plan.runs_logic() {
+                // 暂停：不推进预览、也不消费边沿，保留输入状态供恢复/步进使用。
+                ctx.request_repaint_after(std::time::Duration::from_millis(100));
+                self.preview_input_state = input;
+                return;
+            }
+            if plan.paused {
+                // 单帧步进：`request_single_step(一个固定步)` 让**每次** update 恰好执行
+                // 一个逻辑步；请求 N 帧就跑 N 次，然后回到冻结。
+                let mut consumed = false;
+                for _ in 0..plan.steps {
+                    let Some(preview) = self.preview.as_mut() else {
+                        break;
+                    };
+                    preview.request_single_step(std::time::Duration::from_secs_f32(
+                        plan.delta_seconds,
+                    ));
+                    consumed |= consumes_input_edges(preview.update(ctx, &input));
+                }
+                if consumed {
+                    input.finish_frame();
+                }
+                self.preview_input_state = input;
+                return;
+            }
             let stepped = self
                 .preview
                 .as_mut()
@@ -503,9 +578,9 @@ fn preview_diagnostic_color(kind: PreviewErrorKind) -> egui::Color32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::PlayState;
     use crate::SceneTool;
     use crate::WorkspaceTab;
+    use editor::PlayState;
     use editor::ProjectInfo;
     use editor::open_project;
     use eframe::egui::{self, Event, Key, Modifiers, MouseWheelUnit, PointerButton, RawInput};
@@ -615,7 +690,7 @@ mod tests {
     fn play_failed_without_gpu_never_enters_playing() {
         let mut app = app_with_scene();
         app.play();
-        assert_eq!(app.play_state, PlayState::StartFailed);
+        assert_eq!(app.play_state(), PlayState::StartFailed);
         assert!(
             app.play_session.is_none(),
             "初始化失败不得持有 play_session"
@@ -623,23 +698,24 @@ mod tests {
         assert!(!app.is_playing(), "StartFailed 不是运行态");
         assert!(app.preview.is_none());
         assert!(app.status.contains("游戏预览启动失败"), "需给用户可读错误");
+        assert_eq!(app.play.failures(), 1, "失败必须被控制器记录");
     }
 
     /// M11-01：is_playing 反映状态机而非仅 play_session 是否被设置。
     #[test]
     fn is_playing_reflects_state_machine() {
         let mut app = app_with_scene();
-        assert_eq!(app.play_state, PlayState::Editing);
+        assert_eq!(app.play_state(), PlayState::Editing);
         assert!(!app.is_playing());
-        app.play_state = PlayState::Starting;
+        app.play.set_state_for_test(PlayState::Starting);
         assert!(app.is_playing());
-        app.play_state = PlayState::Playing;
+        app.play.set_state_for_test(PlayState::Playing);
         assert!(app.is_playing());
-        app.play_state = PlayState::StartFailed;
+        app.play.set_state_for_test(PlayState::StartFailed);
         assert!(!app.is_playing(), "StartFailed 必须保持编辑态");
-        app.play_state = PlayState::Stopping;
+        app.play.set_state_for_test(PlayState::Stopping);
         assert!(app.is_playing());
-        app.play_state = PlayState::Editing;
+        app.play.set_state_for_test(PlayState::Editing);
         assert!(!app.is_playing());
     }
 
@@ -648,7 +724,7 @@ mod tests {
     fn stop_without_play_is_noop() {
         let mut app = app_with_scene();
         app.stop();
-        assert_eq!(app.play_state, PlayState::Editing);
+        assert_eq!(app.play_state(), PlayState::Editing);
         assert!(app.play_session.is_none());
     }
 
@@ -718,16 +794,16 @@ mod tests {
         let original_selection = Some(SceneEntityId(2));
         let original_zoom = app.scene_zoom;
         let original_pan = app.scene_state.pan;
-        let original_tool = app.scene_tool;
+        let original_tool = app.scene_tool();
         let original_tab = app.workspace_tab;
 
         app.selection
             .set_single(SceneEntityId(2), editor::SelectionSource::Hierarchy);
         app.editor_context_snapshot = Some(app.capture_editor_context());
         app.play_session = Some(PlaySession::start(&original));
-        app.play_state = PlayState::Playing;
+        app.play.set_state_for_test(PlayState::Playing);
         app.workspace_tab = WorkspaceTab::Game;
-        app.scene_tool = SceneTool::Move;
+        app.set_scene_tool(SceneTool::Move);
         app.scene_zoom = 1.6;
         app.scene_state.pan = egui::vec2(42.0, -17.0);
         app.preview_input_state.key_event(KeyCode::KeyW, true);
@@ -744,14 +820,14 @@ mod tests {
 
         app.stop();
 
-        assert_eq!(app.play_state, PlayState::Editing);
+        assert_eq!(app.play_state(), PlayState::Editing);
         assert_eq!(app.workspace_tab, original_tab);
         assert!(app.play_session.is_none());
         assert!(!app.preview_input_state.is_down(KeyCode::KeyW));
         assert!(!app.preview_input_state.mouse_is_down(MouseButton::Left));
         assert_eq!(app.selection.primary(), original_selection);
         assert_eq!(app.selection.source(), editor::SelectionSource::Hierarchy);
-        assert_eq!(app.scene_tool, original_tool);
+        assert_eq!(app.scene_tool(), original_tool);
         assert_eq!(app.scene_zoom, original_zoom);
         assert_eq!(app.scene_state.pan, original_pan);
         assert_eq!(app.document.current_scene.as_ref().unwrap(), &original);
@@ -772,7 +848,7 @@ mod tests {
 
         app.play();
 
-        assert_eq!(app.play_state, PlayState::Playing);
+        assert_eq!(app.play_state(), PlayState::Playing);
         assert!(
             app.play_session.is_some(),
             "play should create play_session"

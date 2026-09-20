@@ -4,8 +4,8 @@ use crate::ComponentClipboard;
 use crate::EditorApp;
 use crate::util::strip_verbatim_prefix;
 use editor::{
-    Camera3DFields, Collider3dFields, CommandKind, ImageFields, InspectorError, LightFields,
-    TextFields, Transform3DFields, TransformFields, TransformSpace, WorldTextFields,
+    Camera3DFields, Collider3dFields, CommandKind, InspectorError,
+    TextFields, Transform3DFields, TransformFields, TransformSpace,
 };
 use eframe::egui;
 use engine::core::{
@@ -46,6 +46,9 @@ impl ComponentCategory {
 
 /// E13：注册表驱动 Add Component——新组件只需在此登记名称与类别，
 /// 默认值在 `add_component` 的 match 中补充（类型化 setter 或字面字符串）。
+///
+/// `菜单栏的「组件」菜单直接由这张表生成`（见 `crate::menu`），因此新增组件既不用改
+/// 巨型 match，也不用改菜单。
 const COMPONENT_REGISTRY: &[ComponentDescriptor] = &[
     ComponentDescriptor {
         name: "Sprite",
@@ -116,6 +119,31 @@ const COMPONENT_REGISTRY: &[ComponentDescriptor] = &[
         category: ComponentCategory::Ui,
     },
 ];
+
+/// 组件菜单的分组视图：`(类别标签, 类别下的组件名)`。
+///
+/// 菜单栏（`crate::menu` 的「组件」菜单）用它生成子菜单——**注册表是唯一来源**，
+/// 因此新增组件只改注册表一处，菜单与 Inspector 的 Add Component 同时生效。
+#[must_use]
+pub(crate) fn component_menu_groups() -> Vec<(&'static str, Vec<&'static str>)> {
+    [
+        ComponentCategory::Gameplay,
+        ComponentCategory::Rendering,
+        ComponentCategory::ThreeD,
+        ComponentCategory::Ui,
+    ]
+    .into_iter()
+    .map(|category| {
+        let names = COMPONENT_REGISTRY
+            .iter()
+            .filter(|descriptor| descriptor.category == category)
+            .map(|descriptor| descriptor.name)
+            .collect();
+        (category.label(), names)
+    })
+    .filter(|(_, names): &(&str, Vec<&str>)| !names.is_empty())
+    .collect()
+}
 
 /// Inspector Override 摘要用的源 Prefab 缓存条目。
 pub(crate) struct CachedPrefabSource {
@@ -271,20 +299,23 @@ impl EditorApp {
                             ""
                         }
                     ));
+                    // docs/55 §4.1：面板只发 typed action（目标显式携带），不直接调用文档写入方法。
                     if is_prefab_root && ui.button("重新应用源 Prefab").clicked() {
-                        self.reapply_selected_prefab();
+                        self.dispatch(editor::EditorCommand::ReapplyPrefab { entity: selected });
                     }
                     if ui.button("打开源 Prefab").clicked() {
                         self.open_scene_resource(std::path::PathBuf::from(&prefab_source));
                     }
                     if is_prefab_root && ui.button("写回源并更新实例").clicked() {
-                        self.save_selected_prefab_to_source();
+                        self.dispatch(editor::EditorCommand::SavePrefabToSource { entity: selected });
                     }
                     if is_prefab_root && ui.button("Unpack").clicked() {
-                        self.unpack_selected_prefab();
+                        self.dispatch(editor::EditorCommand::UnpackPrefab { entity: selected });
                     }
                     if is_prefab_root && ui.button("Revert Overrides").clicked() {
-                        self.revert_selected_prefab_overrides();
+                        self.dispatch(editor::EditorCommand::RevertPrefabOverrides {
+                            entity: selected,
+                        });
                     }
                 }
                 if let Some(prefab_state) = self.prefab_override_summary(selected) {
@@ -293,14 +324,50 @@ impl EditorApp {
                             if prefab_overrides.is_empty() {
                                 ui.label("Prefab Override：无");
                             } else {
+                                // 逐字段选择性 Apply / Revert（docs/55 阶段 3）：
+                                // 每行显示「源 → 实例」，并可单独把该字段推回源 Prefab 或还原为源取值。
+                                let mut revert_field: Option<String> = None;
+                                let mut apply_field: Option<String> = None;
                                 ui.collapsing(
                                     format!("Prefab Override（{}）", prefab_overrides.len()),
                                     |ui| {
-                                        for override_field in prefab_overrides {
-                                            ui.label(override_field);
+                                        for row in &prefab_overrides {
+                                            ui.horizontal(|ui| {
+                                                if ui
+                                                    .small_button("应用")
+                                                    .on_hover_text(format!(
+                                                        "把实例取值写回源 Prefab 并更新全部实例：{}",
+                                                        compact_value(&row.instance_value)
+                                                    ))
+                                                    .clicked()
+                                                {
+                                                    apply_field = Some(row.field.clone());
+                                                }
+                                                if ui
+                                                    .small_button("回退")
+                                                    .on_hover_text(format!(
+                                                        "把这个字段还原为源 Prefab 的取值：{}",
+                                                        row.source_value
+                                                    ))
+                                                    .clicked()
+                                                {
+                                                    revert_field = Some(row.field.clone());
+                                                }
+                                                ui.monospace(&row.field);
+                                                ui.weak("源=");
+                                                ui.monospace(&row.source_value);
+                                                ui.weak("实例=");
+                                                ui.monospace(compact_value(&row.instance_value));
+                                            });
                                         }
                                     },
                                 );
+                                if let Some(field) = revert_field {
+                                    self.revert_prefab_override_field(selected, &field);
+                                }
+                                if let Some(field) = apply_field {
+                                    self.apply_prefab_override_field(selected, &field);
+                                }
                             }
                         }
                         Err(error) => {
@@ -611,12 +678,9 @@ impl EditorApp {
                         });
                     });
                 }
-                if has("MeshRenderer") {
-                    ui.horizontal(|ui| {
-                        ui.label("MeshRenderer");
-                        ui.text_edit_singleline(&mut self.mesh_renderer);
-                    });
-                }
+                // `MeshRenderer` 的手写面板**已删除**（第 21 轮）：与 `Light` 同样由
+                // `draw_schema_driven_components` 按 schema 生成（`mesh` 字段，带
+                // "工程内相对路径 / .glb|.gltf / 内置哨兵" 规则提示）。
                 if has("Camera3D") {
                     ui.group(|ui| {
                         ui.label("Camera3D");
@@ -670,27 +734,11 @@ impl EditorApp {
                         }
                     });
                 }
-                if has("Light") {
-                    ui.group(|ui| {
-                        ui.label("Light");
-                        ui.horizontal(|ui| {
-                            ui.label("方向");
-                            ui.add(egui::DragValue::new(&mut self.light.direction_x));
-                            ui.add(egui::DragValue::new(&mut self.light.direction_y));
-                            ui.add(egui::DragValue::new(&mut self.light.direction_z));
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label("颜色");
-                            ui.add(egui::DragValue::new(&mut self.light.color_r));
-                            ui.add(egui::DragValue::new(&mut self.light.color_g));
-                            ui.add(egui::DragValue::new(&mut self.light.color_b));
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label("强度");
-                            ui.add(egui::DragValue::new(&mut self.light.intensity));
-                        });
-                    });
-                }
+                // `Light` 的手写面板**已删除**（docs/55 阶段 2）：该组件在
+                // `schema_fields::HANDWRITTEN_PANEL_COMPONENTS` 之外，因此由
+                // `draw_schema_driven_components` 按 schema 生成字段行
+                // （方向 = DragValue×3、颜色 = 取色器、强度 = DragValue），
+                // 提交走 `EditorCommand::SetComponentField`。
                 if has("Collider3d") {
                     let collider3d_header = if self.inspector_collider3d_open {
                         "Collider3d  v"
@@ -850,147 +898,12 @@ impl EditorApp {
                         });
                     }
                 }
-                if has("WorldText") {
-                    let world_text_header = if self.inspector_world_text_open {
-                        "WorldText  v"
-                    } else {
-                        "WorldText  >"
-                    };
-                    if ui.button(world_text_header).clicked() {
-                        self.inspector_world_text_open = !self.inspector_world_text_open;
-                    }
-                    if self.inspector_world_text_open {
-                        ui.group(|ui| {
-                            ui.label("世界空间文字：锚在实体世界位置上，相机移动时跟随世界");
-                            ui.horizontal(|ui| {
-                                ui.label("文本");
-                                ui.text_edit_singleline(&mut self.world_text.text);
-                            });
-                            ui.horizontal(|ui| {
-                                ui.label("字号");
-                                let mut font_size = self.world_text.font_size;
-                                if ui
-                                    .add(
-                                        egui::DragValue::new(&mut font_size)
-                                            .suffix("px")
-                                            .speed(1.0),
-                                    )
-                                    .changed()
-                                {
-                                    self.world_text.font_size = font_size.max(1.0);
-                                }
-                            });
-                            ui.horizontal(|ui| {
-                                ui.label("字体");
-                                let selected = if self.world_text.font.is_empty() {
-                                    "默认字体（不指定）".to_owned()
-                                } else {
-                                    self.world_text.font.clone()
-                                };
-                                egui::ComboBox::from_id_salt("inspector_world_text_font")
-                                    .selected_text(selected)
-                                    .show_ui(ui, |ui| {
-                                        ui.selectable_value(
-                                            &mut self.world_text.font,
-                                            String::new(),
-                                            "默认字体（不指定）",
-                                        );
-                                        for path in self.project_font_paths() {
-                                            ui.selectable_value(
-                                                &mut self.world_text.font,
-                                                path.clone(),
-                                                path,
-                                            );
-                                        }
-                                    });
-                            });
-                            ui.horizontal(|ui| {
-                                ui.label("颜色");
-                                ui.add(
-                                    egui::DragValue::new(&mut self.world_text.color_r)
-                                        .range(0.0..=1.0),
-                                );
-                                ui.add(
-                                    egui::DragValue::new(&mut self.world_text.color_g)
-                                        .range(0.0..=1.0),
-                                );
-                                ui.add(
-                                    egui::DragValue::new(&mut self.world_text.color_b)
-                                        .range(0.0..=1.0),
-                                );
-                            });
-                            ui.horizontal(|ui| {
-                                ui.label("屏幕偏移");
-                                ui.add(
-                                    egui::DragValue::new(&mut self.world_text.offset_x).speed(1.0),
-                                );
-                                ui.add(
-                                    egui::DragValue::new(&mut self.world_text.offset_y).speed(1.0),
-                                );
-                                ui.checkbox(&mut self.world_text.centered, "水平居中");
-                            });
-                            if ui.button("移除 WorldText").clicked()
-                                && let Err(error) = self.remove_component("WorldText")
-                            {
-                                self.status = error;
-                            }
-                        });
-                    }
-                }
-                if has("Image") {
-                    let image_header = if self.inspector_image_open {
-                        "Image  v"
-                    } else {
-                        "Image  >"
-                    };
-                    if ui.button(image_header).clicked() {
-                        self.inspector_image_open = !self.inspector_image_open;
-                    }
-                    if self.inspector_image_open {
-                        ui.group(|ui| {
-                            ui.horizontal(|ui| {
-                                ui.label("纹理");
-                                ui.text_edit_singleline(&mut self.image.texture);
-                            });
-                            ui.horizontal(|ui| {
-                                ui.label("九宫格边框");
-                                ui.add(
-                                    egui::DragValue::new(&mut self.image.nine_slice_l)
-                                        .prefix("左 "),
-                                );
-                                ui.add(
-                                    egui::DragValue::new(&mut self.image.nine_slice_r)
-                                        .prefix("右 "),
-                                );
-                                ui.add(
-                                    egui::DragValue::new(&mut self.image.nine_slice_t)
-                                        .prefix("上 "),
-                                );
-                                ui.add(
-                                    egui::DragValue::new(&mut self.image.nine_slice_b)
-                                        .prefix("下 "),
-                                );
-                            });
-                            ui.horizontal(|ui| {
-                                ui.label("颜色");
-                                ui.add(
-                                    egui::DragValue::new(&mut self.image.color_r).range(0.0..=1.0),
-                                );
-                                ui.add(
-                                    egui::DragValue::new(&mut self.image.color_g).range(0.0..=1.0),
-                                );
-                                ui.add(
-                                    egui::DragValue::new(&mut self.image.color_b).range(0.0..=1.0),
-                                );
-                            });
-                            if ui.button("移除 Image").clicked()
-                                && let Err(error) = self.remove_component("Image")
-                            {
-                                self.status = error;
-                            }
-                        });
-                    }
-                }
+                // `WorldText` 的手写面板**已删除**（第 23 轮）：文本/字号/颜色/偏移/居中由
+                // schema 生成（颜色=取色器、偏移=两个 DragValue、居中=勾选框），
+                // **字体字段用项目字体下拉**（`ChoiceSource::ProjectFonts`）。
+                // `Image` 的手写面板**已删除**（第 22 轮）：纹理 = 文本框、颜色 = **取色器**、
+                // 九宫格四边 = 4 个 DragValue（非负规则由 schema 表达式），全部由
+                // `draw_schema_driven_components` 生成。
                 if has("Sprite") {
                     let sprite_header = if self.inspector_sprite_open {
                         "Sprite  v"
@@ -1433,12 +1346,16 @@ impl EditorApp {
                 if has("UiAnimation") {
                     self.draw_ui_animation_editor(ui);
                 }
-                if has("LuaScript") {
+                if has("Script") {
                     ui.horizontal(|ui| {
                         ui.label("Lua");
                         ui.text_edit_singleline(&mut self.lua_script);
                     });
                 }
+                // docs/55 阶段 2：有 schema、没有手写面板的组件由通用字段编辑器接管
+                // （Camera2D/Quad/RenderMode/Visibility/EntityScript/Particle），
+                // 提交通通走 typed action，不在面板里直接写组件串。
+                self.draw_schema_driven_components(ui);
                 ui.separator();
                 if ui.button("添加子实体").clicked() {
                     self.add_entity(Some(selected));
@@ -1947,18 +1864,70 @@ impl EditorApp {
                     "Camera3D" => {
                         inspector.set_camera3d(scene, selected, Camera3DFields::default())?
                     }
-                    "Light" => inspector.set_light(scene, selected, LightFields::default())?,
+                    // Light 没有手写面板了，但"添加组件"仍要能加：默认值直接取**引擎类型**
+                    // 的编码（不在这里手写字面串），之后由通用字段编辑器接管编辑。
+                    "Light" => {
+                        if let Some(entity) = scene.scene.entities.get_mut(&selected) {
+                            entity.components.insert(
+                                "Light".to_owned(),
+                                engine::core::light::Light::default().to_component_str(),
+                            );
+                        }
+                        scene.mark_dirty();
+                    }
                     "Collider3d" => {
                         inspector.set_collider3d(scene, selected, Collider3dFields::default())?
                     }
+                    // MeshRenderer 同样没有手写面板了：默认值取引擎类型 + 内置哨兵的编码。
                     "MeshRenderer" => {
-                        inspector.set_mesh_renderer(scene, selected, "__ground_plane__")?
+                        if let Some(entity) = scene.scene.entities.get_mut(&selected) {
+                            entity.components.insert(
+                                "MeshRenderer".to_owned(),
+                                engine::core::mesh3d::MeshRenderer {
+                                    mesh: engine::core::mesh3d::GROUND_PLANE_SENTINEL.to_owned(),
+                                }
+                                .to_component_str(),
+                            );
+                        }
+                        scene.mark_dirty();
                     }
                     "Text" => inspector.set_text(scene, selected, TextFields::default())?,
+                    // WorldText 没有手写面板了：默认值取引擎类型的编码
+                    // （`text=文字;font_size=…;offset=0,-20;centered=true`）。
                     "WorldText" => {
-                        inspector.set_world_text(scene, selected, WorldTextFields::default())?
+                        if let Some(entity) = scene.scene.entities.get_mut(&selected) {
+                            entity.components.insert(
+                                "WorldText".to_owned(),
+                                engine::core::world_text::WorldText {
+                                    text: engine::core::ui::UiText {
+                                        text: "文字".to_owned(),
+                                        font_size: engine::core::ui::UI_TEXT_BASE_PX,
+                                        color: [1.0, 1.0, 1.0],
+                                        font: String::new(),
+                                    },
+                                    offset: [0.0, -20.0],
+                                    centered: true,
+                                }
+                                .to_component_str(),
+                            );
+                        }
+                        scene.mark_dirty();
                     }
-                    "Image" => inspector.set_image(scene, selected, ImageFields::default())?,
+                    // Image 同样没有手写面板了：默认值取引擎类型的编码（空纹理 + 白 + 无九宫格）。
+                    "Image" => {
+                        if let Some(entity) = scene.scene.entities.get_mut(&selected) {
+                            entity.components.insert(
+                                "Image".to_owned(),
+                                engine::core::ui::UiImage {
+                                    texture: String::new(),
+                                    color: [1.0, 1.0, 1.0],
+                                    nine_slice: None,
+                                }
+                                .to_component_str(),
+                            );
+                        }
+                        scene.mark_dirty();
+                    }
                     // E16：UiLayout 默认为中心点锚 200×100 元素，由布局统一
                     // 承担所有 UI 位置与尺寸。
                     "UiLayout" => {
@@ -2219,7 +2188,8 @@ impl EditorApp {
         }
     }
 
-    fn copy_selected_components(&mut self) {
+    /// 复制选中实体的组件到编辑器剪贴板（菜单「编辑 ▸ 复制组件」）。
+    pub(crate) fn copy_selected_components(&mut self) {
         let Some(id) = self.selection.primary() else {
             return;
         };
@@ -2237,7 +2207,8 @@ impl EditorApp {
         self.status = "Components copied".to_owned();
     }
 
-    fn paste_selected_components(&mut self) {
+    /// 粘贴编辑器剪贴板里的组件到选中实体（菜单「编辑 ▸ 粘贴组件」）。
+    pub(crate) fn paste_selected_components(&mut self) {
         if self.is_playing() {
             return;
         }
@@ -2285,7 +2256,7 @@ impl EditorApp {
     fn prefab_override_summary(
         &mut self,
         selected: SceneEntityId,
-    ) -> Option<Result<Vec<String>, String>> {
+    ) -> Option<Result<Vec<PrefabOverrideRow>, String>> {
         // 先把需要的元数据拷出来，结束对场景的不可变借用。
         let (prefab_source, source_id) = {
             let scene = self.current_scene()?;
@@ -2313,18 +2284,125 @@ impl EditorApp {
         };
         let scene = self.current_scene()?;
         let entity = scene.scene.entities.get(&selected)?;
-        Some(Ok(diff_prefab_entity(source_entity, entity)))
+        Some(Ok(prefab_override_rows(source_entity, entity)))
     }
 
-    pub(crate) fn reapply_selected_prefab(&mut self) {
+    /// 把**单个字段**还原为源 Prefab 的取值（docs/55 阶段 3：选择性 Revert）。
+    ///
+    /// 走统一的 history 网关：一条 Undo 即可收回；Play 中拒绝；不触碰其它覆盖字段。
+    pub(crate) fn revert_prefab_override_field(&mut self, selected: SceneEntityId, field: &str) {
         if self.is_playing() {
             self.status = "Play mode locks scene editing; click Stop first".to_owned();
             return;
         }
-        let Some(selected) = self.selection.primary() else {
-            self.status = "请先选中 Prefab 根实例".to_owned();
+        let Some((prefab_source, source_id, parent)) = (|| {
+            let scene = self.document.current_scene.as_ref()?;
+            let entity = scene.scene.entities.get(&selected)?;
+            Some((
+                entity.metadata.get("prefab.source")?.clone(),
+                entity
+                    .metadata
+                    .get("prefab.source_id")?
+                    .parse::<u64>()
+                    .ok()
+                    .map(SceneEntityId)?,
+                entity.parent,
+            ))
+        })() else {
+            self.status = "当前实体不是 Prefab 实例".to_owned();
             return;
         };
+        let path = strip_verbatim_prefix(&self.project.root).join(&prefab_source);
+        if let Err(error) = self.ensure_prefab_source_cached(&path) {
+            self.status = format!("加载源 Prefab 失败：{error}");
+            return;
+        }
+        let Some(source_entity) = self
+            .prefab_source_cache
+            .get(&path)
+            .and_then(|cached| cached.prefab.entities.get(&source_id))
+            .cloned()
+        else {
+            self.status = format!("源 Prefab 中缺少实体 {}", source_id.0);
+            return;
+        };
+        let field = field.to_owned();
+        let field_label = field.clone();
+        let Some(doc) = self.document.current_scene.as_mut() else {
+            return;
+        };
+        let result = self.history.execute(
+            doc,
+            format!("Revert Override {field_label}"),
+            CommandKind::Property,
+            move |scene| {
+                let entity = scene
+                    .scene
+                    .entities
+                    .get_mut(&selected)
+                    .ok_or_else(|| format!("场景中不存在实体 {}", selected.0))?;
+                if field == "name" {
+                    entity.name = source_entity.name.clone();
+                } else if let Some(key) = field.strip_prefix("component:") {
+                    let payload = source_entity
+                        .components
+                        .get(key)
+                        .cloned()
+                        .ok_or_else(|| format!("源 Prefab 缺少组件 {key}"))?;
+                    entity.components.insert(key.to_owned(), payload);
+                } else if let Some(raw_path) = field.strip_prefix("property:") {
+                    let path = engine::core::property_path::PropertyPath::parse(raw_path)
+                        .map_err(|error| error.to_string())?;
+                    let source_payload = source_entity
+                        .components
+                        .get(&path.component)
+                        .ok_or_else(|| format!("源 Prefab 缺少组件 {}", path.component))?;
+                    let value = engine::core::property_path::read_field_text(source_payload, &path)
+                        .map_err(|error| error.to_string())?;
+                    let current = entity
+                        .components
+                        .get(&path.component)
+                        .cloned()
+                        .ok_or_else(|| format!("实例缺少组件 {}", path.component))?;
+                    let updated =
+                        engine::core::property_path::write_builtin(&current, &path, &value)
+                            .map_err(|error| error.to_string())?;
+                    entity.components.insert(path.component.clone(), updated);
+                } else if let Some(key) = field.strip_prefix("metadata:") {
+                    match source_entity.metadata.get(key) {
+                        Some(value) => {
+                            entity.metadata.insert(key.to_owned(), value.clone());
+                        }
+                        None => {
+                            entity.metadata.remove(key);
+                        }
+                    }
+                } else {
+                    return Err(format!("不支持的 Prefab override 字段 {field}"));
+                }
+                scene.mark_dirty();
+                Ok::<(), String>(())
+            },
+        );
+        match result {
+            Ok(true) => {
+                self.on_document_changed(crate::actions::DocumentChange::PrefabApply);
+                self.status = format!("已回退覆盖字段：{field_label}（父节点 {parent:?}）");
+            }
+            Ok(false) => self.status = format!("字段已是源取值：{field_label}"),
+            Err(error) => self.status = format!("回退覆盖失败：{error}"),
+        }
+    }
+
+    /// 重新应用源 Prefab（docs/55 §4.1：**目标由 typed action 显式给出**，不再偷偷读选区）。
+    ///
+    /// 之前这里读 `selection.primary()`，于是 Hierarchy 的右键菜单必须先"设为单选"才能调用——
+    /// 一个隐藏的选区依赖。现在目标作为参数传进来，视图侧只负责发命令。
+    pub(crate) fn reapply_prefab(&mut self, selected: SceneEntityId) {
+        if self.is_playing() {
+            self.status = "Play mode locks scene editing; click Stop first".to_owned();
+            return;
+        }
         let Some(scene) = self.current_scene() else {
             return;
         };
@@ -2412,15 +2490,12 @@ impl EditorApp {
         }
     }
 
-    fn save_selected_prefab_to_source(&mut self) {
+    /// 把实例写回源 Prefab 文件（目标由 typed action 显式给出）。
+    pub(crate) fn save_prefab_to_source(&mut self, selected: SceneEntityId) {
         if self.is_playing() {
             self.status = "Play mode locks scene editing; click Stop first".to_owned();
             return;
         }
-        let Some(selected) = self.selection.primary() else {
-            self.status = "请先选中 Prefab 根实例".to_owned();
-            return;
-        };
         let Some(scene) = self.current_scene() else {
             return;
         };
@@ -2457,67 +2532,26 @@ impl EditorApp {
                     return;
                 }
             };
-        let roots = prefab_root_ids(&scene.scene, &prefab_source);
-        let mut rebuilds = Vec::new();
-        for root_id in roots {
-            match collect_prefab_rebuild_state(&scene.scene, root_id, &prefab_source, &new_prefab) {
-                Ok(rebuild) => rebuilds.push(rebuild),
-                Err(error) => {
-                    self.status = format!("实例 {} 无法更新：{error}", root_id.0);
-                    return;
-                }
-            }
-        }
-        if let Err(error) = new_prefab.save(&prefab_path) {
-            self.status = format!("写回源 Prefab 失败：{error}");
-            return;
-        }
-
         let new_selected_root = std::rc::Rc::new(std::cell::Cell::new(None));
         let selected_result = new_selected_root.clone();
         let prefab_source_for_apply = prefab_source.clone();
         let Some(scene) = self.document.current_scene.as_mut() else {
             return;
         };
-        let result = self.history.execute(
+        let result = Self::write_prefab_and_rebuild_instances(
+            &mut self.history,
             scene,
-            "Save Prefab Source",
-            CommandKind::Property,
-            move |scene| {
-                for rebuild in &rebuilds {
-                    if let Some(parent_id) = rebuild.parent
-                        && let Some(parent) = scene.scene.entities.get_mut(&parent_id)
-                    {
-                        parent
-                            .children
-                            .retain(|child| *child != rebuild.instance_root);
-                    }
-                    for entity_id in &rebuild.instance_entities {
-                        scene.scene.entities.remove(entity_id);
-                    }
-                    let instance = new_prefab
-                        .instantiate(&mut scene.scene, rebuild.parent, &rebuild.overrides)
-                        .map_err(|error| error.to_string())?;
-                    apply_prefab_instance_metadata(
-                        &mut scene.scene,
-                        &prefab_source_for_apply,
-                        &instance,
-                    );
-                    preserve_prefab_editor_flags(
-                        scene,
-                        &rebuild.source_to_instance,
-                        &instance.source_to_instance,
-                    );
-                    if rebuild.instance_root == selected {
-                        new_selected_root.set(Some(instance.instance_root));
-                    }
-                }
-                scene.mark_dirty();
-                Ok::<(), String>(())
+            PrefabWriteRequest {
+                source: &prefab_source_for_apply,
+                path: &prefab_path,
+                prefab: new_prefab,
+                selected,
+                label: "Save Prefab Source",
             },
+            &new_selected_root,
         );
         match result {
-            Ok(_) => {
+            Ok(()) => {
                 self.refresh_resources();
                 if let Some(new_root) = selected_result.get() {
                     self.selection
@@ -2530,15 +2564,223 @@ impl EditorApp {
         }
     }
 
-    pub(crate) fn unpack_selected_prefab(&mut self) {
+    /// 把一个字段的**实例取值**应用回源 Prefab 文件，并同步更新场景里的全部实例
+    /// （docs/55 阶段 3：逐字段 Apply）。应用后该字段不再是覆盖。
+    pub(crate) fn apply_prefab_override_field(&mut self, selected: SceneEntityId, field: &str) {
         if self.is_playing() {
             self.status = "Play mode locks scene editing; click Stop first".to_owned();
             return;
         }
-        let Some(selected) = self.selection.primary() else {
-            self.status = "请先选中 Prefab 根实例".to_owned();
+        let Some((prefab_source, source_id)) = self.prefab_instance_source(selected) else {
+            self.status = "当前实体不是 Prefab 实例".to_owned();
             return;
         };
+        let Some(instance_value) = self.prefab_override_instance_value(selected, field) else {
+            self.status = format!("无法读取实例取值：{field}");
+            return;
+        };
+        let prefab_path = strip_verbatim_prefix(&self.project.root).join(&prefab_source);
+        let mut prefab = match Prefab::load(&prefab_path) {
+            Ok(prefab) => prefab,
+            Err(error) => {
+                self.status = format!("加载源 Prefab 失败：{error}");
+                return;
+            }
+        };
+        // 只改源 Prefab 里的目标字段；失败则**不落盘、不改场景**。
+        let Some(source_entity) = prefab.entities.get_mut(&source_id) else {
+            self.status = format!("源 Prefab 中缺少实体 {}", source_id.0);
+            return;
+        };
+        if field == "name" {
+            source_entity.name = instance_value;
+        } else if let Some(key) = field.strip_prefix("component:") {
+            source_entity
+                .components
+                .insert(key.to_owned(), instance_value);
+        } else if let Some(raw_path) = field.strip_prefix("property:") {
+            let Ok(path) = engine::core::property_path::PropertyPath::parse(raw_path) else {
+                self.status = format!("非法属性路径：{raw_path}");
+                return;
+            };
+            let Some(payload) = source_entity.components.get(&path.component).cloned() else {
+                self.status = format!("源 Prefab 缺少组件 {}", path.component);
+                return;
+            };
+            match engine::core::property_path::write_builtin(&payload, &path, &instance_value) {
+                Ok(updated) => {
+                    source_entity.components.insert(path.component, updated);
+                }
+                Err(error) => {
+                    self.status = format!("应用覆盖失败：{error}");
+                    return;
+                }
+            }
+        } else if let Some(key) = field.strip_prefix("metadata:") {
+            source_entity
+                .metadata
+                .insert(key.to_owned(), instance_value);
+        } else {
+            self.status = format!("不支持的 Prefab override 字段 {field}");
+            return;
+        }
+
+        let new_selected_root = std::rc::Rc::new(std::cell::Cell::new(None));
+        let selected_result = new_selected_root.clone();
+        let field_label = field.to_owned();
+        let Some(scene) = self.document.current_scene.as_mut() else {
+            return;
+        };
+        let result = Self::write_prefab_and_rebuild_instances(
+            &mut self.history,
+            scene,
+            PrefabWriteRequest {
+                source: &prefab_source,
+                path: &prefab_path,
+                prefab,
+                selected,
+                label: &format!("Apply Override {field_label}"),
+            },
+            &new_selected_root,
+        );
+        match result {
+            Ok(()) => {
+                self.refresh_resources();
+                if let Some(new_root) = selected_result.get() {
+                    self.selection
+                        .set_single(new_root, editor::SelectionSource::Inspector);
+                    self.on_document_changed(crate::actions::DocumentChange::PrefabApply);
+                }
+                self.status = format!("已把字段应用到源 Prefab 并更新全部实例：{field_label}");
+            }
+            Err(error) => self.status = format!("应用覆盖失败：{error}"),
+        }
+    }
+
+    /// 是否是 Prefab 实例（有 `prefab.source`）。typed action 的前置条件检查用它，
+    /// 避免"面板与命令层各写一遍元数据判断"。
+    pub(crate) fn is_prefab_instance(&self, selected: SceneEntityId) -> bool {
+        self.document
+            .current_scene
+            .as_ref()
+            .and_then(|document| document.scene.entities.get(&selected))
+            .is_some_and(|entity| entity.metadata.contains_key("prefab.source"))
+    }
+
+    /// 是否是 Prefab **根**实例（`prefab.root=true`）：只有根实例支持重新应用/写回/解包。
+    pub(crate) fn is_prefab_root(&self, selected: SceneEntityId) -> bool {
+        self.document
+            .current_scene
+            .as_ref()
+            .and_then(|document| document.scene.entities.get(&selected))
+            .is_some_and(|entity| {
+                entity
+                    .metadata
+                    .get("prefab.root")
+                    .is_some_and(|value| value == "true")
+            })
+    }
+
+    /// Prefab 实例的 `(来源路径, 源实体 ID)`；非实例返回 `None`。
+    fn prefab_instance_source(&self, selected: SceneEntityId) -> Option<(String, SceneEntityId)> {
+        let scene = self.document.current_scene.as_ref()?;
+        let entity = scene.scene.entities.get(&selected)?;
+        Some((
+            entity.metadata.get("prefab.source")?.clone(),
+            entity
+                .metadata
+                .get("prefab.source_id")?
+                .parse::<u64>()
+                .ok()
+                .map(SceneEntityId)?,
+        ))
+    }
+
+    /// 覆盖字段的**实例侧**原始文本（应用回源时用的就是这个值）。
+    fn prefab_override_instance_value(
+        &self,
+        selected: SceneEntityId,
+        field: &str,
+    ) -> Option<String> {
+        let scene = self.document.current_scene.as_ref()?;
+        let entity = scene.scene.entities.get(&selected)?;
+        Some(prefab_override_side_value(entity, field))
+    }
+
+    /// 把（可能已改动的）Prefab 落盘，并在**一条历史**里重建场景内全部同源实例。
+    ///
+    /// 整体写回与逐字段应用共用这条路径：覆盖集合由「实例 vs 新源」重新 diff 得出，
+    /// 因此刚被应用的字段会自动从覆盖列表中消失。
+    ///
+    /// 作为关联函数接收 `history` 与 `scene` 两个**互不相干**的可变借用，
+    /// 避免「持有 current_scene 借用时再调用 &mut self 方法」的借用冲突。
+    fn write_prefab_and_rebuild_instances(
+        history: &mut editor::CommandService,
+        scene: &mut editor::SceneDocument,
+        request: PrefabWriteRequest<'_>,
+        new_selected_root: &std::rc::Rc<std::cell::Cell<Option<SceneEntityId>>>,
+    ) -> Result<(), String> {
+        let PrefabWriteRequest {
+            source: prefab_source,
+            path: prefab_path,
+            prefab: new_prefab,
+            selected,
+            label,
+        } = request;
+        let roots = prefab_root_ids(&scene.scene, prefab_source);
+        let mut rebuilds = Vec::new();
+        for root_id in roots {
+            rebuilds.push(collect_prefab_rebuild_state(
+                &scene.scene,
+                root_id,
+                prefab_source,
+                &new_prefab,
+            )?);
+        }
+        new_prefab
+            .save(prefab_path)
+            .map_err(|error| format!("写回源 Prefab 失败：{error}"))?;
+
+        let prefab_source_owned = prefab_source.to_owned();
+        let selected_root = new_selected_root.clone();
+        let new_prefab_for_apply = new_prefab.clone();
+        let result = history.execute(scene, label, CommandKind::Property, move |scene| {
+            for rebuild in &rebuilds {
+                if let Some(parent_id) = rebuild.parent
+                    && let Some(parent) = scene.scene.entities.get_mut(&parent_id)
+                {
+                    parent
+                        .children
+                        .retain(|child| *child != rebuild.instance_root);
+                }
+                for entity_id in &rebuild.instance_entities {
+                    scene.scene.entities.remove(entity_id);
+                }
+                let instance = new_prefab_for_apply
+                    .instantiate(&mut scene.scene, rebuild.parent, &rebuild.overrides)
+                    .map_err(|error| error.to_string())?;
+                apply_prefab_instance_metadata(&mut scene.scene, &prefab_source_owned, &instance);
+                preserve_prefab_editor_flags(
+                    scene,
+                    &rebuild.source_to_instance,
+                    &instance.source_to_instance,
+                );
+                if rebuild.instance_root == selected {
+                    selected_root.set(Some(instance.instance_root));
+                }
+            }
+            scene.mark_dirty();
+            Ok::<(), String>(())
+        });
+        result.map(|_| ())
+    }
+
+    /// 解包 Prefab 实例（目标由 typed action 显式给出）。
+    pub(crate) fn unpack_prefab(&mut self, selected: SceneEntityId) {
+        if self.is_playing() {
+            self.status = "Play mode locks scene editing; click Stop first".to_owned();
+            return;
+        }
         let Some(scene) = self.current_scene() else {
             return;
         };
@@ -2870,6 +3112,18 @@ fn prefab_override_value(instance: &SceneEntity, field: &str) -> Result<String, 
             .get(key)
             .cloned()
             .ok_or_else(|| format!("实例缺少组件 {key}"))
+    } else if let Some(path) = field.strip_prefix("property:") {
+        // 逐字段覆盖：值取该字段（或元组分量）的**原始文本**，
+        // 由 `PrefabInstance::apply_overrides` 用 property_path 做最小改写。
+        // 取原始文本而不是规范化数值，避免把 `77` 写成 `77.000000`。
+        let path = engine::core::property_path::PropertyPath::parse(path)
+            .map_err(|error| format!("{field}: {error}"))?;
+        let payload = instance
+            .components
+            .get(&path.component)
+            .ok_or_else(|| format!("实例缺少组件 {}", path.component))?;
+        engine::core::property_path::read_field_text(payload, &path)
+            .map_err(|error| format!("{field}: {error}"))
     } else if let Some(key) = field.strip_prefix("metadata:") {
         instance
             .metadata
@@ -2977,6 +3231,79 @@ fn preserve_prefab_editor_flags(
     }
 }
 
+/// 一次「落盘 Prefab + 重建实例」请求（整体写回与逐字段应用共用）。
+struct PrefabWriteRequest<'a> {
+    source: &'a str,
+    path: &'a std::path::Path,
+    prefab: Prefab,
+    /// 需要在重建后重新选中的实例根（通常是用户当前选中的那个）。
+    selected: SceneEntityId,
+    /// Undo/Redo 菜单里显示的命令名。
+    label: &'a str,
+}
+
+/// Prefab 覆盖列表的一行：字段 + 源取值 + 实例取值（都用于显示与选择性回退）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PrefabOverrideRow {
+    field: String,
+    source_value: String,
+    instance_value: String,
+}
+
+/// 由覆盖字段串计算某一侧的原始文本（源或实例）。
+fn prefab_override_side_value(entity: &SceneEntity, field: &str) -> String {
+    if field == "name" {
+        return entity.name.clone();
+    }
+    if let Some(key) = field.strip_prefix("component:") {
+        return entity
+            .components
+            .get(key)
+            .cloned()
+            .unwrap_or_else(|| "（缺失）".to_owned());
+    }
+    if let Some(raw_path) = field.strip_prefix("property:") {
+        let Ok(path) = engine::core::property_path::PropertyPath::parse(raw_path) else {
+            return "（非法路径）".to_owned();
+        };
+        let Some(payload) = entity.components.get(&path.component) else {
+            return "（缺失）".to_owned();
+        };
+        return engine::core::property_path::read_field_text(payload, &path)
+            .unwrap_or_else(|_| "（缺失）".to_owned());
+    }
+    if let Some(key) = field.strip_prefix("metadata:") {
+        return entity
+            .metadata
+            .get(key)
+            .cloned()
+            .unwrap_or_else(|| "（缺失）".to_owned());
+    }
+    "（未知字段）".to_owned()
+}
+
+/// 由 diff 产生的字段串计算「源 / 实例」两侧的原始文本。
+fn prefab_override_rows(source: &SceneEntity, instance: &SceneEntity) -> Vec<PrefabOverrideRow> {
+    diff_prefab_entity(source, instance)
+        .into_iter()
+        .map(|field| PrefabOverrideRow {
+            source_value: prefab_override_side_value(source, &field),
+            instance_value: prefab_override_side_value(instance, &field),
+            field,
+        })
+        .collect()
+}
+
+/// 列表里只显示前若干字符，避免长组件串把行撑爆。
+fn compact_value(value: &str) -> String {
+    const MAX: usize = 48;
+    if value.chars().count() <= MAX {
+        return value.to_owned();
+    }
+    let head: String = value.chars().take(MAX).collect();
+    format!("{head}…")
+}
+
 fn diff_prefab_entity(source: &SceneEntity, instance: &SceneEntity) -> Vec<String> {
     let mut overrides = Vec::new();
     if source.name != instance.name {
@@ -2989,8 +3316,50 @@ fn diff_prefab_entity(source: &SceneEntity, instance: &SceneEntity) -> Vec<Strin
         .chain(instance.components.keys())
         .cloned()
         .collect::<std::collections::BTreeSet<_>>();
+    let registry = engine::core::component_schema::builtin_registry();
     for key in component_keys {
-        if source.components.get(&key) != instance.components.get(&key) {
+        let source_value = source.components.get(&key);
+        let instance_value = instance.components.get(&key);
+        if source_value == instance_value {
+            continue;
+        }
+        // docs/55 阶段 3：**逐字段** Override。两边都在、且该组件有 schema 时，
+        // 只把真正变化的字段列为覆盖（其余字段不动），这样编辑一个字段不会冻结整个组件串；
+        // 组件新增/删除或没有 schema 时退回组件级覆盖（整串替换）。
+        let field_level = match (source_value, instance_value, registry.get(key.as_str())) {
+            (Some(source_payload), Some(instance_payload), Some(schema)) => {
+                let (Ok(source_data), Ok(instance_data)) =
+                    (schema.parse(source_payload), schema.parse(instance_payload))
+                else {
+                    overrides.push(format!("component:{key}"));
+                    continue;
+                };
+                let mut fields = std::collections::BTreeSet::new();
+                for (field, source_field) in &source_data {
+                    match instance_data.get(field) {
+                        Some(instance_field) if instance_field == source_field => {}
+                        Some(_) => {
+                            fields.insert(field.clone());
+                        }
+                        None => {
+                            fields.insert(field.clone());
+                        }
+                    }
+                }
+                for field in instance_data.keys() {
+                    if !source_data.contains_key(field) {
+                        fields.insert(field.clone());
+                    }
+                }
+                // 字段级集合可能为空（例如仅格式不同）：此时不产生噪音覆盖。
+                for field in fields {
+                    overrides.push(format!("property:{key}.{field}"));
+                }
+                true
+            }
+            _ => false,
+        };
+        if !field_level && source_value != instance_value {
             overrides.push(format!("component:{key}"));
         }
     }
@@ -3280,11 +3649,24 @@ mod tests {
                 .get(&(SceneEntityId(1), "name".to_owned())),
             Some(&"Boss".to_owned())
         );
+        // 逐字段 Override：只记录真正变化的字段（原始文本），不再冻结整个组件串。
         assert_eq!(
             rebuild
                 .overrides
-                .get(&(SceneEntityId(2), "component:Transform".to_owned())),
-            Some(&"x=9;y=4;rotation=0;scale_x=1;scale_y=1".to_owned())
+                .get(&(SceneEntityId(2), "property:Transform.x".to_owned())),
+            Some(&"9".to_owned())
+        );
+        assert_eq!(
+            rebuild
+                .overrides
+                .get(&(SceneEntityId(2), "property:Transform.y".to_owned())),
+            Some(&"4".to_owned())
+        );
+        assert!(
+            !rebuild
+                .overrides
+                .contains_key(&(SceneEntityId(2), "component:Transform".to_owned())),
+            "有 schema 的组件必须走字段级覆盖，而不是整串覆盖"
         );
     }
 
@@ -3392,10 +3774,7 @@ mod tests {
             .prefab_override_summary(target)
             .expect("prefab instance must produce a summary")
             .expect("summary must load");
-        assert!(
-            first.iter().any(|field| field.contains("name")),
-            "{first:?}"
-        );
+        assert!(first.iter().any(|row| row.field == "name"), "{first:?}");
         assert_eq!(app.prefab_source_cache.len(), 1, "首次读取应填充缓存");
 
         // 第二次读取应命中缓存（内容一致、不重新读盘）。
@@ -3428,10 +3807,7 @@ mod tests {
             "文件改动后缓存必须重载"
         );
         // 差异集合仍然来自源 Prefab 的真实内容（改名 override 依旧列出）。
-        assert!(
-            third.iter().any(|field| field.contains("name")),
-            "{third:?}"
-        );
+        assert!(third.iter().any(|row| row.field == "name"), "{third:?}");
         let _ = fs::remove_dir_all(root);
     }
 
@@ -3454,8 +3830,11 @@ mod tests {
         }
         select_entity(&mut app, target);
 
-        app.reapply_selected_prefab();
-
+        // typed action（面板按钮走的就是这条）：目标显式携带。
+        assert_eq!(
+            app.dispatch(editor::EditorCommand::ReapplyPrefab { entity: target }),
+            editor::CommandResult::Applied
+        );
         assert!(
             app.status.contains("已重新应用 Prefab"),
             "status should confirm prefab reapply"
@@ -3464,14 +3843,313 @@ mod tests {
         let scene = &app.document.current_scene.as_ref().unwrap().scene;
         let entity = scene.entities.get(&selected).unwrap();
         assert_eq!(entity.name, "BossGreen");
+        // 逐字段语义：被覆盖的字段保留实例取值（原始文本 `77`/`19` 不被规范化），
+        // 其余字段跟随源 Prefab。这里用类型化读取断言，避免绑定源文件的格式细节。
+        let payload = entity
+            .components
+            .get("Transform")
+            .expect("Transform")
+            .clone();
+        let registry = engine::core::component_schema::builtin_registry();
+        let read = |field: &str| {
+            let path =
+                engine::core::property_path::PropertyPath::parse(&format!("Transform.{field}"))
+                    .expect("path");
+            engine::core::property_path::read_field(&registry, &payload, &path).expect("field")
+        };
         assert_eq!(
-            entity.components.get("Transform").map(String::as_str),
-            Some("x=77;y=19;rotation=0;scale_x=1;scale_y=1")
+            read("x"),
+            engine::core::component_schema::FieldValue::Number(77.0)
         );
+        assert_eq!(
+            read("y"),
+            engine::core::component_schema::FieldValue::Number(19.0)
+        );
+        assert_eq!(
+            read("scale_x"),
+            engine::core::component_schema::FieldValue::Number(1.0)
+        );
+        assert!(payload.contains("x=77"), "覆盖字段保留原始文本：{payload}");
         assert_eq!(
             entity.metadata.get("prefab.source").map(String::as_str),
             Some("assets/prefabs/slime_green.prefab")
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// Revert = 丢弃全部覆盖：实例字段回到源 Prefab 取值（逐字），名字覆盖同样被清掉。
+    #[test]
+    fn sample_project_revert_prefab_overrides_restores_source_values() {
+        let (mut app, root) = sample_app_with_production_scene("revert");
+        let (target, instance_count) = {
+            let scene = &app.document.current_scene.as_ref().unwrap().scene;
+            let target = prefab_root(scene, "assets/prefabs/slime_green.prefab");
+            let count = scene
+                .entities
+                .values()
+                .filter(|entity| {
+                    entity
+                        .metadata
+                        .get("prefab.root")
+                        .is_some_and(|value| value == "true")
+                        && entity
+                            .metadata
+                            .get("prefab.source")
+                            .is_some_and(|value| value == "assets/prefabs/slime_green.prefab")
+                })
+                .count();
+            (target, count)
+        };
+        // 期望值 = 同一 Prefab 在空场景里**全新实例化**的结果：
+        // 「Revert Overrides」的语义就是"回到没有覆盖的源状态"。
+        let expected = {
+            let prefab = engine::core::prefab::Prefab::load(
+                crate::util::strip_verbatim_prefix(&app.project.root)
+                    .join("assets/prefabs/slime_green.prefab"),
+            )
+            .expect("source prefab loads");
+            let mut scratch = Scene::new("scratch");
+            let instance = prefab
+                .instantiate(&mut scratch, None, &std::collections::BTreeMap::new())
+                .expect("fresh instance");
+            scratch.entities[&instance.instance_root]
+                .components
+                .get("Transform")
+                .cloned()
+                .expect("fresh instance has Transform")
+        };
+        {
+            let scene = app.document.current_scene.as_mut().unwrap();
+            let entity = scene.scene.entities.get_mut(&target).unwrap();
+            entity.name = "RevertedName".to_owned();
+            entity.components.insert(
+                "Transform".to_owned(),
+                "x=123;y=456;rotation=0;scale_x=1;scale_y=1".to_owned(),
+            );
+            scene.mark_dirty();
+        }
+        select_entity(&mut app, target);
+
+        assert_eq!(
+            app.dispatch(editor::EditorCommand::RevertPrefabOverrides { entity: target }),
+            editor::CommandResult::Applied
+        );
+        assert!(
+            app.status.contains("已还原 Prefab 覆盖"),
+            "status should confirm the revert: {}",
+            app.status
+        );
+        let scene = &app.document.current_scene.as_ref().unwrap().scene;
+        // 生产示例场景里同一个 Prefab 有多个同级实例，且 revert 会重建实例（新实体 ID），
+        // 因此这里做**差分**断言：实例数量不变、名字覆盖消失、且恰好出现一个
+        // 取值等于"全新实例化"的实例根（即刚被 revert 的那个）。
+        let roots: Vec<&engine::core::scene::SceneEntity> = scene
+            .entities
+            .values()
+            .filter(|entity| {
+                entity
+                    .metadata
+                    .get("prefab.root")
+                    .is_some_and(|value| value == "true")
+                    && entity
+                        .metadata
+                        .get("prefab.source")
+                        .is_some_and(|value| value == "assets/prefabs/slime_green.prefab")
+            })
+            .collect();
+        assert_eq!(roots.len(), instance_count, "revert 不得增删实例");
+        assert!(
+            scene
+                .entities
+                .values()
+                .all(|candidate| candidate.name != "RevertedName"),
+            "名字覆盖必须被还原"
+        );
+        let reverted: Vec<&&engine::core::scene::SceneEntity> = roots
+            .iter()
+            .filter(|entity| entity.components.get("Transform") == Some(&expected))
+            .collect();
+        assert_eq!(
+            reverted.len(),
+            1,
+            "恰有一个实例根回到源 Prefab 取值（逐字）：{expected}"
+        );
+        assert_eq!(
+            reverted[0]
+                .metadata
+                .get("prefab.source")
+                .map(String::as_str),
+            Some("assets/prefabs/slime_green.prefab"),
+            "revert 后必须保留 Prefab 来源元数据"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// 选择性 Revert（docs/55 阶段 3）：只回退一个字段，其它覆盖必须原样保留；
+    /// 且回退是**一条** Undo（可整体收回）。
+    #[test]
+    fn selective_revert_restores_one_field_and_keeps_other_overrides() {
+        let (mut app, root) = sample_app_with_production_scene("selective-revert");
+        let target = {
+            let scene = &app.document.current_scene.as_ref().unwrap().scene;
+            prefab_root(scene, "assets/prefabs/slime_green.prefab")
+        };
+        // 制造两个独立覆盖：名字 + Transform.x。
+        {
+            let scene = app.document.current_scene.as_mut().unwrap();
+            let entity = scene.scene.entities.get_mut(&target).unwrap();
+            entity.name = "SelectiveGreen".to_owned();
+            let payload = entity
+                .components
+                .get("Transform")
+                .cloned()
+                .expect("instance has Transform");
+            let path = engine::core::property_path::PropertyPath::parse("Transform.x").unwrap();
+            let updated =
+                engine::core::property_path::write_builtin(&payload, &path, "999").unwrap();
+            entity.components.insert("Transform".to_owned(), updated);
+            scene.mark_dirty();
+        }
+        select_entity(&mut app, target);
+
+        // 覆盖列表里应同时出现字段级条目。
+        let rows = app
+            .prefab_override_summary(target)
+            .expect("summary")
+            .expect("loads");
+        assert!(
+            rows.iter().any(|row| row.field == "property:Transform.x"),
+            "{rows:?}"
+        );
+        assert!(rows.iter().any(|row| row.field == "name"), "{rows:?}");
+
+        let undo_before = app.history.undo_len();
+        app.revert_prefab_override_field(target, "property:Transform.x");
+
+        let scene = &app.document.current_scene.as_ref().unwrap().scene;
+        let entity = scene.entities.get(&target).expect("instance");
+        let payload = entity.components.get("Transform").expect("Transform");
+        let path = engine::core::property_path::PropertyPath::parse("Transform.x").unwrap();
+        let registry = engine::core::component_schema::builtin_registry();
+        let source_x = {
+            let prefab = Prefab::load(root.join("assets/prefabs/slime_green.prefab")).unwrap();
+            let source_id = entity
+                .metadata
+                .get("prefab.source_id")
+                .and_then(|value| value.parse::<u64>().ok())
+                .map(SceneEntityId)
+                .expect("source id");
+            let source_payload = prefab.entities[&source_id]
+                .components
+                .get("Transform")
+                .expect("source Transform");
+            engine::core::property_path::read_field(&registry, source_payload, &path)
+                .expect("source x")
+        };
+        assert_eq!(
+            engine::core::property_path::read_field(&registry, payload, &path).expect("x"),
+            source_x,
+            "被回退字段必须等于源取值"
+        );
+        assert_eq!(entity.name, "SelectiveGreen", "其它覆盖（名字）必须保留");
+        assert_eq!(
+            app.history.undo_len(),
+            undo_before + 1,
+            "选择性回退必须只产生一条历史"
+        );
+
+        // 一次 Undo 收回这次回退。
+        app.dispatch(editor::EditorCommand::Undo);
+        let payload = app.document.current_scene.as_ref().unwrap().scene.entities[&target]
+            .components
+            .get("Transform")
+            .expect("Transform")
+            .clone();
+        let x = engine::core::property_path::read_field(&registry, &payload, &path).expect("x");
+        assert_eq!(
+            x,
+            engine::core::component_schema::FieldValue::Number(999.0),
+            "Undo 后覆盖字段应恢复"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// 逐字段 Apply（docs/55 阶段 3）：把实例取值写回**源 Prefab 文件**并更新全部实例；
+    /// 应用后该字段不再是覆盖，其它覆盖保持不变。
+    #[test]
+    fn apply_prefab_override_field_writes_source_and_drops_that_override() {
+        let (mut app, root) = sample_app_with_production_scene("selective-apply");
+        let target = {
+            let scene = &app.document.current_scene.as_ref().unwrap().scene;
+            prefab_root(scene, "assets/prefabs/slime_green.prefab")
+        };
+        // 制造两个覆盖：Transform.x=999 与名字。
+        {
+            let scene = app.document.current_scene.as_mut().unwrap();
+            let entity = scene.scene.entities.get_mut(&target).unwrap();
+            entity.name = "ApplyGreen".to_owned();
+            let payload = entity
+                .components
+                .get("Transform")
+                .cloned()
+                .expect("instance has Transform");
+            let path = engine::core::property_path::PropertyPath::parse("Transform.x").unwrap();
+            let updated =
+                engine::core::property_path::write_builtin(&payload, &path, "999").unwrap();
+            entity.components.insert("Transform".to_owned(), updated);
+            scene.mark_dirty();
+        }
+        select_entity(&mut app, target);
+        let source_id = app.document.current_scene.as_ref().unwrap().scene.entities[&target]
+            .metadata
+            .get("prefab.source_id")
+            .and_then(|value| value.parse::<u64>().ok())
+            .map(SceneEntityId)
+            .expect("source id");
+
+        let undo_before = app.history.undo_len();
+        app.apply_prefab_override_field(target, "property:Transform.x");
+        assert!(
+            app.status.contains("已把字段应用到源 Prefab"),
+            "status: {}",
+            app.status
+        );
+
+        // 1) 源 Prefab 文件里该字段已更新。
+        let prefab = Prefab::load(root.join("assets/prefabs/slime_green.prefab"))
+            .expect("source prefab reloads");
+        let registry = engine::core::component_schema::builtin_registry();
+        let path = engine::core::property_path::PropertyPath::parse("Transform.x").unwrap();
+        assert_eq!(
+            engine::core::property_path::read_field(
+                &registry,
+                prefab.entities[&source_id]
+                    .components
+                    .get("Transform")
+                    .expect("source Transform"),
+                &path
+            )
+            .expect("source x"),
+            engine::core::component_schema::FieldValue::Number(999.0),
+            "源 Prefab 文件必须被更新"
+        );
+
+        // 2) 该字段不再是覆盖（实例 == 源），名字覆盖仍在。
+        let rows = app
+            .prefab_override_summary(app.selection.primary().unwrap())
+            .expect("summary")
+            .expect("loads");
+        assert!(
+            !rows.iter().any(|row| row.field == "property:Transform.x"),
+            "应用后该字段不应再是覆盖：{rows:?}"
+        );
+        assert!(
+            rows.iter().any(|row| row.field == "name"),
+            "其它覆盖必须保留：{rows:?}"
+        );
+
+        // 3) 场景更新是**一条**历史（文件写入本身不属于文档历史，这点与整体写回一致）。
+        assert_eq!(app.history.undo_len(), undo_before + 1);
         let _ = fs::remove_dir_all(root);
     }
 
@@ -3506,8 +4184,10 @@ mod tests {
         }
         select_entity(&mut app, target);
 
-        app.save_selected_prefab_to_source();
-
+        assert_eq!(
+            app.dispatch(editor::EditorCommand::SavePrefabToSource { entity: target }),
+            editor::CommandResult::Applied
+        );
         assert!(
             app.status.contains("已写回 Prefab 源并更新实例"),
             "status should confirm prefab save, got: {}",

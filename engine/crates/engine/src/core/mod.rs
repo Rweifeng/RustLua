@@ -19,6 +19,8 @@ pub mod camera;
 pub mod char_collect;
 /// Deferred world mutations for safe ECS system iteration.
 pub mod commands;
+/// 打开场景时把**旧组件名**改写成运行时真正读取的名字（幂等、不写盘）。
+pub mod component_migration;
 /// E21: typed schema registry over serialized component strings.
 pub mod component_schema;
 /// Lightweight JSON-schema validation for `data` tables loaded via Lua.
@@ -66,6 +68,8 @@ pub mod math2d;
 pub mod math3d;
 /// 游戏工程路径解析（默认仓库内 examples）。
 pub mod paths;
+/// Typed `Component.field[index]` property paths with minimal-churn writes (docs/55 PropertyPath).
+pub mod property_path;
 /// WP2/WP9：场景空间层级迁移命令（dry-run / 写回 / 备份 / 一键回滚）。
 pub mod scene_migration;
 pub use paths::fixture_games_dir;

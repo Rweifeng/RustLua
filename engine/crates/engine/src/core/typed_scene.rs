@@ -544,6 +544,35 @@ mod tests {
         ),
     ];
 
+    /// 脚本组件的名字只有**一个**：加载器认的名字必须就是
+    /// [`crate::core::entity_script::SCRIPT_COMPONENT`]（历史上编辑器写 `LuaScript`、
+    /// schema 写 `EntityScript`、运行时读 `Script`，三处不一致导致"设了脚本不生效"）。
+    #[test]
+    fn script_component_name_matches_the_shared_constant() {
+        let name = crate::core::entity_script::SCRIPT_COMPONENT;
+        assert_eq!(name, "Script");
+        let mut scene = Scene::new("script-name");
+        scene.add_entity(SceneEntityId(1), "E", None).unwrap();
+        scene
+            .entities
+            .get_mut(&SceneEntityId(1))
+            .unwrap()
+            .components
+            .insert(name.to_owned(), "file=scripts/ai/patrol.lua".to_owned());
+        let typed = TypedScene::compile_v2(&scene).unwrap();
+        assert!(
+            typed.entities[0]
+                .components
+                .contains_key(&ComponentId::Script),
+            "加载器必须认得 {name}"
+        );
+        // schema 注册表也必须用同一个名字（见 component_schema 的守卫测试）。
+        assert!(
+            crate::core::component_schema::builtin_registry().contains_key(name),
+            "{name} 必须有 schema"
+        );
+    }
+
     #[test]
     fn compiles_known_components_and_parent_topology_once() {
         let mut scene = Scene::new("typed");

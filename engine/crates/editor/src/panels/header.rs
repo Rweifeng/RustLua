@@ -15,154 +15,12 @@ impl EditorApp {
         self.sync_window_title(context);
         egui::TopBottomPanel::top("menu_bar").show(context, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
-                ui.menu_button("项目", |ui| {
-                    if ui.button("新建项目").clicked() {
-                        self.create_new_project();
-                        ui.close();
-                    }
-                    if ui.button("打开项目").clicked() {
-                        self.open_project_menu();
-                        ui.close();
-                    }
-                    // 最近项目（最多 5 个，最新在前）。
-                    ui.menu_button("最近项目", |ui| {
-                        if self.recent_projects.is_empty() {
-                            ui.label("（暂无最近项目）");
-                        } else {
-                            for path in self.recent_projects.clone() {
-                                if ui.button(display_path(Path::new(&path))).clicked() {
-                                    self.open_recent_project(path);
-                                    ui.close();
-                                }
-                            }
-                        }
-                    });
-                    if ui.button("保存项目").clicked() {
-                        self.save_scene();
-                        ui.close();
-                    }
-                    // 项目设置：仅在真正打开项目（有 project.toml）时可用。
-                    if ui
-                        .add_enabled(self.project_loaded, egui::Button::new("项目设置"))
-                        .on_hover_text("编辑 project.toml：名称 / 入口脚本 / 启动场景 / 字体")
-                        .clicked()
-                    {
-                        self.open_project_settings();
-                        ui.close();
-                    }
-                    ui.separator();
-                    if ui.button("发布项目").clicked() {
-                        self.show_publish_panel = true;
-                        ui.close();
-                    }
-                });
-                ui.menu_button("编辑", |ui| {
-                    // 新建场景（第一个子菜单）。
-                    ui.horizontal(|ui| {
-                        ui.label("场景名");
-                        ui.text_edit_singleline(&mut self.new_scene_name);
-                    });
-                    if ui.button("新建场景").clicked() {
-                        self.create_scene();
-                        ui.close();
-                    }
-                    ui.separator();
-                    // 实体操作。
-                    ui.horizontal(|ui| {
-                        ui.label("实体名称");
-                        ui.text_edit_singleline(&mut self.entity_name);
-                    });
-                    if ui.button("添加根实体").clicked() {
-                        self.add_entity(None);
-                        ui.close();
-                    }
-                    if ui.button("添加 Sprite").clicked() {
-                        self.add_entity_with_component("Sprite", "Sprite");
-                        ui.close();
-                    }
-                    if ui.button("添加 Tilemap").clicked() {
-                        self.add_entity_with_component("Tilemap", "Tilemap");
-                        ui.close();
-                    }
-                    if ui.button("添加 UI Text").clicked() {
-                        self.add_entity_with_component("UiText", "Text");
-                        ui.close();
-                    }
-                    if ui.button("添加 UI Image").clicked() {
-                        self.add_entity_with_component("UiImage", "Image");
-                        ui.close();
-                    }
-                    if ui.button("添加 3D 实体").clicked() {
-                        self.add_3d_entity(None);
-                        ui.close();
-                    }
-                    ui.separator();
-                    if ui.button("创建预制体").clicked() {
-                        self.create_prefab_from_selected();
-                        ui.close();
-                    }
-                    ui.separator();
-                    if ui.button("收集字体字符").clicked() {
-                        self.collect_font_chars();
-                        ui.close();
-                    }
-                });
-                ui.menu_button("帮助", |ui| {
-                    if ui.button("使用手册").clicked() {
-                        self.open_help();
-                        ui.close();
-                    }
-                    if ui.button("版本说明").clicked() {
-                        self.show_about = true;
-                        ui.close();
-                    }
-                });
-                // 崩溃恢复：检测到未清理的自动保存快照时才出现。
-                if !self.recovery_scan.candidates.is_empty() {
-                    ui.menu_button("⚠ 恢复", |ui| {
-                        ui.label("检测到崩溃恢复快照：");
-                        ui.separator();
-                        for candidate in self.recovery_scan.candidates.clone() {
-                            let label = candidate.original_path.as_ref().map_or_else(
-                                || display_path(&candidate.path),
-                                |path| display_path(path),
-                            );
-                            ui.horizontal(|ui| {
-                                ui.label(&label);
-                                if ui.button("恢复").clicked() {
-                                    self.recover_candidate(candidate.clone());
-                                    ui.close();
-                                }
-                                if ui.button("丢弃").clicked() {
-                                    let _ = self.recovery.discard(&candidate);
-                                    self.refresh_recovery_scan();
-                                    ui.close();
-                                }
-                            });
-                        }
-                        ui.separator();
-                        // 一次性清空 `.temp/` 下全部恢复快照（P4）：`clear_all` 此前
-                        // 只有定义没有入口，崩溃恢复攒多了只能一个个"丢弃"。
-                        if ui
-                            .button(format!(
-                                "全部丢弃（{} 项）",
-                                self.recovery_scan.candidates.len()
-                            ))
-                            .clicked()
-                        {
-                            match self.recovery.clear_all() {
-                                Ok(removed) => {
-                                    self.status = format!("已清理 {removed} 个恢复快照");
-                                }
-                                Err(error) => {
-                                    self.status = format!("清理恢复快照失败：{error}");
-                                }
-                            }
-                            self.refresh_recovery_scan();
-                            ui.close();
-                        }
-                    });
-                }
+                // 菜单结构是数据（`crate::menu::MENU_BAR`，按 Unity 的七个顶级菜单组织）：
+                // 这里只负责渲染 + 把动作交回 `run_menu_action`。
+                self.draw_menu_bar(ui);
+                // 旧的内联菜单（项目/编辑/视图/帮助/恢复）已迁移到 `crate::menu`：
+                // 结构与动作都在那边的声明表里，这里不再逐个按钮地拼。
+
                 // 右侧：状态 + 资源/控制台面板开关。
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if icon_toggle(ui, self.show_lua_console, "⌨", "显示或隐藏控制台").clicked()
@@ -196,7 +54,7 @@ impl EditorApp {
     }
 
     /// 恢复一条崩溃快照（E06：dirty 时先经确认网关，确认后才替换文档）。
-    fn recover_candidate(&mut self, candidate: editor::RecoveryCandidate) {
+    pub(crate) fn recover_candidate(&mut self, candidate: editor::RecoveryCandidate) {
         self.request_document_change(crate::actions::PendingChange::Recover { candidate });
     }
 
@@ -239,7 +97,7 @@ impl EditorApp {
 
     /// 菜单：新建项目 —— 选目录，缺啥补啥（project.toml/scripts/scenes/assets），再导入。
     /// E06：目录选定并补齐骨架后，经确认网关切换项目（dirty 时弹确认窗）。
-    fn create_new_project(&mut self) {
+    pub(crate) fn create_new_project(&mut self) {
         let Some(dir) = choose_project_directory() else {
             return;
         };
@@ -251,7 +109,7 @@ impl EditorApp {
     }
 
     /// 菜单：打开项目 —— 选目录并走后台导入流程（E06：dirty 时先确认）。
-    fn open_project_menu(&mut self) {
+    pub(crate) fn open_project_menu(&mut self) {
         let Some(dir) = choose_project_directory() else {
             return;
         };
@@ -296,7 +154,7 @@ impl EditorApp {
     }
 
     /// 菜单：使用手册 —— 在资源管理器中打开 docs 目录（docs 位于工作区根，不在 engine/ 下）。
-    fn open_help(&mut self) {
+    pub(crate) fn open_help(&mut self) {
         let docs = workspace_root().join("docs");
         if docs.is_dir() {
             open_in_explorer(&docs);

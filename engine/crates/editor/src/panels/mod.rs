@@ -15,5 +15,11 @@ pub(crate) mod publish;
 pub(crate) mod resource_browser;
 pub(crate) mod runtime_debug;
 pub(crate) mod scene_view;
+/// schema 驱动的通用组件字段编辑器（docs/55 阶段 2：新增组件不改巨型 match）。
+pub(crate) mod schema_inspector;
 pub(crate) mod tilemap_tools;
 pub(crate) mod toolbar;
+
+/// 架构守卫：面板只发 typed action，不直接写文档（棘轮测试）。
+#[cfg(test)]
+mod architecture_tests;

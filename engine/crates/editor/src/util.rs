@@ -8,6 +8,38 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// 测试用唯一令牌：进程 ID + 原子计数 + 时间戳。
+///
+/// 只取时间戳不够——Windows 时钟粒度下并行测试可能拿到同一个纳秒值，临时目录互撞，
+/// 于是 `opens_project_and_reports_required_directories` 曾在全量测试里偶发失败。
+/// bin 与 lib 各有一份本地实现（不把测试支持暴露成公开 API）。
+#[cfg(test)]
+mod playback_icon_tests {
+    use super::{PlaybackIcon, pause_resume_icon};
+
+    /// 图标选择：运行中显示"暂停"（两条竖杠），暂停中显示"继续"（三角形）。
+    ///
+    /// 这条测试盯住的是**用户看到的那个按钮**：曾经用 `❚❚` 字形，字体缺字形时渲染成
+    /// 两个"豆腐块"（用户截图反馈）；现在两种状态都由画笔按这里的选择绘制。
+    #[test]
+    fn pause_button_shows_the_opposite_action_icon() {
+        assert_eq!(pause_resume_icon(false), PlaybackIcon::Pause);
+        assert_eq!(pause_resume_icon(true), PlaybackIcon::Play);
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_token() -> u128 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let counter = u128::from(COUNTER.fetch_add(1, Ordering::Relaxed));
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|value| value.as_nanos())
+        .unwrap_or_default();
+    (u128::from(std::process::id()) << 96) ^ (counter << 64) ^ (nanos & 0xFFFF_FFFF_FFFF_FFFF)
+}
+
 /// 去除 Windows 逐字路径前缀 `\\?\`（会破坏 Lua require 的 searchpath 解析）。
 pub(crate) fn strip_verbatim_prefix(path: &Path) -> PathBuf {
     let text = path.to_string_lossy();
@@ -138,6 +170,81 @@ pub(crate) fn icon_button(ui: &mut Ui, icon: &str, tooltip: &str) -> Response {
 pub(crate) fn icon_toggle(ui: &mut Ui, selected: bool, icon: &str, tooltip: &str) -> Response {
     ui.add_sized([24.0, 24.0], egui::Button::selectable(selected, icon))
         .on_hover_text(tooltip)
+}
+
+/// 播放控制图标要画成什么（纯数据，便于单测；画笔在 [`pause_resume_icon_button`]）。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PlaybackIcon {
+    /// 两条竖杠 = 暂停。
+    Pause,
+    /// 三角形 = 继续/播放。
+    Play,
+}
+
+/// 暂停态显示"继续"（三角形），运行态显示"暂停"（两条竖杠）。
+#[must_use]
+pub(crate) const fn pause_resume_icon(paused: bool) -> PlaybackIcon {
+    if paused {
+        PlaybackIcon::Play
+    } else {
+        PlaybackIcon::Pause
+    }
+}
+
+/// 暂停/继续按钮：**图标用画笔绘制**，不依赖字体里有 `❚` 这类字形。
+///
+/// 起因（用户反馈的截图）：原来按钮文字用 `❚❚`（U+275A），而编辑器配置的字体里没有这个
+/// 字形，实际渲染成两个"豆腐块"（缺字方框）。图标用 `ui.painter()` 画出来就与字体无关，
+/// 尺寸/配色仍走 egui 自己的按钮视觉（hover/按下反馈一致）。
+pub(crate) fn pause_resume_icon_button(
+    ui: &mut Ui,
+    icon: PlaybackIcon,
+    enabled: bool,
+    tooltip: &str,
+) -> Response {
+    let size = egui::vec2(24.0, 24.0);
+    let sense = if enabled {
+        egui::Sense::click()
+    } else {
+        egui::Sense::hover()
+    };
+    let (rect, response) = ui.allocate_exact_size(size, sense);
+    let visuals = ui.style().interact(&response);
+    ui.painter().rect_filled(rect, 3.0, visuals.bg_fill);
+    let color = if enabled {
+        visuals.fg_stroke.color
+    } else {
+        ui.visuals().weak_text_color()
+    };
+    let center = rect.center();
+    match icon {
+        PlaybackIcon::Pause => {
+            // 两条竖杠：居中对齐、宽 3px、高 12px、间距 3px。
+            for offset in [-3.0_f32, 3.0] {
+                let bar = egui::Rect::from_center_size(
+                    egui::pos2(center.x + offset, center.y),
+                    egui::vec2(3.0, 12.0),
+                );
+                ui.painter().rect_filled(bar, 1.0, color);
+            }
+        }
+        PlaybackIcon::Play => {
+            ui.painter().add(egui::Shape::convex_polygon(
+                vec![
+                    egui::pos2(center.x - 3.5, center.y - 6.0),
+                    egui::pos2(center.x - 3.5, center.y + 6.0),
+                    egui::pos2(center.x + 5.0, center.y),
+                ],
+                color,
+                egui::Stroke::NONE,
+            ));
+        }
+    }
+    if enabled {
+        response.on_hover_text(tooltip)
+    } else {
+        response.on_disabled_hover_text(tooltip)
+    }
 }
 
 #[cfg(windows)]
