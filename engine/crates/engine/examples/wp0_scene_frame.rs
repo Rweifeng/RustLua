@@ -55,6 +55,13 @@ const DEPTH_STAIRS: [usize; 3] = [1, 10, 100];
 /// 动画精灵阶梯：**每帧每实体分配**是动画路径最容易退化的地方（批 N 就抓到过一次：轨道视图
 /// 每帧现算）。静态精灵阶梯量不到它，因此单列一档。
 const ANIMATION_STAIRS: [usize; 2] = [500, 5_000];
+/// 层级帧阶梯：`spatial=local` 的场景里父子链上的**世界变换传播**占一帧多少。
+///
+/// docs/54 §11.1 登记过一条"有意未实施"：dirty/version 增量传播。这条阶梯就是那份判断的证据——
+/// 传播在真实帧里的占比是可测的，而不是"感觉不是瓶颈"。
+const HIERARCHY_STAIRS: [usize; 2] = [1_000, 10_000];
+/// 每条父链的深度（根变动要重算整条链，因此深度决定传播的最坏成本）。
+const HIERARCHY_CHAIN_DEPTH: usize = 8;
 /// 精灵剔除 A/B 的规模：1 万档看顶点生成，5 万档看**收集阶段**（剔除前那 5 万次 push
 /// 与随后对 5 万项的排序才是大头）。
 const SPRITE_CULLING_AB_SPRITES: [usize; 2] = [10_000, 50_000];
@@ -111,6 +118,10 @@ fn main() {
         .iter()
         .map(|count| measure_animation_frame(&examples, *count, config.cycles))
         .collect::<Vec<_>>();
+    let hierarchy_stairs = HIERARCHY_STAIRS
+        .iter()
+        .map(|count| measure_hierarchy_frame(&examples, *count, config.cycles))
+        .collect::<Vec<_>>();
     let json = format_report(
         &scene_entries,
         &frame_stairs,
@@ -119,6 +130,7 @@ fn main() {
         &particle_stairs,
         &tilemap_edit_stairs,
         &animation_stairs,
+        &hierarchy_stairs,
         &sprite_culling_ab,
         &config,
     );
@@ -137,11 +149,16 @@ fn main() {
         .filter_map(|entry| animation_alloc_p50(entry))
         .max()
         .unwrap_or(0);
+    let worst_spatial_share = hierarchy_stairs
+        .iter()
+        .filter_map(|entry| json_number_field(entry, "spatial_share_pct"))
+        .fold(0.0_f64, f64::max);
     println!(
-        "wp0_scene_frame_ok report_version={REPORT_VERSION} scenes={scenes} stairs={} depth_stairs={} animation_stairs={} animation_alloc_p50_max={worst_animation_alloc}",
+        "wp0_scene_frame_ok report_version={REPORT_VERSION} scenes={scenes} stairs={} depth_stairs={} animation_stairs={} animation_alloc_p50_max={worst_animation_alloc} hierarchy_stairs={} hierarchy_spatial_share_pct_max={worst_spatial_share:.2}",
         frame_stairs.len(),
         depth_stairs.len(),
-        animation_stairs.len()
+        animation_stairs.len(),
+        hierarchy_stairs.len()
     );
 }
 
@@ -433,6 +450,114 @@ fn measure_animation_frame(examples: &std::path::Path, count: usize, cycles: usi
     )
 }
 
+/// 层级帧阶梯：`count` 个实体按 `HIERARCHY_CHAIN_DEPTH` 组成父链（`spatial=local`）。
+///
+/// 关注点：**世界变换传播在真实帧里占多少**。docs/54 §11.1 把 dirty/version 增量传播登记成
+/// "有意未实施"，理由是"全量传播未被证明是瓶颈"——这条阶梯把那个理由变成数字：同一帧里
+/// `spatial_propagate` 这一格的耗时除以整帧耗时就是它的占比，深度又与最坏情况（根变动要重算
+/// 整条链）一致。
+fn measure_hierarchy_frame(examples: &std::path::Path, count: usize, cycles: usize) -> String {
+    let root = examples.join("game_api");
+    let mut runtime = RuntimeScene::from_scene_edit(Some(root.as_path()), hierarchy_scene(count))
+        .expect("runtime scene for the hierarchy stair");
+    let input = InputSnapshot::default();
+    for _ in 0..FRAME_WARMUP {
+        run_frame(&mut runtime, &input);
+    }
+    let mut frame_samples = Vec::with_capacity(cycles);
+    let mut propagate_us = Vec::with_capacity(cycles);
+    let mut alloc_counts = Vec::with_capacity(cycles);
+    let mut vertices = 0usize;
+    for _ in 0..cycles {
+        let sample = run_frame(&mut runtime, &input);
+        frame_samples.push(sample.elapsed);
+        alloc_counts.push(sample.alloc_count);
+        // 每帧的调度报告里 `spatial_propagate` 那一格就是传播本身（帧系统，含父先序传播）。
+        let micros = runtime
+            .last_schedule_report()
+            .and_then(|report| {
+                report
+                    .timings
+                    .iter()
+                    .find(|timing| timing.name == "spatial_propagate")
+                    .map(|timing| timing.elapsed.as_micros() as u64)
+            })
+            .unwrap_or(0);
+        propagate_us.push(micros);
+        vertices = sample.vertices;
+    }
+    let frame_p50 = median_u64(
+        &frame_samples
+            .iter()
+            .map(|d| d.as_micros() as u64)
+            .collect::<Vec<_>>(),
+    );
+    let propagate_p50 = median_u64(&propagate_us);
+    let share = if frame_p50 == 0 {
+        0.0
+    } else {
+        propagate_p50 as f64 * 100.0 / frame_p50 as f64
+    };
+    format!(
+        "{{\"entities\":{count},\"chains\":{},\"chain_depth\":{HIERARCHY_CHAIN_DEPTH},\"samples\":{},\
+         \"frame_us\":{},\"spatial_propagate_us\":{},\"spatial_share_pct\":{share:.3},\
+         \"alloc_count_p50\":{},\"vertices\":{vertices}}}",
+        count.div_ceil(HIERARCHY_CHAIN_DEPTH),
+        frame_samples.len(),
+        stats_json(&summarize(frame_samples)),
+        propagate_p50,
+        median_u64(&alloc_counts),
+    )
+}
+
+/// 从一行 JSON 里读一个数值字段（门与 ok 行复用同一份报告，不另算一遍）。
+fn json_number_field(entry: &str, field: &str) -> Option<f64> {
+    let marker = format!("\"{field}\":");
+    let start = entry.find(&marker)? + marker.len();
+    let rest = &entry[start..];
+    let end = rest.find([',', '}']).unwrap_or(rest.len());
+    rest[..end].parse().ok()
+}
+
+/// 合成 `count` 个实体、每 `HIERARCHY_CHAIN_DEPTH` 个一串父链的精灵场景。
+///
+/// 必须显式声明 `meta spatial=local`：未声明的 v2 场景里 `parent` 只是组织关系（docs/54 §4.1
+/// 批 G），传播那一格根本不会跑——阶梯也就量不到东西。
+fn hierarchy_scene(count: usize) -> Scene {
+    let mut scene = Scene::new(format!("wp0-hierarchy-{count}"));
+    scene.metadata.insert("spatial".into(), "local".into());
+    for index in 0..count {
+        let id = SceneEntityId(index as u64 + 1);
+        let parent = if index > 0 && index % HIERARCHY_CHAIN_DEPTH != 0 {
+            Some(SceneEntityId(index as u64))
+        } else {
+            None
+        };
+        scene
+            .add_entity(id, format!("Node{index}"), parent)
+            .expect("add hierarchy entity");
+        let root_index = index / HIERARCHY_CHAIN_DEPTH;
+        let x = (root_index % 40) as f32 * 34.0 - 600.0;
+        let y = (root_index / 40) as f32 * 34.0 - 300.0;
+        let entity = scene.entities.get_mut(&id).expect("hierarchy entity");
+        // 子节点只带一点局部偏移：世界位置由父链组合出来（这正是要量的东西）。
+        entity.components.insert(
+            "Transform".into(),
+            if parent.is_some() {
+                "x=1;y=0;rotation=0;scale_x=1;scale_y=1".into()
+            } else {
+                format!("x={x};y={y};rotation=0;scale_x=1;scale_y=1")
+            },
+        );
+        entity.components.insert(
+            "Sprite".into(),
+            "texture=assets/textures/player.png;size=16x16;pivot=0.500,0.500;\
+             tint=1.000,1.000,1.000,1.000;sorting_layer=default;order=0"
+                .into(),
+        );
+    }
+    scene
+}
 /// 读出动画阶梯一行里的 `alloc_count_p50`（门用同一份报告判定，不另算一遍）。
 fn animation_alloc_p50(entry: &str) -> Option<u64> {
     let marker = "\"alloc_count_p50\":";
@@ -698,6 +823,7 @@ fn format_report(
     particle_stairs: &[String],
     tilemap_edit_stairs: &[String],
     animation_stairs: &[String],
+    hierarchy_stairs: &[String],
     sprite_culling_ab: &str,
     config: &Config,
 ) -> String {
@@ -735,6 +861,10 @@ fn format_report(
     json.push_str(&format!(
         "  \"animation_stairs\": [\n    {}\n  ],\n",
         animation_stairs.join(",\n    ")
+    ));
+    json.push_str(&format!(
+        "  \"hierarchy_stairs\": [\n    {}\n  ],\n",
+        hierarchy_stairs.join(",\n    ")
     ));
     json.push_str(&format!(
         "  \"sprite_culling_ab\": [{sprite_culling_ab}]\n}}\n"
