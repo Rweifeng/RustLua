@@ -56,6 +56,104 @@ impl CameraProjection {
     }
 }
 
+/// 统一 `Camera` 组件的**取值**：一个显式的投影分支。
+///
+/// 消费方（编辑器 / 运行时 / 场景编译）拿到它之后**按投影分支**处理，而不是按组件名——
+/// 这正是"不再区分 2D/3D 组件"要表达的语义。旧名字仍然是合法输入
+/// （[`Self::from_component_str`] 同时接受 `Camera2D`/`Camera3D`/`Camera`）。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum CameraComponent {
+    Orthographic(Camera2D),
+    Perspective(Camera3D),
+}
+
+impl CameraComponent {
+    /// 从**任意历史写法**读取：`Camera2D` / `Camera3D` / `Camera`（含缺判别字段的兼容路径）。
+    pub fn from_component_str(name: &str, payload: &str) -> Result<Self, String> {
+        match name {
+            LEGACY_CAMERA_2D_COMPONENT => Camera2D::from_component_str(payload)
+                .map(Self::Orthographic)
+                .map_err(|error| error.to_string()),
+            LEGACY_CAMERA_3D_COMPONENT => Camera3D::from_component_str(payload)
+                .map(Self::Perspective)
+                .map_err(|error| error.to_string()),
+            CAMERA_COMPONENT => {
+                let (declared, rest) = split_projection(payload);
+                let projection = match declared {
+                    Some(projection) => projection,
+                    None => infer_projection(&rest).ok_or_else(|| {
+                        format!(
+                            "{CAMERA_COMPONENT} 缺少 {PROJECTION_FIELD} 字段，且无法从字段集合判定投影"
+                        )
+                    })?,
+                };
+                Self::from_projection(projection, &rest)
+            }
+            other => Err(format!("不是相机组件：{other}")),
+        }
+    }
+
+    /// 按已知投影读取**去掉判别字段之后**的字段串。
+    pub fn from_projection(
+        projection: CameraProjection,
+        rest: &str,
+    ) -> Result<Self, String> {
+        match projection {
+            CameraProjection::Orthographic => Camera2D::from_component_str(rest)
+                .map(Self::Orthographic)
+                .map_err(|error| error.to_string()),
+            CameraProjection::Perspective => Camera3D::from_component_str(rest)
+                .map(Self::Perspective)
+                .map_err(|error| error.to_string()),
+        }
+    }
+
+    #[must_use]
+    pub const fn projection(self) -> CameraProjection {
+        match self {
+            Self::Orthographic(_) => CameraProjection::Orthographic,
+            Self::Perspective(_) => CameraProjection::Perspective,
+        }
+    }
+
+    #[must_use]
+    pub const fn enabled(self) -> bool {
+        match self {
+            Self::Orthographic(camera) => camera.enabled,
+            Self::Perspective(camera) => camera.enabled,
+        }
+    }
+
+    #[must_use]
+    pub fn as_orthographic(self) -> Option<Camera2D> {
+        match self {
+            Self::Orthographic(camera) => Some(camera),
+            Self::Perspective(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn as_perspective(self) -> Option<Camera3D> {
+        match self {
+            Self::Perspective(camera) => Some(camera),
+            Self::Orthographic(_) => None,
+        }
+    }
+
+    /// 统一写法（判别字段在前，字段体来自各自既有的编码器）。
+    #[must_use]
+    pub fn to_component_str(self) -> String {
+        match self {
+            Self::Orthographic(camera) => {
+                canonical_payload(CameraProjection::Orthographic, &camera.to_component_str())
+            }
+            Self::Perspective(camera) => {
+                canonical_payload(CameraProjection::Perspective, &camera.to_component_str())
+            }
+        }
+    }
+}
+
 /// 一次场景级迁移的结果。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CameraMigrationOutcome {
@@ -79,41 +177,14 @@ impl CameraMigrationOutcome {
 /// - `Err(reason)`：解析失败（调用方原样保留）。
 pub fn unified_camera_payload(name: &str, payload: &str) -> Result<Option<String>, String> {
     match name {
-        LEGACY_CAMERA_2D_COMPONENT => {
-            let camera = Camera2D::from_component_str(payload).map_err(|error| error.to_string())?;
-            Ok(Some(canonical_payload(
-                CameraProjection::Orthographic,
-                &camera.to_component_str(),
-            )))
-        }
-        LEGACY_CAMERA_3D_COMPONENT => {
-            let camera = Camera3D::from_component_str(payload).map_err(|error| error.to_string())?;
-            Ok(Some(canonical_payload(
-                CameraProjection::Perspective,
-                &camera.to_component_str(),
-            )))
+        LEGACY_CAMERA_2D_COMPONENT | LEGACY_CAMERA_3D_COMPONENT => {
+            let camera = CameraComponent::from_component_str(name, payload)?;
+            Ok(Some(camera.to_component_str()))
         }
         CAMERA_COMPONENT => {
-            let (declared, rest) = split_projection(payload);
-            // 没写判别字段时，按**出现了哪套字段**判定（`center`/`zoom` 是 2D，其余是 3D）：
-            // 这是"手写/早期数据"的兼容路径，判据是字段集合的存在性，不是对数值的猜测。
-            let projection = match declared {
-                Some(projection) => projection,
-                None => infer_projection(&rest).ok_or_else(|| {
-                    format!("{CAMERA_COMPONENT} 缺少 {PROJECTION_FIELD} 字段，且无法从字段集合判定投影")
-                })?,
-            };
-            let body = match projection {
-                CameraProjection::Orthographic => {
-                    Camera2D::from_component_str(&rest).map_err(|error| error.to_string())?
-                        .to_component_str()
-                }
-                CameraProjection::Perspective => {
-                    Camera3D::from_component_str(&rest).map_err(|error| error.to_string())?
-                        .to_component_str()
-                }
-            };
-            let canonical = canonical_payload(projection, &body);
+            // 统一值是唯一事实源：它同时负责"缺判别字段时的兼容判定"与字段体校验。
+            let camera = CameraComponent::from_component_str(name, payload)?;
+            let canonical = camera.to_component_str();
             Ok((canonical != payload).then_some(canonical))
         }
         _ => Ok(None),
@@ -361,7 +432,54 @@ mod tests {
         assert!(empty.is_err(), "{empty:?}");
     }
 
-    /// 坏数据原样保留并进 `skipped`；非相机组件不受影响。
+    /// **统一 Camera 的读侧**（第 52 轮）：一个取值类型 + 显式投影分支，旧名与新名都能读。
+    #[test]
+    fn unified_camera_reader_branches_on_projection_not_on_component_name() {
+        // 旧名照读（编辑器与运行时在迁移完成前仍会遇到它们）。
+        let orthographic = CameraComponent::from_component_str(
+            LEGACY_CAMERA_2D_COMPONENT,
+            "center=1.0000,2.0000;zoom=4.000000",
+        )
+        .expect("2D 可读");
+        assert_eq!(orthographic.projection(), CameraProjection::Orthographic);
+        assert!(orthographic.as_orthographic().is_some());
+        assert!(orthographic.as_perspective().is_none());
+        assert!(orthographic.enabled());
+
+        let perspective = CameraComponent::from_component_str(
+            LEGACY_CAMERA_3D_COMPONENT,
+            "position=0.000000000,1.000000000,5.000000000;target=0.000000000,0.000000000,0.000000000;fov=60.0000;near=0.100000000;far=100.000000000;enabled=false",
+        )
+        .expect("3D 可读");
+        assert_eq!(perspective.projection(), CameraProjection::Perspective);
+        assert!(!perspective.enabled());
+        assert!(perspective.as_perspective().is_some());
+
+        // 统一写法读回来是同一个分支与同一份取值（读→写→读稳定）。
+        let canonical = perspective.to_component_str();
+        assert!(canonical.starts_with("projection=perspective;"), "{canonical}");
+        assert_eq!(
+            CameraComponent::from_component_str(CAMERA_COMPONENT, &canonical).expect("统一写法可读"),
+            perspective
+        );
+        let canonical_2d = orthographic.to_component_str();
+        assert_eq!(
+            CameraComponent::from_component_str(CAMERA_COMPONENT, &canonical_2d)
+                .expect("统一写法可读"),
+            orthographic
+        );
+        // 判别字段与字段体不匹配（写了 orthographic 却给了 3D 字段）→ 报错，不猜。
+        assert!(
+            CameraComponent::from_component_str(
+                CAMERA_COMPONENT,
+                "projection=orthographic;position=0,0,5;target=0,0,0;fov=60;near=0.1;far=100"
+            )
+            .is_err()
+        );
+        // 不是相机组件 → 明确报错。
+        assert!(CameraComponent::from_component_str("Sprite", "size=1x1").is_err());
+    }
+
     #[test]
     fn broken_camera_payloads_are_left_untouched_and_reported() {
         let (mut scene, id) = scene_with(&[

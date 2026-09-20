@@ -36,12 +36,41 @@ impl LocalTransform {
         })
     }
 
-    pub const fn from_3d(value: Transform3D) -> Self {
+    pub fn from_3d(value: Transform3D) -> Self {
         Self {
             translation: value.position,
             rotation: value.rotation,
             scale: value.scale,
         }
+    }
+
+    /// **统一 `Transform` 组件**的读取器：接受两种历史写法（第 52 轮）。
+    ///
+    /// - 统一/3D 写法：`position=x,y,z;rotation=rx,ry,rz,rw;scale=sx,sy,sz`；
+    /// - 2D 旧写法：`x=..;y=..;rotation=..;scale_x=..;scale_y=..`（按 [`Self::from_2d`] 映射，
+    ///   `z=0`、绕 Z 的四元数、`scale_z=1`）。
+    ///
+    /// 先试 3D、再试 2D：两种写法的键集合不相交（`position` vs `x`），所以顺序不影响判定；
+    /// 真正畸形的串两边都失败，返回**底层解析器的原文**（不在这里发明新错误文案）。
+    pub fn from_unified_component_str(value: &str) -> Result<Self, String> {
+        if let Ok(transform) = Transform3D::from_component_str(value) {
+            return Ok(Self::from_3d(transform));
+        }
+        let legacy = Transform::from_component_str(value).map_err(|error| error.to_string())?;
+        Self::from_2d(legacy).map_err(|error| error.to_string())
+    }
+
+    /// 统一 `Transform` 组件的**规范写法**（3D 形态）。
+    ///
+    /// 委托 [`Transform3D::to_component_str`]，数字格式只有那一份实现。
+    #[must_use]
+    pub fn to_unified_component_str(self) -> String {
+        Transform3D {
+            position: self.translation,
+            rotation: self.rotation,
+            scale: self.scale,
+        }
+        .to_component_str()
     }
 
     pub fn matrix(self) -> Result<Mat4, Math3dError> {
@@ -1047,6 +1076,43 @@ mod tests {
             translation: Vec3::new(x, 0.0, 0.0),
             ..LocalTransform::identity()
         }
+    }
+
+    /// **统一 `Transform` 的读侧**（第 52 轮）：同一份实现吃两种历史写法，写法 3D 时只做规范化。
+    #[test]
+    fn unified_transform_reader_accepts_both_historical_shapes() {
+        // 3D 写法：位置/四元数/缩放原样读入。
+        let three_d = Transform3D {
+            position: Vec3::new(1.0, 2.0, 3.0),
+            rotation: Quat::from_axis_angle(Vec3::Y, 0.5).expect("四元数"),
+            scale: Vec3::new(2.0, 2.0, 2.0),
+        }
+        .to_component_str();
+        let parsed = LocalTransform::from_unified_component_str(&three_d).expect("3D 写法可读");
+        assert_eq!(parsed, LocalTransform::from_3d(Transform3D::from_component_str(&three_d).unwrap()));
+        assert_eq!(parsed.to_unified_component_str(), three_d, "规范化后逐字节相同");
+
+        // 2D 旧写法：映射与 `from_2d` 完全一致（渲染路径用的就是它）。
+        let legacy = "x=3.000000000;y=-4.000000000;rotation=1.570796327;scale_x=2.000000000;scale_y=0.500000000";
+        let parsed = LocalTransform::from_unified_component_str(legacy).expect("2D 旧写法可读");
+        let expected = LocalTransform::from_2d(Transform::from_component_str(legacy).unwrap()).unwrap();
+        assert_eq!(parsed, expected);
+        assert_eq!(parsed.translation, Vec3::new(3.0, -4.0, 0.0));
+        assert_eq!(parsed.scale, Vec3::new(2.0, 0.5, 1.0));
+
+        // 读→写→读 稳定（编辑器保存出去的统一写法，再读回来必须一样）。
+        let canonical = parsed.to_unified_component_str();
+        assert_eq!(
+            LocalTransform::from_unified_component_str(&canonical).expect("统一写法可读"),
+            parsed
+        );
+        // 畸形串两边都失败，返回底层解析器的原文，不在这里发明新文案。
+        assert!(LocalTransform::from_unified_component_str("x=oops").is_err());
+        assert!(
+            LocalTransform::from_unified_component_str("position=1,2").is_err(),
+            "缺字段的 3D 串必须被拒"
+        );
+        assert!(LocalTransform::from_unified_component_str("").is_err());
     }
 
     fn chain(depth: usize) -> TransformTree {

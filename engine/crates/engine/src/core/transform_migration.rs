@@ -57,23 +57,10 @@ pub fn unified_transform_payload(name: &str, payload: &str) -> Result<Option<Str
             Ok((canonical != payload).then_some(canonical))
         }
         TRANSFORM_COMPONENT => {
-            // 先按统一（3D）写法读：这是新格式，读到就只做格式规范化。
-            if let Ok(transform) = Transform3D::from_component_str(payload) {
-                let canonical = transform.to_component_str();
-                return Ok((canonical != payload).then_some(canonical));
-            }
-            // 再按 2D 旧写法读，并升级成统一表示。
-            let legacy = crate::core::transform::Transform::from_component_str(payload)
-                .map_err(|error| error.to_string())?;
-            let local = LocalTransform::from_2d(legacy).map_err(|error| error.to_string())?;
-            Ok(Some(
-                Transform3D {
-                    position: local.translation,
-                    rotation: local.rotation,
-                    scale: local.scale,
-                }
-                .to_component_str(),
-            ))
+            // 统一读取器负责"3D 写法 / 2D 旧写法"两种历史形态（与运行时读侧同一份实现）。
+            let local = LocalTransform::from_unified_component_str(payload)?;
+            let canonical = local.to_unified_component_str();
+            Ok((canonical != payload).then_some(canonical))
         }
         _ => Ok(None),
     }
