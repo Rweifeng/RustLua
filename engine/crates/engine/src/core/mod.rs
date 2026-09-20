@@ -142,6 +142,8 @@ pub mod tilemap;
 pub mod time_step;
 /// 2D transform and velocity components with a minimal integration system.
 pub mod transform;
+/// 变换组件的统一迁移（2D 旧写法与 `Transform3D` → 单一 `Transform`）。
+pub mod transform_migration;
 /// 3D transform component and model-matrix construction.
 /// WP1：加载边界的类型化场景编译。
 pub mod typed_scene;
