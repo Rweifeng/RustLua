@@ -623,13 +623,9 @@ impl EditorApp {
     /// 从磁盘打开一个场景/Prefab 文档，并通过统一入口替换当前文档。
     pub(crate) fn open_scene_document(&mut self, path: impl AsRef<Path>) -> Result<(), String> {
         let display = path.as_ref().display().to_string();
-        let (document, migration) =
-            SceneDocument::open_with_migration(path).map_err(|error| error.to_string())?;
+        let document = SceneDocument::open(path).map_err(|error| error.to_string())?;
         self.set_current_scene_document(document);
-        // 旧组件名迁移过就明说：独立游戏读的是场景文件，不保存运行时仍看不到脚本。
-        if !migration.is_empty() {
-            self.status = format!("{}（保存后对运行时生效）：{display}", migration.describe());
-        }
+        self.status = format!("已打开场景：{display}");
         Ok(())
     }
 

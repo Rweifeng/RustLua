@@ -289,7 +289,7 @@ impl InspectorState {
         let script = script.into();
         validate_lua_script(&script)?;
         // 加载器/运行时读的是 `Script` + `file=<路径>`；这里写出**同一个**名字与载荷形式
-        // （旧写法 `LuaScript` + 裸路径运行时根本不认，见 `core::component_migration`）。
+        // （旧写法 `LuaScript` + 裸路径曾靠迁移兜底，第 55 轮已连同迁移代码一起删除。）
         let value = entity_script_value(&script);
         let entity = entity_mut(document, id)?;
         if entity.components.get(SCRIPT_COMPONENT) != Some(&value) {
@@ -305,12 +305,7 @@ impl InspectorState {
         id: SceneEntityId,
     ) -> Result<(), InspectorError> {
         let entity = entity_mut(document, id)?;
-        let mut changed = entity.components.remove(SCRIPT_COMPONENT).is_some();
-        // 旧键也顺手清掉，避免"清了脚本但旧键还在"。
-        changed |= entity
-            .components
-            .remove(engine::core::component_migration::LEGACY_LUA_SCRIPT_COMPONENT)
-            .is_some();
+        let changed = entity.components.remove(SCRIPT_COMPONENT).is_some();
         if changed {
             document.mark_dirty();
         }
@@ -644,14 +639,7 @@ fn read_lua_script(entity: &SceneEntity) -> Option<String> {
             Err(_) => Some(value.clone()),
         };
     }
-    entity
-        .components
-        .get(engine::core::component_migration::LEGACY_LUA_SCRIPT_COMPONENT)
-        .map(|value| {
-            value
-                .strip_prefix("file=")
-                .map_or_else(|| value.clone(), str::to_owned)
-        })
+    None
 }
 
 #[derive(Debug)]

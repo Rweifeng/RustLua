@@ -41,7 +41,7 @@ pub const HANDWRITTEN_PANEL_COMPONENTS: &[&str] = &[
     "ButtonStates",
     "UiAnimation",
     // 实体级脚本：Inspector 有专门的"Lua 路径"输入（含工程内相对路径校验），
-    // 不走通用字段行——但它写的**名字与载荷**必须是运行时那份（见 `component_migration`）。
+    // 不走通用字段行——但它写的**名字与载荷**必须是运行时那份（`Script` + `file=…`）。
     "Script",
 ];
 

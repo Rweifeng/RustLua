@@ -62,23 +62,14 @@ impl SceneDocument {
     }
 
     /// 从磁盘打开场景；只有成功解析和校验后才创建文档。
-    pub fn open(path: impl AsRef<Path>) -> Result<Self, DocumentError> {
-        Self::open_with_migration(path).map(|(document, _report)| document)
-    }
-
-    /// 同 [`Self::open`]，但把**旧组件名迁移**的报告交回调用方。
     ///
-    /// 打开旧场景时会把编辑器历史写法 `LuaScript`（裸路径）改写成运行时真正读取的
-    /// `Script`（`file=...`）。迁移只改内存：如果发生了迁移，文档被标记为未保存——
-    /// 因为**独立游戏读的是场景文件**，不保存就等于运行时仍看不到脚本。这就是为什么
-    /// 这里必须把报告交出去（调用方要提示用户保存），而不是安静地改掉。
-    pub fn open_with_migration(
-        path: impl AsRef<Path>,
-    ) -> Result<(Self, engine::core::component_migration::ComponentMigrationReport), DocumentError>
-    {
+    /// **第 55 轮起不再有"打开时自动迁移"**：旧的组件名/旧写法兼容已从引擎删除
+    /// （用户裁定"只保留最核心的代码"）。仓库内的示例数据已经迁到统一写法，
+    /// 外部老工程需要自己先跑一次迁移（迁移工具的用法见 docs/56 §3.50 与 docs/57 §4）。
+    pub fn open(path: impl AsRef<Path>) -> Result<Self, DocumentError> {
         let path = path.as_ref().to_path_buf();
         let extension = path.extension().and_then(|value| value.to_str());
-        let mut scene = if extension == Some("prefab") {
+        let scene = if extension == Some("prefab") {
             let prefab = Prefab::load(&path).map_err(DocumentError::Prefab)?;
             scene_from_prefab(&prefab)
         } else {
@@ -91,18 +82,13 @@ impl SceneDocument {
             }
             scene
         };
-        let report = engine::core::component_migration::migrate_legacy_components(&mut scene);
-        let mut document = Self {
+        // 场景里的元数据键是编辑器自己的约定，打开时补齐（不是内容迁移）。
+        Ok(Self {
             path: Some(path),
             scene,
             dirty: false,
             revision: 0,
-        };
-        if !report.is_empty() {
-            tracing::info!(target: "editor", "[migration] {}", report.describe());
-            document.mark_dirty();
-        }
-        Ok((document, report))
+        })
     }
 
     pub fn mark_dirty(&mut self) {
@@ -473,75 +459,6 @@ mod tests {
         assert!(document.is_dirty());
     }
 
-    /// 打开旧场景时把 `LuaScript`（编辑器历史写法，裸路径）迁移成运行时读取的
-    /// `Script`（`file=<路径>`），并**标记未保存**——独立游戏读的是场景文件，
-    /// 不保存就等于运行时仍看不到脚本。第二次打开必须已经干净（幂等）。
-    #[test]
-    fn open_migrates_legacy_script_component_and_marks_dirty_once() {
-        let root = temp_root("legacy-script");
-        let path = root.join("legacy.scene");
-        let mut scene = Scene::new("legacy");
-        scene.add_entity(SceneEntityId(1), "Patrol", None).unwrap();
-        scene
-            .entities
-            .get_mut(&SceneEntityId(1))
-            .unwrap()
-            .components
-            .insert("LuaScript".to_owned(), "scripts/ai/patrol.lua".to_owned());
-        scene.save(&path).unwrap();
-
-        let (mut document, report) = SceneDocument::open_with_migration(&path).unwrap();
-        assert_eq!(report.migrated, 1);
-        assert_eq!(report.conflicts, 0);
-        assert_eq!(report.untouched, 0);
-        assert!(
-            document.is_dirty(),
-            "迁移后必须提示未保存（否则游戏仍读不到脚本）"
-        );
-        let components = &document.scene.entities[&SceneEntityId(1)].components;
-        assert!(!components.contains_key("LuaScript"));
-        let parsed = engine::core::entity_script::EntityScript::from_component_str(
-            &components[engine::core::entity_script::SCRIPT_COMPONENT],
-        )
-        .expect("运行时解析器必须认得迁移结果");
-        assert_eq!(parsed.file, "scripts/ai/patrol.lua");
-
-        // 保存后重新打开：场景里已经是新名字，迁移无事可做、也不再标脏。
-        document.save().unwrap();
-        assert!(!document.is_dirty());
-        let (reopened, report) = SceneDocument::open_with_migration(&path).unwrap();
-        assert!(report.is_empty(), "{}", report.describe());
-        assert!(!reopened.is_dirty(), "没有旧组件时不得标脏");
-        assert_eq!(reopened.scene, document.scene);
-        let _ = fs::remove_dir_all(root);
-    }
-
-    /// 无法解析的旧负载原样保留（迁移不猜、不丢数据），并且不会被误报成"迁移成功"。
-    #[test]
-    fn open_keeps_unparsable_legacy_component_untouched() {
-        let root = temp_root("legacy-bad");
-        let path = root.join("bad.scene");
-        let mut scene = Scene::new("bad");
-        scene.add_entity(SceneEntityId(1), "E", None).unwrap();
-        scene
-            .entities
-            .get_mut(&SceneEntityId(1))
-            .unwrap()
-            .components
-            .insert("LuaScript".to_owned(), "../outside.lua".to_owned());
-        scene.save(&path).unwrap();
-
-        let (document, report) = SceneDocument::open_with_migration(&path).unwrap();
-        assert_eq!(report.untouched, 1);
-        assert_eq!(report.migrated, 0);
-        // untouched 也算"发生过需要用户知道的事"→ 标脏提示保存（内容一字未改）。
-        assert!(document.is_dirty());
-        assert_eq!(
-            document.scene.entities[&SceneEntityId(1)].components["LuaScript"],
-            "../outside.lua"
-        );
-        let _ = fs::remove_dir_all(root);
-    }
 
     #[test]
     fn invalid_scene_does_not_modify_original_or_clear_dirty() {

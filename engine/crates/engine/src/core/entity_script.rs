@@ -29,7 +29,7 @@ use std::path::{Path, PathBuf};
 /// 写的是 `LuaScript`（裸路径）、schema 注册表写的是 `EntityScript`，而运行时只读 `Script`——
 /// 三处名字不一致意味着"Inspector 里设了脚本路径，运行时永不加载"。现在运行时、加载器、
 /// schema 注册表与编辑器都从这里取名字，旧写法由
-/// [`crate::core::component_migration`] 在打开场景时迁移。
+/// 旧的 `LuaScript` 写法与它的迁移代码已在第 55 轮删除（见 docs/56 §3.51）。
 pub const SCRIPT_COMPONENT: &str = "Script";
 
 /// 实体级脚本组件的负载。
