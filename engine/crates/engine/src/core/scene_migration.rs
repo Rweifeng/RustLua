@@ -396,7 +396,7 @@ mod tests {
             .components
             .insert(
                 "Transform".into(),
-                "x=10.000000000;y=0.000000000;rotation=0.000000000;scale_x=2.000000000;scale_y=2.000000000".into(),
+                "position=10,0,0;rotation=0,0,0,1;scale=2,2,1".into(),
             );
         scene
             .entities
@@ -405,13 +405,14 @@ mod tests {
             .components
             .insert(
                 "Transform".into(),
-                "x=3.000000000;y=0.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000".into(),
+                "position=3,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
             );
         scene
     }
 
     fn child_position(scene: &Scene) -> crate::core::transform::Vec2 {
-        crate::core::transform::Transform::from_component_str(
+        // 场景文档里的 `Transform` 只有统一（3D 形态）一份；2D 数值经 `to_2d` 投影读出。
+        crate::core::spatial_transform::LocalTransform::transform_2d_from_component_str(
             &scene.entities[&SceneEntityId(2)].components["Transform"],
         )
         .expect("child transform")
@@ -712,11 +713,13 @@ mod tests {
         scene.add_entity(child, "Child", Some(parent)).unwrap();
         scene.entities.get_mut(&parent).unwrap().components.insert(
             "Transform".into(),
-            "x=0;y=0;rotation=0;scale_x=2;scale_y=1".into(),
+            "position=0,0,0;rotation=0,0,0,1;scale=2,1,1".into(),
         );
         scene.entities.get_mut(&child).unwrap().components.insert(
             "Transform".into(),
-            "x=4;y=0;rotation=45;scale_x=1;scale_y=1".into(),
+            // 旧 `rotation=45` 是弧度原值 ⇒ 四元数取半角 `sin/cos(22.5)`。
+            "position=4,0,0;rotation=0,0,-0.48717451246050952,-0.87330464009351561;scale=1,1,1"
+                .into(),
         );
         scene.save(&path).expect("save scene");
         let outcome = migrate_scene_file(
@@ -763,7 +766,7 @@ mod tests {
                 let mut locals = std::collections::BTreeMap::new();
                 let mut parents = std::collections::BTreeMap::new();
                 for entity in scene.entities.values() {
-                    let Some((_, local)) =
+                    let Some(local) =
                         crate::core::spatial_transform::scene_entity_local(entity)
                     else {
                         continue;
@@ -804,45 +807,64 @@ mod tests {
         );
     }
 
-    /// docs/54 §8-②「运行时只有一份权威 LocalTransform」的**仓库级**判据：随仓库发布的示例场景里
+    /// **仓库级数据门**：随仓库发布的示例场景与 Prefab 只能写**统一组件**。
     ///
-    /// - 没有任何实体同时带 `Transform` 与 `Transform3D`（两份局部真源）；
-    /// - 没有任何实体手写派生组件 `GlobalTransform`（那是传播系统的输出，写进场景就是第二份世界真源）；
-    /// - 没有坏的 `parent` 边（悬空父/自环）。
+    /// - 不得出现旧组件名 `Transform3D` / `Camera2D` / `Camera3D`（它们已经从引擎删除）；
+    /// - 每个 `Transform` 载荷必须是统一形态（`position/rotation/scale`），不得再有 2D 旧形态
+    ///   （`x/y/rotation/scale_x/scale_y`）——那正是本轮的删除目标；
+    /// - 不得手写派生组件 `GlobalTransform`（世界变换是传播输出，写进场景就是第二份世界真源）；
+    /// - 没有悬空的 `parent` 边。
     ///
-    /// 任意新场景违反其中一条，这条测试立刻判红——因此"一份权威"是每次 `cargo test` 都重新证明的
-    /// 事实，而不是"我们小心一点"。
+    /// 前两条把"数据真的迁干净了"变成每次 `cargo test` 都重新证明的事实：任何新场景只要写回旧名
+    /// 或旧形态，这条立刻判红。覆盖 `scenes/**` 与 `**/*.prefab`（构建产物目录除外）。
     #[test]
-    fn shipped_scenes_carry_exactly_one_local_transform_truth() {
-        use crate::core::scene_space::{ParentLinkIssue, ambiguous_local_transform_entities};
-        let mut checked_scenes = 0usize;
+    fn shipped_data_uses_only_unified_components() {
+        use crate::core::scene_space::ParentLinkIssue;
+        let legacy_names = ["Transform3D", "Camera2D", "Camera3D"];
+        let mut checked_files = 0usize;
         for project in ["game_api", "game_jhyt"] {
             let root = crate::core::paths::games_dir()
                 .join("examples")
                 .join(project);
-            for file in project_scene_files(&root) {
+            for file in project_data_files(&root) {
                 let Ok(scene) = Scene::load(&file) else {
                     continue;
                 };
-                checked_scenes += 1;
-                let ambiguous = ambiguous_local_transform_entities(&scene);
-                assert!(
-                    ambiguous.is_empty(),
-                    "{}: 实体 {:?} 同时带 Transform 与 Transform3D（两份局部真源）",
-                    file.display(),
-                    ambiguous.iter().map(|id| id.0).collect::<Vec<_>>()
-                );
-                let authored_global: Vec<u64> = scene
-                    .entities
-                    .values()
-                    .filter(|entity| entity.components.contains_key("GlobalTransform"))
-                    .map(|entity| entity.id.0)
-                    .collect();
-                assert!(
-                    authored_global.is_empty(),
-                    "{}: 实体 {authored_global:?} 手写了派生组件 GlobalTransform（世界变换是传播输出）",
-                    file.display()
-                );
+                checked_files += 1;
+                for entity in scene.entities.values() {
+                    let legacy: Vec<&str> = legacy_names
+                        .iter()
+                        .copied()
+                        .filter(|name| entity.components.contains_key(*name))
+                        .collect();
+                    assert!(
+                        legacy.is_empty(),
+                        "{}: 实体 {}({}) 仍写着旧组件名 {legacy:?}——请跑 \
+                         `cargo run -p editor --example migrate_project -- --write <项目根>`",
+                        file.display(),
+                        entity.id.0,
+                        entity.name
+                    );
+                    if let Some(payload) = entity.components.get("Transform") {
+                        assert!(
+                            crate::core::spatial_transform::LocalTransform::from_unified_component_str(
+                                payload
+                            )
+                            .is_ok(),
+                            "{}: 实体 {}({}) 的 Transform 不是统一形态：{payload:?}",
+                            file.display(),
+                            entity.id.0,
+                            entity.name
+                        );
+                    }
+                    assert!(
+                        !entity.components.contains_key("GlobalTransform"),
+                        "{}: 实体 {}({}) 手写了派生组件 GlobalTransform（世界变换是传播输出）",
+                        file.display(),
+                        entity.id.0,
+                        entity.name
+                    );
+                }
                 let issues = crate::core::scene_space::parent_link_issues(&scene);
                 assert!(
                     !issues
@@ -854,9 +876,42 @@ mod tests {
             }
         }
         assert!(
-            checked_scenes >= 20,
-            "审计应覆盖随仓库发布的场景，实际只读到 {checked_scenes} 份"
+            checked_files >= 20,
+            "审计应覆盖随仓库发布的场景与 Prefab，实际只读到 {checked_files} 份"
         );
+    }
+
+    /// 收集项目里**源数据**文件：`scenes/**/*.scene` + 任意层级的 `*.prefab`。
+    ///
+    /// 与 [`project_scene_files`] 的分工：那个是"迁移工具钦定的场景集合"（只认 `scenes/`），
+    /// 这份是**审计用**的——`assets/prefabs/*.prefab` 也是随仓库发布的数据，旧名/旧形态躲在
+    /// 那里同样要判红。构建产物（`builds/`、`.cache/`）不是源数据，跳过。
+    fn project_data_files(project_root: &Path) -> Vec<PathBuf> {
+        fn walk(dir: &Path, files: &mut Vec<PathBuf>) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("");
+                    if matches!(name, "builds" | ".cache" | "target" | ".git") {
+                        continue;
+                    }
+                    walk(&path, files);
+                } else if path
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .is_some_and(|extension| extension == "scene" || extension == "prefab")
+                {
+                    files.push(path);
+                }
+            }
+        }
+        let mut files = Vec::new();
+        walk(project_root, &mut files);
+        files.sort();
+        files
     }
 
     #[test]

@@ -665,10 +665,20 @@ impl ComponentSchema {
                     .to_owned(),
             });
         }
+        self.parse_with_fields(self.fields, raw)
+    }
+
+    /// 按指定字段表解析的实现。
+    fn parse_with_fields(
+        &self,
+        fields: &'static [FieldSchema],
+        raw: &str,
+    ) -> Result<ComponentData, SchemaError> {
         let mut data = ComponentData::new();
         // 有转义字段的组件必须用**转义感知**的切分（`text=a\;b` 不是一个分隔符）；
         // 没有转义字段的组件保持朴素切分：口径与它们各自的引擎解析器一致，不放宽审计。
-        let segments: Vec<&str> = if self.has_escaped_fields() {
+        let escaped = fields.iter().any(|field| field.escaped);
+        let segments: Vec<&str> = if escaped {
             crate::core::ui::split_fields(raw)
         } else {
             raw.split(';').collect()
@@ -685,8 +695,7 @@ impl ComponentSchema {
                     reason: "component field must be key=value".to_owned(),
                 });
             };
-            let schema = self
-                .fields
+            let schema = fields
                 .iter()
                 .find(|schema| schema.name == key)
                 .ok_or_else(|| SchemaError {
@@ -703,7 +712,7 @@ impl ComponentSchema {
             };
             data.insert(key.to_owned(), schema.validate_raw(&value, self.name)?);
         }
-        for schema in self.fields {
+        for schema in fields {
             if schema.required && !data.contains_key(schema.name) {
                 return Err(SchemaError {
                     component: self.name.to_owned(),
@@ -771,12 +780,33 @@ impl fmt::Display for SchemaError {
 
 impl std::error::Error for SchemaError {}
 
+/// **统一 `Transform`**：唯一变换组件的字段表 = 3D 表示。
+///
+/// 组件串由 `Transform3D::to_component_str` 写出；2D 实体用的是**同一个组件、同一个形态**，
+/// 空间差别不体现在字段上（见 `spatial_transform::entity_space`）。
 const TRANSFORM_FIELDS: &[FieldSchema] = &[
-    FieldSchema::new("x", FieldKind::Number, true),
-    FieldSchema::new("y", FieldKind::Number, true),
-    FieldSchema::new("rotation", FieldKind::Number, true),
-    FieldSchema::new("scale_x", FieldKind::Number, true),
-    FieldSchema::new("scale_y", FieldKind::Number, true),
+    FieldSchema::new("position", FieldKind::Vec3, true),
+    FieldSchema::new("rotation", FieldKind::Vec4, true),
+    FieldSchema::new("scale", FieldKind::Vec3, true),
+];
+
+/// 统一 `Camera`：显式投影判别字段 + 两套字段的并集。
+///
+/// **刻意宽松**："哪套字段必须出现"由引擎读取器（`camera::CameraComponent`）强制——
+/// 判别字段必填，字段体必须与它匹配（写 orthographic 却给透视字段会被拒）。
+const CAMERA_FIELDS: &[FieldSchema] = &[
+    FieldSchema::new("projection", FieldKind::Enum, true)
+        .with_choices(&["orthographic", "perspective"]),
+    FieldSchema::new("center", FieldKind::Vec2, false),
+    FieldSchema::new("zoom", FieldKind::Number, false),
+    FieldSchema::new("bounds", FieldKind::Vec4, false),
+    FieldSchema::new("position", FieldKind::Vec3, false),
+    FieldSchema::new("target", FieldKind::Vec3, false),
+    FieldSchema::new("fov", FieldKind::Number, false),
+    FieldSchema::new("near", FieldKind::Number, false),
+    FieldSchema::new("far", FieldKind::Number, false),
+    FieldSchema::new("pose", FieldKind::Enum, false).with_choices(&["transform", "look_at"]),
+    FieldSchema::new("enabled", FieldKind::Bool, false),
 ];
 
 const TEXT_FIELDS: &[FieldSchema] = &[
@@ -835,37 +865,6 @@ const UI_LAYOUT_FIELDS: &[FieldSchema] = &[
 // `builtin_schemas_match_engine_encoders` 用引擎自己的编码器逐条验证，
 // 因此字段名/类型漂移会直接让这个门判红（docs/55 §1 第 3 条）。
 // ---------------------------------------------------------------------------
-
-/// `Transform3D::to_component_str`：`position=..;rotation=..;scale=..`
-const TRANSFORM_3D_FIELDS: &[FieldSchema] = &[
-    FieldSchema::new("position", FieldKind::Vec3, true),
-    FieldSchema::new("rotation", FieldKind::Vec4, true),
-    FieldSchema::new("scale", FieldKind::Vec3, true),
-];
-
-/// `Camera2dComponent::to_component_str`：`center=..;zoom=.. [+rotation/bounds/enabled]`
-const CAMERA_2D_FIELDS: &[FieldSchema] = &[
-    FieldSchema::new("center", FieldKind::Vec2, true),
-    FieldSchema::new("zoom", FieldKind::Number, true),
-    FieldSchema::new("rotation", FieldKind::Number, false),
-    FieldSchema::new("bounds", FieldKind::Vec4, false),
-    FieldSchema::new("enabled", FieldKind::Bool, false),
-];
-
-/// `Camera3dComponent::to_component_str`：位置/目标/视场/远近 [+pose/enabled]
-const CAMERA_3D_FIELDS: &[FieldSchema] = &[
-    FieldSchema::new("position", FieldKind::Vec3, true),
-    FieldSchema::new("target", FieldKind::Vec3, true),
-    FieldSchema::new("fov", FieldKind::Number, true),
-    FieldSchema::new("near", FieldKind::Number, true),
-    FieldSchema::new("far", FieldKind::Number, true),
-    // 候选与引擎解析器一致（`camera.rs` 的 `pose` 分支）：`transform` = 姿态来自实体的
-    // `Transform3D`；`look_at` = 显式声明"用本组件的 position/target"。后者与**省略**同义
-    // （编码器在 `pose_from_transform=false` 时根本不写这个字段），但通用字段编辑器需要它：
-    // 下拉框没有"清空"动作，没有 `look_at` 就没法把 `pose=transform` 改回去。
-    FieldSchema::new("pose", FieldKind::Enum, false).with_choices(&["transform", "look_at"]),
-    FieldSchema::new("enabled", FieldKind::Bool, false),
-];
 
 /// `DirectionalLight::to_component_str`：`direction=..;color=..;intensity=..`
 const LIGHT_FIELDS: &[FieldSchema] = &[
@@ -1244,13 +1243,15 @@ const UI_ANIMATION_LIST: ListModel = ListModel {
 #[must_use]
 pub fn builtin_registry() -> BTreeMap<&'static str, ComponentSchema> {
     let schemas = [
-        ComponentSchema::new("Transform", 1, TRANSFORM_FIELDS),
+        // **唯一的变换组件**：2D 与 3D 用同一个名字、同一个（3D）形态；空间由实体
+        // 携带的其它组件推断（`spatial_transform::entity_space`），2D 消费者用
+        // `LocalTransform::to_2d` 投影。旧名 `Transform3D` 已删除。
+        ComponentSchema::new("Transform", 2, TRANSFORM_FIELDS),
         ComponentSchema::new("Text", 2, TEXT_FIELDS),
         ComponentSchema::new("Image", 2, IMAGE_FIELDS),
         ComponentSchema::new("UiLayout", 1, UI_LAYOUT_FIELDS),
-        ComponentSchema::new("Transform3D", 1, TRANSFORM_3D_FIELDS),
-        ComponentSchema::new("Camera2D", 1, CAMERA_2D_FIELDS),
-        ComponentSchema::new("Camera3D", 1, CAMERA_3D_FIELDS),
+        // **统一相机**：判别字段 + 两套字段并集；旧名 `Camera2D`/`Camera3D` 已删除。
+        ComponentSchema::new("Camera", 1, CAMERA_FIELDS),
         ComponentSchema::new("Light", 1, LIGHT_FIELDS),
         ComponentSchema::new("MeshRenderer", 1, MESH_RENDERER_FIELDS),
         ComponentSchema::new("Sprite", 1, SPRITE_FIELDS),
@@ -1311,7 +1312,7 @@ pub fn validate_component(
 mod tests {
     use super::*;
     use crate::core::{
-        camera::{Camera2D, Camera3D},
+        camera::{Camera2D, Camera3D, CameraComponent},
         entity_script::EntityScript,
         light::Light,
         mesh3d::MeshRenderer,
@@ -1321,7 +1322,7 @@ mod tests {
         render_mode::RenderMode,
         sprite::SpriteComponent,
         tilemap::Tilemap,
-        transform::{Transform, Transform3D},
+        transform::Transform3D,
         ui_binding::{BindingPath, BindingSet, BoundProperty, PropertyBinding},
         ui_events::{UiEventBinding, UiEventType, UiEvents},
         ui_layout::{ChildAlign, ContainerKind, ContainerStyle},
@@ -1406,34 +1407,31 @@ mod tests {
     fn builtin_schemas_match_engine_encoders() {
         let registry = builtin_registry();
         let cases: Vec<(&str, Vec<String>)> = vec![
-            ("Transform", vec![Transform::default().to_component_str()]),
+            // **唯一的变换组件**：2D 与 3D 都是这一份（3D 形态），编码器只有 `Transform3D`。
             (
-                "Transform3D",
+                "Transform",
                 vec![Transform3D::default().to_component_str()],
             ),
+            // **统一相机**：判别字段 + 各自投影的字段体，两种投影都必须过同一份 schema。
             (
-                "Camera2D",
+                "Camera",
                 vec![
-                    Camera2D::new(crate::core::transform::Vec2::new(0.0, 0.0), 1.0)
-                        .expect("valid camera")
-                        .to_component_str(),
-                    Camera2D::new(crate::core::transform::Vec2::new(0.0, 0.0), 2.0)
-                        .expect("valid camera")
-                        .to_component_str(),
-                ],
-            ),
-            (
-                "Camera3D",
-                vec![
-                    Camera3D::perspective(
-                        crate::core::math3d::Vec3::new(0.0, 1.0, 3.0),
-                        crate::core::math3d::Vec3::new(0.0, 0.0, 0.0),
-                        60.0_f32.to_radians(),
-                        16.0 / 9.0,
-                        0.1,
-                        100.0,
+                    CameraComponent::Orthographic(
+                        Camera2D::new(crate::core::transform::Vec2::new(0.0, 0.0), 1.0)
+                            .expect("valid camera"),
                     )
-                    .expect("valid camera")
+                    .to_component_str(),
+                    CameraComponent::Perspective(
+                        Camera3D::perspective(
+                            crate::core::math3d::Vec3::new(0.0, 1.0, 3.0),
+                            crate::core::math3d::Vec3::new(0.0, 0.0, 0.0),
+                            60.0_f32.to_radians(),
+                            16.0 / 9.0,
+                            0.1,
+                            100.0,
+                        )
+                        .expect("valid camera"),
+                    )
                     .to_component_str(),
                 ],
             ),
@@ -2120,9 +2118,9 @@ mod tests {
             );
         }
 
-        // 相机：`pose` 的两个字面量必须与引擎解析器一致（`transform` / `look_at`）。
-        let camera = &registry["Camera3D"];
-        let camera_base = "position=0,0,5;target=0,0,0;fov=90;near=0.1;far=100";
+        // 相机：统一 `Camera` 的 `pose` 两个字面量必须与引擎解析器一致（`transform` / `look_at`）。
+        let camera = &registry["Camera"];
+        let camera_base = "projection=perspective;position=0,0,5;target=0,0,0;fov=90;near=0.1;far=100";
         let camera_samples = [
             (camera_base.to_owned(), true),
             (format!("{camera_base};pose=transform"), true),
@@ -2131,9 +2129,14 @@ mod tests {
             (format!("{camera_base};pose=look_at"), true),
             (format!("{camera_base};pose=bogus"), false),
             (format!("{camera_base};enabled=false"), true),
+            // 判别字段必填：缺了它 schema 与引擎读取器都必须拒绝。
+            (
+                "position=0,0,5;target=0,0,0;fov=90;near=0.1;far=100".to_owned(),
+                false,
+            ),
         ];
         for (payload, expected_ok) in camera_samples {
-            let engine = crate::core::camera::Camera3D::from_component_str(&payload);
+            let engine = crate::core::camera::CameraComponent::from_component_str(&payload);
             let schema = camera.parse(&payload);
             assert_eq!(
                 engine.is_ok(),
@@ -2440,7 +2443,7 @@ mod tests {
         assert!(
             FieldSchema::new("zoom", FieldKind::Number, true)
                 .with_rules(&[FieldRule::NonNegative])
-                .validate("-0.5", "Camera2D")
+                .validate("-0.5", "Camera")
                 .is_err()
         );
         // 非空规则对文本生效。
@@ -2524,11 +2527,12 @@ mod tests {
     #[test]
     fn parses_transform_and_round_trips() {
         let registry = builtin_registry();
+        // 统一 `Transform` 只有 3D 形态：`position`/`rotation`/`scale` 三个向量字段。
         let data = registry["Transform"]
-            .parse("x=1;y=-2;rotation=0;scale_x=2;scale_y=3")
+            .parse("position=1,-2,0;rotation=0,0,0,1;scale=2,3,1")
             .unwrap();
-        assert_eq!(data["x"], FieldValue::Number(1.0));
-        assert_eq!(data["scale_y"], FieldValue::Number(3.0));
+        assert_eq!(data["position"], FieldValue::Tuple(vec![1.0, -2.0, 0.0]));
+        assert_eq!(data["scale"], FieldValue::Tuple(vec![2.0, 3.0, 1.0]));
         assert!(!registry["Transform"].serialize(&data).is_empty());
     }
 
@@ -2536,11 +2540,11 @@ mod tests {
     fn errors_include_component_and_field_path() {
         let registry = builtin_registry();
         let error = registry["Transform"]
-            .parse("x=bad;y=0;rotation=0;scale_x=1;scale_y=1")
+            .parse("position=bad,0,0;rotation=0,0,0,1;scale=1,1,1")
             .unwrap_err();
         assert_eq!(error.component, "Transform");
-        assert_eq!(error.field, "x");
-        assert!(error.to_string().contains("component Transform field x"));
+        assert_eq!(error.field, "position");
+        assert!(error.to_string().contains("component Transform field position"));
     }
 
     #[test]

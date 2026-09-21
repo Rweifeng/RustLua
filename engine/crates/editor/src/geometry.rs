@@ -3,34 +3,35 @@
 use editor::TransformFields;
 use eframe::egui;
 
-/// 把 2D Transform 字段序列化为组件字符串。
+/// 把 2D Transform 字段序列化为**唯一形态**的组件字符串。
+///
+/// `Transform` 只有一个表示（`position/rotation/scale`，3D 形态），2D 只是
+/// "z=0、绕 Z 旋转、scale_z=1"的特例；数字格式交给引擎的编码器，编辑器不自己拼字符串。
 pub(crate) fn encode_transform(transform: TransformFields) -> String {
-    format!(
-        "x={:.9};y={:.9};rotation={:.9};scale_x={:.9};scale_y={:.9}",
-        transform.position_x,
-        transform.position_y,
-        transform.rotation,
-        transform.scale_x,
-        transform.scale_y
+    let local = engine::core::spatial_transform::LocalTransform::from_2d(
+        engine::core::transform::Transform {
+            position: engine::core::transform::Vec2::new(transform.position_x, transform.position_y),
+            rotation: transform.rotation,
+            scale: engine::core::transform::Vec2::new(transform.scale_x, transform.scale_y),
+        },
     )
+    .expect("2D 字段一定是有限数（编辑器内部数据）");
+    local.to_unified_component_str()
 }
 
-/// 解析 `x=..;y=..;rotation=..;scale_x=..;scale_y=..` 组件字符串。
+/// 解析 `Transform` 组件串为 2D 字段：**唯一形态**（统一 3D 写法）经 `LocalTransform::to_2d`
+/// 投影出平面 TRS；畸形串返回 `None`（旧 2D 写法已随统一删除）。
 pub(crate) fn parse_transform(value: &str) -> Option<TransformFields> {
-    let mut fields = TransformFields::default();
-    for part in value.split(';') {
-        let (key, raw) = part.split_once('=')?;
-        let number = raw.parse::<f32>().ok()?;
-        match key {
-            "x" => fields.position_x = number,
-            "y" => fields.position_y = number,
-            "rotation" => fields.rotation = number,
-            "scale_x" => fields.scale_x = number,
-            "scale_y" => fields.scale_y = number,
-            _ => {}
-        }
-    }
-    Some(fields)
+    let transform = engine::core::spatial_transform::LocalTransform::transform_2d_from_component_str(
+        value,
+    )?;
+    Some(TransformFields {
+        position_x: transform.position.x,
+        position_y: transform.position.y,
+        rotation: transform.rotation,
+        scale_x: transform.scale.x,
+        scale_y: transform.scale.y,
+    })
 }
 
 pub(crate) fn rotated_corners(

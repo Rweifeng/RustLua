@@ -483,15 +483,19 @@ mod tests {
     fn version_2_scene_roundtrips_with_3d_components() {
         let text = "scene_version=2\nname=3d\n\
              entity\t1\tCamera\t\n\
-             component\t1\tTransform3D\tposition=0,0,5;rotation=0,0,0,1;scale=1,1,1\n\
-             component\t1\tCamera3D\tposition=0,0,5;target=0,0,0;fov=60;near=0.1;far=100\n\
+             component\t1\tTransform\tposition=0,0,5;rotation=0,0,0,1;scale=1,1,1\n\
+             component\t1\tCamera\tprojection=perspective;position=0,0,5;target=0,0,0;fov=60;near=0.1;far=100\n\
              entity\t2\tMesh\t\n\
              component\t2\tMeshRenderer\tmesh=assets/models/cube.glb\n";
         let scene = Scene::from_text(text).unwrap();
         assert_eq!(scene.version, 2);
         assert_eq!(
-            scene.entities[&SceneEntityId(1)].components["Transform3D"],
+            scene.entities[&SceneEntityId(1)].components["Transform"],
             "position=0,0,5;rotation=0,0,0,1;scale=1,1,1"
+        );
+        assert_eq!(
+            scene.entities[&SceneEntityId(1)].components["Camera"],
+            "projection=perspective;position=0,0,5;target=0,0,0;fov=60;near=0.1;far=100"
         );
         assert_eq!(
             scene.entities[&SceneEntityId(2)].components["MeshRenderer"],

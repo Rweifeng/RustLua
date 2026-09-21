@@ -1,18 +1,18 @@
 scene_version=2
 name=mixed
 entity	1	Camera
-component	1	Camera3D	position=0,0,6;target=0,0,0;fov=60;near=0.1;far=100
+component	1	Camera	projection=perspective;position=0.000000000,0.000000000,6.000000000;target=0.000000000,0.000000000,0.000000000;fov=60.0000;near=0.100000001;far=100.000000000
 entity	2	Sun
 component	2	Light	direction=0.2,0.1,-0.9;color=1,1,1;intensity=1
 entity	3	Wall
-component	3	Transform3D	position=0,0,-1;rotation=0.7071068,0,0,0.7071068;scale=1,1,1
 component	3	MeshRenderer	mesh=__ground_plane__
+component	3	Transform	position=0.000000000,0.000000000,-1.000000000;rotation=0.707106829,0.000000000,0.000000000,0.707106829;scale=1.000000000,1.000000000,1.000000000
 entity	4	FrontSprite
-component	4	Transform	x=-2.5;y=0;rotation=0;scale_x=1;scale_y=1
 component	4	Sprite	texture=assets/textures/red-1x1.png;size=2x2;pivot=0.500,0.500;tint=1.000,1.000,1.000,1.000;sorting_layer=default;order=0;z=0
+component	4	Transform	position=-2.500000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 entity	5	BehindSprite
-component	5	Transform	x=2.5;y=0;rotation=0;scale_x=1;scale_y=1
 component	5	Sprite	texture=assets/textures/red-1x1.png;size=2x2;pivot=0.500,0.500;tint=1.000,1.000,1.000,1.000;sorting_layer=default;order=0;z=-2
+component	5	Transform	position=2.500000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 entity	6	Veil
-component	6	Transform	x=0;y=1.5;rotation=0;scale_x=1;scale_y=1
 component	6	Sprite	texture=assets/textures/red-1x1.png;size=2x2;pivot=0.500,0.500;tint=1.000,1.000,1.000,0.500;sorting_layer=default;order=0;z=0
+component	6	Transform	position=0.000000000,1.500000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000

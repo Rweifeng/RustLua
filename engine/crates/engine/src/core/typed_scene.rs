@@ -5,7 +5,6 @@ use std::{collections::BTreeMap, fmt};
 use crate::core::{
     animation::AnimationStateMachine,
     animation3d::Animation3dDescriptor,
-    camera::Camera3D,
     entity_script::EntityScript,
     light::Light,
     mesh3d::MeshRenderer,
@@ -18,7 +17,6 @@ use crate::core::{
     sprite::SpriteComponent,
     spatial_transform::LocalTransform,
     tilemap::Tilemap,
-    transform::Transform,
     transform::Transform3D,
     ui::{UiImage, UiText},
     ui_events::UiEvents,
@@ -50,16 +48,15 @@ impl AssetResolver for ResourceDatabase {
 
 /// 场景组件名对应的类型化键。
 ///
-/// 2D/3D 变体刻意分开：同一场景里 `Transform` 与 `Transform3D`、`Collider` 与
-/// `Collider3d` 是**两套**独立真源，合并会让"哪个是权威"变成隐式推断（docs/40
-/// §5 禁止把两个组件当成一个兼容槽）。
+/// **变换与相机各只有一个键**：2D/3D 用同一个组件名、同一份表示（`Transform` 是统一 TRS，
+/// `Camera` 用 `projection` 判别字段承载两种投影）。`Collider` 与 `Collider3d` 仍然是两套
+/// 独立真源——那对组件没有统一，合并会让"哪个是权威"变成隐式推断（docs/40 §5）。
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum ComponentId {
-    Transform2D,
-    Transform3D,
-    Camera3D,
-    /// docs/54 §8-①：正交（2D）相机与透视相机一样是**实体组件**。
-    Camera2D,
+    /// 唯一的变换组件（2D 与 3D 共用；空间由 `spatial_transform::entity_space` 推断）。
+    Transform,
+    /// 唯一的相机组件（`CameraComponent` 里带显式投影分支）。
+    Camera,
     Light,
     MeshRenderer,
     UiLayout,
@@ -96,10 +93,8 @@ impl ComponentId {
     /// 新增组件时的顺序：先在这里加变体与名字，再在 `compile_component` 加深分支，
     /// 最后在 `component_schema::builtin_registry` 注册（漏了最后一步上面那条测试会判红）。
     pub const ALL: &'static [Self] = &[
-        Self::Transform2D,
-        Self::Transform3D,
-        Self::Camera3D,
-        Self::Camera2D,
+        Self::Transform,
+        Self::Camera,
         Self::Light,
         Self::MeshRenderer,
         Self::UiLayout,
@@ -125,11 +120,8 @@ impl ComponentId {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            // 2D 变换在磁盘上就叫 `Transform`（`Transform3D` 才是带后缀的那个）。
-            Self::Transform2D => "Transform",
-            Self::Transform3D => "Transform3D",
-            Self::Camera3D => "Camera3D",
-            Self::Camera2D => "Camera2D",
+            Self::Transform => "Transform",
+            Self::Camera => crate::core::camera::CAMERA_COMPONENT,
             Self::Light => "Light",
             Self::MeshRenderer => "MeshRenderer",
             Self::UiLayout => "UiLayout",
@@ -155,10 +147,10 @@ impl ComponentId {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum TypedComponent {
-    Transform2D(Transform),
-    Transform3D(Transform3D),
-    Camera3D(Camera3D),
-    Camera2D(crate::core::camera::Camera2D),
+    /// 唯一的变换组件，值就是统一 TRS（2D 消费者用 `LocalTransform::to_2d` 投影）。
+    Transform(Transform3D),
+    /// 唯一的相机组件，值是带投影分支的统一取值。
+    Camera(crate::core::camera::CameraComponent),
     Light(Light),
     MeshRenderer {
         renderer: MeshRenderer,
@@ -232,67 +224,32 @@ impl std::error::Error for TypedSceneDiagnostic {}
 /// 源场景里，这里刻意不解释，避免把它们静默当成已知组件。`Some(Err)` 是已知组件
 /// 但内容非法，必须按实体/组件上报诊断而不是跳过。
 ///
-/// 覆盖面按**真实源场景用量**排序（26 个源场景普查，2026-09-17）：Transform 24、
-/// UiLayout 23、Text 23、Sprite 15、Tilemap 12、Collider 11、Animation 10、
-/// UiEvents/Image 各 6、Light/Camera3D/Transform3D/MeshRenderer 各 3、
-/// Collider3d/Animation3D 各 2、ButtonStates/Container 各 1。
+/// 覆盖面按**真实源场景用量**排序（26 个源场景普查，2026-09-17；旧名已随统一合并）：
+/// Transform 24、UiLayout 23、Text 23、Sprite 15、Tilemap 12、Collider 11、Animation 10、
+/// UiEvents/Image 各 6、Light/Camera/MeshRenderer 各 3、Collider3d/Animation3D 各 2、
+/// ButtonStates/Container 各 1。
 fn compile_component(
     name: &str,
     value: &str,
     assets: Option<&dyn AssetResolver>,
 ) -> Option<Result<(ComponentId, TypedComponent), String>> {
     let parsed = match name {
-        // **统一 `Transform`**（第 53 轮）：同一个组件名现在承载两种历史形态——
-        // 2D 旧写法（`x/y/rotation/scale_x/scale_y`，既有行为一字不改）与统一写法
-        // （`position/rotation/scale`）。按**形态**落到已有的两个类型化变体，
-        // 因此 2D 渲染 / 3D 渲染 / Lua 的消费方一行都不用改。
-        "Transform" => {
-            if let Ok(component) = Transform::from_component_str(value) {
-                Ok((
-                    ComponentId::Transform2D,
-                    TypedComponent::Transform2D(component),
-                ))
-            } else {
-                LocalTransform::from_unified_component_str(value).map(|local| {
-                    (
-                        ComponentId::Transform3D,
-                        TypedComponent::Transform3D(Transform3D {
-                            position: local.translation,
-                            rotation: local.rotation,
-                            scale: local.scale,
-                        }),
-                    )
-                })
-            }
-        }
-        "Transform3D" => Transform3D::from_component_str(value)
-            .map(|component| {
-                (
-                    ComponentId::Transform3D,
-                    TypedComponent::Transform3D(component),
-                )
-            })
-            .map_err(|error| error.to_string()),
-        // **统一 `Camera`**（第 53 轮）：按显式投影判别字段落到已有的两个类型化变体
-        // （缺判别字段的兼容判定也在这里生效）。消费方仍按 `Camera2D`/`Camera3D` 分支。
-        "Camera" => crate::core::camera_migration::CameraComponent::from_component_str(
-            "Camera", value,
-        )
-        .map(|component| match component {
-            crate::core::camera_migration::CameraComponent::Orthographic(camera) => {
-                (ComponentId::Camera2D, TypedComponent::Camera2D(camera))
-            }
-            crate::core::camera_migration::CameraComponent::Perspective(camera) => {
-                (ComponentId::Camera3D, TypedComponent::Camera3D(camera))
-            }
+        // **唯一的变换组件**：载荷只有一个形态（`position/rotation/scale`）。2D 实体用的是
+        // 同一个组件名、同一个形态——空间差别由实体携带的其它组件推断
+        // （`spatial_transform::entity_space`），2D 消费方用 `LocalTransform::to_2d` 投影。
+        "Transform" => LocalTransform::from_unified_component_str(value).map(|local| {
+            (
+                ComponentId::Transform,
+                TypedComponent::Transform(Transform3D {
+                    position: local.translation,
+                    rotation: local.rotation,
+                    scale: local.scale,
+                }),
+            )
         }),
-        "Camera3D" => Camera3D::from_component_str(value)
-            .map(|component| (ComponentId::Camera3D, TypedComponent::Camera3D(component)))
-            .map_err(|error| error.to_string()),
-        // docs/54 §8-①：正交相机不再是"只有宿主和 Lua 才有"的东西。
-        "Camera2D" => crate::core::camera::Camera2D::from_component_str(value)
-            .map(|component| (ComponentId::Camera2D, TypedComponent::Camera2D(component)))
-            .map_err(|error| error.to_string()),
+        // **唯一的相机组件**：值里带显式投影分支，消费方按投影分支处理。
+        "Camera" => crate::core::camera::CameraComponent::from_component_str(value)
+            .map(|component| (ComponentId::Camera, TypedComponent::Camera(component))),
         "Light" => Light::from_component_str(value)
             .map(|component| (ComponentId::Light, TypedComponent::Light(component)))
             .map_err(|error| error.to_string()),
@@ -399,7 +356,7 @@ fn compile_component(
 /// - `Some(Err(reason))`：已知组件但载荷非法，`reason` 是引擎解析器的原文。
 ///
 /// 为什么需要这条入口：schema 描述的是**字符串契约**（字段类型 + 声明式规则），而引擎
-/// 解析器还管着 schema 表达不了的**跨字段/几何不变量**（`Camera3D` 的 `near < far`、
+/// 解析器还管着 schema 表达不了的**跨字段/几何不变量**（`Camera` 的 `near < far`、
 /// look-at 非退化、`Transform` 的缩放非零……）。编辑器允许写入的载荷至少必须是引擎能读的，
 /// 因此字段写入后跑一次这里——校验逻辑只有解析器一处定义，编辑器不另写一份，也不会漂移。
 #[must_use]
@@ -582,18 +539,13 @@ mod tests {
     const SOURCE_SCENE_COMPONENTS: &[(&str, &str, ComponentId)] = &[
         (
             "Transform",
-            "x=1;y=2;rotation=0;scale_x=1;scale_y=1",
-            ComponentId::Transform2D,
-        ),
-        (
-            "Transform3D",
             "position=1,2,3;rotation=0,0,0,1;scale=1,1,1",
-            ComponentId::Transform3D,
+            ComponentId::Transform,
         ),
         (
-            "Camera3D",
-            "position=0,0,5;target=0,0,0;fov=90;near=0.1;far=100",
-            ComponentId::Camera3D,
+            "Camera",
+            "projection=perspective;position=0,0,5;target=0,0,0;fov=90;near=0.1;far=100",
+            ComponentId::Camera,
         ),
         (
             "Light",
@@ -700,7 +652,7 @@ mod tests {
             .unwrap()
             .components
             .insert(
-                "Transform3D".into(),
+                "Transform".into(),
                 "position=1,2,3;rotation=0,0,0,1;scale=1,1,1".into(),
             );
         scene
@@ -719,7 +671,7 @@ mod tests {
             .iter()
             .find(|entity| entity.id == SceneEntityId(2))
             .unwrap();
-        assert!(child.components.contains_key(&ComponentId::Transform3D));
+        assert!(child.components.contains_key(&ComponentId::Transform));
         assert!(child.components.contains_key(&ComponentId::MeshRenderer));
     }
 
@@ -733,46 +685,35 @@ mod tests {
             .unwrap()
             .components
             .insert(
-                "Transform3D".into(),
+                "Transform".into(),
                 "position=bad;rotation=0,0,0,1;scale=1,1,1".into(),
             );
         let error = TypedScene::compile_v2(&scene).unwrap_err();
         assert_eq!(error[0].entity, SceneEntityId(7));
-        assert_eq!(error[0].component, "Transform3D");
+        assert_eq!(error[0].component, "Transform");
         assert!(error[0].to_string().contains("Broken"));
     }
 
-    /// **统一 `Transform` / `Camera` 的编译**（第 53 轮）：同一个组件名按**形态/投影**分流到已有的
-    /// 2D/3D 类型化变体，因此消费方不用改。每个用例单独一个实体——不能塞进
-    /// `SOURCE_SCENE_COMPONENTS` 那种"一个实体挂全部组件"的表（同名同行会互相覆盖）。
+    /// **统一 `Transform` / `Camera` 的编译**：变换只有一个键、一个形态；相机按键里的投影分支
+    /// 取值。缺判别字段的两条兼容路径（旧名、按字段集合推断）已随统一删除——缺 `projection`
+    /// 现在必须**报错**，因为"猜投影"猜错的代价是画面变了却没人知道。
     #[test]
-    fn unified_transform_and_camera_compile_to_the_existing_typed_variants() {
+    fn unified_transform_and_camera_compile_to_single_typed_variants() {
         let cases: &[(&str, &str, ComponentId)] = &[
             (
                 "Transform",
-                "x=1.000000000;y=2.000000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000",
-                ComponentId::Transform2D,
-            ),
-            (
-                "Transform",
                 "position=1.000000000,2.000000000,3.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000",
-                ComponentId::Transform3D,
+                ComponentId::Transform,
             ),
             (
                 "Camera",
                 "projection=orthographic;center=10.0000,20.0000;zoom=2.000000",
-                ComponentId::Camera2D,
+                ComponentId::Camera,
             ),
             (
                 "Camera",
                 "projection=perspective;position=0.000000000,1.000000000,5.000000000;target=0.000000000,0.000000000,0.000000000;fov=60.0000;near=0.100000000;far=100.000000000",
-                ComponentId::Camera3D,
-            ),
-            // 缺判别字段的兼容路径：按字段集合判定。
-            (
-                "Camera",
-                "center=0.0000,0.0000;zoom=1.000000",
-                ComponentId::Camera2D,
+                ComponentId::Camera,
             ),
         ];
         for (name, value, expected) in cases {
@@ -787,7 +728,7 @@ mod tests {
             );
             assert_eq!(entity.components.len(), 1, "{name} 只应产出一个类型化组件");
         }
-        // 统一写法下的 3D 取值必须真的读进来（不是空壳）。
+        // 统一写法下的取值必须真的读进来（不是空壳）。
         let scene = scene_with(
             SceneEntityId(1),
             "Unified",
@@ -797,11 +738,28 @@ mod tests {
             )],
         );
         let typed = TypedScene::compile_v2(&scene).expect("编译");
-        match &typed.entities[0].components[&ComponentId::Transform3D] {
-            TypedComponent::Transform3D(transform) => {
-                assert_eq!(transform.position, crate::core::math3d::Vec3::new(1.0, 2.0, 3.0))
+        match &typed.entities[0].components[&ComponentId::Transform] {
+            TypedComponent::Transform(transform) => {
+                assert_eq!(transform.position, crate::core::math3d::Vec3::new(1.0, 2.0, 3.0));
             }
-            other => panic!("期望 Transform3D，实际 {other:?}"),
+            other => panic!("期望 Transform，实际 {other:?}"),
+        }
+        // 参考：同一个实体**没有**另一个变换键（统一之后不存在"两份局部真源"）。
+        let scene = scene_with(
+            SceneEntityId(1),
+            "Unified",
+            &[(
+                "Camera",
+                "projection=orthographic;center=0,0;zoom=1",
+            )],
+        );
+        let typed = TypedScene::compile_v2(&scene).expect("编译");
+        match &typed.entities[0].components[&ComponentId::Camera] {
+            TypedComponent::Camera(camera) => assert_eq!(
+                camera.projection(),
+                crate::core::camera::CameraProjection::Orthographic
+            ),
+            other => panic!("期望 Camera，实际 {other:?}"),
         }
         // 判别字段与字段体不匹配 → 编译报错（不猜）。
         let scene = scene_with(
@@ -811,6 +769,13 @@ mod tests {
                 "Camera",
                 "projection=orthographic;position=0,0,5;target=0,0,0;fov=60;near=0.1;far=100",
             )],
+        );
+        assert!(TypedScene::compile_v2(&scene).is_err());
+        // 缺判别字段 → 编译报错（旧名与"按字段集合推断"两条兼容路径已删除）。
+        let scene = scene_with(
+            SceneEntityId(1),
+            "Unified",
+            &[("Camera", "center=0,0;zoom=1")],
         );
         assert!(TypedScene::compile_v2(&scene).is_err());
     }
@@ -893,7 +858,10 @@ mod tests {
             SceneEntityId(1),
             "Custom",
             &[
-                ("Transform", "x=1;y=2;rotation=0;scale_x=1;scale_y=1"),
+                (
+                    "Transform",
+                    "position=1,2,0;rotation=0,0,0,1;scale=1,1,1",
+                ),
                 ("MyGameHealth", "hp=10"),
                 ("LuaTable", "{}"),
             ],
@@ -901,7 +869,7 @@ mod tests {
         let typed = TypedScene::compile_v2(&scene).unwrap();
         let entity = &typed.entities[0];
         assert_eq!(entity.components.len(), 1);
-        assert!(entity.components.contains_key(&ComponentId::Transform2D));
+        assert!(entity.components.contains_key(&ComponentId::Transform));
         // 源场景原样保留，供 Lua / 编辑器回写使用。
         assert_eq!(
             scene.entities[&SceneEntityId(1)].components["MyGameHealth"],
@@ -919,17 +887,17 @@ mod tests {
         // 引擎能读。
         assert_eq!(
             validate_component_payload(
-                "Camera3D",
-                "position=0,0,5;target=0,0,0;fov=90;near=0.1;far=100"
+                "Camera",
+                "projection=perspective;position=0,0,5;target=0,0,0;fov=90;near=0.1;far=100"
             ),
             Some(Ok(()))
         );
         // 已知组件但载荷非法：必须带原因，编辑器据此拒绝写入。
         let rejected = validate_component_payload(
-            "Camera3D",
-            "position=0,0,5;target=0,0,0;fov=90;near=10;far=1",
+            "Camera",
+            "projection=perspective;position=0,0,5;target=0,0,0;fov=90;near=10;far=1",
         )
-        .expect("Camera3D 是已知组件");
+        .expect("Camera 是已知组件");
         assert!(rejected.is_err(), "near > far 必须被判红");
         assert!(
             !rejected.unwrap_err().is_empty(),
@@ -938,11 +906,17 @@ mod tests {
         // 落点退化（position == target）同样只有解析器拦得住。
         assert!(
             validate_component_payload(
-                "Camera3D",
-                "position=0,0,5;target=0,0,5;fov=90;near=0.1;far=100"
+                "Camera",
+                "projection=perspective;position=0,0,5;target=0,0,5;fov=90;near=0.1;far=100"
             )
             .expect("known")
             .is_err()
+        );
+        // 判别字段必填：缺了它连"这是哪种相机"都不知道，必须拒绝。
+        assert!(
+            validate_component_payload("Camera", "position=0,0,5;target=0,0,0;fov=90;near=0.1;far=100")
+                .expect("known")
+                .is_err()
         );
     }
 
@@ -984,7 +958,7 @@ mod tests {
             .unwrap()
             .components
             .insert(
-                "Transform3D".into(),
+                "Transform".into(),
                 "position=1,2,3;rotation=0,0,0,1;scale=1,1,1".into(),
             );
         scene
@@ -1017,7 +991,7 @@ mod tests {
             .iter()
             .find(|entity| entity.id == SceneEntityId(1))
             .unwrap();
-        assert!(good.components.contains_key(&ComponentId::Transform3D));
+        assert!(good.components.contains_key(&ComponentId::Transform));
         assert!(good.components.contains_key(&ComponentId::MeshRenderer));
         // 坏组件的实体本身保留（只是丢了那个组件），父子拓扑仍然完整。
         assert!(typed.parent_first.contains(&SceneEntityId(1)));
@@ -1101,8 +1075,8 @@ mod tests {
                     .entities
                     .iter()
                     .filter_map(|entity| {
-                        let Some(TypedComponent::Transform3D(transform)) =
-                            entity.components.get(&ComponentId::Transform3D)
+                        let Some(TypedComponent::Transform(transform)) =
+                            entity.components.get(&ComponentId::Transform)
                         else {
                             return None;
                         };
@@ -1130,7 +1104,7 @@ mod tests {
                         .entities
                         .iter()
                         .filter(|entity| {
-                            entity.components.contains_key(&ComponentId::Transform3D)
+                            entity.components.contains_key(&ComponentId::Transform)
                                 && entity.components.contains_key(&ComponentId::MeshRenderer)
                         })
                         .count(),
@@ -1156,10 +1130,17 @@ mod tests {
                 let typed_cameras: Vec<SceneEntityId> = typed
                     .entities
                     .iter()
-                    .filter(|entity| entity.components.contains_key(&ComponentId::Camera3D))
+                    .filter(|entity| {
+                        matches!(
+                            entity.components.get(&ComponentId::Camera),
+                            Some(TypedComponent::Camera(camera))
+                                if camera.projection()
+                                    == crate::core::camera::CameraProjection::Perspective
+                        )
+                    })
                     .map(|entity| entity.id)
                     .collect();
-                assert_eq!(typed_cameras, old_cameras, "{label} 相机集合不一致");
+                assert_eq!(typed_cameras, old_cameras, "{label} 透视相机集合不一致");
                 let old_lights: Vec<SceneEntityId> = serialized
                     .lights
                     .iter()
@@ -1201,21 +1182,32 @@ mod tests {
             ComponentId::Text,
             ComponentId::UiLayout,
             ComponentId::ParticleEmitter,
-            // 3D 内容：网格、透视相机
+            // 3D 内容：网格、光源
             ComponentId::MeshRenderer,
-            ComponentId::Camera3D,
-            // 正交（2D）相机
-            ComponentId::Camera2D,
-            // 空间：两种变换、光源
-            ComponentId::Transform2D,
-            ComponentId::Transform3D,
             ComponentId::Light,
+            // 空间与相机：各**一个**组件（2D/3D 由载荷与判别字段表达，不是两个组件）
+            ComponentId::Transform,
+            ComponentId::Camera,
         ] {
             assert!(
                 present.contains(&required),
                 "unified.scene 缺少 {required:?}：一份场景要能同时表达全部渲染类别，实际 {present:?}"
             );
         }
+        // 相机**两种投影**都要在这个场景里出现（只有一种就证明不了"一份场景同时表达 2D 与 3D"）。
+        let projections: std::collections::BTreeSet<&str> = typed
+            .entities
+            .iter()
+            .filter_map(|entity| match entity.components.get(&ComponentId::Camera) {
+                Some(TypedComponent::Camera(camera)) => Some(camera.projection().as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            projections,
+            ["orthographic", "perspective"].into_iter().collect(),
+            "unified.scene 必须同时声明正交与透视相机"
+        );
         // 粒子发射器必须是"连续"的，否则"场景表达粒子"就只是声明了一次爆发。
         let emitter = typed
             .entities

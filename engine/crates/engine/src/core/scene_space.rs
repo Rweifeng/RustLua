@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 use crate::core::{
     math3d::Mat4,
     scene::{Scene, SceneEntityId},
-    spatial_transform::{GlobalTransform, LocalTransform},
+    spatial_transform::{GlobalTransform, LocalTransform, TRANSFORM_COMPONENT},
     transform::{Transform, Transform3D},
 };
 
@@ -89,23 +89,13 @@ pub fn spatial_mode_issue(scene: &Scene) -> Option<String> {
     ))
 }
 
-/// 文档里每个实体的**局部**变换（2D 的 `Transform` 升维成平面 TRS，3D 的 `Transform3D` 直取）。
-///
-/// 同时带 2D 与 3D 局部变换的实体取 3D（超集空间）——与运行时"两份真源会被点名、矩阵按 3D 取"
-/// 的规则一致（docs/54 §8-②）。
+/// 文档里每个实体的**局部**变换（唯一的 `Transform` 组件，统一 3D 形态）。
 #[must_use]
 pub fn local_transforms(scene: &Scene) -> BTreeMap<SceneEntityId, LocalTransform> {
     let mut locals = BTreeMap::new();
     for entity in scene.entities.values() {
-        if let Some(raw) = entity.components.get("Transform3D")
-            && let Ok(transform) = Transform3D::from_component_str(raw)
-        {
-            locals.insert(entity.id, LocalTransform::from_3d(transform));
-            continue;
-        }
-        if let Some(raw) = entity.components.get("Transform")
-            && let Ok(transform) = Transform::from_component_str(raw)
-            && let Ok(local) = LocalTransform::from_2d(transform)
+        if let Some(raw) = entity.components.get(TRANSFORM_COMPONENT)
+            && let Ok(local) = LocalTransform::from_unified_component_str(raw)
         {
             locals.insert(entity.id, local);
         }
@@ -163,49 +153,12 @@ pub fn parent_link_issues(scene: &Scene) -> Vec<ParentLinkIssue> {
     issues
 }
 
-/// 一条"一个实体有几份局部变换真源"的审计结论（docs/54 §8-②）。
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum LocalTransformTruth {
-    /// 只有 2D 局部变换。
-    Plane2d,
-    /// 只有 3D 局部变换（或 2D 组件的载荷非法——非法载荷由 typed 编译单独诊断）。
-    Space3d,
-    /// 两者都有：**两份局部真源**，没有唯一权威。运行时按 3D 取矩阵并报
-    /// `AmbiguousLocalTransform` 诊断，但正确的做法是作者删掉多余的那一个。
-    Ambiguous,
-}
-
-/// 实体携带哪一份局部变换。
-#[must_use]
-pub fn local_transform_truth(scene: &Scene, entity: SceneEntityId) -> Option<LocalTransformTruth> {
-    let components = &scene.entities.get(&entity)?.components;
-    match (
-        components.contains_key("Transform"),
-        components.contains_key("Transform3D"),
-    ) {
-        (true, true) => Some(LocalTransformTruth::Ambiguous),
-        (false, true) => Some(LocalTransformTruth::Space3d),
-        (true, false) => Some(LocalTransformTruth::Plane2d),
-        (false, false) => None,
-    }
-}
-
-/// 审计整份文档的局部真源：返回所有**同时带 2D 与 3D 局部变换**的实体（顺序确定）。
-///
-/// 这是 docs/54 §8-② "运行时只有一份权威 LocalTransform" 的**文档侧**可执行判据：运行时与文档侧
-/// 各自都会在使用时报告/取 3D，但"作者写了两个"这件事必须在批量检查里能被点出来——仓库内的示例
-/// 场景由 `scene_migration` 的仓库级测试逐份断言为空集。
-#[must_use]
-pub fn ambiguous_local_transform_entities(scene: &Scene) -> Vec<SceneEntityId> {
-    scene
-        .entities
-        .values()
-        .filter(|entity| {
-            local_transform_truth(scene, entity.id) == Some(LocalTransformTruth::Ambiguous)
-        })
-        .map(|entity| entity.id)
-        .collect()
-}
+// **唯一局部变换真源**（docs/54 §8-②）现在是**结构性**的：文档里只有一个变换组件名
+// （`Transform`），一个实体不可能再写出"两份局部真源"。此前这里有一份
+// `LocalTransformTruth` 审计（`Plane2d` / `Space3d` / `Ambiguous`）来点名"同时带 2D 与 3D
+// 变换"的实体；统一之后那种数据**无法表达**，审计随之删除——留下它只会是永远返回空集的空转。
+// 仓库侧仍有一条门（`scene_migration` 的 `shipped_data_uses_only_unified_components`）盯着
+// "旧名不得复活"。
 
 /// 文档里每个实体的**世界矩阵**——与运行时同一套规则：父先序、`Global = Global(parent) * Local`。
 ///
@@ -237,7 +190,7 @@ pub fn world_matrices(scene: &Scene) -> BTreeMap<SceneEntityId, Mat4> {
     }
 }
 
-/// 实体的世界变换（3D 视图）：优先矩阵分解，失败退回局部 `Transform3D`。
+/// 实体的世界变换（3D 视图）：优先矩阵分解，失败退回局部 `Transform`。
 #[must_use]
 pub fn world_transform_3d(scene: &Scene, entity: SceneEntityId) -> Option<Transform3D> {
     if let Some(matrix) = world_matrices(scene).get(&entity)
@@ -253,7 +206,7 @@ pub fn world_transform_3d(scene: &Scene, entity: SceneEntityId) -> Option<Transf
         .entities
         .get(&entity)?
         .components
-        .get("Transform3D")
+        .get(TRANSFORM_COMPONENT)
         .and_then(|raw| Transform3D::from_component_str(raw).ok())
 }
 
@@ -378,49 +331,23 @@ pub fn keep_world_after_reparent(
     let Some(entity) = scene.entities.get_mut(&child) else {
         return Ok(false);
     };
-    let mut changed = false;
-    if entity.components.contains_key("Transform3D") {
+    // 只有**一个**变换组件：有就按统一形态写回，没有就不新建（新建组件不是"保持世界"的语义）。
+    if entity.components.contains_key(TRANSFORM_COMPONENT) {
         entity
             .components
-            .insert("Transform3D".into(), encode_transform_3d(local));
-        changed = true;
+            .insert(TRANSFORM_COMPONENT.into(), encode_transform(local));
+        return Ok(true);
     }
-    if entity.components.contains_key("Transform") {
-        entity
-            .components
-            .insert("Transform".into(), encode_transform_2d(local));
-        changed = true;
-    }
-    Ok(changed)
+    Ok(false)
 }
 
-/// 2D `Transform` 组件串（与世界→局部换算配套，供编辑器写回文档用）。
+/// **统一 `Transform` 组件串**（世界→局部换算配套，供编辑器写回文档用）。
+///
+/// 命名不带 2D/3D：2D 与 3D 写的是同一份统一形态（`position/rotation/scale`），差别只在
+/// "2D 的值恰好 z=0、绕 Z 旋转、scale_z=1"。
 #[must_use]
-pub fn encode_transform_2d(local: LocalTransform) -> String {
-    let transform = Transform {
-        position: crate::core::transform::Vec2::new(local.translation.x, local.translation.y),
-        rotation: 2.0 * local.rotation.z.atan2(local.rotation.w),
-        scale: crate::core::transform::Vec2::new(local.scale.x, local.scale.y),
-    };
-    format!(
-        "x={};y={};rotation={};scale_x={};scale_y={}",
-        transform.position.x,
-        transform.position.y,
-        transform.rotation,
-        transform.scale.x,
-        transform.scale.y
-    )
-}
-
-/// 3D `Transform3D` 组件串。
-#[must_use]
-pub fn encode_transform_3d(local: LocalTransform) -> String {
-    Transform3D {
-        position: local.translation,
-        rotation: local.rotation,
-        scale: local.scale,
-    }
-    .to_component_str()
+pub fn encode_transform(local: LocalTransform) -> String {
+    local.to_unified_component_str()
 }
 
 #[cfg(test)]
@@ -438,11 +365,11 @@ mod tests {
         scene.add_entity(parent, "Parent", None).unwrap();
         scene.add_entity(child, "Child", Some(parent)).unwrap();
         scene.entities.get_mut(&parent).unwrap().components.insert(
-            "Transform3D".into(),
+            TRANSFORM_COMPONENT.into(),
             "position=10,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
         );
         scene.entities.get_mut(&child).unwrap().components.insert(
-            "Transform3D".into(),
+            TRANSFORM_COMPONENT.into(),
             "position=0,5,0;rotation=0,0,0,1;scale=1,1,1".into(),
         );
         scene
@@ -493,7 +420,7 @@ mod tests {
             .get_mut(&child)
             .unwrap()
             .components
-            .insert("Transform3D".into(), encode_transform_3d(local));
+            .insert(TRANSFORM_COMPONENT.into(), encode_transform(local));
         let world = world_matrices(&updated)[&child];
         assert!((world.columns[3][0] - 20.0).abs() < 1e-4);
         assert!((world.columns[3][1] - 5.0).abs() < 1e-4);
@@ -538,7 +465,7 @@ mod tests {
         let lone = SceneEntityId(1);
         scene.add_entity(lone, "Lone", None).unwrap();
         scene.entities.get_mut(&lone).unwrap().components.insert(
-            "Transform3D".into(),
+            TRANSFORM_COMPONENT.into(),
             "position=3,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
         );
         // 自环：`Scene::add_entity` 不允许，直接写 `parent` 模拟手改过的场景文件。
@@ -550,7 +477,7 @@ mod tests {
         scene.add_entity(b, "B", Some(a)).unwrap();
         for (id, x) in [(a, 4.0_f32), (b, 6.0)] {
             scene.entities.get_mut(&id).unwrap().components.insert(
-                "Transform3D".into(),
+                TRANSFORM_COMPONENT.into(),
                 format!("position={x},0,0;rotation=0,0,0,1;scale=1,1,1"),
             );
         }
@@ -583,13 +510,13 @@ mod tests {
             .unwrap()
             .components
             .insert(
-                "Transform3D".into(),
+                TRANSFORM_COMPONENT.into(),
                 "position=-4,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
             );
         scene.entities.get_mut(&child).unwrap().parent = Some(new_parent);
         assert!(
             keep_world_after_reparent(&mut scene, child, before).expect("keep-world 可行"),
-            "该实体有 Transform3D，必须真的写回"
+            "该实体有 Transform，必须真的写回"
         );
         let after = world_matrices(&scene)[&child];
         for column in 0..4 {
@@ -641,8 +568,8 @@ mod tests {
         scene.add_entity(child, "Child", Some(parent)).unwrap();
         for (id, x) in [(parent, 100.0_f32), (child, 0.0)] {
             scene.entities.get_mut(&id).unwrap().components.insert(
-                "Transform".into(),
-                format!("x={x};y=0;rotation=0;scale_x=1;scale_y=1"),
+                TRANSFORM_COMPONENT.into(),
+                format!("position={x},0,0;rotation=0,0,0,1;scale=1,1,1"),
             );
         }
         assert_eq!(
@@ -654,7 +581,7 @@ mod tests {
 
         // 父改成沿 z 抬高：2D 视图必须消失（不接受压平）。
         scene.entities.get_mut(&parent).unwrap().components.insert(
-            "Transform3D".into(),
+            TRANSFORM_COMPONENT.into(),
             "position=100,0,5;rotation=0,0,0,1;scale=1,1,1".into(),
         );
         assert!(

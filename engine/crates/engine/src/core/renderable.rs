@@ -309,7 +309,7 @@ mod tests {
             Renderable::Single(RenderableKind::Sprite)
         );
         assert_eq!(
-            Renderable::classify(["Transform", "MeshRenderer", "Transform3D"]),
+            Renderable::classify(["Transform", "MeshRenderer"]),
             Renderable::Single(RenderableKind::Mesh)
         );
         assert_eq!(

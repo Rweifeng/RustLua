@@ -405,7 +405,7 @@ fn sprite_scene(sprites: usize) -> Scene {
         let entity = scene.entities.get_mut(&id).expect("sprite entity");
         entity.components.insert(
             "Transform".into(),
-            format!("x={x};y={y};rotation=0;scale_x=1;scale_y=1"),
+            format!("position={x},{y},0;rotation=0,0,0,1;scale=1,1,1"),
         );
         entity.components.insert(
             "Sprite".into(),
@@ -670,9 +670,9 @@ fn hierarchy_scene(count: usize) -> Scene {
         entity.components.insert(
             "Transform".into(),
             if parent.is_some() {
-                "x=1;y=0;rotation=0;scale_x=1;scale_y=1".into()
+                "position=1,0,0;rotation=0,0,0,1;scale=1,1,1".into()
             } else {
-                format!("x={x};y={y};rotation=0;scale_x=1;scale_y=1")
+                format!("position={x},{y},0;rotation=0,0,0,1;scale=1,1,1")
             },
         );
         entity.components.insert(
@@ -714,7 +714,7 @@ fn animation_scene(count: usize) -> Scene {
         let entity = scene.entities.get_mut(&id).expect("animated entity");
         entity.components.insert(
             "Transform".into(),
-            format!("x={x};y={y};rotation=0;scale_x=1;scale_y=1"),
+            format!("position={x},{y},0;rotation=0,0,0,1;scale=1,1,1"),
         );
         entity.components.insert(
             "Sprite".into(),
@@ -780,7 +780,7 @@ fn tilemap_scene(side: usize) -> Scene {
     let entity = scene.entities.get_mut(&id).expect("tilemap entity");
     entity.components.insert(
         "Transform".into(),
-        "x=0;y=0;rotation=0;scale_x=1;scale_y=1".into(),
+        "position=0,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
     );
     entity.components.insert(
         "Tilemap".into(),

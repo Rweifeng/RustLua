@@ -816,7 +816,7 @@ mod tests {
     fn component_menu_comes_from_the_registry() {
         let groups = crate::panels::inspector::component_menu_groups();
         let categories: Vec<&str> = groups.iter().map(|(category, _)| *category).collect();
-        for expected in ["玩法", "渲染", "3D", "UI"] {
+        for expected in ["变换与相机", "玩法", "渲染", "3D", "UI"] {
             assert!(categories.contains(&expected), "缺少类别 {expected}");
         }
         let names: Vec<&str> = groups
@@ -825,20 +825,16 @@ mod tests {
             .collect();
         assert!(names.contains(&"Sprite"), "注册表里应有 Sprite");
         assert!(names.contains(&"Light"), "注册表里应有 Light");
-        // 第 53 轮：变换与相机正在统一成单一组件，**带 3D 后缀的重复项不再作为可添加组件**
-        // （它们仍能加载与显示，只是不该出现在"新加一个组件"的入口里）。
-        assert!(
-            !names.contains(&"Transform3D"),
-            "统一化后不应再提供 Transform3D 作为可添加组件：{names:?}"
-        );
-        assert!(
-            !names.contains(&"Camera3D"),
-            "统一化后不应再提供 Camera3D 作为可添加组件：{names:?}"
-        );
-        assert!(
-            !names.contains(&"Camera2D"),
-            "相机不分 2D/3D：不应把 Camera2D 也摆成可添加项（统一名 `Camera` 由 schema 注册表跟上后加入）"
-        );
+        // 第 57 轮：变换与相机各只有**一个**组件，旧名已经从注册表删除，
+        // 因此既不会作为可添加项出现，也不会在加载时被认出来。
+        assert!(names.contains(&"Transform"), "注册表里应有统一的 Transform");
+        assert!(names.contains(&"Camera"), "注册表里应有统一的 Camera");
+        for legacy in ["Transform3D", "Camera3D", "Camera2D"] {
+            assert!(
+                !names.contains(&legacy),
+                "旧名 {legacy} 不得作为可添加组件：{names:?}"
+            );
+        }
         let mut sorted = names.clone();
         sorted.sort_unstable();
         sorted.dedup();

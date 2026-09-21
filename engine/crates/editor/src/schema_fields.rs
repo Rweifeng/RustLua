@@ -8,11 +8,11 @@
 //! 接管集合是**推导**的（注册了 schema 且不在 [`HANDWRITTEN_PANEL_COMPONENTS`] 里），
 //! 所以给引擎新增组件 + 注册 schema 之后，编辑器自动获得它的字段编辑器。
 
-use engine::core::camera::{Camera3D, Projection};
+use engine::core::camera::Projection;
 use engine::core::component_schema::{FieldKind, builtin_registry};
 use engine::core::math3d::Vec3;
 use engine::core::property_path::{
-    PropertyError, PropertyPath, read_field_display_text, read_field_text, write_field,
+    PropertyError, PropertyPath, read_field_display_text, write_field,
 };
 use engine::core::scene::{Scene, SceneEntity, SceneEntityId};
 use engine::core::transform::Transform3D;
@@ -27,8 +27,8 @@ use std::fmt;
 /// 一行 match/白名单都不用改——这正是 docs/55 阶段 2 验收条款
 /// "新增组件不再修改巨型 match" 的可检形式。
 pub const HANDWRITTEN_PANEL_COMPONENTS: &[&str] = &[
-    // 注意：`Light`(20) / `MeshRenderer`(21) / `Image`(22) / `WorldText`(23) / `Camera3D`(24) /
-    // `Text`(25) / `UiLayout`(31) / `Sprite`(34) / `Transform`(36) / `Transform3D`(36) **都不在**
+    // 注意：`Light`(20) / `MeshRenderer`(21) / `Image`(22) / `WorldText`(23) / `Camera`(24) /
+    // `Text`(25) / `UiLayout`(31) / `Sprite`(34) / `Transform`(36) **都不在**
     // 这张表里——它们的手写面板与整套缓冲管线已删除，改由通用编辑器按 schema 生成字段行
     // （见 `panels/schema_inspector.rs` 的 `field_widget`）。
     // 这就是"组件迁移到 schema"的样板：删面板 + 删缓冲管线、从本表移除即可。
@@ -122,7 +122,7 @@ pub enum ChoiceSource {
 /// `to_radians()`、`Camera3D::to_component_str` 写出去时 `to_degrees()`（见 `core/camera.rs`）。
 /// 这条事实由 `field_units_agree_with_the_engine_encoder` 直接拿引擎编码器对拍：
 /// 编辑器显示的角度必须等于引擎解析出来的 `fov_y` 换算成的角度。
-const DEGREE_FIELDS: &[(&str, &str)] = &[("Camera3D", "fov")];
+const DEGREE_FIELDS: &[(&str, &str)] = &[("Camera", "fov")];
 
 /// 候选值来自项目字体的字段名（`Text.font` / `WorldText.font`）。
 const PROJECT_FONT_FIELDS: &[&str] = &["font"];
@@ -422,7 +422,7 @@ fn payload_has_field(payload: &str, field: &str) -> bool {
 /// 组件级的**只读说明**：迁移后的组件里那些"不是字段"的信息（相机的投影摘要与生效姿态）。
 ///
 /// 视图只呈现、不编辑。`warning` 为真表示"组件参数与渲染实际行为不一致"
-/// （如 `pose=transform` 但实体没有 `Transform3D`），需要用醒目颜色显示。
+/// （如 `pose=transform` 但实体没有 `Transform`），需要用醒目颜色显示。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SchemaComponentNote {
     pub text: String,
@@ -452,7 +452,7 @@ type NoteProvider = fn(&SceneEntity) -> Vec<SchemaComponentNote>;
 ///
 /// 这是一张数据表而不是巨型 match，而且**不是**字段编辑器的一部分：字段仍完全由 schema 生成；
 /// 只有当一个组件确实有"字段之外的信息"时才在这里加一项（没有就不加）。
-const NOTE_PROVIDERS: &[(&str, NoteProvider)] = &[("Camera3D", camera3d_notes)];
+const NOTE_PROVIDERS: &[(&str, NoteProvider)] = &[("Camera", camera_notes)];
 
 /// 该组件在当前实体上的只读说明（组件不在实体上 / 没有登记说明时为空）。
 #[must_use]
@@ -571,7 +571,7 @@ pub struct SchemaComponentAction {
     pub fields: Vec<(String, String)>,
 }
 
-/// 组件级的**编辑器态开关**（不写文档）：如 `Transform`/`Transform3D` 的"锁定比例"。
+/// 组件级的**编辑器态开关**（不写文档）：如变换的"锁定比例"（统一后 `Transform` 已撤掉它）。
 ///
 /// 开关本身不是字段，也不进组件串；打开后做**字段镜像**：改 `mirrors` 里的 `from` 字段时，
 /// 同一次提交里把 `to` 也写成同一个值（等比锁的语义——迁移前手写面板就是这么做的）。
@@ -591,10 +591,10 @@ pub struct SchemaComponentToggle {
 type ToggleProvider = fn() -> Vec<SchemaComponentToggle>;
 
 /// 编辑器态开关的表（与 `NOTE_PROVIDERS`/`ACTION_PROVIDERS` 同一思路）。
-const TOGGLE_PROVIDERS: &[(&str, ToggleProvider)] = &[
-    ("Transform", transform_toggles),
-    ("Transform3D", transform_toggles_3d),
-];
+///
+/// **第 56 轮起是空表**：唯一登记过的"等比锁"随变换统一一起撤掉了——统一后的 `scale` 是
+/// `Vec3`，而等比锁的机制是"把这个字段的**整个值**复制到另一个字段"，对向量字段没有可复制对象。
+const TOGGLE_PROVIDERS: &[(&str, ToggleProvider)] = &[];
 
 /// 该组件的编辑器态开关。
 #[must_use]
@@ -622,44 +622,16 @@ pub fn mirror_fields(
         .collect()
 }
 
-/// 2D `Transform`：比例锁把 `scale_x` 镜像到 `scale_y`（与手写面板一致）。
-fn transform_toggles() -> Vec<SchemaComponentToggle> {
-    vec![SchemaComponentToggle {
-        key: "transform_lock_ratio",
-        label: "锁定比例",
-        default: false,
-        mirrors: vec![
-            ("scale_x".to_owned(), "scale_y".to_owned()),
-            ("scale_y".to_owned(), "scale_x".to_owned()),
-        ],
-    }]
-}
 
-/// 3D `Transform3D`：比例锁把一个轴镜像到另外两个轴。
-fn transform_toggles_3d() -> Vec<SchemaComponentToggle> {
-    vec![SchemaComponentToggle {
-        key: "transform3d_lock_ratio",
-        label: "锁定比例",
-        default: false,
-        mirrors: vec![
-            ("scale_x".to_owned(), "scale_y".to_owned()),
-            ("scale_x".to_owned(), "scale_z".to_owned()),
-            ("scale_y".to_owned(), "scale_x".to_owned()),
-            ("scale_y".to_owned(), "scale_z".to_owned()),
-            ("scale_z".to_owned(), "scale_x".to_owned()),
-            ("scale_z".to_owned(), "scale_y".to_owned()),
-        ],
-    }]
-}
-
-/// 组件级动作的提供者：给定实体，返回这个组件的动作列表。
-type ActionProvider = fn(&SceneEntity) -> Vec<SchemaComponentAction>;
+/// 组件级动作的提供者：给定实体**与组件名**，返回这个组件的动作列表。
+///
+/// 组件名要传进来：同一个实现可能服务多个组件名，动作必须从**实体上那个名字**的载荷里读当前值。
+type ActionProvider = fn(&SceneEntity, &str) -> Vec<SchemaComponentAction>;
 
 /// 组件级动作的**提供者表**（与 `NOTE_PROVIDERS` 同一思路：数据表，不是巨型 match）。
 const ACTION_PROVIDERS: &[(&str, ActionProvider)] = &[
     ("UiLayout", ui_layout_preset_actions),
     ("Transform", transform_reset_action),
-    ("Transform3D", transform3d_reset_action),
 ];
 
 /// 该组件在当前实体上的动作（没有登记/组件不在实体上时为空）。
@@ -668,57 +640,25 @@ pub fn component_actions(entity: &SceneEntity, component: &str) -> Vec<SchemaCom
     ACTION_PROVIDERS
         .iter()
         .find(|(name, _)| *name == component)
-        .map_or_else(Vec::new, |(_, provider)| provider(entity))
+        .map_or_else(Vec::new, |(_, provider)| provider(entity, component))
 }
 
-/// `Transform` 的"Reset"动作：把**引擎默认值**的每个字段写回去（一次提交 = 一条 Undo）。
+/// `Transform` 的"Reset"动作：把**引擎默认值**写回去（一次提交 = 一条 Undo）。
 ///
-/// 值来自引擎类型（`Transform::identity()`），编辑器不手写字面量；返回 `None` 表示这个组件
-/// 不在实体上（动作列表为空）。
-fn transform_reset_action(entity: &SceneEntity) -> Vec<SchemaComponentAction> {
-    let Some(payload) = entity.components.get("Transform") else {
-        return Vec::new();
-    };
-    let Ok(current) = engine::core::transform::Transform::from_component_str(payload) else {
-        return Vec::new();
-    };
-    let identity = engine::core::transform::Transform::identity();
-    let defaults = [
-        ("x", identity.position.x),
-        ("y", identity.position.y),
-        ("rotation", identity.rotation),
-        ("scale_x", identity.scale.x),
-        ("scale_y", identity.scale.y),
-    ];
-    // 已经等于默认值时不提供动作（视图据此隐藏"重置"）。
-    if defaults.iter().all(|(field, value)| {
-        read_field_text(payload, &PropertyPath::new("Transform", *field))
-            .ok()
-            .and_then(|text| text.trim().parse::<f32>().ok())
-            .is_some_and(|current| (current - value).abs() < f32::EPSILON)
-    }) {
-        return Vec::new();
-    }
-    let _ = current;
-    vec![SchemaComponentAction {
-        label: "重置为默认值".to_owned(),
-        selected: false,
-        fields: defaults
-            .iter()
-            .map(|(field, value)| ((*field).to_owned(), value.to_string()))
-            .collect(),
-    }]
-}
-
-/// `Transform3D` 的"Reset"动作（同上，引擎默认值是单位变换）。
-fn transform3d_reset_action(entity: &SceneEntity) -> Vec<SchemaComponentAction> {
-    let Some(payload) = entity.components.get("Transform3D") else {
+/// 值来自引擎类型（`Transform3D::identity()`），编辑器不手写字面量。
+/// **只认统一形态**：变化后的载荷必须是统一写法，否则动作不提供（写一半的串比没有按钮更糟）。
+fn transform_reset_action(entity: &SceneEntity, component: &str) -> Vec<SchemaComponentAction> {
+    let Some(payload) = entity.components.get(component) else {
         return Vec::new();
     };
     let Ok(current) = engine::core::transform::Transform3D::from_component_str(payload) else {
         return Vec::new();
     };
     let identity = engine::core::transform::Transform3D::identity();
+    if current == identity {
+        // 已经等于默认值时不提供动作（视图据此隐藏"重置"）。
+        return Vec::new();
+    }
     let defaults: Vec<(String, String)> = vec![
         (
             "position".to_owned(),
@@ -742,9 +682,6 @@ fn transform3d_reset_action(entity: &SceneEntity) -> Vec<SchemaComponentAction> 
             ),
         ),
     ];
-    if current == identity {
-        return Vec::new();
-    }
     vec![SchemaComponentAction {
         label: "重置为默认值".to_owned(),
         selected: false,
@@ -752,10 +689,11 @@ fn transform3d_reset_action(entity: &SceneEntity) -> Vec<SchemaComponentAction> 
     }]
 }
 
+
 /// `UiLayout` 的锚点预设：与手写面板里的下拉**同一份语义**——预设来自引擎的/// `UiLayoutPreset::ALL`，写入值是引擎自己的编码（`anchors` 四元组 + `pivot` 二元组），
 /// 选中态用"字段值与预设一致"判定（不是另存一份"当前预设"状态，因此外部改动也会立刻反映）。
-fn ui_layout_preset_actions(entity: &SceneEntity) -> Vec<SchemaComponentAction> {
-    let Some(payload) = entity.components.get("UiLayout") else {
+fn ui_layout_preset_actions(entity: &SceneEntity, component: &str) -> Vec<SchemaComponentAction> {
+    let Some(payload) = entity.components.get(component) else {
         return Vec::new();
     };
     let Ok(layout) = engine::core::ui_layout::UiRectLayout::from_component_str(payload) else {
@@ -794,16 +732,17 @@ fn ui_layout_preset_actions(entity: &SceneEntity) -> Vec<SchemaComponentAction> 
         .collect()
 }
 
-/// `Camera3D` 的只读说明（手写面板里"不是字段"的那部分，随迁移搬到通用编辑器）。
+/// `Camera` 的只读说明（手写面板里"不是字段"的那部分，随迁移搬到通用编辑器）。
 ///
-/// 两条信息都用**引擎自己的解析器**从组件串原文得到：`Projection::from_camera3d` 是
-/// "这台相机怎么投影"的唯一说法，`Camera3D::with_pose` 与运行时用的是同一条姿态换算。
-/// 因此这里显示的不是编辑器的推测，而是渲染器真正会用的值。
-fn camera3d_notes(entity: &SceneEntity) -> Vec<SchemaComponentNote> {
-    let Some(raw) = entity.components.get("Camera3D") else {
+/// 统一之后只有**一个**相机组件，说明按**判别字段给出的投影分支**分两套：正交（2D 视口）与
+/// 透视（当前这套：`Projection::from_camera3d` 是"这台相机怎么投影"的唯一说法，
+/// `Camera3D::with_pose` 与运行时用的是同一条姿态换算）。因此这里显示的不是编辑器的推测，
+/// 而是渲染器真正会用的值。
+fn camera_notes(entity: &SceneEntity) -> Vec<SchemaComponentNote> {
+    let Some(raw) = entity.components.get("Camera") else {
         return Vec::new();
     };
-    let camera = match Camera3D::from_component_str(raw) {
+    let camera = match engine::core::camera::CameraComponent::from_component_str(raw) {
         Ok(camera) => camera,
         Err(error) => {
             return vec![SchemaComponentNote::warning(format!(
@@ -814,16 +753,30 @@ fn camera3d_notes(entity: &SceneEntity) -> Vec<SchemaComponentNote> {
     let mut notes = Vec::new();
     // docs/54 §4.2：`enabled=false` 的相机不参与选帧。必须说明，否则用户会看到一台
     // "参数正常"的相机却完全不参与渲染。
-    if !camera.enabled {
+    if !camera.enabled() {
         notes.push(SchemaComponentNote::warning(
             "已禁用（enabled=false）—— 不参与相机选帧，渲染回退到默认相机",
         ));
     }
-    // WP5：`pose=transform` 时组件的 position/target 退化为"没有 Transform3D 时的回退值"，
+    let camera = match camera.as_perspective() {
+        Some(camera) => camera,
+        None => {
+            // 正交（2D）相机：字段体是 `center`/`zoom`/`bounds`，说明只有"投到多大"这一条实质信息。
+            let orthographic = camera
+                .as_orthographic()
+                .expect("已确认不是透视分支");
+            notes.push(SchemaComponentNote::info(format!(
+                "投影：正交（{:.3} px/单位，中心 ({:.1}, {:.1})）",
+                orthographic.zoom, orthographic.center.x, orthographic.center.y
+            )));
+            return notes;
+        }
+    };
+    // WP5：`pose=transform` 时组件的 position/target 退化为"没有 Transform 时的回退值"，
     // 所以先说清楚这一点，再给出**实际生效**的姿态。
     if camera.pose_from_transform {
         notes.push(SchemaComponentNote::info(
-            "位置/目标仅在实体没有 Transform3D 时生效（pose=transform）",
+            "位置/目标仅在实体没有 Transform 时生效（pose=transform）",
         ));
     }
     notes.push(SchemaComponentNote::info(
@@ -838,9 +791,9 @@ fn camera3d_notes(entity: &SceneEntity) -> Vec<SchemaComponentNote> {
     if !camera.pose_from_transform {
         return notes;
     }
-    notes.push(match entity.components.get("Transform3D") {
+    notes.push(match entity.components.get("Transform") {
         None => SchemaComponentNote::warning(
-            "警告：实体没有 Transform3D —— 渲染回退到上面的组件姿态",
+            "警告：实体没有 Transform —— 渲染回退到上面的组件姿态",
         ),
         Some(raw) => match Transform3D::from_component_str(raw)
             .map_err(|error| error.to_string())
@@ -851,7 +804,7 @@ fn camera3d_notes(entity: &SceneEntity) -> Vec<SchemaComponentNote> {
                     .normalized()
                     .unwrap_or(Vec3::new(0.0, 0.0, -1.0));
                 SchemaComponentNote::info(format!(
-                    "生效姿态（来自 Transform3D）：位置 ({:.3}, {:.3}, {:.3})，视线 -Z → ({:.3}, {:.3}, {:.3})",
+                    "生效姿态（来自 Transform）：位置 ({:.3}, {:.3}, {:.3})，视线 -Z → ({:.3}, {:.3}, {:.3})",
                     posed.position.x,
                     posed.position.y,
                     posed.position.z,
@@ -861,7 +814,7 @@ fn camera3d_notes(entity: &SceneEntity) -> Vec<SchemaComponentNote> {
                 ))
             }
             Err(error) => SchemaComponentNote::warning(format!(
-                "警告：Transform3D 不可用（{error}）—— 渲染回退到组件姿态"
+                "警告：Transform 不可用（{error}）—— 渲染回退到组件姿态"
             )),
         },
     });
@@ -971,6 +924,7 @@ pub fn preview_field_edit(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use engine::core::camera::Camera3D;
     use engine::core::scene::SceneEntity;
     use std::collections::BTreeMap;
 
@@ -1030,10 +984,8 @@ mod tests {
                 // `ParticleEmitter` 是**改名**换来的——注册表原来写的是 `Particle`，
                 // 与运行时读的名字不一致，所以真实工程里的粒子组件一直没被接管。
                 "Animation3D",
-                "Camera2D",
-                // 从手写面板迁移过来的组件（删面板 → 进这里）：Light 20 轮、MeshRenderer 21 轮、
-                // Image 22 轮、WorldText 23 轮、Camera3D 24 轮、Text 25 轮。
-                "Camera3D",
+                // 第 57 轮：统一之后的**唯一**相机组件（旧名 `Camera2D`/`Camera3D` 已从注册表删除）。
+                "Camera",
                 "Collider",
                 "Image",
                 "Light",
@@ -1043,8 +995,8 @@ mod tests {
                 "RenderMode",
                 "Sprite",
                 "Text",
+                // 唯一的变换组件（旧名 `Transform3D` 已从注册表删除）。
                 "Transform",
-                "Transform3D",
                 "UiLayout",
                 "Visibility",
                 "WorldText"
@@ -1215,37 +1167,21 @@ mod tests {
     /// 等比锁是"编辑器态 + 字段镜像"（不写文档），重置是"写回引擎默认值"的动作。
     #[test]
     fn transform_toggles_and_reset_actions_come_from_the_engine_types() {
-        // 等比锁：2D 一个镜像对，3D 三个轴两两镜像。
-        let toggle = component_toggles("Transform");
-        assert_eq!(toggle.len(), 1);
-        assert_eq!(toggle[0].label, "锁定比例");
-        assert_eq!(
-            toggle[0].mirrors,
-            vec![
-                ("scale_x".to_owned(), "scale_y".to_owned()),
-                ("scale_y".to_owned(), "scale_x".to_owned()),
-            ]
-        );
-        let toggle3d = component_toggles("Transform3D");
-        assert_eq!(toggle3d.len(), 1);
-        assert_eq!(toggle3d[0].mirrors.len(), 6, "三个轴两两镜像");
-        assert!(component_toggles("Light").is_empty());
-        // 镜像展开是纯函数：改 scale_x（锁打开）→ 同步 scale_y/scale_z。
-        assert_eq!(
-            mirror_fields(&toggle3d, "scale_x", "2.5"),
-            vec![
-                ("scale_y".to_owned(), "2.5".to_owned()),
-                ("scale_z".to_owned(), "2.5".to_owned()),
-            ]
-        );
+        // 第 56 轮：变换统一成单一 `Transform`（`scale` 是 `Vec3`），**等比锁开关随之撤掉**——
+        // 旧机制是"复制整个字段值"，对向量字段没有可复制对象。这条断言把"它是空表"钉住，
+        // 免得有人又加回一个点了没反应的开关。
         assert!(
-            mirror_fields(&toggle3d, "position", "1,2,3").is_empty(),
-            "非比例字段不受锁影响"
+            component_toggles("Transform").is_empty(),
+            "统一后的 Transform 不再有等比锁开关（见 ACTION_PROVIDERS 的说明）"
         );
-        assert!(mirror_fields(&[], "scale_x", "1").is_empty(), "没开锁就不镜像");
+        assert!(component_toggles("Light").is_empty());
+        assert!(mirror_fields(&[], "scale", "1,1,1").is_empty(), "没开锁就不镜像");
 
-        // 重置动作：字段值来自引擎的 `identity()`；已经等于默认值时不再提供动作。
-        let entity = entity_with(&[("Transform", "x=3;y=4;rotation=0.5;scale_x=2;scale_y=2")]);
+        // 重置动作：字段值来自引擎的 `identity()`。
+        let entity = entity_with(&[(
+            "Transform",
+            "position=3.000000000,4.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=2.000000000,2.000000000,1.000000000",
+        )]);
         let reset = component_actions(&entity, "Transform");
         assert_eq!(reset.len(), 1);
         let fields: Vec<(&str, &str)> = reset[0]
@@ -1256,11 +1192,9 @@ mod tests {
         assert_eq!(
             fields,
             vec![
-                ("x", "0"),
-                ("y", "0"),
-                ("rotation", "0"),
-                ("scale_x", "1"),
-                ("scale_y", "1"),
+                ("position", "0,0,0"),
+                ("rotation", "0,0,0,1"),
+                ("scale", "1,1,1"),
             ]
         );
         // 写回去之后必须真的等于引擎的单位变换。
@@ -1271,39 +1205,19 @@ mod tests {
                 .unwrap_or(payload);
         }
         assert_eq!(
-            engine::core::transform::Transform::from_component_str(&payload).unwrap(),
-            engine::core::transform::Transform::identity()
+            engine::core::transform::Transform3D::from_component_str(&payload).unwrap(),
+            engine::core::transform::Transform3D::identity()
         );
         // 已经是单位变换 → 没有"重置"动作可点。
         let identity = entity_with(&[(
             "Transform",
-            engine::core::transform::Transform::identity().to_component_str().as_str(),
+            engine::core::transform::Transform3D::identity().to_component_str().as_str(),
         )]);
         assert!(component_actions(&identity, "Transform").is_empty());
 
-        // Transform3D 同理（position/rotation/scale 三个字段一次写完）。
-        let entity3d = entity_with(&[(
-            "Transform3D",
-            "position=1,2,3;rotation=0,0,0,1;scale=2,2,2",
-        )]);
-        let reset3d = component_actions(&entity3d, "Transform3D");
-        assert_eq!(reset3d.len(), 1);
-        let names: Vec<&str> = reset3d[0]
-            .fields
-            .iter()
-            .map(|(name, _)| name.as_str())
-            .collect();
-        assert_eq!(names, vec!["position", "rotation", "scale"]);
-        let mut payload3d = entity3d.components["Transform3D"].clone();
-        for (field, value) in &reset3d[0].fields {
-            payload3d = edit_component_payload("Transform3D", &payload3d, field, value)
-                .expect("重置写入不该失败")
-                .unwrap_or(payload3d);
-        }
-        assert_eq!(
-            engine::core::transform::Transform3D::from_component_str(&payload3d).unwrap(),
-            engine::core::transform::Transform3D::identity()
-        );
+        // 畸形的载荷同样不给动作（宁可没有按钮，也不写出更坏的串）。
+        let broken = entity_with(&[("Transform", "position=oops")]);
+        assert!(component_actions(&broken, "Transform").is_empty());
     }
 
     /// **组件级动作**（第 30 轮）：`UiLayout` 的 12 个锚点预设来自引擎的
@@ -1361,7 +1275,7 @@ mod tests {
         assert!(component_actions(&entity_with(&[("Quad", "size=8,8")]), "UiLayout").is_empty());
     }
 
-    /// **字段单位必须与引擎编码器一致**（第 24 轮抓到并修掉的漂移）。`Camera3D` 的组件串里
+    /// **字段单位必须与引擎编码器一致**（第 24 轮抓到并修掉的漂移）。统一 `Camera` 的组件串里
     /// `fov` 存的就是**角度**（`Camera3D::to_component_str` 写 `fov_y.to_degrees()`、
     /// `from_component_str` 读进来再 `to_radians()`），所以编辑器显示时**不能**做换算。
     /// 曾经这里被当成"组件串存弧度"：照那样迁移面板，手写面板里的 60° 会在通用编辑器里
@@ -1378,11 +1292,12 @@ mod tests {
             100.0,
         )
         .expect("合法相机");
-        let payload = camera.to_component_str();
+        let payload =
+            engine::core::camera::CameraComponent::Perspective(camera).to_component_str();
         let raw =
-            read_field_text(&payload, &PropertyPath::new("Camera3D", "fov")).expect("fov 原文");
+            read_field_text(&payload, &PropertyPath::new("Camera", "fov")).expect("fov 原文");
         let stored: f64 = raw.trim().parse().expect("fov 是数字");
-        let shown = field_unit("Camera3D", "fov").to_display(stored);
+        let shown = field_unit("Camera", "fov").to_display(stored);
         let engine_degrees = f64::from(camera.fov_y.to_degrees());
         assert!(
             (shown - engine_degrees).abs() < 1e-3,
@@ -1393,7 +1308,7 @@ mod tests {
             "显示值就是组件串里的角度：{shown}"
         );
         // 写回路径同样不换算。
-        assert!((field_unit("Camera3D", "fov").from_display(60.0) - 60.0).abs() < 1e-9);
+        assert!((field_unit("Camera", "fov").from_display(60.0) - 60.0).abs() < 1e-9);
         // 只有"组件串存弧度"的字段（`Radians`，如 `Transform.rotation`）才乘/除 π/180。
         assert!((FieldUnit::Radians.to_display(std::f64::consts::FRAC_PI_3) - 60.0).abs() < 1e-9);
         assert!(
@@ -1458,14 +1373,14 @@ mod tests {
     }
 
     /// 迁移过来的**只读说明**（第 24 轮）：投影来自统一 `Projection`，`pose=transform` 时给出
-    /// **生效**姿态——缺 `Transform3D` 必须给警告，而不是只显示"其实不生效"的组件值。
+    /// **生效**姿态——缺 `Transform` 必须给警告，而不是只显示"其实不生效"的组件值。
     #[test]
     fn camera_notes_show_projection_and_effective_pose() {
         let mut entity = entity_with(&[(
-            "Camera3D",
-            "position=0,0,6;target=0,0,0;fov=60;near=0.1;far=100",
+            "Camera",
+            "projection=perspective;position=0,0,6;target=0,0,0;fov=60;near=0.1;far=100",
         )]);
-        let notes = component_notes(&entity, "Camera3D");
+        let notes = component_notes(&entity, "Camera");
         assert_eq!(notes.len(), 1, "{notes:?}");
         assert!(
             notes[0].text.contains("透视") && notes[0].text.contains("60.0°"),
@@ -1474,31 +1389,31 @@ mod tests {
         );
         assert!(!notes[0].warning);
 
-        // 声明 pose=transform 但没有 Transform3D：必须给出"回退到组件姿态"的警告。
+        // 声明 pose=transform 但没有 Transform：必须给出"回退到组件姿态"的警告。
         entity.components.insert(
-            "Camera3D".to_owned(),
-            "position=0,0,6;target=0,0,0;fov=60;near=0.1;far=100;pose=transform".to_owned(),
+            "Camera".to_owned(),
+            "projection=perspective;position=0,0,6;target=0,0,0;fov=60;near=0.1;far=100;pose=transform".to_owned(),
         );
-        let notes = component_notes(&entity, "Camera3D");
+        let notes = component_notes(&entity, "Camera");
         assert!(
             notes
                 .iter()
-                .any(|note| note.text.contains("仅在实体没有 Transform3D 时生效")),
+                .any(|note| note.text.contains("仅在实体没有 Transform 时生效")),
             "{notes:?}"
         );
         assert!(
             notes
                 .iter()
-                .any(|note| note.warning && note.text.contains("没有 Transform3D")),
+                .any(|note| note.warning && note.text.contains("没有 Transform")),
             "{notes:?}"
         );
 
-        // 补上绕 Y 转 90° 的 Transform3D：生效姿态必须显示变换后的位置与视线（-X）。
+        // 补上绕 Y 转 90° 的 Transform：生效姿态必须显示变换后的位置与视线（-X）。
         entity.components.insert(
-            "Transform3D".to_owned(),
+            "Transform".to_owned(),
             "position=20,5,0;rotation=0,0.7071068,0,0.7071068;scale=1,1,1".to_owned(),
         );
-        let notes = component_notes(&entity, "Camera3D");
+        let notes = component_notes(&entity, "Camera");
         let pose = notes
             .iter()
             .find(|note| note.text.contains("生效姿态"))
@@ -1506,15 +1421,15 @@ mod tests {
         assert!(!pose.warning, "{}", pose.text);
         assert!(
             pose.text.contains("20.000") && pose.text.contains("-1.000"),
-            "生效姿态应来自 Transform3D 且视线为 -X：{}",
+            "生效姿态应来自 Transform 且视线为 -X：{}",
             pose.text
         );
 
-        // 非法的 Transform3D 串同样是警告（不静默当作可用）。
+        // 非法的 Transform 串同样是警告（不静默当作可用）。
         entity
             .components
-            .insert("Transform3D".to_owned(), "position=oops".to_owned());
-        let notes = component_notes(&entity, "Camera3D");
+            .insert("Transform".to_owned(), "position=oops".to_owned());
+        let notes = component_notes(&entity, "Camera");
         assert!(
             notes
                 .iter()
@@ -1523,12 +1438,12 @@ mod tests {
         );
 
         // docs/54 §4.2：禁用相机必须说明"不参与选帧"。
-        entity.components.remove("Transform3D");
+        entity.components.remove("Transform");
         entity.components.insert(
-            "Camera3D".to_owned(),
-            "position=0,0,6;target=0,0,0;fov=60;near=0.1;far=100;enabled=false".to_owned(),
+            "Camera".to_owned(),
+            "projection=perspective;position=0,0,6;target=0,0,0;fov=60;near=0.1;far=100;enabled=false".to_owned(),
         );
-        let notes = component_notes(&entity, "Camera3D");
+        let notes = component_notes(&entity, "Camera");
         assert!(
             notes
                 .iter()
@@ -1539,15 +1454,28 @@ mod tests {
         // 无法解析的串：只给一条警告，不猜内容。
         entity
             .components
-            .insert("Camera3D".to_owned(), "position=oops".to_owned());
-        let notes = component_notes(&entity, "Camera3D");
+            .insert("Camera".to_owned(), "position=oops".to_owned());
+        let notes = component_notes(&entity, "Camera");
         assert_eq!(notes.len(), 1, "{notes:?}");
         assert!(notes[0].warning && notes[0].text.contains("无法解析"));
+
+        // 正交分支：同一个组件、按判别字段给出 2D 那套说明（不再有 `Camera2D` 组件名）。
+        let orthographic = entity_with(&[(
+            "Camera",
+            "projection=orthographic;center=640,360;zoom=2",
+        )]);
+        let notes = component_notes(&orthographic, "Camera");
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(
+            notes[0].text.contains("正交") && notes[0].text.contains("2.000"),
+            "{notes:?}"
+        );
+        assert!(!notes[0].warning);
 
         // 没有登记说明的组件 / 没有该组件的实体：空。
         assert!(component_notes(&entity, "Quad").is_empty());
         let empty = entity_with(&[("Quad", "size=8,8")]);
-        assert!(component_notes(&empty, "Camera3D").is_empty());
+        assert!(component_notes(&empty, "Camera").is_empty());
     }
 
     /// **引擎解析器兜底门**（第 24 轮）：schema 的字段规则通过、但引擎读不了的编辑必须被拒绝，
@@ -1556,27 +1484,37 @@ mod tests {
     #[test]
     fn edits_the_engine_cannot_read_are_rejected() {
         let scene = scene_with(&[(
-            "Camera3D",
-            "position=0,0,5;target=0,0,0;fov=90;near=0.1;far=100",
+            "Camera",
+            "projection=perspective;position=0,0,5;target=0,0,0;fov=90;near=0.1;far=100",
         )]);
         // 合法编辑：通过。
         assert!(
-            edit_component_field(&scene, SceneEntityId(1), "Camera3D", "fov", "60").is_ok_and(
+            edit_component_field(&scene, SceneEntityId(1), "Camera", "fov", "60").is_ok_and(
                 |updated| updated.is_some_and(|payload| payload.contains("fov=60.000000"))
             )
         );
         // `near >= far`：schema 只做类型校验，引擎解析器拒绝（`InvalidPerspective`）。
-        match edit_component_field(&scene, SceneEntityId(1), "Camera3D", "near", "500") {
+        match edit_component_field(&scene, SceneEntityId(1), "Camera", "near", "500") {
             Err(SchemaFieldError::EngineRejected { component, reason }) => {
-                assert_eq!(component, "Camera3D");
+                assert_eq!(component, "Camera");
                 assert!(!reason.is_empty(), "拒绝原因不能是空串");
             }
             other => panic!("near >= far 必须被引擎解析器拦下，实际 {other:?}"),
         }
         // 落点退化（position == target）同理。
-        match edit_component_field(&scene, SceneEntityId(1), "Camera3D", "target", "0,0,5") {
+        match edit_component_field(&scene, SceneEntityId(1), "Camera", "target", "0,0,5") {
             Err(SchemaFieldError::EngineRejected { .. }) => {}
             other => panic!("position == target 必须被拦下，实际 {other:?}"),
+        }
+        // 判别字段说"正交"，但字段体里没有正交必填的 `center`：schema 的并集表放行（可选），
+        // 由**引擎解析器**拦下——"哪种投影必须有哪些字段"只有一处定义（`CameraComponent`）。
+        let orthographic = scene_with(&[("Camera", "projection=orthographic;zoom=1")]);
+        match edit_component_field(&orthographic, SceneEntityId(1), "Camera", "zoom", "2") {
+            Err(SchemaFieldError::EngineRejected { component, reason }) => {
+                assert_eq!(component, "Camera");
+                assert!(!reason.is_empty(), "拒绝原因不能是空串");
+            }
+            other => panic!("缺 center 的正交相机必须被引擎解析器拦下，实际 {other:?}"),
         }
         // 引擎不认识的组件名（自定义/Lua 组件）不受这道门影响：没有 schema 就报 `NoSchema`，
         // 不会因为"引擎不认识"而被当成非法载荷（`validate_component_payload` 返回 `None`）。
@@ -1592,16 +1530,16 @@ mod tests {
     #[test]
     fn rejected_engine_edits_do_not_produce_a_new_payload() {
         let scene = scene_with(&[(
-            "Camera3D",
-            "position=0,0,5;target=0,0,0;fov=90;near=0.1;far=100",
+            "Camera",
+            "projection=perspective;position=0,0,5;target=0,0,0;fov=90;near=0.1;far=100",
         )]);
         assert!(matches!(
-            preview_field_edit(&scene, SceneEntityId(1), "Camera3D", "far", "0.05"),
+            preview_field_edit(&scene, SceneEntityId(1), "Camera", "far", "0.05"),
             Err(SchemaFieldError::EngineRejected { .. })
         ));
         // 与旧手写面板同级：`far <= near` 也不行。
         assert!(matches!(
-            preview_field_edit(&scene, SceneEntityId(1), "Camera3D", "far", "0.1"),
+            preview_field_edit(&scene, SceneEntityId(1), "Camera", "far", "0.1"),
             Err(SchemaFieldError::EngineRejected { .. })
         ));
     }
@@ -1642,14 +1580,17 @@ mod tests {
     fn driven_components_follow_the_declared_order_and_ignore_unknown_ones() {
         let entity = entity_with(&[
             ("ParticleEmitter", "count=8;speed=20;life=1;size=2;color=1,1,1,1"),
-            ("Transform", "x=1;y=2"),
-            ("Camera2D", "zoom=1"),
+            (
+                "Transform",
+                "position=1,2,0;rotation=0,0,0,1;scale=1,1,1",
+            ),
+            ("Camera", "projection=orthographic;center=0,0;zoom=1"),
         ]);
         // `Transform` 已在第 36 轮迁到通用编辑器，因此它现在**在**接管集合里；
         // 手写面板的组件（如 `Container`）与未知组件仍然不出现。
         assert_eq!(
             driven_components(&entity),
-            vec!["Camera2D", "ParticleEmitter", "Transform"]
+            vec!["Camera", "ParticleEmitter", "Transform"]
         );
         assert!(rows_for_component(&entity, "Container").is_none());
         assert!(rows_for_component(&entity, "Nope").is_none());
@@ -1683,30 +1624,36 @@ mod tests {
         );
         // 类型等价但格式不同（`1` vs `1.000000`）：`write_field` 做类型归一比较，
         // 因此这里也必须是"无变化"，否则每次失焦提交都会多出一条历史。
-        let scene2 = scene_with(&[("Camera2D", "center=0,0;zoom=1.000000")]);
+        let scene2 = scene_with(&[(
+            "Camera",
+            "projection=orthographic;center=0,0;zoom=1.000000",
+        )]);
         assert_eq!(
-            edit_component_field(&scene2, SceneEntityId(1), "Camera2D", "zoom", "1").expect("ok"),
+            edit_component_field(&scene2, SceneEntityId(1), "Camera", "zoom", "1").expect("ok"),
             None
         );
     }
 
     /// 现有组件串本身不满足 schema 时，报错必须指向**整串**问题，而不是用户正在改的字段。
     ///
-    /// `write_field` 要先整串解析才能比较当前值，因此缺必填字段的旧串原本会以
-    /// "字段 center 取值非法：required field is missing" 冒出来——用户改的是 `zoom`，
-    /// 这条消息会把人带到错误的字段上。
+    /// `write_field` 要先整串解析才能比较当前值，因此"坏字段在别处"的串会以那个字段的
+    /// 名字冒出来——用户改的是 `pivot`，消息却指向 `anchors`，这正是把人带到错误字段上的形态。
+    ///
+    /// 注意**统一 `Camera` 不在这条路上**：它的字段表刻意宽松（`center`/`position` 等都可选），
+    /// "哪种投影必须有哪些字段"由引擎解析器强制，因此缺 `center` 得到的是
+    /// `EngineRejected`（见 `edits_the_engine_cannot_read_are_rejected`）。
     #[test]
     fn unparsable_payload_is_reported_as_a_payload_problem() {
-        let scene = scene_with(&[("Camera2D", "zoom=1")]);
-        match edit_component_field(&scene, SceneEntityId(1), "Camera2D", "zoom", "2") {
+        let scene = scene_with(&[("UiLayout", "anchors=1,2,3;offsets=0,0,0,0")]);
+        match edit_component_field(&scene, SceneEntityId(1), "UiLayout", "pivot", "0.5,0.5") {
             Err(SchemaFieldError::PayloadUnparsable {
                 component,
                 field,
                 reason,
             }) => {
-                assert_eq!(component, "Camera2D");
-                assert_eq!(field, "center");
-                assert!(reason.contains("required"), "{reason}");
+                assert_eq!(component, "UiLayout");
+                assert_eq!(field, "anchors", "指出的是整串里出问题的那个字段");
+                assert!(!reason.is_empty(), "{reason}");
             }
             other => panic!("expected PayloadUnparsable, got {other:?}"),
         }
@@ -1755,7 +1702,7 @@ mod tests {
     /// 且"把读到的原文再提交一次"必须是无变化（幂等）——这条同时守住"场景格式不变"。
     ///
     /// 诚实边界：仓库里的示例工程 `examples/game_jhyt` **没有任何**这六个组件
-    /// （`Camera2D/Quad/RenderMode/Visibility/EntityScript/Particle` 全为 0 次命中），
+    /// （`Camera/Quad/RenderMode/Visibility/Script/Particle` 全为 0 次命中），
     /// 所以真实工程证据不存在，这里用引擎自己的 `Scene::save`/`Scene::load` 做往返。
     #[test]
     fn driven_components_survive_a_scene_save_load_round_trip() {
@@ -1766,9 +1713,10 @@ mod tests {
         scene.add_entity(SceneEntityId(1), "E", None).unwrap();
         {
             let entity = scene.entities.get_mut(&SceneEntityId(1)).unwrap();
-            entity
-                .components
-                .insert("Camera2D".to_owned(), "center=0,0;zoom=1.5".to_owned());
+            entity.components.insert(
+                "Camera".to_owned(),
+                "projection=orthographic;center=0,0;zoom=1.5".to_owned(),
+            );
             entity
                 .components
                 .insert("Quad".to_owned(), "size=64,32;color=1,1,1,1".to_owned());
@@ -1793,7 +1741,7 @@ mod tests {
         assert_eq!(
             driven_components(entity),
             vec![
-                "Camera2D",
+                "Camera",
                 "ParticleEmitter",
                 "Quad",
                 "RenderMode",
@@ -1812,7 +1760,7 @@ mod tests {
         assert!(!rows.is_empty());
         for row in &rows {
             if !row.present {
-                // 可选字段可以合法缺省（`Camera2D.rotation` 等）：缺省就没有"原文"可提交。
+                // 可选字段可以合法缺省（`Camera.rotation` 等）：缺省就没有"原文"可提交。
                 assert!(
                     !row.required,
                     "{}.{} 是必填字段，保存/加载后必须仍然在场",

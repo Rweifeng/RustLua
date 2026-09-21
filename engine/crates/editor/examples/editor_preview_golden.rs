@@ -71,7 +71,7 @@ fn main() {
                     .ok_or_else(|| "child entity missing".to_owned())?;
                 entity.components.insert(
                     "Transform".into(),
-                    document_space::encode_transform_2d(*local),
+                    document_space::encode_transform(*local),
                 );
                 Ok(())
             },
@@ -248,7 +248,7 @@ fn main() {
 /// 一份带父子关系的可编辑文档：父（Rig）有非单位缩放，子（Part）挂在它下面。
 ///
 /// 刻意用非单位父缩放：世界保持的编辑只有在"把父变换正确反解掉"时才成立，父为单位阵时
-/// 这条断言会退化成"什么都没检验"。用 2D 组件（`Transform` + `Sprite` + `Camera2D`），
+/// 这条断言会退化成"什么都没检验"。用 2D 内容（`Transform` + `Sprite` + 正交 `Camera`），
 /// 因为这是编辑器场景视图最常见的预览形态（世界内容也真的会被画出来）。
 fn editable_document() -> (SceneDocument, SceneEntityId, SceneEntityId) {
     let mut scene = Scene::new("editor-preview-golden");
@@ -261,12 +261,12 @@ fn editable_document() -> (SceneDocument, SceneEntityId, SceneEntityId) {
     scene.add_entity(part, "Part", Some(rig)).unwrap();
     scene.entities.get_mut(&rig).unwrap().components.insert(
         "Transform".into(),
-        "x=10;y=0;rotation=0;scale_x=2;scale_y=2".into(),
+        "position=10,0,0;rotation=0,0,0,1;scale=2,2,1".into(),
     );
     // 子实体的局部值 = 反解出来的结果（世界 12,0 ⇒ 局部 1,0）。
     scene.entities.get_mut(&part).unwrap().components.insert(
         "Transform".into(),
-        "x=1;y=0;rotation=0;scale_x=1;scale_y=1".into(),
+        "position=1,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
     );
     scene.entities.get_mut(&part).unwrap().components.insert(
         "Sprite".into(),
@@ -274,12 +274,12 @@ fn editable_document() -> (SceneDocument, SceneEntityId, SceneEntityId) {
          tint=1.000,1.000,1.000,1.000;sorting_layer=default;order=0"
             .into(),
     );
-    // 2D 相机：让预览把世界内容画到画面中央（与编辑器场景视图同一套初始相机）。
+    // 正交相机（统一 `Camera`）：让预览把世界内容画到画面中央（与编辑器场景视图同一套初始相机）。
     let camera = SceneEntityId(3);
-    scene.add_entity(camera, "Camera2D", None).unwrap();
+    scene.add_entity(camera, "OrthographicCamera", None).unwrap();
     scene.entities.get_mut(&camera).unwrap().components.insert(
-        "Camera2D".into(),
-        "center=12.0000,0.0000;zoom=64.000000".into(),
+        "Camera".into(),
+        "projection=orthographic;center=12.0000,0.0000;zoom=64.000000".into(),
     );
     let mut document = SceneDocument::new_scene("editor-preview-golden");
     document.scene = scene;

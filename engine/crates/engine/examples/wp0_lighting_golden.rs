@@ -206,7 +206,7 @@ fn render_scene(
         ),
     );
     scene.entities.get_mut(&ground).unwrap().components.insert(
-        "Transform3D".into(),
+        "Transform".into(),
         "position=0,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
     );
     scene
@@ -220,7 +220,7 @@ fn render_scene(
     // 注意三个轴都要缩：`__ground_plane__` 是 ±4 的 XZ 面，只缩 x/y 会留下 ±4 的 z 向长条
     // （本轮踩到过：遮挡物变成 2×8 的带子，它的影子被自己挡住一大半，量到的"阴影足迹"完全对不上）。
     scene.entities.get_mut(&caster).unwrap().components.insert(
-        "Transform3D".into(),
+        "Transform".into(),
         format!("position=0,{CASTER_HEIGHT},0;rotation=0,0,0,1;scale=0.25,0.25,0.25"),
     );
     scene
@@ -232,8 +232,8 @@ fn render_scene(
     // 相机在地面上方俯视：demo3d 的相机与地面同高，地面在画面里是**边缘朝向**的，
     // 因此那个场景本来就看不到"地面被照亮/被遮暗"。
     scene.entities.get_mut(&camera).unwrap().components.insert(
-        "Camera3D".into(),
-        "position=0,3,6;target=0,0,0;fov=60;near=0.1;far=100".into(),
+        "Camera".into(),
+        "projection=perspective;position=0,3,6;target=0,0,0;fov=60;near=0.1;far=100".into(),
     );
 
     let mut runtime = RuntimeScene::from_scene_edit(Some(root), scene).expect("lighting runtime");

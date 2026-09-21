@@ -209,6 +209,53 @@ mod tests {
         path
     }
 
+    /// **未迁移数据的负控门**（第 57 轮统一之后）：审计必须把"旧组件名"与"旧 2D 载荷形态"
+    /// 分别点出来——这正是外部老工程在删掉自动迁移之后**唯一**的发现通道，也是仓库内示例
+    /// 数据的常驻门（`slime_*.prefab` 那次漏迁就是靠它现形的）。
+    ///
+    /// 两类信号的形状不同，必须都断：旧名 ⇒ `component_no_schema`（unknown，不报 schema_error）；
+    /// 旧形态 ⇒ `schema_error`（统一字段表里没有 `x` 这个键）。
+    #[test]
+    fn un_migrated_legacy_names_and_shapes_are_reported() {
+        let root = temp_root("legacy");
+        write_scene(
+            &root,
+            "legacy",
+            &[
+                // 旧名：引擎不再认识它，因此进 unknown 明细。
+                (
+                    "Transform3D",
+                    "position=0,0,0;rotation=0,0,0,1;scale=1,1,1",
+                ),
+                // 旧形态：名字对、载荷是 2D 那套 —— 必须报 schema_error。
+                ("Transform", "x=1;y=2;rotation=0;scale_x=1;scale_y=1"),
+                ("Camera2D", "center=0,0;zoom=1"),
+            ],
+        );
+        let audit = audit_project(&root).expect("audit runs");
+        assert_eq!(audit.unknown.get("Transform3D"), Some(&1), "{audit:?}");
+        assert_eq!(audit.unknown.get("Camera2D"), Some(&1), "{audit:?}");
+        assert_eq!(audit.findings.len(), 1, "{:?}", audit.findings);
+        let finding = &audit.findings[0];
+        assert_eq!(finding.component, "Transform");
+        // 报的是**旧形态里的那个键**（`x` 不在统一字段表里），因此用户一眼能看出是旧写法。
+        assert_eq!(finding.field, "x", "{finding:?}");
+        assert!(
+            finding.reason.contains("unknown field"),
+            "原因要指出这是不认识的字段：{finding:?}"
+        );
+        assert!(!audit.is_clean());
+        let lines = audit.report_lines();
+        assert!(lines[0].contains("schema_errors=1"), "{lines:?}");
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("component_no_schema component=Transform3D")),
+            "{lines:?}"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn clean_project_reports_zero_errors() {
         let root = temp_root("clean");
@@ -216,7 +263,10 @@ mod tests {
             &root,
             "main",
             &[
-                ("Transform", "x=0;y=0;rotation=0;scale_x=1;scale_y=1"),
+                (
+                    "Transform",
+                    "position=0,0,0;rotation=0,0,0,1;scale=1,1,1",
+                ),
                 (
                     "Sprite",
                     "texture=a.png;size=16x16;pivot=0.5,0.5;tint=1,1,1,1;sorting_layer=default;order=0",
@@ -272,7 +322,10 @@ mod tests {
             "custom",
             &[
                 ("MyCustomThing", "whatever=1"),
-                ("Transform", "x=0;y=0;rotation=0;scale_x=1;scale_y=1"),
+                (
+                    "Transform",
+                    "position=0,0,0;rotation=0,0,0,1;scale=1,1,1",
+                ),
             ],
         );
         let audit = audit_project(&root).expect("audit runs");

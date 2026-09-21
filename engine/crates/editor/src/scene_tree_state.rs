@@ -539,7 +539,10 @@ mod tests {
             .get_mut(&source_id)
             .unwrap()
             .components
-            .insert("Transform".into(), "x=1".into());
+            .insert(
+                "Transform".into(),
+                "position=1,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
+            );
         let source = document.scene.entities[&source_id].clone();
 
         let copy_id = tree
@@ -552,7 +555,7 @@ mod tests {
         assert_eq!(document.scene.entities[&copy_id].parent, None);
         assert_eq!(
             document.scene.entities[&copy_id].components["Transform"],
-            "x=1"
+            "position=1,0,0;rotation=0,0,0,1;scale=1,1,1"
         );
         assert_eq!(
             document.scene.entities[&copied_child_id].parent,

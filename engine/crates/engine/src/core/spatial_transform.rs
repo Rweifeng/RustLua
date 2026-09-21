@@ -19,6 +19,9 @@ pub struct LocalTransform {
     pub scale: Vec3,
 }
 
+/// **唯一的变换组件名**：场景/Prefab 里 2D 与 3D 实体写的都是这一个名字。
+pub const TRANSFORM_COMPONENT: &str = "Transform";
+
 impl LocalTransform {
     pub const fn identity() -> Self {
         Self {
@@ -44,20 +47,35 @@ impl LocalTransform {
         }
     }
 
-    /// **统一 `Transform` 组件**的读取器：接受两种历史写法（第 52 轮）。
+    /// **统一 `Transform` 的 2D 视图**：位置取 xy、旋转取绕 Z 的角度、缩放取 xy。
     ///
-    /// - 统一/3D 写法：`position=x,y,z;rotation=rx,ry,rz,rw;scale=sx,sy,sz`；
-    /// - 2D 旧写法：`x=..;y=..;rotation=..;scale_x=..;scale_y=..`（按 [`Self::from_2d`] 映射，
-    ///   `z=0`、绕 Z 的四元数、`scale_z=1`）。
-    ///
-    /// 先试 3D、再试 2D：两种写法的键集合不相交（`position` vs `x`），所以顺序不影响判定；
-    /// 真正畸形的串两边都失败，返回**底层解析器的原文**（不在这里发明新错误文案）。
-    pub fn from_unified_component_str(value: &str) -> Result<Self, String> {
-        if let Ok(transform) = Transform3D::from_component_str(value) {
-            return Ok(Self::from_3d(transform));
+    /// 给 2D 消费者的唯一入口（2D 渲染、2D 拖拽、2D 物理都用它）：统一后的组件是 3D 表示，
+    /// 而 2D 语义（`x/y/rotation/scale_x/scale_y`）由这里投影出来，**2D 代码不必知道 3D 形态**。
+    /// 旋转按 `2*atan2(z, w)` 取 Z 分量：对"绕 Z 旋转"的载荷是精确的，对一般四元数是投影。
+    #[must_use]
+    pub fn to_2d(self) -> Transform {
+        Transform {
+            position: crate::core::transform::Vec2::new(self.translation.x, self.translation.y),
+            rotation: 2.0 * self.rotation.z.atan2(self.rotation.w),
+            scale: crate::core::transform::Vec2::new(self.scale.x, self.scale.y),
         }
-        let legacy = Transform::from_component_str(value).map_err(|error| error.to_string())?;
-        Self::from_2d(legacy).map_err(|error| error.to_string())
+    }
+
+    /// 读 `Transform` 组件并给出 **2D 视图**（2D 便利 API 的唯一入口）；畸形串返回 `None`。
+    #[must_use]
+    pub fn transform_2d_from_component_str(raw: &str) -> Option<Transform> {
+        Self::from_unified_component_str(raw).ok().map(Self::to_2d)
+    }
+
+    /// `Transform` 组件的读取器：**唯一形态**是 `position=x,y,z;rotation=rx,ry,rz,rw;scale=sx,sy,sz`
+    /// （直接委托 [`Transform3D::from_component_str`]，数字与报错文案只有那一份实现）。
+    ///
+    /// 2D 与 3D 实体用的是同一个组件、同一个形态：空间差别由实体携带的其它组件推断
+    /// （见 [`entity_space`]），2D 消费者用 [`Self::to_2d`] 把统一形态投影成平面 TRS。
+    pub fn from_unified_component_str(value: &str) -> Result<Self, String> {
+        Transform3D::from_component_str(value)
+            .map(Self::from_3d)
+            .map_err(|error| error.to_string())
     }
 
     /// 统一 `Transform` 组件的**规范写法**（3D 形态）。
@@ -865,7 +883,7 @@ pub fn migrate_v2_hierarchy(scene: &Scene) -> (TransformTree, MigrationReport) {
     // 局部空间解释"，而真实场景里 2D 实体占多数，只看 3D 会把它们全当成"无变换"跳过。
     let mut world = BTreeMap::new();
     for entity in scene.entities.values() {
-        let Some((_, local)) = scene_entity_local(entity) else {
+        let Some(local) = scene_entity_local(entity) else {
             report.skipped.push(entity.id);
             continue;
         };
@@ -928,13 +946,13 @@ pub fn migrate_scene_to_local_space(scene: &Scene) -> (SpatialMigration, Migrati
     let mut migrated = SpatialMigration::default();
     // v2 下每个实体的世界矩阵就是它自己的 TRS（局部=世界），这是"保持世界位置"的基准。
     let mut world: BTreeMap<SceneEntityId, Mat4> = BTreeMap::new();
-    let mut spaces: BTreeMap<SceneEntityId, SpatialKind> = BTreeMap::new();
+    let mut locals: BTreeMap<SceneEntityId, LocalTransform> = BTreeMap::new();
     for entity in scene.entities.values() {
         match scene_entity_local(entity) {
-            Some((kind, local)) => match local.matrix() {
+            Some(local) => match local.matrix() {
                 Ok(matrix) => {
                     world.insert(entity.id, matrix);
-                    spaces.insert(entity.id, kind);
+                    locals.insert(entity.id, local);
                 }
                 Err(_) => report.skipped.push(entity.id),
             },
@@ -945,48 +963,35 @@ pub fn migrate_scene_to_local_space(scene: &Scene) -> (SpatialMigration, Migrati
         let Some(&own_world) = world.get(&entity.id) else {
             continue;
         };
-        let kind = spaces[&entity.id];
         // 保持世界位置的两种结果：建继承（局部 = 父世界的逆 × 自己世界）或保持为根。
-        let keep_as_root =
-            |migrated: &mut SpatialMigration, report: &mut MigrationReport| match encode_local(
-                kind, own_world,
-            ) {
-                Some(encoded) => {
-                    migrated.locals.insert(entity.id, encoded);
-                }
-                None => report.skipped.push(entity.id),
-            };
+        // 保持为根时局部值就是原值（v2 的"局部=世界"），因此直接回写、不重新分解。
+        let own_local = locals[&entity.id];
+        let keep_as_root = |migrated: &mut SpatialMigration| {
+            migrated
+                .locals
+                .insert(entity.id, encode_local(own_local));
+        };
         let Some(parent) = entity.parent else {
-            keep_as_root(&mut migrated, &mut report);
+            keep_as_root(&mut migrated);
             report.roots.push(entity.id);
             continue;
         };
         let Some(&parent_world) = world.get(&parent) else {
             // 父节点没有可用的变换：保持组织关系但不建立空间继承，世界位置不变。
-            keep_as_root(&mut migrated, &mut report);
+            keep_as_root(&mut migrated);
             report.skipped.push(entity.id);
             continue;
         };
         match GlobalTransform::from_matrix(own_world)
             .local_relative_to(Some(GlobalTransform::from_matrix(parent_world)))
         {
-            Ok(local) => match encode_local_checked(kind, local) {
-                Some(encoded) => {
-                    migrated.locals.insert(entity.id, encoded);
-                    report.converted.push(entity.id);
-                }
-                None => {
-                    // 拒绝（含 2D 压不平）：保持为根，并**清掉 parent**，否则新语义下世界位置会变。
-                    keep_as_root(&mut migrated, &mut report);
-                    report.refused.push((
-                        entity.id,
-                        MigrationRefusal::NotRepresentable(DecomposeError::Shear { amount: 0.0 }),
-                    ));
-                    migrated.detached.push(entity.id);
-                }
-            },
+            Ok(local) => {
+                migrated.locals.insert(entity.id, encode_local(local));
+                report.converted.push(entity.id);
+            }
             Err(error) => {
-                keep_as_root(&mut migrated, &mut report);
+                // 拒绝：保持为根，并**清掉 parent**，否则新语义下世界位置会变。
+                keep_as_root(&mut migrated);
                 report
                     .refused
                     .push((entity.id, MigrationRefusal::NotRepresentable(error)));
@@ -997,7 +1002,7 @@ pub fn migrate_scene_to_local_space(scene: &Scene) -> (SpatialMigration, Migrati
     (migrated, report)
 }
 
-/// 实体属于哪种空间（用于选择写回的组件串格式）。
+/// 实体属于哪种空间（统一 `Transform` 之后由实体携带的其它组件推断，见 [`entity_space`]）。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SpatialKind {
     TwoD,
@@ -1014,46 +1019,57 @@ pub struct SpatialMigration {
     pub detached: Vec<SceneEntityId>,
 }
 
-/// 读取实体的局部变换（2D 优先，其次 3D）。两种都没有时返回 `None`。
+/// 读取实体的局部变换（统一 `Transform`）。没有组件或载荷非法时返回 `None`。
 pub(crate) fn scene_entity_local(
     entity: &crate::core::scene::SceneEntity,
-) -> Option<(SpatialKind, LocalTransform)> {
-    if let Some(raw) = entity.components.get("Transform")
-        && let Ok(transform) = Transform::from_component_str(raw)
-        && let Ok(local) = LocalTransform::from_2d(transform)
-    {
-        return Some((SpatialKind::TwoD, local));
-    }
-    if let Some(raw) = entity.components.get("Transform3D")
-        && let Ok(transform) = Transform3D::from_component_str(raw)
-    {
-        return Some((SpatialKind::ThreeD, LocalTransform::from_3d(transform)));
-    }
-    None
+) -> Option<LocalTransform> {
+    LocalTransform::from_unified_component_str(entity.components.get(TRANSFORM_COMPONENT)?).ok()
 }
 
-/// 把世界矩阵编成该空间的组件串；矩阵不可分解时返回 `None`（调用方按跳过/拒绝处理）。
-fn encode_local(kind: SpatialKind, matrix: Mat4) -> Option<String> {
-    let local = LocalTransform::from_matrix(matrix).ok()?;
-    encode_local_checked(kind, local)
+/// **3D 专属组件**：实体带其中任意一个，就判定它属于 3D 空间（见 [`entity_space`]）。
+///
+/// 判据必须**数据可验证**，不能是"看起来对"的猜测：仓库内两个示例工程在去掉旧名之前，
+/// 每个带 `Transform3D` 的实体都恰好带这里列出的某一个（一次性迁移工具在改名之前逐实体断言过，
+/// 见 docs/56 §3.52），所以"旧 3D 名"与"带 3D 专属组件"在真实数据上是同一个划分。
+pub const THREE_D_MARKERS: &[&str] = &["MeshRenderer", "Animation3D", "Collider3d", "Light"];
+
+/// 实体的**空间种类**：统一 `Transform` 之后磁盘上不再有"2D 名 / 3D 名"可依据，
+/// 所以由实体携带的**其它组件**推断。
+///
+/// 规则（顺序固定，全部写在 [`THREE_D_MARKERS`] 与这里）：
+/// 1. 带任一 3D 专属组件 ⇒ [`SpatialKind::ThreeD`]；
+/// 2. 带**透视**相机（统一 `Camera` 的 `projection=perspective`）⇒ [`SpatialKind::ThreeD`]；
+/// 3. 其余一律 [`SpatialKind::TwoD`]——2D 是历史默认（`Transform` 从来就是 2D 的名字）。
+///
+/// **已知边界**（诚实记录）：一个"既没有 3D 专属组件、又要 3D 变换"的实体会落到 2D 空间。
+/// 现有示例工程里不存在这种实体（3D 画面全都由 `MeshRenderer`/`Light`/`Animation3D` 产生）。
+/// 反向的误判不会发生：2D 实体带上 `Light` 之类的组件在本引擎里本身就是矛盾数据。
+#[must_use]
+pub fn entity_space(components: &BTreeMap<String, String>) -> SpatialKind {
+    if THREE_D_MARKERS
+        .iter()
+        .any(|name| components.contains_key(*name))
+    {
+        return SpatialKind::ThreeD;
+    }
+    let perspective = components
+        .get(crate::core::camera::CAMERA_COMPONENT)
+        .and_then(|raw| {
+            crate::core::camera::CameraComponent::from_component_str(raw).ok()
+        })
+        .is_some_and(|camera| {
+            camera.projection() == crate::core::camera::CameraProjection::Perspective
+        });
+    if perspective {
+        SpatialKind::ThreeD
+    } else {
+        SpatialKind::TwoD
+    }
 }
 
-/// 把已分解的局部变换编成该空间的组件串；2D 空间要求平面（z 位移/缩放为 1、旋转只绕 Z）。
-fn encode_local_checked(kind: SpatialKind, local: LocalTransform) -> Option<String> {
-    match kind {
-        SpatialKind::ThreeD => Some(
-            Transform3D {
-                position: local.translation,
-                rotation: local.rotation,
-                scale: local.scale,
-            }
-            .to_component_str(),
-        ),
-        SpatialKind::TwoD => {
-            let flat = plane_local(local)?;
-            Some(flat.to_component_str())
-        }
-    }
+/// 把已分解的局部变换编成**唯一的**组件串（统一 3D 形态）。
+fn encode_local(local: LocalTransform) -> String {
+    local.to_unified_component_str()
 }
 
 /// 3D 局部变换 → 2D `Transform`：只有真正落在 XY 平面上时才成立（z 位移为 0、z 缩放为 1、
@@ -1078,27 +1094,111 @@ mod tests {
         }
     }
 
-    /// **统一 `Transform` 的读侧**（第 52 轮）：同一份实现吃两种历史写法，写法 3D 时只做规范化。
+    /// **空间推断规则**（第 57 轮）：统一 `Transform` 之后磁盘上不再有"2D 名 / 3D 名"，
+    /// 2D/3D 由实体携带的**其它组件**推断（[`entity_space`]）。这条把规则表逐条钉住：
+    ///
+    /// - 任一 3D 专属组件（[`THREE_D_MARKERS`]）⇒ 3D；
+    /// - 透视 `Camera` ⇒ 3D；正交 `Camera` ⇒ 2D；
+    /// - 其余（含"只有 `Transform`"）⇒ 2D。
+    ///
+    /// **为什么可信**：仓库内两个示例工程在改名之前，每个 `Transform3D` 实体都恰好带某个
+    /// 3D 专属组件（一次性迁移工具在改名之前逐实体断言过，见 docs/56 §3.52），所以
+    /// "旧 3D 名"与"带 3D 专属组件"在真实数据上是**同一个划分**。
     #[test]
-    fn unified_transform_reader_accepts_both_historical_shapes() {
-        // 3D 写法：位置/四元数/缩放原样读入。
+    fn entity_space_is_inferred_from_the_other_components() {
+        let components = |pairs: &[(&str, &str)]| -> BTreeMap<String, String> {
+            pairs
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+                .collect()
+        };
+        let transform = "position=1,2,3;rotation=0,0,0,1;scale=1,1,1";
+        // 标记表**逐字**断言：删掉/替换其中一条（例如把 `MeshRenderer` 移出）必须判红，
+        // 否则"规则表"就只是测试自己引用的一个常量，改它不会有人发现。
+        assert_eq!(
+            THREE_D_MARKERS,
+            &["MeshRenderer", "Animation3D", "Collider3d", "Light"]
+        );
+        // 只有变换 ⇒ 2D（历史默认）。
+        assert_eq!(
+            entity_space(&components(&[("Transform", transform)])),
+            SpatialKind::TwoD
+        );
+        // 任一 3D 专属组件 ⇒ 3D（逐个断言，标记表被删空一条就会红）。
+        for marker in THREE_D_MARKERS {
+            assert_eq!(
+                entity_space(&components(&[("Transform", transform), (marker, "x=1")])),
+                SpatialKind::ThreeD,
+                "{marker} 必须是 3D 专属标记"
+            );
+        }
+        // 2D 专属组件**不**改变判定（默认就是 2D，它们只是佐证）。
+        for marker in ["Sprite", "Quad", "Tilemap", "UiLayout", "Text", "Collider"] {
+            assert_eq!(
+                entity_space(&components(&[("Transform", transform), (marker, "x=1")])),
+                SpatialKind::TwoD,
+                "{marker} 不该把实体判成 3D"
+            );
+        }
+        // 相机的**投影判别字段**决定空间（不是组件名）。
+        assert_eq!(
+            entity_space(&components(&[(
+                "Camera",
+                "projection=perspective;position=0,0,5;target=0,0,0;fov=60;near=0.1;far=100"
+            )])),
+            SpatialKind::ThreeD
+        );
+        assert_eq!(
+            entity_space(&components(&[(
+                "Camera",
+                "projection=orthographic;center=0,0;zoom=1"
+            )])),
+            SpatialKind::TwoD
+        );
+        // 坏的相机载荷**不**把实体拖进 3D（推断不出来就按默认 2D；载荷本身由各自路径报错）。
+        assert_eq!(
+            entity_space(&components(&[("Camera", "position=oops")])),
+            SpatialKind::TwoD
+        );
+    }
+
+    /// **统一 `Transform` 的读侧**（第 52 轮）：只有**一种**形态，即
+    /// `position=x,y,z;rotation=rx,ry,rz,rw;scale=sx,sy,sz`。
+    ///
+    /// 收敛前读侧还兼收 2D 旧写法（`x=..;y=..;rotation=..;scale_x=..;scale_y=..`）；旧名与旧形态
+    /// 删除之后，那条通路必须**同时**关闭，否则"某个 2D 实体悄悄写旧形态"会重新变得可读。
+    #[test]
+    fn unified_transform_reader_accepts_only_the_canonical_shape() {
+        // 统一写法：位置/四元数/缩放原样读入。
         let three_d = Transform3D {
             position: Vec3::new(1.0, 2.0, 3.0),
             rotation: Quat::from_axis_angle(Vec3::Y, 0.5).expect("四元数"),
             scale: Vec3::new(2.0, 2.0, 2.0),
         }
         .to_component_str();
-        let parsed = LocalTransform::from_unified_component_str(&three_d).expect("3D 写法可读");
+        let parsed = LocalTransform::from_unified_component_str(&three_d).expect("统一写法可读");
         assert_eq!(parsed, LocalTransform::from_3d(Transform3D::from_component_str(&three_d).unwrap()));
         assert_eq!(parsed.to_unified_component_str(), three_d, "规范化后逐字节相同");
 
-        // 2D 旧写法：映射与 `from_2d` 完全一致（渲染路径用的就是它）。
-        let legacy = "x=3.000000000;y=-4.000000000;rotation=1.570796327;scale_x=2.000000000;scale_y=0.500000000";
-        let parsed = LocalTransform::from_unified_component_str(legacy).expect("2D 旧写法可读");
-        let expected = LocalTransform::from_2d(Transform::from_component_str(legacy).unwrap()).unwrap();
-        assert_eq!(parsed, expected);
-        assert_eq!(parsed.translation, Vec3::new(3.0, -4.0, 0.0));
-        assert_eq!(parsed.scale, Vec3::new(2.0, 0.5, 1.0));
+        // 2D 消费者的唯一入口是 `to_2d` 投影：绕 Z 的旋转还原成平面角度、缩放取 xy。
+        let quarter_turn = std::f32::consts::FRAC_PI_2;
+        let planar = LocalTransform::from_unified_component_str(
+            &Transform3D {
+                position: Vec3::new(3.0, -4.0, 0.0),
+                rotation: Quat::from_axis_angle(Vec3::Z, quarter_turn).expect("四元数"),
+                scale: Vec3::new(2.0, 0.5, 1.0),
+            }
+            .to_component_str(),
+        )
+        .expect("统一写法可读");
+        let planar_2d = planar.to_2d();
+        assert_eq!(planar_2d.position, crate::core::transform::Vec2::new(3.0, -4.0));
+        assert_eq!(planar_2d.scale, crate::core::transform::Vec2::new(2.0, 0.5));
+        assert!(
+            (planar_2d.rotation - quarter_turn).abs() < 1e-5,
+            "{}",
+            planar_2d.rotation
+        );
 
         // 读→写→读 稳定（编辑器保存出去的统一写法，再读回来必须一样）。
         let canonical = parsed.to_unified_component_str();
@@ -1106,11 +1206,19 @@ mod tests {
             LocalTransform::from_unified_component_str(&canonical).expect("统一写法可读"),
             parsed
         );
-        // 畸形串两边都失败，返回底层解析器的原文，不在这里发明新文案。
+        // 2D 旧写法已随旧名一起删除：读侧必须拒绝它（不再有"两种历史写法"这回事）。
+        assert!(
+            LocalTransform::from_unified_component_str(
+                "x=3.000000000;y=-4.000000000;rotation=1.570796327;scale_x=2.000000000;scale_y=0.500000000"
+            )
+            .is_err(),
+            "2D 旧形态已不存在，读侧必须拒绝"
+        );
+        // 畸形串一律失败，返回底层解析器的原文，不在这里发明新文案。
         assert!(LocalTransform::from_unified_component_str("x=oops").is_err());
         assert!(
             LocalTransform::from_unified_component_str("position=1,2").is_err(),
-            "缺字段的 3D 串必须被拒"
+            "缺字段的统一串必须被拒"
         );
         assert!(LocalTransform::from_unified_component_str("").is_err());
     }
@@ -1493,7 +1601,7 @@ mod tests {
         );
     }
 
-    /// 旧新对拍：项目里每个真实 `Transform3D` 经统一表示产出的矩阵，必须与旧
+    /// 对拍：项目里每个真实 3D 实体的统一 `Transform` 经统一表示产出的矩阵，必须与
     /// `Transform3D::model_matrix()` 逐元素一致——统一空间不得改变既有 3D 画面。
     #[test]
     fn unified_matrix_matches_legacy_model_matrix_on_project_scenes() {
@@ -1512,10 +1620,14 @@ mod tests {
                 }
                 let scene = Scene::load(&path).expect("load scene");
                 for entity in scene.entities.values() {
-                    let Some(raw) = entity.components.get("Transform3D") else {
+                    // 3D 实体 = 承载 3D 专属组件（或透视相机）的实体，见 `entity_space`。
+                    if entity_space(&entity.components) != SpatialKind::ThreeD {
+                        continue;
+                    }
+                    let Some(raw) = entity.components.get(TRANSFORM_COMPONENT) else {
                         continue;
                     };
-                    let legacy = Transform3D::from_component_str(raw).expect("parse Transform3D");
+                    let legacy = Transform3D::from_component_str(raw).expect("parse Transform");
                     let legacy_matrix = legacy.model_matrix().expect("legacy model matrix");
                     let unified_matrix = LocalTransform::from_3d(legacy)
                         .matrix()
@@ -1538,11 +1650,11 @@ mod tests {
         }
         assert!(
             checked >= 3,
-            "应至少覆盖 3D 场景的 Transform3D，实际 {checked}"
+            "应至少覆盖 3D 场景的 Transform，实际 {checked}"
         );
     }
 
-    fn scene_with_transform3d(name: &str, entries: &[(u64, Option<u64>, &str)]) -> Scene {
+    fn scene_with_transform(name: &str, entries: &[(u64, Option<u64>, &str)]) -> Scene {
         let mut scene = Scene::new(name);
         for (id, parent, transform) in entries {
             scene
@@ -1557,7 +1669,7 @@ mod tests {
                 .get_mut(&SceneEntityId(*id))
                 .expect("entity")
                 .components
-                .insert("Transform3D".into(), (*transform).to_owned());
+                .insert(TRANSFORM_COMPONENT.into(), (*transform).to_owned());
         }
         scene
     }
@@ -1566,7 +1678,7 @@ mod tests {
     /// 后者会把子实体从 x=3 搬到 x=16——正是 docs/40 §3 WP2 禁止的语义漂移。
     #[test]
     fn migration_keeps_world_positions_instead_of_treating_parent_as_local() {
-        let scene = scene_with_transform3d(
+        let scene = scene_with_transform(
             "migrate",
             &[
                 (1, None, "position=10,0,0;rotation=0,0,0,1;scale=2,2,2"),
@@ -1593,7 +1705,7 @@ mod tests {
     /// 无法无损表达时拒绝迁移，并保持实体为根——世界位置同样不变。
     #[test]
     fn migration_refuses_shear_and_keeps_world_position() {
-        let scene = scene_with_transform3d(
+        let scene = scene_with_transform(
             "shear",
             &[
                 (1, None, "position=0,0,0;rotation=0,0,0,1;scale=2,1,1"),
@@ -1642,7 +1754,7 @@ mod tests {
                 for entity in scene.entities.values() {
                     let Some(original) = entity
                         .components
-                        .get("Transform3D")
+                        .get(TRANSFORM_COMPONENT)
                         .and_then(|raw| Transform3D::from_component_str(raw).ok())
                     else {
                         continue;
@@ -1664,16 +1776,13 @@ mod tests {
         }
         assert!(
             checked >= 3,
-            "应至少覆盖 3D 场景的 Transform3D，实际 {checked}"
+            "应至少覆盖 3D 场景的 Transform，实际 {checked}"
         );
     }
 
-    /// 把迁移写回的组件串解析回局部变换（2D 优先，其次 3D）。
+    /// 把迁移写回的组件串解析回局部变换（唯一形态 + 2D 投影视图）。
     fn local_from_encoded(raw: &str) -> LocalTransform {
-        if let Ok(transform) = Transform::from_component_str(raw) {
-            return LocalTransform::from_2d(transform).expect("2D local is valid");
-        }
-        LocalTransform::from_3d(Transform3D::from_component_str(raw).expect("3D local parses"))
+        LocalTransform::from_unified_component_str(raw).expect("unified local parses")
     }
 
     fn scene_with_2d(name: &str, entries: &[(u64, Option<u64>, &str)]) -> Scene {
@@ -1703,15 +1812,15 @@ mod tests {
         let scene = scene_with_2d(
             "migrate-2d",
             &[
-                (1, None, "x=10;y=5;rotation=0;scale_x=2;scale_y=2"),
+                (1, None, "position=10,5,0;rotation=0,0,0,1;scale=2,2,1"),
                 // 子实体的 x=3 是**世界**坐标（v2 语义），迁移后局部 x 应为 (3-10)/2 = -3.5。
-                (2, Some(1), "x=3;y=5;rotation=0;scale_x=1;scale_y=1"),
+                (2, Some(1), "position=3,5,0;rotation=0,0,0,1;scale=1,1,1"),
             ],
         );
         let (migrated, report) = migrate_scene_to_local_space(&scene);
         assert!(report.is_lossless(), "{report:?}");
         assert_eq!(report.converted, vec![SceneEntityId(2)]);
-        let child = Transform::from_component_str(
+        let child = LocalTransform::transform_2d_from_component_str(
             migrated
                 .locals
                 .get(&SceneEntityId(2))
@@ -1728,7 +1837,7 @@ mod tests {
                 .locals
                 .get(&SceneEntityId(1))
                 .expect("root encoded")
-                .contains("x=10.000000000"),
+                .contains("position=10.000000000,5.000000000,0.000000000"),
             "根实体也写回规范串"
         );
         assert!(migrated.detached.is_empty());
@@ -1761,17 +1870,19 @@ mod tests {
         let scene = scene_with_2d(
             "migrate-2d-shear",
             &[
-                (1, None, "x=0;y=0;rotation=45;scale_x=2;scale_y=1"),
-                (2, Some(1), "x=0;y=0;rotation=-45;scale_x=1;scale_y=1"),
+                // `rotation=45` 旧载荷是**弧度**原值 ⇒ 四元数取半角 `sin/cos(22.5)`。
+                (1, None, "position=0,0,0;rotation=0,0,-0.48717451246050952,-0.87330464009351561;scale=2,1,1"),
+                (2, Some(1), "position=0,0,0;rotation=0,0,0.48717451246050952,-0.87330464009351561;scale=1,1,1"),
             ],
         );
         let (migrated, report) = migrate_scene_to_local_space(&scene);
         assert!(!report.is_lossless(), "含剪切的父子关系必须被拒绝");
         assert_eq!(migrated.detached, vec![SceneEntityId(2)]);
         // 被拒实体保持为根 ⇒ 世界位置仍是它自己的 TRS，迁移前后一致。
-        let kept =
-            Transform::from_component_str(migrated.locals.get(&SceneEntityId(2)).expect("encoded"))
-                .expect("parses");
+        let kept = LocalTransform::transform_2d_from_component_str(
+            migrated.locals.get(&SceneEntityId(2)).expect("encoded"),
+        )
+        .expect("parses");
         assert!(kept.position.x.abs() < 1e-6 && kept.position.y.abs() < 1e-6);
     }
 }

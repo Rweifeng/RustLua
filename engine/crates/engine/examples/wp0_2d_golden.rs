@@ -365,7 +365,7 @@ fn golden_scene(camera: Camera2D, viewport: Viewport, tiles: &str) -> Scene {
     entity.components.insert(
         "Transform".into(),
         format!(
-            "x={};y={};rotation=0;scale_x=1;scale_y=1",
+            "position={},{},0;rotation=0,0,0,1;scale=1,1,1",
             origin.x, origin.y
         ),
     );
@@ -400,7 +400,10 @@ fn add_sprite(
     let entity = scene.entities.get_mut(&id).expect("sprite entity");
     entity.components.insert(
         "Transform".into(),
-        format!("x={};y={};rotation=0;scale_x=1;scale_y=1", world.x, world.y),
+        format!(
+            "position={},{},0;rotation=0,0,0,1;scale=1,1,1",
+            world.x, world.y
+        ),
     );
     entity.components.insert(
         "Sprite".into(),
@@ -588,7 +591,7 @@ fn culling_scene(camera: Camera2D, viewport: Viewport) -> Scene {
     entity.components.insert(
         "Transform".into(),
         format!(
-            "x={};y={};rotation=0;scale_x=1;scale_y=1",
+            "position={},{},0;rotation=0,0,0,1;scale=1,1,1",
             origin.x, origin.y
         ),
     );

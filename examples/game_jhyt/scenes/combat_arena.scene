@@ -6,158 +6,158 @@ meta	tile_size	32
 meta	ui_reference_height	720
 meta	ui_reference_width	1280
 entity	1	GroundMap
-component	1	Transform	x=0.000000;y=0.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
 component	1	Tilemap	tile_size=32x32;width=40;height=22;texture=assets/art/tilesets/manor/manor_ground.png;tiles=4444444444444444444444444444444444444444433333333333333333331111111111111111111443333333333333333333111111111111111111144333333333333333333311111111111111111114433333333333333333331111111111111111111443333333333333333333111111111111111111144333333333333333333311111111111111111114433333333333333333333333333333111111111443333333333333333333333333333311111111144333333333333333333311111111111111111114433333333333333333331111111111111111111443333333333333333333111111111111111111144333333333333333333311111111111111111114411111111331111111111111111111111111111441111111111111111111111111111166666661144111111111111111111111111111116666666114411111111111111111111111111111666666611441111111111111111111111111111166666661144111111111111111111111111111111111111114411111111111111111111111111111111111111441111111111111111111111111111111111111144444444444444444444444444444444444444444;solid=1111111111111111111111111111111111111111100000101010100000000000000000000000000110000000101000000000000000000000000000011001000000000000000000000000000000000001100000000000000000000000000000000000000110000000000000000000000000000000000000011000000000000000010000000000000000000001100000000000000000000000000000000000000110000000000000000000000000000000000000011000000000000000010000100000000000000001100000000000000000000000001110000000000110000000000000000000000010000000000000011100000000000000000100000000000000000001100011011000100100100000000000000001000110000000000000000000000000000011111110011000000000000000000000000000001111111001100000000000000000000000000000111111100110000000000000000000000000000011111110011000000000000000000000000000000000000001101001000001000100000000010010000000010110000000100000000000000000000000000000011111111111111111111111111111111111111111
+component	1	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 entity_meta	1	role	ground_tilemap
 entity	2	ArenaGate
 component	2	Sprite	texture=assets/art/buildings/manor_gate.png;size=96x96;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=5
-component	2	Transform	x=256.000000;y=0.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
-entity_meta	2	role	building
+component	2	Transform	position=256.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 entity_meta	2	cell	8,0
+entity_meta	2	role	building
 entity	3	ArenaLanternA
 component	3	Sprite	texture=assets/art/props/village_lantern.png;size=24x64;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=10
-component	3	Transform	x=192.000000;y=32.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
-entity_meta	3	role	prop
+component	3	Transform	position=192.000000000,32.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 entity_meta	3	cell	6,1
+entity_meta	3	role	prop
 entity	4	ArenaLanternB
 component	4	Sprite	texture=assets/art/props/village_lantern.png;size=24x64;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=10
-component	4	Transform	x=384.000000;y=32.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
-entity_meta	4	role	prop
+component	4	Transform	position=384.000000000,32.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 entity_meta	4	cell	12,1
+entity_meta	4	role	prop
 entity	5	ArenaSign
 component	5	Sprite	texture=assets/art/props/manor_sign.png;size=32x42;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=10
-component	5	Transform	x=704.000000;y=288.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
-entity_meta	5	role	prop
+component	5	Transform	position=704.000000000,288.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 entity_meta	5	cell	22,9
+entity_meta	5	role	prop
 entity	6	ArenaRackA
 component	6	Sprite	texture=assets/art/props/manor_rack.png;size=64x46;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=10
-component	6	Transform	x=128.000000;y=416.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
-entity_meta	6	role	prop
+component	6	Transform	position=128.000000000,416.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 entity_meta	6	cell	4,13
+entity_meta	6	role	prop
 entity	7	ArenaRackB
 component	7	Sprite	texture=assets/art/props/manor_rack.png;size=64x46;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=10
-component	7	Transform	x=224.000000;y=416.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
-entity_meta	7	role	prop
+component	7	Transform	position=224.000000000,416.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 entity_meta	7	cell	7,13
+entity_meta	7	role	prop
 entity	8	ArenaHaystackA
 component	8	Sprite	texture=assets/art/props/manor_haystack.png;size=36x34;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=10
-component	8	Transform	x=384.000000;y=416.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
-entity_meta	8	role	prop
+component	8	Transform	position=384.000000000,416.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 entity_meta	8	cell	12,13
+entity_meta	8	role	prop
 entity	9	ArenaBannerA
 component	9	Sprite	texture=assets/art/props/village_banner.png;size=32x56;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=10
-component	9	Transform	x=480.000000;y=416.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
-entity_meta	9	role	prop
+component	9	Transform	position=480.000000000,416.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 entity_meta	9	cell	15,13
+entity_meta	9	role	prop
 entity	10	ArenaBannerB
 component	10	Sprite	texture=assets/art/props/village_banner.png;size=32x56;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=10
-component	10	Transform	x=576.000000;y=416.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
-entity_meta	10	role	prop
+component	10	Transform	position=576.000000000,416.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 entity_meta	10	cell	18,13
+entity_meta	10	role	prop
 entity	11	ArenaBannerC
 component	11	Sprite	texture=assets/art/props/village_banner.png;size=32x56;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=10
-component	11	Transform	x=608.000000;y=384.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
-entity_meta	11	role	prop
+component	11	Transform	position=608.000000000,384.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 entity_meta	11	cell	19,12
+entity_meta	11	role	prop
 entity	12	ArenaBannerD
 component	12	Sprite	texture=assets/art/props/village_banner.png;size=32x56;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=10
-component	12	Transform	x=32.000000;y=384.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
-entity_meta	12	role	prop
+component	12	Transform	position=32.000000000,384.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 entity_meta	12	cell	1,12
+entity_meta	12	role	prop
 entity	13	ArenaRockA
 component	13	Sprite	texture=assets/art/props/village_rock.png;size=64x40;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=10
-component	13	Transform	x=544.000000;y=288.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
-entity_meta	13	role	prop
+component	13	Transform	position=544.000000000,288.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 entity_meta	13	cell	17,9
+entity_meta	13	role	prop
 entity	14	ArenaRockB
 component	14	Sprite	texture=assets/art/props/village_rock.png;size=64x40;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=10
-component	14	Transform	x=544.000000;y=192.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
-entity_meta	14	role	prop
+component	14	Transform	position=544.000000000,192.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 entity_meta	14	cell	17,6
+entity_meta	14	role	prop
 entity	15	ArenaRockC
 component	15	Sprite	texture=assets/art/props/village_rock.png;size=64x40;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=10
-component	15	Transform	x=96.000000;y=96.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
-entity_meta	15	role	prop
+component	15	Transform	position=96.000000000,96.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 entity_meta	15	cell	3,3
+entity_meta	15	role	prop
 entity	16	ArenaRockD
 component	16	Sprite	texture=assets/art/props/village_rock.png;size=64x40;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=10
-component	16	Transform	x=1120.000000;y=416.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
-entity_meta	16	role	prop
+component	16	Transform	position=1120.000000000,416.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 entity_meta	16	cell	35,13
+entity_meta	16	role	prop
 entity	17	ArenaStall
 component	17	Sprite	texture=assets/art/props/village_stall.png;size=64x40;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=10
-component	17	Transform	x=832.000000;y=320.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
-entity_meta	17	role	prop
+component	17	Transform	position=832.000000000,320.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 entity_meta	17	cell	26,10
+entity_meta	17	role	prop
 entity	18	ArenaJar
 component	18	Sprite	texture=assets/art/props/manor_jar.png;size=24x30;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=10
-component	18	Transform	x=900.000000;y=320.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
-entity_meta	18	role	prop
+component	18	Transform	position=900.000000000,320.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 entity_meta	18	cell	28,10
+entity_meta	18	role	prop
 entity	19	ArenaHaystackB
 component	19	Sprite	texture=assets/art/props/manor_haystack.png;size=36x34;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=10
-component	19	Transform	x=768.000000;y=352.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
-entity_meta	19	role	prop
+component	19	Transform	position=768.000000000,352.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 entity_meta	19	cell	24,11
+entity_meta	19	role	prop
 entity	20	ArenaPier
 component	20	Sprite	texture=assets/art/props/village_pier.png;size=96x32;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=8
-component	20	Transform	x=992.000000;y=448.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
-entity_meta	20	role	prop
+component	20	Transform	position=992.000000000,448.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 entity_meta	20	cell	31,14
+entity_meta	20	role	prop
 entity	21	ArenaTreeA
 component	21	Sprite	texture=assets/art/props/manor_tree.png;size=64x88;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=20
-component	21	Transform	x=64.000000;y=608.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
-entity_meta	21	role	prop
+component	21	Transform	position=64.000000000,608.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 entity_meta	21	cell	2,19
+entity_meta	21	role	prop
 entity	22	ArenaBambooA
 component	22	Sprite	texture=assets/art/props/manor_bamboo.png;size=48x76;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=20
-component	22	Transform	x=160.000000;y=608.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
-entity_meta	22	role	prop
+component	22	Transform	position=160.000000000,608.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 entity_meta	22	cell	5,19
+entity_meta	22	role	prop
 entity	23	ArenaBambooB
 component	23	Sprite	texture=assets/art/props/manor_bamboo.png;size=48x76;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=20
-component	23	Transform	x=352.000000;y=608.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
-entity_meta	23	role	prop
+component	23	Transform	position=352.000000000,608.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 entity_meta	23	cell	11,19
+entity_meta	23	role	prop
 entity	24	ArenaTreeB
 component	24	Sprite	texture=assets/art/props/manor_tree.png;size=64x88;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=20
-component	24	Transform	x=480.000000;y=608.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
-entity_meta	24	role	prop
+component	24	Transform	position=480.000000000,608.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 entity_meta	24	cell	15,19
+entity_meta	24	role	prop
 entity	25	ArenaRockN
 component	25	Sprite	texture=assets/art/props/village_rock.png;size=64x40;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=20
-component	25	Transform	x=256.000000;y=640.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
-entity_meta	25	role	prop
+component	25	Transform	position=256.000000000,640.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 entity_meta	25	cell	8,20
+entity_meta	25	role	prop
 entity	26	ArenaBambooC
 component	26	Sprite	texture=assets/art/props/manor_bamboo.png;size=48x76;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=20
-component	26	Transform	x=800.000000;y=608.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
-entity_meta	26	role	prop
+component	26	Transform	position=800.000000000,608.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 entity_meta	26	cell	25,19
+entity_meta	26	role	prop
 entity	27	ArenaTreeC
 component	27	Sprite	texture=assets/art/props/manor_tree.png;size=64x88;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=20
-component	27	Transform	x=896.000000;y=608.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
-entity_meta	27	role	prop
+component	27	Transform	position=896.000000000,608.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 entity_meta	27	cell	28,19
+entity_meta	27	role	prop
 entity	28	ArenaTreeD
 component	28	Sprite	texture=assets/art/props/manor_tree.png;size=64x88;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=20
-component	28	Transform	x=1184.000000;y=608.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
-entity_meta	28	role	prop
+component	28	Transform	position=1184.000000000,608.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 entity_meta	28	cell	37,19
+entity_meta	28	role	prop
 entity	29	JianghuPlayer
-component	29	Sprite	texture=assets/art/characters/player_male/static_s.png;size=32x32;tint=1.000,1.000,1.000,1.000;sorting_layer=actor
 component	29	Animation	default=idle_s;clip:idle_s:assets/art/characters/player_male/idle_s.png:4:6:true;clip:idle_n:assets/art/characters/player_male/idle_n.png:4:6:true;clip:idle_e:assets/art/characters/player_male/idle_e.png:4:6:true;clip:idle_w:assets/art/characters/player_male/idle_w.png:4:6:true;clip:walk_s:assets/art/characters/player_male/walk_s.png:6:10:true;clip:walk_n:assets/art/characters/player_male/walk_n.png:6:10:true;clip:walk_e:assets/art/characters/player_male/walk_e.png:6:10:true;clip:walk_w:assets/art/characters/player_male/walk_w.png:6:10:true;clip:hoe_s:assets/art/characters/player_male/hoe_s.png:4:8:false;clip:hoe_n:assets/art/characters/player_male/hoe_n.png:4:8:false;clip:hoe_e:assets/art/characters/player_male/hoe_e.png:4:8:false;clip:hoe_w:assets/art/characters/player_male/hoe_w.png:4:8:false;clip:water_s:assets/art/characters/player_male/water_s.png:4:8:false;clip:water_n:assets/art/characters/player_male/water_n.png:4:8:false;clip:water_e:assets/art/characters/player_male/water_e.png:4:8:false;clip:water_w:assets/art/characters/player_male/water_w.png:4:8:false;clip:attack_s:assets/art/characters/player_male/attack_s.png:4:12:false;clip:attack_n:assets/art/characters/player_male/attack_n.png:4:12:false;clip:attack_e:assets/art/characters/player_male/attack_e.png:4:12:false;clip:attack_w:assets/art/characters/player_male/attack_w.png:4:12:false;clip:hurt_s:assets/art/characters/player_male/hurt_s.png:2:6:false;clip:hurt_n:assets/art/characters/player_male/hurt_n.png:2:6:false;clip:hurt_e:assets/art/characters/player_male/hurt_e.png:2:6:false;clip:hurt_w:assets/art/characters/player_male/hurt_w.png:2:6:false;clip:faint_s:assets/art/characters/player_male/faint_s.png:4:6:false;clip:faint_n:assets/art/characters/player_male/faint_n.png:4:6:false;clip:faint_e:assets/art/characters/player_male/faint_e.png:4:6:false;clip:faint_w:assets/art/characters/player_male/faint_w.png:4:6:false
 component	29	Collider	shape=ball;radius=12
-component	29	Transform	x=304.000000;y=176.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
-entity_meta	29	role	player_spawn
+component	29	Sprite	texture=assets/art/characters/player_male/static_s.png;size=32x32;tint=1.000,1.000,1.000,1.000;sorting_layer=actor
+component	29	Transform	position=304.000000000,176.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 entity_meta	29	persistent	true
+entity_meta	29	role	player_spawn
 entity	30	HudTitle
-component	30	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=24.00,20.00,640.00,44.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 component	30	Text	text=山庄 · 演武场;font_size=18.00;color=0.949,0.918,0.847
-component	30	Transform	x=0.000000;y=0.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+component	30	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	30	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=24.00,20.00,640.00,44.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 entity_meta	30	role	hud_title
 entity	31	HudHint
-component	31	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=24.00,50.00,1000.00,72.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 component	31	Text	text=WASD 移动 · E 交互(出口) · J 普攻 · K 武学 · R 战败重开;font_size=14.00;color=0.850,0.900,1.000
-component	31	Transform	x=0.000000;y=0.000000;rotation=0.000000000;scale_x=1.000000000;scale_y=1.000000000
+component	31	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	31	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=24.00,50.00,1000.00,72.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 entity_meta	31	role	hud_hint

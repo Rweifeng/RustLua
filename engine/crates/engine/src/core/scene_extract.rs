@@ -69,20 +69,24 @@ pub fn extract_serialized_scene_3d(scene: &Scene) -> SerializedScene3d {
         diagnostics: Vec::new(),
     };
     for entity in scene.entities.values() {
-        let transform = match entity.components.get("Transform3D") {
-            Some(value) => match Transform3D::from_component_str(value) {
+        // **唯一的 `Transform` 组件**：只有推断为 3D 空间的实体才进 3D 提取（2D 实体用的是
+        // 同一个组件名，它们的变换归 2D 渲染路径，见 `spatial_transform::entity_space`）。
+        let is_three_d = crate::core::spatial_transform::entity_space(&entity.components)
+            == crate::core::spatial_transform::SpatialKind::ThreeD;
+        let transform = match entity.components.get("Transform") {
+            Some(value) if is_three_d => match Transform3D::from_component_str(value) {
                 Ok(transform) => Some(transform),
                 Err(error) => {
                     result.diagnostics.push(SceneExtractDiagnostic {
                         entity: entity.id,
                         name: entity.name.clone(),
-                        component: "Transform3D".to_owned(),
+                        component: "Transform".to_owned(),
                         message: error.to_string(),
                     });
                     None
                 }
             },
-            None => None,
+            _ => None,
         };
         if let Some(value) = entity.components.get("MeshRenderer") {
             match (transform, MeshRenderer::from_component_str(value)) {
@@ -97,7 +101,7 @@ pub fn extract_serialized_scene_3d(scene: &Scene) -> SerializedScene3d {
                     Err(error) => result.diagnostics.push(SceneExtractDiagnostic {
                         entity: entity.id,
                         name: entity.name.clone(),
-                        component: "Transform3D".to_owned(),
+                        component: "Transform".to_owned(),
                         message: error.to_string(),
                     }),
                 },
@@ -110,9 +114,11 @@ pub fn extract_serialized_scene_3d(scene: &Scene) -> SerializedScene3d {
                 (None, _) => {}
             }
         }
-        if let Some(value) = entity.components.get("Camera3D") {
-            match Camera3D::from_component_str(value) {
-                Ok(camera) => {
+        if let Some(value) = entity.components.get(crate::core::camera::CAMERA_COMPONENT) {
+            // 统一 `Camera`：按投影分支取值，只有**透视**相机属于 3D 提取；正交相机归 2D 路径
+            // （它不是"3D 里坏掉的相机"，跳过但不报诊断）。
+            match crate::core::camera::CameraComponent::from_component_str(value) {
+                Ok(crate::core::camera::CameraComponent::Perspective(camera)) => {
                     // WP5 / docs/54 §8-⑦：`pose=transform` 的相机姿态取实体的**世界**变换
                     // （父链组合后的结果），而不是局部值——相机挂在父下时才算对得上画面。
                     // 取不到就**报诊断**并保持组件姿态；沉默地"看起来没生效"是最难查的一类问题。
@@ -124,7 +130,7 @@ pub fn extract_serialized_scene_3d(scene: &Scene) -> SerializedScene3d {
                                     result.diagnostics.push(SceneExtractDiagnostic {
                                         entity: entity.id,
                                         name: entity.name.clone(),
-                                        component: "Camera3D".to_owned(),
+                                        component: crate::core::camera::CAMERA_COMPONENT.to_owned(),
                                         message: format!(
                                             "pose=transform 无法应用（{error}），已回退到组件姿态"
                                         ),
@@ -136,8 +142,8 @@ pub fn extract_serialized_scene_3d(scene: &Scene) -> SerializedScene3d {
                                 result.diagnostics.push(SceneExtractDiagnostic {
                                     entity: entity.id,
                                     name: entity.name.clone(),
-                                    component: "Camera3D".to_owned(),
-                                    message: "Camera3D 声明了 pose=transform，但该实体没有可用的 Transform3D（或无法无损分解），已回退到组件姿态"
+                                    component: crate::core::camera::CAMERA_COMPONENT.to_owned(),
+                                    message: "相机声明了 pose=transform，但该实体没有可用的 Transform（或无法无损分解），已回退到组件姿态"
                                         .to_owned(),
                                 });
                                 camera
@@ -148,11 +154,12 @@ pub fn extract_serialized_scene_3d(scene: &Scene) -> SerializedScene3d {
                     };
                     result.cameras.push((entity.id, camera));
                 }
+                Ok(crate::core::camera::CameraComponent::Orthographic(_)) => {}
                 Err(error) => result.diagnostics.push(SceneExtractDiagnostic {
                     entity: entity.id,
                     name: entity.name.clone(),
-                    component: "Camera3D".to_owned(),
-                    message: error.to_string(),
+                    component: crate::core::camera::CAMERA_COMPONENT.to_owned(),
+                    message: error,
                 }),
             }
         }
@@ -230,7 +237,7 @@ mod tests {
             "模型矩阵平移应等于位置: {translation:?}"
         );
 
-        // Camera：两个串行 Camera3D，aspect 默认 1.0（fov 存弧度）。
+        // Camera：两个串行透视相机，aspect 默认 1.0（fov 存弧度）。
         assert_eq!(extracted.cameras.len(), 2);
         let (first_id, first_camera) = &extracted.cameras[0];
         assert_eq!(*first_id, crate::core::scene::SceneEntityId(1));
@@ -259,7 +266,7 @@ mod tests {
         assert!(extracted.diagnostics.is_empty(), "demo3d 应无诊断");
     }
 
-    /// “无 drawable”与“提取失败”不混为一谈：缺少 Transform3D 的 MeshRenderer
+    /// “无 drawable”与“提取失败”不混为一谈：缺少 `Transform` 的 MeshRenderer
     /// 是静默跳过（无实体、无诊断）；非法组件字符串才产生带实体/名称/组件的诊断。
     #[test]
     fn missing_transform_is_not_extraction_failure() {
@@ -282,7 +289,7 @@ mod tests {
             .unwrap()
             .components
             .insert(
-                "Transform3D".into(),
+                "Transform".into(),
                 "position=0,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
             );
         scene
@@ -292,7 +299,7 @@ mod tests {
             .components
             .insert("MeshRenderer".into(), "mesh=../escape.glb".into());
         let extracted = extract_serialized_scene_3d(&scene);
-        // 缺 Transform3D → 无 drawable 也无需诊断；坏 mesh → 明确诊断。
+        // 缺 Transform → 无 drawable 也无需诊断；坏 mesh → 明确诊断。
         assert_eq!(extracted.entities.len(), 0);
         assert_eq!(extracted.diagnostics.len(), 1);
         assert_eq!(extracted.diagnostics[0].entity, SceneEntityId(2));
@@ -312,7 +319,7 @@ mod tests {
             .unwrap()
             .components
             .insert(
-                "Transform3D".into(),
+                "Transform".into(),
                 "position=0,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
             );
         scene
@@ -334,12 +341,12 @@ mod tests {
         assert_eq!(extracted.diagnostics[0].entity, SceneEntityId(2));
     }
 
-    /// WP5：`pose=transform` 的相机，姿态取实体的 `Transform3D`；取不到时**必须报诊断**
+    /// WP5：`pose=transform` 的相机，姿态取实体的 `Transform`；取不到时**必须报诊断**
     /// 并回退到组件姿态——沉默地"看起来没生效"是最难查的一类问题。
     #[test]
     fn camera_pose_from_transform_is_extracted_and_diagnosed_when_missing() {
         let mut scene = Scene::new("3d");
-        // ① 同时有 Transform3D 与 Camera3D(pose=transform)：位置取变换位置。
+        // ① 同时有 Transform 与 Camera(projection=perspective, pose=transform)：位置取变换位置。
         scene.add_entity(SceneEntityId(1), "Posed", None).unwrap();
         scene
             .entities
@@ -347,7 +354,7 @@ mod tests {
             .unwrap()
             .components
             .insert(
-                "Transform3D".into(),
+                "Transform".into(),
                 "position=7,8,9;rotation=0,0,0,1;scale=1,1,1".into(),
             );
         scene
@@ -356,10 +363,11 @@ mod tests {
             .unwrap()
             .components
             .insert(
-                "Camera3D".into(),
-                "position=0,0,6;target=0,0,0;fov=60;near=0.1;far=100;pose=transform".into(),
+                "Camera".into(),
+                "projection=perspective;position=0,0,6;target=0,0,0;fov=60;near=0.1;far=100;pose=transform"
+                    .into(),
             );
-        // ② 声明了 pose=transform 但没有 Transform3D：必须报诊断。
+        // ② 声明了 pose=transform 但没有 Transform：必须报诊断。
         scene.add_entity(SceneEntityId(2), "Unposed", None).unwrap();
         scene
             .entities
@@ -367,8 +375,9 @@ mod tests {
             .unwrap()
             .components
             .insert(
-                "Camera3D".into(),
-                "position=1,2,3;target=0,0,0;fov=60;near=0.1;far=100;pose=transform".into(),
+                "Camera".into(),
+                "projection=perspective;position=1,2,3;target=0,0,0;fov=60;near=0.1;far=100;pose=transform"
+                    .into(),
             );
 
         let extracted = extract_serialized_scene_3d(&scene);
@@ -392,7 +401,7 @@ mod tests {
             .expect("unposed camera");
         assert!(
             (unposed.position.z - 3.0).abs() < 1e-4,
-            "没有 Transform3D 时保持组件姿态"
+            "没有 Transform 时保持组件姿态"
         );
         assert_eq!(extracted.diagnostics.len(), 1);
         assert_eq!(extracted.diagnostics[0].entity, SceneEntityId(2));

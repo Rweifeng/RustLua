@@ -164,13 +164,13 @@ fn apply_edit(app: &mut EditorApp, id: SceneEntityId, step: usize) -> bool {
                     .ok_or_else(|| "entity missing".to_owned())?;
                 let mut transform = entity
                     .components
-                    .get("Transform3D")
+                    .get("Transform")
                     .and_then(|value| Transform3D::from_component_str(value).ok())
                     .unwrap_or_default();
                 transform.position.x = step as f32;
                 entity
                     .components
-                    .insert("Transform3D".to_owned(), transform.to_component_str());
+                    .insert("Transform".to_owned(), transform.to_component_str());
                 scene.mark_dirty();
                 Ok::<(), String>(())
             },

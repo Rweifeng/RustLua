@@ -1017,7 +1017,7 @@ impl EditorApp {
             inspector_collider3d_open: false,
             inspector_tilemap_open: true,
             inspector_animation_open: true,
-            inspector_add_component: "Transform3D".to_owned(),
+            inspector_add_component: "Transform".to_owned(),
             entity_name: "Entity".to_owned(),
             status: recovery_scan_error.map_or_else(
                 || "尚未创建场景".to_owned(),
@@ -2110,11 +2110,11 @@ mod migration_tests {
         scene.add_entity(child, "Child", Some(parent)).unwrap();
         scene.entities.get_mut(&parent).unwrap().components.insert(
             "Transform".into(),
-            "x=10;y=0;rotation=0;scale_x=2;scale_y=2".into(),
+            "position=10,0,0;rotation=0,0,0,1;scale=2,2,1".into(),
         );
         scene.entities.get_mut(&child).unwrap().components.insert(
             "Transform".into(),
-            "x=3;y=0;rotation=0;scale_x=1;scale_y=1".into(),
+            "position=3,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
         );
         if with_legacy_text {
             let hud = SceneEntityId(3);
@@ -2198,11 +2198,11 @@ mod migration_tests {
         scene.add_entity(child, "Child", Some(parent)).unwrap();
         scene.entities.get_mut(&parent).unwrap().components.insert(
             "Transform".into(),
-            "x=0;y=0;rotation=0;scale_x=2;scale_y=1".into(),
+            "position=0,0,0;rotation=0,0,0,1;scale=2,1,1".into(),
         );
         scene.entities.get_mut(&child).unwrap().components.insert(
             "Transform".into(),
-            "x=4;y=0;rotation=45;scale_x=1;scale_y=1".into(),
+            "position=4,0,0;rotation=0,0,0.38268343,0.92387953;scale=1,1,1".into(),
         );
         scene
             .save(root.join("scenes/shear.scene"))

@@ -97,7 +97,7 @@ impl EditorApp {
                 // 无法无损反解（剪切/镜像/退化）：拒绝写回，不静默近似。
                 continue;
             };
-            let encoded = editor::document_space::encode_transform_2d(local);
+            let encoded = editor::document_space::encode_transform(local);
             if let Some(entity) = scene.scene.entities.get_mut(id) {
                 entity.components.insert("Transform".to_owned(), encoded);
             }
@@ -169,7 +169,7 @@ impl EditorApp {
             match editor::document_space::locals_for_world_targets(&scene.scene, &targets)
                 .get(&id)
                 .copied()
-                .map(editor::document_space::encode_transform_3d)
+                .map(editor::document_space::encode_transform)
             {
                 Some(encoded) => {
                     let changed = self.history.execute(
@@ -180,7 +180,7 @@ impl EditorApp {
                             if let Some(entity) = scene.scene.entities.get_mut(&id) {
                                 entity
                                     .components
-                                    .insert("Transform3D".to_owned(), encoded.clone());
+                                    .insert("Transform".to_owned(), encoded.clone());
                             }
                             scene.mark_dirty();
                             Ok::<(), ()>(())

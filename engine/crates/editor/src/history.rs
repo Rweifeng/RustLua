@@ -368,7 +368,7 @@ mod tests {
                         .get_mut(&SceneEntityId(7))
                         .unwrap()
                         .components
-                        .insert("Transform3D".into(), format!("position={value},0,0"));
+                        .insert("Transform".into(), format!("position={value},0,0"));
                     Ok::<_, ()>(())
                 },
             )

@@ -21,6 +21,8 @@ struct ComponentDescriptor {
 /// E13：组件类别（Add Component 分组 + 未来按类别过滤的扩展点）。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ComponentCategory {
+    /// 变换与相机：2D 与 3D 共用同一套组件（第 57 轮统一后的唯一入口）。
+    Spatial,
     Gameplay,
     Rendering,
     ThreeD,
@@ -28,8 +30,18 @@ enum ComponentCategory {
 }
 
 impl ComponentCategory {
+    /// 分组顺序（菜单与 Add Component 共用一处，避免两处顺序漂移）。
+    const ALL: &'static [Self] = &[
+        Self::Spatial,
+        Self::Gameplay,
+        Self::Rendering,
+        Self::ThreeD,
+        Self::Ui,
+    ];
+
     const fn label(self) -> &'static str {
         match self {
+            Self::Spatial => "变换与相机",
             Self::Gameplay => "玩法",
             Self::Rendering => "渲染",
             Self::ThreeD => "3D",
@@ -44,6 +56,17 @@ impl ComponentCategory {
 /// `菜单栏的「组件」菜单直接由这张表生成`（见 `crate::menu`），因此新增组件既不用改
 /// 巨型 match，也不用改菜单。
 const COMPONENT_REGISTRY: &[ComponentDescriptor] = &[
+    // 第 57 轮：**唯一的**变换与相机（旧名 `Transform3D`/`Camera2D`/`Camera3D` 已从引擎删除，
+    // 因此它们既不在本表、也不再能被加载）。默认值见 `add_component` 的对应分支：
+    // `Transform` = 引擎的单位变换，`Camera` = 透视相机 + 判别字段。
+    ComponentDescriptor {
+        name: "Transform",
+        category: ComponentCategory::Spatial,
+    },
+    ComponentDescriptor {
+        name: "Camera",
+        category: ComponentCategory::Spatial,
+    },
     ComponentDescriptor {
         name: "Sprite",
         category: ComponentCategory::Rendering,
@@ -56,10 +79,6 @@ const COMPONENT_REGISTRY: &[ComponentDescriptor] = &[
         name: "Animation",
         category: ComponentCategory::Gameplay,
     },
-    // 第 53 轮：**取消 `Transform3D` / `Camera3D` 作为可添加组件**——变换与相机正在统一成
-    // 单一 `Transform` / `Camera`（见 `core::transform_migration`、`core::camera_migration`），
-    // 这里不再提供带 3D 后缀的重复项。这两个旧名**仍然可以加载与显示**（旧场景不会变得不能编辑），
-    // 只是不再作为"新加一个组件"的入口；统一名会在 schema 注册表跟上后加入本表。
     ComponentDescriptor {
         name: "MeshRenderer",
         category: ComponentCategory::ThreeD,
@@ -116,23 +135,19 @@ const COMPONENT_REGISTRY: &[ComponentDescriptor] = &[
 /// 因此新增组件只改注册表一处，菜单与 Inspector 的 Add Component 同时生效。
 #[must_use]
 pub(crate) fn component_menu_groups() -> Vec<(&'static str, Vec<&'static str>)> {
-    [
-        ComponentCategory::Gameplay,
-        ComponentCategory::Rendering,
-        ComponentCategory::ThreeD,
-        ComponentCategory::Ui,
-    ]
-    .into_iter()
-    .map(|category| {
-        let names = COMPONENT_REGISTRY
-            .iter()
-            .filter(|descriptor| descriptor.category == category)
-            .map(|descriptor| descriptor.name)
-            .collect();
-        (category.label(), names)
-    })
-    .filter(|(_, names): &(&str, Vec<&str>)| !names.is_empty())
-    .collect()
+    ComponentCategory::ALL
+        .iter()
+        .copied()
+        .map(|category| {
+            let names = COMPONENT_REGISTRY
+                .iter()
+                .filter(|descriptor| descriptor.category == category)
+                .map(|descriptor| descriptor.name)
+                .collect();
+            (category.label(), names)
+        })
+        .filter(|(_, names): &(&str, Vec<&str>)| !names.is_empty())
+        .collect()
 }
 
 /// Inspector Override 摘要用的源 Prefab 缓存条目。
@@ -453,12 +468,7 @@ impl EditorApp {
                         .selected_text(&self.inspector_add_component)
                         .show_ui(ui, |ui| {
                             // E13：按类别分组展示注册表（顺序固定，避免漂移）。
-                            for category in [
-                                ComponentCategory::Gameplay,
-                                ComponentCategory::Rendering,
-                                ComponentCategory::ThreeD,
-                                ComponentCategory::Ui,
-                            ] {
+                            for category in ComponentCategory::ALL.iter().copied() {
                                 ui.weak(category.label());
                                 for descriptor in
                                     COMPONENT_REGISTRY.iter().filter(|d| d.category == category)
@@ -1355,26 +1365,28 @@ impl EditorApp {
                             scene.mark_dirty();
                         }
                     }
-                    // `Transform3D` 也没有手写面板了（第 36 轮）：默认值取**引擎类型**的编码
-                    // （单位变换），编辑由通用字段编辑器接管。
-                    "Transform3D" => {
+                    // 唯一的 `Transform`：默认值取**引擎类型**的编码（单位变换），
+                    // 编辑由通用字段编辑器接管。
+                    "Transform" => {
                         if let Some(entity) = scene.scene.entities.get_mut(&selected) {
                             entity.components.insert(
-                                "Transform3D".to_owned(),
+                                "Transform".to_owned(),
                                 engine::core::transform::Transform3D::identity().to_component_str(),
                             );
                         }
                         scene.mark_dirty();
                     }
-                    // `Camera3D` 同样没有手写面板了（第 24 轮）：默认值取**引擎类型**的编码
-                    // （`Camera3D::default()` = 位置 (0,0,5) 看向原点、FOV 90°、near 0.1、far 100），
-                    // 编辑器里不再有这份默认值。
-                    "Camera3D" => {
-                        let camera = engine::core::camera::Camera3D::default();
+                    // 唯一的 `Camera`：默认值是**透视**相机（`Camera3D::default()` = 位置 (0,0,5)
+                    // 看向原点、FOV 90°、near 0.1、far 100）+ 显式判别字段；要正交就把
+                    // `projection` 改成 orthographic，字段编辑器会接着给正交那套字段。
+                    "Camera" => {
+                        let camera = engine::core::camera::CameraComponent::Perspective(
+                            engine::core::camera::Camera3D::default(),
+                        );
                         if let Some(entity) = scene.scene.entities.get_mut(&selected) {
                             entity
                                 .components
-                                .insert("Camera3D".to_owned(), camera.to_component_str());
+                                .insert("Camera".to_owned(), camera.to_component_str());
                         }
                         scene.mark_dirty();
                     }
@@ -1933,7 +1945,10 @@ mod tests {
             parent: None,
             children: Vec::new(),
             components: std::collections::BTreeMap::from([
-                ("Transform".to_owned(), "x=0;y=0".to_owned()),
+                (
+                    "Transform".to_owned(),
+                    "position=0,0,0;rotation=0,0,0,1;scale=1,1,1".to_owned(),
+                ),
                 ("Sprite".to_owned(), "texture=enemy.png".to_owned()),
             ]),
             resources: std::collections::BTreeMap::new(),
@@ -1946,9 +1961,14 @@ mod tests {
         let source = entity();
         let mut instance = entity();
         instance.name = "Enemy Boss".to_owned();
+        // 两边都是**合法载荷** ⇒ 走字段级覆盖（`position` 这一个字段变了）。
         instance
             .components
-            .insert("Transform".to_owned(), "x=10;y=4".to_owned());
+            .insert("Transform".to_owned(), "position=10,4,0;rotation=0,0,0,1;scale=1,1,1".to_owned());
+        // 实例上多出来的组件没有字段级对拍对象 ⇒ 仍是组件级覆盖（整串替换）。
+        instance
+            .components
+            .insert("Light".to_owned(), "direction=0,0,-1;color=1,1,1;intensity=1".to_owned());
         instance
             .metadata
             .insert("team".to_owned(), "blue".to_owned());
@@ -1961,7 +1981,9 @@ mod tests {
             overrides,
             vec![
                 "name".to_owned(),
-                "component:Transform".to_owned(),
+                // 组件按键名排序：`Light` 在 `Transform` 之前。
+                "component:Light".to_owned(),
+                "property:Transform.position".to_owned(),
                 "metadata:team".to_owned()
             ]
         );
@@ -1981,7 +2003,7 @@ mod tests {
             .components
             .insert(
                 "Transform".to_owned(),
-                "x=0;y=0;rotation=0;scale_x=1;scale_y=1".to_owned(),
+                "position=0,0,0;rotation=0,0,0,1;scale=1,1,1".to_owned(),
             );
         let prefab = Prefab::from_scene(
             &source,
@@ -2004,7 +2026,7 @@ mod tests {
         let child = instance.source_to_instance[&SceneEntityId(2)];
         scene.entities.get_mut(&child).unwrap().components.insert(
             "Transform".to_owned(),
-            "x=9;y=4;rotation=0;scale_x=1;scale_y=1".to_owned(),
+            "position=9,4,0;rotation=0,0,0,1;scale=1,1,1".to_owned(),
         );
 
         let rebuild = collect_prefab_rebuild_state(
@@ -2021,17 +2043,12 @@ mod tests {
             Some(&"Boss".to_owned())
         );
         // 逐字段 Override：只记录真正变化的字段（原始文本），不再冻结整个组件串。
+        // 统一 `Transform` 之后位置的字段名是 `position`（Vec3），不再是 `x`/`y` 两个字段。
         assert_eq!(
             rebuild
                 .overrides
-                .get(&(SceneEntityId(2), "property:Transform.x".to_owned())),
-            Some(&"9".to_owned())
-        );
-        assert_eq!(
-            rebuild
-                .overrides
-                .get(&(SceneEntityId(2), "property:Transform.y".to_owned())),
-            Some(&"4".to_owned())
+                .get(&(SceneEntityId(2), "property:Transform.position".to_owned())),
+            Some(&"9,4,0".to_owned())
         );
         assert!(
             !rebuild
@@ -2195,7 +2212,7 @@ mod tests {
             entity.name = "BossGreen".to_owned();
             entity.components.insert(
                 "Transform".to_owned(),
-                "x=77;y=19;rotation=0;scale_x=1;scale_y=1".to_owned(),
+                "position=77,19,0;rotation=0,0,0,1;scale=1,1,1".to_owned(),
             );
             scene.mark_dirty();
         }
@@ -2229,18 +2246,17 @@ mod tests {
             engine::core::property_path::read_field(&registry, &payload, &path).expect("field")
         };
         assert_eq!(
-            read("x"),
-            engine::core::component_schema::FieldValue::Number(77.0)
+            read("position"),
+            engine::core::component_schema::FieldValue::Tuple(vec![77.0, 19.0, 0.0])
         );
         assert_eq!(
-            read("y"),
-            engine::core::component_schema::FieldValue::Number(19.0)
+            read("scale"),
+            engine::core::component_schema::FieldValue::Tuple(vec![1.0, 1.0, 1.0])
         );
-        assert_eq!(
-            read("scale_x"),
-            engine::core::component_schema::FieldValue::Number(1.0)
+        assert!(
+            payload.contains("position=77"),
+            "覆盖字段保留原始文本：{payload}"
         );
-        assert!(payload.contains("x=77"), "覆盖字段保留原始文本：{payload}");
         assert_eq!(
             entity.metadata.get("prefab.source").map(String::as_str),
             Some("assets/prefabs/slime_green.prefab")
@@ -2295,7 +2311,7 @@ mod tests {
             entity.name = "RevertedName".to_owned();
             entity.components.insert(
                 "Transform".to_owned(),
-                "x=123;y=456;rotation=0;scale_x=1;scale_y=1".to_owned(),
+                "position=123,456,0;rotation=0,0,0,1;scale=1,1,1".to_owned(),
             );
             scene.mark_dirty();
         }
@@ -2375,9 +2391,10 @@ mod tests {
                 .get("Transform")
                 .cloned()
                 .expect("instance has Transform");
-            let path = engine::core::property_path::PropertyPath::parse("Transform.x").unwrap();
+            let path =
+                engine::core::property_path::PropertyPath::parse("Transform.position").unwrap();
             let updated =
-                engine::core::property_path::write_builtin(&payload, &path, "999").unwrap();
+                engine::core::property_path::write_builtin(&payload, &path, "999,0,0").unwrap();
             entity.components.insert("Transform".to_owned(), updated);
             scene.mark_dirty();
         }
@@ -2389,20 +2406,20 @@ mod tests {
             .expect("summary")
             .expect("loads");
         assert!(
-            rows.iter().any(|row| row.field == "property:Transform.x"),
+            rows.iter().any(|row| row.field == "property:Transform.position"),
             "{rows:?}"
         );
         assert!(rows.iter().any(|row| row.field == "name"), "{rows:?}");
 
         let undo_before = app.history.undo_len();
-        app.revert_prefab_override_field(target, "property:Transform.x");
+        app.revert_prefab_override_field(target, "property:Transform.position");
 
         let scene = &app.document.current_scene.as_ref().unwrap().scene;
         let entity = scene.entities.get(&target).expect("instance");
         let payload = entity.components.get("Transform").expect("Transform");
-        let path = engine::core::property_path::PropertyPath::parse("Transform.x").unwrap();
+        let path = engine::core::property_path::PropertyPath::parse("Transform.position").unwrap();
         let registry = engine::core::component_schema::builtin_registry();
-        let source_x = {
+        let source_position = {
             let prefab = Prefab::load(root.join("assets/prefabs/slime_green.prefab")).unwrap();
             let source_id = entity
                 .metadata
@@ -2415,11 +2432,11 @@ mod tests {
                 .get("Transform")
                 .expect("source Transform");
             engine::core::property_path::read_field(&registry, source_payload, &path)
-                .expect("source x")
+                .expect("source position")
         };
         assert_eq!(
-            engine::core::property_path::read_field(&registry, payload, &path).expect("x"),
-            source_x,
+            engine::core::property_path::read_field(&registry, payload, &path).expect("position"),
+            source_position,
             "被回退字段必须等于源取值"
         );
         assert_eq!(entity.name, "SelectiveGreen", "其它覆盖（名字）必须保留");
@@ -2436,10 +2453,11 @@ mod tests {
             .get("Transform")
             .expect("Transform")
             .clone();
-        let x = engine::core::property_path::read_field(&registry, &payload, &path).expect("x");
+        let position =
+            engine::core::property_path::read_field(&registry, &payload, &path).expect("position");
         assert_eq!(
-            x,
-            engine::core::component_schema::FieldValue::Number(999.0),
+            position,
+            engine::core::component_schema::FieldValue::Tuple(vec![999.0, 0.0, 0.0]),
             "Undo 后覆盖字段应恢复"
         );
         let _ = fs::remove_dir_all(root);
@@ -2454,7 +2472,7 @@ mod tests {
             let scene = &app.document.current_scene.as_ref().unwrap().scene;
             prefab_root(scene, "assets/prefabs/slime_green.prefab")
         };
-        // 制造两个覆盖：Transform.x=999 与名字。
+        // 制造两个覆盖：Transform.position=999,0,0 与名字。
         {
             let scene = app.document.current_scene.as_mut().unwrap();
             let entity = scene.scene.entities.get_mut(&target).unwrap();
@@ -2464,9 +2482,10 @@ mod tests {
                 .get("Transform")
                 .cloned()
                 .expect("instance has Transform");
-            let path = engine::core::property_path::PropertyPath::parse("Transform.x").unwrap();
+            let path =
+                engine::core::property_path::PropertyPath::parse("Transform.position").unwrap();
             let updated =
-                engine::core::property_path::write_builtin(&payload, &path, "999").unwrap();
+                engine::core::property_path::write_builtin(&payload, &path, "999,0,0").unwrap();
             entity.components.insert("Transform".to_owned(), updated);
             scene.mark_dirty();
         }
@@ -2479,7 +2498,7 @@ mod tests {
             .expect("source id");
 
         let undo_before = app.history.undo_len();
-        app.apply_prefab_override_field(target, "property:Transform.x");
+        app.apply_prefab_override_field(target, "property:Transform.position");
         assert!(
             app.status.contains("已把字段应用到源 Prefab"),
             "status: {}",
@@ -2490,7 +2509,7 @@ mod tests {
         let prefab = Prefab::load(root.join("assets/prefabs/slime_green.prefab"))
             .expect("source prefab reloads");
         let registry = engine::core::component_schema::builtin_registry();
-        let path = engine::core::property_path::PropertyPath::parse("Transform.x").unwrap();
+        let path = engine::core::property_path::PropertyPath::parse("Transform.position").unwrap();
         assert_eq!(
             engine::core::property_path::read_field(
                 &registry,
@@ -2500,8 +2519,8 @@ mod tests {
                     .expect("source Transform"),
                 &path
             )
-            .expect("source x"),
-            engine::core::component_schema::FieldValue::Number(999.0),
+            .expect("source position"),
+            engine::core::component_schema::FieldValue::Tuple(vec![999.0, 0.0, 0.0]),
             "源 Prefab 文件必须被更新"
         );
 
@@ -2511,7 +2530,9 @@ mod tests {
             .expect("summary")
             .expect("loads");
         assert!(
-            !rows.iter().any(|row| row.field == "property:Transform.x"),
+            !rows
+                .iter()
+                .any(|row| row.field == "property:Transform.position"),
             "应用后该字段不应再是覆盖：{rows:?}"
         );
         assert!(

@@ -929,8 +929,8 @@ mod tests {
     #[test]
     fn field_units_convert_without_touching_the_stored_contract() {
         use editor::{FieldUnit, field_unit};
-        assert_eq!(field_unit("Camera3D", "fov"), FieldUnit::Degrees);
-        assert_eq!(field_unit("Camera3D", "near"), FieldUnit::Raw);
+        assert_eq!(field_unit("Camera", "fov"), FieldUnit::Degrees);
+        assert_eq!(field_unit("Camera", "near"), FieldUnit::Raw);
         assert_eq!(field_unit("Light", "intensity"), FieldUnit::Raw);
         // `Degrees` = 组件串里就是角度：显示与存储是同一个数（不换算）。
         assert_eq!(FieldUnit::Degrees.to_display(60.0), 60.0);
@@ -950,14 +950,14 @@ mod tests {
         use editor::{ChoiceSource, field_choice_source};
         assert_eq!(field_choice_source("font"), ChoiceSource::ProjectFonts);
         assert_eq!(field_choice_source("text"), ChoiceSource::Static);
-        let light = engine::core::component_schema::builtin_registry()["Camera3D"].clone();
+        let light = engine::core::component_schema::builtin_registry()["Camera"].clone();
         let fov = light
             .fields
             .iter()
             .find(|field| field.name == "fov")
             .expect("fov 字段");
         let row = editor::SchemaFieldRow {
-            component: "Camera3D",
+            component: "Camera",
             field: fov.name,
             path: "Camera3D.fov".to_owned(),
             kind: fov.kind,
@@ -969,9 +969,9 @@ mod tests {
             hint: format!(
                 "{}{}",
                 fov.describe(),
-                editor::field_unit("Camera3D", fov.name).label()
+                editor::field_unit("Camera", fov.name).label()
             ),
-            unit: editor::field_unit("Camera3D", fov.name),
+            unit: editor::field_unit("Camera", fov.name),
             choices_source: editor::field_choice_source(fov.name),
             mixed: false,
             path_rule: false,
@@ -1326,15 +1326,16 @@ mod tests {
             .unwrap()
             .components
             .insert(
-                "Camera3D".to_owned(),
-                "position=0,0,5;target=0,0,0;fov=60;near=0.1;far=100".to_owned(),
+                "Camera".to_owned(),
+                "projection=perspective;position=0,0,5;target=0,0,0;fov=60;near=0.1;far=100"
+                    .to_owned(),
             );
 
         // 1) 行由 schema 生成；`fov` 显示的角度就是组件串里的数（60°，不是 3437.75°）。
         let rows = app.schema_field_rows();
         let fov = rows
             .iter()
-            .find(|row| row.component == "Camera3D" && row.field == "fov")
+            .find(|row| row.component == "Camera" && row.field == "fov")
             .expect("Camera3D.fov 行");
         assert_eq!(fov.unit, editor::FieldUnit::Degrees);
         assert_eq!(fov.text, "60", "原始文本原样读出（不回写、不换算）");
@@ -1345,7 +1346,7 @@ mod tests {
         );
         let position = rows
             .iter()
-            .find(|row| row.component == "Camera3D" && row.field == "position")
+            .find(|row| row.component == "Camera" && row.field == "position")
             .expect("Camera3D.position 行");
         assert_eq!(
             field_widget(position.kind, position.field),
@@ -1356,7 +1357,7 @@ mod tests {
         );
         let pose = rows
             .iter()
-            .find(|row| row.component == "Camera3D" && row.field == "pose")
+            .find(|row| row.component == "Camera" && row.field == "pose")
             .expect("Camera3D.pose 行");
         assert_eq!(field_widget(pose.kind, pose.field), FieldWidget::Choice);
         assert!(
@@ -1369,7 +1370,7 @@ mod tests {
         assert_eq!(
             app.dispatch(EditorCommand::SetComponentField {
                 entity,
-                component: "Camera3D".to_owned(),
+                component: "Camera".to_owned(),
                 field: "fov".to_owned(),
                 value: "75".to_owned(),
             }),
@@ -1377,10 +1378,12 @@ mod tests {
         );
         assert_eq!(app.history.undo_len(), 1);
         let payload = app.document.current_scene.as_ref().unwrap().scene.entities[&entity].components
-            ["Camera3D"]
+            ["Camera"]
             .clone();
-        let camera = engine::core::camera::Camera3D::from_component_str(&payload)
-            .expect("引擎解析器必须认得迁移后的写入");
+        let camera = engine::core::camera::CameraComponent::from_component_str(&payload)
+            .expect("引擎解析器必须认得迁移后的写入")
+            .as_perspective()
+            .expect("判别字段是 perspective");
         assert!(
             (camera.fov_y.to_degrees() - 75.0).abs() < 0.001,
             "组件串存角度，所以引擎读回来就是 75°：{}",
@@ -1391,7 +1394,7 @@ mod tests {
         //    与旧手写面板的 `validate_camera3d` 同级——迁移不放松校验。
         match app.dispatch(EditorCommand::SetComponentField {
             entity,
-            component: "Camera3D".to_owned(),
+            component: "Camera".to_owned(),
             field: "near".to_owned(),
             value: "200".to_owned(),
         }) {
@@ -1401,7 +1404,7 @@ mod tests {
         assert_eq!(app.history.undo_len(), 1, "拒绝不得产生历史");
 
         // 4) 只读说明：投影摘要来自统一 `Projection`；禁用时给出"不参与选帧"的警告。
-        let notes = app.schema_component_notes("Camera3D");
+        let notes = app.schema_component_notes("Camera");
         assert!(
             notes
                 .iter()
@@ -1411,13 +1414,13 @@ mod tests {
         assert_eq!(
             app.dispatch(EditorCommand::SetComponentField {
                 entity,
-                component: "Camera3D".to_owned(),
+                component: "Camera".to_owned(),
                 field: "enabled".to_owned(),
                 value: "false".to_owned(),
             }),
             CommandResult::Applied
         );
-        let notes = app.schema_component_notes("Camera3D");
+        let notes = app.schema_component_notes("Camera");
         assert!(
             notes
                 .iter()
@@ -1648,9 +1651,9 @@ mod tests {
         }
     }
 
-    /// **迁移证据**（第 36 轮）：`Transform`/`Transform3D` 走通用字段路径——字段全是 DragValue，
-    /// **等比锁**是编辑器态开关（不写文档），**重置**是组件级动作（值来自引擎 `identity()`），
-    /// 提交一条 Undo、引擎能读回。这条同时收口"面板迁移全部完成"。
+    /// **迁移证据**（第 36 轮，第 57 轮随统一收敛）：唯一的 `Transform` 走通用字段路径——
+    /// 字段全是 DragValue、**重置**是组件级动作（值来自引擎 `identity()`），提交一条 Undo、
+    /// 引擎能读回。等比锁开关已随统一撤掉（`scale` 是 `Vec3`，没有可复制的单一字段值）。
     #[test]
     fn migrated_transforms_keep_toggles_and_reset_actions() {
         let mut app = app_with_quad();
@@ -1666,30 +1669,15 @@ mod tests {
             .components
             .insert(
                 "Transform".to_owned(),
-                "x=3;y=4;rotation=0.5;scale_x=2;scale_y=2".to_owned(),
-            );
-        app.document
-            .current_scene
-            .as_mut()
-            .unwrap()
-            .scene
-            .entities
-            .get_mut(&entity)
-            .unwrap()
-            .components
-            .insert(
-                "Transform3D".to_owned(),
-                "position=1,2,3;rotation=0,0,0,1;scale=2,2,2".to_owned(),
+                "position=3.000000000,4.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=2.000000000,2.000000000,1.000000000".to_owned(),
             );
 
-        // 字段行与控件：全部 DragValue（向量连排）。
+        // 字段行与控件：`position`/`scale` = Vec3、`rotation` = Vec4。
         let rows = app.schema_field_rows();
         for (component, field, parts) in [
-            ("Transform", "x", 1_usize),
-            ("Transform", "scale_x", 1),
-            ("Transform3D", "position", 3),
-            ("Transform3D", "rotation", 4),
-            ("Transform3D", "scale", 3),
+            ("Transform", "position", 3_usize),
+            ("Transform", "rotation", 4),
+            ("Transform", "scale", 3),
         ] {
             let row = rows
                 .iter()
@@ -1705,13 +1693,14 @@ mod tests {
             };
             assert_eq!(field_widget(row.kind, row.field), expected);
         }
-        // 两个组件都有"锁定比例"开关（编辑器态，不写文档）与"重置为默认值"动作。
-        assert_eq!(editor::component_toggles("Transform").len(), 1);
-        assert_eq!(editor::component_toggles("Transform3D").len(), 1);
+        // 第 56 轮：统一后 `scale` 是 `Vec3`，等比锁开关撤掉；"重置为默认值"动作保留。
+        assert!(
+            editor::component_toggles("Transform").is_empty(),
+            "统一后的 Transform 不再有等比锁开关"
+        );
         assert_eq!(app.schema_component_actions("Transform").len(), 1);
-        assert_eq!(app.schema_component_actions("Transform3D").len(), 1);
 
-        // 组件级动作：一次提交写完 5 个字段 = 一条 Undo，结果等于引擎的单位变换。
+        // 组件级动作：一次提交写完 3 个字段 = 一条 Undo，结果等于引擎的单位变换。
         let reset = app.schema_component_actions("Transform")[0].fields.clone();
         assert_eq!(
             app.dispatch(EditorCommand::SetComponentFields {
@@ -1726,8 +1715,8 @@ mod tests {
             ["Transform"]
             .clone();
         assert_eq!(
-            engine::core::transform::Transform::from_component_str(&payload).unwrap(),
-            engine::core::transform::Transform::identity()
+            engine::core::transform::Transform3D::from_component_str(&payload).unwrap(),
+            engine::core::transform::Transform3D::identity()
         );
         // 重置后动作列表变空（视图据此不显示按钮）。
         assert!(app.schema_component_actions("Transform").is_empty());
@@ -1736,26 +1725,26 @@ mod tests {
         assert_eq!(
             app.dispatch(EditorCommand::SetComponentField {
                 entity,
-                component: "Transform3D".to_owned(),
+                component: "Transform".to_owned(),
                 field: "scale".to_owned(),
-                value: "1,1,1".to_owned(),
+                value: "2,2,2".to_owned(),
             }),
             CommandResult::Applied
         );
         assert_eq!(app.history.undo_len(), 2);
         let payload = app.document.current_scene.as_ref().unwrap().scene.entities[&entity].components
-            ["Transform3D"]
+            ["Transform"]
             .clone();
         assert_eq!(
             engine::core::transform::Transform3D::from_component_str(&payload)
                 .unwrap()
                 .scale,
-            engine::core::math3d::Vec3::new(1.0, 1.0, 1.0)
+            engine::core::math3d::Vec3::new(2.0, 2.0, 2.0)
         );
         // 缩放为 0 仍被拒绝（引擎解析器的规则，经兜底门生效）。
         match app.dispatch(EditorCommand::SetComponentField {
             entity,
-            component: "Transform3D".to_owned(),
+            component: "Transform".to_owned(),
             field: "scale".to_owned(),
             value: "0,1,1".to_owned(),
         }) {

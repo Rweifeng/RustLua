@@ -374,7 +374,7 @@ impl EditorApp {
         if self.scene_view_mode == crate::SceneViewMode::View3D {
             let target = entity
                 .components
-                .get("Transform3D")
+                .get("Transform")
                 .and_then(|value| Transform3D::from_component_str(value).ok())
                 .map(|transform| transform.position)
                 .unwrap_or(engine::core::math3d::Vec3::ZERO);
@@ -1175,7 +1175,8 @@ impl EditorApp {
                     .metadata
                     .get("ui.root")
                     .is_some_and(|value| value == "true"),
-                entity.components.contains_key("Transform3D"),
+                engine::core::spatial_transform::entity_space(&entity.components)
+                    == engine::core::spatial_transform::SpatialKind::ThreeD,
                 entity
                     .components
                     .keys()
@@ -2041,7 +2042,7 @@ mod tests {
                         if depth % 2 == 0 {
                             "UiLayout"
                         } else {
-                            "Transform3D"
+                            "Collider"
                         }
                         .to_owned(),
                         "x=1".to_owned(),

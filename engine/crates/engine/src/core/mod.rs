@@ -19,8 +19,6 @@ pub mod camera;
 pub mod char_collect;
 /// Deferred world mutations for safe ECS system iteration.
 pub mod commands;
-/// 摄像机组件的统一迁移（`Camera2D`/`Camera3D` → 单一 `Camera`）。
-pub mod camera_migration;
 /// E21: typed schema registry over serialized component strings.
 pub mod component_schema;
 /// Lightweight JSON-schema validation for `data` tables loaded via Lua.
@@ -142,8 +140,6 @@ pub mod tilemap;
 pub mod time_step;
 /// 2D transform and velocity components with a minimal integration system.
 pub mod transform;
-/// 变换组件的统一迁移（2D 旧写法与 `Transform3D` → 单一 `Transform`）。
-pub mod transform_migration;
 /// 3D transform component and model-matrix construction.
 /// WP1：加载边界的类型化场景编译。
 pub mod typed_scene;

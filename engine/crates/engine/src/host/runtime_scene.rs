@@ -610,12 +610,6 @@ impl RuntimeScene {
         self.last_scene_emission
     }
 
-    /// docs/54 §8-②：最近一次场景加载里"同时带 2D 与 3D 局部变换"的实体名（空 = 无歧义）。
-    #[must_use]
-    pub fn scene_ambiguous_transforms(&self) -> Vec<String> {
-        self.script.scene_ambiguous_transforms()
-    }
-
     /// docs/54 §8-②：最近一次场景加载里**坏的 `parent` 边**（悬空父/自环）的可读描述
     /// （空 = 每条 `parent` 都指向同一文档里的实体且不是自己）。
     #[must_use]
@@ -4701,7 +4695,7 @@ fn load_runtime_scene(project_root: Option<&Path>) -> Scene {
                 .components
                 .insert(
                     "Transform".into(),
-                    "x=640;y=360;rotation=0;scale_x=1;scale_y=1".into(),
+                    "position=640,360,0;rotation=0,0,0,1;scale=1,1,1".into(),
                 );
             scene
                 .entities
@@ -5594,7 +5588,7 @@ mod sdf_tests {
             3,
             "SprClick",
             &[
-                ("Transform", "x=100;y=50;rotation=0;scale_x=1;scale_y=1"),
+                ("Transform", "position=100,50,0;rotation=0,0,0,1;scale=1,1,1"),
                 (
                     "Sprite",
                     "texture=assets/textures/coin.png;size=32x32;pivot=0.5,0.5;tint=1,1,1,1",
@@ -5721,7 +5715,7 @@ mod sdf_tests {
             let entity = scene.entities.get_mut(&SceneEntityId(1)).unwrap();
             entity.components.insert(
                 "Transform".into(),
-                "x=0;y=0;rotation=0;scale_x=1;scale_y=1".into(),
+                "position=0,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
             );
             entity.components.insert(
                 "WorldText".into(),
@@ -5766,7 +5760,7 @@ mod sdf_tests {
             .components
             .insert(
                 "Transform".into(),
-                "x=400;y=200;rotation=0;scale_x=1;scale_y=1".into(),
+                "position=400,200,0;rotation=0,0,0,1;scale=1,1,1".into(),
             );
         let mut runtime = RuntimeScene::from_scene_edit(None, scene).expect("runtime");
         let player = runtime
@@ -5834,7 +5828,7 @@ mod sdf_tests {
             let entity = scene.entities.get_mut(&entity_id).unwrap();
             entity.components.insert(
                 "Transform".into(),
-                "x=640;y=360;rotation=0;scale_x=1;scale_y=1".into(),
+                "position=640,360,0;rotation=0,0,0,1;scale=1,1,1".into(),
             );
             entity.components.insert(
                 "Sprite".into(),
@@ -5900,7 +5894,7 @@ mod sdf_tests {
             let backdrop = scene.entities.get_mut(&SceneEntityId(1)).unwrap();
             backdrop.components.insert(
                 "Transform".into(),
-                "x=640;y=360;rotation=0;scale_x=1;scale_y=1".into(),
+                "position=640,360,0;rotation=0,0,0,1;scale=1,1,1".into(),
             );
             backdrop
                 .components
@@ -5908,7 +5902,7 @@ mod sdf_tests {
             let bar = scene.entities.get_mut(&SceneEntityId(2)).unwrap();
             bar.components.insert(
                 "Transform".into(),
-                "x=640;y=360;rotation=0;scale_x=1;scale_y=1".into(),
+                "position=640,360,0;rotation=0,0,0,1;scale=1,1,1".into(),
             );
             bar.components.insert(
                 "Quad".into(),
@@ -6000,7 +5994,7 @@ mod sdf_tests {
             let entity = scene.entities.get_mut(&SceneEntityId(1)).unwrap();
             entity.components.insert(
                 "Transform".into(),
-                "x=0;y=0;rotation=0;scale_x=1;scale_y=1".into(),
+                "position=0,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
             );
             entity
                 .components
@@ -6054,7 +6048,7 @@ mod sdf_tests {
             scene.add_entity(id, format!("Mesh{}", id.0), None).unwrap();
             let entity = scene.entities.get_mut(&id).unwrap();
             entity.components.insert(
-                "Transform3D".into(),
+                "Transform".into(),
                 "position=0,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
             );
             entity
@@ -6101,7 +6095,7 @@ mod sdf_tests {
             let entity = scene.entities.get_mut(&SceneEntityId(1)).unwrap();
             entity.components.insert(
                 "Transform".into(),
-                "x=640;y=360;rotation=0;scale_x=1;scale_y=1".into(),
+                "position=640,360,0;rotation=0,0,0,1;scale=1,1,1".into(),
             );
             entity.components.insert(
                 "Sprite".into(),
@@ -6113,7 +6107,7 @@ mod sdf_tests {
             let entity = scene.entities.get_mut(&SceneEntityId(2)).unwrap();
             entity.components.insert(
                 "Transform".into(),
-                "x=640;y=300;rotation=0;scale_x=1;scale_y=1".into(),
+                "position=640,300,0;rotation=0,0,0,1;scale=1,1,1".into(),
             );
             // 第二个资源（内置白纹理）：必须与贴图拿到**不同**的句柄。
             entity
@@ -6178,11 +6172,11 @@ mod sdf_tests {
         scene.add_entity(child, "Part", Some(parent)).unwrap();
         scene.entities.get_mut(&parent).unwrap().components.insert(
             "Transform".into(),
-            "x=10;y=0;rotation=0;scale_x=1;scale_y=1".into(),
+            "position=10,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
         );
         scene.entities.get_mut(&child).unwrap().components.insert(
             "Transform".into(),
-            "x=2;y=0;rotation=0;scale_x=1;scale_y=1".into(),
+            "position=2,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
         );
         let mut runtime =
             RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("runtime scene");
@@ -6308,7 +6302,7 @@ mod sdf_tests {
         for (id, x) in [(ring, 10.0), (middle, 2.0), (leaf, 1.0)] {
             scene.entities.get_mut(&id).unwrap().components.insert(
                 "Transform".into(),
-                format!("x={x};y=0;rotation=0;scale_x=1;scale_y=1"),
+                format!("position={x},0,0;rotation=0,0,0,1;scale=1,1,1"),
             );
         }
         let mut runtime =
@@ -6511,7 +6505,7 @@ mod sdf_tests {
             .components
             .insert(
                 "Transform".into(),
-                "x=1;y=2;rotation=0;scale_x=1;scale_y=1".into(),
+                "position=1,2,0;rotation=0,0,0,1;scale=1,1,1".into(),
             );
         let mut runtime =
             RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("runtime scene");
@@ -6556,7 +6550,7 @@ mod sdf_tests {
             let entity = scene.entities.get_mut(&SceneEntityId(1)).unwrap();
             entity.components.insert(
                 "Transform".into(),
-                "x=640;y=360;rotation=0;scale_x=1;scale_y=1".into(),
+                "position=640,360,0;rotation=0,0,0,1;scale=1,1,1".into(),
             );
             entity.components.insert(
                 "Sprite".into(),
@@ -6628,7 +6622,7 @@ mod sdf_tests {
             let entity = scene.entities.get_mut(&SceneEntityId(1)).unwrap();
             entity.components.insert(
                 "Transform".into(),
-                "x=640;y=360;rotation=0;scale_x=1;scale_y=1".into(),
+                "position=640,360,0;rotation=0,0,0,1;scale=1,1,1".into(),
             );
             entity.components.insert(
                 "Sprite".into(),
@@ -6701,7 +6695,7 @@ mod sdf_tests {
             let entity = scene.entities.get_mut(&id).unwrap();
             entity.components.insert(
                 "Transform".into(),
-                "x=640;y=360;rotation=0;scale_x=1;scale_y=1".into(),
+                "position=640,360,0;rotation=0,0,0,1;scale=1,1,1".into(),
             );
             entity.components.insert(
                 "Sprite".into(),
@@ -6751,7 +6745,7 @@ mod sdf_tests {
             let entity = scene.entities.get_mut(&SceneEntityId(1)).unwrap();
             entity.components.insert(
                 "Transform".into(),
-                "x=640;y=360;rotation=0;scale_x=1;scale_y=1".into(),
+                "position=640,360,0;rotation=0,0,0,1;scale=1,1,1".into(),
             );
             entity.components.insert(
                 "Sprite".into(),
@@ -6784,7 +6778,7 @@ mod sdf_tests {
             let entity = scene.entities.get_mut(&SceneEntityId(1)).unwrap();
             entity.components.insert(
                 "Transform".into(),
-                "x=0;y=0;rotation=0;scale_x=1;scale_y=1".into(),
+                "position=0,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
             );
             entity.components.insert(
                 "WorldText".into(),
@@ -6840,7 +6834,7 @@ mod sdf_tests {
         let entity = scene.entities.get_mut(&id).unwrap();
         entity.components.insert(
             "Transform".into(),
-            "x=640;y=360;rotation=0;scale_x=1;scale_y=1".into(),
+            "position=640,360,0;rotation=0,0,0,1;scale=1,1,1".into(),
         );
         // 2×2 瓦片地图：用真实 tileset 纹理，保证纹理注册与 UV 都走正常路径。
         entity.components.insert(
@@ -6916,7 +6910,7 @@ mod sdf_tests {
         let entity = scene.entities.get_mut(&id).unwrap();
         entity.components.insert(
             "Transform".into(),
-            "x=640;y=360;rotation=0;scale_x=1;scale_y=1".into(),
+            "position=640,360,0;rotation=0,0,0,1;scale=1,1,1".into(),
         );
         entity.components.insert(
             "Sprite".into(),
@@ -6972,7 +6966,7 @@ mod sdf_tests {
         // 默认 2D 相机中心 (640,360)、zoom 1 ⇒ 世界 (-40,0) 落在 2D 视口之外。
         entity.components.insert(
             "Transform".into(),
-            "x=-40;y=0;rotation=0;scale_x=1;scale_y=1".into(),
+            "position=-40,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
         );
         entity.components.insert(
             "Sprite".into(),
@@ -6995,7 +6989,7 @@ mod sdf_tests {
         scene.add_entity(wall, "Wall", None).unwrap();
         let entity = scene.entities.get_mut(&wall).unwrap();
         entity.components.insert(
-            "Transform3D".into(),
+            "Transform".into(),
             "position=0,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
         );
         entity
@@ -7028,7 +7022,7 @@ mod sdf_tests {
         let entity = scene.entities.get_mut(&source).unwrap();
         entity.components.insert(
             "Transform".into(),
-            "x=640;y=360;rotation=0;scale_x=1;scale_y=1".into(),
+            "position=640,360,0;rotation=0,0,0,1;scale=1,1,1".into(),
         );
         // 60 粒子/秒、步长 1/60 秒 ⇒ 每步恰好 1 个。
         entity.components.insert(
@@ -7061,7 +7055,7 @@ mod sdf_tests {
         let entity = burst_scene.entities.get_mut(&id).unwrap();
         entity.components.insert(
             "Transform".into(),
-            "x=640;y=360;rotation=0;scale_x=1;scale_y=1".into(),
+            "position=640,360,0;rotation=0,0,0,1;scale=1,1,1".into(),
         );
         entity
             .components
@@ -7078,7 +7072,7 @@ mod sdf_tests {
         );
     }
 
-    /// docs/54 §8-①：场景声明的 `Camera2D` 成为**初始** 2D 相机；没声明时保持历史默认。
+    /// docs/54 §8-①：场景声明的**正交** `Camera` 成为**初始** 2D 相机；没声明时保持历史默认。
     #[test]
     fn scene_declared_camera2d_becomes_the_initial_runtime_camera() {
         let root = game_root();
@@ -7090,7 +7084,10 @@ mod sdf_tests {
             .get_mut(&id)
             .unwrap()
             .components
-            .insert("Camera2D".into(), "center=100,50;zoom=2".into());
+            .insert(
+                "Camera".into(),
+                "projection=orthographic;center=100,50;zoom=2".into(),
+            );
         let runtime = RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("runtime");
         let camera = runtime.camera_2d();
         assert_eq!(camera.center, Vec2::new(100.0, 50.0));
@@ -7119,7 +7116,7 @@ mod sdf_tests {
             scene.add_entity(ball, "Ball", None).unwrap();
             let entity = scene.entities.get_mut(&ball).unwrap();
             entity.components.insert(
-                "Transform3D".into(),
+                "Transform".into(),
                 "position=0,5,0;rotation=0,0,0,1;scale=1,1,1".into(),
             );
             entity.components.insert(
@@ -7206,7 +7203,7 @@ mod sdf_tests {
         scene.add_entity(ball, "Ball", None).unwrap();
         let entity = scene.entities.get_mut(&ball).unwrap();
         entity.components.insert(
-            "Transform3D".into(),
+            "Transform".into(),
             "position=0,5,0;rotation=0,0,0,1;scale=1,1,1".into(),
         );
         entity
@@ -7243,12 +7240,23 @@ mod sdf_tests {
         scene.metadata.insert("spatial".into(), "local".into());
         scene.add_entity(rig, "Rig", None).unwrap();
         scene.add_entity(child, "Child", Some(rig)).unwrap();
+        // 统一 `Transform` 之后，空间种类由实体携带的**其它组件**推断
+        //（`spatial_transform::entity_space`）：这条断言读的是 3D 世界变换（运行时 `Transform3D`
+        // 与 Lua `transform3d.world`），因此父子都必须带 3D 专属组件，否则运行时会按 2D 落库。
+        for id in [rig, child] {
+            scene
+                .entities
+                .get_mut(&id)
+                .unwrap()
+                .components
+                .insert("MeshRenderer".into(), "mesh=__ground_plane__".into());
+        }
         scene.entities.get_mut(&rig).unwrap().components.insert(
-            "Transform3D".into(),
+            "Transform".into(),
             "position=10,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
         );
         scene.entities.get_mut(&child).unwrap().components.insert(
-            "Transform3D".into(),
+            "Transform".into(),
             "position=0,5,0;rotation=0,0,0,1;scale=1,1,1".into(),
         );
 
@@ -7303,24 +7311,16 @@ mod sdf_tests {
     }
 
     /// docs/54 §8-②：「运行时只有一份权威 LocalTransform」在加载期就要可见：
-    /// 同一实体同时声明 `Transform` 与 `Transform3D` 会被点名，坏 `parent` 边（悬空/自环）
-    /// 同样会被点名——两者都不该只在"开启继承后逐帧传播"时才浮现。
+    /// 坏 `parent` 边（悬空/自环）在加载期就被点名——不该只在"开启继承后逐帧传播"时才浮现。
+    ///
+    /// （第 57 轮起"一个实体同时带 `Transform` 与 `Transform3D`"这件事**无法再表达**：
+    /// 变换只剩一个组件名，因此那条点位随之删除，见 `scene_space`。）
     #[test]
-    fn loading_a_scene_reports_two_local_truths_and_broken_parent_edges() {
+    fn loading_a_scene_reports_broken_parent_edges() {
         let root = game_root();
-        let mut scene = Scene::new("truth-audit");
-        let both = crate::core::scene::SceneEntityId(1);
+        let mut scene = Scene::new("parent-audit");
         let dangling = crate::core::scene::SceneEntityId(2);
-        scene.add_entity(both, "Both", None).unwrap();
         scene.add_entity(dangling, "Dangling", None).unwrap();
-        scene.entities.get_mut(&both).unwrap().components.insert(
-            "Transform".into(),
-            "x=1;y=2;rotation=0;scale_x=1;scale_y=1".into(),
-        );
-        scene.entities.get_mut(&both).unwrap().components.insert(
-            "Transform3D".into(),
-            "position=1,2,3;rotation=0,0,0,1;scale=1,1,1".into(),
-        );
         scene
             .entities
             .get_mut(&dangling)
@@ -7328,18 +7328,13 @@ mod sdf_tests {
             .components
             .insert(
                 "Transform".into(),
-                "x=0;y=0;rotation=0;scale_x=1;scale_y=1".into(),
+                "position=0,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
             );
         // 手改成悬空父：`Scene::add_entity` 会拒绝这种边，因此只能直接写字段。
         scene.entities.get_mut(&dangling).unwrap().parent =
             Some(crate::core::scene::SceneEntityId(999));
 
         let runtime = RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("runtime");
-        assert_eq!(
-            runtime.scene_ambiguous_transforms(),
-            vec!["Both".to_owned()],
-            "同存两种局部变换必须点名"
-        );
         assert_eq!(
             runtime.scene_parent_issues(),
             vec!["Dangling → 不存在的父 999".to_owned()],
@@ -7363,7 +7358,7 @@ mod sdf_tests {
             // **视口外剔除**挡掉，测出来的 0 顶点就不是遮罩造成的了。
             entity.components.insert(
                 "Transform".into(),
-                "x=640;y=360;rotation=0;scale_x=1;scale_y=1".into(),
+                "position=640,360,0;rotation=0,0,0,1;scale=1,1,1".into(),
             );
             entity.components.insert(
                 "Sprite".into(),
@@ -7419,11 +7414,11 @@ mod sdf_tests {
         scene.add_entity(camera, "Cam", None).unwrap();
         scene.add_entity(mesh, "Box", None).unwrap();
         scene.entities.get_mut(&camera).unwrap().components.insert(
-            "Camera3D".into(),
-            "position=0,0,5;target=0,0,0;fov=60;near=0.1;far=100".into(),
+            "Camera".into(),
+            "projection=perspective;position=0,0,5;target=0,0,0;fov=60;near=0.1;far=100".into(),
         );
         scene.entities.get_mut(&mesh).unwrap().components.insert(
-            "Transform3D".into(),
+            "Transform".into(),
             "position=0,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
         );
         scene
@@ -7474,7 +7469,7 @@ mod sdf_tests {
         let entity = scene.entities.get_mut(&panel).unwrap();
         entity.components.insert(
             "Transform".into(),
-            "x=0;y=0;rotation=0;scale_x=1;scale_y=1".into(),
+            "position=0,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
         );
         entity.components.insert(
             "Image".into(),
@@ -7526,11 +7521,11 @@ mod sdf_tests {
         scene.add_entity(cam, "Cam", None).unwrap();
         scene.add_entity(wall, "Wall", None).unwrap();
         scene.entities.get_mut(&cam).unwrap().components.insert(
-            "Camera3D".into(),
-            "position=0,0,5;target=0,0,0;fov=60;near=0.1;far=100".into(),
+            "Camera".into(),
+            "projection=perspective;position=0,0,5;target=0,0,0;fov=60;near=0.1;far=100".into(),
         );
         scene.entities.get_mut(&wall).unwrap().components.insert(
-            "Transform3D".into(),
+            "Transform".into(),
             "position=0,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
         );
         scene.entities.get_mut(&wall).unwrap().components.insert(
@@ -7580,21 +7575,30 @@ mod sdf_tests {
         scene.add_entity(rig, "Rig", None).unwrap();
         scene.add_entity(cam, "Cam", Some(rig)).unwrap();
         scene.add_entity(ground, "Ground", None).unwrap();
+        // 相机姿态取的是**世界**变换（`world_transform_3d_lazy` 沿父链组合），父实体因此也必须
+        // 落成 3D：空间种类由实体携带的其它组件推断（`spatial_transform::entity_space`），
+        // 没有 3D 专属组件的父会按 2D 落库，组合会在这里断掉。
+        scene
+            .entities
+            .get_mut(&rig)
+            .unwrap()
+            .components
+            .insert("MeshRenderer".into(), "mesh=__ground_plane__".into());
         scene.entities.get_mut(&rig).unwrap().components.insert(
-            "Transform3D".into(),
+            "Transform".into(),
             "position=10,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
         );
         scene.entities.get_mut(&cam).unwrap().components.insert(
-            "Transform3D".into(),
+            "Transform".into(),
             "position=0,0,6;rotation=0,0,0,1;scale=1,1,1".into(),
         );
         scene.entities.get_mut(&cam).unwrap().components.insert(
-            "Camera3D".into(),
-            "position=0,0,99;target=0,0,0;fov=60;near=0.1;far=100;pose=transform".into(),
+            "Camera".into(),
+            "projection=perspective;position=0,0,99;target=0,0,0;fov=60;near=0.1;far=100;pose=transform".into(),
         );
         // `scene_3d` 需要至少一个 drawable 才会返回 Some。
         scene.entities.get_mut(&ground).unwrap().components.insert(
-            "Transform3D".into(),
+            "Transform".into(),
             "position=0,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
         );
         scene
@@ -7631,7 +7635,7 @@ mod sdf_tests {
             let entity = scene.entities.get_mut(&id).unwrap();
             entity.components.insert(
                 "Transform".into(),
-                format!("x={x};y=360;rotation=0;scale_x={scale};scale_y={scale}"),
+                format!("position={x},360,0;rotation=0,0,0,1;scale={scale},{scale},1"),
             );
             entity.components.insert(
                 "Sprite".into(),
@@ -7716,7 +7720,7 @@ mod sdf_tests {
             let entity = scene.entities.get_mut(&id).unwrap();
             entity.components.insert(
                 "Transform".into(),
-                "x=640;y=360;rotation=0;scale_x=1;scale_y=1".into(),
+                "position=640,360,0;rotation=0,0,0,1;scale=1,1,1".into(),
             );
             entity
                 .components
@@ -7756,7 +7760,7 @@ mod sdf_tests {
         let ui_entity = ui_scene.entities.get_mut(&ui_id).unwrap();
         ui_entity.components.insert(
             "Transform".into(),
-            "x=0;y=0;rotation=0;scale_x=1;scale_y=1".into(),
+            "position=0,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
         );
         ui_entity.components.insert(
             "UiLayout".into(),
@@ -7798,15 +7802,15 @@ mod sdf_tests {
         scene.add_entity(lone, "Lone", None).unwrap();
         scene.entities.get_mut(&parent).unwrap().components.insert(
             "Transform".into(),
-            "x=10;y=5;rotation=0;scale_x=2;scale_y=2".into(),
+            "position=10,5,0;rotation=0,0,0,1;scale=2,2,1".into(),
         );
         scene.entities.get_mut(&child).unwrap().components.insert(
             "Transform".into(),
-            "x=-3.5;y=0;rotation=0;scale_x=1;scale_y=1".into(),
+            "position=-3.5,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
         );
         scene.entities.get_mut(&lone).unwrap().components.insert(
             "Transform".into(),
-            "x=7;y=9;rotation=0;scale_x=1;scale_y=1".into(),
+            "position=7,9,0;rotation=0,0,0,1;scale=1,1,1".into(),
         );
         let mut runtime =
             RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("runtime scene");
@@ -7849,7 +7853,7 @@ mod sdf_tests {
         let entity = scene.entities.get_mut(&id).unwrap();
         entity.components.insert(
             "Transform".into(),
-            "x=0;y=0;rotation=0;scale_x=1;scale_y=1".into(),
+            "position=0,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
         );
         entity
             .components
@@ -7913,12 +7917,12 @@ mod sdf_tests {
         scene.add_entity(child, "Child", Some(parent)).unwrap();
         scene.entities.get_mut(&parent).unwrap().components.insert(
             "Transform".into(),
-            "x=10;y=5;rotation=0;scale_x=2;scale_y=2".into(),
+            "position=10,5,0;rotation=0,0,0,1;scale=2,2,1".into(),
         );
         // 迁移后的局部值：世界 x=3 ⇒ 局部 (3-10)/2 = -3.5。
         scene.entities.get_mut(&child).unwrap().components.insert(
             "Transform".into(),
-            "x=-3.5;y=0;rotation=0;scale_x=1;scale_y=1".into(),
+            "position=-3.5,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
         );
         let mut runtime =
             RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("runtime scene");
@@ -7982,11 +7986,11 @@ mod sdf_tests {
         scene.add_entity(child, "Member", Some(parent)).unwrap();
         scene.entities.get_mut(&parent).unwrap().components.insert(
             "Transform".into(),
-            "x=10;y=5;rotation=0;scale_x=2;scale_y=2".into(),
+            "position=10,5,0;rotation=0,0,0,1;scale=2,2,1".into(),
         );
         scene.entities.get_mut(&child).unwrap().components.insert(
             "Transform".into(),
-            "x=1;y=2;rotation=0;scale_x=1;scale_y=1".into(),
+            "position=1,2,0;rotation=0,0,0,1;scale=1,1,1".into(),
         );
         let runtime =
             RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("runtime scene");
@@ -8061,7 +8065,7 @@ mod sdf_tests {
         for (id, x) in [(parent, 0.0_f32), (child, 4.0), (orphan, 8.0)] {
             scene.entities.get_mut(&id).unwrap().components.insert(
                 "Transform".into(),
-                format!("x={x};y=0;rotation=0;scale_x=1;scale_y=1"),
+                format!("position={x},0,0;rotation=0,0,0,1;scale=1,1,1"),
             );
         }
         let runtime =
@@ -8292,7 +8296,7 @@ mod sdf_tests {
         scene.add_entity(mesh, "Mesh", None).unwrap();
         // `scene_3d` 以 drawable 为准：没有网格实体时直接返回 None，放一个网格当锚点。
         scene.entities.get_mut(&mesh).unwrap().components.insert(
-            "Transform3D".into(),
+            "Transform".into(),
             "position=0,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
         );
         scene
@@ -8302,16 +8306,16 @@ mod sdf_tests {
             .components
             .insert("MeshRenderer".into(), "mesh=assets/models/test.glb".into());
         scene.entities.get_mut(&posed).unwrap().components.insert(
-            "Transform3D".into(),
+            "Transform".into(),
             "position=20,5,0;rotation=0,0.7071068,0,0.7071068;scale=1,1,1".into(),
         );
         scene.entities.get_mut(&posed).unwrap().components.insert(
-            "Camera3D".into(),
-            "position=0,0,6;target=0,0,0;fov=60;near=0.1;far=100;pose=transform".into(),
+            "Camera".into(),
+            "projection=perspective;position=0,0,6;target=0,0,0;fov=60;near=0.1;far=100;pose=transform".into(),
         );
         scene.entities.get_mut(&plain).unwrap().components.insert(
-            "Camera3D".into(),
-            "position=0,0,6;target=0,0,0;fov=60;near=0.1;far=100".into(),
+            "Camera".into(),
+            "projection=perspective;position=0,0,6;target=0,0,0;fov=60;near=0.1;far=100".into(),
         );
         let runtime =
             RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("runtime scene");
@@ -8347,7 +8351,7 @@ mod sdf_tests {
             .unwrap()
             .components
             .insert(
-                "Transform3D".into(),
+                "Transform".into(),
                 "position=20,5,0;rotation=0,0.7071068,0,0.7071068;scale=1,1,1".into(),
             );
         control
@@ -8356,8 +8360,8 @@ mod sdf_tests {
             .unwrap()
             .components
             .insert(
-                "Camera3D".into(),
-                "position=0,0,6;target=0,0,0;fov=60;near=0.1;far=100".into(),
+                "Camera".into(),
+                "projection=perspective;position=0,0,6;target=0,0,0;fov=60;near=0.1;far=100".into(),
             );
         control
             .entities
@@ -8365,7 +8369,7 @@ mod sdf_tests {
             .unwrap()
             .components
             .insert(
-                "Transform3D".into(),
+                "Transform".into(),
                 "position=0,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
             );
         control

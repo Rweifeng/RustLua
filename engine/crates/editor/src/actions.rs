@@ -4173,7 +4173,11 @@ mod tests {
                 .get_mut(&id)
                 .unwrap()
                 .components
-                .insert("Transform".to_owned(), "x=999;y=999".to_owned());
+                .insert(
+                    "Transform".to_owned(),
+                    "position=999.000000000,999.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000"
+                        .to_owned(),
+                );
             scene.mark_dirty();
         }
         // 拖拽预览值从**文档**读（`Transform` 缓冲已随迁移删除，第 36 轮）。

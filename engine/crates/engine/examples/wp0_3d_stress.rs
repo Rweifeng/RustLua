@@ -279,8 +279,8 @@ fn build_scene(mesh_count: usize) -> Scene {
         .unwrap()
         .components
         .insert(
-            "Camera3D".into(),
-            "position=0,0,20;target=0,0,0;fov=60;near=0.1;far=100".into(),
+            "Camera".into(),
+            "projection=perspective;position=0,0,20;target=0,0,0;fov=60;near=0.1;far=100".into(),
         );
     scene.add_entity(SceneEntityId(2), "Sun", None).unwrap();
     scene
@@ -299,7 +299,7 @@ fn build_scene(mesh_count: usize) -> Scene {
         let z = (index / 100) as f32 * 0.18 - (mesh_count as f32 / 100.0) * 0.09;
         let entity = scene.entities.get_mut(&id).unwrap();
         entity.components.insert(
-            "Transform3D".into(),
+            "Transform".into(),
             format!("position={x},0,{z};rotation=0,0,0,1;scale=0.08,0.08,0.08"),
         );
         entity.components.insert(

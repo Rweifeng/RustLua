@@ -107,7 +107,7 @@ impl EditorApp {
                         .map_err(|error| error.to_string())?;
                     if let Some(entity) = scene.scene.entities.get_mut(&id) {
                         entity.components.insert(
-                            "Transform3D".into(),
+                            "Transform".into(),
                             Transform3D::default().to_component_str(),
                         );
                         entity
@@ -149,7 +149,7 @@ impl EditorApp {
                     if let Some(entity) = scene.scene.entities.get_mut(&id) {
                         entity.components.insert(
                             "Transform".into(),
-                            "x=0;y=0;rotation=0;scale_x=1;scale_y=1".into(),
+                            "position=0,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
                         );
                         // 新建精灵按源纹理实际像素尺寸生成，编辑器包围框与实际显示一致；
                         // 纹理读取失败时回退到默认 32×32。

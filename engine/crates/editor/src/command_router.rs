@@ -491,6 +491,52 @@ mod tests {
         app
     }
 
+    /// **唯一的变换与相机组件**（第 57 轮）：从"添加组件"入口加进来的默认载荷必须是
+    /// **统一形态**，并且能被引擎解析器读回——这是"旧名删掉之后，新实体仍然合法"的常驻门。
+    ///
+    /// 两条默认值都来自**引擎类型**（`Transform3D::identity()` / `Camera3D::default()`），
+    /// 编辑器里没有第二份手写字面量。
+    #[test]
+    fn adding_transform_and_camera_writes_unified_payloads() {
+        let mut app = test_app();
+        app.project_loaded = true;
+        let entity = SceneEntityId(1);
+        for component in ["Transform", "Camera"] {
+            assert_eq!(
+                app.dispatch(EditorCommand::AddComponent {
+                    entity,
+                    component: component.to_owned(),
+                }),
+                CommandResult::Applied,
+                "{component} 应能作为组件加进来"
+            );
+        }
+        let components = &app.document.current_scene.as_ref().unwrap().scene.entities[&entity]
+            .components;
+        assert_eq!(
+            engine::core::transform::Transform3D::from_component_str(&components["Transform"])
+                .expect("统一形态的 Transform"),
+            engine::core::transform::Transform3D::identity()
+        );
+        let camera = engine::core::camera::CameraComponent::from_component_str(&components["Camera"])
+            .expect("统一形态的 Camera");
+        assert_eq!(
+            camera.projection(),
+            engine::core::camera::CameraProjection::Perspective,
+            "默认添加的是透视相机（要正交就把判别字段改成 orthographic）"
+        );
+        // 旧名不得再被认识：加进文档只会得到"未知组件"错误，而不是悄悄写一个没人读的键。
+        assert!(app.dispatch(EditorCommand::AddComponent {
+            entity,
+            component: "Transform3D".to_owned(),
+        }) != CommandResult::Applied);
+        assert!(
+            !app.document.current_scene.as_ref().unwrap().scene.entities[&entity]
+                .components
+                .contains_key("Transform3D")
+        );
+    }
+
     /// 实体级命令：创建 / 复制 / 删除 / 换父 / 选中都走同一入口，且各自只产生一条历史。
     #[test]
     fn entity_commands_apply_through_dispatch_and_undo_as_one_step() {
@@ -514,7 +560,9 @@ mod tests {
             Some(root)
         );
 
-        // 3D 实体带 Transform3D 组件。
+        // 第 57 轮：变换统一成一个组件，因此"新建 3D 实体"与"新建实体"写的是**同一个**
+        // `Transform`（单位变换）；空间由实体随后挂上的组件推断（`MeshRenderer`/`Light`/… ⇒ 3D）。
+        // 这条断言把"写入的载荷是统一形态"钉住（旧名 `Transform3D` 不会再出现）。
         assert_eq!(
             app.dispatch(EditorCommand::CreateEntity {
                 name: "Box".to_owned(),
@@ -524,10 +572,11 @@ mod tests {
             editor::CommandResult::Applied
         );
         let boxed = app.selection.primary().expect("3D 实体应被选中");
-        assert!(
-            app.document.current_scene.as_ref().unwrap().scene.entities[&boxed]
-                .components
-                .contains_key("Transform3D")
+        let payload = &app.document.current_scene.as_ref().unwrap().scene.entities[&boxed]
+            .components["Transform"];
+        assert_eq!(
+            engine::core::transform::Transform3D::from_component_str(payload).expect("统一形态"),
+            engine::core::transform::Transform3D::identity()
         );
 
         // 复制：在选中实体旁生成副本，历史 +1。

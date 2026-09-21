@@ -237,7 +237,10 @@ fn hud_scene(camera: Camera2D, viewport: Viewport) -> Scene {
     let entity = scene.entities.get_mut(&sprite).unwrap();
     entity.components.insert(
         "Transform".into(),
-        format!("x={};y={};rotation=0;scale_x=1;scale_y=1", world.x, world.y),
+        format!(
+            "position={},{},0;rotation=0,0,0,1;scale=1,1,1",
+            world.x, world.y
+        ),
     );
     entity.components.insert(
         "Sprite".into(),
@@ -250,7 +253,7 @@ fn hud_scene(camera: Camera2D, viewport: Viewport) -> Scene {
     let entity = scene.entities.get_mut(&panel).unwrap();
     entity.components.insert(
         "Transform".into(),
-        "x=0;y=0;rotation=0;scale_x=1;scale_y=1".into(),
+        "position=0,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
     );
     entity.components.insert(
         "Image".into(),
@@ -267,7 +270,10 @@ fn hud_scene(camera: Camera2D, viewport: Viewport) -> Scene {
     let entity = scene.entities.get_mut(&probe).unwrap();
     entity.components.insert(
         "Transform".into(),
-        format!("x={};y={};rotation=0;scale_x=1;scale_y=1", world.x, world.y),
+        format!(
+            "position={},{},0;rotation=0,0,0,1;scale=1,1,1",
+            world.x, world.y
+        ),
     );
     entity.components.insert(
         "Collider".into(),

@@ -73,7 +73,7 @@ pub mod inspector_state;
 
 pub use inspector_state::{
     Collider3dFields, ContainerFields, InspectorError, InspectorSnapshot, InspectorState,
-    Transform3DFields, TransformFields,
+    TransformFields,
 };
 
 pub mod scene_tree_state;

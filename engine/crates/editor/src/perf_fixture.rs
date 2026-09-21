@@ -115,7 +115,7 @@ pub fn build_scene_fixture(spec: FixtureSpec) -> SceneFixture {
             .expect("fixture root exists")
             .components
             .insert(
-                "Transform3D".to_owned(),
+                "Transform".to_owned(),
                 Transform3D {
                     position: Vec3::new(index as f32, 0.0, 0.0),
                     ..Transform3D::default()
@@ -154,7 +154,7 @@ pub fn build_scene_fixture(spec: FixtureSpec) -> SceneFixture {
             .expect("fixture child exists")
             .components
             .insert(
-                "Transform3D".to_owned(),
+                "Transform".to_owned(),
                 Transform3D {
                     position: Vec3::new(0.0, slots as f32, 0.0),
                     ..Transform3D::default()
@@ -225,7 +225,7 @@ mod tests {
         for entity in fixture.document.scene.entities.values() {
             if let Some(parent) = entity.parent {
                 assert!(fixture.document.scene.entities.contains_key(&parent));
-                assert!(entity.components.contains_key("Transform3D"));
+                assert!(entity.components.contains_key("Transform"));
             }
         }
     }

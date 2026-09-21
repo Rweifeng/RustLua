@@ -185,7 +185,7 @@ impl EditorApp {
                         .map_err(|e| e.to_string())?;
                     if let Some(entity) = scene.scene.entities.get_mut(&id) {
                         entity.components.insert(
-                            "Transform3D".into(),
+                            "Transform".into(),
                             Transform3D::default().to_component_str(),
                         );
                     }

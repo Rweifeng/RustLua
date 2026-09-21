@@ -156,10 +156,6 @@ struct ScriptState {
     /// Authoring ID → live ECS handle. The editor uses this to preview a drag
     /// by mutating one component without rebuilding the whole runtime.
     scene_entities: BTreeMap<SceneEntityId, EntityId>,
-    /// docs/54 §8-②：**加载期**发现的"两份局部真源"实体名（同时带 `Transform` 与
-    /// `Transform3D`）。运行时传播也会报同一条诊断，但那条只在开启继承时逐帧产生，
-    /// 加载期这一份保证"编辑一个含歧义实体的场景"立刻能看到问题。
-    scene_ambiguous_transforms: Vec<String>,
     /// docs/54 §8-②：最近一次场景加载里**坏的 `parent` 边**（悬空父/自环）的可读描述。
     /// 运行时会把这类边当成"没有父"（容错），因此必须同时可发现，否则子树会静默少一层位移。
     scene_parent_issues: Vec<String>,
@@ -547,20 +543,6 @@ impl LuaRuntime {
         let mut state = self.state.borrow_mut();
         state.scene = Some(scene.name.clone());
         state.scene_entities.clear();
-        // docs/54 §8-②：加载期就把"两份局部真源"找出来。运行时的传播诊断只在开启继承时逐帧
-        // 产生，而这类问题属于**数据**问题，应该在载入/编辑场景时立刻可见。
-        // 判定与文档侧审计共用 `scene_space`（同一份实现）。
-        state.scene_ambiguous_transforms =
-            crate::core::scene_space::ambiguous_local_transform_entities(scene)
-                .into_iter()
-                .map(|id| {
-                    scene
-                        .entities
-                        .get(&id)
-                        .filter(|entity| !entity.name.is_empty())
-                        .map_or_else(|| format!("entity {}", id.0), |entity| entity.name.clone())
-                })
-                .collect();
         // 坏 parent 边（悬空/自环）同样在这里点名：运行时会把它们当成"没有父"，静默下去就成了
         // "子树莫名其妙少了一层位移"。
         state.scene_parent_issues = crate::core::scene_space::parent_link_issues(scene)
@@ -615,13 +597,6 @@ impl LuaRuntime {
                 target: "scene",
                 issue = %issue,
                 "[scene] 场景里的 parent 边坏了（docs/54 §8-②）"
-            );
-        }
-        for name in &state.scene_ambiguous_transforms {
-            tracing::warn!(
-                target: "scene",
-                entity = %name,
-                "[scene] 该实体同时带 Transform 与 Transform3D：局部变换真源不唯一（docs/54 §8-②）"
             );
         }
         let mut count = 0;
@@ -745,38 +720,42 @@ impl LuaRuntime {
         _resources: &BTreeMap<String, AssetId>,
     ) -> Result<EntityId, LuaBridgeError> {
         let id = state.world.spawn();
-        // **统一 `Transform`**（第 53 轮）：同一个组件名可能是 2D 旧形态，也可能是统一 3D 形态；
-        // `Transform3D` 是旧的 3D 名。这里按形态分流到既有的两条插入路径，语义与原实现一致；
-        // 两种形态都解析不了时仍然报错（不静默丢组件）。
-        let transform_2d = components
-            .get("Transform")
-            .filter(|value| Transform::from_component_str(value).is_ok())
-            .cloned();
-        let transform_3d = components
-            .get("Transform3D")
-            .cloned()
-            .or_else(|| {
-                components
-                    .get("Transform")
-                    .filter(|value| Transform::from_component_str(value).is_err())
-                    .cloned()
-            });
-        if let Some(value) = components.get("Transform")
-            && crate::core::spatial_transform::LocalTransform::from_unified_component_str(value)
-                .is_err()
-        {
-            return Err(LuaBridgeError::Api(format!(
-                "entity {name:?} has an invalid Transform"
-            )));
-        }
-        if let Some(value) = transform_2d.as_deref() {
-            let transform = Transform::from_component_str(value).map_err(|error| {
-                LuaBridgeError::Api(format!("entity {name:?} has an invalid Transform: {error}"))
+        // **唯一的 `Transform` 组件**：载荷只有一个形态（`position/rotation/scale`），
+        // 2D 还是 3D 由实体携带的**其它组件**推断（`spatial_transform::entity_space`），
+        // 推断结果决定插进运行时世界的哪一份表示：2D 快路径（平面 f32 弧度，10k 精灵档实测过）
+        // 还是统一 3D 表示。2D 消费方（SpriteBatch / 2D 物理 / Lua `transform.get`）读前者，
+        // 3D 消费方读后者——两边都拿得到同一个组件里的同一份数据。
+        let raw_transform = components.get("Transform").cloned();
+        if let Some(value) = raw_transform.as_deref() {
+            let local = crate::core::spatial_transform::LocalTransform::from_unified_component_str(
+                value,
+            )
+            .map_err(|reason| {
+                LuaBridgeError::Api(format!("entity {name:?} has an invalid Transform: {reason}"))
             })?;
-            state
-                .world
-                .insert(id, transform)
-                .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
+            let space = crate::core::spatial_transform::entity_space(components);
+            match space {
+                crate::core::spatial_transform::SpatialKind::TwoD => {
+                    let flat = local.to_2d();
+                    state
+                        .world
+                        .insert(id, flat)
+                        .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
+                }
+                crate::core::spatial_transform::SpatialKind::ThreeD => {
+                    state
+                        .world
+                        .insert(
+                            id,
+                            Transform3D {
+                                position: local.translation,
+                                rotation: local.rotation,
+                                scale: local.scale,
+                            },
+                        )
+                        .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
+                }
+            }
         }
         if let Some(raw) = components.get("Sprite") {
             let component = SpriteComponent::from_component_str(raw).map_err(|error| {
@@ -821,28 +800,19 @@ impl LuaRuntime {
                 .insert(id, tilemap)
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
         }
-        // docs/54 §8-①：场景可以声明自带的 2D（正交）相机。它作为**初始**相机生效；
-        // 之后 Lua `camera2d.*` 与相机控制器照旧可以移动它（不是第二份姿态真源）。
+        // docs/54 §8-①：场景可以声明自带的相机。它作为**初始**相机生效；之后 Lua
+        // `camera2d.*`/`camera3d.*` 与相机控制器照旧可以移动它（不是第二份姿态真源）。
         //
-        // 第 53 轮：统一 `Camera` 组件按**投影判别字段**落回这两条既有路径，
-        // 因此旧名（`Camera2D`/`Camera3D`）与统一名可以同时存在、互不干扰。
+        // **唯一的 `Camera` 组件**：投影由判别字段给出，运行时按投影分支落进两份既有表示。
         let unified_camera = components
             .get("Camera")
-            .map(|value| crate::core::camera_migration::CameraComponent::from_component_str("Camera", value))
+            .map(|value| crate::core::camera::CameraComponent::from_component_str(value))
             .transpose()
             .map_err(|error| {
                 LuaBridgeError::Api(format!("entity {name:?} has an invalid Camera: {error}"))
             })?;
-        let camera_2d = components
-            .get("Camera2D")
-            .cloned()
-            .map(|value| {
-                crate::core::camera::Camera2D::from_component_str(&value).map_err(|error| {
-                    LuaBridgeError::Api(format!("entity {name:?} has an invalid Camera2D: {error}"))
-                })
-            })
-            .transpose()?
-            .or_else(|| unified_camera.and_then(crate::core::camera_migration::CameraComponent::as_orthographic));
+        let camera_2d =
+            unified_camera.and_then(crate::core::camera::CameraComponent::as_orthographic);
         if let Some(camera) = camera_2d {
             state
                 .world
@@ -869,17 +839,6 @@ impl LuaRuntime {
             state
                 .world
                 .insert(id, animation)
-                .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
-        }
-        if let Some(value) = transform_3d.as_deref() {
-            let transform = Transform3D::from_component_str(value).map_err(|error| {
-                LuaBridgeError::Api(format!(
-                    "entity {name:?} has an invalid Transform3D: {error}"
-                ))
-            })?;
-            state
-                .world
-                .insert(id, transform)
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
         }
         if let Some(value) = components.get("Animation3D") {
@@ -914,18 +873,8 @@ impl LuaRuntime {
                 .insert(id, renderer)
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
         }
-        let camera_3d = components
-            .get("Camera3D")
-            .cloned()
-            .map(|value| {
-                Camera3D::from_component_str(&value).map_err(|error| {
-                    LuaBridgeError::Api(format!("entity {name:?} has an invalid Camera3D: {error}"))
-                })
-            })
-            .transpose()?
-            .or_else(|| {
-                unified_camera.and_then(crate::core::camera_migration::CameraComponent::as_perspective)
-            });
+        let camera_3d =
+            unified_camera.and_then(crate::core::camera::CameraComponent::as_perspective);
         if let Some(camera) = camera_3d {
             state
                 .world
@@ -1410,15 +1359,6 @@ impl LuaRuntime {
     #[must_use]
     pub fn scene_entity_handle(&self, id: SceneEntityId) -> Option<EntityId> {
         self.state.borrow().scene_entities.get(&id).copied()
-    }
-
-    /// docs/54 §8-②：最近一次场景加载里"同时带 2D 与 3D 局部变换"的实体名。
-    ///
-    /// 空 = 每个实体都只有一份权威局部变换。非空时调用方应把它当成**数据问题**报给作者
-    /// （运行时会把世界矩阵按 3D 视图取，但那是权宜，不是语义）。
-    #[must_use]
-    pub fn scene_ambiguous_transforms(&self) -> Vec<String> {
-        self.state.borrow().scene_ambiguous_transforms.clone()
     }
 
     /// docs/54 §8-②：最近一次场景加载里**坏的 `parent` 边**（悬空父/自环）的可读描述。
@@ -7598,7 +7538,7 @@ mod tests {
             .components
             .insert(
                 "Transform".into(),
-                "x=0;y=0;rotation=0;scale_x=1;scale_y=1".into(),
+                "position=0,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
             );
         scene
             .entities
@@ -7632,9 +7572,9 @@ mod tests {
         let _ = fs::remove_file(path);
     }
 
-    /// **Lua 桥接读统一组件**（第 53 轮）：`Transform` 的两种形态与统一 `Camera` 都必须能实例化，
-    /// 且落进世界的是对应的类型化组件（2D → `Transform` / `Camera2D`，3D → `Transform3D` / `Camera3D`）。
-    /// 坏串仍然报错——不能因为"现在支持两种形态"就把解析失败静默吞掉。
+    /// **Lua 桥接读统一组件**（第 53 轮）：统一的 `Transform` 与统一的 `Camera`（两种投影）都必须能
+    /// 实例化，且落进世界的是对应的类型化组件（2D → `Transform` / `Camera2D`，3D → `Transform3D` / `Camera3D`；
+    /// 2D 还是 3D 由实体携带的其它组件推断）。坏串仍然报错——解析失败不得被静默吞掉。
     #[test]
     fn lua_bridge_accepts_unified_transform_and_camera_components() {
         use crate::core::camera::{Camera2D, Camera3D};
@@ -7655,11 +7595,11 @@ mod tests {
             LuaRuntime::new().unwrap().instantiate_scene(&scene)
         };
 
-        // 2D 旧形态（既有行为）+ 2D 相机旧名。
+        // 2D 实体（无 3D 专属组件）+ 统一 `Camera`（正交）。
         assert_eq!(
             instantiate(&[
-                ("Transform", "x=1;y=2;rotation=0;scale_x=1;scale_y=1"),
-                ("Camera2D", "center=0.0000,0.0000;zoom=1.000000"),
+                ("Transform", "position=1,2,0;rotation=0,0,0,1;scale=1,1,1"),
+                ("Camera", "projection=orthographic;center=0.0000,0.0000;zoom=1.000000"),
             ])
             .unwrap(),
             1
@@ -7679,7 +7619,7 @@ mod tests {
             .unwrap(),
             1
         );
-        // 统一 Camera（正交）与缺判别字段的兼容写法。
+        // 统一 Camera（正交）。
         assert_eq!(
             instantiate(&[(
                 "Camera",
@@ -7688,9 +7628,18 @@ mod tests {
             .unwrap(),
             1
         );
-        assert_eq!(
-            instantiate(&[("Camera", "center=1.0000,2.0000;zoom=4.000000")]).unwrap(),
-            1
+        // `projection` 是**必填判别字段**：缺字段、或字段体与判别不匹配，一律报错（没有"兼容写法"）。
+        assert!(
+            instantiate(&[("Camera", "center=1.0000,2.0000;zoom=4.000000")]).is_err(),
+            "缺 projection 的 Camera 必须被拒"
+        );
+        assert!(
+            instantiate(&[(
+                "Camera",
+                "projection=orthographic;position=0,0,5;target=0,0,0;fov=60;near=0.1;far=100",
+            )])
+            .is_err(),
+            "写 orthographic 却给透视字段体必须被拒"
         );
 
         // 世界里的取值确实是 3D 那份（不是空壳），并且相机落到了 3D 分支。
@@ -7721,7 +7670,7 @@ mod tests {
         assert!(runtime.with_world(|world| world.has::<Camera3D>(entity).unwrap()));
         assert!(!runtime.with_world(|world| world.has::<Camera2D>(entity).unwrap()));
 
-        // 坏串必须报错（两种形态都读不了）。
+        // 坏串必须报错。
         assert!(instantiate(&[("Transform", "x=oops")]).is_err());
         assert!(instantiate(&[("Transform", "position=1,2")]).is_err());
         assert!(instantiate(&[("Camera", "projection=orthographic;fov=60")]).is_err());
@@ -7740,7 +7689,7 @@ mod tests {
             .components
             .insert(
                 "Transform".into(),
-                "x=0;y=0;rotation=0;scale_x=1;scale_y=1".into(),
+                "position=0,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
             );
 
         let mut runtime = LuaRuntime::new().unwrap();
@@ -7790,7 +7739,7 @@ mod tests {
             .components
             .insert(
                 "Transform".into(),
-                "x=0;y=0;rotation=0;scale_x=1;scale_y=1".into(),
+                "position=0,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
             );
         scene
             .entities
@@ -7958,6 +7907,9 @@ mod tests {
         let _ = fs::remove_file(second);
     }
     /// 构造一个同时带 2D 与 3D 实体的场景，供统一 `transform` 测试复用。
+    ///
+    /// 空间由实体携带的**其它组件**推断（`spatial_transform::entity_space`），所以 3D 那个
+    /// 必须真的带一个 3D 专属组件（这里是 `MeshRenderer`）——否则它会被判成 2D。
     fn unified_transform_scene() -> crate::core::scene::Scene {
         use crate::core::scene::{Scene, SceneEntityId};
         let mut scene = Scene::new("unified-transform-probe");
@@ -7969,18 +7921,21 @@ mod tests {
             .components
             .insert(
                 "Transform".into(),
-                "x=0;y=0;rotation=0;scale_x=1;scale_y=1".into(),
+                "position=0,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
             );
         scene.add_entity(SceneEntityId(2), "Solid", None).unwrap();
-        scene
-            .entities
-            .get_mut(&SceneEntityId(2))
-            .unwrap()
-            .components
-            .insert(
-                "Transform3D".into(),
+        {
+            let components = &mut scene
+                .entities
+                .get_mut(&SceneEntityId(2))
+                .unwrap()
+                .components;
+            components.insert(
+                "Transform".into(),
                 "position=1,2,3;rotation=0,0,0,1;scale=1,1,1".into(),
             );
+            components.insert("MeshRenderer".into(), "mesh=assets/models/test.glb".into());
+        }
         scene.add_entity(SceneEntityId(3), "Bare", None).unwrap();
         scene
     }
@@ -8159,7 +8114,7 @@ mod tests {
             .components
             .insert(
                 "Transform".into(),
-                "x=32;y=48;rotation=0;scale_x=1;scale_y=1".into(),
+                "position=32,48,0;rotation=0,0,0,1;scale=1,1,1".into(),
             );
         scene
             .entities
@@ -8219,7 +8174,7 @@ mod tests {
             .unwrap()
             .components
             .insert(
-                "Transform3D".into(),
+                "Transform".into(),
                 "position=1,2,3;rotation=0,0,0,1;scale=1,1,1".into(),
             );
         scene
@@ -8259,11 +8214,11 @@ mod tests {
         scene.add_entity(child, "Child", Some(parent)).unwrap();
         scene.entities.get_mut(&parent).unwrap().components.insert(
             "Transform".into(),
-            "x=10;y=5;rotation=0;scale_x=2;scale_y=2".into(),
+            "position=10,5,0;rotation=0,0,0,1;scale=2,2,1".into(),
         );
         scene.entities.get_mut(&child).unwrap().components.insert(
             "Transform".into(),
-            "x=-3.5;y=0;rotation=0;scale_x=1;scale_y=1".into(),
+            "position=-3.5,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
         );
         let mut runtime = LuaRuntime::new().unwrap();
         runtime.instantiate_scene(&scene).unwrap();
@@ -8305,7 +8260,10 @@ mod tests {
             let entity = scene.entities.get_mut(&id).unwrap();
             entity.components.insert(
                 "Transform".into(),
-                format!("x={};y=0;rotation=0;scale_x=1;scale_y=1", index * 100),
+                format!(
+                    "position={},0,0;rotation=0,0,0,1;scale=1,1,1",
+                    index * 100
+                ),
             );
             entity
                 .components
@@ -8475,11 +8433,11 @@ mod tests {
         scene.add_entity(deco, "Deco", None).unwrap();
         scene.entities.get_mut(&wall).unwrap().components.insert(
             "Transform".into(),
-            "x=10;y=0;rotation=0;scale_x=1;scale_y=1".into(),
+            "position=10,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
         );
         scene.entities.get_mut(&deco).unwrap().components.insert(
             "Transform".into(),
-            "x=12;y=0;rotation=0;scale_x=1;scale_y=1".into(),
+            "position=12,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
         );
         scene.entities.get_mut(&wall).unwrap().components.insert(
             "Collider".into(),
@@ -8529,14 +8487,14 @@ mod tests {
         scene.add_entity(wall3d, "Wall3d", None).unwrap();
         scene.entities.get_mut(&wall2d).unwrap().components.insert(
             "Transform".into(),
-            "x=10;y=0;rotation=0;scale_x=1;scale_y=1".into(),
+            "position=10,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
         );
         scene.entities.get_mut(&wall2d).unwrap().components.insert(
             "Collider".into(),
             "shape=cuboid;half_width=1;half_height=5;dynamic=false;layer=2;mask=2".into(),
         );
         scene.entities.get_mut(&wall3d).unwrap().components.insert(
-            "Transform3D".into(),
+            "Transform".into(),
             "position=10,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
         );
         scene.entities.get_mut(&wall3d).unwrap().components.insert(
@@ -8713,7 +8671,7 @@ mod tests {
             .components
             .insert(
                 "Transform".into(),
-                "x=0;y=0;rotation=0;scale_x=1;scale_y=1".into(),
+                "position=0,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
             );
         scene
             .entities
@@ -8729,7 +8687,7 @@ mod tests {
             .components
             .insert(
                 "Transform".into(),
-                "x=0;y=0;rotation=0;scale_x=1;scale_y=1".into(),
+                "position=0,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
             );
         // 2x2 tilemap, right column solid -> a wall spanning x=20..40
         scene
@@ -8791,7 +8749,7 @@ mod tests {
             scene.add_entity(id, name, None).unwrap();
             let entity = scene.entities.get_mut(&id).unwrap();
             entity.components.insert(
-                "Transform3D".into(),
+                "Transform".into(),
                 format!("position={},0,0;rotation=0,0,0,1;scale=1,1,1", index * 10),
             );
             entity
@@ -8827,7 +8785,7 @@ mod tests {
             .unwrap()
             .components
             .insert(
-                "Transform3D".into(),
+                "Transform".into(),
                 "position=0,5,0;rotation=0,0,0,1;scale=1,1,1".into(),
             );
         scene
@@ -8843,7 +8801,7 @@ mod tests {
             .unwrap()
             .components
             .insert(
-                "Transform3D".into(),
+                "Transform".into(),
                 "position=0,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
             );
         // Static ground: cuboid spanning y=-2..0 (top at y=0), centered at (0,-1,0).
@@ -9039,7 +8997,7 @@ mod tests {
         for id in [walker, idle] {
             scene.entities.get_mut(&id).unwrap().components.insert(
                 "Transform".into(),
-                "x=0;y=0;rotation=0;scale_x=1;scale_y=1".into(),
+                "position=0,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
             );
         }
         scene
@@ -9250,7 +9208,7 @@ mod tests {
             .components
             .insert(
                 "Transform".into(),
-                "x=16;y=16;rotation=0;scale_x=1;scale_y=1".into(),
+                "position=16,16,0;rotation=0,0,0,1;scale=1,1,1".into(),
             );
         let mut runtime = LuaRuntime::new().unwrap();
         runtime.instantiate_scene(&scene).unwrap();
@@ -9405,7 +9363,7 @@ mod tests {
         let farm_entity = farm.entities.get_mut(&SceneEntityId(1)).unwrap();
         farm_entity.components.insert(
             "Transform".into(),
-            "x=0;y=0;rotation=0;scale_x=1;scale_y=1".into(),
+            "position=0,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
         );
         farm_entity.components.insert(
             "Tilemap".into(),
@@ -9975,7 +9933,7 @@ mod tests {
             .components
             .insert(
                 "Transform".into(),
-                "x=0;y=0;rotation=0;scale_x=1;scale_y=1".into(),
+                "position=0,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
             );
         arena
             .entities
@@ -10394,8 +10352,8 @@ mod tests {
             .unwrap()
             .components
             .insert(
-                "Camera3D".into(),
-                "position=0,0,5;target=0,0,0;fov=90;near=0.1;far=100".into(),
+                "Camera".into(),
+                "projection=perspective;position=0,0,5;target=0,0,0;fov=90;near=0.1;far=100".into(),
             );
         scene.add_entity(SceneEntityId(2), "Sun", None).unwrap();
         scene
@@ -10414,7 +10372,7 @@ mod tests {
             .unwrap()
             .components
             .insert(
-                "Transform3D".into(),
+                "Transform".into(),
                 "position=0,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
             );
         scene
@@ -10483,8 +10441,8 @@ mod tests {
             .unwrap()
             .components
             .insert(
-                "Camera3D".into(),
-                "position=0,0,5;target=0,0,0;fov=90;near=0.1;far=100".into(),
+                "Camera".into(),
+                "projection=perspective;position=0,0,5;target=0,0,0;fov=90;near=0.1;far=100".into(),
             );
         let mut runtime = LuaRuntime::new().unwrap();
         assert_eq!(runtime.instantiate_scene(&scene).unwrap(), 1);

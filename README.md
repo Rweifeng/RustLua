@@ -64,6 +64,12 @@ cargo run -p editor -- --project ..\examples\game_jhyt --check
 - **WebGL 仅到产物层**：wasm 能加载、页面能进入 Lua，但运行时缺 17 个宿主 API 全局，**浏览器内可玩尚未实现**
   （见 [docs/32](docs/32-webgl-浏览器平台验收.md) §4 与 backlog 4-24）；降级为"实验性"，不作平台承诺。
 - **健康度**：`cargo test --workspace` 834 项通过（0 失败）、clippy 零告警、24 项 headless MVP 样例全绿。
+- **组件统一（第 57 轮）**：场景/Prefab 里变换与相机各只有**一个**组件名——`Transform`
+  （载荷 `position/rotation/scale`）与 `Camera`（判别字段 `projection=orthographic|perspective`）。
+  旧名 `Transform3D`/`Camera2D`/`Camera3D`、旧的 2D 变换写法与"打开文档时自动迁移"都已删除，
+  示例工程数据已迁完。**外部老工程需要先跑一次一次性迁移工具**：
+  `cd engine && cargo run -p editor --example migrate_project -- --write <项目根>`（默认 dry-run）。
+  细节与验收证据见 [docs/56](docs/56-编辑器重构阶段0-1基线与验收.md) §3.52。
 
 ## 约定
 

@@ -4,12 +4,12 @@
 //! **为什么编辑态需要自己的入口**：编辑器在文档上工作（没有 ECS），而运行时在 World 上工作；
 //! 两者的组合规则由引擎的 `propagate_all` / `propagate_spatial` 共用，且有等价性测试钉住。
 //!
-//! 组件串编码（`encode_transform_2d` / `encode_transform_3d`）也一并转发。
+//! 组件串编码（[`encode_transform`]）也一并转发。
 
 pub use engine::core::scene_space::{
-    encode_transform_2d, encode_transform_3d, keep_world_after_reparent, local_keeping_world,
-    local_transforms, locals_for_world_targets, parent_world_matrix, parents, world_matrices,
-    world_transform_2d, world_transform_3d,
+    encode_transform, keep_world_after_reparent, local_keeping_world, local_transforms,
+    locals_for_world_targets, parent_world_matrix, parents, world_matrices, world_transform_2d,
+    world_transform_3d,
 };
 
 #[cfg(test)]
@@ -29,7 +29,7 @@ mod tests {
         scene.add_entity(child, "Child", Some(parent)).unwrap();
         for (id, x) in [(parent, 5.0_f32), (child, 2.0)] {
             scene.entities.get_mut(&id).unwrap().components.insert(
-                "Transform3D".into(),
+                "Transform".into(),
                 format!("position={x},0,0;rotation=0,0,0,1;scale=1,1,1"),
             );
         }

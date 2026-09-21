@@ -879,8 +879,8 @@ impl EditorApp {
                     .entities
                     .iter()
                     .filter_map(|entity| {
-                        let Some(TypedComponent::Transform3D(transform)) =
-                            entity.components.get(&ComponentId::Transform3D)
+                        let Some(TypedComponent::Transform(transform)) =
+                            entity.components.get(&ComponentId::Transform)
                         else {
                             return None;
                         };
@@ -904,7 +904,7 @@ impl EditorApp {
                     .filter(|diagnostic| {
                         matches!(
                             diagnostic.component.as_str(),
-                            "Transform3D" | "MeshRenderer"
+                            "Transform" | "Camera" | "MeshRenderer"
                         )
                     })
                     .map(|diagnostic| {
@@ -3987,7 +3987,7 @@ mod tests {
             let entity = scene.entities.get_mut(&id).unwrap();
             entity.components.insert(
                 "Transform".to_owned(),
-                "x=100;y=100;rotation=0;scale_x=1;scale_y=1".to_owned(),
+                "position=100,100,0;rotation=0,0,0,1;scale=1,1,1".to_owned(),
             );
             entity.components.insert(
                 "Sprite".to_owned(),
@@ -4048,7 +4048,9 @@ mod tests {
             ["Transform"]
             .clone();
         assert_ne!(after, before, "文档必须真的被改动");
-        let moved = engine::core::transform::Transform::from_component_str(&after).unwrap();
+        let moved =
+            engine::core::spatial_transform::LocalTransform::transform_2d_from_component_str(&after)
+                .expect("统一写法必须能被 2D 视图读回");
         // 面板 Y 向下、世界 Y 向上：面板 +(24,12) 对应世界 (124, 88)（zoom=1、ppp=1）。
         assert!(
             (moved.position.x - 124.0).abs() < 0.001 && (moved.position.y - 88.0).abs() < 0.001,

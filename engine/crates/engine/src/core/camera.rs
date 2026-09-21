@@ -1602,6 +1602,150 @@ impl FrameViews {
     }
 }
 
+/// 统一后的相机组件名：场景里只有这一个名字，2D/3D 由投影判别字段表达。
+pub const CAMERA_COMPONENT: &str = "Camera";
+
+/// 统一 `Camera` 组件里的投影判别字段名。
+pub const PROJECTION_FIELD: &str = "projection";
+
+/// 统一组件承载的两种投影语义（判别字段的取值）。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CameraProjection {
+    Orthographic,
+    Perspective,
+}
+
+impl CameraProjection {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Orthographic => "orthographic",
+            Self::Perspective => "perspective",
+        }
+    }
+
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim() {
+            "orthographic" => Some(Self::Orthographic),
+            "perspective" => Some(Self::Perspective),
+            _ => None,
+        }
+    }
+}
+
+/// 统一 `Camera` 组件的**取值**：一个显式的投影分支。
+///
+/// 消费方（编辑器 / 运行时 / 场景编译）拿到它之后**按投影分支**处理，而不是按组件名——
+/// 这正是"不再区分 2D/3D 组件"要表达的语义。两种语义的字段体仍由**各自既有的编码器**
+/// 读写（正交 = `center`/`zoom`/`bounds`，透视 = `position`/`target`/`fov`/`near`/`far`），
+/// 因此统一组件不做任何会改变画面的映射：
+///
+/// ```text
+/// projection=orthographic;center=..,..;rotation=..;zoom=..[;bounds=..][;enabled=false]
+/// projection=perspective;position=..,..,..;target=..,..,..;fov=..;near=..;far=..[;pose=transform][;enabled=false]
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum CameraComponent {
+    Orthographic(Camera2D),
+    Perspective(Camera3D),
+}
+
+impl CameraComponent {
+    /// 读统一 `Camera` 载荷：**判别字段必填**（schema 也这么声明）。
+    ///
+    /// 判别字段缺失或与字段体不匹配一律报错，不猜——猜错的代价是"画面变了却没人知道"。
+    pub fn from_component_str(payload: &str) -> Result<Self, String> {
+        let (declared, rest) = split_projection(payload);
+        let Some(projection) = declared else {
+            return Err(format!(
+                "{CAMERA_COMPONENT} 缺少 {PROJECTION_FIELD} 字段（应为 orthographic 或 perspective）"
+            ));
+        };
+        Self::from_projection(projection, &rest)
+    }
+
+    /// 按已知投影读取**去掉判别字段之后**的字段串。
+    pub fn from_projection(projection: CameraProjection, rest: &str) -> Result<Self, String> {
+        match projection {
+            CameraProjection::Orthographic => Camera2D::from_component_str(rest)
+                .map(Self::Orthographic)
+                .map_err(|error| error.to_string()),
+            CameraProjection::Perspective => Camera3D::from_component_str(rest)
+                .map(Self::Perspective)
+                .map_err(|error| error.to_string()),
+        }
+    }
+
+    #[must_use]
+    pub const fn projection(self) -> CameraProjection {
+        match self {
+            Self::Orthographic(_) => CameraProjection::Orthographic,
+            Self::Perspective(_) => CameraProjection::Perspective,
+        }
+    }
+
+    #[must_use]
+    pub const fn enabled(self) -> bool {
+        match self {
+            Self::Orthographic(camera) => camera.enabled,
+            Self::Perspective(camera) => camera.enabled,
+        }
+    }
+
+    #[must_use]
+    pub fn as_orthographic(self) -> Option<Camera2D> {
+        match self {
+            Self::Orthographic(camera) => Some(camera),
+            Self::Perspective(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn as_perspective(self) -> Option<Camera3D> {
+        match self {
+            Self::Perspective(camera) => Some(camera),
+            Self::Orthographic(_) => None,
+        }
+    }
+
+    /// 统一写法（判别字段在前，字段体来自各自既有的编码器）。
+    #[must_use]
+    pub fn to_component_str(self) -> String {
+        match self {
+            Self::Orthographic(camera) => {
+                canonical_payload(CameraProjection::Orthographic, &camera.to_component_str())
+            }
+            Self::Perspective(camera) => {
+                canonical_payload(CameraProjection::Perspective, &camera.to_component_str())
+            }
+        }
+    }
+}
+
+/// 统一写法：判别字段在前，其后是**各自解析器**写出的字段串。
+fn canonical_payload(projection: CameraProjection, body: &str) -> String {
+    format!("{PROJECTION_FIELD}={};{body}", projection.as_str())
+}
+
+/// 从载荷里取出判别字段，并返回**去掉它之后**的其余字段串（保持原有顺序）。
+fn split_projection(payload: &str) -> (Option<CameraProjection>, String) {
+    let mut declared = None;
+    let mut rest: Vec<&str> = Vec::new();
+    for field in payload.split(';') {
+        if field.trim().is_empty() {
+            continue;
+        }
+        match field.split_once('=') {
+            Some((key, value)) if key.trim() == PROJECTION_FIELD => {
+                declared = CameraProjection::parse(value);
+            }
+            _ => rest.push(field),
+        }
+    }
+    (declared, rest.join(";"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

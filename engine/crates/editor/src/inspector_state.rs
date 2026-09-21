@@ -31,37 +31,9 @@ impl Default for TransformFields {
     }
 }
 
-/// Inspector 可编辑的 Transform3D 字段（无 3D Gizmo，仅查看与数值编辑）。
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Transform3DFields {
-    pub position_x: f32,
-    pub position_y: f32,
-    pub position_z: f32,
-    pub rotation_x: f32,
-    pub rotation_y: f32,
-    pub rotation_z: f32,
-    pub rotation_w: f32,
-    pub scale_x: f32,
-    pub scale_y: f32,
-    pub scale_z: f32,
-}
-
-impl Default for Transform3DFields {
-    fn default() -> Self {
-        Self {
-            position_x: 0.0,
-            position_y: 0.0,
-            position_z: 0.0,
-            rotation_x: 0.0,
-            rotation_y: 0.0,
-            rotation_z: 0.0,
-            rotation_w: 1.0,
-            scale_x: 1.0,
-            scale_y: 1.0,
-            scale_z: 1.0,
-        }
-    }
-}
+// `Transform3DFields`（3D 变换的 Inspector 缓冲）与 `Camera3DFields` 一起删除：
+// 变换第 36 轮、相机第 24 轮迁到 schema 生成的字段编辑器，第 57 轮统一成单一
+// `Transform`/`Camera` 组件后连字段类型也只剩通用路径（`schema_fields`）需要的那一份。
 
 // `Camera3D` 的 Inspector 缓冲管线（`Camera3DFields` + `set_camera3d` +
 // `validate/encode/decode_camera3d`）**已删除**（第 24 轮）：该组件迁到 schema 生成的
@@ -877,11 +849,11 @@ mod tests {
             engine::core::mesh3d::GROUND_PLANE_SENTINEL
         );
     }
-    /// `Camera3D` 的缓冲管线已随面板迁移删除（第 24 轮）；这里验证**迁移后的路径**：
-    /// 快照里不再有相机字段（编辑由通用字段编辑器负责），组件串仍是引擎编码器认得的
-    /// 形式，默认值来自引擎类型（`Camera3D::default()`）。
+    /// 相机的缓冲管线已随面板迁移删除（第 24 轮）、组件本身也在第 57 轮统一成单一 `Camera`；
+    /// 这里验证**迁移后的路径**：快照里不再有相机字段（编辑由通用字段编辑器负责），
+    /// 组件串仍是引擎编码器认得的统一形式，默认值来自引擎类型（`Camera3D::default()` + 判别字段）。
     #[test]
-    fn camera3d_is_edited_through_the_schema_path() {
+    fn camera_is_edited_through_the_schema_path() {
         let (mut document, inspector, id) = setup();
         document
             .scene
@@ -890,18 +862,23 @@ mod tests {
             .unwrap()
             .components
             .insert(
-                "Camera3D".to_owned(),
-                engine::core::camera::Camera3D::default().to_component_str(),
+                "Camera".to_owned(),
+                engine::core::camera::CameraComponent::Perspective(
+                    engine::core::camera::Camera3D::default(),
+                )
+                .to_component_str(),
             );
         let snapshot = inspector.snapshot(&document, id).unwrap();
         assert!(
             !format!("{snapshot:?}").contains("camera3d"),
             "迁移后快照不得再携带相机缓冲字段"
         );
-        let camera = engine::core::camera::Camera3D::from_component_str(
-            &document.scene.entities[&id].components["Camera3D"],
+        let camera = engine::core::camera::CameraComponent::from_component_str(
+            &document.scene.entities[&id].components["Camera"],
         )
-        .expect("引擎解析器必须认得 Camera3D");
+        .expect("引擎解析器必须认得统一的 Camera")
+        .as_perspective()
+        .expect("默认添加的是透视相机");
         assert!(
             (camera.fov_y.to_degrees() - 90.0).abs() < 0.01,
             "默认相机 FOV 是 90°（组件串里存角度）：{}",

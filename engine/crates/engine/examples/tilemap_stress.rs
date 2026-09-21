@@ -96,7 +96,7 @@ fn build_scene(width: usize, height: usize) -> Scene {
         .expect("tilemap entity exists");
     entity.components.insert(
         "Transform".to_owned(),
-        "x=0;y=0;rotation=0;scale_x=1;scale_y=1".to_owned(),
+        "position=0,0,0;rotation=0,0,0,1;scale=1,1,1".to_owned(),
     );
 
     let mut tilemap = Tilemap::new(Vec2::new(32.0, 32.0), width, height).expect("tilemap");
