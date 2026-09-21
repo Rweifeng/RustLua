@@ -1,6 +1,6 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$Project = "examples",
+    [string]$Project = "examples/game_api",
     [switch]$Release
 )
 

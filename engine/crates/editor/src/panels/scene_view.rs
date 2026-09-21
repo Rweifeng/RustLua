@@ -4883,7 +4883,7 @@ mod tests {
         let project = open_project(&root).unwrap();
         let mut app = EditorApp::new(project, None, LogSink::new(64));
         app.refresh_resources();
-        app.open_scene_resource(PathBuf::from("scenes/menu.scene"));
+        app.open_scene_resource(PathBuf::from("scenes/ui_test.scene"));
         // 本测试聚焦"UI 包围框贴合实际渲染矩形"：UI 按面板适配（viewport=面板、
         // reference=设计分辨率），面板 1280×720 与设计分辨率 1:1，便于断言。
         app.game_camera_2d_center = Vec2::new(0.0, 0.0);
@@ -4997,7 +4997,7 @@ mod tests {
         let project = open_project(&root).unwrap();
         let mut app = EditorApp::new(project, None, LogSink::new(64));
         app.refresh_resources();
-        app.open_scene_resource(PathBuf::from("scenes/menu.scene"));
+        app.open_scene_resource(PathBuf::from("scenes/ui_test.scene"));
         let before = app
             .document
             .current_scene
@@ -5045,7 +5045,7 @@ mod tests {
         let project = open_project(&root).unwrap();
         let mut app = EditorApp::new(project, None, LogSink::new(64));
         app.refresh_resources();
-        app.open_scene_resource(PathBuf::from("scenes/production.scene"));
+        app.open_scene_resource(PathBuf::from("scenes/api_gameplay.scene"));
         app.sync_inspector(SceneEntityId(1));
         let width = app.tilemap.map.width;
         let x = 4usize;
@@ -5071,7 +5071,7 @@ mod tests {
 
         app.save_scene();
         assert_eq!(app.status, "Scene saved");
-        app.open_scene_resource(PathBuf::from("scenes/production.scene"));
+        app.open_scene_resource(PathBuf::from("scenes/api_gameplay.scene"));
         let reopened = app.document.current_scene.as_ref().unwrap();
         let reopened_component =
             reopened.scene.entities[&SceneEntityId(1)].components["Tilemap"].clone();

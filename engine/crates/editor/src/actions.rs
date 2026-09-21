@@ -3451,7 +3451,7 @@ mod tests {
             .insert(SceneEntityId(1), Transform3D::default());
         app.preview_diagnostic = Some("stale frame".to_owned());
 
-        app.open_scene_resource(PathBuf::from("scenes/menu.scene"));
+        app.open_scene_resource(PathBuf::from("scenes/ui_test.scene"));
 
         assert_eq!(app.scene_runtime_revision, None);
         assert_eq!(app.scene_view_cache_2d.revision, None);
@@ -3497,7 +3497,7 @@ mod tests {
 
         // 切换文档 → 缓存整体失效。文档此时是干净的，否则会被 E06 未保存保护拦下、
         // 实际不切文档（那样断言的就是另一回事）。
-        app.open_scene_resource(PathBuf::from("scenes/menu.scene"));
+        app.open_scene_resource(PathBuf::from("scenes/ui_test.scene"));
         assert_eq!(app.scene_view_3d_typed.revision, None);
         assert!(app.scene_view_3d_typed.entities.is_empty());
 
@@ -3542,24 +3542,44 @@ mod tests {
         root
     }
 
-    /// 打开 examples 副本并打开其 scenes/production.scene。
-    /// 与 inspector tests 的 sample_app_with_production_scene 行为保持一致
-    /// （拷贝 assets/scenes 后不依赖资源索引，Prefab 按相对路径加载）。
+    /// 打开示例工程副本并打开 **Prefab 实例场景** `scenes/api_prefab.scene`。
+    ///
+    /// 与 inspector tests 的 `sample_app_with_production_scene` 指向同一个场景：
+    /// 它带两个 Prefab 源（slime_green / slime_red）的真实实例，Apply / Revert / 逐字段
+    /// Override 这些路径都需要"实例实体上真的有 `prefab.source` 元数据"才测得动。
+    /// （拷贝 assets/scenes 后不依赖资源索引，Prefab 按相对路径加载。）
     fn open_sample_production(label: &str) -> (EditorApp, PathBuf) {
         let root = copy_sample_project(label);
         let project = open_project(&root).expect("production 副本应可打开");
         let mut app = EditorApp::new(project, None, LogSink::new(64));
-        app.open_scene_resource(PathBuf::from("scenes/production.scene"));
+        app.open_scene_resource(PathBuf::from("scenes/api_prefab.scene"));
         (app, root)
     }
 
-    /// 打开 examples 副本并打开其 scenes/main.scene（8 个根实体）。
+    /// 打开示例工程副本并打开 2D 综合场景 `scenes/main.scene`。
+    ///
+    /// 场景名与实体结构见 `examples/game_api/README.md`；断言**不写死实体数量**，
+    /// 而是在运行期从文档里取（示例工程的场景会随演示增删而变，写死数量只会制造假失败）。
     fn open_examples_main(label: &str) -> (EditorApp, PathBuf) {
         let root = copy_examples_project(label);
         let project = open_project(&root).expect("examples 副本应可打开");
         let mut app = EditorApp::new(project, None, LogSink::new(64));
         app.open_scene_resource(PathBuf::from("scenes/main.scene"));
         (app, root)
+    }
+
+    /// 文档里第一个**没有父实体**的实体 id（删除/撤销这类测试需要一个真有意义的根实体）。
+    fn first_root_entity(app: &EditorApp) -> SceneEntityId {
+        app.document
+            .current_scene
+            .as_ref()
+            .expect("已打开场景")
+            .scene
+            .entities
+            .values()
+            .find(|entity| entity.parent.is_none())
+            .expect("示例场景应当有根实体")
+            .id
     }
 
     /// 制造一份“上次文档”遗留的陈旧状态：运行时 revision、2D/3D 缓存、
@@ -3652,11 +3672,23 @@ mod tests {
     #[test]
     fn examples_main_open_scene_routes_unified_refresh() {
         let (mut app, root) = open_examples_main("examples-open");
-        {
+        let entity_count = {
             let scene = app.document.current_scene.clone().expect("已打开场景");
-            assert_eq!(scene.scene.entities.len(), 8);
-            assert!(scene.scene.entities.contains_key(&SceneEntityId(4)));
-        }
+            let count = scene.scene.entities.len();
+            assert!(
+                count >= 8,
+                "示例 main.scene 应当有足够多的实体，实际 {count}"
+            );
+            assert!(
+                scene
+                    .scene
+                    .entities
+                    .values()
+                    .any(|entity| entity.parent.is_some()),
+                "示例 main.scene 应当有父子关系（Hierarchy 面板与传播路径的样本）"
+            );
+            count
+        };
         assert_eq!(app.status, "已打开场景：scenes/main.scene");
         assert!(app.selection.is_empty());
 
@@ -3676,7 +3708,8 @@ mod tests {
                 .scene
                 .entities
                 .len(),
-            8
+            entity_count,
+            "重开同一场景应当得到同一份实体集合"
         );
         assert!(app.selection.is_empty());
         assert_eq!(app.selection.primary(), None);
@@ -3689,8 +3722,17 @@ mod tests {
     #[test]
     fn examples_main_delete_selected_root_routes_unified_refresh() {
         let (mut app, root) = open_examples_main("examples-delete");
+        let target = first_root_entity(&app);
+        let before = app
+            .document
+            .current_scene
+            .as_ref()
+            .unwrap()
+            .scene
+            .entities
+            .len();
         app.selection
-            .set_single(SceneEntityId(4), editor::SelectionSource::Hierarchy);
+            .set_single(target, editor::SelectionSource::Hierarchy);
         app.delete_target = crate::DeleteTarget::Hierarchy;
         poison_scene_view_caches(&mut app);
 
@@ -3698,8 +3740,12 @@ mod tests {
         app.delete_selected_entity();
         assert_eq!(app.status, "Entity deleted");
         let scene = app.document.current_scene.as_ref().unwrap();
-        assert_eq!(scene.scene.entities.len(), 7);
-        assert!(!scene.scene.entities.contains_key(&SceneEntityId(4)));
+        assert_eq!(
+            scene.scene.entities.len(),
+            before - 1,
+            "删除根实体（连同子树）"
+        );
+        assert!(!scene.scene.entities.contains_key(&target));
         assert!(app.selection.is_empty());
         assert_eq!(app.selection.primary(), None);
         assert!(matches!(app.delete_target, crate::DeleteTarget::None));
@@ -3711,10 +3757,17 @@ mod tests {
     #[test]
     fn examples_main_undo_redo_routes_unified_refresh() {
         let (mut app, root) = open_examples_main("examples-undo");
-        let scene = app.document.current_scene.clone().unwrap();
-        assert_eq!(scene.scene.entities.len(), 8);
+        let target = first_root_entity(&app);
+        let before = app
+            .document
+            .current_scene
+            .as_ref()
+            .unwrap()
+            .scene
+            .entities
+            .len();
         app.selection
-            .set_single(SceneEntityId(4), editor::SelectionSource::Hierarchy);
+            .set_single(target, editor::SelectionSource::Hierarchy);
         poison_scene_view_caches(&mut app);
 
         app.delete_selected_entity();
@@ -3727,7 +3780,7 @@ mod tests {
                 .scene
                 .entities
                 .len(),
-            7
+            before - 1
         );
         assert_scene_view_and_metadata_invalidated(&app);
 
@@ -3735,8 +3788,8 @@ mod tests {
         app.undo();
         assert_eq!(app.status, "Undo: Delete entities");
         let scene = app.document.current_scene.as_ref().unwrap();
-        assert_eq!(scene.scene.entities.len(), 8);
-        assert!(scene.scene.entities.contains_key(&SceneEntityId(4)));
+        assert_eq!(scene.scene.entities.len(), before);
+        assert!(scene.scene.entities.contains_key(&target));
         assert!(app.selection.is_empty());
         assert_eq!(app.selection.primary(), None);
         assert_scene_view_and_metadata_invalidated(&app);
@@ -3745,8 +3798,8 @@ mod tests {
         app.redo();
         assert_eq!(app.status, "Redo: Delete entities");
         let scene = app.document.current_scene.as_ref().unwrap();
-        assert_eq!(scene.scene.entities.len(), 7);
-        assert!(!scene.scene.entities.contains_key(&SceneEntityId(4)));
+        assert_eq!(scene.scene.entities.len(), before - 1);
+        assert!(!scene.scene.entities.contains_key(&target));
         assert!(app.selection.is_empty());
         assert_eq!(app.selection.primary(), None);
         assert_scene_view_and_metadata_invalidated(&app);
@@ -3906,30 +3959,30 @@ mod tests {
     fn e06_dirty_open_is_pending_clean_open_is_immediate() {
         let (mut app, root) = open_sample_production("e06-pending");
         // 打开 production 时文档 clean：再次请求打开 menu 应立即执行，不挂起。
-        app.open_scene_resource(PathBuf::from("scenes/menu.scene"));
+        app.open_scene_resource(PathBuf::from("scenes/ui_test.scene"));
         assert!(app.pending_document_change.is_none());
-        assert_eq!(app.status, "已打开场景：scenes/menu.scene");
+        assert_eq!(app.status, "已打开场景：scenes/ui_test.scene");
         assert_eq!(
             app.document.current_scene.as_ref().unwrap().scene.name,
-            "menu"
+            "ui_test"
         );
 
         // 打 dirty：请求「打开 production」被挂起，当前文档不被替换。
         app.document.current_scene.as_mut().unwrap().mark_dirty();
-        app.open_scene_resource(PathBuf::from("scenes/production.scene"));
+        app.open_scene_resource(PathBuf::from("scenes/api_gameplay.scene"));
         assert!(app.pending_document_change.is_some());
         assert_eq!(
             app.document.current_scene.as_ref().unwrap().scene.name,
-            "menu",
+            "ui_test",
             "确认前不得切换文档"
         );
 
         // 已挂起 pending 时再次请求离开：被忽略，不覆盖也不重复弹窗。
-        app.open_scene_resource(PathBuf::from("scenes/menu.scene"));
+        app.open_scene_resource(PathBuf::from("scenes/ui_test.scene"));
         assert!(app.pending_document_change.is_some());
         assert_eq!(
             app.document.current_scene.as_ref().unwrap().scene.name,
-            "menu",
+            "ui_test",
             "重复请求不得覆盖挂起的离开操作"
         );
 
@@ -3942,7 +3995,7 @@ mod tests {
         app.document.current_scene.as_mut().unwrap().mark_dirty();
         // 快照必须在 mark_dirty 之后：取消 = 保留这份 dirty 文档继续编辑。
         let doc_dirty = app.document.current_scene.as_ref().unwrap().clone();
-        app.open_scene_resource(PathBuf::from("scenes/menu.scene"));
+        app.open_scene_resource(PathBuf::from("scenes/ui_test.scene"));
         assert!(app.pending_document_change.is_some());
 
         let resolved = app.resolve_pending_change(&test_context(), PendingDecision::Cancel);
@@ -3962,7 +4015,7 @@ mod tests {
     fn e06_discard_leaves_without_saving() {
         let (mut app, root) = open_sample_production("e06-discard");
         app.document.current_scene.as_mut().unwrap().mark_dirty();
-        app.open_scene_resource(PathBuf::from("scenes/menu.scene"));
+        app.open_scene_resource(PathBuf::from("scenes/ui_test.scene"));
         assert!(app.pending_document_change.is_some());
 
         // 「放弃并继续」不保存直接切换，且切换后文档 clean（来自磁盘）。
@@ -3971,7 +4024,7 @@ mod tests {
         assert!(app.pending_document_change.is_none());
         assert_eq!(
             app.document.current_scene.as_ref().unwrap().scene.name,
-            "menu",
+            "ui_test",
             "放弃后应切到请求的场景"
         );
         assert!(!app.document.current_scene.as_ref().unwrap().is_dirty());
@@ -3993,7 +4046,7 @@ mod tests {
             .clone()
             .expect("磁盘打开的文档应有路径");
         app.document.current_scene.as_mut().unwrap().mark_dirty();
-        app.open_scene_resource(PathBuf::from("scenes/menu.scene"));
+        app.open_scene_resource(PathBuf::from("scenes/ui_test.scene"));
         assert!(app.pending_document_change.is_some());
 
         let resolved = app.resolve_pending_change(&test_context(), PendingDecision::Save);
@@ -4002,7 +4055,7 @@ mod tests {
         assert!(!app.pending_save_failed);
         assert_eq!(
             app.document.current_scene.as_ref().unwrap().scene.name,
-            "menu",
+            "ui_test",
             "保存成功后应切到请求的场景"
         );
 
@@ -4189,15 +4242,31 @@ mod tests {
     #[test]
     fn e08_inspector_mark_then_finish_yields_single_history_and_undo() {
         let (mut app, root) = open_sample_production("e08-inspector-mark-finish");
-        let id = SceneEntityId(2);
+        // `Animation` 面板是仍在**缓冲**里的组件（Transform/Text/UiLayout 已迁到 schema 字段
+        // 编辑器），因此这条测试挑一个**真的有 Animation 组件**的实体，而不是写死 id 2：
+        // 示例工程的场景会随演示增删而变化，"id 2 必须是动画实体"只是历史巧合。
+        let (id, default_clip) = {
+            let scene = &app.document.current_scene.as_ref().unwrap().scene;
+            let entity = scene
+                .entities
+                .values()
+                .find(|entity| entity.components.contains_key("Animation"))
+                .expect("示例场景应当至少有一个带 Animation 的实体");
+            let machine =
+                AnimationStateMachine::from_component_str(&entity.components["Animation"])
+                    .expect("Animation 组件串应当可解析");
+            (entity.id, machine.default)
+        };
         app.selection
             .set_single(id, editor::SelectionSource::Hierarchy);
         app.sync_inspector(id);
         let pristine = app.document.current_scene.clone().unwrap();
         assert_eq!(app.history.undo_len(), 0);
-        // `Transform` 已迁到 schema 字段编辑器（第 36 轮），不再有缓冲字段；这条缓冲事务测试
-        // 改用**仍在缓冲里的** `Animation` 组件（entity 2 有 idle/move/attack 三个 clip）。
-        assert_eq!(app.animation.machine.default, "idle");
+        assert_eq!(app.animation.machine.default, default_clip);
+        assert!(
+            !app.animation.machine.clips.is_empty(),
+            "动画实体应当至少有一个 clip"
+        );
 
         // 帧内拖动/键入：mark 直写文档并置 pending，但不写历史、不落盘。
         app.animation.machine.default = "move".to_owned();
@@ -4367,7 +4436,7 @@ mod tests {
         let (mut app, root) = open_sample_production("e06-save-fail");
         app.document.current_scene.as_mut().unwrap().mark_dirty();
         // 请求离开到 menu（dirty → pending；只挂起，不碰磁盘）。
-        app.open_scene_resource(PathBuf::from("scenes/menu.scene"));
+        app.open_scene_resource(PathBuf::from("scenes/ui_test.scene"));
         assert!(app.pending_document_change.is_some());
         let doc_before = app.document.current_scene.as_ref().unwrap().clone();
 
@@ -4403,7 +4472,7 @@ mod tests {
         assert!(!app.pending_save_failed);
         assert_eq!(
             app.document.current_scene.as_ref().unwrap().scene.name,
-            "menu",
+            "ui_test",
             "修复后保存成功应切到请求的场景"
         );
 

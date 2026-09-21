@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "source": "api_core demo table",
+  "entries": {
+    "coin": { "name": "Coin", "value": 5, "stack": 99 },
+    "gem": { "name": "Gem", "value": 25, "stack": 16 }
+  }
+}

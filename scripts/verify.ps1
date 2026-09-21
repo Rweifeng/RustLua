@@ -647,14 +647,23 @@ if ($Benchmarks) {
         $goldenReport.semantic.center_non_background_pixels -le 100) {
         throw "3D semantic golden invalid"
     }
-    # wp0-v4：场景/帧报告契约。场景数下界防止"扫不到场景却报绿"；帧阶梯必须三档且
-    # 每档都有非零时间、非零分配——分配为 0 只可能意味着计数没生效，而不是"优化到位"。
+    # wp0-v4：场景/帧报告契约。场景数**必须等于两个示例工程 scenes/ 里的场景文件数**
+    # （此前写死一个下界，示例工程重建后它既挡不住"扫漏了场景"，也会在场景增减时误报）；
+    # 帧阶梯必须三档且每档都有非零时间、非零分配——分配为 0 只可能意味着计数没生效，
+    # 而不是"优化到位"。
     $sceneFrameReport = Get-Content -LiteralPath $sceneFramePath -Raw | ConvertFrom-Json
+    $sceneFileCount = @(
+        Get-ChildItem -Path (Join-Path $gameRoot "game_api/scenes"), (Join-Path $gameRoot "game_jhyt/scenes") `
+            -Filter *.scene -File -ErrorAction SilentlyContinue
+    ).Count
+    if ($sceneFileCount -le 0) {
+        throw "示例工程目录里找不到任何 .scene 文件（路径或布局变了）"
+    }
     if ($sceneFrameReport.report_version -ne "wp0-v4" -or
         $sceneFrameReport.benchmark -ne "scene_frame" -or
-        $sceneFrameReport.scene_load.scenes -lt 26 -or
+        $sceneFrameReport.scene_load.scenes -ne $sceneFileCount -or
         $sceneFrameReport.frame_stairs.Count -ne 3) {
-        throw "wp0-v4 scene/frame report schema invalid"
+        throw "wp0-v4 scene/frame report schema invalid: scenes=$($sceneFrameReport.scene_load.scenes) expected=$sceneFileCount"
     }
     foreach ($entry in $sceneFrameReport.scene_load.entries) {
         if ($entry.diagnostics -ne 0 -or $entry.typed_components -le 0 -or

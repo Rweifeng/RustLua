@@ -1,0 +1,30 @@
+scene_version=2
+name=api_camera
+meta	display_name	相机：2D 控制器 / 3D 投影链 / Camera 选择
+meta	editor.root_order	1,2,3,4,5,6,7,8,9
+entity	1	Camera2dOrtho
+component	1	Camera	projection=orthographic;center=640.0000,360.0000;zoom=1.000000
+entity	2	Camera3dMain
+component	2	Camera	projection=perspective;position=0.000000000,6.000000000,8.000000000;target=0.000000000,0.000000000,0.000000000;fov=60.0000;near=0.100000001;far=100.000000000
+entity	3	Camera3dTop
+component	3	Camera	projection=perspective;position=0.000000000,12.000000000,0.010000000;target=0.000000000,0.000000000,0.000000000;fov=60.0000;near=0.100000001;far=100.000000000
+entity	4	Sun
+component	4	Light	direction=0.400000006,-0.800000012,0.500000000;color=1,1,1;intensity=1
+entity	5	Ground
+component	5	MeshRenderer	mesh=__ground_plane__
+component	5	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=5.000000000,5.000000000,5.000000000
+entity	6	Prop3d
+component	6	MeshRenderer	mesh=assets/models/m8-test-triangle.glb
+component	6	Transform	position=0.000000000,0.600000024,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=0.800000012,0.800000012,0.800000012
+entity	7	Runner
+component	7	Sprite	texture=assets/textures/player.png;size=40x40;pivot=0.500,0.500;tint=0.400,1.000,0.400,1.000;sorting_layer=default;order=2;z=0
+component	7	Transform	position=640.000000000,360.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	7	RenderMode	mode=overlay
+entity	8	Marker
+component	8	Quad	size=18,18;color=1.000,0.900,0.200,1.000;pivot=0.500,0.500;z=0;order=3
+component	8	Transform	position=640.000000000,360.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	8	RenderMode	mode=overlay
+entity	9	Hud
+component	9	Text	text=HUD (screen space Text + UiLayout): no camera ever moves this;font_size=13.00;color=0.760,0.880,0.980
+component	9	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	9	UiLayout	anchors=1.0000,0.0000,1.0000,0.0000;offsets=-215.00,26.00,-215.00,26.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.5000,0.5000

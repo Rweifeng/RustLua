@@ -1,0 +1,11 @@
+scene_version=2
+name=api_ui
+entity	1	Toolbar
+component	1	Image	texture=__white__;color=0.170,0.210,0.300
+component	1	Text	text=scene UI node (above runtime ui);font_size=12;color=0.960,0.970,1.000
+component	1	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	1	UiLayout	anchors=1.0000,0.0000,1.0000,0.0000;offsets=-248.00,8.00,-16.00,28.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=1.0000,0.0000
+entity	2	Hud
+component	2	Text	text=entity Text / Image are drawn above every runtime ui.* element;font_size=12;color=0.720,0.800,0.920
+component	2	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	2	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=700.00,46.00,700.00,46.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000

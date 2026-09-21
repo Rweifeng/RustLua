@@ -1,9 +1,0 @@
-scene_version=2
-name=data_inventory
-entity	1	Chest
-component	1	Sprite	texture=assets/textures/tileset.png;size=32x32;pivot=0.500,0.500;tint=1.000,1.000,1.000,1.000;sorting_layer=default;order=0
-component	1	Transform	position=160.000000000,160.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
-entity	2	Instruction
-component	2	Text	text=SPACE adds a potion. Chest receives the first item.;font_size=13;color=0.850,0.880,0.950
-component	2	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
-component	2	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=20.00,650.00,20.00,650.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000

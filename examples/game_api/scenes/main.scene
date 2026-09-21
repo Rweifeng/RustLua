@@ -1,36 +1,122 @@
 scene_version=2
 name=main
-entity	1	Player
-component	1	Animation	default=idle;clip:idle:assets/textures/hero-idle.png:4:4:true;clip:move:assets/textures/hero-move.png:4:8:true;clip:attack:assets/textures/hero-attack.png:2:6:false
-component	1	Collider	shape=ball;radius=16
-component	1	Sprite	texture=assets/textures/player.png;size=32x32;pivot=0.500,0.500;tint=1.000,1.000,1.000,1.000;sorting_layer=default;order=0
-component	1	Transform	position=48.000000000,160.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
-entity	2	Tilemap
-component	2	Tilemap	tile_size=32x32;width=10;height=8;texture=assets/textures/tileset.png;tiles=11111111111222222221122212222112222222211222222221122222222112222222211111111111;solid=11111111111000000001100010000110000000011000000001100000000110000000011111111111
+# 2D 综合演示场景（配套脚本 scripts/demo_main.lua）。这个场景想证明的事情，逐条列在这里：
+#   ① 一个实体只有一种可绘制表达：Sprite 与 Quad 分别放在不同实体上（同时挂会被加载期点名，
+#      渲染只画一种），因此本场景里 Player/BlobSlime/Crate 用 Sprite，Aura/ScaleBar/Coin 用 Quad；
+#   ② Quad 是**一等**矩形：Aura 与 ScaleBar 故意**不写 texture**，它们采样内置白纹理，
+#      `color` 就是最终颜色——不需要 `texture=__white__` 这种内部哨兵；Coin 那个 Quad 写了
+#      显式贴图，两者走的是**同一套批处理**（同一个纹理表、排序、剔除、深度、可见遮罩）；
+#   ③ 父子对：Player → Player/Aura（`entity 3 Aura 2` 的 parent 边）。Aura 是主角身上的矩形光晕，
+#      父子同在 (0,0,0)。**这不是随便挑的位置，而是这类发布场景唯一能过的形状**：
+#      仓库级门 `scene_migration::shipped_example_scenes_render_the_same_under_both_parent_semantics`
+#      对 `scenes/**` 里每一个带 parent 的实体断言
+#      "父先序组合出来的世界位置 == 它自己 Transform 里写的那个位置"，而它**不读 `meta spatial`**
+#      （`scene_migration.rs` 里 locals/parents 直接从实体取值后 `propagate_all`，再逐实体比较）。
+#      于是"父不在原点"的父子对必然判红：父 (640,360) + 子本地 (0,0) → 子世界 (640,360) ≠ 子本地 (0,0)。
+#      唯一能过的形状是**整条父链净位移为零**——`index.scene`(15 个带 parent 的实体)、
+#      `ui_test.scene`(19 个)、`api_3d.scene`(1 个) 都是这么写的（父在 (0,0,0)）。
+#      本场景照此办理，`meta spatial` 因此也不必声明（未声明 = 组织关系，与另外三个发布场景一致）。
+#      真正的空间继承（`meta spatial local` + 相对父的偏移）由引擎自己的门证明，且那些场景
+#      不在"随仓库发布"的扫描范围里：`runtime_scene.rs` 的
+#      `scene_entity_world_transform_follows_the_parent_chain`、
+#      `spatial_inheritance_switches_between_local_and_world_positions`、
+#      `incremental_propagation_recomputes_only_changed_subtrees`；
+#      自有工程里跑 `editor --migrate-spatial-write` 即可把 parent 语义改成 local。
+#      本场景因此演示的是父子对本身的读法：`transform.get(Aura)`（局部）与 `transform.world(Aura)`
+#      （世界）是两个不同来源的接口——组织关系下父的位移**不会**自动传给子，所以脚本按 T 移动
+#      主角时会显式连子实体一起写。这条"看不出差别"恰好是组织关系的事实，写在这里免得被误读成
+#      "空间继承没生效"（见 demo_transform 的注释）。
+#   ④ RenderMode 三种模式各来一个实体（world/overlay/screen），几何因此走三条不同的产出路径；
+#   ⑤ 可见层：Hidden 这个实体用 `visibility.set` 被在 0x1 / 0x2 两位之间切换，视图遮罩是 0x1 时
+#      写到 0x2 的它**不存在于这个视图**（不产顶点、不占绘制层序号），不是"变透明"。
+#      刻意**不写 `Visibility` 组件**：`typed_scene` 的组件表（`ComponentId::ALL` /
+#      `compile_component`）还没有覆盖 `Visibility`，而
+#      `typed_scene::tests::compiles_every_project_scene_and_matches_serialized_extraction`
+#      会逐场景断言"源组件数 == typed 组件数"，一个未覆盖的名字就直接判红
+#      （类型化编译对未知名是 `_ => return None` + `else { continue }`，静默丢，所以那条计数断言
+#      是唯一能发现缺口的地方）。`visibility.get/set/all` 是**运行期** API，对没有该组件的实体
+#      同样可用（`get` 返回全可见常量、`set` 会把组件补上），因此脚本里的可见层演示照旧成立。
+#      这是"场景不得使用 typed 尚未覆盖的组件名"这条约束的**已知取舍**，要恢复 `Visibility`
+#      组件得先在引擎侧把它加进 typed_scene 的组件表；
+#   ⑥ 物理：Player(ball 动态)、BlobSlime(ball 动态)、Coin(ball sensor)、Crate(ball)、
+#      Platform(cuboid 固定)、Ground(Tilemap，实心格自动生成静态单元格碰撞体)。
+#      两种 shape 都在场，因此 `physics.raycast` / `physics.overlap` 有真实的碰撞体可命中；
+#   ⑦ UI：Hud 是屏幕空间 Text + UiLayout（不受世界相机影响），WorldText 是名字牌（跟着世界走）。
+meta	editor.root_order	1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22
+entity	1	Camera2D
+component	1	Camera	projection=orthographic;center=640,360;zoom=1
+entity	2	Player
 component	2	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
-entity	3	Slime1
-component	3	Animation	default=squish;clip:squish:assets/textures/slime.png:2:3:true
-component	3	Collider	shape=ball;radius=10
-component	3	Sprite	texture=assets/textures/slime.png;size=32x32;pivot=0.500,0.500;tint=1.000,1.000,1.000,1.000;sorting_layer=default;order=0
-component	3	Transform	position=160.000000000,80.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
-entity	4	Slime2
+component	2	Sprite	texture=assets/textures/player.png;size=32x32;pivot=0.500,0.500;tint=1.000,1.000,1.000,1.000;sorting_layer=actor;order=0
+component	2	Animation	default=idle;clip:idle:assets/textures/hero-idle.png:4:4:true;clip:move:assets/textures/hero-move.png:4:8:true;clip:hit:assets/textures/hero-attack.png:2:8:false:events=0:swing,1:hit
+component	2	Collider	shape=ball;radius=16
+entity	3	Aura	2
+component	3	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	3	Quad	size=48,48;color=0.350,0.700,1.000,0.850;pivot=0.500,0.500;z=-0.250
+entity	4	BlobSlime
+component	4	Transform	position=400.000000000,180.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	4	Sprite	texture=assets/textures/slime.png;size=32x32;pivot=0.500,0.500;tint=1.000,1.000,1.000,1.000;sorting_layer=actor;order=0
 component	4	Animation	default=squish;clip:squish:assets/textures/slime.png:2:3:true
-component	4	Collider	shape=ball;radius=10
-component	4	Sprite	texture=assets/textures/slime.png;size=32x32;pivot=0.500,0.500;tint=1.000,1.000,1.000,1.000;sorting_layer=default;order=0
-component	4	Transform	position=240.000000000,200.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
-entity	5	Coin1
+component	4	Collider	shape=ball;radius=14
+entity	5	Coin
+component	5	Transform	position=260.000000000,180.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	5	Quad	size=24,24;color=1.000,0.850,0.200,1.000;texture=assets/textures/coin.png;pivot=0.500,0.500;z=-0.100;layer=pickup;order=1
 component	5	Collider	shape=ball;radius=12;sensor=true
-component	5	Sprite	texture=assets/textures/coin.png;size=16x16;pivot=0.500,0.500;tint=1.000,1.000,1.000,1.000;sorting_layer=pickup;order=1
-component	5	Transform	position=96.000000000,64.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
-entity	6	Coin2
-component	6	Collider	shape=ball;radius=12;sensor=true
-component	6	Sprite	texture=assets/textures/coin.png;size=16x16;pivot=0.500,0.500;tint=1.000,1.000,1.000,1.000;sorting_layer=pickup;order=1
-component	6	Transform	position=192.000000000,192.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
-entity	7	Coin3
-component	7	Collider	shape=ball;radius=12;sensor=true
-component	7	Sprite	texture=assets/textures/coin.png;size=16x16;pivot=0.500,0.500;tint=1.000,1.000,1.000,1.000;sorting_layer=pickup;order=1
-component	7	Transform	position=272.000000000,96.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
-entity	8	test
-component	8	Text	text=123456;font_size=12;color=1.000,1.000,1.000
-component	8	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
-component	8	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=10.00,10.00,10.00,10.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	6	Platform
+component	6	Transform	position=400.000000000,520.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	6	Collider	shape=cuboid;half_width=160;half_height=16;dynamic=false
+entity	7	Crate
+component	7	Transform	position=760.000000000,320.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	7	Sprite	texture=assets/textures/red-1x1.png;size=36x36;pivot=0.500,0.500;tint=1.000,0.900,0.700,1.000;sorting_layer=default;order=0
+component	7	Collider	shape=ball;radius=18
+entity	8	Ground
+component	8	Transform	position=128.000000000,96.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	8	Tilemap	tile_size=64x64;width=8;height=8;texture=assets/textures/tileset.png;tiles=1111111113333331133333311333333113333331133333311333333111111111;solid=1111111110000001100000011000000110000001100000011000000111111111
+entity	9	Sparks
+component	9	Transform	position=520.000000000,300.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	9	ParticleEmitter	count=6;rate=24.000000;speed=90.000000;life=0.600000;size=4.000000;size_end=0.500000;color=1.000,0.700,0.250,1.000;color_end=1.000,0.250,0.100,0.000;gravity=0,120;drag=0.500000
+entity	10	Nameplate
+component	10	Transform	position=0.000000000,50.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	10	WorldText	text=Player;font_size=14;color=0.900,0.950,1.000;offset=0,10;centered=true
+entity	11	Hidden
+component	11	Transform	position=120.000000000,110.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	11	Sprite	texture=assets/textures/coin.png;size=24x24;pivot=0.500,0.500;tint=1.000,1.000,1.000,1.000;sorting_layer=default;order=0
+entity	12	Hud
+component	12	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	12	Text	text=main.scene - 2D core demo (Sprite / Quad / Animation / Tilemap / Physics);font_size=14.00;color=0.900,0.950,1.000
+component	12	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=24.00,44.00,24.00,44.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	13	ScaleBar
+component	13	Transform	position=0.000000000,30.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	13	Quad	size=96,10;color=0.200,0.900,0.300,1.000;pivot=0.500,0.500;z=-0.500;layer=ui;order=0
+entity	14	RenderModeWorld
+component	14	Transform	position=0.000000000,110.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	14	Sprite	texture=assets/textures/red-1x1.png;size=20x20;pivot=0.500,0.500;tint=1.000,0.400,0.400,1.000;sorting_layer=default;order=0
+component	14	RenderMode	mode=world
+entity	15	RenderModeOverlay
+component	15	Transform	position=60.000000000,110.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	15	Sprite	texture=assets/textures/red-1x1.png;size=20x20;pivot=0.500,0.500;tint=0.400,1.000,0.400,1.000;sorting_layer=default;order=0
+component	15	RenderMode	mode=overlay
+entity	16	RenderModeScreen
+component	16	Transform	position=1120.000000000,200.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	16	Sprite	texture=assets/textures/red-1x1.png;size=20x20;pivot=0.500,0.500;tint=0.400,0.500,1.000,1.000;sorting_layer=default;order=0
+component	16	RenderMode	mode=screen
+entity	17	DecorClock
+component	17	Transform	position=840.000000000,540.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	17	Sprite	texture=assets/textures/coin.png;size=16x16;pivot=0.500,0.500;tint=1.000,1.000,1.000,1.000;sorting_layer=background;order=0
+entity	18	DecorFrame
+component	18	Transform	position=640.000000000,640.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	18	Quad	size=1000,8;color=0.200,0.250,0.400,1.000;pivot=0.500,0.500;z=-1.000;layer=background;order=0
+entity	19	DecorIdle
+component	19	Transform	position=1000.000000000,540.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	19	Sprite	texture=assets/textures/slime.png;size=32x32;pivot=0.500,0.500;tint=1.000,1.000,1.000,1.000;sorting_layer=background;order=0
+component	19	Animation	default=squish;clip:squish:assets/textures/slime.png:2:3:true
+entity	20	DecorFighter
+component	20	Transform	position=1120.000000000,540.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	20	Sprite	texture=assets/textures/player.png;size=32x32;pivot=0.500,0.500;tint=1.000,1.000,1.000,1.000;sorting_layer=background;order=0
+component	20	Animation	default=idle;clip:idle:assets/textures/hero-idle.png:4:4:true;clip:hit:assets/textures/hero-attack.png:2:8:false:events=0:swing,1:hit
+entity	21	DecorGem
+component	21	Transform	position=940.000000000,220.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	21	Sprite	texture=assets/textures/coin.png;size=16x16;pivot=0.500,0.500;tint=1.000,1.000,1.000,1.000;sorting_layer=background;order=0
+entity	22	DecorPanel
+component	22	Transform	position=760.000000000,540.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	22	Quad	size=48,48;color=0.550,0.300,0.850,1.000;pivot=0.500,0.500;z=-0.800;layer=background;order=0

@@ -1,33 +1,36 @@
--- 游戏主入口：只负责加载职责模块并转发生命周期回调。
--- 玩法逻辑按职责拆分到同目录各模块：
---   game.lua          流程编排（场景初始化、每帧更新、事件分发、胜负）
---   state.lua         共享状态与工具函数
---   player.lua        玩家（移动/攻击/血量/动画）
---   enemies.lua       史莱姆（收集/追击）
---   coins.lua         金币（收集/拾取）
---   save_manager.lua  存档（自动恢复/存/读）
---   hud.lua           HUD（血条/目标文本）
---   demo3d.lua        M8-06 3D 集成演示（移动网格/切换相机，防御式）
-local game = require("game")
-local demo3d = require("demo3d")
-local game3d = require("game3d")
+-- 工程入口：把引擎的工程级回调原样转交给路由（`scripts/router.lua`）。
+--
+-- 入口只做转发，演示逻辑全部在 `scripts/demo_*.lua` 里，按场景分模块。
+-- 回调契约（引擎侧）：`on_create()` / `update()` / `on_destroy()` /
+-- `on_click(name)` / `on_drag(from_id, from_index, to_id, to_index)` /
+-- `on_day_start()` / `on_day_end()`。模块没实现的回调由路由跳过。
 
-log.info("project script loaded")
+local route = require("router")
 
 function on_create()
-    game.on_create()
-    demo3d.on_create()
-    game3d.on_create()
+    route.on_create()
 end
 
 function update()
-    local result = game.update()
-    demo3d.update()
-    game3d.update()
-    return result
+    return route.update()
 end
 
--- UI Button 点击回调：任何按钮被点击都会记录到日志（用于 UI 测试）。
+function on_destroy()
+    route.on_destroy()
+end
+
 function on_click(name)
-    log.info("button clicked: " .. tostring(name))
+    return route.on_click(name)
+end
+
+function on_drag(from_id, from_index, to_id, to_index)
+    return route.on_drag(from_id, from_index, to_id, to_index)
+end
+
+function on_day_start()
+    return route.on_day_start()
+end
+
+function on_day_end()
+    return route.on_day_end()
 end

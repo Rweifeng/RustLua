@@ -69,6 +69,10 @@ pub fn parse_arguments() -> Result<Arguments, String> {
 /// project: either a directory with its own `project.toml` (packaged layout) or
 /// a sibling `game/project.toml` (workspace layout). Lets double-clicking the
 /// exe launch the game instead of the diagnostic scene.
+///
+/// 顺序即优先级：显式 `--project` > `pack/`（发布包）> 检出目录里的示例工程。
+/// 示例工程按 `examples/game_api`（API 演示工程）优先，其次 `examples`/`game`
+/// （历史布局与外部游戏工程）。
 pub fn find_project_root() -> Option<PathBuf> {
     let exe_dir = std::env::current_exe()
         .ok()?
@@ -83,7 +87,7 @@ pub fn find_project_root() -> Option<PathBuf> {
         if direct.is_file() {
             return Some(dir.to_path_buf());
         }
-        for project_name in ["examples", "game"] {
+        for project_name in ["examples/game_api", "examples", "game"] {
             let project = dir.join(project_name).join("project.toml");
             if project.is_file() {
                 return Some(dir.join(project_name));

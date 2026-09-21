@@ -1666,6 +1666,15 @@ impl LuaRuntime {
         }
     }
 
+    /// 当前场景名（`scene.reload()` 返回的那个值）。
+    ///
+    /// 宿主与测试用它断言"切场景真的发生了"：Lua 侧读的是同一份状态，因此不存在
+    /// "脚本以为切了、宿主以为没切"的第二份真源。
+    #[must_use]
+    pub fn scene_name(&self) -> Option<String> {
+        self.state.borrow().scene.clone()
+    }
+
     /// Executes a short expression or statement in the currently loaded Lua VM.
     /// Console failures are routed through the same structured debugger as script errors.
     pub fn execute_console(&mut self, source: &str) -> Result<String, LuaBridgeError> {
@@ -10203,150 +10212,144 @@ mod tests {
         let _ = fs::remove_file(click);
     }
 
+    /// 示例工程的**入口菜单**能载入、跑一步，并且菜单卡片都是结构化的 `UiEvents` 实体。
+    ///
+    /// 这三条（本测试与下面两条）原本对着旧工程的口号式返回值（`menu_ready` /
+    /// `production_ok`）断言；示例工程重建后改成**断言可观测状态**
+    /// （当前场景名、存档是否落盘、实体数量），这样演示模块的措辞再改也不会误伤。
     #[test]
-    fn production_sample_main_script_runs_menu_update() {
+    fn sample_project_index_scene_runs_the_project_script() {
         use crate::core::scene::Scene;
         use crate::core::ui_events::UiEvents;
 
         let root = production_sample_root();
-        if !root.join("scenes/menu.scene").is_file() {
+        let path = root.join("scenes/index.scene");
+        if !path.is_file() {
             return;
         }
-        let scene = Scene::load(root.join("scenes/menu.scene")).expect("load sample menu");
-        let mut runtime = LuaRuntime::new().unwrap();
-        runtime.set_project_root(root.clone());
-        assert_eq!(runtime.instantiate_scene(&scene).unwrap(), 7);
-        runtime
-            .execute_project_script(&root.join("scripts/showcase.lua"))
-            .expect("load sample showcase.lua");
-
-        assert_eq!(runtime.call_update().unwrap(), "menu_ready");
-        // Button has been removed; menu buttons use structured UiEvents.
-        let clicks = runtime.with_world(|world| world.entities_with::<UiEvents>().len());
-        assert_eq!(clicks, 2, "menu scene should expose two UiEvents buttons");
-    }
-
-    #[test]
-    fn production_sample_start_button_loads_production_scene() {
-        use crate::core::{
-            animation::AnimationStateMachine, input::MouseButton, scene::Scene, tilemap::Tilemap,
-        };
-
-        let root = production_sample_root();
-        if !root.join("scenes/menu.scene").is_file() {
-            return;
-        }
-        let scene = Scene::load(root.join("scenes/menu.scene")).expect("load sample menu");
+        let scene = Scene::load(&path).expect("load index scene");
         let mut runtime = LuaRuntime::new().unwrap();
         runtime.set_project_root(root.clone());
         runtime.instantiate_scene(&scene).unwrap();
         runtime
-            .execute_project_script(&root.join("scripts/showcase.lua"))
-            .expect("load sample showcase.lua");
+            .execute_project_script(&root.join("scripts/main.lua"))
+            .expect("load sample main.lua");
+
+        let result = runtime.call_update().unwrap();
+        assert!(
+            result.starts_with("index_ok"),
+            "入口菜单的演示模块应当接手 update：{result}"
+        );
+        let cards = runtime.with_world(|world| world.entities_with::<UiEvents>().len());
+        assert!(
+            cards >= 10,
+            "入口菜单的每张卡片都应当是 UiEvents 实体，实际 {cards}"
+        );
+    }
+
+    /// 点菜单卡片 → `scene.load` → 宿主处理过渡 → 目标场景的演示模块接手。
+    #[test]
+    fn sample_project_menu_click_loads_the_demo_scene() {
+        use crate::core::{input::MouseButton, scene::Scene};
+
+        let root = production_sample_root();
+        let path = root.join("scenes/index.scene");
+        if !path.is_file() {
+            return;
+        }
+        let scene = Scene::load(&path).expect("load index scene");
+        let mut runtime = LuaRuntime::new().unwrap();
+        runtime.set_project_root(root.clone());
+        runtime.instantiate_scene(&scene).unwrap();
+        runtime
+            .execute_project_script(&root.join("scripts/main.lua"))
+            .expect("load sample main.lua");
 
         let mut input = InputSnapshot::default();
-        input.cursor_moved(520.0, 400.0);
+        input.cursor_moved(200.0, 160.0);
         input.mouse_event(MouseButton::Left, true);
-        // StartButton 命中矩形（覆盖点击点）→ on_click("StartButton") → 载入生产场景。
+        // 命中矩形由运行时预计算（`RuntimeScene::compute_click_targets`），
+        // 这里直接给一个覆盖点击点的目标，实体名就是目标场景名。
         runtime
             .process_ui_clicks(
                 &input,
                 &[UiClickTarget {
-                    name: "StartButton".to_owned(),
-                    origin: [300.0, 300.0],
-                    size: [500.0, 200.0],
+                    name: "api_core".to_owned(),
+                    origin: [120.0, 148.0],
+                    size: [560.0, 50.0],
                     functions: vec!["on_click".to_owned()],
                 }],
             )
             .unwrap();
         runtime.process_scene_transition().unwrap();
 
+        assert_eq!(
+            runtime.scene_name().as_deref(),
+            Some("api_core"),
+            "点击卡片后应当切到该演示场景"
+        );
         let result = runtime.call_update().unwrap();
         assert!(
-            result.starts_with("production_ok"),
-            "production gameplay update should run after transition: {result}"
-        );
-        let counts = runtime.with_world(|world| {
-            (
-                world.entities_with::<Tilemap>().len(),
-                world.entities_with::<AnimationStateMachine>().len(),
-            )
-        });
-        assert_eq!(counts.0, 1, "production scene should load one tilemap");
-        assert_eq!(
-            counts.1, 11,
-            "production scene should load player plus ten animated enemies"
+            result.starts_with("api_core_ok"),
+            "目标场景的演示模块应当接手 update：{result}"
         );
     }
+
+    /// 演示里"按 S 存档、按 ESC 回菜单"这条真实链路：`save.commit` 真的落盘，
+    /// `scene.load("index")` 真的切回入口场景。
     #[test]
-    fn production_sample_can_save_and_return_to_menu() {
+    fn sample_project_demo_saves_and_esc_returns_to_menu() {
         use crate::core::{input::KeyCode, scene::Scene};
+
         let root = production_sample_root();
-        if !root.join("scenes/menu.scene").is_file() {
+        let path = root.join("scenes/api_core.scene");
+        if !path.is_file() {
             return;
         }
-        let save_path = std::env::temp_dir().join(format!(
-            "p2-production-sample-save-{}.sav",
+        let dir = std::env::temp_dir().join(format!(
+            "p2-sample-save-{}",
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .expect("clock should be valid")
                 .as_nanos()
         ));
-        let _ = fs::remove_file(&save_path);
-        let scene = Scene::load(root.join("scenes/menu.scene")).expect("load sample menu");
+        fs::create_dir_all(&dir).unwrap();
+        let save_path = dir.join("save.sav");
+
+        let scene = Scene::load(&path).expect("load api_core scene");
         let mut runtime = LuaRuntime::new().unwrap();
         runtime.set_project_root(root.clone());
         runtime.set_save_path(save_path.clone());
         runtime.instantiate_scene(&scene).unwrap();
         runtime
-            .execute_project_script(&root.join("scripts/showcase.lua"))
-            .expect("load sample showcase.lua");
+            .execute_project_script(&root.join("scripts/main.lua"))
+            .expect("load sample main.lua");
 
-        let mut click = InputSnapshot::default();
-        click.cursor_moved(520.0, 400.0);
-        click.mouse_event(crate::core::input::MouseButton::Left, true);
-        runtime
-            .process_ui_clicks(
-                &click,
-                &[UiClickTarget {
-                    name: "StartButton".to_owned(),
-                    origin: [300.0, 300.0],
-                    size: [500.0, 200.0],
-                    functions: vec!["on_click".to_owned()],
-                }],
-            )
-            .unwrap();
-        runtime.process_scene_transition().unwrap();
-
+        // S = `save.slot("demo")` + `save.commit()`（演示里写明的落盘键）。
         let mut save_input = InputSnapshot::default();
-        save_input.key_event(KeyCode::F1, true);
+        save_input.key_event(KeyCode::KeyS, true);
         runtime.set_input(save_input);
-        let save_result = runtime.call_update().unwrap();
+        runtime.call_update().unwrap();
+        let slot_file = dir.join("save_demo.sav");
         assert!(
-            save_result.starts_with("production_ok"),
-            "save frame should continue gameplay update: {save_result}"
+            slot_file.is_file(),
+            "按 S 应当把演示槽写盘：{}",
+            slot_file.display()
         );
-        assert!(save_path.is_file(), "F1 should commit a save file");
 
+        // ESC = 命名动作 `cancel` → 路由回到入口菜单。
         let mut menu_input = InputSnapshot::default();
-        menu_input.key_event(KeyCode::F4, true);
+        menu_input.key_event(KeyCode::Escape, true);
         runtime.set_input(menu_input);
-        let switch_result = runtime.call_update().unwrap();
-        assert_eq!(switch_result, "return_menu");
+        runtime.call_update().unwrap();
         runtime.process_scene_transition().unwrap();
-        runtime.set_input(InputSnapshot::default());
-        assert_eq!(runtime.call_update().unwrap(), "menu_ready");
-        let clicks = runtime.with_world(|world| {
-            world
-                .entities_with::<crate::core::ui_events::UiEvents>()
-                .len()
-        });
         assert_eq!(
-            clicks, 2,
-            "menu scene should restore two UiEvents buttons after F4"
+            runtime.scene_name().as_deref(),
+            Some("index"),
+            "ESC 应当回到入口菜单"
         );
 
-        let _ = fs::remove_file(save_path);
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]

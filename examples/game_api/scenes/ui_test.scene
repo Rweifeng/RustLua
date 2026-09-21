@@ -1,25 +1,272 @@
+# ui_test —— 场景 UI 组件（Text / Image / UiLayout / Container / ButtonStates / UiEvents）的可交互演示。
+#
+# 这个演示想证明什么：
+#   ① 屏幕空间 UI 的几何只由 `UiLayout`（四边 Anchor + Offset）与 `Container`（自动布局）给出；
+#      Transform 一律留在原点——`scene_migration` 的父子语义门要求"子实体世界位置 == 局部位置"。
+#   ② 按钮 = `Image + Text + UiEvents`（docs/30 §8）：点击由引擎 `process_ui_clicks` 命中
+#      `UiEvents event=click` 的实体，再调用**工程级全局** `on_click(实体名)`
+#      （scripts/main.lua → router → scripts/demo_ui_events.lua）。
+#   ③ `Container` 的五种 kind 各出现一次：vbox（左侧按钮列）/ hbox（图例行）/ grid（2×2 图标）/
+#      center（居中徽标）/ margin（内缩卡片）。容器按子实体 Image 的 UiLayout 尺寸摆放它们。
+#   ④ `Image.nine_slice`（九宫格）：右侧 InfoPanel 用 button_green.png 的纹理像素边框，
+#      渲染时拆成 3×3 共 9 格（不是单四边形拉伸）。
+#   ⑤ `ButtonStates` 的五个视觉状态贴图覆盖：**只有编辑器 UI Designer 消费**——运行时渲染读的是
+#      `Image.texture`，ButtonStates 既没有运行时消费方，也不会在鼠标悬停时切换。
+#   ⑥ 本文件**刻意不写** `UiBindings` / `UiAnimation`：这两个组件只注册了 schema，
+#      运行时 `typed_scene::compile_component` 没有它们的分支，写进场景会让
+#      "组件必须被 typed 覆盖"的编译门判红。演示里"绑定的计数文本"由
+#      scripts/demo_ui_events.lua 每帧用 `ui.text_at` 重画，"位移动画"也由脚本驱动。
+#
+# 两条布局约定（改这个文件前请先读）：
+#   · 容器实体的 id 必须**小于**其子实体的 id —— 布局解算按实体 id 顺序自顶向下，容器先解算才能把
+#     子实体摆到算出来的矩形上；id 反了子实体会用自己的 UiLayout 覆盖容器的摆放结果。
+#   · 场景 UI 的绘制顺序 = 实体 id 顺序（全屏背景必须是最小的 id），且**所有 Text 画在所有 Image 之上**，
+#     所以按钮文字可以放心地和按钮图片同处一块矩形。
+#
+# 被引擎测试固定引用的三处（不要改）：
+#   · 实体 `StartButton` 存在且带 `UiEvents event=click;function=on_click`（点击要经 on_click 分发）；
+#   · 场景产出 SDF 文字 draw（下面多处 font_size < 24 走 SDF 路径）；
+#   · 文件里含 `assets/textures/slime.png`（`assetc` 的依赖改名门用它做消费者）。
 scene_version=2
 name=ui_test
-entity	1	BgSlime
-component	1	Sprite	texture=assets/textures/slime.png;size=32x32;pivot=0.500,0.500;tint=1.000,1.000,1.000,1.000;sorting_layer=default;order=0
-component	1	Transform	position=619.261901855,340.716796875,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=4.000000000,4.000000000,1.000000000
-entity	2	TitleText
-component	2	Text	text=UI Test;font_size=36;color=1,1,0.2
+# ① 全屏背景：UiLayout 的 anchors=0,0,1,1 + offsets=0,0,0,0 = 铺满设计分辨率 1280×720。
+entity	1	BackdropPanel
+# 背景是 **Quad**（世界/overlay 通道）而不是 Image：场景 `Image`/`Text` 永远画在 Lua 动态 UI
+# 之上，铺满屏幕的 Image 会把脚本的读数（`api.title/status/hint` 与面板里的数值）整片盖住。
+# Quad 走 2D 世界通道，动态 UI（ScreenUI）在它之上；默认 2D 相机中心 (640,360)、zoom 1，
+# 因此 1280×720 的 Quad 恰好铺满屏幕。
+component	1	Quad	size=1280,720;color=0.055,0.065,0.090,1
+component	1	Transform	position=640.000000000,360.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+# ② 顶栏：只拉伸左右（anchors 右边界 = 1），高度由 offsets 的 top/bottom 直接给。
+entity	2	HeaderBar
+component	2	Image	texture=__white__;color=0.100,0.150,0.240
 component	2	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
-component	2	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=90.00,20.00,90.00,20.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
-entity	3	CoinImage
-component	3	Image	texture=assets/textures/coin.png;color=1,1,1
+component	2	UiLayout	anchors=0.0000,0.0000,1.0000,0.0000;offsets=24.00,16.00,-24.00,72.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.5000,0.5000
+# ③ 标题：**点锚**（四条 offsets 相等 → 零尺寸）——文字从该点开始画；长度 > 32 字符走 SDF 路径。
+entity	3	TitleText
+component	3	Text	text=ui_test - scene UI components and UiEvents clicks;font_size=20;color=0.930,0.960,1.000
 component	3	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
-component	3	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=80.00,90.00,144.00,154.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
-entity	4	StartButton
-component	4	Image	texture=__white__;color=0.200,0.450,0.800
-component	4	Text	text=Start;font_size=12;color=1.000,1.000,1.000
+component	3	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=48.00,32.00,48.00,32.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+# ④ 顶栏右侧的组件清单（Text 只是视觉属性，位置同样来自 UiLayout 的点锚）。
+entity	4	HeaderComponentsText
+component	4	Text	text=Image + Text + UiLayout + Container + ButtonStates + UiEvents;font_size=14;color=0.620,0.720,0.850
 component	4	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
-component	4	UiEvents	event=click;function=on_click
-component	4	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=150.00,200.00,270.00,240.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
-entity	5	QuitButton
-component	5	Image	texture=__white__;color=0.600,0.200,0.200
-component	5	Text	text=Quit;font_size=12;color=1.000,1.000,1.000
+component	4	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=740.00,36.00,740.00,36.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+# ⑤ Container kind=vbox：左侧按钮列的**位置不是手写的**——下面 6 个按钮实体（id 6/8/10/12/14/16）
+#    以它为父，容器按 padding=16,16,16,16、spacing=12、align=center 逐个摆放。
+#    容器自身矩形：(60,120)-(340,560)；每个按钮 240×48 → 首个孩子落在 (80,136)，每个下移 60。
+entity	5	ButtonColumn
+component	5	Container	kind=vbox;padding=16.0000,16.0000,16.0000,16.0000;spacing=12.000000;columns=0;stretch=false;fill=false;align=center
+component	5	Image	texture=__white__;color=0.088,0.108,0.155
 component	5	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
-component	5	UiEvents	event=click;function=on_click
-component	5	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=150.00,250.00,270.00,290.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+component	5	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=60.00,120.00,340.00,560.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+# ⑥ StartButton：引擎测试点名要的实体。点击 → on_click("StartButton") → 计数 +1。
+#    ButtonStates 写全五个状态（pressed 用内置白纹理表示"按下白闪"，disabled 用项目里的 red-1x1.png）；
+#    这些贴图只有编辑器读，运行时渲染用的是上面 Image 的 __white__ + 颜色。
+entity	6	StartButton	5
+component	6	ButtonStates	normal=assets/textures/ui/button_green.png;hover=assets/textures/ui/button_green.png;pressed=__white__;disabled=assets/textures/red-1x1.png;focused=assets/textures/ui/button_green.png
+component	6	Image	texture=__white__;color=0.160,0.420,0.720
+component	6	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	6	UiEvents	event=click;function=on_click
+component	6	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=-120.00,-24.00,120.00,24.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+# ⑦ 按钮文字是**子实体**：它的 UiLayout 锚点相对父矩形（按钮的 240×48）解析 → (12,17)，
+#    于是文字始终贴在按钮左上角内侧，按钮被容器挪到哪都跟着走（不需要抄绝对坐标）。
+entity	7	StartLabel	6
+component	7	Text	text=Start +1;font_size=14;color=0.980,0.980,0.980
+component	7	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	7	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=12.00,17.00,12.00,17.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+# ⑧ ResetButton：点击 → 计数清零。
+entity	8	ResetButton	5
+component	8	Image	texture=__white__;color=0.560,0.300,0.180
+component	8	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	8	UiEvents	event=click;function=on_click
+component	8	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=-120.00,-24.00,120.00,24.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	9	ResetLabel	8
+component	9	Text	text=Reset 0;font_size=14;color=0.980,0.980,0.980
+component	9	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	9	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=12.00,17.00,12.00,17.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+# ⑨ CloseButton：点击 → 脚本用 `visibility.set(id, 0)` 藏起右侧 InfoPanel 那一组**场景实体**
+#    （再点一次恢复）。ButtonStates 这里只写两条：**未写到的状态回退到 normal**（合法写法）。
+entity	10	CloseButton	5
+component	10	ButtonStates	normal=assets/textures/ui/button_green.png;pressed=__white__
+component	10	Image	texture=__white__;color=0.520,0.190,0.210
+component	10	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	10	UiEvents	event=click;function=on_click
+component	10	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=-120.00,-24.00,120.00,24.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	11	CloseLabel	10
+component	11	Text	text=Close panel;font_size=14;color=0.980,0.980,0.980
+component	11	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	11	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=12.00,17.00,12.00,17.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+# ⑩ PointerButton：一条组件串里声明 4 种指针事件（pointer_enter/exit/down/up，多条用 `|` 分隔）。
+#    **运行时只分发 click**（`process_ui_clicks` → `UiEvents::click_functions`），其余四种事件是
+#    解析/校验/编辑器层面的事实；`arg.<名>=值` 是给编辑器与工具的声明式参数（引擎不会把它传给 Lua）。
+#    function 一律写工程里真实存在的全局函数名（scripts/main.lua 暴露 on_click / on_drag），
+#    否则编辑器会报 "function ... was not found"。
+entity	12	PointerButton	5
+component	12	Image	texture=__white__;color=0.220,0.400,0.330
+component	12	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	12	UiEvents	event=pointer_enter;function=on_click;arg.name=hover_in|event=pointer_exit;function=on_click;arg.name=hover_out|event=pointer_down;function=on_click;arg.name=pressed|event=pointer_up;function=on_click;arg.name=released|event=click;function=on_click
+component	12	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=-120.00,-24.00,120.00,24.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	13	PointerLabel	12
+component	13	Text	text=Pointer events;font_size=14;color=0.980,0.980,0.980
+component	13	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	13	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=12.00,17.00,12.00,17.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+# ⑪ SubmitButton：focus / submit / value_changed 三种事件（表单语义），同样都绑到全局 on_click。
+#    点击 → 脚本把"提交次数" +1（右侧 InfoPanel 里看得见）。
+entity	14	SubmitButton	5
+component	14	Image	texture=__white__;color=0.320,0.300,0.560
+component	14	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	14	UiEvents	event=focus;function=on_click|event=submit;function=on_click|event=value_changed;function=on_click|event=click;function=on_click
+component	14	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=-120.00,-24.00,120.00,24.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	15	SubmitLabel	14
+component	15	Text	text=Submit +1;font_size=14;color=0.980,0.980,0.980
+component	15	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	15	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=12.00,17.00,12.00,17.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+# ⑫ DisabledButton：**故意没有 UiEvents** —— 于是它不是命中目标、点了没有任何反应。
+#    `disabled_state=true` 是 ButtonStates 的"这个按钮处于禁用态"声明，它同样只有编辑器消费：
+#    场景 UI 没有运行时禁用开关，"点不动"这件事在运行时只能靠**不写 UiEvents**表达。
+entity	16	DisabledButton	5
+component	16	ButtonStates	normal=assets/textures/ui/button_green.png;hover=assets/textures/ui/button_green.png;pressed=__white__;disabled=assets/textures/red-1x1.png;focused=assets/textures/ui/button_green.png;disabled_state=true
+component	16	Image	texture=__white__;color=0.220,0.230,0.270
+component	16	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	16	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=-120.00,-24.00,120.00,24.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	17	DisabledLabel	16
+component	17	Text	text=Disabled - no UiEvents;font_size=14;color=0.700,0.720,0.760
+component	17	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	17	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=12.00,17.00,12.00,17.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+# ⑬ 容器 kind 的图注。
+entity	18	VBoxLabel
+component	18	Text	text=Container kind=vbox;font_size=14;color=0.760,0.840,0.960
+component	18	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	18	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=60.00,96.00,60.00,96.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	19	HBoxLabel
+component	19	Text	text=Container kind=hbox;font_size=14;color=0.760,0.840,0.960
+component	19	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	19	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=380.00,96.00,380.00,96.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+# ⑭ Container kind=hbox：三个 140×40 的色块横向排列（容器矩形 380..860 × 120..180，
+#    padding 10 → 内宽 460；3×140 + 2×10 = 440 ≤ 460，align=center 只影响交叉轴）。
+entity	20	LegendRow
+component	20	Container	kind=hbox;padding=10.0000,10.0000,10.0000,10.0000;spacing=10.000000;columns=0;stretch=false;fill=false;align=center
+component	20	Image	texture=__white__;color=0.100,0.130,0.180
+component	20	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	20	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=380.00,120.00,860.00,180.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	21	LegendChipA	20
+component	21	Image	texture=__white__;color=0.180,0.360,0.520
+component	21	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	21	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=-70.00,-20.00,70.00,20.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	22	LegendChipB	20
+component	22	Image	texture=__white__;color=0.520,0.360,0.180
+component	22	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	22	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=-70.00,-20.00,70.00,20.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	23	LegendChipC	20
+component	23	Image	texture=__white__;color=0.200,0.480,0.400
+component	23	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	23	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=-70.00,-20.00,70.00,20.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	24	GridLabel
+component	24	Text	text=Container kind=grid;font_size=14;color=0.760,0.840,0.960
+component	24	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	24	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=380.00,196.00,380.00,196.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+# ⑮ Container kind=grid：columns=2 的 2×2 网格（容器 380..640 × 220..416，
+#    列宽/行高取该列/行里最大子尺寸；每个格子 100×80）。
+entity	25	IconGrid
+component	25	Container	kind=grid;padding=8.0000,8.0000,8.0000,8.0000;spacing=8.000000;columns=2;stretch=false;fill=false;align=center
+component	25	Image	texture=__white__;color=0.090,0.110,0.160
+component	25	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	25	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=380.00,220.00,640.00,416.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	26	IconTileA	25
+component	26	Image	texture=__white__;color=0.260,0.320,0.480
+component	26	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	26	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=-50.00,-40.00,50.00,40.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	27	IconTileB	25
+component	27	Image	texture=__white__;color=0.480,0.300,0.260
+component	27	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	27	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=-50.00,-40.00,50.00,40.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	28	IconTileC	25
+component	28	Image	texture=__white__;color=0.260,0.460,0.380
+component	28	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	28	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=-50.00,-40.00,50.00,40.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	29	IconTileD	25
+component	29	Image	texture=__white__;color=0.420,0.260,0.440
+component	29	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	29	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=-50.00,-40.00,50.00,40.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	30	CenterLabel
+component	30	Text	text=Container kind=center;font_size=14;color=0.760,0.840,0.960
+component	30	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	30	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=380.00,432.00,380.00,432.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+# ⑯ Container kind=center：唯一的子实体保持自己的尺寸并居中（容器 380..560 × 456..552）。
+entity	31	CenterBadge
+component	31	Container	kind=center;padding=6.0000,6.0000,6.0000,6.0000;spacing=0.000000;columns=0;stretch=false;fill=false;align=center
+component	31	Image	texture=__white__;color=0.110,0.140,0.190
+component	31	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	31	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=380.00,456.00,560.00,552.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	32	CenterChip	31
+component	32	Image	texture=__white__;color=0.700,0.560,0.200
+component	32	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	32	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=-60.00,-30.00,60.00,30.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	33	MarginLabel
+component	33	Text	text=Container kind=margin;font_size=14;color=0.760,0.840,0.960
+component	33	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	33	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=600.00,432.00,600.00,432.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+# ⑰ Container kind=margin：子实体被内缩成"容器矩形 - padding"的一整块
+#    （padding 左/上 10、右/下 16；子实体自己的尺寸被忽略，这是 margin 与 center 的区别）。
+entity	34	MarginCard
+component	34	Container	kind=margin;padding=10.0000,10.0000,16.0000,16.0000;spacing=0.000000;columns=0;stretch=false;fill=false;align=start
+component	34	Image	texture=__white__;color=0.140,0.170,0.230
+component	34	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	34	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=600.00,456.00,860.00,552.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	35	MarginCardInner	34
+component	35	Image	texture=__white__;color=0.260,0.520,0.620
+component	35	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	35	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=0.00,0.00,234.00,70.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	36	InfoPanelLabel
+component	36	Text	text=InfoPanel - Image nine_slice;font_size=14;color=0.760,0.840,0.960
+component	36	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	36	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=880.00,96.00,880.00,96.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+# ⑱ 九宫格 Image：`nine_slice=24,24,16,16` 的四条边框是**纹理像素**（button_green.png 是 192×64），
+#    渲染把它拆成 3×3 格 → 角部不被拉伸。这块面板的 6 个子实体的 UiLayout 以它的矩形为参考
+#    （anchors=0 = 父矩形左上角，offsets 是像素内缩），所以面板被挪动时子实体整体跟着走。
+entity	37	InfoPanel
+component	37	Image	texture=assets/textures/ui/button_green.png;nine_slice=24.00,24.00,16.00,16.00;color=0.780,0.900,0.860
+component	37	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	37	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=880.00,120.00,1220.00,560.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	38	InfoPanelTitle	37
+component	38	Text	text=InfoPanel - 7 scene entities;font_size=16;color=0.100,0.160,0.140
+component	38	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	38	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=20.00,16.00,20.00,16.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+# ⑲ 绑定文本的左半边：标签是**场景 Text**（静态），右半边的数值由 scripts/demo_ui_events.lua
+#    每帧用 `ui.text_at` 画在同一行上（`UiBindings` 运行时不消费，绑定只能由脚本做）。
+entity	39	InfoClicksLabel	37
+component	39	Text	text=clicks ->;font_size=16;color=0.100,0.160,0.140
+component	39	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	39	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=20.00,64.00,20.00,64.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	40	InfoSubmitsLabel	37
+component	40	Text	text=submits ->;font_size=16;color=0.100,0.160,0.140
+component	40	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	40	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=20.00,100.00,20.00,100.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	41	InfoBindNote	37
+component	41	Text	text=values drawn by the script;font_size=14;color=0.180,0.240,0.220
+component	41	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	41	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=20.00,148.00,20.00,148.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+# ⑳ 真实纹理的 Image（64×64）：`assetc` 的依赖改名门要求本场景引用 slime.png，
+#    同时它演示"Image 用工程内纹理 + UiLayout 给几何"。
+entity	42	InfoPreviewIcon	37
+component	42	Image	texture=assets/textures/slime.png;color=1.000,1.000,1.000
+component	42	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	42	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=20.00,200.00,84.00,264.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	43	InfoPanelHint	37
+component	43	Text	text=CloseButton hides this block;font_size=14;color=0.180,0.240,0.220
+component	43	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	43	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=20.00,300.00,20.00,300.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+# ㉑ drag 事件：`event=drag;function=on_drag`。`on_drag` 是 `ui.drag_end`（动态网格拖拽）
+#    触发的全局回调，**运行时不分发**场景 UiEvents 的 drag 绑定——这条声明是"事件类型齐全 +
+#    编辑器可见"的演示，真正的拖拽回调入口在 scripts/demo_ui_events.lua 的 M.on_drag。
+#    它没有 click 绑定，所以点它不会有任何反应（不是命中目标的行为副作用）。
+entity	44	DragHandle
+component	44	Image	texture=__white__;color=0.240,0.200,0.360
+component	44	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	44	UiEvents	event=drag;function=on_drag
+component	44	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=1080.00,596.00,1220.00,656.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	45	DragHandleLabel	44
+component	45	Text	text=drag event;font_size=14;color=0.900,0.900,1.000
+component	45	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	45	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=12.00,20.00,12.00,20.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000

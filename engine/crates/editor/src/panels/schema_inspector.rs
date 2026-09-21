@@ -1142,7 +1142,7 @@ mod tests {
                 .get_mut(&entity)
                 .unwrap()
                 .components;
-            // 两份都是真实工程里的形态（`game_jyht/scenes/*.scene`、`game_api/scenes/game3d.scene`）。
+            // 两份都是真实工程里的形态（`game_jyht/scenes/*.scene`、`game_api/scenes/api_3d.scene`）。
             components.insert("Collider".to_owned(), "shape=ball;radius=12".to_owned());
             components.insert(
                 "Animation3D".to_owned(),

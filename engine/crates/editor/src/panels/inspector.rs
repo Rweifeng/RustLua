@@ -1889,21 +1889,38 @@ mod tests {
         root
     }
 
+    /// 打开示例工程副本并打开 **Prefab 实例场景**（`api_prefab.scene`）。
+    ///
+    /// 该场景里两个 Prefab 源（`assets/prefabs/slime_green.prefab` / `slime_red.prefab`）
+    /// 各有实例，实例实体带 `prefab.root` / `prefab.source` / `prefab.source_id` 元数据——
+    /// Prefab 的 Apply / Revert / 逐字段 Override 要有真实实例才测得动。
     fn sample_app_with_production_scene(label: &str) -> (EditorApp, PathBuf) {
         let root = copy_sample_project(label);
         let project = open_project(&root).unwrap();
         let mut app = EditorApp::new(project, None, LogSink::new(64));
         app.refresh_resources();
-        app.open_scene_resource(PathBuf::from("scenes/production.scene"));
+        app.open_scene_resource(PathBuf::from("scenes/api_prefab.scene"));
         (app, root)
     }
 
+    /// 打开示例工程副本并打开 2D 综合场景（`main.scene`）：动画/精灵/物理这些
+    /// "玩法侧"组件的样本都在这里。
+    fn sample_app_with_main_scene(label: &str) -> (EditorApp, PathBuf) {
+        let root = copy_sample_project(label);
+        let project = open_project(&root).unwrap();
+        let mut app = EditorApp::new(project, None, LogSink::new(64));
+        app.refresh_resources();
+        app.open_scene_resource(PathBuf::from("scenes/main.scene"));
+        (app, root)
+    }
+
+    /// 打开示例工程副本并打开 **场景 UI 场景**（`ui_test.scene`）。
     fn sample_app_with_menu_scene(label: &str) -> (EditorApp, PathBuf) {
         let root = copy_sample_project(label);
         let project = open_project(&root).unwrap();
         let mut app = EditorApp::new(project, None, LogSink::new(64));
         app.refresh_resources();
-        app.open_scene_resource(PathBuf::from("scenes/menu.scene"));
+        app.open_scene_resource(PathBuf::from("scenes/ui_test.scene"));
         (app, root)
     }
 
@@ -2617,38 +2634,55 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    /// `Animation` 面板（仍在缓冲里的组件）的编辑要能在保存 / 重开后**逐字段保留**。
+    ///
+    /// 实体与剪辑名都不写死：从场景里取第一个带 `Animation` 的实体与它的第一个剪辑名，
+    /// 只改"帧率 + 是否循环"这两个数值字段，再比对重开后的**数值**。
     #[test]
     fn sample_project_animation_edit_persists_after_save_and_reopen() {
-        let (mut app, root) = sample_app_with_production_scene("animation-edit");
-        select_entity(&mut app, SceneEntityId(2));
-        app.animation.machine.default = "move".to_owned();
-        let move_clip = app
+        let (mut app, root) = sample_app_with_main_scene("animation-edit");
+        let (id, clip_name) = {
+            let scene = &app.document.current_scene.as_ref().unwrap().scene;
+            let entity = scene
+                .entities
+                .values()
+                .find(|entity| entity.components.contains_key("Animation"))
+                .expect("示例 main.scene 应当有带 Animation 的实体");
+            let machine =
+                AnimationStateMachine::from_component_str(&entity.components["Animation"])
+                    .expect("Animation 组件串应当可解析");
+            let clip = machine.clips.first().expect("动画实体应当至少有一个 clip");
+            (entity.id, clip.name.clone())
+        };
+        select_entity(&mut app, id);
+        app.animation.machine.default = clip_name.clone();
+        let clip = app
             .animation
             .machine
             .clips
             .iter_mut()
-            .find(|clip| clip.name == "move")
-            .expect("player should have move clip");
-        move_clip.frame_rate = 12.0;
-        move_clip.looped = false;
+            .find(|clip| clip.name == clip_name)
+            .expect("选中的剪辑应当还在面板缓冲里");
+        clip.frame_rate = 12.0;
+        clip.looped = false;
 
         app.apply_inspector();
         app.save_scene();
-        app.open_scene_resource(PathBuf::from("scenes/production.scene"));
+        app.open_scene_resource(PathBuf::from("scenes/main.scene"));
 
         let reopened = app.document.current_scene.as_ref().unwrap();
         let animation = AnimationStateMachine::from_component_str(
-            &reopened.scene.entities[&SceneEntityId(2)].components["Animation"],
+            &reopened.scene.entities[&id].components["Animation"],
         )
         .unwrap();
-        assert_eq!(animation.default, "move");
-        let move_clip = animation
+        assert_eq!(animation.default, clip_name);
+        let clip = animation
             .clips
             .iter()
-            .find(|clip| clip.name == "move")
-            .expect("reopened animation should keep move clip");
-        assert_eq!(move_clip.frame_rate, 12.0);
-        assert!(!move_clip.looped);
+            .find(|clip| clip.name == clip_name)
+            .expect("重开后应当保留同一个剪辑");
+        assert_eq!(clip.frame_rate, 12.0);
+        assert!(!clip.looped);
         let _ = fs::remove_dir_all(root);
     }
 
@@ -2686,7 +2720,7 @@ mod tests {
         );
 
         app.save_scene();
-        app.open_scene_resource(PathBuf::from("scenes/menu.scene"));
+        app.open_scene_resource(PathBuf::from("scenes/ui_test.scene"));
         let reopened = app.document.current_scene.as_ref().unwrap();
         let title = UiText::from_component_str(
             &reopened.scene.entities[&SceneEntityId(3)].components["Text"],

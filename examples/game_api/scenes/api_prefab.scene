@@ -1,0 +1,46 @@
+scene_version=2
+name=api_prefab
+meta	editor.root_order	1,2,3,4,5,6,7
+entity	1	Ground
+component	1	Tilemap	tile_size=32x32;width=12;height=8;texture=assets/textures/tileset.png;tiles=111111111111100000000001100000000001100000000001100000000001100000000001100000000001111111111111;solid=111111111111100000000001100000000001100000000001100000000001100000000001100000000001111111111111
+component	1	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity	2	Hero
+component	2	Collider	shape=ball;radius=14
+component	2	Sprite	texture=assets/textures/player.png;size=32x32;pivot=0.500,0.500;tint=1.000,1.000,1.000,1.000;sorting_layer=actors;order=2
+component	2	Transform	position=96.000000000,160.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity	3	SlimeGreen1
+entity_meta	3	prefab.root	true
+entity_meta	3	prefab.source	assets/prefabs/slime_green.prefab
+entity_meta	3	prefab.source_id	1
+component	3	Animation	default=squish;clip:squish:assets/textures/slime.png:2:3:true
+component	3	Collider	shape=ball;radius=12;layer=2;mask=1
+component	3	Sprite	texture=assets/textures/slime.png;size=32x32;pivot=0.5,0.5;tint=0.600,1.000,0.600,1.000;sorting_layer=actors;order=0
+component	3	Transform	position=224.000000000,128.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity	4	SlimeGreen2
+entity_meta	4	prefab.root	true
+entity_meta	4	prefab.source	assets/prefabs/slime_green.prefab
+entity_meta	4	prefab.source_id	1
+component	4	Animation	default=squish;clip:squish:assets/textures/slime.png:2:3:true
+component	4	Collider	shape=ball;radius=12;layer=2;mask=1
+component	4	Sprite	texture=assets/textures/slime.png;size=32x32;pivot=0.5,0.5;tint=0.600,1.000,0.600,1.000;sorting_layer=actors;order=0
+component	4	Transform	position=224.000000000,224.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity	5	SlimeRed1
+entity_meta	5	prefab.root	true
+entity_meta	5	prefab.source	assets/prefabs/slime_red.prefab
+entity_meta	5	prefab.source_id	1
+component	5	Animation	default=squish;clip:squish:assets/textures/slime.png:2:3:true
+component	5	Collider	shape=ball;radius=12;layer=2;mask=1
+component	5	Sprite	texture=assets/textures/slime.png;size=32x32;pivot=0.5,0.5;tint=1.000,0.550,0.550,1.000;sorting_layer=actors;order=0
+component	5	Transform	position=304.000000000,128.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.100000000,1.100000000,1.000000000
+entity	6	SlimeRed2
+entity_meta	6	prefab.root	true
+entity_meta	6	prefab.source	assets/prefabs/slime_red.prefab
+entity_meta	6	prefab.source_id	1
+component	6	Animation	default=squish;clip:squish:assets/textures/slime.png:2:3:true
+component	6	Collider	shape=ball;radius=12;layer=2;mask=1
+component	6	Sprite	texture=assets/textures/slime.png;size=32x32;pivot=0.5,0.5;tint=1.000,0.550,0.550,1.000;sorting_layer=actors;order=0
+component	6	Transform	position=304.000000000,224.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.100000000,1.100000000,1.000000000
+entity	7	PrefabHud
+component	7	Text	text=Prefab scene - 4 instances from 2 sources (editor-side feature);font_size=12;color=0.850,0.900,0.980
+component	7	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	7	UiLayout	anchors=1.0000,0.0000,1.0000,0.0000;offsets=-560.00,52.00,-560.00,52.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000

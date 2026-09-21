@@ -750,7 +750,7 @@ mod tests {
         let project = open_project(&root).unwrap();
         let mut app = EditorApp::new(project, None, LogSink::new(64));
         app.refresh_resources();
-        app.open_scene_resource(PathBuf::from("scenes/production.scene"));
+        app.open_scene_resource(PathBuf::from("scenes/api_gameplay.scene"));
         let original = app.document.current_scene.as_ref().unwrap().clone();
         let original_selection = Some(SceneEntityId(2));
         let original_zoom = app.scene_zoom;
@@ -805,7 +805,7 @@ mod tests {
         let project = open_project(&root).unwrap();
         let mut app = EditorApp::new(project, Some((device, queue)), LogSink::new(64));
         app.refresh_resources();
-        app.open_scene_resource(PathBuf::from("scenes/menu.scene"));
+        app.open_scene_resource(PathBuf::from("scenes/ui_test.scene"));
 
         app.play();
 
@@ -843,7 +843,7 @@ mod tests {
         let project = open_project(&root).unwrap();
         let mut app = EditorApp::new(project, Some((device, queue)), LogSink::new(64));
         app.refresh_resources();
-        app.open_scene_resource(PathBuf::from("scenes/menu.scene"));
+        app.open_scene_resource(PathBuf::from("scenes/ui_test.scene"));
         app.play();
         assert!(
             app.preview.is_some(),

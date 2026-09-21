@@ -8,7 +8,7 @@ entity	3	Sun
 component	3	Light	direction=0.4,-0.8,0.5;color=1,1,1;intensity=1
 entity	4	ShadowTriangle
 component	4	MeshRenderer	mesh=assets/models/m8-test-triangle.glb
-component	4	Transform	position=0.000000000,0.699999988,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	4	Transform	position=0.000000,0.000000,0.000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 entity	5	Ground
 component	5	MeshRenderer	mesh=__ground_plane__
 component	5	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000

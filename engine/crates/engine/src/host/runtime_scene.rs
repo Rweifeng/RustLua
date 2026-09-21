@@ -62,7 +62,10 @@ use crate::host::frame::{
 use crate::host::gamepad::{GamepadBackend, GamepadDeadzone, GamepadPoller};
 
 pub struct RuntimeScene {
-    script: LuaRuntime,
+    /// Lua 桥。**crate 内可见**：工程级门（`host::sample_project`）要用它驱动
+    /// `on_click` / `scene.load` / 控制台表达式，验证示例工程的菜单与演示真的能跑；
+    /// 对外仍然只暴露 `RuntimeScene` 自己的方法。
+    pub(crate) script: LuaRuntime,
     /// 自上次 `take_script_micros` 以来所有固定步里 Lua `update()` 的累计耗时
     /// （微秒）。宿主把它送进 `PerformanceStats::lua_ms`，性能面板因此显示的是
     /// "Lua 花了多少"而不是恒为 0（P4 接线）。
@@ -4882,41 +4885,10 @@ mod sdf_tests {
         crate::core::games_dir().join("examples").join("game_api")
     }
 
-    #[test]
-    fn showcase_scenes_instantiate_and_step() {
-        let root = game_root();
-        let names = [
-            "arena",
-            "data_inventory",
-            "demo3d",
-            "effects",
-            "game3d",
-            "gameplay_api",
-            "index",
-            "main",
-            "menu",
-            "mixed",
-            "persistence",
-            "physics3d",
-            "production",
-            "resources",
-            "stress",
-            "tilemap",
-            "ui_dynamic",
-            "ui_layout",
-            "ui_test",
-            "unified",
-        ];
-        for name in names {
-            let path = root.join("scenes").join(format!("{name}.scene"));
-            let scene = Scene::load(&path).unwrap_or_else(|error| panic!("load {name}: {error}"));
-            let mut runtime = RuntimeScene::from_scene(Some(&root), scene)
-                .unwrap_or_else(|error| panic!("instantiate {name}: {error}"));
-            runtime
-                .run_script_steps(1, 1.0 / 60.0, &crate::core::input::InputSnapshot::default())
-                .unwrap_or_else(|error| panic!("step {name}: {error}"));
-        }
-    }
+    // 示例工程"逐场景实例化 + 步进"的门已迁到 `host::sample_project`
+    // （`sample_project_runs_every_scene_headless`）：它**从 scenes/ 目录读**场景清单，
+    // 因此新增/改名场景不再需要在这里手抄一份名单（名单漂移过：M18-03 与示例工程重建都踩过）。
+    // 那一组门还一并覆盖脚本编译、API 覆盖率、组件覆盖率与入口菜单接线。
 
     fn production_sample_root() -> std::path::PathBuf {
         crate::core::games_dir().join("examples").join("game_api")
@@ -8132,16 +8104,18 @@ mod sdf_tests {
         );
     }
 
+    /// 示例工程的 **场景 UI 场景**（`ui_test.scene`）要真的产出可见 UI draw，
+    /// 并且场景侧的 UI 组件（`UiEvents` / `Image` / `Text`）都在运行时世界里。
     #[test]
-    fn production_sample_menu_scene_instantiates_ui() {
+    fn sample_project_ui_scene_instantiates_ui() {
         let root = production_sample_root();
-        if !root.join("scenes/menu.scene").is_file() {
+        if !root.join("scenes/ui_test.scene").is_file() {
             return;
         }
-        let path = root.join("scenes/menu.scene");
-        assert!(path.is_file(), "样板菜单场景缺失: {}", path.display());
-        let scene = Scene::load(&path).unwrap_or_else(|e| panic!("load menu: {e}"));
-        let mut runtime = RuntimeScene::from_scene_edit(Some(&root), scene).expect("runtime menu");
+        let path = root.join("scenes/ui_test.scene");
+        let scene = Scene::load(&path).unwrap_or_else(|e| panic!("load ui_test: {e}"));
+        let mut runtime =
+            RuntimeScene::from_scene_edit(Some(&root), scene).expect("runtime ui_test");
         let mesh = runtime.vertices(1280, 720).expect("vertices");
         let counts = runtime.script.with_world(|world| {
             (
@@ -8152,32 +8126,31 @@ mod sdf_tests {
                 world.entities_with::<UiText>().len(),
             )
         });
-        assert_eq!(counts.0, 2, "menu scene buttons are UiEvents entities");
         assert!(
-            counts.1 >= 3,
-            "menu scene should expose logo + two button images"
+            counts.0 >= 2,
+            "ui_test 场景的按钮是 UiEvents 实体，实际 {}",
+            counts.0
         );
-        assert!(
-            counts.2 >= 3,
-            "menu scene should expose title/subtitle/help text"
-        );
+        assert!(counts.1 >= 1, "ui_test 场景应有 Image 实体");
+        assert!(counts.2 >= 3, "ui_test 场景应有标题/按钮/HUD 文本");
         assert!(
             !mesh.draws.is_empty(),
-            "menu scene should produce visible 2D/UI draws"
+            "ui_test 场景应产出可见的 2D/UI draw"
         );
     }
 
+    /// 示例工程的 **玩法场景**（`api_gameplay.scene`）要带着它的地块、演员与世界文字
+    /// 实例化出来，并真的渲染：这是"场景 + 脚本 + 渲染"三层的端到端样本。
     #[test]
-    fn production_sample_scene_instantiates_gameplay_entities() {
+    fn sample_project_gameplay_scene_instantiates_gameplay_entities() {
         let root = production_sample_root();
-        if !root.join("scenes/production.scene").is_file() {
+        if !root.join("scenes/api_gameplay.scene").is_file() {
             return;
         }
-        let path = root.join("scenes/production.scene");
-        assert!(path.is_file(), "样板生产场景缺失: {}", path.display());
-        let scene = Scene::load(&path).unwrap_or_else(|e| panic!("load production: {e}"));
+        let path = root.join("scenes/api_gameplay.scene");
+        let scene = Scene::load(&path).unwrap_or_else(|e| panic!("load api_gameplay: {e}"));
         let mut runtime =
-            RuntimeScene::from_scene_edit(Some(&root), scene).expect("runtime production");
+            RuntimeScene::from_scene_edit(Some(&root), scene).expect("runtime api_gameplay");
         let input = InputSnapshot::default();
         runtime
             .run_script_steps(1, 1.0 / 60.0, &input)
@@ -8187,29 +8160,29 @@ mod sdf_tests {
             (
                 world.entities_with::<crate::core::tilemap::Tilemap>().len(),
                 world
-                    .entities_with::<crate::core::animation::AnimationStateMachine>()
+                    .entities_with::<crate::core::sprite::SpriteAsset>()
+                    .len(),
+                world
+                    .entities_with::<crate::core::world_text::WorldText>()
                     .len(),
                 world
                     .entities_with::<crate::core::ui_events::UiEvents>()
                     .len(),
             )
         });
-        assert_eq!(counts.0, 1, "production scene should have one tilemap");
-        assert_eq!(
-            counts.1, 11,
-            "production scene should have player plus ten animated enemies"
-        );
-        assert_eq!(
-            counts.2, 1,
-            "production scene exposes one UiEvents (BackToMenuButton)"
+        assert_eq!(counts.0, 1, "玩法场景应有一块地块（Tilemap）");
+        assert!(counts.1 >= 3, "玩法场景应有玩家/箱子/商人等演员");
+        assert!(counts.2 >= 1, "玩法场景应有世界文字（FieldSign）");
+        assert_eq!(counts.3, 0, "玩法场景不声明场景 UI 事件");
+        assert!(
+            runtime.texture_paths.len() >= 3,
+            "玩法场景应加载地块/玩家/史莱姆纹理，实际 {:?}",
+            runtime.texture_paths
         );
         assert!(
-            runtime.texture_paths.len() >= 4,
-            "production scene should load tilemap/player/enemy/pickup textures"
-        );
-        assert!(
-            mesh.draws.len() >= 4,
-            "production scene should render tilemap and gameplay actors"
+            mesh.draws.len() >= 3,
+            "玩法场景应渲染地块与演员，实际 {} 个 draw",
+            mesh.draws.len()
         );
     }
 

@@ -1,6 +1,7 @@
 [project]
-name = "examples"
+# RustLua API 演示工程：每个 Lua API 模块一个可交互场景（入口 scenes/index.scene）。
+name = "game_api"
 version = "0.1.0"
 engine = "RustLua"
-main_script = "scripts/showcase.lua"
+main_script = "scripts/main.lua"
 startup_scene = "scenes/index.scene"

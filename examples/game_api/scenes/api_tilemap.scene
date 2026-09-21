@@ -1,0 +1,24 @@
+scene_version=2
+name=api_tilemap
+meta	display_name	Tilemap 与格子坐标
+# GroundMap 是"场景声明的网格"：tiles / solid 各 100 个字符 = width(10) x height(10)，
+# 逐格 row-major，y 朝上（row 0 画在地图最下面）。格子值 0=空、1=墙、3=地面，都是
+# assets/textures/tileset.png 的列的采样。solid 是**独立的一层**（1=阻挡），与 tiles 无关。
+# Walker 在 cell(2,2)、Target 在 cell(7,7)（两个格心 = 80,80 / 240,240）；cell y=3..6、x=5..6
+# 的那堵内墙让 A* 必须绕行。实体名与 scripts/demo_tilemap.lua 里的 entity.find 一一对应。
+entity	1	GroundMap
+component	1	Tilemap	tile_size=32x32;width=10;height=10;texture=assets/textures/tileset.png;tiles=1111111111133333333113333333311333311331133331133113333113311333311331133333333113333333311111111111;solid=1111111111100000000110000000011000011001100001100110000110011000011001100000000110000000011111111111
+component	1	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity	2	Walker
+component	2	Sprite	texture=assets/textures/player.png;size=24x24;pivot=0.500,0.500;tint=0.400,1.000,0.400,1.000;sorting_layer=default;order=10
+component	2	Transform	position=80.000000000,80.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity	3	Target
+component	3	Sprite	texture=assets/textures/coin.png;size=24x24;pivot=0.500,0.500;tint=1.000,0.450,0.450,1.000;sorting_layer=default;order=9
+component	3	Transform	position=240.000000000,240.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity	4	Sign
+component	4	Transform	position=176.000000000,368.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	4	WorldText	text=tilemap preset;font_size=14;color=0.900,1.000,0.700;offset=0,0;centered=true
+entity	5	Hud
+component	5	Text	text=Tilemap demo;font_size=14;color=0.850,0.900,1.000
+component	5	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	5	UiLayout	anchors=0.0000,1.0000,0.0000,1.0000;offsets=364.00,-330.00,364.00,-330.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,1.0000

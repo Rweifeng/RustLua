@@ -1,0 +1,23 @@
+scene_version=2
+name=api_gameplay
+meta	editor.root_order	1,2,3,4,5,6
+entity	1	FarmPlot
+component	1	Tilemap	tile_size=32x32;width=10;height=8;texture=assets/textures/tileset.png;tiles=11111111111000000001102222220110222222011022222201102222220110000000011111111111;solid=11111111111000000001100000000110000000011000000001100000000110000000011111111111
+component	1	Transform	position=80.000000000,120.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity	2	Farmer
+component	2	Collider	shape=ball;radius=14;sensor=true
+component	2	Sprite	texture=assets/textures/player.png;size=32x32;pivot=0.500,0.500;tint=1.000,1.000,1.000,1.000;sorting_layer=default;order=2
+component	2	Transform	position=144.000000000,176.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity	3	Chest
+component	3	Sprite	texture=assets/textures/coin.png;size=24x24;pivot=0.500,0.500;tint=1.000,0.850,0.350,1.000;sorting_layer=default;order=0
+component	3	Transform	position=144.000000000,256.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity	4	Shopkeeper
+component	4	Sprite	texture=assets/textures/slime.png;size=32x32;pivot=0.500,0.500;tint=0.700,0.900,1.000,1.000;sorting_layer=default;order=1
+component	4	Transform	position=240.000000000,176.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity	5	FieldSign
+component	5	Transform	position=300.000000000,330.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	5	WorldText	text=Field sign - world text follows the camera;font_size=14;color=1.000,0.950,0.700
+entity	6	SceneHud
+component	6	Text	text=Scene HUD - Tilemap plot + Farmer / Chest / Shopkeeper / FieldSign;font_size=12;color=0.780,0.850,0.950
+component	6	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	6	UiLayout	anchors=1.0000,0.0000,1.0000,0.0000;offsets=-620.00,52.00,-620.00,52.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000

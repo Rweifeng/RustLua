@@ -282,7 +282,7 @@ mod tests {
     #[test]
     fn app_startup_scans_recovery_and_recover_candidate_restores_scene() {
         let root = copy_sample_project("recover-menu");
-        let scene_path = root.join("scenes/production.scene");
+        let scene_path = root.join("scenes/api_gameplay.scene");
         let manager = editor::RecoveryManager::new(root.join(".temp"));
         let mut modified = SceneDocument::open(&scene_path).unwrap();
         let original = modified.clone();

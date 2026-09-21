@@ -742,7 +742,7 @@ mod tests {
             "red prefab should become invalid after texture rename: {invalid_paths:?}"
         );
         assert!(
-            invalid_paths.contains(&"scenes/production.scene".to_owned()),
+            invalid_paths.contains(&"scenes/api_gameplay.scene".to_owned()),
             "production scene should become invalid after texture rename: {invalid_paths:?}"
         );
 
@@ -757,7 +757,7 @@ mod tests {
             new_rel,
         );
         replace_in_file(
-            &root.join("scenes/production.scene"),
+            &root.join("scenes/api_gameplay.scene"),
             "assets/textures/slime.png",
             new_rel,
         );
@@ -772,7 +772,7 @@ mod tests {
         assert!(
             !invalid_paths.contains(&"assets/prefabs/slime_green.prefab".to_owned())
                 && !invalid_paths.contains(&"assets/prefabs/slime_red.prefab".to_owned())
-                && !invalid_paths.contains(&"scenes/production.scene".to_owned()),
+                && !invalid_paths.contains(&"scenes/api_gameplay.scene".to_owned()),
             "updating consumers should clear invalid state: {invalid_paths:?}"
         );
 

@@ -1,0 +1,30 @@
+scene_version=2
+name=api_script
+meta	editor.root_order	1,2,3,4,5,6
+entity	1	Camera2D
+component	1	Camera	projection=orthographic;center=640.0000,360.0000;zoom=1.000000
+entity	2	Backdrop
+component	2	Quad	size=1280,720;color=0.070,0.085,0.120,1.000;z=-10
+component	2	Transform	position=640.000000000,360.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity	3	PatrolA
+component	3	Collider	shape=ball;radius=16;dynamic=false
+component	3	Script	file=scripts/entity/patrol.lua
+component	3	Sprite	texture=assets/textures/slime.png;size=32x32;pivot=0.500,0.500;tint=0.400,0.900,0.500,1.000;sorting_layer=default;order=0
+component	3	Transform	position=480.000000000,240.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	3	WorldText	text=patrol A;font_size=12;color=1.000,0.900,0.400;offset=0,-32;centered=true
+entity	4	PatrolB
+component	4	Collider	shape=ball;radius=16;dynamic=false
+component	4	Script	file=scripts/entity/patrol.lua
+component	4	Sprite	texture=assets/textures/slime.png;size=32x32;pivot=0.500,0.500;tint=0.500,0.700,1.000,1.000;sorting_layer=default;order=0
+component	4	Transform	position=660.000000000,380.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	4	WorldText	text=patrol B;font_size=12;color=1.000,0.900,0.400;offset=0,-32;centered=true
+entity	5	PatrolC
+component	5	Collider	shape=ball;radius=16;dynamic=false
+component	5	Script	file=scripts/entity/patrol.lua
+component	5	Sprite	texture=assets/textures/slime.png;size=32x32;pivot=0.500,0.500;tint=1.000,0.700,0.400,1.000;sorting_layer=default;order=0
+component	5	Transform	position=820.000000000,520.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	5	WorldText	text=patrol C;font_size=12;color=1.000,0.900,0.400;offset=0,-32;centered=true
+entity	6	ScriptHint
+component	6	Text	text=One Script file, three entities: patrolA/B/C all declare file=scripts/entity/patrol.lua - one Lua state per file, one instance per entity (press S to spawn + find + find_id + persist_id + is_alive + destroy);font_size=13;color=0.610,0.700,0.850
+component	6	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	6	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=12.00,8.00,12.00,8.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000

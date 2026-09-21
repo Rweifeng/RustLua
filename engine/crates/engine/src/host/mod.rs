@@ -13,6 +13,9 @@ pub mod gamepad;
 pub mod keymap;
 pub mod renderer;
 pub mod runtime_scene;
+/// 示例工程 `examples/game_api` 的工程级门（headless 步进 / 脚本编译 / API 与组件覆盖率）。
+#[cfg(test)]
+mod sample_project;
 pub mod shader;
 
 pub use frame::{

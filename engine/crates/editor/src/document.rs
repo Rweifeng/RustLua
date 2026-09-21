@@ -438,7 +438,7 @@ impl From<ProjectError> for DocumentError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::core::{prefab::Prefab, scene::SceneEntityId};
+    use engine::core::{prefab::Prefab, scene::SceneEntityId, tilemap::Tilemap};
 
     fn temp_root(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!("rustlua-m5-02-{label}-{}", unique_token()))
@@ -703,22 +703,21 @@ mod tests {
         let Some(root) = copy_sample_project("scene") else {
             return;
         };
-        let path = root.join("scenes/production.scene");
+        let path = root.join("scenes/api_gameplay.scene");
         let mut document = SceneDocument::open(&path).unwrap();
-        assert_eq!(document.scene.name, "production");
+        assert_eq!(document.scene.name, "api_gameplay");
         assert!(document.scene.entities.contains_key(&SceneEntityId(1)));
         assert!(document.scene.entities.contains_key(&SceneEntityId(2)));
         assert!(
-            document.scene.entities.len() >= 18,
-            "sample production scene should include tilemap/player/enemies/coins/ui"
+            document.scene.entities.len() >= 6,
+            "示例玩法场景应包含地块/玩家/箱子/商人与 HUD 文本"
         );
-        assert_eq!(
-            document.scene.entities[&SceneEntityId(10)]
-                .metadata
-                .get("prefab.source")
-                .map(String::as_str),
-            Some("assets/prefabs/slime_green.prefab")
-        );
+        // 地块是 Tilemap 组件：往返必须逐字节保住它的逐格数据。
+        let tilemap = Tilemap::from_component_str(
+            &document.scene.entities[&SceneEntityId(1)].components["Tilemap"],
+        )
+        .unwrap();
+        assert_eq!(tilemap.tiles.len(), tilemap.solid.len());
 
         document.save().unwrap();
         let reopened = SceneDocument::open(&path).unwrap();
@@ -731,7 +730,7 @@ mod tests {
         let Some(root) = copy_sample_project("scene-edit") else {
             return;
         };
-        let path = root.join("scenes/production.scene");
+        let path = root.join("scenes/api_gameplay.scene");
         let mut document = SceneDocument::open(&path).unwrap();
 
         document
@@ -794,7 +793,7 @@ mod tests {
         let Some(root) = copy_sample_project("play-session") else {
             return;
         };
-        let path = root.join("scenes/production.scene");
+        let path = root.join("scenes/api_gameplay.scene");
         let document = SceneDocument::open(&path).unwrap();
         let original = document.clone();
         let mut session = PlaySession::start(&document);
@@ -828,7 +827,7 @@ mod tests {
         let Some(root) = copy_sample_project("recovery") else {
             return;
         };
-        let path = root.join("scenes/production.scene");
+        let path = root.join("scenes/api_gameplay.scene");
         let manager = crate::RecoveryManager::new(root.join(".temp"));
         let mut document = SceneDocument::open(&path).unwrap();
         let original = document.clone();

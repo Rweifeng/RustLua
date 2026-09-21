@@ -1,0 +1,40 @@
+scene_version=2
+name=api_input
+meta	editor.root_order	1,2,3,4,5,6,7,8,9,10,11
+entity	1	Backdrop
+component	1	Quad	size=1280,720;color=0.06,0.07,0.10,1.000;z=0.900
+component	1	Transform	position=640.000000000,360.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity	2	Camera2d
+component	2	Camera	projection=orthographic;center=640.0000,360.0000;zoom=1.000000
+entity	3	Hint
+component	3	Text	text=Input API - 物理键/命名动作/鼠标/手柄四路仪表：位置与颜色都由输入驱动，数值见左下状态行。;font_size=14.00;color=0.800,0.860,0.980
+component	3	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	3	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=24.00,16.00,24.00,16.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	4	Probe
+component	4	Sprite	texture=assets/textures/player.png;size=44x44;pivot=0.500,0.500;tint=0.400,0.720,1.000,1.000;sorting_layer=default;order=2
+component	4	Transform	position=450.000000000,190.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity	5	ProbeLabel
+component	5	Text	text=Probe = 物理键 + 命名动作仪表（WASD / 方向键 / J / 空格 / 右键）;font_size=13.00;color=0.640,0.800,1.000
+component	5	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	5	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=260.00,216.00,260.00,216.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	6	Key
+component	6	Sprite	texture=assets/textures/coin.png;size=44x44;pivot=0.500,0.500;tint=1.000,0.780,0.300,1.000;sorting_layer=default;order=1
+component	6	Transform	position=394.000000000,190.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity	7	KeyLabel
+component	7	Text	text=Key = 物理键边沿：空格/E/Q/R/1..3 与 input.axis(WASD + 方向键);font_size=13.00;color=1.000,0.840,0.480
+component	7	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	7	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=260.00,240.00,260.00,240.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	8	Mouse
+component	8	Sprite	texture=assets/textures/slime.png;size=40x40;pivot=0.500,0.500;tint=0.620,1.000,0.450,1.000;sorting_layer=default;order=1
+component	8	Transform	position=450.000000000,380.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity	9	MouseLabel
+component	9	Text	text=Mouse = cursor_position（方块中心）+ cursor_delta + scroll_delta;font_size=13.00;color=0.720,1.000,0.560
+component	9	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	9	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=260.00,348.00,260.00,348.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	10	Pad
+component	10	Sprite	texture=assets/textures/slime.png;size=40x40;pivot=0.500,0.500;tint=1.000,0.520,0.720,1.000;sorting_layer=default;order=1
+component	10	Transform	position=450.000000000,500.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity	11	PadLabel
+component	11	Text	text=Pad = pad_button(0..15) / pad_axis(0..5)；交互动作按下时 rumble 登记一次震动请求;font_size=13.00;color=1.000,0.620,0.800
+component	11	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	11	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=260.00,548.00,260.00,548.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000

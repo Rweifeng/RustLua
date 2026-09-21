@@ -1304,7 +1304,7 @@ mod tests {
         let _ = fs::remove_dir_all(&out);
         let manifest = package(&root, &out, false, false).unwrap();
         assert!(
-            manifest.entries.contains_key("scenes/production.scene"),
+            manifest.entries.contains_key("scenes/api_gameplay.scene"),
             "packaged manifest should include production scene"
         );
         assert!(
@@ -1357,40 +1357,15 @@ mod tests {
             "red prefab should become invalid after texture rename: {consumers:?}"
         );
         assert!(
-            consumers.contains(&PathBuf::from("scenes/production.scene")),
-            "production scene should become invalid after texture rename: {consumers:?}"
+            consumers.contains(&PathBuf::from("scenes/api_gameplay.scene")),
+            "gameplay scene should become invalid after texture rename: {consumers:?}"
         );
 
-        replace_in_file(
-            &root.join("assets/prefabs/slime_green.prefab"),
-            "assets/textures/slime.png",
-            new_rel,
-        );
-        replace_in_file(
-            &root.join("assets/prefabs/slime_red.prefab"),
-            "assets/textures/slime.png",
-            new_rel,
-        );
-        replace_in_file(
-            &root.join("scenes/production.scene"),
-            "assets/textures/slime.png",
-            new_rel,
-        );
-        replace_in_file(
-            &root.join("scenes/main.scene"),
-            "assets/textures/slime.png",
-            new_rel,
-        );
-        replace_in_file(
-            &root.join("scenes/ui_test.scene"),
-            "assets/textures/slime.png",
-            new_rel,
-        );
-        replace_in_file(
-            &root.join("scripts/demo_ui_dynamic.lua"),
-            "assets/textures/slime.png",
-            new_rel,
-        );
+        // 修复：**逐个消费方**把旧路径改成新路径。消费方清单**从断链报告里取**，
+        // 而不是手抄一份文件列表——示例工程每加一个引用者，手抄清单就会悄悄失效。
+        for consumer in &consumers {
+            replace_in_file(&root.join(consumer), "assets/textures/slime.png", new_rel);
+        }
 
         let outcomes = import(&root).unwrap();
         assert!(

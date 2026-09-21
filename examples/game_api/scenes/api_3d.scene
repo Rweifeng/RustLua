@@ -1,0 +1,28 @@
+scene_version=2
+name=api_3d
+entity	1	Camera3d
+component	1	Camera	projection=perspective;position=0,2.5,6;target=0,1,0;fov=60;near=0.1;far=100
+entity	2	Sun
+component	2	Light	direction=0.4,-0.8,0.5;color=1,1,1;intensity=1
+entity	3	Ground
+component	3	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	3	MeshRenderer	mesh=__ground_plane__
+component	3	Collider3d	shape=cuboid;half_width=4;half_height=0.1;half_z=4;dynamic=false
+entity	4	OrbitTriangle	3
+component	4	Transform	position=1.600000000,0.050000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	4	MeshRenderer	mesh=assets/models/m8-test-triangle.glb
+entity	5	SkeletonWarrior
+component	5	Transform	position=-1.600000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	5	MeshRenderer	mesh=assets/models/kaykit-warrior.glb
+component	5	Animation3D	mesh=assets/models/kaykit-warrior.glb;clip=Idle;looped=true
+entity	6	BounceSphere
+component	6	Transform	position=0.000000000,2.200000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=0.800000000,0.800000000,0.800000000
+component	6	MeshRenderer	mesh=assets/models/m8-test-triangle.glb
+component	6	Collider3d	shape=ball;radius=0.4
+entity	7	CapsuleSensor
+component	7	Transform	position=2.200000000,0.900000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	7	Collider3d	shape=capsule;half_height=0.8;radius=0.4;sensor=true
+entity	8	CcdProbe
+component	8	Transform	position=0.000000000,1.400000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=0.500000000,0.500000000,0.500000000
+component	8	MeshRenderer	mesh=assets/models/m8-test-triangle.glb
+component	8	Collider3d	shape=ball;radius=0.4;ccd=true

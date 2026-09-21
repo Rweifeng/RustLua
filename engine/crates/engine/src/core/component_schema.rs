@@ -994,7 +994,7 @@ const PARTICLE_FIELDS: &[FieldSchema] = &[
 /// 与其它 schema 不同，3D 碰撞体在引擎侧**只有解析器、没有 `to_component_str`**
 /// （碰撞体只在实体实例化时解析一次；编辑器侧另有 `inspector_state::encode_collider3d`）。
 /// 因此这里的事实源是解析器，对拍样本取**真实工程里出现过的形态**
-/// （`examples/game_api/scenes/game3d.scene`、`physics3d.scene`），并由
+/// （`examples/game_api/scenes/api_3d.scene` 的三种碰撞体形态），并由
 /// `builtin_schemas_match_engine_encoders` 用引擎解析器逐条确认"schema 接受的串引擎也接受"。
 ///
 /// required 判定：
@@ -1078,7 +1078,7 @@ const CONTAINER_FIELDS: &[FieldSchema] = &[
 /// 空值（`normal=`）被解析器当成"没有覆盖"（`non_empty` 返回 `None`）而不是错误，所以这里
 /// **不能**挂 `NonEmpty`——那会让"清空一个状态"这种合法写法变成审计误报。
 /// 路径规则同理不挂：引擎只把值当不透明字符串存，真实工程里的 `__white__` 是内置哨兵
-/// （`examples/game_api/scenes/ui_layout.scene` 实体 7），扩展名/相对路径判定在别处，schema
+/// （`examples/game_api/scenes/ui_test.scene` 的 ButtonStates），扩展名/相对路径判定在别处，schema
 /// 替它加码就是"比引擎更松/更严"的反向漂移。
 const BUTTON_STATES_FIELDS: &[FieldSchema] = &[
     FieldSchema::new("normal", FieldKind::Text, false),
@@ -1180,7 +1180,7 @@ const UI_BINDINGS_LIST: ListModel = ListModel {
 /// `ColliderDesc::from_component_str`（组件名 `Collider`）：2D 碰撞体——`Collider3d` 的孪生。
 ///
 /// 事实源同样是**解析器**（2D 也没有 `to_component_str`），样本取真实工程里出现过的形态
-/// （`examples/game_jyht/scenes/*.scene`：`shape=ball;radius=12`），由
+/// （`examples/game_api/scenes/api_prefab.scene` 的史莱姆实例：`shape=ball;radius=12`），由
 /// `builtin_schemas_match_engine_encoders` 末尾的显式对拍确认"schema 接受的串引擎也接受"。
 ///
 /// required 判定（逐条对照解析器的 `ok_or`）：
@@ -1336,8 +1336,8 @@ mod tests {
         world_text::WorldText,
     };
 
-    /// `Collider3d` 的真实工程实例（`examples/game_api/scenes/game3d.scene`、
-    /// `physics3d.scene`）：三种形状各自出现过的完整形态，逐字节照抄。
+    /// `Collider3d` 的真实工程实例（`examples/game_api/scenes/api_3d.scene`）：
+    /// 三种形状各自出现过的完整形态，逐字节照抄。
     ///
     /// 引擎侧**没有** `ColliderDesc3d::to_component_str`（碰撞体只在实例化时解析一次），
     /// 所以漂移门对它的证据分两半：这些**真实串**必须过 schema（下面的 `cases`），
@@ -1396,8 +1396,8 @@ mod tests {
         "shape=cuboid;half_width=8;half_height=4;sensor=true",
     ];
 
-    /// `Animation3D` 的真实工程实例（`examples/game_api/scenes/game3d.scene`、
-    /// `game_jyht/scenes/demo3d.scene`）：`mesh` 是 `glb` 工程内相对路径。
+    /// `Animation3D` 的真实工程实例（`examples/game_api/scenes/api_3d.scene`、
+    /// `assets/models/`）：`mesh` 是 `glb` 工程内相对路径。
     const ANIMATION_3D_INSTANCES: &[&str] = &[
         "mesh=assets/models/kaykit-warrior.glb;clip=Idle;looped=true",
         "mesh=assets/models/kaykit-warrior.glb;clip=Running_A;looped=true",
@@ -1503,7 +1503,7 @@ mod tests {
                         map.texture = "assets/custom-tileset.png".to_owned();
                         map.to_component_str()
                     },
-                    // 真实工程形态（`examples/game_api/scenes/arena.scene` 实体 2）。
+                    // 真实工程形态（`examples/game_api/scenes/api_gameplay.scene` 的地块）。
                     "tile_size=32x32;width=8;height=5;texture=assets/textures/tileset.png;tiles=1111111112222221122322211222222111111111;solid=1111111110000001100100011000000111111111"
                         .to_owned(),
                 ],
@@ -1525,7 +1525,7 @@ mod tests {
                     // 真实工程形态（`engine/crates/engine/src/core/typed_scene.rs` 的样本串）。
                     "kind=vbox;padding=0,0,0,0;spacing=4;columns=1;stretch=true;fill=false;align=center"
                         .to_owned(),
-                    // 真实工程形态（`examples/game_api/scenes/ui_layout.scene` 实体 4）：
+                    // 真实工程形态（`examples/game_api/scenes/ui_test.scene` 的面板）：
                     // 编辑器手写面板编码出来的定长小数（`padding=.0000`、`spacing=.000000`）。
                     "kind=vbox;padding=24.0000,24.0000,24.0000,24.0000;spacing=16.000000;columns=0;stretch=false;fill=false;align=center"
                         .to_owned(),
@@ -1541,7 +1541,7 @@ mod tests {
                     )
                     .expect("valid button states")
                     .to_component_str(),
-                    // 真实工程形态（`examples/game_api/scenes/ui_layout.scene` 实体 7）：
+                    // 真实工程形态（`examples/game_api/scenes/ui_test.scene` 的 ButtonStates）：
                     // `__white__` 是内置白色贴图哨兵，不是路径。
                     "normal=__white__;disabled=__white__;disabled_state=true".to_owned(),
                 ],
@@ -2309,7 +2309,7 @@ mod tests {
         let button_samples = [
             (String::new(), true),
             ("normal=base.png".to_owned(), true),
-            // 真实工程形态（`examples/game_api/scenes/ui_layout.scene` 实体 7）。
+            // 真实工程形态（`examples/game_api/scenes/ui_test.scene` 的 ButtonStates）。
             (
                 "normal=__white__;disabled=__white__;disabled_state=true".to_owned(),
                 true,

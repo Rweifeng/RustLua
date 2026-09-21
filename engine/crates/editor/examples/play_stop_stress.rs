@@ -61,7 +61,7 @@ fn copy_sample_project(label: &str) -> PathBuf {
 
 fn main() {
     let root = copy_sample_project("stress");
-    let path = root.join("scenes/production.scene");
+    let path = root.join("scenes/api_gameplay.scene");
     let document = SceneDocument::open(&path).expect("open sample scene");
     let original = document.clone();
     let started = Instant::now();

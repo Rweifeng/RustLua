@@ -1,0 +1,41 @@
+scene_version=2
+name=api_audio
+meta	editor.root_order	1,2,3,4,5,6,7,8,9,10,11
+entity	1	Backdrop
+component	1	Quad	size=1280,720;color=0.060,0.070,0.100,1.000;z=0.900
+component	1	Transform	position=640.000000000,360.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity	2	Camera2d
+component	2	Camera	projection=orthographic;center=640.0000,360.0000;zoom=1.000000
+entity	3	Legend
+component	3	Text	text=play / play_on / music / stop_music / volume / buses / set_bus_volume / bus_volume / effective_volume / settings_text / apply_settings / settings_path / load_settings / save_settings;font_size=12.00;color=0.800,0.860,0.980
+component	3	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	3	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=24.00,60.00,24.00,60.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	4	Speaker
+component	4	Sprite	texture=assets/textures/player.png;size=56x56;pivot=0.500,0.500;tint=0.600,0.820,1.000,1.000;sorting_layer=default;order=1
+component	4	Transform	position=420.000000000,220.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity	5	SpeakerLabel
+component	5	Text	text=Speaker - master volume;font_size=14.00;color=0.640,0.800,1.000
+component	5	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	5	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=306.00,286.00,306.00,286.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	6	Bgm
+component	6	Sprite	texture=assets/textures/coin.png;size=56x56;pivot=0.500,0.500;tint=1.000,0.860,0.380,1.000;sorting_layer=default;order=1
+component	6	Transform	position=640.000000000,220.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity	7	BgmLabel
+component	7	Text	text=Bgm - music bus (bgm);font_size=14.00;color=1.000,0.900,0.520
+component	7	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	7	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=572.00,286.00,572.00,286.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	8	Sfx
+component	8	Sprite	texture=assets/textures/slime.png;size=56x56;pivot=0.500,0.500;tint=1.000,0.620,0.780,1.000;sorting_layer=default;order=1
+component	8	Transform	position=860.000000000,220.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity	9	SfxLabel
+component	9	Text	text=Sfx - sfx / ui bus;font_size=14.00;color=1.000,0.700,0.840
+component	9	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	9	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=800.00,286.00,800.00,286.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	10	HudNote
+component	10	Text	text=brightness - effective volume (master x bus). lift - this bus just sounded. Bgm gold while looping, grey when stopped. Sfx white flash from sfx, blue flash from ui;font_size=13.00;color=0.820,0.880,0.960
+component	10	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	10	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=24.00,312.00,24.00,312.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	11	Keys
+component	11	Text	text=1 pickup / 2 hit-sfx / 3 attack-ui / 4 music / 5 stop_music / TAB bus / , . bus vol / [ ] master / P apply text / L load / S save;font_size=13.00;color=0.560,0.640,0.760
+component	11	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	11	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=24.00,480.00,24.00,480.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
