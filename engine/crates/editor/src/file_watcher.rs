@@ -31,6 +31,21 @@ pub struct FileSignature {
     pub modified: Option<SystemTime>,
 }
 
+impl FileSignature {
+    /// 单个文件的签名；文件不存在/无法读取时返回 `None`。
+    ///
+    /// 与 `scan_tree` 用同一套判据（长度 + mtime，**不读内容**），
+    /// 因此"保存前检查外部改动"的成本就是一次 `metadata()`（docs/55 阶段 3 的数据安全半边）。
+    #[must_use]
+    pub fn of(path: &Path) -> Option<Self> {
+        let metadata = std::fs::metadata(path).ok()?;
+        Some(Self {
+            len: metadata.len(),
+            modified: metadata.modified().ok(),
+        })
+    }
+}
+
 /// Files whose signature changed since the previous snapshot.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WatchDiff {

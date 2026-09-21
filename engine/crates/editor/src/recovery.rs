@@ -1,4 +1,4 @@
-﻿use crate::SceneDocument;
+use crate::SceneDocument;
 use engine::core::scene::{Scene, SceneError};
 use std::{
     error::Error,
@@ -193,6 +193,10 @@ impl RecoveryManager {
             scene: candidate.scene.clone(),
             dirty: true,
             revision: 0,
+            // 恢复出来的文档**没有**"加载/保存时的磁盘基准"：它的内容来自崩溃快照，
+            // 与磁盘上的文件本来就不是同一份。留 `None` 时 `disk_status()` 返回
+            // `Untracked`（保守放行），不会把"恢复后保存"误判成外部冲突。
+            disk_signature: None,
         }
     }
 

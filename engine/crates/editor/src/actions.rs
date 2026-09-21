@@ -189,22 +189,22 @@ impl EditorApp {
         // 统一收尾：选择修复 + Inspector 空同步 + Scene View/Game 预览失效 +
         // Hierarchy 元数据重扫（含 delete_target 复位）。
         self.on_document_changed(DocumentChange::PlaybackStopped);
-        let snapshot = self
-            .editor_context_snapshot
-            .take()
-            .unwrap_or_else(|| crate::EditorContextSnapshot {
-                selection: editor::SelectionModel::new(),
-                workspace_tab: crate::WorkspaceTab::Scene,
-                scene_tool: crate::scene_interaction::SceneTool::Select,
-                gizmo_space: crate::scene_interaction::GizmoSpace::default(),
-                gizmo_pivot: crate::scene_interaction::GizmoPivot::default(),
-                scene_view_mode: self.scene_view_mode,
-                scene_zoom: 1.0,
-                scene_pan: egui::Vec2::ZERO,
-                hierarchy_collapsed: self.scene_state.collapsed.clone(),
-                preview_resolution: self.preview_resolution,
-                game_camera_2d_center: self.game_camera_2d_center,
-            });
+        let snapshot =
+            self.editor_context_snapshot
+                .take()
+                .unwrap_or_else(|| crate::EditorContextSnapshot {
+                    selection: editor::SelectionModel::new(),
+                    workspace_tab: crate::WorkspaceTab::Scene,
+                    scene_tool: crate::scene_interaction::SceneTool::Select,
+                    gizmo_space: crate::scene_interaction::GizmoSpace::default(),
+                    gizmo_pivot: crate::scene_interaction::GizmoPivot::default(),
+                    scene_view_mode: self.scene_view_mode,
+                    scene_zoom: 1.0,
+                    scene_pan: egui::Vec2::ZERO,
+                    hierarchy_collapsed: self.scene_state.collapsed.clone(),
+                    preview_resolution: self.preview_resolution,
+                    game_camera_2d_center: self.game_camera_2d_center,
+                });
         self.restore_editor_context(snapshot);
         if let Err(error) = self.play.finish_stop() {
             tracing::warn!(target: "editor", "[preview] state machine: {error}");
@@ -449,17 +449,17 @@ impl EditorApp {
             .current_scene
             .as_mut()
             .expect("已确认存在当前文档");
-        let result = self
-            .history
-            .execute(document, label, CommandKind::Property, move |document| {
-                for (id, payload) in &updated {
-                    if let Some(instance) = document.scene.entities.get_mut(id) {
-                        instance.components.insert(key.clone(), payload.clone());
+        let result =
+            self.history
+                .execute(document, label, CommandKind::Property, move |document| {
+                    for (id, payload) in &updated {
+                        if let Some(instance) = document.scene.entities.get_mut(id) {
+                            instance.components.insert(key.clone(), payload.clone());
+                        }
                     }
-                }
-                document.mark_dirty();
-                Ok::<(), String>(())
-            });
+                    document.mark_dirty();
+                    Ok::<(), String>(())
+                });
         match result {
             Ok(true) => {
                 self.status = format!("已批量写入 {component}（{written} 个实体）");
@@ -530,16 +530,16 @@ impl EditorApp {
             .current_scene
             .as_mut()
             .expect("已确认存在当前文档");
-        let result = self
-            .history
-            .execute(document, label, CommandKind::Property, move |document| {
-                let Some(instance) = document.scene.entities.get_mut(&entity) else {
-                    return Err(format!("实体不存在：{}", entity.0));
-                };
-                instance.components.insert(key, payload);
-                document.mark_dirty();
-                Ok::<(), String>(())
-            });
+        let result =
+            self.history
+                .execute(document, label, CommandKind::Property, move |document| {
+                    let Some(instance) = document.scene.entities.get_mut(&entity) else {
+                        return Err(format!("实体不存在：{}", entity.0));
+                    };
+                    instance.components.insert(key, payload);
+                    document.mark_dirty();
+                    Ok::<(), String>(())
+                });
         match result {
             Ok(true) => {
                 self.status = format!(
@@ -594,16 +594,16 @@ impl EditorApp {
         };
         let label = format!("Set {path}");
         let key = component.to_owned();
-        let result = self
-            .history
-            .execute(document, label, CommandKind::Property, move |document| {
-                let Some(instance) = document.scene.entities.get_mut(&entity) else {
-                    return Err(format!("实体不存在：{}", entity.0));
-                };
-                instance.components.insert(key, payload);
-                document.mark_dirty();
-                Ok::<(), String>(())
-            });
+        let result =
+            self.history
+                .execute(document, label, CommandKind::Property, move |document| {
+                    let Some(instance) = document.scene.entities.get_mut(&entity) else {
+                        return Err(format!("实体不存在：{}", entity.0));
+                    };
+                    instance.components.insert(key, payload);
+                    document.mark_dirty();
+                    Ok::<(), String>(())
+                });
         match result {
             Ok(true) => {
                 self.status = format!("已写入 {component}.{field}");
@@ -1158,7 +1158,19 @@ impl EditorApp {
     ///
     /// E06：返回是否保存成功。失败（如场景无路径、磁盘写入失败、校验失败）时文档
     /// 保持 dirty 且不变更内容，供「保存并继续」确认流判断是否需要停留在当前文档。
+    ///
+    /// 磁盘文件被外部改动过时**拒绝覆盖**（见下面 `disk_status` 的说明）；
+    /// 显式覆盖走 [`EditorApp::save_scene_force`]。
     pub(crate) fn save_scene(&mut self) -> bool {
+        self.save_scene_with_policy(false)
+    }
+
+    /// 强制保存：明知磁盘被外部改过也覆盖（菜单里的显式动作）。
+    pub(crate) fn save_scene_force(&mut self) -> bool {
+        self.save_scene_with_policy(true)
+    }
+
+    fn save_scene_with_policy(&mut self, force: bool) -> bool {
         let started = std::time::Instant::now();
         // E07：保存前若正处于活动事务，先把最后一条 preview 提交为一条历史命令
         // （快照来自事务 before），保证落盘内容可被单条 Undo 收回。
@@ -1180,6 +1192,27 @@ impl EditorApp {
             self.status = "No scene".into();
             return false;
         };
+        // docs/55 阶段 3 的数据安全半边：**磁盘上的文件在外部被改过就不要静默覆盖**。
+        //
+        // `scenes/` 与 `scripts/` 本来就是外部工具会写的目录（生成器、git checkout、另一个编辑器），
+        // 而这里过去是无条件覆盖——用户的 Ctrl+S 会悄悄吃掉别人的改动，正是计划 §8
+        // 把"数据损坏"列为直接阻断项要防的那类事故。默认拒绝并给出可执行的下一步
+        // （`save_scene_force` 提供显式覆盖出口，用户不会被卡死）。
+        let disk_status = doc.disk_status();
+        if disk_status.blocks_overwrite() && !force {
+            self.status = format!(
+                "已阻止保存：{}（{}）。如需覆盖请用「强制保存」，或先用「重新加载」放弃内存改动。",
+                disk_status.describe(),
+                doc.path
+                    .as_deref()
+                    .map(crate::util::display_path)
+                    .unwrap_or_else(|| "<未命名>".to_owned())
+            );
+            self.set_scene_view_diagnostic(self.status.clone());
+            self.profiler
+                .record_command("save_scene_blocked", started.elapsed());
+            return false;
+        }
         let is_prefab_document = doc.is_prefab_document();
         let r = if doc.path.is_some() {
             self.recovery.save_document(doc).map_err(|e| e.to_string())
@@ -1212,7 +1245,8 @@ impl EditorApp {
             }
             Err(error) => error,
         };
-        self.profiler.record_command("save_scene", started.elapsed());
+        self.profiler
+            .record_command("save_scene", started.elapsed());
         saved
     }
 
@@ -1526,10 +1560,16 @@ impl EditorApp {
             report.rewritten_components
         );
         if open_document_components > 0 {
-            status.push_str(&format!("；当前文档内 {open_document_components} 处（未保存，可 Undo）"));
+            status.push_str(&format!(
+                "；当前文档内 {open_document_components} 处（未保存，可 Undo）"
+            ));
         }
         if !report.failures.is_empty() {
-            status.push_str(&format!("；{} 个文档未改写：{}", report.failures.len(), report.failures.join("、")));
+            status.push_str(&format!(
+                "；{} 个文档未改写：{}",
+                report.failures.len(),
+                report.failures.join("、")
+            ));
         }
         Ok(status)
     }
@@ -2001,15 +2041,12 @@ impl EditorApp {
     pub(crate) fn set_entity_persistent(&mut self, entity: SceneEntityId, persistent: bool) {
         let inspector = self.inspector.clone();
         if let Some(scene) = self.document.current_scene.as_mut() {
-            let _ = self.history.execute(
-                scene,
-                "Toggle Persistent",
-                CommandKind::Property,
-                |scene| {
-                    inspector.set_persistent(scene, entity, persistent)?;
-                    Ok::<(), InspectorError>(())
-                },
-            );
+            let _ =
+                self.history
+                    .execute(scene, "Toggle Persistent", CommandKind::Property, |scene| {
+                        inspector.set_persistent(scene, entity, persistent)?;
+                        Ok::<(), InspectorError>(())
+                    });
         }
     }
 
@@ -2041,8 +2078,7 @@ impl EditorApp {
         let result =
             self.history
                 .execute(scene, "Rename entity", CommandKind::Rename, move |scene| {
-                    tree.rename(scene, entity, name)
-                        .map_err(|e| e.to_string())
+                    tree.rename(scene, entity, name).map_err(|e| e.to_string())
                 });
         match result {
             Ok(true) => {
@@ -2198,19 +2234,16 @@ impl EditorApp {
             return;
         };
         if let Some(scene) = self.document.current_scene.as_mut() {
-            let _ = self.history.execute(
-                scene,
-                "Paste Components",
-                CommandKind::Property,
-                |scene| {
-                    let target = scene.scene.entities.get_mut(&entity).ok_or(())?;
-                    target.components = clipboard.components.clone();
-                    target.resources = clipboard.resources.clone();
-                    target.metadata = clipboard.metadata.clone();
-                    scene.mark_dirty();
-                    Ok::<(), ()>(())
-                },
-            );
+            let _ =
+                self.history
+                    .execute(scene, "Paste Components", CommandKind::Property, |scene| {
+                        let target = scene.scene.entities.get_mut(&entity).ok_or(())?;
+                        target.components = clipboard.components.clone();
+                        target.resources = clipboard.resources.clone();
+                        target.metadata = clipboard.metadata.clone();
+                        scene.mark_dirty();
+                        Ok::<(), ()>(())
+                    });
         }
         self.sync_inspector(entity);
         self.status = "Components pasted".to_owned();
@@ -3181,6 +3214,123 @@ mod tests {
         copy_dir(&source.join("scenes"), &root.join("scenes"));
         copy_dir(&source.join("assets"), &root.join("assets"));
         root
+    }
+
+    /// docs/55 阶段 3 的数据安全半边：**磁盘文件被外部改动时保存必须被拒绝**。
+    ///
+    /// 这条守的是一类静默数据损坏：`scenes/` 是外部工具（生成器、git checkout、另一个编辑器）
+    /// 会写的目录，而过去 `Ctrl+S` 无条件覆盖——别人的改动被悄悄吃掉，且**没有任何提示**。
+    #[test]
+    fn save_refuses_to_overwrite_an_externally_modified_scene() {
+        let root = copy_sample_project("external-change");
+        let project = open_project(&root).expect("打开工程");
+        let mut app = EditorApp::new(project, None, LogSink::new(64));
+        app.project_loaded = true;
+        app.open_scene_resource(PathBuf::from("scenes/ui_test.scene"));
+        let path = app
+            .document
+            .current_scene
+            .as_ref()
+            .and_then(|document| document.path.clone())
+            .expect("场景应有磁盘路径");
+
+        // ① 干净状态下保存：正常通过（不制造假冲突）。
+        assert!(app.save_scene(), "无外部改动时保存必须成功：{}", app.status);
+
+        // ② 外部改写磁盘文件（模拟生成器/git checkout）。
+        let external = "scene\texternally\twritten\n";
+        fs::write(&path, external).expect("外部写入");
+        assert_eq!(
+            app.document
+                .current_scene
+                .as_ref()
+                .expect("场景")
+                .disk_status(),
+            editor::DiskStatus::Modified,
+            "外部写入之后必须被识别为已修改"
+        );
+
+        // ③ 普通保存被拒绝，且**磁盘内容原样保留**（这才是关键：拒绝不是提示，而是不写）。
+        app.document
+            .current_scene
+            .as_mut()
+            .expect("场景")
+            .mark_dirty();
+        assert!(!app.save_scene(), "外部改动后普通保存必须被拒绝");
+        assert_eq!(
+            fs::read_to_string(&path).expect("磁盘内容"),
+            external,
+            "被拒绝的保存不得改动磁盘文件"
+        );
+        assert!(
+            app.status.contains("已阻止保存"),
+            "状态栏必须说明原因：{}",
+            app.status
+        );
+        assert!(
+            app.document
+                .current_scene
+                .as_ref()
+                .expect("场景")
+                .is_dirty(),
+            "被拒绝之后文档必须保持 dirty"
+        );
+
+        // ④ 显式强制保存：覆盖成功，磁盘内容变成编辑器里的场景。
+        assert!(app.save_scene_force(), "强制保存必须成功：{}", app.status);
+        let written = fs::read_to_string(&path).expect("磁盘内容");
+        assert_ne!(written, external, "强制保存必须真的覆盖");
+        assert!(
+            written.contains(
+                &app.document
+                    .current_scene
+                    .as_ref()
+                    .expect("场景")
+                    .scene
+                    .name
+            ),
+            "覆盖后的文件应当是被保存的场景"
+        );
+        // ⑤ 覆盖之后签名刷新：再保存一次不会再报冲突（否则用户会陷在"永远冲突"里）。
+        assert_eq!(
+            app.document
+                .current_scene
+                .as_ref()
+                .expect("场景")
+                .disk_status(),
+            editor::DiskStatus::Unchanged
+        );
+        app.document
+            .current_scene
+            .as_mut()
+            .expect("场景")
+            .mark_dirty();
+        assert!(app.save_scene(), "覆盖之后应恢复正常保存：{}", app.status);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// 未命名文档没有磁盘基准，`disk_status()` 必须是 `Untracked` 而不是"冲突"。
+    #[test]
+    fn unnamed_document_never_reports_a_disk_conflict() {
+        let root = copy_sample_project("unnamed-disk");
+        let project = open_project(&root).expect("打开工程");
+        let mut app = EditorApp::new(project, None, LogSink::new(64));
+        app.project_loaded = true;
+        app.create_scene();
+        let document = app.document.current_scene.as_ref().expect("新场景");
+        assert!(document.path.is_none());
+        assert_eq!(document.disk_status(), editor::DiskStatus::Untracked);
+        assert!(app.save_scene(), "新建场景必须能保存：{}", app.status);
+        assert!(
+            app.document
+                .current_scene
+                .as_ref()
+                .expect("场景")
+                .path
+                .is_some(),
+            "保存之后应获得路径"
+        );
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

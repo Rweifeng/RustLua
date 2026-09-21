@@ -2,7 +2,10 @@
 
 mod actions;
 mod command_router;
+mod framegate;
 mod geometry;
+mod gizmo;
+mod gui_evidence;
 mod hierarchy_ops;
 mod import;
 mod menu;
@@ -13,6 +16,7 @@ mod publish;
 mod scene_drag;
 mod scene_interaction;
 mod scene_ops;
+mod scene_tools;
 mod ui_editor;
 mod util;
 
@@ -31,10 +35,9 @@ use std::{
 };
 
 use editor::{
-    AutoSaveController, Collider3dFields, InspectorState,
-    PlaySession, ProjectDocument, ProjectInfo, RecoveryManager, RecoveryScan, ResourceBrowserState,
-    SceneTreeState, SelectionModel, TransformFields,
-    check_project, open_project,
+    AutoSaveController, Collider3dFields, InspectorState, PlaySession, ProjectDocument,
+    ProjectInfo, RecoveryManager, RecoveryScan, ResourceBrowserState, SceneTreeState,
+    SelectionModel, TransformFields, check_project, open_project,
 };
 use eframe::egui;
 use engine::core::{
@@ -75,6 +78,10 @@ struct Arguments {
     perf_baseline: bool,
     /// 基线报告落盘路径（可选；同时始终打印到 stdout）。
     perf_report: Option<PathBuf>,
+    /// docs/55 阶段 0「GUI smoke」：无窗口的合成输入整帧用例（可当质量门）。
+    gui_smoke: bool,
+    /// GUI smoke 报告落盘路径（可选；同时始终打印到 stdout）。
+    gui_report: Option<PathBuf>,
 }
 
 fn parse_arguments() -> Result<Arguments, String> {
@@ -108,14 +115,23 @@ fn parse_arguments() -> Result<Arguments, String> {
                     .ok_or_else(|| "--perf-report 需要一个路径参数".to_owned())?;
                 arguments.perf_report = Some(PathBuf::from(path));
             }
+            "--gui-smoke" => arguments.gui_smoke = true,
+            "--gui-report" => {
+                let path = values
+                    .next()
+                    .ok_or_else(|| "--gui-report 需要一个路径参数".to_owned())?;
+                arguments.gui_report = Some(PathBuf::from(path));
+            }
             "--help" | "-h" => {
                 println!(
                     "用法：editor [--project <项目路径>] [--check]\n\
                      \x20     editor --project <项目路径> --migrate-spatial [--migrate-spatial-write]\n\
                      \x20     editor --project <项目路径> --restore-spatial\n\
                      \x20     editor --perf-baseline [--perf-report <路径>]\n\
+                     \x20     editor --gui-smoke [--gui-report <路径>]\n\
                      \x20     （迁移命令可加 --migrate-report <路径> 把报告落盘；有实体被拒绝或出错时退出码为 2）\n\
-                     \x20     （--perf-baseline 无窗口运行 docs/55 ER-01 基线场景；有场景不达标时退出码为 2）"
+                     \x20     （--perf-baseline 无窗口运行 docs/55 ER-01 基线场景；有场景不达标时退出码为 2）\n\
+                     \x20     （--gui-smoke 无窗口运行 docs/55 阶段 0 的合成输入 GUI 用例；有用例失败时退出码为 2）"
                 );
                 std::process::exit(0);
             }
@@ -344,6 +360,16 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
+    if arguments.gui_smoke {
+        // docs/55 阶段 0：无窗口的合成输入整帧 GUI 用例；有用例失败时退出码 2。
+        let ok = framegate::run_and_write_report(arguments.gui_report.as_deref())
+            .map_err(|error| -> Box<dyn Error> { error.into() })?;
+        if !ok {
+            std::process::exit(2);
+        }
+        return Ok(());
+    }
+
     let project = arguments
         .project
         .as_ref()
@@ -369,6 +395,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         viewport: eframe::egui::ViewportBuilder::default().with_inner_size([1280.0, 720.0]),
         ..Default::default()
     };
+    // docs/55 阶段 0：真实窗口的证据/soak 运行器跑在 App 里，App 由 eframe 持有并在关窗时
+    // 析构，因此结果通过一个共享旗标带回来——失败时进程退出码为 2，脚本才能把它当质量门。
+    let evidence_failed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let evidence_failed_for_app = evidence_failed.clone();
     eframe::run_native(
         "RustLua 编辑器",
         options,
@@ -389,6 +419,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 gpu,
                 log_sink,
             );
+            app.evidence_failed_flag = evidence_failed_for_app;
             app.set_render_state(creation_context.wgpu_render_state.clone());
             app.initialize_ui_extensions();
             app.project_loaded = arguments.project.is_some();
@@ -404,6 +435,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             Ok(Box::new(app))
         }),
     )?;
+    if evidence_failed.load(std::sync::atomic::Ordering::SeqCst) {
+        std::process::exit(2);
+    }
     Ok(())
 }
 
@@ -463,6 +497,31 @@ struct EditorApp {
     /// 阶段（Idle/Dragging/Marquee/Painting）由状态机推导。
     interaction: crate::scene_interaction::ToolStateMachine,
     scene_view_mode: SceneViewMode,
+    /// 本帧 2D Scene 画布的**屏幕矩形**（`egui::Rect::NOTHING` 表示本帧没画 2D 视图）。
+    ///
+    /// docs/55 阶段 0「GUI smoke」需要一个稳定的落点：合成指针事件必须打在 Scene View
+    /// 真正分配的画布上，而不是猜一个坐标。面板每帧分配画布时顺手记下它，于是 smoke 能用
+    /// **和面板完全相同的坐标换算**把实体中心换算成屏幕点（`collect_scene_2d_entities`），
+    /// 再走真实的 `egui` 事件路径。生产路径的代价是每帧一次 `Rect` 写入。
+    pub(crate) scene_canvas_rect: egui::Rect,
+    /// 本帧层级面板**搜索框**的屏幕矩形（`NOTHING` = 本帧没画）。
+    ///
+    /// docs/55 §8 质量门把"输入焦点"列为 GUI smoke 的一项：键入时 Q/W/E/R 这类快捷键
+    /// **不得**抢键。要把这条变成可自动化的断言，合成指针事件必须有一个真实的输入框落点。
+    pub(crate) hierarchy_filter_rect: egui::Rect,
+    /// docs/55 阶段 0：真实窗口 GUI/GPU 证据运行器（`P2_EDITOR_GUI_EVIDENCE=<目录>`）。
+    /// 生产运行为 `None`，每帧只多一次 `Option` 判断。
+    gui_evidence: Option<crate::gui_evidence::GuiEvidence>,
+    /// GUI 证据运行里是否有采集失败的步骤（`main` 据此把退出码置 2）。
+    gui_evidence_failed: bool,
+    /// docs/55 阶段 0：真实窗口长会话 soak（`P2_EDITOR_SOAK=<秒>`）。
+    gui_soak: Option<crate::gui_evidence::GuiSoak>,
+    /// soak 是否失败（例如没有打开任何文档）。
+    gui_soak_failed: bool,
+    /// 惰性初始化标记：环境变量只在第一帧读一次。
+    evidence_runners_initialized: bool,
+    /// 证据/soak 的结果旗标（真实窗口关掉之后由 `main` 读，失败时退出码 2）。
+    evidence_failed_flag: Arc<std::sync::atomic::AtomicBool>,
     show_scene_guides: bool,
     show_safe_area: bool,
     show_pixel_grid: bool,
@@ -801,9 +860,40 @@ impl EditorApp {
 
     /// 切换场景工具：走状态机，因此**切换工具会取消进行中的交互**
     /// （`ToolStateMachine::handle(ToolSelected)` 的既有语义，不再需要调用方自己清场）。
+    ///
+    /// docs/55 阶段 2：请求先过当前视图模式的**能力表**（[`EditorApp::tool_mode`]）。
+    /// 该模式不支持的工具会落到模式的默认工具并在状态栏说明——过去的做法是照单全收，
+    /// 于是在 3D 里选中 Tile 画笔会得到一个"点了没反应"的工具。
     pub(crate) fn set_scene_tool(&mut self, tool: SceneTool) {
+        let mode = self.tool_mode();
+        let (effective, coerced) = mode.resolve(tool);
+        if coerced {
+            self.status = format!("{}不支持「{tool}」，已切换到「{effective}」", mode.label());
+        }
         self.interaction
-            .handle(crate::scene_interaction::InteractionEvent::ToolSelected(tool));
+            .handle(crate::scene_interaction::InteractionEvent::ToolSelected(
+                effective,
+            ));
+    }
+
+    /// 当前视图模式对应的**工具模式**（能力表的输入）。
+    pub(crate) fn tool_mode(&self) -> crate::scene_tools::ToolMode {
+        match self.scene_view_mode {
+            SceneViewMode::View2D => crate::scene_tools::ToolMode::TwoD,
+            SceneViewMode::View3D => crate::scene_tools::ToolMode::ThreeD,
+            SceneViewMode::Widget => crate::scene_tools::ToolMode::Widget,
+            SceneViewMode::Prefab => crate::scene_tools::ToolMode::Prefab,
+        }
+    }
+
+    /// 切换视图模式后**重新校验当前工具**：带着 2D 的 Tile 画笔切到 3D 时必须收敛，
+    /// 否则"工具按钮亮着、画布上却什么都不发生"。
+    pub(crate) fn revalidate_scene_tool_for_view_mode(&mut self) {
+        let mode = self.tool_mode();
+        let current = self.scene_tool();
+        if !mode.allows(current) {
+            self.set_scene_tool(mode.default_tool());
+        }
     }
 }
 
@@ -919,7 +1009,7 @@ struct SceneEditorState {
     /// 3D 实体变换预览（画布俯视 XZ 投影；M9-03/M10-07）。
     preview3d_transform: std::collections::BTreeMap<SceneEntityId, Transform3D>,
     /// 3D 平移/旋转/缩放 Gizmo 拖拽（M9-03/M10-07）。
-    gizmo_drag: Option<GizmoDrag>,
+    gizmo_drag: Option<crate::gizmo::GizmoDrag>,
     collapsed: std::collections::BTreeSet<SceneEntityId>,
     hidden: std::collections::BTreeSet<SceneEntityId>,
     locked: std::collections::BTreeSet<SceneEntityId>,
@@ -946,18 +1036,6 @@ struct UiDragInitial {
     /// `UiLayout` 四边 offset（authored 坐标）。UI 元素绘制在设计分辨率
     /// 包围框内，拖动增量换算为 zoom/ppp（见 draw_scene_view）。
     offsets: [f32; 4],
-}
-
-/// 3D 变换 Gizmo 拖拽：约束到哪个轴（Y 为垂直高度，Free 为 XZ 平面；
-/// Scale 为等比缩放，Rotate 由 scene_tool 决定）。
-struct GizmoDrag {
-    id: SceneEntityId,
-    axis: GizmoAxis,
-    start: egui::Pos2,
-    initial: Transform3D,
-    /// 轴心模式 `Center` 时的**公转中心**（手柄起点）；`None` = 原地旋转/缩放。
-    pivot: Option<engine::core::math3d::Vec3>,
-    start_ray: Option<engine::core::camera::Ray3>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1038,6 +1116,14 @@ impl EditorApp {
             gizmo_space: crate::scene_interaction::GizmoSpace::default(),
             gizmo_pivot: crate::scene_interaction::GizmoPivot::default(),
             scene_view_mode: SceneViewMode::default(),
+            scene_canvas_rect: egui::Rect::NOTHING,
+            hierarchy_filter_rect: egui::Rect::NOTHING,
+            gui_evidence: None,
+            gui_evidence_failed: false,
+            gui_soak: None,
+            gui_soak_failed: false,
+            evidence_runners_initialized: false,
+            evidence_failed_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             show_scene_guides: false,
             show_safe_area: false,
             show_pixel_grid: false,
@@ -1732,6 +1818,88 @@ impl EditorApp {
 
 impl eframe::App for EditorApp {
     fn update(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
+        self.draw_frame(context);
+    }
+}
+
+impl EditorApp {
+    /// **一帧的完整绘制 + 输入处理**（docs/55 阶段 2 验收："绘制与交互可独立测试"）。
+    ///
+    /// 从 `eframe::App::update` 里抽出来的理由：`update` 需要一个真实的
+    /// `eframe::Frame`，而它无法在测试里构造，于是"整帧"在自动化里一直是不可达的——
+    /// 只能逐个面板调用。抽成 `draw_frame(&egui::Context)` 之后，真实 `egui::Context`
+    /// 的合成帧就能把**所有面板**跑一遍（含跨面板的工作流），阶段 0 的 GUI smoke
+    /// 与 DPI/resize 门槛都建立在它之上（见 `crate::framegate`）。
+    /// 推进 docs/55 阶段 0 的真实窗口运行器（GUI/GPU 证据、长会话 soak）。
+    ///
+    /// 环境变量在**第一帧**才读：没设置 `P2_EDITOR_GUI_EVIDENCE` / `P2_EDITOR_SOAK` 时，
+    /// 生产路径上只有一次布尔判断，不会因为"带了证据设施"而改变启动行为。
+    /// 返回 `true` 表示要求关闭窗口（证据采集完成或 soak 到时）。
+    fn tick_evidence_runners(&mut self, context: &egui::Context) -> bool {
+        use std::sync::atomic::Ordering;
+        if !self.evidence_runners_initialized {
+            self.evidence_runners_initialized = true;
+            // soak 优先：它也用 `P2_EDITOR_GUI_EVIDENCE` 指定产物目录，两个都设时应跑 soak
+            // （否则"启动 soak"会静默变成"跑一遍截图"——这正是第一版的行为，已修）。
+            match crate::gui_evidence::GuiSoak::from_env() {
+                Some(soak) => {
+                    tracing::info!(
+                        target: "editor",
+                        "[soak] 开始长会话采样，产物目录={}",
+                        soak.output_dir().display()
+                    );
+                    self.gui_soak = Some(soak);
+                }
+                None => {
+                    if let Some(evidence) = crate::gui_evidence::GuiEvidence::from_env() {
+                        if let Err(error) =
+                            crate::gui_evidence::prepare_output_dir(evidence.output_dir())
+                        {
+                            tracing::error!(
+                                target: "editor",
+                                "[gui-evidence] 无法准备输出目录 {}: {error}",
+                                evidence.output_dir().display()
+                            );
+                        } else {
+                            tracing::info!(
+                                target: "editor",
+                                "[gui-evidence] 开始采集，产物目录={}",
+                                evidence.output_dir().display()
+                            );
+                        }
+                        self.gui_evidence = Some(evidence);
+                    }
+                }
+            }
+        }
+        let close = if let Some(mut evidence) = self.gui_evidence.take() {
+            let close = evidence.tick(self, context);
+            self.gui_evidence_failed |= evidence.failed();
+            self.gui_evidence = Some(evidence);
+            close
+        } else if let Some(mut soak) = self.gui_soak.take() {
+            let close = soak.tick(self, context);
+            self.gui_soak_failed |= soak.failed();
+            self.gui_soak = Some(soak);
+            close
+        } else {
+            false
+        };
+        if close && (self.gui_evidence_failed || self.gui_soak_failed) {
+            self.evidence_failed_flag.store(true, Ordering::SeqCst);
+        }
+        close
+    }
+
+    pub(crate) fn draw_frame(&mut self, context: &egui::Context) {
+        // docs/55 阶段 0：真实窗口证据 / 长会话 soak 的推进点。
+        //
+        // 放在帧首是刻意的：`set_pixels_per_point` 与 `InnerSize` 都在**下一次 pass** 生效，
+        // 先设再画才能让本帧的布局反映新的 DPI/尺寸（配合 warmup 帧收敛）。
+        if self.tick_evidence_runners(context) {
+            // 证据采集已经写完报告：这一帧照常绘制（保证最后一屏有内容），然后关窗。
+            context.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
         // Editor Profiler（docs/55 P0）：帧起点 + 本帧各面板/命令耗时。
         let frame_started = Instant::now();
         self.profiler.begin_frame(frame_started);

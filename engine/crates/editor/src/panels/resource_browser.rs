@@ -339,7 +339,7 @@ impl EditorApp {
         if !matches_project {
             // 项目切换：旧句柄 drop 后其 worker 退出；这里重建并建立基线。
             self.file_watcher = Some(editor::spawn_watcher(
-                root,
+                root.clone(),
                 editor::WatchScope::default(),
                 self.file_watch_interval,
             ));
@@ -374,6 +374,36 @@ impl EditorApp {
             self.profiler
                 .add("file_watch_changed_files", diff.len() as u64);
             let summary = diff.summary();
+            // docs/55 阶段 3：外部改动**命中当前打开的文档**时立刻说清楚。
+            //
+            // 保存时的拒绝（`EditorApp::save_scene`）是安全网，但用户可能在那之前又改了一堆东西；
+            // 变化刚被检测到就给出提示与可执行的下一步，才谈得上"所有错误可定位"。
+            let open_document = self
+                .current_scene()
+                .and_then(|document| document.path.clone())
+                .map(|path| strip_verbatim_prefix(&path))
+                .map(|path| {
+                    // 观察器给出的是**项目相对路径**，而文档上是绝对路径：去掉项目前缀才能比较
+                    //（去不掉就退回绝对路径，比较自然不命中，不会误报）。
+                    path.strip_prefix(&root)
+                        .map_or_else(|_| path.clone(), PathBuf::from)
+                });
+            let touched = open_document.as_ref().is_some_and(|open| {
+                diff.modified
+                    .iter()
+                    .chain(&diff.removed)
+                    .any(|candidate| candidate == open)
+            });
+            if touched {
+                let name = open_document.as_ref().map_or_else(
+                    || "<当前文档>".to_owned(),
+                    |path| path.display().to_string(),
+                );
+                self.push_console_notice(format!(
+                    "当前打开的场景已被外部修改：{name}（保存会被拒绝；确认后可「强制保存（覆盖外部修改）」）"
+                ));
+                self.set_scene_view_diagnostic(format!("外部修改：{name} —— 保存已被保护性拒绝"));
+            }
             self.push_console_notice(format!("检测到外部文件变化（{summary}），正在后台刷新资源"));
             self.status = format!("外部文件变化：{summary}");
             self.refresh_resources();
@@ -835,7 +865,10 @@ mod tests {
             )
             .is_err()
         );
-        assert!(root.join("assets/player.png").exists(), "被拒绝时不得搬动文件");
+        assert!(
+            root.join("assets/player.png").exists(),
+            "被拒绝时不得搬动文件"
+        );
 
         let status = app
             .perform_resource_move(
@@ -858,8 +891,15 @@ mod tests {
             app.document.current_scene.as_ref().unwrap().scene.entities[&id].components["Sprite"]
                 .contains("assets/hero.png")
         );
-        assert_eq!(app.history.undo_len(), undo_before + 1, "引用改写必须可撤销");
-        assert_eq!(app.selected_resource, Some(PathBuf::from("assets/hero.png")));
+        assert_eq!(
+            app.history.undo_len(),
+            undo_before + 1,
+            "引用改写必须可撤销"
+        );
+        assert_eq!(
+            app.selected_resource,
+            Some(PathBuf::from("assets/hero.png"))
+        );
         let _ = fs::remove_dir_all(root);
     }
 

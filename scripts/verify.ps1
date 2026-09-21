@@ -258,6 +258,35 @@ try {
         Pop-Location
     }
 
+    # docs/55 阶段 0「GUI smoke 清单落地」：无窗口的**合成输入整帧**用例（层级点击/多选/范围选、
+    # 键盘快捷键、Scene View 真实指针拖动、未保存保护弹窗、DPI×resize 组合下的行高与画布几何）。
+    # 它覆盖的是"整帧 + 真实 egui 事件路径"，与下面的基线（`--perf-baseline`）互补：
+    # 基线量性能与几何，这里量**交互语义**。有用例失败时退出码为 2。
+    Write-Step "Editor GUI smoke (synthetic full frames)"
+    Push-Location $projectRoot
+    try {
+        $guiSmokePath = Join-Path $projectRoot "artifacts\baselines\editor-gui-smoke.txt"
+        $guiSmokeOutput = & cargo run --quiet --manifest-path "engine/Cargo.toml" -p editor -- --gui-smoke --gui-report $guiSmokePath 2>&1
+        $guiSmokeExit = $LASTEXITCODE
+        $guiSmokeOutput | ForEach-Object { Write-Host $_ }
+        if ($guiSmokeExit -ne 0) {
+            throw "editor GUI smoke failed (exit code $guiSmokeExit); report: $guiSmokePath"
+        }
+        if (-not (Test-Path -LiteralPath $guiSmokePath)) {
+            throw "editor GUI smoke report was not written: $guiSmokePath"
+        }
+        $guiSmokeText = Get-Content -Raw -LiteralPath $guiSmokePath
+        if ($guiSmokeText -notmatch "result=ok") {
+            throw "editor GUI smoke report has no result=ok summary line"
+        }
+        if ($guiSmokeText -notmatch "failed=0") {
+            throw "editor GUI smoke report lists failed cases"
+        }
+    }
+    finally {
+        Pop-Location
+    }
+
     # docs/54 §8-⑨：Web 平台的可重复证据。两层，退出码语义严格区分：
     #   ① 浏览器契约层（verify-webgl.ps1）：真实浏览器 + Node 静态服务器跑资源获取/解析、
     #      WebGL2 能力、存储降级与缺失资源诊断。不需要 wasm 目标，本机可跑。

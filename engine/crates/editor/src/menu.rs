@@ -115,6 +115,8 @@ pub(crate) enum MenuAction {
     NewProject,
     OpenProject,
     SaveScene,
+    /// docs/55 阶段 3：明知磁盘被外部改动也覆盖（显式动作，不绑快捷键）。
+    ForceSaveScene,
     ProjectSettings,
     PublishProject,
     Quit,
@@ -166,9 +168,7 @@ pub(crate) enum MenuAction {
 const FILE_MENU: &[MenuRow] = &[
     // Unity 的 File ▸ New Scene 是**直接创建**（Untitled），菜单里没有名字输入框；
     // 场景名由 `create_scene` 自动取（`main`，冲突时 `main2`…）。
-    MenuRow::Item(
-        MenuItem::new("新建场景", MenuAction::NewScene).gate(MenuGate::ProjectLoaded),
-    ),
+    MenuRow::Item(MenuItem::new("新建场景", MenuAction::NewScene).gate(MenuGate::ProjectLoaded)),
     MenuRow::Separator,
     MenuRow::Item(MenuItem::new("新建项目…", MenuAction::NewProject)),
     MenuRow::Item(MenuItem::new("打开项目…", MenuAction::OpenProject)),
@@ -177,6 +177,12 @@ const FILE_MENU: &[MenuRow] = &[
     MenuRow::Item(
         MenuItem::new("保存场景", MenuAction::SaveScene)
             .shortcut("Ctrl+S")
+            .gate(MenuGate::ProjectLoaded),
+    ),
+    // docs/55 阶段 3：磁盘文件被外部改动时普通保存会被**拒绝**（不静默覆盖别人的改动），
+    // 这里给出显式出口；没有冲突时它只是"再保存一次"，不会造成意外。
+    MenuRow::Item(
+        MenuItem::new("强制保存（覆盖外部修改）", MenuAction::ForceSaveScene)
             .gate(MenuGate::ProjectLoaded),
     ),
     MenuRow::Separator,
@@ -223,9 +229,7 @@ const EDIT_MENU: &[MenuRow] = &[
             .shortcut("Ctrl+A")
             .gate(MenuGate::ProjectLoaded),
     ),
-    MenuRow::Item(
-        MenuItem::new("取消选择", MenuAction::DeselectAll).gate(MenuGate::HasSelection),
-    ),
+    MenuRow::Item(MenuItem::new("取消选择", MenuAction::DeselectAll).gate(MenuGate::HasSelection)),
     // Unity 把 Play / Pause / Step 放在 Edit 菜单里（工具栏只是入口之一）。
     MenuRow::Separator,
     MenuRow::Item(MenuItem::new("播放", MenuAction::PlayStart).gate(MenuGate::ProjectLoaded)),
@@ -233,9 +237,7 @@ const EDIT_MENU: &[MenuRow] = &[
     MenuRow::Item(
         MenuItem::new("暂停 / 继续", MenuAction::PlayTogglePause).gate(MenuGate::ProjectLoaded),
     ),
-    MenuRow::Item(
-        MenuItem::new("单帧步进", MenuAction::PlayStep).gate(MenuGate::ProjectLoaded),
-    ),
+    MenuRow::Item(MenuItem::new("单帧步进", MenuAction::PlayStep).gate(MenuGate::ProjectLoaded)),
     MenuRow::Separator,
     MenuRow::Item(
         MenuItem::new("项目设置…", MenuAction::ProjectSettings).gate(MenuGate::ProjectLoaded),
@@ -416,10 +418,9 @@ impl EditorApp {
                 }
                 MenuRow::WorkspaceTabs => {
                     ui.label("工作台");
-                    for (label, tab) in [
-                        ("场景", WorkspaceTab::Scene),
-                        ("游戏", WorkspaceTab::Game),
-                    ] {
+                    for (label, tab) in
+                        [("场景", WorkspaceTab::Scene), ("游戏", WorkspaceTab::Game)]
+                    {
                         if ui
                             .selectable_label(self.workspace_tab == tab, label)
                             .clicked()
@@ -442,6 +443,8 @@ impl EditorApp {
                             .clicked()
                         {
                             self.scene_view_mode = mode;
+                            // docs/55 阶段 2：换模式后重新校验工具能力（见 `scene_tools`）。
+                            self.revalidate_scene_tool_for_view_mode();
                             ui.close();
                         }
                     }
@@ -521,9 +524,14 @@ impl EditorApp {
             MenuAction::SaveScene => {
                 self.dispatch(editor::EditorCommand::Save);
             }
+            MenuAction::ForceSaveScene => {
+                self.save_scene_force();
+            }
             MenuAction::ProjectSettings => self.open_project_settings(),
             MenuAction::PublishProject => self.show_publish_panel = true,
-            MenuAction::Quit => self.request_document_change(crate::actions::PendingChange::QuitEditor),
+            MenuAction::Quit => {
+                self.request_document_change(crate::actions::PendingChange::QuitEditor)
+            }
             // ---- 编辑 ----
             MenuAction::Undo => {
                 self.dispatch(editor::EditorCommand::Undo);

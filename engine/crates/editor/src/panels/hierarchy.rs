@@ -201,16 +201,17 @@ impl HierarchyLowerCache {
                     .map(|entity| (entity.id, entity.name.to_lowercase())),
             );
             self.components.clear();
-            self.components.extend(document.scene.entities.values().map(|entity| {
-                (
-                    entity.id,
-                    entity
-                        .components
-                        .keys()
-                        .map(|name| name.to_lowercase())
-                        .collect::<Vec<_>>(),
-                )
-            }));
+            self.components
+                .extend(document.scene.entities.values().map(|entity| {
+                    (
+                        entity.id,
+                        entity
+                            .components
+                            .keys()
+                            .map(|name| name.to_lowercase())
+                            .collect::<Vec<_>>(),
+                    )
+                }));
             self.revision = document.revision;
             self.entity_count = entity_count;
             self.valid = true;
@@ -477,9 +478,12 @@ impl EditorApp {
                 }
                 ui.separator();
                 // H05：搜索框 —— 占位提示 + 非空时一键清空 + 命中计数。
-                ui.horizontal(|ui| {
+                //
+                // docs/55 阶段 0：把输入框矩形记进探针，GUI smoke 才能用**真实指针事件**把焦点
+                // 打进文本框（"输入焦点"是计划 §8 质量门枚举的一项：键入时快捷键不得抢键）。
+                let filter_response = ui.horizontal(|ui| {
                     let edit_width = (ui.available_width() - 34.0).max(60.0);
-                    ui.add(
+                    let edit_response = ui.add(
                         egui::TextEdit::singleline(&mut self.hierarchy_filter)
                             // 语法提示直接写在占位文本里：`type:`/`component:` 是 ER-04 的"类型过滤"。
                             .hint_text("搜索实体（type:Sprite 或 component:ui 按组件过滤）")
@@ -490,7 +494,10 @@ impl EditorApp {
                     {
                         self.hierarchy_filter.clear();
                     }
+                    edit_response.rect
                 });
+                // 探针：GUI smoke 用它把合成点击打在输入框真正的位置上。
+                self.hierarchy_filter_rect = filter_response.inner;
                 if !self.hierarchy_filter.trim().is_empty() {
                     ui.small(format!("匹配 {} 项", self.hierarchy_match_count()));
                 }
@@ -559,6 +566,12 @@ impl EditorApp {
     fn hierarchy_match_count(&mut self) -> usize {
         self.ensure_hierarchy_rows();
         self.hierarchy_visible_cache.match_count
+    }
+
+    /// 过滤匹配数（`pub(crate)` 版）：GUI smoke 要在**帧外**断言"输入真的缩窄了树"，
+    /// 而上面那个私有版本需要在 `&mut self` 上跑一次扁平化——这正是我们要验证的东西。
+    pub(crate) fn filtered_match_count(&mut self) -> usize {
+        self.hierarchy_match_count()
     }
 
     /// H03：单选并更新 Shift 锚点（Hierarchy 内统一入口）。
@@ -1672,7 +1685,10 @@ mod tests {
             .get_mut(&child)
             .unwrap()
             .metadata
-            .insert("prefab.source".to_owned(), "assets/prefabs/hero.prefab".to_owned());
+            .insert(
+                "prefab.source".to_owned(),
+                "assets/prefabs/hero.prefab".to_owned(),
+            );
         app.selection
             .set_single(instance_root, editor::SelectionSource::Hierarchy);
 
@@ -1723,12 +1739,10 @@ mod tests {
         scene.add_entity(root, "Hero", None).unwrap();
         let child = SceneEntityId(2);
         scene.add_entity(child, "Weapon", Some(root)).unwrap();
-        scene
-            .entities
-            .get_mut(&child)
-            .unwrap()
-            .metadata
-            .insert("prefab.source".to_owned(), "assets/prefabs/sword.prefab".to_owned());
+        scene.entities.get_mut(&child).unwrap().metadata.insert(
+            "prefab.source".to_owned(),
+            "assets/prefabs/sword.prefab".to_owned(),
+        );
         let prefab = engine::core::prefab::Prefab::from_scene(
             &scene,
             root,
@@ -1869,7 +1883,10 @@ mod tests {
                 .get_mut(&SceneEntityId(3))
                 .unwrap()
                 .components
-                .insert("Light".to_owned(), "direction=0,1,0;color=1,1,1;intensity=1".to_owned());
+                .insert(
+                    "Light".to_owned(),
+                    "direction=0,1,0;color=1,1,1;intensity=1".to_owned(),
+                );
             let solo = entities.get_mut(&SceneEntityId(4)).unwrap();
             solo.components
                 .insert("UiLayout".to_owned(), "pivot=0,0".to_owned());

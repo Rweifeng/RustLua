@@ -25,6 +25,9 @@ pub struct SceneDocument {
     /// 单调递增的编辑修订号：每次 `mark_dirty` 自增，供编辑器检测场景内容是否变化。
     /// 不参与相等比较（纯修订计数变化不算内容变化），避免干扰 history 的 no-op 检测。
     pub revision: u64,
+    /// 加载/上次保存时该文件的签名（长度 + mtime）。用于判断**外部改动**，
+    /// 不参与相等比较（与 `revision` 同理：磁盘状态不是文档内容）。
+    pub disk_signature: Option<crate::file_watcher::FileSignature>,
 }
 
 impl PartialEq for SceneDocument {
@@ -43,6 +46,7 @@ impl SceneDocument {
             scene: Scene::new(name),
             dirty: true,
             revision: 0,
+            disk_signature: None,
         }
     }
 
@@ -84,10 +88,12 @@ impl SceneDocument {
         };
         // 场景里的元数据键是编辑器自己的约定，打开时补齐（不是内容迁移）。
         Ok(Self {
-            path: Some(path),
+            path: Some(path.clone()),
             scene,
             dirty: false,
             revision: 0,
+            // 记下加载时的磁盘签名：之后保存前就能判断"这份文件是不是被别人改过"。
+            disk_signature: crate::file_watcher::FileSignature::of(&path),
         })
     }
 
@@ -132,6 +138,35 @@ impl SceneDocument {
         Ok(())
     }
 
+    /// 本文件在磁盘上是否**已被外部改动**（生成器、git checkout、别的编辑器…）。
+    ///
+    /// docs/55 §8 把"数据损坏"列为直接阻断项，而"保存时静默覆盖外部改动"正是最典型的
+    /// 数据损坏路径之一：`scenes/` 与 `scripts/` 本来就是外部工具会碰的目录
+    /// （`file_watcher.rs` 的模块注释里写明了这一点）。这里给出判定，
+    /// 由调用方（`EditorApp::save_scene`）决定是拒绝还是强制覆盖。
+    ///
+    /// 未命名文档（`path` 为 `None`）恒为 `false`——没有磁盘文件就无从冲突。
+    /// 记录签名缺失（例如文档是内存里造出来的）也返回 `false`：宁可保守地允许保存，
+    /// 也不要在没有基准的情况下把用户挡在门外。
+    pub fn disk_status(&self) -> DiskStatus {
+        let Some(path) = self.path.as_deref() else {
+            return DiskStatus::Untracked;
+        };
+        let Some(recorded) = self.disk_signature else {
+            return DiskStatus::Untracked;
+        };
+        match crate::file_watcher::FileSignature::of(path) {
+            None => DiskStatus::Removed,
+            Some(current) if current == recorded => DiskStatus::Unchanged,
+            Some(_) => DiskStatus::Modified,
+        }
+    }
+
+    /// 记录"当前磁盘状态就是我保存/加载时的状态"。
+    fn record_disk_signature(&mut self, path: &Path) {
+        self.disk_signature = crate::file_watcher::FileSignature::of(path);
+    }
+
     fn save_to(&mut self, path: &Path) -> Result<(), DocumentError> {
         self.scene.validate().map_err(DocumentError::Scene)?;
         if is_prefab_document(&self.scene, Some(path)) {
@@ -148,7 +183,39 @@ impl SceneDocument {
             atomic_write_scene(path, &self.scene)?;
         }
         self.dirty = false;
+        // 落盘成功 → 磁盘状态就是当前状态（否则下一次保存会把自己的写入当成"外部改动"）。
+        self.record_disk_signature(path);
         Ok(())
+    }
+}
+
+/// 文档与磁盘文件的关系（`docs/55` 阶段 3 的"外部变化"数据安全半边）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DiskStatus {
+    /// 未命名文档，或没有可比较的基准签名。
+    Untracked,
+    /// 磁盘内容与记录一致。
+    Unchanged,
+    /// 磁盘文件被外部改动过。
+    Modified,
+    /// 磁盘文件被外部删除。
+    Removed,
+}
+
+impl DiskStatus {
+    /// 是否应当**阻止**直接覆盖。
+    pub const fn blocks_overwrite(self) -> bool {
+        matches!(self, Self::Modified | Self::Removed)
+    }
+
+    /// 状态栏/诊断用的一句话。
+    pub const fn describe(self) -> &'static str {
+        match self {
+            Self::Untracked => "未跟踪磁盘状态",
+            Self::Unchanged => "磁盘内容与编辑器一致",
+            Self::Modified => "文件已在外部被修改",
+            Self::Removed => "文件已在外部被删除",
+        }
     }
 }
 
@@ -458,7 +525,6 @@ mod tests {
         assert!(matches!(document.save(), Err(DocumentError::MissingPath)));
         assert!(document.is_dirty());
     }
-
 
     #[test]
     fn invalid_scene_does_not_modify_original_or_clear_dirty() {

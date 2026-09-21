@@ -44,13 +44,8 @@ impl EditorApp {
             } else {
                 "暂停运行（逻辑时间冻结）"
             };
-            if pause_resume_icon_button(
-                ui,
-                pause_resume_icon(paused),
-                pausable,
-                pause_tooltip,
-            )
-            .clicked()
+            if pause_resume_icon_button(ui, pause_resume_icon(paused), pausable, pause_tooltip)
+                .clicked()
             {
                 self.dispatch(if paused {
                     editor::EditorCommand::ResumePlay
@@ -151,6 +146,8 @@ impl EditorApp {
                 } else {
                     SceneViewMode::View3D
                 };
+                // docs/55 阶段 2：换模式后重新校验工具（Tile 画笔在 3D 里没有落点）。
+                self.revalidate_scene_tool_for_view_mode();
                 // 从 3D 切回 2D：把视图适配到设计分辨率包围框。
                 if was_3d {
                     self.scene_view_fit_pending = true;
@@ -169,6 +166,7 @@ impl EditorApp {
                 } else {
                     SceneViewMode::Widget
                 };
+                self.revalidate_scene_tool_for_view_mode();
                 self.scene_view_fit_pending = true;
             }
             if icon_toggle(
@@ -184,6 +182,7 @@ impl EditorApp {
                 } else {
                     SceneViewMode::Prefab
                 };
+                self.revalidate_scene_tool_for_view_mode();
                 self.scene_view_fit_pending = true;
             }
             if self.scene_view_mode == SceneViewMode::Widget {

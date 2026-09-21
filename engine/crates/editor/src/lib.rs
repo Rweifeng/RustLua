@@ -82,7 +82,7 @@ pub use scene_tree_state::{ReparentPosition, SceneTreeError, SceneTreeState};
 
 pub mod document;
 
-pub use document::{DocumentError, PlaySession, ProjectDocument, SceneDocument};
+pub use document::{DiskStatus, DocumentError, PlaySession, ProjectDocument, SceneDocument};
 
 /// docs/54 §8-⑦：编辑态的空间语义（文档世界变换、目标世界→新局部、换父 keep-world）。
 pub mod document_space;
@@ -339,6 +339,10 @@ pub mod history;
 pub use history::{
     CommandHistory, CommandKind, EditCommand, EditTransactionState, HistoryError, TransactionError,
 };
+
+/// docs/55 ER-03「patch 原型」：把字段级编辑表示成补丁而不是整份文档快照。
+pub mod patch_history;
+pub use patch_history::{EditPatch, FieldChange, PatchHistory};
 
 pub mod recovery;
 pub use recovery::{

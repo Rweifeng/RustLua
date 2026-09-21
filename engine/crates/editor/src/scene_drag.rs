@@ -134,27 +134,32 @@ impl EditorApp {
         }
     }
 
-    /// 提交 3D 平移 Gizmo 拖拽：只改 Transform3D 的 position，保留旋转/缩放。
+    /// 提交 3D Gizmo 拖拽：把所有目标的 `Transform3D` 一次写入（**一条 Undo 覆盖全部**）。
+    ///
+    /// docs/55 阶段 2 收口：拖拽目标是整个选中集合，因此这里不再是"只取 preview 的第一条"。
+    /// 只要有一个目标的世界变换无法在父链下无损反解，就**整批拒绝**——写一半会让多选拖拽
+    /// 变成"部分实体留在原地"的静默错误，这比不写更糟。
     ///
     /// docs/54 §8-⑦：Gizmo 的初值与目标都是**世界**变换，而文档里存的是**局部**值。这里按父链
-    /// 反解后再写回，因此父链下的实体不再"拖完跳一下"；反解不了（剪切/镜像/退化）时**拒绝写回**
-    /// 并给出提示，不静默近似。
+    /// 反解后再写回，因此父链下的实体不再"拖完跳一下"。
     pub(crate) fn commit_gizmo_drag3d(&mut self) {
         if self.is_playing() {
             self.scene_state.preview3d_transform.clear();
             return;
         }
+        let primary = self
+            .scene_state
+            .gizmo_drag
+            .as_ref()
+            .map(crate::gizmo::GizmoDrag::primary);
         let preview = std::mem::take(&mut self.scene_state.preview3d_transform);
-        let Some((id, transform)) = preview
-            .iter()
-            .next()
-            .map(|(id, transform)| (*id, *transform))
-        else {
+        if preview.is_empty() {
             return;
-        };
+        }
+        let primary = primary.unwrap_or(preview.keys().next().copied().expect("非空"));
         enum Outcome {
-            Written,
-            Rejected,
+            Written(usize),
+            Rejected(Vec<SceneEntityId>),
             Unchanged,
         }
         let outcome = {
@@ -162,47 +167,72 @@ impl EditorApp {
                 return;
             };
             let mut targets = BTreeMap::new();
-            targets.insert(
-                id,
-                engine::core::spatial_transform::LocalTransform::from_3d(transform),
-            );
-            match editor::document_space::locals_for_world_targets(&scene.scene, &targets)
-                .get(&id)
-                .copied()
-                .map(editor::document_space::encode_transform)
-            {
-                Some(encoded) => {
-                    let changed = self.history.execute(
-                        scene,
-                        "3D Transform",
-                        CommandKind::Transform3D(id),
-                        |scene| {
-                            if let Some(entity) = scene.scene.entities.get_mut(&id) {
+            for (id, transform) in &preview {
+                targets.insert(
+                    *id,
+                    engine::core::spatial_transform::LocalTransform::from_3d(*transform),
+                );
+            }
+            let locals = editor::document_space::locals_for_world_targets(&scene.scene, &targets);
+            let mut encoded = BTreeMap::new();
+            let mut rejected = Vec::new();
+            for id in preview.keys() {
+                match locals
+                    .get(id)
+                    .copied()
+                    .map(editor::document_space::encode_transform)
+                {
+                    Some(value) => {
+                        encoded.insert(*id, value);
+                    }
+                    None => rejected.push(*id),
+                }
+            }
+            if !rejected.is_empty() {
+                Outcome::Rejected(rejected)
+            } else {
+                let written = encoded.len();
+                let changed = self.history.execute(
+                    scene,
+                    if written > 1 {
+                        "3D Transform (multi)"
+                    } else {
+                        "3D Transform"
+                    },
+                    CommandKind::Transform3D(primary),
+                    |scene| {
+                        for (id, value) in &encoded {
+                            if let Some(entity) = scene.scene.entities.get_mut(id) {
                                 entity
                                     .components
-                                    .insert("Transform".to_owned(), encoded.clone());
+                                    .insert("Transform".to_owned(), value.clone());
                             }
-                            scene.mark_dirty();
-                            Ok::<(), ()>(())
-                        },
-                    );
-                    if matches!(changed, Ok(true)) {
-                        Outcome::Written
-                    } else {
-                        Outcome::Unchanged
-                    }
+                        }
+                        scene.mark_dirty();
+                        Ok::<(), ()>(())
+                    },
+                );
+                if matches!(changed, Ok(true)) {
+                    Outcome::Written(written)
+                } else {
+                    Outcome::Unchanged
                 }
-                None => Outcome::Rejected,
             }
         };
         match outcome {
-            Outcome::Written => {
+            Outcome::Written(written) => {
+                self.status = if written > 1 {
+                    format!("已移动 {written} 个实体（一条撤销可全部回退）")
+                } else {
+                    "已移动实体".to_owned()
+                };
                 self.save_scene();
-                self.sync_inspector(id);
+                self.sync_inspector(primary);
             }
-            Outcome::Rejected => self.set_scene_view_diagnostic(
-                "该实体的世界变换无法在父链下无损反解（剪切/镜像/退化），已拒绝写回".to_owned(),
-            ),
+            Outcome::Rejected(rejected) => self.set_scene_view_diagnostic(format!(
+                "{} 个选中实体的世界变换无法在父链下无损反解（剪切/镜像/退化），已整批拒绝写回",
+                rejected.len()
+            )),
             Outcome::Unchanged => {}
         }
     }
@@ -240,4 +270,162 @@ pub(crate) fn set_ui_component_layout(entity: &mut SceneEntity, offsets: [f32; 4
         .components
         .insert("UiLayout".to_owned(), layout.to_component_str());
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::EditorApp;
+    use crate::gizmo::{GizmoDrag, GizmoDragTargets};
+    use editor::{CommandResult, EditorCommand, ProjectInfo, SceneDocument};
+    use eframe::egui;
+    use engine::core::{
+        logging::LogSink,
+        math3d::{Quat, Vec3},
+        scene::SceneEntityId,
+        transform::Transform3D,
+    };
+    use std::collections::BTreeSet;
+
+    fn app_with_two_entities() -> EditorApp {
+        let root = std::env::temp_dir().join(format!(
+            "rustlua-drag-commit-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_nanos())
+                .unwrap_or_default()
+        ));
+        let mut document = SceneDocument::new_scene("multi_gizmo");
+        for index in 0..2_u64 {
+            let id = SceneEntityId(index + 1);
+            document
+                .scene
+                .add_entity(id, format!("Node{index}"), None)
+                .expect("加实体");
+            document
+                .scene
+                .entities
+                .get_mut(&id)
+                .expect("实体存在")
+                .components
+                .insert(
+                    "Transform".to_owned(),
+                    "position=0,0,0;rotation=0,0,0,1;scale=1,1,1".to_owned(),
+                );
+        }
+        let mut app = EditorApp::new(
+            ProjectInfo {
+                root,
+                version: "test".to_owned(),
+                directories: Vec::new(),
+            },
+            None,
+            LogSink::new(32),
+        );
+        app.document.current_scene = Some(document);
+        app
+    }
+
+    fn transform_of(app: &EditorApp, id: SceneEntityId) -> String {
+        app.document.current_scene.as_ref().unwrap().scene.entities[&id].components["Transform"]
+            .clone()
+    }
+
+    /// docs/55 阶段 2 收口：**3D 多选拖拽 = 一条 Undo 覆盖全部目标**。
+    ///
+    /// 这条测试钉住的是"多选推广"这件事本身：提交前 `commit_gizmo_drag3d` 只写 preview 的第一条，
+    /// 于是"选了 5 个、只动 1 个"却没有任何报错——正是阶段 2 要收掉的那类静默错误。
+    #[test]
+    fn gizmo_drag3d_commits_every_selected_entity_as_one_undo() {
+        let mut app = app_with_two_entities();
+        let (first, second) = (SceneEntityId(1), SceneEntityId(2));
+        let before_first = transform_of(&app, first);
+        let before_second = transform_of(&app, second);
+
+        let initial = Transform3D {
+            position: Vec3::new(0.0, 0.0, 0.0),
+            rotation: Quat::identity(),
+            scale: Vec3::new(1.0, 1.0, 1.0),
+        };
+        let targets = GizmoDragTargets::new(
+            first,
+            [(first, initial), (second, initial)],
+            &BTreeSet::new(),
+        )
+        .expect("两个实体都可拖");
+        assert_eq!(targets.targets.len(), 2);
+        app.scene_state.gizmo_drag = Some(GizmoDrag {
+            targets,
+            axis: crate::GizmoAxis::X,
+            start: egui::Pos2::ZERO,
+            origin: initial,
+            pivot: None,
+            start_ray: None,
+        });
+        // 两个目标都推进了预览（模拟拖拽中的同一份世界增量）。
+        for (id, offset) in [(first, 3.0_f32), (second, 3.0_f32)] {
+            app.scene_state.preview3d_transform.insert(
+                id,
+                Transform3D {
+                    position: Vec3::new(offset, 0.0, 0.0),
+                    ..initial
+                },
+            );
+        }
+
+        app.commit_gizmo_drag3d();
+
+        assert_eq!(app.history.undo_len(), 1, "一次拖拽只能有一条 Undo");
+        assert_ne!(
+            transform_of(&app, first),
+            before_first,
+            "第一个目标必须落盘"
+        );
+        assert_ne!(
+            transform_of(&app, second),
+            before_second,
+            "第二个目标也必须落盘"
+        );
+        let after_first = transform_of(&app, first);
+        let after_second = transform_of(&app, second);
+
+        // 一条 Undo 把两个实体一起还原。
+        assert_eq!(
+            app.dispatch(EditorCommand::Undo),
+            CommandResult::Applied,
+            "撤销必须成功"
+        );
+        assert_eq!(
+            transform_of(&app, first),
+            before_first,
+            "第一个目标要回到原值"
+        );
+        assert_eq!(
+            transform_of(&app, second),
+            before_second,
+            "第二个目标要回到原值"
+        );
+        assert_ne!(after_first, before_first);
+        assert_ne!(after_second, before_second);
+    }
+
+    /// 锁定实体不进入拖拽目标集合（与"锁定不响应手柄"一致）。
+    #[test]
+    fn locked_entities_are_excluded_from_the_drag_targets() {
+        let first = SceneEntityId(1);
+        let second = SceneEntityId(2);
+        let initial = Transform3D {
+            position: Vec3::new(0.0, 0.0, 0.0),
+            rotation: Quat::identity(),
+            scale: Vec3::new(1.0, 1.0, 1.0),
+        };
+        let locked: BTreeSet<SceneEntityId> = [second].into_iter().collect();
+        let targets = GizmoDragTargets::new(first, [(first, initial), (second, initial)], &locked)
+            .expect("至少有一个可拖目标");
+        assert_eq!(targets.targets.len(), 1);
+        assert_eq!(targets.targets[0].0, first);
+        // 全被锁定 → 不给拖拽集合（调用方据此提前返回，不制造空 Undo）。
+        let none = GizmoDragTargets::new(first, [(second, initial)], &locked);
+        assert!(none.is_none());
+    }
 }

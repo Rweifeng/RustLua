@@ -140,42 +140,56 @@ impl EditorApp {
         let Some(scene) = self.document.current_scene.as_mut() else {
             return Ok(());
         };
-        let result =
-            self.history
-                .execute(scene, "Create Sprite", CommandKind::Create, move |scene| {
-                    let id = tree
-                        .create_entity(scene, name.clone(), None)
-                        .map_err(|error| error.to_string())?;
-                    if let Some(entity) = scene.scene.entities.get_mut(&id) {
-                        entity.components.insert(
-                            "Transform".into(),
-                            "position=0,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
-                        );
-                        // 新建精灵按源纹理实际像素尺寸生成，编辑器包围框与实际显示一致；
-                        // 纹理读取失败时回退到默认 32×32。
-                        let size =
-                            TextureAsset::load_png(root.join(&path), TextureColorSpace::Srgb)
-                                .map(|asset| Vec2::new(asset.width() as f32, asset.height() as f32))
-                                .unwrap_or_else(|_| Vec2::new(32.0, 32.0));
-                        let sprite = engine::core::sprite::SpriteComponent {
-                            texture: path.clone(),
-                            size,
-                            pivot: engine::core::transform::Vec2::new(0.5, 0.5),
-                            tint: [1.0; 4],
-                            sorting: engine::core::sprite::SpriteSorting::default(),
+        // 记下新建实体的 id：拖放之后要把它**选中**（docs/55 阶段 0 的 GUI smoke 用例
+        // `dnd/dropped_entity_is_named_and_selected` 抓到的缺口）。
+        //
+        // 其余创建入口（层级面板的「+」/`Ctrl+D`/Inspector 添加组件）都把新实体设为选中，
+        // 只有拖放这条路径漏了——用户拖完资源，Inspector 还停在旧对象上，得再去层级面板点一次。
+        let mut created: Option<SceneEntityId> = None;
+        let result = self
+            .history
+            .execute(scene, "Create Sprite", CommandKind::Create, |scene| {
+                let id = tree
+                    .create_entity(scene, name.clone(), None)
+                    .map_err(|error| error.to_string())?;
+                if let Some(entity) = scene.scene.entities.get_mut(&id) {
+                    entity.components.insert(
+                        "Transform".into(),
+                        "position=0,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
+                    );
+                    // 新建精灵按源纹理实际像素尺寸生成，编辑器包围框与实际显示一致；
+                    // 纹理读取失败时回退到默认 32×32。
+                    let size = TextureAsset::load_png(root.join(&path), TextureColorSpace::Srgb)
+                        .map(|asset| Vec2::new(asset.width() as f32, asset.height() as f32))
+                        .unwrap_or_else(|_| Vec2::new(32.0, 32.0));
+                    let sprite = engine::core::sprite::SpriteComponent {
+                        texture: path.clone(),
+                        size,
+                        pivot: engine::core::transform::Vec2::new(0.5, 0.5),
+                        tint: [1.0; 4],
+                        sorting: engine::core::sprite::SpriteSorting::default(),
 
-                            flip_x: false,
-                            flip_y: false,
-                            z: 0.0,
-                        };
-                        entity
-                            .components
-                            .insert("Sprite".into(), sprite.to_component_str());
-                    }
-                    Ok::<(), String>(())
-                });
+                        flip_x: false,
+                        flip_y: false,
+                        z: 0.0,
+                    };
+                    entity
+                        .components
+                        .insert("Sprite".into(), sprite.to_component_str());
+                }
+                created = Some(id);
+                Ok::<(), String>(())
+            });
         match result {
-            Ok(_) => Ok(()),
+            Ok(_) => {
+                if let Some(id) = created {
+                    self.selection
+                        .set_single(id, editor::SelectionSource::SceneView2D);
+                    self.sync_inspector(id);
+                    self.status = format!("已从资源创建精灵：{id:?}");
+                }
+                Ok(())
+            }
             Err(error) => Err(error),
         }
     }

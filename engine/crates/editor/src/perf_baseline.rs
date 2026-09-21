@@ -1086,7 +1086,10 @@ pub(crate) fn run_baseline() -> BaselineReport {
             vec![
                 format!("running_steps={running_steps} expected=600"),
                 format!("paused_steps={paused_steps} expected=0"),
-                format!("step_steps={step_steps} requested=5 tail_plan_steps={}", tail.steps),
+                format!(
+                    "step_steps={step_steps} requested=5 tail_plan_steps={}",
+                    tail.steps
+                ),
                 format!(
                     "hitch_steps={} cap={}",
                     hitch.steps,
@@ -1175,7 +1178,7 @@ pub(crate) fn run_baseline() -> BaselineReport {
         // 取值确实写进了文档（抽查最后一个目标）：读回的原文 == 归一化后的提交值。
         let payload = app.document.current_scene.as_ref().unwrap().scene.entities
             [&targets[targets.len() - 1]]
-        .components["Quad"]
+            .components["Quad"]
             .clone();
         let expected_text = last_value
             .split(',')
@@ -1192,7 +1195,10 @@ pub(crate) fn run_baseline() -> BaselineReport {
             &samples,
             vec![
                 format!("applied={applied} expected={edits}"),
-                format!("idempotent_noops={idempotent_noops} expected={}", targets.len()),
+                format!(
+                    "idempotent_noops={idempotent_noops} expected={}",
+                    targets.len()
+                ),
                 format!("undo_entries={undo_entries} dropped={dropped} budget={}", {
                     editor::CommandService::default().max_entries()
                 }),
@@ -1211,14 +1217,14 @@ pub(crate) fn run_baseline() -> BaselineReport {
         ));
     }
 
-
     // 30. 字段级**语义规则**必须真的走到审计路径（docs/55 阶段 2「字段校验」）。
     //
     // 场景：一个临时工程里放一个 400 实体的场景，其中 200 个脚本路径非法
     // （绝对路径 / 穿越 / 空），200 个合法。不变量：审计恰好报 200 条 schema_error、
     // 合法的 200 个一条不报（没有误报），并且审计扫描的是**磁盘上的文件**（不是内存校验）。
     {
-        let root = std::env::temp_dir().join(format!("p2-baseline-schema-rules-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("p2-baseline-schema-rules-{}", std::process::id()));
         let scenes = root.join("scenes");
         fs::create_dir_all(&scenes).expect("temp project scenes dir");
         let mut scene = engine::core::scene::Scene::new("rules");
@@ -1232,29 +1238,19 @@ pub(crate) fn run_baseline() -> BaselineReport {
         for index in 0..200 {
             let id = SceneEntityId(entity_index);
             scene.add_entity(id, format!("bad{index}"), None).unwrap();
-            scene
-                .entities
-                .get_mut(&id)
-                .unwrap()
-                .components
-                .insert(
-                    engine::core::entity_script::SCRIPT_COMPONENT.to_owned(),
-                    bad[index % bad.len()].to_owned(),
-                );
+            scene.entities.get_mut(&id).unwrap().components.insert(
+                engine::core::entity_script::SCRIPT_COMPONENT.to_owned(),
+                bad[index % bad.len()].to_owned(),
+            );
             entity_index += 1;
         }
         for index in 0..200 {
             let id = SceneEntityId(entity_index);
             scene.add_entity(id, format!("good{index}"), None).unwrap();
-            scene
-                .entities
-                .get_mut(&id)
-                .unwrap()
-                .components
-                .insert(
-                    engine::core::entity_script::SCRIPT_COMPONENT.to_owned(),
-                    format!("file=scripts/ai/patrol_{index}.lua"),
-                );
+            scene.entities.get_mut(&id).unwrap().components.insert(
+                engine::core::entity_script::SCRIPT_COMPONENT.to_owned(),
+                format!("file=scripts/ai/patrol_{index}.lua"),
+            );
             entity_index += 1;
         }
         let path = scenes.join("rules.scene");
@@ -1271,7 +1267,10 @@ pub(crate) fn run_baseline() -> BaselineReport {
             .iter()
             .filter(|reason| reason.contains("绝对路径"))
             .count();
-        let traversal = bad_reasons.iter().filter(|reason| reason.contains("..")).count();
+        let traversal = bad_reasons
+            .iter()
+            .filter(|reason| reason.contains(".."))
+            .count();
         let empty = bad_reasons
             .iter()
             .filter(|reason| reason.contains("不能为空"))
@@ -1286,21 +1285,261 @@ pub(crate) fn run_baseline() -> BaselineReport {
                     audit.components,
                     audit.findings.len()
                 ),
-                format!(
-                    "absolute={absolute} traversal={traversal} empty={empty}"
-                ),
+                format!("absolute={absolute} traversal={traversal} empty={empty}"),
             ],
             audit.documents == 1
                 && audit.components == 400
                 && audit.findings.len() == 200
                 && absolute + traversal + empty == 200
-                && audit
-                    .findings
-                    .iter()
-                    .all(|finding| finding.field == "file"
-                        && finding.component == engine::core::entity_script::SCRIPT_COMPONENT),
+                && audit.findings.iter().all(|finding| {
+                    finding.field == "file"
+                        && finding.component == engine::core::entity_script::SCRIPT_COMPONENT
+                }),
         ));
         let _ = fs::remove_dir_all(&root);
+    }
+
+    // 31. Prefab 往返**字节与哈希一致**（docs/55 阶段 3 验收条款）。
+    //
+    // 验收原文是"Prefab 往返 hash 一致"。这条不是"跑一遍没报错"就算过，而是四个具体不变量：
+    // ① `to_text` → `from_text` → `to_text` 逐字节相同（序列化是定点的，不会每次多/少一个字段）；
+    // ② 写盘 → 读回 → 再写盘的字节哈希与首次相同（磁盘往返也不引入漂移）；
+    // ③ 实例化 → 落盘场景 → 重新打开之后，实例上的覆盖字段**逐字**保持原值；
+    // ④ 把"实例 vs 源 Prefab"重新 diff 出来，覆盖集合与写入前**完全相同**（幂等，不会越用越多）。
+    {
+        use engine::core::prefab::Prefab;
+        use engine::core::resource_db::AssetId;
+        use engine::core::scene::Scene;
+
+        let root = temp_root("prefab-roundtrip");
+        let prefab_path = root.join("prefabs/hero.prefab");
+        let scene_path = root.join("scenes/level.scene");
+
+        // 造一棵 3 节点的小树（根 + 两个子节点，含组件与元数据）。
+        let mut source = Scene::new("prefab_source");
+        let ids: Vec<SceneEntityId> = (1..=3).map(SceneEntityId).collect();
+        source.add_entity(ids[0], "Hero", None).expect("root");
+        source
+            .add_entity(ids[1], "Body", Some(ids[0]))
+            .expect("child");
+        source
+            .add_entity(ids[2], "Weapon", Some(ids[0]))
+            .expect("child");
+        for (index, id) in ids.iter().enumerate() {
+            let entity = source.entities.get_mut(id).expect("entity");
+            entity.components.insert(
+                "Transform".to_owned(),
+                format!("position={index},0,0;rotation=0,0,0,1;scale=1,1,1"),
+            );
+            entity
+                .components
+                .insert("Quad".to_owned(), "size=32,32;color=1,1,1,1".to_owned());
+            entity
+                .metadata
+                .insert("tag".to_owned(), format!("node{index}"));
+        }
+
+        let prefab = Prefab::from_scene(&source, ids[0], AssetId::from_seed("hero"), "hero")
+            .expect("建 Prefab");
+        let text_first = prefab.to_text();
+        let parsed = Prefab::from_text(&text_first).expect("文本回读");
+        let text_second = parsed.to_text();
+        let text_stable = text_first == text_second;
+        prefab.save(&prefab_path).expect("保存 Prefab");
+        let loaded = Prefab::load(&prefab_path).expect("读回 Prefab");
+        let text_disk = loaded.to_text();
+        let disk_stable = text_disk == text_first;
+
+        // 实例化 + 一条**逐字段**覆盖，然后落盘场景并重新打开。
+        let mut scene = Scene::new("level");
+        let override_value = "99,88".to_owned();
+        let mut overrides = std::collections::BTreeMap::new();
+        overrides.insert(
+            (ids[1], "property:Quad.size".to_owned()),
+            override_value.clone(),
+        );
+        let instance = loaded
+            .instantiate(&mut scene, None, &overrides)
+            .expect("带覆盖实例化");
+        let instance_root = instance.instance_root;
+        let body = instance.source_to_instance[&ids[1]];
+        scene.save(&scene_path).expect("保存场景");
+        let reopened = Scene::load(&scene_path).expect("重新打开场景");
+
+        // ③ 覆盖字段逐字保持：重开之后实例上的 Quad.size 必须还是覆盖值。
+        let reopened_body = reopened.entities.get(&body).expect("Body 实例");
+        let reopened_size = engine::core::property_path::read_field_text(
+            &reopened_body.components["Quad"],
+            &engine::core::property_path::PropertyPath::new("Quad", "size"),
+        )
+        .unwrap_or_default();
+        let override_survived = reopened_size == "99.000000,88.000000";
+        let _ = instance_root;
+
+        // ④ 覆盖集合幂等：把"实例 vs 源"重新 diff 一遍，结果与写入前一致。
+        let rediffed: std::collections::BTreeMap<(SceneEntityId, String), String> = reopened
+            .entities
+            .values()
+            .filter_map(|entity| {
+                let source_id = *loaded
+                    .entities
+                    .iter()
+                    .find(|(_, candidate)| candidate.name == entity.name)
+                    .map(|(id, _)| id)?;
+                let source_quad = loaded.entities[&source_id].components.get("Quad")?;
+                let current = entity.components.get("Quad")?;
+                (current != source_quad).then(|| {
+                    (
+                        (source_id, "property:Quad.size".to_owned()),
+                        current.clone(),
+                    )
+                })
+            })
+            .collect();
+        let diff_idempotent = rediffed.len() == 1
+            && rediffed
+                .values()
+                .next()
+                .is_some_and(|value| value == &reopened_body.components["Quad"]);
+
+        scenarios.push(instant_scenario(
+            "prefab_roundtrip_hash",
+            0.0,
+            vec![
+                format!("text_stable={text_stable} disk_stable={disk_stable}"),
+                format!(
+                    "entities={} text_bytes={}",
+                    loaded.entities.len(),
+                    text_first.len()
+                ),
+                format!("override_survived={override_survived} read_back={reopened_size}"),
+                format!(
+                    "rediff_overrides={} diff_idempotent={diff_idempotent}",
+                    rediffed.len()
+                ),
+            ],
+            text_stable && disk_stable && override_survived && diff_idempotent,
+        ));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // 32. docs/55 ER-03「patch 原型」：字段级编辑表示成补丁之后，**内存**到底降多少，
+    //     以及最要紧的那条不变量（Undo/Redo 等价）是否仍然成立。
+    //
+    // 计划的 §1 把"Undo 主要保存完整文档快照，大场景和长编辑会话的内存成本不可控"列为主要矛盾；
+    // 阶段 1 的"历史内存预算"只是止血（上界 200 条）。这里给出同一串编辑在两条历史下的
+    // **保留字节数**，并用逐字节比较证明补丁路径撤销/重做到位——"Undo 不等价"是 docs/55 §8
+    // 的硬阻断项，原型不通过这一条就没有意义。
+    {
+        use editor::{EditPatch, PatchHistory};
+        use engine::core::scene::SceneEntityId;
+
+        let fixture = build_scene_fixture(FixtureSize::Medium.spec());
+        let mut base = fixture.document;
+        let targets: Vec<SceneEntityId> = base.scene.entities.keys().copied().take(200).collect();
+        for id in &targets {
+            if let Some(entity) = base.scene.entities.get_mut(id) {
+                entity
+                    .components
+                    .insert("Quad".to_owned(), "size=64,32;color=1,1,1,1".to_owned());
+            }
+        }
+        let original_text = base.scene.to_text();
+        let single_document_bytes = original_text.len();
+
+        let mut patch_document = base.clone();
+        let mut snapshot_document = base;
+        let edits = 1_000;
+        // 预算取 ≥ 编辑数：这一条量的是"**同一串编辑**在两条历史下的成本与等价性"，
+        // 若把预算压到 200，两条历史都撤不回起点（各丢了 800 条），那就成了在测预算而不是测补丁。
+        // 预算上限本身由 `patch_history::tests::adjacent_transforms_merge_and_budget_drops_the_oldest`
+        // 与 `history_budget_500_edits` 分别钉住。
+        let mut patch_history = PatchHistory::new(edits);
+        let mut snapshot_history = editor::CommandHistory::new();
+        let mut samples = Vec::with_capacity(edits);
+
+        for step in 0..edits {
+            let id = targets[step % targets.len()];
+            let before = patch_document.scene.entities[&id].components["Quad"].clone();
+            let after = format!("size={},{};color=1,1,1,1", 1000 + step, 900 + step);
+
+            let started = Instant::now();
+            patch_history.apply(
+                &mut patch_document.scene,
+                EditPatch::set_component(id, "Quad", Some(before), after.clone()),
+            );
+            samples.push(started.elapsed().as_secs_f32() * 1000.0);
+
+            let after_for_snapshot = after;
+            snapshot_history
+                .execute(
+                    &mut snapshot_document,
+                    "Set Component",
+                    CommandKind::Property,
+                    move |document| {
+                        if let Some(entity) = document.scene.entities.get_mut(&id) {
+                            entity
+                                .components
+                                .insert("Quad".to_owned(), after_for_snapshot.clone());
+                        }
+                        Ok::<(), ()>(())
+                    },
+                )
+                .expect("快照编辑");
+        }
+
+        // ① 两条历史应用同一串编辑之后，文档必须逐字节相同。
+        let same_after_edits = patch_document.scene.to_text() == snapshot_document.scene.to_text();
+        let final_text = patch_document.scene.to_text();
+
+        // ② 全部撤销 → 回到起点；③ 全部重做 → 回到终态。
+        while patch_history.can_undo() {
+            patch_history.undo(&mut patch_document.scene);
+        }
+        while snapshot_history.can_undo() {
+            snapshot_history.undo(&mut snapshot_document).ok();
+        }
+        let undo_equivalent = patch_document.scene.to_text() == original_text
+            && snapshot_document.scene.to_text() == original_text;
+        while patch_history.can_redo() {
+            patch_history.redo(&mut patch_document.scene);
+        }
+        while snapshot_history.can_redo() {
+            snapshot_history.redo(&mut snapshot_document).ok();
+        }
+        let redo_equivalent = patch_document.scene.to_text() == final_text
+            && snapshot_document.scene.to_text() == final_text;
+
+        // ④ 内存：补丁保留的字节 vs 快照历史保留的字节（后者按"每条 before + after"下界估算，
+        //    真实快照实现还要多一次克隆分配，所以这个比较对快照侧是**保守**的）。
+        let patch_bytes = patch_history.retained_bytes();
+        let snapshot_bytes = single_document_bytes * patch_history.undo_len() * 2;
+        scenarios.push(summarize(
+            "patch_history_memory_1k_edits",
+            &samples,
+            vec![
+                format!(
+                    "single_document_bytes={single_document_bytes} entities={}",
+                    patch_document.scene.entities.len()
+                ),
+                format!(
+                    "patch_retained_bytes={patch_bytes} snapshot_retained_bytes_lower_bound={snapshot_bytes}"
+                ),
+                format!(
+                    "ratio={:.3}% undo_len={} dropped={}",
+                    100.0 * patch_bytes as f64 / snapshot_bytes.max(1) as f64,
+                    patch_history.undo_len(),
+                    patch_history.dropped_entries()
+                ),
+                format!(
+                    "same_after_edits={same_after_edits} undo_equivalent={undo_equivalent} redo_equivalent={redo_equivalent}"
+                ),
+            ],
+            same_after_edits
+                && undo_equivalent
+                && redo_equivalent
+                && patch_bytes * 20 < snapshot_bytes,
+        ));
     }
 
     BaselineReport { scenarios }

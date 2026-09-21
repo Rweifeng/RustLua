@@ -580,6 +580,7 @@ mod tests {
             scene: Scene::from_text(&document.scene.to_text()).unwrap(),
             dirty: false,
             revision: 0,
+            disk_signature: None,
         };
         let roots: Vec<_> = tree.roots(&roundtrip).map(|entity| entity.id).collect();
         assert_eq!(roots, vec![third, first, second]);
