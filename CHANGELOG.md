@@ -59,6 +59,23 @@
 - 两个开发工具：`engine --example lua_check`（Lua 脚本秒级语法门）、
   `engine --example subset_project_font`（按工程用字重新子集化字体）。
 
+## Unreleased — 编辑器绿色版（免安装包）与中文字体查找修正
+
+- **绿色版引擎包**（`scripts/package-engine.ps1`）：一条命令产出
+  `artifacts/packages/RustLua-Engine-<版本>-win64/`（+ 同名 `.zip`），内容为 release 版
+  `editor.exe` / `game.exe` / `assetc.exe` + 中文字体 + 两个样例工程 +
+  三个双击即用的 bat（含"便携模式"：`RUSTLUA_USER_DIR` 指到包内 `userdata\`，不写 `%APPDATA%`）
+  + `运行说明.txt` / `build-info.txt` / `文件清单.manifest.txt`（逐文件 SHA256）。
+  先写 staging 再原子替换，失败不留半份包。
+- **修正编辑器查找中文字体的方式**（跨机可用性的前提）：原先只认编译期绝对路径
+  （`env!("CARGO_MANIFEST_DIR")/fonts/…`，即**构建机**上的路径），绿色包拷到别的 Windows 主机后
+  中文会全部变成豆腐块。现在按 `RUSTLUA_FONT` → **exe 同目录 `/fonts/`** → exe 同目录 →
+  源码树 的顺序查找，并把**实际命中的路径**（或全部候选路径）打到 stderr——跨机验收时那行日志就是结论。
+- 两个踩坑记录（已写进 docs/50 §8）：① `.bat` 写 UTF-8 BOM 会被 cmd 当命令执行
+  （绿色包的 bat 改用系统 ANSI/GBK，中文注释同时也可读）；②
+  `Start-Process -ArgumentList @(...)` 拼接参数**不加引号**，含空格的路径会被切开，
+  游戏报 `argument error: unknown argument: <路径片段>`——自测脚本要传完整且自带引号的整串。
+
 ## Unreleased — 编辑器重构阶段 0-3 收口（docs/55）
 
 主题：按 [docs/55](docs/55-编辑器商业引擎对标重构计划.md) 的阶段路线，把**阶段 0/1/2/3** 的交付物与验收

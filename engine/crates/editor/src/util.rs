@@ -289,16 +289,72 @@ pub(crate) fn choose_project_directory() -> Option<PathBuf> {
     None
 }
 
+/// 中文字体候选路径，按优先级排列。
+///
+/// **为什么不能只用编译期路径**：原先这里写死 `env!("CARGO_MANIFEST_DIR")/fonts/…`，
+/// 也就是构建机的绝对路径（`E:\Codex\RustLua\engine\crates\editor\fonts\…`）。
+/// 绿色版（免安装、整目录拷到别的 Windows 主机）上那条路径根本不存在，
+/// 于是中文全变成"豆腐块"——一个和包本身无关、却会让跨机验收直接失败的坑。
+///
+/// 优先级：显式环境变量 → **exe 同目录**（发布/便携形态）→ 编译期路径（开发形态）。
+#[must_use]
+pub(crate) fn cjk_font_candidates() -> Vec<PathBuf> {
+    const FILE_NAME: &str = "NotoSansSC-VF.ttf";
+    let mut candidates = Vec::new();
+    if let Ok(explicit) = env::var("RUSTLUA_FONT") {
+        let explicit = PathBuf::from(explicit);
+        if !explicit.as_os_str().is_empty() {
+            candidates.push(explicit);
+        }
+    }
+    if let Ok(exe) = env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        // 包内布局：<包根>/editor.exe + <包根>/fonts/NotoSansSC-VF.ttf
+        candidates.push(dir.join("fonts").join(FILE_NAME));
+        // 允许把字体直接摆在 exe 旁边
+        candidates.push(dir.join(FILE_NAME));
+    }
+    // 开发形态：源码树里的那份
+    candidates.push(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("fonts")
+            .join(FILE_NAME),
+    );
+    candidates
+}
+
 /// 为 egui 默认字体追加中文 fallback。
+///
+/// 找不到字体时**只退化、不静默**：打印试过的每一个路径，让人一眼看出是包缺了字体
+/// 还是路径写错了（跨机验收时这一行日志就是结论）。
 pub(crate) fn configure_cjk_fallback(context: &egui::Context) {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fonts/NotoSansSC-VF.ttf");
-    let Ok(bytes) = std::fs::read(&path) else {
+    let candidates = cjk_font_candidates();
+    let mut bytes = None;
+    for candidate in &candidates {
+        match std::fs::read(candidate) {
+            Ok(loaded) => {
+                bytes = Some((candidate.clone(), loaded));
+                break;
+            }
+            Err(error) => {
+                eprintln!(
+                    "editor: CJK fallback not at {} ({error})",
+                    candidate.display()
+                );
+            }
+        }
+    }
+    let Some((path, bytes)) = bytes else {
         eprintln!(
-            "editor: failed to read CJK fallback font {}",
-            path.display()
+            "editor: no CJK fallback font found; tried {} path(s). \
+             Chinese text will render as boxes. Set RUSTLUA_FONT to a .ttf, \
+             or place NotoSansSC-VF.ttf in <exe dir>/fonts/.",
+            candidates.len()
         );
         return;
     };
+    eprintln!("editor: CJK fallback font = {}", path.display());
     let mut fonts = FontDefinitions::default();
     fonts.font_data.insert(
         "noto-cjk-fallback".to_owned(),
@@ -311,6 +367,41 @@ pub(crate) fn configure_cjk_fallback(context: &egui::Context) {
         }
     }
     context.set_fonts(fonts);
+}
+
+#[cfg(test)]
+mod cjk_font_tests {
+    use super::cjk_font_candidates;
+
+    /// 便携/发布形态必须能命中"exe 同目录的 fonts/"，否则绿色版中文必然是豆腐块。
+    ///
+    /// 这条测试盯住的是一次真实的可移植性缺陷：候选表原先只有编译期路径
+    /// （`CARGO_MANIFEST_DIR`），把整目录拷到别的 Windows 主机后那条路径不存在。
+    #[test]
+    fn exe_adjacent_font_is_a_candidate() {
+        let candidates = cjk_font_candidates();
+        assert!(
+            candidates.len() >= 3,
+            "至少要有 exe 旁/编译期两类候选：{candidates:?}"
+        );
+        let exe_dir = std::env::current_exe()
+            .expect("current_exe")
+            .parent()
+            .expect("exe parent")
+            .to_path_buf();
+        assert!(
+            candidates.contains(&exe_dir.join("fonts").join("NotoSansSC-VF.ttf")),
+            "exe 同目录的 fonts/NotoSansSC-VF.ttf 必须在候选里：{candidates:?}"
+        );
+        // 开发形态仍然要命中源码树里的那份（否则本机开发会没字体）。
+        assert!(
+            candidates
+                .iter()
+                .any(|candidate| candidate.ends_with("fonts/NotoSansSC-VF.ttf")
+                    && candidate.to_string_lossy().contains("crates")),
+            "编译期源码树路径仍应保留：{candidates:?}"
+        );
+    }
 }
 
 /// 在资源管理器中打开目录（ShellExecuteW，比 `explorer <path>` 更可靠）。
