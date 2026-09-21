@@ -278,7 +278,8 @@ impl ResourceBrowserState {
                         | ResourceState::Stale
                         | ResourceState::Missing
                         | ResourceState::ImportFailed
-                ) && attempted.get(&entry.path) != Some(&self.signature_of(&entry.path));
+                ) && attempted.get(&entry.path)
+                    != Some(&self.signature_of(&entry.path));
                 needs_import.then_some((id, entry.path.clone()))
             })
             .collect();
@@ -559,11 +560,7 @@ mod tests {
         // 用户显式刷新（资源面板「刷新」/菜单「刷新资源」）→ 强制重新排队。
         browser.clear_import_attempts();
         browser.refresh(&root).unwrap();
-        assert_eq!(
-            browser.pending_imports().len(),
-            1,
-            "显式刷新必须能强制重试"
-        );
+        assert_eq!(browser.pending_imports().len(), 1, "显式刷新必须能强制重试");
 
         // 文件内容变化 → 签名变化 → 自动重新排队（与 staled_files 那条门一致）。
         let pending = browser.pending_imports().to_vec();

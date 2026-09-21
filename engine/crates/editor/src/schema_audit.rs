@@ -223,10 +223,7 @@ mod tests {
             "legacy",
             &[
                 // 旧名：引擎不再认识它，因此进 unknown 明细。
-                (
-                    "Transform3D",
-                    "position=0,0,0;rotation=0,0,0,1;scale=1,1,1",
-                ),
+                ("Transform3D", "position=0,0,0;rotation=0,0,0,1;scale=1,1,1"),
                 // 旧形态：名字对、载荷是 2D 那套 —— 必须报 schema_error。
                 ("Transform", "x=1;y=2;rotation=0;scale_x=1;scale_y=1"),
                 ("Camera2D", "center=0,0;zoom=1"),
@@ -263,10 +260,7 @@ mod tests {
             &root,
             "main",
             &[
-                (
-                    "Transform",
-                    "position=0,0,0;rotation=0,0,0,1;scale=1,1,1",
-                ),
+                ("Transform", "position=0,0,0;rotation=0,0,0,1;scale=1,1,1"),
                 (
                     "Sprite",
                     "texture=a.png;size=16x16;pivot=0.5,0.5;tint=1,1,1,1;sorting_layer=default;order=0",
@@ -322,10 +316,7 @@ mod tests {
             "custom",
             &[
                 ("MyCustomThing", "whatever=1"),
-                (
-                    "Transform",
-                    "position=0,0,0;rotation=0,0,0,1;scale=1,1,1",
-                ),
+                ("Transform", "position=0,0,0;rotation=0,0,0,1;scale=1,1,1"),
             ],
         );
         let audit = audit_project(&root).expect("audit runs");

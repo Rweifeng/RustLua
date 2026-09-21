@@ -14,8 +14,8 @@ use crate::core::{
     quad::Quad,
     resource_db::{AssetId, ResourceDatabase},
     scene::{Scene, SceneEntityId},
-    sprite::SpriteComponent,
     spatial_transform::LocalTransform,
+    sprite::SpriteComponent,
     tilemap::Tilemap,
     transform::Transform3D,
     ui::{UiImage, UiText},
@@ -740,7 +740,10 @@ mod tests {
         let typed = TypedScene::compile_v2(&scene).expect("编译");
         match &typed.entities[0].components[&ComponentId::Transform] {
             TypedComponent::Transform(transform) => {
-                assert_eq!(transform.position, crate::core::math3d::Vec3::new(1.0, 2.0, 3.0));
+                assert_eq!(
+                    transform.position,
+                    crate::core::math3d::Vec3::new(1.0, 2.0, 3.0)
+                );
             }
             other => panic!("期望 Transform，实际 {other:?}"),
         }
@@ -748,10 +751,7 @@ mod tests {
         let scene = scene_with(
             SceneEntityId(1),
             "Unified",
-            &[(
-                "Camera",
-                "projection=orthographic;center=0,0;zoom=1",
-            )],
+            &[("Camera", "projection=orthographic;center=0,0;zoom=1")],
         );
         let typed = TypedScene::compile_v2(&scene).expect("编译");
         match &typed.entities[0].components[&ComponentId::Camera] {
@@ -858,10 +858,7 @@ mod tests {
             SceneEntityId(1),
             "Custom",
             &[
-                (
-                    "Transform",
-                    "position=1,2,0;rotation=0,0,0,1;scale=1,1,1",
-                ),
+                ("Transform", "position=1,2,0;rotation=0,0,0,1;scale=1,1,1"),
                 ("MyGameHealth", "hp=10"),
                 ("LuaTable", "{}"),
             ],
@@ -914,9 +911,12 @@ mod tests {
         );
         // 判别字段必填：缺了它连"这是哪种相机"都不知道，必须拒绝。
         assert!(
-            validate_component_payload("Camera", "position=0,0,5;target=0,0,0;fov=90;near=0.1;far=100")
-                .expect("known")
-                .is_err()
+            validate_component_payload(
+                "Camera",
+                "position=0,0,5;target=0,0,0;fov=90;near=0.1;far=100"
+            )
+            .expect("known")
+            .is_err()
         );
     }
 

@@ -143,7 +143,9 @@ impl UiAnimationClip {
     /// （`ui_editor::parse_ui_animation_component` / `apply_ui_animation_editor`），
     /// 于是引擎与审计都无法校验 `UiAnimation`——注册 schema 就等于凭空造一份事实源。
     /// 现在引擎有了解析器，schema 的 `ListModel`（动态键 `track.`）才有对拍对象。
-    pub fn tracks_from_component_str(raw: &str) -> Result<BTreeMap<String, UiAnimationTrack>, String> {
+    pub fn tracks_from_component_str(
+        raw: &str,
+    ) -> Result<BTreeMap<String, UiAnimationTrack>, String> {
         let mut tracks = BTreeMap::new();
         for field in raw.split('|') {
             let field = field.trim();
@@ -171,7 +173,8 @@ impl UiAnimationClip {
                         .trim()
                         .parse()
                         .map_err(|_| format!("bad value: {item}"))?,
-                    easing: UiEasing::parse(parts[2]).ok_or_else(|| format!("bad easing: {item}"))?,
+                    easing: UiEasing::parse(parts[2])
+                        .ok_or_else(|| format!("bad easing: {item}"))?,
                 });
             }
             let track = UiAnimationTrack::new(property, keyframes)?;
@@ -311,7 +314,8 @@ mod tests {
     #[test]
     fn component_str_round_trips_and_rejects_malformed_input() {
         let sample = "track.opacity=0.000:0.000:linear|track.scale=0.000:1.000:smoothstep";
-        let tracks = UiAnimationClip::tracks_from_component_str(sample).expect("编辑器一直写这个格式");
+        let tracks =
+            UiAnimationClip::tracks_from_component_str(sample).expect("编辑器一直写这个格式");
         assert_eq!(tracks.len(), 2);
         assert_eq!(
             tracks["opacity"].keyframes,

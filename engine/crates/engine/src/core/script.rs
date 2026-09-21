@@ -727,12 +727,13 @@ impl LuaRuntime {
         // 3D 消费方读后者——两边都拿得到同一个组件里的同一份数据。
         let raw_transform = components.get("Transform").cloned();
         if let Some(value) = raw_transform.as_deref() {
-            let local = crate::core::spatial_transform::LocalTransform::from_unified_component_str(
-                value,
-            )
-            .map_err(|reason| {
-                LuaBridgeError::Api(format!("entity {name:?} has an invalid Transform: {reason}"))
-            })?;
+            let local =
+                crate::core::spatial_transform::LocalTransform::from_unified_component_str(value)
+                    .map_err(|reason| {
+                    LuaBridgeError::Api(format!(
+                        "entity {name:?} has an invalid Transform: {reason}"
+                    ))
+                })?;
             let space = crate::core::spatial_transform::entity_space(components);
             match space {
                 crate::core::spatial_transform::SpatialKind::TwoD => {
@@ -7599,7 +7600,10 @@ mod tests {
         assert_eq!(
             instantiate(&[
                 ("Transform", "position=1,2,0;rotation=0,0,0,1;scale=1,1,1"),
-                ("Camera", "projection=orthographic;center=0.0000,0.0000;zoom=1.000000"),
+                (
+                    "Camera",
+                    "projection=orthographic;center=0.0000,0.0000;zoom=1.000000"
+                ),
             ])
             .unwrap(),
             1
@@ -7646,7 +7650,11 @@ mod tests {
         let mut scene = Scene::new("unified");
         scene.add_entity(SceneEntityId(1), "Cam", None).unwrap();
         {
-            let components = &mut scene.entities.get_mut(&SceneEntityId(1)).unwrap().components;
+            let components = &mut scene
+                .entities
+                .get_mut(&SceneEntityId(1))
+                .unwrap()
+                .components;
             components.insert(
                 "Transform".to_owned(),
                 "position=1.000000000,2.000000000,3.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000".to_owned(),
@@ -7665,8 +7673,12 @@ mod tests {
                 .copied()
                 .expect("统一 Transform 应作为 Transform3D 落进世界")
         });
-        let transform = runtime.with_world(|world| *world.get::<Transform3D>(entity).unwrap().unwrap());
-        assert_eq!(transform.position, crate::core::math3d::Vec3::new(1.0, 2.0, 3.0));
+        let transform =
+            runtime.with_world(|world| *world.get::<Transform3D>(entity).unwrap().unwrap());
+        assert_eq!(
+            transform.position,
+            crate::core::math3d::Vec3::new(1.0, 2.0, 3.0)
+        );
         assert!(runtime.with_world(|world| world.has::<Camera3D>(entity).unwrap()));
         assert!(!runtime.with_world(|world| world.has::<Camera2D>(entity).unwrap()));
 
@@ -8260,10 +8272,7 @@ mod tests {
             let entity = scene.entities.get_mut(&id).unwrap();
             entity.components.insert(
                 "Transform".into(),
-                format!(
-                    "position={},0,0;rotation=0,0,0,1;scale=1,1,1",
-                    index * 100
-                ),
+                format!("position={},0,0;rotation=0,0,0,1;scale=1,1,1", index * 100),
             );
             entity
                 .components

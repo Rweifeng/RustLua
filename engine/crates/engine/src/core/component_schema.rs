@@ -159,7 +159,9 @@ fn encode_field(schema: Option<&FieldSchema>, key: &str, value: &FieldValue) -> 
     let escaped = schema.is_some_and(|field| field.escaped);
     let kind = schema.map(|field| field.kind);
     match (escaped, kind, value) {
-        (true, _, FieldValue::Text(text)) => format!("{key}={}", crate::core::ui::escape_text(text)),
+        (true, _, FieldValue::Text(text)) => {
+            format!("{key}={}", crate::core::ui::escape_text(text))
+        }
         (_, Some(FieldKind::Size), FieldValue::Tuple(values)) if values.len() == 2 => {
             format!("{key}={}x{}", values[0], values[1])
         }
@@ -565,7 +567,10 @@ impl ComponentSchema {
                     continue;
                 }
                 let Some((key, value)) = segment.split_once('=') else {
-                    return Err(fail(segment, "component field must be key=value".to_owned()));
+                    return Err(fail(
+                        segment,
+                        "component field must be key=value".to_owned(),
+                    ));
                 };
                 let schema = self
                     .fields
@@ -596,7 +601,10 @@ impl ComponentSchema {
                         .iter()
                         .any(|(prefix, _)| prefix == positional.prefix)
                 {
-                    return Err(fail(positional.prefix, "required field is missing".to_owned()));
+                    return Err(fail(
+                        positional.prefix,
+                        "required field is missing".to_owned(),
+                    ));
                 }
             }
             entries.push(entry);
@@ -848,8 +856,7 @@ const IMAGE_FIELDS: &[FieldSchema] = &[
     // 九宫格四条边框（纹理像素）：与 `UiImage::from_component_str` 同一口径，负值拒绝。
     // 全零与"省略该字段"**语义相同**（渲染侧用 `any(|v| *v > 0.0)` 过滤，
     // 见 `runtime_scene.rs` 的九宫格分支），因此编辑器把零写出来后引擎再保存会自然收敛回省略。
-    FieldSchema::new("nine_slice", FieldKind::Vec4, false)
-        .with_rules(&[FieldRule::NonNegative]),
+    FieldSchema::new("nine_slice", FieldKind::Vec4, false).with_rules(&[FieldRule::NonNegative]),
 ];
 
 const UI_LAYOUT_FIELDS: &[FieldSchema] = &[
@@ -1038,12 +1045,10 @@ const COLLIDER_3D_FIELDS: &[FieldSchema] = &[
 ///   schema 额外拒绝**纯空白**（解析器只查 `is_empty()`），属于 `Image.nine_slice` 那类
 ///   "写了也没用"的输入守卫。
 const TILEMAP_FIELDS: &[FieldSchema] = &[
-    FieldSchema::new("tile_size", FieldKind::Size, true)
-        .with_rules(&[FieldRule::NonNegative]),
+    FieldSchema::new("tile_size", FieldKind::Size, true).with_rules(&[FieldRule::NonNegative]),
     FieldSchema::new("width", FieldKind::Int, true).with_rules(&[FieldRule::NonNegative]),
     FieldSchema::new("height", FieldKind::Int, true).with_rules(&[FieldRule::NonNegative]),
-    FieldSchema::new("texture", FieldKind::Text, false)
-        .with_rules(&[REQUIRED_TEXTURE_RULE]),
+    FieldSchema::new("texture", FieldKind::Text, false).with_rules(&[REQUIRED_TEXTURE_RULE]),
     FieldSchema::new("tiles", FieldKind::Text, true).with_rules(&[FieldRule::NonEmpty]),
     FieldSchema::new("solid", FieldKind::Text, true).with_rules(&[FieldRule::NonEmpty]),
 ];
@@ -1636,7 +1641,9 @@ mod tests {
             enabled: false,
         }
         .to_component_str();
-        let parsed = registry[name].parse(&encoded).expect("engine encoder output");
+        let parsed = registry[name]
+            .parse(&encoded)
+            .expect("engine encoder output");
         let reserialized = registry[name].serialize(&parsed);
         let reparsed = registry[name]
             .parse(&reserialized)
@@ -1673,9 +1680,9 @@ mod tests {
                 schema.list.is_some(),
                 "{component} 必须是列表模型（否则又退回扁平键值映射）"
             );
-            let payload = schema
-                .parse_payload(encoded)
-                .unwrap_or_else(|error| panic!("{component}: 解析引擎串 {encoded:?} 失败：{error}"));
+            let payload = schema.parse_payload(encoded).unwrap_or_else(|error| {
+                panic!("{component}: 解析引擎串 {encoded:?} 失败：{error}")
+            });
             assert_eq!(
                 schema.serialize_payload(&payload),
                 encoded,
@@ -1752,21 +1759,24 @@ mod tests {
                 ComponentEntry {
                     fields: ComponentData::from([
                         ("event".to_owned(), FieldValue::Choice("click".to_owned())),
-                        ("function".to_owned(), FieldValue::Text("on_start".to_owned())),
+                        (
+                            "function".to_owned(),
+                            FieldValue::Text("on_start".to_owned())
+                        ),
                     ]),
                     positional: Vec::new(),
                 },
                 ComponentEntry {
                     fields: ComponentData::from([
-                        (
-                            "arg.amount".to_owned(),
-                            FieldValue::Text("2".to_owned())
-                        ),
+                        ("arg.amount".to_owned(), FieldValue::Text("2".to_owned())),
                         (
                             "event".to_owned(),
                             FieldValue::Choice("value_changed".to_owned())
                         ),
-                        ("function".to_owned(), FieldValue::Text("on_settings".to_owned())),
+                        (
+                            "function".to_owned(),
+                            FieldValue::Text("on_settings".to_owned())
+                        ),
                         ("target".to_owned(), FieldValue::Text("Icon".to_owned())),
                     ]),
                     positional: Vec::new(),
@@ -1826,7 +1836,7 @@ mod tests {
         // ④ `UiAnimation`（第 40 轮）：格式的唯一事实源已搬进引擎
         // （`UiAnimationClip::tracks_from_component_str` / `tracks_to_component_str`），
         // 因此这里可以对拍"引擎写什么 → schema 读什么 → schema 写回什么"。
-        use crate::core::ui_animation::{UiAnimationClip, UiEasing, UiKeyframe, UiAnimationTrack};
+        use crate::core::ui_animation::{UiAnimationClip, UiAnimationTrack, UiEasing, UiKeyframe};
         let mut tracks = std::collections::BTreeMap::new();
         tracks.insert(
             "opacity".to_owned(),
@@ -1946,7 +1956,10 @@ mod tests {
         let error = naive_animation
             .parse(animation)
             .expect_err("位置式 `clip:` 段没有 `=`，schema 模型读不了");
-        assert_eq!(error.field, "clip:squish:assets/textures/slime.png:2:3:true");
+        assert_eq!(
+            error.field,
+            "clip:squish:assets/textures/slime.png:2:3:true"
+        );
 
         // ② `UiEvents`：`|` 分隔多条绑定 → `event`/`function`/`target` 各出现多次。
         // `BTreeMap` 会**静默折叠**成一条（后写覆盖先写），往返序列化直接丢绑定——
@@ -2120,7 +2133,8 @@ mod tests {
 
         // 相机：统一 `Camera` 的 `pose` 两个字面量必须与引擎解析器一致（`transform` / `look_at`）。
         let camera = &registry["Camera"];
-        let camera_base = "projection=perspective;position=0,0,5;target=0,0,0;fov=90;near=0.1;far=100";
+        let camera_base =
+            "projection=perspective;position=0,0,5;target=0,0,0;fov=90;near=0.1;far=100";
         let camera_samples = [
             (camera_base.to_owned(), true),
             (format!("{camera_base};pose=transform"), true),
@@ -2325,7 +2339,10 @@ mod tests {
         // cuboid 缺 radius"这一条（真实工程 `game3d.scene` 里全是这种串）。
         let collider = &registry["Collider3d"];
         let collider_samples = [
-            ("shape=ball;radius=0.5;dynamic=false;sensor=true".to_owned(), true),
+            (
+                "shape=ball;radius=0.5;dynamic=false;sensor=true".to_owned(),
+                true,
+            ),
             (
                 "shape=cuboid;half_width=4;half_height=0.1;half_z=4;dynamic=false".to_owned(),
                 true,
@@ -2377,9 +2394,9 @@ mod tests {
         for component in ["Text", "WorldText"] {
             // WorldText 的串多带 offset/centered；`Text` 的字段是它的子集，两者都能解析。
             let schema = &builtin_registry()[component];
-            let parsed = schema
-                .parse(&payload)
-                .unwrap_or_else(|error| panic!("{component} schema 必须接受引擎编码的串：{error:?}"));
+            let parsed = schema.parse(&payload).unwrap_or_else(|error| {
+                panic!("{component} schema 必须接受引擎编码的串：{error:?}")
+            });
             assert_eq!(
                 parsed["text"],
                 FieldValue::Text("a;b=c\\d 中文".to_owned()),
@@ -2391,8 +2408,9 @@ mod tests {
             );
             // 反向：schema 写出的串引擎必须能读回同样的值。
             let reserialized = schema.serialize(&parsed);
-            let engine = crate::core::ui::UiText::from_component_str(&reserialized)
-                .unwrap_or_else(|error| panic!("{component} 的 schema 输出必须能被引擎读回：{error}"));
+            let engine = crate::core::ui::UiText::from_component_str(&reserialized).unwrap_or_else(
+                |error| panic!("{component} 的 schema 输出必须能被引擎读回：{error}"),
+            );
             assert_eq!(engine.text, text.text);
             assert_eq!(engine.font, text.font);
         }
@@ -2435,8 +2453,8 @@ mod tests {
         let error = texture.validate("assets/a.gif", "Image").unwrap_err();
         assert!(error.reason.contains("扩展名"), "{}", error.reason);
         // 非负规则。
-        let particle = FieldSchema::new("count", FieldKind::Int, true)
-            .with_rules(&[FieldRule::NonNegative]);
+        let particle =
+            FieldSchema::new("count", FieldKind::Int, true).with_rules(&[FieldRule::NonNegative]);
         assert!(particle.validate("4", "ParticleEmitter").is_ok());
         assert!(particle.validate("-1", "ParticleEmitter").is_err());
         assert!(particle.validate("0", "ParticleEmitter").is_ok());
@@ -2485,17 +2503,22 @@ mod tests {
             "缺省字段不该被补出合成默认值"
         );
         // 显式给出时仍被校验。
-        assert!(registry["WorldText"]
-            .parse("text=hello;font_size=18;offset=1,2")
-            .is_ok());
-        assert!(registry["WorldText"]
-            .parse("text=hello;font_size=18;offset=1")
-            .is_err());
+        assert!(
+            registry["WorldText"]
+                .parse("text=hello;font_size=18;offset=1,2")
+                .is_ok()
+        );
+        assert!(
+            registry["WorldText"]
+                .parse("text=hello;font_size=18;offset=1")
+                .is_err()
+        );
     }
 
     /// 反向漂移：schema 里写错字段名会让引擎编码解析失败（防止 schema 单方面"发明"字段）。
     #[test]
-    fn schemas_reject_fields_the_encoder_never_writes() {        let registry = builtin_registry();
+    fn schemas_reject_fields_the_encoder_never_writes() {
+        let registry = builtin_registry();
         let error = registry["Sprite"]
             .parse("texture=a.png;size=16x16;pivot=0.5,0.5;tint=1,1,1,1;sorting_layer=default;order=0;bogus=1")
             .unwrap_err();
@@ -2544,7 +2567,11 @@ mod tests {
             .unwrap_err();
         assert_eq!(error.component, "Transform");
         assert_eq!(error.field, "position");
-        assert!(error.to_string().contains("component Transform field position"));
+        assert!(
+            error
+                .to_string()
+                .contains("component Transform field position")
+        );
     }
 
     #[test]

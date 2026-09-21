@@ -48,8 +48,7 @@ pub const HANDWRITTEN_PANEL_COMPONENTS: &[&str] = &[
 /// 该组件是否由通用（schema 驱动）编辑器接管：有 schema 且没有手写面板。
 #[must_use]
 pub fn is_schema_driven(component: &str) -> bool {
-    !HANDWRITTEN_PANEL_COMPONENTS.contains(&component)
-        && builtin_registry().contains_key(component)
+    !HANDWRITTEN_PANEL_COMPONENTS.contains(&component) && builtin_registry().contains_key(component)
 }
 
 /// 字段的**显示单位**：编辑器显示与输入用什么单位，以及组件串里存的是什么。
@@ -305,7 +304,9 @@ pub fn driven_components(entity: &SceneEntity) -> Vec<&'static str> {
     builtin_registry()
         .keys()
         .copied()
-        .filter(|component| entity.components.contains_key(*component) && is_schema_driven(component))
+        .filter(|component| {
+            entity.components.contains_key(*component) && is_schema_driven(component)
+        })
         .collect()
 }
 
@@ -469,7 +470,10 @@ pub fn component_notes(entity: &SceneEntity, component: &str) -> Vec<SchemaCompo
 /// 为什么是诊断而不是拒绝：`FieldRule` 是纯字段规则、查不了资源库；而且作者经常会
 /// "先写引用、后补资源"。用 `BTreeSet<String>`（而不是 `ResourceBrowserState`）当输入，
 /// 是为了让这条逻辑与编辑器状态解耦、可单测。
-pub fn mark_missing_assets(rows: &mut [SchemaFieldRow], assets: &std::collections::BTreeSet<String>) {
+pub fn mark_missing_assets(
+    rows: &mut [SchemaFieldRow],
+    assets: &std::collections::BTreeSet<String>,
+) {
     if assets.is_empty() {
         // 资源索引还没建立（例如刚打开工程）：不做判断，避免整屏假警告。
         return;
@@ -483,7 +487,9 @@ pub fn mark_missing_assets(rows: &mut [SchemaFieldRow], assets: &std::collection
 }
 
 /// 取出路径规则的扩展名白名单（第一条路径规则为准；没有路径规则就是空 = 不限制）。
-fn path_extensions_of(rules: &[engine::core::component_schema::FieldRule]) -> &'static [&'static str] {
+fn path_extensions_of(
+    rules: &[engine::core::component_schema::FieldRule],
+) -> &'static [&'static str] {
     use engine::core::component_schema::FieldRule;
     rules
         .iter()
@@ -503,10 +509,7 @@ fn path_extensions_of(rules: &[engine::core::component_schema::FieldRule]) -> &'
 /// 空查询原样返回（视图的默认状态）。
 #[must_use]
 pub fn filter_field_rows(rows: &[SchemaFieldRow], query: &str) -> Vec<SchemaFieldRow> {
-    let terms: Vec<String> = query
-        .split_whitespace()
-        .map(str::to_lowercase)
-        .collect();
+    let terms: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
     if terms.is_empty() {
         return rows.to_vec();
     }
@@ -622,7 +625,6 @@ pub fn mirror_fields(
         .collect()
 }
 
-
 /// 组件级动作的提供者：给定实体**与组件名**，返回这个组件的动作列表。
 ///
 /// 组件名要传进来：同一个实现可能服务多个组件名，动作必须从**实体上那个名字**的载荷里读当前值。
@@ -688,7 +690,6 @@ fn transform_reset_action(entity: &SceneEntity, component: &str) -> Vec<SchemaCo
         fields: defaults,
     }]
 }
-
 
 /// `UiLayout` 的锚点预设：与手写面板里的下拉**同一份语义**——预设来自引擎的/// `UiLayoutPreset::ALL`，写入值是引擎自己的编码（`anchors` 四元组 + `pivot` 二元组），
 /// 选中态用"字段值与预设一致"判定（不是另存一份"当前预设"状态，因此外部改动也会立刻反映）。
@@ -762,9 +763,7 @@ fn camera_notes(entity: &SceneEntity) -> Vec<SchemaComponentNote> {
         Some(camera) => camera,
         None => {
             // 正交（2D）相机：字段体是 `center`/`zoom`/`bounds`，说明只有"投到多大"这一条实质信息。
-            let orthographic = camera
-                .as_orthographic()
-                .expect("已确认不是透视分支");
+            let orthographic = camera.as_orthographic().expect("已确认不是透视分支");
             notes.push(SchemaComponentNote::info(format!(
                 "投影：正交（{:.3} px/单位，中心 ({:.1}, {:.1})）",
                 orthographic.zoom, orthographic.center.x, orthographic.center.y
@@ -860,7 +859,10 @@ pub fn edit_component_payload(
 }
 
 fn edit_component_payload_with(
-    registry: &std::collections::BTreeMap<&'static str, engine::core::component_schema::ComponentSchema>,
+    registry: &std::collections::BTreeMap<
+        &'static str,
+        engine::core::component_schema::ComponentSchema,
+    >,
     component: &str,
     payload: &str,
     field: &str,
@@ -1123,14 +1125,23 @@ mod tests {
     #[test]
     fn missing_asset_paths_are_flagged_not_rejected() {
         let entity = entity_with(&[
-            ("Sprite", "texture=assets/textures/player.png;size=1x1;tint=1,1,1,1;sorting_layer=default"),
+            (
+                "Sprite",
+                "texture=assets/textures/player.png;size=1x1;tint=1,1,1,1;sorting_layer=default",
+            ),
             ("MeshRenderer", "mesh=assets/models/nope.glb"),
             ("Light", "direction=0,1,0;color=1,1,1;intensity=1"),
         ]);
         let mut rows = rows_for_entity(&entity);
         // 带路径规则的字段：Sprite.texture / MeshRenderer.mesh；颜色字段不是。
-        assert!(rows.iter().any(|row| row.path == "Sprite.texture" && row.path_rule));
-        assert!(rows.iter().any(|row| row.path == "MeshRenderer.mesh" && row.path_rule));
+        assert!(
+            rows.iter()
+                .any(|row| row.path == "Sprite.texture" && row.path_rule)
+        );
+        assert!(
+            rows.iter()
+                .any(|row| row.path == "MeshRenderer.mesh" && row.path_rule)
+        );
         assert!(
             rows.iter()
                 .any(|row| row.path == "Light.color" && !row.path_rule)
@@ -1139,8 +1150,9 @@ mod tests {
         mark_missing_assets(&mut rows, &std::collections::BTreeSet::new());
         assert!(rows.iter().all(|row| !row.missing_asset), "空索引不判缺失");
         // 索引里有 player.png：它不算缺失；nope.glb 算缺失。
-        let assets: std::collections::BTreeSet<String> =
-            ["assets/textures/player.png".to_owned()].into_iter().collect();
+        let assets: std::collections::BTreeSet<String> = ["assets/textures/player.png".to_owned()]
+            .into_iter()
+            .collect();
         mark_missing_assets(&mut rows, &assets);
         let missing: Vec<&str> = rows
             .iter()
@@ -1175,7 +1187,10 @@ mod tests {
             "统一后的 Transform 不再有等比锁开关（见 ACTION_PROVIDERS 的说明）"
         );
         assert!(component_toggles("Light").is_empty());
-        assert!(mirror_fields(&[], "scale", "1,1,1").is_empty(), "没开锁就不镜像");
+        assert!(
+            mirror_fields(&[], "scale", "1,1,1").is_empty(),
+            "没开锁就不镜像"
+        );
 
         // 重置动作：字段值来自引擎的 `identity()`。
         let entity = entity_with(&[(
@@ -1211,7 +1226,9 @@ mod tests {
         // 已经是单位变换 → 没有"重置"动作可点。
         let identity = entity_with(&[(
             "Transform",
-            engine::core::transform::Transform3D::identity().to_component_str().as_str(),
+            engine::core::transform::Transform3D::identity()
+                .to_component_str()
+                .as_str(),
         )]);
         assert!(component_actions(&identity, "Transform").is_empty());
 
@@ -1237,7 +1254,11 @@ mod tests {
         );
         // 每个动作都写 anchors + pivot 两个字段（预设会同时改它们）。
         for action in &actions {
-            let names: Vec<&str> = action.fields.iter().map(|(name, _)| name.as_str()).collect();
+            let names: Vec<&str> = action
+                .fields
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect();
             assert_eq!(names, vec!["anchors", "pivot"], "{}", action.label);
         }
         // 默认布局（anchors=0,0,0,0 + pivot=0.5,0.5）**不匹配**任何预设 → 视图显示"自定义"。
@@ -1248,7 +1269,9 @@ mod tests {
         // 把某个预设写回后，**恰好那一个**变成选中态（选中态由字段值推导，不另存状态）。
         let full_rect = actions
             .iter()
-            .find(|action| action.label == engine::core::ui_layout::UiLayoutPreset::FullRect.label())
+            .find(|action| {
+                action.label == engine::core::ui_layout::UiLayoutPreset::FullRect.label()
+            })
             .expect("FullRect 动作");
         let mut payload = entity.components["UiLayout"].clone();
         for (field, value) in &full_rect.fields {
@@ -1292,10 +1315,8 @@ mod tests {
             100.0,
         )
         .expect("合法相机");
-        let payload =
-            engine::core::camera::CameraComponent::Perspective(camera).to_component_str();
-        let raw =
-            read_field_text(&payload, &PropertyPath::new("Camera", "fov")).expect("fov 原文");
+        let payload = engine::core::camera::CameraComponent::Perspective(camera).to_component_str();
+        let raw = read_field_text(&payload, &PropertyPath::new("Camera", "fov")).expect("fov 原文");
         let stored: f64 = raw.trim().parse().expect("fov 是数字");
         let shown = field_unit("Camera", "fov").to_display(stored);
         let engine_degrees = f64::from(camera.fov_y.to_degrees());
@@ -1330,15 +1351,10 @@ mod tests {
             .expect("Text 由通用编辑器接管");
         assert!(rows_before.iter().any(|row| row.path == "Text.text"));
         // 写入含特殊字符的文本：一次编辑后引擎必须能原样读回。
-        let updated = edit_component_field(
-            &scene,
-            SceneEntityId(1),
-            "Text",
-            "text",
-            "a;b=c\\d 中文",
-        )
-        .expect("转义写入不该失败")
-        .expect("取值有变化");
+        let updated =
+            edit_component_field(&scene, SceneEntityId(1), "Text", "text", "a;b=c\\d 中文")
+                .expect("转义写入不该失败")
+                .expect("取值有变化");
         assert!(
             updated.contains("text=a\\;b\\=c\\\\d 中文"),
             "组件串里必须是转义形式：{updated}"
@@ -1353,8 +1369,14 @@ mod tests {
         assert_eq!(text_row.text, "a;b=c\\d 中文");
         // 幂等：把读到的显示文本再提交一次是"无变化"（不产生历史、不改字节）。
         assert_eq!(
-            edit_component_field(&scene_after, SceneEntityId(1), "Text", "text", &text_row.text)
-                .expect("ok"),
+            edit_component_field(
+                &scene_after,
+                SceneEntityId(1),
+                "Text",
+                "text",
+                &text_row.text
+            )
+            .expect("ok"),
             None
         );
         // 字体字段同理（旧手写面板的 `font=assets/fonts/a\;b\=数字.ttf` 写法）。
@@ -1460,10 +1482,8 @@ mod tests {
         assert!(notes[0].warning && notes[0].text.contains("无法解析"));
 
         // 正交分支：同一个组件、按判别字段给出 2D 那套说明（不再有 `Camera2D` 组件名）。
-        let orthographic = entity_with(&[(
-            "Camera",
-            "projection=orthographic;center=640,360;zoom=2",
-        )]);
+        let orthographic =
+            entity_with(&[("Camera", "projection=orthographic;center=640,360;zoom=2")]);
         let notes = component_notes(&orthographic, "Camera");
         assert_eq!(notes.len(), 1, "{notes:?}");
         assert!(
@@ -1579,11 +1599,11 @@ mod tests {
     #[test]
     fn driven_components_follow_the_declared_order_and_ignore_unknown_ones() {
         let entity = entity_with(&[
-            ("ParticleEmitter", "count=8;speed=20;life=1;size=2;color=1,1,1,1"),
             (
-                "Transform",
-                "position=1,2,0;rotation=0,0,0,1;scale=1,1,1",
+                "ParticleEmitter",
+                "count=8;speed=20;life=1;size=2;color=1,1,1,1",
             ),
+            ("Transform", "position=1,2,0;rotation=0,0,0,1;scale=1,1,1"),
             ("Camera", "projection=orthographic;center=0,0;zoom=1"),
         ]);
         // `Transform` 已在第 36 轮迁到通用编辑器，因此它现在**在**接管集合里；
@@ -1624,10 +1644,7 @@ mod tests {
         );
         // 类型等价但格式不同（`1` vs `1.000000`）：`write_field` 做类型归一比较，
         // 因此这里也必须是"无变化"，否则每次失焦提交都会多出一条历史。
-        let scene2 = scene_with(&[(
-            "Camera",
-            "projection=orthographic;center=0,0;zoom=1.000000",
-        )]);
+        let scene2 = scene_with(&[("Camera", "projection=orthographic;center=0,0;zoom=1.000000")]);
         assert_eq!(
             edit_component_field(&scene2, SceneEntityId(1), "Camera", "zoom", "1").expect("ok"),
             None
@@ -1751,9 +1768,10 @@ mod tests {
         );
         // `Script`（实体级脚本）虽然不由通用编辑器接管，但它必须能**按运行时格式**读回：
         // 这条同时覆盖了"三个名字收敛成一个"的修复。
-        let script =
-            engine::core::entity_script::EntityScript::from_component_str(&entity.components["Script"])
-                .expect("运行时解析器必须认得保存下来的 Script");
+        let script = engine::core::entity_script::EntityScript::from_component_str(
+            &entity.components["Script"],
+        )
+        .expect("运行时解析器必须认得保存下来的 Script");
         assert_eq!(script.file, "scripts/a.lua");
         assert!(!script.enabled);
         let rows = rows_for_entity(entity);

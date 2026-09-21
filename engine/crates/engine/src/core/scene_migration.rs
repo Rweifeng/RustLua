@@ -389,24 +389,14 @@ mod tests {
         let child = SceneEntityId(2);
         scene.add_entity(parent, "Parent", None).unwrap();
         scene.add_entity(child, "Child", Some(parent)).unwrap();
-        scene
-            .entities
-            .get_mut(&parent)
-            .unwrap()
-            .components
-            .insert(
-                "Transform".into(),
-                "position=10,0,0;rotation=0,0,0,1;scale=2,2,1".into(),
-            );
-        scene
-            .entities
-            .get_mut(&child)
-            .unwrap()
-            .components
-            .insert(
-                "Transform".into(),
-                "position=3,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
-            );
+        scene.entities.get_mut(&parent).unwrap().components.insert(
+            "Transform".into(),
+            "position=10,0,0;rotation=0,0,0,1;scale=2,2,1".into(),
+        );
+        scene.entities.get_mut(&child).unwrap().components.insert(
+            "Transform".into(),
+            "position=3,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
+        );
         scene
     }
 
@@ -766,8 +756,7 @@ mod tests {
                 let mut locals = std::collections::BTreeMap::new();
                 let mut parents = std::collections::BTreeMap::new();
                 for entity in scene.entities.values() {
-                    let Some(local) =
-                        crate::core::spatial_transform::scene_entity_local(entity)
+                    let Some(local) = crate::core::spatial_transform::scene_entity_local(entity)
                     else {
                         continue;
                     };
@@ -894,7 +883,10 @@ mod tests {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.is_dir() {
-                    let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("");
+                    let name = path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("");
                     if matches!(name, "builds" | ".cache" | "target" | ".git") {
                         continue;
                     }

@@ -1304,221 +1304,214 @@ impl EditorApp {
         name: &str,
     ) -> Result<(), InspectorError> {
         match name {
-                    // `Sprite` 的手写面板已删除（第 34 轮）：默认值取**引擎类型**的编码
-                    // （纹理/尺寸/排序层都是引擎与"添加组件"共用的默认），编辑由通用字段编辑器接管。
-                    "Sprite" => {
-                        if let Some(entity) = scene.scene.entities.get_mut(&selected) {
-                            entity.components.insert(
-                                "Sprite".to_owned(),
-                                engine::core::sprite::SpriteComponent {
-                                    texture: "assets/textures/player.png".to_owned(),
-                                    size: engine::core::transform::Vec2::new(128.0, 128.0),
-                                    pivot: engine::core::transform::Vec2::new(0.5, 0.5),
-                                    tint: [1.0; 4],
-                                    sorting: engine::core::sprite::SpriteSorting::default(),
-                                    flip_x: false,
-                                    flip_y: false,
-                                    z: 0.0,
-                                }
-                                .to_component_str(),
-                            );
+            // `Sprite` 的手写面板已删除（第 34 轮）：默认值取**引擎类型**的编码
+            // （纹理/尺寸/排序层都是引擎与"添加组件"共用的默认），编辑由通用字段编辑器接管。
+            "Sprite" => {
+                if let Some(entity) = scene.scene.entities.get_mut(&selected) {
+                    entity.components.insert(
+                        "Sprite".to_owned(),
+                        engine::core::sprite::SpriteComponent {
+                            texture: "assets/textures/player.png".to_owned(),
+                            size: engine::core::transform::Vec2::new(128.0, 128.0),
+                            pivot: engine::core::transform::Vec2::new(0.5, 0.5),
+                            tint: [1.0; 4],
+                            sorting: engine::core::sprite::SpriteSorting::default(),
+                            flip_x: false,
+                            flip_y: false,
+                            z: 0.0,
                         }
-                        scene.mark_dirty();
-                    }
-                    "Tilemap" => {
-                        if let Some(entity) = scene.scene.entities.get_mut(&selected) {
-                            entity.components.insert(
-                                "Tilemap".to_owned(),
-                                engine::core::tilemap::Tilemap::new(
-                                    engine::core::transform::Vec2::new(32.0, 32.0),
-                                    8,
-                                    8,
-                                )
-                                .map_err(|error| {
-                                    InspectorError::InvalidAssetReference(error.to_string())
-                                })?
-                                .to_component_str(),
-                            );
-                            scene.mark_dirty();
+                        .to_component_str(),
+                    );
+                }
+                scene.mark_dirty();
+            }
+            "Tilemap" => {
+                if let Some(entity) = scene.scene.entities.get_mut(&selected) {
+                    entity.components.insert(
+                        "Tilemap".to_owned(),
+                        engine::core::tilemap::Tilemap::new(
+                            engine::core::transform::Vec2::new(32.0, 32.0),
+                            8,
+                            8,
+                        )
+                        .map_err(|error| InspectorError::InvalidAssetReference(error.to_string()))?
+                        .to_component_str(),
+                    );
+                    scene.mark_dirty();
+                }
+            }
+            "Animation" => {
+                if let Some(entity) = scene.scene.entities.get_mut(&selected) {
+                    entity.components.insert(
+                        "Animation".to_owned(),
+                        engine::core::animation::AnimationStateMachine::new(
+                            "idle",
+                            vec![engine::core::animation::AnimationClip {
+                                name: "idle".to_owned(),
+                                sheet: "assets/textures/player.png".to_owned(),
+                                cols: 1,
+                                frame_rate: 1.0,
+                                looped: true,
+                                events: Vec::new(),
+                            }],
+                        )
+                        .map_err(|error| InspectorError::InvalidAssetReference(error.to_string()))?
+                        .to_component_str(),
+                    );
+                    scene.mark_dirty();
+                }
+            }
+            // 唯一的 `Transform`：默认值取**引擎类型**的编码（单位变换），
+            // 编辑由通用字段编辑器接管。
+            "Transform" => {
+                if let Some(entity) = scene.scene.entities.get_mut(&selected) {
+                    entity.components.insert(
+                        "Transform".to_owned(),
+                        engine::core::transform::Transform3D::identity().to_component_str(),
+                    );
+                }
+                scene.mark_dirty();
+            }
+            // 唯一的 `Camera`：默认值是**透视**相机（`Camera3D::default()` = 位置 (0,0,5)
+            // 看向原点、FOV 90°、near 0.1、far 100）+ 显式判别字段；要正交就把
+            // `projection` 改成 orthographic，字段编辑器会接着给正交那套字段。
+            "Camera" => {
+                let camera = engine::core::camera::CameraComponent::Perspective(
+                    engine::core::camera::Camera3D::default(),
+                );
+                if let Some(entity) = scene.scene.entities.get_mut(&selected) {
+                    entity
+                        .components
+                        .insert("Camera".to_owned(), camera.to_component_str());
+                }
+                scene.mark_dirty();
+            }
+            // Light 没有手写面板了，但"添加组件"仍要能加：默认值直接取**引擎类型**
+            // 的编码（不在这里手写字面串），之后由通用字段编辑器接管编辑。
+            "Light" => {
+                if let Some(entity) = scene.scene.entities.get_mut(&selected) {
+                    entity.components.insert(
+                        "Light".to_owned(),
+                        engine::core::light::Light::default().to_component_str(),
+                    );
+                }
+                scene.mark_dirty();
+            }
+            "Collider3d" => {
+                inspector.set_collider3d(scene, selected, Collider3dFields::default())?
+            }
+            // MeshRenderer 同样没有手写面板了：默认值取引擎类型 + 内置哨兵的编码。
+            "MeshRenderer" => {
+                if let Some(entity) = scene.scene.entities.get_mut(&selected) {
+                    entity.components.insert(
+                        "MeshRenderer".to_owned(),
+                        engine::core::mesh3d::MeshRenderer {
+                            mesh: engine::core::mesh3d::GROUND_PLANE_SENTINEL.to_owned(),
                         }
-                    }
-                    "Animation" => {
-                        if let Some(entity) = scene.scene.entities.get_mut(&selected) {
-                            entity.components.insert(
-                                "Animation".to_owned(),
-                                engine::core::animation::AnimationStateMachine::new(
-                                    "idle",
-                                    vec![engine::core::animation::AnimationClip {
-                                        name: "idle".to_owned(),
-                                        sheet: "assets/textures/player.png".to_owned(),
-                                        cols: 1,
-                                        frame_rate: 1.0,
-                                        looped: true,
-                                        events: Vec::new(),
-                                    }],
-                                )
-                                .map_err(|error| {
-                                    InspectorError::InvalidAssetReference(error.to_string())
-                                })?
-                                .to_component_str(),
-                            );
-                            scene.mark_dirty();
+                        .to_component_str(),
+                    );
+                }
+                scene.mark_dirty();
+            }
+            "Text" => {
+                let text = engine::core::ui::UiText::default();
+                if let Some(entity) = scene.scene.entities.get_mut(&selected) {
+                    entity
+                        .components
+                        .insert("Text".to_owned(), text.to_component_str());
+                }
+                scene.mark_dirty();
+            }
+            // WorldText 没有手写面板了：默认值取引擎类型的编码
+            // （`text=文字;font_size=…;offset=0,-20;centered=true`）。
+            "WorldText" => {
+                if let Some(entity) = scene.scene.entities.get_mut(&selected) {
+                    entity.components.insert(
+                        "WorldText".to_owned(),
+                        engine::core::world_text::WorldText {
+                            text: engine::core::ui::UiText {
+                                text: "文字".to_owned(),
+                                font_size: engine::core::ui::UI_TEXT_BASE_PX,
+                                color: [1.0, 1.0, 1.0],
+                                font: String::new(),
+                            },
+                            offset: [0.0, -20.0],
+                            centered: true,
                         }
-                    }
-                    // 唯一的 `Transform`：默认值取**引擎类型**的编码（单位变换），
-                    // 编辑由通用字段编辑器接管。
-                    "Transform" => {
-                        if let Some(entity) = scene.scene.entities.get_mut(&selected) {
-                            entity.components.insert(
-                                "Transform".to_owned(),
-                                engine::core::transform::Transform3D::identity().to_component_str(),
-                            );
+                        .to_component_str(),
+                    );
+                }
+                scene.mark_dirty();
+            }
+            // Image 同样没有手写面板了：默认值取引擎类型的编码（空纹理 + 白 + 无九宫格）。
+            "Image" => {
+                if let Some(entity) = scene.scene.entities.get_mut(&selected) {
+                    entity.components.insert(
+                        "Image".to_owned(),
+                        engine::core::ui::UiImage {
+                            texture: String::new(),
+                            color: [1.0, 1.0, 1.0],
+                            nine_slice: None,
                         }
-                        scene.mark_dirty();
-                    }
-                    // 唯一的 `Camera`：默认值是**透视**相机（`Camera3D::default()` = 位置 (0,0,5)
-                    // 看向原点、FOV 90°、near 0.1、far 100）+ 显式判别字段；要正交就把
-                    // `projection` 改成 orthographic，字段编辑器会接着给正交那套字段。
-                    "Camera" => {
-                        let camera = engine::core::camera::CameraComponent::Perspective(
-                            engine::core::camera::Camera3D::default(),
-                        );
-                        if let Some(entity) = scene.scene.entities.get_mut(&selected) {
-                            entity
-                                .components
-                                .insert("Camera".to_owned(), camera.to_component_str());
-                        }
-                        scene.mark_dirty();
-                    }
-                    // Light 没有手写面板了，但"添加组件"仍要能加：默认值直接取**引擎类型**
-                    // 的编码（不在这里手写字面串），之后由通用字段编辑器接管编辑。
-                    "Light" => {
-                        if let Some(entity) = scene.scene.entities.get_mut(&selected) {
-                            entity.components.insert(
-                                "Light".to_owned(),
-                                engine::core::light::Light::default().to_component_str(),
-                            );
-                        }
-                        scene.mark_dirty();
-                    }
-                    "Collider3d" => {
-                        inspector.set_collider3d(scene, selected, Collider3dFields::default())?
-                    }
-                    // MeshRenderer 同样没有手写面板了：默认值取引擎类型 + 内置哨兵的编码。
-                    "MeshRenderer" => {
-                        if let Some(entity) = scene.scene.entities.get_mut(&selected) {
-                            entity.components.insert(
-                                "MeshRenderer".to_owned(),
-                                engine::core::mesh3d::MeshRenderer {
-                                    mesh: engine::core::mesh3d::GROUND_PLANE_SENTINEL.to_owned(),
-                                }
-                                .to_component_str(),
-                            );
-                        }
-                        scene.mark_dirty();
-                    }
-                    "Text" => {
-                        let text = engine::core::ui::UiText::default();
-                        if let Some(entity) = scene.scene.entities.get_mut(&selected) {
-                            entity
-                                .components
-                                .insert("Text".to_owned(), text.to_component_str());
-                        }
-                        scene.mark_dirty();
-                    }
-                    // WorldText 没有手写面板了：默认值取引擎类型的编码
-                    // （`text=文字;font_size=…;offset=0,-20;centered=true`）。
-                    "WorldText" => {
-                        if let Some(entity) = scene.scene.entities.get_mut(&selected) {
-                            entity.components.insert(
-                                "WorldText".to_owned(),
-                                engine::core::world_text::WorldText {
-                                    text: engine::core::ui::UiText {
-                                        text: "文字".to_owned(),
-                                        font_size: engine::core::ui::UI_TEXT_BASE_PX,
-                                        color: [1.0, 1.0, 1.0],
-                                        font: String::new(),
-                                    },
-                                    offset: [0.0, -20.0],
-                                    centered: true,
-                                }
-                                .to_component_str(),
-                            );
-                        }
-                        scene.mark_dirty();
-                    }
-                    // Image 同样没有手写面板了：默认值取引擎类型的编码（空纹理 + 白 + 无九宫格）。
-                    "Image" => {
-                        if let Some(entity) = scene.scene.entities.get_mut(&selected) {
-                            entity.components.insert(
-                                "Image".to_owned(),
-                                engine::core::ui::UiImage {
-                                    texture: String::new(),
-                                    color: [1.0, 1.0, 1.0],
-                                    nine_slice: None,
-                                }
-                                .to_component_str(),
-                            );
-                        }
-                        scene.mark_dirty();
-                    }
-                    // E16：UiLayout 默认 = 引擎的 `default_element()`（中心锚 200×100 元素），
-                    // 由布局统一承担所有 UI 位置与尺寸；编辑器不再自己拼预设 + 手写 offsets。
-                    "UiLayout" => {
-                        if let Some(entity) = scene.scene.entities.get_mut(&selected) {
-                            entity.components.insert(
-                                "UiLayout".to_owned(),
-                                engine::core::ui_layout::UiRectLayout::default_element()
-                                    .to_component_str(),
-                            );
-                            scene.mark_dirty();
-                        }
-                    }
-                    // E17：Container 默认 VBox 无内边距。
-                    "Container" => {
-                        if let Some(entity) = scene.scene.entities.get_mut(&selected) {
-                            entity.components.insert(
-                                "Container".to_owned(),
-                                engine::core::ui_layout::ContainerStyle::default()
-                                    .to_component_str(),
-                            );
-                            scene.mark_dirty();
-                        }
-                    }
-                    "UiEvents" => {
-                        if let Some(entity) = scene.scene.entities.get_mut(&selected) {
-                            entity.components.insert(
-                                "UiEvents".to_owned(),
-                                engine::core::ui_events::UiEvents::click("on_click")
-                                    .to_component_str(),
-                            );
-                            scene.mark_dirty();
-                        }
-                    }
-                    "UiBindings" => {
-                        if let Some(entity) = scene.scene.entities.get_mut(&selected) {
-                            entity.components.insert(
-                                "UiBindings".to_owned(),
-                                "property=text.text;target=self;source=data.value".to_owned(),
-                            );
-                            scene.mark_dirty();
-                        }
-                    }
-                    "ButtonStates" => {
-                        if let Some(entity) = scene.scene.entities.get_mut(&selected) {
-                            entity.components.insert(
-                                "ButtonStates".to_owned(),
-                                "normal=assets/textures/player.png".to_owned(),
-                            );
-                            scene.mark_dirty();
-                        }
-                    }
-                    other => {
-                        if let Some(entity) = scene.scene.entities.get_mut(&selected) {
-                            entity.components.insert(other.to_owned(), String::new());
-                            scene.mark_dirty();
-                        }
-                    }
+                        .to_component_str(),
+                    );
+                }
+                scene.mark_dirty();
+            }
+            // E16：UiLayout 默认 = 引擎的 `default_element()`（中心锚 200×100 元素），
+            // 由布局统一承担所有 UI 位置与尺寸；编辑器不再自己拼预设 + 手写 offsets。
+            "UiLayout" => {
+                if let Some(entity) = scene.scene.entities.get_mut(&selected) {
+                    entity.components.insert(
+                        "UiLayout".to_owned(),
+                        engine::core::ui_layout::UiRectLayout::default_element().to_component_str(),
+                    );
+                    scene.mark_dirty();
+                }
+            }
+            // E17：Container 默认 VBox 无内边距。
+            "Container" => {
+                if let Some(entity) = scene.scene.entities.get_mut(&selected) {
+                    entity.components.insert(
+                        "Container".to_owned(),
+                        engine::core::ui_layout::ContainerStyle::default().to_component_str(),
+                    );
+                    scene.mark_dirty();
+                }
+            }
+            "UiEvents" => {
+                if let Some(entity) = scene.scene.entities.get_mut(&selected) {
+                    entity.components.insert(
+                        "UiEvents".to_owned(),
+                        engine::core::ui_events::UiEvents::click("on_click").to_component_str(),
+                    );
+                    scene.mark_dirty();
+                }
+            }
+            "UiBindings" => {
+                if let Some(entity) = scene.scene.entities.get_mut(&selected) {
+                    entity.components.insert(
+                        "UiBindings".to_owned(),
+                        "property=text.text;target=self;source=data.value".to_owned(),
+                    );
+                    scene.mark_dirty();
+                }
+            }
+            "ButtonStates" => {
+                if let Some(entity) = scene.scene.entities.get_mut(&selected) {
+                    entity.components.insert(
+                        "ButtonStates".to_owned(),
+                        "normal=assets/textures/player.png".to_owned(),
+                    );
+                    scene.mark_dirty();
+                }
+            }
+            other => {
+                if let Some(entity) = scene.scene.entities.get_mut(&selected) {
+                    entity.components.insert(other.to_owned(), String::new());
+                    scene.mark_dirty();
+                }
+            }
         }
         Ok(())
     }
@@ -1824,11 +1817,11 @@ pub(crate) fn diff_prefab_entity(source: &SceneEntity, instance: &SceneEntity) -
 mod tests {
     use super::*;
     // Prefab 写路径的纯函数住在 shell（`actions.rs`）：测试直接调它们做单元级断言。
+    use crate::EditorApp;
     use crate::actions::{
         apply_prefab_instance_metadata, build_prefab_from_instance_root,
         collect_prefab_rebuild_state,
     };
-    use crate::EditorApp;
     use editor::open_project;
     use engine::core::{
         animation::AnimationStateMachine,
@@ -1962,13 +1955,15 @@ mod tests {
         let mut instance = entity();
         instance.name = "Enemy Boss".to_owned();
         // 两边都是**合法载荷** ⇒ 走字段级覆盖（`position` 这一个字段变了）。
-        instance
-            .components
-            .insert("Transform".to_owned(), "position=10,4,0;rotation=0,0,0,1;scale=1,1,1".to_owned());
+        instance.components.insert(
+            "Transform".to_owned(),
+            "position=10,4,0;rotation=0,0,0,1;scale=1,1,1".to_owned(),
+        );
         // 实例上多出来的组件没有字段级对拍对象 ⇒ 仍是组件级覆盖（整串替换）。
-        instance
-            .components
-            .insert("Light".to_owned(), "direction=0,0,-1;color=1,1,1;intensity=1".to_owned());
+        instance.components.insert(
+            "Light".to_owned(),
+            "direction=0,0,-1;color=1,1,1;intensity=1".to_owned(),
+        );
         instance
             .metadata
             .insert("team".to_owned(), "blue".to_owned());
@@ -2406,7 +2401,8 @@ mod tests {
             .expect("summary")
             .expect("loads");
         assert!(
-            rows.iter().any(|row| row.field == "property:Transform.position"),
+            rows.iter()
+                .any(|row| row.field == "property:Transform.position"),
             "{rows:?}"
         );
         assert!(rows.iter().any(|row| row.field == "name"), "{rows:?}");
@@ -2662,10 +2658,7 @@ mod tests {
         select_entity(&mut app, SceneEntityId(3));
         // `Text` 已迁到 schema 驱动的通用字段编辑器（第 25 轮）：这里按**生产路径**
         // （typed 命令）提交字段，`UiLayout` 仍走它自己的缓冲面板。
-        for (field, value) in [
-            ("text", "Production Sample Title"),
-            ("font_size", "33.6"),
-        ] {
+        for (field, value) in [("text", "Production Sample Title"), ("font_size", "33.6")] {
             assert_eq!(
                 app.dispatch(editor::EditorCommand::SetComponentField {
                     entity: SceneEntityId(3),

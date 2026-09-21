@@ -35,10 +35,10 @@ use std::{
 };
 
 use engine::core::{
-    camera::{Camera2D, Camera3D, CameraComponent, CAMERA_COMPONENT},
+    camera::{CAMERA_COMPONENT, Camera2D, Camera3D, CameraComponent},
     prefab::Prefab,
     scene::{Scene, SceneEntity, SceneEntityId},
-    spatial_transform::{entity_space, LocalTransform, SpatialKind, THREE_D_MARKERS},
+    spatial_transform::{LocalTransform, SpatialKind, THREE_D_MARKERS, entity_space},
     transform::{Transform, Transform3D},
 };
 
@@ -144,7 +144,10 @@ fn migrate_root(root: &Path, write: bool, report: &mut Report) {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
-                let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("");
+                let name = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("");
                 // 构建产物与缓存不是源数据：迁移它们只会制造无谓差异（发布包由构建重新生成）。
                 if matches!(name, "builds" | ".cache" | "target" | ".git") {
                     continue;
@@ -181,7 +184,9 @@ impl Changes {
 /// 把一个实体的组件表改写成统一形态。
 ///
 /// 返回 `Ok((新组件表, 改动条数))` 或 `Err(跳过原因)`；**失败时不做任何改动**（调用方保留原表）。
-fn migrate_entity(components: &BTreeMap<String, String>) -> Result<(BTreeMap<String, String>, Changes), Skip> {
+fn migrate_entity(
+    components: &BTreeMap<String, String>,
+) -> Result<(BTreeMap<String, String>, Changes), Skip> {
     let mut next = components.clone();
     let mut changes = Changes::default();
 
@@ -365,7 +370,10 @@ fn migrate_file(path: &Path, write: bool, report: &mut Report) {
     }
     let read_back = fs::read_to_string(path).unwrap_or_default();
     if read_back != text {
-        eprintln!("{} 写回校验失败：读回的字节与写入内容不一致", path.display());
+        eprintln!(
+            "{} 写回校验失败：读回的字节与写入内容不一致",
+            path.display()
+        );
         return;
     }
     report.files_written += 1;

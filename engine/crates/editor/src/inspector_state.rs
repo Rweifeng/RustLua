@@ -253,7 +253,8 @@ impl InspectorState {
     // schema 生成的字段编辑器（纹理文本框带图片扩展名规则、排序层下拉、多选批量由第 33 轮的
     // 批量命令承担），提交走 `EditorCommand::SetComponentField(s)`。
 
-    pub fn set_lua_script(        &self,
+    pub fn set_lua_script(
+        &self,
         document: &mut SceneDocument,
         id: SceneEntityId,
         script: impl Into<String>,
@@ -722,11 +723,7 @@ mod tests {
             Err(InspectorError::UnknownEntity(_))
         ));
         assert!(matches!(
-            inspector.set_container(
-                &mut document,
-                ghost,
-                ContainerFields::default()
-            ),
+            inspector.set_container(&mut document, ghost, ContainerFields::default()),
             Err(InspectorError::UnknownEntity(_))
         ));
     }
@@ -750,10 +747,7 @@ mod tests {
             Some("file=scripts/player.lua"),
             "面板必须按运行时格式写 Script 组件"
         );
-        assert!(
-            !raw.contains_key("LuaScript"),
-            "旧键名不得再被写进场景"
-        );
+        assert!(!raw.contains_key("LuaScript"), "旧键名不得再被写进场景");
         // 运行时解析器读得回来（"不是换个名字了事"）。
         let parsed = engine::core::entity_script::EntityScript::from_component_str(
             &raw[engine::core::entity_script::SCRIPT_COMPONENT],
@@ -797,7 +791,11 @@ mod tests {
     #[test]
     fn lua_windows_root_relative_path_rejected() {
         let (mut document, inspector, id) = setup();
-        for script in ["/etc/passwd.lua", r"C:\windows\x.lua", "scripts/../../x.lua"] {
+        for script in [
+            "/etc/passwd.lua",
+            r"C:\windows\x.lua",
+            "scripts/../../x.lua",
+        ] {
             assert!(
                 inspector.set_lua_script(&mut document, id, script).is_err(),
                 "{script} 必须被拒绝"
@@ -832,10 +830,7 @@ mod tests {
         let entity = document.scene.entities.get_mut(&id).unwrap();
         entity.components.insert(
             "MeshRenderer".to_owned(),
-            format!(
-                "mesh={}",
-                engine::core::mesh3d::GROUND_PLANE_SENTINEL
-            ),
+            format!("mesh={}", engine::core::mesh3d::GROUND_PLANE_SENTINEL),
         );
         let snapshot = inspector.snapshot(&document, id).unwrap();
         assert!(!format!("{snapshot:?}").contains("mesh_renderer"));
@@ -893,9 +888,10 @@ mod tests {
     fn light_is_edited_through_the_schema_path() {
         let (mut document, inspector, id) = setup();
         let entity = document.scene.entities.get_mut(&id).unwrap();
-        entity
-            .components
-            .insert("Light".to_owned(), "direction=0,1,0;color=1,1,1;intensity=2".to_owned());
+        entity.components.insert(
+            "Light".to_owned(),
+            "direction=0,1,0;color=1,1,1;intensity=2".to_owned(),
+        );
         // 快照不再携带 light（面板迁移后由通用编辑器负责）。
         let snapshot = inspector.snapshot(&document, id).unwrap();
         assert!(!format!("{snapshot:?}").contains("light"));
@@ -911,15 +907,21 @@ mod tests {
         let (mut document, inspector, id) = setup();
         // `Transform` 的写入路径已迁到 typed 命令（第 36 轮）；这里保留场景文本往返这条断言，
         // 变换值用**引擎编码器**写入（与迁移前的落盘格式一致）。
-        document.scene.entities.get_mut(&id).unwrap().components.insert(
-            "Transform".to_owned(),
-            engine::core::transform::Transform {
-                position: engine::core::transform::Vec2::new(4.0, 5.0),
-                rotation: 0.5,
-                scale: engine::core::transform::Vec2::new(2.0, 3.0),
-            }
-            .to_component_str(),
-        );
+        document
+            .scene
+            .entities
+            .get_mut(&id)
+            .unwrap()
+            .components
+            .insert(
+                "Transform".to_owned(),
+                engine::core::transform::Transform {
+                    position: engine::core::transform::Vec2::new(4.0, 5.0),
+                    rotation: 0.5,
+                    scale: engine::core::transform::Vec2::new(2.0, 3.0),
+                }
+                .to_component_str(),
+            );
         inspector
             .set_lua_script(&mut document, id, "player.lua")
             .unwrap();
@@ -1020,13 +1022,17 @@ mod tests {
         let (mut document, inspector, id) = setup();
         let registry = engine::core::component_schema::builtin_registry();
         // 负九宫格：schema 规则拒绝（原来由编辑器 set_image 拒绝）。
-        assert!(registry["Image"]
-            .parse("texture=a.png;color=1,1,1;nine_slice=-1,0,0,0")
-            .is_err());
+        assert!(
+            registry["Image"]
+                .parse("texture=a.png;color=1,1,1;nine_slice=-1,0,0,0")
+                .is_err()
+        );
         // 全零与省略都合法，且渲染侧用 `any(|v| *v > 0.0)` 过滤 → 语义相同。
-        assert!(registry["Image"]
-            .parse("texture=a.png;color=1,1,1;nine_slice=0,0,0,0")
-            .is_ok());
+        assert!(
+            registry["Image"]
+                .parse("texture=a.png;color=1,1,1;nine_slice=0,0,0,0")
+                .is_ok()
+        );
         assert!(registry["Image"].parse("texture=a.png").is_ok());
 
         let entity = document.scene.entities.get_mut(&id).unwrap();
@@ -1073,9 +1079,11 @@ mod tests {
 
         // 非有限 offset：schema 规则仍拒绝（原来由编辑器 validate_world_text 拦）。
         let registry = engine::core::component_schema::builtin_registry();
-        assert!(registry["WorldText"]
-            .parse("text=x;font_size=18;offset=NaN,0")
-            .is_err());
+        assert!(
+            registry["WorldText"]
+                .parse("text=x;font_size=18;offset=NaN,0")
+                .is_err()
+        );
     }
     /// `Image` 的缓冲管线已随面板迁移删除（第 22 轮）；见
     /// `image_is_edited_through_the_schema_path` 对迁移后语义的验证。

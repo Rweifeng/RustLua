@@ -30,7 +30,13 @@ pub fn rewrite_component_reference(payload: &str, from: &str, to: &str) -> Optio
     let mut segment_start = 0usize;
     for (index, ch) in payload.char_indices() {
         if ch == ';' || ch == '|' {
-            push_segment(&mut out, &payload[segment_start..index], &from, to, &mut changed);
+            push_segment(
+                &mut out,
+                &payload[segment_start..index],
+                &from,
+                to,
+                &mut changed,
+            );
             out.push(ch);
             segment_start = index + ch.len_utf8();
         }
@@ -130,9 +136,10 @@ pub fn rewrite_project_references(
             continue;
         }
         if let Err(error) = scene.save(&path) {
-            report
-                .failures
-                .push(format!("{}（写回失败：{error}）", relative_display(root, &path)));
+            report.failures.push(format!(
+                "{}（写回失败：{error}）",
+                relative_display(root, &path)
+            ));
             continue;
         }
         report.rewritten_components += changed;
@@ -228,8 +235,7 @@ mod tests {
     /// 只替换**整段取值**：同名前缀/后缀的路径不许被顺手改掉（子串替换是典型的数据损坏源）。
     #[test]
     fn rewrites_only_whole_reference_values() {
-        let payload =
-            "texture=assets/textures/a.png;size=1x1;tint=1,1,1,1;sorting_layer=default";
+        let payload = "texture=assets/textures/a.png;size=1x1;tint=1,1,1,1;sorting_layer=default";
         assert_eq!(
             rewrite_component_reference(payload, "assets/textures/a.png", "assets/textures/b.png")
                 .as_deref(),
@@ -262,7 +268,10 @@ mod tests {
             Some("mesh=assets/models/hero2.glb;clip=Idle")
         );
         // 空 from 是无效输入（不许把空前缀到处替换）。
-        assert_eq!(rewrite_component_reference(payload, "", "assets/x.png"), None);
+        assert_eq!(
+            rewrite_component_reference(payload, "", "assets/x.png"),
+            None
+        );
     }
 
     /// 位置式段（`Animation` 的 `clip:<名>:<sheet>:…`）里的资源路径也要跟着改。
@@ -270,8 +279,12 @@ mod tests {
     fn rewrites_positional_clip_sheet_and_multiple_records() {
         let payload = "default=squish;clip:squish:assets/textures/slime.png:2:3:true";
         assert_eq!(
-            rewrite_component_reference(payload, "assets/textures/slime.png", "assets/textures/red.png")
-                .as_deref(),
+            rewrite_component_reference(
+                payload,
+                "assets/textures/slime.png",
+                "assets/textures/red.png"
+            )
+            .as_deref(),
             Some("default=squish;clip:squish:assets/textures/red.png:2:3:true")
         );
         // 多条记录的 `|` 分隔与记录内 `;` 都要原样保留（不能把分隔符吃掉或改掉）。
@@ -315,10 +328,16 @@ mod tests {
         scene
             .add_entity(engine::core::scene::SceneEntityId(1), "Hero", None)
             .unwrap();
-        scene.entities.get_mut(&engine::core::scene::SceneEntityId(1)).unwrap().components.insert(
-            "Sprite".to_owned(),
-            "texture=assets/textures/old.png;size=1x1;tint=1,1,1,1;sorting_layer=default".to_owned(),
-        );
+        scene
+            .entities
+            .get_mut(&engine::core::scene::SceneEntityId(1))
+            .unwrap()
+            .components
+            .insert(
+                "Sprite".to_owned(),
+                "texture=assets/textures/old.png;size=1x1;tint=1,1,1,1;sorting_layer=default"
+                    .to_owned(),
+            );
         scene.save(root.join("scenes/main.scene")).unwrap();
         std::fs::write(root.join("scenes/other.scene"), b"name = \"other\"\n").unwrap();
         std::fs::write(root.join("scenes/broken.scene"), b"\0\0\0").unwrap();

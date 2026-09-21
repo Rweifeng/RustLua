@@ -666,7 +666,8 @@ mod tests {
     }
 
     #[test]
-    fn workspace_service_keeps_play_runtime_isolated() {        let mut workspace = WorkspaceService::open(project());
+    fn workspace_service_keeps_play_runtime_isolated() {
+        let mut workspace = WorkspaceService::open(project());
         workspace.new_scene("main");
         workspace.current_scene_mut().unwrap().scene.name = "editor".into();
         workspace.start_play().unwrap();

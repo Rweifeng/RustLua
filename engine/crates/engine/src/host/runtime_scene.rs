@@ -5588,7 +5588,10 @@ mod sdf_tests {
             3,
             "SprClick",
             &[
-                ("Transform", "position=100,50,0;rotation=0,0,0,1;scale=1,1,1"),
+                (
+                    "Transform",
+                    "position=100,50,0;rotation=0,0,0,1;scale=1,1,1",
+                ),
                 (
                     "Sprite",
                     "texture=assets/textures/coin.png;size=32x32;pivot=0.5,0.5;tint=1,1,1,1",
@@ -7079,15 +7082,10 @@ mod sdf_tests {
         let mut scene = Scene::new("scene-camera2d");
         let id = crate::core::scene::SceneEntityId(1);
         scene.add_entity(id, "Main2D", None).unwrap();
-        scene
-            .entities
-            .get_mut(&id)
-            .unwrap()
-            .components
-            .insert(
-                "Camera".into(),
-                "projection=orthographic;center=100,50;zoom=2".into(),
-            );
+        scene.entities.get_mut(&id).unwrap().components.insert(
+            "Camera".into(),
+            "projection=orthographic;center=100,50;zoom=2".into(),
+        );
         let runtime = RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("runtime");
         let camera = runtime.camera_2d();
         assert_eq!(camera.center, Vec2::new(100.0, 50.0));

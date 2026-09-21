@@ -212,7 +212,9 @@ impl EditorApp {
                         if target == primary {
                             return CommandResult::NoOp;
                         }
-                        self.document_edit(|app| app.handle_hierarchy_drop(primary, target, position))
+                        self.document_edit(|app| {
+                            app.handle_hierarchy_drop(primary, target, position)
+                        })
                     }
                 }
             }
@@ -384,7 +386,8 @@ impl EditorApp {
 
     /// Turn a guarded action's status text into a result: the guard paths report failures
     /// through `status`, so a failure is recognised by the status still describing a problem.
-    fn command_result_from_status(&self, _context: &str) -> CommandResult {        if self.pending_document_change.is_some() {
+    fn command_result_from_status(&self, _context: &str) -> CommandResult {
+        if self.pending_document_change.is_some() {
             // 未保存切换保护已挂起：用户还没确认，什么都没改，不算失败。
             CommandResult::NoOp
         } else if self.status.contains("失败") || self.status.contains("错误") {
@@ -511,25 +514,28 @@ mod tests {
                 "{component} 应能作为组件加进来"
             );
         }
-        let components = &app.document.current_scene.as_ref().unwrap().scene.entities[&entity]
-            .components;
+        let components =
+            &app.document.current_scene.as_ref().unwrap().scene.entities[&entity].components;
         assert_eq!(
             engine::core::transform::Transform3D::from_component_str(&components["Transform"])
                 .expect("统一形态的 Transform"),
             engine::core::transform::Transform3D::identity()
         );
-        let camera = engine::core::camera::CameraComponent::from_component_str(&components["Camera"])
-            .expect("统一形态的 Camera");
+        let camera =
+            engine::core::camera::CameraComponent::from_component_str(&components["Camera"])
+                .expect("统一形态的 Camera");
         assert_eq!(
             camera.projection(),
             engine::core::camera::CameraProjection::Perspective,
             "默认添加的是透视相机（要正交就把判别字段改成 orthographic）"
         );
         // 旧名不得再被认识：加进文档只会得到"未知组件"错误，而不是悄悄写一个没人读的键。
-        assert!(app.dispatch(EditorCommand::AddComponent {
-            entity,
-            component: "Transform3D".to_owned(),
-        }) != CommandResult::Applied);
+        assert!(
+            app.dispatch(EditorCommand::AddComponent {
+                entity,
+                component: "Transform3D".to_owned(),
+            }) != CommandResult::Applied
+        );
         assert!(
             !app.document.current_scene.as_ref().unwrap().scene.entities[&entity]
                 .components
@@ -810,18 +816,24 @@ mod tests {
             entity: root,
             field: "property:Transform.x".to_owned(),
         }) {
-            CommandResult::Rejected(reason) => assert!(reason.contains("不是 Prefab 实例"), "{reason}"),
+            CommandResult::Rejected(reason) => {
+                assert!(reason.contains("不是 Prefab 实例"), "{reason}")
+            }
             other => panic!("expected Rejected, got {other:?}"),
         }
         match app.dispatch(EditorCommand::RevertPrefabOverride {
             entity: root,
             field: "property:Transform.x".to_owned(),
         }) {
-            CommandResult::Rejected(reason) => assert!(reason.contains("不是 Prefab 实例"), "{reason}"),
+            CommandResult::Rejected(reason) => {
+                assert!(reason.contains("不是 Prefab 实例"), "{reason}")
+            }
             other => panic!("expected Rejected, got {other:?}"),
         }
         match app.dispatch(EditorCommand::RevertPrefabOverrides { entity: root }) {
-            CommandResult::Rejected(reason) => assert!(reason.contains("不是 Prefab 实例"), "{reason}"),
+            CommandResult::Rejected(reason) => {
+                assert!(reason.contains("不是 Prefab 实例"), "{reason}")
+            }
             other => panic!("expected Rejected, got {other:?}"),
         }
         // 3) 根实例限定操作同样被拒绝（同一个普通实体）。
@@ -839,7 +851,13 @@ mod tests {
         }
         assert_eq!(app.history.undo_len(), 0, "拒绝必须不产生历史");
         assert_eq!(
-            app.document.current_scene.as_ref().unwrap().scene.entities.len(),
+            app.document
+                .current_scene
+                .as_ref()
+                .unwrap()
+                .scene
+                .entities
+                .len(),
             1,
             "拒绝不得改动文档"
         );

@@ -232,10 +232,9 @@ impl EditorApp {
             return;
         }
         // 编码同样来自引擎（唯一事实源）：编辑器不再自己拼 `track.<属性>=…`。
-        let payload =
-            engine::core::ui_animation::UiAnimationClip::tracks_to_component_str(
-                &self.ui_animation_editor.tracks,
-            );
+        let payload = engine::core::ui_animation::UiAnimationClip::tracks_to_component_str(
+            &self.ui_animation_editor.tracks,
+        );
         self.set_ui_component("UiAnimation", Some(payload));
     }
 

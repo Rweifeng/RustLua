@@ -69,10 +69,9 @@ fn main() {
                     .entities
                     .get_mut(&child)
                     .ok_or_else(|| "child entity missing".to_owned())?;
-                entity.components.insert(
-                    "Transform".into(),
-                    document_space::encode_transform(*local),
-                );
+                entity
+                    .components
+                    .insert("Transform".into(), document_space::encode_transform(*local));
                 Ok(())
             },
         )
@@ -276,7 +275,9 @@ fn editable_document() -> (SceneDocument, SceneEntityId, SceneEntityId) {
     );
     // 正交相机（统一 `Camera`）：让预览把世界内容画到画面中央（与编辑器场景视图同一套初始相机）。
     let camera = SceneEntityId(3);
-    scene.add_entity(camera, "OrthographicCamera", None).unwrap();
+    scene
+        .add_entity(camera, "OrthographicCamera", None)
+        .unwrap();
     scene.entities.get_mut(&camera).unwrap().components.insert(
         "Camera".into(),
         "projection=orthographic;center=12.0000,0.0000;zoom=64.000000".into(),

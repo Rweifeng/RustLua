@@ -10,7 +10,10 @@ use eframe::egui;
 pub(crate) fn encode_transform(transform: TransformFields) -> String {
     let local = engine::core::spatial_transform::LocalTransform::from_2d(
         engine::core::transform::Transform {
-            position: engine::core::transform::Vec2::new(transform.position_x, transform.position_y),
+            position: engine::core::transform::Vec2::new(
+                transform.position_x,
+                transform.position_y,
+            ),
             rotation: transform.rotation,
             scale: engine::core::transform::Vec2::new(transform.scale_x, transform.scale_y),
         },
@@ -22,9 +25,8 @@ pub(crate) fn encode_transform(transform: TransformFields) -> String {
 /// 解析 `Transform` 组件串为 2D 字段：**唯一形态**（统一 3D 写法）经 `LocalTransform::to_2d`
 /// 投影出平面 TRS；畸形串返回 `None`（旧 2D 写法已随统一删除）。
 pub(crate) fn parse_transform(value: &str) -> Option<TransformFields> {
-    let transform = engine::core::spatial_transform::LocalTransform::transform_2d_from_component_str(
-        value,
-    )?;
+    let transform =
+        engine::core::spatial_transform::LocalTransform::transform_2d_from_component_str(value)?;
     Some(TransformFields {
         position_x: transform.position.x,
         position_y: transform.position.y,

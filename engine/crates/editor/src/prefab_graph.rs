@@ -84,7 +84,13 @@ where
         .nested
         .iter()
         .rev()
-        .map(|source| (source.clone(), 2usize, vec![root_source.to_owned(), source.clone()]))
+        .map(|source| {
+            (
+                source.clone(),
+                2usize,
+                vec![root_source.to_owned(), source.clone()],
+            )
+        })
         .collect();
     let mut seen: BTreeSet<String> = report.nested.iter().cloned().collect();
     let mut cycles: BTreeSet<Vec<String>> = BTreeSet::new();
@@ -225,7 +231,10 @@ mod tests {
         };
         let report = scan_prefab_nesting("p0.prefab", links);
         assert!(report.max_depth <= MAX_NESTING_DEPTH + 1, "{report:?}");
-        assert!(!report.truncated_at.is_empty(), "必须有截断记录：{report:?}");
+        assert!(
+            !report.truncated_at.is_empty(),
+            "必须有截断记录：{report:?}"
+        );
         let text = report.diagnostic("p0.prefab").expect("有诊断");
         assert!(text.contains("未继续展开"), "{text}");
     }

@@ -386,7 +386,9 @@ pub fn read_field_display_text(
 }
 
 /// 该组件该用哪种切分：有自由文本字段就尊重转义，否则与它自己的引擎解析器口径一致。
-fn splitter_for(schema: Option<&ComponentSchema>) -> for<'a> fn(&'a str) -> Vec<(&'a str, &'a str)> {
+fn splitter_for(
+    schema: Option<&ComponentSchema>,
+) -> for<'a> fn(&'a str) -> Vec<(&'a str, &'a str)> {
     if schema.is_some_and(ComponentSchema::has_escaped_fields) {
         split_fields_escaped
     } else {

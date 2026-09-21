@@ -967,9 +967,7 @@ pub fn migrate_scene_to_local_space(scene: &Scene) -> (SpatialMigration, Migrati
         // 保持为根时局部值就是原值（v2 的"局部=世界"），因此直接回写、不重新分解。
         let own_local = locals[&entity.id];
         let keep_as_root = |migrated: &mut SpatialMigration| {
-            migrated
-                .locals
-                .insert(entity.id, encode_local(own_local));
+            migrated.locals.insert(entity.id, encode_local(own_local));
         };
         let Some(parent) = entity.parent else {
             keep_as_root(&mut migrated);
@@ -1054,9 +1052,7 @@ pub fn entity_space(components: &BTreeMap<String, String>) -> SpatialKind {
     }
     let perspective = components
         .get(crate::core::camera::CAMERA_COMPONENT)
-        .and_then(|raw| {
-            crate::core::camera::CameraComponent::from_component_str(raw).ok()
-        })
+        .and_then(|raw| crate::core::camera::CameraComponent::from_component_str(raw).ok())
         .is_some_and(|camera| {
             camera.projection() == crate::core::camera::CameraProjection::Perspective
         });
@@ -1177,8 +1173,15 @@ mod tests {
         }
         .to_component_str();
         let parsed = LocalTransform::from_unified_component_str(&three_d).expect("统一写法可读");
-        assert_eq!(parsed, LocalTransform::from_3d(Transform3D::from_component_str(&three_d).unwrap()));
-        assert_eq!(parsed.to_unified_component_str(), three_d, "规范化后逐字节相同");
+        assert_eq!(
+            parsed,
+            LocalTransform::from_3d(Transform3D::from_component_str(&three_d).unwrap())
+        );
+        assert_eq!(
+            parsed.to_unified_component_str(),
+            three_d,
+            "规范化后逐字节相同"
+        );
 
         // 2D 消费者的唯一入口是 `to_2d` 投影：绕 Z 的旋转还原成平面角度、缩放取 xy。
         let quarter_turn = std::f32::consts::FRAC_PI_2;
@@ -1192,7 +1195,10 @@ mod tests {
         )
         .expect("统一写法可读");
         let planar_2d = planar.to_2d();
-        assert_eq!(planar_2d.position, crate::core::transform::Vec2::new(3.0, -4.0));
+        assert_eq!(
+            planar_2d.position,
+            crate::core::transform::Vec2::new(3.0, -4.0)
+        );
         assert_eq!(planar_2d.scale, crate::core::transform::Vec2::new(2.0, 0.5));
         assert!(
             (planar_2d.rotation - quarter_turn).abs() < 1e-5,
@@ -1871,8 +1877,16 @@ mod tests {
             "migrate-2d-shear",
             &[
                 // `rotation=45` 旧载荷是**弧度**原值 ⇒ 四元数取半角 `sin/cos(22.5)`。
-                (1, None, "position=0,0,0;rotation=0,0,-0.48717451246050952,-0.87330464009351561;scale=2,1,1"),
-                (2, Some(1), "position=0,0,0;rotation=0,0,0.48717451246050952,-0.87330464009351561;scale=1,1,1"),
+                (
+                    1,
+                    None,
+                    "position=0,0,0;rotation=0,0,-0.48717451246050952,-0.87330464009351561;scale=2,1,1",
+                ),
+                (
+                    2,
+                    Some(1),
+                    "position=0,0,0;rotation=0,0,0.48717451246050952,-0.87330464009351561;scale=1,1,1",
+                ),
             ],
         );
         let (migrated, report) = migrate_scene_to_local_space(&scene);

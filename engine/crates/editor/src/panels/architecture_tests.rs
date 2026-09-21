@@ -102,7 +102,8 @@ fn count_writes(source: &str) -> Vec<String> {
     let lines: Vec<&str> = source.lines().collect();
     let mut cut = lines.len();
     for (index, line) in lines.iter().enumerate() {
-        let is_attribute = line.trim_end() == "#[cfg(test)]" && !line.starts_with(char::is_whitespace);
+        let is_attribute =
+            line.trim_end() == "#[cfg(test)]" && !line.starts_with(char::is_whitespace);
         let next_is_module = lines
             .get(index + 1)
             .is_some_and(|next| next.trim_start().starts_with("mod "));

@@ -70,15 +70,13 @@ pub(crate) fn field_widget(kind: FieldKind, field: &str) -> FieldWidget {
             parts: 2,
             size: true,
         },
-        FieldKind::Vec2 | FieldKind::Vec3 | FieldKind::Vec4 if is_color => {
-            FieldWidget::Color {
-                parts: match kind {
-                    FieldKind::Vec2 => 2,
-                    FieldKind::Vec3 => 3,
-                    _ => 4,
-                },
-            }
-        }
+        FieldKind::Vec2 | FieldKind::Vec3 | FieldKind::Vec4 if is_color => FieldWidget::Color {
+            parts: match kind {
+                FieldKind::Vec2 => 2,
+                FieldKind::Vec3 => 3,
+                _ => 4,
+            },
+        },
         FieldKind::Vec2 => FieldWidget::Vector {
             parts: 2,
             size: false,
@@ -109,7 +107,12 @@ impl EditorApp {
         };
         // 主选中在前，其余按选择顺序（批量写入的目标集合由 shell 用同一份选区算出来）。
         let mut ids = vec![selected];
-        ids.extend(self.selection.ids().into_iter().filter(|id| *id != selected));
+        ids.extend(
+            self.selection
+                .ids()
+                .into_iter()
+                .filter(|id| *id != selected),
+        );
         let entities: Vec<&engine::core::scene::SceneEntity> = ids
             .iter()
             .filter_map(|id| document.scene.entities.get(id))
@@ -178,7 +181,8 @@ impl EditorApp {
         let Some(selected) = self.selection.primary() else {
             return;
         };
-        let rows = editor::filter_field_rows(&self.schema_field_rows(), &self.inspector_field_filter);
+        let rows =
+            editor::filter_field_rows(&self.schema_field_rows(), &self.inspector_field_filter);
         if rows.is_empty() {
             return;
         }
@@ -212,7 +216,8 @@ impl EditorApp {
         // 组件级动作（原子多字段）与单字段提交分开排队：动作必须**一条**历史。
         let mut pending_action: Option<(String, Vec<(String, String)>)> = None;
         // 打开的"编辑器态开关"（如 Transform 的等比锁）：提交时会把镜像字段一起写。
-        let mut active_toggles: Vec<(&'static str, Vec<editor::SchemaComponentToggle>)> = Vec::new();
+        let mut active_toggles: Vec<(&'static str, Vec<editor::SchemaComponentToggle>)> =
+            Vec::new();
         let mut current_component: Option<&'static str> = None;
         for (index, row) in rows.iter().enumerate() {
             if current_component != Some(row.component) {
@@ -225,10 +230,7 @@ impl EditorApp {
                     let key = egui::Id::new(("schema_toggle", selected, toggle.key));
                     let mut on = ui
                         .data_mut(|data| *data.get_temp_mut_or_insert_with(key, || toggle.default));
-                    ui.add_enabled(
-                        !playing,
-                        egui::Checkbox::new(&mut on, toggle.label),
-                    );
+                    ui.add_enabled(!playing, egui::Checkbox::new(&mut on, toggle.label));
                     ui.data_mut(|data| data.insert_temp(key, on));
                     if on {
                         open_toggles.push(toggle.clone());
@@ -363,13 +365,14 @@ impl EditorApp {
                         // **显示单位**在这里生效：如 `Camera3D.fov` 显示角度、组件串存弧度。
                         let stored: f64 = buffer.text.trim().parse().unwrap_or_default();
                         let mut value = row.unit.to_display(stored);
-                        let response = ui.add_enabled(
-                            !playing,
-                            egui::DragValue::new(&mut value)
-                                .speed(if integer { 1.0 } else { 0.1 })
-                                .max_decimals(if integer { 0 } else { 4 }),
-                        )
-                        .on_hover_text(row.hint.as_str());
+                        let response = ui
+                            .add_enabled(
+                                !playing,
+                                egui::DragValue::new(&mut value)
+                                    .speed(if integer { 1.0 } else { 0.1 })
+                                    .max_decimals(if integer { 0 } else { 4 }),
+                            )
+                            .on_hover_text(row.hint.as_str());
                         if response.changed() {
                             let converted = row.unit.from_display(value);
                             let text = if integer {
@@ -413,12 +416,10 @@ impl EditorApp {
                             .join(&separator.to_string());
                         if changed {
                             buffer.text = text.clone();
-                            pending =
-                                Some((row.component.to_owned(), row.field.to_owned(), text));
+                            pending = Some((row.component.to_owned(), row.field.to_owned(), text));
                             buffer.focused = true;
                         } else {
-                            buffer.focused =
-                                response.is_some_and(|drag| drag.has_focus());
+                            buffer.focused = response.is_some_and(|drag| drag.has_focus());
                         }
                     }
                     FieldWidget::Color { parts } => {
@@ -455,8 +456,7 @@ impl EditorApp {
                                 )
                             };
                             buffer.text = text.clone();
-                            pending =
-                                Some((row.component.to_owned(), row.field.to_owned(), text));
+                            pending = Some((row.component.to_owned(), row.field.to_owned(), text));
                         }
                         buffer.focused = response.has_focus();
                     }
@@ -509,10 +509,7 @@ impl EditorApp {
                                         picked = true;
                                     }
                                     for path in &candidates {
-                                        if ui
-                                            .selectable_label(*path == chosen, path)
-                                            .clicked()
-                                        {
+                                        if ui.selectable_label(*path == chosen, path).clicked() {
                                             chosen = path.clone();
                                             picked = true;
                                         }
@@ -623,17 +620,15 @@ impl EditorApp {
 mod tests {
     use super::{FieldWidget, field_widget};
     use crate::EditorApp;
-    use engine::core::component_schema::FieldKind;
     use editor::{CommandResult, EditorCommand, ProjectInfo, SceneDocument};
+    use engine::core::component_schema::FieldKind;
     use engine::core::{logging::LogSink, scene::SceneEntityId};
 
     fn app_with_quad() -> EditorApp {
         let mut app = EditorApp::new(
             ProjectInfo {
-                root: std::env::temp_dir().join(format!(
-                    "p2-schema-inspector-{}",
-                    crate::util::test_token()
-                )),
+                root: std::env::temp_dir()
+                    .join(format!("p2-schema-inspector-{}", crate::util::test_token())),
                 version: "test".to_owned(),
                 directories: Vec::new(),
             },
@@ -731,7 +726,13 @@ mod tests {
         assert_eq!(
             widgets,
             vec![
-                ("direction", FieldWidget::Vector { parts: 3, size: false }),
+                (
+                    "direction",
+                    FieldWidget::Vector {
+                        parts: 3,
+                        size: false
+                    }
+                ),
                 ("color", FieldWidget::Color { parts: 3 }),
                 ("intensity", FieldWidget::Number { integer: false }),
             ],
@@ -741,7 +742,8 @@ mod tests {
 
     /// 通用字段区只对"接管名单里的组件"生成行（手写面板的组件不重复出现）。
     #[test]
-    fn schema_rows_only_cover_missing_panels() {        let mut app = app_with_quad();
+    fn schema_rows_only_cover_missing_panels() {
+        let mut app = app_with_quad();
         let rows = app.schema_field_rows();
         assert!(
             rows.iter().all(|row| row.component == "Quad"),
@@ -815,8 +817,8 @@ mod tests {
             CommandResult::Applied
         );
         assert_eq!(app.history.undo_len(), 1);
-        let payload = app.document.current_scene.as_ref().unwrap().scene.entities[&entity].components
-            ["Light"]
+        let payload = app.document.current_scene.as_ref().unwrap().scene.entities[&entity]
+            .components["Light"]
             .clone();
         assert_eq!(
             engine::core::light::Light::from_component_str(&payload)
@@ -827,8 +829,8 @@ mod tests {
 
         // 3) Undo 回到默认强度（迁移不得改变 Undo 语义）。
         assert_eq!(app.dispatch(EditorCommand::Undo), CommandResult::Applied);
-        let payload = app.document.current_scene.as_ref().unwrap().scene.entities[&entity].components
-            ["Light"]
+        let payload = app.document.current_scene.as_ref().unwrap().scene.entities[&entity]
+            .components["Light"]
             .clone();
         assert_eq!(
             engine::core::light::Light::from_component_str(&payload)
@@ -879,8 +881,8 @@ mod tests {
             CommandResult::Applied
         );
         assert_eq!(app.history.undo_len(), 1);
-        let payload = app.document.current_scene.as_ref().unwrap().scene.entities[&entity].components
-            ["MeshRenderer"]
+        let payload = app.document.current_scene.as_ref().unwrap().scene.entities[&entity]
+            .components["MeshRenderer"]
             .clone();
         assert_eq!(
             engine::core::mesh3d::MeshRenderer::from_component_str(&payload)
@@ -1038,11 +1040,11 @@ mod tests {
             CommandResult::Applied
         );
         assert_eq!(app.history.undo_len(), 1);
-        let payload = app.document.current_scene.as_ref().unwrap().scene.entities[&entity].components
-            ["WorldText"]
+        let payload = app.document.current_scene.as_ref().unwrap().scene.entities[&entity]
+            .components["WorldText"]
             .clone();
-        let parsed = engine::core::world_text::WorldText::from_component_str(&payload)
-            .expect("引擎解析器");
+        let parsed =
+            engine::core::world_text::WorldText::from_component_str(&payload).expect("引擎解析器");
         assert_eq!(parsed.text.text, "受伤-12");
         assert_eq!(parsed.text.color, [0.25, 0.5, 0.75]);
         assert!(parsed.centered);
@@ -1108,11 +1110,15 @@ mod tests {
         );
 
         // ③ 选择器候选：按扩展名筛 + 当前值兜底（换行写成工程里更常见的反斜杠形式）。
-        let candidates = app.picker_candidates_for(texture.path_extensions, "assets\\textures\\player.png");
+        let candidates =
+            app.picker_candidates_for(texture.path_extensions, "assets\\textures\\player.png");
         assert_eq!(candidates[0], "assets/textures/player.png");
         let empty = app.picker_candidates_for(&[], "");
         assert!(
-            empty.is_empty() || empty.iter().all(|path| path.ends_with(".png") || path.contains('.')),
+            empty.is_empty()
+                || empty
+                    .iter()
+                    .all(|path| path.ends_with(".png") || path.contains('.')),
             "只应给出真实资源路径：{empty:?}"
         );
     }
@@ -1169,10 +1175,9 @@ mod tests {
             CommandResult::Applied
         );
         assert_eq!(app.history.undo_len(), 1);
-        let payload =
-            app.document.current_scene.as_ref().unwrap().scene.entities[&entity].components
-                ["Collider"]
-                .clone();
+        let payload = app.document.current_scene.as_ref().unwrap().scene.entities[&entity]
+            .components["Collider"]
+            .clone();
         let collider = engine::core::physics::ColliderDesc::from_component_str(&payload)
             .expect("引擎解析器必须认得通用编辑器写出来的串");
         assert!(
@@ -1205,10 +1210,9 @@ mod tests {
             CommandResult::Applied
         );
         assert_eq!(app.history.undo_len(), 2);
-        let payload =
-            app.document.current_scene.as_ref().unwrap().scene.entities[&entity].components
-                ["Animation3D"]
-                .clone();
+        let payload = app.document.current_scene.as_ref().unwrap().scene.entities[&entity]
+            .components["Animation3D"]
+            .clone();
         assert!(payload.contains("clip=Running_A"), "{payload}");
         match app.dispatch(EditorCommand::SetComponentField {
             entity,
@@ -1274,8 +1278,8 @@ mod tests {
             CommandResult::Applied
         );
         assert_eq!(app.history.undo_len(), 1);
-        let payload = app.document.current_scene.as_ref().unwrap().scene.entities[&entity].components
-            ["Image"]
+        let payload = app.document.current_scene.as_ref().unwrap().scene.entities[&entity]
+            .components["Image"]
             .clone();
         assert_eq!(
             engine::core::ui::UiImage::from_component_str(&payload)
@@ -1377,8 +1381,8 @@ mod tests {
             CommandResult::Applied
         );
         assert_eq!(app.history.undo_len(), 1);
-        let payload = app.document.current_scene.as_ref().unwrap().scene.entities[&entity].components
-            ["Camera"]
+        let payload = app.document.current_scene.as_ref().unwrap().scene.entities[&entity]
+            .components["Camera"]
             .clone();
         let camera = engine::core::camera::CameraComponent::from_component_str(&payload)
             .expect("引擎解析器必须认得迁移后的写入")
@@ -1487,8 +1491,8 @@ mod tests {
             CommandResult::Applied
         );
         assert_eq!(app.history.undo_len(), 1);
-        let payload = app.document.current_scene.as_ref().unwrap().scene.entities[&entity].components
-            ["Text"]
+        let payload = app.document.current_scene.as_ref().unwrap().scene.entities[&entity]
+            .components["Text"]
             .clone();
         let parsed = engine::core::ui::UiText::from_component_str(&payload).expect("引擎解析器");
         assert_eq!(parsed.text, "a;b=中文");
@@ -1527,10 +1531,34 @@ mod tests {
                 .unwrap_or_else(|| panic!("{field} 行"));
             field_widget(row.kind, row.field)
         };
-        assert_eq!(widget("anchors"), FieldWidget::Vector { parts: 4, size: false });
-        assert_eq!(widget("offsets"), FieldWidget::Vector { parts: 4, size: false });
-        assert_eq!(widget("pivot"), FieldWidget::Vector { parts: 2, size: false });
-        assert_eq!(widget("max_size"), FieldWidget::Vector { parts: 2, size: false });
+        assert_eq!(
+            widget("anchors"),
+            FieldWidget::Vector {
+                parts: 4,
+                size: false
+            }
+        );
+        assert_eq!(
+            widget("offsets"),
+            FieldWidget::Vector {
+                parts: 4,
+                size: false
+            }
+        );
+        assert_eq!(
+            widget("pivot"),
+            FieldWidget::Vector {
+                parts: 2,
+                size: false
+            }
+        );
+        assert_eq!(
+            widget("max_size"),
+            FieldWidget::Vector {
+                parts: 2,
+                size: false
+            }
+        );
 
         // 2) 组件级动作：12 个预设 + 选中态推导。
         let actions = app.schema_component_actions("UiLayout");
@@ -1546,7 +1574,9 @@ mod tests {
         // 3) 应用一个预设：一条 Undo、引擎读回、offsets 不变。
         let full_rect = actions
             .iter()
-            .find(|action| action.label == engine::core::ui_layout::UiLayoutPreset::FullRect.label())
+            .find(|action| {
+                action.label == engine::core::ui_layout::UiLayoutPreset::FullRect.label()
+            })
             .expect("FullRect 动作")
             .clone();
         assert_eq!(
@@ -1558,18 +1588,15 @@ mod tests {
             CommandResult::Applied
         );
         assert_eq!(app.history.undo_len(), 1, "预设 = 一条 Undo");
-        let payload = app.document.current_scene.as_ref().unwrap().scene.entities[&entity].components
-            ["UiLayout"]
+        let payload = app.document.current_scene.as_ref().unwrap().scene.entities[&entity]
+            .components["UiLayout"]
             .clone();
         let layout = engine::core::ui_layout::UiRectLayout::from_component_str(&payload).unwrap();
         assert_eq!(layout.anchors, [0.0, 0.0, 1.0, 1.0], "FullRect = 四边贴满");
         assert_eq!(layout.offsets, [0.0, 0.0, 0.0, 0.0], "未涉及的字段原样保留");
         // 应用后该预设成为选中态。
         let actions = app.schema_component_actions("UiLayout");
-        assert_eq!(
-            actions.iter().filter(|action| action.selected).count(),
-            1
-        );
+        assert_eq!(actions.iter().filter(|action| action.selected).count(), 1);
 
         // 4) anchors 越界仍被拒绝（原手写面板的 `0..=1` 校验没有丢——现在由引擎解析器拦）。
         match app.dispatch(EditorCommand::SetComponentField {
@@ -1582,7 +1609,8 @@ mod tests {
             other => panic!("越界 anchor 必须被拒绝，实际 {other:?}"),
         }
         // 5) 默认值来自引擎（`default_element()`：中心锚 200×100）。
-        let default_payload = engine::core::ui_layout::UiRectLayout::default_element().to_component_str();
+        let default_payload =
+            engine::core::ui_layout::UiRectLayout::default_element().to_component_str();
         let default_layout =
             engine::core::ui_layout::UiRectLayout::from_component_str(&default_payload).unwrap();
         assert_eq!(default_layout.offsets, [-100.0, -50.0, 100.0, 50.0]);
@@ -1604,8 +1632,8 @@ mod tests {
             }),
             CommandResult::Applied
         );
-        let payload = app.document.current_scene.as_ref().unwrap().scene.entities[&entity].components
-            ["Quad"]
+        let payload = app.document.current_scene.as_ref().unwrap().scene.entities[&entity]
+            .components["Quad"]
             .clone();
         assert!(
             engine::core::quad::Quad::from_component_str(&payload).is_ok(),
@@ -1686,10 +1714,7 @@ mod tests {
             let expected = if parts == 1 {
                 FieldWidget::Number { integer: false }
             } else {
-                FieldWidget::Vector {
-                    parts,
-                    size: false,
-                }
+                FieldWidget::Vector { parts, size: false }
             };
             assert_eq!(field_widget(row.kind, row.field), expected);
         }
@@ -1711,8 +1736,8 @@ mod tests {
             CommandResult::Applied
         );
         assert_eq!(app.history.undo_len(), 1);
-        let payload = app.document.current_scene.as_ref().unwrap().scene.entities[&entity].components
-            ["Transform"]
+        let payload = app.document.current_scene.as_ref().unwrap().scene.entities[&entity]
+            .components["Transform"]
             .clone();
         assert_eq!(
             engine::core::transform::Transform3D::from_component_str(&payload).unwrap(),
@@ -1732,8 +1757,8 @@ mod tests {
             CommandResult::Applied
         );
         assert_eq!(app.history.undo_len(), 2);
-        let payload = app.document.current_scene.as_ref().unwrap().scene.entities[&entity].components
-            ["Transform"]
+        let payload = app.document.current_scene.as_ref().unwrap().scene.entities[&entity]
+            .components["Transform"]
             .clone();
         assert_eq!(
             engine::core::transform::Transform3D::from_component_str(&payload)
@@ -1793,8 +1818,20 @@ mod tests {
             field_widget(row.kind, row.field)
         };
         assert_eq!(widget("texture"), FieldWidget::Text);
-        assert_eq!(widget("size"), FieldWidget::Vector { parts: 2, size: true });
-        assert_eq!(widget("pivot"), FieldWidget::Vector { parts: 2, size: false });
+        assert_eq!(
+            widget("size"),
+            FieldWidget::Vector {
+                parts: 2,
+                size: true
+            }
+        );
+        assert_eq!(
+            widget("pivot"),
+            FieldWidget::Vector {
+                parts: 2,
+                size: false
+            }
+        );
         assert_eq!(widget("tint"), FieldWidget::Color { parts: 4 });
         assert_eq!(widget("flip_x"), FieldWidget::Checkbox);
         assert_eq!(widget("order"), FieldWidget::Number { integer: true });
@@ -1824,11 +1861,11 @@ mod tests {
             CommandResult::Applied
         );
         assert_eq!(app.history.undo_len(), 1);
-        let payload = app.document.current_scene.as_ref().unwrap().scene.entities[&entity].components
-            ["Sprite"]
+        let payload = app.document.current_scene.as_ref().unwrap().scene.entities[&entity]
+            .components["Sprite"]
             .clone();
-        let sprite =
-            engine::core::sprite::SpriteComponent::from_component_str(&payload).expect("引擎解析器");
+        let sprite = engine::core::sprite::SpriteComponent::from_component_str(&payload)
+            .expect("引擎解析器");
         assert_eq!(sprite.sorting.layer, "actor");
         assert_eq!(sprite.texture, "assets/textures/player.png", "其它字段不动");
 
@@ -1857,13 +1894,16 @@ mod tests {
                 scene.add_entity(id, "Peer", None).unwrap();
             }
             // b 有 Quad（取值不同），c **没有** Quad（不该被写、也不参与混合判定）。
-            scene.entities.get_mut(&b).unwrap().components.insert(
-                "Quad".to_owned(),
-                "size=8,8;color=1,1,1,1".to_owned(),
-            );
+            scene
+                .entities
+                .get_mut(&b)
+                .unwrap()
+                .components
+                .insert("Quad".to_owned(), "size=8,8;color=1,1,1,1".to_owned());
         }
         // 选择顺序：最后加入的成为主选中 → 先选 b、c，最后选 a（a 有 Quad，作为基准）。
-        app.selection.set_single(b, editor::SelectionSource::Hierarchy);
+        app.selection
+            .set_single(b, editor::SelectionSource::Hierarchy);
         app.selection.add(c, editor::SelectionSource::Hierarchy);
         app.selection.add(a, editor::SelectionSource::Hierarchy);
         assert_eq!(app.selection.primary(), Some(a));
@@ -1903,7 +1943,10 @@ mod tests {
                 scene.entities[&id].components["Quad"]
             );
         }
-        assert!(!scene.entities[&c].components.contains_key("Quad"), "没有该组件的实体不动");
+        assert!(
+            !scene.entities[&c].components.contains_key("Quad"),
+            "没有该组件的实体不动"
+        );
 
         // 3) 全部目标都已等于该取值 → NoOp（不产生新历史）。
         assert_eq!(
@@ -1973,17 +2016,21 @@ mod tests {
             CommandResult::Applied
         );
         assert_eq!(app.history.undo_len(), 1, "多字段提交必须只有一条历史");
-        let payload = app.document.current_scene.as_ref().unwrap().scene.entities[&entity].components
-            ["UiLayout"]
+        let payload = app.document.current_scene.as_ref().unwrap().scene.entities[&entity]
+            .components["UiLayout"]
             .clone();
-        let layout =
-            engine::core::ui_layout::UiRectLayout::from_component_str(&payload).expect("引擎解析器");
+        let layout = engine::core::ui_layout::UiRectLayout::from_component_str(&payload)
+            .expect("引擎解析器");
         assert_eq!(layout.anchors, [0.5, 0.5, 0.5, 0.5]);
-        assert_eq!(layout.offsets, [1.0, 2.0, 3.0, 4.0], "未涉及的字段必须原样保留");
+        assert_eq!(
+            layout.offsets,
+            [1.0, 2.0, 3.0, 4.0],
+            "未涉及的字段必须原样保留"
+        );
 
         // 原子性：第二个字段非法 → 整体不写、文档与历史都不变。
-        let before = app.document.current_scene.as_ref().unwrap().scene.entities[&entity].components
-            ["UiLayout"]
+        let before = app.document.current_scene.as_ref().unwrap().scene.entities[&entity]
+            .components["UiLayout"]
             .clone();
         match app.dispatch(EditorCommand::SetComponentFields {
             entity,
@@ -1998,8 +2045,7 @@ mod tests {
         }
         assert_eq!(app.history.undo_len(), 1, "拒绝不得产生历史");
         assert_eq!(
-            app.document.current_scene.as_ref().unwrap().scene.entities[&entity].components
-                ["UiLayout"],
+            app.document.current_scene.as_ref().unwrap().scene.entities[&entity].components["UiLayout"],
             before,
             "任一步失败必须整体不写"
         );
@@ -2043,7 +2089,7 @@ mod tests {
         assert_eq!(app.history.undo_len(), 1);
         let payload = &app.document.current_scene.as_ref().unwrap().scene.entities
             [&SceneEntityId(1)]
-        .components["Quad"];
+            .components["Quad"];
         assert_eq!(payload, "size=128.000000,64.000000;color=1,1,1,1");
 
         // 幂等：同一取值（以及类型等价的写法）不再产生历史。
@@ -2074,10 +2120,7 @@ mod tests {
 
         // Undo 回到最初：比较**场景内容**（`revision` 是单调递增的缓存失效计数，
         // Undo 后仍会前进，所以整份 `SceneDocument` 不该逐字段相等）。
-        assert_eq!(
-            app.dispatch(EditorCommand::Undo),
-            CommandResult::Applied
-        );
+        assert_eq!(app.dispatch(EditorCommand::Undo), CommandResult::Applied);
         let restored = &app.document.current_scene.as_ref().unwrap().scene;
         assert_eq!(
             Some(restored),
@@ -2123,8 +2166,7 @@ mod tests {
     #[test]
     fn field_edit_is_rejected_while_playing() {
         let mut app = app_with_quad();
-        app.play
-            .set_state_for_test(editor::PlayState::Playing);
+        app.play.set_state_for_test(editor::PlayState::Playing);
         let before = app.document.current_scene.clone();
         match app.dispatch(EditorCommand::SetComponentField {
             entity: SceneEntityId(1),

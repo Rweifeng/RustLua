@@ -1,9 +1,7 @@
 //! 标题栏 + 菜单栏 + 崩溃恢复提示（编辑器顶部区域）。
 
 use crate::EditorApp;
-use crate::util::{
-    choose_project_directory, icon_toggle, open_in_explorer, strip_verbatim_prefix,
-};
+use crate::util::{choose_project_directory, icon_toggle, open_in_explorer, strip_verbatim_prefix};
 use crate::workspace_root;
 use eframe::egui;
 use std::path::Path;
