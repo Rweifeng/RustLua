@@ -19,6 +19,17 @@ if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
     $OutputRoot = Join-Path $workspaceRoot "artifacts\packages"
 }
 
+# 把文本的行尾统一成 CRLF。
+#
+# 本脚本自身是 LF 换行，here-string 会原样带出 LF。Windows 上的 .bat 必须是 CRLF：
+# cmd.exe 按 CR 找行尾，LF-only 的 bat 在遇到多字节（GBK）注释行时会把行切碎，
+# 用户实际看到的是 `'_api: 2D' 不是内部或外部命令`——`game_api：2D` 的残片被当命令执行了。
+# .txt/.manifest 也一并转成 CRLF：记事本等老工具对 LF-only 的显示仍然不一致。
+function ConvertTo-Crlf {
+    param([string]$Text)
+    return ($Text -replace "`r`n", "`n") -replace "`n", "`r`n"
+}
+
 # ---------------------------------------------------------------------------
 # 版本与构建信息
 # ---------------------------------------------------------------------------
@@ -107,16 +118,22 @@ try {
     # -----------------------------------------------------------------------
     # 3) 启动脚本（双击即用）
     #
-    # 编码说明：.bat 用**系统 ANSI（中文 Windows 上是 GBK）**写。两个原因：
-    #   ① cmd.exe 默认按 ANSI 读 bat，UTF-8 的中文注释会乱码；
-    #   ② 给 .bat 写 UTF-8 BOM 会让 cmd 把 BOM 当命令执行（真实踩过的坑），所以绝不能带 BOM。
+    # **批处理文件的两条硬约束**（都是真实踩过的坑，改动前请先读）：
+    #   ① **行尾必须是 CRLF**。本脚本自身是 LF 换行，here-string 会原样带出 LF；
+    #      而 cmd.exe 按 CR 找行尾，LF-only 的 bat 遇到 GBK 多字节内容会把注释行切碎，
+    #      用户看到的是 `'_api: 2D' 不是内部或外部命令`（`game_api：2D` 的残片被当命令执行）。
+    #      → 一律过 `ConvertTo-Crlf`。
+    #   ② **内容保持纯 ASCII**：注释用英文。bat 的编码随控制台代码页而变（GBK/UTF-8 都可能），
+    #      写中文就有乱码与误切的风险；中文说明放在 `运行说明.txt`（UTF-8 with BOM，记事本可直接看）。
+    #      UTF-8 BOM 更是绝不能加：cmd 会把 BOM 当命令执行。
     # 脚本里的路径一律加引号——包可能被放在带空格的目录里。
     # -----------------------------------------------------------------------
-    $batEncoding = [System.Text.Encoding]::GetEncoding(936)
+    $asciiBat = [System.Text.ASCIIEncoding]::new()
     $editorBat = @'
 @echo off
-rem 绿色版启动：打开包内样例工程（game_api：2D + 3D + UI + Prefab）。
-rem 中文界面依赖包内 fonts\NotoSansSC-VF.ttf —— 请不要把它单独挪走。
+rem Portable launcher: opens the bundled sample project (game_api: 2D + 3D + UI + Prefab).
+rem The Chinese UI needs fonts\NotoSansSC-VF.ttf shipped next to this exe - do not move it away.
+rem See 运行说明.txt for the full (Chinese) guide.
 setlocal
 cd /d "%~dp0"
 start "" "%~dp0editor.exe" --project "%~dp0samples\game_api"
@@ -125,8 +142,9 @@ endlocal
     # 真正便携：把玩家数据/日志写进包内 userdata\，不落 %APPDATA%。
     $portableBat = @'
 @echo off
-rem 完全便携模式：玩家数据、日志、崩溃报告都写进包内 userdata\（不写 %APPDATA%）。
-rem 适合 U 盘/共享目录：整个文件夹拷走即可，卸载 = 删除文件夹。
+rem Fully portable mode: player data, logs and crash reports go to .\userdata
+rem instead of %APPDATA%. Copy the whole folder to a USB stick and go.
+rem See 运行说明.txt for the full (Chinese) guide.
 setlocal
 cd /d "%~dp0"
 set RUSTLUA_USER_DIR=%~dp0userdata
@@ -136,17 +154,18 @@ endlocal
 '@
     $gameBat = @'
 @echo off
-rem 直接跑样板游戏（game_jhyt）的运行时：开发态工程，启动会实时读 scenes/scripts/assets。
-rem 注意：以开发态运行会在工程目录下建 .cache\（资源库与导入缓存），这是预期行为；
-rem 发布形态（game.exe + pack\，不往自己目录里写玩家数据）请用仓库里的 scripts\package.ps1。
+rem Runs the bundled game_jhyt sample with game.exe (development layout: reads
+rem scenes\scripts\assets live, so a .cache\ folder appears in the project - expected).
+rem For a real release package (game.exe + read-only pack\) use scripts\package.ps1 from the repo.
+rem See 运行说明.txt for the full (Chinese) guide.
 setlocal
 cd /d "%~dp0"
 start "" "%~dp0game.exe" --project "%~dp0samples\game_jhyt"
 endlocal
 '@
-    [System.IO.File]::WriteAllText((Join-Path $staging "启动编辑器.bat"), $editorBat, $batEncoding)
-    [System.IO.File]::WriteAllText((Join-Path $staging "便携模式启动.bat"), $portableBat, $batEncoding)
-    [System.IO.File]::WriteAllText((Join-Path $staging "运行样板游戏.bat"), $gameBat, $batEncoding)
+    [System.IO.File]::WriteAllText((Join-Path $staging "启动编辑器.bat"), (ConvertTo-Crlf $editorBat), $asciiBat)
+    [System.IO.File]::WriteAllText((Join-Path $staging "便携模式启动.bat"), (ConvertTo-Crlf $portableBat), $asciiBat)
+    [System.IO.File]::WriteAllText((Join-Path $staging "运行样板游戏.bat"), (ConvertTo-Crlf $gameBat), $asciiBat)
 
     # -----------------------------------------------------------------------
     # 4) 文件清单（含 SHA256）——跨机核对"拷过去的是不是同一份"
@@ -161,7 +180,7 @@ endlocal
         $manifest.Add(("{0}`t{1}`t{2}" -f $relative, $file.Length, $hash))
         $totalBytes += $file.Length
     }
-    [System.IO.File]::WriteAllLines((Join-Path $staging "文件清单.manifest.txt"), $manifest, [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText((Join-Path $staging "文件清单.manifest.txt"), (ConvertTo-Crlf ($manifest -join "`n")), [System.Text.UTF8Encoding]::new($false))
 
     $totalMiB = [math]::Round($totalBytes / 1MB, 1)
     $sampleBytes = 0
@@ -184,7 +203,7 @@ sizes: total=${totalMiB}MiB font=${fontMiB}MiB samples=${sampleMiB}MiB
 player_data_default: %APPDATA%\examples （用 便携模式启动.bat 或 RUSTLUA_USER_DIR 可改为包内 userdata\）
 cjk_font_lookup: <exe 同目录>/fonts/NotoSansSC-VF.ttf （其次 exe 同目录，再其次构建机源码路径；RUSTLUA_FONT 可覆盖）
 "@
-    [System.IO.File]::WriteAllText((Join-Path $staging "build-info.txt"), $buildInfo, [System.Text.UTF8Encoding]::new($true))
+    [System.IO.File]::WriteAllText((Join-Path $staging "build-info.txt"), (ConvertTo-Crlf $buildInfo), [System.Text.UTF8Encoding]::new($true))
 
     $readme = @"
 RustLua 引擎编辑器 · 绿色版运行说明
@@ -233,7 +252,7 @@ RustLua 引擎编辑器 · 绿色版运行说明
     请不要单独挪走它（挪走会变豆腐块，日志里会有 "no CJK fallback font found"）。
   * 这台机器上构建的包没有做代码签名与安装器；分发前请自行确认公司安全策略。
 "@
-    [System.IO.File]::WriteAllText((Join-Path $staging "运行说明.txt"), $readme, [System.Text.UTF8Encoding]::new($true))
+    [System.IO.File]::WriteAllText((Join-Path $staging "运行说明.txt"), (ConvertTo-Crlf $readme), [System.Text.UTF8Encoding]::new($true))
 
     # -----------------------------------------------------------------------
     # 5) 原子替换最终目录

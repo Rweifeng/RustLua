@@ -71,9 +71,12 @@
   （`env!("CARGO_MANIFEST_DIR")/fonts/…`，即**构建机**上的路径），绿色包拷到别的 Windows 主机后
   中文会全部变成豆腐块。现在按 `RUSTLUA_FONT` → **exe 同目录 `/fonts/`** → exe 同目录 →
   源码树 的顺序查找，并把**实际命中的路径**（或全部候选路径）打到 stderr——跨机验收时那行日志就是结论。
-- 两个踩坑记录（已写进 docs/50 §8）：① `.bat` 写 UTF-8 BOM 会被 cmd 当命令执行
-  （绿色包的 bat 改用系统 ANSI/GBK，中文注释同时也可读）；②
-  `Start-Process -ArgumentList @(...)` 拼接参数**不加引号**，含空格的路径会被切开，
+- 两个踩坑记录（已写进 docs/50 §8）：
+  ① **`.bat` 必须是 CRLF + 纯 ASCII + 无 BOM**。打包脚本自身是 LF，here-string 会带出 LF，
+  而 cmd.exe 按 CR 找行尾——**LF-only 的 bat 遇到 GBK 多字节注释行会把注释行切碎**，
+  用户双击后实际看到 `'_api: 2D' 不是内部或外部命令`（注释里 `game_api：2D` 的残片被当命令执行）。
+  现在写文件前一律过 `ConvertTo-Crlf`，bat 内容只用 ASCII（中文说明在 `运行说明.txt`）。
+  ② `Start-Process -ArgumentList @(...)` 拼接参数**不加引号**，含空格的路径会被切开，
   游戏报 `argument error: unknown argument: <路径片段>`——自测脚本要传完整且自带引号的整串。
 
 ## Unreleased — 编辑器重构阶段 0-3 收口（docs/55）
