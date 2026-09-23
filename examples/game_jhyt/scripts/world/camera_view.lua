@@ -46,17 +46,68 @@ end
 -- 最近一次绑定的 (场景, 实体 id, 是否已跟随)，供诊断与验收（`M.status()`）。
 local bound = { scene = nil, entity = nil, following = false }
 
+-- 宿主是否**真的**实现了 `camera2d`。
+--
+-- 为什么不能只用 `pcall(camera2d.follow, ...)` 判定：WebGL / 微信小游戏运行时**没有**
+-- `camera2d`，而它把"引擎里有、web 侧没实现"的宿主全局换成了会**自报家门**的代理
+-- （可调用、可索引，见 `plugins/webgl/web-runtime.js` 的 `__p2_missing_proxy`）——
+-- 也就是说 `pcall` **不会**失败，`camera2d.follow(...)` 会静默地"成功"，直到后来读
+-- `camera2d.get().x` 才炸在离现场很远的地方（实测：微信真机形态点「开始新游戏」后
+-- 启动失败在 `camera_view.lua` 取 `center.x` 那一行）。
+--
+-- 判据按优先级两条，缺一不可：
+--   ① **先**查宿主自报的缺失全局清单。web / 微信运行时在启动时把"这一侧没实现的宿主
+--      全局"整体算一遍，落在 `__p2_missing_globals`（`plugins/webgl/web-runtime.js` 的
+--      `engine-host-compat` 片段）。在清单里 ⇒ 整个 `camera2d` 都是代理，直接判不可用。
+--      这一步是**权威**判据，且**零噪声**（只查表，不碰代理）。
+--      只用下面的形状探测会误判：宿主把缺失全局换成了可调用/可索引的代理，
+--      `pcall(camera2d.get)` 会"成功"并返回一张真表，于是判成"可用"，`camera2d.follow`
+--      继续静默生效（代理吞掉），直到某处读字段才炸——这正是本次线上问题的形态
+--      （微信形态点「开始新游戏」后启动失败在取 `center.x` 那一行）。
+--   ② 形状探测兜底（覆盖"表在、方法没实现"的宿主，以及不带这套兼容层的宿主）：
+--      真实现返回 `{x=, y=}`，代理返回**空壳代理表**，所以用 `next(value)` 判"表里真的
+--      有字段"。这一步只能走 `next`/`type` 这类**不查索引**的手段：读 `value.x`（或等价
+--      的 `value["x"]`）会经过 `__index`，在宿主日志里留下一条 `camera2d.get.x` 的假缺口，
+--      harness 会因为"未在白名单里的缺失 API"判红（实测踩到，两处都不能写字段访问）。
+-- 探测结果缓存一次（能力是宿主属性，不会一帧一变）。
+local camera_ready = nil
+local function camera_available()
+  if camera_ready ~= nil then
+    return camera_ready
+  end
+  camera_ready = false
+  local missing_globals = rawget(_G, "__p2_missing_globals")
+  if type(missing_globals) == "table" and missing_globals["camera2d"] then
+    return false
+  end
+  if type(camera2d) == "table" or type(camera2d) == "userdata" then
+    local ok, value = pcall(camera2d.get)
+    -- `next(value)` 只认"表里真的有字段"；空壳代理表自身没有字段（字段都在 `__index` 里）。
+    camera_ready = ok and type(value) == "table" and next(value) ~= nil
+  end
+  return camera_ready
+end
+
 -- 让相机跟随玩家，玩家因此始终停在视野正中。
 -- **每次进入玩法地图都要调用**：换图会重建场景实体（Lua VM 与相机控制器活着，但玩家
 -- 是新 id），沿用旧 id 会让跟随目标指向已销毁的实体。
--- 返回 ok, reason。
+-- 返回 ok, reason；宿主没有 `camera2d` 时返回 false + "host_has_no_camera2d"（调用方
+-- 不需要区别对待——相机是表现层，缺了不该拖垮玩法）。
 function M.follow_player()
   local current = scene.reload()
   if not is_playable(current) then
     -- 门面：没有玩家可跟。顺手取消跟随，免得相机停在上一张图的坐标上。
-    pcall(camera2d.unfollow)
+    if camera_available() then
+      pcall(camera2d.unfollow)
+    end
     bound = { scene = current, entity = nil, following = false }
     return false, "not_a_playable_map"
+  end
+  if not camera_available() then
+    -- WebGL / 微信小游戏：宿主没有相机 API（相机由适配层自己决定取景）。
+    -- 这里**不报错也不记 warn**：它是已知的平台能力差异，每张图记一条只会刷日志。
+    bound = { scene = current, entity = nil, following = false }
+    return false, "host_has_no_camera2d"
   end
   local pid = player.ensure()
   if not pid then
@@ -86,7 +137,9 @@ end
 
 -- 清掉跟随状态（新档/回门面时用，避免拿上一局的玩家实体当目标）。
 function M.reset()
-  pcall(camera2d.unfollow)
+  if camera_available() then
+    pcall(camera2d.unfollow)
+  end
   bound = { scene = nil, entity = nil, following = false }
 end
 
@@ -94,25 +147,32 @@ end
 -- 不是脚本自述——验收断言"相机真的跟着玩家"必须看它。
 --
 -- 门面（没有玩家实体）上 `player` 为 nil：验收要用 `following` 先判定，不能直接取字段。
+-- 宿主没有 `camera2d`（WebGL / 微信小游戏）时 `center`/`zoom` 为 nil、`available=false`。
 function M.status()
   -- 玩法地图之外（门面/未进图）不建玩家实体：`player.ensure()` 会返回 nil，
   -- 取 .x 会抛 Lua 错误，因此这里必须先判空。
   local has_player = scene.reload() ~= nil and maps.get(scene.reload()) ~= nil
+  local available = camera_available()
   local center = { x = nil, y = nil }
-  local ok, value = pcall(camera2d.get)
-  if ok and type(value) == "table" then
-    center.x, center.y = tonumber(value.x), tonumber(value.y)
-  end
   local zoom = nil
-  local zoom_ok, zoom_value = pcall(camera2d.get_zoom)
-  if zoom_ok then
-    zoom = tonumber(zoom_value)
+  if available then
+    local ok, value = pcall(camera2d.get)
+    -- 同上：只有确认是**真表**（`next` 非空）才逐字段读，避免在代理上留下假缺口。
+    if ok and type(value) == "table" and next(value) ~= nil then
+      center.x, center.y = tonumber(value["x"]), tonumber(value["y"])
+    end
+    local zoom_ok, zoom_value = pcall(camera2d.get_zoom)
+    if zoom_ok then
+      zoom = tonumber(zoom_value)
+    end
   end
   local pos = has_player and player.position() or nil
   return {
     scene = bound.scene,
     entity = bound.entity,
     following = bound.following,
+    -- 宿主能力：false 时上面三个字段没有意义（相机由平台自己决定取景）。
+    available = available,
     center = center,
     zoom = zoom,
     player = pos and { x = tonumber(pos.x), y = tonumber(pos.y) } or nil

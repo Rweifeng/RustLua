@@ -1503,11 +1503,25 @@ end
     }
   }
 
+  // 引擎里存在、但 web 运行时**未实现**的宿主全局清单。
+  //
+  // 为什么必须有这份清单：下面的 `hostCompat` 会把名单里缺的全局换成"自报家门"的代理，
+  // 而 `missingHostGlobals()` 用**同一份名单**判断"这条路径到底缺哪些 API"。
+  // **不在名单里的缺失全局不会得到代理**——它保持 nil，脚本一碰就是
+  // `attempt to index a nil value (global 'x')`，而诊断清单里**一个字都不提**它，
+  // 于是根因看起来像"游戏脚本写错了"，而不是"这个平台没有这个 API"。
+  //
+  // `camera2d`（2026-09-23 补）：桌面引擎有、web/微信两边都没有。它此前**不**在名单里，
+  // 于是第一个用到它的脚本会以"取 nil"的姿态炸掉，且 `missing-host-api` 通道保持沉默
+  // （实测：`examples/game_jhyt` 的 `world/camera_view.lua` 在微信形态点「开始新游戏」后
+  // 启动失败）。**给引擎新增宿主能力后，这里要一起想**：要么实现它，要么列进这份名单，
+  // 让平台缺口在诊断里可见。
   const ENGINE_HOST_GLOBALS = [
-    'animation', 'animation3d', 'app', 'asset', 'audio', 'calendar', 'camera', 'clock',
-    'container', 'data', 'day', 'entity', 'event', 'grid', 'health', 'input', 'interact',
-    'inv', 'item', 'light', 'log', 'map', 'mesh', 'particles', 'physics', 'physics3d',
-    'save', 'scene', 'shop', 'sprite', 'tag', 'tilemap', 'time', 'transform', 'transform3d', 'ui'
+    'animation', 'animation3d', 'app', 'asset', 'audio', 'calendar', 'camera', 'camera2d',
+    'clock', 'container', 'data', 'day', 'entity', 'event', 'grid', 'health', 'input',
+    'interact', 'inv', 'item', 'light', 'log', 'map', 'mesh', 'particles', 'physics',
+    'physics3d', 'save', 'scene', 'shop', 'sprite', 'tag', 'tilemap', 'time', 'transform',
+    'transform3d', 'ui'
   ];
 
   function missingHostGlobals(L) {
@@ -1729,7 +1743,23 @@ function input.actions()
   return names
 end
 `;
-      doString(L, missingApiCompat + '\n' + hostCompat, 'engine-host-compat');
+      // 先记下"这一侧到底缺哪些宿主全局"，再装兼容层——顺序不能反：`hostCompat` 会把缺的
+      // 全局换成代理，之后 `missingHostGlobals()` 只会看到"不是 nil 了"（那是它给 catch
+      // 分支用的兜底诊断，见下面 `catch`）。
+      //
+      // 这份**静态清单**要交给游戏脚本：代理是可调用/可索引的，所以
+      // `pcall(camera2d.get)` 会"成功"并返回一张真表——脚本单靠"调用报不报错"或
+      // "返回值形状"都判不出宿主其实没有这个 API（`examples/game_jhyt` 的
+      // `world/camera_view.lua` 实测踩到）。有了它，脚本可以**零噪声**地判能力：
+      // 不碰代理就不会在诊断日志里留下假缺口。
+      //
+      // 用**下标**写法而不是 `{name=true}`：表里会出现 `time`/`log` 这类**Lua 保留字**
+      // 或非标识符，`{time=true}` 直接是语法错误（实测把启动打成
+      // `'}' expected near '='`）；`["time"]=true` 对任何名字都成立。
+      const eagerlyMissingGlobals = missingHostGlobals(L);
+      const missingGlobalTable = '__p2_missing_globals = {' +
+        eagerlyMissingGlobals.map(name => `[${luaQuote(name)}]=true`).join(',') + '}';
+      doString(L, missingApiCompat + '\n' + missingGlobalTable + '\n' + hostCompat, 'engine-host-compat');
       doString(L, luaPrelude(sceneState, knownScenes) + '\n' + preload, 'engine-host-prelude');
       doString(L, methodCompat + '\n' + genericCompat, 'engine-host-method-compat');
       // 在**真正的宿主表**上装缺失方法陷阱（放在 methodCompat 之后：那批默认实现

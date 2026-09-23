@@ -1600,6 +1600,12 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
       'ui.focus_open', 'ui.focus_select', 'ui.focus_index', 'ui.focus_move',
       'ui.focus_close', 'ui.scroll_close',
       'input.nav_settings', 'input.set_nav_settings', 'input.last_device', 'input.action_repeat',
+      // 注：`camera2d`（web / 微信运行时没有 2D 相机控制器）**不在**这张表里，也不需要——
+      // 游戏侧 `scripts/world/camera_view.lua` 查宿主启动期算好的缺失全局清单
+      // （`__p2_missing_globals`）判能力，命中就直接跳过整条相机逻辑，**不碰代理**，
+      // 因此诊断通道里不会留下 `camera2d.*` 的缺口。这比"先调用再看报错"更强：
+      // 代理是可调用/可索引的，调用永远"成功"，缺口反而会被延迟到读字段时才炸。
+      // 这条断言因此同时守着"降级路径没有退化回碰代理"。
     ]);
     const reportedMissing = new Set();
     for (const line of consoleLogs.concat(consoleWarns, consoleErrors)) {
