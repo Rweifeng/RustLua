@@ -56,9 +56,10 @@ camera_demo_ok center=Vec2 { x: 0.0, y: 0.0 } corner=Vec2 { x: -9.730531, y: 5.7
 
 ## 相机控制器（WP4 增补；WP5 相机收敛后并入统一相机）
 
-`core/camera.rs` 里的 `Camera2dController` 提供跟随 / 死区 / 平滑 / 抖动；相机数据仍只有
+`core/camera/controller.rs` 里的 `Camera2dController` 提供跟随 / 死区 / 平滑 / 抖动；相机数据仍只有
 `Camera2D` 一份，bounds 钳制复用相机自己的 `Camera2D::constrained_center`（与剔除用的可见域
-同源），因此不会出现两套夹取规则。
+同源），因此不会出现两套夹取规则。逐精灵/逐瓦片的投影不再走 `Camera2D::world_to_screen`，
+而是走每帧烘焙一次的 `core/camera/bake.rs`（`OrthoTerms` / `CameraView`）。
 
 WP5 收敛后控制器的边界改成"给出**本帧应当渲染的相机**"：
 

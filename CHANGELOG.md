@@ -5,6 +5,83 @@
 度量数字（µs、分配字节、测试计数）、逐条证据、golden 断言与实施细节留在能力文档与任务文件里，不在本文重复：
 重构过程见 [docs/53](docs/53-WP0增量场景帧基准与每帧分配.md) 与 [docs/40](docs/40-引擎全面重构计划.md)，已完成任务的验收记录见 `tasks/done/`。
 
+## Unreleased — 相机模块拆分与每帧烘焙（批 1–5）
+
+主题：`core/camera.rs` 曾把四件事装在一个 2565 行的文件里——相机类型与数学、组件串编解码、
+2D 跟随策略、每帧渲染视图契约，外加 3D 几何。同时**同一组相机量被逐精灵反复重算**：
+`Camera2D::world_to_screen` 每次调用都要 `validate()` + `constrained_center()`（内部再算一次
+`sin_cos`）+ 自己的 `sin_cos`，而 `Sprite::quad` 每个精灵调 4 次、剔除再 1 次、一帧还要走 3 遍
+overlay 构建；瓦片层为此写了一份**与 `Camera2D` 重复的** `TilemapCamera`，世界文字则是
+**每个文字实体**各算一次 `view_projection` + `Mat4::inverse()`。
+
+### 批 1：按职责拆成 `core/camera/`（纯搬家，零行为变化）
+
+- `camera/{mod,component,codec,controller,selection,view,error,bake,tests}.rs`：类型与数学 /
+  组件串编解码 / 2D 控制器策略 / 选择规则 / 每帧视图契约 / 共用错误 / 每帧烘焙 / 测试。
+- **公开路径一字不变**：`camera/mod.rs` 统一 `pub use`，因此引擎内 26 个文件与编辑器/示例的
+  调用点**零改动**（这正是"纯搬家"的判据）；判据是既有相机测试一条不改地通过。
+
+### 批 2：3D 几何外迁 `core/geom3d.rs`
+
+- `Ray3` / `Frustum` / `Plane` / `FrustumClassification` 搬去 `core/geom3d.rs`（纯几何：消费方是
+  `core::picking`、编辑器 gizmo 与渲染剔除）；`core::camera` 保留兼容 re-export，新代码直接
+  `use crate::core::geom3d::…`。
+- `Frustum` 字段保持私有并新增 `Frustum::from_view_projection`：视锥只能由某份视图投影矩阵导出，
+  "随手塞一个矩阵进去"从此不可表达。
+
+### 批 3：每帧烘焙层（性能）
+
+- 新增 `camera::CameraView` 与 `camera::OrthoTerms`：把"只依赖相机 + 视口"的量（中心、`sin/cos`、
+  zoom、可见域、视图投影矩阵）**每帧算一次**，之后逐点换算只剩乘加，且**不可失败**
+  （非法相机在烘焙时就被拒，而不是在逐精灵路径上每次重判）。
+- 接线：`Sprite::quad_with_terms`（逐精灵 4~5 次 `validate` + 三角函数 → 0）、
+  `SpriteBatch::build*`（每帧烘焙一次；公开签名不变，冷路径照旧）、瓦片层（**删掉
+  `TilemapCamera` 那份重复数学**）、世界文字（每个实体一次求逆 → 每帧一次）、2D/3D 调试线框、
+  `picking::{screen_from_view, screen_from_view_unclipped}`、`active_camera3d`（每帧 2~3 次
+  `Vec<(u64, Camera3D)>` 分配 + 全实体扫描 → 单趟、零分配）。
+- 语义保持：非有限变换仍然"保留并走原报错路径"，不被剔除静默吞掉（这条在替换 `world_to_screen`
+  的 `Result` 时显式补了守卫）。
+
+### 批 4：运行期也只有**一个**相机组件
+
+- 世界存储从"按投影分支落进 `Camera2D` / `Camera3D` 两个类型"改为**只存 `Camera`**；
+  `CameraComponent` 因此更名 `Camera`（与 docs/54 §4.2 蓝图同名），消费方按 `as_orthographic` /
+  `as_perspective` 取值，`as_perspective_mut` 让"只有透视相机能被 `camera.set` 改写"由**类型**保证。
+- `camera.set_active` / `camera.get` / `camera.set` 照旧**拒绝正交相机**（错误串不变）；
+  `declared_camera_2d_in` 与 `active_camera3d` 改为单趟遍历那一个存储。
+
+### 批 5：`RenderView` 不再自带一份矩阵
+
+- `RenderView` 内部持有本次烘焙的 `CameraView`，公开字段 `view_projection: Option<Mat4>` 移除，
+  改为 `matrix()` / `baked()`："投影参数与矩阵互相矛盾"从类型上不可表达。
+- 宿主改清屏/绘制顺序走 `with_clear` / `with_order`（不再用结构体更新语法改框架字段）。
+- 退化相机仍可表达（`RenderView::degenerate`）：它正是渲染器"声明了视图却没有矩阵"那条历史
+  回退分支的触发条件。
+
+### 有意保留的偏离（已评估、未做，附理由）
+
+- **编辑器 Inspector 的每帧解析不做缓存**：`schema_fields::camera_notes` 每帧解析一次 `Camera`
+  载荷（选中 N 个实体则 N 次），量级是**每帧常数、约微秒**；加备忘录会引入"载荷变了缓存没失效"
+  的陈旧风险，收益不可测。按仓库既有口径（"只判测量是活的"）不做。
+- **`Camera3D::aspect_ratio` 仍是组件字段，没有改成"由视口推出"**：宿主每帧用窗口比例覆盖它，
+  而 `Camera3D` 也被**没有视口**的调用方使用（`light_view_projection` 用 aspect 1.0 构造光照相机、
+  编辑器传面板比例）。把 aspect 唯一化为"视口派生"是一次**行为可见**的改动，值得单独一批做，
+  不与本次纯拆分混在一起。
+- **`camera.set_active` 仍拒绝正交相机**（只对 3D pass 生效）：2D 的生效相机是宿主所有权的
+  `RuntimeScene.camera`（脚本请求 → 控制器 → 回填），把它改成"由 ECS 选中"会破坏那条链。
+  运行时的**存储与遍历**已统一为一个 `Camera`，但"谁生效"这件事仍是两条既有语义。
+- **宿主未声明 `FrameViews` 时**（`preview_session` 的回滚档）渲染器仍按 `Scene3d.camera` 现算一次
+  矩阵——每帧**常数**成本，且这条路径正是"不调用 `set_frame_views` 即回到收敛前"的保证；
+  把它也挪进烘焙会让"未声明"与"相机退化"两种语义混在一起。
+
+### 兼容契约（未动）
+
+场景 / Prefab / Lua 的组件名与载荷文法、`fov` 用度、`enabled=false` 只在禁用时写出、
+`pose=transform` 只在开启时写出、`math2d::CoordinateError` 的 re-export、Lua 19 个相机函数的名字/
+参数/错误串/返回表形状，全部逐字不变；`shipped_data_uses_only_unified_components`、
+`builtin_schemas_match_engine_encoders`、`editor --check`（`schema_errors=0`）与
+2D overlay / 3D semantic golden 照旧通过。
+
 ## Unreleased — 2D 相机跟随与取景边界（场景声明的相机不再只在启动场景生效）
 
 主题：`examples/game_jhyt` 的相机此前是**默认相机**（中心 `(640,360)`、`zoom=1`、无 bounds）——
