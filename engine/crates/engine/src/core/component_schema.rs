@@ -800,7 +800,7 @@ const TRANSFORM_FIELDS: &[FieldSchema] = &[
 
 /// 统一 `Camera`：显式投影判别字段 + 两套字段的并集。
 ///
-/// **刻意宽松**："哪套字段必须出现"由引擎读取器（`camera::CameraComponent`）强制——
+/// **刻意宽松**："哪套字段必须出现"由引擎读取器（`camera::Camera`）强制——
 /// 判别字段必填，字段体必须与它匹配（写 orthographic 却给透视字段会被拒）。
 const CAMERA_FIELDS: &[FieldSchema] = &[
     FieldSchema::new("projection", FieldKind::Enum, true)
@@ -1317,7 +1317,7 @@ pub fn validate_component(
 mod tests {
     use super::*;
     use crate::core::{
-        camera::{Camera2D, Camera3D, CameraComponent},
+        camera::{Camera, Camera2D, Camera3D},
         entity_script::EntityScript,
         light::Light,
         mesh3d::MeshRenderer,
@@ -1421,12 +1421,12 @@ mod tests {
             (
                 "Camera",
                 vec![
-                    CameraComponent::Orthographic(
+                    Camera::Orthographic(
                         Camera2D::new(crate::core::transform::Vec2::new(0.0, 0.0), 1.0)
                             .expect("valid camera"),
                     )
                     .to_component_str(),
-                    CameraComponent::Perspective(
+                    Camera::Perspective(
                         Camera3D::perspective(
                             crate::core::math3d::Vec3::new(0.0, 1.0, 3.0),
                             crate::core::math3d::Vec3::new(0.0, 0.0, 0.0),
@@ -2150,7 +2150,7 @@ mod tests {
             ),
         ];
         for (payload, expected_ok) in camera_samples {
-            let engine = crate::core::camera::CameraComponent::from_component_str(&payload);
+            let engine = crate::core::camera::Camera::from_component_str(&payload);
             let schema = camera.parse(&payload);
             assert_eq!(
                 engine.is_ok(),

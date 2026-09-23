@@ -55,7 +55,7 @@ impl AssetResolver for ResourceDatabase {
 pub enum ComponentId {
     /// 唯一的变换组件（2D 与 3D 共用；空间由 `spatial_transform::entity_space` 推断）。
     Transform,
-    /// 唯一的相机组件（`CameraComponent` 里带显式投影分支）。
+    /// 唯一的相机组件（`Camera` 里带显式投影分支）。
     Camera,
     Light,
     MeshRenderer,
@@ -150,7 +150,7 @@ pub enum TypedComponent {
     /// 唯一的变换组件，值就是统一 TRS（2D 消费者用 `LocalTransform::to_2d` 投影）。
     Transform(Transform3D),
     /// 唯一的相机组件，值是带投影分支的统一取值。
-    Camera(crate::core::camera::CameraComponent),
+    Camera(crate::core::camera::Camera),
     Light(Light),
     MeshRenderer {
         renderer: MeshRenderer,
@@ -248,7 +248,7 @@ fn compile_component(
             )
         }),
         // **唯一的相机组件**：值里带显式投影分支，消费方按投影分支处理。
-        "Camera" => crate::core::camera::CameraComponent::from_component_str(value)
+        "Camera" => crate::core::camera::Camera::from_component_str(value)
             .map(|component| (ComponentId::Camera, TypedComponent::Camera(component))),
         "Light" => Light::from_component_str(value)
             .map(|component| (ComponentId::Light, TypedComponent::Light(component)))

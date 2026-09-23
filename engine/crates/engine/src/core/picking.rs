@@ -12,7 +12,7 @@
 //! 本模块只负责"把链子接起来"并提供最近命中挑选，因此不会产生第二份投影实现。
 
 use crate::core::{
-    camera::{Camera3D, Ray3, Viewport},
+    camera::{Camera3D, CameraView, Ray3, Viewport},
     math3d::{Aabb3, Vec3},
     transform::Vec2,
 };
@@ -27,13 +27,23 @@ pub fn ray_from_screen(camera: Camera3D, screen: Vec2, viewport: Viewport) -> Re
 
 /// 世界坐标 → 屏幕像素 +(是否可见)。`visible` 用 NDC z ∈ [0, 1] 与裁剪范围判定：相机背后的点
 /// 在 NDC 里也有坐标，不报这一点会让 HUD 标记在背后画出幽灵。
+///
+/// 冷路径便捷入口：每次调用现烘焙一次相机（[`CameraView`]）。热路径请用
+/// [`screen_from_view`]，把烘焙提到循环外。
 #[must_use]
 pub fn screen_from_world(
     camera: Camera3D,
     world: Vec3,
     viewport: Viewport,
 ) -> Option<(Vec2, bool)> {
-    let ndc = camera.world_to_ndc(world).ok()?;
+    let view = CameraView::from_camera3d(camera, viewport).ok()?;
+    screen_from_view(view, world, viewport)
+}
+
+/// [`screen_from_world`] 的**已烘焙**版本：不重建矩阵、不校验相机（每帧一次，循环里调用）。
+#[must_use]
+pub fn screen_from_view(view: CameraView, world: Vec3, viewport: Viewport) -> Option<(Vec2, bool)> {
+    let ndc = view.world_to_ndc(world)?;
     let screen = Vec2::new(
         (ndc.x * 0.5 + 0.5) * viewport.width,
         (0.5 - ndc.y * 0.5) * viewport.height,
@@ -53,7 +63,18 @@ pub fn screen_from_world_unclipped(
     world: Vec3,
     viewport: Viewport,
 ) -> Option<Vec2> {
-    let ndc = camera.world_to_ndc(world).ok()?;
+    let view = CameraView::from_camera3d(camera, viewport).ok()?;
+    screen_from_view_unclipped(view, world, viewport)
+}
+
+/// [`screen_from_world_unclipped`] 的**已烘焙**版本（逐段调用的调试路径用它）。
+#[must_use]
+pub fn screen_from_view_unclipped(
+    view: CameraView,
+    world: Vec3,
+    viewport: Viewport,
+) -> Option<Vec2> {
+    let ndc = view.world_to_ndc(world)?;
     if !ndc.is_finite() || !(0.0..=1.0).contains(&ndc.z) {
         return None; // 相机背后或远裁剪面之外
     }

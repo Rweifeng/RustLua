@@ -1384,7 +1384,7 @@ mod tests {
         let payload = app.document.current_scene.as_ref().unwrap().scene.entities[&entity]
             .components["Camera"]
             .clone();
-        let camera = engine::core::camera::CameraComponent::from_component_str(&payload)
+        let camera = engine::core::camera::Camera::from_component_str(&payload)
             .expect("引擎解析器必须认得迁移后的写入")
             .as_perspective()
             .expect("判别字段是 perspective");

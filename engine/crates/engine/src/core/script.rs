@@ -804,17 +804,14 @@ impl LuaRuntime {
         // docs/54 §8-①：场景可以声明自带的相机。它作为**初始**相机生效；之后 Lua
         // `camera2d.*`/`camera3d.*` 与相机控制器照旧可以移动它（不是第二份姿态真源）。
         //
-        // **唯一的 `Camera` 组件**：投影由判别字段给出，运行时按投影分支落进两份既有表示。
-        let unified_camera = components
-            .get("Camera")
-            .map(|value| crate::core::camera::CameraComponent::from_component_str(value))
-            .transpose()
-            .map_err(|error| {
-                LuaBridgeError::Api(format!("entity {name:?} has an invalid Camera: {error}"))
-            })?;
-        let camera_2d =
-            unified_camera.and_then(crate::core::camera::CameraComponent::as_orthographic);
-        if let Some(camera) = camera_2d {
+        // **唯一的 `Camera` 组件**：投影由判别字段给出，落进世界的就是**这一个**组件类型，
+        // 消费方按投影分支取值（`as_orthographic` / `as_perspective`）——这正是"运行时也只
+        // 有一个相机组件"的落地：世界存储、选帧遍历与 Lua 的 `camera.*` 都只看这一个类型。
+        if let Some(value) = components.get("Camera") {
+            let camera =
+                crate::core::camera::Camera::from_component_str(value).map_err(|error| {
+                    LuaBridgeError::Api(format!("entity {name:?} has an invalid Camera: {error}"))
+                })?;
             state
                 .world
                 .insert(id, camera)
@@ -872,14 +869,6 @@ impl LuaRuntime {
             state
                 .world
                 .insert(id, renderer)
-                .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
-        }
-        let camera_3d =
-            unified_camera.and_then(crate::core::camera::CameraComponent::as_perspective);
-        if let Some(camera) = camera_3d {
-            state
-                .world
-                .insert(id, camera)
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
         }
         if let Some(value) = components.get("Light") {
@@ -3605,10 +3594,13 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
             require_alive(&state, id)?;
             if state
                 .world
-                .get::<Camera3D>(id)
+                .get::<crate::core::camera::Camera>(id)
                 .map_err(world_error)?
+                .copied()
+                .and_then(crate::core::camera::Camera::as_perspective)
                 .is_none()
             {
+                // 只有**透视**相机能成为 3D pass 的活动相机（正交相机归 2D 视图）。
                 return Err(api_error("entity has no camera3d"));
             }
             state.active_camera = Some(id);
@@ -3627,7 +3619,13 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
             let id = entity_from_lua(id)?;
             let state = s.borrow();
             require_alive(&state, id)?;
-            let Some(camera) = state.world.get::<Camera3D>(id).map_err(world_error)? else {
+            let Some(camera) = state
+                .world
+                .get::<crate::core::camera::Camera>(id)
+                .map_err(world_error)?
+                .copied()
+                .and_then(crate::core::camera::Camera::as_perspective)
+            else {
                 return Err(api_error("entity has no camera3d"));
             };
             let t = lua.create_table()?;
@@ -3669,7 +3667,12 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
                 {
                     return Err(api_error("camera.set fov must be in (0, 180) degrees"));
                 }
-                let Some(camera) = state.world.get_mut::<Camera3D>(id).map_err(world_error)? else {
+                let Some(camera) = state
+                    .world
+                    .get_mut::<crate::core::camera::Camera>(id)
+                    .map_err(world_error)?
+                    .and_then(crate::core::camera::Camera::as_perspective_mut)
+                else {
                     return Err(api_error("entity has no camera3d"));
                 };
                 camera.position = Vec3::new(x, y, z);
@@ -7748,7 +7751,20 @@ mod tests {
             transform.position,
             crate::core::math3d::Vec3::new(1.0, 2.0, 3.0)
         );
-        assert!(runtime.with_world(|world| world.has::<Camera3D>(entity).unwrap()));
+        // 世界存储里只有**一个**相机组件：投影由判别分支表达，而不是两个不同的组件类型。
+        let stored = runtime
+            .with_world(|world| {
+                world
+                    .get::<crate::core::camera::Camera>(entity)
+                    .unwrap()
+                    .copied()
+            })
+            .expect("统一 Camera 必须落进世界");
+        assert_eq!(
+            stored.projection(),
+            crate::core::camera::CameraProjection::Perspective
+        );
+        assert!(!runtime.with_world(|world| world.has::<Camera3D>(entity).unwrap()));
         assert!(!runtime.with_world(|world| world.has::<Camera2D>(entity).unwrap()));
 
         // 坏串必须报错。
@@ -10481,7 +10497,11 @@ mod tests {
 
         assert_eq!(
             runtime.active_camera(),
-            Some(runtime.with_world(|world| world.entities_with::<Camera3D>()[0]))
+            Some(
+                runtime.with_world(|world| {
+                    world.entities_with::<crate::core::camera::Camera>()[0]
+                })
+            )
         );
         assert_eq!(
             runtime.active_light(),
@@ -10534,8 +10554,13 @@ mod tests {
         runtime.execute_project_script(&path).unwrap();
         assert_eq!(runtime.call_update().unwrap(), "cam-ok");
         let cam = runtime.with_world(|world| {
-            let id = world.entities_with::<Camera3D>()[0];
-            *world.get::<Camera3D>(id).unwrap().unwrap()
+            let id = world.entities_with::<crate::core::camera::Camera>()[0];
+            world
+                .get::<crate::core::camera::Camera>(id)
+                .unwrap()
+                .unwrap()
+                .as_perspective()
+                .expect("这台相机是透视的")
         });
         assert_eq!(cam.position, Vec3::new(1.0, 2.0, 3.0));
         assert_eq!(cam.target, Vec3::new(4.0, 5.0, 6.0));

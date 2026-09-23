@@ -3,7 +3,7 @@
 use std::{error::Error, fmt};
 
 use crate::core::{
-    camera::{Camera2D, CoordinateError, Viewport},
+    camera::{Camera2D, CoordinateError, OrthoTerms, Viewport},
     transform::{Transform, Vec2},
 };
 
@@ -448,11 +448,27 @@ impl Sprite {
     }
 
     /// Generates screen-space vertices using the M3-01 top-left screen convention.
+    ///
+    /// 便捷入口：每次调用现烘焙一次相机。**热路径请用 [`Sprite::quad_with_terms`]**——
+    /// 逐精灵重复烘焙正是"每精灵 4 次校验 + 三角函数"的来源。
     pub fn quad(
         &self,
         transform: Transform,
         camera: Camera2D,
         viewport: Viewport,
+    ) -> Result<SpriteQuad, SpriteError> {
+        let terms = OrthoTerms::new(camera, viewport).map_err(SpriteError::Coordinate)?;
+        self.quad_with_terms(transform, terms)
+    }
+
+    /// Generates screen-space vertices from **pre-baked** camera terms.
+    ///
+    /// 每帧烘焙一次（[`OrthoTerms::new`]），之后逐顶点只剩乘加：不校验相机、不算三角函数。
+    /// 投影结果与 [`Sprite::quad`] 完全一致（`OrthoTerms` 与 `Camera2D::world_to_screen` 同源）。
+    pub fn quad_with_terms(
+        &self,
+        transform: Transform,
+        camera: OrthoTerms,
     ) -> Result<SpriteQuad, SpriteError> {
         self.validate()?;
         if !transform.position.x.is_finite()
@@ -490,7 +506,7 @@ impl Sprite {
                 transform.position.x + scaled.x * cos - scaled.y * sin,
                 transform.position.y + scaled.x * sin + scaled.y * cos,
             );
-            let screen = camera.world_to_screen(world, viewport)?;
+            let screen = camera.world_to_screen(world);
             positions[index] = [screen.x, screen.y];
         }
         let (u0, u1) = if self.flip_x {

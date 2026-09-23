@@ -4702,14 +4702,13 @@ mod tests {
     #[test]
     fn world_sprite_view_falls_back_to_the_explicit_matrix_without_a_view_matrix() {
         let viewport = Viewport::new(320.0, 240.0).unwrap();
-        let matrixless = RenderView {
-            projection: Projection::Orthographic { zoom: 2.0 },
+        let matrixless = RenderView::degenerate(
+            Projection::Orthographic { zoom: 2.0 },
             viewport,
-            clear: ClearPolicy::None,
-            order: 0,
-            visibility: u32::MAX,
-            view_projection: None,
-        };
+            ClearPolicy::None,
+            0,
+            u32::MAX,
+        );
         let explicit = Mat4::translation(Vec3::new(3.0, 4.0, 5.0));
         let resolved = resolve_world_sprite_view(Some(matrixless), None, None, explicit, None);
         assert_eq!(resolved.matrix, explicit);
@@ -4817,19 +4816,17 @@ mod tests {
 
         // 2) 声明主视图但用**历史默认色**：必须与回滚档逐字节相同。
         let declared_default = FrameViews {
-            main: Some(RenderView {
-                projection: Projection::Perspective {
+            main: Some(RenderView::degenerate(
+                Projection::Perspective {
                     fov_y: 1.0,
                     near: 0.1,
                     far: 100.0,
                 },
                 viewport,
-                clear: ClearPolicy::Color(DEFAULT_3D_CLEAR),
-                order: 0,
-                visibility: u32::MAX,
-                // 这一条只验清屏/视口：不声明矩阵，渲染器走"没有矩阵"的历史回退分支。
-                view_projection: None,
-            }),
+                ClearPolicy::Color(DEFAULT_3D_CLEAR),
+                0,
+                u32::MAX,
+            )),
             overlay: None,
         };
         renderer.set_frame_views(declared_default);
@@ -4841,10 +4838,12 @@ mod tests {
 
         // 3) 声明一个不同的清屏色：整帧都必须是该颜色 ⇒ 清屏确实由声明驱动。
         renderer.set_frame_views(FrameViews {
-            main: Some(RenderView {
-                clear: ClearPolicy::Color([1.0, 0.0, 0.0, 1.0]),
-                ..declared_default.main.expect("main view")
-            }),
+            main: Some(
+                declared_default
+                    .main
+                    .expect("main view")
+                    .with_clear(ClearPolicy::Color([1.0, 0.0, 0.0, 1.0])),
+            ),
             overlay: None,
         });
         let red_target = new_target("p2-view-red");
@@ -4859,10 +4858,12 @@ mod tests {
         // 4) 声明"不清屏"：**同一张附件**上再画一帧空场景，红色必须原样留着
         //    （说明这一帧真的没有清屏，而不是又清成了别的颜色）。
         renderer.set_frame_views(FrameViews {
-            main: Some(RenderView {
-                clear: ClearPolicy::None,
-                ..declared_default.main.expect("main view")
-            }),
+            main: Some(
+                declared_default
+                    .main
+                    .expect("main view")
+                    .with_clear(ClearPolicy::None),
+            ),
             overlay: None,
         });
         let kept = render_and_read(&mut renderer, &red_target);
@@ -4932,18 +4933,19 @@ mod tests {
             vector_segments: Vec::new(),
         };
         renderer.set_frame_views(FrameViews {
-            main: Some(RenderView {
-                clear: ClearPolicy::Color(DEFAULT_3D_CLEAR),
-                ..declared_default.main.expect("main view")
-            }),
-            overlay: Some(RenderView {
-                projection: Projection::Orthographic { zoom: 1.0 },
-                viewport: half,
-                clear: ClearPolicy::None,
-                order: 1,
-                visibility: u32::MAX,
-                view_projection: None,
-            }),
+            main: Some(
+                declared_default
+                    .main
+                    .expect("main view")
+                    .with_clear(ClearPolicy::Color(DEFAULT_3D_CLEAR)),
+            ),
+            overlay: Some(RenderView::degenerate(
+                Projection::Orthographic { zoom: 1.0 },
+                half,
+                ClearPolicy::None,
+                1,
+                u32::MAX,
+            )),
         });
         let clipped = {
             let target = new_target("p2-view-overlay");
@@ -5687,10 +5689,7 @@ mod tests {
             [0.0, 0.0, 0.0, 1.0],
         );
         renderer.set_frame_views(FrameViews {
-            main: Some(RenderView {
-                clear: ClearPolicy::None,
-                ..declared
-            }),
+            main: Some(declared.with_clear(ClearPolicy::None)),
             overlay: Some(declared),
         });
         let quad = crate::host::frame::SceneMesh {

@@ -743,7 +743,7 @@ fn camera_notes(entity: &SceneEntity) -> Vec<SchemaComponentNote> {
     let Some(raw) = entity.components.get("Camera") else {
         return Vec::new();
     };
-    let camera = match engine::core::camera::CameraComponent::from_component_str(raw) {
+    let camera = match engine::core::camera::Camera::from_component_str(raw) {
         Ok(camera) => camera,
         Err(error) => {
             return vec![SchemaComponentNote::warning(format!(
@@ -1315,7 +1315,7 @@ mod tests {
             100.0,
         )
         .expect("合法相机");
-        let payload = engine::core::camera::CameraComponent::Perspective(camera).to_component_str();
+        let payload = engine::core::camera::Camera::Perspective(camera).to_component_str();
         let raw = read_field_text(&payload, &PropertyPath::new("Camera", "fov")).expect("fov 原文");
         let stored: f64 = raw.trim().parse().expect("fov 是数字");
         let shown = field_unit("Camera", "fov").to_display(stored);
@@ -1527,7 +1527,7 @@ mod tests {
             other => panic!("position == target 必须被拦下，实际 {other:?}"),
         }
         // 判别字段说"正交"，但字段体里没有正交必填的 `center`：schema 的并集表放行（可选），
-        // 由**引擎解析器**拦下——"哪种投影必须有哪些字段"只有一处定义（`CameraComponent`）。
+        // 由**引擎解析器**拦下——"哪种投影必须有哪些字段"只有一处定义（`Camera`）。
         let orthographic = scene_with(&[("Camera", "projection=orthographic;zoom=1")]);
         match edit_component_field(&orthographic, SceneEntityId(1), "Camera", "zoom", "2") {
             Err(SchemaFieldError::EngineRejected { component, reason }) => {

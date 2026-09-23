@@ -3,7 +3,7 @@
 use std::{error::Error, fmt};
 
 use crate::core::{
-    camera::{Camera2D, CameraBounds, CoordinateError, Viewport},
+    camera::{Camera2D, CameraBounds, CoordinateError, OrthoTerms, Viewport},
     par::{Parallelism, map_chunks_in_place},
     sprite::{Sprite, SpriteError, SpriteVertex},
     transform::Transform,
@@ -287,6 +287,8 @@ impl SpriteBatch {
         viewport: Viewport,
         parallelism: Parallelism,
     ) -> Result<SpriteBatchMesh, SpriteBatchError> {
+        // 相机每帧只烘焙一次：逐精灵的顶点生成因此不再校验相机、不再算三角函数。
+        let camera = OrthoTerms::new(camera, viewport)?;
         let mut ordered: Vec<(usize, &SpriteBatchItem)> = self.items.iter().enumerate().collect();
         ordered.sort_by(|(left_index, left), (right_index, right)| {
             left.layer
@@ -312,7 +314,7 @@ impl SpriteBatch {
                     }
                     let quad = item
                         .sprite
-                        .quad(item.transform, camera, viewport)
+                        .quad_with_terms(item.transform, camera)
                         .map_err(|_| offset + local)?;
                     out[local * 6..local * 6 + 6].copy_from_slice(&quad.vertices);
                 }
@@ -320,7 +322,7 @@ impl SpriteBatch {
             },
         );
         if let Err(position) = generated {
-            return Err(classify_failure(&ordered, camera, viewport, position));
+            return Err(classify_failure(&ordered, camera, position));
         }
         let mut draws: Vec<SpriteDrawBatch> = Vec::new();
         let mut start = 0usize;
@@ -363,6 +365,8 @@ impl SpriteBatch {
         parallelism: Parallelism,
         cull: bool,
     ) -> Result<(), SpriteBatchError> {
+        // 同上：烘焙一次，逐精灵只做乘加。
+        let camera = OrthoTerms::new(camera, viewport)?;
         let mut ordered: Vec<(usize, &SpriteBatchItem)> = self.items.iter().enumerate().collect();
         ordered.sort_by(|(left_index, left), (right_index, right)| {
             left.layer
@@ -371,7 +375,7 @@ impl SpriteBatch {
                 .then_with(|| left_index.cmp(right_index))
         });
         if cull {
-            ordered.retain(|(_, item)| sprite_may_be_visible(item, camera, viewport));
+            ordered.retain(|(_, item)| sprite_may_be_visible(item, camera));
         }
         if ordered.is_empty() {
             return Ok(());
@@ -387,7 +391,7 @@ impl SpriteBatch {
                 &mut out[start..],
                 |chunk, slice, offset| {
                     for (local, (_index, item)) in chunk.iter().enumerate() {
-                        let quad = quad_ndc::<V>(item, camera, viewport, offset + local)?;
+                        let quad = quad_ndc::<V>(item, camera, offset + local)?;
                         slice[local * 6..local * 6 + 6].copy_from_slice(&quad);
                     }
                     Ok(())
@@ -395,12 +399,12 @@ impl SpriteBatch {
             );
             if let Err(position) = generated {
                 out.truncate(start);
-                return Err(classify_failure(&ordered, camera, viewport, position));
+                return Err(classify_failure(&ordered, camera, position));
             }
         } else {
             let mut failure = None;
             for (index, (_original, item)) in ordered.iter().enumerate() {
-                match quad_ndc::<V>(item, camera, viewport, index) {
+                match quad_ndc::<V>(item, camera, index) {
                     Ok(quad) => out.extend_from_slice(&quad),
                     Err(position) => {
                         failure = Some(position);
@@ -410,7 +414,7 @@ impl SpriteBatch {
             }
             if let Some(position) = failure {
                 out.truncate(start);
-                return Err(classify_failure(&ordered, camera, viewport, position));
+                return Err(classify_failure(&ordered, camera, position));
             }
         }
         let mut index = start;
@@ -613,18 +617,22 @@ fn sprite_intersects_world_bounds(item: &SpriteBatchItem, bounds: CameraBounds) 
 ///
 /// 判定用"屏幕中心 + 外接圆半径"：半径 = 世界半对角线 × zoom，因此**与旋转无关**，
 /// 旋转、负缩放、任意 pivot 都被保守覆盖（pivot 只改变矩形相对中心的偏移，不超过半对角线）。
-/// 中心用 `Camera2D::world_to_screen`——与 `Sprite::quad` 走同一个投影，不会分叉。
+/// 中心用 [`OrthoTerms::world_to_screen`]——与 `Sprite::quad` 走同一个投影，不会分叉。
 ///
-/// 变换非法或投影失败时返回 `true`（保留）：剔除只允许少画视口外的东西，**绝不能把错误吞掉**
+/// 变换非法时返回 `true`（保留）：剔除只允许少画视口外的东西，**绝不能把错误吞掉**
 /// ——非法变换仍必须走原来的报错路径。
-fn sprite_may_be_visible(item: &SpriteBatchItem, camera: Camera2D, viewport: Viewport) -> bool {
-    let Ok(center) = camera.world_to_screen(item.transform.position, viewport) else {
+fn sprite_may_be_visible(item: &SpriteBatchItem, camera: OrthoTerms) -> bool {
+    // 位置非有限 ⇒ 保留：投影本身已不会失败，这条守卫就是原来 `world_to_screen` 失败时的
+    // 那一支（NaN 参与比较会让 `retain` 静默丢掉本该报错的精灵）。
+    if !item.transform.position.x.is_finite() || !item.transform.position.y.is_finite() {
         return true;
-    };
+    }
+    let center = camera.world_to_screen(item.transform.position);
     let half_x = item.sprite.size.x * item.transform.scale.x.abs() * 0.5;
     let half_y = item.sprite.size.y * item.transform.scale.y.abs() * 0.5;
     // +1px 抹掉亚像素与采样误差；跨在边缘上的精灵因此一律保留。
-    let radius = (half_x * half_x + half_y * half_y).sqrt() * camera.zoom + 1.0;
+    let radius = (half_x * half_x + half_y * half_y).sqrt() * camera.zoom() + 1.0;
+    let viewport = camera.viewport();
     center.x + radius >= 0.0
         && center.x - radius <= viewport.width
         && center.y + radius >= 0.0
@@ -635,8 +643,7 @@ fn sprite_may_be_visible(item: &SpriteBatchItem, camera: Camera2D, viewport: Vie
 /// 先判变换是否有限，再取精灵自身错误（单条重算，不在热路径上）。
 fn classify_failure(
     ordered: &[(usize, &SpriteBatchItem)],
-    camera: Camera2D,
-    viewport: Viewport,
+    camera: OrthoTerms,
     position: usize,
 ) -> SpriteBatchError {
     let (index, item) = ordered[position];
@@ -649,7 +656,7 @@ fn classify_failure(
     {
         return SpriteBatchError::InvalidTransform { index };
     }
-    match item.sprite.quad(transform, camera, viewport) {
+    match item.sprite.quad_with_terms(transform, camera) {
         Err(error) => SpriteBatchError::Sprite { index, error },
         Ok(_) => unreachable!("调用方已在该位置报错"),
     }
@@ -658,8 +665,7 @@ fn classify_failure(
 /// 单个精灵的 6 个 NDC 顶点；失败时返回**排序序位置**（`position`），与并行路径一致。
 fn quad_ndc<V: OverlayVertexSink>(
     item: &SpriteBatchItem,
-    camera: Camera2D,
-    viewport: Viewport,
+    camera: OrthoTerms,
     position: usize,
 ) -> Result<[V; 6], usize> {
     let transform = item.transform;
@@ -673,8 +679,9 @@ fn quad_ndc<V: OverlayVertexSink>(
     }
     let quad = item
         .sprite
-        .quad(transform, camera, viewport)
+        .quad_with_terms(transform, camera)
         .map_err(|_| position)?;
+    let viewport = camera.viewport();
     Ok(quad.vertices.map(|vertex| {
         V::from_ndc(
             ndc_from_screen(vertex.position, viewport),

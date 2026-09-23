@@ -857,18 +857,16 @@ mod tests {
             .unwrap()
             .components
             .insert(
-                "Camera".to_owned(),
-                engine::core::camera::CameraComponent::Perspective(
-                    engine::core::camera::Camera3D::default(),
-                )
+            "Camera".to_owned(),
+            engine::core::camera::Camera::Perspective(engine::core::camera::Camera3D::default())
                 .to_component_str(),
-            );
+        );
         let snapshot = inspector.snapshot(&document, id).unwrap();
         assert!(
             !format!("{snapshot:?}").contains("camera3d"),
             "迁移后快照不得再携带相机缓冲字段"
         );
-        let camera = engine::core::camera::CameraComponent::from_component_str(
+        let camera = engine::core::camera::Camera::from_component_str(
             &document.scene.entities[&id].components["Camera"],
         )
         .expect("引擎解析器必须认得统一的 Camera")

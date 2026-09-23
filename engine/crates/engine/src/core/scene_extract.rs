@@ -117,8 +117,8 @@ pub fn extract_serialized_scene_3d(scene: &Scene) -> SerializedScene3d {
         if let Some(value) = entity.components.get(crate::core::camera::CAMERA_COMPONENT) {
             // 统一 `Camera`：按投影分支取值，只有**透视**相机属于 3D 提取；正交相机归 2D 路径
             // （它不是"3D 里坏掉的相机"，跳过但不报诊断）。
-            match crate::core::camera::CameraComponent::from_component_str(value) {
-                Ok(crate::core::camera::CameraComponent::Perspective(camera)) => {
+            match crate::core::camera::Camera::from_component_str(value) {
+                Ok(crate::core::camera::Camera::Perspective(camera)) => {
                     // WP5 / docs/54 §8-⑦：`pose=transform` 的相机姿态取实体的**世界**变换
                     // （父链组合后的结果），而不是局部值——相机挂在父下时才算对得上画面。
                     // 取不到就**报诊断**并保持组件姿态；沉默地"看起来没生效"是最难查的一类问题。
@@ -154,7 +154,7 @@ pub fn extract_serialized_scene_3d(scene: &Scene) -> SerializedScene3d {
                     };
                     result.cameras.push((entity.id, camera));
                 }
-                Ok(crate::core::camera::CameraComponent::Orthographic(_)) => {}
+                Ok(crate::core::camera::Camera::Orthographic(_)) => {}
                 Err(error) => result.diagnostics.push(SceneExtractDiagnostic {
                     entity: entity.id,
                     name: entity.name.clone(),

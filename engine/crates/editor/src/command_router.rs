@@ -521,9 +521,8 @@ mod tests {
                 .expect("统一形态的 Transform"),
             engine::core::transform::Transform3D::identity()
         );
-        let camera =
-            engine::core::camera::CameraComponent::from_component_str(&components["Camera"])
-                .expect("统一形态的 Camera");
+        let camera = engine::core::camera::Camera::from_component_str(&components["Camera"])
+            .expect("统一形态的 Camera");
         assert_eq!(
             camera.projection(),
             engine::core::camera::CameraProjection::Perspective,

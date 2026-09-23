@@ -14,7 +14,9 @@ use crate::core::{
     animation3d::Animation3D,
     asset_handle::{AssetHandle, AssetRecord, AssetStore},
     camera::Camera3D,
-    camera::{Camera2D, CameraBounds, CameraSelection, RenderView, Viewport},
+    camera::{
+        Camera2D, CameraBounds, CameraSelection, CameraView, OrthoTerms, RenderView, Viewport,
+    },
     entity::EntityId,
     font::{FontAtlas, FontVectorAtlas, project_font},
     hierarchy::{GlobalTransform, SpatialReport},
@@ -938,6 +940,10 @@ impl RuntimeScene {
         if shapes.is_empty() {
             return;
         }
+        // 预算项每帧一次：逐段投影因此不再校验相机、不再算三角函数。
+        let Ok(camera) = OrthoTerms::new(self.camera, viewport) else {
+            return;
+        };
         let start = vertices.len();
         for shape in shapes {
             // 传感器黄、动态体绿、固定体青：三种响应**不是**同一件事，画成一个颜色会让
@@ -952,12 +958,16 @@ impl RuntimeScene {
             // 轮廓本身由 `ColliderShape::wireframe_edges` 给出（局部坐标，2D/3D 同一套语义），
             // 这里只做姿态变换与投影。折线首尾相接，再逐段投影成细四边形。
             for (from, to) in shape.wireframe_segments() {
-                let (Ok(from), Ok(to)) = (
-                    self.camera.world_to_screen(from, viewport),
-                    self.camera.world_to_screen(to, viewport),
-                ) else {
+                // 非有限端点跳过该段（与旧的"投影失败即放弃"同一语义）。
+                if !from.x.is_finite()
+                    || !from.y.is_finite()
+                    || !to.x.is_finite()
+                    || !to.y.is_finite()
+                {
                     continue;
-                };
+                }
+                let from = camera.world_to_screen(from);
+                let to = camera.world_to_screen(to);
                 push_screen_line(vertices, [from.x, from.y], [to.x, to.y], color, viewport);
             }
         }
@@ -1000,7 +1010,11 @@ impl RuntimeScene {
             return;
         }
         let aspect = viewport.width / viewport.height.max(1.0);
-        let camera = self.active_camera3d(aspect);
+        // 每帧烘焙一次 3D 视图：逐段投影因此不再重建矩阵（此前每个端点都会重建一次
+        // `view_projection_matrix`，等于每段两次 4×4 乘法加两次校验）。
+        let Ok(view) = CameraView::from_camera3d(self.active_camera3d(aspect), viewport) else {
+            return;
+        };
         let start = vertices.len();
         for shape in shapes {
             let color = if shape.sensor {
@@ -1012,8 +1026,8 @@ impl RuntimeScene {
             };
             for (from, to) in shape.wireframe_segments() {
                 let (Some(from), Some(to)) = (
-                    crate::core::picking::screen_from_world_unclipped(camera, from, viewport),
-                    crate::core::picking::screen_from_world_unclipped(camera, to, viewport),
+                    crate::core::picking::screen_from_view_unclipped(view, from, viewport),
+                    crate::core::picking::screen_from_view_unclipped(view, to, viewport),
                 ) else {
                     continue; // 相机背后/远裁剪面之外：不画，也不猜
                 };
@@ -2159,7 +2173,7 @@ impl RuntimeScene {
             }
             out
         });
-        let camera = self.camera;
+        let camera = OrthoTerms::new(self.camera, viewport).ok();
         entities
             .into_iter()
             .filter_map(|(id, image, text, sprite, events)| {
@@ -2174,7 +2188,7 @@ impl RuntimeScene {
                     let layout_rect = self.scene_ui_layout_rect(id, viewport_arr)?;
                     self.text_hit_rect(&layout_rect, &text)?
                 } else if let Some((sprite, transform)) = sprite {
-                    sprite_screen_rect(&sprite, &transform, camera, viewport)?
+                    sprite_screen_rect(&sprite, &transform, camera?)?
                 } else {
                     return None;
                 };
@@ -2358,28 +2372,45 @@ impl RuntimeScene {
             active: self.script.active_camera().map(|id| id.index() as u64),
         };
         let mut camera = self.script.with_world(|world| {
-            let mut candidates: Vec<(u64, Camera3D)> = Vec::new();
+            // 单趟遍历、**不建候选表**：显式选中优先，否则排序序第一个启用项。
+            // （此前每调用一次就分配一个 `Vec<(u64, Camera3D)>`，而它每帧至少被调 2~3 次：
+            // `scene_3d_with_camera`、`set_camera3d_view`、3D 调试线框。）
+            let mut chosen: Option<Camera3D> = None;
+            let mut fallback: Option<Camera3D> = None;
             let mut selected_disabled = false;
-            world.for_each::<Camera3D>(|id, camera| {
-                if !camera.enabled {
+            world.for_each::<crate::core::camera::Camera>(|id, camera| {
+                // 唯一组件、按投影分支取值：正交相机不属于 3D pass 的候选（既不参与
+                // "第一个"回退，也不响应显式选中——与它此前根本不在 `Camera3D` 存储里一致）。
+                let Some(component) = camera.as_perspective() else {
+                    return;
+                };
+                if !component.enabled {
                     selected_disabled |= selection.is_selected(id.index() as u64);
+                    return;
+                }
+                if chosen.is_some() {
+                    // 已命中显式选中项，且回退项也已就位：剩下的候选不必再解析姿态。
                     return;
                 }
                 // WP5：声明了 `pose=transform` 的相机，姿态改由**实体的 Transform3D** 提供
                 // （位置 + -Z 视线 + +Y 上方向），本组件的 position/target 退化为回退值。
                 // 没有 Transform3D 时保持组件姿态（scene_extract 会为此报诊断）。
-                let camera = if camera.pose_from_transform {
+                let camera = if component.pose_from_transform {
                     // docs/54 §8-⑦：姿态取实体的**世界**变换（父链组合后的结果）。取局部值
                     // 会让挂在父下的相机看不清"它到底在看哪里"；这里用 lazy 版本，因此不依赖
                     // "调用方本帧已经跑过传播"这个隐含顺序。
                     match crate::core::hierarchy::world_transform_3d_lazy(world, id) {
-                        Ok(Some(pose)) => camera.with_pose(pose).unwrap_or(*camera),
-                        _ => *camera,
+                        Ok(Some(pose)) => component.with_pose(pose).unwrap_or(component),
+                        _ => component,
                     }
                 } else {
-                    *camera
+                    component
                 };
-                candidates.push((id.index() as u64, camera));
+                if selection.is_selected(id.index() as u64) {
+                    chosen = Some(camera);
+                } else if fallback.is_none() {
+                    fallback = Some(camera);
+                }
             });
             if selected_disabled {
                 tracing::warn!(
@@ -2387,8 +2418,7 @@ impl RuntimeScene {
                     "[render] `camera.set_active` 选中的相机 `enabled=false`，已回退到下一台可用相机"
                 );
             }
-            // 已经按"启用 + 姿态解析"筛过一遍，因此这里用普通 `resolve`。
-            selection.resolve(candidates)
+            chosen.or(fallback)
         });
         if let Some(camera) = &mut camera {
             camera.aspect_ratio = aspect_ratio;
@@ -3460,11 +3490,20 @@ impl RuntimeScene {
 
         let viewport = Viewport::new(width.max(1) as f32, height.max(1) as f32)
             .map_err(|error| error.to_string())?;
-        let camera = self.camera;
+        // 预算项与世界通道要用的**逆矩阵**都在循环外算一次：此前每个世界文字实体各算一次
+        // `view_projection` + `Mat4::inverse()`，实体一多就是每帧成百上千次 4×4 求逆。
+        let Ok(camera) = OrthoTerms::new(self.camera, viewport) else {
+            return Ok(());
+        };
+        let world_inverse = if self.world_sprite_depth {
+            CameraView::from_camera2d(self.camera, viewport)
+                .ok()
+                .and_then(CameraView::inverse)
+        } else {
+            None
+        };
         for (_, transform, text) in entries {
-            let Ok(screen) = camera.world_to_screen(transform.position, viewport) else {
-                continue;
-            };
+            let screen = camera.world_to_screen(transform.position);
             let mut origin = [screen.x + text.offset[0], screen.y + text.offset[1]];
             if text.centered {
                 let (size, _) = self.measure_scene_ui_text(&text.text);
@@ -3497,10 +3536,7 @@ impl RuntimeScene {
                 // `view_projection` 的逆映射回世界坐标——因此屏幕上的观感与 overlay 路径
                 // 逐个像素一致（字号仍是像素大小、随 zoom 换算成世界尺寸），但它有了世界
                 // 坐标与 z，可以和精灵/瓦片一起参与深度测试。
-                let Ok(matrix) = camera.view_projection(viewport, -1.0, 1.0) else {
-                    continue;
-                };
-                let Ok(inverse) = matrix.inverse() else {
+                let Some(inverse) = world_inverse else {
                     continue;
                 };
                 let converted = mesh
@@ -3931,7 +3967,10 @@ impl RuntimeScene {
         world_draws: &mut Vec<SpriteDrawBatch>,
         viewport: Viewport,
     ) -> Result<(), String> {
-        let camera = TilemapCamera::new(self.camera, viewport);
+        let Ok(camera) = OrthoTerms::new(self.camera, viewport) else {
+            // 相机退化（zoom 非正等）时不产瓦片顶点：与精灵路径一致，等宿主修好相机再画。
+            return Ok(());
+        };
         // WP4 ④：视口外瓦片只在 `vertices()` 之外还被用到时不剔除（不存在这种调用），
         // 因此这里直接取运行时开关；关掉即像素对拍用的"整层全画"档。
         let cull = self.tilemap_culling;
@@ -4006,7 +4045,7 @@ impl RuntimeScene {
                             vertices,
                             overlay_draws,
                             texture,
-                            &camera,
+                            camera,
                             &layer,
                             cull,
                         );
@@ -4226,55 +4265,6 @@ fn build_cached_tilemap_layer(
     })
 }
 
-#[derive(Clone, Copy)]
-struct TilemapCamera {
-    center: Vec2,
-    sin: f32,
-    cos: f32,
-    zoom: f32,
-    half_width: f32,
-    half_height: f32,
-    /// 屏幕像素 → NDC 需要视口尺寸；与精灵路径共用 `core::sprite_batch::ndc_from_screen`，
-    /// 保证两条路径的换算永远一致。
-    viewport: Viewport,
-}
-
-impl TilemapCamera {
-    fn new(camera: Camera2D, viewport: Viewport) -> Self {
-        let center = camera.constrained_center(viewport).unwrap_or(camera.center);
-        let (sin, cos) = camera.rotation.sin_cos();
-        Self {
-            center,
-            sin,
-            cos,
-            zoom: camera.zoom,
-            half_width: viewport.width * 0.5,
-            half_height: viewport.height * 0.5,
-            viewport,
-        }
-    }
-
-    fn world_to_screen(self, world: Vec2) -> [f32; 2] {
-        let delta = Vec2::new(world.x - self.center.x, world.y - self.center.y);
-        let view = Vec2::new(
-            delta.x * self.cos + delta.y * self.sin,
-            -delta.x * self.sin + delta.y * self.cos,
-        );
-        [
-            view.x * self.zoom + self.half_width,
-            self.half_height - view.y * self.zoom,
-        ]
-    }
-
-    fn world_offset_to_screen_delta(self, world: Vec2) -> [f32; 2] {
-        let view = Vec2::new(
-            world.x * self.cos + world.y * self.sin,
-            -world.x * self.sin + world.y * self.cos,
-        );
-        [view.x * self.zoom, -view.y * self.zoom]
-    }
-}
-
 /// 把一层的瓦片顶点**直接以 NDC**追加进最终 overlay 缓冲（WP6 单趟化：不再先产出
 /// `SpriteVertex` 再转换一遍）。屏幕像素 → NDC 走 `ndc_from_screen` 这唯一一份实现。
 ///
@@ -4287,7 +4277,7 @@ fn append_tilemap_layer<V: OverlayVertexSink>(
     vertices: &mut Vec<V>,
     draws: &mut Vec<SpriteDrawBatch>,
     texture_id: u32,
-    camera: &TilemapCamera,
+    camera: OrthoTerms,
     layer: &CachedTilemapLayer,
     cull: bool,
 ) {
@@ -4311,17 +4301,18 @@ fn append_tilemap_layer<V: OverlayVertexSink>(
             corner.x * cos - corner.y * sin,
             corner.x * sin + corner.y * cos,
         );
-        camera.world_offset_to_screen_delta(rotated)
+        camera.world_delta_to_screen(rotated)
     });
     // 整层共用的一组保守外扩量：角点屏幕偏移的 AABB，再加 1px 抹掉亚像素与采样误差。
     let (mut extent_x, mut extent_y) = (0.0f32, 0.0f32);
     for offset in &screen_offsets {
-        extent_x = extent_x.max(offset[0].abs());
-        extent_y = extent_y.max(offset[1].abs());
+        extent_x = extent_x.max(offset.x.abs());
+        extent_y = extent_y.max(offset.y.abs());
     }
     extent_x += 1.0;
     extent_y += 1.0;
-    let (viewport_w, viewport_h) = (camera.viewport.width, camera.viewport.height);
+    let viewport = camera.viewport();
+    let (viewport_w, viewport_h) = (viewport.width, viewport.height);
     for tile in &layer.sprites {
         let center_world = Vec2::new(
             layer.transform.position.x + tile.center_offset.x,
@@ -4329,14 +4320,14 @@ fn append_tilemap_layer<V: OverlayVertexSink>(
         );
         let center = camera.world_to_screen(center_world);
         if cull
-            && (center[0] + extent_x < 0.0
-                || center[0] - extent_x > viewport_w
-                || center[1] + extent_y < 0.0
-                || center[1] - extent_y > viewport_h)
+            && (center.x + extent_x < 0.0
+                || center.x - extent_x > viewport_w
+                || center.y + extent_y < 0.0
+                || center.y - extent_y > viewport_h)
         {
             continue;
         }
-        let positions = screen_offsets.map(|offset| [center[0] + offset[0], center[1] + offset[1]]);
+        let positions = screen_offsets.map(|offset| [center.x + offset.x, center.y + offset.y]);
         let uv = [
             [tile.uv_min.x, tile.uv_min.y],
             [tile.uv_max.x, tile.uv_min.y],
@@ -4346,7 +4337,7 @@ fn append_tilemap_layer<V: OverlayVertexSink>(
         let tint = [1.0; 4];
         let vertex = |corner: usize| {
             V::from_ndc(
-                ndc_from_screen(positions[corner], camera.viewport),
+                ndc_from_screen(positions[corner], viewport),
                 uv[corner],
                 tint,
             )
@@ -4678,28 +4669,31 @@ pub fn load_custom_font_atlas(project_root: Option<&Path>, font_asset: &str) -> 
 /// **启动场景与换图读的是同一份口径**：`init` 用它决定初始相机，`sync_camera_from_scene`
 /// 用它决定换图后的 bounds。两处各写一遍的话，"哪台算场景相机"就会有两个答案。
 ///
-/// docs/54 §4.2：被禁用的相机不参与选择（与 3D 侧同一条规则），但过滤在 `find_map`
+/// docs/54 §4.2：被禁用的相机不参与选择（与 3D 侧同一条规则），但过滤在遍历
 /// **里面**——"第一台被禁用"不该挡掉后面启用的那台。
+///
+/// 运行时世界里只有**一个** `Camera` 组件，因此这里单趟遍历、按投影分支取值，
+/// 不再需要"先取一份 `Vec<EntityId>` 再逐实体 `get`"。
 fn declared_camera_2d_in(world: &crate::core::world::World) -> Option<Camera2D> {
-    world
-        .entities_with::<Camera2D>()
-        .into_iter()
-        .find_map(|id| {
-            world
-                .get::<Camera2D>(id)
-                .ok()
-                .flatten()
-                .copied()
-                .filter(|camera| camera.enabled)
-        })
+    let mut found = None;
+    world.for_each::<crate::core::camera::Camera>(|_, camera| {
+        if found.is_some() {
+            return;
+        }
+        if let Some(orthographic) = camera.as_orthographic()
+            && orthographic.enabled
+        {
+            found = Some(orthographic);
+        }
+    });
+    found
 }
 
 /// Sprite 的世界矩形（pivot+缩放+旋转+位移）投影到屏幕的 AABB，供 UiEvents 命中。
 fn sprite_screen_rect(
     sprite: &Sprite,
     transform: &Transform,
-    camera: Camera2D,
-    viewport: Viewport,
+    camera: OrthoTerms,
 ) -> Option<([f32; 2], [f32; 2])> {
     // 局部四角：(-pivot*size) 到 ((1-pivot)*size)，经缩放/旋转/位移后投影。
     let pivot = sprite.pivot;
@@ -4723,7 +4717,11 @@ fn sprite_screen_rect(
             transform.position.x + rotated.x,
             transform.position.y + rotated.y,
         );
-        let screen = camera.world_to_screen(world, viewport).ok()?;
+        let screen = camera.world_to_screen(world);
+        // 非有限的世界坐标不产出命中矩形（与旧的"投影失败即放弃"同一语义）。
+        if !screen.x.is_finite() || !screen.y.is_finite() {
+            return None;
+        }
         min[0] = min[0].min(screen.x);
         min[1] = min[1].min(screen.y);
         max[0] = max[0].max(screen.x);

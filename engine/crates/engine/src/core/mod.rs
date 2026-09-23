@@ -12,7 +12,8 @@ pub mod asset_handle;
 pub mod atlas;
 /// Named sound-effect playback backed by rodio.
 pub mod audio;
-/// WP4：2D 相机控制器（跟随 / 死区 / 平滑 / 抖动）。
+/// 统一相机：2D/3D 投影与坐标换算、组件编解码、2D 控制器、选择规则与每帧渲染视图契约。
+/// 按职责分子模块，公开路径由 `camera/mod.rs` 统一 `pub use`（见模块文档）。
 pub mod camera;
 /// Perspective camera and view-frustum primitives for 3D rendering.
 /// 打包时字符收集：扫描场景 Text 与 Lua 字符串，产出去重的字符集供字形预热。
@@ -40,6 +41,8 @@ pub mod font;
 pub mod font_subset;
 /// Gameplay data types for clocks, items, and inventories.
 pub mod gameplay;
+/// 3D 几何基元：射线、视锥与平面（拾取、gizmo 与渲染剔除共用；此前住在 `core::camera`）。
+pub mod geom3d;
 /// CPU-side glTF/GLB mesh and scene asset importer.
 pub mod gltf_asset;
 /// Grid helpers for tile-based world/cell conversion and facing.

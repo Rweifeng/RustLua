@@ -35,7 +35,7 @@ use std::{
 };
 
 use engine::core::{
-    camera::{CAMERA_COMPONENT, Camera2D, Camera3D, CameraComponent},
+    camera::{CAMERA_COMPONENT, Camera, Camera2D, Camera3D},
     prefab::Prefab,
     scene::{Scene, SceneEntity, SceneEntityId},
     spatial_transform::{LocalTransform, SpatialKind, THREE_D_MARKERS, entity_space},
@@ -242,11 +242,11 @@ fn migrate_entity(
         // 两条分支的错误类型不同（各自解析器的错误），因此统一成字符串再收敛。
         let camera = if is_3d {
             Camera3D::from_component_str(&payload)
-                .map(CameraComponent::Perspective)
+                .map(Camera::Perspective)
                 .map_err(|error| error.to_string())
         } else {
             Camera2D::from_component_str(&payload)
-                .map(CameraComponent::Orthographic)
+                .map(Camera::Orthographic)
                 .map_err(|error| error.to_string())
         }
         .map_err(|reason| Skip::BrokenPayload {
@@ -258,7 +258,7 @@ fn migrate_entity(
     }
     // 统一名但缺判别字段的相机：报出来（不猜投影）。
     if let Some(raw) = next.get(CAMERA_COMPONENT)
-        && CameraComponent::from_component_str(raw).is_err()
+        && Camera::from_component_str(raw).is_err()
     {
         return Err(Skip::BrokenPayload {
             component: CAMERA_COMPONENT.to_owned(),

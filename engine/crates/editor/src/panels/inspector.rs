@@ -1376,7 +1376,7 @@ impl EditorApp {
             // 看向原点、FOV 90°、near 0.1、far 100）+ 显式判别字段；要正交就把
             // `projection` 改成 orthographic，字段编辑器会接着给正交那套字段。
             "Camera" => {
-                let camera = engine::core::camera::CameraComponent::Perspective(
+                let camera = engine::core::camera::Camera::Perspective(
                     engine::core::camera::Camera3D::default(),
                 );
                 if let Some(entity) = scene.scene.entities.get_mut(&selected) {

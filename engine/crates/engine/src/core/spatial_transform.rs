@@ -1052,7 +1052,7 @@ pub fn entity_space(components: &BTreeMap<String, String>) -> SpatialKind {
     }
     let perspective = components
         .get(crate::core::camera::CAMERA_COMPONENT)
-        .and_then(|raw| crate::core::camera::CameraComponent::from_component_str(raw).ok())
+        .and_then(|raw| crate::core::camera::Camera::from_component_str(raw).ok())
         .is_some_and(|camera| {
             camera.projection() == crate::core::camera::CameraProjection::Perspective
         });
