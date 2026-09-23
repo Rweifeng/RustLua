@@ -5,7 +5,7 @@
 度量数字（µs、分配字节、测试计数）、逐条证据、golden 断言与实施细节留在能力文档与任务文件里，不在本文重复：
 重构过程见 [docs/53](docs/53-WP0增量场景帧基准与每帧分配.md) 与 [docs/40](docs/40-引擎全面重构计划.md)，已完成任务的验收记录见 `tasks/done/`。
 
-## Unreleased — 相机模块拆分与每帧烘焙（批 1–5）
+## Unreleased — 相机模块拆分与每帧烘焙（批 1–6）
 
 主题：`core/camera.rs` 曾把四件事装在一个 2565 行的文件里——相机类型与数学、组件串编解码、
 2D 跟随策略、每帧渲染视图契约，外加 3D 几何。同时**同一组相机量被逐精灵反复重算**：
@@ -58,21 +58,44 @@ overlay 构建；瓦片层为此写了一份**与 `Camera2D` 重复的** `Tilema
 - 退化相机仍可表达（`RenderView::degenerate`）：它正是渲染器"声明了视图却没有矩阵"那条历史
   回退分支的触发条件。
 
+### 批 6：宽高比归**视口**（`Camera3D::aspect_ratio` 降级为"无视口时的回退值"）
+
+- 病灶：宿主每帧把窗口比例**写回** `Camera3D::aspect_ratio`，于是"组件里存的比例"与"渲染/拾取
+  实际用的比例"是两份状态——读代码的人分不清某个时刻哪一份是权威；而 `picking`（Lua
+  `camera3d.*`、编辑器点选、调试线框）过去直接读组件字段，一旦宿主忘了写回，画面与拾取就会
+  按不同比例各算各的（症状是"点中的位置和看到的位置差一点"，且没有任何报错）。
+- 新增 `Camera3D::{projection_matrix_for, view_projection_matrix_for}(aspect)`；
+  `CameraView::from_camera3d` 改用**视口**比例烘焙矩阵并新增 `CameraView::aspect()`。
+  成帧后 `Camera3D::aspect_ratio` **不参与**，它只服务**没有视口**的调用方：宿主未声明
+  `FrameViews` 时的历史回退、光照/阴影相机（`light_view_projection` 只用姿态矩阵）、
+  以及只做姿态变换的路径。`Camera3D::projection_matrix()` / `view_projection_matrix()` 保持原签名
+  （= 用组件自带比例），因此这些调用方一行未改。
+- 拾取同源是**顺带**拿到的：批 3 已把 `picking::{screen_from_world, screen_from_world_unclipped,
+  ray_from_screen}` 改成内部烘焙 `CameraView`，所以这一次改 `from_camera3d` 就让"渲染用的矩阵"与
+  "拾取用的矩阵"同时只由视口决定。
+- **判据（先钉基线，再改，再对拍）**：改前先把 8 份 golden 报告跑一遍存到
+  `artifacts/aspect-before/`，改后再跑一遍存 `artifacts/aspect-after/`，逐值比较
+  **721 项语义/像素字段全部相同**（含 `wp0-lighting-golden` 的 `lit/shadow` 采样像素
+  `[143,155,172]` / `[55,60,67]`、`wp0-mixed-golden` 的遮挡采样、`wp0-hud-golden` 的分层像素、
+  3D golden 的几何计数）。唯一出现的差异是**计时与分配计数**，且已用同版本重跑两次证明它们是噪声
+  （`wp0_3d_stress` 的 `cpu_alloc_count` 在**同一份二进制**上重跑得 24570/24572/24575，
+  而最大的那一档四次都是 bit 相同的 1807361）。
+- 引擎测试 **843**（842 + 新增 `camera_view_takes_aspect_from_the_viewport`）全绿：这条测试断言
+  "成帧矩阵 == 按视口比例算的那一份"且"≠ 组件自带比例的那一份"，并顺带钉住屏幕中心射线指向
+  相机目标。
+
 ### 有意保留的偏离（已评估、未做，附理由）
 
 - **编辑器 Inspector 的每帧解析不做缓存**：`schema_fields::camera_notes` 每帧解析一次 `Camera`
   载荷（选中 N 个实体则 N 次），量级是**每帧常数、约微秒**；加备忘录会引入"载荷变了缓存没失效"
   的陈旧风险，收益不可测。按仓库既有口径（"只判测量是活的"）不做。
-- **`Camera3D::aspect_ratio` 仍是组件字段，没有改成"由视口推出"**：宿主每帧用窗口比例覆盖它，
-  而 `Camera3D` 也被**没有视口**的调用方使用（`light_view_projection` 用 aspect 1.0 构造光照相机、
-  编辑器传面板比例）。把 aspect 唯一化为"视口派生"是一次**行为可见**的改动，值得单独一批做，
-  不与本次纯拆分混在一起。
 - **`camera.set_active` 仍拒绝正交相机**（只对 3D pass 生效）：2D 的生效相机是宿主所有权的
   `RuntimeScene.camera`（脚本请求 → 控制器 → 回填），把它改成"由 ECS 选中"会破坏那条链。
   运行时的**存储与遍历**已统一为一个 `Camera`，但"谁生效"这件事仍是两条既有语义。
 - **宿主未声明 `FrameViews` 时**（`preview_session` 的回滚档）渲染器仍按 `Scene3d.camera` 现算一次
   矩阵——每帧**常数**成本，且这条路径正是"不调用 `set_frame_views` 即回到收敛前"的保证；
-  把它也挪进烘焙会让"未声明"与"相机退化"两种语义混在一起。
+  把它也挪进烘焙会让"未声明"与"相机退化"两种语义混在一起。批 6 之后这条路也正是
+  `Camera3D::aspect_ratio` 唯一还有实际作用的地方（因此它没有被删掉，而被明确降级为回退值）。
 
 ### 兼容契约（未动）
 
