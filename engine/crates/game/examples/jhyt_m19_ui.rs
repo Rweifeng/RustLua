@@ -161,7 +161,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if not t:find(w, 1, true) then return 'missing:' .. w end end return 'ok' end)()",
         "ok",
     )?;
-    assert_num(&mut runtime, "#(require('ui.hud').status_lines())", 9.0)?;
+    assert_num(&mut runtime, "#(require('ui.hud').status_lines())", 5.0)?;
     let hud_line = query_str(&mut runtime, "require('ui.hud').text()")?;
     println!("hud.text() = {hud_line}");
     // update() 返回值仍携带 HUD 文案（既有 headless 断言的兼容面）。
@@ -797,7 +797,8 @@ fn new_runtime(project: &Path, save_path: &Path) -> Result<LuaRuntime, Box<dyn s
     runtime.set_save_path(save_path.to_path_buf());
     // 音频目录固定为 <project>/assets/audio（core/audio.rs）。
     runtime.set_audio_asset_dir(project.join("assets").join("audio"));
-    runtime.set_ui_viewport(1280, 720);
+    // M32 竖版：设计分辨率 720×1280（Lua 动态 UI 是屏幕像素空间，视口必须与设计尺寸一致）。
+    runtime.set_ui_viewport(720, 1280);
     runtime.set_delta(1.0 / 60.0);
     Ok(runtime)
 }

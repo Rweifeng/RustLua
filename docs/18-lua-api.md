@@ -81,7 +81,7 @@ end
 | `ui` | `text/text_at/show/hide/get` | 最小文本 UI 状态接口；`text_at(id,x,y,text[,scale])` 可选缩放 |
 | `audio` | `play/volume/music/stop_music` | 音效播放与音量；`music(name)` 循环 BGM，`stop_music()` 停止 |
 | `save` | `read/write/load/commit` | 键值存档接口（load 从磁盘载入，commit 原子写入） |
-| `app` | `quit` | 请求退出应用 |
+| `app` | `quit` / `project_root` | `quit()` 请求退出应用；`project_root()` 返回**工程根目录的绝对路径**（正斜杠，未配置时为空串）——`io.open` 的相对路径按进程工作目录解析，而 `--check` 不 chdir 到工程根，因此"跨文件契约"校验器（要读 `scenes/*.scene`、`project.toml`）必须靠它拼绝对路径，否则会静默跳过检查 |
 
 ## 农场 API（P0/P1 最小闭环）
 

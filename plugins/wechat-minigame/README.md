@@ -177,10 +177,10 @@ powershell -NoProfile -File scripts\package.ps1 -Platform wechat-minigame `
 
 ```
 examples\<game>\builds\wechat-minigame\<PublishName>\      # 发布根
-└── launcher\                                   # 代码包（上传微信/导入开发者工具的目录），1,534 KB
+└── launcher\                                   # 代码包（上传微信/导入开发者工具的目录），1,644 KB
     ├── game.js, game.json, project.config.json, wechat-adapter.js
     ├── web-runtime.js        # 与 webgl 共用的 Lua 运行时（同一份文件，逻辑不会漂移）
-    ├── pkg/                  # 只放 fengari-web.js（Lua VM）
+    ├── pkg/                  # 随包内核：fengari-web.js（Lua VM）+ game_web.js/_bg.wasm（wasm 核心，M32）
     ├── mainpack.json         # 首屏清单：构建/运行时/harness 三方共用的路由依据
     ├── code-package.json     # 改名映射：逻辑路径 → 会随代码包上传的宿主文件名（见下）
     ├── mainpack\             # 首屏资源（在**主包**里，启动即用，不等分包）
@@ -208,7 +208,7 @@ examples\<game>\builds\wechat-minigame\<PublishName>\      # 发布根
 
 | 形态 | 主包 | 分包 | 总计 |
 |---|---|---|---|
-| **`subpackage`（默认）** | 1,515 KB（37.0%） | 3,011 KB（73.5%） | 4,525 KB（22.1%） |
+| **`subpackage`（默认）** | 1,644 KB（40.1%） | 3,019 KB（73.7%） | 4,663 KB（22.8%） |
 | `remote` | 479 KB（11.7%） | — | 479 KB + CDN 上 4,083 KB |
 | `full` | 4,507 KB（110%）→ **必然超限** | — | 4,507 KB |
 
@@ -224,11 +224,105 @@ examples\<game>\builds\wechat-minigame\<PublishName>\      # 发布根
 运行时用 `wx.loadFont` 注册该子集字体。它在包内的位置随形态变：分包形态下字体属首屏资源，
 在 `mainpack/assets/fonts/`（构建期随 `mainpack.json` 一起切过去）。
 
-**不随包分发 wasm-bindgen 产物**：`pkg/game_web.js` 是 `--target web` 的浏览器 **ES Module**
-（顶层 `export { … }`），而小游戏运行时按 CommonJS 解析，加载即报
+**wasm 核心随包分发（M32 起）**：`pkg/game_web.js` + `pkg/game_web_bg.wasm`（实测 22 KB + 42 KB）。
+微信分支**必须**用 `wasm-bindgen --target no-modules` 生成胶水——`--target web` 那份是浏览器
+ES Module（顶层 `export { … }`），小游戏按 CommonJS 解析，加载即报
 `WAGame.js:1 SyntaxError: MiniProgramError Unexpected token 'export'`。
-它本来也没被使用（适配层明确不加载 wasm 核心），因此微信分支既不构建也不发行它——
-顺带省下约 56 KB 主包体积，并避免了这类"启动即语法错误"。
+no-modules 产物是纯脚本（无 import/export，整体包在一个 IIFE 里），由 `wasm-bridge.js` 包成
+CommonJS 后、用 `initSync(bytes)` **同步实例化**（小游戏没有 `instantiateStreaming`、也不认
+`Response`，走字节路径最少猜测）。见「wasm 核心」一节。
+
+> **构建期有两处必需的补丁**（都在 `scripts/package.ps1`，改胶水写法时会响亮失败而不是静默放过）：
+> ① no-modules 胶水的第一句是 `script_src = new URL(document.currentScript.src, location.href)...`，
+> 小游戏的 `document` shim 没有 `currentScript`/`location`，**这句必然抛错**（实测
+> `Cannot read properties of undefined (reading 'src')`）→ 包一层 try/catch；
+> ② 胶水只有顶层 `let wasm_bindgen = (…)()`，**不是** `module.exports`、也不挂全局，
+> `require()` 拿到的是空对象 → 追加一行 `module.exports = wasm_bindgen;`。
+
+## wasm 核心（M32）
+
+代码包里随包发行 `pkg/game_web.js`（22 KB，`--target no-modules` 胶水）+ `pkg/game_web_bg.wasm`
+（42 KB）。这两样都在**主包**（`pkg/` 不在分包 root 下），因此启动时就能读到，不需要等分包。
+
+**谁在什么时候加载它**：`wechat-adapter.js` 的 `loadWasmCoreOnce()`，在 `start()` 里
+`probePackReadability()` 之后**同步**执行一次。它读字节（`readBytes('pkg/game_web_bg.wasm')`，
+走适配层既有的路径方言与改名表）→ 调 `wasm-bridge.loadWasmCore()` → `initSync(bytes)` 实例化
+→ 把导出清单与字节数记进证据。
+
+**失败不掀翻启动**：wasm 只是"包里多带的一份核心"，游戏逻辑由 Fengari + `pack/` 承载。
+失败时 `console.warn` 一行 + `data-p2-wasm` 记状态，Lua 那条路照常跑完。
+**但不会被静默忽略**——状态有四个读取通道：
+
+| 通道 | 怎么读 | 取值 |
+|---|---|---|
+| DOM 标记 | `__RustLuaWechat.getAttribute('data-p2-wasm')` | 同下表 `status` |
+| 诊断快照 | `__P2_DIAG().wasm` / `wx.__p2Diag().wasm` | `{status, source, bytes, exports, detail}` |
+| 启动日志 | 控制台搜 `wasm-bridge:` | 成功一行（含导出清单）或 `wasm 核心未就绪（<reason>）` |
+| API | `__RustLuaWechat.loadWasm()` / `.wasmInfo()` | 手动触发 / 只读状态 |
+
+`status` 的取值与含义（每一种都能指出是哪一层不对）：
+
+| status | 含义 | 通常原因 |
+|---|---|---|
+| `ok` | 实例化成功，`exports` 是真实导出名 | 正常 |
+| `not-attempted` | 还没触发（`start()` 之前） | 正常 |
+| `no-webassembly` | 宿主没有 `WXWebAssembly` / `WebAssembly` | 无头 harness（未补该全局）；真机基础库过旧 |
+| `webassembly-api-incomplete` | 只有 `instantiate`、没有 `Module`/`Instance` 构造器 | 宿主 wasm 实现残缺（`initSync` 走不通） |
+| `wasm-bytes-unreadable` | 包内读不到 wasm 字节 | 发布形态没把它打进去（检查 `pkg/game_web_bg.wasm` 是否在产物里） |
+| `instantiate-failed` | 胶水抛错（`detail` 带原始信息） | 胶水被改动后与宿主不兼容（如 M32 之前那句 `document.currentScript.src`） |
+| `bridge-missing` | `require('./wasm-bridge.js')` 失败 | 平台文件没被复制进产物 |
+| `glue-shape-unexpected` | `require('./pkg/game_web.js')` 不是函数或缺 `initSync` | **构建期没补 CommonJS 导出**（`--target no-modules` 只有顶层 `let`） |
+
+**为什么用 `initSync` 而不是 async init**：`WXWebAssembly` 只有 `instantiate(path, imports)`，
+而字节已经在我们手里，同步路径少一层"把字节包装成宿主认的形态"的猜测，也不需要
+`fetch` / `Response` / `instantiateStreaming`（小游戏三者都没有）。实例化期间临时把
+`globalThis.WebAssembly` 指向 `WXWebAssembly`（胶水的 `initSync` 用 `new WebAssembly.Module/Instance`），
+调用完立即还原，不污染宿主全局。
+
+**能力边界**：wasm 到"能读、能实例化、导出清单可核对"为止。`game_web::start()`（web-sys 形态）
+在小游戏里跑不了，适配层不调用；`start_wechat()`（去 DOM 入口）已写在 Rust 侧但**未接线、未验证**
+——详见 `engine/crates/game_web/src/lib.rs` 的状态段。
+
+### 怎么验证 wasm 那一步
+
+官方验收（`verify-wechat-minigame.ps1`）会跑十几个 harness 用例，但 **harness 伪造的 API 面里没有
+`WXWebAssembly`**，所以它只能看到 `wasm.status=no-webassembly`。要把 wasm 那一步真正验证到，
+给 harness 补上这个全局再跑：
+
+```powershell
+# 只验证"发布产物里的 wasm 桥接"（读字节 → 实例化 → 导出清单），最快
+node artifacts\probes\verify-wasm-bridge.js examples\game_jhyt\builds\wechat-minigame\jianghu_youtian\launcher
+
+# 在**完整启动路径**里验证：给 harness 预载 WXWebAssembly（能力面只有 Module/Instance/instantiate）
+$env:NODE_OPTIONS="--require $PWD\artifacts\wx-preload.js"
+node scripts\wechat-minigame-harness.js examples\game_jhyt\builds\wechat-minigame\jianghu_youtian\launcher --frames 12
+Remove-Item Env:\NODE_OPTIONS
+# 期望在日志里看到：wasm-bridge: 核心实例化成功（WXWebAssembly，42641 字节，导出 3 项：memory,start,start_wechat）
+```
+
+`artifacts/wx-preload.js` 是那个预载补丁（真机由宿主注入 `WXWebAssembly`，harness 没有，
+所以它属于**验证环境**的缺口而不是适配层的问题）；`artifacts/probes/` 下是配套的一次性探针
+（桥接直测 / 适配层直测 / 画布-版面一致性 / 改名表核对）。
+
+### 画布尺寸 = 竖版设计分辨率（三处必须一起改）
+
+M32 起游戏是竖版，适配层的画布也跟着是 **720×1280**（此前 1280×720）。这三处必须同时改，
+否则症状是"竖版面板横向溢出画布、底部状态栏看不见"，而**无头验证看不出来**（假 ctx 不裁剪、
+超界坐标照样计数）：
+
+| # | 位置 | 值 |
+|---|---|---|
+| ① | `wechat-adapter.js` 的 `VIEW_WIDTH`/`VIEW_HEIGHT` | 720 / 1280 |
+| ② | `plugins/wechat-minigame/game.json` 的 `deviceOrientation` | `portrait` |
+| ③ | `engine/crates/game_web/src/lib.rs` 的 `canvas.set_width/height`（webgl 侧） | 720 / 1280 |
+
+适配层启动时会做一次**一致性自检**（`reportViewAgreement`）：读 `project.toml` 的
+`window_width/height`（= 工程声明的设计分辨率，与 `scripts/ui/layout.lua` 同源）与画布比对，
+结果进 `data-p2-view` 与 `__P2_DIAG().view_agreement`。三档口径：
+`ok`（读到声明且一致）/ `mismatch`（读到但不一致 → `warn`）/ `unknown`（读不到声明，跳过判断，
+**不算错**）。
+注意方向**不参与**这个比对：`game.json` 在真机上读不到（上传后被编译），适配层有一条硬约束
+"一次都不许读它"（回归守卫 `--expect-no-read game.json`），所以方向只报编译期常量。
 
 ## 运行原理
 
@@ -250,11 +344,22 @@ examples\<game>\builds\wechat-minigame\<PublishName>\      # 发布根
 
 ## 已知边界（不要夸大）
 
-- **WASM 核心未接入，也不随包分发**：小游戏侧的游戏逻辑由 Fengari（Lua in JS）+ `pack/` 承载，
-  这正是 webgl 发布当前的执行路径。`pkg/game_web.js`（`--target web`）是浏览器 ESM + web-sys 形态，
-  小游戏既不能 `require` 也不能解析，所以微信分支不构建、不发行它。
-  接入 `WXWebAssembly` 需要去 DOM 化的 **CommonJS** 胶水，属于后续工作；
-  在此之前绝不能声称 wasm 核心在小游戏里跑起来了。
+- **wasm 核心：能装进来、能实例化、导出清单可核对（M32 起），但游戏逻辑不由它承载**。
+  小游戏侧的游戏逻辑仍由 Fengari（Lua in JS）+ `pack/` 承载——这也是 webgl 发布当前的执行路径。
+  M32 做的事是：微信分支**也**构建 `-p game_web` 的 wasm、以 `--target no-modules` 生成
+  CommonJS 胶水随包发行，并由适配层在启动时同步实例化（结果进 `data-p2-wasm` /
+  `__P2_DIAG().wasm` / 一行启动日志）。实测（`--target no-modules` + `WXWebAssembly`，
+  42,641 字节，导出 `memory,start`）：
+  `wasm-bridge: 核心实例化成功（WXWebAssembly，42641 字节，导出 3 项：memory,start,start_wechat）`。
+  **边界（不要夸大）**：`start()` 是 web-sys 形态（`document`/`window`/`fetch`/`Response`），
+  小游戏里跑不了，因此适配层**不调用**它；`start_wechat()`（去 DOM 入口）已写在 Rust 侧但
+  **未接线、未验证**（见 `engine/crates/game_web/src/lib.rs` 的状态段）。
+  所以"wasm 核心在小游戏里跑起来了"这句话，目前只对"加载 + 实例化 + 导出可读"成立，
+  **不对**"引擎在 wasm 里跑 Lua/渲染"成立。
+- **真机会没有 `WXWebAssembly` 吗**：不会（基础库 2.13+ 有），但 harness **默认没有**——
+  它伪造的 API 面里没有这个成员。所以无头环境下适配层会报 `no-webassembly`，那不是缺陷复现。
+  要验证 wasm 那一步，用 `NODE_OPTIONS=--require artifacts/wx-preload.js` 给它补上
+  （能力面刻意只有 `Module`/`Instance`/`instantiate`，没有 `instantiateStreaming`）。
 - **包里所有 `.js` 必须是 CommonJS**：发布脚本、验证脚本、无头 harness 三处都会按
   **脚本模式**（`vm.Script`，不是 `node --check`——Node 会自动识别 ESM 反而漏检）逐个解析，
   发现顶层 `export`/`import` 直接失败。

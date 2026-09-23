@@ -8,3 +8,10 @@ font = "assets/fonts/NotoSansSC-VF.ttf"
 font_fallback = ""
 font_weight = 400.0
 text_render_mode = "vector"
+
+# 竖版设计分辨率（M32）。`scripts/ui/layout.lua` 的 DESIGN 必须与此一致：
+#   * 场景 UI（`UiLayout`）的作者空间 = 这组尺寸（编辑器按 `meta ui_reference_*` 读同一组值）；
+#   * Lua 动态 UI（`ui.panel`/`ui.image`/`ui.text_at`）是**屏幕像素**空间，取值也按这组尺寸排；
+#   * 发布窗口由宿主 `game --project` 按 `window_width`/`window_height` 开（1:1，不做缩放）。
+window_width = 720
+window_height = 1280

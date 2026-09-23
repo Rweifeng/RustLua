@@ -24,6 +24,8 @@ local nav = require("ui.panel_nav")
 local hints = require("ui.hints")
 -- M30：任务行/目标行按真实字宽裁剪（长任务名或长目标不再画到面板外）。
 local ui_text = require("ui.ui_text")
+-- M32 竖版：面板矩形与行偏移的唯一来源（`ui/layout.lua`）。
+local layout = require("ui.layout")
 
 -- 数字直选 1..9 的按键名（默认只有键盘数字键；未绑定该设备的动作自动跳过）。
 local function digits_label()
@@ -38,8 +40,7 @@ end
 local function hint_line()
   local close_label = hints.binding_labels({ "quest", "cancel", "practice" })
   return hints.panel_line({
-    { keyboard = "W/S", alt_keyboard = "方向键", gamepad = "左摇杆/DPad", label = "选择" },
-    { keyboard = "A/D", alt_keyboard = "左右方向键", gamepad = "左右推杆", label = "翻页" },
+    { keyboard = "W/S", alt_keyboard = "上下方向键", gamepad = "左摇杆/DPad", label = "选择" },
     { keyboard = "1-9", gamepad = digits_label(), label = "定位" },
     { keyboard = close_label, gamepad = close_label, label = "关闭" },
   })
@@ -47,9 +48,10 @@ end
 
 local M = {}
 
-local PANEL = { x = 340, y = 120, w = 600, h = 470 }
+-- 竖版版面（M32）：面板与行偏移取自 `layout.lua`；7 行列表 + 发布者 + 目标列表。
+local PANEL = layout.PANEL.quest
 local ROW_LIMIT = 7
-local ROW_H = 34
+local ROW_H = 38
 
 local FOCUS = "qst:focus"
 local SCROLL = "qst:scroll"
@@ -113,6 +115,8 @@ end
 
 local function clear_ui()
   ui.clear("qst:box")
+  ui.clear("qst:rule")
+  ui.clear("qst:sel")
   for _, id in ipairs({ "qst:title", "qst:state", "qst:giver", "qst:objtitle", "qst:hint", "qst:empty", "qst:msg" }) do
     ui_text.hide("qst", id)
   end
@@ -212,18 +216,33 @@ function M.render()
     return false
   end
   local x, y, w, h = PANEL.x, PANEL.y, PANEL.w, PANEL.h
+  local BOX = layout.BOX
   local rows = M.rows()
-  -- 排版预算（M30）：右侧「状态 …」从 x+w-220 起，行/提示从 x+24 起，目标行从 x+56 起。
-  local ROW_W = w - 48
-  local STATE_W = 196
-  local OBJ_W = w - 56 - 24
+  -- 排版预算（M32）：列表/说明/提示同宽（面板宽 - 2×24）；右上角「状态」独占右半区。
+  local ROW_W = layout.list_width(PANEL)
+  local STATE_W = 240
+  local OBJ_W = ROW_W - 32
+  -- 目标列表首行（列表区最后一行之下，留一行间距）。
+  local OBJ_Y = y + BOX.list_dy + ROW_LIMIT * ROW_H + 46
   sync_focus()
   ui_text.begin("qst")
   ui.panel("qst:box", x, y, w, h, 0.10, 0.11, 0.15, 0.94)
-  ui_text.draw("qst", "qst:title", x + 24, y + 16, 22.0, ROW_W, "任务日志")
+  ui.panel("qst:rule", x + BOX.title_dx, y + BOX.title_dy + BOX.title_font + 14, w - BOX.title_dx * 2, 2, 0.72, 0.75, 0.82, 0.22)
+  ui.panel(
+    "qst:sel",
+    x + BOX.list_dx,
+    y + BOX.list_dy + ui_state.index * ROW_H,
+    w - BOX.list_dx * 2,
+    ROW_H,
+    0.85,
+    0.72,
+    0.42,
+    0.20
+  )
+  ui_text.draw("qst", "qst:title", x + BOX.title_dx, y + BOX.title_dy, BOX.title_font, ROW_W, "任务日志")
 
   if #rows == 0 then
-    ui_text.draw("qst", "qst:empty", x + 24, y + 70, 18.0, ROW_W, "暂无任务")
+    ui_text.draw("qst", "qst:empty", x + BOX.list_dx, y + BOX.list_dy, 18.0, ROW_W, "暂无任务")
   else
     ui_text.hide("qst", "qst:empty")
   end
@@ -236,12 +255,8 @@ function M.render()
     local row = rows[index]
     if row then
       local label = string.format("%d. %s【%s】", index, row.name, M.state_text(row.state))
-      if index == ui_state.index + 1 then
-        label = "> " .. label
-      else
-        label = "  " .. label
-      end
-      ui_text.draw("qst", id, x + 24, y + 58 + slot * ROW_H, 17.0, ROW_W, label)
+      label = (index == ui_state.index + 1) and ("> " .. label) or ("  " .. label)
+      ui_text.draw("qst", id, x + BOX.list_dx, y + BOX.list_dy + slot * ROW_H, 17.0, ROW_W, label)
     else
       ui_text.hide("qst", id)
     end
@@ -253,22 +268,22 @@ function M.render()
     ui_text.draw(
       "qst",
       "qst:state",
-      x + w - 220,
-      y + 20,
-      16.0,
+      x + w - STATE_W - BOX.title_dx,
+      y + BOX.corner_y,
+      BOX.corner_font,
       STATE_W,
       "状态 " .. M.state_text(row.state)
     )
     ui_text.draw(
       "qst",
       "qst:giver",
-      x + 24,
-      y + 58 + ROW_LIMIT * ROW_H,
+      x + BOX.list_dx,
+      OBJ_Y - 26,
       15.0,
       ROW_W,
       "发布者 " .. tostring(row.giver_name or "未知")
     )
-    ui_text.draw_exact("qst", "qst:objtitle", x + 24, y + 58 + ROW_LIMIT * ROW_H + 26, 15.0, ROW_W, "目标：")
+    ui_text.draw_exact("qst", "qst:objtitle", x + BOX.list_dx, OBJ_Y, 15.0, ROW_W, "目标：")
     local objectives = M.objectives()
     for i = 1, ROW_LIMIT do
       local objective = objectives[i]
@@ -276,15 +291,7 @@ function M.render()
       if objective then
         local mark = objective.done and "✓" or "…"
         local text = string.format("%s %s %d/%d", mark, tostring(objective.label), objective.current, objective.target)
-        ui_text.draw(
-          "qst",
-          id,
-          x + 56,
-          y + 58 + ROW_LIMIT * ROW_H + 26 + i * 24,
-          15.0,
-          OBJ_W,
-          text
-        )
+        ui_text.draw("qst", id, x + BOX.list_dx + 32, OBJ_Y + i * 26, 15.0, OBJ_W, text)
       else
         ui_text.hide("qst", id)
       end
@@ -301,13 +308,13 @@ function M.render()
   ui_text.draw(
     "qst",
     "qst:msg",
-    x + 24,
-    y + h - 56,
+    x + BOX.list_dx,
+    y + h + BOX.msg_dy,
     14.0,
     ROW_W,
     "只读面板：任务在对话/交互中接取与交付"
   )
-  ui_text.draw("qst", "qst:hint", x + 24, y + h - 30, 14.0, ROW_W, hint_line())
+  ui_text.draw("qst", "qst:hint", x + BOX.list_dx, y + h + BOX.hint_dy, BOX.hint_font, ROW_W, hint_line())
   return true
 end
 

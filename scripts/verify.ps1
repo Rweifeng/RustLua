@@ -475,7 +475,9 @@ if ($Mvp -or $MvpOnly) {
         "jhyt_m28_loop",
         "jhyt_m29_season_weather",
         "jhyt_m30_cjk_text",
-        "jhyt_m31_pc_release"
+        "jhyt_m31_pc_release",
+        # M32 相机收口：相机跟随玩家 + 取景由场景 bounds 锁在地图内（含换图后重绑 bounds）。
+        "jhyt_m32_camera"
     )
     $exampleDir = Join-Path $engineRoot "crates\game\examples"
 

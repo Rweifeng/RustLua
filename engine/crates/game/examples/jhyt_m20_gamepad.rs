@@ -959,9 +959,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     assert_str_why(
         &mut title,
-        "tostring((ui.panel_get('title:hl:BtnContinue') or {}).width > 340)",
+        "tostring((ui.panel_get('title:hl:BtnContinue') or {}).width > 380)",
         "true",
-        "换项当帧高亮应外扩（>340px，基准 332px）",
+        "换项当帧高亮应外扩（>380px，基准 372px）",
     )?;
     // M22 追加修复（按钮文字重影）：脚本**不得**再画标签文字——三行标签由 `main.scene`
     // 的 Text 实体（entity 8/10/12）绘制，脚本重画一遍会与场景文字错位叠成两层
@@ -997,9 +997,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     assert_str_why(
         &mut title,
-        "tostring((ui.panel_get('title:hl:BtnContinue') or {}).width == 332)",
+        "tostring((ui.panel_get('title:hl:BtnContinue') or {}).width == 372)",
         "true",
-        "收敛后高亮应回到基准外扩（332px = 320 + 2×6）",
+        "收敛后高亮应回到基准外扩（372px = 360 + 2×6；M32 竖版按钮 320→360 宽）",
     )?;
     assert_str_why(
         &mut title,
@@ -1415,7 +1415,8 @@ fn new_runtime(project: &Path, save_path: &Path) -> Result<LuaRuntime, Box<dyn s
     runtime.set_save_path(save_path.to_path_buf());
     // 音频目录固定为 <project>/assets/audio（core/audio.rs）。
     runtime.set_audio_asset_dir(project.join("assets").join("audio"));
-    runtime.set_ui_viewport(1280, 720);
+    // M32 竖版：设计分辨率 720×1280（Lua 动态 UI 是屏幕像素空间，视口必须与设计尺寸一致）。
+    runtime.set_ui_viewport(720, 1280);
     runtime.set_delta(1.0 / 60.0);
     Ok(runtime)
 }

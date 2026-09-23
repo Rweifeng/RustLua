@@ -449,15 +449,26 @@ fn lua_font_sizes(root: &Path) -> Result<(usize, usize, f64), Box<dyn std::error
     let mut files = Vec::new();
     collect_lua_files(root, &mut files)?;
     files.sort();
+    // 全局字号常量：`ui/layout.lua` 的版面表（`M.BOX.title_font = 22.0` 等）是**跨文件**
+    // 被引用的（各面板 `local BOX = layout.BOX` 后写 `BOX.hint_font`），因此先扫一遍它，
+    // 得到一份"全局常量表"，再与每个文件自己的常量合并。
+    let mut global_constants = std::collections::BTreeMap::new();
+    let layout_module = root.join("ui").join("layout.lua");
+    if layout_module.is_file() {
+        global_constants = lua_font_constants(&fs::read_to_string(&layout_module)?);
+    }
     let mut calls = 0usize;
     let mut skipped = 0usize;
     let mut min = f64::MAX;
     for path in files {
         // 注释里也会出现 `ui_text.draw(...)`（本模块的用法说明就是），先剥注释再扫描。
         let source = strip_lua_comments(&fs::read_to_string(&path)?);
-        // 模块级字号常量（`local LINE_FONT = 14`）：字号允许写成常量，但必须能解析出来，
-        // 解析不出来就让 `skipped` 把自检顶掉——不允许"看起来扫过了"。
-        let constants = lua_number_constants(&source);
+        // 模块级字号常量（`local LINE_FONT = 14`）+ 版面表常量：字号允许写成常量，
+        // 但必须能解析出来，解析不出来就让 `skipped` 把自检顶掉——不允许"看起来扫过了"。
+        let mut constants = global_constants.clone();
+        for (name, value) in lua_font_constants(&source) {
+            constants.insert(name, value);
+        }
         let bytes = source.as_bytes();
         let mut cursor = 0usize;
         while let Some(found) = source[cursor..].find("ui_text.draw") {
@@ -562,6 +573,67 @@ fn lua_number_constants(source: &str) -> std::collections::BTreeMap<String, f64>
         let value = value.trim().trim_end_matches(',');
         if let Ok(number) = value.parse::<f64>() {
             map.insert(name.to_string(), number);
+        }
+    }
+    map
+}
+
+/// **字号**常量解析：在 [`lua_number_constants`] 之上，额外接受来自版面表的点号引用。
+///
+/// 为什么需要（M32 竖版）：版面几何集中在 `scripts/ui/layout.lua`，字号也跟着进去了
+/// （`M.BOX.title_font = 22.0`、`M.BOX.hint_font = 14.0`）。各面板写成
+/// `ui_text.draw(..., BOX.hint_font, ...)`（`local BOX = layout.BOX`）或
+/// `ui_text.draw(..., layout.BOX.hint_font, ...)`。
+/// 扫描器原先只认"裸数字 / 模块级数字常量"，于是这些调用会落进 `skipped` 把自检顶掉——
+/// 而自检的本意是"不允许看起来扫过了"，不是"字号只许写字面量"。
+///
+/// 做法（纯文本，不引入 Lua 求值器）：把 `M.BOX = { ... }` 块里的 `key = <数字>`
+/// 同时登记成三种写法 `key` / `BOX.key` / `layout.BOX.key`；面板里的 `BOX` 别名因此
+/// 自然命中，不需要再去追别名链。解析不出来的引用仍计入 `skipped`（自检保持有牙齿）。
+fn lua_font_constants(source: &str) -> std::collections::BTreeMap<String, f64> {
+    let mut map = lua_number_constants(source);
+    // 截取 `M.BOX = {` 起始的整块（从 `{` 到配对的 `}`）。
+    let Some(anchor) = source.find("M.BOX = {") else {
+        return map;
+    };
+    let rest = &source[anchor..];
+    let Some(open) = rest.find('{') else {
+        return map;
+    };
+    let mut depth = 0usize;
+    let mut end = rest.len();
+    for (offset, ch) in rest[open..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = open + offset;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    for line in rest[open..end].lines() {
+        let line = line.trim().trim_end_matches(',').trim_end_matches('}');
+        // 去掉行尾注释后取 `key = value`。
+        let line = line.split("--").next().unwrap_or("").trim();
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let (key, value) = (key.trim(), value.trim().trim_end_matches(','));
+        if key.is_empty()
+            || !key
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+        {
+            continue;
+        }
+        if let Ok(number) = value.parse::<f64>() {
+            map.insert(key.to_string(), number);
+            map.insert(format!("BOX.{key}"), number);
+            map.insert(format!("layout.BOX.{key}"), number);
         }
     }
     map
@@ -678,7 +750,8 @@ fn new_runtime(project: &Path, save_path: &Path) -> Result<LuaRuntime, Box<dyn s
     let mut runtime = LuaRuntime::new()?;
     runtime.set_project_root(project.to_path_buf());
     runtime.set_save_path(save_path.to_path_buf());
-    runtime.set_ui_viewport(1280, 720);
+    // M32 竖版：设计分辨率 720×1280（Lua 动态 UI 是屏幕像素空间，视口必须与设计尺寸一致）。
+    runtime.set_ui_viewport(720, 1280);
     runtime.set_delta(1.0 / 60.0);
     Ok(runtime)
 }

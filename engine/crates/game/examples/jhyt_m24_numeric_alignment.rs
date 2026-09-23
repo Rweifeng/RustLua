@@ -40,7 +40,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut runtime = LuaRuntime::new()?;
     runtime.set_project_root(project.clone());
-    runtime.set_ui_viewport(1280, 720);
+    // M32 竖版：设计分辨率 720×1280（Lua 动态 UI 是屏幕像素空间，视口必须与设计尺寸一致）。
+    runtime.set_ui_viewport(720, 1280);
     runtime.set_delta(1.0 / 60.0);
     // 先执行工程入口：`scripts/` 由此进入 require 搜索路径，①② 两节才能在
     // **进入玩法之前**直接读数据（与 `game --check` 同一条路径）。

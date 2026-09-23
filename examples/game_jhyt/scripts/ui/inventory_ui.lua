@@ -26,6 +26,8 @@ local nav = require("ui.panel_nav")
 local hints = require("ui.hints")
 -- M30：行/详情/提示按真实字宽裁剪并登记（长物品名与长说明不再画到面板外）。
 local ui_text = require("ui.ui_text")
+-- M32 竖版：面板矩形与行偏移的唯一来源（`ui/layout.lua`）。
+local layout = require("ui.layout")
 
 -- 数字直选 1..9 的按键名（默认只有键盘数字键；未绑定该设备的动作自动跳过）。
 local function digits_label()
@@ -44,8 +46,8 @@ local function hint_line()
   local close_label = hints.binding_labels({ "inventory", "cancel" })
   return hints.panel_line({
     {
-      keyboard = "W/S/A/D",
-      alt_keyboard = "方向键",
+      keyboard = "W/S",
+      alt_keyboard = "上下方向键",
       gamepad = "左摇杆/DPad",
       label = "选择",
     },
@@ -59,12 +61,15 @@ end
 
 local M = {}
 
-local PANEL = { x = 320, y = 116, w = 640, h = 484 }
+-- 竖版版面（M32）：单列 10 行。横屏是"两列 × 10 行"（640×484 面板），竖屏只有 720 宽，
+-- 两列会把物品名压到 250px 以内（长名字必截断），所以改成**单列 10 行**：
+-- 行矮一点（40px）、列宽翻倍（544px），信息量不减而可读性更好。
+local PANEL = layout.PANEL.inventory
 local ROWS_PER_COL = 10
-local COLS = 2
+local COLS = 1
 local ROW_LIMIT = ROWS_PER_COL * COLS
-local COL_X = { 24, 336 }
-local ROW_H = 32
+local COL_X = { layout.BOX.list_dx }
+local ROW_H = 40
 
 local FOCUS = "bp:focus"
 
@@ -203,6 +208,8 @@ end
 
 local function clear_ui()
   ui.clear("bp:box")
+  ui.clear("bp:rule")
+  ui.clear("bp:sel")
   for _, id in ipairs({ "bp:title", "bp:cap", "bp:msg", "bp:hint", "bp:empty", "bp:detail" }) do
     ui_text.hide("bp", id)
   end
@@ -255,8 +262,13 @@ function M.move(delta)
 end
 
 -- 方向键移动（M20-02）：直接交给引擎焦点环（到边界环绕）。
+-- M32 竖版是**单列**列表：左右方向键不再有意义（横屏两列时是"跳到另一列"），
+-- 这里显式忽略左右轴并把上下轴前推给焦点环，避免"按了右键什么都不发生"被当成卡顿。
 function M.move_dir(direction)
   if not ui_state then
+    return false
+  end
+  if direction ~= "up" and direction ~= "down" then
     return false
   end
   if #M.rows() == 0 then
@@ -360,27 +372,41 @@ function M.render()
     return false
   end
   local x, y, w, h = PANEL.x, PANEL.y, PANEL.w, PANEL.h
+  local BOX = layout.BOX
   local snapshot = M.snapshot()
   local rows = snapshot.slots
   -- 行数会随物品变化：每次重绘同步焦点环项数（保持当前选择）。
   sync_focus()
   ui_text.begin("bp")
   ui.panel("bp:box", x, y, w, h, 0.10, 0.11, 0.15, 0.94)
-  ui_text.draw("bp", "bp:title", x + 24, y + 16, 22.0, w - 48, "背包")
-  -- 右列（容量/负重）从 x+w-300 起：可用宽度 276（面板右内边距 24）。
+  -- 标题下的分隔线 + 选中行的底衬（竖版单列，靠底衬定位"当前选中哪一行"）。
+  ui.panel("bp:rule", x + BOX.title_dx, y + BOX.title_dy + BOX.title_font + 14, w - BOX.title_dx * 2, 2, 0.72, 0.75, 0.82, 0.22)
+  ui.panel(
+    "bp:sel",
+    x + BOX.list_dx,
+    y + BOX.list_dy + ui_state.index * ROW_H,
+    w - BOX.list_dx * 2,
+    ROW_H,
+    0.85,
+    0.72,
+    0.42,
+    0.20
+  )
+  ui_text.draw("bp", "bp:title", x + BOX.title_dx, y + BOX.title_dy, BOX.title_font, layout.list_width(PANEL), "背包")
+  -- 容量/负重：标题行右半区（竖版面板宽 592，右半区仍有 300px 以上）。
   ui_text.draw(
     "bp",
     "bp:cap",
     x + w - 300,
-    y + 20,
-    16.0,
+    y + BOX.corner_y,
+    BOX.corner_font,
     276.0,
     "容量 " .. tostring(snapshot.occupied) .. "/" .. tostring(snapshot.capacity)
       .. " · 负重 " .. tostring(snapshot.weight)
   )
 
   if #rows == 0 then
-    ui_text.draw("bp", "bp:empty", x + 24, y + 100, 18.0, w - 48, "（空）")
+    ui_text.draw("bp", "bp:empty", x + BOX.list_dx, y + BOX.list_dy + ROW_H, 18.0, layout.list_width(PANEL), "（空）")
   else
     ui_text.hide("bp", "bp:empty")
   end
@@ -396,9 +422,9 @@ function M.render()
       if i == ui_state.index then
         label = "> " .. label
       end
-      -- 列宽（M30）：第 1 列从 24 到 336，第 2 列从 336 到 w-24（列尾各留 8/24 白）。
-      local col_w = col == 0 and (COL_X[2] - COL_X[1] - 8) or (w - COL_X[2] - 24)
-      ui_text.draw("bp", id, x + COL_X[col + 1], y + 60 + line * ROW_H, 16.0, col_w, label)
+      -- 列宽（M32）：单列时整行可用 `w - 2*24`（行尾只留一个内边距）。
+      local col_w = col == 0 and (w - COL_X[1] - 24) or layout.list_width(PANEL)
+      ui_text.draw("bp", id, x + COL_X[col + 1], y + BOX.list_dy + line * ROW_H, 16.0, col_w, label)
     else
       ui_text.hide("bp", id)
     end
@@ -418,13 +444,13 @@ function M.render()
       or ""
     local seed = def.kind == "seed" and (" · 设为种子（" .. tostring(seed_key or "") .. "）") or ""
     local text = tostring(def.description or "") .. effect .. equip .. seed
-    ui_text.draw("bp", "bp:detail", x + 24, y + h - 96, 14.0, w - 48, text)
+    ui_text.draw("bp", "bp:detail", x + BOX.list_dx, y + h + BOX.detail_dy, 14.0, layout.list_width(PANEL), text)
   else
     ui_text.hide("bp", "bp:detail")
   end
 
-  ui_text.draw("bp", "bp:msg", x + 24, y + h - 64, 16.0, w - 48, tostring(ui_state.msg or ""))
-  ui_text.draw("bp", "bp:hint", x + 24, y + h - 32, 14.0, w - 48, hint_line())
+  ui_text.draw("bp", "bp:msg", x + BOX.list_dx, y + h + BOX.msg_dy, 16.0, layout.list_width(PANEL), tostring(ui_state.msg or ""))
+  ui_text.draw("bp", "bp:hint", x + BOX.list_dx, y + h + BOX.hint_dy, BOX.hint_font, layout.list_width(PANEL), hint_line())
   return true
 end
 

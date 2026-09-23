@@ -26,6 +26,8 @@ local nav = require("ui.panel_nav")
 local hints = require("ui.hints")
 -- M30：对话正文按真实字宽换行（此前正文既未换行也未裁剪，长句会直接画到面板外面）。
 local ui_text = require("ui.ui_text")
+-- M32 竖版：对话面板矩形来自 `ui/layout.lua`（底部通栏，与 HUD 信息区二选一）。
+local layout = require("ui.layout")
 
 local M = {}
 
@@ -33,14 +35,20 @@ local TILE = 32
 local INTERACT_RANGE = 56 -- 世界单位，约 1.75 格
 local OPTION_LIMIT = 5   -- 与 UI 展示槽位、数字键 1..5 一致
 
--- 对话面板几何与正文排版预算（`M.render` 里的固定面板；正文最多两行，之后省略号）。
-local BOX = { x = 140, y = 440, w = 1000, h = 248 }
+-- 对话面板几何与正文排版预算（`M.render` 里的固定面板；正文最多三行，之后省略号）。
+-- M32 竖版：672×200，落在状态面板**正上方**（800..1000 vs 1020..1144，留 20px 缝）。
+-- 横屏时它是右下 1000×248；竖屏宽度只有 720，正文可用宽度 = 面板宽 - 2×24 = 624px，
+-- 18px 正文一行约 33 个中文字，三行（TEXT_LINES=3）足够放下现有全部台词；
+-- 选项三行落在 100..184，与最底一行的提示（y+170）不重叠。
+local BOX = layout.PANEL.dialogue
 local TEXT_FONT = 18.0
 local OPTION_FONT = 18.0
-local PAD = 24
+local PAD = layout.PAD
 local TEXT_W = BOX.w - PAD * 2
--- 正文起点 y+50、选项起点 y+96：46px 足够两行 18px 正文（行高 1.2em + 字距）。
-local TEXT_LINES = 2
+local TEXT_LINES = 3
+local TEXT_DY = 44
+local OPTION_DY = 100
+local OPTION_ROW_H = 28
 
 local FOCUS = "dlg:focus"
 
@@ -333,8 +341,8 @@ end
 
 -- M20-09：底部提示按当前设备二选一（键鼠给键位、手柄给按钮名）。片段从**当前绑定**
 -- 推导（改键后自动同步）：数字直选用本模块自带的 1..OPTION_LIMIT，方向用 move_*。
--- 对话面板是 1280 宽设计分辨率上的固定面板（宽 440 起点右对齐），因此提示行宽度固定。
-local HINT_W = 494
+-- M32 竖版：对话面板是底部通栏 672 宽，提示行按 624px 预算（面板宽 - 两侧内边距）。
+local HINT_W = BOX.w - PAD * 2
 
 local function digits_label()
   return hints.binding_labels({ "slot_1", "slot_2", "slot_3", "slot_4", "slot_5" }, nil, "/")
@@ -367,8 +375,8 @@ function M.render()
   ui_text.begin("dlg")
   ui.panel("dlg:box", x, y, w, h, 0.10, 0.11, 0.15, 0.92)
   ui_text.draw("dlg", "dlg:speaker", x + PAD, y + 16, 20.0, TEXT_W, speaker and speaker.name or "")
-  -- 正文按面板宽度换行（最多两行，超出加省略号）：长台词不再画到面板外。
-  ui_text.draw_wrapped("dlg", "dlg:text", x + PAD, y + 50, TEXT_FONT, TEXT_W, TEXT_LINES, node.text)
+  -- 正文按面板宽度换行（最多三行，超出加省略号）：长台词不再画到面板外。
+  ui_text.draw_wrapped("dlg", "dlg:text", x + PAD, y + TEXT_DY, TEXT_FONT, TEXT_W, TEXT_LINES, node.text)
   local options = M.options()
   for i = 1, OPTION_LIMIT do
     local entry = options[i]
@@ -379,12 +387,20 @@ function M.render()
       else
         text = "  " .. text
       end
-      ui_text.draw("dlg", "dlg:opt" .. i, x + PAD, y + 96 + (i - 1) * 30, OPTION_FONT, TEXT_W, text)
+      ui_text.draw("dlg", "dlg:opt" .. i, x + PAD, y + OPTION_DY + (i - 1) * OPTION_ROW_H, OPTION_FONT, TEXT_W, text)
     else
       ui_text.hide("dlg", "dlg:opt" .. i)
     end
   end
-  ui_text.draw("dlg", "dlg:hint", x + w - HINT_W, y + h - 28, 14.0, HINT_W, hint_line())
+  ui_text.draw(
+    "dlg",
+    "dlg:hint",
+    x + w - HINT_W - PAD,
+    y + h - 30,
+    layout.BOX.hint_font,
+    HINT_W,
+    hint_line()
+  )
   return true
 end
 

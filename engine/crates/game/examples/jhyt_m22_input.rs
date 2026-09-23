@@ -139,7 +139,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     banner("② 真实工程链路：默认动作表 → 物理键按下 → Lua 动作查询");
     let mut runtime = LuaRuntime::new()?;
     runtime.set_project_root(project.clone());
-    runtime.set_ui_viewport(1280, 720);
+    // M32 竖版：设计分辨率 720×1280（Lua 动态 UI 是屏幕像素空间，视口必须与设计尺寸一致）。
+    runtime.set_ui_viewport(720, 1280);
     runtime.set_delta(1.0 / 60.0);
     runtime.execute_project_script(&main_script)?;
 
@@ -229,7 +230,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut runtime = LuaRuntime::new()?;
     runtime.set_project_root(project_arg.clone());
     runtime.set_settings_root(settings_root.clone());
-    runtime.set_ui_viewport(1280, 720);
+    runtime.set_ui_viewport(720, 1280);
     runtime.set_delta(1.0 / 60.0);
     runtime.execute_project_script(&main_script)?;
 

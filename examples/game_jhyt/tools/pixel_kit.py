@@ -351,6 +351,79 @@ def text_width(text, scale=1):
     return max(0, len(text) * (3 * scale + scale) - scale)
 
 
+# ---------------------------------------------------------------------------
+# 场景 Transform 组件（统一形态）
+# ---------------------------------------------------------------------------
+
+
+def transform_line(entity_id, x=0.0, y=0.0, rotation=0.0, scale_x=1.0, scale_y=1.0):
+    """一行**统一形态**的 `Transform` 组件（`position=..;rotation=..;scale=..`）。
+
+    为什么必须用统一形态：引擎的 `Transform` 读侧只认这一种写法
+    （`core/spatial_transform.rs` 的 `LocalTransform::from_unified_component_str`），
+    2D 旧形态（`x=..;y=..;rotation=..;scale_x=..;scale_y=..`）**已随旧组件名一起删除**。
+    仓库里还有一条数据门测试 `shipped_data_uses_only_unified_components`：场景里只要写回
+    旧形态就立刻判红。此前 `tools/gen_*_scene.py` 一直写旧形态——旧场景文件是当时用
+    一次性工具（`editor --example migrate_project`）迁过的，所以生成器与盘上场景**早就
+    不一致**：重跑一次生成器就会把旧形态写回去，然后启动即失败。
+
+    形态换算（2D 视图 → 统一 3D 形态，与迁移工具同一套口径）：
+      * `z = 0`；
+      * 绕 Z 轴旋转 `r` 的四元数 = `(0, 0, sin(r/2), cos(r/2))`；
+      * `scale_z = 1`。
+    数值一律 9 位小数、负零保留符号（`-0.000000000`）——与引擎 `to_component_str` 逐字节一致，
+    否则"生成器产物 vs 引擎回写产物"对拍会出现假差异。
+    """
+    import math
+
+    half = rotation / 2.0
+    rz = math.sin(half)
+    rw = math.cos(half)
+    return (
+        f"component\t{entity_id}\tTransform\t"
+        f"position={x:.9f},{y:.9f},0.000000000;"
+        f"rotation=0.000000000,0.000000000,{rz:.9f},{rw:.9f};"
+        f"scale={scale_x:.9f},{scale_y:.9f},1.000000000"
+    )
+
+# ---------------------------------------------------------------------------
+# 场景 2D 相机组件（统一 `Camera`，`projection=orthographic`）
+# ---------------------------------------------------------------------------
+
+
+def camera_line(entity_id, map_width, map_height, tile=32, zoom=1.0):
+    """一行**正交 2D 相机**组件，把取景范围锁在地图矩形内。
+
+    为什么每一张玩法地图都要有它：竖版设计分辨率 720×1280 是**竖长条**，而地图是
+    40×22 格 = 1280×704 世界单位（室内/洞穴 20×12 = 640×384）——**横向比地图窄、
+    纵向比地图高**。没有相机组件时运行期用默认中心 `(640,360)`/`zoom=1`/无 bounds：
+    角色走到哪儿都看不出跟随，而竖屏多出来的 576 个世界单位会把地图外的空白画出来。
+
+    引擎口径（`core/camera.rs`）：
+      * `bounds=min_x,min_y,max_x,max_y` 让 `Camera2D::constrained_center` 把**相机中心**
+        夹到 `[min+半视口, max-半视口]`；
+      * 地图在某轴上比视口还小（本例的 y 轴：704 < 1280）时该轴上下界反转，引擎
+        按"两条界的**中点**"取值（`clamp_center`），于是那根轴**钉在地图中心**而不是
+        乱夹——这正是竖屏的地图尺寸给不出的"完全不出界"在纵向上的最优解：地图上下
+        仍有留白（物理上不可避免），但相机不会横向漂移、也不会锁定在跟随以外的位置。
+      * 夹取每帧在渲染前应用（`Camera2dController::resolve_camera`），因此 Lua 的
+        `camera2d.follow` 负责"想跟谁"，场景的 bounds 负责"最多跟到哪儿"。
+
+    `zoom=1.0` 是刻意选的：竖版只收窄可见列数（40 列里约 22 列），不缩放世界
+    （见 `examples/game_jhyt/docs/52` §4）。
+    """
+    # 世界坐标覆盖 [0, map_width*tile] × [0, map_height*tile]；中心给地图中心，
+    # 第一帧（脚本还没 follow 之前）就不会先跳到默认的 (640,360) 再弹回来。
+    max_x = (map_width * tile) / 2.0
+    max_y = (map_height * tile) / 2.0
+    return (
+        f"component\t{entity_id}\tCamera\tprojection=orthographic"
+        f";center={max_x:.4f},{max_y:.4f}"
+        f";zoom={zoom:.6f}"
+        f";bounds=0.0000,0.0000,{map_width * tile:.4f},{map_height * tile:.4f}"
+    )
+
+
 def draw_text(canvas, x, y, text, color=(0xE4, 0xC0, 0x78, 255), scale=1):
     cursor = x
     for char in text.upper():

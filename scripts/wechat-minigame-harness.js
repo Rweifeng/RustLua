@@ -1279,7 +1279,11 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
         if (!info.isMain) canvasFailures.push('canvas 不是全局上屏画布（isMain=false）');
       }
       if (adapter.canvas !== canvas) canvasFailures.push('适配层的 canvas 不是宿主的上屏画布');
-      if (canvas.width !== 1280 || canvas.height !== 720) canvasFailures.push(`上屏画布尺寸未设置（${canvas.width}x${canvas.height}）`);
+      // 画布尺寸 = 游戏的**竖版设计分辨率**（M32 起 720×1280；此前是横版 1280×720）。
+      // 这个断言的价值在于"适配层真的把上屏画布设成了它的逻辑分辨率"——写死旧尺寸会在
+      // 游戏改版面时假失败，所以它与适配层的 VIEW_WIDTH/VIEW_HEIGHT 是**同一件事**，
+      // 改一处必须改另一处（外加 game.json 的 deviceOrientation 与 webgl 侧 canvas 尺寸）。
+      if (canvas.width !== 720 || canvas.height !== 1280) canvasFailures.push(`上屏画布尺寸未设置（${canvas.width}x${canvas.height}，期望 720x1280）`);
       const mainOps = canvas.__ctx ? canvas.__ctx.__ops : 0;
       const offscreenOps = offscreenCanvas.__ctx ? offscreenCanvas.__ctx.__ops : 0;
       if (mainOps <= 0) canvasFailures.push('上屏画布上没有任何绘制调用（画到看不见的地方去了）');

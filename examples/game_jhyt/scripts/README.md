@@ -57,6 +57,7 @@ scripts/
 | `world/schedule.lua` | `world.schedule` | 日程解析（跨午夜时段、雨天替代）与校验 |
 | `world/calendar.lua` | `world.calendar` | 日期推进与季节 |
 | `world/season_visual.lua` | `world.season_visual` | 按季节换地表贴图（进图/跨天两处调用，数据在 `data/season_art.lua`） |
+| `world/camera_view.lua` | `world.camera_view` | 2D 相机跟随玩家（`camera2d.follow`，玩家始终在视野正中）+ 每帧由场景 `GameCamera` 的 `bounds` 把取景夹在地图内；`validate_all` 守"场景 bounds == 真实地图矩形" |
 | `world/weather.lua` | `world.weather` | 当日天气：`(seed, day, season)` 确定性抽签 + 季节概率表，跨天重抽、可钉住当天 |
 | `world/quest.lua` | `world.quest` | 任务五态状态机、目标判定、幂等交付 |
 | `world/dialogue.lua` | `world.dialogue` | 对话定义解析、节点推进、选项条件与副作用 |

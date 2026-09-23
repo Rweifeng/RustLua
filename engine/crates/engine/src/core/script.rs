@@ -7085,12 +7085,36 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
     lua.globals().set("save", save)?;
 
     let app = lua.create_table()?;
-    let s = state;
+    let s = Rc::clone(&state);
     app.set(
         "quit",
         lua.create_function(move |_, ()| {
             s.borrow_mut().quit_requested = true;
             Ok(())
+        })?,
+    )?;
+    // `app.project_root()`：工程根目录的**绝对路径**（`set_project_root` 写入的值）。
+    //
+    // 为什么 Lua 需要它：`io.open` 的相对路径按**进程工作目录**解析，而工程根与工作目录
+    // 并不总是一致——`game --check --project ../examples/game_jhyt` 在 `engine/` 下跑时，
+    // `io.open("scenes/x.scene")` 直接返回 nil。于是"跨文件契约"类校验器（`validate_data`
+    // 里那些要读 `scenes/*.scene` / `project.toml` 的规则，见 `examples/game_jhyt` 的
+    // `ui/layout_check.lua` 与 `world/camera_view.lua`）会**静默跳过**全部检查而仍然打绿灯。
+    // 有了这个查询，校验器就能拼绝对路径，跑在哪个目录下结果都一样。
+    //
+    // 路径分隔符统一成 `/`（Lua 侧字符串拼接用，Windows 的反斜杠在 Lua 模式里是转义符）。
+    // 没配置工程根时返回 `""`——Web 等宿主本来也没有文件系统，调用方据此自行跳过。
+    let s = Rc::clone(&state);
+    app.set(
+        "project_root",
+        lua.create_function(move |_, ()| {
+            let root = s
+                .borrow()
+                .project_root
+                .as_ref()
+                .map(|path| path.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_default();
+            Ok(root)
         })?,
     )?;
     lua.globals().set("app", app)?;
@@ -7310,6 +7334,42 @@ mod tests {
         runtime.lua.load("app.quit()").exec().unwrap();
         assert!(runtime.quit_requested());
         let _ = fs::remove_file(path);
+    }
+
+    /// `app.project_root()`：工程根的绝对路径（正斜杠），未配置时 `""`。
+    ///
+    /// 存在的理由：`io.open` 的相对路径按**进程工作目录**解析，而 `game --check` 并不
+    /// chdir 到工程根（在 `engine/` 下跑 `--check --project ../examples/game_jhyt` 时
+    /// `io.open("scenes/x.scene")` 返回 nil）⇒ 跨文件契约校验器会静默跳过检查。
+    #[test]
+    fn app_exposes_the_project_root_for_cwd_independent_file_checks() {
+        let root = production_sample_root();
+        let mut runtime = LuaRuntime::new().unwrap();
+        runtime.set_project_root(root.clone());
+        let reported = runtime
+            .execute_console("return app.project_root()")
+            .unwrap();
+        let reported = reported.trim();
+        assert!(!reported.is_empty(), "配置了工程根就不该返回空串");
+        assert!(
+            !reported.contains('\\'),
+            "路径分隔符必须归一成正斜杠（Lua 模式里反斜杠是转义符）：{reported}"
+        );
+        let expected = root.to_string_lossy().replace('\\', "/");
+        // 盘符大小写在不同来源可能不同，逐段比对路径尾部即可。
+        assert!(
+            reported.ends_with(&expected) || expected.ends_with(reported),
+            "project_root() = {reported:?}，与 set_project_root 的值对不上（{expected:?}）"
+        );
+        // 没配置时不报错，只是空串（Web 宿主没有文件系统）。
+        let bare = LuaRuntime::new().unwrap();
+        assert_eq!(
+            bare.lua
+                .load("return app.project_root()")
+                .eval::<String>()
+                .unwrap(),
+            ""
+        );
     }
 
     /// M22/W3：`input.action_repeat` 是**时间制**——同一段按住时长内的步数与帧率

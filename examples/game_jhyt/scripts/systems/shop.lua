@@ -30,6 +30,8 @@ local nav = require("ui.panel_nav")
 local hints = require("ui.hints")
 -- M30：面板文字按真实字宽裁剪（长物品名/大额金币不再画到面板外）。
 local ui_text = require("ui.ui_text")
+-- M32 竖版：面板矩形与行偏移的唯一来源（`ui/layout.lua`）。
+local layout = require("ui.layout")
 
 local M = {}
 
@@ -43,8 +45,10 @@ local ROW_H = 34
 local FOCUS = "shp:focus"
 local SCROLL = "shp:scroll"
 
--- 面板几何（与 UI 资源设计 §8.2 一致：640×440，1280×720 居中）。
-local PANEL = { x = 320, y = 140, w = 640, h = 440 }
+-- 面板几何（M32 竖版）：672×720 的单列面板，来自 `ui/layout.lua`。
+-- 横屏时是"640×440、1280×720 居中"的双列宽面板；竖屏只有 720 宽，于是改为
+-- 单列 9 行（行宽 544px，物品名 + 单价 + 限购/持有都在一行内放得下）。
+local PANEL = layout.PANEL.shop
 
 -- 每日限购计数：shop_id → { item_id → 已购数量 }。随存档持久化。
 local used = {}
@@ -362,6 +366,8 @@ end
 -- 必须定义在 M.reset 之前：Lua 词法作用域只认「已声明」的 local。
 local function clear_ui()
   ui.clear("shp:box")
+  ui.clear("shp:rule")
+  ui.clear("shp:sel")
   for _, id in ipairs({ "shp:title", "shp:money", "shp:tab1", "shp:tab2", "shp:qty", "shp:msg", "shp:hint" }) do
     ui_text.hide("shp", id)
   end
@@ -621,28 +627,42 @@ function M.render()
     return false
   end
   local x, y, w, h = PANEL.x, PANEL.y, PANEL.w, PANEL.h
-  -- 排版预算（M30）：右列金额/数量从 x+w-200 起，故标题只能用左侧 400px；
-  -- 行/提示从 x+24 起，可用 w-48。全部按**真实字宽**裁剪并登记（`ui.ui_text`）。
-  local ROW_W = w - 48
-  local RIGHT_W = 176
+  local BOX = layout.BOX
+  -- 排版预算（M32 竖版）：面板宽 592 → 行宽 544；标题独占左半区（300px），
+  -- 右上角的"金币 / 数量"独占右半区（240px），两者不重叠。
+  local ROW_W = layout.list_width(PANEL)
+  local TITLE_W = 300.0
+  local RIGHT_W = 240.0
   ui_text.begin("shp")
   ui.panel("shp:box", x, y, w, h, 0.10, 0.11, 0.15, 0.94)
-  ui_text.draw("shp", "shp:title", x + 24, y + 18, 22.0, 400.0, tostring(def.name))
+  ui.panel("shp:rule", x + BOX.title_dx, y + BOX.title_dy + BOX.title_font + 14, w - BOX.title_dx * 2, 2, 0.72, 0.75, 0.82, 0.22)
+  ui.panel(
+    "shp:sel",
+    x + BOX.list_dx,
+    y + 100 + (ui_state.index - 1) * ROW_H,
+    w - BOX.list_dx * 2,
+    ROW_H,
+    0.85,
+    0.72,
+    0.42,
+    0.20
+  )
+  ui_text.draw("shp", "shp:title", x + BOX.title_dx, y + BOX.title_dy, BOX.title_font, TITLE_W, tostring(def.name))
   ui_text.draw(
     "shp",
     "shp:money",
-    x + w - 200,
-    y + 20,
-    18.0,
+    x + w - RIGHT_W - BOX.title_dx,
+    y + BOX.corner_y,
+    BOX.corner_font,
     RIGHT_W,
     "金币 " .. tostring(state.money) .. " 文"
   )
-  ui_text.draw_exact("shp", "shp:tab1", x + 24, y + 58, 18.0, 96.0, ui_state.tab == "buy" and "[购买]" or " 购买 ")
-  ui_text.draw_exact("shp", "shp:tab2", x + 120, y + 58, 18.0, 80.0, ui_state.tab == "sell" and "[出售]" or " 出售 ")
+  ui_text.draw_exact("shp", "shp:tab1", x + BOX.title_dx, y + 58, 18.0, 96.0, ui_state.tab == "buy" and "[购买]" or " 购买 ")
+  ui_text.draw_exact("shp", "shp:tab2", x + BOX.title_dx + 96, y + 58, 18.0, 80.0, ui_state.tab == "sell" and "[出售]" or " 出售 ")
   ui_text.draw(
     "shp",
     "shp:qty",
-    x + w - 200,
+    x + w - RIGHT_W - BOX.title_dx,
     y + 58,
     18.0,
     RIGHT_W,
@@ -669,19 +689,15 @@ function M.render()
       else
         label = label .. "  持有 " .. tostring(row.have)
       end
-      if index == ui_state.index then
-        label = "> " .. label
-      else
-        label = "  " .. label
-      end
-      ui_text.draw("shp", id, x + 24, y + 100 + (slot - 1) * ROW_H, 18.0, ROW_W, label)
+      label = (index == ui_state.index) and ("> " .. label) or ("  " .. label)
+      ui_text.draw("shp", id, x + BOX.list_dx, y + 100 + (slot - 1) * ROW_H, 18.0, ROW_W, label)
     else
       ui_text.hide("shp", id)
     end
   end
 
-  ui_text.draw("shp", "shp:msg", x + 24, y + h - 64, 16.0, ROW_W, tostring(ui_state.msg or ""))
-  ui_text.draw("shp", "shp:hint", x + 24, y + h - 32, 14.0, ROW_W, hint_line())
+  ui_text.draw("shp", "shp:msg", x + BOX.list_dx, y + h + BOX.msg_dy, 16.0, ROW_W, tostring(ui_state.msg or ""))
+  ui_text.draw("shp", "shp:hint", x + BOX.list_dx, y + h + BOX.hint_dy, BOX.hint_font, ROW_W, hint_line())
   return true
 end
 

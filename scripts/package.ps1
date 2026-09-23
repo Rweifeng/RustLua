@@ -38,6 +38,23 @@ param(
 $ErrorActionPreference = "Stop"
 $workspaceRoot = Split-Path -Parent $PSScriptRoot
 $engineRoot = Join-Path $workspaceRoot "engine"
+# 构建产物目录：默认是 `engine\target`（cargo 与本仓 `.cargo/config.toml` 的默认），
+# 但只要是 `cargo` 在跑，`CARGO_TARGET_DIR` 就是 cargo 自己认的权威开关。
+# **必须跟着它走**：本仓的开发/CI 环境里 `engine\target` 可能是只读的（沙箱、只读挂载、
+# 共享缓存），此时构建只能落在别处，而脚本再去固定路径取 `assetc.exe` / `game_web.wasm`
+# 就会报"缺产物"——那会把"构建成功但取错路径"伪装成"构建失败"。
+$cargoTargetRoot = if ([string]::IsNullOrWhiteSpace($env:CARGO_TARGET_DIR)) {
+    Join-Path $engineRoot "target"
+} else {
+    # 相对路径按 cargo 的口径解析：相对于**执行 cargo 的目录**（脚本里是 $engineRoot）。
+    if ([IO.Path]::IsPathRooted($env:CARGO_TARGET_DIR)) {
+        $env:CARGO_TARGET_DIR
+    } else {
+        Join-Path $engineRoot $env:CARGO_TARGET_DIR
+    }
+}
+$nativeTargetRoot = Join-Path $cargoTargetRoot "release"
+$wasmTargetRoot = Join-Path $cargoTargetRoot "wasm32-unknown-unknown\release"
 if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
     # examples 重组后样板工程在子目录里（根目录已无 project.toml）。
     $ProjectRoot = Join-Path $workspaceRoot "examples\game_jhyt"
@@ -239,12 +256,13 @@ try {
     Write-Host "==> Release build ($Platform)" -ForegroundColor Cyan
     if ($SkipBuild) {
         # M20-03: repeated publish without rebuilding; require existing artifacts.
-        $requiredArtifacts = @((Join-Path $engineRoot "target\release\assetc.exe"))
-        if ($Platform -eq "webgl") {
-            # 只有 webgl 需要 wasm-bindgen 产物；微信小游戏不发行它（见下方 pkg/ 说明）。
-            $requiredArtifacts += (Join-Path $engineRoot "target\wasm32-unknown-unknown\release\game_web.wasm")
+        $requiredArtifacts = @((Join-Path $nativeTargetRoot "assetc.exe"))
+        if ($isWebPlatform) {
+            # 两个 web 平台都要 wasm 产物：webgl 发行 `--target web` 的浏览器胶水，
+            # 微信小游戏发行 `--target no-modules` 的 CommonJS 化胶水（见下方 pkg/ 说明）。
+            $requiredArtifacts += (Join-Path $wasmTargetRoot "game_web.wasm")
         } elseif (-not $isWebPlatform) {
-            $requiredArtifacts += (Join-Path $engineRoot "target\release\game.exe")
+            $requiredArtifacts += (Join-Path $nativeTargetRoot "game.exe")
         }
         foreach ($artifact in $requiredArtifacts) {
             if (-not (Test-Path -LiteralPath $artifact)) {
@@ -256,21 +274,15 @@ try {
     elseif ($isWebPlatform) {
         cargo build -p assetc --release
         if ($LASTEXITCODE -ne 0) { throw "assetc release build failed." }
-        if ($Platform -eq "webgl") {
-            rustup target add wasm32-unknown-unknown
-            if ($LASTEXITCODE -ne 0) { throw "Install wasm32 target failed." }
-            cargo build -p game_web --release --target wasm32-unknown-unknown
-            if ($LASTEXITCODE -ne 0) { throw "WASM build failed ($Platform)." }
-            if (-not (Get-Command wasm-bindgen -ErrorAction SilentlyContinue)) {
-                Write-Host "==> Install wasm-bindgen-cli" -ForegroundColor Cyan
-                cargo install wasm-bindgen-cli --version 0.2.127
-                if ($LASTEXITCODE -ne 0) { throw "wasm-bindgen-cli install failed." }
-            }
-        }
-        else {
-            # 微信小游戏只用到 assetc 产物 + 共享 JS 运行时（Fengari 跑 Lua），
-            # 不构建、也不发行 wasm 核心：少一步构建，也避免 ESM 胶水混进小游戏包。
-            Write-Host "==> WeChat Mini Game build: assetc only (no wasm-bindgen artifacts)" -ForegroundColor DarkGray
+        # webgl 与微信小游戏**共用同一个 wasm 核心**（`-p game_web` 只构建一次，胶水按平台各生成一份）。
+        rustup target add wasm32-unknown-unknown
+        if ($LASTEXITCODE -ne 0) { throw "Install wasm32 target failed." }
+        cargo build -p game_web --release --target wasm32-unknown-unknown
+        if ($LASTEXITCODE -ne 0) { throw "WASM build failed ($Platform)." }
+        if (-not (Get-Command wasm-bindgen -ErrorAction SilentlyContinue)) {
+            Write-Host "==> Install wasm-bindgen-cli" -ForegroundColor Cyan
+            cargo install wasm-bindgen-cli --version 0.2.127
+            if ($LASTEXITCODE -ne 0) { throw "wasm-bindgen-cli install failed." }
         }
     }
     else {
@@ -279,7 +291,7 @@ try {
     }
 
     Write-Host "==> assetc package (platform=$Platform, data resource pack, compress=$Compress encrypt=$Encrypt)" -ForegroundColor Cyan
-    $assetc = Join-Path $engineRoot "target\release\assetc.exe"
+    $assetc = Join-Path $nativeTargetRoot "assetc.exe"
     if (Test-Path $packRoot) { Remove-Item -LiteralPath $packRoot -Recurse -Force }
     $assetcArgs = @("package", $gameRoot, "-o", $packRoot)
     if ($Compress) { $assetcArgs += "--compress" }
@@ -293,20 +305,74 @@ try {
 
     if ($isWebPlatform) {
         Remove-Item -Path (Join-Path $distRoot "game.exe") -Force -ErrorAction SilentlyContinue
-        # pkg/：随包分发的 Lua VM（不请求 CDN，离线可运行）；webgl 另外放 wasm-bindgen 产物。
+        # pkg/：随包分发的 Lua VM（不请求 CDN，离线可运行）；两个 web 平台各放一份 wasm 胶水。
         $pkgRoot = Join-Path $distRoot "pkg"
         if (Test-Path $pkgRoot) { Remove-Item -LiteralPath $pkgRoot -Recurse -Force }
         New-Item -ItemType Directory -Force -Path $pkgRoot | Out-Null
+        $wasmInput = Join-Path $wasmTargetRoot "game_web.wasm"
+        if (-not (Test-Path -LiteralPath $wasmInput)) {
+            throw "wasm artifact missing: $wasmInput"
+        }
         if ($Platform -eq "webgl") {
-            $wasmInput = Join-Path $engineRoot "target\wasm32-unknown-unknown\release\game_web.wasm"
+            # 浏览器：`--target web` 的 **ES Module** 胶水，由 index.html 的 `<script type=module>` 加载。
             wasm-bindgen $wasmInput --out-dir $pkgRoot --target web --no-typescript
             if ($LASTEXITCODE -ne 0) { throw "wasm-bindgen failed." }
+            # wasm-bindgen 对 `--target web` 会额外生成一个 `index.html` 覆盖说明页（它靠
+            # **文件系统里已存在 index.html** 来判断"输出目录是不是给浏览器用的"，因此平台
+            # 目录里那个 index.html 会被浏览器分支的产物**整体覆盖**）。我们自己的那份
+            # `index.html` 是发布模板（含 __PUBLISH_NAME__ 等多种占位符替换），必须由下面的
+            # 复制步骤赢，所以这里把 wasm-bindgen 顺带生成的那份删掉，避免"谁最后写谁生效"
+            # 这种靠顺序的隐式约定。
+            Remove-Item -LiteralPath (Join-Path $pkgRoot "index.html") -Force -ErrorAction SilentlyContinue
         }
-        # 微信小游戏**不随包分发** wasm-bindgen 胶水：它是浏览器 ESM（顶层 `export { … }`），
-        # 小游戏运行时按 CommonJS 解析，加载即报
-        #   WAGame.js:1 SyntaxError: MiniProgramError Unexpected token 'export'
-        # 而这条胶水本来就没被使用（wechat-adapter 明确不加载 wasm 核心），
-        # 所以直接不发——顺带把主包体积从 ~333KB 降到 ~275KB。
+        else {
+            # 微信小游戏：**必须用 `--target no-modules`**。
+            #
+            # 为什么不能沿用 `--target web`：那份胶水是浏览器 ESM（顶层 `export { … }`），
+            # 小游戏运行时按 CommonJS 解析，加载即报
+            #   WAGame.js:1 SyntaxError: MiniProgramError Unexpected token 'export'
+            # `--target no-modules` 的产物是**纯脚本**（无 import/export，全部包在一个 IIFE 里），
+            # 因此可以被 CommonJS 直接 `require`——`wasm-bridge.js` 就是那层包壳。
+            # 这也让 `verify-wechat-minigame.ps1` 的"逐脚本按脚本模式解析"守卫保持有牙齿。
+            wasm-bindgen $wasmInput --out-dir $pkgRoot --target no-modules --no-typescript
+            if ($LASTEXITCODE -ne 0) { throw "wasm-bindgen (no-modules) failed." }
+            # no-modules 胶水开头会算 `script_src`（用于"不给参数时按 `<脚本名>_bg.wasm` 找模块"）：
+            #   if (typeof document !== 'undefined' && document.currentScript !== null) {
+            #       script_src = new URL(document.currentScript.src, location.href).toString();
+            #   }
+            # 小游戏里这段**必然抛错**：适配层那份 `document` shim 只保证运行时直接调用的成员
+            # （`getElementById`），没有 `currentScript` 与 `location` —— 实测报
+            #   Cannot read properties of undefined (reading 'src')
+            # 而它出现在 IIFE 的**第一句**，于是整个 require 失败、wasm 装不进来。
+            # 修法：构建期把这一句包进 try/catch。**为什么不改适配层的 shim**：给 shim 补
+            # `location`/`currentScript` 是"为了绕过一个我们根本不走的代码路径"而伪造宿主能力，
+            # 而这个分支只服务于"不加参数按脚本 URL 猜 wasm 位置"——我们的 bridge 永远**显式传字节**
+            # （`initSync(bytes)`），那条路径一次都不会用到。包一层 try 是诚实的做法：
+            # 这条降级在浏览器里永远不会触发（那里 `document.currentScript` 是真的）。
+            $gluePath = Join-Path $pkgRoot "game_web.js"
+            $glueText = [System.IO.File]::ReadAllText($gluePath)
+            $needle = "script_src = new URL(document.currentScript.src, location.href).toString();"
+            if ($glueText.Contains($needle)) {
+                $patched = $glueText.Replace($needle, "try { $needle } catch (error) { /* 小游戏宿主没有 currentScript/location，见 scripts/package.ps1 的说明 */ }")
+                # 必须与源文件同编码写出（no BOM）：wasm-bindgen 的产物是 UTF-8 无 BOM。
+                [System.IO.File]::WriteAllText($gluePath, $patched, (New-Object System.Text.UTF8Encoding($false)))
+                Write-Host "==> Patched no-modules glue: script_src derivation guarded for the mini game host"
+            }
+            else {
+                # 胶水换了写法就**响亮失败**，不要静默放过——那意味着"小游戏里 wasm 装不进来"
+                # 这个坑又回来了，而且会以"启动照常、wasm 静默缺席"的形态出现。
+                throw "no-modules glue shape changed: 'script_src = new URL(document.currentScript.src, ...)' not found in $gluePath. 小游戏宿主没有 currentScript/location，请重新确认这条降级要不要保留（见本文件注释）。"
+            }
+            # **必须补上 CommonJS 导出**：`--target no-modules` 的产物是一句
+            #   let wasm_bindgen = (function (exports) { … })({ __proto__: null });
+            # 顶层 `let` 是**脚本作用域**绑定，不挂全局、也不是 `module.exports`，
+            # 所以 `require('./pkg/game_web.js')` 拿到的是**空对象**——wasm-bridge 的
+            # "胶水形态不对"就是这么来的（实测：`typeof require(...) === 'object'`，keys 为空）。
+            # 补一行导出即可让 bridge 正常拿到那个函数（它同时带 `initSync` / `start` / `start_wechat`）。
+            $glueText = [System.IO.File]::ReadAllText($gluePath)
+            $glueText += "`n// 微信分支：补 CommonJS 导出（见 scripts/package.ps1）。no-modules 产物只声明了顶层 let，`n// 不挂全局也不是 module.exports，直接 require 会拿到空对象。`nmodule.exports = wasm_bindgen;`n"
+            [System.IO.File]::WriteAllText($gluePath, $glueText, (New-Object System.Text.UTF8Encoding($false)))
+        }
         $fengariSource = Join-Path $workspaceRoot "plugins\webgl\pkg\fengari-web.js"
         if (-not (Test-Path -LiteralPath $fengariSource)) {
             throw "Web platform package requires the vendored Lua runtime: plugins\webgl\pkg\fengari-web.js"
@@ -326,7 +392,7 @@ try {
             # 微信小游戏入口：game.js（入口）+ wechat-adapter.js（wx 宿主适配）+ 两个配置。
             # 平台文件都在 plugins/wechat-minigame/，发布脚本只负责复制、改名与校验。
             $wechatPlugin = Join-Path $workspaceRoot "plugins\wechat-minigame"
-            foreach ($pluginFile in @("game.js", "game.json", "project.config.json", "wechat-adapter.js")) {
+            foreach ($pluginFile in @("game.js", "game.json", "project.config.json", "wechat-adapter.js", "wasm-bridge.js")) {
                 $pluginSource = Join-Path $wechatPlugin $pluginFile
                 if (-not (Test-Path -LiteralPath $pluginSource)) {
                     throw "WeChat platform plugin is missing: $pluginSource"
@@ -451,7 +517,7 @@ try {
         }
     }
     else {
-        Copy-Item -Path (Join-Path $engineRoot "target\release\game.exe") `
+        Copy-Item -Path (Join-Path $nativeTargetRoot "game.exe") `
             -Destination (Join-Path $distRoot "game.exe") -Force
     }
 
@@ -807,11 +873,22 @@ try {
                 throw "WeChat package must not contain $forbidden (wrong platform branch?)"
             }
         }
-        # 浏览器 ESM 胶水同样不得混入：小游戏按 CommonJS 解析，顶层 `export` 会让运行时
-        # 在 WAGame.js 里抛 SyntaxError: Unexpected token 'export'（实测踩过）。
-        foreach ($forbidden in @("pkg\game_web.js", "pkg\game_web_bg.wasm")) {
-            if (Test-Path -LiteralPath (Join-Path $distRoot $forbidden)) {
-                throw "WeChat package must not contain $forbidden (browser ESM glue; the mini game runtime parses CommonJS only)"
+        # wasm 胶水（M32）：小游戏包里**允许且要求**有 `pkg\game_web.js` + `pkg\game_web_bg.wasm`，
+        # 但那份胶水必须是 `--target no-modules` 的纯脚本产物。
+        #
+        # 这里不再按"文件名黑名单"禁止它（那是 wasm 未接入时代的写法）：黑名单挡不住
+        # "构建分支写错、把 `--target web` 的 ESM 胶水打进来"这个真正的风险——
+        # 它只会让**正确**的产物被误杀。现在的口径是**内容判定**：
+        # 下面那条通用兜底会用 `vm.Script`（始终按脚本解析）逐个验证每个 .js，
+        # 顶层 `export`/`import` 一律判红，因此"ESM 混进小游戏包"依然被拦在发布期，
+        # 而且拦的是真东西而不是一个文件名。
+        foreach ($wasmAsset in @("pkg\game_web.js", "pkg\game_web_bg.wasm")) {
+            $wasmAssetPath = Join-Path $distRoot $wasmAsset
+            if (-not (Test-Path -LiteralPath $wasmAssetPath)) {
+                throw "WeChat package is missing $wasmAsset (wasm 核心应随包分发；检查 wasm-bindgen 步骤)"
+            }
+            if ((Get-Item -LiteralPath $wasmAssetPath).Length -le 0) {
+                throw "WeChat package file is empty: $wasmAsset"
             }
         }
         # 通用兜底：小游戏包里每个 .js 都必须能按**脚本**（CommonJS）解析。

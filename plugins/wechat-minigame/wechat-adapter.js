@@ -7,8 +7,10 @@
 //
 // 能力边界（同步维护于 plugins/wechat-minigame/README.md，不得夸大）：
 // - 游戏逻辑走 Fengari（Lua in JS）+ `pack/` 资源，这条路径在小游戏里**真实可运行**；
-// - `pkg/game_web_bg.wasm` 随包分发，但其 wasm-bindgen 胶水是浏览器 ESM/web-sys 形态，
-//   尚未接入 WXWebAssembly，本适配层**不会**假装启动它（见文末 WASM 说明）。
+// - `pkg/game_web.js` + `pkg/game_web_bg.wasm` 随包分发（胶水是 `--target no-modules` 的
+//   纯脚本，由 wasm-bridge.js 包成 CommonJS）。M32 起适配层会在启动时**同步实例化**它，
+//   并把结果写进 `data-p2-wasm` / `__P2_DIAG().wasm`——但游戏逻辑**不**由 wasm 承载，
+//   详见文末「WASM 说明」。
 // - 输入：微信 PC 端键盘（wx.onKeyDown/onKeyUp）直接桥接；触摸映射为指针事件，
 //   并提供左侧虚拟摇杆（WASD）与右侧按键（space）以保证手机端可玩。
 'use strict';
@@ -23,9 +25,23 @@
     throw new Error('wechat-adapter: 未找到全局 wx —— 本文件只能在微信小游戏运行时中加载');
   }
 
-  // 逻辑分辨率：与 webgl 发布的 canvas（1280x720）保持一致，drawScene/HUD 依赖 canvas.width/height。
-  var VIEW_WIDTH = 1280;
-  var VIEW_HEIGHT = 720;
+  // 逻辑分辨率 = 游戏的**竖版设计分辨率**（720×1280），drawScene/HUD 依赖 canvas.width/height。
+  //
+  // 为什么必须是竖版（M32）：`game_jhyt` 在 M32 改成竖版，Lua 面板坐标按 720×1280 排
+  // （`scripts/ui/layout.lua` 的 DESIGN_W/DESIGN_H），而 web 运行时的绘制是**屏幕像素空间**、
+  // 不做缩放——画布还停在 1280×720 的话，竖版面板会横向溢出画布（底部状态栏直接看不见）。
+  //
+  // **改这个尺寸要三处一起改**，缺一处就是"画布与版面不一致"，而那种错位在无头验证里看不出来
+  // （假 ctx 不裁剪、坐标超界也照样记数）：
+  //   ① 这里（小游戏画布）；② `game.json` 的 `deviceOrientation`（否则宿主按横屏给窗口）；
+  //   ③ webgl 侧 `engine/crates/game_web/src/lib.rs` 的 canvas 尺寸。三者必须等于设计分辨率。
+  var VIEW_WIDTH = 720;
+  var VIEW_HEIGHT = 1280;
+  // `game.json` 里声明的方向（**编译期常量，不读文件**）：`game.json` 上传后被编译，
+  // 真机上 `readFileSync` 一律 permission denied，而适配层有一条硬约束"一次都不许读它"
+  // （回归守卫 `--expect-no-read game.json`）。所以方向只作为**自述**出现在诊断里，
+  // 不与 `game.json` 做运行期比对——那属于构建期校验（见 scripts/package.ps1）。
+  var GAME_ORIENTATION = 'portrait';
   // pack/ 是资源根：分包形态（-AssetPack subpackage）下它是 game.json 里声明的分包；
   // 其余形态下它只是主包里的普通目录。是不是分包一律以 game.json 的声明为准（见 hasPackSubpackage）。
   var PACK_PREFIX = 'pack/';
@@ -37,6 +53,9 @@
   // 留在 pack/ 里的首屏资源在真机上依然要等分包下载 —— "主包留一部分"这个直觉做法根本不成立。
   var MAINPACK_DIR = 'mainpack/';
   var MAINPACK_MANIFEST = 'mainpack.json';
+// wasm 核心在代码包里的逻辑路径（发布脚本按 `pkg/game_web_bg.wasm` 放置；`.wasm` 在微信
+// 代码包后缀白名单内，因此**不需要**改名，运行时按逻辑路径读取即可）。
+var WASM_MODULE_PATH = 'pkg/game_web_bg.wasm';
   // 代码包**后缀白名单**的改名映射（构建期生成，产物根；三种形态都有）。
   // 微信代码包只上传后缀在白名单内的文件，`.lua` / `.toml` / `.md` 传不上去——真机上读它们是
   // `permission denied`，而本游戏全部 Lua 逻辑都靠逐文件读取，实测真机启动直接失败。
@@ -1310,6 +1329,16 @@
         (stats.imageCacheLoadFailed ? '（其中 ' + stats.imageCacheLoadFailed + ' 张来自 USER_DATA_PATH 缓存）' : ''),
       image_src_takeover: srcTakeover || 'none',
       image_callback_takeover: callbackTakeover || 'none',
+      // wasm 核心状态：`ok` 才算真的装进来了；其它取值都能指出是哪一层不对（见 loadWasmCoreOnce）。
+      wasm: {
+        status: wasmState.status,
+        source: wasmState.source,
+        bytes: wasmState.bytes,
+        exports: wasmState.exports,
+        detail: wasmState.detail
+      },
+      // 画布 vs 工程声明尺寸（M32 竖版）：agree=false 就是"版面会溢出画布"。
+      view_agreement: viewAgreement,
       read_strategy: preferredStrategy.pack || '(未探明)',
       remote: remoteConfig ? (remoteConfig.packBaseUrl + ' remote=' + stats.remote + ' failed=' + stats.remoteFailed) : 'off',
       image_samples: (stats.imageFailureSamples || []).slice(0, 4),
@@ -2303,11 +2332,19 @@
     }
     // 资源读取自检：分包形态下这三个探针在 mainpack/ 下，验证的正是**路由层本身**。
     probePackReadability();
+    // wasm 核心：在主包内同步加载（`pkg/game_web_bg.wasm` 属首屏骨架，不在分包里）。
+    // 失败**不影响**启动——游戏逻辑由 Fengari + pack/ 承载，wasm 只是随包多带的一份核心；
+    // 但状态会进 `data-p2-wasm` 与 `__P2_DIAG().wasm`，所以"带了却没装上"不会被静默忽略。
+    loadWasmCoreOnce();
+    // 画布与游戏版面的自检：`game.json` 的方向与画布尺寸必须和 `ui/layout.lua` 的设计分辨率
+    // 对得上。**为什么值得单独自检**：Lua 面板画在屏幕像素空间、不做缩放，画布尺寸不对的表现是
+    // "竖版面板横向溢出画布"（底部状态栏看不见），而这在无头验证里**不会报错**
+    // （假 ctx 不裁剪、超界坐标照样计数）→ 只能靠这一行把它变成可读的证据。
+    reportViewAgreement();
     // 分包**后台**载入，**不 await**：首屏资源全在主包里，boot 必须立刻用它们把标题画出来。
     // 分包只影响"进玩法场景"那一步（那时的 pack/ 读取会 await 它，见 fetchShim / Image.src）。
     // 失败不能掀翻启动 Promise（见 ensurePack），否则标题已经在屏上却要被整屏错误页盖掉。
-    ensurePack().then(function (ok) {
-      bodyElement.setAttribute('data-p2-pack', ok ? 'ready' : packState);
+    ensurePack().then(function (ok) {      bodyElement.setAttribute('data-p2-pack', ok ? 'ready' : packState);
       if (ok) {
         bodyElement.setAttribute('data-p2-pack-mount-frame', String(packMountFrame));
         bodyElement.setAttribute('data-p2-pack-progress-events', String(packProgressEvents));
@@ -2346,10 +2383,111 @@
       });
   }
 
-  // WASM 说明：`pkg/game_web_bg.wasm` 由 wasm-bindgen 以 `--target web` 生成，其胶水依赖
-  // 浏览器 ESM 与 web-sys（document/window/fetch），无法直接在小游戏里 require。小游戏侧
-  // 需要 WXWebAssembly + 去 DOM 化的胶水（属后续工作），因此这里显式不加载它，以免出现
-  // "看起来启动了、实际没跑" 的假成功。游戏逻辑由 Fengari + pack/ 真实承载。
+  // WASM 说明（M32）：代码包里发行 `pkg/game_web.js` + `pkg/game_web_bg.wasm`。
+  // 胶水用 **`--target no-modules`** 生成（纯脚本、无 import/export），由 `wasm-bridge.js`
+  // 包成 CommonJS 后用 `initSync(bytes)` 同步实例化——小游戏没有 `instantiateStreaming`、
+  // 也不认 `Response`，走字节路径最少猜测。**不复用 webgl 那份 `--target web` 的 ESM 胶水**：
+  // 小游戏按 CommonJS 解析，顶层 `export` 会让启动直接 SyntaxError。
+  //
+  // 当前边界（不得夸大）：wasm 到"能读、能实例化、导出清单可核对"为止；游戏逻辑仍由
+  // Fengari + `pack/` 承载。`game_web::start_wechat`（去 DOM 入口）**未接线、未验证**，
+  // 状态见 `engine/crates/game_web/src/lib.rs` 与 `plugins/wechat-minigame/README.md`。
+  // ---------- 画布与游戏版面的自检（M32） ----------
+  //
+  // 读包内 `project.toml` 的 `window_width/height`（那是工程声明的设计分辨率，与
+  // `scripts/ui/layout.lua` 的 DESIGN_W/DESIGN_H 同源，由 `ui/layout_check.lua` 在原生侧守住），
+  // 与适配层自己设的画布尺寸比对。不一致时**响亮 warn + 进诊断**：这是"竖版游戏配了横版画布"
+  // 这类错配唯一能在无头环境里被发现的地方（画面不会被裁剪器报错，只会默默溢出）。
+  function reportViewAgreement() {
+    var declaredWidth = null;
+    var declaredHeight = null;
+    // 用**改名感知**的读法（`mainpack/project.toml.txt`），否则 `.toml` 在真机上读不到、
+    // 这里就永远只能报 unknown（本机第一次实现就是这么写的，实测 declared=unknown）。
+    try {
+      var toml = readWithStrategies('project.toml', readTextRaw);
+      if (toml && typeof toml.value === 'string') {
+        var mw = /window_width\s*=\s*(\d+)/.exec(toml.value);
+        var mh = /window_height\s*=\s*(\d+)/.exec(toml.value);
+        if (mw && mh) {
+          declaredWidth = Number(mw[1]);
+          declaredHeight = Number(mh[1]);
+        }
+      }
+    } catch (error) { /* 读不到就按"没声明"记，不当作错误 */ }
+
+    var known = declaredWidth > 0 && declaredHeight > 0;
+    var agree = known ? (declaredWidth === VIEW_WIDTH && declaredHeight === VIEW_HEIGHT) : null;
+    viewAgreement = {
+      declared: known ? (declaredWidth + 'x' + declaredHeight) : 'unknown',
+      canvas: VIEW_WIDTH + 'x' + VIEW_HEIGHT,
+      agree: agree,
+      // 方向**只报编译期常量**，不去读 `game.json`：那个文件在真机上 `readFileSync` 一律
+      // `permission denied`（`*.js`/`game.json` 上传后被编译），而适配层有一条硬约束
+      // **一次都不许读它**（回归守卫 `--expect-no-read game.json`）。
+      // 第一版这里写了 `readText('game.json')` 取 deviceOrientation，被那条守卫当场抓住——
+      // 守卫在这里是对的：拿一个真机读不到的输入去判"方向对不对"，本身就是把功能绑在不可用的输入上。
+      // 方向属于**发布配置**，真值在 `plugins/wechat-minigame/game.json` 与构建期校验里。
+      orientation: GAME_ORIENTATION
+    };
+    // 三档：ok（声明且一致）/ mismatch（声明但不一致）/ unknown（读不到声明，无从判断）。
+    // `unknown` **不算错**：project.toml 可能因发布形态而不在包内，那不该报警。
+    bodyElement.setAttribute('data-p2-view', agree === true ? 'ok' : (agree === false ? 'mismatch' : 'unknown'));
+    if (agree === false) {
+      warn('wechat-adapter: 画布尺寸与工程声明不一致（画布 '
+        + VIEW_WIDTH + 'x' + VIEW_HEIGHT + '，project.toml ' + viewAgreement.declared
+        + '）—— Lua 面板画在屏幕像素空间、不做缩放，会导致版面溢出画布');
+    } else if (agree === true) {
+      log('wechat-adapter: 画布 ' + VIEW_WIDTH + 'x' + VIEW_HEIGHT + '、方向 '
+        + viewAgreement.orientation + '，与 project.toml 声明一致');
+    } else {
+      log('wechat-adapter: 画布 ' + VIEW_WIDTH + 'x' + VIEW_HEIGHT + '、方向 '
+        + viewAgreement.orientation + '（读不到 project.toml 的 window_* 声明，跳过一致性判断）');
+    }
+  }
+
+  // ---------- wasm 核心：加载 + 自证（M32） ----------
+  //
+  // 口径先说清：小游戏的**游戏逻辑**仍由 Fengari + `pack/` 承载（与 webgl 发布同一条路径），
+  // wasm 核心到这里**只做三件事**——能读到、能实例化、导出清单对得上。
+  // 为什么值得做：包内多一份 40KB 的 wasm，如果没人验证它"真的装进来了"，
+  // 它就是一个纯体积开销 + 一个"看起来支持 wasm"的假象。所以这里把结果做成可核对的证据。
+  //
+  // 三档结果（都进 `__P2_DIAG().wasm` 与启动日志，**不**影响 Lua 启动的成功与否）：
+  //   ok                 实例化成功，`exports` 是真实导出名清单
+  //   no-webassembly     宿主没有 WXWebAssembly / WebAssembly（真机极旧基础库）
+  //   webassembly-api-incomplete  只有 instantiate、没有 Module/Instance 构造器
+  //   wasm-bytes-unreadable       包内读不到 wasm（多半是发布形态没把它打进去）
+  //   instantiate-failed          胶水抛错（detail 带原始信息）
+  var wasmState = { status: 'not-attempted' };
+  // 画布/版面一致性自检结果（见 reportViewAgreement），进 __P2_DIAG().view_agreement。
+  var viewAgreement = { declared: 'unknown', canvas: 'unknown', agree: null, orientation: 'unknown' };
+
+  function loadWasmCoreOnce() {
+    if (wasmState.status !== 'not-attempted') return wasmState;
+    var bridge = null;
+    try {
+      bridge = require('./wasm-bridge.js');
+    } catch (error) {
+      wasmState = { status: 'bridge-missing', detail: hostError(error) };
+      warn('wechat-adapter: wasm 桥接层加载失败 -> ' + wasmState.detail);
+      return wasmState;
+    }
+    var result = bridge.loadWasmCore({
+      readBytes: readBytes,
+      wasmPath: WASM_MODULE_PATH,
+      log: log
+    });
+    if (result.ok) {
+      wasmState = { status: 'ok', source: result.source, exports: result.exports, bytes: result.bytes };
+    } else {
+      wasmState = { status: result.reason, source: result.source, detail: result.detail };
+      warn('wechat-adapter: wasm 核心未就绪（' + result.reason + (result.detail ? '：' + result.detail : '') + '）'
+        + '——游戏逻辑不受影响（由 Fengari + pack/ 承载），但"包里带了 wasm 却没装上"属于发布形态问题');
+    }
+    bodyElement.setAttribute('data-p2-wasm', wasmState.status);
+    return wasmState;
+  }
+
   var api = {
     canvas: canvas,
     status: statusElement,
@@ -2391,9 +2529,12 @@
     readStrategy: function () { return preferredStrategy.pack; },
     readStrategies: function () { return { main: preferredStrategy.main, pack: preferredStrategy.pack }; },
     // 渲染自证：开发者工具控制台里可直接 `__P2_DIAG()` 复制一份现场快照
-    // （主画布来源、像素回读、帧数、贴图成败、远端状态）。
+    // （主画布来源、像素回读、帧数、贴图成败、远端状态、wasm 核心状态）。
     diag: diagSnapshot,
     publishDiag: publishDiag,
+    // wasm 核心：状态查询 + 显式触发（默认在 start() 里触发一次；这里给测试与现场排查用）。
+    wasmInfo: function () { return wasmState; },
+    loadWasm: loadWasmCoreOnce,
     canvasInfo: function () {
       return { source: canvasSource, isMain: canvasIsMain, isCreated: canvasIsCreated, width: canvas.width, height: canvas.height };
     },

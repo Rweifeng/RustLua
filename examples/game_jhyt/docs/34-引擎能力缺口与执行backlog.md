@@ -99,6 +99,51 @@
 | 跨会话恢复时钟/背包/装备/玩家 | B-2（游戏侧） | 已具备：`jhyt_smoke`（`E:\Codex\RustLua\.../game/examples/jhyt_smoke.rs`）验证睡觉 → 存档 → 全新会话读档恢复 day/money/稀疏槽位/装备/PersistId 玩家 |
 | 切图/重启后 tile/meta/solid 一致 | B-3 | 已具备：`map_state_tilemap_snapshot_survives_scene_change_and_restart` |
 
+## 对齐记录（1.0，2026-09-23 / M32 相机收口）
+
+1. **相机跟随与取景边界（本轮需求）**：改造前工程**没有任何场景声明相机**，Lua 侧也没有一处
+   `camera2d.follow` ⇒ 运行时一直是默认相机（中心 `(640,360)`、`zoom=1`、无 bounds）。现在：
+   * 每张玩法地图一个 `GameCamera` 实体，`Camera` 组件声明
+     `projection=orthographic;center=<地图中心>;zoom=1;bounds=0,0,W*32,H*32`
+     （由 `tools/pixel_kit.camera_line` 单点产出，8 个场景重跑生成器落地）；
+   * `scripts/world/camera_view.lua` 在每次进图后 `camera2d.follow(player)`，
+     offset/死区/平滑全 0 ⇒ 玩家始终在视野正中；
+   * 竖屏（视口 720×1280）下的边界事实：**x 轴**视口(720) < 地图(1280) ⇒ 夹取区间
+     `[360, 920]` 有效，跟随与"不出图"同时成立；**y 轴**视口(1280) > 地图(704) ⇒ 该轴
+     不可夹取，引擎按 `clamp_center` 取边界中点，相机**钉在地图纵向中心**（地图比屏幕矮时
+     几何上不可避免；要消掉只能 `zoom > 1.82`，已按 `docs/52` §4 裁定不缩放世界）。
+     验收：`jhyt_m32_camera`（7 节，含四角反投影回世界的可见矩形断言）。
+
+2. **发现并修掉一个引擎缺陷：场景声明的相机只在启动场景生效**。
+   `process_scene_transition` 会重建整个世界（`ScriptState::world = World::new()` 后重新
+   实例化），于是场景声明的 `Camera` 在换图后是**新的一份**；而宿主只在 `RuntimeScene::init`
+   读过一次 `declared_camera` ⇒ 换图后 `self.camera` 的 center/zoom/**bounds 全部停在旧值**。
+   症状很隐蔽：每张地图各声明一份 bounds 的工程里，只有开工那张图受约束，之后所有地图的
+   相机都"忘了边界"（表现只是相机看着不对，没有任何报错）。
+   修法：新增内置固定步系统 `scene_camera_sync`（紧跟 `scene_transition`，同格、显式依赖），
+   重读新场景声明的相机并把 **bounds** 同步给宿主；**不取 center/zoom**——换图时相机姿态的
+   权威仍是每帧的 `camera2d.*`，重置回新场景的作者中心会在换图那一帧闪一下。
+   验收：`jhyt_m32_camera` ⑥ 节（换图后仍被夹在东界 920、室内图两轴都退化到地图中心）。
+
+3. **数据门**：`world/camera_view.validate_all` 登记进 `scripts/validate_data.lua`，在启动与
+   `game --check` / `editor --check` 三条路径上核对"场景恰好 1 台 `Camera`、正交投影、
+   `zoom=1`、`bounds` 逐值等于该场景 GroundMap 的真实地图矩形"。这条契约横跨
+   Python 生成器 → `.scene` → 引擎夹取三层，漂移的表现同样是"相机看起来怪但零报错"。
+
+4. **顺带修掉：两个"跨文件契约校验器"此前一直在空跑**。Lua 侧没有拿到工程根的通路，而
+   `io.open` 的相对路径按**进程工作目录**解析、`game --check` 又不 chdir 到工程根
+   （在 `engine/` 下跑 `--check --project ../examples/game_jhyt` 时
+   `io.open("scenes/main.scene")` 返回 nil；`debug.getinfo` 已被 Lua 沙箱剥掉）。于是
+   **`ui/layout_check.lua` 的设计分辨率契约从未真正执行过**（场景 `meta ui_reference_*` 与
+   `project.toml` 的 `window_width/height` 必须等于 720×1280），两个门都是恒绿——比"没有门"
+   更糟，因为它看起来在工作。
+   修法：引擎新增 `app.project_root()`（工程根绝对路径，正斜杠；未配置时为空串，Web 一类
+   没有文件系统的宿主据此跳过），两个校验器改用它拼绝对路径。**负向证据**：把
+   `scenes/manor.scene` 的 `ui_reference_width` 改成 700 ⇒ `[layout] ... = nil×1280，应为
+   720×1280`；把相机 `bounds` 的 max_y 改成 700 ⇒ `[camera_view] ... bounds = 0.0,0.0,1280.0,700.0`。
+   改回即 `game_check_ok`。这与既有裁决一致：**一条不能失败的门不算门**，新门必须给出
+   它确实会红的证据（见 `docs/34` §验收口径与 `jhyt_m23_data_validation` ⑤ 的同款做法）。
+
 ## 对齐记录（0.9，2026-09-15 / M31）
 
 1. **发布包不再把玩家数据写进程序目录（计划 P3）**：发布包形态（`<exe>/pack` + 同级

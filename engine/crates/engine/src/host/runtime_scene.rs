@@ -1403,21 +1403,7 @@ impl RuntimeScene {
         // docs/54 §8-①：场景声明了自己的 `Camera2D`（正交相机）就用它当**初始**相机；
         // 没声明则保持历史默认（中心 = 设计分辨率中心、zoom = 1）。之后 Lua `camera2d.*`
         // 与相机控制器照旧移动它——声明的相机是起点，不是第二份姿态真源。
-        let declared_camera = script.with_world(|world| {
-            world
-                .entities_with::<Camera2D>()
-                .into_iter()
-                // docs/54 §4.2：被禁用的相机不当"初始相机"（与 3D 侧同一条规则）；
-                // 过滤放在 `find_map` **里面**，因此"第一台被禁用"不会挡掉后面启用的那台。
-                .find_map(|id| {
-                    world
-                        .get::<Camera2D>(id)
-                        .ok()
-                        .flatten()
-                        .copied()
-                        .filter(|camera| camera.enabled)
-                })
-        });
+        let declared_camera = script.with_world(declared_camera_2d_in);
         let camera = match declared_camera {
             Some(camera) => camera,
             None => Camera2D::new(crate::core::camera::DEFAULT_2D_CAMERA_CENTER, 1.0)
@@ -1690,6 +1676,19 @@ impl RuntimeScene {
                     .map_err(|error| SystemError::new(error.to_string()))
             },
         ));
+        // 换图会把世界连同场景声明的 `Camera` 一起重建，宿主必须**紧跟其后**重新读一次
+        // bounds（否则"声明的相机"只在启动场景生效）。挂在同一格、排在 scene_transition
+        // 之后，因此新 bounds 在同一个固定步里就被 `step_camera2d` 夹取，渲染不会看到
+        // 越界的一帧。
+        self.add_builtin_step_system(System::new(
+            "scene_camera_sync",
+            ScheduleStage::Simulation,
+            ["scene_transition"],
+            |scene: &mut RuntimeScene, _| {
+                scene.sync_camera_from_scene();
+                Ok(())
+            },
+        ));
         // 以下为每次 run_script_steps 调用只执行一次的帧级系统：原实现里它们
         // 在固定步循环结束后统一推进（elapsed = delta × steps），顺序保持
         // integrate_velocity → AnimationStateMachine → Animation3D。
@@ -1802,6 +1801,38 @@ impl RuntimeScene {
                 Ok(())
             },
         ));
+    }
+
+    /// 换图后同步 2D 相机：重新读新场景声明的 `Camera`，并把 **bounds 换成新地图的**。
+    ///
+    /// 为什么需要它：`process_scene_transition` 会**重建整个世界**（`ScriptState::world =
+    /// World::new()` 后重新实例化），于是切图时场景声明的相机是**新的一份** `Camera2D`；
+    /// 而宿主只在 `init`（启动场景）时读过一次 `declared_camera`。结果是"声明的相机只在
+    /// 启动场景生效"——每张玩法地图各声明一份 bounds 的工程（`examples/game_jhyt`）里，
+    /// 只有开工那张图受约束，之后所有地图的相机都退回"无 bounds"。
+    ///
+    /// 只取 `bounds`，**不取 center/zoom**：换图时相机姿态的权威是每帧的 `camera2d.*`
+    /// 请求，把它重置回新场景的作者中心会在换图那一帧闪一下（与"场景声明的相机是**初始**
+    /// 相机，不是第二份姿态真源"这条既有裁定一致）。新 bounds 在同一个固定步里就会被
+    /// `step_camera2d` 夹取，因此不会渲染出越界的一帧。
+    fn sync_camera_from_scene(&mut self) {
+        let Some(declared) = self.declared_camera_2d() else {
+            return;
+        };
+        if self.camera.bounds != declared.bounds {
+            tracing::info!(
+                target: "render",
+                scene = ?self.script.scene_name(),
+                bounds = ?declared.bounds,
+                "[render] 2D camera bounds refreshed from the new scene"
+            );
+        }
+        self.camera.bounds = declared.bounds;
+    }
+
+    /// 换图后同步 2D 相机时读的"场景相机"（与 `init` 同一个口径）。
+    fn declared_camera_2d(&self) -> Option<Camera2D> {
+        self.script.with_world(declared_camera_2d_in)
     }
 
     /// 每帧推进 2D 相机控制器：解析跟随目标的世界位置 → 控制器算 center → 复用瓦片图
@@ -4640,6 +4671,27 @@ pub fn load_custom_font_atlas(project_root: Option<&Path>, font_asset: &str) -> 
     };
     tracing::info!(target: "render", path = %font_asset, "[render] custom font atlas ready");
     Some(Arc::new(Mutex::new(atlas)))
+}
+
+/// 世界里声明的第一台**启用**的 2D 相机（`Camera projection=orthographic`），没有则 `None`。
+///
+/// **启动场景与换图读的是同一份口径**：`init` 用它决定初始相机，`sync_camera_from_scene`
+/// 用它决定换图后的 bounds。两处各写一遍的话，"哪台算场景相机"就会有两个答案。
+///
+/// docs/54 §4.2：被禁用的相机不参与选择（与 3D 侧同一条规则），但过滤在 `find_map`
+/// **里面**——"第一台被禁用"不该挡掉后面启用的那台。
+fn declared_camera_2d_in(world: &crate::core::world::World) -> Option<Camera2D> {
+    world
+        .entities_with::<Camera2D>()
+        .into_iter()
+        .find_map(|id| {
+            world
+                .get::<Camera2D>(id)
+                .ok()
+                .flatten()
+                .copied()
+                .filter(|camera| camera.enabled)
+        })
 }
 
 /// Sprite 的世界矩形（pivot+缩放+旋转+位移）投影到屏幕的 AABB，供 UiEvents 命中。
@@ -8678,6 +8730,77 @@ mod frame_schedule_tests {
         RuntimeScene::new(Some(&root)).expect("runtime for game_api sample project")
     }
 
+    /// **回归**：换图后必须重读新场景声明的 `Camera`，否则场景声明的 bounds 只在启动场景生效。
+    ///
+    /// 怎么坏的：`process_scene_transition` 重建整个世界（`World::new()` 后重新实例化），
+    /// 换图后那台 `Camera` 是**新的一份**；宿主原先只在 `init`（启动场景）读过一次，
+    /// 于是 `self.camera.bounds` 永远停在开工那张图的值上——每张地图各声明一份 bounds 的
+    /// 工程（`examples/game_jhyt`）里，之后所有地图的相机都不受约束，而且**没有任何报错**。
+    ///
+    /// 断言三件事：① 启动场景（门面，无相机）用历史默认、无 bounds；② 换到声明了相机的
+    /// 场景后 bounds 变成新场景那一份；③ **center 不被重置**（姿态的权威仍是每帧的
+    /// `camera2d.*`，重置回作者中心会在换图那一帧闪一下）。
+    #[test]
+    fn scene_declared_camera_bounds_refresh_after_scene_switch() {
+        let root = crate::core::games_dir().join("examples").join("game_jhyt");
+        if !root.join("scenes/manor.scene").is_file() {
+            eprintln!("跳过：checkout 内没有 examples/game_jhyt");
+            return;
+        }
+        let mut runtime = RuntimeScene::new(Some(&root)).expect("runtime for game_jhyt");
+        let idle = InputSnapshot::default();
+        runtime.run_script_steps(1, 1.0 / 60.0, &idle).unwrap();
+        assert_eq!(runtime.script.scene_name().as_deref(), Some("main"));
+        assert_eq!(
+            runtime.camera_2d().bounds,
+            None,
+            "门面 main.scene 没有声明相机 ⇒ 不该有 bounds"
+        );
+
+        // 进入山庄：bounds 换成地面瓦片图的矩形（40×22 格 × 32 = 1280×704）。
+        runtime
+            .with_script(|script| script.execute_console("on_click('BtnStart')"))
+            .unwrap();
+        runtime.run_script_steps(1, 1.0 / 60.0, &idle).unwrap();
+        assert_eq!(runtime.script.scene_name().as_deref(), Some("manor"));
+        let manor = runtime.camera_2d();
+        let expected =
+            CameraBounds::new(Vec2::new(0.0, 0.0), Vec2::new(1280.0, 704.0)).expect("manor bounds");
+        assert_eq!(
+            manor.bounds,
+            Some(expected),
+            "换图后应读入新场景声明的 bounds"
+        );
+        // ③ 姿态不被重置：`enter_playable_map` 先落点再 follow，下一帧相机中心 = 玩家坐标
+        // （528,112）。若 bounds 同步顺手把 center 重置成场景作者值，这里会变成 (640,352)——
+        // 注意 y 最终仍会被夹到 352（视口 1280 > 地图 704），所以只断言 x 未被重置。
+        runtime.vertices(720, 1280).expect("render viewport");
+        runtime.run_script_steps(1, 1.0 / 60.0, &idle).unwrap();
+        let followed = runtime.camera_2d();
+        assert!(
+            (followed.center.x - 528.0).abs() < 1.0,
+            "换图后 center.x 应由跟随决定（528），实际 {}",
+            followed.center.x
+        );
+
+        // 换到室内（20×12 = 640×384）：bounds 必须跟着地图换，而不是留在山庄那份。
+        runtime
+            .with_script(|script| script.execute_console("map[\"goto\"]('interior_herb')"))
+            .unwrap();
+        runtime.run_script_steps(1, 1.0 / 60.0, &idle).unwrap();
+        assert_eq!(
+            runtime.script.scene_name().as_deref(),
+            Some("interior_herb")
+        );
+        let small = CameraBounds::new(Vec2::new(0.0, 0.0), Vec2::new(640.0, 384.0))
+            .expect("interior bounds");
+        assert_eq!(
+            runtime.camera_2d().bounds,
+            Some(small),
+            "换到更小的地图后 bounds 应同步缩小"
+        );
+    }
+
     /// 固定步顺序必须与原手工编排一致：
     /// input_apply → lua_update → ui_click_dispatch → physics2d → physics3d →
     /// particles → clock → scene_transition；帧级系统每调用一次：
@@ -8745,6 +8868,8 @@ mod frame_schedule_tests {
                 "particles_step",
                 "clock_step",
                 "scene_transition",
+                // 换图后重读新场景声明的 `Camera`（bounds 必须跟着地图走），排在换图之后。
+                "scene_camera_sync",
                 "integrate_velocity",
                 "camera2d_controller",
                 "animation_state_advance",

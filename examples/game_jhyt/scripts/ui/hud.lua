@@ -21,17 +21,21 @@ local maps = require("data.maps")
 local goals = require("systems.goals")
 local tutorial = require("ui.tutorial")
 local ui_text = require("ui.ui_text")
+-- M32 竖版：面板几何与行宽预算的唯一来源（`ui/layout.lua`）。
+local layout = require("ui.layout")
 
 local M = {}
 
--- 状态面板几何（1280×720 视口；右列不与对话/商店/背包/暂停面板重叠）。
-local PANEL = { x = 996, y = 8, w = 276, h = 300 }
-local LINE_H = 30
+-- 状态面板几何（竖版：底部通栏；左右各留 24，不与任何其它面板重叠）。
+-- 横屏时它是右上角一块 276×300 的小面板，竖屏改到**底部**：竖屏宽度只有 720，
+-- 右上角放不下"面板 + 资源条 + 反馈行"，而底部通栏既够宽也不挡地图中央的玩法视野。
+local PANEL = layout.PANEL.hud_info
+local LINE_H = 20
 local LINE_FONT = 14
-local PANEL_LINES = 10
--- 可用文字宽度：面板内左右各留 12；整行行宽为 1280 视口两侧各留 16。
+local PANEL_LINES = 5
+-- 可用文字宽度：面板内左右各留 12；整行行宽为设计宽两侧各留 24（`layout.row_width()`）。
 local PANEL_TEXT_W = PANEL.w - 24
-local ROW_TEXT_W = 1280 - 32
+local ROW_TEXT_W = layout.row_width()
 
 local WEATHER_TEXT = { sunny = "晴", rainy = "雨" }
 local SEASON_TEXT = { spring = "春", summer = "夏", autumn = "秋", winter = "冬" }
@@ -247,18 +251,23 @@ local draw_bars
 local draw_weather_visual
 
 -- 状态面板逐行文案（headless 验收直接读这里，保证与绘制同源）。
+--
+-- M32 竖版：横屏是 9 行（右列 276 宽的小面板够高），竖屏把面板压到 124px 高，
+-- 于是合并同类项成 5 行——**信息一条不少**，只是把"同一天内的两个指标"并到一行：
+--   ① 生命(气血) + 体力 + 内力      ② 时间 + 天气
+--   ③ 金钱 + 地图                   ④ 快捷栏（武器 + 工具）
+--   ⑤ 种子
+-- 合并的是显示，不是数据：`ui_text.audit()` 仍逐行按真实字宽量 648px 的预算。
 function M.status_lines()
+  local hotbar = hotbar_lines()
   local lines = {
-    hp_text(),
-    "体力 " .. tostring(state.energy) .. " · 内力 " .. tostring(state.inner_power),
-    "时间 " .. clock_text(),
-    "天气 " .. weather_text(),
-    "金钱 " .. tostring(state.money) .. " 文",
-    "地图 " .. tostring((maps.get(map.current() or scene.reload()) or {}).display or "未知")
+    hp_text() .. " · 体力 " .. tostring(state.energy) .. " · 内力 " .. tostring(state.inner_power),
+    "时间 " .. clock_text() .. " · 天气 " .. weather_text(),
+    "金钱 " .. tostring(state.money) .. " 文 · 地图 "
+      .. tostring((maps.get(map.current() or scene.reload()) or {}).display or "未知"),
+    "快捷栏",
+    tostring(hotbar[2] or "武器 - · 工具 -") .. " · " .. tostring(hotbar[3] or "种子 -"),
   }
-  for _, line in ipairs(hotbar_lines()) do
-    lines[#lines + 1] = line
-  end
   return lines
 end
 
@@ -267,16 +276,8 @@ end
 -- `input.update():match('building')` 依赖这里的 `building` 字面量）。
 function M.text()
   local lines = M.status_lines()
-  local text = table.concat({
-    lines[1],
-    "体力 " .. tostring(state.energy),
-    "内力 " .. tostring(state.inner_power),
-    "时间 " .. clock_text(),
-    "天气 " .. weather_text(),
-    "金钱 " .. tostring(state.money) .. " 文",
-    lines[6]
-  }, " · ")
-  text = text .. " · " .. tostring(lines[7]) .. "：" .. tostring(lines[8]) .. " · " .. tostring(lines[9])
+  -- M32：状态行合并成 5 行后，单行摘要直接由这 5 行拼（不再按下标取第 6..9 行）。
+  local text = table.concat(lines, " · ")
   local building = require("systems.building")
   if building.build_mode() then
     local preview = building.preview(state.facing)
@@ -402,10 +403,17 @@ end
 local DEFAULT_KEYS =
     "WASD 移动 · E 交互 · J 攻击 · K 武学 · G 送礼 · T 睡觉 · Q 修炼 · B 建造 · I 背包 · L 任务 · P 暂停"
 
--- 每帧重绘：状态面板 + 键位提示 + 提示区（对话态隐藏左下两行，避免与
--- 对话面板重叠——对话自己带提示）。`key_hints` 为空时用静态兜底。
+-- 每帧重绘：状态面板 + 资源条 + 键位提示 + 提示区。`key_hints` 为空时用静态兜底。
+--
+-- M32 竖版的两条位置规则（都有机器检查，不靠自觉）：
+--   * 状态面板在底部通栏（1020..1144），对话面板在它**正上方**（800..1000）——
+--     `layout.CONTEXT.gameplay` 把两者放在同一同屏组里，`layout.audit()` 断言不重叠，
+--     因此说话时状态照样可见（竖屏底部一块通栏放得下"对话框 + 状态行"，不必二选一）。
+--   * 键位提示固定在最底一行（y=1246），它在状态面板之下，与任何面板都不冲突；
+--     横屏时它在 y=8、与 scene 的 HudTitle（y 20..44）叠字，竖版顺手修掉了。
 function M.draw(key_hints)
   local x, y, w, h = PANEL.x, PANEL.y, PANEL.w, PANEL.h
+  local in_dialogue = state.is_mode("Dialogue")
   -- HUD 每帧重绘：同时重开自己那一轮文字登记（M30）。登记表即"本帧画面上有哪些文字、
   -- 各自可用多宽"，验收遍历它逐条量宽（`ui_text.audit()`），无需在验收里重抄几何。
   ui_text.begin("hud")
@@ -425,29 +433,31 @@ function M.draw(key_hints)
   if type(hint) ~= "string" or hint == "" then
     hint = DEFAULT_KEYS
   end
-  ui_text.draw("hud", "hud:keys", 16, 8, 13.0, ROW_TEXT_W, hint)
+  -- M32 竖版：键位提示从"顶部一行"改到**底部最后一行**。竖屏顶部是地图标题
+  -- （scene 的 HudTitle/HudHint），原先两者都在 y=8 会叠字。
+  ui_text.draw("hud", "hud:keys", PANEL.x, layout.ROW.bottom_y, 13.0, ROW_TEXT_W, hint)
 
-  if state.is_mode("Dialogue") then
+  if in_dialogue then
     ui_text.hide("hud", "hud:feedback")
     ui_text.hide("hud", "hud:tutorial")
     ui_text.hide("hud", "hud:goals")
   else
     local feedback = M.feedback_line()
     if feedback ~= "" then
-      ui_text.draw("hud", "hud:feedback", 16, 660, 16.0, ROW_TEXT_W, feedback)
+      ui_text.draw("hud", "hud:feedback", PANEL.x, layout.ROW.feedback_y, 16.0, ROW_TEXT_W, feedback)
     else
       ui_text.hide("hud", "hud:feedback")
     end
     -- 七日目标（M27）：放在反馈行上方，不占引导行（两者可同时可见）。
     local goals = M.goals_line()
     if goals ~= "" then
-      ui_text.draw("hud", "hud:goals", 16, 634, 15.0, ROW_TEXT_W, goals)
+      ui_text.draw("hud", "hud:goals", PANEL.x, layout.ROW.goals_y, 15.0, ROW_TEXT_W, goals)
     else
       ui_text.hide("hud", "hud:goals")
     end
     local prompt = tutorial.prompt()
     if prompt then
-      ui_text.draw("hud", "hud:tutorial", 16, 686, 15.0, ROW_TEXT_W, prompt)
+      ui_text.draw("hud", "hud:tutorial", PANEL.x, PANEL.y - 24, 15.0, ROW_TEXT_W, prompt)
     else
       ui_text.hide("hud", "hud:tutorial")
     end
@@ -469,12 +479,12 @@ end
 -- 与 M28 起唯一上限来源一致）。宽度变化因此是"真的反映数值"，不是装饰。
 local BAR = {
   x = PANEL.x + 12,
-  -- 状态面板正下方（面板高 300、起点 y=8）：不覆盖任何文本行，
-  -- 也不与左下角的反馈/引导行（y≈634/660）重叠。
-  y0 = PANEL.y + PANEL.h + 10,
-  row = 18,
+  -- M32 竖版：三条资源条从"面板正下方"改到**面板正上方**（右列布局在竖屏没有右列）。
+  -- 面板顶 y=1020，条高三行（16px 间隔 22px）落在 954..1020，正好贴住面板上沿。
+  y0 = PANEL.y - 66,
+  row = 22,
   w = 120,
-  h = 12,
+  h = 16,
   frame = "assets/art/ui/hud/ui_bar_frame_9s.png",
 }
 local BARS = {
@@ -522,16 +532,25 @@ end
 -- 下雨；而 `farm` 的雨天免浇水、NPC 的 `rain_place` 日程都以天气为条件——没有可见
 -- 反馈时这些机制像是"没生效"。这里只做**表现**：不改玩法状态，晴天把两者清掉。
 --
--- 全屏遮罩用 `ui.panel`（1280×720 设计视口），图标用 `ui.image`（M29 起可读回，
+-- 全屏遮罩用 `ui.panel`（竖版 720×1280 设计视口，M32），图标用 `ui.image`（M29 起可读回，
 -- 见 `ui.image_get`）。每帧重画，晴天 `ui.clear` 收干净。
-local RAIN_OVERLAY = { id = "hud:rain", w = 1280, h = 720, r = 0.16, g = 0.22, b = 0.34, a = 0.22 }
+local RAIN_OVERLAY = {
+  id = "hud:rain",
+  w = layout.DESIGN_W,
+  h = layout.DESIGN_H,
+  r = 0.16,
+  g = 0.22,
+  b = 0.34,
+  a = 0.22,
+}
 -- 天气取值闭集是 `sunny|rainy`（`world/weather.lua` 的 KINDS），所以只有两张图被接线；
 -- `ui_weather_cloud.png` 属于"没有对应天气取值"的资源，登记在 docs/48 的计划行里。
 local WEATHER_ICONS = {
   sunny = "assets/art/ui/hud/ui_weather_sun.png",
   rainy = "assets/art/ui/hud/ui_weather_rain.png",
 }
-local RAIN_ICON = { id = "hud:weather_icon", size = 20 }
+-- 图标落在**屏幕右上角**（竖屏顶部右侧没有别的元素；横屏时它贴在状态面板右上角）。
+local RAIN_ICON = { id = "hud:weather_icon", size = 20, x = layout.DESIGN_W - 28, y = 6 }
 
 function draw_weather_visual()
   if weather.is_rainy() then
@@ -552,8 +571,8 @@ function draw_weather_visual()
   -- 天气图标：取值只有晴/雨两种，直接按取值取图（写错取值就会当场报错，不做兜底图标）。
   ui.image(
     RAIN_ICON.id,
-    PANEL.x + PANEL.w - 26,
-    PANEL.y + 6,
+    RAIN_ICON.x,
+    RAIN_ICON.y,
     RAIN_ICON.size,
     RAIN_ICON.size,
     WEATHER_ICONS[weather.current()],

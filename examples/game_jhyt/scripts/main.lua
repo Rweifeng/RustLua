@@ -29,6 +29,9 @@ local weather = require("world.weather")
 local season_visual = require("world.season_visual")
 local maps = require("data.maps")
 local map_manager = require("world.map_manager")
+-- M32 相机收口：2D 相机跟随玩家（玩家始终在视野正中），取景范围由场景 `GameCamera`
+-- 的 `bounds` 锁在本地图矩形内（引擎每帧夹取）。见 world/camera_view.lua 头注释。
+local camera_view = require("world.camera_view")
 local npcs = require("data.npcs")
 local characters = require("data.characters")
 local places = require("data.places")
@@ -154,6 +157,9 @@ end
 -- 加载期校验：委托 scripts/validate_data.lua（M20-01 单一事实来源）——启动、
 -- 发布前检查（game/editor --check）与编辑器资源扫描共用同一份校验器清单与
 -- 诊断文本（含文件/对象/字段路径），避免多处实现漂移。
+-- M32 竖版：竖版版面契约（面板几何不自叠 + 设计分辨率三处一致）作为 `layout`
+-- 校验器登记在 validate_data 里，因此**同一个门**就能挡住"改了几何常量把两个面板
+-- 叠在一起"这类只有跑到画面上才看得见的问题。
 local function validate_content()
   local report = require("validate_data").check({ strict = true })
   if report ~= "" then
@@ -204,6 +210,8 @@ local function new_game()
   -- 天气与季节表现（M29）：天气抽签种子回默认、季节换图计数清零（贴图由进图时重设）。
   weather.reset()
   season_visual.reset()
+  -- 相机（M32 相机收口）：清掉上一局的跟随目标，避免新档第一帧跟着已销毁的实体。
+  camera_view.reset()
   audio.init()
   clock.set(1, 0)
 end
@@ -212,6 +220,10 @@ end
 -- 并注册本图出口（map_manager 幂等）。village 没有 FarmGrid，不碰农田逻辑。
 local function enter_playable_map(map_id)
   map_manager.on_enter(map_id)
+  -- 相机跟随（M32 相机收口）：必须在落点之后、且每次进图都重绑——换图会重建玩家实体，
+  -- 沿用旧 id 会让跟随目标指向已销毁的实体；换图后场景自带的 `Camera` 也换了 bounds，
+  -- 但相机控制器与 zoom 跨场景保持（引擎语义：场景相机只是**初始**相机）。
+  camera_view.follow_player()
   if map_id == "manor" then
     farm.init()
   end
@@ -367,6 +379,9 @@ function jianghu_return_to_title()
   entry = nil
   booted = false
   state.set_mode("Playing")
+  -- 相机（M32 相机收口）：门面没有玩家实体，必须取消跟随——否则相机控制器会继续
+  -- 追着一个**已销毁**的实体（引擎对死目标按 None 处理，画面会停在上一张图的坐标）。
+  camera_view.reset()
   return scene.load("main")
 end
 
@@ -387,6 +402,9 @@ function jianghu_status()
       sfx = audio.bus_volume("sfx"),
       ui = audio.bus_volume("ui")
     },
+    -- M32 相机收口：跟随状态与宿主回填的真实相机中心（headless 验收读它断言
+    -- "玩家始终在视野正中"与"相机中心被地图 bounds 夹住"）。
+    camera = camera_view.status(),
     settings_path = audio.settings_path()
   }
 end

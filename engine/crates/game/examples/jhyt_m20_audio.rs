@@ -338,19 +338,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     assert_num(&mut runtime, "ui.focus_count('bp:focus')", inv_rows)?;
     assert_num(&mut runtime, "ui.focus_index('bp:focus')", 0.0)?;
-    // 2 列网格：右移到同排下一列，再下移到同列下一行。
+    // M32 竖版：背包改成**单列** 10 行（横屏是 2 列网格），因此左右方向键不再有意义
+    // （单列列表里按右键不应移动选择），逐行下移由 ArrowDown 表达。
     press(&mut runtime, KeyCode::ArrowRight)?;
+    assert_num(&mut runtime, "require('ui.inventory_ui').index()", 0.0)?;
+    press(&mut runtime, KeyCode::ArrowDown)?;
     assert_num(&mut runtime, "require('ui.inventory_ui').index()", 1.0)?;
     assert_num(&mut runtime, "ui.focus_index('bp:focus')", 1.0)?;
     press(&mut runtime, KeyCode::ArrowDown)?;
-    assert_num(&mut runtime, "require('ui.inventory_ui').index()", 3.0)?;
+    assert_num(&mut runtime, "require('ui.inventory_ui').index()", 2.0)?;
     // W/S 与方向键共用同一焦点环（既有键位仍可用）。
     press(
         &mut runtime,
         KeyCode::from_char('w').expect("QWERTY 字符必须有对应物理键"),
     )?;
     assert_num(&mut runtime, "require('ui.inventory_ui').index()", 1.0)?;
-    // 末项再下移 → 环绕回**同列首项**（2 列网格的焦点循环语义）。
+    // 末项再下移 → 环绕回**第一项**（单列列表的焦点循环语义：没有"同列"这回事了）。
     let last = inv_rows - 1.0;
     lua(
         &mut runtime,
@@ -358,12 +361,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     assert_num(&mut runtime, "require('ui.inventory_ui').index()", last)?;
     press(&mut runtime, KeyCode::ArrowDown)?;
-    let column_wrap = (last as i64 % 2) as f64;
-    assert_num(
-        &mut runtime,
-        "require('ui.inventory_ui').index()",
-        column_wrap,
-    )?;
+    assert_num(&mut runtime, "require('ui.inventory_ui').index()", 0.0)?;
     let inv_focus_count = query_num(&mut runtime, "return ui.focus_count('bp:focus')")?;
     press(
         &mut runtime,
@@ -391,7 +389,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "require('ui.quest_ui').index()",
         quest_rows - 1.0,
     )?;
-    let quest_scroll_max = ((quest_rows - 7.0).max(0.0)) * 34.0;
+    // M32 竖版：任务行高 34 → 38（面板从 600×470 变成 592×720）。
+    let quest_scroll_max = ((quest_rows - 7.0).max(0.0)) * 38.0;
     assert_num(
         &mut runtime,
         "ui.scroll_max('qst:scroll')",
@@ -612,7 +611,8 @@ fn new_runtime(project: &Path, save_path: &Path) -> Result<LuaRuntime, Box<dyn s
     runtime.set_save_path(save_path.to_path_buf());
     // 音频目录固定为 <project>/assets/audio（core/audio.rs）。
     runtime.set_audio_asset_dir(project.join("assets").join("audio"));
-    runtime.set_ui_viewport(1280, 720);
+    // M32 竖版：设计分辨率 720×1280（Lua 动态 UI 是屏幕像素空间，视口必须与设计尺寸一致）。
+    runtime.set_ui_viewport(720, 1280);
     runtime.set_delta(1.0 / 60.0);
     Ok(runtime)
 }

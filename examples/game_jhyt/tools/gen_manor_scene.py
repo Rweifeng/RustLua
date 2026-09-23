@@ -40,6 +40,9 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from character_art import player_art  # noqa: E402  主角形象（与 manifest 同源）
+# M32：`Transform` 的统一形态序列化器（场景数据门只认这一种写法）。
+from pixel_kit import transform_line as spawn_transform  # noqa: E402
+from pixel_kit import camera_line  # noqa: E402  场景 2D 相机（取景锁在地图内）
 
 # 地图尺寸（maps.lua 的 spawn/exit 边界校验按 40x22 处理，不要改）
 W, H = 40, 22
@@ -216,10 +219,9 @@ def row_major(grid):
 
 
 def transform_line(entity_id, x, y):
-    return (
-        f"component\t{entity_id}\tTransform\tx={x:.6f};y={y:.6f};rotation=0.000000000"
-        ";scale_x=1.000000000;scale_y=1.000000000"
-    )
+    # M32：统一的 Transform 形态由 `pixel_kit.transform_line` 单点产出
+    # （引擎读侧只认 `position/rotation/scale`，2D 旧形态已删除；见该函数注释）。
+    return spawn_transform(entity_id, x, y)
 
 
 def sprite_line(entity_id, texture, width, height, layer, order):
@@ -240,8 +242,10 @@ def build_scene(ground, solid):
     lines.append("meta\tdisplay_name\t江湖有田·山庄")
     lines.append("meta\tgame\tjianghu_youtian")
     lines.append("meta\ttile_size\t32")
-    lines.append("meta\tui_reference_height\t720")
-    lines.append("meta\tui_reference_width\t1280")
+    # M32 竖版：设计分辨率 720×1280（与 `scripts/ui/layout.lua` 的 DESIGN_W/H 一致，
+    # 由 `ui/layout_check.lua` 在 `--check` 与启动期守住）。
+    lines.append("meta\tui_reference_height\t1280")
+    lines.append("meta\tui_reference_width\t720")
     # 1 地表
     lines.append("entity\t1\tGroundMap")
     lines.append(transform_line(1, 0.0, 0.0))
@@ -296,7 +300,7 @@ def build_scene(ground, solid):
     lines.append(f"entity\t{title_id}\tHudTitle")
     lines.append(
         f"component\t{title_id}\tUiLayout\tanchors=0.0000,0.0000,0.0000,0.0000;"
-        "offsets=24.00,20.00,640.00,44.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000"
+        "offsets=24.00,20.00,672.00,44.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000"
     )
     lines.append(
         f"component\t{title_id}\tText\ttext=山庄 · 药田垂直切片;font_size=18.00;color=0.949,0.918,0.847"
@@ -306,11 +310,10 @@ def build_scene(ground, solid):
     hint_id = next_id + 1
     lines.append(f"entity\t{hint_id}\tHudHint")
     lines.append(
-        # 地图自带操作提示放在**地图标题正下方**（与其它地图同一套坐标）：底部 660/686
-        # 两行是 HUD 的动态反馈区（hud:feedback / hud:tutorial），静态提示压在那里会与
-        # 它们叠字；此前山庄还用「贴底锚点」把提示放在 654..676，比其它地图更靠上。
+        # 地图自带操作提示放在**地图标题正下方**（与其它地图同一套坐标）；M32 竖版：
+        # 宽度收到 672（720 - 2×24），底部信息区整块留给 HUD 的动态反馈/目标/键位行。
         f"component\t{hint_id}\tUiLayout\tanchors=0.0000,0.0000,0.0000,0.0000;"
-        "offsets=24.00,50.00,1000.00,72.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000"
+        "offsets=24.00,50.00,672.00,72.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000"
     )
     lines.append(
         f"component\t{hint_id}\tText\ttext=WASD 移动 · E 朝面前格劳作 · T 睡觉到清晨 · Q 吐纳练功 · J 普攻 · K 武学"
@@ -318,6 +321,15 @@ def build_scene(ground, solid):
     )
     lines.append(transform_line(hint_id, 0.0, 0.0))
     lines.append(f"entity_meta\t{hint_id}\trole\thud_hint")
+    # 场景相机（本地图唯一的 `Camera` 实体）：把 2D 取景范围锁在整张地图的矩形内，
+    # 运行期由 `scripts/world/camera_view.lua` 让相机跟随玩家（`camera2d.follow`）。
+    # 几何与理由见 `pixel_kit.camera_line`；`scripts/world/camera_view.lua` 的
+    # `validate_all` 会在启动/`--check` 时核对"场景 bounds == 地图尺寸"。
+    camera_id = hint_id + 1
+    lines.append(f"entity\t{camera_id}\tGameCamera")
+    lines.append(camera_line(camera_id, W, H))
+    lines.append(transform_line(camera_id, 0.0, 0.0))
+    lines.append(f"entity_meta\t{camera_id}\trole\tgame_camera")
     return "\n".join(lines) + "\n"
 
 

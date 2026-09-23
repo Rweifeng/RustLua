@@ -1,96 +1,96 @@
 scene_version=2
 name=main
-meta	design_doc	docs/44-江湖有田-主入口门面与山庄场景重构.md
 meta	display_name	江湖有田·主入口门面
-meta	editor.root_order	1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17
 meta	game	jianghu_youtian
-meta	ui_reference_height	720
-meta	ui_reference_width	1280
+meta	ui_reference_height	1280
+meta	ui_reference_width	720
+meta	design_doc	docs/52-江湖有田-竖版720x1280改造.md
 entity	1	BgNight
 component	1	Image	texture=assets/art/title/title_bg_pixel.png;color=1.000,1.000,1.000
 component	1	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
-component	1	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=0.00,0.00,1280.00,720.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+component	1	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=0.00,0.00,720.00,1280.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 entity_meta	1	role	menu_background
 entity	2	BgVignette
 component	2	Image	texture=assets/art/ui/menu/ui_menu_vignette.png;color=1.000,1.000,1.000
 component	2	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
-component	2	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=0.00,0.00,1280.00,720.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+component	2	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=0.00,0.00,720.00,1280.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 entity_meta	2	role	menu_vignette
 entity	3	InkBand
 component	3	Image	texture=assets/art/ui/menu/ui_menu_ink_band.png;color=1.000,1.000,1.000
 component	3	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
-component	3	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=160.00,56.00,1120.00,296.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+component	3	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=40.00,560.00,680.00,720.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 entity_meta	3	role	menu_ink_band
 entity	4	Logo
 component	4	Image	texture=assets/art/ui/logo/ui_title_logo.png;color=1.000,1.000,1.000
 component	4	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
-component	4	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=384.00,80.00,896.00,336.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+component	4	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=104.00,560.00,616.00,816.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 entity_meta	4	role	menu_logo
 entity	5	LanternL
 component	5	Image	texture=assets/art/ui/menu/ui_menu_lantern.png;color=1.000,1.000,1.000
 component	5	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
-component	5	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=112.00,168.00,184.00,296.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+component	5	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=128.00,588.00,200.00,716.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 entity_meta	5	role	menu_lantern
 entity	6	LanternR
 component	6	Image	texture=assets/art/ui/menu/ui_menu_lantern.png;color=1.000,1.000,1.000
 component	6	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
-component	6	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=1096.00,168.00,1168.00,296.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+component	6	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=520.00,588.00,592.00,716.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 entity_meta	6	role	menu_lantern
 entity	7	BtnStart
 component	7	Image	texture=assets/art/ui/menu/ui_menu_btn_wuxia_9s.png;color=1.000,1.000,1.000;nine_slice=18,18,18,18
 component	7	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
-component	7	UiEvents	event=click;function=on_click
-component	7	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=480.00,432.00,800.00,496.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+component	7	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=180.00,620.00,540.00,684.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 entity_meta	7	role	menu_button_BtnStart
+component	7	UiEvents	event=click;function=on_click
 entity	8	BtnStartLabel
 component	8	Text	text=开始新游戏;font_size=24.00;color=0.949,0.918,0.847
 component	8	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
-component	8	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=577.00,449.00,702.00,479.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+component	8	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=297.00,637.00,422.00,667.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 entity_meta	8	role	menu_button_label
 entity	9	BtnContinue
 component	9	Image	texture=assets/art/ui/menu/ui_menu_btn_wuxia_9s.png;color=1.000,1.000,1.000;nine_slice=18,18,18,18
 component	9	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
-component	9	UiEvents	event=click;function=on_click
-component	9	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=480.00,504.00,800.00,568.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+component	9	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=180.00,708.00,540.00,772.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 entity_meta	9	role	menu_button_BtnContinue
+component	9	UiEvents	event=click;function=on_click
 entity	10	BtnContinueLabel
 component	10	Text	text=继续江湖;font_size=24.00;color=0.949,0.918,0.847
 component	10	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
-component	10	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=590.00,521.00,690.00,551.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+component	10	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=310.00,725.00,410.00,755.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 entity_meta	10	role	menu_button_label
 entity	11	BtnExit
 component	11	Image	texture=assets/art/ui/menu/ui_menu_btn_wuxia_9s.png;color=1.000,1.000,1.000;nine_slice=18,18,18,18
 component	11	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
-component	11	UiEvents	event=click;function=on_click
-component	11	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=480.00,576.00,800.00,640.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+component	11	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=180.00,796.00,540.00,860.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 entity_meta	11	role	menu_button_BtnExit
+component	11	UiEvents	event=click;function=on_click
 entity	12	BtnExitLabel
 component	12	Text	text=退出江湖;font_size=24.00;color=0.949,0.918,0.847
 component	12	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
-component	12	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=590.00,593.00,690.00,623.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+component	12	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=310.00,813.00,410.00,843.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 entity_meta	12	role	menu_button_label
 entity	13	TipScroll
 component	13	Image	texture=assets/art/ui/menu/ui_menu_panel_scroll_9s.png;color=1.000,1.000,1.000;nine_slice=20,20,20,20
 component	13	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
-component	13	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=32.00,596.00,452.00,692.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+component	13	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=24.00,1064.00,476.00,1160.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 entity_meta	13	role	menu_tip_panel
 entity	14	TipTitle
 component	14	Text	text=江湖小贴士;font_size=20.00;color=0.145,0.165,0.196
 component	14	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
-component	14	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=52.00,608.00,200.00,632.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+component	14	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=44.00,1076.00,244.00,1100.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 entity_meta	14	role	menu_tip_title
 entity	15	TipBody
 component	15	Text	text=新档先在药田种下第一株灵芝，;font_size=15.00;color=0.145,0.165,0.196
 component	15	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
-component	15	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=52.00,634.00,440.00,654.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+component	15	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=44.00,1102.00,452.00,1122.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 entity_meta	15	role	menu_tip_body
 entity	16	TipBody2
 component	16	Text	text=三日后再下山去云泽村换些种子。;font_size=15.00;color=0.145,0.165,0.196
 component	16	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
-component	16	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=52.00,656.00,440.00,676.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+component	16	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=44.00,1124.00,452.00,1144.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 entity_meta	16	role	menu_tip_body
 entity	17	FooterText
-component	17	Text	text=江湖有田 v0.1.0 · RustLua 原型 · 主入口门面;font_size=14.00;color=0.659,0.624,0.541
+component	17	Text	text=江湖有田 v0.1.0 · RustLua 原型 · 竖版;font_size=14.00;color=0.659,0.624,0.541
 component	17	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
-component	17	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=1010.00,696.00,1256.00,712.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+component	17	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=536.00,1246.00,696.00,1266.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 entity_meta	17	role	menu_footer
+meta	editor.root_order	1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17

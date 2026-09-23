@@ -427,6 +427,12 @@ function M.update()
     -- scene：`scene.reload()` 是"当前场景名"的读法，直接显示；切场景在 F 键分支里。
     scene_name = dash(scene.reload())
 
+    -- app：`app.quit()` 见 Q 键分支；`app.project_root()` 是只读查询——工程根的绝对路径
+    -- （正斜杠；未配置工程根时为空串）。它存在的理由是 `io.open` 的相对路径按**进程工作
+    -- 目录**解析，跨文件契约校验器必须靠它拼绝对路径，否则会静默跳过检查。
+    local project_root = app.project_root()
+    log.info("api_core app.project_root -> " .. dash(project_root))
+
     -- save：键值 + 任意表 + 槽。这三条读/写路径**都只写内存**（`ScriptState::save_data`）。
     save.write(SAVE_KEY, string.format("frame=%d hp=%.0f", frame, hero_hp))
     save_readback = save.read(SAVE_KEY)

@@ -56,7 +56,18 @@ local function validators()
     { "season_art", require("data.season_art"), "data.season_art" },
     { "registries", require("data.registry_check"), "data.registry_check" },
     { "gather", require("data.gather"), "data.gather" },
-    { "enemy_art", require("data.enemy_art"), "data.enemy_art" }
+    { "enemy_art", require("data.enemy_art"), "data.enemy_art" },
+    -- M32 追加："layout"（ui/layout_check.lua）：竖版版面契约。除面板几何自洽
+    -- （矩形在设计画布内、面板互不重叠）之外，还守**设计分辨率契约**——
+    -- `scenes/*.scene` 的 `meta ui_reference_width/height` 与 `project.toml` 的
+    -- `window_width/height` 必须都等于 `ui/layout.lua` 的 720×1280。
+    -- 这条契约横跨 Lua 与场景/工程文件，任何一处漂移都会让"场景 UI 与 Lua 面板
+    -- 各按一套尺寸排"，画面上错位却没有任何报错。
+    { "layout", require("ui.layout_check"), "ui.layout_check" },
+    -- M32 相机收口追加："camera_view"（world/camera_view.lua）：每张玩法地图在场景里
+    -- 声明的 `Camera` 契约——恰好 1 台、正交投影、`zoom=1`、且 `bounds` 逐值等于该场景
+    -- GroundMap 的真实地图矩形。漂移的表现是"相机取景跑出地图边缘"，但不会有任何报错。
+    { "camera_view", require("world.camera_view"), "world.camera_view" }
   }
 end
 

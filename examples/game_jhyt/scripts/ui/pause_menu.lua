@@ -25,6 +25,8 @@ local nav = require("ui.panel_nav")
 local hints = require("ui.hints")
 -- M30：面板文字按真实字宽裁剪（设置项/消息/提示行）。
 local ui_text = require("ui.ui_text")
+-- M32 竖版：面板矩形来自 `ui/layout.lua`（唯一定义处，改版式只改那一处）。
+local layout = require("ui.layout")
 
 -- 底部提示：按当前设备二选一，按键名从**当前绑定**推导（改键后自动同步）。
 local function hint_line()
@@ -54,7 +56,7 @@ local appearances = require("data.appearances")
 
 local M = {}
 
-local PANEL = { x = 440, y = 170, w = 400, h = 380 }
+local PANEL = layout.PANEL.pause
 local ROW_H = 44
 local ITEMS = { "resume", "save", "load", "appearance", "volume", "title" }
 local LABEL = {
@@ -336,6 +338,8 @@ end
 
 function clear_ui()
   ui.clear("pse:box")
+  ui.clear("pse:rule")
+  ui.clear("pse:sel")
   for _, id in ipairs({ "pse:title", "pse:msg", "pse:hint" }) do
     ui_text.hide("pse", id)
   end
@@ -347,6 +351,8 @@ end
 
 function clear_settings_ui()
   ui.clear("pse:s:box")
+  ui.clear("pse:s:rule")
+  ui.clear("pse:s:sel")
   for _, id in ipairs({ "pse:s:title", "pse:s:subtitle", "pse:s:msg", "pse:s:hint" }) do
     ui_text.hide("pse", id)
   end
@@ -394,6 +400,47 @@ function M.move(delta)
   return true
 end
 
+-- 面板内部几何：标题 / 分隔线 / 列表 / 消息 / 提示统一取自 `layout.BOX`（M32 竖版）。
+local BOX = layout.BOX
+local RULE_H = 2
+-- 分隔线与行底衬：极淡的白，只做"标题 / 列表"的分层，不抢内容。
+local RULE_COLOR = { 0.72, 0.75, 0.82, 0.22 }
+local ROW_FILL_SELECTED = { 0.85, 0.72, 0.42, 0.20 }
+
+-- 面板骨架：背板 + 标题 + 标题下的分隔线。返回 (x, y, w, h)。
+local function draw_frame(id_prefix, title, row_fill)
+  local x, y, w, h = PANEL.x, PANEL.y, PANEL.w, PANEL.h
+  ui.panel(id_prefix .. ":box", x, y, w, h, 0.08, 0.09, 0.12, 0.96)
+  ui.panel(
+    id_prefix .. ":rule",
+    x + BOX.title_dx,
+    y + BOX.title_dy + BOX.title_font + 14,
+    w - BOX.title_dx * 2,
+    RULE_H,
+    RULE_COLOR[1],
+    RULE_COLOR[2],
+    RULE_COLOR[3],
+    RULE_COLOR[4]
+  )
+  ui_text.draw("pse", id_prefix .. ":title", x + BOX.title_dx, y + BOX.title_dy, BOX.title_font, w - BOX.title_dx * 2, title)
+  if row_fill then
+    ui.panel(
+      id_prefix .. ":sel",
+      x + BOX.list_dx,
+      row_fill[1],
+      w - BOX.list_dx * 2,
+      row_fill[2],
+      ROW_FILL_SELECTED[1],
+      ROW_FILL_SELECTED[2],
+      ROW_FILL_SELECTED[3],
+      ROW_FILL_SELECTED[4]
+    )
+  else
+    ui.clear(id_prefix .. ":sel")
+  end
+  return x, y, w, h
+end
+
 function M.render()
   if not ui_state then
     return false
@@ -401,27 +448,21 @@ function M.render()
   if settings_state then
     return M.render_settings()
   end
-  local x, y, w, h = PANEL.x, PANEL.y, PANEL.w, PANEL.h
-  -- 排版预算（M30）：行从 x+44 起（缩进留给焦点符），消息/提示从 x+24 起。
-  local ROW_W = w - 44 - 24
-  local MSG_W = w - 48
+  local ROW_W = layout.list_width(PANEL)
   ui_text.begin("pse")
-  ui.panel("pse:box", x, y, w, h, 0.08, 0.09, 0.12, 0.96)
-  ui_text.draw("pse", "pse:title", x + 24, y + 18, 24.0, w - 48, "暂停")
   local rows = M.rows()
+  -- 选中行的底衬矩形（列表从 y+BOX.list_dy 起，行高 ROW_H）。
+  local sel_y = PANEL.y + BOX.list_dy + ui_state.index * ROW_H
+  local x, y, w, h = draw_frame("pse", "暂停", { sel_y, ROW_H })
   for i = 1, #ITEMS do
     local id = "pse:row" .. i
     local row = rows[i]
     local label = row and row.label or ""
-    if i - 1 == ui_state.index then
-      label = "> " .. label
-    else
-      label = "  " .. label
-    end
-    ui_text.draw("pse", id, x + 44, y + 72 + (i - 1) * ROW_H, 18.0, ROW_W, label)
+    label = (i - 1 == ui_state.index) and ("> " .. label) or ("  " .. label)
+    ui_text.draw("pse", id, x + BOX.list_dx, y + BOX.list_dy + (i - 1) * ROW_H, 18.0, ROW_W, label)
   end
-  ui_text.draw("pse", "pse:msg", x + 24, y + h - 62, 15.0, MSG_W, tostring(ui_state.msg or ""))
-  ui_text.draw("pse", "pse:hint", x + 24, y + h - 32, 14.0, MSG_W, hint_line())
+  ui_text.draw("pse", "pse:msg", x + BOX.title_dx, y + h + BOX.msg_dy, 15.0, ROW_W, tostring(ui_state.msg or ""))
+  ui_text.draw("pse", "pse:hint", x + BOX.title_dx, y + h + BOX.hint_dy, BOX.hint_font, ROW_W, hint_line())
   return true
 end
 
@@ -430,28 +471,21 @@ function M.render_settings()
   if not settings_state then
     return false
   end
-  local x, y, w, h = PANEL.x, PANEL.y, PANEL.w, PANEL.h
-  local ROW_W = w - 44 - 24
-  local MSG_W = w - 48
+  local ROW_W = layout.list_width(PANEL)
   sync_settings_focus()
   ui_text.begin("pse")
-  ui.panel("pse:s:box", x, y, w, h, 0.08, 0.09, 0.12, 0.96)
-  ui_text.draw("pse", "pse:s:title", x + 24, y + 18, 24.0, w - 48, "设置")
-  ui_text.draw_exact("pse", "pse:s:subtitle", x + w - 220, y + 26, 15.0, 196.0, "音量分组")
   local rows = M.settings_rows()
+  local sel_y = PANEL.y + BOX.list_dy + settings_state.index * ROW_H
+  local x, y, w, h = draw_frame("pse:s", "设置", { sel_y, ROW_H })
   for i = 1, #SETTINGS_ITEMS do
     local id = "pse:s:row" .. i
     local row = rows[i]
     local label = row and row.label or ""
-    if i - 1 == settings_state.index then
-      label = "> " .. label
-    else
-      label = "  " .. label
-    end
-    ui_text.draw("pse", id, x + 44, y + 72 + (i - 1) * ROW_H, 18.0, ROW_W, label)
+    label = (i - 1 == settings_state.index) and ("> " .. label) or ("  " .. label)
+    ui_text.draw("pse", id, x + BOX.list_dx, y + BOX.list_dy + (i - 1) * ROW_H, 18.0, ROW_W, label)
   end
-  ui_text.draw("pse", "pse:s:msg", x + 24, y + h - 62, 15.0, MSG_W, tostring(settings_state.msg or ""))
-  ui_text.draw("pse", "pse:s:hint", x + 24, y + h - 32, 14.0, MSG_W, settings_hint_line())
+  ui_text.draw("pse", "pse:s:msg", x + BOX.title_dx, y + h + BOX.msg_dy, 15.0, ROW_W, tostring(settings_state.msg or ""))
+  ui_text.draw("pse", "pse:s:hint", x + BOX.title_dx, y + h + BOX.hint_dy, BOX.hint_font, ROW_W, settings_hint_line())
   return true
 end
 

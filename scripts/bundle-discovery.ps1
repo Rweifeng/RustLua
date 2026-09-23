@@ -28,8 +28,10 @@ function Get-BundleMarkerFiles {
     唯一的**有意**差异：清单只收「缺了就跑不起来/验收不了」的条目。像 webgl 的包内双击壳
     `test-webgl.bat` 属于便利项（缺了不影响产物能否运行与验收），因此发布时 `package.ps1` 严格
     要求它、而本清单不要求它 —— 否则今天之前发布过的、仍然完全可验收的包会被发现器挡掉。
-    微信清单曾要求 `pkg\game_web.js`/`pkg\game_web_bg.wasm`，但该平台已改为纯 JS + Fengari 路径
-    （见 package.ps1 的微信必需清单），故已同步移除。
+    微信清单在 M32 起**重新要求** `pkg\game_web.js` / `pkg\game_web_bg.wasm`：该平台曾一度
+    改走"纯 JS + Fengari"（不发行 wasm），M32 起改为随包发行 wasm 核心并在启动时同步实例化
+    （见 package.ps1 的微信必需清单与 plugins/wechat-minigame/README.md 的「wasm 核心」）。
+    两处清单必须同步——任一处漏改，就会出现"发布脚本拒收、发现器却接受"的假通过。
 
     微信的平台标记仍是 **8 项**，但其中骨架两项（manifest.txt / project.toml）的**位置随形态变**：
     分包形态（-AssetPack subpackage）下它们是首屏资源，构建期已被搬到 mainpack/，pack/ 里
@@ -59,7 +61,10 @@ function Get-BundleMarkerFiles {
             )
         }
         "wechat-minigame" {
-            # 小游戏不走 wasm 模块：入口 game.js + wechat-adapter.js + 随包 Lua VM。
+            # 小游戏：入口 game.js + wechat-adapter.js + 随包 Lua VM + **wasm 核心**（M32 起）。
+            # wasm 两项与 webgl 同名同义（`--target no-modules` 的 CommonJS 化胶水 + 模块本体），
+            # 少任何一个都说明产物与当前发布形态不一致——这也是"发现器只收非它不可的条目"口径下的
+            # 必需项：适配层启动时会读它并实例化，缺了虽然游戏还能跑，但那说明包不是当前形态产出的。
             # 前六项在三种资源形态（full / thin / subpackage）下位置都相同，是稳定的平台标记；
             # 骨架两项的**位置**随形态变（有 mainpack.json 就是分包形态，骨架在 mainpack/，否则在 pack/），
             # **文件名**也可能被改名：微信代码包只上传后缀在白名单内的文件，构建期把 `.toml` 之类
@@ -92,6 +97,8 @@ function Get-BundleMarkerFiles {
                 "wechat-adapter.js",
                 "web-runtime.js",
                 "pkg\fengari-web.js",
+                "pkg\game_web.js",
+                "pkg\game_web_bg.wasm",
                 ($skeleton + "\" + (& $resolve "manifest.txt")),
                 ($skeleton + "\" + (& $resolve "project.toml"))
             )

@@ -307,9 +307,26 @@ impl ApplicationHandler for GameApp {
         if self.window.is_some() {
             return;
         }
+        // 窗口尺寸由工程声明（`project.toml` 的 `window_width`/`window_height`），缺省
+        // 1280×720 横屏。**为什么不能写死**：竖版工程（`game_jhyt` 的 720×1280）里
+        // Lua 动态 UI 是屏幕像素空间、不随参考分辨率缩放，窗口比例不对就会整块画到屏幕外。
+        let (window_width, window_height) = match self.project_root.as_deref() {
+            Some(root) => {
+                let (size, diagnostics) = engine::core::project_config::window_size(root);
+                for diagnostic in diagnostics {
+                    tracing::warn!(target: "window", "[window] {diagnostic}");
+                }
+                size
+            }
+            None => engine::core::project_config::DEFAULT_WINDOW_SIZE,
+        };
         let attributes = Window::default_attributes()
             .with_title(&self.window_title)
-            .with_inner_size(PhysicalSize::new(1280, 720));
+            .with_inner_size(PhysicalSize::new(window_width, window_height));
+        tracing::info!(
+            target: "game",
+            "[window] requested size: {window_width}x{window_height}"
+        );
         let window = Arc::new(event_loop.create_window(attributes).expect("create window"));
         tracing::info!(target: "game", "[window] created: {:?}", window.id());
         match Renderer::new(

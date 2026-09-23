@@ -358,7 +358,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "(function() local p = ui.panel_get('hud:rain'); \
            if not p then return 'no_overlay' end; \
            if not p.visible then return 'overlay_hidden' end; \
-           if p.width < 1200 or p.height < 700 then return 'overlay_too_small' end; \
+           if p.width < 700 or p.height < 1200 then return 'overlay_too_small' end; \
            if p.a <= 0 or p.a >= 0.6 then return 'overlay_alpha:' .. tostring(p.a) end; \
            return 'ok' end)()",
         "ok",
@@ -382,7 +382,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "assets/art/ui/hud/ui_weather_sun.png",
     )?;
     // HUD 文本仍然与天气一致（文本与画面同源，M26 的映射不受影响）。
-    assert_str(&mut rt, "require('ui.hud').status_lines()[4]", "天气 晴")?;
+    // M32 竖版：状态行合并成 5 行，"时间/天气"现在同一行，因此这里取该行的天气片段
+    // （`天气 晴`）而不是整行字面量——否则改版式就要改断言，断言的意图本来是"文本与天气一致"。
+    assert_str(
+        &mut rt,
+        "(function() local line = require('ui.hud').status_lines()[2]; \
+           return tostring(line:match('天气%s*%S+')) end)()",
+        "天气 晴",
+    )?;
     println!("④ 雨天遮罩 + 雨图标；晴天遮罩清除并换成晴图标");
 
     // ---------------- ⑤ 雨天真实影响玩法：免浇水且不花体力 ----------------
@@ -966,7 +973,8 @@ fn new_runtime(project: &Path, save_path: &Path) -> Result<LuaRuntime, Box<dyn s
     let mut runtime = LuaRuntime::new()?;
     runtime.set_project_root(project.to_path_buf());
     runtime.set_save_path(save_path.to_path_buf());
-    runtime.set_ui_viewport(1280, 720);
+    // M32 竖版：设计分辨率 720×1280（Lua 动态 UI 是屏幕像素空间，视口必须与设计尺寸一致）。
+    runtime.set_ui_viewport(720, 1280);
     runtime.set_delta(1.0 / 60.0);
     Ok(runtime)
 }

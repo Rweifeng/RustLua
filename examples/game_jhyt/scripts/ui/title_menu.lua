@@ -18,6 +18,8 @@ local nav = require("ui.panel_nav")
 local hints = require("ui.hints")
 -- M30：文字统一走 `ui.ui_text`（裁剪 + 登记，验收遍历登记表逐条量宽）。
 local ui_text = require("ui.ui_text")
+-- M32 竖版：按钮矩形与设计宽度的唯一来源（`ui/layout.lua`），与 `main.scene` 对齐。
+local layout = require("ui.layout")
 -- `core.audio` 是叶子模块（只依赖 core.save_manager），顶层 require 不会成环；
 -- 选中/确认/取消反馈音都经它（UI 总线）。
 local audio = require("core.audio")
@@ -36,27 +38,47 @@ local M = {}
 
 local FOCUS = "title:menu"
 
--- 与 `main.scene` 里按钮实体的 `UiLayout` 对齐（设计分辨率 1280x720）：
--- BtnStart 480,432,800,496 / BtnContinue 480,504,800,568 / BtnExit 480,576,800,640。
--- `label` 是场景**文字实体**（entity 8/10/12）的左上角：标签文字由场景画，脚本只在
--- 它的左侧留白里补选中箭头，因此两个坐标必须一起改（`tools/gen_main_menu_scene.py`）。
+-- 与 `main.scene` 里按钮实体的 `UiLayout` 对齐（**竖版 720×1280**，M32）：
+-- 三块木牌按钮竖排在中部（y 620 / 708 / 796），`layout.PANEL.title_btn` 给出统一矩形，
+-- 每项只差 `title_btn_gap` 的纵向偏移。`label_x` 是场景**文字实体**（entity 8/10/12）
+-- 的左边缘：标签文字由场景画，脚本只在它的左侧留白里补选中箭头，因此两个坐标必须一起改
+-- （`tools/gen_main_menu_scene.py` 的 `BUTTONS`）。
+local BTN = layout.PANEL.title_btn
+local BTN_STEP = BTN.h + layout.METRIC.title_btn_gap
+local BTN_LABEL_FONT = 24.0
+-- 标签在按钮里水平居中：按真实字宽算左边缘（`ui.measure_text` 与渲染同口径），
+-- 不再用"每字 25px"的估算——估宽会让「开始新游戏」与「继续江湖」看起来偏左/偏右。
+local function label_left(label)
+  local width = 0
+  local ok, measured = pcall(ui.measure_text, label, BTN_LABEL_FONT)
+  if ok and type(measured) == "table" and tonumber(measured.width) then
+    width = tonumber(measured.width)
+  end
+  return math.floor(BTN.x + (BTN.w - width) / 2 + 0.5)
+end
+
 local OPTIONS = {
   {
     id = "BtnStart",
-    panel = { 480, 432, 800, 496 },
-    label = { 577, 449 },
+    label_text = "开始新游戏",
+    panel = { BTN.x, BTN.y, BTN.x + BTN.w, BTN.y + BTN.h },
   },
   {
     id = "BtnContinue",
-    panel = { 480, 504, 800, 568 },
-    label = { 590, 521 },
+    label_text = "继续江湖",
+    panel = { BTN.x, BTN.y + BTN_STEP, BTN.x + BTN.w, BTN.y + BTN_STEP + BTN.h },
   },
   {
     id = "BtnExit",
-    panel = { 480, 576, 800, 640 },
-    label = { 590, 593 },
+    label_text = "退出江湖",
+    panel = { BTN.x, BTN.y + BTN_STEP * 2, BTN.x + BTN.w, BTN.y + BTN_STEP * 2 + BTN.h },
   },
 }
+-- 场景文字实体的左上角 = 标签居中位置 + 垂直居中（文字高按 30px 计，与场景一致）。
+for _, option in ipairs(OPTIONS) do
+  local x1, y1, x2, y2 = option.panel[1], option.panel[2], option.panel[3], option.panel[4]
+  option.label = { label_left(option.label_text), y1 + (((y2 - y1) - 30) // 2) }
+end
 
 -- 选中箭头及其左边距（像素）：箭头画在场景标签左边缘往左 `ARROW_GAP` 处，
 -- 原先这里是 `"> " .. text` 的前缀位置，宽度约 19px，留 22px 不会压到标签。
@@ -246,7 +268,7 @@ function M.render()
       ui.hide("title:label:" .. option.id)
     end
   end
-  ui_text.draw("title", "title:hint", 16, 8, 13.0, 1280 - 32, M.hint_line())
+  ui_text.draw("title", "title:hint", layout.ROW.top_x, layout.ROW.top_y, 13.0, layout.row_width(), M.hint_line())
   return true
 end
 
