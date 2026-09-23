@@ -388,22 +388,32 @@ impl Camera3D {
         if !self.position.is_finite() || !self.target.is_finite() || !self.up.is_finite() {
             return Err(Camera3dError::NonFinite);
         }
-        if !self.fov_y.is_finite()
-            || self.fov_y <= 0.0
-            || self.fov_y >= std::f32::consts::PI
-            || !self.aspect_ratio.is_finite()
-            || self.aspect_ratio <= 0.0
-            || !self.near.is_finite()
-            || !self.far.is_finite()
-            || self.near <= 0.0
-            || self.far <= self.near
-        {
+        self.validate_projection()?;
+        // 组件自带的 `aspect_ratio` 也必须合法：**没有视口**的调用方（宿主未声明视图时的回退、
+        // 光照/阴影相机）仍在用它。一经成帧（`CameraView` / `RenderView`），宽高比的权威就是
+        // 视口，这个字段不再参与（见 [`Camera3D::projection_matrix_for`]）。
+        if !self.aspect_ratio.is_finite() || self.aspect_ratio <= 0.0 {
             return Err(Camera3dError::InvalidPerspective);
         }
         if (self.target - self.position).length_squared() <= f32::EPSILON
             || self.up.cross(self.target - self.position).length_squared() <= f32::EPSILON
         {
             return Err(Camera3dError::InvalidLookAt);
+        }
+        Ok(())
+    }
+
+    /// 投影参数的校验（不含姿态，也不含宽高比——后者是成帧时的输入）。
+    fn validate_projection(self) -> Result<(), Camera3dError> {
+        if !self.fov_y.is_finite()
+            || self.fov_y <= 0.0
+            || self.fov_y >= std::f32::consts::PI
+            || !self.near.is_finite()
+            || !self.far.is_finite()
+            || self.near <= 0.0
+            || self.far <= self.near
+        {
+            return Err(Camera3dError::InvalidPerspective);
         }
         Ok(())
     }
@@ -431,21 +441,41 @@ impl Camera3D {
             ],
         })
     }
-    pub fn projection_matrix(self) -> Result<Mat4, Camera3dError> {
+    /// 透视投影矩阵，**宽高比由调用方给出**。
+    ///
+    /// 成帧路径（[`crate::core::camera::CameraView::from_camera3d`]）传的是**视口**比例。这样
+    /// "组件里存的比例"与"实际渲染用的比例"不会再各说各话：此前宿主每帧把窗口比例写回
+    /// `aspect_ratio`，读者却分不清"这个值现在是权威还是上一帧的残留"。
+    pub fn projection_matrix_for(self, aspect_ratio: f32) -> Result<Mat4, Camera3dError> {
         self.validate()?;
+        if !aspect_ratio.is_finite() || aspect_ratio <= 0.0 {
+            return Err(Camera3dError::InvalidPerspective);
+        }
         let f = 1.0 / (self.fov_y * 0.5).tan();
         let range = self.far - self.near;
         Ok(Mat4 {
             columns: [
-                [f / self.aspect_ratio, 0.0, 0.0, 0.0],
+                [f / aspect_ratio, 0.0, 0.0, 0.0],
                 [0.0, f, 0.0, 0.0],
                 [0.0, 0.0, -self.far / range, -1.0],
                 [0.0, 0.0, -self.near * self.far / range, 0.0],
             ],
         })
     }
+
+    /// 用**组件自带** `aspect_ratio` 的版本。只有**没有视口**的调用方该用它：宿主未声明
+    /// `FrameViews` 时的历史回退、光照/阴影相机、以及只做姿态变换的路径。
+    pub fn projection_matrix(self) -> Result<Mat4, Camera3dError> {
+        self.projection_matrix_for(self.aspect_ratio)
+    }
+
     pub fn view_projection_matrix(self) -> Result<Mat4, Camera3dError> {
-        Ok(self.projection_matrix()? * self.view_matrix()?)
+        self.view_projection_matrix_for(self.aspect_ratio)
+    }
+
+    /// 与 [`Camera3D::view_projection_matrix`] 相同，但宽高比由调用方给出（成帧路径传视口比例）。
+    pub fn view_projection_matrix_for(self, aspect_ratio: f32) -> Result<Mat4, Camera3dError> {
+        Ok(self.projection_matrix_for(aspect_ratio)? * self.view_matrix()?)
     }
     pub fn world_to_ndc(self, world: Vec3) -> Result<Vec3, Camera3dError> {
         if !world.is_finite() {
