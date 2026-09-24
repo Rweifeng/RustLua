@@ -14,21 +14,26 @@
 - 新场景 `inspector_schema_path`（`editor --perf-baseline`，进门时会跑）：把同一条 Inspector
   schema 路径**拆账**——`camera_notes`（只读说明：解析 `Camera`/`Transform` 载荷 + 若干
   `format!`）vs `rows_for_selection`（逐字段行构建）vs **纯解析**本身。
-- **实测（release，2 个组件的实体）**：`Camera::from_component_str` = **604 ns**；
-  `camera_notes`（`pose=transform`，最重分支）= **1 684 ns**；`rows_for_selection` =
-  **26 184 ns**（4 个组件时约 **52.8 µs**）。⇒ 解析只占行构建的 **2.3%**。
-- 结论（决定了偏离保持不变）：`camera_notes` 每帧只对**主选中实体**调一次，整条 1.68 µs、
-  其中解析 0.6 µs——把它缓存起来，省下的量与"按键比较"的成本同量级（键必须含载荷文本，否则
-  正是那条偏离里担心的陈旧风险）。**因此仍然不做**，但现在这个"不做"有数字、有可复跑的量尺。
+- **实测**（同一台机，两种 profile）：**release**：`Camera::from_component_str` = **565 ns**、
+  `camera_notes`（`pose=transform`，最重分支）= **1 570 ns**、`rows_for_selection` = **24 879 ns**；
+  **debug**（`verify.ps1` 走的正是它）：`7 286 / 16 792 / 154 156 ns`。⇒ 解析只占行构建的
+  **2.3%（release）/ 4.7%（debug）**。
+- 结论（决定了偏离保持不变）：`camera_notes` 每帧只对**主选中实体**调一次，整条 1.6 µs
+  （release）/ 16.8 µs（debug）、其中解析 0.57 / 7.3 µs——把它缓存起来，省下的量与"按键比较"
+  的成本同量级（键必须含载荷文本，否则正是那条偏离里担心的陈旧风险）。**因此仍然不做**，
+  但现在这个"不做"有数字、有可复跑的量尺。
 - 顺手更正了两处口径：①原偏离文字写的"选中 N 个实体则 N 次"不准确——`schema_component_notes`
-  只取 `selection.primary()`（实测一次）；②这条路径上真正的开销是**行构建**（每帧 26~53 µs，
+  只取 `selection.primary()`（实测一次）；②这条路径上真正的开销是**行构建**（每帧 25~154 µs，
   逐字段 `String` 分配 + schema 查表），它与"解析"是两种不同形状的问题：真要优化得按
   "载荷文本 + 选择 + 资源索引版本"做键（含失效契约），不是顺手加个备忘录——留作独立批次。
-- 场景自带判据（`ok`）：`camera_notes` 必须仍在**微秒级以下**，且纯解析必须仍**远小于**行构建
-  （`parse × 10 < rows`）。这两条一旦不成立——例如有人把载荷解析搬进逐字段循环——场景立刻变红。
-- 判据：`editor --perf-baseline` → `scenarios=32 failed=0 result=ok`；编辑器 176 测试全绿；
-  `cargo fmt --check` / `clippy -D warnings` / `check-docs` 干净；编辑器预览 golden 与批 9 逐值相同
-  （本批不改任何运行时行为，只加量尺与文档）。
+- 场景自带判据（`ok`）：解析与只读说明都必须**远小于**行构建（`parse × 10 < rows`、
+  `notes × 3 < rows`）。**刻意不钉绝对时间**：时间是构建与机器相关的量（debug 比 release 慢
+  7~8 倍，同一次 debug 跑里 p95 就能到 15 ms、max 68 ms）——第一版判据写成
+  `notes < 10 µs`，在 `verify.ps1` 的 debug 路径上当场假红，这一条就是这么改回来的。
+  判据一旦不成立（例如有人把载荷解析搬进逐字段循环），场景立刻变红。
+- 判据：`editor --perf-baseline` → **debug 与 release 双 profile** 均 `scenarios=32 failed=0
+  result=ok`；引擎 854、编辑器 176 全绿；`cargo fmt --check` / `clippy -D warnings` / `check-docs`
+  干净；编辑器预览 golden 与批 9 逐值相同（本批不改任何运行时行为，只加量尺与文档）。
 
 ## Unreleased — 相机模块拆分与每帧烘焙（批 1–9）
 

@@ -1619,12 +1619,18 @@ pub(crate) fn run_baseline() -> BaselineReport {
                 "parse_share_of_rows={:.2}%（行构建的大头是逐字段 String 分配与 schema 查表，不是解析）",
                 100.0 * parse_ns / rows_per_call_ns.max(1.0)
             ),
-            "判据：camera_notes 每帧一次 ⇒ 亚微秒级；缓存解析省下的量与键比较同量级 ⇒ 不做"
+            "note: 绝对数是**本机构建相关**的（debug 约是 release 的 7~8 倍；`verify.ps1` 跑的是 \
+             debug，同机 A/B 用同一 profile 才有意义）——因此下面的判据只钉**量级关系**"
+                .to_owned(),
+            "判据：解析与只读说明都必须**远小于**行构建（parse × 10 < rows、notes × 3 < rows）；\
+             camera_notes 每帧一次 ⇒ 亚微秒~十几微秒，缓存省下的量与键比较同量级 ⇒ 不做"
                 .to_owned(),
         ];
-        // 断言只钉"量级关系"，不钉具体值（时间是机器相关的量）：解析远小于行构建，且相机说明
-        // 处于微秒级之下。这两条一旦不成立（例如有人把解析搬进逐字段循环），这条场景立刻变红。
-        let ok = notes_ns < 10_000.0 && parse_ns * 10.0 < rows_per_call_ns;
+        // 断言只钉"量级关系"，**不钉绝对时间**：时间是构建与机器相关的量（debug 比 release 慢
+        // 7~8 倍，`verify.ps1` 走的正是 debug），把它写进 `ok` 会在换个 profile 时假红——第一版
+        // 判据就是这么踩的。这两条一旦不成立（例如有人把载荷解析搬进逐字段循环，或行构建被
+        // 优化到跟解析同量级），场景立刻变红。
+        let ok = parse_ns * 10.0 < rows_per_call_ns && notes_ns * 3.0 < rows_per_call_ns;
         let _ = &rows_samples;
         scenarios.push(summarize("inspector_schema_path", &samples, notes, ok));
     }
