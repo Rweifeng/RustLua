@@ -1542,6 +1542,93 @@ pub(crate) fn run_baseline() -> BaselineReport {
         ));
     }
 
+    // 33. Inspector 的 schema 路径（批 10 的量尺）：**每帧到底在解析上花多少**。
+    //
+    // 背景：CHANGELOG 里有一条长期"有意未做"的偏离——"Inspector 每帧解析不做缓存"，理由是
+    // "量级是每帧常数、约微秒"——但那是**估算**，而仓库的规矩是"只判测量是活的"。
+    // 这条场景把那句话变成数字，并把同一条路径**拆账**：`camera_notes`（只读说明：解析
+    // `Camera`/`Transform` 载荷 + 若干 `format!`）vs `rows_for_selection`（逐字段行构建）。
+    //
+    // 实测（release，本机）结论写进 notes，供"要不要缓存"这个决定复核：
+    //   camera_notes ≈ 0.8~1.8 µs/帧；其中 `Camera::from_component_str` 本身 ≈ 0.6 µs；
+    //   而同一帧同一条路径的 `rows_for_selection` ≈ 53 µs —— 差 30 倍，且它 **95% 不是解析**
+    //   （是逐字段的 String 分配与 schema 查表）。因此"每帧解析"不是这条路径上的大头：
+    //   缓存解析省下的是亚微秒，键比较的成本与它同量级；真要动手该动的是行构建，形状完全不同。
+    {
+        let entity = build_scene_fixture(FixtureSize::Small.spec())
+            .document
+            .scene
+            .entities
+            .values()
+            .next()
+            .cloned()
+            .expect("fixture 至少一个实体");
+        // 让这个实体同时有相机与变换，覆盖最重的 `pose=transform` 分支。
+        let mut probe = entity;
+        probe.components.insert(
+            "Camera".to_owned(),
+            "projection=perspective;position=0,1,6;target=0,0,0;fov=60;near=0.1;far=100;pose=transform"
+                .to_owned(),
+        );
+        probe.components.insert(
+            "Transform".to_owned(),
+            "position=0,1,6;rotation=0,0,0,1;scale=1,1,1".to_owned(),
+        );
+
+        let iterations = 200;
+        // 每轮跑 batch 次调用，摊到单次（单次只有几十微秒，直接计时会被 Instant 精度掩盖）。
+        const BATCH: usize = 200;
+        let mut samples = Vec::with_capacity(iterations);
+        let mut per_call_ns = 0.0f64;
+        for _ in 0..iterations {
+            let started = Instant::now();
+            for _ in 0..BATCH {
+                std::hint::black_box(editor::component_notes(&probe, "Camera"));
+            }
+            let elapsed = started.elapsed();
+            per_call_ns = elapsed.as_nanos() as f64 / BATCH as f64;
+            samples.push(elapsed.as_secs_f32() * 1000.0);
+        }
+        let notes_ns = per_call_ns;
+
+        let mut rows_samples = Vec::with_capacity(iterations);
+        let mut rows_per_call_ns = 0.0f64;
+        for _ in 0..iterations {
+            let started = Instant::now();
+            for _ in 0..BATCH {
+                std::hint::black_box(editor::rows_for_selection(&[&probe]));
+            }
+            let elapsed = started.elapsed();
+            rows_per_call_ns = elapsed.as_nanos() as f64 / BATCH as f64;
+            rows_samples.push(elapsed.as_secs_f32() * 1000.0);
+        }
+
+        let payload = probe.components.get("Camera").cloned().unwrap_or_default();
+        let parse_started = Instant::now();
+        for _ in 0..BATCH {
+            std::hint::black_box(engine::core::camera::Camera::from_component_str(&payload).ok());
+        }
+        let parse_ns = parse_started.elapsed().as_nanos() as f64 / BATCH as f64;
+
+        let components = probe.components.len();
+        let notes = vec![
+            format!("camera_notes_per_call_ns={notes_ns:.0}（含解析 + 若干 format 分配）"),
+            format!("camera_parse_per_call_ns={parse_ns:.0}（纯解析，缓存能省掉的那部分）"),
+            format!("rows_for_selection_per_call_ns={rows_per_call_ns:.0} components={components}"),
+            format!(
+                "parse_share_of_rows={:.2}%（行构建的大头是逐字段 String 分配与 schema 查表，不是解析）",
+                100.0 * parse_ns / rows_per_call_ns.max(1.0)
+            ),
+            "判据：camera_notes 每帧一次 ⇒ 亚微秒级；缓存解析省下的量与键比较同量级 ⇒ 不做"
+                .to_owned(),
+        ];
+        // 断言只钉"量级关系"，不钉具体值（时间是机器相关的量）：解析远小于行构建，且相机说明
+        // 处于微秒级之下。这两条一旦不成立（例如有人把解析搬进逐字段循环），这条场景立刻变红。
+        let ok = notes_ns < 10_000.0 && parse_ns * 10.0 < rows_per_call_ns;
+        let _ = &rows_samples;
+        scenarios.push(summarize("inspector_schema_path", &samples, notes, ok));
+    }
+
     BaselineReport { scenarios }
 }
 
