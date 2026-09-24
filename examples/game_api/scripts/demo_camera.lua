@@ -12,13 +12,17 @@
 --      **每帧渲染时回填**的相机快照：首帧渲染之前调用会**明确报错**，引擎刻意不拿一台默认
 --      相机去猜（猜错会让"点不中 / 点错位置"变成查不出原因的现象）。本演示用 `api.try` 把它
 --      包住，并把报错原文打上屏幕 —— 这是引擎刻意的边界，不是演示的缺陷；
---   ④ `camera.set_active(id)` 选中的**透视**相机就是 3D pass 真正在用的那台（按 1 / 2 切换
---      机组看得见画面变化），而 `camera.set` / `camera.get` 读写的是**实体上的 `Camera`
---      组件**本身：写入立即生效、立即读回，与 `camera2d` 的"请求 / 消费"模式正好对照。
+--   ④ `camera.set_active(id)` 是**唯一**的选择链（批 9 起不再分 2D/3D 两条）：选中的实体带
+--      `Camera` 就行，由它的 `projection` 决定服务哪个 pass —— 透视相机决定 3D pass 取景
+--      （按 1 / 2 切换机组看得见画面变化），**正交相机则是 2D 相机的来源**（按 B 把 2D 取景切回
+--      场景声明的正交相机：宿主采用它的 `center`/`zoom`/`bounds`）。而 `camera.set` /
+--      `camera.get` 读写的是**实体上的 `Camera` 组件**本身（透视 payload）：写入立即生效、
+--      立即读回，与 `camera2d` 的"请求 / 消费"模式正好对照。
 --
 -- 场景（scenes/api_camera.scene）里的东西各自负责什么：
 --   Camera2dOrtho  `Camera projection=orthographic` —— 场景声明的正交相机就是运行时**初始
---                  2D 相机**，`camera2d.*` 控制的就是它（世界坐标 = 设计分辨率像素）；
+--                  2D 相机**（第一台启用的正交相机），`camera2d.*` 控制的就是它；
+--                  按 B 用 `camera.set_active` 显式选中它 ⇒ 2D 取景复位回它声明的值；
 --   Camera3dMain / Camera3dTop  两台透视相机，供 `camera.set_active` 切换（决定 3D pass 取景）；
 --   Sun + Ground + Prop3d       3D 观察对象：方向光 + `__ground_plane__` 地面 + 一个三角形；
 --   Runner（Sprite）            2D 相机的跟随目标：沿椭圆轨迹匀速走，跟随 / 死区 / 平滑才看得见；
@@ -67,6 +71,7 @@ local SET_X, SET_Y = 900.0, 430.0
 -- ---- 状态 -------------------------------------------------------------------------
 
 local id_camera3d_main, id_camera3d_top = nil, nil
+local id_camera2d_ortho = nil
 local id_runner, id_marker = nil, nil
 
 local bootstrapped = false      -- 首帧把"登记型 / 写入型"接口各走过一遍
@@ -185,16 +190,20 @@ end
 -- ---- 按键 -------------------------------------------------------------------------
 
 local function handle_keys()
-    -- 1 / 2：切换 3D pass 用的透视相机。
-    -- `camera.set_active` 只认带 `Camera3D` 的实体，因此**正交**相机（Camera2dOrtho）
-    -- 不在这条选择链上 —— 它属于 `camera2d` 控制器那一套：这就是统一 `Camera` 组件的
-    -- 分支语义（`projection` 是判别字段，两类字段体各自成立）。
+    -- 1 / 2：切换 3D pass 用的透视相机；B：把 2D 相机切回场景声明的正交相机。
+    -- `camera.set_active` 是**唯一**的选择链（批 9 起不再区分 2D/3D）：选中的实体带 `Camera`
+    -- 就行，由它的 `projection` 决定服务哪个 pass —— 透视进 3D world，正交进 2D overlay。
     if input.just_pressed("1") then
         camera.set_active(id_camera3d_main)
         orbit = false
     elseif input.just_pressed("2") then
         camera.set_active(id_camera3d_top)
         orbit = false
+    elseif input.just_pressed("b") then
+        -- 选中正交相机 ⇒ 宿主采用它的**载荷**（center/zoom/bounds）作为 2D 取景基准。
+        -- 跟随中这一步会被下一帧的跟随再拉走，与 V 键同一性质：状态行的 host 列先跳到场景值、
+        -- 随后被跟随带走（先按 G 取消跟随，再按 B，就能看到它停在场景声明的取景上）。
+        camera.set_active(id_camera2d_ortho)
     end
 
     -- F / G：跟随与取消跟随是一对。
@@ -266,6 +275,7 @@ function M.on_create()
     api.hint("1/2 pick 3D cam  F/G follow  V set2d  Z zoom  X shake  C reset  T orbit  - " .. api.KEYS_BACK)
     id_camera3d_main = entity.find("Camera3dMain")
     id_camera3d_top = entity.find("Camera3dTop")
+    id_camera2d_ortho = entity.find("Camera2dOrtho")
     id_runner = entity.find("Runner")
     id_marker = entity.find("Marker")
     if not bound() then

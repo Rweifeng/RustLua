@@ -114,9 +114,9 @@ struct ScriptState {
     /// `Camera3D::ray_from_screen` / `world_to_ndc`，因此两侧不会各写一套投影数学。
     camera3d_view: Option<(Camera3D, [f32; 2])>,
     audio: AudioSystem,
-    /// Entity whose `Camera3D` component the renderer uses this frame. Lua
-    /// selects it with `camera.set_active`; the renderer falls back to the
-    /// first camera entity when unset.
+    /// Entity whose `Camera` component is the **active camera**（相机拆分批 9：只有这一条选择链）。
+    /// Lua selects it with `camera.set_active`; each pass then filters candidates by projection —
+    /// 3D pass 取透视、2D 相机取正交——未选择（或选中的不是本 pass 的投影）时回退到排序序第一台。
     active_camera: Option<EntityId>,
     /// Entity whose `Light` component the renderer uses this frame.
     active_light: Option<EntityId>,
@@ -1380,8 +1380,8 @@ impl LuaRuntime {
             .map(|(name, _)| name.clone())
     }
 
-    /// Returns the entity whose `Camera3D` the renderer should use, if Lua
-    /// selected one with `camera.set_active`.
+    /// Returns the entity whose `Camera` the passes should use, if Lua selected one with
+    /// `camera.set_active`（3D pass 只在它是透视相机时用它，2D 只在它是正交相机时用它）。
     #[must_use]
     pub fn active_camera(&self) -> Option<EntityId> {
         self.state.borrow().active_camera
@@ -3592,16 +3592,21 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
             let id = entity_from_lua(id)?;
             let mut state = s.borrow_mut();
             require_alive(&state, id)?;
+            // 拆分批 9：**只有一条选择链**——认任何带 `Camera` 的实体，由它的 `projection` 决定
+            // 服务哪个 pass（透视 → 3D world，正交 → 2D overlay）。
+            //
+            // 与批 9 之前的行为差别（已在 CHANGELOG 的「兼容契约（变更）」里逐条记录）：
+            // ① 选中**正交**相机不再报 `entity has no camera3d`，而是成为 2D 相机的来源
+            //    （宿主采用它的载荷作为 2D 取景基准）；② 对**完全没有相机**的实体，错误串由
+            //    `entity has no camera3d` 改为 `entity has no camera`（那句话在"一条选择链"下
+            //    才是真的）。`camera.get` / `camera.set` 是**透视 payload** 的读写，仍保持原错误串。
             if state
                 .world
                 .get::<crate::core::camera::Camera>(id)
                 .map_err(world_error)?
-                .copied()
-                .and_then(crate::core::camera::Camera::as_perspective)
                 .is_none()
             {
-                // 只有**透视**相机能成为 3D pass 的活动相机（正交相机归 2D 视图）。
-                return Err(api_error("entity has no camera3d"));
+                return Err(api_error("entity has no camera"));
             }
             state.active_camera = Some(id);
             Ok(true)
@@ -10517,6 +10522,80 @@ mod tests {
         });
         assert_eq!(light.direction, Vec3::new(0.0, 1.0, 0.0));
         assert_eq!(light.intensity, 2.0);
+        let _ = fs::remove_file(path);
+    }
+
+    /// 拆分批 9：`camera.set_active` 是**唯一**的选择链——认任何带 `Camera` 的实体，由它的
+    /// `projection` 决定服务哪个 pass（透视 → 3D world，正交 → 2D overlay）。
+    ///
+    /// 这条测试同时钉住**契约变更**的两条（CHANGELOG「兼容契约（变更）」）：
+    /// ① 选中正交相机不再报错；② 对完全没有相机的实体，错误串是 `entity has no camera`。
+    /// 而 `camera.get` / `camera.set`（透视 payload 的读写）仍保持原来的 `entity has no camera3d`。
+    #[test]
+    fn camera_set_active_takes_any_projection() {
+        use crate::core::scene::{Scene, SceneEntityId};
+
+        let mut scene = Scene::new("camera-selection-unified");
+        for (id, name) in [
+            (SceneEntityId(1), "Cam2d"),
+            (SceneEntityId(2), "Cam3d"),
+            (SceneEntityId(3), "Prop"),
+        ] {
+            scene.add_entity(id, name, None).unwrap();
+        }
+        let insert = |scene: &mut Scene, id, payload: &str| {
+            scene
+                .entities
+                .get_mut(&id)
+                .unwrap()
+                .components
+                .insert("Camera".into(), payload.into());
+        };
+        insert(
+            &mut scene,
+            SceneEntityId(1),
+            "projection=orthographic;center=640,360;zoom=1.5",
+        );
+        insert(
+            &mut scene,
+            SceneEntityId(2),
+            "projection=perspective;position=0,0,6;target=0,0,0;fov=60;near=0.1;far=100",
+        );
+
+        let mut runtime = LuaRuntime::new().unwrap();
+        assert_eq!(runtime.instantiate_scene(&scene).unwrap(), 3);
+
+        let path = script(
+            "function update()\n\
+             local c2 = entity.find('Cam2d')\n\
+             local c3 = entity.find('Cam3d')\n\
+             local prop = entity.find('Prop')\n\
+             assert(camera.get_active() == nil)\n\
+             -- 正交相机也能被选中（批 9 之前这里报 entity has no camera3d）\n\
+             assert(camera.set_active(c2))\n\
+             assert(camera.get_active() == c2)\n\
+             -- 透视相机照旧\n\
+             assert(camera.set_active(c3))\n\
+             assert(camera.get_active() == c3)\n\
+             -- 完全没有相机的实体：错误串在一条选择链下是 entity has no camera\n\
+             local ok, err = pcall(camera.set_active, prop)\n\
+             assert(not ok)\n\
+             local text = tostring(err)\n\
+             assert(string.find(text, 'entity has no camera', 1, true) ~= nil, text)\n\
+             -- 透视为 payload 的读写仍是 3D 专属：正交相机在这里照旧被拒\n\
+             local ok_get = pcall(camera.get, c2)\n\
+             assert(not ok_get)\n\
+             local ok_set = pcall(camera.set, c2, 0, 0, 1, 0, 0, 0)\n\
+             assert(not ok_set)\n\
+             return 'unified-selection-ok' end",
+        );
+        runtime.execute_project_script(&path).unwrap();
+        assert_eq!(runtime.call_update().unwrap(), "unified-selection-ok");
+
+        let expected = runtime.with_world(|world| {
+            world.entities_with::<crate::core::camera::Camera>()[1] // Cam3d（id 升序第二台）
+        });
+        assert_eq!(runtime.active_camera(), Some(expected));
         let _ = fs::remove_file(path);
     }
 

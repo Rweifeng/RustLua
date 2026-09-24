@@ -116,6 +116,10 @@ pub struct RuntimeScene {
     /// 本帧的 3D 视图（拆分批 8，见 [`FrameView3d`]）：`vertices()` 定帧，同帧消费方共用。
     /// `None` = 本帧还没定帧，或刚被一次世界变更作废。
     frame_view_3d: Option<FrameView3d>,
+    /// 拆分批 9：**已经采用过载荷**的 2D 相机来源（`camera.set_active` 选中的那台正交相机）。
+    /// 它让"选择变化"成为一次性事件：同一台不再重复采用（否则每帧把控制器的取景抹平），
+    /// 而选择离开 2D 相机后再选回来会重新采用（"把 2D 取景复位回场景声明"由此表达）。
+    adopted_camera_2d_source: Option<EntityId>,
     viewport_width: u32,
     viewport_height: u32,
     /// Canvas 空间 UI 参考分辨率（设计分辨率）。发布游戏默认 `UI_REFERENCE_SIZE`；
@@ -1498,6 +1502,7 @@ impl RuntimeScene {
             sprite_culling: true,
             camera,
             frame_view_3d: None,
+            adopted_camera_2d_source: None,
             viewport_width: 1280,
             viewport_height: 720,
             ui_reference: UI_REFERENCE_SIZE,
@@ -1877,7 +1882,9 @@ impl RuntimeScene {
     /// 相机，不是第二份姿态真源"这条既有裁定一致）。新 bounds 在同一个固定步里就会被
     /// `step_camera2d` 夹取，因此不会渲染出越界的一帧。
     fn sync_camera_from_scene(&mut self) {
-        let Some(declared) = self.declared_camera_2d() else {
+        // 拆分批 9：同步的是**当前生效**那台的 bounds（显式选中优先，否则声明的第一台）——
+        // 脚本显式选了另一台 2D 相机时，换图不该把它的 bounds 换成"第一台"的。
+        let Some(declared) = self.effective_camera_2d_payload() else {
             return;
         };
         if self.camera.bounds != declared.bounds {
@@ -1891,9 +1898,22 @@ impl RuntimeScene {
         self.camera.bounds = declared.bounds;
     }
 
-    /// 换图后同步 2D 相机时读的"场景相机"（与 `init` 同一个口径）。
-    fn declared_camera_2d(&self) -> Option<Camera2D> {
-        self.script.with_world(declared_camera_2d_in)
+    /// 拆分批 9：**本帧生效**的 2D 相机载荷（显式选中优先，否则排序序第一台启用的正交相机）。
+    ///
+    /// 与 `active_camera3d` 是同一条规则的两个投影分支：同一个 `CameraSelection`、同样的
+    /// `enabled` 回退与告警。区别只在"谁拥有运动"——2D 的 center/zoom 之后由
+    /// `Camera2dController`（跟随/死区/平滑/抖动/脚本请求）继续决定。
+    fn effective_camera_2d_payload(&self) -> Option<Camera2D> {
+        let selection = CameraSelection {
+            active: self.script.active_camera().map(|id| id.index() as u64),
+        };
+        self.script.with_world(|world| {
+            selected_camera_2d_in(world, selection)
+                .map(|(_, payload)| payload)
+                // 没有选中 2D 相机（未选择 / 选中的是透视相机）时，换图同步的 bounds 取自
+                // 场景声明的第一台启用正交相机 —— 与 `init` 的初始种子同一口径。
+                .or_else(|| declared_camera_2d_in(world))
+        })
     }
 
     /// 每帧推进 2D 相机控制器：解析跟随目标的世界位置 → 控制器算 center → 复用瓦片图
@@ -1901,6 +1921,33 @@ impl RuntimeScene {
     ///
     /// 不跟随时控制器原样返回当前中心，因此 `camera2d.set` 的效果不会被覆盖。
     fn step_camera2d(&mut self, delta_seconds: f32) {
+        // 拆分批 9：`camera.set_active` 是**一条**选择链——它选中的正交相机就是 2D 相机的来源。
+        // 选中项**变化**时采用一次它的**载荷**（center/zoom/rotation/bounds）；同一台不再重复采用。
+        //
+        // 为什么"变化时才采用"而不是"每帧取生效载荷"：2D 的 center/zoom 之后归控制器（跟随/死区/
+        // 平滑/抖动/请求），每帧重读作者写的初始值会把控制器算出的取景逐帧抹平——`camera2d.follow`
+        // 与 `shake` 会静默失效。为什么"选中的是透视相机时不重置"：切换 3D 相机是常见操作，
+        // 它绝不该把 2D 取景弹回作者值（见 `selected_camera_2d_in` 的语义说明）。
+        let selection = CameraSelection {
+            active: self.script.active_camera().map(|id| id.index() as u64),
+        };
+        let source = self
+            .script
+            .with_world(|world| selected_camera_2d_in(world, selection));
+        match source {
+            Some((id, payload)) if Some(id) != self.adopted_camera_2d_source => {
+                self.adopted_camera_2d_source = Some(id);
+                tracing::info!(
+                    target: "render",
+                    center = ?payload.center,
+                    zoom = payload.zoom,
+                    "[render] 2D camera adopted from the entity selected by camera.set_active"
+                );
+                self.camera = payload;
+            }
+            Some(_) => {} // 同一台：不重复采用（否则每帧把控制器的取景抹平）
+            None => self.adopted_camera_2d_source = None, // 选择离开 2D 相机 ⇒ 之后再选中会重新采用
+        }
         // WP5：请求消费、跟随、advance、bounds 钳制的**次序**现在固定在
         // `Camera2dController::resolve_camera` 内部，宿主不再自己拼这套顺序，也不会出现
         // "宿主与控制器各夹一次 bounds"的分叉。
@@ -4791,18 +4838,68 @@ pub fn load_custom_font_atlas(project_root: Option<&Path>, font_asset: &str) -> 
 /// 运行时世界里只有**一个** `Camera` 组件，因此这里单趟遍历、按投影分支取值，
 /// 不再需要"先取一份 `Vec<EntityId>` 再逐实体 `get`"。
 fn declared_camera_2d_in(world: &crate::core::world::World) -> Option<Camera2D> {
+    first_enabled_ortho_camera_in(world).map(|(_, camera)| camera)
+}
+
+/// 排序序第一台**启用**的正交相机（拆分批 9：这是"默认 2D 相机"的唯一定义处）。
+fn first_enabled_ortho_camera_in(
+    world: &crate::core::world::World,
+) -> Option<(EntityId, Camera2D)> {
     let mut found = None;
-    world.for_each::<crate::core::camera::Camera>(|_, camera| {
+    world.for_each::<crate::core::camera::Camera>(|id, camera| {
         if found.is_some() {
             return;
         }
         if let Some(orthographic) = camera.as_orthographic()
             && orthographic.enabled
         {
-            found = Some(orthographic);
+            found = Some((id, orthographic));
         }
     });
     found
+}
+
+/// 拆分批 9：**2D 相机的来源**——`camera.set_active` 选中的那台**正交**相机（与 3D pass 共用同
+/// 一条选择链，只是候选按投影过滤）。
+///
+/// 语义（为什么与 `active_camera3d` 不完全对称）：
+/// - 选中的是正交相机且启用 ⇒ 返回它（宿主采用它的**载荷**作为 2D 取景基准，即"换 2D 相机"）；
+/// - 选中的正交相机被禁用 ⇒ 告警并回退到排序序第一台启用的正交相机（与 3D 侧选中禁用相机同一
+///   规则、同一告警形状）；
+/// - 没选中、或选中的是**透视**相机 ⇒ 返回 `None`＝**2D 取景保持现状**。这一条很关键：脚本切换
+///   3D 相机（最常见操作）绝不该把 2D 相机重置回作者写的初始值——2D 的 center/zoom 归
+///   `Camera2dController`（跟随/死区/平滑/抖动/请求），重置会在切相机那一帧闪一下。
+fn selected_camera_2d_in(
+    world: &crate::core::world::World,
+    selection: CameraSelection,
+) -> Option<(EntityId, Camera2D)> {
+    let mut chosen = None;
+    let mut selected_disabled = false;
+    world.for_each::<crate::core::camera::Camera>(|id, camera| {
+        // 正交相机是 2D 的唯一候选：选中的透视相机在这里被过滤掉（它服务 3D pass）。
+        let Some(component) = camera.as_orthographic() else {
+            return;
+        };
+        if !selection.is_selected(id.index() as u64) {
+            return;
+        }
+        if component.enabled {
+            chosen = Some((id, component));
+        } else {
+            selected_disabled = true;
+        }
+    });
+    if chosen.is_some() {
+        return chosen;
+    }
+    if selected_disabled {
+        tracing::warn!(
+            target: "render",
+            "[render] `camera.set_active` 选中的相机 `enabled=false`，2D 视图已回退到下一台可用相机"
+        );
+        return first_enabled_ortho_camera_in(world);
+    }
+    None
 }
 
 /// Sprite 的世界矩形（pivot+缩放+旋转+位移）投影到屏幕的 AABB，供 UiEvents 命中。
@@ -8983,6 +9080,210 @@ mod sdf_tests {
             "2D 预算项：overlay 批 + 瓦片层 + 世界文字 + render_view_2d 内部各一次，实际 {}",
             counts.ortho_terms
         );
+    }
+
+    /// 拆分批 9 的夹具：两台正交相机（`Cam2dA` 在前）+ 一个精灵，可选把 A 设为 `enabled=false`；
+    /// `with_3d` 时再加一台透视相机（`Cam3d`）与一个网格，让 `scene_3d` 有内容。
+    fn camera2d_selection_scene(
+        name: &str,
+        disable_a: bool,
+        with_3d: bool,
+    ) -> crate::core::scene::Scene {
+        let mut scene = crate::core::scene::Scene::new(name);
+        let a = crate::core::scene::SceneEntityId(1);
+        let b = crate::core::scene::SceneEntityId(2);
+        let sprite = crate::core::scene::SceneEntityId(3);
+        for (id, entity) in [(a, "Cam2dA"), (b, "Cam2dB"), (sprite, "Sprite")] {
+            scene.add_entity(id, entity, None).unwrap();
+        }
+        let enabled = if disable_a { ";enabled=false" } else { "" };
+        scene.entities.get_mut(&a).unwrap().components.insert(
+            "Camera".into(),
+            format!("projection=orthographic;center=100,100;zoom=2{enabled}"),
+        );
+        scene.entities.get_mut(&b).unwrap().components.insert(
+            "Camera".into(),
+            "projection=orthographic;center=500,500;zoom=0.5".into(),
+        );
+        let entity = scene.entities.get_mut(&sprite).unwrap();
+        entity.components.insert(
+            "Transform".into(),
+            "position=100,100,0;rotation=0,0,0,1;scale=1,1,1".into(),
+        );
+        entity.components.insert(
+            "Sprite".into(),
+            "texture=assets/textures/red-1x1.png;size=16x16;pivot=0.5,0.5;z=0".into(),
+        );
+        if with_3d {
+            let camera3d = crate::core::scene::SceneEntityId(4);
+            let mesh = crate::core::scene::SceneEntityId(5);
+            scene.add_entity(camera3d, "Cam3d", None).unwrap();
+            scene.add_entity(mesh, "Mesh", None).unwrap();
+            scene
+                .entities
+                .get_mut(&camera3d)
+                .unwrap()
+                .components
+                .insert(
+                    "Camera".into(),
+                    "projection=perspective;position=0,0,6;target=0,0,0;fov=60;near=0.1;far=100"
+                        .into(),
+                );
+            let entity = scene.entities.get_mut(&mesh).unwrap();
+            entity.components.insert(
+                "Transform".into(),
+                "position=0,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
+            );
+            entity
+                .components
+                .insert("MeshRenderer".into(), "mesh=assets/models/test.glb".into());
+        }
+        scene
+    }
+
+    /// 拆分批 9：`camera.set_active` 是**一条**选择链——选中的正交相机就是 2D 相机的来源，
+    /// 宿主在**选择变化**时采用一次它的载荷（center/zoom）；同一台不重复采用（否则每帧会把
+    /// 控制器算出的取景抹平），而选中**透视**相机时 2D 取景必须原地不动（切 3D 相机是常见操作）。
+    #[test]
+    fn camera_set_active_on_an_orthographic_camera_adopts_the_2d_payload() {
+        let root = game_root();
+        let mut runtime = RuntimeScene::from_scene_edit(
+            Some(root.as_path()),
+            camera2d_selection_scene("camera2d-select", false, true),
+        )
+        .expect("runtime scene");
+        // 默认（无选中）：排序序第一台启用的正交相机 ⇒ Cam2dA。
+        assert_eq!(runtime.camera.center, Vec2::new(100.0, 100.0));
+        assert_eq!(runtime.camera.zoom, 2.0);
+
+        // 选中 Cam2dB（正交）⇒ 采用它的载荷。
+        runtime
+            .with_script(|script| {
+                script.execute_console("return camera.set_active(entity.find('Cam2dB'))")
+            })
+            .expect("select Cam2dB");
+        runtime.step_camera2d(1.0 / 60.0);
+        assert_eq!(
+            runtime.camera.center,
+            Vec2::new(500.0, 500.0),
+            "选中正交相机后必须采用它的载荷"
+        );
+        assert_eq!(runtime.camera.zoom, 0.5);
+
+        // 同一台再"选中"一次不重复采用：把相机挪走（控制器或宿主写入）之后不得被盖回去。
+        runtime.set_camera_2d(Camera2D {
+            center: Vec2::new(42.0, 24.0),
+            ..runtime.camera
+        });
+        runtime
+            .with_script(|script| {
+                script.execute_console("return camera.set_active(entity.find('Cam2dB'))")
+            })
+            .expect("re-select Cam2dB");
+        for _ in 0..3 {
+            runtime.step_camera2d(1.0 / 60.0);
+        }
+        assert_eq!(
+            runtime.camera.center,
+            Vec2::new(42.0, 24.0),
+            "同一台重复选中不该把控制器算出的取景抹平"
+        );
+
+        // 选中**透视**相机（切 3D 取景）：2D 取景必须原地不动。
+        runtime
+            .with_script(|script| {
+                script.execute_console("return camera.set_active(entity.find('Cam3d'))")
+            })
+            .expect("select Cam3d");
+        for _ in 0..2 {
+            runtime.step_camera2d(1.0 / 60.0);
+        }
+        assert_eq!(
+            runtime.camera.center,
+            Vec2::new(42.0, 24.0),
+            "切 3D 相机不该把 2D 相机弹回作者值"
+        );
+
+        // 再选回 Cam2dB ⇒ 来源变了，重新采用它的载荷（这就是"把 2D 取景复位回场景声明"的表达）。
+        runtime
+            .with_script(|script| {
+                script.execute_console("return camera.set_active(entity.find('Cam2dB'))")
+            })
+            .expect("select Cam2dB again");
+        runtime.step_camera2d(1.0 / 60.0);
+        assert_eq!(runtime.camera.center, Vec2::new(500.0, 500.0));
+    }
+
+    /// 拆分批 9：选中的正交相机**被禁用**时告警并回退到下一台可用相机（与 3D 侧选中禁用相机
+    /// 同一规则、同一告警形状）。
+    #[test]
+    fn camera_set_active_on_a_disabled_2d_camera_falls_back() {
+        let root = game_root();
+        let mut runtime = RuntimeScene::from_scene_edit(
+            Some(root.as_path()),
+            camera2d_selection_scene("camera2d-disabled", true, false),
+        )
+        .expect("runtime scene");
+        // A 被禁用 ⇒ 初始取景来自 B（"第一台被禁用不该挡掉后面启用的那台"）。
+        assert_eq!(runtime.camera.center, Vec2::new(500.0, 500.0));
+
+        // 显式选中被禁用的 A：必须回退（而不是采用它的载荷）。
+        runtime
+            .with_script(|script| {
+                script.execute_console("return camera.set_active(entity.find('Cam2dA'))")
+            })
+            .expect("select disabled Cam2dA");
+        runtime.step_camera2d(1.0 / 60.0);
+        assert_eq!(
+            runtime.camera.center,
+            Vec2::new(500.0, 500.0),
+            "选中被禁用的 2D 相机必须回退到下一台可用相机（B）"
+        );
+        assert_eq!(runtime.camera.zoom, 0.5);
+    }
+
+    /// 拆分批 9（负向）：一条选择链上，**投影决定服务哪个 pass**——选中正交相机不得改变 3D pass
+    /// 用的相机，反之选中透视相机也不得改变 2D 取景。
+    #[test]
+    fn camera_selection_serves_each_pass_by_projection() {
+        let root = game_root();
+        let mut runtime = RuntimeScene::from_scene_edit(
+            Some(root.as_path()),
+            camera2d_selection_scene("camera2d-vs-3d", false, true),
+        )
+        .expect("runtime scene");
+        let viewport = Viewport::new(640.0, 360.0).unwrap();
+        let before = runtime.scene_3d(viewport).expect("3d scene").camera;
+        let framing_before = runtime.camera;
+
+        // 选中正交相机：3D pass 不受影响（候选按投影过滤）。
+        runtime
+            .with_script(|script| {
+                script.execute_console("return camera.set_active(entity.find('Cam2dB'))")
+            })
+            .expect("select Cam2dB");
+        runtime.step_camera2d(1.0 / 60.0);
+        let after = runtime.scene_3d(viewport).expect("3d scene").camera;
+        assert_eq!(after, before, "选中正交相机不得改变 3D pass 用的相机");
+        assert_eq!(
+            runtime.camera.center,
+            Vec2::new(500.0, 500.0),
+            "2D 侧确实换了相机（否则这条测试没有区分力）"
+        );
+
+        // 反过来：选中透视相机，2D 取景必须保持（不是回到作者值）。
+        runtime
+            .with_script(|script| {
+                script.execute_console("return camera.set_active(entity.find('Cam3d'))")
+            })
+            .expect("select Cam3d");
+        for _ in 0..3 {
+            runtime.step_camera2d(1.0 / 60.0);
+        }
+        assert_eq!(runtime.camera.center, Vec2::new(500.0, 500.0));
+        assert_ne!(framing_before.center, runtime.camera.center);
+        let after_3d = runtime.scene_3d(viewport).expect("3d scene").camera;
+        assert_eq!(after_3d, before, "Cam3d 是唯一透视相机，3D pass 仍用它");
     }
 
     /// RuntimeScene 无 GPU 长会话：重复 create → run_script_steps → vertices → drop，

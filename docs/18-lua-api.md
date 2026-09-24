@@ -15,11 +15,11 @@
 |---|---|---|
 | `transform3d` | `attach/get/set/move` | 挂接/查询/设置/移动 3D 变换；`set(id,x,y,z[,rx,ry,rz,rw[,sx,sy,sz]])` |
 | `mesh` | `set/get/clear` | 设置/读取/清除 `MeshRenderer` 网格路径 |
-| `camera` | `set_active/get_active/get` | 切换/查询活动相机；`get(id)` 返回 `x,y,z,tx,ty,tz,fov,near,far` |
+| `camera` | `set_active/get_active/get` | **唯一**的活动相机选择链（批 9 起不再分 2D/3D）：`set_active(id)` 只要求实体带 `Camera`，由 `projection` 决定它服务哪个 pass（透视 → 3D world，正交 → 2D overlay）；`get(id)` 读写**透视 payload**，返回 `x,y,z,tx,ty,tz,fov,near,far` |
 | `light` | `set_active/get/set` | 设置/读取方向光；`set(id,dx,dy,dz,r,g,b,intensity)` |
 | `physics3d` | `get_velocity/set_position/events/raycast/overlap` | 3D 物理查询：`get_velocity(id)`→`{x,y,z}`；`events()`→碰撞事件数组 `{a,b,started}`；`raycast(ox,oy,oz,dx,dy,dz,max[,groups])`→命中实体 id 或 nil；`overlap(cx,cy,cz,r[,groups])`→实体 id 数组。可选尾参 `groups = {layer=N, mask=N}` 按碰撞分组过滤（缺省全收，见下文"物理查询的分组过滤"） |
 
-3D 组件在 `instantiate_scene` 时从场景字符串解析为 World 组件；`camera.set_active` 与 `light.set_active` 由宿主渲染器每帧读取，未选择时回退到首个 `Camera3D` / `Light` 实体。
+3D 组件在 `instantiate_scene` 时从场景字符串解析为 World 组件；`camera.set_active` 与 `light.set_active` 由宿主渲染器每帧读取。3D pass 在**选中的是透视相机**时用它，否则回退到排序序第一台启用的透视相机；2D 视图在**选中的是正交相机**时用它（宿主采用它的载荷作为 2D 取景基准），否则保持现状。`enabled=false` 的相机不参与选择（选中它会告警并回退）。
 
 ## M8-07 新增骨骼动画 API
 
@@ -270,6 +270,12 @@ map = "rustlua-actions-v2\ninteract=key:keye,pad:0\n..."
 此前 Lua **完全无法控制 2D 相机**（`camera` 表只管 3D 的 `Camera3D` 组件）；大地图与跟随镜头
 只能靠宿主代码。相机数据在宿主而不在 Lua 状态里，因此 `set`/`set_zoom` 是**登记请求、宿主下一帧
 消费**；`get`/`get_zoom` 读宿主回填的真实值。
+
+**2D 相机"用哪台"由 `camera.set_active` 决定**（批 9 起与 3D 共用一条选择链）：选中的是**正交**
+相机时，宿主在选中项变化时采用它的载荷（`center`/`zoom`/`rotation`/`bounds`）作为 2D 取景基准，
+之后 center/zoom 仍归 `camera2d.*` 的控制器（跟随 / 死区 / 平滑 / 抖动 / 请求）；选中的是透视
+相机或什么都没选时，2D 取景**保持现状**（切 3D 相机不会把 2D 相机弹回作者值）。没有显式选中
+时，初始 2D 相机是排序序第一台启用的正交相机。
 
 | 调用 | 说明 |
 | --- | --- |

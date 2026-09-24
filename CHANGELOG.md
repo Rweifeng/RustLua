@@ -5,7 +5,7 @@
 度量数字（µs、分配字节、测试计数）、逐条证据、golden 断言与实施细节留在能力文档与任务文件里，不在本文重复：
 重构过程见 [docs/53](docs/53-WP0增量场景帧基准与每帧分配.md) 与 [docs/40](docs/40-引擎全面重构计划.md)，已完成任务的验收记录见 `tasks/done/`。
 
-## Unreleased — 相机模块拆分与每帧烘焙（批 1–8）
+## Unreleased — 相机模块拆分与每帧烘焙（批 1–9）
 
 主题：`core/camera.rs` 曾把四件事装在一个 2565 行的文件里——相机类型与数学、组件串编解码、
 2D 跟随策略、每帧渲染视图契约，外加 3D 几何。同时**同一组相机量被逐精灵反复重算**：
@@ -181,14 +181,49 @@ overlay 构建；瓦片层为此写了一份**与 `Camera2D` 重复的** `Tilema
   repeat-2/repeat-3 **以及 pristine HEAD 那次**逐位相同——同一个数字跨三种代码状态出现，
   更说明"clean 值"是确定的，差异来自运行环境而不是代码。
 
+### 批 9：**"谁生效"收成一条选择链**（`camera.set_active` 认任何相机，投影决定服务哪个 pass）
+
+- 病灶（批 8 之后唯一剩下的架构级分叉）：3D 的"谁生效"是 ECS 选择（`ScriptState.active_camera`，
+  Lua 可切），2D 的"谁生效"是宿主所有权（`RuntimeScene.camera` + 控制器请求/回填链），
+  **脚本够不着"2D 用哪台"**——场景里声明的第一台正交相机永久生效，换台只能靠改场景或宿主代码。
+  同一条"哪台相机生效"的问题因此有两个答案，`camera.set_active` 还明确**拒绝**正交相机。
+- 落法：只留**一个** `active_camera`。`camera.set_active(id)` 只要求实体带 `Camera`，
+  **由 `projection` 决定它服务哪个 pass**：透视 → 3D world 取景；正交 → **2D 相机的来源**
+  （宿主在选中项变化时采用它的载荷 `center`/`zoom`/`rotation`/`bounds` 一次作为 2D 取景基准）。
+  `camera2d.set_active` 这类"第二条选择入口"**不做**——那只会把分叉换个名字。
+- 每 pass 仍**按投影过滤候选**，`enabled=false` 的选中项**告警并回退**到下一台可用相机
+  （2D 与 3D 同一规则、同一告警形状）；`camera.get` / `camera.set` 仍只认透视 payload。
+- 与 3D 侧**唯一的不对称**（有意，且是 2D 多了控制器这一层的结果）：**选中的是透视相机或什么
+  都没选时，2D 取景保持现状**——切换 3D 相机是常见操作，它不该把 2D 相机弹回作者写的初始值；
+  同一台重复选中也不重复采用载荷（否则 `camera2d.follow` 与 `shake` 会被逐帧抹平）。
+- 示例工程同步：`examples/game_api/scripts/demo_camera.lua` 把"正交相机不在这条选择链上"那段
+  旧说法改成新语义，并新增 **B 键**（把 2D 相机切回场景声明的正交相机）——这也是新能力在示例里
+  的真实调用点。
+- 判据：4 条新测试——`camera_set_active_takes_any_projection`（正交/透视都能选中；无相机实体报新
+  错误串；`camera.get`/`camera.set` 仍拒绝正交）、`camera_set_active_on_an_orthographic_camera_
+  adopts_the_2d_payload`（采用一次、同一台不重复、切 3D 相机不动 2D）、`camera_set_active_on_a_
+  disabled_2d_camera_falls_back`（禁用回退）、`camera_selection_serves_each_pass_by_projection`
+  （投影分工的**双向**负向断言）。引擎测试 **850 → 854**；`sample_project_demos_cover_every_lua_api`
+  等 14 条示例工程门全过（含 `sample_project_runs_every_scene_headless` 跑新 demo）；
+  8 份 golden 语义零差异；MVP 头曼回归全过。
+
+### 兼容契约（变更：`camera.set_active`，本系列第一次）
+
+其余 18 个相机函数与全部场景/Prefab 文法**未动**；改的只有 `camera.set_active` 这一条：
+
+- **放宽**：选中一台**正交**相机不再报 `entity has no camera3d`，而是成为 2D 相机的来源。
+  （批 9 之前它必须报错，因为那时"2D 用哪台"根本没有选择链。）
+- **错误串**：对**完全没有 `Camera` 组件**的实体，错误串由 `entity has no camera3d` 改为
+  `entity has no camera`——"一条选择链"下前者已经不是真的。`camera.get` / `camera.set`
+  （透视 payload 的读写）**保持** `entity has no camera3d` 逐字不变。
+- 影响面：仓库内没有任何脚本/测试依赖"选中正交相机报错"这条行为（示例工程与全部测试已核对），
+  `docs/18` 的 `camera` 表与 `camera2d` 小节、`docs/54` §11.2/§12 同步改写。
+
 ### 有意保留的偏离（已评估、未做，附理由）
 
 - **编辑器 Inspector 的每帧解析不做缓存**：`schema_fields::camera_notes` 每帧解析一次 `Camera`
   载荷（选中 N 个实体则 N 次），量级是**每帧常数、约微秒**；加备忘录会引入"载荷变了缓存没失效"
   的陈旧风险，收益不可测。按仓库既有口径（"只判测量是活的"）不做。
-- **`camera.set_active` 仍拒绝正交相机**（只对 3D pass 生效）：2D 的生效相机是宿主所有权的
-  `RuntimeScene.camera`（脚本请求 → 控制器 → 回填），把它改成"由 ECS 选中"会破坏那条链。
-  运行时的**存储与遍历**已统一为一个 `Camera`，但"谁生效"这件事仍是两条既有语义。
 - **宿主未声明 `FrameViews` 时**（`preview_session` 与示例 golden 的回滚档）渲染器仍不自己造
   视图，而是吃 `Scene3d.view`——那是**提取时**按视口烘焙好的同一份契约（批 7）。这条路径仍是
   "不调用 `set_frame_views` 即回到收敛前"的保证，但它不再是"渲染器回查相机"：矩阵与视口都来自
