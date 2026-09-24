@@ -53,8 +53,7 @@ out/
 ├── project.toml
 ├── scenes/        # .scene，encrypt 时编码
 ├── scripts/       # .lua，encrypt 时编码
-├── assets/        # compress 时压缩
-├── fonts/…        # 发布子集化后的主字体（替换完整字体）
+├── assets/        # compress 时压缩；子集化后的主字体落在 assets/fonts/…（工程里的 font 路径被原样保留）
 ├── chars.txt      # 收集到的项目用字字符清单
 └── manifest.txt   # 路径、大小、校验和清单
 ```
@@ -92,7 +91,10 @@ P2PK1 <flags> [12B nonce] <payload>
 1. Release 构建（`cargo build --workspace --release`；web 平台改为 `cargo build -p game_web --release --target wasm32-unknown-unknown` + `wasm-bindgen`）。
 2. `assetc package` 生成数据包 `pack/`（按平台）。
 3. 复制运行器到发布目录：
-   - **pc**：`game.exe` + `pack/` + `fonts/NotoSansSC-VF.ttf` + `release.toml` + `run.txt` + `deps.txt` + `build-info.txt`。
+   - **pc**：`game.exe` + `pack/` + `release.toml` + `run.txt` + `deps.txt` + `build-info.txt`。
+     字体**在包内**（`pack/assets/fonts/NotoSansSC-VF.ttf`）：PC 不把 17 MB 完整字体复制到发布根，
+     运行时以 `pack/` 为工程根、按 `settings.toml` 的 `font` 路径读取（`package.ps1` 会在打包时
+     真查这一条；发布根下的 `fonts/` 只有 webgl 的 `index.html` 需要）。
    - **webgl**：`index.html`（由 `plugins/webgl/index.html` 模板替换工程名/字体路径生成）+ `web-runtime.js` + `pkg/game_web.js` + `pkg/game_web_bg.wasm` + `pkg/fengari-web.js` + `fonts/` + `pack/`。
    - **wechat-minigame**：`game.js` + `wechat-adapter.js` + `game.json` + `project.config.json` + `web-runtime.js` + `pkg/fengari-web.js` + `pack/` + `release.toml` + `run.txt` + `deps.txt` + `build-info.txt`；
      默认形态（`-AssetPack subpackage`）下另有 `mainpack.json` + `mainpack/`（主包侧首屏资源）+ `pack/game.js`（分包入口）。
@@ -204,7 +206,9 @@ save_version=2
 - **回归**：`scripts/test-release-atomic.ps1` 覆盖成功交换、文件占用回滚、交换前失败丢弃、遗留清理四个场景，
   输出 `release_atomic_ok cases=4`。
 
-发布目录布局与 P2PK1 资源包格式未变（`game.exe + fonts/ + pack/ + release.toml + run.txt + deps.txt (+ index.html/pkg/web-runtime.js)`）。
+发布目录布局与 P2PK1 资源包格式未变（pc：`game.exe + pack/ + release.toml + run.txt + deps.txt`，
+字体在 `pack/assets/fonts/` 内；webgl 另加 `index.html + pkg/ + web-runtime.js + fonts/`——根下的
+`fonts/` 只服务 webgl 的 `index.html`）。
 
 ### assetc 打包的输入/输出安全边界（M23）
 

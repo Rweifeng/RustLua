@@ -1002,6 +1002,17 @@ try {
     else {
         # PC 不复制 17 MB 完整字体到发布根：assetc 已把工程字体打进 pack/（运行时以 pack 为工程根，
         # 按 settings.toml 的 font 路径读取），`fonts/` 那一份只有 webgl 的 index.html 需要。
+        # 这条**真的去查**包内字体，而不是只在 build-info.txt 里声称一句——此前那行 `font_check`
+        # 对 pc 写的是"fonts/$fontName present and non-empty"，而 pc 的发布根根本没有 fonts/：
+        # 自述与现实相反，读的人无从分辨（验收那边也照着这句写成了根下字体，于是正确的 pc 发布
+        # 过不了自己的门）。
+        $packedPcFont = Join-Path $packRoot ("assets\fonts\" + $fontName)
+        if (-not (Test-Path -LiteralPath $packedPcFont)) {
+            throw "PC package requires the project font inside pack/: $packedPcFont"
+        }
+        if ((Get-Item -LiteralPath $packedPcFont).Length -le 0) {
+            throw "PC packaged font is empty: $packedPcFont"
+        }
         $packageContents = "game.exe, pack/ (data, assets/fonts/$fontName), release.toml, run.txt, deps.txt"
         if ($settingsPackaged) {
             $packageContents = "game.exe, pack/ (data, settings.toml, assets/fonts/$fontName), release.toml, run.txt, deps.txt"
@@ -1018,7 +1029,7 @@ try {
         "engine version: $engineVersion",
         "toolchain: $toolchain",
         "contents: $packageContents",
-        "font_check: $(if ($Platform -eq 'wechat-minigame') { "$wechatFontRelative (subset, packaged into launcher/)" } else { "fonts/$fontName present and non-empty" })",
+        "font_check: $(if ($Platform -eq 'wechat-minigame') { "$wechatFontRelative (subset, packaged into launcher/)" } elseif ($Platform -eq 'webgl') { "fonts/$fontName present and non-empty (index.html 的字体路径指向它)" } else { "pack/assets/fonts/$fontName present and non-empty（发布根不带完整字体）" })",
         "settings_check: $(if ($settingsPackaged) { 'settings.toml packaged from project root（微信形态按白名单改名成 settings.toml.txt）' } else { 'no project settings.toml; engine defaults apply' })",
         "player_data: $(if ($Platform -eq 'wechat-minigame') { 'wx storage / USER_DATA_PATH; the code package is read-only' } elseif ($Platform -eq 'webgl') { 'browser storage; no filesystem player data' } else { "$PlayerDataDir (override: RUSTLUA_USER_DIR); pack/ is read-only and never written" })"
     ) | Set-Content (Join-Path $distRoot "build-info.txt") -Encoding UTF8

@@ -41,17 +41,22 @@ use std::{
 /// 发布目录相对工程根的位置（`scripts/package.ps1 -Platform pc` 的输出）。
 const RELEASE_REL: &str = "builds/pc/jianghu_youtian";
 /// 发布包必须存在的条目（`game.exe` 在上一级）。
+///
+/// 字体在**包内**（`pack/assets/fonts/…`）而不是发布根：PC 形态不复制 17 MB 完整字体到发布根
+/// （见 `scripts/package.ps1` 的 pc 分支），运行时以 `pack/` 为工程根、按 `settings.toml` 的
+/// `font` 路径读取；发布根下的 `fonts/` 只有 webgl 的 `index.html` 需要。此前这里按 webgl
+/// 的布局要求根下字体，于是**一条正确的 pc 发布反而过不了这个门**。
 const REQUIRED_RELEASE_ENTRIES: &[&str] = &[
     "game.exe",
     "release.toml",
     "run.txt",
     "build-info.txt",
     "deps.txt",
-    "fonts/NotoSansSC-VF.ttf",
     "pack/project.toml",
     "pack/manifest.txt",
     "pack/chars.txt",
     "pack/settings.toml",
+    "pack/assets/fonts/NotoSansSC-VF.ttf",
     "pack/scripts/main.lua",
     "pack/scripts/ui/ui_text.lua",
     "pack/scripts/ui/text_fit.lua",
