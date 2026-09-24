@@ -5,7 +5,7 @@
 度量数字（µs、分配字节、测试计数）、逐条证据、golden 断言与实施细节留在能力文档与任务文件里，不在本文重复：
 重构过程见 [docs/53](docs/53-WP0增量场景帧基准与每帧分配.md) 与 [docs/40](docs/40-引擎全面重构计划.md)，已完成任务的验收记录见 `tasks/done/`。
 
-## Unreleased — 相机模块拆分与每帧烘焙（批 1–6）
+## Unreleased — 相机模块拆分与每帧烘焙（批 1–7）
 
 主题：`core/camera.rs` 曾把四件事装在一个 2565 行的文件里——相机类型与数学、组件串编解码、
 2D 跟随策略、每帧渲染视图契约，外加 3D 几何。同时**同一组相机量被逐精灵反复重算**：
@@ -84,6 +84,60 @@ overlay 构建；瓦片层为此写了一份**与 `Camera2D` 重复的** `Tilema
   "成帧矩阵 == 按视口比例算的那一份"且"≠ 组件自带比例的那一份"，并顺带钉住屏幕中心射线指向
   相机目标。
 
+### 批 7：宽高比的唯一权威落到**类型**（`Camera3D` 里不再有比例字段）
+
+- 病灶（批 6 只治了一半）：批 6 让**成帧**走视口，但 `Camera3D::aspect_ratio` 还在，而且宿主
+  每帧仍往它里面写窗口比例（`scene_3d_with_camera` 的 `c.aspect_ratio = aspect`、
+  `active_camera3d` 结尾的 `camera.aspect_ratio = aspect`）；同时 `projection_matrix` /
+  `view_projection_matrix` / `world_to_ndc` / `ndc_to_world` / `ray_from_screen` / `frustum`
+  这六个 API 仍按**组件自带**比例算。于是"组件里存的比例"与"渲染/拾取实际用的比例"依旧是两份
+  状态：`picking::ray_from_screen` 一边收 `viewport`、一边从相机取比例，两边恰好相等**只因为
+  宿主记得写回**——忘了写回就是"点中的位置和看到的位置差一点"，而且没有任何报错。
+- **判据（这个字段能不能删）**：它**从来不在载荷文法里**——`Camera3D::from_component_str` 只读
+  `position/target/fov/near/far/pose/enabled`，`to_component_str` 一个字节都不写它（新测试钉住
+  "组件串里不出现 `aspect`"）。所以删字段对场景/Prefab/Lua 组件串、编辑器 schema 与
+  `builtin_schemas_match_engine_encoders` / `shipped_data_uses_only_unified_components` 零影响。
+- 落法：删字段；`Camera3D::perspective` 去掉形参；六个矩阵/换算 API 全部改成**接受
+  `Viewport`**，并新增 `Viewport::aspect()` 作为全仓库**唯一**的比例推导处 ⇒
+  "拿相机自带的比例算矩阵"这件事**不可表达**。宿主两处写回随之删除，
+  `scene_3d(aspect)` → `scene_3d(viewport)`、`scene_3d_with_camera(aspect, …)` →
+  `scene_3d_with_camera(viewport, …)`。
+- 回退档的语义没变，来源变硬：`Scene3d` 现在带 `view: RenderView`（**提取处**按视口成帧），
+  于是"宿主未声明 `FrameViews`"时渲染器吃 `scene.view.matrix()`、视锥剔除吃
+  `scene.view.baked().frustum()`；宿主声明主视图时（`game_app` / 编辑器 Scene 视图）直接用
+  同一份 `scene3d.view`——同一个视口只烘焙一次，声明与回退不可能给出两个比例。
+- **逐条说明"哪些调用方的 aspect 是有意与视口不同"：一个都没有**。①光照/阴影相机
+  （`light_view_projection`）只消费 `view_matrix()`，它自己拼正交式投影，比例从来不参与——
+  那个 `1.0` 是没人读的占位，随字段一起消失；②编辑器取景相机的"面板比例"**就是**它的视口
+  （`render_viewport(render_w, render_h)`；`project_to_screen` 按 `rect` 的浮点尺寸建视口，
+  与旧公式同一个比例、不经整数化）；③`Renderer::new` 的首帧 uniform 初值取目标视口（0 尺寸
+  仍是被拒绝的非法输入，与旧版"比例非法即报错"同一结果）。
+- **判据（先钉基线，再改，再逐值对拍）**：在 pristine HEAD（`518acc4`）上把 8 份 golden 跑一遍
+  存 `artifacts/camera-viewport-before/`，改后同机再跑存 `artifacts/camera-viewport-after/`，
+  用新增的 `scripts/compare-golden.ps1` 递归摊平叶子后对拍 **1353 个字段**：**语义与像素 0 处
+  不同**（含 lighting 的 `lit=[143,155,172]`/`shadow=[55,60,67]`、mixed 的遮挡采样、hud 的分层
+  像素、3D golden 的几何计数与编辑器预览的 `painted=65536`），另有 543 个叶子落在白名单噪声键
+  （计时、时间占比、分配**计数**）。
+- 白名单外只剩 6 处：`wp0-3d-stress` 三档的 `cpu_live_bytes` / `cpu_peak_bytes`。它们是 docs/54 §7
+  的红线，因此**刻意不加进白名单**（要看见，不能被静默放行），改由同二进制重跑证明它们是噪声：
+  n=100 档的 `cpu_live_bytes` 在 **同一份二进制**上得 `517696 / 551386 / 534849`（±3%），改前那次
+  `517128` 落在这个区间里；n=10000 档在 repeat-2/repeat-3 上与**改动前**逐位相同
+  （`cpu_alloc_bytes=337605858`、`cpu_live_bytes=136`、`cpu_peak_bytes=5167623`）。仓库自己的门
+  `compare-baseline.ps1 -GeometryOnly`（几何量 + 内存峰值 ±10%）对提交进版本库的基线给出
+  `baseline_compare_ok checks=12 regressions=0`。
+- 该脚本自带正/负向自测：把一个采样像素 `[143,155,172]` 改成 `[144,…]` → 判红并点名
+  `root.samples.lit[0]`（退出 1）；只改 `p95_us` / `alloc_count_p50` → 放行（计入 ignored_noise）。
+- 引擎测试 **844**（843 + 新增 `aspect_ratio_only_comes_from_the_viewport`）全绿：新测试钉住
+  ①组件串往返里没有 `aspect` 字段、②同一台相机换视口就换矩阵（`view_projection == projection ×
+  view`）、③`Viewport::aspect()` 就是宽高比；`scene_3d_with_camera` 那条改成**负向断言**
+  （相机载荷与传入值逐字段相同 + 视图比例来自视口 + 覆盖前后视图矩阵一致）。编辑器 283、
+  `assetc` 176 亦全绿；`cargo fmt --check`、`clippy -D warnings`、`git diff --check`、
+  `game --check`、`editor --check`（game_jhyt 与 game_api，`schema_errors=0`）、`check-docs`
+  （`ps1_bom_ok` 含新脚本）全通过。
+- 兼容契约未动：载荷文法、Lua 19 个相机函数的名字/参数/错误串/返回表形状（`camera3d.get()`
+  本来就不返回比例，返回的是 `width`/`height`）、`fov` 用度、`math2d::CoordinateError` 的
+  re-export 全部逐字不变；改的是 Rust 侧的签名与**谁拥有比例**。
+
 ### 有意保留的偏离（已评估、未做，附理由）
 
 - **编辑器 Inspector 的每帧解析不做缓存**：`schema_fields::camera_notes` 每帧解析一次 `Camera`
@@ -92,10 +146,12 @@ overlay 构建；瓦片层为此写了一份**与 `Camera2D` 重复的** `Tilema
 - **`camera.set_active` 仍拒绝正交相机**（只对 3D pass 生效）：2D 的生效相机是宿主所有权的
   `RuntimeScene.camera`（脚本请求 → 控制器 → 回填），把它改成"由 ECS 选中"会破坏那条链。
   运行时的**存储与遍历**已统一为一个 `Camera`，但"谁生效"这件事仍是两条既有语义。
-- **宿主未声明 `FrameViews` 时**（`preview_session` 的回滚档）渲染器仍按 `Scene3d.camera` 现算一次
-  矩阵——每帧**常数**成本，且这条路径正是"不调用 `set_frame_views` 即回到收敛前"的保证；
-  把它也挪进烘焙会让"未声明"与"相机退化"两种语义混在一起。批 6 之后这条路也正是
-  `Camera3D::aspect_ratio` 唯一还有实际作用的地方（因此它没有被删掉，而被明确降级为回退值）。
+- **宿主未声明 `FrameViews` 时**（`preview_session` 与示例 golden 的回滚档）渲染器仍不自己造
+  视图，而是吃 `Scene3d.view`——那是**提取时**按视口烘焙好的同一份契约（批 7）。这条路径仍是
+  "不调用 `set_frame_views` 即回到收敛前"的保证，但它不再是"渲染器回查相机"：矩阵与视口都来自
+  那一次烘焙，而"未声明"（回退可用）与"相机退化"（`baked() == None`，保持上一帧矩阵并告警）
+  两种语义仍然分开。**批 6 里"这条路是 `Camera3D::aspect_ratio` 唯一还有实际作用的地方"这条
+  偏离随批 7 消失**：那个字段不在载荷文法里，已整个删除。
 
 ### 兼容契约（未动）
 
@@ -104,6 +160,11 @@ overlay 构建；瓦片层为此写了一份**与 `Camera2D` 重复的** `Tilema
 参数/错误串/返回表形状，全部逐字不变；`shipped_data_uses_only_unified_components`、
 `builtin_schemas_match_engine_encoders`、`editor --check`（`schema_errors=0`）与
 2D overlay / 3D semantic golden 照旧通过。
+
+批 7 删掉 `Camera3D::aspect_ratio` 之所以不动契约：**它从来不在载荷文法里**（组件串只有
+`position/target/fov/near/far/pose/enabled`，编码器不写它、解析器不读它），也从未出现在
+Lua 返回表（`camera3d.get()` 给的是 `width`/`height`）。它是纯运行期暂存值——正是"宿主每帧写回"
+才让它看起来像配置。
 
 ## Unreleased — 2D 相机跟随与取景边界（场景声明的相机不再只在启动场景生效）
 

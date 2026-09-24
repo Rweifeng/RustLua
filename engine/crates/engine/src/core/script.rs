@@ -8472,7 +8472,6 @@ mod tests {
             Vec3::new(0.0, 5.0, 10.0),
             Vec3::ZERO,
             std::f32::consts::FRAC_PI_2,
-            4.0 / 3.0,
             0.1,
             100.0,
         )

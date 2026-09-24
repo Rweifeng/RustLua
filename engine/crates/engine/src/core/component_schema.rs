@@ -1431,7 +1431,6 @@ mod tests {
                             crate::core::math3d::Vec3::new(0.0, 1.0, 3.0),
                             crate::core::math3d::Vec3::new(0.0, 0.0, 0.0),
                             60.0_f32.to_radians(),
-                            16.0 / 9.0,
                             0.1,
                             100.0,
                         )

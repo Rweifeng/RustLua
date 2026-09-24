@@ -1901,10 +1901,13 @@ impl EditorApp {
     /// drawable/component 提取路径，实体/资源数量与关键状态一致），编辑器轨道
     /// 相机作为覆盖传入（不修改场景数据）；`scene_runtime` 缺失、实例化失败或
     /// 提取为空时回退到静态 serialized extractor（保持既有诊断行为）。
-    fn build_scene3d(&mut self, aspect: f32) -> Option<Scene3d> {
-        let camera = self.editor_camera(aspect);
+    ///
+    /// 拆分批 7：参数是**视口**而不是裸比例——面板比例只经由视口进入烘焙的视图，
+    /// 既不写进组件、也不需要调用方自己算一次除法（`Viewport::aspect` 是唯一推导处）。
+    fn build_scene3d(&mut self, viewport: Viewport) -> Option<Scene3d> {
+        let camera = self.editor_camera();
         if let Some(runtime) = &self.scene_runtime
-            && let Some(mut scene3d) = runtime.scene_3d_with_camera(aspect, Some(camera))
+            && let Some(mut scene3d) = runtime.scene_3d_with_camera(viewport, Some(camera))
         {
             // Gizmo/拖拽预览覆盖 transform（不修改场景数据、不写回 ECS）。
             for drawable in &mut scene3d.drawables {
@@ -1970,6 +1973,8 @@ impl EditorApp {
         };
         Some(Scene3d {
             camera,
+            // 编辑器这条回退路径自己拼 drawable，但视图仍按同一处规则成帧：宽高比来自视口。
+            view: RenderView::main_3d(camera, viewport, DEFAULT_3D_CLEAR),
             light,
             drawables,
         })
@@ -2014,7 +2019,7 @@ impl EditorApp {
         // M11-04 / R-05：确保编辑场景的 ECS 运行时已按当前文档 revision 建立，
         // 让 3D 视图与运行时共用同一条提取路径（相机以编辑器视图作为覆盖）。
         self.ensure_scene_runtime();
-        let scene3d = self.build_scene3d(render_w as f32 / render_h.max(1) as f32);
+        let scene3d = self.build_scene3d(render_viewport(render_w, render_h));
         let mesh = SceneMesh {
             vertices: Vec::new(),
             draws: Vec::new(),
@@ -2037,13 +2042,10 @@ impl EditorApp {
         };
         // WP5：编辑器视图也走统一的视图描述——3D 视图声明主视图（清屏色 + 视口），
         // 而不是让渲染器自己写死清屏色。
+        // 拆分批 7：声明的主视图就是**提取时烘焙的那一份**（同一个视口烘焙一次）。
         if let Some(scene3d) = scene3d.as_ref() {
             renderer.set_frame_views(FrameViews {
-                main: Some(RenderView::main_3d(
-                    scene3d.camera,
-                    render_viewport(render_w, render_h),
-                    DEFAULT_3D_CLEAR,
-                )),
+                main: Some(scene3d.view),
                 overlay: None,
             });
         }
@@ -2458,7 +2460,12 @@ impl EditorApp {
         }
     }
 
-    fn editor_camera(&self, aspect_ratio: f32) -> Camera3D {
+    /// 编辑器取景相机：面板的 pan/zoom 决定姿态，投影参数固定（fov 60°、near 0.1、far 200）。
+    ///
+    /// 拆分批 7：**不含面板宽高比**——比例是每帧视图量，由调用方以 `Viewport` 交给
+    /// `Camera3D::{view_projection_matrix, ray_from_screen}` 或 `scene_3d_with_camera`。
+    /// 编辑器相机从不出现在场景数据里，因此它也不该模仿"组件里存一份比例"的旧形态。
+    fn editor_camera(&self) -> Camera3D {
         let cam = self.editor_camera;
         let position = Vec3::new(
             cam.target.x + cam.dist * cam.pitch.cos() * cam.yaw.sin(),
@@ -2470,7 +2477,6 @@ impl EditorApp {
             target: cam.target,
             up: Vec3::Y,
             fov_y: 60f32.to_radians(),
-            aspect_ratio,
             near: 0.1,
             far: 200.0,
             // 编辑器自己的取景相机永远由面板的 pan/zoom 决定，不跟随实体变换。
@@ -2481,9 +2487,10 @@ impl EditorApp {
     }
 
     fn editor_camera_ray(&self, x: f32, y: f32, width: f32, height: f32) -> Option<Ray3> {
-        let camera = self.editor_camera(width / height.max(1.0));
+        let camera = self.editor_camera();
         // docs/54 §8-⑦：与 Lua `camera3d.ray` 走**同一条共享链**（`core::picking`），
-        // 因此"编辑器点中哪个"和"脚本算出的射线"不会各说一套。
+        // 因此"编辑器点中哪个"和"脚本算出的射线"不会各说一套。宽高比与屏幕坐标同源
+        // （同一个 `viewport`），拆分批 7 之后这一点由类型保证。
         let viewport = Viewport::new(width.max(1.0), height.max(1.0)).ok()?;
         engine::core::picking::ray_from_screen(
             camera,
@@ -2495,8 +2502,12 @@ impl EditorApp {
 
     /// 把世界坐标投影到屏幕（编辑器相机透视投影）。
     fn project_to_screen(&self, world: Vec3, rect: egui::Rect) -> Option<egui::Pos2> {
-        let camera = self.editor_camera(rect.width() / rect.height().max(1.0));
-        let vp = camera.view_projection_matrix().ok()?;
+        let camera = self.editor_camera();
+        // 与旧的 `rect.width() / rect.height().max(1.0)` **同一个比例**：egui 的矩形是浮点，
+        // 因此这里按浮点建视口，不经过整数化（那会让 gizmo 的投影差一点点）。
+        let vp = camera
+            .view_projection_matrix(Viewport::new(rect.width(), rect.height().max(1.0)).ok()?)
+            .ok()?;
         let c = vp.columns;
         let x = c[0][0] * world.x + c[1][0] * world.y + c[2][0] * world.z + c[3][0];
         let y = c[0][1] * world.x + c[1][1] * world.y + c[2][1] * world.z + c[3][1];

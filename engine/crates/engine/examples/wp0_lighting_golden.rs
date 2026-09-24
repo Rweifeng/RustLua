@@ -237,9 +237,8 @@ fn render_scene(
     );
 
     let mut runtime = RuntimeScene::from_scene_edit(Some(root), scene).expect("lighting runtime");
-    let extracted = runtime
-        .scene_3d(WIDTH as f32 / HEIGHT as f32)
-        .expect("lighting 3D extraction");
+    let viewport = Viewport::new(WIDTH as f32, HEIGHT as f32).expect("viewport");
+    let extracted = runtime.scene_3d(viewport).expect("lighting 3D extraction");
     let mesh = runtime
         .vertices(WIDTH, HEIGHT)
         .expect("lighting 2D extraction");
@@ -250,7 +249,6 @@ fn render_scene(
     let pixels = renderer
         .copy_texture_to_cpu(texture, WIDTH, HEIGHT)
         .expect("lighting readback");
-    let viewport = Viewport::new(WIDTH as f32, HEIGHT as f32).expect("viewport");
     let project = |world: Vec3| -> (engine::core::transform::Vec2, [u8; 3]) {
         let point = screen_from_world(extracted.camera, world, viewport)
             .expect("camera projects the sample point")

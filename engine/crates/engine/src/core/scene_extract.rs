@@ -237,7 +237,8 @@ mod tests {
             "模型矩阵平移应等于位置: {translation:?}"
         );
 
-        // Camera：两个串行透视相机，aspect 默认 1.0（fov 存弧度）。
+        // Camera：两个串行透视相机（fov 存弧度）。宽高比**不在相机里**——它由每帧视口给出
+        // （`Viewport::aspect`），因此这里没有任何比例可断言。
         assert_eq!(extracted.cameras.len(), 2);
         let (first_id, first_camera) = &extracted.cameras[0];
         assert_eq!(*first_id, crate::core::scene::SceneEntityId(1));
@@ -246,7 +247,6 @@ mod tests {
             crate::core::math3d::Vec3::new(0.0, 0.0, 6.0)
         );
         assert!((first_camera.fov_y - 60f32.to_radians()).abs() < 1e-5);
-        assert!((first_camera.aspect_ratio - 1.0).abs() < 1e-6);
 
         // Light：唯一方向光。`direction` 是**光传播方向**，太阳因此是 y 为负（自上而下）——
         // 快照在这里钉住这个符号：写反会导致朝上的表面 `diffuse = 0`、场景只剩环境光，

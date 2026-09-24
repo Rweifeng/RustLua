@@ -15,7 +15,8 @@ use crate::core::{
     asset_handle::{AssetHandle, AssetRecord, AssetStore},
     camera::Camera3D,
     camera::{
-        Camera2D, CameraBounds, CameraSelection, CameraView, OrthoTerms, RenderView, Viewport,
+        Camera2D, CameraBounds, CameraSelection, CameraView, DEFAULT_3D_CLEAR, OrthoTerms,
+        RenderView, Viewport,
     },
     entity::EntityId,
     font::{FontAtlas, FontVectorAtlas, project_font},
@@ -1009,10 +1010,9 @@ impl RuntimeScene {
         if shapes.is_empty() {
             return;
         }
-        let aspect = viewport.width / viewport.height.max(1.0);
         // 每帧烘焙一次 3D 视图：逐段投影因此不再重建矩阵（此前每个端点都会重建一次
         // `view_projection_matrix`，等于每段两次 4×4 乘法加两次校验）。
-        let Ok(view) = CameraView::from_camera3d(self.active_camera3d(aspect), viewport) else {
+        let Ok(view) = CameraView::from_camera3d(self.active_camera3d(), viewport) else {
             return;
         };
         let start = vertices.len();
@@ -2225,17 +2225,22 @@ impl RuntimeScene {
     /// camera (Lua-selected, else the first `Camera3D` entity, else a default),
     /// the active light, and every entity with both a `Transform3D` and a
     /// `MeshRenderer`. Returns `None` when the scene has no 3D drawables.
-    pub fn scene_3d(&self, aspect_ratio: f32) -> Option<Scene3d> {
-        self.scene_3d_with_camera(aspect_ratio, None)
+    ///
+    /// 视口是**唯一**的宽高比来源（相机拆分批 7）：这里不再有任何"把比例写回相机"的动作，
+    /// 组件载荷与场景里写的一字不差。
+    pub fn scene_3d(&self, viewport: Viewport) -> Option<Scene3d> {
+        self.scene_3d_with_camera(viewport, None)
     }
 
     /// 带可选相机覆盖的 3D 提取（M11-04 / R-05）：编辑器 Scene 3D 视图与运行时
     /// 共用同一条 ECS drawable/component 提取路径（单一事实来源），编辑器传入
     /// 视图导航相机作为覆盖（不改场景数据），运行时传入 `None` 走
     /// `active_camera3d`（Lua 选择 / 首个 Camera3D / 默认）。
+    ///
+    /// 覆盖相机同样**不被改写**：视口比例只进 [`Scene3d::view`]（烘焙结果），不进相机载荷。
     pub fn scene_3d_with_camera(
         &self,
-        aspect_ratio: f32,
+        viewport: Viewport,
         camera_override: Option<Camera3D>,
     ) -> Option<Scene3d> {
         // Runtime extraction intentionally reads ECS state so physics, scripts,
@@ -2329,15 +2334,13 @@ impl RuntimeScene {
         }
         // 编辑器视图覆盖相机时不触碰场景数据（不写 ECS、不改脚本状态），仅作为
         // 渲染视角覆盖；运行时传 None 则按 Lua 选择 / 首个 Camera3D / 默认解析。
-        let camera = camera_override
-            .map(|mut c| {
-                c.aspect_ratio = aspect_ratio;
-                c
-            })
-            .unwrap_or_else(|| self.active_camera3d(aspect_ratio));
+        let camera = camera_override.unwrap_or_else(|| self.active_camera3d());
         let light = self.active_light();
         Some(Scene3d {
             camera,
+            // 拆分批 7：视图在提取处成帧，渲染器（含"宿主未声明 FrameViews"的历史回退）与
+            // 宿主声明的主视图因此消费同一份视口派生矩阵。
+            view: RenderView::main_3d(camera, viewport, DEFAULT_3D_CLEAR),
             light,
             drawables,
         })
@@ -2345,12 +2348,14 @@ impl RuntimeScene {
 
     /// Resolves the active camera: Lua's `camera.set_active` selection, else the
     /// first entity with a `Camera3D` component, else a fixed default.
-    fn active_camera3d(&self, aspect_ratio: f32) -> Camera3D {
+    ///
+    /// **不改写相机**（拆分批 7）：返回的就是组件载荷本身。此前这里按传入的窗口比例覆写
+    /// `aspect_ratio`，于是"组件里存的比例"与"渲染/拾取实际用的比例"成为两份状态。
+    fn active_camera3d(&self) -> Camera3D {
         let fallback = Camera3D::perspective(
             Vec3::new(0.0, 0.0, 5.0),
             Vec3::ZERO,
             std::f32::consts::FRAC_PI_2,
-            aspect_ratio,
             0.1,
             100.0,
         )
@@ -2359,7 +2364,6 @@ impl RuntimeScene {
             target: Vec3::ZERO,
             up: Vec3::Y,
             fov_y: std::f32::consts::FRAC_PI_2,
-            aspect_ratio,
             near: 0.1,
             far: 100.0,
             pose_from_transform: false,
@@ -2371,7 +2375,7 @@ impl RuntimeScene {
         let selection = CameraSelection {
             active: self.script.active_camera().map(|id| id.index() as u64),
         };
-        let mut camera = self.script.with_world(|world| {
+        let camera = self.script.with_world(|world| {
             // 单趟遍历、**不建候选表**：显式选中优先，否则排序序第一个启用项。
             // （此前每调用一次就分配一个 `Vec<(u64, Camera3D)>`，而它每帧至少被调 2~3 次：
             // `scene_3d_with_camera`、`set_camera3d_view`、3D 调试线框。）
@@ -2420,11 +2424,7 @@ impl RuntimeScene {
             }
             chosen.or(fallback)
         });
-        if let Some(camera) = &mut camera {
-            camera.aspect_ratio = aspect_ratio;
-            return *camera;
-        }
-        fallback
+        camera.unwrap_or(fallback)
     }
 
     /// Resolves the active light: Lua's `light.set_active` selection, else the
@@ -2464,9 +2464,9 @@ impl RuntimeScene {
             .set_camera_view(self.camera, [width.max(1) as f32, height.max(1) as f32]);
         // docs/54 §8-⑦：把本帧 **3D pass 实际用的那台相机**回填给 Lua，于是 `camera3d.ray`
         // 与编辑器 3D 点选走的是同一份投影数学（同一条 `Camera3D::ray_from_screen`）。
-        let aspect = width.max(1) as f32 / height.max(1) as f32;
+        // 拆分批 7：回填的是**组件载荷本身**——宽高比由 Lua 侧的视口给出，不再写回相机。
         self.script.set_camera3d_view(
-            self.active_camera3d(aspect),
+            self.active_camera3d(),
             [width.max(1) as f32, height.max(1) as f32],
         );
         self.sprite_batch.clear();
@@ -6082,7 +6082,9 @@ mod sdf_tests {
         }
         let runtime =
             RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("runtime scene");
-        let first = runtime.scene_3d(16.0 / 9.0).expect("first frame 3d");
+        let first = runtime
+            .scene_3d(Viewport::new(16.0, 9.0).unwrap())
+            .expect("first frame 3d");
         assert_eq!(first.drawables.len(), 2, "两个网格都应在 drawable 里");
         let handles: Vec<_> = first
             .drawables
@@ -6090,7 +6092,9 @@ mod sdf_tests {
             .map(|drawable| drawable.mesh_handle.expect("运行时必须给网格身份"))
             .collect();
         assert_ne!(handles[0], handles[1], "不同网格必须是不同句柄");
-        let second = runtime.scene_3d(16.0 / 9.0).expect("second frame 3d");
+        let second = runtime
+            .scene_3d(Viewport::new(16.0, 9.0).unwrap())
+            .expect("second frame 3d");
         let second_handles: Vec<_> = second
             .drawables
             .iter()
@@ -7456,12 +7460,14 @@ mod sdf_tests {
         let mut runtime =
             RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("runtime");
 
-        let visible = runtime.scene_3d(1.0).expect("mesh visible by default");
+        let visible = runtime
+            .scene_3d(Viewport::new(1.0, 1.0).unwrap())
+            .expect("mesh visible by default");
         assert_eq!(visible.drawables.len(), 1);
 
         runtime.set_view_visibility(0b01, ALL_LAYERS);
         assert!(
-            runtime.scene_3d(1.0).is_none(),
+            runtime.scene_3d(Viewport::new(1.0, 1.0).unwrap()).is_none(),
             "被世界遮罩排除的网格不该出现在提取结果里"
         );
         assert_eq!(runtime.take_view_filtered(), 1);
@@ -7469,7 +7475,7 @@ mod sdf_tests {
         runtime.set_view_visibility(0b10, ALL_LAYERS);
         assert_eq!(
             runtime
-                .scene_3d(1.0)
+                .scene_3d(Viewport::new(1.0, 1.0).unwrap())
                 .expect("mesh visible again")
                 .drawables
                 .len(),
@@ -7629,7 +7635,10 @@ mod sdf_tests {
             .insert("MeshRenderer".into(), "mesh=__ground_plane__".into());
 
         let runtime = RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("runtime");
-        let camera = runtime.scene_3d(16.0 / 9.0).expect("3d scene").camera;
+        let camera = runtime
+            .scene_3d(Viewport::new(16.0, 9.0).unwrap())
+            .expect("3d scene")
+            .camera;
         assert!(
             (camera.position.x - 10.0).abs() < 1e-4 && (camera.position.z - 6.0).abs() < 1e-4,
             "相机姿态应取世界变换（父 +10 x 再局部 z=6），实际 {:?}",
@@ -8141,7 +8150,9 @@ mod sdf_tests {
         let path = root.join("scenes/demo3d.scene");
         let scene = Scene::load(&path).unwrap_or_else(|e| panic!("load demo3d: {e}"));
         let runtime = RuntimeScene::from_scene_edit(Some(&root), scene).expect("runtime demo3d");
-        let scene3d = runtime.scene_3d(16.0 / 9.0).expect("3d scene");
+        let scene3d = runtime
+            .scene_3d(Viewport::new(16.0, 9.0).unwrap())
+            .expect("3d scene");
         let mut names: Vec<&str> = scene3d.drawables.iter().map(|d| d.name.as_str()).collect();
         names.sort_unstable();
         assert_eq!(names, ["Ground", "ShadowTriangle", "SkeletonWarrior"]);
@@ -8251,7 +8262,9 @@ mod sdf_tests {
         let scene = Scene::load(&path).unwrap_or_else(|e| panic!("load demo3d: {e}"));
         let serialized = crate::core::scene_extract::extract_serialized_scene_3d(&scene);
         let runtime = RuntimeScene::from_scene_edit(Some(&root), scene).expect("runtime demo3d");
-        let runtime3d = runtime.scene_3d(16.0 / 9.0).expect("3d scene");
+        let runtime3d = runtime
+            .scene_3d(Viewport::new(16.0, 9.0).unwrap())
+            .expect("3d scene");
 
         // serialized extractor 应有可断言的有效实体；合法性一致时无诊断。
         assert_eq!(serialized.entities.len(), runtime3d.drawables.len());
@@ -8278,8 +8291,9 @@ mod sdf_tests {
             }
         }
 
-        // 活动相机 = 首个 Camera3D 实体（from_scene_edit 无 Lua 选择），
-        // 与 serialized 首个相机一致，仅 aspect_ratio 被 host 覆盖为传入值。
+        // 活动相机 = 首个 Camera3D 实体（from_scene_edit 无 Lua 选择），与 serialized 首个相机
+        // **逐字段相同**：拆分批 7 之后宿主不往相机里写任何量（此前会把传入的 16:9 写回
+        // `aspect_ratio`，于是"组件里存的比例"与"渲染/拾取实际用的比例"成了两份状态）。
         assert!(!serialized.cameras.is_empty(), "demo3d 应有相机");
         let serialized_camera = &serialized.cameras[0].1;
         let runtime_camera = &runtime3d.camera;
@@ -8289,9 +8303,16 @@ mod sdf_tests {
         assert!((runtime_camera.fov_y - serialized_camera.fov_y).abs() < 1e-6);
         assert!((runtime_camera.near - serialized_camera.near).abs() < 1e-6);
         assert!((runtime_camera.far - serialized_camera.far).abs() < 1e-6);
+        assert_eq!(
+            runtime_camera.pose_from_transform,
+            serialized_camera.pose_from_transform
+        );
+        assert_eq!(runtime_camera.enabled, serialized_camera.enabled);
+        // 比例的唯一去处是**本帧视图**：传入 16:9 视口 ⇒ 视图比例就是 16:9，相机载荷一字未改。
         assert!(
-            (runtime_camera.aspect_ratio - 16.0 / 9.0).abs() < 1e-6,
-            "runtime 相机 aspect 应为传入值"
+            (runtime3d.view.aspect() - 16.0 / 9.0).abs() < 1e-6,
+            "视图比例必须来自视口：{}",
+            runtime3d.view.aspect()
         );
 
         // 活动光源 = 首个 Light 实体，与 serialized 首个光源一致。
@@ -8340,7 +8361,9 @@ mod sdf_tests {
         );
         let runtime =
             RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("runtime scene");
-        let extracted = runtime.scene_3d(16.0 / 9.0).expect("3d scene");
+        let extracted = runtime
+            .scene_3d(Viewport::new(16.0, 9.0).unwrap())
+            .expect("3d scene");
         // 活动相机 = 排序序第一个（实体 1，即声明了 pose=transform 的那台）。
         let camera = extracted.camera;
         assert!(
@@ -8402,7 +8425,7 @@ mod sdf_tests {
         let control_runtime =
             RuntimeScene::from_scene_edit(Some(root.as_path()), control).expect("runtime scene");
         let control_camera = control_runtime
-            .scene_3d(16.0 / 9.0)
+            .scene_3d(Viewport::new(16.0, 9.0).unwrap())
             .expect("3d scene")
             .camera;
         assert!(
@@ -8418,9 +8441,12 @@ mod sdf_tests {
     }
 
     /// M11-04 / R-05：编辑器 3D 视图相机覆盖（`scene_3d_with_camera`）不修改场景
-    /// 数据——传 `Some` 仅覆盖渲染视角（aspect 同步为传入值），传 `None` 走
-    /// `active_camera3d`；覆盖前后 drawables 一致，且覆盖后 `scene_3d` 仍回退到
-    /// 场景相机（证明覆盖是瞬时的视图参数，未写入 ECS / 脚本状态）。
+    /// 数据——传 `Some` 仅覆盖渲染视角，传 `None` 走 `active_camera3d`；覆盖前后
+    /// drawables 一致，且覆盖后 `scene_3d` 仍回退到场景相机（证明覆盖是瞬时的视图参数，
+    /// 未写入 ECS / 脚本状态）。
+    ///
+    /// 拆分批 7：覆盖相机也**不被改写**——比例只进本帧视图（`view.aspect()`），相机载荷
+    /// 与传入值逐字段相同（此前 `aspect_ratio` 会被覆写成传入比例）。
     #[test]
     fn scene_3d_with_camera_override_keeps_scene_data_intact() {
         let root = game_root();
@@ -8431,38 +8457,63 @@ mod sdf_tests {
         let scene = Scene::load(&path).unwrap_or_else(|e| panic!("load demo3d: {e}"));
         let runtime = RuntimeScene::from_scene_edit(Some(&root), scene).expect("runtime demo3d");
 
-        let before = runtime.scene_3d(16.0 / 9.0).expect("3d scene");
+        let before = runtime
+            .scene_3d(Viewport::new(16.0, 9.0).unwrap())
+            .expect("3d scene");
         let override_camera = Camera3D {
             position: Vec3::new(10.0, 20.0, 30.0),
             target: Vec3::new(-5.0, -6.0, -7.0),
             up: Vec3::Z,
             fov_y: 0.9,
-            aspect_ratio: 2.0,
             near: 0.5,
             far: 200.0,
             pose_from_transform: false,
             enabled: true,
         };
         let overridden = runtime
-            .scene_3d_with_camera(4.0 / 3.0, Some(override_camera))
+            .scene_3d_with_camera(Viewport::new(4.0, 3.0).unwrap(), Some(override_camera))
             .expect("3d scene");
-        // 覆盖仅作用于相机：aspect 同步为传入值，其余相机字段保持覆盖值。
+        // 覆盖仅作用于**本帧视图**：相机载荷逐字段保持覆盖值，比例来自视口而不是相机。
         assert_eq!(overridden.camera.position, Vec3::new(10.0, 20.0, 30.0));
         assert_eq!(overridden.camera.target, Vec3::new(-5.0, -6.0, -7.0));
-        assert!((overridden.camera.aspect_ratio - 4.0 / 3.0).abs() < 1e-6);
         assert!((overridden.camera.fov_y - 0.9).abs() < 1e-6);
+        assert_eq!(
+            overridden.camera, override_camera,
+            "宿主不得改写覆盖相机（拆分批 7 之前它会在这里被写回 aspect）"
+        );
+        assert!((overridden.view.aspect() - 4.0 / 3.0).abs() < 1e-6);
+        assert_ne!(
+            overridden.view.matrix(),
+            before.view.matrix(),
+            "不同视口比例必须给出不同的投影矩阵"
+        );
+        assert_eq!(
+            overridden.view.matrix(),
+            Some(
+                override_camera
+                    .view_projection_matrix(Viewport::new(4.0, 3.0).unwrap())
+                    .unwrap()
+            ),
+            "视图矩阵必须等于按视口比例现算的那一份"
+        );
         // drawables 不受相机覆盖影响：数量与每项名称/mesh path 均一致。
         assert_eq!(overridden.drawables.len(), before.drawables.len());
         for (a, b) in overridden.drawables.iter().zip(before.drawables.iter()) {
             assert_eq!(a.name, b.name);
             assert_eq!(a.mesh_path, b.mesh_path);
         }
-        // 无覆盖路径 = scene_3d 路径（相机/光源/资源一致），覆盖后场景数据未变。
-        let after = runtime.scene_3d(16.0 / 9.0).expect("3d scene");
-        assert_eq!(after.camera.position, before.camera.position);
-        assert_eq!(after.camera.target, before.camera.target);
+        // 无覆盖路径 = scene_3d 路径（相机/光源/资源/视图一致），覆盖后场景数据未变。
+        let after = runtime
+            .scene_3d(Viewport::new(16.0, 9.0).unwrap())
+            .expect("3d scene");
+        assert_eq!(after.camera, before.camera);
         assert_eq!(after.light.direction, before.light.direction);
         assert_eq!(after.drawables.len(), before.drawables.len());
+        assert_eq!(
+            after.view.matrix(),
+            before.view.matrix(),
+            "覆盖是瞬时的：回到无覆盖路径必须给出同一份视图矩阵"
+        );
     }
 
     /// RuntimeScene 无 GPU 长会话：重复 create → run_script_steps → vertices → drop，

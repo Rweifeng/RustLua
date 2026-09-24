@@ -32,6 +32,17 @@ impl Viewport {
         }
         Ok(Self { width, height })
     }
+
+    /// 本视口的宽高比——**全仓库唯一**的宽高比推导处。
+    ///
+    /// 透视投影需要的比例只能从这里来：`Camera3D` 里**没有**存放比例的字段。理由是这两件事的
+    /// 生命周期不同——视口是"本帧多大"，相机组件是"场景里写了什么"；把后者也存一份比例，
+    /// 就会出现"组件里存的比例"与"渲染/拾取实际用的比例"两份状态，而读代码的人分不清某一刻
+    /// 哪一份是权威（历史上宿主每帧把窗口比例写回组件字段，正是这条病灶）。
+    #[must_use]
+    pub fn aspect(self) -> f32 {
+        self.width / self.height
+    }
 }
 
 /// An axis-aligned world rectangle used to constrain a [`Camera2D`].
@@ -279,13 +290,22 @@ fn validate_vec2(name: &'static str, value: Vec2) -> Result<(), CoordinateError>
     }
 }
 
+/// 透视（3D）相机：位置 + 视线 + **垂直**视场角 + near/far。
+///
+/// **这里没有宽高比字段**，这是有意的：比例是"本帧视口多大"的派生量（[`Viewport::aspect`]），
+/// 不是场景数据。组件会被保存、比较、跨帧停留，而视口每帧都可能变——把比例也存进组件就会出现
+/// 两份状态（"组件里写的"与"渲染/拾取实际用的"），读代码的人分不清哪一份是权威，宿主一旦忘了
+/// 同步就会出现"点中的位置和看到的位置差一点"这种没有报错的偏差。因此投影/射线一族 API 的
+/// 宽高比参数是 [`Viewport`]：只有拿到本帧视口才可能算出矩阵。
+///
+/// 组件串文法里也从来没有 `aspect` 字段（`codec` 只读写 position/target/fov/near/far/pose/enabled），
+/// 所以删掉这个字段对场景、Prefab 与编辑器 schema **零影响**。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Camera3D {
     pub position: Vec3,
     pub target: Vec3,
     pub up: Vec3,
     pub fov_y: f32,
-    pub aspect_ratio: f32,
     pub near: f32,
     pub far: f32,
     /// WP5：姿态是否由**实体的 `Transform3D`** 提供（组件串里的 `pose=transform`）。
@@ -317,14 +337,12 @@ impl Default for Camera3D {
     ///
     /// 编辑器「添加组件 ▸ Camera3D」直接用这个类型的编码，编辑器里不再手写这份默认值
     /// （与迁移后的其它组件同一条规则：默认值只有引擎一处定义）。
-    /// `aspect_ratio` 只是占位——宿主每帧用窗口比例覆盖它。
     fn default() -> Self {
         Self {
             position: Vec3::new(0.0, 0.0, 5.0),
             target: Vec3::ZERO,
             up: Vec3::Y,
             fov_y: std::f32::consts::FRAC_PI_2,
-            aspect_ratio: 1.0,
             near: 0.1,
             far: 100.0,
             pose_from_transform: false,
@@ -338,7 +356,6 @@ impl Camera3D {
         position: Vec3,
         target: Vec3,
         fov_y: f32,
-        aspect_ratio: f32,
         near: f32,
         far: f32,
     ) -> Result<Self, Camera3dError> {
@@ -347,7 +364,6 @@ impl Camera3D {
             target,
             up: Vec3::Y,
             fov_y,
-            aspect_ratio,
             near,
             far,
             pose_from_transform: false,
@@ -357,7 +373,7 @@ impl Camera3D {
         Ok(camera)
     }
     /// 用实体的 `Transform3D` 作为相机姿态（WP5）：位置取变换位置，视线取变换的 **-Z**，
-    /// 上方向取变换的 +Y。fov/near/far/aspect 仍来自本组件。
+    /// 上方向取变换的 +Y。fov/near/far 仍来自本组件（宽高比从来不在组件里，见 [`Viewport::aspect`]）。
     ///
     /// 只改姿态来源，不改投影参数——因此"相机也是一台普通实体"这件事不需要第二套相机类型。
     /// 姿态无法表达时（非有限、退化旋转）返回错误，绝不静默退回旧姿态。
@@ -389,12 +405,6 @@ impl Camera3D {
             return Err(Camera3dError::NonFinite);
         }
         self.validate_projection()?;
-        // 组件自带的 `aspect_ratio` 也必须合法：**没有视口**的调用方（宿主未声明视图时的回退、
-        // 光照/阴影相机）仍在用它。一经成帧（`CameraView` / `RenderView`），宽高比的权威就是
-        // 视口，这个字段不再参与（见 [`Camera3D::projection_matrix_for`]）。
-        if !self.aspect_ratio.is_finite() || self.aspect_ratio <= 0.0 {
-            return Err(Camera3dError::InvalidPerspective);
-        }
         if (self.target - self.position).length_squared() <= f32::EPSILON
             || self.up.cross(self.target - self.position).length_squared() <= f32::EPSILON
         {
@@ -403,7 +413,7 @@ impl Camera3D {
         Ok(())
     }
 
-    /// 投影参数的校验（不含姿态，也不含宽高比——后者是成帧时的输入）。
+    /// 投影参数的校验（不含姿态，也不含宽高比——宽高比不在本组件里，见 [`Viewport::aspect`]）。
     fn validate_projection(self) -> Result<(), Camera3dError> {
         if !self.fov_y.is_finite()
             || self.fov_y <= 0.0
@@ -441,13 +451,13 @@ impl Camera3D {
             ],
         })
     }
-    /// 透视投影矩阵，**宽高比由调用方给出**。
-    ///
-    /// 成帧路径（[`crate::core::camera::CameraView::from_camera3d`]）传的是**视口**比例。这样
-    /// "组件里存的比例"与"实际渲染用的比例"不会再各说各话：此前宿主每帧把窗口比例写回
-    /// `aspect_ratio`，读者却分不清"这个值现在是权威还是上一帧的残留"。
-    pub fn projection_matrix_for(self, aspect_ratio: f32) -> Result<Mat4, Camera3dError> {
+    /// 透视投影矩阵。**宽高比只由视口给出**——`Camera3D` 里没有比例字段，因此"组件里存的比例"
+    /// 与"实际渲染/拾取用的比例"不可能分叉（历史上宿主每帧把窗口比例写回组件，读代码的人
+    /// 分不清哪一份是权威）。所有消费方（`CameraView`、`picking`、编辑器取景、渲染回退）
+    /// 都从这里取矩阵，没有第二个入口。
+    pub fn projection_matrix(self, viewport: Viewport) -> Result<Mat4, Camera3dError> {
         self.validate()?;
+        let aspect_ratio = viewport.aspect();
         if !aspect_ratio.is_finite() || aspect_ratio <= 0.0 {
             return Err(Camera3dError::InvalidPerspective);
         }
@@ -463,33 +473,22 @@ impl Camera3D {
         })
     }
 
-    /// 用**组件自带** `aspect_ratio` 的版本。只有**没有视口**的调用方该用它：宿主未声明
-    /// `FrameViews` 时的历史回退、光照/阴影相机、以及只做姿态变换的路径。
-    pub fn projection_matrix(self) -> Result<Mat4, Camera3dError> {
-        self.projection_matrix_for(self.aspect_ratio)
+    pub fn view_projection_matrix(self, viewport: Viewport) -> Result<Mat4, Camera3dError> {
+        Ok(self.projection_matrix(viewport)? * self.view_matrix()?)
     }
-
-    pub fn view_projection_matrix(self) -> Result<Mat4, Camera3dError> {
-        self.view_projection_matrix_for(self.aspect_ratio)
-    }
-
-    /// 与 [`Camera3D::view_projection_matrix`] 相同，但宽高比由调用方给出（成帧路径传视口比例）。
-    pub fn view_projection_matrix_for(self, aspect_ratio: f32) -> Result<Mat4, Camera3dError> {
-        Ok(self.projection_matrix_for(aspect_ratio)? * self.view_matrix()?)
-    }
-    pub fn world_to_ndc(self, world: Vec3) -> Result<Vec3, Camera3dError> {
+    pub fn world_to_ndc(self, world: Vec3, viewport: Viewport) -> Result<Vec3, Camera3dError> {
         if !world.is_finite() {
             return Err(Camera3dError::NonFinite);
         }
-        self.view_projection_matrix()?
+        self.view_projection_matrix(viewport)?
             .transform_point(world)
             .map_err(|_| Camera3dError::InvalidLookAt)
     }
-    pub fn ndc_to_world(self, ndc: Vec3) -> Result<Vec3, Camera3dError> {
+    pub fn ndc_to_world(self, ndc: Vec3, viewport: Viewport) -> Result<Vec3, Camera3dError> {
         if !ndc.is_finite() {
             return Err(Camera3dError::NonFinite);
         }
-        self.view_projection_matrix()?
+        self.view_projection_matrix(viewport)?
             .inverse()
             .map_err(|_| Camera3dError::InvalidLookAt)?
             .transform_point(ndc)
@@ -497,19 +496,24 @@ impl Camera3D {
     }
 
     /// Converts a viewport pixel coordinate into a world-space ray.
+    ///
+    /// 屏幕坐标与宽高比来自**同一个视口**：因此"点中的位置"与"看到的位置"用的是同一份投影。
     pub fn ray_from_screen(
         self,
         x: f32,
         y: f32,
-        width: f32,
-        height: f32,
+        viewport: Viewport,
     ) -> Result<(Vec3, Vec3), Camera3dError> {
-        if width <= 0.0 || height <= 0.0 || !x.is_finite() || !y.is_finite() {
+        if viewport.width <= 0.0 || viewport.height <= 0.0 || !x.is_finite() || !y.is_finite() {
             return Err(Camera3dError::NonFinite);
         }
-        let ndc = Vec3::new(x / width * 2.0 - 1.0, 1.0 - y / height * 2.0, 0.0);
-        let near = self.ndc_to_world(ndc)?;
-        let far = self.ndc_to_world(Vec3::new(ndc.x, ndc.y, 1.0))?;
+        let ndc = Vec3::new(
+            x / viewport.width * 2.0 - 1.0,
+            1.0 - y / viewport.height * 2.0,
+            0.0,
+        );
+        let near = self.ndc_to_world(ndc, viewport)?;
+        let far = self.ndc_to_world(Vec3::new(ndc.x, ndc.y, 1.0), viewport)?;
         let direction = (far - near)
             .normalized()
             .map_err(|_| Camera3dError::InvalidLookAt)?;
@@ -519,9 +523,9 @@ impl Camera3D {
         Ok((near, direction))
     }
 
-    pub fn frustum(self) -> Result<Frustum, Camera3dError> {
+    pub fn frustum(self, viewport: Viewport) -> Result<Frustum, Camera3dError> {
         Ok(Frustum::from_view_projection(
-            self.view_projection_matrix()?,
+            self.view_projection_matrix(viewport)?,
         ))
     }
 }

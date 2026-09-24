@@ -12,7 +12,9 @@ use std::{
 
 use crate::core::{
     asset_handle::AssetHandle,
-    camera::{Camera3D, ClearPolicy, DEFAULT_3D_CLEAR, FrameViews, RenderView, Viewport},
+    camera::{
+        Camera3D, CameraView, ClearPolicy, DEFAULT_3D_CLEAR, FrameViews, RenderView, Viewport,
+    },
     layer::{RenderLayer, layer_indices},
     light::Light,
     logging::{EngineError, LogModule},
@@ -1035,20 +1037,22 @@ impl Renderer {
                     },
                 ],
             });
+        // 首帧 uniform 的初值：相机矩阵按**目标视口**算（宽高比只从视口来，拆分批 7）。
+        let initial_viewport = Viewport::new(config.width as f32, config.height as f32)
+            .map_err(|error| error.to_string())?;
         let camera = Camera3D::perspective(
             Vec3::new(0.0, 0.0, 5.0),
             Vec3::ZERO,
             std::f32::consts::FRAC_PI_2,
-            config.width as f32 / config.height as f32,
             0.1,
             100.0,
         )
         .map_err(|error| error.to_string())?;
         let camera_matrix = camera
-            .view_projection_matrix()
+            .view_projection_matrix(initial_viewport)
             .map_err(|error| error.to_string())?;
         let light_camera =
-            Camera3D::perspective(Vec3::new(4.0, 6.0, 4.0), Vec3::ZERO, 1.3, 1.0, 0.1, 30.0)
+            Camera3D::perspective(Vec3::new(4.0, 6.0, 4.0), Vec3::ZERO, 1.3, 0.1, 30.0)
                 .map_err(|error| error.to_string())?;
         let light_view = light_camera
             .view_matrix()
@@ -1961,10 +1965,10 @@ impl Renderer {
     /// active scene's camera and directional light.
     ///
     /// `view_projection` 是宿主声明的世界视图矩阵（docs/54 §8-③）。有声明就用声明的那一份，
-    /// 没有才回退到 `Scene3d.camera`——后者是收敛前的老路径，只为"宿主没声明视图"保留。
+    /// 没有才回退到 `Scene3d.view`——那是**同一次视口烘焙**的结果（相机拆分批 7），因此回退
+    /// 路径与声明路径不可能给出两个不同的比例。
     fn update_3d_uniforms(&mut self, scene: &Scene3d, view_projection: Option<Mat4>) {
-        let Some(matrix) = view_projection.or_else(|| scene.camera.view_projection_matrix().ok())
-        else {
+        let Some(matrix) = view_projection.or_else(|| scene.view.matrix()) else {
             // 宿主既没声明视图、相机又退化：不写 uniform（保持上一帧的值），并留下诊断。
             // 这条路径不该在正常帧里出现——世界视图矩阵的唯一来源是宿主声明的 `RenderView`。
             tracing::warn!(
@@ -1980,8 +1984,8 @@ impl Renderer {
             bytemuck::cast_slice(&matrix.columns),
         );
         if view_projection.is_none() {
-            // 合法回滚档：宿主没声明视图时回退到场景相机。trace 级别，不刷屏。
-            tracing::trace!(target: "render", "[render] 3D view matrix fell back to Scene3d.camera");
+            // 合法回滚档：宿主没声明视图时回退到场景提取时烘焙的视图。trace 级别，不刷屏。
+            tracing::trace!(target: "render", "[render] 3D view matrix fell back to Scene3d.view");
         }
         self.write_light_uniforms(scene);
     }
@@ -2128,8 +2132,10 @@ impl Renderer {
     /// frustum, resolved to cached geometry. Static drawables sharing a mesh
     /// path and primitive are grouped into one instanced draw when enabled.
     fn frame_3d_draws(&mut self, scene: &Scene3d) -> Vec<FrameDraw> {
+        // 剔除视锥来自本帧**视图的烘焙结果**（拆分批 7）：与写进 uniform 的矩阵同源，
+        // 因此"画出来的"与"被剔除的"不可能按两个比例各算一套。
         let frustum = if self.cull_enabled {
-            scene.camera.frustum().ok()
+            scene.view.baked().map(CameraView::frustum)
         } else {
             None
         };
@@ -2867,12 +2873,13 @@ impl Renderer {
             clear => clear,
         };
         // docs/54 §8-③：本帧世界视图的投影矩阵**只有一份来源**——宿主声明的 `RenderView`。
-        // 渲染器不再自己回查 `Camera3D`（那只是"宿主没声明"时的历史回退）。
+        // 渲染器不再自己回查 `Camera3D`（那只是"宿主没声明"时的历史回退），回退吃的是
+        // 场景提取时就已按视口烘焙好的 `Scene3d.view`（拆分批 7）。
         let main_matrix = self
             .frame_views
             .main
             .and_then(RenderView::matrix)
-            .or_else(|| scene3d.and_then(|scene| scene.camera.view_projection_matrix().ok()));
+            .or_else(|| scene3d.and_then(|scene| scene.view.matrix()));
         let frame_draws = if let Some(scene) = scene3d {
             self.update_3d_uniforms(scene, main_matrix);
             self.frame_3d_draws(scene)
@@ -4039,8 +4046,9 @@ fn light_view_projection(light: Light) -> Mat4 {
         .direction
         .normalized()
         .unwrap_or(Vec3::new(0.0, -1.0, 0.0));
-    let Ok(camera) = Camera3D::perspective(-direction * 12.0, Vec3::ZERO, 1.3, 1.0, 0.1, 30.0)
-    else {
+    // 阴影相机**只消费姿态**（`view_matrix`）：它自带一份正交式投影（见下），透视投影的
+    // 宽高比在这里从来不参与，因此拆分批 7 之后这台相机也不需要任何视口。
+    let Ok(camera) = Camera3D::perspective(-direction * 12.0, Vec3::ZERO, 1.3, 0.1, 30.0) else {
         return Mat4::identity();
     };
     let Ok(view) = camera.view_matrix() else {
@@ -4467,7 +4475,6 @@ mod tests {
             Vec3::new(0.0, 0.0, 4.0),
             Vec3::ZERO,
             std::f32::consts::FRAC_PI_2,
-            1.0,
             0.1,
             100.0,
         )
@@ -4484,6 +4491,7 @@ mod tests {
         let mesh_model = Mat4::translation(Vec3::new(0.0, 0.0, -1.0)) * facing;
         let scene = Scene3d {
             camera,
+            view: RenderView::main_3d(camera, viewport, DEFAULT_3D_CLEAR),
             light: Light::default(),
             drawables: vec![crate::host::frame::Scene3dDrawable {
                 entity: crate::core::scene::SceneEntityId(1),
@@ -4654,7 +4662,6 @@ mod tests {
             Vec3::new(0.0, 0.0, 6.0),
             Vec3::ZERO,
             std::f32::consts::FRAC_PI_2,
-            640.0 / 360.0,
             0.1,
             100.0,
         )
@@ -5338,7 +5345,7 @@ mod tests {
             .run_script_steps(1, 1.0 / 60.0, &crate::core::input::InputSnapshot::default())
             .expect("step runtime");
         let mesh = runtime.vertices(640, 360).expect("build 2D mesh");
-        let scene3d = runtime.scene_3d(640.0 / 360.0);
+        let scene3d = runtime.scene_3d(Viewport::new(640.0, 360.0).unwrap());
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("p2-test-preview"),
             size: wgpu::Extent3d {
@@ -5527,18 +5534,21 @@ mod tests {
         let mut renderer =
             Renderer::new_offscreen(device.clone(), queue.clone(), None, false, false)
                 .expect("offscreen renderer");
+        let size = 32u32;
         let camera = Camera3D::perspective(
             Vec3::new(0.0, 0.0, 4.0),
             Vec3::ZERO,
             std::f32::consts::FRAC_PI_2,
-            1.0,
             0.1,
             100.0,
         )
         .expect("perspective camera");
+        // 夹具自己拼 `Scene3d`，因此也要自己声明视口——视图与相机在这儿成帧一次。
+        let viewport = Viewport::new(size as f32, size as f32).expect("viewport");
         let handle = AssetHandle::new(7, 3);
         let scene = |handle: Option<AssetHandle>| Scene3d {
             camera,
+            view: RenderView::main_3d(camera, viewport, DEFAULT_3D_CLEAR),
             light: Light::default(),
             drawables: vec![crate::host::frame::Scene3dDrawable {
                 entity: crate::core::scene::SceneEntityId(1),
@@ -5556,7 +5566,6 @@ mod tests {
                 },
             }],
         };
-        let size = 32u32;
         let target = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("p2-test-mesh-identity"),
             size: wgpu::Extent3d {

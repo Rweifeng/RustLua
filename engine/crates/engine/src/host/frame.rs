@@ -7,7 +7,7 @@ use std::{
 };
 
 use crate::core::{
-    camera::Camera3D,
+    camera::{Camera3D, RenderView},
     font::FontAtlas,
     layer::RenderLayer,
     light::Light,
@@ -274,10 +274,18 @@ pub struct Scene3dDrawable {
 }
 
 /// Per-frame 3D render state gathered from the runtime world: the active
-/// camera (aspect already applied), the active directional light, and the
-/// drawables (entities with `Transform3D` + `MeshRenderer`).
+/// camera, the active directional light, and the drawables (entities with
+/// `Transform3D` + `MeshRenderer`).
+///
+/// 相机拆分批 7：视图**在这里就成帧**（[`Scene3d::view`]）。此前宿主每帧把目标宽高比写回
+/// `Camera3D::aspect_ratio`，渲染器在"宿主没声明视图"时再按那个字段现算一次矩阵——于是比例
+/// 有两份状态（组件里的 vs 实际用的）。现在提取一台相机的同时按**视口**烘焙视图：宿主声明的
+/// `FrameViews` 与渲染器的历史回退吃的是同一份矩阵的**同一个来源**，组件载荷一个字节都没被改写。
 pub struct Scene3d {
+    /// 本帧生效的相机**载荷**（姿态与投影参数；宽高比不在组件里，见 `Viewport::aspect`）。
     pub camera: Camera3D,
+    /// 本帧的视图契约：矩阵按视口烘焙（`baked()` 为 `None` = 这台相机退化）。
+    pub view: RenderView,
     pub light: Light,
     pub drawables: Vec<Scene3dDrawable>,
 }

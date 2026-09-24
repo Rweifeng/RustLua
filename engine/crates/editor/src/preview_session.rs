@@ -5,6 +5,7 @@
 //! Game 视图只负责输入桥接与绘制，Scene 视图可复用 readback 生命周期辅助。
 
 use eframe::egui;
+use engine::core::camera::Viewport;
 use engine::core::font::FontAtlas;
 use engine::core::input::InputSnapshot;
 use engine::core::scene::Scene;
@@ -270,8 +271,14 @@ impl PreviewSession {
                 return PreviewTick::Failed;
             }
         };
-        let aspect = self.width as f32 / self.height.max(1) as f32;
-        let scene3d = self.runtime.scene_3d(aspect);
+        // 拆分批 7：宽高比只从视口来（相机载荷不再被改写），回滚档（不声明 FrameViews）下
+        // 渲染器仍吃这次提取时烘焙的视图。
+        let viewport = Viewport::new(self.width.max(1) as f32, self.height.max(1) as f32)
+            .unwrap_or(Viewport {
+                width: 1.0,
+                height: 1.0,
+            });
+        let scene3d = self.runtime.scene_3d(viewport);
         self.renderer.render_into_texture(
             &mesh,
             scene3d.as_ref(),

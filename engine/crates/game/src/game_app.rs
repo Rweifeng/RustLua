@@ -5,7 +5,7 @@
 use std::{path::PathBuf, sync::Arc, time::Instant};
 
 use engine::core::{
-    camera::{DEFAULT_3D_CLEAR, FrameViews, RenderView, Viewport},
+    camera::{FrameViews, Viewport},
     input::{InputSnapshot, MouseButton},
     logging::{EngineError, LogModule},
     performance::{PerformanceSnapshot, PerformanceStats},
@@ -258,27 +258,27 @@ impl GameApp {
                 }
             }
         }
-        let aspect = renderer.config.width as f32 / renderer.config.height.max(1) as f32;
+        // 拆分批 7：视口（而不是一个裸比例）是宽高比的唯一来源；`scene_3d` 不再改写相机载荷。
+        let viewport = Viewport::new(
+            renderer.config.width.max(1) as f32,
+            renderer.config.height.max(1) as f32,
+        )
+        .unwrap_or(Viewport {
+            width: 1.0,
+            height: 1.0,
+        });
         let scene3d = self
             .runtime_scene
             .as_ref()
-            .and_then(|scene| scene.scene_3d(aspect));
+            .and_then(|scene| scene.scene_3d(viewport));
         // WP5：把本帧的相机侧视图交给渲染器——清屏色与 2D overlay 的视口由这些声明决定，
         // 渲染器不再自己写死。2D 视图与上面 `vertices()` 用的是同一个 `RuntimeScene` 相机，
         // 因此"取景"和"清屏/视口"不会各说一套。
         if let Some(scene) = self.runtime_scene.as_ref() {
-            let viewport = Viewport::new(
-                renderer.config.width.max(1) as f32,
-                renderer.config.height.max(1) as f32,
-            )
-            .unwrap_or(Viewport {
-                width: 1.0,
-                height: 1.0,
-            });
             let overlay = scene.render_view_2d(renderer.config.width, renderer.config.height);
-            let main = scene3d
-                .as_ref()
-                .map(|scene3d| RenderView::main_3d(scene3d.camera, viewport, DEFAULT_3D_CLEAR));
+            // 3D 主视图直接用**提取时烘焙好的那一份**（拆分批 7）：再调一次 `main_3d`
+            // 等于把同一个视口烘焙两遍，还多一个"两次烘焙会不会不一致"的问题。
+            let main = scene3d.as_ref().map(|scene3d| scene3d.view);
             renderer.set_frame_views(FrameViews {
                 main,
                 overlay: Some(overlay),

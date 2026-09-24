@@ -18,9 +18,12 @@ use crate::core::{
 };
 
 /// 屏幕像素 → 世界射线。与编辑器 3D 点选、Lua `camera3d.ray` 共用同一入口。
+///
+/// 宽高比与屏幕坐标**必须**来自同一个视口：`Camera3D` 里没有比例字段，因此这里不可能出现
+/// "投影按 A 比例、屏幕按 B 尺寸"的错位（[`Camera3D::ray_from_screen`] 的视口参数是唯一入口）。
 pub fn ray_from_screen(camera: Camera3D, screen: Vec2, viewport: Viewport) -> Result<Ray3, String> {
     let (origin, direction) = camera
-        .ray_from_screen(screen.x, screen.y, viewport.width, viewport.height)
+        .ray_from_screen(screen.x, screen.y, viewport)
         .map_err(|error| error.to_string())?;
     Ray3::new(origin, direction).map_err(|error| error.to_string())
 }
@@ -131,15 +134,7 @@ mod tests {
     use std::f32::consts::FRAC_PI_2;
 
     fn camera() -> Camera3D {
-        Camera3D::perspective(
-            Vec3::new(0.0, 5.0, 20.0),
-            Vec3::ZERO,
-            FRAC_PI_2,
-            4.0 / 3.0,
-            0.1,
-            100.0,
-        )
-        .unwrap()
+        Camera3D::perspective(Vec3::new(0.0, 5.0, 20.0), Vec3::ZERO, FRAC_PI_2, 0.1, 100.0).unwrap()
     }
 
     fn viewport() -> Viewport {

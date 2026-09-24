@@ -18,9 +18,9 @@ fn main() {
     let scene = Scene::load(&scene_path).expect("load demo3d scene");
     let mut runtime =
         RuntimeScene::from_scene_edit(Some(&root), scene).expect("instantiate demo3d");
-    let extracted = runtime
-        .scene_3d(WIDTH as f32 / HEIGHT as f32)
-        .expect("3D scene");
+    let viewport =
+        engine::core::camera::Viewport::new(WIDTH as f32, HEIGHT as f32).expect("viewport");
+    let extracted = runtime.scene_3d(viewport).expect("3D scene");
     let names = extracted
         .drawables
         .iter()

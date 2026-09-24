@@ -49,9 +49,9 @@ fn main() {
     // 抓出那次误丢的地方（见 `world_channel_does_not_cull_by_the_2d_camera_when_the_scene_has_3d_content`）。
     runtime.set_world_sprite_depth(true);
 
-    let aspect = WIDTH as f32 / HEIGHT as f32;
+    let viewport = Viewport::new(WIDTH as f32, HEIGHT as f32).expect("viewport");
     let mesh = runtime.vertices(WIDTH, HEIGHT).expect("2D extraction");
-    let scene3d = runtime.scene_3d(aspect).expect("3D extraction");
+    let scene3d = runtime.scene_3d(viewport).expect("3D extraction");
     assert!(
         !mesh.world_sprites.is_empty(),
         "世界 Sprite 通道没有顶点：开关或提取路径不对"

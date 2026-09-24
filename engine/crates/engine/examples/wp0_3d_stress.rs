@@ -257,7 +257,8 @@ fn render_once(
     last: &mut DefaultMetrics,
 ) {
     let mesh = runtime.vertices(640, 360).expect("2D extraction");
-    let scene = runtime.scene_3d(640.0 / 360.0);
+    let scene =
+        runtime.scene_3d(engine::core::camera::Viewport::new(640.0, 360.0).expect("viewport"));
     assert!(matches!(
         renderer.render_into_texture(&mesh, scene.as_ref(), view, 640, 360),
         RenderOutcome::Presented

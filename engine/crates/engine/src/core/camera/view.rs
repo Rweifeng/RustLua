@@ -201,10 +201,10 @@ impl RenderView {
         self
     }
 
-    /// 视口宽高比（透视投影需要）。
+    /// 视口宽高比（透视投影需要）——与烘焙矩阵同一个来源（[`Viewport::aspect`]）。
     #[must_use]
     pub fn aspect(self) -> f32 {
-        self.viewport.width / self.viewport.height
+        self.viewport.aspect()
     }
 }
 

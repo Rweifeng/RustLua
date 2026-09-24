@@ -13,25 +13,34 @@ mod projection_tests {
             Vec3::new(0.0, 0.0, 5.0),
             Vec3::ZERO,
             std::f32::consts::FRAC_PI_2,
-            1.0,
             0.1,
             100.0,
         )
         .unwrap()
     }
+    /// 透视换算一律要一个视口（宽高比只从这里来，拆分批 7）。
+    fn viewport(width: f32, height: f32) -> Viewport {
+        Viewport::new(width, height).unwrap()
+    }
+    /// 1:1 视口：把这些测试的数值与"宽高比为 1"的旧基线对齐（旧版相机自带 `aspect_ratio=1.0`）。
+    fn square() -> Viewport {
+        viewport(1.0, 1.0)
+    }
     #[test]
     fn camera_center_round_trips_through_ndc() {
         let camera = camera();
         let point = Vec3::new(0.0, 0.0, 0.0);
-        let ndc = camera.world_to_ndc(point).unwrap();
+        let ndc = camera.world_to_ndc(point, square()).unwrap();
         assert!((ndc.x.abs() + ndc.y.abs() + ndc.z - 0.981).abs() < 0.01);
-        let recovered = camera.ndc_to_world(ndc).unwrap();
+        let recovered = camera.ndc_to_world(ndc, square()).unwrap();
         assert!((recovered - point).length() < 1e-4);
     }
     #[test]
     fn screen_center_ray_points_toward_camera_target() {
         let camera = camera();
-        let (origin, direction) = camera.ray_from_screen(320.0, 240.0, 640.0, 480.0).unwrap();
+        let (origin, direction) = camera
+            .ray_from_screen(320.0, 240.0, viewport(640.0, 480.0))
+            .unwrap();
         assert!(origin.z < camera.position.z);
         assert!(direction.z < -0.9);
         assert!(direction.y.abs() < 0.01);
@@ -53,7 +62,7 @@ mod projection_tests {
     #[test]
     fn frustum_classifies_front_and_rear_points() {
         let camera = camera();
-        let frustum = camera.frustum().unwrap();
+        let frustum = camera.frustum(square()).unwrap();
         assert!(frustum.contains_point(Vec3::ZERO));
         assert!(!frustum.contains_point(Vec3::new(0.0, 0.0, 6.0)));
     }
@@ -61,7 +70,7 @@ mod projection_tests {
     #[test]
     fn frustum_sphere_culling_respects_radius() {
         let camera = camera();
-        let frustum = camera.frustum().unwrap();
+        let frustum = camera.frustum(square()).unwrap();
         // Behind the camera (near plane) is culled; a large radius that reaches
         // back in front is kept.
         assert!(!frustum.contains_sphere(Vec3::new(0.0, 0.0, 6.0), 0.0));
@@ -79,7 +88,7 @@ mod projection_tests {
     #[test]
     fn frustum_planes_agree_with_point_classification() {
         let camera = camera();
-        let frustum = camera.frustum().unwrap();
+        let frustum = camera.frustum(square()).unwrap();
         let inside = Vec3::ZERO;
         let outside = Vec3::new(0.0, 0.0, 6.0);
         // The origin is inside every plane (positive signed distance).
@@ -99,8 +108,8 @@ mod projection_tests {
     }
     #[test]
     fn invalid_perspective_is_rejected() {
-        assert!(Camera3D::perspective(Vec3::ZERO, Vec3::Z, 0.0, 1.0, 0.1, 10.0).is_err());
-        assert!(Camera3D::perspective(Vec3::ZERO, Vec3::ZERO, 1.0, 1.0, 0.1, 10.0).is_err());
+        assert!(Camera3D::perspective(Vec3::ZERO, Vec3::Z, 0.0, 0.1, 10.0).is_err());
+        assert!(Camera3D::perspective(Vec3::ZERO, Vec3::ZERO, 1.0, 0.1, 10.0).is_err());
     }
     #[test]
     fn parses_editor_component_string() {
@@ -110,7 +119,6 @@ mod projection_tests {
         assert_eq!(camera.position, Vec3::new(0.0, 0.0, 5.0));
         assert_eq!(camera.target, Vec3::ZERO);
         assert!((camera.fov_y - std::f32::consts::FRAC_PI_2).abs() < 1e-5);
-        assert_eq!(camera.aspect_ratio, 1.0);
         assert_eq!(camera.near, 0.1);
         assert_eq!(camera.far, 100.0);
         assert_eq!(
@@ -308,10 +316,12 @@ mod projection_tests {
     #[test]
     fn projection_conventions_are_pinned_for_the_convergence() {
         let camera = camera(); // position (0,0,5)、看向原点、fov_y = π/2、near 0.1、far 100
-        assert!((camera.aspect_ratio - 1.0).abs() < 1e-6);
+        // 宽高比只从视口来（拆分批 7）。这一条数值基线取 1:1 视口，与旧版"相机自带
+        // `aspect_ratio = 1.0`"逐值可比——换的是参数来源，不是算法。
+        let unit = square();
 
         // ① 投影矩阵：f = 1/tan(fov_y/2) = 1；aspect 只影响 x；深度映射为 **0..1**。
-        let projection = camera.projection_matrix().unwrap();
+        let projection = camera.projection_matrix(unit).unwrap();
         let column = |index: usize| projection.columns[index];
         assert!(
             (column(0)[0] - 1.0).abs() < 1e-5,
@@ -337,26 +347,29 @@ mod projection_tests {
 
         // ③ 世界 → NDC：世界 +x 落 NDC 右半边、世界 +y 落 NDC **上**半边；
         //    深度随距离单调增且始终在 0..1 内。
-        let right = camera.world_to_ndc(Vec3::new(1.0, 0.0, 0.0)).unwrap();
-        let up = camera.world_to_ndc(Vec3::new(0.0, 1.0, 0.0)).unwrap();
+        let right = camera.world_to_ndc(Vec3::new(1.0, 0.0, 0.0), unit).unwrap();
+        let up = camera.world_to_ndc(Vec3::new(0.0, 1.0, 0.0), unit).unwrap();
         assert!(right.x > 0.0 && right.y.abs() < 1e-5, "世界 +x → NDC +x");
         assert!(
             up.y > 0.0 && up.x.abs() < 1e-5,
             "世界 +y → NDC +y（NDC y 向上）"
         );
-        let near_point = camera.world_to_ndc(Vec3::new(0.0, 0.0, 4.0)).unwrap();
-        let far_point = camera.world_to_ndc(Vec3::new(0.0, 0.0, -50.0)).unwrap();
+        let near_point = camera.world_to_ndc(Vec3::new(0.0, 0.0, 4.0), unit).unwrap();
+        let far_point = camera
+            .world_to_ndc(Vec3::new(0.0, 0.0, -50.0), unit)
+            .unwrap();
         assert!(near_point.z > 0.0 && near_point.z < far_point.z && far_point.z < 1.0);
 
         // ④ 射线与投影必须互为逆：把任意世界点投到屏幕，再从该屏幕坐标发射线，射线必须**穿过**
-        //    该点。这条比逐元素断言更能锁住"投影和拾取是同一套"。
+        //    该点。投影与"屏幕多大"必须来自**同一个视口**（这正是"点中的位置"与"看到的位置"
+        //    同源的那条要求；旧版这里投影用组件比例 1.0、屏幕却按 640×480，是两份状态）。
         let world = Vec3::new(1.5, -0.75, 0.5);
-        let ndc = camera.world_to_ndc(world).unwrap();
-        let (width, height) = (640.0, 480.0);
-        let screen_x = (ndc.x + 1.0) * 0.5 * width;
-        let screen_y = (1.0 - ndc.y) * 0.5 * height;
+        let screen_viewport = viewport(640.0, 480.0);
+        let ndc = camera.world_to_ndc(world, screen_viewport).unwrap();
+        let screen_x = (ndc.x + 1.0) * 0.5 * screen_viewport.width;
+        let screen_y = (1.0 - ndc.y) * 0.5 * screen_viewport.height;
         let (origin, direction) = camera
-            .ray_from_screen(screen_x, screen_y, width, height)
+            .ray_from_screen(screen_x, screen_y, screen_viewport)
             .unwrap();
         let along = (world - origin).dot(direction);
         let closest = origin + direction * along;
@@ -366,12 +379,55 @@ mod projection_tests {
         );
 
         // ⑤ 视锥：正前方的点在视锥内、相机背后的点在视锥外。
-        let frustum = camera.frustum().unwrap();
+        let frustum = camera.frustum(unit).unwrap();
         assert!(frustum.contains_point(Vec3::ZERO));
         assert!(
             !frustum.contains_point(Vec3::new(0.0, 0.0, 50.0)),
             "相机背后的点必须在视锥外"
         );
+
+        // ⑥ **宽高比只有视口一个来源**：换视口就换矩阵，相机载荷不变。
+        let wide = camera.projection_matrix(viewport(16.0, 9.0)).unwrap();
+        assert!(
+            (wide.columns[0][0] - 1.0 / (16.0 / 9.0)).abs() < 1e-5,
+            "x 缩放 = f / (视口宽高比)"
+        );
+        assert_eq!(
+            camera.projection_matrix(unit).unwrap().columns[0][0],
+            projection.columns[0][0],
+            "同一台相机在同一视口下必须给同一矩阵（矩阵不缓存任何比例）"
+        );
+    }
+
+    /// 拆分批 7（负向契约）：`Camera3D` 里**没有**宽高比字段，因此不可能出现
+    /// "组件里存的比例"与"渲染/拾取实际用的比例"两份状态。
+    ///
+    /// 这条测试是**编译期契约**的运行期备忘：任何把比例塞回相机类型的改动都会让上面那些
+    /// 调用点（`world_to_ndc`/`ray_from_screen`/`frustum`/`projection_matrix` 全都要视口）
+    /// 不再能写出"用相机自带比例"的形态。
+    #[test]
+    fn aspect_ratio_only_comes_from_the_viewport() {
+        let camera = camera();
+        // 组件串文法里从来没有 aspect 字段：往返只搬运姿态与投影参数。
+        let payload = camera.to_component_str();
+        assert!(
+            !payload.contains("aspect"),
+            "组件串不该出现 aspect 字段：{payload}"
+        );
+        assert_eq!(Camera3D::from_component_str(&payload).unwrap(), camera);
+        // 两种比例给出两份矩阵，且都等于"按该视口比例现算"的那一份。
+        let a = viewport(640.0, 360.0);
+        let b = viewport(360.0, 640.0);
+        assert_ne!(
+            camera.view_projection_matrix(a).unwrap(),
+            camera.view_projection_matrix(b).unwrap()
+        );
+        assert_eq!(
+            camera.view_projection_matrix(a).unwrap(),
+            camera.projection_matrix(a).unwrap() * camera.view_matrix().unwrap()
+        );
+        assert_eq!(a.aspect(), 640.0 / 360.0);
+        assert_eq!(b.aspect(), 360.0 / 640.0);
     }
 
     /// WP5 基线（2D 侧）：剔除用的 `visible_world_bounds` 与绘制用的 `world_to_screen` 必须是

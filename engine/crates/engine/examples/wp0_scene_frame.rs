@@ -371,7 +371,10 @@ fn run_frame(runtime: &mut RuntimeScene, input: &InputSnapshot) -> FrameSample {
         .vertices(VIEWPORT.0, VIEWPORT.1)
         .expect("2D extraction");
     let vertices_alloc_count = wp0_alloc::window_count();
-    let scene3d = runtime.scene_3d(VIEWPORT.0 as f32 / VIEWPORT.1 as f32);
+    let scene3d = runtime.scene_3d(
+        engine::core::camera::Viewport::new(VIEWPORT.0 as f32, VIEWPORT.1 as f32)
+            .expect("viewport"),
+    );
     let scene3d_alloc_count = wp0_alloc::window_count();
     // 渲染器消费完这一帧的产物才算帧结束，因此析构成本计入帧时间。
     let vertices = mesh.vertices.len();

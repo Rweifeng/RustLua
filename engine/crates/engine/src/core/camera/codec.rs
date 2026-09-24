@@ -199,15 +199,14 @@ impl Camera3D {
     /// `position=x,y,z;target=x,y,z;fov=<degrees>;near=<n>;far=<f>`
     /// （可选 `;pose=transform`，见 [`Camera3D::pose_from_transform`]）。
     ///
-    /// The `up` vector defaults to +Y and `aspect_ratio` to 1.0; the host
-    /// renderer replaces `aspect_ratio` with the window aspect each frame.
+    /// The `up` vector defaults to +Y. 宽高比**不在文法里**：它每帧由视口给出
+    /// （`Viewport::aspect`），读写两侧都不存在 `aspect` 字段。
     pub fn from_component_str(value: &str) -> Result<Self, Camera3dComponentError> {
         let mut camera = Self {
             position: Vec3::ZERO,
             target: Vec3::ZERO,
             up: Vec3::Y,
             fov_y: 0.0,
-            aspect_ratio: 1.0,
             near: 0.0,
             far: 0.0,
             pose_from_transform: false,

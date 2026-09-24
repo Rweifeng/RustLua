@@ -152,14 +152,14 @@ impl CameraView {
         })
     }
 
-    /// 透视（3D）视图。矩阵的宽高比**由视口给出**——`Camera3D::aspect_ratio` 只是"没有视口"时的
-    /// 回退值（宿主未声明视图的历史回退、光照/阴影相机），成帧后不参与，因此"组件里的比例"
-    /// 与"渲染/拾取实际用的比例"不可能分叉。
+    /// 透视（3D）视图。矩阵的宽高比**只由视口给出**（[`Viewport::aspect`]）：`Camera3D` 里没有
+    /// 比例字段，所以"组件里的比例"与"渲染/拾取实际用的比例"这两份状态不存在——同一次烘焙的
+    /// 矩阵同时供渲染与拾取使用。
     pub fn from_camera3d(camera: Camera3D, viewport: Viewport) -> Result<Self, Camera3dError> {
         Ok(Self {
             projection: Projection::from_camera3d(camera),
             viewport,
-            view_projection: camera.view_projection_matrix_for(viewport.width / viewport.height)?,
+            view_projection: camera.view_projection_matrix(viewport)?,
             ortho: None,
             visible_bounds: None,
         })
@@ -168,7 +168,7 @@ impl CameraView {
     /// 本视图的宽高比（**唯一权威**：来自视口）。
     #[must_use]
     pub fn aspect(self) -> f32 {
-        self.viewport.width / self.viewport.height
+        self.viewport.aspect()
     }
 
     /// 世界 → 裁剪空间矩阵（渲染器与深度通道消费的那一份）。
@@ -261,7 +261,6 @@ mod tests {
             Vec3::new(0.0, 0.0, 5.0),
             Vec3::ZERO,
             std::f32::consts::FRAC_PI_2,
-            1.0,
             0.1,
             100.0,
         )
@@ -356,15 +355,12 @@ mod tests {
         assert!(view.inverse().is_some());
     }
 
-    /// 3D 视图的 NDC 与射线必须与 `Camera3D` 的方法给同一结果（同源同约定）——
-    /// 前提是相机自带的 `aspect_ratio` 与视口一致（成帧路径下这是常态）。
+    /// 3D 视图的 NDC 与射线必须与 `Camera3D` 的方法给同一结果（同源同约定）——两边都要
+    /// **同一个视口**（比例与像素边界同源，这正是"点中的位置 = 看到的位置"的前提）。
     #[test]
     fn camera_view_matches_camera3d_ndc_and_ray() {
         let viewport = Viewport::new(640.0, 480.0).unwrap();
-        let camera = Camera3D {
-            aspect_ratio: viewport.width / viewport.height,
-            ..perspective()
-        };
+        let camera = perspective();
         let view = CameraView::from_camera3d(camera, viewport).unwrap();
         assert!(view.ortho().is_none() && view.visible_bounds().is_none());
 
@@ -373,7 +369,7 @@ mod tests {
             Vec3::new(1.5, -0.75, 0.5),
             Vec3::new(-0.2, 0.4, 4.0),
         ] {
-            let expected = camera.world_to_ndc(world).unwrap();
+            let expected = camera.world_to_ndc(world, viewport).unwrap();
             let actual = view.world_to_ndc(world).unwrap();
             assert!(
                 (actual - expected).length() < 1e-4,
@@ -383,7 +379,7 @@ mod tests {
 
         let (origin, direction) = view.ray_from_screen(320.0, 240.0).unwrap();
         let (expected_origin, expected_direction) =
-            camera.ray_from_screen(320.0, 240.0, 640.0, 480.0).unwrap();
+            camera.ray_from_screen(320.0, 240.0, viewport).unwrap();
         assert!((origin - expected_origin).length() < 1e-3);
         assert!((direction - expected_direction).length() < 1e-3);
 
@@ -393,29 +389,28 @@ mod tests {
         assert!(!frustum.contains_sphere(Vec3::new(0.0, 0.0, 6.0), 0.0));
     }
 
-    /// **视口是宽高比的唯一权威**：成帧后矩阵按视口比例算，组件里的 `aspect_ratio` 不参与。
+    /// **视口是宽高比的唯一权威**：矩阵按视口比例算，`Camera3D` 里没有第二份比例可读。
     ///
-    /// 这条钉住的是收敛本身：此前宿主每帧把窗口比例写回 `Camera3D::aspect_ratio`，于是"组件里
-    /// 的比例"与"渲染/拾取实际用的比例"是两份状态——谁在什么时候是权威，读代码的人看不出来。
+    /// 这条钉住的是收敛本身：此前相机自带 `aspect_ratio`，宿主每帧把窗口比例写回它，于是
+    /// "组件里的比例"与"渲染/拾取实际用的比例"是两份状态——谁在什么时候是权威，读代码的人
+    /// 看不出来。拆分批 7 把那份状态删掉了（字段不存在 ⇒ 不可能分叉）。
     #[test]
     fn camera_view_takes_aspect_from_the_viewport() {
         let viewport = Viewport::new(640.0, 480.0).unwrap(); // 4:3
-        // 组件里是过期的 1:1（默认值），视口是 4:3。
-        let camera = Camera3D {
-            aspect_ratio: 1.0,
-            ..perspective()
-        };
+        let camera = perspective();
         let view = CameraView::from_camera3d(camera, viewport).unwrap();
-        let expected_aspect = viewport.width / viewport.height;
+        let expected_aspect = viewport.aspect();
         assert!((view.aspect() - expected_aspect).abs() < 1e-6);
         assert_eq!(
             view.matrix(),
-            camera.view_projection_matrix_for(expected_aspect).unwrap(),
+            camera.view_projection_matrix(viewport).unwrap(),
             "成帧必须用视口比例"
         );
-        // 组件自带比例的那份**仍然可用**（没有视口的调用方：宿主未声明视图时的回退、
-        // 光照/阴影相机），但它与成帧结果确实不同——两份比例各说各话正是这次收敛要消灭的状态。
-        assert_ne!(view.matrix(), camera.view_projection_matrix().unwrap());
+        // 换一个视口 ⇒ 换一份矩阵；相机载荷一个字节都没被改写（同源，但比例只跟着视口走）。
+        let square = Viewport::new(640.0, 640.0).unwrap();
+        let square_view = CameraView::from_camera3d(camera, square).unwrap();
+        assert_ne!(view.matrix(), square_view.matrix());
+        assert!((square_view.aspect() - 1.0).abs() < 1e-6);
         // 拾取同源：屏幕射线也走这份烘焙矩阵（中心像素的射线指向相机目标）。
         let (origin, direction) = view.ray_from_screen(320.0, 240.0).unwrap();
         let origin_ndc = view.matrix().transform_point(origin).unwrap();
@@ -449,7 +444,6 @@ mod tests {
             target: Vec3::ZERO,
             up: Vec3::Y,
             fov_y: std::f32::consts::FRAC_PI_3,
-            aspect_ratio: 1.0,
             near: 0.1,
             far: 10.0,
             pose_from_transform: false,
