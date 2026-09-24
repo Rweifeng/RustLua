@@ -44,6 +44,11 @@ mod error;
 mod selection;
 mod view;
 
+/// 烘焙**计数账本**（拆分批 8）：只存在于测试构建。它把"宿主每帧烘焙一次"这句口径变成可判的
+/// 数字——现实是"每个消费者每帧各一次"（详见模块文档）。
+#[cfg(test)]
+pub(crate) mod ledger;
+
 pub use bake::{CameraView, OrthoTerms};
 pub use codec::{Camera2dComponentError, Camera3dComponentError};
 pub use component::{

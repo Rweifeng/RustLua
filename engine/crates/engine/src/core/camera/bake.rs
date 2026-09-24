@@ -47,6 +47,8 @@ impl OrthoTerms {
     /// 从正交相机烘焙。内部走 `constrained_center`，因此"挡住相机的那块区域"与
     /// 剔除用的可见域仍然是同一份换算。
     pub fn new(camera: Camera2D, viewport: Viewport) -> Result<Self, CoordinateError> {
+        #[cfg(test)]
+        crate::core::camera::ledger::count_ortho_terms();
         camera.validate()?;
         let center = camera.constrained_center(viewport)?;
         let (sin, cos) = camera.rotation.sin_cos();
@@ -143,6 +145,8 @@ pub struct CameraView {
 impl CameraView {
     /// 正交（2D）视图：深度范围取 [`ORTHO_NEAR`]..[`ORTHO_FAR`]（与 `RenderView::overlay_2d` 同一约定）。
     pub fn from_camera2d(camera: Camera2D, viewport: Viewport) -> Result<Self, CoordinateError> {
+        #[cfg(test)]
+        crate::core::camera::ledger::count_view_2d();
         Ok(Self {
             projection: Projection::from_camera2d(camera),
             viewport,
@@ -156,6 +160,8 @@ impl CameraView {
     /// 比例字段，所以"组件里的比例"与"渲染/拾取实际用的比例"这两份状态不存在——同一次烘焙的
     /// 矩阵同时供渲染与拾取使用。
     pub fn from_camera3d(camera: Camera3D, viewport: Viewport) -> Result<Self, Camera3dError> {
+        #[cfg(test)]
+        crate::core::camera::ledger::count_view_3d();
         Ok(Self {
             projection: Projection::from_camera3d(camera),
             viewport,

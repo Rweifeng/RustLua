@@ -64,6 +64,32 @@ use crate::host::frame::{
 };
 use crate::host::gamepad::{GamepadBackend, GamepadDeadzone, GamepadPoller};
 
+/// 本帧的 3D 视图（相机拆分批 8）：`vertices()` **定帧**时解析一次、烘焙一次，同一帧的消费方
+/// （回填给 Lua 的 `camera3d.*`、3D 渲染提取、3D 调试线框）共用它。
+///
+/// ## 为什么必须定帧
+///
+/// 此前这三个消费方各自调一次 `active_camera3d()`，两份结果一致靠的是"同帧两步之间没有代码
+/// 改过世界"这个**隐含约定**——与批 7 治好的"同一事实两处算"是同一类病：宿主只要在两步之间
+/// 插入一次步进/拖拽预览，画面与拾取就会按两台不同的相机各算一套，且没有任何报错。
+///
+/// ## 语义
+///
+/// - **谁定帧**：`vertices()`（宿主的每帧入口：它已经在做"传播世界变换 + 清每帧状态 + 回填 Lua
+///   相机"这三件事，是天然的帧边界）。
+/// - **失效**：任何可能改世界或改相机选择的入口（`run_script_steps`、编辑器拖拽预览）之后，
+///   定帧值作废，下一次消费重新定帧——绝不拿步进前的相机去渲染步进后的世界。
+/// - **视口参与缓存键**：宿主若用另一个视口调 `scene_3d`，比例仍按**传入视口**算（不复用），
+///   因此"渲染视口"与"矩阵比例"仍然只有一个来源。
+/// - 宿主没走 `vertices()` 就直接调 `scene_3d`（示例/golden 里就有这种顺序）时缓存为空，
+///   按需解析——行为与定帧前逐字节相同。
+#[derive(Clone, Copy, Debug)]
+struct FrameView3d {
+    camera: Camera3D,
+    viewport: Viewport,
+    view: RenderView,
+}
+
 pub struct RuntimeScene {
     /// Lua 桥。**crate 内可见**：工程级门（`host::sample_project`）要用它驱动
     /// `on_click` / `scene.load` / 控制台表达式，验证示例工程的菜单与演示真的能跑；
@@ -87,6 +113,9 @@ pub struct RuntimeScene {
     /// 视口外精灵剔除（WP6 CPU 可见性）。默认开启，同样可关掉做像素对拍。
     sprite_culling: bool,
     camera: Camera2D,
+    /// 本帧的 3D 视图（拆分批 8，见 [`FrameView3d`]）：`vertices()` 定帧，同帧消费方共用。
+    /// `None` = 本帧还没定帧，或刚被一次世界变更作废。
+    frame_view_3d: Option<FrameView3d>,
     viewport_width: u32,
     viewport_height: u32,
     /// Canvas 空间 UI 参考分辨率（设计分辨率）。发布游戏默认 `UI_REFERENCE_SIZE`；
@@ -372,6 +401,9 @@ impl RuntimeScene {
     /// - 实体只有 2D `Transform` ⇒ 只在**真能无损压平**时才写（四元数只有 z/w 分量、z 位移为 0、
     ///   z 缩放为 1），否则**报错**——手抄一个 XY 会把旋转与缩放悄悄丢掉（docs/54 §1.2）；
     /// - 两种都没有 ⇒ `Ok(false)`（没有局部变换可更新，调用方自己决定要不要新建组件）。
+    ///
+    /// 拆分批 8：写成功即视为**相机相关的世界变更**（`pose=transform` 的相机可能就在这个实体或
+    /// 它的父链上），因此作废本帧定下的 3D 视图。
     pub fn set_local_transform(
         &mut self,
         entity: SceneEntityId,
@@ -380,32 +412,40 @@ impl RuntimeScene {
         let Some(runtime) = self.script.scene_entity_handle(entity) else {
             return Ok(false);
         };
-        self.script.with_world_mut(|world| {
-            if world.get::<Transform3D>(runtime).ok().flatten().is_some() {
-                let transform = Transform3D {
-                    position: value.translation,
-                    rotation: value.rotation,
-                    scale: value.scale,
-                };
-                world
-                    .insert(runtime, transform)
-                    .map_err(|error| error.to_string())?;
-                return Ok(true);
-            }
-            if world.get::<Transform>(runtime).ok().flatten().is_some() {
-                let flat = crate::core::spatial_transform::plane_local(value).ok_or_else(|| {
-                    "this entity only has a 2D Transform; the value is not planar \
+        let written = self
+            .script
+            .with_world_mut(|world| -> Result<bool, String> {
+                if world.get::<Transform3D>(runtime).ok().flatten().is_some() {
+                    let transform = Transform3D {
+                        position: value.translation,
+                        rotation: value.rotation,
+                        scale: value.scale,
+                    };
+                    world
+                        .insert(runtime, transform)
+                        .map_err(|error| error.to_string())?;
+                    return Ok(true);
+                }
+                if world.get::<Transform>(runtime).ok().flatten().is_some() {
+                    let flat =
+                        crate::core::spatial_transform::plane_local(value).ok_or_else(|| {
+                            "this entity only has a 2D Transform; the value is not planar \
                          (tilt, z offset or z scale) — flattening would drop it"
-                        .to_owned()
-                })?;
-                world
-                    .insert(runtime, flat)
-                    .map_err(|error| error.to_string())?;
-                return Ok(true);
-            }
-            Ok(false)
-        })
+                                .to_owned()
+                        })?;
+                    world
+                        .insert(runtime, flat)
+                        .map_err(|error| error.to_string())?;
+                    return Ok(true);
+                }
+                Ok(false)
+            })?;
+        if written {
+            self.invalidate_frame_view_3d();
+        }
+        Ok(written)
     }
+
     /// WP2 ④：按**场景实体 id** 读世界变换（2D）。
     ///
     /// 编辑器拾取包围框必须与渲染用同一份位置：场景视图渲染走 `vertices()`（父链组合后的
@@ -1012,7 +1052,8 @@ impl RuntimeScene {
         }
         // 每帧烘焙一次 3D 视图：逐段投影因此不再重建矩阵（此前每个端点都会重建一次
         // `view_projection_matrix`，等于每段两次 4×4 乘法加两次校验）。
-        let Ok(view) = CameraView::from_camera3d(self.active_camera3d(), viewport) else {
+        // 拆分批 8：同帧同视口直接吃 `vertices()` 定帧的那一份（不再多解析一次相机）。
+        let Some(view) = self.frame_camera_view(viewport) else {
             return;
         };
         let start = vertices.len();
@@ -1068,6 +1109,11 @@ impl RuntimeScene {
                 updated = true;
             }
         });
+        if updated {
+            // 拆分批 8：拖拽预览改的是世界姿态——`pose=transform` 的相机可能就在被拖的父链上，
+            // 因此本帧已定帧的 3D 视图作废（编辑器每帧重渲染，下一次消费会重新定帧）。
+            self.invalidate_frame_view_3d();
+        }
         updated
     }
 
@@ -1451,6 +1497,7 @@ impl RuntimeScene {
             tilemap_culling: true,
             sprite_culling: true,
             camera,
+            frame_view_3d: None,
             viewport_width: 1280,
             viewport_height: 720,
             ui_reference: UI_REFERENCE_SIZE,
@@ -1946,6 +1993,10 @@ impl RuntimeScene {
         // WP2：本帧脚本/物理都改完局部变换后，统一传播一次世界变换——渲染与 Lua 的世界位置
         // 因此都来自同一次传播（3D 提取是 `&self`，不能自己触发传播，所以必须在这里做）。
         self.propagate_spatial_now();
+        // 拆分批 8：这一步可能改过世界（脚本换选中相机、移动父链、换场景），因此在这之前定下的
+        // "本帧 3D 视图"不再可信——作废，让下一次消费重新定帧。放在这里（而不是开头）是为了让
+        // "先定帧后步进"的宿主顺序也不会拿到步进前的相机。
+        self.invalidate_frame_view_3d();
         outcome
     }
 
@@ -2334,16 +2385,68 @@ impl RuntimeScene {
         }
         // 编辑器视图覆盖相机时不触碰场景数据（不写 ECS、不改脚本状态），仅作为
         // 渲染视角覆盖；运行时传 None 则按 Lua 选择 / 首个 Camera3D / 默认解析。
-        let camera = camera_override.unwrap_or_else(|| self.active_camera3d());
+        //
+        // 拆分批 8：无覆盖时优先复用**本帧已定帧**的那一份——相机与视图都来自同一次解析/烘焙。
+        // 视图只跟（相机 × 视口）有关，因此视口不同时**换烘焙、不换相机**：相机不依赖视口，
+        // 再解析一次只会白白多一趟遍历（也让"同帧只解析一次"这条账本数字失真）。
+        let (camera, view) = match (camera_override, self.frame_view_3d) {
+            (Some(camera), _) => (
+                camera,
+                RenderView::main_3d(camera, viewport, DEFAULT_3D_CLEAR),
+            ),
+            (None, Some(frame)) if frame.viewport == viewport => (frame.camera, frame.view),
+            (None, Some(frame)) => (
+                frame.camera,
+                RenderView::main_3d(frame.camera, viewport, DEFAULT_3D_CLEAR),
+            ),
+            (None, None) => {
+                let camera = self.active_camera3d();
+                (
+                    camera,
+                    RenderView::main_3d(camera, viewport, DEFAULT_3D_CLEAR),
+                )
+            }
+        };
         let light = self.active_light();
         Some(Scene3d {
             camera,
             // 拆分批 7：视图在提取处成帧，渲染器（含"宿主未声明 FrameViews"的历史回退）与
             // 宿主声明的主视图因此消费同一份视口派生矩阵。
-            view: RenderView::main_3d(camera, viewport, DEFAULT_3D_CLEAR),
+            view,
             light,
             drawables,
         })
+    }
+
+    /// 本帧的 3D 视图烘焙结果（拆分批 8）：同帧复用定帧时的那一份（`vertices()` 定的），
+    /// 视口不同则只重新烘焙（相机不依赖视口，不必再解析一次）。`None` = 相机退化（位置与目标
+    /// 重合等），消费方据此走各自的历史回退。
+    fn frame_camera_view(&self, viewport: Viewport) -> Option<CameraView> {
+        if let Some(frame) = self.frame_view_3d {
+            if frame.viewport == viewport {
+                return frame.view.baked();
+            }
+            return CameraView::from_camera3d(frame.camera, viewport).ok();
+        }
+        CameraView::from_camera3d(self.active_camera3d(), viewport).ok()
+    }
+
+    /// 拆分批 8：世界或相机姿态可能变了 ⇒ 作废本帧定下的 3D 视图。
+    ///
+    /// 所有"宿主能在帧内调用、且可能改到**生效相机或其姿态**"的入口都必须走它（不变量是
+    /// **帧内一切消费方看到同一台相机**；代价只是下一次消费多一趟 O(#相机) 的解析）。用一个
+    /// 有名字的函数而不是撒一行 `= None`：漏掉一处就是一条静默的陈旧路径，而名字能把
+    /// "这里发生了相机相关的世界变更"写在调用点上。
+    fn invalidate_frame_view_3d(&mut self) {
+        #[cfg(test)]
+        crate::core::camera::ledger::count_frame_view_invalidations();
+        self.frame_view_3d = None;
+    }
+
+    /// 测试用：本帧已定帧的 3D 视图（拆分批 8）。`None` = 未定帧或已被世界变更作废。
+    #[cfg(test)]
+    pub(crate) fn frame_view_3d(&self) -> Option<RenderView> {
+        self.frame_view_3d.map(|frame| frame.view)
     }
 
     /// Resolves the active camera: Lua's `camera.set_active` selection, else the
@@ -2352,6 +2455,8 @@ impl RuntimeScene {
     /// **不改写相机**（拆分批 7）：返回的就是组件载荷本身。此前这里按传入的窗口比例覆写
     /// `aspect_ratio`，于是"组件里存的比例"与"渲染/拾取实际用的比例"成为两份状态。
     fn active_camera3d(&self) -> Camera3D {
+        #[cfg(test)]
+        crate::core::camera::ledger::count_camera3d_resolution();
         let fallback = Camera3D::perspective(
             Vec3::new(0.0, 0.0, 5.0),
             Vec3::ZERO,
@@ -2451,6 +2556,10 @@ impl RuntimeScene {
     pub fn vertices(&mut self, width: u32, height: u32) -> Result<SceneMesh, String> {
         self.viewport_width = width.max(1);
         self.viewport_height = height.max(1);
+        // 拆分批 8：新的一帧 ⇒ 上一帧定下的 3D 视图不再可用（下面按本帧视口重新定帧）。
+        // 这里刻意**不**走 `invalidate_frame_view_3d()`：那是"世界变更把定帧值作废"的账，
+        // 帧边界不是世界变更（账本里两者分开记，混在一起就看不出"到底是谁作废的"）。
+        self.frame_view_3d = None;
         self.script.set_ui_viewport(width, height);
         // WP2：提取前先把局部变换传播成世界变换（开启空间继承时才有实际效果；关闭时这一步
         // 只会清掉遗留的世界变换组件，消费者读到的仍是局部值 = 旧行为）。
@@ -2465,10 +2574,17 @@ impl RuntimeScene {
         // docs/54 §8-⑦：把本帧 **3D pass 实际用的那台相机**回填给 Lua，于是 `camera3d.ray`
         // 与编辑器 3D 点选走的是同一份投影数学（同一条 `Camera3D::ray_from_screen`）。
         // 拆分批 7：回填的是**组件载荷本身**——宽高比由 Lua 侧的视口给出，不再写回相机。
-        self.script.set_camera3d_view(
-            self.active_camera3d(),
-            [width.max(1) as f32, height.max(1) as f32],
-        );
+        // 拆分批 8：这里同时是**定帧点**——解析一次 `active_camera3d()`、烘焙一次视图，之后同帧的
+        // `scene_3d` 与 3D 调试线框复用同一份，于是"渲染用的相机"与"回填给 Lua 的相机"由**构造**
+        // 决定同源，而不是靠"两步之间没人改世界"的巧合。
+        let camera3d = self.active_camera3d();
+        self.script
+            .set_camera3d_view(camera3d, [width.max(1) as f32, height.max(1) as f32]);
+        self.frame_view_3d = Some(FrameView3d {
+            camera: camera3d,
+            viewport,
+            view: RenderView::main_3d(camera3d, viewport, DEFAULT_3D_CLEAR),
+        });
         self.sprite_batch.clear();
         // WP6：收集阶段的可见域。开着时 `SpriteBatch::push` 直接丢掉不可能落在视口内的精灵，
         // 省下每项 80 字节的写入与后续排序——5 万精灵档实测这部分占掉整帧的大头（docs/53 §3.9）。
@@ -4927,6 +5043,7 @@ fn screen_rect_ndc(
 #[cfg(test)]
 mod sdf_tests {
     use super::*;
+    use crate::core::camera::ledger;
     use crate::core::scene::Scene;
 
     // 示例重组后，展示工程从 examples/ 迁入 examples/game_api/（多项目布局）；
@@ -8513,6 +8630,358 @@ mod sdf_tests {
             after.view.matrix(),
             before.view.matrix(),
             "覆盖是瞬时的：回到无覆盖路径必须给出同一份视图矩阵"
+        );
+    }
+
+    /// 拆分批 8 的场景夹具：一台透视相机 + 一个网格（`scene_3d` 以 drawable 为准，没有网格就
+    /// 直接返回 `None`），可选第二台相机与 `pose=transform`。
+    fn frame_view_scene(
+        name: &str,
+        second_camera: Option<&str>,
+        camera_payload: &str,
+    ) -> crate::core::scene::Scene {
+        let mut scene = crate::core::scene::Scene::new(name);
+        let camera = crate::core::scene::SceneEntityId(1);
+        let mesh = crate::core::scene::SceneEntityId(2);
+        scene.add_entity(camera, "Camera", None).unwrap();
+        scene.add_entity(mesh, "Mesh", None).unwrap();
+        scene
+            .entities
+            .get_mut(&camera)
+            .unwrap()
+            .components
+            .insert("Camera".into(), camera_payload.into());
+        let entity = scene.entities.get_mut(&mesh).unwrap();
+        entity.components.insert(
+            "Transform".into(),
+            "position=0,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
+        );
+        entity
+            .components
+            .insert("MeshRenderer".into(), "mesh=assets/models/test.glb".into());
+        if let Some(payload) = second_camera {
+            let second = crate::core::scene::SceneEntityId(3);
+            scene.add_entity(second, "Camera2", None).unwrap();
+            scene
+                .entities
+                .get_mut(&second)
+                .unwrap()
+                .components
+                .insert("Camera".into(), payload.into());
+        }
+        scene
+    }
+
+    /// 拆分批 8：**一帧只解析一次生效 3D 相机**，渲染提取与 Lua 回填因此是同一次解析的产物。
+    ///
+    /// 这是"同源靠构造、不靠调用顺序"的账：批 8 之前同一帧里 `vertices()`（回填 Lua）与
+    /// `scene_3d()`（渲染提取）各解析一次，两者一致靠的是"两步之间没有代码改过世界"这个隐含
+    /// 约定；现在账本上的数字是 1。
+    #[test]
+    fn one_frame_resolves_the_active_3d_camera_once() {
+        let root = game_root();
+        let scene = frame_view_scene(
+            "frame-view-once",
+            None,
+            "projection=perspective;position=1,2,3;target=0,0,0;fov=60;near=0.1;far=100",
+        );
+        let mut runtime =
+            RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("runtime scene");
+        let viewport = Viewport::new(640.0, 360.0).unwrap();
+
+        ledger::reset();
+        let _mesh = runtime.vertices(640, 360).expect("vertices");
+        let frame = runtime.frame_view_3d().expect("vertices() 应已定帧");
+        let scene3d = runtime.scene_3d(viewport).expect("3d scene");
+
+        let counts = ledger::snapshot();
+        assert_eq!(
+            counts.camera3d_resolutions, 1,
+            "一帧只该解析一次生效相机（定帧），实际 {}",
+            counts.camera3d_resolutions
+        );
+        assert_eq!(
+            counts.view_3d, 1,
+            "3D 视图只该烘焙一次（定帧），实际 {}",
+            counts.view_3d
+        );
+        // 定帧值就是渲染提取用的那一份：相机逐字段相同、矩阵逐位相同、比例来自视口。
+        assert_eq!(scene3d.camera, runtime.active_camera3d());
+        assert_eq!(scene3d.view.matrix(), frame.matrix());
+        assert!((scene3d.view.aspect() - viewport.aspect()).abs() < 1e-6);
+        assert_eq!(scene3d.view.viewport, viewport);
+        // 相机确实是场景里声明的那台，而不是回退默认相机。
+        assert!((scene3d.camera.position - Vec3::new(1.0, 2.0, 3.0)).length() < 1e-6);
+    }
+
+    /// 拆分批 8：视口不同 ⇒ **换烘焙、不换相机**（相机不依赖视口，再解析一次只会多一趟遍历）。
+    #[test]
+    fn a_different_viewport_rebakes_without_resolving_the_camera_again() {
+        let root = game_root();
+        let scene = frame_view_scene(
+            "frame-view-viewport",
+            None,
+            "projection=perspective;position=0,0,6;target=0,0,0;fov=60;near=0.1;far=100",
+        );
+        let mut runtime =
+            RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("runtime scene");
+
+        ledger::reset();
+        let _ = runtime.vertices(640, 360).expect("vertices");
+        let square = Viewport::new(480.0, 480.0).unwrap();
+        let scene3d = runtime.scene_3d(square).expect("3d scene");
+        let counts = ledger::snapshot();
+        assert_eq!(counts.camera3d_resolutions, 1, "换视口不该再解析一次相机");
+        assert_eq!(
+            counts.view_3d, 2,
+            "第二个视口要单独烘焙一次（1 次定帧 + 1 次重烘焙）"
+        );
+        assert!(
+            (scene3d.view.aspect() - 1.0).abs() < 1e-6,
+            "比例必须来自传入视口"
+        );
+        assert_eq!(scene3d.view.viewport, square);
+        assert_eq!(
+            scene3d.view.matrix(),
+            Some(
+                scene3d
+                    .camera
+                    .view_projection_matrix(square)
+                    .expect("matrix")
+            ),
+            "重烘焙必须等价于按该视口现算"
+        );
+    }
+
+    /// 拆分批 8（负向）：定帧值**不能盖过**此后发生的相机相关世界变更。
+    ///
+    /// 这是引入缓存后最危险的一条路径：宿主若在 `vertices()` 之后用 `set_local_transform` 挪动
+    /// 带 `pose=transform` 的相机（编辑器属性面板就是这么做的），渲染必须看到**新**姿态。
+    #[test]
+    fn local_transform_write_invalidates_the_frame_view() {
+        let root = game_root();
+        let mut scene = frame_view_scene(
+            "frame-view-stale-transform",
+            None,
+            "projection=perspective;position=0,0,6;target=0,0,0;fov=60;near=0.1;far=100;pose=transform",
+        );
+        // `pose=transform`：姿态来自实体自己的 `Transform`（组件名 `Transform` 解出的就是 3D 变换）。
+        scene
+            .entities
+            .get_mut(&crate::core::scene::SceneEntityId(1))
+            .unwrap()
+            .components
+            .insert(
+                "Transform".into(),
+                "position=0,1,6;rotation=0,0,0,1;scale=1,1,1".into(),
+            );
+        let mut runtime =
+            RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("runtime scene");
+        let viewport = Viewport::new(640.0, 360.0).unwrap();
+
+        ledger::reset();
+        let _ = runtime.vertices(640, 360).expect("vertices");
+        let pinned = runtime.scene_3d(viewport).expect("3d scene");
+        assert!(
+            (pinned.camera.position - Vec3::new(0.0, 1.0, 6.0)).length() < 1e-3,
+            "定帧时相机应取 Transform 的 (0,1,6)：{:?}",
+            pinned.camera.position
+        );
+
+        // 帧内改姿态：定帧值必须作废。
+        let moved = runtime
+            .set_local_transform(
+                crate::core::scene::SceneEntityId(1),
+                crate::core::spatial_transform::LocalTransform {
+                    translation: Vec3::new(0.0, 1.0, 60.0),
+                    rotation: crate::core::math3d::Quat::from_axis_angle(Vec3::Y, 0.0).unwrap(),
+                    scale: Vec3::new(1.0, 1.0, 1.0),
+                },
+            )
+            .expect("local transform write");
+        assert!(moved, "写局部变换应成功");
+        assert!(
+            runtime.frame_view_3d().is_none(),
+            "写局部变换之后定帧值必须作废"
+        );
+        let after = runtime.scene_3d(viewport).expect("3d scene");
+        assert!(
+            (after.camera.position - Vec3::new(0.0, 1.0, 60.0)).length() < 1e-3,
+            "渲染必须看到新姿态，而不是定帧时的旧值：{:?}",
+            after.camera.position
+        );
+    }
+
+    /// 拆分批 8（负向）：脚本步进之后定帧值作废——脚本可能换掉生效相机或移动相机父链。
+    #[test]
+    fn script_steps_invalidate_the_frame_view() {
+        let root = game_root();
+        let scene = frame_view_scene(
+            "frame-view-stale-steps",
+            Some("projection=perspective;position=0,0,9;target=0,0,0;fov=45;near=0.1;far=100"),
+            "projection=perspective;position=0,0,6;target=0,0,0;fov=60;near=0.1;far=100",
+        );
+        let mut runtime =
+            RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("runtime scene");
+
+        ledger::reset();
+        let _ = runtime.vertices(640, 360).expect("vertices");
+        assert!(runtime.frame_view_3d().is_some(), "定帧后应有本帧视图");
+        runtime
+            .run_script_steps(1, 1.0 / 60.0, &InputSnapshot::default())
+            .expect("script step");
+        assert!(
+            runtime.frame_view_3d().is_none(),
+            "步进之后定帧值必须作废（脚本可能换掉生效相机）"
+        );
+        let counts = ledger::snapshot();
+        assert_eq!(counts.frame_view_invalidations, 1);
+        // 作废之后的消费重新定帧：这一帧因此是 2 次解析（定帧 1 次 + 作废后 1 次），这是
+        // "宁可多解析一次，也不拿步进前的相机去渲染步进后的世界"的代价，账本上看得见。
+        let _ = runtime
+            .scene_3d(Viewport::new(640.0, 360.0).unwrap())
+            .expect("3d scene");
+        assert_eq!(ledger::snapshot().camera3d_resolutions, 2);
+    }
+
+    /// 拆分批 8：宿主**没走** `vertices()` 就先调 `scene_3d`（示例/golden 里有这种顺序）时，
+    /// 没有定帧值 ⇒ 按需解析 + 烘焙，行为与定帧前逐字节相同。
+    #[test]
+    fn scene_3d_without_a_frame_still_resolves_on_demand() {
+        let root = game_root();
+        let scene = frame_view_scene(
+            "frame-view-on-demand",
+            None,
+            "projection=perspective;position=0,0,6;target=0,0,0;fov=60;near=0.1;far=100",
+        );
+        let runtime = RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("runtime");
+
+        ledger::reset();
+        let viewport = Viewport::new(16.0, 9.0).unwrap();
+        let extracted = runtime.scene_3d(viewport).expect("3d scene");
+        let counts = ledger::snapshot();
+        assert_eq!(counts.camera3d_resolutions, 1);
+        assert_eq!(counts.view_3d, 1);
+        assert_eq!(
+            extracted.view.matrix(),
+            Some(
+                extracted
+                    .camera
+                    .view_projection_matrix(viewport)
+                    .expect("matrix")
+            )
+        );
+        assert!((extracted.view.aspect() - 16.0 / 9.0).abs() < 1e-6);
+    }
+
+    /// 拆分批 8 的**账本门**：把"一帧里相机被投影/烘焙了几次"变成确定的数字。
+    ///
+    /// 这不是性能断言（测试里的时间不可信），而是**口径断言**：docs/54 批 3 写的是"宿主每帧
+    /// 烘焙一次"，现实是"每个消费者每帧各烘焙一次"（overlay 批、瓦片层、世界文字、宿主的
+    /// overlay 视图各自一份 2D 预算项）。数字写在这里，任何增减都得有人来解释：是有意，还是回退。
+    #[test]
+    fn frame_bake_ledger_is_pinned() {
+        let root = game_root();
+        let mut scene = crate::core::scene::Scene::new("frame-bake-ledger");
+        let sprite = crate::core::scene::SceneEntityId(1);
+        let tiles = crate::core::scene::SceneEntityId(2);
+        let text = crate::core::scene::SceneEntityId(3);
+        let camera = crate::core::scene::SceneEntityId(4);
+        let mesh = crate::core::scene::SceneEntityId(5);
+        for (id, name) in [
+            (sprite, "Sprite"),
+            (tiles, "Tiles"),
+            (text, "Text"),
+            (camera, "Camera"),
+            (mesh, "Mesh"),
+        ] {
+            scene.add_entity(id, name, None).unwrap();
+        }
+        let payload = |scene: &mut crate::core::scene::Scene, id, key: &str, value: &str| {
+            scene
+                .entities
+                .get_mut(&id)
+                .unwrap()
+                .components
+                .insert(key.into(), value.into());
+        };
+        payload(
+            &mut scene,
+            sprite,
+            "Transform",
+            "position=100,100,0;rotation=0,0,0,1;scale=1,1,1",
+        );
+        payload(
+            &mut scene,
+            sprite,
+            "Sprite",
+            "texture=assets/textures/red-1x1.png;size=2x2;pivot=0.5,0.5;z=0",
+        );
+        payload(
+            &mut scene,
+            tiles,
+            "Transform",
+            "position=640,360,0;rotation=0,0,0,1;scale=1,1,1",
+        );
+        payload(
+            &mut scene,
+            tiles,
+            "Tilemap",
+            "tile_size=32x32;width=2;height=2;texture=assets/textures/tileset.png;tiles=1111;solid=0000",
+        );
+        payload(
+            &mut scene,
+            text,
+            "Transform",
+            "position=640,400,0;rotation=0,0,0,1;scale=1,1,1",
+        );
+        payload(
+            &mut scene,
+            text,
+            "WorldText",
+            "text=HP;font_size=24;color=1,1,1;offset=0,-20;centered=false",
+        );
+        payload(
+            &mut scene,
+            camera,
+            "Camera",
+            "projection=perspective;position=0,0,6;target=0,0,0;fov=60;near=0.1;far=100",
+        );
+        payload(
+            &mut scene,
+            mesh,
+            "Transform",
+            "position=0,0,0;rotation=0,0,0,1;scale=1,1,1",
+        );
+        payload(
+            &mut scene,
+            mesh,
+            "MeshRenderer",
+            "mesh=assets/models/test.glb",
+        );
+        let mut runtime =
+            RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("runtime scene");
+        let viewport = Viewport::new(640.0, 360.0).unwrap();
+
+        // 一帧典型路径：宿主提取 2D 顶点 → 声明 2D overlay 视图 → 提取 3D 场景。
+        ledger::reset();
+        let _ = runtime.vertices(640, 360).expect("vertices");
+        let _ = runtime.render_view_2d(640, 360);
+        let _ = runtime.scene_3d(viewport).expect("3d scene");
+        let counts = ledger::snapshot();
+
+        // 3D 侧（拆分批 8 的成果）：相机解析 1 次、视图烘焙 1 次——渲染提取复用定帧值。
+        assert_eq!(counts.camera3d_resolutions, 1);
+        assert_eq!(counts.view_3d, 1);
+        // 2D 侧：每个消费者各烘焙一次自己的预算项——① overlay 批 ② 瓦片层 ③ 世界文字
+        // ④ 宿主的 overlay 视图（`render_view_2d`，它还会烘焙一份完整 2D 视图）。
+        // 这 4 次是**有意保留**的：单次烘焙是常数级（validate + sin_cos + 几次乘法），4 次远低于
+        // 一帧预算，改签名做帧级共享的收益不成比例（docs/54 §12 批 8 有记录）。
+        assert_eq!(counts.view_2d, 1, "宿主的 overlay 视图（render_view_2d）");
+        assert_eq!(
+            counts.ortho_terms, 4,
+            "2D 预算项：overlay 批 + 瓦片层 + 世界文字 + render_view_2d 内部各一次，实际 {}",
+            counts.ortho_terms
         );
     }
 
