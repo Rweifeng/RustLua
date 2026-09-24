@@ -12,6 +12,9 @@
 param()
 
 $ErrorActionPreference = "Stop"
+# 本脚本的中文结论行会经 docs/34 记录的 `powershell -File`（5.1）被调用，而 5.1 控制台默认按
+# ANSI 解码，中文会显示成乱码。UTF8Encoding($false) 不带 BOM，避免给 stdout 混入 BOM。
+try { [Console]::OutputEncoding = New-Object Text.UTF8Encoding($false) } catch { }
 . (Join-Path $PSScriptRoot "release-atomic.ps1")
 
 $failures = @()

@@ -81,6 +81,13 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: pwsh -NoProfile -File scripts/test-compare-baseline.ps1
 
+      # docs/34「Release Candidate」清单里的 `release_atomic_ok cases=4` 此前只靠人记得跑，
+      # 而 `release-atomic.ps1` 是 `package.ps1` 每次发布都走的 staging/交换/回滚核心——它回归了
+      # 不会有人立刻发现。这条用例零依赖（不需要 cargo / node / GPU，只用临时目录），进门成本极低。
+      - name: Atomic release swap and rollback
+        working-directory: ${{ github.workspace }}
+        run: pwsh -NoProfile -File scripts/test-release-atomic.ps1
+
       # docs/54 §8-⑨/⑩：WP0 基准与语义 golden（2D / 3D / **混合 2D/3D**）必须进门，而不是
       # "只在本机手动跑过"。这一步需要可用的 wgpu 适配器（示例显式请求 fallback adapter，
       # Windows 上是 WARP）；适配器缺失会让示例**报错退出**而不是静默跳过——宁可判红，也不要

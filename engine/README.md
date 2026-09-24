@@ -67,7 +67,7 @@ p2 game 0.1.0
 
 ## CI
 
-`.github/workflows/quality.yml` 在 Windows runner 上执行 metadata、format、clippy、test、Debug build 和 Release build。
+`.github/workflows/quality.yml` 在 Windows runner 上执行 metadata、format、clippy、test、Debug/Release build 与两个工程的 `--check`，再跑 `scripts/verify.ps1` 的 `-MvpOnly`／`-Benchmarks`／`-Web` 三步，以及 `scripts/test-compare-baseline.ps1`、`scripts/test-release-atomic.ps1`。
 
 ## 范围限制
 
