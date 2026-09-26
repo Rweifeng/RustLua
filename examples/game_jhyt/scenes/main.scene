@@ -1,10 +1,11 @@
 scene_version=2
 name=main
+meta	design_doc	docs/52-江湖有田-竖版720x1280改造.md
 meta	display_name	江湖有田·主入口门面
+meta	editor.root_order	1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17
 meta	game	jianghu_youtian
 meta	ui_reference_height	1280
 meta	ui_reference_width	720
-meta	design_doc	docs/52-江湖有田-竖版720x1280改造.md
 entity	1	BgNight
 component	1	Image	texture=assets/art/title/title_bg_pixel.png;color=1.000,1.000,1.000
 component	1	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
@@ -38,9 +39,9 @@ entity_meta	6	role	menu_lantern
 entity	7	BtnStart
 component	7	Image	texture=assets/art/ui/menu/ui_menu_btn_wuxia_9s.png;color=1.000,1.000,1.000;nine_slice=18,18,18,18
 component	7	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	7	UiEvents	event=click;function=on_click
 component	7	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=180.00,620.00,540.00,684.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 entity_meta	7	role	menu_button_BtnStart
-component	7	UiEvents	event=click;function=on_click
 entity	8	BtnStartLabel
 component	8	Text	text=开始新游戏;font_size=24.00;color=0.949,0.918,0.847
 component	8	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
@@ -49,9 +50,9 @@ entity_meta	8	role	menu_button_label
 entity	9	BtnContinue
 component	9	Image	texture=assets/art/ui/menu/ui_menu_btn_wuxia_9s.png;color=1.000,1.000,1.000;nine_slice=18,18,18,18
 component	9	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	9	UiEvents	event=click;function=on_click
 component	9	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=180.00,708.00,540.00,772.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 entity_meta	9	role	menu_button_BtnContinue
-component	9	UiEvents	event=click;function=on_click
 entity	10	BtnContinueLabel
 component	10	Text	text=继续江湖;font_size=24.00;color=0.949,0.918,0.847
 component	10	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
@@ -60,9 +61,9 @@ entity_meta	10	role	menu_button_label
 entity	11	BtnExit
 component	11	Image	texture=assets/art/ui/menu/ui_menu_btn_wuxia_9s.png;color=1.000,1.000,1.000;nine_slice=18,18,18,18
 component	11	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	11	UiEvents	event=click;function=on_click
 component	11	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=180.00,796.00,540.00,860.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 entity_meta	11	role	menu_button_BtnExit
-component	11	UiEvents	event=click;function=on_click
 entity	12	BtnExitLabel
 component	12	Text	text=退出江湖;font_size=24.00;color=0.949,0.918,0.847
 component	12	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
@@ -93,4 +94,3 @@ component	17	Text	text=江湖有田 v0.1.0 · RustLua 原型 · 竖版;font_size
 component	17	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 component	17	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=536.00,1246.00,696.00,1266.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 entity_meta	17	role	menu_footer
-meta	editor.root_order	1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17

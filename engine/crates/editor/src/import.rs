@@ -62,6 +62,12 @@ impl EditorApp {
         if self.progress.running || !self.project_loaded {
             return;
         }
+        // 后台刷新在途时暂停新导入：`pending_imports` 来自上一次落地的刷新，
+        // 在途刷新落地后会整体替换状态（含待导入项）。此刻起导入只会重复上一轮
+        // 队列（导入完成后同帧弹窗立刻重开，进度条反复停在 100% 进行中）。
+        if self.resource_refresh_job.is_some() {
+            return;
+        }
         let pending = self.resources.pending_imports().to_vec();
         if pending.is_empty() {
             return;
@@ -172,7 +178,21 @@ struct ImportOutcome {
     resources: ResourceBrowserState,
 }
 
+/// 从 panic payload 里提取可读消息。
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        (*message).to_owned()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "未知原因".to_owned()
+    }
+}
+
 /// 后台导入游戏项目：打开项目 + 加载文档 + 扫描资源，结果回传主线程。
+///
+/// worker 用 `catch_unwind` 兜底：线程一旦 panic（此前只能静默死亡），也要回传
+/// `Finished{success:false}`，否则"导入游戏项目"进度面板会永远停在"进行中"。
 fn spawn_import(path: PathBuf, tx: Sender<ProgressEvent>) {
     thread::spawn(move || {
         let _ = tx.send(ProgressEvent::Line(format!(
@@ -180,52 +200,64 @@ fn spawn_import(path: PathBuf, tx: Sender<ProgressEvent>) {
             display_path(&path)
         )));
         let _ = tx.send(ProgressEvent::Progress(0.1));
-        let result = (|| -> Result<ImportOutcome, String> {
-            let project =
-                open_project(&path).map_err(|error| format_project_error(&path, error))?;
-            if !project.root.join("project.toml").is_file() {
-                return Err("不是独立游戏项目：缺少 project.toml".to_owned());
-            }
-            let _ = tx.send(ProgressEvent::Progress(0.3));
-            let document = ProjectDocument::open(project.clone());
-            let _ = tx.send(ProgressEvent::Progress(0.55));
-            let recovery = RecoveryManager::new(project.root.join(".temp"));
-            // 恢复快照扫描失败要**说出来**：静默当作"没有快照"会让用户以为编辑内容
-            // 已经没了，也让"恢复目录不可读"这类环境问题查不出来。
-            let recovery_scan = match recovery.scan() {
-                Ok(scan) => scan,
-                Err(error) => {
-                    let _ = tx.send(ProgressEvent::Line(format!(
-                        "警告：崩溃恢复快照扫描失败（{error}）；本次导入不会列出待恢复内容。\n"
-                    )));
-                    RecoveryScan::default()
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+            || -> Result<ImportOutcome, String> {
+                let project =
+                    open_project(&path).map_err(|error| format_project_error(&path, error))?;
+                if !project.root.join("project.toml").is_file() {
+                    return Err("不是独立游戏项目：缺少 project.toml".to_owned());
                 }
-            };
-            let _ = tx.send(ProgressEvent::Progress(0.7));
-            let mut resources = ResourceBrowserState::new();
-            if let Err(error) = resources.refresh(&project.root) {
-                return Err(format!("资源扫描失败：{error}"));
-            }
-            // 资源扫描是最重的一步，完成后接近收尾。
-            let _ = tx.send(ProgressEvent::Progress(0.9));
-            Ok(ImportOutcome {
-                project,
-                document,
-                recovery,
-                recovery_scan,
-                resources,
-            })
-        })();
+                let _ = tx.send(ProgressEvent::Progress(0.3));
+                let document = ProjectDocument::open(project.clone());
+                let _ = tx.send(ProgressEvent::Progress(0.55));
+                let recovery = RecoveryManager::new(project.root.join(".temp"));
+                // 恢复快照扫描失败要**说出来**：静默当作"没有快照"会让用户以为编辑内容
+                // 已经没了，也让"恢复目录不可读"这类环境问题查不出来。
+                let recovery_scan = match recovery.scan() {
+                    Ok(scan) => scan,
+                    Err(error) => {
+                        let _ = tx.send(ProgressEvent::Line(format!(
+                            "警告：崩溃恢复快照扫描失败（{error}）；本次导入不会列出待恢复内容。\n"
+                        )));
+                        RecoveryScan::default()
+                    }
+                };
+                let _ = tx.send(ProgressEvent::Progress(0.7));
+                let mut resources = ResourceBrowserState::new();
+                if let Err(error) = resources.refresh(&project.root) {
+                    return Err(format!("资源扫描失败：{error}"));
+                }
+                // 资源扫描是最重的一步，完成后接近收尾。
+                let _ = tx.send(ProgressEvent::Progress(0.9));
+                Ok(ImportOutcome {
+                    project,
+                    document,
+                    recovery,
+                    recovery_scan,
+                    resources,
+                })
+            },
+        ));
         match result {
-            Ok(outcome) => {
+            Ok(Ok(outcome)) => {
                 let _ = tx.send(ProgressEvent::Line("导入完成。\n".to_owned()));
                 let _ = tx.send(ProgressEvent::Finished {
                     success: true,
                     result: Some(Box::new(outcome)),
                 });
             }
-            Err(error) => {
+            Ok(Err(error)) => {
                 let _ = tx.send(ProgressEvent::Line(format!("导入失败：{error}\n")));
+                let _ = tx.send(ProgressEvent::Finished {
+                    success: false,
+                    result: None,
+                });
+            }
+            Err(panic) => {
+                let message = panic_message(&*panic);
+                let _ = tx.send(ProgressEvent::Line(format!(
+                    "导入线程异常退出：{message}\n"
+                )));
                 let _ = tx.send(ProgressEvent::Finished {
                     success: false,
                     result: None,
@@ -237,6 +269,8 @@ fn spawn_import(path: PathBuf, tx: Sender<ProgressEvent>) {
 
 /// 后台资源导入：对待导入项跑 importer batch，回写 DB，进度逐行回传。
 /// 不依赖前台状态：自行打开 DB/缓存实例，原子写盘防撕裂。
+/// worker 用 `catch_unwind` 兜底：线程一旦 panic（此前只能静默死亡），也要回传
+/// `Finished{success:false}`，否则"导入资源"进度面板会永远停在"进行中"。
 fn spawn_resource_import(
     root: PathBuf,
     items: Vec<(AssetId, PathBuf)>,
@@ -248,39 +282,44 @@ fn spawn_resource_import(
             "导入 {} 个资源...\n",
             items.len()
         )));
-        let result = (|| -> Result<ImportSummary, String> {
-            let mut database = ResourceDatabase::open(&root)
-                .map_err(|error| format!("资源库打开失败：{error}"))?;
-            let mut cache =
-                ImportCache::open(&root).map_err(|error| format!("导入缓存打开失败：{error}"))?;
-            let registry = ImporterRegistry::builtin();
-            let items: Vec<(AssetId, PathBuf)> = items
-                .into_iter()
-                .map(|(id, relative)| (id, root.join(relative)))
-                .collect();
-            // 按实际导入数量回报进度，驱动确定进度条。
-            let tx_progress = tx.clone();
-            let summary = run_import_batch_with_progress(
-                &root,
-                &mut database,
-                &mut cache,
-                registry,
-                &items,
-                &cancel,
-                |done, total| {
-                    let _ = tx_progress.send(ProgressEvent::Progress(done as f32 / total as f32));
-                },
-            );
-            // 导入可能修复/恢复了依赖（如失败的纹理重新就绪）：重新传播失效，
-            // 把消费者从 Invalid/Stale 撤回到可消费状态，再写盘。
-            database.propagate_invalidation();
-            database
-                .save()
-                .map_err(|error| format!("保存资源数据库失败：{error}"))?;
-            Ok(summary)
-        })();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+            || -> Result<ImportSummary, String> {
+                let mut database = ResourceDatabase::open(&root)
+                    .map_err(|error| format!("资源库打开失败：{error}"))?;
+                let mut cache = ImportCache::open(&root)
+                    .map_err(|error| format!("导入缓存打开失败：{error}"))?;
+                let registry = ImporterRegistry::builtin();
+                let items: Vec<(AssetId, PathBuf)> = items
+                    .into_iter()
+                    .map(|(id, relative)| (id, root.join(relative)))
+                    .collect();
+                // 按实际导入数量回报进度，驱动确定进度条。
+                let tx_progress = tx.clone();
+                let summary = run_import_batch_with_progress(
+                    &root,
+                    &mut database,
+                    &mut cache,
+                    registry,
+                    &items,
+                    &cancel,
+                    |done, total| {
+                        let _ =
+                            tx_progress.send(ProgressEvent::Progress(done as f32 / total as f32));
+                    },
+                );
+                // 导入可能修复/恢复了依赖（如失败的纹理重新就绪）：重新传播失效，
+                // 把消费者从 Invalid/Stale 撤回到可消费状态，再写盘。进度已到 100%，
+                // 先告知用户正在收尾，避免"100% 却一直进行中"被误认作卡死。
+                let _ = tx.send(ProgressEvent::Line("正在保存资源库…\n".to_owned()));
+                database.propagate_invalidation();
+                database
+                    .save()
+                    .map_err(|error| format!("保存资源数据库失败：{error}"))?;
+                Ok(summary)
+            },
+        ));
         match result {
-            Ok(summary) => {
+            Ok(Ok(summary)) => {
                 let _ = tx.send(ProgressEvent::Line(format!(
                     "导入完成：{} 个（导入 {}/复用 {}/失败 {}/跳过 {}），耗时 {}ms\n",
                     summary.total,
@@ -295,8 +334,18 @@ fn spawn_resource_import(
                     result: None,
                 });
             }
-            Err(error) => {
+            Ok(Err(error)) => {
                 let _ = tx.send(ProgressEvent::Line(format!("资源导入失败：{error}\n")));
+                let _ = tx.send(ProgressEvent::Finished {
+                    success: false,
+                    result: None,
+                });
+            }
+            Err(panic) => {
+                let message = panic_message(&*panic);
+                let _ = tx.send(ProgressEvent::Line(format!(
+                    "资源导入线程异常退出：{message}\n"
+                )));
                 let _ = tx.send(ProgressEvent::Finished {
                     success: false,
                     result: None,

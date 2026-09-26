@@ -10,7 +10,13 @@ use std::{
         atomic::{AtomicBool, Ordering},
         mpsc::Receiver,
     },
+    time::{Duration, Instant},
 };
+
+/// 看门狗静默阈值：任务线程在此时间内**未送来任何事件**，视为已卡死或已退出。
+/// 正常导入每个资源都会回传事件，最终保存前也有"正在保存资源库…"提示；
+/// 长时间静默只可能意味着线程阻塞或异常退出（`thread::spawn` 会静默吞掉 panic）。
+const WATCHDOG_SILENCE_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// 进度面板事件（任务线程 → 主线程）。
 pub(crate) enum ProgressEvent {
@@ -54,6 +60,8 @@ pub(crate) struct ProgressPanel {
     recentering: bool,
     /// 上一帧窗口尺寸，用于判断窗口尺寸是否已稳定。
     last_size: egui::Vec2,
+    /// 最近一次收到任务事件的时间（看门狗用：长时间无事件视为任务线程无响应）。
+    last_event_at: Option<Instant>,
 }
 
 impl ProgressPanel {
@@ -80,6 +88,8 @@ impl ProgressPanel {
         // 新任务：窗口出现时先居中。
         self.recentering = true;
         self.last_size = egui::Vec2::ZERO;
+        // 看门狗起点：任务线程通常立刻回传首条事件；即使卡住也有明确超时，不会永远"进行中"。
+        self.last_event_at = Some(Instant::now());
     }
 
     /// 每帧排空事件；返回本帧是否刚完成。
@@ -107,6 +117,24 @@ impl ProgressPanel {
                     }
                 }
             }
+            self.last_event_at = Some(Instant::now());
+        }
+        // 看门狗：任务线程长时间无事件 → 视为卡死/已退出，主动收尾并报失败，
+        // 避免"导入资源"等进度面板永远停在"进行中..."。
+        if !finished
+            && self
+                .last_event_at
+                .is_some_and(|last| last.elapsed() > WATCHDOG_SILENCE_TIMEOUT)
+        {
+            self.output.push_str(&format!(
+                "任务线程超过 {} 秒未响应（可能已卡死或异常退出），已标记为失败。\n",
+                WATCHDOG_SILENCE_TIMEOUT.as_secs()
+            ));
+            self.running = false;
+            self.done = true;
+            self.success = false;
+            self.rx = None;
+            finished = true;
         }
         if finished {
             self.running = false;

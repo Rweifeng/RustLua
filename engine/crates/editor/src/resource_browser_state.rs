@@ -135,6 +135,18 @@ impl ResourceBrowserState {
         self.import_attempted.clear();
     }
 
+    /// 跨刷新保留"已尝试"签名表，并按保留后的表**重算待导入队列**。
+    ///
+    /// 后台刷新（`RefreshHandle`）产出的是**全新**的 `ResourceBrowserState`
+    /// （`import_attempted` 为空），其 `pending_imports` 是在空表下算出来的——未就绪
+    /// 资源会全部重新排队。主线程应用前调用本方法：把旧表的签名搬过来（`import_attempted`
+    /// 记的是**尝试时签名**，`current_signatures` 仍取新扫描的结果），再重算队列，
+    /// 去重守卫才真正生效——否则未就绪资源每次刷新都重新导入，"导入资源"弹窗
+    /// 无限重开、进度条反复停在 100% 进行中（第 49 轮报障的形态）。
+    pub fn preserve_attempted_from(&mut self, previous: &Self) {
+        self.import_attempted = previous.import_attempted.clone();
+        self.recompute_pending();
+    }
     /// 该路径在**最近一次刷新**里的签名（不在盘上 = 0）。
     fn signature_of(&self, path: &Path) -> u64 {
         self.current_signatures.get(path).copied().unwrap_or(0)
@@ -263,6 +275,14 @@ impl ResourceBrowserState {
         // `start_resource_import` 每帧重开"导入资源"弹窗（见字段注释）。内容变了签名就变，
         // 自然重新排队。Invalid（依赖断链）不加入——重导消费者自己无法修复，等依赖恢复后
         // 传播自动撤销。
+        self.recompute_pending();
+        self.last_refresh = Some(SystemTime::now());
+        Ok(())
+    }
+
+    /// 按当前条目与"已尝试"签名表重算待导入队列（`refresh` 与
+    /// `preserve_attempted_from` 共用）。
+    fn recompute_pending(&mut self) {
         let attempted = &self.import_attempted;
         self.pending_imports = self
             .entries
@@ -283,8 +303,6 @@ impl ResourceBrowserState {
                 needs_import.then_some((id, entry.path.clone()))
             })
             .collect();
-        self.last_refresh = Some(SystemTime::now());
-        Ok(())
     }
 }
 
@@ -595,6 +613,59 @@ mod tests {
         assert!(
             browser.pending_imports().is_empty(),
             "attempted+failed 资源不再自动重试"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// **回归**（本轮报障）：去重守卫必须跨刷新存活。
+    ///
+    /// 生产路径里 `poll_resource_refresh` 用后台 worker 产出的**全新**状态整体替换
+    /// `self.resources`（worker 的 `import_attempted` 是空的）。若不把旧状态的
+    /// 已尝试签名搬过来，`unchanged_assets_are_not_retried_after_attempt` 的守卫只在
+    /// "同一对象连续 refresh" 的测试里成立，真实编辑器里每次刷新都会把未就绪资源
+    /// 重新排队 → "导入资源"弹窗无限重开、进度条反复停在 100% 进行中。
+    #[test]
+    fn attempted_dedup_survives_state_replacement() {
+        let root = temp_root("state-replace");
+        file(&root, "assets/player.png", b"png");
+        // 第一轮刷新（模拟刷新 J1 落地后的状态）：产出待导入项。
+        let mut applied = ResourceBrowserState::new();
+        applied.refresh(&root).unwrap();
+        let pending = applied.pending_imports().to_vec();
+        assert_eq!(pending.len(), 1);
+        // 导入启动：记录已尝试签名（模拟 start_resource_import 的 record_import_attempts）。
+        applied.record_import_attempts(&pending);
+
+        // 导入完成后再刷新：worker 产出全新状态（import_attempted 为空），
+        // 主线程应用前必须 preserve_attempted_from 旧状态，否则去重失效。
+        let mut worker_state = ResourceBrowserState::new();
+        worker_state.refresh(&root).unwrap();
+        assert!(
+            worker_state.pending_imports().len() == 1,
+            "worker 全新状态没有去重记录，待导入项重新出现"
+        );
+        worker_state.preserve_attempted_from(&applied);
+        assert!(
+            worker_state.pending_imports().is_empty(),
+            "preserve 后同一内容不得再次排队"
+        );
+        // 再模拟几轮刷新替换：必须持续保持空（弹窗不会自己回来）。
+        for _ in 0..3 {
+            let mut next = ResourceBrowserState::new();
+            next.refresh(&root).unwrap();
+            next.preserve_attempted_from(&worker_state);
+            assert!(next.pending_imports().is_empty());
+            worker_state = next;
+        }
+        // 内容变化后签名不同 → 自动重新排队（语义不被破坏）。
+        file(&root, "assets/player.png", b"png3");
+        let mut changed = ResourceBrowserState::new();
+        changed.refresh(&root).unwrap();
+        changed.preserve_attempted_from(&worker_state);
+        assert_eq!(
+            changed.pending_imports().len(),
+            1,
+            "内容变了就该自动再试一次"
         );
         let _ = fs::remove_dir_all(root);
     }

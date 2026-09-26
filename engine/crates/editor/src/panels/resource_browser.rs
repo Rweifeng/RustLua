@@ -424,6 +424,7 @@ impl EditorApp {
             }
             editor::RefreshPoll::Ready(result) => *result,
         };
+        let mut result = result;
         self.resource_refresh_job = None;
         self.profiler.bump("resource_refresh_applied");
         if let Some(error) = result.error {
@@ -432,6 +433,10 @@ impl EditorApp {
             return;
         }
         let started = Instant::now();
+        // 后台刷新产出的是全新状态（`import_attempted` 为空）：应用前把旧状态的
+        // 已尝试签名表搬过来，去重守卫才能跨刷新存活（否则未就绪资源每次刷新都
+        // 重新排队 → "导入资源"弹窗无限重开）。
+        result.state.preserve_attempted_from(&self.resources);
         self.resources = result.state;
         if self.selected_resource.as_ref().is_some_and(|selected| {
             self.resources
