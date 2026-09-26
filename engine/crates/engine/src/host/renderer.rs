@@ -12,6 +12,7 @@ use std::{
 
 use crate::core::{
     asset_handle::AssetHandle,
+    async_loader::{AsyncLoader, LoadMode},
     camera::{
         Camera3D, CameraView, ClearPolicy, DEFAULT_3D_CLEAR, FrameViews, RenderView, Viewport,
     },
@@ -445,6 +446,10 @@ pub struct Renderer {
     /// 身份缓存命中/未命中次数（诊断/验收用：证明身份这条路真的被走到了）。
     texture_identity_hits: u64,
     texture_identity_misses: u64,
+    /// P0-②：异步资源加载（后台读盘 + CPU 解码，主线程小步 GPU 上传）。
+    /// 游戏运行（`Renderer::new`）为 Async；golden / 编辑器离屏预览（`new_offscreen`）
+    /// 为 Sync，保证确定性输出里绝无异步加载。
+    async_loader: AsyncLoader,
     white: Option<wgpu::BindGroup>,
     atlas: Option<wgpu::BindGroup>,
     font_atlas_texture: Option<wgpu::Texture>,
@@ -595,6 +600,13 @@ impl Renderer {
         cull_enabled: bool,
         instancing_enabled: bool,
     ) -> Result<Self, String> {
+        // P0-②：窗口渲染（游戏运行）走异步加载；离屏渲染（golden / 编辑器预览）走同步，
+        // 保证确定性输出里绝无异步加载。
+        let async_mode = if window.is_some() {
+            LoadMode::Async
+        } else {
+            LoadMode::Sync
+        };
         // Surface mode: create instance/adapter/device from the window.
         // Offscreen mode: use the caller-provided device/queue.
         let (device, queue, surface, format, config, adapter_name) = if let Some(window) = window {
@@ -1552,6 +1564,7 @@ impl Renderer {
             texture_slots: HashMap::new(),
             texture_identity_hits: 0,
             texture_identity_misses: 0,
+            async_loader: AsyncLoader::new(async_mode),
             white: None,
             atlas: None,
             font_atlas_texture: None,
@@ -1690,11 +1703,8 @@ impl Renderer {
                 return self.mesh_cache.get(&key);
             }
             self.mesh_identity_misses += 1;
-            if !self.mesh_cache.contains_key(path)
-                && let Some(cached) = self.load_cached_mesh(path)
-            {
-                self.mesh_cache.insert(path.to_owned(), cached);
-                tracing::info!(target: "render", path = %path, "[render] 3D mesh cached");
+            if !self.mesh_cache.contains_key(path) {
+                self.request_mesh_load(path);
             }
             if self.mesh_cache.contains_key(path) {
                 self.mesh_slots.insert(handle, path.to_owned());
@@ -1702,34 +1712,17 @@ impl Renderer {
             return self.mesh_cache.get(path);
         }
         // 没有身份：旧路径（行为与收敛前一致）。
-        if !self.mesh_cache.contains_key(path)
-            && let Some(cached) = self.load_cached_mesh(path)
-        {
-            self.mesh_cache.insert(path.to_owned(), cached);
-            tracing::info!(target: "render", path = %path, "[render] 3D mesh cached");
+        if !self.mesh_cache.contains_key(path) {
+            self.request_mesh_load(path);
         }
         self.mesh_cache.get(path)
     }
 
-    fn load_cached_mesh(&mut self, path: &str) -> Option<CachedMesh> {
-        if path == GROUND_PLANE_SENTINEL {
-            return Some(self.ground_plane_cached_mesh());
-        }
-        let root = self.project_root.as_ref()?;
-        let file = root.join(path);
-        if !file.is_file() {
-            tracing::warn!(target: "render", path = %path, "[render] 3D mesh file missing; skipped");
-            return None;
-        }
-        let meshes = match MeshAsset::from_gltf_path(&file) {
-            Ok(meshes) => meshes,
-            Err(error) => {
-                tracing::warn!(target: "render", path = %path, error = %error, "[render] 3D mesh load failed; skipped");
-                return None;
-            }
-        };
+    /// 把已解析的 `MeshAsset` 转成 GPU 侧 `CachedMesh`（上传几何 + albedo）。
+    /// 同步与异步路径共用这一份转换，保证两条路径的 GPU 产物完全一致。
+    fn cached_from_meshes(&mut self, path: &str, meshes: &[MeshAsset]) -> Option<CachedMesh> {
         let mut primitives = Vec::new();
-        for mesh in &meshes {
+        for mesh in meshes {
             for primitive in &mesh.primitives {
                 let material = mesh.materials.get(primitive.material.unwrap_or(usize::MAX));
                 let albedo = material
@@ -1759,6 +1752,88 @@ impl Renderer {
             return None;
         }
         Some(CachedMesh { primitives })
+    }
+
+    /// P0-②：网格 MISS 的异步请求 + 收完成品上传。Async 下资源后台解码、就绪后入缓存；
+    /// Sync 下 request 同步完成、同一调用内即入缓存。
+    fn request_mesh_load(&mut self, path: &str) {
+        if path == GROUND_PLANE_SENTINEL {
+            // 地面哨兵不走文件加载（也没有异步文件）；直接同步合成并缓存。
+            self.mesh_cache
+                .insert(path.to_owned(), self.ground_plane_cached_mesh());
+            return;
+        }
+        let resolved = self
+            .project_root
+            .as_ref()
+            .map(|root| root.join(path))
+            .unwrap_or_else(|| PathBuf::from(path));
+        self.async_loader.request_gltf(path, &resolved);
+        let drained = self.async_loader.drain_ready();
+        self.upload_decoded(drained);
+    }
+
+    /// P0-②：主线程把本轮完成的异步解码产物做 GPU 上传并写入缓存。
+    ///
+    /// 这是"后台解码、主线程小步上传"的上传侧：`wgpu` 的提交本身不阻塞，真正卡主线程的
+    /// CPU 解码已全部下移到 worker。失败资源只记 warning（调用方已有占位回退），不崩溃。
+    fn upload_decoded(&mut self, assets: Vec<crate::core::async_loader::DecodedAsset>) {
+        for asset in assets {
+            if let Some(error) = &asset.error {
+                tracing::warn!(
+                    target: "render",
+                    path = %asset.key,
+                    error = %error,
+                    "[render] async asset load failed; fallback used"
+                );
+                continue;
+            }
+            match asset.kind {
+                crate::core::async_loader::LoadKind::TexturePng => {
+                    if let Some(texture) = asset.texture {
+                        if self.textures.iter().any(|entry| entry.path == asset.key) {
+                            continue; // 已上传过（并发请求去重后的兜底）。
+                        }
+                        match self.upload_texture(&texture, &asset.key) {
+                            Some(bind) => {
+                                self.textures.push(LoadedTexture {
+                                    path: asset.key.clone(),
+                                    bind_group: bind,
+                                });
+                                tracing::info!(
+                                    target: "render",
+                                    path = %asset.key,
+                                    dimensions = ?(texture.width(), texture.height()),
+                                    "[render] texture loaded (async)"
+                                );
+                            }
+                            None => {
+                                tracing::warn!(
+                                    target: "render",
+                                    path = %asset.key,
+                                    "[render] texture GPU upload failed; fallback used"
+                                );
+                            }
+                        }
+                    }
+                }
+                crate::core::async_loader::LoadKind::GltfMesh => {
+                    if let Some(meshes) = asset.meshes {
+                        if self.mesh_cache.contains_key(&asset.key) {
+                            continue;
+                        }
+                        if let Some(cached) = self.cached_from_meshes(&asset.key, &meshes) {
+                            self.mesh_cache.insert(asset.key.clone(), cached);
+                            tracing::info!(
+                                target: "render",
+                                path = %asset.key,
+                                "[render] 3D mesh cached (async)"
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Uploads decoded base-color pixels (RGBA8) as an sRGB GPU texture and
@@ -3616,24 +3691,22 @@ impl Renderer {
             .as_ref()
             .map(|root| root.join(path))
             .unwrap_or_else(|| PathBuf::from(path));
-        let asset = match TextureAsset::load_png(&resolved, TextureColorSpace::Srgb) {
-            Ok(asset) => asset,
-            Err(error) => {
-                tracing::warn!(target: "render", path = %path, error = %error, "[render] texture load failed; falling back to white");
-                return self.ensure_white();
-            }
-        };
-        let bind = self.upload_texture(&asset, path)?;
-        let slot = self.textures.len();
-        self.textures.push(LoadedTexture {
-            path: path.to_owned(),
-            bind_group: bind.clone(),
-        });
-        if let Some(handle) = handles.get(texture as usize - 1).copied() {
-            self.texture_slots.insert(handle, slot);
+        // P0-②：MISS → 异步请求（幂等）并收走本轮完成的解码产物上传。
+        // Async 下若本路径未就绪，先回退白贴图，就绪后后续帧自动命中真实贴图；
+        // Sync 下请求同步完成、同一调用内即命中，golden 逐字节不变。
+        self.async_loader.request_texture(path, &resolved);
+        let drained = self.async_loader.drain_ready();
+        if !drained.is_empty() {
+            self.upload_decoded(drained);
         }
-        tracing::info!(target: "render", path = %path, dimensions = ?(asset.width(), asset.height()), "[render] texture loaded");
-        Some(bind)
+        if let Some(slot) = self.textures.iter().position(|entry| entry.path == *path) {
+            if let Some(handle) = handles.get(texture as usize - 1).copied() {
+                self.texture_slots.insert(handle, slot);
+            }
+            return Some(self.textures[slot].bind_group.clone());
+        }
+        tracing::debug!(target: "render", path = %path, "[render] texture not ready yet; white fallback this frame");
+        self.ensure_white()
     }
 
     fn ensure_white(&mut self) -> Option<wgpu::BindGroup> {

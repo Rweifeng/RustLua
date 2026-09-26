@@ -8,6 +8,8 @@ pub mod animation3d;
 pub mod animation_track;
 /// docs/54 §4.4：运行时资源身份（`AssetHandle` 稳定句柄 + `AssetStore` 注册表）。
 pub mod asset_handle;
+/// P0-②：异步资源加载（后台读盘 + CPU 解码，主线程小步 GPU 上传；双模式：Async / Sync）。
+pub mod async_loader;
 /// Texture atlas regions and named Sprite sub-assets.
 pub mod atlas;
 /// Named sound-effect playback backed by rodio.
