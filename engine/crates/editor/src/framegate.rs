@@ -135,7 +135,7 @@ impl GuiSmoke {
         app.document.current_scene = Some(smoke_document());
         app.selection.clear(editor::SelectionSource::Hierarchy);
         app.show_domain_overlay = false;
-        app.show_performance_hud = false;
+        app.show_performance_panel = false;
         let ctx = egui::Context::default();
         ctx.set_theme(egui::Theme::Dark);
         ctx.set_pixels_per_point(pixels_per_point);

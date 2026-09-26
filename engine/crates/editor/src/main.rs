@@ -509,6 +509,19 @@ struct EditorApp {
     /// docs/55 §8 质量门把"输入焦点"列为 GUI smoke 的一项：键入时 Q/W/E/R 这类快捷键
     /// **不得**抢键。要把这条变成可自动化的断言，合成指针事件必须有一个真实的输入框落点。
     pub(crate) hierarchy_filter_rect: egui::Rect,
+    /// 本帧中央工作区（`CentralPanel`：工具栏 + Scene/Game 视图）的屏幕矩形。
+    ///
+    /// 浮层窗口（性能面板）要落在**工作区**右下角，而不是整个视口右下角——
+    /// `egui::Context::content_rect` 只排除了操作系统的标题栏/状态栏，**不**排除停靠面板，
+    /// 用它定位会让窗口压到右侧属性面板与底部控制台上（第一版就是这样）。
+    pub(crate) workspace_rect: egui::Rect,
+    /// 本帧性能面板窗口的屏幕矩形（`NOTHING` = 面板关着）。
+    ///
+    /// 与 `scene_canvas_rect` 同一用途：让"性能面板不压住 Scene 右上角工具条"这条
+    /// 用户报过的重叠变成可断言的量，而不是靠看截图（见 `panels/performance` 测试）。
+    pub(crate) perf_panel_rect: egui::Rect,
+    /// 本帧 Scene 视图右上角工具条（选择/移动/旋转/缩放）的屏幕矩形。
+    pub(crate) scene_tools_rect: egui::Rect,
     /// docs/55 阶段 0：真实窗口 GUI/GPU 证据运行器（`P2_EDITOR_GUI_EVIDENCE=<目录>`）。
     /// 生产运行为 `None`，每帧只多一次 `Option` 判断。
     gui_evidence: Option<crate::gui_evidence::GuiEvidence>,
@@ -525,7 +538,8 @@ struct EditorApp {
     show_scene_guides: bool,
     show_safe_area: bool,
     show_pixel_grid: bool,
-    show_performance_hud: bool,
+    /// 性能面板（独立弹窗）是否打开；数字本身由 `panels::performance` 绘制。
+    show_performance_panel: bool,
     snap_enabled: bool,
     snap_step: f32,
     hierarchy_filter: String,
@@ -695,7 +709,7 @@ struct EditorApp {
     ui_animation_playing: bool,
     /// E24: deduplicated Game View / Console diagnostics.
     preview_diagnostics: DiagnosticCollector,
-    /// E25: layout cache statistics exposed through the performance HUD.
+    /// E25: layout cache statistics exposed through the performance panel.
     ui_layout_cache: UiLayoutCache,
     /// E27: fault-isolated extension container held by the editor app.
     plugin_registry: PluginRegistry,
@@ -1118,6 +1132,9 @@ impl EditorApp {
             scene_view_mode: SceneViewMode::default(),
             scene_canvas_rect: egui::Rect::NOTHING,
             hierarchy_filter_rect: egui::Rect::NOTHING,
+            perf_panel_rect: egui::Rect::NOTHING,
+            scene_tools_rect: egui::Rect::NOTHING,
+            workspace_rect: egui::Rect::NOTHING,
             gui_evidence: None,
             gui_evidence_failed: false,
             gui_soak: None,
@@ -1127,7 +1144,7 @@ impl EditorApp {
             show_scene_guides: false,
             show_safe_area: false,
             show_pixel_grid: false,
-            show_performance_hud: false,
+            show_performance_panel: false,
             snap_enabled: false,
             snap_step: 0.5,
             hierarchy_filter: String::new(),
@@ -2076,7 +2093,7 @@ impl EditorApp {
         // 行3 Scene+Game（中央）+ 工具栏。
         {
             let started = Instant::now();
-            egui::CentralPanel::default().show(context, |ui| {
+            let workspace = egui::CentralPanel::default().show(context, |ui| {
                 self.draw_workspace_toolbar(ui);
                 ui.separator();
                 match self.workspace_tab {
@@ -2084,6 +2101,7 @@ impl EditorApp {
                     WorkspaceTab::Game => self.draw_game_view(ui),
                 }
             });
+            self.workspace_rect = workspace.response.rect;
             self.profiler.record_panel("workspace", started.elapsed());
         }
 
@@ -2094,6 +2112,8 @@ impl EditorApp {
         // （只读探针）都是可开关的独立窗口。
         self.draw_domain_data_panel(context);
         self.draw_runtime_debug_panel(context);
+        // 性能面板（独立弹窗）：升级后的 Scene 视图不再往画布上叠性能文字。
+        self.draw_performance_panel(context);
         self.draw_about_window(context);
         // E06：最后绘制「未保存的更改」确认窗，置于其余窗口之上；仅在 dirty 且
         // 有挂起的离开操作时显示，此时其它面板保持原样、文档不被改动。

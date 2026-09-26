@@ -153,7 +153,7 @@ pub(crate) enum MenuAction {
     ToggleDomainData,
     ToggleRuntimeDebug,
     TogglePublishPanel,
-    TogglePerformanceHud,
+    TogglePerformancePanel,
     TogglePixelGrid,
     ToggleSceneGuides,
     ToggleSafeArea,
@@ -304,7 +304,10 @@ const WINDOW_MENU: &[MenuRow] = &[
     MenuRow::Item(MenuItem::new("领域数据", MenuAction::ToggleDomainData)),
     MenuRow::Item(MenuItem::new("运行时调试", MenuAction::ToggleRuntimeDebug)),
     MenuRow::Item(MenuItem::new("发布面板", MenuAction::TogglePublishPanel)),
-    MenuRow::Item(MenuItem::new("性能 HUD", MenuAction::TogglePerformanceHud)),
+    MenuRow::Item(MenuItem::new(
+        "性能面板",
+        MenuAction::TogglePerformancePanel,
+    )),
     MenuRow::Separator,
     MenuRow::WorkspaceTabs,
     MenuRow::ViewModes,
@@ -595,8 +598,8 @@ impl EditorApp {
                 self.show_runtime_debug_panel = !self.show_runtime_debug_panel;
             }
             MenuAction::TogglePublishPanel => self.show_publish_panel = !self.show_publish_panel,
-            MenuAction::TogglePerformanceHud => {
-                self.show_performance_hud = !self.show_performance_hud;
+            MenuAction::TogglePerformancePanel => {
+                self.show_performance_panel = !self.show_performance_panel;
             }
             MenuAction::TogglePixelGrid => self.show_pixel_grid = !self.show_pixel_grid,
             MenuAction::ToggleSceneGuides => self.show_scene_guides = !self.show_scene_guides,

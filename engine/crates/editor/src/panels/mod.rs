@@ -9,6 +9,8 @@ pub(crate) mod input_bindings;
 pub(crate) mod inspector;
 /// egui 键 ⇄ 引擎物理键的唯一转换层（M22/W1）。
 pub(crate) mod keymap;
+/// 性能面板（独立弹窗）：帧/面板/命令耗时、布局缓存与队列计数。
+pub(crate) mod performance;
 pub(crate) mod progress;
 pub(crate) mod project_settings;
 pub(crate) mod publish;

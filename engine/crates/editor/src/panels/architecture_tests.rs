@@ -55,6 +55,7 @@ const PINNED_WRITES: &[(&str, usize)] = &[
     ("inspector.rs", 0),
     ("keymap.rs", 0),
     ("mod.rs", 0),
+    ("performance.rs", 0),
     ("progress.rs", 0),
     ("project_settings.rs", 0),
     ("publish.rs", 0),

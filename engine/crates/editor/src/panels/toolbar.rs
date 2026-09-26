@@ -226,7 +226,8 @@ impl EditorApp {
             ui.checkbox(&mut self.show_scene_guides, "辅助线");
             ui.checkbox(&mut self.show_safe_area, "Safe Area");
             ui.checkbox(&mut self.show_pixel_grid, "像素网格");
-            ui.checkbox(&mut self.show_performance_hud, "性能");
+            ui.checkbox(&mut self.show_performance_panel, "性能")
+                .on_hover_text("性能面板（独立弹窗：帧/面板/命令耗时、缓存与队列计数）");
             // M19-03：出口/地点只读覆盖层 + 两个可开关的生产工具窗口。
             ui.checkbox(&mut self.show_domain_overlay, "出口/地点");
             if icon_toggle(

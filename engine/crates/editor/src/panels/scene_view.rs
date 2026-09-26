@@ -199,80 +199,9 @@ impl EditorApp {
             egui::FontId::proportional(16.0),
             egui::Color32::LIGHT_GRAY,
         );
-        if self.show_performance_hud {
-            let stats = *self.ui_layout_cache.stats();
-            let total_hits = stats.hits + stats.misses;
-            let hit_rate = if total_hits == 0 {
-                0.0
-            } else {
-                stats.hits as f32 / total_hits as f32 * 100.0
-            };
-            painter.text(
-                rect.right_top() + egui::vec2(-12.0, 12.0),
-                egui::Align2::RIGHT_TOP,
-                format!(
-                    "layout cache {} entries · {} hits · {} misses · {:.1}% · {} invalidations",
-                    stats.entries, stats.hits, stats.misses, hit_rate, stats.invalidations
-                ),
-                egui::FontId::monospace(11.0),
-                egui::Color32::from_rgb(170, 220, 240),
-            );
-            // Editor Profiler（docs/55 P0）：帧分布 + 最热面板 + 队列/缓存计数。
-            let profiler = self.profiler.report();
-            let hottest = profiler
-                .panels
-                .iter()
-                .max_by(|left, right| left.p95_ms.total_cmp(&right.p95_ms))
-                .map(|panel| format!("{} {:.1}ms", panel.name, panel.p95_ms))
-                .unwrap_or_else(|| "n/a".to_owned());
-            let hud_color = if profiler.frame_budget_exceeded() {
-                egui::Color32::from_rgb(240, 180, 90)
-            } else {
-                egui::Color32::from_rgb(170, 220, 240)
-            };
-            painter.text(
-                rect.right_top() + egui::vec2(-12.0, 26.0),
-                egui::Align2::RIGHT_TOP,
-                format!(
-                    "frame {:.1}/{:.1}ms p50/p95 (budget {:.1}) · worst {hottest} · over {}/{}",
-                    profiler.frame_p50_ms,
-                    profiler.frame_p95_ms,
-                    profiler.frame_budget_ms,
-                    profiler.over_budget_frames,
-                    profiler.frame_samples
-                ),
-                egui::FontId::monospace(11.0),
-                hud_color,
-            );
-            painter.text(
-                rect.right_top() + egui::vec2(-12.0, 40.0),
-                egui::Align2::RIGHT_TOP,
-                format!(
-                    "undo {} (dropped {}) · rows {} · entities {} · resources {} · pending import {} · scans {}",
-                    self.history.undo_len(),
-                    self.history.dropped_entries(),
-                    self.hierarchy_visible_cache.len(),
-                    profiler
-                        .gauges
-                        .iter()
-                        .find(|(name, _)| name == "scene_entities")
-                        .map_or(0.0, |(_, value)| *value),
-                    profiler
-                        .gauges
-                        .iter()
-                        .find(|(name, _)| name == "resource_entries")
-                        .map_or(0.0, |(_, value)| *value),
-                    profiler
-                        .gauges
-                        .iter()
-                        .find(|(name, _)| name == "resource_pending_imports")
-                        .map_or(0.0, |(_, value)| *value),
-                    self.profiler.counter("resource_refresh_applied"),
-                ),
-                egui::FontId::monospace(11.0),
-                egui::Color32::from_rgb(150, 200, 170),
-            );
-        }
+        // 性能数字**不在这里画**：它们是独立弹窗（`panels::performance`），
+        // 因为本视图右上角是工具小面板（见 `draw_scene_tool_panel`），两段文字叠在一起时
+        // 工具按钮被盖住、数字也读不全。
         // Scene View 的过滤只按**名称词**（`type:` 词管 Hierarchy 的行可见性，
         // 不该让视口里的对象凭空消失——见 `HierarchyFilter::matches_name`）。
         let filter = crate::panels::hierarchy::HierarchyFilter::parse(&self.hierarchy_filter);
@@ -1391,6 +1320,9 @@ impl EditorApp {
             egui::pos2(rect.right() - width - 4.0, rect.top() + 4.0),
             egui::vec2(width, 26.0),
         );
+        // 本帧工具条的屏幕矩形：性能面板的默认位置与它**不得相交**（用户报的重叠就是这两块
+        // 文字/控件叠在同一角落）。生产路径每帧一次 `Rect` 写入，与 `scene_canvas_rect` 同源。
+        self.scene_tools_rect = tools_rect;
         let tool = self.scene_tool();
         let mode = self.tool_mode();
         let mut requested: Option<SceneTool> = None;
