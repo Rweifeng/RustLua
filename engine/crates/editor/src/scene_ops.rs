@@ -172,6 +172,7 @@ impl EditorApp {
                         flip_x: false,
                         flip_y: false,
                         z: 0.0,
+                        nine_slice: None,
                     };
                     entity
                         .components

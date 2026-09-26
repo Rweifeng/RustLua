@@ -911,6 +911,9 @@ const SPRITE_FIELDS: &[FieldSchema] = &[
     FieldSchema::new("flip_x", FieldKind::Bool, false),
     FieldSchema::new("flip_y", FieldKind::Bool, false),
     FieldSchema::new("z", FieldKind::Number, false),
+    // P2-②b：Sprite 九宫格（归一化边界 [l,r,t,b]）。与 `Image.nine_slice` 同款：
+    // Vec4 + 非负规则；可选——旧项目无此字段仍无损打开（schema 审计守住）。
+    FieldSchema::new("nine_slice", FieldKind::Vec4, false).with_rules(&[FieldRule::NonNegative]),
 ];
 
 /// `QuadComponent::to_component_str`：size 是逗号分隔（与 Sprite 的 `x` 形式不同）。

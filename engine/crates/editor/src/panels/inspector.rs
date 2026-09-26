@@ -669,10 +669,49 @@ impl EditorApp {
                             if self.tilemap.map.solid.len() != target_len {
                                 self.tilemap.map.solid.resize(target_len, false);
                             }
+                            // P2-②a：Tile Palette——可视化瓦片调色板（0=擦除 + TILE_PALETTE 6 色）。
+                            // 取代"画笔=数字 DragValue"的盲选：色块即瓦片，点击即选，当前画笔描白边。
                             ui.horizontal(|ui| {
-                                ui.label("画笔");
+                                ui.label("调色板");
+                                for tile in 0..=6_u8 {
+                                    let color = if tile == 0 {
+                                        egui::Color32::from_gray(42)
+                                    } else {
+                                        let [r, g, b, _] =
+                                            engine::core::tilemap::TILE_PALETTE[(tile - 1) as usize];
+                                        egui::Color32::from_rgba_unmultiplied(
+                                            (r * 255.0) as u8,
+                                            (g * 255.0) as u8,
+                                            (b * 255.0) as u8,
+                                            255,
+                                        )
+                                    };
+                                    let selected = self.tilemap.brush == tile;
+                                    let swatch = egui::Button::new(
+                                        egui::RichText::new(if tile == 0 { "×" } else { "" })
+                                            .color(egui::Color32::from_gray(200)),
+                                    )
+                                    .fill(color)
+                                    .min_size(egui::vec2(22.0, 22.0))
+                                    .stroke(if selected {
+                                        egui::Stroke::new(2.0_f32, egui::Color32::WHITE)
+                                    } else {
+                                        egui::Stroke::new(1.0_f32, egui::Color32::from_gray(90))
+                                    });
+                                    if ui.add(swatch).clicked() {
+                                        self.tilemap.brush = tile;
+                                    }
+                                }
                                 ui.add(egui::DragValue::new(&mut self.tilemap.brush).range(0..=6));
+                            });
+                            ui.horizontal(|ui| {
                                 ui.checkbox(&mut self.tilemap.paint_collision, "画碰撞层");
+                                if ui.button("预览碰撞层").clicked() {
+                                    self.tilemap.preview_collision = !self.tilemap.preview_collision;
+                                }
+                                if self.tilemap.preview_collision {
+                                    ui.label("（碰撞层半透明覆盖）");
+                                }
                             });
                             ui.label("点击下方网格可直接编辑视觉层或碰撞层。");
                             let preview_width = self.tilemap.map.width.min(24);
@@ -1319,6 +1358,7 @@ impl EditorApp {
                             flip_x: false,
                             flip_y: false,
                             z: 0.0,
+                            nine_slice: None,
                         }
                         .to_component_str(),
                     );

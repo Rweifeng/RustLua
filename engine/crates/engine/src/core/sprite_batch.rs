@@ -172,7 +172,7 @@ pub trait WorldSpriteVertexSink: Copy + Send {
     fn from_world(position: [f32; 3], uv: [f32; 2], color: [f32; 4]) -> Self;
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum SpriteBatchError {
     Sprite { index: usize, error: SpriteError },
     Coordinate(CoordinateError),
@@ -289,6 +289,13 @@ impl SpriteBatch {
     ) -> Result<SpriteBatchMesh, SpriteBatchError> {
         // 相机每帧只烘焙一次：逐精灵的顶点生成因此不再校验相机、不再算三角函数。
         let camera = OrthoTerms::new(camera, viewport)?;
+        // P2-②b：九宫格打破"每项固定 6 顶点"的并行分块前提（一项产出 9×6=54 顶点），
+        // 因此混有九宫格项时整体降级串行——九宫格是少数派（面板/按钮类纹理），性能非关键；
+        // 纯普通精灵场景仍走并行分块，输出逐字节不变。
+        let has_sliced = self
+            .items
+            .iter()
+            .any(|item| item.sprite.nine_slice.is_some());
         let mut ordered: Vec<(usize, &SpriteBatchItem)> = self.items.iter().enumerate().collect();
         ordered.sort_by(|(left_index, left), (right_index, right)| {
             left.layer
@@ -296,6 +303,40 @@ impl SpriteBatch {
                 .then_with(|| left.texture_id.cmp(&right.texture_id))
                 .then_with(|| left_index.cmp(right_index))
         });
+        if has_sliced {
+            let mut vertices = Vec::new();
+            let mut draws: Vec<SpriteDrawBatch> = Vec::new();
+            let mut start = 0usize;
+            for (_, item) in &ordered {
+                let quads = item
+                    .sprite
+                    .quad_sliced_with_terms(item.transform, camera)
+                    .map_err(|error| SpriteBatchError::Sprite {
+                        index: start,
+                        error,
+                    })?;
+                let count = quads.len();
+                for quad in quads {
+                    vertices.extend_from_slice(&quad.vertices);
+                }
+                if let Some(previous) = draws.last_mut()
+                    && previous.texture_id == item.texture_id
+                    && previous.layer == item.layer
+                {
+                    previous.vertex_count += count * 6;
+                } else {
+                    draws.push(SpriteDrawBatch::translucent(
+                        item.texture_id,
+                        item.layer,
+                        crate::core::layer::RenderLayer::World2D,
+                        start,
+                        count * 6,
+                    ));
+                }
+                start += count * 6;
+            }
+            return Ok(SpriteBatchMesh { vertices, draws });
+        }
         // 每精灵固定 6 个顶点：输出按项数 × 6 一次开好，分块就地写入，不做二次拼接。
         let mut vertices = vec![SpriteVertex::default(); ordered.len() * 6];
         let (generated, _parallel) = map_chunks_in_place(
@@ -367,6 +408,11 @@ impl SpriteBatch {
     ) -> Result<(), SpriteBatchError> {
         // 同上：烘焙一次，逐精灵只做乘加。
         let camera = OrthoTerms::new(camera, viewport)?;
+        // P2-②b：同 `build_with_parallelism`——九宫格降级串行（一项产 54 顶点）。
+        let has_sliced = self
+            .items
+            .iter()
+            .any(|item| item.sprite.nine_slice.is_some());
         let mut ordered: Vec<(usize, &SpriteBatchItem)> = self.items.iter().enumerate().collect();
         ordered.sort_by(|(left_index, left), (right_index, right)| {
             left.layer
@@ -378,6 +424,41 @@ impl SpriteBatch {
             ordered.retain(|(_, item)| sprite_may_be_visible(item, camera));
         }
         if ordered.is_empty() {
+            return Ok(());
+        }
+        if has_sliced {
+            for (index, (_original, item)) in ordered.iter().enumerate() {
+                let quads = item
+                    .sprite
+                    .quad_sliced_with_terms(item.transform, camera)
+                    .map_err(|error| SpriteBatchError::Sprite { index, error })?;
+                let count = quads.len();
+                for quad in quads {
+                    for vertex in quad.vertices {
+                        out.push(V::from_ndc(
+                            ndc_from_screen(vertex.position, camera.viewport()),
+                            vertex.uv,
+                            vertex.color,
+                        ));
+                    }
+                }
+                let at = out.len() - count * 6;
+                if let Some(previous) = draws.last_mut()
+                    && previous.texture_id == item.texture_id
+                    && previous.layer == item.layer
+                    && previous.vertex_start + previous.vertex_count == at
+                {
+                    previous.vertex_count += count * 6;
+                } else {
+                    draws.push(SpriteDrawBatch::translucent(
+                        item.texture_id,
+                        item.layer,
+                        crate::core::layer::RenderLayer::World2D,
+                        at,
+                        count * 6,
+                    ));
+                }
+            }
             return Ok(());
         }
         let start = out.len();
@@ -469,6 +550,50 @@ impl SpriteBatch {
             ordered.retain(|(_, item)| sprite_intersects_world_bounds(item, bounds));
         }
         if ordered.is_empty() {
+            return Ok(());
+        }
+        // P2-②b：九宫格降级串行（一项产 54 顶点；世界通道同样不破坏并行分块契约）。
+        let has_sliced = self
+            .items
+            .iter()
+            .any(|item| item.sprite.nine_slice.is_some());
+        if has_sliced {
+            for (_, item) in &ordered {
+                let quads = item
+                    .sprite
+                    .quad_sliced_world(item.transform)
+                    .map_err(|error| SpriteBatchError::Sprite { index: 0, error })?;
+                let count = quads.len();
+                let z = item.sprite.z;
+                for quad in quads {
+                    for vertex in quad.vertices {
+                        out.push(V::from_world(
+                            [vertex.position[0], vertex.position[1], z],
+                            vertex.uv,
+                            vertex.color,
+                        ));
+                    }
+                }
+                let at = out.len() - count * 6;
+                let opaque = tint_is_opaque(item.sprite.tint);
+                if let Some(previous) = draws.last_mut()
+                    && previous.depth_write == opaque
+                    && previous.texture_id == item.texture_id
+                    && previous.layer == item.layer
+                    && previous.vertex_start + previous.vertex_count == at
+                {
+                    previous.vertex_count += count * 6;
+                } else {
+                    draws.push(SpriteDrawBatch::new(
+                        item.texture_id,
+                        item.layer,
+                        crate::core::layer::RenderLayer::World2D,
+                        at,
+                        count * 6,
+                        opaque,
+                    ));
+                }
+            }
             return Ok(());
         }
         let start = out.len();

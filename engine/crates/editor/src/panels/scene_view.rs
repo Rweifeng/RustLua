@@ -1381,6 +1381,32 @@ impl EditorApp {
         if let Some(tool) = requested {
             self.set_scene_tool(tool);
         }
+        // P2-②c：2D workspace 状态胶囊——视图/吸附/像素网格的**显式**状态。
+        // 验收"复杂贴片与视图"的可观察性：贴片时知道自己吸附步长与网格开关，
+        // 而不是只能从工具栏 checkbox 猜。只在 2D 视图下显示。
+        if self.scene_view_mode == crate::SceneViewMode::View2D {
+            let status_rect = egui::Rect::from_min_size(
+                egui::pos2(rect.left() + 4.0, rect.top() + 4.0),
+                egui::vec2(220.0, 26.0),
+            );
+            ui.scope_builder(egui::UiBuilder::new().max_rect(status_rect), |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("2D").strong());
+                    ui.separator();
+                    if self.snap_enabled {
+                        ui.label(format!("吸附 {}", self.snap_step));
+                    } else {
+                        ui.label("无吸附");
+                    }
+                    ui.separator();
+                    if self.show_pixel_grid {
+                        ui.label("像素网格");
+                    } else {
+                        ui.label("无网格");
+                    }
+                });
+            });
+        }
         // M19-03 Tile 生产工具第二行：编辑模式 + 区域剪贴板状态（仅 TilePaint 工具下显示）。
         if self.scene_tool() != SceneTool::TilePaint {
             return;
@@ -1494,7 +1520,7 @@ impl EditorApp {
                         egui::Color32::from_rgba_unmultiplied(80, 140, 220, 48),
                     );
                 }
-                if solid {
+                if solid && self.tilemap.preview_collision {
                     painter.rect_filled(
                         screen_rect.shrink(2.0),
                         0.0,
@@ -3892,6 +3918,7 @@ mod tests {
                     flip_x: false,
                     flip_y: false,
                     z: 0.0,
+                    nine_slice: None,
                 }
                 .to_component_str(),
             );
@@ -4418,6 +4445,7 @@ mod tests {
                 flip_x: false,
                 flip_y: false,
                 z: 0.0,
+                nine_slice: None,
             };
             entity
                 .components
@@ -4456,6 +4484,7 @@ mod tests {
                 flip_x: false,
                 flip_y: false,
                 z: 0.0,
+                nine_slice: None,
             };
             entity
                 .components
@@ -4537,6 +4566,7 @@ mod tests {
             flip_x: false,
             flip_y: false,
             z: 0.0,
+            nine_slice: None,
         };
         scene
             .entities
@@ -4739,6 +4769,7 @@ mod tests {
                 flip_x: false,
                 flip_y: false,
                 z: 0.0,
+                nine_slice: None,
             };
             entity
                 .components
@@ -4788,6 +4819,7 @@ mod tests {
                 flip_x: false,
                 flip_y: false,
                 z: 0.0,
+                nine_slice: None,
             };
             entity
                 .components

@@ -371,6 +371,7 @@ pub(crate) fn smoke_document() -> SceneDocument {
                 flip_x: false,
                 flip_y: false,
                 z: 0.0,
+                nine_slice: None,
             }
             .to_component_str(),
         );

@@ -24,6 +24,10 @@ pub struct Sprite {
     /// 世界 z（WP6）：四边形所在的世界平面深度。默认 0（世界平面），只在使用
     /// 世界 Sprite 深度通道时参与深度测试；overlay 路径忽略它。
     pub z: f32,
+    /// P2-②b：九宫格（9-slice）边界，归一化比例 `[left, right, top, bottom]`（0..=1，
+    /// 相对纹理）。`None` = 普通单 quad（既有行为逐字节不变）；`Some` = 几何切成 3×3
+    /// 共 9 个 quad，四角不缩放、四边单轴缩放、中心双轴缩放（面板/按钮等可拉伸 UI 纹理）。
+    pub nine_slice: Option<[f32; 4]>,
 }
 
 /// One CPU-side vertex in screen-pixel space.
@@ -65,6 +69,9 @@ pub struct SpriteComponent {
     pub flip_y: bool,
     /// 世界 z（组件串可选 `z=`，默认 0）。非 0 时写回组件串，因此既有场景字符串不变。
     pub z: f32,
+    /// P2-②b：九宫格边界（归一化比例 `[l,r,t,b]`，组件串 `nine_slice=l,r,t,b`）。
+    /// `None` = 普通精灵（既有场景字符串不变）。
+    pub nine_slice: Option<[f32; 4]>,
 }
 
 /// Stable 2D ordering metadata.
@@ -129,6 +136,8 @@ pub enum SpriteComponentError {
     InvalidOrder(String),
     /// 世界 z 不是有限数（WP6：深度必须可比较，NaN 会让整帧深度测试失效）。
     InvalidDepth(String),
+    /// 九宫格边界非法（非有限数、越界、l+r/t+b 超过 1）。
+    InvalidNineSlice(String),
     Sprite(SpriteError),
 }
 
@@ -142,6 +151,7 @@ impl fmt::Display for SpriteComponentError {
             Self::InvalidTint(value) => write!(f, "invalid sprite tint: {value}"),
             Self::InvalidOrder(value) => write!(f, "invalid sprite order: {value}"),
             Self::InvalidDepth(value) => write!(f, "invalid sprite z: {value}"),
+            Self::InvalidNineSlice(value) => write!(f, "invalid sprite nine-slice: {value}"),
             Self::Sprite(error) => error.fmt(f),
         }
     }
@@ -166,6 +176,7 @@ impl Default for SpriteComponent {
             flip_x: false,
             flip_y: false,
             z: 0.0,
+            nine_slice: None,
         }
     }
 }
@@ -222,6 +233,7 @@ impl SpriteComponent {
                         .parse()
                         .map_err(|_| SpriteComponentError::InvalidOrder(raw.to_owned()))?
                 }
+                "nine_slice" => component.nine_slice = parse_nine_slice(raw)?,
                 _ => return Err(SpriteComponentError::InvalidField(field.to_owned())),
             }
         }
@@ -258,7 +270,23 @@ impl SpriteComponent {
         if self.z != 0.0 {
             text.push_str(&format!(";z={}", trim_float(self.z)));
         }
+        if let Some([l, r, t, b]) = self.nine_slice {
+            text.push_str(&format!(
+                ";nine_slice={},{},{},{}",
+                trim_float(l),
+                trim_float(r),
+                trim_float(t),
+                trim_float(b)
+            ));
+        }
         text
+    }
+
+    /// P2-②b：设置九宫格边界（组件串 `nine_slice=l,r,t,b`）。
+    #[must_use]
+    pub const fn with_nine_slice(mut self, nine_slice: Option<[f32; 4]>) -> Self {
+        self.nine_slice = nine_slice;
+        self
     }
 
     pub fn sprite(&self) -> Result<Sprite, SpriteComponentError> {
@@ -267,6 +295,7 @@ impl SpriteComponent {
             .with_tint(self.tint)
             .map(|sprite| sprite.with_flip(self.flip_x, self.flip_y))
             .map(|sprite| sprite.with_z(self.z))
+            .map(|sprite| sprite.with_nine_slice(self.nine_slice))
             .map_err(Into::into)
     }
 
@@ -316,6 +345,25 @@ fn parse_pair(value: &str, name: &str) -> Result<Vec2, SpriteComponentError> {
     Ok(Vec2::new(x, y))
 }
 
+/// 解析 `nine_slice=l,r,t,b`（归一化边界比例）。四值缺一即报错；范围校验在 validate 里。
+fn parse_nine_slice(value: &str) -> Result<Option<[f32; 4]>, SpriteComponentError> {
+    let parts: Vec<_> = value.split(',').collect();
+    if parts.len() != 4 {
+        return Err(SpriteComponentError::InvalidNineSlice(value.to_owned()));
+    }
+    let mut out = [0.0_f32; 4];
+    for (index, part) in parts.iter().enumerate() {
+        let parsed: f32 = part
+            .trim()
+            .parse()
+            .map_err(|_| SpriteComponentError::InvalidNineSlice(value.to_owned()))?;
+        if !parsed.is_finite() {
+            return Err(SpriteComponentError::InvalidNineSlice(value.to_owned()));
+        }
+        out[index] = parsed;
+    }
+    Ok(Some(out))
+}
 /// 解析 `flip_x` / `flip_y`。只接受明确的 true/false（含 1/0）；拼错的值必须报错，
 /// 不能静默当成 false——那会让"翻转变成了看不懂就不翻"。
 fn parse_flag(raw: &str, field: &str) -> Result<bool, SpriteComponentError> {
@@ -367,11 +415,16 @@ pub struct SpriteQuad {
     pub vertices: [SpriteVertex; 6],
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum SpriteError {
     InvalidSize(Vec2),
     InvalidPivot(Vec2),
-    InvalidUv { min: Vec2, max: Vec2 },
+    InvalidUv {
+        min: Vec2,
+        max: Vec2,
+    },
+    /// 九宫格边界非法（非有限数、越界 0..=1、l+r/t+b 超过 1）。
+    InvalidNineSlice(String),
     NonFiniteTint([f32; 4]),
     Coordinate(CoordinateError),
 }
@@ -381,6 +434,7 @@ impl fmt::Display for SpriteError {
         match self {
             Self::InvalidSize(v) => write!(f, "invalid sprite size: ({}, {})", v.x, v.y),
             Self::InvalidPivot(v) => write!(f, "invalid sprite pivot: ({}, {})", v.x, v.y),
+            Self::InvalidNineSlice(value) => write!(f, "invalid sprite nine-slice: {value}"),
             Self::InvalidUv { min, max } => {
                 write!(f, "invalid sprite UV: min={min:?}, max={max:?}")
             }
@@ -408,6 +462,7 @@ impl Sprite {
             flip_x: false,
             flip_y: false,
             z: 0.0,
+            nine_slice: None,
         };
         sprite.validate()?;
         Ok(sprite)
@@ -583,6 +638,216 @@ impl Sprite {
         Ok(positions)
     }
 
+    /// P2-②b：设置九宫格边界（归一化比例 `[l,r,t,b]`，l+r<=1、t+b<=1，允许退化=0 拉伸区）。
+    #[must_use]
+    pub const fn with_nine_slice(mut self, nine_slice: Option<[f32; 4]>) -> Self {
+        self.nine_slice = nine_slice;
+        self
+    }
+
+    /// P2-②b：9-slice 几何（**世界坐标**版，无投影——世界 Sprite 深度通道用）。
+    /// `nine_slice` 为 `None` 时与 [`Sprite::quad_world`] 同一数学；为 `Some` 时切成 3×3 共 9 quad。
+    pub fn quad_sliced_world(&self, transform: Transform) -> Result<Vec<SpriteQuad>, SpriteError> {
+        let Some([l, r, t, b]) = self.nine_slice else {
+            let positions = self.quad_world(transform)?;
+            let (u0, u1) = if self.flip_x {
+                (self.uv_max.x, self.uv_min.x)
+            } else {
+                (self.uv_min.x, self.uv_max.x)
+            };
+            let (v0, v1) = if self.flip_y {
+                (self.uv_max.y, self.uv_min.y)
+            } else {
+                (self.uv_min.y, self.uv_max.y)
+            };
+            let uv = [[u0, v0], [u1, v0], [u1, v1], [u0, v1]];
+            let vertex = |index: usize| SpriteVertex {
+                position: positions[index],
+                uv: uv[index],
+                color: self.tint,
+            };
+            return Ok(vec![SpriteQuad {
+                vertices: [
+                    vertex(0),
+                    vertex(1),
+                    vertex(2),
+                    vertex(0),
+                    vertex(2),
+                    vertex(3),
+                ],
+            }]);
+        };
+        self.validate()?;
+        // 与 quad_sliced_with_terms 同一份局部划分与 UV 分割，只是末尾不投影。
+        let x0 = -self.pivot.x * self.size.x;
+        let x3 = (1.0 - self.pivot.x) * self.size.x;
+        let x1 = x0 + l * self.size.x;
+        let x2 = x3 - r * self.size.x;
+        let y0 = (1.0 - self.pivot.y) * self.size.y;
+        let y3 = -self.pivot.y * self.size.y;
+        let y1 = y0 - t * self.size.y;
+        let y2 = y3 + b * self.size.y;
+        let (u_lo, u_hi) = if self.flip_x {
+            (self.uv_max.x, self.uv_min.x)
+        } else {
+            (self.uv_min.x, self.uv_max.x)
+        };
+        let (v_lo, v_hi) = if self.flip_y {
+            (self.uv_max.y, self.uv_min.y)
+        } else {
+            (self.uv_min.y, self.uv_max.y)
+        };
+        let us = [
+            u_lo,
+            u_lo + (u_hi - u_lo) * l,
+            u_hi - (u_hi - u_lo) * r,
+            u_hi,
+        ];
+        let vs = [
+            v_lo,
+            v_lo + (v_hi - v_lo) * t,
+            v_hi - (v_hi - v_lo) * b,
+            v_hi,
+        ];
+        let xs = [x0, x1, x2, x3];
+        let ys = [y0, y1, y2, y3];
+        let cos = transform.rotation.cos();
+        let sin = transform.rotation.sin();
+        let mut quads = Vec::with_capacity(9);
+        for row in 0..3 {
+            for col in 0..3 {
+                let (x_min, x_max) = (xs[col], xs[col + 1]);
+                let (y_max, y_min) = (ys[row], ys[row + 1]);
+                let (u0, u1) = (us[col], us[col + 1]);
+                let (v0, v1) = (vs[row], vs[row + 1]);
+                let local = [
+                    Vec2::new(x_min, y_max),
+                    Vec2::new(x_max, y_max),
+                    Vec2::new(x_max, y_min),
+                    Vec2::new(x_min, y_min),
+                ];
+                let mut positions = [[0.0; 2]; 4];
+                for (index, point) in local.into_iter().enumerate() {
+                    let scaled =
+                        Vec2::new(point.x * transform.scale.x, point.y * transform.scale.y);
+                    positions[index] = [
+                        transform.position.x + scaled.x * cos - scaled.y * sin,
+                        transform.position.y + scaled.x * sin + scaled.y * cos,
+                    ];
+                }
+                let uv = [[u0, v0], [u1, v0], [u1, v1], [u0, v1]];
+                let vertex = |index: usize| SpriteVertex {
+                    position: positions[index],
+                    uv: uv[index],
+                    color: self.tint,
+                };
+                quads.push(SpriteQuad {
+                    vertices: [
+                        vertex(0),
+                        vertex(1),
+                        vertex(2),
+                        vertex(0),
+                        vertex(2),
+                        vertex(3),
+                    ],
+                });
+            }
+        }
+        Ok(quads)
+    }
+    /// P2-②b：9-slice 几何。`nine_slice` 为 `None` 时与 [`Sprite::quad_with_terms`] 逐字节相同
+    /// （单 quad）；为 `Some` 时按边界把四边形切成 3×3 共 9 个 quad，UV 同比例分割。
+    /// 切分发生在**局部坐标**（pivot 原点），每个子 quad 走同一套旋转/缩放/投影数学。
+    pub fn quad_sliced_with_terms(
+        &self,
+        transform: Transform,
+        camera: OrthoTerms,
+    ) -> Result<Vec<SpriteQuad>, SpriteError> {
+        let Some([l, r, t, b]) = self.nine_slice else {
+            return Ok(vec![self.quad_with_terms(transform, camera)?]);
+        };
+        self.validate()?;
+        // 局部 x 边界（pivot 原点，左→右）：左缘/中/右缘。
+        let x0 = -self.pivot.x * self.size.x;
+        let x3 = (1.0 - self.pivot.x) * self.size.x;
+        let x1 = x0 + l * self.size.x;
+        let x2 = x3 - r * self.size.x;
+        // 局部 y 边界（pivot 原点，顶→底）：顶带/中/底带。
+        let y0 = (1.0 - self.pivot.y) * self.size.y;
+        let y3 = -self.pivot.y * self.size.y;
+        let y1 = y0 - t * self.size.y;
+        let y2 = y3 + b * self.size.y;
+        // UV 分割：与 quad_with_terms 同一条 flip 约定（翻转只交换采样走向）。
+        let (u_lo, u_hi) = if self.flip_x {
+            (self.uv_max.x, self.uv_min.x)
+        } else {
+            (self.uv_min.x, self.uv_max.x)
+        };
+        let (v_lo, v_hi) = if self.flip_y {
+            (self.uv_max.y, self.uv_min.y)
+        } else {
+            (self.uv_min.y, self.uv_max.y)
+        };
+        let us = [
+            u_lo,
+            u_lo + (u_hi - u_lo) * l,
+            u_hi - (u_hi - u_lo) * r,
+            u_hi,
+        ];
+        let vs = [
+            v_lo,
+            v_lo + (v_hi - v_lo) * t,
+            v_hi - (v_hi - v_lo) * b,
+            v_hi,
+        ];
+        let xs = [x0, x1, x2, x3];
+        let ys = [y0, y1, y2, y3];
+        let cos = transform.rotation.cos();
+        let sin = transform.rotation.sin();
+        let mut quads = Vec::with_capacity(9);
+        for row in 0..3 {
+            for col in 0..3 {
+                let (x_min, x_max) = (xs[col], xs[col + 1]);
+                let (y_max, y_min) = (ys[row], ys[row + 1]);
+                let (u0, u1) = (us[col], us[col + 1]);
+                let (v0, v1) = (vs[row], vs[row + 1]);
+                let local = [
+                    Vec2::new(x_min, y_max),
+                    Vec2::new(x_max, y_max),
+                    Vec2::new(x_max, y_min),
+                    Vec2::new(x_min, y_min),
+                ];
+                let mut positions = [[0.0; 2]; 4];
+                for (index, point) in local.into_iter().enumerate() {
+                    let scaled =
+                        Vec2::new(point.x * transform.scale.x, point.y * transform.scale.y);
+                    let world = Vec2::new(
+                        transform.position.x + scaled.x * cos - scaled.y * sin,
+                        transform.position.y + scaled.x * sin + scaled.y * cos,
+                    );
+                    let screen = camera.world_to_screen(world);
+                    positions[index] = [screen.x, screen.y];
+                }
+                let uv = [[u0, v0], [u1, v0], [u1, v1], [u0, v1]];
+                let vertex = |index: usize| SpriteVertex {
+                    position: positions[index],
+                    uv: uv[index],
+                    color: self.tint,
+                };
+                quads.push(SpriteQuad {
+                    vertices: [
+                        vertex(0),
+                        vertex(1),
+                        vertex(2),
+                        vertex(0),
+                        vertex(2),
+                        vertex(3),
+                    ],
+                });
+            }
+        }
+        Ok(quads)
+    }
     fn validate(&self) -> Result<(), SpriteError> {
         if !self.size.x.is_finite()
             || !self.size.y.is_finite()
@@ -618,6 +883,20 @@ impl Sprite {
         }
         if self.tint.iter().any(|channel| !channel.is_finite()) {
             return Err(SpriteError::NonFiniteTint(self.tint));
+        }
+        if let Some([l, r, t, b]) = self.nine_slice {
+            for (name, value) in [("l", l), ("r", r), ("t", t), ("b", b)] {
+                if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+                    return Err(SpriteError::InvalidNineSlice(format!("{name}={value}")));
+                }
+            }
+            if l + r > 1.0 || t + b > 1.0 {
+                return Err(SpriteError::InvalidNineSlice(format!(
+                    "l+r={} t+b={}",
+                    l + r,
+                    t + b
+                )));
+            }
         }
         Ok(())
     }
@@ -678,6 +957,87 @@ mod tests {
         near(quad.vertices[1].position[1], 10.0);
     }
     #[test]
+    fn nine_slice_none_matches_plain_quad() {
+        let (camera, viewport) = camera();
+        let terms = OrthoTerms::new(camera, viewport).unwrap();
+        let sprite = Sprite::new(Vec2::new(4.0, 4.0)).unwrap();
+        let plain = sprite
+            .quad_with_terms(Transform::identity(), terms)
+            .unwrap();
+        let sliced = sprite
+            .quad_sliced_with_terms(Transform::identity(), terms)
+            .unwrap();
+        assert_eq!(sliced.len(), 1, "nine_slice=None 应只产 1 个 quad");
+        assert_eq!(&sliced[0], &plain, "None 分支必须与普通 quad 逐字节相同");
+    }
+    #[test]
+    fn nine_slice_emits_nine_quads() {
+        let (camera, viewport) = camera();
+        let terms = OrthoTerms::new(camera, viewport).unwrap();
+        let sprite = Sprite::new(Vec2::new(6.0, 6.0))
+            .unwrap()
+            .with_nine_slice(Some([0.2, 0.3, 0.1, 0.4]));
+        let quads = sprite
+            .quad_sliced_with_terms(Transform::identity(), terms)
+            .unwrap();
+        assert_eq!(quads.len(), 9, "9-slice 应产 9 个 quad");
+        let total = quads.iter().map(|q| q.vertices.len()).sum::<usize>();
+        assert_eq!(total, 54, "9×6=54 顶点");
+        // 中心 quad 的 UV 应等于 [l, 1-r]×[t, 1-b]。
+        let center = &quads[4];
+        near(center.vertices[0].uv[0], 0.2);
+        near(center.vertices[2].uv[0], 0.7); // 1 - 0.3
+        near(center.vertices[0].uv[1], 0.1);
+        near(center.vertices[2].uv[1], 0.6); // 1 - 0.4
+        // 世界坐标版（无投影）可精确断言：identity 变换下，左上/中心/右下 quad 的
+        // 角点 = pivot(0.5,0.5) × size(6,6) 下的边界划分。
+        let world = sprite.quad_sliced_world(Transform::identity()).unwrap();
+        assert_eq!(world.len(), 9);
+        // 顶点顺序与 quad_world 一致：v0=(x_min,y_max) TL，v2=(x_max,y_min) BR。
+        // ys 递减（y0=3 → y3=-3），row0: [3, 2.4]，row1: [2.4, -0.6]，row2: [-0.6, -3]。
+        near(world[0].vertices[0].position[0], -3.0);
+        near(world[0].vertices[0].position[1], 3.0);
+        near(world[0].vertices[2].position[0], -1.8);
+        near(world[0].vertices[2].position[1], 2.4);
+        near(world[4].vertices[0].position[0], -1.8);
+        near(world[4].vertices[0].position[1], 2.4);
+        near(world[4].vertices[2].position[0], 1.2);
+        near(world[4].vertices[2].position[1], -0.6);
+        near(world[8].vertices[2].position[0], 3.0);
+        near(world[8].vertices[2].position[1], -3.0);
+    }
+    #[test]
+    fn nine_slice_rejects_overflow() {
+        let (camera, viewport) = camera();
+        let terms = OrthoTerms::new(camera, viewport).unwrap();
+        assert!(
+            Sprite::new(Vec2::new(2.0, 2.0))
+                .unwrap()
+                .with_nine_slice(Some([0.6, 0.6, 0.1, 0.1]))
+                .quad_sliced_with_terms(Transform::identity(), terms)
+                .is_err(),
+            "l+r > 1 必须被拒绝"
+        );
+        assert!(
+            Sprite::new(Vec2::new(2.0, 2.0))
+                .unwrap()
+                .with_nine_slice(Some([0.1, 0.1, 0.7, 0.7]))
+                .quad_sliced_with_terms(Transform::identity(), terms)
+                .is_err(),
+            "t+b > 1 必须被拒绝"
+        );
+    }
+    #[test]
+    fn nine_slice_component_str_roundtrip() {
+        let component = SpriteComponent::new("panel.png", Vec2::new(128.0, 64.0))
+            .unwrap()
+            .with_nine_slice(Some([0.125, 0.125, 0.25, 0.25]));
+        let text = component.to_component_str();
+        let parsed = SpriteComponent::from_component_str(&text).unwrap();
+        assert_eq!(parsed.nine_slice, Some([0.125, 0.125, 0.25, 0.25]));
+        assert!(text.contains("nine_slice="), "组件串应输出 nine_slice 字段");
+    }
+    #[test]
     fn rejects_invalid_input() {
         assert!(Sprite::new(Vec2::new(0.0, 1.0)).is_err());
         assert!(
@@ -708,6 +1068,7 @@ mod tests {
             flip_x: false,
             flip_y: false,
             z: 0.0,
+            nine_slice: None,
         };
         let encoded = component.to_component_str();
         let decoded = SpriteComponent::from_component_str(&encoded).unwrap();

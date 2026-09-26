@@ -744,6 +744,8 @@ struct TilemapEditorState {
     map: Tilemap,
     brush: u8,
     paint_collision: bool,
+    /// P2-②a：碰撞层预览开关（默认开，保持历史行为；关闭时 solid 覆盖不绘制）。
+    preview_collision: bool,
     /// M19-03 Tile 编辑模式：单格画笔 / 矩形填充 / 区域复制 / 区域粘贴。
     mode: TileEditMode,
     /// 区域复制剪贴板（tile 值 + solid 位；编辑期状态，与文档无关，不产生历史）。
@@ -783,6 +785,7 @@ impl Default for TilemapEditorState {
                 .expect("default tilemap should be valid"),
             brush: 1,
             paint_collision: false,
+            preview_collision: true,
             mode: TileEditMode::default(),
             clipboard: None,
         }
