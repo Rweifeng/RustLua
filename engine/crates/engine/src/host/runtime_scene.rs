@@ -103,6 +103,21 @@ pub struct RuntimeScene {
     /// 每精灵顶点生成的并行度（WP8）。默认取检测到的核数；`Parallelism::SEQUENTIAL`
     /// 即完全回滚到单线程，输出逐字节相同（见 `core/par.rs` 与 `sprite_batch` 的测试）。
     sprite_parallelism: Parallelism,
+    /// P1-③：系统级数据并行开关（粒子积分等系统内纯数据子任务）。默认取检测到的
+    /// 核数；`Parallelism::SEQUENTIAL` 完全回滚到单线程——输出逐位相同（回滚档）。
+    system_parallelism: Parallelism,
+    /// P1-①：渲染级空间索引（视口候选预筛）开关。默认关闭；打开后精灵收集阶段
+    /// 用 uniform grid 预筛视口候选，静态场景收集从 O(N) 降为 O(视口内)
+    /// （docs/40 WP6 ⑧ / docs/53 §3.9）。关闭即逐字节回滚。
+    spatial_index: bool,
+    /// 空间索引网格（惰性创建）。跨帧复用：`hierarchy::local_fingerprint` 不变则不重建
+    /// ——静态场景收集从 O(N) 降为 O(视口内)；任何实体一动（指纹变）就整体重建。
+    spatial_grid: Option<crate::core::spatial_index::SpatialGrid2D>,
+    /// 上次重建网格时的指纹（与 `hierarchy::local_fingerprint` 返回同型；
+    /// 与层级传播的 `spatial_fingerprint` 是两套独立缓存）。
+    spatial_index_fingerprint: Option<(u64, usize, usize)>,
+    /// 网格 cell 边长（世界单位）。只影响性能不影响正确性；默认 256。
+    spatial_index_cell_size: f32,
     /// collider 调试绘制开关（WP7 ②）。默认关闭。
     collider_debug_draw: bool,
     /// docs/54 §8-⑥：**3D** collider 调试绘制开关（`physics3d.debug_draw`）。默认关闭，
@@ -918,6 +933,37 @@ impl RuntimeScene {
         self.sprite_parallelism = parallelism;
     }
 
+    /// P1-③：系统级数据并行开关（粒子积分等系统内纯数据子任务）。默认取检测到的
+    /// 核数；`Parallelism::SEQUENTIAL` 回滚单线程——输出逐位相同（见 `particle` 的测试）。
+    pub fn set_system_parallelism(&mut self, parallelism: Parallelism) {
+        self.system_parallelism = parallelism;
+    }
+
+    /// 当前系统级并行开关。
+    #[must_use]
+    pub const fn system_parallelism(&self) -> Parallelism {
+        self.system_parallelism
+    }
+
+    /// P1-①：渲染级空间索引（视口候选预筛）开关。返回旧值（回滚档）；关闭时清掉
+    /// 网格缓存（下次打开重建）。与 `set_spatial_index_cell_size` 配套。
+    pub fn set_spatial_index(&mut self, enabled: bool) -> bool {
+        let previous = self.spatial_index;
+        self.spatial_index = enabled;
+        if !enabled {
+            self.spatial_grid = None;
+            self.spatial_index_fingerprint = None;
+        }
+        previous
+    }
+
+    /// P1-①：空间索引网格 cell 边长（世界单位）。返回旧值；只影响性能不影响正确性。
+    pub fn set_spatial_index_cell_size(&mut self, cell_size: f32) -> f32 {
+        let previous = self.spatial_index_cell_size;
+        self.spatial_index_cell_size = cell_size;
+        previous
+    }
+
     /// WP7 ②：collider 调试绘制开关。默认关闭；Lua 可用 `physics.debug_draw(true)` 打开。
     pub fn set_collider_debug_draw(&mut self, enabled: bool) {
         self.collider_debug_draw = enabled;
@@ -1493,6 +1539,11 @@ impl RuntimeScene {
             script_micros: 0,
             sprite_batch: SpriteBatch::new(),
             sprite_parallelism: Parallelism::detected(),
+            system_parallelism: Parallelism::detected(),
+            spatial_index: false,
+            spatial_grid: None,
+            spatial_index_fingerprint: None,
+            spatial_index_cell_size: 256.0,
             collider_debug_draw: false,
             collider_debug_draw_3d: false,
             view_world_mask: crate::core::visibility::ALL_LAYERS,
@@ -2346,6 +2397,12 @@ impl RuntimeScene {
         // docs/54 §4.2：3D 网格同样吃**世界视图**的可见遮罩。
         let view_mask = self.view_world_mask;
         let mut filtered = 0usize;
+        // P1-②：LOD 距离用相机位置。优先级：编辑器覆盖相机 → 本帧已定帧相机。
+        // 刻意不在这里兜底 `active_camera3d()`：那是一次解析（有账本断言钉住解析次数）；
+        // 没有覆盖/定帧时 LOD 退基础级（`renderer.mesh`），行为与未启用 LOD 逐字节相同。
+        let lod_camera_position: Option<Vec3> = camera_override
+            .map(|camera| camera.position)
+            .or_else(|| self.frame_view_3d.as_ref().map(|frame| frame.camera.position));
         let drawables = self.script.with_world(|world| {
             let mut drawables = Vec::new();
             // WP2：与 2D 精灵同一条约定——开关每帧选定一次遍历用的组件（开启继承时是
@@ -2387,10 +2444,28 @@ impl RuntimeScene {
                         source: BoundsSource::Fallback,
                     }
                 };
+                // P1-②：LOD（距离驱动网格选择）。`LodGroup` 的 `levels[0]` 是基础级；
+                // `select(distance)` 取最后一个 threshold<=distance 的级别。没有 LodGroup
+                // 或没有可用相机时退 `renderer.mesh`（原行为，像素逐字节不变）。
+                let mesh_path = match (
+                    lod_camera_position,
+                    world.get::<crate::core::lod::LodGroup>(id).ok().flatten(),
+                ) {
+                    (Some(camera_pos), Some(group)) => {
+                        let model_pos = Vec3::new(
+                            model.columns[3][0],
+                            model.columns[3][1],
+                            model.columns[3][2],
+                        );
+                        let distance = (model_pos - camera_pos).length();
+                        group.select(distance).to_owned()
+                    }
+                    _ => renderer.mesh.clone(),
+                };
                 drawables.push(Scene3dDrawable {
                     entity: SceneEntityId(id.index() as u64),
                     name,
-                    mesh_path: renderer.mesh.clone(),
+                    mesh_path: mesh_path.clone(),
                     // docs/54 §4.4：网格也走同一套运行时身份（`ResourceKind::Model`）。3D 提取是
                     // `&self`，因此身份表在 `RefCell` 里——同一网格跨帧恒同句柄，渲染器据此做
                     // O(1) 的网格缓存查找并认出失效引用。
@@ -2398,9 +2473,9 @@ impl RuntimeScene {
                         self.assets
                             .borrow_mut()
                             .intern(
-                                renderer.mesh.as_str(),
+                                mesh_path.as_str(),
                                 AssetRecord {
-                                    path: renderer.mesh.clone(),
+                                    path: mesh_path.clone(),
                                     kind: crate::core::resource_kind::ResourceKind::Model,
                                 },
                             )
@@ -2706,6 +2781,71 @@ impl RuntimeScene {
             let view_mask = self.view_world_mask;
             let mut filtered = 0usize;
             let mut routed = (0usize, 0usize, 0usize);
+            // P1-①：渲染级空间索引（视口候选预筛）。指纹未变则复用网格；变了则整体重建；
+            // 查询得到视口候选集合，收集阶段只处理候选（静态场景收集 O(N) → O(视口内)）。
+            // 与 `cull_bounds` 同条件：3D 世界视图（world_view_is_3d）下遮挡来自深度，网格
+            // 预筛不生效；`sprite_culling` 关闭时同样不预筛（全收，像素不变）。
+            let candidates: Option<std::collections::HashSet<EntityId>> =
+                if self.spatial_index && self.sprite_culling && !world_view_is_3d {
+                    let fingerprint =
+                        script.with_world(crate::core::hierarchy::local_fingerprint);
+                    if self.spatial_index_fingerprint != Some(fingerprint) {
+                        // 重建：与提取同一对组件族（inherit 分支同源），只取位置/缩放/尺寸；
+                        // for_each2 按 EntityId 升序，rebuild 要求升序输入。
+                        let cell_size = self.spatial_index_cell_size;
+                        let grid = script.with_world(|world| {
+                            let mut items: Vec<
+                                (EntityId, crate::core::spatial_index::Circle),
+                            > = Vec::new();
+                            if inherit {
+                                world.for_each2::<GlobalTransform, Sprite>(|id, global, sprite| {
+                                    if let Some(plane) = global.plane() {
+                                        items.push((
+                                            id,
+                                            crate::core::spatial_index::Circle::from_sprite(
+                                                plane.position, plane.scale, sprite.size,
+                                            ),
+                                        ));
+                                    }
+                                });
+                            } else {
+                                world.for_each2::<Transform, Sprite>(|id, transform, sprite| {
+                                    items.push((
+                                        id,
+                                        crate::core::spatial_index::Circle::from_sprite(
+                                            transform.position, transform.scale, sprite.size,
+                                        ),
+                                    ));
+                                });
+                            }
+                            let mut grid =
+                                crate::core::spatial_index::SpatialGrid2D::new(cell_size);
+                            grid.rebuild(items);
+                            grid
+                        });
+                        self.spatial_grid = Some(grid);
+                        self.spatial_index_fingerprint = Some(fingerprint);
+                    }
+                    // 查询候选（CameraBounds → 查询 Bounds）。
+                    cull_bounds.map(|bounds| {
+                        let query_bounds = crate::core::spatial_index::Bounds {
+                            min_x: bounds.min.x,
+                            min_y: bounds.min.y,
+                            max_x: bounds.max.x,
+                            max_y: bounds.max.y,
+                        };
+                        self.spatial_grid
+                            .as_ref()
+                            .map(|grid| {
+                                grid.query(query_bounds)
+                                    .into_iter()
+                                    .collect::<std::collections::HashSet<EntityId>>()
+                            })
+                            .unwrap_or_default()
+                    })
+                } else {
+                    None
+                };
             script.with_world(|world| {
                 let mut index = 0usize;
                 // WP2：提取用的变换来源由空间继承开关**每帧选定一次**：开启时整条换成
@@ -2725,6 +2865,11 @@ impl RuntimeScene {
                     // 仍然占一个序号（否则默认绘制层会整体前移）。
                     let layer_index = index;
                     index += 1;
+                    // P1-①：空间索引预筛——不在视口候选里的实体在构建 item 之前就跳过；
+                    // 与原路径 push 被 cull 拒绝的净效果一致（像素逐字节相同，docs/53 §3.9）。
+                    if candidates.as_ref().is_some_and(|set| !set.contains(&id)) {
+                        return;
+                    }
                     let (texture, sprite) =
                         match world.get::<AnimationStateMachine>(id).ok().flatten() {
                             Some(machine) => {

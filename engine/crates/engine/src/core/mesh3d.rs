@@ -70,7 +70,8 @@ impl MeshRenderer {
     }
 }
 
-fn validate_mesh_path(mesh: &str) -> Result<(), MeshRendererError> {
+/// 网格路径校验（`MeshRenderer` 与 P1-② `LodGroup` 共用；crate 内可见）。
+pub(crate) fn validate_mesh_path(mesh: &str) -> Result<(), MeshRendererError> {
     if mesh.is_empty() {
         return Err(MeshRendererError::MissingMesh);
     }

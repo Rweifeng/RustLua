@@ -1126,6 +1126,19 @@ impl LuaRuntime {
         self.state.borrow_mut().particles.step(delta_seconds);
     }
 
+    /// P1-③：并行推进粒子（`ParticleSystem::step_with_parallelism`）。默认传
+    /// `Parallelism::SEQUENTIAL` 即旧行为（逐位一致，回滚档）。
+    pub fn step_particles_with_parallelism(
+        &mut self,
+        delta_seconds: f32,
+        parallelism: crate::core::par::Parallelism,
+    ) {
+        self.state
+            .borrow_mut()
+            .particles
+            .step_with_parallelism(delta_seconds, parallelism);
+    }
+
     /// Advances the game clock using real `delta_seconds` and the Lua-configured
     /// rate (`clock.set_rate`). Paused clocks and zero rates do nothing.
     pub fn step_clock(&mut self, delta_seconds: f32) {

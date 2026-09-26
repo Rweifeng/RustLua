@@ -430,24 +430,58 @@ impl ParticleSystem {
 
     /// Advances particles by `dt` seconds and recycles the finished ones.
     pub fn step(&mut self, delta_seconds: f32) {
+        self.step_with_parallelism(delta_seconds, crate::core::par::Parallelism::SEQUENTIAL)
+    }
+
+    /// P1-③：并行推进粒子（系统级数据并行）。逐粒子积分彼此独立（无浮点归约），
+    /// 按块并行；回收压缩与串行完全一致（只依赖 `life > 0`，与更新顺序无关）——
+    /// 因此**串/并行结果逐位相同**（docs/40 WP8：系统内纯数据子任务并行；调度器
+    /// 保持确定性单线程）。`Parallelism::SEQUENTIAL` 完全回滚到单线程。
+    pub fn step_with_parallelism(
+        &mut self,
+        delta_seconds: f32,
+        parallelism: crate::core::par::Parallelism,
+    ) {
         if !delta_seconds.is_finite() || delta_seconds <= 0.0 {
             return;
         }
-        for particle in &mut self.particles {
-            particle.velocity = particle.velocity + particle.gravity * delta_seconds;
-            if particle.drag > 0.0 {
-                // 每秒衰减 `drag` 比例；单步时长超过 1/drag 时钳到 0（不反转速度）。
-                particle.velocity =
-                    particle.velocity * (1.0 - particle.drag * delta_seconds).max(0.0);
+        let particles = &mut self.particles;
+        let threads = parallelism.effective_threads(particles.len());
+        if threads < 2 {
+            for particle in particles.iter_mut() {
+                step_particle(particle, delta_seconds);
             }
-            particle.position = particle.position + particle.velocity * delta_seconds;
-            particle.rotation += particle.rotation_speed * delta_seconds;
-            particle.life -= delta_seconds;
+            particles.retain(|particle| particle.life > 0.0);
+            return;
         }
-        // Compact out dead particles, recycling their slots.
-        self.particles.retain(|particle| particle.life > 0.0);
+        let chunk = particles.len().div_ceil(threads).max(1);
+        std::thread::scope(|scope| {
+            for batch in particles.chunks_mut(chunk) {
+                scope.spawn(move || {
+                    for particle in batch.iter_mut() {
+                        step_particle(particle, delta_seconds);
+                    }
+                });
+            }
+        });
+        particles.retain(|particle| particle.life > 0.0);
     }
+}
 
+/// 单粒子一步积分：`step` 与 `step_with_parallelism` 共用同一份，保证串/并行逐位一致。
+fn step_particle(particle: &mut Particle, delta_seconds: f32) {
+    particle.velocity = particle.velocity + particle.gravity * delta_seconds;
+    if particle.drag > 0.0 {
+        // 每秒衰减 `drag` 比例；单步时长超过 1/drag 时钳到 0（不反转速度）。
+        particle.velocity =
+            particle.velocity * (1.0 - particle.drag * delta_seconds).max(0.0);
+    }
+    particle.position = particle.position + particle.velocity * delta_seconds;
+    particle.rotation += particle.rotation_speed * delta_seconds;
+    particle.life -= delta_seconds;
+}
+
+impl ParticleSystem {
     /// Returns the active particles.
     #[must_use]
     pub fn particles(&self) -> &[Particle] {
@@ -488,6 +522,26 @@ mod tests {
         let after = system.particles()[0];
         assert_ne!(after.position, before.position, "particle should move");
         assert!(after.life < before.life, "particle life should decrease");
+    }
+
+    /// P1-③：串/并行 step 逐位一致（同 seed、同 burst、同 dt；压缩只依赖 life>0）。
+    #[test]
+    fn parallel_step_matches_sequential_bit_for_bit() {
+        let emitter = ParticleEmitter::new(10_000, 12.0, 3.0, [1.0, 0.5, 0.25, 1.0]);
+        let mut sequential = ParticleSystem::new();
+        let mut parallel = ParticleSystem::new();
+        sequential.burst_with(Vec2::zero(), &emitter);
+        parallel.burst_with(Vec2::zero(), &emitter);
+        let parallel_degree = crate::core::par::Parallelism::with_threads(4);
+        sequential.step(0.016);
+        parallel.step_with_parallelism(0.016, parallel_degree);
+        assert_eq!(sequential.particles(), parallel.particles());
+        // 多步后死亡粒子的压缩结果同样一致。
+        for _ in 0..90 {
+            sequential.step(0.016);
+            parallel.step_with_parallelism(0.016, parallel_degree);
+        }
+        assert_eq!(sequential.particles(), parallel.particles());
     }
 
     #[test]
