@@ -45,9 +45,9 @@ from pixel_kit import decode_png  # noqa: E402
 from pixel_kit import transform_line as spawn_transform  # noqa: E402
 
 SCENE = os.path.join("scenes", "main.scene")
-# M32 竖版设计分辨率。必须与 `scripts/ui/layout.lua` 的 DESIGN_W/DESIGN_H、
+# M32 设计分辨率（2026-09-27 转横屏）。必须与 `scripts/ui/layout.lua` 的 DESIGN_W/DESIGN_H、
 # `project.toml` 的 window_width/height 一致（由 `ui/layout_check.lua` 守住）。
-REF_W, REF_H = 720, 1280
+REF_W, REF_H = 1280, 720
 GRID = 4
 
 # 允许"作者矩形 != 贴图原始尺寸"的实体：
@@ -57,50 +57,46 @@ GRID = 4
 #     等比缩小不会露出"该 1:1"的证据。见 docs/52 §7 的已知偏差。
 STRETCH = {"BgNight", "BgVignette", "InkBand"}
 
-# 夜景图原始尺寸（`tools/gen_title_bg.py` 产出 1280×720）；底图铺满竖版版面，
+# 夜景图原始尺寸（`tools/gen_title_bg.py` 产出 1280×720）；横屏底图 1:1 铺满版面，
 # 因此这里只记原始尺寸用于"资源确实存在且尺寸符合预期"的核对。
 BG_W, BG_H = 1280, 720
-# 夜景图最下沿的近似色（`tools/gen_title_bg.py` 的调色板底部色）——保留给将来做
-# "等比缩小 + 下面接色带"的竖构图美术（见 docs/52 §7）。
+# 夜景图最下沿的近似色（`tools/gen_title_bg.py` 的调色板底部色）——横屏已 1:1，保留待用。
 BG_BAND_COLOR = "0.086,0.098,0.129"
 
 # (name, kind, texture, rect(l,t,r,b), nine_slice, role)
 LAYERS = [
-    # 底图：横构图夜景（1280×720）铺满竖版版面。**为什么要拉伸**：门面必须整屏覆盖，
-    # 而夜景是"暗色天空 + 月 + 远山"这类没有强水平结构元素的画面，纵向拉伸后视觉上
-    # 仍然成立（等比缩小贴顶部则会露出下方一整块空版面，更难看）。底图与暗角因此
-    # 都在 STRETCH 里，不参与"非 9-slice 必须 1:1"的校验；见 docs/52 §7 的已知偏差。
+    # 底图：横构图夜景（1280×720）横屏 1:1 铺满版面。底图与暗角因此都在 STRETCH 里
+    # （允许"作者矩形 != 贴图原始尺寸"；横屏下实际都是 1:1，不触发缩放偏差）。
     ("BgNight", "image", "assets/art/title/title_bg_pixel.png", (0, 0, REF_W, REF_H), None, "menu_background"),
     ("BgVignette", "image", "assets/art/ui/menu/ui_menu_vignette.png", (0, 0, REF_W, REF_H), None, "menu_vignette"),
-    # InkBand 是 960×240 的墨色横幅，1:1 放不进 720 宽，**等比缩到 2/3**（640×160）：
-    # 竖版里它只负责"托住标题"的暗底，等比缩小后横向居中（左右各 40）。
-    ("InkBand", "image", "assets/art/ui/menu/ui_menu_ink_band.png", (40, 560, 680, 720), None, "menu_ink_band"),
-    # Logo 是 512×256 的木匾贴图，**必须 1:1**（像素画缩放会糊）；竖版里它横向居中：
-    # 720 - 512 = 208，左右各 104（4 的倍数，落在 4px 网格上）。
-    ("Logo", "image", "assets/art/ui/logo/ui_title_logo.png", (104, 560, 616, 816), None, "menu_logo"),
+    # InkBand 是 960×240 的墨色横幅，横屏 1:1（左右各 160，水平居中）。
+    ("InkBand", "image", "assets/art/ui/menu/ui_menu_ink_band.png", (320, 80, 960, 240), None, "menu_ink_band"),
+    # Logo 是 512×256 的木匾贴图，**必须 1:1**（像素画缩放会糊）；横屏水平居中：
+    # (1280 - 512) / 2 = 384，落在 4px 网格上。
+    ("Logo", "image", "assets/art/ui/logo/ui_title_logo.png", (384, 80, 896, 336), None, "menu_logo"),
     # 门面做减法（三轮评审的结果）：只留"标题 + 菜单"，中间不放任何装饰。
     #   ① 朱砂印章（Logo 内「田」+ 外加「江湖」）—— 红章抢视线，撤；
     #   ② 副标题「月夜归园 · 半亩心田」—— 撤；
     #   ③ 竹节分隔 + 两侧回纹角饰 —— 副标题没了它就成了多余的重量，整组撤。
     # 三样切图都还在 UI 套件里（menu/ 模块），将来要加回来往 LAYERS 里加一行即可；
     # 下面那两条"成对装饰必须镜像/对称"的自检也保留着，等装饰回归时自动生效。
-    ("LanternL", "image", "assets/art/ui/menu/ui_menu_lantern.png", (128, 588, 200, 716), None, "menu_lantern"),
-    ("LanternR", "image", "assets/art/ui/menu/ui_menu_lantern.png", (520, 588, 592, 716), None, "menu_lantern"),
+    ("LanternL", "image", "assets/art/ui/menu/ui_menu_lantern.png", (280, 120, 352, 248), None, "menu_lantern"),
+    ("LanternR", "image", "assets/art/ui/menu/ui_menu_lantern.png", (928, 120, 1000, 248), None, "menu_lantern"),
 ]
 
 # 三个按钮的**公共矩形**（与 scripts/ui/layout.lua 的 PANEL.title_btn 逐字一致）：
-#   x=180 w=360 h=64；纵向间隔 = h + title_btn_gap(24) = 88。
-BTN_X, BTN_W, BTN_H, BTN_STEP = 180, 360, 64, 88
+#   x=460 w=360 h=64；纵向间隔 = h + title_btn_gap(16) = 80。
+BTN_X, BTN_W, BTN_H, BTN_STEP = 460, 360, 64, 80
 BTNS = [
     # (实体名, 中文标签, top)
-    ("BtnStart", "开始新游戏", 620),
-    ("BtnContinue", "继续江湖", 708),
-    ("BtnExit", "退出江湖", 796),
+    ("BtnStart", "开始新游戏", 380),
+    ("BtnContinue", "继续江湖", 460),
+    ("BtnExit", "退出江湖", 540),
 ]
 
-# 底部卷轴小贴士面板（竖版：通栏靠下，不挡按钮）。
-FOOTER_PANEL = ("TipScroll", "ui/menu 卷轴", (24, 1064, 476, 1160), "menu_tip_panel")
-FOOTER_TEXT = ("FooterText", "江湖有田 v0.1.0 · RustLua 原型 · 竖版", (536, 1246, 696, 1266), "menu_footer")
+# 底部卷轴小贴士面板（横屏：左下角，不挡按钮）。
+FOOTER_PANEL = ("TipScroll", "ui/menu 卷轴", (24, 600, 476, 696), "menu_tip_panel")
+FOOTER_TEXT = ("FooterText", "江湖有田 v0.1.0 · RustLua 原型 · 横版", (1080, 690, 1240, 710), "menu_footer")
 
 TEX = {
     "btn": "assets/art/ui/menu/ui_menu_btn_wuxia_9s.png",

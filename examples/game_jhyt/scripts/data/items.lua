@@ -112,5 +112,48 @@ return {
     buy = 0,
     sell = 0,
     kind = "material"
+  },
+  -- 莲子（2026-09-26，docs/48 接线）：青云山道野塘日刷采集物。
+  -- 野采物不入商店（buy=0，与狼皮/兽肉口径一致）；sell 参照木料（4 文）上浮为稀有度。
+  lotus_seed = {
+    name = "莲子",
+    description = "青云山道野塘里的莲子，煮粥入药两相宜。",
+    icon = "assets/art/items/lotus_seed.png",
+    stack = 99,
+    buy = 0,
+    sell = 18,
+    kind = "material"
+  },
+  -- 芦苇（2026-09-26，docs/48 接线）：青云山道水边日刷采集物，大宗低值材料。
+  reed = {
+    name = "芦苇",
+    description = "青云山道水边的芦苇，编席扎帚的好材料。",
+    icon = "assets/art/items/reed.png",
+    stack = 99,
+    buy = 0,
+    sell = 6,
+    kind = "material"
+  },
+  -- 茶叶（2026-09-27，docs/48 接线）：青云山道茶棚东侧日刷采集物。
+  -- 野采物不入商店（buy=0，与狼皮/兽肉/莲子口径一致）；sell 对齐兽肉（12 文）。
+  tea_leaf = {
+    name = "茶叶",
+    description = "青云山道茶丛里的嫩叶，晒青后煮饮，回神解乏。",
+    icon = "assets/art/items/tea_leaf.png",
+    stack = 99,
+    buy = 0,
+    sell = 12,
+    kind = "material"
+  },
+  -- 野果（2026-09-27，docs/48 接线）：青云山道野果树日刷采集物。
+  -- 与野谷丛（wild_berry_1）相邻成片；sell 8 文（低值果品）。
+  wild_fruit = {
+    name = "野果",
+    description = "青云山道野果树结的果子，酸甜解渴，也能入菜。",
+    icon = "assets/art/items/wild_fruit.png",
+    stack = 99,
+    buy = 0,
+    sell = 8,
+    kind = "material"
   }
 }

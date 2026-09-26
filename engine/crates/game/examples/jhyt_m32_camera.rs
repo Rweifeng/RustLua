@@ -5,8 +5,7 @@
 //!
 //! 改造前的事实：工程里**没有任何场景声明相机**，Lua 侧也没有一处 `camera2d.follow`
 //! ⇒ 运行时一直是默认相机（中心 `(640,360)`、`zoom=1`、无 bounds）：整幅世界摊在屏幕上、
-//! 角色走到哪儿都不跟随，竖屏多出来的高度还会把地图外的空白画出来
-//! （`examples/game_jhyt/docs/52` §4 把它记为有意留下的偏差）。
+//! 角色走到哪儿都不跟随（`examples/game_jhyt/docs/52` §4 曾记为有意留下的偏差）。
 //!
 //! 现在的实现分三处，本样例逐条钉住：
 //!   * **场景**：每张玩法地图一个 `GameCamera` 实体，`Camera` 组件声明
@@ -15,18 +14,26 @@
 //!     （offset/死区/平滑全 0 ⇒ 玩家始终在视野正中）；
 //!   * **引擎**：每帧渲染前用 `Camera2D::constrained_center` 把相机中心夹到地图内。
 //!
+//! 2026-09-27 转横屏（1280×720）后的几何事实（写清楚，别当成 bug）：
+//!   室外地图 40×22 格 = 1280×704 世界单位，视口 1280×720：
+//!   * **x 轴**：视口宽(1280) == 地图宽(1280) ⇒ 夹取区间退化为单点 [640, 640]，
+//!     相机 x 恒等于 640、**恰好把整幅地图铺满屏幕**（没有左右跟随的余量）；
+//!   * **y 轴**：视口高(720) > 地图高(704) ⇒ 该轴不可夹取，引擎取边界中点，
+//!     相机被钉在地图纵向中心 352（与竖屏时代同一退化，见 `camera_view.lua` 头注释）。
+//!   * 一句话：**x 轴上"整图恰好铺满 + 不出界"同时成立，y 轴上退化为"钉在地图中心"。**
+//!
 //! 为什么用 `RuntimeScene` 而不是裸 `LuaRuntime`：`camera2d.get()` 读的是**宿主每帧
 //! 回填的真实相机**，而"处理请求 → 跟随 → 夹取"这条链在 `RuntimeScene::step_camera2d`
 //! 里（裸 `LuaRuntime` 永远不会跑它，读数会一直停在 0）。视口同样只在**真实渲染路径**
-//! 上有值，因此每一步都先 `vertices(720,1280)`（= 发布窗口尺寸）再推进相机。
+//! 上有值，因此每一步都先 `vertices(1280,720)`（= 发布窗口尺寸）再推进相机。
 //!
 //! 章节：
 //!   ① 门面：玩法地图之外不跟随；
-//!   ② 进图第一帧：相机中心 = 玩家坐标（场景声明的中心只是**初始**值，不是第二份真源）；
-//!   ③ 跟随：玩家在地图中段的每个 x 上，相机中心 x 逐点相等；
-//!   ④ 不出图（贴东/西墙）：相机中心被夹到 `[360, 920]`，且**由四个屏幕角反投影回来的
-//!      可见矩形仍在 [0,1280]×[0,704] 内**（这是"视野不超出地图边缘"的直接证据）；
-//!   ⑤ 竖屏 y 轴事实：地图(704) 比视口(1280) 矮 ⇒ 该轴不可夹取，引擎取边界中点，
+//!   ② 进图第一帧：相机 x = 地图中心 640（视口宽==地图宽 ⇒ 恰好铺满）、y 钉 352；
+//!   ③ 铺满轴：玩家在地图中段的每个 x 上，相机 x 恒定 640、可见矩形恰好 [0,1280]；
+//!   ④ 不出图（贴东/西墙）：相机 x 仍被"钉"在 640（区间退化为单点），且由四个屏幕角
+//!      反投影回来的可见矩形仍在 [0,1280]×[0,704] 内（"视野不超出地图边缘"的直接证据）；
+//!   ⑤ 横屏 y 轴事实：地图(704) 比视口(720) 矮 ⇒ 该轴不可夹取，引擎取边界中点，
 //!      相机被钉在地图纵向中心 352（有意的退化，见 `camera_view.lua` 头注释）；
 //!   ⑥ 换图：青云山道重绑跟随目标、bounds 换成新地图矩形；20×12 的室内图两轴都退化；
 //!   ⑦ 回到门面：取消跟随（不留指向已销毁实体的目标）。
@@ -38,21 +45,22 @@ use engine::core::input::InputSnapshot;
 use engine::host::RuntimeScene;
 use std::{env, path::PathBuf};
 
-/// 竖版设计分辨率 = 发布窗口尺寸 = 相机视口（`zoom=1` 时世界单位与像素 1:1）。
-const VIEW_W: f32 = 720.0;
-const VIEW_H: f32 = 1280.0;
+/// 设计分辨率 = 发布窗口尺寸 = 相机视口（`zoom=1` 时世界单位与像素 1:1；横屏 1280×720）。
+const VIEW_W: f32 = 1280.0;
+const VIEW_H: f32 = 720.0;
 /// 室外地图 40×22 格 × 32 世界单位（`pixel_kit.camera_line` 与场景 bounds 同源）。
 const MAP_W: f32 = 1280.0;
 const MAP_H: f32 = 704.0;
 /// x 轴可用的相机中心区间 = `[bounds.min.x + 半视口, bounds.max.x - 半视口]`，
 /// 即引擎 `Camera2D::constrained_center` 的夹取口径（bounds.min.x = 0）。
-const CENTER_MIN: f32 = VIEW_W / 2.0; // 360
-const CENTER_MAX: f32 = MAP_W - VIEW_W / 2.0; // 920
+/// **横屏下视口宽 == 地图宽**，区间退化为单点 [640, 640]（无跟随余量，整图恰好铺满）。
+const CENTER_MIN: f32 = VIEW_W / 2.0; // 640
+const CENTER_MAX: f32 = MAP_W - VIEW_W / 2.0; // 640
 /// 夹取/投影容差：f32 投影链路有 ~1e-4 量级误差，用 1e-2（远小于一个瓦片 32）。
 const EPS: f32 = 1e-2;
-/// "玩家在视野正中"的容差：相机控制器每步用**上一步**的玩家位置推进，玩家自己在
-/// 碰撞推挤下每帧还会挪零点几个单位，因此这个判定留 0.6 世界单位（约 2% 瓦片）——
-/// 比"每帧精确相等"诚实，又远小于"跟随失效"时的偏差（可达数百单位）。
+/// "玩家在视野正中"的容差（横屏 x 轴恰好铺满时恒不成立，仅用于贴墙章节的
+/// "玩家不可能在正中"判定）：相机 x 恒 640，玩家贴墙 x=16/1264 时偏差数百单位，
+/// 用 EPS 即可区分"铺满"与"意外居中"。
 const FOLLOW_EPS: f32 = 0.6;
 const DT: f32 = 1.0 / 60.0;
 
@@ -76,7 +84,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!("  跟随状态 = {}", title.following);
 
-    banner("② 进入山庄：进图后相机中心 x = 玩家 x；y 因地图比视口矮而钉在地图中心");
+    banner("② 进入山庄：进图后相机 x = 地图中心 640（视口宽==地图宽，恰好铺满）；y 钉在地图中心");
     lua_run(&mut runtime, "on_click('BtnStart')")?;
     frame(&mut runtime)?;
     assert_scene(&mut runtime, "manor")?;
@@ -84,10 +92,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !first.following {
         return Err(format!("进图后应处于跟随状态：{first:?}").into());
     }
-    expect_centered_x(&first, "进图第一帧")?;
+    expect_fixed_center_x(&first, "进图第一帧")?;
     if (first.center.1 - MAP_H / 2.0).abs() > EPS {
         return Err(format!(
-            "进图第一帧：相机中心 y={:.3}，应为地图纵向中心 {}（视口 1280 > 地图 704）",
+            "进图第一帧：相机中心 y={:.3}，应为地图纵向中心 {}（视口高 720 > 地图 704）",
             first.center.1,
             MAP_H / 2.0
         )
@@ -98,50 +106,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         first.player.0, first.player.1, first.center.0, first.center.1, first.zoom
     );
 
-    banner("③ 跟随：玩家 x 落在夹取区间内时，相机中心 x 逐点等于玩家 x（玩家在视野正中）");
-    // 可跟随区间 = [CENTER_MIN, CENTER_MAX]：玩家靠近地图两侧时相机先被夹住，因此
-    // 那一段（④ 章）玩家必然偏离正中——这是"视野不出图"的代价，不是跟随失效。
-    //
-    // 断言口径：与**玩家实际位置**比，不与"我想瞬移到哪"比。`teleport` 落点在实心格
-    // 附近时物理会把刚体推开零点几个世界单位（半径 12 的球），那是物理的正确行为。
+    banner("③ 铺满轴：玩家 x 落在任意中段时，相机 x 恒为 640（视口宽==地图宽，无跟随余量）");
+    // 横屏几何：视口 1280 == 地图 1280 ⇒ 夹取区间退化为单点 640，相机 x 不再跟随玩家
+    // （全图恰好铺满屏幕，没有可夹取余量）。断言口径改为：**相机 x 恒 640** + 可见
+    // 矩形恰好 [0,1280]（"不出图"的直接证据）。若有人把视口改成更宽的窗口（> 地图宽），
+    // 相机 x 会钉在 640 不变、可见矩形 [0,1280] 仍在地图内，本节依旧成立。
     for probe in [420.0_f32, 520.0, 640.0, 760.0, 860.0] {
         teleport_player(&mut runtime, probe, 336.0)?;
         let status = step_until_settled(&mut runtime)?;
-        let delta = (status.center.0 - status.player.0).abs();
-        if delta > FOLLOW_EPS {
-            return Err(format!(
-                "瞬移到 x={probe} 后玩家在 x={:.3}：相机中心 x={:.3}，偏差 {delta:.3} > {FOLLOW_EPS}",
-                status.player.0, status.center.0
-            )
-            .into());
-        }
+        expect_fixed_center_x(&status, &format!("x={probe}"))?;
         expect_view_inside(&status, MAP_W, MAP_H, &format!("x={probe}"))?;
         println!(
-            "  玩家 x={:>7.3} → center=({:>7.3},{:>7.3}) 偏差 {:.3}",
-            status.player.0, status.center.0, status.center.1, delta
+            "  玩家 x={:>7.3} → center=({:>7.3},{:>7.3}) 可见矩形 x[{:.1},{:.1}]",
+            status.player.0, status.center.0, status.center.1, status.center.0 - VIEW_W / 2.0,
+            status.center.0 + VIEW_W / 2.0
         );
     }
 
-    banner("④ 不出图：贴西/东墙时相机被夹到 [360, 920]，可见矩形仍在地图内");
-    for (label, x, expect) in [
-        ("贴西墙", 16.0_f32, CENTER_MIN),
-        ("贴东墙", 1264.0, CENTER_MAX),
-    ] {
+    banner("④ 不出图：贴西/东墙时相机 x 仍为 640（区间退化为单点），可见矩形仍在地图内");
+    for (label, x) in [("贴西墙", 16.0_f32), ("贴东墙", 1264.0)] {
         teleport_player(&mut runtime, x, 336.0)?;
         let status = step_until_settled(&mut runtime)?;
-        if (status.center.0 - expect).abs() > EPS {
-            return Err(format!(
-                "{label}(x={x})：相机中心 x={:.3}，应被夹到 {expect}",
-                status.center.0
-            )
-            .into());
-        }
+        expect_fixed_center_x(&status, label)?;
         expect_view_inside(&status, MAP_W, MAP_H, label)?;
-        // 夹住时玩家**不可能**仍在屏幕正中——这正是"视野不出图"的代价。断言必须显式
-        // 承认它，否则将来有人把 bounds 删掉，只断言"居中"的测试照样全绿。
-        let centered = (status.player.0 - status.center.0).abs() <= EPS;
+        // 相机 x 恒 640 时玩家**不可能**仍在屏幕正中（贴墙时偏差数百单位）——断言必须
+        // 显式承认它，否则将来有人把 bounds 删掉、相机乱漂，只断言"铺满"的测试照样全绿。
+        let centered = (status.player.0 - status.center.0).abs() <= FOLLOW_EPS;
         if centered {
-            return Err(format!("{label}：相机被夹住时玩家不可能仍在正中，断言口径有误").into());
+            return Err(format!("{label}：相机铺满时玩家不可能仍在正中，断言口径有误").into());
         }
         // 直接证据：把四个屏幕角反投影回世界，可见矩形必须落在地图矩形内。
         let corners = visible_world_rect(&mut runtime)?;
@@ -158,7 +150,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    banner("⑤ 竖屏 y 轴事实：地图比视口矮 ⇒ y 被钉在地图中心（有意的退化）");
+    banner("⑤ 横屏 y 轴事实：地图比视口矮 ⇒ y 被钉在地图中心（有意的退化）");
     let status = camera_status(&mut runtime)?;
     if (status.center.1 - MAP_H / 2.0).abs() > EPS {
         return Err(format!(
@@ -183,13 +175,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     teleport_player(&mut runtime, 1200.0, 336.0)?;
     let mountain = step_until_settled(&mut runtime)?;
-    if (mountain.center.0 - CENTER_MAX).abs() > EPS {
-        return Err(format!(
-            "青云山道贴东墙：相机中心 x={:.3}，应被夹到 {CENTER_MAX}",
-            mountain.center.0
-        )
-        .into());
-    }
+    // 青云山道也是 1280×704：视口宽==地图宽 ⇒ x 恒 640（与山庄同一退化）。
+    expect_fixed_center_x(&mountain, "mountain_path 贴东墙")?;
     expect_view_inside(&mountain, MAP_W, MAP_H, "mountain_path")?;
     println!(
         "  mountain_path center=({:.3},{:.3}) entity={:?}",
@@ -238,16 +225,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 // ---------- 断言 ----------
 
-/// 玩家 x == 相机中心 x（"角色始终保持在视野中心"在**可跟随轴**上的判定）。
+/// 相机 x == 地图中心 640（横屏"视口宽==地图宽 ⇒ 恰好铺满"的判定）。
 ///
-/// y 轴上地图(704)比视口(1280)矮，夹取必然把相机钉在地图中心、玩家因此不可能同时居中
+/// y 轴上地图(704)比视口(720)矮，夹取必然把相机钉在地图中心、玩家因此不可能同时居中
 /// ——那是几何事实，所以这里只判 x，y 由 `expect_view_inside` 判"停在地图中心"。
-fn expect_centered_x(status: &CameraStatus, label: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let dx = status.player.0 - status.center.0;
+fn expect_fixed_center_x(status: &CameraStatus, label: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let dx = status.center.0 - MAP_W / 2.0;
     if dx.abs() > EPS {
         return Err(format!(
-            "{label}：玩家 x={:.3} 不在视野中心 x={:.3}，偏差 {dx:.3}",
-            status.player.0, status.center.0
+            "{label}：相机中心 x={:.3}，应恒等于地图中心 {}（视口宽==地图宽 ⇒ 恰好铺满）",
+            status.center.0,
+            MAP_W / 2.0
         )
         .into());
     }

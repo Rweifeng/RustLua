@@ -151,7 +151,6 @@ pub(crate) enum MenuAction {
     ToggleResources,
     ToggleConsole,
     ToggleDomainData,
-    ToggleRuntimeDebug,
     TogglePublishPanel,
     TogglePerformancePanel,
     TogglePixelGrid,
@@ -302,7 +301,6 @@ const WINDOW_MENU: &[MenuRow] = &[
     MenuRow::Item(MenuItem::new("资源浏览器", MenuAction::ToggleResources)),
     MenuRow::Item(MenuItem::new("控制台", MenuAction::ToggleConsole)),
     MenuRow::Item(MenuItem::new("领域数据", MenuAction::ToggleDomainData)),
-    MenuRow::Item(MenuItem::new("运行时调试", MenuAction::ToggleRuntimeDebug)),
     MenuRow::Item(MenuItem::new("发布面板", MenuAction::TogglePublishPanel)),
     MenuRow::Item(MenuItem::new(
         "性能面板",
@@ -593,9 +591,6 @@ impl EditorApp {
             MenuAction::ToggleConsole => self.show_lua_console = !self.show_lua_console,
             MenuAction::ToggleDomainData => {
                 self.show_domain_data_panel = !self.show_domain_data_panel;
-            }
-            MenuAction::ToggleRuntimeDebug => {
-                self.show_runtime_debug_panel = !self.show_runtime_debug_panel;
             }
             MenuAction::TogglePublishPanel => self.show_publish_panel = !self.show_publish_panel,
             MenuAction::TogglePerformancePanel => {

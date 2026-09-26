@@ -69,9 +69,8 @@ M.nodes = {
     minutes = 25,
     respawn_days = 0
   },
-  -- 矿石堆 (28,17)：需要趁手器具（requires 分支）；一次性。
-  -- 山道暂无矿镐道具，故用数据驱动的 requires = "hoe" 表达门槛，
-  -- 缺前置时 prompt 给出明确原因（不静默失败）。
+  -- 矿石堆 (28,17)：需要矿镐（requires 分支，2026-09-27 矿镐实装：原 hoe 占位取消）；
+  -- 一次性。缺前置时 prompt 给出明确原因（不静默失败）。
   {
     id = "wild_ore_1",
     map = "mountain_path",
@@ -79,7 +78,7 @@ M.nodes = {
     item = "timber",
     count = 1,
     minutes = 30,
-    requires = "hoe",
+    requires = "pick",
     respawn_days = 0
   },
   -- 毒草丛 (29,15)：对应 PoisonHerb 道具格；次日刷新，同样需要器具（3 株，成片）。
@@ -91,6 +90,63 @@ M.nodes = {
     count = 3,
     minutes = 20,
     requires = "hoe",
+    respawn_days = 1
+  },
+  -- 莲子塘 (29,5)：对应 scenes/mountain_path.scene 的 LotusPond 道具格。
+  -- 玩家可站 (32,5)/(34,5)/(33,4)/(33,6) 面向它；次日刷新（与药草一致）。
+  {
+    id = "wild_lotus_1",
+    map = "mountain_path",
+    cell = { x = 29, y = 5 },
+    item = "lotus_seed",
+    count = 2,
+    minutes = 20,
+    respawn_days = 1
+  },
+  -- 芦苇丛 (5,13)：对应 scenes/mountain_path.scene 的 ReedPatch 道具格。
+  -- 断桥西侧河岸；玩家可站 (4,13)/(6,13)/(5,12)/(5,14) 面向它；次日刷新。
+  {
+    id = "wild_reed_1",
+    map = "mountain_path",
+    cell = { x = 5, y = 13 },
+    item = "reed",
+    count = 3,
+    minutes = 15,
+    respawn_days = 1
+  },
+  -- 茶丛 (19,10)：对应 scenes/mountain_path.scene 的 TeaGrove 道具格（茶棚东侧）。
+  -- 玩家可站 (18,10)/(20,10)/(19,9)/(19,11) 面向它；次日刷新。
+  {
+    id = "wild_tea_1",
+    map = "mountain_path",
+    cell = { x = 19, y = 10 },
+    item = "tea_leaf",
+    count = 2,
+    minutes = 20,
+    respawn_days = 1
+  },
+  -- 野果树 (6,16)：对应 scenes/mountain_path.scene 的 WildFruitTree 道具格（野谷丛西侧）。
+  -- 玩家可站 (5,16)/(7,16)/(6,15)/(6,17) 面向它；次日刷新（果树年年结果）。
+  {
+    id = "wild_fruit_1",
+    map = "mountain_path",
+    cell = { x = 6, y = 16 },
+    item = "wild_fruit",
+    count = 2,
+    minutes = 15,
+    respawn_days = 1
+  },
+  -- 松木桩 (10,4)：对应 scenes/mountain_path.scene 的 TreeStump 道具格（PineA 东侧）。
+  -- 需要伐木斧（requires 分支）；次日刷新（松林年年长）。
+  -- 玩家可站 (10,5)/(10,3)/(9,4)/(11,4) 面向它。
+  {
+    id = "wild_timber_1",
+    map = "mountain_path",
+    cell = { x = 10, y = 4 },
+    item = "timber",
+    count = 2,
+    minutes = 30,
+    requires = "axe",
     respawn_days = 1
   },
   -- ---- 山庄 manor（药田外围的一次性野采，补足主线药材）----

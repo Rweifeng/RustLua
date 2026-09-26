@@ -312,6 +312,14 @@ function M.act(facing)
   pcall(function()
     require("core.audio").sfx("sfx_harvest")
   end)
+  -- docs/48 effects：毒草丛（wild_poison_herb_1）采集成功 → 毒性雾气短暂飘起
+  -- （1.2s 循环条带后自毁；对齐 manifest 的 poison_motes looped=true）。
+  if tostring(node.id):find("poison", 1, true) then
+    pcall(function()
+      require("systems.effects").spawn("poison_motes",
+        (cell.x + 0.5) * 32, (cell.y + 0.5) * 32, 1.2)
+    end)
+  end
   return state.last_action
 end
 

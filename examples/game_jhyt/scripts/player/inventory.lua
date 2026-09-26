@@ -53,6 +53,11 @@ function M.setup()
   -- 「播种→浇水→睡觉→收获→交付→制作」剧本不可完成。新档直接发放 1 把，
   -- 由玩家在背包面板（I → 选中 → E 装备）切换，同时验证背包/装备交互。
   inv.add(state.inventory, "watering_can", 1)
+  -- 伐木斧/矿镐（2026-09-27，docs/48 接线）：青云山道松木桩与矿石点 requires
+  -- 引用（`data/gather.lua` wild_timber_1 / wild_ore_1）。与 water_can 同先例
+  -- （商店不售工具、无任务奖励）→ 新档直接发放，背包面板装备即可采集。
+  inv.add(state.inventory, "axe", 1)
+  inv.add(state.inventory, "pick", 1)
   inv.equip(state.inventory, "tool", "hoe")
 end
 
@@ -119,6 +124,21 @@ function M.use(item_id)
 
   inv.remove(state.inventory, item_id, 1)
   state.last_action = "use_" .. item_id
+  -- docs/48 effects：回复类物品（use.energy）使用成功 → 治疗提示条带。
+  -- 延迟 require（avoid 模块加载期循环依赖）：use 时所有模块已就绪。
+  local energy = tonumber(effect.energy) or 0
+  if energy ~= 0 then
+    pcall(function()
+      local p = require("player.player")
+      local id = p.ensure()
+      if id then
+        local pos = transform.get(id)
+        if type(pos) == "table" then
+          require("systems.effects").spawn("heal_motes", pos.x, pos.y)
+        end
+      end
+    end)
+  end
   return true, "ok"
 end
 

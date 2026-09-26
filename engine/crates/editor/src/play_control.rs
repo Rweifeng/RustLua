@@ -399,9 +399,9 @@ impl PlayController {
                 Ok(false)
             }
             PlayState::Playing | PlayState::Paused => {
-                self.state = PlayState::Stopping;
-                self.pending_steps = 0;
-                self.accumulator = 0.0;
+                // 不在这里改状态：调用方会先 stop()（内部走 begin_stop → Stopping → Editing）
+                // 再 play()。若提前改成 Stopping，stop() 里的 begin_stop() 会因状态不符而 Err，
+                // 导致状态卡在 Stopping、后续 Stop/暂停按钮全部 NoOp。
                 Ok(true)
             }
             other => Err(PlayControlError::InvalidTransition {

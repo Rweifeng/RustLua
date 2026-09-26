@@ -23,6 +23,8 @@ local weather = require("world.weather")
 local farm_data = require("data.farm")
 -- M19-02：劳作音效（只在成功路径播放；缺文件/无设备静默降级）。
 local audio = require("core.audio")
+-- docs/48 effects 接线：翻土/浇水成功挂特效条带（hoe_dust / water_splash）。
+local effects = require("systems.effects")
 
 local M = {}
 
@@ -313,6 +315,7 @@ function M.act(facing)
       redraw_all()
       state.last_action = "till"
       audio.sfx("sfx_hoe")
+      effects.spawn("hoe_dust", (cx + 0.5) * TILE, (cy + 0.5) * TILE)
       return state.last_action
     end
     -- 成熟 → 收获
@@ -355,6 +358,7 @@ function M.act(facing)
     plot_put(cx, cy, p)
     state.last_action = "water_" .. p.crop
     audio.sfx("sfx_water")
+    effects.spawn("water_splash", (cx + 0.5) * TILE, (cy + 0.5) * TILE)
     -- 主角形象：浇水（非循环条带，播完由 player.tick 落回 walk/idle）
     player.play("water")
     redraw_all()
@@ -382,6 +386,7 @@ function M.act(facing)
   plot_put(cx, cy, p)
   state.last_action = "till"
   audio.sfx("sfx_hoe")
+  effects.spawn("hoe_dust", (cx + 0.5) * TILE, (cy + 0.5) * TILE)
   -- 主角形象：挥锄（翻土）
   player.play("hoe")
   redraw_all()

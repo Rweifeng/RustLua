@@ -144,14 +144,19 @@ function M.wrap(text, size, max_width, max_lines)
   if max_width <= 0 then
     return { "" }
   end
-  -- 1) 分组：先把"不可拆"的片段合成 token（词、以及带行首禁则标点的字）。
+  -- 1) 分组：把"不可拆"的片段合成 token。
+  --    * 空格并入当前词（词内分隔）：「J 攻击」「1/2/3/4/5 直选」这类带空格短标签
+  --      整体换行，不会被断成两半（jhyt_m20_gamepad 面板提示断言）；
+  --    * 行首禁则标点（，。· 等）贴到当前词尾并**结束当前词**（标点是词边界）：
+  --      「W/S 或 方向键 选择 ·」是一个 token，标点不落行首；
+  --    * 无空格的长中文按标点分句成 token；单 token 超宽由第 2 步硬断兜底。
   local tokens = {}
-  local buffer = nil
+  local word = nil            -- 当前词缓冲（内部可含空格）
   local function flush()
-    if buffer and buffer ~= "" then
-      tokens[#tokens + 1] = buffer
+    if word and word ~= "" then
+      tokens[#tokens + 1] = word
     end
-    buffer = nil
+    word = nil
   end
   for _, code in utf8.codes(s) do
     local char = utf8.char(code)
@@ -159,22 +164,21 @@ function M.wrap(text, size, max_width, max_lines)
       flush()
       tokens[#tokens + 1] = "\n"
     elseif char == " " then
-      flush()
-      tokens[#tokens + 1] = " "
-    elseif char:match("^[%w%._%-%+%%/]$") then
-      buffer = (buffer or "") .. char
-    elseif NO_LINE_START[char] then
-      -- 标点贴到前一个 token 尾部（前一个 token 不存在时单独成 token）。
-      if buffer then
-        buffer = buffer .. char
-      elseif #tokens > 0 and tokens[#tokens] ~= "\n" and tokens[#tokens] ~= " " then
+      -- 空格并入当前词（无当前词时成为下一个词的词首空格）。
+      word = (word or "") .. " "
+    elseif char:match("^[%w%._%-%+%%/]$") or not NO_LINE_START[char] then
+      -- ASCII / CJK / 其他普通字符：并入当前词。
+      word = (word or "") .. char
+    else
+      -- 行首禁则标点：贴到当前词尾并结束当前词。
+      if word then
+        word = word .. char
+        flush()
+      elseif #tokens > 0 and tokens[#tokens] ~= "\n" then
         tokens[#tokens] = tokens[#tokens] .. char
       else
         tokens[#tokens + 1] = char
       end
-    else
-      flush()
-      tokens[#tokens + 1] = char
     end
   end
   flush()

@@ -42,9 +42,13 @@ const TEN_AM: i64 = 600;
 const NOON: i64 = 720;
 
 /// `docs/48` §1 里的审计基准（改资源或改接线必须同步改文档，否则本样例报错）。
-const EXPECTED_DEV_ARTIFACTS: usize = 46;
-const EXPECTED_CONTENT_ORPHANS: usize = 102;
-const EXPECTED_REFERENCED: usize = 461;
+///
+/// 2026-09-27 docs/48 全部缺口清零后基准：已引用 562 = 470（首版基准）+ 8（第一批
+/// 场景接线）+ 8（effects 特效）+ 15（portraits 立绘）+ 61（ui 换肤接线增量）；
+/// `_ui_weather_cloud.png` 按 `_` 前缀归入开发产物（46 → 47），内容缺口清零。
+const EXPECTED_DEV_ARTIFACTS: usize = 47;
+const EXPECTED_CONTENT_ORPHANS: usize = 0;
+const EXPECTED_REFERENCED: usize = 562;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let project = env::args()
@@ -358,7 +362,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "(function() local p = ui.panel_get('hud:rain'); \
            if not p then return 'no_overlay' end; \
            if not p.visible then return 'overlay_hidden' end; \
-           if p.width < 700 or p.height < 1200 then return 'overlay_too_small' end; \
+           if p.width < 1200 or p.height < 700 then return 'overlay_too_small' end; \
            if p.a <= 0 or p.a >= 0.6 then return 'overlay_alpha:' .. tostring(p.a) end; \
            return 'ok' end)()",
         "ok",
@@ -382,7 +386,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "assets/art/ui/hud/ui_weather_sun.png",
     )?;
     // HUD 文本仍然与天气一致（文本与画面同源，M26 的映射不受影响）。
-    // M32 竖版：状态行合并成 5 行，"时间/天气"现在同一行，因此这里取该行的天气片段
+    // 状态行第 2 行是"时间/天气"行，因此这里取该行的天气片段
     // （`天气 晴`）而不是整行字面量——否则改版式就要改断言，断言的意图本来是"文本与天气一致"。
     assert_str(
         &mut rt,
@@ -817,7 +821,7 @@ fn audit_assets(project: &Path) -> Result<Audit, Box<dyn std::error::Error>> {
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
         let mut used = corpus.contains(&rel) || corpus.contains(&name);
-        // 音频：引擎按主干解析 `<assets/audio>/<name>.wav`。
+        // 音频：引擎按主干解析 `<assets/audio>/<name>.wav`（先试 `.wav` 再试 `.ogg`）。
         if !used && rel.starts_with("assets/audio/") {
             used = corpus.contains(&stem);
         }
@@ -974,7 +978,7 @@ fn new_runtime(project: &Path, save_path: &Path) -> Result<LuaRuntime, Box<dyn s
     runtime.set_project_root(project.to_path_buf());
     runtime.set_save_path(save_path.to_path_buf());
     // M32 竖版：设计分辨率 720×1280（Lua 动态 UI 是屏幕像素空间，视口必须与设计尺寸一致）。
-    runtime.set_ui_viewport(720, 1280);
+    runtime.set_ui_viewport(1280, 720);
     runtime.set_delta(1.0 / 60.0);
     Ok(runtime)
 }

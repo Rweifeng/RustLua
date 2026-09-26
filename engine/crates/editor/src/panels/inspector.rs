@@ -176,6 +176,64 @@ impl EditorApp {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 ui.heading("属性");
+// 资源面板选中资源时：属性面板显示资源详情，不显示实体属性。
+                if let Some(resource_path) = &self.selected_resource {
+                    ui.heading("资源");
+                    if let Some(entry) = self.resources.entries().iter().find(|e| &e.path == resource_path).cloned() {
+                        let file_name = entry.path.file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| entry.path_string());
+                        ui.strong(&file_name);
+                        ui.label(egui::RichText::new(entry.path_string()).monospace().small());
+                        ui.separator();
+                        ui.horizontal(|ui| {
+                            ui.label("类型：");
+                            ui.label(egui::RichText::new(format!("{:?}", entry.kind)).monospace());
+                        });
+                        let (status_text, status_color) = match entry.status {
+                            engine::core::resource_db::ResourceState::Ready => ("已就绪".to_owned(), egui::Color32::from_rgb(120,200,130)),
+                            engine::core::resource_db::ResourceState::Discovered => ("待导入".to_owned(), egui::Color32::YELLOW),
+                            engine::core::resource_db::ResourceState::Stale => ("已变更需重导".to_owned(), egui::Color32::YELLOW),
+                            engine::core::resource_db::ResourceState::Missing => ("文件缺失".to_owned(), egui::Color32::GRAY),
+                            engine::core::resource_db::ResourceState::ImportFailed => ("导入失败".to_owned(), egui::Color32::RED),
+                            engine::core::resource_db::ResourceState::Invalid => ("依赖断链".to_owned(), egui::Color32::RED),
+                            _ => (format!("{:?}", entry.status), ui.visuals().weak_text_color()),
+                        };
+                        ui.horizontal(|ui| {
+                            ui.label("状态：");
+                            ui.colored_label(status_color, status_text);
+                        });
+                        if let Some(error) = &entry.error {
+                            ui.colored_label(egui::Color32::RED, egui::RichText::new(error).small());
+                        }
+                        // 文件大小
+                        let abs_path = self.project.root.join(&entry.path);
+                        if let Ok(meta) = std::fs::metadata(&abs_path) {
+                            let kb = meta.len() as f64 / 1024.0;
+                            ui.label(format!("大小：{kb:.1} KB"));
+                        }
+                        // 纹理：显示大图预览
+                        if entry.kind == engine::core::resource_kind::ResourceKind::Texture {
+                            ui.separator();
+                            let rel = entry.path_string();
+                            if let Some(tex_id) = self.texture_thumbnail(&rel, ui.ctx()) {
+                                let size = egui::vec2(128.0, 128.0);
+                                ui.add(egui::Image::new(egui::load::SizedTexture::new(tex_id, size))
+                                    .fit_to_original_size(1.0));
+                            } else {
+                                ui.label("缩略图加载中…");
+                            }
+                        }
+                        // 场景/Prefab：提示双击打开
+                        if matches!(entry.kind, engine::core::resource_kind::ResourceKind::Scene | engine::core::resource_kind::ResourceKind::Prefab) {
+                            ui.separator();
+                            ui.label(egui::RichText::new("双击资源面板中的条目可打开编辑").small().weak());
+                        }
+                    } else {
+                        ui.label("资源信息不可用");
+                    }
+                    return;
+                }
                 if self
                     .current_scene()
                     .is_some_and(|scene| scene.is_prefab_document())
@@ -956,10 +1014,6 @@ impl EditorApp {
                 // （Camera2D/Quad/RenderMode/Visibility/EntityScript/Particle），
                 // 提交通通走 typed action，不在面板里直接写组件串。
                 self.draw_schema_driven_components(ui);
-                ui.separator();
-                if ui.button("添加子实体").clicked() {
-                    self.add_entity(Some(selected));
-                }
             });
         // E08 帧末边界：缓冲差异已在控件编辑帧随 `mark_inspector_edit` 直写文档，
         // 这里只做提交决策。

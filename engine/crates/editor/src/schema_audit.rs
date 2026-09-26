@@ -33,6 +33,8 @@ pub struct SchemaAudit {
     pub per_component: BTreeMap<String, usize>,
     /// Components with no registered schema (reported, not an error).
     pub unknown: BTreeMap<String, usize>,
+    /// 已知被改名的旧组件名（WP9 弃用告警）：给出迁移指向，不混在 unknown 里。
+    pub renamed: BTreeMap<String, usize>,
     /// Field-level mismatches for registered components.
     pub findings: Vec<SchemaFinding>,
 }
@@ -45,15 +47,25 @@ impl SchemaAudit {
     /// Report lines in the same `key=value` style as `editor --check`.
     pub fn report_lines(&self) -> Vec<String> {
         let mut lines = vec![format!(
-            "schema_audit documents={} components={} schema_errors={} unknown_components={}",
+            "schema_audit documents={} components={} schema_errors={} unknown_components={} renamed_components={}",
             self.documents,
             self.components,
             self.findings.len(),
-            self.unknown.len()
+            self.unknown.len(),
+            self.renamed.len()
         )];
         for (component, count) in &self.unknown {
             lines.push(format!(
                 "component_no_schema component={component} count={count}"
+            ));
+        }
+        for (component, count) in &self.renamed {
+            let current = COMPONENT_RENAMES
+                .iter()
+                .find(|(legacy, _)| *legacy == component)
+                .map_or("?", |(_, current)| *current);
+            lines.push(format!(
+                "component_renamed legacy={component} current={current} count={count} hint=migrate_project"
             ));
         }
         for finding in self.findings.iter().take(50) {
@@ -76,6 +88,18 @@ impl SchemaAudit {
     }
 }
 
+/// 已知的组件改名表（WP9 组件改名弃用告警）：旧名 → 统一后的现名。
+///
+/// 引擎只保留统一名（`Transform` / `Camera`），旧名出现在工程里说明**没有跑过
+/// 迁移工具**——审计把这类名字单列成 `component_renamed`，指向
+/// `migrate_project`（editor 示例），而不是混进"未注册组件"的
+/// `component_no_schema`。
+const COMPONENT_RENAMES: &[(&str, &str)] = &[
+    ("Transform3D", "Transform"),
+    ("Camera2D", "Camera"),
+    ("Camera3D", "Camera"),
+];
+
 /// Validate every component of every scene/prefab/widget document under `root`.
 pub fn audit_project(root: &Path) -> Result<SchemaAudit, std::io::Error> {
     let registry = builtin_registry();
@@ -91,7 +115,14 @@ pub fn audit_project(root: &Path) -> Result<SchemaAudit, std::io::Error> {
                 audit.components += 1;
                 *audit.per_component.entry(name.clone()).or_insert(0) += 1;
                 if !registry.contains_key(name.as_str()) {
-                    *audit.unknown.entry(name.clone()).or_insert(0) += 1;
+                    if COMPONENT_RENAMES
+                        .iter()
+                        .any(|(legacy, _)| *legacy == name.as_str())
+                    {
+                        *audit.renamed.entry(name.clone()).or_insert(0) += 1;
+                    } else {
+                        *audit.unknown.entry(name.clone()).or_insert(0) += 1;
+                    }
                     continue;
                 }
                 if let Err(error) = validate_component(&registry, name, payload) {
@@ -213,8 +244,8 @@ mod tests {
     /// 分别点出来——这正是外部老工程在删掉自动迁移之后**唯一**的发现通道，也是仓库内示例
     /// 数据的常驻门（`slime_*.prefab` 那次漏迁就是靠它现形的）。
     ///
-    /// 两类信号的形状不同，必须都断：旧名 ⇒ `component_no_schema`（unknown，不报 schema_error）；
-    /// 旧形态 ⇒ `schema_error`（统一字段表里没有 `x` 这个键）。
+    /// 两类信号的形状不同，必须都断：旧名 ⇒ `component_renamed`（指向 migrate_project，
+    /// 不再混进 unknown）；旧形态 ⇒ `schema_error`（统一字段表里没有 `x` 这个键）。
     #[test]
     fn un_migrated_legacy_names_and_shapes_are_reported() {
         let root = temp_root("legacy");
@@ -230,8 +261,13 @@ mod tests {
             ],
         );
         let audit = audit_project(&root).expect("audit runs");
-        assert_eq!(audit.unknown.get("Transform3D"), Some(&1), "{audit:?}");
-        assert_eq!(audit.unknown.get("Camera2D"), Some(&1), "{audit:?}");
+        assert_eq!(audit.renamed.get("Transform3D"), Some(&1), "{audit:?}");
+        assert_eq!(audit.renamed.get("Camera2D"), Some(&1), "{audit:?}");
+        assert!(
+            audit.unknown.is_empty(),
+            "旧名不再算 unknown：{:?}",
+            audit.unknown
+        );
         assert_eq!(audit.findings.len(), 1, "{:?}", audit.findings);
         let finding = &audit.findings[0];
         assert_eq!(finding.component, "Transform");
@@ -247,9 +283,18 @@ mod tests {
         assert!(
             lines
                 .iter()
-                .any(|line| line.contains("component_no_schema component=Transform3D")),
+                .any(|line| line.contains(
+                    "component_renamed legacy=Transform3D current=Transform"
+                )),
             "{lines:?}"
         );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("component_renamed legacy=Camera2D current=Camera")),
+            "{lines:?}"
+        );
+        assert!(lines[0].contains("renamed_components=2"), "{lines:?}");
         let _ = std::fs::remove_dir_all(root);
     }
 

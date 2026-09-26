@@ -1,0 +1,10 @@
+[audio]
+master = 1.0
+bgm = 1.0
+sfx = 1.0
+ui = 1.0
+
+[input]
+map = "rustlua-actions-v2\nattack=key:keyj\nbuild=key:keyb\ncancel=key:escape,pad:1\nconfirm=key:space,pad:0\ndemolish=key:keyx\ngift=key:keyg\ninteract=key:keye\ninventory=key:keyi\nmove_down=key:keys\nmove_left=key:keya\nmove_right=key:keyd\nmove_up=key:keyw\npause=key:keyp\nplace=key:keyf\npractice=key:keyq\nquest=key:keyl\nrespawn=key:keyr\nseed=key:keyc\nskill=key:keyk\nsleep=key:keyt\nslot_1=key:digit1\nslot_2=key:digit2\nslot_3=key:digit3\nslot_4=key:digit4\nslot_5=key:digit5\nslot_6=key:digit6\nslot_7=key:digit7\nslot_8=key:digit8\nslot_9=key:digit9\nui_down=key:arrowdown,padaxis:1-,pad:13\nui_left=key:arrowleft,padaxis:0-,pad:14\nui_right=key:arrowright,padaxis:0+,pad:15\nui_up=key:arrowup,padaxis:1+,pad:12\nuse=key:keyu\nvolume_down=key:minus\nvolume_up=key:equal"
+stick_deadzone = 0.15
+trigger_deadzone = 0.05

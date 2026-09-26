@@ -114,6 +114,7 @@ impl EditorApp {
                     self.recovery = outcome.recovery;
                     self.recovery_scan = outcome.recovery_scan;
                     self.resources = outcome.resources;
+                    self.resource_tree_cache = None;
                     // 项目切换：清空旧项目缩略图缓存并让后台解码结果失效。
                     self.thumbnails.clear();
                     self.thumbnail_worker.clear();

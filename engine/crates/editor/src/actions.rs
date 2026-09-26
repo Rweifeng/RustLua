@@ -1856,6 +1856,64 @@ impl EditorApp {
         }
     }
 
+    /// Unity 风格：新建 UI 实体时自动确保场景里有一个 Canvas 根（全屏 UiLayout），
+    /// 新 UI 实体挂到 Canvas 下。已有 Canvas 就直接复用。
+    pub(crate) fn create_ui_entity(&mut self) {
+        if self.is_playing() {
+            self.status = "Play mode locks scene editing; click Stop first".into();
+            return;
+        }
+        let Some(scene) = self.document.current_scene.as_mut() else {
+            self.status = "Create a scene first".into();
+            return;
+        };
+        let tree = self.tree.clone();
+        let created = std::cell::Cell::new(None::<SceneEntityId>);
+        let result = self
+            .history
+            .execute(scene, "Create UI entity", CommandKind::Create, |scene| {
+                // 1. 找或建 UI 根节点（metadata ui.root=true）。
+                let root_id = scene.scene.entities.values()
+                    .find(|e| e.metadata.get("ui.root").map(|v| v == "true").unwrap_or(false))
+                    .map(|e| e.id);
+                let root_id = if let Some(id) = root_id {
+                    id
+                } else {
+                    let id = tree.create_entity(scene, "UIRoot", None).map_err(|e| e.to_string())?;
+                    if let Some(root) = scene.scene.entities.get_mut(&id) {
+                        root.metadata.insert("ui.root".into(), "true".into());
+                        root.components.insert(
+                            "UiLayout".into(),
+                            "anchors=0.0000,0.0000,1.0000,1.0000;offsets=0.00,0.00,0.00,0.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000".into(),
+                        );
+                    }
+                    id
+                };
+                // 2. 在 UI 根下建 UI 实体。
+                let id = tree.create_entity(scene, "UI Element", Some(root_id))
+                    .map_err(|e| e.to_string())?;
+                if let Some(entity) = scene.scene.entities.get_mut(&id) {
+                    entity.components.insert(
+                        "Transform".into(),
+                        encode_transform(TransformFields::default()),
+                    );
+                }
+                created.set(Some(id));
+                Ok::<(), String>(())
+            });
+        match result {
+            Ok(true) => {
+                if let Some(id) = created.get() {
+                    self.selection.add(id, editor::SelectionSource::Command);
+                    self.sync_inspector(id);
+                }
+                self.status = "UI entity created under UI root".into();
+            }
+            Ok(false) => self.status = "No change".into(),
+            Err(e) => self.status = e,
+        }
+    }
+
     pub(crate) fn add_entity_with_component(&mut self, name: &str, component: &str) {
         self.entity_name = name.to_owned();
         self.add_entity(None);

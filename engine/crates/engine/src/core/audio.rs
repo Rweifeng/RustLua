@@ -278,6 +278,21 @@ impl AudioSystem {
             tracing::info!(target: "audio", "[audio] music stopped");
         }
     }
+    /// Pauses the looping background music（编辑器暂停时调用；不释放 sink，恢复时继续）。
+    pub fn pause_music(&self) {
+        if let Some(music) = self.music_sink.as_ref() {
+            music.pause();
+            tracing::debug!(target: "audio", "[audio] music paused");
+        }
+    }
+
+    /// Resumes a previously paused looping background music sink。
+    pub fn resume_music(&self) {
+        if let Some(music) = self.music_sink.as_ref() {
+            music.play();
+            tracing::debug!(target: "audio", "[audio] music resumed");
+        }
+    }
 
     /// Opens the output device on first use; degrades to a warning without one.
     fn ensure_device(&mut self) -> Result<(), AudioError> {

@@ -3,7 +3,7 @@
 //! Loads `examples/game_jhyt/scripts/main.lua` into a bare `LuaRuntime` and
 //! reproduces the M19-02 acceptance paths:
 //!
-//! - ①音频：15 个自研合成 WAV 存在且为 22050Hz/16-bit/单声道/非空；Lua 侧
+//! - ①音频：16 个自研合成 OGG 存在（OggS+Vorbis 容器检查、非空；采样率/位深/声道由生成器保证）；Lua 侧
 //!   `audio.play/music/stop_music/volume` 与 `audio.sfx/play_bgm` 调用路径
 //!   在无音频设备时也不抛错（pcall 静默降级），同一曲目不重启。
 //! - ②HUD 文案包含生命/体力/内力/时间/天气/金钱/快捷栏字段。
@@ -29,7 +29,7 @@ use std::{
 
 /// 自研合成音频清单（tools/gen_audio.py 生成；名称即运行时键名）。
 const BGM_CLIPS: [&str; 4] = ["bgm_title", "bgm_manor", "bgm_village", "bgm_wilds"];
-const SFX_CLIPS: [&str; 11] = [
+const SFX_CLIPS: [&str; 12] = [
     "ui_click",
     "ui_confirm",
     "ui_cancel",
@@ -41,6 +41,8 @@ const SFX_CLIPS: [&str; 11] = [
     "sfx_quest",
     "sfx_sleep",
     "sfx_craft",
+    // M22：面板选中项变化播 ui_move（panel_nav.lua 调用；目录有 ui_move.ogg）。
+    "ui_move",
 ];
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -59,20 +61,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let save_path = fresh_save_path(&project, "jhyt_m19_ui.sav");
     let project_arg = project.clone();
 
-    banner("M19-02a 音频资源：15 个 WAV 存在 + 22050Hz/16-bit/单声道/非空 + 调用路径不抛错");
+    banner("M19-02a 音频资源：16 个 OGG 存在（OggS+Vorbis 容器检查、非空）+ 调用路径不抛错");
     let audio_dir = project.join("assets").join("audio");
     let mut clips = 0;
     for name in BGM_CLIPS.iter().chain(SFX_CLIPS.iter()) {
-        let path = audio_dir.join(format!("{name}.wav"));
-        let info = inspect_wav(&path)?;
-        println!(
-            "{name}.wav ch={} rate={} bits={} frames={} bytes={} peak={}",
-            info.channels, info.sample_rate, info.bits, info.frames, info.bytes, info.peak
-        );
+        let path = audio_dir.join(format!("{name}.ogg"));
+        let info = inspect_ogg(&path)?;
+        println!("{name}.ogg bytes={} vorbis={} container=OggS", info.bytes, info.vorbis);
         clips += 1;
     }
-    if clips != 15 {
-        return Err(format!("expected 15 clips, inspected {clips}").into());
+    if clips != 16 {
+        return Err(format!("expected 16 clips, inspected {clips}").into());
     }
 
     let mut runtime = new_runtime(&project_arg, &save_path)?;
@@ -708,85 +707,33 @@ require('ui.text_fit').fit('一二三四五六七八九十', 14, 60), 14) <= 60)
 
 // ---------- helpers ----------
 
-/// WAV 头部与样本自检（M19-02：格式与「非空」由 Rust 侧独立复核）。
-struct WavInfo {
-    channels: u16,
-    sample_rate: u32,
-    bits: u16,
-    frames: u64,
+/// OGG 容器与 Vorbis 标识自检（M19-02 同步 .ogg，2026-09-27）。
+///
+/// 注意口径：OGG（Vorbis）是压缩容器，**无解码器**时无法在 Rust 侧复核
+/// 22050Hz/16-bit/单声道与振幅——这些参数由生成器 `tools/gen_audio.py`
+/// （WAV 22050/16/单 → OGG 转码保持）保证；这里独立复核的是：
+/// 文件存在且非空（> 1KB）、OggS 魔数、Vorbis 标识（首页 `\x01vorbis`）。
+struct OggInfo {
     bytes: u64,
-    peak: i32,
+    vorbis: bool,
 }
 
-fn inspect_wav(path: &Path) -> Result<WavInfo, Box<dyn std::error::Error>> {
+fn inspect_ogg(path: &Path) -> Result<OggInfo, Box<dyn std::error::Error>> {
     let bytes = fs::read(path).map_err(|e| format!("missing {}: {e}", path.display()))?;
-    if bytes.len() < 44 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
-        return Err(format!("bad RIFF/WAVE header: {}", path.display()).into());
+    if bytes.len() < 64 || &bytes[0..4] != b"OggS" {
+        return Err(format!("bad OggS header: {}", path.display()).into());
     }
-    let total = bytes.len() as u64;
-    let mut cursor = 12usize;
-    let mut channels = 0u16;
-    let mut sample_rate = 0u32;
-    let mut bits = 0u16;
-    let mut audio_format = 0u16;
-    let mut data_range: Option<(usize, usize)> = None;
-    while cursor + 8 <= bytes.len() {
-        let id = &bytes[cursor..cursor + 4];
-        let size = u32::from_le_bytes(bytes[cursor + 4..cursor + 8].try_into()?) as usize;
-        let body = cursor + 8;
-        if id == b"fmt " && body + 16 <= bytes.len() {
-            audio_format = u16::from_le_bytes(bytes[body..body + 2].try_into()?);
-            channels = u16::from_le_bytes(bytes[body + 2..body + 4].try_into()?);
-            sample_rate = u32::from_le_bytes(bytes[body + 4..body + 8].try_into()?);
-            bits = u16::from_le_bytes(bytes[body + 14..body + 16].try_into()?);
-        } else if id == b"data" {
-            let end = (body + size).min(bytes.len());
-            data_range = Some((body, end));
-        }
-        cursor = body + size + (size % 2);
+    let vorbis = bytes.windows(7).any(|w| w == b"\x01vorbis");
+    if !vorbis {
+        return Err(format!("no vorbis identification header: {}", path.display()).into());
     }
-    let (start, end) = data_range.ok_or_else(|| format!("no data chunk: {}", path.display()))?;
-    if audio_format != 1 {
-        return Err(format!("expected PCM, got format {audio_format}").into());
+    // 非空阈值：1KB 以上（静音/损坏的短文件会卡在更小尺寸）。
+    if bytes.len() < 1024 {
+        return Err(format!("ogg too small: {} ({} bytes)", path.display(), bytes.len()).into());
     }
-    if channels != 1 || sample_rate != 22050 || bits != 16 {
-        return Err(format!(
-            "{}: expected ch=1 rate=22050 bits=16, got ch={channels} rate={sample_rate} bits={bits}",
-            path.display()
-        )
-        .into());
-    }
-    let mut peak = 0i32;
-    let mut loud = 0u64;
-    let mut frames = 0u64;
-    let mut index = start;
-    while index + 2 <= end {
-        let sample = i16::from_le_bytes(bytes[index..index + 2].try_into()?) as i32;
-        peak = peak.max(sample.abs());
-        if sample.abs() > 100 {
-            loud += 1;
-        }
-        frames += 1;
-        index += 2;
-    }
-    if frames == 0 {
-        return Err(format!("empty audio data: {}", path.display()).into());
-    }
-    // 非空：至少 1% 的样本振幅 > 100。
-    if loud * 100 < frames {
-        return Err(format!(
-            "audio too quiet: {} loud={loud} frames={frames}",
-            path.display()
-        )
-        .into());
-    }
-    Ok(WavInfo {
-        channels,
-        sample_rate,
-        bits,
-        frames,
-        bytes: total,
-        peak,
+    Ok(OggInfo {
+        bytes: bytes.len() as u64,
+        vorbis,
     })
 }
 
@@ -797,8 +744,8 @@ fn new_runtime(project: &Path, save_path: &Path) -> Result<LuaRuntime, Box<dyn s
     runtime.set_save_path(save_path.to_path_buf());
     // 音频目录固定为 <project>/assets/audio（core/audio.rs）。
     runtime.set_audio_asset_dir(project.join("assets").join("audio"));
-    // M32 竖版：设计分辨率 720×1280（Lua 动态 UI 是屏幕像素空间，视口必须与设计尺寸一致）。
-    runtime.set_ui_viewport(720, 1280);
+    // M32 横屏：设计分辨率 1280×720（Lua 动态 UI 是屏幕像素空间，视口必须与设计尺寸一致）。
+    runtime.set_ui_viewport(1280, 720);
     runtime.set_delta(1.0 / 60.0);
     Ok(runtime)
 }

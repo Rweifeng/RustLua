@@ -1,4 +1,4 @@
--- layout_check.lua：竖版版面校验器（M32）。
+-- layout_check.lua：版面校验器（M32，2026-09-27 转横屏）。
 --
 -- 为什么单独一个文件，而不是把 `validate_all` 写进 `ui/layout.lua`：
 --   * `validate_data.lua` 的注册表要求每个校验器是**纯数据/纯规则模块**，

@@ -20,6 +20,8 @@ local hints = require("ui.hints")
 local ui_text = require("ui.ui_text")
 -- M32 竖版：按钮矩形与设计宽度的唯一来源（`ui/layout.lua`），与 `main.scene` 对齐。
 local layout = require("ui.layout")
+-- docs/48 ui 换肤接线：菜单装饰组（四角/竹分隔/印章/按钮悬停态）。
+local skin = require("ui.skin")
 -- `core.audio` 是叶子模块（只依赖 core.save_manager），顶层 require 不会成环；
 -- 选中/确认/取消反馈音都经它（UI 总线）。
 local audio = require("core.audio")
@@ -38,8 +40,8 @@ local M = {}
 
 local FOCUS = "title:menu"
 
--- 与 `main.scene` 里按钮实体的 `UiLayout` 对齐（**竖版 720×1280**，M32）：
--- 三块木牌按钮竖排在中部（y 620 / 708 / 796），`layout.PANEL.title_btn` 给出统一矩形，
+-- 与 `main.scene` 里按钮实体的 `UiLayout` 对齐（**横屏 1280×720**，M32；2026-09-27）：
+-- 三块木牌按钮竖排在中部（y 380 / 460 / 540），`layout.PANEL.title_btn` 给出统一矩形，
 -- 每项只差 `title_btn_gap` 的纵向偏移。`label_x` 是场景**文字实体**（entity 8/10/12）
 -- 的左边缘：标签文字由场景画，脚本只在它的左侧留白里补选中箭头，因此两个坐标必须一起改
 -- （`tools/gen_main_menu_scene.py` 的 `BUTTONS`）。
@@ -240,6 +242,22 @@ function M.render()
   local index = M.index()
   local anim = M.anim()
   ui_text.begin("title")
+  -- docs/48 ui 换肤接线：菜单装饰组（画在场景 UI 之上，场景已接 vignette/ink/logo/灯笼/按钮底/卷轴）。
+  -- 选中按钮 = 悬停态：btn_wuxia_hover 覆盖在 9s 按钮底上（选中即悬停，交互语义真实）。
+  local sel_opt = OPTIONS[index]
+  if sel_opt then
+    skin.panel("title:btn_hover", sel_opt.panel[1], sel_opt.panel[2],
+      sel_opt.panel[3] - sel_opt.panel[1], sel_opt.panel[4] - sel_opt.panel[2], "menu_btn_wuxia_hover")
+  end
+  -- 四角装饰：围绕 logo 区（384,80)-(896,336) 外扩 6px，40×40。
+  skin.icon("title:orn_tl", 378, 74, 40, 40, "menu_ornament_corner")
+  skin.icon("title:orn_tr", 858, 74, 40, 40, "menu_ornament_corner_tr")
+  skin.icon("title:orn_bl", 378, 302, 40, 40, "menu_ornament_corner_bl")
+  skin.icon("title:orn_br", 858, 302, 40, 40, "menu_ornament_corner_br")
+  -- 竹分隔线：按钮区（y380-604）与贴士区之间（y600 起）。
+  skin.icon("title:divider", 460, 606, 360, 10, "menu_divider_bamboo")
+  -- 江湖印章：右上角（footer 在右下，右上留白）。
+  skin.icon("title:seal", 1176, 20, 64, 64, "menu_seal_jianghu")
   for position, option in ipairs(OPTIONS) do
     local x1, y1, x2, y2 = option.panel[1], option.panel[2], option.panel[3], option.panel[4]
     if position == index then

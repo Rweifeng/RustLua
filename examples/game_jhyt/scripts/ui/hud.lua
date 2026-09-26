@@ -23,12 +23,14 @@ local tutorial = require("ui.tutorial")
 local ui_text = require("ui.ui_text")
 -- M32 竖版：面板几何与行宽预算的唯一来源（`ui/layout.lua`）。
 local layout = require("ui.layout")
+-- docs/48 ui 换肤接线：面板背景/行图标/状态图标/条图标贴图。
+local skin = require("ui.skin")
 
 local M = {}
 
--- 状态面板几何（竖版：底部通栏；左右各留 24，不与任何其它面板重叠）。
--- 横屏时它是右上角一块 276×300 的小面板，竖屏改到**底部**：竖屏宽度只有 720，
--- 右上角放不下"面板 + 资源条 + 反馈行"，而底部通栏既够宽也不挡地图中央的玩法视野。
+-- 状态面板几何（横屏：右侧信息栏顶部，与对话面板同栏、上下排布）。
+-- 竖屏曾改到**底部通栏**（竖屏宽度只有 720，右上角放不下"面板 + 资源条 + 反馈行"）；
+-- 2026-09-27 转横屏：信息栏右置（880..1280），面板与对话/反馈行共用一栏。
 local PANEL = layout.PANEL.hud_info
 -- 状态面板行距/字号（M32 后的可读性重构：5 行 14px → 4 行 18px）。
 -- 4 行 × 28px + 顶部 10px = 122px，正好装进 124px 高的面板；字号从 14 提到 18，
@@ -48,9 +50,33 @@ local CHIP_COLORS = {
 }
 -- 面板顶部的金色细条（与色块同色系，让"底栏"有明确的收口）。
 local ACCENT = { h = 3, r = 0.93, g = 0.75, b = 0.35, a = 0.9 }
+-- docs/48 ui 换肤接线：状态行图标（行号 → skin key；无图标行为 nil）。
+local LINE_ICONS = { [1] = "hud_icon_hp", [3] = "hud_icon_coin" }
+-- 状态图标注册表（8 张全列出；绘制按真实状态是否存在）。
+local STATUS_ICONS = {
+  poison = "hud_status_poison",
+  buff = "hud_status_buff",
+  bleed = "hud_status_bleed",
+  debuff = "hud_status_debuff",
+  sleep = "hud_status_sleep",
+  stealth = "hud_status_stealth",
+  weather = "hud_status_weather",
+  festival = "hud_status_festival"
+}
+-- 当前真实激活的状态键（有玩法来源的才返回；其余状态机制未实现 → 不画但已就绪）。
+local function active_status_keys()
+  local out = {}
+  if require("player.stats").buff_count("player") > 0 then
+    out[#out + 1] = "buff"
+  end
+  if weather.is_rainy() then
+    out[#out + 1] = "weather"
+  end
+  return out
+end
 -- 可用文字宽度：面板内左右各留 12，再扣除色块与间距（整行行宽为设计宽两侧各留 24）。
 local PANEL_TEXT_W = PANEL.w - 24 - CHIP.w - CHIP.gap - 4
-local ROW_TEXT_W = layout.row_width()
+local ROW_TEXT_W = PANEL.w - 24  -- 横屏右栏行宽预算 = 面板宽 − 边距（竖屏曾用全宽 row_width）
 
 local WEATHER_TEXT = { sunny = "晴", rainy = "雨" }
 local SEASON_TEXT = { spring = "春", summer = "夏", autumn = "秋", winter = "冬" }
@@ -424,12 +450,69 @@ local DEFAULT_KEYS =
 --     因此说话时状态照样可见（竖屏底部一块通栏放得下"对话框 + 状态行"，不必二选一）。
 --   * 键位提示固定在最底一行（y=1246），它在状态面板之下，与任何面板都不冲突；
 --     横屏时它在 y=8、与 scene 的 HudTitle（y 20..44）叠字，竖版顺手修掉了。
+-- docs/48 ui 换肤接线：建造预览图标（ghost_ok 可放置 / ghost_bad 冲突）。
+-- building.preview 是逻辑 footprint（headless 验收用），这里的图标是它的可视反馈，
+-- 画在资源条右侧（状态图标竖排的第三行位）。
+local function draw_build_ghost()
+  local ok, building_mod = pcall(require, "systems.building")
+  if not ok or type(building_mod) ~= "table" or not building_mod.build_mode() then
+    return
+  end
+  local preview = building_mod.preview(state.facing)
+  local ghost_key = preview.ok and "build_ghost_ok" or "build_ghost_bad"
+  skin.icon("hud:build_ghost", BAR.x + BAR.w + 10, BAR.y0 + 2 * 20, 24, 24, ghost_key)
+end
+
+-- docs/48 ui 换肤接线：招式快捷栏（skill_card 卡底 + 招式图标）。
+-- 招式取 `data.skills.ids()` 全表（5 招，与 `skills/` 模块图标一一对应）；
+-- 尚未做"已学/未学"限制，栏位即游戏招式索引。画在资源条下方（y234 起，不压引导行）。
+local SKILL_ICON_KEYS = {
+  basic_blade = "skill_basic_blade",
+  chase_wind = "skill_chase_wind",
+  guard_heart = "skill_guard_heart",
+  return_palm = "skill_return_palm",
+  breath_qi = "skill_breath_qi",
+}
+local function draw_skill_bar()
+  local ok, skill_data = pcall(require, "data.skills")
+  if not ok or type(skill_data) ~= "table" or type(skill_data.ids) ~= "function" then
+    return
+  end
+  local ids = skill_data.ids()
+  if type(ids) ~= "table" then
+    return
+  end
+  local slot = 48
+  local gap = 4
+  local x0 = BAR.x
+  local y0 = BAR.y0 + BAR.row * 3 + 30
+  for i, skill_id in ipairs(ids) do
+    local card_id = "hud:skill_card" .. i
+    skin.panel(card_id, x0 + (i - 1) * (slot + gap), y0, slot, slot, "skill_card")
+    local icon_key = SKILL_ICON_KEYS[skill_id]
+    if icon_key then
+      skin.icon("hud:skill_icon" .. i, x0 + (i - 1) * (slot + gap) + 4, y0 + 4, 40, 40, icon_key)
+    end
+  end
+end
+
 function M.draw(key_hints)
   local x, y, w, h = PANEL.x, PANEL.y, PANEL.w, PANEL.h
   local in_dialogue = state.is_mode("Dialogue")
   -- HUD 每帧重绘：同时重开自己那一轮文字登记（M30）。登记表即"本帧画面上有哪些文字、
   -- 各自可用多宽"，验收遍历它逐条量宽（`ui_text.audit()`），无需在验收里重抄几何。
   ui_text.begin("hud")
+  -- HUD 文字是浅色，用深色半透明底；不用浅色纸面 skin（否则浅底浅字看不清）。
+  -- docs/48 ui 换肤接线：头像框（48×48）浮在面板左侧。
+  skin.icon("hud:avatar_frame", x - 56, y + 8, 48, 48, "hud_avatar_frame")
+  -- docs/48 ui 换肤接线：激活状态图标（竖排 16×16，画在资源条右侧区外）。
+  local statuses = active_status_keys()
+  for index, key in ipairs(statuses) do
+    local tex_key = STATUS_ICONS[key]
+    if tex_key then
+      skin.icon("hud:status_" .. key, BAR.x + BAR.w + 10, BAR.y0 + (index - 1) * 20, 16, 16, tex_key)
+    end
+  end
   ui.panel("hud:box", x, y, w, h, 0.08, 0.09, 0.12, 0.62)
   -- 金色收口条（面板顶部 3px），与行内分类色块同色系。
   ui.panel("hud:accent", x, y, w, ACCENT.h, ACCENT.r, ACCENT.g, ACCENT.b, ACCENT.a)
@@ -442,6 +525,11 @@ function M.draw(key_hints)
       -- 分类色块 + 文字：色块在 x+12 处，文字起点让出色块（x+12+CHIP.w+gap）。
       ui.panel("hud:chip" .. i, x + 12, y + 10 + (i - 1) * LINE_H + (LINE_H - CHIP.h) / 2,
         CHIP.w, CHIP.h, color.r, color.g, color.b, 0.95)
+      -- docs/48 ui 换肤接线：行图标（12×12，画在色块左外侧，不压文字）。
+      local line_key = LINE_ICONS[i]
+      if line_key then
+        skin.icon("hud:line_icon" .. i, x + 6, y + 10 + (i - 1) * LINE_H + (LINE_H - 12) / 2, 12, 12, line_key)
+      end
       ui_text.draw("hud", id, x + 12 + CHIP.w + CHIP.gap, y + 10 + (i - 1) * LINE_H, LINE_FONT, PANEL_TEXT_W, line)
     else
       ui.clear("hud:chip" .. i)
@@ -453,9 +541,20 @@ function M.draw(key_hints)
   if type(hint) ~= "string" or hint == "" then
     hint = DEFAULT_KEYS
   end
-  -- M32 竖版：键位提示从"顶部一行"改到**底部最后一行**。竖屏顶部是地图标题
-  -- （scene 的 HudTitle/HudHint），原先两者都在 y=8 会叠字。字号 13→16（可读性）。
-  ui_text.draw("hud", "hud:keys", PANEL.x, layout.ROW.bottom_y, 16.0, ROW_TEXT_W, hint)
+  -- 键位提示在世界底部通栏一行（右栏 280px 放不下 11 个键位项——收窄后
+  -- 断行会把「J 攻击」这类标签拆成两行，jhyt_m20_gamepad 的键鼠说明断言会拦）。
+  -- 通栏宽 = 设计宽 − 两侧边距，11 项整行放得下；y 取 ROW.bottom_y − 24，行高 16
+  -- 落在 666..682，与右栏 dialogue/goals/feedback（320..612）不重叠。
+  ui_text.draw_wrapped(
+    "hud",
+    "hud:keys",
+    layout.ROW.top_x,
+    layout.ROW.bottom_y - 24,
+    16.0,
+    layout.row_width(),
+    1,
+    hint
+  )
 
   if in_dialogue then
     ui_text.hide("hud", "hud:feedback")
@@ -475,10 +574,10 @@ function M.draw(key_hints)
     else
       ui_text.hide("hud", "hud:goals")
     end
-    -- 新手引导行：放在资源条**上方**（资源条 954..1020 会与旧位置 PANEL.y-24=996 叠字）。
+    -- 新手引导行：放在资源条**下方**（右栏：面板 8..132、资源条 138..192、引导行 198）。
     local prompt = tutorial.prompt()
     if prompt then
-      ui_text.draw("hud", "hud:tutorial", PANEL.x, BAR.y0 - 26, 16.0, ROW_TEXT_W, prompt)
+      ui_text.draw("hud", "hud:tutorial", PANEL.x, BAR.y0 + BAR.row * 3 + 6, 16.0, ROW_TEXT_W, prompt)
     else
       ui_text.hide("hud", "hud:tutorial")
     end
@@ -487,6 +586,9 @@ function M.draw(key_hints)
   -- 直调、不套 `pcall`：套上 `pcall` 只会把"函数名写错/取值非法"变成"画面上什么都没有、
   -- 日志里也没有一行错误"——M29 用前向声明修掉的正是这个坑。
   draw_bars()
+  -- docs/48 ui 换肤接线：建造预览图标 + 招式快捷栏（都画在资源条下方/右侧）。
+  draw_build_ghost()
+  draw_skill_bar()
   draw_weather_visual()
   return true
 end
@@ -500,10 +602,10 @@ end
 -- 与 M28 起唯一上限来源一致）。宽度变化因此是"真的反映数值"，不是装饰。
 BAR = {
   x = PANEL.x + 12,
-  -- M32 竖版：三条资源条从"面板正下方"改到**面板正上方**（右列布局在竖屏没有右列）。
-  -- 面板顶 y=1020，条高三行（18px 间隔 24px）落在 954..1020，正好贴住面板上沿。
-  -- 可读性重构：条宽 120→160、条高 16→18，更容易一眼看清剩余比例。
-  y0 = PANEL.y - 66,
+  -- 2026-09-27 横屏：三条资源条在**面板正下方**（右栏顶部已被面板占满，
+  -- 竖屏曾画在面板正上方）。条高三行（18px 间隔 24px）落在 138..192，贴着面板下沿；
+  -- 条宽 160、条高 18。
+  y0 = PANEL.y + PANEL.h + 6,
   row = 24,
   w = 160,
   h = 18,
@@ -539,8 +641,11 @@ end
 function draw_bars()
   local ratios = M.bar_ratios()
   local values = { ratios.hp, ratios.stamina, ratios.neili }
+  -- docs/48 ui 换肤接线：三条资源条的行首图标（16×16）。
+  local bar_icons = { "hud_icon_hp", "hud_icon_stamina", "hud_icon_neili" }
   for index, bar in ipairs(BARS) do
     local y = BAR.y0 + (index - 1) * BAR.row
+    skin.icon(bar.id .. ":icon", BAR.x - 22, y + 1, 16, 16, bar_icons[index])
     ui.image(bar.id .. ":frame", BAR.x, y, BAR.w, BAR.h, BAR.frame, 1, 1, 1)
     local fill = math.max(1, math.floor(BAR.w * values[index] + 0.5))
     ui.image(bar.id, BAR.x, y, fill, BAR.h, bar.fill, 1, 1, 1)
@@ -617,6 +722,11 @@ function M.reset()
   for _, bar in ipairs(BARS) do
     ui.clear(bar.id)
     ui.clear(bar.id .. ":frame")
+  end
+  ui.clear("hud:build_ghost")
+  for i = 1, 5 do
+    ui.clear("hud:skill_card" .. i)
+    ui.clear("hud:skill_icon" .. i)
   end
   return true
 end

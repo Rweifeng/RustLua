@@ -66,8 +66,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &mut runtime,
         "(function() local n = 0 for _ in pairs(require('data.items')) do n = n + 1 end return n end)()",
     )?;
-    if item_count != 10.0 {
-        return Err(format!("data/items.lua has {item_count} entries, want 10").into());
+    if item_count != 14.0 {
+        return Err(format!("data/items.lua has {item_count} entries, want 14").into());
     }
 
     banner("② 登记覆盖：任何带 validate_all 的模块都必须登记进 validate_data.lua");
@@ -337,7 +337,7 @@ fn new_runtime(project: &Path) -> Result<LuaRuntime, Box<dyn std::error::Error>>
     let mut runtime = LuaRuntime::new()?;
     runtime.set_project_root(project.to_path_buf());
     // M32 竖版：设计分辨率 720×1280（Lua 动态 UI 是屏幕像素空间，视口必须与设计尺寸一致）。
-    runtime.set_ui_viewport(720, 1280);
+    runtime.set_ui_viewport(1280, 720);
     runtime.set_delta(1.0 / 60.0);
     Ok(runtime)
 }

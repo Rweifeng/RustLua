@@ -1100,7 +1100,7 @@ impl EditorApp {
             console_notices: Vec::new(),
             console_rows_cache: Default::default(),
             console_filter: String::new(),
-            console_log_level_filter: ConsoleLogLevelFilter::Error,
+            console_log_level_filter: ConsoleLogLevelFilter::All,
             console_tab: ConsoleTab::Editor,
             inspector: InspectorState::new(),
             mesh_renderer: String::new(),
@@ -1485,6 +1485,7 @@ impl EditorApp {
 
     fn select_resource(&mut self, path: PathBuf) {
         self.selected_resource = Some(path.clone());
+        self.selection.clear(editor::SelectionSource::None);
         self.delete_target = DeleteTarget::Resource(path);
     }
 
@@ -2044,6 +2045,10 @@ impl EditorApp {
         }
         self.sync_hierarchy_metadata();
         self.poll_progress();
+        // 后台任务进行中时持续请求重绘，否则 egui 空闲不重绘，进度条卡住。
+        if self.progress.running {
+            context.request_repaint();
+        }
         self.poll_resource_refresh();
         // 外部文件变化（保存/生成器/其它工具）：轮询监听 → 触发后台资源刷新。
         self.poll_file_watcher();

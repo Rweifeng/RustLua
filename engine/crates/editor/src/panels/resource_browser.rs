@@ -36,7 +36,7 @@ impl EditorApp {
                 if let Some(error) = self.resources.last_error() {
                     ui.colored_label(egui::Color32::RED, format!("错误：{error}"));
                 }
-                egui::ScrollArea::vertical().show(ui, |ui| {
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                     // 把资源按目录组织成树（可折叠）；过滤后无可见子项的目录自动隐藏。
                     // 树按 (filter, refresh_count) 缓存，命中时复用上次构建的树，
                     // 避免大资源项目每帧 clone 全部条目重建。
@@ -53,6 +53,10 @@ impl EditorApp {
                     });
                 });
             });
+            // 缩略图后台解码未完成时持续重绘，否则 egui 空闲不画、缩略图永远出不来。
+            if self.thumbnail_worker.has_pending() {
+                context.request_repaint_after(std::time::Duration::from_millis(32));
+            }
         refresh_resources
     }
 
@@ -266,7 +270,7 @@ impl EditorApp {
 
     /// 纹理缩略图（缓存 + 后台解码）。大图在后台线程降采样到 ≤64px，主线程
     /// 只接收结果并上传 GPU；未就绪时返回 `None`（本帧不画图，用占位符）。
-    fn texture_thumbnail(
+    pub(crate) fn texture_thumbnail(
         &mut self,
         relative: &str,
         ctx: &egui::Context,
@@ -275,22 +279,22 @@ impl EditorApp {
             return Some(handle.id());
         }
         // 上传后台已解码的缩略图（每帧限量，避免一帧上传过多）。
+        // 先把本批 drain 到的结果全部上传并入库，再判断当前条目是否命中——
+        // 否则循环里遇到当前条目就 return，会把同批其他结果丢弃，导致部分缩略图永远空白。
+        let mut found_current: Option<egui::TextureId> = None;
         for result in self.thumbnail_worker.drain(MAX_THUMBNAIL_UPLOADS_PER_FRAME) {
-            let Some(pixels) = result.pixels else {
-                if result.key == relative {
-                    return None; // 当前条目解码失败：不再重试（requested 已记录）。
-                }
-                continue;
-            };
+            let Some(pixels) = result.pixels else { continue; };
             let image =
                 egui::ColorImage::from_rgba_unmultiplied([result.width, result.height], &pixels);
             let handle = ctx.load_texture("thumb", image, egui::TextureOptions::LINEAR);
             let id = handle.id();
             if result.key == relative {
-                self.thumbnails.insert(relative.to_owned(), handle);
-                return Some(id);
+                found_current = Some(id);
             }
             self.thumbnails.insert(result.key, handle);
+        }
+        if let Some(id) = found_current {
+            return Some(id);
         }
         // 未缓存且未在解码中：提交后台解码请求（每帧预算内），本帧不画图。
         let root = strip_verbatim_prefix(&self.project.root);
@@ -675,6 +679,9 @@ impl ThumbnailWorker {
         self.requested.clear();
         self.submitted_this_frame = 0;
     }
+
+    /// 是否还有未完成的解码请求（用于驱动空闲重绘直到缩略图加载完）。
+    pub(crate) fn has_pending(&self) -> bool { !self.requested.is_empty() }
 }
 
 /// 后台线程的解码实现：读取 + PNG 解码 + 降采样到 ≤64px。
@@ -683,6 +690,10 @@ fn decode_thumbnail(request: &ThumbnailRequest) -> ThumbnailResult {
     let key = request.key.clone();
     match TextureAsset::load_png(&request.path, TextureColorSpace::Srgb) {
         Ok(asset) => {
+            use std::io::Write as _;
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("thumb_debug.log") {
+                let _ = writeln!(f, "OK   {}", request.path.display());
+            }
             let (pixels, width, height) = downscale_rgba(
                 asset.pixels(),
                 asset.width() as usize,
@@ -697,12 +708,18 @@ fn decode_thumbnail(request: &ThumbnailRequest) -> ThumbnailResult {
                 generation,
             }
         }
-        Err(_) => ThumbnailResult {
-            key,
-            pixels: None,
-            width: 0,
-            height: 0,
-            generation,
+        Err(error) => {
+            use std::io::Write as _;
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("thumb_debug.log") {
+                let _ = writeln!(f, "FAIL {}: {error}", request.path.display());
+            }
+            ThumbnailResult {
+                key,
+                pixels: None,
+                width: 0,
+                height: 0,
+                generation,
+            }
         },
     }
 }

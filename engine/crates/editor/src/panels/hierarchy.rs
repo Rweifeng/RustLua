@@ -481,19 +481,27 @@ impl EditorApp {
                 //
                 // docs/55 阶段 0：把输入框矩形记进探针，GUI smoke 才能用**真实指针事件**把焦点
                 // 打进文本框（"输入焦点"是计划 §8 质量门枚举的一项：键入时快捷键不得抢键）。
-                let filter_response = ui.horizontal(|ui| {
-                    let edit_width = (ui.available_width() - 34.0).max(60.0);
-                    let edit_response = ui.add(
-                        egui::TextEdit::singleline(&mut self.hierarchy_filter)
-                            // 语法提示直接写在占位文本里：`type:`/`component:` 是 ER-04 的"类型过滤"。
-                            .hint_text("搜索实体（type:Sprite 或 component:ui 按组件过滤）")
-                            .desired_width(edit_width),
-                    );
+                // right-to-left：✕ 先画靠右，TextEdit 后画用 INFINITY 占满剩余宽度。
+                // 之前按 available_width()-34 算 desired_width，输入文字比这个宽时 TextEdit
+                // 的内容 galley 会反向撑大自身，导致输入框越输越宽（与 schema_inspector 同一问题）。
+                let filter_response = ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                    // 空时也在按钮位分配 0 宽占位：保持 TextEdit 的 widget 序号稳定，
+                    // 否则输入首字符时 ✕ 按钮出现会让 TextEdit 序号 +1，egui 视为新控件而丢焦点。
                     if !self.hierarchy_filter.is_empty()
                         && ui.small_button("✕").on_hover_text("清空过滤").clicked()
                     {
                         self.hierarchy_filter.clear();
+                    } else {
+                        ui.allocate_exact_size(egui::vec2(0.0, 0.0), egui::Sense::hover());
                     }
+                    // 显式固定 widget ID：按钮出现/消失会改变自动序号，导致 TextEdit 被当成新控件而丢焦点。
+                    let edit_response = ui.add(
+                        egui::TextEdit::singleline(&mut self.hierarchy_filter)
+                            .id(ui.make_persistent_id("hierarchy_search_box"))
+                            // 语法提示直接写在占位文本里：`type:`/`component:` 是 ER-04 的"类型过滤"。
+                            .hint_text("搜索实体（type:Sprite 或 component:ui 按组件过滤）")
+                            .desired_width(f32::INFINITY),
+                    );
                     edit_response.rect
                 });
                 // 探针：GUI smoke 用它把合成点击打在输入框真正的位置上。
@@ -577,6 +585,7 @@ impl EditorApp {
     /// H03：单选并更新 Shift 锚点（Hierarchy 内统一入口）。
     pub(crate) fn select_single_hierarchy(&mut self, id: SceneEntityId) {
         self.selection.set_single(id, SelectionSource::Hierarchy);
+        self.selected_resource = None;
         self.selection_anchor = Some(id);
         self.sync_inspector(id);
     }
@@ -1148,6 +1157,11 @@ impl EditorApp {
                 parent,
                 transform_3d: true,
             });
+            ui.close();
+        }
+        ui.separator();
+        if ui.button("新建 UI 实体").clicked() {
+            self.create_ui_entity();
             ui.close();
         }
         let has_clipboard = self.hierarchy_clipboard.is_some();

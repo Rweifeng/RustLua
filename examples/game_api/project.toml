@@ -5,3 +5,7 @@ version = "0.1.0"
 engine = "RustLua"
 main_script = "scripts/main.lua"
 startup_scene = "scenes/index.scene"
+font = ""
+font_fallback = ""
+font_weight = 400.0
+text_render_mode = "vector"

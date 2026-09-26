@@ -2098,6 +2098,16 @@ impl RuntimeScene {
         outcome
     }
 
+    /// 暂停 BGM（编辑器暂停时调用；不释放 sink）。
+    pub fn pause_music(&self) {
+        self.script.pause_music();
+    }
+
+    /// 恢复 BGM。
+    pub fn resume_music(&self) {
+        self.script.resume_music();
+    }
+
     /// Executes the per-step pipeline `steps` times and the frame pipeline
     /// once, accumulating schedule timings into `last_schedule`.
     fn run_pipelines(
@@ -2465,14 +2475,16 @@ impl RuntimeScene {
                     }
                     _ => renderer.mesh.clone(),
                 };
-                drawables.push(Scene3dDrawable {
-                    entity: SceneEntityId(id.index() as u64),
-                    name,
-                    mesh_path: mesh_path.clone(),
-                    // docs/54 §4.4：网格也走同一套运行时身份（`ResourceKind::Model`）。3D 提取是
-                    // `&self`，因此身份表在 `RefCell` 里——同一网格跨帧恒同句柄，渲染器据此做
-                    // O(1) 的网格缓存查找并认出失效引用。
-                    mesh_handle: Some(
+                // WP6：3D 提取不再每帧克隆 mesh 路径（数量级 ≤13 mesh，但同类分配问题
+                // 一并消除）。先借用身份表做零分配的 `handle_of` 查找，未注册时才走
+                // intern（首帧/换网格各一次）；`mesh_path` 直接 move 进 drawable。
+                let mesh_handle = {
+                    let assets = self.assets.borrow();
+                    assets.handle_of(mesh_path.as_str())
+                };
+                let mesh_handle = Some(match mesh_handle {
+                    Some(handle) => handle,
+                    None => {
                         self.assets
                             .borrow_mut()
                             .intern(
@@ -2482,8 +2494,17 @@ impl RuntimeScene {
                                     kind: crate::core::resource_kind::ResourceKind::Model,
                                 },
                             )
-                            .0,
-                    ),
+                            .0
+                    }
+                });
+                drawables.push(Scene3dDrawable {
+                    entity: SceneEntityId(id.index() as u64),
+                    name,
+                    mesh_path,
+                    // docs/54 §4.4：网格也走同一套运行时身份（`ResourceKind::Model`）。3D 提取是
+                    // `&self`，因此身份表在 `RefCell` 里——同一网格跨帧恒同句柄，渲染器据此做
+                    // O(1) 的网格缓存查找并认出失效引用。
+                    mesh_handle,
                     model,
                     palette,
                     bounds,
@@ -3715,15 +3736,55 @@ impl RuntimeScene {
         for (id, text) in texts {
             let rect = self.scene_ui_layout_rect(id, viewport);
             if let Some(rect) = rect {
-                let position = [rect.x, rect.y];
-                // `layout_text` already emits absolute screen-space vertices;
-                // adding the layout origin again would displace scene text by
-                // its full top-left position (the visible "text ran away" bug).
+                // 点锚点（w=h=0）的 Text：按 pivot 在该点居中文字。
+                // 否则文字从 pivot 点开始左对齐向下排，偏出按钮中心。
+                let pivot = self.ui_scene_nodes.get(&(id.index() as u64))
+                    .and_then(|n| n.layout.as_ref())
+                    .map(|l| l.pivot)
+                    .unwrap_or([0.5, 0.5]);
+                let mut position = [rect.x, rect.y];
+                // 先判断渲染路径，measure 必须与渲染走同一路径，否则字体度量不一致。
                 let use_vector = self.should_render_vector(
                     Some(text.font.as_str()),
                     text.effective_scale(),
                     text.text.chars().count(),
                 );
+                if rect.w < 1.0 && rect.h < 1.0 {
+                    // 收集实际渲染顶点的包围盒（origin=[0,0] 时）。
+                    let mut bbox: Option<(f32,f32,f32,f32)> = None;
+                    if use_vector {
+                        if let Some(handle) = self.ensure_vector_font(if text.font.is_empty() { "" } else { text.font.as_str() }) {
+                            if let Ok(mut atlas) = handle.lock() {
+                                let style = crate::core::text::TextStyle {
+                                    scale: text.effective_scale(),
+                                    color: [1.0,1.0,1.0,1.0],
+                                    ..Default::default()
+                                };
+                                if let Ok(verts) = crate::core::text::TextLayout::build_vector(
+                                    &text.text, [0.0,0.0], style, &mut atlas) {
+                                    bbox = Some(verts.iter().fold(
+                                        (f32::MAX,f32::MIN,f32::MAX,f32::MIN),
+                                        |(a,b,c,d), v| (a.min(v.position[0]), b.max(v.position[0]), c.min(v.position[1]), d.max(v.position[1]))));
+                                }
+                            }
+                        }
+                    }
+                    if bbox.is_none() {
+                        if let Ok((measure, _)) = self.layout_text(
+                            &text.text, [0.0,0.0], text.effective_scale(), text.color) {
+                            bbox = Some(measure.vertices.iter().fold(
+                                (f32::MAX,f32::MIN,f32::MAX,f32::MIN),
+                                |(a,b,c,d), v| (a.min(v.position[0]), b.max(v.position[0]), c.min(v.position[1]), d.max(v.position[1]))));
+                        }
+                    }
+                    if let Some((min_x,max_x,min_y,max_y)) = bbox {
+                        position[0] = rect.x - min_x * (1.0 - pivot[0]) - max_x * pivot[0];
+                        position[1] = rect.y - min_y * (1.0 - pivot[1]) - max_y * pivot[1];
+                    }
+                }
+                // `layout_text` already emits absolute screen-space vertices;
+                // adding the layout origin again would displace scene text by
+                // its full top-left position (the visible "text ran away" bug).
                 if use_vector
                     && self.push_vector_text_run(
                         vector_vertices,

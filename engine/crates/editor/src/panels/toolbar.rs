@@ -95,20 +95,6 @@ impl EditorApp {
                         ui.close();
                     }
                 });
-            if icon_button(ui, "×", "删除当前分辨率预设").clicked() {
-                let index = self
-                    .preview_resolutions
-                    .iter()
-                    .position(|r| *r == self.preview_resolution);
-                if let Some(index) = index {
-                    self.preview_resolutions.remove(index);
-                }
-                if self.preview_resolutions.is_empty() {
-                    self.preview_resolutions.push((640, 360));
-                }
-                self.preview_resolution = self.preview_resolutions[0];
-                self.scene_view_fit_pending = true;
-            }
             ui.separator();
             if icon_toggle(
                 ui,
@@ -169,22 +155,6 @@ impl EditorApp {
                 self.revalidate_scene_tool_for_view_mode();
                 self.scene_view_fit_pending = true;
             }
-            if icon_toggle(
-                ui,
-                self.scene_view_mode == SceneViewMode::Prefab,
-                "Prefab",
-                "Prefab Mode",
-            )
-            .clicked()
-            {
-                self.scene_view_mode = if self.scene_view_mode == SceneViewMode::Prefab {
-                    SceneViewMode::View2D
-                } else {
-                    SceneViewMode::Prefab
-                };
-                self.revalidate_scene_tool_for_view_mode();
-                self.scene_view_fit_pending = true;
-            }
             if self.scene_view_mode == SceneViewMode::Widget {
                 ui.separator();
                 if ui.button("New Widget").clicked() {
@@ -239,16 +209,6 @@ impl EditorApp {
             .clicked()
             {
                 self.show_domain_data_panel = !self.show_domain_data_panel;
-            }
-            if icon_toggle(
-                ui,
-                self.show_runtime_debug_panel,
-                "调",
-                "运行时调试面板（只读：地图/NPC/任务/农田/建筑/存档）",
-            )
-            .clicked()
-            {
-                self.show_runtime_debug_panel = !self.show_runtime_debug_panel;
             }
             ui.add(
                 egui::DragValue::new(&mut self.snap_step)

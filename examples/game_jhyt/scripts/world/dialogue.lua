@@ -28,6 +28,10 @@ local hints = require("ui.hints")
 local ui_text = require("ui.ui_text")
 -- M32 竖版：对话面板矩形来自 `ui/layout.lua`（底部通栏，与 HUD 信息区二选一）。
 local layout = require("ui.layout")
+-- docs/48 portraits 接线：对话立绘（speaker + 节点 mood → 立绘贴图）。
+local portrait = require("ui.portrait")
+-- docs/48 ui 换肤接线：纸面背景/立绘框/标记贴图。
+local skin = require("ui.skin")
 
 local M = {}
 
@@ -227,6 +231,8 @@ end
 
 local function clear_ui()
   ui.clear("dlg:box")
+  ui.clear("dlg:portrait")
+  ui.clear("dlg:portrait_frame")
   ui_text.hide("dlg", "dlg:speaker")
   ui_text.hide("dlg", "dlg:text")
   ui_text.hide("dlg", "dlg:hint")
@@ -342,7 +348,9 @@ end
 -- M20-09：底部提示按当前设备二选一（键鼠给键位、手柄给按钮名）。片段从**当前绑定**
 -- 推导（改键后自动同步）：数字直选用本模块自带的 1..OPTION_LIMIT，方向用 move_*。
 -- M32 竖版：对话面板是底部通栏 672 宽，提示行按 624px 预算（面板宽 - 两侧内边距）。
-local HINT_W = BOX.w - PAD * 2
+-- 横屏右栏 280：提示行预算放宽到 280-16=264（比 PAD*2=24 多给 8px），让
+-- 「W/S 或 方向键 选择 · 1/2/3/4/5 直选 ·」两段短语能挤进同一行，2 行即可装完整条。
+local HINT_W = BOX.w - 16
 
 local function digits_label()
   return hints.binding_labels({ "slot_1", "slot_2", "slot_3", "slot_4", "slot_5" }, nil, "/")
@@ -373,6 +381,14 @@ function M.render()
   -- 选项数量随节点/条件变化：重绘时同步焦点环（M20-02）。
   sync_focus()
   ui_text.begin("dlg")
+  -- 对话面板用深色半透明底（文字是浅色），不用浅色纸面 skin，否则白字看不清。
+  -- docs/48 portraits 接线：speaker 立绘（表情随节点 mood）；立绘框 128×128 与立绘同中心。
+  local pw, ph = portrait.display_size()
+  local tex = portrait.texture_for(def.speaker, node)
+  if tex then
+    skin.icon("dlg:portrait_frame", x + w / 2 - 64, y - ph - 6 - 16, 128, 128, "portrait_frame")
+    ui.image("dlg:portrait", x + w / 2 - pw / 2, y - ph - 6, pw, ph, tex, 1.0, 1.0, 1.0)
+  end
   ui.panel("dlg:box", x, y, w, h, 0.10, 0.11, 0.15, 0.92)
   ui_text.draw("dlg", "dlg:speaker", x + PAD, y + 16, 20.0, TEXT_W, speaker and speaker.name or "")
   -- 正文按面板宽度换行（最多三行，超出加省略号）：长台词不再画到面板外。
@@ -387,20 +403,31 @@ function M.render()
       else
         text = "  " .. text
       end
+      -- docs/48 ui 换肤接线：选中行左侧画对话标记（8×8）。
+      if i == selected then
+        skin.icon("dlg:marker" .. i, x + PAD - 12, y + OPTION_DY + (i - 1) * OPTION_ROW_H + 6, 8, 8, "dialogue_marker")
+      end
       ui_text.draw("dlg", "dlg:opt" .. i, x + PAD, y + OPTION_DY + (i - 1) * OPTION_ROW_H, OPTION_FONT, TEXT_W, text)
     else
       ui_text.hide("dlg", "dlg:opt" .. i)
     end
   end
-  ui_text.draw(
+  -- 2026-09-27 横屏：右栏对话面板 280 宽 ⇒ 提示行预算 264px（HINT_W=BOX.w-16）。
+-- 改 `draw_wrapped` 按真实字宽折行（正常 2 行 530/544，不碰选项行 420..504）；
+-- max_lines=3 兜底：窄栏极端文案即使折到 3 行也完整登记（第 3 行向下排，不截断），
+-- m20 的"面板提示应含 空格 确认 / Esc 结束"不依赖单行猜宽度。
+  ui_text.draw_wrapped(
     "dlg",
     "dlg:hint",
     x + w - HINT_W - PAD,
     y + h - 30,
     layout.BOX.hint_font,
     HINT_W,
+    3,
     hint_line()
   )
+  -- docs/48 ui 换肤接线：右下角"继续"图标（16×16，不压 hint 文案左端）。
+  skin.icon("dlg:continue", x + PAD, y + h - 32, 16, 16, "dialogue_continue")
   return true
 end
 

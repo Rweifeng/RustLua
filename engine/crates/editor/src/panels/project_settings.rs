@@ -434,33 +434,6 @@ impl EditorApp {
                         ui.end_row();
                     });
                 ui.separator();
-                // ---- M20-02：音频分组音量（settings.toml 的 [audio] 段） ----
-                ui.label("音频");
-                ui.label(format!(
-                    "{}",
-                    ProjectSettings::path_in(&strip_verbatim_prefix(&self.project.root)).display()
-                ));
-                egui::Grid::new("project_settings_audio_grid")
-                    .num_columns(2)
-                    .spacing([12.0, 6.0])
-                    .show(ui, |ui| {
-                        for (label, value) in [
-                            ("主音量", &mut self.project_settings.audio_master),
-                            ("BGM", &mut self.project_settings.audio_bgm),
-                            ("音效", &mut self.project_settings.audio_sfx),
-                            ("界面音效", &mut self.project_settings.audio_ui),
-                        ] {
-                            let percent = *value * 100.0;
-                            ui.label(format!("{label}  {percent:.0}%"));
-                            ui.add(
-                                egui::Slider::new(value, 0.0..=1.0)
-                                    .fixed_decimals(2)
-                                    .show_value(false),
-                            );
-                            ui.end_row();
-                        }
-                    });
-                ui.separator();
                 // ---- M20-08：输入（动作绑定 + 死区，settings.toml 的 [input] 段）----
                 self.draw_input_bindings_section(ui, &root);
                 ui.separator();
@@ -691,15 +664,7 @@ impl EditorApp {
             // 强制重建 Scene View 运行时，避免保存后仍显示旧渲染路径。
             self.invalidate_font_render_resources();
         }
-        // M20-02：音频小节写回独立的 settings.toml（保序保留其余段）。
-        match save_audio_settings(&self.project_settings, &root) {
-            Ok(()) => {
-                // M20-08：输入小节已在函数开头写回（校验通过才会走到这里）。
-                self.project_settings.message =
-                    "已保存项目设置（含 [audio] 与 [input] 段）。".to_owned();
-            }
-            Err(error) => self.project_settings.message = error,
-        }
+        self.project_settings.message = "已保存项目设置（输入绑定）。".to_owned();
     }
 }
 

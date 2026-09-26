@@ -9,8 +9,8 @@
 //!   互不重复叠加，query = 2 → 10 → 13；同 buff 重复添加幂等（仍 13）。
 //! - 换装变化：`skills.player_damage('strike')` 随装备/Buff 可验证变化
 //!   （13 → 10 → 2 → 10），M18-01 数值锚点不破坏。
-//! - 礼物：`relationship.gift` 计分/累积/拒绝路径（not_giftable/not_enough/
-//!   unknown_npc）；`gift_facing` 在无 NPC 的演武场返回 `no_npc_near`（G 键同路）。
+//! - 礼物：`relationship.gift` 计分/每日限次/拒绝路径（gift_today/not_giftable/
+//!   not_enough/unknown_npc）；`gift_facing` 在无 NPC 的演武场返回 `no_npc_near`（G 键同路）。
 //! - 对话/任务修改关系与声望：对话 relationship effect（+5）、任务
 //!   relationship/reputation 奖励（+10/+5）到账且来源入流水；重复交付幂等。
 //! - reward_once 幂等：同 key 第二次 `already_rewarded`，fn 只执行一次。
@@ -287,7 +287,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     banner(
-        "M18-04d 礼物：gift 计分/累积 + not_giftable/not_enough/unknown_npc + gift_facing 无 NPC",
+        "M18-04d 礼物：gift 计分/每日限次 + not_giftable/not_enough/unknown_npc + gift_facing 无 NPC",
     );
     lua(&mut runtime, "inv.add('player', 'lingzhi', 2)")?;
     assert_str(
@@ -300,6 +300,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &mut runtime,
         "require('player.relationship').points('npc_shen_qingluo')",
         8.0,
+    )?;
+    // 每日限次（docs/33 §8.1）：同日再送同一 NPC → gift_today，不扣物不加分。
+    assert_str(
+        &mut runtime,
+        "(function() local ok, why = require('player.relationship').gift('npc_shen_qingluo','lingzhi'); \
+         return tostring(ok) .. '|' .. tostring(why) end)()",
+        "false|gift_today",
+    )?;
+    assert_num(&mut runtime, "inv.count('player','lingzhi')", 1.0)?;
+    // 次日再送 → 恢复计分（8+8=16），并消耗第二株。
+    let gift_day = query_num(&mut runtime, "clock.now().day")?;
+    lua(
+        &mut runtime,
+        &format!("clock.set({}, {TEN_AM})", gift_day as i64 + 1),
     )?;
     assert_str(
         &mut runtime,
@@ -794,7 +808,7 @@ fn new_runtime(project: &Path, save_path: &Path) -> Result<LuaRuntime, Box<dyn s
     runtime.set_project_root(project.to_path_buf());
     runtime.set_save_path(save_path.to_path_buf());
     // M32 竖版：设计分辨率 720×1280（Lua 动态 UI 是屏幕像素空间，视口必须与设计尺寸一致）。
-    runtime.set_ui_viewport(720, 1280);
+    runtime.set_ui_viewport(1280, 720);
     runtime.set_delta(1.0 / 60.0);
     Ok(runtime)
 }

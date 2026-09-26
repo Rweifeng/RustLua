@@ -32,6 +32,8 @@ local hints = require("ui.hints")
 local ui_text = require("ui.ui_text")
 -- M32 竖版：面板矩形与行偏移的唯一来源（`ui/layout.lua`）。
 local layout = require("ui.layout")
+-- docs/48 ui 换肤接线：面板背景/数量步进/槽框/页签/滚动箭头/关闭/印章贴图。
+local skin = require("ui.skin")
 
 local M = {}
 
@@ -366,6 +368,7 @@ end
 -- 必须定义在 M.reset 之前：Lua 词法作用域只认「已声明」的 local。
 local function clear_ui()
   ui.clear("shp:box")
+  ui.clear("shp:skin_bg")
   ui.clear("shp:rule")
   ui.clear("shp:sel")
   for _, id in ipairs({ "shp:title", "shp:money", "shp:tab1", "shp:tab2", "shp:qty", "shp:msg", "shp:hint" }) do
@@ -634,7 +637,11 @@ function M.render()
   local TITLE_W = 300.0
   local RIGHT_W = 240.0
   ui_text.begin("shp")
+  -- docs/48 ui 换肤接线：主面板纸面背景（9-slice）叠在纯色兜底之上。
+  skin.panel("shp:skin_bg", x, y, w, h, "panel_main")
   ui.panel("shp:box", x, y, w, h, 0.10, 0.11, 0.15, 0.94)
+  -- docs/48 ui 换肤接线：标题分隔线用 common 竹纹分隔贴图（叠在原纯色线之上）。
+  skin.icon("shp:divider", x + BOX.title_dx, y + BOX.title_dy + BOX.title_font + 6, w - BOX.title_dx * 2, 8, "divider")
   ui.panel("shp:rule", x + BOX.title_dx, y + BOX.title_dy + BOX.title_font + 14, w - BOX.title_dx * 2, 2, 0.72, 0.75, 0.82, 0.22)
   ui.panel(
     "shp:sel",
@@ -648,6 +655,9 @@ function M.render()
     0.20
   )
   ui_text.draw("shp", "shp:title", x + BOX.title_dx, y + BOX.title_dy, BOX.title_font, TITLE_W, tostring(def.name))
+  -- docs/48 ui 换肤接线：标题右端印章（24×24）与右上关闭按钮（16×16）。
+  skin.icon("shp:seal", x + w - BOX.title_dx - 44, y + BOX.title_dy + 2, 24, 24, "icon_seal")
+  skin.icon("shp:close", x + w - BOX.title_dx - 16, y + BOX.title_dy + 2, 16, 16, "btn_close")
   ui_text.draw(
     "shp",
     "shp:money",
@@ -657,8 +667,16 @@ function M.render()
     RIGHT_W,
     "金币 " .. tostring(state.money) .. " 文"
   )
+  -- docs/48 ui 换肤接线：购买/出售页签背景（9-slice，选中 on / 未选 off）。
+  skin.panel("shp:tab_buy", x + BOX.title_dx - 6, y + 54, 96, 28,
+    ui_state.tab == "buy" and "tab_on" or "tab_off")
+  skin.panel("shp:tab_sell", x + BOX.title_dx + 90, y + 54, 96, 28,
+    ui_state.tab == "sell" and "tab_on" or "tab_off")
   ui_text.draw_exact("shp", "shp:tab1", x + BOX.title_dx, y + 58, 18.0, 96.0, ui_state.tab == "buy" and "[购买]" or " 购买 ")
   ui_text.draw_exact("shp", "shp:tab2", x + BOX.title_dx + 96, y + 58, 18.0, 80.0, ui_state.tab == "sell" and "[出售]" or " 出售 ")
+  -- docs/48 ui 换肤接线：数量步进按钮（24×24）画在数量文本两侧。
+  skin.icon("shp:step_minus", x + w - RIGHT_W - BOX.title_dx - 32, y + 54, 24, 24, "shop_step_minus")
+  skin.icon("shp:step_plus", x + w - BOX.title_dx - 24, y + 54, 24, 24, "shop_step_plus")
   ui_text.draw(
     "shp",
     "shp:qty",
@@ -671,6 +689,11 @@ function M.render()
 
   local rows = M.rows()
   -- 行数可能超过可视槽位：按选中行滚动窗口（引擎 ScrollState，M20-02）。
+  -- docs/48 ui 换肤接线：超出一页时画上下滚动箭头（列表右侧）。
+  if #rows > ROW_LIMIT then
+    skin.icon("shp:scroll_up", x + w - BOX.title_dx - 16, y + BOX.list_dy - 4, 16, 16, "scroll_arrow_up")
+    skin.icon("shp:scroll_down", x + w - BOX.title_dx - 16, y + BOX.list_dy + ROW_LIMIT * ROW_H - 12, 16, 16, "scroll_arrow_down")
+  end
   sync_focus()
   local first = nav.window(SCROLL, #rows, ROW_LIMIT, ROW_H, ui_state.index)
   for slot = 1, ROW_LIMIT do

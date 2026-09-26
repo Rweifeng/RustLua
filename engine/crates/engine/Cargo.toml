@@ -17,7 +17,7 @@ image = { version = '0.25', default-features = false, features = ['png', 'jpeg']
 rapier2d = "0.22"
 rapier3d = "0.22"
 crossbeam-channel = "0.5"
-rodio = "0.19"
+rodio = { version = "0.19", features = ["wav", "vorbis", "mp3", "flac"] }
 ab_glyph = "0.2"
 bymsdfgen-core = "0.1"
 ttf-parser = "0.25"

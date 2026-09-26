@@ -188,17 +188,6 @@ impl EditorApp {
                 egui::Color32::WHITE,
             );
         }
-        painter.text(
-            rect.left_top() + egui::vec2(12.0, 12.0),
-            egui::Align2::LEFT_TOP,
-            match self.scene_view_mode {
-                crate::SceneViewMode::Widget => "Scene View  -  Widget",
-                crate::SceneViewMode::Prefab => "Scene View  -  Prefab",
-                _ => "Scene View  -  2D",
-            },
-            egui::FontId::proportional(16.0),
-            egui::Color32::LIGHT_GRAY,
-        );
         // 性能数字**不在这里画**：它们是独立弹窗（`panels::performance`），
         // 因为本视图右上角是工具小面板（见 `draw_scene_tool_panel`），两段文字叠在一起时
         // 工具按钮被盖住、数字也读不全。
@@ -805,7 +794,7 @@ impl EditorApp {
             egui::StrokeKind::Outside,
         );
         painter.text(
-            rect.left_top() + egui::vec2(12.0, 36.0),
+            rect.left_top() + egui::vec2(4.0, 34.0),
             egui::Align2::LEFT_TOP,
             format!("设计分辨率 {w}×{h}"),
             egui::FontId::proportional(13.0),
@@ -1315,7 +1304,7 @@ impl EditorApp {
     /// （`crate::scene_tools::ToolMode`）给出——3D/Widget 模式下不再显示一个"点了没反应"的
     /// Tile 画笔，Move 的提示在 Widget 模式里也说明了它改的是锚点/偏移。
     fn draw_scene_tool_panel(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
-        let width = 280.0;
+        let width = 430.0;
         let tools_rect = egui::Rect::from_min_size(
             egui::pos2(rect.right() - width - 4.0, rect.top() + 4.0),
             egui::vec2(width, 26.0),
@@ -1327,8 +1316,39 @@ impl EditorApp {
         let mode = self.tool_mode();
         let mut requested: Option<SceneTool> = None;
         ui.scope_builder(egui::UiBuilder::new().max_rect(tools_rect), |ui| {
-            ui.horizontal(|ui| {
-                for candidate in mode.tools() {
+            // right_to_left：先画的 widget 贴右边缘，保证 "轴心" 紧贴视图右边界。
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // 轴心（最右）
+                if matches!(
+                    tool,
+                    SceneTool::Move | SceneTool::Rotate | SceneTool::Scale | SceneTool::Select
+                ) && ui
+                    .selectable_label(
+                        self.gizmo_pivot == crate::scene_interaction::GizmoPivot::Center,
+                        self.gizmo_pivot.label(),
+                    )
+                    .on_hover_text("Gizmo 轴心：实体原点 / 选中内容包围盒中心（点击切换）")
+                    .clicked()
+                {
+                    self.gizmo_pivot = self.gizmo_pivot.toggled();
+                }
+                // 世界/局部
+                if matches!(
+                    tool,
+                    SceneTool::Move | SceneTool::Rotate | SceneTool::Scale | SceneTool::Select
+                ) && ui
+                    .selectable_label(
+                        self.gizmo_space == crate::scene_interaction::GizmoSpace::Local,
+                        self.gizmo_space.label(),
+                    )
+                    .on_hover_text("Gizmo 变换空间：世界轴 / 实体局部轴（点击切换）")
+                    .clicked()
+                {
+                    self.gizmo_space = self.gizmo_space.toggled();
+                }
+                ui.separator();
+                // 工具按钮：rev() 后视觉顺序仍是 选择|移动|旋转|缩放|▦（从左到右）
+                for candidate in mode.tools().iter().rev() {
                     let label = match candidate {
                         SceneTool::TilePaint => "▦",
                         other => match other {
@@ -1344,37 +1364,6 @@ impl EditorApp {
                     {
                         requested = Some(*candidate);
                     }
-                }
-                ui.separator();
-                // P1：Gizmo 变换空间（世界/局部）。只对需要方向的工具显示，避免在
-                // 选择/Tile 画笔下给出一个看不出差别的开关。
-                if matches!(
-                    tool,
-                    SceneTool::Move | SceneTool::Rotate | SceneTool::Scale | SceneTool::Select
-                ) && ui
-                    .selectable_label(
-                        self.gizmo_space == crate::scene_interaction::GizmoSpace::Local,
-                        self.gizmo_space.label(),
-                    )
-                    .on_hover_text("Gizmo 变换空间：世界轴 / 实体局部轴（点击切换）")
-                    .clicked()
-                {
-                    self.gizmo_space = self.gizmo_space.toggled();
-                }
-                // P1：Gizmo 轴心（轴心/中心）。它决定手柄画在实体原点还是 AABB 中心，
-                // 以及 2D 旋转/缩放绕哪一点。
-                if matches!(
-                    tool,
-                    SceneTool::Move | SceneTool::Rotate | SceneTool::Scale | SceneTool::Select
-                ) && ui
-                    .selectable_label(
-                        self.gizmo_pivot == crate::scene_interaction::GizmoPivot::Center,
-                        self.gizmo_pivot.label(),
-                    )
-                    .on_hover_text("Gizmo 轴心：实体原点 / 选中内容包围盒中心（点击切换）")
-                    .clicked()
-                {
-                    self.gizmo_pivot = self.gizmo_pivot.toggled();
                 }
             });
         });

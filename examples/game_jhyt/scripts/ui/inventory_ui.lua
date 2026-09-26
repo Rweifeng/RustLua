@@ -28,6 +28,8 @@ local hints = require("ui.hints")
 local ui_text = require("ui.ui_text")
 -- M32 竖版：面板矩形与行偏移的唯一来源（`ui/layout.lua`）。
 local layout = require("ui.layout")
+-- docs/48 ui 换肤接线：面板背景/槽框/品质框/印章贴图。
+local skin = require("ui.skin")
 
 -- 数字直选 1..9 的按键名（默认只有键盘数字键；未绑定该设备的动作自动跳过）。
 local function digits_label()
@@ -208,6 +210,7 @@ end
 
 local function clear_ui()
   ui.clear("bp:box")
+  ui.clear("bp:skin_bg")
   ui.clear("bp:rule")
   ui.clear("bp:sel")
   for _, id in ipairs({ "bp:title", "bp:cap", "bp:msg", "bp:hint", "bp:empty", "bp:detail" }) do
@@ -378,8 +381,12 @@ function M.render()
   -- 行数会随物品变化：每次重绘同步焦点环项数（保持当前选择）。
   sync_focus()
   ui_text.begin("bp")
+  -- docs/48 ui 换肤接线：主面板纸面背景（9-slice）叠在纯色兜底之上。
+  skin.panel("bp:skin_bg", x, y, w, h, "panel_main")
   ui.panel("bp:box", x, y, w, h, 0.10, 0.11, 0.15, 0.94)
   -- 标题下的分隔线 + 选中行的底衬（竖版单列，靠底衬定位"当前选中哪一行"）。
+  -- docs/48 ui 换肤接线：标题分隔线用 common 竹纹分隔贴图（叠在原纯色线之上）。
+  skin.icon("bp:divider", x + BOX.title_dx, y + BOX.title_dy + BOX.title_font + 6, w - BOX.title_dx * 2, 8, "divider")
   ui.panel("bp:rule", x + BOX.title_dx, y + BOX.title_dy + BOX.title_font + 14, w - BOX.title_dx * 2, 2, 0.72, 0.75, 0.82, 0.22)
   ui.panel(
     "bp:sel",
@@ -393,6 +400,8 @@ function M.render()
     0.20
   )
   ui_text.draw("bp", "bp:title", x + BOX.title_dx, y + BOX.title_dy, BOX.title_font, layout.list_width(PANEL), "背包")
+  -- docs/48 ui 换肤接线：标题右端印章（24×24）。
+  skin.icon("bp:seal", x + w - BOX.title_dx - 24, y + BOX.title_dy + 2, 24, 24, "icon_seal")
   -- 容量/负重：标题行右半区（竖版面板宽 592，右半区仍有 300px 以上）。
   ui_text.draw(
     "bp",
@@ -424,6 +433,10 @@ function M.render()
       end
       -- 列宽（M32）：单列时整行可用 `w - 2*24`（行尾只留一个内边距）。
       local col_w = col == 0 and (w - COL_X[1] - 24) or layout.list_width(PANEL)
+      -- docs/48 ui 换肤接线：非选中行槽框（16×16，画在行首左外侧；选中行另有 slot_selected）。
+      if i ~= ui_state.index then
+        skin.icon("bp:slot" .. (i + 1), x + COL_X[col + 1] - 22, y + BOX.list_dy + line * ROW_H + 2, 16, 16, "slot")
+      end
       ui_text.draw("bp", id, x + COL_X[col + 1], y + BOX.list_dy + line * ROW_H, 16.0, col_w, label)
     else
       ui_text.hide("bp", id)
@@ -444,12 +457,17 @@ function M.render()
       or ""
     local seed = def.kind == "seed" and (" · 设为种子（" .. tostring(seed_key or "") .. "）") or ""
     local text = tostring(def.description or "") .. effect .. equip .. seed
-    ui_text.draw("bp", "bp:detail", x + BOX.list_dx, y + h + BOX.detail_dy, 14.0, layout.list_width(PANEL), text)
+    -- docs/48 ui 换肤接线：选中行的槽框（slot_selected）与品质框（凡品，40×40 原尺寸）。
+  skin.icon("bp:sel_slot", x + w - BOX.list_dx - 84, y + BOX.list_dy + ui_state.index * ROW_H + (ROW_H - 40) / 2, 40, 40, "slot_selected")
+  skin.icon("bp:quality", x + w - BOX.list_dx - 42, y + BOX.list_dy + ui_state.index * ROW_H + (ROW_H - 40) / 2, 40, 40, "quality_frame_0")
+  ui_text.draw("bp", "bp:detail", x + BOX.list_dx, y + h + BOX.detail_dy, 14.0, layout.list_width(PANEL), text)
   else
     ui_text.hide("bp", "bp:detail")
   end
 
   ui_text.draw("bp", "bp:msg", x + BOX.list_dx, y + h + BOX.msg_dy, 16.0, layout.list_width(PANEL), tostring(ui_state.msg or ""))
+  -- docs/48 ui 换肤接线：按键提示条背景（key_hint 9-slice）。
+  skin.panel("bp:key_hint", x + BOX.list_dx, y + h + BOX.hint_dy - 6, layout.list_width(PANEL), BOX.hint_font + 12, "key_hint")
   ui_text.draw("bp", "bp:hint", x + BOX.list_dx, y + h + BOX.hint_dy, BOX.hint_font, layout.list_width(PANEL), hint_line())
   return true
 end

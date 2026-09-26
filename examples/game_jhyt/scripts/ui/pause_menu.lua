@@ -27,6 +27,8 @@ local hints = require("ui.hints")
 local ui_text = require("ui.ui_text")
 -- M32 竖版：面板矩形来自 `ui/layout.lua`（唯一定义处，改版式只改那一处）。
 local layout = require("ui.layout")
+-- docs/48 ui 换肤接线：面板背景/印章/关闭/音量滑轨贴图。
+local skin = require("ui.skin")
 
 -- 底部提示：按当前设备二选一，按键名从**当前绑定**推导（改键后自动同步）。
 local function hint_line()
@@ -338,6 +340,7 @@ end
 
 function clear_ui()
   ui.clear("pse:box")
+  ui.clear("pse:skin_bg")
   ui.clear("pse:rule")
   ui.clear("pse:sel")
   for _, id in ipairs({ "pse:title", "pse:msg", "pse:hint" }) do
@@ -351,6 +354,7 @@ end
 
 function clear_settings_ui()
   ui.clear("pse:s:box")
+  ui.clear("pse:s:skin_bg")
   ui.clear("pse:s:rule")
   ui.clear("pse:s:sel")
   for _, id in ipairs({ "pse:s:title", "pse:s:subtitle", "pse:s:msg", "pse:s:hint" }) do
@@ -410,7 +414,11 @@ local ROW_FILL_SELECTED = { 0.85, 0.72, 0.42, 0.20 }
 -- 面板骨架：背板 + 标题 + 标题下的分隔线。返回 (x, y, w, h)。
 local function draw_frame(id_prefix, title, row_fill)
   local x, y, w, h = PANEL.x, PANEL.y, PANEL.w, PANEL.h
+  -- docs/48 ui 换肤接线：主面板纸面背景（9-slice）叠在纯色兜底之上。
+  skin.panel(id_prefix .. ":skin_bg", x, y, w, h, "panel_main")
   ui.panel(id_prefix .. ":box", x, y, w, h, 0.08, 0.09, 0.12, 0.96)
+  -- docs/48 ui 换肤接线：标题分隔线用 common 竹纹分隔贴图（叠在原纯色线之上）。
+  skin.icon(id_prefix .. ":divider", x + BOX.title_dx, y + BOX.title_dy + BOX.title_font + 6, w - BOX.title_dx * 2, 8, "divider")
   ui.panel(
     id_prefix .. ":rule",
     x + BOX.title_dx,
@@ -423,6 +431,9 @@ local function draw_frame(id_prefix, title, row_fill)
     RULE_COLOR[4]
   )
   ui_text.draw("pse", id_prefix .. ":title", x + BOX.title_dx, y + BOX.title_dy, BOX.title_font, w - BOX.title_dx * 2, title)
+  -- docs/48 ui 换肤接线：标题右端印章（24×24）与右上关闭按钮（16×16）。
+  skin.icon(id_prefix .. ":seal", x + w - BOX.title_dx - 44, y + BOX.title_dy + 2, 24, 24, "icon_seal")
+  skin.icon(id_prefix .. ":close", x + w - BOX.title_dx - 16, y + BOX.title_dy + 2, 16, 16, "btn_close")
   if row_fill then
     ui.panel(
       id_prefix .. ":sel",
@@ -462,6 +473,8 @@ function M.render()
     ui_text.draw("pse", id, x + BOX.list_dx, y + BOX.list_dy + (i - 1) * ROW_H, 18.0, ROW_W, label)
   end
   ui_text.draw("pse", "pse:msg", x + BOX.title_dx, y + h + BOX.msg_dy, 15.0, ROW_W, tostring(ui_state.msg or ""))
+  -- docs/48 ui 换肤接线：按键提示条背景（key_hint 9-slice）。
+  skin.panel("pse:key_hint", x + BOX.title_dx, y + h + BOX.hint_dy - 6, ROW_W, BOX.hint_font + 12, "key_hint")
   ui_text.draw("pse", "pse:hint", x + BOX.title_dx, y + h + BOX.hint_dy, BOX.hint_font, ROW_W, hint_line())
   return true
 end
@@ -483,8 +496,35 @@ function M.render_settings()
     local label = row and row.label or ""
     label = (i - 1 == settings_state.index) and ("> " .. label) or ("  " .. label)
     ui_text.draw("pse", id, x + BOX.list_dx, y + BOX.list_dy + (i - 1) * ROW_H, 18.0, ROW_W, label)
+    -- docs/48 ui 换肤接线：音量行的滑轨 + 手柄（四路音量各自真实 bus 值，master/bgm/sfx/ui）。
+    local bus = SETTINGS_ITEMS[i]
+    if bus == "save" then
+      -- docs/48 ui 换肤接线：存档槽（save_slot 9s，48×24）画在"保存"行尾 + 主按钮（btn_primary）。
+      skin.panel("pse:s:slot", x + w - BOX.list_dx - 148, y + BOX.list_dy + (i - 1) * ROW_H + 2, 96, 24, "save_slot")
+      skin.panel("pse:s:btn_save", x + w - BOX.list_dx - 48, y + BOX.list_dy + (i - 1) * ROW_H + 2, 40, 24, "btn_primary")
+    elseif bus == "back" then
+      -- docs/48 ui 换肤接线：返回行尾副按钮（btn_secondary）。
+      skin.panel("pse:s:btn_back", x + w - BOX.list_dx - 48, y + BOX.list_dy + (i - 1) * ROW_H + 2, 40, 24, "btn_secondary")
+    elseif bus ~= "save" and bus ~= "back" then
+      local row_y = y + BOX.list_dy + (i - 1) * ROW_H + (ROW_H - 8) / 2
+      skin.panel("pse:s:track" .. i, x + w - BOX.list_dx - 116, row_y, 116, 8, "slider_track")
+      local ratio = audio.bus_volume(bus)
+      if type(ratio) ~= "number" then
+        ratio = 0.5
+      end
+      skin.icon(
+        "pse:s:handle" .. i,
+        x + w - BOX.list_dx - 116 + math.floor(ratio * 100),
+        row_y - 2,
+        12,
+        12,
+        "slider_handle"
+      )
+    end
   end
   ui_text.draw("pse", "pse:s:msg", x + BOX.title_dx, y + h + BOX.msg_dy, 15.0, ROW_W, tostring(settings_state.msg or ""))
+  -- docs/48 ui 换肤接线：按键提示条背景（key_hint 9-slice）。
+  skin.panel("pse:s:key_hint", x + BOX.title_dx, y + h + BOX.hint_dy - 6, ROW_W, BOX.hint_font + 12, "key_hint")
   ui_text.draw("pse", "pse:s:hint", x + BOX.title_dx, y + h + BOX.hint_dy, BOX.hint_font, ROW_W, settings_hint_line())
   return true
 end

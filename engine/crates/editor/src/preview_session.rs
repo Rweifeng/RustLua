@@ -200,6 +200,16 @@ impl PreviewSession {
         self.runtime.with_script(visit)
     }
 
+    /// 暂停 BGM（编辑器暂停时调用）。
+    pub(crate) fn pause_music(&self) {
+        self.runtime.pause_music();
+    }
+
+    /// 恢复 BGM。
+    pub(crate) fn resume_music(&self) {
+        self.runtime.resume_music();
+    }
+
     /// 回读指标（slot 数、busy/drop/rebuild 等），供视图与诊断显示。
     pub(crate) fn readback_metrics(&self) -> ReadbackMetrics {
         if self.uses_native_texture() {

@@ -1175,6 +1175,16 @@ impl LuaRuntime {
         self.state.borrow_mut().audio.set_asset_dir(dir);
     }
 
+    /// 暂停 BGM（编辑器暂停时调用）。
+    pub fn pause_music(&self) {
+        self.state.borrow().audio.pause_music();
+    }
+
+    /// 恢复 BGM（编辑器恢复运行时调用）。
+    pub fn resume_music(&self) {
+        self.state.borrow().audio.resume_music();
+    }
+
     /// Sets the project root, used to resolve `scenes/<name>.scene` on load.
     pub fn set_project_root(&mut self, root: PathBuf) {
         self.state.borrow_mut().project_root = Some(root);
@@ -5918,6 +5928,26 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
             Ok(result)
         })?,
     )?;
+/// 解析 "left,right,top,bottom" 九宫格边距（像素，单位是作者空间像素）；空/非法返回 None。
+fn parse_nine_slice(value: &str) -> Option<[f32; 4]> {
+    let parts: Vec<&str> = value.split(',').map(str::trim).collect();
+    if parts.len() != 4 {
+        return None;
+    }
+    let mut out = [0.0_f32; 4];
+    for (i, part) in parts.iter().enumerate() {
+        let v: f32 = part.parse().ok()?;
+        if !v.is_finite() || v < 0.0 {
+            return None;
+        }
+        out[i] = v;
+    }
+    if out.iter().all(|v| *v <= 0.0) {
+        return None;
+    }
+    Some(out)
+}
+
     let s = Rc::clone(&state);
     ui.set(
         "panel_get",
@@ -5985,7 +6015,7 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
         "image",
         lua.create_function(
             move |_,
-                  (id, x, y, width, height, texture, r, g, b): (
+                  (id, x, y, width, height, texture, r, g, b, slice): (
                 String,
                 f32,
                 f32,
@@ -5995,10 +6025,14 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
                 f32,
                 f32,
                 f32,
+                Option<String>,
             )| {
                 if !finite_ui_rect(x, y, width, height) {
                     return Err(api_error("ui.image rect must be finite and positive"));
                 }
+                // docs/48 ui 换肤：可选第 10 参 `slice`（"left,right,top,bottom" 像素边距）
+                // → 九宫格渲染（DynamicUiImage.nine_slice）；空/非法回退普通四边形（向后兼容）。
+                let nine_slice = slice.as_deref().and_then(parse_nine_slice);
                 s.borrow_mut().ui_images.insert(
                     id,
                     DynamicUiImage {
@@ -6008,7 +6042,7 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
                         color: [r, g, b],
                         space: crate::core::ui::UiLayoutSpace::Screen,
                         anchor: [0.0, 0.0],
-                        nine_slice: None,
+                        nine_slice,
                     },
                 );
                 Ok(())
@@ -6035,6 +6069,12 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
             result.set("r", image.color[0])?;
             result.set("g", image.color[1])?;
             result.set("b", image.color[2])?;
+            result.set(
+                "nine_slice",
+                image
+                    .nine_slice
+                    .map(|s| format!("{},{},{},{}", s[0], s[1], s[2], s[3])),
+            )?;
             Ok(Some(result))
         })?,
     )?;

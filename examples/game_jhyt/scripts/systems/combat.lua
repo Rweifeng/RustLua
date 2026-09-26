@@ -33,6 +33,8 @@ local map_manager = require("world.map_manager")
 local combat_data = require("data.combat")
 -- M19-02：命中/受击音效（命中结算处播放，缺文件/无设备静默降级）。
 local audio = require("core.audio")
+-- docs/48 effects 接线：攻击/命中/受击/掌风挂特效条带。
+local effects = require("systems.effects")
 
 local M = {}
 
@@ -240,6 +242,12 @@ local function apply_damage(atk, target_id)
     stats.hits = stats.hits + 1
     mirror_health(pid, player_hp)
     audio.sfx("sfx_hit")
+    -- docs/48 effects：玩家受击闪白 + 命中火花。
+    local ok, pos = pcall(transform.get, pid)
+    if ok and type(pos) == "table" then
+      effects.spawn("hurt_flash", pos.x, pos.y)
+      effects.spawn("hit_spark", pos.x, pos.y)
+    end
     if player_hp <= 0 then
       player_dead = true
       stats.deaths = stats.deaths + 1
@@ -275,6 +283,11 @@ local function apply_damage(atk, target_id)
   if enemy_kind and enemy_kind.is_enemy(target_id) then
     -- 名字必须在结算前取：死亡路径会销毁实体并清空 id → is_enemy 失配。
     local target_display = enemy_kind.name_of(target_id) or tostring(target_id)
+    -- docs/48 effects：命中火花（目标位置，hit 结算前取——死亡路径会销毁实体）。
+    local ok, pos = pcall(transform.get, target_id)
+    if ok and type(pos) == "table" then
+      effects.spawn("hit_spark", pos.x, pos.y)
+    end
     local remaining = enemy_kind.hit(target_id, atk.damage, hit_reaction(atk, target_id))
     if remaining == nil then
       return nil
@@ -431,6 +444,16 @@ function M.attack(attacker_id, attacker_key, attacker_name, attacker_kind, skill
   -- 主角形象：普攻/武学起手就播 attack_<dir>（与判定窗口同帧起算，观感对齐）
   if attacker_kind == "player" then
     player.play("attack")
+    -- docs/48 effects：刀光落在 hitbox 中心（攻击者前方 range/2），千风掌带身法残影。
+    local ok, pos = pcall(transform.get, attacker_id)
+    if ok and type(pos) == "table" then
+      if skill_id == "palm_gust" then
+        effects.spawn("dash_streak", pos.x, pos.y)
+      end
+      local dir = FACING_VECTORS[facing] or FACING_VECTORS.down
+      local dist = (tonumber(skill.range) or 0) / 2
+      effects.spawn("blade_arc", pos.x + dir.x * dist, pos.y + dir.y * dist)
+    end
   end
   return true, "ok"
 end

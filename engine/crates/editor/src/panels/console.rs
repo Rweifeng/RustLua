@@ -150,51 +150,43 @@ impl EditorApp {
                                 .and_then(|name| name.to_str())
                                 .unwrap_or("项目");
                             ui.heading(format!("控制台 — {project_name}"));
-                            ui.text_edit_singleline(&mut self.console_filter);
-                            ui.separator();
-                            ui.selectable_value(
-                                &mut self.console_log_level_filter,
-                                ConsoleLogLevelFilter::All,
-                                "全部",
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.console_filter)
+                                    .desired_width(160.0)
+                                    .hint_text("过滤日志…"),
                             );
-                            ui.selectable_value(
-                                &mut self.console_log_level_filter,
-                                ConsoleLogLevelFilter::Info,
-                                "Info",
-                            );
-                            ui.selectable_value(
-                                &mut self.console_log_level_filter,
-                                ConsoleLogLevelFilter::Warning,
-                                "Warning",
-                            );
-                            ui.selectable_value(
-                                &mut self.console_log_level_filter,
-                                ConsoleLogLevelFilter::Error,
-                                "Error",
-                            );
-                            if ui.button("运行选中脚本").clicked() {
-                                self.run_selected_script();
-                            }
-                            if ui.button("清空").clicked() {
-                                self.clear_console();
-                                self.log_sink.clear();
-                                self.console_notices.clear();
-                            }
-                        });
-                        ui.horizontal(|ui| {
-                            let response = ui.text_edit_singleline(&mut self.console_input);
-                            if response.lost_focus()
-                                && ui.input(|input| input.key_pressed(egui::Key::Enter))
-                            {
-                                self.run_console_command();
-                            }
-                            if ui.button("执行").clicked() {
-                                self.run_console_command();
-                            }
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui.button("清空").clicked() {
+                                    self.clear_console();
+                                    self.log_sink.clear();
+                                    self.console_notices.clear();
+                                }
+                                ui.selectable_value(
+                                    &mut self.console_log_level_filter,
+                                    ConsoleLogLevelFilter::Error,
+                                    "Error",
+                                );
+                                ui.selectable_value(
+                                    &mut self.console_log_level_filter,
+                                    ConsoleLogLevelFilter::Warning,
+                                    "Warning",
+                                );
+                                ui.selectable_value(
+                                    &mut self.console_log_level_filter,
+                                    ConsoleLogLevelFilter::Info,
+                                    "Info",
+                                );
+                                ui.selectable_value(
+                                    &mut self.console_log_level_filter,
+                                    ConsoleLogLevelFilter::All,
+                                    "全部",
+                                );
+                            });
                         });
                         // 滚动区填满剩余空间，面板高度保持固定，仅滚动内部内容。
                         egui::ScrollArea::vertical()
                             .auto_shrink([false; 2])
+                            .hscroll(false)
                             .show(ui, |ui| {
                                 self.draw_console_log_body(ui);
                             });

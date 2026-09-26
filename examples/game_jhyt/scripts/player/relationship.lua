@@ -7,7 +7,9 @@
 --   * 幂等奖励：reward_once(key, fn) 首次执行 fn 并记录 key，重复调用拒绝；
 --     keys 随存档持久化（任务/对话/日常一次性奖励的统一锚点）。
 --   * 送礼：gift 校验 NPC/礼物配置/背包持有，成功 = 消耗 1 件 + 加分；
---     gift_facing 面向 NPC 送礼（面前格或相邻 1 格，只读 npc.query 定位）。
+--     每日限次（docs/33 §8.1）：同一 NPC 每日有效礼物最多 1 次，重复送
+--     返回 "gift_today" 且不扣物不加分；gift_facing 面向 NPC 送礼（面前格或
+--     相邻 1 格，只读 npc.query 定位）。
 --
 -- 数据定义见 data/relationships.lua（纯数据 + validate_all）；引用完整性在
 -- 加载期校验（main.validate_content），运行时对未知 NPC/阵营返回明确 reason，
@@ -27,6 +29,7 @@ local EVENT_LIMIT = 32
 local points = {}      -- npc_id → 关系分（0..100）
 local reputation = {}  -- faction → 声望值（faction.min..faction.max）
 local rewarded = {}    -- key → true（幂等奖励锚点，随存档持久化）
+local gifted_day = {}  -- npc_id → 最后一次有效送礼的游戏日（每日限次，docs/33 §8.1）
 local events = {}      -- 有界变更流水（关系/声望共用）
 
 local function record_event(kind, id, delta, before, after, source, event)
@@ -48,6 +51,7 @@ function M.reset()
   points = {}
   reputation = {}
   rewarded = {}
+  gifted_day = {}
   events = {}
 end
 
@@ -130,7 +134,8 @@ function M.reward_once(key, fn)
 end
 
 -- 送礼：NPC 存在且配置了该礼物（否则 not_giftable）、背包持有（否则
--- not_enough）；成功 = 消耗 1 件 + gift_points 加分（来源 gift，事件 = 物品 id）。
+-- not_enough）、当日未送过（否则 gift_today，不扣物不加分）；成功 =
+-- 消耗 1 件 + gift_points 加分（来源 gift，事件 = 物品 id）。
 -- 返回 true,新分数。
 function M.gift(npc_id, item_id)
   if type(npc_id) ~= "string" or not npcs.get(npc_id) then
@@ -142,6 +147,11 @@ function M.gift(npc_id, item_id)
   if inv.count(state.inventory, item_id) <= 0 then
     return false, "not_enough"
   end
+  -- 每日限次（docs/33 §8.1）：同一 NPC 每日有效礼物最多 1 次。
+  local day = clock.now().day
+  if gifted_day[npc_id] == day then
+    return false, "gift_today"
+  end
   inv.remove(state.inventory, item_id, 1)
   local ok, after = M.add(npc_id, data.gift_points(npc_id, item_id), "gift", item_id)
   if not ok then
@@ -150,6 +160,7 @@ function M.gift(npc_id, item_id)
     log.warn("[relationship] gift add failed after consume: " .. tostring(npc_id) .. "/" .. tostring(item_id))
     return false, after
   end
+  gifted_day[npc_id] = day
   return true, after
 end
 
@@ -193,6 +204,13 @@ function M.gift_facing(facing)
     return false, "no_npc_near"
   end
 
+  -- 每日限次（docs/33 §8.1）：目标今日已收过礼 → 直接提示 gift_today，
+  -- 不再扫背包（否则会误报 no_gift）。
+  local today = clock.now().day
+  if gifted_day[target] == today then
+    return false, "gift_today"
+  end
+
   -- 背包顺序扫描：第一件该 NPC 可收的礼物。
   local inventory = inv.get(state.inventory)
   local capacity = tonumber(inventory and inventory.capacity) or 0
@@ -227,7 +245,7 @@ function M.events()
   return out
 end
 
--- 存档：关系/声望/已发奖励/流水全量快照（基础默认值由 restore 兜底）。
+-- 存档：关系/声望/已发奖励/每日送礼记录/流水全量快照（基础默认值由 restore 兜底）。
 function M.capture()
   local points_data = {}
   for npc_id, value in pairs(points) do
@@ -247,6 +265,12 @@ function M.capture()
       rewarded_data[key] = true
     end
   end
+  local gifted_day_data = {}
+  for npc_id, day in pairs(gifted_day) do
+    if type(npc_id) == "string" and type(day) == "number" then
+      gifted_day_data[npc_id] = day
+    end
+  end
   local events_data = {}
   for index, entry in ipairs(events) do
     events_data[index] = {
@@ -263,6 +287,7 @@ function M.capture()
     points = points_data,
     reputation = reputation_data,
     rewarded = rewarded_data,
+    gifted_day = gifted_day_data,
     events = events_data
   }
 end
@@ -273,6 +298,7 @@ function M.restore(data_in)
   points = {}
   reputation = {}
   rewarded = {}
+  gifted_day = {}
   events = {}
   if type(data_in) ~= "table" then
     return
@@ -297,6 +323,13 @@ function M.restore(data_in)
     for key, flag in pairs(data_in.rewarded) do
       if type(key) == "string" and key ~= "" and flag == true then
         rewarded[key] = true
+      end
+    end
+  end
+  if type(data_in.gifted_day) == "table" then
+    for npc_id, day in pairs(data_in.gifted_day) do
+      if type(npc_id) == "string" and npcs.get(npc_id) and type(day) == "number" then
+        gifted_day[npc_id] = day
       end
     end
   end

@@ -1066,40 +1066,60 @@ impl EditorApp {
                     if ui.button("重新校验").clicked() {
                         revalidate = true;
                     }
-                    ui.label(format!("工程：{}", report.project_root.display()));
+                    let proj_name = report
+                        .project_root
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("项目");
+                    ui.colored_label(
+                        ui.visuals().weak_text_color(),
+                        format!("工程：{proj_name}"),
+                    );
+                    // 右侧：领域数据统计 chips。
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let weak = ui.visuals().weak_text_color();
+                        let chip = |ui: &mut egui::Ui, label: &str, n: usize| {
+                            ui.colored_label(weak, format!("{label} {n}"));
+                        };
+                        chip(ui, "对话", report.view.dialogues.len());
+                        chip(ui, "任务", report.view.quests.len());
+                        chip(ui, "商店", report.view.shops.len());
+                        chip(ui, "NPC", report.view.npcs.len());
+                        chip(ui, "地点", report.view.places.len());
+                        let exits: usize = report.view.maps.iter().map(|m| m.exits.len()).sum();
+                        chip(ui, "出口", exits);
+                        chip(ui, "地图", report.view.maps.len());
+                    });
                 });
                 if let Some(error) = &report.bootstrap_error {
                     ui.colored_label(egui::Color32::RED, format!("校验失败：{error}"));
                     return;
                 }
-                ui.label(format!("校验来源：{}", report.source.label()));
                 if report.issue_count() == 0 {
                     ui.colored_label(
                         egui::Color32::from_rgb(120, 200, 130),
-                        "全部通过（0 条问题）",
+                        egui::RichText::new("✓ 全部通过").strong(),
                     );
                 } else {
                     ui.colored_label(
                         egui::Color32::from_rgb(230, 170, 60),
-                        format!(
-                            "问题 {} 条（问题模块 {} 个）",
-                            report.issue_count(),
-                            report.problem_modules()
-                        ),
+                        format!("⚠ 问题 {} 条（模块 {} 个）", report.issue_count(), report.problem_modules()),
                     );
                 }
+                ui.colored_label(
+                    ui.visuals().weak_text_color(),
+                    egui::RichText::new(report.source.label()).small(),
+                );
                 if let Some(error) = &report.view_error {
                     ui.colored_label(
                         egui::Color32::from_rgb(230, 150, 90),
-                        format!("只读视图失败（覆盖层将为空）：{error}"),
+                        format!("只读视图失败：{error}"),
                     );
-                }
-                if !report.view.is_empty() {
-                    ui.label(self.domain_view_summary());
                 }
                 ui.separator();
                 egui::ScrollArea::vertical()
                     .auto_shrink([false; 2])
+                    .hscroll(false)
                     .show(ui, |ui| {
                         for module in &report.modules {
                             let color = match module.status {

@@ -30,6 +30,8 @@ local enemies = require("data.enemies")
 local enemy_art = require("data.enemy_art")
 local combat_data = require("data.combat")
 local map_manager = require("world.map_manager")
+-- docs/48 effects 接线：敌人受击闪白。
+local effects = require("systems.effects")
 
 local M = {}
 
@@ -119,10 +121,17 @@ local function activate(actor)
       return nil
     end
     actor.id = id
-    -- 美术：优先 data/enemy_art.lua（单帧 + 序列帧 attach），退回 data/enemies.lua 的灰盒串
+    -- 美术：优先 data/enemy_art.lua（单帧 + 序列帧 attach），退回 data/enemies.lua 的灰盒串。
+    -- 4-15：art 挂载失败必须 report（否则敌人静默变灰盒且无诊断）。
     local applied = false
     if actor.enemy.art then
-      applied = pcall(enemy_art.apply, id, actor.enemy.art, actor.facing or "s") == true
+      local art_ok, art_err = pcall(enemy_art.apply, id, actor.enemy.art, actor.facing or "s")
+      if art_ok then
+        applied = true
+      else
+        report(actor, "art:" .. actor.enemy.art,
+          "enemy=" .. tostring(actor.enemy.name) .. " art apply failed: " .. tostring(art_err))
+      end
     end
     if not applied and actor.enemy.sprite then
       pcall(sprite.set, id, actor.enemy.sprite)
@@ -470,6 +479,11 @@ function M.hit(id, damage, meta)
           -- 受击：切一次 hurt_<dir>（非循环，播完由 step_path/chase 切回 idle/walk）
           actor.facing = actor.facing or "s"
           pcall(animation.set, id, "hurt_" .. actor.facing)
+        end
+        -- docs/48 effects：敌人受击闪白（取实体位置）。
+        local ok, pos = pcall(transform.get, id)
+        if ok and type(pos) == "table" then
+          effects.spawn("hurt_flash", pos.x, pos.y)
         end
       end
       return hp

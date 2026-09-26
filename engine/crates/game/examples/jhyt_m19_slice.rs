@@ -344,7 +344,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_num(
         &mut rt,
         "#(require('systems.gather').nodes('mountain_path'))",
-        5.0,
+        10.0,
     )?;
     assert_str(
         &mut rt,
@@ -429,11 +429,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "false",
     )?;
     lua(&mut rt, "clock.set(1, 600)")?;
-    // 缺前置分支：矿石点 requires = "hoe"，手上没有锄头时明确给出原因。
+    // 缺前置分支：矿石点 requires = "pick"（2026-09-27 矿镐实装，原 hoe 占位取消），
+    // 手上没有矿镐时明确给出原因。
     assert_str(
         &mut rt,
         "(function() local d = require('data.gather').get('wild_ore_1'); \
-          inv.remove(require('core.state').inventory, 'hoe', 99); \
+          inv.remove(require('core.state').inventory, 'pick', 99); \
           local g = require('systems.gather'); \
           local cell = d.cell; \
           require('player.player').teleport((cell.x + 0.5) * 32, (cell.y - 0.5) * 32); \
@@ -441,12 +442,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
           local info = g.available('up'); \
           if not info then return 'none' end; \
           return tostring(info.ok) .. '|' .. tostring(info.reason) end)()",
-        "false|需要锄头",
+        "false|需要矿镐",
     )?;
     lua(
         &mut rt,
-        "inv.add(require('core.state').inventory, 'hoe', 1); \
-         inv.equip(require('core.state').inventory, 'tool', 'hoe')",
+        "inv.add(require('core.state').inventory, 'pick', 1); \
+         inv.equip(require('core.state').inventory, 'tool', 'pick')",
+    )?;
+    // 矿石 gate 通过后再把 tool 槽换回锄头（后续毒草丛采集 requires = "hoe"）。
+    lua(
+        &mut rt,
+        "inv.equip(require('core.state').inventory, 'tool', 'hoe')",
     )?;
     // 战斗：青云山道野猪（真实 J 键：普攻判定窗 → 命中/击杀入账）。
     lua(
@@ -519,9 +525,115 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "require('core.state').last_action",
         "gather_lingzhi",
     )?;
+    // 内容推进（2026-09-26，docs/48 接线）：莲子塘 (33,5) 与芦苇丛 (5,13)。
+    // 站到采集点**相邻格**并面向它（(33,4)→(33,5)、(4,13)→(5,13)）。
+    lua(
+        &mut rt,
+        "require('player.player').teleport(944.0, 144.0); require('core.state').facing = 'up'",
+    )?;
+    frames(&mut rt, 2)?;
+    assert_str(
+        &mut rt,
+        "require('systems.interaction').prompt('up')",
+        "E: 采集 莲子",
+    )?;
+    press(&mut rt, KeyCode::KeyE)?;
+    assert_str(
+        &mut rt,
+        "require('core.state').last_action",
+        "gather_lotus_seed",
+    )?;
+    lua(
+        &mut rt,
+        "require('player.player').teleport(144.0, 432.0); require('core.state').facing = 'right'",
+    )?;
+    frames(&mut rt, 2)?;
+    assert_str(
+        &mut rt,
+        "require('systems.interaction').prompt('right')",
+        "E: 采集 芦苇",
+    )?;
+    press(&mut rt, KeyCode::KeyE)?;
+    assert_str(
+        &mut rt,
+        "require('core.state').last_action",
+        "gather_reed",
+    )?;
+    // 内容推进（2026-09-27，docs/48 接线）：茶丛 (19,10) 与野果树 (6,16)。
+    // 站到采集点**相邻格**并面向它（(19,9)→(19,10)、(6,15)→(6,16)）。
+    lua(
+        &mut rt,
+        "require('player.player').teleport(624.0, 304.0); require('core.state').facing = 'up'",
+    )?;
+    frames(&mut rt, 2)?;
+    assert_str(
+        &mut rt,
+        "require('systems.interaction').prompt('up')",
+        "E: 采集 茶叶",
+    )?;
+    press(&mut rt, KeyCode::KeyE)?;
+    assert_str(
+        &mut rt,
+        "require('core.state').last_action",
+        "gather_tea_leaf",
+    )?;
+    lua(
+        &mut rt,
+        "require('player.player').teleport(208.0, 496.0); require('core.state').facing = 'up'",
+    )?;
+    frames(&mut rt, 2)?;
+    assert_str(
+        &mut rt,
+        "require('systems.interaction').prompt('up')",
+        "E: 采集 野果",
+    )?;
+    press(&mut rt, KeyCode::KeyE)?;
+    assert_str(
+        &mut rt,
+        "require('core.state').last_action",
+        "gather_wild_fruit",
+    )?;
+    assert_num(
+        &mut rt,
+        "inv.count(require('core.state').inventory, 'tea_leaf') >= 1 and 1 or 0",
+        1.0,
+    )?;
+    assert_num(
+        &mut rt,
+        "inv.count(require('core.state').inventory, 'wild_fruit') >= 1 and 1 or 0",
+        1.0,
+    )?;
     assert_num(
         &mut rt,
         "inv.count(require('core.state').inventory, 'rice') >= 4 and 1 or 0",
+        1.0,
+    )?;
+    // 内容推进（2026-09-27，docs/48 接线）：松木桩 (10,4)（requires=axe 伐木点）。
+    // 装备伐木斧后真实 E 键采集 timber ×2（缺斧由 gate 拒绝，reason=需要伐木斧）。
+    lua(
+        &mut rt,
+        "inv.add(require('core.state').inventory, 'axe', 1); \
+         inv.equip(require('core.state').inventory, 'tool', 'axe')",
+    )?;
+    lua(
+        &mut rt,
+        "require('player.player').teleport(336.0, 160.0); require('core.state').facing = 'down'",
+    )?;
+    frames(&mut rt, 2)?;
+    assert_str(
+        &mut rt,
+        "require('systems.interaction').prompt('down')",
+        "E: 采集 木料",
+    )?;
+    press(&mut rt, KeyCode::KeyE)?;
+    assert_str(
+        &mut rt,
+        "require('core.state').last_action",
+        "gather_timber",
+    )?;
+    assert_num(
+        &mut rt,
+        "inv.count(require('core.state').inventory, 'timber') >= 2 and 1 or 0",
         1.0,
     )?;
     assert_num(
@@ -1021,7 +1133,7 @@ fn new_runtime(project: &Path, save_path: &Path) -> Result<LuaRuntime, Box<dyn s
     runtime.set_project_root(project.to_path_buf());
     runtime.set_save_path(save_path.to_path_buf());
     // M32 竖版：设计分辨率 720×1280（Lua 动态 UI 是屏幕像素空间，视口必须与设计尺寸一致）。
-    runtime.set_ui_viewport(720, 1280);
+    runtime.set_ui_viewport(1280, 720);
     runtime.set_delta(1.0 / 60.0);
     Ok(runtime)
 }

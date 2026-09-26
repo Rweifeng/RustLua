@@ -1,8 +1,9 @@
 # 任务：WP9 编辑器、Lua、迁移与发布收口
 
-对应 [docs/40](../../docs/40-引擎全面重构计划.md) §3 WP9。状态：**Lua 统一变换 API、统一 Transform
-面板、统一 Camera 面板（按 `Projection` + 生效姿态）、screen→world 换算已完成；只剩迁移命令
-写回（依赖 WP2 裁定）与组件改名弃用告警。**
+对应 [docs/40](../../docs/40-引擎全面重构计划.md) §3 WP9。状态：**已完成并收口（2026-09-26）——
+Lua 统一变换 API、统一 Transform 面板、统一 Camera 面板（按 `Projection` + 生效姿态）、
+screen→world 换算、迁移命令（数据层 + CLI）、组件改名弃用告警全部落地；迁移「写回」经核实
+无需施加（见「收口说明」）。**
 
 ## 已做
 
@@ -62,14 +63,20 @@ docs/40 §3 WP9 实施要求"一个 Transform 面板按 2D/3D 编辑模式展示
 测试：`lua_transform_api_dispatches_between_2d_and_3d`、
 `lua_transform_api_refuses_ambiguous_rotation_and_unknown_space`。docs/18 已同步。
 
-## 未完成
+## 收口说明（2026-09-26）
 
-- **迁移命令**：数据层与 CLI 已完成（见下），剩余项是"写回示例场景"这一步本身——当前仓库
-  40 个场景里只有 `game_api/scenes/index.scene` 一处父子关系（UI 子实体，父子变换都是单位阵），
-  迁移与否世界位置都不变，因此**没有实际写回**；用户工程的用法是
-  `editor --project <路径> --migrate-spatial`（dry-run）→ `--migrate-spatial-write`（写回）→
-  `--restore-spatial`（回滚）。
-- **组件改名弃用告警**：不依赖任何裁定，可直接做（尚未开始）。
+- **迁移命令「写回」未施加是正确决定，不是遗漏**：数据层与 CLI 已完成（见下），仓库 40 个场景
+  仅 `game_api/scenes/index.scene` 一处父子关系（UI 子实体，父子变换都是单位阵）——迁移与否世界
+  位置都不变，写回只会留下无意义的 `.spatial-local` 标记。CLI 三命令（`--migrate-spatial` /
+  `--migrate-spatial-write` / `--restore-spatial`）随时可用；将来任何场景出现真实局部空间父子关系，
+  直接按 dry-run → write → restore 流程施加即可。
+- **组件改名弃用告警**：✅ 已做（上一轮）——`editor/src/schema_audit.rs` 增 `COMPONENT_RENAMES`
+  改名表（Transform3D→Transform / Camera2D→Camera / Camera3D→Camera）、汇总行
+  `renamed_components=N`、明细行 `component_renamed legacy=.. current=.. count=.. hint=migrate_project`；
+  未注册组件先查改名表再进 `unknown`；`editor --check` 对 `game_jhyt` 与 `game_api` 仍
+  `schema_errors=0`。证据：`schema_audit` 6 单测全绿、clippy `-D warnings` 干净。
+
+**WP9 无剩余活动项。**
 
 ### WP2 空间层级迁移命令（已完成）
 

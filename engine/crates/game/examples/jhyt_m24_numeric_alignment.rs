@@ -12,6 +12,13 @@
 //! 3. **文档里的行没有对应数据**：商店价格表中尚未落地的商品必须在显式白名单里，
 //!    新增一行而不补数据会让本示例失败，逼出"补数据或移出白名单"的决定。
 //!
+//! ③–⑦ 把同一套"文档 ↔ 数据"锁扩展到剩余项（M24 续，docs/37 4-14）：
+//!   - ③ §2.2 初始属性（铜钱 120 / 内力 50 / 上限 100）↔ core/state.lua + player/inventory.lua；
+//!   - ④ §3 打坐效果单元格（恢复 5 点内力）↔ ui/input.lua practice 分支口径；
+//!   - ⑤ §6.1 基础刀法（伤害 2 / 内力 0 / 冷却 0.4s=24 步）↔ data/skills.lua，未实现行白名单；
+//!   - ⑥ §7.2 建筑升级成本（仅木材 4/6/3）↔ data/buildings.lua 的 upgrade_cost；
+//!   - ⑦ §9.1 普通订单奖励区间 [40,100] ⊇ order_herb 60 / order_pill 80 / order_hunt 90。
+//!
 //! Usage:
 //!   cargo run -p game --example jhyt_m24_numeric_alignment [-- <game_jhyt-root>]
 
@@ -41,7 +48,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut runtime = LuaRuntime::new()?;
     runtime.set_project_root(project.clone());
     // M32 竖版：设计分辨率 720×1280（Lua 动态 UI 是屏幕像素空间，视口必须与设计尺寸一致）。
-    runtime.set_ui_viewport(720, 1280);
+    runtime.set_ui_viewport(1280, 720);
     runtime.set_delta(1.0 / 60.0);
     // 先执行工程入口：`scripts/` 由此进入 require 搜索路径，①② 两节才能在
     // **进入玩法之前**直接读数据（与 `game --check` 同一条路径）。
@@ -193,7 +200,209 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .into());
     }
 
-    banner("③ 灵芝：真实耕作 7 天收获，数量 == data/crops.lua:lingzhi.yield");
+    banner("③ 设计案 §2.2 玩家初始属性 == core/state.lua + player/inventory.lua");
+    let attr_rows = markdown_table(&design, "属性")?;
+    let expected_attrs = [
+        (
+            "铜钱",
+            query_num(&mut runtime, "require('core.state').money")?,
+        ),
+        (
+            "内力",
+            query_num(&mut runtime, "require('core.state').inner_power")?,
+        ),
+        (
+            "最大内力",
+            query_num(
+                &mut runtime,
+                "require('player.inventory').max_inner_power()",
+            )?,
+        ),
+        (
+            "最大体力",
+            query_num(&mut runtime, "require('player.inventory').max_energy()")?,
+        ),
+    ];
+    for (doc_name, data_value) in expected_attrs {
+        let row = attr_rows
+            .iter()
+            .find(|row| row.len() >= 2 && row[0] == doc_name)
+            .ok_or_else(|| format!("§2.2 找不到「{doc_name}」行：{attr_rows:?}"))?;
+        let doc_value = number_from_cell(&row[1])?;
+        if (doc_value - data_value).abs() > f64::EPSILON {
+            return Err(
+                format!("设计案 §2.2 {doc_name} = {doc_value}，Lua 数据为 {data_value}").into(),
+            );
+        }
+        println!("  {doc_name}: 初始/上限 = {doc_value}");
+    }
+
+    banner("④ 设计案 §3 打坐行 == 实现口径（恢复 5 点内力，ui/input.lua）");
+    let action_rows = markdown_table(&design, "行为")?;
+    let meditate = action_rows
+        .iter()
+        .find(|row| row.first().map(String::as_str) == Some("打坐"))
+        .ok_or_else(|| format!("§3 找不到「打坐」行：{action_rows:?}"))?;
+    if meditate.len() < 4 {
+        return Err(format!("打坐行格式不符（期望 ≥4 列）: {meditate:?}").into());
+    }
+    // 实现口径：ui/input.lua practice 分支
+    // `state.inner_power = math.min(100, (state.inner_power or 0) + 5)`。
+    // 文档单元格必须写「恢复 5 点内力」；改任何一侧都要同步另一侧，否则本断言失败。
+    const MEDITATION_RECOVERY: &str = "恢复 5 点内力";
+    if !meditate[3].contains(MEDITATION_RECOVERY) {
+        return Err(format!(
+            "设计案 §3 打坐效果 = {:?}，实现口径为「{MEDITATION_RECOVERY}」（ui/input.lua practice 分支）",
+            meditate[3]
+        )
+        .into());
+    }
+    println!("  打坐: 效果单元格 = {:?}", meditate[3]);
+
+    banner("⑤ 设计案 §6.1 玩家招式 == data/skills.lua（基础刀法；未实现行白名单）");
+    let skill_rows = markdown_table(&design, "招式")?;
+    const SKILL_ROWS_WITHOUT_DATA: &[&str] = &["追风步", "守心诀", "回风掌"];
+    let mut skill_checked = 0;
+    for row in &skill_rows {
+        if row.len() < 4 {
+            return Err(format!("招式表行格式不符（期望 ≥4 列）: {row:?}").into());
+        }
+        match row[0].as_str() {
+            "基础刀法" => {
+                let doc_damage = number_from_cell(&row[1])?;
+                let data_damage =
+                    query_num(&mut runtime, "require('data.skills').skills.strike.damage")?;
+                if (doc_damage - data_damage).abs() > f64::EPSILON {
+                    return Err(format!(
+                        "设计案 §6.1 基础刀法伤害 = {doc_damage}，data/skills.lua:strike.damage = {data_damage}"
+                    )
+                    .into());
+                }
+                let doc_inner = number_from_cell(&row[2])?;
+                let data_inner = query_num(
+                    &mut runtime,
+                    "require('data.skills').skills.strike.inner_cost",
+                )?;
+                if (doc_inner - data_inner).abs() > f64::EPSILON {
+                    return Err(format!(
+                        "设计案 §6.1 基础刀法内力消耗 = {doc_inner}，实现为 {data_inner}"
+                    )
+                    .into());
+                }
+                // 冷却：文档写秒（0.4 秒），数据写 60Hz 固定步（24）→ 秒×60 == 步。
+                let doc_cooldown_sec = number_from_cell(&row[3])?;
+                let data_cooldown_steps = query_num(
+                    &mut runtime,
+                    "require('data.skills').skills.strike.cooldown",
+                )?;
+                if (doc_cooldown_sec * 60.0 - data_cooldown_steps).abs() > f64::EPSILON {
+                    return Err(format!(
+                        "设计案 §6.1 基础刀法冷却 = {doc_cooldown_sec}s，实现 {data_cooldown_steps} 步（60Hz）"
+                    )
+                    .into());
+                }
+                // 装剑后 10：由 jhyt_m18_stats 的 player_damage 行为断言覆盖，这里只锁数据行。
+                skill_checked += 1;
+                println!("  基础刀法: 伤害={doc_damage} 内力={doc_inner} 冷却={doc_cooldown_sec}s");
+            }
+            name if SKILL_ROWS_WITHOUT_DATA.contains(&name) => {}
+            name => {
+                return Err(format!(
+                    "设计案 §6.1 新增了「{name}」但 data/skills.lua 没有对应招式：\
+                     要么补数据并登记映射，要么加入 SKILL_ROWS_WITHOUT_DATA 白名单"
+                )
+                .into());
+            }
+        }
+    }
+    if skill_checked != 1 {
+        return Err(format!("§6.1 应比对 1 行（基础刀法），实际 {skill_checked} 行").into());
+    }
+
+    banner("⑥ 设计案 §7.2 建筑升级成本 == data/buildings.lua（仅木材口径）");
+    let upgrade_lines = markdown_bullets_after(&design, "升级成本")?;
+    let expected_costs = [
+        ("药庐 1→2 级", "herb_hut", 4.0),
+        ("库房 1→2 级", "storehouse", 6.0),
+        ("茶棚 1→2 级", "tea_shed", 3.0),
+    ];
+    if upgrade_lines.len() < expected_costs.len() {
+        return Err(format!(
+            "§7.2 升级成本只找到 {} 行，期望 ≥{} 行",
+            upgrade_lines.len(),
+            expected_costs.len()
+        )
+        .into());
+    }
+    for (doc_label, building_id, expected_timber) in expected_costs {
+        if !upgrade_lines.iter().any(|line| {
+            line.contains(doc_label) && line.contains(&format!("木材 {}", expected_timber as i64))
+        }) {
+            return Err(format!(
+                "§7.2 找不到「{doc_label}：木材 {}」行：{upgrade_lines:?}",
+                expected_timber as i64
+            )
+            .into());
+        }
+        let data_cost = query_str(
+            &mut runtime,
+            &format!(
+                "(function() local b = require('data.buildings').buildings.{building_id}; \
+                 local out = {{}}; for _, c in ipairs(b.upgrade_cost or {{}}) do out[#out+1] = c.item .. '=' .. tostring(c.count) end; \
+                 return table.concat(out, ',') end)()"
+            ),
+        )?;
+        if data_cost != format!("timber={}", expected_timber as i64) {
+            return Err(format!(
+                "设计案 §7.2 {doc_label} 木材 {}，data/buildings.lua:{building_id}.upgrade_cost = {data_cost}",
+                expected_timber as i64
+            )
+            .into());
+        }
+        println!("  {doc_label}: upgrade_cost = {data_cost}");
+    }
+
+    banner("⑦ 设计案 §9.1 普通订单奖励区间 ⊇ data/quests/order_*.lua 的显式金额");
+    let reward_rows = markdown_table(&design, "难度")?;
+    let ordinary = reward_rows
+        .iter()
+        .find(|row| row.first().map(String::as_str) == Some("普通"))
+        .ok_or_else(|| format!("§9.1 找不到「普通」行：{reward_rows:?}"))?;
+    if ordinary.len() < 3 {
+        return Err(format!("§9.1 普通行格式不符（期望 ≥3 列）: {ordinary:?}").into());
+    }
+    // 铜钱奖励单元格形如 `40–100`（en dash）或 `40-100`，取首尾数字为区间。
+    let (reward_min, reward_max) = range_from_cell(&ordinary[2])?;
+    let order_rewards = [
+        ("order_herb", 60.0),
+        ("order_pill", 80.0),
+        ("order_hunt", 90.0),
+    ];
+    for (quest_id, expected) in order_rewards {
+        let data_money = query_num(
+            &mut runtime,
+            &format!(
+                "(function() local q = require('data.quests.{quest_id}'); \
+                 for _, r in ipairs(q.rewards or {{}}) do if r.kind == 'money' then return r.amount end end; \
+                 return -1 end)()"
+            ),
+        )?;
+        if (data_money - expected).abs() > f64::EPSILON {
+            return Err(format!(
+                "设计案 §9.2 订单 {quest_id} 奖励应为 {expected}（文档口径），实现为 {data_money}"
+            )
+            .into());
+        }
+        if data_money < reward_min || data_money > reward_max {
+            return Err(format!(
+                "订单 {quest_id} 奖励 {data_money} 不在 §9.1 普通任务区间 [{reward_min},{reward_max}]"
+            )
+            .into());
+        }
+        println!("  {quest_id}: 铜钱奖励={data_money}（区间 [{reward_min},{reward_max}] 内）");
+    }
+
+    banner("⑧ 灵芝：真实耕作 7 天收获，数量 == data/crops.lua:lingzhi.yield");
     open_main_menu(&mut runtime)?;
     click_button(&mut runtime, "BtnStart")?;
     assert_scene_is(&mut runtime, "manor")?;
@@ -428,6 +637,46 @@ fn markdown_table(
         return Err(format!("设计案里找不到以「{first_cell}」为表头的表格").into());
     }
     Ok(rows)
+}
+
+/// 取设计案 markdown 里以 `needle` 为标题下方的"`- `"清单行（直到第一个非清单非空行）。
+fn markdown_bullets_after(
+    markdown: &str,
+    needle: &str,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let mut bullets = Vec::new();
+    let mut found = false;
+    for line in markdown.lines() {
+        let trimmed = line.trim();
+        if !found {
+            // 标题行必须是段落/标题（不能是 `- ` 列表行），避免命中"沿革/备注"里的同词。
+            if trimmed.contains(needle) && !trimmed.starts_with("- ") {
+                found = true;
+            }
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("- ") {
+            bullets.push(rest.to_owned());
+            continue;
+        }
+        if trimmed.is_empty() || trimmed.starts_with('|') || trimmed.starts_with("```") {
+            continue;
+        }
+        break;
+    }
+    if bullets.is_empty() {
+        return Err(format!("设计案里找不到「{needle}」下方的清单行").into());
+    }
+    Ok(bullets)
+}
+
+/// 区间单元格：`40–100` / `40-100` / `40—100` → (40, 100)。
+fn range_from_cell(cell: &str) -> Result<(f64, f64), Box<dyn std::error::Error>> {
+    let trimmed = cell.replace(' ', "");
+    let (left, right) = trimmed
+        .split_once(['–', '-', '—'])
+        .ok_or_else(|| format!("cell {cell:?} 不是区间（如 40–100）"))?;
+    Ok((left.parse()?, right.parse()?))
 }
 
 /// 单元格里的数值：`12`、`30/个`、`4` 都要能解析出前面的数字。

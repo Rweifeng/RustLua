@@ -341,6 +341,7 @@ impl EditorApp {
             let plan = self.play.plan_frame(elapsed);
             if plan.paused && !plan.runs_logic() {
                 // 暂停：不推进预览、也不消费边沿，保留输入状态供恢复/步进使用。
+                if let Some(preview) = &self.preview { preview.pause_music(); }
                 ctx.request_repaint_after(std::time::Duration::from_millis(100));
                 self.preview_input_state = input;
                 return;
@@ -364,6 +365,7 @@ impl EditorApp {
                 self.preview_input_state = input;
                 return;
             }
+            if let Some(preview) = &self.preview { preview.resume_music(); }
             let stepped = self
                 .preview
                 .as_mut()

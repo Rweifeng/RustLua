@@ -108,6 +108,19 @@ function M.buff_bonus(actor, key)
 end
 
 -- 三层合成查询：未知 key 返回 0（不查表、不抛错）。
+-- 当前生效的 Buff 数量（HUD 状态图标：有 buff 才画图标）。
+function M.buff_count(actor)
+  local list = buffs[actor]
+  if type(list) ~= "table" then
+    return 0
+  end
+  local n = 0
+  for _ in ipairs(list) do
+    n = n + 1
+  end
+  return n
+end
+
 function M.query(actor, key)
   if not VALID_STATS[key] then
     return 0

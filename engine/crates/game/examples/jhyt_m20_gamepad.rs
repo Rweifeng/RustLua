@@ -1416,7 +1416,7 @@ fn new_runtime(project: &Path, save_path: &Path) -> Result<LuaRuntime, Box<dyn s
     // 音频目录固定为 <project>/assets/audio（core/audio.rs）。
     runtime.set_audio_asset_dir(project.join("assets").join("audio"));
     // M32 竖版：设计分辨率 720×1280（Lua 动态 UI 是屏幕像素空间，视口必须与设计尺寸一致）。
-    runtime.set_ui_viewport(720, 1280);
+    runtime.set_ui_viewport(1280, 720);
     runtime.set_delta(1.0 / 60.0);
     Ok(runtime)
 }

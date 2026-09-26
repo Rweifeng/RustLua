@@ -26,6 +26,8 @@ local hints = require("ui.hints")
 local ui_text = require("ui.ui_text")
 -- M32 竖版：面板矩形与行偏移的唯一来源（`ui/layout.lua`）。
 local layout = require("ui.layout")
+-- docs/48 ui 换肤接线：面板背景/任务子弹/印章贴图。
+local skin = require("ui.skin")
 
 -- 数字直选 1..9 的按键名（默认只有键盘数字键；未绑定该设备的动作自动跳过）。
 local function digits_label()
@@ -115,6 +117,7 @@ end
 
 local function clear_ui()
   ui.clear("qst:box")
+  ui.clear("qst:skin_bg")
   ui.clear("qst:rule")
   ui.clear("qst:sel")
   for _, id in ipairs({ "qst:title", "qst:state", "qst:giver", "qst:objtitle", "qst:hint", "qst:empty", "qst:msg" }) do
@@ -226,7 +229,11 @@ function M.render()
   local OBJ_Y = y + BOX.list_dy + ROW_LIMIT * ROW_H + 46
   sync_focus()
   ui_text.begin("qst")
+  -- docs/48 ui 换肤接线：主面板纸面背景（9-slice）叠在纯色兜底之上。
+  skin.panel("qst:skin_bg", x, y, w, h, "panel_main")
   ui.panel("qst:box", x, y, w, h, 0.10, 0.11, 0.15, 0.94)
+  -- docs/48 ui 换肤接线：标题分隔线用 common 竹纹分隔贴图（叠在原纯色线之上）。
+  skin.icon("qst:divider", x + BOX.title_dx, y + BOX.title_dy + BOX.title_font + 6, w - BOX.title_dx * 2, 8, "divider")
   ui.panel("qst:rule", x + BOX.title_dx, y + BOX.title_dy + BOX.title_font + 14, w - BOX.title_dx * 2, 2, 0.72, 0.75, 0.82, 0.22)
   ui.panel(
     "qst:sel",
@@ -240,6 +247,8 @@ function M.render()
     0.20
   )
   ui_text.draw("qst", "qst:title", x + BOX.title_dx, y + BOX.title_dy, BOX.title_font, ROW_W, "任务日志")
+  -- docs/48 ui 换肤接线：标题右端印章（24×24）。
+  skin.icon("qst:seal", x + w - BOX.title_dx - 24, y + BOX.title_dy + 2, 24, 24, "icon_seal")
 
   if #rows == 0 then
     ui_text.draw("qst", "qst:empty", x + BOX.list_dx, y + BOX.list_dy, 18.0, ROW_W, "暂无任务")
@@ -256,6 +265,9 @@ function M.render()
     if row then
       local label = string.format("%d. %s【%s】", index, row.name, M.state_text(row.state))
       label = (index == ui_state.index + 1) and ("> " .. label) or ("  " .. label)
+      -- docs/48 ui 换肤接线：任务状态子弹（完成 done / 其他 todo，12×12 画在行首左侧）。
+      local bullet_key = row.state == "completed" and "quest_bullet_done" or "quest_bullet_todo"
+      skin.icon("qst:bullet" .. id, x + BOX.list_dx - 18, y + BOX.list_dy + slot * ROW_H + 4, 12, 12, bullet_key)
       ui_text.draw("qst", id, x + BOX.list_dx, y + BOX.list_dy + slot * ROW_H, 17.0, ROW_W, label)
     else
       ui_text.hide("qst", id)
@@ -314,7 +326,9 @@ function M.render()
     ROW_W,
     "只读面板：任务在对话/交互中接取与交付"
   )
-  ui_text.draw("qst", "qst:hint", x + BOX.list_dx, y + h + BOX.hint_dy, BOX.hint_font, ROW_W, hint_line())
+    -- docs/48 ui 换肤接线：按键提示条背景（key_hint 9-slice）。
+  skin.panel("qst:key_hint", x + BOX.list_dx, y + h + BOX.hint_dy - 6, ROW_W, BOX.hint_font + 12, "key_hint")
+ui_text.draw("qst", "qst:hint", x + BOX.list_dx, y + h + BOX.hint_dy, BOX.hint_font, ROW_W, hint_line())
   return true
 end
 

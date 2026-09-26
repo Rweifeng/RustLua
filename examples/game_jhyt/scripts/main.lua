@@ -70,6 +70,8 @@ local goals_data = require("data.goals")
 -- death 管战败结算（扣未入库掉落 50% + 铜钱 5%、回山庄、状态回满）。
 local loot = require("systems.loot")
 local death = require("systems.death")
+-- docs/48 effects 接线：主循环推进特效生命周期（固定步 60Hz → dt=1/60）。
+local effects = require("systems.effects")
 local drops_data = require("data.drops")
 local inventory_ui = require("ui.inventory_ui")
 local quest_ui = require("ui.quest_ui")
@@ -463,6 +465,8 @@ function update()
     -- 攻击在注册后第 windup 步开始判定，下一 tick 起算，顺序确定。
     combat.tick()
     enemy.tick()
+    -- 特效固定步推进：播完自毁（与战斗/敌人同固定步语义）。
+    effects.update(1 / 60)
     local label = input.update()
     -- 主角形象：input.update 决定了朝向与"是否在走"，之后再切 walk/idle
     -- （顺序不能反，否则动画永远慢一帧）。切图后实体会重建，tick 里会重挂。
@@ -509,9 +513,12 @@ function on_day_start()
   shop.on_day_start()
   -- 采集点刷新（M19-01）：清掉已到刷新期的记录并落盘；未接线时 query/act 的
   -- 惰性刷新给出同样结果，这里只是让存档在新的一天立刻干净。
-  pcall(function()
+  local gather_ok, gather_err = pcall(function()
     require("systems.gather").on_day_start()
   end)
+  if not gather_ok then
+    log.warn("[main] gather.on_day_start failed: " .. tostring(gather_err))
+  end
   -- 新手引导（M19-02）：睡觉步骤在跨天事件里推进。
   tutorial.on_day_start()
   -- 掉落入库（M28）：昨天/今天打到的猎物在睡前搬回仓库（"未入库"只到跨天为止），

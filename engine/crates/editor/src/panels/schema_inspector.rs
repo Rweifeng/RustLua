@@ -188,21 +188,26 @@ impl EditorApp {
         }
         let playing = self.is_playing();
         ui.separator();
-        ui.strong("组件字段（由 schema 自动生成）");
-        ui.weak("这些组件没有手写面板，字段由 Component Schema + PropertyPath 驱动；每次提交一条 Undo。");
         // P1：字段搜索（多词 AND，匹配组件名/字段名/路径/当前值）。过滤词只影响本面板的
         // 呈现，不改文档；清空即回到全部字段。
-        ui.horizontal(|ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut self.inspector_field_filter)
-                    .hint_text("搜索字段（如 texture / camera fov）")
-                    .desired_width((ui.available_width() - 34.0).max(60.0)),
-            );
+        // 用 right-to-left 布局：✕ 按钮先画（靠右），TextEdit 后画并用 INFINITY 占满剩余宽度。
+        // 之前按 available_width()-34 算固定 desired_width，但 egui 的 desired_width 只是"期望"，
+        // 输入文字比这个宽度长时 TextEdit 的内容 galley 会反过来撑大自身，导致输入框越长越宽。
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+            // 空时也在按钮位分配 0 宽占位：保持 TextEdit 的 widget 序号稳定（同 hierarchy 搜索框）。
             if !self.inspector_field_filter.is_empty()
                 && ui.small_button("✕").on_hover_text("清空搜索").clicked()
             {
                 self.inspector_field_filter.clear();
+            } else {
+                ui.allocate_exact_size(egui::vec2(0.0, 0.0), egui::Sense::hover());
             }
+            ui.add(
+                egui::TextEdit::singleline(&mut self.inspector_field_filter)
+                    .id(ui.make_persistent_id("inspector_field_search_box"))
+                    .hint_text("搜索字段（如 texture / camera fov）")
+                    .desired_width(f32::INFINITY),
+            );
         });
         if !self.inspector_field_filter.trim().is_empty() {
             let total = self.schema_field_rows().len();
