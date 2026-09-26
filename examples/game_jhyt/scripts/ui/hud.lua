@@ -30,11 +30,26 @@ local M = {}
 -- 横屏时它是右上角一块 276×300 的小面板，竖屏改到**底部**：竖屏宽度只有 720，
 -- 右上角放不下"面板 + 资源条 + 反馈行"，而底部通栏既够宽也不挡地图中央的玩法视野。
 local PANEL = layout.PANEL.hud_info
-local LINE_H = 20
-local LINE_FONT = 14
-local PANEL_LINES = 5
--- 可用文字宽度：面板内左右各留 12；整行行宽为设计宽两侧各留 24（`layout.row_width()`）。
-local PANEL_TEXT_W = PANEL.w - 24
+-- 状态面板行距/字号（M32 后的可读性重构：5 行 14px → 4 行 18px）。
+-- 4 行 × 28px + 顶部 10px = 122px，正好装进 124px 高的面板；字号从 14 提到 18，
+-- 覆盖"底部信息看不清"的诉求。行数/字号是 `jhyt_m19_ui`/`jhyt_m30_cjk_text`
+-- 的验收面（`status_lines()` 恰好 4 条、`hud:keys` 字号 16），改动要同步那两处断言。
+local LINE_H = 28
+local LINE_FONT = 18
+local PANEL_LINES = 4
+-- 每行左侧的"分类色块"（引擎文字没有着色通道，用色块做视觉分组）：
+-- ① 状态=绿 ② 时间/天气=金 ③ 金钱/地图=蓝 ④ 快捷栏=紫。
+local CHIP = { w = 6, h = 16, gap = 4 }
+local CHIP_COLORS = {
+  { r = 0.36, g = 0.82, b = 0.45 },
+  { r = 0.95, g = 0.76, b = 0.30 },
+  { r = 0.38, g = 0.66, b = 0.96 },
+  { r = 0.78, g = 0.56, b = 0.96 },
+}
+-- 面板顶部的金色细条（与色块同色系，让"底栏"有明确的收口）。
+local ACCENT = { h = 3, r = 0.93, g = 0.75, b = 0.35, a = 0.9 }
+-- 可用文字宽度：面板内左右各留 12，再扣除色块与间距（整行行宽为设计宽两侧各留 24）。
+local PANEL_TEXT_W = PANEL.w - 24 - CHIP.w - CHIP.gap - 4
 local ROW_TEXT_W = layout.row_width()
 
 local WEATHER_TEXT = { sunny = "晴", rainy = "雨" }
@@ -249,15 +264,14 @@ end
 -- 因此这里显式前向声明，并在验收样例里直接断言元素真的画出来了。
 local draw_bars
 local draw_weather_visual
+local BAR
 
 -- 状态面板逐行文案（headless 验收直接读这里，保证与绘制同源）。
 --
--- M32 竖版：横屏是 9 行（右列 276 宽的小面板够高），竖屏把面板压到 124px 高，
--- 于是合并同类项成 5 行——**信息一条不少**，只是把"同一天内的两个指标"并到一行：
+-- M32 竖版后改为 4 行（**信息一条不少**，只是把"快捷栏/武器/工具/种子"四行压缩成一行）：
 --   ① 生命(气血) + 体力 + 内力      ② 时间 + 天气
---   ③ 金钱 + 地图                   ④ 快捷栏（武器 + 工具）
---   ⑤ 种子
--- 合并的是显示，不是数据：`ui_text.audit()` 仍逐行按真实字宽量 648px 的预算。
+--   ③ 金钱 + 地图                   ④ 快捷栏（武器 + 工具 + 种子）
+-- 合并的是显示，不是数据：`ui_text.audit()` 仍逐行按真实字宽量 PANEL_TEXT_W 的预算。
 function M.status_lines()
   local hotbar = hotbar_lines()
   local lines = {
@@ -265,8 +279,7 @@ function M.status_lines()
     "时间 " .. clock_text() .. " · 天气 " .. weather_text(),
     "金钱 " .. tostring(state.money) .. " 文 · 地图 "
       .. tostring((maps.get(map.current() or scene.reload()) or {}).display or "未知"),
-    "快捷栏",
-    tostring(hotbar[2] or "武器 - · 工具 -") .. " · " .. tostring(hotbar[3] or "种子 -"),
+    "快捷栏 " .. tostring(hotbar[2] or "武器 - · 工具 -") .. " · " .. tostring(hotbar[3] or "种子 -"),
   }
   return lines
 end
@@ -276,7 +289,7 @@ end
 -- `input.update():match('building')` 依赖这里的 `building` 字面量）。
 function M.text()
   local lines = M.status_lines()
-  -- M32：状态行合并成 5 行后，单行摘要直接由这 5 行拼（不再按下标取第 6..9 行）。
+  -- M32：状态行合并成 4 行后，单行摘要直接由这 4 行拼（不再按下标取第 5..9 行）。
   local text = table.concat(lines, " · ")
   local building = require("systems.building")
   if building.build_mode() then
@@ -418,13 +431,20 @@ function M.draw(key_hints)
   -- 各自可用多宽"，验收遍历它逐条量宽（`ui_text.audit()`），无需在验收里重抄几何。
   ui_text.begin("hud")
   ui.panel("hud:box", x, y, w, h, 0.08, 0.09, 0.12, 0.62)
+  -- 金色收口条（面板顶部 3px），与行内分类色块同色系。
+  ui.panel("hud:accent", x, y, w, ACCENT.h, ACCENT.r, ACCENT.g, ACCENT.b, ACCENT.a)
   local lines = M.status_lines()
   for i = 1, PANEL_LINES do
     local id = "hud:line" .. i
     local line = lines[i]
+    local color = CHIP_COLORS[i]
     if line then
-      ui_text.draw("hud", id, x + 12, y + 10 + (i - 1) * LINE_H, LINE_FONT, PANEL_TEXT_W, line)
+      -- 分类色块 + 文字：色块在 x+12 处，文字起点让出色块（x+12+CHIP.w+gap）。
+      ui.panel("hud:chip" .. i, x + 12, y + 10 + (i - 1) * LINE_H + (LINE_H - CHIP.h) / 2,
+        CHIP.w, CHIP.h, color.r, color.g, color.b, 0.95)
+      ui_text.draw("hud", id, x + 12 + CHIP.w + CHIP.gap, y + 10 + (i - 1) * LINE_H, LINE_FONT, PANEL_TEXT_W, line)
     else
+      ui.clear("hud:chip" .. i)
       ui_text.hide("hud", id)
     end
   end
@@ -434,8 +454,8 @@ function M.draw(key_hints)
     hint = DEFAULT_KEYS
   end
   -- M32 竖版：键位提示从"顶部一行"改到**底部最后一行**。竖屏顶部是地图标题
-  -- （scene 的 HudTitle/HudHint），原先两者都在 y=8 会叠字。
-  ui_text.draw("hud", "hud:keys", PANEL.x, layout.ROW.bottom_y, 13.0, ROW_TEXT_W, hint)
+  -- （scene 的 HudTitle/HudHint），原先两者都在 y=8 会叠字。字号 13→16（可读性）。
+  ui_text.draw("hud", "hud:keys", PANEL.x, layout.ROW.bottom_y, 16.0, ROW_TEXT_W, hint)
 
   if in_dialogue then
     ui_text.hide("hud", "hud:feedback")
@@ -444,20 +464,21 @@ function M.draw(key_hints)
   else
     local feedback = M.feedback_line()
     if feedback ~= "" then
-      ui_text.draw("hud", "hud:feedback", PANEL.x, layout.ROW.feedback_y, 16.0, ROW_TEXT_W, feedback)
+      ui_text.draw("hud", "hud:feedback", PANEL.x, layout.ROW.feedback_y, 18.0, ROW_TEXT_W, feedback)
     else
       ui_text.hide("hud", "hud:feedback")
     end
-    -- 七日目标（M27）：放在反馈行上方，不占引导行（两者可同时可见）。
+    -- 七日目标（M27）：放在反馈行上方，不占引导行（两者可同时可见）。字号 15→17。
     local goals = M.goals_line()
     if goals ~= "" then
-      ui_text.draw("hud", "hud:goals", PANEL.x, layout.ROW.goals_y, 15.0, ROW_TEXT_W, goals)
+      ui_text.draw("hud", "hud:goals", PANEL.x, layout.ROW.goals_y, 17.0, ROW_TEXT_W, goals)
     else
       ui_text.hide("hud", "hud:goals")
     end
+    -- 新手引导行：放在资源条**上方**（资源条 954..1020 会与旧位置 PANEL.y-24=996 叠字）。
     local prompt = tutorial.prompt()
     if prompt then
-      ui_text.draw("hud", "hud:tutorial", PANEL.x, PANEL.y - 24, 15.0, ROW_TEXT_W, prompt)
+      ui_text.draw("hud", "hud:tutorial", PANEL.x, BAR.y0 - 26, 16.0, ROW_TEXT_W, prompt)
     else
       ui_text.hide("hud", "hud:tutorial")
     end
@@ -477,14 +498,15 @@ end
 -- 生命取 `combat.player_hp()/player_max_hp()`，体力/内力取 `state.energy`、
 -- `state.inner_power`（上限来自 `player/inventory.lua` 的 `max_energy/max_inner_power`，
 -- 与 M28 起唯一上限来源一致）。宽度变化因此是"真的反映数值"，不是装饰。
-local BAR = {
+BAR = {
   x = PANEL.x + 12,
   -- M32 竖版：三条资源条从"面板正下方"改到**面板正上方**（右列布局在竖屏没有右列）。
-  -- 面板顶 y=1020，条高三行（16px 间隔 22px）落在 954..1020，正好贴住面板上沿。
+  -- 面板顶 y=1020，条高三行（18px 间隔 24px）落在 954..1020，正好贴住面板上沿。
+  -- 可读性重构：条宽 120→160、条高 16→18，更容易一眼看清剩余比例。
   y0 = PANEL.y - 66,
-  row = 22,
-  w = 120,
-  h = 16,
+  row = 24,
+  w = 160,
+  h = 18,
   frame = "assets/art/ui/hud/ui_bar_frame_9s.png",
 }
 local BARS = {
@@ -588,6 +610,10 @@ function M.reset()
   clear_dynamic()
   ui.clear(RAIN_OVERLAY.id)
   ui.clear(RAIN_ICON.id)
+  ui.clear("hud:accent")
+  for i = 1, PANEL_LINES do
+    ui.clear("hud:chip" .. i)
+  end
   for _, bar in ipairs(BARS) do
     ui.clear(bar.id)
     ui.clear(bar.id .. ":frame")

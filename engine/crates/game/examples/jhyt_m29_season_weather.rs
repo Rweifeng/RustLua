@@ -519,8 +519,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "assets/art/ui/hud/ui_bar_fill_hp.png",
     )?;
     let full_width = query_num(&mut rt, "ui.image_get('hud:bar_hp').width")?;
-    if (full_width - 120.0).abs() > 1.0 {
-        return Err(format!("满血条宽度应为 120，实为 {full_width}").into());
+    if (full_width - 160.0).abs() > 1.0 {
+        return Err(format!("满血条宽度应为 160，实为 {full_width}").into());
     }
     // 真实受伤：把气血压到一半（`combat.player_hp` 是 HUD 的同源数据）。
     lua(

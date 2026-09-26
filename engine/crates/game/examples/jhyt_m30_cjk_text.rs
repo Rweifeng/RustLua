@@ -106,7 +106,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "false",
     )?;
     // `ui.text_get`：绘制后能读回文字与字号（验收读回口径）。
-    assert_num(&mut rt, "ui.text_get('hud:keys').size", 13.0)?;
+    assert_num(&mut rt, "ui.text_get('hud:keys').size", 16.0)?;
     assert_str(
         &mut rt,
         "tostring(ui.text_get('hud:keys').text:find('移动', 1, true) ~= nil)",

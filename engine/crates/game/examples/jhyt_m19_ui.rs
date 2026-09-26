@@ -161,7 +161,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if not t:find(w, 1, true) then return 'missing:' .. w end end return 'ok' end)()",
         "ok",
     )?;
-    assert_num(&mut runtime, "#(require('ui.hud').status_lines())", 5.0)?;
+    assert_num(&mut runtime, "#(require('ui.hud').status_lines())", 4.0)?;
     let hud_line = query_str(&mut runtime, "require('ui.hud').text()")?;
     println!("hud.text() = {hud_line}");
     // update() 返回值仍携带 HUD 文案（既有 headless 断言的兼容面）。
