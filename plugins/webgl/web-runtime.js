@@ -74,8 +74,21 @@
   // 运行期路径把 spec 塞回 `entity.components` 再调这里，行为与场景声明完全一致。
   function applyComponents(entity) {
     if (entity.components.Transform) {
+      // 场景文件里的 Transform 是 **Transform3D 统一格式**（`position=x,y,z;rotation=x,y,z,w;
+      // scale=x,y,z`，见 core/transform.rs 的 Transform3D::from_component_str），运行期实体经
+      // `transform.set` 走的才是 `x=;y=` 的 2D 格式。两种都必须认——只认 `x=` 会把静态
+      // 建筑/物件的坐标整成 (0,0)，画面表现就是"所有建筑都堆在世界原点"。
       const p = parseProps(entity.components.Transform);
-      entity.transform = { x: Number(p.x || 0), y: Number(p.y || 0), rotation: Number(p.rotation || 0), scale_x: Number(p.scale_x || 1), scale_y: Number(p.scale_y || 1) };
+      const pos = String(p.position || '').split(',').map(Number);
+      const scl = String(p.scale || '').split(',').map(Number);
+      const rot = Number(p.rotation || 0);
+      entity.transform = {
+        x: Number.isFinite(pos[0]) ? pos[0] : Number(p.x || 0),
+        y: Number.isFinite(pos[1]) ? pos[1] : Number(p.y || 0),
+        rotation: Number.isFinite(rot) ? rot : 0,
+        scale_x: Number.isFinite(scl[0]) ? scl[0] : Number(p.scale_x || 1),
+        scale_y: Number.isFinite(scl[1]) ? scl[1] : Number(p.scale_y || 1),
+      };
     }
     if (entity.components.Tilemap) {
       const p = parseProps(entity.components.Tilemap);
@@ -115,7 +128,16 @@
       const size = String(p.size || '').split('x').map(Number);
       const width = size[0] > 0 ? size[0] : 32;
       const height = size[1] > 0 ? size[1] : width;
-      entity.sprite = { texture: p.texture || '', size: width, size_y: height };
+      // 锚点 pivot（原生 Sprite 默认 0.5,0.5；静态建筑/物件写 `pivot=0,0` = 左下贴地、向上生长）。
+      // 不解析 pivot 会按中心点画在坐标上，建筑整体偏移半个身位（且与翻转前的画法不一致）。
+      const pivot = String(p.pivot || '').split(',').map(Number);
+      entity.sprite = {
+        texture: p.texture || '',
+        size: width,
+        size_y: height,
+        pivot_x: Number.isFinite(pivot[0]) ? pivot[0] : 0.5,
+        pivot_y: Number.isFinite(pivot[1]) ? pivot[1] : 0.5,
+      };
     }
     // 场景静态 UI：`UiLayout` 给出屏幕矩形（设计分辨率 1280x720），
     // `Image`/`Text` 给出要画的内容。菜单、HUD 底图、按钮都走这条路径，
@@ -448,11 +470,62 @@
     return drew;
   }
 
+  // 相机（世界 → 画布），与原生引擎同一套约定（camera.rs 的 constrained_center /
+  // camera_view.lua 的 follow_player）：
+  //   * 世界 y 朝上、tilemap row 0 在地图最底；画布 y 向下 ⇒
+  //     `画布 = 视口/2 + (世界 - 相机中心)` 的 x 轴、`画布 = 视口/2 - (世界 - 相机中心)` 的
+  //     y 轴，正好等于引擎 `world_to_screen`（屏幕空间、左上原点），画布即屏幕。
+  //   * 相机中心默认跟随玩家实体（名字含 `player`，即 JianghuPlayer），无玩家时取地图中心。
+  //   * 夹取规则与原生一致：中心 ∈ [半视口, 地图尺寸 - 半视口]；区间非法（地图比视口短）
+  //     时取两条界的中点（竖版 y 轴因此钉在地图纵向中心）。
+  // 没有 tilemap 的场景（标题门面）返回 null ⇒ 世界元素保持原样（屏幕空间，无翻转无相机）。
+  function computeCamera(sceneState, viewportW, viewportH) {
+    let map = null;
+    let player = null;
+    for (const entity of sceneState.entities.values()) {
+      if (entity.alive === false) continue;
+      if (!map && entity.tilemap && entity.tilemap.width > 0 && entity.tilemap.height > 0) {
+        map = entity.tilemap;
+      }
+      if (!player && entity.transform) {
+        const name = String(entity.name || '');
+        if (name === 'JianghuPlayer' || name.toLowerCase().indexOf('player') !== -1) {
+          player = entity;
+        }
+      }
+    }
+    if (!map) return null;
+    const mapW = map.width * map.tile_size;
+    const mapH = map.height * map.tile_size;
+    const halfW = viewportW / 2;
+    const halfH = viewportH / 2;
+    let cx = mapW / 2;
+    let cy = mapH / 2;
+    if (player && player.transform) {
+      cx = player.transform.x;
+      cy = player.transform.y;
+    }
+    const clampAxis = (value, min, max) => (min > max ? (min + max) / 2 : Math.max(min, Math.min(max, value)));
+    cx = clampAxis(cx, halfW, mapW - halfW);
+    cy = clampAxis(cy, halfH, mapH - halfH);
+    return { x: cx, y: cy };
+  }
+
   function drawScene(ctx, sceneState, images, projectName, uiText, pending) {
     const canvas = ctx.canvas;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.fillStyle = '#151923';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    const camera = computeCamera(sceneState, canvas.width, canvas.height);
+    // 世界 → 画布（屏幕空间）：x 同向、y 反向（世界朝上 ↔ 画布朝下）。无相机时原样直绘。
+    const toCanvas = (wx, wy) => {
+      if (!camera) return { x: wx, y: wy };
+      return {
+        x: canvas.width / 2 + (wx - camera.x),
+        y: canvas.height / 2 - (wy - camera.y),
+      };
+    };
 
     const tilemapEntity = Array.from(sceneState.entities.values()).find(entity => entity.tilemap);
     if (tilemapEntity) {
@@ -466,15 +539,17 @@
         for (let x = 0; x < map.width; x += 1) {
           const i = y * map.width + x;
           const tile = Number(map.tiles[i] || 0);
+          // 单元格世界矩形 [y*ts, (y+1)*ts]；画布以单元格**上沿**为锚点直绘，无需翻转贴图。
+          const cell = toCanvas(origin.x + x * map.tile_size, origin.y + (y + 1) * map.tile_size);
           if (tileset && tile > 0) {
             const tileIndex = tile - 1;
             const sx = (tileIndex % columns) * map.tile_size;
             const sy = Math.floor(tileIndex / columns) * map.tile_size;
-            ctx.drawImage(tileset, sx, sy, map.tile_size, map.tile_size, origin.x + x * map.tile_size, origin.y + y * map.tile_size, map.tile_size, map.tile_size);
+            ctx.drawImage(tileset, sx, sy, map.tile_size, map.tile_size, cell.x, cell.y, map.tile_size, map.tile_size);
           } else {
             const solid = map.solid[i] === '1';
             ctx.fillStyle = solid ? '#334155' : '#1f2937';
-            ctx.fillRect(origin.x + x * map.tile_size, origin.y + y * map.tile_size, map.tile_size - 1, map.tile_size - 1);
+            ctx.fillRect(cell.x, cell.y, map.tile_size - 1, map.tile_size - 1);
           }
         }
       }
@@ -497,18 +572,26 @@
       // 运行期挂上去的形象（sprite.set / animation.attach）不在场景预加载清单里，
       // 必须走按需加载，否则 NPC/敌人只会画成一个色块圆点。
       const sprite = clip ? ensureTexture(images, pending, clip.sheet) : (entity.sprite ? ensureTexture(images, pending, entity.sprite.texture) : null);
+      // 世界实体走相机变换（与瓦片同一套）。锚点按 Sprite.pivot（原生默认 0.5,0.5；
+      // 静态建筑/物件 0,0 = 左下贴地向上长）：画布上沿 = 中心点 - pivot×尺寸。
+      // 变换里 y 已反向，无需再翻转贴图本身。
+      const p = toCanvas(pos.x, pos.y);
+      const pivotX = entity.sprite && entity.sprite.pivot_x !== undefined ? entity.sprite.pivot_x : 0.5;
+      const pivotY = entity.sprite && entity.sprite.pivot_y !== undefined ? entity.sprite.pivot_y : 0.5;
+      const dx = p.x - pivotX * size;
+      const dy = p.y - pivotY * sizeY;
       if (sprite && clip) {
         // frame 是**帧序号**（Lua 侧按引擎 current_frame 算好回写），不是累计 tick：
         // 引擎的 current_frame_uv 只取条带首行（frame/cols, 0），所以 sy 恒为 0。
         const index = Math.max(0, Math.floor(Number(entity.animation.frame) || 0));
         const sx = (index % Math.max(1, clip.cols)) * size;
-        ctx.drawImage(sprite, sx, 0, size, size, pos.x - size / 2, pos.y - sizeY / 2, size, sizeY);
+        ctx.drawImage(sprite, sx, 0, size, size, dx, dy, size, sizeY);
       } else if (sprite) {
-        ctx.drawImage(sprite, pos.x - size / 2, pos.y - sizeY / 2, size, sizeY);
+        ctx.drawImage(sprite, dx, dy, size, sizeY);
       } else {
         ctx.fillStyle = entityColor(entity);
         ctx.beginPath();
-        ctx.arc(pos.x, pos.y, Math.max(6, size / 2), 0, Math.PI * 2);
+        ctx.arc(p.x, p.y, Math.max(6, size / 2), 0, Math.PI * 2);
         ctx.fill();
       }
     }
