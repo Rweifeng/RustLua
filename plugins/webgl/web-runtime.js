@@ -1805,11 +1805,129 @@ end
         markBoot('running', sceneState.name);
         console.log('[lua] 切换场景:', name, '实体', next.entities.size);
         sceneSwitch = '';
+        // P0-①：场景切换落定 = drive 的**事件驱动入口**。wait 阶段若靠虚拟时间下的
+        // 帧轮询判据，加载期间的 rAF 帧会吞噬虚拟时间预算、轮询迟迟等不到判据满足
+        // （实测有日志拖慢帧率时 done、清理日志后 absent 的竞态）。切换完成的瞬间
+        // 直接进 move，与微信 harness"触发一次 → 等切换 → 再移动"完全同构。
+        if (driveAuto && driveAuto.phase === 'wait') {
+          driveAuto.phase = 'move';
+          driveAuto.frames = 0;
+          markDrivePhase('moving');
+        }
       } catch (error) {
         console.error(error);
         if (status) status.textContent = 'scene load failed: ' + error;
         markBoot('failed', (error && error.message) || error);
         sceneSwitch = 'failed';
+      }
+    }
+
+    // P0-①：URL `?p2-drive=auto` 驱动"完整剧本"（标题按确认 → 进玩法地图 → 按住方向键移动），
+    // 结果写进 `data-p2-drive`（done/failed）供无头浏览器验收断言。驱动走**真实输入路径**
+    // （window KeyboardEvent），与微信 harness 的 --drive-new-game/--drive-move 同构——
+    // 两个平台共用同一份 web-runtime.js，字段含义一致，可以直接对照。
+    let driveAuto = null;
+    try {
+      const search = (typeof window !== 'undefined' && window.location && window.location.search) || '';
+      if (search.indexOf('p2-drive=auto') >= 0) {
+        driveAuto = {
+          phase: 'confirm',
+          frames: 0,
+          confirmFrames: 2,
+          sceneBefore: sceneState.name,
+          waitLimit: 150,
+          moveKey: 'w',
+          moveFrames: 12,
+          positions: [],
+          first: null
+        };
+      }
+    } catch (e) { driveAuto = null; }
+    if (driveAuto) {
+    }
+
+    function dispatchDriveKey(type, key) {
+      try { window.dispatchEvent(new KeyboardEvent(type, { key, bubbles: true })); } catch (e) { }
+    }
+
+    function markDrivePhase(phase) {
+      const body = document.body || document.documentElement;
+      if (body) body.setAttribute('data-p2-drive-phase', phase);
+    }
+
+    function markDrive(state, detail) {
+      const body = document.body || document.documentElement;
+      if (!body) return;
+      body.setAttribute('data-p2-drive', state);
+      if (detail) body.setAttribute('data-p2-drive-detail', String(detail).slice(0, 400));
+      console.log('[drive] ' + state + ' ' + detail);
+    }
+
+    function stepDrive() {
+      if (!driveAuto || driveAuto.phase === 'done' || driveAuto.phase === 'failed') return;
+      const d = driveAuto;
+      d.frames += 1;
+      if (d.phase === 'confirm') {
+        // 与微信 harness 同构：真实空格键值 ' '（keyName 归一到 'space'），按 2 帧后松开。
+        // 只按 1 帧标题不响应（Lua 确认需要按住/连续帧）；但也不能按太久——新场景起来后
+        // 继续按 space 会触发场景里的交互（无限 loading）。2 帧是两者间的稳定值。
+        if (d.frames < d.confirmFrames) {
+          dispatchDriveKey('keydown', ' ');
+        }
+        if (d.frames >= d.confirmFrames) {
+          dispatchDriveKey('keyup', ' ');
+          d.phase = 'wait';
+          d.frames = 0;
+        }
+        return;
+      }
+      if (d.phase === 'wait') {
+        const summary = String(callGlobal(L, '__p2_world_summary') || '');
+        const mapMatch = summary.match(/\bmap=([^\s]+)/);
+        const sceneSwitched = sceneState.name !== d.sceneBefore ||
+          (mapMatch && mapMatch[1] !== 'main' && mapMatch[1] !== d.sceneBefore);
+        if (sceneSwitched) {
+          d.phase = 'move';
+          d.frames = 0;
+        } else if (d.frames >= d.waitLimit) {
+          markDrive('failed', 'scene switch did not happen within ' + d.waitLimit + ' frames (scene=' + sceneState.name + ' frames=' + d.frames + ')');
+          d.phase = 'failed';
+        }
+        return;
+      }
+      if (d.phase === 'move') {
+        dispatchDriveKey('keydown', d.moveKey);
+        const summary = String(callGlobal(L, '__p2_world_summary') || '');
+        const match = summary.match(/player=[^ ]*@(-?\d+),(-?\d+)/);
+        if (match) {
+          const pos = [Number(match[1]), Number(match[2])];
+          if (d.first === null) d.first = pos;
+          d.positions.push(pos);
+          // 位移出现即完成：虚拟时间预算在场景加载期被 rAF 帧吞噬后所剩无几，
+          // 固定帧数轮询在这种环境下不可靠（实测多轮 absent）；坐标一变化就收口。
+          if (d.first && (pos[0] !== d.first[0] || pos[1] !== d.first[1])) {
+            dispatchDriveKey('keyup', d.moveKey);
+            const dx = pos[0] - d.first[0];
+            const dy = pos[1] - d.first[1];
+            const detail = 'scene=' + sceneState.name + ' before=' + d.first.join(',') + ' after=' + pos.join(',') + ' d=' + dx + ',' + dy + ' samples=' + d.positions.length;
+            markDrivePhase('done');
+            markDrive('done', detail);
+            d.phase = 'done';
+            return;
+          }
+        }
+        if (d.frames >= d.moveFrames) {
+          dispatchDriveKey('keyup', d.moveKey);
+          const first = d.first || d.positions[0];
+          const last = d.positions[d.positions.length - 1];
+          let detail;
+          if (!first || !last) detail = 'no player position observed while moving (frames=' + d.frames + ')';
+          else detail = 'scene=' + sceneState.name + ' before=' + first.join(',') + ' after=' + last.join(',') + ' d=' + (last[0]-first[0]) + ',' + (last[1]-first[1]) + ' samples=' + d.positions.length;
+          markDrivePhase('failed');
+          markDrive('failed', detail);
+          d.phase = 'failed';
+        }
+        return;
       }
     }
 
@@ -1833,6 +1951,7 @@ end
           requestAnimationFrame(frame);
           return;
         }
+        stepDrive();
         doString(L, '__p2_input = ' + luaValue(webInput.snapshot()), '__p2_input');
         const result = callGlobal(L, 'update');
         syncLuaScene(sceneState, callGlobal(L, '__p2_export_state'));

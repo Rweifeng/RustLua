@@ -21,6 +21,9 @@ param(
     [string]$BundleRoot = "",
     [int]$Port = 8137,
     [int]$TimeoutSeconds = 90,
+    # P0-①：URL 驱动“完整剧本”（`?p2-drive=auto`）：标题按确认 → 进玩法地图 → 按住方向键
+    # 移动。断言 `data-p2-drive=done` 且位移非零（主角真的在浏览器里被驱动着走了）。
+    [switch]$Drive,
     # 调用方（`verify.ps1 -Web`）用它拿退出码：`Start-Process -PassThru -RedirectStandardOutput`
     # 返回的进程对象上 `ExitCode` 是 **$null**（本轮实测），而 `[int]$null` 会静默变成 0——
     # "包起不来"于是被当成"通过"。因此由子进程自己把结果写进这个文件。
@@ -39,7 +42,7 @@ function Exit-With([int]$Code) {
 # 未捕获的终止错误（本脚本里大量 `throw`）也必须是"失败且**可见**"：调用方只看状态文件，
 # 没有 trap 时它只剩"没写状态文件"这条模糊线索（真实原因还压在 stderr 里，不该靠人肉去捞）。
 trap {
-    Write-Host "[RED] webgl bundle verification aborted: $($_.Exception.Message)"
+    Write-Host "[RED] webgl bundle verification aborted: $($_.Exception.Message) @line $($_.InvocationInfo.ScriptLineNumber)"
     Exit-With 1
 }
 $workspaceRoot = Split-Path -Parent $PSScriptRoot
@@ -126,7 +129,7 @@ $server = Start-Process -FilePath $node.Source `
     -RedirectStandardError (Join-Path $logRoot "bundle-serve-$stamp.log.err")
 Start-Sleep -Milliseconds 1200
 
-$url = "http://127.0.0.1:$Port/index.html"
+$url = "http://127.0.0.1:$Port/index.html" + $(if ($Drive) { "?p2-drive=auto" } else { "" })
 $domPath = Join-Path $logRoot "bundle-dom-$stamp.html"
 $errPath = Join-Path $logRoot "bundle-dom-$stamp.err"
 
@@ -136,7 +139,7 @@ function Invoke-HeadlessDom([string]$HeadlessFlag) {
         "--disable-gpu-sandbox",
         "--no-sandbox",
         "--disable-extensions",
-        "--virtual-time-budget=15000",
+        "--virtual-time-budget=120000",
         "--dump-dom",
         $url
     )
@@ -149,9 +152,9 @@ function Invoke-HeadlessDom([string]$HeadlessFlag) {
     if (Test-Path -LiteralPath $domPath) { return Get-Content -LiteralPath $domPath -Raw } else { return "" }
 }
 
-$dom = Invoke-HeadlessDom "--headless=new"
+$dom = Invoke-HeadlessDom "--headless"
 if (-not $dom -or $dom -notmatch "data-p2-boot") {
-    $dom = Invoke-HeadlessDom "--headless"
+    $dom = Invoke-HeadlessDom "--headless=new"
 }
 Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
 
@@ -180,6 +183,10 @@ $uiElements = if ($dom -match 'data-p2-ui-elements="(\d+)"') { [int]$Matches[1] 
 # `scripts/wechat-minigame-harness.js --drive-new-game ...` 里——两个 web 平台共用同一份
 # `web-runtime.js`，字段含义完全一致，所以这里读到的世界状态可以直接对照它。
 $world = if ($dom -match 'data-p2-world="([^"]*)"') { $Matches[1] } else { "" }
+# P0-①：`?p2-drive=auto` 的剧本结果。`done` = 确认 → 进玩法地图 → 位移非零全部发生；
+# `failed` 时 detail 给出卡在哪一步（场景没切换 / 没有玩家位置 / 位移为 0）。
+$driveState = if ($dom -match 'data-p2-drive="([^"]*)"') { $Matches[1] } else { "absent" }
+$driveStateDetail = if ($dom -match 'data-p2-drive-detail="([^"]*)"') { $Matches[1] } else { "" }
 
 $summary = [ordered]@{
     task           = "M31"
@@ -195,6 +202,8 @@ $summary = [ordered]@{
     drawnSamples   = $drawnRaw
     uiElements     = $uiElements
     world          = $world
+    drive          = $driveState
+    driveDetail    = $driveStateDetail
     domDump        = $domPath
     log            = $logPath
 }
@@ -204,11 +213,20 @@ Write-Log "boot=$boot missing_host_api=$($missingNames.Count) detail=$detail" $(
 Write-Log "status text: $statusText"
 Write-Log "drawn samples: $(if ($null -eq $drawnRaw) { 'unknown' } else { $drawnRaw }) ui elements: $(if ($null -eq $uiElements) { 'unknown' } else { $uiElements })"
 Write-Log "world: $(if ([string]::IsNullOrWhiteSpace($world)) { '(未自报)' } else { $world })"
+if ($Drive) {
+    Write-Log "drive: $driveState detail: $driveStateDetail" $(if ($driveState -eq "done") { "Green" } else { "Yellow" })
+}
 Write-Log "dom: $domPath"
 
 if ($drawnRaw -eq 0) {
     # 启动成功但没有画面：这正是“页面能跑却黑屏”的典型症状，必须显式失败。
     Write-Log "webgl_bundle_blank boot=$boot detail=canvas has no painted pixels" Red
+    Exit-With 1
+}
+
+if ($Drive -and $driveState -ne "done") {
+    # P0-①：请求了“完整剧本”却没跑完——无论 boot 是否 ok，都是验收失败。
+    Write-Log "webgl_bundle_drive_failed boot=$boot drive=$driveState detail=$driveStateDetail world=$world" Red
     Exit-With 1
 }
 
