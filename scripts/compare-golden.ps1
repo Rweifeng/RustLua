@@ -4,7 +4,7 @@ param(
     [Parameter(Mandatory = $true)][string]$Current,
     [Parameter(Mandatory = $true)][string]$Previous,
     # 允许不同的**叶子键**（正则，匹配完整路径）。默认只放行"计时与运行噪声"：
-    # 时间是机器/负载相关的量（baselines/README.md 已裁定跨机不可比），分配**计数**在同一份
+    # 时间是机器/负载相关的量（artifacts/baselines/README.md 已裁定跨机不可比），分配**计数**在同一份
     # 二进制上重跑也会抖（相机拆分批 6 实测 24570/24572/24575）；分配**峰值字节**不在此列，
     # 它是 docs/54 §7 的红线，必须逐值相同，由 compare-baseline.ps1 -GeometryOnly 另判。
     [string[]]$IgnoreKeyPattern = @(

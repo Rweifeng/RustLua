@@ -23,8 +23,7 @@ Rust 写的 2D/3D 游戏引擎 + Lua 玩法脚本运行时，配套一个可视�
 | `scripts/` | 质量门与发布脚本：`verify.ps1`（总门）、`check-docs.ps1`（文档门）、`package.ps1`（发布）、`package-engine.ps1`（绿色版）、`test-bundle.ps1`（本地试玩产物）等 |
 | `tasks/` | 任务生命周期：`plan/`（WP 工作包与 game_jhyt 执行台账）、`done/`（已归档 134 份） |
 | `docs/` | 引擎能力、技术决策、质量门与发布契约（索引见 [docs/README.md](docs/README.md)） |
-| `baselines/` | 随仓库提交的性能基线快照，供 `verify.ps1 -Benchmarks` 做"这一次 vs 上一次"的对比 |
-| `artifacts/` | 生成物：发布包、基线报告（`artifacts/baselines/`）、质量门日志（`artifacts/logs/`），已被 `.gitignore` 忽略 |
+| `artifacts/` | 生成物：发布包、质量门日志（`artifacts/logs/`），已被 `.gitignore` 忽略；其中 `artifacts/baselines/` 为例外，随仓库提交性能基线快照，供 `verify.ps1 -Benchmarks` 做"这一次 vs 上一次"的对比 |
 
 ## 快速开始
 
