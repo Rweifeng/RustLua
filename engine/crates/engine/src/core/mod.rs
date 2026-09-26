@@ -77,14 +77,14 @@ pub mod property_path;
 pub mod scene_migration;
 pub use paths::fixture_games_dir;
 pub use paths::games_dir;
+/// P1-②：多级细节（LOD）——`LodGroup` 按相机距离选择 `MeshRenderer` 的网格。
+pub mod lod;
 /// GPU-friendly CPU mesh and material data for 3D rendering.
 pub mod mesh3d;
 /// 发布资源编解码（压缩 + 加密）。
 pub mod pack;
 /// 确定性数据并行执行器（纯分块任务，可回滚为串行）。
 pub mod par;
-/// 渲染级 2D 空间索引（P1-①）：uniform grid 视口预筛，省收集阶段的 ECS 访问。
-pub mod spatial_index;
 /// Pooled particle bursts with spawn/update/recycle.
 pub mod particle;
 /// Runtime frame and update performance sampling.
@@ -128,12 +128,12 @@ pub mod scene_extract;
 pub mod scene_space;
 /// Deterministic stage-based system scheduling.
 pub mod scheduler;
-/// P1-②：多级细节（LOD）——`LodGroup` 按相机距离选择 `MeshRenderer` 的网格。
-pub mod lod;
 /// Lua VM and host API bridge.
 pub mod script;
 /// 工程级设置文件 `<project>/settings.toml`（音频分组音量等玩家偏好）。
 pub mod settings;
+/// 渲染级 2D 空间索引（P1-①）：uniform grid 视口预筛，省收集阶段的 ECS 访问。
+pub mod spatial_index;
 /// WP2：统一的局部/世界变换与父先序传播。
 pub mod spatial_transform;
 /// CPU-side 2D Sprite geometry and UV generation.

@@ -9,7 +9,7 @@
 |---|---|---|
 | ① 统一 Transform 与 XY 便利 API | 已做 | WP2 的 `Local/GlobalTransform` + Lua 统一 `transform` 表（[WP9](WP9-编辑器Lua迁移收口.md)） |
 | ② Camera2D 正交控制器 | 已做 | `core/camera2d_controller.rs`：follow/dead-zone/帧率无关平滑/确定性抖动；9 个测试 |
-| ③ Sprite pivot/nine-slice/区域/flip/颜色/层/排序键 | **大部分已做** | pivot 早已有、flip 已补（docs/08）、层与 order 已有；**nine_slice 只对 UI Image 有，世界 Sprite 没有**（待办） |
+| ③ Sprite pivot/nine-slice/区域/flip/颜色/层/排序键 | **已做** | pivot 早已有、flip 已补（docs/08）、层与 order 已有；**nine_slice 已补（P2-②b，2026-09）**——`Sprite`/`SpriteComponent` 增加 `nine_slice`（组件串 `nine_slice=l,r,t,b`、校验 l+r/t+b≤1），`quad_sliced_with_terms`/`quad_sliced_world` 产出 3×3 九 quad，`SpriteBatch` 三条构建路径混有九宫格项时整体降级串行（普通精灵仍并行、输出逐字节不变）；schema 注册后由通用字段编辑器接管；引擎 lib 880 测试全绿（876 基线 + 4 个九宫格测试） |
 | ④ Tilemap chunk dirty / 可见 chunk 提取 | **部分已做** | 可见瓦片剔除已做（docs/53 §3.9，−17%/−71%）；**chunk 级脏重建未做**（见下） |
 | ⑤ 粒子 SoA/池化/曲线 | 部分已做 | 曲线已补（尺寸/颜色/自转/重力/阻力）；SoA 未做——docs/40 §8 的"1 万粒子 <4 ms"实测 **1.88 ms 已达标**，缺动力 |
 | ⑥ 屏幕 UI 与世界文字分离 | 已做 | `WorldText`（docs/12 §世界文字），走同一字形管线 |
@@ -32,10 +32,10 @@
 
 量尺已在门里（`wp0-v4` 的 `tilemap_edit_stairs`），做之前先看数字。
 
-## 待办：世界 Sprite 的 nine_slice（③ 的缺口）
+## ~~待办：世界 Sprite 的 nine_slice~~（P2-②b 已做，2026-09）
 
-UI `Image` 已有九宫格，世界 `Sprite` 没有。需要先确认真实需求（当前项目里没有用例），
-否则属于"为了对齐清单而加功能"。
+原缺口：UI `Image` 已有九宫格，世界 `Sprite` 没有。P2-②b 以编辑器 2D 验收（docs/40 编辑器 2D 行
+「锚点/九宫格/碰撞 overlay」）作为真实用例补齐：见上表 ③ 的证据行。
 
 ## 待裁定：⑨ World2D / Legacy2DOverlay / ScreenUI 三种显式层
 

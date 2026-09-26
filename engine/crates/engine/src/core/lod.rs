@@ -60,7 +60,10 @@ impl core::fmt::Display for LodGroupError {
                 write!(f, "unsupported LodGroup mesh extension: {value}")
             }
             Self::InvalidThreshold(value) => {
-                write!(f, "invalid LodGroup lod threshold: {value} (expected `distance|mesh` with a positive finite distance)")
+                write!(
+                    f,
+                    "invalid LodGroup lod threshold: {value} (expected `distance|mesh` with a positive finite distance)"
+                )
             }
             Self::ThresholdNotIncreasing { previous, current } => {
                 write!(
@@ -85,22 +88,21 @@ impl LodGroup {
                 .ok_or_else(|| LodGroupError::MalformedField(field.to_owned()))?;
             match key {
                 "mesh" => {
-                    mesh3d::validate_mesh_path(raw)
-                        .map_err(|error| match error {
-                            mesh3d::MeshRendererError::InvalidMeshPath(value) => {
-                                LodGroupError::InvalidMeshPath(value)
-                            }
-                            mesh3d::MeshRendererError::UnsupportedMeshExtension(value) => {
-                                LodGroupError::UnsupportedMeshExtension(value)
-                            }
-                            _ => LodGroupError::MissingMesh,
-                        })?;
+                    mesh3d::validate_mesh_path(raw).map_err(|error| match error {
+                        mesh3d::MeshRendererError::InvalidMeshPath(value) => {
+                            LodGroupError::InvalidMeshPath(value)
+                        }
+                        mesh3d::MeshRendererError::UnsupportedMeshExtension(value) => {
+                            LodGroupError::UnsupportedMeshExtension(value)
+                        }
+                        _ => LodGroupError::MissingMesh,
+                    })?;
                     mesh = Some(raw.to_owned());
                 }
                 "lod" => {
-                    let (threshold, path) = raw.split_once('|').ok_or_else(|| {
-                        LodGroupError::InvalidThreshold(raw.to_owned())
-                    })?;
+                    let (threshold, path) = raw
+                        .split_once('|')
+                        .ok_or_else(|| LodGroupError::InvalidThreshold(raw.to_owned()))?;
                     let threshold: f32 = threshold
                         .trim()
                         .parse()
@@ -204,8 +206,7 @@ mod tests {
     /// 选择语义：距离 < 阈值 → 基础级；>= 阈值 → 该级；多个阈值满足时取最后一个。
     #[test]
     fn select_picks_the_last_threshold_at_or_below_distance() {
-        let group =
-            LodGroup::from_component_str("mesh=a.glb;lod=8|b.glb;lod=32|c.glb").unwrap();
+        let group = LodGroup::from_component_str("mesh=a.glb;lod=8|b.glb;lod=32|c.glb").unwrap();
         assert_eq!(group.select(0.0), "a.glb");
         assert_eq!(group.select(7.999), "a.glb");
         assert_eq!(group.select(8.0), "b.glb");
@@ -264,8 +265,7 @@ mod tests {
     /// 地面哨兵网格（`__ground_plane__`）在 LOD 里同样放行（与 MeshRenderer 一致）。
     #[test]
     fn ground_plane_sentinel_is_allowed() {
-        let group =
-            LodGroup::from_component_str("mesh=__ground_plane__;lod=8|b.glb").unwrap();
+        let group = LodGroup::from_component_str("mesh=__ground_plane__;lod=8|b.glb").unwrap();
         assert_eq!(group.levels[0].mesh, "__ground_plane__");
     }
 }

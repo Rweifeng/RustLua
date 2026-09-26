@@ -41,8 +41,7 @@ impl Circle {
         scale: crate::core::transform::Vec2,
         size: crate::core::transform::Vec2,
     ) -> Self {
-        let radius = 0.5
-            * ((size.x * scale.x).powi(2) + (size.y * scale.y).powi(2)).sqrt();
+        let radius = 0.5 * ((size.x * scale.x).powi(2) + (size.y * scale.y).powi(2)).sqrt();
         Self {
             center_x: position.x,
             center_y: position.y,
@@ -130,10 +129,7 @@ impl SpatialGrid2D {
             let (max_x, max_y) = self.cell_of(bounds.max_x, bounds.max_y);
             for cell_x in min_x..=max_x {
                 for cell_y in min_y..=max_y {
-                    self.cells
-                        .entry((cell_x, cell_y))
-                        .or_default()
-                        .push(entity);
+                    self.cells.entry((cell_x, cell_y)).or_default().push(entity);
                 }
             }
             self.count += 1;
@@ -154,11 +150,7 @@ impl SpatialGrid2D {
         let (max_x, max_y) = self.cell_of(bounds.max_x, bounds.max_y);
         let mut seen: Vec<EntityId> = Vec::new();
         for (&(cell_x, cell_y), entities) in &self.cells {
-            if cell_x >= min_x
-                && cell_x <= max_x
-                && cell_y >= min_y
-                && cell_y <= max_y
-            {
+            if cell_x >= min_x && cell_x <= max_x && cell_y >= min_y && cell_y <= max_y {
                 seen.extend_from_slice(entities);
             }
         }
@@ -215,7 +207,9 @@ mod tests {
     }
 
     fn entities(ids: &[u64]) -> impl Iterator<Item = (EntityId, Circle)> + '_ {
-        ids.iter().copied().map(|id| (entity(id), circle(0.0, 0.0, 0.5)))
+        ids.iter()
+            .copied()
+            .map(|id| (entity(id), circle(0.0, 0.0, 0.5)))
     }
 
     #[test]

@@ -473,8 +473,7 @@ fn step_particle(particle: &mut Particle, delta_seconds: f32) {
     particle.velocity = particle.velocity + particle.gravity * delta_seconds;
     if particle.drag > 0.0 {
         // 每秒衰减 `drag` 比例；单步时长超过 1/drag 时钳到 0（不反转速度）。
-        particle.velocity =
-            particle.velocity * (1.0 - particle.drag * delta_seconds).max(0.0);
+        particle.velocity = particle.velocity * (1.0 - particle.drag * delta_seconds).max(0.0);
     }
     particle.position = particle.position + particle.velocity * delta_seconds;
     particle.rotation += particle.rotation_speed * delta_seconds;

@@ -455,8 +455,8 @@ impl EditorApp {
         // 竖向按"工具条下沿以下还剩多少"来定：矮窗口不硬塞 340（塞不下时整窗会被 egui
         // 顶回屏幕内，那正是"又压回工具条"的路径）。
         let available_outer = (anchor.bottom() - 12.0) - floor;
-        let inner_height = (available_outer - WINDOW_CHROME_HEIGHT)
-            .clamp(MIN_PANEL_HEIGHT, DEFAULT_PANEL_HEIGHT);
+        let inner_height =
+            (available_outer - WINDOW_CHROME_HEIGHT).clamp(MIN_PANEL_HEIGHT, DEFAULT_PANEL_HEIGHT);
         let default_size = egui::vec2(DEFAULT_PANEL_WIDTH, inner_height);
         let default_pos = egui::pos2(
             (anchor.right() - default_size.x - 12.0).max(anchor.left() + 8.0),

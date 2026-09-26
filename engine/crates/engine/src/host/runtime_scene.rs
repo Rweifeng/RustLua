@@ -2400,9 +2400,12 @@ impl RuntimeScene {
         // P1-②：LOD 距离用相机位置。优先级：编辑器覆盖相机 → 本帧已定帧相机。
         // 刻意不在这里兜底 `active_camera3d()`：那是一次解析（有账本断言钉住解析次数）；
         // 没有覆盖/定帧时 LOD 退基础级（`renderer.mesh`），行为与未启用 LOD 逐字节相同。
-        let lod_camera_position: Option<Vec3> = camera_override
-            .map(|camera| camera.position)
-            .or_else(|| self.frame_view_3d.as_ref().map(|frame| frame.camera.position));
+        let lod_camera_position: Option<Vec3> =
+            camera_override.map(|camera| camera.position).or_else(|| {
+                self.frame_view_3d
+                    .as_ref()
+                    .map(|frame| frame.camera.position)
+            });
         let drawables = self.script.with_world(|world| {
             let mut drawables = Vec::new();
             // WP2：与 2D 精灵同一条约定——开关每帧选定一次遍历用的组件（开启继承时是
@@ -2787,23 +2790,23 @@ impl RuntimeScene {
             // 预筛不生效；`sprite_culling` 关闭时同样不预筛（全收，像素不变）。
             let candidates: Option<std::collections::HashSet<EntityId>> =
                 if self.spatial_index && self.sprite_culling && !world_view_is_3d {
-                    let fingerprint =
-                        script.with_world(crate::core::hierarchy::local_fingerprint);
+                    let fingerprint = script.with_world(crate::core::hierarchy::local_fingerprint);
                     if self.spatial_index_fingerprint != Some(fingerprint) {
                         // 重建：与提取同一对组件族（inherit 分支同源），只取位置/缩放/尺寸；
                         // for_each2 按 EntityId 升序，rebuild 要求升序输入。
                         let cell_size = self.spatial_index_cell_size;
                         let grid = script.with_world(|world| {
-                            let mut items: Vec<
-                                (EntityId, crate::core::spatial_index::Circle),
-                            > = Vec::new();
+                            let mut items: Vec<(EntityId, crate::core::spatial_index::Circle)> =
+                                Vec::new();
                             if inherit {
                                 world.for_each2::<GlobalTransform, Sprite>(|id, global, sprite| {
                                     if let Some(plane) = global.plane() {
                                         items.push((
                                             id,
                                             crate::core::spatial_index::Circle::from_sprite(
-                                                plane.position, plane.scale, sprite.size,
+                                                plane.position,
+                                                plane.scale,
+                                                sprite.size,
                                             ),
                                         ));
                                     }
@@ -2813,7 +2816,9 @@ impl RuntimeScene {
                                     items.push((
                                         id,
                                         crate::core::spatial_index::Circle::from_sprite(
-                                            transform.position, transform.scale, sprite.size,
+                                            transform.position,
+                                            transform.scale,
+                                            sprite.size,
                                         ),
                                     ));
                                 });

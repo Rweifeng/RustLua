@@ -125,7 +125,7 @@ impl AsyncLoader {
                 // 每 worker 一条独立请求通道（mpsc 是单消费者，不能共享 receiver）。
                 let (job_tx, job_rx) = mpsc::channel::<Job>();
                 let result_tx = result_tx.clone();
-                match thread::Builder::new()
+                if thread::Builder::new()
                     .name("rustlua-asset".to_string())
                     .spawn(move || {
                         while let Ok(job) = job_rx.recv() {
@@ -134,11 +134,12 @@ impl AsyncLoader {
                                 break;
                             }
                         }
-                    }) {
-                    Ok(_) => job_senders.push(job_tx),
-                    // 线程起不来就少一个 worker；全起不来时请求走同步完成（降级即同步）。
-                    Err(_) => {}
+                    })
+                    .is_ok()
+                {
+                    job_senders.push(job_tx);
                 }
+                // 线程起不来就少一个 worker；全起不来时请求走同步完成（降级即同步）。
             }
         }
         let workers = job_senders.len();
@@ -465,7 +466,7 @@ mod tests {
         let png = sample_png("batch");
         let mut loader = AsyncLoader::new(LoadMode::Async);
         for index in 0..16 {
-            loader.request_texture(&format!("t{index}.png"), &png);
+            loader.request_texture(format!("t{index}.png"), &png);
         }
         let mut received = std::collections::HashSet::new();
         for _ in 0..500 {
