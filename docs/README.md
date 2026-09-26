@@ -12,13 +12,19 @@
 - [项目章程](00-project-charter.md)：项目目标、范围和协作规则；
 - [技术决策](02-technical-decisions.md)：关键技术选型和变更记录。
 
-## 能力文档
+## 一、入门与使用
+
+- [使用手册](22-使用手册.md)：环境、构建、运行 Demo、Lua 入门
+- [工程目录功能说明](23-工程目录功能说明.md)：每个主要目录和源码文件的职责
+- [编辑器使用指南](25-editor-guide.md)：面板、工具栏、Play/Stop、导入/发布、崩溃恢复
+
+## 二、引擎能力参考
 
 - [坐标和颜色约定](06-coordinate-and-color-conventions.md)
 - [纹理加载和上传](07-texture-loading-and-upload.md)
 - [Sprite](08-sprite.md)
 - [SpriteBatch](09-sprite-batch.md)
-- [Camera2D](10-camera2d.md)
+- [Camera2D](10-camera2d.md)：相机概念与数学（运行时已统一为单一 `Camera` 组件）
 - [图集](11-texture-atlas.md)
 - [文本](12-text.md)
 - [2D Demo](13-2d-demo.md)
@@ -26,28 +32,30 @@
 - [导入缓存](15-import-cache.md)
 - [场景格式](16-scene-format.md)
 - [预制体](17-prefab.md)
-- [Lua API](18-lua-api.md)
+- [Lua API](18-lua-api.md)：Lua 侧全部接口参考
 - [Lua 热重载](19-lua-hot-reload.md)
 - [Lua 脚本调试](20-lua-script-debug.md)
 - [场景脚本 Demo](21-scene-script-demo.md)
 - [3D 渲染与能力参考](24-3d-rendering.md)
 
-## 编辑器与发布
+## 三、编辑器与工具链
 
-- [编辑器使用指南](25-editor-guide.md)：面板、工具栏、Play/Stop、导入/发布、崩溃恢复
 - [资源管线与发布（assetc）](26-assetc-and-publish.md)：`project.toml`、CLI、打包格式、存档格式
-- [编辑器 UI 优化方案](27-editor-ui-optimization-plan.md) / [执行任务](28-editor-ui-optimization-execution-tasks.md) / [E01 状态基线](29-editor-e01-state-baseline.md) / [层级面板优化](31-hierarchy-panel-optimization.md)
-- [兼容性设计](30-compatibility-designs.md)
-- [使用手册](22-使用手册.md)：环境、构建、运行 Demo、Lua 入门
-- [Demos 总览](demos/README.md)
+- [编辑器 UI 优化方案](27-editor-ui-optimization-plan.md)
+- [编辑器 UI 优化执行任务](28-editor-ui-optimization-execution-tasks.md)
+- [E01 状态基线](29-editor-e01-state-baseline.md)
+- [兼容性设计](30-compatibility-designs.md)：兼容边界与新旧字段转换
+- [层级面板优化](31-hierarchy-panel-optimization.md)
 
-## 质量、平台与输入
+## 四、质量门、输入与游戏回归
 
-- [WebGL 浏览器平台验收](32-webgl-浏览器平台验收.md)：浏览器契约检查页、无头验收脚本、产物层启动验收（`verify-webgl-bundle.ps1`）与已知限制
 - [手柄设备接入与输入契约](33-手柄设备接入与输入契约.md)：按钮/轴索引契约、XInput 后端、Fake 后端与死区
 - [质量门与发布清单](34-质量门与发布清单.md)：Alpha/Beta/RC 门槛、缺陷分级、性能基线与发布清单；文档一致性门 `scripts/check-docs.ps1`（编号/索引/链接/历史路径/编码）
 - [输入动作映射与设置持久化](35-输入动作映射与设置持久化.md)：`ActionMap`、Lua `input.action*`、`[input]` 设置段
 - [游戏级回归与性能基线](36-游戏级回归与性能基线.md)：核心剧本、帧率确定性、长跑/读档与发布目录隔离自测
+
+## 五、引擎重构与 2D/3D 统一
+
 - [引擎与游戏工程复核及优化完善计划](37-引擎与游戏工程复核及优化完善计划.md)：复核发现的缺口、执行顺序与各阶段完成状态
 - [统一 2D/3D 核心架构实施计划](38-统一2D3D核心架构实施计划.md)：统一运行时的架构目标、迁移路径与阶段验收
 - [引擎核心先进性与性能等级复核](39-引擎核心先进性与性能等级复核.md)：按模块给出的能力等级、与成熟引擎的差距和证据要求
@@ -59,15 +67,26 @@
 - [WP1/WP2 设计与最小原型](45-WP1-WP2设计与原型.md)：Typed Scene 与 Local/Global Transform 原型
 - [WP0 正式关闭报告](46-WP0关闭报告.md)：四批交付矩阵、退出判定与已知限制
 - [WP0 增量：场景装载、typed 编译与运行时帧分配](53-WP0增量场景帧基准与每帧分配.md)：`wp0-v4` 报告、每帧分配量尺（WP1-5/WP3/WP6 的前后对照基线）与质量门接入
-- [发布包与用户数据目录](50-发布包与用户数据目录.md)：发布包/开发工程两套数据根、玩家设置播种与升级、验收与 FAQ
-- [平台插件适配](51-平台插件适配.md)：`plugins/` 下各平台（微信小游戏 / WebGL）的运行时文件与发布脚本的取用关系
-- [微信小游戏分包发布](52-微信小游戏分包发布.md)：主包 + 单分包（默认形态）的切分机制、运行时路由、体积账与验收
 - [2D/3D 统一优化方案与现状对比](54-2D3D统一优化方案与现状对比.md)：统一原则、当前事实盘点、与彻底统一目标的差距表与实施优先级
+
+## 六、编辑器重构（商业引擎对标）
+
 - [编辑器商业引擎对标重构计划](55-编辑器商业引擎对标重构计划.md)：结合 Unity、Unreal 与当前实现的模块重构、UI/UX、性能预算、阶段路线和验收门
 - [编辑器重构阶段 0-1 基线与验收](56-编辑器重构阶段0-1基线与验收.md)：性能 fixture、可重复基线报告、已落地服务边界与剩余缺口
 - [编辑器重构进度与续跑交接](57-编辑器重构进度与续跑交接.md)：一句话状态、验证命令组、下一步顺序、未提交改动如何带走、踩过的坑
 - [编辑器重构阶段 0-3 收口与验收](58-编辑器重构阶段0-3收口与验收.md)：四个阶段的逐条验收结论、GUI smoke 与真实窗口 DPI/Play-Stop/soak 证据、质量门对照与诚实边界清单
+
+## 七、平台与发布
+
+- [WebGL 浏览器平台验收](32-webgl-浏览器平台验收.md)：浏览器契约检查页、无头验收脚本、产物层启动验收（`verify-webgl-bundle.ps1`）与已知限制
+- [发布包与用户数据目录](50-发布包与用户数据目录.md)：发布包/开发工程两套数据根、玩家设置播种与升级、验收与 FAQ
+- [平台插件适配](51-平台插件适配.md)：`plugins/` 下各平台（微信小游戏 / WebGL）的运行时文件与发布脚本的取用关系
+- [微信小游戏分包发布](52-微信小游戏分包发布.md)：主包 + 单分包（默认形态）的切分机制、运行时路由、体积账与验收
+
+## 八、示例工程
+
 - [示例工程 game_api 与 API 覆盖率门](59-示例工程game_api与API覆盖率门.md)：按当前 API 重建演示工程、场景↔模块映射、11 条自动化门、共享取景框与渲染顺序约束
+- [Demos 总览](demos/README.md)：两个示例工程（game_api / game_jhyt）的定位、入口与 game_api 演示地图
 
 ## 第三方素材
 
@@ -87,7 +106,7 @@
 
 | 命名空间 | 目录 | 职责 | 区段 |
 |---|---|---|---|
-| 引擎文档 | `docs/NN-*.md` | 引擎能力、技术决策、质量门与发布 | `00`–`50`（本目录） |
+| 引擎文档 | `docs/NN-*.md` | 引擎能力、技术决策、质量门与发布 | `00`–`59`（本目录） |
 | 游戏文档 | `examples/<project>/docs/NN-*.md` | 单个游戏项目的内容设计、美术、数值、交付记录 | `29`–`50`（`game_jhyt`） |
 
 规则：① 同一目录内编号唯一（`scripts/check-docs.ps1` 会在质量门里强制）；
