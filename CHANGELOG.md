@@ -5,6 +5,25 @@
 度量数字（µs、分配字节、测试计数）、逐条证据、golden 断言与实施细节留在能力文档与任务文件里，不在本文重复：
 重构过程见 [docs/53](docs/53-WP0增量场景帧基准与每帧分配.md) 与 [docs/40](docs/40-引擎全面重构计划.md)，已完成任务的验收记录见 `tasks/done/`。
 
+## Unreleased — WP4 ④ Tilemap chunk 级脏重建（提前实现：触发条件未出现）
+
+主题：docs/40 §3 WP4 ④ 的最后一块——Tilemap 编辑代价从 O(总格数) 降为 O(块数)。
+文档口径触发条件为"出现 1000×1000 量级真实地图"（1000×1000 整层重建十几毫秒、远超 <4ms 目标），
+核查 game_jhyt 最大真实地图仅 40×22 → 条件未触发，按指示为未来大图铺路提前实现（WP4 待办段与
+docs/53 §3.9 已如实登记）。
+
+- **实现**（`engine/crates/engine/src/host/runtime_scene.rs`）：缓存结构由整层 sprite 列表改为
+  32×32 格块行主序缓存（`TileChunk`）；收集未命中时逐块比对 `tiles` 行段、只重建
+  变化的块（`rebuild_dirty_chunks`）；append 两处（overlay/world）按块行主序消费，
+  顶点顺序与块序绑定、像素不变。
+- **语义边界**（有单测）：`solid`/`meta` 变化与 `position`/`rotation` 变化零重建
+  （不参与 sprite 生成；`center_offset` 相对层原点）；`scale` 变化全块重建
+  （`center_offset` 预乘 scale）。
+- **验证**：单测 `tilemap_chunk_tests` 7 项全绿（含 1000×1000 改一格只重建 1 块
+  `million_cell_edit_is_chunk_bounded`）；引擎 lib 887 测试全绿；wp0_2d_golden
+  `tilemap_culling.pixels_identical=true`（剔除开/关像素逐字节相同）；wp0-v4 场景帧契约与
+  tilemap_stress 100×100 量尺通过。
+
 ## Unreleased — WP10 Phase 1：宿主 API 编译进 wasm（批次 A，缺失 17→13）
 
 主题：docs/32 §4 backlog 4-24 方案①落地第一步——17 个缺失宿主全局开始以**纯 Rust 实现编译进

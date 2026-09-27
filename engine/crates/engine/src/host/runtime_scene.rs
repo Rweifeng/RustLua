@@ -308,11 +308,36 @@ impl FrameScheduleReport {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct CachedTileSprite {
     center_offset: Vec2,
     uv_min: Vec2,
     uv_max: Vec2,
+}
+
+/// 分量级相等：测试里用 ssert_eq! 对比 chunk 化展平与整层平铺参考
+/// （Vec2 未实现 PartialEq，此处按分量逐一比较——数值由同一公式算出，精确相等）。
+impl PartialEq for CachedTileSprite {
+    fn eq(&self, other: &Self) -> bool {
+        self.center_offset.x == other.center_offset.x
+            && self.center_offset.y == other.center_offset.y
+            && self.uv_min.x == other.uv_min.x
+            && self.uv_min.y == other.uv_min.y
+            && self.uv_max.x == other.uv_max.x
+            && self.uv_max.y == other.uv_max.y
+    }
+}
+
+/// WP4 ④ chunk 级脏重建：每层按固定块（32×32 格）切分，编辑只重建变化的块。
+/// `ox/oy` 是块左上角的**格坐标**；边缘块宽/高可能不满 [`TILE_CHUNK_SIZE`]。
+/// 块内 `sprites` 按块内行主序（与整层行主序拼接后的顺序一致——像素等价由此兜住）。
+#[derive(Clone, Debug)]
+struct TileChunk {
+    ox: usize,
+    oy: usize,
+    w: usize,
+    h: usize,
+    sprites: Vec<CachedTileSprite>,
 }
 
 /// 文本渲染后端的项目级策略。
@@ -339,8 +364,12 @@ impl TextRenderMode {
 
 struct CachedTilemapLayer {
     transform: Transform,
+    /// 比对基准：命中判断与逐块脏比对都拿它跟当前 world 里的 `Tilemap` 比较。
     tilemap: Tilemap,
-    sprites: Vec<CachedTileSprite>,
+    /// 行主序块排列的瓦片块缓存。
+    chunks: Vec<TileChunk>,
+    /// 全层非空格总数（append 前置判断与顶点容量预留用，避免每帧重算）。
+    total: usize,
 }
 
 impl RuntimeScene {
@@ -4441,13 +4470,30 @@ impl RuntimeScene {
                         texture_lookup,
                         texture_handles,
                     );
-                    let layer = match previous.remove(&entity) {
+                    let mut layer = match previous.remove(&entity) {
                         Some(layer)
-                            if layer.transform == *transform && layer.tilemap == *tilemap =>
+                            if layer.tilemap == *tilemap
+                                && layer.transform.scale == transform.scale =>
                         {
+                            // 命中：瓦片与缩放都没变。`center_offset` 相对层原点，
+                            // 与 position/rotation 无关——只同步 transform，不重建任何块。
                             layer
                         }
-                        _ => match build_cached_tilemap_layer(*transform, tilemap.clone()) {
+                        Some(mut layer) => {
+                            // 未命中：逐块比对 tiles 切片，只重建变化的块（scale 变化时全建）。
+                            let rebuilt =
+                                rebuild_dirty_chunks(&mut layer, tilemap, transform.scale);
+                            if rebuilt > 0 {
+                                tracing::debug!(
+                                    target: "scene",
+                                    "tilemap chunk rebuild: {} chunk(s)",
+                                    rebuilt
+                                );
+                            }
+                            layer.tilemap = tilemap.clone();
+                            layer
+                        }
+                        None => match build_all_chunks(*transform, tilemap.clone()) {
                             Ok(layer) => layer,
                             Err(error) => {
                                 failure = Some(error);
@@ -4455,10 +4501,11 @@ impl RuntimeScene {
                             }
                         },
                     };
+                    layer.transform = *transform;
                     // 预留本层顶点容量：`Vec::new()` 一路翻倍到 6 万顶点会额外搬上兆字节
                     // （`wp0-v4` tilemap 阶梯实测的每帧分配里，增长churn 占约 1.9 MB）。
                     if world_pass {
-                        world_vertices.reserve(layer.sprites.len() * 6);
+                        world_vertices.reserve(layer.total * 6);
                         world_draws.reserve(1);
                         append_tilemap_layer_world(
                             world_vertices,
@@ -4468,7 +4515,7 @@ impl RuntimeScene {
                             cull_bounds,
                         );
                     } else {
-                        vertices.reserve(layer.sprites.len() * 6);
+                        vertices.reserve(layer.total * 6);
                         overlay_draws.reserve(1);
                         append_tilemap_layer(
                             vertices,
@@ -4663,22 +4710,31 @@ fn build_ui_scene_nodes(scene: &Scene, honor_editor_hidden: bool) -> BTreeMap<u6
     nodes
 }
 
-fn build_cached_tilemap_layer(
-    transform: Transform,
-    tilemap: Tilemap,
-) -> Result<CachedTilemapLayer, String> {
+/// WP4 ④ chunk 级脏重建：瓦片块边长（格数）。块行主序拼接 == 原整层行主序。
+const TILE_CHUNK_SIZE: usize = 32;
+
+/// 构建一个块（`ox/oy` = 块左上角格坐标，`w/h` = 实际块尺寸，边缘块可能不满）。
+/// 与整层平铺构建的唯一区别是范围限定在块内；`center_offset` 语义不变
+/// （相对层原点、预乘 `scale`——因此 `scale` 变化必须整层重建，见 [`rebuild_dirty_chunks`]）。
+fn build_chunk(
+    tilemap: &Tilemap,
+    ox: usize,
+    oy: usize,
+    w: usize,
+    h: usize,
+    scale: Vec2,
+) -> TileChunk {
     let mut sprites = Vec::new();
-    for y in 0..tilemap.height {
-        for x in 0..tilemap.width {
-            let index = y * tilemap.width + x;
-            let cell = tilemap.tiles[index];
+    for y in oy..(oy + h) {
+        for x in ox..(ox + w) {
+            let cell = tilemap.tiles[y * tilemap.width + x];
             if cell == 0 {
                 continue;
             }
             let (uv_min, uv_max) = Tilemap::tile_uv(cell);
             let center_offset = Vec2::new(
-                (x as f32 + 0.5) * tilemap.tile_size.x * transform.scale.x,
-                (y as f32 + 0.5) * tilemap.tile_size.y * transform.scale.y,
+                (x as f32 + 0.5) * tilemap.tile_size.x * scale.x,
+                (y as f32 + 0.5) * tilemap.tile_size.y * scale.y,
             );
             sprites.push(CachedTileSprite {
                 center_offset,
@@ -4687,11 +4743,73 @@ fn build_cached_tilemap_layer(
             });
         }
     }
+    TileChunk {
+        ox,
+        oy,
+        w,
+        h,
+        sprites,
+    }
+}
+
+/// 全新建层：按 32×32 块行主序切分并逐块构建，累计 `total`。
+fn build_all_chunks(transform: Transform, tilemap: Tilemap) -> Result<CachedTilemapLayer, String> {
+    let scale = transform.scale;
+    let mut chunks = Vec::new();
+    let mut total = 0usize;
+    let mut oy = 0usize;
+    while oy < tilemap.height {
+        let h = (tilemap.height - oy).min(TILE_CHUNK_SIZE);
+        let mut ox = 0usize;
+        while ox < tilemap.width {
+            let w = (tilemap.width - ox).min(TILE_CHUNK_SIZE);
+            let chunk = build_chunk(&tilemap, ox, oy, w, h, scale);
+            total += chunk.sprites.len();
+            chunks.push(chunk);
+            ox += w;
+        }
+        oy += h;
+    }
     Ok(CachedTilemapLayer {
         transform,
         tilemap,
-        sprites,
+        chunks,
+        total,
     })
+}
+
+/// 逐块脏重建：只重建 `tiles` 切片变化的块；`scale` 变化时所有块都要重建
+/// （`center_offset` 预乘了 scale）。返回重建的块数。`solid`/`meta` 变化不触发
+/// 重建——它们不参与 sprite 生成，像素结果不变（由 2D golden 像素等价兜底）。
+fn rebuild_dirty_chunks(layer: &mut CachedTilemapLayer, tilemap: &Tilemap, scale: Vec2) -> usize {
+    let old = &layer.tilemap;
+    let mut rebuilt = 0usize;
+    let mut total = 0usize;
+    for chunk in &mut layer.chunks {
+        let scale_changed = layer.transform.scale != scale;
+        // 逐行段比较：row-major 的 	iles 里块区域**不是连续切片**（块宽 < 层宽时
+        // 跨行），按块内每行 [y*width+ox, y*width+ox+w) 分段比对才覆盖真实区域。
+        let mut tiles_changed = false;
+        for y in chunk.oy..(chunk.oy + chunk.h) {
+            if old.tiles[y * old.width + chunk.ox..y * old.width + chunk.ox + chunk.w]
+                != tilemap.tiles
+                    [y * tilemap.width + chunk.ox..y * tilemap.width + chunk.ox + chunk.w]
+            {
+                tiles_changed = true;
+                break;
+            }
+        }
+        if scale_changed || tiles_changed {
+            let rebuilt_chunk = build_chunk(tilemap, chunk.ox, chunk.oy, chunk.w, chunk.h, scale);
+            total += rebuilt_chunk.sprites.len();
+            *chunk = rebuilt_chunk;
+            rebuilt += 1;
+        } else {
+            total += chunk.sprites.len();
+        }
+    }
+    layer.total = total;
+    rebuilt
 }
 
 /// 把一层的瓦片顶点**直接以 NDC**追加进最终 overlay 缓冲（WP6 单趟化：不再先产出
@@ -4710,7 +4828,7 @@ fn append_tilemap_layer<V: OverlayVertexSink>(
     layer: &CachedTilemapLayer,
     cull: bool,
 ) {
-    if layer.sprites.is_empty() {
+    if layer.total == 0 {
         return;
     }
     let start = vertices.len();
@@ -4742,43 +4860,46 @@ fn append_tilemap_layer<V: OverlayVertexSink>(
     extent_y += 1.0;
     let viewport = camera.viewport();
     let (viewport_w, viewport_h) = (viewport.width, viewport.height);
-    for tile in &layer.sprites {
-        let center_world = Vec2::new(
-            layer.transform.position.x + tile.center_offset.x,
-            layer.transform.position.y + tile.center_offset.y,
-        );
-        let center = camera.world_to_screen(center_world);
-        if cull
-            && (center.x + extent_x < 0.0
-                || center.x - extent_x > viewport_w
-                || center.y + extent_y < 0.0
-                || center.y - extent_y > viewport_h)
-        {
-            continue;
+    // WP4 ④：块行主序 + 块内行主序 == 原整层行主序 → 顶点顺序逐字节不变。
+    for chunk in &layer.chunks {
+        for tile in &chunk.sprites {
+            let center_world = Vec2::new(
+                layer.transform.position.x + tile.center_offset.x,
+                layer.transform.position.y + tile.center_offset.y,
+            );
+            let center = camera.world_to_screen(center_world);
+            if cull
+                && (center.x + extent_x < 0.0
+                    || center.x - extent_x > viewport_w
+                    || center.y + extent_y < 0.0
+                    || center.y - extent_y > viewport_h)
+            {
+                continue;
+            }
+            let positions = screen_offsets.map(|offset| [center.x + offset.x, center.y + offset.y]);
+            let uv = [
+                [tile.uv_min.x, tile.uv_min.y],
+                [tile.uv_max.x, tile.uv_min.y],
+                [tile.uv_max.x, tile.uv_max.y],
+                [tile.uv_min.x, tile.uv_max.y],
+            ];
+            let tint = [1.0; 4];
+            let vertex = |corner: usize| {
+                V::from_ndc(
+                    ndc_from_screen(positions[corner], viewport),
+                    uv[corner],
+                    tint,
+                )
+            };
+            vertices.extend_from_slice(&[
+                vertex(0),
+                vertex(1),
+                vertex(2),
+                vertex(0),
+                vertex(2),
+                vertex(3),
+            ]);
         }
-        let positions = screen_offsets.map(|offset| [center.x + offset.x, center.y + offset.y]);
-        let uv = [
-            [tile.uv_min.x, tile.uv_min.y],
-            [tile.uv_max.x, tile.uv_min.y],
-            [tile.uv_max.x, tile.uv_max.y],
-            [tile.uv_min.x, tile.uv_max.y],
-        ];
-        let tint = [1.0; 4];
-        let vertex = |corner: usize| {
-            V::from_ndc(
-                ndc_from_screen(positions[corner], viewport),
-                uv[corner],
-                tint,
-            )
-        };
-        vertices.extend_from_slice(&[
-            vertex(0),
-            vertex(1),
-            vertex(2),
-            vertex(0),
-            vertex(2),
-            vertex(3),
-        ]);
     }
     let count = vertices.len() - start;
     if let Some(previous) = draws.last_mut()
@@ -4812,7 +4933,7 @@ fn append_tilemap_layer_world<V: WorldSpriteVertexSink>(
     layer: &CachedTilemapLayer,
     cull_bounds: Option<CameraBounds>,
 ) {
-    if layer.sprites.is_empty() {
+    if layer.total == 0 {
         return;
     }
     let start = vertices.len();
@@ -4835,42 +4956,45 @@ fn append_tilemap_layer_world<V: WorldSpriteVertexSink>(
     });
     // 保守剔除半径：外接圆半径（与旋转无关），因此旋转/负缩放都不会误剔。
     let radius = (half.x * half.x + half.y * half.y).sqrt() + 1.0;
-    for tile in &layer.sprites {
-        let center = Vec2::new(
-            layer.transform.position.x + tile.center_offset.x,
-            layer.transform.position.y + tile.center_offset.y,
-        );
-        if let Some(bounds) = cull_bounds
-            && (center.x + radius < bounds.min.x
-                || center.x - radius > bounds.max.x
-                || center.y + radius < bounds.min.y
-                || center.y - radius > bounds.max.y)
-        {
-            continue;
+    // WP4 ④：块行主序 + 块内行主序 == 原整层行主序 → 顶点顺序逐字节不变。
+    for chunk in &layer.chunks {
+        for tile in &chunk.sprites {
+            let center = Vec2::new(
+                layer.transform.position.x + tile.center_offset.x,
+                layer.transform.position.y + tile.center_offset.y,
+            );
+            if let Some(bounds) = cull_bounds
+                && (center.x + radius < bounds.min.x
+                    || center.x - radius > bounds.max.x
+                    || center.y + radius < bounds.min.y
+                    || center.y - radius > bounds.max.y)
+            {
+                continue;
+            }
+            let positions = offsets.map(|offset| [center.x + offset.x, center.y + offset.y]);
+            let uv = [
+                [tile.uv_min.x, tile.uv_min.y],
+                [tile.uv_max.x, tile.uv_min.y],
+                [tile.uv_max.x, tile.uv_max.y],
+                [tile.uv_min.x, tile.uv_max.y],
+            ];
+            let tint = [1.0; 4];
+            let vertex = |corner: usize| {
+                V::from_world(
+                    [positions[corner][0], positions[corner][1], 0.0],
+                    uv[corner],
+                    tint,
+                )
+            };
+            vertices.extend_from_slice(&[
+                vertex(0),
+                vertex(1),
+                vertex(2),
+                vertex(0),
+                vertex(2),
+                vertex(3),
+            ]);
         }
-        let positions = offsets.map(|offset| [center.x + offset.x, center.y + offset.y]);
-        let uv = [
-            [tile.uv_min.x, tile.uv_min.y],
-            [tile.uv_max.x, tile.uv_min.y],
-            [tile.uv_max.x, tile.uv_max.y],
-            [tile.uv_min.x, tile.uv_max.y],
-        ];
-        let tint = [1.0; 4];
-        let vertex = |corner: usize| {
-            V::from_world(
-                [positions[corner][0], positions[corner][1], 0.0],
-                uv[corner],
-                tint,
-            )
-        };
-        vertices.extend_from_slice(&[
-            vertex(0),
-            vertex(1),
-            vertex(2),
-            vertex(0),
-            vertex(2),
-            vertex(3),
-        ]);
     }
     let count = vertices.len() - start;
     if count == 0 {
@@ -5401,6 +5525,290 @@ fn screen_rect_ndc(
             sdf: 0,
         },
     ]
+}
+
+#[cfg(test)]
+mod tilemap_chunk_tests {
+    use super::*;
+
+    /// 整层平铺参考实现：与 [`build_chunk`] 同公式，顺序 = 行主序（y 外层 x 内层）。
+    /// 它是 WP4 ④ 的"像素等价"证明的单元级替身——chunk 化后的展平序列必须逐项相等。
+    fn flat_sprites(tilemap: &Tilemap, scale: Vec2) -> Vec<CachedTileSprite> {
+        let mut sprites = Vec::new();
+        for y in 0..tilemap.height {
+            for x in 0..tilemap.width {
+                let cell = tilemap.tiles[y * tilemap.width + x];
+                if cell == 0 {
+                    continue;
+                }
+                let (uv_min, uv_max) = Tilemap::tile_uv(cell);
+                let center_offset = Vec2::new(
+                    (x as f32 + 0.5) * tilemap.tile_size.x * scale.x,
+                    (y as f32 + 0.5) * tilemap.tile_size.y * scale.y,
+                );
+                sprites.push(CachedTileSprite {
+                    center_offset,
+                    uv_min,
+                    uv_max,
+                });
+            }
+        }
+        sprites
+    }
+
+    /// 块行主序展平（append 实际消费的顺序）。
+    fn flatten(layer: &CachedTilemapLayer) -> Vec<CachedTileSprite> {
+        let mut out = Vec::new();
+        for chunk in &layer.chunks {
+            out.extend_from_slice(&chunk.sprites);
+        }
+        out
+    }
+
+    /// 覆盖完备性比较：按格坐标排序后逐项相等。块行主序 ≠ 整层行主序
+    /// （层宽 > 块宽时顺序不同），瓦片互不重叠 → 像素不变，由 2D golden 证明；
+    /// 单元级只验证"每个非空格恰好出现一次、内容正确"。
+    fn sorted(mut v: Vec<CachedTileSprite>) -> Vec<CachedTileSprite> {
+        v.sort_by(|a, b| {
+            (a.center_offset.y, a.center_offset.x, a.uv_min.x, a.uv_min.y)
+                .partial_cmp(&(b.center_offset.y, b.center_offset.x, b.uv_min.x, b.uv_min.y))
+                .unwrap()
+        });
+        v
+    }
+
+    /// 块内行主序属性：块内相邻 sprite 的格索引（y*W+x）严格递增。
+    fn sprite_index(s: &CachedTileSprite, tile_size: f32, scale: f32, map_width: usize) -> i64 {
+        let x = (s.center_offset.x / (tile_size * scale) - 0.5).round() as i64;
+        let y = (s.center_offset.y / (tile_size * scale) - 0.5).round() as i64;
+        y * map_width as i64 + x
+    }
+    fn assert_chunk_rows_major(chunk: &TileChunk, map_width: usize) {
+        if chunk.sprites.len() < 2 {
+            return; // 空块/单格块无需窗口比较
+        }
+        let mut prev = sprite_index(&chunk.sprites[0], 16.0, 1.0, map_width);
+        for s in &chunk.sprites[1..] {
+            let cur = sprite_index(s, 16.0, 1.0, map_width);
+            assert!(cur > prev, "chunk 内顺序必须行主序 (y 外层 x 内层)");
+            prev = cur;
+        }
+    }
+
+    /// 块行主序属性：chunks 整体按 (oy, ox) 字典序排列（append 消费顺序稳定）。
+    fn assert_chunks_block_major(layer: &CachedTilemapLayer) {
+        for pair in layer.chunks.windows(2) {
+            let (a, b) = (&pair[0], &pair[1]);
+            assert!((a.oy, a.ox) <= (b.oy, b.ox), "chunks 必须按块行主序排列");
+        }
+    }
+
+    fn transform(position: Vec2, scale: Vec2) -> Transform {
+        Transform {
+            position,
+            rotation: 0.0,
+            scale,
+        }
+    }
+
+    /// 确定性伪随机填充（1..=6，约 2/3 非空），避免测试依赖手写小地图。
+    fn fill(map: &mut Tilemap, seed: u32) {
+        let mut state = seed;
+        for y in 0..map.height {
+            for x in 0..map.width {
+                state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+                let v = ((state >> 16) % 9) as u8; // 0..=8
+                if v > 0 && v <= 6 {
+                    map.set_cell(x, y, v).unwrap();
+                }
+            }
+        }
+    }
+
+    fn make_map(width: usize, height: usize, seed: u32) -> Tilemap {
+        let mut map = Tilemap::new(Vec2::new(16.0, 16.0), width, height).unwrap();
+        fill(&mut map, seed);
+        map
+    }
+
+    /// 覆盖块边界两侧的尺寸：小于一块、恰好一块、一块半、非 32 倍数、整块倍数。
+    #[test]
+    fn chunked_flat_order_matches_row_major_reference() {
+        for (w, h) in [
+            (1usize, 1usize),
+            (3, 3),
+            (32, 32),
+            (33, 65),
+            (40, 22),
+            (100, 100),
+        ] {
+            let map = make_map(w, h, (w * 31 + h) as u32);
+            let layer = build_all_chunks(
+                transform(Vec2::new(7.0, -3.0), Vec2::new(1.0, 1.0)),
+                map.clone(),
+            )
+            .unwrap();
+            assert_eq!(
+                sorted(flatten(&layer)),
+                sorted(flat_sprites(&map, Vec2::new(1.0, 1.0))),
+                "w={w} h={h}: 覆盖不完备或内容错误"
+            );
+            assert_eq!(
+                layer.total,
+                flatten(&layer).len(),
+                "total mismatch w={w} h={h}"
+            );
+            for chunk in &layer.chunks {
+                assert_chunk_rows_major(chunk, map.width);
+            }
+            assert_chunks_block_major(&layer);
+        }
+    }
+
+    /// 非 32 倍数尺寸的块布局：33×65 → 2 列 × 3 行，边缘块不满。
+    #[test]
+    fn non_multiple_32_chunk_layout() {
+        let map = make_map(33, 65, 7);
+        let layer = build_all_chunks(Transform::identity(), map).unwrap();
+        assert_eq!(layer.chunks.len(), 6);
+        let got: Vec<(usize, usize, usize, usize)> = layer
+            .chunks
+            .iter()
+            .map(|c| (c.ox, c.oy, c.w, c.h))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (0, 0, 32, 32),
+                (32, 0, 1, 32),
+                (0, 32, 32, 32),
+                (32, 32, 1, 32),
+                (0, 64, 32, 1),
+                (32, 64, 1, 1),
+            ]
+        );
+    }
+
+    /// 编辑一格 → 只重建它所在的 1 块；同块多格 → 仍 1 块；跨块两格 → 2 块；零改动 → 0 块。
+    #[test]
+    fn edit_rebuilds_only_dirty_chunk() {
+        let mut map = make_map(40, 22, 9);
+        let mut layer = build_all_chunks(
+            transform(Vec2::new(0.0, 0.0), Vec2::new(1.0, 1.0)),
+            map.clone(),
+        )
+        .unwrap();
+
+        // 零改动。
+        assert_eq!(
+            rebuild_dirty_chunks(&mut layer, &map, Vec2::new(1.0, 1.0)),
+            0
+        );
+
+        // 改一格（块 (0,0) 内）。
+        map.set_cell(3, 5, 4).unwrap();
+        assert_eq!(
+            rebuild_dirty_chunks(&mut layer, &map, Vec2::new(1.0, 1.0)),
+            1
+        );
+
+        // 同块再改一格 → 仍 1 块。
+        map.set_cell(7, 9, 2).unwrap();
+        assert_eq!(
+            rebuild_dirty_chunks(&mut layer, &map, Vec2::new(1.0, 1.0)),
+            1
+        );
+
+        // 跨块两格（(3,3) 与 (35,5) 分属两列两块）→ 2 块。
+        map.set_cell(3, 3, 5).unwrap();
+        map.set_cell(35, 5, 6).unwrap();
+        assert_eq!(
+            rebuild_dirty_chunks(&mut layer, &map, Vec2::new(1.0, 1.0)),
+            2
+        );
+
+        // 覆盖仍然完备。
+        assert_eq!(
+            sorted(flatten(&layer)),
+            sorted(flat_sprites(&map, Vec2::new(1.0, 1.0)))
+        );
+    }
+
+    /// position/rotation 变化不触发任何块重建（center_offset 相对层原点）。
+    #[test]
+    fn position_rotation_change_keeps_chunks() {
+        let map = make_map(40, 22, 11);
+        let mut layer = build_all_chunks(
+            transform(Vec2::new(1.0, 2.0), Vec2::new(1.0, 1.0)),
+            map.clone(),
+        )
+        .unwrap();
+        let before = flatten(&layer);
+        layer.transform = transform(Vec2::new(-9.0, 42.0), Vec2::new(1.0, 1.0));
+        layer.transform.rotation = 1.25;
+        assert_eq!(
+            rebuild_dirty_chunks(&mut layer, &map, Vec2::new(1.0, 1.0)),
+            0
+        );
+        assert_eq!(flatten(&layer), before); // 零重建 → 序列逐项原样
+    }
+
+    /// scale 变化 → 所有块重建（center_offset 预乘 scale）。
+    #[test]
+    fn scale_change_rebuilds_all_chunks() {
+        let map = make_map(40, 22, 13);
+        let mut layer = build_all_chunks(
+            transform(Vec2::new(0.0, 0.0), Vec2::new(1.0, 1.0)),
+            map.clone(),
+        )
+        .unwrap();
+        let chunk_count = layer.chunks.len();
+        let rebuilt = rebuild_dirty_chunks(&mut layer, &map, Vec2::new(2.0, 2.0));
+        assert_eq!(rebuilt, chunk_count);
+        assert_eq!(
+            sorted(flatten(&layer)),
+            sorted(flat_sprites(&map, Vec2::new(2.0, 2.0)))
+        );
+    }
+
+    /// solid/meta 变化不触发重建：它们不参与 sprite 生成，像素不变。
+    #[test]
+    fn solid_and_meta_change_do_not_rebuild() {
+        let mut map = make_map(40, 22, 17);
+        let mut layer = build_all_chunks(Transform::identity(), map.clone()).unwrap();
+        map.set_solid(3, 5, true).unwrap();
+        map.meta.insert(
+            (1, 1),
+            BTreeMap::from([("name".to_owned(), "door".to_owned())]),
+        );
+        assert_eq!(
+            rebuild_dirty_chunks(&mut layer, &map, Vec2::new(1.0, 1.0)),
+            0
+        );
+    }
+
+    /// 1000×1000 量级：改一格只重建 1 块（O(块) 而非 O(100 万格)）——
+    /// 这是 WP4 ④ 触发条件（1000×1000 真实地图）未出现时，结构性证明编辑代价受块界约束。
+    #[test]
+    fn million_cell_edit_is_chunk_bounded() {
+        let mut map = make_map(1000, 1000, 23);
+        let layer = build_all_chunks(Transform::identity(), map.clone()).unwrap();
+        // 1000×1000 → 32×32 块满铺：ceil(1000/32)=32 列 × 32 行（边缘 1000=32*31+8）。
+        assert_eq!(layer.chunks.len(), 32 * 32);
+        assert_eq!(layer.total, flat_sprites(&map, Vec2::new(1.0, 1.0)).len());
+        let mut dirty = layer;
+        // 选一个与现值不同的值，保证确实发生编辑。
+        let original = map.cell(999, 999).unwrap();
+        let target = if original == 5 { 6 } else { 5 };
+        map.set_cell(999, 999, target).unwrap();
+        let rebuilt = rebuild_dirty_chunks(&mut dirty, &map, Vec2::new(1.0, 1.0));
+        assert_eq!(rebuilt, 1, "编辑代价必须受块界约束：只重建 1 块而非全层");
+        assert_eq!(
+            sorted(flatten(&dirty)),
+            sorted(flat_sprites(&map, Vec2::new(1.0, 1.0))),
+            "覆盖不完备"
+        );
+    }
 }
 
 #[cfg(test)]

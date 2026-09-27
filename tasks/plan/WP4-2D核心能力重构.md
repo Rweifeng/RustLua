@@ -10,27 +10,34 @@
 | ① 统一 Transform 与 XY 便利 API | 已做 | WP2 的 `Local/GlobalTransform` + Lua 统一 `transform` 表（[WP9](WP9-编辑器Lua迁移收口.md)） |
 | ② Camera2D 正交控制器 | 已做 | `core/camera2d_controller.rs`：follow/dead-zone/帧率无关平滑/确定性抖动；9 个测试 |
 | ③ Sprite pivot/nine-slice/区域/flip/颜色/层/排序键 | **已做** | pivot 早已有、flip 已补（docs/08）、层与 order 已有；**nine_slice 已补（P2-②b，2026-09）**——`Sprite`/`SpriteComponent` 增加 `nine_slice`（组件串 `nine_slice=l,r,t,b`、校验 l+r/t+b≤1），`quad_sliced_with_terms`/`quad_sliced_world` 产出 3×3 九 quad，`SpriteBatch` 三条构建路径混有九宫格项时整体降级串行（普通精灵仍并行、输出逐字节不变）；schema 注册后由通用字段编辑器接管；引擎 lib 880 测试全绿（876 基线 + 4 个九宫格测试） |
-| ④ Tilemap chunk dirty / 可见 chunk 提取 | **部分已做** | 可见瓦片剔除已做（docs/53 §3.9，−17%/−71%）；**chunk 级脏重建未做**（见下） |
+| ④ Tilemap chunk dirty / 可见 chunk 提取 | **已做** | 可见瓦片剔除（docs/53 §3.9，−17%/−71%）+ **chunk 级脏重建（2026-09，触发条件未出现、按指示提前实现）**：32×32 格切块行主序缓存（`TileChunk`），编辑时逐块比对 `tiles` 行段只重建脏块（`rebuild_dirty_chunks`），append 按块行主序消费；`solid`/`meta` 变化与 `position`/`rotation` 变化零重建（不参与 sprite 生成），`scale` 变化全块重建（`center_offset` 预乘 scale）；1000×1000 改一格只重建 1 块（O(块) 而非 O(100 万格)，单测 `million_cell_edit_is_chunk_bounded`）；像素等价由 wp0_2d_golden `tilemap_culling.pixels_identical=true` 兜住；引擎测试 887 全绿（另有 3 个失败为并行会话 title_menu 未提交改动引入，与本项无关） |
 | ⑤ 粒子 SoA/池化/曲线 | 部分已做 | 曲线已补（尺寸/颜色/自转/重力/阻力）；SoA 未做——docs/40 §8 的"1 万粒子 <4 ms"实测 **1.88 ms 已达标**，缺动力 |
 | ⑥ 屏幕 UI 与世界文字分离 | 已做 | `WorldText`（docs/12 §世界文字），走同一字形管线 |
 | ⑦ 动画 clip/state/事件边界 | 已做 | `AnimationClip::events` + Lua `animation.events()`（帧事件语义逐条有测试） |
 | ⑧ 输入统一 screen→world | 已做 | `camera2d.screen_to_world/world_to_screen/mouse_world`，与渲染共用同一份投影 |
 | ⑨ World2D / Legacy2DOverlay / ScreenUI 三种显式层 | ✅ 已做（WP6 2D/3D 统一批次落地，2026-09-26 裁定达成） | `core/layer.rs` 的 `RenderLayer::{World2D,Overlay2D,ScreenUI}` + `OVERLAY_DRAW_ORDER` 分桶（桶内原序，层序由渲染器保证）；`runtime_scene.rs` 的 `mode=overlay/screen/world` 显式显示模式路由；`RenderPass::Legacy2DOverlay`（World2D+Overlay2D 两桶）+ ScreenUI 独立通道；旧项目默认走 Legacy2DOverlay——`wp0_2d_golden` 泄漏/区域/行序/剔除逐字节不变；`wp0-hud-golden-v1` HUD 隔离门进 verify.ps1；详见 docs/54 批 B/J、阶段 E 与本文件「已裁定」段 |
 
-## 待办：Tilemap chunk 级脏重建（有触发条件，不盲做）
+## ~~待办：Tilemap chunk 级脏重建~~（已做，2026-09——**触发条件未出现，按指示提前实现**）
 
-**为什么没做**：先补了量尺才敢决定。实测（docs/53 §3.9）改一格之后的净代价是 32×32 **+2 µs**（噪声）、
-100×100 **+107 µs**——代价与**总格数**成正比（整层 sprite 列表重建），但在这个量级上完全不痛；而稳态帧的
-大头已经被"视口外瓦片剔除"拿走了。chunk 化在这种规模下只剩很小的净收益，却要引入块划分、逐块比对与
-块序拼接三处新复杂度。
+**为什么提前做**：文档口径的触发条件是"出现 1000×1000 量级的真实地图"——核查 game_jhyt 全部真实
+.scene，最大 40×22（village/mountain_path/combat_arena/manor），interior 系列 20×12，引擎源码/测试
+无 1000×1000 → **条件未触发**。但整层重建代价是 O(总格数)，1000×1000 时会是十几毫秒、远超 docs/40 §5
+的 <4ms 目标，为未来大图铺路而提前实现（本段因此保留原量尺数字作为基线：
+32×32 编辑 +2 µs、100×100 +107 µs，docs/53 §3.9）。
 
-**触发条件**：出现 1000×1000 量级的真实地图（1000×1000 时整层重建会是十几毫秒，远超 docs/40 §5 的
-"接口更新目标 <4ms"）。到那时要做的是：
-1. 每层按固定块（建议 32×32 格）切分，缓存块内 sprite 列表；
-2. 编辑时**逐块比对** `tiles` 切片，只重建变化的块；
-3. 块序拼接必须保持绘制顺序稳定（块行主序），像素结果不变——由 2D golden 的像素等价证明兜住。
+**已实现**（引擎 lib 单测 `tilemap_chunk_tests` 7 项全绿）：
+1. 每层按 32×32 格切分（`TILE_CHUNK_SIZE`），缓存块内 sprite 列表（`TileChunk`，边缘块不满）；
+2. 编辑时**逐块比对** `tiles` **行段**（块区域在 row-major `tiles` 里不是连续切片——块宽 < 层宽时跨行，
+   逐行段比较才覆盖真实区域），只重建变化的块（`rebuild_dirty_chunks` 返回重建块数）；
+3. 块序拼接按块行主序（`chunks` 按 `(oy, ox)` 字典序），块内行主序，append 消费顺序稳定；
+   像素结果不变——wp0_2d_golden 的 `tilemap_culling.pixels_identical=true`（剔除开/关逐字节相同）兜住。
+   注意：块行主序 ≠ 整层行主序（层宽 > 块宽时顺序不同），瓦片互不重叠 → 像素不变。
 
-量尺已在门里（`wp0-v4` 的 `tilemap_edit_stairs`），做之前先看数字。
+**语义边界**（有单测）：`solid`/`meta` 变化与 `position`/`rotation` 变化 → 零块重建（它们不参与
+sprite 生成；`center_offset` 相对层原点）；`scale` 变化 → 全块重建（`center_offset` 预乘 scale）。
+1000×1000 改一格只重建 1 块（`million_cell_edit_is_chunk_bounded`）——编辑代价从 O(N) 降为 O(块)。
+
+量尺已在门里（`wp0-v4` 的 `tilemap_edit_stairs` + `tilemap_stress` 100×100），数字见 docs/53 §3.9。
 
 ## ~~待办：世界 Sprite 的 nine_slice~~（P2-②b 已做，2026-09）
 
