@@ -5,6 +5,36 @@
 度量数字（µs、分配字节、测试计数）、逐条证据、golden 断言与实施细节留在能力文档与任务文件里，不在本文重复：
 重构过程见 [docs/53](docs/53-WP0增量场景帧基准与每帧分配.md) 与 [docs/40](docs/40-引擎全面重构计划.md)，已完成任务的验收记录见 `tasks/done/`。
 
+## Unreleased — WP10 批次 B/C 宿主 API（web 兼容层）+ 微信侧 HostApi 接线
+
+主题：WP10 剩余三块收口——批次 B（event/data/asset/tag/light/interact/container/shop
+编译进 wasm 语义、web 侧以 Lua 补丁 + JS 桥实现，标注"需存储后端与回调桥"）、批次 C
+（item/inv/container/shop/map 数据单向喂入，web 补丁区已有 item 表）、微信小游戏侧接线
+（wasm-bridge 返回 glue → adapter 实例化 HostApi → 挂 window.__P2_HOST_API）。
+
+- **web 兼容层**（plugins/webgl/web-runtime.js）：methodCompat 模板补齐 7 个宿主表
+  （event/tag/light/interact/container/shop/asset；item 此前已有）——event 快照分发
+  （回调里再 emit/订阅不影响本次分发）、tag/light 实体状态（__p2_require_alive 同引擎）、
+  interact.query 距离升序同距 priority 降序、container 复用背包机制（键 "container:<id>"）、
+  shop 目录与 price、asset 句柄（"asset:<path>"）；installRustHostApiBridge 新增 data 表 JS 桥
+  （同步 XHR 读 pack/<path>，微信无同步 XHR 平台降级报"不可读"；schema 简化校验
+  string/number/integer/boolean/table 支持嵌套）。**执行顺序修正**：methodCompat 先于
+  missing 清单生成，避免刚补的表被 __p2_missing_globals 误标为缺失（脚本层判能力零噪声）。
+- **微信侧接线**（wasm-bridge.js / wechat-adapter.js）：loadWasmCore 返回 glue
+  （wasm-bindgen 导出载体），adapter 在 wasm 实例化成功后 new HostApi（发布名
+  jianghu_youtian）挂 window.__P2_HOST_API；状态进 __P2_DIAG().wasm.hostApi，导出缺失或
+  实例化失败如实记录（不假装成功、不影响 Lua 启动）。
+- **无头门**（scripts/wechat-minigame-harness.js）：模拟宿主 WXWebAssembly（Node 真实
+  WebAssembly），新增断言"wasm 核心实例化成功 + hostApi=ok"——微信侧批次 A（app/clock/
+  calendar/day）落地的直接证据；ok 行输出 wasm=status:hostApi。
+- **验证**：webgl 包 20,827KB/688 文件 verify-webgl-bundle 过（boot=running、
+  missing_host_api=0、世界 17 实体、绘制 16130 采样）；微信包 8,467KB/709 文件
+  （分包形态，main 44.4%/分包 32.5%）verify-wechat-minigame 全门过（path styles×4、
+  分包 6 例、玩法/摇杆位移非零、渲染自证、宿主全局、wasm=ok:ok）。
+- **已登记未决**：data 在微信侧无同步 XHR → load 报"不可读"（平台降级，与
+  app.project_root 空串同风格）；input.nav_settings/set_nav_settings/last_device 为历史
+  遗留缺口（不在本批批次清单，trap 通道如实点名）。
+
 ## Unreleased — 引擎侧注册 `ui.scene_text_visible`（与 web 兼容层同步）
 
 主题：`ui.scene_text_visible(name, visible)` 从 web 兼容层（fengari/web-runtime.js）

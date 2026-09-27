@@ -1046,6 +1046,10 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
   }
 
   globalThis.wx = wx;
+  // WP10 微信侧接线：宿主暴露 WXWebAssembly（能力面 = Node 的真实 WebAssembly）。
+  // wasm-bridge 据此实例化 wasm 核心并导出 HostApi 构造器，适配层把实例挂到
+  // window.__P2_HOST_API——无头 harness 用 Node 的 WebAssembly 模拟这一环。
+  globalThis.WXWebAssembly = globalThis.WebAssembly;
   if (debugOverlay) stats.storage.set('p2_debug_overlay', '1');
   // 看门狗超时走存储注入（适配层读 p2_boot_timeout_ms）：默认 10s，卡死用例压到 1s 左右，
   // 否则"验证看门狗"本身要等 10 秒，进不了质量门。
@@ -2192,6 +2196,15 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
       }
     }
 
+    // WP10 微信侧接线门：wasm 核心必须实例化成功且 HostApi 已挂到 __P2_HOST_API
+    //（wasm-bridge 返回 glue → adapter new HostApi(...) → window.__P2_HOST_API）。
+    // 这是"批次 A 在微信侧落地"的直接证据：缺了它微信端 app/clock 等仍是 missing 代理。
+    const wasmDiag = (adapter && adapter.diag) ? adapter.diag().wasm : null;
+    if (!wasmDiag || wasmDiag.status !== 'ok' || wasmDiag.hostApi !== 'ok') {
+      failures.push('WP10 wasm 宿主桥未就绪（status=' + (wasmDiag ? wasmDiag.status : 'no-diag')
+        + ' hostApi=' + (wasmDiag ? wasmDiag.hostApi : 'no-diag') + '）：微信侧 __P2_HOST_API 接线未生效');
+    }
+
     console.error = originalError;
     if (failures.length) {
       stats.consoleErrors = consoleErrors;
@@ -2216,7 +2229,7 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
         ` entry=${packEntryError ? 'FAIL' : 'ok'}` +
         ` loading_bar=${drawnTexts.some((text) => text.includes('正在下载资源')) ? 'ok' : 'none'}`
       : ` subpackage=none subpackage_loads=${stats.subpackageLoads}`;
-    console.log(`wechat_minigame_harness_ok path_style=${wxPathStyle} read_strategy=${readStrategy} frames=${stats.frames} draw_ops=${stats.drawOps} draws_per_frame=${perFrameDraws.length > 0 ? perFrameDraws[0] : 0} drawn=${drawn} ui_elements=${uiElements} pack_reads=${stats.packReads} images=${stats.imagesLoaded} binary=${binaryProbe} audio_ctx=${stats.audioCreated} audio_played=${stats.audioPlayed} audio_srcs=${JSON.stringify(stats.audioSrcs.slice(0, 8))}${uploadEvidence}${subpackageEvidence} read_strategies=main:${strategies.main || 'none'}/pack:${strategies.pack || 'none'} font=${fontFamily} boot=${bootState} world=${JSON.stringify(worldSummary.replace(/\s+/g, ' '))} move=${JSON.stringify(moveEvidence)} touch_stick=${JSON.stringify(touchStickEvidence)} attack=${JSON.stringify(attackEvidence)} bag=${JSON.stringify(bagEvidence)} stick_key=w key_bridge=ArrowUp${remoteEvidence}`);
+    console.log(`wechat_minigame_harness_ok path_style=${wxPathStyle} read_strategy=${readStrategy} frames=${stats.frames} draw_ops=${stats.drawOps} draws_per_frame=${perFrameDraws.length > 0 ? perFrameDraws[0] : 0} drawn=${drawn} ui_elements=${uiElements} pack_reads=${stats.packReads} images=${stats.imagesLoaded} binary=${binaryProbe} audio_ctx=${stats.audioCreated} audio_played=${stats.audioPlayed} audio_srcs=${JSON.stringify(stats.audioSrcs.slice(0, 8))}${uploadEvidence}${subpackageEvidence} read_strategies=main:${strategies.main || 'none'}/pack:${strategies.pack || 'none'} font=${fontFamily} boot=${bootState} world=${JSON.stringify(worldSummary.replace(/\s+/g, ' '))} move=${JSON.stringify(moveEvidence)} touch_stick=${JSON.stringify(touchStickEvidence)} attack=${JSON.stringify(attackEvidence)} bag=${JSON.stringify(bagEvidence)} stick_key=w key_bridge=ArrowUp wasm=${wasmDiag ? (wasmDiag.status + ':' + wasmDiag.hostApi) : 'no-diag'}${remoteEvidence}`);
     return 0;
   }).catch((error) => {
     console.error = originalError;

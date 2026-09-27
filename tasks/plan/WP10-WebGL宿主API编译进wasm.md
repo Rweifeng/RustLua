@@ -80,3 +80,21 @@ docs/32 §4 backlog 4-24：**17 个引擎宿主全局**在 WebGL / 微信小游�
 - **数据双写一致性**（批次 C）：设计成"Lua 加载数据 → 喂入 wasm"单向流，wasm 侧只读/只改运行态。
 - **并行会话**正在改 `web-runtime.js`/`wechat-adapter.js`（面板关闭按钮功能）——本工作包桥接代码
   做**增量**（新增函数 + 注册点插入），不覆盖其 hunk；提交时只提交本工作包文件。
+
+## 8. 实施记录（2026-09-28 批次 B/C + 微信接线收口）
+
+- **批次 B/C 的 web 侧落地**（`plugins/webgl/web-runtime.js`）：methodCompat 模板补齐
+  event/tag/light/interact/container/shop/asset 七个宿主表（item 此前已有）；data 走
+  installRustHostApiBridge 的 JS 桥（同步 XHR 读 pack/<path>，schema 简化校验）。
+  语义逐条对齐 engine core/script.rs（event 快照分发、interact.query 距离升序同距
+  priority 降序、container 键 "container:<id>"、asset 句柄 "asset:<path>"）。
+  执行顺序修正：methodCompat 先于 missing 清单生成（否则刚补的表被 __p2_missing_globals 误标）。
+- **微信侧接线**（wasm-bridge.js / wechat-adapter.js）：loadWasmCore 返回 glue，
+  adapter 实例化 HostApi（发布名 jianghu_youtian）挂 window.__P2_HOST_API；
+  harness 模拟 WXWebAssembly（Node 真实 WebAssembly）并断言 wasm=ok:ok。
+- **未决/降级登记**：批次 B 标注的"需存储后端与回调桥"按计划**未**做持久化
+  （web/微信侧 event/data 等为内存态；data 在微信无同步 XHR 报"不可读"，平台降级）；
+  批次 C 数据单向喂入 wasm 数据层**未**实施（web 侧补丁区为 Lua 内存态，wasm 侧仅
+  批次 A 的 app/clock/calendar/day 自持状态）；input.nav_settings/set_nav_settings/
+  last_device 为历史遗留缺口（不在本批清单）。后续若做"存储后端 + 回调桥 + wasm 数据层"
+  需单开工作包。

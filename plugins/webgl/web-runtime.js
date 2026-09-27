@@ -1904,8 +1904,6 @@ end
   // 保持原有"自报家门"代理行为（向后兼容，两条路径共用本运行时）。
   function installRustHostApiBridge(L) {
     const f = window.fengari;
-    const api = window.__P2_HOST_API;
-    if (!api) return;
 
     // 把 JS 值对象推成 Lua 表（number/boolean/string；null/undefined → nil）。
     function pushHostObject(Ls, object) {
@@ -1937,6 +1935,117 @@ end
       }
       f.lua.lua_setglobal(L, f.to_luastring(name));
     }
+
+    // ---- WP10 批次 B：data（读 pack JSON）----
+    // web 无文件系统：load/reload 用同步 XHR 读 pack/<path>（微信小游戏无同步 XHR
+    // 时返回"不可读"，与 app.project_root 空串同类的平台降级）。schema 校验为简化版
+    //（spec 字段值 = 类型名 string/number/integer/boolean/table，支持嵌套表），对齐桌面
+    // data_schema DSL 常用面、不覆盖其全部规则（与补丁区 map.schema 的降级同风格登记）。
+    const p2DataCache = {};
+    const p2DataSchemas = {};
+    function p2ReadPackTextSync(path) {
+      try {
+        const req = new XMLHttpRequest();
+        req.open('GET', 'pack/' + path, false);
+        req.send(null);
+        if (req.status === 200 || req.status === 0) return req.responseText;
+      } catch (_) { /* 微信小游戏无同步 XHR */ }
+      return null;
+    }
+    function p2PushJsonToLua(Ls, value) {
+      if (value === null || value === undefined) { f.lua.lua_pushnil(Ls); return; }
+      const t = typeof value;
+      if (t === 'number') { f.lua.lua_pushnumber(Ls, value); return; }
+      if (t === 'boolean') { f.lua.lua_pushboolean(Ls, value); return; }
+      if (t === 'string') { f.lua.lua_pushstring(Ls, f.to_luastring(value)); return; }
+      if (Array.isArray(value)) {
+        f.lua.lua_createtable(Ls, value.length, 0);
+        for (let i = 0; i < value.length; i++) { p2PushJsonToLua(Ls, value[i]); f.lua.lua_rawseti(Ls, -2, i + 1); }
+        return;
+      }
+      const keys = Object.keys(value);
+      f.lua.lua_createtable(Ls, 0, keys.length);
+      for (const key of keys) { p2PushJsonToLua(Ls, value[key]); f.lua.lua_setfield(Ls, -2, key); }
+    }
+    function p2LuaToJs(Ls, index) {
+      const t = f.lua.lua_type(Ls, index);
+      if (t === f.lua.LUA_TNIL || t === f.lua.LUA_TNONE) return null;
+      if (t === f.lua.LUA_TBOOLEAN) return f.lua.lua_toboolean(Ls, index);
+      if (t === f.lua.LUA_TNUMBER) return f.lua.lua_tonumber(Ls, index);
+      if (t === f.lua.LUA_TSTRING) return f.lua.lua_tostring(Ls, index);
+      if (t === f.lua.LUA_TTABLE) {
+        const result = {};
+        f.lua.lua_pushnil(Ls);
+        while (f.lua.lua_next(Ls, index) !== 0) {
+          const key = f.lua.lua_tostring(Ls, -2);
+          const value = p2LuaToJs(Ls, -1);
+          f.lua.lua_pop(Ls, 1);
+          if (key) result[key] = value;
+        }
+        return result;
+      }
+      return null;
+    }
+    function p2SchemaViolation(json, spec, path) {
+      if (typeof spec !== 'object' || spec === null) return null;
+      for (const key of Object.keys(spec)) {
+        const rule = spec[key];
+        const actual = json && json[key];
+        if (typeof rule === 'string') {
+          const ok =
+            (rule === 'string' && typeof actual === 'string') ||
+            (rule === 'number' && typeof actual === 'number') ||
+            (rule === 'integer' && typeof actual === 'number' && Number.isInteger(actual)) ||
+            (rule === 'boolean' && typeof actual === 'boolean') ||
+            (rule === 'table' && typeof actual === 'object' && actual !== null && !Array.isArray(actual));
+          if (!ok) return 'schema violation at ' + path + '.' + key + ': expected ' + rule;
+        } else if (typeof rule === 'object' && rule !== null && actual !== null && typeof actual === 'object') {
+          const nested = p2SchemaViolation(actual, rule, path + '.' + key);
+          if (nested) return nested;
+        }
+      }
+      return null;
+    }
+    function p2DataLoadOne(Ls, path) {
+      if (p2DataCache[path] !== undefined) { p2PushJsonToLua(Ls, p2DataCache[path]); return 1; }
+      const text = p2ReadPackTextSync(path);
+      if (text === null) return hostError(Ls, 'data.load ' + path + ': file not readable on this platform');
+      let json;
+      try { json = JSON.parse(text); } catch (error) { return hostError(Ls, 'data.load ' + path + ': invalid JSON: ' + error); }
+      const spec = p2DataSchemas[path];
+      if (spec) {
+        const violation = p2SchemaViolation(json, spec, path);
+        if (violation) return hostError(Ls, 'data.load ' + path + ': ' + violation);
+      }
+      p2DataCache[path] = json;
+      p2PushJsonToLua(Ls, json);
+      return 1;
+    }
+    registerHostTable('data', {
+      load(Ls) { return p2DataLoadOne(Ls, f.lua.luaL_checkstring(Ls, 1)); },
+      reload(Ls) {
+        const path = f.lua.luaL_checkstring(Ls, 1);
+        delete p2DataCache[path];
+        return p2DataLoadOne(Ls, path);
+      },
+      cache_clear() {
+        for (const key of Object.keys(p2DataCache)) delete p2DataCache[key];
+        return 0;
+      },
+      schema(Ls) {
+        const path = f.lua.luaL_checkstring(Ls, 1);
+        if (f.lua.lua_type(Ls, 2) === f.lua.LUA_TTABLE) {
+          p2DataSchemas[path] = p2LuaToJs(Ls, 2);
+          delete p2DataCache[path];
+        } else {
+          delete p2DataSchemas[path];
+        }
+        return 0;
+      },
+    });
+
+    const api = window.__P2_HOST_API;
+    if (!api) return;
 
     registerHostTable('clock', {
       now(Ls) {
@@ -2103,7 +2212,7 @@ function doString(L, source, name) {
     // 场景可切换 ⇒ 这两项必须可重新赋值（切图时整体换掉）。
     let sceneState = parseScene(sceneText);
     const canvas = document.getElementById('p2-canvas');
-    const ctx = canvas.getContext('2d');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
     if (!ctx) throw new Error('2D canvas context is not available');
     const webInput = createWebInput(canvas);
     let images = await loadSceneImages(sceneState);
@@ -2210,6 +2319,177 @@ function item.def(id)
   local result = {}
   for key, value in pairs(definition) do result[key] = value end
   return result
+end
+-- ==== WP10 批次 B/C 补齐：event/data(JS桥)/asset/tag/light/interact/container/shop ====
+-- 以下补丁先于 missing 清单生成执行，表本身可能是 nil（尚未被代理占位）——
+-- 因此每个表先 X = X or {} 再挂方法，避免 "global is nil" 或覆盖真实表。
+event = event or {}
+tag = tag or {}
+light = light or {}
+interact = interact or {}
+container = container or {}
+shop = shop or {}
+asset = asset or {}
+-- 与补丁区既有同族表（inv/grid/map/sprite…）同一套 __p2_ 机制；语义逐条对齐桌面
+-- core/script.rs。event 回调是 fengari 函数（emit 快照遍历，回调里再 emit/订阅/退订
+-- 不影响本次分发）；tag/light 是实体状态（__p2_require_alive 同引擎）；container 复用
+-- 背包机制（键 "container:<id>"）；shop 目录直接存 Lua 表（price 读 buy/sell）。
+__p2_events = {}
+function event.on(name, callback)
+  assert(type(callback) == 'function', 'event.on expects a function')
+  local list = __p2_events[tostring(name)]
+  if not list then list = {} __p2_events[tostring(name)] = list end
+  list[#list + 1] = callback
+end
+function event.subscribe(name, callback) return event.on(name, callback) end
+function event.emit(name, data)
+  local list = __p2_events[tostring(name or '')] or {}
+  local callbacks = {}
+  for index = 1, #list do callbacks[index] = list[index] end
+  for index = 1, #callbacks do callbacks[index](data) end
+end
+function event.unsubscribe(name, callback)
+  local key = tostring(name)
+  if callback == nil then __p2_events[key] = nil return end
+  local list = __p2_events[key]
+  if not list then return end
+  for index = #list, 1, -1 do
+    if list[index] == callback then table.remove(list, index) end
+  end
+end
+function event.off(name, callback) return event.unsubscribe(name, callback) end
+
+-- 实体标签（引擎 tag.get/set 同构）：id → { key = value }；空 value 删除键、删空袋。
+__p2_tags = {}
+function tag.get(id, key)
+  local bag = __p2_tags[tonumber(id)]
+  if not bag then return nil end
+  return bag[tostring(key)]
+end
+function tag.set(id, key, value)
+  id, key = tonumber(id), tostring(key or '')
+  if key == '' then error('tag key must not be empty', 2) end
+  __p2_require_alive(id)
+  local bag = __p2_tags[id]
+  value = tostring(value or '')
+  if value == '' then
+    if bag then
+      bag[key] = nil
+      if next(bag) == nil then __p2_tags[id] = nil end
+    end
+  else
+    if not bag then bag = {} __p2_tags[id] = bag end
+    bag[key] = value
+  end
+end
+
+-- 光照（引擎 light 同构）：实体 → 方向/颜色/强度；set_active 要求该实体已有光。
+__p2_lights = {}
+__p2_active_light = nil
+function light.set_active(id)
+  id = tonumber(id)
+  __p2_require_alive(id)
+  if not __p2_lights[id] then error('entity has no light', 2) end
+  __p2_active_light = id
+  return true
+end
+function light.get(id)
+  id = tonumber(id)
+  __p2_require_alive(id)
+  local l = __p2_lights[id]
+  if not l then error('entity has no light', 2) end
+  return { dx = l.dx or 0, dy = l.dy or 0, dz = l.dz or 0, r = l.r or 1, g = l.g or 1, b = l.b or 1, intensity = l.intensity or 1 }
+end
+function light.set(id, dx, dy, dz, r, g, b, intensity)
+  id = tonumber(id)
+  __p2_require_alive(id)
+  intensity = tonumber(intensity) or 1
+  if not intensity or intensity ~= intensity or intensity < 0 then
+    error('light intensity must be finite and non-negative', 2)
+  end
+  __p2_lights[id] = { dx = dx or 0, dy = dy or 0, dz = dz or 0, r = r or 1, g = g or 1, b = b or 1, intensity = intensity }
+end
+
+-- 交互（引擎 interact 同构）：prompt 状态 + query（按距离升序、同距 priority 降序）。
+__p2_interact_prompt = nil
+function interact.prompt(text) __p2_interact_prompt = tostring(text or '') end
+function interact.clear_prompt() __p2_interact_prompt = nil end
+function interact.get_prompt() return __p2_interact_prompt end
+function interact.query(x, y, radius)
+  x, y, radius = tonumber(x), tonumber(y), tonumber(radius) or 0
+  if not radius or radius ~= radius or radius < 0 then
+    error('interact radius must be finite and non-negative', 2)
+  end
+  local hits = {}
+  for id, bag in pairs(__p2_tags) do
+    if bag.interact or bag.kind then
+      local t = __p2_transforms[id]
+      if t then
+        local dx, dy = (t.x or 0) - x, (t.y or 0) - y
+        if dx * dx + dy * dy <= radius * radius then
+          hits[#hits + 1] = { id = id, kind = bag.kind or bag.interact or '', priority = tonumber(bag.priority) or 0 }
+        end
+      end
+    end
+  end
+  table.sort(hits, function(a, b)
+    local ta, tb = __p2_transforms[a.id], __p2_transforms[b.id]
+    local da = ((ta and ta.x or 0) - x) ^ 2 + ((ta and ta.y or 0) - y) ^ 2
+    local db = ((tb and tb.x or 0) - x) ^ 2 + ((tb and tb.y or 0) - y) ^ 2
+    if da ~= db then return da < db end
+    return -a.priority < -b.priority
+  end)
+  return hits
+end
+
+-- 容器（引擎 container 同构）：把实体关联成第二个背包，键 "container:<id>"。
+function container.open(entity_id, capacity)
+  local key = 'container:' .. tostring(tonumber(entity_id))
+  __p2_inventories[key] = __p2_inventory_new(capacity or 12)
+  return key
+end
+function container.get(entity_id)
+  local key = 'container:' .. tostring(tonumber(entity_id))
+  if __p2_inventories[key] then return key end
+  return nil
+end
+function container.close(entity_id)
+  local key = 'container:' .. tostring(tonumber(entity_id))
+  local existed = __p2_inventories[key] ~= nil
+  __p2_inventories[key] = nil
+  return existed
+end
+function container.move(entity_id, from_index, to_id, to_index)
+  return inv.move('container:' .. tostring(tonumber(entity_id)), from_index, to_id, to_index, nil)
+end
+
+-- 商店目录（引擎 shop 同构：set_catalog/price）。
+__p2_shops = {}
+function shop.set_catalog(name, spec)
+  assert(type(spec) == 'table', 'shop.set_catalog expects a table')
+  __p2_shops[tostring(name)] = spec
+  return true
+end
+function shop.price(name, item_id)
+  local catalog = __p2_shops[tostring(name)]
+  if not catalog then return nil end
+  local entry = catalog[tostring(item_id)]
+  if not entry then return nil end
+  return { buy = tonumber(entry.buy) or 0, sell = tonumber(entry.sell) or 0 }
+end
+
+-- 资源句柄（引擎 asset 同构：load 返回 "asset:<path>"、release 注销）。
+__p2_assets = {}
+function asset.load(path)
+  local key = tostring(path)
+  local token = 'asset:' .. key
+  __p2_assets[key] = token
+  return token
+end
+function asset.release(token)
+  for path, value in pairs(__p2_assets) do
+    if value == token then __p2_assets[path] = nil end
+  end
 end
 for _, api in ipairs({audio, input}) do
   if not api.load_settings then
@@ -2384,12 +2664,16 @@ end
       // 用**下标**写法而不是 `{name=true}`：表里会出现 `time`/`log` 这类**Lua 保留字**
       // 或非标识符，`{time=true}` 直接是语法错误（实测把启动打成
       // `'}' expected near '='`）；`["time"]=true` 对任何名字都成立。
+      // 顺序：**先装真实实现**（luaPrelude 的 __p2_ 核心 + methodCompat 的方法补丁），
+      // **再算缺失清单**并给真正缺失的全局装代理——否则 methodCompat 刚补的表
+      //（event/tag/light/interact/container/shop/asset/item）会先被 `__p2_missing_globals`
+      // 误标成缺失，脚本判能力时得到错误结论。
+      doString(L, luaPrelude(sceneState, knownScenes) + '\n' + preload, 'engine-host-prelude');
+      doString(L, methodCompat + '\n' + genericCompat, 'engine-host-method-compat');
       const eagerlyMissingGlobals = missingHostGlobals(L);
       const missingGlobalTable = '__p2_missing_globals = {' +
         eagerlyMissingGlobals.map(name => `[${luaQuote(name)}]=true`).join(',') + '}';
       doString(L, missingApiCompat + '\n' + missingGlobalTable + '\n' + hostCompat, 'engine-host-compat');
-      doString(L, luaPrelude(sceneState, knownScenes) + '\n' + preload, 'engine-host-prelude');
-      doString(L, methodCompat + '\n' + genericCompat, 'engine-host-method-compat');
       // 在**真正的宿主表**上装缺失方法陷阱（放在 methodCompat 之后：那批默认实现
       // 必须先落地，否则陷阱会让 `if not api.load_settings` 之类的探测误判为"有"）。
       doString(L, ENGINE_HOST_GLOBALS.map(name => `__p2_trap_host_table(${luaQuote(name)}, ${name})`).join('\n'), 'engine-host-table-traps');

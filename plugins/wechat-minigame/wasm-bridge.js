@@ -129,7 +129,9 @@ function loadWasmCore(options) {
 
   log('wasm-bridge: 核心实例化成功（' + picked.source + '，' + bytes.length + ' 字节，导出 '
     + exports.length + ' 项：' + exports.join(',') + '）');
-  return { ok: true, source: picked.source, exports: exports, bytes: bytes.length };
+  // host = 胶水函数（wasm-bindgen `--target no-modules` 的导出载体）：调用方可用
+  // `new host.HostApi(name)` 实例化宿主桥挂到 `window.__P2_HOST_API`（WP10 微信侧接线）。
+  return { ok: true, source: picked.source, exports: exports, bytes: bytes.length, host: glue };
 }
 
 module.exports = { loadWasmCore: loadWasmCore };

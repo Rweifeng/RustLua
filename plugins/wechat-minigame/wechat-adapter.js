@@ -56,6 +56,8 @@
 // wasm 核心在代码包里的逻辑路径（发布脚本按 `pkg/game_web_bg.wasm` 放置；`.wasm` 在微信
 // 代码包后缀白名单内，因此**不需要**改名，运行时按逻辑路径读取即可）。
 var WASM_MODULE_PATH = 'pkg/game_web_bg.wasm';
+// WP10 微信侧接线：HostApi 构造器的发布名（与 webgl 发布名一致，app.name() 的返回值）。
+var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
   // 代码包**后缀白名单**的改名映射（构建期生成，产物根；三种形态都有）。
   // 微信代码包只上传后缀在白名单内的文件，`.lua` / `.toml` / `.md` 传不上去——真机上读它们是
   // `permission denied`，而本游戏全部 Lua 逻辑都靠逐文件读取，实测真机启动直接失败。
@@ -1344,12 +1346,14 @@ var WASM_MODULE_PATH = 'pkg/game_web_bg.wasm';
       image_src_takeover: srcTakeover || 'none',
       image_callback_takeover: callbackTakeover || 'none',
       // wasm 核心状态：`ok` 才算真的装进来了；其它取值都能指出是哪一层不对（见 loadWasmCoreOnce）。
+      // hostApi：WP10 微信侧接线状态（ok=HostApi 已实例化挂到 __P2_HOST_API）。
       wasm: {
         status: wasmState.status,
         source: wasmState.source,
         bytes: wasmState.bytes,
         exports: wasmState.exports,
-        detail: wasmState.detail
+        detail: wasmState.detail,
+        hostApi: wasmState.hostApi
       },
       // 画布 vs 工程声明尺寸（横版方案A）：agree=false 就是"版面会溢出画布"。
       view_agreement: viewAgreement,
@@ -2523,6 +2527,20 @@ var WASM_MODULE_PATH = 'pkg/game_web_bg.wasm';
     });
     if (result.ok) {
       wasmState = { status: 'ok', source: result.source, exports: result.exports, bytes: result.bytes };
+      // WP10 微信侧接线：wasm 导出 HostApi 构造器 → 实例化挂到 window.__P2_HOST_API。
+      // web-runtime.js 的 installRustHostApiBridge 据此把 app/clock/calendar/day 注册成
+      // 真实 fengari 全局（批次 A 在微信侧的落地点）；导出缺失时保持 missing 代理
+      //（向后兼容，状态如实进 wasmState.hostApi，不参与成功判定）。
+      if (result.host && typeof result.host.HostApi === 'function') {
+        try {
+          window.__P2_HOST_API = new result.host.HostApi(WECHAT_PUBLISH_NAME);
+          wasmState.hostApi = 'ok';
+        } catch (error) {
+          wasmState.hostApi = 'error:' + hostError(error);
+        }
+      } else {
+        wasmState.hostApi = 'no-HostApi-export';
+      }
     } else {
       wasmState = { status: result.reason, source: result.source, detail: result.detail };
       warn('wechat-adapter: wasm 核心未就绪（' + result.reason + (result.detail ? '：' + result.detail : '') + '）'
