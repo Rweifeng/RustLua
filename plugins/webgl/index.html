@@ -17,7 +17,7 @@
   <script src="./pkg/fengari-web.js"></script>
   <script src="./web-runtime.js"></script>
   <script type="module">
-    import init, { start } from './pkg/game_web.js';
+    import init, { start, HostApi } from './pkg/game_web.js';
     const publishName = __PUBLISH_NAME_JSON__;
     const status = document.getElementById('status');
     const markBoot = (state, detail) => {
@@ -27,6 +27,7 @@
     try {
       await init();
       await start('p2-canvas', publishName);
+      window.__P2_HOST_API = (typeof HostApi === 'function') ? new HostApi(publishName) : null;
       await window.p2RunLuaGame(status);
       status.textContent = publishName + ' - Lua running';
       markBoot('ok', publishName);

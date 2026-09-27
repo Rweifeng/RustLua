@@ -119,6 +119,14 @@ camera/mesh`），与桌面引擎注册的 36 个顶层全局并不等价。桌�
      并在 `package.ps1 -Platform webgl` 时对不满足子集的工程**构建期报警**（而不是运行期报错）。
   当前默认按 (1) 规划、(2) 兜底（缺失清单已可机器读取：`bundle-summary-*.json` 的
   `missingHostApi`/`missingCount`）。
+
+- **WP10（2026-09-27 立项）**：按 (1) 落地，设计见 `tasks/plan/WP10-WebGL宿主API编译进wasm.md`。
+  工具链事实：mlua-sys 的 build 用 `cc` crate 编译 Lua C 源码，`wasm32-unknown-unknown` 无 C 编译器
+  → 整引擎 script.rs 进 wasm 不可行；方案①落地 = 17 个宿主 API 以**纯 Rust** 实现进 `game_web` wasm
+  （wasm-bindgen 导出），fengari Lua 经 `web-runtime.js` 桥接（两条 web 路径共用）。
+  Phase 1（批次 A：`app/clock/calendar/day`）已实现：`engine/crates/game_web/src/host_api.rs` +
+  桥 + index.html 接线；缺失清单 17 → 13（eager `missingHostGlobals()`，运行门禁 boot 正常）。
+  批次 B/C 见工作包文档。
 - **浏览器回归验证的是平台契约 + 产物启动**，不是「WASM 游戏跑通完整剧本」。
 - **Lua VM 已随包分发**：`index.html` 引 `./pkg/fengari-web.js`（由 `package.ps1` 从
   `plugins/webgl/pkg/fengari-web.js` 复制），不再依赖 CDN，离线/纯内网可运行。

@@ -1843,7 +1843,129 @@ end
     });
   }
 
-  function doString(L, source, name) {
+    // WP10 批次 A：把 wasm 核心里编译进的宿主 API（app/clock/calendar/day）注册成
+  // 真实 fengari 全局。`window.__P2_HOST_API` 由 index.html 在 `await init()` 后实例化
+  // wasm 导出的 `HostApi` 并挂上；导出缺失（旧包 / 微信侧未接线）时本函数直接返回，
+  // 保持原有"自报家门"代理行为（向后兼容，两条路径共用本运行时）。
+  function installRustHostApiBridge(L) {
+    const f = window.fengari;
+    const api = window.__P2_HOST_API;
+    if (!api) return;
+
+    // 把 JS 值对象推成 Lua 表（number/boolean/string；null/undefined → nil）。
+    function pushHostObject(Ls, object) {
+      const keys = Object.keys(object);
+      f.lua.lua_createtable(Ls, 0, keys.length);
+      for (const key of keys) {
+        const value = object[key];
+        if (typeof value === 'boolean') f.lua.lua_pushboolean(Ls, value);
+        else if (typeof value === 'number') f.lua.lua_pushnumber(Ls, value);
+        else if (value === null || value === undefined) f.lua.lua_pushnil(Ls);
+        else f.lua.lua_pushstring(Ls, f.to_luastring(String(value)));
+        f.lua.lua_setfield(Ls, -2, key);
+      }
+      return 1;
+    }
+
+    // 非法参数 → Lua error（与桌面 api_error 抛错一致）。
+    function hostError(Ls, message) {
+      return f.lauxlib.luaL_error(Ls, f.to_luastring(message));
+    }
+
+    // 注册一张宿主表：name → { method: cfunction }。
+    function registerHostTable(name, methods) {
+      const keys = Object.keys(methods);
+      f.lua.lua_createtable(L, 0, keys.length);
+      for (const key of keys) {
+        f.lua.lua_pushcfunction(L, methods[key]);
+        f.lua.lua_setfield(L, -2, key);
+      }
+      f.lua.lua_setglobal(L, f.to_luastring(name));
+    }
+
+    registerHostTable('clock', {
+      now(Ls) {
+        pushHostObject(Ls, api.clock_now());
+        return 1;
+      },
+      set(Ls) {
+        const day = f.lua.luaL_checkinteger(Ls, 1);
+        const minute = f.lua.luaL_checkinteger(Ls, 2);
+        if (!api.clock_set(day, minute)) return hostError(Ls, api.last_error());
+        return 0;
+      },
+      set_rate(Ls) {
+        const rate = f.lua.luaL_checknumber(Ls, 1);
+        if (!api.clock_set_rate(rate)) return hostError(Ls, api.last_error());
+        return 0;
+      },
+      pause(Ls) {
+        api.clock_pause(f.lua.lua_toboolean(Ls, 1));
+        return 0;
+      },
+      add(Ls) {
+        const minutes = f.lua.luaL_checknumber(Ls, 1);
+        if (!api.clock_add(minutes)) return hostError(Ls, api.last_error());
+        return 0;
+      },
+      sleep_to_morning(Ls) {
+        f.lua.lua_pushnumber(Ls, api.clock_sleep_to_morning());
+        return 1;
+      },
+    });
+
+    registerHostTable('calendar', {
+      now(Ls) {
+        pushHostObject(Ls, api.calendar_now());
+        return 1;
+      },
+      set(Ls) {
+        const day = f.lua.luaL_checkinteger(Ls, 1);
+        const season = f.lua.luaL_checkinteger(Ls, 2);
+        const year = f.lua.luaL_checkinteger(Ls, 3);
+        const minute = f.lua.luaL_checkinteger(Ls, 4);
+        if (!api.calendar_set(day, season, year, minute)) return hostError(Ls, api.last_error());
+        return 0;
+      },
+    });
+
+    registerHostTable('day', {
+      now(Ls) {
+        pushHostObject(Ls, api.day_now());
+        return 1;
+      },
+      sleep(Ls) {
+        // 桌面语义（main.lua:491 约定）：on_day_end → 睡到清晨 → on_day_start。
+        // 钩子是 fengari 函数，由 JS 桥持有并触发；callGlobal 对缺失/非函数返回 null。
+        callGlobal(Ls, 'on_day_end');
+        const newDay = api.day_sleep();
+        callGlobal(Ls, 'on_day_start');
+        f.lua.lua_pushnumber(Ls, newDay);
+        return 1;
+      },
+    });
+
+    registerHostTable('app', {
+      name(Ls) {
+        f.lua.lua_pushstring(Ls, f.to_luastring(api.app_name()));
+        return 1;
+      },
+      platform(Ls) {
+        f.lua.lua_pushstring(Ls, f.to_luastring(api.app_platform()));
+        return 1;
+      },
+      project_root(Ls) {
+        f.lua.lua_pushstring(Ls, f.to_luastring(api.app_project_root()));
+        return 1;
+      },
+      quit() {
+        api.app_quit();
+        return 0;
+      },
+    });
+  }
+
+function doString(L, source, name) {
     const f = window.fengari;
     const rc = f.lauxlib.luaL_loadbuffer(L, f.to_luastring(source), source.length, f.to_luastring(name));
     if (rc !== f.lua.LUA_OK || f.lua.lua_pcall(L, 0, f.lua.LUA_MULTRET, 0) !== f.lua.LUA_OK) {
@@ -1961,6 +2083,7 @@ end
     const L = f.lauxlib.luaL_newstate();
     f.lualib.luaL_openlibs(L);
     installLuaAudioBridge(L);
+    installRustHostApiBridge(L);
     try {
       const hostCompat = ENGINE_HOST_GLOBALS.map(name => `if ${name} == nil then ${name} = __p2_missing_host_global(${luaQuote(name)}) end`).join('\n');
       // 引擎里有、web 运行时没实现的宿主 API：**不再静默变成空表**。

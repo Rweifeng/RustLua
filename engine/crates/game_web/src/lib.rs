@@ -1,3 +1,9 @@
+//! 浏览器（WebGL / 微信小游戏）wasm 入口与宿主 API（WP10）。
+
+/// WP10 批次 A：`app / clock / calendar / day` 宿主 API 的 Rust 实现（编译进 wasm）。
+#[cfg(target_arch = "wasm32")]
+pub mod host_api;
+
 #[cfg(target_arch = "wasm32")]
 mod wasm {
     use wasm_bindgen::{JsCast, prelude::*};
