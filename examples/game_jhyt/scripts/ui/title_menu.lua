@@ -63,16 +63,19 @@ local OPTIONS = {
   {
     id = "BtnStart",
     label_text = "开始新游戏",
+    scene_label = "BtnStartLabel",
     panel = { BTN.x, BTN.y, BTN.x + BTN.w, BTN.y + BTN.h },
   },
   {
     id = "BtnContinue",
     label_text = "继续江湖",
+    scene_label = "BtnContinueLabel",
     panel = { BTN.x, BTN.y + BTN_STEP, BTN.x + BTN.w, BTN.y + BTN_STEP + BTN.h },
   },
   {
     id = "BtnExit",
     label_text = "退出江湖",
+    scene_label = "BtnExitLabel",
     panel = { BTN.x, BTN.y + BTN_STEP * 2, BTN.x + BTN.w, BTN.y + BTN_STEP * 2 + BTN.h },
   },
 }
@@ -242,6 +245,14 @@ function M.render()
   local index = M.index()
   local anim = M.anim()
   ui_text.begin("title")
+  -- 按钮标签统一由脚本绘制（场景 Text 实体 BtnStartLabel 等一并隐藏）：
+  -- 场景层与脚本层若同时渲染会在同一位置叠出「两个重叠文字」（编辑器 1280×720 实测，
+  -- 场景文字 y=397 vs 旧脚本 y=380 错位 17px）。隐藏场景实体后每项只有一层文字。
+  for _, option in ipairs(OPTIONS) do
+    if option.scene_label then
+      ui.scene_text_visible(option.scene_label, false)
+    end
+  end
   -- docs/48 ui 换肤接线：菜单装饰组（画在场景 UI 之上，场景已接 vignette/ink/logo/灯笼/按钮底/卷轴）。
   -- 选中按钮 = 悬停态：btn_wuxia_hover 覆盖在 9s 按钮底上（选中即悬停，交互语义真实）。
   local sel_opt = OPTIONS[index]
@@ -280,10 +291,19 @@ function M.render()
       -- 场景标签左边缘之外，与文字互不重叠。
       local arrow_x = option.label[1] - ARROW_GAP - 3.0 * anim.ease
       ui_text.draw_exact("title", "title:arrow:" .. option.id, arrow_x, option.label[2], 24.0, 48.0, ARROW)
+      -- 选中态 hover 贴图（menu_btn_wuxia_hover）中心不透明，会把场景标签文字盖住
+      -- （默认选中第 1 项时「开始新游戏」整行不可见，实机表现为"按钮字体没显示"）。
+      -- 脚本在 hover 之上、以场景文字实体同位置（x = 居中左缘、y = 场景 UiLayout 顶）
+      -- 重画一次标签：选中项这层文字与场景层同位置，切换选中时文字不跳；非选中项
+      -- 无 hover，场景文字天然可见——每项始终只有一层文字（不重影）。
+      ui_text.draw("title", "title:label:" .. option.id,
+        option.label[1], option.label[2], BTN_LABEL_FONT, BTN.w, option.label_text)
     else
       ui.hide("title:hl:" .. option.id)
       ui.hide("title:arrow:" .. option.id)
-      ui.hide("title:label:" .. option.id)
+      -- 未选中项无 hover 遮挡，同样由脚本画（场景实体已隐藏，位置 = 场景文字同点）。
+      ui_text.draw("title", "title:label:" .. option.id,
+        option.label[1], option.label[2], BTN_LABEL_FONT, BTN.w, option.label_text)
     end
   end
   ui_text.draw("title", "title:hint", layout.ROW.top_x, layout.ROW.top_y, 13.0, layout.row_width(), M.hint_line())

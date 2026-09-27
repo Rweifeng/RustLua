@@ -245,7 +245,11 @@
        state.mouseJust[button] = true;
        state.mouse[button] = true;
        const rect = canvas.getBoundingClientRect();
-       state.pressCursor = [event.clientX - rect.left, event.clientY - rect.top];
+       // 画布坐标 → 设计坐标：与 drawScene 的 contain 变换互逆（(x - ox) / s）。
+       const fitS = Math.min(canvas.width / 1280, canvas.height / 720);
+       const fitOx = (canvas.width - 1280 * fitS) / 2;
+       const fitOy = (canvas.height - 720 * fitS) / 2;
+       state.pressCursor = [(event.clientX - rect.left - fitOx) / fitS, (event.clientY - rect.top - fitOy) / fitS];
      });
      window.addEventListener('mouseup', event => {
        const button = event.button === 2 ? 'right' : 'left';
@@ -256,7 +260,11 @@
      });
     canvas.addEventListener('mousemove', event => {
       const rect = canvas.getBoundingClientRect();
-      state.cursor = [event.clientX - rect.left, event.clientY - rect.top];
+      // 画布坐标 → 设计坐标（与 drawScene 的 contain 变换互逆）。
+      const fitS = Math.min(canvas.width / 1280, canvas.height / 720);
+      const fitOx = (canvas.width - 1280 * fitS) / 2;
+      const fitOy = (canvas.height - 720 * fitS) / 2;
+      state.cursor = [(event.clientX - rect.left - fitOx) / fitS, (event.clientY - rect.top - fitOy) / fitS];
     });
     canvas.addEventListener('wheel', event => {
       state.scroll += event.deltaY;
@@ -488,7 +496,7 @@
         drew = true;
       }
     }
-    if (entity.text && entity.text.value) {
+    if (entity.text && entity.text.value && !p2SceneTextHidden.has(String(entity.name || ''))) {
       ctx.font = entity.text.size + 'px ' + GAME_FONT;
       ctx.textBaseline = 'top';
       ctx.fillStyle = colorCss(entity.text.color);
@@ -539,19 +547,44 @@
     return { x: cx, y: cy };
   }
 
+  // 场景文字实体隐藏集：title_menu 把按钮标签接管为脚本绘制（ui.scene_text_visible(false)），
+  // 场景里的 Text 实体（BtnStartLabel 等）不再画，避免「场景层 + 脚本层」两层文字重叠。
+  let p2SceneTextHidden = new Set();
+  function refreshSceneTextHidden(L) {
+    p2SceneTextHidden = new Set();
+    try {
+      const raw = String(callGlobal(L, '__p2_export_scene_text_hidden') || '');
+      if (raw) raw.split(',').forEach(name => { if (name) p2SceneTextHidden.add(name); });
+    } catch (e) { /* 兼容层缺失时保持空集 */ }
+  }
+
   function drawScene(ctx, sceneState, images, projectName, uiText, pending) {
     const canvas = ctx.canvas;
+    // 等比适配（contain）：设计画布 1280×720 → 实际 canvas（窗口/屏幕物理像素）。
+    // 微信把 canvas fill 铺满窗口，画布尺寸若与窗口比例不一致会被**非等比拉伸**
+    // （开发者工具 1380×652 下横 1.08×、纵 0.91×，文字随之变形发糊）。画布已跟随
+    // 窗口（wechat-adapter），这里把 1280×720 设计空间等比缩放到居中区域（黑边），
+    // 场景/UI/文字不再变形；相机视口同步用设计尺寸（在缩放后的坐标系里计算）。
+    const fitS = Math.min(canvas.width / 1280, canvas.height / 720);
+    const fitOx = (canvas.width - 1280 * fitS) / 2;
+    const fitOy = (canvas.height - 720 * fitS) / 2;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.fillStyle = '#151923';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.save();
+    ctx.translate(fitOx, fitOy);
+    ctx.scale(fitS, fitS);
 
-    const camera = computeCamera(sceneState, canvas.width, canvas.height);
+    const camera = computeCamera(sceneState, 1280, 720);
     // 世界 → 画布（屏幕空间）：x 同向、y 反向（世界朝上 ↔ 画布朝下）。无相机时原样直绘。
+    // 注意：这里已在 contain 的 scale 变换**内**，坐标系 = 1280×720 设计空间，视口中心必须用
+    // 设计尺寸（640/360）而不是真实 canvas 尺寸——用 canvas.width/2 会把场景中心整体右移、
+    // 与屏幕空间 UI（面板/HUD/按钮）分离（1785×832 窗口实测：场景中心偏到千分比 663）。
     const toCanvas = (wx, wy) => {
       if (!camera) return { x: wx, y: wy };
       return {
-        x: canvas.width / 2 + (wx - camera.x),
-        y: canvas.height / 2 - (wy - camera.y),
+        x: 640 + (wx - camera.x),
+        y: 360 - (wy - camera.y),
       };
     };
 
@@ -627,9 +660,14 @@
     if (typeof window !== 'undefined' && window.__P2_DEBUG) {
       ctx.fillStyle = '#d0d7e2';
       ctx.font = '14px sans-serif';
-      ctx.fillText('Project: ' + projectName + ' | Scene: ' + sceneState.name + ' | Lua update running', 12, canvas.height - 16);
+      ctx.fillText('Project: ' + projectName + ' | Scene: ' + sceneState.name + ' | Lua update running', 12, 704);
     }
-    return drawUi(ctx, uiText, images, pending);
+    // 动态 UI（面板/按钮/文字）也必须在 contain 变换**内**绘制：它与场景共用 1280×720
+    // 设计坐标系。若在 restore 之后画，微信窗口比例≠16:9 时动态 UI 按原始设计坐标铺在
+    // 画布左上（未缩放居中），与场景错位分离（1785×832 实机截图）。
+    const uiCount = drawUi(ctx, uiText, images, pending);
+    ctx.restore();
+    return uiCount;
   }
 
   function luaQuote(text) {
@@ -682,6 +720,7 @@ __p2_ui_panels = {}
 __p2_ui_texts = {}
 __p2_ui_bars = {}
 __p2_ui_images = {}
+__p2_scene_text_hidden = {}
 __p2_alive = {}
 -- 运行期改写的渲染数据（syncLuaScene 每帧取走）：sprite.set / animation.attach /
 -- tilemap.set_cell / tilemap.set_texture / entity.spawn。引擎换场景时整张 world 重建
@@ -730,7 +769,11 @@ function __p2_apply_virtual_input()
   if type(__p2_input.keys) ~= 'table' then __p2_input.keys = {} end
   if type(__p2_input.just) ~= 'table' then __p2_input.just = {} end
   for name in pairs(__p2_virtual_keys) do __p2_input.keys[name] = true end
-  for name in pairs(__p2_virtual_just) do __p2_input.just[name] = true end
+  -- 按下边沿不跨帧重放：input.virtual_pressed 注入当帧已把键写进 __p2_input.just，
+  -- 这里若再把 __p2_virtual_just 并入 just，toggle 类动作（inventory/quest/pause 等绑定
+  -- 到虚拟按钮的键）会在下一帧重放一次边沿——背包打开后立刻被同一动作关闭，面板只存活
+  -- 一帧（微信实机"点击背包按钮没有渲染背包UI"的根因）。__p2_virtual_just 仅作注入登记，
+  -- 清空即可，不写回 just。
   __p2_virtual_just = {}
 end
 -- 场景与地图宿主 API。引擎事实（core/script.rs 的 scene.load / map.goto）：
@@ -1555,6 +1598,18 @@ function ui.show(id)
     if entry then entry.visible = true end
   end
 end
+-- 场景文字实体显隐（按实体名，如 BtnStartLabel）：true/省略=显示，false=隐藏。
+-- 标题界面把按钮标签接管为脚本绘制后，场景 Text 实体须隐藏，否则两层文字重叠。
+__p2_scene_text_hidden = {}
+function ui.scene_text_visible(name, visible)
+  local key = tostring(name or '')
+  if visible == false then __p2_scene_text_hidden[key] = true else __p2_scene_text_hidden[key] = nil end
+end
+function __p2_export_scene_text_hidden()
+  local out = {}
+  for k in pairs(__p2_scene_text_hidden) do out[#out + 1] = k end
+  return table.concat(out, ',')
+end
 function ui.clear(id)
   for _, store in ipairs({ __p2_ui_panels, __p2_ui_texts, __p2_ui_bars, __p2_ui_images }) do
     store[id] = nil
@@ -2189,6 +2244,16 @@ local bindings = {
   confirm = {'space'}, cancel = {'escape'},
   ui_up = {'up'}, ui_down = {'down'}, ui_left = {'left'}, ui_right = {'right'},
 }
+-- 菜单导航连发（引擎 input.action_repeat）：web 端没有"按住重复"的设备时钟，
+-- 语义取"一次边沿 = 一步"（与 DPad 一次触摸 = 一步、M20-08 手感一致），等价于
+-- action_pressed。必须实现而非缺失——missing 代理 __call 恒返回 truthy 替身，
+-- ui_step 里 input.action_repeat or input.action_pressed 会选中代理，方向键永远判定为"上"。
+function input.action_repeat(action)
+  for _,key in ipairs(bindings[tostring(action)] or {}) do
+    if __p2_input and __p2_input.just and __p2_input.just[key] then return true end
+  end
+  return false
+end
 function input.bindings(action) local result = {}; for i,k in ipairs(bindings[tostring(action)] or {}) do result[i]=k end; return result end
 function input.action_pressed(action)
   for _,key in ipairs(bindings[tostring(action)] or {}) do
@@ -2215,6 +2280,95 @@ function input.actions()
   for name in pairs(bindings) do names[#names + 1] = name end
   table.sort(names)
   return names
+end
+-- 面板焦点环（引擎 ui.focus_* 的 web 实现）：Lua 侧状态机。引擎事实：0 基序号、
+-- focus_open(id,count[,columns]) 建立/重建环、focus_move 按列网格方向移动、到边界环绕。
+-- 此前缺失 → panel_nav.lua 的 api() 探测到非函数 → 全部降级（open 不建环、move 返回
+-- nil），于是面板方向导航（方向键/DPad/摇杆）在 web 端全是死的——DPad 触摸后高亮不动的根因。
+local focus_rings = {}
+local function focus_ring(id)
+  local key = tostring(id)
+  local ring = focus_rings[key]
+  if not ring then
+    ring = { count = 0, cols = 1, index = 0 }
+    focus_rings[key] = ring
+  end
+  return ring
+end
+local function focus_clamp(ring, value)
+  if ring.count <= 0 then return 0 end
+  if value < 0 then return 0 end
+  if value >= ring.count then return ring.count - 1 end
+  return value
+end
+ui.focus_open = function(id, count, columns)
+  local ring = focus_ring(id)
+  ring.count = math.max(0, tonumber(count) or 0)
+  ring.cols = math.max(1, tonumber(columns) or 1)
+  ring.index = focus_clamp(ring, ring.index)
+  return ring.count
+end
+ui.focus_select = function(id, index)
+  local ring = focus_ring(id)
+  ring.index = focus_clamp(ring, math.floor(tonumber(index) or 0))
+  return true
+end
+ui.focus_index = function(id)
+  local ring = focus_rings[tostring(id)]
+  if not ring then return nil end
+  return ring.index
+end
+ui.focus_count = function(id)
+  local ring = focus_rings[tostring(id)]
+  if not ring then return 0 end
+  return ring.count
+end
+ui.focus_move = function(id, direction)
+  local ring = focus_ring(id)
+  if ring.count <= 0 then return 0 end
+  local cols = ring.cols
+  local rows = math.max(1, math.ceil(ring.count / cols))
+  local row = math.floor(ring.index / cols)
+  local col = ring.index % cols
+  if direction == "up" then
+    row = (row - 1 + rows) % rows
+  elseif direction == "down" then
+    row = (row + 1) % rows
+  elseif direction == "left" then
+    col = (col - 1 + cols) % cols
+  elseif direction == "right" then
+    col = (col + 1) % cols
+  end
+  ring.index = focus_clamp(ring, row * cols + col)
+  return ring.index
+end
+ui.focus_close = function(id)
+  focus_rings[tostring(id)] = nil
+  return true
+end
+-- 列表滚动（panel_nav.window 用）：尺寸登记 + 偏移计算；缺 API 时 panel_nav 恒返回 1。
+local scroll_state = {}
+ui.scroll_extents = function(id, view_h, total_h)
+  local s = scroll_state[tostring(id)] or { view = 0, total = 0, offset = 0 }
+  s.view = tonumber(view_h) or 0
+  s.total = tonumber(total_h) or 0
+  scroll_state[tostring(id)] = s
+  return true
+end
+ui.scroll_to_visible = function(id, y, h)
+  local s = scroll_state[tostring(id)] or { view = 0, total = 0, offset = 0 }
+  s.offset = math.max(0, tonumber(y) or 0)
+  scroll_state[tostring(id)] = s
+  return true
+end
+ui.scroll_offset = function(id)
+  local s = scroll_state[tostring(id)]
+  if not s then return 0 end
+  return s.offset or 0
+end
+ui.scroll_close = function(id)
+  scroll_state[tostring(id)] = nil
+  return true
 end
 `;
       // 先记下"这一侧到底缺哪些宿主全局"，再装兼容层——顺序不能反：`hostCompat` 会把缺的
@@ -2253,6 +2407,7 @@ end
     // 传 false = 只取快照、不推进速度与动画帧（首帧不该白走一次积分）。
     syncLuaScene(sceneState, callGlobal(L, '__p2_export_state', [false]));
     await loadGameFont();
+    refreshSceneTextHidden(L);
     let uiElements = drawScene(ctx, sceneState, images, projectName, callGlobal(L, '__p2_export_ui'), pendingTextures);
     let frameCount = 0;
     // '' 空闲 / 'loading' 切换在途 / 'failed' 切换失败（停链，让失败可见而不是无限重绘）
@@ -2275,6 +2430,7 @@ end
         // 换场景后的 on_create 会重新落位、挂形象、生成 NPC —— 与启动路径同理，
         // 立刻取一次快照，别让新场景的第一帧画成"只有场景本体"。
         syncLuaScene(sceneState, callGlobal(L, '__p2_export_state', [false]));
+        refreshSceneTextHidden(L);
         uiElements = drawScene(ctx, sceneState, images, projectName, callGlobal(L, '__p2_export_ui'), pendingTextures);
         markBoot('running', sceneState.name);
         console.log('[lua] 切换场景:', name, '实体', next.entities.size);
@@ -2410,6 +2566,7 @@ end
         // 切换在途：只重绘当前画面（表现上"画面不跳"），**不推 update**——新场景数据
         // 尚未就绪时跑 Lua 只会拿到半初始化状态。rAF 链保持不断，切换完成后自动恢复。
         if (sceneSwitch === 'loading') {
+          refreshSceneTextHidden(L);
           drawScene(ctx, sceneState, images, projectName, callGlobal(L, '__p2_export_ui'), pendingTextures);
           requestAnimationFrame(frame);
           return;
@@ -2421,6 +2578,7 @@ end
         if (pendingScene) {
           sceneSwitch = 'loading';
           applySceneSwitch(pendingScene);
+          refreshSceneTextHidden(L);
           drawScene(ctx, sceneState, images, projectName, callGlobal(L, '__p2_export_ui'), pendingTextures);
           requestAnimationFrame(frame);
           return;
@@ -2432,6 +2590,7 @@ end
         doString(L, '__p2_apply_virtual_input()', '__p2_virtual_input');
         const result = callGlobal(L, 'update');
         syncLuaScene(sceneState, callGlobal(L, '__p2_export_state'));
+        refreshSceneTextHidden(L);
         uiElements = drawScene(ctx, sceneState, images, projectName, callGlobal(L, '__p2_export_ui'), pendingTextures);
         frameCount += 1;
         const body = document.body || document.documentElement;

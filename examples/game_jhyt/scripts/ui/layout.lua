@@ -148,6 +148,11 @@ M.TOUCH = {
       { key = "confirm", label = "确定", x = 1160, y = 585, size = 80 },
     },
   },
+  -- 关闭按钮（×）：只在面板模式显示，位置 = **当前面板矩形右上角内侧**，不写死——
+  -- 由 virtual_pad 按 `rect.x + rect.w - dx, rect.y + dy` 推算（modal 面板与对话面板
+  -- 矩形不同）。audit_touch 用 inventory（modal 代表）与 dialogue 两个位置做
+  -- 越界 / 不压右栏文字 / 与 DPad 不重叠检查（quest/pause/shop 与 inventory 同矩形）。
+  close = { dx = 56, dy = 64, size = 44 },
   -- 按钮配色（语义 → RGB；绘制端只读这里，不再各自硬编码）。
   button_color = {
     primary = { 0.25, 0.55, 0.35 },   -- 交互 / DPad 确定
@@ -319,6 +324,30 @@ function M.audit_touch()
         cx = key.x,
         cy = key.y,
         r = size / 2,
+        group = "panel",
+      }
+    end
+  end
+  -- 关闭按钮：跟随面板矩形，audit 采样 inventory（modal 组代表，quest/pause/shop 同矩形）
+  -- 与 dialogue 两个位置；与 DPad 同屏（panel 组），必须都不重叠、不越界、不压右栏文字。
+  local close = touch.close
+  if type(close) ~= "table" then
+    issues[#issues + 1] = "layout.TOUCH.close 必须是 { dx, dy, size } 表"
+  else
+    local c_size = tonumber(close.size) or 0
+    local close_samples = {}
+    if type(M.PANEL.inventory) == "table" then
+      close_samples[#close_samples + 1] = { name = "inventory(modal)", rect = M.PANEL.inventory }
+    end
+    if type(M.PANEL.dialogue) == "table" then
+      close_samples[#close_samples + 1] = { name = "dialogue", rect = M.PANEL.dialogue }
+    end
+    for _, sample in ipairs(close_samples) do
+      circles[#circles + 1] = {
+        name = string.format("touch.close(%s)", sample.name),
+        cx = sample.rect.x + sample.rect.w - (tonumber(close.dx) or 0),
+        cy = sample.rect.y + (tonumber(close.dy) or 0),
+        r = c_size / 2,
         group = "panel",
       }
     end

@@ -144,12 +144,6 @@ local function heal_mode()
     or (state.is_mode("Shop") and not shop.ui_active())
     or (state.is_mode("Dialogue") and not dialogue.is_open())
   if stuck then
-    log.info("[heal] stuck mode=" .. tostring(state.mode)
-      .. " inv_active=" .. tostring(inventory_ui.ui_active())
-      .. " quest_active=" .. tostring(quest_ui.ui_active())
-      .. " pause_active=" .. tostring(pause_menu.ui_active())
-      .. " shop_active=" .. tostring(shop.ui_active())
-      .. " dlg_open=" .. tostring(dialogue.is_open()))
     state.set_mode("Playing")
     return true
   end
@@ -172,7 +166,6 @@ local function update_context()
   if input.action_pressed("pause") then
     pause_menu.open()
   elseif input.action_pressed("inventory") then
-    log.info("[ctx] inventory pressed -> open")
     inventory_ui.open()
   elseif input.action_pressed("quest") then
     quest_ui.open()

@@ -1063,8 +1063,26 @@ var WASM_MODULE_PATH = 'pkg/game_web_bg.wasm';
   // 是否与 wx.createCanvas() 返回的是同一个对象（true 时说明"首次调用"语义被我们用对了）。
   var canvasIsCreated = !!(createdCanvas && canvas === createdCanvas);
 
-  canvas.width = VIEW_WIDTH;
-  canvas.height = VIEW_HEIGHT;
+  // 画布跟随窗口**物理**尺寸（CSS 逻辑 × dpr）：微信把画布 fill 铺满窗口，画布若与窗口
+  // 比例不一致就会被**非等比拉伸**（开发者工具预览 1380×652 下横 1.08×、纵 0.91×，
+  // 画面拉伸 + 字体发糊的直接根因）。渲染端（web-runtime.js drawScene）把 1280×720
+  // 设计画布等比 contain 居中绘制（黑边），触摸也做同一逆变换（clientX → 设计坐标），
+  // 控件命中不受影响。`VIEW_WIDTH/VIEW_HEIGHT` 仍是**设计声明**（诊断/比对 project.toml 用）。
+  canvas.width = Math.max(1, Math.round(screenWidth * pixelRatio));
+  canvas.height = Math.max(1, Math.round(screenHeight * pixelRatio));
+  // 窗口尺寸变化（开发者工具拖动预览窗口 / 真机横竖屏切换）时重新跟随：
+  // 画布与窗口比例一旦失配，宿主 fill 就会重新出现非等比拉伸。runtime 的 drawScene/
+  // 输入逆变换每帧都从 canvas.width/height 现算，无需再通知。
+  if (typeof wx.onWindowResize === 'function') {
+    wx.onWindowResize(function (res) {
+      if (res && res.windowWidth > 0 && res.windowHeight > 0) {
+        screenWidth = res.windowWidth;
+        screenHeight = res.windowHeight;
+        canvas.width = Math.max(1, Math.round(screenWidth * pixelRatio));
+        canvas.height = Math.max(1, Math.round(screenHeight * pixelRatio));
+      }
+    });
+  }
   // 宿主 canvas 通常允许挂 own property（和 Image.src 同一套社区做法），但代理/冻结对象上
   // 赋值同样会**静默失败**——那样运行时的 canvas.addEventListener 就是 undefined，输入会
   // 整条失效而没有任何报错。这里回读校验，挂不上就换一个只做事件转发的包装对象

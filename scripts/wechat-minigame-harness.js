@@ -1207,17 +1207,21 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
   windowTarget.addEventListener('mouseup', () => { mouseBridgeEvents.push('up'); });
 
   return bootSettled.then(async () => {
-    // 触摸：落在**可见摇杆**（画布坐标 (150,585)；375×667 屏下 ≈ (44,542)）并向上拖动。
+    // 触摸：落在**可见摇杆**（画布坐标 (150,585)；375×667 屏等比 contain 后 ≈ (44,399)）
+    // 并向上拖动（设计 -93 → (150,492) ≈ 屏 (44,372)）。
     if (inputHandlers.onTouchStart) {
-      inputHandlers.onTouchStart({ touches: [{ identifier: 1, clientX: 44, clientY: 542 }], changedTouches: [{ identifier: 1, clientX: 44, clientY: 542 }] });
-      inputHandlers.onTouchMove({ touches: [{ identifier: 1, clientX: 44, clientY: 492 }], changedTouches: [{ identifier: 1, clientX: 44, clientY: 492 }] });
-      inputHandlers.onTouchEnd({ touches: [], changedTouches: [{ identifier: 1, clientX: 44, clientY: 492 }] });
+      inputHandlers.onTouchStart({ touches: [{ identifier: 1, clientX: 44, clientY: 399 }], changedTouches: [{ identifier: 1, clientX: 44, clientY: 399 }] });
+      inputHandlers.onTouchMove({ touches: [{ identifier: 1, clientX: 44, clientY: 372 }], changedTouches: [{ identifier: 1, clientX: 44, clientY: 372 }] });
+      inputHandlers.onTouchEnd({ touches: [], changedTouches: [{ identifier: 1, clientX: 44, clientY: 372 }] });
     }
     const stickKeys = drawnEvents.slice();
     const mouseBridge = mouseBridgeEvents.slice();
 
-    // 键盘（微信 PC 端）：ArrowUp → 'ArrowUp'
-    if (inputHandlers.onKeyDown) inputHandlers.onKeyDown({ key: 'ArrowUp', code: 'ArrowUp' });
+    // 键盘（微信 PC 端）：ArrowUp → 'ArrowUp'。drive-new-game 时**不在标题阶段按**：
+    // 标题界面按方向键会把焦点从"开始新游戏"移走（焦点环真实生效后），随后空格确认
+    // 会选中"退出江湖"→ app.quit → 启动路径断言全红。该用例的键盘桥证据改在主循环
+    // 确认进入玩法地图之后再补（见下）。
+    if (!driveNewGame && inputHandlers.onKeyDown) inputHandlers.onKeyDown({ key: 'ArrowUp', code: 'ArrowUp' });
 
     // 泵帧：运行时每帧会再次 requestAnimationFrame。逐帧记录绘制调用数，
     // 这样"只跑了第一帧就卡住"不会被误判为通过。
@@ -1229,22 +1233,57 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
     // --bag 固定开销：打开 35 帧（等 ui-summary %30 刷新）+ 关闭 35 帧；选择阶段另占 bagFrames 帧。
     const bagBudget = bagFrames > 0 ? (35 + bagFrames + 35) : 0;
     const moveBudget = (driveMove > 0 ? driveMove + 1 : 0) + (touchStickMove > 0 ? touchStickMove + 1 : 0) + (attackFrames > 0 ? attackFrames : 0) + bagBudget;
+    const failures = [];
+    // 标题单层断言的口径：drawnTexts 是**跨帧累计**数组（336 行声明后只 push 不重置），
+    // 直接 count 会把历史帧的同一标签重复计数（实测 4 次 = 4 帧 × 1 次）。所以只看
+    // **上一帧结束到断言时刻的新增**：单层 = 本帧恰好 1 条，场景层+脚本层重叠 = 2 条。
+    let prevDrawnLen = drawnTexts.length;
     for (let i = 0; i < (noFrames ? 0 : Math.max(0, frames - moveBudget)); i++) {
       // 玩家真实路径：按一下确认（空格）触发「开始新游戏」。按下一帧、松开下一帧，
       // 这样 `just_pressed` 只在一帧内为真（与引擎的 just_pressed 语义一致）。
       if (driveNewGame) {
-        if (i === driveFrame && inputHandlers.onKeyDown) inputHandlers.onKeyDown({ key: ' ', code: 'Space' });
+        if (i === driveFrame) {
+          if (inputHandlers.onKeyDown) inputHandlers.onKeyDown({ key: ' ', code: 'Space' });
+        }
         if (i === driveFrame + 1 && inputHandlers.onKeyUp) inputHandlers.onKeyUp({ key: ' ', code: 'Space' });
       }
       const callback = rafQueue.shift();
       if (!callback) break;
       callback(Date.now());
       stats.frames++;
+      // 标题断言放在 driveFrame-1 帧（标题最后完整帧）：确认帧（i===driveFrame）的 update
+      // 已消费标题 UI（切场景隐藏标签），该帧新增"开始新游戏"为 0 条，断言会误报。
+      if (driveNewGame && i === Math.max(0, driveFrame - 1)) {
+        // 标题按钮文字断言（**本帧新增**口径：drawnTexts 跨帧累计，slice(prevDrawnLen)
+        // 恰好是本帧画出的条目）。默认选中第 1 项 → hover 贴图会盖住场景文字；修复后
+        // 场景 Text 实体（BtnStartLabel 等）隐藏、脚本统一绘制全部按钮标签——本帧
+        // "开始新游戏"应恰好 1 条；2+ 即场景层与脚本层重叠（编辑器重叠文字根因）。
+        const titleNew = drawnTexts.slice(prevDrawnLen);
+        const titleTexts = drawnTexts.slice();
+        if (!titleTexts.some((t) => String(t).includes('开始新游戏'))) {
+          failures.push('[title] 选中按钮未重画标签文字：累计 drawnTexts 无 "开始新游戏"（hover 盖住场景文字且脚本未重画）');
+        }
+        if (!titleTexts.some((t) => String(t).includes('继续江湖'))) {
+          failures.push('[title] 按钮文字未渲染：累计 drawnTexts 无 "继续江湖"');
+        }
+        const startNew = titleNew.filter((t) => String(t).includes('开始新游戏'));
+        if (startNew.length !== 1) {
+          failures.push('[title] 按钮文字单层校验失败：本帧"开始新游戏"渲染 ' + startNew.length + ' 条（应为 1，2+ 即场景 Text 实体未隐藏 + 脚本层重叠）');
+        }
+      }
+      prevDrawnLen = drawnTexts.length;
       // 分包挂载/进度由帧循环驱动（只对 --subpackage delay 有效）：必须在 afterFrame 之后，
       // 这样"这一帧还没挂载"是真的没挂载，`denied_before_mount` 才有意义。
       pumpSubpackage();
       perFrameDraws.push(stats.drawOps);
       await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+
+    // drive-new-game 的键盘桥证据：此时空格确认已完成、已进入玩法地图（再按方向键
+    // 只是玩家移动输入，不干扰标题焦点环）。按下+立即释放，避免 keys['up'] 残留。
+    if (driveNewGame && inputHandlers.onKeyDown) {
+      inputHandlers.onKeyDown({ key: 'ArrowUp', code: 'ArrowUp' });
+      if (inputHandlers.onKeyUp) inputHandlers.onKeyUp({ key: 'ArrowUp', code: 'ArrowUp' });
     }
 
     const bootState = adapter.getAttribute('data-p2-boot');
@@ -1292,7 +1331,6 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
       }
     }
 
-    const failures = [];
     const remoteStats = adapter.remoteStats ? adapter.remoteStats() : null;
     const elapsedMs = Date.now() - remoteStartedAt;
 
@@ -1341,11 +1379,10 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
         if (!info.isMain) canvasFailures.push('canvas 不是全局上屏画布（isMain=false）');
       }
       if (adapter.canvas !== canvas) canvasFailures.push('适配层的 canvas 不是宿主的上屏画布');
-      // 画布尺寸 = 游戏的**横版设计分辨率**（「横屏方案A」1280×720；M32 一度是竖版 720×1280）。
-      // 这个断言的价值在于"适配层真的把上屏画布设成了它的逻辑分辨率"——写死旧尺寸会在
-      // 游戏改版面时假失败，所以它与适配层的 VIEW_WIDTH/VIEW_HEIGHT 是**同一件事**，
-      // 改一处必须改另一处（外加 game.json 的 deviceOrientation 与 webgl 侧 canvas 尺寸）。
-      if (canvas.width !== 1280 || canvas.height !== 720) canvasFailures.push(`上屏画布尺寸未设置（${canvas.width}x${canvas.height}，期望 1280x720）`);
+      // 画布尺寸 = 窗口**物理**尺寸（windowWidth×windowHeight×dpr；本用例 mock 375×667@1）。
+      // 设计画布 1280×720 由 web-runtime 等比 contain 适配（画布不再要求恰等于设计分辨率，
+      // 否则微信按窗口比例 fill 会把画面非等比拉伸、文字发糊——开发者工具 1380×652 的实证）。
+      if (canvas.width !== 375 || canvas.height !== 667) canvasFailures.push(`上屏画布尺寸未跟随窗口（${canvas.width}x${canvas.height}，期望 375x667 = windowWidth×windowHeight×dpr）`);
       const mainOps = canvas.__ctx ? canvas.__ctx.__ops : 0;
       const offscreenOps = offscreenCanvas.__ctx ? offscreenCanvas.__ctx.__ops : 0;
       if (mainOps <= 0) canvasFailures.push('上屏画布上没有任何绘制调用（画到看不见的地方去了）');
@@ -1634,13 +1671,14 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
         failures.push('--touch-stick-move 前拿不到主角坐标（data-p2-world=' + readWorld() + '）');
         touchStickEvidence = 'no-player';
       } else {
-        // 可见摇杆底圆中心在画布 (150,585)（375×667 屏 ≈ (44,542)），向上推 50 CSS px。
-        const stickDown = { touches: [{ identifier: 9, clientX: 44, clientY: 542 }], changedTouches: [{ identifier: 9, clientX: 44, clientY: 542 }] };
-        const stickUp = { touches: [{ identifier: 9, clientX: 44, clientY: 492 }], changedTouches: [{ identifier: 9, clientX: 44, clientY: 492 }] };
+        // 可见摇杆底圆中心在画布 (150,585)（375×667 屏等比 contain 后 ≈ (44,399)），
+        // 向上推到设计 (150,492) ≈ 屏 (44,372)，越过 base 半径后轴饱和（与旧 50 CSS px 一致）。
+        const stickDown = { touches: [{ identifier: 9, clientX: 44, clientY: 399 }], changedTouches: [{ identifier: 9, clientX: 44, clientY: 399 }] };
+        const stickUp = { touches: [{ identifier: 9, clientX: 44, clientY: 372 }], changedTouches: [{ identifier: 9, clientX: 44, clientY: 372 }] };
         if (inputHandlers.onTouchStart) inputHandlers.onTouchStart(stickDown);
         if (inputHandlers.onTouchMove) inputHandlers.onTouchMove(stickUp);
         for (let i = 0; i < touchStickMove; i++) { if (!(await pump())) break; }
-        if (inputHandlers.onTouchEnd) inputHandlers.onTouchEnd({ touches: [], changedTouches: [{ identifier: 9, clientX: 44, clientY: 492 }] });
+        if (inputHandlers.onTouchEnd) inputHandlers.onTouchEnd({ touches: [], changedTouches: [{ identifier: 9, clientX: 44, clientY: 372 }] });
         await pump();
         const after = readPlayer(readWorld());
         if (!after) {
@@ -1657,7 +1695,7 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
         }
       }
     }
-    // 攻击按钮端到端：触摸攻击按钮（画布 (1165,480) ≈ 375×667 屏 (341,445)）→ 适配层
+    // 攻击按钮端到端：触摸攻击按钮（画布 (1165,480) ≈ 375×667 屏等比 contain 后 (341,369)）→ 适配层
     // 指针事件 → virtual_pad 命中测试（press_position）→ 注入 keyj → 运行时翻译成动作键
     // 'j' → 动作层 attack → combat.player_attack("strike")。此前 web 运行时没实现
     // physics.positions_in_radius：攻击判定窗内每帧调用它，每帧打一条 [lua missing-host-api]
@@ -1674,8 +1712,8 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
         await new Promise((resolve) => setTimeout(resolve, 0));
         return true;
       };
-      const attackDown = { touches: [{ identifier: 11, clientX: 341, clientY: 445 }], changedTouches: [{ identifier: 11, clientX: 341, clientY: 445 }] };
-      const attackUp = { touches: [], changedTouches: [{ identifier: 11, clientX: 341, clientY: 445 }] };
+      const attackDown = { touches: [{ identifier: 11, clientX: 341, clientY: 369 }], changedTouches: [{ identifier: 11, clientX: 341, clientY: 369 }] };
+      const attackUp = { touches: [], changedTouches: [{ identifier: 11, clientX: 341, clientY: 369 }] };
       let presses = 0;
       for (let i = 0; i < attackFrames; i++) {
         if (i % 20 === 0) {
@@ -1700,10 +1738,11 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
       }
     }
     // --- 背包按钮端到端 + 面板内十字键选择（用户报"点击背包按钮没有渲染背包UI"的回归）。
-    // 背包按钮画布 (1175,360) ≈ 375×667 屏 (344,334)：触摸 → 适配层指针事件 → virtual_pad
+    // 背包按钮画布 (1175,360) ≈ 375×667 屏等比 contain 后 (344,334)（y 恰在等比中心附近不变）：
+    // 触摸 → 适配层指针事件 → virtual_pad
     // 命中（press_position）→ 注入 keyi → 运行时翻译动作键 'i' → 动作层 inventory →
     // inventory_ui.open() → render()（ui-summary 出现 X:bp:title = 背包面板真的渲染了）。
-    // 打开后按钮簇隐藏、十字键（DPad）接管：触摸 DPad「下」（画布 (1160,675) ≈ 屏 (340,625)）
+    // 打开后按钮簇隐藏、十字键（DPad）接管：触摸 DPad「下」（画布 (1160,675) ≈ 屏等比 contain 后 (340,426)）
     // → 注入 'down' → ui_step()/action_pressed("ui_down") → inventory_ui.move_dir("down") →
     // 高亮从第 1 行移到第 2 行（画布文本出现 "> 2."）。这条就是"微信端打开面板选不了工具"的
     // 端到端回归：背包按钮或 DPad 链路断了这条必红。
@@ -1738,16 +1777,19 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
       let dpadMoved = false;
       if (bagFrames > 0) {
         const mark = drawnTexts.length;
-        const dpadDown = { touches: [{ identifier: 13, clientX: 340, clientY: 625 }], changedTouches: [{ identifier: 13, clientX: 340, clientY: 625 }] };
-        const dpadUp = { touches: [], changedTouches: [{ identifier: 13, clientX: 340, clientY: 625 }] };
+        const dpadDown = { touches: [{ identifier: 13, clientX: 340, clientY: 426 }], changedTouches: [{ identifier: 13, clientX: 340, clientY: 426 }] };
+        const dpadUp = { touches: [], changedTouches: [{ identifier: 13, clientX: 340, clientY: 426 }] };
         if (inputHandlers.onTouchStart) inputHandlers.onTouchStart(dpadDown);
         if (inputHandlers.onTouchEnd) inputHandlers.onTouchEnd(dpadUp);
         for (let i = 0; i < bagFrames; i++) { if (!(await pumpBag())) break; }
         dpadMoved = drawnTexts.slice(mark).some((text) => /^> 2\./.test(String(text)));
       }
-      // ③ 回到玩法态（按钮簇可见）再点背包按钮 → 关闭
-      if (inputHandlers.onTouchStart) inputHandlers.onTouchStart(bagDown);
-      if (inputHandlers.onTouchEnd) inputHandlers.onTouchEnd(bagUp);
+      // ③ 触摸关闭按钮（×，画布 (824,104) ≈ 屏等比 contain 后 (241,258)）→ 注入 cancel → 背包关闭。
+      // 每个弹出面板在面板态右上角内侧显示 ×，命中走 virtual_pad 面板分支注入 cancel。
+      const closeDown = { touches: [{ identifier: 14, clientX: 241, clientY: 258 }], changedTouches: [{ identifier: 14, clientX: 241, clientY: 258 }] };
+      const closeUp = { touches: [], changedTouches: [{ identifier: 14, clientX: 241, clientY: 258 }] };
+      if (inputHandlers.onTouchStart) inputHandlers.onTouchStart(closeDown);
+      if (inputHandlers.onTouchEnd) inputHandlers.onTouchEnd(closeUp);
       for (let i = 0; i < 35; i++) { if (!(await pumpBag())) break; }
       const closed = !uiSummary().includes('bp:title');
       bagEvidence = 'pressed=2 opened=' + (opened ? 'y' : 'n') + ' dpad_moved=' + (dpadMoved ? 'y' : 'n') + ' closed=' + (closed ? 'y' : 'n');
@@ -1758,7 +1800,7 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
         failures.push('背包内触摸十字键「下」后高亮没有从第 1 行移到第 2 行（画布未出现 "> 2."）：DPad 注入 → ui_down → move_dir 链路没生效');
       }
       if (!closed) {
-        failures.push('玩法态再点背包按钮后背包面板没有关闭（ui-summary 仍有 bp:title）');
+        failures.push('面板态触摸关闭按钮（×）后背包面板没有关闭（ui-summary 仍有 bp:title）');
       }
     }
     const worldSummary = String(adapter.getAttribute('data-p2-world') || '');

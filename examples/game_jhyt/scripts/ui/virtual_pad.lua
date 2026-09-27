@@ -28,6 +28,16 @@ local COLORS = layout.TOUCH.button_color
 
 -- 面板导航十字键（DPad + 中央确定），几何在 layout.TOUCH.dpad；与玩法按钮簇不同屏。
 local DPAD_KEYS = (layout.TOUCH.dpad and layout.TOUCH.dpad.keys) or {}
+-- 关闭按钮（×）：跟随当前面板矩形右上角内侧（modal 四面板共用 inventory 矩形，
+-- 对话面板用 dialogue 矩形）。几何偏移（dx/dy/size）定义在 layout.TOUCH.close。
+local PANEL_RECT = {
+  Inventory = layout.PANEL.inventory,
+  Quest = layout.PANEL.quest,
+  Pause = layout.PANEL.pause,
+  Shop = layout.PANEL.shop,
+  Dialogue = layout.PANEL.dialogue,
+}
+local CLOSE = layout.TOUCH.close
 -- 十字键方向 → 注入的物理键名：面板导航走引擎物理键 up/down/left/right（bindings 的
 -- ui_up/ui_down/...），中央确定走 space（bindings confirm）。这些不是 keyX 形式，
 -- 运行时 __p2_virtual_name 原样返回，正好命中动作层（与摇杆注入 keyw → 'w' 同思路）。
@@ -56,12 +66,24 @@ local stick_dx, stick_dy = 0, 0
 local last_dir = { up = false, down = false, left = false, right = false }
 local button_down = {}
 local dpad_down = {}
+-- 关闭按钮按下态（只发一次 cancel 边沿；面板关闭即随面板态退出，无需跨帧按住）。
+local close_down = false
 -- 面板模式切换的边沿：只在 玩法↔面板 变化那一帧释放对侧控件的残留按住态。
 local panel_active = false
 
 local function in_circle(px, py, cx, cy, r)
   local dx, dy = px - cx, py - cy
   return dx * dx + dy * dy <= r * r
+end
+
+-- 关闭按钮几何：当前面板矩形右上角内侧。
+local function close_geometry()
+  local rect = PANEL_RECT[state.mode] or layout.PANEL.inventory
+  return {
+    x = rect.x + rect.w - CLOSE.dx,
+    y = rect.y + CLOSE.dy,
+    size = CLOSE.size,
+  }
 end
 
 -- 文本居中用的半宽；宿主没有 `ui.measure_text`（或字体不可用）时按 0.5×字号×字数估。
@@ -96,7 +118,6 @@ local function button_press(index, key)
     return
   end
   button_down[index] = true
-  log.info("[vp] button_press " .. tostring(key) .. " idx=" .. tostring(index))
   input.virtual_pressed(key)
   input.virtual_key(key, true)
 end
@@ -134,6 +155,7 @@ end
 function M.release_all()
   stick_active = false
   stick_dx, stick_dy = 0, 0
+  close_down = false
   release_all_dirs()
   for index, btn in ipairs(BUTTONS) do
     button_release(index, btn.key)
@@ -198,7 +220,6 @@ function M.update()
   local is_panel = not state.is_mode("Playing")
   if is_panel ~= panel_active then
     panel_active = is_panel
-    log.info("[vp] mode=" .. tostring(state.mode) .. " is_panel=" .. tostring(is_panel))
     if is_panel then
       stick_active = false
       stick_dx, stick_dy = 0, 0
@@ -213,6 +234,16 @@ function M.update()
     end
   end
   if is_panel then
+    -- 关闭按钮（×）：命中即注入一次 cancel 边沿（面板关闭动作吃 just；跨帧按住不重发）。
+    local cg = close_geometry()
+    if close_down then
+      if mouse_released then
+        close_down = false
+      end
+    elseif mouse_pressed and in_circle(press_x, press_y, cg.x, cg.y, cg.size / 2) then
+      close_down = true
+      input.virtual_pressed("cancel")
+    end
     for index, key in ipairs(DPAD_KEYS) do
       if dpad_down[index] then
         if mouse_released then
@@ -221,7 +252,6 @@ function M.update()
           input.virtual_key(DPAD_PHYSICAL[key.dir or key.key], true)
         end
       elseif mouse_pressed and in_circle(press_x, press_y, key.x, key.y, key.size / 2) then
-        log.info("[vp] dpad_hit " .. tostring(key.dir or key.key) .. " press=" .. tostring(press_x) .. "," .. tostring(press_y))
         dpad_press(index, DPAD_PHYSICAL[key.dir or key.key])
       end
     end
@@ -264,7 +294,6 @@ function M.update()
         input.virtual_key(btn.key, true)
       end
     elseif mouse_pressed and in_circle(press_x, press_y, btn.x, btn.y, btn.size / 2) then
-      log.info("[vp] hit " .. tostring(btn.key) .. " press=" .. tostring(press_x) .. "," .. tostring(press_y))
       button_press(index, btn.key)
     end
   end
@@ -276,15 +305,24 @@ function M.draw()
   end
   ui_text.begin("vp")
 
-  -- 面板模式：只画十字键（方向键用 system 灰、中央确定用 primary 绿；按下提亮）。
+  -- 面板模式：只画十字键（方向键用 system 灰、中央确定用 primary 绿；按下提亮）
+  -- 与右上角关闭按钮（×）。
   if not state.is_mode("Playing") then
+    local cg = close_geometry()
+    local c_radius = cg.size / 2
+    local c_pressed = close_down
+    local c_cc = COLORS.system
+    ui.circle("vp:close_ring", cg.x, cg.y, c_radius + 3, 0.95, 0.95, 0.95, c_pressed and 0.42 or 0.30)
+    ui.circle("vp:close_btn", cg.x, cg.y, c_radius, c_cc[1], c_cc[2], c_cc[3], c_pressed and 0.92 or 0.78)
+    local cfont = math.max(11, c_radius * 0.62)
+    ui_text.draw("vp", "vp:close_x", cg.x - half_width("×", cfont), cg.y - cfont * 0.5, cfont, cg.size, "×")
     for index, key in ipairs(DPAD_KEYS) do
       local pressed = dpad_down[index]
       local radius = key.size / 2
       local color = (key.key == "confirm") and COLORS.primary or COLORS.system
-      local ring_alpha = pressed and 0.27 or 0.15
-      local body_alpha = pressed and 0.85 or 0.55
-      ui.circle("vp:dring" .. index, key.x, key.y, radius + 3, 0.9, 0.9, 0.9, ring_alpha)
+      local ring_alpha = pressed and 0.42 or 0.30
+      local body_alpha = pressed and 0.92 or 0.78
+      ui.circle("vp:dring" .. index, key.x, key.y, radius + 3, 0.95, 0.95, 0.95, ring_alpha)
       ui.circle("vp:dbtn" .. index, key.x, key.y, radius, color[1], color[2], color[3], body_alpha)
       local label = key.label or ""
       local font = math.max(11, radius * 0.42)
@@ -296,16 +334,18 @@ function M.draw()
     return
   end
 
-  -- 摇杆：外圈（按下时提亮）+ 底圆 + 摇杆头。
-  local stick_alpha = stick_active and 0.7 or 0.45
-  ui.circle("vp:stick_ring", STICK.cx, STICK.cy, STICK.base_r + 4, 0.15, 0.15, 0.18, stick_alpha)
-  ui.circle("vp:stick_base", STICK.cx, STICK.cy, STICK.base_r, 0.25, 0.25, 0.30, stick_alpha)
+  -- 摇杆：亮白外圈（深色地面上也清晰）+ 提亮底圆 + 摇杆头。
+  -- 编辑器实测：旧配色（0.15/0.25/0.55 深灰蓝、alpha 0.45）叠在深灰地面/建筑上几乎隐形，
+  -- 微信深色场景同理。外圈改用亮灰白（对比深色地面靠**亮度差**而非透明度差）。
+  local stick_alpha = stick_active and 0.8 or 0.62
+  ui.circle("vp:stick_ring", STICK.cx, STICK.cy, STICK.base_r + 4, 0.88, 0.88, 0.92, stick_alpha)
+  ui.circle("vp:stick_base", STICK.cx, STICK.cy, STICK.base_r, 0.34, 0.34, 0.40, stick_alpha)
   ui.circle(
     "vp:stick_knob",
     STICK.cx + stick_dx,
     STICK.cy + stick_dy,
     STICK.knob_r,
-    0.55, 0.55, 0.65, 0.8
+    0.78, 0.78, 0.86, 0.92
   )
 
   -- 按钮：外圈描边 + 主体 + 左上高光 + 居中标签（按下提亮）。
@@ -313,9 +353,10 @@ function M.draw()
     local pressed = button_down[index]
     local radius = btn.size / 2
     local color = BUTTON_COLOR[btn.key] or COLORS.system
-    local ring_alpha = pressed and 0.27 or 0.15
-    local body_alpha = pressed and 0.85 or 0.55
-    ui.circle("vp:ring" .. index, btn.x, btn.y, radius + 3, 0.9, 0.9, 0.9, ring_alpha)
+    -- 对比度：body 0.55→0.78、ring 0.15→0.30（旧值在编辑器浅色场景上显得"只有轮廓、虚"）
+    local ring_alpha = pressed and 0.42 or 0.30
+    local body_alpha = pressed and 0.92 or 0.78
+    ui.circle("vp:ring" .. index, btn.x, btn.y, radius + 3, 0.95, 0.95, 0.95, ring_alpha)
     ui.circle("vp:btn" .. index, btn.x, btn.y, radius, color[1], color[2], color[3], body_alpha)
     ui.circle(
       "vp:hl" .. index,
