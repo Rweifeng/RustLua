@@ -49,7 +49,7 @@ cargo run -p editor -- --project ..\examples\game_jhyt --check
 |---|---|---|
 | PC | `scripts\package.ps1 -ProjectRoot examples/game_jhyt` | **已验收**（M31）：干净目录可运行、`pack/` 只读、存档与设置写用户数据目录 |
 | WebGL | 加 `-Platform webgl` | **产物层**：缺失宿主 API 全局 = 0、启动路径不再因缺失全局停下（2026-09-19 无头 Edge 复测），但**不等于**「浏览器内跑通完整剧本」，按实验性对待 |
-| 微信小游戏 | 加 `-Platform wechat-minigame`（默认主包 + 单分包） | **产物层**：切分、配额、白名单改名与 5 条分包 harness 用例全绿；**真机首次跑通前不作平台承诺** |
+| 微信小游戏 | 加 `-Platform wechat-minigame`（默认主包 + 单分包） | **已真机验收**（2026-09-27，Android）：启动进山庄、虚拟摇杆移动、按钮交互全通；产物层切分、配额、白名单与 harness 用例（含摇杆链路）全绿 |
 | 编辑器绿色版 | `scripts\package-engine.ps1 -Zip` | 免安装包：release 三件套 + 字体 + 样例工程 + 双击即用的 bat |
 
 平台契约、体积账与已知边界分别见 [docs/32](docs/32-webgl-浏览器平台验收.md)、

@@ -644,6 +644,21 @@ if (-not $SkipRuntime) {
     if ($playOkLine -match 'd=0,0') { throw "玩法路径用例自报位移为 0（主角没动却仍然通过）：$playOkLine" }
     Write-Host $playOkLine -ForegroundColor DarkGray
 
+    # 摇杆链路（docs/34 质量门第 6 条）：`--drive-move` 验证的是**键盘**注入；触屏是微信小游戏
+    # 的主输入，单独成用例——触摸 → 指针事件 → virtual_pad 命中 → 键注入 → 动作层 → 世界移动，
+    # 位移 d≠0 才通过。此前只能手动驱动 harness 验证，回归会静默漏过，故这里接进门禁。
+    $stickArgs = @("--drive-new-game", "--expect-runtime-spawns", "--touch-stick-move", "40", "--frames", "240")
+    if ($isThinPack) { $stickArgs += @("--remote", "thin", "--remote-root", $assetPackDir) }
+    $stickCase = Invoke-HarnessCase -ExtraArgs $stickArgs -Label "play-path-touchstick"
+    if ($stickCase.ExitCode -ne 0) { throw "摇杆链路用例失败（--drive-new-game --expect-runtime-spawns --touch-stick-move, exit $($stickCase.ExitCode)）" }
+    $stickOkLine = $stickCase.Lines | Where-Object { $_ -match "wechat_minigame_harness_ok" } | Select-Object -First 1
+    if (-not $stickOkLine) { throw "摇杆链路用例未输出 wechat_minigame_harness_ok" }
+    if (-not ($stickOkLine -match 'touch_stick="stick before=\d+,\d+ after=\d+,\d+ d=-?\d+,-?\d+"')) {
+        throw "摇杆链路用例没有自报位移证据（缺少 touch_stick=「stick before=… after=… d=x,y」这段）：$stickOkLine"
+    }
+    if ($stickOkLine -match 'd=0,0') { throw "摇杆链路用例自报位移为 0（主角没动却仍然通过）：$stickOkLine" }
+    Write-Host $stickOkLine -ForegroundColor DarkGray
+
     # 远端配置的存在性要自洽：配了必须有、没配必须没有，且内容可解析。
     if ($hasRemoteConfig) {
         $remoteConfig = Get-Content -LiteralPath $remoteConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -663,7 +678,7 @@ if (-not $SkipRuntime) {
     elseif ($isThinPack) { " thin_case=ok" }
     else { "" }
     $remoteField = if ($isSubpackagePack) { "remote_fallback=n/a(分包形态不带远端配置)" } else { "remote_fallback=ok" }
-    Write-Host ("wechat_minigame_package_ok files={0} runtime=ok path_styles={1} asset_pack={2} {3} negatives={4} host_globals=ok,locked render_selfcheck=ok play_path=ok{5}" -f `
+    Write-Host ("wechat_minigame_package_ok files={0} runtime=ok path_styles={1} asset_pack={2} {3} negatives={4} host_globals=ok,locked render_selfcheck=ok play_path=ok,touch_stick=ok{5}" -f `
         $required.Count, ($pathStyles -join ','), $formName, $remoteField, (($negativeCases + @("image-src-frozen", "image-src-prototype", "image-callback-bridge", "boot-stall", "host-document-frozen")) -join ','), $formEvidence) -ForegroundColor Green
     if ($remoteOkLine) { Write-Host $remoteOkLine -ForegroundColor DarkGray }
 } else {
