@@ -3773,7 +3773,15 @@ impl RuntimeScene {
         let texts: Vec<(EntityId, UiText)> = self.script.with_world(|world| {
             let mut texts = Vec::new();
             world.for_each::<UiText>(|id, text| {
-                if crate::core::visibility::entity_visible_in(world, id, overlay_mask) {
+                // `ui.scene_text_visible(name, false)` 按实体名隐藏场景文字：
+                // 实体仍在场景与 UiLayout 布局里，仅跳过绘制（语义与 web 兼容层一致）。
+                let name_hidden = self
+                    .script
+                    .entity_name(id)
+                    .is_some_and(|name| self.script.scene_text_hidden().contains(&name));
+                if crate::core::visibility::entity_visible_in(world, id, overlay_mask)
+                    && !name_hidden
+                {
                     texts.push((id, text.clone()));
                 } else {
                     filtered += 1;

@@ -33,7 +33,7 @@ use crate::core::{
 use mlua::{Function, Lua, Result as LuaResult, Table, Value};
 use std::{
     cell::RefCell,
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fmt, fs,
     path::{Path, PathBuf},
     rc::Rc,
@@ -86,6 +86,10 @@ struct ScriptState {
     last_update_micros: u64,
     assets: BTreeMap<String, String>,
     ui: BTreeMap<String, UiText>,
+    /// `ui.scene_text_visible(name, false)` 登记的场景文字实体按名隐藏集。
+    /// 语义与 web 兼容层 `__p2_scene_text_hidden` 对齐：实体仍在场景里
+    /// （照常参与 UiLayout 布局），仅绘制场景文字时跳过该实体。
+    scene_text_hidden: BTreeSet<String>,
     ui_bars: BTreeMap<String, UiBar>,
     save_data: BTreeMap<String, String>,
     physics: PhysicsWorld,
@@ -1296,6 +1300,12 @@ impl LuaRuntime {
     ) -> R {
         let state = self.state.borrow();
         f(&state.ui, &state.ui_bars)
+    }
+
+    /// 场景文字按名隐藏集（`ui.scene_text_visible` 写入）的只读视图。
+    #[must_use]
+    pub fn scene_text_hidden(&self) -> BTreeSet<String> {
+        self.state.borrow().scene_text_hidden.clone()
     }
 
     /// Gives the host a read view of runtime Lua-created UI panels/images/grids.
@@ -5873,6 +5883,22 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
             Ok(())
         })?,
     )?;
+    let s = Rc::clone(&state);
+    ui.set(
+        "scene_text_visible",
+        // 场景文字实体按名显隐：`visible == false` 隐藏，其余（true / 省略）显示。
+        // 语义与 web 兼容层 `__p2_scene_text_hidden` 对齐（title_menu 隐藏场景层
+        // 按钮标签、改由脚本统一绘制，避免两层文字重叠）。
+        lua.create_function(move |_, (name, visible): (String, Option<bool>)| {
+            let mut state = s.borrow_mut();
+            if visible == Some(false) {
+                state.scene_text_hidden.insert(name);
+            } else {
+                state.scene_text_hidden.remove(&name);
+            }
+            Ok(())
+        })?,
+    )?;
     lua.globals().set("ui", &ui)?;
     let s = Rc::clone(&state);
     ui.set(
@@ -9171,6 +9197,39 @@ mod tests {
             huge.font_size,
             Some(24.0),
             "optional font_size argument is honored"
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    /// `ui.scene_text_visible(name, visible)`：false 登记进隐藏集、非 false 移除；
+    /// 缺失（nil）与 true 均视为显示。语义与 web 兼容层 `__p2_scene_text_hidden` 对齐。
+    #[test]
+    fn ui_scene_text_visible_toggles_hidden_set() {
+        let mut runtime = LuaRuntime::new().unwrap();
+        let path = script(
+            "ui.scene_text_visible('BtnStartLabel', false)\nfunction update() return 'ok' end",
+        );
+        runtime.execute_project_script(&path).unwrap();
+        runtime.call_update().unwrap();
+        assert!(
+            runtime.scene_text_hidden().contains("BtnStartLabel"),
+            "false registers the name as hidden"
+        );
+        let _ = fs::remove_file(path);
+        let mut runtime = LuaRuntime::new().unwrap();
+        let path = script(
+            "ui.scene_text_visible('BtnStartLabel', true)\nui.scene_text_visible('BtnExitLabel', nil)\nfunction update() return 'ok' end",
+        );
+        runtime.execute_project_script(&path).unwrap();
+        runtime.call_update().unwrap();
+        let hidden = runtime.scene_text_hidden();
+        assert!(
+            !hidden.contains("BtnStartLabel"),
+            "true removes the name from the hidden set"
+        );
+        assert!(
+            !hidden.contains("BtnExitLabel"),
+            "nil (omitted) counts as visible"
         );
         let _ = fs::remove_file(path);
     }

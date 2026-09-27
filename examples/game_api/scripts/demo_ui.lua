@@ -390,6 +390,14 @@ local function handle_keys()
     elseif input.just_pressed("e") then
         ui.show(PANEL_ID)
         note = "e: ui.show(外框) -> 面板与文本一起回来"
+    elseif input.just_pressed("v") then
+        -- `ui.scene_text_visible(name, visible)`：按**实体名**隐藏/显示场景文字实体
+        -- （实体仍在场景与 UiLayout 布局里，仅跳过文字绘制；false=隐藏，true/省略=显示）。
+        -- 本演示场景没有 Text 实体，成对 hide+show 只为覆盖 API 面；实际工程用它做
+        -- 标题菜单"场景层文字让位给脚本统一绘制"（见 game_jhyt/title_menu.lua）。
+        ui.scene_text_visible("demo_scene_text", false)
+        ui.scene_text_visible("demo_scene_text", true)
+        note = "v: ui.scene_text_visible 按实体名显隐场景文字（hide+show 成对，画面不变）"
     elseif input.just_pressed("x") then
         -- `ui.clear(id)` 删**面板 / 图片 / 网格**（外加 `<id>:tooltip` / `<id>:title` 文本），
         -- 但**不删同 id 的普通动态文本** ⇒ 外框、网格、HP 图标都没了，

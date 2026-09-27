@@ -5,6 +5,21 @@
 度量数字（µs、分配字节、测试计数）、逐条证据、golden 断言与实施细节留在能力文档与任务文件里，不在本文重复：
 重构过程见 [docs/53](docs/53-WP0增量场景帧基准与每帧分配.md) 与 [docs/40](docs/40-引擎全面重构计划.md)，已完成任务的验收记录见 `tasks/done/`。
 
+## Unreleased — 引擎侧注册 `ui.scene_text_visible`（与 web 兼容层同步）
+
+主题：`ui.scene_text_visible(name, visible)` 从 web 兼容层（fengari/web-runtime.js）
+补到引擎 mlua 侧，消除标题菜单单层文字改动（并行批次，见 a4675c5）在引擎 headless 回归上的 3 项红。
+
+- **引擎实现**（`engine/crates/engine/src/core/script.rs`）：`ui` 表注册
+  `scene_text_visible`（false 登记、其余移除）；`ScriptState` 新增
+  `scene_text_hidden`（按实体名隐藏集）；`runtime_scene.rs` 的
+  `push_scene_ui` 收集 UiText 时按实体名跳过（实体仍在场景与 UiLayout 布局里，
+  仅不绘制文字——与 web 端 `__p2_scene_text_hidden` 语义一致）。
+- **验证**：单测 `ui_scene_text_visible_toggles_hidden_set`；引擎 lib 891 测试全绿
+  （含此前 3 项红 `scene_declared_camera_bounds_refresh_after_scene_switch` /
+  `title_scene_stick` / `gamepad_navigation` 复绿，以及示例工程演示覆盖门
+  补 `demo_ui.lua` v 键）；cargo fmt / clippy 过。
+
 ## Unreleased — WP4 ④ Tilemap chunk 级脏重建（提前实现：触发条件未出现）
 
 主题：docs/40 §3 WP4 ④ 的最后一块——Tilemap 编辑代价从 O(总格数) 降为 O(块数)。
