@@ -490,6 +490,11 @@ impl LuaRuntime {
         // M22/W3：逻辑时间按**每个固定步**累加（`set_input` 每步一次），
         // 因此 catch-up 帧（一帧多步）也走同样的时间线，连发节奏与帧率无关。
         state.logical_ms += f64::from(state.delta_seconds) * 1000.0;
+        // 触屏虚拟键（`input.virtual_key`）是**跨帧保持**的按住态，脚本只在抬起时
+        // 注入 `false`；宿主每帧喂入的新快照若整份替换，会把上一帧的注入清空，
+        // 摇杆/虚拟按钮就永远读不到按住。这里把旧虚拟键并入新快照。
+        let mut input = input;
+        input.inherit_virtual_keys(&state.input);
         state.input = input;
     }
 
@@ -2682,6 +2687,28 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
         lua.create_function(move |_, name: String| {
             let state = s.borrow();
             Ok(state.input.action_just_released(&state.action_map, &name))
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    input.set(
+        "virtual_key",
+        lua.create_function(move |_, (name, down): (String, bool)| {
+            let mut state = s.borrow_mut();
+            if let Some(key) = KeyCode::from_text(&name.to_lowercase()) {
+                state.input.set_virtual_key(key, down);
+            }
+            Ok(())
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    input.set(
+        "virtual_pressed",
+        lua.create_function(move |_, name: String| {
+            let mut state = s.borrow_mut();
+            if let Some(key) = KeyCode::from_text(&name.to_lowercase()) {
+                state.input.set_virtual_pressed(key);
+            }
+            Ok(())
         })?,
     )?;
     let s = Rc::clone(&state);
@@ -5928,25 +5955,25 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
             Ok(result)
         })?,
     )?;
-/// 解析 "left,right,top,bottom" 九宫格边距（像素，单位是作者空间像素）；空/非法返回 None。
-fn parse_nine_slice(value: &str) -> Option<[f32; 4]> {
-    let parts: Vec<&str> = value.split(',').map(str::trim).collect();
-    if parts.len() != 4 {
-        return None;
-    }
-    let mut out = [0.0_f32; 4];
-    for (i, part) in parts.iter().enumerate() {
-        let v: f32 = part.parse().ok()?;
-        if !v.is_finite() || v < 0.0 {
+    /// 解析 "left,right,top,bottom" 九宫格边距（像素，单位是作者空间像素）；空/非法返回 None。
+    fn parse_nine_slice(value: &str) -> Option<[f32; 4]> {
+        let parts: Vec<&str> = value.split(',').map(str::trim).collect();
+        if parts.len() != 4 {
             return None;
         }
-        out[i] = v;
+        let mut out = [0.0_f32; 4];
+        for (i, part) in parts.iter().enumerate() {
+            let v: f32 = part.parse().ok()?;
+            if !v.is_finite() || v < 0.0 {
+                return None;
+            }
+            out[i] = v;
+        }
+        if out.iter().all(|v| *v <= 0.0) {
+            return None;
+        }
+        Some(out)
     }
-    if out.iter().all(|v| *v <= 0.0) {
-        return None;
-    }
-    Some(out)
-}
 
     let s = Rc::clone(&state);
     ui.set(
@@ -6004,6 +6031,32 @@ fn parse_nine_slice(value: &str) -> Option<[f32; 4]> {
                         visible: true,
                         space: crate::core::ui::UiLayoutSpace::Screen,
                         anchor: [0.0, 0.0],
+                        shape: 0,
+                    },
+                );
+                Ok(())
+            },
+        )?,
+    )?;
+    let s = Rc::clone(&state);
+    ui.set(
+        "circle",
+        lua.create_function(
+            move |_,
+                  (id, cx, cy, radius, r, g, b, a): (
+                String, f32, f32, f32, f32, f32, f32, f32,
+            )| {
+                let color = [r, g, b, a];
+                s.borrow_mut().ui_panels.insert(
+                    id,
+                    UiPanel {
+                        position: [cx - radius, cy - radius],
+                        size: [radius * 2.0, radius * 2.0],
+                        color,
+                        visible: true,
+                        space: crate::core::ui::UiLayoutSpace::Screen,
+                        anchor: [0.0, 0.0],
+                        shape: 1,
                     },
                 );
                 Ok(())
@@ -6215,6 +6268,7 @@ fn parse_nine_slice(value: &str) -> Option<[f32; 4]> {
                         visible: true,
                         space: crate::core::ui::UiLayoutSpace::Screen,
                         anchor: [0.0, 0.0],
+                        shape: 0,
                     },
                 );
                 state.ui.insert(
@@ -6263,6 +6317,7 @@ fn parse_nine_slice(value: &str) -> Option<[f32; 4]> {
                         visible: true,
                         space: crate::core::ui::UiLayoutSpace::Screen,
                         anchor: [0.0, 0.0],
+                        shape: 0,
                     },
                 );
                 state.ui.insert(
@@ -7371,7 +7426,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let unique = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!("p2-lua-{id}-{unique}.lua"));
+        let path = std::env::temp_dir().join(format!("rustlua-lua-{id}-{unique}.lua"));
         fs::write(&path, contents).unwrap();
         path
     }
@@ -9125,7 +9180,8 @@ mod tests {
     /// 而不是"脚本被调用了"。
     #[test]
     fn entity_script_component_drives_its_own_entity() {
-        let root = std::env::temp_dir().join(format!("p2-entity-script-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("rustlua-entity-script-{}", std::process::id()));
         let scripts = root.join("scripts");
         fs::create_dir_all(&scripts).unwrap();
         fs::write(
@@ -9253,7 +9309,7 @@ mod tests {
     #[test]
     fn entity_script_reports_missing_files_and_missing_project_root() {
         let root =
-            std::env::temp_dir().join(format!("p2-entity-script-miss-{}", std::process::id()));
+            std::env::temp_dir().join(format!("rustlua-entity-script-miss-{}", std::process::id()));
         fs::create_dir_all(&root).unwrap();
         let mut scene = crate::core::scene::Scene::new("entity-script-missing");
         let id = crate::core::scene::SceneEntityId(1);
@@ -9290,7 +9346,7 @@ mod tests {
 
     #[test]
     fn project_script_can_require_sibling_lua_modules() {
-        let root = std::env::temp_dir().join(format!("p2-module-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("rustlua-module-{}", std::process::id()));
         fs::create_dir_all(&root).unwrap();
         fs::write(
             root.join("helper.lua"),
@@ -9312,7 +9368,7 @@ mod tests {
 
     #[test]
     fn encrypted_project_and_modules_load_via_decode_and_require() {
-        let root = std::env::temp_dir().join(format!("p2-enc-module-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("rustlua-enc-module-{}", std::process::id()));
         fs::create_dir_all(&root).unwrap();
         // 用发布包格式（压缩+加密）写模块与主脚本。
         let helper_src = "local M = {}\nfunction M.answer() return 7 end\nreturn M\n".as_bytes();
@@ -9397,7 +9453,7 @@ mod tests {
     fn clock_save_slots_blobs_map_inventory_and_data_lua_api() {
         use crate::core::scene::{Scene, SceneEntityId};
 
-        let root = std::env::temp_dir().join(format!("p2-farm-api-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("rustlua-farm-api-{}", std::process::id()));
         let scenes = root.join("scenes");
         let data = root.join("data");
         fs::create_dir_all(&scenes).unwrap();
@@ -9502,7 +9558,7 @@ mod tests {
     fn map_state_tilemap_snapshot_survives_scene_change_and_restart() {
         use crate::core::scene::{Scene, SceneEntityId};
 
-        let root = std::env::temp_dir().join(format!("p2-mapstate-b3-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("rustlua-mapstate-b3-{}", std::process::id()));
         let scenes = root.join("scenes");
         fs::create_dir_all(&scenes).unwrap();
         let save_path = root.join("save.sav");
@@ -9668,7 +9724,7 @@ mod tests {
 
     #[test]
     fn data_schema_registration_rejects_invalid_tables_on_load() {
-        let root = std::env::temp_dir().join(format!("p2-data-schema-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("rustlua-data-schema-{}", std::process::id()));
         let data = root.join("data");
         fs::create_dir_all(&data).unwrap();
         fs::write(
@@ -9702,7 +9758,7 @@ mod tests {
     /// 这些键不属于任何游戏侧 provider，残留会让新档读回上一局的地图/农田/建筑。
     #[test]
     fn save_clear_and_map_state_clear_drop_persisted_keys() {
-        let root = std::env::temp_dir().join(format!("p2-state-clear-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("rustlua-state-clear-{}", std::process::id()));
         let dir = root.join(".data");
         fs::create_dir_all(&dir).unwrap();
         let save_path = dir.join("save.sav");
@@ -9736,7 +9792,8 @@ mod tests {
     /// 且地图/出生点键同样被丢弃（`map.current()` 回落到当前场景）。
     #[test]
     fn new_game_style_clear_removes_map_keys_and_survives_reload() {
-        let root = std::env::temp_dir().join(format!("p2-newgame-clear-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("rustlua-newgame-clear-{}", std::process::id()));
         let dir = root.join(".data");
         fs::create_dir_all(&dir).unwrap();
         let save_path = dir.join("save.sav");
@@ -9791,8 +9848,10 @@ mod tests {
 
     #[test]
     fn save_load_rejects_older_save() {
-        let root =
-            std::env::temp_dir().join(format!("p2-save-version-reject-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!(
+            "rustlua-save-version-reject-{}",
+            std::process::id()
+        ));
         let dir = root.join(".data");
         fs::create_dir_all(&dir).unwrap();
         let save_path = dir.join("save.sav");
@@ -9811,7 +9870,7 @@ mod tests {
     /// 时无法解析。现在 `save.write` + `commit` + 新会话 `save.load` 必须无损往返。
     #[test]
     fn save_write_round_trips_multiline_and_cjk_values_across_sessions() {
-        let root = std::env::temp_dir().join(format!("p2-save-escape-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("rustlua-save-escape-{}", std::process::id()));
         let dir = root.join(".data");
         fs::create_dir_all(&dir).unwrap();
         let save_path = dir.join("save.sav");
@@ -9859,7 +9918,7 @@ mod tests {
     /// 但第二个返回值给出原因，诊断面板据此才能告诉玩家进度是丢了还是从没存过。
     #[test]
     fn save_load_reports_missing_versus_corrupt() {
-        let root = std::env::temp_dir().join(format!("p2-save-reason-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("rustlua-save-reason-{}", std::process::id()));
         let dir = root.join(".data");
         fs::create_dir_all(&dir).unwrap();
         let save_path = dir.join("save.sav");
@@ -9920,7 +9979,7 @@ mod tests {
     /// 回归：v1 旧存档（裸行）仍然可读，且读入后能正常 commit 成 v2。
     #[test]
     fn legacy_v1_save_still_loads_and_upgrades_on_commit() {
-        let root = std::env::temp_dir().join(format!("p2-save-v1-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("rustlua-save-v1-{}", std::process::id()));
         let dir = root.join(".data");
         fs::create_dir_all(&dir).unwrap();
         let save_path = dir.join("save.sav");
@@ -10021,7 +10080,7 @@ mod tests {
     /// `ui.measure_text` / `ui.text_get`（M30）：中文排版的度量与读回。
     #[test]
     fn measure_text_and_text_get_lua_api() {
-        let root = std::env::temp_dir().join(format!("p2-measure-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("rustlua-measure-{}", std::process::id()));
         let fonts = root.join("assets").join("fonts");
         fs::create_dir_all(&fonts).unwrap();
         let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -10072,7 +10131,7 @@ mod tests {
     fn save_commit_load_and_scene_transition() {
         use crate::core::scene::{Scene, SceneEntityId};
 
-        let root = std::env::temp_dir().join(format!("p2-save-scene-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("rustlua-save-scene-{}", std::process::id()));
         let scenes = root.join("scenes");
         fs::create_dir_all(&scenes).unwrap();
         let mut arena = Scene::new("arena");
@@ -10143,7 +10202,7 @@ mod tests {
         use crate::core::scene::{Scene, SceneEntityId};
         use crate::core::ui::UiText;
 
-        let root = std::env::temp_dir().join(format!("p2-persist-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("rustlua-persist-{}", std::process::id()));
         let scenes = root.join("scenes");
         fs::create_dir_all(&scenes).unwrap();
 
@@ -10225,7 +10284,8 @@ mod tests {
         use crate::core::scene::{Scene, SceneEntityId};
         use crate::core::ui::UiText;
 
-        let root = std::env::temp_dir().join(format!("p2-persist-name-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("rustlua-persist-name-{}", std::process::id()));
         let scenes = root.join("scenes");
         fs::create_dir_all(&scenes).unwrap();
 
@@ -10292,7 +10352,7 @@ mod tests {
         use crate::core::input::MouseButton;
         use crate::core::scene::{Scene, SceneEntityId};
 
-        let root = std::env::temp_dir().join(format!("p2-click-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("rustlua-click-{}", std::process::id()));
         let scenes = root.join("scenes");
         fs::create_dir_all(&scenes).unwrap();
         let mut menu = Scene::new("menu");
@@ -10440,7 +10500,7 @@ mod tests {
             return;
         }
         let dir = std::env::temp_dir().join(format!(
-            "p2-sample-save-{}",
+            "rustlua-sample-save-{}",
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .expect("clock should be valid")
@@ -11757,5 +11817,39 @@ mod tests {
                 .unwrap(),
             "true|false"
         );
+    }
+
+    #[test]
+    fn virtual_key_reaches_action_axis_within_and_across_frames() {
+        let mut runtime = LuaRuntime::new().unwrap();
+        // 同一逻辑帧内注入 → 立即可读（触屏摇杆 `update()` 之后同帧的 `update_movement`）。
+        let mut input = InputSnapshot::default();
+        runtime.set_input(input.clone());
+        runtime
+            .execute_console(
+                "input.virtual_key('keyw', true)\n\
+                 return input.action_axis('move_down', 'move_up')",
+            )
+            .unwrap();
+        let same_frame = runtime
+            .execute_console("return input.action_axis('move_down', 'move_up')")
+            .unwrap();
+        // 下一帧宿主重新喂入快照（物理状态重建）→ 虚拟键必须仍然按住。
+        input.finish_frame();
+        runtime.set_input(input);
+        let next_frame = runtime
+            .execute_console(
+                "return input.action_axis('move_down', 'move_up') .. '|' .. tostring(input.action('move_up'))",
+            )
+            .unwrap();
+        runtime
+            .execute_console("input.virtual_key('keyw', false)")
+            .unwrap();
+        let released = runtime
+            .execute_console("return input.action_axis('move_down', 'move_up')")
+            .unwrap();
+        assert_eq!(same_frame, "1", "同帧注入必须立刻可读");
+        assert_eq!(next_frame, "1.0|true", "跨帧必须保持按住，直到显式释放");
+        assert_eq!(released, "0", "显式释放后归零");
     }
 }

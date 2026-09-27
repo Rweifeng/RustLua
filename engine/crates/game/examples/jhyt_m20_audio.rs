@@ -482,15 +482,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     assert_num(&mut runtime, "ui.scroll_offset('shp:scroll')", 0.0)?;
     // 回到第 1 行后方向键下移 11 次 → 第 12 行；窗口滚动到让选中行可见。
+    // offset 按选中行算：(12 - 可视 9) * 行高 34 = 102（与初始 stock 数无关；
+    // 旧公式 (shop_stock+8-9)*34 只在 stock=4 时巧合正确，Alpha 作物扩展 stock=8 后暴露）。
     lua(&mut runtime, "require('systems.shop').select(1)")?;
     assert_num(&mut runtime, "require('systems.shop').selected()", 1.0)?;
     press_many(&mut runtime, KeyCode::ArrowDown, 11)?;
     assert_num(&mut runtime, "require('systems.shop').selected()", 12.0)?;
-    assert_num(
-        &mut runtime,
-        "ui.scroll_offset('shp:scroll')",
-        (shop_stock + 8.0 - 9.0) * 34.0,
-    )?;
+    assert_num(&mut runtime, "ui.scroll_offset('shp:scroll')", 102.0)?;
     assert_str(
         &mut runtime,
         "(function() local t = ui.get('shp:row9'); \

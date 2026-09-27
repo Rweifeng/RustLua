@@ -413,7 +413,7 @@ function M.feedback_line()
   return "› " .. text
 end
 
--- 七日目标行（左下第二行；M27）。目标线走完（`goals.prompt()` 返回空串）时这一行不画，
+-- 七日目标行（左上角第一行；M27）。目标线走完（`goals.prompt()` 返回空串）时这一行不画，
 -- 由 `ui_text` 的登记表决定"这一帧没有 hud:goals"。
 function M.goals_line()
   local text = goals.prompt()
@@ -544,7 +544,7 @@ function M.draw(key_hints)
   -- 键位提示在世界底部通栏一行（右栏 280px 放不下 11 个键位项——收窄后
   -- 断行会把「J 攻击」这类标签拆成两行，jhyt_m20_gamepad 的键鼠说明断言会拦）。
   -- 通栏宽 = 设计宽 − 两侧边距，11 项整行放得下；y 取 ROW.bottom_y − 24，行高 16
-  -- 落在 666..682，与右栏 dialogue/goals/feedback（320..612）不重叠。
+  -- 落在 666..682；七日目标/动作反馈在左上角（8/36），与它互不重叠。
   ui_text.draw_wrapped(
     "hud",
     "hud:keys",
@@ -563,14 +563,14 @@ function M.draw(key_hints)
   else
     local feedback = M.feedback_line()
     if feedback ~= "" then
-      ui_text.draw("hud", "hud:feedback", PANEL.x, layout.ROW.feedback_y, 18.0, ROW_TEXT_W, feedback)
+      ui_text.draw("hud", "hud:feedback", layout.ROW.top_x, layout.ROW.feedback_y, 18.0, layout.row_width(), feedback)
     else
       ui_text.hide("hud", "hud:feedback")
     end
     -- 七日目标（M27）：放在反馈行上方，不占引导行（两者可同时可见）。字号 15→17。
     local goals = M.goals_line()
     if goals ~= "" then
-      ui_text.draw("hud", "hud:goals", PANEL.x, layout.ROW.goals_y, 17.0, ROW_TEXT_W, goals)
+      ui_text.draw("hud", "hud:goals", layout.ROW.top_x, layout.ROW.goals_y, 17.0, layout.row_width(), goals)
     else
       ui_text.hide("hud", "hud:goals")
     end

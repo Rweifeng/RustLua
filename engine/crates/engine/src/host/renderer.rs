@@ -633,7 +633,7 @@ impl Renderer {
             };
             let (device, queue) = adapter
                 .request_device(&DeviceDescriptor {
-                    label: Some("p2-render-device"),
+                    label: Some("rustlua-render-device"),
                     required_features,
                     experimental_features: wgpu::ExperimentalFeatures::disabled(),
                     required_limits: wgpu::Limits::default(),
@@ -690,7 +690,7 @@ impl Renderer {
         };
         let texture_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("p2-texture-bind-group-layout"),
+                label: Some("rustlua-texture-bind-group-layout"),
                 entries: &[
                     wgpu::BindGroupLayoutEntry {
                         binding: 0,
@@ -711,13 +711,13 @@ impl Renderer {
                 ],
             });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("p2-textured-pipeline-layout"),
+            label: Some("rustlua-textured-pipeline-layout"),
             bind_group_layouts: &[&texture_bind_group_layout],
             push_constant_ranges: &[],
         });
         let camera_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("p2-camera3d-bind-group-layout"),
+                label: Some("rustlua-camera3d-bind-group-layout"),
                 entries: &[
                     wgpu::BindGroupLayoutEntry {
                         binding: 0,
@@ -768,11 +768,11 @@ impl Renderer {
                 ],
             });
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("p2-textured-shader"),
+            label: Some("rustlua-textured-shader"),
             source: wgpu::ShaderSource::Wgsl(TEXTURED_SHADER.into()),
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("p2-textured-pipeline"),
+            label: Some("rustlua-textured-pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
@@ -822,7 +822,7 @@ impl Renderer {
             cache: None,
         });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("p2-texture-sampler"),
+            label: Some("rustlua-texture-sampler"),
             mag_filter: wgpu::FilterMode::Nearest,
             min_filter: wgpu::FilterMode::Nearest,
             mipmap_filter: wgpu::FilterMode::Nearest,
@@ -830,14 +830,14 @@ impl Renderer {
         });
         // SDF 文本需要 Linear 采样（距离场插值）；精灵保持 Nearest。
         let sdf_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("p2-sdf-sampler"),
+            label: Some("rustlua-sdf-sampler"),
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
             mipmap_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
         let pipeline_sdf = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("p2-textured-sdf-pipeline"),
+            label: Some("rustlua-textured-sdf-pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
@@ -888,7 +888,7 @@ impl Renderer {
         });
         let vector_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("p2-vector-text-bind-group-layout"),
+                label: Some("rustlua-vector-text-bind-group-layout"),
                 entries: &[
                     wgpu::BindGroupLayoutEntry {
                         binding: 0,
@@ -913,16 +913,16 @@ impl Renderer {
                 ],
             });
         let vector_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("p2-vector-text-pipeline-layout"),
+            label: Some("rustlua-vector-text-pipeline-layout"),
             bind_group_layouts: &[&vector_bind_group_layout],
             push_constant_ranges: &[],
         });
         let vector_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("p2-vector-text-shader"),
+            label: Some("rustlua-vector-text-shader"),
             source: wgpu::ShaderSource::Wgsl(VECTOR_TEXT_SHADER.into()),
         });
         let vector_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("p2-vector-text-pipeline"),
+            label: Some("rustlua-vector-text-pipeline"),
             layout: Some(&vector_layout),
             vertex: wgpu::VertexState {
                 module: &vector_shader,
@@ -972,32 +972,32 @@ impl Renderer {
             cache: None,
         });
         let vector_vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("p2-vector-text-vertex-buffer"),
+            label: Some("rustlua-vector-text-vertex-buffer"),
             size: 1024 * 1024,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let vector_glyph_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("p2-vector-text-glyph-buffer"),
+            label: Some("rustlua-vector-text-glyph-buffer"),
             size: 64 * 1024,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let vector_segment_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("p2-vector-text-segment-buffer"),
+            label: Some("rustlua-vector-text-segment-buffer"),
             size: 1024 * 1024,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("p2-vertex-buffer"),
+            label: Some("rustlua-vertex-buffer"),
             size: INITIAL_2D_VERTEX_BUFFER_BYTES,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let material_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("p2-material3d-bind-group-layout"),
+                label: Some("rustlua-material3d-bind-group-layout"),
                 entries: &[
                     wgpu::BindGroupLayoutEntry {
                         binding: 0,
@@ -1080,7 +1080,7 @@ impl Renderer {
         let light_matrix = light_projection * light_view;
         let shadow_view = Self::create_shadow_view(&device, 2048);
         let shadow_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("p2-shadow-comparison-sampler"),
+            label: Some("rustlua-shadow-comparison-sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             address_mode_w: wgpu::AddressMode::ClampToEdge,
@@ -1090,35 +1090,35 @@ impl Renderer {
             ..Default::default()
         });
         let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("p2-camera3d-buffer"),
+            label: Some("rustlua-camera3d-buffer"),
             contents: bytemuck::cast_slice(&camera_matrix.columns),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
         let light_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("p2-directional-light-buffer"),
+            label: Some("rustlua-directional-light-buffer"),
             // 与 `Light::default()` 一致：`direction` 是**光传播方向**，所以天空里的太阳 y 分量为负。
             contents: bytemuck::cast_slice(&[[0.4_f32, -0.8, 0.5, 0.0], [1.0_f32, 1.0, 1.0, 1.0]]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
         let shadow_camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("p2-shadow-camera-buffer"),
+            label: Some("rustlua-shadow-camera-buffer"),
             contents: bytemuck::cast_slice(&light_matrix.columns),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
         let identity_palette = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("p2-identity-joint-palette"),
+            label: Some("rustlua-identity-joint-palette"),
             contents: bytemuck::cast_slice(&identity_palette_data()),
             usage: wgpu::BufferUsages::UNIFORM,
         });
         let albedo_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("p2-albedo-sampler"),
+            label: Some("rustlua-albedo-sampler"),
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
         // 1x1 white texture bound when a material has no base-color texture.
         let white_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("p2-albedo-white"),
+            label: Some("rustlua-albedo-white"),
             size: wgpu::Extent3d {
                 width: 1,
                 height: 1,
@@ -1152,7 +1152,7 @@ impl Renderer {
         );
         let white_albedo_view = white_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("p2-camera3d-bind-group"),
+            label: Some("rustlua-camera3d-bind-group"),
             layout: &camera_bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
@@ -1179,7 +1179,7 @@ impl Renderer {
         });
         let shadow_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("p2-shadow-bind-group-layout"),
+                label: Some("rustlua-shadow-bind-group-layout"),
                 entries: &[wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::VERTEX,
@@ -1192,7 +1192,7 @@ impl Renderer {
                 }],
             });
         let shadow_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("p2-shadow-bind-group"),
+            label: Some("rustlua-shadow-bind-group"),
             layout: &shadow_bind_group_layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
@@ -1200,16 +1200,16 @@ impl Renderer {
             }],
         });
         let mesh_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("p2-mesh3d-shader"),
+            label: Some("rustlua-mesh3d-shader"),
             source: wgpu::ShaderSource::Wgsl(MESH3D_SHADER.into()),
         });
         let mesh_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("p2-mesh3d-pipeline-layout"),
+            label: Some("rustlua-mesh3d-pipeline-layout"),
             bind_group_layouts: &[&camera_bind_group_layout, &material_bind_group_layout],
             push_constant_ranges: &[],
         });
         let mesh_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("p2-mesh3d-pipeline"),
+            label: Some("rustlua-mesh3d-pipeline"),
             layout: Some(&mesh_pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &mesh_shader,
@@ -1270,17 +1270,17 @@ impl Renderer {
             cache: None,
         });
         let shadow_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("p2-shadow-shader"),
+            label: Some("rustlua-shadow-shader"),
             source: wgpu::ShaderSource::Wgsl(SHADOW_SHADER.into()),
         });
         let shadow_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("p2-shadow-pipeline-layout"),
+                label: Some("rustlua-shadow-pipeline-layout"),
                 bind_group_layouts: &[&shadow_bind_group_layout, &material_bind_group_layout],
                 push_constant_ranges: &[],
             });
         let shadow_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("p2-shadow-pipeline"),
+            label: Some("rustlua-shadow-pipeline"),
             layout: Some(&shadow_pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shadow_shader,
@@ -1342,7 +1342,7 @@ impl Renderer {
         );
         let timestamp_query_set = timestamp_enabled.then(|| {
             device.create_query_set(&wgpu::QuerySetDescriptor {
-                label: Some("p2-frame-timestamps"),
+                label: Some("rustlua-frame-timestamps"),
                 ty: wgpu::QueryType::Timestamp,
                 count: 2,
             })
@@ -1352,7 +1352,7 @@ impl Renderer {
         // 与 overlay 路径互不影响：宿主不喂世界顶点时它一次也不会被用到。
         let world_sprite_camera_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("p2-world-sprite-camera-layout"),
+                label: Some("rustlua-world-sprite-camera-layout"),
                 entries: &[wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::VERTEX,
@@ -1366,12 +1366,12 @@ impl Renderer {
             });
         let world_sprite_camera_buffer =
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("p2-world-sprite-camera"),
+                label: Some("rustlua-world-sprite-camera"),
                 contents: bytemuck::bytes_of(&IDENTITY_MAT4),
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             });
         let world_sprite_camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("p2-world-sprite-camera-bind-group"),
+            label: Some("rustlua-world-sprite-camera-bind-group"),
             layout: &world_sprite_camera_layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
@@ -1379,12 +1379,12 @@ impl Renderer {
             }],
         });
         let world_sprite_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("p2-world-sprite-shader"),
+            label: Some("rustlua-world-sprite-shader"),
             source: wgpu::ShaderSource::Wgsl(WORLD_SPRITE_SHADER.into()),
         });
         let world_sprite_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("p2-world-sprite-pipeline-layout"),
+                label: Some("rustlua-world-sprite-pipeline-layout"),
                 bind_group_layouts: &[&world_sprite_camera_layout, &texture_bind_group_layout],
                 push_constant_ranges: &[],
             });
@@ -1439,13 +1439,13 @@ impl Renderer {
             })
         };
         let world_sprite_pipeline =
-            create_world_sprite_pipeline("p2-world-sprite-pipeline", DepthPass::WorldSprite);
+            create_world_sprite_pipeline("rustlua-world-sprite-pipeline", DepthPass::WorldSprite);
         let world_sprite_opaque_pipeline = create_world_sprite_pipeline(
-            "p2-world-sprite-opaque-pipeline",
+            "rustlua-world-sprite-opaque-pipeline",
             DepthPass::WorldSpriteOpaque,
         );
         let world_sprite_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("p2-world-sprite-buffer"),
+            label: Some("rustlua-world-sprite-buffer"),
             size: WORLD_SPRITE_BUFFER_BYTES,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
@@ -1454,12 +1454,12 @@ impl Renderer {
         // docs/54 §4.3：后处理通道的管线与资源。宿主不打开时这些都只是闲置对象（不产生 pass、
         // 不产生离屏纹理），因此"没开后处理"的运行时代价与收敛前一致。
         let post_process_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("p2-post-process-shader"),
+            label: Some("rustlua-post-process-shader"),
             source: wgpu::ShaderSource::Wgsl(POST_PROCESS_SHADER.into()),
         });
         let post_process_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("p2-post-process-bind-group-layout"),
+                label: Some("rustlua-post-process-bind-group-layout"),
                 entries: &[
                     wgpu::BindGroupLayoutEntry {
                         binding: 0,
@@ -1491,13 +1491,13 @@ impl Renderer {
             });
         let post_process_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("p2-post-process-pipeline-layout"),
+                label: Some("rustlua-post-process-pipeline-layout"),
                 bind_group_layouts: &[&post_process_layout],
                 push_constant_ranges: &[],
             });
         let post_process_pipeline =
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("p2-post-process-pipeline"),
+                label: Some("rustlua-post-process-pipeline"),
                 layout: Some(&post_process_pipeline_layout),
                 vertex: wgpu::VertexState {
                     module: &post_process_shader,
@@ -1523,7 +1523,7 @@ impl Renderer {
                 cache: None,
             });
         let post_process_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("p2-post-process-sampler"),
+            label: Some("rustlua-post-process-sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             address_mode_w: wgpu::AddressMode::ClampToEdge,
@@ -1532,7 +1532,7 @@ impl Renderer {
             ..Default::default()
         });
         let post_process_params = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("p2-post-process-params"),
+            label: Some("rustlua-post-process-params"),
             // 32 字节：exposure + vignette + 两个填充位，随后是一个 vec4 着色（见 core::post_process）。
             size: 32,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -1650,7 +1650,7 @@ impl Renderer {
     fn create_depth_view(device: &Device, width: u32, height: u32) -> wgpu::TextureView {
         device
             .create_texture(&wgpu::TextureDescriptor {
-                label: Some("p2-depth32-texture"),
+                label: Some("rustlua-depth32-texture"),
                 size: wgpu::Extent3d {
                     width,
                     height,
@@ -1669,7 +1669,7 @@ impl Renderer {
     fn create_shadow_view(device: &Device, size: u32) -> wgpu::TextureView {
         device
             .create_texture(&wgpu::TextureDescriptor {
-                label: Some("p2-shadow-map"),
+                label: Some("rustlua-shadow-map"),
                 size: wgpu::Extent3d {
                     width: size,
                     height: size,
@@ -1840,7 +1840,7 @@ impl Renderer {
     /// returns its index in `albedo_textures`.
     fn upload_albedo(&mut self, rgba: &[u8], width: u32, height: u32) -> u32 {
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("p2-albedo-texture"),
+            label: Some("rustlua-albedo-texture"),
             size: wgpu::Extent3d {
                 width: width.max(1),
                 height: height.max(1),
@@ -1941,14 +1941,14 @@ impl Renderer {
         let vertex_buffer = self
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("p2-mesh3d-vertices"),
+                label: Some("rustlua-mesh3d-vertices"),
                 contents: bytemuck::cast_slice(vertices),
                 usage: wgpu::BufferUsages::VERTEX,
             });
         let index_buffer = self
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("p2-mesh3d-indices"),
+                label: Some("rustlua-mesh3d-indices"),
                 contents: bytemuck::cast_slice(indices),
                 usage: wgpu::BufferUsages::INDEX,
             });
@@ -1979,14 +1979,14 @@ impl Renderer {
         let material_buffer = self
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("p2-material3d-frame-buffer"),
+                label: Some("rustlua-material3d-frame-buffer"),
                 contents: bytemuck::cast_slice(&material_data),
                 usage: wgpu::BufferUsages::UNIFORM,
             });
         let palette_buffer = if material.skinned && !palette.is_empty() {
             self.device
                 .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("p2-joint-palette-frame-buffer"),
+                    label: Some("rustlua-joint-palette-frame-buffer"),
                     contents: bytemuck::cast_slice(&joint_palette_data(palette)),
                     usage: wgpu::BufferUsages::UNIFORM,
                 })
@@ -2000,7 +2000,7 @@ impl Renderer {
         let instance_buffer = self
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("p2-instance-models-frame-buffer"),
+                label: Some("rustlua-instance-models-frame-buffer"),
                 contents: bytemuck::cast_slice(&instance_data),
                 usage: wgpu::BufferUsages::STORAGE,
             });
@@ -2009,7 +2009,7 @@ impl Renderer {
             .and_then(|index| self.albedo_textures.get(index as usize))
             .map_or(&self.white_albedo_view, |cached| &cached.view);
         self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("p2-material3d-frame-bind-group"),
+            label: Some("rustlua-material3d-frame-bind-group"),
             layout: &self._material_bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
@@ -2153,9 +2153,9 @@ impl Renderer {
         };
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some(if world.shared_depth {
-                "p2-world-sprite-pass"
+                "rustlua-world-sprite-pass"
             } else {
-                "p2-world-sprite-pass-isolated"
+                "rustlua-world-sprite-pass-isolated"
             }),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view,
@@ -2320,7 +2320,7 @@ impl Renderer {
             return;
         }
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("p2-post-process-scene"),
+            label: Some("rustlua-post-process-scene"),
             size: wgpu::Extent3d {
                 width,
                 height,
@@ -2355,7 +2355,7 @@ impl Renderer {
             bytemuck::bytes_of(&settings.uniform()),
         );
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("p2-post-process-bind-group"),
+            label: Some("rustlua-post-process-bind-group"),
             layout: &self.post_process_layout,
             entries: &[
                 wgpu::BindGroupEntry {
@@ -2373,7 +2373,7 @@ impl Renderer {
             ],
         });
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("p2-post-process-pass"),
+            label: Some("rustlua-post-process-pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: target,
                 depth_slice: None,
@@ -2460,7 +2460,7 @@ impl Renderer {
             capacity *= 2;
         }
         self.world_sprite_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("p2-world-sprite-buffer"),
+            label: Some("rustlua-world-sprite-buffer"),
             size: capacity,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
@@ -2500,7 +2500,7 @@ impl Renderer {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("p2-clear-encoder"),
+                label: Some("rustlua-clear-encoder"),
             });
         let started = Instant::now();
         let completed_gpu_us = self.poll_gpu_timestamp();
@@ -2546,7 +2546,7 @@ impl Renderer {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("p2-offscreen-encoder"),
+                label: Some("rustlua-offscreen-encoder"),
             });
         let started = Instant::now();
         let completed_gpu_us = self.poll_gpu_timestamp();
@@ -2583,7 +2583,7 @@ impl Renderer {
         let row_bytes = 4 * width;
         let bytes_per_row = row_bytes.div_ceil(256) * 256;
         let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("p2-preview-readback"),
+            label: Some("rustlua-preview-readback"),
             size: (bytes_per_row * height) as u64,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
@@ -2591,7 +2591,7 @@ impl Renderer {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("p2-preview-copy"),
+                label: Some("rustlua-preview-copy"),
             });
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
@@ -2805,7 +2805,7 @@ impl Renderer {
         while self.readback_slots.len() < 2 {
             self.readback_slots.push(ReadbackSlot {
                 buffer: self.device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("p2-editor-readback"),
+                    label: Some("rustlua-editor-readback"),
                     size: size_bytes.max(4),
                     usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
                     mapped_at_creation: false,
@@ -2834,7 +2834,7 @@ impl Renderer {
         let slot = &mut self.readback_slots[index];
         if slot.width != width || slot.height != height || slot.buffer.size() < size_bytes {
             slot.buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("p2-editor-readback"),
+                label: Some("rustlua-editor-readback"),
                 size: size_bytes,
                 usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
                 mapped_at_creation: false,
@@ -2854,7 +2854,7 @@ impl Renderer {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("p2-editor-readback-copy"),
+                label: Some("rustlua-editor-readback-copy"),
             });
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
@@ -3011,7 +3011,7 @@ impl Renderer {
             && let Some(clear) = clear
         {
             let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("p2-clear-pass"),
+                label: Some("rustlua-clear-pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: draw_target,
                     depth_slice: None,
@@ -3052,7 +3052,7 @@ impl Renderer {
         }
         if plan.contains(RenderPass::Shadow) {
             let mut shadow_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("p2-shadow-pass"),
+                label: Some("rustlua-shadow-pass"),
                 color_attachments: &[],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &self.shadow_view,
@@ -3085,7 +3085,7 @@ impl Renderer {
         }
         if plan.contains(RenderPass::DepthOpaque) {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("p2-mesh3d-pass"),
+                label: Some("rustlua-mesh3d-pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: draw_target,
                     depth_slice: None,
@@ -3162,7 +3162,7 @@ impl Renderer {
             self.ensure_2d_vertex_capacity(bytes.len() as u64);
             self.queue.write_buffer(&self.vertex_buffer, 0, bytes);
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("p2-scene-pass"),
+                label: Some("rustlua-scene-pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: draw_target,
                     depth_slice: None,
@@ -3265,7 +3265,7 @@ impl Renderer {
             if self.vector_bind_group.is_none() {
                 self.vector_bind_group =
                     Some(self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                        label: Some("p2-vector-text-bind-group"),
+                        label: Some("rustlua-vector-text-bind-group"),
                         layout: &self.vector_bind_group_layout,
                         entries: &[
                             wgpu::BindGroupEntry {
@@ -3281,7 +3281,7 @@ impl Renderer {
             }
             let bind = self.vector_bind_group.as_ref().expect("vector bind group");
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("p2-vector-text-pass"),
+                label: Some("rustlua-vector-text-pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: draw_target,
                     depth_slice: None,
@@ -3349,7 +3349,7 @@ impl Renderer {
             required
         );
         self.vertex_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("p2-vertex-buffer"),
+            label: Some("rustlua-vertex-buffer"),
             size: capacity,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
@@ -3376,13 +3376,13 @@ impl Renderer {
         let map_error = std::sync::Arc::new(std::sync::Mutex::new(None));
         self.timestamp_slots.push(TimestampSlot {
             resolve_buffer: self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("p2-frame-timestamp-resolve"),
+                label: Some("rustlua-frame-timestamp-resolve"),
                 size: 16,
                 usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
                 mapped_at_creation: false,
             }),
             buffer: self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("p2-frame-timestamp-readback"),
+                label: Some("rustlua-frame-timestamp-readback"),
                 size: 16,
                 usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
                 mapped_at_creation: false,
@@ -3581,7 +3581,7 @@ impl Renderer {
         let vertex_capacity = grown(self.vector_vertex_buffer.size(), vertex_size);
         if vertex_capacity != self.vector_vertex_buffer.size() {
             self.vector_vertex_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("p2-vector-text-vertex-buffer"),
+                label: Some("rustlua-vector-text-vertex-buffer"),
                 size: vertex_capacity,
                 usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
@@ -3591,7 +3591,7 @@ impl Renderer {
         let glyph_capacity = grown(self.vector_glyph_buffer.size(), glyph_size);
         if glyph_capacity != self.vector_glyph_buffer.size() {
             self.vector_glyph_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("p2-vector-text-glyph-buffer"),
+                label: Some("rustlua-vector-text-glyph-buffer"),
                 size: glyph_capacity,
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
@@ -3601,7 +3601,7 @@ impl Renderer {
         let segment_capacity = grown(self.vector_segment_buffer.size(), segment_size);
         if segment_capacity != self.vector_segment_buffer.size() {
             self.vector_segment_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("p2-vector-text-segment-buffer"),
+                label: Some("rustlua-vector-text-segment-buffer"),
                 size: segment_capacity,
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
@@ -3716,7 +3716,7 @@ impl Renderer {
         let asset =
             TextureAsset::from_rgba8(1, 1, vec![255, 255, 255, 255], TextureColorSpace::Srgb)
                 .ok()?;
-        let bind = self.upload_texture(&asset, "p2-white-1x1")?;
+        let bind = self.upload_texture(&asset, "rustlua-white-1x1")?;
         self.white = Some(bind.clone());
         Some(bind)
     }
@@ -3733,7 +3733,7 @@ impl Renderer {
             TextureColorSpace::Srgb,
         )
         .ok()?;
-        let bind = self.upload_texture(&asset, "p2-builtin-text-atlas")?;
+        let bind = self.upload_texture(&asset, "rustlua-builtin-text-atlas")?;
         self.atlas = Some(bind.clone());
         Some(bind)
     }
@@ -3779,7 +3779,7 @@ impl Renderer {
             self.font_atlas_bind = None;
             self.font_atlas_sdf_bind = None;
             let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("p2-font-atlas"),
+                label: Some("rustlua-font-atlas"),
                 size: wgpu::Extent3d {
                     width: font.width,
                     height: font.height,
@@ -3816,7 +3816,7 @@ impl Renderer {
         );
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("p2-font-atlas-bind"),
+            label: Some("rustlua-font-atlas-bind"),
             layout: &self.texture_bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
@@ -3834,7 +3834,7 @@ impl Renderer {
         self.font_atlas_bind = Some(bind_group.clone());
         // SDF 文本用 Linear 采样绑定（同一纹理，不同采样器）。
         let sdf_bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("p2-font-atlas-sdf-bind"),
+            label: Some("rustlua-font-atlas-sdf-bind"),
             layout: &self.texture_bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
@@ -3911,7 +3911,7 @@ impl Renderer {
             Some(texture) => texture,
             None => self.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(&format!(
-                    "p2-custom-font-{}",
+                    "rustlua-custom-font-{}",
                     font_asset_from_texture_path(key)
                 )),
                 size: wgpu::Extent3d {
@@ -3948,7 +3948,7 @@ impl Renderer {
         );
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("p2-custom-font-bind"),
+            label: Some("rustlua-custom-font-bind"),
             layout: &self.texture_bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
@@ -3962,7 +3962,7 @@ impl Renderer {
             ],
         });
         let sdf_bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("p2-custom-font-sdf-bind"),
+            label: Some("rustlua-custom-font-sdf-bind"),
             layout: &self.texture_bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
@@ -4302,7 +4302,7 @@ mod tests {
             return; // no GPU available; skip
         };
         let (device, queue) = pollster::block_on(adapter.request_device(&DeviceDescriptor {
-            label: Some("p2-test-device"),
+            label: Some("rustlua-test-device"),
             required_features: wgpu::Features::empty(),
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
             required_limits: wgpu::Limits::default(),
@@ -4313,7 +4313,7 @@ mod tests {
         let mut renderer = Renderer::new_offscreen(device.clone(), queue, None, false, false)
             .expect("offscreen renderer");
         let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("p2-test-preview"),
+            label: Some("rustlua-test-preview"),
             size: wgpu::Extent3d {
                 width: 64,
                 height: 64,
@@ -4371,7 +4371,7 @@ mod tests {
             return; // no GPU available; skip
         };
         let (device, queue) = pollster::block_on(adapter.request_device(&DeviceDescriptor {
-            label: Some("p2-world-sprite-device"),
+            label: Some("rustlua-world-sprite-device"),
             required_features: wgpu::Features::empty(),
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
             required_limits: wgpu::Limits::default(),
@@ -4443,7 +4443,7 @@ mod tests {
         ];
 
         let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("p2-world-sprite-target"),
+            label: Some("rustlua-world-sprite-target"),
             size: wgpu::Extent3d {
                 width: SIZE,
                 height: SIZE,
@@ -4533,7 +4533,7 @@ mod tests {
             return; // no GPU available; skip
         };
         let (device, queue) = pollster::block_on(adapter.request_device(&DeviceDescriptor {
-            label: Some("p2-mixed-occlusion-device"),
+            label: Some("rustlua-mixed-occlusion-device"),
             required_features: wgpu::Features::empty(),
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
             required_limits: wgpu::Limits::default(),
@@ -4624,7 +4624,7 @@ mod tests {
         };
 
         let target = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("p2-mixed-occlusion-target"),
+            label: Some("rustlua-mixed-occlusion-target"),
             size: wgpu::Extent3d {
                 width: SIZE,
                 height: SIZE,
@@ -4829,7 +4829,7 @@ mod tests {
             return; // no GPU available; skip
         };
         let (device, queue) = pollster::block_on(adapter.request_device(&DeviceDescriptor {
-            label: Some("p2-view-device"),
+            label: Some("rustlua-view-device"),
             required_features: wgpu::Features::empty(),
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
             required_limits: wgpu::Limits::default(),
@@ -4887,7 +4887,7 @@ mod tests {
         let viewport = Viewport::new(SIZE as f32, SIZE as f32).unwrap();
 
         // 1) 不声明任何视图（回滚档）：读回历史默认清屏色。
-        let baseline = render_and_read(&mut renderer, &new_target("p2-view-baseline"));
+        let baseline = render_and_read(&mut renderer, &new_target("rustlua-view-baseline"));
         let clear = pixel(&baseline, 0, 0);
         assert!(
             clear.iter().any(|&byte| byte > 0),
@@ -4910,7 +4910,8 @@ mod tests {
             overlay: None,
         };
         renderer.set_frame_views(declared_default);
-        let unplugged = render_and_read(&mut renderer, &new_target("p2-view-declared-default"));
+        let unplugged =
+            render_and_read(&mut renderer, &new_target("rustlua-view-declared-default"));
         assert_eq!(
             unplugged, baseline,
             "声明历史默认色与不声明必须是同一帧（回滚档逐字节等价）"
@@ -4926,7 +4927,7 @@ mod tests {
             ),
             overlay: None,
         });
-        let red_target = new_target("p2-view-red");
+        let red_target = new_target("rustlua-view-red");
         let red = render_and_read(&mut renderer, &red_target);
         assert_eq!(
             pixel(&red, 0, 0),
@@ -5028,7 +5029,7 @@ mod tests {
             )),
         });
         let clipped = {
-            let target = new_target("p2-view-overlay");
+            let target = new_target("rustlua-view-overlay");
             let view = target.create_view(&wgpu::TextureViewDescriptor::default());
             renderer.render_into_texture(&quad, None, &view, SIZE, SIZE);
             renderer
@@ -5063,7 +5064,7 @@ mod tests {
             return; // no GPU available; skip
         };
         let (device, queue) = pollster::block_on(adapter.request_device(&DeviceDescriptor {
-            label: Some("p2-tetris-device"),
+            label: Some("rustlua-tetris-device"),
             required_features: wgpu::Features::empty(),
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
             required_limits: wgpu::Limits::default(),
@@ -5084,7 +5085,7 @@ mod tests {
         )
         .expect("offscreen renderer");
         let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("p2-tetris-preview"),
+            label: Some("rustlua-tetris-preview"),
             size: wgpu::Extent3d {
                 width: 1280,
                 height: 720,
@@ -5150,7 +5151,7 @@ mod tests {
             return; // no GPU; skip
         };
         let (device, queue) = pollster::block_on(adapter.request_device(&DeviceDescriptor {
-            label: Some("p2-tetris-restart-device"),
+            label: Some("rustlua-tetris-restart-device"),
             required_features: wgpu::Features::empty(),
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
             required_limits: wgpu::Limits::default(),
@@ -5168,7 +5169,7 @@ mod tests {
         )
         .expect("offscreen renderer");
         let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("p2-tetris-restart"),
+            label: Some("rustlua-tetris-restart"),
             size: wgpu::Extent3d {
                 width: 1280,
                 height: 720,
@@ -5247,7 +5248,7 @@ mod tests {
             return; // no GPU available; skip
         };
         let (device, queue) = pollster::block_on(adapter.request_device(&DeviceDescriptor {
-            label: Some("p2-test-device"),
+            label: Some("rustlua-test-device"),
             required_features: wgpu::Features::empty(),
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
             required_limits: wgpu::Limits::default(),
@@ -5258,7 +5259,7 @@ mod tests {
         let mut renderer = Renderer::new_offscreen(device.clone(), queue, None, false, false)
             .expect("offscreen renderer");
         let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("p2-test-readback"),
+            label: Some("rustlua-test-readback"),
             size: wgpu::Extent3d {
                 width: 64,
                 height: 64,
@@ -5330,7 +5331,7 @@ mod tests {
             return; // no GPU available; skip
         };
         let (device, queue) = pollster::block_on(adapter.request_device(&DeviceDescriptor {
-            label: Some("p2-test-device"),
+            label: Some("rustlua-test-device"),
             required_features: wgpu::Features::empty(),
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
             required_limits: wgpu::Limits::default(),
@@ -5349,7 +5350,7 @@ mod tests {
         // 注入一个"映射失败"的槽（模拟 map_async 回调返回 Err）。
         renderer.readback_slots.push(ReadbackSlot {
             buffer: device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("p2-test-readback-failed"),
+                label: Some("rustlua-test-readback-failed"),
                 size: 256 * 8,
                 usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
                 mapped_at_creation: false,
@@ -5395,7 +5396,7 @@ mod tests {
             panic!("无法获取用于编辑器预览测试的 wgpu adapter");
         };
         let (device, queue) = pollster::block_on(adapter.request_device(&DeviceDescriptor {
-            label: Some("p2-test-device"),
+            label: Some("rustlua-test-device"),
             required_features: wgpu::Features::empty(),
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
             required_limits: wgpu::Limits::default(),
@@ -5420,7 +5421,7 @@ mod tests {
         let mesh = runtime.vertices(640, 360).expect("build 2D mesh");
         let scene3d = runtime.scene_3d(Viewport::new(640.0, 360.0).unwrap());
         let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("p2-test-preview"),
+            label: Some("rustlua-test-preview"),
             size: wgpu::Extent3d {
                 width: 640,
                 height: 360,
@@ -5463,7 +5464,7 @@ mod tests {
             return; // no GPU available; skip
         };
         let (device, queue) = pollster::block_on(adapter.request_device(&DeviceDescriptor {
-            label: Some("p2-test-device"),
+            label: Some("rustlua-test-device"),
             required_features: wgpu::Features::empty(),
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
             required_limits: wgpu::Limits::default(),
@@ -5481,7 +5482,7 @@ mod tests {
                 .expect("offscreen renderer");
         let size = 32u32;
         let target = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("p2-test-identity"),
+            label: Some("rustlua-test-identity"),
             size: wgpu::Extent3d {
                 width: size,
                 height: size,
@@ -5596,7 +5597,7 @@ mod tests {
             return; // no GPU available; skip
         };
         let (device, queue) = pollster::block_on(adapter.request_device(&DeviceDescriptor {
-            label: Some("p2-test-device"),
+            label: Some("rustlua-test-device"),
             required_features: wgpu::Features::empty(),
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
             required_limits: wgpu::Limits::default(),
@@ -5640,7 +5641,7 @@ mod tests {
             }],
         };
         let target = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("p2-test-mesh-identity"),
+            label: Some("rustlua-test-mesh-identity"),
             size: wgpu::Extent3d {
                 width: size,
                 height: size,
@@ -5711,7 +5712,7 @@ mod tests {
             return; // no GPU available; skip
         };
         let (device, queue) = pollster::block_on(adapter.request_device(&DeviceDescriptor {
-            label: Some("p2-test-device"),
+            label: Some("rustlua-test-device"),
             required_features: wgpu::Features::empty(),
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
             required_limits: wgpu::Limits::default(),
@@ -5724,7 +5725,7 @@ mod tests {
                 .expect("offscreen renderer");
         let size = 64u32;
         let target = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("p2-test-plan"),
+            label: Some("rustlua-test-plan"),
             size: wgpu::Extent3d {
                 width: size,
                 height: size,
@@ -5862,7 +5863,7 @@ mod tests {
             return; // no GPU available; skip
         };
         let (device, queue) = pollster::block_on(adapter.request_device(&DeviceDescriptor {
-            label: Some("p2-test-device"),
+            label: Some("rustlua-test-device"),
             required_features: wgpu::Features::empty(),
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
             required_limits: wgpu::Limits::default(),
@@ -5875,7 +5876,7 @@ mod tests {
                 .expect("offscreen renderer");
         let size = 32u32;
         let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("p2-test-post-process"),
+            label: Some("rustlua-test-post-process"),
             size: wgpu::Extent3d {
                 width: size,
                 height: size,

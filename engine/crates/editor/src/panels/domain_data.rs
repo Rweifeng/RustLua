@@ -1053,6 +1053,9 @@ impl EditorApp {
         let mut open = self.show_domain_data_panel;
         let mut revalidate = false;
         let mut located: Option<String> = None;
+        // 只读视图摘要先算一次：面板标题与「只读视图」小节共用，且必须在窗口闭包
+        // 之外取好（闭包内 `self` 已被 `domain_report` 借用）。
+        let summary = self.domain_view_summary();
         egui::Window::new("领域数据（Lua 校验）")
             .open(&mut open)
             .default_size([640.0, 460.0])
@@ -1071,24 +1074,14 @@ impl EditorApp {
                         .file_name()
                         .and_then(|n| n.to_str())
                         .unwrap_or("项目");
-                    ui.colored_label(
-                        ui.visuals().weak_text_color(),
-                        format!("工程：{proj_name}"),
-                    );
-                    // 右侧：领域数据统计 chips。
+                    ui.colored_label(ui.visuals().weak_text_color(), format!("工程：{proj_name}"));
+                    // 右侧：领域数据只读视图摘要（与「只读视图」小节同一份文本，
+                    // 同一个 `domain_view_summary`，避免两处口径漂移）。
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let weak = ui.visuals().weak_text_color();
-                        let chip = |ui: &mut egui::Ui, label: &str, n: usize| {
-                            ui.colored_label(weak, format!("{label} {n}"));
-                        };
-                        chip(ui, "对话", report.view.dialogues.len());
-                        chip(ui, "任务", report.view.quests.len());
-                        chip(ui, "商店", report.view.shops.len());
-                        chip(ui, "NPC", report.view.npcs.len());
-                        chip(ui, "地点", report.view.places.len());
-                        let exits: usize = report.view.maps.iter().map(|m| m.exits.len()).sum();
-                        chip(ui, "出口", exits);
-                        chip(ui, "地图", report.view.maps.len());
+                        ui.colored_label(
+                            ui.visuals().weak_text_color(),
+                            egui::RichText::new(&summary).small(),
+                        );
                     });
                 });
                 if let Some(error) = &report.bootstrap_error {
@@ -1103,7 +1096,11 @@ impl EditorApp {
                 } else {
                     ui.colored_label(
                         egui::Color32::from_rgb(230, 170, 60),
-                        format!("⚠ 问题 {} 条（模块 {} 个）", report.issue_count(), report.problem_modules()),
+                        format!(
+                            "⚠ 问题 {} 条（模块 {} 个）",
+                            report.issue_count(),
+                            report.problem_modules()
+                        ),
                     );
                 }
                 ui.colored_label(
@@ -1233,6 +1230,8 @@ impl EditorApp {
         let Some(view) = self.domain_report.as_ref().map(|report| &report.view) else {
             return;
         };
+        // 与面板标题同一份摘要（同一个 `domain_view_summary`），避免两处口径漂移。
+        ui.label(egui::RichText::new(self.domain_view_summary()).strong());
         ui.label(format!("任务索引：{}", join_or_none(&view.quests)));
         ui.label(format!("对话索引：{}", join_or_none(&view.dialogues)));
         ui.label("地图出口：");
@@ -1637,7 +1636,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("clock")
             .as_nanos();
-        let root = std::env::temp_dir().join(format!("p2-editor-m1903-{label}-{suffix}"));
+        let root = std::env::temp_dir().join(format!("rustlua-editor-m1903-{label}-{suffix}"));
         fs::create_dir_all(root.join("scripts/data/nested")).expect("fixture dirs");
         fs::create_dir_all(root.join("scripts/systems")).expect("runtime module dir");
         fs::create_dir_all(root.join("scenes")).expect("scenes dir");

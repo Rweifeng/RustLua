@@ -462,6 +462,111 @@ def icon_ape_core():
     return cv
 
 
+def icon_radish():
+    """萝卜：白身锥形 + 尾须 + 顶叶（快熟作物，白色主体在深色背包里好认）。"""
+    cv = Canvas(SIZE, SIZE)
+    white = rgb("#F4F1EA")
+    white_dim = rgb("#D8D2C4")
+    white_dark = rgb("#B8B0A0")
+    for y in range(12, 29):
+        t = (y - 12) / 16.0
+        half = int(round(2 + 8 * (1 - t) ** 1.4))
+        cv.hline(16 - half, 16 + half, y, white)
+    cv.hline(9, 23, 14, white_dim)
+    cv.hline(10, 22, 20, white_dim)
+    # 尾须
+    stick(cv, 15, 27, 14, 30, white_dark, 1)
+    stick(cv, 17, 27, 18, 30, white_dark, 1)
+    # 顶叶三片
+    for side, y in ((-1, 10), (1, 12)):
+        blob(cv, 16 + side * 5, y, 5, 3, BAMBOO)
+        cv.hline(16 + side * 5 - 4, 16 + side * 5 + 2, y - 2, BAMBOO_LIGHT)
+    blob(cv, 16, 8, 3, 3, BAMBOO_LIGHT)
+    cv.outline(INK)
+    return cv
+
+
+def _seed_pack(spots, spot_color, note=""):
+    """通用种子纸包：折口纸包 + 三粒溢出种子（颜色随种子）。"""
+    cv = Canvas(SIZE, SIZE)
+    cv.rect(8, 12, 23, 27, PAPER)
+    cv.rect(8, 12, 23, 15, PAPER_DIM)
+    cv.vline(8, 12, 27, PAPER_DIM)
+    cv.vline(23, 12, 27, PAPER_DIM)
+    cv.hline(8, 23, 27, PAPER_DIM)
+    stick(cv, 8, 14, 23, 14, BAMBOO, 1)
+    for x, y in spots:
+        shade_blob(cv, x, y, 2, 2, spot_color)
+    for x, y in ((24, 16), (26, 19)):
+        cv.set(x, y, spot_color)
+    cv.outline(INK)
+    return cv
+
+
+def icon_seed_radish():
+    """萝卜籽：纸包 + 白粒（教学快熟）。"""
+    return _seed_pack(((12, 20), (16, 24), (20, 21)), rgb("#F4F1EA"), "radish")
+
+
+def icon_seed_herb():
+    """草药籽：纸包 + 绿粒。"""
+    return _seed_pack(((12, 20), (16, 24), (20, 21)), BAMBOO_LIGHT, "herb")
+
+
+def icon_polygonum():
+    """何首乌：暗紫块根一对 + 细须（8 天高价药材）。"""
+    cv = Canvas(SIZE, SIZE)
+    root = rgb("#6E4A63")
+    root_light = rgb("#8A6078")
+    root_dark = rgb("#4A2E42")
+    for cx, cy, rx, ry in ((12, 21, 5, 7), (21, 23, 4, 6)):
+        blob(cv, cx, cy, rx, ry, root)
+        blob(cv, cx - 1, cy - 2, rx * 0.5, ry * 0.5, root_light)
+    # 分叉须
+    stick(cv, 12, 27, 10, 30, root_dark, 1)
+    stick(cv, 13, 27, 15, 30, root_dark, 1)
+    stick(cv, 21, 28, 19, 30, root_dark, 1)
+    stick(cv, 22, 28, 24, 30, root_dark, 1)
+    # 藤叶
+    blob(cv, 16, 8, 6, 3, BAMBOO)
+    cv.hline(10, 22, 6, BAMBOO_LIGHT)
+    cv.outline(INK)
+    return cv
+
+
+def icon_seed_polygonum():
+    """何首乌苗：纸包 + 紫粒。"""
+    return _seed_pack(((12, 20), (16, 24), (20, 21)), rgb("#8A6078"), "polygonum")
+
+
+def icon_ginseng():
+    """人参：淡黄人形根 + 参须 + 顶叶（10 天最高价药材）。"""
+    cv = Canvas(SIZE, SIZE)
+    root = rgb("#E8D9A8")
+    root_dim = rgb("#D4BF85")
+    root_dark = rgb("#A8905C")
+    # 主根（人形）
+    blob(cv, 16, 19, 6, 8, root)
+    blob(cv, 13, 13, 3, 4, root)
+    blob(cv, 19, 13, 3, 4, root)
+    cv.hline(13, 19, 15, root_dim)
+    # 参须
+    stick(cv, 11, 11, 7, 8, root_dark, 1)
+    stick(cv, 21, 11, 25, 8, root_dark, 1)
+    stick(cv, 14, 27, 11, 30, root_dark, 1)
+    stick(cv, 18, 27, 21, 30, root_dark, 1)
+    # 顶叶
+    blob(cv, 16, 7, 5, 3, BAMBOO)
+    cv.hline(11, 21, 5, BAMBOO_LIGHT)
+    cv.outline(INK)
+    return cv
+
+
+def icon_seed_ginseng():
+    """人参籽：纸包 + 淡黄粒。"""
+    return _seed_pack(((12, 20), (16, 24), (20, 21)), rgb("#E8D9A8"), "ginseng")
+
+
 # ---------------------------------------------------------------------------
 # 清单
 # ---------------------------------------------------------------------------
@@ -484,6 +589,13 @@ ICONS = [
     ("wolf_pelt", icon_wolf_pelt, "狼皮 / DROP"),
     ("boar_meat", icon_boar_meat, "兽肉 / DROP"),
     ("ape_core", icon_ape_core, "山魈内丹 / DROP"),
+    ("radish", icon_radish, "萝卜 / CROP"),
+    ("seed_radish", icon_seed_radish, "萝卜籽 / SEED"),
+    ("seed_herb", icon_seed_herb, "草药籽 / SEED"),
+    ("polygonum", icon_polygonum, "何首乌 / CROP"),
+    ("seed_polygonum", icon_seed_polygonum, "何首乌苗 / SEED"),
+    ("ginseng", icon_ginseng, "人参 / CROP"),
+    ("seed_ginseng", icon_seed_ginseng, "人参籽 / SEED"),
     ("hoe", icon_hoe, "锄头 / TOOL"),
     ("axe", icon_axe, "斧 / TOOL"),
     ("pick", icon_pick, "镐 / TOOL"),

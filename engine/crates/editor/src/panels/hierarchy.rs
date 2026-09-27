@@ -484,26 +484,27 @@ impl EditorApp {
                 // right-to-left：✕ 先画靠右，TextEdit 后画用 INFINITY 占满剩余宽度。
                 // 之前按 available_width()-34 算 desired_width，输入文字比这个宽时 TextEdit
                 // 的内容 galley 会反向撑大自身，导致输入框越输越宽（与 schema_inspector 同一问题）。
-                let filter_response = ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                    // 空时也在按钮位分配 0 宽占位：保持 TextEdit 的 widget 序号稳定，
-                    // 否则输入首字符时 ✕ 按钮出现会让 TextEdit 序号 +1，egui 视为新控件而丢焦点。
-                    if !self.hierarchy_filter.is_empty()
-                        && ui.small_button("✕").on_hover_text("清空过滤").clicked()
-                    {
-                        self.hierarchy_filter.clear();
-                    } else {
-                        ui.allocate_exact_size(egui::vec2(0.0, 0.0), egui::Sense::hover());
-                    }
-                    // 显式固定 widget ID：按钮出现/消失会改变自动序号，导致 TextEdit 被当成新控件而丢焦点。
-                    let edit_response = ui.add(
-                        egui::TextEdit::singleline(&mut self.hierarchy_filter)
-                            .id(ui.make_persistent_id("hierarchy_search_box"))
-                            // 语法提示直接写在占位文本里：`type:`/`component:` 是 ER-04 的"类型过滤"。
-                            .hint_text("搜索实体（type:Sprite 或 component:ui 按组件过滤）")
-                            .desired_width(f32::INFINITY),
-                    );
-                    edit_response.rect
-                });
+                let filter_response =
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                        // 空时也在按钮位分配 0 宽占位：保持 TextEdit 的 widget 序号稳定，
+                        // 否则输入首字符时 ✕ 按钮出现会让 TextEdit 序号 +1，egui 视为新控件而丢焦点。
+                        if !self.hierarchy_filter.is_empty()
+                            && ui.small_button("✕").on_hover_text("清空过滤").clicked()
+                        {
+                            self.hierarchy_filter.clear();
+                        } else {
+                            ui.allocate_exact_size(egui::vec2(0.0, 0.0), egui::Sense::hover());
+                        }
+                        // 显式固定 widget ID：按钮出现/消失会改变自动序号，导致 TextEdit 被当成新控件而丢焦点。
+                        let edit_response = ui.add(
+                            egui::TextEdit::singleline(&mut self.hierarchy_filter)
+                                .id(ui.make_persistent_id("hierarchy_search_box"))
+                                // 语法提示直接写在占位文本里：`type:`/`component:` 是 ER-04 的"类型过滤"。
+                                .hint_text("搜索实体（type:Sprite 或 component:ui 按组件过滤）")
+                                .desired_width(f32::INFINITY),
+                        );
+                        edit_response.rect
+                    });
                 // 探针：GUI smoke 用它把合成点击打在输入框真正的位置上。
                 self.hierarchy_filter_rect = filter_response.inner;
                 if !self.hierarchy_filter.trim().is_empty() {
@@ -1665,7 +1666,7 @@ mod tests {
     #[test]
     fn creating_a_prefab_from_a_prefab_instance_is_refused() {
         let root = std::env::temp_dir().join(format!(
-            "p2-create-prefab-{}-{}",
+            "rustlua-create-prefab-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -1773,7 +1774,7 @@ mod tests {
     #[test]
     fn new_scene_name_avoids_overwriting_existing_scenes() {
         let root = std::env::temp_dir().join(format!(
-            "p2-new-scene-name-{}-{}",
+            "rustlua-new-scene-name-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -1824,7 +1825,7 @@ mod tests {
         let mut app = crate::EditorApp::new(
             editor::ProjectInfo {
                 root: std::env::temp_dir()
-                    .join(format!("p2-hierarchy-filter-{}", std::process::id())),
+                    .join(format!("rustlua-hierarchy-filter-{}", std::process::id())),
                 version: "test".to_owned(),
                 directories: Vec::new(),
             },
@@ -1870,7 +1871,7 @@ mod tests {
         let mut app = crate::EditorApp::new(
             editor::ProjectInfo {
                 root: std::env::temp_dir()
-                    .join(format!("p2-hierarchy-opts-{}", std::process::id())),
+                    .join(format!("rustlua-hierarchy-opts-{}", std::process::id())),
                 version: "test".to_owned(),
                 directories: Vec::new(),
             },
@@ -2205,7 +2206,7 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let root = std::env::temp_dir().join(format!("p2-hierarchy-persist-{token}"));
+        let root = std::env::temp_dir().join(format!("rustlua-hierarchy-persist-{token}"));
         let mut document = sample_document();
         document.path = Some(root.join("scenes/main.scene"));
         let mut app = make_app(document);

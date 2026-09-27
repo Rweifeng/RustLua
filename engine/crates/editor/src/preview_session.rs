@@ -131,7 +131,7 @@ impl PreviewSession {
         )?;
         let (width, height) = size;
         let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("p2-editor-preview"),
+            label: Some("rustlua-editor-preview"),
             size: wgpu::Extent3d {
                 width,
                 height,
@@ -357,7 +357,7 @@ impl PreviewSession {
             return;
         }
         let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("p2-editor-preview"),
+            label: Some("rustlua-editor-preview"),
             size: wgpu::Extent3d {
                 width,
                 height,
@@ -523,7 +523,7 @@ mod tests {
         }))
         .ok()?;
         pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("p2-preview-session-test"),
+            label: Some("rustlua-preview-session-test"),
             required_features: wgpu::Features::empty(),
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
             required_limits: wgpu::Limits::default(),

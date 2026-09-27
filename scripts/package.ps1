@@ -124,7 +124,7 @@ $fontName = Split-Path -Leaf $fontSource
 $publishNameJson = $PublishName | ConvertTo-Json -Compress
 
 # webgl 与微信小游戏共用 plugins/webgl/web-runtime.js，而这份 JS 运行时只读明文 pack/
-# （不做 P2PK1 解包、也不做 gzip 解压——那是 Rust 运行时的能力）。因此 -Encrypt/-Compress
+# （不做 RustLua 解包、也不做 gzip 解压——那是 Rust 运行时的能力）。因此 -Encrypt/-Compress
 # 会产出"打包成功但运行不起来"的包，这里直接拒绝，而不是发出去再排查。
 if ($isWebPlatform -and ($Encrypt -or $Compress)) {
     throw "Platform '$Platform' cannot use -Encrypt/-Compress: the shared web runtime reads plaintext pack/ only (see plugins/webgl/README.md)."
@@ -160,7 +160,8 @@ function Invoke-PackagedCheck {
 }
 
 # 微信小游戏三种形态的体积配额不同，断言也必须不同：
-#   subpackage：主包 = launcher 总量 − pack/（分包），三档都要断言（主包 4MB / 单分包 4MB / 总计 20MB）
+#   subpackage：主包 = launcher 总量 − pack/（分包），断言主包 4MB / 单个普通分包不设 4MB 门 / 总计 20MB
+#   （官方 2023-10 起：主包 ≤ 4M、单个普通分包不限制大小、总量 ≤ 20M/30M，见 docs/52 与 package.ps1 体积门）
 #   full      ：pack/ 也在主包里，整个包都算主包 4MB（没有分包配额可用）
 #   remote    ：pack/ 只剩骨架，主包 4MB；重资源在 CDN 上不占包体配额
 # 超限时的**出路**必须写进报错里，否则使用者只看到"超了"却不知道该往哪走。
@@ -185,14 +186,17 @@ function Assert-WeChatPackageVolume {
                 "两侧此消彼长）；② 改用 -AssetPack remote -RemotePackBaseUrl <CDN> 把重资源移出包内。") -f `
                 ($mainBytes / 1KB), ($TotalBytes / 1KB), ($PackBytes / 1KB)) + $Suffix)
         }
-        if ($PackBytes -gt 4MB) {
-            throw ((("微信小游戏单个分包超限: {0:N0} KB > 4,096 KB（pack/ 是 subpackages[0].root，目录下所有文件都计入）。" +
+        # 单个普通分包：官方 2023-10 起不再限 4MB（微信官方《分包加载》：主包 ≤ 4M、
+        # 单个普通分包不限制大小、总量 ≤ 20M/30M）。此处保留**总量**门（下方 20MB 那条），
+        # 单分包不再单独设 4MB 门——iOS 备用 wav 音频（InnerAudioContext 在 iOS 不支持 ogg）
+        # 需要进分包，旧 4MB 门会误杀合规产物。
+        if ($PackBytes -gt 20MB) {
+            throw ((("微信小游戏单个分包过大: {0:N0} KB > 20,480 KB（pack/ 是 subpackages[0].root，目录下所有文件都计入）。" +
                 "出路（按优先级）：① 把更多资源列进首屏清单搬去 mainpack/；② 拆第二个分包；" +
                 "③ 改用 -AssetPack remote -RemotePackBaseUrl <CDN>。") -f ($PackBytes / 1KB)) + $Suffix)
         }
-        # 这一档在当前产物形态下**走不到**（如实标注，别让人以为它被验证过）：主包 ≤ 4MB 且
-        # 单分包 ≤ 4MB ⇒ 总量 ≤ 8MB < 20MB，而上面两条会先抛。留着是因为微信的 20MB 是
-        # "主包 + 全部分包之和"的上限——一旦将来真的拆出第二个分包，这条才会变成活的门。
+        # 总量门（官方：主包 + 全部分包之和 ≤ 20MB；开通虚拟支付后可到 30MB，脚本按无内购口径
+        # 保守取 20MB）。主包 4MB 门在上面独立生效，单个普通分包不限大小（见上一条的注释）。
         if ($TotalBytes -gt 20MB) {
             throw (("微信小游戏代码包总量超限: {0:N0} KB > 20,480 KB（主包 + 全部分包之和）。" -f ($TotalBytes / 1KB)) + $Suffix)
         }
@@ -298,6 +302,47 @@ try {
     if ($Encrypt) { $assetcArgs += "--encrypt" }
     & $assetc @assetcArgs
     if ($LASTEXITCODE -ne 0) { throw "assetc package failed." }
+
+    # 微信小游戏：iOS 的 InnerAudioContext 不支持 ogg（官方格式矩阵 ogg: iOS ✗ / Android ✓），
+    # 因此为 pack/assets/audio/*.ogg 生成同名 .wav 备用格式，运行时按平台选择
+    # （web-runtime.js 的 installLuaAudioBridge：iOS → wav，其余 → ogg）。
+    # 形态约束：subpackage / remote 生成（wav 落在分包或 CDN，无主包体积压力）；
+    # full 形态不生成（主包 4MB 上限会被 wav 撑爆），并明确警告 iOS 上音频无声。
+    if ($Platform -eq "wechat-minigame") {
+        if ($isSubpackagePack -or $exportsAssetPack) {
+            $ogg2wavExe = Join-Path $cargoTargetRoot "debug\examples\ogg2wav.exe"
+            if (-not (Test-Path -LiteralPath $ogg2wavExe)) {
+                Write-Host "==> Building ogg2wav tool (engine example)" -ForegroundColor Cyan
+                cargo build -p engine --example ogg2wav
+                if ($LASTEXITCODE -ne 0) { throw "ogg2wav tool build failed." }
+            }
+            $audioDir = Join-Path $packRoot "assets\audio"
+            $oggFiles = @(Get-ChildItem -LiteralPath $audioDir -Filter "*.ogg" -File -ErrorAction SilentlyContinue)
+            $wavCount = 0
+            foreach ($ogg in $oggFiles) {
+                $wav = Join-Path $audioDir ($ogg.BaseName + ".wav")
+                $savedEap = $ErrorActionPreference
+                $ErrorActionPreference = "Continue"
+                try {
+                    & $ogg2wavExe $ogg.FullName $wav "--rate" "22050" 2>&1 | Out-Null
+                    $ogg2wavExit = $LASTEXITCODE
+                }
+                finally {
+                    $ErrorActionPreference = $savedEap
+                }
+                if ($ogg2wavExit -ne 0) {
+                    throw ("ogg2wav failed on {0}（exit {1}）" -f $ogg.Name, $ogg2wavExit)
+                }
+                $wavCount++
+            }
+            if ($wavCount -gt 0) {
+                Write-Host ("==> WeChat audio: generated {0} .wav fallback (iOS InnerAudioContext has no ogg; --rate 22050)" -f $wavCount) -ForegroundColor DarkGray
+            }
+        }
+        else {
+            Write-Warning "WeChat full package: 未生成 wav 备用音频（主包 4MB 上限）；iOS 上 InnerAudioContext 不支持 ogg，BGM/SFX 将无声。建议改用 -AssetPack subpackage 或 remote。"
+        }
+    }
 
     Write-Host "==> Copy runner and docs" -ForegroundColor Cyan
     # 发布包只含运行器；assetc 为开发工具，不随包分发（并清理历史残留）。
@@ -929,7 +974,7 @@ try {
         Write-Host ("wechat_minigame_size_precheck files={0} main_kb={1:N0} main_of_limit={2:P1} subpackage_kb={3:N0} subpackage_of_limit={4:P1} pack_kb={5:N0} total_kb={6:N0} total_of_limit={7:P1} asset_pack={8}" -f `
             $requiredWeChatFiles.Count, ($wechatVolume.Main / 1KB), ($wechatVolume.Main / 4MB), `
             $(if ($isSubpackagePack) { $wechatVolume.Pack / 1KB } else { 0 }), `
-            $(if ($isSubpackagePack) { $wechatVolume.Pack / 4MB } else { 0 }), `
+            $(if ($isSubpackagePack) { $wechatVolume.Pack / 20MB } else { 0 }), `
             ($wechatPackSize / 1KB), ($wechatVolume.Total / 1KB), ($wechatVolume.Total / 20MB), $AssetPack) -ForegroundColor DarkGray
     }
     elseif ($Platform -eq "webgl") {
@@ -1110,7 +1155,7 @@ try {
         Write-Host ("wechat_minigame_package_ok files={0} main_kb={1:N0} main_of_limit={2:P1} subpackage_kb={3:N0} subpackage_of_limit={4:P1} pack_kb={5:N0} total_kb={6:N0} total_of_limit={7:P1} asset_pack={8} split={9}" -f `
             $requiredWeChatFiles.Count, ($wechatFinalVolume.Main / 1KB), ($wechatFinalVolume.Main / 4MB), `
             $(if ($isSubpackagePack) { $wechatFinalVolume.Pack / 1KB } else { 0 }), `
-            $(if ($isSubpackagePack) { $wechatFinalVolume.Pack / 4MB } else { 0 }), `
+            $(if ($isSubpackagePack) { $wechatFinalVolume.Pack / 20MB } else { 0 }), `
             ($wechatFinalPack / 1KB), ($wechatFinalVolume.Total / 1KB), ($wechatFinalVolume.Total / 20MB), $AssetPack, `
             $(if ($isSubpackagePack) { "mainpack+pack" } else { "none" })) -ForegroundColor Green
     }

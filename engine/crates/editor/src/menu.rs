@@ -849,7 +849,7 @@ mod tests {
 
     fn menu_test_app() -> EditorApp {
         let project = editor::ProjectInfo {
-            root: std::env::temp_dir().join(format!("p2-menu-{}", crate::util::test_token())),
+            root: std::env::temp_dir().join(format!("rustlua-menu-{}", crate::util::test_token())),
             version: "test".to_owned(),
             directories: Vec::new(),
         };

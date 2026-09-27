@@ -554,11 +554,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "E: 采集 芦苇",
     )?;
     press(&mut rt, KeyCode::KeyE)?;
-    assert_str(
-        &mut rt,
-        "require('core.state').last_action",
-        "gather_reed",
-    )?;
+    assert_str(&mut rt, "require('core.state').last_action", "gather_reed")?;
     // 内容推进（2026-09-27，docs/48 接线）：茶丛 (19,10) 与野果树 (6,16)。
     // 站到采集点**相邻格**并面向它（(19,9)→(19,10)、(6,15)→(6,16)）。
     lua(

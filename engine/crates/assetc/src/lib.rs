@@ -777,7 +777,7 @@ pub fn package(
 
 /// 冒烟检查：创建临时项目，验证 scan/import 闭环可用。
 pub fn check() -> Result<String, String> {
-    let root = std::env::temp_dir().join(format!("p2-assetc-check-{}", std::process::id()));
+    let root = std::env::temp_dir().join(format!("rustlua-assetc-check-{}", std::process::id()));
     fs::create_dir_all(root.join("scripts")).map_err(|e| e.to_string())?;
     fs::write(
         root.join("project.toml"),
@@ -814,7 +814,8 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_project(name: &str) -> PathBuf {
-        let root = std::env::temp_dir().join(format!("p2-assetc-{name}-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("rustlua-assetc-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("assets/textures")).unwrap();
         fs::create_dir_all(root.join("scenes")).unwrap();
@@ -863,7 +864,7 @@ mod tests {
             return None;
         }
         let root = std::env::temp_dir().join(format!(
-            "p2-assetc-sample-{label}-{}-{}",
+            "rustlua-assetc-sample-{label}-{}-{}",
             std::process::id(),
             unique_suffix()
         ));
@@ -1070,7 +1071,7 @@ mod tests {
     #[test]
     fn package_copies_data_and_writes_manifest() {
         let root = temp_project("package");
-        let out = std::env::temp_dir().join(format!("p2-assetc-out-{}", std::process::id()));
+        let out = std::env::temp_dir().join(format!("rustlua-assetc-out-{}", std::process::id()));
         let _ = fs::remove_dir_all(&out);
         package(&root, &out, false, false).unwrap();
         assert!(out.join("project.toml").is_file());
@@ -1087,7 +1088,7 @@ mod tests {
     fn package_compresses_supported_assets_without_compressing_lua() {
         let root = temp_project("package-compress-assets");
         let out = std::env::temp_dir().join(format!(
-            "p2-assetc-compress-out-{}-{}",
+            "rustlua-assetc-compress-out-{}-{}",
             std::process::id(),
             unique_suffix()
         ));
@@ -1181,7 +1182,7 @@ mod tests {
     fn collect_files_rejects_symlink_escaping_the_project() {
         let root = temp_project("symlink-escape");
         let outside = std::env::temp_dir().join(format!(
-            "p2-assetc-outside-{}-{}",
+            "rustlua-assetc-outside-{}-{}",
             std::process::id(),
             unique_suffix()
         ));
@@ -1207,7 +1208,7 @@ mod tests {
         assert!(error.contains("项目目录外"), "{error}");
         // 同时确认整条打包路径也会失败（不会写出半个发布目录）。
         let out = std::env::temp_dir().join(format!(
-            "p2-assetc-symlink-out-{}-{}",
+            "rustlua-assetc-symlink-out-{}-{}",
             std::process::id(),
             unique_suffix()
         ));
@@ -1297,7 +1298,7 @@ mod tests {
         );
 
         let out = std::env::temp_dir().join(format!(
-            "p2-assetc-sample-pack-{}-{}",
+            "rustlua-assetc-sample-pack-{}-{}",
             std::process::id(),
             unique_suffix()
         ));

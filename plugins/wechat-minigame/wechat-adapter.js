@@ -25,23 +25,23 @@
     throw new Error('wechat-adapter: 未找到全局 wx —— 本文件只能在微信小游戏运行时中加载');
   }
 
-  // 逻辑分辨率 = 游戏的**竖版设计分辨率**（720×1280），drawScene/HUD 依赖 canvas.width/height。
+  // 逻辑分辨率 = 游戏的**横版设计分辨率**（1280×720），drawScene/HUD 依赖 canvas.width/height。
   //
-  // 为什么必须是竖版（M32）：`game_jhyt` 在 M32 改成竖版，Lua 面板坐标按 720×1280 排
-  // （`scripts/ui/layout.lua` 的 DESIGN_W/DESIGN_H），而 web 运行时的绘制是**屏幕像素空间**、
-  // 不做缩放——画布还停在 1280×720 的话，竖版面板会横向溢出画布（底部状态栏直接看不见）。
+  // 为什么必须是横版：`game_jhyt` 在 M32 一度改成竖版，随后按「横屏方案A」转回横版——Lua 面板
+  // 坐标按 `scripts/ui/layout.lua` 的 DESIGN_W/DESIGN_H（1280×720）排，而 web 运行时的绘制是
+  // **屏幕像素空间**、不做缩放，画布尺寸不对就是面板溢出画布（超出部分直接看不见）。
   //
   // **改这个尺寸要三处一起改**，缺一处就是"画布与版面不一致"，而那种错位在无头验证里看不出来
   // （假 ctx 不裁剪、坐标超界也照样记数）：
-  //   ① 这里（小游戏画布）；② `game.json` 的 `deviceOrientation`（否则宿主按横屏给窗口）；
+  //   ① 这里（小游戏画布）；② `game.json` 的 `deviceOrientation`（否则宿主按相反方向给窗口）；
   //   ③ webgl 侧 `engine/crates/game_web/src/lib.rs` 的 canvas 尺寸。三者必须等于设计分辨率。
-  var VIEW_WIDTH = 720;
-  var VIEW_HEIGHT = 1280;
+  var VIEW_WIDTH = 1280;
+  var VIEW_HEIGHT = 720;
   // `game.json` 里声明的方向（**编译期常量，不读文件**）：`game.json` 上传后被编译，
   // 真机上 `readFileSync` 一律 permission denied，而适配层有一条硬约束"一次都不许读它"
   // （回归守卫 `--expect-no-read game.json`）。所以方向只作为**自述**出现在诊断里，
   // 不与 `game.json` 做运行期比对——那属于构建期校验（见 scripts/package.ps1）。
-  var GAME_ORIENTATION = 'portrait';
+  var GAME_ORIENTATION = 'landscape';
   // pack/ 是资源根：分包形态（-AssetPack subpackage）下它是 game.json 里声明的分包；
   // 其余形态下它只是主包里的普通目录。是不是分包一律以 game.json 的声明为准（见 hasPackSubpackage）。
   var PACK_PREFIX = 'pack/';
@@ -62,10 +62,6 @@ var WASM_MODULE_PATH = 'pkg/game_web_bg.wasm';
   // 构建期把这些文件的文件名追加 `.txt`，映射表放在这里；运行时**只查表、不重算规则**
   // （规则在 scripts/code-package-rules.js，构建期与无头验证共用，两处重算必然漂移）。
   var CODE_PACKAGE_MAP = 'code-package.json';
-  // 虚拟摇杆参数（触摸端可玩性；PC/开发者工具可直接用键盘）。
-  var STICK_DEADZONE = 18;      // CSS px：小于该位移视为未推动
-  var STICK_KEY_THRESHOLD = 6;  // CSS px：推动量超过该值即按下对应方向键
-
   var userRoot = (wx.env && wx.env.USER_DATA_PATH) || '';
   var sysInfo = safeCall(wx, 'getSystemInfoSync') || {};
   var screenWidth = sysInfo.windowWidth || 375;
@@ -1337,7 +1333,7 @@ var WASM_MODULE_PATH = 'pkg/game_web_bg.wasm';
         exports: wasmState.exports,
         detail: wasmState.detail
       },
-      // 画布 vs 工程声明尺寸（M32 竖版）：agree=false 就是"版面会溢出画布"。
+      // 画布 vs 工程声明尺寸（横版方案A）：agree=false 就是"版面会溢出画布"。
       view_agreement: viewAgreement,
       read_strategy: preferredStrategy.pack || '(未探明)',
       remote: remoteConfig ? (remoteConfig.packBaseUrl + ' remote=' + stats.remote + ' failed=' + stats.remoteFailed) : 'off',
@@ -1583,44 +1579,30 @@ var WASM_MODULE_PATH = 'pkg/game_web_bg.wasm';
   function toCanvasY(clientY) { return clientY / screenHeight * canvas.height; }
 
   // 触摸 → 指针事件（让运行时既有的 mousedown/mousemove/mouseup 逻辑继续生效）
-  // + 虚拟摇杆（左半屏 WASD）/ 动作键（右半屏 space），保证手机端可玩。
-  function installTouchBridge() {
-    var primary = null;   // 驱动指针的触点
-    var stick = null;     // 驱动摇杆的触点
-    var actionTouch = null;
+  // + 动作键（右半屏 space，菜单确认；兼容手机端从标题进游戏/对话推进）。
+  //
+  // 历史形态的"左半屏 WASD 虚拟摇杆"已移除：触屏操控改由游戏侧的 `ui/virtual_pad.lua`
+  // （可见摇杆 + 可见按钮）接管，适配层只负责把触点忠实地翻译成鼠标事件——
+  // 微信实测导致可见控件全部失效的三个根因都在这层：
+  //   ① 光标只在 touchmove 时更新 → 首次按下（touchstart）时 cursor 还停在 (0,0)，
+  //      虚拟控件在"按下边沿"那一帧全部命中测试脱靶；
+  //   ② mouseup 只派发到 canvas，而运行时在 window 上监听（shim 的 dispatchEvent 不冒泡）
+  //      → mouse_just_released 永远不触发，控件按下后永远不释放；
+  //   ③ 只有首个触点派发 mousedown → 按住摇杆再点按钮时按钮收不到按下边沿。
+  // 第③条的配套：运行时每次 mousedown 都记按下边沿 + 按下位置（press_cursor），
+  // 虚拟按钮按按下位置命中测试（见 web-runtime.js 与 virtual_pad.lua）。
 
-    function firstTouch(res) {
-      var list = (res && res.touches) || [];
-      return list.length ? list[0] : null;
-    }
-    function changedTouch(res) {
-      var list = (res && res.changedTouches) || [];
-      return list.length ? list[0] : null;
-    }
+
+
+  function installTouchBridge() {
+    var pointer = null;      // 驱动光标/持续鼠标状态的触点（优先左半屏=摇杆区触点）
+    var actionTouch = null;  // 右半屏触点 → space（菜单确认）
 
     function pressKey(key) {
       dispatchWindow(makeEvent('keydown', { key: key, code: key }));
     }
     function releaseKey(key) {
       dispatchWindow(makeEvent('keyup', { key: key, code: key }));
-    }
-    var stickKeys = { up: 'w', down: 's', left: 'a', right: 'd' };
-    function applyStick(dx, dy, held) {
-      var active = { up: false, down: false, left: false, right: false };
-      if (held) {
-        var distance = Math.sqrt(dx * dx + dy * dy);
-        if (distance > STICK_DEADZONE) {
-          if (dy < -STICK_KEY_THRESHOLD) active.up = true;
-          if (dy > STICK_KEY_THRESHOLD) active.down = true;
-          if (dx < -STICK_KEY_THRESHOLD) active.left = true;
-          if (dx > STICK_KEY_THRESHOLD) active.right = true;
-        }
-      }
-      for (var name in stickKeys) {
-        if (!Object.prototype.hasOwnProperty.call(stickKeys, name)) continue;
-        if (active[name]) pressKey(stickKeys[name]);
-        else releaseKey(stickKeys[name]);
-      }
     }
 
     function movePointer(touch, type, button) {
@@ -1632,40 +1614,80 @@ var WASM_MODULE_PATH = 'pkg/game_web_bg.wasm';
     }
 
     function handleStart(res) {
-      var touch = firstTouch(res);
-      if (!touch) return;
-      if (touch.clientX < screenWidth / 2) {
-        if (!stick) { stick = { id: touch.identifier, x: touch.clientX, y: touch.clientY }; }
-      } else if (actionTouch === null) {
-        actionTouch = touch.identifier;
-        pressKey(' ');
-      }
-      if (primary === null) {
-        primary = touch.identifier;
-        movePointer(touch, 'mousedown', 0);
+      var list = (res && res.touches) || [];
+      for (var i = 0; i < list.length; i++) {
+        var touch = list[i];
+        var isLeft = touch.clientX < screenWidth / 2;
+        var becomesPointer = pointer === null || (isLeft && pointer.x >= screenWidth / 2);
+        if (becomesPointer) {
+          pointer = { id: touch.identifier, x: touch.clientX, y: touch.clientY };
+          // 先落光标再按下去（根因①的修复）：虚拟控件在"按下边沿"那一帧用 cursor
+          // 命中测试。光标随后由 pointer 触点的 touchmove 持续驱动。
+          movePointer(touch, 'mousemove');
+          movePointer(touch, 'mousedown', 0);
+        } else {
+          // 第二根及以后的手指（通常是在摇杆区外的按钮手）：只派发 mousedown、不移动
+          // 光标——光标保持跟手（摇杆方向不被另一只手带偏），按下位置由运行时记进
+          // press_cursor，虚拟按钮按它做命中测试（根因③的修复）。
+          movePointer(touch, 'mousedown', 0);
+        }
+        if (!isLeft && actionTouch === null) {
+          actionTouch = touch.identifier;
+          pressKey(' ');
+        }
       }
     }
     function handleMove(res) {
       var list = (res && res.touches) || [];
       for (var i = 0; i < list.length; i++) {
         var touch = list[i];
-        if (stick && touch.identifier === stick.id) {
-          applyStick(touch.clientX - stick.x, touch.clientY - stick.y, true);
+        if (pointer && touch.identifier === pointer.id) {
+          pointer.x = touch.clientX;
+          pointer.y = touch.clientY;
+          movePointer(touch, 'mousemove');
         }
-        if (touch.identifier === primary) movePointer(touch, 'mousemove');
       }
     }
     function handleEnd(res) {
-      var touch = changedTouch(res);
-      if (touch) {
-        if (stick && touch.identifier === stick.id) { applyStick(0, 0, false); stick = null; }
-        if (touch.identifier === actionTouch) { releaseKey(' '); actionTouch = null; }
-        if (touch.identifier === primary) { movePointer(touch, 'mouseup', 0); primary = null; }
+      var list = (res && res.changedTouches) || [];
+      var remaining = (res && res.touches) || [];
+      var lastUp = null;   // 最后一指（需要把 mouseup 交给运行时）
+      for (var i = 0; i < list.length; i++) {
+        var touch = list[i];
+        if (actionTouch !== null && touch.identifier === actionTouch) {
+          releaseKey(' ');
+          actionTouch = null;
+        }
+        if (pointer && touch.identifier === pointer.id) {
+          pointer = null;
+          // 还有触点时把光标交给下一个（优先左半屏，即摇杆区）。
+          for (var j = 0; j < remaining.length; j++) {
+            var t = remaining[j];
+            if (t.identifier === touch.identifier) continue;
+            if (pointer === null || (t.clientX < screenWidth / 2 && pointer.x >= screenWidth / 2)) {
+              pointer = { id: t.identifier, x: t.clientX, y: t.clientY };
+              movePointer(t, 'mousemove');
+            }
+          }
+        }
+        if (remaining.length === 0) lastUp = touch;
+      }
+      // 最后一指离屏才发 mouseup：按住摇杆时点按钮/确认不该把移动一起释放；
+      // 无论最后抬起的是不是跟手触点，全部手指离屏都必须把"抬起"交给运行时
+      // （否则控件按下后永远不释放）。同时派发到 window——运行时在 window 上监听
+      // mouseup（根因②的修复）。
+      if (lastUp) {
+        movePointer(lastUp, 'mouseup', 0);
+        dispatchWindow(makeEvent('mouseup', {
+          button: 0,
+          clientX: toCanvasX(lastUp.clientX || 0),
+          clientY: toCanvasY(lastUp.clientY || 0)
+        }));
       }
     }
 
     function on(name, handler) {
-      if (typeof wx[name] === 'function') { try { wx[name](handler); } catch (e) { warn('wechat-adapter: ' + name + ' 注册失败 ' + e); } }
+      if (typeof wx[name] === 'function') { try { wx[name](handler); } catch (err) { warn('wechat-adapter: ' + name + ' 注册失败 ' + err); } }
     }
     on('onTouchStart', handleStart);
     on('onTouchMove', handleMove);
@@ -1685,7 +1707,6 @@ var WASM_MODULE_PATH = 'pkg/game_web_bg.wasm';
       dispatchWindow(makeEvent('keyup', { key: normalizeKey(res && res.key), code: res && res.code }));
     });
   }
-
   function dispatchWindow(event) {
     // 派发目标是**运行时看到的那个 window**（宿主自带 window 时它是宿主对象，不是 globalThis）。
     var target = (typeof windowTarget !== 'undefined' && windowTarget) ? windowTarget : g;
@@ -2338,7 +2359,7 @@ var WASM_MODULE_PATH = 'pkg/game_web_bg.wasm';
     loadWasmCoreOnce();
     // 画布与游戏版面的自检：`game.json` 的方向与画布尺寸必须和 `ui/layout.lua` 的设计分辨率
     // 对得上。**为什么值得单独自检**：Lua 面板画在屏幕像素空间、不做缩放，画布尺寸不对的表现是
-    // "竖版面板横向溢出画布"（底部状态栏看不见），而这在无头验证里**不会报错**
+    // "面板溢出画布"（边缘控件看不见），而这在无头验证里**不会报错**
     // （假 ctx 不裁剪、超界坐标照样计数）→ 只能靠这一行把它变成可读的证据。
     reportViewAgreement();
     // 分包**后台**载入，**不 await**：首屏资源全在主包里，boot 必须立刻用它们把标题画出来。
@@ -2396,15 +2417,20 @@ var WASM_MODULE_PATH = 'pkg/game_web_bg.wasm';
   //
   // 读包内 `project.toml` 的 `window_width/height`（那是工程声明的设计分辨率，与
   // `scripts/ui/layout.lua` 的 DESIGN_W/DESIGN_H 同源，由 `ui/layout_check.lua` 在原生侧守住），
-  // 与适配层自己设的画布尺寸比对。不一致时**响亮 warn + 进诊断**：这是"竖版游戏配了横版画布"
+  // 与适配层自己设的画布尺寸比对。不一致时**响亮 warn + 进诊断**：这是"设计分辨率与画布
+  // 尺寸错配"
   // 这类错配唯一能在无头环境里被发现的地方（画面不会被裁剪器报错，只会默默溢出）。
   function reportViewAgreement() {
     var declaredWidth = null;
     var declaredHeight = null;
-    // 用**改名感知**的读法（`mainpack/project.toml.txt`），否则 `.toml` 在真机上读不到、
-    // 这里就永远只能报 unknown（本机第一次实现就是这么写的，实测 declared=unknown）。
+    // 逻辑路径**必须带 `pack/` 前缀**：`readSubjects` 对不带前缀的路径**原样返回**（既不查
+    // 改名表 `hostFileFor`、也不按首屏清单路由到 `mainpack/`），于是读的是代码包根下并不存在
+    // 的 `project.toml`——分包形态下它的真身是 `mainpack/project.toml.txt`，结果**恒报 unknown**，
+    // 这道"设计分辨率与画布不一致"的守卫等于没装。
+    // 实测：画布 720×1280 对声明 1280×720 本该报 mismatch，实际却报 unknown——横竖屏错配
+    // 一直没被发现，根因就在这里。
     try {
-      var toml = readWithStrategies('project.toml', readTextRaw);
+      var toml = readWithStrategies('pack/project.toml', readTextRaw);
       if (toml && typeof toml.value === 'string') {
         var mw = /window_width\s*=\s*(\d+)/.exec(toml.value);
         var mh = /window_height\s*=\s*(\d+)/.exec(toml.value);

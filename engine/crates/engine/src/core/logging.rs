@@ -307,7 +307,7 @@ pub fn install_crash_handler(crash_log_path: impl AsRef<Path>) {
             .unwrap_or_else(|| "unknown".to_owned());
         let thread = std::thread::current().name().unwrap_or("main").to_owned();
         let report = format!(
-            "=== P2 crash report ===\n\
+            "=== RustLua crash report ===\n\
              version={}\n\
              timestamp={}\n\
              thread={}\n\
@@ -339,7 +339,7 @@ mod tests {
 
     #[test]
     fn crash_handler_writes_report_with_payload_and_version() {
-        let path = std::env::temp_dir().join(format!("p2-crash-{}.log", std::process::id()));
+        let path = std::env::temp_dir().join(format!("rustlua-crash-{}.log", std::process::id()));
         let _ = std::fs::remove_file(&path);
         let original = std::panic::take_hook();
         install_crash_handler(&path);
@@ -354,7 +354,7 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
-        assert!(text.contains("P2 crash report"));
+        assert!(text.contains("RustLua crash report"));
         assert!(text.contains("panic=boom-marker"));
         assert!(text.contains("version="));
         assert!(text.contains("backtrace:"));

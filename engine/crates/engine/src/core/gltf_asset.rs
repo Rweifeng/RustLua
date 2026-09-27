@@ -481,7 +481,8 @@ mod tests {
 
     #[test]
     fn rejects_invalid_glb_with_path_context() {
-        let path = std::env::temp_dir().join(format!("p2-invalid-gltf-{}.glb", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("rustlua-invalid-gltf-{}.glb", std::process::id()));
         fs::write(&path, b"not a glb").unwrap();
         let error = GltfAsset::load(&path).unwrap_err().to_string();
         assert!(error.contains("invalid-gltf") && error.contains("cannot import glTF"));

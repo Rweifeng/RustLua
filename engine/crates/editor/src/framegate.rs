@@ -15,7 +15,7 @@
 //! | 覆盖面 | 谁负责 |
 //! |---|---|
 //! | 整帧布局/交互逻辑、跨面板状态、DPI 与 resize 下的**点空间**几何 | 本模块（无窗口、可重复、进 CI） |
-//! | 真实窗口的 GPU 画面、100/150/200% DPI 截图、30 分钟 Play/Stop、长会话内存 | `P2_EDITOR_*` 真实运行（`--gui-evidence`，产物归档到 `artifacts/acceptance/`） |
+//! | 真实窗口的 GPU 画面、100/150/200% DPI 截图、30 分钟 Play/Stop、长会话内存 | `RUSTLUA_EDITOR_*` 真实运行（`--gui-evidence`，产物归档到 `artifacts/acceptance/`） |
 //!
 //! 本模块**不**声称覆盖后者：合成帧没有 GPU 后备缓冲，也没有真实窗口的重绘节奏。
 //! 这一点在 `docs/58` 里逐条登记。

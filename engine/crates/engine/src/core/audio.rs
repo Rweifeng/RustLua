@@ -357,7 +357,7 @@ mod tests {
         let mut audio = AudioSystem::new();
         audio.set_asset_dir(std::env::temp_dir());
         // loading fails before any device is opened
-        assert!(audio.play("p2-audio-definitely-missing").is_err());
+        assert!(audio.play("rustlua-audio-definitely-missing").is_err());
         assert!(
             audio.stream.is_none(),
             "device must not open on a failed load"

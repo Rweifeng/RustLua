@@ -294,7 +294,7 @@ mod tests {
             resolve_window_title(None, Some("Published".to_owned())),
             "Published"
         );
-        let root = std::env::temp_dir().join(format!("p2-title-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("rustlua-title-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(
             root.join("project.toml"),
@@ -319,7 +319,7 @@ mod tests {
 
     #[test]
     fn verify_project_reports_missing_resources_once() {
-        let root = std::env::temp_dir().join(format!("p2-verify-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("rustlua-verify-{}", std::process::id()));
         std::fs::create_dir_all(root.join("scenes")).unwrap();
         std::fs::create_dir_all(root.join("assets/textures")).unwrap();
         std::fs::write(
@@ -350,7 +350,7 @@ mod tests {
 
     #[test]
     fn verify_project_passes_for_complete_project() {
-        let root = std::env::temp_dir().join(format!("p2-verify-ok-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("rustlua-verify-ok-{}", std::process::id()));
         std::fs::create_dir_all(root.join("scripts")).unwrap();
         std::fs::create_dir_all(root.join("scenes")).unwrap();
         std::fs::write(
@@ -376,7 +376,7 @@ mod tests {
     /// 诊断含文件路径（以及 Lua/数据的行或字段定位）。
     #[test]
     fn verify_project_reports_script_syntax_and_domain_data_issues() {
-        let root = std::env::temp_dir().join(format!("p2-verify-diag-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("rustlua-verify-diag-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("scripts/data")).unwrap();
         std::fs::create_dir_all(root.join("scenes")).unwrap();
@@ -435,7 +435,8 @@ mod tests {
     /// M20-01：合法工程（含校验入口返回空）不应产生任何诊断。
     #[test]
     fn verify_project_accepts_valid_scripts_and_domain_data() {
-        let root = std::env::temp_dir().join(format!("p2-verify-clean-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("rustlua-verify-clean-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("scripts/data")).unwrap();
         std::fs::create_dir_all(root.join("scenes")).unwrap();
@@ -485,7 +486,7 @@ mod tests {
 
     #[test]
     fn verify_project_reports_missing_3d_mesh() {
-        let root = std::env::temp_dir().join(format!("p2-verify-3d-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("rustlua-verify-3d-{}", std::process::id()));
         std::fs::create_dir_all(root.join("scenes")).unwrap();
         std::fs::create_dir_all(root.join("scripts")).unwrap();
         std::fs::create_dir_all(root.join("assets/models")).unwrap();

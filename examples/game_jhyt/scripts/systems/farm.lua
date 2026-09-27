@@ -78,19 +78,43 @@ local function add_labor(minutes)
   state.labor_minutes = (state.labor_minutes or 0) + minutes
 end
 
-local SEED_ORDER = { "seed_lingzhi", "seed_rice" }
+-- 惰性装载作物定义表（crops/crops_by_seed）：restore 可能在非山庄地图
+-- （如 continue 直接进云泽村）先于 farm.init 运行 —— init 只绑定 FarmGrid，
+-- 而地块数据本身与场景无关，不能因为作物表未初始化而丢 short id。
+-- 必须在 seed_for_selected 之前声明（词法作用域，前向引用会退化为全局 nil）。
+local function ensure_crops()
+  if crops then
+    return
+  end
+  crops = require("data.crops")
+  crops_by_seed = {}
+  for id, def in pairs(crops or {}) do
+    if def and def.seed_item then
+      crops_by_seed[def.seed_item] = id
+    end
+  end
+end
 
+-- 播种：按 selected_seed 反查作物（Alpha 扩种后不再硬编码两种种子；
+-- crops_by_seed 由 ensure_crops 按 crops 全表构建）。回退取背包里第一个
+-- 有库存的种子（稳定字母序），保证未主动选种时行为确定。
 local function seed_for_selected()
   local selected = state.selected_seed
-  local crop = selected == "seed_lingzhi" and crops.lingzhi or selected == "seed_rice" and crops.rice
+  ensure_crops()
+  local crop = selected and crops_by_seed[selected] and crops[crops_by_seed[selected]]
   if crop and inv.count(state.inventory, crop.seed_item) > 0 then
     return crop.seed_item, crop
   end
-  for _, seed_id in ipairs(SEED_ORDER) do
-    local crop = crops[seed_id == "seed_lingzhi" and "lingzhi" or "rice"]
-    if crop and inv.count(state.inventory, crop.seed_item) > 0 then
-      state.selected_seed = seed_id
-      return crop.seed_item, crop
+  local ids = {}
+  for id in pairs(crops or {}) do
+    ids[#ids + 1] = id
+  end
+  table.sort(ids)
+  for _, id in ipairs(ids) do
+    local c = crops[id]
+    if c and inv.count(state.inventory, c.seed_item) > 0 then
+      state.selected_seed = c.seed_item
+      return c.seed_item, c
     end
   end
   return nil
@@ -104,22 +128,6 @@ local function crop_short_id(crop_def)
     end
   end
   return nil
-end
-
--- 惰性装载作物定义表（crops/crops_by_seed）：restore 可能在非山庄地图
--- （如 continue 直接进云泽村）先于 farm.init 运行 —— init 只绑定 FarmGrid，
--- 而地块数据本身与场景无关，不能因为作物表未初始化而丢 short id。
-local function ensure_crops()
-  if crops then
-    return
-  end
-  crops = require("data.crops")
-  crops_by_seed = {}
-  for id, def in pairs(crops or {}) do
-    if def and def.seed_item then
-      crops_by_seed[def.seed_item] = id
-    end
-  end
 end
 
 -- 由地块存值（short id 或历史 seed_item）解析 crop short id；无法识别返回 nil。

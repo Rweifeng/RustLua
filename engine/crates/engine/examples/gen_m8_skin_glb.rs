@@ -89,7 +89,7 @@ fn main() {
 
     // ---- JSON -------------------------------------------------------------
     let json = format!(
-        r#"{{"asset":{{"version":"2.0","generator":"p2 self-authored M8-07 skinned test asset"}},
+        r#"{{"asset":{{"version":"2.0","generator":"RustLua self-authored M8-07 skinned test asset"}},
 "scene":0,"scenes":[{{"nodes":[0]}}],
 "nodes":[
   {{"name":"Root","children":[1,2]}},

@@ -242,10 +242,10 @@ def build_scene(ground, solid):
     lines.append("meta\tdisplay_name\t江湖有田·山庄")
     lines.append("meta\tgame\tjianghu_youtian")
     lines.append("meta\ttile_size\t32")
-    # M32 竖版：设计分辨率 720×1280（与 `scripts/ui/layout.lua` 的 DESIGN_W/H 一致，
+    # 横屏方案A：设计分辨率 1280×720（与 `scripts/ui/layout.lua` 的 DESIGN_W/H 一致，
     # 由 `ui/layout_check.lua` 在 `--check` 与启动期守住）。
-    lines.append("meta\tui_reference_height\t1280")
-    lines.append("meta\tui_reference_width\t720")
+    lines.append("meta\tui_reference_height\t720")
+    lines.append("meta\tui_reference_width\t1280")
     # 1 地表
     lines.append("entity\t1\tGroundMap")
     lines.append(transform_line(1, 0.0, 0.0))

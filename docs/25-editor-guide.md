@@ -18,10 +18,10 @@ editor [--project <项目路径>] [--check] [--help]
 
 | 变量 | 作用 |
 |---|---|
-| `P2_EDITOR_AUTOPLAY=1` | 启动后自动打开场景、切 3D 视图并自动 Play |
-| `P2_EDITOR_AUTOPLAY_SCENE=<相对路径>` | 覆盖自动 Play 的场景（默认 `scenes/main.scene`） |
-| `P2_EDITOR_THUMBNAIL_BENCH=<n>` | 跑缩略图基准后退出（默认 1000） |
-| `P2_EDITOR_PLAYSTOP_BENCH=<n>` | 跑 Play/Stop 基准后退出（默认 100） |
+| `RUSTLUA_EDITOR_AUTOPLAY=1` | 启动后自动打开场景、切 3D 视图并自动 Play |
+| `RUSTLUA_EDITOR_AUTOPLAY_SCENE=<相对路径>` | 覆盖自动 Play 的场景（默认 `scenes/main.scene`） |
+| `RUSTLUA_EDITOR_THUMBNAIL_BENCH=<n>` | 跑缩略图基准后退出（默认 1000） |
+| `RUSTLUA_EDITOR_PLAYSTOP_BENCH=<n>` | 跑 Play/Stop 基准后退出（默认 100） |
 
 ## 2. 项目工作流
 

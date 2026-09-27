@@ -1342,7 +1342,8 @@ mod tests {
         }
         parents.insert(SceneEntityId(2), SceneEntityId(1));
         parents.insert(SceneEntityId(3), SceneEntityId(2));
-        let solved = propagate_all(&locals, &parents).expect("scene-side solve");
+        let solved =
+            propagate_all(&locals, &parents, locals.keys().copied()).expect("scene-side solve");
 
         for (index, (entity, _)) in chain.iter().enumerate() {
             let scene_id = SceneEntityId(index as u64 + 1);

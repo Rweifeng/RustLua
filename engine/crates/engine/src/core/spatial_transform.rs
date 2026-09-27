@@ -562,21 +562,53 @@ pub struct ParentFirstPlan<Id> {
 
 /// 全量父先序求解：正确性参照实现。增量路径的结果必须与它逐实体一致。
 ///
-/// 遍历本身走 [`parent_first_plan`]（与运行时传播同一份驱动）；任何坏数据都按
+/// 遍历本身走 [`parent_first_plan`]（与运行时传播同一份驱动）；任何**坏数据**都按
 /// [`PropagationError`] **拒绝**，因此加载期的语义是"要么整棵树可解，要么明确失败"。
+///
+/// `universe` 是"文档里**存在**的实体全集"（通常传 `scene.entities.keys()`）。
+/// 它用来区分两种此前无法区分、却被当成同一种错的情况：
+/// - 父**根本不存在**（悬空父，手改坏的场景）⇒ 仍然拒绝；
+/// - 父存在、但**自己没有 `Transform`**（纯组织节点 / UI 根 `UIRoot`——
+///   `scene_space::parents` 只保留指向真实实体的边）⇒ 该父贡献**单位变换**，
+///   子树照常求解，不再整份文档降级。
+///
+/// 为什么要 `universe`：调用方只把**有 Transform 的实体**放进 `locals`，于是"父没变换"
+/// 与"父不存在"在 `locals` 里长得一模一样。缺少这个区分时，一个 `UIRoot` 就会让
+/// `scene_space::world_matrices` 的 `Err` 分支把**整份文档**退回未组合的局部矩阵
+/// （静默降级，正是本参数要消除的）。
 pub fn propagate_all(
     locals: &BTreeMap<SceneEntityId, LocalTransform>,
     parents: &BTreeMap<SceneEntityId, SceneEntityId>,
+    universe: impl IntoIterator<Item = SceneEntityId>,
 ) -> Result<BTreeMap<SceneEntityId, GlobalTransform>, PropagationError> {
+    let universe = universe
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    // 参与求解的实体 = **全集 ∪ 有局部的实体**。全集必须进 `ids`：`parent_first_plan`
+    // 只沿 `ids` 上溯，"父在全集里但不在 `ids` 里"会被它直接判成悬空父（`index_of` 落空），
+    // 根本走不到 `has_local` 那条分支。并集顺带保证调用方漏传某个带 `Transform` 的实体时，
+    // 行为与改动前一致（仍然求解）。
+    let ids = universe
+        .iter()
+        .copied()
+        .chain(locals.keys().copied())
+        .collect::<std::collections::BTreeSet<_>>();
     let plan = parent_first_plan(
-        locals.keys().copied(),
+        ids.iter().copied(),
         |entity| parents.get(&entity).copied(),
-        |entity| locals.contains_key(&entity),
+        // 父在全集里但没有 `Transform` ⇒ 视为**单位变换的组织节点**（不再是坏数据），
+        // 子树照常参与求解；只有父压根不在全集里才算悬空父。
+        |entity| locals.contains_key(&entity) || universe.contains(&entity),
     );
     if let Some(problem) = plan.problems.first() {
         return Err(match problem {
-            PropagationProblem::MissingParent { entity, parent }
-            | PropagationProblem::ParentWithoutLocal { entity, parent } => {
+            PropagationProblem::MissingParent { entity, parent } => {
+                PropagationError::MissingParent {
+                    entity: *entity,
+                    parent: *parent,
+                }
+            }
+            PropagationProblem::ParentWithoutLocal { entity, parent } => {
                 PropagationError::MissingParent {
                     entity: *entity,
                     parent: *parent,
@@ -592,11 +624,21 @@ pub fn propagate_all(
     }
     let mut globals: BTreeMap<SceneEntityId, GlobalTransform> = BTreeMap::new();
     for entity in plan.ordered {
-        let local = locals
-            .get(&entity)
-            .ok_or(PropagationError::InvalidLocal(entity))?
-            .matrix()
-            .map_err(|_| PropagationError::InvalidLocal(entity))?;
+        // 无 `Transform` 的组织节点以**单位变换**入表，好让后代能照常组合到它。
+        let local = match locals.get(&entity) {
+            Some(local) => local
+                .matrix()
+                .map_err(|_| PropagationError::InvalidLocal(entity))?,
+            None => {
+                if universe.contains(&entity) {
+                    LocalTransform::identity()
+                        .matrix()
+                        .map_err(|_| PropagationError::InvalidLocal(entity))?
+                } else {
+                    return Err(PropagationError::InvalidLocal(entity));
+                }
+            }
+        };
         let global = match parents.get(&entity).copied() {
             Some(parent) => {
                 let parent_global = globals
@@ -1253,7 +1295,7 @@ mod tests {
                 parents.insert(id, SceneEntityId(index));
             }
         }
-        let globals = propagate_all(&locals, &parents).unwrap();
+        let globals = propagate_all(&locals, &parents, locals.keys().copied()).unwrap();
         let point = globals[&SceneEntityId(100)]
             .matrix()
             .transform_point(Vec3::ZERO)
@@ -1271,12 +1313,41 @@ mod tests {
             (SceneEntityId(2), SceneEntityId(1)),
         ]);
         assert!(matches!(
-            propagate_all(&locals, &cycle),
+            propagate_all(&locals, &cycle, locals.keys().copied()),
             Err(PropagationError::Cycle(_))
         ));
         let missing = BTreeMap::from([(SceneEntityId(1), SceneEntityId(9))]);
         assert!(matches!(
-            propagate_all(&locals, &missing),
+            propagate_all(&locals, &missing, locals.keys().copied()),
+            Err(PropagationError::MissingParent { .. })
+        ));
+    }
+
+    /// 回归：父**存在但没有 `Transform`**（纯组织节点，如示例工程的 UI 根 `UIRoot`）时，
+    /// 子树必须照常求解，而不是把整份文档判红。
+    ///
+    /// 实机症状（`shipped_example_scenes_render_the_same_under_both_parent_semantics` 抓到）：
+    /// `index.scene` 的每个子实体都挂在只有 `UiLayout` 的 `UIRoot` 下，调用方只把带
+    /// `Transform` 的实体放进 `locals`，于是父"没变换"与父"不存在"长得一样 ⇒
+    /// `scene_space::world_matrices` 走 `Err` 分支，**整份文档**静默退回未组合的局部矩阵。
+    /// 现在两种数据分开了：父不在全集里才算悬空，父在全集里则贡献单位变换。
+    #[test]
+    fn parent_without_transform_is_unit_and_keeps_children_solvable() {
+        let mut locals = BTreeMap::new();
+        locals.insert(SceneEntityId(1), translated(3.0));
+        let parents = BTreeMap::from([(SceneEntityId(1), SceneEntityId(0))]);
+        // 全集含 0（UIRoot，无 Transform）⇒ 正常求解：世界 = 单位 × 局部 = 局部。
+        let globals = propagate_all(&locals, &parents, [SceneEntityId(0), SceneEntityId(1)])
+            .expect("组织节点应贡献单位变换");
+        let point = globals[&SceneEntityId(1)]
+            .matrix()
+            .transform_point(Vec3::ZERO)
+            .unwrap();
+        assert!((point.x - 3.0).abs() < 1e-4, "子实体世界位置应为 {point:?}");
+
+        // 反例：父根本不在全集里 ⇒ 仍是悬空父，必须判红（安全性没有被这次放宽吃掉）。
+        assert!(matches!(
+            propagate_all(&locals, &parents, [SceneEntityId(1)].into_iter()),
             Err(PropagationError::MissingParent { .. })
         ));
     }
@@ -1471,7 +1542,7 @@ mod tests {
         let parents = (2..=10)
             .map(|index| (SceneEntityId(index), SceneEntityId(index - 1)))
             .collect::<BTreeMap<_, _>>();
-        let reference = propagate_all(&locals, &parents).unwrap();
+        let reference = propagate_all(&locals, &parents, locals.keys().copied()).unwrap();
         for index in 1..=10 {
             let id = SceneEntityId(index);
             let incremental = tree.global(id).unwrap();
@@ -1857,7 +1928,8 @@ mod tests {
         }
         let mut parents = BTreeMap::new();
         parents.insert(SceneEntityId(2), SceneEntityId(1));
-        let globals = propagate_all(&locals, &parents).expect("propagate migrated locals");
+        let globals = propagate_all(&locals, &parents, locals.keys().copied())
+            .expect("propagate migrated locals");
         let world = Vec3::new(
             globals[&SceneEntityId(2)].matrix().columns[3][0],
             globals[&SceneEntityId(2)].matrix().columns[3][1],

@@ -36,27 +36,29 @@ impl EditorApp {
                 if let Some(error) = self.resources.last_error() {
                     ui.colored_label(egui::Color32::RED, format!("错误：{error}"));
                 }
-                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                    // 把资源按目录组织成树（可折叠）；过滤后无可见子项的目录自动隐藏。
-                    // 树按 (filter, refresh_count) 缓存，命中时复用上次构建的树，
-                    // 避免大资源项目每帧 clone 全部条目重建。
-                    let mut resource_to_open = None;
-                    let tree = self.resource_tree_for_draw();
-                    self.draw_resource_tree(ui, &tree, "", 1, context, &mut resource_to_open);
-                    if let Some(path) = resource_to_open {
-                        self.open_scene_resource(path);
-                    }
-                    self.resource_tree_cache = Some(ResourceTreeCache {
-                        filter: self.resources_filter.clone(),
-                        refresh_count: self.resources.refresh_count(),
-                        tree,
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        // 把资源按目录组织成树（可折叠）；过滤后无可见子项的目录自动隐藏。
+                        // 树按 (filter, refresh_count) 缓存，命中时复用上次构建的树，
+                        // 避免大资源项目每帧 clone 全部条目重建。
+                        let mut resource_to_open = None;
+                        let tree = self.resource_tree_for_draw();
+                        self.draw_resource_tree(ui, &tree, "", 1, context, &mut resource_to_open);
+                        if let Some(path) = resource_to_open {
+                            self.open_scene_resource(path);
+                        }
+                        self.resource_tree_cache = Some(ResourceTreeCache {
+                            filter: self.resources_filter.clone(),
+                            refresh_count: self.resources.refresh_count(),
+                            tree,
+                        });
                     });
-                });
             });
-            // 缩略图后台解码未完成时持续重绘，否则 egui 空闲不画、缩略图永远出不来。
-            if self.thumbnail_worker.has_pending() {
-                context.request_repaint_after(std::time::Duration::from_millis(32));
-            }
+        // 缩略图后台解码未完成时持续重绘，否则 egui 空闲不画、缩略图永远出不来。
+        if self.thumbnail_worker.has_pending() {
+            context.request_repaint_after(std::time::Duration::from_millis(32));
+        }
         refresh_resources
     }
 
@@ -283,7 +285,9 @@ impl EditorApp {
         // 否则循环里遇到当前条目就 return，会把同批其他结果丢弃，导致部分缩略图永远空白。
         let mut found_current: Option<egui::TextureId> = None;
         for result in self.thumbnail_worker.drain(MAX_THUMBNAIL_UPLOADS_PER_FRAME) {
-            let Some(pixels) = result.pixels else { continue; };
+            let Some(pixels) = result.pixels else {
+                continue;
+            };
             let image =
                 egui::ColorImage::from_rgba_unmultiplied([result.width, result.height], &pixels);
             let handle = ctx.load_texture("thumb", image, egui::TextureOptions::LINEAR);
@@ -681,7 +685,9 @@ impl ThumbnailWorker {
     }
 
     /// 是否还有未完成的解码请求（用于驱动空闲重绘直到缩略图加载完）。
-    pub(crate) fn has_pending(&self) -> bool { !self.requested.is_empty() }
+    pub(crate) fn has_pending(&self) -> bool {
+        !self.requested.is_empty()
+    }
 }
 
 /// 后台线程的解码实现：读取 + PNG 解码 + 降采样到 ≤64px。
@@ -691,7 +697,11 @@ fn decode_thumbnail(request: &ThumbnailRequest) -> ThumbnailResult {
     match TextureAsset::load_png(&request.path, TextureColorSpace::Srgb) {
         Ok(asset) => {
             use std::io::Write as _;
-            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("thumb_debug.log") {
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("thumb_debug.log")
+            {
                 let _ = writeln!(f, "OK   {}", request.path.display());
             }
             let (pixels, width, height) = downscale_rgba(
@@ -710,7 +720,11 @@ fn decode_thumbnail(request: &ThumbnailRequest) -> ThumbnailResult {
         }
         Err(error) => {
             use std::io::Write as _;
-            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("thumb_debug.log") {
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("thumb_debug.log")
+            {
                 let _ = writeln!(f, "FAIL {}: {error}", request.path.display());
             }
             ThumbnailResult {
@@ -720,7 +734,7 @@ fn decode_thumbnail(request: &ThumbnailRequest) -> ThumbnailResult {
                 height: 0,
                 generation,
             }
-        },
+        }
     }
 }
 
@@ -755,7 +769,7 @@ mod tests {
 
     fn temp_project_root(label: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!(
-            "p2-editor-resource-browser-{label}-{}-{}",
+            "rustlua-editor-resource-browser-{label}-{}-{}",
             std::process::id(),
             unique_suffix()
         ));

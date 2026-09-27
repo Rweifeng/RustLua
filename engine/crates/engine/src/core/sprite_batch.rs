@@ -289,7 +289,7 @@ impl SpriteBatch {
     ) -> Result<SpriteBatchMesh, SpriteBatchError> {
         // 相机每帧只烘焙一次：逐精灵的顶点生成因此不再校验相机、不再算三角函数。
         let camera = OrthoTerms::new(camera, viewport)?;
-        // P2-②b：九宫格打破"每项固定 6 顶点"的并行分块前提（一项产出 9×6=54 顶点），
+        // RustLua-②b：九宫格打破"每项固定 6 顶点"的并行分块前提（一项产出 9×6=54 顶点），
         // 因此混有九宫格项时整体降级串行——九宫格是少数派（面板/按钮类纹理），性能非关键；
         // 纯普通精灵场景仍走并行分块，输出逐字节不变。
         let has_sliced = self
@@ -408,7 +408,7 @@ impl SpriteBatch {
     ) -> Result<(), SpriteBatchError> {
         // 同上：烘焙一次，逐精灵只做乘加。
         let camera = OrthoTerms::new(camera, viewport)?;
-        // P2-②b：同 `build_with_parallelism`——九宫格降级串行（一项产 54 顶点）。
+        // RustLua-②b：同 `build_with_parallelism`——九宫格降级串行（一项产 54 顶点）。
         let has_sliced = self
             .items
             .iter()
@@ -552,7 +552,7 @@ impl SpriteBatch {
         if ordered.is_empty() {
             return Ok(());
         }
-        // P2-②b：九宫格降级串行（一项产 54 顶点；世界通道同样不破坏并行分块契约）。
+        // RustLua-②b：九宫格降级串行（一项产 54 顶点；世界通道同样不破坏并行分块契约）。
         let has_sliced = self
             .items
             .iter()

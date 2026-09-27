@@ -1223,8 +1223,10 @@ pub(crate) fn run_baseline() -> BaselineReport {
     // （绝对路径 / 穿越 / 空），200 个合法。不变量：审计恰好报 200 条 schema_error、
     // 合法的 200 个一条不报（没有误报），并且审计扫描的是**磁盘上的文件**（不是内存校验）。
     {
-        let root =
-            std::env::temp_dir().join(format!("p2-baseline-schema-rules-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!(
+            "rustlua-baseline-schema-rules-{}",
+            std::process::id()
+        ));
         let scenes = root.join("scenes");
         fs::create_dir_all(&scenes).expect("temp project scenes dir");
         let mut scene = engine::core::scene::Scene::new("rules");

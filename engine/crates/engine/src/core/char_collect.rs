@@ -262,7 +262,7 @@ mod tests {
     }
 
     fn temp_dir() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("p2_char_collect_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("rustlua_char_collect_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
     }

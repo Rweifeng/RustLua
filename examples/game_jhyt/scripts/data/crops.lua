@@ -28,5 +28,54 @@ return {
     harvest_item = "rice",
     sell_price = 30,
     land = "field"
+  },
+  -- ---- Alpha 作物扩展（2026-09-27，docs/33 §4.1 同步 +4）----
+  -- 萝卜：快熟教学作物，早期现金流；2 天即收（唯一 2 天作物）。
+  radish = {
+    name = "萝卜",
+    stages = 3,
+    growth_days = 2,
+    yield = 2,
+    season = { "spring", "summer" },
+    seed_item = "seed_radish",
+    harvest_item = "radish",
+    sell_price = 8,
+    land = "field"
+  },
+  -- 草药：制药原料（§4.2 药粉/内力丹配方待接），也是商店药材（§5.2 草药转正）。
+  herb = {
+    name = "草药",
+    stages = 3,
+    growth_days = 3,
+    yield = 2,
+    season = { "spring", "summer", "autumn" },
+    seed_item = "seed_herb",
+    harvest_item = "herb",
+    sell_price = 8,
+    land = "medicinal"
+  },
+  -- 何首乌（docs/30 §6.3：8 天）：高价药材，礼物用。
+  polygonum = {
+    name = "何首乌",
+    stages = 3,
+    growth_days = 8,
+    yield = 1,
+    season = { "spring", "summer", "autumn" },
+    seed_item = "seed_polygonum",
+    harvest_item = "polygonum",
+    sell_price = 120,
+    land = "medicinal"
+  },
+  -- 人参（docs/30 §6.3：10 天）：高价药材、主线药材。
+  ginseng = {
+    name = "人参",
+    stages = 3,
+    growth_days = 10,
+    yield = 1,
+    season = { "spring", "autumn" },
+    seed_item = "seed_ginseng",
+    harvest_item = "ginseng",
+    sell_price = 200,
+    land = "medicinal"
   }
 }

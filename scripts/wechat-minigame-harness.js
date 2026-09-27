@@ -39,6 +39,9 @@ let noFrames = false;
   // 适配层必须都能读通（--wx-path-style root|slash|sub-root|no-utf8）。
   let wxPathStyle = 'root';
   let wxPathStyleGiven = false;
+  // 模拟宿主的 platform（--wx-platform ios|android|devtools|harness）：
+  // 决定音频后端选 wav（iOS）还是 ogg（其余），与真机格式矩阵一致。
+  let wxPlatform = 'harness';
   // 远端回落模式：
   //   auto    = 包内**读不到** pack/（整个资源包都在远端），应有远端证据并通过
   //   thin    = 瘦首包：pack/ 只留骨架（game.js/project.toml/settings.toml/manifest.txt），
@@ -97,6 +100,9 @@ let noFrames = false;
   // 回写通道 → 渲染器。游戏把摇杆键解释成什么动作是游戏的事，所以按哪个键由运行时产出，
   // 不由用例硬编码。
   let driveMove = 0;
+  let touchStickMove = 0;
+  let attackFrames = 0;
+  let bagFrames = 0;
   // 分包挂载行为——新发布形态（主包 + 单分包）的核心**宿主语义**，与 `--wx-path-style` 正交：
   //   auto      = 默认。game.json 真的声明了 pack 分包时按"未挂载则读不到 pack/"模拟，并成功挂载
   //   off       = 关掉分包模拟（声明了分包也当普通目录读）——用来把"方言"这一轴单独隔离出来
@@ -128,6 +134,7 @@ let noFrames = false;
     if (argv[i] === '--frames' && argv[i + 1]) frames = Number(argv[++i]) || 12;
 if (argv[i] === '--no-frames') noFrames = true;
     else if (argv[i] === '--wx-path-style' && argv[i + 1]) { wxPathStyle = String(argv[++i]); wxPathStyleGiven = true; }
+    else if (argv[i] === '--wx-platform' && argv[i + 1]) wxPlatform = String(argv[++i]);
     else if (argv[i] === '--remote' && argv[i + 1]) remoteMode = String(argv[++i]);
     else if (argv[i] === '--remote-root' && argv[i + 1]) remoteRoot = path.resolve(String(argv[++i]));
     else if (argv[i] === '--image-src-frozen') frozenImageSrc = true;
@@ -145,6 +152,9 @@ if (argv[i] === '--no-frames') noFrames = true;
     else if (argv[i] === '--drive-new-game') driveNewGame = true;
     else if (argv[i] === '--expect-runtime-spawns') expectRuntimeSpawns = true;
     else if (argv[i] === '--drive-move' && argv[i + 1]) driveMove = Math.max(0, Number(argv[++i]) || 0);
+    else if (argv[i] === '--touch-stick-move' && argv[i + 1]) touchStickMove = Math.max(0, Number(argv[++i]) || 0);
+    else if (argv[i] === '--attack' && argv[i + 1]) attackFrames = Math.max(0, Number(argv[++i]) || 0);
+    else if (argv[i] === '--bag' && argv[i + 1]) bagFrames = Math.max(0, Number(argv[++i]) || 0);
     else if (argv[i] === '--drive-frame' && argv[i + 1]) driveFrame = Math.max(0, Number(argv[++i]) || 0);
     else if (argv[i] === '--subpackage' && argv[i + 1]) subpackageMode = String(argv[++i]);
     else if (argv[i] === '--subpackage-delay-frames' && argv[i + 1]) subpackageDelayFrames = Math.max(0, Number(argv[++i]) || 0);
@@ -205,6 +215,9 @@ if (argv[i] === '--no-frames') noFrames = true;
   }
   // fail-once 的第二次尝试由"下一次 pack/ 读取"触发，而默认用例从头到尾只待在标题界面
   // （首屏资源全在主包，一次 pack/ 读取都不发生）→ 永远不会有第二次尝试，用例会假绿。
+  if ((touchStickMove > 0 || attackFrames > 0 || bagFrames > 0) && !driveNewGame) {
+    fail('--touch-stick-move 需要配合 --drive-new-game：可见虚拟摇杆只在玩法地图里接管移动');
+  }
   if (subpackageMode === 'fail-once' && !driveNewGame) {
     fail('--subpackage fail-once 需要配合 --drive-new-game：重试由"进玩法场景时的 pack/ 读取"触发，' +
       '只跑标题界面的话第二次尝试根本不会发生，这条用例会假绿');
@@ -249,7 +262,7 @@ if (argv[i] === '--no-frames') noFrames = true;
   const downloadTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'p2-wx-dl-'));
   let downloadSeq = 0;
   const pendingImageSrcs = new Set();
-const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures: 0, imageFailureSamples: [], keyEvents: [], drawOps: 0, frames: 0, storage: new Map(), remoteRequests: 0, remoteAttempts: 0, cacheWrites: 0, fontLoaded: 0, fontMissing: 0, fontBadMagic: 0 };
+const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures: 0, imageFailureSamples: [], keyEvents: [], drawOps: 0, frames: 0, storage: new Map(), remoteRequests: 0, remoteAttempts: 0, cacheWrites: 0, fontLoaded: 0, fontMissing: 0, fontBadMagic: 0, audioPlayed: 0, audioCreated: 0, audioSrcs: [] };
 
   // 真 HTTP GET（远端回落必须走真实网络路径，否则"远端可用"没被验证过）。
   function httpGet(url) {
@@ -472,22 +485,24 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
     // 这是真机的硬语义——`subpackages` root 目录在挂载前根本不在沙箱里。由宿主侧强制，
     // 才谈得上"首屏必须全在主包"这件事被真的验证过；放在被测代码里自觉就等于没验。
     if (subpackageGate && !packMounted && rel.startsWith('pack/')) {
-      packDeniedBeforeMount++;
-      if (bootSettledAt < 0) packDeniedBeforeBoot++;
+      if (!probeOnlyMode) {
+        packDeniedBeforeMount++;
+        if (bootSettledAt < 0) packDeniedBeforeBoot++;
+      }
       return null;
     }
     // 宿主不给读的文件（`--deny-code-file`）：**所有**代码包方言一律拒绝，与真机上那串
     // `permission denied` 一模一样（真机对 user-data 给的是 no such file，这里也保留那个区别，
     // 因为"两个来源的报错不同"正是当初判断"代码包这条路根本没通"的线索之一）。
     if (denyCodeFiles.length && denyCodeFiles.includes(rel)) {
-      deniedCodeReads.set(rel, (deniedCodeReads.get(rel) || 0) + 1);
+      if (!probeOnlyMode) deniedCodeReads.set(rel, (deniedCodeReads.get(rel) || 0) + 1);
       return null;
     }
     // 整个子目录被拒（真机对"未声明的子目录"就是这个行为）。**必须排在分包挂载门之后**：
     // 已声明的分包 root 在挂载后是可读的，这正是它与 `mainpack/` 的区别所在。
     for (const dir of denyCodeDirs) {
       if (rel.startsWith(dir)) {
-        deniedDirReads.set(dir, (deniedDirReads.get(dir) || 0) + 1);
+        if (!probeOnlyMode) deniedDirReads.set(dir, (deniedDirReads.get(dir) || 0) + 1);
         return null;
       }
     }
@@ -542,6 +557,11 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
     try { return fn(); }
     finally { uploadSetBypass = false; }
   }
+  // 存在性探测模式（accessSync）：web-runtime.js 的音频后端用它判断 InnerAudioContext.src
+  // 是否可达。探测失败 = 调用方自行降级（文件在分包里、分包还没挂载等），**不算**「代码包
+  // 读取被拒」——那是资源读取（readFileSync/fetch）的语义；若计入，音频在分包挂载前的合理
+  // 探测失败会被误报成「首屏清单漏列」（denied_before_boot>0）。
+  let probeOnlyMode = false;
 
   // 写入/建目录的路径解析：**不做存在性检查**（目标本来就不存在），
   // 且只有 USER_DATA_PATH 下可写——与真实宿主一致（代码包只读）。
@@ -738,7 +758,7 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
   // 而这正是最危险的一类假绿。这里把**未实现的名字记下来**，由断言报出来——
   // 保持返回 undefined（不能返回假函数，那会把适配层的守卫骗过去）。
   const fsmUnknownProbes = new Set();
-  const FSM_IMPLEMENTED = new Set(['readFileSync', 'writeFileSync', 'mkdirSync', 'unlinkSync', 'readFile']);
+  const FSM_IMPLEMENTED = new Set(['readFileSync', 'writeFileSync', 'mkdirSync', 'unlinkSync', 'readFile', 'accessSync']);
 
   function recordFsmProbes(target) {
     return new Proxy(target, {
@@ -754,7 +774,7 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
   const rafQueue = [];
   const wx = {
     env: { USER_DATA_PATH: userRoot },
-    getSystemInfoSync: () => ({ windowWidth: 375, windowHeight: 667, pixelRatio: 1, platform: 'harness', system: 'node' }),
+    getSystemInfoSync: () => ({ windowWidth: 375, windowHeight: 667, pixelRatio: 1, platform: wxPlatform, system: 'node' }),
     createCanvas: () => (hostCanvasMode === 'offscreen' ? offscreenCanvas : canvas),
     createImage: () => {
       const image = { onload: null, onerror: null, width: 0, height: 0, _src: '' };
@@ -820,6 +840,14 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
       return image;
     },
     getFileSystemManager: () => recordFsmProbes({
+      accessSync(filePath) {
+        probeOnlyMode = true;
+        let abs = null;
+        try { abs = resolveHostPathUnrestricted(filePath); }
+        finally { probeOnlyMode = false; }
+        if (!abs) throw new Error('accessSync:fail no such file or directory ' + filePath);
+        return undefined;
+      },
       readFileSync(filePath, encoding) {
         const abs = resolveHostPath(filePath);
         if (!abs) throw new Error('readFileSync:fail ' + (lastDenyReason ? 'permission denied, open ' : 'no such file or directory ') + filePath);
@@ -934,6 +962,24 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
       // auto/ok：像真机一样"很快但不同步"地挂上。
       setTimeout(() => mountPack(pending), 0);
       return task;
+    },
+    createInnerAudioContext: () => {
+      // 音频后端 mock：记录 src/volume/loop，play 计入统计（web-runtime.js 的
+      // installLuaAudioBridge 用它验证「真实创建了 InnerAudioContext 并播放」）。
+      const ctx = {
+        _src: '', loop: false, volume: 1, _destroyed: false, _ended: null, _error: null,
+        set src(value) { this._src = String(value); },
+        get src() { return this._src; },
+        play() { stats.audioPlayed++; stats.audioSrcs.push(this._src); },
+        stop() { },
+        destroy() { this._destroyed = true; },
+        onEnded(cb) { this._ended = typeof cb === 'function' ? cb : null; },
+        onError(cb) { this._error = typeof cb === 'function' ? cb : null; },
+        offEnded() { this._ended = null; },
+        offError() { this._error = null; }
+      };
+      stats.audioCreated++;
+      return ctx;
     },
     loadFont: hostLoadFont,
     requestAnimationFrame: (callback) => { rafQueue.push(callback); return rafQueue.length; },
@@ -1143,18 +1189,32 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
       `；适配层诊断 ${logs.length} 条:\n    ${logs.length ? logs.join('\n    ') : '（无）'}`);
   }
 
-  // 键盘事件桥接自检（不依赖游戏语义）：注册监听后模拟触摸/键盘，确认事件真的到达运行时宿主。
+  // 键盘/触摸事件桥接自检（不依赖游戏语义）：注册监听后模拟触摸/键盘，确认事件真的到达运行时宿主。
   const windowTarget = globalThis.window;
   windowTarget.addEventListener('keydown', (event) => { drawnEvents.push(String(event.key)); });
+  // 触摸不再注入键盘键：可见虚拟控件（Lua 侧 ui/virtual_pad）靠 canvas 的 mousedown/
+  // mousemove 与 window 的 mouseup 驱动。这里收集的**鼠标事件契约**：
+  // 触点按下 → 光标先落位再 mousedown；拖动 → mousemove；抬手 → mouseup 必须到达
+  // window（运行时在那里监听，否则 mouse_just_released 永不触发，控件按了不释放）。
+  const mouseBridgeEvents = [];
+  // frozen/locked 宿主下 document.getElementById 可能缺失（适配层补不回来），
+  // 自检代码自身必须先防御再调用，否则会把「宿主被冻结」误报成 harness 崩溃。
+  const canvasTouchTarget = globalThis.document && typeof globalThis.document.getElementById === 'function' ? globalThis.document.getElementById('p2-canvas') : null;
+  if (canvasTouchTarget && typeof canvasTouchTarget.addEventListener === 'function') {
+    canvasTouchTarget.addEventListener('mousedown', (event) => { mouseBridgeEvents.push(`down:${Math.round(event.clientX)},${Math.round(event.clientY)}`); });
+    canvasTouchTarget.addEventListener('mousemove', (event) => { mouseBridgeEvents.push(`move:${Math.round(event.clientX)},${Math.round(event.clientY)}`); });
+  }
+  windowTarget.addEventListener('mouseup', () => { mouseBridgeEvents.push('up'); });
 
   return bootSettled.then(async () => {
-    // 触摸：左半屏推动虚拟摇杆 → 应当派发 'w'
+    // 触摸：落在**可见摇杆**（画布坐标 (150,585)；375×667 屏下 ≈ (44,542)）并向上拖动。
     if (inputHandlers.onTouchStart) {
-      inputHandlers.onTouchStart({ touches: [{ identifier: 1, clientX: 60, clientY: 300 }], changedTouches: [{ identifier: 1, clientX: 60, clientY: 300 }] });
-      inputHandlers.onTouchMove({ touches: [{ identifier: 1, clientX: 60, clientY: 250 }], changedTouches: [{ identifier: 1, clientX: 60, clientY: 250 }] });
-      inputHandlers.onTouchEnd({ touches: [], changedTouches: [{ identifier: 1, clientX: 60, clientY: 250 }] });
+      inputHandlers.onTouchStart({ touches: [{ identifier: 1, clientX: 44, clientY: 542 }], changedTouches: [{ identifier: 1, clientX: 44, clientY: 542 }] });
+      inputHandlers.onTouchMove({ touches: [{ identifier: 1, clientX: 44, clientY: 492 }], changedTouches: [{ identifier: 1, clientX: 44, clientY: 492 }] });
+      inputHandlers.onTouchEnd({ touches: [], changedTouches: [{ identifier: 1, clientX: 44, clientY: 492 }] });
     }
     const stickKeys = drawnEvents.slice();
+    const mouseBridge = mouseBridgeEvents.slice();
 
     // 键盘（微信 PC 端）：ArrowUp → 'ArrowUp'
     if (inputHandlers.onKeyDown) inputHandlers.onKeyDown({ key: 'ArrowUp', code: 'ArrowUp' });
@@ -1166,7 +1226,9 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
     const perFrameDraws = [];
     // `--drive-move N` 的移动驱动要在世界稳定之后单独占 N+1 帧（松键后还要一帧让自报值刷新）。
     // 这些帧从**总预算**里扣：`stats.frames !== frames` 这条断言仍然表示"帧预算跑满了"。
-    const moveBudget = driveMove > 0 ? driveMove + 1 : 0;
+    // --bag 固定开销：打开 35 帧（等 ui-summary %30 刷新）+ 关闭 35 帧；选择阶段另占 bagFrames 帧。
+    const bagBudget = bagFrames > 0 ? (35 + bagFrames + 35) : 0;
+    const moveBudget = (driveMove > 0 ? driveMove + 1 : 0) + (touchStickMove > 0 ? touchStickMove + 1 : 0) + (attackFrames > 0 ? attackFrames : 0) + bagBudget;
     for (let i = 0; i < (noFrames ? 0 : Math.max(0, frames - moveBudget)); i++) {
       // 玩家真实路径：按一下确认（空格）触发「开始新游戏」。按下一帧、松开下一帧，
       // 这样 `just_pressed` 只在一帧内为真（与引擎的 just_pressed 语义一致）。
@@ -1279,11 +1341,11 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
         if (!info.isMain) canvasFailures.push('canvas 不是全局上屏画布（isMain=false）');
       }
       if (adapter.canvas !== canvas) canvasFailures.push('适配层的 canvas 不是宿主的上屏画布');
-      // 画布尺寸 = 游戏的**竖版设计分辨率**（M32 起 720×1280；此前是横版 1280×720）。
+      // 画布尺寸 = 游戏的**横版设计分辨率**（「横屏方案A」1280×720；M32 一度是竖版 720×1280）。
       // 这个断言的价值在于"适配层真的把上屏画布设成了它的逻辑分辨率"——写死旧尺寸会在
       // 游戏改版面时假失败，所以它与适配层的 VIEW_WIDTH/VIEW_HEIGHT 是**同一件事**，
       // 改一处必须改另一处（外加 game.json 的 deviceOrientation 与 webgl 侧 canvas 尺寸）。
-      if (canvas.width !== 720 || canvas.height !== 1280) canvasFailures.push(`上屏画布尺寸未设置（${canvas.width}x${canvas.height}，期望 720x1280）`);
+      if (canvas.width !== 1280 || canvas.height !== 720) canvasFailures.push(`上屏画布尺寸未设置（${canvas.width}x${canvas.height}，期望 1280x720）`);
       const mainOps = canvas.__ctx ? canvas.__ctx.__ops : 0;
       const offscreenOps = offscreenCanvas.__ctx ? offscreenCanvas.__ctx.__ops : 0;
       if (mainOps <= 0) canvasFailures.push('上屏画布上没有任何绘制调用（画到看不见的地方去了）');
@@ -1471,7 +1533,9 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
         }
         // 事件必须真的到达运行时：走的是上面已经跑过的触摸/键盘桥接证据。
         if (!drawnEvents.includes('ArrowUp')) hostFailures.push(`宿主全局下的键盘事件未桥接（实际: ${JSON.stringify(drawnEvents)}）`);
-        if (!stickKeys.includes('w')) hostFailures.push(`宿主全局下的触摸摇杆未桥接（实际: ${JSON.stringify(stickKeys)}）`);
+        if (!mouseBridge.some((entry) => entry.startsWith('down:'))) hostFailures.push(`宿主全局下的触摸未派发 canvas mousedown（实际: ${JSON.stringify(mouseBridge)}）`);
+        if (!mouseBridge.some((entry) => entry.startsWith('move:'))) hostFailures.push(`宿主全局下的触摸未派发 canvas mousemove（实际: ${JSON.stringify(mouseBridge)}）`);
+        if (!mouseBridge.includes('up')) hostFailures.push(`宿主全局下的触摸未把 mouseup 派发到 window（实际: ${JSON.stringify(mouseBridge)}）`);
       }
       restoreRemoteConfig();
       if (hostFailures.length) {
@@ -1516,7 +1580,8 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
         return true;
       };
       const before = readPlayer(readWorld());
-      // 按哪个键由**运行时自己产出**（触摸摇杆派发出来的键），用例不硬编码游戏按键。
+      // 按哪个键由**运行时自己产出**。旧的"触摸摇杆派发键盘键"已移除（可见虚拟控件走
+      // 鼠标事件 + Lua 侧注入），这里回落到键盘桥接注入 'w' 作为运动驱动。
       const keys = stickKeys.length ? stickKeys : ['w'];
       if (!before) {
         failures.push(`--drive-move 前拿不到主角坐标（data-p2-world=${readWorld()}）`);
@@ -1540,6 +1605,160 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
               '（输入桥接 → physics.set_position/transform.set → 回写通道 这条链路没生效）');
           }
         }
+      }
+    }
+    // --- 按住**可见虚拟摇杆**主角会走：端到端触摸链路断言。
+    // drive-move 走的是键盘桥接；这条走完整触摸链路：触摸 → 适配层指针事件
+    // （mousemove+mousedown）→ 运行时按下边沿/按下位置（press_cursor）→
+    // ui/virtual_pad.lua 命中测试（按 press_position）→ 注入虚拟键（引擎键名
+    // keyw，运行时翻译成动作键 'w'）→ 动作层 → 世界移动。它就是本次"微信端
+    // 可见摇杆/按钮不生效"修复的端到端回归：摇杆链路断了这条必红。
+    let touchStickEvidence = 'not-driven';
+    if (touchStickMove > 0) {
+      const readWorld = () => String(adapter.getAttribute('data-p2-world') || '');
+      const readPlayer = (text) => {
+        const match = text.match(/player=\S+?@(-?\d+),(-?\d+)/);
+        return match ? { x: Number(match[1]), y: Number(match[2]) } : null;
+      };
+      const pump = async () => {
+        const callback = rafQueue.shift();
+        if (!callback) return false;
+        callback(Date.now());
+        stats.frames++;
+        perFrameDraws.push(stats.drawOps);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        return true;
+      };
+      const before = readPlayer(readWorld());
+      if (!before) {
+        failures.push('--touch-stick-move 前拿不到主角坐标（data-p2-world=' + readWorld() + '）');
+        touchStickEvidence = 'no-player';
+      } else {
+        // 可见摇杆底圆中心在画布 (150,585)（375×667 屏 ≈ (44,542)），向上推 50 CSS px。
+        const stickDown = { touches: [{ identifier: 9, clientX: 44, clientY: 542 }], changedTouches: [{ identifier: 9, clientX: 44, clientY: 542 }] };
+        const stickUp = { touches: [{ identifier: 9, clientX: 44, clientY: 492 }], changedTouches: [{ identifier: 9, clientX: 44, clientY: 492 }] };
+        if (inputHandlers.onTouchStart) inputHandlers.onTouchStart(stickDown);
+        if (inputHandlers.onTouchMove) inputHandlers.onTouchMove(stickUp);
+        for (let i = 0; i < touchStickMove; i++) { if (!(await pump())) break; }
+        if (inputHandlers.onTouchEnd) inputHandlers.onTouchEnd({ touches: [], changedTouches: [{ identifier: 9, clientX: 44, clientY: 492 }] });
+        await pump();
+        const after = readPlayer(readWorld());
+        if (!after) {
+          failures.push('--touch-stick-move 后拿不到主角坐标');
+          touchStickEvidence = 'no-player-after';
+        } else {
+          const dx = after.x - before.x;
+          const dy = after.y - before.y;
+          touchStickEvidence = 'stick before=' + before.x + ',' + before.y + ' after=' + after.x + ',' + after.y + ' d=' + dx + ',' + dy;
+          if (dx === 0 && dy === 0) {
+            failures.push('按住可见摇杆 ' + touchStickMove + ' 帧后主角一动没动（仍在 ' + before.x + ',' + before.y + '）' +
+              '（触摸 → 指针事件 → virtual_pad 注入 → 动作层 这条链路没生效）');
+          }
+        }
+      }
+    }
+    // 攻击按钮端到端：触摸攻击按钮（画布 (1165,480) ≈ 375×667 屏 (341,445)）→ 适配层
+    // 指针事件 → virtual_pad 命中测试（press_position）→ 注入 keyj → 运行时翻译成动作键
+    // 'j' → 动作层 attack → combat.player_attack("strike")。此前 web 运行时没实现
+    // physics.positions_in_radius：攻击判定窗内每帧调用它，每帧打一条 [lua missing-host-api]
+    // （微信端实测点一次攻击后控制台刷屏 2.6 万条）。这条用例就是该刷屏的回归：
+    // 实现被删掉时，missing-host-api 白名单断言（positions_in_radius 不在白名单）必红。
+    let attackEvidence = 'not-driven';
+    if (attackFrames > 0) {
+      const pump = async () => {
+        const callback = rafQueue.shift();
+        if (!callback) return false;
+        callback(Date.now());
+        stats.frames++;
+        perFrameDraws.push(stats.drawOps);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        return true;
+      };
+      const attackDown = { touches: [{ identifier: 11, clientX: 341, clientY: 445 }], changedTouches: [{ identifier: 11, clientX: 341, clientY: 445 }] };
+      const attackUp = { touches: [], changedTouches: [{ identifier: 11, clientX: 341, clientY: 445 }] };
+      let presses = 0;
+      for (let i = 0; i < attackFrames; i++) {
+        if (i % 20 === 0) {
+          if (inputHandlers.onTouchStart) inputHandlers.onTouchStart(attackDown);
+          if (inputHandlers.onTouchEnd) inputHandlers.onTouchEnd(attackUp);
+          presses++;
+        }
+        if (!(await pump())) break;
+      }
+      const missingPhysics = consoleLogs.concat(consoleWarns, consoleErrors)
+        .filter((line) => /missing-host-api\] physics\.positions_in_radius/.test(String(line))).length;
+      const combatHits = consoleLogs
+        .filter((line) => /\[combat\] (hit|kill) /.test(String(line))).length;
+      attackEvidence = 'pressed=' + presses + ' missing_physics=' + missingPhysics + ' combat_hits=' + combatHits;
+      if (presses < 2) {
+        failures.push('--attack 帧预算太少（' + attackFrames + '），连按不足 2 次，无法保证攻击判定窗被触发');
+      }
+      if (missingPhysics > 0) {
+        failures.push('攻击后诊断通道出现 physics.positions_in_radius 缺失（' + missingPhysics +
+          ' 条）：web 运行时必须实现它——缺失时判定窗每帧调用每帧刷屏 missing-host-api' +
+          '（微信端"点击一次后疯狂打印"的根因）');
+      }
+    }
+    // --- 背包按钮端到端 + 面板内十字键选择（用户报"点击背包按钮没有渲染背包UI"的回归）。
+    // 背包按钮画布 (1175,360) ≈ 375×667 屏 (344,334)：触摸 → 适配层指针事件 → virtual_pad
+    // 命中（press_position）→ 注入 keyi → 运行时翻译动作键 'i' → 动作层 inventory →
+    // inventory_ui.open() → render()（ui-summary 出现 X:bp:title = 背包面板真的渲染了）。
+    // 打开后按钮簇隐藏、十字键（DPad）接管：触摸 DPad「下」（画布 (1160,675) ≈ 屏 (340,625)）
+    // → 注入 'down' → ui_step()/action_pressed("ui_down") → inventory_ui.move_dir("down") →
+    // 高亮从第 1 行移到第 2 行（画布文本出现 "> 2."）。这条就是"微信端打开面板选不了工具"的
+    // 端到端回归：背包按钮或 DPad 链路断了这条必红。
+    let bagEvidence = 'not-driven';
+    if (bagFrames > 0) {
+      const pumpBag = async () => {
+        const callback = rafQueue.shift();
+        if (!callback) return false;
+        callback(Date.now());
+        stats.frames++;
+        perFrameDraws.push(stats.drawOps);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        return true;
+      };
+      const uiSummary = () => String(adapter.getAttribute('data-p2-ui-summary') || '');
+      const bagDown = { touches: [{ identifier: 12, clientX: 344, clientY: 334 }], changedTouches: [{ identifier: 12, clientX: 344, clientY: 334 }] };
+      const bagUp = { touches: [], changedTouches: [{ identifier: 12, clientX: 344, clientY: 334 }] };
+      // ① 触摸背包按钮 → 打开背包（画布文本证据：bp:title "背包" + 行文本 "1. xxx xN [分类]"）
+      const markOpen = drawnTexts.length;
+      if (inputHandlers.onTouchStart) inputHandlers.onTouchStart(bagDown);
+      if (inputHandlers.onTouchEnd) inputHandlers.onTouchEnd(bagUp);
+      for (let i = 0; i < 35; i++) { if (!(await pumpBag())) break; }
+      const openedNew = drawnTexts.slice(markOpen).some((t) => String(t).includes('背包'))
+        && drawnTexts.slice(markOpen).some((t) => /^\d+\. .+ x\d+  \[/.test(String(t)));
+      const opened = openedNew || uiSummary().includes('bp:title');
+      if (!opened) {
+        failures.push('[debug] newTexts=' + JSON.stringify(drawnTexts.slice(markOpen, markOpen + 12)) +
+          ' ui-summary-tail=' + JSON.stringify(uiSummary().slice(-120)) +
+          ' mouseBridge=' + JSON.stringify(mouseBridgeEvents.slice(-8)));
+      }
+      // ② 背包内十字键「下」→ 高亮移到第 2 行
+      let dpadMoved = false;
+      if (bagFrames > 0) {
+        const mark = drawnTexts.length;
+        const dpadDown = { touches: [{ identifier: 13, clientX: 340, clientY: 625 }], changedTouches: [{ identifier: 13, clientX: 340, clientY: 625 }] };
+        const dpadUp = { touches: [], changedTouches: [{ identifier: 13, clientX: 340, clientY: 625 }] };
+        if (inputHandlers.onTouchStart) inputHandlers.onTouchStart(dpadDown);
+        if (inputHandlers.onTouchEnd) inputHandlers.onTouchEnd(dpadUp);
+        for (let i = 0; i < bagFrames; i++) { if (!(await pumpBag())) break; }
+        dpadMoved = drawnTexts.slice(mark).some((text) => /^> 2\./.test(String(text)));
+      }
+      // ③ 回到玩法态（按钮簇可见）再点背包按钮 → 关闭
+      if (inputHandlers.onTouchStart) inputHandlers.onTouchStart(bagDown);
+      if (inputHandlers.onTouchEnd) inputHandlers.onTouchEnd(bagUp);
+      for (let i = 0; i < 35; i++) { if (!(await pumpBag())) break; }
+      const closed = !uiSummary().includes('bp:title');
+      bagEvidence = 'pressed=2 opened=' + (opened ? 'y' : 'n') + ' dpad_moved=' + (dpadMoved ? 'y' : 'n') + ' closed=' + (closed ? 'y' : 'n');
+      if (!opened) {
+        failures.push('触摸背包按钮后背包面板没有渲染（ui-summary 无 bp:title）：动作层 inventory → inventory_ui.open/render 链路断了');
+      }
+      if (!dpadMoved) {
+        failures.push('背包内触摸十字键「下」后高亮没有从第 1 行移到第 2 行（画布未出现 "> 2."）：DPad 注入 → ui_down → move_dir 链路没生效');
+      }
+      if (!closed) {
+        failures.push('玩法态再点背包按钮后背包面板没有关闭（ui-summary 仍有 bp:title）');
       }
     }
     const worldSummary = String(adapter.getAttribute('data-p2-world') || '');
@@ -1881,7 +2100,9 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
     if (nonCommonJs.length) {
       failures.push(`以下脚本不是 CommonJS，微信运行时会在启动时报 Unexpected token 'export': ${nonCommonJs.join('; ')}`);
     }
-    if (!stickKeys.includes('w')) failures.push(`触摸虚拟摇杆未派发 'w'（实际: ${JSON.stringify(stickKeys)}）`);
+    if (!mouseBridge.some((entry) => entry.startsWith('down:'))) failures.push(`触摸未派发 canvas mousedown（实际: ${JSON.stringify(mouseBridge)}）`);
+    if (!mouseBridge.some((entry) => entry.startsWith('move:'))) failures.push(`触摸未派发 canvas mousemove（实际: ${JSON.stringify(mouseBridge)}）`);
+    if (!mouseBridge.includes('up')) failures.push(`触摸未把 mouseup 派发到 window（实际: ${JSON.stringify(mouseBridge)}）`);
     if (!drawnEvents.includes('ArrowUp')) failures.push(`微信键盘事件未桥接（实际: ${JSON.stringify(drawnEvents)}）`);
     if (fontFamily !== 'WeChatHarnessFont') failures.push(`字体未注册（fontFamily=${fontFamily}）`);
     const fatalLogs = consoleErrors.filter((line) => /Lua runtime failed|startup failed|missing engine host API|traceback/i.test(String(line)));
@@ -1953,7 +2174,7 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
         ` entry=${packEntryError ? 'FAIL' : 'ok'}` +
         ` loading_bar=${drawnTexts.some((text) => text.includes('正在下载资源')) ? 'ok' : 'none'}`
       : ` subpackage=none subpackage_loads=${stats.subpackageLoads}`;
-    console.log(`wechat_minigame_harness_ok path_style=${wxPathStyle} read_strategy=${readStrategy} frames=${stats.frames} draw_ops=${stats.drawOps} draws_per_frame=${perFrameDraws.length > 0 ? perFrameDraws[0] : 0} drawn=${drawn} ui_elements=${uiElements} pack_reads=${stats.packReads} images=${stats.imagesLoaded} binary=${binaryProbe}${uploadEvidence}${subpackageEvidence} read_strategies=main:${strategies.main || 'none'}/pack:${strategies.pack || 'none'} font=${fontFamily} boot=${bootState} world=${JSON.stringify(worldSummary.replace(/\s+/g, ' '))} move=${JSON.stringify(moveEvidence)} stick_key=w key_bridge=ArrowUp${remoteEvidence}`);
+    console.log(`wechat_minigame_harness_ok path_style=${wxPathStyle} read_strategy=${readStrategy} frames=${stats.frames} draw_ops=${stats.drawOps} draws_per_frame=${perFrameDraws.length > 0 ? perFrameDraws[0] : 0} drawn=${drawn} ui_elements=${uiElements} pack_reads=${stats.packReads} images=${stats.imagesLoaded} binary=${binaryProbe} audio_ctx=${stats.audioCreated} audio_played=${stats.audioPlayed} audio_srcs=${JSON.stringify(stats.audioSrcs.slice(0, 8))}${uploadEvidence}${subpackageEvidence} read_strategies=main:${strategies.main || 'none'}/pack:${strategies.pack || 'none'} font=${fontFamily} boot=${bootState} world=${JSON.stringify(worldSummary.replace(/\s+/g, ' '))} move=${JSON.stringify(moveEvidence)} touch_stick=${JSON.stringify(touchStickEvidence)} attack=${JSON.stringify(attackEvidence)} bag=${JSON.stringify(bagEvidence)} stick_key=w key_bridge=ArrowUp${remoteEvidence}`);
     return 0;
   }).catch((error) => {
     console.error = originalError;

@@ -6,7 +6,7 @@ use std::{
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = std::env::temp_dir().join(format!(
-        "p2-hot-reload-{}.lua",
+        "rustlua-hot-reload-{}.lua",
         SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
     ));
     fs::write(&path, "function update() return 'v1' end")?;

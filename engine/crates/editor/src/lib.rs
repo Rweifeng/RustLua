@@ -284,7 +284,8 @@ mod tests {
 
     fn temp_project() -> PathBuf {
         // 用 crate 级唯一令牌：并行测试下也不会有两个测试拿到同一目录。
-        let root = std::env::temp_dir().join(format!("p2-editor-test-{}", crate::test_token()));
+        let root =
+            std::env::temp_dir().join(format!("rustlua-editor-test-{}", crate::test_token()));
         fs::create_dir_all(&root).expect("temporary project should be created");
         root
     }
@@ -319,7 +320,7 @@ mod tests {
 
     #[test]
     fn rejects_missing_project() {
-        let path = std::env::temp_dir().join("p2-editor-project-that-does-not-exist");
+        let path = std::env::temp_dir().join("rustlua-editor-project-that-does-not-exist");
         assert!(matches!(open_project(path), Err(ProjectError::NotFound(_))));
     }
 

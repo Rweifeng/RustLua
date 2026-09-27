@@ -1370,7 +1370,7 @@ impl EditorApp {
         if let Some(tool) = requested {
             self.set_scene_tool(tool);
         }
-        // P2-②c：2D workspace 状态胶囊——视图/吸附/像素网格的**显式**状态。
+        // RustLua-②c：2D workspace 状态胶囊——视图/吸附/像素网格的**显式**状态。
         // 验收"复杂贴片与视图"的可观察性：贴片时知道自己吸附步长与网格开关，
         // 而不是只能从工具栏 checkbox 猜。只在 2D 视图下显示。
         if self.scene_view_mode == crate::SceneViewMode::View2D {
@@ -1824,7 +1824,7 @@ impl EditorApp {
             .is_none_or(|(texture, _)| texture.width() != width || texture.height() != height);
         if size_changed && let Some((device, _)) = &self.gpu {
             let texture = device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("p2-scene-view"),
+                label: Some("rustlua-scene-view"),
                 size: wgpu::Extent3d {
                     width,
                     height,
@@ -2277,7 +2277,7 @@ impl EditorApp {
             return;
         };
         let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("p2-scene-screen"),
+            label: Some("rustlua-scene-screen"),
             size: wgpu::Extent3d {
                 width: width.max(1),
                 height: height.max(1),
@@ -3758,7 +3758,7 @@ mod tests {
         }))
         .ok()?;
         pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("p2-scene-view-gpu-test"),
+            label: Some("rustlua-scene-view-gpu-test"),
             required_features: wgpu::Features::empty(),
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
             required_limits: wgpu::Limits::default(),
@@ -3799,7 +3799,7 @@ mod tests {
         )
         .expect("offscreen renderer");
         let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("p2-ui-test"),
+            label: Some("rustlua-ui-test"),
             size: wgpu::Extent3d {
                 width: 1280,
                 height: 720,

@@ -632,8 +632,10 @@ mod tests {
     fn app_with_quad() -> EditorApp {
         let mut app = EditorApp::new(
             ProjectInfo {
-                root: std::env::temp_dir()
-                    .join(format!("p2-schema-inspector-{}", crate::util::test_token())),
+                root: std::env::temp_dir().join(format!(
+                    "rustlua-schema-inspector-{}",
+                    crate::util::test_token()
+                )),
                 version: "test".to_owned(),
                 directories: Vec::new(),
             },

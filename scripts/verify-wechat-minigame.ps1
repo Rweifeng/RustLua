@@ -309,12 +309,15 @@ else { "改用 -AssetPack subpackage（主包 + 单分包）或 -AssetPack remot
 if ($mainSize -gt $MainPackageLimit) {
     throw ("主包体积超限: {0:N0} KB > {1:N0} KB。出路：{2}" -f ($mainSize / 1KB), ($MainPackageLimit / 1KB), $mainHint)
 }
-if ($isSubpackagePack -and $subpackageSize -gt $MainPackageLimit) {
+# 单个普通分包：官方 2023-10 起不限制大小（主包 ≤ 4M、单个普通分包不限、总量 ≤ 20M/30M，
+# 见 docs/52 与 scripts/package.ps1 的体积门）。因此不再用主包 4MB 门卡分包，
+# 由下方总量门（20MB）兜底。
+if ($isSubpackagePack -and $subpackageSize -gt $TotalLimit) {
     throw ("单个分包体积超限: {0:N0} KB > {1:N0} KB（pack/ 是 subpackages[0].root，目录下所有文件都计入）。出路：把更多资源列进首屏清单，或拆第二个分包" -f `
-        ($subpackageSize / 1KB), ($MainPackageLimit / 1KB))
+        ($subpackageSize / 1KB), ($TotalLimit / 1KB))
 }
-# 第三档（总量 20MB）在当前形态下**走不到**（如实标注）：主包 ≤ 4MB 且单分包 ≤ 4MB ⇒ 总量 ≤ 8MB，
-# 而上面两条会先抛。留着是因为微信的 20MB 管的是"主包 + 全部分包之和"——真拆出第二个分包时它才活。
+# 总量门（官方：主包 + 全部分包之和 ≤ 20MB；开通虚拟支付可到 30MB，按无内购口径保守取 20MB）。
+# 主包 4MB 门在上面独立生效；单个普通分包不限制大小（见上一条注释），因此总量门是分包的兜底。
 if ($totalSize -gt $TotalLimit) {
     throw ("发布包总体积超限: {0:N0} KB > {1:N0} KB（主包 + 全部分包之和）" -f ($totalSize / 1KB), ($TotalLimit / 1KB))
 }
@@ -322,11 +325,11 @@ if ($totalSize -gt $TotalLimit) {
 $formName = if ($isSubpackagePack) { "subpackage" } elseif ($isThinPack) { "thin" } else { "full" }
 Write-Host ("wechat_minigame_static_ok main={0:N0}KB subpackage={1:N0}KB total={2:N0}KB subpackages={3} asset_pack={4} upload_rules=ok main_of_limit={5:P1} subpackage_of_limit={6:P1} total_of_limit={7:P1}" -f `
     ($mainSize / 1KB), ($subpackageSize / 1KB), ($totalSize / 1KB), $(if ($subpackageNames.Count) { $subpackageNames -join ',' } else { 'none' }), $formName, `
-    ($mainSize / $MainPackageLimit), $(if ($subpackageSize -gt 0) { $subpackageSize / $MainPackageLimit } else { 0 }), ($totalSize / $TotalLimit)) -ForegroundColor Green
+    ($mainSize / $MainPackageLimit), $(if ($subpackageSize -gt 0) { $subpackageSize / $TotalLimit } else { 0 }), ($totalSize / $TotalLimit)) -ForegroundColor Green
 if ($isSubpackagePack) {
-    Write-Host ("主包 {0:N0}KB（含首屏 mainpack/ {1:N0}KB）/ 上限 4,096KB（{2:P1}）；分包 pack/ {3:N0}KB / 上限 4,096KB（{4:P1}）" -f `
+    Write-Host ("主包 {0:N0}KB（含首屏 mainpack/ {1:N0}KB）/ 上限 4,096KB（{2:P1}）；分包 pack/ {3:N0}KB / 总量上限 20,480KB（{4:P1}，单分包官方不限大小）" -f `
         ($mainSize / 1KB), ((Get-DirSize -Path (Join-Path $root "mainpack")) / 1KB), ($mainSize / $MainPackageLimit), `
-        ($subpackageSize / 1KB), ($subpackageSize / $MainPackageLimit)) -ForegroundColor DarkGray
+        ($subpackageSize / 1KB), ($subpackageSize / $TotalLimit)) -ForegroundColor DarkGray
 }
 elseif ($isThinPack) {
     Write-Host ("包内骨架 {0:N0}KB / 上限 4,096KB（{1:P1}）；资源包 {2:N0}KB 在 CDN，不占配额" -f `

@@ -15,13 +15,13 @@
 //!
 //! | 变量 | 含义 |
 //! |---|---|
-//! | `P2_EDITOR_GUI_EVIDENCE=<目录>` | 打开证据运行，产物写到该目录 |
-//! | `P2_EDITOR_GUI_EVIDENCE_WARMUP=<帧数>` | 每步截图前等待的帧数（默认 20） |
-//! | `P2_EDITOR_SOAK=<秒>` | 打开 soak（真实窗口内循环 Play/Stop + 编辑），每秒采样一次内存 |
-//! | `P2_EDITOR_SOAK_PLAY_SECONDS=<秒>` | soak 里每个 Play 阶段持续多久（默认 2 秒） |
-//! | `P2_EDITOR_SOAK_STEP_SECONDS=<秒>` | 两次采样之间的间隔（默认 1 秒） |
+//! | `RUSTLUA_EDITOR_GUI_EVIDENCE=<目录>` | 打开证据运行，产物写到该目录 |
+//! | `RUSTLUA_EDITOR_GUI_EVIDENCE_WARMUP=<帧数>` | 每步截图前等待的帧数（默认 20） |
+//! | `RUSTLUA_EDITOR_SOAK=<秒>` | 打开 soak（真实窗口内循环 Play/Stop + 编辑），每秒采样一次内存 |
+//! | `RUSTLUA_EDITOR_SOAK_PLAY_SECONDS=<秒>` | soak 里每个 Play 阶段持续多久（默认 2 秒） |
+//! | `RUSTLUA_EDITOR_SOAK_STEP_SECONDS=<秒>` | 两次采样之间的间隔（默认 1 秒） |
 //!
-//! 退出码：`P2_EDITOR_GUI_EVIDENCE` 模式下若有步骤没拿到截图，进程退出码为 2
+//! 退出码：`RUSTLUA_EDITOR_GUI_EVIDENCE` 模式下若有步骤没拿到截图，进程退出码为 2
 //! （由 `run_gui_evidence` 在关闭窗口前记录，`main` 在 `run_native` 之后核对）。
 
 use crate::EditorApp;
@@ -105,8 +105,8 @@ pub(crate) struct GuiEvidence {
 impl GuiEvidence {
     /// 从环境变量构造（未打开时返回 `None`，生产路径零开销——只有一个 `Option` 判断）。
     pub(crate) fn from_env() -> Option<Self> {
-        let out_dir = std::env::var("P2_EDITOR_GUI_EVIDENCE").ok()?;
-        let warmup = std::env::var("P2_EDITOR_GUI_EVIDENCE_WARMUP")
+        let out_dir = std::env::var("RUSTLUA_EDITOR_GUI_EVIDENCE").ok()?;
+        let warmup = std::env::var("RUSTLUA_EDITOR_GUI_EVIDENCE_WARMUP")
             .ok()
             .and_then(|raw| raw.parse::<usize>().ok())
             .filter(|value| *value > 0)
@@ -227,7 +227,7 @@ impl GuiEvidence {
     /// 准备阶段：打开场景、等后台资源导入结束（最长等 180 秒，超时也继续并如实记录）。
     fn prepare(&mut self, app: &mut EditorApp, context: &egui::Context) {
         if app.document.current_scene.is_none() {
-            let relative = std::env::var("P2_EDITOR_EVIDENCE_SCENE")
+            let relative = std::env::var("RUSTLUA_EDITOR_EVIDENCE_SCENE")
                 .unwrap_or_else(|_| "scenes/main.scene".to_owned());
             app.open_scene_resource(PathBuf::from(&relative));
             if app.document.current_scene.is_some() {
@@ -561,21 +561,21 @@ pub(crate) struct GuiSoak {
 
 impl GuiSoak {
     pub(crate) fn from_env() -> Option<Self> {
-        let seconds = std::env::var("P2_EDITOR_SOAK")
+        let seconds = std::env::var("RUSTLUA_EDITOR_SOAK")
             .ok()
             .and_then(|raw| raw.parse::<u64>().ok())
             .filter(|value| *value > 0)?;
-        let play_seconds = std::env::var("P2_EDITOR_SOAK_PLAY_SECONDS")
+        let play_seconds = std::env::var("RUSTLUA_EDITOR_SOAK_PLAY_SECONDS")
             .ok()
             .and_then(|raw| raw.parse::<u64>().ok())
             .filter(|value| *value > 0)
             .unwrap_or(2);
-        let step_seconds = std::env::var("P2_EDITOR_SOAK_STEP_SECONDS")
+        let step_seconds = std::env::var("RUSTLUA_EDITOR_SOAK_STEP_SECONDS")
             .ok()
             .and_then(|raw| raw.parse::<u64>().ok())
             .filter(|value| *value > 0)
             .unwrap_or(1);
-        let out_dir = std::env::var("P2_EDITOR_GUI_EVIDENCE")
+        let out_dir = std::env::var("RUSTLUA_EDITOR_GUI_EVIDENCE")
             .map(PathBuf::from)
             .unwrap_or_else(|_| std::env::temp_dir().join("rustlua-editor-soak"));
         Some(Self {
@@ -615,7 +615,7 @@ impl GuiSoak {
             // 长会话需要一个打开的文档：没有就自己打开默认场景（soak 的语义是"编辑器开着
             // 一直用"，而不是"空窗口挂着"）。
             if app.document.current_scene.is_none() {
-                let relative = std::env::var("P2_EDITOR_EVIDENCE_SCENE")
+                let relative = std::env::var("RUSTLUA_EDITOR_EVIDENCE_SCENE")
                     .unwrap_or_else(|_| "scenes/main.scene".to_owned());
                 app.open_scene_resource(PathBuf::from(&relative));
                 if app.document.current_scene.is_none() {

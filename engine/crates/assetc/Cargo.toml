@@ -3,7 +3,7 @@ name = "assetc"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "P2 资源构建工具：扫描/导入/清理/打包项目资源"
+description = "RustLua 资源构建工具：扫描/导入/清理/打包项目资源"
 
 [dependencies]
 engine = { path = "../engine" }

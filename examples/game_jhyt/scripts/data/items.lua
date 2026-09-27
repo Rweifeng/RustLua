@@ -136,6 +136,84 @@ return {
   },
   -- 茶叶（2026-09-27，docs/48 接线）：青云山道茶棚东侧日刷采集物。
   -- 野采物不入商店（buy=0，与狼皮/兽肉/莲子口径一致）；sell 对齐兽肉（12 文）。
+  -- ---- Alpha 作物扩展（2026-09-27，docs/33 §4.1/§5.2 同步）----
+  -- 萝卜：快熟收获物；商店收价 8（zhao_stall buys）。
+  radish = {
+    name = "萝卜",
+    description = "两天就能收的白萝卜，最实惠的练手作物。",
+    icon = "assets/art/items/radish.png",
+    stack = 99,
+    buy = 0,
+    sell = 8,
+    kind = "crop"
+  },
+  seed_radish = {
+    name = "萝卜籽",
+    description = "用于种植萝卜（普通耕地）。",
+    icon = "assets/art/items/seed_radish.png",
+    stack = 99,
+    buy = 4,
+    sell = 0,
+    kind = "seed"
+  },
+  -- 草药：§5.2「草药 8」从白名单转正（buy=8 为商店参考价；为防套利不进 stock，
+  -- 只进 buys——与 rice/lingzhi 同构）。图标 assets/art/items/herb.png 此前是孤儿，落地后闭环。
+  herb = {
+    name = "草药",
+    description = "田间种的药草，制药和卖店两用。",
+    icon = "assets/art/items/herb.png",
+    stack = 99,
+    buy = 8,
+    sell = 8,
+    kind = "crop"
+  },
+  seed_herb = {
+    name = "草药籽",
+    description = "用于种植草药（药田）。",
+    icon = "assets/art/items/seed_herb.png",
+    stack = 99,
+    buy = 6,
+    sell = 0,
+    kind = "seed"
+  },
+  -- 何首乌：8 天高价药材，礼物用（docs/30 §6.3）。
+  polygonum = {
+    name = "何首乌",
+    description = "块根乌紫的贵重药材，送礼也拿得出手。",
+    icon = "assets/art/items/polygonum.png",
+    stack = 99,
+    buy = 0,
+    sell = 120,
+    kind = "crop"
+  },
+  seed_polygonum = {
+    name = "何首乌苗",
+    description = "用于种植何首乌（药田）。",
+    icon = "assets/art/items/seed_polygonum.png",
+    stack = 99,
+    buy = 40,
+    sell = 0,
+    kind = "seed"
+  },
+  -- 人参：10 天最高价药材，主线药材（docs/30 §6.3）。
+  ginseng = {
+    name = "人参",
+    description = "药田里的十年参，主线要用的贵重药材。",
+    icon = "assets/art/items/ginseng.png",
+    stack = 99,
+    buy = 0,
+    sell = 200,
+    kind = "crop"
+  },
+  seed_ginseng = {
+    name = "人参籽",
+    description = "用于种植人参（药田）。",
+    icon = "assets/art/items/seed_ginseng.png",
+    stack = 99,
+    buy = 60,
+    sell = 0,
+    kind = "seed"
+  },
   tea_leaf = {
     name = "茶叶",
     description = "青云山道茶丛里的嫩叶，晒青后煮饮，回神解乏。",

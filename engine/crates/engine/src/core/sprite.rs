@@ -24,7 +24,7 @@ pub struct Sprite {
     /// 世界 z（WP6）：四边形所在的世界平面深度。默认 0（世界平面），只在使用
     /// 世界 Sprite 深度通道时参与深度测试；overlay 路径忽略它。
     pub z: f32,
-    /// P2-②b：九宫格（9-slice）边界，归一化比例 `[left, right, top, bottom]`（0..=1，
+    /// RustLua-②b：九宫格（9-slice）边界，归一化比例 `[left, right, top, bottom]`（0..=1，
     /// 相对纹理）。`None` = 普通单 quad（既有行为逐字节不变）；`Some` = 几何切成 3×3
     /// 共 9 个 quad，四角不缩放、四边单轴缩放、中心双轴缩放（面板/按钮等可拉伸 UI 纹理）。
     pub nine_slice: Option<[f32; 4]>,
@@ -69,7 +69,7 @@ pub struct SpriteComponent {
     pub flip_y: bool,
     /// 世界 z（组件串可选 `z=`，默认 0）。非 0 时写回组件串，因此既有场景字符串不变。
     pub z: f32,
-    /// P2-②b：九宫格边界（归一化比例 `[l,r,t,b]`，组件串 `nine_slice=l,r,t,b`）。
+    /// RustLua-②b：九宫格边界（归一化比例 `[l,r,t,b]`，组件串 `nine_slice=l,r,t,b`）。
     /// `None` = 普通精灵（既有场景字符串不变）。
     pub nine_slice: Option<[f32; 4]>,
 }
@@ -282,7 +282,7 @@ impl SpriteComponent {
         text
     }
 
-    /// P2-②b：设置九宫格边界（组件串 `nine_slice=l,r,t,b`）。
+    /// RustLua-②b：设置九宫格边界（组件串 `nine_slice=l,r,t,b`）。
     #[must_use]
     pub const fn with_nine_slice(mut self, nine_slice: Option<[f32; 4]>) -> Self {
         self.nine_slice = nine_slice;
@@ -638,14 +638,14 @@ impl Sprite {
         Ok(positions)
     }
 
-    /// P2-②b：设置九宫格边界（归一化比例 `[l,r,t,b]`，l+r<=1、t+b<=1，允许退化=0 拉伸区）。
+    /// RustLua-②b：设置九宫格边界（归一化比例 `[l,r,t,b]`，l+r<=1、t+b<=1，允许退化=0 拉伸区）。
     #[must_use]
     pub const fn with_nine_slice(mut self, nine_slice: Option<[f32; 4]>) -> Self {
         self.nine_slice = nine_slice;
         self
     }
 
-    /// P2-②b：9-slice 几何（**世界坐标**版，无投影——世界 Sprite 深度通道用）。
+    /// RustLua-②b：9-slice 几何（**世界坐标**版，无投影——世界 Sprite 深度通道用）。
     /// `nine_slice` 为 `None` 时与 [`Sprite::quad_world`] 同一数学；为 `Some` 时切成 3×3 共 9 quad。
     pub fn quad_sliced_world(&self, transform: Transform) -> Result<Vec<SpriteQuad>, SpriteError> {
         let Some([l, r, t, b]) = self.nine_slice else {
@@ -755,7 +755,7 @@ impl Sprite {
         }
         Ok(quads)
     }
-    /// P2-②b：9-slice 几何。`nine_slice` 为 `None` 时与 [`Sprite::quad_with_terms`] 逐字节相同
+    /// RustLua-②b：9-slice 几何。`nine_slice` 为 `None` 时与 [`Sprite::quad_with_terms`] 逐字节相同
     /// （单 quad）；为 `Some` 时按边界把四边形切成 3×3 共 9 个 quad，UV 同比例分割。
     /// 切分发生在**局部坐标**（pivot 原点），每个子 quad 走同一套旋转/缩放/投影数学。
     pub fn quad_sliced_with_terms(

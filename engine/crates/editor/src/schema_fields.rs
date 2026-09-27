@@ -1722,7 +1722,8 @@ mod tests {
     /// 所以真实工程证据不存在，这里用引擎自己的 `Scene::save`/`Scene::load` 做往返。
     #[test]
     fn driven_components_survive_a_scene_save_load_round_trip() {
-        let root = std::env::temp_dir().join(format!("p2-schema-fields-{}", crate::test_token()));
+        let root =
+            std::env::temp_dir().join(format!("rustlua-schema-fields-{}", crate::test_token()));
         std::fs::create_dir_all(&root).expect("temp dir");
         let path = root.join("roundtrip.scene");
         let mut scene = Scene::new("roundtrip");

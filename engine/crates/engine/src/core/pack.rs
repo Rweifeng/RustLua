@@ -1,7 +1,7 @@
 //! 发布资源编解码：可选 gzip 压缩 + chacha20poly1305 加密。
 //!
-//! 编码文件带 `P2PK1` 头部 + 标志字节 +（加密时）nonce + payload；
-//! `decode` 自动检测：非 `P2PK1` 文件（明文/开发模式）原样返回，
+//! 编码文件带 `RustLua` 头部 + 标志字节 +（加密时）nonce + payload；
+//! `decode` 自动检测：非 `RustLua` 文件（明文/开发模式）原样返回，
 //! 因此同一套运行时代码既能加载开发明文，也能加载发布加密包。
 
 use chacha20poly1305::{
@@ -11,8 +11,9 @@ use chacha20poly1305::{
 use flate2::{Compression, read::GzDecoder, write::GzEncoder};
 use std::io::{Read, Write};
 
-/// 打包文件魔数。
-pub const PACK_MAGIC: &[u8; 5] = b"P2PK1";
+/// 打包文件魔数（7 字节 ASCII `RustLua`；长度由 `PACK_MAGIC.len()` 统一推导，
+/// 因此加长不影响 `encode`/`decode` 的游标计算）。
+pub const PACK_MAGIC: &[u8; 7] = b"RustLua";
 const FLAG_COMPRESSED: u8 = 1;
 const FLAG_ENCRYPTED: u8 = 2;
 const NONCE_LEN: usize = 12;
@@ -80,7 +81,7 @@ pub fn encode(bytes: &[u8], compress: bool, encrypt: bool) -> Vec<u8> {
     out
 }
 
-/// 解码资源；非 `P2PK1` 文件（明文/开发模式）原样返回。
+/// 解码资源；非 `RustLua` 文件（明文/开发模式）原样返回。
 pub fn decode(bytes: &[u8]) -> Result<Vec<u8>, String> {
     if !bytes.starts_with(PACK_MAGIC) {
         return Ok(bytes.to_vec());

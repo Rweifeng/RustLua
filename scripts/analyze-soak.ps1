@@ -1,6 +1,6 @@
-﻿[CmdletBinding()]
+﻿CmdletBinding()]
 param(
-    # soak.json 路径（`P2_EDITOR_SOAK` 运行产出的归档文件）。
+    # soak.json 路径（`RUSTLUA_EDITOR_SOAK` 运行产出的归档文件）。
     [Parameter(Mandatory = $true)][string]$Path,
     # 把整段按时长切成多少个窗口（每段取谷值/中位/峰值）。
     [int]$Windows = 8

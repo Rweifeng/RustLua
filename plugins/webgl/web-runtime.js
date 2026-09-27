@@ -214,7 +214,12 @@
       just: {},
       mouse: {},
       mouseJust: {},
+      // 鼠标**抬起边沿**（`input.mouse_just_released`）。与 `mouseJust` 分开：引擎
+      // `InputSnapshot` 的 pressed/released 也是两个独立集合，合成一个会让"刚按下"
+      // 与"刚抬起"互相冒充。
+      mouseUp: {},
       cursor: [0, 0],
+      pressCursor: [0, 0],
       lastCursor: [0, 0],
       cursorDelta: [0, 0],
       scroll: 0
@@ -234,10 +239,21 @@
     window.addEventListener('keyup', event => { state.keys[keyName(event)] = false; });
     canvas.addEventListener('mousedown', event => {
        const button = event.button === 2 ? 'right' : 'left';
-       if (!state.mouse[button]) state.mouseJust[button] = true;
+       // 每次 mousedown 都记按下边沿（不只首按）：多指场景里第二根手指按按钮也必须产生
+       // 一次边沿，否则"按住摇杆再点按钮"按钮永远收不到按下（微信端虚拟按钮失效的根因③）。
+       // 按下位置单独记进 press_cursor：光标可能正跟手（摇杆），虚拟控件按按下位置命中测试。
+       state.mouseJust[button] = true;
        state.mouse[button] = true;
+       const rect = canvas.getBoundingClientRect();
+       state.pressCursor = [event.clientX - rect.left, event.clientY - rect.top];
      });
-     window.addEventListener('mouseup', event => { state.mouse[event.button === 2 ? 'right' : 'left'] = false; });
+     window.addEventListener('mouseup', event => {
+       const button = event.button === 2 ? 'right' : 'left';
+       // 有按下过才记边沿：宿主（微信适配层）在触摸链上可能补发 mouseup，
+       // 没按过的"抬起"不该产生一次幽灵点击。
+       if (state.mouse[button]) state.mouseUp[button] = true;
+       state.mouse[button] = false;
+     });
     canvas.addEventListener('mousemove', event => {
       const rect = canvas.getBoundingClientRect();
       state.cursor = [event.clientX - rect.left, event.clientY - rect.top];
@@ -252,9 +268,10 @@
         state.lastCursor = [state.cursor[0], state.cursor[1]];
         const horizontal = (state.keys.d || state.keys.right ? 1 : 0) - (state.keys.a || state.keys.left ? 1 : 0);
          const vertical = (state.keys.s || state.keys.down ? 1 : 0) - (state.keys.w || state.keys.up ? 1 : 0);
-        const out = { axis_x: horizontal, axis_y: vertical, keys: state.keys, just: state.just, mouse: state.mouse, mouse_just: state.mouseJust, cursor: state.cursor, cursor_delta: state.cursorDelta, scroll: state.scroll };
+        const out = { axis_x: horizontal, axis_y: vertical, keys: state.keys, just: state.just, mouse: state.mouse, mouse_just: state.mouseJust, mouse_just_released: state.mouseUp, cursor: state.cursor, press_cursor: state.pressCursor, cursor_delta: state.cursorDelta, scroll: state.scroll };
         state.just = {};
         state.mouseJust = {};
+        state.mouseUp = {};
         state.scroll = 0;
         return out;
       }
@@ -370,7 +387,7 @@
       if (!line) continue;
       const parts = line.split('\t');
       if (parts[0] === 'P') {
-        panels.push({ id: parts[1], x: +parts[2], y: +parts[3], w: +parts[4], h: +parts[5], r: +parts[6], g: +parts[7], b: +parts[8], a: parts[9] === undefined ? 1 : +parts[9] });
+        panels.push({ id: parts[1], x: +parts[2], y: +parts[3], w: +parts[4], h: +parts[5], r: +parts[6], g: +parts[7], b: +parts[8], a: parts[9] === undefined ? 1 : +parts[9], shape: parts[10] === undefined ? 0 : +parts[10] });
       } else if (parts[0] === 'I') {
         images.push({ id: parts[1], x: +parts[2], y: +parts[3], w: +parts[4], h: +parts[5], texture: parts[6] || '', r: +parts[7], g: +parts[8], b: +parts[9] });
       } else if (parts[0] === 'B') {
@@ -410,11 +427,22 @@
 
   function drawUi(ctx, uiText, images, pending) {
     const ui = parseUiLines(uiText);
-    LAST_UI_SUMMARY = ui.panels.map(item => 'P:' + item.id)
+    LAST_UI_SUMMARY = ui.panels.map(item => (item.shape === 1 ? 'C:' : 'P:') + item.id)
       .concat(ui.images.map(item => 'I:' + item.id + ':' + item.texture), ui.bars.map(item => 'B:' + item.id), ui.texts.map(item => 'X:' + item.id))
       .join(',');
     for (const panel of ui.panels) {
       ctx.fillStyle = uiColor(panel.r, panel.g, panel.b, panel.a);
+      // shape=1（引擎 UiPanel.shape）：在外接矩形内画填充圆。半径取 min(w,h)/2，
+      // 圆心取矩形中心——与 runtime_scene.rs 的三角扇几何一致；退化半径跳过，
+      // 不让 arc 拿到 0/负半径抛异常（那会让整帧绘制中断）。
+      if (panel.shape === 1) {
+        const radius = Math.min(panel.w, panel.h) / 2;
+        if (!(radius > 0)) continue;
+        ctx.beginPath();
+        ctx.arc(panel.x + panel.w / 2, panel.y + panel.h / 2, radius, 0, Math.PI * 2);
+        ctx.fill();
+        continue;
+      }
       ctx.fillRect(panel.x, panel.y, panel.w, panel.h);
     }
     for (const image of ui.images) {
@@ -477,7 +505,7 @@
   //     y 轴，正好等于引擎 `world_to_screen`（屏幕空间、左上原点），画布即屏幕。
   //   * 相机中心默认跟随玩家实体（名字含 `player`，即 JianghuPlayer），无玩家时取地图中心。
   //   * 夹取规则与原生一致：中心 ∈ [半视口, 地图尺寸 - 半视口]；区间非法（地图比视口短）
-  //     时取两条界的中点（竖版 y 轴因此钉在地图纵向中心）。
+  //     时取两条界的中点（横版下地图 704 < 视口 720，y 轴因此钉在地图纵向中心）。
   // 没有 tilemap 的场景（标题门面）返回 null ⇒ 世界元素保持原样（屏幕空间，无翻转无相机）。
   function computeCamera(sceneState, viewportW, viewportH) {
     let map = null;
@@ -674,10 +702,37 @@ for _, id in pairs(__p2_names) do __p2_alive[id] = true end`;
     return `
 ${sceneBindings(sceneState)}
 __p2_save = {}
-__p2_input = { axis_x = 0, axis_y = 0, keys = {}, just = {}, mouse = {}, mouse_just = {}, cursor = {0, 0}, cursor_delta = {0, 0}, scroll = 0 }
+-- 虚拟键（触屏摇杆/虚拟按钮注入）是**跨帧保持**的按住态：引擎 InputSnapshot::
+-- inherit_virtual_keys 每帧把上一份快照的虚拟键集合并入新快照。宿主每帧都整份替换
+-- __p2_input（设备层重新采样），不并回来就会退化成「摇杆能动、角色不动」——
+-- 同帧注入、下一帧被清空，input.action_axis 恒为 0（引擎侧踩过同一个坑）。
+__p2_virtual_keys = {}
+__p2_virtual_just = {}
+__p2_input = { axis_x = 0, axis_y = 0, keys = {}, just = {}, mouse = {}, mouse_just = {}, mouse_just_released = {}, cursor = {0, 0}, cursor_delta = {0, 0}, scroll = 0 }
 log ={ info = function(v) print('[lua] ' .. tostring(v)) end, warn = function(v) print('[lua warn] ' .. tostring(v)) end, error = function(v) print('[lua error] ' .. tostring(v)) end, debug = function(v) print('[lua debug] ' .. tostring(v)) end }
 time = { delta = function() return 1 / 60 end }
-input = { axis = function(name) name = tostring(name or 'x'):lower(); if name == 'x' or name == 'horizontal' then return __p2_input.axis_x or 0 end; if name == 'y' or name == 'vertical' then return __p2_input.axis_y or 0 end; return 0 end, is_down = function(key) return __p2_input.keys[tostring(key):lower()] == true end, just_pressed = function(key) return __p2_input.just[tostring(key):lower()] == true end, mouse_is_down = function(button) return __p2_input.mouse[tostring(button or 0)] == true end, mouse_just_pressed = function(button) return __p2_input.mouse_just[tostring(button or 0)] == true end, cursor_position = function() return __p2_input.cursor or {0, 0} end, cursor_delta = function() return __p2_input.cursor_delta or {0, 0} end, scroll_delta = function() return __p2_input.scroll or 0 end }
+-- 引擎物理键名 → web 键名：native 引擎的动作表用 keyw/keya/keyj...（core/input.rs 的
+-- ActionMap），web 的动作层（下方 bindings 表）用 w/a/j...。虚拟控件
+-- （ui/virtual_pad.lua）注入的是引擎名，不翻译就永远命中不了任何动作（微信实测：
+-- 可见摇杆/按钮全部"按了没反应"）。
+local function __p2_virtual_name(key)
+  local name = tostring(key):lower()
+  local letter = name:match('^key([a-z])$')
+  if letter then return letter end
+  return name
+end
+input = { axis = function(name) name = tostring(name or 'x'):lower(); if name == 'x' or name == 'horizontal' then return __p2_input.axis_x or 0 end; if name == 'y' or name == 'vertical' then return __p2_input.axis_y or 0 end; return 0 end, is_down = function(key) return __p2_input.keys[tostring(key):lower()] == true end, just_pressed = function(key) return __p2_input.just[tostring(key):lower()] == true end, mouse_is_down = function(button) return __p2_input.mouse[tostring(button or 0)] == true end, mouse_just_pressed = function(button) return __p2_input.mouse_just[tostring(button or 0)] == true end, cursor_position = function() return __p2_input.cursor or {0, 0} end, press_position = function() return __p2_input.press_cursor or __p2_input.cursor or {0, 0} end, cursor_delta = function() return __p2_input.cursor_delta or {0, 0} end, scroll_delta = function() return __p2_input.scroll or 0 end, mouse_just_released = function(button) return __p2_input.mouse_just_released and __p2_input.mouse_just_released[tostring(button or 0)] == true end, virtual_key = function(key, down) local name = __p2_virtual_name(key); if down then __p2_virtual_keys[name] = true else __p2_virtual_keys[name] = nil end; if __p2_input.keys then __p2_input.keys[name] = down and true or false end end, virtual_pressed = function(key) local name = __p2_virtual_name(key); __p2_virtual_keys[name] = true; __p2_virtual_just[name] = true; if __p2_input.keys then __p2_input.keys[name] = true end; if __p2_input.just then __p2_input.just[name] = true end end }
+-- 每帧把上一帧注入的虚拟键并回新快照（宿主在帧首刚整份替换过 __p2_input）。
+-- 按下边沿（virtual_pressed）只在**被消费的这一帧**可见一次，读完即清——与引擎
+-- 「边沿只在一个快照周期内为真」一致；重发边沿会让 action_pressed 系动作连发。
+function __p2_apply_virtual_input()
+  if type(__p2_input) ~= 'table' then return end
+  if type(__p2_input.keys) ~= 'table' then __p2_input.keys = {} end
+  if type(__p2_input.just) ~= 'table' then __p2_input.just = {} end
+  for name in pairs(__p2_virtual_keys) do __p2_input.keys[name] = true end
+  for name in pairs(__p2_virtual_just) do __p2_input.just[name] = true end
+  __p2_virtual_just = {}
+end
 -- 场景与地图宿主 API。引擎事实（core/script.rs 的 scene.load / map.goto）：
 --   * 切换是**排队的**：写 save_data["__map"]、记录 __map:spawn:x/y、把名字排进
 --     scene_pending_load；真正换场景由随后的 process_scene_transition 完成，
@@ -1241,6 +1296,33 @@ tilemap = {
 }
 health = { get = function(id) return __p2_health[id] or 100 end, set = function(id, hp) __p2_health[id] = hp end, damage = function(id, amount) __p2_health[id] = (health.get(id) or 100) - amount; return __p2_health[id] end }
 physics = {
+  -- 场景空间**宽相**：按实体 Transform 位置做圆查询，与 native（core/script.rs
+  -- 同名 API）语义一致：返回半径内所有存活实体 id 的 1 基数组（含调用者自己）。
+  -- 此前 web 端缺失该 API：combat.lua 判定窗内每帧调用它，每帧打一条
+  -- [lua missing-host-api] physics.positions_in_radius（微信端实测点一次攻击
+  -- 后控制台刷屏 2.6 万条）。实现后缺口消失、战斗宽相真正生效。
+  positions_in_radius = function(x, y, radius)
+    local cx, cy, r = tonumber(x), tonumber(y), tonumber(radius)
+    local finite = function(v) return v ~= nil and v == v and v ~= math.huge and v ~= -math.huge end
+    if not finite(cx) or not finite(cy) or not finite(r) or r < 0 then
+      error('physics.positions_in_radius arguments must be finite', 2)
+    end
+    local result = {}
+    local n = 1
+    local r2 = r * r
+    for id in pairs(__p2_alive) do
+      local pos = __p2_transforms[id]
+      if pos then
+        local dx = (pos.x or 0) - cx
+        local dy = (pos.y or 0) - cy
+        if dx * dx + dy * dy <= r2 then
+          result[n] = id
+          n = n + 1
+        end
+      end
+    end
+    return result
+  end,
   set_velocity = function(id, x, y) __p2_velocity[id] = { x = x or 0, y = y or 0 }; return true end,
   -- 2D 传送（引擎 M17-01）：**刚体与 ECS 同步落位**，只改 transform 会被下一帧
   -- 物理回写覆盖成旧位置（player.teleport 的注释里就写着这条）。这里两者都写。
@@ -1373,16 +1455,36 @@ animation = {
   end
 }
 animation3d = { set = function(...) return true end }
--- 音频宿主 API。web 平台没有音频后端（浏览器/小游戏侧都没有接入混音器），
--- 但**返回值语义必须与引擎一致**：audio.play_on 播放失败要返回 false + 原因，
+-- 音频宿主 API。微信小游戏走真实后端（JS 桥 __p2_audio_js_*，见 web-runtime.js 的
+-- installLuaAudioBridge：InnerAudioContext，iOS 用 wav 备用格式）；浏览器（WebGL）
+-- 没有接入混音器，保持「播放一律失败」的既有语义。
+-- **返回值语义必须与引擎一致**：audio.play_on 播放失败要返回 false + 原因，
 -- 游戏侧 core/audio.lua 据此把该 bus:name 记进 failed 表、不再重试；
 -- 若这里返回无意义的成功，游戏会每帧重试同一段缺资源的音效。
 __p2_audio_buses = { master = true, bgm = true, sfx = true, ui = true }
 __p2_audio_volume = { master = 1, bgm = 1, sfx = 1, ui = 1 }
 audio = {
-  volume = function(_) return true end,
-  music = function(name) log.info('music ' .. tostring(name)) end,
-  play = function(name) log.info('sound ' .. tostring(name)); return true end,
+  volume = function(value)
+    if value ~= nil then
+      local v = tonumber(value)
+      if v then
+        if v < 0 then v = 0 elseif v > 1 then v = 1 end
+        __p2_audio_volume.master = v
+      end
+    end
+    if __p2_audio_js_set_volume then __p2_audio_js_set_volume('master', __p2_audio_volume.master) end
+    return true
+  end,
+  music = function(name)
+    if type(name) ~= 'string' or name == '' then return false, 'audio name must not be empty' end
+    if not __p2_audio_js_music then return false, 'web platform has no audio backend' end
+    return __p2_audio_js_music(name)
+  end,
+  play = function(name) return audio.play_on('sfx', name) end,
+  stop_music = function()
+    if __p2_audio_js_stop_music then __p2_audio_js_stop_music() end
+    return true
+  end,
   set_bus_volume = function(bus, level)
     bus = tostring(bus or '')
     if not __p2_audio_buses[bus] then error('unknown audio bus: ' .. bus, 2) end
@@ -1390,6 +1492,7 @@ audio = {
     if not value then error('audio.set_bus_volume level must be a number', 2) end
     if value < 0 then value = 0 elseif value > 1 then value = 1 end
     __p2_audio_volume[bus] = value
+    if __p2_audio_js_set_volume then __p2_audio_js_set_volume(bus, value) end
     return true
   end,
   bus_volume = function(bus)
@@ -1403,18 +1506,28 @@ audio = {
     if bus == 'master' then return __p2_audio_volume.master end
     return __p2_audio_volume.master * __p2_audio_volume[bus]
   end,
-  -- web 平台没有混音器：播放一律失败，返回 false + 原因（游戏侧会因此走静默降级，
-  -- 与「缺音频资源」同一条路径，不会每帧重试）。
+  -- 微信小游戏：真实播放（文件不存在/后端不可用才失败）；浏览器：一律失败。
   play_on = function(bus, name)
     bus = tostring(bus or '')
     if not __p2_audio_buses[bus] then error('unknown audio bus: ' .. bus, 2) end
     if type(name) ~= 'string' or name == '' then return false, 'audio name must not be empty' end
-    return false, 'web platform has no audio backend'
+    if not __p2_audio_js_play_on then return false, 'web platform has no audio backend' end
+    return __p2_audio_js_play_on(bus, name)
   end
 }
 ui = {}
 function ui.panel(id, x, y, w, h, r, g, b, a)
-  __p2_ui_panels[id] = { x = x, y = y, w = w, h = h, r = r, g = g, b = b, a = a, visible = true }
+  __p2_ui_panels[id] = { x = x, y = y, w = w, h = h, r = r, g = g, b = b, a = a, visible = true, shape = 0 }
+end
+-- 圆形与 ui.panel **共用同一张表**：引擎 ui.circle 写的就是 ui_panels，只多一个
+-- shape = 1（core/ui.rs 的 UiPanel.shape：0 = 矩形、1 = 圆形）。因此两边共享 id
+-- 命名空间，ui.panel_get / ui.hide / ui.clear 对圆同样生效。
+-- position/size 存的是**外接矩形**（引擎存 [cx-r, cy-r] / [2r, 2r]），绘制侧取
+-- center = position + size/2、r = min(w,h)/2——与 runtime_scene.rs push_ui_panels
+-- 的三角扇几何逐项对齐（32 段填充圆）。
+function ui.circle(id, cx, cy, radius, r, g, b, a)
+  local value = tonumber(radius) or 0
+  __p2_ui_panels[id] = { x = cx - value, y = cy - value, w = value * 2, h = value * 2, r = r, g = g, b = b, a = a, visible = true, shape = 1 }
 end
 function ui.image(id, x, y, w, h, texture, r, g, b)
   __p2_ui_images[id] = { x = x, y = y, w = w, h = h, texture = tostring(texture or ''), r = r or 1, g = g or 1, b = b or 1, visible = true }
@@ -1466,7 +1579,7 @@ function __p2_export_ui()
   local function flat(v) return string.gsub(tostring(v or ''), '[\\t\\r\\n]', ' ') end
   for id, p in pairs(__p2_ui_panels) do
     if p.visible then
-      rows[#rows + 1] = 'P\\t' .. flat(id) .. '\\t' .. num(p.x) .. '\\t' .. num(p.y) .. '\\t' .. num(p.w) .. '\\t' .. num(p.h) .. '\\t' .. num(p.r) .. '\\t' .. num(p.g) .. '\\t' .. num(p.b) .. '\\t' .. num(p.a)
+      rows[#rows + 1] = 'P\\t' .. flat(id) .. '\\t' .. num(p.x) .. '\\t' .. num(p.y) .. '\\t' .. num(p.w) .. '\\t' .. num(p.h) .. '\\t' .. num(p.r) .. '\\t' .. num(p.g) .. '\\t' .. num(p.b) .. '\\t' .. num(p.a) .. '\\t' .. num(p.shape or 0)
     end
   end
   for id, i in pairs(__p2_ui_images) do
@@ -1574,6 +1687,160 @@ function __p2_world_summary()
   return table.concat(parts, ' ')
 end
 `;
+  }
+
+
+  // ---------- 音频后端（微信小游戏：InnerAudioContext；浏览器：无后端） ----------
+  //
+  // Lua 侧 audio 表经 __p2_audio_js_* 全局调用到这里。微信端用
+  // wx.createInnerAudioContext() 播放（官方推荐 API，支持流式、适合 BGM 与短音效）。
+  // 格式：InnerAudioContext 的官方格式矩阵里 ogg 在 iOS 不支持（Android 支持），
+  // 因此 iOS 走 .wav 备用格式、其余平台走 .ogg（体积小）。WebGL（浏览器）没有接入
+  // 混音器，保持「播放一律失败」的既有语义，游戏侧静默降级。
+  function installLuaAudioBridge(L) {
+    const f = window.fengari;
+    const isWechat = typeof wx !== 'undefined' && typeof wx.createInnerAudioContext === 'function';
+    let wechatPlatform = '';
+    if (isWechat) {
+      try {
+        const info = (typeof wx.getSystemInfoSync === 'function') && wx.getSystemInfoSync();
+        wechatPlatform = String((info && info.platform) || '').toLowerCase();
+      } catch (error) { wechatPlatform = ''; }
+    }
+    // iOS 的 InnerAudioContext 不支持 ogg：iOS 用 wav，其余用 ogg。
+    const preferWav = isWechat && wechatPlatform === 'ios';
+    // 音量状态（与 Lua 侧 __p2_audio_volume 保持一致；Lua 是事实来源，这里只用于播放时应用）。
+    const volumes = { master: 1, bgm: 1, sfx: 1, ui: 1 };
+    const clamp01 = function (v) { const n = Number(v); if (!(n >= 0)) return 0; return n > 1 ? 1 : n; };
+    const effective = function (bus) {
+      if (bus === 'master') return volumes.master;
+      const group = volumes[bus] === undefined ? 1 : volumes[bus];
+      return volumes.master * group;
+    };
+    // 一次性音效池：[{bus,name,ctx,alive}, ...]（同一音效允许重叠播放）。
+    const sfxPool = [];
+    // 循环 BGM（同时只有一个）。
+    let musicCtx = null;
+
+    // 候选 src：微信宿主对不同路径形式的接受程度不一致（分包根相对等），
+    // 与 wechat-adapter.js 的 readStrategies 同理，逐个尝试（pack/ 是资源根）。
+    function srcCandidates(name) {
+      const ext = preferWav ? 'wav' : 'ogg';
+      const logical = 'assets/audio/' + name + '.' + ext;
+      return ['pack/' + logical, logical, './pack/' + logical];
+    }
+    function fileExists(path) {
+      if (!isWechat) return false;
+      try {
+        const fs = (typeof wx.getFileSystemManager === 'function') && wx.getFileSystemManager();
+        if (!fs || typeof fs.accessSync !== 'function') return true; // 无法探测：假定存在，交给 onError
+        fs.accessSync(path);
+        return true;
+      } catch (error) { return false; }
+    }
+    function resolveSrc(name) {
+      if (!isWechat) return null;
+      const list = srcCandidates(name);
+      for (let i = 0; i < list.length; i += 1) {
+        if (fileExists(list[i])) return list[i];
+      }
+      return null;
+    }
+    function destroyCtx(ctx) {
+      try { if (typeof ctx.offEnded === 'function') ctx.offEnded(); } catch (error) { }
+      try { if (typeof ctx.offError === 'function') ctx.offError(); } catch (error) { }
+      try { if (typeof ctx.stop === 'function') ctx.stop(); } catch (error) { }
+      try { if (typeof ctx.destroy === 'function') ctx.destroy(); } catch (error) { }
+    }
+    function applyVolume(ctx, bus) {
+      try { ctx.volume = clamp01(effective(bus)); } catch (error) { /* 宿主只读时忽略 */ }
+    }
+    function pruneSfxPool() {
+      for (let i = sfxPool.length - 1; i >= 0; i -= 1) {
+        if (!sfxPool[i].alive) sfxPool.splice(i, 1);
+      }
+    }
+    function playOn(bus, name) {
+      if (!isWechat) return { ok: false, reason: 'web platform has no audio backend' };
+      const src = resolveSrc(name);
+      if (!src) return { ok: false, reason: 'audio file not found: ' + name };
+      let ctx;
+      try { ctx = wx.createInnerAudioContext(); } catch (error) { return { ok: false, reason: 'createInnerAudioContext failed: ' + error }; }
+      try { ctx.src = src; } catch (error) { destroyCtx(ctx); return { ok: false, reason: 'set src failed: ' + error }; }
+      const entry = { bus: bus, name: name, ctx: ctx, alive: true };
+      const onEnd = function () { entry.alive = false; destroyCtx(ctx); };
+      try {
+        ctx.onEnded(onEnd);
+        ctx.onError(onEnd);
+      } catch (error) { /* 宿主未提供回调时忽略 */ }
+      applyVolume(ctx, bus);
+      try { ctx.play(); } catch (error) { destroyCtx(ctx); return { ok: false, reason: 'play failed: ' + error }; }
+      sfxPool.push(entry);
+      pruneSfxPool();
+      // 并发音效过多时淘汰最旧的（防止长时间运行内存泄漏）。
+      if (sfxPool.length > 48) {
+        const victim = sfxPool.shift();
+        if (victim) destroyCtx(victim.ctx);
+      }
+      return { ok: true, src: src };
+    }
+    function music(name) {
+      if (!isWechat) return { ok: false, reason: 'web platform has no audio backend' };
+      const src = resolveSrc(name);
+      if (!src) return { ok: false, reason: 'audio file not found: ' + name };
+      if (musicCtx) { destroyCtx(musicCtx); musicCtx = null; }
+      let ctx;
+      try { ctx = wx.createInnerAudioContext(); } catch (error) { return { ok: false, reason: 'createInnerAudioContext failed: ' + error }; }
+      try { ctx.loop = true; ctx.src = src; } catch (error) { destroyCtx(ctx); return { ok: false, reason: 'music setup failed: ' + error }; }
+      try { ctx.onError(function () { /* BGM 播放失败仅静默（下一次切图会重试） */ }); } catch (error) { }
+      applyVolume(ctx, 'bgm');
+      try { ctx.play(); } catch (error) { destroyCtx(ctx); return { ok: false, reason: 'music play failed: ' + error }; }
+      musicCtx = ctx;
+      return { ok: true, src: src };
+    }
+    function stopMusic() {
+      if (musicCtx) { destroyCtx(musicCtx); musicCtx = null; }
+    }
+    function setVolume(bus, value) {
+      volumes[bus] = clamp01(value);
+      for (let i = 0; i < sfxPool.length; i += 1) {
+        if (sfxPool[i].alive) applyVolume(sfxPool[i].ctx, sfxPool[i].bus);
+      }
+      if (musicCtx) applyVolume(musicCtx, 'bgm');
+    }
+    function registerLuaFunction(name, fn) {
+      f.lua.lua_pushcfunction(L, fn);
+      f.lua.lua_setglobal(L, f.to_luastring(name));
+    }
+    registerLuaFunction('__p2_audio_js_play_on', function (Ls) {
+      const rawBus = f.lua.lua_tostring(Ls, 1);
+      const rawName = f.lua.lua_tostring(Ls, 2);
+      const bus = rawBus ? f.to_jsstring(rawBus) : '';
+      const name = rawName ? f.to_jsstring(rawName) : '';
+      const result = playOn(bus, name);
+      f.lua.lua_pushboolean(Ls, result.ok);
+      if (result.ok) return 1;
+      f.lua.lua_pushstring(Ls, f.to_luastring(result.reason || 'audio play failed'));
+      return 2;
+    });
+    registerLuaFunction('__p2_audio_js_music', function (Ls) {
+      const raw = f.lua.lua_tostring(Ls, 1);
+      const name = raw ? f.to_jsstring(raw) : '';
+      const result = music(name);
+      f.lua.lua_pushboolean(Ls, result.ok);
+      if (result.ok) return 1;
+      f.lua.lua_pushstring(Ls, f.to_luastring(result.reason || 'music failed'));
+      return 2;
+    });
+    registerLuaFunction('__p2_audio_js_stop_music', function () { stopMusic(); return 0; });
+    registerLuaFunction('__p2_audio_js_set_volume', function (Ls) {
+      const rawBus = f.lua.lua_tostring(Ls, 1);
+      const rawValue = f.lua.lua_tostring(Ls, 2);
+      const bus = rawBus ? f.to_jsstring(rawBus) : '';
+      const value = rawValue ? Number(f.to_jsstring(rawValue)) : 1;
+      setVolume(bus, value);
+      return 0;
+    });
   }
 
   function doString(L, source, name) {
@@ -1693,6 +1960,7 @@ end
     const f = window.fengari;
     const L = f.lauxlib.luaL_newstate();
     f.lualib.luaL_openlibs(L);
+    installLuaAudioBridge(L);
     try {
       const hostCompat = ENGINE_HOST_GLOBALS.map(name => `if ${name} == nil then ${name} = __p2_missing_host_global(${luaQuote(name)}) end`).join('\n');
       // 引擎里有、web 运行时没实现的宿主 API：**不再静默变成空表**。
@@ -2036,6 +2304,9 @@ end
         }
         stepDrive();
         doString(L, '__p2_input = ' + luaValue(webInput.snapshot()), '__p2_input');
+        // 快照是**整份替换**的（设备层每帧重新采样），虚拟键必须在替换**之后**并回来——
+        // 顺序反了就等于没注入。对应引擎侧 `InputSnapshot::inherit_virtual_keys`。
+        doString(L, '__p2_apply_virtual_input()', '__p2_virtual_input');
         const result = callGlobal(L, 'update');
         syncLuaScene(sceneState, callGlobal(L, '__p2_export_state'));
         uiElements = drawScene(ctx, sceneState, images, projectName, callGlobal(L, '__p2_export_ui'), pendingTextures);

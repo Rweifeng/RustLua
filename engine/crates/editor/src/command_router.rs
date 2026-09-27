@@ -478,7 +478,7 @@ mod tests {
         let mut app = EditorApp::new(
             ProjectInfo {
                 root: std::env::temp_dir()
-                    .join(format!("p2-command-router-{}", std::process::id())),
+                    .join(format!("rustlua-command-router-{}", std::process::id())),
                 version: "test".to_owned(),
                 directories: Vec::new(),
             },
@@ -1032,7 +1032,7 @@ mod tests {
     fn save_as_command_writes_to_requested_path() {
         let mut app = test_app();
         let target = std::env::temp_dir().join(format!(
-            "p2-command-router-saveas-{}.scene",
+            "rustlua-command-router-saveas-{}.scene",
             std::process::id()
         ));
         let _ = std::fs::remove_file(&target);

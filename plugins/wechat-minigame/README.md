@@ -304,17 +304,17 @@ Remove-Item Env:\NODE_OPTIONS
 所以它属于**验证环境**的缺口而不是适配层的问题）；`artifacts/probes/` 下是配套的一次性探针
 （桥接直测 / 适配层直测 / 画布-版面一致性 / 改名表核对）。
 
-### 画布尺寸 = 竖版设计分辨率（三处必须一起改）
+### 画布尺寸 = 横版设计分辨率（三处必须一起改）
 
-M32 起游戏是竖版，适配层的画布也跟着是 **720×1280**（此前 1280×720）。这三处必须同时改，
-否则症状是"竖版面板横向溢出画布、底部状态栏看不见"，而**无头验证看不出来**（假 ctx 不裁剪、
-超界坐标照样计数）：
+按「横屏方案A」，游戏的设计分辨率是 **1280×720**，适配层画布与 `game.json` 的方向都要跟着走
+（M32 曾整体改成竖版 720×1280，方案A 已转回横版）。这三处必须同时改，否则症状是
+"面板溢出画布、边缘控件看不见"，而**无头验证看不出来**（假 ctx 不裁剪、超界坐标照样计数）：
 
 | # | 位置 | 值 |
 |---|---|---|
-| ① | `wechat-adapter.js` 的 `VIEW_WIDTH`/`VIEW_HEIGHT` | 720 / 1280 |
-| ② | `plugins/wechat-minigame/game.json` 的 `deviceOrientation` | `portrait` |
-| ③ | `engine/crates/game_web/src/lib.rs` 的 `canvas.set_width/height`（webgl 侧） | 720 / 1280 |
+| ① | `wechat-adapter.js` 的 `VIEW_WIDTH`/`VIEW_HEIGHT` | 1280 / 720 |
+| ② | `plugins/wechat-minigame/game.json` 的 `deviceOrientation` | `landscape` |
+| ③ | `engine/crates/game_web/src/lib.rs` 的 `canvas.set_width/height`（webgl 侧） | 1280 / 720 |
 
 适配层启动时会做一次**一致性自检**（`reportViewAgreement`）：读 `project.toml` 的
 `window_width/height`（= 工程声明的设计分辨率，与 `scripts/ui/layout.lua` 同源）与画布比对，
@@ -337,7 +337,7 @@ M32 起游戏是竖版，适配层的画布也跟着是 **720×1280**（此前 1
 | `FontFace` + `document.fonts` | `wx.loadFont` / `canvas.loadFont`，并把 `ctx.font` 里的 `RustLuaGameFont` 替换成真实字体族 |
 | `requestAnimationFrame` | `wx.requestAnimationFrame`（无则 `setTimeout` 兜底） |
 | `localStorage` | `wx.getStorageSync` / `setStorageSync` |
-| `keydown` / `mouse*` | `wx.onKeyDown/onKeyUp`（微信 PC 端）；触摸映射为指针事件 + 左半屏虚拟摇杆（WASD）、右半屏动作键（space） |
+| `keydown` / `mouse*` | `wx.onKeyDown/onKeyUp`（微信 PC 端）；触摸映射为指针事件（画布 `mousedown/mousemove` + `window mouseup`）驱动**游戏侧可见虚拟摇杆/按钮**（`ui/virtual_pad.lua`），右半屏触点派发动作键（space，菜单确认） |
 | 生命周期 | `wx.onShow` / `wx.onHide` → `focus` / `blur` |
 
 启动失败时适配层会把原因直接画到画布上（小游戏没有 DOM 控制台），便于真机定位。
@@ -461,9 +461,9 @@ M32 起游戏是竖版，适配层的画布也跟着是 **720×1280**（此前 1
   它是**防传输损坏/半截文件/缓存陈旧**的最小防线，不是内容签名。
 - **缓存不会自动清理**：`USER_DATA_PATH` 下的副本会一直留着（小游戏对用户目录有容量上限，
   超限时写入失败只是本轮重新下载，不会崩）。需要精确控制容量时应自行加清理策略。
-- **不支持 `-Encrypt` / `-Compress`**：共享 JS 运行时只读明文 `pack/`（不做 P2PK1 解包与
+- **不支持 `-Encrypt` / `-Compress`**：共享 JS 运行时只读明文 `pack/`（不做 RustLua 解包与
   gzip 解压）。发布脚本对 web 平台直接拒绝这两个开关，避免产出跑不起来的包。
-- **触摸端是虚拟摇杆近似**，不是原生多指手势；手柄/键鼠映射仍以 PC 端为准。
+- **触摸端由游戏侧可见虚拟摇杆/按钮接管**（`ui/virtual_pad.lua`），适配层只把触点译成指针事件，不再注入不可见的半屏摇杆；右半屏触点派发确认键（space）。手柄/键鼠映射仍以 PC 端为准。
 - **远端模式下 `Image.src` 必须能被改写**：适配层把"包内没有的贴图"换成本地缓存路径，
   而宿主怎么写 `src` 由适配层启动时**自己探明**，并打一行自检
   `wechat-adapter: Image.src 接管方式 = prototype-accessor`（同时进 `__P2_DIAG().image_src_takeover`
@@ -543,13 +543,16 @@ M32 起游戏是竖版，适配层的画布也跟着是 **720×1280**（此前 1
   `type(x)=="function"` 探测过、会降级的那批），并且按引擎源码逐条补齐：`physics.set_position`、
   `transform.set`、`entity.spawn/find_id/persist_id/destroy`、`sprite.set`、
   `animation.attach/set/get/ended/frame`、`tilemap.set_cell/set_texture/find_path`（二叉堆 A*，
-  与 `Map::find_path` 同序）、`save.clear`、`audio.play_on/set_bus_volume`、`log.debug`。
+  与 `Map::find_path` 同序）、`save.clear`、`log.debug`。
+  `audio.play_on/set_bus_volume` 在 web-runtime.js 里是**真实后端**（`installLuaAudioBridge`：
+  微信端 `wx.createInnerAudioContext` 播放，iOS 用构建期生成的 wav 备用格式、其余用 ogg；
+  浏览器端保持"无后端"失败语义）。
   ⑩ "世界在动"与"画面在动"是两件事：Lua 世界与渲染器各存一份实体数据，靠**回写通道**同步
   （结构变更走一次性 op 列表，每帧的 Transform/动画走 `T`/`A` 行）。只在 Lua 侧取样的话，
   "世界里主角在走、画面上钉死在出生点"完全看不见 → 运行时每帧自报 `data-p2-world`
   （含渲染侧坐标 `drawn=`），质量门新增玩法路径用例
   （`--drive-new-game --expect-runtime-spawns --drive-move`）：走到玩法地图后
-  **按住运行时自己从触摸摇杆派发出来的键**若干帧，断言主角坐标真的变了、且渲染侧坐标与
+  **按住运动驱动键**若干帧（`--drive-move` 由键盘桥接注入），断言主角坐标真的变了、且渲染侧坐标与
   Lua 世界一致。按哪个键由运行时产出、用例不硬编码游戏键位——断的是宿主契约，不是某一款游戏的键位。
   三条反向用例（`T` 行关掉、速度积分关掉、`entity.spawn` 关掉）都必须让对应用例变红，
   否则断言就是摆设。

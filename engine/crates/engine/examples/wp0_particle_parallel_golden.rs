@@ -1,4 +1,4 @@
-//! P2-① 证据：P1-③ 粒子并行（`step_particles_with_parallelism`）的像素级一致性断言。
+//! RustLua-① 证据：P1-③ 粒子并行（`step_particles_with_parallelism`）的像素级一致性断言。
 //!
 //! 粒子并行是**执行路径优化**：同样的发射/推进语义，串行与多线程必须产生
 //! 逐字节相同的粒子状态，否则并行就不是等价变换。证据：

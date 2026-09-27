@@ -371,7 +371,7 @@ mod tests {
 
     fn temp_dir(label: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "p2-scene-migration-{label}-{}-{}",
+            "rustlua-scene-migration-{label}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -769,8 +769,14 @@ mod tests {
                     continue;
                 }
                 checked_scenes += 1;
-                let globals = crate::core::spatial_transform::propagate_all(&locals, &parents)
-                    .expect("scene hierarchy propagates");
+                let globals = crate::core::spatial_transform::propagate_all(
+                    &locals,
+                    &parents,
+                    // 实体全集：没有 `Transform` 的组织节点（如 UI 根 `UIRoot`）按单位变换参与，
+                    // 只有真正悬空的父才该判红。
+                    scene.entities.keys().copied(),
+                )
+                .unwrap_or_else(|error| panic!("场景 {} 传播失败：{error:?}", file.display()));
                 for (id, local) in &locals {
                     let world = globals[id].matrix();
                     let world_translation = crate::core::math3d::Vec3::new(

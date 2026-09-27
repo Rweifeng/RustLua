@@ -149,7 +149,7 @@ fn default_engine_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-/// p2 工作区根（含 scripts/、docs/ 等），相对编辑器 crate 上溯 3 级：`E:\Codex\RustLua`。
+/// RustLua 工作区根（含 scripts/、docs/ 等），相对编辑器 crate 上溯 3 级：`E:\Codex\RustLua`。
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -522,12 +522,12 @@ struct EditorApp {
     pub(crate) perf_panel_rect: egui::Rect,
     /// 本帧 Scene 视图右上角工具条（选择/移动/旋转/缩放）的屏幕矩形。
     pub(crate) scene_tools_rect: egui::Rect,
-    /// docs/55 阶段 0：真实窗口 GUI/GPU 证据运行器（`P2_EDITOR_GUI_EVIDENCE=<目录>`）。
+    /// docs/55 阶段 0：真实窗口 GUI/GPU 证据运行器（`RUSTLUA_EDITOR_GUI_EVIDENCE=<目录>`）。
     /// 生产运行为 `None`，每帧只多一次 `Option` 判断。
     gui_evidence: Option<crate::gui_evidence::GuiEvidence>,
     /// GUI 证据运行里是否有采集失败的步骤（`main` 据此把退出码置 2）。
     gui_evidence_failed: bool,
-    /// docs/55 阶段 0：真实窗口长会话 soak（`P2_EDITOR_SOAK=<秒>`）。
+    /// docs/55 阶段 0：真实窗口长会话 soak（`RUSTLUA_EDITOR_SOAK=<秒>`）。
     gui_soak: Option<crate::gui_evidence::GuiSoak>,
     /// soak 是否失败（例如没有打开任何文档）。
     gui_soak_failed: bool,
@@ -744,7 +744,7 @@ struct TilemapEditorState {
     map: Tilemap,
     brush: u8,
     paint_collision: bool,
-    /// P2-②a：碰撞层预览开关（默认开，保持历史行为；关闭时 solid 覆盖不绘制）。
+    /// RustLua-②a：碰撞层预览开关（默认开，保持历史行为；关闭时 solid 覆盖不绘制）。
     preview_collision: bool,
     /// M19-03 Tile 编辑模式：单格画笔 / 矩形填充 / 区域复制 / 区域粘贴。
     mode: TileEditMode,
@@ -1333,7 +1333,7 @@ impl EditorApp {
     }
 
     fn autoplay_scene_path(&self) -> PathBuf {
-        std::env::var("P2_EDITOR_AUTOPLAY_SCENE")
+        std::env::var("RUSTLUA_EDITOR_AUTOPLAY_SCENE")
             .ok()
             .map(|path| self.project.root.join(path))
             .unwrap_or_else(|| self.project.root.join("scenes/main.scene"))
@@ -1350,7 +1350,7 @@ impl EditorApp {
     }
 
     fn run_thumbnail_window_benchmark(&mut self, context: &egui::Context) -> bool {
-        let Some(raw) = std::env::var("P2_EDITOR_THUMBNAIL_BENCH").ok() else {
+        let Some(raw) = std::env::var("RUSTLUA_EDITOR_THUMBNAIL_BENCH").ok() else {
             return false;
         };
         if self.thumbnail_benchmark_ran {
@@ -1362,7 +1362,7 @@ impl EditorApp {
             .ok()
             .filter(|count| *count > 0)
             .unwrap_or(1000);
-        let relative = std::env::var("P2_EDITOR_THUMBNAIL_SOURCE")
+        let relative = std::env::var("RUSTLUA_EDITOR_THUMBNAIL_SOURCE")
             .ok()
             .unwrap_or_else(|| "assets/textures/slime.png".to_owned());
         let path = self.project.root.join(&relative);
@@ -1413,7 +1413,7 @@ impl EditorApp {
     }
 
     fn run_play_stop_window_benchmark(&mut self, context: &egui::Context) -> bool {
-        let Some(raw) = std::env::var("P2_EDITOR_PLAYSTOP_BENCH").ok() else {
+        let Some(raw) = std::env::var("RUSTLUA_EDITOR_PLAYSTOP_BENCH").ok() else {
             return false;
         };
         if self.play_stop_benchmark_ran {
@@ -1853,14 +1853,14 @@ impl EditorApp {
     /// 与 DPI/resize 门槛都建立在它之上（见 `crate::framegate`）。
     /// 推进 docs/55 阶段 0 的真实窗口运行器（GUI/GPU 证据、长会话 soak）。
     ///
-    /// 环境变量在**第一帧**才读：没设置 `P2_EDITOR_GUI_EVIDENCE` / `P2_EDITOR_SOAK` 时，
+    /// 环境变量在**第一帧**才读：没设置 `RUSTLUA_EDITOR_GUI_EVIDENCE` / `RUSTLUA_EDITOR_SOAK` 时，
     /// 生产路径上只有一次布尔判断，不会因为"带了证据设施"而改变启动行为。
     /// 返回 `true` 表示要求关闭窗口（证据采集完成或 soak 到时）。
     fn tick_evidence_runners(&mut self, context: &egui::Context) -> bool {
         use std::sync::atomic::Ordering;
         if !self.evidence_runners_initialized {
             self.evidence_runners_initialized = true;
-            // soak 优先：它也用 `P2_EDITOR_GUI_EVIDENCE` 指定产物目录，两个都设时应跑 soak
+            // soak 优先：它也用 `RUSTLUA_EDITOR_GUI_EVIDENCE` 指定产物目录，两个都设时应跑 soak
             // （否则"启动 soak"会静默变成"跑一遍截图"——这正是第一版的行为，已修）。
             match crate::gui_evidence::GuiSoak::from_env() {
                 Some(soak) => {
@@ -1955,9 +1955,9 @@ impl EditorApp {
         {
             let _ = self.autosave.tick(&self.recovery, doc, SystemTime::now());
         }
-        // 调试钩子：`P2_EDITOR_AUTOPLAY=1` 打开指定场景、切 3D 视口并自动 Play。
-        // 可通过 `P2_EDITOR_AUTOPLAY_SCENE=scenes/foo.scene` 覆盖默认场景。
-        if std::env::var("P2_EDITOR_AUTOPLAY").is_ok() && !self.is_playing() {
+        // 调试钩子：`RUSTLUA_EDITOR_AUTOPLAY=1` 打开指定场景、切 3D 视口并自动 Play。
+        // 可通过 `RUSTLUA_EDITOR_AUTOPLAY_SCENE=scenes/foo.scene` 覆盖默认场景。
+        if std::env::var("RUSTLUA_EDITOR_AUTOPLAY").is_ok() && !self.is_playing() {
             self.scene_view_mode = SceneViewMode::View3D;
             if self.document.current_scene.is_none() {
                 let _ = self.open_scene_document(self.autoplay_scene_path());
@@ -2149,7 +2149,7 @@ mod layout_tests {
     #[test]
     fn layout_round_trips_through_the_editor_shell() {
         let root = std::env::temp_dir().join(format!(
-            "p2-editor-layout-shell-{}-{:?}",
+            "rustlua-editor-layout-shell-{}-{:?}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -2285,7 +2285,7 @@ mod migration_tests {
 
     fn temp_project(label: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "p2-editor-migration-{label}-{}-{}",
+            "rustlua-editor-migration-{label}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

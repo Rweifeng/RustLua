@@ -59,15 +59,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Err(format!("{module} ({registry}) leaks reserved keys: {leaked}").into());
         }
     }
-    // 注册表是哈希表（`#` 恒为 0），只能数键个数：物品 10 条 = lingzhi/rice/
-    // seed_lingzhi/seed_rice/heal_pill/herb_tonic/timber（M19/M18）+ M28 的敌人掉落物
-    // wolf_pelt/boar_meat/ape_core。
+    // 注册表是哈希表（`#` 恒为 0），只能数键个数：基础物品 + 采集物 + 掉落物 14 条
+    // （lingzhi/rice/seed_lingzhi/seed_rice/heal_pill/herb_tonic/timber/wolf_pelt/
+    //  boar_meat/ape_core + tea_leaf/lotus_seed/reed/wild_fruit）
+    // + Alpha 作物扩展 8 条（radish/seed_radish/herb/seed_herb/polygonum/
+    //  seed_polygonum/ginseng/seed_ginseng）= 22。
     let item_count = query_num(
         &mut runtime,
         "(function() local n = 0 for _ in pairs(require('data.items')) do n = n + 1 end return n end)()",
     )?;
-    if item_count != 14.0 {
-        return Err(format!("data/items.lua has {item_count} entries, want 14").into());
+    if item_count != 22.0 {
+        return Err(format!("data/items.lua has {item_count} entries, want 22").into());
     }
 
     banner("② 登记覆盖：任何带 validate_all 的模块都必须登记进 validate_data.lua");

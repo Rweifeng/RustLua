@@ -213,7 +213,7 @@ mod tests {
 
     fn temp_root(label: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!(
-            "p2-schema-audit-{label}-{}-{}",
+            "rustlua-schema-audit-{label}-{}-{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -378,8 +378,10 @@ mod tests {
 
     #[test]
     fn missing_directory_is_not_an_error() {
-        let root =
-            std::env::temp_dir().join(format!("p2-schema-audit-missing-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!(
+            "rustlua-schema-audit-missing-{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&root);
         let audit = audit_project(&root).expect("audit tolerates a missing root");
         assert_eq!(audit.documents, 0);

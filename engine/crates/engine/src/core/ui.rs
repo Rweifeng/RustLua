@@ -123,6 +123,8 @@ pub struct UiPanel {
     pub visible: bool,
     pub space: UiLayoutSpace,
     pub anchor: [f32; 2],
+    /// 0 = 矩形, 1 = 圆形（position/size 解释为外接圆外接矩形）。
+    pub shape: u8,
 }
 
 /// One rendered cell inside a Lua-created [`UiGrid`].

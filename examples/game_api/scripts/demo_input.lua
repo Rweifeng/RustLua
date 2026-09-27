@@ -292,6 +292,24 @@ end
 
 --- 每个固定步一次。headless（无设备、无按键）下也必须跑通。
 function M.update()
+    -- ⓪ 触屏虚拟键（`input.virtual_key` / `input.virtual_pressed`）：这两条是给**触屏
+    -- 虚拟摇杆/按钮**用的——脚本注入按住态，引擎把它与物理键**合并**后再算
+    -- `is_down` / `axis` / `action_axis`（`InputSnapshot::virtual_keys`）。
+    --
+    -- 为什么按下文这么写：
+    --   * `virtual_key(name, down)` 的按住态是**跨帧保持**的：注入 true 之后每帧不重发，
+    --     只在抬起时注入 false。所以这里每帧都把 `keyv` 的物理按住态原样喂给它，
+    --     抬起那一帧自然发 false——注入结果直接体现在下面第①行的 axis 上。
+    --   * `virtual_pressed(name)` 只造**一次按下边沿**，是"这一帧点了一下"的语义，
+    --     所以它放在 `just_pressed("keyp")` 分支里（每按一次 P 触发一帧）。
+    --   * 挑 `keyv` / `keyp` 是因为它们**没有**绑到任何默认动作，注入不会污染
+    --     `move_*` / `ui_*` 等动作的读数。
+    local vk_down = input.is_down("keyv")
+    input.virtual_key("keyv", vk_down)
+    if input.just_pressed("keyp") then
+        input.virtual_pressed("keyp")
+    end
+
     -- ① 物理键层：边沿、按住与两个内置轴。
     local pressed = pressed_text()
     local released = released_text()
@@ -568,8 +586,10 @@ function M.update()
 
     -- 第①行：物理键层（`is_down` / `just_pressed` / `pressed` / `just_released` /
     -- `released` / `axis`）——这一层只认物理键，与绑定无关。
+    -- 行尾的 `虚拟keyv=` 是 `input.virtual_key` 注入后的**读回**：按 V 时它必须跟着变 true，
+    -- 同时 `axis h` 也会 +1（虚拟键与物理键在 `is_down`/`axis` 里是同一份合并结果）。
     S.status = string.format(
-        "① 物理键 按住[%s] 按下[%s] 松开[%s] 事件=%d 最近=%s axis h=%s v=%s 悬停=%s",
+        "① 物理键 按住[%s] 按下[%s] 松开[%s] 事件=%d 最近=%s axis h=%s v=%s 虚拟keyv=%s",
         held_text(),
         pressed ~= "" and pressed or "-",
         released ~= "" and released or "-",
@@ -577,7 +597,7 @@ function M.update()
         S.last_event,
         short(axis_x),
         short(axis_y),
-        hover
+        tostring(input.is_down("keyv"))
     )
     -- 第②行：命名动作层（`action` / `action_pressed` / `action_released` /
     -- `action_repeat` / `action_axis` / `last_device`）。`ui_x`/`ui_y` 是方向动作合成的轴，

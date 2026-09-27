@@ -177,7 +177,13 @@ pub fn world_matrices(scene: &Scene) -> BTreeMap<SceneEntityId, Mat4> {
             .collect();
     }
     let parents = parents(scene);
-    match crate::core::spatial_transform::propagate_all(&locals, &parents) {
+    // 传**实体全集**：父存在但没有 `Transform`（纯组织节点 / UI 根）要按单位变换参与组合，
+    // 不能与"悬空父"混为一谈——否则一个 `UIRoot` 就会让整份文档退回未组合的局部矩阵。
+    match crate::core::spatial_transform::propagate_all(
+        &locals,
+        &parents,
+        scene.entities.keys().copied(),
+    ) {
         Ok(globals) => globals
             .into_iter()
             .map(|(entity, global)| (entity, global.matrix()))

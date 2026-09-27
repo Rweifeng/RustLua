@@ -1141,6 +1141,8 @@ pub struct InputSnapshot {
     held_keys: HashSet<KeyCode>,
     pressed_keys: HashSet<KeyCode>,
     released_keys: HashSet<KeyCode>,
+    /// 虚拟按键（触屏摇杆注入）
+    virtual_keys: HashSet<KeyCode>,
     held_mouse: HashSet<MouseButton>,
     pressed_mouse: HashSet<MouseButton>,
     released_mouse: HashSet<MouseButton>,
@@ -1172,6 +1174,7 @@ impl Default for InputSnapshot {
             held_keys: HashSet::new(),
             pressed_keys: HashSet::new(),
             released_keys: HashSet::new(),
+            virtual_keys: HashSet::new(),
             held_mouse: HashSet::new(),
             pressed_mouse: HashSet::new(),
             released_mouse: HashSet::new(),
@@ -1203,6 +1206,36 @@ impl InputSnapshot {
         } else if self.held_keys.remove(&key) {
             self.released_keys.insert(key);
         }
+    }
+
+    /// 注入/释放虚拟按键（触屏摇杆用）。
+    pub fn set_virtual_key(&mut self, key: KeyCode, down: bool) {
+        if down {
+            self.virtual_keys.insert(key);
+        } else {
+            self.virtual_keys.remove(&key);
+        }
+    }
+
+    /// 虚拟按键产生一次按下边沿。
+    pub fn set_virtual_pressed(&mut self, key: KeyCode) {
+        self.virtual_keys.insert(key);
+        self.pressed_keys.insert(key);
+    }
+
+    /// 沿用上一份快照里由 [`Self::set_virtual_key`] 注入的虚拟键按住态（M22 触屏摇杆修复）。
+    ///
+    /// 虚拟键是**跨帧保持**的按住态：脚本（触屏摇杆/虚拟按钮）注入 `true` 之后每一帧
+    /// 不重发，只在抬起时注入 `false`。而宿主每帧都用设备层重新采样的新快照调
+    /// [`crate::core::script::ScriptState::set_input`]，整份替换会把上一帧注入的虚拟键
+    /// 一起丢掉——摇杆于是永远读回 0（同帧注入、下一帧被清空，`input.action_axis`
+    /// 恒为 0，表现为"摇杆能动、角色不动"）。
+    ///
+    /// 这里把旧快照的虚拟键集合并入新快照；宿主级输入（键/鼠标/手柄/边沿）仍以新快照
+    /// 为准，因此不会把物理输入"粘住"。
+    pub fn inherit_virtual_keys(&mut self, previous: &Self) {
+        self.virtual_keys
+            .extend(previous.virtual_keys.iter().copied());
     }
 
     /// Records a mouse-button state transition without losing a quick click.
@@ -1347,7 +1380,7 @@ impl InputSnapshot {
                 &self.held_gamepad,
                 &self.gamepad_axes,
                 &self.axis_digital,
-            )
+            ) || matches!(binding, Binding::Key(k) if self.virtual_keys.contains(k))
         })
     }
 
@@ -1413,6 +1446,11 @@ impl InputSnapshot {
                 &self.gamepad_axes,
                 &self.axis_digital,
             );
+            if let Binding::Key(k) = binding
+                && self.virtual_keys.contains(k)
+            {
+                value -= 1.0;
+            }
         }
         for binding in map.bindings(positive) {
             value += binding_axis_value(
@@ -1423,6 +1461,11 @@ impl InputSnapshot {
                 &self.gamepad_axes,
                 &self.axis_digital,
             );
+            if let Binding::Key(k) = binding
+                && self.virtual_keys.contains(k)
+            {
+                value += 1.0;
+            }
         }
         value.clamp(-1.0, 1.0)
     }

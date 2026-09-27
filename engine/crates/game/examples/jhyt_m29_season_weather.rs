@@ -46,9 +46,11 @@ const NOON: i64 = 720;
 /// 2026-09-27 docs/48 全部缺口清零后基准：已引用 562 = 470（首版基准）+ 8（第一批
 /// 场景接线）+ 8（effects 特效）+ 15（portraits 立绘）+ 61（ui 换肤接线增量）；
 /// `_ui_weather_cloud.png` 按 `_` 前缀归入开发产物（46 → 47），内容缺口清零。
+/// 2026-09-27 Alpha 作物扩展：+7 图标（radish/seed_radish/seed_herb/polygonum/
+/// seed_polygonum/ginseng/seed_ginseng），herb.png 孤儿随草药落地转已引用 → 569。
 const EXPECTED_DEV_ARTIFACTS: usize = 47;
 const EXPECTED_CONTENT_ORPHANS: usize = 0;
-const EXPECTED_REFERENCED: usize = 562;
+const EXPECTED_REFERENCED: usize = 569;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let project = env::args()

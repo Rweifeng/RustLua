@@ -727,7 +727,7 @@ impl EditorApp {
                             if self.tilemap.map.solid.len() != target_len {
                                 self.tilemap.map.solid.resize(target_len, false);
                             }
-                            // P2-②a：Tile Palette——可视化瓦片调色板（0=擦除 + TILE_PALETTE 6 色）。
+                            // RustLua-②a：Tile Palette——可视化瓦片调色板（0=擦除 + TILE_PALETTE 6 色）。
                             // 取代"画笔=数字 DragValue"的盲选：色块即瓦片，点击即选，当前画笔描白边。
                             ui.horizontal(|ui| {
                                 ui.label("调色板");

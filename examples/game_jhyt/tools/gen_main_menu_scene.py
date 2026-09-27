@@ -137,9 +137,9 @@ def build():
         "name=main",
         "meta\tdisplay_name\t江湖有田·主入口门面",
         "meta\tgame\tjianghu_youtian",
-        # M32 竖版：设计分辨率 720×1280（与 scripts/ui/layout.lua 一致）。
-        "meta\tui_reference_height\t1280",
-        "meta\tui_reference_width\t720",
+        # 横屏方案A：设计分辨率 1280×720（与 scripts/ui/layout.lua 一致）。
+        "meta\tui_reference_height\t720",
+        "meta\tui_reference_width\t1280",
         "meta\tdesign_doc\tdocs/52-江湖有田-竖版720x1280改造.md",
     ]
     order = []

@@ -90,6 +90,90 @@ M.PANEL = {
   dialogue = { x = 240, y = 450, w = 800, h = 240 },
 }
 
+-- ---------- 触屏控件（虚拟摇杆 + 虚拟按钮） ----------
+--
+-- 为什么放这里：虚拟摇杆原来是 `ui/virtual_pad.lua` 里手写的一大堆散坐标
+-- （交互 1180,600 / 攻击 1098,552 / 背包 1085,600 / 任务 1132,518 / 暂停 1180,680）。
+-- 那些坐标**同时踩了两个坑**，而且都不报错：
+--   ① 右缘越界：交互/暂停在 x=1180、半径 46/26 → 右缘 1226/1206，窗口一旦不是
+--      1280 宽（桌面缩放、非 1:1 预览）就被切掉；
+--   ② 压住 HUD 文字：「交互/背包」的 x 范围压在右栏目标行（y 566..590）上，
+--      「任务」压在资源条/招式栏（y 234..282）上——实机截图里目标文案被两个圆盖住。
+--
+-- 因此几何收进本文件（与 `M.PANEL` 同源），由 `M.audit_touch()` 断言三条承诺：
+--   * 每个控件都是设计画布内的**整圆**（不越界、不被切）；
+--   * 控件之间互不重叠（相交即误触）；
+--   * 每个控件都不与右栏同屏元素（状态面板 / 资源条 / 招式栏 / 目标行 / 反馈行 /
+--     底部键位提示）的包围盒相交——手指不和文案抢地方。
+--
+-- 落位（设计画布 1280×720，横屏）：
+--   * 摇杆在**世界左下角**（左拇指）。世界区 0..1000 内没有 HUD 文字，只有底部
+--     键位提示行（y 648..678）且它只占左侧文字宽度（约 x≤690）；
+--   * 动作按钮簇在**世界右下角**（右拇指），按 L 形排布：直角交点在**交互**（最大），
+--     竖臂沿 x≈1170 向上串「攻击 → 背包」，横臂沿 y=635 向左串「任务 → 暂停」。
+--     七日目标/动作反馈两行已挪到**左上角**（右栏腾空），L 整体贴住屏幕右下角：
+--     右缘 1229、下缘 689，仍在设计画布 1280×720 内。
+M.TOUCH = {
+  -- 摇杆：底圆 52 + 外圈 4 = 56（按钮簇最近处距摇杆圆心 776，不会误触）。
+  stick = { cx = 150, cy = 585, base_r = 52, knob_r = 21 },
+  -- 拾取半径比视觉半径大 30：手指落在圈外一点也能推杆（触屏手感）。
+  stick_grab_extra = 30,
+  -- 方向阈值：占最大偏移的比例（0.35 ≈ 推过 1/3 才算该方向）。
+  stick_deadzone = 0.35,
+  -- 虚拟按钮。size = 直径；半径一律由 `size / 2` 推导（不再两处手抄半径/直径）。
+  -- 触控目标直径都 ≥ 58，两两圆距 ≥ 6px，满足"最小可点面积"与"不误触"。
+  --
+  -- 七日目标/动作反馈已挪到左上角，右栏不再限制按钮 x 上界；唯一约束是画布
+  -- 1280×720 与底部键位提示行（hud_keys y 648..678、x 24..696，横臂整体在其右侧）。
+  -- L 形贴右下角：交互在直角交点（最大，最贴右拇指），竖臂向上串「攻击 → 背包」，
+  -- 横臂向左串「任务 → 暂停」，两两圆距 ≥ 6px 不误触。尺寸与上一版一致。
+  buttons = {
+    { key = "keye", label = "交互", x = 1175, y = 635, size = 108 },
+    { key = "keyj", label = "攻击", x = 1165, y = 480, size = 84 },
+    { key = "keyi", label = "背包", x = 1175, y = 360, size = 72 },
+    { key = "keyl", label = "任务", x = 1005, y = 635, size = 80 },
+    { key = "keyp", label = "暂停", x = 855, y = 635, size = 68 },
+  },
+  -- 面板导航十字键（DPad + 中央确定）：只在**面板模式**显示（背包/任务/暂停/商店/对话），
+  -- 与玩法按钮簇（L 形）不同屏，因此 `audit_touch` 按 group 分组：同组才查互不重叠，
+  -- 越界与"不压右栏文字/键位提示"对全部圆生效。中央 ok 直径 80，四方向直径 64，
+  -- 两两圆心距 84..90（≥ 半径和 + 12）；右缘 1276、下缘 707 都在设计画布内。
+  -- 位置：屏幕右下角（右拇指），与 L 形按钮同区域——面板打开时按钮簇隐藏，DPad 顶替。
+  dpad = {
+    keys = {
+      { dir = "up", label = "上", x = 1160, y = 495, size = 64 },
+      { dir = "down", label = "下", x = 1160, y = 675, size = 64 },
+      { dir = "left", label = "左", x = 1076, y = 585, size = 64 },
+      { dir = "right", label = "右", x = 1244, y = 585, size = 64 },
+      { key = "confirm", label = "确定", x = 1160, y = 585, size = 80 },
+    },
+  },
+  -- 按钮配色（语义 → RGB；绘制端只读这里，不再各自硬编码）。
+  button_color = {
+    primary = { 0.25, 0.55, 0.35 },   -- 交互 / DPad 确定
+    combat = { 0.65, 0.30, 0.25 },    -- 攻击
+    panel = { 0.30, 0.40, 0.60 },     -- 背包
+    log = { 0.45, 0.40, 0.65 },       -- 任务
+    system = { 0.40, 0.40, 0.42 },    -- 暂停 / DPad 方向键
+  },
+}
+
+-- "会与触屏控件抢地方"的 UI 元素包围盒（`{x,y,w,h}`）。这些多数不是 `M.PANEL`
+-- 成员（资源条 / 招式栏 / 文字行都不是面板），但**必须**参与触屏控件的重叠检查，
+-- 否则又会回到"圆盖住目标文案、没人报错"的老路。
+--
+-- 它们是 `hud.lua` / `ROW` 的副本：写死在这里是刻意的——校验器要能在 HUD 挪位置时
+-- **报警**，而不是跟着自动漂移（那正是原bug静默的原因）。配套的 `audit_touch()` 会
+-- 断言 `hud_info` 与 `M.PANEL.hud_info` 仍然一致。
+M.TOUCH_KEEP_CLEAR = {
+  hud_info = M.PANEL.hud_info,                          -- 状态面板（1000,8 280×124）
+  hud_bars = { x = 1012, y = 138, w = 160, h = 72 },    -- 三条资源条（18px 行 × 3）
+  hud_skill_bar = { x = 1012, y = 234, w = 260, h = 48 }, -- 招式快捷栏（5 × 48 卡）
+  hud_goals = { x = 16, y = 8, w = 760, h = 26 },       -- 七日目标行（左上角，ROW.goals_y）
+  hud_feedback = { x = 16, y = 36, w = 520, h = 24 },     -- 动作反馈行（左上角，ROW.feedback_y）
+  hud_keys = { x = 24, y = 648, w = 672, h = 30 },      -- 底部键位提示（11 项单行）
+}
+
 -- 版面常量：与面板矩形同源（同一份 720×1280 版面），但不是矩形，故不参与
 -- "越界 / 互不重叠"检查。放这里是为了"改版式只改一个文件"。
 M.METRIC = {
@@ -121,8 +205,8 @@ M.ROW = {
   top_x = 16,           -- 顶部说明行（标题门面）
   top_y = 8,
   bottom_y = 690,       -- 右侧信息栏最后一行（游戏内键位提示 / 标题门面版本行）
-  goals_y = 566,        -- 七日目标行（对话面板之下）
-  feedback_y = 594,     -- 当前动作反馈行（目标行之下）
+  goals_y = 8,           -- 七日目标行（左上角，贴顶边）
+  feedback_y = 36,      -- 当前动作反馈行（目标行之下 28px）
 }
 
 -- 面板内部的行偏移（全部以面板左上角为原点）。
@@ -158,6 +242,150 @@ local OVERLAP_ALLOWED = {}
 
 local function overlap_key(a, b)
   return (a < b) and (a .. "|" .. b) or (b .. "|" .. a)
+end
+
+-- ---------- 触屏控件自检 ----------
+
+-- 圆（`{cx,cy,r}`）的包围盒。
+local function circle_box(circle)
+  return {
+    x = circle.cx - circle.r,
+    y = circle.cy - circle.r,
+    w = circle.r * 2,
+    h = circle.r * 2,
+  }
+end
+
+local function boxes_overlap(a, b)
+  return a.x < b.x + b.w and b.x < a.x + a.w and a.y < b.y + b.h and b.y < a.y + a.h
+end
+
+local function circles_overlap(a, b)
+  local dx, dy = a.cx - b.cx, a.cy - b.cy
+  local rr = a.r + b.r
+  return dx * dx + dy * dy < rr * rr
+end
+
+-- 返回 (是否通过, 问题列表)。检查（对应文件头 `M.TOUCH` 的三条承诺）：
+--   ① 每个控件（摇杆底圆 + 外圈、每个按钮的视觉圆）是设计画布内的**整圆**，
+--      `cx - r >= 0`、`cx + r <= DESIGN_W`、y 同理 —— 越界等于被窗口切掉；
+--   ② 控件两两不重叠（相交即误触）；
+--   ③ 控件不与 `M.TOUCH_KEEP_CLEAR` 里右栏文字/资源条/键位提示的包围盒重叠。
+function M.audit_touch()
+  local issues = {}
+  local touch = M.TOUCH
+  if type(touch) ~= "table" then
+    return false, { "layout.TOUCH 必须是表" }
+  end
+
+  -- 收集控件圆：摇杆外圈（底圆 + 4）、每个按钮（半径 = size/2）与每个十字键。
+  -- group 标注控件所属场景：玩法（摇杆/按钮簇）与面板（十字键）不同屏，跨组不做重叠检查。
+  local circles = {}
+  local stick = touch.stick
+  if type(stick) ~= "table" then
+    issues[#issues + 1] = "layout.TOUCH.stick 必须是表"
+  else
+    local base = tonumber(stick.base_r) or 0
+    circles[#circles + 1] = { name = "touch.stick", cx = stick.cx, cy = stick.cy, r = base + 4, group = "gameplay" }
+  end
+  for index, btn in ipairs(touch.buttons or {}) do
+    local size = tonumber(btn.size) or 0
+    local name = string.format("touch.buttons[%d](%s)", index, tostring(btn.label or btn.key))
+    if size <= 0 then
+      issues[#issues + 1] = "layout." .. name .. " 的 size 必须为正（当前 "
+        .. tostring(btn.size) .. "）：半径由 size/2 推导，不再另写一份"
+    end
+    circles[#circles + 1] = {
+      name = name,
+      cx = btn.x,
+      cy = btn.y,
+      r = size / 2,
+      group = "gameplay",
+    }
+  end
+  local dpad = touch.dpad
+  if type(dpad) ~= "table" or type(dpad.keys) ~= "table" then
+    issues[#issues + 1] = "layout.TOUCH.dpad 必须是 { keys = { { dir/key, label, x, y, size } } } 表"
+  else
+    for index, key in ipairs(dpad.keys) do
+      local size = tonumber(key.size) or 0
+      local name = string.format("touch.dpad.keys[%d](%s)", index, tostring(key.dir or key.key or key.label))
+      if size <= 0 then
+        issues[#issues + 1] = "layout." .. name .. " 的 size 必须为正（当前 "
+          .. tostring(key.size) .. "）：半径由 size/2 推导"
+      end
+      circles[#circles + 1] = {
+        name = name,
+        cx = key.x,
+        cy = key.y,
+        r = size / 2,
+        group = "panel",
+      }
+    end
+  end
+
+  -- ① 整圆在设计画布内。
+  for _, circle in ipairs(circles) do
+    if type(circle.cx) ~= "number" or type(circle.cy) ~= "number" then
+      issues[#issues + 1] = "layout." .. circle.name .. " 的 cx/cy 必须是数值"
+    elseif circle.cx - circle.r < 0 or circle.cx + circle.r > M.DESIGN_W
+        or circle.cy - circle.r < 0 or circle.cy + circle.r > M.DESIGN_H then
+      issues[#issues + 1] = string.format(
+        "layout.%s 越出设计画布 %dx%d（会被窗口切掉）：cx=%.0f cy=%.0f r=%.0f",
+        circle.name, M.DESIGN_W, M.DESIGN_H, circle.cx, circle.cy, circle.r
+      )
+    end
+  end
+
+  -- ② 控件互不重叠（只对**同屏**的控件：玩法组与面板组不同屏，允许几何上叠）。
+  for i = 1, #circles do
+    for j = i + 1, #circles do
+      local a, b = circles[i], circles[j]
+      if (a.group or "gameplay") ~= (b.group or "gameplay") then
+        -- 跨组：玩法控件只在玩法态、十字键只在面板态，永不共屏，跳过重叠检查。
+      elseif type(a.cx) == "number" and type(b.cx) == "number" and circles_overlap(a, b) then
+        issues[#issues + 1] = string.format(
+          "layout.%s 与 layout.%s 重叠（半径和 %.0f > 圆心距 %.1f，会误触）",
+          a.name, b.name, a.r + b.r, math.sqrt((a.cx - b.cx) ^ 2 + (a.cy - b.cy) ^ 2)
+        )
+      end
+    end
+  end
+
+  -- ③ 不压右栏文字 / 资源条 / 键位提示。
+  local keep = {}
+  local keep_names = {}
+  for name in pairs(M.TOUCH_KEEP_CLEAR or {}) do
+    keep_names[#keep_names + 1] = name
+  end
+  table.sort(keep_names)
+  for _, name in ipairs(keep_names) do
+    keep[#keep + 1] = { name = name, box = M.TOUCH_KEEP_CLEAR[name] }
+  end
+  -- 副本一致性：`hud_info` 必须是 `M.PANEL.hud_info` 同一张表——否则"校验器盯着的框"
+  -- 与"HUD 真正画的地方"就分叉了，那正是这类静默重叠的成因。
+  if M.TOUCH_KEEP_CLEAR and M.TOUCH_KEEP_CLEAR.hud_info ~= M.PANEL.hud_info then
+    issues[#issues + 1] =
+      "layout.TOUCH_KEEP_CLEAR.hud_info 与 layout.PANEL.hud_info 不是同一张表："
+      .. "副本已漂移，重叠检查会盯错框"
+  end
+  for _, circle in ipairs(circles) do
+    if type(circle.cx) == "number" then
+      local box = circle_box(circle)
+      for _, target in ipairs(keep) do
+        if type(target.box) == "table" and target.box.x
+            and boxes_overlap(box, target.box) then
+          issues[#issues + 1] = string.format(
+            "layout.%s 压住 UI 元素 %s（包围盒 %.0f,%.0f %.0fx%.0f 相交）：触屏控件只允许落在世界区",
+            circle.name, target.name,
+            target.box.x, target.box.y, target.box.w, target.box.h
+          )
+        end
+      end
+    end
+  end
+
+  return #issues == 0, issues
 end
 
 -- ---------- 自检（改几何后的第一道网） ----------
@@ -249,6 +477,13 @@ function M.audit()
           end
         end
       end
+    end
+  end
+  -- ⑤ 触屏控件（摇杆 + 虚拟按钮）：整圆不越界、互不重叠、不压右栏文字与键位提示。
+  local ok_touch, touch_issues = M.audit_touch()
+  if not ok_touch then
+    for _, issue in ipairs(touch_issues or {}) do
+      issues[#issues + 1] = issue
     end
   end
   return #issues == 0, issues

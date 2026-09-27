@@ -3445,15 +3445,41 @@ impl RuntimeScene {
                 self.ui_reference,
             );
             let start = vertices.len() as u32;
-            vertices.extend(screen_rect_ndc(
-                origin[0],
-                origin[1],
-                size[0],
-                size[1],
-                panel.color,
-                width,
-                height,
-            ));
+            if panel.shape == 1 {
+                // 圆形（`ui.circle`）：**单个三角扇**，共享一个圆心顶点 + 一圈环顶点。
+                // 不要逐三角形重复写圆心——那样每段都要多一个顶点（32 段多 31 个），
+                // 且曾经先写整圈再 `truncate` 回退，白做一遍工作。
+                let sw = width.max(1) as f32;
+                let sh = height.max(1) as f32;
+                let cx = origin[0] + size[0] / 2.0;
+                let cy = origin[1] + size[1] / 2.0;
+                let r = size[0].min(size[1]) / 2.0;
+                let to_ndc =
+                    |x: f32, y: f32| -> [f32; 2] { [x / sw * 2.0 - 1.0, 1.0 - y / sh * 2.0] };
+                let v = |x: f32, y: f32| OverlayVertex {
+                    position: to_ndc(x, y),
+                    uv: [0.0, 0.0],
+                    color: panel.color,
+                    sdf: 0,
+                };
+                const SEGMENTS: usize = 32;
+                vertices.push(v(cx, cy)); // 圆心 = 扇心
+                for i in 0..=SEGMENTS {
+                    // 环上首尾重合（i == SEGMENTS 复刻 i == 0），使最后一段能闭合。
+                    let a = i as f32 / SEGMENTS as f32 * std::f32::consts::PI * 2.0;
+                    vertices.push(v(cx + a.cos() * r, cy + a.sin() * r));
+                }
+            } else {
+                vertices.extend(screen_rect_ndc(
+                    origin[0],
+                    origin[1],
+                    size[0],
+                    size[1],
+                    panel.color,
+                    width,
+                    height,
+                ));
+            }
             draws.push(SceneDraw {
                 texture: 0, // white
                 start,
@@ -3738,7 +3764,9 @@ impl RuntimeScene {
             if let Some(rect) = rect {
                 // 点锚点（w=h=0）的 Text：按 pivot 在该点居中文字。
                 // 否则文字从 pivot 点开始左对齐向下排，偏出按钮中心。
-                let pivot = self.ui_scene_nodes.get(&(id.index() as u64))
+                let pivot = self
+                    .ui_scene_nodes
+                    .get(&(id.index() as u64))
                     .and_then(|n| n.layout.as_ref())
                     .map(|l| l.pivot)
                     .unwrap_or([0.5, 0.5]);
@@ -3751,33 +3779,60 @@ impl RuntimeScene {
                 );
                 if rect.w < 1.0 && rect.h < 1.0 {
                     // 收集实际渲染顶点的包围盒（origin=[0,0] 时）。
-                    let mut bbox: Option<(f32,f32,f32,f32)> = None;
-                    if use_vector {
-                        if let Some(handle) = self.ensure_vector_font(if text.font.is_empty() { "" } else { text.font.as_str() }) {
-                            if let Ok(mut atlas) = handle.lock() {
-                                let style = crate::core::text::TextStyle {
-                                    scale: text.effective_scale(),
-                                    color: [1.0,1.0,1.0,1.0],
-                                    ..Default::default()
-                                };
-                                if let Ok(verts) = crate::core::text::TextLayout::build_vector(
-                                    &text.text, [0.0,0.0], style, &mut atlas) {
-                                    bbox = Some(verts.iter().fold(
-                                        (f32::MAX,f32::MIN,f32::MAX,f32::MIN),
-                                        |(a,b,c,d), v| (a.min(v.position[0]), b.max(v.position[0]), c.min(v.position[1]), d.max(v.position[1]))));
-                                }
-                            }
+                    let mut bbox: Option<(f32, f32, f32, f32)> = None;
+                    if use_vector
+                        && let Some(handle) = self.ensure_vector_font(if text.font.is_empty() {
+                            ""
+                        } else {
+                            text.font.as_str()
+                        })
+                        && let Ok(mut atlas) = handle.lock()
+                    {
+                        let style = crate::core::text::TextStyle {
+                            scale: text.effective_scale(),
+                            color: [1.0, 1.0, 1.0, 1.0],
+                            ..Default::default()
+                        };
+                        if let Ok(verts) = crate::core::text::TextLayout::build_vector(
+                            &text.text,
+                            [0.0, 0.0],
+                            style,
+                            &mut atlas,
+                        ) {
+                            bbox = Some(verts.iter().fold(
+                                (f32::MAX, f32::MIN, f32::MAX, f32::MIN),
+                                |(a, b, c, d), v| {
+                                    (
+                                        a.min(v.position[0]),
+                                        b.max(v.position[0]),
+                                        c.min(v.position[1]),
+                                        d.max(v.position[1]),
+                                    )
+                                },
+                            ));
                         }
                     }
-                    if bbox.is_none() {
-                        if let Ok((measure, _)) = self.layout_text(
-                            &text.text, [0.0,0.0], text.effective_scale(), text.color) {
-                            bbox = Some(measure.vertices.iter().fold(
-                                (f32::MAX,f32::MIN,f32::MAX,f32::MIN),
-                                |(a,b,c,d), v| (a.min(v.position[0]), b.max(v.position[0]), c.min(v.position[1]), d.max(v.position[1]))));
-                        }
+                    if bbox.is_none()
+                        && let Ok((measure, _)) = self.layout_text(
+                            &text.text,
+                            [0.0, 0.0],
+                            text.effective_scale(),
+                            text.color,
+                        )
+                    {
+                        bbox = Some(measure.vertices.iter().fold(
+                            (f32::MAX, f32::MIN, f32::MAX, f32::MIN),
+                            |(a, b, c, d), v| {
+                                (
+                                    a.min(v.position[0]),
+                                    b.max(v.position[0]),
+                                    c.min(v.position[1]),
+                                    d.max(v.position[1]),
+                                )
+                            },
+                        ));
                     }
-                    if let Some((min_x,max_x,min_y,max_y)) = bbox {
+                    if let Some((min_x, max_x, min_y, max_y)) = bbox {
                         position[0] = rect.x - min_x * (1.0 - pivot[0]) - max_x * pivot[0];
                         position[1] = rect.y - min_y * (1.0 - pivot[1]) - max_y * pivot[1];
                     }
@@ -5417,7 +5472,7 @@ mod sdf_tests {
             .find(|target| target.name == "StartButton")
             .expect("StartButton UiEvents 目标");
         let script_path =
-            std::env::temp_dir().join(format!("p2-ui-test-click-{}.lua", std::process::id()));
+            std::env::temp_dir().join(format!("rustlua-ui-test-click-{}.lua", std::process::id()));
         std::fs::write(
             &script_path,
             "function on_click(name) clicked = name end\nfunction update() return tostring(clicked or 'nil') end",
@@ -5493,7 +5548,7 @@ mod sdf_tests {
             return;
         }
         let root = std::env::temp_dir().join(format!(
-            "p2-scene-text-origin-{}-{}",
+            "rustlua-scene-text-origin-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -5631,7 +5686,8 @@ mod sdf_tests {
     /// （图集 version 增加）；无 chars.txt 不预热。
     #[test]
     fn font_prewarm_from_chars_txt() {
-        let root = std::env::temp_dir().join(format!("p2_font_prewarm_{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("rustlua_font_prewarm_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let font_src = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../crates/editor/fonts/NotoSansSC-VF.ttf");
@@ -5772,7 +5828,7 @@ mod sdf_tests {
         }
 
         let root = std::env::temp_dir().join(format!(
-            "p2-preview-gamepad-{}-{}",
+            "rustlua-preview-gamepad-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -5821,6 +5877,98 @@ mod sdf_tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// 触屏虚拟键（`input.virtual_key`，`ui/virtual_pad.lua` 的摇杆与虚拟按钮）
+    /// 必须**跨帧保持**，因为宿主每帧都用设备层重新采样的快照整份替换脚本输入。
+    ///
+    /// 回归（实机症状）：摇杆头能动、`stick=true`，但 `input.action_axis('move_left',
+    /// 'move_right')` 恒为 `0.00`，角色不动——虚拟键在帧内注入后，被下一帧的
+    /// `set_input` 整份替换清空，`update_movement` 永远读到 0。
+    #[test]
+    fn virtual_pad_key_injection_survives_fresh_input_snapshot_per_frame() {
+        let root = std::env::temp_dir().join(format!(
+            "rustlua-virtual-pad-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        let scripts = root.join("scripts");
+        std::fs::create_dir_all(&scripts).unwrap();
+        // 与触屏摇杆同构：按住期间每帧注入 `true`，抬起时注入 `false`。
+        std::fs::write(
+            scripts.join("main.lua"),
+            "sticks = {}\n\
+             held = false\n\
+             function hold() held = true end\n\
+             function release() held = false end\n\
+             function update()\n\
+               local before = input.action_axis('move_down', 'move_up')\n\
+               input.virtual_key('keyw', held)\n\
+               local after = input.action_axis('move_down', 'move_up')\n\
+               if held then sticks[#sticks + 1] = tostring(before) .. '/' .. tostring(after) end\n\
+               return ''\n\
+             end\n",
+        )
+        .unwrap();
+
+        let mut runtime = RuntimeScene::from_scene(Some(&root), Scene::new("virtual-pad"))
+            .expect("runtime scene");
+        // 与 `game_app.rs` / 编辑器预览逐帧一致：宿主持有一份**自己的**快照，每帧 clone
+        // 后交给运行时；脚本对虚拟键的注入只落在运行时那一份克隆里，下一帧又被宿主的
+        // 快照整份覆盖——这正是实机上「摇杆能动、角色不动」的帧边界。
+        let mut host_input = InputSnapshot::default();
+        let step = |runtime: &mut RuntimeScene, host_input: &mut InputSnapshot| {
+            let frame = host_input.clone();
+            runtime
+                .run_script_steps(1, 1.0 / 60.0, &frame)
+                .expect("script step");
+            // 宿主侧只推进边沿/增量（`game_app.rs` 帧末），按住态由设备层重新采样。
+            host_input.finish_frame();
+        };
+        step(&mut runtime, &mut host_input);
+        runtime
+            .script
+            .execute_console("hold() return ''")
+            .expect("hold stick");
+        for _ in 0..3 {
+            step(&mut runtime, &mut host_input);
+        }
+        let held = runtime
+            .script
+            .execute_console("return tostring(#sticks) .. '|' .. tostring(sticks[1]) .. '|' .. tostring(sticks[3])")
+            .expect("probe held");
+        runtime
+            .script
+            .execute_console("release() return ''")
+            .expect("release stick");
+        step(&mut runtime, &mut host_input);
+        let released = runtime
+            .script
+            .execute_console("return tostring(#sticks)")
+            .expect("probe released");
+        let (count, first, last) = {
+            let probe = held.trim().to_owned();
+            let mut parts = probe.split('|');
+            (
+                parts.next().unwrap_or_default().to_owned(),
+                parts.next().unwrap_or_default().to_owned(),
+                parts.next().unwrap_or_default().to_owned(),
+            )
+        };
+        // `before/after`：注入前的轴值 / 注入后的轴值。首帧注入前为 0（此前没有任何注入），
+        // 但**第二帧起**注入前必须已是 +1——虚拟键要跨帧保持住，否则 `update_movement`
+        // 在下一帧只会读到 0（实机「摇杆能动、角色不动」）。
+        assert_eq!(count, "3", "按住期间每帧都应读到虚拟键轴值");
+        assert_eq!(first, "0.0/1.0", "首帧：注入前无虚拟键、注入后立即可读");
+        assert_eq!(
+            last, "1.0/1.0",
+            "第二帧起：注入前虚拟键必须仍被按住（跨帧保持）"
+        );
+        assert_eq!(released, "3", "释放后不再计入按住帧");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// M22/W4：**0 步帧不得吞掉手柄边沿**。
     ///
     /// 宿主侧键鼠边沿只在 `steps > 0` 时被 `finish_frame` 清掉（`game_app.rs`），所以 0 步帧
@@ -5832,7 +5980,7 @@ mod sdf_tests {
         use crate::host::gamepad::{FakeBackend, GamepadFrame, button};
 
         let root = std::env::temp_dir().join(format!(
-            "p2-zero-step-gamepad-{}-{}",
+            "rustlua-zero-step-gamepad-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -5889,7 +6037,7 @@ mod sdf_tests {
         use crate::host::gamepad::{GamepadFrame, SlotBackend};
 
         let root = std::env::temp_dir().join(format!(
-            "p2-rumble-{}-{}",
+            "rustlua-rumble-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -6110,7 +6258,8 @@ mod sdf_tests {
 
     #[test]
     fn load_runtime_scene_uses_project_startup_scene() {
-        let root = std::env::temp_dir().join(format!("p2-startup-scene-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("rustlua-startup-scene-{}", std::process::id()));
         let scenes = root.join("scenes");
         std::fs::create_dir_all(&scenes).unwrap();
         std::fs::write(
@@ -6136,8 +6285,19 @@ mod sdf_tests {
         assert!(path.is_file(), "测试场景资源缺失: {}", path.display());
         let scene = Scene::load(&path).unwrap_or_else(|e| panic!("load ui_test: {e}"));
         let mut runtime = RuntimeScene::from_scene_edit(Some(&root), scene).expect("runtime");
+        // 本用例断言的是 **SDF 字形**，因此自己钉住渲染模式，不继承工程配置
+        // （`game_api/project.toml` 现为 `text_render_mode = "vector"`）。
+        runtime.set_text_render_mode(TextRenderMode::Sdf);
         let mesh = runtime.vertices(640, 360).expect("vertices");
         let sdf_count = mesh.draws.iter().filter(|d| d.sdf).count();
+        eprintln!(
+            "ui_test: draws={} sdf={} text_entities={}",
+            mesh.draws.len(),
+            sdf_count,
+            runtime
+                .script
+                .with_world(|w| w.entities_with::<UiText>().len())
+        );
         eprintln!(
             "ui_test: draws={} sdf={} text_entities={}",
             mesh.draws.len(),
@@ -6425,7 +6585,8 @@ mod sdf_tests {
     /// 组件化脚本要替代的正是"工程脚本自己遍历实体"的那套手工分派。
     #[test]
     fn entity_script_component_runs_inside_the_step_pipeline() {
-        let root = std::env::temp_dir().join(format!("p2-rs-entity-script-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("rustlua-rs-entity-script-{}", std::process::id()));
         let scripts = root.join("scripts");
         std::fs::create_dir_all(&scripts).expect("create scripts dir");
         std::fs::write(
@@ -7742,7 +7903,7 @@ mod sdf_tests {
              return 'ok' end",
         );
         let path = std::env::temp_dir().join(format!(
-            "p2-three-way-{}-{}.lua",
+            "rustlua-three-way-{}-{}.lua",
             std::process::id(),
             handle
         ));
@@ -8191,6 +8352,10 @@ mod sdf_tests {
             ),
         )
         .expect("runtime");
+        // 本用例断言的是 **SDF 字形**分段，因此自己钉住渲染模式：`game_api/project.toml`
+        // 现为 `text_render_mode = "vector"`（示例工程刻意走矢量轮廓），`auto` 也会因
+        // 字号 < 2.0 之外的启发式而漂移。依赖工程配置会让这条测试随工程设置变红。
+        world_runtime.set_text_render_mode(TextRenderMode::Sdf);
         let world_mesh = world_runtime.vertices(640, 360).expect("vertices");
         assert!(!world_mesh.draws.is_empty(), "世界文字应产出绘制分段");
         assert!(
@@ -8225,6 +8390,8 @@ mod sdf_tests {
             .insert("Text".into(), "text=Menu;font_size=16;color=1,1,1".into());
         let mut ui_runtime =
             RuntimeScene::from_scene_edit(Some(root.as_path()), ui_scene).expect("runtime");
+        // 同上：本用例断言 SDF 路径，不继承工程配置的 `vector`。
+        ui_runtime.set_text_render_mode(TextRenderMode::Sdf);
         let ui_mesh = ui_runtime.vertices(640, 360).expect("vertices");
         assert!(!ui_mesh.draws.is_empty(), "屏幕 UI 文本应产出绘制分段");
         assert!(
@@ -9543,7 +9710,7 @@ mod sdf_tests {
             return;
         }
         let root = std::env::temp_dir().join(format!(
-            "p2-custom-font-{}-{}",
+            "rustlua-custom-font-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -9624,7 +9791,7 @@ mod sdf_tests {
             return;
         }
         let root = std::env::temp_dir().join(format!(
-            "p2-text-render-mode-{}-{}",
+            "rustlua-text-render-mode-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

@@ -130,12 +130,20 @@ impl EditorApp {
     ///
     /// 高度固定：滚动区填满剩余空间，面板不再随日志行数伸缩（M-固定高度）。
     pub(crate) fn draw_lua_console_panel(&mut self, context: &egui::Context) {
+        // 高度来自持久化布局（console 面板在布局里复用 PANEL_CONSOLE 的宽度槽位记录高度），
+        // 并且用 `exact_height` **钉死**。
+        //
+        // 为什么不用 `default_height`：egui 的 `TopBottomPanel` 把「内容矩形」存成下一帧的
+        // 高度。控制台内部是「日志滚动区 + 输入行」两级布局，滚动区会把内容矩形顶出分配高度，
+        // 于是每帧放大 ~2px（`内容变高 → 面板变高 → 可用高度变大`），实测 60 帧后画布被吃掉
+        // 一百多像素。`exact_height` 切断这条正反馈；代价是面板不再可拖动改高（面板尺寸本来
+        // 也不参与布局持久化——`capture_layout` 只写可见性，所以重启后本来也回默认高度）。
+        let panel_height = self
+            .layout
+            .panel_width(editor::PANEL_CONSOLE)
+            .clamp(60.0, 520.0);
         egui::TopBottomPanel::bottom("console")
-            .resizable(true)
-            // 高度来自持久化布局（console 面板在布局里复用 PANEL_CONSOLE 的宽度槽位记录高度）。
-            .default_height(self.layout.panel_width(editor::PANEL_CONSOLE))
-            .min_height(60.0)
-            .max_height(520.0)
+            .exact_height(panel_height)
             .show(context, |ui| {
                 ui.horizontal_top(|ui| {
                     // 左侧：日志分类导航（图标按钮，切换编辑器日志 / 游戏 Lua 日志）。
@@ -155,44 +163,89 @@ impl EditorApp {
                                     .desired_width(160.0)
                                     .hint_text("过滤日志…"),
                             );
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if ui.button("清空").clicked() {
-                                    self.clear_console();
-                                    self.log_sink.clear();
-                                    self.console_notices.clear();
-                                }
-                                ui.selectable_value(
-                                    &mut self.console_log_level_filter,
-                                    ConsoleLogLevelFilter::Error,
-                                    "Error",
-                                );
-                                ui.selectable_value(
-                                    &mut self.console_log_level_filter,
-                                    ConsoleLogLevelFilter::Warning,
-                                    "Warning",
-                                );
-                                ui.selectable_value(
-                                    &mut self.console_log_level_filter,
-                                    ConsoleLogLevelFilter::Info,
-                                    "Info",
-                                );
-                                ui.selectable_value(
-                                    &mut self.console_log_level_filter,
-                                    ConsoleLogLevelFilter::All,
-                                    "全部",
-                                );
-                            });
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui.button("清空").clicked() {
+                                        self.clear_console();
+                                        self.log_sink.clear();
+                                        self.console_notices.clear();
+                                    }
+                                    ui.selectable_value(
+                                        &mut self.console_log_level_filter,
+                                        ConsoleLogLevelFilter::Error,
+                                        "Error",
+                                    );
+                                    ui.selectable_value(
+                                        &mut self.console_log_level_filter,
+                                        ConsoleLogLevelFilter::Warning,
+                                        "Warning",
+                                    );
+                                    ui.selectable_value(
+                                        &mut self.console_log_level_filter,
+                                        ConsoleLogLevelFilter::Info,
+                                        "Info",
+                                    );
+                                    ui.selectable_value(
+                                        &mut self.console_log_level_filter,
+                                        ConsoleLogLevelFilter::All,
+                                        "全部",
+                                    );
+                                },
+                            );
                         });
                         // 滚动区填满剩余空间，面板高度保持固定，仅滚动内部内容。
+                        let row_height = console_row_height(ui);
+                        let input_row_budget = row_height + ui.spacing().item_spacing.y;
+                        let log_height = (ui.available_height() - input_row_budget).max(row_height);
                         egui::ScrollArea::vertical()
+                            .id_salt("console_log_body")
                             .auto_shrink([false; 2])
                             .hscroll(false)
+                            .max_height(log_height)
                             .show(ui, |ui| {
                                 self.draw_console_log_body(ui);
                             });
+                        // 输入固定在滚动区**下方**：日志滚到哪一行都不影响输入，
+                        // 也避免长日志把输入顶出可见范围。
+                        self.draw_console_input_row(ui);
                     });
                 });
             });
+    }
+
+    /// 控制台输入行（docs/25 §10「输入行 + 执行（或 Enter）在内嵌 VM 执行 Lua」）。
+    ///
+    /// 回显 `> <源码>` / `<结果>`，结果与错误都落到 `console_output`，因此复用
+    /// 既有的分类 / 级别 / 过滤索引，不需要第二套展示路径。
+    fn draw_console_input_row(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.label("Lua");
+            let response = ui.add(
+                egui::TextEdit::singleline(&mut self.console_input)
+                    .desired_width(240.0)
+                    .hint_text("输入 Lua 表达式或语句，Enter 执行…"),
+            );
+            let entered =
+                response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+            let run = ui.button("执行").clicked();
+            if entered || run {
+                self.run_console_command();
+                // 命令执行完仍把焦点留在输入行：连续输入不必每次重新点一下。
+                response.request_focus();
+            }
+            // 「运行选中脚本」按 docs/25 §10 用 Inspector 当前的 Lua 路径；
+            // 没有引用时按钮置灰（而不是点了才报错）。VM 由该方法按需创建。
+            let has_script = !self.lua_script.trim().is_empty();
+            if ui
+                .add_enabled(has_script, egui::Button::new("运行选中脚本"))
+                .on_hover_text("先运行脚本，再调用一次 update 调试入口")
+                .on_disabled_hover_text("Inspector 中先填入 Lua 脚本路径（如 scripts/player.lua）")
+                .clicked()
+            {
+                self.run_selected_script();
+            }
+        });
     }
 
     /// 左侧日志分类导航（图标按钮 + tooltip）。
@@ -264,41 +317,32 @@ impl EditorApp {
             self.rebuild_console_rows_if_needed(&key, &sources, tab, &filter, level_filter);
         // 取出（而非借用）行索引：绘制期间还需要不可变借用各来源文本。
         let rows = std::mem::take(&mut self.console_rows_cache.rows);
-        let row_height = console_row_height(ui);
-        let body_height = ui.available_height().max(row_height);
         self.console_row_probe.reset();
         // 点击跳转在帧末统一执行：跳转可能切换文档，不能在绘制中途改状态。
         let mut pending_jump: Option<editor::DiagnosticLocation> = None;
-        egui::ScrollArea::vertical()
-            .id_salt("console_log_body")
-            .auto_shrink([false; 2])
-            .max_height(body_height)
-            .show_rows(ui, row_height, row_count, |ui, visible| {
-                for index in visible {
-                    if pending_jump.is_some() {
-                        break;
-                    }
-                    let Some(row) = rows.get(index).copied() else {
-                        continue;
-                    };
-                    let Some(text) = console_row_text(&sources, tab, row) else {
-                        continue;
-                    };
-                    let level = sources.level(row.source, row.index);
-                    let response = draw_log_line(ui, text, level);
-                    self.console_row_probe.observe(response.rect.height());
-                    // 可定位的行可点击：解析出的 路径/行号/实体 交给统一跳转入口。
-                    if let Some(location) = editor::parse_location(text) {
-                        let response = response.interact(egui::Sense::click());
-                        if response.hovered() {
-                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                        }
-                        if response.clicked() {
-                            pending_jump = Some(location);
-                        }
-                    }
+        for index in 0..row_count {
+            if pending_jump.is_some() {
+                break;
+            }
+            let Some(row) = rows.get(index).copied() else {
+                continue;
+            };
+            let Some(text) = console_row_text(&sources, tab, row) else {
+                continue;
+            };
+            let level = sources.level(row.source, row.index);
+            let response = draw_log_line(ui, text, level);
+            self.console_row_probe.observe(response.rect.height());
+            if let Some(location) = editor::parse_location(text) {
+                let response = response.interact(egui::Sense::click());
+                if response.hovered() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                 }
-            });
+                if response.clicked() {
+                    pending_jump = Some(location);
+                }
+            }
+        }
         self.console_rows_cache.rows = rows;
         if let Some(location) = pending_jump {
             self.profiler.bump("console_diagnostic_jump");
@@ -348,7 +392,15 @@ impl EditorApp {
                 .map_err(|error| error.to_string())
         });
         match result {
-            Ok(value) => self.push_console_output(format!("> {source}\n{value}")),
+            // docs/25 §10：回显 `> <源码>`，下一物理行是结果；结果为空白就不留空行。
+            Ok(value) => {
+                let value = value.trim_end();
+                if value.is_empty() {
+                    self.push_console_output(format!("> {source}"));
+                } else {
+                    self.push_console_output(format!("> {source}\n{value}"));
+                }
+            }
             Err(error) => {
                 self.status = error.clone();
                 self.push_console_output(format!("> {source}\n错误：{error}"));
@@ -371,6 +423,14 @@ impl EditorApp {
             return;
         }
         let path = self.project.root.join(&script);
+        // 先判存在：路径写错时给「文件不存在」而不是引擎内部的加载错误。
+        if !path.is_file() {
+            let message = format!("Lua 脚本不存在：{}", path.display());
+            self.status = message.clone();
+            self.push_console_output(format!("运行 {script}\n错误：{message}"));
+            return;
+        }
+        // VM 按需创建（与输入行同一条路径），因此这里不再要求 VM 已经存在。
         let result = self.ensure_lua_runtime().and_then(|runtime| {
             runtime
                 .execute_project_script(&path)
@@ -380,7 +440,12 @@ impl EditorApp {
         match result {
             Ok(value) => {
                 self.status = format!("Lua 脚本运行成功：{script}");
-                self.push_console_output(format!("运行 {script}\n{value}"));
+                let value = value.trim_end();
+                if value.is_empty() {
+                    self.push_console_output(format!("运行 {script}"));
+                } else {
+                    self.push_console_output(format!("运行 {script}\n{value}"));
+                }
             }
             Err(error) => {
                 self.status = error.clone();
@@ -541,9 +606,13 @@ fn draw_log_line(ui: &mut egui::Ui, line: &str, level: ConsoleLogLevel) -> egui:
     // 这是虚拟滚动的前提——换行会让行高不一致，无法按固定行高跳转绘制。
     let response = ui.add(
         egui::Label::new(egui::RichText::new(line).monospace().color(color))
-            .wrap_mode(egui::TextWrapMode::Extend)
-            .selectable(false),
+            .wrap_mode(egui::TextWrapMode::Wrap)
+            .selectable(true)
+            .sense(egui::Sense::click()),
     );
+    if response.clicked() {
+        ui.ctx().copy_text(line.to_string());
+    }
     if line.chars().count() > 80 {
         response.clone().on_hover_text(line);
     }

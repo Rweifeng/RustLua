@@ -631,6 +631,13 @@ impl EditorApp {
             self.project_settings.message = error;
             return;
         }
+        // M20-02：音频小节同样只在「保存」时落盘。`open_project_settings` 会把
+        // `settings.toml` 的 `[audio]` 读进缓冲，这里必须对称写回，否则面板上改动的
+        // 音量永远只停在内存里（重新打开就被旧值覆盖）。
+        if let Err(error) = save_audio_settings(&self.project_settings, &root) {
+            self.project_settings.message = error;
+            return;
+        }
         // 项目打开时该文件必存在；万一缺失则从空骨架开始补全。
         let previous = std::fs::read_to_string(&path).unwrap_or_else(|_| "[project]\n".to_owned());
         let (old_font, old_fallback, old_weight, old_text_render_mode) = font_keys_from(&previous);
@@ -664,7 +671,7 @@ impl EditorApp {
             // 强制重建 Scene View 运行时，避免保存后仍显示旧渲染路径。
             self.invalidate_font_render_resources();
         }
-        self.project_settings.message = "已保存项目设置（输入绑定）。".to_owned();
+        self.project_settings.message = "已保存项目设置（音频 + 输入绑定）。".to_owned();
     }
 }
 

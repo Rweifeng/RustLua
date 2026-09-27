@@ -71,17 +71,17 @@ assetc_manifest=1\tassetc-package-1
 
 版本号 `PACKAGE_VERSION = "assetc-package-1"` 变更会触发发布脚本重新打包。
 
-## 3. 发布资源编码（P2PK1）
+## 3. 发布资源编码（RustLua）
 
 编码文件布局（[pack.rs](../engine/crates/engine/src/core/pack.rs)，ADR-0015）：
 
 ```
-P2PK1 <flags> [12B nonce] <payload>
+RustLua <flags> [12B nonce] <payload>
 ```
 
 - `flags`：`0x01` 已 gzip 压缩、`0x02` 已加密（ChaCha20Poly1305）。
 - 先压缩再加密；加密时生成随机 nonce。
-- `decode` 自动检测：非 `P2PK1` 文件（开发明文）原样返回，因此同一套运行时代码既能加载开发明文也能加载发布加密包。
+- `decode` 自动检测：非 `RustLua` 文件（开发明文）原样返回，因此同一套运行时代码既能加载开发明文也能加载发布加密包。
 - 加密密钥固定内嵌于可执行文件，属于防随意读取的混淆，非强加密。
 
 ## 4. 发布流程（`scripts/package.ps1`）
@@ -206,7 +206,7 @@ save_version=2
 - **回归**：`scripts/test-release-atomic.ps1` 覆盖成功交换、文件占用回滚、交换前失败丢弃、遗留清理四个场景，
   输出 `release_atomic_ok cases=4`。
 
-发布目录布局与 P2PK1 资源包格式未变（pc：`game.exe + pack/ + release.toml + run.txt + deps.txt`，
+发布目录布局与 RustLua 资源包格式未变（pc：`game.exe + pack/ + release.toml + run.txt + deps.txt`，
 字体在 `pack/assets/fonts/` 内；webgl 另加 `index.html + pkg/ + web-runtime.js + fonts/`——根下的
 `fonts/` 只服务 webgl 的 `index.html`）。
 

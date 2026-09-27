@@ -67,7 +67,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for name in BGM_CLIPS.iter().chain(SFX_CLIPS.iter()) {
         let path = audio_dir.join(format!("{name}.ogg"));
         let info = inspect_ogg(&path)?;
-        println!("{name}.ogg bytes={} vorbis={} container=OggS", info.bytes, info.vorbis);
+        println!(
+            "{name}.ogg bytes={} vorbis={} container=OggS",
+            info.bytes, info.vorbis
+        );
         clips += 1;
     }
     if clips != 16 {

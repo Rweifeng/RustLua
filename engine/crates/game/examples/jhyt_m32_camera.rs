@@ -118,7 +118,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         expect_view_inside(&status, MAP_W, MAP_H, &format!("x={probe}"))?;
         println!(
             "  玩家 x={:>7.3} → center=({:>7.3},{:>7.3}) 可见矩形 x[{:.1},{:.1}]",
-            status.player.0, status.center.0, status.center.1, status.center.0 - VIEW_W / 2.0,
+            status.player.0,
+            status.center.0,
+            status.center.1,
+            status.center.0 - VIEW_W / 2.0,
             status.center.0 + VIEW_W / 2.0
         );
     }
@@ -229,7 +232,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///
 /// y 轴上地图(704)比视口(720)矮，夹取必然把相机钉在地图中心、玩家因此不可能同时居中
 /// ——那是几何事实，所以这里只判 x，y 由 `expect_view_inside` 判"停在地图中心"。
-fn expect_fixed_center_x(status: &CameraStatus, label: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn expect_fixed_center_x(
+    status: &CameraStatus,
+    label: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
     let dx = status.center.0 - MAP_W / 2.0;
     if dx.abs() > EPS {
         return Err(format!(

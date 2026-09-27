@@ -76,7 +76,7 @@ fn run_to_victory(
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let root = std::env::temp_dir().join(format!(
-        "p2-scene-script-{}",
+        "rustlua-scene-script-{}",
         SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
     ));
     let scene_path = root.join("arena.scene");

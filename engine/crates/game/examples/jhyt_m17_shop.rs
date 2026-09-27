@@ -78,16 +78,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "require('data.items').heal_pill.use.energy",
         40.0,
     )?;
-    // M18-02 起货摊额外上架建筑升级材料 timber（纯数据新增），共 4 项。
+    // M18-02 起货摊额外上架 timber；2026-09-27 Alpha 作物扩展再上架 4 种新种子
+    // （seed_radish/seed_herb/seed_polygonum/seed_ginseng），共 8 项；buys 同步 +4
+    // （radish/herb/polygonum/ginseng）→ 6 项。新增项都在列表末尾，[2] 索引不受影响。
     assert_num(
         &mut runtime,
         "#(require('systems.shop').stock('zhao_stall'))",
-        4.0,
+        8.0,
     )?;
     assert_num(
         &mut runtime,
         "#(require('systems.shop').buys('zhao_stall'))",
-        2.0,
+        6.0,
     )?;
     assert_validate(&mut runtime, "systems.shop")?;
     assert_validate(&mut runtime, "world.quest")?;
@@ -194,7 +196,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_mode(&mut runtime, "Shop")?;
     assert_str(&mut runtime, "require('systems.shop').ui_active()", "true")?;
     assert_str(&mut runtime, "require('systems.shop').tab()", "buy")?;
-    assert_num(&mut runtime, "#(require('systems.shop').rows())", 4.0)?;
+    assert_num(&mut runtime, "#(require('systems.shop').rows())", 8.0)?;
     assert_str(&mut runtime, "require('core.state').last_action", "shop")?;
     // 选第 2 行（seed_lingzhi），数量 +1。
     press(

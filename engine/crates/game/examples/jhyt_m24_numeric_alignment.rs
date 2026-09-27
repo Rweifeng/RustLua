@@ -56,7 +56,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     banner("① 设计案 §4.1 作物表 == data/crops.lua + data/items.lua（逐格解析文档比对）");
     let crop_rows = markdown_table(&design, "作物")?;
-    let expected_crops = [("稻谷", "rice"), ("灵芝", "lingzhi")];
+    let expected_crops = [
+        ("稻谷", "rice"),
+        ("灵芝", "lingzhi"),
+        ("萝卜", "radish"),
+        ("草药", "herb"),
+        ("何首乌", "polygonum"),
+        ("人参", "ginseng"),
+    ];
     if crop_rows.len() != expected_crops.len() {
         return Err(format!(
             "设计案作物表有 {} 行，期望 {} 行（新增作物必须同时更新本示例的映射）",
@@ -158,6 +165,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ("灵芝孢子", "seed_lingzhi"),
         ("木材", "timber"),
         ("回复药", "heal_pill"),
+        // Alpha 作物扩展（2026-09-27，docs/33 §5.2）：草药白名单转正 + 4 种新种子。
+        ("草药", "herb"),
+        ("萝卜籽", "seed_radish"),
+        ("草药籽", "seed_herb"),
+        ("何首乌苗", "seed_polygonum"),
+        ("人参籽", "seed_ginseng"),
     ];
     let mut checked_rows = 0;
     for row in &shop_rows {
@@ -506,6 +519,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err(format!("还原 yield 后校验不通过:\n{recovered}").into());
     }
 
+    banner(
+        "⑨ 萝卜：复用 ④ 的 field 格（⑤ 已收空为 tilled 空地），真实耕作 2 天收获 == yield（Alpha 快熟）",
+    );
+    // ⑤ 的 grow_and_harvest 已把 field_cell 收空（plot.crop=nil、可播种），且玩家仍在原位
+    // 面向 up（④/⑤ 均未移动）。till 步骤已由④ 断言覆盖。
+    // 测试角色没有萝卜籽（初始背包只有稻种/菌种；真实玩家从 zhao_stall 购买）——
+    // 先补 1 个到背包，否则 seed_for_selected 会回退选中背包里第一个有库存的种子。
+    runtime.execute_console("inv.add(require('core.state').inventory, 'seed_radish', 1)")?;
+    set_facing(&mut runtime, "up")?;
+    set_seed(&mut runtime, "seed_radish")?;
+    press(&mut runtime, KeyCode::KeyE)?;
+    assert_str(
+        &mut runtime,
+        "require('core.state').last_action",
+        "plant_seed_radish",
+    )?;
+    let radish_before = query_num(&mut runtime, "inv.count('player', 'radish')")?;
+    grow_and_harvest(&mut runtime, "watering_can", "water_radish")?;
+    let radish_yield = query_num(&mut runtime, "inv.count('player', 'radish')")? - radish_before;
+    let documented_radish = query_num(&mut runtime, "require('data.crops').radish.yield")?;
+    if (radish_yield - documented_radish).abs() > f64::EPSILON {
+        return Err(format!(
+            "萝卜实际收获 {radish_yield}，data/crops.lua:radish.yield = {documented_radish}"
+        )
+        .into());
+    }
+
     banner("⑥ yield 是必填字段：抹掉它必须在校验期报出（不能再静默按 1 结算）");
     let missing = query_str(
         &mut runtime,
@@ -521,14 +561,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!(
         "jhyt_m24_numeric_alignment_ok project={} crops={} shop_rows={} lingzhi_yield={} \
-         rice_yield={} mutated_yield={} field_cell={}",
+         rice_yield={} mutated_yield={} field_cell={} radish_yield={}",
         project.display(),
         crop_rows.len(),
         checked_rows,
         lingzhi_yield,
         rice_yield,
         mutated_yield,
-        field_cell
+        field_cell,
+        radish_yield
     );
     Ok(())
 }

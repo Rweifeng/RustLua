@@ -17,12 +17,12 @@ mod wasm {
             .get_element_by_id(canvas_id)
             .ok_or_else(|| JsValue::from_str("missing canvas"))?
             .dyn_into::<HtmlCanvasElement>()?;
-        // 画布尺寸 = 游戏的**竖版设计分辨率**（720×1280，M32 起）。
+        // 画布尺寸 = 游戏的**横版设计分辨率**（1280×720）。
         // 必须与 `scripts/ui/layout.lua` 的 DESIGN_W/DESIGN_H、`project.toml` 的
         // window_width/height、以及微信适配层的 VIEW_WIDTH/VIEW_HEIGHT 一致：
-        // Lua 动态 UI 画在**屏幕像素空间**、不做缩放，画布尺寸不对就是"面板横向溢出画布"。
-        canvas.set_width(720);
-        canvas.set_height(1280);
+        // Lua 动态 UI 画在**屏幕像素空间**、不做缩放，画布尺寸不对就是面板溢出画布。
+        canvas.set_width(1280);
+        canvas.set_height(720);
         let manifest = fetch_text("pack/manifest.txt").await?;
         let project = fetch_text("pack/project.toml").await?;
         let startup_scene = project_key(&project, "startup_scene")

@@ -15,6 +15,7 @@ local goals = require("systems.goals")
 local inventory_ui = require("ui.inventory_ui")
 local quest_ui = require("ui.quest_ui")
 local pause_menu = require("ui.pause_menu")
+local virtual_pad = require("ui.virtual_pad")
 
 -- input.lua：《江湖有田》输入分发（M16 → M20-08）。
 --
@@ -143,6 +144,12 @@ local function heal_mode()
     or (state.is_mode("Shop") and not shop.ui_active())
     or (state.is_mode("Dialogue") and not dialogue.is_open())
   if stuck then
+    log.info("[heal] stuck mode=" .. tostring(state.mode)
+      .. " inv_active=" .. tostring(inventory_ui.ui_active())
+      .. " quest_active=" .. tostring(quest_ui.ui_active())
+      .. " pause_active=" .. tostring(pause_menu.ui_active())
+      .. " shop_active=" .. tostring(shop.ui_active())
+      .. " dlg_open=" .. tostring(dialogue.is_open()))
     state.set_mode("Playing")
     return true
   end
@@ -157,6 +164,7 @@ local function frame()
   -- 因此同一个 last_action 不会在后续每一帧重复计数。
   goals.on_action(state.last_action)
   hud.draw(M.key_hints())
+  virtual_pad.draw()
   return hud.text()
 end
 
@@ -164,6 +172,7 @@ local function update_context()
   if input.action_pressed("pause") then
     pause_menu.open()
   elseif input.action_pressed("inventory") then
+    log.info("[ctx] inventory pressed -> open")
     inventory_ui.open()
   elseif input.action_pressed("quest") then
     quest_ui.open()
@@ -425,6 +434,7 @@ function M.panel_line(spec, separator)
 end
 
 function M.update()
+  virtual_pad.update()
   player.ensure()
   -- 模式自愈：读档/切图后 mode 可能停在没有面板的 UI 态（会永久吞输入），
   -- 先复位 Playing 再按状态分发。

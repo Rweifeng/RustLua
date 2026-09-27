@@ -19,7 +19,7 @@
 
 ## 限制
 
-`web-runtime.js` 只读**明文** `pack/`：它不做 P2PK1 解包，也不做 gzip 解压（那是 Rust 运行时的能力）。
+`web-runtime.js` 只读**明文** `pack/`：它不做 RustLua 解包，也不做 gzip 解压（那是 Rust 运行时的能力）。
 因此 `package.ps1 -Platform webgl|wechat-minigame` 会拒绝 `-Encrypt` / `-Compress`，
 避免产出"打包成功但运行不起来"的发布包。
 

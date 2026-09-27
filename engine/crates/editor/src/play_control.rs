@@ -634,12 +634,29 @@ mod tests {
         assert_eq!(controller.failures(), 2);
     }
 
+    /// 重启请求的契约：**由调用方**先释放会话再重新开始。
+    ///
+    /// `request_restart` 在运行/暂停态**故意不改状态**（保持 `Playing`/`Paused`），
+    /// 否则调用方接着走的 `stop()` → `begin_stop()` 会因状态已不是运行态而 `Err`，
+    /// 状态卡在 `Stopping`、后续 Stop/暂停全变 NoOp（见方法上的注释与
+    /// `panels::game_view::restart_play` 的 `Ok(true) => { stop(); play(); }`）。
+    /// 因此这里模拟调用方的真实两步，而不是断言 `request_restart` 自己变成 `Stopping`。
     #[test]
     fn restart_requests_stop_then_start() {
         let mut controller = playing();
         assert!(controller.request_restart().expect("restart"));
+        assert_eq!(
+            controller.state(),
+            PlayState::Playing,
+            "运行态不得被 request_restart 提前改成 Stopping：调用方还要走 stop()"
+        );
+        // 调用方的第一步：stop() 内部就是 begin_stop → 释放 → finish_stop。
+        controller.begin_stop().expect("begin stop");
         assert_eq!(controller.state(), PlayState::Stopping);
         controller.finish_stop().expect("finish stop");
+        assert_eq!(controller.state(), PlayState::Editing);
+        assert_eq!(controller.stops(), 1);
+        // 第二步：play()。
         controller.begin_start().expect("begin");
         controller.mark_running().expect("running");
         assert_eq!(controller.starts(), 2, "重启计为第二次启动");

@@ -227,7 +227,7 @@ mod tests {
     use super::*;
 
     fn temp_root(tag: &str) -> PathBuf {
-        let root = env::temp_dir().join(format!("p2-userdir-{tag}-{}", std::process::id()));
+        let root = env::temp_dir().join(format!("rustlua-userdir-{tag}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         root

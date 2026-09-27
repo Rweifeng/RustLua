@@ -356,7 +356,8 @@ mod publish_tests {
 
     #[test]
     fn default_publish_name_reads_project_name() {
-        let root = std::env::temp_dir().join(format!("p2-publish-name-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("rustlua-publish-name-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(
             root.join("project.toml"),

@@ -312,7 +312,7 @@ mod tests {
     #[test]
     fn project_rewrite_updates_documents_and_skips_broken_files() {
         let root = std::env::temp_dir().join(format!(
-            "p2-resource-ops-{}-{}",
+            "rustlua-resource-ops-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

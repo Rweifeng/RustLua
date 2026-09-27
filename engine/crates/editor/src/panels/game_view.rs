@@ -341,7 +341,9 @@ impl EditorApp {
             let plan = self.play.plan_frame(elapsed);
             if plan.paused && !plan.runs_logic() {
                 // 暂停：不推进预览、也不消费边沿，保留输入状态供恢复/步进使用。
-                if let Some(preview) = &self.preview { preview.pause_music(); }
+                if let Some(preview) = &self.preview {
+                    preview.pause_music();
+                }
                 ctx.request_repaint_after(std::time::Duration::from_millis(100));
                 self.preview_input_state = input;
                 return;
@@ -365,7 +367,9 @@ impl EditorApp {
                 self.preview_input_state = input;
                 return;
             }
-            if let Some(preview) = &self.preview { preview.resume_music(); }
+            if let Some(preview) = &self.preview {
+                preview.resume_music();
+            }
             let stepped = self
                 .preview
                 .as_mut()
@@ -557,7 +561,7 @@ mod tests {
     /// 无 GPU 上下文 + 含一个实体的编辑器应用（用于失败路径测试）。
     fn app_with_scene() -> EditorApp {
         let root = PathBuf::from(std::env::var("TEMP").unwrap_or_else(|_| ".".into()))
-            .join(format!("p2-m11-01-{}", std::process::id()));
+            .join(format!("rustlua-m11-01-{}", std::process::id()));
         let project = ProjectInfo {
             root,
             version: "test".into(),
@@ -638,7 +642,7 @@ mod tests {
         }))
         .ok()?;
         pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("p2-game-view-test"),
+            label: Some("rustlua-game-view-test"),
             required_features: wgpu::Features::empty(),
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
             required_limits: wgpu::Limits::default(),

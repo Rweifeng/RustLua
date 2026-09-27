@@ -17,7 +17,7 @@ Rust 写的 2D/3D 游戏引擎 + Lua 玩法脚本运行时，配套一个可视�
 | 目录 | 内容 |
 |---|---|
 | `engine/` | Rust workspace：`crates/engine`（运行时）、`editor`、`game`（桌面运行器）、`assetc`（打包/校验）、`game_web`（WebGL 宿主） |
-| `examples/game_jhyt` | 完整游戏工程《江湖有田》：竖版 720×1280、8 个场景动线（门面/山庄/村庄/山道/洞窟/演武场/两处室内），种田/采集/制作/战斗/任务/商店/7 日目标 |
+| `examples/game_jhyt` | 完整游戏工程《江湖有田》：横版 1280×720、8 个场景动线（门面/山庄/村庄/山道/洞窟/演武场/两处室内），种田/采集/制作/战斗/任务/商店/7 日目标 |
 | `examples/game_api` | 引擎 API 活文档：每个 Lua API 都有一处**可运行**演示，覆盖度由 `host::sample_project` 的 11 条门守 |
 | `plugins/` | 平台运行时：`webgl/`（共用 `web-runtime.js` + 契约页）、`wechat-minigame/`（适配层与分包路由） |
 | `scripts/` | 质量门与发布脚本：`verify.ps1`（总门）、`check-docs.ps1`（文档门）、`package.ps1`（发布）、`package-engine.ps1`（绿色版）、`test-bundle.ps1`（本地试玩产物）等 |
@@ -91,10 +91,13 @@ cargo run -p editor -- --project ..\examples\game_jhyt --check
   （`%APPDATA%\<应用名>`，`RUSTLUA_USER_DIR` 可覆盖）、日志写 `<用户数据目录>/logs/`；
   `package.ps1 -SelfTest` 断言隔离目录内无玩家数据。窗口尺寸改由工程声明
   （`project.toml` 的 `window_width/height`），不再写死。
-- **游戏工程竖版改造（M32）**：`game_jhyt` 从 1280×720 横屏整体改为 **720×1280 竖屏**，
-  8 个场景重生。设计尺寸的四处来源（`scripts/ui/layout.lua`、场景 `meta ui_reference_*`、
-  `project.toml`、场景生成器）由 `ui/layout_check.lua` 在启动期、`game --check`、`editor --check`
-  三条路径上守，漂移当场报错。相机跟随玩家、取景被场景 `bounds` 锁在地图内；换图后由内置系统
+- **游戏工程横版回归（「横屏方案A」，2026-09-27）**：`game_jhyt` 从 M32 的 **720×1280** 竖屏
+  转回 **1280×720** 横版，8 个场景重生。设计尺寸的来源（`scripts/ui/layout.lua`、场景
+  `meta ui_reference_*`、`project.toml`、场景生成器）由 `ui/layout_check.lua` 在启动期、
+  `game --check`、`editor --check` 三条路径上守，漂移当场报错；**平台层另有三处必须同改**
+  （微信适配层的 `VIEW_WIDTH/VIEW_HEIGHT`、`plugins/wechat-minigame/game.json` 的
+  `deviceOrientation`、`game_web` 的 canvas 尺寸），适配层的 `reportViewAgreement` 是唯一能在
+  无头环境里发现该错配的自检。相机跟随玩家、取景被场景 `bounds` 锁在地图内；换图后由内置系统
   `scene_camera_sync` 重绑新场景的 bounds（此前场景声明的相机只在启动场景生效）。
 - **编辑器重构阶段 0-3 收口**（[docs/55](docs/55-编辑器商业引擎对标重构计划.md) /
   [docs/58](docs/58-编辑器重构阶段0-3收口与验收.md)）：整帧 GUI smoke 自动化（29 用例）已进总门；

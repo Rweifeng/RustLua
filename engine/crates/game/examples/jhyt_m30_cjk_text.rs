@@ -1,4 +1,4 @@
-//! Headless acceptance drive for M30 / 计划 P2（阶段五）：
+//! Headless acceptance drive for M30 / 计划 RustLua（阶段五）：
 //! 中文排版、缺字与溢出检查——"文字有没有画到面板外面、有没有豆腐块"从此可机器验收。
 //!
 //! 为什么这一轮值得做：`docs/42` §1 早就写了"中文字形 11px 起可读"、美术交付也按

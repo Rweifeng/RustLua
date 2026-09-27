@@ -1,5 +1,5 @@
 -- ============================================================================
--- api_ui：**运行时动态 UI**（`ui` 表，43 个函数）—— 面板 / 图片 / 网格 / tooltip /
+-- api_ui：**运行时动态 UI**（`ui` 表，44 个函数）—— 面板 / 圆形 / 图片 / 网格 / tooltip /
 -- 模态 / 拖拽 / 焦点环 / 滚动 / 读回 / 文本度量。
 --
 -- 这一组的共同前提（每一条都能在引擎代码里核实，不是猜的）：
@@ -67,6 +67,8 @@ local GRID_COLUMNS, GRID_ROWS, GRID_CELL, GRID_GAP = 4, 3, 64, 10
 local GRID_COUNT = GRID_COLUMNS * GRID_ROWS
 
 local HP_ICON_ID = "hp_icon"
+-- `ui.circle` 的 id：与面板同容器，只是 shape=1（圆形）。
+local CIRCLE_ID = "status_dot"
 local TIP_ID = "bag_tip"
 local MODAL_ID = "confirm"
 local MODAL_BODY_ID = "confirm_body"
@@ -235,6 +237,12 @@ local function build_static()
     -- `ui.image(id, x, y, width, height, texture, r, g, b)`：注意是 (x,y,w,h,texture,r,g,b)，
     -- 没有 alpha —— 前 5 个参数与 `ui.panel` 的位置一致，之后一个贴图路径 + 3 个颜色分量。
     ui.image(HP_ICON_ID, 40, 422, 26, 26, "assets/textures/coin.png", 1.0, 0.86, 0.35)
+
+    -- `ui.circle(id, cx, cy, radius, r, g, b, a)`：与 `ui.panel` 同一个容器
+    -- （`UiPanel.shape`：0=矩形、1=圆形），但几何给的是**圆心 + 半径**，
+    -- 引擎内部按外接矩形 `[cx-r, cy-r, 2r, 2r]` 存，渲染时走三角扇而不是两个三角形。
+    -- 写在背包外框右上方当"在线"指示灯。
+    ui.circle(CIRCLE_ID, 372, 86, 10, 0.30, 0.85, 0.45, 1.0)
 
     -- 焦点环：8 项、4 列；已有环保留当前焦点（重建不会丢选择）。
     ui.focus_open(FOCUS_ID, FOCUS_ITEMS, FOCUS_COLUMNS)
