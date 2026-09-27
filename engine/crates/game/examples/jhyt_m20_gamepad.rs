@@ -963,16 +963,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "true",
         "换项当帧高亮应外扩（>380px，基准 372px）",
     )?;
-    // M22 追加修复（按钮文字重影）：脚本**不得**再画标签文字——三行标签由 `main.scene`
-    // 的 Text 实体（entity 8/10/12）绘制，脚本重画一遍会与场景文字错位叠成两层
-    //（不选中项错 22px、选中项只错约 3px），肉眼是「一明一暗两遍字」。
+    // M22 追加修复（按钮文字单层）：按钮标签**由脚本统一绘制**（`ui_text.draw`），
+    // 场景层 Text 实体（BtnStartLabel/BtnContinueLabel/BtnExitLabel）在同帧
+    // `ui.scene_text_visible(name, false)` 按名隐藏——每项只有脚本这一层文字，
+    // 不再与场景文字错位叠成两层（此前场景层+脚本层同时画才重影）。
+    // 断言两件事：脚本层标签可见；场景层实体名已进引擎的按名隐藏集。
     // 同时断言选中箭头确实画在标签左侧留白里（原来的 `> ` 前缀位置）。
     assert_str_why(
         &mut title,
-        "tostring((ui.get('title:label:BtnContinue') or { visible = false }).visible == false)",
+        "tostring((ui.get('title:label:BtnContinue') or { visible = false }).visible == true)",
         "true",
-        "脚本不得重画按钮标签（会与场景文字重影）",
+        "脚本层按钮标签应可见（单层文字：场景层已按名隐藏）",
     )?;
+    if !title.scene_text_hidden().contains("BtnContinueLabel") {
+        return Err(
+            "场景文字实体 BtnContinueLabel 应被 ui.scene_text_visible 隐藏（单层文字）".into(),
+        );
+    }
     assert_str_why(
         &mut title,
         "tostring((ui.get('title:arrow:BtnContinue') or { visible = false }).visible == true)",
