@@ -1092,7 +1092,11 @@ mod impls {
             for _ in 0..zeros {
                 out.push('0');
             }
-            out.push_str(digits);
+            // %.14e 把小数展开成 prec 位有效数字（0.1 -> "10000000000000"），
+            // 与另两个分支一致，非 alt 形式必须去掉尾零，否则 tostring(0.1)
+            // 会输出 "0.10000000000000"。
+            let frac = trim_trailing_zeros(digits, alt);
+            out.push_str(&frac);
         }
         out
     }
