@@ -41,7 +41,7 @@ use crate::core::{
         OverlayVertexSink, SpriteBatch, SpriteBatchItem, SpriteDrawBatch, WorldSpriteVertexSink,
         ndc_from_screen,
     },
-    text::{TextAtlas, TextLayout, TextMesh, TextStyle},
+    text::TextMesh,
     tilemap::Tilemap,
     transform::Transform3D,
     transform::{Transform, Vec2, integrate_velocity},
@@ -52,7 +52,6 @@ use crate::core::{
     ui_events::{UiClickTarget, UiEvents},
     ui_layout::{UiRect, UiRectLayout},
     ui_scene_layout::{ResolvedUiNode, UiSceneNode, resolve_scene_ui_layout},
-    world_text::WorldText,
 };
 
 use crate::host::frame::{
@@ -63,6 +62,8 @@ use crate::host::frame::{
     font_texture_path,
 };
 use crate::host::gamepad::{GamepadBackend, GamepadDeadzone, GamepadPoller};
+
+mod text;
 
 /// 本帧的 3D 视图（相机拆分批 8）：`vertices()` **定帧**时解析一次、烘焙一次，同一帧的消费方
 /// （回填给 Lua 的 `camera3d.*`、3D 渲染提取、3D 调试线框）共用它。
@@ -84,7 +85,7 @@ use crate::host::gamepad::{GamepadBackend, GamepadDeadzone, GamepadPoller};
 /// - 宿主没走 `vertices()` 就直接调 `scene_3d`（示例/golden 里就有这种顺序）时缓存为空，
 ///   按需解析——行为与定帧前逐字节相同。
 #[derive(Clone, Copy, Debug)]
-struct FrameView3d {
+pub(crate) struct FrameView3d {
     camera: Camera3D,
     viewport: Viewport,
     view: RenderView,
@@ -98,172 +99,172 @@ pub struct RuntimeScene {
     /// 自上次 `take_script_micros` 以来所有固定步里 Lua `update()` 的累计耗时
     /// （微秒）。宿主把它送进 `PerformanceStats::lua_ms`，性能面板因此显示的是
     /// "Lua 花了多少"而不是恒为 0（P4 接线）。
-    script_micros: u64,
-    sprite_batch: SpriteBatch,
+    pub(crate) script_micros: u64,
+    pub(crate) sprite_batch: SpriteBatch,
     /// 每精灵顶点生成的并行度（WP8）。默认取检测到的核数；`Parallelism::SEQUENTIAL`
     /// 即完全回滚到单线程，输出逐字节相同（见 `core/par.rs` 与 `sprite_batch` 的测试）。
-    sprite_parallelism: Parallelism,
+    pub(crate) sprite_parallelism: Parallelism,
     /// P1-③：系统级数据并行开关（粒子积分等系统内纯数据子任务）。默认取检测到的
     /// 核数；`Parallelism::SEQUENTIAL` 完全回滚到单线程——输出逐位相同（回滚档）。
-    system_parallelism: Parallelism,
+    pub(crate) system_parallelism: Parallelism,
     /// P1-①：渲染级空间索引（视口候选预筛）开关。默认关闭；打开后精灵收集阶段
     /// 用 uniform grid 预筛视口候选，静态场景收集从 O(N) 降为 O(视口内)
     /// （docs/40 WP6 ⑧ / docs/53 §3.9）。关闭即逐字节回滚。
-    spatial_index: bool,
+    pub(crate) spatial_index: bool,
     /// 空间索引网格（惰性创建）。跨帧复用：`hierarchy::local_fingerprint` 不变则不重建
     /// ——静态场景收集从 O(N) 降为 O(视口内)；任何实体一动（指纹变）就整体重建。
-    spatial_grid: Option<crate::core::spatial_index::SpatialGrid2D>,
+    pub(crate) spatial_grid: Option<crate::core::spatial_index::SpatialGrid2D>,
     /// 上次重建网格时的指纹（与 `hierarchy::local_fingerprint` 返回同型；
     /// 与层级传播的 `spatial_fingerprint` 是两套独立缓存）。
-    spatial_index_fingerprint: Option<(u64, usize, usize)>,
+    pub(crate) spatial_index_fingerprint: Option<(u64, usize, usize)>,
     /// 网格 cell 边长（世界单位）。只影响性能不影响正确性；默认 256。
-    spatial_index_cell_size: f32,
+    pub(crate) spatial_index_cell_size: f32,
     /// collider 调试绘制开关（WP7 ②）。默认关闭。
-    collider_debug_draw: bool,
+    pub(crate) collider_debug_draw: bool,
     /// docs/54 §8-⑥：**3D** collider 调试绘制开关（`physics3d.debug_draw`）。默认关闭，
     /// 与 2D 开关独立——混合场景里只想看一侧是常态。
-    collider_debug_draw_3d: bool,
+    pub(crate) collider_debug_draw_3d: bool,
     /// 视口外瓦片剔除（WP4 ④）。默认开启；关掉即回到整层全画，用于像素对拍与回滚。
-    tilemap_culling: bool,
+    pub(crate) tilemap_culling: bool,
     /// 视口外精灵剔除（WP6 CPU 可见性）。默认开启，同样可关掉做像素对拍。
-    sprite_culling: bool,
-    camera: Camera2D,
+    pub(crate) sprite_culling: bool,
+    pub(crate) camera: Camera2D,
     /// 本帧的 3D 视图（拆分批 8，见 [`FrameView3d`]）：`vertices()` 定帧，同帧消费方共用。
     /// `None` = 本帧还没定帧，或刚被一次世界变更作废。
-    frame_view_3d: Option<FrameView3d>,
+    pub(crate) frame_view_3d: Option<FrameView3d>,
     /// 拆分批 9：**已经采用过载荷**的 2D 相机来源（`camera.set_active` 选中的那台正交相机）。
     /// 它让"选择变化"成为一次性事件：同一台不再重复采用（否则每帧把控制器的取景抹平），
     /// 而选择离开 2D 相机后再选回来会重新采用（"把 2D 取景复位回场景声明"由此表达）。
-    adopted_camera_2d_source: Option<EntityId>,
-    viewport_width: u32,
-    viewport_height: u32,
+    pub(crate) adopted_camera_2d_source: Option<EntityId>,
+    pub(crate) viewport_width: u32,
+    pub(crate) viewport_height: u32,
     /// Canvas 空间 UI 参考分辨率（设计分辨率）。发布游戏默认 `UI_REFERENCE_SIZE`；
     /// 编辑器按设计分辨率显式设置，使 UI 适配 = viewport / reference。
-    ui_reference: [f32; 2],
+    pub(crate) ui_reference: [f32; 2],
     /// 是否渲染屏幕空间 UI 覆盖层。编辑器场景视图置 false：UI 由 egui 在
     /// 设计分辨率包围框内绘制布局框，避免旧的面板适配覆盖层与之冲突。
-    render_ui_overlay: bool,
+    pub(crate) render_ui_overlay: bool,
     /// 项目根目录（纹理路径解析用，与渲染器 `project_root.join(path)` 一致）。
-    project_root: Option<PathBuf>,
+    pub(crate) project_root: Option<PathBuf>,
     /// 九宫格 UV 计算用的纹理像素尺寸缓存（惰性、按 path）。
-    texture_dims: HashMap<String, (u32, u32)>,
-    texture_paths: Vec<String>,
+    pub(crate) texture_dims: HashMap<String, (u32, u32)>,
+    pub(crate) texture_paths: Vec<String>,
     /// 本帧的路径去重表（每帧清空）：把"同一路径只注册一次"保持成 O(1)，与身份表分开。
-    texture_lookup: HashMap<String, u32>,
+    pub(crate) texture_lookup: HashMap<String, u32>,
     /// docs/54 §4.4：**跨帧稳定**的运行时资源身份表（`路径 → 句柄`）。
     ///
     /// 与每帧重建的 `texture_paths` 不同，它**不清空**：同一路径因此在进程内恒同句柄，
     /// "这一帧的 draw 引用的是哪个资源"跨帧可比；资源释放后旧句柄失效，而不是悄悄指向别人
     /// 放在同一个下标上的贴图。
-    assets: std::cell::RefCell<AssetStore<AssetRecord>>,
+    pub(crate) assets: std::cell::RefCell<AssetStore<AssetRecord>>,
     /// 本帧与 `texture_paths` **同序**的句柄（交给渲染器做 O(1) 的贴图缓存查找）。
-    texture_handles: Vec<AssetHandle>,
+    pub(crate) texture_handles: Vec<AssetHandle>,
     /// docs/54 §4.3：声明了 `mode=overlay` 的实体（屏幕空间，落 `Overlay2D` 桶）。
-    overlay_batch: SpriteBatch,
+    pub(crate) overlay_batch: SpriteBatch,
     /// docs/54 §4.3：声明了 `mode=screen` 的实体（屏幕空间，落 `ScreenUI` 桶）。
-    screen_batch: SpriteBatch,
+    pub(crate) screen_batch: SpriteBatch,
     /// 本帧三种显式模式各路由了几个实体 `(world, overlay, screen)`（诊断/验收用）。
-    render_mode_routed: (usize, usize, usize),
-    tilemap_cache: HashMap<EntityId, CachedTilemapLayer>,
+    pub(crate) render_mode_routed: (usize, usize, usize),
+    pub(crate) tilemap_cache: HashMap<EntityId, CachedTilemapLayer>,
     /// 共享字体图集：运行时重建（编辑器拖动/编辑场景导致 revision 变化时）复用
     /// 同一实例，避免每帧重新生成 MSDF 字形。生成字形需可变访问（内部 Mutex）。
-    font_atlas: Option<Arc<Mutex<FontAtlas>>>,
-    vector_atlas: Option<Arc<Mutex<FontVectorAtlas>>>,
+    pub(crate) font_atlas: Option<Arc<Mutex<FontAtlas>>>,
+    pub(crate) vector_atlas: Option<Arc<Mutex<FontVectorAtlas>>>,
     /// 场景 Text 自定义字体矢量轮廓缓存（key = `font://<asset>`）。编辑器注入
     /// 同一实例供场景视图/预览跨运行时重建复用；独立运行时用新鲜空表。
-    custom_vector_atlases: VectorAtlasMap,
-    last_font_version: u64,
+    pub(crate) custom_vector_atlases: VectorAtlasMap,
+    pub(crate) last_font_version: u64,
     /// 场景 Text 自定义字体缓存（key = `font://<asset>` → 图集句柄）。编辑器注入
     /// 同一实例供场景视图/预览跨运行时重建复用；独立运行时用各自新鲜的空表。
-    custom_font_atlases: FontAtlasMap,
+    pub(crate) custom_font_atlases: FontAtlasMap,
     /// 每个自定义字体“上次上报版本”，用于判定本帧像素是否变化（见默认图集的
     /// `last_font_version` 语义，保证新渲染器首帧一定拿到非空像素）。
-    custom_font_versions: HashMap<String, u64>,
+    pub(crate) custom_font_versions: HashMap<String, u64>,
     /// 本帧布局用到、待上报渲染器的自定义字体 key（`font://...`），`vertices`
     /// 末尾生成像素快照后清空。
-    frame_font_keys: Vec<String>,
+    pub(crate) frame_font_keys: Vec<String>,
     /// 已 warn 过的加载失败字体路径（避免文本每帧 layout 时重复刷屏）。
-    missing_fonts: HashSet<String>,
-    missing_vector_fonts: HashSet<String>,
-    text_render_mode: TextRenderMode,
-    ui_scene_nodes: BTreeMap<u64, UiSceneNode>,
-    ui_layout_rects: BTreeMap<u64, ResolvedUiNode>,
+    pub(crate) missing_fonts: HashSet<String>,
+    pub(crate) missing_vector_fonts: HashSet<String>,
+    pub(crate) text_render_mode: TextRenderMode,
+    pub(crate) ui_scene_nodes: BTreeMap<u64, UiSceneNode>,
+    pub(crate) ui_layout_rects: BTreeMap<u64, ResolvedUiNode>,
     /// 共享帧调度管线（M18-03）：每个固定步执行一次的系统。调度器实例**跨帧保留**
     /// （只在 `run_script_steps` 期间临时借出再放回），因此系统的拓扑执行序只算一次，
     /// 而不是每步重建调度器 + 重算拓扑序——固定步一帧可跑 8 步，这份开销纯属浪费。
-    step_scheduler: Scheduler<RuntimeScene>,
+    pub(crate) step_scheduler: Scheduler<RuntimeScene>,
     /// 共享帧调度管线：每次 `run_script_steps` 调用只执行一次的系统。
-    frame_scheduler: Scheduler<RuntimeScene>,
+    pub(crate) frame_scheduler: Scheduler<RuntimeScene>,
     /// 系统注册用**名字**记录，供诊断与重名校验；系统本体归调度器所有。
-    step_system_names: Vec<String>,
-    frame_system_names: Vec<String>,
+    pub(crate) step_system_names: Vec<String>,
+    pub(crate) frame_system_names: Vec<String>,
     /// 当前固定步的输入快照：由 `run_script_steps` 注入、`input_apply` 消费，
     /// `ui_click_dispatch` 复用，步结束即清空。
-    pending_step_input: Option<InputSnapshot>,
+    pub(crate) pending_step_input: Option<InputSnapshot>,
     /// 最近一次 `run_script_steps` 的调度统计（M18-03 性能统计出口）。
-    last_schedule: Option<FrameScheduleReport>,
+    pub(crate) last_schedule: Option<FrameScheduleReport>,
     /// 手柄设备轮询（M20-06）：每帧采样后合并进本步输入快照。
-    gamepad: GamepadPoller,
+    pub(crate) gamepad: GamepadPoller,
     /// WP2：是否把 `parent` 当**局部空间**解释（负责人裁定）。默认关闭 = 旧行为
     /// （`parent` 只是组织关系，实体位置就是世界位置）；打开后每帧传播世界变换，
     /// 消费者读 `WorldTransform`。关掉即回滚，且关掉时世界变换组件会被清掉。
-    spatial_inheritance: bool,
+    pub(crate) spatial_inheritance: bool,
     /// docs/54 §4.1：**场景声明的** `parent` 语义（与 `spatial_inheritance` 区分：后者是当前
     /// 生效的开关，宿主可覆盖；这一份是场景自己说的，用于诊断与验收）。
-    spatial_mode: crate::core::scene_space::SpatialMode,
+    pub(crate) spatial_mode: crate::core::scene_space::SpatialMode,
     /// docs/54 §10 批 R：上一帧传播用的**局部真源指纹**（`(hash, 组件数, Parent 数)`）。
     /// 与上一帧相同 ⇒ 世界值仍然是上一帧算出来的那一份，整趟跳过传播。
-    spatial_fingerprint: Option<(u64, usize, usize)>,
+    pub(crate) spatial_fingerprint: Option<(u64, usize, usize)>,
     /// 跳过策略的开关（回滚档：`false` = 每帧全量传播，与收敛前逐字节一致）。
-    spatial_skip_unchanged: bool,
+    pub(crate) spatial_skip_unchanged: bool,
     /// 累计"因为输入没变而跳过传播"的帧数（诊断/验收用）。
-    spatial_skipped_frames: u64,
+    pub(crate) spatial_skipped_frames: u64,
     /// docs/54 §10 批 S：**逐实体增量**传播的状态（上一帧的输入快照 + 父先序求解顺序）。
-    spatial_incremental: crate::core::hierarchy::SpatialIncremental,
+    pub(crate) spatial_incremental: crate::core::hierarchy::SpatialIncremental,
     /// 增量策略的开关（回滚档：`false` = 指纹变化后一律全量传播，与批 S 之前逐字节一致）。
-    spatial_incremental_enabled: bool,
+    pub(crate) spatial_incremental_enabled: bool,
     /// 最近一次传播走的路径（`Skipped` / `Full` / `Incremental`）——门与验收读它。
-    last_spatial_path: crate::core::hierarchy::SpatialPath,
+    pub(crate) last_spatial_path: crate::core::hierarchy::SpatialPath,
     /// 最近一次传播**真正重算**的实体数（增量路径 = 脏子树大小）。这是"增量真的生效"的证据：
     /// 只挪一个叶子时它必须是 1，而不是实体总数。
-    last_spatial_recomputed: usize,
+    pub(crate) last_spatial_recomputed: usize,
     /// 累计的三条路径调用次数 `[跳过, 全量, 增量]`（取走即清零；一步里传播会被调用多次）。
-    spatial_path_counts: [u64; 3],
+    pub(crate) spatial_path_counts: [u64; 3],
     /// 累计"真正重算的实体数"（取走即清零）——一帧里只挪一个叶子时它应当是 1。
-    spatial_recomputed_total: u64,
+    pub(crate) spatial_recomputed_total: u64,
     /// 最近一次空间传播的诊断（环/无法无损表达），供宿主与测试查。
-    last_spatial_report: SpatialReport,
+    pub(crate) last_spatial_report: SpatialReport,
     /// 本帧是否**真的**在传播世界变换（= 开关打开且场景里存在 `Parent`）。提取路径按它选
     /// 遍历的组件：为假时读局部值，与"没有层级"的语义完全一致，也不花任何传播成本。
-    spatial_active: bool,
+    pub(crate) spatial_active: bool,
     /// WP7：谁有权写 `Transform`（默认 `Physics` = 模拟结果回写，与既有行为一致）。
-    physics_authority: PhysicsAuthority,
+    pub(crate) physics_authority: PhysicsAuthority,
     /// WP7：阶段顺序（`Unified` = 脚本→同步→物理→回写→世界变换；`Legacy` = 旧的单系统
     /// "步进即回写"顺序，作为回滚档）。
-    physics_stage_order: PhysicsStageOrder,
+    pub(crate) physics_stage_order: PhysicsStageOrder,
     /// WP6：世界 Sprite 是否走**带深度**的通道（默认关闭 = 现状"3D 之后的 overlay"）。
     /// 打开后精灵以世界坐标产出（`SceneMesh::world_sprites`），由渲染器的世界 Sprite 通道投影
     /// 并参与深度测试；关掉即逐字节回到 overlay 路径——这就是回滚档。
-    world_sprite_depth: bool,
+    pub(crate) world_sprite_depth: bool,
     /// docs/54 §8-①：最近一步由**场景声明的发射器**发出的粒子个数（诊断与验收用）。
-    last_scene_emission: usize,
+    pub(crate) last_scene_emission: usize,
     /// WP7：最近一步 `physics_sync` 同步的刚体数 `(2D, 3D)`。0 表示这一步没做步前同步
     /// （默认 authority=Physics，或回滚档 `Legacy`）——因此它同时也是"回滚档真的生效"的证据。
-    last_physics_sync: (usize, usize),
+    pub(crate) last_physics_sync: (usize, usize),
     /// docs/54 §4.1：最近一步**每实体脚本**实际调用的实体数（诊断与验收用）。
     ///
     /// 0 既可能是"没有脚本实体"，也可能是"这一步没跑脚本格"——它与
     /// [`Self::last_schedule`] 一起看才能区分，因此诊断里两个都报。
-    last_entity_script_calls: usize,
+    pub(crate) last_entity_script_calls: usize,
     /// docs/54 §4.2：宿主声明的**视图可见遮罩**（`world`, `overlay`），分别对应
     /// `FrameViews::{main, overlay}.visibility`。默认 `u32::MAX` = 全可见，因此不声明时行为不变。
-    view_world_mask: u32,
-    view_overlay_mask: u32,
+    pub(crate) view_world_mask: u32,
+    pub(crate) view_overlay_mask: u32,
     /// 最近一次提取里被视图遮罩拦掉的实体数（诊断用：区分"被遮罩拦住"与"根本没提取到"）。
     ///
     /// 用 `Cell` 是因为 `scene_3d` 是 `&self`（编辑器与宿主都只借用），而它同样要记这个数。
     /// 语义与 `take_script_micros` 一致：**取走即清空**。
-    view_filtered: std::cell::Cell<usize>,
+    pub(crate) view_filtered: std::cell::Cell<usize>,
 }
 
 /// WP7 阶段顺序（回滚档）。
@@ -362,7 +363,7 @@ impl TextRenderMode {
     }
 }
 
-struct CachedTilemapLayer {
+pub(crate) struct CachedTilemapLayer {
     transform: Transform,
     /// 比对基准：命中判断与逐块脏比对都拿它跟当前 world 里的 `Tilemap` 比较。
     tilemap: Tilemap,
@@ -1098,6 +1099,7 @@ impl RuntimeScene {
                 start: start as u32,
                 count: count as u32,
                 sdf: false,
+                bitmap: false,
                 vector: false,
                 render_layer: RenderLayer::Overlay2D,
             });
@@ -1161,6 +1163,7 @@ impl RuntimeScene {
                 start: start as u32,
                 count: count as u32,
                 sdf: false,
+                bitmap: false,
                 vector: false,
                 render_layer: RenderLayer::Overlay2D,
             });
@@ -1290,184 +1293,6 @@ impl RuntimeScene {
     /// 注入共享默认矢量轮廓图集（编辑器跨运行时重建复用）。
     pub fn set_vector_atlas(&mut self, vector_atlas: Option<VectorFontHandle>) {
         self.vector_atlas = vector_atlas;
-    }
-
-    fn ensure_vector_atlas(&mut self) {
-        if self.vector_atlas.is_none()
-            && let Some(root) = &self.project_root
-        {
-            self.vector_atlas = load_project_vector_atlas(Some(root));
-        }
-    }
-
-    /// 获取默认或指定字体的矢量轮廓缓存；自定义字体失败返回 `None`，调用方
-    /// 仍可选择回退 SDF。
-    fn ensure_vector_font(&mut self, font_asset: &str) -> Option<Arc<Mutex<FontVectorAtlas>>> {
-        if font_asset.is_empty() {
-            self.ensure_vector_atlas();
-            return self.vector_atlas.clone();
-        }
-        let key = font_texture_path(font_asset);
-        if self.missing_vector_fonts.contains(&key) {
-            return None;
-        }
-        if let Ok(map) = self.custom_vector_atlases.lock()
-            && let Some(handle) = map.get(&key).cloned()
-        {
-            return Some(handle);
-        }
-        if let Some(atlas) = load_custom_vector_atlas(self.project_root.as_deref(), font_asset) {
-            if let Ok(mut map) = self.custom_vector_atlases.lock() {
-                map.entry(key.clone()).or_insert_with(|| atlas.clone());
-            }
-            return Some(atlas);
-        } else {
-            self.missing_vector_fonts.insert(key.clone());
-        }
-        None
-    }
-
-    /// 惰性加载项目字体图集：未注入共享图集时才按需加载（含 chars.txt 预热）。
-    /// 编辑器场景视图/预览会先 `set_font_atlas` 注入已预热图集，故这里通常不会触发；
-    /// 独立游戏/测试首次排版文本时加载一次，此后复用。
-    fn ensure_font_atlas(&mut self) {
-        if self.font_atlas.is_none()
-            && let Some(root) = &self.project_root
-        {
-            self.font_atlas = load_project_font_atlas(Some(root));
-        }
-    }
-
-    /// 注入跨运行时重建共享的自定义字体缓存（编辑器场景视图/预览用；独立运行
-    /// 时运行时各自持有新鲜空表）。
-    pub fn set_custom_font_atlases(&mut self, custom_font_atlases: FontAtlasMap) {
-        self.custom_font_atlases = custom_font_atlases;
-    }
-
-    /// 注入跨运行时重建共享的自定义矢量轮廓缓存。
-    pub fn set_custom_vector_atlases(&mut self, custom_vector_atlases: VectorAtlasMap) {
-        self.custom_vector_atlases = custom_vector_atlases;
-    }
-
-    /// 取场景 Text 指定字体的共享图集句柄；未加载则按需从项目根解码（缺文件/
-    /// 不可读返回 None，调用方回退默认字体）。加载失败仅对同一路径 warn 一次。
-    fn ensure_custom_font(&mut self, asset: &str) -> Option<FontHandle> {
-        let key = font_texture_path(asset);
-        if let Ok(map) = self.custom_font_atlases.lock()
-            && let Some(handle) = map.get(&key).cloned()
-        {
-            return Some(handle);
-        }
-        // 已知缺失：直接回退默认，不再每帧尝试读盘。
-        if self.missing_fonts.contains(asset) {
-            return None;
-        }
-        let root = self.project_root.clone();
-        let handle = match load_custom_font_atlas(root.as_deref(), asset) {
-            Some(handle) => handle,
-            None => {
-                if self.missing_fonts.insert(asset.to_owned()) {
-                    tracing::warn!(
-                        target: "render",
-                        path = %asset,
-                        "[render] custom font load failed; text falls back to default font"
-                    );
-                }
-                return None;
-            }
-        };
-        if let Ok(mut map) = self.custom_font_atlases.lock() {
-            let handle = map.entry(key).or_insert_with(|| handle.clone()).clone();
-            Some(handle)
-        } else {
-            None
-        }
-    }
-
-    /// 度量一段场景文本在给定 scale 下的网格尺寸与字形像素范围
-    /// `(size, pixel_bounds)`（编辑器 UI 包围框用）。`size` 含
-    /// ascender/descender 空白（锚点对齐用），`pixel_bounds` 是可见字形的
-    /// 紧致范围（包围框贴合文字用）。与渲染同路径：SDF 字体存在时用真实
-    /// 字体，否则用内置 5x7 位图。
-    pub fn measure_ui_text(&mut self, text: &str, scale: f32) -> ([f32; 2], [f32; 4]) {
-        self.ensure_font_atlas();
-        let style = TextStyle {
-            scale,
-            ..Default::default()
-        };
-        if let Some(font) = &self.font_atlas {
-            let mut font = font.lock().expect("font atlas lock");
-            TextLayout::build(text, [0.0, 0.0], style, &mut font)
-                .map(|mesh| (mesh.size, mesh.pixel_bounds()))
-                .unwrap_or(([0.0, 0.0], [0.0; 4]))
-        } else {
-            let atlas = TextAtlas::built_in();
-            TextLayout::build_bitmap(text, [0.0, 0.0], style, &atlas)
-                .map(|mesh| (mesh.size, mesh.pixel_bounds()))
-                .unwrap_or(([0.0, 0.0], [0.0; 4]))
-        }
-    }
-
-    /// 决定一段文本的首选渲染路径；矢量图集不可用时渲染层仍会回退 SDF。
-    fn should_render_vector(&self, font_asset: Option<&str>, scale: f32, chars: usize) -> bool {
-        match self.text_render_mode {
-            TextRenderMode::Vector => true,
-            TextRenderMode::Sdf => false,
-            TextRenderMode::Auto => {
-                font_asset.is_none_or(str::is_empty) && scale >= 2.0 && chars <= 32
-            }
-        }
-    }
-
-    /// Measures scene-node UI text with the same backend choice as rendering.
-    /// `auto` keeps the default-font heuristic; forced modes apply to every text.
-    pub fn measure_scene_ui_text(
-        &mut self,
-        text: &crate::core::ui::UiText,
-    ) -> ([f32; 2], [f32; 4]) {
-        let scale = text.effective_scale();
-        let use_vector =
-            self.should_render_vector(Some(text.font.as_str()), scale, text.text.chars().count());
-        if use_vector
-            && let Some(measured) = self.measure_vector_text(&text.text, scale, &text.font)
-        {
-            return measured;
-        }
-        self.measure_ui_text(&text.text, scale)
-    }
-
-    fn measure_vector_text(
-        &mut self,
-        text: &str,
-        scale: f32,
-        font_asset: &str,
-    ) -> Option<([f32; 2], [f32; 4])> {
-        let atlas = self.ensure_vector_font(font_asset)?;
-        let style = TextStyle {
-            scale,
-            color: [1.0, 1.0, 1.0, 1.0],
-            ..Default::default()
-        };
-        let mut atlas = atlas.lock().expect("vector atlas lock");
-        let layout = TextLayout::build_vector(text, [0.0, 0.0], style, &mut atlas).ok()?;
-        if layout.is_empty() {
-            return None;
-        }
-        let mut min = [f32::INFINITY; 2];
-        let mut max = [f32::NEG_INFINITY; 2];
-        for vertex in &layout {
-            min[0] = min[0].min(vertex.position[0]);
-            min[1] = min[1].min(vertex.position[1]);
-            max[0] = max[0].max(vertex.position[0]);
-            max[1] = max[1].max(vertex.position[1]);
-        }
-        if !min.iter().all(|value| value.is_finite()) {
-            return None;
-        }
-        Some((
-            [max[0] - min[0], max[1] - min[1]],
-            [min[0], min[1], max[0], max[1]],
-        ))
     }
 
     fn init(
@@ -3204,6 +3029,7 @@ impl RuntimeScene {
                 start: draw.vertex_start as u32,
                 count: draw.vertex_count as u32,
                 sdf: false,
+                bitmap: false,
                 vector: false,
                 render_layer: RenderLayer::World2D,
             })
@@ -3220,6 +3046,7 @@ impl RuntimeScene {
                 start: draw.vertex_start as u32,
                 count: draw.vertex_count as u32,
                 sdf: false,
+                bitmap: false,
                 vector: false,
                 render_layer: layer,
             }));
@@ -3514,6 +3341,7 @@ impl RuntimeScene {
                 start,
                 count: vertices.len() as u32 - start,
                 sdf: false,
+                bitmap: false,
                 vector: false,
                 render_layer: RenderLayer::ScreenUI,
             });
@@ -3569,6 +3397,7 @@ impl RuntimeScene {
                 start,
                 count: vertices.len() as u32 - start,
                 sdf: false,
+                bitmap: false,
                 vector: false,
                 render_layer: RenderLayer::ScreenUI,
             });
@@ -3596,6 +3425,7 @@ impl RuntimeScene {
                     start,
                     count: vertices.len() as u32 - start,
                     sdf: false,
+                    bitmap: false,
                     vector: false,
                     render_layer: RenderLayer::ScreenUI,
                 });
@@ -3654,6 +3484,7 @@ impl RuntimeScene {
                 start,
                 count,
                 sdf: false,
+                bitmap: false,
                 vector: false,
                 render_layer: RenderLayer::ScreenUI,
             });
@@ -3706,6 +3537,7 @@ impl RuntimeScene {
                 )?
             {
                 let (mesh, is_sdf) = self.layout_text(&text, position, scale, [1.0, 1.0, 1.0])?;
+                let is_bitmap = mesh.bitmap;
                 let text_vertices = text_to_ndc(mesh, is_sdf, width, height);
                 let font_key = if is_sdf {
                     FONT_ATLAS_TEXTURE_PATH.to_owned()
@@ -3717,6 +3549,7 @@ impl RuntimeScene {
                     draws,
                     text_vertices,
                     is_sdf,
+                    is_bitmap,
                     &font_key,
                     RenderLayer::ScreenUI,
                 );
@@ -3894,364 +3727,20 @@ impl RuntimeScene {
                     continue;
                 }
                 let (mesh, is_sdf, font_key) = self.layout_scene_text(&text, position)?;
+                let is_bitmap = mesh.bitmap;
                 let text_vertices = text_to_ndc(mesh, is_sdf, width, height);
                 self.push_text_run(
                     vertices,
                     draws,
                     text_vertices,
                     is_sdf,
+                    is_bitmap,
                     &font_key,
                     RenderLayer::ScreenUI,
                 );
             }
         }
         Ok(())
-    }
-
-    /// 世界空间文字（WP4）：把实体的世界位置投影到屏幕后，走与屏幕文字**完全相同**的
-    /// 字形管线（含 vector / SDF 两种模式与自定义字体）。
-    ///
-    /// 绘制层：精灵之上、屏幕 UI 之下，不参与世界深度。字形预热必须在构建任何字形网格
-    /// **之前**完成，理由与 `push_scene_ui` 中的说明相同（图集增长会让先构建的网格 UV 失效）。
-    #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
-    fn push_world_text(
-        &mut self,
-        vertices: &mut Vec<OverlayVertex>,
-        world_vertices: &mut Vec<WorldSpriteVertex>,
-        draws: &mut Vec<SceneDraw>,
-        world_draws: &mut Vec<SpriteDrawBatch>,
-        vector_vertices: &mut Vec<FrameVectorTextVertex>,
-        vector_glyphs: &mut Vec<VectorGlyphSnapshot>,
-        vector_segments: &mut Vec<VectorSegmentSnapshot>,
-        width: u32,
-        height: u32,
-    ) -> Result<(), String> {
-        // WP2：世界文字锚在**世界**位置上——继承开启时读传播结果，关闭时读局部值。
-        // 两条路径都是 `for_each2`，因此不额外多做一次 `get`。
-        let inherit = self.spatial_active;
-        let entries = self.script.with_world(|world| {
-            let mut entries = Vec::new();
-            if inherit {
-                world.for_each2::<GlobalTransform, WorldText>(|id, global, text| {
-                    if let Some(plane) = global.plane() {
-                        entries.push((id, plane, text.clone()));
-                    }
-                });
-            } else {
-                world.for_each2::<Transform, WorldText>(|id, transform, text| {
-                    entries.push((id, *transform, text.clone()));
-                });
-            }
-            entries
-        });
-        if entries.is_empty() {
-            return Ok(());
-        }
-        let prewarm = entries
-            .iter()
-            .map(|(id, _, text)| (*id, text.text.clone()))
-            .collect::<Vec<_>>();
-        self.prewarm_frame_glyphs(&prewarm);
-
-        let viewport = Viewport::new(width.max(1) as f32, height.max(1) as f32)
-            .map_err(|error| error.to_string())?;
-        // 预算项与世界通道要用的**逆矩阵**都在循环外算一次：此前每个世界文字实体各算一次
-        // `view_projection` + `Mat4::inverse()`，实体一多就是每帧成百上千次 4×4 求逆。
-        let Ok(camera) = OrthoTerms::new(self.camera, viewport) else {
-            return Ok(());
-        };
-        let world_inverse = if self.world_sprite_depth {
-            CameraView::from_camera2d(self.camera, viewport)
-                .ok()
-                .and_then(CameraView::inverse)
-        } else {
-            None
-        };
-        for (_, transform, text) in entries {
-            let screen = camera.world_to_screen(transform.position);
-            let mut origin = [screen.x + text.offset[0], screen.y + text.offset[1]];
-            if text.centered {
-                let (size, _) = self.measure_scene_ui_text(&text.text);
-                origin[0] -= size[0] * 0.5;
-            }
-            let use_vector = self.should_render_vector(
-                Some(text.text.font.as_str()),
-                text.text.effective_scale(),
-                text.text.text.chars().count(),
-            );
-            if use_vector
-                && self.push_vector_text_run(
-                    vector_vertices,
-                    vector_glyphs,
-                    vector_segments,
-                    &text.text.text,
-                    origin,
-                    text.text.effective_scale(),
-                    text.text.color,
-                    Some(&text.text.font),
-                    width,
-                    height,
-                )?
-            {
-                continue;
-            }
-            let (mesh, is_sdf, font_key) = self.layout_scene_text(&text.text, origin)?;
-            if self.world_sprite_depth {
-                // WP6：世界文字也进世界坐标深度通道。做法是把**像素空间**的字形顶点经
-                // `view_projection` 的逆映射回世界坐标——因此屏幕上的观感与 overlay 路径
-                // 逐个像素一致（字号仍是像素大小、随 zoom 换算成世界尺寸），但它有了世界
-                // 坐标与 z，可以和精灵/瓦片一起参与深度测试。
-                let Some(inverse) = world_inverse else {
-                    continue;
-                };
-                let converted = mesh
-                    .vertices
-                    .iter()
-                    .map(|vertex| {
-                        let ndc = ndc_from_screen(vertex.position, viewport);
-                        let Ok(world) = inverse.transform_point(Vec3::new(ndc[0], ndc[1], 0.0))
-                        else {
-                            return None;
-                        };
-                        Some(WorldSpriteVertex {
-                            position: [world.x, world.y, 0.0],
-                            uv: vertex.uv,
-                            color: vertex.color,
-                        })
-                    })
-                    .collect::<Option<Vec<_>>>();
-                if let Some(converted) = converted {
-                    let start = world_vertices.len();
-                    world_vertices.extend(converted);
-                    // 文字是**带 alpha 的字形边缘**：测深度但不写深度（写深度会在字形边缘
-                    // 留下硬边并遮住后面的内容）。
-                    world_draws.push(SpriteDrawBatch::translucent(
-                        self.texture_id(&font_key),
-                        0,
-                        RenderLayer::World2D,
-                        start,
-                        world_vertices.len() - start,
-                    ));
-                }
-                continue;
-            }
-            let text_vertices = text_to_ndc(mesh, is_sdf, width, height);
-            self.push_text_run(
-                vertices,
-                draws,
-                text_vertices,
-                is_sdf,
-                &font_key,
-                RenderLayer::World2D,
-            );
-        }
-        Ok(())
-    }
-
-    /// Layouts a string into a pixel-space text mesh using real font metrics.
-    /// Uses the SDF font atlas when available, else the built-in bitmap atlas.
-    /// Returns `(mesh, is_sdf)`.
-    fn layout_text(
-        &mut self,
-        text: &str,
-        position: [f32; 2],
-        scale: f32,
-        color: [f32; 3],
-    ) -> Result<(TextMesh, bool), String> {
-        self.ensure_font_atlas();
-        let style = TextStyle {
-            scale,
-            color: [color[0], color[1], color[2], 1.0],
-            ..Default::default()
-        };
-        if let Some(font) = &self.font_atlas {
-            let mut font = font.lock().expect("font atlas lock");
-            TextLayout::build(text, position, style, &mut font)
-                .map(|mesh| (mesh, true))
-                .map_err(|error| error.to_string())
-        } else {
-            let atlas = TextAtlas::built_in();
-            TextLayout::build_bitmap(text, position, style, &atlas)
-                .map(|mesh| (mesh, false))
-                .map_err(|error| error.to_string())
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn push_vector_text_run(
-        &mut self,
-        vertices: &mut Vec<FrameVectorTextVertex>,
-        glyphs: &mut Vec<VectorGlyphSnapshot>,
-        segments: &mut Vec<VectorSegmentSnapshot>,
-        text: &str,
-        position: [f32; 2],
-        scale: f32,
-        color: [f32; 3],
-        font_asset: Option<&str>,
-        width: u32,
-        height: u32,
-    ) -> Result<bool, String> {
-        let atlas = self.ensure_vector_font(font_asset.unwrap_or_default());
-        let Some(atlas) = atlas else {
-            return Ok(false);
-        };
-        let style = TextStyle {
-            scale,
-            color: [color[0], color[1], color[2], 1.0],
-            ..Default::default()
-        };
-        let mut atlas = atlas.lock().expect("vector atlas lock");
-        let layout = TextLayout::build_vector(text, position, style, &mut atlas)
-            .map_err(|error| error.to_string())?;
-        if layout.is_empty() {
-            return Ok(false);
-        }
-        let base_glyph = glyphs.len() as u32;
-        let mut remap = HashMap::new();
-        for vertex in layout {
-            let mapped = if let Some(mapped) = remap.get(&vertex.glyph_id) {
-                *mapped
-            } else {
-                let Some(glyph) = atlas.glyph_by_id(vertex.glyph_id) else {
-                    return Ok(false);
-                };
-                let mapped = base_glyph + remap.len() as u32;
-                let segment_start = segments.len() as u32;
-                segments.extend(glyph.segments.iter().map(|segment| VectorSegmentSnapshot {
-                    start: segment.start,
-                    end: segment.end,
-                    bounds: [
-                        segment.start[0].min(segment.end[0]),
-                        segment.start[1].min(segment.end[1]),
-                        segment.start[0].max(segment.end[0]),
-                        segment.start[1].max(segment.end[1]),
-                    ],
-                }));
-                glyphs.push(VectorGlyphSnapshot {
-                    segment_start,
-                    segment_count: segments.len() as u32 - segment_start,
-                    _padding: [0; 2],
-                    bounds: glyph.bounds,
-                });
-                remap.insert(vertex.glyph_id, mapped);
-                mapped
-            };
-            vertices.push(FrameVectorTextVertex {
-                position: [
-                    vertex.position[0] / width.max(1) as f32 * 2.0 - 1.0,
-                    1.0 - vertex.position[1] / height.max(1) as f32 * 2.0,
-                ],
-                local: vertex.local,
-                glyph_id: mapped,
-                color: vertex.color,
-            });
-        }
-        Ok(true)
-    }
-
-    /// 在构建任何文本网格之前，把本帧全部文本所需字形光栅化进各自字体图集，
-    /// 使图集在本帧增长到最终尺寸。见 `push_scene_ui` 调用处注释。
-    fn prewarm_frame_glyphs(&mut self, texts: &[(EntityId, UiText)]) {
-        let mut default_chars: Vec<char> = Vec::new();
-        let mut custom_chars: HashMap<&str, Vec<char>> = HashMap::new();
-        for (_, text) in texts {
-            if self.should_render_vector(
-                Some(text.font.as_str()),
-                text.effective_scale(),
-                text.text.chars().count(),
-            ) {
-                continue;
-            }
-            if text.font.is_empty() {
-                default_chars.extend(text.text.chars());
-            } else {
-                custom_chars
-                    .entry(text.font.as_str())
-                    .or_default()
-                    .extend(text.text.chars());
-            }
-        }
-        if !default_chars.is_empty() {
-            self.ensure_font_atlas();
-            if let Some(font) = &self.font_atlas {
-                let mut font = font.lock().expect("font atlas lock");
-                font.prewarm(default_chars.into_iter());
-            }
-        }
-        for (asset, chars) in custom_chars {
-            if let Some(handle) = self.ensure_custom_font(asset) {
-                let mut atlas = handle.lock().expect("font atlas lock");
-                atlas.prewarm(chars.into_iter());
-            }
-        }
-    }
-
-    /// 记录入本帧待上报列表；无自定义字体 / 字体缺失不可读时回退默认（默认 SDF 或
-    /// 内置位图）。返回 `(mesh, is_sdf, font_key)`。
-    fn layout_scene_text(
-        &mut self,
-        text: &UiText,
-        position: [f32; 2],
-    ) -> Result<(TextMesh, bool, String), String> {
-        let effective_scale = text.effective_scale();
-        if !text.font.is_empty()
-            && let Some(handle) = self.ensure_custom_font(&text.font)
-        {
-            let mesh = {
-                let mut atlas = handle.lock().expect("font atlas lock");
-                let style = TextStyle {
-                    scale: effective_scale,
-                    color: [text.color[0], text.color[1], text.color[2], 1.0],
-                    ..Default::default()
-                };
-                TextLayout::build(&text.text, position, style, &mut atlas)
-                    .map_err(|error| error.to_string())?
-            };
-            let key = font_texture_path(&text.font);
-            self.frame_font_keys.push(key.clone());
-            return Ok((mesh, true, key));
-        }
-        // 无自定义字体，或自定义字体缺失/不可读：回退默认字体路径。
-        let (mesh, is_sdf) = self.layout_text(&text.text, position, effective_scale, text.color)?;
-        let key = if is_sdf {
-            FONT_ATLAS_TEXTURE_PATH.to_owned()
-        } else {
-            ATLAS_TEXTURE_PATH.to_owned()
-        };
-        Ok((mesh, is_sdf, key))
-    }
-
-    /// Appends a text run as a single SDF or bitmap draw. SDF runs carry their
-    /// font key (`font://...` for a custom font, else the default-atlas sentinel);
-    /// bitmap runs always bind the built-in 5x7 atlas.
-    fn push_text_run(
-        &mut self,
-        vertices: &mut Vec<OverlayVertex>,
-        draws: &mut Vec<SceneDraw>,
-        text_vertices: Vec<OverlayVertex>,
-        is_sdf: bool,
-        font_key: &str,
-        render_layer: RenderLayer,
-    ) {
-        if text_vertices.is_empty() {
-            return;
-        }
-        let start = vertices.len() as u32;
-        let texture = if is_sdf {
-            self.texture_id(font_key) + 1
-        } else {
-            self.texture_id(ATLAS_TEXTURE_PATH) + 1
-        };
-        vertices.extend(text_vertices);
-        draws.push(SceneDraw {
-            texture,
-            start,
-            count: vertices.len() as u32 - start,
-            sdf: is_sdf,
-            vector: false,
-            render_layer,
-        });
     }
 
     /// Pushes a screen-space textured quad for the `Image` component.
@@ -4318,6 +3807,7 @@ impl RuntimeScene {
                     start,
                     count: vertices.len() as u32 - start,
                     sdf: false,
+                    bitmap: false,
                     vector: false,
                     render_layer: RenderLayer::ScreenUI,
                 });
@@ -4373,6 +3863,7 @@ impl RuntimeScene {
             start,
             count: vertices.len() as u32 - start,
             sdf: false,
+            bitmap: false,
             vector: false,
             render_layer: RenderLayer::ScreenUI,
         });
@@ -5399,7 +4890,7 @@ fn merge_adjacent_draws(draws: &mut Vec<SceneDraw>) {
 }
 
 /// Converts a pixel-space text mesh into NDC overlay vertices.
-fn text_to_ndc(mesh: TextMesh, is_sdf: bool, width: u32, height: u32) -> Vec<OverlayVertex> {
+pub(crate) fn text_to_ndc(mesh: TextMesh, is_sdf: bool, width: u32, height: u32) -> Vec<OverlayVertex> {
     text_to_ndc_with_offset(mesh, is_sdf, [0.0, 0.0], width, height)
 }
 
@@ -5412,6 +4903,8 @@ fn text_to_ndc_with_offset(
     width: u32,
     height: u32,
 ) -> Vec<OverlayVertex> {
+    // 混合渲染：bitmap 模式 sdf=2（Nearest + 阈值化），MSDF 模式 sdf=1（Linear + smoothstep）。
+    let sdf_value: u32 = if mesh.bitmap { 2 } else { u32::from(is_sdf) };
     mesh.vertices
         .into_iter()
         .map(|vertex| OverlayVertex {
@@ -5421,7 +4914,7 @@ fn text_to_ndc_with_offset(
             ],
             uv: vertex.uv,
             color: vertex.color,
-            sdf: u32::from(is_sdf),
+            sdf: sdf_value,
         })
         .collect()
 }

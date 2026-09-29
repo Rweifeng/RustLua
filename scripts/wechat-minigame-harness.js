@@ -113,6 +113,10 @@ let noFrames = false;
   let subpackageMode = 'auto';
   let subpackageDelayFrames = 0;
   let expectPackFailure = false;
+  // `--no-wasm`：**不**暴露 WXWebAssembly，模拟"wasm 桥不可用"的宿主形态（微信开发者工具/
+  // 极旧基础库）。契约：wasm 失败不得影响 Lua 启动——clock 走 Lua 兜底（web-runtime 的
+  // genericCompat）、boot 照常成功、适配层必须显式报告 __P2_HOST_API 未接线。
+  let noWasm = false;
   // 模拟"宿主不给读代码包里的某个文件"——**真机实测**：
   //   readFileSync('game.json') 一律 permission denied（平台配置不向 FileSystemManager 开放，
   //   与小程序侧 app.json 同理）。这条必须能复现，否则"适配层拿它当判据"这类缺陷在无头测试里全绿。
@@ -159,6 +163,7 @@ if (argv[i] === '--no-frames') noFrames = true;
     else if (argv[i] === '--subpackage' && argv[i + 1]) subpackageMode = String(argv[++i]);
     else if (argv[i] === '--subpackage-delay-frames' && argv[i + 1]) subpackageDelayFrames = Math.max(0, Number(argv[++i]) || 0);
     else if (argv[i] === '--expect-pack-failure') expectPackFailure = true;
+    else if (argv[i] === '--no-wasm') noWasm = true;
     else if (argv[i] === '--deny-code-file' && argv[i + 1]) {
       // 可重复给，也可一次给逗号分隔的多个
       for (const item of String(argv[++i]).split(',')) {
@@ -1049,7 +1054,17 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
   // WP10 微信侧接线：宿主暴露 WXWebAssembly（能力面 = Node 的真实 WebAssembly）。
   // wasm-bridge 据此实例化 wasm 核心并导出 HostApi 构造器，适配层把实例挂到
   // window.__P2_HOST_API——无头 harness 用 Node 的 WebAssembly 模拟这一环。
-  globalThis.WXWebAssembly = globalThis.WebAssembly;
+  // `--no-wasm` 时**不**暴露它，模拟开发者工具/极旧基础库的"wasm 桥不可用"形态：
+  // 契约是 wasm 失败不影响 Lua 启动（clock 兜底 + boot 照常成功）。
+  // 注意：Node 自带 WebAssembly，而 wasm-bridge 的 resolveWebAssembly 在 WXWebAssembly
+  // 缺失时会回退到宿主 WebAssembly（实测：只删 WXWebAssembly 时仍报 wasm=ok:ok）——
+  // 要模拟"宿主真缺 wasm"，两个入口都必须清掉。
+  if (!noWasm) {
+    globalThis.WXWebAssembly = globalThis.WebAssembly;
+  } else {
+    try { delete globalThis.WXWebAssembly; } catch (_) { }
+    try { delete globalThis.WebAssembly; } catch (_) { }
+  }
   if (debugOverlay) stats.storage.set('p2_debug_overlay', '1');
   // 看门狗超时走存储注入（适配层读 p2_boot_timeout_ms）：默认 10s，卡死用例压到 1s 左右，
   // 否则"验证看门狗"本身要等 10 秒，进不了质量门。
@@ -2199,8 +2214,24 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
     // WP10 微信侧接线门：wasm 核心必须实例化成功且 HostApi 已挂到 __P2_HOST_API
     //（wasm-bridge 返回 glue → adapter new HostApi(...) → window.__P2_HOST_API）。
     // 这是"批次 A 在微信侧落地"的直接证据：缺了它微信端 app/clock 等仍是 missing 代理。
+    // `--no-wasm` 反转这条门：宿主没有 WXWebAssembly 时（开发者工具/极旧基础库形态），
+    // **wasm 失败不得影响 Lua 启动**（插件层既有契约）——boot 照常成功、clock 用 Lua
+    // 兜底（missing 清单不得含 clock 任何路径）、适配层必须显式报告 "__P2_HOST_API 未接线"
+    //（静默降级不可见 = 等于没降级，没法修）。
     const wasmDiag = (adapter && adapter.diag) ? adapter.diag().wasm : null;
-    if (!wasmDiag || wasmDiag.status !== 'ok' || wasmDiag.hostApi !== 'ok') {
+    if (noWasm) {
+      if (!wasmDiag || !wasmDiag.status || wasmDiag.status === 'ok') {
+        failures.push('--no-wasm 下 wasm 不应实例化成功（status=' + (wasmDiag ? wasmDiag.status : 'no-diag')
+          + '），"宿主桥不可用"的形态没被模拟出来');
+      }
+      if (consoleLogs.some((line) => /\[lua missing-host-api\] clock/.test(String(line)))) {
+        failures.push('--no-wasm 下 clock 不应走 missing 代理（应使用 Lua 兜底实现），但日志出现 [lua missing-host-api] clock*');
+      }
+      const fallbackWarn = consoleWarns.some((line) => line.includes('__P2_HOST_API 未接线'));
+      if (!fallbackWarn) {
+        failures.push('--no-wasm 下适配层未报告 __P2_HOST_API 未接线（clock 兜底不可见，静默降级）');
+      }
+    } else if (!wasmDiag || wasmDiag.status !== 'ok' || wasmDiag.hostApi !== 'ok') {
       failures.push('WP10 wasm 宿主桥未就绪（status=' + (wasmDiag ? wasmDiag.status : 'no-diag')
         + ' hostApi=' + (wasmDiag ? wasmDiag.hostApi : 'no-diag') + '）：微信侧 __P2_HOST_API 接线未生效');
     }

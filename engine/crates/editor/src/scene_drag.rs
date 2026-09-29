@@ -64,6 +64,8 @@ impl EditorApp {
         if self.is_playing() {
             self.scene_state.preview.clear();
             self.scene_state.preview_ui.clear();
+            self.scene_state.preview_anchors.clear();
+            self.scene_state.preview_padding.clear();
             return;
         }
         // 世界 → 局部**必须在 take 之前算**：`scene_drag_locals()` 读的就是
@@ -73,11 +75,14 @@ impl EditorApp {
         let locals = self.scene_drag_locals();
         let preview = std::mem::take(&mut self.scene_state.preview);
         let preview_ui = std::mem::take(&mut self.scene_state.preview_ui);
+        let preview_anchors = std::mem::take(&mut self.scene_state.preview_anchors);
+        let preview_padding = std::mem::take(&mut self.scene_state.preview_padding);
         let first = preview
             .keys()
             .next()
             .copied()
-            .or_else(|| preview_ui.keys().next().copied());
+            .or_else(|| preview_ui.keys().next().copied())
+            .or_else(|| preview_padding.keys().next().copied());
         let Some(first) = first else {
             return;
         };
@@ -108,6 +113,18 @@ impl EditorApp {
                 set_ui_component_layout(entity, *position);
             }
         }
+        // Phase 5c：写入 anchor 预览。
+        for (id, anchors) in &preview_anchors {
+            if let Some(entity) = scene.scene.entities.get_mut(id) {
+                set_ui_component_anchors(entity, *anchors);
+            }
+        }
+        // Phase 5d：写入 container padding 预览。
+        for (id, padding) in &preview_padding {
+            if let Some(entity) = scene.scene.entities.get_mut(id) {
+                set_container_padding(entity, *padding);
+            }
+        }
         scene.mark_dirty();
     }
 
@@ -117,6 +134,8 @@ impl EditorApp {
         if self.is_playing() {
             self.scene_state.preview.clear();
             self.scene_state.preview_ui.clear();
+            self.scene_state.preview_anchors.clear();
+            self.scene_state.preview_padding.clear();
             return;
         }
         self.apply_drag_preview_to_document();
@@ -269,6 +288,36 @@ pub(crate) fn set_ui_component_layout(entity: &mut SceneEntity, offsets: [f32; 4
     entity
         .components
         .insert("UiLayout".to_owned(), layout.to_component_str());
+    true
+}
+
+/// Phase 5c：把 UiLayout 的 anchors 写回组件串；非 UI 实体返回 `false`。
+pub(crate) fn set_ui_component_anchors(entity: &mut SceneEntity, anchors: [f32; 4]) -> bool {
+    let Some(raw) = entity.components.get("UiLayout") else {
+        return false;
+    };
+    let Ok(mut layout) = UiRectLayout::from_component_str(raw) else {
+        return false;
+    };
+    layout.anchors = anchors;
+    entity
+        .components
+        .insert("UiLayout".to_owned(), layout.to_component_str());
+    true
+}
+
+/// Phase 5d：把 Container 的 padding 写回组件串；非 Container 实体返回 `false`。
+pub(crate) fn set_container_padding(entity: &mut SceneEntity, padding: [f32; 4]) -> bool {
+    let Some(raw) = entity.components.get("Container") else {
+        return false;
+    };
+    let Ok(mut style) = engine::core::ui_layout::ContainerStyle::from_component_str(raw) else {
+        return false;
+    };
+    style.padding = padding;
+    entity
+        .components
+        .insert("Container".to_owned(), style.to_component_str());
     true
 }
 

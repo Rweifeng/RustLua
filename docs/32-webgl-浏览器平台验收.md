@@ -36,7 +36,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-webgl-bundle.
 
 # 显式指定产物（本机有多个合格产物，或想验证某个特定包）
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-webgl-bundle.ps1 `
-    -BundleRoot examples/game_jhyt/builds/webgl/jianghu_youtian
+    -BundleRoot examples/game_jhyt/builds/webgl
 
 # 一条命令试玩：定位产物 → 产物层验收 → 起本地服务（Ctrl-C 退出）
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-bundle.ps1

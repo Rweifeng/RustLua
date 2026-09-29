@@ -3,12 +3,12 @@
 # 与 verify-webgl.ps1 的分工：
 #   * verify-webgl.ps1  —— 平台契约层（资源获取/解析、WebGL2 能力、存储降级、缺失资源诊断），
 #                          用一张契约检查页跑，不依赖 wasm 模块；
-#   * 本脚本            —— 产物层：直接起静态服务器 + 无头浏览器打开 `builds/webgl/<name>/index.html`，
+#   * 本脚本            —— 产物层：直接起静态服务器 + 无头浏览器打开 `builds/webgl/index.html`，
 #                          断言 wasm 模块加载、页面进入 Lua 执行（`data-p2-boot` 标记）。
 #
 # 用法：
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify-webgl-bundle.ps1 `
-#       [-BundleRoot examples\game_jhyt\builds\webgl\jianghu_youtian] [-Port 8137] [-TimeoutSeconds 90]
+#       [-BundleRoot examples\game_jhyt\builds\webgl] [-Port 8137] [-TimeoutSeconds 90]
 #
 # 省略 -BundleRoot 时自动发现（本机唯一的合格 webgl 产物，见 scripts\bundle-discovery.ps1）：
 # 默认值不再写死某个游戏工程，任何工程发布后都能直接跑。

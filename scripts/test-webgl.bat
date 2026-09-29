@@ -9,7 +9,7 @@ rem
 rem Keep this file ASCII-only and WITHOUT a UTF-8 BOM (see plugins\webgl\test-webgl.bat).
 rem
 rem Usage: test-webgl.bat [extra args for scripts\test-bundle.ps1]
-rem   test-webgl.bat -BundleRoot examples\game_jhyt\builds\webgl\jianghu_youtian -Port 8199
+rem   test-webgl.bat -BundleRoot examples\game_jhyt\builds\webgl -Port 8199
 
 setlocal EnableExtensions
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0test-bundle.ps1" -Platform webgl %*

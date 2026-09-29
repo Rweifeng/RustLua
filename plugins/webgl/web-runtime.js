@@ -397,7 +397,7 @@
       if (parts[0] === 'P') {
         panels.push({ id: parts[1], x: +parts[2], y: +parts[3], w: +parts[4], h: +parts[5], r: +parts[6], g: +parts[7], b: +parts[8], a: parts[9] === undefined ? 1 : +parts[9], shape: parts[10] === undefined ? 0 : +parts[10] });
       } else if (parts[0] === 'I') {
-        images.push({ id: parts[1], x: +parts[2], y: +parts[3], w: +parts[4], h: +parts[5], texture: parts[6] || '', r: +parts[7], g: +parts[8], b: +parts[9] });
+        images.push({ id: parts[1], x: +parts[2], y: +parts[3], w: +parts[4], h: +parts[5], texture: parts[6] || '', r: +parts[7], g: +parts[8], b: +parts[9], slice: parts[10] || '' });
       } else if (parts[0] === 'B') {
         bars.push({ id: parts[1], x: +parts[2], y: +parts[3], w: +parts[4], h: +parts[5], ratio: +parts[6], r: +parts[7], g: +parts[8], b: +parts[9] });
       } else if (parts[0] === 'X') {
@@ -433,6 +433,42 @@
 
   let LAST_UI_SUMMARY = '';
 
+  // 9-slice 绘制（与引擎 nine_slice_cells 对齐）：corners 固定像素、edges 单向拉伸、
+  // center 双向拉伸。slice = "l,r,t,b" 纹理像素；目标比边距和还窄时边距等比收缩。
+  function drawNineSliceImage(ctx, tex, dx, dy, dw, dh, sliceStr) {
+    const tw = tex.naturalWidth || tex.width;
+    const th = tex.naturalHeight || tex.height;
+    if (!(tw > 0) || !(th > 0)) return;
+    const parts = String(sliceStr || '').split(',').map(Number);
+    if (parts.length !== 4 || parts.some(v => !Number.isFinite(v) || v < 0)) {
+      ctx.drawImage(tex, dx, dy, dw, dh);
+      return;
+    }
+    let [l, r, t, b] = parts;
+    // 目标比左右边距和还窄时等比压缩边距（与 Rust dst_col_f 逻辑一致）。
+    const fx = (l + r > dw && l + r > 0) ? dw / (l + r) : 1;
+    const fy = (t + b > dh && t + b > 0) ? dh / (t + b) : 1;
+    l *= fx; r *= fx; t *= fy; b *= fy;
+    const sw = tw - l - r, sh = th - t - b;      // source center 尺寸
+    const dwc = dw - l - r, dhc = dh - t - b;     // dest center 尺寸
+    // [sx, sy, sWidth, sHeight, dx, dy, dWidth, dHeight]
+    const cells = [
+      [0, 0, l, t, dx, dy, l, t],                                  // TL
+      [l, 0, sw, t, dx + l, dy, dwc, t],                           // top edge
+      [tw - r, 0, r, t, dx + l + dwc, dy, r, t],                   // TR
+      [0, t, l, sh, dx, dy + t, l, dhc],                           // left edge
+      [l, t, sw, sh, dx + l, dy + t, dwc, dhc],                    // center
+      [tw - r, t, r, sh, dx + l + dwc, dy + t, r, dhc],            // right edge
+      [0, th - b, l, b, dx, dy + t + dhc, l, b],                   // BL
+      [l, th - b, sw, b, dx + l, dy + t + dhc, dwc, b],           // bottom edge
+      [tw - r, th - b, r, b, dx + l + dwc, dy + t + dhc, r, b],    // BR
+    ];
+    for (const c of cells) {
+      if (c[6] <= 0 || c[7] <= 0 || c[2] <= 0 || c[3] <= 0) continue;
+      ctx.drawImage(tex, c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]);
+    }
+  }
+
   function drawUi(ctx, uiText, images, pending) {
     const ui = parseUiLines(uiText);
     LAST_UI_SUMMARY = ui.panels.map(item => (item.shape === 1 ? 'C:' : 'P:') + item.id)
@@ -456,7 +492,11 @@
     for (const image of ui.images) {
       const texture = ensureTexture(images, pending, image.texture);
       if (!texture) continue;
-      ctx.drawImage(texture, image.x, image.y, image.w, image.h);
+      if (image.slice) {
+        drawNineSliceImage(ctx, texture, image.x, image.y, image.w, image.h, image.slice);
+      } else {
+        ctx.drawImage(texture, image.x, image.y, image.w, image.h);
+      }
     }
     for (const bar of ui.bars) {
       ctx.fillStyle = uiColor(bar.r, bar.g, bar.b, 1);
@@ -758,6 +798,10 @@ local function __p2_virtual_name(key)
   local name = tostring(key):lower()
   local letter = name:match('^key([a-z])$')
   if letter then return letter end
+  -- native 引擎把"关闭"作为独立物理键 cancel；web 键盘关闭键是 Escape，
+  -- bindings.cancel 绑在 'escape' 上。虚拟控件注入 "cancel" 时须翻成 'escape'，
+  -- 否则 just["cancel"] 永远不被 action_pressed("cancel") 读到（关闭按钮点了没反应）。
+  if name == 'cancel' then return 'escape' end
   return name
 end
 input = { axis = function(name) name = tostring(name or 'x'):lower(); if name == 'x' or name == 'horizontal' then return __p2_input.axis_x or 0 end; if name == 'y' or name == 'vertical' then return __p2_input.axis_y or 0 end; return 0 end, is_down = function(key) return __p2_input.keys[tostring(key):lower()] == true end, just_pressed = function(key) return __p2_input.just[tostring(key):lower()] == true end, mouse_is_down = function(button) return __p2_input.mouse[tostring(button or 0)] == true end, mouse_just_pressed = function(button) return __p2_input.mouse_just[tostring(button or 0)] == true end, cursor_position = function() return __p2_input.cursor or {0, 0} end, press_position = function() return __p2_input.press_cursor or __p2_input.cursor or {0, 0} end, cursor_delta = function() return __p2_input.cursor_delta or {0, 0} end, scroll_delta = function() return __p2_input.scroll or 0 end, mouse_just_released = function(button) return __p2_input.mouse_just_released and __p2_input.mouse_just_released[tostring(button or 0)] == true end, virtual_key = function(key, down) local name = __p2_virtual_name(key); if down then __p2_virtual_keys[name] = true else __p2_virtual_keys[name] = nil end; if __p2_input.keys then __p2_input.keys[name] = down and true or false end end, virtual_pressed = function(key) local name = __p2_virtual_name(key); __p2_virtual_keys[name] = true; __p2_virtual_just[name] = true; if __p2_input.keys then __p2_input.keys[name] = true end; if __p2_input.just then __p2_input.just[name] = true end end }
@@ -1572,8 +1616,10 @@ function ui.circle(id, cx, cy, radius, r, g, b, a)
   local value = tonumber(radius) or 0
   __p2_ui_panels[id] = { x = cx - value, y = cy - value, w = value * 2, h = value * 2, r = r, g = g, b = b, a = a, visible = true, shape = 1 }
 end
-function ui.image(id, x, y, w, h, texture, r, g, b)
-  __p2_ui_images[id] = { x = x, y = y, w = w, h = h, texture = tostring(texture or ''), r = r or 1, g = g or 1, b = b or 1, visible = true }
+function ui.image(id, x, y, w, h, texture, r, g, b, slice)
+  local s = nil
+  if slice ~= nil and tostring(slice) ~= '' then s = tostring(slice) end
+  __p2_ui_images[id] = { x = x, y = y, w = w, h = h, texture = tostring(texture or ''), r = r or 1, g = g or 1, b = b or 1, slice = s, visible = true }
 end
 function ui.bar(id, x, y, w, h, ratio, r, g, b)
   local value = tonumber(ratio) or 0
@@ -1639,7 +1685,7 @@ function __p2_export_ui()
   end
   for id, i in pairs(__p2_ui_images) do
     if i.visible then
-      rows[#rows + 1] = 'I\\t' .. flat(id) .. '\\t' .. num(i.x) .. '\\t' .. num(i.y) .. '\\t' .. num(i.w) .. '\\t' .. num(i.h) .. '\\t' .. flat(i.texture) .. '\\t' .. num(i.r) .. '\\t' .. num(i.g) .. '\\t' .. num(i.b)
+      rows[#rows + 1] = 'I\\t' .. flat(id) .. '\\t' .. num(i.x) .. '\\t' .. num(i.y) .. '\\t' .. num(i.w) .. '\\t' .. num(i.h) .. '\\t' .. flat(i.texture) .. '\\t' .. num(i.r) .. '\\t' .. num(i.g) .. '\\t' .. num(i.b) .. '\\t' .. flat(i.slice or '')
     end
   end
   for id, b in pairs(__p2_ui_bars) do
@@ -2045,7 +2091,14 @@ end
     });
 
     const api = window.__P2_HOST_API;
-    if (!api) return;
+    if (!api) {
+      // wasm 宿主桥未接线（微信侧 wasm 核心不可用/未实例化时的真实形态）：clock 由
+      // genericCompat 的 Lua 兜底接管（now/set/set_rate），calendar/day/app 走 missing
+      // 代理自报。**不再硬崩**——wasm 失败不影响 Lua 启动是插件层既有的文档契约。
+      // 桥的状态在微信侧见 __P2_DIAG().wasm（status/hostApi）。
+      console.warn('[web-runtime] __P2_HOST_API 未接线：clock 走 Lua 兜底，calendar/day/app 自报缺失（wasm 桥状态见 __P2_DIAG().wasm）');
+      return;
+    }
 
     registerHostTable('clock', {
       now(Ls) {
@@ -2501,6 +2554,14 @@ for _, api in ipairs({audio, input}) do
 end
 `;
       const genericCompat = `
+-- clock 兜底（WP10 批 A 之后补）：批 A 把 clock 编译进 wasm，web 侧由
+-- registerHostTable('clock') 注册成真实 fengari 全局；但微信侧 __P2_HOST_API 未接线
+-- （wasm 桥不可用）时 clock 是 nil，直接 function clock.xxx 会
+-- attempt to index a nil value (global 'clock') 把启动打崩（实测：微信开发者工具）。
+-- 先给一张空表兜底，now/set/set_rate 用 Lua 侧游戏时间（day 默认从 1 起，与批 B 前
+-- 真实设备一致）；pause/add/sleep_to_morning 未实现时由 missing 代理自报。
+-- calendar/day/app 保持 missing 代理（批 B 前的真实设备行为，游戏可容忍）。
+clock = clock or {}
 local rate, currentDay, minute = 0, 1, 0
 function clock.set_rate(value) rate = assert(tonumber(value)) end
 function clock.set(dayValue, minuteValue) currentDay = dayValue; minute = minuteValue end

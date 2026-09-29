@@ -162,9 +162,10 @@ impl EditorApp {
                         name: "New Widget".to_owned(),
                     });
                 }
-                ui.label("控件");
+                ui.label("控件（点击创建 / 拖到画布）");
+                // 5b：统一走 create_widget_at_center，与拖放创建共用同一路径。
                 if ui.button("Text").clicked() {
-                    self.add_entity_with_component("New Text", "Text");
+                    self.create_widget_at_center("Text");
                 }
                 ui.dnd_drag_source(
                     egui::Id::new("widget_palette_text"),
@@ -172,7 +173,7 @@ impl EditorApp {
                     |ui| ui.small("↕"),
                 );
                 if ui.button("Image").clicked() {
-                    self.add_entity_with_component("New Image", "Image");
+                    self.create_widget_at_center("Image");
                 }
                 ui.dnd_drag_source(
                     egui::Id::new("widget_palette_image"),
@@ -180,14 +181,27 @@ impl EditorApp {
                     |ui| ui.small("↕"),
                 );
                 if ui.button("Button").clicked() {
-                    self.add_entity_with_component("New Button", "Image");
-                    if let Err(error) = self.add_component("UiEvents") {
-                        self.status = error;
-                    }
+                    self.create_widget_at_center("Button");
                 }
                 ui.dnd_drag_source(
                     egui::Id::new("widget_palette_button"),
                     "widget:Button".to_owned(),
+                    |ui| ui.small("↕"),
+                );
+                if ui.button("Panel").clicked() {
+                    self.create_widget_at_center("Panel");
+                }
+                ui.dnd_drag_source(
+                    egui::Id::new("widget_palette_panel"),
+                    "widget:Panel".to_owned(),
+                    |ui| ui.small("↕"),
+                );
+                if ui.button("Container").clicked() {
+                    self.create_widget_at_center("Container");
+                }
+                ui.dnd_drag_source(
+                    egui::Id::new("widget_palette_container"),
+                    "widget:Container".to_owned(),
                     |ui| ui.small("↕"),
                 );
             }

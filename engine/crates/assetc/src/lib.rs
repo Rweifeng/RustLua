@@ -628,7 +628,7 @@ const PACKAGE_SOURCE_DIRS: &[&str] = &["scenes", "scripts", "assets"];
 /// **允许** `out` 位于项目内的其它位置（如 `builds/`）：`scan`/`collect_data_files`
 /// 只遍历 `project.toml` 与上述三个子目录，因此 `builds/` 下的发布产物不会被当成
 /// 项目数据；`scripts/package.ps1` 的原子发布正是这样布局的
-/// （`<project>/builds/<platform>/<name>/.staging-*/pack`）。
+/// （`<project>/builds/<platform>/.staging-*/pack`）。
 fn ensure_distinct_output(project: &Path, out: &Path) -> Result<(), String> {
     let project_abs = canonical_or_absolute(project)?;
     let out_abs = canonical_or_absolute(out)?;
@@ -1125,7 +1125,7 @@ mod tests {
         cleanup(&root);
     }
 
-    /// 发布脚本的真实布局（`<project>/builds/<platform>/<name>/.staging-*/pack`）
+    /// 发布脚本的真实布局（`<project>/builds/<platform>/.staging-*/pack`）
     /// 必须**允许**：`scan`/`collect_data_files` 只遍历 `project.toml` 与
     /// `scenes/`/`scripts/`/`assets/`，因此 `builds/` 下的产物不会被当成项目数据。
     /// 回归背景：更严格的「输出不能位于项目内部」规则曾让 `package.ps1 -SelfTest`

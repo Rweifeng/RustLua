@@ -67,7 +67,7 @@ cargo run -p editor -- --project ..\examples\game_jhyt --check
 | 编辑器整帧 smoke（合成输入的 DPI/resize/拖放/停靠/多选/弹窗） | `cargo run -p editor -- --gui-smoke`（`--gui-report <文件>` 落报告） |
 | 干净目录发布自测 | `scripts\package.ps1 -ProjectRoot examples/game_jhyt -SelfTest` |
 | WebGL 产物层启动验收 | `scripts\verify-webgl-bundle.ps1` |
-| 微信小游戏产物层验收 | `scripts\verify-wechat-minigame.ps1`（默认取 `examples/game_jhyt/builds/wechat-minigame/<发布名>`，`-BundleRoot` 可指定） |
+| 微信小游戏产物层验收 | `scripts\verify-wechat-minigame.ps1`（默认取 `examples/game_jhyt/builds/wechat-minigame`，`-BundleRoot` 可指定） |
 | 本地试玩某个 web 平台产物（自动发现 + 验收 + 起服务） | `scripts\test-bundle.ps1`（`-Platform wechat-minigame` 切平台） |
 
 门全绿的含义与逐项通过标准见 [docs/34-质量门与发布清单.md](docs/34-质量门与发布清单.md)；

@@ -219,7 +219,7 @@ save_version=2
   `collect_files` 一边遍历一边写入（自我复制，且下次打包把产物当输入）。**允许**
   `out` 位于项目内的其它位置（如 `builds/`）——`scan`/`collect_data_files` 只遍历
   `project.toml` 与那三个子目录，`scripts/package.ps1` 的原子发布正是这样布局的
-  （`<project>/builds/<platform>/<name>/.staging-*/pack`）。比较前先规范化路径
+  （`<project>/builds/<platform>/.staging-*/pack`）。比较前先规范化路径
   （`canonical_or_absolute`：输出目录通常不存在，按"最近存在的祖先 + 剩余分量"规范化），
   因此 `assets/dist/../dist` 这类写法绕不过检查。
   > 回归记录：这条规则最初写成"输出目录位于项目内部一律拒绝"，`verify.ps1 -Mvp`

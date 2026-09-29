@@ -529,7 +529,7 @@ impl EditorApp {
                 self.save_scene_force();
             }
             MenuAction::ProjectSettings => self.open_project_settings(),
-            MenuAction::PublishProject => self.show_publish_panel = true,
+            MenuAction::PublishProject => self.publish.show_panel = true,
             MenuAction::Quit => {
                 self.request_document_change(crate::actions::PendingChange::QuitEditor)
             }
@@ -592,7 +592,7 @@ impl EditorApp {
             MenuAction::ToggleDomainData => {
                 self.show_domain_data_panel = !self.show_domain_data_panel;
             }
-            MenuAction::TogglePublishPanel => self.show_publish_panel = !self.show_publish_panel,
+            MenuAction::TogglePublishPanel => self.publish.show_panel = !self.publish.show_panel,
             MenuAction::TogglePerformancePanel => {
                 self.show_performance_panel = !self.show_performance_panel;
             }

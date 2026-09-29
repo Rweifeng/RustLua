@@ -48,6 +48,28 @@ impl fmt::Display for PublishPlatform {
     }
 }
 
+/// 发布面板的全部 UI 状态（P1 EditorApp 瘦身：从 `EditorApp` 5 个散字段收敛）。
+#[derive(Clone, Debug)]
+pub(crate) struct PublishState {
+    pub(crate) show_panel: bool,
+    pub(crate) platform: PublishPlatform,
+    pub(crate) name: String,
+    pub(crate) compress: bool,
+    pub(crate) encrypt: bool,
+}
+
+impl PublishState {
+    pub(crate) fn new(project_root: &Path) -> Self {
+        Self {
+            show_panel: false,
+            platform: PublishPlatform::Pc,
+            name: default_publish_name(project_root),
+            compress: false,
+            encrypt: false,
+        }
+    }
+}
+
 impl EditorApp {
     /// 启动 Release 发布打包（后台执行 scripts/package.ps1，非阻塞、不弹终端窗）。
     pub(crate) fn start_publish(&mut self) {
@@ -67,20 +89,20 @@ impl EditorApp {
         // open_project 会生成 \\?\ 逐字路径，PowerShell -File 不识别，需先去掉前缀。
         let script = strip_verbatim(&found);
         let project_root = strip_verbatim(&self.project.root);
-        let publish_name = normalize_publish_name(&self.publish_name, &self.project.root);
+        let publish_name = normalize_publish_name(&self.publish.name, &self.project.root);
         let package_dir = project_root
             .join("builds")
-            .join(self.publish_platform.script_value())
+            .join(self.publish.platform.script_value())
             .join(&publish_name);
         let (tx, rx) = channel();
         spawn_publish(
             PublishRequest {
                 script,
                 project_root,
-                platform: self.publish_platform,
+                platform: self.publish.platform,
                 publish_name,
-                compress: self.publish_compress,
-                encrypt: self.publish_encrypt,
+                compress: self.publish.compress,
+                encrypt: self.publish.encrypt,
                 skip_build: false,
             },
             tx,

@@ -16,6 +16,7 @@ mod publish;
 mod scene_drag;
 mod scene_interaction;
 mod scene_ops;
+mod scene_resize;
 mod scene_tools;
 mod ui_editor;
 mod util;
@@ -552,11 +553,7 @@ struct EditorApp {
     scene_state: SceneEditorState,
     inspector_clipboard: Option<ComponentClipboard>,
     progress: ProgressPanel,
-    show_publish_panel: bool,
-    publish_platform: crate::publish::PublishPlatform,
-    publish_name: String,
-    publish_compress: bool,
-    publish_encrypt: bool,
+    publish: crate::publish::PublishState,
     /// 底部资源浏览器 / Lua 控制台面板的显示开关（收起后 Scene/Game 视图获得最大空间）。
     show_resources_panel: bool,
     show_lua_console: bool,
@@ -1023,6 +1020,8 @@ struct SceneEditorState {
     /// UI 组件拖拽预览（实体 id → UiLayout 四边 offset 预览值）。布局与视觉
     /// 组件分离，拖拽时单独预览，提交时写回 `UiLayout`。
     preview_ui: std::collections::BTreeMap<SceneEntityId, [f32; 4]>,
+    /// Phase 5c：锚点拖拽预览（实体 id → anchors 四元组预览值）。
+    preview_anchors: std::collections::BTreeMap<SceneEntityId, [f32; 4]>,
     /// 3D 实体变换预览（画布俯视 XZ 投影；M9-03/M10-07）。
     preview3d_transform: std::collections::BTreeMap<SceneEntityId, Transform3D>,
     /// 3D 平移/旋转/缩放 Gizmo 拖拽（M9-03/M10-07）。
@@ -1035,6 +1034,16 @@ struct SceneEditorState {
     /// M19-03 矩形工具拖拽起点/当前格（TilePaint 的矩形填充与区域复制共用）。
     tile_rect_anchor: Option<(usize, usize)>,
     tile_rect_current: Option<(usize, usize)>,
+    /// Phase 5a：当前激活的缩放手柄（Widget 模式下选中 UI 实体时）。
+    resize_handle: Option<crate::scene_resize::ResizeHandle>,
+    /// Phase 5c：当前激活的锚点手柄（Widget 模式下按住 Alt 时显示）。
+    anchor_handle: Option<crate::scene_resize::AnchorHandle>,
+    /// Phase 5d：Container padding 拖拽预览（实体 id → padding 四元组预览值）。
+    preview_padding: std::collections::BTreeMap<SceneEntityId, [f32; 4]>,
+    /// Phase 5d：当前激活的 padding 手柄（Widget 模式下选中 Container 实体时）。
+    padding_handle: Option<crate::scene_resize::PaddingHandle>,
+    /// Phase 5d：padding 拖拽开始时的初始 padding 和实体外框（面板坐标）。
+    padding_drag_initial: Option<([f32; 4], egui::Rect)>,
 }
 
 struct SceneDrag {
@@ -1053,6 +1062,8 @@ struct UiDragInitial {
     /// `UiLayout` 四边 offset（authored 坐标）。UI 元素绘制在设计分辨率
     /// 包围框内，拖动增量换算为 zoom/ppp（见 draw_scene_view）。
     offsets: [f32; 4],
+    /// Phase 5c：`UiLayout` 四元组 anchors（归一化 0..1）。
+    anchors: [f32; 4],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1078,7 +1089,6 @@ impl EditorApp {
         log_sink: LogSink,
     ) -> Self {
         let project_loaded = project.root.join("project.toml").is_file();
-        let publish_name = crate::publish::default_publish_name(&project.root);
         let recovery = RecoveryManager::new(project.root.join(".temp"));
         // 启动扫描失败（权限/IO）不能让编辑器假装"没有待恢复内容"：把原因写进状态栏，
         // 而不是用 `unwrap_or_default()` 静默吞掉。
@@ -1086,6 +1096,7 @@ impl EditorApp {
             Ok(scan) => (scan, None),
             Err(error) => (RecoveryScan::default(), Some(error.to_string())),
         };
+        let publish = crate::publish::PublishState::new(&project.root);
         Self {
             document: ProjectDocument::open(project.clone()),
             project,
@@ -1155,11 +1166,7 @@ impl EditorApp {
             scene_state: SceneEditorState::default(),
             inspector_clipboard: None,
             progress: ProgressPanel::default(),
-            show_publish_panel: false,
-            publish_platform: crate::publish::PublishPlatform::Pc,
-            publish_name,
-            publish_compress: false,
-            publish_encrypt: false,
+            publish,
             show_resources_panel: true,
             show_lua_console: true,
             show_domain_data_panel: false,

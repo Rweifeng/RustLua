@@ -1923,6 +1923,102 @@ impl EditorApp {
         }
     }
 
+    /// 5b：覆盖主选实体的 UiLayout offsets（一条历史，可撤销）。
+    /// 拖放创建后用来把默认中心定位改成落点位置。
+    pub(crate) fn set_ui_layout_offsets(&mut self, offsets: [f32; 4]) {
+        let Some(id) = self.selection.primary() else {
+            return;
+        };
+        let Some(scene) = self.document.current_scene.as_mut() else {
+            return;
+        };
+        let _ = self.history.execute(
+            scene,
+            "Position widget",
+            CommandKind::Property,
+            move |scene| {
+                if let Some(entity) = scene.scene.entities.get_mut(&id) {
+                    crate::scene_drag::set_ui_component_layout(entity, offsets);
+                }
+                scene.mark_dirty();
+                Ok::<(), InspectorError>(())
+            },
+        );
+    }
+
+    /// 5c：覆盖主选实体的 UiLayout anchors（一条历史，可撤销）。
+    pub(crate) fn set_ui_layout_anchors(&mut self, anchors: [f32; 4]) {
+        let Some(id) = self.selection.primary() else {
+            return;
+        };
+        let Some(scene) = self.document.current_scene.as_mut() else {
+            return;
+        };
+        let _ = self.history.execute(
+            scene,
+            "Adjust anchors",
+            CommandKind::Property,
+            move |scene| {
+                if let Some(entity) = scene.scene.entities.get_mut(&id) {
+                    if let Some(raw) = entity.components.get("UiLayout") {
+                        if let Ok(mut layout) =
+                            engine::core::ui_layout::UiRectLayout::from_component_str(raw)
+                        {
+                            layout.anchors = anchors;
+                            entity.components.insert(
+                                "UiLayout".to_owned(),
+                                layout.to_component_str(),
+                            );
+                        }
+                    }
+                }
+                scene.mark_dirty();
+                Ok::<(), InspectorError>(())
+            },
+        );
+    }
+
+    /// 5b：在设计分辨率指定位置创建 widget（面板 → 设计像素已换算）。
+    /// 默认 200×100 尺寸，中心锚点，按 widget 类型附加视觉/事件组件。
+    pub(crate) fn create_widget_at(&mut self, widget: &str, design_pos: egui::Pos2) {
+        let (name, component) = match widget {
+            "Text" => ("New Text", "Text"),
+            "Image" => ("New Image", "Image"),
+            "Button" => ("New Button", "Image"),
+            "Panel" => ("New Panel", "Image"),
+            "Container" => ("New Container", "Container"),
+            _ => {
+                self.status = format!("未知 Widget 类型：{widget}");
+                return;
+            }
+        };
+        self.add_entity_with_component(name, component);
+        // 默认 default_element() 是 200×100 中心锚点：offsets = [-100, -50, 100, 50]。
+        // 按落点平移：offsets += (design_pos - design_center)。
+        let design_center = egui::pos2(
+            self.preview_resolution.0 as f32 * 0.5,
+            self.preview_resolution.1 as f32 * 0.5,
+        );
+        let dx = design_pos.x - design_center.x;
+        let dy = design_pos.y - design_center.y;
+        let offsets = [-100.0 + dx, -50.0 + dy, 100.0 + dx, 50.0 + dy];
+        self.set_ui_layout_offsets(offsets);
+        if widget == "Button" {
+            if let Err(error) = self.add_component("UiEvents") {
+                self.status = error;
+            }
+        }
+    }
+
+    /// 5b：在设计分辨率中心创建 widget（无落点时的回退路径）。
+    pub(crate) fn create_widget_at_center(&mut self, widget: &str) {
+        let design_center = egui::pos2(
+            self.preview_resolution.0 as f32 * 0.5,
+            self.preview_resolution.1 as f32 * 0.5,
+        );
+        self.create_widget_at(widget, design_center);
+    }
+
     /// 收集项目用到的字符并写入项目根 `chars.txt`（首包字体预热）。场景视图下次
     /// 重建图集时读到它并预生成字形，避免首帧文字卡顿。
     pub(crate) fn collect_font_chars(&mut self) {

@@ -12,7 +12,7 @@ rem
 rem Keep this file ASCII-only and WITHOUT a UTF-8 BOM (see plugins\webgl\test-webgl.bat).
 rem
 rem Usage: test-wechat-minigame.bat [extra args for scripts\test-bundle.ps1]
-rem   test-wechat-minigame.bat -BundleRoot examples\game_jhyt\builds\wechat-minigame\jianghu_youtian\launcher
+rem   test-wechat-minigame.bat -BundleRoot examples\game_jhyt\builds\wechat-minigame\launcher
 rem   test-wechat-minigame.bat -Port 8899
 
 setlocal EnableExtensions

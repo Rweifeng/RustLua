@@ -1,7 +1,8 @@
 ﻿# bundle-discovery.ps1：定位「某个游戏工程的某个平台的发布产物目录」。
 #
-# 为什么需要它：发布产物落在 `examples\<工程>\builds\<平台>\<publish_name>\`，而验收/试玩
-# 脚本此前把 `examples\game_jhyt\builds\webgl\jianghu_youtian` 写死成默认值——换一个游戏工程、
+# 为什么需要它：发布产物落在 `examples\<工程>\builds\<平台>\`（2026-09-28 起不再按 publish_name
+# 建子目录；旧布局 `<publish_name>\` 子目录仍被兼容识别）。验收/试玩脚本此前把
+# `examples\game_jhyt\builds\webgl\jianghu_youtian` 写死成默认值——换一个游戏工程、
 # 换一个 publish_name 就失效。这里把「一个合格的发布包长什么样」收成一处，供
 # verify-webgl-bundle.ps1 / verify-wechat-minigame.ps1 / test-bundle.ps1 共同点源。
 #
@@ -240,6 +241,23 @@ function Find-GameBundle {
         if (-not (Test-Path -LiteralPath $platformRoot)) { continue }
         $scanRoots.Add($platformRoot)
 
+        # 新布局（2026-09-28 起）：产物直接落在 `builds\<平台>\`，平台根自身就是发布根。
+        # 平台根合格时只认它（微信的 launcher/ 是其内部结构，不能再当独立候选数一遍）。
+        $rootReason = Get-BundleRejectReason -Path $platformRoot -Platform $Platform
+        if (-not $rootReason) {
+            $info = Get-BundleBuildInfo -Path $platformRoot -Platform $Platform
+            $candidates.Add([pscustomobject]@{
+                    # Path = 验收脚本要吃的目录（微信是发布根下的 launcher/），ReleaseRoot = 发布根。
+                    Path        = (Resolve-BundleArtifactRoot -Path $platformRoot -Platform $Platform)
+                    ReleaseRoot = $platformRoot
+                    PublishName = $info.PublishName
+                    BuildTime   = $info.BuildTime
+                    Modified    = (Get-Item -LiteralPath $platformRoot -Force).LastWriteTime
+                })
+            continue
+        }
+
+        # 旧布局（`<publish_name>\` 子目录）兼容：平台根自身不合格时，枚举子目录候选。
         # -Force 让隐藏项也进入枚举：staging/backup 目录带前导点。
         foreach ($candidate in (Get-ChildItem -LiteralPath $platformRoot -Directory -Force -ErrorAction SilentlyContinue)) {
             # 只跳过「名字本身就是 staging/backup」的候选。注意 staging 是建在发布目录**内部**的

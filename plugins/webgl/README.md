@@ -37,7 +37,7 @@ powershell -NoProfile -File scripts\test-bundle.ps1
 powershell -NoProfile -File scripts\verify-webgl-bundle.ps1
 ```
 
-产物的定位规则收在 `scripts/bundle-discovery.ps1`：扫 `examples\<工程>\builds\webgl\<publish_name>`，
+产物的定位规则收在 `scripts/bundle-discovery.ps1`：扫 `examples\<工程>\builds\webgl`，
 标记文件清单与 `package.ps1` 的产物校验数组**逐项一致**（含 `pkg/fengari-web.js`——正是它把随包
 Lua VM 之前的历史产物挡在发现之外，否则一个「index.html 与 wasm 都在、却在浏览器里进不了 Lua」
 的包会被选中）。本机有多个合格产物时不做猜测，要求显式 `-BundleRoot`。

@@ -3201,14 +3201,19 @@ impl Renderer {
                     for index in layer_indices(&mesh.draws, |draw| draw.render_layer, *layer) {
                         let draw = &mesh.draws[index];
                         if draw.sdf {
-                            // SDF 文本：Linear 采样 + SDF shader 分支。默认字体用全局图集
-                            // bind；自定义字体（font://...）按该字体的 draw 选对应 bind。
-                            let Some(sdf_bind) = self.sdf_bind_for(draw.texture, &mesh.paths)
-                            else {
+                            // 文本绘制：共用 pipeline_sdf（shader 按顶点 sdf 值分支）。
+                            // bitmap（sdf=2）：Nearest 采样 + MSDF 阈值化，小字号清晰。
+                            // MSDF（sdf=1）：Linear 采样 + smoothstep AA，大字号平滑。
+                            let bind = if draw.bitmap {
+                                self.bind_group_for(draw.texture, &mesh.paths, &mesh.path_handles)
+                            } else {
+                                self.sdf_bind_for(draw.texture, &mesh.paths)
+                            };
+                            let Some(bind) = bind else {
                                 continue;
                             };
                             pass.set_pipeline(&self.pipeline_sdf);
-                            pass.set_bind_group(0, &sdf_bind, &[]);
+                            pass.set_bind_group(0, &bind, &[]);
                             pass.draw(draw.start..draw.start + draw.count, 0..1);
                             record_vertex_draw(&mut metrics, draw.count);
                             continue;
@@ -5000,6 +5005,7 @@ mod tests {
                 start: 0,
                 count: 6,
                 sdf: false,
+                bitmap: false,
                 vector: false,
                 render_layer: crate::core::layer::RenderLayer::World2D,
             }],
@@ -5820,6 +5826,7 @@ mod tests {
                     start: 0,
                     count: 6,
                     sdf: false,
+                    bitmap: false,
                     vector: false,
                     render_layer: RenderLayer::World2D,
                 },

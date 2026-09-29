@@ -15,10 +15,10 @@
 
     边界：开发者工具需要勾选「不校验合法域名、TLS 版本以及 HTTPS 证书」；
     真机访问不到本机 127.0.0.1，且必须 HTTPS + mp 后台 downloadFile 合法域名。
-    发布根布局是 <PublishName>/{launcher,assets}，服务的是 assets/，开发者工具导入的是 launcher/。
+    发布根布局是 builds/<平台>/{launcher,assets}，服务的是 assets/，开发者工具导入的是 launcher/。
 #>
 param(
-    [string]$Root = "examples\game_jhyt\builds\wechat-minigame\jianghu_youtian\assets",
+    [string]$Root = "examples\game_jhyt\builds\wechat-minigame\assets",
     [int]$Port = 8787,
     # 参数不能叫 $Host：那是 PowerShell 的只读自动变量，赋值会直接报
     # "Cannot overwrite variable Host because it is read-only or constant."（实测启动即失败）。

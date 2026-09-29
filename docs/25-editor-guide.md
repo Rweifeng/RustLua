@@ -153,7 +153,7 @@ editor [--project <项目路径>] [--check] [--help]
   - **发布平台**：PC / WebGL / 微信小游戏。
   - **发布名**（默认取 `project.toml` 的 `name`）、**压缩**、**加密**、**发布** 按钮。
   - 后台启动 [scripts/package.ps1](../scripts/package.ps1)（`powershell -NoProfile -ExecutionPolicy Bypass`，不弹终端窗），参数 `-ProjectRoot -Platform -PublishName [-Compress] [-Encrypt]`。
-  - 输出目录：`<项目>/builds/<平台>/<发布名>`；进度阶段映射：Release 构建 0.15 → assetc 打包 0.55 → 复制运行器 0.7 → 目录隔离自测 0.85 → 就绪 0.95。
+  - 输出目录：`<项目>/builds/<平台>`；进度阶段映射：Release 构建 0.15 → assetc 打包 0.55 → 复制运行器 0.7 → 目录隔离自测 0.85 → 就绪 0.95。
   - 完成显示输出目录 + **打开目录**；完整日志存 `artifacts/builds/release/publish-last.log`。
 
 ## 12. 崩溃恢复

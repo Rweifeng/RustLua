@@ -6,6 +6,7 @@ use crate::geometry::{
 };
 use crate::panels::tilemap_tools::{CellRect, TileFill, copy_region, fill_rect, paste_region};
 use crate::scene_interaction::{InteractionEvent, ToolPhase};
+use crate::scene_resize;
 use crate::util::icon_toggle;
 use crate::util::strip_verbatim_prefix;
 use crate::{
@@ -52,23 +53,38 @@ impl EditorApp {
             self.scene_view_fit_pending = false;
             self.fit_scene_view_to_design(rect);
         }
-        // 拖放：把资源浏览器中的纹理拖到场景创建精灵。
+        // 拖放：把资源浏览器中的纹理拖到场景创建精灵；Widget 模式下拖放控件到落点位置。
         let (_, dropped_texture) = ui
             .dnd_drop_zone::<String, egui::Response>(egui::Frame::default(), |ui| {
                 ui.allocate_rect(rect, egui::Sense::hover())
             });
         if let Some(path) = dropped_texture {
             if let Some(widget) = path.strip_prefix("widget:") {
-                match widget {
-                    "Text" => self.add_entity_with_component("New Text", "Text"),
-                    "Image" => self.add_entity_with_component("New Image", "Image"),
-                    "Button" => {
-                        self.add_entity_with_component("New Button", "Image");
-                        if let Err(error) = self.add_component("UiEvents") {
-                            self.status = error;
-                        }
+                // 5b：Widget 模式下按落点位置创建；否则回退到中心。
+                let drop_pos = ui.input(|i| i.pointer.interact_pos());
+                if self.scene_view_mode == crate::SceneViewMode::Widget {
+                    if let Some(pointer) = drop_pos {
+                        let ppp = ui.ctx().pixels_per_point();
+                        let design = self.preview_resolution;
+                        let center = egui::vec2(
+                            self.game_camera_2d_center.x,
+                            self.game_camera_2d_center.y,
+                        );
+                        let design_pos = panel_to_design_pos(
+                            rect,
+                            self.scene_state.pan,
+                            self.scene_zoom,
+                            ppp,
+                            center,
+                            design,
+                            pointer,
+                        );
+                        self.create_widget_at(widget, design_pos);
+                    } else {
+                        self.create_widget_at_center(widget);
                     }
-                    _ => self.status = format!("未知 Widget 类型：{widget}"),
+                } else {
+                    self.create_widget_at_center(widget);
                 }
             } else if let Err(error) = self.spawn_dropped_resource(&path) {
                 self.status = error;
@@ -299,6 +315,86 @@ impl EditorApp {
             }
         }
 
+        // Phase 5a：Widget 模式下为选中的 UI 实体绘制缩放手柄。
+        if self.scene_view_mode == SceneViewMode::Widget {
+            for entity in entities.iter() {
+                if self.selection.contains(entity.id) && entity.ui.is_some() {
+                    let box_rect = egui::Rect::from_center_size(entity.center, entity.size);
+                    scene_resize::draw_resize_handles(&painter, box_rect);
+                }
+            }
+            // Phase 5c：为选中的 UI 实体绘制锚点手柄（锚点矩形 = anchors * parent_size）。
+            for entity in entities.iter() {
+                if self.selection.contains(entity.id)
+                    && let Some(ref ui_entity) = entity.ui
+                {
+                    let parent_w = self.preview_resolution.0 as f32;
+                    let parent_h = self.preview_resolution.1 as f32;
+                    // 使用预览 anchors（如果有）或文档 anchors。
+                    let anchors = self
+                        .scene_state
+                        .preview_anchors
+                        .get(&entity.id)
+                        .copied()
+                        .unwrap_or(ui_entity.layout.anchors);
+                    let anchor_origin = [anchors[0] * parent_w, anchors[1] * parent_h];
+                    let anchor_size = [
+                        (anchors[2] - anchors[0]) * parent_w,
+                        (anchors[3] - anchors[1]) * parent_h,
+                    ];
+                    let anchor_rect = design_rect_to_panel(
+                        rect,
+                        self.scene_state.pan,
+                        self.scene_zoom,
+                        scale,
+                        self.game_camera_center_egui(),
+                        self.preview_resolution,
+                        anchor_origin,
+                        anchor_size,
+                    );
+                    scene_resize::draw_anchor_handles(&painter, anchor_rect);
+                }
+            }
+            // Phase 5d：为选中的 Container 实体绘制 padding 可视化。
+            if let Some(scene) = self.document.current_scene.as_ref() {
+                for entity in entities.iter() {
+                    if !self.selection.contains(entity.id) {
+                        continue;
+                    }
+                    let Some(scene_entity) = scene.scene.entities.get(&entity.id) else {
+                        continue;
+                    };
+                    let Some(container_raw) = scene_entity.components.get("Container") else {
+                        continue;
+                    };
+                    let Ok(style) =
+                        engine::core::ui_layout::ContainerStyle::from_component_str(container_raw)
+                    else {
+                        continue;
+                    };
+                    // 使用预览 padding（如果有）或文档 padding。
+                    let padding = self
+                        .scene_state
+                        .preview_padding
+                        .get(&entity.id)
+                        .copied()
+                        .unwrap_or(style.padding);
+                    // outer_rect = 实体边界（面板坐标）
+                    let outer_rect = egui::Rect::from_center_size(entity.center, entity.size);
+                    // design_to_panel_scale: 设计像素 → 面板像素
+                    let design_w = self.preview_resolution.0 as f32;
+                    let panel_w = outer_rect.width();
+                    let design_to_panel_scale = panel_w / design_w.max(1.0);
+                    scene_resize::draw_padding_overlay(
+                        &painter,
+                        outer_rect,
+                        padding,
+                        design_to_panel_scale,
+                    );
+                }
+            }
+        }
+
         let pointer = response.interact_pointer_pos();
         let hovered_tile = pointer.and_then(|pos| {
             tilemap_context.as_ref().and_then(|context| {
@@ -349,8 +445,70 @@ impl EditorApp {
         if response.drag_started_by(egui::PointerButton::Primary)
             && let Some(pos) = drag_start_pos(ui, pointer)
         {
-            let additive = ui.input(|input| input.modifiers.command || input.modifiers.ctrl);
-            self.scene_pointer_down(pos, &entities, additive);
+            // Phase 5c：Widget 模式下先检测锚点手柄命中（Alt 按住时优先）。
+            let anchor_hit = if self.scene_view_mode == SceneViewMode::Widget
+                && ui.input(|i| i.modifiers.alt)
+            {
+                self.selected_ui_anchor_rect(pos, &entities)
+                    .and_then(|rect| scene_resize::hit_test_anchor_handle(rect, pos))
+            } else {
+                None
+            };
+            // Phase 5d：其次检测 padding 手柄命中（Container 实体选中时）。
+            let padding_hit = if anchor_hit.is_none() && self.scene_view_mode == SceneViewMode::Widget
+            {
+                self.selected_container_padding_hit(pos, &entities)
+            } else {
+                None
+            };
+            // Phase 5a：其次检测缩放手柄命中——手柄优先级高于实体选中。
+            let resize_hit = if anchor_hit.is_none()
+                && padding_hit.is_none()
+                && self.scene_view_mode == SceneViewMode::Widget
+            {
+                self.selected_ui_entity_rect(pos, &entities)
+                    .and_then(|rect| scene_resize::hit_test_handle(rect, pos))
+            } else {
+                None
+            };
+            if let Some(handle) = anchor_hit {
+                // 锚点拖动：走正常拖动管线，但标记为 anchor 模式。
+                let additive = ui.input(|input| input.modifiers.command || input.modifiers.ctrl);
+                self.scene_pointer_down(pos, &entities, additive);
+                self.scene_state.anchor_handle = Some(handle);
+            } else if let Some(handle) = padding_hit {
+                // Padding 拖动：走正常拖动管线，标记为 padding 模式。
+                let additive = ui.input(|input| input.modifiers.command || input.modifiers.ctrl);
+                self.scene_pointer_down(pos, &entities, additive);
+                self.scene_state.padding_handle = Some(handle);
+                // 存储初始 padding 和外框供拖动计算使用。
+                if let Some(primary) = self.selection.primary() {
+                    if let Some(scene) = self.document.current_scene.as_ref() {
+                        if let Some(scene_entity) = scene.scene.entities.get(&primary) {
+                            if let Some(container_raw) = scene_entity.components.get("Container") {
+                                if let Ok(style) = engine::core::ui_layout::ContainerStyle::from_component_str(container_raw) {
+                                    if let Some(entity) = entities.iter().find(|e| e.id == primary) {
+                                        let outer_rect = egui::Rect::from_center_size(entity.center, entity.size);
+                                        self.scene_state.padding_drag_initial = Some((style.padding, outer_rect));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } else if let Some(handle) = resize_hit {
+                // 走正常拖动管线（建 SceneDrag、推进状态机），但标记为 resize 模式。
+                let additive = ui.input(|input| input.modifiers.command || input.modifiers.ctrl);
+                self.scene_pointer_down(pos, &entities, additive);
+                self.scene_state.resize_handle = Some(handle);
+            } else {
+                self.scene_state.resize_handle = None;
+                self.scene_state.anchor_handle = None;
+                self.scene_state.padding_handle = None;
+                self.scene_state.padding_drag_initial = None;
+                let additive = ui.input(|input| input.modifiers.command || input.modifiers.ctrl);
+                self.scene_pointer_down(pos, &entities, additive);
+            }
         }
         if response.dragged_by(egui::PointerButton::Primary)
             && let Some(current) = pointer
@@ -378,6 +536,12 @@ impl EditorApp {
                 // 拖动过程中持续累加；非加选时集合已在框选开始时清空。
                 self.selection.add(id, SelectionSource::SceneView2D);
             }
+        }
+        // Phase 5a：拖动 / 缩放过程中绘制对齐辅助线。
+        if self.scene_state.drag.is_some()
+            && let Some(current_pointer) = pointer
+        {
+            self.draw_alignment_guides(&painter, rect, current_pointer, scale, &entities);
         }
         // 工具小面板（Select/Move/Rotate/Scale）置于场景右上角。
         self.draw_scene_tool_panel(ui, rect);
@@ -438,6 +602,7 @@ impl EditorApp {
                             entity.id,
                             UiDragInitial {
                                 offsets: ui.layout.offsets,
+                                anchors: ui.layout.anchors,
                             },
                         )
                     })
@@ -475,25 +640,68 @@ impl EditorApp {
         let delta = pos - drag.start;
         let mut preview = std::collections::BTreeMap::new();
         let mut preview_ui = std::collections::BTreeMap::new();
+        let mut preview_anchors = std::collections::BTreeMap::new();
+        let mut preview_padding = std::collections::BTreeMap::new();
         let pivot = scene_drag_pivot(self.gizmo_pivot, self.selection.primary(), &drag.initial);
         let angle = (delta.x * 0.5).to_radians();
         let factor = (1.0 + delta.x * 0.01).max(0.05);
+        // Phase 5d：padding 模式——单独处理，不依赖 ui_initial。
+        if let Some(handle) = self.scene_state.padding_handle {
+            if let Some((initial_padding, outer_rect)) = self.scene_state.padding_drag_initial {
+                if let Some(primary) = self.selection.primary() {
+                    let design_w = self.preview_resolution.0 as f32;
+                    let panel_w = outer_rect.width();
+                    let design_to_panel_scale = panel_w / design_w.max(1.0);
+                    let new_padding = scene_resize::compute_padding_values(
+                        initial_padding,
+                        delta,
+                        design_to_panel_scale,
+                        handle,
+                    );
+                    preview_padding.insert(primary, new_padding);
+                }
+            }
+            self.scene_state.preview_padding = preview_padding;
+            self.apply_drag_preview_to_runtime();
+            return;
+        }
         for id in &drag.ids {
-            // UI 组件拖拽：只预览 UiLayout offsets，不写 Transform。
+            // UI 组件拖拽：只预览 UiLayout offsets/anchors，不写 Transform。
             if let Some(ui) = drag.ui_initial.get(id) {
-                // UI 组件绘制在设计分辨率包围框内，随 Scene 缩放（world→面板 =
-                // world*zoom/ppp）：面板拖动增量（points）换算成设计像素增量 =
-                // delta / (zoom/ppp)。Screen/Canvas 两空间同用此比例。
-                let per_axis = egui::vec2(self.scene_zoom / scale, self.scene_zoom / scale);
-                preview_ui.insert(
-                    *id,
-                    [
-                        ui.offsets[0] + delta.x / per_axis.x,
-                        ui.offsets[1] + delta.y / per_axis.y,
-                        ui.offsets[2] + delta.x / per_axis.x,
-                        ui.offsets[3] + delta.y / per_axis.y,
-                    ],
-                );
+                if let Some(handle) = self.scene_state.anchor_handle {
+                    // Phase 5c：anchor 模式——按手柄修改 anchors。
+                    let parent_panel_size = egui::vec2(
+                        self.preview_resolution.0 as f32 * self.scene_zoom / scale,
+                        self.preview_resolution.1 as f32 * self.scene_zoom / scale,
+                    );
+                    let new_anchors = scene_resize::compute_anchor_values(
+                        ui.anchors,
+                        delta,
+                        parent_panel_size,
+                        handle,
+                    );
+                    preview_anchors.insert(*id, new_anchors);
+                    // anchor 模式下 offsets 保持不变。
+                    preview_ui.insert(*id, ui.offsets);
+                } else {
+                    let per_axis = egui::vec2(self.scene_zoom / scale, self.scene_zoom / scale);
+                    let design_delta = scene_resize::panel_delta_to_design_delta(delta, self.scene_zoom, scale);
+                    let new_offsets = if let Some(handle) = self.scene_state.resize_handle {
+                        // Phase 5a：resize 模式——按手柄只改对应边的 offset。
+                        scene_resize::compute_resize_offsets(ui.offsets, design_delta, handle)
+                    } else {
+                        // 正常平移模式——四边同移。
+                        [
+                            ui.offsets[0] + delta.x / per_axis.x,
+                            ui.offsets[1] + delta.y / per_axis.y,
+                            ui.offsets[2] + delta.x / per_axis.x,
+                            ui.offsets[3] + delta.y / per_axis.y,
+                        ]
+                    };
+                    preview_ui.insert(*id, new_offsets);
+                    // 非 anchor 模式下 anchors 保持不变。
+                    preview_anchors.insert(*id, ui.anchors);
+                }
                 continue;
             }
             let initial = drag.initial[id];
@@ -513,6 +721,7 @@ impl EditorApp {
         }
         self.scene_state.preview = preview;
         self.scene_state.preview_ui = preview_ui;
+        self.scene_state.preview_anchors = preview_anchors;
         // 拖动中只把预览写入运行时 ECS，避免每帧重建 Lua/ECS；松手时由
         // finish_scene_drag 事务化写入文档，生成单条 Undo + 单次保存。
         self.apply_drag_preview_to_runtime();
@@ -522,10 +731,162 @@ impl EditorApp {
     pub(crate) fn scene_pointer_up(&mut self, pos: egui::Pos2) -> ToolPhase {
         self.finish_scene_drag();
         self.scene_state.drag = None;
+        self.scene_state.resize_handle = None;
+        self.scene_state.anchor_handle = None;
+        self.scene_state.padding_handle = None;
+        self.scene_state.padding_drag_initial = None;
         self.interaction.handle(InteractionEvent::PointerUp {
             pos: [pos.x, pos.y],
         });
         self.interaction.phase()
+    }
+
+    /// Phase 5a：返回当前唯一选中 UI 实体的面板包围框（仅 Widget 模式、单选时有意义）。
+    fn selected_ui_entity_rect(
+        &self,
+        pointer: egui::Pos2,
+        entities: &[SceneBoxedEntity],
+    ) -> Option<egui::Rect> {
+        if self.scene_view_mode != SceneViewMode::Widget {
+            return None;
+        }
+        let primary = self.selection.primary()?;
+        let entity = entities.iter().find(|e| e.id == primary)?;
+        if entity.ui.is_none() {
+            return None;
+        }
+        let rect = egui::Rect::from_center_size(entity.center, entity.size);
+        // 指针必须在包围框附近（留出手柄大小的余量）。
+        let margin = scene_resize::HANDLE_HALF_SIZE + 4.0;
+        let expanded = rect.expand(margin);
+        expanded.contains(pointer).then_some(rect)
+    }
+
+    /// Phase 5c：返回主选 UI 实体的锚点矩形（面板坐标），用于锚点手柄命中测试。
+    fn selected_ui_anchor_rect(
+        &self,
+        _pointer: egui::Pos2,
+        entities: &[SceneBoxedEntity],
+    ) -> Option<egui::Rect> {
+        if self.scene_view_mode != SceneViewMode::Widget {
+            return None;
+        }
+        let primary = self.selection.primary()?;
+        let entity = entities.iter().find(|e| e.id == primary)?;
+        let ui_entity = entity.ui.as_ref()?;
+        // 需要面板矩形来调用 design_rect_to_panel。
+        let panel_rect = self.scene_canvas_rect;
+        if panel_rect.is_negative() {
+            return None;
+        }
+        let parent_w = self.preview_resolution.0 as f32;
+        let parent_h = self.preview_resolution.1 as f32;
+        let anchor_origin = [
+            ui_entity.layout.anchors[0] * parent_w,
+            ui_entity.layout.anchors[1] * parent_h,
+        ];
+        let anchor_size = [
+            (ui_entity.layout.anchors[2] - ui_entity.layout.anchors[0]) * parent_w,
+            (ui_entity.layout.anchors[3] - ui_entity.layout.anchors[1]) * parent_h,
+        ];
+        Some(design_rect_to_panel(
+            panel_rect,
+            self.scene_state.pan,
+            self.scene_zoom,
+            self.scene_canvas_rect.width().max(1.0) / panel_rect.width().max(1.0),
+            self.game_camera_center_egui(),
+            self.preview_resolution,
+            anchor_origin,
+            anchor_size,
+        ))
+    }
+
+    /// Phase 5d：命中测试选中 Container 实体的 padding 手柄。
+    /// 返回 (手柄, 外框矩形, 当前 padding, 设计→面板缩放)。
+    fn selected_container_padding_hit(
+        &self,
+        pointer: egui::Pos2,
+        entities: &[SceneBoxedEntity],
+    ) -> Option<scene_resize::PaddingHandle> {
+        if self.scene_view_mode != SceneViewMode::Widget {
+            return None;
+        }
+        let primary = self.selection.primary()?;
+        let entity = entities.iter().find(|e| e.id == primary)?;
+        let scene = self.document.current_scene.as_ref()?;
+        let scene_entity = scene.scene.entities.get(&primary)?;
+        let container_raw = scene_entity.components.get("Container")?;
+        let style = engine::core::ui_layout::ContainerStyle::from_component_str(container_raw).ok()?;
+        let padding = self
+            .scene_state
+            .preview_padding
+            .get(&primary)
+            .copied()
+            .unwrap_or(style.padding);
+        let outer_rect = egui::Rect::from_center_size(entity.center, entity.size);
+        let design_w = self.preview_resolution.0 as f32;
+        let panel_w = outer_rect.width();
+        let design_to_panel_scale = panel_w / design_w.max(1.0);
+        scene_resize::hit_test_padding_handle(outer_rect, padding, design_to_panel_scale, pointer)
+    }
+
+    /// Phase 5a：计算并绘制对齐辅助线（拖动 / 缩放过程中）。
+    fn draw_alignment_guides(
+        &self,
+        painter: &egui::Painter,
+        _canvas_rect: egui::Rect,
+        pointer: egui::Pos2,
+        scale: f32,
+        entities: &[SceneBoxedEntity],
+    ) {
+        let Some(drag) = self.scene_state.drag.as_ref() else {
+            return;
+        };
+        let delta = pointer - drag.start;
+        let ratio = (self.scene_zoom / scale.max(1.0e-3)).max(1.0e-3);
+
+        // 计算被拖实体的当前面板包围框。
+        let mut dragged_rect = None;
+        for entity in entities.iter() {
+            if !drag.ids.contains(&entity.id) {
+                continue;
+            }
+            let base = egui::Rect::from_center_size(entity.center, entity.size);
+            if let (Some(ui_init), Some(handle)) =
+                (drag.ui_initial.get(&entity.id), self.scene_state.resize_handle)
+            {
+                let design_delta =
+                    scene_resize::panel_delta_to_design_delta(delta, self.scene_zoom, scale);
+                let new_offsets =
+                    scene_resize::compute_resize_offsets(ui_init.offsets, design_delta, handle);
+                let dx = (new_offsets[0] - ui_init.offsets[0]) / ratio;
+                let dy = (new_offsets[1] - ui_init.offsets[1]) / ratio;
+                let dw =
+                    (new_offsets[2] - ui_init.offsets[2]) / ratio - dx;
+                let dh =
+                    (new_offsets[3] - ui_init.offsets[3]) / ratio - dy;
+                dragged_rect = Some(egui::Rect::from_min_size(
+                    egui::pos2(base.left() + dx, base.top() + dy),
+                    egui::vec2(base.width() + dw, base.height() + dh),
+                ));
+            } else if entity.ui.is_some() {
+                dragged_rect = Some(base.translate(delta));
+            } else {
+                dragged_rect = Some(base.translate(delta));
+            }
+            break;
+        }
+
+        let Some(dragged) = dragged_rect else { return };
+
+        let others: Vec<(SceneEntityId, egui::Rect)> = entities
+            .iter()
+            .filter(|e| !drag.ids.contains(&e.id))
+            .map(|e| (e.id, egui::Rect::from_center_size(e.center, e.size)))
+            .collect();
+
+        let guides = scene_resize::compute_snap_guides(dragged, &others);
+        scene_resize::draw_snap_guides(painter, &guides);
     }
 
     /// 某实体在 2D Scene 画布上的**包围框中心与尺寸**（面板逻辑坐标 / 点）。
@@ -2548,6 +2909,23 @@ fn design_rect_to_panel(
     let min = scene_view_world_to_panel(panel, pan, zoom, ppp, Vec2::new(world_x, world_y));
     let size = egui::vec2(size[0] * zoom / ppp, size[1] * zoom / ppp);
     egui::Rect::from_min_size(min, size)
+}
+
+/// 5b：面板逻辑坐标 → 设计分辨率像素（`design_rect_to_panel` 的逆）。
+/// 用于拖放创建时把落点映射回设计空间，计算 UiLayout offsets。
+fn panel_to_design_pos(
+    panel: egui::Rect,
+    pan: egui::Vec2,
+    zoom: f32,
+    ppp: f32,
+    center: egui::Vec2,
+    design: (u32, u32),
+    pointer: egui::Pos2,
+) -> egui::Pos2 {
+    let world = scene_view_panel_to_world(panel, pan, zoom, ppp, pointer);
+    let dw = design.0 as f32;
+    let dh = design.1 as f32;
+    egui::pos2(world.x - center.x + dw * 0.5, center.y + dh * 0.5 - world.y)
 }
 
 /// 计算 2D 实体在 Scene 视图中的屏幕空间包围框（中心 + 尺寸）。

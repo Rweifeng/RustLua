@@ -1,7 +1,7 @@
 ﻿# test-bundle.ps1：通用的「本地试玩一个 web 平台发布产物」入口。
 #
-# 一个游戏工程的 web 平台产物落在 `examples\<工程>\builds\<平台>\<publish_name>\`，
-# 但试玩这件事与工程名、平台名、目录深度都无关：**定位产物 → 交给该平台既有的验收脚本
+# 一个游戏工程的 web 平台产物落在 `examples\<工程>\builds\<平台>\`（2026-09-28 起不再按
+# publish_name 建子目录），但试玩这件事与工程名、平台名、目录深度都无关：**定位产物 → 交给该平台既有的验收脚本
 # 断言 → 起本地服务**。这里就是这个与平台无关的入口，webgl 与微信小游戏共用。
 #
 # 分工（严格）：本脚本**不重复实现任何产物断言**。断言属于
@@ -17,7 +17,7 @@
 #
 # 用法：
 #   powershell -NoProfile -File scripts\test-bundle.ps1
-#   powershell -NoProfile -File scripts\test-bundle.ps1 -Platform webgl -BundleRoot examples\game_jhyt\builds\webgl\jianghu_youtian
+#   powershell -NoProfile -File scripts\test-bundle.ps1 -Platform webgl -BundleRoot examples\game_jhyt\builds\webgl
 #   powershell -NoProfile -File scripts\test-bundle.ps1 -Platform wechat-minigame -NoVerify
 #   powershell -NoProfile -File scripts\test-bundle.ps1 -Platform wechat-minigame -AssetPackRoot D:\cdn\jianghu -Port 8899
 #

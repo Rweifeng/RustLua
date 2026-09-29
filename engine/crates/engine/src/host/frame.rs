@@ -111,6 +111,9 @@ pub struct SceneDraw {
     pub start: u32,
     pub count: u32,
     pub sdf: bool,
+    /// 混合渲染：`true` 表示小字号 bitmap 路径（Nearest 采样 + MSDF 阈值化）。
+    /// 仅当 `sdf == true` 时有意义。
+    pub bitmap: bool,
     pub vector: bool,
     /// WP6：这段几何属于哪个渲染层。世界内容与屏幕内容因此可以被区分开——
     /// 世界 Sprite 深度通道只吃世界层，屏幕 UI 永远留在屏幕空间。
@@ -126,6 +129,7 @@ impl SceneDraw {
             start,
             count,
             sdf: false,
+            bitmap: false,
             vector: false,
             render_layer: RenderLayer::World2D,
         }
@@ -153,6 +157,13 @@ impl SceneDraw {
     #[must_use]
     pub const fn with_sdf(mut self, sdf: bool) -> Self {
         self.sdf = sdf;
+        self
+    }
+
+    /// 标记 bitmap 文本（小字号 Nearest 采样 + MSDF 阈值化）。
+    #[must_use]
+    pub const fn with_bitmap(mut self, bitmap: bool) -> Self {
+        self.bitmap = bitmap;
         self
     }
 }

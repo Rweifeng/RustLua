@@ -246,6 +246,7 @@ impl GameApp {
                         start: base + range.start,
                         count: range.count,
                         sdf: false,
+                        bitmap: false,
                         vector: false,
                         // 性能浮层是世界之上的叠加内容：屏幕空间、不参与深度。
                         render_layer: engine::core::layer::RenderLayer::Overlay2D,

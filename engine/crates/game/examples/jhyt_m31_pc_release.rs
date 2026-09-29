@@ -39,7 +39,7 @@ use std::{
 };
 
 /// 发布目录相对工程根的位置（`scripts/package.ps1 -Platform pc` 的输出）。
-const RELEASE_REL: &str = "builds/pc/jianghu_youtian";
+const RELEASE_REL: &str = "builds/pc";
 /// 发布包必须存在的条目（`game.exe` 在上一级）。
 ///
 /// 字体在**包内**（`pack/assets/fonts/…`）而不是发布根：PC 形态不复制 17 MB 完整字体到发布根
@@ -87,7 +87,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // -----------------------------------------------------------------
-    banner("① 发布目录形态与卫生（真实 `builds/pc/jianghu_youtian`）");
+    banner("① 发布目录形态与卫生（真实 `builds/pc`）");
     if !release.is_dir() {
         return Err(format!(
             "release directory missing: {}（先跑 scripts/package.ps1 -Platform pc）",

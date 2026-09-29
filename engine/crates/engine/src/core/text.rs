@@ -123,6 +123,10 @@ pub struct TextMesh {
     /// 高度是 em 盒高度 `ascent + |descent| + (行数-1) × 行高`
     /// （M30 起修正；此前少算了 descender）。与 [`measure_text`] 完全同口径。
     pub size: [f32; 2],
+    /// `true` 表示此 mesh 由 `build_bitmap`（内置 5×7 位图字模）生成，
+    /// 渲染侧会以 Nearest 采样 + MSDF 阈值化（`sdf=2`）处理，
+    /// 与小字号 SDF 路径（`sdf=1`，Linear + smoothstep）区分。
+    pub bitmap: bool,
 }
 
 impl Default for TextMesh {
@@ -132,6 +136,7 @@ impl Default for TextMesh {
             glyph_count: 0,
             line_count: 1,
             size: [0.0, 0.0],
+            bitmap: false,
         }
     }
 }
@@ -350,6 +355,7 @@ impl TextLayout {
                 (max_x - origin[0]).max(0.0),
                 (y - origin[1] + 7.0 * style.scale).max(0.0),
             ],
+            bitmap: true,
         })
     }
 
@@ -509,6 +515,7 @@ impl TextLayout {
                 // `measure_ui_text` 的高度因此都比实际字形矮一截。
                 (y - descent * base_px - origin[1]).max(0.0),
             ],
+            bitmap: false,
         })
     }
 }

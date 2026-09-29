@@ -81,7 +81,9 @@ $PlayerDataDir = if ($env:RUSTLUA_USER_DIR) {
 } else {
     Join-Path $env:USERPROFILE (".local\share\" + $PublishName)
 }
-$distRoot = Join-Path $gameRoot ("builds\" + $Platform + "\" + $PublishName)
+# 发布根布局（2026-09-28 起）：产物直接落在 `builds\<平台>\`，不再按 publish_name 建子目录；
+# $PublishName 仍用于玩家数据目录、发布名与各配置文件的标识字段（见下）。
+$distRoot = Join-Path $gameRoot ("builds\" + $Platform)
 $packRoot = Join-Path $distRoot "pack"
 # M20-03：原子发布。所有内容先写进 staging，全部成功后再原子替换最终目录；
 # 失败时最终目录保持旧版本不变（不会出现半更新状态）。
@@ -1021,7 +1023,7 @@ try {
     cargo tree -e normal --prefix none 2>$null | Sort-Object -Unique | Set-Content (Join-Path $distRoot "deps.txt") -Encoding UTF8
 
     if ($Platform -eq "wechat-minigame") {
-        # 发布根 = <PublishName>/，里面 launcher/ 是首包、assets/ 是 CDN 资源包（仅 remote 形态）；
+        # 发布根 = <工程>/builds/<平台>/，里面 launcher/ 是首包、assets/ 是 CDN 资源包（仅 remote 形态）；
         # $distRoot 始终指向 launcher/，所以体积统计/必需文件检查都只看首包。
         $packageContents = "launcher/: game.js, game.json, project.config.json, wechat-adapter.js, web-runtime.js, pkg/, pack/ (skeleton when thin), release.toml, run.txt, deps.txt"
         if ($settingsPackaged) {

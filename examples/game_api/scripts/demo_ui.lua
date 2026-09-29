@@ -475,6 +475,163 @@ local function handle_keys()
         note = string.format("pgup: ui.scroll_page(-1) 生效 %.0f", ui.scroll_page(SCROLL_ID, -1))
     elseif input.just_pressed("pagedown") then
         note = string.format("pgdn: ui.scroll_page(+1) 生效 %.0f", ui.scroll_page(SCROLL_ID, 1))
+    elseif input.just_pressed("l") then
+        -- Layout API demo: create a layout, apply preset, and resolve it.
+        local layout_id = "demo_layout"
+        ui.layout(layout_id, {
+            anchors = { 0.5, 0.5, 0.5, 0.5 },
+            offsets = { -50, -25, 50, 25 },
+            min_size = { 80, 40 },
+            max_size = { 200, 100 },
+            pivot = { 0.5, 0.5 }
+        })
+        local resolved = ui.resolve_layout(layout_id, SCREEN_W, SCREEN_H)
+        local layout_data = ui.get_layout(layout_id)
+        note = string.format(
+            "l: ui.layout -> resolve=(%.0f,%.0f,%.0f,%.0f) anchors=[%.2f,%.2f,%.2f,%.2f]",
+            resolved and resolved.x or 0,
+            resolved and resolved.y or 0,
+            resolved and resolved.w or 0,
+            resolved and resolved.h or 0,
+            layout_data and layout_data.anchors[1] or 0,
+            layout_data and layout_data.anchors[2] or 0,
+            layout_data and layout_data.anchors[3] or 0,
+            layout_data and layout_data.anchors[4] or 0
+        )
+    elseif input.just_pressed("k") then
+        -- Layout preset demo: apply a named preset and read it back.
+        local layout_id = "demo_layout_preset"
+        ui.set_layout(layout_id, { anchors = { 0, 0, 1, 1 } })
+        ui.set_preset(layout_id, "center")
+        local resolved = ui.resolve_layout(layout_id, SCREEN_W, SCREEN_H)
+        note = string.format(
+            "k: ui.set_preset(center) -> resolve=(%.0f,%.0f,%.0f,%.0f)",
+            resolved and resolved.x or 0,
+            resolved and resolved.y or 0,
+            resolved and resolved.w or 0,
+            resolved and resolved.h or 0
+        )
+    elseif input.just_pressed("c") then
+        -- Container auto-layout demo: create a VBox container and add children.
+        local container_id = "demo_container"
+        ui.container(container_id, {
+            kind = "vbox",
+            padding = { 10, 10, 10, 10 },
+            spacing = 8,
+            stretch = false,
+            fill = false,
+            align = "start"
+        })
+        ui.container_add(container_id, "child1", { size = { 100, 30 }, expand = 0, fill = false })
+        ui.container_add(container_id, "child2", { size = { 120, 40 }, expand = 1.0, fill = false })
+        ui.container_add(container_id, "child3", { size = { 80, 25 }, expand = 0, fill = true })
+        local resolved = ui.container_resolve(container_id, 300, 200)
+        local info = ui.container_get(container_id)
+        note = string.format(
+            "c: ui.container(vbox) -> %d children, child1=(%.0f,%.0f) child2=(%.0f,%.0f)",
+            info and info.child_count or 0,
+            resolved and resolved.child1 and resolved.child1.x or 0,
+            resolved and resolved.child1 and resolved.child1.y or 0,
+            resolved and resolved.child2 and resolved.child2.x or 0,
+            resolved and resolved.child2 and resolved.child2.y or 0
+        )
+    elseif input.just_pressed("b") then
+        -- Container HBox demo: horizontal layout with grid.
+        local container_id = "demo_hbox"
+        ui.container(container_id, {
+            kind = "hbox",
+            padding = { 5, 5, 5, 5 },
+            spacing = 10,
+            stretch = true,
+            fill = true
+        })
+        for i = 1, 4 do
+            ui.container_add(container_id, "btn" .. i, { size = { 60, 40 }, expand = 1.0, fill = true })
+        end
+        local resolved = ui.container_resolve(container_id, 400, 60)
+        local children = ui.container_children(container_id)
+        note = string.format(
+            "b: ui.container(hbox) -> %d children, btn1=(%.0f,%.0f,%.0f,%.0f) btn4=(%.0f,%.0f)",
+            children and #children or 0,
+            resolved and resolved.btn1 and resolved.btn1.x or 0,
+            resolved and resolved.btn1 and resolved.btn1.y or 0,
+            resolved and resolved.btn1 and resolved.btn1.w or 0,
+            resolved and resolved.btn1 and resolved.btn1.h or 0,
+            resolved and resolved.btn4 and resolved.btn4.x or 0,
+            resolved and resolved.btn4 and resolved.btn4.w or 0
+        )
+    elseif input.just_pressed("n") then
+        -- Container management APIs: remove, update, set_style, clear.
+        local container_id = "demo_manage"
+        ui.container(container_id, { kind = "vbox", spacing = 5 })
+        ui.container_add(container_id, "item1", { size = { 100, 30 } })
+        ui.container_add(container_id, "item2", { size = { 100, 30 } })
+        ui.container_add(container_id, "item3", { size = { 100, 30 } })
+        -- Update a child's size
+        ui.container_update_child(container_id, "item2", { size = { 150, 40 } })
+        -- Change container style
+        ui.container_set_style(container_id, { spacing = 10, kind = "hbox" })
+        -- Remove one child
+        ui.container_remove(container_id, "item3")
+        local info = ui.container_get(container_id)
+        -- Clear all children
+        ui.container_clear(container_id)
+        local after = ui.container_get(container_id)
+        note = string.format(
+            "n: container ops -> before=%d after_clear=%d kind=%s",
+            info and info.child_count or 0,
+            after and after.child_count or 0,
+            info and info.kind or "?"
+        )
+    elseif input.just_pressed("m") then
+        -- Theme system demo: create themes, switch, get colors.
+        ui.theme_preset("my_dark", "dark")
+        ui.theme_preset("my_light", "light")
+        ui.theme("custom", {
+            background = { 0.2, 0.1, 0.3, 1.0 },
+            foreground = { 1.0, 0.9, 0.8, 1.0 },
+            primary = { 0.8, 0.4, 1.0, 1.0 },
+            font_size = 16,
+            spacing = 12
+        })
+        ui.set_theme("custom")
+        local active = ui.get_theme()
+        local bg = ui.theme_color("background")
+        local primary = ui.theme_color("primary")
+        local themes = ui.theme_list()
+        local theme_data = ui.theme_get("custom")
+        -- Apply theme to element
+        ui.apply_theme("my_panel", "my_light")
+        local elem_theme = ui.element_theme("my_panel")
+        ui.clear_theme("my_panel")
+        note = string.format(
+            "m: theme=%s bg=(%.2f,%.2f,%.2f) primary=(%.2f,%.2f) themes=%d font=%.0f",
+            active or "?",
+            bg and bg[1] or 0, bg and bg[2] or 0, bg and bg[3] or 0,
+            primary and primary[1] or 0, primary and primary[2] or 0,
+            themes and #themes or 0,
+            theme_data and theme_data.font_size or 0
+        )
+    elseif input.just_pressed("p") then
+        -- Signal/Event system demo: bind, emit, query, unbind.
+        local element = "demo_btn"
+        local id1 = ui.on(element, "click", function(el, data)
+            note = "signal click fired: " .. tostring(data)
+        end)
+        local id2 = ui.on(element, "hover", function(el, data)
+            -- second handler, different event
+        end)
+        local count = ui.emit(element, "click", "hello")
+        local sigs = ui.signals(element)
+        local handler_list = ui.handlers(element)
+        ui.off(element, "click", id1)
+        local after_count = ui.emit(element, "click", "after_off")
+        ui.clear_signals(element)
+        local final_sigs = ui.signals(element)
+        note = string.format(
+            "p: signal on=%d emit=%d sigs=%d handlers=%d after_off=%d final=%d",
+            id1, count, #sigs, #handler_list, after_count, #final_sigs
+        )
     end
 
     -- 滚轮：`input.scroll_delta()` 返回的是**数组**（[1]=x、[2]=y），不是数字 ——
@@ -811,6 +968,7 @@ function M.on_create()
     api.hint(
         "1 grid_cell  2 grid_clear  3 grid_hit  4 tooltip  5 modal  6 bar  7/8/9 drag  "
             .. "q hide  e show  x clear  r rebuild  t ui.text  v measure_text(0)  "
+            .. "l layout  k set_preset  c container(vbox)  b container(hbox)  n container_ops  m theme  p signal  "
             .. api.KEYS_BACK
     )
 
@@ -903,6 +1061,7 @@ function M.on_destroy()
     ui.drag_cancel()
     ui.focus_close(FOCUS_ID)
     ui.scroll_close(SCROLL_ID)
+    ui.clear_signals("demo_btn")
     ui.clear(BG_ID)
     ui.clear(PANEL_ID)
     ui.clear(GRID_ID)

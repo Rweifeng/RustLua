@@ -49,10 +49,10 @@ powershell -NoProfile -File scripts\package.ps1 -Platform wechat-minigame -SkipB
 # 验证已有发布包：静态布局/配额 + 无头运行时实跑
 # （-BundleRoot 可指 launcher/ 或整个发布根（会自动下沉）；资源包按 <发布根>\assets 自动探测）
 powershell -NoProfile -File scripts\verify-wechat-minigame.ps1 `
-  -BundleRoot examples\game_jhyt\builds\wechat-minigame\jianghu_youtian\launcher
+  -BundleRoot examples\game_jhyt\builds\wechat-minigame\launcher
 
 # 只要运行时那一层（Node 伪造 wx API 真实执行 game.js）
-node scripts\wechat-minigame-harness.js examples\game_jhyt\builds\wechat-minigame\jianghu_youtian\launcher --frames 12
+node scripts\wechat-minigame-harness.js examples\game_jhyt\builds\wechat-minigame\launcher --frames 12
 
 # 分包形态用例（--subpackage 与 --wx-path-style 是正交的两轴）：
 #   ok        → 声明有且仅有 1 个 root=pack、入口 pack/game.js 可执行
@@ -112,7 +112,7 @@ wechat_minigame_package_ok files=12 runtime=ok path_styles=root,slash,sub-root,n
 
 ```powershell
 powershell -NoProfile -File scripts\serve-pack.ps1 `
-  -Root examples\game_jhyt\builds\wechat-minigame\jianghu_youtian-assets -Port 8787
+  -Root examples\game_jhyt\builds\wechat-minigame\assets -Port 8787
 ```
 
 发布之后用微信开发者工具「导入项目」选中发布目录即可；默认 appid 为 `touristappid`（本地预览），
@@ -129,7 +129,7 @@ powershell -NoProfile -File scripts\serve-pack.ps1 `
 ```powershell
 # 1) 起一个本地静态服务托管**资源包目录**（瘦首包时发布目录里已经没有资源了）
 powershell -NoProfile -File scripts\serve-pack.ps1 `
-  -Root examples\game_jhyt\builds\wechat-minigame\jianghu_youtian-assets -Port 8787
+  -Root examples\game_jhyt\builds\wechat-minigame\assets -Port 8787
 
 # 2) 发布：瘦首包 + 导出资源包 + 写入远端地址
 powershell -NoProfile -File scripts\package.ps1 -Platform wechat-minigame `
@@ -291,11 +291,11 @@ CommonJS 后、用 `initSync(bytes)` **同步实例化**（小游戏没有 `inst
 
 ```powershell
 # 只验证"发布产物里的 wasm 桥接"（读字节 → 实例化 → 导出清单），最快
-node artifacts\probes\verify-wasm-bridge.js examples\game_jhyt\builds\wechat-minigame\jianghu_youtian\launcher
+node artifacts\probes\verify-wasm-bridge.js examples\game_jhyt\builds\wechat-minigame\launcher
 
 # 在**完整启动路径**里验证：给 harness 预载 WXWebAssembly（能力面只有 Module/Instance/instantiate）
 $env:NODE_OPTIONS="--require $PWD\artifacts\wx-preload.js"
-node scripts\wechat-minigame-harness.js examples\game_jhyt\builds\wechat-minigame\jianghu_youtian\launcher --frames 12
+node scripts\wechat-minigame-harness.js examples\game_jhyt\builds\wechat-minigame\launcher --frames 12
 Remove-Item Env:\NODE_OPTIONS
 # 期望在日志里看到：wasm-bridge: 核心实例化成功（WXWebAssembly，42641 字节，导出 3 项：memory,start,start_wechat）
 ```
@@ -565,3 +565,15 @@ Remove-Item Env:\NODE_OPTIONS
   **进度条把帧数断言打红**（适配层自绘会让某帧之后每帧少画几笔 → "每帧绘制数严格递增"递减）
   由 `withAdapterDraw` 标记 + harness 侧排除适配层的笔数解决——口径是**排除适配层的笔**，
   不是把断言放宽成 `ops > 0`（那等于放弃这条证据）。
+  ⑫ **wasm 宿主桥没接上时，启动不许崩**（开发者工具实测踩到）：WP10 批 B 把 `methodCompat`
+  放在 missing 代理占位**之前**执行，而 `genericCompat` 直接在全局 `clock` 上定义方法
+  （`function clock.set_rate(...)`）——微信侧 `__P2_HOST_API` 未接线（wasm 桥不可用）时
+  `clock` 是 nil，启动即报 `attempt to index a nil value (global 'clock')`，且
+  "wasm 失败不影响 Lua 启动"的既有契约被这句崩启动架空。修复：`genericCompat` 先
+  `clock = clock or {}` 兜底（now/set/set_rate 用 Lua 侧游戏时间，day 从 1 起；
+  pause/add/sleep_to_morning 缺失时走 missing 代理自报）；`installRustHostApiBridge`
+  未接线时打显式 `console.warn`（静默降级不可见 = 等于没降级）。
+  新增 `--no-wasm` 回归用例（同时清掉 `WXWebAssembly` 与 Node 自带 `WebAssembly`——
+  只删前者时 `resolveWebAssembly` 会回退到宿主 `WebAssembly`，把"桥不可用"模拟成"桥可用"）：
+  断言 wasm 诊断如实报 `no-webassembly`、boot 照常进入玩法场景、missing 清单不含 `clock`、
+  适配层显式报告未接线。

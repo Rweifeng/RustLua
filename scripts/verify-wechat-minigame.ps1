@@ -8,7 +8,7 @@
 #      pack 资源被读取、Lua 主循环在绘制、触摸/键盘事件被桥接。
 #
 # 用法：powershell -NoProfile -File scripts\verify-wechat-minigame.ps1 `
-#         -BundleRoot examples\game_jhyt\builds\wechat-minigame\jianghu_youtian
+#         -BundleRoot examples\game_jhyt\builds\wechat-minigame
 [CmdletBinding()]
 param(
     [string]$BundleRoot = "",
@@ -25,11 +25,11 @@ $ErrorActionPreference = "Stop"
 try { [Console]::OutputEncoding = New-Object Text.UTF8Encoding($false) } catch { }
 $workspaceRoot = Split-Path -Parent $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($BundleRoot)) {
-    $BundleRoot = Join-Path $workspaceRoot "examples\game_jhyt\builds\wechat-minigame\jianghu_youtian"
+    $BundleRoot = Join-Path $workspaceRoot "examples\game_jhyt\builds\wechat-minigame"
 }
 if (-not (Test-Path -LiteralPath $BundleRoot)) { throw "发布目录不存在: $BundleRoot" }
 $root = (Resolve-Path -LiteralPath $BundleRoot).Path
-# 允许直接传**发布根**（形如 <PublishName>/，内含 launcher/ 与可选的 assets/）：微信发布根下
+# 允许直接传**发布根**（形如 builds/<平台>/，内含 launcher/ 与可选的 assets/）：微信发布根下
 # 真正的代码包是 launcher/，这里自动下沉一层。否则直接跑本脚本（不传 -BundleRoot）会得到
 # "缺少 game.js" 这种无从下手的报错——而默认值指向的正是发布根。
 if (-not (Test-Path -LiteralPath (Join-Path $root "game.js"))) {
@@ -397,6 +397,21 @@ if (-not $SkipRuntime) {
     }
     $probeLine = $case.Lines | Where-Object { $_ -match "资源读取自检" } | Select-Object -First 1
     if ($probeLine) { Write-Host $probeLine -ForegroundColor DarkGray }
+
+    # 1a2) wasm 宿主桥不可用（--no-wasm：模拟开发者工具/极旧基础库没有可用的 WXWebAssembly）：
+    #      wasm 失败**不得影响 Lua 启动**（插件层既有契约）。实测：开发者工具曾因 __P2_HOST_API
+    #      未接线而 methodCompat 在 nil 的 clock 上定义方法直接崩启动（"attempt to index a nil
+    #      value (global 'clock')"）；修复后 clock 走 Lua 兜底、boot 照常成功，且适配层必须显式
+    #      报告"__P2_HOST_API 未接线"（静默降级不可见 = 等于没降级）。
+    $noWasmArgs = @("--frames", "60", "--no-wasm", "--drive-new-game", "--expect-runtime-spawns")
+    $noWasmCase = Invoke-HarnessCase -ExtraArgs $noWasmArgs -Label "no-wasm-clock-fallback"
+    if ($noWasmCase.ExitCode -ne 0) { throw "wasm 未接线时启动失败（--no-wasm, exit $($noWasmCase.ExitCode)）——clock 兜底/降级契约被破坏" }
+    $noWasmOk = $noWasmCase.Lines | Where-Object { $_ -match "wechat_minigame_harness_ok" } | Select-Object -First 1
+    if (-not $noWasmOk) { throw "no-wasm-clock-fallback 用例未输出 wechat_minigame_harness_ok" }
+    if (-not ($noWasmOk -match 'wasm=no-webassembly')) {
+        throw ("no-wasm-clock-fallback 用例的 wasm 诊断未如实报告 no-webassembly：{0}" -f $noWasmOk)
+    }
+    Write-Host $noWasmOk -ForegroundColor DarkGray
 
     # 1b) 分包形态专项（新形态的核心承诺，四条各自钉住一件事）：
     #     · 形态自证：声明有且仅有 1 个 root=pack 的分包、入口 pack/game.js 可执行、
