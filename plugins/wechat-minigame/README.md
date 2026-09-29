@@ -180,7 +180,7 @@ examples\<game>\builds\wechat-minigame\<PublishName>\      # 发布根
 └── launcher\                                   # 代码包（上传微信/导入开发者工具的目录），1,644 KB
     ├── game.js, game.json, project.config.json, wechat-adapter.js
     ├── web-runtime.js        # 与 webgl 共用的 Lua 运行时（同一份文件，逻辑不会漂移）
-    ├── pkg/                  # 随包内核：fengari-web.js（Lua VM）+ game_web.js/_bg.wasm（wasm 核心，M32）
+    ├── pkg/                  # 随包内核：game_web.js/_bg.wasm（wasm 核心，含 mlua Lua 执行层与 Lua 桥导出，M32）
     ├── mainpack.json         # 首屏清单：构建/运行时/harness 三方共用的路由依据
     ├── code-package.json     # 改名映射：逻辑路径 → 会随代码包上传的宿主文件名（见下）
     ├── mainpack\             # 首屏资源（在**主包**里，启动即用，不等分包）
@@ -247,11 +247,13 @@ CommonJS 后、用 `initSync(bytes)` **同步实例化**（小游戏没有 `inst
 **谁在什么时候加载它**：`wechat-adapter.js` 的 `loadWasmCoreOnce()`，在 `start()` 里
 `probePackReadability()` 之后**同步**执行一次。它读字节（`readBytes('pkg/game_web_bg.wasm')`，
 走适配层既有的路径方言与改名表）→ 调 `wasm-bridge.loadWasmCore()` → `initSync(bytes)` 实例化
-→ 把导出清单与字节数记进证据。
+→ 把导出清单与字节数记进证据，并把 6 个 Lua 桥导出挂到 `window.__P2_LUA_BRIDGE`
+（`lua_boot` 包装成 `lua_boot_with_reader`，vfs 路径经 `/project/` 剥离 + `pack/` 前缀路由）。
 
-**失败不掀翻启动**：wasm 只是"包里多带的一份核心"，游戏逻辑由 Fengari + `pack/` 承载。
-失败时 `console.warn` 一行 + `data-p2-wasm` 记状态，Lua 那条路照常跑完。
-**但不会被静默忽略**——状态有四个读取通道：
+**失败不掀翻启动**：wasm 核心的宿主交互（`hostapi_*` 诊断）失败只 `console.warn` 一行 +
+`data-p2-wasm` 记状态；**但 Lua 执行层就在 wasm 里**（迁移后无备用解释器），`__P2_LUA_BRIDGE`
+缺失会让 `web-runtime.js` 抛 `wasm lua bridge not loaded`——这是发布形态问题，不是可降级路径。
+wasm 状态不被静默忽略——有四个读取通道：
 
 | 通道 | 怎么读 | 取值 |
 |---|---|---|
@@ -344,18 +346,19 @@ Remove-Item Env:\NODE_OPTIONS
 
 ## 已知边界（不要夸大）
 
-- **wasm 核心：能装进来、能实例化、导出清单可核对（M32 起），但游戏逻辑不由它承载**。
-  小游戏侧的游戏逻辑仍由 Fengari（Lua in JS）+ `pack/` 承载——这也是 webgl 发布当前的执行路径。
-  M32 做的事是：微信分支**也**构建 `-p game_web` 的 wasm、以 `--target no-modules` 生成
-  CommonJS 胶水随包发行，并由适配层在启动时同步实例化（结果进 `data-p2-wasm` /
+- **wasm 核心：就是 Lua 执行层（WP10 迁移后）**。wasm（mlua 移植，Lua 5.4 + vendored）承载全部
+  Lua 交互：启动（`lua_boot`/`lua_boot_with_reader`）、补丁注入（`lua_do_string`）、全局调用
+  （`lua_call_global`）、JS 回调注册（`lua_register_js_callback`）、缺失全局（`lua_missing_globals`）、
+  工程主脚本执行（`lua_execute_main`）。微信分支与 webgl 共用同一份 wasm，以 `--target no-modules`
+  生成 CommonJS 胶水随包发行，并由适配层在启动时同步实例化（结果进 `data-p2-wasm` /
   `__P2_DIAG().wasm` / 一行启动日志）。实测（`--target no-modules` + `WXWebAssembly`，
-  42,641 字节，导出 `memory,start`）：
-  `wasm-bridge: 核心实例化成功（WXWebAssembly，42641 字节，导出 3 项：memory,start,start_wechat）`。
+  2,442,213 字节，导出 109 项含 `lua_boot`…`lua_execute_main`）：
+  `wasm-bridge: 核心实例化成功（WXWebAssembly，2442213 字节，导出 109 项：…,lua_boot,…,lua_execute_main,…）`。
   **边界（不要夸大）**：`start()` 是 web-sys 形态（`document`/`window`/`fetch`/`Response`），
   小游戏里跑不了，因此适配层**不调用**它；`start_wechat()`（去 DOM 入口）已写在 Rust 侧但
   **未接线、未验证**（见 `engine/crates/game_web/src/lib.rs` 的状态段）。
   所以"wasm 核心在小游戏里跑起来了"这句话，目前只对"加载 + 实例化 + 导出可读"成立，
-  **不对**"引擎在 wasm 里跑 Lua/渲染"成立。
+  **不对**"引擎在 wasm 里跑 Lua/渲染"成立——但 Lua 执行（经 `__P2_LUA_BRIDGE`）**确实**在 wasm 里。
 - **真机会没有 `WXWebAssembly` 吗**：不会（基础库 2.13+ 有），但 harness **默认没有**——
   它伪造的 API 面里没有这个成员。所以无头环境下适配层会报 `no-webassembly`，那不是缺陷复现。
   要验证 wasm 那一步，用 `NODE_OPTIONS=--require artifacts/wx-preload.js` 给它补上

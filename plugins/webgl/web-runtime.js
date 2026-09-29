@@ -771,7 +771,6 @@ __p2_sprites = {}
 -- 运行期**结构变更**（spawn/destroy/sprite.set/animation.attach/tilemap.set_cell/
 -- set_texture）走一次性 op 列表：JS 每帧取走即清空。每帧状态（位置、动画帧序号）
 -- 走 T/A 行实时回写，两者分开是刻意的——动画组件串一条就有几 KB，逐帧重发
--- 在 Fengari 里是纯粹的浪费。
 __p2_ops = {}
 function __p2_emit(row) __p2_ops[#__p2_ops + 1] = row end
 for _, id in pairs(__p2_names) do __p2_alive[id] = true end`;
@@ -1270,7 +1269,7 @@ tilemap = {
   end,
   -- A* 寻路（引擎 core/tilemap.rs 的 Map::find_path 同构）：返回 **1 基** 的
   -- {x=,y=} 格数组（含起终点），走不通返回 nil + 原因字符串。
-  -- 开放集用二叉堆：Fengari 是 JS 里的解释器，线性取最小在 64x64 图上单次寻路
+  -- 开放集用二叉堆：线性取最小在 64x64 图上单次寻路
   -- 要百万级比较，NPC/敌人每帧重寻路会把帧时间吃光。
   find_path = function(id, from_x, from_y, to_x, to_y, diagonal)
     local m = __p2_tilemap_of(id)
@@ -1798,8 +1797,7 @@ end
   // 格式：InnerAudioContext 的官方格式矩阵里 ogg 在 iOS 不支持（Android 支持），
   // 因此 iOS 走 .wav 备用格式、其余平台走 .ogg（体积小）。WebGL（浏览器）没有接入
   // 混音器，保持「播放一律失败」的既有语义，游戏侧静默降级。
-  function installLuaAudioBridge(L) {
-    const f = window.fengari;
+  function installLuaAudioBridge() {
     const isWechat = typeof wx !== 'undefined' && typeof wx.createInnerAudioContext === 'function';
     let wechatPlatform = '';
     if (isWechat) {
@@ -1909,286 +1907,46 @@ end
       }
       if (musicCtx) applyVolume(musicCtx, 'bgm');
     }
+    // WP10 迁移：JS 回调经 wasm 桥注册成 Lua 全局。回调收 Lua 参数（string/number/
+    // boolean/nil → JS 基本值），返回 **数组 = 多返回值**（`[ok]` / `[ok, reason]`
+    // 对应 fengari 版的多 push 语义），空数组 = 无返回。
     function registerLuaFunction(name, fn) {
-      f.lua.lua_pushcfunction(L, fn);
-      f.lua.lua_setglobal(L, f.to_luastring(name));
+      const bridge = window.__P2_LUA_BRIDGE;
+      if (!bridge) throw new Error('wasm lua bridge not loaded');
+      bridge.lua_register_js_callback(name, fn);
     }
-    registerLuaFunction('__p2_audio_js_play_on', function (Ls) {
-      const rawBus = f.lua.lua_tostring(Ls, 1);
-      const rawName = f.lua.lua_tostring(Ls, 2);
-      const bus = rawBus ? f.to_jsstring(rawBus) : '';
-      const name = rawName ? f.to_jsstring(rawName) : '';
+    registerLuaFunction('__p2_audio_js_play_on', function (bus, name) {
+      bus = String(bus == null ? '' : bus);
+      name = String(name == null ? '' : name);
       const result = playOn(bus, name);
-      f.lua.lua_pushboolean(Ls, result.ok);
-      if (result.ok) return 1;
-      f.lua.lua_pushstring(Ls, f.to_luastring(result.reason || 'audio play failed'));
-      return 2;
+      if (result.ok) return [true];
+      return [false, result.reason || 'audio play failed'];
     });
-    registerLuaFunction('__p2_audio_js_music', function (Ls) {
-      const raw = f.lua.lua_tostring(Ls, 1);
-      const name = raw ? f.to_jsstring(raw) : '';
+    registerLuaFunction('__p2_audio_js_music', function (name) {
+      name = String(name == null ? '' : name);
       const result = music(name);
-      f.lua.lua_pushboolean(Ls, result.ok);
-      if (result.ok) return 1;
-      f.lua.lua_pushstring(Ls, f.to_luastring(result.reason || 'music failed'));
-      return 2;
+      if (result.ok) return [true];
+      return [false, result.reason || 'music failed'];
     });
-    registerLuaFunction('__p2_audio_js_stop_music', function () { stopMusic(); return 0; });
-    registerLuaFunction('__p2_audio_js_set_volume', function (Ls) {
-      const rawBus = f.lua.lua_tostring(Ls, 1);
-      const rawValue = f.lua.lua_tostring(Ls, 2);
-      const bus = rawBus ? f.to_jsstring(rawBus) : '';
-      const value = rawValue ? Number(f.to_jsstring(rawValue)) : 1;
-      setVolume(bus, value);
-      return 0;
+    registerLuaFunction('__p2_audio_js_stop_music', function () { stopMusic(); return []; });
+    registerLuaFunction('__p2_audio_js_set_volume', function (bus, value) {
+      bus = String(bus == null ? '' : bus);
+      const parsed = Number(value == null ? 1 : value);
+      setVolume(bus, Number.isFinite(parsed) ? parsed : 1);
+      return [];
     });
   }
 
-    // WP10 批次 A：把 wasm 核心里编译进的宿主 API（app/clock/calendar/day）注册成
-  // 真实 fengari 全局。`window.__P2_HOST_API` 由 index.html 在 `await init()` 后实例化
-  // wasm 导出的 `HostApi` 并挂上；导出缺失（旧包 / 微信侧未接线）时本函数直接返回，
-  // 保持原有"自报家门"代理行为（向后兼容，两条路径共用本运行时）。
-  function installRustHostApiBridge(L) {
-    const f = window.fengari;
-
-    // 把 JS 值对象推成 Lua 表（number/boolean/string；null/undefined → nil）。
-    function pushHostObject(Ls, object) {
-      const keys = Object.keys(object);
-      f.lua.lua_createtable(Ls, 0, keys.length);
-      for (const key of keys) {
-        const value = object[key];
-        if (typeof value === 'boolean') f.lua.lua_pushboolean(Ls, value);
-        else if (typeof value === 'number') f.lua.lua_pushnumber(Ls, value);
-        else if (value === null || value === undefined) f.lua.lua_pushnil(Ls);
-        else f.lua.lua_pushstring(Ls, f.to_luastring(String(value)));
-        f.lua.lua_setfield(Ls, -2, key);
-      }
-      return 1;
-    }
-
-    // 非法参数 → Lua error（与桌面 api_error 抛错一致）。
-    function hostError(Ls, message) {
-      return f.lauxlib.luaL_error(Ls, f.to_luastring(message));
-    }
-
-    // 注册一张宿主表：name → { method: cfunction }。
-    function registerHostTable(name, methods) {
-      const keys = Object.keys(methods);
-      f.lua.lua_createtable(L, 0, keys.length);
-      for (const key of keys) {
-        f.lua.lua_pushcfunction(L, methods[key]);
-        f.lua.lua_setfield(L, -2, key);
-      }
-      f.lua.lua_setglobal(L, f.to_luastring(name));
-    }
-
-    // ---- WP10 批次 B：data（读 pack JSON）----
-    // web 无文件系统：load/reload 用同步 XHR 读 pack/<path>（微信小游戏无同步 XHR
-    // 时返回"不可读"，与 app.project_root 空串同类的平台降级）。schema 校验为简化版
-    //（spec 字段值 = 类型名 string/number/integer/boolean/table，支持嵌套表），对齐桌面
-    // data_schema DSL 常用面、不覆盖其全部规则（与补丁区 map.schema 的降级同风格登记）。
-    const p2DataCache = {};
-    const p2DataSchemas = {};
-    function p2ReadPackTextSync(path) {
-      try {
-        const req = new XMLHttpRequest();
-        req.open('GET', 'pack/' + path, false);
-        req.send(null);
-        if (req.status === 200 || req.status === 0) return req.responseText;
-      } catch (_) { /* 微信小游戏无同步 XHR */ }
-      return null;
-    }
-    function p2PushJsonToLua(Ls, value) {
-      if (value === null || value === undefined) { f.lua.lua_pushnil(Ls); return; }
-      const t = typeof value;
-      if (t === 'number') { f.lua.lua_pushnumber(Ls, value); return; }
-      if (t === 'boolean') { f.lua.lua_pushboolean(Ls, value); return; }
-      if (t === 'string') { f.lua.lua_pushstring(Ls, f.to_luastring(value)); return; }
-      if (Array.isArray(value)) {
-        f.lua.lua_createtable(Ls, value.length, 0);
-        for (let i = 0; i < value.length; i++) { p2PushJsonToLua(Ls, value[i]); f.lua.lua_rawseti(Ls, -2, i + 1); }
-        return;
-      }
-      const keys = Object.keys(value);
-      f.lua.lua_createtable(Ls, 0, keys.length);
-      for (const key of keys) { p2PushJsonToLua(Ls, value[key]); f.lua.lua_setfield(Ls, -2, key); }
-    }
-    function p2LuaToJs(Ls, index) {
-      const t = f.lua.lua_type(Ls, index);
-      if (t === f.lua.LUA_TNIL || t === f.lua.LUA_TNONE) return null;
-      if (t === f.lua.LUA_TBOOLEAN) return f.lua.lua_toboolean(Ls, index);
-      if (t === f.lua.LUA_TNUMBER) return f.lua.lua_tonumber(Ls, index);
-      if (t === f.lua.LUA_TSTRING) return f.lua.lua_tostring(Ls, index);
-      if (t === f.lua.LUA_TTABLE) {
-        const result = {};
-        f.lua.lua_pushnil(Ls);
-        while (f.lua.lua_next(Ls, index) !== 0) {
-          const key = f.lua.lua_tostring(Ls, -2);
-          const value = p2LuaToJs(Ls, -1);
-          f.lua.lua_pop(Ls, 1);
-          if (key) result[key] = value;
-        }
-        return result;
-      }
-      return null;
-    }
-    function p2SchemaViolation(json, spec, path) {
-      if (typeof spec !== 'object' || spec === null) return null;
-      for (const key of Object.keys(spec)) {
-        const rule = spec[key];
-        const actual = json && json[key];
-        if (typeof rule === 'string') {
-          const ok =
-            (rule === 'string' && typeof actual === 'string') ||
-            (rule === 'number' && typeof actual === 'number') ||
-            (rule === 'integer' && typeof actual === 'number' && Number.isInteger(actual)) ||
-            (rule === 'boolean' && typeof actual === 'boolean') ||
-            (rule === 'table' && typeof actual === 'object' && actual !== null && !Array.isArray(actual));
-          if (!ok) return 'schema violation at ' + path + '.' + key + ': expected ' + rule;
-        } else if (typeof rule === 'object' && rule !== null && actual !== null && typeof actual === 'object') {
-          const nested = p2SchemaViolation(actual, rule, path + '.' + key);
-          if (nested) return nested;
-        }
-      }
-      return null;
-    }
-    function p2DataLoadOne(Ls, path) {
-      if (p2DataCache[path] !== undefined) { p2PushJsonToLua(Ls, p2DataCache[path]); return 1; }
-      const text = p2ReadPackTextSync(path);
-      if (text === null) return hostError(Ls, 'data.load ' + path + ': file not readable on this platform');
-      let json;
-      try { json = JSON.parse(text); } catch (error) { return hostError(Ls, 'data.load ' + path + ': invalid JSON: ' + error); }
-      const spec = p2DataSchemas[path];
-      if (spec) {
-        const violation = p2SchemaViolation(json, spec, path);
-        if (violation) return hostError(Ls, 'data.load ' + path + ': ' + violation);
-      }
-      p2DataCache[path] = json;
-      p2PushJsonToLua(Ls, json);
-      return 1;
-    }
-    registerHostTable('data', {
-      load(Ls) { return p2DataLoadOne(Ls, f.lua.luaL_checkstring(Ls, 1)); },
-      reload(Ls) {
-        const path = f.lua.luaL_checkstring(Ls, 1);
-        delete p2DataCache[path];
-        return p2DataLoadOne(Ls, path);
-      },
-      cache_clear() {
-        for (const key of Object.keys(p2DataCache)) delete p2DataCache[key];
-        return 0;
-      },
-      schema(Ls) {
-        const path = f.lua.luaL_checkstring(Ls, 1);
-        if (f.lua.lua_type(Ls, 2) === f.lua.LUA_TTABLE) {
-          p2DataSchemas[path] = p2LuaToJs(Ls, 2);
-          delete p2DataCache[path];
-        } else {
-          delete p2DataSchemas[path];
-        }
-        return 0;
-      },
-    });
-
-    const api = window.__P2_HOST_API;
-    if (!api) {
-      // wasm 宿主桥未接线（微信侧 wasm 核心不可用/未实例化时的真实形态）：clock 由
-      // genericCompat 的 Lua 兜底接管（now/set/set_rate），calendar/day/app 走 missing
-      // 代理自报。**不再硬崩**——wasm 失败不影响 Lua 启动是插件层既有的文档契约。
-      // 桥的状态在微信侧见 __P2_DIAG().wasm（status/hostApi）。
-      console.warn('[web-runtime] __P2_HOST_API 未接线：clock 走 Lua 兜底，calendar/day/app 自报缺失（wasm 桥状态见 __P2_DIAG().wasm）');
-      return;
-    }
-
-    registerHostTable('clock', {
-      now(Ls) {
-        pushHostObject(Ls, api.clock_now());
-        return 1;
-      },
-      set(Ls) {
-        const day = f.lua.luaL_checkinteger(Ls, 1);
-        const minute = f.lua.luaL_checkinteger(Ls, 2);
-        if (!api.clock_set(day, minute)) return hostError(Ls, api.last_error());
-        return 0;
-      },
-      set_rate(Ls) {
-        const rate = f.lua.luaL_checknumber(Ls, 1);
-        if (!api.clock_set_rate(rate)) return hostError(Ls, api.last_error());
-        return 0;
-      },
-      pause(Ls) {
-        api.clock_pause(f.lua.lua_toboolean(Ls, 1));
-        return 0;
-      },
-      add(Ls) {
-        const minutes = f.lua.luaL_checknumber(Ls, 1);
-        if (!api.clock_add(minutes)) return hostError(Ls, api.last_error());
-        return 0;
-      },
-      sleep_to_morning(Ls) {
-        f.lua.lua_pushnumber(Ls, api.clock_sleep_to_morning());
-        return 1;
-      },
-    });
-
-    registerHostTable('calendar', {
-      now(Ls) {
-        pushHostObject(Ls, api.calendar_now());
-        return 1;
-      },
-      set(Ls) {
-        const day = f.lua.luaL_checkinteger(Ls, 1);
-        const season = f.lua.luaL_checkinteger(Ls, 2);
-        const year = f.lua.luaL_checkinteger(Ls, 3);
-        const minute = f.lua.luaL_checkinteger(Ls, 4);
-        if (!api.calendar_set(day, season, year, minute)) return hostError(Ls, api.last_error());
-        return 0;
-      },
-    });
-
-    registerHostTable('day', {
-      now(Ls) {
-        pushHostObject(Ls, api.day_now());
-        return 1;
-      },
-      sleep(Ls) {
-        // 桌面语义（main.lua:491 约定）：on_day_end → 睡到清晨 → on_day_start。
-        // 钩子是 fengari 函数，由 JS 桥持有并触发；callGlobal 对缺失/非函数返回 null。
-        callGlobal(Ls, 'on_day_end');
-        const newDay = api.day_sleep();
-        callGlobal(Ls, 'on_day_start');
-        f.lua.lua_pushnumber(Ls, newDay);
-        return 1;
-      },
-    });
-
-    registerHostTable('app', {
-      name(Ls) {
-        f.lua.lua_pushstring(Ls, f.to_luastring(api.app_name()));
-        return 1;
-      },
-      platform(Ls) {
-        f.lua.lua_pushstring(Ls, f.to_luastring(api.app_platform()));
-        return 1;
-      },
-      project_root(Ls) {
-        f.lua.lua_pushstring(Ls, f.to_luastring(api.app_project_root()));
-        return 1;
-      },
-      quit() {
-        api.app_quit();
-        return 0;
-      },
-    });
-  }
 
 function doString(L, source, name) {
-    const f = window.fengari;
-    const rc = f.lauxlib.luaL_loadbuffer(L, f.to_luastring(source), source.length, f.to_luastring(name));
-    if (rc !== f.lua.LUA_OK || f.lua.lua_pcall(L, 0, f.lua.LUA_MULTRET, 0) !== f.lua.LUA_OK) {
-      const message = f.to_jsstring(f.lua.lua_tostring(L, -1));
-      f.lua.lua_pop(L, 1);
-      throw new Error(message);
+    // WP10 迁移（fengari → mlua-wasm）：L 参数保留仅为调用点兼容（bridge 模式忽略），
+    // 执行走 wasm 桥 `lua_do_string`；Lua 语法/运行错误由 wasm-bindgen 抛成 JS 异常。
+    const bridge = window.__P2_LUA_BRIDGE;
+    if (!bridge) throw new Error('wasm lua bridge not loaded');
+    try {
+      bridge.lua_do_string(source, name);
+    } catch (error) {
+      throw new Error(String((error && error.message) || error));
     }
   }
 
@@ -2214,14 +1972,16 @@ function doString(L, source, name) {
   ];
 
   function missingHostGlobals(L) {
-    const f = window.fengari;
-    const missing = [];
-    for (const name of ENGINE_HOST_GLOBALS) {
-      f.lua.lua_getglobal(L, f.to_luastring(name));
-      if (f.lua.lua_isnil(L, -1)) missing.push(name);
-      f.lua.lua_pop(L, 1);
+    // WP10 迁移：经 wasm 桥一次查出缺失清单（bridge 内部遍历全局表）。
+    const bridge = window.__P2_LUA_BRIDGE;
+    if (!bridge) return [];
+    try {
+      const raw = bridge.lua_missing_globals(JSON.stringify(ENGINE_HOST_GLOBALS));
+      return JSON.parse(raw || '[]');
+    } catch (error) {
+      console.warn('[lua bridge] missing globals probe failed:', error);
+      return [];
     }
-    return missing;
   }
 
   function markBoot(state, detail) {
@@ -2232,31 +1992,23 @@ function doString(L, source, name) {
   }
 
   function callGlobal(L, name, args) {
-    const f = window.fengari;
-    f.lua.lua_getglobal(L, f.to_luastring(name));
-    if (!f.lua.lua_isfunction(L, -1)) {
-      f.lua.lua_pop(L, 1);
-      return null;
+    // WP10 迁移：经 wasm 桥 `lua_call_global` 调用。参数转 JSON 数组（Rust 侧转
+    // Lua 值），返回该全局的字符串化结果或 null（全局缺失 / 返回非字符串），
+    // 协议与 fengari 版 `lua_isstring ? tostring : null` 逐项一致。
+    const bridge = window.__P2_LUA_BRIDGE;
+    if (!bridge) return null;
+    try {
+      const value = bridge.lua_call_global(name, JSON.stringify(args || []));
+      // wasm-bindgen 对 Ok(None) 返回 undefined；协议层统一归一成 null（fengari 版语义）。
+      return value === undefined ? null : value;
+    } catch (error) {
+      throw new Error(String((error && error.message) || error));
     }
-    const list = args || [];
-    for (const value of list) {
-      if (typeof value === 'boolean') f.lua.lua_pushboolean(L, value);
-      else if (typeof value === 'number') f.lua.lua_pushnumber(L, value);
-      else if (value === null || value === undefined) f.lua.lua_pushnil(L);
-      else f.lua.lua_pushstring(L, f.to_luastring(String(value)));
-    }
-    if (f.lua.lua_pcall(L, list.length, 1, 0) !== f.lua.LUA_OK) {
-      const message = f.to_jsstring(f.lua.lua_tostring(L, -1));
-      f.lua.lua_pop(L, 1);
-      throw new Error(message);
-    }
-    const result = f.lua.lua_isstring(L, -1) ? f.to_jsstring(f.lua.lua_tostring(L, -1)) : null;
-    f.lua.lua_pop(L, 1);
-    return result;
   }
 
   window.p2RunLuaGame = async function (status) {
-    if (!window.fengari) throw new Error('fengari-web not loaded');
+    if (!window.__P2_LUA_BRIDGE) throw new Error('wasm lua bridge not loaded (fengari execution layer removed)');
+    const bridge = window.__P2_LUA_BRIDGE;
     const project = await fetchText('pack/project.toml');
     const startup = keyValue(project, 'startup_scene', 'scenes/main.scene');
     const mainScript = keyValue(project, 'main_script', 'scripts/main.lua');
@@ -2295,12 +2047,14 @@ function doString(L, source, name) {
       const chunkName = '@' + name.replace(/\./g, '/') + '.lua';
       return `package.preload[${luaQuote(name)}] = assert(load(${luaQuote(modules[name])}, ${luaQuote(chunkName)}))`;
     }).join('\n');
-    const main = await fetchText('pack/' + mainScript);
-    const f = window.fengari;
-    const L = f.lauxlib.luaL_newstate();
-    f.lualib.luaL_openlibs(L);
-    installLuaAudioBridge(L);
-    installRustHostApiBridge(L);
+    // WP10 迁移（fengari → mlua-wasm）：Lua 状态由 wasm 侧 `LuaRuntime` 承载
+    // （`lua_boot` 建运行时 + vfs provider，provider 读 wasm 预加载资源表）；
+    // main.lua 在补丁注入完成后经 `lua_execute_main` 执行（读 vfs + pack 解码，
+    // 与桌面/微信压缩包语义一致），这里不再 fetch main 源码。
+    // `L` 保留为 null 仅为调用点兼容（doString/callGlobal/missingHostGlobals 已走 bridge）。
+    bridge.lua_boot();
+    const L = null;
+    installLuaAudioBridge();
     try {
       const hostCompat = ENGINE_HOST_GLOBALS.map(name => `if ${name} == nil then ${name} = __p2_missing_host_global(${luaQuote(name)}) end`).join('\n');
       // 引擎里有、web 运行时没实现的宿主 API：**不再静默变成空表**。
@@ -2738,7 +2492,9 @@ end
       // 在**真正的宿主表**上装缺失方法陷阱（放在 methodCompat 之后：那批默认实现
       // 必须先落地，否则陷阱会让 `if not api.load_settings` 之类的探测误判为"有"）。
       doString(L, ENGINE_HOST_GLOBALS.map(name => `__p2_trap_host_table(${luaQuote(name)}, ${name})`).join('\n'), 'engine-host-table-traps');
-      doString(L, main, mainScript);
+      // WP10 迁移：main.lua 不再由 JS fetch 后注入，改经 wasm 桥读 vfs 预加载表
+      // + pack 解码执行（与桌面/微信压缩包语义一致；执行前全部宿主补丁已在位）。
+      bridge.lua_execute_main();
     } catch (error) {
       const missing = missingHostGlobals(L);
       const detail = 'missing engine host API: ' + missing.join(', ');
@@ -2765,18 +2521,30 @@ end
     // 执行而新场景数据从未加载（实测点「开始新游戏」第 5 帧崩在 `map.current()`）。
     async function applySceneSwitch(name) {
       try {
+        // [DIAG] 场景切换分步日志：定位 wasm trap（unreachable）发生在哪一步（定位后移除）。
+        console.log('[lua] switch diag: fetch', name);
         const next = parseScene(await fetchText('pack/scenes/' + name + '.scene'));
+        console.log('[lua] switch diag: parsed entities', next.entities.size);
         const nextImages = await loadSceneImages(next);
+        console.log('[lua] switch diag: images', nextImages.size);
+        console.log('[lua] switch diag: doString bindings...');
         doString(L, sceneBindings(next), 'engine-host-scene');
+        console.log('[lua] switch diag: doString ok');
         sceneState = next;
         images = nextImages;
         pendingTextures.clear();
+        console.log('[lua] switch diag: callGlobal on_create...');
         callGlobal(L, 'on_create');
+        console.log('[lua] switch diag: on_create ok');
         // 换场景后的 on_create 会重新落位、挂形象、生成 NPC —— 与启动路径同理，
         // 立刻取一次快照，别让新场景的第一帧画成"只有场景本体"。
+        console.log('[lua] switch diag: export_state...');
         syncLuaScene(sceneState, callGlobal(L, '__p2_export_state', [false]));
+        console.log('[lua] switch diag: export_state ok');
         refreshSceneTextHidden(L);
+        console.log('[lua] switch diag: draw...');
         uiElements = drawScene(ctx, sceneState, images, projectName, callGlobal(L, '__p2_export_ui'), pendingTextures);
+        console.log('[lua] switch diag: draw ok');
         markBoot('running', sceneState.name);
         console.log('[lua] 切换场景:', name, '实体', next.entities.size);
         sceneSwitch = '';

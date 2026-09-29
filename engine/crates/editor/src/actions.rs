@@ -1946,38 +1946,6 @@ impl EditorApp {
         );
     }
 
-    /// 5c：覆盖主选实体的 UiLayout anchors（一条历史，可撤销）。
-    pub(crate) fn set_ui_layout_anchors(&mut self, anchors: [f32; 4]) {
-        let Some(id) = self.selection.primary() else {
-            return;
-        };
-        let Some(scene) = self.document.current_scene.as_mut() else {
-            return;
-        };
-        let _ = self.history.execute(
-            scene,
-            "Adjust anchors",
-            CommandKind::Property,
-            move |scene| {
-                if let Some(entity) = scene.scene.entities.get_mut(&id) {
-                    if let Some(raw) = entity.components.get("UiLayout") {
-                        if let Ok(mut layout) =
-                            engine::core::ui_layout::UiRectLayout::from_component_str(raw)
-                        {
-                            layout.anchors = anchors;
-                            entity.components.insert(
-                                "UiLayout".to_owned(),
-                                layout.to_component_str(),
-                            );
-                        }
-                    }
-                }
-                scene.mark_dirty();
-                Ok::<(), InspectorError>(())
-            },
-        );
-    }
-
     /// 5b：在设计分辨率指定位置创建 widget（面板 → 设计像素已换算）。
     /// 默认 200×100 尺寸，中心锚点，按 widget 类型附加视觉/事件组件。
     pub(crate) fn create_widget_at(&mut self, widget: &str, design_pos: egui::Pos2) {
@@ -2003,10 +1971,10 @@ impl EditorApp {
         let dy = design_pos.y - design_center.y;
         let offsets = [-100.0 + dx, -50.0 + dy, 100.0 + dx, 50.0 + dy];
         self.set_ui_layout_offsets(offsets);
-        if widget == "Button" {
-            if let Err(error) = self.add_component("UiEvents") {
-                self.status = error;
-            }
+        if widget == "Button"
+            && let Err(error) = self.add_component("UiEvents")
+        {
+            self.status = error;
         }
     }
 

@@ -91,10 +91,7 @@ impl ResizeHandle {
 /// 在包围框矩形上命中测试：指针落在哪个手柄上？
 ///
 /// 从最"具体"的手柄开始检测（角优先于边中点），避免角与边重叠时误判。
-pub fn hit_test_handle(
-    rect: egui::Rect,
-    pointer: egui::Pos2,
-) -> Option<ResizeHandle> {
+pub fn hit_test_handle(rect: egui::Rect, pointer: egui::Pos2) -> Option<ResizeHandle> {
     let half = HANDLE_HALF_SIZE + 2.0;
     for handle in ResizeHandle::ALL {
         let anchor = handle.anchor(rect);
@@ -529,10 +526,8 @@ pub fn draw_padding_overlay(
     let handle_half = HANDLE_HALF_SIZE * 0.8;
     for handle in PaddingHandle::ALL {
         let center = handle.edge_center(inner_rect);
-        let handle_rect = egui::Rect::from_center_size(
-            center,
-            egui::vec2(handle_half * 2.0, handle_half * 2.0),
-        );
+        let handle_rect =
+            egui::Rect::from_center_size(center, egui::vec2(handle_half * 2.0, handle_half * 2.0));
         painter.rect_filled(handle_rect, 1.0, egui::Color32::from_rgb(255, 160, 60));
         painter.rect_stroke(handle_rect, 1.0, stroke, egui::StrokeKind::Outside);
     }

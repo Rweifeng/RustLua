@@ -135,6 +135,66 @@ if ($isWebPlatform -and ($Encrypt -or $Compress)) {
 # M31/P3：发布版运行器是 Windows GUI 子系统程序，`& exe args` 不等待也不捕获输出
 # （`$LASTEXITCODE` 会保留前一条命令的值 ⇒ 自检空跑）。统一用 Start-Process -Wait +
 # 重定向取回真实退出码与输出。返回 `[pscustomobject]@{ ExitCode; Output }`。
+function Optimize-WasmBin {
+    param(
+        [Parameter(Mandatory = $true)][string]$WasmPath
+    )
+    # 用 binaryen 的 wasm-opt -Oz 对 wasm-bindgen 产物做体积优化（省 ~200-300 KB，
+    # 顺带移除 name section）。微信小游戏主包 4 MB 上限需要它；webgl 亦受益。
+    # wasm-opt 不可用时跳过并提示，不阻断发布（webgl 无硬性体积门槛）。
+    if (-not (Test-Path -LiteralPath $WasmPath)) { return }
+    $wasmOptPath = $null
+    $cmd = Get-Command wasm-opt -ErrorAction SilentlyContinue
+    if ($cmd) { $wasmOptPath = $cmd.Source }
+    else {
+        $localOpt = Join-Path $env:USERPROFILE ".tools\binaryen\binaryen-version_133\bin\wasm-opt.exe"
+        if (Test-Path -LiteralPath $localOpt) { $wasmOptPath = $localOpt }
+    }
+    if (-not $wasmOptPath) {
+        Write-Warning "wasm-opt 未找到：$WasmPath 保持未优化体积（微信小游戏主包可能超 4 MB）。"
+        return
+    }
+    $optOut = $WasmPath + ".opt"
+    & $wasmOptPath -Oz $WasmPath -o $optOut
+    if ($LASTEXITCODE -eq 0) {
+        Move-Item -Force -LiteralPath $optOut -Destination $WasmPath
+        Write-Host ("==> wasm-opt -Oz: {0:N0} KB" -f ((Get-Item -LiteralPath $WasmPath).Length / 1KB)) -ForegroundColor DarkGray
+    }
+    else {
+        Remove-Item -LiteralPath $optOut -Force -ErrorAction SilentlyContinue
+        Write-Warning "wasm-opt 处理失败（$WasmPath），按未优化体积继续发布。"
+    }
+}
+function Minify-JsFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$JsPath
+    )
+    # 用 terser 压缩工程自维护的运行时 JS（web-runtime.js / wechat-adapter.js）：
+    # 发布产物更小（合计省 100 KB+，微信小游戏主包 4 MB 上限需要），源码保持可读。
+    # terser 不可用时跳过并提示，不阻断发布（webgl 无硬性体积门槛）。
+    if (-not (Test-Path -LiteralPath $JsPath)) { return }
+    $terserPath = $null
+    $cmd = Get-Command terser -ErrorAction SilentlyContinue
+    if ($cmd) { $terserPath = $cmd.Source }
+    else {
+        $localTerser = Join-Path $env:APPDATA "npm\terser.cmd"
+        if (Test-Path -LiteralPath $localTerser) { $terserPath = $localTerser }
+    }
+    if (-not $terserPath) {
+        Write-Warning "terser 未找到：$JsPath 保持未压缩（微信小游戏主包可能超 4 MB）。"
+        return
+    }
+    $minOut = $JsPath + ".min"
+    & $terserPath $JsPath -o $minOut
+    if ($LASTEXITCODE -eq 0) {
+        Move-Item -Force -LiteralPath $minOut -Destination $JsPath
+        Write-Host ("==> terser minify: {0:N0} KB" -f ((Get-Item -LiteralPath $JsPath).Length / 1KB)) -ForegroundColor DarkGray
+    }
+    else {
+        Remove-Item -LiteralPath $minOut -Force -ErrorAction SilentlyContinue
+        Write-Warning "terser 压缩失败（$JsPath），按原样继续。"
+    }
+}
 function Invoke-PackagedCheck {
     param(
         [Parameter(Mandatory = $true)][string]$Runner,
@@ -278,21 +338,67 @@ try {
         Write-Host "==> Skipping cargo build (-SkipBuild): reusing existing artifacts" -ForegroundColor DarkGray
     }
     elseif ($isWebPlatform) {
-        cargo build -p assetc --release
+        $savedEap = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try {
+            cargo build -p assetc --release -q 2>&1 | Out-Null
+        }
+        finally {
+            $ErrorActionPreference = $savedEap
+        }
         if ($LASTEXITCODE -ne 0) { throw "assetc release build failed." }
         # webgl 与微信小游戏**共用同一个 wasm 核心**（`-p game_web` 只构建一次，胶水按平台各生成一份）。
-        rustup target add wasm32-unknown-unknown
+        # PS 5.1 陷阱：$ErrorActionPreference='Stop' 下原生程序写 stderr 会变成**终止性
+        # 错误**（NativeCommandError），rustup/cargo 的正常进度输出也在 stderr —— 必须临时
+        # 降为 Continue 再调（同 ogg2wav 的既有模式），否则打包在构建第一步就误报失败。
+        $savedEap = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try {
+            rustup target add wasm32-unknown-unknown 2>&1 | Out-Null
+        }
+        finally {
+            $ErrorActionPreference = $savedEap
+        }
         if ($LASTEXITCODE -ne 0) { throw "Install wasm32 target failed." }
-        cargo build -p game_web --release --target wasm32-unknown-unknown
+        # 全量引擎 wasm（mlua wasm 移植 + wasm-bindgen）必须保留 `target_features` 自定义段
+        # （含 reference-types）：wasm-bindgen-cli 靠该段检测模块特性，决定是否生成 externref
+        # table 与 catch wrappers。workspace release profile 的 `strip = true` 会移除该段，
+        # 导致打包时 wasm-bindgen 报 "externref table required for catch wrappers"（实测，
+        # 见 artifacts/package-webgl-*.log 排查记录）。因此 wasm 构建临时用环境变量覆盖 strip
+        # 为 none；桌面构建（assetc/game.exe）不受影响，仍按 workspace profile 走 strip。
+        #
+        # WP10 迁移（EH 兼容）：**webgl 必须用 rustc 1.88（LLVM 18）构建**。1.97（LLVM 19）
+        # 对 vendored Lua C 的 setjmp 生成 try_table（new EH）、对 Rust 侧 catch_unwind 生成
+        # legacy try（0x06），同一模块里新旧 EH 指令混合，当前 Edge 直接拒绝编译
+        # （"module uses a mix of legacy and new exception handling instructions"，实测
+        # 2026-09-29：1.88 产物 Edge 跑通、1.97 产物报混合）。1.88 产物为纯 try_table，
+        # Edge/V8 支持。**微信侧不用 1.88**（保持默认 toolchain 构建 + wasm-opt -Oz 瘦身：
+        # 主包 4MB 上限需要；WXWebAssembly 对混合的接受度沿用阶段二发布基线）。
+        $wasmToolchain = if ($Platform -eq "webgl") { "+1.88.0" } else { "" }
+        $savedStrip = $env:CARGO_PROFILE_RELEASE_STRIP
+        $env:CARGO_PROFILE_RELEASE_STRIP = "none"
+        $savedEap = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try {
+            cargo $wasmToolchain build -p game_web --release --target wasm32-unknown-unknown -q 2>&1 | Out-Null
+        }
+        finally {
+            $ErrorActionPreference = $savedEap
+        }
+        if ($null -eq $savedStrip) { Remove-Item Env:\CARGO_PROFILE_RELEASE_STRIP -ErrorAction SilentlyContinue }
+        else { $env:CARGO_PROFILE_RELEASE_STRIP = $savedStrip }
         if ($LASTEXITCODE -ne 0) { throw "WASM build failed ($Platform)." }
         if (-not (Get-Command wasm-bindgen -ErrorAction SilentlyContinue)) {
             Write-Host "==> Install wasm-bindgen-cli" -ForegroundColor Cyan
-            cargo install wasm-bindgen-cli --version 0.2.127
+            # 必须与 game_web 依赖的 wasm-bindgen crate 版本一致（0.2.129 族）：
+            # CLI 与 wasm 元数据 schema 必须精确匹配（旧版 CLI 报 "failed to read
+            # wasm-bindgen data"；版本不一致的 catch 处理会报 catch wrapper 类错误）。
+            cargo install wasm-bindgen-cli --version 0.2.129 2>&1 | Out-Null
             if ($LASTEXITCODE -ne 0) { throw "wasm-bindgen-cli install failed." }
         }
     }
     else {
-        cargo build --workspace --release
+        cargo build --workspace --release -q 2>&1 | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "Release build failed." }
     }
 
@@ -315,7 +421,7 @@ try {
             $ogg2wavExe = Join-Path $cargoTargetRoot "debug\examples\ogg2wav.exe"
             if (-not (Test-Path -LiteralPath $ogg2wavExe)) {
                 Write-Host "==> Building ogg2wav tool (engine example)" -ForegroundColor Cyan
-                cargo build -p engine --example ogg2wav
+                cargo build -p engine --example ogg2wav 2>&1 | Out-Null
                 if ($LASTEXITCODE -ne 0) { throw "ogg2wav tool build failed." }
             }
             $audioDir = Join-Path $packRoot "assets\audio"
@@ -362,7 +468,9 @@ try {
         }
         if ($Platform -eq "webgl") {
             # 浏览器：`--target web` 的 **ES Module** 胶水，由 index.html 的 `<script type=module>` 加载。
-            wasm-bindgen $wasmInput --out-dir $pkgRoot --target web --no-typescript
+            # --remove-name-section：release 构建为保留 target_features 段关闭了 strip，name
+            # section（纯调试信息）可达 1.2 MB+，部署前移除（对运行无任何影响）。
+            wasm-bindgen $wasmInput --out-dir $pkgRoot --target web --no-typescript --remove-name-section
             if ($LASTEXITCODE -ne 0) { throw "wasm-bindgen failed." }
             # wasm-bindgen 对 `--target web` 会额外生成一个 `index.html` 覆盖说明页（它靠
             # **文件系统里已存在 index.html** 来判断"输出目录是不是给浏览器用的"，因此平台
@@ -371,6 +479,13 @@ try {
             # 复制步骤赢，所以这里把 wasm-bindgen 顺带生成的那份删掉，避免"谁最后写谁生效"
             # 这种靠顺序的隐式约定。
             Remove-Item -LiteralPath (Join-Path $pkgRoot "index.html") -Force -ErrorAction SilentlyContinue
+            # WP10 迁移（webgl EH 兼容）：**不跑 wasm-opt**。wasm-bindgen 产物是纯
+            # try_table（new EH，V8/Edge 支持）；binaryen 的任意 pass 都会把部分 try_table
+            # 转回 legacy try（0x06），造成"legacy + new EH 指令混合"，当前 Edge 直接拒绝
+            # 编译（WebAssembly.instantiateStreaming: module uses a mix of legacy and new
+            # exception handling instructions，实测 2026-09-29）。webgl 无 4MB 硬体积门槛，
+            # 2.8MB 未优化产物直接发布。微信侧保留 wasm-opt（WXWebAssembly 接受混合，
+            # 且主包 4MB 上限需要 -Oz 瘦身）。
         }
         else {
             # 微信小游戏：**必须用 `--target no-modules`**。
@@ -381,7 +496,7 @@ try {
             # `--target no-modules` 的产物是**纯脚本**（无 import/export，全部包在一个 IIFE 里），
             # 因此可以被 CommonJS 直接 `require`——`wasm-bridge.js` 就是那层包壳。
             # 这也让 `verify-wechat-minigame.ps1` 的"逐脚本按脚本模式解析"守卫保持有牙齿。
-            wasm-bindgen $wasmInput --out-dir $pkgRoot --target no-modules --no-typescript
+            wasm-bindgen $wasmInput --out-dir $pkgRoot --target no-modules --no-typescript --remove-name-section
             if ($LASTEXITCODE -ne 0) { throw "wasm-bindgen (no-modules) failed." }
             # no-modules 胶水开头会算 `script_src`（用于"不给参数时按 `<脚本名>_bg.wasm` 找模块"）：
             #   if (typeof document !== 'undefined' && document.currentScript !== null) {
@@ -419,21 +534,18 @@ try {
             $glueText = [System.IO.File]::ReadAllText($gluePath)
             $glueText += "`n// 微信分支：补 CommonJS 导出（见 scripts/package.ps1）。no-modules 产物只声明了顶层 let，`n// 不挂全局也不是 module.exports，直接 require 会拿到空对象。`nmodule.exports = wasm_bindgen;`n"
             [System.IO.File]::WriteAllText($gluePath, $glueText, (New-Object System.Text.UTF8Encoding($false)))
+            Optimize-WasmBin (Join-Path $pkgRoot "game_web_bg.wasm")
         }
-        $fengariSource = Join-Path $workspaceRoot "plugins\webgl\pkg\fengari-web.js"
-        if (-not (Test-Path -LiteralPath $fengariSource)) {
-            throw "Web platform package requires the vendored Lua runtime: plugins\webgl\pkg\fengari-web.js"
-        }
-        if ((Get-Item -LiteralPath $fengariSource).Length -le 0) {
-            throw "Vendored Lua runtime is empty: plugins\webgl\pkg\fengari-web.js"
-        }
-        Copy-Item $fengariSource (Join-Path $pkgRoot "fengari-web.js") -Force
-        # webgl 与微信小游戏共用同一份 Lua 运行时：两个平台的游戏逻辑不会各自漂移。
+        # WP10 迁移（fengari → mlua-wasm）：Lua 执行层在 wasm 侧 mlua（LuaRuntime 桥），
+        # pkg/fengari-web.js 已从发布链路移除，此处不再复制。
+        # webgl 与微信小游戏共用同一份 web 运行时：两个平台的游戏逻辑不会各自漂移。
         $webRuntimeTemplate = Join-Path $workspaceRoot "plugins\webgl\web-runtime.js"
         if (-not (Test-Path -LiteralPath $webRuntimeTemplate)) {
             throw "Web platform package requires the shared Lua runtime: plugins\webgl\web-runtime.js"
         }
         Copy-Item $webRuntimeTemplate (Join-Path $distRoot "web-runtime.js") -Force
+        # 发布产物 minify（源码保持 plugins/webgl/web-runtime.js 可读）：微信主包体积需要它。
+        Minify-JsFile (Join-Path $distRoot "web-runtime.js")
 
         if ($Platform -eq "wechat-minigame") {
             # 微信小游戏入口：game.js（入口）+ wechat-adapter.js（wx 宿主适配）+ 两个配置。
@@ -445,6 +557,8 @@ try {
                     throw "WeChat platform plugin is missing: $pluginSource"
                 }
                 Copy-Item -LiteralPath $pluginSource -Destination (Join-Path $distRoot $pluginFile) -Force
+                # 发布产物 minify（源码保持 plugins/wechat-minigame/wechat-adapter.js 可读）。
+                if ($pluginFile -eq "wechat-adapter.js") { Minify-JsFile (Join-Path $distRoot $pluginFile) }
             }
             # game.json 的 subpackages **按形态注入，不写死在模板里**：
             # 模板带上分包声明会让另外两种形态（full / remote）被微信直接拒开——声明的 root
@@ -544,14 +658,12 @@ try {
             $indexHtml = Get-Content -LiteralPath $indexTemplate -Raw -Encoding UTF8
             $indexHtml = $indexHtml.Replace('__PUBLISH_NAME_JSON__', $publishNameJson)
             $indexHtml = $indexHtml.Replace('__PUBLISH_NAME__', $PublishName)
-            $indexHtml = $indexHtml.Replace('__FONT_PATH__', "./fonts/$fontName")
+            # WP10 之后 webgl **不随包复制 17 MB 完整字体**：`__FONT_PATH__` 替换为空串，
+            # web-runtime.js 的 loadGameFont() 检测到空路径直接跳过，GAME_FONT 保持
+            # 'sans-serif'（浏览器系统字体渲染中文，Windows/macOS/常见 Linux 桌面均有）。
+            # 若后续要字体保真，可改为打包期子集字体（微信侧已是 247 KB 子集方案）。
+            $indexHtml = $indexHtml.Replace('__FONT_PATH__', '')
             [IO.File]::WriteAllText((Join-Path $distRoot "index.html"), $indexHtml, (New-Object Text.UTF8Encoding($false)))
-            $fontTarget = Join-Path $distRoot ("fonts\\" + $fontName)
-            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $fontTarget) | Out-Null
-            Copy-Item -Path $fontSource -Destination $fontTarget -Force
-            if (-not (Test-Path -LiteralPath $fontTarget) -or (Get-Item -LiteralPath $fontTarget).Length -le 0) {
-                throw "Release package font is missing or empty: fonts/$fontName"
-            }
             # 包内双击壳：与 index.html 一样来自平台插件模板，必须由发布脚本生成——
             # Complete-ReleaseSwap 会把发布根下所有非 .staging-*/.backup-* 条目移入备份后删除，
             # 手工丢进产物目录的脚本每次发布会消失。模板本身与游戏工程名、目录深度无关
@@ -867,7 +979,8 @@ try {
             (Join-Path $distRoot "project.config.json"),
             (Join-Path $distRoot "wechat-adapter.js"),
             (Join-Path $distRoot "web-runtime.js"),
-            (Join-Path $distRoot "pkg\fengari-web.js"),
+            (Join-Path $distRoot "pkg\game_web.js"),
+            (Join-Path $distRoot "pkg\game_web_bg.wasm"),
             (Join-Path $distRoot "code-package.json"),
             (Join-Path $skeletonRoot (Resolve-CodePackName "manifest.txt")),
             (Join-Path $skeletonRoot (Resolve-CodePackName "project.toml"))
@@ -986,7 +1099,6 @@ try {
             (Join-Path $distRoot "web-runtime.js"),
             (Join-Path $distRoot "pkg\game_web.js"),
             (Join-Path $distRoot "pkg\game_web_bg.wasm"),
-            (Join-Path $distRoot "pkg\fengari-web.js"),
             (Join-Path $packRoot "manifest.txt"),
             (Join-Path $packRoot "project.toml")
         )
@@ -1041,14 +1153,15 @@ try {
         }
     }
     elseif ($Platform -eq "webgl") {
-        $packageContents = "index.html, test-webgl.bat, pkg/game_web.js, pkg/game_web_bg.wasm, pkg/fengari-web.js, web-runtime.js, fonts/$fontName, pack/ (data), release.toml, run.txt, deps.txt"
+        $packageContents = "index.html, test-webgl.bat, pkg/game_web.js, pkg/game_web_bg.wasm, web-runtime.js, pack/ (data), release.toml, run.txt, deps.txt"
         if ($settingsPackaged) {
-            $packageContents = "index.html, test-webgl.bat, pkg/game_web.js, pkg/game_web_bg.wasm, pkg/fengari-web.js, web-runtime.js, fonts/$fontName, pack/ (data, settings.toml), release.toml, run.txt, deps.txt"
+            $packageContents = "index.html, test-webgl.bat, pkg/game_web.js, pkg/game_web_bg.wasm, web-runtime.js, pack/ (data, settings.toml), release.toml, run.txt, deps.txt"
         }
     }
     else {
         # PC 不复制 17 MB 完整字体到发布根：assetc 已把工程字体打进 pack/（运行时以 pack 为工程根，
-        # 按 settings.toml 的 font 路径读取），`fonts/` 那一份只有 webgl 的 index.html 需要。
+        # 按 settings.toml 的 font 路径读取）。webgl 同样不随包带字体（走浏览器系统字体，
+        # `__FONT_PATH__` 为空；见上方 webgl 分支）。只有微信走打包期子集字体（247 KB）。
         # 这条**真的去查**包内字体，而不是只在 build-info.txt 里声称一句——此前那行 `font_check`
         # 对 pc 写的是"fonts/$fontName present and non-empty"，而 pc 的发布根根本没有 fonts/：
         # 自述与现实相反，读的人无从分辨（验收那边也照着这句写成了根下字体，于是正确的 pc 发布
@@ -1252,7 +1365,8 @@ if ($SelfTest) {
             (Join-Path $isolatedRoot "project.config.json"),
             (Join-Path $isolatedRoot "wechat-adapter.js"),
             (Join-Path $isolatedRoot "web-runtime.js"),
-            (Join-Path $isolatedRoot "pkg\fengari-web.js"),
+            (Join-Path $isolatedRoot "pkg\game_web.js"),
+            (Join-Path $isolatedRoot "pkg\game_web_bg.wasm"),
             (Join-Path $isolatedSkeletonRoot "manifest.txt")
         )) {
             if (-not (Test-Path -LiteralPath $file)) { throw "isolated WeChat launcher is missing: $file" }

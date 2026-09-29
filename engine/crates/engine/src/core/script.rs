@@ -439,6 +439,25 @@ struct EntityScriptState {
     lua: Lua,
     fingerprint: ScriptFingerprint,
 }
+
+/// 临时探针：定位 wasm 启动路径的时间 panic（验证后移除）。
+#[doc(hidden)]
+pub fn probe_startup_stage(stage: u8) -> Result<(), String> {
+    match stage {
+        0 => {
+            let _ = Lua::new();
+        }
+        1 => {
+            let _ = ScriptState::default();
+        }
+        2 => {
+            let _ = ActionMap::with_defaults();
+        }
+        _ => return Err("unknown stage".to_owned()),
+    }
+    Ok(())
+}
+
 impl LuaRuntime {
     pub fn new() -> Result<Self, LuaBridgeError> {
         let lua = Lua::new();
@@ -1665,14 +1684,24 @@ impl LuaRuntime {
             self.state.borrow_mut().last_update_micros = 0;
             return Ok(String::new());
         };
+        // wasm32-unknown-unknown 的 std 不实现 Instant（unsupported.rs 直接 panic）；
+        // 耗时统计只在桌面有意义（宿主性能面板），wasm 侧记 0 并跳过计时。
+        #[cfg(not(target_arch = "wasm32"))]
         let started = std::time::Instant::now();
         let result = update.call(()).map_err(|error| LuaBridgeError::Runtime {
             path,
             source: error.to_string(),
         });
         // 失败也要记账：否则"Lua 抛错的那一帧"在性能面板上看起来是零成本。
-        self.state.borrow_mut().last_update_micros =
-            u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.state.borrow_mut().last_update_micros =
+                u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.state.borrow_mut().last_update_micros = 0;
+        }
         result
     }
 
@@ -1691,6 +1720,14 @@ impl LuaRuntime {
                 Err(error)
             }
         }
+    }
+
+    /// 访问底层 mlua 状态（wasm Lua 桥用：注入宿主回调 / 调用自定义全局 /
+    /// 执行补丁代码串）。只读借用；mlua 状态是单线程语义（wasm 单线程、
+    /// 桌面线程内），调用方不得跨线程持有。
+    #[must_use]
+    pub fn lua(&self) -> &Lua {
+        &self.lua
     }
 
     /// 当前场景名（`scene.reload()` 返回的那个值）。
@@ -1815,15 +1852,15 @@ fn find_line_number(source: &str) -> Option<u32> {
 
 fn file_fingerprint(path: &Path, source: &str) -> Result<ScriptFingerprint, LuaBridgeError> {
     use std::hash::{Hash, Hasher};
-    let metadata = fs::metadata(path).map_err(|error| LuaBridgeError::Load {
+    let meta = crate::core::vfs::metadata(path).map_err(|error| LuaBridgeError::Load {
         path: path.to_path_buf(),
         source: error.to_string(),
     })?;
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     source.hash(&mut hasher);
     Ok(ScriptFingerprint {
-        modified: metadata.modified().ok(),
-        length: metadata.len(),
+        modified: meta.modified,
+        length: meta.len,
         hash: hasher.finish(),
     })
 }
@@ -2318,8 +2355,12 @@ fn move_inventories(
 }
 
 /// 读取项目脚本源码，支持发布包的压缩/加密（明文原样返回）。
-fn read_project_script(path: &Path) -> Result<String, LuaBridgeError> {
-    let bytes = fs::read(path).map_err(|error| LuaBridgeError::Load {
+/// 桌面走 `std::fs`；wasm32-unknown-unknown 走宿主注入的虚拟文件系统（`core::vfs`）。
+/// `pub`：wasm Lua 桥（`game_web::lua_bridge::lua_execute_main`）需要它在**既有状态**
+/// 上读取+执行 main.lua（`execute_project_script` 的 `load_candidate` 会新建 Lua
+/// 状态、丢弃已注入的宿主补丁，web 流程不可用）。
+pub fn read_project_script(path: &Path) -> Result<String, LuaBridgeError> {
+    let bytes = crate::core::vfs::read(path).map_err(|error| LuaBridgeError::Load {
         path: path.to_path_buf(),
         source: error.to_string(),
     })?;
@@ -2336,10 +2377,10 @@ fn install_encoded_require_searcher(lua: &Lua, script_dir: PathBuf) -> mlua::Res
     let searcher = lua.create_function(move |lua, module: String| {
         let relative = module.replace('.', std::path::MAIN_SEPARATOR_STR);
         let file_path = script_dir.join(format!("{relative}.lua"));
-        if !file_path.is_file() {
+        if !crate::core::vfs::is_file(&file_path) {
             return Ok(Value::Nil);
         }
-        let bytes = fs::read(&file_path).map_err(mlua::Error::external)?;
+        let bytes = crate::core::vfs::read(&file_path).map_err(mlua::Error::external)?;
         let decoded = crate::core::pack::decode(&bytes).map_err(mlua::Error::external)?;
         let source = String::from_utf8_lossy(&decoded).into_owned();
         let chunk_name = format!("scripts/{module}.lua");
@@ -2350,6 +2391,14 @@ fn install_encoded_require_searcher(lua: &Lua, script_dir: PathBuf) -> mlua::Res
     let searchers: Table = package.get("searchers")?;
     searchers.raw_insert(1, searcher)?;
     Ok(())
+}
+
+/// 在**既有** Lua 状态上配置 require（web 侧 `lua_execute_main` 用）：
+/// mlua 默认 require 搜索器走 C 文件 API，wasm 下没有文件系统，必须装
+/// vfs provider 支持的编码搜索器。`execute_project_script` 的 `load_candidate`
+/// 会新建 Lua 状态（丢弃已注入补丁），因此 web 流程不能复用，只能这样显式补装。
+pub fn install_web_require(lua: &Lua, script_dir: &Path) -> mlua::Result<()> {
+    install_encoded_require_searcher(lua, script_dir.to_path_buf())
 }
 
 /// Writes `text` to `path` atomically (temp file + rename), like scene saves.
@@ -5697,7 +5746,7 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
                 return json_to_lua_value(lua, cached);
             }
             let file_path = root.join(&path);
-            let bytes = std::fs::read(&file_path).map_err(|error| {
+            let bytes = crate::core::vfs::read(&file_path).map_err(|error| {
                 api_error(format!("data.load {}: {error}", file_path.display()))
             })?;
             let decoded = crate::core::pack::decode(&bytes).map_err(|error| {
@@ -5725,7 +5774,7 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
                     .ok_or_else(|| api_error("data.reload requires a project root"))?
             };
             let file_path = root.join(&path);
-            let bytes = std::fs::read(&file_path).map_err(|error| {
+            let bytes = crate::core::vfs::read(&file_path).map_err(|error| {
                 api_error(format!("data.reload {}: {error}", file_path.display()))
             })?;
             let decoded = crate::core::pack::decode(&bytes).map_err(|error| {

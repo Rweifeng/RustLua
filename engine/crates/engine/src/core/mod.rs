@@ -83,6 +83,8 @@ pub mod lod;
 pub mod mesh3d;
 /// 发布资源编解码（压缩 + 加密）。
 pub mod pack;
+/// wasm32-unknown-unknown virtual file system: project resources (.lua / data files) come from a host-injected reader on Web, std::fs on desktop.
+pub mod vfs;
 /// 确定性数据并行执行器（纯分块任务，可回滚为串行）。
 pub mod par;
 /// Pooled particle bursts with spawn/update/recycle.

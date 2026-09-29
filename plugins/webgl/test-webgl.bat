@@ -37,7 +37,6 @@ if not exist "%BUNDLE%\index.html" set "IS_BUNDLE="
 if not exist "%BUNDLE%\web-runtime.js" set "IS_BUNDLE="
 if not exist "%BUNDLE%\pkg\game_web.js" set "IS_BUNDLE="
 if not exist "%BUNDLE%\pkg\game_web_bg.wasm" set "IS_BUNDLE="
-if not exist "%BUNDLE%\pkg\fengari-web.js" set "IS_BUNDLE="
 
 rem Walk up until the repository root shows up. %~dp0 is the only reliable anchor:
 rem on double-click the current directory is %SystemRoot%\System32, not the bundle.

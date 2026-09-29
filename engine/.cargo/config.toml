@@ -3,3 +3,22 @@ target-dir = "target"
 
 [term]
 verbose = false
+
+# RustLua engine — wasm32-unknown-unknown support for the vendored mlua fork.
+#
+# - ZIG: path to the Zig executable used to compile the vendored Lua C sources
+#   (and the wasm-lua-shim C stubs) for wasm32-unknown-unknown via
+#   `zig cc --target=wasm32-freestanding`.
+# - exception-handling: Lua's error handling relies on setjmp/longjmp, which on
+#   bare WebAssembly is provided by the wasm exception-handling proposal. The
+#   Rust side must enable the same target feature.
+# - reference-types: wasm-bindgen 生成 catch wrappers 需要 externref table，
+#   而该 table 只在模块声明 `reference-types` target feature 时才会被
+#   wasm-bindgen-cli 处理（源码 lib.rs: 模块 target_features 检测），否则
+#   打包报 "externref table required for catch wrappers"。
+
+[env]
+ZIG = "C:\\Users\\Administrator\\.tools\\zig-x86_64-windows-0.16.0\\zig.exe"
+
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "target-feature=+exception-handling,+reference-types"]

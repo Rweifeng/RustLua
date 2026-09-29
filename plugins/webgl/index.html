@@ -14,10 +14,9 @@
   <canvas id="p2-canvas"></canvas>
   <div id="status">Loading __PUBLISH_NAME__...</div>
   <script>window.__P2_FONT = '__FONT_PATH__';</script>
-  <script src="./pkg/fengari-web.js"></script>
   <script src="./web-runtime.js"></script>
   <script type="module">
-    import init, { start, HostApi } from './pkg/game_web.js';
+    import init, { start, lua_boot, lua_do_string, lua_call_global, lua_register_js_callback, lua_missing_globals, lua_execute_main } from './pkg/game_web.js';
     const publishName = __PUBLISH_NAME_JSON__;
     const status = document.getElementById('status');
     const markBoot = (state, detail) => {
@@ -27,9 +26,15 @@
     try {
       await init();
       await start('p2-canvas', publishName);
-      window.__P2_HOST_API = (typeof HostApi === 'function') ? new HostApi(publishName) : null;
+      // WP10 迁移（fengari → mlua-wasm）：wasm Lua 桥挂到全局，web-runtime.js 的
+      // Lua 交互（建运行时/注入补丁/调全局/注册 JS 回调/查缺失全局）全部经它完成。
+      // fengari-web.js 已从发布包移除。
+      window.__P2_LUA_BRIDGE = {
+        lua_boot, lua_do_string, lua_call_global,
+        lua_register_js_callback, lua_missing_globals, lua_execute_main
+      };
       await window.p2RunLuaGame(status);
-      status.textContent = publishName + ' - Lua running';
+      status.textContent = publishName + ' - Lua running (mlua-wasm)';
       markBoot('ok', publishName);
     } catch (error) {
       console.error(error);

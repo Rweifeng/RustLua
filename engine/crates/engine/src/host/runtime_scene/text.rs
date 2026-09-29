@@ -24,12 +24,21 @@ use crate::core::{
 };
 
 use super::{
-    FONT_ATLAS_TEXTURE_PATH, FrameVectorTextVertex, OverlayVertex, SceneDraw, VectorGlyphSnapshot,
-    VectorSegmentSnapshot, WorldSpriteVertex, font_texture_path, load_custom_font_atlas,
-    load_custom_vector_atlas, load_project_font_atlas, load_project_vector_atlas, text_to_ndc,
-    TextRenderMode,
+    FONT_ATLAS_TEXTURE_PATH, FrameVectorTextVertex, OverlayVertex, SceneDraw, TextRenderMode,
+    VectorGlyphSnapshot, VectorSegmentSnapshot, WorldSpriteVertex, font_texture_path,
+    load_custom_font_atlas, load_custom_vector_atlas, load_project_font_atlas,
+    load_project_vector_atlas, text_to_ndc,
 };
 use crate::host::frame::{ATLAS_TEXTURE_PATH, FontAtlasMap, FontHandle, VectorAtlasMap};
+
+/// 一段文字 run 的渲染种类：决定绑哪张图集、走 SDF 还是 bitmap 分支。
+/// SDF run 携带自己的 font key（自定义字体是 `font://...`，否则是默认图集哨兵）；
+/// bitmap run 永远绑内置 5x7 图集。
+pub(crate) struct TextRunKind<'a> {
+    pub sdf: bool,
+    pub bitmap: bool,
+    pub font_key: &'a str,
+}
 
 impl super::RuntimeScene {
     pub(crate) fn ensure_vector_atlas(&mut self) {
@@ -42,7 +51,10 @@ impl super::RuntimeScene {
 
     /// 获取默认或指定字体的矢量轮廓缓存；自定义字体失败返回 `None`，调用方
     /// 仍可选择回退 SDF。
-    pub(crate) fn ensure_vector_font(&mut self, font_asset: &str) -> Option<Arc<Mutex<FontVectorAtlas>>> {
+    pub(crate) fn ensure_vector_font(
+        &mut self,
+        font_asset: &str,
+    ) -> Option<Arc<Mutex<FontVectorAtlas>>> {
         if font_asset.is_empty() {
             self.ensure_vector_atlas();
             return self.vector_atlas.clone();
@@ -149,7 +161,12 @@ impl super::RuntimeScene {
     }
 
     /// 决定一段文本的首选渲染路径；矢量图集不可用时渲染层仍会回退 SDF。
-    pub(crate) fn should_render_vector(&self, font_asset: Option<&str>, scale: f32, chars: usize) -> bool {
+    pub(crate) fn should_render_vector(
+        &self,
+        font_asset: Option<&str>,
+        scale: f32,
+        chars: usize,
+    ) -> bool {
         match self.text_render_mode {
             TextRenderMode::Vector => true,
             TextRenderMode::Sdf => false,
@@ -161,10 +178,7 @@ impl super::RuntimeScene {
 
     /// Measures scene-node UI text with the same backend choice as rendering.
     /// `auto` keeps the default-font heuristic; forced modes apply to every text.
-    pub fn measure_scene_ui_text(
-        &mut self,
-        text: &UiText,
-    ) -> ([f32; 2], [f32; 4]) {
+    pub fn measure_scene_ui_text(&mut self, text: &UiText) -> ([f32; 2], [f32; 4]) {
         let scale = text.effective_scale();
         let use_vector =
             self.should_render_vector(Some(text.font.as_str()), scale, text.text.chars().count());
@@ -343,9 +357,11 @@ impl super::RuntimeScene {
                 vertices,
                 draws,
                 text_vertices,
-                is_sdf,
-                is_bitmap,
-                &font_key,
+                TextRunKind {
+                    sdf: is_sdf,
+                    bitmap: is_bitmap,
+                    font_key: &font_key,
+                },
                 RenderLayer::World2D,
             );
         }
@@ -525,25 +541,21 @@ impl super::RuntimeScene {
         Ok((mesh, is_sdf, key))
     }
 
-    /// Appends a text run as a single SDF or bitmap draw. SDF runs carry their
-    /// font key (`font://...` for a custom font, else the default-atlas sentinel);
-    /// bitmap runs always bind the built-in 5x7 atlas.
+    /// Appends a text run as a single SDF or bitmap draw.
     pub(crate) fn push_text_run(
         &mut self,
         vertices: &mut Vec<OverlayVertex>,
         draws: &mut Vec<SceneDraw>,
         text_vertices: Vec<OverlayVertex>,
-        is_sdf: bool,
-        is_bitmap: bool,
-        font_key: &str,
+        kind: TextRunKind<'_>,
         render_layer: RenderLayer,
     ) {
         if text_vertices.is_empty() {
             return;
         }
         let start = vertices.len() as u32;
-        let texture = if is_sdf {
-            self.texture_id(font_key) + 1
+        let texture = if kind.sdf {
+            self.texture_id(kind.font_key) + 1
         } else {
             self.texture_id(ATLAS_TEXTURE_PATH) + 1
         };
@@ -552,8 +564,8 @@ impl super::RuntimeScene {
             texture,
             start,
             count: vertices.len() as u32 - start,
-            sdf: is_sdf,
-            bitmap: is_bitmap,
+            sdf: kind.sdf,
+            bitmap: kind.bitmap,
             vector: false,
             render_layer,
         });

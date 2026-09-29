@@ -81,7 +81,6 @@ $required = @(
     "web-runtime.js",
     "pkg\game_web.js",
     "pkg\game_web_bg.wasm",
-    "pkg\fengari-web.js",
     "pack\manifest.txt",
     "pack\project.toml"
 )
@@ -90,9 +89,8 @@ foreach ($item in $required) {
     if (-not (Test-Path -LiteralPath $path)) { throw "WebGL bundle is missing: $item" }
     if ((Get-Item -LiteralPath $path).Length -le 0) { throw "WebGL bundle entry is empty: $item" }
 }
-$fontDir = Join-Path $bundle "fonts"
-$font = Get-ChildItem -LiteralPath $fontDir -Filter *.ttf -ErrorAction SilentlyContinue | Select-Object -First 1
-if (-not $font) { throw "WebGL bundle has no fonts/*.ttf" }
+# WP10 之后 webgl 不随包带 fonts/（`__FONT_PATH__` 为空，走浏览器系统字体渲染中文）。
+# 若哪天恢复随包子集字体，再在这里加回校验。
 
 # wasm 魔数（\0asm）：产物必须是真 wasm，不是占位文件。
 $wasmPath = Join-Path $bundle "pkg\game_web_bg.wasm"
@@ -139,6 +137,10 @@ function Invoke-HeadlessDom([string]$HeadlessFlag) {
         "--disable-gpu-sandbox",
         "--no-sandbox",
         "--disable-extensions",
+        # 转发 console.*（含 wasm panic hook 的 console.error）到 stderr（CONSOLE 前缀），
+        # 排查 wasm trap（如场景切换 unreachable）时能从 bundle-dom-*.err 拿到 Rust panic 详情。
+        "--enable-logging=stderr",
+        "--v=0",
         "--virtual-time-budget=120000",
         "--dump-dom",
         $url

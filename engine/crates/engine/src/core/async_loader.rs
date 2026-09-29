@@ -116,6 +116,8 @@ impl AsyncLoader {
     pub fn with_workers(mode: LoadMode, workers: usize) -> Self {
         // wasm 没有 std::thread；无论调用方要多少 worker，实际恒为 0（同步完成）。
         #[cfg(target_arch = "wasm32")]
+        let _ = workers; // consume the parameter before shadowing it
+        #[cfg(target_arch = "wasm32")]
         let workers = 0;
         // 结果通道：多 worker 共用一个 sender（mpsc 天然多生产者），主线程持 receiver。
         let (result_tx, result_rx) = mpsc::channel::<DecodedAsset>();

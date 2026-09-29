@@ -1,8 +1,12 @@
 use std::{
-    fmt, fs, io,
+    fmt, io,
     path::Path,
     sync::{Arc, Mutex, OnceLock},
 };
+
+// 文件系统仅在非 wasm 平台可用（wasm32-unknown-unknown 无 std::fs）。
+#[cfg(not(target_arch = "wasm32"))]
+use std::fs;
 
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -90,6 +94,9 @@ impl fmt::Display for EngineError {
 impl std::error::Error for EngineError {}
 
 struct LogGuard {
+    // 文件日志仅在非 wasm 平台可用（tracing-appender 在 wasm32-unknown-unknown
+    // 无法编译）；wasm 构建的 LogGuard 为空结构，仅作为"已初始化"标记。
+    #[cfg(not(target_arch = "wasm32"))]
     _file_guard: tracing_appender::non_blocking::WorkerGuard,
 }
 
@@ -213,32 +220,9 @@ pub fn init_logging_with_sink(
     if LOG_GUARD.get().is_some() {
         return Ok(());
     }
-    let log_path = log_path.as_ref();
-    if let Some(parent) = log_path.parent() {
-        fs::create_dir_all(parent).map_err(|error| {
-            EngineError::new(
-                LogModule::Engine,
-                "initialize logging",
-                format!("cannot create log directory {}", parent.display()),
-            )
-            .with_source(error)
-            .with_suggestion("check that the project log directory is writable")
-        })?;
-    }
-    let file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(log_path)
-        .map_err(|error| {
-            EngineError::new(
-                LogModule::Engine,
-                "initialize logging",
-                format!("cannot open log file {}", log_path.display()),
-            )
-            .with_source(error)
-            .with_suggestion("check the log path and file permissions")
-        })?;
-    let (non_blocking, guard) = tracing_appender::non_blocking(file);
+    // wasm 构建没有文件日志：log_path 仅作为占位参数保留（签名与桌面一致）。
+    #[cfg(target_arch = "wasm32")]
+    let _ = log_path.as_ref();
     let filter = EnvFilter::try_new(filter.unwrap_or(DEFAULT_LOG_FILTER)).map_err(|error| {
         EngineError::new(
             LogModule::Engine,
@@ -251,10 +235,6 @@ pub fn init_logging_with_sink(
     let console = tracing_subscriber::fmt::layer()
         .with_target(true)
         .with_ansi(false);
-    let file_layer = tracing_subscriber::fmt::layer()
-        .with_writer(non_blocking)
-        .with_target(true)
-        .with_ansi(false);
     // 可选：把日志实时回传到共享缓冲（Option<Layer> 作为 Layer 叠加）。
     let sink_layer = sink.map(|sink| {
         tracing_subscriber::fmt::layer()
@@ -262,11 +242,57 @@ pub fn init_logging_with_sink(
             .with_target(true)
             .with_ansi(false)
     });
-    tracing_subscriber::registry()
-        .with(filter)
-        .with(console)
-        .with(sink_layer)
-        .with(file_layer)
+    #[cfg(not(target_arch = "wasm32"))]
+    let registry = {
+        let log_path = log_path.as_ref();
+        if let Some(parent) = log_path.parent() {
+            fs::create_dir_all(parent).map_err(|error| {
+                EngineError::new(
+                    LogModule::Engine,
+                    "initialize logging",
+                    format!("cannot create log directory {}", parent.display()),
+                )
+                .with_source(error)
+                .with_suggestion("check that the project log directory is writable")
+            })?;
+        }
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_path)
+            .map_err(|error| {
+                EngineError::new(
+                    LogModule::Engine,
+                    "initialize logging",
+                    format!("cannot open log file {}", log_path.display()),
+                )
+                .with_source(error)
+                .with_suggestion("check the log path and file permissions")
+            })?;
+        let (non_blocking, guard) = tracing_appender::non_blocking(file);
+        let file_layer = tracing_subscriber::fmt::layer()
+            .with_writer(non_blocking)
+            .with_target(true)
+            .with_ansi(false);
+        (
+            tracing_subscriber::registry()
+                .with(filter)
+                .with(console)
+                .with(sink_layer)
+                .with(file_layer),
+            guard,
+        )
+    };
+    #[cfg(target_arch = "wasm32")]
+    let registry = (
+        tracing_subscriber::registry()
+            .with(filter)
+            .with(console)
+            .with(sink_layer),
+        (),
+    );
+    registry
+        .0
         .try_init()
         .map_err(|error| {
             EngineError::new(
@@ -277,60 +303,74 @@ pub fn init_logging_with_sink(
             .with_source(error)
             .with_suggestion("initialize logging only once during application startup")
         })?;
-    let _ = LOG_GUARD.set(LogGuard { _file_guard: guard });
+    #[cfg(not(target_arch = "wasm32"))]
+    let _ = LOG_GUARD.set(LogGuard {
+        _file_guard: registry.1,
+    });
+    #[cfg(target_arch = "wasm32")]
+    let _ = LOG_GUARD.set(LogGuard {});
     Ok(())
 }
 
 /// Registers a panic hook that writes a crash report to `crash_log_path`
 /// (version, timestamp, thread, panic message, location, backtrace) before the
 /// default hook runs. Safe to call once per process.
+/// On wasm32-unknown-unknown (no filesystem) the hook only forwards to the
+/// previous hook; hosts install their own console/report hook instead.
 pub fn install_crash_handler(crash_log_path: impl AsRef<Path>) {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let crash_log_path = crash_log_path.as_ref().to_path_buf();
-    let default = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        let backtrace = std::backtrace::Backtrace::capture();
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        let message = if let Some(payload) = info.payload().downcast_ref::<&str>() {
-            (*payload).to_owned()
-        } else if let Some(payload) = info.payload().downcast_ref::<String>() {
-            payload.clone()
-        } else {
-            "non-string panic payload".to_owned()
-        };
-        let location = info
-            .location()
-            .map(|l| l.to_string())
-            .unwrap_or_else(|| "unknown".to_owned());
-        let thread = std::thread::current().name().unwrap_or("main").to_owned();
-        let report = format!(
-            "=== RustLua crash report ===\n\
-             version={}\n\
-             timestamp={}\n\
-             thread={}\n\
-             panic={}\n\
-             location={}\n\
-             backtrace:\n{backtrace}\n",
-            crate::core::version(),
-            timestamp,
-            thread,
-            message,
-            location,
-        );
-        // 原子替换写入：避免并发 panic（如测试中其他线程的故意 panic）
-        // 用 fs::write 截断+写入交叠导致报告损坏。
-        if let Some(parent) = crash_log_path.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
-        let temporary = crash_log_path.with_extension("tmp");
-        let _ = fs::write(&temporary, &report);
-        let _ = fs::remove_file(&crash_log_path);
-        let _ = fs::rename(&temporary, &crash_log_path);
-        default(info);
-    }));
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = crash_log_path.as_ref();
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let crash_log_path = crash_log_path.as_ref().to_path_buf();
+        let default = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let backtrace = std::backtrace::Backtrace::capture();
+            let timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let message = if let Some(payload) = info.payload().downcast_ref::<&str>() {
+                (*payload).to_owned()
+            } else if let Some(payload) = info.payload().downcast_ref::<String>() {
+                payload.clone()
+            } else {
+                "non-string panic payload".to_owned()
+            };
+            let location = info
+                .location()
+                .map(|l| l.to_string())
+                .unwrap_or_else(|| "unknown".to_owned());
+            let thread = std::thread::current().name().unwrap_or("main").to_owned();
+            let report = format!(
+                "=== RustLua crash report ===\n\
+                 version={}\n\
+                 timestamp={}\n\
+                 thread={}\n\
+                 panic={}\n\
+                 location={}\n\
+                 backtrace:\n{backtrace}\n",
+                crate::core::version(),
+                timestamp,
+                thread,
+                message,
+                location,
+            );
+            // 原子替换写入：避免并发 panic（如测试中其他线程的故意 panic）
+            // 用 fs::write 截断+写入交叠导致报告损坏。
+            if let Some(parent) = crash_log_path.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+            let temporary = crash_log_path.with_extension("tmp");
+            let _ = fs::write(&temporary, &report);
+            let _ = fs::remove_file(&crash_log_path);
+            let _ = fs::rename(&temporary, &crash_log_path);
+            default(info);
+        }));
+    }
 }
 
 #[cfg(test)]

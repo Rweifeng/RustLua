@@ -11,7 +11,6 @@ bytemuck.workspace = true
 mlua = { version = "0.11", features = ["lua54", "vendored"] }
 serde_json = "1"
 tracing.workspace = true
-tracing-appender.workspace = true
 tracing-subscriber.workspace = true
 image = { version = '0.25', default-features = false, features = ['png', 'jpeg'] }
 rapier2d = "0.22"
@@ -38,3 +37,8 @@ vorbis = "0.1"
 # XInput（Windows 原生），保持 GamepadBackend 抽象以便后续替换为 gilrs。
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Input_XboxController"] }
+
+# 文件日志（tracing-appender）在 wasm32-unknown-unknown 上不可用（无 symlink/
+# 文件系统），wasm 构建只保留 console/sink 层（core/logging.rs 按 cfg 分支）。
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tracing-appender.workspace = true

@@ -6,6 +6,7 @@ members = [
     "crates/engine",
     "crates/game",
     "crates/game_web",
+    "crates/wasm-lua-spike",
 ]
 
 [workspace.package]
@@ -16,7 +17,11 @@ license = "MIT OR Apache-2.0"
 repository = ""
 
 # Release 体积优化：strip 符号、LTO、单 codegen 单元、优化尺寸。
-# 不启用 panic=abort，保留崩溃日志/回溯能力。
+# panic 保持 abort（wasm32-unknown-unknown 默认）：全局 -C panic=unwind 会让 wgpu 的
+# wasm 后端编译失败（RefCell 不满足 RefUnwindSafe 的 catch_unwind 约束，实测 2026-09-29）；
+# cargo profile 的 panic=unwind 对 wasm target 也不生效（被 cargo 静默回退 abort）。
+# 代价：Rust panic 在浏览器里是裸 "Error: unreachable"（位置被吞），排查用 web-runtime.js
+# 分步日志 + 发布产物 --enable-logging 抓 console 定位。
 [profile.release]
 opt-level = "s"
 lto = "fat"
@@ -32,3 +37,10 @@ tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 getrandom = { version = "0.2", features = ["js"] }
+
+# wasm32-unknown-unknown support for mlua: vendored forks with the wasm patch
+# (libc shim + wasm-EH error handling). See docs/ wasm notes.
+[patch.crates-io]
+mlua = { path = "vendor/mlua" }
+mlua-sys = { path = "vendor/mlua-sys" }
+lua-src = { path = "vendor/lua-src" }

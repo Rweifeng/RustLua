@@ -66,10 +66,8 @@ impl EditorApp {
                     if let Some(pointer) = drop_pos {
                         let ppp = ui.ctx().pixels_per_point();
                         let design = self.preview_resolution;
-                        let center = egui::vec2(
-                            self.game_camera_2d_center.x,
-                            self.game_camera_2d_center.y,
-                        );
+                        let center =
+                            egui::vec2(self.game_camera_2d_center.x, self.game_camera_2d_center.y);
                         let design_pos = panel_to_design_pos(
                             rect,
                             self.scene_state.pan,
@@ -446,21 +444,20 @@ impl EditorApp {
             && let Some(pos) = drag_start_pos(ui, pointer)
         {
             // Phase 5c：Widget 模式下先检测锚点手柄命中（Alt 按住时优先）。
-            let anchor_hit = if self.scene_view_mode == SceneViewMode::Widget
-                && ui.input(|i| i.modifiers.alt)
-            {
-                self.selected_ui_anchor_rect(pos, &entities)
-                    .and_then(|rect| scene_resize::hit_test_anchor_handle(rect, pos))
-            } else {
-                None
-            };
+            let anchor_hit =
+                if self.scene_view_mode == SceneViewMode::Widget && ui.input(|i| i.modifiers.alt) {
+                    self.selected_ui_anchor_rect(pos, &entities)
+                        .and_then(|rect| scene_resize::hit_test_anchor_handle(rect, pos))
+                } else {
+                    None
+                };
             // Phase 5d：其次检测 padding 手柄命中（Container 实体选中时）。
-            let padding_hit = if anchor_hit.is_none() && self.scene_view_mode == SceneViewMode::Widget
-            {
-                self.selected_container_padding_hit(pos, &entities)
-            } else {
-                None
-            };
+            let padding_hit =
+                if anchor_hit.is_none() && self.scene_view_mode == SceneViewMode::Widget {
+                    self.selected_container_padding_hit(pos, &entities)
+                } else {
+                    None
+                };
             // Phase 5a：其次检测缩放手柄命中——手柄优先级高于实体选中。
             let resize_hit = if anchor_hit.is_none()
                 && padding_hit.is_none()
@@ -482,19 +479,16 @@ impl EditorApp {
                 self.scene_pointer_down(pos, &entities, additive);
                 self.scene_state.padding_handle = Some(handle);
                 // 存储初始 padding 和外框供拖动计算使用。
-                if let Some(primary) = self.selection.primary() {
-                    if let Some(scene) = self.document.current_scene.as_ref() {
-                        if let Some(scene_entity) = scene.scene.entities.get(&primary) {
-                            if let Some(container_raw) = scene_entity.components.get("Container") {
-                                if let Ok(style) = engine::core::ui_layout::ContainerStyle::from_component_str(container_raw) {
-                                    if let Some(entity) = entities.iter().find(|e| e.id == primary) {
-                                        let outer_rect = egui::Rect::from_center_size(entity.center, entity.size);
-                                        self.scene_state.padding_drag_initial = Some((style.padding, outer_rect));
-                                    }
-                                }
-                            }
-                        }
-                    }
+                if let Some(primary) = self.selection.primary()
+                    && let Some(scene) = self.document.current_scene.as_ref()
+                    && let Some(scene_entity) = scene.scene.entities.get(&primary)
+                    && let Some(container_raw) = scene_entity.components.get("Container")
+                    && let Ok(style) =
+                        engine::core::ui_layout::ContainerStyle::from_component_str(container_raw)
+                    && let Some(entity) = entities.iter().find(|e| e.id == primary)
+                {
+                    let outer_rect = egui::Rect::from_center_size(entity.center, entity.size);
+                    self.scene_state.padding_drag_initial = Some((style.padding, outer_rect));
                 }
             } else if let Some(handle) = resize_hit {
                 // 走正常拖动管线（建 SceneDrag、推进状态机），但标记为 resize 模式。
@@ -647,19 +641,19 @@ impl EditorApp {
         let factor = (1.0 + delta.x * 0.01).max(0.05);
         // Phase 5d：padding 模式——单独处理，不依赖 ui_initial。
         if let Some(handle) = self.scene_state.padding_handle {
-            if let Some((initial_padding, outer_rect)) = self.scene_state.padding_drag_initial {
-                if let Some(primary) = self.selection.primary() {
-                    let design_w = self.preview_resolution.0 as f32;
-                    let panel_w = outer_rect.width();
-                    let design_to_panel_scale = panel_w / design_w.max(1.0);
-                    let new_padding = scene_resize::compute_padding_values(
-                        initial_padding,
-                        delta,
-                        design_to_panel_scale,
-                        handle,
-                    );
-                    preview_padding.insert(primary, new_padding);
-                }
+            if let Some((initial_padding, outer_rect)) = self.scene_state.padding_drag_initial
+                && let Some(primary) = self.selection.primary()
+            {
+                let design_w = self.preview_resolution.0 as f32;
+                let panel_w = outer_rect.width();
+                let design_to_panel_scale = panel_w / design_w.max(1.0);
+                let new_padding = scene_resize::compute_padding_values(
+                    initial_padding,
+                    delta,
+                    design_to_panel_scale,
+                    handle,
+                );
+                preview_padding.insert(primary, new_padding);
             }
             self.scene_state.preview_padding = preview_padding;
             self.apply_drag_preview_to_runtime();
@@ -685,7 +679,8 @@ impl EditorApp {
                     preview_ui.insert(*id, ui.offsets);
                 } else {
                     let per_axis = egui::vec2(self.scene_zoom / scale, self.scene_zoom / scale);
-                    let design_delta = scene_resize::panel_delta_to_design_delta(delta, self.scene_zoom, scale);
+                    let design_delta =
+                        scene_resize::panel_delta_to_design_delta(delta, self.scene_zoom, scale);
                     let new_offsets = if let Some(handle) = self.scene_state.resize_handle {
                         // Phase 5a：resize 模式——按手柄只改对应边的 offset。
                         scene_resize::compute_resize_offsets(ui.offsets, design_delta, handle)
@@ -752,9 +747,7 @@ impl EditorApp {
         }
         let primary = self.selection.primary()?;
         let entity = entities.iter().find(|e| e.id == primary)?;
-        if entity.ui.is_none() {
-            return None;
-        }
+        entity.ui.as_ref()?;
         let rect = egui::Rect::from_center_size(entity.center, entity.size);
         // 指针必须在包围框附近（留出手柄大小的余量）。
         let margin = scene_resize::HANDLE_HALF_SIZE + 4.0;
@@ -816,7 +809,8 @@ impl EditorApp {
         let scene = self.document.current_scene.as_ref()?;
         let scene_entity = scene.scene.entities.get(&primary)?;
         let container_raw = scene_entity.components.get("Container")?;
-        let style = engine::core::ui_layout::ContainerStyle::from_component_str(container_raw).ok()?;
+        let style =
+            engine::core::ui_layout::ContainerStyle::from_component_str(container_raw).ok()?;
         let padding = self
             .scene_state
             .preview_padding
@@ -852,25 +846,22 @@ impl EditorApp {
                 continue;
             }
             let base = egui::Rect::from_center_size(entity.center, entity.size);
-            if let (Some(ui_init), Some(handle)) =
-                (drag.ui_initial.get(&entity.id), self.scene_state.resize_handle)
-            {
+            if let (Some(ui_init), Some(handle)) = (
+                drag.ui_initial.get(&entity.id),
+                self.scene_state.resize_handle,
+            ) {
                 let design_delta =
                     scene_resize::panel_delta_to_design_delta(delta, self.scene_zoom, scale);
                 let new_offsets =
                     scene_resize::compute_resize_offsets(ui_init.offsets, design_delta, handle);
                 let dx = (new_offsets[0] - ui_init.offsets[0]) / ratio;
                 let dy = (new_offsets[1] - ui_init.offsets[1]) / ratio;
-                let dw =
-                    (new_offsets[2] - ui_init.offsets[2]) / ratio - dx;
-                let dh =
-                    (new_offsets[3] - ui_init.offsets[3]) / ratio - dy;
+                let dw = (new_offsets[2] - ui_init.offsets[2]) / ratio - dx;
+                let dh = (new_offsets[3] - ui_init.offsets[3]) / ratio - dy;
                 dragged_rect = Some(egui::Rect::from_min_size(
                     egui::pos2(base.left() + dx, base.top() + dy),
                     egui::vec2(base.width() + dw, base.height() + dh),
                 ));
-            } else if entity.ui.is_some() {
-                dragged_rect = Some(base.translate(delta));
             } else {
                 dragged_rect = Some(base.translate(delta));
             }

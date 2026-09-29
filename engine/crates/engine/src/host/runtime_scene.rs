@@ -3548,9 +3548,11 @@ impl RuntimeScene {
                     vertices,
                     draws,
                     text_vertices,
-                    is_sdf,
-                    is_bitmap,
-                    &font_key,
+                    text::TextRunKind {
+                        sdf: is_sdf,
+                        bitmap: is_bitmap,
+                        font_key: &font_key,
+                    },
                     RenderLayer::ScreenUI,
                 );
             }
@@ -3733,9 +3735,11 @@ impl RuntimeScene {
                     vertices,
                     draws,
                     text_vertices,
-                    is_sdf,
-                    is_bitmap,
-                    &font_key,
+                    text::TextRunKind {
+                        sdf: is_sdf,
+                        bitmap: is_bitmap,
+                        font_key: &font_key,
+                    },
                     RenderLayer::ScreenUI,
                 );
             }
@@ -4890,7 +4894,12 @@ fn merge_adjacent_draws(draws: &mut Vec<SceneDraw>) {
 }
 
 /// Converts a pixel-space text mesh into NDC overlay vertices.
-pub(crate) fn text_to_ndc(mesh: TextMesh, is_sdf: bool, width: u32, height: u32) -> Vec<OverlayVertex> {
+pub(crate) fn text_to_ndc(
+    mesh: TextMesh,
+    is_sdf: bool,
+    width: u32,
+    height: u32,
+) -> Vec<OverlayVertex> {
     text_to_ndc_with_offset(mesh, is_sdf, [0.0, 0.0], width, height)
 }
 

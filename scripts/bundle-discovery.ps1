@@ -47,25 +47,25 @@ function Get-BundleMarkerFiles {
 
     switch ($Platform) {
         "webgl" {
-            # 关键一项是 pkg\fengari-web.js：2026-09-09 之前的产物没有随包的 Lua VM
-            # （`examples\game_api\builds\webgl\examples` 就是这样一个历史包），
-            # 少了它在浏览器里根本进不了 Lua——必须靠这一项把旧产物挡在发现之外，
-            # 否则「index.html + wasm 都在」会让一个跑不起来的包被选中。
+            # 关键一项是 pkg\game_web_bg.wasm：WP10 迁移后 Lua 执行层就在 wasm 里
+            # （mlua 移植，随包发行），少了它游戏在浏览器里根本进不了 Lua——必须靠这一项
+            # 把旧产物（2026-09-29 之前的 fengari 时代包）挡在发现之外，否则
+            # 「index.html + wasm 都在」会让一个跑不起来的包被选中。
             return @(
                 "index.html",
                 "web-runtime.js",
                 "pkg\game_web.js",
                 "pkg\game_web_bg.wasm",
-                "pkg\fengari-web.js",
                 "pack\manifest.txt",
                 "pack\project.toml"
             )
         }
         "wechat-minigame" {
-            # 小游戏：入口 game.js + wechat-adapter.js + 随包 Lua VM + **wasm 核心**（M32 起）。
+            # 小游戏：入口 game.js + wechat-adapter.js + **wasm 核心**（WP10 迁移后即 Lua
+            # 执行层，mlua 移植随包发行）。
             # wasm 两项与 webgl 同名同义（`--target no-modules` 的 CommonJS 化胶水 + 模块本体），
             # 少任何一个都说明产物与当前发布形态不一致——这也是"发现器只收非它不可的条目"口径下的
-            # 必需项：适配层启动时会读它并实例化，缺了虽然游戏还能跑，但那说明包不是当前形态产出的。
+            # 必需项：适配层启动时会读它并实例化，缺了 Lua 根本跑不起来。
             # 前六项在三种资源形态（full / thin / subpackage）下位置都相同，是稳定的平台标记；
             # 骨架两项的**位置**随形态变（有 mainpack.json 就是分包形态，骨架在 mainpack/，否则在 pack/），
             # **文件名**也可能被改名：微信代码包只上传后缀在白名单内的文件，构建期把 `.toml` 之类
@@ -97,7 +97,6 @@ function Get-BundleMarkerFiles {
                 "project.config.json",
                 "wechat-adapter.js",
                 "web-runtime.js",
-                "pkg\fengari-web.js",
                 "pkg\game_web.js",
                 "pkg\game_web_bg.wasm",
                 ($skeleton + "\" + (& $resolve "manifest.txt")),
@@ -325,8 +324,8 @@ function Write-BundleReport {
             Write-Host ("    {0}  [{1}, {2}]" -f (Get-DisplayPath -Path $candidate.Path -WorkspaceRoot $Report.WorkspaceRoot), $name, $when)
         }
     }
-    # 被排除项必须无条件列出：旧产物（例如缺 pkg\fengari-web.js 的历史包）被静默忽略时，
-    # 用户看到的只是「找不到产物」，而真正该看到的是「你那个包缺什么」。
+    # 被排除项必须无条件列出：旧产物（例如缺 pkg\game_web_bg.wasm 的 fengari 时代历史包）
+    # 被静默忽略时，用户看到的只是「找不到产物」，而真正该看到的是「你那个包缺什么」。
     if ($Report.Rejected.Count -gt 0) {
         Write-Host ("  已排除 {0} 项：" -f $Report.Rejected.Count)
         foreach ($item in $Report.Rejected) { Write-Host "    $item" }

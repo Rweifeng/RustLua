@@ -3,19 +3,23 @@
 浏览器 WebGL 发布所需的平台侧文件都放在这个目录，`scripts/package.ps1 -Platform webgl`
 会把它们复制/生成进发布包。
 
-- `web-runtime.js`：浏览器运行时。负责从 `pack/` 读取工程与场景、用 Fengari 执行 Lua、
+- `web-runtime.js`：浏览器运行时。负责从 `pack/` 读取工程与场景、经 **wasm Lua 桥**（`__P2_LUA_BRIDGE`，执行层在 wasm 侧 mlua）执行 Lua、
   把 `ui.*` 调用与场景静态 UI（`UiLayout` + `Image`/`Text`）画到 2D canvas，并接入
   键盘/鼠标输入与启动自检标记（`data-p2-boot` / `data-p2-drawn` / `data-p2-ui-*`）。
   **微信小游戏发布共用这一份文件**（见 `plugins/wechat-minigame/README.md`）。
 - `index.html`：浏览器页面模板。`package.ps1` 负责替换 `__PUBLISH_NAME__` /
-  `__PUBLISH_NAME_JSON__` / `__FONT_PATH__` 三个占位符（标题、脚本字符串与字体路径），
-  因此字体路径与工程名不会再出现"生成时变量还没赋值"的空值。
+  `__PUBLISH_NAME_JSON__` / `__FONT_PATH__` 三个占位符（标题、脚本字符串与字体路径）。
+  `__FONT_PATH__` 当前替换为**空串**：webgl 不随包带 17 MB 完整字体，`web-runtime.js` 的
+  `loadGameFont()` 检测到空路径直接跳过，中文由浏览器系统字体（`sans-serif`）渲染。
+  若日后要字体保真，可改为打包期子集字体（微信侧已是 247 KB 子集方案）。
 - `test-webgl.bat`：**包内双击壳模板**。`package.ps1` 把它复制进每个 webgl 产物目录；
   它不写死游戏工程名或目录深度，而是从自身位置向上找到仓库根（含 `scripts\test-bundle.ps1` 的目录）。
   必须由发布脚本复制、不能手工丢进产物目录：`scripts/release-atomic.ps1` 的原子替换会把发布根下
   所有非 `.staging-*`/`.backup-*` 条目移入备份后删除，手工文件活不过一次发布。
-- `pkg/fengari-web.js`：随包分发的 Lua VM（本地依赖，不请求 CDN，离线可运行）。
 - `pkg/game_web.js`、`pkg/game_web_bg.wasm`：发布时由 `wasm-bindgen` 生成（不入库）。
+  wasm 即 Lua 执行层（mlua 移植，Lua 5.4 + vendored），另导出 6 个 Lua 桥函数
+  （`lua_boot` / `lua_do_string` / `lua_call_global` / `lua_register_js_callback` /
+  `lua_missing_globals` / `lua_execute_main`）收编全部 Lua 交互。
 
 ## 限制
 
@@ -38,8 +42,8 @@ powershell -NoProfile -File scripts\verify-webgl-bundle.ps1
 ```
 
 产物的定位规则收在 `scripts/bundle-discovery.ps1`：扫 `examples\<工程>\builds\webgl`，
-标记文件清单与 `package.ps1` 的产物校验数组**逐项一致**（含 `pkg/fengari-web.js`——正是它把随包
-Lua VM 之前的历史产物挡在发现之外，否则一个「index.html 与 wasm 都在、却在浏览器里进不了 Lua」
+标记文件清单与 `package.ps1` 的产物校验数组**逐项一致**（含 `pkg/game_web_bg.wasm`——正是它把随包
+wasm 核心之前的历史产物挡在发现之外，否则一个「index.html 与 wasm 都在、却在浏览器里进不了 Lua」
 的包会被选中）。本机有多个合格产物时不做猜测，要求显式 `-BundleRoot`。
 
 发布包目录下还带一个 `test-webgl.bat`：双击即验证并起本地服务器，
