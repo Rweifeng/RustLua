@@ -2545,11 +2545,20 @@ end
           driveAuto.frames = 0;
           markDrivePhase('moving');
         }
+        if (sceneVerify && sceneVerify.status === 'in-flight') {
+          sceneVerify.status = 'done';
+          markSceneVerify('done', 'scene=' + name + ' entities=' + next.entities.size);
+        }
       } catch (error) {
         console.error(error);
         if (status) status.textContent = 'scene load failed: ' + error;
         markBoot('failed', (error && error.message) || error);
         sceneSwitch = 'failed';
+        if (sceneVerify && sceneVerify.status === 'in-flight') {
+          sceneVerify.status = 'failed';
+          markSceneVerify('failed',
+            ((error && error.message) || String(error)) + ' scene=' + name);
+        }
       }
     }
 
@@ -2576,6 +2585,28 @@ end
     } catch (e) { driveAuto = null; }
     if (driveAuto) {
     }
+
+    // 场景切换防回归门：`?p2-scene-verify=1` 让首帧把**当前**场景重新走一遍
+    // applySceneSwitch（fetch scene 文件 → parseScene → 重绑 Lua → 重跑 on_create）。
+    // 与游戏剧本解耦（不假设"标题→玩法地图"流程），只验一条：切换路径本身能跑通、
+    // 不会在 wasm 上 unreachable（此前宿主闭包返回 Err 时的 raise 会撞 panic=abort 终止垫，
+    // 现场只表现为 boot 绿、场景一切就死）。status: queued -> in-flight -> done|failed。
+    let sceneVerify = null;
+    try {
+      const search = (typeof window !== 'undefined' && window.location && window.location.search) || '';
+      if (search.indexOf('p2-scene-verify=1') >= 0) {
+        sceneVerify = { status: 'queued', target: sceneState.name };
+      }
+    } catch (e) { sceneVerify = null; }
+
+    function markSceneVerify(state, detail) {
+      const body = document.body || document.documentElement;
+      if (!body) return;
+      body.setAttribute('data-p2-scene-verify', state);
+      if (detail) body.setAttribute('data-p2-scene-verify-detail', String(detail).slice(0, 400));
+      console.log('[scene-verify] ' + state + ' ' + (detail || ''));
+    }
+    if (sceneVerify) markSceneVerify('queued', 'target=' + sceneVerify.target);
 
     function dispatchDriveKey(type, key) {
       try { window.dispatchEvent(new KeyboardEvent(type, { key, bubbles: true })); } catch (e) { }
@@ -2673,6 +2704,17 @@ end
           return;
         }
         if (sceneSwitch === 'failed') return;
+        // 场景自检在首帧触发一次：把当前场景重新排队走 applySceneSwitch 全流程。
+        // 这里刻意**不**通过 Lua 的 scene.load 排队，而是直接调 JS 侧的 applySceneSwitch，
+        // 因为 Lua 的 pending 队列是游戏状态的一部分，测试不应污染它。
+        if (sceneVerify && sceneVerify.status === 'queued') {
+          sceneVerify.status = 'in-flight';
+          markSceneVerify('in-flight', 'reloading scene=' + sceneVerify.target);
+          sceneSwitch = 'loading';
+          applySceneSwitch(sceneVerify.target);
+          requestAnimationFrame(frame);
+          return;
+        }
         // 场景切换是**排队**的（`scene.load` / `map.goto` 只排队、不改名字）；每帧开头
         // 取一次，取走即应用——与引擎"排队 → transition → 重跑 on_create"同构。
         const pendingScene = callGlobal(L, '__p2_take_pending_scene');

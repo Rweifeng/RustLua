@@ -413,7 +413,7 @@ try {
             $bundleRun = & $runWebEvidence $bundleScript "bundle"
             $bundleExit = $bundleRun.ExitCode
             if ($bundleExit -eq 1) {
-                throw "published webgl bundle FAILED to boot (verify-webgl-bundle.ps1 exit 1)"
+                throw "published webgl bundle FAILED verification (verify-webgl-bundle.ps1 exit 1; boot / scene-verify / blank check - see bundle-summary-*.json)"
             }
             if ($bundleExit -ne 0) {
                 Write-Host "webgl_bundle_skipped reason=environment_limited_or_no_bundle exit=$bundleExit (先跑 scripts\package.ps1 -Platform webgl)" -ForegroundColor Yellow
@@ -434,7 +434,16 @@ try {
                 if ($null -eq $bundlePayload.drawnSamples -or $bundlePayload.drawnSamples -le 0) {
                     throw "webgl bundle reports no painted canvas samples (blank frame): drawn=$($bundlePayload.drawnSamples)"
                 }
-                Write-Host "webgl_bundle_ok boot=$($bundlePayload.boot) wasm_bytes=$($bundlePayload.wasmBytes) drawn=$($bundlePayload.drawnSamples) ui=$($bundlePayload.uiElements) missing_host_api=$($bundlePayload.missingCount)" -ForegroundColor Green
+                # 场景切换防回归门：verify-webgl-bundle 默认在 URL 里带 p2-scene-verify=1，
+                # 断言首帧把当前场景重新走一遍 applySceneSwitch 全流程（fetch → parse →
+                # 重绑 Lua → 重跑 on_create）。这里独立于子脚本 exit code 再兜一层，防止
+                # 未来 URL/断言解耦时被无意跳过；旧产物若没升级 web-runtime.js 会是 absent。
+                if ($bundlePayload.PSObject.Properties.Name -contains 'sceneVerify') {
+                    if ($bundlePayload.sceneVerify -ne 'done') {
+                        throw "webgl scene switch gate FAILED: scene_verify=$($bundlePayload.sceneVerify) detail=$($bundlePayload.sceneVerifyDetail)"
+                    }
+                }
+                Write-Host "webgl_bundle_ok boot=$($bundlePayload.boot) wasm_bytes=$($bundlePayload.wasmBytes) drawn=$($bundlePayload.drawnSamples) ui=$($bundlePayload.uiElements) missing_host_api=$($bundlePayload.missingCount) scene_verify=$($bundlePayload.sceneVerify)" -ForegroundColor Green
             }
 
             # ③ 新 EH（try_table/exnref）跨浏览器层：本产物是纯新 EH，低于门槛的引擎连编译都
