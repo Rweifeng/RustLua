@@ -7,18 +7,6 @@ use crate::error::{Error, Result};
 use crate::state::{ExtraData, RawLua};
 use crate::util::{self, get_internal_metatable, WrappedFailure};
 
-/// [DIAG] mlua wasm 宿主 Err 崩溃定位（2026-09-29，定位后移除）。
-#[cfg(target_arch = "wasm32")]
-static DIAG_WRAP_STEP: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
-#[cfg(target_arch = "wasm32")]
-pub(crate) fn diag_wrap_step(step: u8) {
-    DIAG_WRAP_STEP.store(step, std::sync::atomic::Ordering::SeqCst);
-}
-#[cfg(target_arch = "wasm32")]
-pub fn mlua_diag_wrap_read() -> u8 {
-    DIAG_WRAP_STEP.load(std::sync::atomic::Ordering::SeqCst)
-}
-
 struct StateGuard<'a>(&'a RawLua, *mut ffi::lua_State);
 
 impl<'a> StateGuard<'a> {
@@ -31,6 +19,58 @@ impl<'a> StateGuard<'a> {
 impl Drop for StateGuard<'_> {
     fn drop(&mut self) {
         self.0.state.set(self.1);
+    }
+}
+
+// wasm32：宿主闭包返回 Err 时**不在 Rust 里 raise**。panic=abort 下 Lua 的
+// setjmp/longjmp throw（wasm EH）穿不过 Rust 帧，`extern "C"` / `extern "C-unwind"`
+// 两种 ABI 都会变成 `panic in a function that cannot unwind` → unreachable trap。
+// 这里只把包装好的错误对象压到栈顶并返回哨兵码，由 C 侧 trampoline
+// （mlua-sys wasm-shim-c/csrc/mlua_trampoline.c）在 C 帧内调 lua_error，
+// 使 throw 全程不跨 Rust 帧、能被 Lua VM 的 pcall catch 正常接住。
+// 哨兵码必须与 mlua_trampoline.c 的 MLUA_CB_RAISE 一致。
+#[cfg(target_arch = "wasm32")]
+pub(crate) const MLUA_CB_RAISE: c_int = -100;
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) unsafe fn push_wrapped_error(state: *mut ffi::lua_State, err: Error) {
+    let ud = WrappedFailure::new_userdata(state);
+    let traceback = if ffi::lua_checkstack(state, ffi::LUA_TRACEBACK_STACK) != 0 {
+        ffi::luaL_traceback(state, state, ptr::null(), 0);
+        let traceback = util::to_string(state, -1);
+        ffi::lua_pop(state, 1);
+        traceback
+    } else {
+        "<not enough stack space for traceback>".to_string()
+    };
+    let cause = Arc::new(err);
+    ptr::write(
+        ud,
+        WrappedFailure::Error(Error::CallbackError { traceback, cause }),
+    );
+    get_internal_metatable::<WrappedFailure>(state);
+    ffi::lua_setmetatable(state, -2);
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) unsafe fn callback_noraise_ext<F>(
+    state: *mut ffi::lua_State,
+    mut extra: *mut ExtraData,
+    f: F,
+) -> c_int
+where
+    F: FnOnce(*mut ExtraData, c_int) -> Result<c_int>,
+{
+    if extra.is_null() {
+        extra = ExtraData::get(state);
+    }
+    let nargs = ffi::lua_gettop(state);
+    match f(extra, nargs) {
+        Ok(r) => r,
+        Err(err) => {
+            push_wrapped_error(state, err);
+            MLUA_CB_RAISE
+        }
     }
 }
 
@@ -123,31 +163,23 @@ where
     // panic 无法被 catch_unwind 兜底（本就 panic=abort，行为一致）。桌面保持原逻辑。
     #[cfg(target_arch = "wasm32")]
     {
-        diag_wrap_step(1);
         match f(extra, nargs) {
             Ok(r) => {
                 // Return unused `WrappedFailure` to the pool
                 prealloc_failure.release(state, extra);
-                diag_wrap_step(10);
                 r
             }
             Err(err) => {
-                diag_wrap_step(2);
                 let wrapped_error = prealloc_failure.r#use(state, extra);
-                diag_wrap_step(3);
 
                 if !wrap_error {
                     ptr::write(wrapped_error, WrappedFailure::Error(err));
-                    diag_wrap_step(4);
                     get_internal_metatable::<WrappedFailure>(state);
-                    diag_wrap_step(5);
                     ffi::lua_setmetatable(state, -2);
-                    diag_wrap_step(6);
                     ffi::lua_error(state)
                 }
 
                 // Build `CallbackError` with traceback
-                diag_wrap_step(7);
                 let traceback = if ffi::lua_checkstack(state, ffi::LUA_TRACEBACK_STACK) != 0 {
                     ffi::luaL_traceback(state, state, ptr::null(), 0);
                     let traceback = util::to_string(state, -1);
@@ -161,10 +193,8 @@ where
                     wrapped_error,
                     WrappedFailure::Error(Error::CallbackError { traceback, cause }),
                 );
-                diag_wrap_step(8);
                 get_internal_metatable::<WrappedFailure>(state);
                 ffi::lua_setmetatable(state, -2);
-                diag_wrap_step(9);
                 ffi::lua_error(state)
             }
         }

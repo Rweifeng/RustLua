@@ -333,7 +333,6 @@ unsafe extern "C-unwind" {
     //
     // Miscellaneous functions
     //
-    #[cfg(not(target_arch = "wasm32"))]
     #[link_name = "lua_error"]
     fn lua_error_(L: *mut lua_State) -> c_int;
     pub fn lua_next(L: *mut lua_State, idx: c_int) -> c_int;
@@ -347,29 +346,26 @@ unsafe extern "C-unwind" {
     pub fn lua_closeslot(L: *mut lua_State, idx: c_int);
 }
 
-// P2 fork 2026-09-29：`lua_error`（宿主函数返回 Err 时的 raise 点）在 wasm 上必须
-// 以 `extern "C"`（不可 unwind）声明。此前 `extern "C-unwind"` 让 Rust 在调用点
-// 生成 landing pad（catch_all），Lua `lua_error` 内部的 longjmp（wasm EH
-// throw tag 1）穿过 Rust 帧时被该 landing pad 截获，转成 Rust panic
-// （panic=abort → "cannot unwind" → unreachable trap），导致
-// `pcall(宿主函数)` 捕获不到宿主 Err —— 场景切换遇已死实体即崩。
-// 桌面保留 C-unwind（Rust panic 可穿过 Lua 帧，mlua 原有语义）。
-#[cfg(target_arch = "wasm32")]
-unsafe extern "C" {
-    #[link_name = "lua_error"]
-    fn lua_error_wasm(L: *mut lua_State) -> c_int;
-}
-#[cfg(target_arch = "wasm32")]
-#[inline(always)]
-pub unsafe fn lua_error(L: *mut lua_State) -> ! {
-    lua_error_wasm(L);
-    unreachable!();
-}
-#[cfg(not(target_arch = "wasm32"))]
+// P2 fork 2026-09-30（修订）：`lua_error` 在 wasm 上**必须保持 `extern "C-unwind"`**。
+// 实测（Edge，webgl 产物）：声明为 `extern "C"`（nounwind）时，宿主 Err 的 raise
+// throw 穿出调用点命中 nounwind 终止垫 → `panic in a function that cannot unwind`
+// → unreachable，`pcall(宿主函数)` 捕获不到；而纯 Lua `error()` 的 pcall 正常——
+// 差异只在 throw 是否从 Rust 调用点发起。2026-09-29 曾据此改成 `extern "C"` 以
+// 避开调用点 landing pad，方向反了：两种 ABI 里只有 C-unwind 允许 throw 穿过
+// Rust 帧回到 Lua VM 的 pcall catch。桌面语义不变。
 #[inline(always)]
 pub unsafe fn lua_error(L: *mut lua_State) -> ! {
     lua_error_(L);
     unreachable!();
+}
+
+// wasm32：C 侧回调 trampoline（wasm-shim-c/csrc/mlua_trampoline.c，编入 liblua_shim.a）。
+// 宿主闭包返回 Err 时 raise 必须在 C 帧内发起：panic=abort 下 Lua 的 setjmp/longjmp
+// throw 穿不过 Rust 帧（两种 extern ABI 都会变成 unreachable trap），故 mlua 在 wasm
+// 上把本函数而非 Rust trampoline 推给 lua_pushcclosure，由它在 C 里调 lua_error。
+#[cfg(target_arch = "wasm32")]
+unsafe extern "C-unwind" {
+    pub fn mlua_c_trampoline(L: *mut lua_State) -> c_int;
 }
 
 //

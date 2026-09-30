@@ -82,7 +82,7 @@ fn build_wasm_shim(manifest: &Path) {
     std::fs::create_dir_all(&obj_dir).expect("create obj dir");
 
     let mut objs = Vec::new();
-    for c in ["sjlj.c", "stdio.c"] {
+    for c in ["sjlj.c", "stdio.c", "mlua_trampoline.c"] {
         let src = csrc_dir.join(c);
         let obj = obj_dir.join(format!("{}.o", c));
         run(

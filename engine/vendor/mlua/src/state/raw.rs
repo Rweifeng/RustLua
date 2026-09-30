@@ -1271,6 +1271,19 @@ impl RawLua {
     pub(crate) fn create_callback(&self, func: Callback) -> Result<Function> {
         unsafe extern "C-unwind" fn call_callback(state: *mut ffi::lua_State) -> c_int {
             let upvalue = get_userdata::<CallbackUpvalue>(state, ffi::lua_upvalueindex(1));
+            // wasm32：Err 不在 Rust 里 raise（throw 穿不过 Rust 帧 → unreachable trap），
+            // 返回哨兵码交给 C trampoline 在 C 帧内 lua_error；upvalue 布局见下方 push。
+            #[cfg(target_arch = "wasm32")]
+            {
+                crate::state::util::callback_noraise_ext(state, (*upvalue).extra.get(), |extra, nargs| {
+                    let rawlua = (*extra).raw_lua();
+                    match (*upvalue).data {
+                        Some(ref func) => func(rawlua, nargs),
+                        None => Err(Error::CallbackDestructed),
+                    }
+                })
+            }
+            #[cfg(not(target_arch = "wasm32"))]
             callback_error_ext(state, (*upvalue).extra.get(), true, |extra, nargs| {
                 // Lua ensures that `LUA_MINSTACK` stack spaces are available (after pushing arguments)
                 // The lock must be already held as the callback is executed
@@ -1285,18 +1298,36 @@ impl RawLua {
         let state = self.state();
         unsafe {
             let _sg = StackGuard::new(state);
-            check_stack(state, 4)?;
+            check_stack(state, 5)?;
 
             let func = Some(func);
             let extra = XRc::clone(&self.extra);
             let protect = !self.unlikely_memory_error();
             push_internal_userdata(state, CallbackUpvalue { data: func, extra }, protect)?;
-            if protect {
-                protect_lua!(state, 1, 1, fn(state) {
+            #[cfg(target_arch = "wasm32")]
+            {
+                // upvalue1 = CallbackUpvalue userdata（call_callback 按它取闭包）；
+                // upvalue2 = call_callback 函数指针（C trampoline 取用）。call_callback
+                // 被 trampoline 以普通 Rust 函数调用时，lua_upvalueindex(1) 解析到
+                // 当前活跃 C 闭包（trampoline）的 upvalue1，布局保持一致。
+                ffi::lua_pushlightuserdata(state, call_callback as usize as *mut std::ffi::c_void);
+                if protect {
+                    protect_lua!(state, 2, 1, fn(state) {
+                        ffi::lua_pushcclosure(state, ffi::mlua_c_trampoline, 2);
+                    })?;
+                } else {
+                    ffi::lua_pushcclosure(state, ffi::mlua_c_trampoline, 2);
+                }
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                if protect {
+                    protect_lua!(state, 1, 1, fn(state) {
+                        ffi::lua_pushcclosure(state, call_callback, 1);
+                    })?;
+                } else {
                     ffi::lua_pushcclosure(state, call_callback, 1);
-                })?;
-            } else {
-                ffi::lua_pushcclosure(state, call_callback, 1);
+                }
             }
 
             Ok(Function(self.pop_ref()))
