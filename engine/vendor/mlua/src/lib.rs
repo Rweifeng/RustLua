@@ -107,8 +107,6 @@ pub use crate::function::{Function, FunctionInfo};
 pub use crate::multi::{MultiValue, Variadic};
 pub use crate::scope::Scope;
 pub use crate::state::{GCMode, Lua, LuaOptions, WeakLua};
-#[cfg(target_arch = "wasm32")]
-pub use crate::state::util::mlua_diag_wrap_read;
 pub use crate::stdlib::StdLib;
 pub use crate::string::{BorrowedBytes, BorrowedStr, String};
 pub use crate::table::{Table, TablePairs, TableSequence};

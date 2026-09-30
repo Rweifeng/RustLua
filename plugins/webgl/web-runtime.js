@@ -2495,19 +2495,6 @@ end
       // WP10 迁移：main.lua 不再由 JS fetch 后注入，改经 wasm 桥读 vfs 预加载表
       // + pack 解码执行（与桌面/微信压缩包语义一致；执行前全部宿主补丁已在位）。
       bridge.lua_execute_main();
-      // [DIAG] pcall 宿主 Err 测试（2026-09-29 场景切换崩溃定位，定位后移除）：
-      // 验证 mlua-wasm 的 pcall 能否捕获宿主函数返回的 Lua 错误（切换时
-      // camera2d.follow 对已死实体返回 Err，本应被 pcall 捕获却在 wasm 上崩）。
-      try {
-        doString(L, `
-          local ok1, err1 = pcall(function() error("pure lua error test") end)
-          log.info("[diag] pcall pure lua error: ok=" .. tostring(ok1) .. " err=" .. tostring(err1))
-          local ok2, err2 = pcall(camera2d.follow, 0, {})
-          log.info("[diag] pcall host err: ok=" .. tostring(ok2) .. " err=" .. tostring(err2))
-        `, 'engine-host-diag-pcall');
-      } catch (e) {
-        console.log('[diag] pcall diag CRASHED: ' + String(e && e.message || e));
-      }
     } catch (error) {
       const missing = missingHostGlobals(L);
       const detail = 'missing engine host API: ' + missing.join(', ');
@@ -2534,30 +2521,18 @@ end
     // 执行而新场景数据从未加载（实测点「开始新游戏」第 5 帧崩在 `map.current()`）。
     async function applySceneSwitch(name) {
       try {
-        // [DIAG] 场景切换分步日志：定位 wasm trap（unreachable）发生在哪一步（定位后移除）。
-        console.log('[lua] switch diag: fetch', name);
         const next = parseScene(await fetchText('pack/scenes/' + name + '.scene'));
-        console.log('[lua] switch diag: parsed entities', next.entities.size);
         const nextImages = await loadSceneImages(next);
-        console.log('[lua] switch diag: images', nextImages.size);
-        console.log('[lua] switch diag: doString bindings...');
         doString(L, sceneBindings(next), 'engine-host-scene');
-        console.log('[lua] switch diag: doString ok');
         sceneState = next;
         images = nextImages;
         pendingTextures.clear();
-        console.log('[lua] switch diag: callGlobal on_create...');
         callGlobal(L, 'on_create');
-        console.log('[lua] switch diag: on_create ok');
         // 换场景后的 on_create 会重新落位、挂形象、生成 NPC —— 与启动路径同理，
         // 立刻取一次快照，别让新场景的第一帧画成"只有场景本体"。
-        console.log('[lua] switch diag: export_state...');
         syncLuaScene(sceneState, callGlobal(L, '__p2_export_state', [false]));
-        console.log('[lua] switch diag: export_state ok');
         refreshSceneTextHidden(L);
-        console.log('[lua] switch diag: draw...');
         uiElements = drawScene(ctx, sceneState, images, projectName, callGlobal(L, '__p2_export_ui'), pendingTextures);
-        console.log('[lua] switch diag: draw ok');
         markBoot('running', sceneState.name);
         console.log('[lua] 切换场景:', name, '实体', next.entities.size);
         sceneSwitch = '';

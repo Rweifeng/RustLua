@@ -92,14 +92,9 @@ impl EntityAllocator {
     /// Returns whether a handle refers to a currently alive entity.
     #[must_use]
     pub fn is_alive(&self, entity: EntityId) -> bool {
-        // [DIAG] 场景切换崩溃定位（2026-09-29，定位后移除）。
-        crate::core::script::diag_follow_step(71);
-        let alive = self
-            .generations
+        self.generations
             .get(entity.index as usize)
-            .is_some_and(|&generation| generation == entity.generation);
-        crate::core::script::diag_follow_step(72);
-        alive
+            .is_some_and(|&generation| generation == entity.generation)
     }
 
     /// Returns the current generation for a slot, if the slot exists.
