@@ -367,14 +367,21 @@ try {
         # 见 artifacts/package-webgl-*.log 排查记录）。因此 wasm 构建临时用环境变量覆盖 strip
         # 为 none；桌面构建（assetc/game.exe）不受影响，仍按 workspace profile 走 strip。
         #
-        # WP10 迁移（EH 兼容）：**webgl 必须用 rustc 1.88（LLVM 18）构建**。1.97（LLVM 19）
-        # 对 vendored Lua C 的 setjmp 生成 try_table（new EH）、对 Rust 侧 catch_unwind 生成
-        # legacy try（0x06），同一模块里新旧 EH 指令混合，当前 Edge 直接拒绝编译
+        # WP10 迁移（EH 兼容）：**两个 web 平台都必须用 rustc 1.88（LLVM 18）构建**。
+        # 1.97（LLVM 19）对 vendored Lua C 的 setjmp 生成 try_table（new EH）、对 Rust 侧
+        # catch_unwind 生成 legacy try（0x06），同一模块里新旧 EH 指令混合，V8 直接拒绝编译
         # （"module uses a mix of legacy and new exception handling instructions"，实测
         # 2026-09-29：1.88 产物 Edge 跑通、1.97 产物报混合）。1.88 产物为纯 try_table，
-        # Edge/V8 支持。**微信侧不用 1.88**（保持默认 toolchain 构建 + wasm-opt -Oz 瘦身：
-        # 主包 4MB 上限需要；WXWebAssembly 对混合的接受度沿用阶段二发布基线）。
-        $wasmToolchain = if ($Platform -eq "webgl") { "+1.88.0" } else { "" }
+        # Edge/V8 支持。
+        # 微信侧**同样**要用 1.88（2026-09-30 修正）：早期这里给微信留了默认 toolchain，理由是
+        # "WXWebAssembly 对混合 EH 的接受度沿用阶段二发布基线"——那个前提来自 42 KB 的旧 wasm
+        # （只有 start/memory，没有 mlua）。微信侧接进 mlua Lua 桥之后，1.97 产物在**本机 Node
+        # 的 V8** 就报 `Invalid opcode 0x1f`（实测：错误落在 mlua 的函数里，wasm-opt 之前就已
+        # 经坏了），于是 wasm 装不进来 → `__P2_LUA_BRIDGE` 缺失 → boot=failed、0 帧。
+        # 也就是说旧口径同时失去真机依据和本机可验证性，把发布期的硬缺陷推迟到提审之后。
+        # 顺带证伪了"1.88 未优化产物太大"的担忧：binaryen 133 的 `-Oz` **会保留**纯 try_table
+        # （实测 3,149,994 → 2,427,854 字节，产物仍可被 V8 加载），所以微信侧照旧跑 -Oz 瘦身。
+        $wasmToolchain = "+1.88.0"
         $savedStrip = $env:CARGO_PROFILE_RELEASE_STRIP
         $env:CARGO_PROFILE_RELEASE_STRIP = "none"
         $savedEap = $ErrorActionPreference
@@ -521,8 +528,9 @@ try {
             # 而它出现在 IIFE 的**第一句**，于是整个 require 失败、wasm 装不进来。
             # 修法：构建期把这一句包进 try/catch。**为什么不改适配层的 shim**：给 shim 补
             # `location`/`currentScript` 是"为了绕过一个我们根本不走的代码路径"而伪造宿主能力，
-            # 而这个分支只服务于"不加参数按脚本 URL 猜 wasm 位置"——我们的 bridge 永远**显式传字节**
-            # （`initSync(bytes)`），那条路径一次都不会用到。包一层 try 是诚实的做法：
+            # 而这个分支只服务于"不加参数按脚本 URL 猜 wasm 位置"——bridge 永远**显式给参数**
+            # （小游戏走 `WXWebAssembly.instantiate(代码包路径, imports)`，字节兜底走 `initSync(bytes)`），
+            # 那条路径一次都不会用到。包一层 try 是诚实的做法：
             # 这条降级在浏览器里永远不会触发（那里 `document.currentScript` 是真的）。
             $gluePath = Join-Path $pkgRoot "game_web.js"
             $glueText = [System.IO.File]::ReadAllText($gluePath)
@@ -549,6 +557,36 @@ try {
             [System.IO.File]::WriteAllText($gluePath, $glueText, (New-Object System.Text.UTF8Encoding($false)))
             Optimize-WasmBin (Join-Path $pkgRoot "game_web_bg.wasm")
         }
+        # wasm 产物必须**真的能被宿主的 WebAssembly 实现接受**（两个 web 平台都在发布期验一次）。
+        # 这条守卫把三类回归挡在发布期，而不是等产物上线：
+        #   * toolchain 换成 LLVM 19+ → 新旧 EH 指令混用（V8 报 `Invalid opcode 0x1f`）；
+        #   * wasm-opt/binaryen 版本变化 → 改写 EH 编码；
+        #   * 构建参数（如 RUSTFLAGS 的 build-eh 相关）漂移。
+        # 症状在运行时一律塌成同一句 `wasm lua bridge not loaded` + `boot=failed`、0 帧，
+        # 现场看不出是"wasm 装不进来"还是"桥没接线"（实测 2026-09-30 就是这么漏出去的）。
+        # 宿主选择：优先 `WXWebAssembly`（小游戏那份），没有则退到 `WebAssembly`
+        # ——与 wasm-bridge.js 的 resolveWebAssembly 同一口径。本机 Node 的 V8 就是这里测的宿主，
+        # 它**证明不了**微信真机 WXWebAssembly 的行为，但能证明"连标准 V8 都拒绝"这种硬坏。
+        $wasmHostCheck = Join-Path $PSScriptRoot "wasm-lua\verify-wasm-host.mjs"
+        if (-not (Test-Path -LiteralPath $wasmHostCheck)) {
+            throw "缺少 wasm 宿主校验脚本: $wasmHostCheck（发布不能在没有这条守卫的情况下继续）"
+        }
+        $nodeForWasm = Get-Command node -ErrorAction SilentlyContinue
+        if (-not $nodeForWasm) { throw "wasm 宿主校验需要 node" }
+        $savedEapWasm = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try {
+            $wasmHostOutput = & $nodeForWasm.Source $wasmHostCheck (Join-Path $pkgRoot "game_web_bg.wasm") 2>&1
+            $wasmHostExit = $LASTEXITCODE
+        }
+        finally {
+            $ErrorActionPreference = $savedEapWasm
+        }
+        if ($wasmHostExit -ne 0) {
+            throw ("wasm 产物无法被宿主的 WebAssembly 接受（{0}）：{1}" -f `
+                (Join-Path $pkgRoot "game_web_bg.wasm"), (($wasmHostOutput | ForEach-Object { "$_" }) -join ' '))
+        }
+        Write-Host (($wasmHostOutput | Where-Object { $_ -match '^wasm_host_ok' } | Select-Object -First 1)) -ForegroundColor DarkGray
         # WP10 迁移（fengari → mlua-wasm）：Lua 执行层在 wasm 侧 mlua（LuaRuntime 桥），
         # pkg/fengari-web.js 已从发布链路移除，此处不再复制。
         # webgl 与微信小游戏共用同一份 web 运行时：两个平台的游戏逻辑不会各自漂移。
@@ -1366,11 +1404,16 @@ if ($SelfTest) {
     # 复制**发布根**（不是 $distRoot）：微信发布根下是 launcher/ + assets/ 两个目录
     # （分包形态下只有 launcher/，主包与分包都在它里面），隔离自测要连资源包一起搬走，
     # 才能验证"首包与资源包配套"。其它平台 $finalRoot 就是 $distRoot，行为不变。
+    # 复制到隔离目录时，Copy-Item 按**源目录名**（`builds\<平台>` 的最后一段）建容器目录，
+    # 而不是按 $PublishName：微信发布根下是 launcher/ + assets/，容器名就是 `wechat-minigame`。
+    # 早期这里写死 `Join-Path $isolated $PublishName`，于是微信侧的隔离自测永远在找一个
+    # 不存在的路径（`...\jianghu_youtian\launcher\game.js`），把"产物是好的"报成"缺文件"。
+    $isolatedReleaseRoot = Join-Path $isolated (Split-Path -Leaf $finalRoot)
     Copy-Item -LiteralPath $finalRoot -Destination $isolated -Recurse -Force
     if ($Platform -eq "wechat-minigame") {
         # 小游戏是静态包：断言隔离目录里运行时与配置齐全，并用无头 harness 实跑一次。
         # 发布根下有 launcher/（首包）与 assets/（资源包）两个兄弟目录，验证脚本吃的是这两个。
-        $isolatedRoot = Join-Path (Join-Path $isolated $PublishName) "launcher"
+        $isolatedRoot = Join-Path $isolatedReleaseRoot "launcher"
         $isolatedSkeletonRoot = if ($isSubpackagePack) { Join-Path $isolatedRoot "mainpack" } else { Join-Path $isolatedRoot "pack" }
         foreach ($file in @(
             (Join-Path $isolatedRoot "game.js"),
@@ -1423,7 +1466,7 @@ if ($SelfTest) {
             }
             Write-Host ("Check: wechat_minigame_split_ok mainpack_files={0}（隔离副本里逐条复核）" -f $isolatedEntries.Count) -ForegroundColor DarkGray
         }
-        $isolatedAssets = Join-Path (Join-Path $isolated $PublishName) "assets"
+        $isolatedAssets = Join-Path $isolatedReleaseRoot "assets"
         if ($AssetPack -eq "remote") {
             # 瘦首包必须在隔离目录里也是"瘦"的，否则本地自测等于在测一个不存在的形态。
             foreach ($heavy in @("pack\assets", "pack\scenes", "pack\scripts")) {
@@ -1460,7 +1503,7 @@ if ($SelfTest) {
         Write-Host ("Directory-isolation self test passed (WeChat launcher + runtime OK; asset_pack={0})" -f $AssetPack) -ForegroundColor Green
     }
     elseif ($Platform -eq "webgl") {
-        $isolatedRoot = Join-Path $isolated $PublishName
+        $isolatedRoot = $isolatedReleaseRoot
         foreach ($file in @(
             (Join-Path $isolatedRoot "index.html"),
             (Join-Path $isolatedRoot "web-runtime.js"),
@@ -1474,10 +1517,10 @@ if ($SelfTest) {
         Write-Host "Directory-isolation self test passed (WebGL static package OK)" -ForegroundColor Green
     }
     else {
-        $isolatedRunner = Join-Path $isolated ("$PublishName\game.exe")
-        $isolatedPack = Join-Path $isolated ("$PublishName\pack")
+        $isolatedRunner = Join-Path $isolatedReleaseRoot "game.exe"
+        $isolatedPack = Join-Path $isolatedReleaseRoot "pack"
         if (-not (Test-Path $isolatedRunner)) { throw "isolated dir is missing the runner" }
-        $isolatedFont = Join-Path $isolated ("$PublishName\pack\assets\fonts\$fontName")
+        $isolatedFont = Join-Path $isolatedReleaseRoot ("pack\assets\fonts\" + $fontName)
         if (-not (Test-Path -LiteralPath $isolatedFont) -or (Get-Item -LiteralPath $isolatedFont).Length -le 0) {
             # PC 的字体在 pack/ 里（assetc 打包产物）；发布根下的 fonts/ 只属于 webgl 的 index.html。
             throw "isolated dir is missing the packaged font: pack/assets/fonts/$fontName"
@@ -1505,7 +1548,7 @@ if ($SelfTest) {
             if ($rootsLine -notmatch [regex]::Escape($isolatedUserDir)) {
                 throw "release package ignored RUSTLUA_USER_DIR=$isolatedUserDir : $rootsLine"
             }
-            $strayPlayerData = Get-ChildItem -LiteralPath (Join-Path $isolated $PublishName) -Recurse -Force -ErrorAction SilentlyContinue |
+            $strayPlayerData = Get-ChildItem -LiteralPath $isolatedReleaseRoot -Recurse -Force -ErrorAction SilentlyContinue |
                 Where-Object { $_.Name -in @(".cache", ".data") -or $_.Extension -in @(".sav", ".log") }
             if ($strayPlayerData) {
                 throw "release directory contains player data: $($strayPlayerData.FullName -join ', ')"

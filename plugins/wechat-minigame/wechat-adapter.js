@@ -7,11 +7,13 @@
 //
 // 能力边界（同步维护于 plugins/wechat-minigame/README.md，不得夸大）：
 // - 游戏逻辑走 wasm 内的 mlua 执行层（Lua 5.4，vendored）+ `pack/` 资源：适配层启动时
-//   同步实例化 wasm，把 6 个 Lua 桥导出挂到 `window.__P2_LUA_BRIDGE`（`lua_boot` 包装成
-//   `lua_boot_with_reader`），全部 Lua 交互经桥执行——这条路径在小游戏里**真实可运行**；
+//   实例化 wasm（宿主的 `WXWebAssembly.instantiate` 只有异步、代码包路径这一形态），把 6 个
+//   Lua 桥导出挂到 `window.__P2_LUA_BRIDGE`（`lua_boot` 包装成 `lua_boot_with_reader`），
+//   全部 Lua 交互经桥执行——这条路径在小游戏里**真实可运行**；
 // - `pkg/game_web.js` + `pkg/game_web_bg.wasm` 随包分发（胶水是 `--target no-modules` 的
-//   纯脚本，由 wasm-bridge.js 包成 CommonJS）。适配层在启动时**同步实例化**它，并把结果
-//   写进 `data-p2-wasm` / `__P2_DIAG().wasm`，详见文末「WASM 说明」。
+//   纯脚本，由 wasm-bridge.js 包成 CommonJS）。适配层在 boot 之前完成实例化，并把结果
+//   （用了哪条通道、哪个代码包路径）写进 `data-p2-wasm` / `__P2_DIAG().wasm`，
+//   详见文末「WASM 说明」。
 // - 输入：微信 PC 端键盘（wx.onKeyDown/onKeyUp）直接桥接；触摸映射为指针事件，
 //   并提供左侧虚拟摇杆（WASD）与右侧按键（space）以保证手机端可玩。
 'use strict';
@@ -20,7 +22,7 @@
   var g = typeof globalThis !== 'undefined' ? globalThis : this;
   // 版本号会打进日志和 __P2_DIAG()：开发者工具会缓存代码包，
   // "有没有报错" 分不清旧包新包，只有版本号能分清（实测踩过）。
-  var ADAPTER_VERSION = '0.7.0+subpackage';
+  var ADAPTER_VERSION = '0.7.1+wasm-path';
   var wx = g.wx;
   if (!wx) {
     throw new Error('wechat-adapter: 未找到全局 wx —— 本文件只能在微信小游戏运行时中加载');
@@ -1351,9 +1353,13 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
       wasm: {
         status: wasmState.status,
         source: wasmState.source,
+        channel: wasmState.channel,
+        path: wasmState.path,
         bytes: wasmState.bytes,
         exports: wasmState.exports,
         detail: wasmState.detail,
+        attempts: wasmState.attempts,
+        luaBridge: wasmState.luaBridge,
         hostApi: wasmState.hostApi
       },
       // 画布 vs 工程声明尺寸（横版方案A）：agree=false 就是"版面会溢出画布"。
@@ -2377,11 +2383,13 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     }
     // 资源读取自检：分包形态下这三个探针在 mainpack/ 下，验证的正是**路由层本身**。
     probePackReadability();
-    // wasm 核心：在主包内同步加载（`pkg/game_web_bg.wasm` 属首屏骨架，不在分包里）。
+    // wasm 核心：主包里的 `pkg/game_web_bg.wasm`（属首屏骨架，不在分包里）。
     // Lua 执行层就在这个 wasm 里（WP10 迁移后无备用解释器）：加载失败时宿主交互的
     // 诊断通道（`data-p2-wasm` / `__P2_DIAG().wasm`）会如实记录，而 `__P2_LUA_BRIDGE`
     // 缺失会让 web-runtime.js 抛 `wasm lua bridge not loaded`（发布形态问题，不降级）。
-    loadWasmCoreOnce();
+    // **它返回 Promise**：小游戏宿主的 `WXWebAssembly.instantiate(代码包路径, imports)` 只有
+    // 异步形态，所以这里只发起加载、把它排在 boot 之前完成（见下面的 wasmReady 链）。
+    var wasmReady = loadWasmCoreOnce();
     // 画布与游戏版面的自检：`game.json` 的方向与画布尺寸必须和 `ui/layout.lua` 的设计分辨率
     // 对得上。**为什么值得单独自检**：Lua 面板画在屏幕像素空间、不做缩放，画布尺寸不对的表现是
     // "面板溢出画布"（边缘控件看不见），而这在无头验证里**不会报错**
@@ -2401,7 +2409,12 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
       // 绝不让它变成 unhandled rejection（那在小游戏里表现为静默）。
       warn('wechat-adapter: 分包后台载入异常 -> ' + hostError(error));
     });
-    return loadGameFont()
+    return wasmReady
+      .then(function () {
+        // wasm（= Lua 执行层）挂载完成之后才允许 boot：`window.__P2_LUA_BRIDGE` 必须在
+        // web-runtime.js 走到 Lua 之前存在，否则报的是"桥缺失"这种发布形态错误。
+        return loadGameFont();
+      })
       .then(function () {
         bootStartedAt = Date.now();
         bootWatchdog = setTimeout(reportBootStall, bootTimeoutMs());
@@ -2420,7 +2433,20 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
         // 失败路径必须撤掉看门狗：否则 10 秒后它的超时提示会盖掉真正的失败原因。
         if (bootWatchdog) { clearTimeout(bootWatchdog); bootWatchdog = null; }
         var message = (error && error.message) ? error.message : String(error);
-        console.error('[wechat-adapter] 启动失败:', error);
+        // wasm 失败的分层原因必须出现在**错误行与屏幕本身**，而不是只进 console.warn：
+        // 开发者工具的"问题"面板只收 console.error，于是现场只剩一句 `wasm lua bridge not loaded`
+        // ——而这句话对四种完全不同的塌法（宿主没有 WXWebAssembly / 只有 instantiate 没有
+        // Module 构造器 / wasm 字节读不到 / 模块被拒绝编译）给不出任何区分。
+        // 实测 2026-09-30 开发者工具就是这样：本机全绿的产物在工具里报同一句，只能靠人
+        // 去控制台敲 `__P2_DIAG().wasm` 才拿得到判据。真机没控制台，屏幕就是唯一通道。
+        if (wasmState.status !== 'ok') {
+          message = message + ' [wasm=' + wasmState.status
+            + (wasmState.source ? '/' + wasmState.source : '')
+            + (wasmState.detail ? ' detail=' + String(wasmState.detail).slice(0, 200) : '')
+            + (wasmState.attempts && wasmState.attempts.length
+              ? ' tried=' + String(summarizeAttempts(wasmState.attempts)).slice(0, 220) : '') + ']';
+        }
+        console.error('[wechat-adapter] 启动失败:', message);
         bodyElement.setAttribute('data-p2-boot', 'failed');
         bodyElement.setAttribute('data-p2-boot-detail', message.slice(0, 400));
         showBootError('启动失败: ' + message);
@@ -2431,9 +2457,13 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
 
   // WASM 说明（WP10 迁移后）：代码包里发行 `pkg/game_web.js` + `pkg/game_web_bg.wasm`。
   // 胶水用 **`--target no-modules`** 生成（纯脚本、无 import/export），由 `wasm-bridge.js`
-  // 包成 CommonJS 后用 `initSync(bytes)` 同步实例化——小游戏没有 `instantiateStreaming`、
-  // 也不认 `Response`，走字节路径最少猜测。**不复用 webgl 那份 `--target web` 的 ESM 胶水**：
-  // 小游戏按 CommonJS 解析，顶层 `export` 会让启动直接 SyntaxError。
+  // 包成 CommonJS。**实例化只能走宿主的代码包路径通道**：微信的 `WXWebAssembly` 只暴露
+  // `instantiate(path, imports) -> Promise`，第一个参数**只接受代码包路径字符串**
+  // （实测开发者工具对字节数组报 `WebAssembly.instantiate: first argument must be a string`；
+  // 文档也未提供 Module/Instance 构造器）。字节 `initSync` 那条只在标准 WebAssembly 宿主
+  // （本机 Node）成立，保留为兜底通道，且诊断里 `channel` 会写明实际用了哪条。
+  // **不复用 webgl 那份 `--target web` 的 ESM 胶水**：小游戏按 CommonJS 解析，
+  // 顶层 `export` 会让启动直接 SyntaxError。
   //
   // 当前边界（不得夸大）：wasm 即 Lua 执行层（mlua 5.4 + vendored），`__P2_LUA_BRIDGE`
   // 承载全部 Lua 交互；宿主交互诊断通道（`data-p2-wasm` / `__P2_DIAG().wasm`）如实记录。
@@ -2505,85 +2535,119 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
   // 为什么值得做：如果没人验证它"真的装进来了"，Lua 启动失败会被当成"桥没挂上"的假象；
   // 所以这里把结果做成可核对的证据（桥缺失时 web-runtime.js 会抛硬错误，不是静默降级）。
   //
-  // 三档结果（都进 `__P2_DIAG().wasm` 与启动日志）：
-  //   ok                 实例化成功，`exports` 是真实导出名清单
-  //   no-webassembly     宿主没有 WXWebAssembly / WebAssembly（真机极旧基础库）
-  //   webassembly-api-incomplete  只有 instantiate、没有 Module/Instance 构造器
-  //   wasm-bytes-unreadable       包内读不到 wasm（多半是发布形态没把它打进去）
-  //   instantiate-failed          胶水抛错（detail 带原始信息）
+  // 结果档位（都进 `__P2_DIAG().wasm` 与启动日志）：
+  //   ok                        实例化成功，`channel` 标出用的是哪条通道，`exports` 是真实导出名清单
+  //   no-webassembly            宿主没有 WXWebAssembly / WebAssembly（真机极旧基础库）
+  //   webassembly-api-incomplete 宿主既没有 instantiate(path,imports) 也没有 Module/Instance 构造器
+  //   path-instantiate-failed    路径通道（小游戏的唯一公开形态）失败，attempts 里带每条候选路径的原因
+  //   glue-missing / glue-shape-unexpected  胶水没打进包或形态不对（发布形态问题）
+  //   bridge-missing            wasm-bridge.js 自身 require 失败
+  //
+  // **为什么是 Promise**：`WXWebAssembly` 只有异步的 `instantiate(路径, imports)`（文档如此，
+  // 且字节数组会被直接拒），所以 wasm 挂载天生是异步的；boot 必须排在它之后
+  // （见 start() 里的 loadGameFont 之前那一步）。
   var wasmState = { status: 'not-attempted' };
+  var wasmLoadPromise = null;
   // 画布/版面一致性自检结果（见 reportViewAgreement），进 __P2_DIAG().view_agreement。
   var viewAgreement = { declared: 'unknown', canvas: 'unknown', agree: null, orientation: 'unknown' };
 
+  // 幂等：只真正加载一次，后续调用返回同一个 Promise（start() 与 api.loadWasm 共用）。
   function loadWasmCoreOnce() {
-    if (wasmState.status !== 'not-attempted') return wasmState;
-    var bridge = null;
-    try {
-      bridge = require('./wasm-bridge.js');
-    } catch (error) {
-      wasmState = { status: 'bridge-missing', detail: hostError(error) };
-      warn('wechat-adapter: wasm 桥接层加载失败 -> ' + wasmState.detail);
-      return wasmState;
-    }
-    var result = bridge.loadWasmCore({
-      readBytes: readBytes,
-      wasmPath: WASM_MODULE_PATH,
-      log: log
-    });
-    if (result.ok) {
-      wasmState = { status: 'ok', source: result.source, exports: result.exports, bytes: result.bytes };
-      // WP10 迁移（fengari → mlua-wasm）：wasm 导出 Lua 桥函数 → 挂到
-      // window.__P2_LUA_BRIDGE，web-runtime.js 的 Lua 交互全部经它完成。
-      // 微信没有 wasm 预加载资源表（webgl 的 start() 才有），因此 `lua_boot`
-      // 包装成 `lua_boot_with_reader(同步读取器)`：适配层 readText 即该读取器
-      //（pack/ 明文，vfs provider 原样交给引擎 pack::decode）。
-      // 导出缺失时保持"未就绪"状态（boot 会如实报错），不参与 success 判定。
-      if (result.host) {
-        try {
-          // wasm 侧 vfs 的路径形如 `/project/scripts/main.lua`；适配层 readText 只认
-          // `pack/` 前缀的逻辑路径（readSubjects 据此路由到 mainpack/ 首屏清单 + 改名表
-          // hostFileFor）。包装器负责转换：剥 `/project/` → 补 `pack/` 前缀。
-          function wechatReadFile(path) {
-            var rel = String(path).replace(/^\/project\//, '');
-            if (rel.indexOf('pack/') !== 0) rel = 'pack/' + rel;
-            return readText(rel);
-          }
-          window.__P2_LUA_BRIDGE = {
-            lua_boot: function () { return result.host.lua_boot_with_reader(wechatReadFile); },
-            lua_do_string: result.host.lua_do_string,
-            lua_call_global: result.host.lua_call_global,
-            lua_register_js_callback: result.host.lua_register_js_callback,
-            lua_missing_globals: result.host.lua_missing_globals,
-            lua_execute_main: result.host.lua_execute_main
-          };
-          wasmState.luaBridge = 'ok';
-        } catch (error) {
-          wasmState.luaBridge = 'error:' + hostError(error);
-        }
-      } else {
-        wasmState.luaBridge = 'no-glue-export';
+    if (wasmLoadPromise) return wasmLoadPromise;
+    wasmLoadPromise = new Promise(function (resolve) {
+      var bridge = null;
+      try {
+        bridge = require('./wasm-bridge.js');
+      } catch (error) {
+        finish({ status: 'bridge-missing', detail: hostError(error) });
+        warn('wechat-adapter: wasm 桥接层加载失败 -> ' + wasmState.detail);
+        resolve(wasmState);
+        return;
       }
-      // WP10 批次 A：wasm 导出 HostApi 构造器 → 实例化挂到 window.__P2_HOST_API。
-      //（Rust 侧 LuaRuntime::register_api 已注册 clock/calendar/day，此桥仅保留为
-      //  诊断兼容；web-runtime.js 不再经它注册宿主全局。）
-      if (result.host && typeof result.host.HostApi === 'function') {
-        try {
-          window.__P2_HOST_API = new result.host.HostApi(WECHAT_PUBLISH_NAME);
-          wasmState.hostApi = 'ok';
-        } catch (error) {
-          wasmState.hostApi = 'error:' + hostError(error);
+      // readBytes 只喂字节通道（有 Module/Instance 的宿主）；路径通道由宿主自己按
+      // 代码包路径读 wasm，适配层不碰那 2.3 MB。
+      bridge.loadWasmCore({
+        readBytes: readBytes,
+        wasmPath: WASM_MODULE_PATH,
+        log: log
+      }).then(function (result) {
+        if (result.ok) {
+          // 顺序要紧：attachWasmBridge 把 luaBridge/hostApi 写在 wasmState 上，
+          // 必须等 finish 换好对象之后再挂，否则诊断里这两个字段会被丢掉。
+          finish({
+            status: 'ok', source: result.source, channel: result.channel, path: result.path,
+            exports: result.exports, bytes: result.bytes
+          });
+          attachWasmBridge(result);
+        } else {
+          finish({ status: result.reason, source: result.source, detail: result.detail, attempts: result.attempts });
+          warn('wechat-adapter: wasm 核心未就绪（' + result.reason
+            + (result.detail ? '：' + result.detail : '')
+            + (result.attempts ? '｜通道尝试: ' + summarizeAttempts(result.attempts) : '') + '）'
+            + '——Lua 执行层在 wasm 里（WP10 迁移后无备用解释器），`__P2_LUA_BRIDGE` 缺失会让'
+            + ' web-runtime.js 抛硬错误（发布形态问题，不降级）；"包里带了 wasm 却没装上"正是这种问题');
         }
-      } else {
-        wasmState.hostApi = 'no-HostApi-export';
+        resolve(wasmState);
+      });
+    });
+    return wasmLoadPromise;
+  }
+
+  function summarizeAttempts(attempts) {
+    return (attempts || []).map(function (attempt) {
+      return attempt.channel + (attempt.path ? '(' + attempt.path + ')' : '')
+        + '=' + (attempt.detail || attempt.reason || 'failed');
+    }).join(' ; ');
+  }
+
+  function finish(state) {
+    wasmState = state;
+    bodyElement.setAttribute('data-p2-wasm', state.status);
+    return wasmState;
+  }
+
+  function attachWasmBridge(result) {
+    // WP10 迁移（fengari → mlua-wasm）：wasm 导出 Lua 桥函数 → 挂到
+    // window.__P2_LUA_BRIDGE，web-runtime.js 的 Lua 交互全部经它完成。
+    // 微信没有 wasm 预加载资源表（webgl 的 start() 才有），因此 `lua_boot`
+    // 包装成 `lua_boot_with_reader(同步读取器)`：适配层 readText 即该读取器
+    //（pack/ 明文，vfs provider 原样交给引擎 pack::decode）。
+    // 导出缺失时保持"未就绪"状态（boot 会如实报错），不参与 success 判定。
+    if (!result.host) { wasmState.luaBridge = 'no-glue-export'; wasmState.hostApi = 'no-glue-export'; return; }
+    try {
+      // wasm 侧 vfs 的路径形如 `/project/scripts/main.lua`；适配层 readText 只认
+      // `pack/` 前缀的逻辑路径（readSubjects 据此路由到 mainpack/ 首屏清单 + 改名表
+      // hostFileFor）。包装器负责转换：剥 `/project/` → 补 `pack/` 前缀。
+      function wechatReadFile(path) {
+        var rel = String(path).replace(/^\/project\//, '');
+        if (rel.indexOf('pack/') !== 0) rel = 'pack/' + rel;
+        return readText(rel);
+      }
+      window.__P2_LUA_BRIDGE = {
+        lua_boot: function () { return result.host.lua_boot_with_reader(wechatReadFile); },
+        lua_do_string: result.host.lua_do_string,
+        lua_call_global: result.host.lua_call_global,
+        lua_register_js_callback: result.host.lua_register_js_callback,
+        lua_missing_globals: result.host.lua_missing_globals,
+        lua_execute_main: result.host.lua_execute_main
+      };
+      wasmState.luaBridge = 'ok';
+    } catch (error) {
+      wasmState.luaBridge = 'error:' + hostError(error);
+    }
+    // WP10 批次 A：wasm 导出 HostApi 构造器 → 实例化挂到 window.__P2_HOST_API。
+    //（Rust 侧 LuaRuntime::register_api 已注册 clock/calendar/day，此桥仅保留为
+    //  诊断兼容；web-runtime.js 不再经它注册宿主全局。）
+    if (typeof result.host.HostApi === 'function') {
+      try {
+        window.__P2_HOST_API = new result.host.HostApi(WECHAT_PUBLISH_NAME);
+        wasmState.hostApi = 'ok';
+      } catch (error) {
+        wasmState.hostApi = 'error:' + hostError(error);
       }
     } else {
-      wasmState = { status: result.reason, source: result.source, detail: result.detail };
-      warn('wechat-adapter: wasm 核心未就绪（' + result.reason + (result.detail ? '：' + result.detail : '') + '）'
-        + '——Lua 执行层在 wasm 里（WP10 迁移后无备用解释器），`__P2_LUA_BRIDGE` 缺失会让'
-        + ' web-runtime.js 抛硬错误（发布形态问题，不降级）；"包里带了 wasm 却没装上"正是这种问题');
+      wasmState.hostApi = 'no-HostApi-export';
     }
-    bodyElement.setAttribute('data-p2-wasm', wasmState.status);
-    return wasmState;
   }
 
   var api = {

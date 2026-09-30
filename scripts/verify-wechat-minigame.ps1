@@ -399,18 +399,18 @@ if (-not $SkipRuntime) {
     $probeLine = $case.Lines | Where-Object { $_ -match "资源读取自检" } | Select-Object -First 1
     if ($probeLine) { Write-Host $probeLine -ForegroundColor DarkGray }
 
-    # 1a2) wasm 宿主桥不可用（--no-wasm：模拟开发者工具/极旧基础库没有可用的 WXWebAssembly）：
-    #      wasm 失败**不得影响 Lua 启动**（插件层既有契约）。实测：开发者工具曾因 __P2_HOST_API
-    #      未接线而 methodCompat 在 nil 的 clock 上定义方法直接崩启动（"attempt to index a nil
-    #      value (global 'clock')"）；修复后 clock 走 Lua 兜底、boot 照常成功，且适配层必须显式
-    #      报告"__P2_HOST_API 未接线"（静默降级不可见 = 等于没降级）。
-    $noWasmArgs = @("--frames", "60", "--no-wasm", "--drive-new-game", "--expect-runtime-spawns")
-    $noWasmCase = Invoke-HarnessCase -ExtraArgs $noWasmArgs -Label "no-wasm-clock-fallback"
-    if ($noWasmCase.ExitCode -ne 0) { throw "wasm 未接线时启动失败（--no-wasm, exit $($noWasmCase.ExitCode)）——clock 兜底/降级契约被破坏" }
+    # 1a2) wasm 宿主不可用（--no-wasm：模拟开发者工具/极旧基础库没有可用的 WXWebAssembly）：
+    #      WP10 之后 wasm **就是** Lua 执行层，缺它必须响亮失败。fengari 时代那条"wasm 失败
+    #      不影响 Lua 启动（clock 走 Lua 兜底、boot 照常成功）"的降级契约已经不存在——
+    #      没有解释器就没有兜底。这里要的证据是"失败可归因"：boot=failed + 拒绝原因指名 wasm 桥
+    #      + 控制台有启动失败这一行 + 诊断如实报 no-webassembly（而不是含糊的"没跑起来"）。
+    $noWasmArgs = @("--frames", "60", "--no-wasm")
+    $noWasmCase = Invoke-HarnessCase -ExtraArgs $noWasmArgs -Label "no-wasm-loud-failure"
+    if ($noWasmCase.ExitCode -ne 0) { throw "wasm 缺失时未按契约响亮失败（--no-wasm, exit $($noWasmCase.ExitCode)）" }
     $noWasmOk = $noWasmCase.Lines | Where-Object { $_ -match "wechat_minigame_harness_ok" } | Select-Object -First 1
-    if (-not $noWasmOk) { throw "no-wasm-clock-fallback 用例未输出 wechat_minigame_harness_ok" }
+    if (-not $noWasmOk) { throw "no-wasm-loud-failure 用例未输出 wechat_minigame_harness_ok" }
     if (-not ($noWasmOk -match 'wasm=no-webassembly')) {
-        throw ("no-wasm-clock-fallback 用例的 wasm 诊断未如实报告 no-webassembly：{0}" -f $noWasmOk)
+        throw ("no-wasm-loud-failure 用例的 wasm 诊断未如实报告 no-webassembly：{0}" -f $noWasmOk)
     }
     Write-Host $noWasmOk -ForegroundColor DarkGray
 

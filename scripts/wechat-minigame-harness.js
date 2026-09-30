@@ -1051,16 +1051,40 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
   }
 
   globalThis.wx = wx;
-  // WP10 微信侧接线：宿主暴露 WXWebAssembly（能力面 = Node 的真实 WebAssembly）。
+  // WP10 微信侧接线：宿主暴露 WXWebAssembly。
+  //
+  // **必须复刻它的受限形态**，不能直接挂 Node 的 WebAssembly：微信文档里 WXWebAssembly 只有
+  // 一个入口 `instantiate(path, imports) -> Promise`，且第一个参数**只接受代码包路径字符串**
+  // （实测开发者工具对字节数组报 `WebAssembly.instantiate: first argument must be a string`）。
+  // 早期这里写的是 `globalThis.WXWebAssembly = globalThis.WebAssembly`，于是本机验证走的是
+  // 字节 initSync——那条通道在小游戏上根本不存在，结果"本机全绿、工具里起不来"。
+  // 现在只给 instantiate（**不**给 Module/Instance 构造器），路径按代码包根解析。
+  function makeWxWebAssembly(packageRoot) {
+    const real = globalThis.WebAssembly;
+    return {
+      instantiate: function (first, imports) {
+        if (typeof first !== 'string') {
+          return Promise.reject(new TypeError('WebAssembly.instantiate: first argument must be a string'));
+        }
+        const file = path.join(packageRoot, first.replace(/^\/+/, ''));
+        if (!fs.existsSync(file)) {
+          return Promise.reject(new TypeError('WebAssembly.instantiate: no such file in the code package: ' + first));
+        }
+        return real.instantiate(fs.readFileSync(file), imports);
+      },
+      Memory: real.Memory,
+      Table: real.Table,
+      Global: real.Global
+    };
+  }
   // wasm-bridge 据此实例化 wasm 核心并导出 HostApi 构造器，适配层把实例挂到
-  // window.__P2_HOST_API——无头 harness 用 Node 的 WebAssembly 模拟这一环。
-  // `--no-wasm` 时**不**暴露它，模拟开发者工具/极旧基础库的"wasm 桥不可用"形态：
-  // 契约是 wasm 失败不影响 Lua 启动（clock 兜底 + boot 照常成功）。
+  // window.__P2_HOST_API——无头 harness 用上面这份受限复刻模拟这一环。
+  // `--no-wasm` 时**不**暴露它，模拟"宿主没有可用 wasm"的形态：契约是响亮失败。
   // 注意：Node 自带 WebAssembly，而 wasm-bridge 的 resolveWebAssembly 在 WXWebAssembly
   // 缺失时会回退到宿主 WebAssembly（实测：只删 WXWebAssembly 时仍报 wasm=ok:ok）——
   // 要模拟"宿主真缺 wasm"，两个入口都必须清掉。
   if (!noWasm) {
-    globalThis.WXWebAssembly = globalThis.WebAssembly;
+    globalThis.WXWebAssembly = makeWxWebAssembly(root);
   } else {
     try { delete globalThis.WXWebAssembly; } catch (_) { }
     try { delete globalThis.WebAssembly; } catch (_) { }
@@ -1609,7 +1633,27 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
       return 0;
     }
 
-    if (bootState !== 'running' && bootState !== 'ok') failures.push(`data-p2-boot=${bootState}（期望 running/ok）`);
+    // `--no-wasm`（WP10 之后的契约）：wasm **就是** Lua 执行层，宿主没有 WXWebAssembly 时
+    // 启动必须响亮失败，而不是"照常跑出画面"。fengari 时代那条"wasm 失败不影响 Lua 启动"
+    // 的降级契约已经失效——没有 wasm 就没有解释器，能跑起来才是问题。
+    // 这里要求的证据：boot=failed + 启动 Promise 被拒绝 + 拒绝原因指名 wasm 桥
+    //（"静默装死"和"响亮报错"对使用者的代价完全不同，见 docs/52 R9b 同一思路）。
+    if (noWasm) {
+      if (bootState !== 'failed') {
+        failures.push(`--no-wasm 下期望 data-p2-boot=failed（wasm 即 Lua 执行层，缺它必须失败），实际 ${bootState}`);
+      }
+      if (!bootOutcome.error) {
+        failures.push('--no-wasm 下启动 Promise 没有 reject：缺失 Lua 执行层被静默吞掉了');
+      } else if (!/wasm lua bridge/i.test(String((bootOutcome.error && bootOutcome.error.message) || bootOutcome.error))) {
+        failures.push('--no-wasm 下启动失败的原因不是"wasm 桥缺失"，说明错误来源不稳定或被包装掉了：'
+          + String((bootOutcome.error && bootOutcome.error.message) || bootOutcome.error).slice(0, 200));
+      }
+      if (!consoleErrors.some((line) => /启动失败/.test(String(line)))) {
+        failures.push('--no-wasm 下控制台没有"启动失败"这一行（屏幕之外的可见通道缺失）');
+      }
+    } else {
+      if (bootState !== 'running' && bootState !== 'ok') failures.push(`data-p2-boot=${bootState}（期望 running/ok）`);
+    }
     // --- 「点开始新游戏」这条用户真实路径的**世界状态**断言。
     // 只断言"帧循环没停"是不够的：进了图但世界里一个实体都没有、主角没被搬到落点，
     // 这些半死状态以前照样全绿（实测就是"停在标题后又进了 manor，实体 28 个里 NPC
@@ -1898,17 +1942,22 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
         '（新增缺口要显式实现，或把它加进 MISSING_HOST_API_ALLOWED 并说明游戏侧如何降级）');
     }
 
-    if (bootOutcome.error) {
-      failures.push(`启动 Promise 被拒绝: ${String((bootOutcome.error && bootOutcome.error.message) || bootOutcome.error).slice(0, 200)}`);
+    // 下面这组是"**启动成功**"路径的证据断言。`--no-wasm` 走的是响亮失败契约（见上），
+    // 那里 0 帧、0 绘制、boot-detail 带 error 全都是**期望结果**，照跑只会把正确的失败
+    // 报成用例子断言失败（实测：真错误 `wasm lua bridge not loaded` 被淹没在 6 条派生红字里）。
+    if (!noWasm) {
+      if (bootOutcome.error) {
+        failures.push(`启动 Promise 被拒绝: ${String((bootOutcome.error && bootOutcome.error.message) || bootOutcome.error).slice(0, 200)}`);
+      }
+      if (stats.frames < 1) failures.push(`未执行任何帧（raf 队列为空）`);
+      if (stats.frames !== frames) failures.push(`只执行了 ${stats.frames}/${frames} 帧（帧循环中途停止，通常意味着 Lua 报错）`);
+      if (stats.drawOps <= 0) failures.push('没有任何绘制调用（帧循环未真正绘制）');
+      // 每一帧都必须继续产生绘制调用：证明 Lua update 循环在持续推进，而不是只渲染了首帧。
+      const drawsEveryFrame = perFrameDraws.length > 0 && perFrameDraws.every((ops, index) => (index === 0 ? ops > 0 : ops > perFrameDraws[index - 1]));
+      if (!drawsEveryFrame) failures.push(`并非每帧都在绘制（逐帧绘制调用: ${JSON.stringify(perFrameDraws.slice(0, 6))}）`);
+      if (bootDetail && /fail|error|missing/i.test(bootDetail)) failures.push(`data-p2-boot-detail 报告失败: ${bootDetail}`);
+      if (!(drawn > 0)) failures.push(`data-p2-drawn=${drawn}（期望 > 0，即画面上确有内容）`);
     }
-    if (stats.frames < 1) failures.push(`未执行任何帧（raf 队列为空）`);
-    if (stats.frames !== frames) failures.push(`只执行了 ${stats.frames}/${frames} 帧（帧循环中途停止，通常意味着 Lua 报错）`);
-    if (stats.drawOps <= 0) failures.push('没有任何绘制调用（帧循环未真正绘制）');
-    // 每一帧都必须继续产生绘制调用：证明 Lua update 循环在持续推进，而不是只渲染了首帧。
-    const drawsEveryFrame = perFrameDraws.length > 0 && perFrameDraws.every((ops, index) => (index === 0 ? ops > 0 : ops > perFrameDraws[index - 1]));
-    if (!drawsEveryFrame) failures.push(`并非每帧都在绘制（逐帧绘制调用: ${JSON.stringify(perFrameDraws.slice(0, 6))}）`);
-    if (bootDetail && /fail|error|missing/i.test(bootDetail)) failures.push(`data-p2-boot-detail 报告失败: ${bootDetail}`);
-    if (!(drawn > 0)) failures.push(`data-p2-drawn=${drawn}（期望 > 0，即画面上确有内容）`);
     // `--expect-pack-failure` 是**故意**让分包永远挂不上的用例：那时 pack/ 一个字节都读不到，
     // "没读 pack/ 就失败" 这条在这里无从满足（它由 `--remote` 系列用例负责）。跳过它的同时，
     // 上面那组"失败必须三重可见 + 首屏照常"的断言全部照跑——不是放行，是换一套更强的要求。
@@ -2214,26 +2263,30 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
     // WP10 微信侧接线门：wasm 核心必须实例化成功且 HostApi 已挂到 __P2_HOST_API
     //（wasm-bridge 返回 glue → adapter new HostApi(...) → window.__P2_HOST_API）。
     // 这是"批次 A 在微信侧落地"的直接证据：缺了它微信端 app/clock 等仍是 missing 代理。
-    // `--no-wasm` 反转这条门：宿主没有 WXWebAssembly 时（开发者工具/极旧基础库形态），
-    // **wasm 失败不得影响 Lua 启动**（插件层既有契约）——boot 照常成功、clock 用 Lua
-    // 兜底（missing 清单不得含 clock 任何路径）、适配层必须显式报告 "__P2_HOST_API 未接线"
-    //（静默降级不可见 = 等于没降级，没法修）。
+    // `--no-wasm` 反转这条门，但**反转的是判据、不是方向**：宿主没有可用的 WXWebAssembly 时
+    // 诊断必须如实报 `no-webassembly`，而启动必须失败（WP10 之后 wasm 就是 Lua 执行层，
+    // fengari 时代"clock 走 Lua 兜底、boot 照常成功"那条降级契约已不存在——没有解释器就没有兜底）。
+    // 曾经这里断言"boot 照常成功 + 适配层报告 __P2_HOST_API 未接线"，前者与新现实相反、
+    // 后者依赖 Lua 真的跑过（wasm 缺失时 Lua 一帧都没跑，那句警告无从产生）。
     const wasmDiag = (adapter && adapter.diag) ? adapter.diag().wasm : null;
     if (noWasm) {
       if (!wasmDiag || !wasmDiag.status || wasmDiag.status === 'ok') {
         failures.push('--no-wasm 下 wasm 不应实例化成功（status=' + (wasmDiag ? wasmDiag.status : 'no-diag')
           + '），"宿主桥不可用"的形态没被模拟出来');
       }
-      if (consoleLogs.some((line) => /\[lua missing-host-api\] clock/.test(String(line)))) {
-        failures.push('--no-wasm 下 clock 不应走 missing 代理（应使用 Lua 兜底实现），但日志出现 [lua missing-host-api] clock*');
-      }
-      const fallbackWarn = consoleWarns.some((line) => line.includes('__P2_HOST_API 未接线'));
-      if (!fallbackWarn) {
-        failures.push('--no-wasm 下适配层未报告 __P2_HOST_API 未接线（clock 兜底不可见，静默降级）');
+      if (wasmDiag && wasmDiag.luaBridge) {
+        failures.push('--no-wasm 下 __P2_LUA_BRIDGE 不该被挂上（实际 luaBridge=' + wasmDiag.luaBridge
+          + '）：那意味着存在第二条 Lua 通道，本用例的"响亮失败"前提不成立');
       }
     } else if (!wasmDiag || wasmDiag.status !== 'ok' || wasmDiag.hostApi !== 'ok') {
       failures.push('WP10 wasm 宿主桥未就绪（status=' + (wasmDiag ? wasmDiag.status : 'no-diag')
         + ' hostApi=' + (wasmDiag ? wasmDiag.hostApi : 'no-diag') + '）：微信侧 __P2_HOST_API 接线未生效');
+    } else if (wasmDiag.channel !== 'path-instantiate') {
+      // 通道判据：宿主是 WXWebAssembly 时**必须**走代码包路径那条异步通道（小游戏文档里
+      // 只有它）。走成 bytes-sync 只可能发生在 harness 的 WXWebAssembly 被换回完整
+      // WebAssembly 之后——那正是"本机全绿、开发者工具里起不来"的成因，所以把它钉死。
+      failures.push(`wasm 实例化用的通道是 ${wasmDiag.channel}（期望 path-instantiate）：`
+        + '宿主只提供 instantiate(代码包路径, imports)，字节通道在真机上不存在');
     }
 
     console.error = originalError;
@@ -2260,7 +2313,7 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
         ` entry=${packEntryError ? 'FAIL' : 'ok'}` +
         ` loading_bar=${drawnTexts.some((text) => text.includes('正在下载资源')) ? 'ok' : 'none'}`
       : ` subpackage=none subpackage_loads=${stats.subpackageLoads}`;
-    console.log(`wechat_minigame_harness_ok path_style=${wxPathStyle} read_strategy=${readStrategy} frames=${stats.frames} draw_ops=${stats.drawOps} draws_per_frame=${perFrameDraws.length > 0 ? perFrameDraws[0] : 0} drawn=${drawn} ui_elements=${uiElements} pack_reads=${stats.packReads} images=${stats.imagesLoaded} binary=${binaryProbe} audio_ctx=${stats.audioCreated} audio_played=${stats.audioPlayed} audio_srcs=${JSON.stringify(stats.audioSrcs.slice(0, 8))}${uploadEvidence}${subpackageEvidence} read_strategies=main:${strategies.main || 'none'}/pack:${strategies.pack || 'none'} font=${fontFamily} boot=${bootState} world=${JSON.stringify(worldSummary.replace(/\s+/g, ' '))} move=${JSON.stringify(moveEvidence)} touch_stick=${JSON.stringify(touchStickEvidence)} attack=${JSON.stringify(attackEvidence)} bag=${JSON.stringify(bagEvidence)} stick_key=w key_bridge=ArrowUp wasm=${wasmDiag ? (wasmDiag.status + ':' + wasmDiag.hostApi) : 'no-diag'}${remoteEvidence}`);
+    console.log(`wechat_minigame_harness_ok path_style=${wxPathStyle} read_strategy=${readStrategy} frames=${stats.frames} draw_ops=${stats.drawOps} draws_per_frame=${perFrameDraws.length > 0 ? perFrameDraws[0] : 0} drawn=${drawn} ui_elements=${uiElements} pack_reads=${stats.packReads} images=${stats.imagesLoaded} binary=${binaryProbe} audio_ctx=${stats.audioCreated} audio_played=${stats.audioPlayed} audio_srcs=${JSON.stringify(stats.audioSrcs.slice(0, 8))}${uploadEvidence}${subpackageEvidence} read_strategies=main:${strategies.main || 'none'}/pack:${strategies.pack || 'none'} font=${fontFamily} boot=${bootState} world=${JSON.stringify(worldSummary.replace(/\s+/g, ' '))} move=${JSON.stringify(moveEvidence)} touch_stick=${JSON.stringify(touchStickEvidence)} attack=${JSON.stringify(attackEvidence)} bag=${JSON.stringify(bagEvidence)} stick_key=w key_bridge=ArrowUp wasm=${wasmDiag ? (wasmDiag.status + ':' + wasmDiag.hostApi + ':' + (wasmDiag.channel || 'none')) : 'no-diag'}${remoteEvidence}`);
     return 0;
   }).catch((error) => {
     console.error = originalError;
