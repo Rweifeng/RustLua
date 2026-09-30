@@ -556,12 +556,41 @@ try {
             $glueText += "`n// 微信分支：补 CommonJS 导出（见 scripts/package.ps1）。no-modules 产物只声明了顶层 let，`n// 不挂全局也不是 module.exports，直接 require 会拿到空对象。`nmodule.exports = wasm_bindgen;`n"
             [System.IO.File]::WriteAllText($gluePath, $glueText, (New-Object System.Text.UTF8Encoding($false)))
             Optimize-WasmBin (Join-Path $pkgRoot "game_web_bg.wasm")
+            # iOS 的 WXWebAssembly 不支持 Global 导出（docs/52 R12 尾段），带 Global 的模块
+            # 会被整块拒绝。当前 wasm-bindgen 会把 __abort_handler/__instance_terminated
+            # 塞进 Export 段，实测 JS 胶水完全不读它们（`__wbg_call_guard` 一条也没落进
+            # game_web.js）——从 Export 段削掉、Global 定义本身留着，模块仍然自洽。
+            # 只作用在微信分支；webgl 保留原样（浏览器都支持 Global）。
+            $stripGlobals = Join-Path $PSScriptRoot "wasm-lua\strip-wasm-globals.mjs"
+            if (-not (Test-Path -LiteralPath $stripGlobals)) {
+                throw "缺少 wasm Global 剔除脚本: $stripGlobals（发布不能在没有它的情况下继续）"
+            }
+            $nodeForStrip = Get-Command node -ErrorAction SilentlyContinue
+            if (-not $nodeForStrip) { throw "Global 剔除需要 node" }
+            $wasmForStrip = Join-Path $pkgRoot "game_web_bg.wasm"
+            $savedEapStrip = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
+            try {
+                $stripOutput = & $nodeForStrip.Source $stripGlobals $wasmForStrip $wasmForStrip 2>&1
+                $stripExit = $LASTEXITCODE
+            }
+            finally {
+                $ErrorActionPreference = $savedEapStrip
+            }
+            if ($stripExit -ne 0) {
+                throw ("wasm Export 段 Global 剔除失败（{0}）：{1}" -f `
+                    $wasmForStrip, (($stripOutput | ForEach-Object { "$_" }) -join ' '))
+            }
+            Write-Host (($stripOutput | Where-Object { $_ -match '^strip_wasm_globals_ok' } | Select-Object -First 1)) -ForegroundColor DarkGray
         }
         # wasm 产物必须**真的能被宿主的 WebAssembly 实现接受**（两个 web 平台都在发布期验一次）。
-        # 这条守卫把三类回归挡在发布期，而不是等产物上线：
+        # 这条守卫把四类回归挡在发布期，而不是等产物上线：
         #   * toolchain 换成 LLVM 19+ → 新旧 EH 指令混用（V8 报 `Invalid opcode 0x1f`）；
         #   * wasm-opt/binaryen 版本变化 → 改写 EH 编码；
-        #   * 构建参数（如 RUSTFLAGS 的 build-eh 相关）漂移。
+        #   * 构建参数（如 RUSTFLAGS 的 build-eh 相关）漂移；
+        #   * 微信侧 wasm 里还残留 Global 导出（iOS WXWebAssembly 硬拒绝，docs/52 R12；
+        #     上面的 strip-wasm-globals.mjs 已把两条内部 global 从 Export 段剔除，这里再兜
+        #     一次防漏更）。
         # 症状在运行时一律塌成同一句 `wasm lua bridge not loaded` + `boot=failed`、0 帧，
         # 现场看不出是"wasm 装不进来"还是"桥没接线"（实测 2026-09-30 就是这么漏出去的）。
         # 宿主选择：优先 `WXWebAssembly`（小游戏那份），没有则退到 `WebAssembly`
@@ -576,7 +605,7 @@ try {
         $savedEapWasm = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
         try {
-            $wasmHostOutput = & $nodeForWasm.Source $wasmHostCheck (Join-Path $pkgRoot "game_web_bg.wasm") 2>&1
+            $wasmHostOutput = & $nodeForWasm.Source $wasmHostCheck (Join-Path $pkgRoot "game_web_bg.wasm") "--platform=$Platform" 2>&1
             $wasmHostExit = $LASTEXITCODE
         }
         finally {

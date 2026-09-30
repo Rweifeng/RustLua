@@ -8,16 +8,34 @@
 //
 // ## 它证明什么、不证明什么
 // 证明：这份模块能被**标准 V8** 解析、且 Lua 桥导出齐全。
-// 不证明：微信真机的 WXWebAssembly 行为（本机无法模拟宿主实现，见 docs/52 R1 同一口径）。
+// 证明（--platform=wechat-minigame 时）：wasm 的 Export section **不含 Global 条目**——iOS 上的
+// WXWebAssembly 不支持 Global 导出（docs/52 R12 尾段），带 Global 的产物会整模块被拒；本仓的
+// wasm-bindgen 目前会导出 `__abort_handler`/`__instance_terminated` 两条内部 global，需要
+// `scripts/wasm-lua/strip-wasm-globals.mjs` 从 Export 段削掉后再发布。
+// 不证明：微信真机的 WXWebAssembly 行为（本机无法模拟宿主实现，见 docs/52 R1 同一口径）；
+// iOS 具体拒绝哪条也仍以真机为准，这条守卫只是把"明知 iOS 会崩"的产物挡在发布前。
 //
-// 用法：node scripts/wasm-lua/verify-wasm-host.mjs <path/to/game_web_bg.wasm>
-// 退出码：0 通过；1 宿主拒绝解析或导出缺失；3 参数/文件缺失。
+// 用法：node scripts/wasm-lua/verify-wasm-host.mjs <path/to/game_web_bg.wasm> [--platform=<name>]
+//   --platform=webgl            (默认) Global 仅**报告**，不失败（浏览器都支持 Global）。
+//   --platform=wechat-minigame  Global 视为**致命**（iOS WXWebAssembly 硬约束）。
+// 退出码：0 通过；1 宿主拒绝解析、导出缺失、或微信侧检测到 Global 导出；3 参数/文件缺失。
 import { readFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-const wasmPath = process.argv[2];
+const positional = [];
+let platform = 'webgl';
+for (const arg of process.argv.slice(2)) {
+  if (arg.startsWith('--platform=')) platform = arg.slice('--platform='.length);
+  else positional.push(arg);
+}
+if (!['webgl', 'wechat-minigame'].includes(platform)) {
+  console.error(`unsupported --platform=${platform} (expected webgl | wechat-minigame)`);
+  process.exit(3);
+}
+
+const wasmPath = positional[0];
 if (!wasmPath) {
-  console.error('usage: verify-wasm-host.mjs <game_web_bg.wasm>');
+  console.error('usage: verify-wasm-host.mjs <game_web_bg.wasm> [--platform=<webgl|wechat-minigame>]');
   process.exit(3);
 }
 const abs = resolve(wasmPath);
@@ -55,12 +73,34 @@ const required = [
   'lua_missing_globals',
   'lua_execute_main',
 ];
-const exported = new Set(host.Module.exports(mod).map((e) => e.name));
+const allExports = host.Module.exports(mod);
+const exported = new Set(allExports.map((e) => e.name));
 const missing = required.filter((name) => !exported.has(name));
 if (missing.length > 0) {
   console.error(`wasm_host_missing_exports: ${missing.join(',')}`);
   process.exit(1);
 }
+
+// Global 导出：iOS WXWebAssembly 明确拒绝（docs/52 R12）。当前 wasm-bindgen 会把
+// __abort_handler / __instance_terminated 两条内部 global 塞进 Export 段；JS 胶水实测
+// 完全不读它们（`__wbg_call_guard` 等 helper 一条也没落进 game_web.js），所以从 Export 段
+// 削掉不影响运行时行为。webgl 侧只报告（现代浏览器都支持 Global，不需要处理）；
+// 微信侧失败退出，让 package.ps1 在发布前先跑 strip-wasm-globals.mjs 把两条剔除。
+const globals = allExports.filter((e) => e.kind === 'global').map((e) => e.name);
+if (globals.length > 0) {
+  const line = `wasm_host_globals host=${hostName} platform=${platform} names=[${globals.join(',')}]`;
+  if (platform === 'wechat-minigame') {
+    console.error(
+      line +
+      ' : iOS WXWebAssembly 不支持 Global 导出（docs/52 R12）；' +
+      '发布链路应在 verify 之前跑 scripts/wasm-lua/strip-wasm-globals.mjs 从 Export 段剔除。'
+    );
+    process.exit(1);
+  }
+  console.error(line + ' (webgl 忽略：浏览器都支持 Global)');
+}
+
 console.log(
-  `wasm_host_ok host=${hostName} bytes=${bytes.length} exports=${exported.size} bridge_exports=${required.length}`
+  `wasm_host_ok host=${hostName} platform=${platform} bytes=${bytes.length} ` +
+  `exports=${allExports.length} globals=${globals.length} bridge_exports=${required.length}`
 );
