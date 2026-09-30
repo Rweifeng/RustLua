@@ -155,7 +155,11 @@ impl World {
     /// Returns whether an entity handle is currently alive in this world.
     #[must_use]
     pub fn is_alive(&self, entity: EntityId) -> bool {
-        self.entities.is_alive(entity)
+        // [DIAG] 场景切换崩溃定位（2026-09-29，定位后移除）。
+        crate::core::script::diag_follow_step(61);
+        let alive = self.entities.is_alive(entity);
+        crate::core::script::diag_follow_step(62);
+        alive
     }
 
     /// Returns the number of live entities.

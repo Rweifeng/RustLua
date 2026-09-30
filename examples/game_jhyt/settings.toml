@@ -1,21 +1,7 @@
-# 《江湖有田》手柄绑定（PC 手柄实机测试用）
-# 说明：默认动作表里玩法动作只有键盘绑定，摇杆默认只绑菜单导航 ui_up/down/left/right。
-#       本文件把**左摇杆**绑到移动（padaxis:1+/- 与 padaxis:0+/-），因此推杆即可走位；
-#       同时把交互/攻击/武学/背包/暂停/重开绑到手柄按钮。
-# 改键也可在编辑器「项目设置 → 输入」面板完成（本文件即该面板的落点）。
-# 注意：摇杆改绑给移动后，菜单导航仍由 DPad（pad:12..15，默认绑定）与方向键承担；
-#       若也想用摇杆选菜单，把 ui_up/down/left/right 也绑上 padaxis 即可（会与移动
-#       动作构成冲突，编辑器「项目设置 → 输入」会红字拦下）。
+# M20-08 手柄验收设置（示例结束时按原样恢复）
+[audio]
+master = 0.5
+bgm = 0.25
 
 [input]
-# M22/W1 起为物理键格式 v2：键位名与 winit 的 KeyCode 变体名一一对应
-# （key:w → key:keyw、key:1 → key:digit1、key:up → key:arrowup）。
-map = "rustlua-actions-v2\nmove_up=key:keyw,padaxis:1+\nmove_down=key:keys,padaxis:1-\nmove_left=key:keya,padaxis:0-\nmove_right=key:keyd,padaxis:0+\ninteract=key:keye,pad:0\nattack=key:keyj,pad:2\nskill=key:keyk,pad:3\ninventory=key:keyi,pad:4\npause=key:keyp,pad:5\nquest=key:keyl,pad:9\nrespawn=key:keyr,pad:8\n"
-stick_deadzone = 0.15
-trigger_deadzone = 0.05
-# 菜单导航手感（M22/W3 起用毫秒）：左摇杆阈值 / 按住后首次重复延迟 / 重复间隔。
-# 阈值越小越灵敏；延迟与间隔决定长按时的滚动节奏（这里刻意保留 M20-09 的
-# 60fps 手感：16 帧 ≈ 267ms、8 帧 ≈ 133ms，而不是新的默认 350/90）。
-nav_threshold = 0.5
-nav_delay_ms = 267
-nav_repeat_ms = 133
+map = "rustlua-actions-v2\nattack=pad:2\nbuild=key:keyb\ncancel=key:escape,pad:1\nconfirm=key:space,pad:0\ndemolish=key:keyx\ngift=key:keyg\ninteract=pad:0\ninventory=pad:4\nmove_down=padaxis:1-\nmove_left=padaxis:0-\nmove_right=padaxis:0+\nmove_up=padaxis:1+\npause=pad:5\nplace=key:keyf\npractice=key:keyq\nquest=key:keyl\nrespawn=pad:8\nseed=key:keyc\nskill=pad:3\nsleep=key:keyt\nslot_1=key:digit1\nslot_2=key:digit2\nslot_3=key:digit3\nslot_4=key:digit4\nslot_5=key:digit5\nslot_6=key:digit6\nslot_7=key:digit7\nslot_8=key:digit8\nslot_9=key:digit9\nui_down=key:arrowdown,pad:13\nui_left=key:arrowleft,pad:14\nui_right=key:arrowright,pad:15\nui_up=key:arrowup,pad:12\nuse=key:keyu\nvolume_down=key:minus\nvolume_up=key:equal"

@@ -333,6 +333,7 @@ unsafe extern "C-unwind" {
     //
     // Miscellaneous functions
     //
+    #[cfg(not(target_arch = "wasm32"))]
     #[link_name = "lua_error"]
     fn lua_error_(L: *mut lua_State) -> c_int;
     pub fn lua_next(L: *mut lua_State, idx: c_int) -> c_int;
@@ -346,9 +347,25 @@ unsafe extern "C-unwind" {
     pub fn lua_closeslot(L: *mut lua_State, idx: c_int);
 }
 
-// lua_error does not return but is declared to return int, and Rust translates
-// ! to void which can cause link-time errors if the platform linker is aware
-// of return types and requires they match (for example: wasm does this).
+// P2 fork 2026-09-29：`lua_error`（宿主函数返回 Err 时的 raise 点）在 wasm 上必须
+// 以 `extern "C"`（不可 unwind）声明。此前 `extern "C-unwind"` 让 Rust 在调用点
+// 生成 landing pad（catch_all），Lua `lua_error` 内部的 longjmp（wasm EH
+// throw tag 1）穿过 Rust 帧时被该 landing pad 截获，转成 Rust panic
+// （panic=abort → "cannot unwind" → unreachable trap），导致
+// `pcall(宿主函数)` 捕获不到宿主 Err —— 场景切换遇已死实体即崩。
+// 桌面保留 C-unwind（Rust panic 可穿过 Lua 帧，mlua 原有语义）。
+#[cfg(target_arch = "wasm32")]
+unsafe extern "C" {
+    #[link_name = "lua_error"]
+    fn lua_error_wasm(L: *mut lua_State) -> c_int;
+}
+#[cfg(target_arch = "wasm32")]
+#[inline(always)]
+pub unsafe fn lua_error(L: *mut lua_State) -> ! {
+    lua_error_wasm(L);
+    unreachable!();
+}
+#[cfg(not(target_arch = "wasm32"))]
 #[inline(always)]
 pub unsafe fn lua_error(L: *mut lua_State) -> ! {
     lua_error_(L);

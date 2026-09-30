@@ -17,8 +17,14 @@ mod lua_bridge;
 
 /// wasm panic hook：把 Rust panic 打进浏览器 console（各入口统一使用）。
 #[cfg(target_arch = "wasm32")]
-pub(crate) fn install_panic_hook() {
-    std::panic::set_hook(Box::new(|info| {
+pub(crate) fn install_panic_hook() {    std::panic::set_hook(Box::new(|info| {
+        // [DIAG] camera2d.follow 分步探针（2026-09-29 场景切换崩溃定位，定位后移除）：
+        // abort 模式下 panic hook 在 trap 前执行，这里把最后到达的探针步打进 console。
+        web_sys::console::error_1(&wasm_bindgen::JsValue::from_str(&format!(
+            "[follow-diag] step={} mlua-wrap={}",
+            engine::core::script::diag_follow_read(),
+            mlua::mlua_diag_wrap_read(),
+        )));
         web_sys::console::error_1(&wasm_bindgen::JsValue::from_str(&info.to_string()));
     }));
 }
@@ -414,6 +420,53 @@ mod wasm {
 
 #[cfg(not(target_arch = "wasm32"))]
 pub fn native_stub() {}
+
+/// [DIAG] extern "C" 宿主 Err pcall 对照测试（2026-09-30，定位后移除）：
+/// 与 wasm-lua-spike 的 spike_host_err 同构——纯 extern "C" 导出（不走
+/// #[wasm_bindgen] shim），宿主函数返回 Err → pcall 应捕获并返回 4。
+/// 用于判定崩溃是否来自 #[wasm_bindgen] 的 extern "C-unwind" 导出边界。
+#[cfg(target_arch = "wasm32")]
+#[unsafe(no_mangle)]
+pub extern "C" fn diag_test_host_err() -> i32 {
+    let lua = mlua::Lua::new();
+    let host_fail = lua
+        .create_function(
+            |_, _: mlua::Value| -> Result<mlua::Value, mlua::Error> {
+                Err(mlua::Error::external("host err"))
+            },
+        )
+        .expect("diag: create fn");
+    lua.globals().set("host_fail", host_fail).expect("diag: set fn");
+    lua.load(
+        "local ok, err = pcall(host_fail, 1) if ok then return 1 else return 4 end",
+    )
+    .exec()
+    .expect("diag: chunk exec");
+    let captured: i32 = lua
+        .globals()
+        .get("ok")
+        .unwrap_or(0);
+    if captured == 1 { 1 } else { 4 }
+}
+
+/// [DIAG] extern "C" 纯 Lua error pcall 对照测试（2026-09-30，定位后移除）：
+/// 与 diag_test_host_err 同构，但错误来自 Lua 自身 error()（不经过宿主 Err 路径）。
+/// 用于判定"Lua pcall catch 机制是否整体失效"（wbgen 前后模块对比）。
+#[cfg(target_arch = "wasm32")]
+#[unsafe(no_mangle)]
+pub extern "C" fn diag_test_lua_err() -> i32 {
+    let lua = mlua::Lua::new();
+    lua.load(
+        "local ok, err = pcall(function() error('boom') end) if ok then return 1 else return 4 end",
+    )
+    .exec()
+    .expect("diag: chunk exec");
+    let captured: i32 = lua
+        .globals()
+        .get("ok")
+        .unwrap_or(0);
+    if captured == 1 { 1 } else { 4 }
+}
 
 #[cfg(test)]
 mod tests {

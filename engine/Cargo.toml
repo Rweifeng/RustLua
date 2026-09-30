@@ -24,8 +24,8 @@ repository = ""
 # 分步日志 + 发布产物 --enable-logging 抓 console 定位。
 [profile.release]
 opt-level = "s"
-lto = "fat"
-codegen-units = 1
+lto = false
+codegen-units = 16
 strip = true
 
 [workspace.dependencies]
@@ -44,3 +44,9 @@ getrandom = { version = "0.2", features = ["js"] }
 mlua = { path = "vendor/mlua" }
 mlua-sys = { path = "vendor/mlua-sys" }
 lua-src = { path = "vendor/lua-src" }
+# P2 fork 2026-09-30：wasm-bindgen 宏导出由 extern "C-unwind" 改为 extern "C"，
+# 消除 rustc 为 C-unwind 导出生成的 EH landing pad（try_table）——它与 Lua 的 legacy
+# EH 混合后令 V8 的 legacy catch 失效，宿主函数返回 Err 的 pcall 在 wasm 上崩溃。
+# 本工程全部 wasm 目标 panic=abort，C-unwind 语义无实际作用，改后无行为损失。
+wasm-bindgen-macro = { path = "vendor/wasm-bindgen-macro/macro" }
+wasm-bindgen-macro-support = { path = "vendor/wasm-bindgen-macro/macro-support" }

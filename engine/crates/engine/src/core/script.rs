@@ -1924,6 +1924,17 @@ fn api_error(message: impl Into<String>) -> mlua::Error {
     mlua::Error::RuntimeError(message.into())
 }
 
+/// [DIAG] camera2d.follow 分步探针（2026-09-29 场景切换崩溃定位，定位后移除）。
+/// 逐步写 static，game_web 的 panic hook 在 wasm abort 前读出并打进 console，
+/// 从而还原崩溃发生在 follow 内部的哪一步（浏览器只报裸 unreachable）。
+static DIAG_FOLLOW_STEP: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+pub fn diag_follow_step(step: u8) {
+    DIAG_FOLLOW_STEP.store(step, std::sync::atomic::Ordering::SeqCst);
+}
+pub fn diag_follow_read() -> u8 {
+    DIAG_FOLLOW_STEP.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 /// 解析查询的可选 `{ layer = N, mask = N }` 参数（docs/54 §8-⑥：查询也吃 `layer/mask`）。
 ///
 /// - 缺省/空表 = `None`（全收，老行为）。
@@ -1984,7 +1995,11 @@ fn entity_to_lua(entity: EntityId) -> i64 {
     entity_lua_id(entity)
 }
 fn require_alive(state: &ScriptState, entity: EntityId) -> Result<(), mlua::Error> {
-    if state.world.is_alive(entity) {
+    // [DIAG] 场景切换崩溃定位（2026-09-29，定位后移除）。
+    diag_follow_step(51);
+    let alive = state.world.is_alive(entity);
+    diag_follow_step(if alive { 53 } else { 54 });
+    if alive {
         Ok(())
     } else {
         Err(api_error(format!("invalid entity id: {entity}")))
@@ -4023,23 +4038,34 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
         "follow",
         lua.create_function(
             move |_, (id, options): (Option<i64>, Option<mlua::Table>)| {
+                // [DIAG] camera2d.follow 探针（2026-09-29 场景切换崩溃定位，定位后移除）：
+                // 逐步写 static，game_web panic hook 在 abort 前读出打印。
+                diag_follow_step(1);
                 let target = match id {
                     Some(raw) => {
+                        diag_follow_step(2);
                         let entity = entity_from_lua(raw)?;
+                        diag_follow_step(3);
                         let state = s.borrow();
+                        diag_follow_step(4);
                         require_alive(&state, entity)?;
+                        drop(state);
+                        diag_follow_step(5);
                         Some(entity)
                     }
                     None => None,
                 };
                 let mut state = s.borrow_mut();
+                diag_follow_step(6);
                 state.camera2d.follow(target);
+                diag_follow_step(7);
                 if let Some(options) = options {
                     let offset_x = options.get::<Option<f32>>("offset_x")?.unwrap_or(0.0);
                     let offset_y = options.get::<Option<f32>>("offset_y")?.unwrap_or(0.0);
                     let dead_x = options.get::<Option<f32>>("dead_zone_x")?.unwrap_or(0.0);
                     let dead_y = options.get::<Option<f32>>("dead_zone_y")?.unwrap_or(0.0);
                     let smoothing = options.get::<Option<f32>>("smoothing")?.unwrap_or(0.0);
+                    diag_follow_step(8);
                     for value in [offset_x, offset_y, dead_x, dead_y, smoothing] {
                         if !value.is_finite() {
                             return Err(api_error("camera2d.follow options must be finite"));
@@ -4055,7 +4081,9 @@ fn register_api(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
                         .camera2d
                         .set_dead_zone(crate::core::transform::Vec2::new(dead_x, dead_y));
                     state.camera2d.set_smoothing(smoothing);
+                    diag_follow_step(9);
                 }
+                diag_follow_step(10);
                 Ok(true)
             },
         )?,

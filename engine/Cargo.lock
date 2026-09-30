@@ -4463,8 +4463,6 @@ dependencies = [
 [[package]]
 name = "wasm-bindgen-macro"
 version = "0.2.129"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2e29d0c35b16e224a7eeb5cd2d25e3e1968fbd65604117b44d3b789d00ee8535"
 dependencies = [
  "quote",
  "wasm-bindgen-macro-support",
@@ -4473,8 +4471,6 @@ dependencies = [
 [[package]]
 name = "wasm-bindgen-macro-support"
 version = "0.2.129"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6f501a8bc3719dba86ef8ae4728879c08001bea749eb1333ac5b91e040e2a6b7"
 dependencies = [
  "bumpalo",
  "proc-macro2",
@@ -4497,6 +4493,7 @@ name = "wasm-lua-spike"
 version = "0.1.0"
 dependencies = [
  "mlua",
+ "wasm-bindgen",
 ]
 
 [[package]]

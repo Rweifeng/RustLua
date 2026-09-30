@@ -13,7 +13,8 @@
 --   * 确认（`confirm`：空格 / 手柄 A）与鼠标点击统一走场景脚本的 `on_click(name)`，
 --     两条路径**同一个入口**，因此行为完全一致；
 --   * 顶部显示当前设备对应的操作说明（`ui.hints`），与游戏内 HUD 同源；
---   * 手柄 B / Esc（cancel）在标题界面等于「选中退出江湖」。
+--   * 取消键（键盘 Esc / 手柄 B）在门面无副作用：**只有选中「退出江湖」再确认，
+--     或点窗口右上角的关闭按钮**才会结束进程（宿主侧的「Esc 关窗」已移除）。
 local nav = require("ui.panel_nav")
 local hints = require("ui.hints")
 -- M30：文字统一走 `ui.ui_text`（裁剪 + 登记，验收遍历登记表逐条量宽）。
@@ -22,9 +23,6 @@ local ui_text = require("ui.ui_text")
 local layout = require("ui.layout")
 -- docs/48 ui 换肤接线：菜单装饰组（四角/竹分隔/印章/按钮悬停态）。
 local skin = require("ui.skin")
--- `core.audio` 是叶子模块（只依赖 core.save_manager），顶层 require 不会成环；
--- 选中/确认/取消反馈音都经它（UI 总线）。
-local audio = require("core.audio")
 -- `ui.input` 与 main.lua 同层：模块加载期不能 require（会与 main → title_menu 成环），
 -- 首次使用时惰性取一次（此时 Lua 的 require 缓存里已有它）。
 local input_module = nil
@@ -195,17 +193,13 @@ function M.hide()
 end
 
 -- 每帧输入：返回被触发的按钮 id（调用方转交 `on_click`）或 nil。
--- 顺序：取消（B/Esc）→ W/S → 方向键/DPad/摇杆/数字直选 → 确认（A/空格），与游戏内面板一致。
+-- 顺序：W/S → 方向键/DPad/摇杆/数字直选 → 确认（A/空格），与游戏内面板一致。
 function M.update()
   clear()
   local game = game_input()
   advance_anim(select(1, time.delta()))
-  if input.action_pressed("cancel") then
-    -- 标题界面的「取消」= 退出：直接落在最后一项并触发。
-    audio.ui("ui_cancel")
-    M.select(#OPTIONS)
-    return OPTIONS[#OPTIONS].id
-  end
+  -- 取消键（键盘 Esc / 手柄 B）在标题界面**不做任何事**：退出只走「选中退出江湖 +
+  -- 确认」或窗口的关闭按钮，避免一键误关进程。
   -- W/S（`move_up`/`move_down`）也要能导航：顶部提示写的是「W/S 或 方向键 选择」，
   -- 而面板（对话/商店/背包/任务/暂停）都是「先看 `move_*`，再退回 `ui_step()`」——
   -- 标题菜单此前只看 `ui_step()`（= `ui_up`/`ui_down`，默认绑方向键/DPad/左摇杆），
@@ -313,16 +307,13 @@ end
 -- 顶部操作说明：按当前设备二选一（与 HUD 同一套文案来源）。
 function M.hint_line()
   local confirm = hints.binding_labels({ "confirm" })
-  local cancel = hints.binding_labels({ "cancel" })
   local parts = {
     hints.is_gamepad() and "左摇杆/DPad 选择" or "W/S 或 方向键 选择",
   }
   if confirm then
     parts[#parts + 1] = confirm .. " 确认"
   end
-  if cancel then
-    parts[#parts + 1] = cancel .. " 退出"
-  end
+  -- 不提示「Esc/B 退出」：取消键在门面无副作用，退出只走确认「退出江湖」或窗口关闭按钮。
   return table.concat(parts, " · ")
 end
 

@@ -12,6 +12,13 @@
 
 use mlua::{Function, Lua, Result as LuaResult};
 
+/// [DIAG] 链接 wasm-bindgen rt 但不用 externref/JsValue（table 不应出现）。
+#[no_mangle]
+pub extern "C" fn spike_wb_ping() -> u32 {
+    let m = wasm_bindgen::memory();
+    m.byte_length() as u32
+}
+
 #[no_mangle]
 pub extern "C" fn spike_add(a: i64, b: i64) -> i64 {
     let lua = Lua::new();
@@ -40,6 +47,60 @@ pub extern "C" fn spike_error() -> i32 {
                 1
             } else {
                 2
+            }
+        }
+    }
+}
+
+/// 宿主函数返回 Err + 从 Lua pcall 捕获（对应 webgl 场景切换崩溃的根因路径）。
+/// 无 wasm-bindgen 环境：若返回 1 说明 mlua wrap_error → lua_error 的 longjmp
+/// 本身在 wasm 上正常，问题在 game_web 的 wbgen/Rust EH 边界；若 trap 则问题
+/// 在 mlua/Lua C 的 sjlj 与 Rust EH 交互。
+#[no_mangle]
+pub extern "C" fn spike_host_err() -> i32 {
+    let lua = Lua::new();
+    // 深栈版本：宿主函数内部多层 Rust 调用（模拟 engine 场景切换 on_create 的调用深度），
+    // 验证 wasm EH throw 穿过深层 Rust 帧是否被截获（对应 webgl 场景切换崩溃）。
+    fn deep1() -> LuaResult<()> {
+        let v = vec![1u8; 8];
+        let _ = v.len();
+        deep2()
+    }
+    fn deep2() -> LuaResult<()> {
+        let mut s = String::from("x");
+        s.push('y');
+        let _ = s.len();
+        deep3()
+    }
+    fn deep3() -> LuaResult<()> {
+        let a = [1u32, 2, 3];
+        let _ = a.iter().sum::<u32>();
+        deep4()
+    }
+    fn deep4() -> LuaResult<()> {
+        let m: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+        let _ = m.len();
+        deep5()
+    }
+    fn deep5() -> LuaResult<()> {
+        Err(mlua::Error::RuntimeError("dead entity".to_string()))
+    }
+    let fail: Function = lua
+        .create_function(|_, _: ()| deep1())
+        .unwrap();
+    lua.globals().set("host_fail", fail).unwrap();
+    match lua
+        .load("local ok, err = pcall(host_fail); if ok then return 'ok' else return err end")
+        .eval::<String>()
+    {
+        Ok(s) if s.contains("dead entity") => 1,
+        Ok(_) => 2,
+        Err(e) => {
+            let m = e.to_string();
+            if m.contains("dead entity") {
+                3
+            } else {
+                4
             }
         }
     }

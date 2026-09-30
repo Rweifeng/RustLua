@@ -7,6 +7,18 @@ use crate::error::{Error, Result};
 use crate::state::{ExtraData, RawLua};
 use crate::util::{self, get_internal_metatable, WrappedFailure};
 
+/// [DIAG] mlua wasm 宿主 Err 崩溃定位（2026-09-29，定位后移除）。
+#[cfg(target_arch = "wasm32")]
+static DIAG_WRAP_STEP: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn diag_wrap_step(step: u8) {
+    DIAG_WRAP_STEP.store(step, std::sync::atomic::Ordering::SeqCst);
+}
+#[cfg(target_arch = "wasm32")]
+pub fn mlua_diag_wrap_read() -> u8 {
+    DIAG_WRAP_STEP.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 struct StateGuard<'a>(&'a RawLua, *mut ffi::lua_State);
 
 impl<'a> StateGuard<'a> {
@@ -102,6 +114,63 @@ where
     // to store a wrapped failure (error or panic) *before* we proceed.
     let prealloc_failure = PreallocatedFailure::reserve(state, extra);
 
+    // wasm32-unknown-unknown 特殊分支（P2 fork 2026-09-29）：
+    // `catch_unwind` 的 Rust EH 边界会把 Lua `lua_error`（longjmp/throw）截获成 Rust
+    // panic——panic=abort 下直接 `unreachable` trap（浏览器只报 "Error: unreachable"，
+    // Lua 侧 `pcall(宿主函数)` 捕获不到宿主返回的 Err，场景切换一遇已死实体就崩）。
+    // 这里在 wasm 上跳过 catch_unwind：宿主函数返回 Err 时 `lua_error` 的 throw 不再
+    // 穿过 Rust 的 catch 边界，直达 Lua VM 的 pcall 被正常捕获；代价是 wasm 上宿主
+    // panic 无法被 catch_unwind 兜底（本就 panic=abort，行为一致）。桌面保持原逻辑。
+    #[cfg(target_arch = "wasm32")]
+    {
+        diag_wrap_step(1);
+        match f(extra, nargs) {
+            Ok(r) => {
+                // Return unused `WrappedFailure` to the pool
+                prealloc_failure.release(state, extra);
+                diag_wrap_step(10);
+                r
+            }
+            Err(err) => {
+                diag_wrap_step(2);
+                let wrapped_error = prealloc_failure.r#use(state, extra);
+                diag_wrap_step(3);
+
+                if !wrap_error {
+                    ptr::write(wrapped_error, WrappedFailure::Error(err));
+                    diag_wrap_step(4);
+                    get_internal_metatable::<WrappedFailure>(state);
+                    diag_wrap_step(5);
+                    ffi::lua_setmetatable(state, -2);
+                    diag_wrap_step(6);
+                    ffi::lua_error(state)
+                }
+
+                // Build `CallbackError` with traceback
+                diag_wrap_step(7);
+                let traceback = if ffi::lua_checkstack(state, ffi::LUA_TRACEBACK_STACK) != 0 {
+                    ffi::luaL_traceback(state, state, ptr::null(), 0);
+                    let traceback = util::to_string(state, -1);
+                    ffi::lua_pop(state, 1);
+                    traceback
+                } else {
+                    "<not enough stack space for traceback>".to_string()
+                };
+                let cause = Arc::new(err);
+                ptr::write(
+                    wrapped_error,
+                    WrappedFailure::Error(Error::CallbackError { traceback, cause }),
+                );
+                diag_wrap_step(8);
+                get_internal_metatable::<WrappedFailure>(state);
+                ffi::lua_setmetatable(state, -2);
+                diag_wrap_step(9);
+                ffi::lua_error(state)
+            }
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     match catch_unwind(AssertUnwindSafe(|| {
         let rawlua = (*extra).raw_lua();
         let _guard = StateGuard::new(rawlua, state);

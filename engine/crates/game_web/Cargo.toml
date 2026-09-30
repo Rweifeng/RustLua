@@ -7,7 +7,7 @@ license.workspace = true
 publish = false
 
 [lib]
-crate-type = ["cdylib", "rlib"]
+crate-type = ["cdylib"]
 
 [dependencies]
 engine = { path = "../engine" }

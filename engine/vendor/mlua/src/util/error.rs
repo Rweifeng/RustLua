@@ -65,6 +65,39 @@ where
     let ud = WrappedFailure::new_userdata(state);
     ffi::lua_rotate(state, 1, 1);
 
+    #[cfg(target_arch = "wasm32")]
+    {
+        // P2 fork 2026-09-29：wasm 上跳过 catch_unwind。两点理由：
+        // 1) panic=abort 下 catch_unwind 本就不能捕获（abort 直接 trap）；
+        // 2) 保留 catch_unwind 会让 rustc 在 wasm EH 下生成 landing pad，与 Lua C
+        //    （zig 0.16 输出的 legacy EH）混链接后出现 "legacy + new exception
+        //    handling instructions 混合"，Edge 直接拒编（实测 2026-09-29）。
+        match f(nargs) {
+            Ok(r) => {
+                ffi::lua_remove(state, 1);
+                r
+            }
+            Err(err) => {
+                ffi::lua_settop(state, 1);
+
+                // Build `CallbackError` with traceback
+                let traceback = if ffi::lua_checkstack(state, ffi::LUA_TRACEBACK_STACK) != 0 {
+                    ffi::luaL_traceback(state, state, ptr::null(), 0);
+                    let traceback = to_string(state, -1);
+                    ffi::lua_pop(state, 1);
+                    traceback
+                } else {
+                    "<not enough stack space for traceback>".to_string()
+                };
+                let cause = Arc::new(err);
+                let wrapped_error = WrappedFailure::Error(Error::CallbackError { traceback, cause });
+                ptr::write(ud, wrapped_error);
+                ffi::lua_error(state)
+            }
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     match catch_unwind(AssertUnwindSafe(|| f(nargs))) {
         Ok(Ok(r)) => {
             ffi::lua_remove(state, 1);

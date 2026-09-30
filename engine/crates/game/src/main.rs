@@ -109,7 +109,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     run_result(app.failure())
 }
 
-/// 运行结束后的退出判定。`None` = 正常退出（用户关窗、Esc、Lua `app.quit()`），
+/// 运行结束后的退出判定。`None` = 正常退出（用户关窗、Lua `app.quit()`），
 /// `Some(reason)` = 运行期失败 → 返回 `Err`，进程退出码非零。
 ///
 /// 单独抽成函数是为了让"失败必须变成非零退出码"这条契约可以被单测锁住：此前

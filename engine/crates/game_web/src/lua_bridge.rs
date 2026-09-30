@@ -33,6 +33,13 @@ thread_local! {
 }
 
 /// 当前 Lua 运行时（单线程 wasm：一个槽位足够；`lua_boot` 建，Lua 桥函数用）。
+///
+/// 借用约定：`LuaRuntime::lua()` 只需 `&self`，因此所有只读入口（do_string / execute_main /
+/// call_global / register_js_callback / missing_globals）一律用共享 `borrow()`；唯一的
+/// `borrow_mut()` 在 `boot_runtime`（一次性写入，此时尚无 Lua 在跑）。这样 Lua 执行期间经
+/// JS 回调重入本桥时，嵌套的共享借用可以并存，不会触发 `already mutably borrowed: BorrowError`
+/// （此前 do_string 持 `borrow_mut` 跨 `.exec()`，重入的 call_global 在 `borrow()` 处 panic →
+/// wasm 上是无法 unwind 的 `unreachable` trap）。
 thread_local! {
     static LUA_RUNTIME: RefCell<Option<engine::core::script::LuaRuntime>> =
         const { RefCell::new(None) };
@@ -123,9 +130,9 @@ pub fn lua_boot_with_reader(read_file: &js_sys::Function) -> Result<(), JsValue>
 #[wasm_bindgen]
 pub fn lua_execute_main() -> Result<(), JsValue> {
     LUA_RUNTIME.with(|slot| {
-        let mut guard = slot.borrow_mut();
+        let guard = slot.borrow();
         let runtime = guard
-            .as_mut()
+            .as_ref()
             .ok_or_else(|| JsValue::from_str("lua bridge: runtime not booted"))?;
         let path = std::path::PathBuf::from(super::VIRTUAL_PROJECT_ROOT).join("scripts/main.lua");
         let source = engine::core::script::read_project_script(&path)
@@ -149,9 +156,9 @@ pub fn lua_execute_main() -> Result<(), JsValue> {
 #[wasm_bindgen]
 pub fn lua_do_string(source: &str, chunkname: &str) -> Result<(), JsValue> {
     LUA_RUNTIME.with(|slot| {
-        let mut guard = slot.borrow_mut();
+        let guard = slot.borrow();
         let runtime = guard
-            .as_mut()
+            .as_ref()
             .ok_or_else(|| JsValue::from_str("lua bridge: runtime not booted"))?;
         let lua = runtime.lua();
         lua.load(source)
@@ -172,16 +179,6 @@ pub fn lua_call_global(name: &str, args_json: &str) -> Result<Option<String>, Js
             .as_ref()
             .ok_or_else(|| JsValue::from_str("lua bridge: runtime not booted"))?;
         let lua = runtime.lua();
-        // [DIAG] 场景切换崩溃定位（2026-09-29，定位后移除）：line hook 打印 Lua 执行位置，
-        // 崩前最后打印的行 = wasm trap 触发点附近。
-        let _ = lua.set_hook(mlua::HookTriggers::EVERY_LINE, |_lua, debug| {
-            let line = debug.current_line().unwrap_or(0);
-            let src = debug.source().short_src.clone().unwrap_or_else(|| "?".into());
-            web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(
-                &format!("[lua-diag] {src}:{line}"),
-            ));
-            Ok(mlua::VmState::Continue)
-        });
         let value: mlua::Value = lua
             .globals()
             .get(name)
@@ -210,9 +207,9 @@ pub fn lua_register_js_callback(name: &str, callback: &js_sys::Function) -> Resu
         callbacks.len() - 1
     });
     LUA_RUNTIME.with(|slot| {
-        let mut guard = slot.borrow_mut();
+        let guard = slot.borrow();
         let runtime = guard
-            .as_mut()
+            .as_ref()
             .ok_or_else(|| JsValue::from_str("lua bridge: runtime not booted"))?;
         let lua = runtime.lua();
         let wrapped = lua

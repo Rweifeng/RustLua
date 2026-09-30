@@ -441,9 +441,9 @@ impl ApplicationHandler for GameApp {
                     self.input
                         .key_event(key, event.state == ElementState::Pressed);
                 }
-                // 下面两条是**宿主自身的界面快捷键**（性能叠加层开关、退出），
-                // 不是玩法输入，因此继续按逻辑键判定：它们不该受改键表影响，
-                // 也不该因为键盘布局而变化。
+                // 下面这条是**宿主自身的界面快捷键**（性能叠加层开关），不是玩法
+                // 输入，因此继续按逻辑键判定：它不该受改键表影响，也不该因为键盘
+                // 布局而变化。Esc 不再退出进程，只作为玩法输入交给上层。
                 if event.state == ElementState::Pressed
                     && matches!(
                         &event.logical_key,
@@ -452,12 +452,6 @@ impl ApplicationHandler for GameApp {
                 {
                     self.overlay_enabled = !self.overlay_enabled;
                     tracing::info!(target: "game", "[perf] overlay {}", if self.overlay_enabled { "enabled" } else { "disabled" });
-                }
-                if event.state == ElementState::Pressed
-                    && event.logical_key
-                        == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape)
-                {
-                    self.request_exit(event_loop);
                 }
             }
             WindowEvent::MouseInput { state, button, .. } => {

@@ -1068,16 +1068,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_scene_is(&mut title, "main")?;
     title_snapshot.finish_frame();
     title.set_input(InputSnapshot::default());
-    // B（cancel）在标题界面 = 退出项，并播取消音（M22）。
+    // B（cancel）在标题界面**无副作用**：既不落到「退出江湖」，也不触发 on_click。
+    // 退出进程只走「选中退出江湖 + 确认」或窗口的关闭按钮——一键（Esc/B）关窗会误杀。
     let mut cancel_input = InputSnapshot::default();
     cancel_input.gamepad_button_event(button::B as u8, true);
     title.set_input(cancel_input);
-    title.call_update()?;
     assert_str_why(
         &mut title,
-        "tostring(require('core.audio').played_recently('ui_cancel'))",
-        "true",
-        "B 取消应播放 ui_cancel",
+        "tostring(require('ui.title_menu').update())",
+        "nil",
+        "B 取消不应触发任何按钮（旧语义：直接落在退出项）",
     )?;
     title.set_input(InputSnapshot::default());
     title.call_update()?;

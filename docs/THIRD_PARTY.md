@@ -50,7 +50,7 @@ py -3 examples/game_jhyt/tools/gen_audio.py     # 输出 gen_audio_ok files=15
 | `ui_click.wav` | 面板打开、对话开始、音量 ± |
 | `ui_move.wav` | 菜单/面板换项（方向键 / DPad / 摇杆 / 数字直选；M22，`ui/panel_nav.lua` 统一接线） |
 | `ui_confirm.wav` | 对话选择、买卖成功、使用/装备成功、暂停菜单保存/读取成功、标题按钮确认 |
-| `ui_cancel.wav` | 面板关闭、操作失败反馈、对话失败跳转、标题界面 B/Esc 退出 |
+| `ui_cancel.wav` | 面板关闭、操作失败反馈、对话失败跳转 |
 | `sfx_hoe.wav` | `farm.lua` 翻土成功 |
 | `sfx_plant.wav` | `farm.lua` 播种成功 |
 | `sfx_water.wav` | `farm.lua` 浇水成功 |

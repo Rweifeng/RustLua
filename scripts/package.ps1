@@ -398,8 +398,21 @@ try {
         }
     }
     else {
-        cargo build --workspace --release -q 2>&1 | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw "Release build failed." }
+        # PC 发布只需要两个原生产物：`assetc.exe`（资源打包）与 `game.exe`（运行器）。
+        # **不要**构建整个 workspace：`game_web` 等 web 侧 crate 与 PC 包无关，它编译失败
+        # 时 PC 发布会被连带拦下（实测 2026-09-30：`--workspace` 因 game_web 的 JsValue
+        # 报错而中断，而 game.exe/assetc.exe 本身是好的）。
+        # 同 web 分支：PS 5.1 在 `$ErrorActionPreference='Stop'` 下会把 cargo 写到 stderr
+        # 的正常进度变成终止性错误，必须临时降为 Continue 再调。
+        $savedEap = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try {
+            cargo build -p assetc -p game --release -q 2>&1 | Out-Null
+        }
+        finally {
+            $ErrorActionPreference = $savedEap
+        }
+        if ($LASTEXITCODE -ne 0) { throw "Release build failed (pc: assetc+game)." }
     }
 
     Write-Host "==> assetc package (platform=$Platform, data resource pack, compress=$Compress encrypt=$Encrypt)" -ForegroundColor Cyan
