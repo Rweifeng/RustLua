@@ -23,24 +23,83 @@
       document.body.setAttribute('data-p2-boot', state);
       if (detail) document.body.setAttribute('data-p2-boot-detail', String(detail).slice(0, 400));
     };
-    try {
-      await init();
-      await start('p2-canvas', publishName);
-      // WP10 迁移（fengari → mlua-wasm）：wasm Lua 桥挂到全局，web-runtime.js 的
-      // Lua 交互（建运行时/注入补丁/调全局/注册 JS 回调/查缺失全局）全部经它完成。
-      // fengari-web.js 已从发布包移除。
-      window.__P2_LUA_BRIDGE = {
-        lua_boot, lua_do_string, lua_call_global,
-        lua_register_js_callback, lua_missing_globals, lua_execute_main
-      };
-      await window.p2RunLuaGame(status);
-      status.textContent = publishName + ' - Lua running (mlua-wasm)';
-      markBoot('ok', publishName);
-    } catch (error) {
-      console.error(error);
-      status.textContent = 'WebGL startup failed: ' + error;
-      markBoot('failed', (error && error.message) || error);
+
+    // ---- 新 EH 覆盖门槛守卫 ----
+    // 本产物是纯 try_table（wasm “新异常处理”，由 vendored Lua 的 longjmp 经 -fwasm-exceptions
+    // 降低而来）。低于门槛的引擎**连模块都编译不过**，且 WP10 迁移后已无 fengari 回退。与其让它
+    // 下载 ~3MB wasm 再抛一个晦涩的 CompileError，不如**下载前**就给可操作的提示。
+    // 门槛（MDN browser-compat-data，2026-09 核对）：Chrome/Edge 137、Firefox 131、Safari/iOS 18.4。
+    const EH_FLOOR = { chrome: 137, edge: 137, firefox: 131, safari: 18.4 };
+    const detectEngine = () => {
+      const ua = navigator.userAgent;
+      let m;
+      // 顺序要紧：Edge 的 UA 里也含 "Chrome/"；iOS 上所有浏览器都用 WebKit(JSC)，其 EH 能力
+      // 取决于系统版本而非 App 版本，故这里只对能**确信**识别的桌面引擎做拦截，其余交给运行期兜底。
+      if ((m = ua.match(/Edg(?:e|A)?\/(\d+)/))) return { engine: 'edge', version: m[1] };
+      if ((m = ua.match(/Firefox\/(\d+)/))) return { engine: 'firefox', version: m[1] };
+      if ((m = ua.match(/Chrome\/(\d+)/))) return { engine: 'chrome', version: m[1] };
+      if (/Safari\//.test(ua) && (m = ua.match(/Version\/(\d+)(?:\.(\d+))?/))) {
+        return { engine: 'safari', version: m[1] + (m[2] ? '.' + m[2] : '') };
+      }
+      return { engine: 'unknown', version: '0' };
+    };
+    const versionAtLeast = (v, floor) => {
+      const a = String(v).split('.').map((x) => parseInt(x, 10) || 0);
+      const b = String(floor).split('.').map((x) => parseInt(x, 10) || 0);
+      for (let i = 0; i < Math.max(a.length, b.length); i++) {
+        const ai = a[i] || 0, bi = b[i] || 0;
+        if (ai > bi) return true;
+        if (ai < bi) return false;
+      }
+      return true;
+    };
+    // 仅在**确信**低于门槛时返回原因；未知引擎返回 null（不误拦，交运行期 catch 兜底）。
+    const unsupportedReason = () => {
+      if (typeof WebAssembly === 'undefined') return 'no-webassembly';
+      const d = detectEngine();
+      const floor = EH_FLOOR[d.engine];
+      if (floor && !versionAtLeast(d.version, floor)) return d.engine + ' ' + d.version + ' < required ' + floor;
+      return null;
+    };
+    const showUnsupported = (reason) => {
+      status.innerHTML =
+        '您的浏览器版本过低，无法运行本游戏。<br>' +
+        '请更新后重试：iOS Safari 18.4+ / Chrome 或 Edge 137+ / Firefox 131+。' +
+        (reason ? '<br><span style="opacity:.6;font-size:12px">(' + reason + ')</span>' : '');
+      markBoot('unsupported-browser', reason || 'below new-EH floor');
+    };
+
+    const reason = unsupportedReason();
+    if (reason) {
+      showUnsupported(reason);
+    } else {
+      try {
+        await init();
+        await start('p2-canvas', publishName);
+        // WP10 迁移（fengari → mlua-wasm）：wasm Lua 桥挂到全局，web-runtime.js 的
+        // Lua 交互（建运行时/注入补丁/调全局/注册 JS 回调/查缺失全局）全部经它完成。
+        // fengari-web.js 已从发布包移除。
+        window.__P2_LUA_BRIDGE = {
+          lua_boot, lua_do_string, lua_call_global,
+          lua_register_js_callback, lua_missing_globals, lua_execute_main
+        };
+        await window.p2RunLuaGame(status);
+        status.textContent = publishName + ' - Lua running (mlua-wasm)';
+        markBoot('ok', publishName);
+      } catch (error) {
+        console.error(error);
+        // 运行期兜底：未知引擎或卡在门槛边缘时，编译仍可能因缺新 EH 失败——把这类失败也归到
+        // “浏览器不支持”，给出可操作提示，而不是把裸 CompileError 甩给用户。
+        const msg = String((error && error.message) || error);
+        if (/try_table|exnref|exception handling|legacy and new|unexpected opcode|unreachable opcode|invalid opcode/i.test(msg)) {
+          showUnsupported(msg.slice(0, 200));
+        } else {
+          status.textContent = 'WebGL startup failed: ' + error;
+          markBoot('failed', msg);
+        }
+      }
     }
   </script>
+
 </body>
 </html>

@@ -14,7 +14,11 @@ param(
     [switch]$Benchmarks,
     # docs/54 §8-⑨：跑 Web 平台证据（浏览器契约层 + 已发布产物的启动层）。
     # 环境受限（无浏览器/无 node/无 wasm32 目标）时**显式**跳过并打印原因，不伪造通过。
-    [switch]$Web
+    [switch]$Web,
+    # wasm Lua 运行期验证门（scripts/verify-wasm-lua.ps1）：spike（vendored mlua 移植）
+    # + no-modules 桥（game_web Lua 桥）的 Node 验证。退出码 0=通过/1=判红/3=环境受限跳过，
+    # 与 -Web 同一哲学：缺 node/wasm32/zig/wasm-bindgen 时显式跳过，绝不把"跳过"当"通过"。
+    [switch]$WasmLua
 )
 
 $ErrorActionPreference = "Stop"
@@ -431,6 +435,39 @@ try {
                     throw "webgl bundle reports no painted canvas samples (blank frame): drawn=$($bundlePayload.drawnSamples)"
                 }
                 Write-Host "webgl_bundle_ok boot=$($bundlePayload.boot) wasm_bytes=$($bundlePayload.wasmBytes) drawn=$($bundlePayload.drawnSamples) ui=$($bundlePayload.uiElements) missing_host_api=$($bundlePayload.missingCount)" -ForegroundColor Green
+            }
+
+            # ③ 新 EH（try_table/exnref）跨浏览器层：本产物是纯新 EH，低于门槛的引擎连编译都
+            # 过不去（iOS Safari 18.4 / Chrome·Edge 137 / Firefox 131）。这一层只**编译**真实
+            # wasm（不跑游戏），因此与启动层正交：启动层可能因运行期 bug 判红，但只要模块能编译，
+            # EH 覆盖就是绿的。runner 逐个验本机所有浏览器；无浏览器/无产物时以 3 显式跳过。
+            # Safari 无法在 Windows 自动化——runner 会打印 Mac 上的手动验证流程。
+            $ehScript = Join-Path $projectRoot "scripts/verify-webgl-eh.ps1"
+            if (Test-Path -LiteralPath $ehScript) {
+                $ehRun = & $runWebEvidence $ehScript "eh"
+                $ehExit = $ehRun.ExitCode
+                if ($ehExit -eq 1) {
+                    throw "webgl new-EH cross-browser check FAILED (verify-webgl-eh.ps1 exit 1)"
+                }
+                if ($ehExit -ne 0) {
+                    Write-Host "webgl_eh_skipped reason=environment_limited_or_no_browser exit=$ehExit" -ForegroundColor Yellow
+                }
+                else {
+                    $ehSummary = Get-ChildItem -LiteralPath $webEvidenceRoot -Filter "eh-summary-*.json" -ErrorAction SilentlyContinue |
+                        Where-Object { $_.LastWriteTime -ge $ehRun.StartedAt } |
+                        Sort-Object LastWriteTime -Descending | Select-Object -First 1
+                    if (-not $ehSummary) {
+                        throw "webgl new-EH check reported success but wrote no FRESH eh-summary JSON"
+                    }
+                    $ehPayload = Get-Content -LiteralPath $ehSummary.FullName -Raw | ConvertFrom-Json
+                    if ($ehPayload.fail -gt 0 -or $ehPayload.timeout -gt 0 -or $ehPayload.pass -le 0) {
+                        throw "webgl new-EH summary not clean: pass=$($ehPayload.pass) fail=$($ehPayload.fail) timeout=$($ehPayload.timeout)"
+                    }
+                    Write-Host "webgl_eh_ok tested=$($ehPayload.testedCount) pass=$($ehPayload.pass) (new-EH wasm compiles in all discovered browsers)" -ForegroundColor Green
+                }
+            }
+            else {
+                Write-Host "webgl_eh_skipped reason=script_missing ($ehScript)" -ForegroundColor Yellow
             }
         }
         finally {
@@ -1081,6 +1118,70 @@ if ($Benchmarks) {
         }
     }
     Write-Host "WP0 benchmark baselines and semantic golden written and schema-checked: $baselineRoot" -ForegroundColor Green
+}
+
+# wasm Lua 运行期验证门：把 scripts/wasm-lua 下的两个 Node 用例（spike + no-modules 桥）
+# 纳入可重复门。与 -Web 同一子进程约定——Start-Process -PassThru 在重定向下 ExitCode 是
+# $null，退出码**只**认子进程写的 StatusFile；缺失即判失败。0=通过 / 1=判红 / 3=环境受限跳过。
+if ($WasmLua) {
+    Write-Step "wasm Lua runtime evidence"
+    $wasmEvidenceRoot = Join-Path $projectRoot "artifacts\logs\wasm-lua"
+    New-Item -ItemType Directory -Force -Path $wasmEvidenceRoot | Out-Null
+    $wasmScript = Join-Path $projectRoot "scripts\verify-wasm-lua.ps1"
+    if (-not (Test-Path -LiteralPath $wasmScript)) {
+        throw "wasm-lua verification script not found: $wasmScript"
+    }
+    $logFile = Join-Path $wasmEvidenceRoot "gate-wasm-lua-$timestamp.log"
+    $statusFile = "$logFile.status"
+    $timeoutSeconds = 900
+    $process = Start-Process -FilePath "powershell" `
+        -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $wasmScript, "-StatusFile", $statusFile) `
+        -PassThru -RedirectStandardOutput $logFile -RedirectStandardError "$logFile.err"
+    if (-not $process.WaitForExit($timeoutSeconds * 1000)) {
+        Write-Host "wasm-lua evidence timed out after ${timeoutSeconds}s; killing it" -ForegroundColor Yellow
+        Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+        throw "wasm-lua verification timed out (treated as failure, not skip)"
+    }
+    $lines = if (Test-Path -LiteralPath $logFile) { Get-Content -LiteralPath $logFile } else { @() }
+    $lines | Select-Object -Last 20 | ForEach-Object { Write-Host $_ }
+    $lines | ForEach-Object { Add-Content -Path $logPath -Value $_ -Encoding UTF8 }
+    if (Test-Path -LiteralPath "$logFile.err") {
+        $errLines = Get-Content -LiteralPath "$logFile.err" -ErrorAction SilentlyContinue
+        if ($errLines) {
+            Write-Host "wasm-lua evidence stderr:" -ForegroundColor Yellow
+            $errLines | Select-Object -First 12 | ForEach-Object {
+                Write-Host "  $_"
+                Add-Content -Path $logPath -Value "  $_" -Encoding UTF8
+            }
+        }
+    }
+    $exitCode = 1
+    if (Test-Path -LiteralPath $statusFile) {
+        $raw = (Get-Content -LiteralPath $statusFile -Raw).Trim()
+        $parsed = 0
+        if ([int]::TryParse(($raw -replace '^exit=', ''), [ref]$parsed)) {
+            $exitCode = $parsed
+        }
+    }
+    else {
+        Write-Host "wasm-lua evidence wrote no status file (treated as failure)" -ForegroundColor Yellow
+    }
+    if ($exitCode -eq 1) {
+        throw "wasm-lua verification FAILED (verify-wasm-lua.ps1 exit 1)"
+    }
+    if ($exitCode -eq 0) {
+        # 成功必须是**本轮**的新鲜证据：wrapper 自己会在通过时打 wasm_lua_ok，日志里没有
+        # 就说明读到的是陈旧/空输出——退出码 0 不足以证明"这一次真的跑过了"。
+        $hasOk = $false
+        foreach ($line in $lines) { if ($line -match 'wasm_lua_ok') { $hasOk = $true } }
+        if (-not $hasOk) {
+            throw "wasm-lua verification reported success but wrote no wasm_lua_ok line (stale evidence is not evidence)"
+        }
+        Write-Host "wasm_lua_ok (spike + no-modules bridge passed)" -ForegroundColor Green
+    }
+    else {
+        Write-Host "wasm_lua_skipped reason=environment_limited exit=$exitCode (缺 node/wasm32 target/zig/wasm-bindgen)" -ForegroundColor Yellow
+    }
 }
 
 if (-not $KeepLog) {

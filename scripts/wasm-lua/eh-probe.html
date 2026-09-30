@@ -1,0 +1,173 @@
+<!doctype html>
+<!--
+  eh-probe.html —— wasm 异常处理（新 EH：try_table / throw_ref / exnref）跨浏览器运行期探针。
+
+  背景：webgl 产物用 rustc 1.88 / LLVM 18 构建，vendored Lua 的 longjmp 走 `-fwasm-exceptions`，
+  产物是**纯 try_table（新 EH）**，运行它的浏览器必须支持 WebAssembly “exceptionsFinal”
+  特性（不是 2021 那套 legacy EH）。各引擎门槛（MDN browser-compat-data，2026-09 核对）：
+      Chrome / Edge 137   Firefox 131   Safari / iOS Safari 18.4
+  低于门槛的浏览器**连模块都编译不过**（不是运行到一半才炸）。
+
+  本页做的事：fetch 一个 wasm（默认 /pkg/game_web_bg.wasm，即真实 webgl 产物），
+  用 WebAssembly.validate + WebAssembly.compile 编译它。编译成功即证明该浏览器支持本产物
+  所用的新 EH 指令集；失败则把原始错误消息带回（"mix of legacy and new EH"、"unexpected
+  opcode" 之类可直接区分是 EH 不支持还是别的原因）。
+
+  结果有三条回传路径，任选其一都能被采集：
+    ① POST 到 ?post=（默认 /__eh_result__）—— 浏览器无关，Firefox/Safari 也走这条；
+    ② 写进 <body data-eh-probe="...">—— 兼容 Chromium 的 --dump-dom 抓取；
+    ③ console.log("EH_PROBE ...")—— 兼容 --enable-logging=stderr 抓取。
+
+  手动用法（Safari/Firefox 无法在 Windows 上自动化时）：
+      open -a Safari "http://127.0.0.1:<port>/__eh_probe__?tag=safari"
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>wasm EH probe</title>
+  <style>
+    body { font: 14px/1.5 system-ui, sans-serif; margin: 24px; color: #222; }
+    #verdict { font-size: 20px; font-weight: 700; }
+    .pass { color: #137333; } .fail { color: #c5221f; } .pend { color: #999; }
+    pre { background: #f5f5f5; padding: 12px; border-radius: 6px; white-space: pre-wrap; word-break: break-all; }
+    table { border-collapse: collapse; margin-top: 12px; }
+    td, th { border: 1px solid #ddd; padding: 4px 10px; text-align: left; font-size: 13px; }
+  </style>
+</head>
+<body data-eh-probe="pending">
+  <div id="verdict" class="pend">running…</div>
+  <table id="kv"></table>
+  <pre id="out">pending</pre>
+
+  <script>
+  (function () {
+    "use strict";
+    var q = new URLSearchParams(location.search);
+    var wasmUrl = q.get("wasm") || "/pkg/game_web_bg.wasm";
+    var tag = q.get("tag") || "unknown";
+    var postUrl = q.get("post"); // 缺省同源 /__eh_result__；传 "none" 可关闭 POST
+    if (postUrl === null) { postUrl = "/__eh_result__"; }
+
+    // 各引擎支持“新 EH（exceptionsFinal）”的最低版本（MDN BCD 2026-09 核对）。
+    var FLOOR = { chrome: 137, edge: 137, firefox: 131, safari: 18.4 };
+
+    function detectEngine() {
+      var ua = navigator.userAgent;
+      var m;
+      // 顺序要紧：Edge 的 UA 里也含 "Chrome/"，Chromium 系也可能含 "Safari/"。
+      if ((m = ua.match(/Edg(?:e|A|iOS)?\/(\d+)/))) { return { engine: "edge", version: m[1] }; }
+      if ((m = ua.match(/OPR\/(\d+)/))) { return { engine: "opera", version: m[1] }; }
+      if ((m = ua.match(/Firefox\/(\d+)/))) { return { engine: "firefox", version: m[1] }; }
+      if ((m = ua.match(/Chrome\/(\d+)/))) { return { engine: "chrome", version: m[1] }; }
+      // 真 Safari：有 Version/ 且无 Chrome/Chromium。iOS Safari 同样命中这条。
+      if (/Safari\//.test(ua) && (m = ua.match(/Version\/(\d+)(?:\.(\d+))?/))) {
+        return { engine: "safari", version: m[1] + (m[2] ? "." + m[2] : "") };
+      }
+      return { engine: "unknown", version: "0" };
+    }
+
+    // 版本比较：仅取数值段，逐段比。够用于门槛判定（不做 build 号细比）。
+    function versionAtLeast(v, floor) {
+      var a = String(v).split(".").map(function (x) { return parseInt(x, 10) || 0; });
+      var b = String(floor).split(".").map(function (x) { return parseInt(x, 10) || 0; });
+      for (var i = 0; i < Math.max(a.length, b.length); i++) {
+        var ai = a[i] || 0, bi = b[i] || 0;
+        if (ai > bi) { return true; }
+        if (ai < bi) { return false; }
+      }
+      return true;
+    }
+
+    var det = detectEngine();
+    var result = {
+      tag: tag,
+      probe: "wasm-eh",
+      ua: navigator.userAgent,
+      engine: det.engine,
+      engineVersion: det.version,
+      requiredFloor: FLOOR[det.engine] || null,
+      versionMeetsFloor: FLOOR[det.engine] ? versionAtLeast(det.version, FLOOR[det.engine]) : null,
+      wasmUrl: wasmUrl,
+      ts: new Date().toISOString()
+    };
+
+    function emit(final) {
+      result.verdict = final;
+      var text = JSON.stringify(result);
+      // ② DOM（--dump-dom 抓这条）
+      document.body.setAttribute("data-eh-probe", text);
+      var v = document.getElementById("verdict");
+      v.textContent = final + " — " + det.engine + " " + det.version;
+      v.className = final === "PASS" ? "pass" : (final === "FAIL" ? "fail" : "pend");
+      document.getElementById("out").textContent = text;
+      var kv = document.getElementById("kv");
+      kv.innerHTML = "";
+      Object.keys(result).forEach(function (k) {
+        if (k === "ua") { return; }
+        var tr = document.createElement("tr");
+        var td1 = document.createElement("td"); td1.textContent = k;
+        var td2 = document.createElement("td"); td2.textContent = String(result[k]);
+        tr.appendChild(td1); tr.appendChild(td2); kv.appendChild(tr);
+      });
+      // ③ console（--enable-logging=stderr 抓这条）
+      try { console.log("EH_PROBE " + text); } catch (e) {}
+      // ① POST 回传（浏览器无关；Firefox/Safari 的主路径）
+      if (postUrl && postUrl !== "none") {
+        try {
+          fetch(postUrl, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: text
+          }).catch(function () {});
+        } catch (e) {}
+      }
+    }
+
+    // 正向对照：确认 WebAssembly API 本身可用（排除“探针环境坏了”导致的误判）。
+    result.wasmApi = (typeof WebAssembly !== "undefined");
+    try {
+      // 最小合法模块头（magic + version），任何支持 wasm 的引擎都 validate=true。
+      result.headerValidate = WebAssembly.validate(new Uint8Array([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]));
+    } catch (e) {
+      result.headerValidate = false;
+    }
+    if (!result.wasmApi || !result.headerValidate) {
+      result.error = "WebAssembly API unavailable in this browser";
+      emit("NO_WASM");
+      return;
+    }
+
+    // 主测：fetch + validate + compile 真实产物。
+    var t0 = (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
+    fetch(wasmUrl).then(function (resp) {
+      result.httpStatus = resp.status;
+      if (!resp.ok) { throw new Error("fetch failed: HTTP " + resp.status + " for " + wasmUrl); }
+      return resp.arrayBuffer();
+    }).then(function (bytes) {
+      result.bytes = bytes.byteLength;
+      result.validate = WebAssembly.validate(bytes);
+      return WebAssembly.compile(bytes);
+    }).then(function (mod) {
+      var t1 = (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
+      result.compile = "ok";
+      result.compileMs = Math.round(t1 - t0);
+      try { result.exports = WebAssembly.Module.exports(mod).length; } catch (e) {}
+      // 编译成功 => 该引擎接受本产物所用的新 EH 指令（try_table/exnref）。
+      result.newEhSupported = true;
+      emit("PASS");
+    }).catch(function (e) {
+      var t1 = (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
+      result.compile = "fail";
+      result.compileMs = Math.round(t1 - t0);
+      result.newEhSupported = false;
+      result.error = String((e && e.message) || e);
+      // 区分“EH 不支持”与其它编译错误，便于诊断。
+      var msg = result.error.toLowerCase();
+      result.errorLooksLikeEh = /exception|try_table|exnref|legacy|unreachable opcode|unexpected opcode|0xfc/.test(msg);
+      emit("FAIL");
+    });
+  })();
+  </script>
+</body>
+</html>
