@@ -437,10 +437,11 @@ mod tests {
     }
 
     #[test]
-    fn refresh_registers_audio_ogg_and_wav() {
+    fn refresh_registers_audio_ogg_wav_and_mp3() {
         let root = temp_root("audio");
         file(&root, "assets/audio/attack.ogg", b"ogg");
         file(&root, "assets/audio/bgm.wav", b"wav");
+        file(&root, "assets/audio/theme.mp3", b"mp3");
         file(&root, "assets/readme.txt", b"text");
         let mut browser = ResourceBrowserState::new();
         browser.refresh(&root).unwrap();
@@ -450,7 +451,11 @@ mod tests {
             .filter(|entry| entry.kind == ResourceKind::Audio)
             .map(|entry| entry.path_string())
             .collect();
-        assert_eq!(audio.len(), 2, "ogg and wav recognized as audio: {audio:?}");
+        assert_eq!(
+            audio.len(),
+            3,
+            "ogg, wav and mp3 recognized as audio: {audio:?}"
+        );
         assert!(
             browser
                 .entries()

@@ -57,6 +57,32 @@ M.buildings = {
     },
     upgrade_cost = { { item = "timber", count = 3 } },
     station = nil
+  },
+  -- v0.2 铁匠炉：2x2 制作设施，level2 解锁精铁锭。
+  forge = {
+    name = "铁匠炉",
+    w = 2,
+    h = 2,
+    ground_tiles = { 1, 3, 4 },
+    levels = {
+      { sprite = "assets/art/buildings/build_foundation.png", size = "128x64" },
+      { sprite = "assets/art/buildings/build_forge_stand.png", size = "128x112" }
+    },
+    upgrade_cost = { { item = "timber", count = 5 }, { item = "iron_ingot", count = 2 } },
+    station = "forge"
+  },
+  -- v0.2 膳房：2x2 制作设施，level1 煮饭团，level2 炖药汤。
+  kitchen = {
+    name = "膳房",
+    w = 2,
+    h = 2,
+    ground_tiles = { 1, 3 },
+    levels = {
+      { sprite = "assets/art/buildings/build_scaffold.png", size = "128x96" },
+      { sprite = "assets/art/buildings/build_tea_shed.png", size = "112x96" }
+    },
+    upgrade_cost = { { item = "timber", count = 4 } },
+    station = "kitchen"
   }
 }
 

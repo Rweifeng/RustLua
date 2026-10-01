@@ -38,6 +38,11 @@ return {
         { text = "请验我炼的行气散。", cond = { quest = "mainline_seal", state = "deliverable" }, effects = { deliver_quest = "mainline_seal" }, next = "seal_final" },
         { text = "药还没炼成。", cond = { quest = "mainline_seal", state = "in_progress" }, next = "seal_remind" },
         { text = "药香已落印。", cond = { quest = "mainline_seal", state = "completed" }, next = "seal_thanks" },
+        -- ④ 结局·归田（mainline_truth_done 后才出现）
+        { text = "沈掌柜，我想回田里种药。", cond = { quest = "ending_field", state = "not_started", var = "mainline_truth_done", truthy = true }, next = "field_offer" },
+        { text = "二十份稻谷已入囤。", cond = { quest = "ending_field", state = "deliverable" }, effects = { deliver_quest = "ending_field" }, next = "field_done" },
+        { text = "稻谷还在晒。", cond = { quest = "ending_field", state = "in_progress" }, next = "field_remind" },
+        { text = "这一亩三分地，我种下了。", cond = { quest = "ending_field", state = "completed" }, next = "ending_epilogue" },
         { text = "改日再说。", finish = true }
       }
     },
@@ -157,6 +162,38 @@ return {
     },
     seal_thanks = {
       text = "沈青萝：“药香已落印，往后这方子有你一份。”",
+      options = {
+        { text = "告辞。", finish = true }
+      }
+    },
+    -- ④ 结局·归田节点
+    field_offer = {
+      text = "沈青萝把药碾停下手：“你要归田也好。江湖上少一个新人，村里就多一个稳当人。囤够二十份稻谷，回山庄安心种药。”",
+      options = {
+        { text = "便依掌柜所言。", effects = { accept_quest = "ending_field", relationship = { npc_shen_qingluo = 5 } }, next = "field_accept" },
+        { text = "容我再想想。", finish = true }
+      }
+    },
+    field_accept = {
+      text = "沈青萝：“二十份稻谷，一粒也不能少。收齐了再来寻我。”",
+      options = {
+        { text = "记下了。", finish = true }
+      }
+    },
+    field_remind = {
+      text = "沈青萝：“稻谷未足，节气不等人。”",
+      options = {
+        { text = "好。", finish = true }
+      }
+    },
+    field_done = {
+      text = "沈青萝望向田畴：“这一囤稻谷，是你在山庄立足的本钱。归田罢。”",
+      options = {
+        { text = "多谢掌柜。", finish = true }
+      }
+    },
+    ending_epilogue = {
+      text = "沈青萝：“药田青翠，医馆这边也托你照看。”",
       options = {
         { text = "告辞。", finish = true }
       }

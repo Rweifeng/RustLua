@@ -348,7 +348,7 @@ try {
         # webgl 与微信小游戏**共用同一个 wasm 核心**（`-p game_web` 只构建一次，胶水按平台各生成一份）。
         # PS 5.1 陷阱：$ErrorActionPreference='Stop' 下原生程序写 stderr 会变成**终止性
         # 错误**（NativeCommandError），rustup/cargo 的正常进度输出也在 stderr —— 必须临时
-        # 降为 Continue 再调（同 ogg2wav 的既有模式），否则打包在构建第一步就误报失败。
+        # 降为 Continue 再调，否则打包在构建第一步就误报失败。
         #
         # zig：mlua-sys 的 build.rs 用 `zig cc` 编 vendored Lua 的 C 源，**只有 web 平台**需要。
         # 必须显式写进 $env:ZIG：以前靠 engine/.cargo/config.toml 的 [env] 指某台机器的绝对路径，
@@ -458,44 +458,16 @@ WASM build failed ($Platform)。
     & $assetc @assetcArgs
     if ($LASTEXITCODE -ne 0) { throw "assetc package failed." }
 
-    # 微信小游戏：iOS 的 InnerAudioContext 不支持 ogg（官方格式矩阵 ogg: iOS ✗ / Android ✓），
-    # 因此为 pack/assets/audio/*.ogg 生成同名 .wav 备用格式，运行时按平台选择
-    # （web-runtime.js 的 installLuaAudioBridge：iOS → wav，其余 → ogg）。
-    # 形态约束：subpackage / remote 生成（wav 落在分包或 CDN，无主包体积压力）；
-    # full 形态不生成（主包 4MB 上限会被 wav 撑爆），并明确警告 iOS 上音频无声。
+    # 微信小游戏：音频统一为 MP3 格式（InnerAudioContext 在 iOS 和 Android 均支持，
+    # 不再需要 OGG+WAV 双格式）。源文件已是 MP3，assetc 直接复制到 pack/，无需转换。
     if ($Platform -eq "wechat-minigame") {
-        if ($isSubpackagePack -or $exportsAssetPack) {
-            $ogg2wavExe = Join-Path $cargoTargetRoot "debug\examples\ogg2wav.exe"
-            if (-not (Test-Path -LiteralPath $ogg2wavExe)) {
-                Write-Host "==> Building ogg2wav tool (engine example)" -ForegroundColor Cyan
-                cargo build -p engine --example ogg2wav 2>&1 | Out-Null
-                if ($LASTEXITCODE -ne 0) { throw "ogg2wav tool build failed." }
-            }
-            $audioDir = Join-Path $packRoot "assets\audio"
-            $oggFiles = @(Get-ChildItem -LiteralPath $audioDir -Filter "*.ogg" -File -ErrorAction SilentlyContinue)
-            $wavCount = 0
-            foreach ($ogg in $oggFiles) {
-                $wav = Join-Path $audioDir ($ogg.BaseName + ".wav")
-                $savedEap = $ErrorActionPreference
-                $ErrorActionPreference = "Continue"
-                try {
-                    & $ogg2wavExe $ogg.FullName $wav "--rate" "22050" 2>&1 | Out-Null
-                    $ogg2wavExit = $LASTEXITCODE
-                }
-                finally {
-                    $ErrorActionPreference = $savedEap
-                }
-                if ($ogg2wavExit -ne 0) {
-                    throw ("ogg2wav failed on {0}（exit {1}）" -f $ogg.Name, $ogg2wavExit)
-                }
-                $wavCount++
-            }
-            if ($wavCount -gt 0) {
-                Write-Host ("==> WeChat audio: generated {0} .wav fallback (iOS InnerAudioContext has no ogg; --rate 22050)" -f $wavCount) -ForegroundColor DarkGray
-            }
+        $audioDir = Join-Path $packRoot "assets\audio"
+        $mp3Files = @(Get-ChildItem -LiteralPath $audioDir -Filter "*.mp3" -File -ErrorAction SilentlyContinue)
+        if ($mp3Files.Count -eq 0) {
+            Write-Warning "WeChat audio: pack/assets/audio/ 内无 MP3 文件；BGM/SFX 将无声。请确认源 assets/audio/ 含 .mp3 文件。"
         }
         else {
-            Write-Warning "WeChat full package: 未生成 wav 备用音频（主包 4MB 上限）；iOS 上 InnerAudioContext 不支持 ogg，BGM/SFX 将无声。建议改用 -AssetPack subpackage 或 remote。"
+            Write-Host ("==> WeChat audio: {0} .mp3 files (iOS+Android 统一格式，无需双格式)" -f $mp3Files.Count) -ForegroundColor DarkGray
         }
     }
 

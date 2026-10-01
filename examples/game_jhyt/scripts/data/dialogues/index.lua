@@ -1,4 +1,4 @@
--- data/dialogues/index.lua：对话注册表（M17-03 纯数据，M19-01 追加订单/主线入口）。
+-- data/dialogues/index.lua：对话注册表（M17-03 纯数据，M19-01 追加订单/主线入口，v0.2 追加主线四五段与四结局入口）。
 --
 -- 新增一段对话 = 本文件加一个 id + data/dialogues/<id>.lua 一份定义，无需改动
 -- dialogue.lua / quest.lua / Rust 核心（验收项①）。校验与遍历都以此表为准。
@@ -6,7 +6,9 @@
 -- 注意：dialogue.find_for_npc 对每个 speaker 只取**第一条**匹配的对话，
 -- 因此同一个 NPC 的多个任务入口必须写在同一份对话文件的 nodes 里
 -- （M19-01 的订单/主线入口分别扩展了沈青萝/顾长风的既有对话，
--- 林小满的稻米订单是本文件新增的一条对话）。
+-- 林小满的稻米订单是本文件新增的一条对话；v0.2 的四结局与主线四五段
+-- 分别扩展了顾长风（玄明+断念）、沈青萝（归田）的既有对话，并新增
+-- 陆归藏（真相）、苏晚晴（承业）、玄鹤（雪恨）三份对话文件）。
 --
 -- 为什么稻米订单不给货摊掌柜赵铁算盘：他同时挂着 shop_keeper 交互目标
 -- （priority 20 > 对话 10），站到他面前按 E 只会打开商店，该 NPC 的对话
@@ -16,6 +18,9 @@ return {
   ids = {
     "gu_changfeng_teach",
     "shen_qingluo_herb",
-    "lin_xiaoman_rice"
+    "lin_xiaoman_rice",
+    "lu_guizang_truth",
+    "su_wanqing_sect",
+    "xuanhe_vengeance"
   }
 }

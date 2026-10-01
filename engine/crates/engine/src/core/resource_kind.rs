@@ -13,7 +13,7 @@ use std::path::Path;
 pub enum ResourceKind {
     /// Rasterized images (PNG/JPG/JPEG).
     Texture,
-    /// Audio samples (WAV/OGG).
+    /// Audio samples (WAV/OGG/MP3).
     Audio,
     /// Lua runtime scripts.
     LuaScript,
@@ -47,7 +47,7 @@ impl ResourceKind {
             .as_str()
         {
             "png" | "jpg" | "jpeg" => Self::Texture,
-            "wav" | "ogg" => Self::Audio,
+            "wav" | "ogg" | "mp3" => Self::Audio,
             "lua" => Self::LuaScript,
             "scene" | "ron" | "json" => Self::Scene,
             "prefab" => Self::Prefab,
@@ -119,6 +119,7 @@ mod tests {
         assert_eq!(ResourceKind::from_path("a.jpeg"), ResourceKind::Texture);
         assert_eq!(ResourceKind::from_path("a.wav"), ResourceKind::Audio);
         assert_eq!(ResourceKind::from_path("a.ogg"), ResourceKind::Audio);
+        assert_eq!(ResourceKind::from_path("a.mp3"), ResourceKind::Audio);
         assert_eq!(ResourceKind::from_path("a.lua"), ResourceKind::LuaScript);
         assert_eq!(ResourceKind::from_path("a.scene"), ResourceKind::Scene);
         assert_eq!(ResourceKind::from_path("a.ron"), ResourceKind::Scene);
@@ -135,7 +136,6 @@ mod tests {
     fn unknown_and_unsupported_extensions_fall_to_other() {
         assert_eq!(ResourceKind::from_path("a.txt"), ResourceKind::Other);
         assert_eq!(ResourceKind::from_path("a.webp"), ResourceKind::Other);
-        assert_eq!(ResourceKind::from_path("a.mp3"), ResourceKind::Other);
         assert_eq!(ResourceKind::from_path("no_extension"), ResourceKind::Other);
     }
 

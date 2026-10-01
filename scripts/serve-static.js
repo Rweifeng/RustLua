@@ -26,6 +26,7 @@ const MIME = {
   ".jpeg": "image/jpeg",
   ".wav": "audio/wav",
   ".ogg": "audio/ogg",
+  ".mp3": "audio/mpeg",
   ".ttf": "font/ttf",
   ".scene": "text/plain; charset=utf-8",
   ".lua": "text/plain; charset=utf-8",

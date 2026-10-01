@@ -442,6 +442,8 @@ function M.start(dialogue_id)
   active = { id = dialogue_id, node = def.start }
   selected = 1
   state.set_mode("Dialogue")
+  -- NPC 立绘：切 talk_<dir> 手势；close 时复位。
+  npc.set_talking(def.speaker, true)
   audio.ui("ui_click")
   M.render()
   return true
@@ -452,9 +454,13 @@ function M.close(silent)
   if not active then
     return false
   end
+  local def = definition(active.id)
   active = nil
   clear_ui()
   nav.close(FOCUS)
+  if def and def.speaker then
+    npc.set_talking(def.speaker, false)
+  end
   if state.is_mode("Dialogue") then
     state.set_mode("Playing")
   end

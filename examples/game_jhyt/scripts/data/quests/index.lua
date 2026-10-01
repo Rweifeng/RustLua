@@ -20,6 +20,12 @@ return {
     "order_hunt",
     "mainline_arrival",
     "mainline_orders",
-    "mainline_seal"
+    "mainline_seal",
+    "mainline_xuanming",
+    "mainline_truth",
+    "ending_field",
+    "ending_sect",
+    "ending_renounce",
+    "ending_vengeance"
   }
 }

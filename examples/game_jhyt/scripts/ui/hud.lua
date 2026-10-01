@@ -590,7 +590,36 @@ function M.draw(key_hints)
   draw_build_ghost()
   draw_skill_bar()
   draw_weather_visual()
+  -- v0.2 结局横幅：state.vars.ending 一旦写入即锁定，画在屏幕正中偏上，覆盖 HUD 之上。
+  draw_ending_banner()
   return true
+end
+
+-- 结局文本表（与 data/quests/ending_*.lua 中 set_var={ending = "..."} 的取值一一对应）。
+-- 这里刻意把「四种结局」集中在 UI 层给出人类可读的收束语，quest 数据层只写变量；
+-- 增加/改名将导致横幅与任务脱钩，因此这份表中每一项都必须能在 quests/ending_*.lua 找到。
+local ENDING_BANNERS = {
+  field     = { title = "结局·归田",   line = "你放下刀，回到药田。江湖恩怨从此与你无涉。" },
+  sect      = { title = "结局·承业",   line = "你接过青云门信物，从此山庄属你。" },
+  renounce  = { title = "结局·断念",   line = "你把五份行气散留在剑坪，自废武功。" },
+  vengeance = { title = "结局·雪恨",   line = "山门前，你与司徒魁了结这段因果。" }
+}
+local ENDING_BANNER_BOX = { w = 520, h = 96 }
+
+function draw_ending_banner()
+  local key = state.get_var("ending")
+  local banner = (type(key) == "string") and ENDING_BANNERS[key] or nil
+  if not banner then
+    ui.clear("hud:ending_box")
+    ui_text.hide("hud", "hud:ending_title")
+    ui_text.hide("hud", "hud:ending_line")
+    return
+  end
+  local bx = (layout.DESIGN_W - ENDING_BANNER_BOX.w) / 2
+  local by = math.floor(layout.DESIGN_H * 0.34)
+  ui.panel("hud:ending_box", bx, by, ENDING_BANNER_BOX.w, ENDING_BANNER_BOX.h, 0.06, 0.07, 0.10, 0.90)
+  ui_text.draw("hud", "hud:ending_title", bx + 16, by + 12, 22.0, ENDING_BANNER_BOX.w - 32, banner.title)
+  ui_text.draw_wrapped("hud", "hud:ending_line", bx + 16, by + 44, 16.0, ENDING_BANNER_BOX.w - 32, 3, banner.line)
 end
 
 -- 资源条（M29 / 阶段五 P1）：生命 / 体力 / 内力三条 9-slice 条。

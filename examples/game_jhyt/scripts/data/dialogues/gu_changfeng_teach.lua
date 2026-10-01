@@ -22,10 +22,13 @@
 --       next      跳转节点 id（与 finish 二选一）
 --       finish    true 结束对话
 --
--- M19-01 扩展：同一文件里再挂两个入口（find_for_npc 每个 speaker 只取第一条对话）：
+-- M19-01 扩展：同一文件里再挂三个入口（find_for_npc 每个 speaker 只取第一条对话）：
 --   ① 木桩三式 quest_spar（既有）
 --   ② 主线一段 mainline_arrival（接纳 + 记录顾长风讲规矩）
 --   ③ 订单·山庄丸药 order_pill
+-- v0.2 扩展：同一文件再挂两个入口
+--   ④ 主线四段 mainline_xuanming（需要 mainline_seal 已完成才出现）
+--   ⑤ 结局·断念 ending_renounce（需要 mainline_truth_done 才出现）
 return {
   version = 1,
   id = "gu_changfeng_teach",
@@ -49,6 +52,16 @@ return {
         { text = "回复药炼好了，请过目。", cond = { quest = "order_pill", state = "deliverable" }, effects = { deliver_quest = "order_pill" }, next = "pill_done" },
         { text = "丸药还在炉上。", cond = { quest = "order_pill", state = "in_progress" }, next = "pill_remind" },
         { text = "丸药已经交讫。", cond = { quest = "order_pill", state = "completed" }, next = "pill_thanks" },
+        -- ④ 主线·玄冥初现（mainline_seal 落印后才出现）
+        { text = "师父可还记得旧事？", cond = { quest = "mainline_xuanming", state = "not_started", var = "mainline_done", truthy = true }, next = "xuanming_offer" },
+        { text = "实证已备齐，请师父过目。", cond = { quest = "mainline_xuanming", state = "deliverable" }, effects = { deliver_quest = "mainline_xuanming" }, next = "xuanming_done" },
+        { text = "三份物证还在各处。", cond = { quest = "mainline_xuanming", state = "in_progress" }, next = "xuanming_remind" },
+        { text = "玄冥会线索已交讫。", cond = { quest = "mainline_xuanming", state = "completed" }, next = "xuanming_thanks" },
+        -- ⑤ 结局·断念（mainline_truth_done 之后才出现）
+        { text = "弟子想放下这一切。", cond = { quest = "ending_renounce", state = "not_started", var = "mainline_truth_done", truthy = true }, next = "renounce_offer" },
+        { text = "五份行气散留在剑坪了。", cond = { quest = "ending_renounce", state = "deliverable" }, effects = { deliver_quest = "ending_renounce" }, next = "renounce_done" },
+        { text = "行气散还没配足。", cond = { quest = "ending_renounce", state = "in_progress" }, next = "renounce_remind" },
+        { text = "弟子已断此念。", cond = { quest = "ending_renounce", state = "completed" }, next = "ending_epilogue" },
         { text = "改日再来请教。", finish = true }
       }
     },
@@ -140,6 +153,70 @@ return {
       text = "顾长风：“药已入库，你去忙罢。”",
       options = {
         { text = "告辞。", finish = true }
+      }
+    },
+    -- ④ 主线·玄冥初现节点
+    xuanming_offer = {
+      text = "顾长风沉吟：“师父当年留书提及一个名字——玄冥会。村后巷有织品碎片、山道贼寨有芦苇信物、寒泉洞有玄冥寒铁，再加一颗山魈内丹为凭。你可愿替他查下去？”",
+      options = {
+        { text = "弟子领命。", effects = { accept_quest = "mainline_xuanming", relationship = { npc_gu_changfeng = 5 } }, next = "xuanming_accept" },
+        { text = "容徒儿想想。", finish = true }
+      }
+    },
+    xuanming_accept = {
+      text = "顾长风：“四件物事俱在，再来寻我。切记：织品与芦苇不必交出，只取一份即可。”",
+      options = {
+        { text = "记下了。", finish = true }
+      }
+    },
+    xuanming_remind = {
+      text = "顾长风：“线索未齐，不可妄动。”",
+      options = {
+        { text = "好。", finish = true }
+      }
+    },
+    xuanming_done = {
+      text = "顾长风把四件物事排成一列：“织品是司徒魁的，芦苇是贼寨传令的，寒铁与内丹是寒泉洞的。此事已明，去寻陆师叔罢。”",
+      options = {
+        { text = "弟子便去。", finish = true }
+      }
+    },
+    xuanming_thanks = {
+      text = "顾长风：“玄冥会的线头已交给你陆师叔，去书房寻他。”",
+      options = {
+        { text = "告辞。", finish = true }
+      }
+    },
+    -- ⑤ 结局·断念节点
+    renounce_offer = {
+      text = "顾长风望着剑坪：“放下比拿起更难。你若真要抽身，就把五份行气散留在此地，权当给乡邻的最后一段缘。”",
+      options = {
+        { text = "弟子遵命。", effects = { accept_quest = "ending_renounce", relationship = { npc_gu_changfeng = 5 } }, next = "renounce_accept" },
+        { text = "容徒儿三思。", finish = true }
+      }
+    },
+    renounce_accept = {
+      text = "顾长风：“药在炉上，路在脚下。凑齐五份便来剑坪。”",
+      options = {
+        { text = "是。", finish = true }
+      }
+    },
+    renounce_remind = {
+      text = "顾长风：“五份行气散，一份也不能少。”",
+      options = {
+        { text = "好。", finish = true }
+      }
+    },
+    renounce_done = {
+      text = "顾长风接过五只药囊，久久不语，终于把剑穗解下：“自今往后，江湖恩怨与你无涉。”",
+      options = {
+        { text = "谢师父成全。", finish = true }
+      }
+    },
+    ending_epilogue = {
+      text = "顾长风：“剑坪风大，回屋罢。”",
+      options = {
+        { text = "弟子告退。", finish = true }
       }
     }
   }

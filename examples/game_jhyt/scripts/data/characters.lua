@@ -9,8 +9,8 @@
 --   * 每个 clip 采样一整张 1×N 横向条带，帧尺寸 = 条带高 × (条带宽/cols)；
 --   * 实体带 Animation 时，渲染用 clip 的 sheet 覆盖 Sprite 的 texture，
 --     Sprite 只提供尺寸/排序，所以两者要挂在同一实体上；
---   * **NPC 由 entity.spawn 运行时创建，Lua 无"挂 Animation 组件"的 API**，
---     因此 NPC 现在只能用 static_<dir>.png 单帧；缺口记录见 docs/36 第 6 节。
+--   * 运行期实体（NPC/敌人）通过 `animation.attach`（core/script/api/animation.rs）
+--     在 `entity.spawn` 之后挂动画；npc.lua:apply_art 是主要调用点。
 --
 -- 主角在场景里是静态实体（manor.scene/ village.scene 的 JianghuPlayer），
 -- 可以直接在 .scene 里声明 Animation 组件，用 M.player_animation() 取串。

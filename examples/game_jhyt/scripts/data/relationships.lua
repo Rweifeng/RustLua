@@ -52,6 +52,17 @@ M.npcs = {
   },
   npc_xuanhe = {
     gifts = {}
+  },
+  -- v0.2 主线四五段与结局新引用的三位 NPC：陆归藏（书房长老，收茶与行气散）、
+  -- 阿七（村里少年，收零食野果）、司徒魁（玄冥会执事，敌对立场、不收礼）。
+  npc_lu_guizang = {
+    gifts = { tea_brew = 5, herb_tonic = 4 }
+  },
+  npc_a_qi = {
+    gifts = { rice_ball = 3, wild_fruit = 2 }
+  },
+  npc_situ_kui = {
+    gifts = {}
   }
 }
 

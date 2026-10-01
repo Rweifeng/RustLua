@@ -1542,7 +1542,7 @@ animation = {
 }
 animation3d = { set = function(...) return true end }
 -- 音频宿主 API。微信小游戏走真实后端（JS 桥 __p2_audio_js_*，见 web-runtime.js 的
--- installLuaAudioBridge：InnerAudioContext，iOS 用 wav 备用格式）；浏览器（WebGL）
+-- installLuaAudioBridge：InnerAudioContext，统一 MP3 格式）；浏览器（WebGL）
 -- 没有接入混音器，保持「播放一律失败」的既有语义。
 -- **返回值语义必须与引擎一致**：audio.play_on 播放失败要返回 false + 原因，
 -- 游戏侧 core/audio.lua 据此把该 bus:name 记进 failed 表、不再重试；
@@ -1794,20 +1794,10 @@ end
   //
   // Lua 侧 audio 表经 __p2_audio_js_* 全局调用到这里。微信端用
   // wx.createInnerAudioContext() 播放（官方推荐 API，支持流式、适合 BGM 与短音效）。
-  // 格式：InnerAudioContext 的官方格式矩阵里 ogg 在 iOS 不支持（Android 支持），
-  // 因此 iOS 走 .wav 备用格式、其余平台走 .ogg（体积小）。WebGL（浏览器）没有接入
-  // 混音器，保持「播放一律失败」的既有语义，游戏侧静默降级。
+  // 格式统一为 MP3：InnerAudioContext 在 iOS 和 Android 均支持（ogg 在 iOS 不支持，
+  // wav 体积过大）。WebGL（浏览器）没有接入混音器，保持「播放一律失败」的既有语义。
   function installLuaAudioBridge() {
     const isWechat = typeof wx !== 'undefined' && typeof wx.createInnerAudioContext === 'function';
-    let wechatPlatform = '';
-    if (isWechat) {
-      try {
-        const info = (typeof wx.getSystemInfoSync === 'function') && wx.getSystemInfoSync();
-        wechatPlatform = String((info && info.platform) || '').toLowerCase();
-      } catch (error) { wechatPlatform = ''; }
-    }
-    // iOS 的 InnerAudioContext 不支持 ogg：iOS 用 wav，其余用 ogg。
-    const preferWav = isWechat && wechatPlatform === 'ios';
     // 音量状态（与 Lua 侧 __p2_audio_volume 保持一致；Lua 是事实来源，这里只用于播放时应用）。
     const volumes = { master: 1, bgm: 1, sfx: 1, ui: 1 };
     const clamp01 = function (v) { const n = Number(v); if (!(n >= 0)) return 0; return n > 1 ? 1 : n; };
@@ -1824,8 +1814,7 @@ end
     // 候选 src：微信宿主对不同路径形式的接受程度不一致（分包根相对等），
     // 与 wechat-adapter.js 的 readStrategies 同理，逐个尝试（pack/ 是资源根）。
     function srcCandidates(name) {
-      const ext = preferWav ? 'wav' : 'ogg';
-      const logical = 'assets/audio/' + name + '.' + ext;
+      const logical = 'assets/audio/' + name + '.mp3';
       return ['pack/' + logical, logical, './pack/' + logical];
     }
     function fileExists(path) {

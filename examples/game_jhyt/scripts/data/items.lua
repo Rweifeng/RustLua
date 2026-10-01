@@ -233,5 +233,73 @@ return {
     buy = 0,
     sell = 8,
     kind = "material"
+  },
+  -- ---- v0.2 内容扩展（配方/商店/铁匠与膳房）----
+  iron_ore = {
+    name = "铁矿石",
+    description = "青云山道深处采出的矿石，韩铁山愿高价收购。",
+    icon = "assets/art/items/reed.png",
+    stack = 99,
+    buy = 0,
+    sell = 20,
+    kind = "material"
+  },
+  iron_ingot = {
+    name = "铁锭",
+    description = "炉火中锤炼出的铁锭，打刀铸剑的原料。",
+    icon = "assets/art/items/timber.png",
+    stack = 99,
+    buy = 40,
+    sell = 15,
+    kind = "material"
+  },
+  cloth = {
+    name = "麻布",
+    description = "芦苇纤维织成的粗麻布，缝衣包头都用得上。",
+    icon = "assets/art/items/reed.png",
+    stack = 99,
+    buy = 0,
+    sell = 10,
+    kind = "material"
+  },
+  rice_ball = {
+    name = "饭团",
+    description = "稻米捏成的小团，赶路时最顶饿。",
+    icon = "assets/art/items/rice.png",
+    stack = 9,
+    buy = 15,
+    sell = 4,
+    kind = "consumable",
+    use = { energy = 25 }
+  },
+  tea_brew = {
+    name = "山泉清茶",
+    description = "茶叶滚水冲开，饮一口宁神定气。",
+    icon = "assets/art/items/tea_leaf.png",
+    stack = 9,
+    buy = 20,
+    sell = 6,
+    kind = "consumable",
+    use = { inner_power = 15 }
+  },
+  mountain_herb_soup = {
+    name = "行药汤",
+    description = "灵芝与山草药同煮，服后气血充盈。",
+    icon = "assets/art/items/herb_tonic.png",
+    stack = 9,
+    buy = 0,
+    sell = 30,
+    kind = "consumable",
+    use = { buff = { stat = "attack", amount = 5, days = 3 } }
+  },
+  qi_pill = {
+    name = "回气丹",
+    description = "人参灵芝同炼的大补丸，服之真气涌动。",
+    icon = "assets/art/items/heal_pill.png",
+    stack = 9,
+    buy = 0,
+    sell = 80,
+    kind = "consumable",
+    use = { energy = 60, inner_power = 30 }
   }
 }

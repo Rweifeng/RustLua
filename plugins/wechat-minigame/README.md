@@ -565,7 +565,7 @@ node scripts\wechat-minigame-harness.js examples\game_jhyt\builds\wechat-minigam
   `animation.attach/set/get/ended/frame`、`tilemap.set_cell/set_texture/find_path`（二叉堆 A*，
   与 `Map::find_path` 同序）、`save.clear`、`log.debug`。
   `audio.play_on/set_bus_volume` 在 web-runtime.js 里是**真实后端**（`installLuaAudioBridge`：
-  微信端 `wx.createInnerAudioContext` 播放，iOS 用构建期生成的 wav 备用格式、其余用 ogg；
+  微信端 `wx.createInnerAudioContext` 播放统一 MP3 格式、iOS 与 Android 均支持；
   浏览器端保持"无后端"失败语义）。
   ⑩ "世界在动"与"画面在动"是两件事：Lua 世界与渲染器各存一份实体数据，靠**回写通道**同步
   （结构变更走一次性 op 列表，每帧的 Transform/动画走 `T`/`A` 行）。只在 Lua 侧取样的话，

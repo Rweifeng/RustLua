@@ -53,6 +53,51 @@ M.skills = {
     width = 48,
     hitstun = 20,
     knockback = 64
+  },
+  -- 弦月斩：横向扇形剑光；范围与宽度双扩，适合围攻；随武器加成。
+  crescent_slash = {
+    name = "弦月斩",
+    kind = "martial",
+    uses_weapon = false,
+    damage = 8,
+    inner_cost = 15,
+    cooldown = 90,
+    windup = 10,
+    active = 14,
+    range = 48,
+    width = 96,
+    hitstun = 16,
+    knockback = 32
+  },
+  -- 铁砂掌：单体重击；伤害高、判定窗窄、击退远；用来破防或打断精英。
+  iron_palm = {
+    name = "铁砂掌",
+    kind = "martial",
+    uses_weapon = false,
+    damage = 14,
+    inner_cost = 25,
+    cooldown = 120,
+    windup = 14,
+    active = 8,
+    range = 40,
+    width = 36,
+    hitstun = 34,
+    knockback = 96
+  },
+  -- 豹跃：短突进 + 命中击倒；冷却长、前摇小，用于突入或脱困。
+  leopard_step = {
+    name = "豹跃",
+    kind = "martial",
+    uses_weapon = false,
+    damage = 5,
+    inner_cost = 12,
+    cooldown = 72,
+    windup = 4,
+    active = 10,
+    range = 72,
+    width = 32,
+    hitstun = 24,
+    knockback = 48
   }
 }
 

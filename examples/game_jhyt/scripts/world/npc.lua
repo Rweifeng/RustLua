@@ -172,13 +172,35 @@ local function apply_art(actor, id)
   end
 end
 
--- 每帧按"有没有在移动 + 朝向"切 idle/walk（引擎 animation.set 同状态时返回 false，开销可忽略）。
+-- 每帧按"说话 > 移动 > 待机 + 朝向"切 talk/walk/idle（引擎 animation.set 同状态时返回 false，开销可忽略）。
+-- talk 由对话面板在开场/收尾时通过 M.set_talking 显式打开；优先级最高，
+-- 让玩家在对话中看到的 NPC 有"正在说话"的手势，而不是僵立或继续踱步。
 local function update_animation(actor, moving)
   if not actor.animated or not actor.id then
     return
   end
-  local state = (moving and "walk_" or "idle_") .. (actor.facing or "s")
-  pcall(animation.set, actor.id, state)
+  local prefix
+  if actor.talking then
+    prefix = "talk_"
+  elseif moving then
+    prefix = "walk_"
+  else
+    prefix = "idle_"
+  end
+  pcall(animation.set, actor.id, prefix .. (actor.facing or "s"))
+end
+
+-- 对话面板钩子：切 talk_<dir> 手势。缺失 talk_ 条带时静默回落到 idle（不影响功能）。
+function M.set_talking(persist_id, talking)
+  local actor = actors[persist_id]
+  if not actor then
+    return false
+  end
+  actor.talking = talking == true
+  if actor.id and entity.is_alive(actor.id) then
+    update_animation(actor, false)
+  end
+  return true
 end
 
 -- 确保本图存在该 NPC 的实体并落位（pending_pos 优先于逻辑格心）。

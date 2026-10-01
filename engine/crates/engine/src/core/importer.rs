@@ -240,7 +240,7 @@ impl Importer for AudioImporter {
         ResourceKind::Audio
     }
     fn extensions(&self) -> &'static [&'static str] {
-        &["wav", "ogg"]
+        &["wav", "ogg", "mp3"]
     }
     fn validate(&self, source: &Path, bytes: &[u8]) -> Result<(), String> {
         reject_empty(source, bytes)?;
@@ -252,7 +252,7 @@ impl Importer for AudioImporter {
             .and_then(|value| value.to_str())
             .unwrap_or_default()
             .to_ascii_lowercase();
-        // WAV 头含数据长度，可强制读头；OGG 为流式格式，头部无总时长，解码器
+        // WAV 头含数据长度，可强制读头；OGG/MP3 为流式格式，头部无总时长，解码器
         // 初始化成功即视为有效。
         if extension == "wav" && decoder.total_duration().is_none() {
             return Err(format!("{}: 无法读取音频时长", source.display()));
@@ -819,6 +819,24 @@ mod tests {
         importer
             .validate(&ogg, &std::fs::read(&ogg).unwrap())
             .unwrap();
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn audio_importer_validates_mp3_streams() {
+        let root = root("audio-mp3");
+        let Some(bytes) = fixture("../../../examples/game_jhyt/assets/audio/sfx_hit.mp3") else {
+            return;
+        };
+        let mp3 = write_source(&root, "sfx_hit.mp3", &bytes);
+        let importer = ImporterRegistry::builtin()
+            .get(ResourceKind::Audio)
+            .unwrap();
+        importer
+            .validate(&mp3, &std::fs::read(&mp3).unwrap())
+            .unwrap();
+        let bad = write_source(&root, "bad.mp3", b"not audio");
+        assert!(importer.validate(&bad, b"not audio").is_err());
         let _ = fs::remove_dir_all(&root);
     }
 

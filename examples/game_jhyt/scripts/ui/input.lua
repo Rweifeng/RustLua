@@ -498,6 +498,8 @@ function M.update()
   -- 攻击不锁移动（ARPG 习惯）；冷却/前摇/去重由 combat 底座处理。
   -- M25：失败原因写进 last_action（此前返回值被丢弃 → 内力不足/冷却中按下去
   -- 毫无反馈，玩家只能猜），HUD 按 last_action 出中文提示。
+  -- v0.2：追加 3 个高阶武学（弦月斩 V / 铁砂掌 N / 豹跃 M）。键位与 pad 均可
+  -- 通过 settings.toml 的 [input] 段改绑。
   if input.action_pressed("attack") then
     local ok, reason = combat.player_attack("strike")
     if not ok then
@@ -506,6 +508,24 @@ function M.update()
     end
   elseif input.action_pressed("skill") then
     local ok, reason = combat.player_attack("palm_gust")
+    if not ok then
+      state.last_action = reason
+      audio.play_on("ui", "ui_cancel")
+    end
+  elseif input.action_pressed("skill_2") then
+    local ok, reason = combat.player_attack("crescent_slash")
+    if not ok then
+      state.last_action = reason
+      audio.play_on("ui", "ui_cancel")
+    end
+  elseif input.action_pressed("skill_3") then
+    local ok, reason = combat.player_attack("iron_palm")
+    if not ok then
+      state.last_action = reason
+      audio.play_on("ui", "ui_cancel")
+    end
+  elseif input.action_pressed("skill_4") then
+    local ok, reason = combat.player_attack("leopard_step")
     if not ok then
       state.last_action = reason
       audio.play_on("ui", "ui_cancel")

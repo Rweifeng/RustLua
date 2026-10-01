@@ -30,6 +30,57 @@ M.recipes = {
     output = { item = "herb_tonic", count = 1 },
     minutes = 180,
     min_level = 2
+  },
+  -- v0.2 药庐高等级：回气丹（大补丸）。
+  qi_pill_refine = {
+    name = "炼制回气丹",
+    station = "herb",
+    inputs = { { item = "ginseng", count = 1 }, { item = "lingzhi", count = 2 } },
+    output = { item = "qi_pill", count = 1 },
+    minutes = 240,
+    min_level = 2
+  },
+  -- 铁匠炉：3 级配方链。铁矿石→铁锭→麻布（炼铁副产品）
+  forge_smelt_iron = {
+    name = "熔铁矿石",
+    station = "forge",
+    inputs = { { item = "iron_ore", count = 3 } },
+    output = { item = "iron_ingot", count = 1 },
+    minutes = 90,
+    min_level = 1
+  },
+  forge_weave_cloth = {
+    name = "沤麻织布",
+    station = "forge",
+    inputs = { { item = "reed", count = 4 } },
+    output = { item = "cloth", count = 1 },
+    minutes = 60,
+    min_level = 1
+  },
+  -- 膳房：饭团与行药汤。
+  kitchen_rice_ball = {
+    name = "捏饭团",
+    station = "kitchen",
+    inputs = { { item = "rice", count = 2 } },
+    output = { item = "rice_ball", count = 1 },
+    minutes = 30,
+    min_level = 1
+  },
+  kitchen_brew_tea = {
+    name = "冲山泉茶",
+    station = "kitchen",
+    inputs = { { item = "tea_leaf", count = 2 } },
+    output = { item = "tea_brew", count = 1 },
+    minutes = 20,
+    min_level = 1
+  },
+  kitchen_herb_soup = {
+    name = "炖行药汤",
+    station = "kitchen",
+    inputs = { { item = "lingzhi", count = 1 }, { item = "herb", count = 2 } },
+    output = { item = "mountain_herb_soup", count = 1 },
+    minutes = 120,
+    min_level = 2
   }
 }
 

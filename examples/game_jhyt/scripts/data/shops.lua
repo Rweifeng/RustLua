@@ -41,6 +41,32 @@ return {
       { item = "seed_polygonum", price = 40, limit = 3 },
       { item = "seed_ginseng", price = 60, limit = 2 }
     },
-    buys = { "rice", "lingzhi", "radish", "herb", "polygonum", "ginseng" }
+    buys = { "rice", "lingzhi", "radish", "herb", "polygonum", "ginseng", "iron_ore" }
+  },
+  -- v0.2 韩铁山的铁匠铺：卖铁锭与建筑材料，收铁矿石/麻布/兽皮。
+  han_forge = {
+    id = "han_forge",
+    name = "云泽村·韩氏铁铺",
+    keeper = "npc_han_tieshan",
+    place = "village_home_forge",
+    hours = { open = 540, close = 1020 },
+    stock = {
+      { item = "iron_ingot", price = 40, limit = 6 },
+      { item = "timber", price = 18, limit = 15 }
+    },
+    buys = { "iron_ore", "cloth", "wolf_pelt", "boar_meat" }
+  },
+  -- v0.2 阿七的行商摊：卖熟食（饭团/清茶），收莲子野果等山货。
+  a_qi_provisions = {
+    id = "a_qi_provisions",
+    name = "村口·阿七食摊",
+    keeper = "npc_a_qi",
+    place = "village_plaza",
+    hours = { open = 420, close = 1200 },
+    stock = {
+      { item = "rice_ball", price = 15, limit = 8 },
+      { item = "tea_brew", price = 20, limit = 5 }
+    },
+    buys = { "lotus_seed", "wild_fruit", "tea_leaf", "reed" }
   }
 }
