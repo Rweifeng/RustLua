@@ -21,7 +21,7 @@
 //! - 旧版旁路标记 `<file>.spatial-local` 仍然被认（已在旧命令下迁过的工程不会二次施加），
 //!   并在回滚时清理。
 //!
-//! 写盘本身用 [`write_scene_atomically`]：唯一临时名 → 写 → `sync_all` → rename → **读回校验**。
+//! 写盘本身用 [`crate::core::scene_migration::write_scene_atomically`]：唯一临时名 → 写 → `sync_all` → rename → **读回校验**。
 //! 读回的字节与期望不一致即报错，绝不留下"看起来写成功、内容却是别的"的场景。
 
 use std::path::{Path, PathBuf};

@@ -2022,7 +2022,7 @@ impl RuntimeScene {
         self.last_schedule.as_ref()
     }
 
-    /// 替换手柄后端（M20-06）：headless 验收用 [`FakeBackend`] 脚本化设备事件，
+    /// 替换手柄后端（M20-06）：headless 验收用 [`crate::host::gamepad::FakeBackend`] 脚本化设备事件，
     /// 正式运行时用平台默认（Windows XInput）。
     pub fn set_gamepad_backend(&mut self, backend: Box<dyn GamepadBackend>) {
         self.gamepad = GamepadPoller::new(backend);

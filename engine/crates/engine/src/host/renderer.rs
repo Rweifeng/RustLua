@@ -2478,7 +2478,7 @@ impl Renderer {
     /// WP5：声明本帧的相机侧视图（清屏策略 + 视口）。
     ///
     /// 收敛前渲染器把清屏色**写死在 pass 里**、视口恒为整个目标，宿主想说"这块区域
-    /// 只画 2D overlay"或"这帧不要清屏"都无处可说。现在这两件事都由 [`FrameViews`]
+    /// 只画 2D overlay"或"这帧不要清屏"都无处可说。现在这两件事都由 [`crate::core::camera::FrameViews`]
     /// 声明，渲染器只消费不再自己决定。
     ///
     /// 回滚档：**不调用**本函数（或传 [`FrameViews::new`]）即回到收敛前的行为——
@@ -2511,7 +2511,7 @@ impl Renderer {
         self.post_process
     }
 
-    /// WP6：写入世界 Sprite 通道用的投影矩阵——**只在宿主没有声明任何 [`FrameViews`] 时**
+    /// WP6：写入世界 Sprite 通道用的投影矩阵——**只在宿主没有声明任何 [`crate::core::camera::FrameViews`] 时**
     /// 才需要（纯 2D 回滚档）。声明了主视图或 overlay 时，世界 Sprite 用声明里的那一份矩阵
     /// （与网格同一份，见 docs/54 §8-③/④），本函数写入的值会被当帧覆盖。
     pub fn set_world_sprite_camera(&mut self, view_projection: Mat4) {
@@ -2979,7 +2979,7 @@ impl Renderer {
     /// offscreen target): clears the view, draws 3D (shadow + mesh into the
     /// depth view), then the 2D overlay.
     ///
-    /// WP5：清屏与视口不再由本函数写死——它们来自宿主声明的 [`FrameViews`]。
+    /// WP5：清屏与视口不再由本函数写死——它们来自宿主声明的 [`crate::core::camera::FrameViews`]。
     fn render_passes(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -4908,7 +4908,7 @@ mod tests {
         assert_eq!(clamp_viewport(zero, (0, 0)), (0, 0, 1, 1));
     }
 
-    /// WP5：渲染器消费宿主声明的 [`FrameViews`]——清屏色来自声明，且 2D overlay 的视口
+    /// WP5：渲染器消费宿主声明的 [`crate::core::camera::FrameViews`]——清屏色来自声明，且 2D overlay 的视口
     /// 真的只画在声明的那块区域内。
     ///
     /// 同时这是**收敛的对拍**：不声明任何视图时读回的第一像素，必须与"声明历史默认

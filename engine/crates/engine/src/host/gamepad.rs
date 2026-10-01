@@ -6,8 +6,8 @@
 //! 喂入真实设备事件。本模块补齐这一层：
 //!
 //! * [`GamepadBackend`]：平台无关的轮询接口，`poll()` 返回一帧 [`GamepadFrame`]；
-//! * [`XInputBackend`]：Windows 原生 XInput（`windows-sys`，无需新增 crate）；
-//! * [`FakeBackend`]：脚本化帧，供 headless 测试与验收驱动；
+//! * [`crate::host::gamepad::XInputBackend`]：Windows 原生 XInput（`windows-sys`，无需新增 crate）；
+//! * [`crate::host::gamepad::FakeBackend`]：脚本化帧，供 headless 测试与验收驱动；
 //! * [`GamepadPoller`]：把设备帧写进 `InputSnapshot`——按住状态与轴值**每帧写全量**
 //!   （宿主可能每帧重建快照），按下/松开**边沿只在变化帧**喂事件，断连时清空，
 //!   避免「粘键」也避免「按住不动等于没输入」。
@@ -30,7 +30,7 @@
 //! | 11 | R3 | | | |
 //! | 12..15 | DPad 上/下/左/右 | | | |
 //!
-//! 死区与阈值是**两个概念**：死区（[`STICK_DEADZONE`]/[`TRIGGER_DEADZONE`]）用于
+//! 死区与阈值是**两个概念**：死区（[`crate::core::input::STICK_DEADZONE`]/[`crate::core::input::TRIGGER_DEADZONE`]）用于
 //! 消除漂移，动作判定阈值沿用 `core::input` 的 0.5。
 
 use crate::core::input::{AxisDirection, InputSnapshot};
@@ -453,7 +453,7 @@ impl RumbleLog {
 
 /// 多槽位脚本化后端（M22/W2）：每帧给出 4 个槽位的状态，并记录 `set_rumble` 调用。
 ///
-/// 与 [`FakeBackend`] 并列：`FakeBackend` 用于单设备脚本帧（经默认 `poll_all` 落在 slot 0），
+/// 与 [`crate::host::gamepad::FakeBackend`] 并列：`FakeBackend` 用于单设备脚本帧（经默认 `poll_all` 落在 slot 0），
 /// 本类型用于验证槽位切换/热插拔/震动（headless 测试与验收示例共用）。
 #[derive(Debug, Default)]
 pub struct SlotBackend {

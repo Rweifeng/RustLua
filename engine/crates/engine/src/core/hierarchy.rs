@@ -1,9 +1,9 @@
 //! WP2：实体的空间父子关系与世界变换传播。
 //!
 //! 负责人裁定"所有场景的 `parent` 一律按**局部空间**解释"。落地需要三件事：
-//! ① 运行时知道父子关系（[`Parent`] 组件）；② 每帧把局部变换沿父链组合成**世界**变换
-//! （[`propagate_spatial`]，结果写进 [`WorldTransform`] / [`WorldTransform3D`]）；③ 消费者
-//! 优先读世界变换、没有时退回局部（[`world_transform_2d`] / [`world_transform_3d`]）。
+//! ① 运行时知道父子关系（[`crate::core::hierarchy::Parent`] 组件）；② 每帧把局部变换沿父链组合成**世界**变换
+//! （[`crate::core::hierarchy::propagate_spatial`]，结果写进 [`crate::core::spatial_transform::GlobalTransform`]）；③ 消费者
+//! 优先读世界变换、没有时退回局部（[`crate::core::hierarchy::world_transform_2d`] / [`crate::core::hierarchy::world_transform_3d`]）。
 //!
 //! 组合走矩阵再分解，而不是手写 TRS 公式：非均匀父缩放与子旋转的组合会产生**剪切**，那不是
 //! TRS 能表达的东西。分解失败时**保留局部值当世界值**并记一条诊断，绝不近似——近似会让子实体
@@ -69,7 +69,7 @@ pub struct SpatialReport {
     pub diagnostics: Vec<SpatialDiagnostic>,
 }
 
-/// 把局部变换沿父链组合成世界变换，写进 [`WorldTransform`] / [`WorldTransform3D`]。
+/// 把局部变换沿父链组合成世界变换，写进 [`crate::core::spatial_transform::GlobalTransform`]。
 ///
 /// `enabled` 为 `false`（默认）时**清掉**已有的世界变换组件并直接返回：消费者因此退回局部值，
 /// 与"没有空间继承"的旧行为逐字节一致——这就是回滚档。
@@ -486,7 +486,7 @@ impl SpatialIncremental {
 ///
 /// 三条路径（`SpatialPath`）：
 /// - 结构与上一帧相同、且没有任何局部值变化 ⇒ [`SpatialPath::Skipped`]，不碰任何组件；
-/// - 结构变了、或上一帧有诊断 ⇒ [`SpatialPath::Full`]，与 [`propagate_spatial`] 逐字节同一份
+/// - 结构变了、或上一帧有诊断 ⇒ [`SpatialPath::Full`]，与 [`crate::core::hierarchy::propagate_spatial`] 逐字节同一份
 ///   代码路径（`propagate_entities`）；
 /// - 只有局部值变了 ⇒ [`SpatialPath::Incremental`]：脏集合 = 变化的实体 + 它们的后代，
 ///   按缓存的父先序顺序逐个重算（父的世界值从 `GlobalTransform` 组件读，脏父在本趟前面刚写过，
@@ -496,7 +496,7 @@ impl SpatialIncremental {
 /// 为什么"结构变了就全量"：`parent_first_plan` 的 `ordered`/诊断集合是结构的函数，结构一变
 /// 缓存就失效；而结构变化（换父、增删组件、重生）在真实帧里远比"值变化"稀少。
 ///
-/// `enabled` 为假时退回 [`propagate_spatial`] 关闭继承的语义（清掉世界变换、状态失效）。
+/// `enabled` 为假时退回 [`crate::core::hierarchy::propagate_spatial`] 关闭继承的语义（清掉世界变换、状态失效）。
 pub fn propagate_spatial_incremental(
     world: &mut World,
     state: &mut SpatialIncremental,
@@ -1596,7 +1596,7 @@ mod tests {
         assert_eq!(second.path, SpatialPath::Full, "{second:?}");
     }
 
-    /// docs/54 §10 批 S：`enabled == false` 与 [`propagate_spatial`] 的关闭路径逐字一致，并清掉缓存。
+    /// docs/54 §10 批 S：`enabled == false` 与 [`crate::core::hierarchy::propagate_spatial`] 的关闭路径逐字一致，并清掉缓存。
     #[test]
     fn disabled_incremental_matches_disabled_full_propagation() {
         let mut world = World::new();

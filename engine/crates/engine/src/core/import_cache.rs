@@ -2,7 +2,7 @@
 //!
 //! The cache stores a content fingerprint per asset UUID and reuses the cached
 //! artifact when neither content nor importer version changed. Validation and
-//! artifact production are delegated to an [`Importer`].
+//! artifact production are delegated to an [`crate::core::importer::Importer`].
 
 use crate::core::{importer::Importer, resource_db::AssetId};
 use std::{

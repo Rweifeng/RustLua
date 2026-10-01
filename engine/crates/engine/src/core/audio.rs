@@ -3,7 +3,7 @@
 //! run fine on machines without audio hardware (play degrades to a warning).
 //!
 //! M20-02 追加**音量分组**（总线）：BGM / SFX / UI 各自独立调节，实际音量 =
-//! 主音量 × 分组音量；设置可经 [`AudioSystem::to_settings_text`] 持久化。
+//! 主音量 × 分组音量；设置可经 [`crate::core::audio::AudioSystem::to_settings_text`] 持久化。
 
 use std::{collections::HashMap, error::Error, fmt, io::Cursor, path::PathBuf};
 

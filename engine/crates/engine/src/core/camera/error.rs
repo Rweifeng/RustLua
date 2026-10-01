@@ -1,6 +1,6 @@
 //! 坐标与相机换算的共用错误。
 //!
-//! [`CoordinateError`] 是相机换算与 2D 坐标工具（`core::math2d`）共用的错误类型，因此它既
+//! [`crate::core::camera::CoordinateError`] 是相机换算与 2D 坐标工具（`core::math2d`）共用的错误类型，因此它既
 //! 由本模块定义，也被 `core::math2d` 重新导出（`pub use crate::core::camera::CoordinateError`）。
 //! 搬迁/重命名这个类型会改动 `math2d` 的公开 API，别顺手改。
 

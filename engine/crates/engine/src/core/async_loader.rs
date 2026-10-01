@@ -5,7 +5,7 @@
 //! 被 CPU 解码冻住。本模块把「读盘 + 解码」移出主线程：
 //!
 //! - **Async 模式**（游戏运行，`Renderer::new`）：常驻 worker 线程消费请求队列；主线程
-//!   每帧 [`AsyncLoader::drain_ready`] 取走已解码产物做 GPU 上传（wgpu 的 `queue.write_texture`
+//!   每帧 [`crate::core::async_loader::AsyncLoader::drain_ready`] 取走已解码产物做 GPU 上传（wgpu 的 `queue.write_texture`
 //!   提交本身不阻塞，真正的同步开销是 CPU 解码，因此收益集中在解码下移）。
 //! - **Sync 模式**（golden / 编辑器离屏预览，`Renderer::new_offscreen`）：`request_*` 立即
 //!   读盘解码并入队，保证确定性输出（异步加载永远不会出现在 golden 的像素里）。

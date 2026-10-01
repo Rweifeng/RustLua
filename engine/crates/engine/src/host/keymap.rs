@@ -17,7 +17,7 @@
 //!
 //! | 宿主 | 平台事件 | 转换表 |
 //! |---|---|---|
-//! | 独立 `game` | `WindowEvent::KeyboardInput`（`PhysicalKey::Code`） | [`map_key_code`] / [`map_key_event`]（本文件） |
+//! | 独立 `game` | `WindowEvent::KeyboardInput`（`PhysicalKey::Code`） | [`crate::host::keymap::map_key_code`] / [`crate::host::keymap::map_key_event`]（本文件） |
 //! | 编辑器 Play 预览 + 重绑定捕获 | `egui::Key`（egui-winit 的 `physical_key`） | `editor::panels::keymap` 的 `egui_input_key` / `egui_key` / `preview_keys` |
 //!
 //! **为什么必须是物理键**：字符身份在 AZERTY/Dvorak 上会把移动键错位（`W` 位置产生
@@ -250,7 +250,7 @@ pub fn map_key_event(event: &winit::event::KeyEvent) -> Option<KeyCode> {
     classify_physical_key(event.physical_key)
 }
 
-/// [`map_key_event`] 的键分类部分，单独抽出来便于直接断言（`KeyEvent` 的
+/// [`crate::host::keymap::map_key_event`] 的键分类部分，单独抽出来便于直接断言（`KeyEvent` 的
 /// `platform_specific` 字段是 winit 私有的，测试里构造不出完整事件）。
 #[must_use]
 fn classify_physical_key(physical_key: winit::keyboard::PhysicalKey) -> Option<KeyCode> {

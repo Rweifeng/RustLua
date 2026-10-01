@@ -297,7 +297,7 @@ impl ColliderDesc {
 ///
 /// - [`PhysicsAuthority::Physics`]（默认）：**模拟是世界位置的真源**。每步之后把动态刚体的
 ///   位置写回 ECS（渲染与 Lua 因此看到模拟结果）；脚本想移动动态体应改速度。
-/// - [`PhysicsAuthority::Script`]：**ECS 是权威**。物理步之前先把 ECS 位置推给模拟世界
+/// - [`crate::core::physics::PhysicsAuthority::Script`]：**ECS 是权威**。物理步之前先把 ECS 位置推给模拟世界
 ///   （静态/运动学同步），之后的动态回写被**跳过**——否则模拟会把脚本刚写的位置覆盖掉。
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum PhysicsAuthority {

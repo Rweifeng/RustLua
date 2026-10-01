@@ -74,7 +74,7 @@ pub(super) fn entity_from_lua(value: i64) -> Result<EntityId, mlua::Error> {
 /// Lua 侧实体 id 的编码（`index << 32 | generation`）。
 ///
 /// 宿主在需要把一个实体交给 Lua（生成脚本、注入参数、测试对拍）时必须用同一份编码；
-/// 这里公开它，避免调用方各写一遍位运算。反向解码见 [`LuaRuntime::with_script`] 里注册的 API。
+/// 这里公开它，避免调用方各写一遍位运算。反向解码见 同文件的私有 `entity_from_lua` 与 `script::api` 各模块 里注册的 API。
 #[must_use]
 pub fn entity_lua_id(entity: EntityId) -> i64 {
     ((entity.index() as u64) << 32 | entity.generation() as u64) as i64

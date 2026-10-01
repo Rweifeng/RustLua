@@ -114,9 +114,32 @@ try {
     Write-Step "Rust formatting"
     Invoke-Checked cargo @("fmt", "--all", "--", "--check")
 
+    # 优化项 10：Lua API 文档桩的再生成一致性。事实源是**运行期 API 面基线**
+    # （`core::api_surface_snapshot/lua_api_surface.json`），所以这一步查的是
+    # 「文档桩与真正暴露给脚本的那 275 个函数是否还是同一份清单」，外加「待补桩数没有变多」。
+    # 缺 node 时打印原因后跳过——沿用本仓库口径，跳过绝不写成通过。
+    Write-Step "Lua API doc stubs"
+    if (Get-Command node -ErrorAction SilentlyContinue) {
+        Invoke-Checked node @((Join-Path $projectRoot "scripts/gen-lua-api-docs.js"), "--check")
+    } else {
+        Write-Host "  [SKIP] 未找到 node：Lua API 文档桩门未运行（不是通过）" -ForegroundColor Yellow
+    }
+
     if (-not $SkipClippy) {
         Write-Step "Clippy"
         Invoke-Checked cargo @("clippy", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings")
+    }
+
+    # 优化项 10：rustdoc 必须是**零告警**的——失效的 intra-doc 链接是文档站点里点不开的按钮，
+    # 而 `-D warnings` 让"新增一条断链"当场判红（存量已在本批清零）。
+    # `$env.RUSTDOCFLAGS` 只在这一步生效，用 try/finally 复原，避免污染后面的 build/test。
+    Write-Step "Rustdoc (workspace, warnings are errors)"
+    $previousDocFlags = $env:RUSTDOCFLAGS
+    try {
+        $env:RUSTDOCFLAGS = "-D warnings"
+        Invoke-Checked cargo @("doc", "--no-deps", "--workspace", "--lib")
+    } finally {
+        $env:RUSTDOCFLAGS = $previousDocFlags
     }
 
     if (-not $SkipTests) {

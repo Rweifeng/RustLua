@@ -4,7 +4,7 @@
 //! **为什么编辑态需要自己的入口**：编辑器在文档上工作（没有 ECS），而运行时在 World 上工作；
 //! 两者的组合规则由引擎的 `propagate_all` / `propagate_spatial` 共用，且有等价性测试钉住。
 //!
-//! 组件串编码（[`encode_transform`]）也一并转发。
+//! 组件串编码（[`crate::document_space::encode_transform`]）也一并转发。
 
 pub use engine::core::scene_space::{
     encode_transform, keep_world_after_reparent, local_keeping_world, local_transforms,

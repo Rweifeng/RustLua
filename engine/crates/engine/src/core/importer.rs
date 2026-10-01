@@ -1,7 +1,7 @@
 //! Importer trait, builtin registry, and batch runner for M12-01.
 //!
-//! Each [`ResourceKind`] has exactly one builtin [`Importer`] that validates
-//! source files and produces cache artifacts. [`run_import_batch`] drives a
+//! Each [`crate::core::resource_kind::ResourceKind`] has exactly one builtin [`crate::core::importer::Importer`] that validates
+//! source files and produces cache artifacts. [`crate::core::importer::run_import_batch`] drives a
 //! batch of imports, writes per-item state back to the
 //! [`ResourceDatabase`](crate::core::resource_db::ResourceDatabase), and never
 //! aborts the whole batch because of one bad item.
@@ -471,7 +471,7 @@ pub fn run_import_batch(
 
 /// Runs a batch of imports with a per-item progress callback.
 ///
-/// Same behavior as [`run_import_batch`], but `on_progress(processed, total)`
+/// Same behavior as [`crate::core::importer::run_import_batch`], but `on_progress(processed, total)`
 /// is called after each item so a caller can drive a determinate progress bar
 /// from real work. `processed` is the number of items already examined
 /// (including the current one); `total` is the batch size.

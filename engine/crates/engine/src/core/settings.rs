@@ -26,7 +26,7 @@
 //! map = "rustlua-actions-v2\ninteract=key:keye\nmove_up=key:keyw"
 //! ```
 //!
-//! `map` 的值是 [`ActionMap::to_text`] 的**文本原样**（含 `rustlua-actions-v2`
+//! `map` 的值是 [`crate::core::input::ActionMap::to_text`] 的**文本原样**（含 `rustlua-actions-v2`
 //! 版本头），按 TOML 基本字符串转义换行（`\n`）与反斜杠（`\\`）/引号（`\"`）
 //! 写在一行里——多行基本字符串（`"""`）在本文件的手写解析器里不识别，因此
 //! **不用**它。读取侧与 `[audio]` 一样宽松：文件缺失、段缺失、键缺失都不是
@@ -36,7 +36,7 @@
 //! **读 v1、写 v2**（M22/W1）：`rustlua-actions-v1` 的字符写法（`key:e`/`key:1`/
 //! `key:up`/`key:+`/`key:other:1048577`）仍可解析并按 US-QWERTY 换算成物理键，
 //! 有损换算（`key:+` → `key:equal`）逐条记进
-//! [`InputSectionParse::migration_notes`]；写回一律是 v2。
+//! [`crate::core::settings::InputSectionParse::migration_notes`]；写回一律是 v2。
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -54,7 +54,7 @@ pub const AUDIO_SECTION: &str = "audio";
 /// 命名动作映射所在的段名（M20-07）。
 pub const INPUT_SECTION: &str = "input";
 
-/// `[input]` 段内承载 [`ActionMap::to_text`] 的键名（M20-07）。
+/// `[input]` 段内承载 [`crate::core::input::ActionMap::to_text`] 的键名（M20-07）。
 pub const INPUT_MAP_KEY: &str = "map";
 
 /// `[input]` 段内的摇杆死区键（M20-08）。
@@ -338,7 +338,7 @@ type InputMapParse = Result<(ActionMap, Vec<String>), String>;
 /// 从设置文本解析 `[input].map`；非法内容返回原因而不是默认值。
 ///
 /// M22/W1：同时接受 `rustlua-actions-v1`（旧格式）与 `v2`（当前格式）版本头，
-/// v1 会被迁移成物理键并把**有损换算**记进 [`InputSectionParse::migration_notes`]。
+/// v1 会被迁移成物理键并把**有损换算**记进 [`crate::core::settings::InputSectionParse::migration_notes`]。
 #[must_use]
 pub fn parse_input_section(text: &str) -> InputSectionParse {
     let mut section = String::new();

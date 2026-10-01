@@ -13,7 +13,7 @@
 //!   在同一个实体上"此前会**画两遍**（两条收集路径各自 push），既没有诊断也没有优先级——本模块把
 //!   分类写成一个类型，冲突因此可以被点名（文档侧与加载期都点）。
 //! - **`Material` 是单一的**：精灵/Quad 的"贴图 + 颜色"与网格的 glTF PBR 此前是两套说法
-//!   （`Sprite::tint` vs `GpuMaterial`）。现在都用一个 [`Material`] 描述，渲染器的 `GpuMaterial`
+//!   （`Sprite::tint` vs `GpuMaterial`）。现在都用一个 [`crate::core::renderable::Material`] 描述，渲染器的 `GpuMaterial`
 //!   由它构造，于是"材质是什么"只有一处定义。
 //!
 //! 边界（刻意）：`Renderable` 是**分类视图**，不是第二份真源——它从组件推出来，不参与序列化、

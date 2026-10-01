@@ -64,7 +64,7 @@ impl LuaRuntime {
 
     /// WP7 静态/运动学同步：物理步**之前**把 ECS 里动态刚体的位置推给模拟世界。
     ///
-    /// 只在 authority = [`PhysicsAuthority::Script`] 时调用：那种模式下脚本/ECS 是权威，
+    /// 只在 authority = [`crate::core::physics::PhysicsAuthority::Script`] 时调用：那种模式下脚本/ECS 是权威，
     /// 若不先同步，物理世界会拿上一帧的位置继续积分（表现为"脚本设了位置但刚体没动"）。
     /// 返回同步的刚体数。
     pub fn sync_kinematic_bodies(&mut self) -> usize {

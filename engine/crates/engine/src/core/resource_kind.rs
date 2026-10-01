@@ -1,7 +1,7 @@
 //! Unified coarse-grained resource families shared by the editor, assetc, and engine.
 //!
 //! This is the single source of truth for how file extensions map to resource
-//! families. Importers register themselves per [`ResourceKind`]; the editor and
+//! families. Importers register themselves per [`crate::core::resource_kind::ResourceKind`]; the editor and
 //! assetc both report these families to users and persist them via
 //! [`ResourceDatabase`](crate::core::resource_db::ResourceDatabase).
 

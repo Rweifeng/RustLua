@@ -15,7 +15,7 @@
 //!
 //! 此前"这一帧要跑哪些通道、按什么顺序"只存在于 `Renderer::render_passes` 的一串 `if`：
 //! 决策与执行混在一起，因此**没法在不启动 GPU 的情况下断言它**，"顺序对不对"只能靠肉眼看
-//! 代码。本模块把决策抽成纯函数 [`RenderPlan::for_frame`]（输入是一帧内容的**事实**，输出是
+//! 代码。本模块把决策抽成纯函数 [`crate::core::render_plan::RenderPlan::for_frame`]（输入是一帧内容的**事实**，输出是
 //! 通道的**规范顺序**列表），渲染器改为按计划执行：每个代码块的开关条件都不再就地判断，
 //! 而是 `plan.contains(...)`。于是"少跑了一个通道""顺序被换过"这类改动会在不启动 GPU 的
 //! 单测里直接失败。
@@ -24,14 +24,14 @@
 //!
 //! - 计划是**派生**的：它从帧内容算出来，不是第二份真源。渲染器不消费的通道不会出现在计划里。
 //! - 计划**不写像素**：它只决定"跑不跑、按什么顺序跑"，每个通道内部的像素行为仍由原代码决定。
-//! - 顺序是**规范顺序**（[`RenderPass::ALL`]），[`RenderPlan::is_canonical`] 是可断言的硬性质：
+//! - 顺序是**规范顺序**（[`crate::core::render_plan::RenderPass::ALL`]），[`crate::core::render_plan::RenderPlan::is_canonical`] 是可断言的硬性质：
 //!   同一通道至多一次、且严格按规范顺序出现。
 
 use crate::core::layer::RenderLayer;
 
 /// 一帧里的一条渲染通道。
 ///
-/// 变体的**声明顺序就是规范执行顺序**（`Ord` 由声明顺序导出，[`RenderPlan::is_canonical`] 依赖这一点）。
+/// 变体的**声明顺序就是规范执行顺序**（`Ord` 由声明顺序导出，[`crate::core::render_plan::RenderPlan::is_canonical`] 依赖这一点）。
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum RenderPass {
     /// 清屏（`ClearPolicy::Color` 或回滚档的历史默认色）。`ClearPolicy::None` 时这一条不出现。
@@ -133,7 +133,7 @@ pub struct FrameFacts {
     /// 本帧开后处理（宿主 `set_post_process(Some(..))`）。
     ///
     /// 开后处理时场景画进离屏颜色纹理，因此**本帧一定会清屏**（离屏 pass 没有"上一帧内容"可叠）
-    /// ——见 [`RenderPlan::for_frame`] 里对 `clear` 的处理。
+    /// ——见 [`crate::core::render_plan::RenderPlan::for_frame`] 里对 `clear` 的处理。
     pub post_process: bool,
 }
 

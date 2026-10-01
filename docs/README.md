@@ -91,6 +91,7 @@
 ## 九、复盘与优化
 
 - [全面复盘与优化项清单](60-全面复盘与优化项清单.md)：20 项改进点（P0–P3 + 治理），覆盖渲染器 GPU buffer、热重载原子性、ScriptState 架构、API 绑定去重、内存分配优化、CI 并行化与项目治理
+- [rustdoc 站点发布与 Lua API 文档桩](61-rustdoc站点发布与lua_api文档桩.md)：`cargo doc` → GitHub Pages 的发布链路、78 条断链清零的两条 rustdoc 解析规则、以运行期 API 面基线为事实源的 275 个 Lua 绑定函数文档桩与再生成一致性门
 
 ## 第三方素材
 

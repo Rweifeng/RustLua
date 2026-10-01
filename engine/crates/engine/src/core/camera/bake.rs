@@ -211,7 +211,7 @@ impl CameraView {
         self.view_projection.inverse().ok()
     }
 
-    /// 世界 → NDC。与 [`Camera3D::world_to_ndc`] 同一份矩阵，但不再每次重建矩阵与校验。
+    /// 世界 → NDC。与 [`crate::core::camera::Camera3D::world_to_ndc`] 同一份矩阵，但不再每次重建矩阵与校验。
     #[must_use]
     pub fn world_to_ndc(self, world: Vec3) -> Option<Vec3> {
         if !world.is_finite() {
@@ -220,7 +220,7 @@ impl CameraView {
         self.view_projection.transform_point(world).ok()
     }
 
-    /// 屏幕像素 → 世界射线。与 [`Camera3D::ray_from_screen`] 同一套数学（经由同一份矩阵的逆）。
+    /// 屏幕像素 → 世界射线。与 [`crate::core::camera::Camera3D::ray_from_screen`] 同一套数学（经由同一份矩阵的逆）。
     #[must_use]
     pub fn ray_from_screen(self, x: f32, y: f32) -> Option<(Vec3, Vec3)> {
         let viewport = self.viewport;

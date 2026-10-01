@@ -1,7 +1,7 @@
 //! E15/E16/E17 engine-core layout layer: four-edge Anchor + Offset
-//! ([`UiRectLayout`]), named anchor presets ([`UiLayoutPreset`]), basic
-//! Container auto-layout ([`layout_container`]), and Canvas configuration
-//! ([`CanvasConfig`]).
+//! ([`crate::core::ui_layout::UiRectLayout`]), named anchor presets ([`crate::core::ui_layout::UiLayoutPreset`]), basic
+//! Container auto-layout ([`crate::core::ui_layout::layout_container`]), and Canvas configuration
+//! ([`crate::core::ui_layout::CanvasConfig`]).
 //!
 //! All computation here is pure logic with no GPU/window dependency, so the
 //! editor preview and the runtime share the same resolve paths.

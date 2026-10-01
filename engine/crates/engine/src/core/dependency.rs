@@ -2,7 +2,7 @@
 //!
 //! Pure logic (no I/O) shared by the editor, assetc, and game's runtime
 //! verification: it scans scene/prefab component strings and Lua source for
-//! references to other assets, resolves them to [`AssetId`]s through the
+//! references to other assets, resolves them to [`crate::core::resource_db::AssetId`]s through the
 //! database, and (in `propagate` / `detect_cycles`) propagates a dependency's
 //! bad state onto its consumers.
 

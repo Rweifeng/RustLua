@@ -242,7 +242,7 @@ impl Camera2dController {
         camera
     }
 
-    /// 推进一帧并直接给出本帧的 [`RenderView`]（2D overlay 视图）。
+    /// 推进一帧并直接给出本帧的 [`crate::core::camera::RenderView`]（2D overlay 视图）。
     ///
     /// 渲染器消费 `RenderView` 而不回查 ECS/宿主，这是 WP5 要求的形态；宿主侧接线可以分步
     /// 进行，但"相机 + 视口 + 清屏 + 顺序"的说法从这一处产生。

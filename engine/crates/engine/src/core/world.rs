@@ -1,6 +1,6 @@
 //! Entity world and type-erased component storage.
 //!
-//! WP3 裁定：组件存储**整体**换成 dense（[`DenseStorage`]）。对外契约逐条不变——
+//! WP3 裁定：组件存储**整体**换成 dense（[`crate::core::dense_storage::DenseStorage`]）。对外契约逐条不变——
 //! `for_each*` 仍是 `EntityId` 有序、`entities_with` 仍返回有序 `Vec`、`get`/`insert`/`remove`
 //! 语义与原 `HashMap` 实现一致；变化只在内部：查询不再双层哈希（`TypeId` 表 + 实体表）、
 //! 稳态帧遍历零分配、删除不再是排序 `Vec` 的 O(n) memmove。

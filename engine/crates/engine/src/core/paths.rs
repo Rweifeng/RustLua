@@ -1,8 +1,8 @@
 //! 游戏工程路径解析。当前默认示例工程是仓库内 `examples`；少量大型字体
 //! 测试 fixture 仍在仓库外 `games` 目录，使用 `fixture_games_dir` 显式解析。
 //!
-//! 这里同时放**工程内相对路径**的两个权威判定（[`is_absolute_path`] /
-//! [`escapes_project_root`]）：运行时脚本路径校验（`entity_script`）与 schema 的
+//! 这里同时放**工程内相对路径**的两个权威判定（[`crate::core::paths::is_absolute_path`] /
+//! [`crate::core::paths::escapes_project_root`]）：运行时脚本路径校验（`entity_script`）与 schema 的
 //! `FieldRule::ProjectPath` 都用它们，避免"同一规则两处实现、一处漏了 Windows 根路径"。
 //! 这两个判定确实曾经不一致：只查 `Path::is_absolute()` 时，`/etc/passwd` 在 Windows 上
 //! 被当成相对路径（没有盘符），而引擎的组件式检查会正确拒绝它。

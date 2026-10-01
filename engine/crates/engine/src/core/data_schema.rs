@@ -4,7 +4,7 @@
 //! Kept intentionally small — the farm content tables (items / crops / shop /
 //! farm) only need map / array / object shapes and the JSON primitive types.
 //! Schemas are authored from Lua (game-specific, not hardcoded in Rust) and
-//! serialized to `serde_json::Value`; [`validate`] reports the first violation
+//! serialized to `serde_json::Value`; [`crate::core::data_schema::validate`] reports the first violation
 //! with a dotted field path so bad data is located at the file/field level.
 //!
 //! A schema value is either a primitive kind name (`"string"`, `"number"`,

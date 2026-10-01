@@ -5,7 +5,7 @@
 //! 用 A/B 基准证明收益后再决定是否替换（docs/40 §3 WP3）。
 //!
 //! **顺序语义与现状不同**：dense 遍历按插入/交换顺序，**不是** EntityId 有序。需要确定性
-//! 的边界（快照、序列化、规则回归）必须显式调 [`DenseStorage::sorted`]——现有
+//! 的边界（快照、序列化、规则回归）必须显式调 [`crate::core::dense_storage::DenseStorage::sorted`]——现有
 //! `World::for_each` 的"有序"契约**不能**直接照搬到热遍历上（docs/40 §3 WP3）。
 
 use crate::core::entity::EntityId;

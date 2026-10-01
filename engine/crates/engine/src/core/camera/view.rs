@@ -1,5 +1,5 @@
-//! 每帧渲染契约：怎么投影（[`Projection`]）、投到多大视口、清屏策略与绘制顺序
-//! （[`RenderView`] / [`FrameViews`]）。
+//! 每帧渲染契约：怎么投影（[`crate::core::camera::Projection`]）、投到多大视口、清屏策略与绘制顺序
+//! （[`crate::core::camera::RenderView`] / [`crate::core::camera::FrameViews`]）。
 //!
 //! 渲染器消费这些类型而**不回查 ECS**：相机的姿态与投影参数由宿主从组件取出后在这里成帧。
 //! "2D 用另一套视图说法"这类分叉从类型上就不存在——两个家族共用同一套字段。
@@ -11,12 +11,12 @@ use crate::core::math3d::Mat4;
 /// 统一投影描述（WP5）：正交（2D 世界）与透视（3D 世界）的唯一说法。
 ///
 /// 相机可以跨 2D 与 3D 复用，但**不强制**两者共用 shader 与深度规则——本类型只回答
-/// "怎么投影"，不回答"画出来长什么样"（那是渲染器与 [`RenderView`] 的事）。
+/// "怎么投影"，不回答"画出来长什么样"（那是渲染器与 [`crate::core::camera::RenderView`] 的事）。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Projection {
-    /// 正交：`zoom` 是"每世界单位多少像素"，与 [`Camera2D`] 一致。
+    /// 正交：`zoom` 是"每世界单位多少像素"，与 [`crate::core::camera::Camera2D`] 一致。
     Orthographic { zoom: f32 },
-    /// 透视：`fov_y` 是**垂直**视场角（弧度），与 [`Camera3D`] 一致。
+    /// 透视：`fov_y` 是**垂直**视场角（弧度），与 [`crate::core::camera::Camera3D`] 一致。
     Perspective { fov_y: f32, near: f32, far: f32 },
 }
 

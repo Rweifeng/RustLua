@@ -10,12 +10,12 @@
 //!
 //! 本模块把那个说法变成类型：
 //!
-//! - [`PropertyTrack`]：`目标 + 关键帧 + 插值方式`。离散目标（Sprite region / 骨骼 pose）只允许
+//! - [`crate::core::animation_track::PropertyTrack`]：`目标 + 关键帧 + 插值方式`。离散目标（Sprite region / 骨骼 pose）只允许
 //!   `Step`——对 UV 区域做"插值"没有意义，静默允许会让美术看到中间的杂乱帧。连续目标
 //!   （Transform）才允许 `Linear`。
-//! - [`EventTrack`]：按时间点触发的事件。**事件不是"第几帧"**：帧只是 Sprite region 轨道上的一种
-//!   量化，因此事件自带源数据序号（[`EventMarker::order`]）供"每轮只触发一次"的去重使用。
-//! - [`AnimationTracks`]：一组轨道 + 采样查询。
+//! - [`crate::core::animation_track::EventTrack`]：按时间点触发的事件。**事件不是"第几帧"**：帧只是 Sprite region 轨道上的一种
+//!   量化，因此事件自带源数据序号（[`crate::core::animation_track::EventMarker::order`]）供"每轮只触发一次"的去重使用。
+//! - [`crate::core::animation_track::AnimationTracks`]：一组轨道 + 采样查询。
 //!
 //! 与既有实现的关系是**视图而非替代**：`AnimationClip::tracks()` 把帧动画表达成轨道，
 //! `AnimationStateMachine` 的 UV 采样与帧事件触发都改走这一份实现，于是"帧→UV"与"帧事件落在哪一步"

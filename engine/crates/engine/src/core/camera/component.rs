@@ -17,7 +17,7 @@ use crate::core::{
 /// 设计分辨率包围框以它为中心（编辑器 Scene 视图据此定位游戏取景范围）。
 pub const DEFAULT_2D_CAMERA_CENTER: Vec2 = Vec2::new(640.0, 360.0);
 
-/// A positive pixel viewport used by [`Camera2D`] conversions.
+/// A positive pixel viewport used by [`crate::core::camera::Camera2D`] conversions.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Viewport {
     pub width: f32,
@@ -45,7 +45,7 @@ impl Viewport {
     }
 }
 
-/// An axis-aligned world rectangle used to constrain a [`Camera2D`].
+/// An axis-aligned world rectangle used to constrain a [`crate::core::camera::Camera2D`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CameraBounds {
     pub min: Vec2,
@@ -235,7 +235,7 @@ impl Camera2D {
     /// bounds 钳制后的相机中心：保证**整个视口**仍落在 `bounds` 内（无 `bounds` 时原样返回）。
     ///
     /// 收敛前宿主里也有一份同名同算法的副本（瓦片相机与相机控制器各用各的），所以这里把它
-    /// 提升为公开 API——夹取规则只留这一份，剔除用的可见域也走 [`Camera2D::visible_extent`]。
+    /// 提升为公开 API——夹取规则只留这一份，剔除用的可见域也走 私有 `visible_extent`。
     pub fn constrained_center(self, viewport: Viewport) -> Result<Vec2, CoordinateError> {
         let Some(bounds) = self.bounds else {
             return Ok(self.center);

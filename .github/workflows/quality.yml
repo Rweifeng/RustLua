@@ -54,6 +54,26 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
+      # 优化项 10：rustdoc 零告警门。断链在文档站点上就是点不开的按钮，而增量只看代码
+      # 是发现不了的（fmt/clippy/test 全绿时文档可以同时烂掉）。`-D warnings` 让
+      # "新增一条失效 intra-doc 链接"当场判红；存量已在本批清零。
+      - name: Rustdoc (warnings are errors)
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: cargo doc --no-deps --workspace --lib
+
+      # 优化项 10：Lua API 文档桩的再生成一致性门（本地/CI 同一条命令，见 verify.ps1
+      # 的「Lua API doc stubs」步）。事实源是运行期 API 面基线，所以这一步真正回答的是
+      # 「文档桩清单 == 脚本能调到的函数」+「待补桩数没有变多」。
+      - name: Set up Node (Lua API doc gate)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Lua API doc stubs
+        working-directory: ${{ github.workspace }}
+        run: node scripts/gen-lua-api-docs.js --check
+
   # 编译 + 全量测试（windows）。Release 构建放在测试**之前**：
   # `publish_spawn_end_to_end` 用 `-SkipBuild` 复用 `target/release/game.exe` 做真实的
   # 发布目录自检，若该产物不存在或是陈旧的，这条用例会以"发布应成功"失败——那是

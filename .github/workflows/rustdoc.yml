@@ -1,0 +1,79 @@
+name: Rustdoc site
+
+# 优化项 10：把 rustdoc 发到 GitHub Pages。
+#
+# 为什么单独一个 workflow（而不是塞进 quality.yml）：quality.yml 是"判红用"的门，
+# 这个 job 的目的是**产出并发布站点**；混在一起会让一次文档发布的失败看起来像代码回归。
+# rustdoc 的零告警门本身仍在 quality.yml 的 lint job 里（`RUSTDOCFLAGS: -D warnings`），
+# 所以这里重复跑一次是"发布前再生成一遍"，不是第二道门。
+#
+# 一次性人工前提（仓库设置，不是本文件能改的）：
+#   Settings → Pages → Build and deployment → Source = **GitHub Actions**
+# 若仍是 "Deploy from a branch"，deploy-pages 这一步会报
+# "Pages source must be set to GitHub Actions"（而不是静默不发布）。
+#
+# 站点根导航页与 `.nojekyll` 由 scripts/gen-rustdoc.ps1 生成——cargo 对多 crate workspace
+# 不写根 index.html，直接传 target/doc 会得到 404 的站点根。
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "engine/**"
+      - "scripts/gen-rustdoc.ps1"
+      - "scripts/gen-lua-api-docs.js"
+      - ".github/workflows/rustdoc.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 同一时间只允许一次发布；后来的 push 排队而不是并发覆盖同一个 Pages 站点。
+concurrency:
+  group: rustdoc-pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine
+
+      # 站点目录 ~50MB（1800+ 文件，含源码浏览器），在 Pages 的 100MB 站点建议线内。
+      # `-AllowWarnings` **故意不加**：文档有断链就不发布，宁可不更新站点。
+      - name: Build rustdoc site
+        run: pwsh -NoProfile -File scripts/gen-rustdoc.ps1
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload site artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: artifacts/doc-site
+
+  deploy:
+    needs: build
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: windows-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

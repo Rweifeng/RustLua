@@ -8,7 +8,7 @@
 //! 屏幕像素 --ray_from_screen--> 世界射线 --ray_hits_aabb / ray_plane_point--> 命中
 //! ```
 //!
-//! 投影数学仍在 [`Camera3D::ray_from_screen`] / [`Camera3D::world_to_ndc`]（`Camera2D` 与它同源），
+//! 投影数学仍在 [`crate::core::camera::Camera3D::ray_from_screen`] / [`crate::core::camera::Camera3D::world_to_ndc`]（`Camera2D` 与它同源），
 //! 本模块只负责"把链子接起来"并提供最近命中挑选，因此不会产生第二份投影实现。
 
 use crate::core::{
@@ -20,7 +20,7 @@ use crate::core::{
 /// 屏幕像素 → 世界射线。与编辑器 3D 点选、Lua `camera3d.ray` 共用同一入口。
 ///
 /// 宽高比与屏幕坐标**必须**来自同一个视口：`Camera3D` 里没有比例字段，因此这里不可能出现
-/// "投影按 A 比例、屏幕按 B 尺寸"的错位（[`Camera3D::ray_from_screen`] 的视口参数是唯一入口）。
+/// "投影按 A 比例、屏幕按 B 尺寸"的错位（[`crate::core::camera::Camera3D::ray_from_screen`] 的视口参数是唯一入口）。
 pub fn ray_from_screen(camera: Camera3D, screen: Vec2, viewport: Viewport) -> Result<Ray3, String> {
     let (origin, direction) = camera
         .ray_from_screen(screen.x, screen.y, viewport)

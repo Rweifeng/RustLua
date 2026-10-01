@@ -1,7 +1,7 @@
 //! Platform-independent input snapshots for deterministic simulation.
 //!
 //! M20-02 追加**动作映射层**：把物理输入（键盘/鼠标/抽象手柄）映射到命名动作，
-//! 支持重绑定与设置持久化（[`ActionMap::to_text`] / [`ActionMap::from_text`]）。
+//! 支持重绑定与设置持久化（[`crate::core::input::ActionMap::to_text`] / [`crate::core::input::ActionMap::from_text`]）。
 //! 手柄为**最小跨平台抽象**：宿主喂入按钮/轴即可，具体设备轮询（需要额外
 //! 依赖）未接入，见任务 M20-02 的已知限制。
 
@@ -1227,7 +1227,7 @@ impl InputSnapshot {
     ///
     /// 虚拟键是**跨帧保持**的按住态：脚本（触屏摇杆/虚拟按钮）注入 `true` 之后每一帧
     /// 不重发，只在抬起时注入 `false`。而宿主每帧都用设备层重新采样的新快照调
-    /// [`crate::core::script::ScriptState::set_input`]，整份替换会把上一帧注入的虚拟键
+    /// `crate::core::script::ScriptState::set_input`（私有类型，故不成链接），整份替换会把上一帧注入的虚拟键
     /// 一起丢掉——摇杆于是永远读回 0（同帧注入、下一帧被清空，`input.action_axis`
     /// 恒为 0，表现为"摇杆能动、角色不动"）。
     ///
@@ -1607,7 +1607,7 @@ pub const AXIS_DIGITAL_OFF: f32 = 0.4;
 pub const AXIS_HYSTERESIS: f32 = AXIS_DIGITAL_ON - AXIS_DIGITAL_OFF;
 
 /// 摇杆/扳机死区（M20-08：可在 `settings.toml` 的 `[input]` 段读写；默认值仍是
-/// [`STICK_DEADZONE`] / [`TRIGGER_DEADZONE`]）。
+/// [`crate::core::input::STICK_DEADZONE`] / [`crate::core::input::TRIGGER_DEADZONE`]）。
 ///
 /// 语义与 [`apply_stick_deadzone`] / [`apply_stick_deadzone_radial`] /
 /// [`apply_trigger_deadzone`] 一致：死区内归零（消除回中漂移），死区外按比例
