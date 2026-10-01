@@ -555,6 +555,8 @@ fn is_encryptable_data(path: &Path) -> bool {
 }
 
 fn is_compressible_asset(path: &Path) -> bool {
+    // mp3 虽然自身是压缩格式，实测工程内 16 个 clips 走 pack 的 gzip 默认档仍从
+    // 1,497,215 B 降到 1,441,547 B（-3.7%）：低码率单声道流的帧头与填充字节可压。
     matches!(
         extension(path).as_deref(),
         Some("png")
@@ -562,6 +564,7 @@ fn is_compressible_asset(path: &Path) -> bool {
             | Some("jpeg")
             | Some("wav")
             | Some("ogg")
+            | Some("mp3")
             | Some("ttf")
             | Some("otf")
             | Some("glb")
@@ -1101,6 +1104,22 @@ mod tests {
         assert!(!lua.starts_with(engine::core::pack::PACK_MAGIC));
         fs::remove_dir_all(&out).ok();
         cleanup(&root);
+    }
+
+    /// 压缩白名单的口径：资产按格式压缩，代码（Lua/场景）走加密通道而非这里。
+    /// 新增音频格式时必须同时改 `ResourceKind::from_path` 与这里，否则新格式会
+    /// 以原始字节进包——体积问题只在发布期才暴露。
+    #[test]
+    fn compressible_assets_cover_every_packaged_asset_format() {
+        for name in [
+            "a.png", "a.jpg", "a.jpeg", "a.wav", "a.ogg", "a.mp3", "a.ttf", "a.otf", "a.glb",
+            "A.MP3",
+        ] {
+            assert!(is_compressible_asset(Path::new(name)), "{name} 应可压缩");
+        }
+        for name in ["a.lua", "a.scene", "a.json", "a.txt"] {
+            assert!(!is_compressible_asset(Path::new(name)), "{name} 不应进压缩");
+        }
     }
 
     /// 打包输出目录不得与项目目录相同、也不得位于 `scenes/`/`scripts/`/`assets/`

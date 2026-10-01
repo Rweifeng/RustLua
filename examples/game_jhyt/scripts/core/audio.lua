@@ -11,8 +11,8 @@
 --   * `audio.settings_text()` / `audio.apply_settings(text)` 音量设置文本往返
 --   * `audio.load_settings()` / `audio.save_settings()` 读写
 --     `<project>/settings.toml` 的 `[audio]` 段（M20-02；文件可选，缺失即默认 1.0）
---   * 音频目录固定为 `<project>/assets/audio/`，依次尝试 `<name>.wav` 与
---     `<name>.ogg`；无输出设备时引擎只 warn 并静默降级，不影响玩法。
+--   * 音频目录固定为 `<project>/assets/audio/`，依次尝试 `<name>.mp3`、`<name>.wav`
+--     与 `<name>.ogg`（本工程只用 .mp3）；无输出设备时引擎只 warn 并静默降级，不影响玩法。
 --
 -- 本模块职责：
 --   * 按地图选曲（同一曲目不重启，切图才换曲）
