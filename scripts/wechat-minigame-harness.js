@@ -115,7 +115,7 @@ let noFrames = false;
   let expectPackFailure = false;
   // `--no-wasm`：**不**暴露 WXWebAssembly，模拟"wasm 桥不可用"的宿主形态（微信开发者工具/
   // 极旧基础库）。契约：wasm 失败不得影响 Lua 启动——clock 走 Lua 兜底（web-runtime 的
-  // genericCompat）、boot 照常成功、适配层必须显式报告 __P2_HOST_API 未接线。
+  // genericCompat）、boot 照常成功、适配层必须显式报告 __RUSTLUA_HOST_API 未接线。
   let noWasm = false;
   // 模拟"宿主不给读代码包里的某个文件"——**真机实测**：
   //   readFileSync('game.json') 一律 permission denied（平台配置不向 FileSystemManager 开放，
@@ -1078,7 +1078,7 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
     };
   }
   // wasm-bridge 据此实例化 wasm 核心并导出 HostApi 构造器，适配层把实例挂到
-  // window.__P2_HOST_API——无头 harness 用上面这份受限复刻模拟这一环。
+  // window.__RUSTLUA_HOST_API——无头 harness 用上面这份受限复刻模拟这一环。
   // `--no-wasm` 时**不**暴露它，模拟"宿主没有可用 wasm"的形态：契约是响亮失败。
   // 注意：Node 自带 WebAssembly，而 wasm-bridge 的 resolveWebAssembly 在 WXWebAssembly
   // 缺失时会回退到宿主 WebAssembly（实测：只删 WXWebAssembly 时仍报 wasm=ok:ok）——
@@ -1465,7 +1465,7 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
       const logs = consoleLogs.filter((line) => /渲染自证/.test(String(line)));
       if (!logs.length) overlayFailures.push('没有输出"渲染自证"日志（真机上无法复制现场）');
       // 现场导出通道：开发者工具控制台的"上下文"可能**看不到游戏全局**
-      // （实测：`适配层已就绪` 打了、`__P2_DIAG()` 却报 is not defined），所以"挂在 wx 上"
+      // （实测：`适配层已就绪` 打了、`__RUSTLUA_DIAG()` 却报 is not defined），所以"挂在 wx 上"
       // 和"写进 wx 存储"这两条不依赖全局作用域的通道必须真的可用。
       if (typeof globalThis.wx.__rustluaDiag !== 'function') overlayFailures.push('wx.__rustluaDiag 不可用（控制台看不到游戏全局时的现场通道）');
       let storedDiag = null;
@@ -2260,13 +2260,13 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
       }
     }
 
-    // WP10 微信侧接线门：wasm 核心必须实例化成功且 HostApi 已挂到 __P2_HOST_API
-    //（wasm-bridge 返回 glue → adapter new HostApi(...) → window.__P2_HOST_API）。
+    // WP10 微信侧接线门：wasm 核心必须实例化成功且 HostApi 已挂到 __RUSTLUA_HOST_API
+    //（wasm-bridge 返回 glue → adapter new HostApi(...) → window.__RUSTLUA_HOST_API）。
     // 这是"批次 A 在微信侧落地"的直接证据：缺了它微信端 app/clock 等仍是 missing 代理。
     // `--no-wasm` 反转这条门，但**反转的是判据、不是方向**：宿主没有可用的 WXWebAssembly 时
     // 诊断必须如实报 `no-webassembly`，而启动必须失败（WP10 之后 wasm 就是 Lua 执行层，
     // fengari 时代"clock 走 Lua 兜底、boot 照常成功"那条降级契约已不存在——没有解释器就没有兜底）。
-    // 曾经这里断言"boot 照常成功 + 适配层报告 __P2_HOST_API 未接线"，前者与新现实相反、
+    // 曾经这里断言"boot 照常成功 + 适配层报告 __RUSTLUA_HOST_API 未接线"，前者与新现实相反、
     // 后者依赖 Lua 真的跑过（wasm 缺失时 Lua 一帧都没跑，那句警告无从产生）。
     const wasmDiag = (adapter && adapter.diag) ? adapter.diag().wasm : null;
     if (noWasm) {
@@ -2275,12 +2275,12 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
           + '），"宿主桥不可用"的形态没被模拟出来');
       }
       if (wasmDiag && wasmDiag.luaBridge) {
-        failures.push('--no-wasm 下 __P2_LUA_BRIDGE 不该被挂上（实际 luaBridge=' + wasmDiag.luaBridge
+        failures.push('--no-wasm 下 __RUSTLUA_LUA_BRIDGE 不该被挂上（实际 luaBridge=' + wasmDiag.luaBridge
           + '）：那意味着存在第二条 Lua 通道，本用例的"响亮失败"前提不成立');
       }
     } else if (!wasmDiag || wasmDiag.status !== 'ok' || wasmDiag.hostApi !== 'ok') {
       failures.push('WP10 wasm 宿主桥未就绪（status=' + (wasmDiag ? wasmDiag.status : 'no-diag')
-        + ' hostApi=' + (wasmDiag ? wasmDiag.hostApi : 'no-diag') + '）：微信侧 __P2_HOST_API 接线未生效');
+        + ' hostApi=' + (wasmDiag ? wasmDiag.hostApi : 'no-diag') + '）：微信侧 __RUSTLUA_HOST_API 接线未生效');
     } else if (wasmDiag.channel !== 'path-instantiate') {
       // 通道判据：宿主是 WXWebAssembly 时**必须**走代码包路径那条异步通道（小游戏文档里
       // 只有它）。走成 bytes-sync 只可能发生在 harness 的 WXWebAssembly 被换回完整

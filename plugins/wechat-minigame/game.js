@@ -5,10 +5,10 @@
 //   2. web-runtime.js     与 webgl 发布共用的 Lua 运行时，挂载 window.rustluaRunLuaGame
 //   3. adapter.start()    载入 pack/ 资源 → 经宿主的 WXWebAssembly.instantiate(代码包路径,
 //                         imports) **异步**实例化 wasm 核心（wasm-bridge.js）→
-//                         挂载 window.__P2_LUA_BRIDGE → 启动 Lua 主循环
+//                         挂载 window.__RUSTLUA_LUA_BRIDGE → 启动 Lua 主循环
 //
 // WP10 迁移（fengari → mlua-wasm）：Lua 执行层在 wasm 侧 mlua（LuaRuntime 桥），
-// pkg/fengari-web.js 已从发布包移除；Lua 交互经 __P2_LUA_BRIDGE（lua_boot /
+// pkg/fengari-web.js 已从发布包移除；Lua 交互经 __RUSTLUA_LUA_BRIDGE（lua_boot /
 // lua_do_string / lua_call_global / lua_register_js_callback / lua_missing_globals /
 // lua_execute_main）完成。
 //

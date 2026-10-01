@@ -105,7 +105,7 @@ fn boot_runtime(
 /// 建 Lua 运行时（webgl：资源 provider 用 `start()` 预加载表）。
 ///
 /// 注意：**不执行 `scripts/main.lua`**——web 侧流程是"先注入全部宿主补丁，
-/// 再执行 main.lua"（与 fengari 版 `p2RunLuaGame` 同序）。`execute_project_script`
+/// 再执行 main.lua"（与 fengari 版 `rustluaRunLuaGame` 同序）。`execute_project_script`
 /// 内部的 `load_candidate` 会新建 Lua 状态（补丁会丢），因此 main.lua 由 JS 侧
 /// 以 `lua_do_string(main, "scripts/main.lua")` 直接在既有状态上执行。
 #[wasm_bindgen]

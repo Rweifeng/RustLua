@@ -1995,7 +1995,7 @@ function doString(L, source, name) {
     }
   }
 
-  window.p2RunLuaGame = async function (status) {
+  window.rustluaRunLuaGame = async function (status) {
     if (!window.__RUSTLUA_LUA_BRIDGE) throw new Error('wasm lua bridge not loaded (fengari execution layer removed)');
     const bridge = window.__RUSTLUA_LUA_BRIDGE;
     const project = await fetchText('pack/project.toml');
