@@ -18,7 +18,11 @@ param(
     # wasm Lua 运行期验证门（scripts/verify-wasm-lua.ps1）：spike（vendored mlua 移植）
     # + no-modules 桥（game_web Lua 桥）的 Node 验证。退出码 0=通过/1=判红/3=环境受限跳过，
     # 与 -Web 同一哲学：缺 node/wasm32/zig/wasm-bindgen 时显式跳过，绝不把"跳过"当"通过"。
-    [switch]$WasmLua
+    [switch]$WasmLua,
+    # 限制 cargo 编译并行度与 benchmark rayon 线程池上限，防止完整回归把 CPU/内存打满导致系统崩溃。
+    # 未指定时自动取 CPU 核数的一半（最少 2），已足够在 8 核 / 16 GB 机器上把峰值内存与 CPU 占用
+    # 控制在安全范围。CI 不受影响（runner 资源固定，可显式传 -MaxJobs 覆盖）。
+    [int]$MaxJobs = 0
 )
 
 $ErrorActionPreference = "Stop"
@@ -32,6 +36,40 @@ $defaultGameProject = Join-Path $gameRoot "game_jhyt"
 $logRoot = Join-Path $projectRoot "artifacts\logs\quality"
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $logPath = Join-Path $logRoot "verify-$timestamp.log"
+
+# ── Resource limits ──────────────────────────────────────────────────────────
+# 完整回归（fmt + clippy + test + build + MVP examples + WP0 benchmarks）默认会把所有
+# CPU 核心与尽可能多的内存吃满，在 8 核 / 16 GB 的开发机上足以让系统卡死甚至崩溃重启。
+# 在第一条 cargo 命令之前就把并行度上限写进环境变量，后续所有 cargo / benchmark 子进程
+# 都会继承：
+#   CARGO_BUILD_JOBS  → cargo 编译（rustc）并行度，直接决定 CPU 与链接期内存峰值
+#   RAYON_NUM_THREADS → benchmark 示例运行时线程池（sprite/tilemap/3D stress 等）
+if ($MaxJobs -le 0) {
+    $procCount = if ($IsWindows -or $env:OS -like '*Windows*') {
+        (Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors
+    } else {
+        [Environment]::ProcessorCount
+    }
+    $cpuBased = [math]::Max(2, [math]::Floor($procCount / 2))
+    # 内存感知：每个 rustc 进程峰值约 3-4 GB，留一半给系统与其他进程。
+    # 16 GB 机器 → max 4 jobs，32 GB → max 8 jobs，避免大核数机器把内存吃满。
+    $maxJobs = $cpuBased
+    try {
+        if ($IsWindows -or $env:OS -like '*Windows*') {
+            $freeRamGb = [math]::Round((Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory / 1MB, 1)
+        } else {
+            $freeRamGb = [math]::Round((Get-Content /proc/meminfo | Select-String 'MemAvailable' | ForEach-Object { ($_ -split '\s+')[1] }) / 1MB, 1)
+        }
+        $memBased = [math]::Max(2, [math]::Floor($freeRamGb / 4))
+        $maxJobs = [math]::Min($cpuBased, $memBased)
+        Write-Host "  memory check: free=${freeRamGb}GB → mem-based max=$memBased"
+    } catch {
+        Write-Host "  memory check unavailable ($_), using CPU-based max=$cpuBased" -ForegroundColor Yellow
+    }
+    $MaxJobs = $maxJobs
+}
+$env:CARGO_BUILD_JOBS = "$MaxJobs"
+$env:RAYON_NUM_THREADS = "$MaxJobs"
 
 New-Item -ItemType Directory -Force -Path $logRoot | Out-Null
 
@@ -59,6 +97,11 @@ function Invoke-Checked([string]$File, [string[]]$Arguments) {
         throw "Command failed (exit code $exitCode): $command"
     }
 }
+
+Write-Step "Resource limits"
+Write-Host "  cargo build jobs = $MaxJobs (env:CARGO_BUILD_JOBS)"
+Write-Host "  rayon  threads   = $MaxJobs (env:RAYON_NUM_THREADS)"
+Write-Host "  override with -MaxJobs <N>"
 
 # package.ps1 必须用**具名参数**调用：PowerShell 的数组 splat（`@array`）是按位置传参，
 # 数组里的 `-SelfTest` 会被当作 `-Platform` 的值而触发 ValidateSet 失败
@@ -88,6 +131,102 @@ function Invoke-PackageSelfTest([string]$ProjectRootPath) {
 
 if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
     throw "cargo was not found. Install Rust stable and ensure cargo is on PATH."
+}
+
+# ── Stale artifact cleanup ────────────────────────────────────────────────────
+# 回归测试会反复跑，磁盘上容易堆积：① package.ps1 -SelfTest 在 Windows 上因 AV/索引器锁文件
+# 偶尔清理失败，%TEMP% 里留下完整的发行包副本（每个 ~50-100 MB）；② quality 日志每次运行
+# 新增一个带时间戳的文件，从不清理；③ 手动 GUI 证据运行留下的 artifacts/tmp-* 目录；
+# ④ web/wasm 日志同样堆积。这里在正式测试前统一清理，避免磁盘被悄悄吃满。
+Write-Step "Stale artifact cleanup"
+$cleanedBytes = 0
+
+# ① %TEMP% 下过期的 p2 release/user data test 目录（超过 1 小时的）
+$cutoff = (Get-Date).AddHours(-1)
+foreach ($pattern in @("p2 release test *", "p2 user data test *")) {
+    Get-ChildItem -Path $env:TEMP -Directory -Filter $pattern -ErrorAction SilentlyContinue |
+        Where-Object { $_.CreationTime -lt $cutoff } |
+        ForEach-Object {
+            try {
+                $size = (Get-ChildItem $_.FullName -Recurse -File -ErrorAction SilentlyContinue |
+                    Measure-Object -Property Length -Sum).Sum
+                Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction Stop
+                $cleanedBytes += $size
+                Write-Host "  removed stale temp: $($_.Name)" -ForegroundColor DarkGray
+            } catch {
+                Write-Host "  failed to remove $($_.Name): $_" -ForegroundColor Yellow
+            }
+        }
+}
+
+# ② quality 日志轮转：保留最近 10 个，删除更旧的
+$logFiles = Get-ChildItem -LiteralPath $logRoot -File -Filter "verify-*.log" -ErrorAction SilentlyContinue |
+    Sort-Object CreationTime -Descending
+if ($logFiles.Count -gt 10) {
+    $logFiles | Select-Object -Skip 10 | ForEach-Object {
+        $cleanedBytes += $_.Length
+        Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue
+    }
+    Write-Host "  rotated quality logs: kept 10, removed $($logFiles.Count - 10)" -ForegroundColor DarkGray
+}
+
+# ③ artifacts/tmp-* 目录（手动 GUI 证据运行的残留，超过 1 天的）
+$evidenceCutoff = (Get-Date).AddDays(-1)
+Get-ChildItem -LiteralPath $projectRoot -Directory -Filter "tmp-*" -ErrorAction SilentlyContinue |
+    Where-Object { $_.CreationTime -lt $evidenceCutoff } |
+    ForEach-Object {
+        try {
+            $size = (Get-ChildItem $_.FullName -Recurse -File -ErrorAction SilentlyContinue |
+                Measure-Object -Property Length -Sum).Sum
+            Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction Stop
+            $cleanedBytes += $size
+            Write-Host "  removed stale evidence: $($_.Name)" -ForegroundColor DarkGray
+        } catch {
+            Write-Host "  failed to remove $($_.Name): $_" -ForegroundColor Yellow
+        }
+    }
+# artifacts/ 下的 tmp-* 子目录
+$artifactsDir = Join-Path $projectRoot "artifacts"
+if (Test-Path -LiteralPath $artifactsDir) {
+    Get-ChildItem -LiteralPath $artifactsDir -Directory -Filter "tmp-*" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CreationTime -lt $evidenceCutoff } |
+        ForEach-Object {
+            try {
+                $size = (Get-ChildItem $_.FullName -Recurse -File -ErrorAction SilentlyContinue |
+                    Measure-Object -Property Length -Sum).Sum
+                Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction Stop
+                $cleanedBytes += $size
+                Write-Host "  removed stale evidence: artifacts/$($_.Name)" -ForegroundColor DarkGray
+            } catch {
+                Write-Host "  failed to remove artifacts/$($_.Name): $_" -ForegroundColor Yellow
+            }
+        }
+}
+
+# ④ web/wasm 日志轮转：各保留最近 10 个
+foreach ($subDir in @("webgl", "wasm-lua")) {
+    $subPath = Join-Path $projectRoot "artifacts\logs\$subDir"
+    if (Test-Path -LiteralPath $subPath) {
+        $subLogs = Get-ChildItem -LiteralPath $subPath -File -Filter "*.log" -ErrorAction SilentlyContinue |
+            Sort-Object CreationTime -Descending
+        if ($subLogs.Count -gt 10) {
+            $subLogs | Select-Object -Skip 10 | ForEach-Object {
+                $cleanedBytes += $_.Length
+                Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue
+                # 也清理配套的 .status 和 .err 文件
+                Remove-Item -LiteralPath "$($_.FullName).status" -Force -ErrorAction SilentlyContinue
+                Remove-Item -LiteralPath "$($_.FullName).err" -Force -ErrorAction SilentlyContinue
+            }
+            Write-Host "  rotated $subDir logs: kept 10, removed $($subLogs.Count - 10)" -ForegroundColor DarkGray
+        }
+    }
+}
+
+$cleanedMB = [math]::Round($cleanedBytes / 1MB, 1)
+if ($cleanedBytes -gt 0) {
+    Write-Host "  cleaned up $cleanedMB MB of stale artifacts" -ForegroundColor Green
+} else {
+    Write-Host "  no stale artifacts found" -ForegroundColor DarkGray
 }
 
 $runGates = -not $MvpOnly
