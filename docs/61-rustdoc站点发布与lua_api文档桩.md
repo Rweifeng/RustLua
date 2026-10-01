@@ -70,6 +70,6 @@ powershell -File scripts/gen-rustdoc.ps1      # cargo doc → 可发布的静态
 - **275 个函数目前全是桩**，一条人工说明都还没写；`documented=0` 是诚实的起点而不是完成态。签名是**从绑定源码推断**的，`Option<f32>` / `?` 这类标记需人工核对成 Lua 侧口径（Lua 里没有 `Option`，实际是"可省略参数"）。
 - 文档桩只覆盖 `_G` 上的 41 张模块表；场景组件字符串、`project.toml` 字段、编辑器面板不在 `lua_api_surface.json` 里，各自有自己的 schema 门。
 - `-D warnings` 只作用在 `--lib`；`--all-targets`（examples/benches/tests）没进门，因为 examples 的文档注释不是发布面，且会把一次性脚本的私有胶水也拉进断链统计。
-- `cargo fmt --all --check` 本机仍报 8 个文件的**存量**格式差异（`assetc/src/lib.rs`、`core/commands.rs`、`core/lod.rs`、`core/texture.rs`、`host/renderer.rs`、`host/runtime_scene.rs` 等），是 docs/60 那批遗留，与本次注释行改动无关，也没有顺手改掉——格式化别人的在途代码会把无关 diff 混进这次提交。
+- 本批**只动注释行**，因此不引入格式 diff：在提交树上 `cargo fmt --all -- --check` 实测退出码 0。写作过程中本机一度报 8 个文件的**存量**格式差异（`core/commands.rs`、`core/lod.rs`、`core/texture.rs`、`host/renderer.rs` 等在途文件），那属于并行进行中的另一批改动，没有顺手格式化——格式化别人的在途代码会把无关 diff 混进这次提交。
 - Pages 的 Source 设置、以及"站点真的可访问"这两点未在本机验证（无 `gh`、无凭据），需要一次 push + Actions 观察。
 - 本机 `cargo doc --no-deps --workspace --lib` 出现过**同一条命令一次报 9~19 个编译错、下一次全绿**的抖动（`?` 转换、`Self::init` 实参类型这类不该随机的错误）。`touch crates/engine/src/lib.rs` 强制全量重编后连续多次干净，怀疑是 Windows 上增量编译指纹的 mtime 抖动。CI 是干净 checkout，不受影响；本地若复现，`cargo clean -p engine` 再跑。
