@@ -160,7 +160,7 @@
    真实 WebGL 发布包在无头浏览器里启动后发现——wasm 加载成功、页面进入 Lua，但
    `web-runtime.js` 只有演示级子集，缺 17 个桌面引擎顶层全局
    （`app, asset, calendar, clock, container, data, day, event, grid, interact, inv, item,
-   light, map, shop, sprite, tag`），本工程在 `item` 上停住（`data-p2-boot="failed"`）。
+   light, map, shop, sprite, tag`），本工程在 `item` 上停住（`data-rustlua-boot="failed"`）。
    现状与两条修法（宿主 API 编进 wasm / 把子集定为平台契约）见 `docs/32` §4；
    **PC 发行不受影响**，WebGL 仍按"实验性、未承诺可玩"处理。
 4. **一条发布卫生规则**：发布目录不允许出现 `.cache`/`.data`/`*.sav` 与 `.staging-*` 残留，

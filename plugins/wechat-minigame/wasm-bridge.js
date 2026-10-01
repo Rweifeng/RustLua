@@ -304,7 +304,7 @@ function loadWasmCore(options) {
           + (result.bytes ? '，' + result.bytes + ' 字节' : '')
           + '，导出 ' + result.exports.length + ' 项：' + result.exports.join(',') + '）');
         // host = 胶水函数（wasm-bindgen `--target no-modules` 的导出载体）：调用方可用
-        // `new host.HostApi(name)` 实例化宿主桥挂到 `window.__P2_HOST_API`（WP10 微信侧接线）。
+        // `new host.HostApi(name)` 实例化宿主桥挂到 `window.__RUSTLUA_HOST_API`（WP10 微信侧接线）。
         return {
           ok: true,
           source: picked.source,

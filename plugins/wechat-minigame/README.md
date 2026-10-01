@@ -274,14 +274,14 @@ WXWebAssembly.instantiate(path, imports)  ->  Promise<{module, instance}>
 `/pkg/game_web_bg.wasm` 两种写法（前后导斜杠的容忍度按宿主不同），成功的那个进 `path` 证据。
 
 **失败不掀翻启动**：wasm 核心的宿主交互（`hostapi_*` 诊断）失败只 `console.warn` 一行 +
-`data-p2-wasm` 记状态；**但 Lua 执行层就在 wasm 里**（迁移后无备用解释器），`__P2_LUA_BRIDGE`
+`data-rustlua-wasm` 记状态；**但 Lua 执行层就在 wasm 里**（迁移后无备用解释器），`__RUSTLUA_LUA_BRIDGE`
 缺失会让 `web-runtime.js` 抛 `wasm lua bridge not loaded`——这是发布形态问题，不是可降级路径。
 wasm 状态不被静默忽略——有四个读取通道：
 
 | 通道 | 怎么读 | 取值 |
 |---|---|---|
-| DOM 标记 | `__RustLuaWechat.getAttribute('data-p2-wasm')` | 同下表 `status` |
-| 诊断快照 | `__P2_DIAG().wasm` / `wx.__p2Diag().wasm` | `{status, source, channel, path, exports, detail, attempts}` |
+| DOM 标记 | `__RustLuaWechat.getAttribute('data-rustlua-wasm')` | 同下表 `status` |
+| 诊断快照 | `__RUSTLUA_DIAG().wasm` / `wx.__rustluaDiag().wasm` | `{status, source, channel, path, exports, detail, attempts}` |
 | 启动日志 | 控制台搜 `wasm-bridge:` | 成功一行（含通道、路径与导出清单）或 `wasm 核心未就绪（<reason>｜通道尝试: …）` |
 | API | `__RustLuaWechat.loadWasm()` / `.wasmInfo()` | 触发/等待加载（返回 Promise）/ 只读状态 |
 
@@ -335,7 +335,7 @@ node scripts\wechat-minigame-harness.js examples\game_jhyt\builds\wechat-minigam
 
 适配层启动时会做一次**一致性自检**（`reportViewAgreement`）：读 `project.toml` 的
 `window_width/height`（= 工程声明的设计分辨率，与 `scripts/ui/layout.lua` 同源）与画布比对，
-结果进 `data-p2-view` 与 `__P2_DIAG().view_agreement`。三档口径：
+结果进 `data-rustlua-view` 与 `__RUSTLUA_DIAG().view_agreement`。三档口径：
 `ok`（读到声明且一致）/ `mismatch`（读到但不一致 → `warn`）/ `unknown`（读不到声明，跳过判断，
 **不算错**）。
 注意方向**不参与**这个比对：`game.json` 在真机上读不到（上传后被编译），适配层有一条硬约束
@@ -349,7 +349,7 @@ node scripts\wechat-minigame-harness.js examples\game_jhyt\builds\wechat-minigam
 | 运行时需要 | 小游戏实现 |
 |---|---|
 | `fetch('pack/…')` | `wx.getFileSystemManager().readFileSync`，先查 `USER_DATA_PATH` 再查代码包。**首屏清单内的路径直接读主包 `mainpack/`（不等分包）**；清单外的才先 `await wx.loadSubpackage` 再读 `pack/` |
-| `document` / `window` | 轻量 shim（`getElementById('p2-canvas')`、`body.setAttribute('data-p2-*')` 启动标记） |
+| `document` / `window` | 轻量 shim（`getElementById('rustlua-canvas')`、`body.setAttribute('data-rustlua-*')` 启动标记） |
 | `new Image()` | `wx.createImage()`；**包内没有这张贴图时先下载到 `USER_DATA_PATH`，再把 `src` 指向本地文件**（`Image.src` 是宿主自己加载的，给一个不存在的路径只会静默 `onerror`，画面上少东西而日志里看不出来） |
 | `FontFace` + `document.fonts` | `wx.loadFont` / `canvas.loadFont`，并把 `ctx.font` 里的 `RustLuaGameFont` 替换成真实字体族 |
 | `requestAnimationFrame` | `wx.requestAnimationFrame`（无则 `setTimeout` 兜底） |
@@ -367,13 +367,13 @@ node scripts\wechat-minigame-harness.js examples\game_jhyt\builds\wechat-minigam
   工程主脚本执行（`lua_execute_main`）。微信分支与 webgl 共用同一份 wasm，以 `--target no-modules`
   生成 CommonJS 胶水随包发行，由适配层在 boot 之前经宿主的
   `WXWebAssembly.instantiate('pkg/game_web_bg.wasm', imports)` **异步**实例化（结果含"用了哪条通道"
-  进 `data-p2-wasm` / `__P2_DIAG().wasm` / 一行启动日志）。实测（`-Oz` 后 2,427,854 字节，导出 109 项
+  进 `data-rustlua-wasm` / `__RUSTLUA_DIAG().wasm` / 一行启动日志）。实测（`-Oz` 后 2,427,854 字节，导出 109 项
   含 `lua_boot`…`lua_execute_main`）：
   `wasm-bridge: 核心实例化成功（WXWebAssembly/path-instantiate，路径 pkg/game_web_bg.wasm，导出 109 项：…）`。
   **边界（不要夸大）**：`start()` 是 web-sys 形态（`document`/`window`/`fetch`/`Response`），
   小游戏里跑不了，因此适配层**不调用**它；`start_wechat()`（去 DOM 入口）已写在 Rust 侧但
   **未接线、未验证**（见 `engine/crates/game_web/src/lib.rs` 的状态段）。
-  也就是说渲染/输入仍由 `web-runtime.js` + 适配层承担，而 **Lua 逻辑（经 `__P2_LUA_BRIDGE`）
+  也就是说渲染/输入仍由 `web-runtime.js` + 适配层承担，而 **Lua 逻辑（经 `__RUSTLUA_LUA_BRIDGE`）
   确实跑在 wasm 里**——这两件事别混着说。
 - **真机会没有 `WXWebAssembly` 吗**：不会（基础库 2.13+ 有），但它**只有**
   `instantiate(代码包路径, imports)` 这一条异步通道；拿它当标准 `WebAssembly` 用（喂字节、
@@ -405,7 +405,7 @@ node scripts\wechat-minigame-harness.js examples\game_jhyt\builds\wechat-minigam
   `document.getElementById(...)` 才炸出 `TypeError: document.getElementById is not a function`，
   报错点离原因很远。现在 `installShimGlobal` 一律**回读校验**：
   能接替就接替，接替不了就把 shim 的成员**就地补齐**到宿主对象上（`document`/`window` 都走这条路），
-  并把结果（接替/已补齐/补不动/仍缺）记进 `__P2_DIAG()`。启动时会输出一行自检，例如：
+  并把结果（接替/已补齐/补不动/仍缺）记进 `__RUSTLUA_DIAG()`。启动时会输出一行自检，例如：
 
   ```
   wechat-adapter: 宿主全局自检 window=globalThis document=宿主 document（已补齐） canvas=原对象 getElementById=ok body=ok
@@ -429,22 +429,22 @@ node scripts\wechat-minigame-harness.js examples\game_jhyt\builds\wechat-minigam
   给出"被宿主占用且补不齐"的诊断（一帧都不许跑）。
 
   另外：代码包会被开发者工具缓存，"有没有报错"分不清旧包新包，所以适配层会在加载末尾打一行
-  `wechat-adapter: 适配层已就绪 v0.6.1+diag-world（__RustLuaWechat / __P2_DIAG 已注册；wx 通道=ok）`，
-  版本号同时进 `__P2_DIAG().version`；控制台搜 `适配层已就绪` 就能确认现场跑的是哪一版。
+  `wechat-adapter: 适配层已就绪 v0.6.1+diag-world（__RustLuaWechat / __RUSTLUA_DIAG 已注册；wx 通道=ok）`，
+  版本号同时进 `__RUSTLUA_DIAG().version`；控制台搜 `适配层已就绪` 就能确认现场跑的是哪一版。
 
-  **控制台未必看得见游戏全局**（实测：`适配层已就绪` 打印了、`__P2_DIAG()` 却报
+  **控制台未必看得见游戏全局**（实测：`适配层已就绪` 打印了、`__RUSTLUA_DIAG()` 却报
   `is not defined`——开发者工具控制台的"上下文"与游戏全局不是同一个对象）。所以诊断入口做成
   四条互不依赖的通道，任何一条可用就能拿到现场：
 
   | 通道 | 用法 | 前提 |
   | --- | --- | --- |
-  | 全局 | `__P2_DIAG()` / `__RustLuaWechat.canvasInfo()` | 控制台上下文就是游戏全局 |
-  | `wx` | `wx.__p2Diag()` / `wx.__p2CanvasInfo()` | 控制台里能看到 `wx` |
-  | 存储 | `wx.getStorageSync('p2_diag')`，或直接在**存储面板**里看 | 开发者工具的存储面板能打开 |
-  | 屏幕 | 覆盖层（发布目录放 `debug-overlay.txt`，或 `wx.setStorageSync('p2_debug_overlay','1')`） | **不需要控制台**，真机上唯一可用 |
+  | 全局 | `__RUSTLUA_DIAG()` / `__RustLuaWechat.canvasInfo()` | 控制台上下文就是游戏全局 |
+  | `wx` | `wx.__rustluaDiag()` / `wx.__p2CanvasInfo()` | 控制台里能看到 `wx` |
+  | 存储 | `wx.getStorageSync('rustlua_diag')`，或直接在**存储面板**里看 | 开发者工具的存储面板能打开 |
+  | 屏幕 | 覆盖层（发布目录放 `debug-overlay.txt`，或 `wx.setStorageSync('rustlua_debug_overlay','1')`） | **不需要控制台**，真机上唯一可用 |
 
   覆盖层的像素回读与四角测试图案、贴图失败警示条是"画面到底有没有真的上屏"的最终证据；
-  `p2_diag` 快照在覆盖层开启后每 60 帧刷新一次。
+  `rustlua_diag` 快照在覆盖层开启后每 60 帧刷新一次。
 
   同样的道理适用于 canvas：宿主 canvas 若不允许挂监听（`canvas.addEventListener` 赋值静默失败），
   适配层会换成只做事件转发的包装对象（`getContext`/`width`/`height` 仍转发到真 canvas）。
@@ -459,14 +459,14 @@ node scripts\wechat-minigame-harness.js examples\game_jhyt\builds\wechat-minigam
   - **常驻失败警示条**：只要贴图真的加载失败（宿主 `onerror`）或明知包内与远端都拿不到，屏幕顶部
     就出现红色警示条；启动失败画面也会带上它。
   - **覆盖层 + 像素回读**：把 `debug-overlay.txt` 放进发布目录，或调用
-    `wx.setStorageSync('p2_debug_overlay', '1')`，屏幕上会叠一层四角色块 + 对角线 + 诊断文字，
+    `wx.setStorageSync('rustlua_debug_overlay', '1')`，屏幕上会叠一层四角色块 + 对角线 + 诊断文字，
     并在首帧做一次**真像素回读**（画 `#ff00ff` 再 `getImageData` 读回来）。控制台里
-    `__P2_DIAG()`（以及每 60 帧的 `渲染自证 {...}` 日志）给出可复制的现场快照：主画布来源与尺寸、
+    `__RUSTLUA_DIAG()`（以及每 60 帧的 `渲染自证 {...}` 日志）给出可复制的现场快照：主画布来源与尺寸、
     屏幕尺寸、`ctx` 能力、像素回读、帧数、`drawn`（运行时采样的非背景像素数）、贴图
     `ok/fail/未供应` 与失败样本、读取形式、远端状态、以及**世界状态**（`world`，
     见下一条）。
   - **世界状态行**：运行时每帧把 `scene=/map=/spawn=/alive=/player=@x,y/clip` 写进
-    `data-p2-world`，适配层读出来翻成覆盖层的两行短句（`世界 地图=… 实体=…/… 落点=…`、
+    `data-rustlua-world`，适配层读出来翻成覆盖层的两行短句（`世界 地图=… 实体=…/… 落点=…`、
     `主角 …@x,y 动画=… 渲染侧=x,y`）。为什么需要它："帧循环在跑、UI 在画"和
     "世界里真的有人、主角真的在动"完全是两件事——前者全绿而后者全空时，画面就是一张
     背景图，而日志里一句错都没有。`渲染侧=` 是**渲染器自己**记住的坐标，与 Lua 世界的坐标
@@ -486,7 +486,7 @@ node scripts\wechat-minigame-harness.js examples\game_jhyt\builds\wechat-minigam
 - **触摸端由游戏侧可见虚拟摇杆/按钮接管**（`ui/virtual_pad.lua`），适配层只把触点译成指针事件，不再注入不可见的半屏摇杆；右半屏触点派发确认键（space）。手柄/键鼠映射仍以 PC 端为准。
 - **远端模式下 `Image.src` 必须能被改写**：适配层把"包内没有的贴图"换成本地缓存路径，
   而宿主怎么写 `src` 由适配层启动时**自己探明**，并打一行自检
-  `wechat-adapter: Image.src 接管方式 = prototype-accessor`（同时进 `__P2_DIAG().image_src_takeover`
+  `wechat-adapter: Image.src 接管方式 = prototype-accessor`（同时进 `__RUSTLUA_DIAG().image_src_takeover`
   与覆盖层/`贴图` 诊断行）。三种形态**都必须能用**：
 
   | 接管方式 | 形态 | 写法 |
@@ -502,7 +502,7 @@ node scripts\wechat-minigame-harness.js examples\game_jhyt\builds\wechat-minigam
 
   **`onload`/`onerror` 是同一条契约的另一半**，也必须自报
   `wechat-adapter: Image.onload/onerror 接管方式 = host-setter|own-accessor`
-  （`__P2_DIAG().image_callback_takeover`）。宿主把回调做成**原型访问器**并存在自己的私有字段里
+  （`__RUSTLUA_DIAG().image_callback_takeover`）。宿主把回调做成**原型访问器**并存在自己的私有字段里
   （基础库 2.32.3 的 `k$` 包装类：`set onload(v){ this.__onload = v }`，而真实 image 的回调是
   **构造时**就接成 `this.__onload` 的）时，用自己的 accessor 盖住 `onload` ＝ 把宿主的桥拆掉：
   **贴图加载成功也传不回运行时**，`loadImage` 的 Promise 永不 settle。症状与"src 没交到宿主"
@@ -513,7 +513,7 @@ node scripts\wechat-minigame-harness.js examples\game_jhyt\builds\wechat-minigam
   也不 reject 的卡死（弱网、CDN 挂起、宿主收下 `src` 却永不回调）**不会产生任何异常**，
   日志里和"还在加载"长得一模一样。超时后适配层会 `console.error` 一段现场并
   **把"启动超时 …s"画到画布上**——真机/开发者工具里没有控制台，只打日志等于还是黑屏。
-  超时可用存储覆盖（`wx.setStorageSync('p2_boot_timeout_ms', 300)`）：慢 CDN 上放大，
+  超时可用存储覆盖（`wx.setStorageSync('rustlua_boot_timeout_ms', 300)`）：慢 CDN 上放大，
   自动化用例里缩短（否则验证看门狗本身就要等 10 秒，进不了质量门）。
   这条契约由 `--image-src-silent --expect-boot-stall` 覆盖：宿主收下 `src` 但永不回调 →
   断言看门狗确实报警**且"启动超时"真的落在画布像素上**（只报警不上屏 = 仍然黑屏）。
@@ -537,7 +537,7 @@ node scripts\wechat-minigame-harness.js examples\game_jhyt\builds\wechat-minigam
   ⑤ "流程正常但画面全黑"：`boot=running` 与"真的画到屏幕上"是两件事 → 现在用
   `--host-canvas offscreen` 覆盖离屏画布陷阱，用 `--remote png-fail --expect-image-band`
   覆盖"贴图全丢却照常启动"（实测 35 张贴图全失败时 boot 仍是 running），
-  并给出屏幕警示条 / 覆盖层 / `__P2_DIAG()` 三条自证通道；
+  并给出屏幕警示条 / 覆盖层 / `__RUSTLUA_DIAG()` 三条自证通道；
   ⑥ 开发者工具（稳定版 2.02.2608060，基础库 2.25.3）里**全黑、0 帧、0 错误、日志全绿**：
   适配层只读 `Object.getOwnPropertyDescriptor(image, 'src')`，而基础库把 `src` 定义在
   **原型**上（`class Image { setSrc(v){this._src=v;…} getSrc(){return this._src} }`），
@@ -569,7 +569,7 @@ node scripts\wechat-minigame-harness.js examples\game_jhyt\builds\wechat-minigam
   浏览器端保持"无后端"失败语义）。
   ⑩ "世界在动"与"画面在动"是两件事：Lua 世界与渲染器各存一份实体数据，靠**回写通道**同步
   （结构变更走一次性 op 列表，每帧的 Transform/动画走 `T`/`A` 行）。只在 Lua 侧取样的话，
-  "世界里主角在走、画面上钉死在出生点"完全看不见 → 运行时每帧自报 `data-p2-world`
+  "世界里主角在走、画面上钉死在出生点"完全看不见 → 运行时每帧自报 `data-rustlua-world`
   （含渲染侧坐标 `drawn=`），质量门新增玩法路径用例
   （`--drive-new-game --expect-runtime-spawns --drive-move`）：走到玩法地图后
   **按住运动驱动键**若干帧（`--drive-move` 由键盘桥接注入），断言主角坐标真的变了、且渲染侧坐标与
@@ -587,7 +587,7 @@ node scripts\wechat-minigame-harness.js examples\game_jhyt\builds\wechat-minigam
   不是把断言放宽成 `ops > 0`（那等于放弃这条证据）。
   ⑫ **wasm 宿主桥没接上时，启动不许崩**（开发者工具实测踩到）：WP10 批 B 把 `methodCompat`
   放在 missing 代理占位**之前**执行，而 `genericCompat` 直接在全局 `clock` 上定义方法
-  （`function clock.set_rate(...)`）——微信侧 `__P2_HOST_API` 未接线（wasm 桥不可用）时
+  （`function clock.set_rate(...)`）——微信侧 `__RUSTLUA_HOST_API` 未接线（wasm 桥不可用）时
   `clock` 是 nil，启动即报 `attempt to index a nil value (global 'clock')`，且
   "wasm 失败不影响 Lua 启动"的既有契约被这句崩启动架空。修复：`genericCompat` 先
   `clock = clock or {}` 兜底（now/set/set_rate 用 Lua 侧游戏时间，day 从 1 起；

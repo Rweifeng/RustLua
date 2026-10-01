@@ -3,9 +3,9 @@
 浏览器 WebGL 发布所需的平台侧文件都放在这个目录，`scripts/package.ps1 -Platform webgl`
 会把它们复制/生成进发布包。
 
-- `web-runtime.js`：浏览器运行时。负责从 `pack/` 读取工程与场景、经 **wasm Lua 桥**（`__P2_LUA_BRIDGE`，执行层在 wasm 侧 mlua）执行 Lua、
+- `web-runtime.js`：浏览器运行时。负责从 `pack/` 读取工程与场景、经 **wasm Lua 桥**（`__RUSTLUA_LUA_BRIDGE`，执行层在 wasm 侧 mlua）执行 Lua、
   把 `ui.*` 调用与场景静态 UI（`UiLayout` + `Image`/`Text`）画到 2D canvas，并接入
-  键盘/鼠标输入与启动自检标记（`data-p2-boot` / `data-p2-drawn` / `data-p2-ui-*`）。
+  键盘/鼠标输入与启动自检标记（`data-rustlua-boot` / `data-rustlua-drawn` / `data-rustlua-ui-*`）。
   **微信小游戏发布共用这一份文件**（见 `plugins/wechat-minigame/README.md`）。
 - `index.html`：浏览器页面模板。`package.ps1` 负责替换 `__PUBLISH_NAME__` /
   `__PUBLISH_NAME_JSON__` / `__FONT_PATH__` 三个占位符（标题、脚本字符串与字体路径）。
@@ -51,18 +51,18 @@ wasm 核心之前的历史产物挡在发现之外，否则一个「index.html �
 
 ## 画面自检
 
-`verify-webgl-bundle.ps1` 除了断言 `data-p2-boot`，还读取运行时写入的画布采样：
+`verify-webgl-bundle.ps1` 除了断言 `data-rustlua-boot`，还读取运行时写入的画布采样：
 
-- `data-p2-drawn`：非背景色采样点数量。`-1` 表示像素不可读，`0` 表示"启动了但黑屏"（判定失败）。
-- `data-p2-ui-elements` / `data-p2-ui-summary`：当前帧由 Lua `ui.*` 绘制的元素数量与 id 摘要。
-- `data-p2-world`：**世界状态**，每帧刷新：
+- `data-rustlua-drawn`：非背景色采样点数量。`-1` 表示像素不可读，`0` 表示"启动了但黑屏"（判定失败）。
+- `data-rustlua-ui-elements` / `data-rustlua-ui-summary`：当前帧由 Lua `ui.*` 绘制的元素数量与 id 摘要。
+- `data-rustlua-world`：**世界状态**，每帧刷新：
   `scene=<场景声明实体数> map=<当前地图> spawn=<落点|none> alive=<存活实体数>
   player=<主角名>@x,y/<当前动画> drawn=<渲染器侧主角>x,y`。
   前四项由 Lua 侧给，`scene=`/`drawn=` 由渲染器侧补。
 
 这样可以区分"Lua 在跑"和"真的画出了画面"，避免出现启动成功却没有任何画面的情况。
 
-`data-p2-world` 再往前一步，区分的是"画面在动"和**世界真的在动**：一个只有背景与 HUD 的
+`data-rustlua-world` 再往前一步，区分的是"画面在动"和**世界真的在动**：一个只有背景与 HUD 的
 画面同样能让 `drawn` 与 `ui_elements` 全绿。`alive` 少于 `scene` 说明实体表在场景切换中丢了，
 `alive` 等于 `scene` 说明"运行期生成角色"（`entity.spawn` + `sprite.set` + `animation.attach`）
 这条链路没生效，`player=` 与 `drawn=` 不一致说明**回写通道**（Lua → 渲染器）断了。

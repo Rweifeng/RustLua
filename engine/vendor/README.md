@@ -36,4 +36,4 @@ Lua 与 wasm-bindgen 的错误传播在对应上游版本里没有可用实现�
    - `cargo test -p engine --lib`（桌面全量）+ `cargo fmt` / `cargo clippy -- -D warnings`
    - `cargo check -p game_web --target wasm32-unknown-unknown`（需要 `ZIG` 环境变量）
    - wasm 桥契约：`artifacts/verify-no-modules-bridge.mjs`
-   - webgl / 微信发布门（docs 里的 p2-scene-verify 场景切换回归）
+   - webgl / 微信发布门（docs 里的 rustlua-scene-verify 场景切换回归）

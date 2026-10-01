@@ -56,7 +56,7 @@
 
   function checkStorage() {
     try {
-      const probe = "p2-webgl-probe";
+      const probe = "rustlua-webgl-probe";
       window.localStorage.setItem(probe, "1");
       window.localStorage.removeItem(probe);
       return { available: true, fallback: false };
@@ -117,7 +117,7 @@
     details.firstAssetBytes = assetBytes;
 
     // 资源缺失必须是可诊断的失败（404），而不是静默成功。
-    const missing = await fetch("pack/__p2_missing_probe__.txt", { cache: "no-store" });
+    const missing = await fetch("pack/__rustlua_missing_probe__.txt", { cache: "no-store" });
     details.missingStatus = missing.status;
     if (missing.ok) {
       throw new Error("missing resource unexpectedly resolved");
