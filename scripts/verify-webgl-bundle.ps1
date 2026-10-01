@@ -5,9 +5,9 @@
 #   * verify-webgl.ps1  —— 平台契约层（资源获取/解析、WebGL2 能力、存储降级、缺失资源诊断），
 #                          用一张契约检查页跑，不依赖 wasm 模块；
 #   * 本脚本            —— 产物层：直接起静态服务器 + 无头浏览器打开 `builds/webgl/index.html`，
-#                          断言 wasm 模块加载、页面进入 Lua 执行（`data-p2-boot` 标记），
-#                          并且默认让首帧重新走一遍 applySceneSwitch（`?p2-scene-verify=1`），
-#                          断言 `data-p2-scene-verify=done`。这条**场景切换门**是上次
+#                          断言 wasm 模块加载、页面进入 Lua 执行（`data-rustlua-boot` 标记），
+#                          并且默认让首帧重新走一遍 applySceneSwitch（`?rustlua-scene-verify=1`），
+#                          断言 `data-rustlua-scene-verify=done`。这条**场景切换门**是上次
 #                          wasm panic=abort 与宿主闭包 raise 交叉崩溃（boot=ok 却一切就死）
 #                          的回归哨兵；`-NoSceneVerify` 会把它关掉（只验 boot）。
 #
@@ -20,7 +20,7 @@
 # 省略 -BundleRoot 时自动发现（本机唯一的合格 webgl 产物，见 scripts\bundle-discovery.ps1）：
 # 默认值不再写死某个游戏工程，任何工程发布后都能直接跑。
 #
-# 退出码：0 = 启动成功且场景切换门通过（`data-p2-boot=ok` + `data-p2-scene-verify=done`）；
+# 退出码：0 = 启动成功且场景切换门通过（`data-rustlua-boot=ok` + `data-rustlua-scene-verify=done`）；
 #         1 = 启动或场景切换失败（含缺失宿主 API 与 scene-verify 明细）；
 #         2 = 环境受限（无 node/浏览器）；3 = 未找到产物（需 -BundleRoot 显式指定）。
 
@@ -29,8 +29,8 @@ param(
     [string]$BundleRoot = "",
     [int]$Port = 8137,
     [int]$TimeoutSeconds = 90,
-    # P0-①：URL 驱动"完整剧本"（`?p2-drive=auto`）：标题按确认 → 进玩法地图 → 按住方向键
-    # 移动。断言 `data-p2-drive=done` 且位移非零（主角真的在浏览器里被驱动着走了）。
+    # P0-①：URL 驱动"完整剧本"（`?rustlua-drive=auto`）：标题按确认 → 进玩法地图 → 按住方向键
+    # 移动。断言 `data-rustlua-drive=done` 且位移非零（主角真的在浏览器里被驱动着走了）。
     # 与 -NoSceneVerify 独立：剧本是"跑游戏内容"，scene-verify 是"跑运行时切换机制"。
     [switch]$Drive,
     # 关掉场景切换防回归门（默认 ON）：仅当产物里没有可 reload 的启动场景时才关。
@@ -139,8 +139,8 @@ $server = Start-Process -FilePath $node.Source `
 Start-Sleep -Milliseconds 1200
 
 $queryBits = @()
-if ($Drive) { $queryBits += "p2-drive=auto" }
-if (-not $NoSceneVerify) { $queryBits += "p2-scene-verify=1" }
+if ($Drive) { $queryBits += "rustlua-drive=auto" }
+if (-not $NoSceneVerify) { $queryBits += "rustlua-scene-verify=1" }
 $url = "http://127.0.0.1:$Port/index.html"
 if ($queryBits.Count -gt 0) { $url += "?" + ($queryBits -join "&") }
 $domPath = Join-Path $logRoot "bundle-dom-$stamp.html"
@@ -170,7 +170,7 @@ function Invoke-HeadlessDom([string]$HeadlessFlag) {
 }
 
 $dom = Invoke-HeadlessDom "--headless"
-if (-not $dom -or $dom -notmatch "data-p2-boot") {
+if (-not $dom -or $dom -notmatch "data-rustlua-boot") {
     $dom = Invoke-HeadlessDom "--headless=new"
 }
 Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
@@ -181,8 +181,8 @@ if (-not $dom) {
 }
 
 # ---------- 3. 断言 ----------
-$boot = if ($dom -match 'data-p2-boot="([^"]*)"') { $Matches[1] } else { "absent" }
-$detail = if ($dom -match 'data-p2-boot-detail="([^"]*)"') { $Matches[1] } else { "" }
+$boot = if ($dom -match 'data-rustlua-boot="([^"]*)"') { $Matches[1] } else { "absent" }
+$detail = if ($dom -match 'data-rustlua-boot-detail="([^"]*)"') { $Matches[1] } else { "" }
 $statusText = if ($dom -match '<div id="status">([^<]*)</div>') { $Matches[1] } else { "" }
 # 缺失宿主 API 明细：`detail` 里是 `… [missing engine host API: a, b, c]`。单独导出一个
 # **数值**字段给验收样例读（JSON 里逗号与转义引号都会打乱"按字段切割"的朴素解析）。
@@ -190,26 +190,26 @@ $missingNames = @()
 if ($detail -match 'missing engine host API:\s*([^\]]*)') {
     $missingNames = @($Matches[1].Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 }
-# 画面自检：`data-p2-drawn` 是运行时对 canvas 采样得到的“非背景像素采样点”数量。
+# 画面自检：`data-rustlua-drawn` 是运行时对 canvas 采样得到的“非背景像素采样点”数量。
 # `-1` = 像素不可读（跨域贴图污染），`0` = 启动了但真的什么都没画出来。
-$drawnRaw = if ($dom -match 'data-p2-drawn="(-?\d+)"') { [int]$Matches[1] } else { $null }
-$uiElements = if ($dom -match 'data-p2-ui-elements="(\d+)"') { [int]$Matches[1] } else { $null }
+$drawnRaw = if ($dom -match 'data-rustlua-drawn="(-?\d+)"') { [int]$Matches[1] } else { $null }
+$uiElements = if ($dom -match 'data-rustlua-ui-elements="(\d+)"') { [int]$Matches[1] } else { $null }
 # 世界状态自报：`scene=/map=/alive=/player=@x,y/clip`（+ 渲染侧 `drawn=`）。
 # 这里只作为**证据**记录，不新增判定：无头浏览器这一次是"打开页面等 15s 后 dump DOM"，
 # 停在启动场景是正常的（玩家要按键才进玩法地图）。真正有牙的那一组断言在
 # `scripts/wechat-minigame-harness.js --drive-new-game ...` 里——两个 web 平台共用同一份
 # `web-runtime.js`，字段含义完全一致，所以这里读到的世界状态可以直接对照它。
-$world = if ($dom -match 'data-p2-world="([^"]*)"') { $Matches[1] } else { "" }
-# P0-①：`?p2-drive=auto` 的剧本结果。`done` = 确认 → 进玩法地图 → 位移非零全部发生；
+$world = if ($dom -match 'data-rustlua-world="([^"]*)"') { $Matches[1] } else { "" }
+# P0-①：`?rustlua-drive=auto` 的剧本结果。`done` = 确认 → 进玩法地图 → 位移非零全部发生；
 # `failed` 时 detail 给出卡在哪一步（场景没切换 / 没有玩家位置 / 位移为 0）。
-$driveState = if ($dom -match 'data-p2-drive="([^"]*)"') { $Matches[1] } else { "absent" }
-$driveStateDetail = if ($dom -match 'data-p2-drive-detail="([^"]*)"') { $Matches[1] } else { "" }
-# 场景切换防回归门：`?p2-scene-verify=1` 让首帧把当前场景重新走一遍 applySceneSwitch
+$driveState = if ($dom -match 'data-rustlua-drive="([^"]*)"') { $Matches[1] } else { "absent" }
+$driveStateDetail = if ($dom -match 'data-rustlua-drive-detail="([^"]*)"') { $Matches[1] } else { "" }
+# 场景切换防回归门：`?rustlua-scene-verify=1` 让首帧把当前场景重新走一遍 applySceneSwitch
 # 全流程（fetch → parse → 重绑 Lua → 重跑 on_create）。done=通过、failed=细节给出错误、
 # in-flight=在途未落定（通常说明 headless 虚拟时间预算在切换 promise resolve 前烧完）、
 # absent=URL 门没接上或 runtime 未升级。后两种都算失败。
-$sceneVerifyState = if ($dom -match 'data-p2-scene-verify="([^"]*)"') { $Matches[1] } else { "absent" }
-$sceneVerifyDetail = if ($dom -match 'data-p2-scene-verify-detail="([^"]*)"') { $Matches[1] } else { "" }
+$sceneVerifyState = if ($dom -match 'data-rustlua-scene-verify="([^"]*)"') { $Matches[1] } else { "absent" }
+$sceneVerifyDetail = if ($dom -match 'data-rustlua-scene-verify-detail="([^"]*)"') { $Matches[1] } else { "" }
 
 $summary = [ordered]@{
     task           = "M31"

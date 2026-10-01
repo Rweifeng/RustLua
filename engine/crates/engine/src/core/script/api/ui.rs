@@ -137,7 +137,7 @@ pub(super) fn register(lua: &Lua, ui: Table, state: Rc<RefCell<ScriptState>>) ->
     ui.set(
         "scene_text_visible",
         // 场景文字实体按名显隐：`visible == false` 隐藏，其余（true / 省略）显示。
-        // 语义与 web 兼容层 `__p2_scene_text_hidden` 对齐（title_menu 隐藏场景层
+        // 语义与 web 兼容层 `__rustlua_scene_text_hidden` 对齐（title_menu 隐藏场景层
         // 按钮标签、改由脚本统一绘制，避免两层文字重叠）。
         lua.create_function(move |_, (name, visible): (String, Option<bool>)| {
             let mut state = s.lua_borrow_mut()?;

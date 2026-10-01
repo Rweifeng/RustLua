@@ -87,11 +87,11 @@ node scripts/serve-static.js examples/game_jhyt/builds/webgl/<name> 8000
 1. 断言发布产物完整（`index.html`/`web-runtime.js`/`pkg/game_web.js`/`pkg/game_web_bg.wasm`/
    `pack/manifest.txt`/`fonts/*.ttf`），并校验 wasm 魔数（`\0asm`，不是占位文件）；
 2. 起静态服务器 + 无头浏览器打开 `index.html`，读页面上的机器可读启动标记
-   `data-p2-boot`（`pending`/`booted`/`running`/`ok`/`failed`）与 `data-p2-boot-detail`；
+   `data-rustlua-boot`（`pending`/`booted`/`running`/`ok`/`failed`）与 `data-rustlua-boot-detail`；
 3. `boot=ok|booted|running` → 退出 0 并写 `bundle-summary-*.json`；`failed` → 退出 1 并把
    **缺失的引擎宿主 API 全局**列出来；无 node/浏览器 → 退出 2（环境受限，不伪造通过）；
    省略 `-BundleRoot` 又没能唯一定位产物 → 退出 3（打印候选与被排除项及原因）。
-4. 顺带把运行时的**世界状态自报**（`data-p2-world`：`scene=/map=/alive=/player=@x,y/clip`）
+4. 顺带把运行时的**世界状态自报**（`data-rustlua-world`：`scene=/map=/alive=/player=@x,y/clip`）
    写进 summary 与日志。它在这里只是**证据**、不是判定：无头浏览器这一次是"打开页面等 15s
    再 dump DOM"，停在启动场景是正常的（玩家要按键才进玩法地图）。有牙的那一组断言在
    `scripts/wechat-minigame-harness.js --drive-new-game --expect-runtime-spawns --drive-move`
@@ -120,7 +120,7 @@ node scripts/serve-static.js examples/game_jhyt/builds/webgl/<name> 8000
 - 好消息：wasm 模块**真实加载**，页面**进入了 Lua 执行**（`scripts/main.lua` 已被加载执行）；
 - 坏消息：`game_jhyt` 的脚本在一个 WebGL 运行时没有实现的宿主 API 上失败——
   `[string "scripts/main.lua"]:6545: attempt to index a nil value (global 'item')`，
-  失败时页面标记 `data-p2-boot="failed"` 并给出缺失清单：
+  失败时页面标记 `data-rustlua-boot="failed"` 并给出缺失清单：
 
   `app, asset, calendar, clock, container, data, day, event, grid, interact, inv, item, light,
   map, shop, sprite, tag`（17 个）

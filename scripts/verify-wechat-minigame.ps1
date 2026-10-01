@@ -352,11 +352,11 @@ if (-not $SkipRuntime) {
     function Invoke-HarnessCase {
         param([string[]]$ExtraArgs, [string]$Label)
         Write-Host ("==> Runtime verification: node $harness $root --frames $Frames {0}" -f ($ExtraArgs -join ' ')) -ForegroundColor Cyan
-        $outFile = Join-Path $env:TEMP ("p2-wx-verify-" + [guid]::NewGuid().ToString("N") + ".out")
+        $outFile = Join-Path $env:TEMP ("rustlua-wx-verify-" + [guid]::NewGuid().ToString("N") + ".out")
         $errFile = $outFile + ".err"
         try {
             # `Start-Process -ArgumentList` 会把数组按空格拼接且**不加引号**：含空格的路径
-            # （自测用的 "p2 release test …" 隔离目录）必须自己带上引号——不只是 $root，
+            # （自测用的 "rustlua release test …" 隔离目录）必须自己带上引号——不只是 $root，
             # 附加参数里的路径（--remote-root <资源包目录>）同样会从空格处被截断。
             $quoted = foreach ($arg in $ExtraArgs) {
                 if ($arg -match '"') { throw "harness 参数里不允许出现双引号: $arg" }

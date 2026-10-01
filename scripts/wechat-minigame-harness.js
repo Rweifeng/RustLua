@@ -68,7 +68,7 @@ let noFrames = false;
   let silentImageSrc = false;
   // 期望"启动卡死"是**预期行为**：此时断言适配层的看门狗确实报了警并画到了屏幕上。
   let expectBootStall = false;
-  // 看门狗超时（毫秒），通过存储注入给适配层（见 wechat-adapter.js 的 p2_boot_timeout_ms）。
+  // 看门狗超时（毫秒），通过存储注入给适配层（见 wechat-adapter.js 的 rustlua_boot_timeout_ms）。
   let bootTimeoutMsOverride = 0;
   // harness 自己的启动等待上限，默认 30s；卡死用例要把它压到几秒，否则一条用例跑 30 秒进不了质量门。
   let bootDeadlineOverride = 0;
@@ -80,7 +80,7 @@ let noFrames = false;
   let hostDocument = '';
   let hostWindowMode = '';
   // 上屏画布与 wx.createCanvas() 返回值不一致的宿主形态（见下面的 offscreenCanvas 说明）。
-  // --debug-overlay：开启适配层的屏幕自证覆盖层（走 wx.getStorageSync('p2_debug_overlay')）。
+  // --debug-overlay：开启适配层的屏幕自证覆盖层（走 wx.getStorageSync('rustlua_debug_overlay')）。
   let hostCanvasMode = '';
   let debugOverlay = false;
   // 期望"贴图拿不到 → 屏幕上出现红色警示条"（配合 --remote down 使用）。
@@ -263,8 +263,8 @@ if (argv[i] === '--no-frames') noFrames = true;
     fail(`--remote-root 下没有 pack/: ${remoteServeRoot}`);
   }
 
-  const userRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'p2-wx-user-'));
-  const downloadTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'p2-wx-dl-'));
+  const userRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'rustlua-wx-user-'));
+  const downloadTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rustlua-wx-dl-'));
   let downloadSeq = 0;
   const pendingImageSrcs = new Set();
 const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures: 0, imageFailureSamples: [], keyEvents: [], drawOps: 0, frames: 0, storage: new Map(), remoteRequests: 0, remoteAttempts: 0, cacheWrites: 0, fontLoaded: 0, fontMissing: 0, fontBadMagic: 0, audioPlayed: 0, audioCreated: 0, audioSrcs: [] };
@@ -360,13 +360,13 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
     }
     return null;
   }
-  // 适配层自绘（进度条 / 警示条 / 覆盖层 / 像素自检）会把 `ctx.__p2AdapterDraw` 置真
+  // 适配层自绘（进度条 / 警示条 / 覆盖层 / 像素自检）会把 `ctx.__rustluaAdapterDraw` 置真
   // （见 wechat-adapter.js 的 withAdapterDraw）。这些笔数**不计入** stats.drawOps：
   // "每帧绘制数严格递增"这条断言要证明的是**游戏**在画，而适配层的笔数随自身状态增减
   // （分包一开始下载每帧多画几笔，挂载完成后又少画几笔）→ 递减 → 假红。
   // 口径是把适配层的笔**排除**，不是放宽断言：游戏自己不画了，这条依然会红。
   function countDraw(ctx) {
-    if (ctx && ctx.__p2AdapterDraw) return;
+    if (ctx && ctx.__rustluaAdapterDraw) return;
     stats.drawOps++;
     if (ctx) ctx.__ops++;
   }
@@ -421,7 +421,7 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
     ctx.strokeRect = function () { countDraw(ctx); };
     // 贴图也要落到像素上：运行时的画面自检（web-runtime.js 的 sampleDrawnPixels）是**真的**
     // 采样 canvas 像素来回答"启动了但有没有画出东西"。假 ctx 若不记录 drawImage 的落点，
-    // 这条断言就退化成"只有 fillRect 才算数"，`data-p2-drawn` 会凭空变小。
+    // 这条断言就退化成"只有 fillRect 才算数"，`data-rustlua-drawn` 会凭空变小。
     ctx.drawImage = function (image) {
       countDraw(ctx);
       const rest = Array.prototype.slice.call(arguments, 1).map((value) => Number(value) || 0);
@@ -906,7 +906,7 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
         let target = options.filePath || null;
         try {
           if (!target) {
-            target = path.join(downloadTmpDir, 'p2-dl-' + (downloadSeq++) + path.extname(String(options.url).split('?')[0]));
+            target = path.join(downloadTmpDir, 'rustlua-dl-' + (downloadSeq++) + path.extname(String(options.url).split('?')[0]));
           } else {
             const abs = resolveWritePath(target);
             if (!abs) throw new Error('filePath 不在 USER_DATA_PATH 下（真机会拒绝）: ' + target);
@@ -1089,13 +1089,13 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
     try { delete globalThis.WXWebAssembly; } catch (_) { }
     try { delete globalThis.WebAssembly; } catch (_) { }
   }
-  if (debugOverlay) stats.storage.set('p2_debug_overlay', '1');
-  // 看门狗超时走存储注入（适配层读 p2_boot_timeout_ms）：默认 10s，卡死用例压到 1s 左右，
+  if (debugOverlay) stats.storage.set('rustlua_debug_overlay', '1');
+  // 看门狗超时走存储注入（适配层读 rustlua_boot_timeout_ms）：默认 10s，卡死用例压到 1s 左右，
   // 否则"验证看门狗"本身要等 10 秒，进不了质量门。
-  if (bootTimeoutMsOverride > 0) stats.storage.set('p2_boot_timeout_ms', bootTimeoutMsOverride);
+  if (bootTimeoutMsOverride > 0) stats.storage.set('rustlua_boot_timeout_ms', bootTimeoutMsOverride);
   // fail-once 要验的是"失败之后能自愈"，而适配层的重试冷却是 10 秒（自动化等不起）。
   // 这里把冷却压到 0（与看门狗超时同一套注入手法），让重试在同一个用例里真的发生。
-  if (subpackageMode === 'fail-once') stats.storage.set('p2_pack_retry_cooldown_ms', '0');
+  if (subpackageMode === 'fail-once') stats.storage.set('rustlua_pack_retry_cooldown_ms', '0');
   // 上屏画布挂在全局（真机/开发者工具就是这样）：`--host-canvas offscreen` 时它与
   // wx.createCanvas() 的返回值**不是同一个对象**，适配层必须挑全局这个上屏画布。
   if (hostCanvasMode === 'offscreen') globalThis.GameGlobal = { canvas };
@@ -1137,7 +1137,7 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
       }
       if (hostDocument === 'locked') Object.preventExtensions(locked);
       // 非 locked 的两个形态额外给一个**看着像 DOM、其实不能用**的 body（有 appendChild、
-      // 没有 setAttribute）：它会让 data-p2-boot / data-p2-drawn 全都写不进去，
+      // 没有 setAttribute）：它会让 data-rustlua-boot / data-rustlua-drawn 全都写不进去，
       // 也就是让**诊断自己撒谎**（画面画了却报 drawn=0）。
       if (hostDocument !== 'locked') locked.body = { appendChild: () => {}, style: {} };
       hostStubs.document = hostDocument === 'frozen' ? Object.freeze(locked) : locked;
@@ -1196,7 +1196,7 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
   // **启动必须有截止时间**：启动 Promise 既不 resolve 也不 reject 时（例如某张贴图永远
   // 不触发 onload/onerror），早期实现会一直等下去——那既不是"通过"也不是"失败"，
   // 而是把整条验证链挂死（实测 600s 超时）。这里改成明确失败，并点名还没完成的贴图。
-  const bootDeadlineMs = bootDeadlineOverride > 0 ? bootDeadlineOverride : Number(process.env.P2_BOOT_TIMEOUT_MS || 30000);
+  const bootDeadlineMs = bootDeadlineOverride > 0 ? bootDeadlineOverride : Number(process.env.RUSTLUA_BOOT_TIMEOUT_MS || 30000);
   const bootWinner = await Promise.race([
     bootSettled.then(() => 'settled'),
     new Promise((resolve) => { setTimeout(() => resolve('timeout'), bootDeadlineMs); })
@@ -1221,12 +1221,12 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
           `；画到屏幕上的文本 ${drawnTexts.length} 条: ${drawnTexts.slice(0, 8).join(' | ') || '（无）'}`);
       }
       const stallDiag = adapter.diag ? adapter.diag() : {};
-      console.log(`wechat_minigame_harness_negative_ok case=boot-stall boot=${globalThis.__RustLuaWechat && globalThis.__RustLuaWechat.getAttribute('data-p2-boot')}` +
+      console.log(`wechat_minigame_harness_negative_ok case=boot-stall boot=${globalThis.__RustLuaWechat && globalThis.__RustLuaWechat.getAttribute('data-rustlua-boot')}` +
         ` pending_images=${pendingImageSrcs.size} watchdog_ms=${bootTimeoutMsOverride || 'default'} on_screen=yes` +
         ` image_src_takeover=${stallDiag.image_src_takeover || 'n/a'} frames=${stats.frames} elapsed_ms=${Date.now() - remoteStartedAt}`);
       return 0;
     }
-    fail(`启动 Promise 在 ${bootDeadlineMs}ms 内没有 settle（boot=${globalThis.__RustLuaWechat && globalThis.__RustLuaWechat.getAttribute('data-p2-boot')}）` +
+    fail(`启动 Promise 在 ${bootDeadlineMs}ms 内没有 settle（boot=${globalThis.__RustLuaWechat && globalThis.__RustLuaWechat.getAttribute('data-rustlua-boot')}）` +
       `；未完成加载的贴图 ${pendingImageSrcs.size} 张: ${pending.length ? pending.join(' | ') : '（无）'}` +
       `；统计 pack_reads=${stats.packReads} subpackage_loads=${stats.subpackageLoads} image_failures=${stats.imageFailures} remote_attempts=${stats.remoteAttempts}` +
       `；适配层诊断 ${logs.length} 条:\n    ${logs.length ? logs.join('\n    ') : '（无）'}`);
@@ -1242,7 +1242,7 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
   const mouseBridgeEvents = [];
   // frozen/locked 宿主下 document.getElementById 可能缺失（适配层补不回来），
   // 自检代码自身必须先防御再调用，否则会把「宿主被冻结」误报成 harness 崩溃。
-  const canvasTouchTarget = globalThis.document && typeof globalThis.document.getElementById === 'function' ? globalThis.document.getElementById('p2-canvas') : null;
+  const canvasTouchTarget = globalThis.document && typeof globalThis.document.getElementById === 'function' ? globalThis.document.getElementById('rustlua-canvas') : null;
   if (canvasTouchTarget && typeof canvasTouchTarget.addEventListener === 'function') {
     canvasTouchTarget.addEventListener('mousedown', (event) => { mouseBridgeEvents.push(`down:${Math.round(event.clientX)},${Math.round(event.clientY)}`); });
     canvasTouchTarget.addEventListener('mousemove', (event) => { mouseBridgeEvents.push(`move:${Math.round(event.clientX)},${Math.round(event.clientY)}`); });
@@ -1329,10 +1329,10 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
       if (inputHandlers.onKeyUp) inputHandlers.onKeyUp({ key: 'ArrowUp', code: 'ArrowUp' });
     }
 
-    const bootState = adapter.getAttribute('data-p2-boot');
-    const bootDetail = adapter.getAttribute('data-p2-boot-detail') || '';
-    const drawn = Number(adapter.getAttribute('data-p2-drawn') || 0);
-    const uiElements = adapter.getAttribute('data-p2-ui-elements');
+    const bootState = adapter.getAttribute('data-rustlua-boot');
+    const bootDetail = adapter.getAttribute('data-rustlua-boot-detail') || '';
+    const drawn = Number(adapter.getAttribute('data-rustlua-drawn') || 0);
+    const uiElements = adapter.getAttribute('data-rustlua-ui-elements');
     const fontFamily = adapter.fontFamily();
 
     // 二进制读取验证：fetch(...).arrayBuffer() 必须与磁盘字节逐字节一致。
@@ -1467,10 +1467,10 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
       // 现场导出通道：开发者工具控制台的"上下文"可能**看不到游戏全局**
       // （实测：`适配层已就绪` 打了、`__P2_DIAG()` 却报 is not defined），所以"挂在 wx 上"
       // 和"写进 wx 存储"这两条不依赖全局作用域的通道必须真的可用。
-      if (typeof globalThis.wx.__p2Diag !== 'function') overlayFailures.push('wx.__p2Diag 不可用（控制台看不到游戏全局时的现场通道）');
+      if (typeof globalThis.wx.__rustluaDiag !== 'function') overlayFailures.push('wx.__rustluaDiag 不可用（控制台看不到游戏全局时的现场通道）');
       let storedDiag = null;
-      try { storedDiag = globalThis.wx.getStorageSync('p2_diag'); } catch (e) { storedDiag = null; }
-      if (!storedDiag || !/"boot"/.test(String(storedDiag))) overlayFailures.push('wx 存储里没有 p2_diag 快照（存储面板看不到现场）');
+      try { storedDiag = globalThis.wx.getStorageSync('rustlua_diag'); } catch (e) { storedDiag = null; }
+      if (!storedDiag || !/"boot"/.test(String(storedDiag))) overlayFailures.push('wx 存储里没有 rustlua_diag 快照（存储面板看不到现场）');
       restoreRemoteConfig();
       if (overlayFailures.length) {
         fail(`渲染自证覆盖层用例未按预期表现（--debug-overlay）:\n  - ${overlayFailures.join('\n  - ')}`);
@@ -1568,7 +1568,7 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
         if (stats.frames > 0) hostFailures.push(`补不齐时不该继续跑帧（frames=${stats.frames}）`);
       } else {
         if (bootOutcome.error) hostFailures.push(`宿主提供可补齐的全局时不该失败: ${String((bootOutcome.error && bootOutcome.error.message) || bootOutcome.error).slice(0, 200)}`);
-        if (bootState !== 'running' && bootState !== 'ok') hostFailures.push(`data-p2-boot=${bootState}（期望 running/ok）`);
+        if (bootState !== 'running' && bootState !== 'ok') hostFailures.push(`data-rustlua-boot=${bootState}（期望 running/ok）`);
         if (!patchLog) hostFailures.push('适配层没有报告"就地补齐"（无法确认走的是补齐而不是替换/丢弃）');
         // 模块必须**加载完整**：开发者工具里 __RustLuaWechat is not defined 就是加载期中止的信号。
         if (!globalThis.__RustLuaWechat || typeof globalThis.__RustLuaWechat !== 'object') {
@@ -1581,9 +1581,9 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
         if (typeof globalThis.document.getElementById !== 'function') {
           hostFailures.push('document.getElementById 仍不是函数（这正是开发者工具里报的 TypeError）');
         }
-        const canvasFromDocument = globalThis.document.getElementById('p2-canvas');
+        const canvasFromDocument = globalThis.document.getElementById('rustlua-canvas');
         if (!canvasFromDocument || typeof canvasFromDocument.getContext !== 'function') {
-          hostFailures.push('document.getElementById("p2-canvas") 没有返回可用的 canvas');
+          hostFailures.push('document.getElementById("rustlua-canvas") 没有返回可用的 canvas');
         }
         // 运行时的标记落在 `document.body || document.documentElement`：两者**至少一个**能写。
         const markHost = [globalThis.document.body, globalThis.document.documentElement]
@@ -1595,8 +1595,8 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
         const hostDiag = adapter.diag ? adapter.diag() : null;
         if (!hostDiag) hostFailures.push('适配层没有暴露 diag()');
         else {
-          if (hostDiag.boot !== 'running' && hostDiag.boot !== 'ok') hostFailures.push(`补齐后 data-p2-boot=${hostDiag.boot}（标记没写进 body/documentElement）`);
-          if (!(Number(hostDiag.drawn) > 0)) hostFailures.push(`补齐后 data-p2-drawn=${hostDiag.drawn}（画面自证读不到像素数）`);
+          if (hostDiag.boot !== 'running' && hostDiag.boot !== 'ok') hostFailures.push(`补齐后 data-rustlua-boot=${hostDiag.boot}（标记没写进 body/documentElement）`);
+          if (!(Number(hostDiag.drawn) > 0)) hostFailures.push(`补齐后 data-rustlua-drawn=${hostDiag.drawn}（画面自证读不到像素数）`);
           if (hostDiag.boot_marks === 'none') hostFailures.push('诊断报告"标记写于 none"（读不到运行时的标记）');
           if (hostDocument === 'locked') {
             // 不可扩展的宿主对象：补不动的成员必须被明确报出来，而不是假装补齐了。
@@ -1640,7 +1640,7 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
     //（"静默装死"和"响亮报错"对使用者的代价完全不同，见 docs/52 R9b 同一思路）。
     if (noWasm) {
       if (bootState !== 'failed') {
-        failures.push(`--no-wasm 下期望 data-p2-boot=failed（wasm 即 Lua 执行层，缺它必须失败），实际 ${bootState}`);
+        failures.push(`--no-wasm 下期望 data-rustlua-boot=failed（wasm 即 Lua 执行层，缺它必须失败），实际 ${bootState}`);
       }
       if (!bootOutcome.error) {
         failures.push('--no-wasm 下启动 Promise 没有 reject：缺失 Lua 执行层被静默吞掉了');
@@ -1652,12 +1652,12 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
         failures.push('--no-wasm 下控制台没有"启动失败"这一行（屏幕之外的可见通道缺失）');
       }
     } else {
-      if (bootState !== 'running' && bootState !== 'ok') failures.push(`data-p2-boot=${bootState}（期望 running/ok）`);
+      if (bootState !== 'running' && bootState !== 'ok') failures.push(`data-rustlua-boot=${bootState}（期望 running/ok）`);
     }
     // --- 「点开始新游戏」这条用户真实路径的**世界状态**断言。
     // 只断言"帧循环没停"是不够的：进了图但世界里一个实体都没有、主角没被搬到落点，
     // 这些半死状态以前照样全绿（实测就是"停在标题后又进了 manor，实体 28 个里 NPC
-    // 一个都没生成"）。运行时每帧自报 data-p2-world，这里逐项核对。
+    // 一个都没生成"）。运行时每帧自报 data-rustlua-world，这里逐项核对。
     // 断言的措辞保持平台通用：不认工程名，只核对宿主 API 的契约。
     // --- 「按住方向键主角会走」：世界起来之后的**运动**断言。
     // 前面所有断言只看"世界存在"（地图对、实体数对、主角在落点）。一个只存在于纸面上的
@@ -1665,7 +1665,7 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
     // T 行不生效时，画面上的主角钉死在出生点——"能进图但不能玩"就是这种半死状态。
     let moveEvidence = 'not-driven';
     if (driveMove > 0) {
-      const readWorld = () => String(adapter.getAttribute('data-p2-world') || '');
+      const readWorld = () => String(adapter.getAttribute('data-rustlua-world') || '');
       const readPlayer = (text) => {
         const match = text.match(/player=\S+?@(-?\d+),(-?\d+)/);
         return match ? { x: Number(match[1]), y: Number(match[2]) } : null;
@@ -1684,7 +1684,7 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
       // 鼠标事件 + Lua 侧注入），这里回落到键盘桥接注入 'w' 作为运动驱动。
       const keys = stickKeys.length ? stickKeys : ['w'];
       if (!before) {
-        failures.push(`--drive-move 前拿不到主角坐标（data-p2-world=${readWorld()}）`);
+        failures.push(`--drive-move 前拿不到主角坐标（data-rustlua-world=${readWorld()}）`);
         moveEvidence = 'no-player';
       } else {
         for (const key of keys) if (inputHandlers.onKeyDown) inputHandlers.onKeyDown({ key, code: key });
@@ -1694,7 +1694,7 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
         await pump();
         const after = readPlayer(readWorld());
         if (!after) {
-          failures.push(`--drive-move 后拿不到主角坐标（data-p2-world=${readWorld()}）`);
+          failures.push(`--drive-move 后拿不到主角坐标（data-rustlua-world=${readWorld()}）`);
           moveEvidence = 'no-player-after';
         } else {
           const dx = after.x - before.x;
@@ -1715,7 +1715,7 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
     // 可见摇杆/按钮不生效"修复的端到端回归：摇杆链路断了这条必红。
     let touchStickEvidence = 'not-driven';
     if (touchStickMove > 0) {
-      const readWorld = () => String(adapter.getAttribute('data-p2-world') || '');
+      const readWorld = () => String(adapter.getAttribute('data-rustlua-world') || '');
       const readPlayer = (text) => {
         const match = text.match(/player=\S+?@(-?\d+),(-?\d+)/);
         return match ? { x: Number(match[1]), y: Number(match[2]) } : null;
@@ -1731,7 +1731,7 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
       };
       const before = readPlayer(readWorld());
       if (!before) {
-        failures.push('--touch-stick-move 前拿不到主角坐标（data-p2-world=' + readWorld() + '）');
+        failures.push('--touch-stick-move 前拿不到主角坐标（data-rustlua-world=' + readWorld() + '）');
         touchStickEvidence = 'no-player';
       } else {
         // 可见摇杆底圆中心在画布 (150,585)（375×667 屏等比 contain 后 ≈ (44,399)），
@@ -1820,7 +1820,7 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
         await new Promise((resolve) => setTimeout(resolve, 0));
         return true;
       };
-      const uiSummary = () => String(adapter.getAttribute('data-p2-ui-summary') || '');
+      const uiSummary = () => String(adapter.getAttribute('data-rustlua-ui-summary') || '');
       const bagDown = { touches: [{ identifier: 12, clientX: 344, clientY: 334 }], changedTouches: [{ identifier: 12, clientX: 344, clientY: 334 }] };
       const bagUp = { touches: [], changedTouches: [{ identifier: 12, clientX: 344, clientY: 334 }] };
       // ① 触摸背包按钮 → 打开背包（画布文本证据：bp:title "背包" + 行文本 "1. xxx xN [分类]"）
@@ -1866,14 +1866,14 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
         failures.push('面板态触摸关闭按钮（×）后背包面板没有关闭（ui-summary 仍有 bp:title）');
       }
     }
-    const worldSummary = String(adapter.getAttribute('data-p2-world') || '');
+    const worldSummary = String(adapter.getAttribute('data-rustlua-world') || '');
     const worldField = (name) => {
       const match = worldSummary.match(new RegExp(name + '=([^\\s]*)'));
       return match ? match[1] : '';
     };
     if (driveNewGame) {
       if (!worldSummary) {
-        failures.push('--drive-new-game 后 data-p2-world 是空的（运行时没有自报世界状态）');
+        failures.push('--drive-new-game 后 data-rustlua-world 是空的（运行时没有自报世界状态）');
       } else {
         const mapName = worldField('map');
         if (!mapName || mapName === 'main') {
@@ -1897,7 +1897,7 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
         const spawn = worldField('spawn');
         const player = worldSummary.match(/player=(\S+?)@(-?\d+),(-?\d+)/);
         if (!player) {
-          failures.push(`--drive-new-game 后拿不到主角坐标（data-p2-world=${worldSummary}）`);
+          failures.push(`--drive-new-game 后拿不到主角坐标（data-rustlua-world=${worldSummary}）`);
         } else if (spawn && spawn !== 'none') {
           const [spawnX, spawnY] = spawn.split(',').map(Number);
           if (Math.abs(Number(player[2]) - spawnX) > 2 || Math.abs(Number(player[3]) - spawnY) > 2) {
@@ -1910,7 +1910,7 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
         // 完全看不见（正是"能进图但玩不了"的典型症状）。
         const drawn = worldSummary.match(/drawn=(\S+?)@(-?\d+),(-?\d+)/);
         if (!drawn) {
-          failures.push(`--drive-new-game 后没有渲染器侧的主角位置自报（data-p2-world=${worldSummary}）`);
+          failures.push(`--drive-new-game 后没有渲染器侧的主角位置自报（data-rustlua-world=${worldSummary}）`);
         } else if (player && (Math.abs(Number(drawn[2]) - Number(player[2])) > 2 || Math.abs(Number(drawn[3]) - Number(player[3])) > 2)) {
           failures.push(`Lua 世界里的主角在 (${player[2]},${player[3]})，渲染器侧却在 (${drawn[2]},${drawn[3]})` +
             '（回写通道的 T 行没把位置同步给渲染器）');
@@ -1926,7 +1926,7 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
       'input.nav_settings', 'input.set_nav_settings', 'input.last_device', 'input.action_repeat',
       // 注：`camera2d`（web / 微信运行时没有 2D 相机控制器）**不在**这张表里，也不需要——
       // 游戏侧 `scripts/world/camera_view.lua` 查宿主启动期算好的缺失全局清单
-      // （`__p2_missing_globals`）判能力，命中就直接跳过整条相机逻辑，**不碰代理**，
+      // （`__rustlua_missing_globals`）判能力，命中就直接跳过整条相机逻辑，**不碰代理**，
       // 因此诊断通道里不会留下 `camera2d.*` 的缺口。这比"先调用再看报错"更强：
       // 代理是可调用/可索引的，调用永远"成功"，缺口反而会被延迟到读字段时才炸。
       // 这条断言因此同时守着"降级路径没有退化回碰代理"。
@@ -1955,8 +1955,8 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
       // 每一帧都必须继续产生绘制调用：证明 Lua update 循环在持续推进，而不是只渲染了首帧。
       const drawsEveryFrame = perFrameDraws.length > 0 && perFrameDraws.every((ops, index) => (index === 0 ? ops > 0 : ops > perFrameDraws[index - 1]));
       if (!drawsEveryFrame) failures.push(`并非每帧都在绘制（逐帧绘制调用: ${JSON.stringify(perFrameDraws.slice(0, 6))}）`);
-      if (bootDetail && /fail|error|missing/i.test(bootDetail)) failures.push(`data-p2-boot-detail 报告失败: ${bootDetail}`);
-      if (!(drawn > 0)) failures.push(`data-p2-drawn=${drawn}（期望 > 0，即画面上确有内容）`);
+      if (bootDetail && /fail|error|missing/i.test(bootDetail)) failures.push(`data-rustlua-boot-detail 报告失败: ${bootDetail}`);
+      if (!(drawn > 0)) failures.push(`data-rustlua-drawn=${drawn}（期望 > 0，即画面上确有内容）`);
     }
     // `--expect-pack-failure` 是**故意**让分包永远挂不上的用例：那时 pack/ 一个字节都读不到，
     // "没读 pack/ 就失败" 这条在这里无从满足（它由 `--remote` 系列用例负责）。跳过它的同时，
@@ -2159,8 +2159,8 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
         // 失败必须**三重可见**，缺一条就等于"玩家看到黑屏、日志里什么都没有"：
         //   ① 属性（自动化/开发者工具可查）② 控制台 ③ 屏幕（真机上唯一可用的那条）。
         if (packInfo.state !== 'failed') failures.push(`--expect-pack-failure 下适配层分包状态=${packInfo.state}（期望 failed）`);
-        if (adapter.getAttribute('data-p2-pack') !== 'failed') {
-          failures.push(`分包失败没有落到 data-p2-pack 上（实际 ${adapter.getAttribute('data-p2-pack')}）`);
+        if (adapter.getAttribute('data-rustlua-pack') !== 'failed') {
+          failures.push(`分包失败没有落到 data-rustlua-pack 上（实际 ${adapter.getAttribute('data-rustlua-pack')}）`);
         }
         const packErrorLog = consoleErrors.find((line) => /分包/.test(String(line)));
         if (!packErrorLog) {
@@ -2172,9 +2172,9 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
         }
         // 失败**不能**掀翻首屏：标题画面已经在主包里画出来了，翻掉就等于把可见的失败变成黑屏。
         if (bootState !== 'running' && bootState !== 'ok') {
-          failures.push(`分包失败掀翻了启动（data-p2-boot=${bootState}）：首屏资源全在主包，标题必须照常出来`);
+          failures.push(`分包失败掀翻了启动（data-rustlua-boot=${bootState}）：首屏资源全在主包，标题必须照常出来`);
         }
-        if (!(drawn > 0)) failures.push(`分包失败下首屏没有画出任何内容（data-p2-drawn=${drawn}）`);
+        if (!(drawn > 0)) failures.push(`分包失败下首屏没有画出任何内容（data-rustlua-drawn=${drawn}）`);
       }
       if (subpackageMode === 'fail-once') {
         // 失败后必须能自愈：冷却（用例里压到 0）过后由下一次 pack/ 读取触发重试。

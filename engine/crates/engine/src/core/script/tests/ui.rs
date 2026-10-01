@@ -35,7 +35,7 @@ fn ui_text_at_accepts_optional_scale_and_font_size() {
 }
 
 /// `ui.scene_text_visible(name, visible)`：false 登记进隐藏集、非 false 移除；
-/// 缺失（nil）与 true 均视为显示。语义与 web 兼容层 `__p2_scene_text_hidden` 对齐。
+/// 缺失（nil）与 true 均视为显示。语义与 web 兼容层 `__rustlua_scene_text_hidden` 对齐。
 #[test]
 fn ui_scene_text_visible_toggles_hidden_set() {
     let mut runtime = LuaRuntime::new().unwrap();

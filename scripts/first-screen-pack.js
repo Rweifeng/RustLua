@@ -20,7 +20,7 @@
  *   多列 → 该资源留在主包、分包变小。而 4MB 上限卡的是**分包那一侧**，
  *          主包预算很宽（实测约 37%），所以多列与体积上限的方向是一致的。
  *
- * 漏列不会静默：适配层的 assetStats.imageFailed / 屏幕红条 / data-p2-boot-detail
+ * 漏列不会静默：适配层的 assetStats.imageFailed / 屏幕红条 / data-rustlua-boot-detail
  * 三条既有通道会把它变成可见失败，harness 的 imageFailures > 0 断言直接红。
  *
  * 数据来源：以 pack/ 的**实际磁盘文件**为权威，manifest.txt 只用于交叉校验

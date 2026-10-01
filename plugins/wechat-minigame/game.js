@@ -2,7 +2,7 @@
 //
 // 加载顺序由小游戏运行时决定，这里显式写清依赖关系：
 //   1. wechat-adapter.js  安装浏览器风格宿主 API（window/document/fetch/Image/输入/生命周期）
-//   2. web-runtime.js     与 webgl 发布共用的 Lua 运行时，挂载 window.p2RunLuaGame
+//   2. web-runtime.js     与 webgl 发布共用的 Lua 运行时，挂载 window.rustluaRunLuaGame
 //   3. adapter.start()    载入 pack/ 资源 → 经宿主的 WXWebAssembly.instantiate(代码包路径,
 //                         imports) **异步**实例化 wasm 核心（wasm-bridge.js）→
 //                         挂载 window.__P2_LUA_BRIDGE → 启动 Lua 主循环
@@ -22,14 +22,14 @@ var win = globalThis.window || globalThis;
 
 require('./web-runtime.js');
 
-if (typeof win.p2RunLuaGame !== 'function') {
-  adapter.showBootError('运行时未就绪：web-runtime.js 未导出 p2RunLuaGame');
-  throw new Error('game.js: p2RunLuaGame 未就绪');
+if (typeof win.rustluaRunLuaGame !== 'function') {
+  adapter.showBootError('运行时未就绪：web-runtime.js 未导出 rustluaRunLuaGame');
+  throw new Error('game.js: rustluaRunLuaGame 未就绪');
 }
 
 // 启动 Promise 挂到全局，便于自动化验证（scripts/wechat-minigame-harness.js）等待启动完成。
 globalThis.__RustLuaWechatBoot = adapter.start(function (status) {
-  return win.p2RunLuaGame(status);
+  return win.rustluaRunLuaGame(status);
 }).catch(function (error) {
   console.error('[game.js] 启动失败', error);
   throw error;

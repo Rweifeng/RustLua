@@ -240,7 +240,7 @@ mod wasm {
     /// 启动流程 = 验证三必需文件 → 复用 [`start_lua`] 的读取器跑 Lua 桥（main.lua +
     /// 一帧 update()）→ 逐条 report 诊断。
     ///
-    /// ## 当前状态：**本入口未接线**（微信侧 Lua 交互已改走 `__P2_LUA_BRIDGE` 的
+    /// ## 当前状态：**本入口未接线**（微信侧 Lua 交互已改走 `__RUSTLUA_LUA_BRIDGE` 的
     /// `lua_boot_with_reader`，不经本函数）
     ///
     /// * 它能编译进 `wasm32-unknown-unknown`，但发布链路**不调用**本函数：微信适配层

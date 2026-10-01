@@ -8,11 +8,11 @@
 // 能力边界（同步维护于 plugins/wechat-minigame/README.md，不得夸大）：
 // - 游戏逻辑走 wasm 内的 mlua 执行层（Lua 5.4，vendored）+ `pack/` 资源：适配层启动时
 //   实例化 wasm（宿主的 `WXWebAssembly.instantiate` 只有异步、代码包路径这一形态），把 6 个
-//   Lua 桥导出挂到 `window.__P2_LUA_BRIDGE`（`lua_boot` 包装成 `lua_boot_with_reader`），
+//   Lua 桥导出挂到 `window.__RUSTLUA_LUA_BRIDGE`（`lua_boot` 包装成 `lua_boot_with_reader`），
 //   全部 Lua 交互经桥执行——这条路径在小游戏里**真实可运行**；
 // - `pkg/game_web.js` + `pkg/game_web_bg.wasm` 随包分发（胶水是 `--target no-modules` 的
 //   纯脚本，由 wasm-bridge.js 包成 CommonJS）。适配层在 boot 之前完成实例化，并把结果
-//   （用了哪条通道、哪个代码包路径）写进 `data-p2-wasm` / `__P2_DIAG().wasm`，
+//   （用了哪条通道、哪个代码包路径）写进 `data-rustlua-wasm` / `__RUSTLUA_DIAG().wasm`，
 //   详见文末「WASM 说明」。
 // - 输入：微信 PC 端键盘（wx.onKeyDown/onKeyUp）直接桥接；触摸映射为指针事件，
 //   并提供左侧虚拟摇杆（WASD）与右侧按键（space）以保证手机端可玩。
@@ -20,7 +20,7 @@
 
 (function () {
   var g = typeof globalThis !== 'undefined' ? globalThis : this;
-  // 版本号会打进日志和 __P2_DIAG()：开发者工具会缓存代码包，
+  // 版本号会打进日志和 __RUSTLUA_DIAG()：开发者工具会缓存代码包，
   // "有没有报错" 分不清旧包新包，只有版本号能分清（实测踩过）。
   var ADAPTER_VERSION = '0.7.1+wasm-path';
   var wx = g.wx;
@@ -765,12 +765,12 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
   }
 
   function updateAssetMarkers() {
-    bodyElement.setAttribute('data-p2-asset-package', String(assetStats.package));
-    bodyElement.setAttribute('data-p2-asset-cache', String(assetStats.cache));
-    bodyElement.setAttribute('data-p2-asset-remote', String(assetStats.remote));
-    bodyElement.setAttribute('data-p2-asset-remote-bytes', String(assetStats.remoteBytes));
-    bodyElement.setAttribute('data-p2-asset-verified', String(assetStats.verified));
-    bodyElement.setAttribute('data-p2-asset-source', assetStats.remote > 0
+    bodyElement.setAttribute('data-rustlua-asset-package', String(assetStats.package));
+    bodyElement.setAttribute('data-rustlua-asset-cache', String(assetStats.cache));
+    bodyElement.setAttribute('data-rustlua-asset-remote', String(assetStats.remote));
+    bodyElement.setAttribute('data-rustlua-asset-remote-bytes', String(assetStats.remoteBytes));
+    bodyElement.setAttribute('data-rustlua-asset-verified', String(assetStats.verified));
+    bodyElement.setAttribute('data-rustlua-asset-source', assetStats.remote > 0
       ? (assetStats.package + assetStats.cache > 0 ? 'mixed' : 'remote')
       : 'package');
   }
@@ -793,9 +793,9 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
   // 失败后的重试冷却：不设的话每一次 pack/ 读取都会重新下一次包 → 重试风暴（真机上表现为反复下载）。
   // 10 秒是"玩家从标题进到玩法场景"的量级：够短（网络恢复后能自己好），够长（不会刷屏下载）。
   var PACK_RETRY_COOLDOWN_MS = 10000;
-  // 冷却可现场覆盖（`wx.setStorageSync('p2_pack_retry_cooldown_ms', 0)`）：与启动看门狗同理，
+  // 冷却可现场覆盖（`wx.setStorageSync('rustlua_pack_retry_cooldown_ms', 0)`）：与启动看门狗同理，
   // 否则"失败后能自愈"这条路径没法被自动化验证（等 10 秒的用例进不了质量门）。
-  var PACK_RETRY_COOLDOWN_KEY = 'p2_pack_retry_cooldown_ms';
+  var PACK_RETRY_COOLDOWN_KEY = 'rustlua_pack_retry_cooldown_ms';
 
   function packRetryCooldownMs() {
     var value = parseInt(safeCall(wx, 'getStorageSync', PACK_RETRY_COOLDOWN_KEY), 10);
@@ -850,7 +850,7 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
   // `pack/`（声明为分包时）按需载入；多次调用共享同一个 Promise（失败不缓存，冷却后允许重试）。
   //
   // **绝不 reject**：加载失败一律 resolve(false) 并走可见的失败通道（console.error +
-  // data-p2-pack=failed + 屏幕红横幅）。理由：调用方既有 `fetchShim`（它要的是"能不能读"）
+  // data-rustlua-pack=failed + 屏幕红横幅）。理由：调用方既有 `fetchShim`（它要的是"能不能读"）
   // 也有 `start()`（它代表**整局启动**）。让一个分包下载失败去 reject 启动 Promise，结果是
   // 标题画面已经画出来了却被整屏错误页盖掉——黑屏、且比"分包没挂上"更难排查。
   function ensurePack() {
@@ -892,8 +892,8 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
         // 失败必须**响亮**，但**不能**掀翻启动 Promise（见函数头注释）。三条通道同时给：
         // 控制台（开发者工具）、属性（无头 harness/自动化）、屏幕横幅（真机上唯一可用的那条）。
         console.error('[wechat-adapter] ' + packFailure + ' 现场：' + JSON.stringify(diagSnapshot()));
-        bodyElement.setAttribute('data-p2-pack', 'failed');
-        bodyElement.setAttribute('data-p2-pack-detail', packFailure.slice(0, 200));
+        bodyElement.setAttribute('data-rustlua-pack', 'failed');
+        bodyElement.setAttribute('data-rustlua-pack-detail', packFailure.slice(0, 200));
         publishDiag();
         resolve(false);
       }
@@ -1152,12 +1152,12 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
   var rawGetContext = canvas.getContext;
   canvas.getContext = function (kind) {
     if (kind !== '2d') return rawGetContext ? rawGetContext.call(canvas, kind) : null;
-    if (!canvas.__p2Context) {
+    if (!canvas.__rustluaContext) {
       var ctx = rawGetContext ? rawGetContext.call(canvas, '2d') : null;
       if (!ctx) return null;
-      canvas.__p2Context = wrapContext(ctx);
+      canvas.__rustluaContext = wrapContext(ctx);
     }
-    return canvas.__p2Context;
+    return canvas.__rustluaContext;
   };
 
   var bootAttributes = {};
@@ -1183,7 +1183,7 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
       return { tagName: String(tag), style: {}, setAttribute: function () {}, appendChild: function () {} };
     },
     getElementById: function (id) {
-      if (id === 'p2-canvas') return canvasTarget;
+      if (id === 'rustlua-canvas') return canvasTarget;
       if (id === 'status') return statusElement;
       return null;
     }
@@ -1201,11 +1201,11 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
   // 顺带承担"自绘失败绝不能影响游戏帧"：任何异常在这里被吞掉并降级为告警。
   function withAdapterDraw(ctx, fn) {
     if (!ctx) return undefined;
-    var previous = ctx.__p2AdapterDraw;
-    ctx.__p2AdapterDraw = true;
+    var previous = ctx.__rustluaAdapterDraw;
+    ctx.__rustluaAdapterDraw = true;
     try { return fn(ctx); }
     catch (error) { warn('wechat-adapter: 适配层自绘失败 -> ' + hostError(error)); return undefined; }
-    finally { ctx.__p2AdapterDraw = previous === undefined ? false : previous; }
+    finally { ctx.__rustluaAdapterDraw = previous === undefined ? false : previous; }
   }
 
   // 启动失败时把原因画到屏幕上：小游戏没有 DOM 控制台，真机上只能靠画面自证。
@@ -1242,9 +1242,9 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
   // 小游戏宿主里没有 DOM 控制台，真机/开发者工具出问题时只能靠**画面自证**：
   // "流程正常但屏幕全黑" 这种最坏情况（贴图静默丢失、画到了离屏画布、上下文被包装坏）
   // 在日志里和成功长得一模一样。所以这里提供两件事：
-  //   1) `__P2_DIAG()`：一份可复制的 JSON 快照（主画布来源、像素回读、帧数、贴图、远端）；
+  //   1) `__RUSTLUA_DIAG()`：一份可复制的 JSON 快照（主画布来源、像素回读、帧数、贴图、远端）；
   //   2) 可开启的屏幕覆盖层：四角色块 + 对角线 + 诊断文字，每帧画在游戏画面**之上**。
-  //      开启方式（任一）：发布目录里有 `debug-overlay.txt`，或 wx.getStorageSync('p2_debug_overlay')。
+  //      开启方式（任一）：发布目录里有 `debug-overlay.txt`，或 wx.getStorageSync('rustlua_debug_overlay')。
   // 另外，一旦贴图真的加载失败（宿主 onerror 说话），屏幕上会**始终**出现红色警示条——
   // 宁可画面难看，也不要"少了一半素材却没有任何提示"。
   var DEBUG_OVERLAY_FILE = 'debug-overlay.txt';
@@ -1268,7 +1268,7 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     // quiet=true：没有这个文件是常态，不该刷"读取失败"的日志。
     var probe = readWithStrategies(DEBUG_OVERLAY_FILE, readTextRaw, true);
     if (probe && probe.value) return true;
-    var stored = safeCall(wx, 'getStorageSync', 'p2_debug_overlay');
+    var stored = safeCall(wx, 'getStorageSync', 'rustlua_debug_overlay');
     return !!(stored && stored !== '' && stored !== '0' && stored !== 'false');
   }
 
@@ -1331,12 +1331,12 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
       pixel_probe: pixelProbeValue,
       frames: frameCount,
       version: ADAPTER_VERSION,
-      boot: bootAttr('data-p2-boot') || 'unknown',
-      boot_detail: String(bootAttr('data-p2-boot-detail') || '').slice(0, 120),
+      boot: bootAttr('data-rustlua-boot') || 'unknown',
+      boot_detail: String(bootAttr('data-rustlua-boot-detail') || '').slice(0, 120),
       boot_marks: bootMarkTargetName(),
-      drawn: bootAttr('data-p2-drawn') || '0',
-      ui_elements: bootAttr('data-p2-ui-elements') || '0',
-      world: String(bootAttr('data-p2-world') || '').slice(0, 200),
+      drawn: bootAttr('data-rustlua-drawn') || '0',
+      ui_elements: bootAttr('data-rustlua-ui-elements') || '0',
+      world: String(bootAttr('data-rustlua-world') || '').slice(0, 200),
       document_shim: shimReports.document ? {
         replaced: shimReports.document.replaced,
         patched: shimReports.document.patched,
@@ -1349,7 +1349,7 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
       image_src_takeover: srcTakeover || 'none',
       image_callback_takeover: callbackTakeover || 'none',
       // wasm 核心状态：`ok` 才算真的装进来了；其它取值都能指出是哪一层不对（见 loadWasmCoreOnce）。
-      // hostApi：WP10 微信侧接线状态（ok=HostApi 已实例化挂到 __P2_HOST_API）。
+      // hostApi：WP10 微信侧接线状态（ok=HostApi 已实例化挂到 __RUSTLUA_HOST_API）。
       wasm: {
         status: wasmState.status,
         source: wasmState.source,
@@ -1398,7 +1398,7 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     };
   }
 
-  // `data-p2-world` 是运行时每帧自报的世界状态（地图/实体数/落点/主角坐标与当前动画）。
+  // `data-rustlua-world` 是运行时每帧自报的世界状态（地图/实体数/落点/主角坐标与当前动画）。
   // 覆盖层把它翻成两行短句：开发者工具里"游戏在跑但世界是空的"必须能一眼看出来，
   // 而不是只能靠贴图数量去猜。渲染侧坐标与 Lua 世界并列显示，两者不一致就是回写通道断链。
   function worldLines(raw) {
@@ -1422,7 +1422,7 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
   function diagText() {
     var d = diagSnapshot();
     var lines = [
-      'P2 DIAG 覆盖层（debug-overlay.txt / p2_debug_overlay 已开启）',
+      'RustLua DIAG 覆盖层（debug-overlay.txt / rustlua_debug_overlay 已开启）',
       '主画布 ' + d.canvas_size + ' 来源=' + d.canvas_source + ' 上屏=' + (d.canvas_is_main ? 'yes' : 'NO') +
         ' 首调=' + (d.canvas_is_created ? 'yes' : 'no') + ' 样式=' + d.canvas_style,
       '屏幕 ' + d.screen + ' ctx=' + d.ctx + ' 像素回读=' + d.pixel_probe,
@@ -1550,16 +1550,16 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
 
   // 每帧回调之后调用：先计数（永远），再按需覆盖层/警示条。
   // 现场导出通道。为什么要三条：开发者工具控制台的"上下文"**未必就是游戏全局**——实测
-  // 日志明明打了 `适配层已就绪 v…（__RustLuaWechat / __P2_DIAG 已注册）`，控制台里
-  // `__P2_DIAG()` 却报 "is not defined"（`__RustLuaWechat` 同样不可见）。所以除了挂全局，
+  // 日志明明打了 `适配层已就绪 v…（__RustLuaWechat / __RUSTLUA_DIAG 已注册）`，控制台里
+  // `__RUSTLUA_DIAG()` 却报 "is not defined"（`__RustLuaWechat` 同样不可见）。所以除了挂全局，
   // 再加两条**不依赖全局作用域**的通道：
-  //   ① `wx.__p2Diag()` / `wx.__p2CanvasInfo()` —— 控制台里只要能看到 wx 就能调用；
-  //   ② `wx.getStorageSync('p2_diag')` —— 连控制台都用不上，直接看开发者工具的"存储"面板。
+  //   ① `wx.__rustluaDiag()` / `wx.__rustluaCanvasInfo()` —— 控制台里只要能看到 wx 就能调用；
+  //   ② `wx.getStorageSync('rustlua_diag')` —— 连控制台都用不上，直接看开发者工具的"存储"面板。
   function publishDiag() {
     var text;
     try { text = JSON.stringify(diagSnapshot()); } catch (e) { return; }
     try {
-      if (typeof wx !== 'undefined' && wx && typeof wx.setStorageSync === 'function') wx.setStorageSync('p2_diag', text);
+      if (typeof wx !== 'undefined' && wx && typeof wx.setStorageSync === 'function') wx.setStorageSync('rustlua_diag', text);
     } catch (e) { /* 存储不可用不影响游戏 */ }
   }
 
@@ -1578,9 +1578,9 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     // 依据是信息优先级：覆盖层是诊断面板，被任何东西盖住就失去意义，永远最上；
     // 贴图警示条说的是"画面已经在缺素材"（比"还在下载"更严重）所以压在进度条之上；
     // 分包失败条排在进度条之上、贴图警示条之下；进度条只是等待提示，垫在最底下。
-    // `data-p2-boot=failed` 时**不画进度条/失败条**：那一刻整屏属于 showBootError 的错误页，
+    // `data-rustlua-boot=failed` 时**不画进度条/失败条**：那一刻整屏属于 showBootError 的错误页，
     // 叠上去只会互相遮挡，把真正的失败原因糊掉。
-    var bootFailed = String(bootAttr('data-p2-boot') || '') === 'failed';
+    var bootFailed = String(bootAttr('data-rustlua-boot') || '') === 'failed';
     if (packState === 'loading' && !bootFailed) withAdapterDraw(ctx, drawLoadingBar);
     if (imageFailures > 0) {
       bandFailures = imageFailures;
@@ -1814,7 +1814,7 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
       if (!relative) { warn('wechat-adapter: pack/project.toml 未声明 font，跳过自定义字体'); return null; }
       var fontPath = PACK_PREFIX + relative.replace(/^\.?\//, '');
       // 标记要落在运行时读的那个对象上（web-runtime.js 读的是 bare `window`）。
-      setWindowFlag('__P2_FONT', fontPath);
+      setWindowFlag('__RUSTLUA_FONT', fontPath);
       return ensureLocalAsset(fontPath).then(function (result) {
         if (!result.available) { warn('wechat-adapter: 字体资源不可得，中文将使用系统字体: ' + fontPath); return null; }
         // 优先用**那次读取真正成功**的宿主路径（分包形态下它已经被路由到 mainpack/）；
@@ -1864,7 +1864,7 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
 
   // 个别成员的"够用"标准要更严：`body`/`documentElement` 必须能 `setAttribute`
   // （web-runtime 的启动/画面标记全靠它写出来），`fonts` 必须有 `add`。
-  // 放宽的后果很隐蔽：宿主那个半成品 body 会让 `data-p2-boot`/`data-p2-drawn` 全都写不进去，
+  // 放宽的后果很隐蔽：宿主那个半成品 body 会让 `data-rustlua-boot`/`data-rustlua-drawn` 全都写不进去，
   // 于是**诊断自己开始撒谎**（画面明明画了，我们却报 drawn=0）。
   var SHIM_MEMBER_REQUIRED = { body: 'setAttribute', documentElement: 'setAttribute', fonts: 'add' };
   function shimMemberUsable(key, value) {
@@ -1884,7 +1884,7 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     } catch (e) { return false; }
   }
 
-  // 每个 shim 全局的安装结果（接替/补齐/补不动/仍缺哪些），进 __P2_DIAG() 供现场核对。
+  // 每个 shim 全局的安装结果（接替/补齐/补不动/仍缺哪些），进 __RUSTLUA_DIAG() 供现场核对。
   var shimReports = {};
 
   // 把一个浏览器风格的 shim 装成全局，并且**回读校验**。
@@ -1897,7 +1897,7 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
   // 语义：能接替就接替；接替不了就把 shim 的成员**就地补齐**到宿主对象上；
   // 补不齐的成员（对象不可扩展/属性不可配置）**绝不在这里抛**——模块加载期抛出去会让
   // `game.js` 整个中止、`__RustLuaWechat` 都不存在，屏幕上只剩一片黑加一行控制台错误
-  // （实测过）。改成：console.error 喊出来 + 记进 `__P2_DIAG()`，真正的失败交给 `start()`
+  // （实测过）。改成：console.error 喊出来 + 记进 `__RUSTLUA_DIAG()`，真正的失败交给 `start()`
   // 的错误路径——那条路径会把原因**画到屏幕上**，比"什么都没启动"好诊断得多。
   function installShimGlobal(name, shim, required) {
     var host = g[name];
@@ -1943,7 +1943,7 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     return target;
   }
 
-  // `window` 必须带事件通道（运行时把 p2RunLuaGame 挂在它上面，键盘/鼠标事件也从
+  // `window` 必须带事件通道（运行时把 rustluaRunLuaGame 挂在它上面，键盘/鼠标事件也从
   // 这里派发）。通道先装在 globalThis 上，再让 installShimGlobal 去接替/补齐宿主 window——
   // 顺序不能反：installShimGlobal 会校验 addEventListener 是否真的可用。
   createEventTarget(g);
@@ -2310,9 +2310,9 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
   // 那一类故障里最难查的一种）。超时后把**诊断画到屏幕上**，不依赖控制台也不依赖帧循环，
   // 并把最可能的原因直接写出来；若之后启动真的完成了，第一帧就会把它清掉。
   var BOOT_TIMEOUT_MS = 10000;
-  // 超时可现场覆盖（`wx.setStorageSync('p2_boot_timeout_ms', 300)`）：慢 CDN 上可以放大，
+  // 超时可现场覆盖（`wx.setStorageSync('rustlua_boot_timeout_ms', 300)`）：慢 CDN 上可以放大，
   // 自动化用例里可以缩短——否则看门狗本身没法被验证（等 10 秒的用例进不了质量门）。
-  var BOOT_TIMEOUT_KEY = 'p2_boot_timeout_ms';
+  var BOOT_TIMEOUT_KEY = 'rustlua_boot_timeout_ms';
   var bootStartedAt = 0;
   var bootWatchdog = null;
 
@@ -2348,11 +2348,11 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
   function start(boot) {
     if (started) return Promise.resolve(false);
     started = true;
-    bodyElement.setAttribute('data-p2-adapter', 'ready');
+    bodyElement.setAttribute('data-rustlua-adapter', 'ready');
     // 必须在 ensurePack 之前读：它决定"分包加载失败是否致命"。
     loadRemoteConfig();
     updateAssetMarkers();
-    // 覆盖层开关：发布目录放 debug-overlay.txt，或 wx.setStorageSync('p2_debug_overlay', '1')。
+    // 覆盖层开关：发布目录放 debug-overlay.txt，或 wx.setStorageSync('rustlua_debug_overlay', '1')。
     // 放在这里（而不是模块加载时）是因为它要读文件/存储，且读法依赖已探明的路径方言。
     try {
       debugOverlayEnabled = debugOverlayRequested();
@@ -2378,14 +2378,14 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     // 首屏清单要在**任何** pack/ 读取之前就位（font 与 probe 都会读 pack/）。这里显式加载一次
     // 而不是只靠 readWithStrategies 里的惰性加载：清单缺失是"发布形态不对"的硬信号，值得一条日志。
     if (loadFirstScreenManifest()) {
-      bodyElement.setAttribute('data-p2-layout', 'mainpack+pack');
-      bodyElement.setAttribute('data-p2-mainpack-entries', String(firstScreen.count));
+      bodyElement.setAttribute('data-rustlua-layout', 'mainpack+pack');
+      bodyElement.setAttribute('data-rustlua-mainpack-entries', String(firstScreen.count));
     }
     // 资源读取自检：分包形态下这三个探针在 mainpack/ 下，验证的正是**路由层本身**。
     probePackReadability();
     // wasm 核心：主包里的 `pkg/game_web_bg.wasm`（属首屏骨架，不在分包里）。
     // Lua 执行层就在这个 wasm 里（WP10 迁移后无备用解释器）：加载失败时宿主交互的
-    // 诊断通道（`data-p2-wasm` / `__P2_DIAG().wasm`）会如实记录，而 `__P2_LUA_BRIDGE`
+    // 诊断通道（`data-rustlua-wasm` / `__RUSTLUA_DIAG().wasm`）会如实记录，而 `__RUSTLUA_LUA_BRIDGE`
     // 缺失会让 web-runtime.js 抛 `wasm lua bridge not loaded`（发布形态问题，不降级）。
     // **它返回 Promise**：小游戏宿主的 `WXWebAssembly.instantiate(代码包路径, imports)` 只有
     // 异步形态，所以这里只发起加载、把它排在 boot 之前完成（见下面的 wasmReady 链）。
@@ -2398,10 +2398,10 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     // 分包**后台**载入，**不 await**：首屏资源全在主包里，boot 必须立刻用它们把标题画出来。
     // 分包只影响"进玩法场景"那一步（那时的 pack/ 读取会 await 它，见 fetchShim / Image.src）。
     // 失败不能掀翻启动 Promise（见 ensurePack），否则标题已经在屏上却要被整屏错误页盖掉。
-    ensurePack().then(function (ok) {      bodyElement.setAttribute('data-p2-pack', ok ? 'ready' : packState);
+    ensurePack().then(function (ok) {      bodyElement.setAttribute('data-rustlua-pack', ok ? 'ready' : packState);
       if (ok) {
-        bodyElement.setAttribute('data-p2-pack-mount-frame', String(packMountFrame));
-        bodyElement.setAttribute('data-p2-pack-progress-events', String(packProgressEvents));
+        bodyElement.setAttribute('data-rustlua-pack-mount-frame', String(packMountFrame));
+        bodyElement.setAttribute('data-rustlua-pack-progress-events', String(packProgressEvents));
         log('wechat-adapter: 分包就绪，首屏之外资源可从 ' + (packSubpackageName() || PACK_SUBPACKAGE) + '/ 读取');
       }
     }).catch(function (error) {
@@ -2411,7 +2411,7 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     });
     return wasmReady
       .then(function () {
-        // wasm（= Lua 执行层）挂载完成之后才允许 boot：`window.__P2_LUA_BRIDGE` 必须在
+        // wasm（= Lua 执行层）挂载完成之后才允许 boot：`window.__RUSTLUA_LUA_BRIDGE` 必须在
         // web-runtime.js 走到 Lua 之前存在，否则报的是"桥缺失"这种发布形态错误。
         return loadGameFont();
       })
@@ -2438,7 +2438,7 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
         // ——而这句话对四种完全不同的塌法（宿主没有 WXWebAssembly / 只有 instantiate 没有
         // Module 构造器 / wasm 字节读不到 / 模块被拒绝编译）给不出任何区分。
         // 实测 2026-09-30 开发者工具就是这样：本机全绿的产物在工具里报同一句，只能靠人
-        // 去控制台敲 `__P2_DIAG().wasm` 才拿得到判据。真机没控制台，屏幕就是唯一通道。
+        // 去控制台敲 `__RUSTLUA_DIAG().wasm` 才拿得到判据。真机没控制台，屏幕就是唯一通道。
         if (wasmState.status !== 'ok') {
           message = message + ' [wasm=' + wasmState.status
             + (wasmState.source ? '/' + wasmState.source : '')
@@ -2447,8 +2447,8 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
               ? ' tried=' + String(summarizeAttempts(wasmState.attempts)).slice(0, 220) : '') + ']';
         }
         console.error('[wechat-adapter] 启动失败:', message);
-        bodyElement.setAttribute('data-p2-boot', 'failed');
-        bodyElement.setAttribute('data-p2-boot-detail', message.slice(0, 400));
+        bodyElement.setAttribute('data-rustlua-boot', 'failed');
+        bodyElement.setAttribute('data-rustlua-boot-detail', message.slice(0, 400));
         showBootError('启动失败: ' + message);
         drawStartupProbe();
         throw error;
@@ -2465,8 +2465,8 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
   // **不复用 webgl 那份 `--target web` 的 ESM 胶水**：小游戏按 CommonJS 解析，
   // 顶层 `export` 会让启动直接 SyntaxError。
   //
-  // 当前边界（不得夸大）：wasm 即 Lua 执行层（mlua 5.4 + vendored），`__P2_LUA_BRIDGE`
-  // 承载全部 Lua 交互；宿主交互诊断通道（`data-p2-wasm` / `__P2_DIAG().wasm`）如实记录。
+  // 当前边界（不得夸大）：wasm 即 Lua 执行层（mlua 5.4 + vendored），`__RUSTLUA_LUA_BRIDGE`
+  // 承载全部 Lua 交互；宿主交互诊断通道（`data-rustlua-wasm` / `__RUSTLUA_DIAG().wasm`）如实记录。
   // `game_web::start_wechat`（去 DOM 入口）**未接线、未验证**，状态见
   // `engine/crates/game_web/src/lib.rs` 与 `plugins/wechat-minigame/README.md`。
   // ---------- 画布与游戏版面的自检（M32） ----------
@@ -2513,7 +2513,7 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     };
     // 三档：ok（声明且一致）/ mismatch（声明但不一致）/ unknown（读不到声明，无从判断）。
     // `unknown` **不算错**：project.toml 可能因发布形态而不在包内，那不该报警。
-    bodyElement.setAttribute('data-p2-view', agree === true ? 'ok' : (agree === false ? 'mismatch' : 'unknown'));
+    bodyElement.setAttribute('data-rustlua-view', agree === true ? 'ok' : (agree === false ? 'mismatch' : 'unknown'));
     if (agree === false) {
       warn('wechat-adapter: 画布尺寸与工程声明不一致（画布 '
         + VIEW_WIDTH + 'x' + VIEW_HEIGHT + '，project.toml ' + viewAgreement.declared
@@ -2531,11 +2531,11 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
   //
   // 口径先说清：小游戏的**游戏逻辑**由 wasm 内的 mlua 执行层承载（与 webgl 发布同一条路径），
   // wasm 核心在这里做**三件事**——能读到、能实例化、导出清单对得上，并把 6 个 Lua 桥导出
-  // 挂到 `window.__P2_LUA_BRIDGE`（`lua_boot` 包装成 `lua_boot_with_reader`）。
+  // 挂到 `window.__RUSTLUA_LUA_BRIDGE`（`lua_boot` 包装成 `lua_boot_with_reader`）。
   // 为什么值得做：如果没人验证它"真的装进来了"，Lua 启动失败会被当成"桥没挂上"的假象；
   // 所以这里把结果做成可核对的证据（桥缺失时 web-runtime.js 会抛硬错误，不是静默降级）。
   //
-  // 结果档位（都进 `__P2_DIAG().wasm` 与启动日志）：
+  // 结果档位（都进 `__RUSTLUA_DIAG().wasm` 与启动日志）：
   //   ok                        实例化成功，`channel` 标出用的是哪条通道，`exports` 是真实导出名清单
   //   no-webassembly            宿主没有 WXWebAssembly / WebAssembly（真机极旧基础库）
   //   webassembly-api-incomplete 宿主既没有 instantiate(path,imports) 也没有 Module/Instance 构造器
@@ -2548,7 +2548,7 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
   // （见 start() 里的 loadGameFont 之前那一步）。
   var wasmState = { status: 'not-attempted' };
   var wasmLoadPromise = null;
-  // 画布/版面一致性自检结果（见 reportViewAgreement），进 __P2_DIAG().view_agreement。
+  // 画布/版面一致性自检结果（见 reportViewAgreement），进 __RUSTLUA_DIAG().view_agreement。
   var viewAgreement = { declared: 'unknown', canvas: 'unknown', agree: null, orientation: 'unknown' };
 
   // 幂等：只真正加载一次，后续调用返回同一个 Promise（start() 与 api.loadWasm 共用）。
@@ -2584,7 +2584,7 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
           warn('wechat-adapter: wasm 核心未就绪（' + result.reason
             + (result.detail ? '：' + result.detail : '')
             + (result.attempts ? '｜通道尝试: ' + summarizeAttempts(result.attempts) : '') + '）'
-            + '——Lua 执行层在 wasm 里（WP10 迁移后无备用解释器），`__P2_LUA_BRIDGE` 缺失会让'
+            + '——Lua 执行层在 wasm 里（WP10 迁移后无备用解释器），`__RUSTLUA_LUA_BRIDGE` 缺失会让'
             + ' web-runtime.js 抛硬错误（发布形态问题，不降级）；"包里带了 wasm 却没装上"正是这种问题');
         }
         resolve(wasmState);
@@ -2602,13 +2602,13 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
 
   function finish(state) {
     wasmState = state;
-    bodyElement.setAttribute('data-p2-wasm', state.status);
+    bodyElement.setAttribute('data-rustlua-wasm', state.status);
     return wasmState;
   }
 
   function attachWasmBridge(result) {
     // WP10 迁移（fengari → mlua-wasm）：wasm 导出 Lua 桥函数 → 挂到
-    // window.__P2_LUA_BRIDGE，web-runtime.js 的 Lua 交互全部经它完成。
+    // window.__RUSTLUA_LUA_BRIDGE，web-runtime.js 的 Lua 交互全部经它完成。
     // 微信没有 wasm 预加载资源表（webgl 的 start() 才有），因此 `lua_boot`
     // 包装成 `lua_boot_with_reader(同步读取器)`：适配层 readText 即该读取器
     //（pack/ 明文，vfs provider 原样交给引擎 pack::decode）。
@@ -2623,7 +2623,7 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
         if (rel.indexOf('pack/') !== 0) rel = 'pack/' + rel;
         return readText(rel);
       }
-      window.__P2_LUA_BRIDGE = {
+      window.__RUSTLUA_LUA_BRIDGE = {
         lua_boot: function () { return result.host.lua_boot_with_reader(wechatReadFile); },
         lua_do_string: result.host.lua_do_string,
         lua_call_global: result.host.lua_call_global,
@@ -2635,12 +2635,12 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     } catch (error) {
       wasmState.luaBridge = 'error:' + hostError(error);
     }
-    // WP10 批次 A：wasm 导出 HostApi 构造器 → 实例化挂到 window.__P2_HOST_API。
+    // WP10 批次 A：wasm 导出 HostApi 构造器 → 实例化挂到 window.__RUSTLUA_HOST_API。
     //（Rust 侧 LuaRuntime::register_api 已注册 clock/calendar/day，此桥仅保留为
     //  诊断兼容；web-runtime.js 不再经它注册宿主全局。）
     if (typeof result.host.HostApi === 'function') {
       try {
-        window.__P2_HOST_API = new result.host.HostApi(WECHAT_PUBLISH_NAME);
+        window.__RUSTLUA_HOST_API = new result.host.HostApi(WECHAT_PUBLISH_NAME);
         wasmState.hostApi = 'ok';
       } catch (error) {
         wasmState.hostApi = 'error:' + hostError(error);
@@ -2690,7 +2690,7 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     },
     readStrategy: function () { return preferredStrategy.pack; },
     readStrategies: function () { return { main: preferredStrategy.main, pack: preferredStrategy.pack }; },
-    // 渲染自证：开发者工具控制台里可直接 `__P2_DIAG()` 复制一份现场快照
+    // 渲染自证：开发者工具控制台里可直接 `__RUSTLUA_DIAG()` 复制一份现场快照
     // （主画布来源、像素回读、帧数、贴图成败、远端状态、wasm 核心状态）。
     diag: diagSnapshot,
     publishDiag: publishDiag,
@@ -2713,26 +2713,26 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     fontFamily: function () { return gameFontFamily; },
     getAttribute: function (name) { return bootAttr(name); },
     // 供自动化测试判定启动结果（plugins/wechat-minigame/README.md §验证）
-    isBootOk: function () { return bootAttr('data-p2-boot') === 'ok'; }
+    isBootOk: function () { return bootAttr('data-rustlua-boot') === 'ok'; }
   };
   g.__RustLuaWechat = api;
-  // 开发者工具控制台可直接调用：`__P2_DIAG()` / `__RustLuaWechat.canvasInfo()`。
-  g.__P2_DIAG = diagSnapshot;
-  // 控制台的"上下文"与游戏全局可能不是同一个对象（实测 `__P2_DIAG is not defined`），
-  // 因此把同一批入口也挂到 `wx` 上：只要控制台能看到 wx，就能 `wx.__p2Diag()`。
+  // 开发者工具控制台可直接调用：`__RUSTLUA_DIAG()` / `__RustLuaWechat.canvasInfo()`。
+  g.__RUSTLUA_DIAG = diagSnapshot;
+  // 控制台的"上下文"与游戏全局可能不是同一个对象（实测 `__RUSTLUA_DIAG is not defined`），
+  // 因此把同一批入口也挂到 `wx` 上：只要控制台能看到 wx，就能 `wx.__rustluaDiag()`。
   var wxBridge = 'no-wx';
   try {
     if (typeof wx !== 'undefined' && wx) {
-      wx.__p2Diag = diagSnapshot;
-      wx.__p2CanvasInfo = api.canvasInfo;
-      wx.__p2Version = ADAPTER_VERSION;
-      wx.__p2PublishDiag = publishDiag;
+      wx.__rustluaDiag = diagSnapshot;
+      wx.__rustluaCanvasInfo = api.canvasInfo;
+      wx.__rustluaVersion = ADAPTER_VERSION;
+      wx.__rustluaPublishDiag = publishDiag;
       wxBridge = 'ok';
     }
   } catch (e) { wxBridge = 'fail:' + hostError(e); }
   // 这一行是"现场跑的到底是哪一版适配层"的唯一凭据：代码包会被开发者工具缓存，
   // 光看"有没有报错"分不清旧包新包（实测踩过）。控制台搜 `适配层已就绪` 即可确认版本。
-  log('wechat-adapter: 适配层已就绪 v' + ADAPTER_VERSION + '（__RustLuaWechat / __P2_DIAG 已注册；wx 通道=' + wxBridge + '）');
+  log('wechat-adapter: 适配层已就绪 v' + ADAPTER_VERSION + '（__RustLuaWechat / __RUSTLUA_DIAG 已注册；wx 通道=' + wxBridge + '）');
   publishDiag();
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })();

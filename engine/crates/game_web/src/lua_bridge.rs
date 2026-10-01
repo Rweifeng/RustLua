@@ -125,7 +125,7 @@ pub fn lua_boot_with_reader(read_file: &js_sys::Function) -> Result<(), JsValue>
 /// 读 vfs 预加载表 + `pack::decode` 自动解开压缩/加密，与桌面语义一致）。
 ///
 /// **不能走 `execute_project_script`**：其内部 `load_candidate` 会 `Lua::new()` 新建
-/// 状态并重跑 `register_api`，刚注入的 web 宿主补丁（`input`/`audio`/`__p2_*` 等）
+/// 状态并重跑 `register_api`，刚注入的 web 宿主补丁（`input`/`audio`/`__rustlua_*` 等）
 /// 全部丢失。这里直接在运行时既有状态上 load + exec，保持补丁在位。
 #[wasm_bindgen]
 pub fn lua_execute_main() -> Result<(), JsValue> {

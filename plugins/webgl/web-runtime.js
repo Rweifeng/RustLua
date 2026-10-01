@@ -286,7 +286,7 @@
     };
   }
 
-  // Lua → 渲染器的状态回写。行格式（Lua 侧 __p2_export_state 生成）：
+  // Lua → 渲染器的状态回写。行格式（Lua 侧 __rustlua_export_state 生成）：
   //   R  spawn（运行期实体，渲染器必须先认识它）
   //   S  sprite.set（Sprite 组件串）        X  animation.attach（Animation 组件串）
   //   C  tilemap.set_cell                   U  tilemap.set_texture
@@ -372,7 +372,7 @@
 
   // 游戏在 fonts/ 下随包分发中文 TTF；这里用 FontFace 注册，保证 HUD/菜单中文可见。
   async function loadGameFont() {
-    const url = (typeof window !== 'undefined' && window.__P2_FONT) || '';
+    const url = (typeof window !== 'undefined' && window.__RUSTLUA_FONT) || '';
     if (!url || typeof FontFace !== 'function' || !document.fonts) return;
     try {
       const face = new FontFace('RustLuaGameFont', 'url("' + url + '")');
@@ -414,7 +414,7 @@
   }
 
   // 画面自检：采样 canvas 像素，统计“非背景色”的采样点数量。用于回答
-  // “页面启动了但没有画面”这类问题——`data-p2-boot=running` 只说明 Lua 在跑，
+  // “页面启动了但没有画面”这类问题——`data-rustlua-boot=running` 只说明 Lua 在跑，
   // 不代表真的画出了东西。返回 -1 表示像素不可读（canvas 被跨域贴图污染）。
   function sampleDrawnPixels(ctx) {
     try {
@@ -593,7 +593,7 @@
   function refreshSceneTextHidden(L) {
     p2SceneTextHidden = new Set();
     try {
-      const raw = String(callGlobal(L, '__p2_export_scene_text_hidden') || '');
+      const raw = String(callGlobal(L, '__rustlua_export_scene_text_hidden') || '');
       if (raw) raw.split(',').forEach(name => { if (name) p2SceneTextHidden.add(name); });
     } catch (e) { /* 兼容层缺失时保持空集 */ }
   }
@@ -697,7 +697,7 @@
       }
     }
 
-    if (typeof window !== 'undefined' && window.__P2_DEBUG) {
+    if (typeof window !== 'undefined' && window.__RUSTLUA_DEBUG) {
       ctx.fillStyle = '#d0d7e2';
       ctx.font = '14px sans-serif';
       ctx.fillText('Project: ' + projectName + ' | Scene: ' + sceneState.name + ' | Lua update running', 12, 704);
@@ -730,10 +730,10 @@
     }).join(',') + '}';
   }
 
-  // 场景数据在 Lua 侧的绑定：`__p2_names/transforms/tilemaps/animations` 对应引擎里
-  // "当前场景的实体表"，`__p2_alive` 对应实体存活集合。**启动与换场景共用同一段生成
-  // 代码**——换场景时只重绑这四张表并重建存活集合，别的（存档 `__p2_save`、地图状态
-  // `__p2_map_state`、`__map`/`__map:spawn`）都是引擎 `save_data` 里的持久数据，
+  // 场景数据在 Lua 侧的绑定：`__rustlua_names/transforms/tilemaps/animations` 对应引擎里
+  // "当前场景的实体表"，`__rustlua_alive` 对应实体存活集合。**启动与换场景共用同一段生成
+  // 代码**——换场景时只重绑这四张表并重建存活集合，别的（存档 `__rustlua_save`、地图状态
+  // `__rustlua_map_state`、`__map`/`__map:spawn`）都是引擎 `save_data` 里的持久数据，
   // 跨场景必须保留，与引擎一致。
   function sceneBindings(sceneState) {
     const names = {};
@@ -747,53 +747,53 @@
       if (entity.animation) animations[entity.id] = entity.animation;
     }
     return `
-__p2_scene_name = ${luaQuote(sceneState.name)}
-__p2_names = ${luaValue(names)}
-__p2_transforms = ${luaValue(transforms)}
-__p2_tilemaps = ${luaValue(tilemaps)}
-__p2_animations = ${luaValue(animations)}
-__p2_health = {}
-__p2_velocity = {}
+__rustlua_scene_name = ${luaQuote(sceneState.name)}
+__rustlua_names = ${luaValue(names)}
+__rustlua_transforms = ${luaValue(transforms)}
+__rustlua_tilemaps = ${luaValue(tilemaps)}
+__rustlua_animations = ${luaValue(animations)}
+__rustlua_health = {}
+__rustlua_velocity = {}
 -- UI 注册表同样属于"当前场景"：标题菜单留下的面板/标签不能渗进下一张场景的第一帧
 -- （main.lua 的 on_click 也专门 hide 一次，这里是运行时侧的兜底）。
-__p2_ui_panels = {}
-__p2_ui_texts = {}
-__p2_ui_bars = {}
-__p2_ui_images = {}
-__p2_scene_text_hidden = {}
-__p2_alive = {}
+__rustlua_ui_panels = {}
+__rustlua_ui_texts = {}
+__rustlua_ui_bars = {}
+__rustlua_ui_images = {}
+__rustlua_scene_text_hidden = {}
+__rustlua_alive = {}
 -- 运行期改写的渲染数据（syncLuaScene 每帧取走）：sprite.set / animation.attach /
 -- tilemap.set_cell / tilemap.set_texture / entity.spawn。引擎换场景时整张 world 重建
 -- （script.rs 的场景载入分支 world = World::new() 并清 names/persist/health），
 -- 所以这些注册表也必须跟着场景走，否则新场景会带上上一张图的贴图、格子与持久 id 映射。
-__p2_persist = {}
-__p2_sprites = {}
+__rustlua_persist = {}
+__rustlua_sprites = {}
 -- 运行期**结构变更**（spawn/destroy/sprite.set/animation.attach/tilemap.set_cell/
 -- set_texture）走一次性 op 列表：JS 每帧取走即清空。每帧状态（位置、动画帧序号）
 -- 走 T/A 行实时回写，两者分开是刻意的——动画组件串一条就有几 KB，逐帧重发
-__p2_ops = {}
-function __p2_emit(row) __p2_ops[#__p2_ops + 1] = row end
-for _, id in pairs(__p2_names) do __p2_alive[id] = true end`;
+__rustlua_ops = {}
+function __rustlua_emit(row) __rustlua_ops[#__rustlua_ops + 1] = row end
+for _, id in pairs(__rustlua_names) do __rustlua_alive[id] = true end`;
   }
 
   function luaPrelude(sceneState, knownScenes) {
     return `
 ${sceneBindings(sceneState)}
-__p2_save = {}
+__rustlua_save = {}
 -- 虚拟键（触屏摇杆/虚拟按钮注入）是**跨帧保持**的按住态：引擎 InputSnapshot::
 -- inherit_virtual_keys 每帧把上一份快照的虚拟键集合并入新快照。宿主每帧都整份替换
--- __p2_input（设备层重新采样），不并回来就会退化成「摇杆能动、角色不动」——
+-- __rustlua_input（设备层重新采样），不并回来就会退化成「摇杆能动、角色不动」——
 -- 同帧注入、下一帧被清空，input.action_axis 恒为 0（引擎侧踩过同一个坑）。
-__p2_virtual_keys = {}
-__p2_virtual_just = {}
-__p2_input = { axis_x = 0, axis_y = 0, keys = {}, just = {}, mouse = {}, mouse_just = {}, mouse_just_released = {}, cursor = {0, 0}, cursor_delta = {0, 0}, scroll = 0 }
+__rustlua_virtual_keys = {}
+__rustlua_virtual_just = {}
+__rustlua_input = { axis_x = 0, axis_y = 0, keys = {}, just = {}, mouse = {}, mouse_just = {}, mouse_just_released = {}, cursor = {0, 0}, cursor_delta = {0, 0}, scroll = 0 }
 log ={ info = function(v) print('[lua] ' .. tostring(v)) end, warn = function(v) print('[lua warn] ' .. tostring(v)) end, error = function(v) print('[lua error] ' .. tostring(v)) end, debug = function(v) print('[lua debug] ' .. tostring(v)) end }
 time = { delta = function() return 1 / 60 end }
 -- 引擎物理键名 → web 键名：native 引擎的动作表用 keyw/keya/keyj...（core/input.rs 的
 -- ActionMap），web 的动作层（下方 bindings 表）用 w/a/j...。虚拟控件
 -- （ui/virtual_pad.lua）注入的是引擎名，不翻译就永远命中不了任何动作（微信实测：
 -- 可见摇杆/按钮全部"按了没反应"）。
-local function __p2_virtual_name(key)
+local function __rustlua_virtual_name(key)
   local name = tostring(key):lower()
   local letter = name:match('^key([a-z])$')
   if letter then return letter end
@@ -803,21 +803,21 @@ local function __p2_virtual_name(key)
   if name == 'cancel' then return 'escape' end
   return name
 end
-input = { axis = function(name) name = tostring(name or 'x'):lower(); if name == 'x' or name == 'horizontal' then return __p2_input.axis_x or 0 end; if name == 'y' or name == 'vertical' then return __p2_input.axis_y or 0 end; return 0 end, is_down = function(key) return __p2_input.keys[tostring(key):lower()] == true end, just_pressed = function(key) return __p2_input.just[tostring(key):lower()] == true end, mouse_is_down = function(button) return __p2_input.mouse[tostring(button or 0)] == true end, mouse_just_pressed = function(button) return __p2_input.mouse_just[tostring(button or 0)] == true end, cursor_position = function() return __p2_input.cursor or {0, 0} end, press_position = function() return __p2_input.press_cursor or __p2_input.cursor or {0, 0} end, cursor_delta = function() return __p2_input.cursor_delta or {0, 0} end, scroll_delta = function() return __p2_input.scroll or 0 end, mouse_just_released = function(button) return __p2_input.mouse_just_released and __p2_input.mouse_just_released[tostring(button or 0)] == true end, virtual_key = function(key, down) local name = __p2_virtual_name(key); if down then __p2_virtual_keys[name] = true else __p2_virtual_keys[name] = nil end; if __p2_input.keys then __p2_input.keys[name] = down and true or false end end, virtual_pressed = function(key) local name = __p2_virtual_name(key); __p2_virtual_keys[name] = true; __p2_virtual_just[name] = true; if __p2_input.keys then __p2_input.keys[name] = true end; if __p2_input.just then __p2_input.just[name] = true end end }
--- 每帧把上一帧注入的虚拟键并回新快照（宿主在帧首刚整份替换过 __p2_input）。
+input = { axis = function(name) name = tostring(name or 'x'):lower(); if name == 'x' or name == 'horizontal' then return __rustlua_input.axis_x or 0 end; if name == 'y' or name == 'vertical' then return __rustlua_input.axis_y or 0 end; return 0 end, is_down = function(key) return __rustlua_input.keys[tostring(key):lower()] == true end, just_pressed = function(key) return __rustlua_input.just[tostring(key):lower()] == true end, mouse_is_down = function(button) return __rustlua_input.mouse[tostring(button or 0)] == true end, mouse_just_pressed = function(button) return __rustlua_input.mouse_just[tostring(button or 0)] == true end, cursor_position = function() return __rustlua_input.cursor or {0, 0} end, press_position = function() return __rustlua_input.press_cursor or __rustlua_input.cursor or {0, 0} end, cursor_delta = function() return __rustlua_input.cursor_delta or {0, 0} end, scroll_delta = function() return __rustlua_input.scroll or 0 end, mouse_just_released = function(button) return __rustlua_input.mouse_just_released and __rustlua_input.mouse_just_released[tostring(button or 0)] == true end, virtual_key = function(key, down) local name = __rustlua_virtual_name(key); if down then __rustlua_virtual_keys[name] = true else __rustlua_virtual_keys[name] = nil end; if __rustlua_input.keys then __rustlua_input.keys[name] = down and true or false end end, virtual_pressed = function(key) local name = __rustlua_virtual_name(key); __rustlua_virtual_keys[name] = true; __rustlua_virtual_just[name] = true; if __rustlua_input.keys then __rustlua_input.keys[name] = true end; if __rustlua_input.just then __rustlua_input.just[name] = true end end }
+-- 每帧把上一帧注入的虚拟键并回新快照（宿主在帧首刚整份替换过 __rustlua_input）。
 -- 按下边沿（virtual_pressed）只在**被消费的这一帧**可见一次，读完即清——与引擎
 -- 「边沿只在一个快照周期内为真」一致；重发边沿会让 action_pressed 系动作连发。
-function __p2_apply_virtual_input()
-  if type(__p2_input) ~= 'table' then return end
-  if type(__p2_input.keys) ~= 'table' then __p2_input.keys = {} end
-  if type(__p2_input.just) ~= 'table' then __p2_input.just = {} end
-  for name in pairs(__p2_virtual_keys) do __p2_input.keys[name] = true end
-  -- 按下边沿不跨帧重放：input.virtual_pressed 注入当帧已把键写进 __p2_input.just，
-  -- 这里若再把 __p2_virtual_just 并入 just，toggle 类动作（inventory/quest/pause 等绑定
+function __rustlua_apply_virtual_input()
+  if type(__rustlua_input) ~= 'table' then return end
+  if type(__rustlua_input.keys) ~= 'table' then __rustlua_input.keys = {} end
+  if type(__rustlua_input.just) ~= 'table' then __rustlua_input.just = {} end
+  for name in pairs(__rustlua_virtual_keys) do __rustlua_input.keys[name] = true end
+  -- 按下边沿不跨帧重放：input.virtual_pressed 注入当帧已把键写进 __rustlua_input.just，
+  -- 这里若再把 __rustlua_virtual_just 并入 just，toggle 类动作（inventory/quest/pause 等绑定
   -- 到虚拟按钮的键）会在下一帧重放一次边沿——背包打开后立刻被同一动作关闭，面板只存活
-  -- 一帧（微信实机"点击背包按钮没有渲染背包UI"的根因）。__p2_virtual_just 仅作注入登记，
+  -- 一帧（微信实机"点击背包按钮没有渲染背包UI"的根因）。__rustlua_virtual_just 仅作注入登记，
   -- 清空即可，不写回 just。
-  __p2_virtual_just = {}
+  __rustlua_virtual_just = {}
 end
 -- 场景与地图宿主 API。引擎事实（core/script.rs 的 scene.load / map.goto）：
 --   * 切换是**排队的**：写 save_data["__map"]、记录 __map:spawn:x/y、把名字排进
@@ -827,59 +827,59 @@ end
 --     返回 false 且不改任何状态。
 --   * map.state(name[, value]) 是**地图作用域的持久键**（引擎侧落在
 --     save_data["__mapstate:<name>"]）：读缺失键返回 nil，写返回 true。
--- 此前这里是 load = function(name) __p2_scene_name = name end 加一张空表 map
+-- 此前这里是 load = function(name) __rustlua_scene_name = name end 加一张空表 map
 -- （hostCompat 留下的）：改名不换场景，update() 当帧就走"已在玩法地图"分支，
 -- 而新场景的实体/瓦片从未加载；map.current() 则直接崩在空表上
 -- （实测：标题界面点「开始新游戏」后第 5 帧 hud 报 attempt to call a nil value）。
-__p2_scene_known = ${luaValue(knownScenes || {})}
-__p2_scene_pending = nil
-__p2_map_current = nil
-__p2_map_spawn = nil
-__p2_map_state = {}
+__rustlua_scene_known = ${luaValue(knownScenes || {})}
+__rustlua_scene_pending = nil
+__rustlua_map_current = nil
+__rustlua_map_spawn = nil
+__rustlua_map_state = {}
 
-function __p2_scene_request(name)
+function __rustlua_scene_request(name)
   name = tostring(name or '')
-  if name == '' or not __p2_scene_known[name] then return false end
-  __p2_scene_pending = name
+  if name == '' or not __rustlua_scene_known[name] then return false end
+  __rustlua_scene_pending = name
   return true
 end
 
 -- 运行时每帧取一次待切换场景（取走即清空，与引擎"只应用一次"一致）。
-function __p2_take_pending_scene()
-  local name = __p2_scene_pending
-  __p2_scene_pending = nil
+function __rustlua_take_pending_scene()
+  local name = __rustlua_scene_pending
+  __rustlua_scene_pending = nil
   return name
 end
 
 scene = {
-  reload = function() return __p2_scene_name end,
-  load = function(name) return __p2_scene_request(name) end
+  reload = function() return __rustlua_scene_name end,
+  load = function(name) return __rustlua_scene_request(name) end
 }
 
 -- 网格换算宿主 API（引擎 core/grid.rs）：世界坐标 ↔ 格子坐标、朝向格、越界判定。
 -- 返回形状与引擎一致：world_to_cell/facing_cell 是**数组** {cx, cy}（调用侧写 cell[1], cell[2]），
 -- cell_to_world 是 {x, y}（向量）。tile_size 必须为正有限值（引擎会报错，这里同样报）。
-function __p2_tile_size(value)
+function __rustlua_tile_size(value)
   local size = tonumber(value)
   if not size or size ~= size or size == math.huge or size == -math.huge or size <= 0 then
     error('tile_size must be a positive finite number', 2)
   end
   return size
 end
-__p2_facing_step = { up = { 0, 1 }, n = { 0, 1 }, north = { 0, 1 }, down = { 0, -1 }, s = { 0, -1 }, south = { 0, -1 }, left = { -1, 0 }, w = { -1, 0 }, west = { -1, 0 }, right = { 1, 0 }, e = { 1, 0 }, east = { 1, 0 } }
+__rustlua_facing_step = { up = { 0, 1 }, n = { 0, 1 }, north = { 0, 1 }, down = { 0, -1 }, s = { 0, -1 }, south = { 0, -1 }, left = { -1, 0 }, w = { -1, 0 }, west = { -1, 0 }, right = { 1, 0 }, e = { 1, 0 }, east = { 1, 0 } }
 grid = {
   world_to_cell = function(x, y, tile_size)
-    local size = __p2_tile_size(tile_size)
+    local size = __rustlua_tile_size(tile_size)
     return { math.floor(x / size), math.floor(y / size) }
   end,
   cell_to_world = function(cx, cy, tile_size)
-    local size = __p2_tile_size(tile_size)
+    local size = __rustlua_tile_size(tile_size)
     return { (cx + 0.5) * size, (cy + 0.5) * size }
   end,
   facing_cell = function(x, y, facing, tile_size)
-    local size = __p2_tile_size(tile_size)
+    local size = __rustlua_tile_size(tile_size)
     -- 未知朝向回落 down（引擎 Facing::parse 的默认分支）
-    local step = __p2_facing_step[tostring(facing or ''):lower():match('^%s*(.-)%s*$')] or { 0, -1 }
+    local step = __rustlua_facing_step[tostring(facing or ''):lower():match('^%s*(.-)%s*$')] or { 0, -1 }
     return { math.floor(x / size) + step[1], math.floor(y / size) + step[2] }
   end,
   in_bounds = function(cx, cy, width, height)
@@ -893,20 +893,20 @@ grid = {
 -- 受堆叠上限钳制（上限取 item.define 的 stack，缺省 99）；移除从**后往前**扫。
 -- 返回值语义逐条对齐引擎：add 返回装不下的剩余、remove/count 返回数量、
 -- 目标库存不存在时 add 隐式建一个 24 格的（引擎如此，不报错）。
-__p2_inventories = {}
-function __p2_stack_limit(item_id)
+__rustlua_inventories = {}
+function __rustlua_stack_limit(item_id)
   local definition = type(item) == 'table' and type(item.def) == 'function' and item.def(item_id) or nil
   local limit = definition and tonumber(definition.stack) or nil
   if not limit or limit < 1 then return 99 end
   return math.floor(limit)
 end
-function __p2_inventory_new(capacity)
+function __rustlua_inventory_new(capacity)
   capacity = math.max(1, math.floor(tonumber(capacity) or 24))
   local slots = {}
   for index = 1, capacity do slots[index] = { item = '', count = 0 } end
   return { capacity = capacity, slots = slots, equipment = {} }
 end
-function __p2_inventory_add(inventory, item_id, count, limit)
+function __rustlua_inventory_add(inventory, item_id, count, limit)
   local remaining = count
   for _, slot in ipairs(inventory.slots) do
     if remaining == 0 then break end
@@ -929,7 +929,7 @@ function __p2_inventory_add(inventory, item_id, count, limit)
   end
   return remaining
 end
-function __p2_inventory_remove(inventory, item_id, count)
+function __rustlua_inventory_remove(inventory, item_id, count)
   local remaining = count
   for index = #inventory.slots, 1, -1 do
     if remaining == 0 then break end
@@ -943,18 +943,18 @@ function __p2_inventory_remove(inventory, item_id, count)
   end
   return count - remaining
 end
-function __p2_inventory_get(id)
-  local inventory = __p2_inventories[id]
+function __rustlua_inventory_get(id)
+  local inventory = __rustlua_inventories[id]
   if not inventory then error('inventory ' .. tostring(id) .. ' not found', 2) end
   return inventory
 end
-function __p2_inventory_slot(inventory, index)
+function __rustlua_inventory_slot(inventory, index)
   index = math.floor(tonumber(index) or 0)
   if index <= 0 then error('inventory slot index must be positive', 3) end
   if index > inventory.capacity then error('inventory slot out of bounds', 3) end
   return inventory.slots[index]
 end
-function __p2_inventory_movable(source, target, requested, limit)
+function __rustlua_inventory_movable(source, target, requested, limit)
   if target.item == source.item then
     return math.min(math.max(0, limit - target.count), requested)
   elseif target.item == '' then
@@ -966,38 +966,38 @@ inv = {
   create = function(id, capacity)
     id = tostring(id or '')
     if id == '' then error('inv.create id must not be empty', 2) end
-    __p2_inventories[id] = __p2_inventory_new(capacity or 24)
+    __rustlua_inventories[id] = __rustlua_inventory_new(capacity or 24)
     return id
   end,
   hotbar = function(id, size)
     id = tostring(id or '')
     if id == '' then error('inv.hotbar id must not be empty', 2) end
-    __p2_inventories[id] = __p2_inventory_new(size or 9)
+    __rustlua_inventories[id] = __rustlua_inventory_new(size or 9)
     return id
   end,
-  capacity = function(id) return __p2_inventory_get(tostring(id)).capacity end,
-  exists = function(id) return __p2_inventories[tostring(id)] ~= nil end,
+  capacity = function(id) return __rustlua_inventory_get(tostring(id)).capacity end,
+  exists = function(id) return __rustlua_inventories[tostring(id)] ~= nil end,
   add = function(id, item_id, count)
     id, item_id = tostring(id), tostring(item_id or '')
     if item_id == '' then error('inv.add item id must not be empty', 2) end
     count = math.floor(tonumber(count) or 0)
     if count <= 0 then error('inv.add count must be positive', 2) end
-    local inventory = __p2_inventories[id]
+    local inventory = __rustlua_inventories[id]
     if not inventory then
-      inventory = __p2_inventory_new(24)
-      __p2_inventories[id] = inventory
+      inventory = __rustlua_inventory_new(24)
+      __rustlua_inventories[id] = inventory
     end
-    return __p2_inventory_add(inventory, item_id, count, __p2_stack_limit(item_id))
+    return __rustlua_inventory_add(inventory, item_id, count, __rustlua_stack_limit(item_id))
   end,
   remove = function(id, item_id, count)
     count = math.floor(tonumber(count) or 0)
     if count <= 0 then error('inv.remove count must be positive', 2) end
-    local inventory = __p2_inventories[tostring(id)]
+    local inventory = __rustlua_inventories[tostring(id)]
     if not inventory then return 0 end
-    return __p2_inventory_remove(inventory, tostring(item_id), count)
+    return __rustlua_inventory_remove(inventory, tostring(item_id), count)
   end,
   count = function(id, item_id)
-    local inventory = __p2_inventories[tostring(id)]
+    local inventory = __rustlua_inventories[tostring(id)]
     if not inventory then return 0 end
     local total = 0
     for _, slot in ipairs(inventory.slots) do
@@ -1007,7 +1007,7 @@ inv = {
   end,
   get = function(id)
     id = tostring(id)
-    local inventory = __p2_inventory_get(id)
+    local inventory = __rustlua_inventory_get(id)
     local slots, occupied = {}, 0
     for index, slot in ipairs(inventory.slots) do
       if slot.item ~= '' then
@@ -1018,13 +1018,13 @@ inv = {
     return { id = id, capacity = inventory.capacity, slots = slots, occupied = occupied }
   end,
   slot = function(id, index)
-    local slot = __p2_inventory_slot(__p2_inventory_get(tostring(id)), index)
+    local slot = __rustlua_inventory_slot(__rustlua_inventory_get(tostring(id)), index)
     if slot.item == '' then return nil end
     return { item = slot.item, count = slot.count }
   end,
   set = function(id, index, item_id, count)
-    local inventory = __p2_inventory_get(tostring(id))
-    local slot = __p2_inventory_slot(inventory, index)
+    local inventory = __rustlua_inventory_get(tostring(id))
+    local slot = __rustlua_inventory_slot(inventory, index)
     count = math.floor(tonumber(count) or 0)
     if item_id ~= nil and tostring(item_id) ~= '' and count > 0 then
       slot.item = tostring(item_id)
@@ -1034,37 +1034,37 @@ inv = {
     end
   end,
   swap = function(from_id, from_index, to_id, to_index)
-    local from = __p2_inventory_get(tostring(from_id))
-    local left = __p2_inventory_slot(from, from_index)
+    local from = __rustlua_inventory_get(tostring(from_id))
+    local left = __rustlua_inventory_slot(from, from_index)
     if tostring(from_id) == tostring(to_id) then
-      local right = __p2_inventory_slot(from, to_index)
+      local right = __rustlua_inventory_slot(from, to_index)
       left.item, right.item = right.item, left.item
       left.count, right.count = right.count, left.count
       return true
     end
-    local to = __p2_inventory_get(tostring(to_id))
-    local right = __p2_inventory_slot(to, to_index)
+    local to = __rustlua_inventory_get(tostring(to_id))
+    local right = __rustlua_inventory_slot(to, to_index)
     left.item, right.item = right.item, left.item
     left.count, right.count = right.count, left.count
     return true
   end,
   move = function(from_id, from_index, to_id, to_index, count)
-    local from = __p2_inventory_get(tostring(from_id))
-    local source = __p2_inventory_slot(from, from_index)
+    local from = __rustlua_inventory_get(tostring(from_id))
+    local source = __rustlua_inventory_slot(from, from_index)
     if source.item == '' then return 0 end
-    local limit = __p2_stack_limit(source.item)
+    local limit = __rustlua_stack_limit(source.item)
     local same = tostring(from_id) == tostring(to_id)
     if to_index == nil then
       -- 无目标格：退回"移出再放回"，净效果是重新堆叠，返回净移动量（引擎同义）。
       local requested = math.max(1, math.floor(tonumber(count) or source.count))
-      local removed = __p2_inventory_remove(from, source.item, requested)
-      local leftover = __p2_inventory_add(from, source.item, removed, limit)
+      local removed = __rustlua_inventory_remove(from, source.item, requested)
+      local leftover = __rustlua_inventory_add(from, source.item, removed, limit)
       return removed - leftover
     end
-    local to = same and from or __p2_inventory_get(tostring(to_id))
-    local target = __p2_inventory_slot(to, to_index)
+    local to = same and from or __rustlua_inventory_get(tostring(to_id))
+    local target = __rustlua_inventory_slot(to, to_index)
     local requested = math.max(0, math.min(math.floor(tonumber(count) or source.count), source.count))
-    local moved = __p2_inventory_movable(source, target, requested, limit)
+    local moved = __rustlua_inventory_movable(source, target, requested, limit)
     if moved > 0 then
       source.count = source.count - moved
       if source.count == 0 then source.item = '' end
@@ -1081,7 +1081,7 @@ inv = {
   equip = function(id, slot, item_id)
     id, slot = tostring(id or ''), tostring(slot or '')
     if id == '' or slot == '' then error('inv.equip needs an inventory id and a non-empty slot', 2) end
-    local inventory = __p2_inventory_get(id)
+    local inventory = __rustlua_inventory_get(id)
     local value = item_id ~= nil and tostring(item_id) or ''
     if value == '' then
       inventory.equipment[slot] = nil
@@ -1089,40 +1089,40 @@ inv = {
       inventory.equipment[slot] = value
     end
   end,
-  equip_get = function(id, slot) return __p2_inventory_get(tostring(id)).equipment[tostring(slot)] end,
+  equip_get = function(id, slot) return __rustlua_inventory_get(tostring(id)).equipment[tostring(slot)] end,
   equip_list = function(id)
     local result = {}
-    for slot, item_id in pairs(__p2_inventory_get(tostring(id)).equipment) do result[slot] = item_id end
+    for slot, item_id in pairs(__rustlua_inventory_get(tostring(id)).equipment) do result[slot] = item_id end
     return result
   end,
   -- 引擎的 inv.open 面向容器 UI，游戏未使用；保留同名空实现以免宿主 API 表缺项。
   open = function() end
 }
 map = {
-  current = function() return __p2_map_current end,
-  spawn = function() return __p2_map_spawn end,
-  set_spawn = function(x, y) __p2_map_spawn = { x = x, y = y } end,
+  current = function() return __rustlua_map_current end,
+  spawn = function() return __rustlua_map_spawn end,
+  set_spawn = function(x, y) __rustlua_map_spawn = { x = x, y = y } end,
   -- goto 是 Lua 5.2+ 的保留字，只能以 map["goto"](...) 形式使用（游戏侧正是这么调的）。
   ["goto"] = function(name, x, y)
-    if not __p2_scene_request(name) then return false end
-    __p2_map_current = tostring(name)
-    if x ~= nil and y ~= nil then __p2_map_spawn = { x = x, y = y } end
+    if not __rustlua_scene_request(name) then return false end
+    __rustlua_map_current = tostring(name)
+    if x ~= nil and y ~= nil then __rustlua_map_spawn = { x = x, y = y } end
     return true
   end,
   enter = function(name, x, y) return map["goto"](name, x, y) end,
   state = function(name, value)
     name = tostring(name)
-    if value == nil then return __p2_map_state[name] end
-    __p2_map_state[name] = value
+    if value == nil then return __rustlua_map_state[name] end
+    __rustlua_map_state[name] = value
     return true
   end,
   state_clear = function(name)
     local removed = 0
     if name == nil then
-      for _ in pairs(__p2_map_state) do removed = removed + 1 end
-      __p2_map_state = {}
-    elseif __p2_map_state[tostring(name)] ~= nil then
-      __p2_map_state[tostring(name)] = nil
+      for _ in pairs(__rustlua_map_state) do removed = removed + 1 end
+      __rustlua_map_state = {}
+    elseif __rustlua_map_state[tostring(name)] ~= nil then
+      __rustlua_map_state[tostring(name)] = nil
       removed = 1
     end
     return removed
@@ -1132,16 +1132,16 @@ map = {
 }
 -- 存活校验（引擎 require_alive 的同构）：对未知/已销毁实体**报错**而不是静默改数据。
 -- 静默 no-op 会让"实体早就没了"这类问题一路潜伏到画面异常才被发现。
-function __p2_require_alive(id)
-  if __p2_alive[id] ~= true then
+function __rustlua_require_alive(id)
+  if __rustlua_alive[id] ~= true then
     error('entity is not alive: ' .. tostring(id), 3)
   end
 end
 
 -- 实体 id 分配：取现有存活 id 之外的最小正整数（与引擎 world.spawn 的递增 id 形态一致）。
-function __p2_next_entity_id()
+function __rustlua_next_entity_id()
   local id = 1
-  for k in pairs(__p2_alive) do
+  for k in pairs(__rustlua_alive) do
     if type(k) == 'number' and k >= id then id = k + 1 end
   end
   return id
@@ -1153,71 +1153,71 @@ end
 -- persist_id 是跨场景重挂用的稳定键（NPC/敌人靠它避免重复生成）：find_id 查它、
 -- destroy 清它，与引擎 core/script.rs 的 persist 表逐条对齐（含重复注册报错）。
 entity = {
-  find = function(name) return __p2_names[name] end,
-  is_alive = function(id) return __p2_alive[id] == true end,
-  find_id = function(persist_id) return __p2_persist[tostring(persist_id or '')] end,
+  find = function(name) return __rustlua_names[name] end,
+  is_alive = function(id) return __rustlua_alive[id] == true end,
+  find_id = function(persist_id) return __rustlua_persist[tostring(persist_id or '')] end,
   persist_id = function(id)
-    for key, value in pairs(__p2_persist) do
+    for key, value in pairs(__rustlua_persist) do
       if value == id then return key end
     end
     return nil
   end,
   destroy = function(id)
-    __p2_require_alive(id)
-    __p2_alive[id] = false
-    __p2_emit('D\t' .. id)
-    for key, value in pairs(__p2_persist) do
-      if value == id then __p2_persist[key] = nil end
+    __rustlua_require_alive(id)
+    __rustlua_alive[id] = false
+    __rustlua_emit('D\t' .. id)
+    for key, value in pairs(__rustlua_persist) do
+      if value == id then __rustlua_persist[key] = nil end
     end
     return true
   end,
   spawn = function(name, persist_id)
     local key = persist_id ~= nil and tostring(persist_id) or ''
-    local taken = key ~= '' and __p2_persist[key] or nil
-    if taken ~= nil and __p2_alive[taken] == true then
+    local taken = key ~= '' and __rustlua_persist[key] or nil
+    if taken ~= nil and __rustlua_alive[taken] == true then
       error('persist_id already in use: ' .. key, 2)
     end
-    local id = __p2_next_entity_id()
-    __p2_alive[id] = true
-    __p2_transforms[id] = { x = 0, y = 0, rotation = 0, scale_x = 1, scale_y = 1 }
-    if name ~= nil and name ~= '' then __p2_names[tostring(name)] = id end
-    if key ~= '' then __p2_persist[key] = id end
-    __p2_emit('R\t' .. id .. '\t' .. tostring(name or ''))
+    local id = __rustlua_next_entity_id()
+    __rustlua_alive[id] = true
+    __rustlua_transforms[id] = { x = 0, y = 0, rotation = 0, scale_x = 1, scale_y = 1 }
+    if name ~= nil and name ~= '' then __rustlua_names[tostring(name)] = id end
+    if key ~= '' then __rustlua_persist[key] = id end
+    __rustlua_emit('R\t' .. id .. '\t' .. tostring(name or ''))
     return id
   end
 }
 transform = {
   get = function(id)
-    local p = __p2_transforms[id]
+    local p = __rustlua_transforms[id]
     if not p then return nil end
     return { x = p.x or 0, y = p.y or 0, rotation = p.rotation or 0, scale_x = p.scale_x or 1, scale_y = p.scale_y or 1 }
   end,
   set = function(id, x, y, rotation, scale_x, scale_y)
-    __p2_require_alive(id)
-    local p = __p2_transforms[id] or { x = 0, y = 0, rotation = 0, scale_x = 1, scale_y = 1 }
+    __rustlua_require_alive(id)
+    local p = __rustlua_transforms[id] or { x = 0, y = 0, rotation = 0, scale_x = 1, scale_y = 1 }
     p.x, p.y = tonumber(x) or 0, tonumber(y) or 0
     if rotation ~= nil then p.rotation = tonumber(rotation) or 0 end
     if scale_x ~= nil then p.scale_x = tonumber(scale_x) or 1 end
     if scale_y ~= nil then p.scale_y = tonumber(scale_y) or 1 end
-    __p2_transforms[id] = p
+    __rustlua_transforms[id] = p
     return true
   end,
   move = function(id, dx, dy)
-    __p2_require_alive(id)
-    local p = __p2_transforms[id] or { x = 0, y = 0, rotation = 0, scale_x = 1, scale_y = 1 }
+    __rustlua_require_alive(id)
+    local p = __rustlua_transforms[id] or { x = 0, y = 0, rotation = 0, scale_x = 1, scale_y = 1 }
     p.x = (p.x or 0) + (tonumber(dx) or 0)
     p.y = (p.y or 0) + (tonumber(dy) or 0)
-    __p2_transforms[id] = p
+    __rustlua_transforms[id] = p
     return true
   end
 }
 transform3d = { attach = function(_) return true end, get = function(_) return { x = 0, y = 0, z = 0 } end, set = function(...) return true end, move = function(...) return true end }
-__p2_tilemap_of = function(id)
-  local m = __p2_tilemaps[id]
+__rustlua_tilemap_of = function(id)
+  local m = __rustlua_tilemaps[id]
   if not m then return nil end
   return m
 end
-__p2_cell_index = function(m, x, y)
+__rustlua_cell_index = function(m, x, y)
   x, y = tonumber(x), tonumber(y)
   if not x or not y or x < 0 or y < 0 or x >= m.width or y >= m.height then return nil end
   return math.floor(y) * m.width + math.floor(x) + 1
@@ -1226,45 +1226,45 @@ tilemap = {
   -- 引擎的 tilemap.get 带 texture（season_visual 靠它判断"是否已是目标地表"，
   -- 少了这个字段就会每帧重复写组件、网格反复重建）。
   get = function(id)
-    local m = __p2_tilemap_of(id)
+    local m = __rustlua_tilemap_of(id)
     if not m then return nil end
     return { width = m.width, height = m.height, tile_size = m.tile_size, texture = m.texture }
   end,
   is_solid = function(id, x, y)
-    local m = __p2_tilemap_of(id)
+    local m = __rustlua_tilemap_of(id)
     if not m then error('entity has no tilemap', 2) end
-    local i = __p2_cell_index(m, x, y)
+    local i = __rustlua_cell_index(m, x, y)
     if not i then return false end
     return string.sub(m.solid, i, i) == '1'
   end,
   get_cell = function(id, x, y)
-    local m = __p2_tilemap_of(id)
+    local m = __rustlua_tilemap_of(id)
     if not m then error('entity has no tilemap', 2) end
-    local i = __p2_cell_index(m, x, y)
+    local i = __rustlua_cell_index(m, x, y)
     if not i then return 0 end
     return tonumber(string.sub(m.tiles, i, i)) or 0
   end,
   set_cell = function(id, x, y, value)
-    local m = __p2_tilemap_of(id)
+    local m = __rustlua_tilemap_of(id)
     if not m then error('entity has no tilemap', 2) end
     local cx, cy = math.floor(tonumber(x) or -1), math.floor(tonumber(y) or -1)
-    local i = __p2_cell_index(m, cx, cy)
+    local i = __rustlua_cell_index(m, cx, cy)
     if not i then error('tilemap cell (' .. tostring(x) .. ', ' .. tostring(y) .. ') is out of bounds', 2) end
     -- Lua 侧自身也要跟着变：tilemap.get_cell 必须读到刚写进去的值（farm 依赖它
     -- 判断「这块地已经锄过了」，只发渲染 op 会让两边数据分叉）。
     -- 单字符编码与引擎一致（Tilemap::to_component_str 的 char::from(b'0' + cell)）。
     local code = math.floor(tonumber(value) or 0)
     m.tiles = string.sub(m.tiles, 1, i - 1) .. string.char(48 + code) .. string.sub(m.tiles, i + 1)
-    __p2_emit('C\t' .. id .. '\t' .. cx .. '\t' .. cy .. '\t' .. tostring(value))
+    __rustlua_emit('C\t' .. id .. '\t' .. cx .. '\t' .. cy .. '\t' .. tostring(value))
     return true
   end,
   set_texture = function(id, texture)
-    local m = __p2_tilemap_of(id)
+    local m = __rustlua_tilemap_of(id)
     if not m then error('entity has no tilemap', 2) end
     local path = tostring(texture or '')
     if path:match('^%s*$') then error('tilemap texture must not be empty', 2) end
     m.texture = path
-    __p2_emit('U\t' .. id .. '\t' .. path)
+    __rustlua_emit('U\t' .. id .. '\t' .. path)
     return true
   end,
   -- A* 寻路（引擎 core/tilemap.rs 的 Map::find_path 同构）：返回 **1 基** 的
@@ -1272,7 +1272,7 @@ tilemap = {
   -- 开放集用二叉堆：线性取最小在 64x64 图上单次寻路
   -- 要百万级比较，NPC/敌人每帧重寻路会把帧时间吃光。
   find_path = function(id, from_x, from_y, to_x, to_y, diagonal)
-    local m = __p2_tilemap_of(id)
+    local m = __rustlua_tilemap_of(id)
     if not m then error('entity has no tilemap', 2) end
     local sx, sy = math.floor(tonumber(from_x) or -1), math.floor(tonumber(from_y) or -1)
     local gx, gy = math.floor(tonumber(to_x) or -1), math.floor(tonumber(to_y) or -1)
@@ -1380,7 +1380,7 @@ tilemap = {
     return nil, 'no path from (' .. sx .. ', ' .. sy .. ') to (' .. gx .. ', ' .. gy .. ')'
   end
 }
-health = { get = function(id) return __p2_health[id] or 100 end, set = function(id, hp) __p2_health[id] = hp end, damage = function(id, amount) __p2_health[id] = (health.get(id) or 100) - amount; return __p2_health[id] end }
+health = { get = function(id) return __rustlua_health[id] or 100 end, set = function(id, hp) __rustlua_health[id] = hp end, damage = function(id, amount) __rustlua_health[id] = (health.get(id) or 100) - amount; return __rustlua_health[id] end }
 physics = {
   -- 场景空间**宽相**：按实体 Transform 位置做圆查询，与 native（core/script.rs
   -- 同名 API）语义一致：返回半径内所有存活实体 id 的 1 基数组（含调用者自己）。
@@ -1396,8 +1396,8 @@ physics = {
     local result = {}
     local n = 1
     local r2 = r * r
-    for id in pairs(__p2_alive) do
-      local pos = __p2_transforms[id]
+    for id in pairs(__rustlua_alive) do
+      local pos = __rustlua_transforms[id]
       if pos then
         local dx = (pos.x or 0) - cx
         local dy = (pos.y or 0) - cy
@@ -1409,7 +1409,7 @@ physics = {
     end
     return result
   end,
-  set_velocity = function(id, x, y) __p2_velocity[id] = { x = x or 0, y = y or 0 }; return true end,
+  set_velocity = function(id, x, y) __rustlua_velocity[id] = { x = x or 0, y = y or 0 }; return true end,
   -- 2D 传送（引擎 M17-01）：**刚体与 ECS 同步落位**，只改 transform 会被下一帧
   -- 物理回写覆盖成旧位置（player.teleport 的注释里就写着这条）。这里两者都写。
   set_position = function(id, x, y)
@@ -1417,11 +1417,11 @@ physics = {
     if not nx or not ny or nx ~= nx or ny ~= ny or nx == math.huge or nx == -math.huge or ny == math.huge or ny == -math.huge then
       error('physics.set_position must be finite', 2)
     end
-    __p2_require_alive(id)
-    local p = __p2_transforms[id] or { rotation = 0, scale_x = 1, scale_y = 1 }
+    __rustlua_require_alive(id)
+    local p = __rustlua_transforms[id] or { rotation = 0, scale_x = 1, scale_y = 1 }
     p.x, p.y = nx, ny
-    __p2_transforms[id] = p
-    __p2_velocity[id] = { x = 0, y = 0 }
+    __rustlua_transforms[id] = p
+    __rustlua_velocity[id] = { x = 0, y = 0 }
     return true
   end,
   events = function() return {} end
@@ -1431,16 +1431,16 @@ physics3d = { set_velocity = function(...) return true end, set_position = funct
 -- 解析交给渲染侧同一份 applyComponents（这里只登记，syncLuaScene 每帧取走）。
 sprite = {
   set = function(id, component)
-    __p2_require_alive(id)
+    __rustlua_require_alive(id)
     local spec = tostring(component or '')
     if spec:match('^%s*$') then error('sprite component must not be empty', 2) end
-    __p2_sprites[id] = spec
-    __p2_emit('S\t' .. id .. '\t' .. spec)
+    __rustlua_sprites[id] = spec
+    __rustlua_emit('S\t' .. id .. '\t' .. spec)
     return true
   end,
   get = function(id)
-    __p2_require_alive(id)
-    local spec = __p2_sprites[id]
+    __rustlua_require_alive(id)
+    local spec = __rustlua_sprites[id]
     if not spec then return nil end
     local size = spec:match('size=([^;]+)') or '32x32'
     local w, h = size:match('^(%d+)x(%d+)$')
@@ -1452,7 +1452,7 @@ sprite = {
 }
 -- 序列帧：clip 定义与引擎 AnimationClip 同构（name:sheet:cols:fps:looped）。
 -- 组件串在 Lua 侧解析一次（帧序号要按 fps 算，必须知道 cols/fps/looping）。
-function __p2_parse_animation(spec)
+function __rustlua_parse_animation(spec)
   local machine = { current = 'idle', time = 0, ended = false, clips = {} }
   for field in tostring(spec or ''):gmatch('[^;]+') do
     local default = field:match('^default=(.*)$')
@@ -1476,7 +1476,7 @@ function __p2_parse_animation(spec)
 end
 -- 步进一帧：引擎 AnimationStateMachine 的同构（time 累加、非循环播完置 ended）；
 -- 帧序号用 current_frame 的算法：循环取模、单次夹紧到 cols-1。
-function __p2_advance_animation(a, delta)
+function __rustlua_advance_animation(a, delta)
   if not a then return nil end
   local clip = a.clips and a.clips[a.current]
   if not clip then return nil end
@@ -1498,14 +1498,14 @@ function __p2_advance_animation(a, delta)
 end
 animation = {
   get = function(id)
-    __p2_require_alive(id)
-    local a = __p2_animations[id]
+    __rustlua_require_alive(id)
+    local a = __rustlua_animations[id]
     if not a then error('entity has no animation', 2) end
     return a.current
   end,
   set = function(id, name)
-    __p2_require_alive(id)
-    local a = __p2_animations[id]
+    __rustlua_require_alive(id)
+    local a = __rustlua_animations[id]
     if not a then error('entity has no animation', 2) end
     local clip = a.clips and a.clips[name]
     if not clip then error('unknown animation clip: ' .. tostring(name), 2) end
@@ -1514,96 +1514,96 @@ animation = {
   end,
   -- 与引擎一致：**读取并清除** ended 标志（take_ended 语义），不是常真。
   ended = function(id)
-    __p2_require_alive(id)
-    local a = __p2_animations[id]
+    __rustlua_require_alive(id)
+    local a = __rustlua_animations[id]
     if not a then error('entity has no animation', 2) end
     local value = a.ended == true
     a.ended = false
     return value
   end,
   frame = function(id)
-    __p2_require_alive(id)
-    local a = __p2_animations[id]
+    __rustlua_require_alive(id)
+    local a = __rustlua_animations[id]
     if not a then error('entity has no animation', 2) end
     return a.frame or 0
   end,
   -- 运行期挂动画（引擎 M21）：spawn 出来的实体只有 Transform，形象靠这里补上。
   attach = function(id, component)
-    __p2_require_alive(id)
+    __rustlua_require_alive(id)
     local spec = tostring(component or '')
-    local machine = __p2_parse_animation(spec)
+    local machine = __rustlua_parse_animation(spec)
     if next(machine.clips) == nil then
       error('animation component has no clip: ' .. spec, 2)
     end
-    __p2_animations[id] = machine
-    __p2_emit('X\t' .. id .. '\t' .. spec)
+    __rustlua_animations[id] = machine
+    __rustlua_emit('X\t' .. id .. '\t' .. spec)
     return true
   end
 }
 animation3d = { set = function(...) return true end }
--- 音频宿主 API。微信小游戏走真实后端（JS 桥 __p2_audio_js_*，见 web-runtime.js 的
+-- 音频宿主 API。微信小游戏走真实后端（JS 桥 __rustlua_audio_js_*，见 web-runtime.js 的
 -- installLuaAudioBridge：InnerAudioContext，统一 MP3 格式）；浏览器（WebGL）
 -- 没有接入混音器，保持「播放一律失败」的既有语义。
 -- **返回值语义必须与引擎一致**：audio.play_on 播放失败要返回 false + 原因，
 -- 游戏侧 core/audio.lua 据此把该 bus:name 记进 failed 表、不再重试；
 -- 若这里返回无意义的成功，游戏会每帧重试同一段缺资源的音效。
-__p2_audio_buses = { master = true, bgm = true, sfx = true, ui = true }
-__p2_audio_volume = { master = 1, bgm = 1, sfx = 1, ui = 1 }
+__rustlua_audio_buses = { master = true, bgm = true, sfx = true, ui = true }
+__rustlua_audio_volume = { master = 1, bgm = 1, sfx = 1, ui = 1 }
 audio = {
   volume = function(value)
     if value ~= nil then
       local v = tonumber(value)
       if v then
         if v < 0 then v = 0 elseif v > 1 then v = 1 end
-        __p2_audio_volume.master = v
+        __rustlua_audio_volume.master = v
       end
     end
-    if __p2_audio_js_set_volume then __p2_audio_js_set_volume('master', __p2_audio_volume.master) end
+    if __rustlua_audio_js_set_volume then __rustlua_audio_js_set_volume('master', __rustlua_audio_volume.master) end
     return true
   end,
   music = function(name)
     if type(name) ~= 'string' or name == '' then return false, 'audio name must not be empty' end
-    if not __p2_audio_js_music then return false, 'web platform has no audio backend' end
-    return __p2_audio_js_music(name)
+    if not __rustlua_audio_js_music then return false, 'web platform has no audio backend' end
+    return __rustlua_audio_js_music(name)
   end,
   play = function(name) return audio.play_on('sfx', name) end,
   stop_music = function()
-    if __p2_audio_js_stop_music then __p2_audio_js_stop_music() end
+    if __rustlua_audio_js_stop_music then __rustlua_audio_js_stop_music() end
     return true
   end,
   set_bus_volume = function(bus, level)
     bus = tostring(bus or '')
-    if not __p2_audio_buses[bus] then error('unknown audio bus: ' .. bus, 2) end
+    if not __rustlua_audio_buses[bus] then error('unknown audio bus: ' .. bus, 2) end
     local value = tonumber(level)
     if not value then error('audio.set_bus_volume level must be a number', 2) end
     if value < 0 then value = 0 elseif value > 1 then value = 1 end
-    __p2_audio_volume[bus] = value
-    if __p2_audio_js_set_volume then __p2_audio_js_set_volume(bus, value) end
+    __rustlua_audio_volume[bus] = value
+    if __rustlua_audio_js_set_volume then __rustlua_audio_js_set_volume(bus, value) end
     return true
   end,
   bus_volume = function(bus)
     bus = tostring(bus or '')
-    if not __p2_audio_buses[bus] then error('unknown audio bus: ' .. bus, 2) end
-    return __p2_audio_volume[bus]
+    if not __rustlua_audio_buses[bus] then error('unknown audio bus: ' .. bus, 2) end
+    return __rustlua_audio_volume[bus]
   end,
   effective_volume = function(bus)
     bus = tostring(bus or '')
-    if not __p2_audio_buses[bus] then error('unknown audio bus: ' .. bus, 2) end
-    if bus == 'master' then return __p2_audio_volume.master end
-    return __p2_audio_volume.master * __p2_audio_volume[bus]
+    if not __rustlua_audio_buses[bus] then error('unknown audio bus: ' .. bus, 2) end
+    if bus == 'master' then return __rustlua_audio_volume.master end
+    return __rustlua_audio_volume.master * __rustlua_audio_volume[bus]
   end,
   -- 微信小游戏：真实播放（文件不存在/后端不可用才失败）；浏览器：一律失败。
   play_on = function(bus, name)
     bus = tostring(bus or '')
-    if not __p2_audio_buses[bus] then error('unknown audio bus: ' .. bus, 2) end
+    if not __rustlua_audio_buses[bus] then error('unknown audio bus: ' .. bus, 2) end
     if type(name) ~= 'string' or name == '' then return false, 'audio name must not be empty' end
-    if not __p2_audio_js_play_on then return false, 'web platform has no audio backend' end
-    return __p2_audio_js_play_on(bus, name)
+    if not __rustlua_audio_js_play_on then return false, 'web platform has no audio backend' end
+    return __rustlua_audio_js_play_on(bus, name)
   end
 }
 ui = {}
 function ui.panel(id, x, y, w, h, r, g, b, a)
-  __p2_ui_panels[id] = { x = x, y = y, w = w, h = h, r = r, g = g, b = b, a = a, visible = true, shape = 0 }
+  __rustlua_ui_panels[id] = { x = x, y = y, w = w, h = h, r = r, g = g, b = b, a = a, visible = true, shape = 0 }
 end
 -- 圆形与 ui.panel **共用同一张表**：引擎 ui.circle 写的就是 ui_panels，只多一个
 -- shape = 1（core/ui.rs 的 UiPanel.shape：0 = 矩形、1 = 圆形）。因此两边共享 id
@@ -1613,58 +1613,58 @@ end
 -- 的三角扇几何逐项对齐（32 段填充圆）。
 function ui.circle(id, cx, cy, radius, r, g, b, a)
   local value = tonumber(radius) or 0
-  __p2_ui_panels[id] = { x = cx - value, y = cy - value, w = value * 2, h = value * 2, r = r, g = g, b = b, a = a, visible = true, shape = 1 }
+  __rustlua_ui_panels[id] = { x = cx - value, y = cy - value, w = value * 2, h = value * 2, r = r, g = g, b = b, a = a, visible = true, shape = 1 }
 end
 function ui.image(id, x, y, w, h, texture, r, g, b, slice)
   local s = nil
   if slice ~= nil and tostring(slice) ~= '' then s = tostring(slice) end
-  __p2_ui_images[id] = { x = x, y = y, w = w, h = h, texture = tostring(texture or ''), r = r or 1, g = g or 1, b = b or 1, slice = s, visible = true }
+  __rustlua_ui_images[id] = { x = x, y = y, w = w, h = h, texture = tostring(texture or ''), r = r or 1, g = g or 1, b = b or 1, slice = s, visible = true }
 end
 function ui.bar(id, x, y, w, h, ratio, r, g, b)
   local value = tonumber(ratio) or 0
   if value < 0 then value = 0 elseif value > 1 then value = 1 end
-  __p2_ui_bars[id] = { x = x, y = y, w = w, h = h, ratio = value, r = r or 1, g = g or 1, b = b or 1, visible = true }
+  __rustlua_ui_bars[id] = { x = x, y = y, w = w, h = h, ratio = value, r = r or 1, g = g or 1, b = b or 1, visible = true }
 end
 function ui.text_at(id, x, y, text, scale, size)
-  __p2_ui_texts[id] = { x = x, y = y, text = tostring(text or ''), scale = scale or 1, size = size, visible = true }
+  __rustlua_ui_texts[id] = { x = x, y = y, text = tostring(text or ''), scale = scale or 1, size = size, visible = true }
 end
 function ui.text(id, text)
-  __p2_ui_texts[id] = { x = 10, y = 10, text = tostring(text or ''), scale = 1, visible = true }
+  __rustlua_ui_texts[id] = { x = 10, y = 10, text = tostring(text or ''), scale = 1, visible = true }
 end
 function ui.hide(id)
-  for _, store in ipairs({ __p2_ui_panels, __p2_ui_texts, __p2_ui_bars, __p2_ui_images }) do
+  for _, store in ipairs({ __rustlua_ui_panels, __rustlua_ui_texts, __rustlua_ui_bars, __rustlua_ui_images }) do
     local entry = store[id]
     if entry then entry.visible = false end
   end
 end
 function ui.show(id)
-  for _, store in ipairs({ __p2_ui_panels, __p2_ui_texts, __p2_ui_bars, __p2_ui_images }) do
+  for _, store in ipairs({ __rustlua_ui_panels, __rustlua_ui_texts, __rustlua_ui_bars, __rustlua_ui_images }) do
     local entry = store[id]
     if entry then entry.visible = true end
   end
 end
 -- 场景文字实体显隐（按实体名，如 BtnStartLabel）：true/省略=显示，false=隐藏。
 -- 标题界面把按钮标签接管为脚本绘制后，场景 Text 实体须隐藏，否则两层文字重叠。
-__p2_scene_text_hidden = {}
+__rustlua_scene_text_hidden = {}
 function ui.scene_text_visible(name, visible)
   local key = tostring(name or '')
-  if visible == false then __p2_scene_text_hidden[key] = true else __p2_scene_text_hidden[key] = nil end
+  if visible == false then __rustlua_scene_text_hidden[key] = true else __rustlua_scene_text_hidden[key] = nil end
 end
-function __p2_export_scene_text_hidden()
+function __rustlua_export_scene_text_hidden()
   local out = {}
-  for k in pairs(__p2_scene_text_hidden) do out[#out + 1] = k end
+  for k in pairs(__rustlua_scene_text_hidden) do out[#out + 1] = k end
   return table.concat(out, ',')
 end
 function ui.clear(id)
-  for _, store in ipairs({ __p2_ui_panels, __p2_ui_texts, __p2_ui_bars, __p2_ui_images }) do
+  for _, store in ipairs({ __rustlua_ui_panels, __rustlua_ui_texts, __rustlua_ui_bars, __rustlua_ui_images }) do
     store[id] = nil
     store[id .. ':title'] = nil
     store[id .. ':tooltip'] = nil
   end
 end
-function ui.panel_get(id) return __p2_ui_panels[id] end
-function ui.image_get(id) return __p2_ui_images[id] end
-function ui.get(id) return __p2_ui_texts[id] end
+function ui.panel_get(id) return __rustlua_ui_panels[id] end
+function ui.image_get(id) return __rustlua_ui_images[id] end
+function ui.get(id) return __rustlua_ui_texts[id] end
 function ui.grid(...) return true end
 function ui.measure_text(text, size)
   local s = tostring(text or '')
@@ -1673,26 +1673,26 @@ function ui.measure_text(text, size)
   local px = tonumber(size) or 16
   return { width = count * px * 0.6, height = px }
 end
-function __p2_export_ui()
+function __rustlua_export_ui()
   local rows = {}
   local function num(v) return tostring(v or 0) end
   local function flat(v) return string.gsub(tostring(v or ''), '[\\t\\r\\n]', ' ') end
-  for id, p in pairs(__p2_ui_panels) do
+  for id, p in pairs(__rustlua_ui_panels) do
     if p.visible then
       rows[#rows + 1] = 'P\\t' .. flat(id) .. '\\t' .. num(p.x) .. '\\t' .. num(p.y) .. '\\t' .. num(p.w) .. '\\t' .. num(p.h) .. '\\t' .. num(p.r) .. '\\t' .. num(p.g) .. '\\t' .. num(p.b) .. '\\t' .. num(p.a) .. '\\t' .. num(p.shape or 0)
     end
   end
-  for id, i in pairs(__p2_ui_images) do
+  for id, i in pairs(__rustlua_ui_images) do
     if i.visible then
       rows[#rows + 1] = 'I\\t' .. flat(id) .. '\\t' .. num(i.x) .. '\\t' .. num(i.y) .. '\\t' .. num(i.w) .. '\\t' .. num(i.h) .. '\\t' .. flat(i.texture) .. '\\t' .. num(i.r) .. '\\t' .. num(i.g) .. '\\t' .. num(i.b) .. '\\t' .. flat(i.slice or '')
     end
   end
-  for id, b in pairs(__p2_ui_bars) do
+  for id, b in pairs(__rustlua_ui_bars) do
     if b.visible then
       rows[#rows + 1] = 'B\\t' .. flat(id) .. '\\t' .. num(b.x) .. '\\t' .. num(b.y) .. '\\t' .. num(b.w) .. '\\t' .. num(b.h) .. '\\t' .. num(b.ratio) .. '\\t' .. num(b.r) .. '\\t' .. num(b.g) .. '\\t' .. num(b.b)
     end
   end
-  for id, t in pairs(__p2_ui_texts) do
+  for id, t in pairs(__rustlua_ui_texts) do
     if t.visible then
       rows[#rows + 1] = 'X\\t' .. flat(id) .. '\\t' .. num(t.x) .. '\\t' .. num(t.y) .. '\\t' .. num(t.size) .. '\\t' .. num(t.scale) .. '\\t' .. flat(t.text)
     end
@@ -1700,8 +1700,8 @@ function __p2_export_ui()
   return table.concat(rows, '\\n')
 end
 save = {
-  read = function(key) return __p2_save[key] end,
-  write = function(key, value) __p2_save[key] = tostring(value) end,
+  read = function(key) return __rustlua_save[key] end,
+  write = function(key, value) __rustlua_save[key] = tostring(value) end,
   load = function() return true end,
   commit = function() return true end,
   -- 「开始新游戏」必须能丢弃引擎侧持久键：__map / __map:spawn:* / __mapstate:*。
@@ -1710,12 +1710,12 @@ save = {
   -- 顺序固定：先清引擎键，再让各模块写自己的空快照）。返回清掉的键数，与引擎一致。
   clear = function()
     local removed = 0
-    for _ in pairs(__p2_save) do removed = removed + 1 end
-    for _ in pairs(__p2_map_state) do removed = removed + 1 end
-    __p2_save = {}
-    __p2_map_state = {}
-    __p2_map_current = nil
-    __p2_map_spawn = nil
+    for _ in pairs(__rustlua_save) do removed = removed + 1 end
+    for _ in pairs(__rustlua_map_state) do removed = removed + 1 end
+    __rustlua_save = {}
+    __rustlua_map_state = {}
+    __rustlua_map_current = nil
+    __rustlua_map_spawn = nil
     log.info('cleared ' .. removed .. ' in-memory key(s)')
     return removed
   end
@@ -1730,28 +1730,28 @@ os = os or {}; os.getenv = function(_) return nil end
 -- 行格式：R=spawn（建实体） S=sprite.set（Sprite 组件串） X=animation.attach
 --        C=set_cell  U=set_texture  D=destroy  T=Transform  A=动画当前 clip + 帧序号
 -- R/D 这类结构变更只发一次（op 列表取走即清）；T/A 每帧对**存活**实体重新发。
-function __p2_export_state(step)
-  local rows = __p2_ops
-  __p2_ops = {}
+function __rustlua_export_state(step)
+  local rows = __rustlua_ops
+  __rustlua_ops = {}
   local advance = step ~= false
   if advance then
-    for id, v in pairs(__p2_velocity) do
-      if __p2_alive[id] == true then
-        local p = __p2_transforms[id] or { x = 0, y = 0 }
+    for id, v in pairs(__rustlua_velocity) do
+      if __rustlua_alive[id] == true then
+        local p = __rustlua_transforms[id] or { x = 0, y = 0 }
         p.x = (p.x or 0) + (v.x or 0) * time.delta()
         p.y = (p.y or 0) + (v.y or 0) * time.delta()
-        __p2_transforms[id] = p
+        __rustlua_transforms[id] = p
       end
     end
-    for _, a in pairs(__p2_animations) do __p2_advance_animation(a, time.delta()) end
+    for _, a in pairs(__rustlua_animations) do __rustlua_advance_animation(a, time.delta()) end
   end
-  for id, p in pairs(__p2_transforms) do
-    if __p2_alive[id] == true then
+  for id, p in pairs(__rustlua_transforms) do
+    if __rustlua_alive[id] == true then
       rows[#rows + 1] = 'T\t' .. id .. '\t' .. tostring(p.x or 0) .. '\t' .. tostring(p.y or 0) .. '\t' .. tostring(p.rotation or 0) .. '\t' .. tostring(p.scale_x or 1) .. '\t' .. tostring(p.scale_y or 1)
     end
   end
-  for id, a in pairs(__p2_animations) do
-    if __p2_alive[id] == true then
+  for id, a in pairs(__rustlua_animations) do
+    if __rustlua_alive[id] == true then
       rows[#rows + 1] = 'A\t' .. id .. '\t' .. tostring(a.current or 'idle') .. '\t' .. tostring(a.frame or 0)
     end
   end
@@ -1761,25 +1761,25 @@ end
 -- 一行世界自报，供宿主诊断覆盖层显示：真机/开发者工具里"看不见世界状态"是排查黑屏
 -- 与"游戏在跑却没进图"的最大障碍。写法保持通用：不认工程名，主角按名字里含 player
 -- 识别（渲染器 entityColor 判定主角用的是同一套启发）。
-function __p2_world_summary()
+function __rustlua_world_summary()
   local alive, player_name, player_id = 0, nil, nil
   -- 两个 O(n) 遍历，不做嵌套：这个函数每帧都要出结果（宿主覆盖层与验收都要读实时值）。
-  for _, value in pairs(__p2_alive) do
+  for _, value in pairs(__rustlua_alive) do
     if value == true then alive = alive + 1 end
   end
-  for name, mapped in pairs(__p2_names) do
-    if type(name) == 'string' and __p2_alive[mapped] == true and name:lower():find('player', 1, true) then
+  for name, mapped in pairs(__rustlua_names) do
+    if type(name) == 'string' and __rustlua_alive[mapped] == true and name:lower():find('player', 1, true) then
       player_name, player_id = name, mapped
     end
   end
   local parts = {
-    'map=' .. tostring(__p2_map_current or __p2_scene_name),
-    'spawn=' .. (__p2_map_spawn and (math.floor((__p2_map_spawn.x or 0) + 0.5) .. ',' .. math.floor((__p2_map_spawn.y or 0) + 0.5)) or 'none'),
+    'map=' .. tostring(__rustlua_map_current or __rustlua_scene_name),
+    'spawn=' .. (__rustlua_map_spawn and (math.floor((__rustlua_map_spawn.x or 0) + 0.5) .. ',' .. math.floor((__rustlua_map_spawn.y or 0) + 0.5)) or 'none'),
     'alive=' .. alive
   }
-  if player_id and __p2_transforms[player_id] then
-    local p = __p2_transforms[player_id]
-    local machine = __p2_animations[player_id]
+  if player_id and __rustlua_transforms[player_id] then
+    local p = __rustlua_transforms[player_id]
+    local machine = __rustlua_animations[player_id]
     parts[#parts + 1] = 'player=' .. tostring(player_name)
       .. '@' .. math.floor((p.x or 0) + 0.5) .. ',' .. math.floor((p.y or 0) + 0.5)
       .. (machine and ('/' .. tostring(machine.current)) or '')
@@ -1792,13 +1792,13 @@ end
 
   // ---------- 音频后端（微信小游戏：InnerAudioContext；浏览器：无后端） ----------
   //
-  // Lua 侧 audio 表经 __p2_audio_js_* 全局调用到这里。微信端用
+  // Lua 侧 audio 表经 __rustlua_audio_js_* 全局调用到这里。微信端用
   // wx.createInnerAudioContext() 播放（官方推荐 API，支持流式、适合 BGM 与短音效）。
   // 格式统一为 MP3：InnerAudioContext 在 iOS 和 Android 均支持（ogg 在 iOS 不支持，
   // wav 体积过大）。WebGL（浏览器）没有接入混音器，保持「播放一律失败」的既有语义。
   function installLuaAudioBridge() {
     const isWechat = typeof wx !== 'undefined' && typeof wx.createInnerAudioContext === 'function';
-    // 音量状态（与 Lua 侧 __p2_audio_volume 保持一致；Lua 是事实来源，这里只用于播放时应用）。
+    // 音量状态（与 Lua 侧 __rustlua_audio_volume 保持一致；Lua 是事实来源，这里只用于播放时应用）。
     const volumes = { master: 1, bgm: 1, sfx: 1, ui: 1 };
     const clamp01 = function (v) { const n = Number(v); if (!(n >= 0)) return 0; return n > 1 ? 1 : n; };
     const effective = function (bus) {
@@ -1900,25 +1900,25 @@ end
     // boolean/nil → JS 基本值），返回 **数组 = 多返回值**（`[ok]` / `[ok, reason]`
     // 对应 fengari 版的多 push 语义），空数组 = 无返回。
     function registerLuaFunction(name, fn) {
-      const bridge = window.__P2_LUA_BRIDGE;
+      const bridge = window.__RUSTLUA_LUA_BRIDGE;
       if (!bridge) throw new Error('wasm lua bridge not loaded');
       bridge.lua_register_js_callback(name, fn);
     }
-    registerLuaFunction('__p2_audio_js_play_on', function (bus, name) {
+    registerLuaFunction('__rustlua_audio_js_play_on', function (bus, name) {
       bus = String(bus == null ? '' : bus);
       name = String(name == null ? '' : name);
       const result = playOn(bus, name);
       if (result.ok) return [true];
       return [false, result.reason || 'audio play failed'];
     });
-    registerLuaFunction('__p2_audio_js_music', function (name) {
+    registerLuaFunction('__rustlua_audio_js_music', function (name) {
       name = String(name == null ? '' : name);
       const result = music(name);
       if (result.ok) return [true];
       return [false, result.reason || 'music failed'];
     });
-    registerLuaFunction('__p2_audio_js_stop_music', function () { stopMusic(); return []; });
-    registerLuaFunction('__p2_audio_js_set_volume', function (bus, value) {
+    registerLuaFunction('__rustlua_audio_js_stop_music', function () { stopMusic(); return []; });
+    registerLuaFunction('__rustlua_audio_js_set_volume', function (bus, value) {
       bus = String(bus == null ? '' : bus);
       const parsed = Number(value == null ? 1 : value);
       setVolume(bus, Number.isFinite(parsed) ? parsed : 1);
@@ -1930,7 +1930,7 @@ end
 function doString(L, source, name) {
     // WP10 迁移（fengari → mlua-wasm）：L 参数保留仅为调用点兼容（bridge 模式忽略），
     // 执行走 wasm 桥 `lua_do_string`；Lua 语法/运行错误由 wasm-bindgen 抛成 JS 异常。
-    const bridge = window.__P2_LUA_BRIDGE;
+    const bridge = window.__RUSTLUA_LUA_BRIDGE;
     if (!bridge) throw new Error('wasm lua bridge not loaded');
     try {
       bridge.lua_do_string(source, name);
@@ -1962,7 +1962,7 @@ function doString(L, source, name) {
 
   function missingHostGlobals(L) {
     // WP10 迁移：经 wasm 桥一次查出缺失清单（bridge 内部遍历全局表）。
-    const bridge = window.__P2_LUA_BRIDGE;
+    const bridge = window.__RUSTLUA_LUA_BRIDGE;
     if (!bridge) return [];
     try {
       const raw = bridge.lua_missing_globals(JSON.stringify(ENGINE_HOST_GLOBALS));
@@ -1976,15 +1976,15 @@ function doString(L, source, name) {
   function markBoot(state, detail) {
     const body = document.body || document.documentElement;
     if (!body) return;
-    body.setAttribute('data-p2-boot', state);
-    if (detail) body.setAttribute('data-p2-boot-detail', String(detail).slice(0, 400));
+    body.setAttribute('data-rustlua-boot', state);
+    if (detail) body.setAttribute('data-rustlua-boot-detail', String(detail).slice(0, 400));
   }
 
   function callGlobal(L, name, args) {
     // WP10 迁移：经 wasm 桥 `lua_call_global` 调用。参数转 JSON 数组（Rust 侧转
     // Lua 值），返回该全局的字符串化结果或 null（全局缺失 / 返回非字符串），
     // 协议与 fengari 版 `lua_isstring ? tostring : null` 逐项一致。
-    const bridge = window.__P2_LUA_BRIDGE;
+    const bridge = window.__RUSTLUA_LUA_BRIDGE;
     if (!bridge) return null;
     try {
       const value = bridge.lua_call_global(name, JSON.stringify(args || []));
@@ -1996,8 +1996,8 @@ function doString(L, source, name) {
   }
 
   window.p2RunLuaGame = async function (status) {
-    if (!window.__P2_LUA_BRIDGE) throw new Error('wasm lua bridge not loaded (fengari execution layer removed)');
-    const bridge = window.__P2_LUA_BRIDGE;
+    if (!window.__RUSTLUA_LUA_BRIDGE) throw new Error('wasm lua bridge not loaded (fengari execution layer removed)');
+    const bridge = window.__RUSTLUA_LUA_BRIDGE;
     const project = await fetchText('pack/project.toml');
     const startup = keyValue(project, 'startup_scene', 'scenes/main.scene');
     const mainScript = keyValue(project, 'main_script', 'scripts/main.lua');
@@ -2005,7 +2005,7 @@ function doString(L, source, name) {
     const sceneText = await fetchText('pack/' + startup);
     // 场景可切换 ⇒ 这两项必须可重新赋值（切图时整体换掉）。
     let sceneState = parseScene(sceneText);
-    const canvas = document.getElementById('p2-canvas');
+    const canvas = document.getElementById('rustlua-canvas');
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     if (!ctx) throw new Error('2D canvas context is not available');
     const webInput = createWebInput(canvas);
@@ -2045,53 +2045,53 @@ function doString(L, source, name) {
     const L = null;
     installLuaAudioBridge();
     try {
-      const hostCompat = ENGINE_HOST_GLOBALS.map(name => `if ${name} == nil then ${name} = __p2_missing_host_global(${luaQuote(name)}) end`).join('\n');
+      const hostCompat = ENGINE_HOST_GLOBALS.map(name => `if ${name} == nil then ${name} = __rustlua_missing_host_global(${luaQuote(name)}) end`).join('\n');
       // 引擎里有、web 运行时没实现的宿主 API：**不再静默变成空表**。
       // 旧写法（if map == nil then map = {} end）把"未实现的全局"伪装成一张空表，
       // 于是 `map.current()` 报的是 `attempt to call a nil value (field 'current')`——
       // 看上去像引擎缺一个字段，实际是整个 map 表都没实现（实测把人误导到"引擎 API 缺失"）。
       // 现在换成会**自报家门**的代理：每次访问记一条 `全局.字段` 路径并打印，同时返回
       // 可调用/可索引的替身让执行继续——一条用例就能把所有缺口探全，而不是撞一个修一个。
-      // `__p2_export_missing_api()` 给出清单，供宿主/harness 断言"这条路径不缺 API"。
+      // `__rustlua_export_missing_api()` 给出清单，供宿主/harness 断言"这条路径不缺 API"。
       const missingApiCompat = `
-__p2_missing_api = {}
-function __p2_record_missing(path)
-  if not __p2_missing_api[path] then
-    __p2_missing_api[path] = true
+__rustlua_missing_api = {}
+function __rustlua_record_missing(path)
+  if not __rustlua_missing_api[path] then
+    __rustlua_missing_api[path] = true
     print('[lua missing-host-api] ' .. path)
   end
 end
-function __p2_missing_proxy(prefix)
+function __rustlua_missing_proxy(prefix)
   return setmetatable({}, {
     __index = function(_, key)
       local child = prefix .. '.' .. tostring(key)
-      __p2_record_missing(child)
-      return __p2_missing_proxy(child)
+      __rustlua_record_missing(child)
+      return __rustlua_missing_proxy(child)
     end,
-    __call = function() return __p2_missing_proxy(prefix) end,
+    __call = function() return __rustlua_missing_proxy(prefix) end,
     __tostring = function() return '<missing host API ' .. prefix .. '>' end
   })
 end
 -- 整个宿主全局都没实现（如 inv / grid / day）：换成会自报家门的代理。
-function __p2_missing_host_global(name)
-  return __p2_missing_proxy(name)
+function __rustlua_missing_host_global(name)
+  return __rustlua_missing_proxy(name)
 end
 -- 宿主表存在但缺方法（如引擎 save 有 clear，shim 里没有）：同样点名。
 -- 只在表自身没有元表时安装，避免盖掉上面代理的 __call。
-function __p2_trap_host_table(name, api)
+function __rustlua_trap_host_table(name, api)
   if type(api) == 'table' and getmetatable(api) == nil then
     setmetatable(api, {
       __index = function(_, key)
         local child = name .. '.' .. tostring(key)
-        __p2_record_missing(child)
-        return __p2_missing_proxy(child)
+        __rustlua_record_missing(child)
+        return __rustlua_missing_proxy(child)
       end
     })
   end
 end
-function __p2_export_missing_api()
+function __rustlua_export_missing_api()
   local rows = {}
-  for path in pairs(__p2_missing_api) do rows[#rows + 1] = path end
+  for path in pairs(__rustlua_missing_api) do rows[#rows + 1] = path end
   table.sort(rows)
   return table.concat(rows, '\\n')
 end
@@ -2126,28 +2126,28 @@ interact = interact or {}
 container = container or {}
 shop = shop or {}
 asset = asset or {}
--- 与补丁区既有同族表（inv/grid/map/sprite…）同一套 __p2_ 机制；语义逐条对齐桌面
+-- 与补丁区既有同族表（inv/grid/map/sprite…）同一套 __rustlua_ 机制；语义逐条对齐桌面
 -- core/script.rs。event 回调是 fengari 函数（emit 快照遍历，回调里再 emit/订阅/退订
--- 不影响本次分发）；tag/light 是实体状态（__p2_require_alive 同引擎）；container 复用
+-- 不影响本次分发）；tag/light 是实体状态（__rustlua_require_alive 同引擎）；container 复用
 -- 背包机制（键 "container:<id>"）；shop 目录直接存 Lua 表（price 读 buy/sell）。
-__p2_events = {}
+__rustlua_events = {}
 function event.on(name, callback)
   assert(type(callback) == 'function', 'event.on expects a function')
-  local list = __p2_events[tostring(name)]
-  if not list then list = {} __p2_events[tostring(name)] = list end
+  local list = __rustlua_events[tostring(name)]
+  if not list then list = {} __rustlua_events[tostring(name)] = list end
   list[#list + 1] = callback
 end
 function event.subscribe(name, callback) return event.on(name, callback) end
 function event.emit(name, data)
-  local list = __p2_events[tostring(name or '')] or {}
+  local list = __rustlua_events[tostring(name or '')] or {}
   local callbacks = {}
   for index = 1, #list do callbacks[index] = list[index] end
   for index = 1, #callbacks do callbacks[index](data) end
 end
 function event.unsubscribe(name, callback)
   local key = tostring(name)
-  if callback == nil then __p2_events[key] = nil return end
-  local list = __p2_events[key]
+  if callback == nil then __rustlua_events[key] = nil return end
+  local list = __rustlua_events[key]
   if not list then return end
   for index = #list, 1, -1 do
     if list[index] == callback then table.remove(list, index) end
@@ -2156,70 +2156,70 @@ end
 function event.off(name, callback) return event.unsubscribe(name, callback) end
 
 -- 实体标签（引擎 tag.get/set 同构）：id → { key = value }；空 value 删除键、删空袋。
-__p2_tags = {}
+__rustlua_tags = {}
 function tag.get(id, key)
-  local bag = __p2_tags[tonumber(id)]
+  local bag = __rustlua_tags[tonumber(id)]
   if not bag then return nil end
   return bag[tostring(key)]
 end
 function tag.set(id, key, value)
   id, key = tonumber(id), tostring(key or '')
   if key == '' then error('tag key must not be empty', 2) end
-  __p2_require_alive(id)
-  local bag = __p2_tags[id]
+  __rustlua_require_alive(id)
+  local bag = __rustlua_tags[id]
   value = tostring(value or '')
   if value == '' then
     if bag then
       bag[key] = nil
-      if next(bag) == nil then __p2_tags[id] = nil end
+      if next(bag) == nil then __rustlua_tags[id] = nil end
     end
   else
-    if not bag then bag = {} __p2_tags[id] = bag end
+    if not bag then bag = {} __rustlua_tags[id] = bag end
     bag[key] = value
   end
 end
 
 -- 光照（引擎 light 同构）：实体 → 方向/颜色/强度；set_active 要求该实体已有光。
-__p2_lights = {}
-__p2_active_light = nil
+__rustlua_lights = {}
+__rustlua_active_light = nil
 function light.set_active(id)
   id = tonumber(id)
-  __p2_require_alive(id)
-  if not __p2_lights[id] then error('entity has no light', 2) end
-  __p2_active_light = id
+  __rustlua_require_alive(id)
+  if not __rustlua_lights[id] then error('entity has no light', 2) end
+  __rustlua_active_light = id
   return true
 end
 function light.get(id)
   id = tonumber(id)
-  __p2_require_alive(id)
-  local l = __p2_lights[id]
+  __rustlua_require_alive(id)
+  local l = __rustlua_lights[id]
   if not l then error('entity has no light', 2) end
   return { dx = l.dx or 0, dy = l.dy or 0, dz = l.dz or 0, r = l.r or 1, g = l.g or 1, b = l.b or 1, intensity = l.intensity or 1 }
 end
 function light.set(id, dx, dy, dz, r, g, b, intensity)
   id = tonumber(id)
-  __p2_require_alive(id)
+  __rustlua_require_alive(id)
   intensity = tonumber(intensity) or 1
   if not intensity or intensity ~= intensity or intensity < 0 then
     error('light intensity must be finite and non-negative', 2)
   end
-  __p2_lights[id] = { dx = dx or 0, dy = dy or 0, dz = dz or 0, r = r or 1, g = g or 1, b = b or 1, intensity = intensity }
+  __rustlua_lights[id] = { dx = dx or 0, dy = dy or 0, dz = dz or 0, r = r or 1, g = g or 1, b = b or 1, intensity = intensity }
 end
 
 -- 交互（引擎 interact 同构）：prompt 状态 + query（按距离升序、同距 priority 降序）。
-__p2_interact_prompt = nil
-function interact.prompt(text) __p2_interact_prompt = tostring(text or '') end
-function interact.clear_prompt() __p2_interact_prompt = nil end
-function interact.get_prompt() return __p2_interact_prompt end
+__rustlua_interact_prompt = nil
+function interact.prompt(text) __rustlua_interact_prompt = tostring(text or '') end
+function interact.clear_prompt() __rustlua_interact_prompt = nil end
+function interact.get_prompt() return __rustlua_interact_prompt end
 function interact.query(x, y, radius)
   x, y, radius = tonumber(x), tonumber(y), tonumber(radius) or 0
   if not radius or radius ~= radius or radius < 0 then
     error('interact radius must be finite and non-negative', 2)
   end
   local hits = {}
-  for id, bag in pairs(__p2_tags) do
+  for id, bag in pairs(__rustlua_tags) do
     if bag.interact or bag.kind then
-      local t = __p2_transforms[id]
+      local t = __rustlua_transforms[id]
       if t then
         local dx, dy = (t.x or 0) - x, (t.y or 0) - y
         if dx * dx + dy * dy <= radius * radius then
@@ -2229,7 +2229,7 @@ function interact.query(x, y, radius)
     end
   end
   table.sort(hits, function(a, b)
-    local ta, tb = __p2_transforms[a.id], __p2_transforms[b.id]
+    local ta, tb = __rustlua_transforms[a.id], __rustlua_transforms[b.id]
     local da = ((ta and ta.x or 0) - x) ^ 2 + ((ta and ta.y or 0) - y) ^ 2
     local db = ((tb and tb.x or 0) - x) ^ 2 + ((tb and tb.y or 0) - y) ^ 2
     if da ~= db then return da < db end
@@ -2241,18 +2241,18 @@ end
 -- 容器（引擎 container 同构）：把实体关联成第二个背包，键 "container:<id>"。
 function container.open(entity_id, capacity)
   local key = 'container:' .. tostring(tonumber(entity_id))
-  __p2_inventories[key] = __p2_inventory_new(capacity or 12)
+  __rustlua_inventories[key] = __rustlua_inventory_new(capacity or 12)
   return key
 end
 function container.get(entity_id)
   local key = 'container:' .. tostring(tonumber(entity_id))
-  if __p2_inventories[key] then return key end
+  if __rustlua_inventories[key] then return key end
   return nil
 end
 function container.close(entity_id)
   local key = 'container:' .. tostring(tonumber(entity_id))
-  local existed = __p2_inventories[key] ~= nil
-  __p2_inventories[key] = nil
+  local existed = __rustlua_inventories[key] ~= nil
+  __rustlua_inventories[key] = nil
   return existed
 end
 function container.move(entity_id, from_index, to_id, to_index)
@@ -2260,14 +2260,14 @@ function container.move(entity_id, from_index, to_id, to_index)
 end
 
 -- 商店目录（引擎 shop 同构：set_catalog/price）。
-__p2_shops = {}
+__rustlua_shops = {}
 function shop.set_catalog(name, spec)
   assert(type(spec) == 'table', 'shop.set_catalog expects a table')
-  __p2_shops[tostring(name)] = spec
+  __rustlua_shops[tostring(name)] = spec
   return true
 end
 function shop.price(name, item_id)
-  local catalog = __p2_shops[tostring(name)]
+  local catalog = __rustlua_shops[tostring(name)]
   if not catalog then return nil end
   local entry = catalog[tostring(item_id)]
   if not entry then return nil end
@@ -2275,16 +2275,16 @@ function shop.price(name, item_id)
 end
 
 -- 资源句柄（引擎 asset 同构：load 返回 "asset:<path>"、release 注销）。
-__p2_assets = {}
+__rustlua_assets = {}
 function asset.load(path)
   local key = tostring(path)
   local token = 'asset:' .. key
-  __p2_assets[key] = token
+  __rustlua_assets[key] = token
   return token
 end
 function asset.release(token)
-  for path, value in pairs(__p2_assets) do
-    if value == token then __p2_assets[path] = nil end
+  for path, value in pairs(__rustlua_assets) do
+    if value == token then __rustlua_assets[path] = nil end
   end
 end
 for _, api in ipairs({audio, input}) do
@@ -2298,7 +2298,7 @@ end
 `;
       const genericCompat = `
 -- clock 兜底（WP10 批 A 之后补）：批 A 把 clock 编译进 wasm，web 侧由
--- registerHostTable('clock') 注册成真实 fengari 全局；但微信侧 __P2_HOST_API 未接线
+-- registerHostTable('clock') 注册成真实 fengari 全局；但微信侧 __RUSTLUA_HOST_API 未接线
 -- （wasm 桥不可用）时 clock 是 nil，直接 function clock.xxx 会
 -- attempt to index a nil value (global 'clock') 把启动打崩（实测：微信开发者工具）。
 -- 先给一张空表兜底，now/set/set_rate 用 Lua 侧游戏时间（day 默认从 1 起，与批 B 前
@@ -2334,14 +2334,14 @@ local bindings = {
 -- ui_step 里 input.action_repeat or input.action_pressed 会选中代理，方向键永远判定为"上"。
 function input.action_repeat(action)
   for _,key in ipairs(bindings[tostring(action)] or {}) do
-    if __p2_input and __p2_input.just and __p2_input.just[key] then return true end
+    if __rustlua_input and __rustlua_input.just and __rustlua_input.just[key] then return true end
   end
   return false
 end
 function input.bindings(action) local result = {}; for i,k in ipairs(bindings[tostring(action)] or {}) do result[i]=k end; return result end
 function input.action_pressed(action)
   for _,key in ipairs(bindings[tostring(action)] or {}) do
-    if __p2_input and __p2_input.just and __p2_input.just[key] then return true end
+    if __rustlua_input and __rustlua_input.just and __rustlua_input.just[key] then return true end
   end
   return false
 end
@@ -2351,10 +2351,10 @@ end
 function input.action_axis(negative, positive)
   local value = 0
   for _,key in ipairs(bindings[tostring(negative)] or {}) do
-    if __p2_input and __p2_input.keys and __p2_input.keys[key] then value = value - 1 end
+    if __rustlua_input and __rustlua_input.keys and __rustlua_input.keys[key] then value = value - 1 end
   end
   for _,key in ipairs(bindings[tostring(positive)] or {}) do
-    if __p2_input and __p2_input.keys and __p2_input.keys[key] then value = value + 1 end
+    if __rustlua_input and __rustlua_input.keys and __rustlua_input.keys[key] then value = value + 1 end
   end
   if value < -1 then return -1 elseif value > 1 then return 1 end
   return value
@@ -2468,19 +2468,19 @@ end
       // 用**下标**写法而不是 `{name=true}`：表里会出现 `time`/`log` 这类**Lua 保留字**
       // 或非标识符，`{time=true}` 直接是语法错误（实测把启动打成
       // `'}' expected near '='`）；`["time"]=true` 对任何名字都成立。
-      // 顺序：**先装真实实现**（luaPrelude 的 __p2_ 核心 + methodCompat 的方法补丁），
+      // 顺序：**先装真实实现**（luaPrelude 的 __rustlua_ 核心 + methodCompat 的方法补丁），
       // **再算缺失清单**并给真正缺失的全局装代理——否则 methodCompat 刚补的表
-      //（event/tag/light/interact/container/shop/asset/item）会先被 `__p2_missing_globals`
+      //（event/tag/light/interact/container/shop/asset/item）会先被 `__rustlua_missing_globals`
       // 误标成缺失，脚本判能力时得到错误结论。
       doString(L, luaPrelude(sceneState, knownScenes) + '\n' + preload, 'engine-host-prelude');
       doString(L, methodCompat + '\n' + genericCompat, 'engine-host-method-compat');
       const eagerlyMissingGlobals = missingHostGlobals(L);
-      const missingGlobalTable = '__p2_missing_globals = {' +
+      const missingGlobalTable = '__rustlua_missing_globals = {' +
         eagerlyMissingGlobals.map(name => `[${luaQuote(name)}]=true`).join(',') + '}';
       doString(L, missingApiCompat + '\n' + missingGlobalTable + '\n' + hostCompat, 'engine-host-compat');
       // 在**真正的宿主表**上装缺失方法陷阱（放在 methodCompat 之后：那批默认实现
       // 必须先落地，否则陷阱会让 `if not api.load_settings` 之类的探测误判为"有"）。
-      doString(L, ENGINE_HOST_GLOBALS.map(name => `__p2_trap_host_table(${luaQuote(name)}, ${name})`).join('\n'), 'engine-host-table-traps');
+      doString(L, ENGINE_HOST_GLOBALS.map(name => `__rustlua_trap_host_table(${luaQuote(name)}, ${name})`).join('\n'), 'engine-host-table-traps');
       // WP10 迁移：main.lua 不再由 JS fetch 后注入，改经 wasm 桥读 vfs 预加载表
       // + pack 解码执行（与桌面/微信压缩包语义一致；执行前全部宿主补丁已在位）。
       bridge.lua_execute_main();
@@ -2495,10 +2495,10 @@ end
     // on_create 里就会挂形象/生成 NPC（`sprite.set` + `animation.attach` + `entity.spawn`），
     // 这些是**一次性 op**：不在这里立刻取走，首帧画的就是"还没挂外观"的场景。
     // 传 false = 只取快照、不推进速度与动画帧（首帧不该白走一次积分）。
-    syncLuaScene(sceneState, callGlobal(L, '__p2_export_state', [false]));
+    syncLuaScene(sceneState, callGlobal(L, '__rustlua_export_state', [false]));
     await loadGameFont();
     refreshSceneTextHidden(L);
-    let uiElements = drawScene(ctx, sceneState, images, projectName, callGlobal(L, '__p2_export_ui'), pendingTextures);
+    let uiElements = drawScene(ctx, sceneState, images, projectName, callGlobal(L, '__rustlua_export_ui'), pendingTextures);
     let frameCount = 0;
     // '' 空闲 / 'loading' 切换在途 / 'failed' 切换失败（停链，让失败可见而不是无限重绘）
     let sceneSwitch = '';
@@ -2519,9 +2519,9 @@ end
         callGlobal(L, 'on_create');
         // 换场景后的 on_create 会重新落位、挂形象、生成 NPC —— 与启动路径同理，
         // 立刻取一次快照，别让新场景的第一帧画成"只有场景本体"。
-        syncLuaScene(sceneState, callGlobal(L, '__p2_export_state', [false]));
+        syncLuaScene(sceneState, callGlobal(L, '__rustlua_export_state', [false]));
         refreshSceneTextHidden(L);
-        uiElements = drawScene(ctx, sceneState, images, projectName, callGlobal(L, '__p2_export_ui'), pendingTextures);
+        uiElements = drawScene(ctx, sceneState, images, projectName, callGlobal(L, '__rustlua_export_ui'), pendingTextures);
         markBoot('running', sceneState.name);
         console.log('[lua] 切换场景:', name, '实体', next.entities.size);
         sceneSwitch = '';
@@ -2551,14 +2551,14 @@ end
       }
     }
 
-    // P0-①：URL `?p2-drive=auto` 驱动"完整剧本"（标题按确认 → 进玩法地图 → 按住方向键移动），
-    // 结果写进 `data-p2-drive`（done/failed）供无头浏览器验收断言。驱动走**真实输入路径**
+    // P0-①：URL `?rustlua-drive=auto` 驱动"完整剧本"（标题按确认 → 进玩法地图 → 按住方向键移动），
+    // 结果写进 `data-rustlua-drive`（done/failed）供无头浏览器验收断言。驱动走**真实输入路径**
     // （window KeyboardEvent），与微信 harness 的 --drive-new-game/--drive-move 同构——
     // 两个平台共用同一份 web-runtime.js，字段含义一致，可以直接对照。
     let driveAuto = null;
     try {
       const search = (typeof window !== 'undefined' && window.location && window.location.search) || '';
-      if (search.indexOf('p2-drive=auto') >= 0) {
+      if (search.indexOf('rustlua-drive=auto') >= 0) {
         driveAuto = {
           phase: 'confirm',
           frames: 0,
@@ -2575,7 +2575,7 @@ end
     if (driveAuto) {
     }
 
-    // 场景切换防回归门：`?p2-scene-verify=1` 让首帧把**当前**场景重新走一遍
+    // 场景切换防回归门：`?rustlua-scene-verify=1` 让首帧把**当前**场景重新走一遍
     // applySceneSwitch（fetch scene 文件 → parseScene → 重绑 Lua → 重跑 on_create）。
     // 与游戏剧本解耦（不假设"标题→玩法地图"流程），只验一条：切换路径本身能跑通、
     // 不会在 wasm 上 unreachable（此前宿主闭包返回 Err 时的 raise 会撞 panic=abort 终止垫，
@@ -2583,7 +2583,7 @@ end
     let sceneVerify = null;
     try {
       const search = (typeof window !== 'undefined' && window.location && window.location.search) || '';
-      if (search.indexOf('p2-scene-verify=1') >= 0) {
+      if (search.indexOf('rustlua-scene-verify=1') >= 0) {
         sceneVerify = { status: 'queued', target: sceneState.name };
       }
     } catch (e) { sceneVerify = null; }
@@ -2591,8 +2591,8 @@ end
     function markSceneVerify(state, detail) {
       const body = document.body || document.documentElement;
       if (!body) return;
-      body.setAttribute('data-p2-scene-verify', state);
-      if (detail) body.setAttribute('data-p2-scene-verify-detail', String(detail).slice(0, 400));
+      body.setAttribute('data-rustlua-scene-verify', state);
+      if (detail) body.setAttribute('data-rustlua-scene-verify-detail', String(detail).slice(0, 400));
       console.log('[scene-verify] ' + state + ' ' + (detail || ''));
     }
     if (sceneVerify) markSceneVerify('queued', 'target=' + sceneVerify.target);
@@ -2603,14 +2603,14 @@ end
 
     function markDrivePhase(phase) {
       const body = document.body || document.documentElement;
-      if (body) body.setAttribute('data-p2-drive-phase', phase);
+      if (body) body.setAttribute('data-rustlua-drive-phase', phase);
     }
 
     function markDrive(state, detail) {
       const body = document.body || document.documentElement;
       if (!body) return;
-      body.setAttribute('data-p2-drive', state);
-      if (detail) body.setAttribute('data-p2-drive-detail', String(detail).slice(0, 400));
+      body.setAttribute('data-rustlua-drive', state);
+      if (detail) body.setAttribute('data-rustlua-drive-detail', String(detail).slice(0, 400));
       console.log('[drive] ' + state + ' ' + detail);
     }
 
@@ -2633,7 +2633,7 @@ end
         return;
       }
       if (d.phase === 'wait') {
-        const summary = String(callGlobal(L, '__p2_world_summary') || '');
+        const summary = String(callGlobal(L, '__rustlua_world_summary') || '');
         const mapMatch = summary.match(/\bmap=([^\s]+)/);
         const sceneSwitched = sceneState.name !== d.sceneBefore ||
           (mapMatch && mapMatch[1] !== 'main' && mapMatch[1] !== d.sceneBefore);
@@ -2648,7 +2648,7 @@ end
       }
       if (d.phase === 'move') {
         dispatchDriveKey('keydown', d.moveKey);
-        const summary = String(callGlobal(L, '__p2_world_summary') || '');
+        const summary = String(callGlobal(L, '__rustlua_world_summary') || '');
         const match = summary.match(/player=[^ ]*@(-?\d+),(-?\d+)/);
         if (match) {
           const pos = [Number(match[1]), Number(match[2])];
@@ -2688,7 +2688,7 @@ end
         // 尚未就绪时跑 Lua 只会拿到半初始化状态。rAF 链保持不断，切换完成后自动恢复。
         if (sceneSwitch === 'loading') {
           refreshSceneTextHidden(L);
-          drawScene(ctx, sceneState, images, projectName, callGlobal(L, '__p2_export_ui'), pendingTextures);
+          drawScene(ctx, sceneState, images, projectName, callGlobal(L, '__rustlua_export_ui'), pendingTextures);
           requestAnimationFrame(frame);
           return;
         }
@@ -2706,24 +2706,24 @@ end
         }
         // 场景切换是**排队**的（`scene.load` / `map.goto` 只排队、不改名字）；每帧开头
         // 取一次，取走即应用——与引擎"排队 → transition → 重跑 on_create"同构。
-        const pendingScene = callGlobal(L, '__p2_take_pending_scene');
+        const pendingScene = callGlobal(L, '__rustlua_take_pending_scene');
         if (pendingScene) {
           sceneSwitch = 'loading';
           applySceneSwitch(pendingScene);
           refreshSceneTextHidden(L);
-          drawScene(ctx, sceneState, images, projectName, callGlobal(L, '__p2_export_ui'), pendingTextures);
+          drawScene(ctx, sceneState, images, projectName, callGlobal(L, '__rustlua_export_ui'), pendingTextures);
           requestAnimationFrame(frame);
           return;
         }
         stepDrive();
-        doString(L, '__p2_input = ' + luaValue(webInput.snapshot()), '__p2_input');
+        doString(L, '__rustlua_input = ' + luaValue(webInput.snapshot()), '__rustlua_input');
         // 快照是**整份替换**的（设备层每帧重新采样），虚拟键必须在替换**之后**并回来——
         // 顺序反了就等于没注入。对应引擎侧 `InputSnapshot::inherit_virtual_keys`。
-        doString(L, '__p2_apply_virtual_input()', '__p2_virtual_input');
+        doString(L, '__rustlua_apply_virtual_input()', '__rustlua_virtual_input');
         const result = callGlobal(L, 'update');
-        syncLuaScene(sceneState, callGlobal(L, '__p2_export_state'));
+        syncLuaScene(sceneState, callGlobal(L, '__rustlua_export_state'));
         refreshSceneTextHidden(L);
-        uiElements = drawScene(ctx, sceneState, images, projectName, callGlobal(L, '__p2_export_ui'), pendingTextures);
+        uiElements = drawScene(ctx, sceneState, images, projectName, callGlobal(L, '__rustlua_export_ui'), pendingTextures);
         frameCount += 1;
         const body = document.body || document.documentElement;
         if (body) {
@@ -2732,13 +2732,13 @@ end
           // scene=/drawn= 由 JS 侧补（场景里声明的实体数、渲染器侧的主角位置），其余由 Lua 侧给。
           const drawnPlayer = rendererPlayerState(sceneState);
           const world = 'scene=' + (sceneState.declared || sceneState.entities.size) + ' '
-            + String(callGlobal(L, '__p2_world_summary') || '')
+            + String(callGlobal(L, '__rustlua_world_summary') || '')
             + (drawnPlayer ? ' drawn=' + drawnPlayer : '');
-          body.setAttribute('data-p2-world', world.slice(0, 300));
+          body.setAttribute('data-rustlua-world', world.slice(0, 300));
           if (frameCount <= 5 || frameCount % 30 === 0) {
-            body.setAttribute('data-p2-drawn', String(sampleDrawnPixels(ctx)));
-            body.setAttribute('data-p2-ui-elements', String(uiElements));
-            body.setAttribute('data-p2-ui-summary', String(LAST_UI_SUMMARY).slice(0, 400));
+            body.setAttribute('data-rustlua-drawn', String(sampleDrawnPixels(ctx)));
+            body.setAttribute('data-rustlua-ui-elements', String(uiElements));
+            body.setAttribute('data-rustlua-ui-summary', String(LAST_UI_SUMMARY).slice(0, 400));
           }
         }
         if (status && result) status.textContent = result;

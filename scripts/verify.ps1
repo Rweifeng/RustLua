@@ -141,9 +141,9 @@ if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
 Write-Step "Stale artifact cleanup"
 $cleanedBytes = 0
 
-# ① %TEMP% 下过期的 p2 release/user data test 目录（超过 1 小时的）
+# ① %TEMP% 下过期的 rustlua release/user data test 目录（超过 1 小时的）
 $cutoff = (Get-Date).AddHours(-1)
-foreach ($pattern in @("p2 release test *", "p2 user data test *")) {
+foreach ($pattern in @("rustlua release test *", "rustlua user data test *")) {
     Get-ChildItem -Path $env:TEMP -Directory -Filter $pattern -ErrorAction SilentlyContinue |
         Where-Object { $_.CreationTime -lt $cutoff } |
         ForEach-Object {
@@ -619,7 +619,7 @@ try {
                 if ($null -eq $bundlePayload.drawnSamples -or $bundlePayload.drawnSamples -le 0) {
                     throw "webgl bundle reports no painted canvas samples (blank frame): drawn=$($bundlePayload.drawnSamples)"
                 }
-                # 场景切换防回归门：verify-webgl-bundle 默认在 URL 里带 p2-scene-verify=1，
+                # 场景切换防回归门：verify-webgl-bundle 默认在 URL 里带 rustlua-scene-verify=1，
                 # 断言首帧把当前场景重新走一遍 applySceneSwitch 全流程（fetch → parse →
                 # 重绑 Lua → 重跑 on_create）。这里独立于子脚本 exit code 再兜一层，防止
                 # 未来 URL/断言解耦时被无意跳过；旧产物若没升级 web-runtime.js 会是 absent。

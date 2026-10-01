@@ -10,8 +10,8 @@
     #status { position: fixed; left: 16px; top: 12px; color: #d0d7e2; font: 14px sans-serif; }
   </style>
 </head>
-<body data-p2-boot="pending">
-  <canvas id="p2-canvas"></canvas>
+<body data-rustlua-boot="pending">
+  <canvas id="rustlua-canvas"></canvas>
   <div id="status">Loading __PUBLISH_NAME__...</div>
   <script>window.__P2_FONT = '__FONT_PATH__';</script>
   <script src="./web-runtime.js"></script>
@@ -20,8 +20,8 @@
     const publishName = __PUBLISH_NAME_JSON__;
     const status = document.getElementById('status');
     const markBoot = (state, detail) => {
-      document.body.setAttribute('data-p2-boot', state);
-      if (detail) document.body.setAttribute('data-p2-boot-detail', String(detail).slice(0, 400));
+      document.body.setAttribute('data-rustlua-boot', state);
+      if (detail) document.body.setAttribute('data-rustlua-boot-detail', String(detail).slice(0, 400));
     };
 
     // ---- 新 EH 覆盖门槛守卫 ----
@@ -75,7 +75,7 @@
     } else {
       try {
         await init();
-        await start('p2-canvas', publishName);
+        await start('rustlua-canvas', publishName);
         // WP10 迁移（fengari → mlua-wasm）：wasm Lua 桥挂到全局，web-runtime.js 的
         // Lua 交互（建运行时/注入补丁/调全局/注册 JS 回调/查缺失全局）全部经它完成。
         // fengari-web.js 已从发布包移除。
@@ -83,7 +83,7 @@
           lua_boot, lua_do_string, lua_call_global,
           lua_register_js_callback, lua_missing_globals, lua_execute_main
         };
-        await window.p2RunLuaGame(status);
+        await window.rustluaRunLuaGame(status);
         status.textContent = publishName + ' - Lua running (mlua-wasm)';
         markBoot('ok', publishName);
       } catch (error) {

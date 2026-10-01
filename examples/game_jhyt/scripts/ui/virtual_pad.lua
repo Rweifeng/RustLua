@@ -40,7 +40,7 @@ local PANEL_RECT = {
 local CLOSE = layout.TOUCH.close
 -- 十字键方向 → 注入的物理键名：面板导航走引擎物理键 up/down/left/right（bindings 的
 -- ui_up/ui_down/...），中央确定走 space（bindings confirm）。这些不是 keyX 形式，
--- 运行时 __p2_virtual_name 原样返回，正好命中动作层（与摇杆注入 keyw → 'w' 同思路）。
+-- 运行时 __rustlua_virtual_name 原样返回，正好命中动作层（与摇杆注入 keyw → 'w' 同思路）。
 local DPAD_PHYSICAL = {
   up = "up", down = "down", left = "left", right = "right", confirm = "space",
 }
@@ -178,7 +178,7 @@ end
 -- `input.virtual_key / input.mouse_just_released / ui.circle` 三个缺口，`M.available()`
 -- 却一直是 true）。`rawget` 绕开元表，拿到的是表里**真正存在**的字段：缺就是 nil；
 -- 因为根本没碰代理，诊断日志里也不会留下假缺口——与 `world/camera_view.lua` 查
--- `__p2_missing_globals` 判能力是同一个思路。
+-- `__rustlua_missing_globals` 判能力是同一个思路。
 local function host_function(api, name)
   if api == nil then
     return false

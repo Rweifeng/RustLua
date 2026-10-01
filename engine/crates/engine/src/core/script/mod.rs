@@ -132,7 +132,7 @@ struct UiState {
     images: BTreeMap<String, DynamicUiImage>,
     grids: BTreeMap<String, UiGrid>,
     /// `ui.scene_text_visible(name, false)` 登记的场景文字实体按名隐藏集。
-    /// 语义与 web 兼容层 `__p2_scene_text_hidden` 对齐：实体仍在场景里
+    /// 语义与 web 兼容层 `__rustlua_scene_text_hidden` 对齐：实体仍在场景里
     /// （照常参与 UiLayout 布局），仅绘制场景文字时跳过该实体。
     scene_text_hidden: BTreeSet<String>,
     drag: Option<UiDrag>,

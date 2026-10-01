@@ -50,14 +50,14 @@ local bound = { scene = nil, entity = nil, following = false }
 --
 -- 为什么不能只用 `pcall(camera2d.follow, ...)` 判定：WebGL / 微信小游戏运行时**没有**
 -- `camera2d`，而它把"引擎里有、web 侧没实现"的宿主全局换成了会**自报家门**的代理
--- （可调用、可索引，见 `plugins/webgl/web-runtime.js` 的 `__p2_missing_proxy`）——
+-- （可调用、可索引，见 `plugins/webgl/web-runtime.js` 的 `__rustlua_missing_proxy`）——
 -- 也就是说 `pcall` **不会**失败，`camera2d.follow(...)` 会静默地"成功"，直到后来读
 -- `camera2d.get().x` 才炸在离现场很远的地方（实测：微信真机形态点「开始新游戏」后
 -- 启动失败在 `camera_view.lua` 取 `center.x` 那一行）。
 --
 -- 判据按优先级两条，缺一不可：
 --   ① **先**查宿主自报的缺失全局清单。web / 微信运行时在启动时把"这一侧没实现的宿主
---      全局"整体算一遍，落在 `__p2_missing_globals`（`plugins/webgl/web-runtime.js` 的
+--      全局"整体算一遍，落在 `__rustlua_missing_globals`（`plugins/webgl/web-runtime.js` 的
 --      `engine-host-compat` 片段）。在清单里 ⇒ 整个 `camera2d` 都是代理，直接判不可用。
 --      这一步是**权威**判据，且**零噪声**（只查表，不碰代理）。
 --      只用下面的形状探测会误判：宿主把缺失全局换成了可调用/可索引的代理，
@@ -76,7 +76,7 @@ local function camera_available()
     return camera_ready
   end
   camera_ready = false
-  local missing_globals = rawget(_G, "__p2_missing_globals")
+  local missing_globals = rawget(_G, "__rustlua_missing_globals")
   if type(missing_globals) == "table" and missing_globals["camera2d"] then
     return false
   end

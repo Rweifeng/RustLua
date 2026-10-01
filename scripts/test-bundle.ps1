@@ -5,7 +5,7 @@
 # 断言 → 起本地服务**。这里就是这个与平台无关的入口，webgl 与微信小游戏共用。
 #
 # 分工（严格）：本脚本**不重复实现任何产物断言**。断言属于
-#   * webgl            -> scripts\verify-webgl-bundle.ps1（产物完整 + wasm 魔数 + 无头浏览器读 data-p2-boot/画面采样）
+#   * webgl            -> scripts\verify-webgl-bundle.ps1（产物完整 + wasm 魔数 + 无头浏览器读 data-rustlua-boot/画面采样）
 #   * wechat-minigame  -> scripts\verify-wechat-minigame.ps1（静态布局/配额 + Node 伪造 wx 宿主跑帧）
 # 两边的验收标准只会有一处，不会出现「试玩脚本说通过、验收费劲却说不通过」的分叉。
 #

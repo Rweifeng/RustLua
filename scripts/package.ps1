@@ -198,11 +198,11 @@ function Invoke-PackagedCheck {
         [Parameter(Mandatory = $true)][string]$Runner,
         [Parameter(Mandatory = $true)][string]$PackRoot
     )
-    $stdoutFile = Join-Path $env:TEMP ("p2-pack-check-" + [guid]::NewGuid().ToString("N") + ".out")
+    $stdoutFile = Join-Path $env:TEMP ("rustlua-pack-check-" + [guid]::NewGuid().ToString("N") + ".out")
     $stderrFile = $stdoutFile + ".err"
     try {
         # `Start-Process -ArgumentList` 会把数组按空格拼成命令行且**不加引号**，因此含空格的
-        # 路径必须自己带引号（自测就是故意用 "p2 release test …" 这种带空格的路径）。
+        # 路径必须自己带引号（自测就是故意用 "rustlua release test …" 这种带空格的路径）。
         $quotedPack = '"' + $PackRoot + '"'
         $process = Start-Process -FilePath $Runner `
             -ArgumentList @("--pack", $quotedPack, "--check") `
@@ -389,7 +389,7 @@ try {
         # "WXWebAssembly 对混合 EH 的接受度沿用阶段二发布基线"——那个前提来自 42 KB 的旧 wasm
         # （只有 start/memory，没有 mlua）。微信侧接进 mlua Lua 桥之后，1.97 产物在**本机 Node
         # 的 V8** 就报 `Invalid opcode 0x1f`（实测：错误落在 mlua 的函数里，wasm-opt 之前就已
-        # 经坏了），于是 wasm 装不进来 → `__P2_LUA_BRIDGE` 缺失 → boot=failed、0 帧。
+        # 经坏了），于是 wasm 装不进来 → `__RUSTLUA_LUA_BRIDGE` 缺失 → boot=failed、0 帧。
         # 也就是说旧口径同时失去真机依据和本机可验证性，把发布期的硬缺陷推迟到提审之后。
         # 顺带证伪了"1.88 未优化产物太大"的担忧：binaryen 133 的 `-Oz` **会保留**纯 try_table
         # （2026-10-01 复测：3,151,173 → 2,743,359 字节，产物仍可被 V8 加载），所以微信侧照旧跑 -Oz 瘦身。
@@ -778,7 +778,7 @@ WASM build failed ($Platform)。
     # `debug-overlay.txt` 是**开发者工具里排查真机黑屏**用的开关（适配层把它当"开启屏幕自证覆盖层"
     # 的信号）。它一旦随包发出去，玩家的屏幕上就会常年挂着一层诊断色块与文字——而它是纯文本
     # 标记，发布脚本不拦就没人拦。删掉不影响任何自动化用例：harness 的覆盖层用例走的是
-    # `wx.setStorageSync('p2_debug_overlay','1')`，不依赖这个文件。
+    # `wx.setStorageSync('rustlua_debug_overlay','1')`，不依赖这个文件。
     # 必须早于体积统计（文件被删会让主包小几十字节，晚了输出行就对不上真实产物）。
     $debugMarkers = @(Get-ChildItem -LiteralPath $stageRoot -Recurse -File -Force -Filter "debug-overlay.txt" -ErrorAction SilentlyContinue)
     foreach ($marker in $debugMarkers) {
@@ -1427,7 +1427,7 @@ function Remove-IsolatedRelease([string]$Path, [string]$Label) {
 
 if ($SelfTest) {
     Write-Host "`n==> Directory-isolation self test (no source/target/.cache, path with spaces)" -ForegroundColor Cyan
-    $isolated = Join-Path $env:TEMP ("p2 release test " + (Get-Date -Format "HHmmss"))
+    $isolated = Join-Path $env:TEMP ("rustlua release test " + (Get-Date -Format "HHmmss"))
     New-Item -ItemType Directory -Force -Path $isolated | Out-Null
     # 复制**发布根**（不是 $distRoot）：微信发布根下是 launcher/ + assets/ 两个目录
     # （分包形态下只有 launcher/，主包与分包都在它里面），隔离自测要连资源包一起搬走，
@@ -1558,7 +1558,7 @@ if ($SelfTest) {
         # 用 --check 做无窗口校验：退出码 0 表示发布包完整（含空格路径 + 无源码环境）。
         # M31/P3：同时把玩家数据根指到一个临时目录，断言发布包形态确实解析到**用户数据目录**
         # （而不是安装目录），并断言安装目录里不出现 .cache/save/settings 等玩家数据。
-        $isolatedUserDir = Join-Path $env:TEMP ("p2 user data test " + (Get-Date -Format "HHmmss"))
+        $isolatedUserDir = Join-Path $env:TEMP ("rustlua user data test " + (Get-Date -Format "HHmmss"))
         New-Item -ItemType Directory -Force -Path $isolatedUserDir | Out-Null
         $env:RUSTLUA_USER_DIR = $isolatedUserDir
         try {

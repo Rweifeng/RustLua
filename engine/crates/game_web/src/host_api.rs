@@ -1,7 +1,7 @@
 //! WebGL/微信 wasm 核心的**宿主 API 编译进 wasm**（WP10 批次 A）。
 //!
 //! 背景：桌面引擎的 36 个宿主全局里，17 个在浏览器端缺失（docs/32 §4），由
-//! `__p2_missing_host_global` 代理占位。WP10 方案①把宿主 API 用**纯 Rust** 实现进
+//! `__rustlua_missing_host_global` 代理占位。WP10 方案①把宿主 API 用**纯 Rust** 实现进
 //! 本 wasm 核心（wasm-bindgen 导出），fengari Lua 运行时经 `web-runtime.js` 桥接调用。
 //! 本模块是**批次 A**：`app / clock / calendar / day`（纯状态、无 IO、无游戏数据）。
 //!

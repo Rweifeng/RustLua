@@ -26,7 +26,7 @@ M.version = 1
 -- （它靠 `fetch`/宿主读取，没有文件系统 API），于是 `io.open` 在这一行直接抛
 -- `attempt to index a nil value (global 'io')`。这不是理论问题——M32 首次把它登记进
 -- `validate_data` 之后，两条 web 发布形态的启动**当场失败**（`domain data validation failed`
--- → `data-p2-boot=failed`），而原生/headless 那边一切正常（那里 `io` 存在）。
+-- → `data-rustlua-boot=failed`），而原生/headless 那边一切正常（那里 `io` 存在）。
 --
 -- 所以这里的口径与适配层一致：**能力探测 + 静默跳过**，不把"宿主读不到文件"当成数据错误。
 -- 代价是"json/scene 的 meta 契约"在 web 运行时不再被校验——但 web 产物本来就用同一批
