@@ -142,6 +142,29 @@ try {
         $env:RUSTDOCFLAGS = $previousDocFlags
     }
 
+    # 优化项 11：本地 pre-commit 门自身的回归。fmt/clippy 步查的是代码，这一步查的是
+    # "提交前到底会不会有人被挡住"——hook 的选路、拦截与逃生门逻辑回归了，前面所有步都发现不了。
+    # 它只用临时 git 仓库 + cargo fmt（零依赖、秒级）。退出码沿用本仓库口径：
+    # 0=通过；3=环境受限（缺 git/cargo/sh）打印原因后跳过，绝不把"跳过"说成"通过"；其余=判红。
+    Write-Step "Local pre-commit hook regression"
+    $hookGateScript = Join-Path $projectRoot "scripts/test-git-hooks.ps1"
+    $previousPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    $hookGateOutput = & powershell -NoProfile -ExecutionPolicy Bypass -File $hookGateScript 2>&1
+    $hookGateCode = $LASTEXITCODE
+    $ErrorActionPreference = $previousPreference
+    $hookGateOutput | ForEach-Object {
+        $line = $_.ToString()
+        Write-Host $line
+        Add-Content -Path $logPath -Value $line -Encoding UTF8
+    }
+    if ($hookGateCode -eq 3) {
+        Write-Host "git_hooks_skipped reason=environment_limited exit=3（缺 git/cargo/sh；见上面一行原因）" -ForegroundColor Yellow
+    }
+    elseif ($hookGateCode -ne 0) {
+        throw "Command failed (exit code $hookGateCode): powershell -File $hookGateScript"
+    }
+
     if (-not $SkipTests) {
         Write-Step "Workspace tests"
         Invoke-Checked cargo @("test", "--workspace", "--all-features")

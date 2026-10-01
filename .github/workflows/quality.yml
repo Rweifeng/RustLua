@@ -74,6 +74,14 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: node scripts/gen-lua-api-docs.js --check
 
+      # 优化项 11：本地 pre-commit 门（git-hooks/pre-commit）自身也要进门。它只能靠每人记得
+      # 跑一次安装脚本，装没装从 CI 看不出来；更要紧的是 hook 内的判定逻辑回归了不会有信号——
+      # 比如暂存区过滤规则写错让门变成"永远跳过"，那正是"跑过了但其实没测"的最坏形态。
+      # 该用例在临时 git 仓库里真的提交，只用 git + cargo fmt（零依赖、秒级），成本极低。
+      - name: Local pre-commit hook regression
+        working-directory: ${{ github.workspace }}
+        run: pwsh -NoProfile -File scripts/test-git-hooks.ps1
+
   # 编译 + 全量测试（windows）。Release 构建放在测试**之前**：
   # `publish_spawn_end_to_end` 用 `-SkipBuild` 复用 `target/release/game.exe` 做真实的
   # 发布目录自检，若该产物不存在或是陈旧的，这条用例会以"发布应成功"失败——那是

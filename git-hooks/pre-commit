@@ -1,0 +1,146 @@
+#!/bin/sh
+# pre-commit（优化项 11）：把 CI 的 lint job 搬到本地提交前，让"推上去才发现 fmt/clippy 红"
+# 变成"提交前 16 秒就红"。CI 的 lint job 是所有后续 job（build-test / gates / web-evidence）
+# 的 needs 前置，它一红整条流水线什么都不跑——本地能挡掉的失败最值钱。
+#
+# 装法（只做一件事：git config core.hooksPath git-hooks）：
+#   powershell -NoProfile -File scripts/install-git-hooks.ps1
+# 判定逻辑的回归测试（不依赖 cargo 之外任何东西）：
+#   powershell -NoProfile -File scripts/test-git-hooks.ps1
+#
+# 覆盖范围与 .github/workflows/quality.yml 的 lint job 一一对应：
+#   git diff --cached --check    ← CI 'Diff check'
+#   cargo fmt --all -- --check   ← CI 'Format'
+#   cargo clippy -D warnings     ← CI 'Clippy'
+# 注意 CI 那一步写的是 `git diff --check`（工作区 vs 索引），干净检出上恒真；本地这里必须查
+# **暂存区**（`--cached`），否则查的不是将要提交的内容。
+#
+# 两处与 CI 的刻意差异，都是为了别让人绕开 hook：
+#   1. clippy 默认不带 --all-features。本机实测（热缓存）fast 9.0s / full 9.2s，差别在冷缓存
+#      才显现（全 feature 图首轮实测 50.9s）。要对齐 CI：git config rustlua.clippy full
+#      要彻底跳过 clippy（不推荐）：git config rustlua.clippy off
+#   2. 本次提交没碰 engine/ 下的 Rust 文件时整段跳过 fmt+clippy——改文档、改示例 Lua 不该等 16 秒。
+#
+# 逃生门都会把失败留给 CI，不是"通过"，输出的措辞刻意按这个口径写：
+#   RUSTLUA_SKIP_PRECOMMIT=1 git commit ...   单次跳过
+#   git config rustlua.hooks off              永久关闭（例如 GUI 客户端 PATH 里没有 cargo）
+#   git commit --no-verify                    git 自带的绕过
+
+set -u
+
+root=$(git rev-parse --show-toplevel) || exit 1
+dry_run=${RUSTLUA_HOOKS_DRY_RUN:-0}
+started=$(date +%s 2>/dev/null || echo "")
+
+say() { printf '%s\n' "$*"; }
+bad() { printf '%s\n' "$*" >&2; }
+
+# cargo 步骤统一走 step()：dry-run 只打印将要执行的命令（scripts/test-git-hooks.ps1 靠它断言
+# 选路逻辑），真实运行才真的执行。git 步骤不包装——纯 git 操作零成本，测试要的是真结果。
+step() {
+	desc=$1
+	shift
+	say "==> $desc"
+	if [ "$dry_run" = "1" ]; then
+		printf 'hook:run %s\n' "$*"
+		return 0
+	fi
+	"$@"
+}
+
+elapsed() {
+	[ -n "$started" ] || { printf ''; return 0; }
+	printf '%s' "$(( $(date +%s) - started ))"
+}
+
+# --- 0. 逃生门 -------------------------------------------------------------
+if [ "${RUSTLUA_SKIP_PRECOMMIT:-}" = "1" ]; then
+	bad "pre-commit SKIPPED (RUSTLUA_SKIP_PRECOMMIT=1)：本次提交未经本地门禁，fmt/clippy 的失败会原样留给 CI。"
+	exit 0
+fi
+if [ "$(git config --bool --get rustlua.hooks 2>/dev/null)" = "false" ]; then
+	bad "pre-commit SKIPPED (git config rustlua.hooks=false)：本地门禁已关闭，lint 失败会原样留给 CI。"
+	exit 0
+fi
+
+# --- 1. 行尾空白 / 冲突标记（查暂存区，零成本，永远真跑）------------------
+if ! git -C "$root" diff --cached --check; then
+	bad ""
+	bad "pre-commit FAILED：暂存区里有行尾空白或冲突标记残留（CI 的 'Diff check' 步会同样判红）。"
+	bad "  上面输出的 文件:行号 就是位置；修好后重新 git add。"
+	exit 1
+fi
+
+# --- 2. 本次提交碰没碰 Rust？----------------------------------------------
+# 只认 engine/ 下的 .rs / .toml / .lock。examples 里的 Lua、docs、tasks 都不需要等编译门。
+staged_rust=$(git -C "$root" diff --cached --name-only --diff-filter=ACMR |
+	grep -E '^engine/.+\.(rs|toml|lock)$' || true)
+if [ -z "$staged_rust" ]; then
+	say "pre-commit ok：本次暂存没碰 engine/ 的 Rust 文件，fmt+clippy 跳过（$(elapsed)s）"
+	say "  注意：CI 对 docs/** 的推送仍会跑全量 fmt/clippy——仓库里既有的格式债不在这一档里，"
+	say "  想连旧账一起验：手动跑 scripts/verify.ps1（或 cd engine && cargo fmt --all -- --check）。"
+	exit 0
+fi
+
+if ! command -v cargo >/dev/null 2>&1; then
+	bad "pre-commit FAILED：PATH 上找不到 cargo，本地门禁无法执行。"
+	bad "  这不是可以忽略的提示——按本仓库的口径，跑不了的门禁判红而不是放行（跑过≠测过）。"
+	bad "  用命令行提交（PATH 正常），或在 GUI 客户端里补 PATH，或明确关闭：git config rustlua.hooks off"
+	exit 1
+fi
+
+# 工作区 vs 暂存区不一致时，cargo 看到的是**工作区**。原生 hook 不做 stash（那会在编译失败时
+# 把用户的改动留在 stash 里），所以这里只把话说清楚，不静默给出一个看起来像"提交内容已验证"的结论。
+drift=$(git -C "$root" diff --name-only | grep -E '^engine/.+\.(rs|toml|lock)$' || true)
+if [ -n "$drift" ]; then
+	say "note：下列文件的工作区内容与暂存区不同，cargo 检查的是工作区版本，结论不必然等于本次提交："
+	printf '%s\n' "$drift" | sed 's/^/  /'
+fi
+
+# 门在 engine/ 里跑（cargo fmt/clippy 都以 workspace 根为 cwd，与 CI 的 working-directory 一致）。
+cd "$root/engine" || exit 1
+
+# --- 3. 格式（与 CI 的 Format 步完全一致）---------------------------------
+if ! step "cargo fmt --all -- --check" cargo fmt --all -- --check; then
+	bad ""
+	bad "pre-commit FAILED：格式检查不通过（CI 的 'Format' 步会同样判红）。"
+	bad "  修复： cd engine && cargo fmt --all   然后重新 git add 被改动的 .rs"
+	bad "  单次跳过： RUSTLUA_SKIP_PRECOMMIT=1 git commit ...（失败留给 CI，别当常规）"
+	exit 1
+fi
+
+# --- 4. clippy（fast 默认；full 与 CI 完全对齐）---------------------------
+mode=$(git config --get rustlua.clippy 2>/dev/null || true)
+[ -n "$mode" ] || mode=fast
+case "$mode" in
+	off | fast | full) ;;
+	*)
+		bad "note：rustlua.clippy=$mode 不是合法值（off|fast|full），按 fast 执行。"
+		mode=fast
+		;;
+esac
+
+if [ "$mode" = "off" ]; then
+	bad "pre-commit PARTIAL：clippy 已由 git config rustlua.clippy=off 关闭，lint 失败会留给 CI。"
+	say "pre-commit PARTIAL: 只跑了 fmt（$(elapsed)s）"
+	exit 0
+fi
+
+if [ "$mode" = "full" ]; then
+	clippy_desc="cargo clippy --workspace --all-targets --all-features -- -D warnings（full，与 CI 对齐）"
+	set -- clippy --workspace --all-targets --all-features -- -D warnings
+else
+	clippy_desc="cargo clippy --workspace --all-targets -- -D warnings（fast：不带 --all-features，对齐 CI 用 git config rustlua.clippy full）"
+	set -- clippy --workspace --all-targets -- -D warnings
+fi
+
+if ! step "$clippy_desc" cargo "$@"; then
+	bad ""
+	bad "pre-commit FAILED：clippy 判红（-D warnings，与 CI 的 'Clippy' 步同口径）。"
+	bad "  上面是 clippy 自己的输出，位置精确到文件与行。"
+	bad "  确认是本地环境问题而非代码问题时的逃生门：RUSTLUA_SKIP_PRECOMMIT=1 git commit ...（失败留给 CI）"
+	exit 1
+fi
+
+say "pre-commit ok: fmt + clippy ($mode) ($(elapsed)s)"
+exit 0
