@@ -135,24 +135,28 @@ if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
 
 # ── Stale artifact cleanup ────────────────────────────────────────────────────
 # 回归测试会反复跑，磁盘上容易堆积：① package.ps1 -SelfTest 在 Windows 上因 AV/索引器锁文件
-# 偶尔清理失败，%TEMP% 里留下完整的发行包副本（每个 ~50-100 MB）；② quality 日志每次运行
-# 新增一个带时间戳的文件，从不清理；③ 手动 GUI 证据运行留下的 artifacts/tmp-* 目录；
-# ④ web/wasm 日志同样堆积。这里在正式测试前统一清理，避免磁盘被悄悄吃满。
+# 偶尔清理失败，%TEMP% 里留下完整的发行包副本（每个 ~50-100 MB）；② 编辑器/引擎测试每个用例
+# 都会往 %TEMP% 建 `rustlua-{module}-{label}-{token}` 目录，一次 interaction-state 用例 5 MB，
+# 100 次 MVP 就 500 MB 起步；③ quality 日志每次运行新增一个带时间戳的文件，从不清理；
+# ④ 手动 GUI 证据运行留下的 artifacts/tmp-* 目录；⑤ web/wasm 日志同样堆积。
+# 这里在正式测试前统一清理，避免磁盘被悄悄吃满。
 Write-Step "Stale artifact cleanup"
 $cleanedBytes = 0
 
-# ① %TEMP% 下过期的 rustlua release/user data test 目录（超过 1 小时的）
-$cutoff = (Get-Date).AddHours(-1)
-foreach ($pattern in @("rustlua release test *", "rustlua user data test *")) {
+# ① + ② %TEMP% 下过期的 rustlua / p2 前缀目录（超过 1 小时的）
+# 覆盖两类：package.ps1 的 "rustlua release test {ts}" / "rustlua user data test {ts}"（空格
+# 分隔，故意带空格测路径），和 Rust 测试建的 rustlua-{module}-{label}-{token} 目录（连字符
+# 分隔）。p2-* 是重命名前遗留，一并清掉。
+$staleCutoff = (Get-Date).AddHours(-1)
+foreach ($pattern in @("rustlua-*", "rustlua *", "p2-*", "p2 *")) {
     Get-ChildItem -Path $env:TEMP -Directory -Filter $pattern -ErrorAction SilentlyContinue |
-        Where-Object { $_.CreationTime -lt $cutoff } |
+        Where-Object { $_.CreationTime -lt $staleCutoff } |
         ForEach-Object {
             try {
                 $size = (Get-ChildItem $_.FullName -Recurse -File -ErrorAction SilentlyContinue |
                     Measure-Object -Property Length -Sum).Sum
                 Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction Stop
                 $cleanedBytes += $size
-                Write-Host "  removed stale temp: $($_.Name)" -ForegroundColor DarkGray
             } catch {
                 Write-Host "  failed to remove $($_.Name): $_" -ForegroundColor Yellow
             }
