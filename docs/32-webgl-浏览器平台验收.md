@@ -143,7 +143,7 @@ camera/mesh`），与桌面引擎注册的 36 个顶层全局并不等价。桌�
   当前默认按 (1) 规划、(2) 兜底（缺失清单已可机器读取：`bundle-summary-*.json` 的
   `missingHostApi`/`missingCount`）。
 
-- **WP10（2026-09-27 立项）**：按 (1) 落地，设计见 `tasks/plan/WP10-WebGL宿主API编译进wasm.md`。
+- **WP10（2026-09-27 立项）**：按 (1) 落地，设计见 `tasks/done/WP10-WebGL宿主API编译进wasm.md`。
   工具链事实：mlua-sys 的 build 用 `cc` crate 编译 Lua C 源码，`wasm32-unknown-unknown` 无 C 编译器
   → 整引擎 script.rs 进 wasm 不可行；方案①落地 = 17 个宿主 API 以**纯 Rust** 实现进 `game_web` wasm
   （wasm-bindgen 导出），fengari Lua 经 `web-runtime.js` 桥接（两条 web 路径共用）。

@@ -82,7 +82,7 @@ cargo run -p editor -- --project ..\examples\game_jhyt --check
 - 发布包与用户数据目录：[docs/50-发布包与用户数据目录.md](docs/50-发布包与用户数据目录.md)
 - 游戏工程总览：[examples/game_jhyt/docs/29-江湖有田-项目执行总览.md](examples/game_jhyt/docs/29-江湖有田-项目执行总览.md)
 - 引擎改进台账：[docs/37-引擎与游戏工程复核及优化完善计划.md](docs/37-引擎与游戏工程复核及优化完善计划.md) 与
-  [tasks/plan/RustLua-game_jhyt-执行计划.md](tasks/plan/RustLua-game_jhyt-执行计划.md)；
+  [tasks/done/RustLua-game_jhyt-执行计划.md](tasks/done/RustLua-game_jhyt-执行计划.md)；
   引擎全面重构见 [docs/40](docs/40-引擎全面重构计划.md) 与 [docs/54](docs/54-2D3D统一优化方案与现状对比.md)
 
 ## 当前状态（M32）

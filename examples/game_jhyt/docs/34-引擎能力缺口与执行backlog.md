@@ -254,7 +254,7 @@
 ## 对齐记录（0.5，2026-09-14 / M23）
 
 按"先质量门、再数据安全、再引擎可靠性、再内容"的顺序执行后的复核（证据见
-`tasks/plan/RustLua-game_jhyt-执行计划.md` 的执行记录与 `scripts/verify.ps1 -Mvp` 日志）：
+`tasks/done/RustLua-game_jhyt-执行计划.md` 的执行记录与 `scripts/verify.ps1 -Mvp` 日志）：
 
 1. **数据校验（本轮新增，计划 G4）**：`validate_data.lua` 的登记表补上 `data.gather` 与
    `data.enemy_art`——两个模块**早就有** `validate_all` 却从未登记，等于它们的校验从来没跑过；

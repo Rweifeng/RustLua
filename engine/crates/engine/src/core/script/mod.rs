@@ -59,7 +59,7 @@ use values::{format_lua_value, lua_value_to_json};
 /// - `host::sample_project` 的 API 覆盖率门（新增函数必须有演示）；
 /// - `lua_api_surface_matches_baseline` 的快照门（清单必须与提交进仓库的基线一致）。
 ///
-/// 快照门是 WP11（`tasks/plan/WP11-script-rs拆分.md`）拆分 `script.rs` 的行为不变量守卫：
+/// 快照门是 WP11（`tasks/done/WP11-script-rs拆分.md`）拆分 `script.rs` 的行为不变量守卫：
 /// `register_api` 有过「同名函数注册两次、后者静默覆盖」的事故，人眼 diff 抓不住。
 pub const LUA_API_PROBE: &str = r#"
 (function()
