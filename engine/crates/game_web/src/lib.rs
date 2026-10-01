@@ -27,6 +27,13 @@ pub(crate) fn install_panic_hook() {
 /// 与桌面端的 `project_root` 语义一致（`data.load` 用 `root.join(path)`）。
 pub const VIRTUAL_PROJECT_ROOT: &str = "/project";
 
+/// 资源读取器的跨端形态：桌面 `vfs::set_provider` 走 `OnceLock` 要求 `Send + Sync`；
+/// wasm 单线程（`thread_local`），允许捕获非 `Send` 句柄（如 `js_sys::Function`）。
+#[cfg(not(target_arch = "wasm32"))]
+type ResourceReader = dyn Fn(&str) -> Option<Vec<u8>> + Send + Sync + 'static;
+#[cfg(target_arch = "wasm32")]
+type ResourceReader = dyn Fn(&str) -> Option<Vec<u8>> + 'static;
+
 /// 启动 Lua 桥并执行一帧：注入资源表 → 新建 Lua 运行时 → 执行
 /// `scripts/main.lua` → 调用全局 `update()`，返回其字符串结果。
 ///
@@ -34,73 +41,28 @@ pub const VIRTUAL_PROJECT_ROOT: &str = "/project";
 /// 返回资源字节；`None` = 资源不存在。需要 `'static`：provider 会进 vfs 的全局
 /// 存储（桌面 `OnceLock` / wasm `thread_local`）。桌面上 provider 优先于真实
 /// 文件系统（engine `core::vfs` 语义），因此本函数在桌面测试与 Web 宿主行为一致。
-///
-/// 桌面签名要求 `Send + Sync`（vfs 的 `OnceLock` 语义）；wasm 单线程，允许捕获
-/// 非 `Send` 句柄（如 `js_sys::Function`）。
 #[cfg(not(target_arch = "wasm32"))]
 pub fn run_lua_once<F>(read_resource: F) -> Result<String, String>
 where
     F: Fn(&str) -> Option<Vec<u8>> + Send + Sync + 'static,
 {
-    run_lua_once_impl(read_resource)
+    run_lua_once_shared(Box::new(read_resource))
 }
 
-/// 启动 Lua 桥并执行一帧：注入资源表 → 新建 Lua 运行时 → 执行
-/// `scripts/main.lua` → 调用全局 `update()`，返回其字符串结果。
 #[cfg(target_arch = "wasm32")]
 pub fn run_lua_once<F>(read_resource: F) -> Result<String, String>
 where
     F: Fn(&str) -> Option<Vec<u8>> + 'static,
 {
-    run_lua_once_impl(read_resource)
+    run_lua_once_shared(Box::new(read_resource))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-fn run_lua_once_impl<F>(read_resource: F) -> Result<String, String>
-where
-    F: Fn(&str) -> Option<Vec<u8>> + Send + Sync + 'static,
-{
-    run_lua_once_body(read_resource)
-}
-
-#[cfg(target_arch = "wasm32")]
-fn run_lua_once_impl<F>(read_resource: F) -> Result<String, String>
-where
-    F: Fn(&str) -> Option<Vec<u8>> + 'static,
-{
-    run_lua_once_body(read_resource)
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn run_lua_once_body<F>(read_resource: F) -> Result<String, String>
-where
-    F: Fn(&str) -> Option<Vec<u8>> + Send + Sync + 'static,
-{
+/// P2-④：跨端唯一实现体（此前 impl/body 两层 × 两份 cfg，共四份近似重复代码）。
+/// 差异只在 `ResourceReader` 这一处 bound，被 cfg 类型别名吸收。
+fn run_lua_once_shared(read_resource: Box<ResourceReader>) -> Result<String, String> {
     let root = std::path::PathBuf::from(VIRTUAL_PROJECT_ROOT);
     let root_for_provider = root.clone();
-    let provider: Box<dyn Fn(&std::path::Path) -> Option<Vec<u8>> + Send + Sync> =
-        Box::new(move |path| {
-            let key = path
-                .strip_prefix(&root_for_provider)
-                .map(|p| p.to_string_lossy().into_owned())
-                .unwrap_or_else(|_| path.to_string_lossy().into_owned());
-            // 资源表 key 统一用 `/`（Web 语义）；Windows 桌面 PathBuf 可能混合
-            // 反斜杠（如 require 的 script_dir.join("helper.lua")）。
-            let key = key.replace('\\', "/");
-            read_resource(&key)
-        });
-    engine::core::vfs::set_provider(provider).map_err(|e| e.to_string())?;
-    lua_once_finish(root)
-}
-
-#[cfg(target_arch = "wasm32")]
-fn run_lua_once_body<F>(read_resource: F) -> Result<String, String>
-where
-    F: Fn(&str) -> Option<Vec<u8>> + 'static,
-{
-    let root = std::path::PathBuf::from(VIRTUAL_PROJECT_ROOT);
-    let root_for_provider = root.clone();
-    let provider = Box::new(move |path: &std::path::Path| {
+    let provider = move |path: &std::path::Path| {
         let key = path
             .strip_prefix(&root_for_provider)
             .map(|p| p.to_string_lossy().into_owned())
@@ -109,8 +71,8 @@ where
         // 反斜杠（如 require 的 script_dir.join("helper.lua")）。
         let key = key.replace('\\', "/");
         read_resource(&key)
-    });
-    engine::core::vfs::set_provider(provider).map_err(|e| e.to_string())?;
+    };
+    engine::core::vfs::set_provider(Box::new(provider)).map_err(|e| e.to_string())?;
     lua_once_finish(root)
 }
 
@@ -162,55 +124,46 @@ mod wasm {
                 let _ = engine::core::script::LuaRuntime::new()
                     .map_err(|e| JsValue::from_str(&e.to_string()))?;
             }
-            4 => {
-                // 注入 mock provider（probe 用；已有则复用）
-                let root4 = std::path::PathBuf::from(super::VIRTUAL_PROJECT_ROOT);
-                let _ = engine::core::vfs::set_provider(Box::new(move |path: &std::path::Path| {
-                    let key = path.strip_prefix(&root4).map(|p| p.to_string_lossy().into_owned())
-                        .unwrap_or_else(|_| path.to_string_lossy().into_owned()).replace('\\', "/");
-                    if key == "scripts/main.lua" {
-                        Some(br#"function update() return 'probe' end"#.to_vec())
-                    } else if key == "scripts/helper.lua" {
-                        Some(br#"return { greet = function() return 'ok' end }"#.to_vec())
-                    } else {
-                        None
-                    }
-                }));
-                let mut runtime = engine::core::script::LuaRuntime::new()
-                    .map_err(|e| JsValue::from_str(&e.to_string()))?;
-                runtime.set_project_root(std::path::PathBuf::from(super::VIRTUAL_PROJECT_ROOT));
-                runtime
-                    .execute_project_script(&std::path::PathBuf::from(
-                        "/project/scripts/main.lua",
-                    ))
-                    .map_err(|e| JsValue::from_str(&e.to_string()))?;
-            }
-            5 => {
-                let root5 = std::path::PathBuf::from(super::VIRTUAL_PROJECT_ROOT);
-                let _ = engine::core::vfs::set_provider(Box::new(move |path: &std::path::Path| {
-                    let key = path.strip_prefix(&root5).map(|p| p.to_string_lossy().into_owned())
-                        .unwrap_or_else(|_| path.to_string_lossy().into_owned()).replace('\\', "/");
-                    if key == "scripts/main.lua" {
-                        Some(br#"function update() return 'probe' end"#.to_vec())
-                    } else if key == "scripts/helper.lua" {
-                        Some(br#"return { greet = function() return 'ok' end }"#.to_vec())
-                    } else {
-                        None
-                    }
-                }));
-                let mut runtime = engine::core::script::LuaRuntime::new()
-                    .map_err(|e| JsValue::from_str(&e.to_string()))?;
-                runtime.set_project_root(std::path::PathBuf::from(super::VIRTUAL_PROJECT_ROOT));
-                runtime
-                    .execute_project_script(&std::path::PathBuf::from(
-                        "/project/scripts/main.lua",
-                    ))
-                    .map_err(|e| JsValue::from_str(&e.to_string()))?;
-                runtime.call_update().map_err(|e| JsValue::from_str(&e.to_string()))?;
+            4 | 5 => {
+                // P2-④：probe 4/5 的 setup 完全相同，收敛为一个函数；5 多跑一帧 update。
+                let mut runtime = probe_boot()?;
+                if stage == 5 {
+                    runtime
+                        .call_update()
+                        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+                }
             }
             _ => return Err(JsValue::from_str("unknown stage")),
         }
         Ok(())
+    }
+
+    /// probe 专用：注入 mock 资源 provider，建运行时并执行 `scripts/main.lua`。
+    fn probe_boot() -> Result<engine::core::script::LuaRuntime, JsValue> {
+        let root = std::path::PathBuf::from(super::VIRTUAL_PROJECT_ROOT);
+        let root_for_key = root.clone();
+        let _ = engine::core::vfs::set_provider(move |path: &std::path::Path| {
+            let key = path
+                .strip_prefix(&root_for_key)
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|_| path.to_string_lossy().into_owned())
+                .replace('\\', "/");
+            match key.as_str() {
+                "scripts/main.lua" => Some(br#"function update() return 'probe' end"#.to_vec()),
+                "scripts/helper.lua" => {
+                    Some(br#"return { greet = function() return 'ok' end }"#.to_vec())
+                }
+                _ => None,
+            }
+        });
+        let mut runtime = engine::core::script::LuaRuntime::new()
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        runtime.set_project_root(root);
+        let main = std::path::PathBuf::from(super::VIRTUAL_PROJECT_ROOT).join("scripts/main.lua");
+        runtime
+            .execute_project_script(&main)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        Ok(runtime)
     }
 
     /// 浏览器（webgl 发布）入口：`document` / `window` / `fetch` 都是浏览器原生形态。
@@ -338,10 +291,7 @@ mod wasm {
             )?,
             Err(e) => report.call1(
                 &JsValue::NULL,
-                &JsValue::from_str(&format!(
-                    "Lua startup error: {}",
-                    js_error_text(&e)
-                )),
+                &JsValue::from_str(&format!("Lua startup error: {}", js_error_text(&e))),
             )?,
         };
         Ok(())
@@ -379,7 +329,8 @@ mod wasm {
             .collect()
     }
 
-    async fn fetch_bytes(url: &str) -> Result<Vec<u8>, JsValue> {
+    /// 单个 GET 请求 → 已校验 ok 的 `Response`（P2-④：fetch_bytes/fetch_text 共用）。
+    async fn fetch_response(url: &str) -> Result<Response, JsValue> {
         let init = RequestInit::new();
         init.set_method("GET");
         init.set_mode(RequestMode::SameOrigin);
@@ -391,22 +342,17 @@ mod wasm {
         if !response.ok() {
             return Err(JsValue::from_str(&format!("HTTP {}", response.status())));
         }
+        Ok(response)
+    }
+
+    async fn fetch_bytes(url: &str) -> Result<Vec<u8>, JsValue> {
+        let response = fetch_response(url).await?;
         let buffer = JsFuture::from(response.array_buffer()?).await?;
         Ok(js_sys::Uint8Array::new(&buffer).to_vec())
     }
 
     async fn fetch_text(url: &str) -> Result<String, JsValue> {
-        let init = RequestInit::new();
-        init.set_method("GET");
-        init.set_mode(RequestMode::SameOrigin);
-        let request = Request::new_with_str_and_init(url, &init)?;
-        let window = web_sys::window().ok_or_else(|| JsValue::from_str("missing window"))?;
-        let response = JsFuture::from(window.fetch_with_request(&request))
-            .await?
-            .dyn_into::<Response>()?;
-        if !response.ok() {
-            return Err(JsValue::from_str(&format!("HTTP {}", response.status())));
-        }
+        let response = fetch_response(url).await?;
         let text = JsFuture::from(response.text()?).await?;
         Ok(text.as_string().unwrap_or_default())
     }

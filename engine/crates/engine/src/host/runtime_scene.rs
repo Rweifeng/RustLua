@@ -3610,10 +3610,8 @@ impl RuntimeScene {
             world.for_each::<UiText>(|id, text| {
                 // `ui.scene_text_visible(name, false)` 按实体名隐藏场景文字：
                 // 实体仍在场景与 UiLayout 布局里，仅跳过绘制（语义与 web 兼容层一致）。
-                let name_hidden = self
-                    .script
-                    .entity_name(id)
-                    .is_some_and(|name| self.script.scene_text_hidden().contains(&name));
+                // P3-②：换成免克隆判定（旧实现每文字每帧 clone 整份隐藏集）。
+                let name_hidden = self.script.is_entity_scene_text_hidden(id);
                 if crate::core::visibility::entity_visible_in(world, id, overlay_mask)
                     && !name_hidden
                 {

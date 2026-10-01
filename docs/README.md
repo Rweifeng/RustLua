@@ -88,6 +88,10 @@
 - [示例工程 game_api 与 API 覆盖率门](59-示例工程game_api与API覆盖率门.md)：按当前 API 重建演示工程、场景↔模块映射、11 条自动化门、共享取景框与渲染顺序约束
 - [Demos 总览](demos/README.md)：两个示例工程（game_api / game_jhyt）的定位、入口与 game_api 演示地图
 
+## 九、复盘与优化
+
+- [全面复盘与优化项清单](60-全面复盘与优化项清单.md)：20 项改进点（P0–P3 + 治理），覆盖渲染器 GPU buffer、热重载原子性、ScriptState 架构、API 绑定去重、内存分配优化、CI 并行化与项目治理
+
 ## 第三方素材
 
 - [第三方资源与许可](THIRD_PARTY.md)

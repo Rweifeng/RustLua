@@ -161,9 +161,9 @@ fn next_2d_vertex_capacity(required: u64) -> u64 {
     floor.checked_next_power_of_two().unwrap_or(floor)
 }
 
-/// A texture uploaded to the GPU and ready to sample.
+/// A texture uploaded to the GPU and ready to sample. The path index lives in
+/// `Renderer::texture_paths`, so the entry itself only carries the bind group.
 struct LoadedTexture {
-    path: String,
     bind_group: wgpu::BindGroup,
 }
 
@@ -440,6 +440,9 @@ pub struct Renderer {
     /// 单帧顶点字节数峰值（诊断用：容量是否接近上限）。
     vertex_bytes_peak: u64,
     textures: Vec<LoadedTexture>,
+    /// P0-③：纹理路径 → `textures` 下标。`textures` 只追加不删除，因此索引恒有效，
+    /// 按路径查找从 O(n) 线性扫描变为 O(1)。
+    texture_paths: HashMap<String, usize>,
     /// docs/54 §4.4：资源身份 → `textures` 下标。句柄由运行时保证"同路径恒同句柄"，因此这张表
     /// 一旦建立就不会指错资源；命中即 O(1) 取 bind group（此前是每 draw 一次线性路径扫描）。
     texture_slots: HashMap<AssetHandle, usize>,
@@ -484,6 +487,16 @@ pub struct Renderer {
     /// Shared identity joint palette bound by non-skinned draws so the shader's
     /// skinning branch is a no-op without a per-draw allocation.
     identity_palette: wgpu::Buffer,
+    /// P0-①：帧级环形缓冲（bump arena）。每帧 3D 开画前偏移归零，材质 uniform 与
+    /// 关节调色板依次 `write_buffer` 写入对齐块；整帧 GPU buffer 分配为零（仅容量
+    /// 不足时翻倍重建，旧 bind group 仍引用旧缓冲、数据已写入，依旧有效）。
+    material_arena: wgpu::Buffer,
+    material_arena_used: u64,
+    /// P0-①：per-instance 模型矩阵的帧级环形缓冲，同上，STORAGE 用法。
+    instance_arena: wgpu::Buffer,
+    instance_arena_used: u64,
+    uniform_align: u64,
+    storage_align: u64,
     /// GPU geometry + file materials cached by mesh path.
     mesh_cache: HashMap<String, CachedMesh>,
     /// docs/54 §4.4：网格资源身份 → `mesh_cache` 的键。运行时给了句柄就按句柄查（O(1)），
@@ -1110,6 +1123,21 @@ impl Renderer {
             contents: bytemuck::cast_slice(&identity_palette_data()),
             usage: wgpu::BufferUsages::UNIFORM,
         });
+        // P0-①：帧级环形缓冲的容量与对齐来自设备限制，跨后端（DX12/Vulkan/Metal/GL）都成立。
+        let uniform_align = device.limits().min_uniform_buffer_offset_alignment.max(1) as u64;
+        let storage_align = device.limits().min_storage_buffer_offset_alignment.max(1) as u64;
+        let material_arena = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("rustlua-material3d-frame-arena"),
+            size: FRAME_ARENA_INITIAL_BYTES,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let instance_arena = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("rustlua-instance-models-frame-arena"),
+            size: FRAME_ARENA_INITIAL_BYTES,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         let albedo_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("rustlua-albedo-sampler"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -1561,6 +1589,7 @@ impl Renderer {
             vertex_buffer_growths: 0,
             vertex_bytes_peak: 0,
             textures: Vec::new(),
+            texture_paths: HashMap::new(),
             texture_slots: HashMap::new(),
             texture_identity_hits: 0,
             texture_identity_misses: 0,
@@ -1590,6 +1619,12 @@ impl Renderer {
             light_buffer,
             shadow_camera_buffer,
             identity_palette,
+            material_arena,
+            material_arena_used: 0,
+            instance_arena,
+            instance_arena_used: 0,
+            uniform_align,
+            storage_align,
             mesh_cache: HashMap::new(),
             mesh_slots: HashMap::new(),
             mesh_identity_hits: 0,
@@ -1791,15 +1826,14 @@ impl Renderer {
             match asset.kind {
                 crate::core::async_loader::LoadKind::TexturePng => {
                     if let Some(texture) = asset.texture {
-                        if self.textures.iter().any(|entry| entry.path == asset.key) {
+                        if self.texture_paths.contains_key(asset.key.as_str()) {
                             continue; // 已上传过（并发请求去重后的兜底）。
                         }
                         match self.upload_texture(&texture, &asset.key) {
                             Some(bind) => {
-                                self.textures.push(LoadedTexture {
-                                    path: asset.key.clone(),
-                                    bind_group: bind,
-                                });
+                                self.texture_paths
+                                    .insert(asset.key.clone(), self.textures.len());
+                                self.textures.push(LoadedTexture { bind_group: bind });
                                 tracing::info!(
                                     target: "render",
                                     path = %asset.key,
@@ -1959,70 +1993,114 @@ impl Renderer {
         }
     }
 
+    /// P0-①：把一块 uniform 数据写入材质/调色板帧级环形缓冲，返回
+    /// （所属缓冲句柄, 起始偏移, 字节数）。句柄单独返回是为了覆盖"本帧中途扩容"
+    /// 的情形：扩容前已写出的块仍在旧缓冲里，旧句柄克隆保证它们存活且指向正确。
+    fn push_frame_uniform(&mut self, contents: &[u8]) -> (wgpu::Buffer, u64, u64) {
+        let mask = self.uniform_align - 1;
+        let size = contents.len() as u64;
+        let mut offset = self.material_arena_used.wrapping_add(mask) & !mask;
+        if offset + size > self.material_arena.size() {
+            let grown = (self.material_arena.size() * 2).max(offset + size);
+            self.material_arena = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("rustlua-material3d-frame-arena"),
+                size: grown,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            offset = 0;
+        }
+        self.queue
+            .write_buffer(&self.material_arena, offset, contents);
+        self.material_arena_used = offset + size;
+        (self.material_arena.clone(), offset, size)
+    }
+
+    /// P0-①：实例模型矩阵帧级环形缓冲的写入端，语义与 [`Self::push_frame_uniform`] 相同。
+    fn push_frame_storage(&mut self, contents: &[u8]) -> (wgpu::Buffer, u64, u64) {
+        let mask = self.storage_align - 1;
+        let size = contents.len() as u64;
+        let mut offset = self.instance_arena_used.wrapping_add(mask) & !mask;
+        if offset + size > self.instance_arena.size() {
+            let grown = (self.instance_arena.size() * 2).max(offset + size);
+            self.instance_arena = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("rustlua-instance-models-frame-arena"),
+                size: grown,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            offset = 0;
+        }
+        self.queue
+            .write_buffer(&self.instance_arena, offset, contents);
+        self.instance_arena_used = offset + size;
+        (self.instance_arena.clone(), offset, size)
+    }
+
     /// Creates a material bind group carrying one primitive's file material,
     /// the joint palette (identity for static meshes, animated for skinned
-    /// drawables), and the per-instance model matrices.
+    /// drawables), and the per-instance model matrices. P0-①：数据落在帧级环形
+    /// 缓冲里按偏移引用，每次调用不再新建任何 GPU buffer。
     fn material_bind_group(
-        &self,
+        &mut self,
         material: GpuMaterial,
         palette: &[Mat4],
         models: &[Mat4],
     ) -> wgpu::BindGroup {
-        let mut material_data = Vec::with_capacity(2);
-        material_data.push(material.base_color);
-        material_data.push([
-            material.metallic,
-            material.roughness,
-            if material.skinned { 1.0 } else { 0.0 },
-            0.0,
-        ]);
-        let material_buffer = self
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("rustlua-material3d-frame-buffer"),
-                contents: bytemuck::cast_slice(&material_data),
-                usage: wgpu::BufferUsages::UNIFORM,
-            });
-        let palette_buffer = if material.skinned && !palette.is_empty() {
-            self.device
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("rustlua-joint-palette-frame-buffer"),
-                    contents: bytemuck::cast_slice(&joint_palette_data(palette)),
-                    usage: wgpu::BufferUsages::UNIFORM,
-                })
-        } else {
-            self.identity_palette.clone()
-        };
+        let material_data: [[f32; 4]; 2] = [
+            material.base_color,
+            [
+                material.metallic,
+                material.roughness,
+                if material.skinned { 1.0 } else { 0.0 },
+                0.0,
+            ],
+        ];
+        let (material_buffer, material_offset, material_size) =
+            self.push_frame_uniform(bytemuck::cast_slice(&material_data));
+        let (palette_buffer, palette_offset, palette_size) =
+            if material.skinned && !palette.is_empty() {
+                self.push_frame_uniform(bytemuck::cast_slice(&joint_palette_data(palette)))
+            } else {
+                let size = self.identity_palette.size();
+                (self.identity_palette.clone(), 0, size)
+            };
         let mut instance_data = Vec::with_capacity(models.len() * 4);
         for model in models {
             instance_data.extend_from_slice(&model.columns);
         }
-        let instance_buffer = self
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("rustlua-instance-models-frame-buffer"),
-                contents: bytemuck::cast_slice(&instance_data),
-                usage: wgpu::BufferUsages::STORAGE,
-            });
+        let (instance_buffer, instance_offset, instance_size) =
+            self.push_frame_storage(bytemuck::cast_slice(&instance_data));
         let albedo = material
             .albedo
             .and_then(|index| self.albedo_textures.get(index as usize))
             .map_or(&self.white_albedo_view, |cached| &cached.view);
+        fn buffer_binding<'a>(
+            buffer: &'a wgpu::Buffer,
+            offset: u64,
+            size: u64,
+        ) -> wgpu::BindingResource<'a> {
+            wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                buffer,
+                offset,
+                size: std::num::NonZeroU64::new(size),
+            })
+        }
         self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("rustlua-material3d-frame-bind-group"),
             layout: &self._material_bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: material_buffer.as_entire_binding(),
+                    resource: buffer_binding(&material_buffer, material_offset, material_size),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: palette_buffer.as_entire_binding(),
+                    resource: buffer_binding(&palette_buffer, palette_offset, palette_size),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: instance_buffer.as_entire_binding(),
+                    resource: buffer_binding(&instance_buffer, instance_offset, instance_size),
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
@@ -3050,6 +3128,20 @@ impl Renderer {
             depth_cleared = true;
             executed.push(RenderPass::WorldSpriteOpaque);
         }
+        // P0-①：本帧的材质 bind group 在进入任何 pass 前一次性建好（阴影与网格共用同一份），
+        // 环形缓冲先复位再填。此前是"每 Draw Call 每 Pass"分配 GPU buffer + bind group。
+        let material_binds: Vec<wgpu::BindGroup> = if !frame_draws.is_empty()
+            && (plan.contains(RenderPass::Shadow) || plan.contains(RenderPass::DepthOpaque))
+        {
+            self.material_arena_used = 0;
+            self.instance_arena_used = 0;
+            frame_draws
+                .iter()
+                .map(|draw| self.material_bind_group(draw.material, &draw.palette, &draw.models))
+                .collect()
+        } else {
+            Vec::new()
+        };
         if plan.contains(RenderPass::Shadow) {
             let mut shadow_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("rustlua-shadow-pass"),
@@ -3067,9 +3159,8 @@ impl Renderer {
             });
             shadow_pass.set_pipeline(&self.shadow_pipeline);
             shadow_pass.set_bind_group(0, &self.shadow_bind_group, &[]);
-            for draw in &frame_draws {
-                let bind = self.material_bind_group(draw.material, &draw.palette, &draw.models);
-                shadow_pass.set_bind_group(1, &bind, &[]);
+            for (index, draw) in frame_draws.iter().enumerate() {
+                shadow_pass.set_bind_group(1, &material_binds[index], &[]);
                 shadow_pass.set_vertex_buffer(0, draw.geometry.vertex_buffer.slice(..));
                 shadow_pass.set_index_buffer(
                     draw.geometry.index_buffer.slice(..),
@@ -3116,9 +3207,8 @@ impl Renderer {
             pass.set_pipeline(&self.mesh_pipeline);
             pass.set_bind_group(0, &self.camera_bind_group, &[]);
             apply_declared_viewport(&mut pass, main_viewport, target);
-            for draw in &frame_draws {
-                let bind = self.material_bind_group(draw.material, &draw.palette, &draw.models);
-                pass.set_bind_group(1, &bind, &[]);
+            for (index, draw) in frame_draws.iter().enumerate() {
+                pass.set_bind_group(1, &material_binds[index], &[]);
                 pass.set_vertex_buffer(0, draw.geometry.vertex_buffer.slice(..));
                 pass.set_index_buffer(
                     draw.geometry.index_buffer.slice(..),
@@ -3685,7 +3775,8 @@ impl Renderer {
             }
             self.texture_identity_misses += 1;
         }
-        if let Some(slot) = self.textures.iter().position(|entry| entry.path == *path) {
+        // P0-③：按路径查缓存走 HashMap（O(1)）。`textures` 只追加，索引恒有效。
+        if let Some(&slot) = self.texture_paths.get(path.as_str()) {
             if let Some(handle) = handles.get(texture as usize - 1).copied() {
                 self.texture_slots.insert(handle, slot);
             }
@@ -3704,7 +3795,7 @@ impl Renderer {
         if !drained.is_empty() {
             self.upload_decoded(drained);
         }
-        if let Some(slot) = self.textures.iter().position(|entry| entry.path == *path) {
+        if let Some(&slot) = self.texture_paths.get(path.as_str()) {
             if let Some(handle) = handles.get(texture as usize - 1).copied() {
                 self.texture_slots.insert(handle, slot);
             }
@@ -4093,6 +4184,9 @@ fn joint_palette_data(palette: &[Mat4]) -> Vec<[f32; 4]> {
 /// 世界 Sprite 顶点缓冲初始容量（按需扩容）。4096 个顶点 ≈ 每帧 1000 多个精灵；
 /// 超限时扩容逻辑与 2D overlay 缓冲同思路（2 的幂次增长）。
 const WORLD_SPRITE_BUFFER_BYTES: u64 = 4096 * std::mem::size_of::<WorldSpriteVertex>() as u64;
+
+/// P0-①：帧级环形缓冲初始容量（128 KiB ≈ 数百个材质块 + 大量实例矩阵），不足时翻倍。
+const FRAME_ARENA_INITIAL_BYTES: u64 = 128 * 1024;
 
 const IDENTITY_MAT4: [[f32; 4]; 4] = [
     [1.0, 0.0, 0.0, 0.0],

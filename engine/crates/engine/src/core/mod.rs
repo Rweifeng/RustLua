@@ -1,11 +1,14 @@
 //! Core types for the Rust + Lua game engine.
 
-/// Named animation states driven by sprite-sheet frame clips.
 pub mod animation;
 /// 3D skeletal animation component driven by glTF skins and clips.
 pub mod animation3d;
 /// docs/54 §4.4：统一的动画轨道抽象（属性轨道 + 事件轨道）。
 pub mod animation_track;
+/// Named animation states driven by sprite-sheet frame clips.
+/// Lua API 面快照门（WP11 阶段 0）：运行期 `_G` 清单必须等于提交进仓库的基线。
+#[cfg(test)]
+mod api_surface_snapshot;
 /// docs/54 §4.4：运行时资源身份（`AssetHandle` 稳定句柄 + `AssetStore` 注册表）。
 pub mod asset_handle;
 /// P0-②：异步资源加载（后台读盘 + CPU 解码，主线程小步 GPU 上传；双模式：Async / Sync）。
@@ -83,8 +86,6 @@ pub mod lod;
 pub mod mesh3d;
 /// 发布资源编解码（压缩 + 加密）。
 pub mod pack;
-/// wasm32-unknown-unknown virtual file system: project resources (.lua / data files) come from a host-injected reader on Web, std::fs on desktop.
-pub mod vfs;
 /// 确定性数据并行执行器（纯分块任务，可回滚为串行）。
 pub mod par;
 /// Pooled particle bursts with spawn/update/recycle.
@@ -174,6 +175,8 @@ pub mod ui_scene_layout;
 pub mod ui_states;
 /// 玩家数据目录（P3）：存档与玩家设置写到哪里（发布包 → 用户目录）。
 pub mod user_dir;
+/// wasm32-unknown-unknown virtual file system: project resources (.lua / data files) come from a host-injected reader on Web, std::fs on desktop.
+pub mod vfs;
 /// docs/54 §4.2：视图可见遮罩（`RenderView::visibility`）的实体侧（`Visibility` 组件）。
 pub mod visibility;
 /// Window and application lifecycle primitives.
@@ -221,6 +224,11 @@ mod tests {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.is_dir() {
+                    // 名为 tests 的子目录整个是单元测试（WP11 把 `mod tests` 拆成了目录），
+                    // 本门只约束生产代码。
+                    if path.file_name().is_some_and(|name| name == "tests") {
+                        continue;
+                    }
                     collect(&path, files);
                 } else if path.extension().is_some_and(|ext| ext == "rs") {
                     files.push(path);

@@ -1,5 +1,10 @@
 name: Rust quality gate
 
+# docs/60 §7.2：原 19 步全串行在单个 job 里（任何一步失败都要等前面所有编译跑完
+# 才看得到）。现在拆成 4 个并行 job：lint 快速失败，build-test / gates /
+# web-evidence 各自独立跑；web 证据 job 补装 zig，让 wasm 门在 CI 上真正执行
+# 而不是常态性以 3 跳过。所有门一个不少，只改调度。
+
 on:
   push:
     paths:
@@ -19,7 +24,8 @@ on:
       - ".github/workflows/quality.yml"
 
 jobs:
-  quality:
+  # 快速失败门：格式 / clippy / diff 检查都不需要产物构建，先红先停。
+  lint:
     runs-on: windows-latest
     defaults:
       run:
@@ -42,19 +48,38 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: git diff --check
 
-      - name: Metadata
-        run: cargo metadata --no-deps --format-version 1
-
       - name: Format
         run: cargo fmt --all -- --check
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
-      # Release 构建放在测试**之前**：`publish_spawn_end_to_end` 用 `-SkipBuild` 复用
-      # `target/release/game.exe` 做真实的发布目录自检，若该产物不存在或是陈旧的，这条
-      # 用例会以"发布应成功"失败——那是环境问题冒充代码问题（本轮就踩到过：9/14 的旧
-      # runner 不含 `player_data_roots`，测试红而代码无辜）。
+  # 编译 + 全量测试（windows）。Release 构建放在测试**之前**：
+  # `publish_spawn_end_to_end` 用 `-SkipBuild` 复用 `target/release/game.exe` 做真实的
+  # 发布目录自检，若该产物不存在或是陈旧的，这条用例会以"发布应成功"失败——那是
+  # 环境问题冒充代码问题（本轮就踩到过：9/14 的旧 runner 不含 `player_data_roots`，
+  # 测试红而代码无辜）。
+  build-test:
+    needs: lint
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: engine
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine
+
+      - name: Metadata
+        run: cargo metadata --no-deps --format-version 1
+
       - name: Release build
         run: cargo build --workspace --release
 
@@ -64,28 +89,39 @@ jobs:
       - name: Debug build
         run: cargo build --workspace
 
+  # 项目门 + 发布链路自测：消费 build-test 之外不需要 release 产物的检查项。
+  gates:
+    needs: lint
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine
+
       - name: Game project check
-        working-directory: ${{ github.workspace }}
         run: cargo run --quiet --manifest-path engine/Cargo.toml -p game -- --project "${{ github.workspace }}\examples\game_jhyt" --check
 
       - name: Editor project check
-        working-directory: ${{ github.workspace }}
         run: cargo run --quiet --manifest-path engine/Cargo.toml -p editor -- --project "${{ github.workspace }}\examples\game_jhyt" --check
 
       - name: Game headless regression suite
-        working-directory: ${{ github.workspace }}
         run: pwsh -NoProfile -File scripts/verify.ps1 -MvpOnly
 
       # docs/54 §7/§8-⑩：性能红线的判定逻辑必须有测试（超阈必须非零退出）。
       - name: Baseline comparison thresholds
-        working-directory: ${{ github.workspace }}
         run: pwsh -NoProfile -File scripts/test-compare-baseline.ps1
 
       # docs/34「Release Candidate」清单里的 `release_atomic_ok cases=4` 此前只靠人记得跑，
       # 而 `release-atomic.ps1` 是 `package.ps1` 每次发布都走的 staging/交换/回滚核心——它回归了
       # 不会有人立刻发现。这条用例零依赖（不需要 cargo / node / GPU，只用临时目录），进门成本极低。
       - name: Atomic release swap and rollback
-        working-directory: ${{ github.workspace }}
         run: pwsh -NoProfile -File scripts/test-release-atomic.ps1
 
       # docs/54 §8-⑨/⑩：WP0 基准与语义 golden（2D / 3D / **混合 2D/3D**）必须进门，而不是
@@ -93,27 +129,50 @@ jobs:
       # Windows 上是 WARP）；适配器缺失会让示例**报错退出**而不是静默跳过——宁可判红，也不要
       # 一份"跑过了但其实没测"的绿灯。
       - name: WP0 benchmarks and semantic goldens
-        working-directory: ${{ github.workspace }}
         run: pwsh -NoProfile -File scripts/verify.ps1 -Benchmarks
+
+  # Web/wasm 证据门。docs/60 §7.2：补装 zig 后 wasm Lua 门在 CI 上**真的执行**
+  # （此前 GitHub runner 无 zig，常态以 3 显式跳过）。跳过绝不等于通过的哲学不变：
+  # 真失败（页面能跑却没画面、引导失败、桥断言不过）仍判红。
+  web-evidence:
+    needs: lint
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine
+
+      - name: Install zig (makes wasm gates execute instead of skipping)
+        # 尽力而为：装不上（choco 源没有对应版本）就让 wasm 门按既有语义以 3 显式跳过，
+        # 不能让 CI 比拆分前更脆。
+        continue-on-error: true
+        run: choco install zig -y
 
       # docs/54 §8-⑨：Web 平台的可重复证据（浏览器契约层 + 已发布产物的启动层）。runner 上没有
       # 浏览器/已发布产物时这两层会**显式**打印跳过原因并以 2/3 退出（不是伪造通过）；真失败
       # （页面能跑却没画面、引导失败）仍是退出码 1，会让这一步判红。
       - name: Web platform evidence
-        working-directory: ${{ github.workspace }}
         run: pwsh -NoProfile -File scripts/verify.ps1 -Web
 
       # wasm Lua 运行期验证门：spike（vendored mlua 的 wasm32 移植）+ no-modules 桥（game_web
       # 的 Lua 桥导出）的 Node 验证。**直接**调 wrapper（不经 verify.ps1），避免把整套常规门再跑
-      # 一遍；退出码 0=通过 / 1=判红 / 3=环境受限跳过。GitHub runner 上没有 zig（vendored Lua 的
-      # wasm C 编译器），因此这一步在 CI 上通常以 3 显式跳过——与 -Web 门同一哲学：跳过绝不等于
-      # 通过；本地/带 zig 的环境上它会真的构建 wasm 并跑完 spike+bridge。
+      # 一遍；退出码 0=通过 / 1=判红 / 3=环境受限跳过。装了 zig 后本地/CI 行为一致：真的构建
+      # wasm 并跑完 spike+bridge。
       - name: wasm Lua runtime evidence
-        working-directory: ${{ github.workspace }}
         shell: pwsh
         run: |
           $status = "artifacts/logs/wasm-lua/ci.status"
           New-Item -ItemType Directory -Force -Path (Split-Path $status) | Out-Null
+          $env:ZIG = "zig"
           pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify-wasm-lua.ps1 -StatusFile $status
           $code = 1
           if (Test-Path -LiteralPath $status) {
@@ -131,10 +190,8 @@ jobs:
       # 浏览器编译一遍，证明它所用的新异常处理被支持（门槛 Chrome/Edge 137、Firefox 131、Safari/iOS
       # 18.4；低于门槛连编译都过不去）。只编译不跑游戏，与启动层正交。**直接**调 runner；退出码
       # 0=已发现浏览器全 PASS / 1=有 FAIL / 3=环境受限（无浏览器或无已发布 webgl 产物）跳过。
-      # GitHub runner 上没有 zig 也就没有 webgl 产物 → 通常以 3 跳过；Safari 无法在 Windows 自动化，
-      # runner 会打印 Mac 上的手动验证流程。跳过绝不等于通过。
+      # Safari 无法在 Windows 自动化，runner 会打印 Mac 上的手动验证流程。跳过绝不等于通过。
       - name: webgl new-EH cross-browser evidence
-        working-directory: ${{ github.workspace }}
         shell: pwsh
         run: |
           $status = "artifacts/logs/webgl/ci-eh.status"

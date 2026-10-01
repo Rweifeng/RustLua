@@ -221,11 +221,9 @@ pub fn lua_register_js_callback(name: &str, callback: &js_sys::Function) -> Resu
                 for arg in args.into_iter() {
                     js_args.push(&lua_value_to_js(lua, arg)?);
                 }
-                let result = js_fn
-                    .apply(&JsValue::NULL, &js_args)
-                    .map_err(|e| {
-                        mlua::Error::RuntimeError(format!("js callback {name_owned}: {e:?}"))
-                    })?;
+                let result = js_fn.apply(&JsValue::NULL, &js_args).map_err(|e| {
+                    mlua::Error::RuntimeError(format!("js callback {name_owned}: {e:?}"))
+                })?;
                 js_result_to_lua(lua, result)
             })
             .map_err(|e| JsValue::from_str(&format!("create_function {name}: {e}")))?;
@@ -337,7 +335,9 @@ fn js_result_to_lua(lua: &mlua::Lua, result: JsValue) -> Result<mlua::MultiValue
         }
         Ok(mlua::MultiValue::from_vec(values))
     } else {
-        Ok(mlua::MultiValue::from_vec(vec![js_value_to_lua(lua, result)?]))
+        Ok(mlua::MultiValue::from_vec(vec![js_value_to_lua(
+            lua, result,
+        )?]))
     }
 }
 
@@ -356,9 +356,7 @@ fn js_value_to_lua(lua: &mlua::Lua, value: JsValue) -> Result<mlua::Value, mlua:
         return Ok(mlua::Value::Number(n));
     }
     if let Some(s) = value.as_string() {
-        return lua
-            .create_string(s.as_bytes())
-            .map(mlua::Value::String);
+        return lua.create_string(s.as_bytes()).map(mlua::Value::String);
     }
     // 对象/函数等：tostring 兜底（音频桥只返回 boolean/string/数组）。
     let text = js_error_text(&value);

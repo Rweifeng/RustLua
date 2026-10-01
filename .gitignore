@@ -1,6 +1,9 @@
 # Rust build output
 engine/target/
 
+# On-demand toolchain cache: zig (wasm 侧 Lua C 编译需要)，由 scripts/zig-toolchain.ps1 下载
+engine/.tools/
+
 # Generated release copies and profiling/screenshot output
 **/artifacts/logs/
 artifacts/

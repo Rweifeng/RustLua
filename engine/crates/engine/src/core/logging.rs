@@ -291,18 +291,15 @@ pub fn init_logging_with_sink(
             .with(sink_layer),
         (),
     );
-    registry
-        .0
-        .try_init()
-        .map_err(|error| {
-            EngineError::new(
-                LogModule::Engine,
-                "initialize logging",
-                "a global subscriber is already installed",
-            )
-            .with_source(error)
-            .with_suggestion("initialize logging only once during application startup")
-        })?;
+    registry.0.try_init().map_err(|error| {
+        EngineError::new(
+            LogModule::Engine,
+            "initialize logging",
+            "a global subscriber is already installed",
+        )
+        .with_source(error)
+        .with_suggestion("initialize logging only once during application startup")
+    })?;
     #[cfg(not(target_arch = "wasm32"))]
     let _ = LOG_GUARD.set(LogGuard {
         _file_guard: registry.1,

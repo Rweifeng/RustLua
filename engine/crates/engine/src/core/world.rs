@@ -117,6 +117,12 @@ impl<T: 'static> ComponentStorage for TypedStorage<T> {
 pub struct World {
     entities: EntityAllocator,
     components: HashMap<TypeId, Box<dyn ComponentStorage>>,
+    /// P3-⑤：实体 → 其持有组件类型的反向索引（`insert`/`remove`/`despawn` 三个入口
+    /// 维护）。`despawn` 借此只碰相关 storage，不再遍历全部已注册组件类型。
+    entity_components: HashMap<EntityId, Vec<TypeId>>,
+    /// P0-②：组件结构修订号——每次 `insert` / `remove` / `despawn` 递增。缓存方
+    /// （如每实体脚本请求表）以它为失效键，无需每帧全量重扫即可确认"没变化"。
+    revision: u64,
 }
 
 impl fmt::Debug for World {
@@ -146,10 +152,21 @@ impl World {
         if !self.entities.despawn(entity) {
             return Err(WorldError::InvalidEntity(entity));
         }
-        for storage in self.components.values_mut() {
-            storage.remove_entity(entity);
+        self.revision = self.revision.wrapping_add(1);
+        if let Some(types) = self.entity_components.remove(&entity) {
+            for type_id in types {
+                if let Some(storage) = self.components.get_mut(&type_id) {
+                    storage.remove_entity(entity);
+                }
+            }
         }
         Ok(())
+    }
+
+    /// 当前组件结构修订号（P0-②：缓存失效判据，只增不减）。
+    #[must_use]
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     /// Returns whether an entity handle is currently alive in this world.
@@ -180,9 +197,15 @@ impl World {
             .downcast_mut::<TypedStorage<T>>()
             .expect("component storage type id must match its concrete storage");
         let previous = typed.dense.insert(entity, component);
+        self.revision = self.revision.wrapping_add(1);
         if previous.is_none() {
             // 新增（或替换了同槽位的上一世代条目）⇒ 有序索引失效。
             typed.order_dirty.set(true);
+            let types = self.entity_components.entry(entity).or_default();
+            let type_id = TypeId::of::<T>();
+            if !types.contains(&type_id) {
+                types.push(type_id);
+            }
         }
         Ok(previous)
     }
@@ -220,6 +243,10 @@ impl World {
         let removed = storage.dense.remove(entity);
         if removed.is_some() {
             storage.order_dirty.set(true);
+            self.revision = self.revision.wrapping_add(1);
+            if let Some(types) = self.entity_components.get_mut(&entity) {
+                types.retain(|type_id| *type_id != TypeId::of::<T>());
+            }
         }
         Ok(removed)
     }

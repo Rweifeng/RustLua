@@ -27,6 +27,10 @@ pub struct Meta {
     pub len: u64,
 }
 
+/// 桌面端资源提供者的类型别名（签名较长，收敛重复，见 clippy type_complexity）。
+#[cfg(not(target_arch = "wasm32"))]
+type DesktopProvider = dyn Fn(&Path) -> Option<Vec<u8>> + Send + Sync;
+
 /// Install the host resource reader. Must be called once before any Lua
 /// script load; a second call fails.
 ///
@@ -34,9 +38,7 @@ pub struct Meta {
 /// single-threaded, so the provider may capture non-`Send` handles such as
 /// `js_sys::Function`.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn set_provider(
-    provider: Box<dyn Fn(&Path) -> Option<Vec<u8>> + Send + Sync>,
-) -> Result<(), &'static str> {
+pub fn set_provider(provider: Box<DesktopProvider>) -> Result<(), &'static str> {
     backend::set(provider)
 }
 
@@ -58,18 +60,15 @@ mod backend {
     use super::*;
     use std::sync::OnceLock;
 
-    static PROVIDER: OnceLock<Box<dyn Fn(&Path) -> Option<Vec<u8>> + Send + Sync>> =
-        OnceLock::new();
+    static PROVIDER: OnceLock<Box<DesktopProvider>> = OnceLock::new();
 
-    pub fn set(
-        provider: Box<dyn Fn(&Path) -> Option<Vec<u8>> + Send + Sync>,
-    ) -> Result<(), &'static str> {
+    pub fn set(provider: Box<DesktopProvider>) -> Result<(), &'static str> {
         PROVIDER
             .set(provider)
             .map_err(|_| "vfs: provider already installed")
     }
 
-    fn provider() -> Option<&'static (dyn Fn(&Path) -> Option<Vec<u8>> + Send + Sync)> {
+    fn provider() -> Option<&'static DesktopProvider> {
         PROVIDER.get().map(|b| b.as_ref())
     }
 
@@ -83,10 +82,10 @@ mod backend {
     }
 
     pub fn is_file(path: &Path) -> bool {
-        if let Some(provider) = provider() {
-            if provider(path).is_some() {
-                return true;
-            }
+        if let Some(provider) = provider()
+            && provider(path).is_some()
+        {
+            return true;
         }
         path.is_file()
     }

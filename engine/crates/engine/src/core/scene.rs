@@ -4,7 +4,8 @@ use crate::core::resource_db::AssetId;
 use std::{
     collections::BTreeMap,
     error::Error,
-    fmt, fs,
+    fmt::{self, Write as _},
+    fs,
     path::{Path, PathBuf},
     str::FromStr,
 };
@@ -56,6 +57,8 @@ impl Scene {
     /// 标记保持不变，父级恢复显示后各自状态仍然生效。
     pub fn is_entity_hidden_with_ancestors(&self, id: SceneEntityId) -> bool {
         let mut cursor = Some(id);
+        // P3-④：复用同一个 key 缓冲，不再每个祖先 `format!` 分配一次。
+        let mut key = String::with_capacity("editor.hidden.".len() + 20);
         // 环保护：正常层级深度不可能超过实体数。
         for _ in 0..=self.entities.len() {
             let Some(entity_id) = cursor else {
@@ -64,11 +67,10 @@ impl Scene {
             let Some(entity) = self.entities.get(&entity_id) else {
                 return false;
             };
-            if self
-                .metadata
-                .get(&format!("editor.hidden.{}", entity_id.0))
-                .is_some_and(|value| value == "true")
-            {
+            key.clear();
+            key.push_str("editor.hidden.");
+            let _ = write!(key, "{}", entity_id.0);
+            if self.metadata.get(&key).is_some_and(|value| value == "true") {
                 return true;
             }
             cursor = entity.parent;
@@ -131,47 +133,48 @@ impl Scene {
         Self::from_text(&text).map_err(|e| e.with_path(path))
     }
     pub fn to_text(&self) -> String {
-        let mut out = format!(
-            "scene_version={}\nname={}\n",
-            self.version,
-            escape(&self.name)
-        );
+        // P3-④：逐字段直接写入输出缓冲（转义内联），不再每行 `format!` 造临时 String。
+        let mut out = String::new();
+        let _ = write!(out, "scene_version={}\nname=", self.version);
+        push_escaped(&mut out, &self.name);
+        out.push('\n');
         for (k, v) in &self.metadata {
-            out.push_str(&format!("meta\t{}\t{}\n", escape(k), escape(v)));
+            out.push_str("meta\t");
+            push_escaped(&mut out, k);
+            out.push('\t');
+            push_escaped(&mut out, v);
+            out.push('\n');
         }
         for e in self.entities.values() {
+            let _ = write!(out, "entity\t{}\t", e.id.0);
+            push_escaped(&mut out, &e.name);
             match e.parent {
+                // 无父实体时不输出空尾字段，避免场景文件产生尾随空白。
                 Some(parent) => {
-                    out.push_str(&format!(
-                        "entity\t{}\t{}\t{}\n",
-                        e.id.0,
-                        escape(&e.name),
-                        parent.0
-                    ));
+                    let _ = writeln!(out, "\t{}", parent.0);
                 }
-                None => {
-                    // 无父实体时不输出空尾字段，避免场景文件产生尾随空白。
-                    out.push_str(&format!("entity\t{}\t{}\n", e.id.0, escape(&e.name)));
-                }
+                None => out.push('\n'),
             }
             for (k, v) in &e.components {
-                out.push_str(&format!(
-                    "component\t{}\t{}\t{}\n",
-                    e.id.0,
-                    escape(k),
-                    escape(v)
-                ));
+                let _ = write!(out, "component\t{}\t", e.id.0);
+                push_escaped(&mut out, k);
+                out.push('\t');
+                push_escaped(&mut out, v);
+                out.push('\n');
             }
             for (k, v) in &e.resources {
-                out.push_str(&format!("resource\t{}\t{}\t{}\n", e.id.0, escape(k), v));
+                let _ = write!(out, "resource\t{}\t", e.id.0);
+                push_escaped(&mut out, k);
+                out.push('\t');
+                let _ = write!(out, "{v}");
+                out.push('\n');
             }
             for (k, v) in &e.metadata {
-                out.push_str(&format!(
-                    "entity_meta\t{}\t{}\t{}\n",
-                    e.id.0,
-                    escape(k),
-                    escape(v)
-                ));
+                let _ = write!(out, "entity_meta\t{}\t", e.id.0);
+                push_escaped(&mut out, k);
+                out.push('\t');
+                push_escaped(&mut out, v);
+                out.push('\n');
             }
         }
         out
@@ -184,7 +187,7 @@ impl Scene {
             if line.trim().is_empty() || line.starts_with('#') {
                 continue;
             }
-            let f: Vec<_> = line.split('\t').collect();
+            let (f, field_count) = split_record(line);
             if let Some(value) = line.strip_prefix("scene_version=") {
                 version = Some(value.parse().map_err(|_| SceneError::Parse {
                     line: n + 1,
@@ -199,7 +202,7 @@ impl Scene {
                 continue;
             }
             if f[0] == "meta" {
-                need(&f, 3, n + 1)?;
+                need(f[0], field_count, 3, n + 1)?;
                 scene
                     .metadata
                     .insert(unescape(f[1], n + 1)?, unescape(f[2], n + 1)?);
@@ -208,7 +211,7 @@ impl Scene {
             if f[0] == "entity" {
                 // Parent is optional: an entity is either a root (3 fields) or
                 // a child (4 fields).
-                if f.len() != 3 && f.len() != 4 {
+                if field_count != 3 && field_count != 4 {
                     return Err(SceneError::Parse {
                         line: n + 1,
                         field: "entity".into(),
@@ -217,7 +220,7 @@ impl Scene {
                     });
                 }
                 let id = number(f[1], n + 1)?;
-                let parent = if f.len() == 4 && !f[3].is_empty() {
+                let parent = if field_count == 4 && !f[3].is_empty() {
                     Some(SceneEntityId(number(f[3], n + 1)?))
                 } else {
                     None
@@ -226,7 +229,7 @@ impl Scene {
                 continue;
             }
             if f[0] == "component" || f[0] == "resource" || f[0] == "entity_meta" {
-                need(&f, 4, n + 1)?;
+                need(f[0], field_count, 4, n + 1)?;
                 let id = SceneEntityId(number(f[1], n + 1)?);
                 let e = scene
                     .entities
@@ -287,12 +290,12 @@ impl Scene {
         Ok(())
     }
 }
-fn need(f: &[&str], n: usize, line: usize) -> Result<(), SceneError> {
-    if f.len() != n {
+fn need(kind: &str, actual: usize, expected: usize, line: usize) -> Result<(), SceneError> {
+    if actual != expected {
         Err(SceneError::Parse {
             line,
-            field: f[0].into(),
-            reason: format!("expected {n} fields, got {}", f.len()),
+            field: kind.into(),
+            reason: format!("expected {expected} fields, got {actual}"),
             path: None,
         })
     } else {
@@ -307,10 +310,34 @@ fn number(s: &str, line: usize) -> Result<u64, SceneError> {
         path: None,
     })
 }
-fn escape(s: &str) -> String {
-    s.replace('\\', "\\\\")
-        .replace('\t', "\\t")
-        .replace('\n', "\\n")
+/// P3-④：单次遍历把转义结果直接写进输出缓冲（原来 3 次链式 `.replace()` 会产生 3 个临时 String）。
+fn push_escaped(out: &mut String, s: &str) {
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '\t' => out.push_str("\\t"),
+            '\n' => out.push_str("\\n"),
+            _ => out.push(c),
+        }
+    }
+}
+
+/// P3-④：把一行拆成**至多 4 个** Tab 分隔字段 + 精确总字段数（固定数组，无每行 Vec 分配）。
+fn split_record(line: &str) -> ([&str; 4], usize) {
+    let mut fields = [""; 4];
+    let mut it = line.split('\t');
+    let mut count = 0;
+    for slot in fields.iter_mut() {
+        match it.next() {
+            Some(value) => {
+                *slot = value;
+                count += 1;
+            }
+            None => break,
+        }
+    }
+    count += it.count();
+    (fields, count)
 }
 fn unescape(s: &str, line: usize) -> Result<String, SceneError> {
     let mut o = String::new();

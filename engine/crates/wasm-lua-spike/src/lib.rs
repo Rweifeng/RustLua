@@ -12,13 +12,6 @@
 
 use mlua::{Function, Lua, Result as LuaResult};
 
-/// [DIAG] 链接 wasm-bindgen rt 但不用 externref/JsValue（table 不应出现）。
-#[no_mangle]
-pub extern "C" fn spike_wb_ping() -> u32 {
-    let m = wasm_bindgen::memory();
-    m.byte_length() as u32
-}
-
 #[no_mangle]
 pub extern "C" fn spike_add(a: i64, b: i64) -> i64 {
     let lua = Lua::new();
@@ -62,7 +55,7 @@ pub extern "C" fn spike_host_err() -> i32 {
     // 深栈版本：宿主函数内部多层 Rust 调用（模拟 engine 场景切换 on_create 的调用深度），
     // 验证 wasm EH throw 穿过深层 Rust 帧是否被截获（对应 webgl 场景切换崩溃）。
     fn deep1() -> LuaResult<()> {
-        let v = vec![1u8; 8];
+        let v = [1u8; 8];
         let _ = v.len();
         deep2()
     }
@@ -85,9 +78,7 @@ pub extern "C" fn spike_host_err() -> i32 {
     fn deep5() -> LuaResult<()> {
         Err(mlua::Error::RuntimeError("dead entity".to_string()))
     }
-    let fail: Function = lua
-        .create_function(|_, _: ()| deep1())
-        .unwrap();
+    let fail: Function = lua.create_function(|_, _: ()| deep1()).unwrap();
     lua.globals().set("host_fail", fail).unwrap();
     match lua
         .load("local ok, err = pcall(host_fail); if ok then return 'ok' else return err end")
@@ -148,19 +139,13 @@ pub extern "C" fn spike_rust_fn() -> i64 {
         Ok(f) => f,
         Err(_) => return -2,
     };
-    match mul.call::<i64>((6, 7)) {
-        Ok(v) => v,
-        Err(_) => -3,
-    }
+    mul.call::<i64>((6, 7)).unwrap_or(-3)
 }
 
 #[no_mangle]
 pub extern "C" fn spike_tostring(x: f64, buf: *mut u8, cap: usize) -> i32 {
     let lua = Lua::new();
-    match lua
-        .load(format!("return tostring({})", x))
-        .eval::<String>()
-    {
+    match lua.load(format!("return tostring({})", x)).eval::<String>() {
         Ok(s) => write_out(&s, buf, cap),
         Err(_) => -2,
     }

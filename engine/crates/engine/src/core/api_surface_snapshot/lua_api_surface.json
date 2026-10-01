@@ -1,0 +1,484 @@
+{
+  "tables": [
+    {
+      "funcs": [
+        "attach",
+        "clips",
+        "ended",
+        "events",
+        "frame",
+        "get",
+        "set",
+        "time"
+      ],
+      "name": "animation"
+    },
+    {
+      "funcs": [
+        "get",
+        "list",
+        "paused",
+        "set",
+        "set_paused",
+        "time"
+      ],
+      "name": "animation3d"
+    },
+    {
+      "funcs": [
+        "project_root",
+        "quit"
+      ],
+      "name": "app"
+    },
+    {
+      "funcs": [
+        "load",
+        "release"
+      ],
+      "name": "asset"
+    },
+    {
+      "funcs": [
+        "apply_settings",
+        "bus_volume",
+        "buses",
+        "effective_volume",
+        "load_settings",
+        "music",
+        "play",
+        "play_on",
+        "save_settings",
+        "set_bus_volume",
+        "settings_path",
+        "settings_text",
+        "stop_music",
+        "volume"
+      ],
+      "name": "audio"
+    },
+    {
+      "funcs": [
+        "now",
+        "set"
+      ],
+      "name": "calendar"
+    },
+    {
+      "funcs": [
+        "get",
+        "get_active",
+        "set",
+        "set_active"
+      ],
+      "name": "camera"
+    },
+    {
+      "funcs": [
+        "follow",
+        "get",
+        "get_zoom",
+        "mouse_world",
+        "screen_to_world",
+        "set",
+        "set_zoom",
+        "shake",
+        "unfollow",
+        "world_to_screen"
+      ],
+      "name": "camera2d"
+    },
+    {
+      "funcs": [
+        "get",
+        "mouse_ray",
+        "pick_plane",
+        "ray",
+        "world_to_screen"
+      ],
+      "name": "camera3d"
+    },
+    {
+      "funcs": [
+        "add",
+        "now",
+        "pause",
+        "set",
+        "set_rate",
+        "sleep_to_morning"
+      ],
+      "name": "clock"
+    },
+    {
+      "funcs": [
+        "close",
+        "get",
+        "move",
+        "open"
+      ],
+      "name": "container"
+    },
+    {
+      "funcs": [
+        "cache_clear",
+        "load",
+        "reload",
+        "schema"
+      ],
+      "name": "data"
+    },
+    {
+      "funcs": [
+        "now",
+        "sleep"
+      ],
+      "name": "day"
+    },
+    {
+      "funcs": [
+        "destroy",
+        "find",
+        "find_id",
+        "is_alive",
+        "persist_id",
+        "spawn"
+      ],
+      "name": "entity"
+    },
+    {
+      "funcs": [
+        "emit",
+        "off",
+        "on",
+        "subscribe",
+        "unsubscribe"
+      ],
+      "name": "event"
+    },
+    {
+      "funcs": [
+        "cell_to_world",
+        "facing_cell",
+        "in_bounds",
+        "world_to_cell"
+      ],
+      "name": "grid"
+    },
+    {
+      "funcs": [
+        "damage",
+        "get",
+        "set"
+      ],
+      "name": "health"
+    },
+    {
+      "funcs": [
+        "action",
+        "action_axis",
+        "action_map_text",
+        "action_pressed",
+        "action_released",
+        "action_repeat",
+        "actions",
+        "axis",
+        "bindings",
+        "cursor_delta",
+        "cursor_position",
+        "diagnostics",
+        "is_down",
+        "just_pressed",
+        "just_released",
+        "last_device",
+        "load_settings",
+        "migration_notes",
+        "mouse_is_down",
+        "mouse_just_pressed",
+        "mouse_just_released",
+        "nav_settings",
+        "pad_axis",
+        "pad_button",
+        "pressed",
+        "rebind",
+        "released",
+        "reset_bindings",
+        "rumble",
+        "save_settings",
+        "scroll_delta",
+        "set_action_map",
+        "set_nav_settings",
+        "settings_path",
+        "unbind",
+        "virtual_key",
+        "virtual_pressed"
+      ],
+      "name": "input"
+    },
+    {
+      "funcs": [
+        "clear_prompt",
+        "get_prompt",
+        "prompt",
+        "query"
+      ],
+      "name": "interact"
+    },
+    {
+      "funcs": [
+        "add",
+        "capacity",
+        "count",
+        "create",
+        "equip",
+        "equip_get",
+        "equip_list",
+        "exists",
+        "get",
+        "hotbar",
+        "move",
+        "remove",
+        "set",
+        "slot",
+        "swap"
+      ],
+      "name": "inv"
+    },
+    {
+      "funcs": [
+        "def",
+        "define"
+      ],
+      "name": "item"
+    },
+    {
+      "funcs": [
+        "get",
+        "set",
+        "set_active"
+      ],
+      "name": "light"
+    },
+    {
+      "funcs": [
+        "error",
+        "info",
+        "warn"
+      ],
+      "name": "log"
+    },
+    {
+      "funcs": [
+        "current",
+        "enter",
+        "go",
+        "goto",
+        "schema",
+        "set_spawn",
+        "spawn",
+        "state",
+        "state_clear"
+      ],
+      "name": "map"
+    },
+    {
+      "funcs": [
+        "clear",
+        "get",
+        "set"
+      ],
+      "name": "mesh"
+    },
+    {
+      "funcs": [
+        "burst",
+        "count"
+      ],
+      "name": "particles"
+    },
+    {
+      "funcs": [
+        "debug_draw",
+        "events",
+        "get_ccd",
+        "get_velocity",
+        "overlap",
+        "positions_in_radius",
+        "raycast",
+        "set_ccd",
+        "set_position",
+        "set_velocity"
+      ],
+      "name": "physics"
+    },
+    {
+      "funcs": [
+        "debug_draw",
+        "events",
+        "get_ccd",
+        "get_velocity",
+        "overlap",
+        "raycast",
+        "set_ccd",
+        "set_position",
+        "set_velocity"
+      ],
+      "name": "physics3d"
+    },
+    {
+      "funcs": [
+        "get",
+        "set"
+      ],
+      "name": "quad"
+    },
+    {
+      "funcs": [
+        "blob_read",
+        "blob_write",
+        "clear",
+        "commit",
+        "load",
+        "read",
+        "slot",
+        "slot_get",
+        "write"
+      ],
+      "name": "save"
+    },
+    {
+      "funcs": [
+        "load",
+        "reload"
+      ],
+      "name": "scene"
+    },
+    {
+      "funcs": [
+        "price",
+        "set_catalog"
+      ],
+      "name": "shop"
+    },
+    {
+      "funcs": [
+        "get",
+        "set"
+      ],
+      "name": "sprite"
+    },
+    {
+      "funcs": [
+        "get",
+        "set"
+      ],
+      "name": "tag"
+    },
+    {
+      "funcs": [
+        "create",
+        "find_path",
+        "get",
+        "get_cell",
+        "get_meta",
+        "is_solid",
+        "set_cell",
+        "set_meta",
+        "set_solid",
+        "set_texture"
+      ],
+      "name": "tilemap"
+    },
+    {
+      "funcs": [
+        "delta"
+      ],
+      "name": "time"
+    },
+    {
+      "funcs": [
+        "attach",
+        "get",
+        "move",
+        "set",
+        "space",
+        "world"
+      ],
+      "name": "transform"
+    },
+    {
+      "funcs": [
+        "attach",
+        "get",
+        "move",
+        "set",
+        "world"
+      ],
+      "name": "transform3d"
+    },
+    {
+      "funcs": [
+        "bar",
+        "circle",
+        "clear",
+        "drag_active",
+        "drag_begin",
+        "drag_cancel",
+        "drag_end",
+        "focus_close",
+        "focus_count",
+        "focus_cycle",
+        "focus_index",
+        "focus_move",
+        "focus_open",
+        "focus_select",
+        "get",
+        "grid",
+        "grid_cell",
+        "grid_clear",
+        "grid_hit",
+        "hide",
+        "image",
+        "image_get",
+        "measure_text",
+        "modal",
+        "modal_hide",
+        "modal_show",
+        "panel",
+        "panel_get",
+        "scene_text_visible",
+        "scroll_by",
+        "scroll_close",
+        "scroll_extents",
+        "scroll_lines",
+        "scroll_max",
+        "scroll_offset",
+        "scroll_open",
+        "scroll_page",
+        "scroll_to_visible",
+        "scroll_visible",
+        "show",
+        "text",
+        "text_at",
+        "text_get",
+        "tooltip",
+        "tooltip_hide"
+      ],
+      "name": "ui"
+    },
+    {
+      "funcs": [
+        "all",
+        "get",
+        "set"
+      ],
+      "name": "visibility"
+    },
+    {
+      "funcs": [
+        "attach",
+        "detach"
+      ],
+      "name": "world_text"
+    }
+  ]
+}

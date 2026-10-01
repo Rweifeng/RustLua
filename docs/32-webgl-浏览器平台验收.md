@@ -22,9 +22,13 @@ WASM 入口读取的资源路径（契约，改动需同步 `web-check.js`）：
 ## 2. 运行方式
 
 ```powershell
-# 完整 WebGL 发布（需要 wasm32 目标与 wasm-bindgen-cli）
-rustup target add wasm32-unknown-unknown
-cargo install wasm-bindgen-cli --version 0.2.127
+# 完整 WebGL 发布。外部工具链由脚本自己解析/按需安装，**不需要手工装**：
+#   * zig   —— 编译 vendored Lua 的 C 源（`zig cc --target=wasm32-freestanding`）；
+#              解析顺序 $env:ZIG → engine\.tools\zig → PATH，全落空时下载固定 0.16.0
+#              到 gitignore 的 engine\.tools\zig\（scripts/zig-toolchain.ps1）
+#   * wasm32 目标 —— 装到真正编 wasm 的那个 toolchain（1.88.0）上，见下方"工具链口径"
+#   * wasm-bindgen CLI —— 版本取自 Cargo.lock 的 wasm-bindgen 条目，不匹配就
+#              cargo install 精确版本到 engine\.tools\wasm-bindgen（scripts/wasm-bindgen.ps1）
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -ProjectRoot examples/game_jhyt -Platform webgl
 
 # 浏览器集成回归（日志与 DOM 快照写到 artifacts/logs/webgl/）
@@ -44,6 +48,25 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-bundle.ps1
 # 本地静态服务（发布目录必须经 HTTP 提供，不能 file:// 打开：浏览器会拦 WASM/资源请求）
 node scripts/serve-static.js examples/game_jhyt/builds/webgl/<name> 8000
 ```
+
+## 2.1 工具链口径（三条都踩过坑，写在明面上）
+
+* **wasm 必须用 rustc 1.88（LLVM 18）编**：1.97 对 vendored Lua C 的 setjmp 生成 new EH
+  （`try_table`）、对 Rust 侧 `catch_unwind` 生成 legacy `try`(0x06)，同一模块里新旧混用，
+  V8 直接拒绝编译（详见 `package.ps1` 里 WP10 那段）。所以 wasm32 目标要装到**这个 toolchain**
+  上：`rustup target add wasm32-unknown-unknown --toolchain 1.88.0`。只跑不带 `--toolchain`
+  的 `rustup target add` 只给默认 stable 装上，1.88.0 依旧报 `can't find crate for 'core'`
+  （实测 2026-09-30）。
+* **wasm-bindgen CLI 的版本事实源是 `engine/Cargo.lock` 里的 `wasm-bindgen`**，不是文档里的
+  某个魔数：CLI 与 wasm 元数据 schema 必须精确一致，偏旧直接拒绝生成胶水。以前这里写死过
+  `0.2.127`，而 crate 已是 `0.2.129`，照着文档装就把 webgl 与微信两条发布一起挂住。
+  现在由 `scripts/wasm-bindgen.ps1` 读 lock 解析，必要时 `cargo install --root engine\.tools\wasm-bindgen`
+  （不污染全局 `~\.cargo\bin`）。
+* **zig 只服务 web 平台**（`zig cc` 编 vendored Lua 的 C 源），pc 构建完全不碰。以前写死在
+  `engine/.cargo/config.toml` 的 `[env] ZIG` 里是某台机器的绝对路径，换机器就 panic
+  `run zig cc: NotFound`，还被 `cargo ... | Out-Null` 吞成"WASM build failed"。现在由
+  `scripts/zig-toolchain.ps1` 解析（`$env:ZIG` → `engine\.tools\zig` → PATH → 按需下载固定
+  0.16.0），下载目录已 gitignore：仓库里只留脚本，不留二进制。
 
 产物目录由 `scripts/bundle-discovery.ps1` 定位，规则与 `package.ps1` 的产物校验清单逐项一致；
 `test-bundle.ps1` 是**与平台无关**的试玩入口（`-Platform webgl|wechat-minigame`），它自身不做任何
@@ -135,6 +158,6 @@ camera/mesh`），与桌面引擎注册的 36 个顶层全局并不等价。桌�
   multirust-channel-manifest.toml`），那份 manifest 指向的镜像对该文件返回 403，而
   `RUSTUP_DIST_SERVER` 对已装 toolchain 的组件下载无效。把 manifest 里的镜像前缀改成
   `https://static.rust-lang.org/dist/` 再 `rustup target add` 即成功（2026-09-19 实测；
-  同样的提示写进了 `scripts/verify-webgl.ps1` 的诊断文件）。`wasm-bindgen-cli 0.2.127`
-  由 `package.ps1` 在缺失时自动 `cargo install`。
+  同样的提示写进了 `scripts/verify-webgl.ps1` 的诊断文件）。zig 与 wasm-bindgen CLI 现在
+  都由 `package.ps1` 按需解析/安装（见 §2.1），不再需要手工 `cargo install`。
 - 不承诺移动端浏览器与触摸设备体验；桌面无头浏览器结果不等同于桌面发行验收结果。

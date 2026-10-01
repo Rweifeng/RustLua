@@ -88,6 +88,12 @@ $packRoot = Join-Path $distRoot "pack"
 # M20-03：原子发布。所有内容先写进 staging，全部成功后再原子替换最终目录；
 # 失败时最终目录保持旧版本不变（不会出现半更新状态）。
 . (Join-Path $PSScriptRoot "release-atomic.ps1")
+# web 平台的两个外部工具链：zig（编译 vendored Lua 的 C 源）与 wasm-bindgen CLI
+# （生成 JS 胶水，版本必须与 Cargo.lock 的 crate 精确一致）。两者的解析顺序、按需安装
+# 与"为什么不能写死本机路径"的说明都在各自的脚本里，这里只消费。
+. (Join-Path $PSScriptRoot "zig-toolchain.ps1")
+. (Join-Path $PSScriptRoot "wasm-bindgen.ps1")
+. (Join-Path $PSScriptRoot "minify-toolchain.ps1")
 
 # webgl 与微信小游戏共用同一套 WASM/静态产物，差别只在入口文件、资源配额与平台配置。
 $isWebPlatform = $Platform -in @("webgl", "wechat-minigame")
@@ -139,19 +145,16 @@ function Optimize-WasmBin {
     param(
         [Parameter(Mandatory = $true)][string]$WasmPath
     )
-    # 用 binaryen 的 wasm-opt -Oz 对 wasm-bindgen 产物做体积优化（省 ~200-300 KB，
-    # 顺带移除 name section）。微信小游戏主包 4 MB 上限需要它；webgl 亦受益。
-    # wasm-opt 不可用时跳过并提示，不阻断发布（webgl 无硬性体积门槛）。
+    # 用 binaryen 的 wasm-opt -Oz 对 wasm-bindgen 产物做体积优化（2026-10-01 实测
+    # 2,853,068 → 2,424,558 字节，顺带移除 name section）。微信小游戏主包 4 MB 上限需要它；
+    # webgl 亦受益。
+    # **必须锁 binaryen 133**：其它版本的 pass 可能把 1.88 产物的纯 try_table 改回 legacy
+    # try，造成新旧 EH 混合、V8 拒绝编译（见 docs/52 R11）。版本校验在
+    # scripts/minify-toolchain.ps1 里做，这里只消费；解析不到（例如离线）才降级为警告。
     if (-not (Test-Path -LiteralPath $WasmPath)) { return }
-    $wasmOptPath = $null
-    $cmd = Get-Command wasm-opt -ErrorAction SilentlyContinue
-    if ($cmd) { $wasmOptPath = $cmd.Source }
-    else {
-        $localOpt = Join-Path $env:USERPROFILE ".tools\binaryen\binaryen-version_133\bin\wasm-opt.exe"
-        if (Test-Path -LiteralPath $localOpt) { $wasmOptPath = $localOpt }
-    }
+    $wasmOptPath = Resolve-WasmOpt -Provision
     if (-not $wasmOptPath) {
-        Write-Warning "wasm-opt 未找到：$WasmPath 保持未优化体积（微信小游戏主包可能超 4 MB）。"
+        Write-Warning "wasm-opt（binaryen 133）未找到：$WasmPath 保持未优化体积（微信小游戏主包很可能超 4 MB）。跑 scripts\minify-toolchain.ps1 自动装，或设 `$env:WASM_OPT。"
         return
     }
     $optOut = $WasmPath + ".opt"
@@ -170,18 +173,13 @@ function Minify-JsFile {
         [Parameter(Mandatory = $true)][string]$JsPath
     )
     # 用 terser 压缩工程自维护的运行时 JS（web-runtime.js / wechat-adapter.js）：
-    # 发布产物更小（合计省 100 KB+，微信小游戏主包 4 MB 上限需要），源码保持可读。
-    # terser 不可用时跳过并提示，不阻断发布（webgl 无硬性体积门槛）。
+    # 发布产物更小（合计省 ~180 KB，微信小游戏主包 4 MB 上限需要），源码保持可读。
+    # 解析与按需安装（npm --prefix 到 gitignore 的 engine\.tools\terser）都在
+    # scripts/minify-toolchain.ps1；没有 npm 的机器才降级为警告。
     if (-not (Test-Path -LiteralPath $JsPath)) { return }
-    $terserPath = $null
-    $cmd = Get-Command terser -ErrorAction SilentlyContinue
-    if ($cmd) { $terserPath = $cmd.Source }
-    else {
-        $localTerser = Join-Path $env:APPDATA "npm\terser.cmd"
-        if (Test-Path -LiteralPath $localTerser) { $terserPath = $localTerser }
-    }
+    $terserPath = Resolve-Terser -Provision
     if (-not $terserPath) {
-        Write-Warning "terser 未找到：$JsPath 保持未压缩（微信小游戏主包可能超 4 MB）。"
+        Write-Warning "terser 未找到：$JsPath 保持未压缩（微信小游戏主包可能超 4 MB）。跑 scripts\minify-toolchain.ps1 自动装，或设 `$env:TERSER。"
         return
     }
     $minOut = $JsPath + ".min"
@@ -351,15 +349,29 @@ try {
         # PS 5.1 陷阱：$ErrorActionPreference='Stop' 下原生程序写 stderr 会变成**终止性
         # 错误**（NativeCommandError），rustup/cargo 的正常进度输出也在 stderr —— 必须临时
         # 降为 Continue 再调（同 ogg2wav 的既有模式），否则打包在构建第一步就误报失败。
+        #
+        # zig：mlua-sys 的 build.rs 用 `zig cc` 编 vendored Lua 的 C 源，**只有 web 平台**需要。
+        # 必须显式写进 $env:ZIG：以前靠 engine/.cargo/config.toml 的 [env] 指某台机器的绝对路径，
+        # 换一台机器就 panic `run zig cc: NotFound`，再被下面的 `| Out-Null` 吞成
+        # "WASM build failed"（实测 2026-09-30）。解析与按需下载见 scripts/zig-toolchain.ps1。
+        $zig = Resolve-ZigToolchain -Install
+        if (-not $zig) {
+            throw "zig not found（webgl/微信 需要它编 wasm 侧的 Lua C 源）：跑 scripts\zig-toolchain.ps1 自动装，或设 `$env:ZIG=<path>\zig.exe。"
+        }
+        $env:ZIG = $zig
+        # wasm 侧固定用 1.88.0（见下方 WP10 的 EH 口径），所以 wasm32 目标要装到**这个
+        # toolchain**上：`rustup target add` 不带 `--toolchain` 只装默认 stable，1.88.0
+        # 依然报 "can't find crate for `core`"（实测 2026-09-30）。
+        $wasmToolchain = "+1.88.0"
         $savedEap = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
         try {
-            rustup target add wasm32-unknown-unknown 2>&1 | Out-Null
+            rustup target add wasm32-unknown-unknown --toolchain 1.88.0 2>&1 | Out-Null
         }
         finally {
             $ErrorActionPreference = $savedEap
         }
-        if ($LASTEXITCODE -ne 0) { throw "Install wasm32 target failed." }
+        if ($LASTEXITCODE -ne 0) { throw "Install wasm32 target failed (toolchain 1.88.0)." }
         # 全量引擎 wasm（mlua wasm 移植 + wasm-bindgen）必须保留 `target_features` 自定义段
         # （含 reference-types）：wasm-bindgen-cli 靠该段检测模块特性，决定是否生成 externref
         # table 与 catch wrappers。workspace release profile 的 `strip = true` 会移除该段，
@@ -380,10 +392,17 @@ try {
         # 经坏了），于是 wasm 装不进来 → `__P2_LUA_BRIDGE` 缺失 → boot=failed、0 帧。
         # 也就是说旧口径同时失去真机依据和本机可验证性，把发布期的硬缺陷推迟到提审之后。
         # 顺带证伪了"1.88 未优化产物太大"的担忧：binaryen 133 的 `-Oz` **会保留**纯 try_table
-        # （实测 3,149,994 → 2,427,854 字节，产物仍可被 V8 加载），所以微信侧照旧跑 -Oz 瘦身。
-        $wasmToolchain = "+1.88.0"
+        # （2026-10-01 复测：3,151,173 → 2,743,359 字节，产物仍可被 V8 加载），所以微信侧照旧跑 -Oz 瘦身。
+        #
+        # 体积：workspace 的 release profile 是 `opt-level = "s"`，而微信主包 4 MB 门在 `s` + `-Oz`
+        # 下实测差 47 KB（主包 4,143 KB）。`opt-level = "z"` 只给 wasm 构建临时开：同一份代码
+        # `-Oz` 后 **2,743,359 → 2,424,516 字节（省 311 KB）**，`wasm_host_ok … exports=121
+        # globals=0 bridge_exports=7` 照旧过。pc/editor 不受影响（不走这条分支），代码速度换体积
+        # 这笔账只记在 web 平台头上。
         $savedStrip = $env:CARGO_PROFILE_RELEASE_STRIP
         $env:CARGO_PROFILE_RELEASE_STRIP = "none"
+        $savedOptLevel = $env:CARGO_PROFILE_RELEASE_OPT_LEVEL
+        $env:CARGO_PROFILE_RELEASE_OPT_LEVEL = "z"
         $savedEap = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
         try {
@@ -394,15 +413,23 @@ try {
         }
         if ($null -eq $savedStrip) { Remove-Item Env:\CARGO_PROFILE_RELEASE_STRIP -ErrorAction SilentlyContinue }
         else { $env:CARGO_PROFILE_RELEASE_STRIP = $savedStrip }
-        if ($LASTEXITCODE -ne 0) { throw "WASM build failed ($Platform)." }
-        if (-not (Get-Command wasm-bindgen -ErrorAction SilentlyContinue)) {
-            Write-Host "==> Install wasm-bindgen-cli" -ForegroundColor Cyan
-            # 必须与 game_web 依赖的 wasm-bindgen crate 版本一致（0.2.129 族）：
-            # CLI 与 wasm 元数据 schema 必须精确匹配（旧版 CLI 报 "failed to read
-            # wasm-bindgen data"；版本不一致的 catch 处理会报 catch wrapper 类错误）。
-            cargo install wasm-bindgen-cli --version 0.2.129 2>&1 | Out-Null
-            if ($LASTEXITCODE -ne 0) { throw "wasm-bindgen-cli install failed." }
+        if ($null -eq $savedOptLevel) { Remove-Item Env:\CARGO_PROFILE_RELEASE_OPT_LEVEL -ErrorAction SilentlyContinue }
+        else { $env:CARGO_PROFILE_RELEASE_OPT_LEVEL = $savedOptLevel }
+        if ($LASTEXITCODE -ne 0) {
+            throw @"
+WASM build failed ($Platform)。
+上面看不到原因，是因为构建输出被 `| Out-Null` 吞了（PS 5.1 下 cargo 的进度走 stderr，
+不吞就会把正常进度变成终止性错误）。手动复现看真相：
+  cd engine; `$env:ZIG=<zig.exe>; cargo +1.88.0 build -p game_web --release --target wasm32-unknown-unknown
+常见三种：缺 zig、1.88.0 这个 toolchain 没装 wasm32-unknown-unknown 目标、工作区处于半重构状态编不过。
+"@
         }
+        # wasm-bindgen CLI 的版本必须与 game_web 依赖的 wasm-bindgen crate **精确一致**
+        # （事实源：engine/Cargo.lock，见 scripts/wasm-bindgen.ps1）。旧实现只判断
+        # "PATH 上有没有 wasm-bindgen"，版本不对也照用，于是本机那份 0.2.127 一路走到
+        # 胶水生成才炸（schema version 不匹配）。
+        $wasmBindgenCli = Resolve-WasmBindgenCli -Provision
+        if (-not $wasmBindgenCli) { throw "wasm-bindgen CLI（版本需与 Cargo.lock 的 wasm-bindgen 一致）解析失败。" }
     }
     else {
         # PC 发布只需要两个原生产物：`assetc.exe`（资源打包）与 `game.exe`（运行器）。
@@ -490,7 +517,7 @@ try {
             # 浏览器：`--target web` 的 **ES Module** 胶水，由 index.html 的 `<script type=module>` 加载。
             # --remove-name-section：release 构建为保留 target_features 段关闭了 strip，name
             # section（纯调试信息）可达 1.2 MB+，部署前移除（对运行无任何影响）。
-            wasm-bindgen $wasmInput --out-dir $pkgRoot --target web --no-typescript --remove-name-section
+            & $wasmBindgenCli $wasmInput --out-dir $pkgRoot --target web --no-typescript --remove-name-section
             if ($LASTEXITCODE -ne 0) { throw "wasm-bindgen failed." }
             # wasm-bindgen 对 `--target web` 会额外生成一个 `index.html` 覆盖说明页（它靠
             # **文件系统里已存在 index.html** 来判断"输出目录是不是给浏览器用的"，因此平台
@@ -516,7 +543,7 @@ try {
             # `--target no-modules` 的产物是**纯脚本**（无 import/export，全部包在一个 IIFE 里），
             # 因此可以被 CommonJS 直接 `require`——`wasm-bridge.js` 就是那层包壳。
             # 这也让 `verify-wechat-minigame.ps1` 的"逐脚本按脚本模式解析"守卫保持有牙齿。
-            wasm-bindgen $wasmInput --out-dir $pkgRoot --target no-modules --no-typescript --remove-name-section
+            & $wasmBindgenCli $wasmInput --out-dir $pkgRoot --target no-modules --no-typescript --remove-name-section
             if ($LASTEXITCODE -ne 0) { throw "wasm-bindgen (no-modules) failed." }
             # no-modules 胶水开头会算 `script_src`（用于"不给参数时按 `<脚本名>_bg.wasm` 找模块"）：
             #   if (typeof document !== 'undefined' && document.currentScript !== null) {

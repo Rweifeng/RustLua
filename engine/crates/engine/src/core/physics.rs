@@ -392,6 +392,10 @@ pub struct PhysicsWorld {
     multibody_joints: MultibodyJointSet,
     ccd_solver: CCDSolver,
     query_pipeline: QueryPipeline,
+    /// P3-③：查询 BVH 的**待重建**标记。add/remove 只置脏，重建推迟到下一次查询
+    /// （`raycast`/`overlap`）或物理步（`step` 内部由 Rapier 统一重建），场景加载批量
+    /// 添加物体时不再每次 O(n) 全量重建。
+    query_dirty: bool,
     hooks: NoHooks,
     collector: CollisionCollector,
     entity_bodies: HashMap<EntityId, RigidBodyHandle>,
@@ -414,6 +418,7 @@ impl Default for PhysicsWorld {
             multibody_joints: MultibodyJointSet::new(),
             ccd_solver: CCDSolver::new(),
             query_pipeline: QueryPipeline::new(),
+            query_dirty: false,
             hooks: NoHooks,
             collector: CollisionCollector::default(),
             entity_bodies: HashMap::new(),
@@ -477,9 +482,9 @@ impl PhysicsWorld {
                     .insert_with_parent(builder.build(), body_handle, &mut self.bodies);
             self.collider_entities.insert(collider_handle, entity);
         }
-        // 查询用的 BVH 必须跟着更新：否则 `raycast`/`overlap` 看不到**上一步之后**新增的碰撞体
-        // （与 3D 侧同一处理）。
-        self.query_pipeline.update(&self.colliders);
+        // 查询用的 BVH 只需在**真正要查**时是新的：这里置脏而不立刻重建，场景加载
+        // 批量 add 时避免每次 O(n) 全量重建（`refresh_queries`/`step` 负责兑现）。
+        self.query_dirty = true;
         Ok(())
     }
 
@@ -498,7 +503,7 @@ impl PhysicsWorld {
             true,
         );
         self.collider_entities.retain(|_, owner| *owner != entity);
-        self.query_pipeline.update(&self.colliders);
+        self.query_dirty = true;
         Ok(())
     }
 
@@ -591,13 +596,22 @@ impl PhysicsWorld {
         Ok(())
     }
 
+    /// P3-③：查询前兑现脏标记——保证"add 之后立刻 raycast 看得见新碰撞体"的既有契约
+    /// 不因延迟重建而破坏。`step()` 里 Rapier 自己会重建，故步过之后无需再动。
+    fn refresh_queries(&mut self) {
+        if self.query_dirty {
+            self.query_pipeline.update(&self.colliders);
+            self.query_dirty = false;
+        }
+    }
+
     /// 射线查询（**与 3D 同构**）：返回最近命中的实体与沿射线方向的距离。
     ///
     /// 走 Rapier 的 `QueryPipeline`，因此命中的是**碰撞体**（形状/偏移/是否 sensor 都参与），
     /// 而不是"实体位置附近的某个点"。此前 Lua 的 `physics.raycast` 是 ECS 位置暴力扫描
     /// （固定 0.5 的垂距阈值、忽略形状与 layer/mask），同一个名字在 2D/3D 下不是同一个东西。
     pub fn raycast(
-        &self,
+        &mut self,
         origin: Vec2,
         direction: Vec2,
         max_distance: f32,
@@ -611,12 +625,13 @@ impl PhysicsWorld {
     /// ——于是"只和玩家层碰撞"的墙照样会被一个不该看见它的查询命中，`layer/mask` 在
     /// **查询**这条路上等于不存在。传 `None` 保持"全收"的老行为。
     pub fn raycast_filtered(
-        &self,
+        &mut self,
         origin: Vec2,
         direction: Vec2,
         max_distance: f32,
         groups: Option<(u8, u8)>,
     ) -> Result<Option<(EntityId, f32)>, PhysicsError> {
+        self.refresh_queries();
         if !direction.is_finite() || direction.dot(direction) <= f32::EPSILON {
             return Err(PhysicsError::Malformed(
                 "ray direction must be non-zero".to_owned(),
@@ -647,17 +662,18 @@ impl PhysicsWorld {
     }
 
     /// 圆形重叠查询（**与 3D 的球重叠同构**）：返回与给定圆相交的实体（按实体排序）。
-    pub fn overlap(&self, center: Vec2, radius: f32) -> Vec<EntityId> {
+    pub fn overlap(&mut self, center: Vec2, radius: f32) -> Vec<EntityId> {
         self.overlap_filtered(center, radius, None)
     }
 
     /// 圆形重叠查询 + 碰撞分组过滤（见 [`PhysicsWorld::raycast_filtered`]）。
     pub fn overlap_filtered(
-        &self,
+        &mut self,
         center: Vec2,
         radius: f32,
         groups: Option<(u8, u8)>,
     ) -> Vec<EntityId> {
+        self.refresh_queries();
         if !center.is_finite() || !radius.is_finite() || radius <= 0.0 {
             return Vec::new();
         }
@@ -776,6 +792,9 @@ impl PhysicsWorld {
             &self.hooks,
             &self.collector,
         );
+        // Rapier 在 step 内部（传入 `Some(&mut query_pipeline)` 时）重建查询 BVH，
+        // 脏标记到此已被兑现。
+        self.query_dirty = false;
         // Contacts accumulate until the host drains them (Lua each frame).
         let events = self
             .collector

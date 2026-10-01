@@ -4493,7 +4493,6 @@ name = "wasm-lua-spike"
 version = "0.1.0"
 dependencies = [
  "mlua",
- "wasm-bindgen",
 ]
 
 [[package]]

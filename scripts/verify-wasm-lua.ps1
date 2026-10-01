@@ -16,9 +16,11 @@
           绝不把"跳过"说成"通过"（与仓库既有 -Web 门同一哲学）。
 
     为什么需要 zig：vendored Lua 的 C 源用 `zig cc --target=wasm32-freestanding` 编译
-    （见 engine/vendor/mlua-sys/build/main_inner.rs 的 find_zig）。engine/.cargo/config.toml
-    里的 ZIG 是**本机绝对路径**，在别的机器/CI 上不存在；因此本脚本先解析一个真实可用的
-    zig 并写进 $env:ZIG（cargo 的 [env] 非 force，进程环境优先），解析不到就按环境受限跳过。
+    （见 engine/vendor/mlua-sys/build/main_inner.rs 的 find_zig）。zig 的位置由
+    scripts/zig-toolchain.ps1 统一解析（$env:ZIG → engine\.tools\zig → PATH），本脚本
+    **只探测不下载**（质量门不该为了跑而去拉 100 MB 网络），解析不到就按环境受限跳过。
+    wasm-bindgen CLI 同理走 scripts/wasm-bindgen.ps1：版本必须与 Cargo.lock 里的
+    wasm-bindgen 精确一致，PATH 上那份旧 CLI 不能凑合用。
 
 .PARAMETER StatusFile
     调用方（verify.ps1）用它拿退出码：Start-Process -PassThru 的 ExitCode 在重定向下是 $null。
@@ -83,20 +85,10 @@ function Invoke-Native([string]$File, [string[]]$Arguments) {
     return $LASTEXITCODE
 }
 
-function Resolve-Zig {
-    if ($env:ZIG -and (Test-Path -LiteralPath $env:ZIG)) { return $env:ZIG }
-    $cmd = Get-Command zig -ErrorAction SilentlyContinue
-    if ($cmd) { return $cmd.Source }
-    $cfg = Join-Path $engineRoot ".cargo\config.toml"
-    if (Test-Path -LiteralPath $cfg) {
-        $match = Select-String -Path $cfg -Pattern 'ZIG\s*=\s*"(.+?)"' | Select-Object -First 1
-        if ($match) {
-            $declared = $match.Matches[0].Groups[1].Value -replace '\\\\', '\'
-            if (Test-Path -LiteralPath $declared) { return $declared }
-        }
-    }
-    return $null
-}
+# zig 与 wasm-bindgen 的解析统一在 scripts/ 下的两个脚本里（与 package.ps1 共用同一份逻辑）。
+# 这里只探测不安装：质量门不能为了跑一次验证去拉 ~100 MB 工具链。
+. (Join-Path $PSScriptRoot "zig-toolchain.ps1")
+. (Join-Path $PSScriptRoot "wasm-bindgen.ps1")
 
 # 跑一个 Node 脚本并返回其退出码。必须在 EAP=Continue 下调用：Node 用 stderr 报
 # 断言失败/异常，PS 5.1 在 EAP=Stop 下会把重定向来的 stderr 当终止性错误抛进 trap，
@@ -145,23 +137,25 @@ finally {
     Pop-Location
 }
 
-$zig = Resolve-Zig
+$zig = Resolve-ZigToolchain
 if (-not $zig) {
-    Write-Log "wasm_lua_skipped reason=no_zig (vendored Lua 的 wasm C 编译需要 zig；设 `$env:ZIG 或把 zig 放进 PATH)" Yellow
+    Write-Log "wasm_lua_skipped reason=no_zig (vendored Lua 的 wasm C 编译需要 zig；跑 scripts\zig-toolchain.ps1 装，或设 `$env:ZIG=<path>\zig.exe / 放进 PATH)" Yellow
     Exit-With 3
 }
 # 进程环境优先于 config.toml 的 [env]（非 force）——把解析到的真实 zig 交给 build.rs。
 $env:ZIG = $zig
 Write-Log "zig = $zig"
 
-if (-not (Get-Command wasm-bindgen -ErrorAction SilentlyContinue)) {
-    Write-Log "wasm-bindgen 未找到，尝试 cargo install wasm-bindgen-cli --version 0.2.129 …"
-    $installExit = Invoke-Native cargo @("install", "wasm-bindgen-cli", "--version", "0.2.129")
-    if (-not (Get-Command wasm-bindgen -ErrorAction SilentlyContinue)) {
-        Write-Log "wasm_lua_skipped reason=no_wasm_bindgen" Yellow
-        Exit-With 3
-    }
+# 版本必须与 Cargo.lock 里的 wasm-bindgen 精确一致；PATH 上那份旧 CLI 不能凑合（详见
+# scripts/wasm-bindgen.ps1）。这里允许安装到仓外缓存 engine\.tools\wasm-bindgen，
+# 因为本门的产物（no-modules 胶水）没有它就是**假通过**——沿用原来"当场 cargo install"
+# 的取向，只是不再污染全局 ~/.cargo/bin。
+$wasmBindgen = Resolve-WasmBindgenCli -Provision
+if (-not $wasmBindgen) {
+    Write-Log "wasm_lua_skipped reason=no_wasm_bindgen (需与 Cargo.lock 的 wasm-bindgen 同版本；跑 scripts\wasm-bindgen.ps1 装)" Yellow
+    Exit-With 3
 }
+Write-Log "wasm-bindgen = $wasmBindgen"
 
 # Node 的 wasm EH flag 在不同版本里可能被移除/默认开启：探测一次，避免"bad option"误判。
 $nodeFlags = @()
@@ -194,7 +188,7 @@ if (-not $SkipBuild) {
 
     Write-Log "==> wasm-bindgen --target no-modules → $glueDir"
     New-Item -ItemType Directory -Force -Path $glueDir | Out-Null
-    $bindgen = Invoke-Native wasm-bindgen @($gameWebWasm, "--out-dir", $glueDir, "--target", "no-modules", "--no-typescript", "--remove-name-section")
+    $bindgen = Invoke-Native $wasmBindgen @($gameWebWasm, "--out-dir", $glueDir, "--target", "no-modules", "--no-typescript", "--remove-name-section")
     if ($bindgen -ne 0) { throw "wasm-bindgen (no-modules) 失败 (exit $bindgen)" }
 }
 

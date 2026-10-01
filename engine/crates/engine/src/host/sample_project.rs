@@ -24,7 +24,7 @@ use super::RuntimeScene;
 use crate::core::{
     input::{InputSnapshot, MouseButton},
     scene::Scene,
-    script::LuaRuntime,
+    script::{LUA_API_PROBE, LuaRuntime},
     typed_scene::ComponentId,
 };
 
@@ -470,36 +470,13 @@ fn sample_project_scene_text_has_every_glyph() {
     );
 }
 
-/// 运行期 API 面：`_G` 里的每个表 + 它的函数名。
-const API_PROBE: &str = r#"
-(function()
-    local stdlib = {
-        string=true, table=true, math=true, io=true, os=true, coroutine=true,
-        debug=true, utf8=true, package=true, _G=true, bit32=true, arg=true,
-    }
-    local out = {}
-    for key, value in pairs(_G) do
-        if type(value) == "table" and not stdlib[key] then
-            local funcs = {}
-            for field, inner in pairs(value) do
-                if type(inner) == "function" then
-                    funcs[#funcs + 1] = tostring(field)
-                end
-            end
-            table.sort(funcs)
-            out[#out + 1] = { name = tostring(key), funcs = funcs }
-        end
-    end
-    table.sort(out, function(a, b) return a.name < b.name end)
-    return { tables = out }
-end)()
-"#;
-
 #[test]
 fn sample_project_demos_cover_every_lua_api() {
     let root = project_root();
     let runtime = LuaRuntime::new().expect("lua vm");
-    let surface = runtime.eval_json(API_PROBE).expect("导出运行时 API 面失败");
+    let surface = runtime
+        .eval_json(LUA_API_PROBE)
+        .expect("导出运行时 API 面失败");
     let (sources, raw_sources) = demo_sources(&root);
 
     let mut total = 0;
