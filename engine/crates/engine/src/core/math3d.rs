@@ -1,7 +1,5 @@
 //! M8 3D math primitives using the engine's right-handed, Y-up convention.
 
-use std::{error::Error, fmt};
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Vec3 {
     pub x: f32,
@@ -393,7 +391,8 @@ impl std::ops::Mul for Mat4 {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, thiserror::Error)]
+#[error("3D math error: {self:?}")]
 pub enum Math3dError {
     NonFinite,
     ZeroLengthVector,
@@ -401,12 +400,6 @@ pub enum Math3dError {
     SingularMatrix,
     InvalidHomogeneousCoordinate,
 }
-impl fmt::Display for Math3dError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "3D math error: {self:?}")
-    }
-}
-impl Error for Math3dError {}
 
 #[cfg(test)]
 mod tests {

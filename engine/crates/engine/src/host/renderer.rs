@@ -577,7 +577,7 @@ impl Renderer {
         project_root: Option<PathBuf>,
         cull_enabled: bool,
         instancing_enabled: bool,
-    ) -> Result<Self, String> {
+    ) -> anyhow::Result<Self> {
         pollster::block_on(Self::new_async(
             Some(window),
             None,
@@ -596,7 +596,7 @@ impl Renderer {
         project_root: Option<PathBuf>,
         cull_enabled: bool,
         instancing_enabled: bool,
-    ) -> Result<Self, String> {
+    ) -> anyhow::Result<Self> {
         pollster::block_on(Self::new_async(
             None,
             Some((device, queue)),
@@ -612,7 +612,7 @@ impl Renderer {
         project_root: Option<PathBuf>,
         cull_enabled: bool,
         instancing_enabled: bool,
-    ) -> Result<Self, String> {
+    ) -> anyhow::Result<Self> {
         // P0-②：窗口渲染（游戏运行）走异步加载；离屏渲染（golden / 编辑器预览）走同步，
         // 保证确定性输出里绝无异步加载。
         let async_mode = if window.is_some() {
@@ -627,7 +627,7 @@ impl Renderer {
             let instance = Instance::new(&InstanceDescriptor::default());
             let surface = instance
                 .create_surface(window)
-                .map_err(|error| format!("could not create surface: {error}"))?;
+                .map_err(|error| anyhow::anyhow!("could not create surface: {error}"))?;
             let adapter = instance
                 .request_adapter(&wgpu::RequestAdapterOptions {
                     power_preference: wgpu::PowerPreference::HighPerformance,
@@ -635,7 +635,9 @@ impl Renderer {
                     force_fallback_adapter: false,
                 })
                 .await
-                .map_err(|error| format!("could not find a compatible GPU adapter: {error}"))?;
+                .map_err(|error| {
+                    anyhow::anyhow!("could not find a compatible GPU adapter: {error}")
+                })?;
             let adapter_name = adapter.get_info().name;
             let timestamp_features =
                 wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
@@ -654,7 +656,7 @@ impl Renderer {
                     trace: wgpu::Trace::Off,
                 })
                 .await
-                .map_err(|error| format!("could not create GPU device: {error}"))?;
+                .map_err(|error| anyhow::anyhow!("could not create GPU device: {error}"))?;
             let capabilities = surface.get_capabilities(&adapter);
             let format = capabilities
                 .formats
@@ -662,7 +664,7 @@ impl Renderer {
                 .copied()
                 .find(|format| format.is_srgb())
                 .or_else(|| capabilities.formats.first().copied())
-                .ok_or_else(|| "GPU surface reported no supported formats".to_owned())?;
+                .ok_or_else(|| anyhow::anyhow!("GPU surface reported no supported formats"))?;
             let present_mode = if capabilities.present_modes.contains(&PresentMode::Mailbox) {
                 PresentMode::Mailbox
             } else {
@@ -687,7 +689,7 @@ impl Renderer {
             (device, queue, Some(surface), format, config, adapter_name)
         } else {
             let (device, queue) = external_device
-                .ok_or_else(|| "offscreen renderer requires a device/queue".to_owned())?;
+                .ok_or_else(|| anyhow::anyhow!("offscreen renderer requires a device/queue"))?;
             let format = wgpu::TextureFormat::Rgba8UnormSrgb;
             let config = SurfaceConfiguration {
                 usage: TextureUsages::RENDER_ATTACHMENT,
@@ -1063,25 +1065,18 @@ impl Renderer {
                 ],
             });
         // 首帧 uniform 的初值：相机矩阵按**目标视口**算（宽高比只从视口来，拆分批 7）。
-        let initial_viewport = Viewport::new(config.width as f32, config.height as f32)
-            .map_err(|error| error.to_string())?;
+        let initial_viewport = Viewport::new(config.width as f32, config.height as f32)?;
         let camera = Camera3D::perspective(
             Vec3::new(0.0, 0.0, 5.0),
             Vec3::ZERO,
             std::f32::consts::FRAC_PI_2,
             0.1,
             100.0,
-        )
-        .map_err(|error| error.to_string())?;
-        let camera_matrix = camera
-            .view_projection_matrix(initial_viewport)
-            .map_err(|error| error.to_string())?;
+        )?;
+        let camera_matrix = camera.view_projection_matrix(initial_viewport)?;
         let light_camera =
-            Camera3D::perspective(Vec3::new(4.0, 6.0, 4.0), Vec3::ZERO, 1.3, 0.1, 30.0)
-                .map_err(|error| error.to_string())?;
-        let light_view = light_camera
-            .view_matrix()
-            .map_err(|error| error.to_string())?;
+            Camera3D::perspective(Vec3::new(4.0, 6.0, 4.0), Vec3::ZERO, 1.3, 0.1, 30.0)?;
+        let light_view = light_camera.view_matrix()?;
         let light_projection = Mat4 {
             columns: [
                 [0.1, 0.0, 0.0, 0.0],
@@ -2656,7 +2651,7 @@ impl Renderer {
         texture: &wgpu::Texture,
         width: u32,
         height: u32,
-    ) -> Result<Vec<u8>, String> {
+    ) -> anyhow::Result<Vec<u8>> {
         // `bytes_per_row` must be a multiple of 256 for `copy_texture_to_buffer`.
         let row_bytes = 4 * width;
         let bytes_per_row = row_bytes.div_ceil(256) * 256;
@@ -2704,8 +2699,8 @@ impl Renderer {
         });
         let map_result = rx
             .recv()
-            .map_err(|error| format!("preview readback channel error: {error}"))?;
-        map_result.map_err(|error| format!("preview texture map failed: {error}"))?;
+            .map_err(|error| anyhow::anyhow!("preview readback channel error: {error}"))?;
+        map_result.map_err(|error| anyhow::anyhow!("preview texture map failed: {error}"))?;
         // 去掉行尾填充，返回紧凑 RGBA8（每行 `row_bytes`）。
         let padded = slice.get_mapped_range();
         let mut pixels = Vec::with_capacity((row_bytes * height) as usize);

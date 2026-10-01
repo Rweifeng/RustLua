@@ -79,7 +79,8 @@ impl fmt::Display for ScheduleStage {
 }
 
 /// Error returned by a system callback.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("{message}")]
 pub struct SystemError {
     message: String,
 }
@@ -93,41 +94,36 @@ impl SystemError {
     }
 }
 
-impl fmt::Display for SystemError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.message)
-    }
-}
-
-impl std::error::Error for SystemError {}
-
 /// Errors produced while validating or executing a schedule.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum SchedulerError {
-    DuplicateSystem {
-        name: String,
-    },
-    MissingDependency {
-        system: String,
-        dependency: String,
-    },
+    #[error("duplicate system: {name}")]
+    DuplicateSystem { name: String },
+    #[error("system {system} depends on missing system {dependency}")]
+    MissingDependency { system: String, dependency: String },
+    #[error(
+        "system {system} ({system_stage}) cannot depend on later system {dependency} ({dependency_stage})"
+    )]
     InvalidStageDependency {
         system: String,
         dependency: String,
         system_stage: ScheduleStage,
         dependency_stage: ScheduleStage,
     },
-    DependencyCycle {
-        systems: Vec<String>,
-    },
-    InvalidDeltaTime {
-        delta_seconds: String,
-    },
+    #[error("system dependency cycle: {}", .systems.join(" -> "))]
+    DependencyCycle { systems: Vec<String> },
+    #[error("invalid scheduler delta time: {delta_seconds}")]
+    InvalidDeltaTime { delta_seconds: String },
+    #[error("system {system} in {stage} failed: {message}")]
     SystemFailed {
         system: String,
         stage: ScheduleStage,
         message: String,
     },
+    #[error(
+        "system {system} in {stage} panicked{}",
+        if .message.is_empty() { String::new() } else { format!(": {}", .message) }
+    )]
     SystemPanicked {
         system: String,
         stage: ScheduleStage,
@@ -135,57 +131,6 @@ pub enum SchedulerError {
         message: String,
     },
 }
-
-impl fmt::Display for SchedulerError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::DuplicateSystem { name } => write!(formatter, "duplicate system: {name}"),
-            Self::MissingDependency { system, dependency } => {
-                write!(
-                    formatter,
-                    "system {system} depends on missing system {dependency}"
-                )
-            }
-            Self::InvalidStageDependency {
-                system,
-                dependency,
-                system_stage,
-                dependency_stage,
-            } => write!(
-                formatter,
-                "system {system} ({system_stage}) cannot depend on later system {dependency} ({dependency_stage})"
-            ),
-            Self::DependencyCycle { systems } => {
-                write!(
-                    formatter,
-                    "system dependency cycle: {}",
-                    systems.join(" -> ")
-                )
-            }
-            Self::InvalidDeltaTime { delta_seconds } => {
-                write!(formatter, "invalid scheduler delta time: {delta_seconds}")
-            }
-            Self::SystemFailed {
-                system,
-                stage,
-                message,
-            } => write!(formatter, "system {system} in {stage} failed: {message}"),
-            Self::SystemPanicked {
-                system,
-                stage,
-                message,
-            } => {
-                if message.is_empty() {
-                    write!(formatter, "system {system} in {stage} panicked")
-                } else {
-                    write!(formatter, "system {system} in {stage} panicked: {message}")
-                }
-            }
-        }
-    }
-}
-
-impl std::error::Error for SchedulerError {}
 
 /// A system callback receives the scheduling context (`&mut World` for the
 /// default [`Scheduler`]; other runtime pipelines may schedule over their own

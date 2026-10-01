@@ -679,30 +679,17 @@ impl Binding {
 }
 
 /// 动作映射错误（重绑定/设置持久化）。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ActionMapError {
+    #[error("action name must not be empty")]
     EmptyAction,
+    #[error("action {action} already binds {binding}")]
     DuplicateBinding { action: String, binding: String },
+    #[error("invalid binding: {0}")]
     InvalidBinding(String),
+    #[error("unsupported action map version: {0}")]
     UnsupportedVersion(String),
 }
-
-impl std::fmt::Display for ActionMapError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::EmptyAction => formatter.write_str("action name must not be empty"),
-            Self::DuplicateBinding { action, binding } => {
-                write!(formatter, "action {action} already binds {binding}")
-            }
-            Self::InvalidBinding(text) => write!(formatter, "invalid binding: {text}"),
-            Self::UnsupportedVersion(version) => {
-                write!(formatter, "unsupported action map version: {version}")
-            }
-        }
-    }
-}
-
-impl std::error::Error for ActionMapError {}
 
 /// 跨动作冲突：一个物理输入被两个及以上动作占用（M20-08）。
 ///

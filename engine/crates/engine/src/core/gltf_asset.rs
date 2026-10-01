@@ -1,7 +1,7 @@
 //! CPU-side glTF 2.0 and GLB importer for M8.
 
 use crate::core::{math3d::Vec3, pack};
-use std::{error::Error, fmt, path::Path};
+use std::path::Path;
 
 pub const IMPORTER_VERSION: &str = "gltf-m8-07";
 
@@ -415,46 +415,20 @@ impl GltfAsset {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, thiserror::Error)]
 pub enum GltfAssetError {
-    Import {
-        path: String,
-        reason: String,
-    },
+    #[error("cannot import glTF {path}: {reason}")]
+    Import { path: String, reason: String },
+    #[error("glTF {path} is missing required attribute {attribute}")]
     MissingAttribute {
         path: String,
         attribute: &'static str,
     },
-    InvalidMesh {
-        path: String,
-        detail: String,
-    },
-    Unsupported {
-        path: String,
-        detail: String,
-    },
+    #[error("invalid glTF mesh {path}: {detail}")]
+    InvalidMesh { path: String, detail: String },
+    #[error("unsupported glTF feature {path}: {detail}")]
+    Unsupported { path: String, detail: String },
 }
-
-impl fmt::Display for GltfAssetError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Import { path, reason } => {
-                write!(formatter, "cannot import glTF {path}: {reason}")
-            }
-            Self::MissingAttribute { path, attribute } => write!(
-                formatter,
-                "glTF {path} is missing required attribute {attribute}"
-            ),
-            Self::InvalidMesh { path, detail } => {
-                write!(formatter, "invalid glTF mesh {path}: {detail}")
-            }
-            Self::Unsupported { path, detail } => {
-                write!(formatter, "unsupported glTF feature {path}: {detail}")
-            }
-        }
-    }
-}
-impl Error for GltfAssetError {}
 
 #[cfg(test)]
 mod tests {

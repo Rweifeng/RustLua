@@ -1,7 +1,7 @@
 use crate::DocumentError;
 use crate::SceneDocument;
 use engine::core::scene::{SceneEntity, SceneEntityId};
-use std::{collections::BTreeSet, error::Error, fmt};
+use std::collections::BTreeSet;
 
 /// 场景树**文档操作**的无状态助手。
 ///
@@ -407,41 +407,28 @@ fn collect_subtree_inner(
     Ok(())
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum SceneTreeError {
+    #[error("场景树中不存在实体 {}", .0 .0)]
     UnknownEntity(SceneEntityId),
+    #[error("当前没有选中的实体")]
     NothingSelected,
+    #[error("实体名称不能为空")]
     EmptyName,
+    #[error("不能将实体 {} 设置为父节点 {:?}，会形成循环", entity.0, parent.map(|id| id.0))]
     Cycle {
         entity: SceneEntityId,
         parent: Option<SceneEntityId>,
     },
+    #[error("实体 {} 的子树包含循环或损坏引用", .0 .0)]
     CorruptTree(SceneEntityId),
+    #[error("根节点 {} 没有可调整的同级顺序", .0 .0)]
     CannotReorderRoot(SceneEntityId),
-    Scene(engine::core::scene::SceneError),
-    Document(DocumentError),
+    #[error("场景操作失败：{0}")]
+    Scene(#[source] engine::core::scene::SceneError),
+    #[error("文档操作失败：{0}")]
+    Document(#[source] DocumentError),
 }
-
-impl fmt::Display for SceneTreeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::UnknownEntity(id) => write!(f, "场景树中不存在实体 {}", id.0),
-            Self::NothingSelected => write!(f, "当前没有选中的实体"),
-            Self::EmptyName => write!(f, "实体名称不能为空"),
-            Self::Cycle { entity, parent } => write!(
-                f,
-                "不能将实体 {} 设置为父节点 {:?}，会形成循环",
-                entity.0,
-                parent.map(|id| id.0)
-            ),
-            Self::CorruptTree(id) => write!(f, "实体 {} 的子树包含循环或损坏引用", id.0),
-            Self::CannotReorderRoot(id) => write!(f, "根节点 {} 没有可调整的同级顺序", id.0),
-            Self::Scene(error) => write!(f, "场景操作失败：{error}"),
-            Self::Document(error) => write!(f, "文档操作失败：{error}"),
-        }
-    }
-}
-impl Error for SceneTreeError {}
 
 #[cfg(test)]
 mod tests {

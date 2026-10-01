@@ -4,7 +4,7 @@ use engine::core::{
     physics3d::{ColliderDesc3d, ColliderShape3d},
     scene::{SceneEntity, SceneEntityId},
 };
-use std::{error::Error, fmt, path::Path};
+use std::path::Path;
 
 /// 第一批 Inspector 可编辑的 Transform 字段。
 ///
@@ -615,49 +615,41 @@ fn read_lua_script(entity: &SceneEntity) -> Option<String> {
     None
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum InspectorError {
+    #[error("Inspector 中不存在实体 {}", .0 .0)]
     UnknownEntity(SceneEntityId),
+    #[error("Inspector 尚未选择实体")]
     NothingSelected,
+    #[error("实体名称不能为空")]
     EmptyName,
+    #[error("Transform 必须是有限数值")]
     NonFiniteTransform,
+    #[error("Transform 缩放必须大于 0")]
     InvalidScale,
+    #[error("Transform 数据无效：{0}")]
     InvalidTransform(String),
+    #[error("Sprite 资源引用无效：{0}")]
     InvalidAssetReference(String),
+    #[error("Lua 脚本路径无效：{0}")]
     InvalidLuaScript(String),
+    #[error("Transform3D 数据无效：{0}")]
     InvalidTransform3d(String),
+    #[error("MeshRenderer 资源引用无效：{0}")]
     InvalidMeshRenderer(String),
+    #[error("Light 数据无效：{0}")]
     InvalidLight(String),
+    #[error("Collider3d 数据无效：{0}")]
     InvalidCollider3d(String),
+    #[error("WorldText 数据无效：{0}")]
     InvalidWorldText(String),
+    #[error("Image 数据无效：{0}")]
     InvalidImage(String),
+    #[error("Button 数据无效：{0}")]
     InvalidButton(String),
+    #[error("Container 数据无效：{0}")]
     InvalidContainer(String),
 }
-
-impl fmt::Display for InspectorError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::UnknownEntity(id) => write!(f, "Inspector 中不存在实体 {}", id.0),
-            Self::NothingSelected => write!(f, "Inspector 尚未选择实体"),
-            Self::EmptyName => write!(f, "实体名称不能为空"),
-            Self::NonFiniteTransform => write!(f, "Transform 必须是有限数值"),
-            Self::InvalidScale => write!(f, "Transform 缩放必须大于 0"),
-            Self::InvalidTransform(value) => write!(f, "Transform 数据无效：{value}"),
-            Self::InvalidAssetReference(value) => write!(f, "Sprite 资源引用无效：{value}"),
-            Self::InvalidLuaScript(value) => write!(f, "Lua 脚本路径无效：{value}"),
-            Self::InvalidTransform3d(value) => write!(f, "Transform3D 数据无效：{value}"),
-            Self::InvalidMeshRenderer(value) => write!(f, "MeshRenderer 资源引用无效：{value}"),
-            Self::InvalidLight(value) => write!(f, "Light 数据无效：{value}"),
-            Self::InvalidCollider3d(value) => write!(f, "Collider3d 数据无效：{value}"),
-            Self::InvalidWorldText(value) => write!(f, "WorldText 数据无效：{value}"),
-            Self::InvalidImage(value) => write!(f, "Image 数据无效：{value}"),
-            Self::InvalidButton(value) => write!(f, "Button 数据无效：{value}"),
-            Self::InvalidContainer(value) => write!(f, "Container 数据无效：{value}"),
-        }
-    }
-}
-impl Error for InspectorError {}
 
 #[cfg(test)]
 mod tests {

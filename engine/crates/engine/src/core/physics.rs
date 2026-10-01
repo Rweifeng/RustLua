@@ -2,7 +2,7 @@
 //! events surfaced to Lua. A zero-gravity top-down world stepped at the fixed
 //! timestep; dynamic bodies sync their positions back to ECS Transforms.
 
-use std::{collections::HashMap, error::Error, fmt};
+use std::{collections::HashMap, fmt};
 
 use rapier2d::prelude::*;
 
@@ -13,24 +13,15 @@ use crate::core::{
 };
 
 /// Errors produced while building or driving the physics world.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, thiserror::Error)]
 pub enum PhysicsError {
+    #[error("entity {0} has no physics body")]
     UnknownBody(EntityId),
+    #[error("entity {0} already has a physics body")]
     DuplicateBody(EntityId),
+    #[error("invalid collider component string: {0}")]
     Malformed(String),
 }
-
-impl fmt::Display for PhysicsError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::UnknownBody(entity) => write!(f, "entity {entity} has no physics body"),
-            Self::DuplicateBody(entity) => write!(f, "entity {entity} already has a physics body"),
-            Self::Malformed(reason) => write!(f, "invalid collider component string: {reason}"),
-        }
-    }
-}
-
-impl Error for PhysicsError {}
 
 /// One collider as it currently sits in the physics world, for debug drawing.
 #[derive(Clone, Debug, PartialEq)]

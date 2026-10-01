@@ -2,8 +2,6 @@
 //! clip (1xN frame strip), frame-rate, and loop policy. Lua reads and switches
 //! states; the renderer samples the current frame's UV region.
 
-use std::{error::Error, fmt};
-
 use crate::core::transform::Vec2;
 
 /// One state's animation: a `1 x cols` frame strip sampled at `frame_rate` FPS.
@@ -147,28 +145,19 @@ pub struct AnimationStateMachine {
 }
 
 /// Errors produced while building or driving an animation state machine.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, thiserror::Error)]
 pub enum AnimationError {
+    #[error("animation state machine has no clips")]
     NoClips,
+    #[error("default state is not one of the clips")]
     MissingDefault,
+    #[error("unknown animation state: {0}")]
     UnknownState(String),
+    #[error("duplicate animation clip: {0}")]
     DuplicateClip(String),
+    #[error("invalid animation component string: {0}")]
     Malformed(String),
 }
-
-impl fmt::Display for AnimationError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NoClips => write!(f, "animation state machine has no clips"),
-            Self::MissingDefault => write!(f, "default state is not one of the clips"),
-            Self::UnknownState(name) => write!(f, "unknown animation state: {name}"),
-            Self::DuplicateClip(name) => write!(f, "duplicate animation clip: {name}"),
-            Self::Malformed(reason) => write!(f, "invalid animation component string: {reason}"),
-        }
-    }
-}
-
-impl Error for AnimationError {}
 
 impl AnimationStateMachine {
     /// Creates a state machine; `default` must reference one of `clips`.

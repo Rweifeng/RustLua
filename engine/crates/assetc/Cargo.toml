@@ -6,4 +6,5 @@ license.workspace = true
 description = "RustLua 资源构建工具：扫描/导入/清理/打包项目资源"
 
 [dependencies]
+anyhow.workspace = true
 engine = { path = "../engine" }

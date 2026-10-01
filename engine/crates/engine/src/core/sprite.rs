@@ -1,7 +1,5 @@
 //! CPU-side Sprite geometry generation for the 2D renderer.
 
-use std::{error::Error, fmt};
-
 use crate::core::{
     camera::{Camera2D, CoordinateError, OrthoTerms, Viewport},
     transform::{Transform, Vec2},
@@ -126,43 +124,28 @@ fn sorting_layer_rank(layer: &str) -> i32 {
     0
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, thiserror::Error)]
 pub enum SpriteComponentError {
+    #[error("sprite component is missing texture")]
     MissingTexture,
+    #[error("invalid sprite field: {0}")]
     InvalidField(String),
+    #[error("invalid sprite size: {0}")]
     InvalidSize(String),
+    #[error("invalid sprite pivot: {0}")]
     InvalidPivot(String),
+    #[error("invalid sprite tint: {0}")]
     InvalidTint(String),
+    #[error("invalid sprite order: {0}")]
     InvalidOrder(String),
     /// 世界 z 不是有限数（WP6：深度必须可比较，NaN 会让整帧深度测试失效）。
+    #[error("invalid sprite z: {0}")]
     InvalidDepth(String),
     /// 九宫格边界非法（非有限数、越界、l+r/t+b 超过 1）。
+    #[error("invalid sprite nine-slice: {0}")]
     InvalidNineSlice(String),
-    Sprite(SpriteError),
-}
-
-impl fmt::Display for SpriteComponentError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::MissingTexture => write!(f, "sprite component is missing texture"),
-            Self::InvalidField(field) => write!(f, "invalid sprite field: {field}"),
-            Self::InvalidSize(value) => write!(f, "invalid sprite size: {value}"),
-            Self::InvalidPivot(value) => write!(f, "invalid sprite pivot: {value}"),
-            Self::InvalidTint(value) => write!(f, "invalid sprite tint: {value}"),
-            Self::InvalidOrder(value) => write!(f, "invalid sprite order: {value}"),
-            Self::InvalidDepth(value) => write!(f, "invalid sprite z: {value}"),
-            Self::InvalidNineSlice(value) => write!(f, "invalid sprite nine-slice: {value}"),
-            Self::Sprite(error) => error.fmt(f),
-        }
-    }
-}
-
-impl Error for SpriteComponentError {}
-
-impl From<SpriteError> for SpriteComponentError {
-    fn from(value: SpriteError) -> Self {
-        Self::Sprite(value)
-    }
+    #[error(transparent)]
+    Sprite(#[from] SpriteError),
 }
 
 impl Default for SpriteComponent {
@@ -415,39 +398,21 @@ pub struct SpriteQuad {
     pub vertices: [SpriteVertex; 6],
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, thiserror::Error)]
 pub enum SpriteError {
+    #[error("invalid sprite size: ({}, {})", .0.x, .0.y)]
     InvalidSize(Vec2),
+    #[error("invalid sprite pivot: ({}, {})", .0.x, .0.y)]
     InvalidPivot(Vec2),
-    InvalidUv {
-        min: Vec2,
-        max: Vec2,
-    },
+    #[error("invalid sprite UV: min={min:?}, max={max:?}")]
+    InvalidUv { min: Vec2, max: Vec2 },
     /// 九宫格边界非法（非有限数、越界 0..=1、l+r/t+b 超过 1）。
+    #[error("invalid sprite nine-slice: {0}")]
     InvalidNineSlice(String),
+    #[error("sprite tint is not finite: {0:?}")]
     NonFiniteTint([f32; 4]),
-    Coordinate(CoordinateError),
-}
-
-impl fmt::Display for SpriteError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InvalidSize(v) => write!(f, "invalid sprite size: ({}, {})", v.x, v.y),
-            Self::InvalidPivot(v) => write!(f, "invalid sprite pivot: ({}, {})", v.x, v.y),
-            Self::InvalidNineSlice(value) => write!(f, "invalid sprite nine-slice: {value}"),
-            Self::InvalidUv { min, max } => {
-                write!(f, "invalid sprite UV: min={min:?}, max={max:?}")
-            }
-            Self::NonFiniteTint(c) => write!(f, "sprite tint is not finite: {c:?}"),
-            Self::Coordinate(error) => error.fmt(f),
-        }
-    }
-}
-impl Error for SpriteError {}
-impl From<CoordinateError> for SpriteError {
-    fn from(value: CoordinateError) -> Self {
-        Self::Coordinate(value)
-    }
+    #[error(transparent)]
+    Coordinate(#[from] CoordinateError),
 }
 
 impl Sprite {

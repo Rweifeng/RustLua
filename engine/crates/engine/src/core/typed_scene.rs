@@ -1,6 +1,6 @@
 //! WP1 原型：在加载边界把可读的 v2 场景编译成类型化运行时数据。
 
-use std::{collections::BTreeMap, fmt};
+use std::collections::BTreeMap;
 
 use crate::core::{
     animation::AnimationStateMachine,
@@ -198,25 +198,14 @@ pub struct TypedScene {
     pub parent_first: Vec<SceneEntityId>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("entity {} ({}) component {}: {}", .entity.0, .name, .component, .message)]
 pub struct TypedSceneDiagnostic {
     pub entity: SceneEntityId,
     pub name: String,
     pub component: String,
     pub message: String,
 }
-
-impl fmt::Display for TypedSceneDiagnostic {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "entity {} ({}) component {}: {}",
-            self.entity.0, self.name, self.component, self.message
-        )
-    }
-}
-
-impl std::error::Error for TypedSceneDiagnostic {}
 
 /// 编译一条 v2 组件记录。
 ///

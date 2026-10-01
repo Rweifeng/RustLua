@@ -16,7 +16,6 @@ use engine::core::property_path::{
 };
 use engine::core::scene::{Scene, SceneEntity, SceneEntityId};
 use engine::core::transform::Transform3D;
-use std::fmt;
 
 /// **有手写面板**的组件：这些组件仍由各自的专用面板编辑，通用字段编辑器不碰它们
 /// （否则同一字段会出现两个编辑器，互相覆盖）。
@@ -212,19 +211,25 @@ impl SchemaFieldRow {
 }
 
 /// 通用字段编辑的失败原因。
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum SchemaFieldError {
     /// 实体不在当前场景里。
+    #[error("实体不存在：{0}")]
     EntityMissing(u64),
     /// 实体没有这个组件。
+    #[error("实体 {entity} 没有组件 {component}")]
     ComponentMissing { entity: u64, component: String },
     /// 组件没有注册 schema（写不了字段，只能整体替换）。
+    #[error("组件 {0} 没有注册 schema")]
     NoSchema(String),
     /// 组件没有这个字段。
+    #[error("组件 {component} 没有字段 {field}")]
     UnknownField { component: String, field: String },
     /// 取值不合法（类型/范围/枚举）。
+    #[error("字段 {field} 取值非法：{reason}")]
     InvalidValue { field: String, reason: String },
     /// 越界下标（通用编辑器按字段行提交，暂不会产生；保留以完整映射引擎错误）。
+    #[error("字段 {field} 只有 {len} 个分量，下标 {index} 越界")]
     UnknownIndex {
         field: String,
         index: usize,
@@ -232,6 +237,10 @@ pub enum SchemaFieldError {
     },
     /// **现有的组件串本身不满足 schema**（例如缺必填字段）：逐字段写入会先整串解析，
     /// 因此这种情况下必须整串修正后再按字段编辑，不能报成"你要改的那个字段非法"。
+    #[error(
+        "组件 {component} 的现有串无法按 schema 解析（字段 {field}：{reason}）；\
+         请先用整串/手写面板修正后再按字段编辑"
+    )]
     PayloadUnparsable {
         component: String,
         field: String,
@@ -239,43 +248,12 @@ pub enum SchemaFieldError {
     },
     /// **引擎解析器读不了**这次编辑产生的新串：schema 的字段契约与声明式规则都通过了，
     /// 但不变量只有引擎解析器说了算（相机 `near < far`、look-at 非退化、缩放非零……）。
+    #[error(
+        "组件 {component} 的新取值引擎无法解析：{reason}\
+         （schema 表达不了的运行时约束由引擎解析器拦下）"
+    )]
     EngineRejected { component: String, reason: String },
 }
-
-impl fmt::Display for SchemaFieldError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::EntityMissing(id) => write!(f, "实体不存在：{id}"),
-            Self::ComponentMissing { entity, component } => {
-                write!(f, "实体 {entity} 没有组件 {component}")
-            }
-            Self::NoSchema(component) => write!(f, "组件 {component} 没有注册 schema"),
-            Self::UnknownField { component, field } => {
-                write!(f, "组件 {component} 没有字段 {field}")
-            }
-            Self::InvalidValue { field, reason } => write!(f, "字段 {field} 取值非法：{reason}"),
-            Self::UnknownIndex { field, index, len } => {
-                write!(f, "字段 {field} 只有 {len} 个分量，下标 {index} 越界")
-            }
-            Self::PayloadUnparsable {
-                component,
-                field,
-                reason,
-            } => write!(
-                f,
-                "组件 {component} 的现有串无法按 schema 解析（字段 {field}：{reason}）；\
-                 请先用整串/手写面板修正后再按字段编辑"
-            ),
-            Self::EngineRejected { component, reason } => write!(
-                f,
-                "组件 {component} 的新取值引擎无法解析：{reason}\
-                 （schema 表达不了的运行时约束由引擎解析器拦下）"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for SchemaFieldError {}
 
 fn map_property_error(error: PropertyError) -> SchemaFieldError {
     match error {

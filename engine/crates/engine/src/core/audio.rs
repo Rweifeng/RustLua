@@ -5,7 +5,7 @@
 //! M20-02 追加**音量分组**（总线）：BGM / SFX / UI 各自独立调节，实际音量 =
 //! 主音量 × 分组音量；设置可经 [`crate::core::audio::AudioSystem::to_settings_text`] 持久化。
 
-use std::{collections::HashMap, error::Error, fmt, io::Cursor, path::PathBuf};
+use std::{collections::HashMap, fmt, io::Cursor, path::PathBuf};
 
 use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
 
@@ -52,27 +52,18 @@ impl AudioBus {
 pub const AUDIO_SETTINGS_VERSION: &str = "rustlua-audio-v1";
 
 /// Errors produced while configuring or playing audio.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum AudioError {
+    #[error("audio I/O failed: {0}")]
     Io(String),
+    #[error("audio device failed: {0}")]
     Device(String),
+    #[error("audio decode failed: {0}")]
     Decode(String),
     /// 音量设置文本版本不符（M20-02）。
+    #[error("audio settings rejected: {0}")]
     Settings(String),
 }
-
-impl fmt::Display for AudioError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Io(reason) => write!(f, "audio I/O failed: {reason}"),
-            Self::Device(reason) => write!(f, "audio device failed: {reason}"),
-            Self::Decode(reason) => write!(f, "audio decode failed: {reason}"),
-            Self::Settings(reason) => write!(f, "audio settings rejected: {reason}"),
-        }
-    }
-}
-
-impl Error for AudioError {}
 
 /// Plays named WAV effects from an asset directory. The output device is
 /// opened on first play and kept alive; finished sinks are reaped so the

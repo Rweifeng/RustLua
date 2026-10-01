@@ -131,40 +131,25 @@ impl EntityScript {
 }
 
 /// `Script` 组件串的解析/校验错误。
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum EntityScriptError {
+    #[error("script component is empty")]
     Empty,
+    #[error("script is missing field {0}")]
     MissingField(&'static str),
+    #[error("malformed script field: {0}")]
     MalformedField(String),
+    #[error("unknown script field: {0}")]
     UnknownField(String),
+    #[error("invalid script field: {0}")]
     InvalidField(String),
+    #[error("script file must not be empty")]
     EmptyFile,
+    #[error("script path must be relative to the project root: {0}")]
     AbsolutePath(String),
+    #[error("script path must stay inside the project root: {0}")]
     EscapesProjectRoot(String),
 }
-
-impl std::fmt::Display for EntityScriptError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Empty => formatter.write_str("script component is empty"),
-            Self::MissingField(field) => write!(formatter, "script is missing field {field}"),
-            Self::MalformedField(field) => write!(formatter, "malformed script field: {field}"),
-            Self::UnknownField(field) => write!(formatter, "unknown script field: {field}"),
-            Self::InvalidField(field) => write!(formatter, "invalid script field: {field}"),
-            Self::EmptyFile => formatter.write_str("script file must not be empty"),
-            Self::AbsolutePath(path) => write!(
-                formatter,
-                "script path must be relative to the project root: {path}"
-            ),
-            Self::EscapesProjectRoot(path) => write!(
-                formatter,
-                "script path must stay inside the project root: {path}"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for EntityScriptError {}
 
 #[cfg(test)]
 mod tests {

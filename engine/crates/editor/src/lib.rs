@@ -88,8 +88,7 @@ pub use document::{DiskStatus, DocumentError, PlaySession, ProjectDocument, Scen
 pub mod document_space;
 
 use std::{
-    error::Error,
-    fmt, fs,
+    fs,
     path::{Path, PathBuf},
 };
 
@@ -111,33 +110,17 @@ pub struct DirectoryStatus {
     pub is_directory: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ProjectError {
+    #[error("项目路径不存在：{}", .0.display())]
     NotFound(PathBuf),
+    #[error("项目路径不是目录：{}", .0.display())]
     NotDirectory(PathBuf),
+    #[error("项目缺少必需目录：{name}（项目根目录：{}）", root.display())]
     MissingDirectory { root: PathBuf, name: String },
+    #[error("读取项目路径失败：{}：{message}", path.display())]
     Io { path: PathBuf, message: String },
 }
-
-impl fmt::Display for ProjectError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NotFound(path) => write!(f, "项目路径不存在：{}", path.display()),
-            Self::NotDirectory(path) => write!(f, "项目路径不是目录：{}", path.display()),
-            Self::MissingDirectory { root, name } => write!(
-                f,
-                "项目缺少必需目录：{}（项目根目录：{}）",
-                name,
-                root.display()
-            ),
-            Self::Io { path, message } => {
-                write!(f, "读取项目路径失败：{}：{}", path.display(), message)
-            }
-        }
-    }
-}
-
-impl Error for ProjectError {}
 
 pub fn open_project(path: impl AsRef<Path>) -> Result<ProjectInfo, ProjectError> {
     let requested = path.as_ref();

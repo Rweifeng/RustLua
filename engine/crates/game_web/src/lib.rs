@@ -42,7 +42,7 @@ type ResourceReader = dyn Fn(&str) -> Option<Vec<u8>> + 'static;
 /// 存储（桌面 `OnceLock` / wasm `thread_local`）。桌面上 provider 优先于真实
 /// 文件系统（engine `core::vfs` 语义），因此本函数在桌面测试与 Web 宿主行为一致。
 #[cfg(not(target_arch = "wasm32"))]
-pub fn run_lua_once<F>(read_resource: F) -> Result<String, String>
+pub fn run_lua_once<F>(read_resource: F) -> anyhow::Result<String>
 where
     F: Fn(&str) -> Option<Vec<u8>> + Send + Sync + 'static,
 {
@@ -50,7 +50,7 @@ where
 }
 
 #[cfg(target_arch = "wasm32")]
-pub fn run_lua_once<F>(read_resource: F) -> Result<String, String>
+pub fn run_lua_once<F>(read_resource: F) -> anyhow::Result<String>
 where
     F: Fn(&str) -> Option<Vec<u8>> + 'static,
 {
@@ -59,7 +59,7 @@ where
 
 /// P2-④：跨端唯一实现体（此前 impl/body 两层 × 两份 cfg，共四份近似重复代码）。
 /// 差异只在 `ResourceReader` 这一处 bound，被 cfg 类型别名吸收。
-fn run_lua_once_shared(read_resource: Box<ResourceReader>) -> Result<String, String> {
+fn run_lua_once_shared(read_resource: Box<ResourceReader>) -> anyhow::Result<String> {
     let root = std::path::PathBuf::from(VIRTUAL_PROJECT_ROOT);
     let root_for_provider = root.clone();
     let provider = move |path: &std::path::Path| {
@@ -72,18 +72,17 @@ fn run_lua_once_shared(read_resource: Box<ResourceReader>) -> Result<String, Str
         let key = key.replace('\\', "/");
         read_resource(&key)
     };
-    engine::core::vfs::set_provider(Box::new(provider)).map_err(|e| e.to_string())?;
+    // `set_provider` 的失败是 `&'static str`（非 `StdError`），保留显式构造以维持原文案。
+    engine::core::vfs::set_provider(Box::new(provider)).map_err(|e| anyhow::anyhow!("{e}"))?;
     lua_once_finish(root)
 }
 
 /// 共用尾部：建运行时、执行 main.lua、跑一帧 update()。
-fn lua_once_finish(root: std::path::PathBuf) -> Result<String, String> {
-    let mut runtime = engine::core::script::LuaRuntime::new().map_err(|e| e.to_string())?;
+fn lua_once_finish(root: std::path::PathBuf) -> anyhow::Result<String> {
+    let mut runtime = engine::core::script::LuaRuntime::new()?;
     runtime.set_project_root(root.clone());
-    runtime
-        .execute_project_script(&root.join("scripts/main.lua"))
-        .map_err(|e| e.to_string())?;
-    runtime.call_update().map_err(|e| e.to_string())
+    runtime.execute_project_script(&root.join("scripts/main.lua"))?;
+    Ok(runtime.call_update()?)
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -108,7 +107,7 @@ mod wasm {
                 .ok()?;
             value.as_string().map(|s| s.into_bytes())
         })
-        .map_err(|e| JsValue::from_str(&e))
+        .map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
     /// 临时探针：逐级定位 wasm 启动路径（验证后移除）。
@@ -392,6 +391,6 @@ mod tests {
         );
 
         let result = run_lua_once(move |key| table.get(key).cloned());
-        assert_eq!(result.as_deref(), Ok("ok:hi:sword"));
+        assert_eq!(result.expect("run_lua_once must succeed"), "ok:hi:sword");
     }
 }

@@ -254,45 +254,30 @@ fn parse_flag(raw: &str, field: &str) -> Result<bool, QuadError> {
 }
 
 /// `Quad` 组件串的解析/校验错误。
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, thiserror::Error)]
 pub enum QuadError {
+    #[error("quad component is empty")]
     Empty,
+    #[error("quad is missing field {0}")]
     MissingField(&'static str),
+    #[error("malformed quad field: {0}")]
     MalformedField(String),
+    #[error("unknown quad field: {0}")]
     UnknownField(String),
+    #[error("invalid quad field: {0}")]
     InvalidField(String),
+    #[error("invalid quad size: {0}")]
     InvalidSize(String),
+    #[error("invalid quad pivot: {0}")]
     InvalidPivot(String),
+    #[error("invalid quad color: {0}")]
     InvalidColor(String),
+    #[error("invalid quad number: {0}")]
     InvalidNumber(String),
+    #[error("quad texture must not be empty")]
     EmptyTexture,
-    Sprite(SpriteError),
-}
-
-impl std::fmt::Display for QuadError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Empty => formatter.write_str("quad component is empty"),
-            Self::MissingField(field) => write!(formatter, "quad is missing field {field}"),
-            Self::MalformedField(field) => write!(formatter, "malformed quad field: {field}"),
-            Self::UnknownField(field) => write!(formatter, "unknown quad field: {field}"),
-            Self::InvalidField(field) => write!(formatter, "invalid quad field: {field}"),
-            Self::InvalidSize(value) => write!(formatter, "invalid quad size: {value}"),
-            Self::InvalidPivot(value) => write!(formatter, "invalid quad pivot: {value}"),
-            Self::InvalidColor(value) => write!(formatter, "invalid quad color: {value}"),
-            Self::InvalidNumber(value) => write!(formatter, "invalid quad number: {value}"),
-            Self::EmptyTexture => formatter.write_str("quad texture must not be empty"),
-            Self::Sprite(error) => error.fmt(formatter),
-        }
-    }
-}
-
-impl std::error::Error for QuadError {}
-
-impl From<SpriteError> for QuadError {
-    fn from(value: SpriteError) -> Self {
-        Self::Sprite(value)
-    }
+    #[error(transparent)]
+    Sprite(#[from] SpriteError),
 }
 
 #[cfg(test)]

@@ -1,6 +1,5 @@
 use crate::SceneDocument;
 use engine::core::scene::SceneEntityId;
-use std::{error::Error, fmt};
 
 /// 一条活动中的事务：把一次连续交互（拖拽 / 数值拖动 / 连续绘制…）合并为
 /// 一条可 Undo 的 `EditCommand`。事务期间只更新 preview（调用方自行在
@@ -70,36 +69,21 @@ pub struct CommandHistory {
 }
 
 /// 事务 API 错误：违反事务状态机（嵌套 begin / 无活动事务时提交或取消）。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum TransactionError {
+    #[error("a transaction is already active")]
     AlreadyActive,
+    #[error("no active transaction")]
     NotActive,
 }
 
-impl fmt::Display for TransactionError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::AlreadyActive => "a transaction is already active",
-            Self::NotActive => "no active transaction",
-        })
-    }
-}
-impl Error for TransactionError {}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum HistoryError {
+    #[error("nothing to undo")]
     NothingToUndo,
+    #[error("nothing to redo")]
     NothingToRedo,
 }
-impl fmt::Display for HistoryError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::NothingToUndo => "nothing to undo",
-            Self::NothingToRedo => "nothing to redo",
-        })
-    }
-}
-impl Error for HistoryError {}
 
 impl CommandHistory {
     pub fn new() -> Self {

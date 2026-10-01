@@ -195,7 +195,7 @@ impl LuaRuntime {
                                 .current_path
                                 .clone()
                                 .unwrap_or_else(|| PathBuf::from("<project script>")),
-                            source: error.to_string(),
+                            reason: error.to_string(),
                         })?;
                 if let Value::Function(function) = callback {
                     function
@@ -205,7 +205,7 @@ impl LuaRuntime {
                                 .current_path
                                 .clone()
                                 .unwrap_or_else(|| PathBuf::from("<project script>")),
-                            source: error.to_string(),
+                            reason: error.to_string(),
                         })?;
                 }
             }

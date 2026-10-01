@@ -1,7 +1,5 @@
 //! CPU-side batching for textured 2D Sprites.
 
-use std::{error::Error, fmt};
-
 use crate::core::{
     camera::{Camera2D, CameraBounds, CoordinateError, OrthoTerms, Viewport},
     par::{Parallelism, map_chunks_in_place},
@@ -172,31 +170,14 @@ pub trait WorldSpriteVertexSink: Copy + Send {
     fn from_world(position: [f32; 3], uv: [f32; 2], color: [f32; 4]) -> Self;
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, thiserror::Error)]
 pub enum SpriteBatchError {
+    #[error("sprite batch item {index} is invalid: {error}")]
     Sprite { index: usize, error: SpriteError },
-    Coordinate(CoordinateError),
+    #[error(transparent)]
+    Coordinate(#[from] CoordinateError),
+    #[error("sprite batch item {index} has a non-finite transform")]
     InvalidTransform { index: usize },
-}
-
-impl fmt::Display for SpriteBatchError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Sprite { index, error } => {
-                write!(f, "sprite batch item {index} is invalid: {error}")
-            }
-            Self::Coordinate(error) => error.fmt(f),
-            Self::InvalidTransform { index } => {
-                write!(f, "sprite batch item {index} has a non-finite transform")
-            }
-        }
-    }
-}
-impl Error for SpriteBatchError {}
-impl From<CoordinateError> for SpriteBatchError {
-    fn from(value: CoordinateError) -> Self {
-        Self::Coordinate(value)
-    }
 }
 
 /// Collects Sprite submissions and converts them into sorted draw batches.

@@ -24,26 +24,15 @@ pub struct PropertyPath {
     pub index: Option<usize>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum PropertyPathError {
     /// The text is not `Component.field` / `Component.field[index]`.
+    #[error("不是合法的属性路径：{0:?}（应形如 Sprite.pivot）")]
     Malformed(String),
     /// The tuple index is missing, empty or not a number.
+    #[error("非法的元组下标：{0:?}")]
     InvalidIndex(String),
 }
-
-impl fmt::Display for PropertyPathError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Malformed(text) => {
-                write!(f, "不是合法的属性路径：{text:?}（应形如 Sprite.pivot）")
-            }
-            Self::InvalidIndex(text) => write!(f, "非法的元组下标：{text:?}"),
-        }
-    }
-}
-
-impl std::error::Error for PropertyPathError {}
 
 impl PropertyPath {
     #[must_use]
@@ -101,47 +90,22 @@ impl fmt::Display for PropertyPath {
 }
 
 /// What went wrong while reading/writing one property.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum PropertyError {
+    #[error("组件 {0} 没有注册 schema")]
     NoSchema(String),
-    UnknownField {
-        component: String,
-        field: String,
-    },
+    #[error("组件 {component} 没有字段 {field}")]
+    UnknownField { component: String, field: String },
+    #[error("字段 {field} 只有 {len} 个分量，下标 {index} 越界")]
     UnknownIndex {
         field: String,
         index: usize,
         len: usize,
     },
-    InvalidValue {
-        field: String,
-        reason: String,
-    },
-    Schema(SchemaError),
-}
-
-impl fmt::Display for PropertyError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NoSchema(component) => write!(f, "组件 {component} 没有注册 schema"),
-            Self::UnknownField { component, field } => {
-                write!(f, "组件 {component} 没有字段 {field}")
-            }
-            Self::UnknownIndex { field, index, len } => {
-                write!(f, "字段 {field} 只有 {len} 个分量，下标 {index} 越界")
-            }
-            Self::InvalidValue { field, reason } => write!(f, "字段 {field} 取值非法：{reason}"),
-            Self::Schema(error) => error.fmt(f),
-        }
-    }
-}
-
-impl std::error::Error for PropertyError {}
-
-impl From<SchemaError> for PropertyError {
-    fn from(error: SchemaError) -> Self {
-        Self::Schema(error)
-    }
+    #[error("字段 {field} 取值非法：{reason}")]
+    InvalidValue { field: String, reason: String },
+    #[error(transparent)]
+    Schema(#[from] SchemaError),
 }
 
 /// Split a component payload into `(key, raw value)` pairs, preserving order and exact text.

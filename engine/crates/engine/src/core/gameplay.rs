@@ -1,7 +1,7 @@
 //! Small gameplay data types shared by the Lua farm API: a game clock,
 //! item definitions, inventories, and item stacks.
 
-use std::{collections::BTreeMap, fmt};
+use std::collections::BTreeMap;
 
 /// Minutes in one in-game day. `sleep_to_morning` and `now()` use this as the
 /// day boundary.
@@ -102,25 +102,11 @@ impl GameClock {
 }
 
 /// Errors produced by inventory operations.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum InventoryError {
+    #[error("inventory slot {index} is out of bounds (capacity {capacity})")]
     IndexOutOfBounds { index: usize, capacity: usize },
 }
-
-impl fmt::Display for InventoryError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::IndexOutOfBounds { index, capacity } => {
-                write!(
-                    f,
-                    "inventory slot {index} is out of bounds (capacity {capacity})"
-                )
-            }
-        }
-    }
-}
-
-impl std::error::Error for InventoryError {}
 
 /// One item quantity in an inventory slot.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]

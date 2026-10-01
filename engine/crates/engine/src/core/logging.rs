@@ -41,13 +41,22 @@ impl fmt::Display for LogModule {
 }
 
 /// Context-rich error for user-facing diagnostics.
-#[derive(Debug, Clone)]
+///
+/// 字段 `cause` 存放「原始错误的文本」而不是 `dyn Error`，因此这里**不能**命名为
+/// `source`：thiserror 会把名为 `source` 的字段一律当成错误源并对其调用
+/// `AsDynError`，`Option<String>` 无法满足该约束。
+#[derive(Debug, Clone, thiserror::Error)]
+#[error(
+    "[{module}] {operation}: {context}{}{}",
+    .cause.as_ref().map_or(String::new(), |cause| format!("; cause: {cause}")),
+    .suggestion.as_ref().map_or(String::new(), |suggestion| format!("; suggestion: {suggestion}")),
+)]
 pub struct EngineError {
     pub module: LogModule,
     pub operation: String,
     pub context: String,
     pub suggestion: Option<String>,
-    pub source: Option<String>,
+    pub cause: Option<String>,
 }
 
 impl EngineError {
@@ -61,7 +70,7 @@ impl EngineError {
             operation: operation.into(),
             context: context.into(),
             suggestion: None,
-            source: None,
+            cause: None,
         }
     }
 
@@ -73,25 +82,10 @@ impl EngineError {
 
     #[must_use]
     pub fn with_source(mut self, source: impl fmt::Display) -> Self {
-        self.source = Some(source.to_string());
+        self.cause = Some(source.to_string());
         self
     }
 }
-
-impl fmt::Display for EngineError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "[{}] {}: {}", self.module, self.operation, self.context)?;
-        if let Some(source) = &self.source {
-            write!(f, "; cause: {source}")?;
-        }
-        if let Some(suggestion) = &self.suggestion {
-            write!(f, "; suggestion: {suggestion}")?;
-        }
-        Ok(())
-    }
-}
-
-impl std::error::Error for EngineError {}
 
 struct LogGuard {
     // 文件日志仅在非 wasm 平台可用（tracing-appender 在 wasm32-unknown-unknown

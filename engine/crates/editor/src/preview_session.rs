@@ -92,7 +92,8 @@ impl PreviewSession {
         custom_vector_atlases: VectorAtlasMap,
     ) -> Result<Self, String> {
         tracing::info!(target: "editor", "[preview] project_root={}", project_root.display());
-        let mut runtime = RuntimeScene::from_scene(Some(project_root), scene.clone())?;
+        let mut runtime = RuntimeScene::from_scene(Some(project_root), scene.clone())
+            .map_err(|error| error.to_string())?;
         // M20-08：把项目 `settings.toml` 的 `[input]` 手柄死区应用到 Play 预览的设备后端
         // （与独立 game 宿主 `game_app` 同一入口；文件缺失/无 `[input]` 段 → 引擎默认
         // 0.15/0.05，读取失败只记日志不中断 Play）。
@@ -128,7 +129,8 @@ impl PreviewSession {
             Some(project_root.to_path_buf()),
             false,
             false,
-        )?;
+        )
+        .map_err(|error| error.to_string())?;
         let (width, height) = size;
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("rustlua-editor-preview"),

@@ -17,7 +17,7 @@ pub(super) fn file_fingerprint(
     use std::hash::{Hash, Hasher};
     let meta = crate::core::vfs::metadata(path).map_err(|error| LuaBridgeError::Load {
         path: path.to_path_buf(),
-        source: error.to_string(),
+        reason: error.to_string(),
     })?;
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     source.hash(&mut hasher);
@@ -36,11 +36,11 @@ pub(super) fn file_fingerprint(
 pub fn read_project_script(path: &Path) -> Result<String, LuaBridgeError> {
     let bytes = crate::core::vfs::read(path).map_err(|error| LuaBridgeError::Load {
         path: path.to_path_buf(),
-        source: error.to_string(),
+        reason: error.to_string(),
     })?;
     let decoded = crate::core::pack::decode(&bytes).map_err(|error| LuaBridgeError::Load {
         path: path.to_path_buf(),
-        source: error,
+        reason: error,
     })?;
     Ok(String::from_utf8_lossy(&decoded).into_owned())
 }

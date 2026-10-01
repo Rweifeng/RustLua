@@ -18,21 +18,12 @@ use crate::core::{
 };
 
 /// Errors returned by world operations that require a live entity.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum WorldError {
     /// The entity handle is stale or was never allocated by this world.
+    #[error("invalid entity handle: {0}")]
     InvalidEntity(EntityId),
 }
-
-impl fmt::Display for WorldError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InvalidEntity(entity) => write!(formatter, "invalid entity handle: {entity}"),
-        }
-    }
-}
-
-impl std::error::Error for WorldError {}
 
 trait ComponentStorage: Any {
     fn remove_entity(&mut self, entity: EntityId);

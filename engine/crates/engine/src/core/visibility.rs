@@ -123,28 +123,19 @@ pub fn entity_visible_in(world: &World, entity: EntityId, view_mask: u32) -> boo
 }
 
 /// `Visibility` 组件串的解析错误。
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum VisibilityError {
+    #[error("visibility component is empty")]
     Empty,
+    #[error("visibility is missing field {0}")]
     MissingField(&'static str),
+    #[error("malformed visibility field: {0}")]
     MalformedField(String),
+    #[error("unknown visibility field: {0}")]
     UnknownField(String),
+    #[error("invalid visibility value: {0}")]
     InvalidValue(String),
 }
-
-impl std::fmt::Display for VisibilityError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Empty => formatter.write_str("visibility component is empty"),
-            Self::MissingField(field) => write!(formatter, "visibility is missing field {field}"),
-            Self::MalformedField(field) => write!(formatter, "malformed visibility field: {field}"),
-            Self::UnknownField(field) => write!(formatter, "unknown visibility field: {field}"),
-            Self::InvalidValue(value) => write!(formatter, "invalid visibility value: {value}"),
-        }
-    }
-}
-
-impl std::error::Error for VisibilityError {}
 
 #[cfg(test)]
 mod tests {

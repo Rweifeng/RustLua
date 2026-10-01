@@ -6,6 +6,7 @@
 //!
 //! 命令（见 `main.rs`）：`scan` / `import` / `clean` / `list` / `package` / `--check`。
 
+use anyhow::anyhow;
 use engine::core::{
     dependency::recompute_edges,
     import_cache::ImportCache,
@@ -115,10 +116,10 @@ fn project_font_key(project: &Path) -> Option<String> {
 }
 
 /// 验证项目目录存在 `project.toml`。
-pub fn ensure_project(project: &Path) -> Result<(), String> {
+pub fn ensure_project(project: &Path) -> anyhow::Result<()> {
     let manifest = project.join("project.toml");
     if !manifest.is_file() {
-        return Err(format!(
+        return Err(anyhow!(
             "不是有效的游戏项目（缺少 {}）：{}",
             manifest.display(),
             project.display()
@@ -133,7 +134,7 @@ pub fn ensure_project(project: &Path) -> Result<(), String> {
 /// `assets/secret -> C:\Users\...`）会在打包时被 `fs::copy` 跟随，把项目外的
 /// 文件悄悄塞进发布包；这里直接报错而不是静默跟随或静默跳过，避免"发布包里
 /// 多了不该有的文件"这种事后很难查的问题。
-pub fn collect_files(root: &Path, output: &mut Vec<(PathBuf, u64)>) -> Result<(), String> {
+pub fn collect_files(root: &Path, output: &mut Vec<(PathBuf, u64)>) -> anyhow::Result<()> {
     let anchor = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     collect_files_in(root, &anchor, output)
 }
@@ -142,15 +143,15 @@ fn collect_files_in(
     root: &Path,
     anchor: &Path,
     output: &mut Vec<(PathBuf, u64)>,
-) -> Result<(), String> {
+) -> anyhow::Result<()> {
     let mut children = fs::read_dir(root)
-        .map_err(|error| format!("读取目录失败 {}: {error}", root.display()))?
+        .map_err(|error| anyhow!("读取目录失败 {}: {error}", root.display()))?
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("读取目录失败 {}: {error}", root.display()))?;
+        .map_err(|error| anyhow!("读取目录失败 {}: {error}", root.display()))?;
     children.sort_by_key(|entry| entry.path());
     for child in children {
         let path = child.path();
-        let file_type = child.file_type().map_err(|e| e.to_string())?;
+        let file_type = child.file_type()?;
         if file_type.is_symlink() {
             ensure_symlink_stays_inside(&path, anchor)?;
         }
@@ -175,11 +176,11 @@ fn collect_files_in(
 }
 
 /// 校验符号链接解析后仍在 `anchor` 内；越界即报错。
-fn ensure_symlink_stays_inside(path: &Path, anchor: &Path) -> Result<(), String> {
+fn ensure_symlink_stays_inside(path: &Path, anchor: &Path) -> anyhow::Result<()> {
     let resolved = fs::canonicalize(path)
-        .map_err(|error| format!("解析符号链接失败 {}: {error}", path.display()))?;
+        .map_err(|error| anyhow!("解析符号链接失败 {}: {error}", path.display()))?;
     if path_escapes_root(anchor, &resolved) {
-        return Err(format!(
+        return Err(anyhow!(
             "符号链接指向项目目录外，打包被拒绝：{} → {}",
             path.display(),
             resolved.display()
@@ -200,10 +201,10 @@ fn path_escapes_root(anchor: &Path, resolved: &Path) -> bool {
         || !resolved.starts_with(anchor)
 }
 
-fn modified_nanos(path: &Path) -> Result<u64, String> {
+fn modified_nanos(path: &Path) -> anyhow::Result<u64> {
     let modified = fs::metadata(path)
         .and_then(|metadata| metadata.modified())
-        .map_err(|error| format!("读取文件时间失败 {}: {error}", path.display()))?;
+        .map_err(|error| anyhow!("读取文件时间失败 {}: {error}", path.display()))?;
     Ok(modified
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_nanos() as u64)
@@ -211,7 +212,7 @@ fn modified_nanos(path: &Path) -> Result<u64, String> {
 }
 
 /// 收集项目的数据文件（清单 + 场景 + 脚本 + 资源），含 mtime。
-pub fn collect_data_files(project: &Path) -> Result<Vec<(PathBuf, u64)>, String> {
+pub fn collect_data_files(project: &Path) -> anyhow::Result<Vec<(PathBuf, u64)>> {
     let mut paths = Vec::new();
     let manifest = project.join("project.toml");
     if manifest.is_file() {
@@ -244,10 +245,10 @@ fn status_label(status: &ResourceState) -> &'static str {
 }
 
 /// 扫描项目数据文件并注册到 ResourceDatabase。
-pub fn scan(project: &Path) -> Result<Vec<ScanEntry>, String> {
+pub fn scan(project: &Path) -> anyhow::Result<Vec<ScanEntry>> {
     ensure_project(project)?;
     let scanned_files = collect_data_files(project)?;
-    let mut database = ResourceDatabase::open(project).map_err(|error| error.to_string())?;
+    let mut database = ResourceDatabase::open(project)?;
     let mut entries = Vec::new();
     let mut disk_assets = Vec::with_capacity(scanned_files.len());
     // 已注册记录延迟到 reconcile+传播后再重建，让 scan 输出反映最新状态
@@ -302,7 +303,7 @@ pub fn scan(project: &Path) -> Result<Vec<ScanEntry>, String> {
         fs::read_to_string(project.join(path)).ok()
     });
     database.propagate_invalidation();
-    database.save().map_err(|error| error.to_string())?;
+    database.save()?;
     // 用 reconcile+传播后的最新状态重建条目，保持按路径排序。
     for (relative, kind_token, id) in registered {
         let record = database
@@ -323,10 +324,10 @@ pub fn scan(project: &Path) -> Result<Vec<ScanEntry>, String> {
 /// 增量导入所有已注册资源。
 ///
 /// 单坏项不中断整个批次：失败资源在结果中以 `error` 记录，其余资源照常导入。
-pub fn import(project: &Path) -> Result<Vec<ImportOutcome>, String> {
+pub fn import(project: &Path) -> anyhow::Result<Vec<ImportOutcome>> {
     let entries = scan(project)?;
-    let mut database = ResourceDatabase::open(project).map_err(|error| error.to_string())?;
-    let mut cache = ImportCache::open(project).map_err(|error| error.to_string())?;
+    let mut database = ResourceDatabase::open(project)?;
+    let mut cache = ImportCache::open(project)?;
     let registry = ImporterRegistry::builtin();
     let items: Vec<_> = entries
         .iter()
@@ -346,7 +347,7 @@ pub fn import(project: &Path) -> Result<Vec<ImportOutcome>, String> {
     );
     // 导入后依赖可能已就绪：重新传播失效，让消费者从 invalid 撤销回可消费状态。
     database.propagate_invalidation();
-    database.save().map_err(|error| error.to_string())?;
+    database.save()?;
     Ok(summary
         .results
         .into_iter()
@@ -378,11 +379,11 @@ pub struct BrokenLink {
 /// 依赖健康度检查：先注册并传播失效，再对每个 Invalid 消费者沿依赖下探到
 /// 断链根，输出完整链路（如 `scenes/main.scene → assets/textures/player.png
 /// (缺失)`）。成环时截断并标注循环依赖。健康项目返回空列表。
-pub fn check_dependencies(project: &Path) -> Result<Vec<BrokenLink>, String> {
+pub fn check_dependencies(project: &Path) -> anyhow::Result<Vec<BrokenLink>> {
     ensure_project(project)?;
     // 注册 + reconcile + 依赖重算 + 失效传播，让数据库反映最新状态。
     scan(project)?;
-    let database = ResourceDatabase::open(project).map_err(|error| error.to_string())?;
+    let database = ResourceDatabase::open(project)?;
     let mut links = Vec::new();
     for record in database.iter() {
         if record.status != ResourceState::Invalid {
@@ -459,22 +460,23 @@ fn walk_broken_chain(db: &ResourceDatabase, start: AssetId) -> Option<(Vec<Asset
 }
 
 /// 清空导入缓存（保留资源数据库）。
-pub fn clean(project: &Path) -> Result<(), String> {
-    let mut cache = ImportCache::open(project).map_err(|error| error.to_string())?;
-    cache.clear().map_err(|error| error.to_string())
+pub fn clean(project: &Path) -> anyhow::Result<()> {
+    let mut cache = ImportCache::open(project)?;
+    cache.clear()?;
+    Ok(())
 }
 
 /// 列出已注册资源。
-pub fn list(project: &Path) -> Result<Vec<ScanEntry>, String> {
+pub fn list(project: &Path) -> anyhow::Result<Vec<ScanEntry>> {
     scan(project)
 }
 
-fn copy_file(source: &Path, destination: &Path) -> Result<(), String> {
+fn copy_file(source: &Path, destination: &Path) -> anyhow::Result<()> {
     if let Some(parent) = destination.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        fs::create_dir_all(parent)?;
     }
     fs::copy(source, destination).map_err(|error| {
-        format!(
+        anyhow!(
             "复制失败 {} → {}: {error}",
             source.display(),
             destination.display()
@@ -484,7 +486,7 @@ fn copy_file(source: &Path, destination: &Path) -> Result<(), String> {
 }
 
 #[cfg(test)]
-fn copy_dir(source: &Path, destination: &Path) -> Result<(), String> {
+fn copy_dir(source: &Path, destination: &Path) -> anyhow::Result<()> {
     if !source.is_dir() {
         return Ok(());
     }
@@ -517,7 +519,7 @@ fn copy_dir_encoded(
     encrypt: bool,
     should_compress: fn(&Path) -> bool,
     should_encrypt: fn(&Path) -> bool,
-) -> Result<(), String> {
+) -> anyhow::Result<()> {
     if !source.is_dir() {
         return Ok(());
     }
@@ -531,12 +533,12 @@ fn copy_dir_encoded(
         let compress_file = compress && should_compress(&file);
         let encrypt_file = encrypt && should_encrypt(&file);
         if compress_file || encrypt_file {
-            let bytes = fs::read(&file).map_err(|e| e.to_string())?;
+            let bytes = fs::read(&file)?;
             let encoded = engine::core::pack::encode(&bytes, compress_file, encrypt_file);
             if let Some(parent) = dest.parent() {
-                fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                fs::create_dir_all(parent)?;
             }
-            fs::write(&dest, &encoded).map_err(|e| e.to_string())?;
+            fs::write(&dest, &encoded)?;
         } else {
             copy_file(&file, &dest)?;
         }
@@ -573,7 +575,7 @@ fn extension(path: &Path) -> Option<String> {
 }
 
 /// 按资产类型统计压缩前后大小、压缩耗时和解压耗时。
-pub fn benchmark_compression(project: &Path) -> Result<Vec<CompressionBenchmarkEntry>, String> {
+pub fn benchmark_compression(project: &Path) -> anyhow::Result<Vec<CompressionBenchmarkEntry>> {
     ensure_project(project)?;
     let assets = project.join("assets");
     if !assets.is_dir() {
@@ -587,16 +589,17 @@ pub fn benchmark_compression(project: &Path) -> Result<Vec<CompressionBenchmarkE
             continue;
         }
         let bytes =
-            fs::read(&file).map_err(|error| format!("读取失败 {}: {error}", file.display()))?;
+            fs::read(&file).map_err(|error| anyhow!("读取失败 {}: {error}", file.display()))?;
         let kind = ResourceKind::from_path(&file).token().to_owned();
         let started = std::time::Instant::now();
         let compressed = engine::core::pack::encode(&bytes, true, false);
         let compress_time = started.elapsed();
         let started = std::time::Instant::now();
-        let decompressed = engine::core::pack::decode(&compressed)?;
+        let decompressed =
+            engine::core::pack::decode(&compressed).map_err(|error| anyhow!("{error}"))?;
         let decompress_time = started.elapsed();
         if decompressed != bytes {
-            return Err(format!("压缩往返校验失败: {}", file.display()));
+            return Err(anyhow!("压缩往返校验失败: {}", file.display()));
         }
         let entry = entries
             .entry(kind.clone())
@@ -629,16 +632,16 @@ const PACKAGE_SOURCE_DIRS: &[&str] = &["scenes", "scripts", "assets"];
 /// 只遍历 `project.toml` 与上述三个子目录，因此 `builds/` 下的发布产物不会被当成
 /// 项目数据；`scripts/package.ps1` 的原子发布正是这样布局的
 /// （`<project>/builds/<platform>/.staging-*/pack`）。
-fn ensure_distinct_output(project: &Path, out: &Path) -> Result<(), String> {
+fn ensure_distinct_output(project: &Path, out: &Path) -> anyhow::Result<()> {
     let project_abs = canonical_or_absolute(project)?;
     let out_abs = canonical_or_absolute(out)?;
     if out_abs == project_abs {
-        return Err("输出目录不能与项目目录相同".to_owned());
+        return Err(anyhow!("输出目录不能与项目目录相同"));
     }
     for sub in PACKAGE_SOURCE_DIRS {
         let source_abs = canonical_or_absolute(&project_abs.join(sub))?;
         if out_abs.starts_with(&source_abs) {
-            return Err(format!(
+            return Err(anyhow!(
                 "输出目录不能位于项目数据目录内部（{}）：{}",
                 sub,
                 out_abs.display()
@@ -646,7 +649,7 @@ fn ensure_distinct_output(project: &Path, out: &Path) -> Result<(), String> {
         }
     }
     if project_abs.starts_with(&out_abs) {
-        return Err(format!(
+        return Err(anyhow!(
             "项目目录不能位于输出目录内部：{} ⊂ {}",
             project_abs.display(),
             out_abs.display()
@@ -657,7 +660,7 @@ fn ensure_distinct_output(project: &Path, out: &Path) -> Result<(), String> {
 
 /// 规范化为绝对路径：已存在则用 `canonicalize`，否则规范化其最近存在的祖先后拼回
 /// 剩余部分（输出目录通常还不存在）。
-fn canonical_or_absolute(path: &Path) -> Result<PathBuf, String> {
+fn canonical_or_absolute(path: &Path) -> anyhow::Result<PathBuf> {
     if let Ok(resolved) = fs::canonicalize(path) {
         return Ok(resolved);
     }
@@ -665,7 +668,7 @@ fn canonical_or_absolute(path: &Path) -> Result<PathBuf, String> {
         path.to_path_buf()
     } else {
         std::env::current_dir()
-            .map_err(|error| format!("读取当前目录失败: {error}"))?
+            .map_err(|error| anyhow!("读取当前目录失败: {error}"))?
             .join(path)
     };
     let mut existing = absolute.clone();
@@ -694,7 +697,7 @@ pub fn package(
     out: &Path,
     compress: bool,
     encrypt: bool,
-) -> Result<PackageManifest, String> {
+) -> anyhow::Result<PackageManifest> {
     ensure_project(project)?;
     ensure_distinct_output(project, out)?;
     copy_file(&project.join("project.toml"), &out.join("project.toml"))?;
@@ -724,7 +727,7 @@ pub fn package(
     )?;
     // 首包字体：收集项目用到的字符清单，运行时预生成字形（首帧文字不卡）。
     let chars = engine::core::char_collect::collect_project_chars(project);
-    fs::write(out.join("chars.txt"), &chars).map_err(|e| e.to_string())?;
+    fs::write(out.join("chars.txt"), &chars)?;
     // 发布子集化：把主字体裁剪到用到的字符，缩小体积（原 `subset-font.py` 的 Rust 版）。
     // 子集化失败（如 CFF 字体）时保留完整字体。
     if let Some(font_path) = project_font_key(project) {
@@ -735,7 +738,7 @@ pub fn package(
             && let Ok(bytes) = fs::read(&src)
             && let Ok(subset) = engine::core::font_subset::subset_ttf(&bytes, &chars)
         {
-            fs::write(&dst, subset).map_err(|e| e.to_string())?;
+            fs::write(&dst, subset)?;
         }
     }
 
@@ -752,7 +755,7 @@ pub fn package(
         let relative = path
             .strip_prefix(out)
             .map_err(|_| {
-                format!(
+                anyhow!(
                     "清单文件不在输出目录内：{} (out={})",
                     path.display(),
                     out.display()
@@ -760,7 +763,7 @@ pub fn package(
             })?
             .to_string_lossy()
             .replace('\\', "/");
-        let bytes = fs::read(&path).map_err(|e| e.to_string())?;
+        let bytes = fs::read(&path)?;
         let entry = FileEntry {
             size: bytes.len() as u64,
             checksum: fnv1a(&bytes),
@@ -771,24 +774,22 @@ pub fn package(
         ));
         manifest.insert(relative, entry);
     }
-    fs::write(out.join("manifest.txt"), lines.join("\n")).map_err(|e| e.to_string())?;
+    fs::write(out.join("manifest.txt"), lines.join("\n"))?;
     Ok(PackageManifest { entries: manifest })
 }
 
 /// 冒烟检查：创建临时项目，验证 scan/import 闭环可用。
-pub fn check() -> Result<String, String> {
+pub fn check() -> anyhow::Result<String> {
     let root = std::env::temp_dir().join(format!("rustlua-assetc-check-{}", std::process::id()));
-    fs::create_dir_all(root.join("scripts")).map_err(|e| e.to_string())?;
+    fs::create_dir_all(root.join("scripts"))?;
     fs::write(
         root.join("project.toml"),
         "[project]\nname = \"check\"\nversion = \"0.0.0\"\nengine = \"RustLua\"\nmain_script = \"scripts/main.lua\"\nstartup_scene = \"\"\n",
-    )
-    .map_err(|e| e.to_string())?;
+    )?;
     fs::write(
         root.join("scripts/main.lua"),
         "-- check\nfunction update() return 'ok' end\n",
-    )
-    .map_err(|e| e.to_string())?;
+    )?;
 
     let scanned = scan(&root)?;
     let imported = import(&root)?;
@@ -1108,20 +1109,20 @@ mod tests {
     fn package_rejects_output_inside_data_dirs_or_equal_to_project() {
         let root = temp_project("package-outguard");
         let error = package(&root, &root, false, false).expect_err("输出=项目 必须被拒绝");
-        assert!(error.contains("相同"), "{error}");
+        assert!(error.to_string().contains("相同"), "{error}");
 
         for sub in ["assets", "scripts", "scenes"] {
             let nested = root.join(sub).join("dist");
             let error = package(&root, &nested, false, false)
                 .expect_err("输出位于项目数据目录内部 必须被拒绝");
-            assert!(error.contains("项目数据目录"), "{error}");
+            assert!(error.to_string().contains("项目数据目录"), "{error}");
             assert!(!nested.exists(), "被拒绝的打包不应留下输出目录");
         }
 
         // 带 `..` 的等价写法也要被识别（词法比较即可，不需要目录存在）。
         let dotted = root.join("assets").join("dist").join("..").join("dist");
         let error = package(&root, &dotted, false, false).expect_err("`..` 绕不过数据目录检查");
-        assert!(error.contains("项目数据目录"), "{error}");
+        assert!(error.to_string().contains("项目数据目录"), "{error}");
         cleanup(&root);
     }
 
@@ -1205,7 +1206,7 @@ mod tests {
         let mut files = Vec::new();
         let error =
             collect_files(&root.join("assets"), &mut files).expect_err("越界符号链接必须被拒绝");
-        assert!(error.contains("项目目录外"), "{error}");
+        assert!(error.to_string().contains("项目目录外"), "{error}");
         // 同时确认整条打包路径也会失败（不会写出半个发布目录）。
         let out = std::env::temp_dir().join(format!(
             "rustlua-assetc-symlink-out-{}-{}",
@@ -1213,7 +1214,7 @@ mod tests {
             unique_suffix()
         ));
         let error = package(&root, &out, false, false).expect_err("打包必须拒绝越界链接");
-        assert!(error.contains("项目目录外"), "{error}");
+        assert!(error.to_string().contains("项目目录外"), "{error}");
 
         fs::remove_file(&link).ok();
         fs::remove_dir_all(&out).ok();

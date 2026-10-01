@@ -57,7 +57,7 @@ impl LuaRuntime {
         if let Err(error) = call_optional(&candidate, "on_create") {
             let error = LuaBridgeError::Runtime {
                 path: path.to_path_buf(),
-                source: error.to_string(),
+                reason: error.to_string(),
             };
             self.record_bridge_error(&error);
             return Err(error);
@@ -84,7 +84,7 @@ impl LuaRuntime {
         if let Err(error) = call_optional(&candidate, "on_create") {
             let error = LuaBridgeError::Runtime {
                 path: path.clone(),
-                source: error.to_string(),
+                reason: error.to_string(),
             };
             self.record_bridge_error(&error);
             return Err(error);
@@ -94,7 +94,7 @@ impl LuaRuntime {
             // "旧已毁、新未立"的半撕裂状态留给下一帧。
             self.record_bridge_error(&LuaBridgeError::Runtime {
                 path: path.clone(),
-                source: format!("reload: old on_destroy failed: {error}"),
+                reason: format!("reload: old on_destroy failed: {error}"),
             });
         }
         self.lua = candidate;
@@ -113,7 +113,7 @@ impl LuaRuntime {
         if let Err(error) = call_optional(&candidate, "on_create") {
             let error = LuaBridgeError::Runtime {
                 path: path.clone(),
-                source: error.to_string(),
+                reason: error.to_string(),
             };
             self.record_bridge_error(&error);
             return Err(error);
@@ -121,7 +121,7 @@ impl LuaRuntime {
         if let Err(error) = call_optional(&self.lua, "on_destroy") {
             self.record_bridge_error(&LuaBridgeError::Runtime {
                 path: path.clone(),
-                source: format!("reload: old on_destroy failed: {error}"),
+                reason: format!("reload: old on_destroy failed: {error}"),
             });
         }
         self.lua = candidate;
@@ -296,7 +296,7 @@ impl LuaRuntime {
             .exec()
             .map_err(|error| LuaBridgeError::Load {
                 path: path.to_path_buf(),
-                source: error.to_string(),
+                reason: error.to_string(),
             })?;
         Ok(candidate)
     }
@@ -322,7 +322,7 @@ impl LuaRuntime {
         let started = std::time::Instant::now();
         let result = update.call(()).map_err(|error| LuaBridgeError::Runtime {
             path,
-            source: error.to_string(),
+            reason: error.to_string(),
         });
         // 失败也要记账：否则"Lua 抛错的那一帧"在性能面板上看起来是零成本。
         #[cfg(not(target_arch = "wasm32"))]

@@ -89,24 +89,13 @@ impl FixedTimeStep {
 }
 
 /// Invalid fixed-step configuration.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum TimeStepError {
+    #[error("updates per second must be greater than zero")]
     InvalidFrequency,
+    #[error("maximum catch-up steps must be greater than zero")]
     InvalidCatchUpLimit,
 }
-
-impl std::fmt::Display for TimeStepError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::InvalidFrequency => f.write_str("updates per second must be greater than zero"),
-            Self::InvalidCatchUpLimit => {
-                f.write_str("maximum catch-up steps must be greater than zero")
-            }
-        }
-    }
-}
-
-impl std::error::Error for TimeStepError {}
 
 #[cfg(test)]
 mod tests {

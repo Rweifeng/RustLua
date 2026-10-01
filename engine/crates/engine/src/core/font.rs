@@ -10,11 +10,7 @@ use bymsdfgen_core::{
     geometry::{Contour, EdgeSegment, Shape},
     math::Vector2,
 };
-use std::{
-    collections::{HashMap, HashSet},
-    error::Error,
-    fmt,
-};
+use std::collections::{HashMap, HashSet};
 
 /// Rasterize scale in device pixels（px/em）。96px/em 在 4096² 打包图集内可容纳
 /// ~1300 个 CJK 字形，锐利度约为旧 64px/em 的 1.5×；如需更锐可上调，但 CJK
@@ -406,9 +402,10 @@ pub struct GlyphMetrics {
 }
 
 /// Errors returned while rasterizing or growing a glyph atlas.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum FontAtlasError {
     /// The atlas reached its configured maximum capacity.
+    #[error("字体图集已满：无法加入字形 {character:?}（{width}×{height}，容量 {capacity}）")]
     AtlasFull {
         character: char,
         width: u32,
@@ -416,24 +413,6 @@ pub enum FontAtlasError {
         capacity: u32,
     },
 }
-
-impl fmt::Display for FontAtlasError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::AtlasFull {
-                character,
-                width,
-                height,
-                capacity,
-            } => write!(
-                formatter,
-                "字体图集已满：无法加入字形 {character:?}（{width}×{height}，容量 {capacity}）"
-            ),
-        }
-    }
-}
-
-impl Error for FontAtlasError {}
 
 /// A growable packed glyph atlas producing one RGBA8 texture.
 #[derive(Clone, Debug)]

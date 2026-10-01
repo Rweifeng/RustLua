@@ -113,33 +113,19 @@ impl RenderMode {
 }
 
 /// `RenderMode` 组件串的解析错误。
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum RenderModeError {
+    #[error("render mode component is empty")]
     Empty,
+    #[error("render mode is missing field {0}")]
     MissingField(&'static str),
+    #[error("malformed render mode field: {0}")]
     MalformedField(String),
+    #[error("unknown render mode field: {0}")]
     UnknownField(String),
+    #[error("unknown render mode: {0}（应为 world / overlay / screen）")]
     UnknownMode(String),
 }
-
-impl std::fmt::Display for RenderModeError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Empty => formatter.write_str("render mode component is empty"),
-            Self::MissingField(field) => write!(formatter, "render mode is missing field {field}"),
-            Self::MalformedField(field) => {
-                write!(formatter, "malformed render mode field: {field}")
-            }
-            Self::UnknownField(field) => write!(formatter, "unknown render mode field: {field}"),
-            Self::UnknownMode(value) => write!(
-                formatter,
-                "unknown render mode: {value}（应为 world / overlay / screen）"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for RenderModeError {}
 
 #[cfg(test)]
 mod tests {

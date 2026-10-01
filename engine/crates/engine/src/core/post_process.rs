@@ -89,32 +89,21 @@ impl PostProcess {
 }
 
 /// `PostProcess` 参数的校验错误。
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, thiserror::Error)]
 pub enum PostProcessError {
+    #[error("exposure must be finite: {0}")]
     NonFiniteExposure(f32),
+    #[error("exposure must be >= 0: {0}")]
     NegativeExposure(f32),
+    #[error("tint must be finite: {0}")]
     NonFiniteTint(f32),
+    #[error("tint must be >= 0: {0}")]
     NegativeTint(f32),
+    #[error("vignette must be finite: {0}")]
     NonFiniteVignette(f32),
+    #[error("vignette must be in 0.0..=1.0: {0}")]
     VignetteOutOfRange(f32),
 }
-
-impl std::fmt::Display for PostProcessError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::NonFiniteExposure(value) => write!(formatter, "exposure must be finite: {value}"),
-            Self::NegativeExposure(value) => write!(formatter, "exposure must be >= 0: {value}"),
-            Self::NonFiniteTint(value) => write!(formatter, "tint must be finite: {value}"),
-            Self::NegativeTint(value) => write!(formatter, "tint must be >= 0: {value}"),
-            Self::NonFiniteVignette(value) => write!(formatter, "vignette must be finite: {value}"),
-            Self::VignetteOutOfRange(value) => {
-                write!(formatter, "vignette must be in 0.0..=1.0: {value}")
-            }
-        }
-    }
-}
-
-impl std::error::Error for PostProcessError {}
 
 #[cfg(test)]
 mod tests {

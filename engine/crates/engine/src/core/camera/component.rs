@@ -235,7 +235,7 @@ impl Camera2D {
     /// bounds 钳制后的相机中心：保证**整个视口**仍落在 `bounds` 内（无 `bounds` 时原样返回）。
     ///
     /// 收敛前宿主里也有一份同名同算法的副本（瓦片相机与相机控制器各用各的），所以这里把它
-    /// 提升为公开 API——夹取规则只留这一份，剔除用的可见域也走 私有 `visible_extent`。
+    /// 提升为公开 API——夹取规则只留这一份，剔除用的可见域也走同一条私有 `visible_extent`。
     pub fn constrained_center(self, viewport: Viewport) -> Result<Vec2, CoordinateError> {
         let Some(bounds) = self.bounds else {
             return Ok(self.center);
@@ -319,18 +319,13 @@ pub struct Camera3D {
     pub enabled: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, thiserror::Error)]
+#[error("3D camera error: {self:?}")]
 pub enum Camera3dError {
     InvalidPerspective,
     InvalidLookAt,
     NonFinite,
 }
-impl std::fmt::Display for Camera3dError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "3D camera error: {self:?}")
-    }
-}
-impl std::error::Error for Camera3dError {}
 
 impl Default for Camera3D {
     /// 新建相机的默认参数：位置 `(0,0,5)` 看向原点、FOV 90°、near 0.1、far 100。

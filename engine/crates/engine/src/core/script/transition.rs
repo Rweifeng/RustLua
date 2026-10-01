@@ -77,7 +77,7 @@ impl LuaRuntime {
                 .current_path
                 .clone()
                 .unwrap_or_else(|| PathBuf::from("<project script>")),
-            source: error.to_string(),
+            reason: error.to_string(),
         })?;
         tracing::info!(target: "scene", name = %name, entities = instantiated, "[scene] switched");
         Ok(())

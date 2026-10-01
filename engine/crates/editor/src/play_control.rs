@@ -13,8 +13,6 @@
 //! * failure isolation: `fail()` records the reason and returns to `StartFailed` without
 //!   touching counters, so a broken preview cannot corrupt editor state.
 
-use std::fmt;
-
 /// 每秒固定逻辑步数（与预览/独立宿主的 60 Hz 约定一致）。
 pub const STEPS_PER_SECOND: u32 = 60;
 
@@ -79,37 +77,24 @@ impl PlayState {
 }
 
 /// 非法状态迁移。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum PlayControlError {
     /// 该操作在当前状态下无意义（例如编辑态调用 pause）。
+    #[error("{action} 在 {} 状态下无效", state.label())]
     InvalidTransition {
         action: &'static str,
         state: PlayState,
     },
     /// 已经在运行/已经暂停等重复请求。
+    #[error("{action} 已在 {} 状态", state.label())]
     AlreadyInState {
         action: &'static str,
         state: PlayState,
     },
     /// 步进次数必须 ≥ 1。
+    #[error("步进帧数必须大于 0")]
     EmptyStep,
 }
-
-impl fmt::Display for PlayControlError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InvalidTransition { action, state } => {
-                write!(f, "{action} 在 {} 状态下无效", state.label())
-            }
-            Self::AlreadyInState { action, state } => {
-                write!(f, "{action} 已在 {} 状态", state.label())
-            }
-            Self::EmptyStep => f.write_str("步进帧数必须大于 0"),
-        }
-    }
-}
-
-impl std::error::Error for PlayControlError {}
 
 /// 本帧要跑多少个逻辑步、每步多长。
 #[derive(Clone, Copy, Debug, PartialEq)]

@@ -6,8 +6,7 @@ use engine::core::{
 };
 use std::{
     collections::HashMap,
-    error::Error,
-    fmt, fs,
+    fs,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -28,31 +27,14 @@ impl ResourceEntry {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum ResourceBrowserError {
+    #[error("资源目录不存在：{}", .0.display())]
     MissingAssetsDirectory(PathBuf),
+    #[error("扫描资源失败：{}：{message}", path.display())]
     Io { path: PathBuf, message: String },
-    Database(ResourceDbError),
-}
-
-impl fmt::Display for ResourceBrowserError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::MissingAssetsDirectory(path) => {
-                write!(f, "资源目录不存在：{}", path.display())
-            }
-            Self::Io { path, message } => write!(f, "扫描资源失败：{}：{message}", path.display()),
-            Self::Database(error) => write!(f, "资源数据库错误：{error}"),
-        }
-    }
-}
-
-impl Error for ResourceBrowserError {}
-
-impl From<ResourceDbError> for ResourceBrowserError {
-    fn from(error: ResourceDbError) -> Self {
-        Self::Database(error)
-    }
+    #[error("资源数据库错误：{0}")]
+    Database(#[from] ResourceDbError),
 }
 
 /// 编辑器资源浏览器状态：扫描、筛选、刷新和错误状态均集中在这里。

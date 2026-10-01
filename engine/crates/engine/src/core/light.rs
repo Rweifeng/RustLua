@@ -1,7 +1,5 @@
 //! Directional light component for 3D scenes.
 
-use std::{error::Error, fmt};
-
 use crate::core::math3d::Vec3;
 
 /// A directional light attached to an entity and parsed from the scene's
@@ -37,31 +35,24 @@ impl Default for Light {
 }
 
 /// Errors while parsing the scene's `Light` component string.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum LightParseError {
     /// A field was not `key=value` as the scene format requires.
+    #[error("malformed Light field: {0}")]
     MalformedField(String),
     /// A required field (`direction`/`color`/`intensity`) was missing.
+    #[error("missing Light field: {0}")]
     MissingField(&'static str),
     /// A numeric or vector field could not be parsed or was not finite.
+    #[error("invalid Light value: {0}")]
     InvalidValue(String),
     /// `intensity` was negative.
+    #[error("Light intensity must be non-negative")]
     NegativeIntensity,
     /// The direction was the zero vector.
+    #[error("Light direction must be non-zero")]
     ZeroDirection,
 }
-impl fmt::Display for LightParseError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::MalformedField(field) => write!(f, "malformed Light field: {field}"),
-            Self::MissingField(field) => write!(f, "missing Light field: {field}"),
-            Self::InvalidValue(value) => write!(f, "invalid Light value: {value}"),
-            Self::NegativeIntensity => write!(f, "Light intensity must be non-negative"),
-            Self::ZeroDirection => write!(f, "Light direction must be non-zero"),
-        }
-    }
-}
-impl Error for LightParseError {}
 
 impl Light {
     /// Parses the scene component string written by the editor:

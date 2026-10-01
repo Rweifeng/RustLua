@@ -3,8 +3,7 @@
 use crate::core::resource_db::AssetId;
 use std::{
     collections::BTreeMap,
-    error::Error,
-    fmt::{self, Write as _},
+    fmt::Write as _,
     fs,
     path::{Path, PathBuf},
     str::FromStr,
@@ -364,26 +363,31 @@ fn unescape(s: &str, line: usize) -> Result<String, SceneError> {
     Ok(o)
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum SceneError {
-    Io {
-        path: String,
-        reason: String,
-    },
+    #[error("scene I/O failed for {path}: {reason}")]
+    Io { path: String, reason: String },
+    #[error(
+        "scene parse error{} at line {line}, field {field}: {reason}",
+        .path.as_ref().map(|p| format!(" in {}", p.display())).unwrap_or_default()
+    )]
     Parse {
         line: usize,
         field: String,
         reason: String,
         path: Option<PathBuf>,
     },
+    #[error("missing scene field: {0}")]
     MissingField(String),
+    #[error("unsupported scene version: {0}")]
     UnsupportedVersion(u32),
+    #[error("duplicate entity: {}", .0 .0)]
     DuplicateEntity(SceneEntityId),
+    #[error("missing parent entity: {}", .0 .0)]
     MissingParent(SceneEntityId),
-    UnknownEntity {
-        line: usize,
-        id: u64,
-    },
+    #[error("unknown entity {id} at line {line}")]
+    UnknownEntity { line: usize, id: u64 },
+    #[error("entity tree mismatch: {}", .0 .0)]
     TreeMismatch(SceneEntityId),
 }
 impl SceneError {
@@ -394,32 +398,6 @@ impl SceneError {
         self
     }
 }
-impl fmt::Display for SceneError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Io { path, reason } => write!(f, "scene I/O failed for {path}: {reason}"),
-            Self::Parse {
-                line,
-                field,
-                reason,
-                path,
-            } => write!(
-                f,
-                "scene parse error{} at line {line}, field {field}: {reason}",
-                path.as_ref()
-                    .map(|p| format!(" in {}", p.display()))
-                    .unwrap_or_default()
-            ),
-            Self::MissingField(x) => write!(f, "missing scene field: {x}"),
-            Self::UnsupportedVersion(v) => write!(f, "unsupported scene version: {v}"),
-            Self::DuplicateEntity(x) => write!(f, "duplicate entity: {}", x.0),
-            Self::MissingParent(x) => write!(f, "missing parent entity: {}", x.0),
-            Self::UnknownEntity { line, id } => write!(f, "unknown entity {id} at line {line}"),
-            Self::TreeMismatch(x) => write!(f, "entity tree mismatch: {}", x.0),
-        }
-    }
-}
-impl Error for SceneError {}
 impl From<std::io::Error> for SceneError {
     fn from(e: std::io::Error) -> Self {
         Self::Io {

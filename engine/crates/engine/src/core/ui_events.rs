@@ -1,6 +1,6 @@
 //! E22: structured UI event bindings.
 
-use std::{collections::BTreeMap, fmt};
+use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum UiEventType {
@@ -208,26 +208,17 @@ impl UiEvents {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum UiEventError {
+    #[error("malformed event binding: {0}")]
     Malformed(String),
+    #[error("unknown event type: {0}")]
     UnknownEvent(String),
+    #[error("unknown event field: {0}")]
     UnknownField(String),
+    #[error("event function is required")]
     MissingFunction,
 }
-
-impl fmt::Display for UiEventError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Malformed(value) => write!(f, "malformed event binding: {value}"),
-            Self::UnknownEvent(value) => write!(f, "unknown event type: {value}"),
-            Self::UnknownField(value) => write!(f, "unknown event field: {value}"),
-            Self::MissingFunction => write!(f, "event function is required"),
-        }
-    }
-}
-
-impl std::error::Error for UiEventError {}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct UiEventDiagnostic {

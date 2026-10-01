@@ -8,8 +8,6 @@
 //! 本模块只在**边界**被调用——场景加载、编辑提交、迁移工具——不参与帧循环。
 //! 运行时读的是 ECS 里的类型化组件，不是字符串。
 
-use std::{error::Error, fmt};
-
 use super::component::{
     CAMERA_COMPONENT, Camera, Camera2D, Camera3D, Camera3dError, CameraBounds, CameraProjection,
     PROJECTION_FIELD,
@@ -17,33 +15,24 @@ use super::component::{
 use crate::core::{math3d::Vec3, transform::Vec2};
 
 /// `Camera2D` 组件串的解析错误。
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum Camera2dComponentError {
     /// 空串不是一个相机。
+    #[error("camera2d component is empty")]
     Empty,
     /// 缺 `center` / `zoom` 这类必填字段。
+    #[error("missing camera2d field: {0}")]
     MissingField(&'static str),
     /// 字段不是 `key=value` 或数值/形状不对。
+    #[error("malformed camera2d field: {0}")]
     MalformedField(String),
     /// 未知键：报错而不是忽略。
+    #[error("unknown camera2d field: {0}")]
     UnknownField(String),
     /// 通过文法但语义非法（zoom <= 0、非有限、bounds 反转等）。
+    #[error("invalid camera2d: {0}")]
     Invalid(String),
 }
-
-impl fmt::Display for Camera2dComponentError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Empty => write!(formatter, "camera2d component is empty"),
-            Self::MissingField(field) => write!(formatter, "missing camera2d field: {field}"),
-            Self::MalformedField(field) => write!(formatter, "malformed camera2d field: {field}"),
-            Self::UnknownField(field) => write!(formatter, "unknown camera2d field: {field}"),
-            Self::Invalid(message) => write!(formatter, "invalid camera2d: {message}"),
-        }
-    }
-}
-
-impl std::error::Error for Camera2dComponentError {}
 
 fn parse_component_number(raw: &str, field: &str) -> Result<f32, Camera2dComponentError> {
     raw.parse::<f32>()
@@ -168,31 +157,24 @@ impl Camera2D {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum Camera3dComponentError {
     /// A field was not `key=value` as the scene format requires.
+    #[error("malformed Camera3D field: {0}")]
     MalformedField(String),
     /// A required field (`position`/`target`/`fov`/`near`/`far`) was missing.
+    #[error("missing Camera3D field: {0}")]
     MissingField(&'static str),
     /// A numeric or vector field could not be parsed.
+    #[error("invalid Camera3D value: {0}")]
     InvalidValue(String),
     /// The perspective parameters were invalid (fov, near, far).
+    #[error("invalid Camera3D perspective parameters")]
     InvalidPerspective,
     /// The camera looked at its own position or had a degenerate up vector.
+    #[error("invalid Camera3D look-at parameters")]
     InvalidLookAt,
 }
-impl fmt::Display for Camera3dComponentError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::MalformedField(field) => write!(f, "malformed Camera3D field: {field}"),
-            Self::MissingField(field) => write!(f, "missing Camera3D field: {field}"),
-            Self::InvalidValue(value) => write!(f, "invalid Camera3D value: {value}"),
-            Self::InvalidPerspective => write!(f, "invalid Camera3D perspective parameters"),
-            Self::InvalidLookAt => write!(f, "invalid Camera3D look-at parameters"),
-        }
-    }
-}
-impl Error for Camera3dComponentError {}
 
 impl Camera3D {
     /// Parses the scene component string written by the editor:

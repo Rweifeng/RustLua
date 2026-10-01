@@ -5,8 +5,7 @@ use engine::core::{
     scene::{Scene, SceneError},
 };
 use std::{
-    error::Error,
-    fmt, fs,
+    fs,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -403,36 +402,22 @@ fn unique_token() -> u128 {
         .unwrap_or(0)
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum DocumentError {
+    #[error("场景尚未命名，请使用另存为选择文件路径")]
     MissingPath,
+    #[error("当前项目没有打开的场景")]
     NoCurrentScene,
-    Project(ProjectError),
-    Scene(SceneError),
-    Prefab(PrefabError),
+    #[error("项目文档错误：{0}")]
+    Project(#[from] ProjectError),
+    #[error("场景文档错误：{0}")]
+    Scene(#[source] SceneError),
+    #[error("Prefab 文档错误：{0}")]
+    Prefab(#[source] PrefabError),
+    #[error("Prefab 文档错误：{0}")]
     InvalidPrefab(String),
+    #[error("文档 I/O 失败：{}：{message}", path.display())]
     Io { path: PathBuf, message: String },
-}
-
-impl fmt::Display for DocumentError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::MissingPath => write!(f, "场景尚未命名，请使用另存为选择文件路径"),
-            Self::NoCurrentScene => write!(f, "当前项目没有打开的场景"),
-            Self::Project(error) => write!(f, "项目文档错误：{error}"),
-            Self::Scene(error) => write!(f, "场景文档错误：{error}"),
-            Self::Prefab(error) => write!(f, "Prefab 文档错误：{error}"),
-            Self::InvalidPrefab(error) => write!(f, "Prefab 文档错误：{error}"),
-            Self::Io { path, message } => write!(f, "文档 I/O 失败：{}：{message}", path.display()),
-        }
-    }
-}
-
-impl Error for DocumentError {}
-impl From<ProjectError> for DocumentError {
-    fn from(error: ProjectError) -> Self {
-        Self::Project(error)
-    }
 }
 
 #[cfg(test)]

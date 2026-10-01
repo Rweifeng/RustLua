@@ -1,6 +1,6 @@
 //! PNG decoding and CPU-side texture asset representation for M3-02.
 
-use std::{error::Error, fmt, path::Path};
+use std::path::Path;
 
 /// The color interpretation to use when creating the GPU texture.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -27,13 +27,13 @@ impl TextureAsset {
         color_space: TextureColorSpace,
     ) -> Result<Self, TextureError> {
         let path = path.as_ref();
-        let bytes = std::fs::read(path).map_err(|source| TextureError::Read {
+        let bytes = std::fs::read(path).map_err(|reason| TextureError::Read {
             path: path.display().to_string(),
-            source: source.to_string(),
+            reason: reason.to_string(),
         })?;
-        let bytes = crate::core::pack::decode(&bytes).map_err(|source| TextureError::Read {
+        let bytes = crate::core::pack::decode(&bytes).map_err(|reason| TextureError::Read {
             path: path.display().to_string(),
-            source,
+            reason,
         })?;
         Self::from_png_bytes(&bytes, color_space).map_err(|error| TextureError::Decode {
             path: path.display().to_string(),
@@ -171,46 +171,46 @@ pub fn save_png_rgba8(
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
     {
-        std::fs::create_dir_all(parent).map_err(|source| TextureError::Write {
+        std::fs::create_dir_all(parent).map_err(|reason| TextureError::Write {
             path: path.display().to_string(),
-            source: source.to_string(),
+            reason: reason.to_string(),
         })?;
     }
     image
         .save_with_format(path, image::ImageFormat::Png)
-        .map_err(|source| TextureError::Write {
+        .map_err(|reason| TextureError::Write {
             path: path.display().to_string(),
-            source: source.to_string(),
+            reason: reason.to_string(),
         })?;
     Ok(())
 }
 
 /// Errors returned by PNG decoding and texture data validation.
-#[derive(Clone, Debug, Eq, PartialEq)]
+///
+/// 文本字段统一命名为 `reason`（而不是 `source`）：thiserror 会把名为 `source` 的字段
+/// 视为错误源并要求它实现 `std::error::Error`，而这里携带的是已格式化的文本。
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum TextureError {
+    #[error("texture input is empty")]
     EmptyInput,
-    Read {
-        path: String,
-        source: String,
-    },
-    Write {
-        path: String,
-        source: String,
-    },
-    Decode {
-        path: String,
-        reason: String,
-    },
-    TooLarge {
-        width: u32,
-        height: u32,
-    },
+    #[error("could not read PNG {path}: {reason}")]
+    Read { path: String, reason: String },
+    #[error("could not write PNG {path}: {reason}")]
+    Write { path: String, reason: String },
+    #[error("could not decode PNG {path}: {reason}")]
+    Decode { path: String, reason: String },
+    #[error("texture dimensions overflow RGBA8 size: {width}x{height}")]
+    TooLarge { width: u32, height: u32 },
+    #[error(
+        "decoded PNG size mismatch for {width}x{height}: got {actual} bytes, expected {expected}"
+    )]
     InvalidDecodedSize {
         width: u32,
         height: u32,
         actual: usize,
         expected: usize,
     },
+    #[error("invalid RGBA8 size for {width}x{height}: got {actual} bytes, expected {expected}")]
     InvalidRgba8Size {
         width: u32,
         height: u32,
@@ -218,45 +218,6 @@ pub enum TextureError {
         expected: usize,
     },
 }
-
-impl fmt::Display for TextureError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::EmptyInput => write!(formatter, "texture input is empty"),
-            Self::Read { path, source } => write!(formatter, "could not read PNG {path}: {source}"),
-            Self::Write { path, source } => {
-                write!(formatter, "could not write PNG {path}: {source}")
-            }
-            Self::Decode { path, reason } => {
-                write!(formatter, "could not decode PNG {path}: {reason}")
-            }
-            Self::TooLarge { width, height } => write!(
-                formatter,
-                "texture dimensions overflow RGBA8 size: {width}x{height}"
-            ),
-            Self::InvalidDecodedSize {
-                width,
-                height,
-                actual,
-                expected,
-            } => write!(
-                formatter,
-                "decoded PNG size mismatch for {width}x{height}: got {actual} bytes, expected {expected}"
-            ),
-            Self::InvalidRgba8Size {
-                width,
-                height,
-                actual,
-                expected,
-            } => write!(
-                formatter,
-                "invalid RGBA8 size for {width}x{height}: got {actual} bytes, expected {expected}"
-            ),
-        }
-    }
-}
-
-impl Error for TextureError {}
 
 #[cfg(test)]
 mod tests {

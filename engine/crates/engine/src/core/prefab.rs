@@ -6,8 +6,7 @@ use crate::core::{
 };
 use std::{
     collections::BTreeMap,
-    error::Error,
-    fmt, fs,
+    fs,
     path::{Path, PathBuf},
     str::FromStr,
 };
@@ -479,25 +478,35 @@ fn unescape(v: &str, line: usize) -> Result<String, PrefabError> {
     Ok(o)
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum PrefabError {
-    Io {
-        path: String,
-        reason: String,
-    },
+    #[error("prefab I/O failed for {path}: {reason}")]
+    Io { path: String, reason: String },
+    #[error(
+        "prefab parse error{} at line {line}: {reason}",
+        .path.as_ref().map(|p| format!(" in {}", p.display())).unwrap_or_default()
+    )]
     Parse {
         line: usize,
         reason: String,
         path: Option<PathBuf>,
     },
+    #[error("missing prefab field: {0}")]
     MissingField(String),
+    #[error("unsupported prefab version: {0}")]
     UnsupportedVersion(u32),
+    #[error("missing prefab entity: {}", .0 .0)]
     MissingEntity(SceneEntityId),
+    #[error("prefab tree mismatch: {}", .0 .0)]
     TreeMismatch(SceneEntityId),
-    Scene(SceneError),
+    #[error(transparent)]
+    Scene(#[from] SceneError),
+    #[error("invalid prefab override: {0}")]
     InvalidOverride(String),
+    #[error("scene entity ID space exhausted")]
     IdExhausted,
 }
+
 impl PrefabError {
     fn with_path(mut self, path: &Path) -> Self {
         if let Self::Parse { path: slot, .. } = &mut self {
@@ -506,28 +515,7 @@ impl PrefabError {
         self
     }
 }
-impl fmt::Display for PrefabError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Io { path, reason } => write!(f, "prefab I/O failed for {path}: {reason}"),
-            Self::Parse { line, reason, path } => write!(
-                f,
-                "prefab parse error{} at line {line}: {reason}",
-                path.as_ref()
-                    .map(|p| format!(" in {}", p.display()))
-                    .unwrap_or_default()
-            ),
-            Self::MissingField(x) => write!(f, "missing prefab field: {x}"),
-            Self::UnsupportedVersion(v) => write!(f, "unsupported prefab version: {v}"),
-            Self::MissingEntity(id) => write!(f, "missing prefab entity: {}", id.0),
-            Self::TreeMismatch(id) => write!(f, "prefab tree mismatch: {}", id.0),
-            Self::Scene(e) => e.fmt(f),
-            Self::InvalidOverride(x) => write!(f, "invalid prefab override: {x}"),
-            Self::IdExhausted => write!(f, "scene entity ID space exhausted"),
-        }
-    }
-}
-impl Error for PrefabError {}
+
 impl From<std::io::Error> for PrefabError {
     fn from(e: std::io::Error) -> Self {
         Self::Io {

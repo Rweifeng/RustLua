@@ -1,6 +1,6 @@
 //! E27: a small, versioned editor extension registry.
 
-use std::{collections::BTreeMap, fmt, panic::AssertUnwindSafe};
+use std::{collections::BTreeMap, panic::AssertUnwindSafe};
 
 pub const PLUGIN_API_VERSION: u32 = 1;
 
@@ -17,33 +17,24 @@ pub trait EditorPlugin {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum PluginError {
+    #[error("plugin {0:?} is already registered")]
     Duplicate(String),
+    #[error("plugin {0:?} is not registered")]
     Missing(String),
+    #[error(
+        "plugin {plugin:?} uses API v{found}; editor requires v{}",
+        PLUGIN_API_VERSION
+    )]
     IncompatibleVersion { plugin: String, found: u32 },
+    #[error("plugin {0:?} failed to load")]
     Load(String),
+    #[error("plugin {0:?} failed to unload")]
     Unload(String),
+    #[error("plugin {0:?} panicked")]
     Panicked(String),
 }
-
-impl fmt::Display for PluginError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Duplicate(name) => write!(f, "plugin {name:?} is already registered"),
-            Self::Missing(name) => write!(f, "plugin {name:?} is not registered"),
-            Self::IncompatibleVersion { plugin, found } => write!(
-                f,
-                "plugin {plugin:?} uses API v{found}; editor requires v{PLUGIN_API_VERSION}"
-            ),
-            Self::Load(name) => write!(f, "plugin {name:?} failed to load"),
-            Self::Unload(name) => write!(f, "plugin {name:?} failed to unload"),
-            Self::Panicked(name) => write!(f, "plugin {name:?} panicked"),
-        }
-    }
-}
-
-impl std::error::Error for PluginError {}
 
 struct RegisteredPlugin {
     plugin: Box<dyn EditorPlugin>,

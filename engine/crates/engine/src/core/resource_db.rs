@@ -9,7 +9,6 @@
 use crate::core::resource_kind::ResourceKind;
 use std::{
     collections::HashMap,
-    error::Error,
     fmt, fs,
     path::{Path, PathBuf},
     str::FromStr,
@@ -666,46 +665,30 @@ fn unescape(value: &str) -> Result<String, ResourceDbError> {
     Ok(out)
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum ResourceDbError {
-    Io(std::io::Error),
+    #[error("resource database I/O failed: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("invalid asset UUID: {0}")]
     InvalidId(String),
+    #[error("invalid resource state: {0}")]
     InvalidStatus(String),
+    #[error("invalid resource kind: {0}")]
     InvalidKind(String),
+    #[error("invalid escaped field: {0}")]
     InvalidEscape(String),
+    #[error("unsupported resource database schema: {0}")]
     UnsupportedSchemaVersion(String),
+    #[error("malformed resource database line {line}")]
     Malformed { line: usize },
+    #[error("invalid project-relative asset path: {0}")]
     InvalidPath(String),
+    #[error("asset not found: {0}")]
     NotFound(AssetId),
+    #[error("asset path not found: {}", .0.display())]
     PathNotFound(PathBuf),
+    #[error("asset path already registered: {}", .0.display())]
     PathAlreadyRegistered(PathBuf),
-}
-impl fmt::Display for ResourceDbError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Io(e) => write!(f, "resource database I/O failed: {e}"),
-            Self::InvalidId(v) => write!(f, "invalid asset UUID: {v}"),
-            Self::InvalidStatus(v) => write!(f, "invalid resource state: {v}"),
-            Self::InvalidKind(v) => write!(f, "invalid resource kind: {v}"),
-            Self::InvalidEscape(v) => write!(f, "invalid escaped field: {v}"),
-            Self::UnsupportedSchemaVersion(v) => {
-                write!(f, "unsupported resource database schema: {v}")
-            }
-            Self::Malformed { line } => write!(f, "malformed resource database line {line}"),
-            Self::InvalidPath(v) => write!(f, "invalid project-relative asset path: {v}"),
-            Self::NotFound(id) => write!(f, "asset not found: {id}"),
-            Self::PathNotFound(p) => write!(f, "asset path not found: {}", p.display()),
-            Self::PathAlreadyRegistered(p) => {
-                write!(f, "asset path already registered: {}", p.display())
-            }
-        }
-    }
-}
-impl Error for ResourceDbError {}
-impl From<std::io::Error> for ResourceDbError {
-    fn from(value: std::io::Error) -> Self {
-        Self::Io(value)
-    }
 }
 
 #[cfg(test)]

@@ -3,7 +3,7 @@
 //! asks for the joint palette produced by the active clip at the current time and
 //! uploads it for GPU skinning.
 
-use std::{error::Error, fmt, path::Path};
+use std::path::Path;
 
 use crate::core::{
     gltf_asset::{GltfAsset, GltfChannelPath},
@@ -50,36 +50,29 @@ pub struct Animation3D {
 }
 
 /// Errors while building or driving a 3D animation.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum Animation3dError {
+    #[error("animation references missing skin {0}")]
     MissingSkin(usize),
+    #[error("skin has no joints")]
     EmptySkin,
+    #[error("skin references invalid joint node {0}")]
     InvalidJoint(usize),
+    #[error("unknown 3D animation clip: {0}")]
     UnknownClip(String),
+    #[error("duplicate 3D animation clip: {0}")]
     DuplicateClip(String),
+    #[error("mesh is not skinned (no skin in the glTF asset)")]
     NotSkinned,
+    #[error("Animation3D component is missing its mesh path")]
     MissingMesh,
+    #[error("invalid Animation3D mesh path: {0}")]
     InvalidMeshPath(String),
+    #[error("3D animation import failed: {0}")]
     Import(String),
+    #[error("invalid Animation3D component string: {0}")]
     Malformed(String),
 }
-impl fmt::Display for Animation3dError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::MissingSkin(index) => write!(f, "animation references missing skin {index}"),
-            Self::EmptySkin => write!(f, "skin has no joints"),
-            Self::InvalidJoint(index) => write!(f, "skin references invalid joint node {index}"),
-            Self::UnknownClip(name) => write!(f, "unknown 3D animation clip: {name}"),
-            Self::DuplicateClip(name) => write!(f, "duplicate 3D animation clip: {name}"),
-            Self::NotSkinned => write!(f, "mesh is not skinned (no skin in the glTF asset)"),
-            Self::MissingMesh => write!(f, "Animation3D component is missing its mesh path"),
-            Self::InvalidMeshPath(value) => write!(f, "invalid Animation3D mesh path: {value}"),
-            Self::Import(reason) => write!(f, "3D animation import failed: {reason}"),
-            Self::Malformed(reason) => write!(f, "invalid Animation3D component string: {reason}"),
-        }
-    }
-}
-impl Error for Animation3dError {}
 
 /// The `Animation3D` scene component value, parsed from the editor string:
 /// `mesh=<path>;clip=<name>;looped=true|false`.

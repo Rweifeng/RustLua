@@ -14,7 +14,7 @@
 //! v1 **仍然可以读**（旧存档零丢失），v2 会被旧引擎明确拒绝
 //! （`UnsupportedVersion`，不静默错读、不覆盖原文件）。
 
-use std::{collections::BTreeMap, error::Error, fmt};
+use std::collections::BTreeMap;
 
 /// The save file format version written by this engine.
 pub const CURRENT_SAVE_VERSION: u32 = 2;
@@ -26,28 +26,15 @@ pub const MIN_READABLE_SAVE_VERSION: u32 = 1;
 const VERSION_PREFIX: &str = "save_version=";
 
 /// Errors produced while encoding or decoding a save file.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum SaveError {
+    #[error("unsupported save version: {0}")]
     UnsupportedVersion(u32),
+    #[error("save file is missing its version header")]
     MissingVersion,
+    #[error("malformed save file at line {line}: {reason}")]
     Malformed { line: usize, reason: String },
 }
-
-impl fmt::Display for SaveError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::UnsupportedVersion(version) => {
-                write!(f, "unsupported save version: {version}")
-            }
-            Self::MissingVersion => write!(f, "save file is missing its version header"),
-            Self::Malformed { line, reason } => {
-                write!(f, "malformed save file at line {line}: {reason}")
-            }
-        }
-    }
-}
-
-impl Error for SaveError {}
 
 /// Escapes one key or value so that a data row never contains a raw TAB, CR or
 /// LF. All other characters (including CJK) pass through unchanged, so plain

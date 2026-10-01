@@ -241,30 +241,15 @@ impl Material {
 }
 
 /// `Material` 的校验错误。
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, thiserror::Error)]
 pub enum MaterialError {
+    #[error("material base color must be finite: {0}")]
     NonFiniteBaseColor(f32),
+    #[error("material metallic must be in 0..=1: {0}")]
     MetallicOutOfRange(f32),
+    #[error("material roughness must be in 0..=1: {0}")]
     RoughnessOutOfRange(f32),
 }
-
-impl std::fmt::Display for MaterialError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::NonFiniteBaseColor(value) => {
-                write!(formatter, "material base color must be finite: {value}")
-            }
-            Self::MetallicOutOfRange(value) => {
-                write!(formatter, "material metallic must be in 0..=1: {value}")
-            }
-            Self::RoughnessOutOfRange(value) => {
-                write!(formatter, "material roughness must be in 0..=1: {value}")
-            }
-        }
-    }
-}
-
-impl std::error::Error for MaterialError {}
 
 /// 精灵的 `tint` + 贴图路径 → 统一材质。
 #[must_use]

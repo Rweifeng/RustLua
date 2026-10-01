@@ -4,8 +4,6 @@
 //! 收敛前 2D 在 `transform.rs`、3D 在 `transform3d.rs`，两边的解析错误类型、组件串格式与
 //! "谁有权写变换"的说法各一套；现在它们只在一个模块里，互转规则也写在同一处。
 
-use std::{error::Error, fmt};
-
 use crate::core::{
     entity::EntityId,
     math3d::{Mat4, Math3dError, Quat, Vec3},
@@ -13,32 +11,21 @@ use crate::core::{
 };
 
 /// Errors while parsing the engine's scene Transform component string.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum TransformParseError {
     /// A field was not `key=number` as the scene format requires.
+    #[error("malformed transform field: {0}")]
     MalformedField(String),
     /// A required field (`x`, `y`, `rotation`, `scale_x`, `scale_y`) was missing.
+    #[error("missing transform field: {0}")]
     MissingField(&'static str),
     /// A numeric field could not be parsed or was not finite.
+    #[error("transform contains a non-finite number")]
     NonFinite,
     /// A scale component was zero or negative.
+    #[error("transform scale must be positive")]
     NonPositiveScale,
 }
-
-impl fmt::Display for TransformParseError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::MalformedField(field) => {
-                write!(f, "malformed transform field: {field}")
-            }
-            Self::MissingField(field) => write!(f, "missing transform field: {field}"),
-            Self::NonFinite => write!(f, "transform contains a non-finite number"),
-            Self::NonPositiveScale => write!(f, "transform scale must be positive"),
-        }
-    }
-}
-
-impl Error for TransformParseError {}
 
 /// A two-dimensional vector used by the minimal 2D gameplay components.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -231,26 +218,15 @@ impl Velocity {
 }
 
 /// Errors returned by the transform integration system.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, thiserror::Error)]
 pub enum TransformSystemError {
     /// A simulation step must be finite and non-negative.
+    #[error("invalid transform delta time: {0}")]
     InvalidDeltaTime(f32),
     /// The requested entity was invalid while applying an update.
+    #[error("invalid entity: {0}")]
     InvalidEntity(EntityId),
 }
-
-impl fmt::Display for TransformSystemError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InvalidDeltaTime(delta_seconds) => {
-                write!(formatter, "invalid transform delta time: {delta_seconds}")
-            }
-            Self::InvalidEntity(entity) => write!(formatter, "invalid entity: {entity}"),
-        }
-    }
-}
-
-impl Error for TransformSystemError {}
 
 impl From<WorldError> for TransformSystemError {
     fn from(error: WorldError) -> Self {
@@ -290,34 +266,24 @@ pub fn integrate_velocity(
     }
     Ok(updated)
 }
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum Transform3dParseError {
     /// A field was not `key=<vector>` as the scene format requires.
+    #[error("malformed Transform3D field: {0}")]
     MalformedField(String),
     /// A required field (`position`/`rotation`/`scale`) was missing.
+    #[error("missing Transform3D field: {0}")]
     MissingField(&'static str),
     /// A vector component could not be parsed or was not finite.
+    #[error("invalid Transform3D vector: {0}")]
     InvalidVector(String),
     /// A scale component was zero or negative.
+    #[error("Transform3D scale must be positive")]
     NonPositiveScale,
     /// The rotation quaternion was not unit length.
+    #[error("Transform3D rotation quaternion must be unit length")]
     NonUnitQuaternion,
 }
-impl fmt::Display for Transform3dParseError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::MalformedField(field) => write!(f, "malformed Transform3D field: {field}"),
-            Self::MissingField(field) => write!(f, "missing Transform3D field: {field}"),
-            Self::InvalidVector(value) => write!(f, "invalid Transform3D vector: {value}"),
-            Self::NonPositiveScale => write!(f, "Transform3D scale must be positive"),
-            Self::NonUnitQuaternion => {
-                write!(f, "Transform3D rotation quaternion must be unit length")
-            }
-        }
-    }
-}
-impl Error for Transform3dParseError {}
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Transform3D {
     pub position: Vec3,

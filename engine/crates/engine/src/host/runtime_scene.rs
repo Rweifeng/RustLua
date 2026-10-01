@@ -374,7 +374,7 @@ pub(crate) struct CachedTilemapLayer {
 }
 
 impl RuntimeScene {
-    pub fn new(project_root: Option<&Path>) -> Result<Self, String> {
+    pub fn new(project_root: Option<&Path>) -> anyhow::Result<Self> {
         let scene = load_runtime_scene(project_root);
         Self::init(project_root, scene, true, false)
     }
@@ -383,20 +383,20 @@ impl RuntimeScene {
     /// 发布包 → 用户数据目录（`%APPDATA%\<app>`），开发工程 → 工程内。
     /// 不显式声明时 `user_dir::is_release_pack` 仍能凭 `<exe>/pack` + `release.toml`
     /// 认出双击启动的发布包。
-    pub fn new_with_layout(project_root: Option<&Path>, packaged: bool) -> Result<Self, String> {
+    pub fn new_with_layout(project_root: Option<&Path>, packaged: bool) -> anyhow::Result<Self> {
         let scene = load_runtime_scene(project_root);
         Self::init(project_root, scene, true, packaged)
     }
 
     /// 实例化一个具体场景（编辑器"运行当前场景"用），而非工程的启动场景。
     /// 编辑器处理的永远是开发工程：玩家设置留在工程根（面板直接编辑那份）。
-    pub fn from_scene(project_root: Option<&Path>, scene: Scene) -> Result<Self, String> {
+    pub fn from_scene(project_root: Option<&Path>, scene: Scene) -> anyhow::Result<Self> {
         Self::init(project_root, scene, true, false)
     }
 
     /// Instantiates a scene WITHOUT running the project script, for the editor's
     /// scene view (render the scene as edited, no game logic).
-    pub fn from_scene_edit(project_root: Option<&Path>, scene: Scene) -> Result<Self, String> {
+    pub fn from_scene_edit(project_root: Option<&Path>, scene: Scene) -> anyhow::Result<Self> {
         Self::init(project_root, scene, false, false)
     }
 
@@ -457,34 +457,31 @@ impl RuntimeScene {
         &mut self,
         entity: SceneEntityId,
         value: crate::core::spatial_transform::LocalTransform,
-    ) -> Result<bool, String> {
+    ) -> anyhow::Result<bool> {
         let Some(runtime) = self.script.scene_entity_handle(entity) else {
             return Ok(false);
         };
         let written = self
             .script
-            .with_world_mut(|world| -> Result<bool, String> {
+            .with_world_mut(|world| -> anyhow::Result<bool> {
                 if world.get::<Transform3D>(runtime).ok().flatten().is_some() {
                     let transform = Transform3D {
                         position: value.translation,
                         rotation: value.rotation,
                         scale: value.scale,
                     };
-                    world
-                        .insert(runtime, transform)
-                        .map_err(|error| error.to_string())?;
+                    world.insert(runtime, transform)?;
                     return Ok(true);
                 }
                 if world.get::<Transform>(runtime).ok().flatten().is_some() {
                     let flat =
                         crate::core::spatial_transform::plane_local(value).ok_or_else(|| {
-                            "this entity only has a 2D Transform; the value is not planar \
+                            anyhow::anyhow!(
+                                "this entity only has a 2D Transform; the value is not planar \
                          (tilt, z offset or z scale) — flattening would drop it"
-                                .to_owned()
+                            )
                         })?;
-                    world
-                        .insert(runtime, flat)
-                        .map_err(|error| error.to_string())?;
+                    world.insert(runtime, flat)?;
                     return Ok(true);
                 }
                 Ok(false)
@@ -1208,20 +1205,20 @@ impl RuntimeScene {
         x: usize,
         y: usize,
         value: u8,
-    ) -> Result<bool, String> {
+    ) -> anyhow::Result<bool> {
         let Some(handle) = self.script.scene_entity_handle(id) else {
             return Ok(false);
         };
         let mut updated = false;
-        let mut failure: Option<String> = None;
+        let mut failure: Option<anyhow::Error> = None;
         self.script
             .with_world_mut(|world| match world.get_mut::<Tilemap>(handle) {
                 Ok(Some(tilemap)) => match tilemap.set_cell(x, y, value) {
                     Ok(()) => updated = true,
-                    Err(error) => failure = Some(error.to_string()),
+                    Err(error) => failure = Some(error.into()),
                 },
                 Ok(None) => {}
-                Err(error) => failure = Some(error.to_string()),
+                Err(error) => failure = Some(error.into()),
             });
         match failure {
             Some(message) => Err(message),
@@ -1300,7 +1297,7 @@ impl RuntimeScene {
         scene: Scene,
         run_script: bool,
         packaged: bool,
-    ) -> Result<Self, String> {
+    ) -> anyhow::Result<Self> {
         // docs/54 §4.1：`parent` 的默认语义由**场景自身**声明，而不是由宿主猜。未声明 ⇒ 组织
         // 关系（v2 历史语义），`spatial=local` ⇒ 父子参与空间组合（迁移后的场景）。宿主仍可用
         // `set_spatial_inheritance` 覆盖这次判断（回滚档）。
@@ -1308,20 +1305,16 @@ impl RuntimeScene {
         if let Some(issue) = crate::core::scene_space::spatial_mode_issue(&scene) {
             tracing::warn!(target: "scene", scene = %scene.name, "{issue}");
         }
-        let mut script = LuaRuntime::new().map_err(|error| error.to_string())?;
+        let mut script = LuaRuntime::new()?;
         // Project root must be set before instantiation so scene components that
         // load assets (e.g. Animation3D) can resolve their mesh paths.
         if let Some(root) = project_root {
             script.set_project_root(root.to_path_buf());
         }
         let instantiated = if run_script {
-            script
-                .instantiate_scene(&scene)
-                .map_err(|error| error.to_string())?
+            script.instantiate_scene(&scene)?
         } else {
-            script
-                .instantiate_scene_with_editor_visibility(&scene, true)
-                .map_err(|error| error.to_string())?
+            script.instantiate_scene_with_editor_visibility(&scene, true)?
         };
         tracing::info!(target: "scene", "[scene] loaded name={} entities={}", scene.name, scene.entities.len());
         tracing::info!(target: "ecs", "[ecs] world initialized entities={instantiated}");
@@ -1356,9 +1349,7 @@ impl RuntimeScene {
             script.set_save_path(roots.save_file());
             let script_path = root.join("scripts/main.lua");
             if script_path.is_file() {
-                script
-                    .execute_project_script(&script_path)
-                    .map_err(|error| error.to_string())?;
+                script.execute_project_script(&script_path)?;
             } else {
                 tracing::info!(target: "script", path = %script_path.display(), "[script] game project has no scripts/main.lua; script runtime idle");
             }
@@ -1370,8 +1361,7 @@ impl RuntimeScene {
         let declared_camera = script.with_world(declared_camera_2d_in);
         let camera = match declared_camera {
             Some(camera) => camera,
-            None => Camera2D::new(crate::core::camera::DEFAULT_2D_CAMERA_CENTER, 1.0)
-                .map_err(|error| error.to_string())?,
+            None => Camera2D::new(crate::core::camera::DEFAULT_2D_CAMERA_CENTER, 1.0)?,
         };
         if declared_camera.is_some() {
             tracing::info!(
@@ -1902,7 +1892,7 @@ impl RuntimeScene {
         steps: u32,
         delta_seconds: f32,
         input: &InputSnapshot,
-    ) -> Result<(), String> {
+    ) -> anyhow::Result<()> {
         self.script.set_delta(delta_seconds);
         // M20-06：把真实手柄设备状态合并进本帧输入（只改按钮/轴，不影响键鼠）。
         // 无设备时 XInput 返回未连接，快照与传入值等价，headless 行为不变。
@@ -1971,16 +1961,14 @@ impl RuntimeScene {
         steps: u32,
         delta_seconds: f32,
         step_input: &mut InputSnapshot,
-    ) -> Result<(), String> {
+    ) -> anyhow::Result<()> {
         let mut report = FrameScheduleReport {
             steps,
             ..FrameScheduleReport::default()
         };
         for step in 0..steps {
             self.pending_step_input = Some(step_input.clone());
-            let step_report = step_scheduler
-                .run(self, delta_seconds)
-                .map_err(|error| error.to_string())?;
+            let step_report = step_scheduler.run(self, delta_seconds)?;
             report.merge(&step_report);
             // One-shot edges are consumed by the first fixed step of a frame;
             // clear them so catch-up steps in the same frame don't re-fire
@@ -1990,9 +1978,7 @@ impl RuntimeScene {
             }
         }
         let elapsed = delta_seconds * steps as f32;
-        let frame_report = frame_scheduler
-            .run(self, elapsed)
-            .map_err(|error| error.to_string())?;
+        let frame_report = frame_scheduler.run(self, elapsed)?;
         report.merge(&frame_report);
         self.last_schedule = Some(report);
         if tracing::enabled!(tracing::Level::DEBUG)
@@ -2062,12 +2048,9 @@ impl RuntimeScene {
     /// 宿主此前只调 `reload_if_changed()`，那只会看到 `scripts/main.lua`；实体脚本改了却"状态
     /// 未变"会让"热重载不生效"变成一个没有线索的问题。这个入口一次返回两件事：
     /// 工程级脚本的状态与**被重载的实体脚本文件数**。
-    pub fn reload_scripts(&mut self) -> Result<(ReloadStatus, usize), String> {
-        let status = self.script.reload_if_changed().map_err(|e| e.to_string())?;
-        let entity_scripts = self
-            .script
-            .reload_entity_scripts()
-            .map_err(|e| e.to_string())?;
+    pub fn reload_scripts(&mut self) -> anyhow::Result<(ReloadStatus, usize)> {
+        let status = self.script.reload_if_changed()?;
+        let entity_scripts = self.script.reload_entity_scripts()?;
         Ok((status, entity_scripts))
     }
 
@@ -2553,7 +2536,7 @@ impl RuntimeScene {
             .unwrap_or_default()
     }
 
-    pub fn vertices(&mut self, width: u32, height: u32) -> Result<SceneMesh, String> {
+    pub fn vertices(&mut self, width: u32, height: u32) -> anyhow::Result<SceneMesh> {
         self.viewport_width = width.max(1);
         self.viewport_height = height.max(1);
         // 拆分批 8：新的一帧 ⇒ 上一帧定下的 3D 视图不再可用（下面按本帧视口重新定帧）。
@@ -2564,8 +2547,7 @@ impl RuntimeScene {
         // WP2：提取前先把局部变换传播成世界变换（开启空间继承时才有实际效果；关闭时这一步
         // 只会清掉遗留的世界变换组件，消费者读到的仍是局部值 = 旧行为）。
         self.propagate_spatial_now();
-        let viewport = Viewport::new(width.max(1) as f32, height.max(1) as f32)
-            .map_err(|error| error.to_string())?;
+        let viewport = Viewport::new(width.max(1) as f32, height.max(1) as f32)?;
         // WP4 ⑧：把本帧渲染用的 2D 相机与视口回填给 Lua，供 `camera2d.screen_to_world`
         // 一类换算使用。帧首回填 ⇒ 脚本看到的是上一帧末相机控制器算出的、也就是玩家刚看到的
         // 那一帧的投影；脚本在首帧渲染前调用换算会报错而不是猜一个默认相机。
@@ -2597,11 +2579,7 @@ impl RuntimeScene {
         // 保守不剔除，绝不误丢。纯 2D 画面仍按 2D 视口裁剪，5 万精灵档的收益不变。
         let world_view_is_3d = self.world_sprite_depth && self.world_view_has_3d_content();
         let cull_bounds = if self.sprite_culling && !world_view_is_3d {
-            Some(
-                self.camera
-                    .visible_world_bounds(viewport)
-                    .map_err(|error| error.to_string())?,
-            )
+            Some(self.camera.visible_world_bounds(viewport)?)
         } else {
             None
         };
@@ -2652,7 +2630,7 @@ impl RuntimeScene {
                 texture_handles,
                 ..
             } = self;
-            let mut failure: Option<String> = None;
+            let mut failure: Option<anyhow::Error> = None;
             let inherit = self.spatial_active;
             // docs/54 §4.2：世界视图的可见遮罩。被拦掉的精灵**不占序号、不产顶点**——
             // "不在这个视图里"不是"透明"。
@@ -2757,7 +2735,7 @@ impl RuntimeScene {
                                 let sampled = match sprite.with_uv(uv_min, uv_max) {
                                     Ok(sampled) => sampled,
                                     Err(error) => {
-                                        failure = Some(error.to_string());
+                                        failure = Some(error.into());
                                         return;
                                     }
                                 };
@@ -2855,7 +2833,7 @@ impl RuntimeScene {
                 texture_handles,
                 ..
             } = self;
-            let mut failure: Option<String> = None;
+            let mut failure: Option<anyhow::Error> = None;
             let inherit = self.spatial_active;
             let view_mask = self.view_world_mask;
             let mut filtered = 0usize;
@@ -2881,7 +2859,7 @@ impl RuntimeScene {
                     let sprite = match quad.to_sprite() {
                         Ok(sprite) => sprite,
                         Err(error) => {
-                            failure = Some(error.to_string());
+                            failure = Some(error.into());
                             return;
                         }
                     };
@@ -2962,54 +2940,46 @@ impl RuntimeScene {
             // docs/54 §8-④：世界通道的剔除量尺必须与世界视图一致——有 3D 内容时收集阶段
             // 已经按"全收"处理（见上面的 `world_view_is_3d`），这里同样不再用 2D 矩形过滤。
             let world_cull_bounds = if world_view_is_3d { None } else { cull_bounds };
-            self.sprite_batch
-                .build_world_into(
-                    &mut world_sprites,
-                    &mut world_sprite_draws,
-                    world_cull_bounds,
-                    self.sprite_parallelism,
-                )
-                .map_err(|error| error.to_string())?;
+            self.sprite_batch.build_world_into(
+                &mut world_sprites,
+                &mut world_sprite_draws,
+                world_cull_bounds,
+                self.sprite_parallelism,
+            )?;
         } else {
             vertices.reserve(self.sprite_batch.len() * 6);
             draw_ranges.reserve(2);
-            self.sprite_batch
-                .build_overlay_into(
-                    self.camera,
-                    viewport,
-                    &mut vertices,
-                    &mut draw_ranges,
-                    self.sprite_parallelism,
-                    self.sprite_culling,
-                )
-                .map_err(|error| error.to_string())?;
+            self.sprite_batch.build_overlay_into(
+                self.camera,
+                viewport,
+                &mut vertices,
+                &mut draw_ranges,
+                self.sprite_parallelism,
+                self.sprite_culling,
+            )?;
         }
         // 显式屏幕空间的批次：无论这一帧走不走世界通道都走 overlay 通道。
         let mut overlay_ranges: Vec<SpriteDrawBatch> = Vec::new();
         let mut screen_ranges: Vec<SpriteDrawBatch> = Vec::new();
         if !self.overlay_batch.is_empty() {
-            self.overlay_batch
-                .build_overlay_into(
-                    self.camera,
-                    viewport,
-                    &mut vertices,
-                    &mut overlay_ranges,
-                    self.sprite_parallelism,
-                    self.sprite_culling,
-                )
-                .map_err(|error| error.to_string())?;
+            self.overlay_batch.build_overlay_into(
+                self.camera,
+                viewport,
+                &mut vertices,
+                &mut overlay_ranges,
+                self.sprite_parallelism,
+                self.sprite_culling,
+            )?;
         }
         if !self.screen_batch.is_empty() {
-            self.screen_batch
-                .build_overlay_into(
-                    self.camera,
-                    viewport,
-                    &mut vertices,
-                    &mut screen_ranges,
-                    self.sprite_parallelism,
-                    self.sprite_culling,
-                )
-                .map_err(|error| error.to_string())?;
+            self.screen_batch.build_overlay_into(
+                self.camera,
+                viewport,
+                &mut vertices,
+                &mut screen_ranges,
+                self.sprite_parallelism,
+                self.sprite_culling,
+            )?;
         }
 
         let mut vector_vertices = Vec::with_capacity(256);
@@ -3207,7 +3177,7 @@ impl RuntimeScene {
 
     /// Pushes every active particle as a small white-texture quad in world
     /// space, so they sit with the scene and fade out with their color alpha.
-    fn push_particles(&mut self) -> Result<(), String> {
+    fn push_particles(&mut self) -> anyhow::Result<()> {
         // 直接在借用内部写入批次：旧实现先把整条粒子数组 `to_vec()` 拷一份，10k 粒子
         // 每帧白拷 840 KB（`wp0-v4` 的粒子阶梯）。
         let RuntimeScene {
@@ -3226,7 +3196,7 @@ impl RuntimeScene {
             texture_lookup,
             texture_handles,
         );
-        let mut failure: Option<String> = None;
+        let mut failure: Option<anyhow::Error> = None;
         script.with_particles(|particles| {
             for particle in particles {
                 let size = particle.size();
@@ -3240,7 +3210,7 @@ impl RuntimeScene {
                 {
                     Ok(sprite) => sprite,
                     Err(error) => {
-                        failure = Some(error.to_string());
+                        failure = Some(error.into());
                         return;
                     }
                 };
@@ -3289,7 +3259,7 @@ impl RuntimeScene {
         draws: &mut Vec<SceneDraw>,
         width: u32,
         height: u32,
-    ) -> Result<(), String> {
+    ) -> anyhow::Result<()> {
         let panels = self.script.with_dynamic_ui(|panels, _, _| panels.clone());
         for panel in panels.values().filter(|panel| panel.visible) {
             let (origin, size) = resolve_ui_rect(
@@ -3356,7 +3326,7 @@ impl RuntimeScene {
         draws: &mut Vec<SceneDraw>,
         width: u32,
         height: u32,
-    ) -> Result<(), String> {
+    ) -> anyhow::Result<()> {
         let images = self.script.with_dynamic_ui(|_, images, _| images.clone());
         for image in images.values() {
             self.push_image_quad(vertices, draws, width, height, image)?;
@@ -3371,7 +3341,7 @@ impl RuntimeScene {
         draws: &mut Vec<SceneDraw>,
         width: u32,
         height: u32,
-    ) -> Result<(), String> {
+    ) -> anyhow::Result<()> {
         let grids = self.script.with_dynamic_ui(|_, _, grids| grids.clone());
         for grid in grids.values() {
             let (origin, total) = resolve_ui_rect(
@@ -3454,7 +3424,7 @@ impl RuntimeScene {
         draws: &mut Vec<SceneDraw>,
         width: u32,
         height: u32,
-    ) -> Result<(), String> {
+    ) -> anyhow::Result<()> {
         let bars = self.script.with_ui(|_, bars| bars.clone());
         for bar in bars.values() {
             let start = vertices.len() as u32;
@@ -3504,7 +3474,7 @@ impl RuntimeScene {
         vector_segments: &mut Vec<VectorSegmentSnapshot>,
         width: u32,
         height: u32,
-    ) -> Result<(), String> {
+    ) -> anyhow::Result<()> {
         let texts = self.script.with_ui(|texts, _| texts.clone());
         let visible: Vec<_> = texts
             .values()
@@ -3573,7 +3543,7 @@ impl RuntimeScene {
         vector_segments: &mut Vec<VectorSegmentSnapshot>,
         width: u32,
         height: u32,
-    ) -> Result<(), String> {
+    ) -> anyhow::Result<()> {
         let viewport = [width.max(1) as f32, height.max(1) as f32];
         self.ensure_scene_ui_layout(viewport);
         // docs/54 §4.2：实体身份的 UI 吃 **overlay 视图**的可见遮罩；按名字注册的画布 UI
@@ -3753,7 +3723,7 @@ impl RuntimeScene {
         width: u32,
         height: u32,
         image: &DynamicUiImage,
-    ) -> Result<(), String> {
+    ) -> anyhow::Result<()> {
         let sw = width.max(1) as f32;
         let sh = height.max(1) as f32;
         let (origin, size) = resolve_ui_rect(
@@ -3925,7 +3895,7 @@ impl RuntimeScene {
         overlay_draws: &mut Vec<SpriteDrawBatch>,
         world_draws: &mut Vec<SpriteDrawBatch>,
         viewport: Viewport,
-    ) -> Result<(), String> {
+    ) -> anyhow::Result<()> {
         let Ok(camera) = OrthoTerms::new(self.camera, viewport) else {
             // 相机退化（zoom 非正等）时不产瓦片顶点：与精灵路径一致，等宿主修好相机再画。
             return Ok(());
@@ -3955,7 +3925,7 @@ impl RuntimeScene {
             } = self;
             let mut previous = std::mem::take(tilemap_cache);
             let mut next_cache = HashMap::with_capacity(previous.len());
-            let mut failure: Option<String> = None;
+            let mut failure: Option<anyhow::Error> = None;
             let inherit = self.spatial_active;
             script.with_world(|world| {
                 // WP2：瓦片层挂在**世界**位置上（继承开启时读传播结果，关闭时读局部值）。
@@ -4254,7 +4224,7 @@ fn build_chunk(
 }
 
 /// 全新建层：按 32×32 块行主序切分并逐块构建，累计 `total`。
-fn build_all_chunks(transform: Transform, tilemap: Tilemap) -> Result<CachedTilemapLayer, String> {
+fn build_all_chunks(transform: Transform, tilemap: Tilemap) -> anyhow::Result<CachedTilemapLayer> {
     let scale = transform.scale;
     let mut chunks = Vec::new();
     let mut total = 0usize;
@@ -7058,7 +7028,7 @@ mod sdf_tests {
         let error = runtime
             .set_local_transform(SceneEntityId(1), tilted)
             .expect_err("非平面值必须被拒绝");
-        assert!(error.contains("not planar"), "{error}");
+        assert!(error.to_string().contains("not planar"), "{error}");
         // 拒绝之后原值必须原样保留（不留半写状态）。
         let unchanged = runtime
             .local_transform_of(SceneEntityId(1))
@@ -10119,8 +10089,9 @@ mod frame_schedule_tests {
         let error = runtime
             .run_script_steps(1, 1.0 / 60.0, &InputSnapshot::default())
             .expect_err("missing dependency must fail the run");
+        let message = error.to_string();
         assert!(
-            error.contains("orphan_probe") && error.contains("no_such_system"),
+            message.contains("orphan_probe") && message.contains("no_such_system"),
             "diagnostic must name system and dependency: {error}"
         );
         // 失败后注册仍在（系统已放回），修复依赖后可重新执行。
@@ -10150,8 +10121,9 @@ mod frame_schedule_tests {
         let error = runtime
             .run_script_steps(1, 1.0 / 60.0, &InputSnapshot::default())
             .expect_err("dependency cycle must fail the run");
+        let message = error.to_string();
         assert!(
-            error.contains("cycle_a") && error.contains("cycle_b"),
+            message.contains("cycle_a") && message.contains("cycle_b"),
             "cycle diagnostic must name the members: {error}"
         );
     }
@@ -10170,8 +10142,9 @@ mod frame_schedule_tests {
         let error = runtime
             .run_script_steps(1, 1.0 / 60.0, &InputSnapshot::default())
             .expect_err("panicking system must fail the run");
+        let message = error.to_string();
         assert!(
-            error.contains("panic_probe") && error.contains("probe-boom"),
+            message.contains("panic_probe") && message.contains("probe-boom"),
             "panic diagnostic must name system and payload: {error}"
         );
         let (step_names, _) = runtime.registered_system_names();

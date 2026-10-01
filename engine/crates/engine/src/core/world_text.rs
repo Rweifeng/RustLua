@@ -6,8 +6,6 @@
 //!
 //! 绘制层：精灵之上、屏幕 UI 之下，不参与世界深度；排序与透明规则同覆盖层。
 
-use std::{error::Error, fmt};
-
 use crate::core::ui::{UiComponentError, UiText};
 
 /// 世界空间文字组件。文字字段（`text` / `font_size` / `color` / `font`）复用 [`UiText`]
@@ -21,35 +19,20 @@ pub struct WorldText {
     pub centered: bool,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, thiserror::Error)]
 pub enum WorldTextError {
     /// 组件串里出现未知或格式错误的字段。
+    #[error("malformed WorldText field: {0}")]
     InvalidField(String),
     /// `offset` 不是两个有限的数。
+    #[error("invalid WorldText offset: {0}")]
     InvalidOffset(String),
     /// `centered` 不是布尔值。
+    #[error("invalid WorldText flag: {0}")]
     InvalidFlag(String),
     /// 文字字段本身不合法（转发 `UiText` 的错误）。
-    Text(UiComponentError),
-}
-
-impl fmt::Display for WorldTextError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InvalidField(field) => write!(formatter, "malformed WorldText field: {field}"),
-            Self::InvalidOffset(value) => write!(formatter, "invalid WorldText offset: {value}"),
-            Self::InvalidFlag(value) => write!(formatter, "invalid WorldText flag: {value}"),
-            Self::Text(error) => error.fmt(formatter),
-        }
-    }
-}
-
-impl Error for WorldTextError {}
-
-impl From<UiComponentError> for WorldTextError {
-    fn from(error: UiComponentError) -> Self {
-        Self::Text(error)
-    }
+    #[error(transparent)]
+    Text(#[from] UiComponentError),
 }
 
 impl WorldText {

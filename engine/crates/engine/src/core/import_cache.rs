@@ -7,8 +7,7 @@
 use crate::core::{importer::Importer, resource_db::AssetId};
 use std::{
     collections::HashMap,
-    error::Error,
-    fmt, fs,
+    fs,
     path::{Path, PathBuf},
 };
 
@@ -213,32 +212,18 @@ impl ImportCache {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum ImportCacheError {
-    Io(std::io::Error),
+    #[error("import cache I/O failed: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("cannot read source {path}: {reason}")]
     Read { path: String, reason: String },
+    #[error("invalid source {path}: {reason}")]
     InvalidSource { path: String, reason: String },
+    #[error("malformed import cache line {line}")]
     Malformed { line: usize },
+    #[error("unsupported import cache schema: {0}")]
     UnsupportedSchemaVersion(String),
-}
-impl fmt::Display for ImportCacheError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Io(error) => write!(f, "import cache I/O failed: {error}"),
-            Self::Read { path, reason } => write!(f, "cannot read source {path}: {reason}"),
-            Self::InvalidSource { path, reason } => write!(f, "invalid source {path}: {reason}"),
-            Self::Malformed { line } => write!(f, "malformed import cache line {line}"),
-            Self::UnsupportedSchemaVersion(value) => {
-                write!(f, "unsupported import cache schema: {value}")
-            }
-        }
-    }
-}
-impl Error for ImportCacheError {}
-impl From<std::io::Error> for ImportCacheError {
-    fn from(value: std::io::Error) -> Self {
-        Self::Io(value)
-    }
 }
 
 #[cfg(test)]

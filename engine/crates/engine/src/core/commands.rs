@@ -2,7 +2,6 @@
 
 use std::{
     collections::{HashMap, VecDeque},
-    error::Error,
     fmt,
 };
 
@@ -42,50 +41,25 @@ impl From<SpawnToken> for CommandEntity {
 }
 
 /// Contextual errors produced while applying a command batch.
-#[derive(Debug, Eq, PartialEq)]
+///
+/// 名为 `source` 的字段是真正的错误源，thiserror 会自动为它们接上 `Error::source`，
+/// 与原先手写的 `fn source()` 行为一致。
+#[derive(Debug, Eq, PartialEq, thiserror::Error)]
 pub enum CommandError {
-    UnresolvedToken {
-        token: SpawnToken,
-    },
+    #[error("unresolved spawn token {}", .token.index())]
+    UnresolvedToken { token: SpawnToken },
+    #[error("{operation} failed for {entity}: {source}")]
     World {
         operation: &'static str,
         entity: EntityId,
         source: WorldError,
     },
+    #[error("command {index} ({operation}) failed: {source}")]
     Failed {
         index: usize,
         operation: &'static str,
         source: Box<CommandError>,
     },
-}
-
-impl fmt::Display for CommandError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::UnresolvedToken { token } => {
-                write!(f, "unresolved spawn token {}", token.index())
-            }
-            Self::World {
-                operation,
-                entity,
-                source,
-            } => write!(f, "{operation} failed for {entity}: {source}"),
-            Self::Failed {
-                index,
-                operation,
-                source,
-            } => write!(f, "command {index} ({operation}) failed: {source}"),
-        }
-    }
-}
-impl Error for CommandError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            Self::World { source, .. } => Some(source),
-            Self::Failed { source, .. } => Some(source),
-            Self::UnresolvedToken { .. } => None,
-        }
-    }
 }
 
 type CommandAction = Box<dyn FnOnce(&mut World, &mut ApplyContext) -> Result<(), CommandError>>;

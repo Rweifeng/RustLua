@@ -1,7 +1,7 @@
 //! E21: typed schemas for high-value scene components encoded as
 //! `BTreeMap<String, String>`.
 
-use std::{collections::BTreeMap, fmt};
+use std::collections::BTreeMap;
 
 /// 字段的**语义规则**：在类型正确之后还要满足的领域约束（docs/55 阶段 2「字段校验」）。
 ///
@@ -769,24 +769,13 @@ impl ComponentSchema {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("component {component} field {field}: {reason}")]
 pub struct SchemaError {
     pub component: String,
     pub field: String,
     pub reason: String,
 }
-
-impl fmt::Display for SchemaError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "component {} field {}: {}",
-            self.component, self.field, self.reason
-        )
-    }
-}
-
-impl std::error::Error for SchemaError {}
 
 /// **统一 `Transform`**：唯一变换组件的字段表 = 3D 表示。
 ///

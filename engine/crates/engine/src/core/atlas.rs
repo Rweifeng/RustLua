@@ -1,6 +1,6 @@
 //! Texture atlas regions and pixel-to-UV conversion for 2D Sprites.
 
-use std::{collections::BTreeMap, error::Error, fmt};
+use std::collections::BTreeMap;
 
 use crate::core::{
     sprite::{Sprite, SpriteError},
@@ -143,12 +143,11 @@ impl SpriteAtlas {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum AtlasError {
-    InvalidAtlasSize {
-        width: u32,
-        height: u32,
-    },
+    #[error("invalid atlas size: {width}x{height}")]
+    InvalidAtlasSize { width: u32, height: u32 },
+    #[error("atlas region ({x},{y},{width},{height}) exceeds {texture_width}x{texture_height}")]
     InvalidDimensions {
         texture_width: u32,
         texture_height: u32,
@@ -158,27 +157,6 @@ pub enum AtlasError {
         height: u32,
     },
 }
-impl fmt::Display for AtlasError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InvalidAtlasSize { width, height } => {
-                write!(f, "invalid atlas size: {width}x{height}")
-            }
-            Self::InvalidDimensions {
-                texture_width,
-                texture_height,
-                x,
-                y,
-                width,
-                height,
-            } => write!(
-                f,
-                "atlas region ({x},{y},{width},{height}) exceeds {texture_width}x{texture_height}"
-            ),
-        }
-    }
-}
-impl Error for AtlasError {}
 
 #[cfg(test)]
 mod tests {

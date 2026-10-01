@@ -37,6 +37,12 @@ tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 getrandom = { version = "0.2", features = ["js"] }
+# 统一错误处理（优化项 3）：
+# - thiserror：库层「类型化错误」，替代手写的 `impl Display` + `impl Error` 样板。
+# - anyhow：宿主/应用层「错误聚合」，替代 `Result<T, String>` 这类丢失类型的错误通道。
+# 两者都在 wasm32-unknown-unknown 上可用（anyhow 依赖 std，本工程 wasm 目标开启 std）。
+thiserror = "2.0"
+anyhow = "1.0"
 
 # wasm32-unknown-unknown support for mlua: vendored forks with the wasm patch
 # (libc shim + wasm-EH error handling). See docs/ wasm notes.

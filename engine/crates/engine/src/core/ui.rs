@@ -4,29 +4,19 @@
 //! owned by `UiLayout` (four-edge Anchor+Offset). Dynamic Lua UI owns its full
 //! runtime rect and uses the Canvas scale helpers below.
 
-use std::{error::Error, fmt};
-
 /// Errors while parsing a UI component string.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum UiComponentError {
     /// A field was not `key=value` as the scene format requires.
+    #[error("malformed UI field: {0}")]
     MalformedField(String),
     /// A required field was missing.
+    #[error("missing UI field: {0}")]
     MissingField(&'static str),
     /// A numeric or color field could not be parsed / was invalid.
+    #[error("invalid UI value: {0}")]
     InvalidValue(String),
 }
-
-impl fmt::Display for UiComponentError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::MalformedField(field) => write!(f, "malformed UI field: {field}"),
-            Self::MissingField(field) => write!(f, "missing UI field: {field}"),
-            Self::InvalidValue(value) => write!(f, "invalid UI value: {value}"),
-        }
-    }
-}
-impl Error for UiComponentError {}
 
 /// Authored layout space for scene UI components.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

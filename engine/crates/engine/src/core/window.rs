@@ -42,23 +42,12 @@ impl AppLifecycle {
 }
 
 /// Invalid lifecycle transition.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("invalid lifecycle transition: {:?} -> {:?}", .from, .to)]
 pub struct LifecycleError {
     pub from: AppLifecycle,
     pub to: AppLifecycle,
 }
-
-impl std::fmt::Display for LifecycleError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "invalid lifecycle transition: {:?} -> {:?}",
-            self.from, self.to
-        )
-    }
-}
-
-impl std::error::Error for LifecycleError {}
 
 /// Returns whether a window size can be rendered.
 #[must_use]

@@ -1,6 +1,6 @@
 //! GPU-friendly CPU mesh and material data for M8-03.
 
-use std::{error::Error, fmt, path::Path};
+use std::path::Path;
 
 use crate::core::{
     gltf_asset::{GltfAsset, GltfAssetError},
@@ -20,30 +20,21 @@ pub struct MeshRenderer {
 pub const GROUND_PLANE_SENTINEL: &str = "__ground_plane__";
 
 /// Errors while parsing the scene's `MeshRenderer` component string.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum MeshRendererError {
     /// A field was not `key=value` as the scene format requires.
+    #[error("malformed MeshRenderer field: {0}")]
     MalformedField(String),
     /// The `mesh` field was missing or empty.
+    #[error("missing MeshRenderer mesh path")]
     MissingMesh,
     /// The mesh path was absolute or escaped the project root.
+    #[error("invalid MeshRenderer mesh path: {0}")]
     InvalidMeshPath(String),
     /// The mesh path did not end in `.glb`/`.gltf`.
+    #[error("unsupported MeshRenderer mesh extension: {0}")]
     UnsupportedMeshExtension(String),
 }
-impl fmt::Display for MeshRendererError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::MalformedField(field) => write!(f, "malformed MeshRenderer field: {field}"),
-            Self::MissingMesh => write!(f, "missing MeshRenderer mesh path"),
-            Self::InvalidMeshPath(value) => write!(f, "invalid MeshRenderer mesh path: {value}"),
-            Self::UnsupportedMeshExtension(value) => {
-                write!(f, "unsupported MeshRenderer mesh extension: {value}")
-            }
-        }
-    }
-}
-impl Error for MeshRendererError {}
 
 impl MeshRenderer {
     /// Parses the scene component string written by the editor: `mesh=<path>`.
@@ -253,24 +244,13 @@ impl From<&crate::core::gltf_asset::GltfMaterial> for MaterialAsset {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, thiserror::Error)]
 pub enum MeshAssetError {
-    Import(GltfAssetError),
+    #[error("mesh import failed: {0}")]
+    Import(#[source] GltfAssetError),
+    #[error("mesh primitive has inconsistent attributes or indices")]
     InvalidPrimitive,
 }
-
-impl std::fmt::Display for MeshAssetError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Import(error) => write!(formatter, "mesh import failed: {error}"),
-            Self::InvalidPrimitive => write!(
-                formatter,
-                "mesh primitive has inconsistent attributes or indices"
-            ),
-        }
-    }
-}
-impl std::error::Error for MeshAssetError {}
 
 #[cfg(test)]
 mod tests {

@@ -210,6 +210,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "anyhow"
+version = "1.0.104"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
+
+[[package]]
 name = "approx"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -269,6 +275,7 @@ dependencies = [
 name = "assetc"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "engine",
 ]
 
@@ -1092,6 +1099,7 @@ dependencies = [
  "engine",
  "pollster",
  "serde_json",
+ "thiserror 2.0.20",
  "tracing",
  "wgpu",
  "windows-sys 0.61.2",
@@ -1255,6 +1263,7 @@ name = "engine"
 version = "0.1.0"
 dependencies = [
  "ab_glyph",
+ "anyhow",
  "bymsdfgen-core",
  "bytemuck",
  "chacha20poly1305",
@@ -1270,6 +1279,7 @@ dependencies = [
  "rapier3d",
  "rodio",
  "serde_json",
+ "thiserror 2.0.20",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
@@ -1529,6 +1539,7 @@ dependencies = [
 name = "game_web"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "engine",
  "js-sys",
  "mlua",

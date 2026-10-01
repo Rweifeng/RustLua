@@ -1,7 +1,7 @@
 //! Grid-based tile maps: visual cells, a separate collision layer, and a
 //! component-string format that round-trips through scenes.
 
-use std::{collections::BTreeMap, error::Error, fmt};
+use std::collections::BTreeMap;
 
 use crate::core::transform::Vec2;
 
@@ -39,70 +39,35 @@ pub struct Tilemap {
 }
 
 /// Errors produced while building or parsing a tile map.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, thiserror::Error)]
 pub enum TilemapError {
+    #[error("invalid tile size: ({}, {})", .0.x, .0.y)]
     InvalidTileSize(Vec2),
+    #[error("tile map dimensions must be non-zero")]
     EmptyDimensions,
+    #[error("tile data length {actual} does not match grid {expected}")]
     LengthMismatch { expected: usize, actual: usize },
+    #[error("tile cell index {0} is out of palette range")]
     InvalidCellIndex(u8),
+    #[error("tile cell ({x}, {y}) is out of bounds")]
     OutOfBounds { x: usize, y: usize },
+    #[error("invalid tile map component string: {0}")]
     Parse(String),
 }
 
-impl fmt::Display for TilemapError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InvalidTileSize(v) => write!(f, "invalid tile size: ({}, {})", v.x, v.y),
-            Self::EmptyDimensions => write!(f, "tile map dimensions must be non-zero"),
-            Self::LengthMismatch { expected, actual } => {
-                write!(
-                    f,
-                    "tile data length {actual} does not match grid {expected}"
-                )
-            }
-            Self::InvalidCellIndex(v) => write!(f, "tile cell index {v} is out of palette range"),
-            Self::OutOfBounds { x, y } => write!(f, "tile cell ({x}, {y}) is out of bounds"),
-            Self::Parse(reason) => write!(f, "invalid tile map component string: {reason}"),
-        }
-    }
-}
-
-impl Error for TilemapError {}
-
 /// Errors produced by [`Tilemap::find_path`].
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, thiserror::Error)]
 pub enum PathError {
-    OutOfBounds {
-        x: usize,
-        y: usize,
-    },
-    Blocked {
-        x: usize,
-        y: usize,
-    },
+    #[error("path endpoint ({x}, {y}) is out of bounds")]
+    OutOfBounds { x: usize, y: usize },
+    #[error("path endpoint ({x}, {y}) is solid")]
+    Blocked { x: usize, y: usize },
+    #[error("no path from ({}, {}) to ({}, {})", .from.0, .from.1, .to.0, .to.1)]
     Unreachable {
         from: (usize, usize),
         to: (usize, usize),
     },
 }
-
-impl fmt::Display for PathError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::OutOfBounds { x, y } => write!(f, "path endpoint ({x}, {y}) is out of bounds"),
-            Self::Blocked { x, y } => write!(f, "path endpoint ({x}, {y}) is solid"),
-            Self::Unreachable { from, to } => {
-                write!(
-                    f,
-                    "no path from ({}, {}) to ({}, {})",
-                    from.0, from.1, to.0, to.1
-                )
-            }
-        }
-    }
-}
-
-impl Error for PathError {}
 
 impl Tilemap {
     /// Creates a grid with the given size and tile size, all cells empty and

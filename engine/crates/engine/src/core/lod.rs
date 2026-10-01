@@ -34,48 +34,29 @@ pub struct LodGroup {
 }
 
 /// 解析 `LodGroup` 组件串的错误。
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, thiserror::Error)]
 pub enum LodGroupError {
     /// 字段不是 `key=value`。
+    #[error("malformed LodGroup field: {0}")]
     MalformedField(String),
     /// 缺 `mesh=` 字段。
+    #[error("missing LodGroup mesh field")]
     MissingMesh,
     /// 网格路径非法（绝对路径 / 逃出工程根）。
+    #[error("invalid LodGroup mesh path: {0}")]
     InvalidMeshPath(String),
     /// 网格扩展名不是 `.glb`/`.gltf`。
+    #[error("unsupported LodGroup mesh extension: {0}")]
     UnsupportedMeshExtension(String),
     /// `lod` 字段缺 `|`、阈值非有限或非正。
+    #[error(
+        "invalid LodGroup lod threshold: {0} (expected `distance|mesh` with a positive finite distance)"
+    )]
     InvalidThreshold(String),
     /// 阈值未严格递增。
+    #[error("LodGroup thresholds must strictly increase: {previous} >= {current}")]
     ThresholdNotIncreasing { previous: f32, current: f32 },
 }
-
-impl core::fmt::Display for LodGroupError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::MalformedField(field) => write!(f, "malformed LodGroup field: {field}"),
-            Self::MissingMesh => write!(f, "missing LodGroup mesh field"),
-            Self::InvalidMeshPath(value) => write!(f, "invalid LodGroup mesh path: {value}"),
-            Self::UnsupportedMeshExtension(value) => {
-                write!(f, "unsupported LodGroup mesh extension: {value}")
-            }
-            Self::InvalidThreshold(value) => {
-                write!(
-                    f,
-                    "invalid LodGroup lod threshold: {value} (expected `distance|mesh` with a positive finite distance)"
-                )
-            }
-            Self::ThresholdNotIncreasing { previous, current } => {
-                write!(
-                    f,
-                    "LodGroup thresholds must strictly increase: {previous} >= {current}"
-                )
-            }
-        }
-    }
-}
-
-impl std::error::Error for LodGroupError {}
 
 impl LodGroup {
     /// 解析编辑器写入的组件串：`LodGroup=mesh=<路径>;lod=<距离>|<路径>[;lod=...]`。

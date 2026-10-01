@@ -1,6 +1,6 @@
 //! E23: minimal one-way ViewModel property bindings.
 
-use std::{collections::BTreeMap, fmt};
+use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BoundProperty {
@@ -191,30 +191,21 @@ fn convert_value(property: BoundProperty, value: &BindingValue) -> BindingValue 
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum BindingError {
+    #[error("binding path is empty")]
     EmptyPath,
+    #[error("malformed binding: {0}")]
     Malformed(String),
+    #[error("unknown binding field: {0}")]
     UnknownField(String),
+    #[error("binding needs target and property")]
     MissingTargetOrProperty,
+    #[error("binding source is required")]
     MissingSource,
+    #[error("binding value {0} was not found")]
     MissingValue(String),
 }
-
-impl fmt::Display for BindingError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::EmptyPath => write!(f, "binding path is empty"),
-            Self::Malformed(value) => write!(f, "malformed binding: {value}"),
-            Self::UnknownField(value) => write!(f, "unknown binding field: {value}"),
-            Self::MissingTargetOrProperty => write!(f, "binding needs target and property"),
-            Self::MissingSource => write!(f, "binding source is required"),
-            Self::MissingValue(path) => write!(f, "binding value {path} was not found"),
-        }
-    }
-}
-
-impl std::error::Error for BindingError {}
 
 #[cfg(test)]
 mod tests {

@@ -1,8 +1,7 @@
 use crate::SceneDocument;
 use engine::core::scene::{Scene, SceneError};
 use std::{
-    error::Error,
-    fmt, fs,
+    fs,
     path::{Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -90,27 +89,15 @@ pub struct RecoveryIssue {
     pub message: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum RecoveryError {
+    #[error("recovery I/O failed: {}: {message}", path.display())]
     Io { path: PathBuf, message: String },
-    Scene(SceneError),
+    #[error("recovery scene is invalid: {0}")]
+    Scene(#[source] SceneError),
+    #[error("invalid recovery file {}: {message}", path.display())]
     Invalid { path: PathBuf, message: String },
 }
-
-impl fmt::Display for RecoveryError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Io { path, message } => {
-                write!(f, "recovery I/O failed: {}: {message}", path.display())
-            }
-            Self::Scene(error) => write!(f, "recovery scene is invalid: {error}"),
-            Self::Invalid { path, message } => {
-                write!(f, "invalid recovery file {}: {message}", path.display())
-            }
-        }
-    }
-}
-impl Error for RecoveryError {}
 
 impl RecoveryManager {
     pub fn new(root: impl Into<PathBuf>) -> Self {

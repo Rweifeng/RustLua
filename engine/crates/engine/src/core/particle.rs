@@ -210,30 +210,21 @@ impl ParticleEmitter {
 }
 
 /// `ParticleEmitter` 组件串的解析错误。
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum ParticleComponentError {
     /// 空串不是一个发射器。
+    #[error("particle emitter component is empty")]
     Empty,
     /// 字段不是 `key=value` 或数值非法。
+    #[error("malformed particle field: {0}")]
     InvalidField(String),
     /// 未知键：**报错**而不是忽略，避免"写了 `rate` 却拼成 `reate`"被静默吞掉。
+    #[error("unknown particle field: {0}")]
     UnknownField(String),
     /// 数值通过文法但语义非法（非有限、`life <= 0`、`drag < 0` 等）。
+    #[error("invalid particle emitter: {0}")]
     Invalid(String),
 }
-
-impl std::fmt::Display for ParticleComponentError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Empty => write!(formatter, "particle emitter component is empty"),
-            Self::InvalidField(field) => write!(formatter, "malformed particle field: {field}"),
-            Self::UnknownField(field) => write!(formatter, "unknown particle field: {field}"),
-            Self::Invalid(message) => write!(formatter, "invalid particle emitter: {message}"),
-        }
-    }
-}
-
-impl std::error::Error for ParticleComponentError {}
 
 fn parse_number(raw: &str, field: &str) -> Result<f32, ParticleComponentError> {
     raw.parse::<f32>()

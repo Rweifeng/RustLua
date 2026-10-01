@@ -10,6 +10,7 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
+anyhow.workspace = true
 engine = { path = "../engine" }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

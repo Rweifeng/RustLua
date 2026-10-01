@@ -8,7 +8,6 @@ use crate::core::{
     scene::{Scene, SceneEntityId},
     transform::Transform3D,
 };
-use std::{error::Error, fmt};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Scene3dEntity {
@@ -42,23 +41,17 @@ impl SceneExtractDiagnostic {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum SceneExtractError {
+    #[error(
+        "实体 {} ({}) 的 {} 组件无效：{}",
+        .0.entity.0,
+        .0.name,
+        .0.component,
+        .0.message
+    )]
     InvalidEntityComponent(SceneExtractDiagnostic),
 }
-
-impl fmt::Display for SceneExtractError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InvalidEntityComponent(diagnostic) => write!(
-                f,
-                "实体 {} ({}) 的 {} 组件无效：{}",
-                diagnostic.entity.0, diagnostic.name, diagnostic.component, diagnostic.message
-            ),
-        }
-    }
-}
-impl Error for SceneExtractError {}
 
 /// Extracts all valid serialized 3D render components while retaining errors.
 pub fn extract_serialized_scene_3d(scene: &Scene) -> SerializedScene3d {

@@ -3,33 +3,25 @@
 //! `api_error` / `world_error` 是 275 个绑定函数共用的**唯一**报错出口：绑定层只经这两条
 //! 产出 `mlua::Error`，因此 Lua 侧看到的报错文案格式一致、且都能被 `ScriptDebugger` 归并。
 
-use std::{fmt, path::PathBuf, time::SystemTime};
+use std::{path::PathBuf, time::SystemTime};
 
 use crate::core::world::WorldError;
 
 /// Errors produced while loading or running a project Lua script.
-#[derive(Debug)]
+///
+/// 文本字段命名为 `reason` 而不是 `source`：thiserror 会把名为 `source` 的字段一律
+/// 当作错误源（`AsDynError`），而这里携带的是已经格式化成字符串的 Lua 报错文本。
+#[derive(Debug, thiserror::Error)]
 pub enum LuaBridgeError {
+    #[error("Lua VM initialization failed: {0}")]
     Init(String),
-    Load { path: PathBuf, source: String },
-    Runtime { path: PathBuf, source: String },
+    #[error("failed to load {}: {reason}", .path.display())]
+    Load { path: PathBuf, reason: String },
+    #[error("script {} failed: {reason}", .path.display())]
+    Runtime { path: PathBuf, reason: String },
+    #[error("Lua API error: {0}")]
     Api(String),
 }
-
-impl fmt::Display for LuaBridgeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Init(source) => write!(f, "Lua VM initialization failed: {source}"),
-            Self::Load { path, source } => write!(f, "failed to load {}: {source}", path.display()),
-            Self::Runtime { path, source } => {
-                write!(f, "script {} failed: {source}", path.display())
-            }
-            Self::Api(source) => write!(f, "Lua API error: {source}"),
-        }
-    }
-}
-
-impl std::error::Error for LuaBridgeError {}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ScriptFingerprint {

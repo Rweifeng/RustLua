@@ -241,7 +241,7 @@ impl super::RuntimeScene {
         vector_segments: &mut Vec<VectorSegmentSnapshot>,
         width: u32,
         height: u32,
-    ) -> Result<(), String> {
+    ) -> anyhow::Result<()> {
         // WP2：世界文字锚在**世界**位置上——继承开启时读传播结果，关闭时读局部值。
         // 两条路径都是 `for_each2`，因此不额外多做一次 `get`。
         let inherit = self.spatial_active;
@@ -269,8 +269,7 @@ impl super::RuntimeScene {
             .collect::<Vec<_>>();
         self.prewarm_frame_glyphs(&prewarm);
 
-        let viewport = Viewport::new(width.max(1) as f32, height.max(1) as f32)
-            .map_err(|error| error.to_string())?;
+        let viewport = Viewport::new(width.max(1) as f32, height.max(1) as f32)?;
         // 预算项与世界通道要用的**逆矩阵**都在循环外算一次：此前每个世界文字实体各算一次
         // `view_projection` + `Mat4::inverse()`，实体一多就是每帧成百上千次 4×4 求逆。
         let Ok(camera) = OrthoTerms::new(self.camera, viewport) else {
@@ -377,7 +376,7 @@ impl super::RuntimeScene {
         position: [f32; 2],
         scale: f32,
         color: [f32; 3],
-    ) -> Result<(TextMesh, bool), String> {
+    ) -> anyhow::Result<(TextMesh, bool)> {
         self.ensure_font_atlas();
         let style = TextStyle {
             scale,
@@ -386,14 +385,13 @@ impl super::RuntimeScene {
         };
         if let Some(font) = &self.font_atlas {
             let mut font = font.lock().expect("font atlas lock");
-            TextLayout::build(text, position, style, &mut font)
-                .map(|mesh| (mesh, true))
-                .map_err(|error| error.to_string())
+            Ok(TextLayout::build(text, position, style, &mut font).map(|mesh| (mesh, true))?)
         } else {
             let atlas = TextAtlas::built_in();
-            TextLayout::build_bitmap(text, position, style, &atlas)
-                .map(|mesh| (mesh, false))
-                .map_err(|error| error.to_string())
+            Ok(
+                TextLayout::build_bitmap(text, position, style, &atlas)
+                    .map(|mesh| (mesh, false))?,
+            )
         }
     }
 
@@ -410,7 +408,7 @@ impl super::RuntimeScene {
         font_asset: Option<&str>,
         width: u32,
         height: u32,
-    ) -> Result<bool, String> {
+    ) -> anyhow::Result<bool> {
         let atlas = self.ensure_vector_font(font_asset.unwrap_or_default());
         let Some(atlas) = atlas else {
             return Ok(false);
@@ -421,8 +419,7 @@ impl super::RuntimeScene {
             ..Default::default()
         };
         let mut atlas = atlas.lock().expect("vector atlas lock");
-        let layout = TextLayout::build_vector(text, position, style, &mut atlas)
-            .map_err(|error| error.to_string())?;
+        let layout = TextLayout::build_vector(text, position, style, &mut atlas)?;
         if layout.is_empty() {
             return Ok(false);
         }
@@ -512,7 +509,7 @@ impl super::RuntimeScene {
         &mut self,
         text: &UiText,
         position: [f32; 2],
-    ) -> Result<(TextMesh, bool, String), String> {
+    ) -> anyhow::Result<(TextMesh, bool, String)> {
         let effective_scale = text.effective_scale();
         if !text.font.is_empty()
             && let Some(handle) = self.ensure_custom_font(&text.font)
@@ -524,8 +521,7 @@ impl super::RuntimeScene {
                     color: [text.color[0], text.color[1], text.color[2], 1.0],
                     ..Default::default()
                 };
-                TextLayout::build(&text.text, position, style, &mut atlas)
-                    .map_err(|error| error.to_string())?
+                TextLayout::build(&text.text, position, style, &mut atlas)?
             };
             let key = font_texture_path(&text.font);
             self.frame_font_keys.push(key.clone());

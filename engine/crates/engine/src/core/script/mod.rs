@@ -792,7 +792,7 @@ impl LuaRuntime {
             .map(format_lua_value)
             .map_err(|error| LuaBridgeError::Runtime {
                 path: path.clone(),
-                source: error.to_string(),
+                reason: error.to_string(),
             });
         if let Err(error) = &result {
             self.record_bridge_error(error);
@@ -822,22 +822,22 @@ impl LuaRuntime {
             .eval::<Value>()
             .map_err(|error| LuaBridgeError::Runtime {
                 path: path.clone(),
-                source: error.to_string(),
+                reason: error.to_string(),
             })?;
         lua_value_to_json(value).map_err(|error| LuaBridgeError::Runtime {
             path,
-            source: error.to_string(),
+            reason: error.to_string(),
         })
     }
 
     fn record_bridge_error(&mut self, error: &LuaBridgeError) {
         match error {
-            LuaBridgeError::Load { path, source } => {
-                self.debugger.record(path.clone(), "load", source.clone())
+            LuaBridgeError::Load { path, reason } => {
+                self.debugger.record(path.clone(), "load", reason.clone())
             }
-            LuaBridgeError::Runtime { path, source } => {
+            LuaBridgeError::Runtime { path, reason } => {
                 self.debugger
-                    .record(path.clone(), "runtime", source.clone())
+                    .record(path.clone(), "runtime", reason.clone())
             }
             LuaBridgeError::Api(source) | LuaBridgeError::Init(source) => {
                 self.debugger
@@ -894,7 +894,7 @@ fn call_entity_hook(
         .get(name)
         .map_err(|error| LuaBridgeError::Runtime {
             path: path.to_path_buf(),
-            source: error.to_string(),
+            reason: error.to_string(),
         })?;
     let Value::Function(function) = callback else {
         return Ok(());
@@ -905,7 +905,7 @@ fn call_entity_hook(
     };
     result.map_err(|error| LuaBridgeError::Runtime {
         path: path.to_path_buf(),
-        source: format!("{name}: {error}"),
+        reason: format!("{name}: {error}"),
     })
 }
 /// Calls a global Lua hook (`on_day_end` / `on_day_start`) if the script defines

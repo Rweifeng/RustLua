@@ -1,9 +1,6 @@
 //! WP2：统一的局部/世界变换、TRS 反解与父先序传播。
 
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    fmt,
-};
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::core::{
     math3d::{Mat4, Math3dError, Quat, Vec3},
@@ -313,96 +310,47 @@ impl GlobalTransform {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, thiserror::Error)]
 pub enum DecomposeError {
     /// 非仿射（含透视项）或含非有限值。
+    #[error("matrix is not an affine transform")]
     NotAffine,
     /// 缩放退化到无法归一化。
+    #[error("matrix has a degenerate scale")]
     DegenerateScale,
     /// 含剪切：无法无损表达为 TRS。
+    #[error("matrix contains shear ({amount})")]
     Shear { amount: f32 },
     /// 镜像/负缩放（行列式为负）。
+    #[error("matrix mirrors (negative scale)")]
     Mirrored,
     /// 矩阵奇异，求逆失败。
+    #[error("matrix is singular")]
     NotInvertible,
 }
 
-impl fmt::Display for DecomposeError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NotAffine => write!(formatter, "matrix is not an affine transform"),
-            Self::DegenerateScale => write!(formatter, "matrix has a degenerate scale"),
-            Self::Shear { amount } => write!(formatter, "matrix contains shear ({amount})"),
-            Self::Mirrored => write!(formatter, "matrix mirrors (negative scale)"),
-            Self::NotInvertible => write!(formatter, "matrix is singular"),
-        }
-    }
-}
-
-impl std::error::Error for DecomposeError {}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum PropagationError {
+    #[error("entity {} missing parent {}", entity.0, parent.0)]
     MissingParent {
         entity: SceneEntityId,
         parent: SceneEntityId,
     },
+    #[error("transform parent cycle at {}", .0 .0)]
     Cycle(SceneEntityId),
+    #[error("invalid local transform at {}", .0 .0)]
     InvalidLocal(SceneEntityId),
 }
 
-impl fmt::Display for PropagationError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::MissingParent { entity, parent } => {
-                write!(formatter, "entity {} missing parent {}", entity.0, parent.0)
-            }
-            Self::Cycle(entity) => write!(formatter, "transform parent cycle at {}", entity.0),
-            Self::InvalidLocal(entity) => {
-                write!(formatter, "invalid local transform at {}", entity.0)
-            }
-        }
-    }
-}
-
-impl std::error::Error for PropagationError {}
-
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, thiserror::Error)]
 pub enum ReparentError {
-    Propagation(PropagationError),
-    Decompose(DecomposeError),
+    #[error(transparent)]
+    Propagation(#[from] PropagationError),
+    #[error(transparent)]
+    Decompose(#[from] DecomposeError),
     /// 新父是自己或自己的后代，换父会成环。
+    #[error("reparenting would create a cycle at {}", .0 .0)]
     WouldCycle(SceneEntityId),
-}
-
-impl fmt::Display for ReparentError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Propagation(error) => error.fmt(formatter),
-            Self::Decompose(error) => error.fmt(formatter),
-            Self::WouldCycle(entity) => {
-                write!(
-                    formatter,
-                    "reparenting would create a cycle at {}",
-                    entity.0
-                )
-            }
-        }
-    }
-}
-
-impl std::error::Error for ReparentError {}
-
-impl From<PropagationError> for ReparentError {
-    fn from(error: PropagationError) -> Self {
-        Self::Propagation(error)
-    }
-}
-
-impl From<DecomposeError> for ReparentError {
-    fn from(error: DecomposeError) -> Self {
-        Self::Decompose(error)
-    }
 }
 
 /// 父先序遍历里"这条数据为什么解不了"的分类（docs/54 §8-②）。

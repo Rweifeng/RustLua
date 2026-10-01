@@ -1,5 +1,6 @@
 //! assetc 命令行入口。
 
+use anyhow::anyhow;
 use std::path::PathBuf;
 
 fn usage() {
@@ -23,13 +24,13 @@ fn usage() {
     );
 }
 
-fn arg(args: &[String], index: usize, flag: &str) -> Result<PathBuf, String> {
+fn arg(args: &[String], index: usize, flag: &str) -> anyhow::Result<PathBuf> {
     args.get(index)
-        .ok_or_else(|| format!("缺少参数: {flag}"))
+        .ok_or_else(|| anyhow!("缺少参数: {flag}"))
         .map(PathBuf::from)
 }
 
-fn run(args: &[String]) -> Result<String, String> {
+fn run(args: &[String]) -> anyhow::Result<String> {
     match args.get(1).map(String::as_str) {
         Some("--check") => assetc::check(),
         Some("--check-deps") => {
@@ -79,17 +80,17 @@ fn run(args: &[String]) -> Result<String, String> {
                     "-o" => {
                         out = Some(PathBuf::from(
                             args.get(i + 1)
-                                .ok_or_else(|| "缺少参数: -o <输出目录>".to_owned())?,
+                                .ok_or_else(|| anyhow!("缺少参数: -o <输出目录>"))?,
                         ));
                         i += 1;
                     }
                     "--compress" => compress = true,
                     "--encrypt" => encrypt = true,
-                    other => return Err(format!("package 未知参数: {other}")),
+                    other => return Err(anyhow!("package 未知参数: {other}")),
                 }
                 i += 1;
             }
-            let out = out.ok_or_else(|| "缺少参数: -o <输出目录>".to_owned())?;
+            let out = out.ok_or_else(|| anyhow!("缺少参数: -o <输出目录>"))?;
             assetc::package(&project, &out, compress, encrypt).map(|manifest| {
                 format!(
                     "assetc_package_ok files={} compress_assets={compress} encrypt_code={encrypt}",
@@ -101,7 +102,7 @@ fn run(args: &[String]) -> Result<String, String> {
             usage();
             Ok(String::new())
         }
-        Some(other) => Err(format!("未知命令: {other}")),
+        Some(other) => Err(anyhow!("未知命令: {other}")),
     }
 }
 

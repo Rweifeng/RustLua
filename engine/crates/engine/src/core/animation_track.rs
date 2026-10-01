@@ -23,7 +23,6 @@
 //! （`TrackValue::Pose`）已经能表达进同一套类型里。
 
 use std::borrow::Cow;
-use std::fmt;
 
 use crate::core::{
     math3d::{Mat4, Vec3},
@@ -399,52 +398,23 @@ impl AnimationTracks {
 }
 
 /// 轨道校验错误。
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, thiserror::Error)]
 pub enum TrackError {
+    #[error("{} track has no keyframes", .0.as_str())]
     EmptyTrack(TrackTarget),
+    #[error("{} 是离散目标，只允许 Step 插值（插值 UV 区域没有意义）", .0.as_str())]
     InterpolationNotAllowed(TrackTarget),
+    #[error("track time is not finite: {0}")]
     NonFiniteTime(f32),
+    #[error("{} track keyframes are out of order: {previous} -> {next}", .target.as_str())]
     OutOfOrder {
         target: TrackTarget,
         previous: f32,
         next: f32,
     },
+    #[error("keyframe value does not match {}", .0.as_str())]
     ValueMismatch(TrackTarget),
 }
-
-impl fmt::Display for TrackError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::EmptyTrack(target) => {
-                write!(formatter, "{} track has no keyframes", target.as_str())
-            }
-            Self::InterpolationNotAllowed(target) => write!(
-                formatter,
-                "{} 是离散目标，只允许 Step 插值（插值 UV 区域没有意义）",
-                target.as_str()
-            ),
-            Self::NonFiniteTime(time) => write!(formatter, "track time is not finite: {time}"),
-            Self::OutOfOrder {
-                target,
-                previous,
-                next,
-            } => write!(
-                formatter,
-                "{} track keyframes are out of order: {previous} -> {next}",
-                target.as_str()
-            ),
-            Self::ValueMismatch(target) => {
-                write!(
-                    formatter,
-                    "keyframe value does not match {}",
-                    target.as_str()
-                )
-            }
-        }
-    }
-}
-
-impl std::error::Error for TrackError {}
 
 #[cfg(test)]
 mod tests {
