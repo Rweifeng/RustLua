@@ -3,7 +3,7 @@
 //! 为什么单独成模块：这些文件是**扁平的 `key = "value"`** 行（见 `examples/*/project.toml`），
 //! 引擎只需要按行取值——但取值口径必须只有一份，否则"字体配置怎么解析"与
 //! "发布包名怎么解析"会各写一遍（此前 `host/runtime_scene.rs` 与
-//! `core/font.rs::project_font` 就各有一份同样的解析器，两边还可能各自漂移）。
+//! `host/runtime_scene.rs` 与拆分前 `core/font.rs`（`project_font`）就各有一份同样的解析器，两边还可能各自漂移）。
 //!
 //! 取值规则：按行 trim（含 BOM），匹配 `<key> =` 前缀，去掉两侧引号与空白；
 //! 空值视为缺失（`None`）——"键存在但为空"不能当成一个有效配置。

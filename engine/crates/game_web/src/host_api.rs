@@ -5,7 +5,7 @@
 //! 本 wasm 核心（wasm-bindgen 导出），fengari Lua 运行时经 `web-runtime.js` 桥接调用。
 //! 本模块是**批次 A**：`app / clock / calendar / day`（纯状态、无 IO、无游戏数据）。
 //!
-//! 语义与桌面 `engine::core::gameplay::GameClock` / `core/script.rs` 逐项对齐：
+//! 语义与桌面 `engine::core::gameplay::GameClock` / `engine::core::script` 逐项对齐：
 //! - 分钟/天：`MINUTES_PER_DAY = 1440`、清晨 `DEFAULT_WAKE_MINUTE = 360`（06:00）；
 //! - 日历：28 天/季 × 4 季/年（`DAYS_PER_YEAR = 112`），season/year/day_of_season 同公式；
 //! - `clock.now()` 返回 day/minute/hour/minute_of_day/rate/paused；

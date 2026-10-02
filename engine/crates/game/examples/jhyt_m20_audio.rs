@@ -607,7 +607,7 @@ fn new_runtime(project: &Path, save_path: &Path) -> Result<LuaRuntime, Box<dyn s
     let mut runtime = LuaRuntime::new()?;
     runtime.set_project_root(project.to_path_buf());
     runtime.set_save_path(save_path.to_path_buf());
-    // 音频目录固定为 <project>/assets/audio（core/audio.rs）。
+    // 音频目录固定为 <project>/assets/audio（`rustlua-audio` 的 audio.rs）。
     runtime.set_audio_asset_dir(project.join("assets").join("audio"));
     // M32 竖版：设计分辨率 720×1280（Lua 动态 UI 是屏幕像素空间，视口必须与设计尺寸一致）。
     runtime.set_ui_viewport(1280, 720);

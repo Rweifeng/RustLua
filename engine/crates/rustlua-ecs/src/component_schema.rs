@@ -1539,7 +1539,7 @@ mod tests {
                         align: ChildAlign::Center,
                     }
                     .to_component_str(),
-                    // 真实工程形态（`engine/crates/engine/src/core/typed_scene.rs` 的样本串）。
+                    // 真实工程形态（`rustlua-scene/src/typed_scene.rs` 的样本串）。
                     "kind=vbox;padding=0,0,0,0;spacing=4;columns=1;stretch=true;fill=false;align=center"
                         .to_owned(),
                     // 真实工程形态（`examples/game_api/scenes/ui_test.scene` 的面板）：

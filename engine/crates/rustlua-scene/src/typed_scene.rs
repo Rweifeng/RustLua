@@ -23,7 +23,7 @@ use rustlua_ui::{
 ///
 /// 只返回库中**已有记录**的 ID；解析不到就必须返回 `None`。刻意不提供"按路径现编
 /// 一个 ID"的兜底：资源身份的唯一真源是资源库（它按 `path:importer_version` 播种，
-/// 见 `core/resource_db.rs` 的 `register`），另编一套会让调用方把"未解析"误当成
+/// 见 `rustlua_assets::resource_db` 的 `register`），另编一套会让调用方把"未解析"误当成
 /// 真实身份。
 pub trait AssetResolver {
     fn asset_id(&self, source_path: &str) -> Option<AssetId>;
@@ -32,7 +32,7 @@ pub trait AssetResolver {
 impl AssetResolver for ResourceDatabase {
     fn asset_id(&self, source_path: &str) -> Option<AssetId> {
         // 先按规范化路径精确命中；Windows 上引用大小写与磁盘不一致时退化为大小写
-        // 不敏感查找（与 core/dependency.rs 的解析口径一致）。
+        // 不敏感查找（与 `rustlua_assets::dependency` 的解析口径一致）。
         if let Ok(Some(record)) = self.find_by_path(source_path) {
             return Some(record.id);
         }

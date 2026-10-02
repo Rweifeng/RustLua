@@ -150,10 +150,10 @@ struct UiState {
     scene_text_hidden: BTreeSet<String>,
     drag: Option<UiDrag>,
     /// 运行时 UI 焦点环（M20-02）：`ui.focus_open/move/...` 按稳定 id 持有，
-    /// 面板用方向键/摇杆方向驱动选择（`core/ui_navigation.rs::FocusRing`）。
+    /// 面板用方向键/摇杆方向驱动选择（`rustlua_ui::ui_navigation::FocusRing`）。
     focus_rings: HashMap<String, FocusRing>,
     /// 运行时列表滚动状态（M20-02）：面板把选中行滚入视口
-    /// （`core/ui_navigation.rs::ScrollState`）。
+    /// （`rustlua_ui::ui_navigation::ScrollState`）。
     scroll_states: HashMap<String, ScrollState>,
     viewport: [f32; 2],
     /// Canvas 空间 UI 参考分辨率（设计分辨率），与运行时渲染保持一致，

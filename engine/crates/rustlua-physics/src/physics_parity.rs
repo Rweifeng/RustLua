@@ -5,7 +5,7 @@
 //! 而 `physics3d.overlap` 是碰撞体查询）。逐条断言**同一个场景在两侧给出同一个答案**，
 //! 是唯一能不靠人眼发现这种漂移的办法。
 //!
-//! 只在测试构建里编译（见 `core/mod.rs` 的 `#[cfg(test)] mod physics_parity`）。
+//! 只在测试构建里编译（见本 crate `src/lib.rs` 的 `#[cfg(test)] mod physics_parity`）。
 
 use crate::physics::{ColliderDesc, ColliderShape, PhysicsWorld};
 use crate::physics3d::{ColliderDesc3d, ColliderShape3d, PhysicsWorld3d};

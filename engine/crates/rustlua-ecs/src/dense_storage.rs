@@ -1,6 +1,7 @@
 //! WP3 原型：dense 值数组 + sparse 槽位索引的组件存储。
 //!
-//! 现状（`core/world.rs`）是 `HashMap<EntityId, T>` 加一份排序的 `Vec<EntityId>`：查询要
+//! 被替换的旧实现（拆分前的 `core/world.rs`，即本 crate 的 `crate::world` 换 dense 之前）是
+//! `HashMap<EntityId, T>` 加一份排序的 `Vec<EntityId>`：查询要
 //! 哈希两次再加 downcast，插入/删除是 O(n) memmove，遍历按哈希桶跳。本模块提供替代实现，
 //! 用 A/B 基准证明收益后再决定是否替换（docs/40 §3 WP3）。
 //!

@@ -102,7 +102,7 @@ pub struct RuntimeScene {
     pub(crate) script_micros: u64,
     pub(crate) sprite_batch: SpriteBatch,
     /// 每精灵顶点生成的并行度（WP8）。默认取检测到的核数；`Parallelism::SEQUENTIAL`
-    /// 即完全回滚到单线程，输出逐字节相同（见 `core/par.rs` 与 `sprite_batch` 的测试）。
+    /// 即完全回滚到单线程，输出逐字节相同（见 `crate::core::par` 与 `sprite_batch` 的测试）。
     pub(crate) sprite_parallelism: Parallelism,
     /// P1-③：系统级数据并行开关（粒子积分等系统内纯数据子任务）。默认取检测到的
     /// 核数；`Parallelism::SEQUENTIAL` 完全回滚到单线程——输出逐位相同（回滚档）。

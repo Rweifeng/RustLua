@@ -4197,7 +4197,7 @@ fn identity_palette_data() -> Vec<[f32; 4]> {
 /// Light-space view-projection used by the shadow map: an orthographic-style projection from a camera
 /// placed **on the light's side**, looking at the origin.
 ///
-/// `Light::direction` is the direction the light **travels** (`core/light.rs` 与 docs/24 的约定，
+/// `Light::direction` is the direction the light **travels** (`crate::core::light` 与 docs/24 的约定，
 /// 着色器用 `-direction` 求表面→光源向量），因此"光源所在的一侧"是 `-direction`：
 ///
 /// ```text

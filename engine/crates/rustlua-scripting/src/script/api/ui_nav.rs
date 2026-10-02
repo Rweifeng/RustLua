@@ -17,7 +17,7 @@ use std::rc::Rc;
 // WP11-USE:END
 
 pub(super) fn register(lua: &Lua, ui: Table, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
-    // ---- M20-02：UI 焦点与滚动导航（core/ui_navigation.rs 的运行时接线）----
+    // ---- M20-02：UI 焦点与滚动导航（`rustlua_ui::ui_navigation` 的运行时接线）----
     // 面板用方向键/摇杆方向驱动列表选择与滚动；序号统一 0 基（Lua 面板常用 1 基，
     // 由游戏侧 `panel_nav.lua` 转换）。`focus_open` 按 `columns` 布局项矩形，
     // 使网格面板（背包 2 列）的左右移动与单列列表的上下移动都可用。

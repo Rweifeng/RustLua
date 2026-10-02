@@ -117,7 +117,7 @@ pub enum ChoiceSource {
 /// 以**角度**为单位的字段（组件, 字段）。
 ///
 /// `Camera3D.fov` 的组件串里存的就是角度：`Camera3D::from_component_str` 读进来时
-/// `to_radians()`、`Camera3D::to_component_str` 写出去时 `to_degrees()`（见 `core/camera.rs`）。
+/// `to_radians()`、`Camera3D::to_component_str` 写出去时 `to_degrees()`（见 `engine::core::camera`）。
 /// 这条事实由 `field_units_agree_with_the_engine_encoder` 直接拿引擎编码器对拍：
 /// 编辑器显示的角度必须等于引擎解析出来的 `fov_y` 换算成的角度。
 const DEGREE_FIELDS: &[(&str, &str)] = &[("Camera", "fov")];

@@ -11,7 +11,7 @@ use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink};
 
 /// 音量总线（M20-02）。`Master` 是总音量，其余为分组音量。
 ///
-/// `Ord` 用于设置文件的有序容器（`core/settings.rs` 的 `BTreeMap<AudioBus, f32>`）。
+/// `Ord` 用于设置文件的有序容器（`rustlua-gameplay` 的 settings 里的 `BTreeMap<AudioBus, f32>`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum AudioBus {
     Master,
