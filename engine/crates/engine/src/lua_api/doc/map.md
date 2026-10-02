@@ -8,7 +8,7 @@
 
 ## `map.current()`
 
-> 绑定：`engine/crates/engine/src/core/script/api/world_data.rs:135`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/world_data.rs:136`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -19,7 +19,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `map.enter(name: String, x: f32, y: f32)`
 
-> 绑定：`engine/crates/engine/src/core/script/api/world_data.rs:104`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/world_data.rs:105`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -30,7 +30,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `map.go(name: String, x: Option<f32>, y: Option<f32>)`
 
-> 绑定：`engine/crates/engine/src/core/script/api/world_data.rs:71`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/world_data.rs:72`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -41,7 +41,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `map.goto(name: String, x: Option<f32>, y: Option<f32>)`
 
-> 绑定：`engine/crates/engine/src/core/script/api/world_data.rs:38`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/world_data.rs:39`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -52,7 +52,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `map.schema(name: String, spec: Option<Value>)`
 
-> 绑定：`engine/crates/engine/src/core/script/api/world_data.rs:246`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/world_data.rs:247`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -63,7 +63,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `map.set_spawn(x: f32, y: f32)`
 
-> 绑定：`engine/crates/engine/src/core/script/api/world_data.rs:174`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/world_data.rs:175`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -74,7 +74,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `map.spawn()`
 
-> 绑定：`engine/crates/engine/src/core/script/api/world_data.rs:151`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/world_data.rs:152`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -85,7 +85,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `map.state(name: String, value: Option<Value>)`
 
-> 绑定：`engine/crates/engine/src/core/script/api/world_data.rs:193`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/world_data.rs:194`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -96,7 +96,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `map.state_clear(name: Option<String>)`
 
-> 绑定：`engine/crates/engine/src/core/script/api/world_data.rs:227`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/world_data.rs:228`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 

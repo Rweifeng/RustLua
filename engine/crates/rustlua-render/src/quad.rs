@@ -30,8 +30,8 @@ use rustlua_ecs::transform::Vec2;
 
 /// 内置白纹理哨兵：没有贴图的 Quad 采样它，于是 tint 就是最终颜色。
 ///
-/// 与 [`crate::host::frame::WHITE_TEXTURE_PATH`] 是同一个字符串（那边是渲染器解析用的定义，
-/// 这里给出无贴图 Quad 的默认值）。刻意不引用 host 层：`core` 不该依赖 `host`。
+/// 与 `WHITE_TEXTURE_PATH`（渲染器解析用的定义）是同一个字符串，这里给出无贴图 Quad
+/// 的默认值。刻意不引用 host 层：`core` 不该依赖 `host`。
 pub const QUAD_DEFAULT_TEXTURE: &str = "__white__";
 
 /// 一等 Quad：几何（`size`/`pivot`）+ 材质（`color`/可选 `texture`）+ 深度与排序（`z`/`sorting`）。

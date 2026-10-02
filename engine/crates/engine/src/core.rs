@@ -16,8 +16,8 @@ pub use rustlua_ecs::{
 
 // ── rustlua-scene ──
 pub use rustlua_scene::{
-    char_collect, prefab, scene, scene_extract, scene_migration, scene_space, typed_scene,
-    world_text,
+    asset_import, char_collect, prefab, scene, scene_extract, scene_migration, scene_space,
+    typed_scene, world_text,
 };
 
 // ── rustlua-camera ──

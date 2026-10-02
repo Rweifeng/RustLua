@@ -10,7 +10,7 @@ use anyhow::anyhow;
 use engine::core::{
     dependency::recompute_edges,
     import_cache::ImportCache,
-    importer::{ImporterRegistry, run_import_batch},
+    importer::run_import_batch,
     resource_db::{AssetId, DiskAsset, ResourceDatabase, ResourceState},
     resource_kind::ResourceKind,
 };
@@ -249,6 +249,9 @@ pub fn scan(project: &Path) -> anyhow::Result<Vec<ScanEntry>> {
     ensure_project(project)?;
     let scanned_files = collect_data_files(project)?;
     let mut database = ResourceDatabase::open(project)?;
+    // core 拆分后 `ImporterRegistry::builtin()` 不含 Scene/Prefab 导入器，
+    // 扫描阶段必须用完整注册表，否则 .scene/.prefab 会误报"不支持的资源类型"。
+    let registry = engine::core::asset_import::full_registry();
     let mut entries = Vec::new();
     let mut disk_assets = Vec::with_capacity(scanned_files.len());
     // 已注册记录延迟到 reconcile+传播后再重建，让 scan 输出反映最新状态
@@ -276,7 +279,7 @@ pub fn scan(project: &Path) -> anyhow::Result<Vec<ScanEntry>> {
             continue;
         }
         let kind_token = kind.token().to_owned();
-        let importer_version = ImporterRegistry::builtin()
+        let importer_version = registry
             .get(kind)
             .map(|importer| importer.version())
             .unwrap_or("none");
@@ -328,7 +331,7 @@ pub fn import(project: &Path) -> anyhow::Result<Vec<ImportOutcome>> {
     let entries = scan(project)?;
     let mut database = ResourceDatabase::open(project)?;
     let mut cache = ImportCache::open(project)?;
-    let registry = ImporterRegistry::builtin();
+    let registry = engine::core::asset_import::full_registry();
     let items: Vec<_> = entries
         .iter()
         .filter_map(|entry| {
@@ -341,7 +344,7 @@ pub fn import(project: &Path) -> anyhow::Result<Vec<ImportOutcome>> {
         project,
         &mut database,
         &mut cache,
-        registry,
+        &registry,
         &items,
         &cancel,
     );

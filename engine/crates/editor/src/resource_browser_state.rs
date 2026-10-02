@@ -1,6 +1,5 @@
 use engine::core::{
     dependency::recompute_edges,
-    importer::ImporterRegistry,
     resource_db::{AssetId, DiskAsset, ResourceDatabase, ResourceDbError, ResourceState},
     resource_kind::ResourceKind,
 };
@@ -198,7 +197,8 @@ impl ResourceBrowserState {
             }
 
             // 统一从 ImporterRegistry 取版本：assetc 与编辑器同源，避免版本漂移。
-            let importer_version = ImporterRegistry::builtin()
+            // core 拆分后 builtin() 不含 Scene/Prefab 导入器，必须用完整注册表。
+            let importer_version = engine::core::asset_import::full_registry()
                 .get(kind)
                 .map(engine::core::importer::Importer::version)
                 .unwrap_or(kind.token());

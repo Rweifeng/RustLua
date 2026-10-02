@@ -13,7 +13,7 @@
 - 透视相机使用 `fov_y`（场景组件中写**度**，内部转弧度）、正的 `near`/`far`（`near > 0`，`far > near`）。
 - 深度纹理 `Depth32Float`，清除值 `1.0`，比较函数 `LessEqual`；3D pass 启用深度测试与写入，2D pass 保持无深度行为。
 - 颜色纹理按 sRGB 采样；法线/金属度/粗糙度与深度数据按线性处理。
-- glTF 节点坐标在导入边界按该约定转换（[gltf_asset.rs](../engine/crates/engine/src/core/gltf_asset.rs)）。
+- glTF 节点坐标在导入边界按该约定转换（[gltf_asset.rs](../engine/crates/rustlua-assets/src/gltf_asset.rs)）。
 
 ## 2. 3D 场景组件
 
@@ -25,14 +25,14 @@
 
 - `rotation` 是单位四元数（`rx,ry,rz,rw`，非单位长度报错）。
 - `scale` 各分量必须为正。
-- 模型矩阵 `T * R * S`（WP2/WP5 收敛后 2D 与 3D 变换同址：[transform.rs](../engine/crates/engine/src/core/transform.rs)）。
+- 模型矩阵 `T * R * S`（WP2/WP5 收敛后 2D 与 3D 变换同址：[transform.rs](../engine/crates/rustlua-ecs/src/transform.rs)）。
 
 ### MeshRenderer
 
 `mesh=<项目相对路径 .glb/.gltf>`
 
 - 只接受项目相对路径，扩展名必须为 `.glb`/`.gltf`；特殊值 `__ground_plane__` 由渲染器合成地面接收平面。
-- 网格来自 [gltf_asset.rs](../engine/crates/engine/src/core/gltf_asset.rs) 的 CPU 侧 glTF 2.0/GLB 导入器（`IMPORTER_VERSION = "gltf-m8-07"`）：支持多 primitive、材质（`base_color_factor` / `base_color_texture`）、skins（JOINTS_0/WEIGHTS_0）、animations、图片。
+- 网格来自 [gltf_asset.rs](../engine/crates/rustlua-assets/src/gltf_asset.rs) 的 CPU 侧 glTF 2.0/GLB 导入器（`IMPORTER_VERSION = "gltf-m8-07"`）：支持多 primitive、材质（`base_color_factor` / `base_color_texture`）、skins（JOINTS_0/WEIGHTS_0）、animations、图片。
 
 ### Camera3D
 
@@ -72,7 +72,7 @@
 ### Collider3D
 
 - 3D 物理使用 [Rapier](https://rapier.rs)（[ADR-0008](02-technical-decisions.md#adr-0008m9-采用-rapier3d-作为-3d-物理后端)）。
-- 形状（[physics3d.rs](../engine/crates/engine/src/core/physics3d.rs)）：
+- 形状（[physics3d.rs](../engine/crates/rustlua-physics/src/physics3d.rs)）：
   - `shape=ball;radius=<r>`
   - `shape=cuboid;half_x=<x>;half_y=<y>;half_z=<z>`
   - `shape=capsule;half_height=<h>;radius=<r>`（沿本地 Y 轴）
@@ -92,7 +92,7 @@
    - 环境基础光 `0.15`，最终 `brightness = (0.15 + (diffuse*(1-metallic) + specular*mix(0.04,1,metallic)) * shadow) * intensity`。
 3. **2D pass**：Sprite/Tilemap/Text/UI（`TEXTURED_SHADER`，含 MSDF 字形），无深度。
 
-顶点格式（[mesh3d.rs](../engine/crates/engine/src/core/mesh3d.rs)）：
+顶点格式（[mesh3d.rs](../engine/crates/rustlua-render/src/mesh3d.rs)）：
 
 | 属性 | 类型 | 说明 |
 |---|---|---|

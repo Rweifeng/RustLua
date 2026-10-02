@@ -2,7 +2,7 @@
 //!
 //! 负责人裁定"所有场景的 `parent` 一律按局部空间解释"。既有场景里子实体的坐标是**世界**坐标，
 //! 直接按新语义解释会让整棵子树位移，因此必须先迁移：把"父世界矩阵的逆"烘进子实体的局部变换，
-//! 世界位置保持不变（见 [`rustlua_ecs::spatial_transform::migrate_scene_to_local_space`]）。
+//! 世界位置保持不变（迁移逻辑已从 `rustlua_ecs::spatial_transform` 移入本模块）。
 //!
 //! 写回是**危险操作**，所以：默认 dry-run（只报告不写盘）；写回前先备份成 `<file>.bak`
 //! （已存在则不覆盖，保证备份永远是"最原始"的那份）；`restore` 把 `.bak` 拷回去并删掉它，
@@ -25,7 +25,15 @@
 //! 读回的字节与期望不一致即报错，绝不留下"看起来写成功、内容却是别的"的场景。
 
 use crate::scene::{Scene, SceneEntityId};
-use std::path::{Path, PathBuf};
+use rustlua_ecs::spatial_transform::{
+    GlobalTransform, LocalTransform, MigrationRefusal, MigrationReport, SpatialMigration,
+    TRANSFORM_COMPONENT, scene_entity_local,
+};
+use rustlua_math::math3d::Mat4;
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 
 /// 场景内嵌迁移标记的键（`meta\tspatial\tlocal`）。见模块头"幂等标记"。
 ///
@@ -163,29 +171,173 @@ pub fn is_spatially_migrated(scene: &Scene, path: &Path) -> bool {
 
 /// 迁移一个场景文件。`options.write` 为假时只读盘、只报告（dry-run）。
 ///
-/// TODO: This function is temporarily stubbed out during the crate split.
-/// The migration logic needs to be moved here from rustlua-ecs to avoid circular dependencies.
+/// 语义：v2 下每个实体的世界矩阵就是它自己的 TRS（局部=世界）。迁移把"父世界矩阵的逆"
+/// 烘进子实体的新局部变换，世界位置不变（`migrate_scene_to_local_space`，本模块私有实现）；无法无损表达
+/// 为 TRS 的实体**拒绝迁移**、清掉 `parent` 并逐条报告。写回前先备份 `<file>.bak`，迁移
+/// 标记内嵌进场景文件、与组件数据**同一次**原子写，写盘后读回校验（见模块头）。
 pub fn migrate_scene_file(
     path: &Path,
-    _options: MigrationOptions,
+    options: MigrationOptions,
 ) -> Result<SceneMigrationOutcome, String> {
     let scene = Scene::load(path).map_err(|error| format!("{}: {error}", path.display()))?;
     let removed_designs = scene_removed_designs(&scene);
+    let entities = scene.entities.len();
 
-    // TODO: Implement migration logic here (moved from rustlua-ecs::spatial_transform)
-    // For now, just return a stub result indicating no migration was performed.
+    // 幂等：已带标记（内嵌或旧版旁路）的场景直接跳过，绝不二次施加。
+    if is_spatially_migrated(&scene, path) {
+        return Ok(SceneMigrationOutcome {
+            path: path.to_path_buf(),
+            entities,
+            converted: 0,
+            refused: 0,
+            skipped: entities,
+            written: false,
+            already_migrated: true,
+            verified: false,
+            backup: None,
+            removed_designs,
+        });
+    }
+
+    let (migrated, report) = migrate_scene_to_local_space(&scene);
+    let converted = report.converted.len();
+    let refused = report.refused.len();
+    let skipped = report.skipped.len();
+
+    if !options.write {
+        return Ok(SceneMigrationOutcome {
+            path: path.to_path_buf(),
+            entities,
+            converted,
+            refused,
+            skipped,
+            written: false,
+            already_migrated: false,
+            verified: false,
+            backup: None,
+            removed_designs,
+        });
+    }
+
+    // 写回是危险操作：先备份（必须是"最原始"那份——已存在时不覆盖，宁可报错）。
+    let backup = options.backup.then(|| backup_path(path));
+    if let Some(backup) = &backup {
+        if backup.is_file() {
+            return Err(format!(
+                "备份已存在 {}：拒绝覆盖（备份必须是\"最原始\"的那份）",
+                backup.display()
+            ));
+        }
+        std::fs::copy(path, backup)
+            .map_err(|error| format!("备份失败 {}: {error}", backup.display()))?;
+    }
+
+    // 应用迁移：写回局部组件串、清掉被拒实体的 parent、内嵌迁移标记。
+    let mut migrated_scene = scene.clone();
+    for (id, local) in &migrated.locals {
+        if let Some(entity) = migrated_scene.entities.get_mut(id) {
+            entity
+                .components
+                .insert(TRANSFORM_COMPONENT.to_owned(), local.clone());
+        }
+    }
+    for id in &migrated.detached {
+        if let Some(entity) = migrated_scene.entities.get_mut(id) {
+            entity.parent = None;
+        }
+    }
+    migrated_scene.metadata.insert(
+        MIGRATION_META_KEY.to_owned(),
+        MIGRATION_META_VALUE.to_owned(),
+    );
+
+    // 原子写 + 读回校验（标记与组件数据在同一次写里落盘，只有一个提交点）。
+    let contents = migrated_scene.to_text();
+    write_scene_atomically(path, &contents)?;
+
     Ok(SceneMigrationOutcome {
         path: path.to_path_buf(),
-        entities: scene.entities.len(),
-        converted: 0,
-        refused: 0,
-        skipped: scene.entities.len(),
-        written: false,
+        entities,
+        converted,
+        refused,
+        skipped,
+        written: true,
         already_migrated: false,
-        verified: false,
-        backup: None,
+        verified: true,
+        backup,
         removed_designs,
     })
+}
+
+/// v2 → 空间层级的迁移：把"父世界矩阵的逆"烘进子实体的新局部变换，世界位置不变。
+///
+/// v2 的 `parent` 只是组织关系：提取器按**单实体** TRS 构造世界矩阵，父子之间没有空间
+/// 继承。因此迁移必须把"父世界矩阵的逆"烘进子实体的新局部变换，而不是把旧局部值直接
+/// 当作相对父节点的坐标——后者会让整棵子树的画面位移。无法无损表达为 TRS 的实体
+/// **拒绝迁移**（保持为根、清掉 `parent`）并逐条报告，世界位置同样不变。
+///
+/// 只读输入、只返回新数据（dry-run 语义），写回由调用方决定。
+fn migrate_scene_to_local_space(scene: &Scene) -> (SpatialMigration, MigrationReport) {
+    let mut report = MigrationReport::default();
+    let mut migrated = SpatialMigration::default();
+    // v2 下每个实体的世界矩阵就是它自己的 TRS（局部=世界），这是"保持世界位置"的基准。
+    let mut world: BTreeMap<SceneEntityId, Mat4> = BTreeMap::new();
+    let mut locals: BTreeMap<SceneEntityId, LocalTransform> = BTreeMap::new();
+    for entity in scene.entities.values() {
+        match scene_entity_local(&entity.components) {
+            Some(local) => match local.matrix() {
+                Ok(matrix) => {
+                    world.insert(entity.id, matrix);
+                    locals.insert(entity.id, local);
+                }
+                Err(_) => report.skipped.push(entity.id),
+            },
+            None => report.skipped.push(entity.id),
+        }
+    }
+    for entity in scene.entities.values() {
+        let Some(&own_world) = world.get(&entity.id) else {
+            continue;
+        };
+        // 保持世界位置的两种结果：建继承（局部 = 父世界的逆 × 自己世界）或保持为根。
+        // 保持为根时局部值就是原值（v2 的"局部=世界"），因此直接回写、不重新分解。
+        let own_local = locals[&entity.id];
+        let keep_as_root = |migrated: &mut SpatialMigration| {
+            migrated
+                .locals
+                .insert(entity.id, own_local.to_unified_component_str());
+        };
+        let Some(parent) = entity.parent else {
+            keep_as_root(&mut migrated);
+            report.roots.push(entity.id);
+            continue;
+        };
+        let Some(&parent_world) = world.get(&parent) else {
+            // 父节点没有可用的变换：保持组织关系但不建立空间继承，世界位置不变。
+            keep_as_root(&mut migrated);
+            report.skipped.push(entity.id);
+            continue;
+        };
+        match GlobalTransform::from_matrix(own_world)
+            .local_relative_to(Some(GlobalTransform::from_matrix(parent_world)))
+        {
+            Ok(local) => {
+                migrated
+                    .locals
+                    .insert(entity.id, local.to_unified_component_str());
+                report.converted.push(entity.id);
+            }
+            Err(error) => {
+                // 拒绝：保持为根，并**清掉 parent**，否则新语义下世界位置会变。
+                keep_as_root(&mut migrated);
+                report
+                    .refused
+                    .push((entity.id, MigrationRefusal::NotRepresentable(error)));
+                migrated.detached.push(entity.id);
+            }
+        }
+    }
+    (migrated, report)
 }
 
 /// 原子写回一个场景文件：唯一临时名 → 写 + `sync_all` → rename → **读回校验**。

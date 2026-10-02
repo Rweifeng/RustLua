@@ -34,7 +34,7 @@ powershell -File scripts/gen-rustdoc.ps1      # cargo doc → 可发布的静态
 | 情形 | 处理 |
 |---|---|
 | `[`component`]` 等 6 个私有子模块名 | 降级成代码块（`component`），没有公开条目可链 |
-| `[`WorldTransform`] / [`WorldTransform3D`]` | 指向已合并的 [`GlobalTransform`](../engine/crates/engine/src/core/spatial_transform.rs)（docs/60 那批的改名遗留） |
+| `[`WorldTransform`] / [`WorldTransform3D`]` | 指向已合并的 [`GlobalTransform`](../engine/crates/rustlua-ecs/src/spatial_transform.rs)（docs/60 那批的改名遗留） |
 | `[`crate::core::script::LuaRuntime::with_script`]` | 该方法不存在；反向解码其实是私有 `entity_from_lua`，降级成代码块 |
 | `[`Camera2D::visible_extent`]` | 私有方法，"public documentation links to private item" 告警，降级 |
 

@@ -1,3 +1,4 @@
+pub mod asset_import;
 pub mod char_collect;
 pub mod prefab;
 pub mod scene;

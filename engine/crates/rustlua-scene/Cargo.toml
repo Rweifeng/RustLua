@@ -8,6 +8,7 @@ publish = false
 
 [dependencies]
 thiserror.workspace = true
+serde_json = "1"
 rustlua-math = { path = "../rustlua-math" }
 rustlua-ecs = { path = "../rustlua-ecs" }
 rustlua-camera = { path = "../rustlua-camera" }

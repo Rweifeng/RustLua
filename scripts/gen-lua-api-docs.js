@@ -28,9 +28,9 @@ import process from 'node:process';
 const REPO_ROOT = path.resolve(import.meta.dirname, '..');
 const SURFACE_JSON = path.join(
   REPO_ROOT,
-  'engine/crates/engine/src/core/api_surface_snapshot/lua_api_surface.json',
+  'engine/crates/rustlua-scripting/src/api_surface_snapshot/lua_api_surface.json',
 );
-const API_DIR = path.join(REPO_ROOT, 'engine/crates/engine/src/core/script/api');
+const API_DIR = path.join(REPO_ROOT, 'engine/crates/rustlua-scripting/src/script/api');
 const DOC_RS = path.join(REPO_ROOT, 'engine/crates/engine/src/lua_api.rs');
 const DOC_DIR = path.join(REPO_ROOT, 'engine/crates/engine/src/lua_api/doc');
 const BASELINE_JSON = path.join(DOC_DIR, 'baseline.json');

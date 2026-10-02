@@ -13,7 +13,7 @@ use editor::{
 };
 use engine::core::{
     import_cache::ImportCache,
-    importer::{ImportSummary, ImporterRegistry, run_import_batch_with_progress},
+    importer::{ImportSummary, run_import_batch_with_progress},
     resource_db::{AssetId, ResourceDatabase},
     resource_kind::ResourceKind,
     scene::SceneEntityId,
@@ -420,7 +420,8 @@ fn spawn_resource_import(
                     .map_err(|error| format!("资源库打开失败：{error}"))?;
                 let mut cache = ImportCache::open(&root)
                     .map_err(|error| format!("导入缓存打开失败：{error}"))?;
-                let registry = ImporterRegistry::builtin();
+                // core 拆分后 builtin() 不含 Scene/Prefab，编辑器导入必须用完整注册表。
+                let registry = engine::core::asset_import::full_registry();
                 let items: Vec<(AssetId, PathBuf)> = items
                     .into_iter()
                     .map(|(id, relative)| (id, root.join(relative)))
@@ -431,7 +432,7 @@ fn spawn_resource_import(
                     &root,
                     &mut database,
                     &mut cache,
-                    registry,
+                    &registry,
                     &items,
                     &cancel,
                     |done, total| {

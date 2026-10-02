@@ -3,7 +3,7 @@
 //! Each [`crate::resource_kind::ResourceKind`] has exactly one builtin [`crate::importer::Importer`] that validates
 //! source files and produces cache artifacts. [`crate::importer::run_import_batch`] drives a
 //! batch of imports, writes per-item state back to the
-//! [`ResourceDatabase`](crate::resource_db::ResourceDatabase), and never
+//! [`crate::resource_db::ResourceDatabase`], and never
 //! aborts the whole batch because of one bad item.
 
 use std::{
@@ -516,8 +516,6 @@ where
 mod tests {
     use super::*;
     use crate::resource_db::ResourceState;
-    // Keep in sync with `rustlua_scene::scene::CURRENT_SCENE_VERSION`
-    const CURRENT_SCENE_VERSION: u32 = 2;
     use std::{fs, io::Write};
 
     fn root(name: &str) -> PathBuf {
@@ -579,15 +577,6 @@ mod tests {
         bytes
     }
 
-    fn scene_bytes() -> Vec<u8> {
-        format!("scene_version={}\nname=main\n", CURRENT_SCENE_VERSION).into_bytes()
-    }
-
-    fn prefab_bytes() -> Vec<u8> {
-        b"prefab_version=1\nasset_id=00000000-0000-4000-8000-000000000000\nname=hero\nroot=1\nentity\t1\troot\t\n"
-            .to_vec()
-    }
-
     #[test]
     fn registry_maps_every_builtin_kind() {
         let registry = ImporterRegistry::builtin();
@@ -595,8 +584,6 @@ mod tests {
             ResourceKind::Texture,
             ResourceKind::Audio,
             ResourceKind::LuaScript,
-            ResourceKind::Scene,
-            ResourceKind::Prefab,
             ResourceKind::Model,
             ResourceKind::Atlas,
             ResourceKind::Font,
@@ -605,6 +592,9 @@ mod tests {
             assert_eq!(importer.kind(), kind);
             assert!(!importer.extensions().is_empty());
         }
+        // core 拆分后 Scene/Prefab 导入器在 rustlua-scene（`asset_import`），builtin 不含它们。
+        assert!(registry.get(ResourceKind::Scene).is_none());
+        assert!(registry.get(ResourceKind::Prefab).is_none());
         assert!(registry.get(ResourceKind::Other).is_none());
     }
 
@@ -654,54 +644,6 @@ mod tests {
     }
 
     #[test]
-    fn scene_importer_validates_json_and_ron_structure() {
-        let root = root("data-json-ron");
-        let importer = ImporterRegistry::builtin()
-            .get(ResourceKind::Scene)
-            .unwrap();
-
-        let good_json = write_source(&root, "good.json", b"{\"a\": [1, 2, 3]}");
-        importer
-            .validate(&good_json, &std::fs::read(&good_json).unwrap())
-            .unwrap();
-
-        let bad_json = write_source(&root, "bad.json", b"{\"a\": [1, 2,}");
-        let error = importer
-            .validate(&bad_json, &std::fs::read(&bad_json).unwrap())
-            .expect_err("invalid json must be rejected");
-        assert!(error.contains("bad.json"), "诊断需含文件路径: {error}");
-        assert!(
-            error.contains("JSON 解析失败"),
-            "诊断需标明 JSON 失败: {error}"
-        );
-        assert!(error.contains("line 1"), "诊断需含行列定位: {error}");
-
-        let good_ron = write_source(&root, "good.ron", b"(name: \"demo\", items: [1, 2])");
-        importer
-            .validate(&good_ron, &std::fs::read(&good_ron).unwrap())
-            .unwrap();
-
-        let bad_ron = write_source(&root, "bad.ron", b"(name: \"demo\", items: [1, 2)");
-        let error = importer
-            .validate(&bad_ron, &std::fs::read(&bad_ron).unwrap())
-            .expect_err("unbalanced ron must be rejected");
-        assert!(error.contains("bad.ron"), "诊断需含文件路径: {error}");
-        assert!(
-            error.contains("RON 结构错误"),
-            "诊断需标明结构错误: {error}"
-        );
-        assert!(error.contains("第 1 行"), "诊断需含行列定位: {error}");
-
-        let unclosed = write_source(&root, "unclosed.ron", b"(name: \"demo\"");
-        let error = importer
-            .validate(&unclosed, &std::fs::read(&unclosed).unwrap())
-            .expect_err("unclosed ron must be rejected");
-        assert!(error.contains("未闭合"), "诊断需说明未闭合: {error}");
-
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
     fn registry_resolves_by_path() {
         let registry = ImporterRegistry::builtin();
         assert_eq!(
@@ -712,10 +654,9 @@ mod tests {
             registry.from_path(Path::new("b.wav")).unwrap().kind(),
             ResourceKind::Audio
         );
-        assert_eq!(
-            registry.from_path(Path::new("c.prefab")).unwrap().kind(),
-            ResourceKind::Prefab
-        );
+        // core 拆分后 Scene/Prefab 导入器在 rustlua-scene（`asset_import`），builtin 不解析它们。
+        assert!(registry.from_path(Path::new("c.prefab")).is_none());
+        assert!(registry.from_path(Path::new("s.scene")).is_none());
         assert!(registry.from_path(Path::new("d.bin")).is_none());
     }
 
@@ -831,56 +772,12 @@ mod tests {
     }
 
     #[test]
-    fn scene_importer_is_strict_for_scene_but_lenient_for_ron_json() {
-        let root = root("scene");
-        let good = write_source(&root, "main.scene", &scene_bytes());
-        let importer = ImporterRegistry::builtin()
-            .get(ResourceKind::Scene)
-            .unwrap();
-        importer
-            .validate(&good, &std::fs::read(&good).unwrap())
-            .unwrap();
-        let bad_scene = write_source(&root, "bad.scene", b"scene_version=0\nname\nbad\n");
-        assert!(
-            importer
-                .validate(&bad_scene, b"scene_version=0\nname\nbad\n")
-                .is_err()
-        );
-        let ron = write_source(&root, "data.ron", b"Scene(version=1)");
-        importer.validate(&ron, b"Scene(version=1)").unwrap();
-        let json = write_source(&root, "data.json", b"{\"a\":1}");
-        importer.validate(&json, b"{\"a\":1}").unwrap();
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn prefab_importer_validates_prefab() {
-        let root = root("prefab");
-        let good = write_source(&root, "hero.prefab", &prefab_bytes());
-        let importer = ImporterRegistry::builtin()
-            .get(ResourceKind::Prefab)
-            .unwrap();
-        importer
-            .validate(&good, &std::fs::read(&good).unwrap())
-            .unwrap();
-        let bad = write_source(&root, "bad.prefab", b"prefab_version=1\nname\nbad\n");
-        assert!(
-            importer
-                .validate(&bad, b"prefab_version=1\nname\nbad\n")
-                .is_err()
-        );
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
     fn empty_sources_are_rejected_by_every_builtin() {
         let registry = ImporterRegistry::builtin();
         for kind in [
             ResourceKind::Texture,
             ResourceKind::Audio,
             ResourceKind::LuaScript,
-            ResourceKind::Scene,
-            ResourceKind::Prefab,
             ResourceKind::Model,
             ResourceKind::Atlas,
             ResourceKind::Font,

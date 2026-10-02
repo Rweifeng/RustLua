@@ -3720,6 +3720,7 @@ dependencies = [
  "rustlua-physics",
  "rustlua-render",
  "rustlua-ui",
+ "serde_json",
  "thiserror 2.0.20",
 ]
 

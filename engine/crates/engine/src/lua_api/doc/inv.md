@@ -8,7 +8,7 @@
 
 ## `inv.add(id: String, item_id: String, count: i64)`
 
-> 绑定：`engine/crates/engine/src/core/script/api/inventory.rs:129`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/inventory.rs:133`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -19,7 +19,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `inv.capacity(id: String)`
 
-> 绑定：`engine/crates/engine/src/core/script/api/inventory.rs:109`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/inventory.rs:113`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -30,7 +30,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `inv.count(id: String, item_id: String)`
 
-> 绑定：`engine/crates/engine/src/core/script/api/inventory.rs:173`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/inventory.rs:177`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -41,7 +41,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `inv.create(id: String, capacity: Option<i64>)`
 
-> 绑定：`engine/crates/engine/src/core/script/api/inventory.rs:79`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/inventory.rs:83`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -52,7 +52,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `inv.equip(id: String, slot: String, item_id: Option<String>)`
 
-> 绑定：`engine/crates/engine/src/core/script/api/inventory.rs:297`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/inventory.rs:301`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -63,7 +63,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `inv.equip_get(id: String, slot: String)`
 
-> 绑定：`engine/crates/engine/src/core/script/api/inventory.rs:316`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/inventory.rs:320`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -74,7 +74,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `inv.equip_list(id: String)`
 
-> 绑定：`engine/crates/engine/src/core/script/api/inventory.rs:327`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/inventory.rs:331`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -85,7 +85,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `inv.exists(id: String)`
 
-> 绑定：`engine/crates/engine/src/core/script/api/inventory.rs:122`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/inventory.rs:126`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -96,7 +96,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `inv.get(id: String)`
 
-> 绑定：`engine/crates/engine/src/core/script/api/inventory.rs:185`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/inventory.rs:189`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -107,7 +107,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `inv.hotbar(id: String, size: Option<i64>)`
 
-> 绑定：`engine/crates/engine/src/core/script/api/inventory.rs:94`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/inventory.rs:98`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -118,7 +118,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `inv.move(from_id: String, from_index: i64, to_id: String, to_index: Option<i64>, count: Option<i64>)`
 
-> 绑定：`engine/crates/engine/src/core/script/api/inventory.rs:272`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/inventory.rs:276`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -129,7 +129,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `inv.remove(id: String, item_id: String, count: i64)`
 
-> 绑定：`engine/crates/engine/src/core/script/api/inventory.rs:159`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/inventory.rs:163`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -140,7 +140,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `inv.set(id: String, index: i64, item_id: Option<String>, count: Option<i64>)`
 
-> 绑定：`engine/crates/engine/src/core/script/api/inventory.rs:238`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/inventory.rs:242`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -151,7 +151,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `inv.slot(id: String, index: i64)`
 
-> 绑定：`engine/crates/engine/src/core/script/api/inventory.rs:213`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/inventory.rs:217`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -162,7 +162,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `inv.swap(from_id: String, from_index: i64, to_id: String, to_index: i64)`
 
-> 绑定：`engine/crates/engine/src/core/script/api/inventory.rs:263`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/inventory.rs:267`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 

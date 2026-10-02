@@ -42,7 +42,7 @@ font_weight = 400.0
 
 ### 扫描范围
 
-`scan` 覆盖 `project.toml`、`scenes/`、`scripts/`、`assets/`；跳过本地工作目录 `.cache`、`.temp`、`.git`、`target`。资源族统一为 `ResourceKind`（[resource_kind.rs](../engine/crates/engine/src/core/resource_kind.rs)）。
+`scan` 覆盖 `project.toml`、`scenes/`、`scripts/`、`assets/`；跳过本地工作目录 `.cache`、`.temp`、`.git`、`target`。资源族统一为 `ResourceKind`（[resource_kind.rs](../engine/crates/rustlua-assets/src/resource_kind.rs)）。
 
 ### 打包内容（`package`）
 
@@ -73,7 +73,7 @@ assetc_manifest=1\tassetc-package-1
 
 ## 3. 发布资源编码（RustLua）
 
-编码文件布局（[pack.rs](../engine/crates/engine/src/core/pack.rs)，ADR-0015）：
+编码文件布局（[pack.rs](../engine/crates/rustlua-infra/src/pack.rs)，ADR-0015）：
 
 ```
 RustLua <flags> [12B nonce] <payload>
@@ -160,7 +160,7 @@ PC 发布包是自包含目录，运行方式：`game.exe --pack pack --title "�
 
 ## 5. 存档格式
 
-运行时存档（[save.rs](../engine/crates/engine/src/core/save.rs)）：
+运行时存档（[save.rs](../engine/crates/rustlua-gameplay/src/save.rs)）：
 
 ```
 save_version=2
