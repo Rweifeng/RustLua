@@ -1,0 +1,13 @@
+[package]
+name = "rustlua-gameplay"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+thiserror.workspace = true
+rustlua-ecs = { path = "../rustlua-ecs" }
+rustlua-audio = { path = "../rustlua-audio" }
+rustlua-input = { path = "../rustlua-input" }

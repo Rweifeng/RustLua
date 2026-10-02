@@ -10,37 +10,41 @@ publish = false
 anyhow.workspace = true
 thiserror.workspace = true
 bytemuck.workspace = true
-mlua = { version = "0.11", features = ["lua54", "vendored"] }
-serde_json = "1"
 tracing.workspace = true
-tracing-subscriber.workspace = true
-image = { version = '0.25', default-features = false, features = ['png', 'jpeg'] }
-rapier2d = "0.22"
-rapier3d = "0.22"
-crossbeam-channel = "0.5"
-rodio = { version = "0.19", features = ["wav", "vorbis", "mp3", "flac"] }
-ab_glyph = "0.2"
-bymsdfgen-core = "0.1"
-ttf-parser = "0.25"
-gltf.workspace = true
-flate2 = "1"
-chacha20poly1305 = "0.10"
-rand = "0.8"
-getrandom.workspace = true
 pollster = "0.4"
 wgpu = "27"
 winit = "0.30"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+getrandom.workspace = true
+
+# Sub-crates (re-exported via `core` module for backward compatibility).
+rustlua-math.workspace = true
+rustlua-ecs.workspace = true
+rustlua-scene.workspace = true
+rustlua-camera.workspace = true
+rustlua-animation.workspace = true
+rustlua-render.workspace = true
+rustlua-ui.workspace = true
+rustlua-physics.workspace = true
+rustlua-assets.workspace = true
+rustlua-audio.workspace = true
+rustlua-input.workspace = true
+rustlua-gameplay.workspace = true
+rustlua-scripting.workspace = true
+rustlua-infra.workspace = true
 
 [dev-dependencies]
 vorbis = "0.1"
+# wp0_*_golden examples 仍直接依赖（core 拆分后 serde_json 已随模块迁到子 crate）
+serde_json = "1"
 
-# M20-06：桌面手柄设备轮询。原计划的 gilrs 依赖在本机离线环境下无法解析
+# M20-06：桌面手柄设备轮询。原计划的 gilrs 在本机离线环境下无法解析
 # （crates 已缓存但索引不可用，见任务文档），改用已在依赖树中的 windows-sys
 # XInput（Windows 原生），保持 GamepadBackend 抽象以便后续替换为 gilrs。
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Input_XboxController"] }
 
 # 文件日志（tracing-appender）在 wasm32-unknown-unknown 上不可用（无 symlink/
-# 文件系统），wasm 构建只保留 console/sink 层（core/logging.rs 按 cfg 分支）。
+# 文件系统），wasm 构建只保留 console/sink 层。
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tracing-appender.workspace = true

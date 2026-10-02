@@ -1,0 +1,21 @@
+[package]
+name = "rustlua-ecs"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+thiserror.workspace = true
+serde_json = "1"
+rustlua-math = { path = "../rustlua-math" }
+rustlua-infra = { path = "../rustlua-infra" }
+
+[dev-dependencies]
+rustlua-animation = { path = "../rustlua-animation" }
+rustlua-scene = { path = "../rustlua-scene" }
+rustlua-ui = { path = "../rustlua-ui" }
+rustlua-physics = { path = "../rustlua-physics" }
+rustlua-render = { path = "../rustlua-render" }
+rustlua-camera = { path = "../rustlua-camera" }

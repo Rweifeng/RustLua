@@ -6,6 +6,20 @@ members = [
     "crates/engine",
     "crates/game",
     "crates/game_web",
+    "crates/rustlua-animation",
+    "crates/rustlua-assets",
+    "crates/rustlua-audio",
+    "crates/rustlua-camera",
+    "crates/rustlua-ecs",
+    "crates/rustlua-gameplay",
+    "crates/rustlua-infra",
+    "crates/rustlua-input",
+    "crates/rustlua-math",
+    "crates/rustlua-physics",
+    "crates/rustlua-render",
+    "crates/rustlua-scene",
+    "crates/rustlua-scripting",
+    "crates/rustlua-ui",
     "crates/wasm-lua-spike",
 ]
 
@@ -30,6 +44,20 @@ strip = true
 
 [workspace.dependencies]
 engine = { path = "crates/engine" }
+rustlua-math = { path = "crates/rustlua-math" }
+rustlua-ecs = { path = "crates/rustlua-ecs" }
+rustlua-scene = { path = "crates/rustlua-scene" }
+rustlua-camera = { path = "crates/rustlua-camera" }
+rustlua-animation = { path = "crates/rustlua-animation" }
+rustlua-render = { path = "crates/rustlua-render" }
+rustlua-ui = { path = "crates/rustlua-ui" }
+rustlua-physics = { path = "crates/rustlua-physics" }
+rustlua-assets = { path = "crates/rustlua-assets" }
+rustlua-audio = { path = "crates/rustlua-audio" }
+rustlua-input = { path = "crates/rustlua-input" }
+rustlua-gameplay = { path = "crates/rustlua-gameplay" }
+rustlua-scripting = { path = "crates/rustlua-scripting" }
+rustlua-infra = { path = "crates/rustlua-infra" }
 eframe = { version = "0.33", features = ["wgpu"] }
 # M27-00：多标签停靠布局。egui_dock 与 egui 小版本硬绑定（crates.io 实测：0.18.0↔0.33、0.19↔0.34、0.20↔0.35、0.21↔0.36；钉 =0.18.0），升级 eframe 必须同步。
 # `serde` feature（阶段 2）：DockState 本身带 serde derive，布局树直接落 layout.json；

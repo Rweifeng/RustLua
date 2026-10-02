@@ -1,0 +1,23 @@
+[package]
+name = "rustlua-render"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+thiserror.workspace = true
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+ab_glyph = "0.2"
+bymsdfgen-core = "0.1"
+ttf-parser = "0.25"
+bytemuck.workspace = true
+rustlua-math = { path = "../rustlua-math" }
+rustlua-ecs = { path = "../rustlua-ecs" }
+rustlua-camera = { path = "../rustlua-camera" }
+rustlua-infra = { path = "../rustlua-infra" }
+rustlua-assets = { path = "../rustlua-assets" }
+
+[dev-dependencies]
+rustlua-ui = { path = "../rustlua-ui" }

@@ -1,0 +1,22 @@
+[package]
+name = "rustlua-scene"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+thiserror.workspace = true
+rustlua-math = { path = "../rustlua-math" }
+rustlua-ecs = { path = "../rustlua-ecs" }
+rustlua-camera = { path = "../rustlua-camera" }
+rustlua-animation = { path = "../rustlua-animation" }
+rustlua-render = { path = "../rustlua-render" }
+rustlua-physics = { path = "../rustlua-physics" }
+rustlua-ui = { path = "../rustlua-ui" }
+rustlua-assets = { path = "../rustlua-assets" }
+rustlua-infra = { path = "../rustlua-infra" }
+
+[dev-dependencies]
+rustlua-infra = { path = "../rustlua-infra" }

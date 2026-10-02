@@ -1,0 +1,12 @@
+[package]
+name = "rustlua-camera"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+thiserror.workspace = true
+rustlua-math = { path = "../rustlua-math" }
+rustlua-ecs = { path = "../rustlua-ecs" }

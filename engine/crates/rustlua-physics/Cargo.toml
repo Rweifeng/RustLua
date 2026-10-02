@@ -1,0 +1,14 @@
+[package]
+name = "rustlua-physics"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+thiserror.workspace = true
+rapier2d = "0.22"
+rapier3d = "0.22"
+rustlua-math = { path = "../rustlua-math" }
+rustlua-ecs = { path = "../rustlua-ecs" }

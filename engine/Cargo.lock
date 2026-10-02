@@ -1295,28 +1295,29 @@ checksum = "66b7e2430c6dff6a955451e2cfc438f09cea1965a9d6f87f7e3b90decc014099"
 name = "engine"
 version = "0.1.0"
 dependencies = [
- "ab_glyph",
  "anyhow",
- "bymsdfgen-core",
  "bytemuck",
- "chacha20poly1305",
- "crossbeam-channel",
- "flate2",
  "getrandom 0.2.17",
- "gltf",
  "image",
- "mlua",
  "pollster",
- "rand 0.8.7",
- "rapier2d",
- "rapier3d",
- "rodio",
+ "rustlua-animation",
+ "rustlua-assets",
+ "rustlua-audio",
+ "rustlua-camera",
+ "rustlua-ecs",
+ "rustlua-gameplay",
+ "rustlua-infra",
+ "rustlua-input",
+ "rustlua-math",
+ "rustlua-physics",
+ "rustlua-render",
+ "rustlua-scene",
+ "rustlua-scripting",
+ "rustlua-ui",
  "serde_json",
  "thiserror 2.0.20",
  "tracing",
  "tracing-appender",
- "tracing-subscriber",
- "ttf-parser",
  "vorbis",
  "wgpu",
  "windows-sys 0.61.2",
@@ -3370,9 +3371,9 @@ dependencies = [
 
 [[package]]
 name = "rand"
-version = "0.8.7"
+version = "0.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22f6172bdec972074665ed81ed53b71da00bfc44b65a753cfde883ec4c702a1a"
+checksum = "e058c7de0b26af77780c769414d6257830bb240f3c38477dbc2c16e5f54d6d4c"
 dependencies = [
  "libc",
  "rand_chacha",
@@ -3644,6 +3645,187 @@ dependencies = [
  "libc",
  "linux-raw-sys 0.12.1",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "rustlua-animation"
+version = "0.1.0"
+dependencies = [
+ "rustlua-assets",
+ "rustlua-ecs",
+ "rustlua-infra",
+ "rustlua-math",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "rustlua-assets"
+version = "0.1.0"
+dependencies = [
+ "ab_glyph",
+ "anyhow",
+ "gltf",
+ "image",
+ "mlua",
+ "rodio",
+ "rustlua-ecs",
+ "rustlua-infra",
+ "rustlua-math",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tracing",
+]
+
+[[package]]
+name = "rustlua-audio"
+version = "0.1.0"
+dependencies = [
+ "rodio",
+ "rustlua-infra",
+ "thiserror 2.0.20",
+ "tracing",
+]
+
+[[package]]
+name = "rustlua-camera"
+version = "0.1.0"
+dependencies = [
+ "rustlua-ecs",
+ "rustlua-math",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "rustlua-ecs"
+version = "0.1.0"
+dependencies = [
+ "rustlua-animation",
+ "rustlua-camera",
+ "rustlua-infra",
+ "rustlua-math",
+ "rustlua-physics",
+ "rustlua-render",
+ "rustlua-scene",
+ "rustlua-ui",
+ "serde_json",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "rustlua-gameplay"
+version = "0.1.0"
+dependencies = [
+ "rustlua-audio",
+ "rustlua-ecs",
+ "rustlua-input",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "rustlua-infra"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chacha20poly1305",
+ "flate2",
+ "rand 0.8.8",
+ "thiserror 2.0.20",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "rustlua-input"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "rustlua-math"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "rustlua-physics"
+version = "0.1.0"
+dependencies = [
+ "rapier2d",
+ "rapier3d",
+ "rustlua-ecs",
+ "rustlua-math",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "rustlua-render"
+version = "0.1.0"
+dependencies = [
+ "ab_glyph",
+ "bymsdfgen-core",
+ "bytemuck",
+ "image",
+ "rustlua-assets",
+ "rustlua-camera",
+ "rustlua-ecs",
+ "rustlua-infra",
+ "rustlua-math",
+ "rustlua-ui",
+ "thiserror 2.0.20",
+ "ttf-parser",
+]
+
+[[package]]
+name = "rustlua-scene"
+version = "0.1.0"
+dependencies = [
+ "rustlua-animation",
+ "rustlua-assets",
+ "rustlua-camera",
+ "rustlua-ecs",
+ "rustlua-infra",
+ "rustlua-math",
+ "rustlua-physics",
+ "rustlua-render",
+ "rustlua-ui",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "rustlua-scripting"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "mlua",
+ "rustlua-animation",
+ "rustlua-assets",
+ "rustlua-audio",
+ "rustlua-camera",
+ "rustlua-ecs",
+ "rustlua-gameplay",
+ "rustlua-infra",
+ "rustlua-input",
+ "rustlua-math",
+ "rustlua-physics",
+ "rustlua-render",
+ "rustlua-scene",
+ "rustlua-ui",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tracing",
+]
+
+[[package]]
+name = "rustlua-ui"
+version = "0.1.0"
+dependencies = [
+ "rustlua-ecs",
+ "rustlua-math",
+ "rustlua-scene",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
