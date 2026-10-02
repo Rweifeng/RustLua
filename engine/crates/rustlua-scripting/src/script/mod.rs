@@ -15,6 +15,7 @@ use std::{
 // 兄弟子模块就访问不到，得逐字段加属性——所以宁可让这个结构体待在最显眼的地方。
 mod api;
 mod error;
+mod guard;
 mod require;
 mod runtime;
 mod scene_spawn;
@@ -24,6 +25,10 @@ mod values;
 
 // 跨 crate 的公开面（`editor` / `game_web` / `host` 用到），路径保持 `core::script::*` 不变。
 pub use error::{LuaBridgeError, ScriptDebugger, ScriptDiagnostic};
+pub use guard::{
+    BudgetSlot, CallbackBudget, ContainOutcome, DEFAULT_CALLBACK_ERROR_LIMIT, EntityHook,
+    ScriptErrorPolicy, ScriptGuard,
+};
 pub use require::{install_web_require, read_project_script};
 pub use values::entity_lua_id;
 
@@ -436,7 +441,13 @@ pub struct LuaRuntime {
     state: Rc<RefCell<ScriptState>>,
     current_path: Option<PathBuf>,
     fingerprint: Option<ScriptFingerprint>,
-    debugger: ScriptDebugger,
+    debugger: RefCell<ScriptDebugger>,
+    /// 脚本错误的处置策略与各回调预算（见 [`guard`]）。
+    ///
+    /// 装在 `RefCell` 里是因为回调入口（`call_update` / `call_entity_scripts` /
+    /// `process_ui_clicks`）取的都是 `&self`——约 200 处调用点不值得为记账改成 `&mut self`。
+    /// **借用绝不跨越 Lua 调用**：一律"先调用、返回后再记账"。
+    guard: RefCell<ScriptGuard>,
     /// docs/54 §4.1：**每实体脚本**。一个脚本**文件**一份 Lua 状态（实体是实例，脚本用收到的
     /// `id` 区分自己），按文件路径缓存——上万实体共享同一个文件时不会变成上万份 Lua 状态。
     entity_scripts: HashMap<String, EntityScriptState>,
@@ -845,37 +856,56 @@ impl LuaRuntime {
     }
 
     fn record_bridge_error(&mut self, error: &LuaBridgeError) {
-        match error {
-            LuaBridgeError::Load { path, reason } => {
-                self.debugger.record(path.clone(), "load", reason.clone())
-            }
-            LuaBridgeError::Runtime { path, reason } => {
-                self.debugger
-                    .record(path.clone(), "runtime", reason.clone())
-            }
-            LuaBridgeError::Api(source) | LuaBridgeError::Init(source) => {
-                self.debugger
-                    .record(PathBuf::from("<engine>"), "api", source.clone())
-            }
-        }
+        let (path, phase, reason) = error::bridge_error_parts(error);
+        self.debugger.borrow_mut().record(path, phase, reason);
     }
 
     #[must_use]
     pub fn diagnostics(&self) -> Vec<ScriptDiagnostic> {
-        self.debugger.visible()
+        self.debugger.borrow().visible()
     }
 
     #[must_use]
-    pub fn all_diagnostics(&self) -> &[ScriptDiagnostic] {
-        self.debugger.all()
+    pub fn all_diagnostics(&self) -> Vec<ScriptDiagnostic> {
+        self.debugger.borrow().all().to_vec()
     }
 
     pub fn clear_diagnostics(&mut self) {
-        self.debugger.clear();
+        self.debugger.borrow_mut().clear();
     }
 
     pub fn set_debug_filter(&mut self, filter: Option<String>) {
-        self.debugger.set_filter(filter);
+        self.debugger.borrow_mut().set_filter(filter);
+    }
+
+    /// 设置脚本错误处置策略。切换即**重置**预算与计数：编辑器 Play/Stop 与热重载
+    /// 都走这里，上一局被停用的回调不该让下一局哑着。
+    pub fn set_error_policy(&mut self, policy: ScriptErrorPolicy) {
+        *self.guard.borrow_mut() = ScriptGuard::new(policy);
+    }
+
+    #[must_use]
+    pub fn error_policy(&self) -> ScriptErrorPolicy {
+        self.guard.borrow().policy()
+    }
+
+    /// 覆盖连续错误上限（验收/测试用）。生产用 [`DEFAULT_CALLBACK_ERROR_LIMIT`]。
+    pub fn set_callback_error_limit(&mut self, limit: u32) {
+        self.guard.borrow_mut().set_error_limit(limit);
+    }
+
+    /// 自上次重置以来被容错的脚本错误总数。
+    ///
+    /// 宿主用它把"脚本出过错"变成可断言的信号：容错不等于静默（见 [`ScriptErrorPolicy`]）。
+    #[must_use]
+    pub fn script_error_total(&self) -> u64 {
+        self.guard.borrow().total_errors()
+    }
+
+    /// 已因连续报错被停用的回调（可读键，按字典序）。
+    #[must_use]
+    pub fn disabled_callbacks(&self) -> Vec<String> {
+        self.guard.borrow().disabled_keys()
     }
 
     #[must_use]

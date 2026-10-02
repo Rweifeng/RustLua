@@ -53,7 +53,17 @@ impl ScriptDebugger {
         Self::default()
     }
 
-    pub fn record(&mut self, path: PathBuf, phase: impl Into<String>, source: impl Into<String>) {
+    /// 记录一条诊断（同 `(path, phase, message)` 去重，只累加 `occurrences`）。
+    ///
+    /// 返回**是否新增**：容错路径据此把日志压成"每个不同错误只打一次"，
+    /// 否则一个每帧报错的脚本会把日志淹掉，真正的首个原因反而被冲走。
+    /// 调用方不关心去重时忽略返回值即可（例如错误本来就要原样上报给宿主）。
+    pub fn record(
+        &mut self,
+        path: PathBuf,
+        phase: impl Into<String>,
+        source: impl Into<String>,
+    ) -> bool {
         let phase = phase.into();
         let source = source.into();
         let line = find_line_number(&source);
@@ -63,7 +73,7 @@ impl ScriptDebugger {
             .find(|item| item.path == path && item.phase == phase && item.message == source)
         {
             existing.occurrences = existing.occurrences.saturating_add(1);
-            return;
+            return false;
         }
         self.records.push(ScriptDiagnostic {
             path,
@@ -73,6 +83,7 @@ impl ScriptDebugger {
             stack_trace: source,
             occurrences: 1,
         });
+        true
     }
 
     pub fn clear(&mut self) {
@@ -125,6 +136,20 @@ pub(super) fn find_line_number(source: &str) -> Option<u32> {
 
 pub(super) fn api_error(message: impl Into<String>) -> mlua::Error {
     mlua::Error::RuntimeError(message.into())
+}
+
+/// 拆开 [`LuaBridgeError`] 的 `(路径, 阶段, 报错文本)`。
+///
+/// 诊断记录与容错日志共用这一套口径：否则同一件事在 Console 里是 "runtime"、
+/// 在日志里是另一个分类，排查时得先在脑子里做一次映射。
+pub(super) fn bridge_error_parts(error: &LuaBridgeError) -> (PathBuf, &'static str, String) {
+    match error {
+        LuaBridgeError::Load { path, reason } => (path.clone(), "load", reason.clone()),
+        LuaBridgeError::Runtime { path, reason } => (path.clone(), "runtime", reason.clone()),
+        LuaBridgeError::Api(source) | LuaBridgeError::Init(source) => {
+            (PathBuf::from("<engine>"), "api", source.clone())
+        }
+    }
 }
 
 pub(super) fn world_error(error: WorldError) -> mlua::Error {

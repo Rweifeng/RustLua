@@ -64,6 +64,21 @@ impl EntityHook {
     }
 }
 
+impl BudgetSlot {
+    /// 槽位的可读键（诊断与宿主显示用）。带 generation，因为 `EntityId` 的槽位会被
+    /// 复用——只写 index 会把"上一世那个实体"和"这一世"混成同一个键。
+    #[must_use]
+    pub fn key(self) -> String {
+        match self {
+            Self::Update => "update()".to_owned(),
+            Self::UiClicks => "ui.click".to_owned(),
+            Self::Entity(id, hook) => {
+                format!("entity:{}:g{}:{}", id.index(), id.generation(), hook.name())
+            }
+        }
+    }
+}
+
 /// 一次错误的处置结果。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ContainOutcome {
@@ -102,10 +117,6 @@ impl CallbackBudget {
             self.disabled = true;
         }
         self.disabled
-    }
-
-    fn reset(&mut self) {
-        *self = Self::default();
     }
 }
 
@@ -177,14 +188,15 @@ impl ScriptGuard {
 
     /// 记一次**成功**：清零该槽位的连续错误计数。
     pub fn record_success(&mut self, slot: BudgetSlot) {
-        self.budget(slot).on_success();
+        self.budget_mut(slot).on_success();
     }
 
     /// 记一次错误：累计计数，并在该槽位停用时登记可读键。
     pub fn record_error(&mut self, slot: BudgetSlot) -> ContainOutcome {
         self.total_errors = self.total_errors.saturating_add(1);
-        if self.budget(slot).on_error(self.error_limit) {
-            self.disabled.insert(slot_key(slot));
+        let limit = self.error_limit;
+        if self.budget_mut(slot).on_error(limit) {
+            self.disabled.insert(slot.key());
             return ContainOutcome::Disabled;
         }
         ContainOutcome::Continue
@@ -195,21 +207,18 @@ impl ScriptGuard {
     /// 每实体预算以 `EntityId` 为键，实体反复生成/销毁会长期累积；`EntityId` 的
     /// generation 每次都不同，所以旧键永远不会再被命中——不剪就是恒定泄漏。
     pub fn prune_entities<'a>(&mut self, live: impl Iterator<Item = &'a EntityId>) {
-        let mut live_ids: BTreeSet<EntityId> = live.copied().collect();
-        self.entity_hooks
-            .retain(|(id, _), _| live_ids.remove(id) || live_ids.contains(id));
-        // 上面那段 retain 只保证"留下的键在 live 里"；已消亡实体的可读键同样要撤下，
-        // 否则诊断面板会一直显示一个早就不存在的实体。
-        let stale: Vec<String> = self
-            .disabled
+        let live_ids: BTreeSet<EntityId> = live.copied().collect();
+        self.entity_hooks.retain(|(id, _), _| live_ids.contains(id));
+        // 停用键同样要撤下：诊断面板不该一直显示一个已经不存在的实体。
+        let live_keys: BTreeSet<String> = live_ids
             .iter()
-            .filter(|key| key.starts_with("entity:"))
-            .filter(|key| !self.entity_hooks.keys().any(|(id, _)| key.contains(&id.to_string())))
-            .cloned()
+            .flat_map(|id| {
+                [EntityHook::Spawn, EntityHook::Update]
+                    .map(|hook| BudgetSlot::Entity(*id, hook).key())
+            })
             .collect();
-        for key in stale {
-            self.disabled.remove(&key);
-        }
+        self.disabled
+            .retain(|key| !key.starts_with("entity:") || live_keys.contains(key));
     }
 
     /// 全量重置（热重载/新一局）：预算与计数清零，停用列表清空。
@@ -227,10 +236,9 @@ impl ScriptGuard {
         match slot {
             BudgetSlot::Update => &self.update,
             BudgetSlot::UiClicks => &self.ui_clicks,
-            BudgetSlot::Entity(id, hook) => self
-                .entity_hooks
-                .get(&(id, hook))
-                .unwrap_or(&EMPTY_BUDGET),
+            BudgetSlot::Entity(id, hook) => {
+                self.entity_hooks.get(&(id, hook)).unwrap_or(&EMPTY_BUDGET)
+            }
         }
     }
 
@@ -249,20 +257,12 @@ static EMPTY_BUDGET: CallbackBudget = CallbackBudget {
     disabled: false,
 };
 
-fn slot_key(slot: BudgetSlot) -> String {
-    match slot {
-        BudgetSlot::Update => "update()".to_owned(),
-        BudgetSlot::UiClicks => "ui.click".to_owned(),
-        BudgetSlot::Entity(id, hook) => format!("entity:{}:{}", id.index(), hook.name()),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn entity(index: u32) -> EntityId {
-        EntityId::new(index, 1)
+        EntityId::from_raw(index, EntityId::INITIAL_GENERATION)
     }
 
     /// 默认策略必须是 Strict：验收路径的既有语义不因本模块加入而改变。
@@ -277,13 +277,28 @@ mod tests {
     fn budget_disables_only_after_consecutive_errors() {
         let mut guard = ScriptGuard::new(ScriptErrorPolicy::Contain);
         guard.set_error_limit(3);
-        assert_eq!(guard.record_error(BudgetSlot::Update), ContainOutcome::Continue);
-        assert_eq!(guard.record_error(BudgetSlot::Update), ContainOutcome::Continue);
+        assert_eq!(
+            guard.record_error(BudgetSlot::Update),
+            ContainOutcome::Continue
+        );
+        assert_eq!(
+            guard.record_error(BudgetSlot::Update),
+            ContainOutcome::Continue
+        );
         guard.record_success(BudgetSlot::Update);
-        assert_eq!(guard.record_error(BudgetSlot::Update), ContainOutcome::Continue);
+        assert_eq!(
+            guard.record_error(BudgetSlot::Update),
+            ContainOutcome::Continue
+        );
         assert!(!guard.is_disabled(BudgetSlot::Update));
-        assert_eq!(guard.record_error(BudgetSlot::Update), ContainOutcome::Continue);
-        assert_eq!(guard.record_error(BudgetSlot::Update), ContainOutcome::Disabled);
+        assert_eq!(
+            guard.record_error(BudgetSlot::Update),
+            ContainOutcome::Continue
+        );
+        assert_eq!(
+            guard.record_error(BudgetSlot::Update),
+            ContainOutcome::Disabled
+        );
         assert!(guard.is_disabled(BudgetSlot::Update));
         assert_eq!(guard.disabled_keys(), vec!["update()".to_owned()]);
     }
@@ -325,7 +340,10 @@ mod tests {
         guard.prune_entities(live.iter());
         assert!(guard.is_disabled(BudgetSlot::Entity(entity(1), EntityHook::Update)));
         assert!(!guard.is_disabled(BudgetSlot::Entity(entity(2), EntityHook::Update)));
-        assert_eq!(guard.disabled_keys(), vec!["entity:1:on_update".to_owned()]);
+        assert_eq!(
+            guard.disabled_keys(),
+            vec!["entity:1:g1:on_update".to_owned()]
+        );
     }
 
     /// 重置保留策略与上限，其余清零。

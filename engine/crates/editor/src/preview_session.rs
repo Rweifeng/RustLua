@@ -11,7 +11,7 @@ use engine::core::input::InputSnapshot;
 use engine::core::scene::Scene;
 use engine::core::time_step::FixedTimeStep;
 use engine::host::frame::{FontAtlasMap, VectorAtlasMap, VectorFontHandle};
-use engine::host::{ReadbackMetrics, ReadbackStatus, Renderer, RuntimeScene};
+use engine::host::{ReadbackMetrics, ReadbackStatus, Renderer, RuntimeScene, ScriptErrorPolicy};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -69,6 +69,13 @@ pub(crate) struct PreviewSession {
     time_step: FixedTimeStep,
     /// 最近一次步进/回读的结构化诊断；Game 视图 overlay 显示。
     diagnostic: Option<String>,
+    /// 脚本运行期错误的常驻提示（容错档专用）。
+    ///
+    /// 与 [`Self::diagnostic`] 分开存：回读/渲染诊断是**瞬时**的（下一帧就清），而
+    /// "脚本已报错 N 次、某个回调被停用"在修好之前一直成立，不该被逐帧的清空冲掉。
+    script_error_note: Option<String>,
+    /// 已提示过的脚本错误计数：只在增长时重建提示字符串，避免每帧分配。
+    script_errors_seen: u64,
 }
 
 enum PreviewTexture {
@@ -94,6 +101,11 @@ impl PreviewSession {
         tracing::info!(target: "editor", "[preview] project_root={}", project_root.display());
         let mut runtime = RuntimeScene::from_scene(Some(project_root), scene.clone())
             .map_err(|error| error.to_string())?;
+        // P0：Play 预览对脚本错误**容错**。此前 `update()` 里一个未捕获的 Lua 错误会让
+        // `run_script_steps` 返回 Err，Play 停在 `PreviewTick::Failed`（画面不再推进，只能
+        // 手动 Stop）；容错后错误进结构化诊断与计数、预览继续跑，与 `game.exe` 同一档。
+        // 无头样例/soak 不设这一档，因此"脚本报错必须判红"的验收语义不变（见 docs/64）。
+        runtime.set_script_error_policy(ScriptErrorPolicy::Contain);
         // M20-08：把项目 `settings.toml` 的 `[input]` 手柄死区应用到 Play 预览的设备后端
         // （与独立 game 宿主 `game_app` 同一入口；文件缺失/无 `[input]` 段 → 引擎默认
         // 0.15/0.05，读取失败只记日志不中断 Play）。
@@ -162,6 +174,8 @@ impl PreviewSession {
             time_step: FixedTimeStep::new(PREVIEW_STEPS_PER_SECOND, PREVIEW_MAX_CATCH_UP_STEPS)
                 .expect("valid preview fixed timestep"),
             diagnostic: None,
+            script_error_note: None,
+            script_errors_seen: 0,
         };
         session.sync_native_texture(device);
         Ok(session)
@@ -190,6 +204,27 @@ impl PreviewSession {
     /// 最近一次步进/回读的结构化诊断。
     pub(crate) fn diagnostic(&self) -> Option<&str> {
         self.diagnostic.as_deref()
+    }
+
+    /// 刷新常驻的脚本错误提示（容错档）。
+    ///
+    /// 容错让 Play 不再因脚本错误停下，代价是"错误发生过"不再有天然的表现形式——
+    /// 因此这里把它变成编辑器里看得见的一行。只在计数增长时重建字符串。
+    fn refresh_script_error_note(&mut self) {
+        let total = self.runtime.script_error_total();
+        if total == self.script_errors_seen {
+            return;
+        }
+        self.script_errors_seen = total;
+        let disabled = self.runtime.script_disabled_callbacks();
+        self.script_error_note = Some(if disabled.is_empty() {
+            format!("脚本运行期错误 {total} 次（已容错，Play 继续）")
+        } else {
+            format!(
+                "脚本运行期错误 {total} 次；已停用回调：{}",
+                disabled.join("、")
+            )
+        });
     }
 
     /// M19-03：把预览运行时的 Lua VM 借给运行时调试面板做只读探针读取。
@@ -237,7 +272,7 @@ impl PreviewSession {
             // 未到期：仅排空在途回读（补上滞后帧），保持游戏匀速。
             let uploaded = self.drain_readback(ctx);
             if uploaded {
-                self.diagnostic = None;
+                self.diagnostic = self.script_error_note.clone();
             }
             ctx.request_repaint_after(PREVIEW_FRAME_INTERVAL);
             return PreviewTick::Idle;
@@ -273,6 +308,9 @@ impl PreviewSession {
         // 累加器还没凑够一个固定步：本帧没有跑逻辑步（边沿必须留给下一有效帧），
         // 但仍然渲染当前状态，避免画面停住。
         let stepped = report.steps > 0;
+        // 容错档下脚本错误不再中断 Play，因此必须**主动显示**：否则"某个回调已经停用"
+        // 在编辑器里只表现为"游戏莫名其妙不动了"，没有任何线索。
+        self.refresh_script_error_note();
         // 构建 2D 网格并渲染到离屏纹理；失败时给出用户可见诊断而不是空白帧。
         let mesh = match self.runtime.vertices(self.width, self.height) {
             Ok(mesh) => mesh,
@@ -299,7 +337,7 @@ impl PreviewSession {
             self.height,
         );
         if self.uses_native_texture() {
-            self.diagnostic = None;
+            self.diagnostic = self.script_error_note.clone();
             self.record_presented_frame();
             self.record_tick_window();
             ctx.request_repaint_after(PREVIEW_FRAME_INTERVAL);
@@ -316,7 +354,7 @@ impl PreviewSession {
                 height,
             } => {
                 self.upload_frame(ctx, pixels, width, height);
-                self.diagnostic = None;
+                self.diagnostic = self.script_error_note.clone();
                 PreviewTick::Rendered
             }
             ReadbackStatus::Pending => {

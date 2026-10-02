@@ -1,5 +1,92 @@
 use super::*;
 
+/// 每实体脚本的容错：某个实体的 `on_update` 报错只跳过**它自己**，另一个实体照常更新——
+/// 按实体（而不是按文件）分预算就是为了这一点。
+#[test]
+fn entity_hook_errors_are_contained_per_entity() {
+    let root = std::env::temp_dir().join(format!("rustlua-entity-guard-{}", std::process::id()));
+    let scripts = root.join("scripts");
+    fs::create_dir_all(&scripts).unwrap();
+    fs::write(
+        scripts.join("broken.lua"),
+        "function on_update(id, dt) error('entity boom') end\n",
+    )
+    .unwrap();
+    fs::write(
+        scripts.join("healthy.lua"),
+        "function on_update(id, dt)\n\
+           local t = transform.get(id)\n\
+           transform.set(id, t.x + 10 * dt, t.y)\n\
+         end\n",
+    )
+    .unwrap();
+
+    let mut scene = rustlua_scene::scene::Scene::new("entity-guard");
+    let broken = rustlua_scene::scene::SceneEntityId(1);
+    let healthy = rustlua_scene::scene::SceneEntityId(2);
+    for id in [broken, healthy] {
+        scene.add_entity(id, "Walker", None).unwrap();
+        scene.entities.get_mut(&id).unwrap().components.insert(
+            "Transform".into(),
+            "position=0,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
+        );
+    }
+    scene
+        .entities
+        .get_mut(&broken)
+        .unwrap()
+        .components
+        .insert("Script".into(), "file=scripts/broken.lua".into());
+    scene
+        .entities
+        .get_mut(&healthy)
+        .unwrap()
+        .components
+        .insert("Script".into(), "file=scripts/healthy.lua".into());
+
+    let mut runtime = LuaRuntime::new().unwrap();
+    runtime.set_project_root(root.clone());
+    runtime.instantiate_scene(&scene).unwrap();
+
+    // 严格档（默认）：首个报错的实体即上报，是否继续由调用方决定。
+    assert!(
+        runtime.call_entity_scripts(0.5).is_err(),
+        "严格档必须上报实体钩子错误"
+    );
+
+    // 容错档：错误记账，循环继续——**后面的实体照样被调用**。
+    runtime.set_error_policy(ScriptErrorPolicy::Contain);
+    let called = runtime
+        .call_entity_scripts(0.5)
+        .expect("容错档下实体钩子错误不得上报");
+    assert_eq!(called, 2, "两个实体都应被调用（含报错的那个）");
+    assert_eq!(runtime.script_error_total(), 1, "错误必须被记账");
+
+    // 观察点是"另一个实体的位置真的动了"，而不是"函数被调了"。
+    let healthy_id = *runtime
+        .state
+        .borrow()
+        .entity_state
+        .scene_entities
+        .get(&healthy)
+        .expect("健康实体的运行时实体");
+    {
+        let state = runtime.state.borrow();
+        let transform = state
+            .world
+            .get::<Transform>(healthy_id)
+            .unwrap()
+            .expect("健康实体有 Transform");
+        assert!(
+            (transform.position.x - 5.0).abs() < 1e-4,
+            "报错实体之后的实体仍应被推进（10*dt，dt=0.5）：实际 {}",
+            transform.position.x
+        );
+    }
+
+    let _ = fs::remove_dir_all(root);
+}
+
 /// docs/54 §4.1：场景声明的**每实体脚本**在加载期读入、`on_spawn` 一次、每步 `on_update`
 /// 一次，并且能改自己那个实体。判据要的是"脚本归属真的下放到实体"，所以断言的是**实体位置**
 /// 而不是"脚本被调用了"。

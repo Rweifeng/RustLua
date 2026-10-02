@@ -11,7 +11,10 @@ use crate::script::ScriptState;
 use crate::script::api;
 use crate::script::call_entity_hook;
 use crate::script::call_optional;
-use crate::script::error::{LuaBridgeError, ScriptDebugger};
+use crate::script::error::{LuaBridgeError, ScriptDebugger, bridge_error_parts};
+use crate::script::guard::{
+    BudgetSlot, ContainOutcome, EntityHook, ScriptErrorPolicy, ScriptGuard,
+};
 use crate::script::require::{
     file_fingerprint, install_encoded_require_searcher, read_project_script,
 };
@@ -41,7 +44,8 @@ impl LuaRuntime {
             state,
             current_path: None,
             fingerprint: None,
-            debugger: ScriptDebugger::new(),
+            debugger: RefCell::new(ScriptDebugger::new()),
+            guard: RefCell::new(ScriptGuard::default()),
             entity_scripts: HashMap::new(),
             entity_scripts_spawned: HashSet::new(),
             entity_script_requests: Vec::new(),
@@ -69,6 +73,9 @@ impl LuaRuntime {
         self.lua = candidate;
         self.current_path = Some(path.to_path_buf());
         self.fingerprint = Some(file_fingerprint(path, &source)?);
+        // 新 VM = 新一局：上一份脚本攒下的错误预算与"已停用"结论必须作废，否则
+        // "改好脚本再重载"仍会被旧结论拦在门外（停用是一次性判定，不会自己解除）。
+        self.guard.borrow_mut().reset();
         Ok(())
     }
 
@@ -103,6 +110,8 @@ impl LuaRuntime {
         }
         self.lua = candidate;
         self.fingerprint = Some(fingerprint);
+        // 热重载的语义就是"这是修好的新版本"：预算清零，被停用的 `update()` 重新有机会。
+        self.guard.borrow_mut().reset();
         Ok(ReloadStatus::Reloaded)
     }
 
@@ -130,6 +139,8 @@ impl LuaRuntime {
         }
         self.lua = candidate;
         self.fingerprint = Some(file_fingerprint(&path, &source)?);
+        // 与 `reload_if_changed` 同因：新 VM 就是新版本，旧的停用结论不再适用。
+        self.guard.borrow_mut().reset();
         Ok(())
     }
 
@@ -182,7 +193,16 @@ impl LuaRuntime {
                 .entity_scripts
                 .get(&file)
                 .expect("脚本刚刚已加载（同文件只加载一次）");
-            call_entity_hook(&state.lua, "on_spawn", id, None, Path::new(&file))?;
+            // 生成钩子失败也**照记 spawned**：不记就会每帧重试同一个必炸的钩子，
+            // 而实体本身已经进世界了（重试并不会让它更完整）。
+            match call_entity_hook(&state.lua, "on_spawn", id, None, Path::new(&file)) {
+                Ok(()) => {
+                    self.guard
+                        .borrow_mut()
+                        .record_success(BudgetSlot::Entity(id, EntityHook::Spawn));
+                }
+                Err(error) => self.contain_entity_hook(id, EntityHook::Spawn, error)?,
+            }
             spawned += 1;
         }
         Ok(spawned)
@@ -192,6 +212,9 @@ impl LuaRuntime {
     ///
     /// 先做一次 [`Self::sync_entity_scripts`]，因此**运行时新生成的实体**（Lua `entity.spawn`、
     /// 预制体实例化）下一帧就会拿到自己的 `on_spawn`/`on_update`，不需要宿主额外接线。
+    ///
+    /// 容错档下某个实体的 `on_update` 报错只跳过**它自己**（不是整个循环，更不是整个固定步）；
+    /// 连续报错达上限的实体会被停用，此后不再进 Lua。
     pub fn call_entity_scripts(&mut self, delta_seconds: f32) -> Result<usize, LuaBridgeError> {
         self.sync_entity_scripts()?;
         // `sync_entity_scripts` 内部已刷新过缓存；这里再确认一次（修订号没变则零成本）。
@@ -201,13 +224,20 @@ impl LuaRuntime {
             let Some(state) = self.entity_scripts.get(file) else {
                 continue;
             };
-            call_entity_hook(
+            let slot = BudgetSlot::Entity(*id, EntityHook::Update);
+            if self.guard.borrow().is_disabled(slot) {
+                continue;
+            }
+            match call_entity_hook(
                 &state.lua,
                 "on_update",
                 *id,
                 Some(delta_seconds),
                 Path::new(file),
-            )?;
+            ) {
+                Ok(()) => self.guard.borrow_mut().record_success(slot),
+                Err(error) => self.contain_entity_hook(*id, EntityHook::Update, error)?,
+            }
             called += 1;
         }
         Ok(called)
@@ -272,6 +302,11 @@ impl LuaRuntime {
                 });
         }
         requests.sort_by_key(|(id, _)| *id);
+        // 消亡实体的容错预算在这里剪掉：`EntityId` 的槽位会被复用、generation 每次都不同，
+        // 不剪就是"每生成一次实体泄漏一条预算"。
+        self.guard
+            .borrow_mut()
+            .prune_entities(requests.iter().map(|(id, _)| id));
         self.entity_script_requests = requests;
         self.entity_script_requests_revision = revision;
     }
@@ -304,11 +339,21 @@ impl LuaRuntime {
             })?;
         Ok(candidate)
     }
+    /// 调用工程级 `update()`。
+    ///
+    /// **错误处置**：`Strict`（默认）把 Lua 错误原样上报给宿主；`Contain` 把错误记进
+    /// 结构化诊断与预算后返回 `Ok("")`，让宿主继续跑（见 [`ScriptErrorPolicy`]）。
+    /// 连续报错达到上限的回调会被**停用**——此后不再进 Lua，日志也不会被同一个错误淹没。
     pub fn call_update(&self) -> Result<String, LuaBridgeError> {
         let path = self
             .current_path
             .clone()
             .unwrap_or_else(|| PathBuf::from("<project script>"));
+        // 已停用的回调直接短路：既省下每帧的报错开销，也避免"停用"变成一句空话。
+        if self.guard.borrow().is_disabled(BudgetSlot::Update) {
+            self.state.borrow_mut().last_update_micros = 0;
+            return Ok(String::new());
+        }
         let update: Option<Function> = self
             .lua
             .globals()
@@ -338,7 +383,77 @@ impl LuaRuntime {
         {
             self.state.borrow_mut().last_update_micros = 0;
         }
-        result
+        match result {
+            Ok(value) => {
+                self.guard.borrow_mut().record_success(BudgetSlot::Update);
+                Ok(value)
+            }
+            Err(error) => self.contain_or_propagate(BudgetSlot::Update, error),
+        }
+    }
+
+    /// 按策略处置一次**工程级回调**错误。
+    ///
+    /// 严格档**不**记诊断：与容器化之前的语义逐字一致（由 `call_update_debug` 负责记录），
+    /// 否则 `debugger_extracts_location_deduplicates_and_filters` 里的 `occurrences`
+    /// 计数会被记成两倍。
+    fn contain_or_propagate(
+        &self,
+        slot: BudgetSlot,
+        error: LuaBridgeError,
+    ) -> Result<String, LuaBridgeError> {
+        if self.guard.borrow().policy() == ScriptErrorPolicy::Strict {
+            return Err(error);
+        }
+        self.contain_script_error(slot, &error);
+        Ok(String::new())
+    }
+
+    /// 记一次被容错的回调错误：计数 + 结构化诊断 + 去重日志。
+    ///
+    /// `pub(super)`：UI 点击分发的容错入口在 `scene_spawn` 里，与这里同属 `script` 模块。
+    /// 借用刻意**不跨越 Lua 调用**（这里的 Lua 调用已经返回了）：`RefCell` 的两次
+    /// `borrow_mut` 各占一条语句的生存期。
+    pub(super) fn contain_script_error(&self, slot: BudgetSlot, error: &LuaBridgeError) {
+        let outcome = self.guard.borrow_mut().record_error(slot);
+        let (path, phase, reason) = bridge_error_parts(error);
+        let is_new = self
+            .debugger
+            .borrow_mut()
+            .record(path.clone(), phase, reason.clone());
+        match outcome {
+            // 停用要单独吼一次：此前每帧一条的报错到这里结束，玩家/开发者必须知道
+            // "这个回调已经不跑了"，否则表现为"某个系统莫名其妙不再更新"。
+            ContainOutcome::Disabled => tracing::error!(
+                target: "script",
+                callback = %slot.key(),
+                path = %path.display(),
+                "[lua-guard] 回调连续报错已停用（不再调用）：{reason}"
+            ),
+            // 每个**不同**的错误只打一条：脚本每帧炸同一行时，日志里应留得下别的信息。
+            ContainOutcome::Continue if is_new => tracing::error!(
+                target: "script",
+                callback = %slot.key(),
+                path = %path.display(),
+                "[lua-guard] 脚本错误已容错（本帧继续）：{reason}"
+            ),
+            ContainOutcome::Continue => {}
+        }
+    }
+
+    /// 每实体钩子的容错入口：`Ok(())` = 已容错（调用方继续下一个实体），
+    /// `Err` = 严格档要求上报。
+    fn contain_entity_hook(
+        &self,
+        id: EntityId,
+        hook: EntityHook,
+        error: LuaBridgeError,
+    ) -> Result<(), LuaBridgeError> {
+        if self.guard.borrow().policy() == ScriptErrorPolicy::Strict {
+            return Err(error);
+        }
+        self.contain_script_error(BudgetSlot::Entity(id, hook), &error);
+        Ok(())
     }
 
     /// 上一次 `call_update` 内部 Lua 调用的耗时（微秒）。宿主用它填 `lua_ms`：

@@ -1,5 +1,73 @@
 use super::*;
 
+/// 覆盖点击目标的单元素切片（命中矩形本身不是这两个用例的观察点）。
+fn click_target(function: &str) -> UiClickTarget {
+    UiClickTarget {
+        name: "Start".to_owned(),
+        origin: [0.0, 0.0],
+        size: [1280.0, 720.0],
+        functions: vec![function.to_owned()],
+    }
+}
+
+/// 严格档（默认）：点击回调报错必须上报给宿主——验收路径的语义不变。
+#[test]
+fn ui_click_error_propagates_in_strict_policy() {
+    let mut runtime = LuaRuntime::new().unwrap();
+    let path = script(
+        "function on_click(name) error('click boom') end\nfunction update() return 'ok' end",
+    );
+    runtime.execute_project_script(&path).unwrap();
+    let mut input = InputSnapshot::default();
+    input.mouse_event(MouseButton::Left, true);
+
+    let error = runtime
+        .process_ui_clicks(&input, &[click_target("on_click")])
+        .expect_err("严格档必须上报点击回调的错误");
+    assert!(error.to_string().contains("click boom"), "{error}");
+    assert_eq!(runtime.script_error_total(), 0, "严格档不经容错记账");
+
+    let _ = fs::remove_file(path);
+}
+
+/// 容错档：点击回调报错记进诊断与计数，**其余排队的目标照常收到点击**。
+///
+/// 这条断言比"返回 Ok"重要：一个按钮的处理函数写错，不该让同一个点击落在后面的
+/// 按钮上时也一起失效。
+#[test]
+fn ui_click_error_is_contained_and_later_targets_still_fire() {
+    let mut runtime = LuaRuntime::new().unwrap();
+    runtime.set_error_policy(ScriptErrorPolicy::Contain);
+    let path = script(
+        "function broken(name) error('click boom') end\n\
+         function healthy(name) ok = name end\n\
+         function update() return tostring(ok or 'nil') end",
+    );
+    runtime.execute_project_script(&path).unwrap();
+    let mut input = InputSnapshot::default();
+    input.mouse_event(MouseButton::Left, true);
+
+    runtime
+        .process_ui_clicks(&input, &[click_target("broken"), click_target("healthy")])
+        .expect("容错档下点击回调错误不得上报");
+
+    assert_eq!(runtime.script_error_total(), 1, "错误必须被记账");
+    let diagnostics = runtime.diagnostics();
+    assert!(
+        diagnostics
+            .iter()
+            .any(|item| item.message.contains("click boom")),
+        "被容错的点击错误必须进诊断: {diagnostics:?}"
+    );
+    assert_eq!(
+        runtime.call_update().unwrap(),
+        "Start",
+        "报错目标之后的目标仍应收到点击"
+    );
+
+    let _ = fs::remove_file(path);
+}
+
 #[test]
 fn ui_text_at_accepts_optional_scale_and_font_size() {
     let mut runtime = LuaRuntime::new().unwrap();

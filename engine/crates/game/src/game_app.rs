@@ -20,7 +20,9 @@ use winit::{
     window::{Window, WindowId},
 };
 
-use engine::host::{OverlayVertex, RenderOutcome, Renderer, RuntimeScene, SceneDraw, SceneMesh};
+use engine::host::{
+    OverlayVertex, RenderOutcome, Renderer, RuntimeScene, SceneDraw, SceneMesh, ScriptErrorPolicy,
+};
 
 pub struct GameApp {
     window: Option<Arc<Window>>,
@@ -156,6 +158,9 @@ impl GameApp {
             self.performance.record_lua_millis(micros as f32 / 1000.0);
         }
         if let Some(Err(error)) = result {
+            // 容错档下这里只可能是**引擎侧**失败（场景/输入/资源），因为 Lua 回调错误已在
+            // 脚本层被记账并继续（见 `set_script_error_policy`）。这类失败仍然必须非零退出：
+            // 静默带病运行会让 CI 与发布自测把"跑过了"当"跑对了"。
             let diagnostic = EngineError::new(
                 LogModule::Script,
                 "fixed-step update",
@@ -343,7 +348,16 @@ impl ApplicationHandler for GameApp {
                     self.project_root.as_deref(),
                     self.packaged,
                 ) {
-                    Ok(scene) => Some(scene),
+                    Ok(mut scene) => {
+                        // P0：交互宿主对脚本错误**容错**。此前 `update()` 里一个未捕获的
+                        // Lua 错误 ⇒ 系统 Err ⇒ 调度器放弃本步剩余系统 ⇒ 这里 `fail()` 结束
+                        // 进程：玩家的这一局因为一行脚本而终止，物理/粒子/场景切换也一起被跳过。
+                        // 容错后错误进结构化诊断与计数、游戏继续；连续报错达上限的回调被停用
+                        // （不再每帧刷日志）。无头验收不用这一档——它们走默认严格档，
+                        // 因此"脚本报错必须判红"在样例与 soak 里原样保留。
+                        scene.set_script_error_policy(ScriptErrorPolicy::Contain);
+                        Some(scene)
+                    }
                     Err(error) => {
                         let diagnostic = EngineError::new(
                             LogModule::Script,

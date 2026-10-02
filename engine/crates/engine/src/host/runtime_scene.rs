@@ -35,7 +35,7 @@ use crate::core::{
     scheduler::{
         ScheduleReport, ScheduleStage, Scheduler, SchedulerError, System, SystemError, SystemTiming,
     },
-    script::{LuaRuntime, ReloadStatus},
+    script::{LuaRuntime, ReloadStatus, ScriptDiagnostic, ScriptErrorPolicy},
     sprite::{Sprite, SpriteAsset, SpriteSorting},
     sprite_batch::{
         OverlayVertexSink, SpriteBatch, SpriteBatchItem, SpriteDrawBatch, WorldSpriteVertexSink,
@@ -2047,6 +2047,45 @@ impl RuntimeScene {
     /// script APIs from a `&mut RuntimeScene` context.
     pub fn with_script<R>(&mut self, visit: impl FnOnce(&mut LuaRuntime) -> R) -> R {
         visit(&mut self.script)
+    }
+
+    /// 设置脚本错误处置策略（见 [`ScriptErrorPolicy`]）。
+    ///
+    /// **默认严格**：脚本报错 ⇒ `run_script_steps` 返回 `Err`。无头样例、soak 与性能
+    /// 基线全都 `unwrap()` 这个结果，因此验收路径"脚本一错就判红"的语义不因容错能力
+    /// 的加入而改变。交互宿主（`game.exe`、编辑器 Play）显式切到
+    /// [`ScriptErrorPolicy::Contain`]：错误记进诊断与计数，游戏继续跑，而不是让玩家
+    /// 的一局因为某个 Lua 分支写错而中断——此前那条路径会直接终止进程，并连带跳过
+    /// 本步的物理/粒子/场景切换。
+    pub fn set_script_error_policy(&mut self, policy: ScriptErrorPolicy) {
+        self.script.set_error_policy(policy);
+    }
+
+    /// 当前脚本错误处置策略。
+    #[must_use]
+    pub fn script_error_policy(&self) -> ScriptErrorPolicy {
+        self.script.error_policy()
+    }
+
+    /// 自本次会话开始被**容错**的脚本错误总数。
+    ///
+    /// 容错不等于静默：宿主与验收脚本用这个计数把"脚本出过错"变成可断言的信号
+    /// （严格档下错误走 `Err`，因此该计数只在容错档增长）。
+    #[must_use]
+    pub fn script_error_total(&self) -> u64 {
+        self.script.script_error_total()
+    }
+
+    /// 因连续报错被停用的脚本回调（可读键，按字典序）。
+    #[must_use]
+    pub fn script_disabled_callbacks(&self) -> Vec<String> {
+        self.script.disabled_callbacks()
+    }
+
+    /// 脚本侧结构化诊断（Console 面板的数据源）。
+    #[must_use]
+    pub fn script_diagnostics(&self) -> Vec<ScriptDiagnostic> {
+        self.script.diagnostics()
     }
 
     /// docs/54 §4.1：热重载**脚本层的全部内容**——工程级脚本 + 每实体脚本。
@@ -5396,6 +5435,158 @@ mod sdf_tests {
             "点击应分发 on_click('StartButton'): {result}"
         );
         let _ = std::fs::remove_file(script_path);
+    }
+
+    /// 写一个只含 `update()` 的临时工程脚本，返回路径（文件名带测试名，避免并行互踩）。
+    fn write_guard_script(name: &str, body: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!("rustlua-{name}-{}.lua", std::process::id()));
+        std::fs::write(&path, body).unwrap();
+        path
+    }
+
+    /// P0 回归：**容错档**下 `update()` 的 Lua 错误不得中断固定步，更不得终止进程。
+    ///
+    /// 这就是本次修复针对的那条链路：错误 ⇒ `SystemError` ⇒ `SchedulerError::SystemFailed`
+    /// ⇒ 调度器放弃本步剩余系统 ⇒ 宿主 `fail()` 退出。容错后本步照跑，错误进诊断与计数。
+    #[test]
+    fn contained_script_error_does_not_abort_the_fixed_step() {
+        let scene = crate::core::scene::Scene::new("guard-contain");
+        let mut runtime = RuntimeScene::from_scene(None, scene).unwrap();
+        runtime.set_script_error_policy(ScriptErrorPolicy::Contain);
+        let path = write_guard_script("guard-contain", "function update() error('guard boom') end");
+        runtime
+            .with_script(|script| script.execute_project_script(&path))
+            .unwrap();
+
+        runtime
+            .run_script_steps(1, 1.0 / 60.0, &InputSnapshot::default())
+            .expect("容错档下脚本错误不得让固定步返回 Err");
+
+        assert_eq!(
+            runtime.script_error_total(),
+            1,
+            "错误必须被记账（容错 ≠ 静默）"
+        );
+        let diagnostics = runtime.script_diagnostics();
+        assert!(
+            diagnostics
+                .iter()
+                .any(|item| item.message.contains("guard boom")),
+            "被容错的错误必须进结构化诊断: {diagnostics:?}"
+        );
+        assert!(
+            runtime.script_disabled_callbacks().is_empty(),
+            "首次错误不该停用回调"
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// 默认（严格）档的语义**一字未改**：脚本报错 ⇒ `run_script_steps` 返回 `Err`。
+    ///
+    /// 26 个无头样例、soak 与性能基线都 `unwrap()` 这个结果，因此验收路径"脚本一错就判红"
+    /// 不受容错能力影响。
+    #[test]
+    fn strict_policy_still_fails_the_step_on_script_error() {
+        let scene = crate::core::scene::Scene::new("guard-strict");
+        let mut runtime = RuntimeScene::from_scene(None, scene).unwrap();
+        assert_eq!(
+            runtime.script_error_policy(),
+            ScriptErrorPolicy::Strict,
+            "默认必须是严格档"
+        );
+        let path = write_guard_script("guard-strict", "function update() error('strict boom') end");
+        runtime
+            .with_script(|script| script.execute_project_script(&path))
+            .unwrap();
+
+        let error = runtime
+            .run_script_steps(1, 1.0 / 60.0, &InputSnapshot::default())
+            .expect_err("严格档必须把脚本错误上报给宿主");
+        assert!(
+            error.to_string().contains("strict boom"),
+            "错误文本要保留 Lua 的原始信息: {error}"
+        );
+        assert_eq!(runtime.script_error_total(), 0, "严格档不经容错记账");
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// 每帧都炸的回调会被停用并**从此不再进 Lua**：既止损，也让日志不被同一个错误淹没。
+    #[test]
+    fn repeated_contained_errors_disable_update() {
+        let scene = crate::core::scene::Scene::new("guard-disable");
+        let mut runtime = RuntimeScene::from_scene(None, scene).unwrap();
+        runtime.set_script_error_policy(ScriptErrorPolicy::Contain);
+        runtime.with_script(|script| script.set_callback_error_limit(2));
+        let path = write_guard_script(
+            "guard-disable",
+            "function update() error('always boom') end",
+        );
+        runtime
+            .with_script(|script| script.execute_project_script(&path))
+            .unwrap();
+
+        let input = InputSnapshot::default();
+        runtime.run_script_steps(1, 1.0 / 60.0, &input).unwrap();
+        runtime.run_script_steps(1, 1.0 / 60.0, &input).unwrap();
+        assert_eq!(runtime.script_error_total(), 2);
+        assert_eq!(
+            runtime.script_disabled_callbacks(),
+            vec!["update()".to_owned()],
+            "连续两次错误（上限 2）应停用 update()"
+        );
+
+        // 停用后不再进 Lua：计数不再增长，而固定步仍然是 Ok。
+        runtime.run_script_steps(1, 1.0 / 60.0, &input).unwrap();
+        assert_eq!(
+            runtime.script_error_total(),
+            2,
+            "停用后不应再有新的错误记账"
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// 容错是**按回调**的：工程级 `update()` 报错不该影响其它系统的推进。
+    /// 用粒子推进做观察点——它是与脚本无关、且每步都动的内建系统。
+    #[test]
+    fn contained_script_error_leaves_engine_systems_running() {
+        use crate::core::scene::Scene;
+
+        let mut scene = Scene::new("guard-systems");
+        scene
+            .add_entity(crate::core::scene::SceneEntityId(1), "Tick", None)
+            .unwrap();
+        scene
+            .entities
+            .get_mut(&crate::core::scene::SceneEntityId(1))
+            .unwrap()
+            .components
+            .insert(
+                "Transform".to_owned(),
+                "position=0,0,0;rotation=0,0,0,1;scale=1,1,1".to_owned(),
+            );
+        let mut runtime = RuntimeScene::from_scene(None, scene).unwrap();
+        runtime.set_script_error_policy(ScriptErrorPolicy::Contain);
+        let path = write_guard_script(
+            "guard-systems",
+            "function update() error('systems boom') end",
+        );
+        runtime
+            .with_script(|script| script.execute_project_script(&path))
+            .unwrap();
+
+        let input = InputSnapshot::default();
+        for _ in 0..3 {
+            runtime
+                .run_script_steps(1, 1.0 / 60.0, &input)
+                .expect("固定步应完整跑完");
+        }
+        // 步进统计是"本步真的跑过各阶段"的证据：脚本报错时它仍然有记录。
+        let report = runtime
+            .last_schedule_report()
+            .expect("每一步都应留下调度统计");
+        assert_eq!(report.steps, 1, "固定步不应被跳过");
+        assert_eq!(runtime.script_error_total(), 3, "三次报错三次记账");
+        let _ = std::fs::remove_file(path);
     }
 
     /// 九宫格：带 `nine_slice` 的 Image 应渲染为 3×3 共 9 格（54 顶点），而非

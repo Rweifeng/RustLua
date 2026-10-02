@@ -306,3 +306,31 @@
      且 vendor 一份也补不齐）；
   3. Web 目标（`crates/game_web`）验证出 egui 在 wasm 下**不可接受的输入缺陷**（键盘焦点、
      IME、指针捕获一类），且该缺陷只能换框架解决。
+
+## ADR-0023：脚本错误按宿主分档处置（严格 / 容错），默认严格
+
+- 状态：Accepted
+- 日期：2026-10-02
+- 范围：`crates/rustlua-scripting/src/script/guard.rs`（新增）、`script/runtime.rs`、`script/scene_spawn.rs`、
+  `crates/engine/src/host/runtime_scene.rs`、`crates/game/src/game_app.rs`、`crates/editor/src/preview_session.rs`。
+- 决定：Lua 回调的错误处置变成**宿主显式选择的策略**（`ScriptErrorPolicy`），而不是"一律致命"：
+  - `Strict`（默认）：首个错误即经 `SystemError` 上报，`run_script_steps` 返回 `Err`——**控制流**与既有语义
+    一致（唯一差别：UI 点击路径的报错文本补上了回调名，便于定位是哪个按钮的处理函数炸了）；
+  - `Contain`：错误记入 `ScriptDiagnostic` 与计数器，固定步继续跑；**连续**错误达到上限
+    （`DEFAULT_CALLBACK_ERROR_LIMIT = 60`，即可见 1 秒 @60Hz）的回调被停用，此后不再进 Lua。
+  预算**按回调**独立：`update()`、UI 点击分发、每实体 `on_spawn`/`on_update`（按 `EntityId`）互不牵连；
+  每实体预算在实体消亡时随 `refresh_entity_script_requests` 剪除。热重载/换场景即重置预算与停用结论。
+  容错档由交互宿主显式开启（`game.exe`、编辑器 Play）；无头样例、soak、性能基线与 Web 宿主保持严格。
+- 原因：此前 `update()` 里一个未捕获的 Lua 错误会沿 `SystemError → SchedulerError::SystemFailed`
+  让调度器**放弃本步剩余所有系统**（物理、粒子、场景切换一并跳过），宿主随即 `fail()` 终止进程——
+  玩家的一局因为一行脚本而结束，且"脚本偶发错误"与"引擎故障"在退出码上不可区分。
+  同时容错不能变成静默：因此配 `script_error_total()` / `script_disabled_callbacks()` 两个出口，
+  且验收路径继续走严格档，"脚本报错必须判红"的既有 26 项样例门一个不少。
+- 代价：多一条"错误被容错后游戏带病运行"的状态需要观测（日志 + 计数 + 编辑器 Play 诊断）；
+  停用是一次性判定，只能靠热重载/重开一局解除——这是有意的，避免"停用-重试-刷屏"循环。
+- 备选：一律容错且不提供严格档——被否，等于把脚本错误从验收门里删掉；
+  一律致命但只记日志不退出——被否，无法与"引擎故障"区分，且仍会跳过本步剩余系统；
+  用 pcall 包住 Lua 但不做预算——被否，每帧报错的脚本会持续刷屏并持续付报错开销。
+- 非目标：不做 Lua 沙箱（`io`/`os` 仍开放）、不做内存/指令预算、不做"错误 N 次后重启 VM"。
+- 重新评估条件：出现"容错让真实故障被掩盖"的实例（届时收紧为按错误类型分档），
+  或交互宿主需要比 60 步更短/更长的停用阈值（届时把上限提到设置文件）。

@@ -27,3 +27,5 @@ pub use gamepad::{
 };
 pub use renderer::{ReadbackMetrics, ReadbackStatus, RenderFrameMetrics, RenderOutcome, Renderer};
 pub use runtime_scene::{RuntimeScene, load_project_font_atlas, load_project_vector_atlas};
+/// 脚本错误处置策略：宿主在 `RuntimeScene` 上选择严格（验收默认）或容错（交互宿主）。
+pub use rustlua_scripting::script::ScriptErrorPolicy;

@@ -8,6 +8,7 @@ use crate::script::LuaRuntime;
 use crate::script::PersistedEntity;
 use crate::script::ScriptState;
 use crate::script::error::LuaBridgeError;
+use crate::script::guard::{BudgetSlot, ScriptErrorPolicy};
 use crate::script::solid_cell_colliders;
 use mlua::Value;
 use rustlua_animation::animation::AnimationStateMachine;
@@ -176,12 +177,19 @@ impl LuaRuntime {
     /// Dispatches click bindings from structured `UiEvents`. Hit targets are
     /// precomputed by `RuntimeScene::compute_click_targets`; each target may
     /// declare one or more Lua callbacks.
+    ///
+    /// 容错档（[`ScriptErrorPolicy::Contain`]）下某个绑定的回调报错只跳过**它自己**：
+    /// 一个按钮的函数写错，不该连带后面排队的按钮一起失效。检测到已停用的分发槽
+    /// 时整体跳过——那时所有点击回调都已被停用。
     pub fn process_ui_clicks(
         &self,
         input: &InputSnapshot,
         targets: &[UiClickTarget],
     ) -> Result<(), LuaBridgeError> {
         if !input.mouse_just_pressed(MouseButton::Left) {
+            return Ok(());
+        }
+        if self.guard.borrow().is_disabled(BudgetSlot::UiClicks) {
             return Ok(());
         }
         let (mx, my) = input.cursor_position();
@@ -196,29 +204,42 @@ impl LuaRuntime {
             .collect();
         for target in clicked {
             for function_name in &target.functions {
-                let callback: Value =
-                    self.lua
-                        .globals()
-                        .get(function_name.as_str())
-                        .map_err(|error| LuaBridgeError::Runtime {
-                            path: self
-                                .current_path
-                                .clone()
-                                .unwrap_or_else(|| PathBuf::from("<project script>")),
-                            reason: error.to_string(),
-                        })?;
-                if let Value::Function(function) = callback {
-                    function
-                        .call::<()>((target.name.as_str(),))
-                        .map_err(|error| LuaBridgeError::Runtime {
-                            path: self
-                                .current_path
-                                .clone()
-                                .unwrap_or_else(|| PathBuf::from("<project script>")),
-                            reason: error.to_string(),
-                        })?;
+                if let Err(error) = self.call_ui_callback(function_name, target.name.as_str()) {
+                    if self.guard.borrow().policy() == ScriptErrorPolicy::Strict {
+                        return Err(error);
+                    }
+                    self.contain_script_error(BudgetSlot::UiClicks, &error);
                 }
             }
+        }
+        Ok(())
+    }
+
+    /// 取全局回调并调用，把两次可能失败的动作（取函数、调用）包成一条错误链。
+    fn call_ui_callback(
+        &self,
+        function_name: &str,
+        target_name: &str,
+    ) -> Result<(), LuaBridgeError> {
+        let path = self
+            .current_path
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("<project script>"));
+        let callback: Value =
+            self.lua
+                .globals()
+                .get(function_name)
+                .map_err(|error| LuaBridgeError::Runtime {
+                    path: path.clone(),
+                    reason: error.to_string(),
+                })?;
+        if let Value::Function(function) = callback {
+            function
+                .call::<()>((target_name,))
+                .map_err(|error| LuaBridgeError::Runtime {
+                    path,
+                    reason: format!("ui click {function_name}: {error}"),
+                })?;
         }
         Ok(())
     }

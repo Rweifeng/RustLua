@@ -35,6 +35,7 @@
 - [Lua API](18-lua-api.md)：Lua 侧全部接口参考
 - [Lua 热重载](19-lua-hot-reload.md)
 - [Lua 脚本调试](20-lua-script-debug.md)
+- [Lua 脚本错误处置策略](64-Lua脚本错误处置策略.md)：严格/容错两档、按回调的错误预算与停用规则
 - [场景脚本 Demo](21-scene-script-demo.md)
 - [3D 渲染与能力参考](24-3d-rendering.md)
 
@@ -113,7 +114,7 @@
 
 | 命名空间 | 目录 | 职责 | 区段 |
 |---|---|---|---|
-| 引擎文档 | `docs/NN-*.md` | 引擎能力、技术决策、质量门与发布 | `00`–`63`（本目录） |
+| 引擎文档 | `docs/NN-*.md` | 引擎能力、技术决策、质量门与发布 | `00`–`64`（本目录） |
 | 游戏文档 | `examples/<project>/docs/NN-*.md` | 单个游戏项目的内容设计、美术、数值、交付记录 | `29`–`50`（`game_jhyt`） |
 
 规则：① 同一目录内编号唯一（`scripts/check-docs.ps1` 会在质量门里强制）；
