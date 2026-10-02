@@ -2754,7 +2754,7 @@ impl RuntimeScene {
                 // WP2：提取用的变换来源由空间继承开关**每帧选定一次**：开启时整条换成
                 // `WorldTransform`，关闭时仍走 `Transform`。刻意不做"每个实体先试世界再退回局部"
                 // ——那会给每个精灵多一次 `get`（两层哈希），WP6 已量到那正是 5 万精灵档的大头。
-                // 不变量（见 `core::hierarchy`）：开启继承时**每个有局部变换的实体都有世界变换**
+                // 不变量（见 `crate::core::hierarchy`）：开启继承时**每个有局部变换的实体都有世界变换**
                 // （组合不了或成环的保留局部值当世界值），所以整条替换不会漏画任何一个精灵。
                 let mut collect = |id: EntityId, transform: &Transform, sprite: &Sprite| {
                     if failure.is_some() {

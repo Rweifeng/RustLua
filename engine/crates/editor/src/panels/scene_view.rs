@@ -3251,7 +3251,7 @@ impl EditorApp {
 
     fn editor_camera_ray(&self, x: f32, y: f32, width: f32, height: f32) -> Option<Ray3> {
         let camera = self.editor_camera();
-        // docs/54 §8-⑦：与 Lua `camera3d.ray` 走**同一条共享链**（`core::picking`），
+        // docs/54 §8-⑦：与 Lua `camera3d.ray` 走**同一条共享链**（`engine::core::picking`），
         // 因此"编辑器点中哪个"和"脚本算出的射线"不会各说一套。宽高比与屏幕坐标同源
         // （同一个 `viewport`），拆分批 7 之后这一点由类型保证。
         let viewport = Viewport::new(width.max(1.0), height.max(1.0)).ok()?;

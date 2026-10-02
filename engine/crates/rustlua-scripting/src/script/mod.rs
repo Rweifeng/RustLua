@@ -23,7 +23,8 @@ mod step;
 mod transition;
 mod values;
 
-// 跨 crate 的公开面（`editor` / `game_web` / `host` 用到），路径保持 `core::script::*` 不变。
+// 跨 crate 的公开面（`editor` / `game_web` / `host` 用到）：消费方沿用的 `engine::core::script::*`
+// 由 engine 的 core.rs 门面再导出，路径与拆分前一字不变。
 pub use error::{LuaBridgeError, ScriptDebugger, ScriptDiagnostic};
 pub use guard::{
     BudgetSlot, CallbackBudget, ContainOutcome, DEFAULT_CALLBACK_ERROR_LIMIT, EntityHook,
@@ -619,7 +620,7 @@ impl LuaRuntime {
     }
 
     /// 设置玩家设置根目录（`settings.toml` 的读写根）。
-    /// 发布包由宿主指向用户数据目录（见 `core::user_dir`），开发工程不调用，
+    /// 发布包由宿主指向用户数据目录（见 `rustlua_infra::user_dir`），开发工程不调用，
     /// 于是退回项目根——编辑器与 `jhyt_m20_*` 检查的就是工程内那份。
     pub fn set_settings_root(&mut self, root: PathBuf) {
         self.state.borrow_mut().settings_root = Some(root);
