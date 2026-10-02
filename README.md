@@ -48,7 +48,7 @@ cargo run -p editor -- --project ..\examples\game_jhyt --check
 | 平台 | 命令 | 现状 |
 |---|---|---|
 | PC | `scripts\package.ps1 -ProjectRoot examples/game_jhyt` | **已验收**（M31）：干净目录可运行、`pack/` 只读、存档与设置写用户数据目录 |
-| WebGL | 加 `-Platform webgl` | **产物层**：缺失宿主 API 全局 = 0、启动路径不再因缺失全局停下（2026-09-19 无头 Edge 复测），但**不等于**「浏览器内跑通完整剧本」，按实验性对待 |
+| WebGL | 加 `-Platform webgl` | **产物层 + 完整剧本门**：缺失宿主 API 全局 = 0、启动路径不再因缺失全局停下（2026-09-19 无头 Edge 复测）；2026-10-02 起 `verify-webgl-bundle.ps1 -DriveJhyt` 在真实浏览器里跑完整玩法链路（新游戏→移动→背包/任务开合→山庄↔云泽村真实切图→回山庄，M1–M6 里程碑落定）并挂进 `verify.ps1` 总门 |
 | 微信小游戏 | 加 `-Platform wechat-minigame`（默认主包 + 单分包） | **已真机验收**（2026-09-27，Android）：启动进山庄、虚拟摇杆移动、按钮交互全通；产物层切分、配额、白名单与 harness 用例（含摇杆链路）全绿 |
 | 编辑器绿色版 | `scripts\package-engine.ps1 -Zip` | 免安装包：release 三件套 + 字体 + 样例工程 + 双击即用的 bat |
 
@@ -64,6 +64,7 @@ cargo run -p editor -- --project ..\examples\game_jhyt --check
 | 总门（含 MVP 回归与发布自测） | `scripts\verify.ps1`（快速路径 `-MvpOnly`；`-SkipBuild -SkipClippy` 复用已有构建） |
 | 格式 / 静态检查 / 测试 | `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets --all-features -- -D warnings`、`cargo test --workspace --all-features` |
 | 文档一致性（编号/索引/链接/历史路径/编码） | `scripts\check-docs.ps1` |
+| vendor 补丁基线（wasm 必需补丁逐文件在位 + 版本耦合） | `scripts\check-vendor-patches.ps1` |
 | 编辑器整帧 smoke（合成输入的 DPI/resize/拖放/停靠/多选/弹窗） | `cargo run -p editor -- --gui-smoke`（`--gui-report <文件>` 落报告） |
 | 干净目录发布自测 | `scripts\package.ps1 -ProjectRoot examples/game_jhyt -SelfTest` |
 | WebGL 产物层启动验收 | `scripts\verify-webgl-bundle.ps1` |

@@ -2575,6 +2575,210 @@ end
     if (driveAuto) {
     }
 
+    // P0-②：URL `?rustlua-drive=jhyt` 驱动**完整玩法剧本**——与微信 harness 的
+    // --drive-new-game/--drive-move/--bag/--quest 同构，但走真实浏览器输入与真实 wasm。
+    // 剧本动线（与 examples/game_jhyt/scripts/data/maps.lua 的 M17-01 动线同步）：
+    //   标题确认 → 新游戏(manor) → 移动 → 背包开合 → 任务面板开合 →
+    //   山庄→云泽村真实场景切换（走到出口格按 E）→ 实体保持校验 → 回山庄 → 里程碑全落定。
+    // 里程碑写进 data-rustlua-drive（done/failed + detail），verify-webgl-bundle.ps1 -DriveJhyt 断言。
+    // 出口世界坐标 = (cell+0.5)*TILE（TILE=32），硬编码自 data/maps.lua；改动线必须两边同步。
+    let driveJhyt = null;
+    try {
+      const search = (typeof window !== 'undefined' && window.location && window.location.search) || '';
+      if (search.indexOf('rustlua-drive=jhyt') >= 0) {
+        driveJhyt = {
+          phase: 'confirm',       // confirm → wait-settle → move → bag-open → bag-close →
+          frames: 0,              // quest-open → quest-close → nav-exit → interact → wait-map →
+          confirmFrames: 2,       // spawn-check → nav-back → interact-back → wait-back → done
+          milestones: [],
+          uiBase: -1,
+          exitKey: null,
+          limit: {
+            'wait-settle': 500, 'move': 40, 'bag-open': 70, 'bag-close': 70,
+            'quest-open': 70, 'quest-close': 70, 'nav-exit': 900, 'wait-map': 600,
+            'nav-back': 900, 'wait-back': 600
+          }
+        };
+      }
+    } catch (e) { driveJhyt = null; }
+    if (driveJhyt) {
+      // 与 data/maps.lua 同步的出口表（仅剧本动线用到的两段）。
+      const JHYT_EXITS = {
+        manor:   { world: [528, 48], to: 'village' },  // maps.manor.exits[1].cell=(16,1) → world(528,48)
+        village: { world: [624, 48], to: 'manor'   }   // maps.village.exits[1].cell=(19,1) → world(624,48)
+      };
+      function jhytReadWorld() {
+        const body = document.body || document.documentElement;
+        if (!body) return '';
+        return body.getAttribute('data-rustlua-world') || '';
+      }
+      function jhytWorldField(text, name) {
+        const match = text.match(new RegExp(name + '=([^\\s]+)'));
+        return match ? match[1] : '';
+      }
+      function jhytPlayerPos(text) {
+        const match = text.match(/player=\S+?@(-?\d+),(-?\d+)/);
+        return match ? [Number(match[1]), Number(match[2])] : null;
+      }
+      function jhytUiElements() {
+        const body = document.body || document.documentElement;
+        if (!body) return -1;
+        // 优先读每帧真值 ui-now（剧本判定用）；回退到 30 帧一更的 ui-elements（老字段）。
+        const raw = body.getAttribute('data-rustlua-ui-now') ?? body.getAttribute('data-rustlua-ui-elements');
+        return raw === null ? -1 : (Number(raw) || 0);
+      }
+      function jhytFail(d, detail) {
+        markDrivePhase('failed');
+        markDrive('failed', 'phase=' + d.phase + ' ' + detail);
+        d.phase = 'failed';
+      }
+      function jhytSucceed(d) {
+        markDrivePhase('done');
+        markDrive('done', 'milestones=' + d.milestones.join(','));
+        d.phase = 'done';
+      }
+      // 朝向目标世界坐标走一格：只注入一个方向键；到达半格内返回 arrived。
+      function jhytNavigate(d, targetX, targetY, worldText) {
+        const pos = jhytPlayerPos(worldText);
+        if (!pos) return 'no-player';
+        const dx = targetX - pos[0], dy = targetY - pos[1];
+        if (Math.abs(dx) <= 16 && Math.abs(dy) <= 16) {
+          if (d.exitKey) { dispatchDriveKey('keyup', d.exitKey); d.exitKey = null; }
+          return 'arrived';
+        }
+        let key;
+        if (Math.abs(dx) >= Math.abs(dy)) key = dx > 0 ? 'd' : 'a';
+        else key = dy > 0 ? 'w' : 's';
+        if (d.exitKey !== key) {
+          if (d.exitKey) dispatchDriveKey('keyup', d.exitKey);
+          dispatchDriveKey('keydown', key);
+          d.exitKey = key;
+        }
+        return 'moving';
+      }
+      function stepDriveJhyt() {
+        if (!driveJhyt || driveJhyt.phase === 'done' || driveJhyt.phase === 'failed') return;
+        const d = driveJhyt;
+        d.frames += 1;
+        // 每帧把当前阶段写进 DOM：无头验收 dump 时能直接看到剧本卡在哪个阶段。
+        markDrivePhase(d.phase);
+        const limit = d.limit[d.phase];
+        if (limit && d.frames > limit) {
+          jhytFail(d, 'timeout phase=' + d.phase + ' frames=' + d.frames +
+            ' world=' + jhytWorldField(jhytReadWorld(), 'map'));
+          return;
+        }
+        const world = jhytReadWorld();
+        const map = jhytWorldField(world, 'map');
+        const alive = Number(jhytWorldField(world, 'alive') || 0);
+        const scene = Number(jhytWorldField(world, 'scene') || 0);
+        if (d.phase === 'confirm') {
+          if (d.frames <= d.confirmFrames) dispatchDriveKey('keydown', ' ');
+          else { dispatchDriveKey('keyup', ' '); d.phase = 'wait-settle'; d.frames = 0; }
+          return;
+        }
+        if (d.phase === 'wait-settle') {
+          if (map === 'manor' && alive > 0) {
+            d.milestones.push('M1:new-game(map=' + map + ',alive=' + alive + ')');
+            d.phase = 'move'; d.frames = 0;
+          }
+          return;
+        }
+        if (d.phase === 'move') {
+          if (d.frames === 1) {
+            d._moveBefore = jhytPlayerPos(world);
+            dispatchDriveKey('keydown', 'w');
+          }
+          if (d.frames >= 12) {
+            dispatchDriveKey('keyup', 'w');
+            const before = d._moveBefore;
+            const after = jhytPlayerPos(world);
+            if (before && after && (after[0] !== before[0] || after[1] !== before[1])) {
+              d.milestones.push('M2:move(' + before.join(',') + '->' + after.join(',') + ')');
+              d.phase = 'bag-open'; d.frames = 0;
+            } else {
+              jhytFail(d, 'player did not move while holding w (before=' +
+                (before && before.join(',')) + ' after=' + (after && after.join(',')) + ')');
+            }
+          }
+          return;
+        }
+        if (d.phase === 'bag-open' || d.phase === 'bag-close' ||
+            d.phase === 'quest-open' || d.phase === 'quest-close') {
+          const isBag = d.phase.indexOf('bag') === 0;
+          const isOpen = d.phase.indexOf('open') >= 0;
+          const key = isBag ? 'i' : 'l';
+          if (d.frames === 1) {
+            d.uiBase = jhytUiElements();
+            dispatchDriveKey('keydown', key);
+          }
+          if (d.frames === 4) dispatchDriveKey('keyup', key);
+          // 面板开关动画期间元素数会跳变：检查点从第 8 帧起、每 6 帧一次（比旧实现更晚、
+          // 更稀疏），避免"刚多一个元素就误判已开、紧接着按关闭键被动画吞掉"的时序问题。
+          if (d.frames >= 8) {
+            const now = jhytUiElements();
+            const ok = isOpen ? now > d.uiBase : now < d.uiBase;
+            if (ok) {
+              const mark = (isBag ? 'M3:bag' : 'M4:quest') + (isOpen ? '-open' : '-close');
+              d.milestones.push(mark + '(' + d.uiBase + '->' + now + ')');
+              d.phase = isOpen ? (d.phase === 'bag-open' ? 'bag-close' : 'quest-close')
+                               : (d.phase === 'bag-close' ? 'quest-open' : 'nav-exit');
+              d.frames = 0;
+              return;
+            }
+            // 方向未达成：第一次按键很可能被开关动画吞掉（总门负载下实际踩到 quest-close
+            // 卡死）。面板开着时按 l/i 是关闭、关着时按是打开（toggle），重按不会误反方向，
+            // 所以每 6 帧重发一次完整的 click（keydown 3 帧后 keyup），直到阶段 limit。
+            const mod = (d.frames - 8) % 6;
+            if (mod === 0) dispatchDriveKey('keydown', key);
+            else if (mod === 3) dispatchDriveKey('keyup', key);
+          }
+          return;
+        }
+        if (d.phase === 'nav-exit' || d.phase === 'nav-back') {
+          const target = JHYT_EXITS[d.phase === 'nav-exit' ? 'manor' : 'village'];
+          const nav = jhytNavigate(d, target.world[0], target.world[1], world);
+          if (nav === 'arrived') {
+            d.phase = d.phase === 'nav-exit' ? 'interact' : 'interact-back';
+            d.frames = 0;
+          }
+          return;
+        }
+        if (d.phase === 'interact' || d.phase === 'interact-back') {
+          if (d.frames <= 4) dispatchDriveKey('keydown', 'e');
+          else {
+            dispatchDriveKey('keyup', 'e');
+            d.phase = d.phase === 'interact' ? 'wait-map' : 'wait-back';
+            d.frames = 0;
+          }
+          return;
+        }
+        if (d.phase === 'wait-map' || d.phase === 'wait-back') {
+          const expect = d.phase === 'wait-map' ? 'village' : 'manor';
+          if (map === expect) {
+            d.milestones.push('M' + (d.phase === 'wait-map' ? '5' : '6') +
+              ':scene(' + expect + ',alive=' + alive + ',scene=' + scene + ')');
+            if (d.phase === 'wait-map') {
+              d.phase = 'spawn-check'; d.frames = 0;
+            } else {
+              // 最后一段（回山庄）命中即收口：milestones 全部落定，写入 done。
+              jhytSucceed(d);
+            }
+          }
+          return;
+        }
+        if (d.phase === 'spawn-check') {
+          if (alive > 0 && alive >= scene) {
+            d.milestones.push('M5b:entities-preserved(alive=' + alive + '>=scene=' + scene + ')');
+            d.phase = 'nav-back'; d.frames = 0;
+          } else {
+            jhytFail(d, 'entities lost after scene switch (alive=' + alive + ' scene=' + scene + ')');
+          }
+          return;
+        }
+      }
+    }
+
     // 场景切换防回归门：`?rustlua-scene-verify=1` 让首帧把**当前**场景重新走一遍
     // applySceneSwitch（fetch scene 文件 → parseScene → 重绑 Lua → 重跑 on_create）。
     // 与游戏剧本解耦（不假设"标题→玩法地图"流程），只验一条：切换路径本身能跑通、
@@ -2603,7 +2807,14 @@ end
 
     function markDrivePhase(phase) {
       const body = document.body || document.documentElement;
-      if (body) body.setAttribute('data-rustlua-drive-phase', phase);
+      if (!body) return;
+      body.setAttribute('data-rustlua-drive-phase', phase);
+      if (driveJhyt) {
+        // 帧级诊断：headless 下 rAF 可能停调度（历史上踩过 virtual-time-budget 把 f 卡在 6），
+        // 验收脚本 dump 时看不到"卡在哪个阶段、已跑多少帧"就无从判断是慢还是死。
+        body.setAttribute('data-rustlua-drive-frames', String(driveJhyt.frames));
+        body.setAttribute('data-rustlua-drive-frames-seen', String((window.__frameCounter || 0)));
+      }
     }
 
     function markDrive(state, detail) {
@@ -2716,6 +2927,8 @@ end
           return;
         }
         stepDrive();
+        if (typeof window !== 'undefined') window.__frameCounter = (window.__frameCounter || 0) + 1;
+        if (driveJhyt && typeof stepDriveJhyt === 'function') stepDriveJhyt();
         doString(L, '__rustlua_input = ' + luaValue(webInput.snapshot()), '__rustlua_input');
         // 快照是**整份替换**的（设备层每帧重新采样），虚拟键必须在替换**之后**并回来——
         // 顺序反了就等于没注入。对应引擎侧 `InputSnapshot::inherit_virtual_keys`。
@@ -2735,6 +2948,9 @@ end
             + String(callGlobal(L, '__rustlua_world_summary') || '')
             + (drawnPlayer ? ' drawn=' + drawnPlayer : '');
           body.setAttribute('data-rustlua-world', world.slice(0, 300));
+          // ui-now 每帧写**真实** UI 元素数（诊断/剧本判定用；ui-elements 仍 30 帧一更，
+          // 只服务宿主诊断覆盖层的低频采样，剧本靠 ui-now 拿到当帧真值）。
+          body.setAttribute('data-rustlua-ui-now', String(uiElements));
           if (frameCount <= 5 || frameCount % 30 === 0) {
             body.setAttribute('data-rustlua-drawn', String(sampleDrawnPixels(ctx)));
             body.setAttribute('data-rustlua-ui-elements', String(uiElements));

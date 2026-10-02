@@ -39,6 +39,12 @@ powershell -NoProfile -File scripts\test-bundle.ps1
 # 只做产物层验证（启动静态服务器 + 无头浏览器，断言 boot 与画面像素）；
 # 省略 -BundleRoot 时同样自动发现
 powershell -NoProfile -File scripts\verify-webgl-bundle.ps1
+
+# 完整玩法剧本验收：URL `?rustlua-drive=jhyt` 在真实浏览器里驱动 game_jhyt 跑完整玩法链路
+# （标题确认 → 新游戏(manor) → 移动 → 背包/任务面板开合 → 山庄↔云泽村真实切图 → 回山庄），
+# M1–M6 里程碑逐段落定，`data-rustlua-drive=done` 才算通过；已挂 verify.ps1 总门
+# （webgl_playthrough_ok）。与 -Drive 互斥（后者是 `?rustlua-drive=auto` 的最小剧本）。
+powershell -NoProfile -File scripts\verify-webgl-bundle.ps1 -DriveJhyt
 ```
 
 产物的定位规则收在 `scripts/bundle-discovery.ps1`：扫 `examples\<工程>\builds\webgl`，

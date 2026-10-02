@@ -248,6 +248,21 @@ if (Test-Path $docsScript) {
     }
 }
 
+# vendor 补丁基线门：`[patch.crates-io]` 的 5 个 fork 携带 wasm32 必需补丁，升级上游后
+# 极易被覆盖丢失（extern "C-unwind" 回归会令 wasm 上宿主函数返回 Err 的 pcall 崩溃，
+# 而 boot 依旧全绿）。纯文件检查、约 1 秒，与文档门同段：`-MvpOnly` 也跑，
+# 补丁丢失不该被快速路径跳过。明细见 engine/vendor/README.md。
+Write-Step "Vendor patch baseline"
+$vendorGateScript = Join-Path $projectRoot "scripts/check-vendor-patches.ps1"
+if (Test-Path $vendorGateScript) {
+    $vendorOutput = & powershell -NoProfile -ExecutionPolicy Bypass -File $vendorGateScript
+    $vendorExit = $LASTEXITCODE
+    $vendorOutput | ForEach-Object { Write-Host $_ }
+    if ($vendorExit -ne 0) {
+        throw "check-vendor-patches.ps1 failed (exit code $vendorExit)"
+    }
+}
+
 if ($runGates) {
 Push-Location $engineRoot
 try {
@@ -507,7 +522,7 @@ try {
         # 把它们的 stdout 接进本进程的管道会让质量门永远等不到 EOF（本轮实际踩到）。因此让子进程
         # 自己写文件、只取退出码，再把要点抄进质量日志。
         $runWebEvidence = {
-            param([string]$Script, [string]$Label)
+            param([string]$Script, [string]$Label, [string[]]$ExtraArgs = @())
             $logFile = Join-Path $webEvidenceRoot ("gate-" + $Label + "-$timestamp.log")
             $statusFile = "$logFile.status"
             # **有界等待**，不用 `-Wait`：`-Wait` 会等到整个进程树结束，而无头浏览器偶尔不自行退出，
@@ -515,8 +530,9 @@ try {
             # ——宁可判红，也不要"卡住"。
             $timeoutSeconds = 600
             $startedAt = Get-Date
+            $argumentList = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $Script, "-StatusFile", $statusFile) + $ExtraArgs
             $process = Start-Process -FilePath "powershell" `
-                -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $Script, "-StatusFile", $statusFile) `
+                -ArgumentList $argumentList `
                 -PassThru -RedirectStandardOutput $logFile -RedirectStandardError "$logFile.err"
             if (-not $process.WaitForExit($timeoutSeconds * 1000)) {
                 Write-Host "web evidence '$Label' timed out after ${timeoutSeconds}s; killing it" -ForegroundColor Yellow
@@ -645,6 +661,37 @@ try {
                     }
                 }
                 Write-Host "webgl_bundle_ok boot=$($bundlePayload.boot) wasm_bytes=$($bundlePayload.wasmBytes) drawn=$($bundlePayload.drawnSamples) ui=$($bundlePayload.uiElements) missing_host_api=$($bundlePayload.missingCount) scene_verify=$($bundlePayload.sceneVerify)" -ForegroundColor Green
+            }
+
+            # ③′ 完整玩法剧本门（P0-②）：verify-webgl-bundle -DriveJhyt 驱动 URL
+            # `?rustlua-drive=jhyt`，在真实浏览器里跑完"标题确认 → 新游戏(manor) →
+            # 移动 → 背包/任务面板开合 → 山庄↔云泽村真实场景切换 → 回山庄"的完整玩法
+            # 链路，M1-M6 里程碑全落定才写 data-rustlua-drive=done（bundle-summary 的
+            # driveJhyt 字段）。这步把"产物层验收 ≠ 完整剧本"的诚实标注升级成机器门：
+            # 玩法内容动不了、动线不对、UI 开合失效、场景切换丢失实体，都会在这里判红。
+            # 与常规 bundle 步互补（那步带 scene-verify，这一步自动关掉它走完整玩法）。
+            $jhytRun = & $runWebEvidence $bundleScript "bundle-jhyt" -ExtraArgs @("-DriveJhyt")
+            $jhytExit = $jhytRun.ExitCode
+            if ($jhytExit -eq 1) {
+                throw "webgl complete playthrough FAILED (verify-webgl-bundle.ps1 -DriveJhyt exit 1; playthrough milestones did not all land - see bundle-summary-*.json driveJhyt=)"
+            }
+            if ($jhytExit -ne 0) {
+                Write-Host "webgl_playthrough_skipped reason=environment_limited_or_no_bundle exit=$jhytExit" -ForegroundColor Yellow
+            }
+            else {
+                $jhytSummary = Get-ChildItem -LiteralPath $webEvidenceRoot -Filter "bundle-summary-*.json" -ErrorAction SilentlyContinue |
+                    Where-Object { $_.LastWriteTime -ge $jhytRun.StartedAt } |
+                    Sort-Object LastWriteTime -Descending | Select-Object -First 1
+                if (-not $jhytSummary) {
+                    throw "webgl complete playthrough reported success but wrote no FRESH bundle-summary JSON"
+                }
+                $jhytPayload = Get-Content -LiteralPath $jhytSummary.FullName -Raw | ConvertFrom-Json
+                if ($jhytPayload.PSObject.Properties.Name -contains 'driveJhyt') {
+                    if ($jhytPayload.driveJhyt -ne 'done') {
+                        throw "webgl complete playthrough gate FAILED: driveJhyt=$($jhytPayload.driveJhyt) detail=$($jhytPayload.driveJhytDetail)"
+                    }
+                }
+                Write-Host "webgl_playthrough_ok driveJhyt=$($jhytPayload.driveJhyt) milestones=$($jhytPayload.driveJhytDetail)" -ForegroundColor Green
             }
 
             # ③ 新 EH（try_table/exnref）跨浏览器层：本产物是纯新 EH，低于门槛的引擎连编译都

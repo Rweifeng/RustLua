@@ -92,10 +92,14 @@ node scripts/serve-static.js examples/game_jhyt/builds/webgl/<name> 8000
    **缺失的引擎宿主 API 全局**列出来；无 node/浏览器 → 退出 2（环境受限，不伪造通过）；
    省略 `-BundleRoot` 又没能唯一定位产物 → 退出 3（打印候选与被排除项及原因）。
 4. 顺带把运行时的**世界状态自报**（`data-rustlua-world`：`scene=/map=/alive=/player=@x,y/clip`）
-   写进 summary 与日志。它在这里只是**证据**、不是判定：无头浏览器这一次是"打开页面等 15s
-   再 dump DOM"，停在启动场景是正常的（玩家要按键才进玩法地图）。有牙的那一组断言在
-   `scripts/wechat-minigame-harness.js --drive-new-game --expect-runtime-spawns --drive-move`
-   里——两个 web 平台共用同一份 `web-runtime.js`，字段含义一致，可以直接对照。
+   写进 summary 与日志。它在这里只是**证据**、不是判定：无头浏览器通过 **CDP 轮询**
+   （`--remote-debugging-port` + `scripts/webgl-cdp-wait.js`）等页面状态落定后再 dump DOM，
+   常规模式等 `boot` 落定即 dump——停在启动场景是正常的（玩家要按键才进玩法地图）。
+   有牙的那一组断言在 `scripts/wechat-minigame-harness.js --drive-new-game
+   --expect-runtime-spawns --drive-move` 里，以及 `-DriveJhyt` 的**完整玩法剧本门**
+   （§3 证据块：M1 新局 → M2 移动 → M3 背包 → M4 任务 → M5/M6 山庄↔村庄切图，
+   `data-rustlua-drive=done`）——两个 web 平台共用同一份 `web-runtime.js`，
+   字段含义一致，可以直接对照。
 
 同一套退出码由 `test-bundle.ps1` 原样透传（它另外用 4 表示端口不可用）。
 
@@ -129,12 +133,36 @@ node scripts/serve-static.js examples/game_jhyt/builds/webgl/<name> 8000
 transform3d/tilemap/health/physics/physics3d/animation/animation3d/audio/ui/save/particles/
 camera/mesh`），与桌面引擎注册的 36 个顶层全局并不等价。桌面发行（PC）不受影响。
 
+**完整玩法剧本门（2026-10-02 新增）**：`verify-webgl-bundle.ps1 -DriveJhyt`（URL
+`?rustlua-drive=jhyt`）在真实浏览器里驱动 `game_jhyt` 跑完整玩法链路，里程碑逐段落定，
+写 `data-rustlua-drive=done`（失败写 `failed` + 卡点 detail）。实测 3.6 秒跑完：
+
+- M1 新游戏：标题确认 → 进入 `manor`（33 实体，玩法 HUD 54 UI 元素）
+- M2 移动：按 w 位移非零（528,112 → 528,138）
+- M3 背包开合：UI 元素 54 → 74 → 54
+- M4 任务面板开合：54 → 77 → 54
+- M5 真实场景切换：`manor` → `village`（alive=37 ≥ scene=31，实体保持）
+- M6 返回：`village` → `manor`（alive=33，回到山庄）
+
+动线依赖 `data/maps.lua` 的出口表（山庄出口 cell(16,1)→world(528,48)，村庄出口
+cell(19,1)→world(624,48)，world=(cell+0.5)×32），改动线必须与 `web-runtime.js` 的
+`JHYT_EXITS` 两边同步。剧本门已挂进 `verify.ps1` 总门（`webgl_playthrough_ok`）。
+
+关键实现细节：无头下**不能用** `--virtual-time-budget`——虚拟时间预算会让 rAF 在页面稳定后
+停止调度（实测 90s 只跑 63 帧、剧本永远停在某个阶段）。`verify-webgl-bundle.ps1` 用真实时钟 +
+`--run-all-compositor-stages-before-draw` 强制每帧完整合成（rAF 稳定推进），并改用
+**CDP 轮询**（`--remote-debugging-port` + `scripts/webgl-cdp-wait.js`，Node 22 内置 WebSocket）
+替代 `--dump-dom`：后者在页面 load 事件后立即 dump、常常早于游戏 boot（boot=pending），
+CDP 轮询真实时钟等状态落定再 dump（常规 bundle 等 `boot`、scene-verify 等 scene 落定、
+剧本门等 `drive` 落定，超时判红）。
+
 ## 4. 已知限制
 
 - **宿主 API 子集**（原"M31/P3 实测未解决"一条已推进，2026-09-19 复测）：真发布包在无头 Edge 里
   `missing_host_api=0`、`boot=running`、canvas 有 15,987 个非背景采样点、世界自报
-  `scene=17 map=main alive=17`，即**启动路径不再因缺失全局停下**。但这只证明"启动 + 进入 Lua +
-  画出画面"，**不等于**"WASM 跑通完整剧本"（见下一条）。
+  `scene=17 map=main alive=17`，即**启动路径不再因缺失全局停下**。这只证明"启动 + 进入 Lua +
+  画出画面"，**不等于**"WASM 跑通完整剧本"——后者 2026-10-02 起由**完整玩法剧本门**覆盖
+  （见 §3 的"完整玩法剧本门"证据块），不再是开放项。
   真正"浏览器内可玩"的两条路仍是：
   1. 把宿主 API 编译进 wasm（引擎侧 `core/script.rs` 的 Lua 桥 + `user_dir`/`save`/`input` 的
      wasm 实现，渲染走 wgpu 的 WebGL2 后端）——工作量最大，但能力与桌面一致；
@@ -150,7 +178,9 @@ camera/mesh`），与桌面引擎注册的 36 个顶层全局并不等价。桌�
   Phase 1（批次 A：`app/clock/calendar/day`）已实现：`engine/crates/game_web/src/host_api.rs` +
   桥 + index.html 接线；缺失清单 17 → 13（eager `missingHostGlobals()`，运行门禁 boot 正常）。
   批次 B/C 见工作包文档。
-- **浏览器回归验证的是平台契约 + 产物启动**，不是「WASM 游戏跑通完整剧本」。
+- **浏览器回归验证的是平台契约 + 产物启动 + 完整玩法剧本**：常规 `verify-webgl-bundle.ps1`
+  断言启动与场景切换机制（scene-verify）；`-DriveJhyt` 把真实玩法内容（移动/背包/任务/切图）
+  跑成机器门（2026-10-02 起挂总门，见 §3）；微信真机 harness 覆盖摇杆链路。
 - **Lua VM 已随包分发**：`index.html` 引 `./pkg/fengari-web.js`（由 `package.ps1` 从
   `plugins/webgl/pkg/fengari-web.js` 复制），不再依赖 CDN，离线/纯内网可运行。
 - **本机曾装不上 wasm32 目标**，原因不是网络不通：`rustup target add wasm32-unknown-unknown` 用的是

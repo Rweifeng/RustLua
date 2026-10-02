@@ -33,6 +33,13 @@ param(
     # 移动。断言 `data-rustlua-drive=done` 且位移非零（主角真的在浏览器里被驱动着走了）。
     # 与 -NoSceneVerify 独立：剧本是"跑游戏内容"，scene-verify 是"跑运行时切换机制"。
     [switch]$Drive,
+    # P0-②：URL 驱动"完整玩法剧本"（`?rustlua-drive=jhyt`）：标题确认 → 新游戏(manor) →
+    # 移动 → 背包/任务面板开合 → 山庄→云泽村真实场景切换 → 回山庄，里程碑逐段落定
+    # （M1 新游戏 / M2 移动 / M3 背包 / M4 任务 / M5 场景切换 / M6 返回）。
+    # 断言 `data-rustlua-drive=done` 且 detail 含全部里程碑。
+    # 与 -Drive 互斥（两者都写 data-rustlua-drive）；带本开关时自动关闭 scene-verify
+    # （首帧重载当前场景会干扰剧本的标题确认阶段）。
+    [switch]$DriveJhyt,
     # 关掉场景切换防回归门（默认 ON）：仅当产物里没有可 reload 的启动场景时才关。
     [switch]$NoSceneVerify,
     # 调用方（`verify.ps1 -Web`）用它拿退出码：`Start-Process -PassThru -RedirectStandardOutput`
@@ -139,7 +146,15 @@ $server = Start-Process -FilePath $node.Source `
 Start-Sleep -Milliseconds 1200
 
 $queryBits = @()
+if ($Drive -and $DriveJhyt) {
+    throw "参数互斥：-Drive 与 -DriveJhyt 只能二选一（两者都写 data-rustlua-drive）"
+}
 if ($Drive) { $queryBits += "rustlua-drive=auto" }
+if ($DriveJhyt) {
+    $queryBits += "rustlua-drive=jhyt"
+    # 剧本驱动走标题确认 → 真实场景切换全流程，首帧重载当前场景（scene-verify）会干扰它。
+    $NoSceneVerify = $true
+}
 if (-not $NoSceneVerify) { $queryBits += "rustlua-scene-verify=1" }
 $url = "http://127.0.0.1:$Port/index.html"
 if ($queryBits.Count -gt 0) { $url += "?" + ($queryBits -join "&") }
@@ -147,6 +162,18 @@ $domPath = Join-Path $logRoot "bundle-dom-$stamp.html"
 $errPath = Join-Path $logRoot "bundle-dom-$stamp.err"
 
 function Invoke-HeadlessDom([string]$HeadlessFlag) {
+    # CDP 轮询替代 `--dump-dom`：dump-dom 在页面 load 事件后**立即** dump，而本游戏在
+    # module 顶层 await 里加载 wasm + boot（`rustluaRunLuaGame`），dump 常常早于 boot
+    # （body 还是 data-rustlua-boot="pending"）。用 `--remote-debugging-port` + Node 轮询
+    # 真实时钟，等状态真正落定再 dump——常规 bundle 等 boot，scene-verify 等 scene 落定，
+    # 剧本门等 drive 落定。时长由 $TimeoutSeconds 控制，超时判红（与 dump-dom 同语义）。
+    $cdpScript = Join-Path $PSScriptRoot "webgl-cdp-wait.js"
+    if (-not (Test-Path -LiteralPath $cdpScript)) {
+        throw "CDP wait script missing: $cdpScript"
+    }
+    $cdpPort = 9200 + (Get-Random -Maximum 700)
+    $profileDir = Join-Path $logRoot "cdp-profile-$stamp-$([guid]::NewGuid().ToString('N').Substring(0, 8))"
+    $waitMode = if ($DriveJhyt) { "drive" } elseif (-not $NoSceneVerify) { "scene" } else { "boot" }
     $arguments = @(
         $HeadlessFlag,
         "--disable-gpu-sandbox",
@@ -156,15 +183,28 @@ function Invoke-HeadlessDom([string]$HeadlessFlag) {
         # 排查 wasm trap（如场景切换 unreachable）时能从 bundle-dom-*.err 拿到 Rust panic 详情。
         "--enable-logging=stderr",
         "--v=0",
-        "--virtual-time-budget=120000",
-        "--dump-dom",
+        # 关键：无头下**不要**加 `--virtual-time-budget`——虚拟时间预算让 rAF 在页面稳定后
+        # 停止调度（实测 90s 只跑 63 帧、剧本永远停在某个阶段）。用真实时钟跑，配合下面
+        # 这个标志强制每帧走完整合成管线，rAF 保持 ~55fps——完整玩法剧本（drive=jhyt）
+        # 才能跑完并落定 done（实测 30s 推进 1635 帧、3.6 秒剧本一次全通）。
+        "--run-all-compositor-stages-before-draw",
+        "--remote-debugging-port=$cdpPort",
+        "--user-data-dir=$profileDir",
         $url
     )
     $process = Start-Process -FilePath $browser -ArgumentList $arguments -PassThru -NoNewWindow `
         -RedirectStandardOutput $domPath -RedirectStandardError $errPath
-    if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
-        try { $process.Kill() } catch { }
-        Write-Log "headless browser timed out after ${TimeoutSeconds}s ($HeadlessFlag)" Yellow
+    & node $cdpScript $cdpPort $domPath $waitMode $TimeoutSeconds
+    $cdpExit = $LASTEXITCODE
+    # 收尾：杀本脚本启动的浏览器**全部进程** + 清理 CDP profile（无头实例不会自己退出）。
+    # 按唯一 user-data-dir 路径匹配命令行，精确杀本实例的进程树——绝不按进程名一网打尽
+    # （开发机上还有用户自己的浏览器）；taskkill /T 对 Edge 的启动器/子进程不可靠。
+    Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -in @("msedge.exe", "chrome.exe") -and $_.CommandLine -like "*$profileDir*" } |
+        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    Remove-Item -Recurse -Force $profileDir -ErrorAction SilentlyContinue
+    if ($cdpExit -eq 2) {
+        Write-Log "CDP unavailable (chrome did not expose debug endpoint); no DOM dump" Yellow
     }
     if (Test-Path -LiteralPath $domPath) { return Get-Content -LiteralPath $domPath -Raw } else { return "" }
 }
@@ -181,35 +221,39 @@ if (-not $dom) {
 }
 
 # ---------- 3. 断言 ----------
-$boot = if ($dom -match 'data-rustlua-boot="([^"]*)"') { $Matches[1] } else { "absent" }
-$detail = if ($dom -match 'data-rustlua-boot-detail="([^"]*)"') { $Matches[1] } else { "" }
-$statusText = if ($dom -match '<div id="status">([^<]*)</div>') { $Matches[1] } else { "" }
+# CDP dump 文件为 UTF-8 无 BOM（Node 写入），PS 5.1 的 Get-Content 按 ANSI 读可能引入
+# 乱码/空行；且 -Raw 对空文件返回 $null、对含空行文件返回非空串。这里统一强制成
+# 单字符串再解析，避免"空数组/空串在 -match 下 $Matches 为 null 再取 [1]"这类抛错。
+$dom = [string]$dom
+$boot = if ($dom -match 'data-rustlua-boot="([^"]*)"' -and $Matches.Count -gt 0) { $Matches[1] } else { "absent" }
+$detail = if ($dom -match 'data-rustlua-boot-detail="([^"]*)"' -and $Matches.Count -gt 0) { $Matches[1] } else { "" }
+$statusText = if ($dom -match '<div id="status">([^<]*)</div>' -and $Matches.Count -gt 0) { $Matches[1] } else { "" }
 # 缺失宿主 API 明细：`detail` 里是 `… [missing engine host API: a, b, c]`。单独导出一个
 # **数值**字段给验收样例读（JSON 里逗号与转义引号都会打乱"按字段切割"的朴素解析）。
 $missingNames = @()
-if ($detail -match 'missing engine host API:\s*([^\]]*)') {
+if ($detail -match 'missing engine host API:\s*([^\]]*)' -and $Matches.Count -gt 0) {
     $missingNames = @($Matches[1].Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 }
 # 画面自检：`data-rustlua-drawn` 是运行时对 canvas 采样得到的“非背景像素采样点”数量。
 # `-1` = 像素不可读（跨域贴图污染），`0` = 启动了但真的什么都没画出来。
-$drawnRaw = if ($dom -match 'data-rustlua-drawn="(-?\d+)"') { [int]$Matches[1] } else { $null }
-$uiElements = if ($dom -match 'data-rustlua-ui-elements="(\d+)"') { [int]$Matches[1] } else { $null }
+$drawnRaw = if ($dom -match 'data-rustlua-drawn="(-?\d+)"' -and $Matches.Count -gt 0) { [int]$Matches[1] } else { $null }
+$uiElements = if ($dom -match 'data-rustlua-ui-elements="(\d+)"' -and $Matches.Count -gt 0) { [int]$Matches[1] } else { $null }
 # 世界状态自报：`scene=/map=/alive=/player=@x,y/clip`（+ 渲染侧 `drawn=`）。
 # 这里只作为**证据**记录，不新增判定：无头浏览器这一次是"打开页面等 15s 后 dump DOM"，
 # 停在启动场景是正常的（玩家要按键才进玩法地图）。真正有牙的那一组断言在
 # `scripts/wechat-minigame-harness.js --drive-new-game ...` 里——两个 web 平台共用同一份
 # `web-runtime.js`，字段含义完全一致，所以这里读到的世界状态可以直接对照它。
-$world = if ($dom -match 'data-rustlua-world="([^"]*)"') { $Matches[1] } else { "" }
+$world = if ($dom -match 'data-rustlua-world="([^"]*)"' -and $Matches.Count -gt 0) { $Matches[1] } else { "" }
 # P0-①：`?rustlua-drive=auto` 的剧本结果。`done` = 确认 → 进玩法地图 → 位移非零全部发生；
 # `failed` 时 detail 给出卡在哪一步（场景没切换 / 没有玩家位置 / 位移为 0）。
-$driveState = if ($dom -match 'data-rustlua-drive="([^"]*)"') { $Matches[1] } else { "absent" }
-$driveStateDetail = if ($dom -match 'data-rustlua-drive-detail="([^"]*)"') { $Matches[1] } else { "" }
+$driveState = if ($dom -match 'data-rustlua-drive="([^"]*)"' -and $Matches.Count -gt 0) { $Matches[1] } else { "absent" }
+$driveStateDetail = if ($dom -match 'data-rustlua-drive-detail="([^"]*)"' -and $Matches.Count -gt 0) { $Matches[1] } else { "" }
 # 场景切换防回归门：`?rustlua-scene-verify=1` 让首帧把当前场景重新走一遍 applySceneSwitch
 # 全流程（fetch → parse → 重绑 Lua → 重跑 on_create）。done=通过、failed=细节给出错误、
 # in-flight=在途未落定（通常说明 headless 虚拟时间预算在切换 promise resolve 前烧完）、
 # absent=URL 门没接上或 runtime 未升级。后两种都算失败。
-$sceneVerifyState = if ($dom -match 'data-rustlua-scene-verify="([^"]*)"') { $Matches[1] } else { "absent" }
-$sceneVerifyDetail = if ($dom -match 'data-rustlua-scene-verify-detail="([^"]*)"') { $Matches[1] } else { "" }
+$sceneVerifyState = if ($dom -match 'data-rustlua-scene-verify="([^"]*)"' -and $Matches.Count -gt 0) { $Matches[1] } else { "absent" }
+$sceneVerifyDetail = if ($dom -match 'data-rustlua-scene-verify-detail="([^"]*)"' -and $Matches.Count -gt 0) { $Matches[1] } else { "" }
 
 $summary = [ordered]@{
     task           = "M31"
@@ -227,6 +271,8 @@ $summary = [ordered]@{
     world          = $world
     drive          = $driveState
     driveDetail    = $driveStateDetail
+    driveJhyt      = if ($DriveJhyt) { $driveState } else { "not-requested" }
+    driveJhytDetail = if ($DriveJhyt) { $driveStateDetail } else { "" }
     sceneVerify    = $sceneVerifyState
     sceneVerifyDetail = $sceneVerifyDetail
     domDump        = $domPath
@@ -240,6 +286,9 @@ Write-Log "drawn samples: $(if ($null -eq $drawnRaw) { 'unknown' } else { $drawn
 Write-Log "world: $(if ([string]::IsNullOrWhiteSpace($world)) { '(未自报)' } else { $world })"
 if ($Drive) {
     Write-Log "drive: $driveState detail: $driveStateDetail" $(if ($driveState -eq "done") { "Green" } else { "Yellow" })
+}
+if ($DriveJhyt) {
+    Write-Log "drive_jhyt: $driveState detail: $driveStateDetail" $(if ($driveState -eq "done") { "Green" } else { "Yellow" })
 }
 if (-not $NoSceneVerify) {
     Write-Log "scene_verify: $sceneVerifyState detail: $sceneVerifyDetail" $(if ($sceneVerifyState -eq "done") { "Green" } else { "Yellow" })
@@ -255,6 +304,12 @@ if ($drawnRaw -eq 0) {
 if ($Drive -and $driveState -ne "done") {
     # P0-①：请求了"完整剧本"却没跑完——无论 boot 是否 ok，都是验收失败。
     Write-Log "webgl_bundle_drive_failed boot=$boot drive=$driveState detail=$driveStateDetail world=$world" Red
+    Exit-With 1
+}
+
+if ($DriveJhyt -and $driveState -ne "done") {
+    # P0-②：请求了"完整玩法剧本"却没跑完（卡在某个里程碑或超时）——无论 boot 是否 ok，都是验收失败。
+    Write-Log "webgl_bundle_drivejhyt_failed boot=$boot drive=$driveState detail=$driveStateDetail world=$world" Red
     Exit-With 1
 }
 
