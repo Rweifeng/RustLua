@@ -7,6 +7,10 @@ use eframe::egui;
 ///
 /// `Transform` 只有一个表示（`position/rotation/scale`，3D 形态），2D 只是
 /// "z=0、绕 Z 旋转、scale_z=1"的特例；数字格式交给引擎的编码器，编辑器不自己拼字符串。
+///
+/// **单位边界**：`TransformFields.rotation` 是**度**（视图里的包围框、Inspector 与浮标都用度），
+/// 而引擎的平面 `Transform.rotation` 与四元数构造一律按**弧度**（`Quat::from_axis_angle` 内部
+/// 走 `angle * 0.5` 的 `sin_cos`）。这两个单位只在这里互换，出去就是引擎口径。
 pub(crate) fn encode_transform(transform: TransformFields) -> String {
     let local = engine::core::spatial_transform::LocalTransform::from_2d(
         engine::core::transform::Transform {
@@ -14,7 +18,7 @@ pub(crate) fn encode_transform(transform: TransformFields) -> String {
                 transform.position_x,
                 transform.position_y,
             ),
-            rotation: transform.rotation,
+            rotation: transform.rotation.to_radians(),
             scale: engine::core::transform::Vec2::new(transform.scale_x, transform.scale_y),
         },
     )
@@ -24,13 +28,15 @@ pub(crate) fn encode_transform(transform: TransformFields) -> String {
 
 /// 解析 `Transform` 组件串为 2D 字段：**唯一形态**（统一 3D 写法）经 `LocalTransform::to_2d`
 /// 投影出平面 TRS；畸形串返回 `None`（旧 2D 写法已随统一删除）。
+///
+/// [`encode_transform`] 的另一半：引擎给的旋转是弧度，这里换成编辑器口径的**度**。
 pub(crate) fn parse_transform(value: &str) -> Option<TransformFields> {
     let transform =
         engine::core::spatial_transform::LocalTransform::transform_2d_from_component_str(value)?;
     Some(TransformFields {
         position_x: transform.position.x,
         position_y: transform.position.y,
-        rotation: transform.rotation,
+        rotation: transform.rotation.to_degrees(),
         scale_x: transform.scale.x,
         scale_y: transform.scale.y,
     })
@@ -151,5 +157,41 @@ mod geometry_tests {
         let selection = egui::Rect::from_min_max(egui::pos2(0.0, -20.0), egui::pos2(30.0, 20.0));
         assert!(!polygon.iter().all(|p| selection.contains(*p)));
         assert!(polygon_intersects_rect(&polygon, selection));
+    }
+
+    /// **单位边界**：`TransformFields.rotation` 是**度**，引擎的平面 `Transform.rotation`
+    /// 与四元数是**弧度**。两边都叫 `rotation` 时，"绕 Z 拖到 45°"曾被存成"绕 Z 转 45 弧度"
+    /// （四元数取主值后画面跳回约 58°，读回来又成了 1.0177）。换算只允许发生在这一对编解码函数里。
+    #[test]
+    fn rotation_crosses_the_degree_radian_boundary_only_in_the_codec() {
+        let transform = TransformFields {
+            position_x: 12.0,
+            position_y: 7.0,
+            rotation: 45.0,
+            scale_x: 2.0,
+            scale_y: 3.0,
+        };
+        let encoded = encode_transform(transform);
+        // 直接按引擎口径读组件：旋转必须是 45° 的**弧度**表示，而不是数字 45。
+        let stored =
+            engine::core::spatial_transform::LocalTransform::transform_2d_from_component_str(
+                &encoded,
+            )
+            .expect("编码必须写出统一形态");
+        assert!(
+            (stored.rotation - 45.0_f32.to_radians()).abs() < 1e-4,
+            "组件里存的应是弧度：{}",
+            stored.rotation
+        );
+        // 读回来又换成编辑器口径的度（视图、浮标、Inspector 都按度显示）。
+        let parsed = parse_transform(&encoded).expect("编码结果必须能被读回");
+        assert!(
+            (parsed.rotation - 45.0).abs() < 1e-3,
+            "度 → 四元数 → 度 应闭环：{parsed:?}"
+        );
+        assert!((parsed.position_x - 12.0).abs() < 1e-4);
+        assert!((parsed.position_y - 7.0).abs() < 1e-4);
+        assert!((parsed.scale_x - 2.0).abs() < 1e-4);
+        assert!((parsed.scale_y - 3.0).abs() < 1e-4);
     }
 }

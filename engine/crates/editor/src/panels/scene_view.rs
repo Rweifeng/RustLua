@@ -54,40 +54,60 @@ impl EditorApp {
             self.fit_scene_view_to_design(rect);
         }
         // 拖放：把资源浏览器中的纹理拖到场景创建精灵；Widget 模式下拖放控件到落点位置。
-        let (_, dropped_texture) = ui
-            .dnd_drop_zone::<String, egui::Response>(egui::Frame::default(), |ui| {
-                ui.allocate_rect(rect, egui::Sense::hover())
-            });
-        if let Some(path) = dropped_texture {
-            if let Some(widget) = path.strip_prefix("widget:") {
-                // 5b：Widget 模式下按落点位置创建；否则回退到中心。
-                let drop_pos = ui.input(|i| i.pointer.interact_pos());
-                if self.scene_view_mode == crate::SceneViewMode::Widget {
-                    if let Some(pointer) = drop_pos {
-                        let ppp = ui.ctx().pixels_per_point();
-                        let design = self.preview_resolution;
-                        let center =
-                            egui::vec2(self.game_camera_2d_center.x, self.game_camera_2d_center.y);
-                        let design_pos = panel_to_design_pos(
-                            rect,
-                            self.scene_state.pan,
-                            self.scene_zoom,
-                            ppp,
-                            center,
-                            design,
-                            pointer,
-                        );
-                        self.create_widget_at(widget, design_pos);
+        // M27-01：载荷类型统一成 `DropPayload` 后，"落在哪 ⇒ 做什么"由 `dnd::plan` 一处判定，
+        // 面板只负责把自己的落点参数（控件创建位置）交出去。
+        let (_, dropped) = ui.dnd_drop_zone::<crate::dnd::DropPayload, egui::Response>(
+            egui::Frame::default(),
+            |ui| ui.allocate_rect(rect, egui::Sense::hover()),
+        );
+        if let Some(payload) = dropped {
+            let source = crate::dnd::DragSource::Internal((*payload).clone());
+            match crate::dnd::plan(&source, crate::dnd::DropZone::SceneCanvas) {
+                crate::dnd::DropAction::CreateWidget(kind) => {
+                    // 5b：Widget 模式下按落点位置创建；否则回退到中心。
+                    let drop_pos = ui.input(|i| i.pointer.interact_pos());
+                    if self.scene_view_mode == crate::SceneViewMode::Widget {
+                        if let Some(pointer) = drop_pos {
+                            let ppp = ui.ctx().pixels_per_point();
+                            let design = self.preview_resolution;
+                            let center = egui::vec2(
+                                self.game_camera_2d_center.x,
+                                self.game_camera_2d_center.y,
+                            );
+                            let design_pos = panel_to_design_pos(
+                                rect,
+                                self.scene_state.pan,
+                                self.scene_zoom,
+                                ppp,
+                                center,
+                                design,
+                                pointer,
+                            );
+                            self.create_widget_at(kind, design_pos);
+                        } else {
+                            self.create_widget_at_center(kind);
+                        }
                     } else {
-                        self.create_widget_at_center(widget);
+                        self.create_widget_at_center(kind);
                     }
-                } else {
-                    self.create_widget_at_center(widget);
                 }
-            } else if let Err(error) = self.spawn_dropped_resource(&path) {
-                self.status = error;
+                action => {
+                    self.status = self.commit_spawn_drop(&action, None);
+                }
             }
         }
+        // 系统文件直接拖进窗口：落在画布上就是"导入 + 建实体"（可生成的那批）。
+        if let Some((action, drop)) =
+            self.claim_external_drop(crate::dnd::DropZone::SceneCanvas, rect)
+        {
+            let text = self.commit_spawn_drop(&action, None);
+            self.status = format!("{text}{}", drop.notes());
+        }
+        let drop_hint = self.external_hover_action(
+            crate::dnd::DropZone::SceneCanvas,
+            rect,
+            ui.input(|input| input.pointer.hover_pos()),
+        );
         // 仅当鼠标悬停在 Scene 视图内时才响应滚轮缩放（避免在其它面板滚动误触发）。
         let scroll = ui.input(|input| input.smooth_scroll_delta.y);
         if response.contains_pointer() && scroll.abs() > 0.0 {
@@ -116,6 +136,16 @@ impl EditorApp {
         }
         // 设计分辨率包围框（Unity Camera Preview 风格）：标注游戏取景范围。
         self.draw_design_resolution_box(&painter, rect, scale);
+        // 拖放反馈画在场景渲染之后（否则会被整张离屏纹理盖掉）。
+        let pointer = ui.input(|input| input.pointer.hover_pos());
+        let drop_hint = drop_hint.or_else(|| {
+            crate::dnd::internal_drag(ui.ctx())
+                .filter(|_| pointer.is_some_and(|pointer| rect.contains(pointer)))
+                .map(|source| crate::dnd::plan(&source, crate::dnd::DropZone::SceneCanvas))
+        });
+        if let Some(action) = drop_hint {
+            crate::dnd::paint_drop_feedback(ui, rect, 2, &action);
+        }
         if self.show_safe_area {
             let safe_frame = design_resolution_frame(
                 rect,
@@ -537,6 +567,16 @@ impl EditorApp {
         {
             self.draw_alignment_guides(&painter, rect, current_pointer, scale, &entities);
         }
+        // M27-02（缺项 3）：旋转工具在 2D 里画成**圆环 + 朝向把手**。此前"横着拖就转"在画面上
+        // 没有任何对应物，用户不知道该往哪儿拖；环心取的是这一趟**真实的转轴**，所以轴心模式
+        // （Pivot/Center）一改，环就跟着挪。
+        if self.scene_tool() == SceneTool::Rotate {
+            self.draw_scene_2d_rotation_ring(&painter, rect, scale, &entities);
+        }
+        // M27-02（缺项 7）：拖动中的即时数值浮标，省掉"拖一下、再扭头看 Inspector"的来回。
+        if let Some(current_pointer) = pointer {
+            self.draw_scene_2d_drag_readout(&painter, current_pointer, &entities);
+        }
         // 工具小面板（Select/Move/Rotate/Scale）置于场景右上角。
         self.draw_scene_tool_panel(ui, rect);
     }
@@ -637,8 +677,13 @@ impl EditorApp {
         let mut preview_anchors = std::collections::BTreeMap::new();
         let mut preview_padding = std::collections::BTreeMap::new();
         let pivot = scene_drag_pivot(self.gizmo_pivot, self.selection.primary(), &drag.initial);
-        let angle = (delta.x * 0.5).to_radians();
-        let factor = (1.0 + delta.x * 0.01).max(0.05);
+        // 转角与轨道**共用同一个数**：吸附生效时两者一起跳，不会出现"框在转、人没转到那个角度"。
+        // 单位是**度**的步长（`snap_angle_step`），不是位置的 `snap_step`——把 0.5 个世界单位
+        // 当成 0.5° 用不叫吸附。
+        let raw_angle = (delta.x * 0.5).to_radians();
+        let angle =
+            crate::gizmo::snap_angle(raw_angle, self.snap_enabled.then_some(self.snap_angle_step));
+        let factor = crate::gizmo::scale_factor(delta, egui::vec2(1.0, 0.0));
         // Phase 5d：padding 模式——单独处理，不依赖 ui_initial。
         if let Some(handle) = self.scene_state.padding_handle {
             if let Some((initial_padding, outer_rect)) = self.scene_state.padding_drag_initial
@@ -734,6 +779,120 @@ impl EditorApp {
             pos: [pos.x, pos.y],
         });
         self.interaction.phase()
+    }
+
+    /// M27-02（缺项 3）：绘制 2D 旋转工具的**圆环 + 朝向把手**。
+    ///
+    /// 圆心不是另挑的一个参考点，而是这一趟拖拽**真实的转轴**（[`scene_drag_pivot`]：
+    /// `Pivot` = 主选实体自身，`Center` = 拖动集合的均值），所以切换轴心模式时环会跟着
+    /// 挪动，用户看到的圆心就是角度绕着转的那个点。把手挂在主选实体当前朝向上，
+    /// "往把手方向拖"与"横着拖多少像素"因此是同一件事。
+    fn draw_scene_2d_rotation_ring(
+        &self,
+        painter: &egui::Painter,
+        rect: egui::Rect,
+        pixels_per_point: f32,
+        entities: &[SceneBoxedEntity],
+    ) {
+        // 空闲时环跟着当前选中集合走；拖动中必须用**拖拽初始**变换——预览后的位置会绕
+        // 圆心公转，用预览值算圆心会让环自己转着跑。
+        let idle: std::collections::BTreeMap<SceneEntityId, TransformFields> =
+            if self.scene_state.drag.is_none() {
+                entities
+                    .iter()
+                    .filter(|entity| {
+                        self.selection.contains(entity.id)
+                            && !self.scene_state.locked.contains(&entity.id)
+                    })
+                    .map(|entity| (entity.id, entity.transform))
+                    .collect()
+            } else {
+                std::collections::BTreeMap::new()
+            };
+        let initial: &std::collections::BTreeMap<SceneEntityId, TransformFields> =
+            match &self.scene_state.drag {
+                Some(drag) => &drag.initial,
+                None => &idle,
+            };
+        if initial.is_empty() {
+            return;
+        }
+        let (px, py) = scene_drag_pivot(self.gizmo_pivot, self.selection.primary(), initial);
+        let center = design_to_panel_pos(
+            rect,
+            self.scene_state.pan,
+            self.scene_zoom,
+            pixels_per_point,
+            self.game_camera_center_egui(),
+            self.preview_resolution,
+            egui::pos2(px, py),
+        );
+        let radius = entities
+            .iter()
+            .filter(|entity| initial.contains_key(&entity.id))
+            .map(|entity| (entity.center - center).length() + entity.size.length() * 0.5)
+            .fold(28.0_f32, f32::max);
+        let color = egui::Color32::from_rgb(230, 160, 60);
+        painter.circle_stroke(center, radius, egui::Stroke::new(2.0_f32, color));
+        let knob = self
+            .selection
+            .primary()
+            .and_then(|id| entities.iter().find(|entity| entity.id == id))
+            .or_else(|| {
+                entities
+                    .iter()
+                    .find(|entity| initial.contains_key(&entity.id))
+            });
+        if let Some(knob) = knob {
+            // 设计分辨率 y 向上、面板 y 向下，所以屏幕角取负。
+            let theta = knob.transform.rotation.to_radians();
+            let point = center + egui::vec2(theta.cos(), -theta.sin()) * radius;
+            painter.line_segment([center, point], egui::Stroke::new(1.0_f32, color));
+            painter.circle_filled(point, 5.0, color);
+        }
+    }
+
+    /// M27-02（缺项 7）：在指针旁绘制本次拖动的即时数值（位置 / 角度 / 缩放）。
+    ///
+    /// 只读**已生效**的包围框变换（`collect_scene_2d_entities` 已经把 in-flight 预览叠加
+    /// 进去了），所以浮标和画面上的框永远一致；差值相对拖拽初值，与 Inspector 里的绝对值
+    /// 互补——这里回答的是"我刚才转了多少度"。
+    fn draw_scene_2d_drag_readout(
+        &self,
+        painter: &egui::Painter,
+        pointer: egui::Pos2,
+        entities: &[SceneBoxedEntity],
+    ) {
+        let Some(drag) = self.scene_state.drag.as_ref() else {
+            return;
+        };
+        let Some(primary) = self.selection.primary() else {
+            return;
+        };
+        // 主选实体不在这一趟拖拽集合里（按下空白后框选到别的实体）→ 没有差值可报。
+        let Some(initial) = drag.initial.get(&primary) else {
+            return;
+        };
+        let Some(entity) = entities.iter().find(|entity| entity.id == primary) else {
+            return;
+        };
+        let current = entity.transform;
+        let text = crate::gizmo::readout_2d(
+            self.scene_tool(),
+            (current.position_x, current.position_y),
+            current.rotation - initial.rotation,
+            (current.scale_x, current.scale_y),
+        );
+        if text.is_empty() {
+            return;
+        }
+        painter.text(
+            pointer + egui::vec2(14.0, 14.0),
+            egui::Align2::LEFT_TOP,
+            text,
+            egui::FontId::proportional(13.0),
+            egui::Color32::from_rgb(240, 220, 120),
+        );
     }
 
     /// Phase 5a：返回当前唯一选中 UI 实体的面板包围框（仅 Widget 模式、单选时有意义）。
@@ -1223,6 +1382,23 @@ impl EditorApp {
         let scale = ui.ctx().pixels_per_point();
         let width = (rect.width() * scale) as u32;
         let height = (rect.height() * scale) as u32;
+        // M27-01：3D 视图同样是放置区（把 .glb / 预制体拖进透视口是游戏编辑器的常态动作）。
+        // 这里的落点只有"建实体"一种语义：控件属于 Widget 模式，重排属于层级。
+        let (_, dropped) = ui
+            .dnd_drop_zone::<crate::dnd::DropPayload, _>(egui::Frame::default(), |ui| {
+                ui.allocate_rect(rect, egui::Sense::hover())
+            });
+        if let Some(payload) = dropped {
+            let source = crate::dnd::DragSource::Internal((*payload).clone());
+            let action = crate::dnd::plan(&source, crate::dnd::DropZone::SceneCanvas);
+            self.status = self.commit_spawn_drop(&action, None);
+        }
+        if let Some((action, drop)) =
+            self.claim_external_drop(crate::dnd::DropZone::SceneCanvas, rect)
+        {
+            let text = self.commit_spawn_drop(&action, None);
+            self.status = format!("{text}{}", drop.notes());
+        }
 
         // 导航：滚轮缩放 / 中键轨道 / 右键平移（编辑器相机，与游戏相机分离）。
         // 滚轮缩放仅当鼠标悬停在视图内才响应。
@@ -1428,6 +1604,31 @@ impl EditorApp {
                     |point| self.project_to_screen(point, rect),
                 );
                 let pointer = response.interact_pointer_pos();
+                // 旋转的三支环：把 3D 圆**投影**成屏幕椭圆（不是画三个同心圆——那样三条环
+                // 会完全重叠，"哪一条"无从判断）。绘制与命中读同一份折线。
+                let rings: Vec<(GizmoAxis, Vec<egui::Pos2>)> = if tool == SceneTool::Rotate {
+                    [GizmoAxis::X, GizmoAxis::Y, GizmoAxis::Z]
+                        .into_iter()
+                        .filter_map(|slot| {
+                            let normal = gizmo_axis_world(
+                                self.gizmo_space,
+                                primary_transform.rotation,
+                                slot,
+                            )?;
+                            let radius =
+                                crate::gizmo::ring_radius_world(origin, normal, len, |point| {
+                                    self.project_to_screen(point, rect)
+                                })?;
+                            let polyline =
+                                crate::gizmo::ring_polyline(origin, normal, radius, |point| {
+                                    self.project_to_screen(point, rect)
+                                });
+                            (!polyline.is_empty()).then_some((slot, polyline))
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
                 // 命中检测：按工具判定手柄。
                 let axis = if response.drag_started_by(egui::PointerButton::Primary)
                     && let Some(pos) = drag_start_pos(ui, pointer)
@@ -1441,6 +1642,14 @@ impl EditorApp {
                             .any(|(id, _, _)| self.scene_state.locked.contains(id)),
                         axes,
                     )
+                    .or_else(|| {
+                        // 环上的点：只有旋转换到这一层才判（三条环要按到椭圆的距离比大小）。
+                        if tool == SceneTool::Rotate {
+                            crate::gizmo::pick_rotation_ring(pos, &rings)
+                        } else {
+                            None
+                        }
+                    })
                 } else {
                     None
                 };
@@ -1476,30 +1685,68 @@ impl EditorApp {
                         );
                     }
                     SceneTool::Rotate => {
-                        painter.circle_stroke(
-                            screen,
-                            len,
-                            egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(230, 160, 60)),
-                        );
-                        // 旋转手柄挂在 X 臂的投影方向上（世界/局部模式都指得出一个方向）。
-                        painter.circle_filled(
-                            screen + axes[0],
-                            5.0,
-                            egui::Color32::from_rgb(230, 160, 60),
-                        );
+                        // 三支环各按自己的轴上色（X 红 / Y 绿 / Z 蓝），指针正压着的那条加粗——
+                        // "先看清会绕哪根轴，再决定按下去"。
+                        let hovered =
+                            ui.input(|input| input.pointer.hover_pos())
+                                .and_then(|position| {
+                                    crate::gizmo::pick_rotation_ring(position, &rings)
+                                });
+                        for (slot, polyline) in &rings {
+                            if polyline.len() < 2 {
+                                continue;
+                            }
+                            let color = match slot {
+                                GizmoAxis::X => egui::Color32::from_rgb(230, 100, 100),
+                                GizmoAxis::Y => egui::Color32::from_rgb(120, 210, 120),
+                                _ => egui::Color32::from_rgb(110, 150, 235),
+                            };
+                            let width = if hovered == Some(*slot) {
+                                3.5_f32
+                            } else {
+                                2.0_f32
+                            };
+                            painter.add(egui::Shape::closed_line(
+                                polyline.clone(),
+                                egui::Stroke::new(width, color),
+                            ));
+                        }
                     }
                     SceneTool::Scale => {
-                        // 等比缩放的手柄沿 X/Y 两条臂的对角方向。
-                        let handle = (axes[0] + axes[1]) * 0.7;
-                        painter.line_segment(
-                            [screen, screen + handle],
-                            egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(180, 100, 220)),
-                        );
-                        painter.circle_filled(
-                            screen + handle,
-                            5.0,
+                        // 中心 = 等比（旧行为），六个把手 = 单轴 / 双轴；位置与命中读同一份。
+                        painter.rect_filled(
+                            egui::Rect::from_center_size(
+                                screen,
+                                egui::Vec2::splat(crate::gizmo::GIZMO_CENTER_HALF * 1.6),
+                            ),
+                            2.0,
                             egui::Color32::from_rgb(180, 100, 220),
                         );
+                        for (handle, offset) in crate::gizmo::scale_handles(axes) {
+                            let color = match handle {
+                                GizmoAxis::ScaleX => egui::Color32::from_rgb(220, 80, 80),
+                                GizmoAxis::ScaleY => egui::Color32::from_rgb(90, 200, 90),
+                                GizmoAxis::ScaleZ => egui::Color32::from_rgb(80, 120, 220),
+                                _ => egui::Color32::from_rgb(180, 100, 220),
+                            };
+                            let point = screen + offset;
+                            if matches!(
+                                handle,
+                                GizmoAxis::ScaleXY | GizmoAxis::ScaleXZ | GizmoAxis::ScaleYZ
+                            ) {
+                                painter.rect_filled(
+                                    egui::Rect::from_center_size(point, egui::Vec2::splat(7.0)),
+                                    1.0,
+                                    color,
+                                );
+                            } else {
+                                painter.line_segment(
+                                    [screen, point],
+                                    egui::Stroke::new(1.5_f32, color),
+                                );
+                                painter.circle_filled(point, 4.5, color);
+                            }
+                        }
                     }
                     SceneTool::TilePaint => {}
                 }
@@ -1567,6 +1814,23 @@ impl EditorApp {
                         let current = current_ray.closest_point_on_line(anchor, axis)?.1;
                         Some(axis * (current - start))
                     });
+                    let primary = drag.primary();
+                    // 旋转角优先按**环面求交**算（指针在环平面上的落点绕环心转了多少度），
+                    // 几何退化时退回水平增量；吸附步长用**角度**单位，与位置的 `snap_step` 分开。
+                    let angle_step = self.snap_enabled.then_some(self.snap_angle_step);
+                    let ring = if tool == SceneTool::Rotate {
+                        let (raw, slot) = self.gizmo_ring_angle(
+                            drag,
+                            pos,
+                            rect,
+                            ui.ctx().pixels_per_point(),
+                            (width as f32, height as f32),
+                            delta,
+                        );
+                        Some((crate::gizmo::snap_angle(raw, angle_step), slot))
+                    } else {
+                        None
+                    };
                     let previews = match tool {
                         SceneTool::Move | SceneTool::Select => {
                             let d = self.editor_camera.dist * 0.002;
@@ -1586,7 +1850,8 @@ impl EditorApp {
                                         (delta.x * rz - delta.y * fz) * d,
                                     )
                                 }
-                                GizmoAxis::Scale => Vec3::ZERO,
+                                // 缩放手柄不会走到这条分支（工具不同）；留个兜底不为零增量。
+                                _ => Vec3::ZERO,
                             });
                             crate::gizmo::translate_targets(
                                 &drag.targets.targets,
@@ -1596,17 +1861,42 @@ impl EditorApp {
                         }
                         SceneTool::Rotate => crate::gizmo::rotate_targets(
                             self.gizmo_space,
+                            ring.map_or(Vec3::Y, |(_, slot)| slot),
                             &drag.targets.targets,
                             drag.pivot,
-                            delta.x * 0.01,
+                            ring.unwrap_or((delta.x * 0.01, Vec3::Y)).0,
                         ),
-                        SceneTool::Scale => crate::gizmo::scale_targets(
-                            &drag.targets.targets,
-                            drag.pivot,
-                            (1.0 + delta.x * 0.01).max(0.05),
-                        ),
+                        SceneTool::Scale => {
+                            let direction = crate::gizmo::scale_handle_direction(drag.axis, axes);
+                            crate::gizmo::scale_axis_targets(
+                                &drag.targets.targets,
+                                drag.pivot,
+                                crate::gizmo::scale_axis_mask(drag.axis),
+                                crate::gizmo::scale_factor(delta, direction),
+                            )
+                        }
                         SceneTool::TilePaint => Vec::new(),
                     };
+                    // 即时数值浮标：拖动中把"现在是多少 / 转了多少"直接标在手柄旁边，
+                    // 省掉"拖一下、再看 Inspector"的来回（M27-02 缺项 7）。
+                    if let Some((_, preview)) = previews.iter().find(|(id, _)| *id == primary) {
+                        let text = crate::gizmo::readout_3d(
+                            tool,
+                            drag.axis,
+                            preview,
+                            ring.unwrap_or((0.0, Vec3::Y)).0,
+                        );
+                        if !text.is_empty() {
+                            painter.text(
+                                screen + egui::vec2(14.0, -len - 16.0),
+                                egui::Align2::LEFT_TOP,
+                                text,
+                                // 与 2D 浮标同一份字号：两侧"拖动手上的数字"必须看起来是同一个东西。
+                                egui::FontId::proportional(13.0),
+                                egui::Color32::from_rgb(240, 220, 120),
+                            );
+                        }
+                    }
                     for (id, next) in previews {
                         self.scene_state.preview3d_transform.insert(id, next);
                     }
@@ -1622,6 +1912,49 @@ impl EditorApp {
         }
         // 工具小面板（Select/Move/Rotate/Scale）置于场景右上角。
         self.draw_scene_tool_panel(ui, rect);
+    }
+
+    /// 环拖动的**转角**：两条视线与环平面求交，取交点绕环心的带符号夹角。
+    ///
+    /// 返回 `(转角, 槽位轴)`，槽位轴喂给 `gizmo::rotate_targets`：**测量**用的是画出来的
+    /// 那条环的法向（局部模式下 = 主实体自己的轴），**应用**用的是槽位（X/Y/Z）——局部模式
+    /// 下每个目标绕它自己的同名轴转，两者不是同一个向量，混用会让多选旋转歪掉。
+    ///
+    /// 相机几乎贴着环面看（交点跑到无穷远）、指针指到转轴上、或没有射线时，退回水平增量
+    /// `delta.x * 0.01`——就是迁移前那条公式，作为退化路径继续存在。
+    fn gizmo_ring_angle(
+        &self,
+        drag: &crate::gizmo::GizmoDrag,
+        pointer: egui::Pos2,
+        rect: egui::Rect,
+        pixels_per_point: f32,
+        size: (f32, f32),
+        delta: egui::Vec2,
+    ) -> (f32, Vec3) {
+        let rotation = drag.primary_initial().rotation;
+        let slot = gizmo_axis_world(
+            crate::scene_interaction::GizmoSpace::World,
+            rotation,
+            drag.axis,
+        );
+        let measured = || {
+            let normal = gizmo_axis_world(self.gizmo_space, rotation, drag.axis)?;
+            let start_ray = drag.start_ray?;
+            let current_ray = self.editor_camera_ray(
+                (pointer.x - rect.left()) * pixels_per_point,
+                (pointer.y - rect.top()) * pixels_per_point,
+                size.0,
+                size.1,
+            )?;
+            let center = drag.origin.position;
+            let start = crate::gizmo::ray_plane_point(start_ray, center, normal)?;
+            let current = crate::gizmo::ray_plane_point(current_ray, center, normal)?;
+            crate::gizmo::ring_angle(center, normal, start, current)
+        };
+        match (measured(), slot) {
+            (Some(angle), Some(slot)) => (angle, slot),
+            _ => (delta.x * 0.01, slot.unwrap_or(Vec3::Y)),
+        }
     }
 
     /// 3D 实体的**世界**变换：与 3D 画面同源——运行时可用时取它（渲染用的就是它），否则按文档
@@ -1728,14 +2061,18 @@ impl EditorApp {
         if self.scene_view_mode == crate::SceneViewMode::View2D {
             let status_rect = egui::Rect::from_min_size(
                 egui::pos2(rect.left() + 4.0, rect.top() + 4.0),
-                egui::vec2(220.0, 26.0),
+                egui::vec2(260.0, 26.0),
             );
             ui.scope_builder(egui::UiBuilder::new().max_rect(status_rect), |ui| {
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("2D").strong());
                     ui.separator();
                     if self.snap_enabled {
-                        ui.label(format!("吸附 {}", self.snap_step));
+                        // 位移步长与**角度**步长各报各的（M27-02）：一个 0.5 不代表旋转也吸附。
+                        ui.label(format!(
+                            "吸附 {} · {:.0}°",
+                            self.snap_step, self.snap_angle_step
+                        ));
                     } else {
                         ui.label("无吸附");
                     }
@@ -2819,20 +3156,6 @@ impl EditorApp {
             rect.center().y - (y / w) * rect.height() * 0.5,
         ))
     }
-
-    /// 拖放资源分发：预制体 → 实例化；其他（纹理）→ 创建精灵。
-    ///
-    /// 三个 `spawn_*` 的**实现体已搬到 shell**（`crate::scene_ops`，第 29 轮）：
-    /// 面板只负责识别拖放并转交（提交边界不在面板里）。
-    fn spawn_dropped_resource(&mut self, path: &str) -> Result<(), String> {
-        if path.ends_with(".prefab") {
-            self.spawn_prefab_from_drop(path)
-        } else if path.ends_with(".glb") || path.ends_with(".gltf") {
-            self.spawn_model_from_drop(path)
-        } else {
-            self.spawn_sprite_from_drop(path)
-        }
-    }
 }
 
 /// Scene 视图 zoom 范围：fit / 滚轮 / Slider 必须共用同一范围，否则 egui
@@ -2917,6 +3240,29 @@ fn panel_to_design_pos(
     let dw = design.0 as f32;
     let dh = design.1 as f32;
     egui::pos2(world.x - center.x + dw * 0.5, center.y + dh * 0.5 - world.y)
+}
+
+/// 设计分辨率坐标 → 面板逻辑坐标（[`panel_to_design_pos`] 的逆）。
+///
+/// 2D 的拖拽逻辑全部工作在**设计空间**（Transform 的 authored 值），而绘制要落在面板上，
+/// 所以圆心这类"由逻辑算出的设计点"必须走同一条映射的反向，不能另写一遍 `pan + world*zoom`
+/// （WP5 之后这类手写映射已经统一，两处各写一份会在高 DPI 上分叉）。
+fn design_to_panel_pos(
+    panel: egui::Rect,
+    pan: egui::Vec2,
+    zoom: f32,
+    ppp: f32,
+    center: egui::Vec2,
+    design: (u32, u32),
+    position: egui::Pos2,
+) -> egui::Pos2 {
+    let dw = design.0 as f32;
+    let dh = design.1 as f32;
+    let world = Vec2::new(
+        position.x + center.x - dw * 0.5,
+        center.y + dh * 0.5 - position.y,
+    );
+    scene_view_world_to_panel(panel, pan, zoom, ppp, world)
 }
 
 /// 计算 2D 实体在 Scene 视图中的屏幕空间包围框（中心 + 尺寸）。
@@ -3135,7 +3481,9 @@ fn scene_drag_transform(
             let relative_y = initial.position_y - pivot.1;
             next.position_x = pivot.0 + relative_x * angle.cos() - relative_y * angle.sin();
             next.position_y = pivot.1 + relative_x * angle.sin() + relative_y * angle.cos();
-            next.rotation += delta.x * 0.5;
+            // 写入的角度必须是**轨道用的那一个**（`angle`），不是未吸附的原始增量：
+            // 否则吸附时画面转到位、文档里存的却是另一个数。
+            next.rotation += angle.to_degrees();
         }
         SceneTool::Scale => {
             next.position_x = pivot.0 + (initial.position_x - pivot.0) * factor;
@@ -3707,6 +4055,35 @@ mod tests {
             crate::gizmo::pick_gizmo_axis(SceneTool::Move, center, center, true, axes),
             None
         );
+        // 缩放（M27-02）：**等比**改落在中心方框上，把手各自管单轴/双轴，
+        // 由 `scale_handles` 一份数据同时驱动绘制与命中。
+        assert_eq!(
+            crate::gizmo::pick_gizmo_axis(SceneTool::Scale, center, center, false, axes),
+            Some(GizmoAxis::Scale),
+            "等比缩放搬到中心方框"
+        );
+        assert_eq!(
+            crate::gizmo::pick_gizmo_axis(
+                SceneTool::Scale,
+                center,
+                center + egui::vec2(40.0, 0.0),
+                false,
+                axes
+            ),
+            Some(GizmoAxis::ScaleX),
+            "X 臂末端现在是单轴把手"
+        );
+        assert_eq!(
+            crate::gizmo::pick_gizmo_axis(
+                SceneTool::Scale,
+                center,
+                center + egui::vec2(18.0, -18.0),
+                false,
+                axes
+            ),
+            Some(GizmoAxis::ScaleXY),
+            "XY 平面把手落在两臂之间"
+        );
         assert_eq!(
             crate::gizmo::pick_gizmo_axis(
                 SceneTool::Scale,
@@ -3715,7 +4092,8 @@ mod tests {
                 false,
                 axes
             ),
-            Some(GizmoAxis::Scale)
+            None,
+            "旧的对角线等比把手位置已让位给 XY 把手（12 点外不再命中）"
         );
         assert_eq!(
             crate::gizmo::pick_gizmo_axis(SceneTool::TilePaint, center, center, false, axes),
@@ -3744,14 +4122,14 @@ mod tests {
 
         // 原地（Pivot）：位置不动、朝向变。
         let (position, rotation) =
-            crate::gizmo::rotate_about(GizmoSpace::World, &initial, None, quarter);
+            crate::gizmo::rotate_about(GizmoSpace::World, Vec3::Y, &initial, None, quarter);
         assert_eq!(position, initial.position, "Pivot 模式下位置不得变化");
         assert!(same_rotation(rotation), "原地旋转仍要改朝向：{rotation:?}");
 
         // 绕原点公转（Center）：位置转到 (0,0,-1) 附近，且到轴心的距离不变。
         let pivot = Vec3::new(0.0, 0.0, 0.0);
         let (position, rotation) =
-            crate::gizmo::rotate_about(GizmoSpace::World, &initial, Some(pivot), quarter);
+            crate::gizmo::rotate_about(GizmoSpace::World, Vec3::Y, &initial, Some(pivot), quarter);
         assert!(
             position.x.abs() < 1e-4 && (position.z + 1.0).abs() < 1e-4,
             "绕世界 Y 转 90° 后实体应到 (0,0,-1)：{position:?}"
@@ -3767,6 +4145,7 @@ mod tests {
         // 轴心就是实体自己时，公转与原地等价。
         let (position, rotation) = crate::gizmo::rotate_about(
             GizmoSpace::World,
+            Vec3::Y,
             &initial,
             Some(initial.position),
             quarter,
@@ -3774,15 +4153,16 @@ mod tests {
         assert_eq!(position, initial.position);
         assert!(same_rotation(rotation));
 
-        // 旋转增量：世界模式绕世界 Y，局部模式绕实体自己的 Y；两者都满足
+        // 旋转增量：世界模式绕世界轴，局部模式绕实体自己的该轴；两者都满足
         // `delta * rotation == gizmo_rotate(...)`（同一份实现，不会漂移）。
         let tilted = Quat::from_axis_angle(Vec3::new(1.0, 0.0, 1.0), 0.6).expect("四元数");
         for space in [GizmoSpace::World, GizmoSpace::Local] {
-            let delta = crate::gizmo::rotation_delta(space, tilted, 0.4);
+            let delta = crate::gizmo::rotation_delta(space, tilted, Vec3::Y, 0.4);
             let composed = delta * tilted;
             // 生产路径（`gizmo_rotate_about` 的 `Pivot` 分支）必须给出同一份朝向。
             let composed_alt = crate::gizmo::rotate_about(
                 space,
+                Vec3::Y,
                 &Transform3D {
                     position: Vec3::new(0.0, 0.0, 0.0),
                     rotation: tilted,
@@ -3802,24 +4182,25 @@ mod tests {
                 "{space:?}: 轨道增量必须与生产路径的旋转语义一致（最大差 {worst}）"
             );
         }
-        let local_axis = crate::gizmo::rotation_delta(GizmoSpace::Local, tilted, 0.4);
+        let local_axis = crate::gizmo::rotation_delta(GizmoSpace::Local, tilted, Vec3::Y, 0.4);
         let own_y = tilted.rotate(Vec3::Y).expect("旋转 Y");
         // 局部增量绕的是实体自己的 Y：作用在该轴上不改变它。
         let rotated = local_axis.rotate(own_y).expect("旋转 Y");
         assert!((rotated - own_y).length() < 1e-4, "局部增量应绕自身 Y 轴");
 
         // 缩放：Center 时位置按比例远离轴心；Pivot 时位置不动。
-        let (position, scale) = crate::gizmo::scale_about(&initial, None, 2.0);
+        let all = [true, true, true];
+        let (position, scale) = crate::gizmo::scale_about(&initial, None, all, 2.0);
         assert_eq!(position, initial.position);
         assert_eq!(scale, Vec3::new(2.0, 2.0, 2.0));
-        let (position, scale) = crate::gizmo::scale_about(&initial, Some(pivot), 2.0);
+        let (position, scale) = crate::gizmo::scale_about(&initial, Some(pivot), all, 2.0);
         assert!(
             (position.x - 2.0).abs() < 1e-4,
             "放大 2 倍应把实体推离轴心 2 倍：{position:?}"
         );
         assert_eq!(scale, Vec3::new(2.0, 2.0, 2.0));
         // 缩放系数下限仍然生效（不会被压成 0 或负数）。
-        let (_, scale) = crate::gizmo::scale_about(&initial, None, 0.0);
+        let (_, scale) = crate::gizmo::scale_about(&initial, None, all, 0.0);
         assert_eq!(scale, Vec3::new(0.05, 0.05, 0.05));
     }
 
@@ -4087,6 +4468,9 @@ mod tests {
     }
 
     /// 只关心朝向的旋转结果（生产路径 `gizmo_rotate_about` 的 `Pivot` 分支）。
+    ///
+    /// 轴固定喂 `Vec3::Y`：这里的断言谈的是"世界 vs 局部"，三支环共用同一段代码，
+    /// 换一根轴只是把 `Y` 换成 `X/Z`，不需要在这里重复一遍。
     fn rotate_only(
         space: crate::scene_interaction::GizmoSpace,
         rotation: engine::core::math3d::Quat,
@@ -4094,6 +4478,7 @@ mod tests {
     ) -> engine::core::math3d::Quat {
         crate::gizmo::rotate_about(
             space,
+            Vec3::Y,
             &engine::core::transform::Transform3D {
                 position: Vec3::new(0.0, 0.0, 0.0),
                 rotation,
@@ -4350,6 +4735,91 @@ mod tests {
             before,
             "Undo 必须回到拖动前的原文"
         );
+    }
+
+    /// **旋转吸附 + 一次撤销**（M27-02 缺项 3/7）：2D 此前完全没有角度吸附（开关只管位移），
+    /// 而且"轨道用的角"与"写进文档的角"必须始终是同一个数——否则吸附时画面转到位、
+    /// 文档里存的是另一个无理数。
+    #[test]
+    fn a_2d_rotation_drag_snaps_to_the_angle_step_and_commits_once() {
+        let mut app = interaction_app();
+        app.set_scene_tool(SceneTool::Rotate);
+        app.snap_enabled = true;
+        app.snap_angle_step = 15.0;
+        let id = SceneEntityId(997);
+        {
+            let scene = &mut app.document.current_scene.as_mut().unwrap().scene;
+            scene.add_entity(id, "SpinMe", None).unwrap();
+            let entity = scene.entities.get_mut(&id).unwrap();
+            entity.components.insert(
+                "Transform".to_owned(),
+                "position=100,100,0;rotation=0,0,0,1;scale=1,1,1".to_owned(),
+            );
+            entity.components.insert(
+                "Sprite".to_owned(),
+                engine::core::sprite::SpriteComponent {
+                    texture: "assets/textures/player.png".to_owned(),
+                    size: engine::core::transform::Vec2::new(32.0, 32.0),
+                    pivot: engine::core::transform::Vec2::new(0.5, 0.5),
+                    tint: [1.0; 4],
+                    sorting: engine::core::sprite::SpriteSorting::default(),
+                    flip_x: false,
+                    flip_y: false,
+                    z: 0.0,
+                    nine_slice: None,
+                }
+                .to_component_str(),
+            );
+        }
+        let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0));
+        let entities = app.collect_scene_2d_entities(
+            rect,
+            &crate::panels::hierarchy::HierarchyFilter::default(),
+            1.0,
+        );
+        let start = entities
+            .iter()
+            .find(|entity| entity.id == id)
+            .expect("合成实体必须出现在 2D 绘制列表里")
+            .center;
+        assert!(matches!(
+            app.scene_pointer_down(start, &entities, false),
+            ToolPhase::Dragging { .. }
+        ));
+        // 横向拖 100 点：原始转角 50°，15° 步长下应跳到 45°。
+        let end = start + egui::vec2(100.0, 0.0);
+        app.scene_pointer_drag(end);
+        app.scene_pointer_drag_apply(end, 1.0);
+        let previewed = app.scene_state.preview[&id];
+        assert!(
+            (previewed.rotation - 45.0).abs() < 1e-3,
+            "预览角度必须已吸附：{}",
+            previewed.rotation
+        );
+        assert_eq!(app.history.undo_len(), 0, "拖动中不得写历史");
+        app.scene_pointer_up(end);
+        assert_eq!(app.history.undo_len(), 1, "一次旋转拖拽 = 恰好一条 Undo");
+        let after = app.document.current_scene.as_ref().unwrap().scene.entities[&id].components
+            ["Transform"]
+            .clone();
+        let stored = parse_transform(&after).expect("统一写法必须能被 2D 视图读回");
+        assert!(
+            (stored.rotation - previewed.rotation).abs() < 1e-3,
+            "文档里存的必须就是画面转到的角度：{stored:?} vs {previewed:?}"
+        );
+        assert!(
+            (stored.position_x - 100.0).abs() < 1e-2 && (stored.position_y - 100.0).abs() < 1e-2,
+            "Pivot 轴心下应绕自己转，位置不动：{stored:?}"
+        );
+        assert_eq!(
+            app.dispatch(editor::EditorCommand::Undo),
+            editor::CommandResult::Applied
+        );
+        let before = parse_transform(
+            &app.document.current_scene.as_ref().unwrap().scene.entities[&id].components["Transform"],
+        )
+        .expect("原文必须能读回");
+        assert!(before.rotation.abs() < 1e-3, "Undo 必须回到 0°：{before:?}");
     }
 
     /// 工具切换走状态机：切换工具会**取消进行中的交互**（不再要求调用方自己清场）。
@@ -5340,8 +5810,13 @@ mod tests {
             .entities
             .len();
 
-        app.spawn_prefab_from_drop("assets/prefabs/slime_green.prefab")
-            .unwrap();
+        let action = crate::dnd::plan(
+            &crate::dnd::DragSource::Internal(crate::dnd::DropPayload::Asset(
+                "assets/prefabs/slime_green.prefab".to_owned(),
+            )),
+            crate::dnd::DropZone::SceneCanvas,
+        );
+        assert_eq!(app.commit_spawn_drop(&action, None), "已创建 1 个实体");
 
         let scene = app.document.current_scene.as_ref().unwrap();
         let prefab_roots: Vec<_> = scene

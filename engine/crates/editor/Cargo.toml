@@ -10,7 +10,10 @@ publish = false
 engine.workspace = true
 thiserror.workspace = true
 eframe.workspace = true
+egui_dock.workspace = true
 wgpu = "27"
+# 阶段 2：`DockTab` 需要 serde derive 才能让 egui_dock 的 `DockState` 序列化落地。
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing.workspace = true
 [target."cfg(windows)".dependencies]

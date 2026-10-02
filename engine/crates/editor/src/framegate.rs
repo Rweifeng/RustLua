@@ -205,6 +205,19 @@ impl GuiSmoke {
         self.frame_with(Vec::new(), modifiers);
     }
 
+    /// 合成一次**释放**（拖放的松手帧）：落区在"指针在内 + 本帧抬起"时才结算。
+    pub(crate) fn release_at(&mut self, pos: egui::Pos2) {
+        self.frame_with(
+            vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::default(),
+            }],
+            egui::Modifiers::default(),
+        );
+    }
+
     /// 合成一次键盘按键（按下 + 抬起，分两帧）。
     pub(crate) fn press_key(&mut self, key: egui::Key, modifiers: egui::Modifiers) {
         self.frame_with(
@@ -251,7 +264,7 @@ impl GuiSmoke {
     /// `egui` 的控件间拖放是"载荷 + 落区"两半：这里模拟的是**载荷已经挂在指针上**的那一帧，
     /// 随后由调用方在落区上释放指针。这样不必知道拖动源控件的矩形，而落区那一半
     /// （`dnd_drop_zone`、payload 类型判定、释放判定、生成实体）走的是完整生产路径。
-    pub(crate) fn frame_with_payload(&mut self, payload: &str) {
+    pub(crate) fn frame_with_payload(&mut self, payload: crate::dnd::DropPayload) {
         self.time += 1.0 / 60.0;
         let raw = egui::RawInput {
             time: Some(self.time),
@@ -260,11 +273,45 @@ impl GuiSmoke {
             ..Default::default()
         };
         let app = &mut self.app;
-        let payload: String = payload.to_owned();
         let _ = self.ctx.run(raw, |ctx| {
             egui::DragAndDrop::set_payload(ctx, payload.clone());
             app.draw_frame(ctx);
         });
+    }
+
+    /// 推进一帧并**注入一次系统拖放**（外部文件 + 松手处的指针位置）。
+    ///
+    /// 真实后端就是这么报的：winit 只给路径不给坐标（`DroppedFile` 在 0.33 里没有 `pos`），
+    /// 编辑器在事件到达那一帧取 `pointer.hover_pos()` 当落点。把两者塞进同一帧，
+    /// 走的仍是 `dnd::take_external_drop` → 面板认领 → 提交层的完整生产路径。
+    pub(crate) fn frame_with_dropped_files(&mut self, files: &[PathBuf], position: egui::Pos2) {
+        self.time += 1.0 / 60.0;
+        let raw = egui::RawInput {
+            time: Some(self.time),
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, self.size)),
+            events: vec![egui::Event::PointerMoved(position)],
+            dropped_files: files
+                .iter()
+                .map(|path| egui::DroppedFile {
+                    path: Some(path.clone()),
+                    ..Default::default()
+                })
+                .collect(),
+            focused: true,
+            ..Default::default()
+        };
+        let app = &mut self.app;
+        let _ = self.ctx.run(raw, |ctx| app.draw_frame(ctx));
+    }
+
+    /// 层级里某实体的父节点（`None` = 场景根）。
+    pub(crate) fn parent_of(&self, id: SceneEntityId) -> Option<SceneEntityId> {
+        self.app
+            .document
+            .current_scene
+            .as_ref()
+            .and_then(|document| document.scene.entities.get(&id))
+            .and_then(|entity| entity.parent)
     }
 
     /// 层级面板搜索框的屏幕矩形（本帧没画时为 `None`）。
@@ -328,6 +375,21 @@ impl GuiSmoke {
     pub(crate) fn cleanup(&self) {
         let _ = fs::remove_dir_all(&self.root);
     }
+}
+
+/// 递归数一个目录里的文件个数（外部拖放用它断言"拒绝不落盘"）。
+fn count_files_under(dir: &Path) -> usize {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return 0;
+    };
+    entries.flatten().fold(0, |count, entry| {
+        let path = entry.path();
+        if path.is_dir() {
+            count + count_files_under(&path)
+        } else {
+            count + 1
+        }
+    })
 }
 
 fn temp_root(label: &str) -> PathBuf {
@@ -713,6 +775,102 @@ fn case_scene_view_pointer_drag() -> Vec<Check> {
     checks
 }
 
+/// 用例 3b：**角度吸附**在真实帧里落进文档（M27-02 缺项 3）。
+///
+/// 这条同时钉住两层：① 画面拖到 45°，文档里就必须是 45°（曾经把"度"当"弧度"写进四元数，
+/// 松手后包围框跳回约 1°）；② 一条撤销把旋转整体回退。
+fn case_scene_view_rotation_snap() -> Vec<Check> {
+    let mut smoke = GuiSmoke::new("scene-rotate", egui::vec2(1280.0, 720.0), 1.0);
+    smoke.idle(4);
+    let mut checks = Vec::new();
+    let id = SceneEntityId(1);
+
+    smoke.app.set_scene_tool(SceneTool::Rotate);
+    smoke.app.snap_enabled = true;
+    smoke.app.snap_angle_step = 15.0;
+    smoke.frame();
+    let before_transform =
+        smoke.scene_document().scene.entities[&id].components["Transform"].clone();
+    let Some((start, _)) = smoke.app.scene_2d_entity_box(id, smoke.pixels_per_point) else {
+        checks.push(Check::new(
+            "scene_view/rotation_ring_needs_the_canvas",
+            false,
+            format!("2D 画布矩形={:?}", smoke.app.scene_canvas_rect),
+        ));
+        smoke.cleanup();
+        return checks;
+    };
+
+    let end = start + egui::vec2(100.0, 0.0);
+    smoke.frame_with(
+        vec![egui::Event::PointerMoved(start)],
+        egui::Modifiers::default(),
+    );
+    smoke.frame_with(
+        vec![egui::Event::PointerButton {
+            pos: start,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::default(),
+        }],
+        egui::Modifiers::default(),
+    );
+    // 横向 100 点：原始转角 50°，15° 步长应跳到 45°。
+    for step in [egui::vec2(60.0, 0.0), egui::vec2(100.0, 0.0)] {
+        smoke.frame_with(
+            vec![egui::Event::PointerMoved(start + step)],
+            egui::Modifiers::default(),
+        );
+    }
+    smoke.frame_with(
+        vec![egui::Event::PointerButton {
+            pos: end,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::default(),
+        }],
+        egui::Modifiers::default(),
+    );
+    smoke.frame();
+
+    let after_transform =
+        smoke.scene_document().scene.entities[&id].components["Transform"].clone();
+    let stored = crate::geometry::parse_transform(&after_transform);
+    let degrees = stored.map(|fields| fields.rotation).unwrap_or_default();
+    checks.push(Check::new(
+        "scene_view/rotation_drag_snaps_to_the_angle_step",
+        (degrees - 45.0).abs() < 0.5,
+        format!("文档里的旋转={degrees}° 期望 45°（原始转角 50°、步长 15°）"),
+    ));
+    checks.push(Check::new(
+        "scene_view/rotation_drag_commits_exactly_one_undo",
+        smoke.app.history.undo_len() == 1 && after_transform != before_transform,
+        format!(
+            "undo={}；前={before_transform} 后={after_transform}",
+            smoke.app.history.undo_len()
+        ),
+    ));
+
+    smoke.press_key(
+        egui::Key::Z,
+        egui::Modifiers {
+            ctrl: true,
+            command: true,
+            ..Default::default()
+        },
+    );
+    let undone = smoke.scene_document().scene.entities[&id].components["Transform"].clone();
+    checks.push(Check::new(
+        "scene_view/undo_restores_the_rotation",
+        undone == before_transform,
+        format!("undo 后={undone} 期望={before_transform}"),
+    ));
+
+    smoke.app.snap_enabled = false;
+    smoke.cleanup();
+    checks
+}
+
 /// 用例 4：未保存保护 —— 弹窗在整帧里出现、期间不执行离开动作、取消后文档原样。
 fn case_unsaved_change_modal() -> Vec<Check> {
     let mut smoke = GuiSmoke::new("unsaved-modal", egui::vec2(1280.0, 720.0), 1.0);
@@ -973,10 +1131,11 @@ fn case_input_focus_consumes_shortcuts() -> Vec<Check> {
     checks
 }
 
-/// 用例 6：**拖放**（docs/55 §8 质量门枚举项）。
+/// 用例 6：**内部拖放到 2D 画布**（docs/55 §8 质量门枚举项）。
 ///
-/// 把资源拖到 Scene 视图生成实体的落区一侧走完整生产路径：
-/// 注入 `String` 载荷 → 在画布上释放指针 → 断言语义（新增实体 + 恰好一条 Undo + 名字可辨）。
+/// 落区一侧走完整生产路径：注入 `DropPayload::Asset` → 在画布上释放指针 → 断言语义
+/// （新增实体 + 恰好一条 Undo + 名字可辨）。同一帧链上还要断言**非法落点**：矩阵判出来的
+/// 拒绝必须零副作用，而且要把原因写进状态栏。
 fn case_drop_payload_on_scene_view() -> Vec<Check> {
     let mut smoke = GuiSmoke::new("drop-payload", egui::vec2(1280.0, 720.0), 1.0);
     smoke.idle(4);
@@ -1000,16 +1159,10 @@ fn case_drop_payload_on_scene_view() -> Vec<Check> {
         vec![egui::Event::PointerMoved(target)],
         egui::Modifiers::default(),
     );
-    smoke.frame_with_payload("assets/textures/player.png");
-    smoke.frame_with(
-        vec![egui::Event::PointerButton {
-            pos: target,
-            button: egui::PointerButton::Primary,
-            pressed: false,
-            modifiers: egui::Modifiers::default(),
-        }],
-        egui::Modifiers::default(),
-    );
+    smoke.frame_with_payload(crate::dnd::DropPayload::Asset(
+        "assets/textures/player.png".to_owned(),
+    ));
+    smoke.release_at(target);
     smoke.frame();
 
     let after_entities = smoke.entity_count();
@@ -1036,6 +1189,346 @@ fn case_drop_payload_on_scene_view() -> Vec<Check> {
         ),
     ));
 
+    // 非法落点：把实体拖到画布上（改父子关系只在层级里认）。
+    let entities_before_reject = smoke.entity_count();
+    let undo_before_reject = smoke.app.history.undo_len();
+    smoke.frame_with_payload(crate::dnd::DropPayload::Entity(SceneEntityId(1)));
+    smoke.release_at(target);
+    smoke.frame();
+    checks.push(Check::new(
+        "dnd/an_entity_on_the_canvas_changes_nothing_and_says_why",
+        smoke.entity_count() == entities_before_reject
+            && smoke.app.history.undo_len() == undo_before_reject
+            && smoke.app.status.contains("层级"),
+        format!(
+            "实体={}；undo {undo_before_reject}→{}；状态={:?}",
+            smoke.entity_count(),
+            smoke.app.history.undo_len(),
+            smoke.app.status
+        ),
+    ));
+
+    smoke.cleanup();
+    checks
+}
+
+/// 用例 6b：**资产拖到层级行**——同一份资产、另一个落点，语义变成"作为子节点"。
+///
+/// 这条是 M27-01 类型收口的存在理由：迁移前层级只认 `SceneEntityId` 载荷，
+/// 资产的 `String` 载荷在协议上就进不了层级行。
+fn case_drop_asset_on_hierarchy_row() -> Vec<Check> {
+    let mut smoke = GuiSmoke::new("drop-hierarchy", egui::vec2(1280.0, 720.0), 1.0);
+    smoke.idle(4);
+    let mut checks = Vec::new();
+    let parent = SceneEntityId(2);
+    let before_entities = smoke.entity_count();
+    let before_undo = smoke.app.history.undo_len();
+    let ids_before: Vec<SceneEntityId> = smoke
+        .scene_document()
+        .scene
+        .entities
+        .keys()
+        .copied()
+        .collect();
+    let Some(row) = smoke.row_rect(parent) else {
+        checks.push(Check::new(
+            "dnd/hierarchy_row_available",
+            false,
+            format!("层级第 {parent:?} 行没有矩形"),
+        ));
+        smoke.cleanup();
+        return checks;
+    };
+    let target = row.center();
+    smoke.frame_with(
+        vec![egui::Event::PointerMoved(target)],
+        egui::Modifiers::default(),
+    );
+    smoke.frame_with_payload(crate::dnd::DropPayload::Asset(
+        "assets/textures/slime_green.png".to_owned(),
+    ));
+    smoke.release_at(target);
+    smoke.frame();
+
+    let created: Vec<SceneEntityId> = smoke
+        .scene_document()
+        .scene
+        .entities
+        .keys()
+        .copied()
+        .filter(|id| !ids_before.contains(id))
+        .collect();
+    checks.push(Check::new(
+        "dnd/an_asset_on_a_row_becomes_a_child_with_one_undo",
+        smoke.entity_count() == before_entities + 1
+            && smoke.app.history.undo_len() == before_undo + 1
+            && created.len() == 1
+            && created
+                .iter()
+                .all(|id| smoke.parent_of(*id) == Some(parent)),
+        format!(
+            "实体 {before_entities}→{}；undo +{}；子节点={created:?}；状态={:?}",
+            smoke.entity_count(),
+            smoke.app.history.undo_len() - before_undo,
+            smoke.app.status
+        ),
+    ));
+    // 资源浏览器收到自家资产：按矩阵是拒绝，但松手那一帧必须**说明原因**，
+    // 并且磁盘与文档都不能有任何改动。
+    let browser = smoke.app.resource_browser_rect;
+    let files_before = count_files_under(&smoke.root);
+    smoke.frame_with(
+        vec![egui::Event::PointerMoved(browser.center())],
+        egui::Modifiers::default(),
+    );
+    smoke.frame_with_payload(crate::dnd::DropPayload::Asset(
+        "assets/textures/player.png".to_owned(),
+    ));
+    smoke.release_at(browser.center());
+    smoke.frame();
+    checks.push(Check::new(
+        "dnd/an_asset_back_onto_the_browser_is_a_silent_reject",
+        browser.is_positive()
+            && smoke.entity_count() == before_entities + 1
+            && count_files_under(&smoke.root) == files_before
+            && smoke.app.status.contains("资源库"),
+        format!(
+            "落区={browser:?}；实体={}；文件={files_before}→{}；状态={:?}",
+            smoke.entity_count(),
+            count_files_under(&smoke.root),
+            smoke.app.status
+        ),
+    ));
+    smoke.cleanup();
+    checks
+}
+
+/// 用例 6c：**实体拖到另一行 = 重挂载**（落点矩阵里唯一会改父子关系的一格）。
+///
+/// 为什么单独一条：资产落点是"加一个实体"，错了最多是多余实体；重挂载错了是把整棵子树
+/// 搬走。矩阵里它是合法格，所以真正要验的是**层级行自己的那三带判定 + 环校验**：
+/// ① 指针落在行中部 → 成为该行的子节点，且只付一次 Undo；
+/// ② 把父节点往它自己的后代上放 → 整笔事务取消（父级不变、Undo 不加），并把原因写进状态栏。
+/// ②若只靠 `dnd::plan` 的单测是测不到的——plan 只管"这类载荷能不能进这一格"，环校验在层级行的
+/// `validate_reparent_target` 里，必须走真实帧才连得起来。
+fn case_reparent_entity_on_hierarchy_row() -> Vec<Check> {
+    let mut smoke = GuiSmoke::new("drop-reparent", egui::vec2(1280.0, 720.0), 1.0);
+    smoke.idle(4);
+    let mut checks = Vec::new();
+    let moving = SceneEntityId(1);
+    let target = SceneEntityId(2);
+    let undo_before = smoke.app.history.undo_len();
+    let Some(row) = smoke.row_rect(target) else {
+        checks.push(Check::new(
+            "dnd/hierarchy_row_for_reparent_available",
+            false,
+            format!("层级第 {target:?} 行没有矩形"),
+        ));
+        smoke.cleanup();
+        return checks;
+    };
+    let point = row.center();
+    smoke.frame_with(
+        vec![egui::Event::PointerMoved(point)],
+        egui::Modifiers::default(),
+    );
+    smoke.frame_with_payload(crate::dnd::DropPayload::Entity(moving));
+    smoke.release_at(point);
+    smoke.frame();
+    checks.push(Check::new(
+        "dnd/an_entity_on_a_row_reparents_with_one_undo",
+        smoke.parent_of(moving) == Some(target)
+            && smoke.app.history.undo_len() == undo_before + 1
+            && smoke.entity_count() == 4,
+        format!(
+            "{moving:?} 的父级={:?}；undo {undo_before}→{}；实体数={}",
+            smoke.parent_of(moving),
+            smoke.app.history.undo_len(),
+            smoke.entity_count()
+        ),
+    ));
+
+    // 环校验：`moving` 现在是 `target` 的后代，反向往回放必须整笔取消。
+    // 先空走两帧再取矩形：重挂载把 `moving` 那一行搬到了 `target` 之后，只走一帧时
+    // `read_response` 读到的还是**上一帧**的行位，往那儿放会落到别的行上（测的就是假阴性）。
+    smoke.idle(2);
+    let Some(back) = smoke.row_rect(moving) else {
+        checks.push(Check::new(
+            "dnd/reparented_row_still_visible",
+            false,
+            format!("重挂载后第 {moving:?} 行没有矩形"),
+        ));
+        smoke.cleanup();
+        return checks;
+    };
+    let point = back.center();
+    smoke.frame_with(
+        vec![egui::Event::PointerMoved(point)],
+        egui::Modifiers::default(),
+    );
+    smoke.frame_with_payload(crate::dnd::DropPayload::Entity(target));
+    smoke.release_at(point);
+    smoke.frame();
+    checks.push(Check::new(
+        "dnd/a_cycle_is_refused_and_says_why",
+        smoke.parent_of(moving) == Some(target)
+            && smoke.parent_of(target).is_none()
+            && smoke.app.history.undo_len() == undo_before + 1
+            && smoke.app.status.contains("后代"),
+        format!(
+            "{moving:?} 的父级={:?}；{target:?} 的父级={:?}；undo={}；状态={:?}",
+            smoke.parent_of(moving),
+            smoke.parent_of(target),
+            smoke.app.history.undo_len(),
+            smoke.app.status
+        ),
+    ));
+    smoke.cleanup();
+    checks
+}
+
+/// 用例 6d：**系统拖放**（从资源管理器拖文件进窗口）。
+///
+/// 四件事都要成立：① 文件真的复制进 `assets/<家族目录>`（不改名、不覆盖）；
+/// ② 落到画布的混合批次 = 导入全部 + 只给可生成的建实体 + **恰好一条** Undo；
+/// ③ 落到层级行 = 同一批文件、另一个落点，建出来的实体挂在那一行下面；
+/// ④ 落在所有放置区之外时由帧末扫尾说明，磁盘与文档零改动。
+fn case_external_dropped_files() -> Vec<Check> {
+    let mut smoke = GuiSmoke::new("drop-external", egui::vec2(1280.0, 720.0), 1.0);
+    smoke.idle(4);
+    let mut checks = Vec::new();
+    let staging = std::env::temp_dir().join(format!(
+        "rustlua-dnd-external-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos())
+            .unwrap_or_default()
+    ));
+    let _ = fs::remove_dir_all(&staging);
+    fs::create_dir_all(&staging).expect("临时拖放目录");
+    let png = staging.join("hero.png");
+    let audio = staging.join("theme.mp3");
+    fs::write(&png, b"png").expect("写 hero.png");
+    fs::write(&audio, b"mp3").expect("写 theme.mp3");
+
+    // ① 资源浏览器：只入库，不建实体。
+    let browser = smoke.app.resource_browser_rect;
+    let entities_before = smoke.entity_count();
+    smoke.frame_with_dropped_files(std::slice::from_ref(&png), browser.center());
+    smoke.frame();
+    let imported = smoke.app.project.root.join("assets/textures/hero.png");
+    checks.push(Check::new(
+        "dnd/an_external_texture_lands_in_its_family_folder",
+        browser.is_positive() && imported.is_file() && smoke.entity_count() == entities_before,
+        format!(
+            "落区={browser:?}；落点={}；实体={}",
+            imported.display(),
+            smoke.entity_count()
+        ),
+    ));
+
+    // ② 画布：混合批次（图 + 音频）→ 导入两个、建一个实体、一条 Undo。
+    //    同一个 `hero.png` 第二次进来必须**让路**（`hero-1.png`），不能覆盖第一次的入库结果。
+    let canvas = smoke.app.scene_canvas_rect;
+    let undo_before_batch = smoke.app.history.undo_len();
+    smoke.frame_with_dropped_files(&[png.clone(), audio.clone()], canvas.center());
+    smoke.frame();
+    let audio_in = smoke.app.project.root.join("assets/audio/theme.mp3");
+    let renamed_in = smoke.app.project.root.join("assets/textures/hero-1.png");
+    checks.push(Check::new(
+        "dnd/an_external_batch_imports_all_and_spawns_one_undo",
+        smoke.entity_count() == entities_before + 1
+            && smoke.app.history.undo_len() == undo_before_batch + 1
+            && audio_in.is_file()
+            && renamed_in.is_file(),
+        format!(
+            "实体 {entities_before}→{}；undo {undo_before_batch}→{}；音频={} 让路={}",
+            smoke.entity_count(),
+            smoke.app.history.undo_len(),
+            audio_in.is_file(),
+            renamed_in.is_file()
+        ),
+    ));
+
+    // ③ 层级的一行：同一批文件换落点，语义变成"导入全部 + 只把可生成的建成**这一行的子节点**"。
+    //    矩阵里外部文件 × Hierarchy 是合法格，而它走的不是画布那条 `commit_spawn_drop(None)`
+    //    分支，父级参数错了不会有任何别的测试发现。
+    let parent_row = SceneEntityId(2);
+    let Some(row) = smoke.row_rect(parent_row) else {
+        checks.push(Check::new(
+            "dnd/hierarchy_row_for_external_batch_available",
+            false,
+            format!("层级第 {parent_row:?} 行没有矩形"),
+        ));
+        let _ = fs::remove_dir_all(staging);
+        smoke.cleanup();
+        return checks;
+    };
+    let entities_before_row = smoke.entity_count();
+    let undo_before_row = smoke.app.history.undo_len();
+    let ids_before_row: Vec<SceneEntityId> = smoke
+        .scene_document()
+        .scene
+        .entities
+        .keys()
+        .copied()
+        .collect();
+    smoke.frame_with(
+        vec![egui::Event::PointerMoved(row.center())],
+        egui::Modifiers::default(),
+    );
+    smoke.frame_with_dropped_files(&[png.clone(), audio.clone()], row.center());
+    smoke.frame();
+    let created_as_child: Vec<SceneEntityId> = smoke
+        .scene_document()
+        .scene
+        .entities
+        .keys()
+        .copied()
+        .filter(|id| !ids_before_row.contains(id))
+        .collect();
+    checks.push(Check::new(
+        "dnd/an_external_batch_on_a_row_spawns_children",
+        smoke.entity_count() == entities_before_row + 1
+            && smoke.app.history.undo_len() == undo_before_row + 1
+            && created_as_child.len() == 1
+            && created_as_child
+                .iter()
+                .all(|id| smoke.parent_of(*id) == Some(parent_row)),
+        format!(
+            "实体 {entities_before_row}→{}；undo {undo_before_row}→{}；子节点={created_as_child:?}",
+            smoke.entity_count(),
+            smoke.app.history.undo_len(),
+        ),
+    ));
+
+    // ④ 没有落点：帧末扫尾要**说明**，磁盘与文档零改动（同一个文件不能因为一次失败的
+    //    松手就被再复制一份）。
+    let assets = smoke.app.project.root.join("assets");
+    let files_before_sweep = count_files_under(&assets);
+    let entities_after_row = smoke.entity_count();
+    let undo_after_row = smoke.app.history.undo_len();
+    let dropped_at = egui::pos2(1.0, 1.0);
+    smoke.frame_with_dropped_files(std::slice::from_ref(&png), dropped_at);
+    // 状态必须在这一帧就读走：下一帧的后台资源刷新完成消息会把它盖掉。
+    let swept = std::mem::take(&mut smoke.app.status);
+    smoke.frame();
+    checks.push(Check::new(
+        "dnd/a_drop_outside_every_zone_is_explained_not_silently_dropped",
+        smoke.entity_count() == entities_after_row
+            && smoke.app.history.undo_len() == undo_after_row
+            && count_files_under(&assets) == files_before_sweep
+            && swept.contains("未做任何改动"),
+        format!(
+            "实体={}；undo {undo_after_row}→{}；文件={files_before_sweep}→{}；扫尾={swept:?}",
+            smoke.entity_count(),
+            smoke.app.history.undo_len(),
+            count_files_under(&assets)
+        ),
+    ));
+
+    let _ = fs::remove_dir_all(staging);
     smoke.cleanup();
     checks
 }
@@ -1111,9 +1604,13 @@ pub(crate) fn run_all() -> SmokeReport {
     checks.extend(case_hierarchy_pointer_selection());
     checks.extend(case_keyboard_shortcuts());
     checks.extend(case_scene_view_pointer_drag());
+    checks.extend(case_scene_view_rotation_snap());
     checks.extend(case_unsaved_change_modal());
     checks.extend(case_input_focus_consumes_shortcuts());
     checks.extend(case_drop_payload_on_scene_view());
+    checks.extend(case_drop_asset_on_hierarchy_row());
+    checks.extend(case_reparent_entity_on_hierarchy_row());
+    checks.extend(case_external_dropped_files());
     checks.extend(case_dock_panel_visibility_and_layout_persistence());
     checks.extend(case_dpi_and_resize_matrix());
     checks.extend(case_resize_keeps_state_consistent());

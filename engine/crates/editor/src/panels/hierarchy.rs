@@ -413,139 +413,142 @@ impl EditorApp {
 
     // `paste_entity` **已搬到 shell**（`crate::hierarchy_ops`，第 28 轮）：提交边界不在面板里。
 
-    /// 层级面板：整合场景文件切换/新建，位于资源面板右侧。
+    /// 层级面板外壳（`Context` 入口只服务 `perf_baseline` 的合成帧；生产路径由 dock
+    /// 标签直接渲染 [`Self::draw_hierarchy_body`]）。
     pub(crate) fn draw_hierarchy_panel(&mut self, context: &egui::Context) {
         egui::SidePanel::left("scene_tree")
             .resizable(true)
             // 宽度来自持久化布局（docs/55 P1：可保存布局）。
             .default_width(self.layout.panel_width(editor::PANEL_HIERARCHY))
             .min_width(110.0)
-            .show(context, |ui| {
-                // 场景文件集成：标题 + 「+」创建菜单 + 当前场景保存状态。
-                ui.horizontal(|ui| {
-                    ui.heading("层级");
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if let Some(document) = self.current_scene() {
-                            if document.dirty {
-                                ui.colored_label(egui::Color32::YELLOW, "● 未保存");
-                            } else {
-                                ui.label("已保存");
-                            }
-                        }
-                        // H01：Unity 风格「+」创建菜单，父级取当前主选中（无则挂根）。
-                        let create_parent = self.selection.primary();
-                        ui.menu_button("+", |ui| {
-                            self.draw_hierarchy_create_menu(ui, create_parent);
-                        });
-                    });
-                });
-                // 场景切换下拉：列出 scenes/ 目录全部场景文件。
-                let scene_files = self.scene_files();
-                let current_path = self
-                    .current_scene()
-                    .and_then(|document| document.path.clone());
-                let mut open_path: Option<PathBuf> = None;
-                egui::ComboBox::from_id_salt("scene_selector")
-                    .width(ui.available_width())
-                    .selected_text(self.scene_selector_label())
-                    .show_ui(ui, |ui| {
-                        if scene_files.is_empty() {
-                            ui.label("（暂无场景文件）");
-                        }
-                        for file in &scene_files {
-                            let is_current = current_path.as_ref().is_some_and(|path| {
-                                strip_verbatim_prefix(path)
-                                    == strip_verbatim_prefix(&self.project.root.join(file))
-                            });
-                            let label = file.file_name().map_or_else(
-                                || file.display().to_string(),
-                                |name| name.to_string_lossy().into_owned(),
-                            );
-                            if ui.selectable_label(is_current, label).clicked() && !is_current {
-                                open_path = Some(file.clone());
-                            }
-                        }
-                    });
+            .show(context, |ui| self.draw_hierarchy_body(ui));
+    }
+
+    /// 层级面板主体（M27-00 阶段 1：dock 标签直接渲染，外壳宽度只服务合成帧路径）。
+    pub(crate) fn draw_hierarchy_body(&mut self, ui: &mut egui::Ui) {
+        // 场景文件集成：标题 + 「+」创建菜单 + 当前场景保存状态。
+        ui.horizontal(|ui| {
+            ui.heading("层级");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if let Some(document) = self.current_scene() {
-                    let path = document
-                        .path
-                        .as_deref()
-                        .map_or_else(|| "未保存，保存后将写入 scenes/".to_owned(), display_path);
-                    ui.small(format!("路径：{path}"));
+                    if document.dirty {
+                        ui.colored_label(egui::Color32::YELLOW, "● 未保存");
+                    } else {
+                        ui.label("已保存");
+                    }
                 }
-                if let Some(path) = open_path {
-                    self.open_scene_resource(path);
-                }
-                ui.separator();
-                // H05：搜索框 —— 占位提示 + 非空时一键清空 + 命中计数。
-                //
-                // docs/55 阶段 0：把输入框矩形记进探针，GUI smoke 才能用**真实指针事件**把焦点
-                // 打进文本框（"输入焦点"是计划 §8 质量门枚举的一项：键入时快捷键不得抢键）。
-                // right-to-left：✕ 先画靠右，TextEdit 后画用 INFINITY 占满剩余宽度。
-                // 之前按 available_width()-34 算 desired_width，输入文字比这个宽时 TextEdit
-                // 的内容 galley 会反向撑大自身，导致输入框越输越宽（与 schema_inspector 同一问题）。
-                let filter_response =
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                        // 空时也在按钮位分配 0 宽占位：保持 TextEdit 的 widget 序号稳定，
-                        // 否则输入首字符时 ✕ 按钮出现会让 TextEdit 序号 +1，egui 视为新控件而丢焦点。
-                        if !self.hierarchy_filter.is_empty()
-                            && ui.small_button("✕").on_hover_text("清空过滤").clicked()
-                        {
-                            self.hierarchy_filter.clear();
-                        } else {
-                            ui.allocate_exact_size(egui::vec2(0.0, 0.0), egui::Sense::hover());
-                        }
-                        // 显式固定 widget ID：按钮出现/消失会改变自动序号，导致 TextEdit 被当成新控件而丢焦点。
-                        let edit_response = ui.add(
-                            egui::TextEdit::singleline(&mut self.hierarchy_filter)
-                                .id(ui.make_persistent_id("hierarchy_search_box"))
-                                // 语法提示直接写在占位文本里：`type:`/`component:` 是 ER-04 的"类型过滤"。
-                                .hint_text("搜索实体（type:Sprite 或 component:ui 按组件过滤）")
-                                .desired_width(f32::INFINITY),
-                        );
-                        edit_response.rect
-                    });
-                // 探针：GUI smoke 用它把合成点击打在输入框真正的位置上。
-                self.hierarchy_filter_rect = filter_response.inner;
-                if !self.hierarchy_filter.trim().is_empty() {
-                    ui.small(format!("匹配 {} 项", self.hierarchy_match_count()));
-                }
-                ui.separator();
-                // 扁平化 + 虚拟滚动：只绘制视口内的行（10k 实体保持可交互）。
-                // 行模型按 (修订, 实体数, 过滤词, 折叠集合) 缓存，绘制不再递归、不再克隆文档。
-                let rows = self.hierarchy_rows();
-                let row_count = rows.len();
-                let body_height = ui.available_height().max(48.0);
-                let row_height = hierarchy_row_height(ui);
-                self.hierarchy_row_probe.reset();
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false; 2])
-                    .max_height(body_height)
-                    .show_rows(ui, row_height, row_count, |ui, visible| {
-                        for index in visible {
-                            if let Some(row) = rows.get(index).copied() {
-                                self.draw_entity_row(ui, row, row_height);
-                            }
-                        }
-                    });
-                if self.current_scene().is_none() {
-                    ui.label("请先新建场景");
-                }
-                // H04：键盘导航（↑↓←→ / F2 / F）。指针悬停面板且无文本焦点时生效。
-                self.handle_hierarchy_shortcuts(ui, context);
-                // H07：空白区域 —— 左键取消选择，右键打开创建菜单。
-                let empty_size = egui::vec2(ui.available_width(), ui.available_height().max(48.0));
-                let (_, empty) = ui.allocate_exact_size(empty_size, egui::Sense::click());
-                if empty.clicked() && self.current_scene().is_some() {
-                    self.selection.clear(SelectionSource::Hierarchy);
-                    self.selection_anchor = None;
-                    self.clear_inspector();
-                }
-                empty.context_menu(|ui| {
-                    let parent = self.selection.primary();
-                    self.draw_hierarchy_create_menu(ui, parent);
+                // H01：Unity 风格「+」创建菜单，父级取当前主选中（无则挂根）。
+                let create_parent = self.selection.primary();
+                ui.menu_button("+", |ui| {
+                    self.draw_hierarchy_create_menu(ui, create_parent);
                 });
             });
+        });
+        // 场景切换下拉：列出 scenes/ 目录全部场景文件。
+        let scene_files = self.scene_files();
+        let current_path = self
+            .current_scene()
+            .and_then(|document| document.path.clone());
+        let mut open_path: Option<PathBuf> = None;
+        egui::ComboBox::from_id_salt("scene_selector")
+            .width(ui.available_width())
+            .selected_text(self.scene_selector_label())
+            .show_ui(ui, |ui| {
+                if scene_files.is_empty() {
+                    ui.label("（暂无场景文件）");
+                }
+                for file in &scene_files {
+                    let is_current = current_path.as_ref().is_some_and(|path| {
+                        strip_verbatim_prefix(path)
+                            == strip_verbatim_prefix(&self.project.root.join(file))
+                    });
+                    let label = file.file_name().map_or_else(
+                        || file.display().to_string(),
+                        |name| name.to_string_lossy().into_owned(),
+                    );
+                    if ui.selectable_label(is_current, label).clicked() && !is_current {
+                        open_path = Some(file.clone());
+                    }
+                }
+            });
+        if let Some(document) = self.current_scene() {
+            let path = document
+                .path
+                .as_deref()
+                .map_or_else(|| "未保存，保存后将写入 scenes/".to_owned(), display_path);
+            ui.small(format!("路径：{path}"));
+        }
+        if let Some(path) = open_path {
+            self.open_scene_resource(path);
+        }
+        ui.separator();
+        // H05：搜索框 —— 占位提示 + 非空时一键清空 + 命中计数。
+        //
+        // docs/55 阶段 0：把输入框矩形记进探针，GUI smoke 才能用**真实指针事件**把焦点
+        // 打进文本框（"输入焦点"是计划 §8 质量门枚举的一项：键入时快捷键不得抢键）。
+        // right-to-left：✕ 先画靠右，TextEdit 后画用 INFINITY 占满剩余宽度。
+        // 之前按 available_width()-34 算 desired_width，输入文字比这个宽时 TextEdit
+        // 的内容 galley 会反向撑大自身，导致输入框越输越宽（与 schema_inspector 同一问题）。
+        let filter_response = ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+            // 空时也在按钮位分配 0 宽占位：保持 TextEdit 的 widget 序号稳定，
+            // 否则输入首字符时 ✕ 按钮出现会让 TextEdit 序号 +1，egui 视为新控件而丢焦点。
+            if !self.hierarchy_filter.is_empty()
+                && ui.small_button("✕").on_hover_text("清空过滤").clicked()
+            {
+                self.hierarchy_filter.clear();
+            } else {
+                ui.allocate_exact_size(egui::vec2(0.0, 0.0), egui::Sense::hover());
+            }
+            // 显式固定 widget ID：按钮出现/消失会改变自动序号，导致 TextEdit 被当成新控件而丢焦点。
+            let edit_response = ui.add(
+                egui::TextEdit::singleline(&mut self.hierarchy_filter)
+                    .id(ui.make_persistent_id("hierarchy_search_box"))
+                    // 语法提示直接写在占位文本里：`type:`/`component:` 是 ER-04 的"类型过滤"。
+                    .hint_text("搜索实体（type:Sprite 或 component:ui 按组件过滤）")
+                    .desired_width(f32::INFINITY),
+            );
+            edit_response.rect
+        });
+        // 探针：GUI smoke 用它把合成点击打在输入框真正的位置上。
+        self.hierarchy_filter_rect = filter_response.inner;
+        if !self.hierarchy_filter.trim().is_empty() {
+            ui.small(format!("匹配 {} 项", self.hierarchy_match_count()));
+        }
+        ui.separator();
+        // 扁平化 + 虚拟滚动：只绘制视口内的行（10k 实体保持可交互）。
+        // 行模型按 (修订, 实体数, 过滤词, 折叠集合) 缓存，绘制不再递归、不再克隆文档。
+        let rows = self.hierarchy_rows();
+        let row_count = rows.len();
+        let body_height = ui.available_height().max(48.0);
+        let row_height = hierarchy_row_height(ui);
+        self.hierarchy_row_probe.reset();
+        egui::ScrollArea::vertical()
+            .auto_shrink([false; 2])
+            .max_height(body_height)
+            .show_rows(ui, row_height, row_count, |ui, visible| {
+                for index in visible {
+                    if let Some(row) = rows.get(index).copied() {
+                        self.draw_entity_row(ui, row, row_height);
+                    }
+                }
+            });
+        if self.current_scene().is_none() {
+            ui.label("请先新建场景");
+        }
+        // H04：键盘导航（↑↓←→ / F2 / F）。指针悬停面板且无文本焦点时生效。
+        self.handle_hierarchy_shortcuts(ui, ui.ctx());
+        // H07：空白区域 —— 左键取消选择，右键打开创建菜单。
+        let empty_size = egui::vec2(ui.available_width(), ui.available_height().max(48.0));
+        let (_, empty) = ui.allocate_exact_size(empty_size, egui::Sense::click());
+        if empty.clicked() && self.current_scene().is_some() {
+            self.selection.clear(SelectionSource::Hierarchy);
+            self.selection_anchor = None;
+            self.clear_inspector();
+        }
+        empty.context_menu(|ui| {
+            let parent = self.selection.primary();
+            self.draw_hierarchy_create_menu(ui, parent);
+        });
     }
 
     /// 过滤匹配（单实体语义入口）。
@@ -1233,7 +1236,7 @@ impl EditorApp {
             .is_some_and(|session| session.id == id);
         let rename_row_height = (row_height - 4.0).max(14.0);
         let (row_zone, drop_payload) =
-            ui.dnd_drop_zone::<SceneEntityId, _>(egui::Frame::default(), |ui| {
+            ui.dnd_drop_zone::<crate::dnd::DropPayload, _>(egui::Frame::default(), |ui| {
                 let inner = ui.horizontal(|ui| {
                     // H06：缩进参考线（每层一条淡色竖线）。
                     let row_left = ui.cursor().left();
@@ -1372,35 +1375,59 @@ impl EditorApp {
         let should_drag = row_hover.contains_pointer()
             && ui.input(|i| i.pointer.primary_down() && i.pointer.is_decidedly_dragging());
         if should_drag && !egui::DragAndDrop::has_any_payload(ui.ctx()) {
-            egui::DragAndDrop::set_payload(ui.ctx(), id);
+            egui::DragAndDrop::set_payload(ui.ctx(), crate::dnd::DropPayload::Entity(id));
         }
-        let drag_target_state = drop_payload
-            .as_ref()
-            .map(|dragged_id| **dragged_id)
-            .filter(|dragged_id| *dragged_id != id)
-            .and_then(|dragged_id| {
-                self.document.current_scene.as_ref().map(|scene| {
-                    (
-                        dragged_id,
-                        self.validate_reparent_target(scene, dragged_id, Some(id)),
-                    )
-                })
-            });
-        let drop_valid = matches!(drag_target_state, Some((_, Ok(()))));
-        let drop_invalid = matches!(drag_target_state, Some((_, Err(_))));
-        let drop_position = ui
-            .input(|input| input.pointer.interact_pos().map(|position| position.y))
-            .map(|pointer_y| {
-                let fraction = (pointer_y - row_rect.top()) / row_rect.height();
-                if fraction < 0.33 {
-                    ReparentPosition::Before
-                } else if fraction > 0.66 {
-                    ReparentPosition::After
-                } else {
-                    ReparentPosition::Child
-                }
+        let dragged = drop_payload.as_ref().map(|payload| (**payload).clone());
+        // M27-01：这一行的落点语义交给 `dnd::plan` —— 实体=重排，资产=建成这一行的子节点。
+        // 重排还要过父子合法性校验（不能把自己挂到自己/后代下面），非法时画红框并拒绝。
+        let reparent_target = match dragged.as_ref() {
+            Some(crate::dnd::DropPayload::Entity(dragged_id)) if *dragged_id != id => {
+                Some(*dragged_id)
+            }
+            _ => None,
+        };
+        let drag_target_state = reparent_target.and_then(|dragged_id| {
+            self.document.current_scene.as_ref().map(|scene| {
+                (
+                    dragged_id,
+                    self.validate_reparent_target(scene, dragged_id, Some(id)),
+                )
             })
-            .unwrap_or(ReparentPosition::Child);
+        });
+        let pointer = ui.input(|input| input.pointer.hover_pos());
+        let drops_asset = matches!(dragged, Some(crate::dnd::DropPayload::Asset(_)));
+        let drop_valid = matches!(drag_target_state, Some((_, Ok(())))) || drops_asset;
+        let drop_invalid = matches!(drag_target_state, Some((_, Err(_))));
+        // 只有重排才分 Before/After/Child 三条带；资产落点是"成为这一行的子节点"，
+        // 画一条横线会把语义说反。
+        let drop_position = if drops_asset {
+            ReparentPosition::Child
+        } else {
+            pointer
+                .map(|position| position.y)
+                .map(|pointer_y| {
+                    let fraction = (pointer_y - row_rect.top()) / row_rect.height();
+                    if fraction < 0.33 {
+                        ReparentPosition::Before
+                    } else if fraction > 0.66 {
+                        ReparentPosition::After
+                    } else {
+                        ReparentPosition::Child
+                    }
+                })
+                .unwrap_or(ReparentPosition::Child)
+        };
+        // 系统文件拖到某一行上：导入并建成这一行的子节点（行矩形互不重叠，谁包住指针谁认领）。
+        if let Some((action, drop)) =
+            self.claim_external_drop(crate::dnd::DropZone::Hierarchy, row_rect)
+        {
+            let text = self.commit_spawn_drop(&action, Some(id));
+            self.status = format!("{text}{}", drop.notes());
+        } else if let Some(action) =
+            self.external_hover_action(crate::dnd::DropZone::Hierarchy, row_rect, pointer)
+        {
+            crate::dnd::paint_drop_feedback(ui, row_rect, 4, &action);
+        }
         if drop_valid || drop_invalid {
             let stroke = egui::Stroke::new(
                 2.0_f32,
@@ -1426,11 +1453,21 @@ impl EditorApp {
                 }
             }
         }
-        if let Some(dropped_id) = drop_payload.as_ref().map(|id| **id)
-            && dropped_id != id
-        {
-            // H03：落点结算移入 helper —— 多选拖拽批量移动 + 单事务原子回滚。
-            self.handle_hierarchy_drop(dropped_id, id, drop_position);
+        let Some(source) = dragged.map(crate::dnd::DragSource::Internal) else {
+            return;
+        };
+        match (
+            reparent_target,
+            crate::dnd::plan(&source, crate::dnd::DropZone::Hierarchy),
+        ) {
+            // H03：重排落点结算移入 helper —— 多选批量移动 + 单事务原子回滚。
+            (Some(dragged_id), _) => {
+                self.handle_hierarchy_drop(dragged_id, id, drop_position);
+            }
+            // 把自己的行拖到自己身上：什么也没发生，不该留一条状态噪音。
+            (None, crate::dnd::DropAction::Reparent) => {}
+            // 资产拖到行上：建实体走同一提交层，父节点=这一行。
+            (None, action) => self.status = self.commit_spawn_drop(&action, Some(id)),
         }
     }
 

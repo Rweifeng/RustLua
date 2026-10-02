@@ -4,12 +4,14 @@
 //! 与 `scene_drag.rs` 同一分工：面板负责绘制、命中测试、资源拖放识别与参数收集；
 //! "写进文档 + 一条 Undo"的提交边界住在面板外。搬出前后行为一字未改：
 //! Play 中一律拒绝、无净变化不产生历史、失败只返回错误字符串（由面板写状态栏）。
+//! M27-01 起拖放生成走 `spawn_dropped_batch`：一次拖放无论几个文件都只有**一条** Undo。
 
 use crate::EditorApp;
 use crate::util::strip_verbatim_prefix;
-use editor::CommandKind;
+use editor::{CommandKind, SceneTreeState};
 use engine::core::{
     prefab::Prefab,
+    resource_kind::ResourceKind,
     scene::SceneEntityId,
     texture::{TextureAsset, TextureColorSpace},
     transform::{Transform3D, Vec2},
@@ -39,24 +41,152 @@ impl EditorApp {
         }
     }
 
-    /// 从拖放的预制体路径实例化到场景。
-    pub(crate) fn spawn_prefab_from_drop(&mut self, path: &str) -> Result<(), String> {
+    /// 从拖放的资源路径**批量**建实体：一次拖放 = 恰好一条 Undo。
+    ///
+    /// 三种语义与迁移前的 `spawn_prefab_from_drop` / `spawn_model_from_drop` /
+    /// `spawn_sprite_from_drop` 一一对应（预制体→实例化并打 prefab.* 标记、模型→
+    /// Transform3D+MeshRenderer、其余→Transform+Sprite）。差别有两点：
+    /// ① 整批只走一次 `history.execute`，撤销一步回到拖放前，不会"撤一半"；
+    /// ② 需要读盘的（预制体解析、源纹理尺寸）在动手之前全部读完，任一文件读不动
+    ///    就整批拒绝，文档零改动——不存在"前三个建好了第四个失败"的中间态。
+    /// `parent` 只影响新建实体的挂点（层级面板按落点带传父节点，画布传 `None`）。
+    /// 返回状态栏文案（本层不写 `self.status`）。
+    pub(crate) fn spawn_dropped_batch(
+        &mut self,
+        paths: &[String],
+        parent: Option<SceneEntityId>,
+    ) -> String {
         if self.is_playing() {
-            return Err("Play mode locks scene editing; click Stop first".to_owned());
+            return "Play mode locks scene editing; click Stop first".to_owned();
+        }
+        if paths.is_empty() {
+            return "没有可创建的资产".to_owned();
+        }
+        if self.document.current_scene.is_none() {
+            return "请先创建场景".to_owned();
         }
         let root = strip_verbatim_prefix(&self.project.root);
-        let prefab = Prefab::load(root.join(path)).map_err(|error| error.to_string())?;
-        let Some(scene) = self.document.current_scene.as_mut() else {
-            return Ok(());
+        let mut specs = Vec::with_capacity(paths.len());
+        for path in paths {
+            match SpawnSpec::prepare(&root, path) {
+                Ok(spec) => specs.push(spec),
+                Err(error) => return error,
+            }
+        }
+        let label = if specs.len() == 1 {
+            specs[0].label().to_owned()
+        } else {
+            "Drop Assets".to_owned()
         };
-        let overrides = std::collections::BTreeMap::new();
-        let result = self.history.execute(
-            scene,
-            "Instantiate Prefab",
-            CommandKind::Create,
-            move |scene| {
+        let tree = self.tree.clone();
+        let created = std::cell::RefCell::new(Vec::new());
+        let Some(scene) = self.document.current_scene.as_mut() else {
+            return "请先创建场景".to_owned();
+        };
+        let result = self
+            .history
+            .execute(scene, label, CommandKind::Create, |scene| {
+                for spec in &specs {
+                    let id = spec.apply(&tree, scene, parent)?;
+                    created.borrow_mut().push(id);
+                }
+                Ok::<(), String>(())
+            });
+        let created = created.into_inner();
+        match result {
+            Err(error) => error,
+            Ok(false) => "No change".to_owned(),
+            Ok(true) => {
+                let Some(&first) = created.first() else {
+                    return "没有可创建的资产".to_owned();
+                };
+                // 整批都选中，Inspector 停在第一个：拖完 20 张图能立刻框住全批改属性。
+                if created.len() == 1 {
+                    self.selection
+                        .set_single(first, editor::SelectionSource::SceneView2D);
+                } else {
+                    self.selection.set_many(
+                        created.iter().copied(),
+                        Some(first),
+                        editor::SelectionSource::SceneView2D,
+                    );
+                }
+                self.sync_inspector(first);
+                format!("已创建 {} 个实体", created.len())
+            }
+        }
+    }
+}
+
+/// 一个待创建实体的**预备**结果：所有需要读盘的信息都在这里，创建过程本身纯内存。
+enum SpawnSpec {
+    Prefab { path: String, prefab: Prefab },
+    Model { path: String },
+    Sprite { path: String, size: Vec2 },
+}
+
+impl SpawnSpec {
+    /// 资源类型按扩展名判定（`ResourceKind::from_path` 是工程内唯一口径）。
+    fn prepare(root: &Path, path: &str) -> Result<Self, String> {
+        Ok(match ResourceKind::from_path(Path::new(path)) {
+            ResourceKind::Prefab => Self::Prefab {
+                path: path.to_owned(),
+                prefab: Prefab::load(root.join(path)).map_err(|error| error.to_string())?,
+            },
+            ResourceKind::Model => Self::Model {
+                path: path.to_owned(),
+            },
+            _ => {
+                // 精灵尺寸按源纹理实际像素生成，编辑器包围框与显示一致；读不到回退 32×32。
+                let size = TextureAsset::load_png(root.join(path), TextureColorSpace::Srgb)
+                    .map(|asset| Vec2::new(asset.width() as f32, asset.height() as f32))
+                    .unwrap_or(Vec2::new(32.0, 32.0));
+                Self::Sprite {
+                    path: path.to_owned(),
+                    size,
+                }
+            }
+        })
+    }
+
+    fn label(&self) -> &'static str {
+        match self {
+            Self::Prefab { .. } => "Instantiate Prefab",
+            Self::Model { .. } => "Create Model",
+            Self::Sprite { .. } => "Create Sprite",
+        }
+    }
+
+    fn name(&self) -> String {
+        let fallback = match self {
+            Self::Prefab { .. } => "Prefab",
+            Self::Model { .. } => "Model",
+            Self::Sprite { .. } => "Sprite",
+        };
+        Path::new(self.path())
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or_else(|| fallback.to_owned())
+    }
+
+    fn path(&self) -> &str {
+        match self {
+            Self::Prefab { path, .. } | Self::Model { path } | Self::Sprite { path, .. } => path,
+        }
+    }
+
+    /// 在文档里真正建出实体，返回**新建的根**实体 id（预制体实例化出的整棵子树算一个）。
+    fn apply(
+        &self,
+        tree: &SceneTreeState,
+        scene: &mut editor::SceneDocument,
+        parent: Option<SceneEntityId>,
+    ) -> Result<SceneEntityId, String> {
+        match self {
+            Self::Prefab { prefab, path } => {
+                let overrides = std::collections::BTreeMap::new();
                 let instance = prefab
-                    .instantiate(&mut scene.scene, None, &overrides)
+                    .instantiate(&mut scene.scene, parent, &overrides)
                     .map_err(|error| error.to_string())?;
                 for (source_id, entity_id) in &instance.source_to_instance {
                     if let Some(entity) = scene.scene.entities.get_mut(entity_id) {
@@ -73,98 +203,35 @@ impl EditorApp {
                     }
                 }
                 scene.mark_dirty();
-                Ok::<(), String>(())
-            },
-        );
-        match result {
-            Ok(_) => Ok(()),
-            Err(error) => Err(error),
-        }
-    }
-
-    /// 从拖放的模型路径创建 3D 网格实体（Transform3D + MeshRenderer）。
-    pub(crate) fn spawn_model_from_drop(&mut self, path: &str) -> Result<(), String> {
-        if self.is_playing() {
-            return Err("Play mode locks scene editing; click Stop first".to_owned());
-        }
-        if self.document.current_scene.is_none() {
-            return Err("请先创建场景".to_owned());
-        }
-        let name = Path::new(path)
-            .file_stem()
-            .map(|stem| stem.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "Model".to_owned());
-        let tree = self.tree.clone();
-        let path = path.to_owned();
-        let Some(scene) = self.document.current_scene.as_mut() else {
-            return Ok(());
-        };
-        let result =
-            self.history
-                .execute(scene, "Create Model", CommandKind::Create, move |scene| {
-                    let id = tree
-                        .create_entity(scene, name.clone(), None)
-                        .map_err(|error| error.to_string())?;
-                    if let Some(entity) = scene.scene.entities.get_mut(&id) {
-                        entity.components.insert(
-                            "Transform".into(),
-                            Transform3D::default().to_component_str(),
-                        );
-                        entity
-                            .components
-                            .insert("MeshRenderer".into(), format!("mesh={path}"));
-                    }
-                    Ok::<(), String>(())
-                });
-        match result {
-            Ok(_) => Ok(()),
-            Err(error) => Err(error),
-        }
-    }
-
-    /// 从拖放的资源路径创建 2D 精灵实体（Transform + Sprite）。
-    pub(crate) fn spawn_sprite_from_drop(&mut self, path: &str) -> Result<(), String> {
-        if self.is_playing() {
-            return Err("Play mode locks scene editing; click Stop first".to_owned());
-        }
-        if self.document.current_scene.is_none() {
-            return Err("请先创建场景".to_owned());
-        }
-        let name = Path::new(path)
-            .file_stem()
-            .map(|stem| stem.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "Sprite".to_owned());
-        let tree = self.tree.clone();
-        let path = path.to_owned();
-        let root = strip_verbatim_prefix(&self.project.root);
-        let Some(scene) = self.document.current_scene.as_mut() else {
-            return Ok(());
-        };
-        // 记下新建实体的 id：拖放之后要把它**选中**（docs/55 阶段 0 的 GUI smoke 用例
-        // `dnd/dropped_entity_is_named_and_selected` 抓到的缺口）。
-        //
-        // 其余创建入口（层级面板的「+」/`Ctrl+D`/Inspector 添加组件）都把新实体设为选中，
-        // 只有拖放这条路径漏了——用户拖完资源，Inspector 还停在旧对象上，得再去层级面板点一次。
-        let mut created: Option<SceneEntityId> = None;
-        let result = self
-            .history
-            .execute(scene, "Create Sprite", CommandKind::Create, |scene| {
+                Ok(instance.instance_root)
+            }
+            Self::Model { path } => {
                 let id = tree
-                    .create_entity(scene, name.clone(), None)
+                    .create_entity(scene, self.name(), parent)
+                    .map_err(|error| error.to_string())?;
+                if let Some(entity) = scene.scene.entities.get_mut(&id) {
+                    entity.components.insert(
+                        "Transform".into(),
+                        Transform3D::default().to_component_str(),
+                    );
+                    entity
+                        .components
+                        .insert("MeshRenderer".into(), format!("mesh={path}"));
+                }
+                Ok(id)
+            }
+            Self::Sprite { path, size } => {
+                let id = tree
+                    .create_entity(scene, self.name(), parent)
                     .map_err(|error| error.to_string())?;
                 if let Some(entity) = scene.scene.entities.get_mut(&id) {
                     entity.components.insert(
                         "Transform".into(),
                         "position=0,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
                     );
-                    // 新建精灵按源纹理实际像素尺寸生成，编辑器包围框与实际显示一致；
-                    // 纹理读取失败时回退到默认 32×32。
-                    let size = TextureAsset::load_png(root.join(&path), TextureColorSpace::Srgb)
-                        .map(|asset| Vec2::new(asset.width() as f32, asset.height() as f32))
-                        .unwrap_or_else(|_| Vec2::new(32.0, 32.0));
                     let sprite = engine::core::sprite::SpriteComponent {
-                        texture: path.clone(),
-                        size,
+                        texture: path.to_owned(),
+                        size: *size,
                         pivot: engine::core::transform::Vec2::new(0.5, 0.5),
                         tint: [1.0; 4],
                         sorting: engine::core::sprite::SpriteSorting::default(),
@@ -178,20 +245,114 @@ impl EditorApp {
                         .components
                         .insert("Sprite".into(), sprite.to_component_str());
                 }
-                created = Some(id);
-                Ok::<(), String>(())
-            });
-        match result {
-            Ok(_) => {
-                if let Some(id) = created {
-                    self.selection
-                        .set_single(id, editor::SelectionSource::SceneView2D);
-                    self.sync_inspector(id);
-                    self.status = format!("已从资源创建精灵：{id:?}");
-                }
-                Ok(())
+                Ok(id)
             }
-            Err(error) => Err(error),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::EditorApp;
+    use crate::util::test_token;
+    use editor::{CommandResult, EditorCommand, ProjectInfo, SceneDocument};
+    use engine::core::{logging::LogSink, scene::SceneEntityId};
+
+    /// 一个只带根实体的临时工程：精灵拖放不需要磁盘上的文件（读不到尺寸时回退 32×32），
+    /// 所以这些用例能在纯内存条件下成立。
+    fn app_with_scene() -> (EditorApp, std::path::PathBuf) {
+        let root = std::env::temp_dir().join(format!("rustlua-scene-ops-{}", test_token()));
+        let mut app = EditorApp::new(
+            ProjectInfo {
+                root: root.clone(),
+                version: "test".to_owned(),
+                directories: Vec::new(),
+            },
+            None,
+            LogSink::new(64),
+        );
+        let mut document = SceneDocument::new_scene("main");
+        document
+            .scene
+            .add_entity(SceneEntityId(1), "Root", None)
+            .unwrap();
+        app.document.current_scene = Some(document);
+        app.project_loaded = true;
+        (app, root)
+    }
+
+    fn entity_count(app: &EditorApp) -> usize {
+        app.document
+            .current_scene
+            .as_ref()
+            .unwrap()
+            .scene
+            .entities
+            .len()
+    }
+
+    fn children_of(app: &EditorApp, parent: SceneEntityId) -> Vec<SceneEntityId> {
+        let document = app.document.current_scene.as_ref().unwrap();
+        let mut ids: Vec<SceneEntityId> = document
+            .scene
+            .entities
+            .iter()
+            .filter(|(_, entity)| entity.parent == Some(parent))
+            .map(|(id, _)| *id)
+            .collect();
+        ids.sort_unstable();
+        ids
+    }
+
+    /// 一次拖放两个资产 = **恰好一条** Undo，两个实体都挂到落点的父节点下且都被选中；
+    /// 撤销一步整批消失（不存在"撤一半"的中间态）。
+    #[test]
+    fn a_two_asset_drop_is_one_undo_that_reverts_as_a_whole() {
+        let (mut app, root) = app_with_scene();
+        let before = entity_count(&app);
+        let text = app.spawn_dropped_batch(
+            &["assets/a.png".to_owned(), "assets/b.png".to_owned()],
+            Some(SceneEntityId(1)),
+        );
+        assert_eq!(text, "已创建 2 个实体");
+        assert_eq!(entity_count(&app), before + 2);
+        assert_eq!(app.history.undo_len(), 1, "整批只能有一条历史");
+        assert_eq!(children_of(&app, SceneEntityId(1)).len(), 2);
+        assert_eq!(app.selection.ids().len(), 2, "拖完要能立刻全批改属性");
+        assert_eq!(app.dispatch(EditorCommand::Undo), CommandResult::Applied);
+        assert_eq!(entity_count(&app), before);
+        assert!(children_of(&app, SceneEntityId(1)).is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// 批次里有一个预制体读不动 ⇒ **整批**在动手之前就被拒绝：文档零改动、历史零增长。
+    #[test]
+    fn one_unreadable_asset_refuses_the_whole_batch() {
+        let (mut app, root) = app_with_scene();
+        let before = entity_count(&app);
+        let text = app.spawn_dropped_batch(
+            &[
+                "assets/a.png".to_owned(),
+                "assets/does-not-exist.prefab".to_owned(),
+            ],
+            None,
+        );
+        assert!(!text.starts_with("已创建"), "必须报告失败：{text}");
+        assert_eq!(entity_count(&app), before, "拒绝时不能留下半个批次");
+        assert_eq!(app.history.undo_len(), 0);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Play 模式是只读预览：拖放必须在**碰文档之前**就被拒绝。
+    #[test]
+    fn play_mode_refuses_a_drop_without_touching_the_document() {
+        let (mut app, root) = app_with_scene();
+        app.play.set_state_for_test(editor::PlayState::Playing);
+        let before = entity_count(&app);
+        let text = app.spawn_dropped_batch(&["assets/a.png".to_owned()], None);
+        assert!(text.contains("Play"), "文案要说清为什么不行：{text}");
+        assert_eq!(entity_count(&app), before);
+        assert_eq!(app.history.undo_len(), 0);
+        let _ = std::fs::remove_dir_all(root);
     }
 }

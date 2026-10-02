@@ -344,6 +344,18 @@ try {
         Pop-Location
     }
 
+    # M27-03：docs/55 阶段 0 立下的 soak **判据脚本**自己坏了五天没人发现（`6bcdabd` 起首行少了
+    # 前括号；读 JSON 又没写 `-Encoding UTF8`），因为调用方是"验收当天手点的人"，不在任何门里。
+    # 这段自测把它的四种判读钉住：稳态放行、持续增长退 2、大锯齿不误报、坏输入不静默退 0。
+    Write-Step "Soak analyzer self test"
+    Push-Location $projectRoot
+    try {
+        Invoke-Checked powershell @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $projectRoot "scripts/test-analyze-soak.ps1"))
+    }
+    finally {
+        Pop-Location
+    }
+
     Write-Step "Game project check"
     Push-Location $projectRoot
     try {

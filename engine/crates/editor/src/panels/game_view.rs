@@ -47,8 +47,8 @@ impl EditorApp {
                 if let Err(error) = self.play.mark_running() {
                     tracing::warn!(target: "editor", "[preview] state machine: {error}");
                 }
-                // 运行预览时自动切到 Game 视图。
-                self.workspace_tab = WorkspaceTab::Game;
+                // 运行预览时自动切到 Game 视图（dock 的活动标签一起动，见 focus_workspace_tab）。
+                self.focus_workspace_tab(WorkspaceTab::Game);
                 self.status = "Play mode started; runtime changes stay isolated".to_owned();
             }
             Err(error) => {

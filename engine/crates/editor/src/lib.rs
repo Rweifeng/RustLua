@@ -11,8 +11,9 @@ pub use play_control::{
 };
 
 pub use layout::{
-    EditorLayout, LAYOUT_VERSION, LayoutLoad, PANEL_CONSOLE, PANEL_HIERARCHY, PANEL_INSPECTOR,
-    PANEL_RESOURCE, layout_path, load_layout, reset_layout, save_layout,
+    EditorLayout, LAYOUT_VERSION, LayoutLoad, PANEL_CONSOLE, PANEL_GAME_VIEW, PANEL_HIERARCHY,
+    PANEL_INSPECTOR, PANEL_RESOURCE, PANEL_SCENE_VIEW, layout_path, load_layout, reset_layout,
+    save_layout,
 };
 
 pub use file_watcher::{

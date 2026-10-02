@@ -13,53 +13,101 @@ use std::time::Instant;
 
 impl EditorApp {
     /// 资源面板：返回是否需要触发一次资源刷新。
-    pub(crate) fn draw_resource_browser_panel(&mut self, context: &egui::Context) -> bool {
+    /// 资源面板主体（M27-00 阶段 1：dock 标签直接渲染，不再自带 SidePanel 外壳）。
+    ///
+    /// 返回是否需要触发一次资源刷新（原 `draw_resource_browser_panel` 的返回值语义）。
+    pub(crate) fn draw_resource_browser_body(&mut self, ui: &mut egui::Ui) -> bool {
         let mut refresh_resources = false;
         self.resources.set_filter(self.resources_filter.clone());
-        egui::SidePanel::left("resource_panel")
-            .resizable(true)
-            // 宽度来自持久化布局（docs/55 P1：可保存布局）。
-            .default_width(self.layout.panel_width(editor::PANEL_RESOURCE))
-            .min_width(110.0)
-            .show(context, |ui| {
-                ui.horizontal(|ui| {
-                    ui.heading("资源面板");
-                    if ui.button("刷新").clicked() {
-                        refresh_resources = true;
-                    }
-                    ui.label(format!("{} 项", self.resources.visible_entries().len()));
-                });
-                ui.text_edit_singleline(&mut self.resources_filter);
-                // P1：重命名（引用保持）。改名走 shell 的 `perform_resource_move`：
-                // 搬文件 + 改写工程里所有引用（当前文档走内存 + Undo）。
-                self.draw_resource_rename_row(ui);
-                if let Some(error) = self.resources.last_error() {
-                    ui.colored_label(egui::Color32::RED, format!("错误：{error}"));
+        // `Context` 是 `Arc` 句柄，clone 一份即可跨 `&mut Ui` 使用（不持有 ui 借用）。
+        let context = ui.ctx().clone();
+        ui.horizontal(|ui| {
+            ui.heading("资源面板");
+            if ui.button("刷新").clicked() {
+                refresh_resources = true;
+            }
+            ui.label(format!("{} 项", self.resources.visible_entries().len()));
+        });
+        ui.text_edit_singleline(&mut self.resources_filter);
+        // P1：重命名（引用保持）。改名走 shell 的 `perform_resource_move`：
+        // 搬文件 + 改写工程里所有引用（当前文档走内存 + Undo）。
+        self.draw_resource_rename_row(ui);
+        if let Some(error) = self.resources.last_error() {
+            ui.colored_label(egui::Color32::RED, format!("错误：{error}"));
+        }
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                // 把资源按目录组织成树（可折叠）；过滤后无可见子项的目录自动隐藏。
+                // 树按 (filter, refresh_count) 缓存，命中时复用上次构建的树，
+                // 避免大资源项目每帧 clone 全部条目重建。
+                let mut resource_to_open = None;
+                let tree = self.resource_tree_for_draw();
+                self.draw_resource_tree(ui, &tree, "", 1, &context, &mut resource_to_open);
+                if let Some(path) = resource_to_open {
+                    self.open_scene_resource(path);
                 }
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        // 把资源按目录组织成树（可折叠）；过滤后无可见子项的目录自动隐藏。
-                        // 树按 (filter, refresh_count) 缓存，命中时复用上次构建的树，
-                        // 避免大资源项目每帧 clone 全部条目重建。
-                        let mut resource_to_open = None;
-                        let tree = self.resource_tree_for_draw();
-                        self.draw_resource_tree(ui, &tree, "", 1, context, &mut resource_to_open);
-                        if let Some(path) = resource_to_open {
-                            self.open_scene_resource(path);
-                        }
-                        self.resource_tree_cache = Some(ResourceTreeCache {
-                            filter: self.resources_filter.clone(),
-                            refresh_count: self.resources.refresh_count(),
-                            tree,
-                        });
-                    });
+                self.resource_tree_cache = Some(ResourceTreeCache {
+                    filter: self.resources_filter.clone(),
+                    refresh_count: self.resources.refresh_count(),
+                    tree,
+                });
             });
         // 缩略图后台解码未完成时持续重绘，否则 egui 空闲不画、缩略图永远出不来。
         if self.thumbnail_worker.has_pending() {
             context.request_repaint_after(std::time::Duration::from_millis(32));
         }
+        self.draw_resource_drop_zone(ui);
         refresh_resources
+    }
+
+    /// M27-01：资源面板作为放置区。
+    ///
+    /// ① **系统文件**拖进来 → 复制进 `assets/<家族目录>` 并请求后台刷新（整块面板都是落点，
+    ///    不必精确对准某个目录——目录归属由文件的资源家族决定）。
+    /// ② 从面板里拖出去的**自家资产**再拖回来：什么都不做，但要说清为什么
+    ///    （`dnd::plan` 把这一格判成 Reject：移动/重命名都要重写引用，不该由一次松手触发）。
+    fn draw_resource_drop_zone(&mut self, ui: &mut egui::Ui) {
+        let rect = ui.min_rect();
+        self.resource_browser_rect = rect;
+        if let Some((action, drop)) =
+            self.claim_external_drop(crate::dnd::DropZone::ResourceBrowser, rect)
+        {
+            let text = self.commit_spawn_drop(&action, None);
+            self.status = format!("{text}{}", drop.notes());
+            return;
+        }
+        let pointer = ui.input(|input| input.pointer.hover_pos());
+        let Some(inside) = pointer.filter(|pointer| rect.contains(*pointer)) else {
+            return;
+        };
+        let internal = crate::dnd::internal_drag(ui.ctx());
+        if internal.is_none() && self.external_hover.is_empty() {
+            return;
+        }
+        // 只有**正在拖拽**时才登记这块 hover 区：一个常年罩住整个列表的 hover 区会抢走
+        // 每行的 tooltip 与右键菜单命中。释放判定与 `dnd_drop_zone` 等价（指针在内 + 松手
+        // ⇒ 取走载荷），但不像它那样把列表包进一层 `Frame`（那会改变行布局）。
+        let zone = ui.interact(
+            rect,
+            egui::Id::new("resource_browser_drop_zone"),
+            egui::Sense::hover(),
+        );
+        if let Some(payload) = zone.dnd_release_payload::<crate::dnd::DropPayload>() {
+            let source = crate::dnd::DragSource::Internal((*payload).clone());
+            let action = crate::dnd::plan(&source, crate::dnd::DropZone::ResourceBrowser);
+            self.status = self.commit_spawn_drop(&action, None);
+            return;
+        }
+        let action = self
+            .external_hover_action(crate::dnd::DropZone::ResourceBrowser, rect, Some(inside))
+            .or_else(|| {
+                internal
+                    .map(|source| crate::dnd::plan(&source, crate::dnd::DropZone::ResourceBrowser))
+            });
+        if let Some(action) = action {
+            crate::dnd::paint_drop_feedback(ui, rect, 1, &action);
+        }
     }
 
     /// 取本次要绘制的资源树：命中缓存时直接移出缓存（绘制后写回），避免大
@@ -204,12 +252,10 @@ impl EditorApp {
             .unwrap_or_else(|| path_string.clone());
         let marker = status_marker(entry.status);
         let is_selected = self.selected_resource.as_ref() == Some(&entry.path);
-        if matches!(
-            entry.kind,
-            ResourceKind::Texture | ResourceKind::Prefab | ResourceKind::Model
-        ) {
+        if crate::dnd::referenceable(entry.kind) {
             // 纹理/模型/预制体：可拖放到场景（纹理/预制体带缩略图）。
-            let payload = path_string.clone();
+            // 可拖的家族判定与落点矩阵共用 `dnd::referenceable`（同一份事实源）。
+            let payload = crate::dnd::DropPayload::Asset(path_string.clone());
             ui.horizontal(|ui| {
                 if let Some(id) = self.texture_thumbnail(&path_string, context) {
                     ui.add(egui::Image::new(egui::load::SizedTexture::new(

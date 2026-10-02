@@ -168,6 +168,25 @@ foreach ($file in Get-ChildItem (Join-Path $repoRoot "scripts") -Filter "*.ps1" 
     }
 }
 
+# ---------------------------------------------------------------- PowerShell 脚本可解析性
+# ⑧ BOM 只保证"字节层没坏"，保证不了"首行没被工具吃掉一个字符"。来历：
+#    scripts/analyze-soak.ps1 的首行 `[CmdletBinding()]` 丢了前括号，HEAD 上就带着这个伤，
+#    而它是 docs/55 阶段 0 的 soak 判据工具——直到 M27-03 验收当天第一次运行才暴露
+#    （PowerShell 报"应为表达式"，ConvertFrom-Json 都没跑到）。这类脚本几个月没人碰一次，
+#    全靠验收当天手气是不可接受的，所以这里用解析器把每个 .ps1 读一遍：只解析、不执行。
+$ps1ParseFailed = New-Object System.Collections.Generic.List[string]
+foreach ($file in Get-ChildItem (Join-Path $repoRoot "scripts") -Filter "*.ps1" -File -ErrorAction SilentlyContinue) {
+    $parseTokens = $null
+    $parseErrors = $null
+    [void][System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$parseTokens, [ref]$parseErrors)
+    if ($parseErrors.Count -gt 0) {
+        $rel = $file.FullName.Substring($repoRoot.Length).TrimStart("\")
+        $first = $parseErrors[0]
+        $ps1ParseFailed.Add("$rel")
+        $issues.Add("${rel}: PowerShell 解析失败（$($first.Extent.StartLineNumber) 行：$($first.Message)）")
+    }
+}
+
 # ---------------------------------------------------------------- 汇总
 $docTotal = 0
 foreach ($key in $docCounts.Keys) { $docTotal += $docCounts[$key] }
@@ -176,5 +195,5 @@ if ($issues.Count -gt 0) {
     foreach ($issue in $issues) { Write-Host "  - $issue" }
     exit 1
 }
-Write-Host "check_docs_ok docs=$($docCounts['docs']) game_docs=$($docCounts['examples\game_jhyt\docs']) h1=$h1Count links=$linkCount ps1_bom_ok=$((Get-ChildItem (Join-Path $repoRoot 'scripts') -Filter '*.ps1' -File).Count)"
+Write-Host "check_docs_ok docs=$($docCounts['docs']) game_docs=$($docCounts['examples\game_jhyt\docs']) h1=$h1Count links=$linkCount ps1_bom_ok=$((Get-ChildItem (Join-Path $repoRoot 'scripts') -Filter '*.ps1' -File).Count) ps1_parse_ok=$((Get-ChildItem (Join-Path $repoRoot 'scripts') -Filter '*.ps1' -File).Count)"
 exit 0

@@ -101,6 +101,8 @@ pub(crate) enum MenuRow {
     ComponentRegistry,
     /// 窗口 ▸ 工作台：场景 / 游戏（互斥选择）。
     WorkspaceTabs,
+    /// 窗口 ▸ 面板：六个工作台面板逐项开关（复选框，状态来自 `show_*`）。
+    PanelToggles,
     /// 窗口 ▸ 视图模式：2D / 3D / Widget / Prefab（互斥选择）。
     ViewModes,
     /// 窗口 ▸ 布局与面板宽度提示（只读信息行）。
@@ -149,6 +151,10 @@ pub(crate) enum MenuAction {
     CreateUiImage,
     // 窗口
     ToggleResources,
+    ToggleHierarchy,
+    ToggleInspector,
+    ToggleSceneView,
+    ToggleGameView,
     ToggleConsole,
     ToggleDomainData,
     TogglePublishPanel,
@@ -298,8 +304,8 @@ const GAMEOBJECT_MENU: &[MenuRow] = &[
 const COMPONENT_MENU: &[MenuRow] = &[MenuRow::ComponentRegistry];
 
 const WINDOW_MENU: &[MenuRow] = &[
-    MenuRow::Item(MenuItem::new("资源浏览器", MenuAction::ToggleResources)),
-    MenuRow::Item(MenuItem::new("控制台", MenuAction::ToggleConsole)),
+    MenuRow::PanelToggles,
+    MenuRow::Separator,
     MenuRow::Item(MenuItem::new("领域数据", MenuAction::ToggleDomainData)),
     MenuRow::Item(MenuItem::new("发布面板", MenuAction::TogglePublishPanel)),
     MenuRow::Item(MenuItem::new(
@@ -426,8 +432,26 @@ impl EditorApp {
                             .selectable_label(self.workspace_tab == tab, label)
                             .clicked()
                         {
-                            self.workspace_tab = tab;
+                            self.focus_workspace_tab(tab);
                             ui.close();
+                        }
+                    }
+                }
+                MenuRow::PanelToggles => {
+                    ui.label("面板");
+                    // 勾选状态只读自 `show_*`，写入一律回到 [`EditorApp::run_menu_action`]：
+                    // 菜单不是第二套状态来源。点完**不关菜单**，一次打开可以连勾多个面板。
+                    for (label, action) in [
+                        ("资源浏览器", MenuAction::ToggleResources),
+                        ("层级", MenuAction::ToggleHierarchy),
+                        ("Scene", MenuAction::ToggleSceneView),
+                        ("Game", MenuAction::ToggleGameView),
+                        ("属性", MenuAction::ToggleInspector),
+                        ("控制台", MenuAction::ToggleConsole),
+                    ] {
+                        let mut shown = self.panel_is_shown(action);
+                        if ui.checkbox(&mut shown, label).clicked() {
+                            self.run_menu_action(action);
                         }
                     }
                 }
@@ -504,6 +528,21 @@ impl EditorApp {
                 ui.close();
             }
         });
+    }
+
+    /// 面板开关的当前状态（[`MenuRow::PanelToggles`] 只读这里，写入走 [`Self::run_menu_action`]）。
+    /// 只有六个工作台面板有状态；浮层窗口（领域数据、发布、性能）不画成复选框。
+    #[must_use]
+    pub(crate) fn panel_is_shown(&self, action: MenuAction) -> bool {
+        match action {
+            MenuAction::ToggleResources => self.show_resources_panel,
+            MenuAction::ToggleHierarchy => self.show_hierarchy_panel,
+            MenuAction::ToggleInspector => self.show_inspector_panel,
+            MenuAction::ToggleSceneView => self.show_scene_view,
+            MenuAction::ToggleGameView => self.show_game_view,
+            MenuAction::ToggleConsole => self.show_lua_console,
+            _ => false,
+        }
     }
 
     /// 条目的可用条件（菜单只读状态，不改状态）。
@@ -588,7 +627,18 @@ impl EditorApp {
             MenuAction::CreateUiImage => self.add_entity_with_component("UiImage", "Image"),
             // ---- 窗口（面板开关） ----
             MenuAction::ToggleResources => self.show_resources_panel = !self.show_resources_panel,
+            MenuAction::ToggleHierarchy => self.show_hierarchy_panel = !self.show_hierarchy_panel,
+            MenuAction::ToggleInspector => self.show_inspector_panel = !self.show_inspector_panel,
             MenuAction::ToggleConsole => self.show_lua_console = !self.show_lua_console,
+            // 中央两个视图共用一条守卫（最后一个不许关）。
+            MenuAction::ToggleSceneView => {
+                let visible = !self.show_scene_view;
+                self.set_central_view_visible(WorkspaceTab::Scene, visible);
+            }
+            MenuAction::ToggleGameView => {
+                let visible = !self.show_game_view;
+                self.set_central_view_visible(WorkspaceTab::Game, visible);
+            }
             MenuAction::ToggleDomainData => {
                 self.show_domain_data_panel = !self.show_domain_data_panel;
             }
@@ -780,6 +830,19 @@ mod tests {
                     }
                     app.run_menu_action(item.action);
                 }
+                // 面板开关是复选框行（不是 `Item`），六个动作只在这里可达。
+                if matches!(row, MenuRow::PanelToggles) {
+                    for action in [
+                        MenuAction::ToggleResources,
+                        MenuAction::ToggleHierarchy,
+                        MenuAction::ToggleSceneView,
+                        MenuAction::ToggleGameView,
+                        MenuAction::ToggleInspector,
+                        MenuAction::ToggleConsole,
+                    ] {
+                        app.run_menu_action(action);
+                    }
+                }
             });
         }
         assert_eq!(skipped, 6, "被跳过的动作数量变了，请同步本测试说明");
@@ -791,19 +854,57 @@ mod tests {
     #[test]
     fn window_menu_toggles_panels() {
         let mut app = menu_test_app();
-        let before = app.show_resources_panel;
-        app.run_menu_action(MenuAction::ToggleResources);
-        assert_ne!(app.show_resources_panel, before);
-        app.run_menu_action(MenuAction::ToggleResources);
-        assert_eq!(app.show_resources_panel, before);
-
-        let console = app.show_lua_console;
-        app.run_menu_action(MenuAction::ToggleConsole);
-        assert_ne!(app.show_lua_console, console);
+        for action in [
+            MenuAction::ToggleResources,
+            MenuAction::ToggleHierarchy,
+            MenuAction::ToggleInspector,
+            MenuAction::ToggleConsole,
+        ] {
+            let before = app.panel_is_shown(action);
+            app.run_menu_action(action);
+            assert_ne!(app.panel_is_shown(action), before, "{action:?} 没有生效");
+            app.run_menu_action(action);
+            assert_eq!(app.panel_is_shown(action), before, "{action:?} 没有还原");
+        }
 
         let grid = app.show_pixel_grid;
         app.run_menu_action(MenuAction::TogglePixelGrid);
         assert_ne!(app.show_pixel_grid, grid);
+    }
+
+    /// 中央视图的守卫：两个不能同时关掉，关到最后一个时只留提示、不改状态。
+    #[test]
+    fn the_last_central_view_cannot_be_hidden() {
+        let mut app = menu_test_app();
+        app.run_menu_action(MenuAction::ToggleSceneView);
+        assert!(!app.show_scene_view);
+        assert!(app.show_game_view, "只关了一个，另一个不受影响");
+
+        app.run_menu_action(MenuAction::ToggleGameView);
+        assert!(app.show_game_view, "最后一个中央视图必须拒绝关闭");
+        assert!(!app.show_scene_view, "拒绝时不能顺手把另一个打开");
+        assert!(
+            app.status.contains("中央视图"),
+            "拒绝要在状态栏说明：{}",
+            app.status
+        );
+
+        app.run_menu_action(MenuAction::ToggleSceneView);
+        assert!(app.show_scene_view && app.show_game_view);
+    }
+
+    /// 关掉当前聚焦的中央视图时，聚焦要跟着搬到还亮着的那个（否则工具栏高亮画在不在的标签上）。
+    #[test]
+    fn hiding_the_focused_central_view_moves_focus() {
+        let mut app = menu_test_app();
+        app.focus_workspace_tab(WorkspaceTab::Scene);
+        app.run_menu_action(MenuAction::ToggleSceneView);
+        assert_eq!(app.workspace_tab, WorkspaceTab::Game);
+        // 反过来：Game 聚焦时关 Game。
+        app.run_menu_action(MenuAction::ToggleSceneView);
+        app.focus_workspace_tab(WorkspaceTab::Game);
+        app.run_menu_action(MenuAction::ToggleGameView);
+        assert_eq!(app.workspace_tab, WorkspaceTab::Scene);
     }
 
     /// 需要选中实体的条目在无选中时被拦下（灰置），有选中时放行。

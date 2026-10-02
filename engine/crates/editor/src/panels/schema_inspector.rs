@@ -294,7 +294,7 @@ impl EditorApp {
                 buffer.text = row.text.clone();
             }
             let widget = field_widget(row.kind, row.field);
-            ui.horizontal(|ui| {
+            let row_inner = ui.horizontal(|ui| {
                 ui.add_sized([110.0, 18.0], egui::Label::new(row.field).truncate());
                 if row.is_unset() {
                     ui.weak("未设置");
@@ -547,6 +547,14 @@ impl EditorApp {
                 }
             });
             ui.data_mut(|data| data.insert_temp(key, buffer));
+            // M27-01：资源引用字段（`Sprite.texture`、`MeshRenderer.mesh`…）是第四块放置区。
+            // 落在这行的资产直接成为字段值——与下拉选择器同一条提交路径（复用下面的 `pending`）。
+            if row.path_rule
+                && let Some(value) =
+                    self.inspector_field_drop(ui, row_inner.response.rect, key, playing)
+            {
+                pending = Some((row.component.to_owned(), row.field.to_owned(), value));
+            }
             // 该组件的最后一行之后画它的**只读说明**（如相机的投影摘要与生效姿态）：
             // 这些信息不是字段（没有输入控件），但它是"渲染器真正会用到的值"，
             // 迁移前住在手写面板里，迁移后由 `schema_fields::component_notes` 提供。
@@ -616,6 +624,95 @@ impl EditorApp {
                         fields,
                     });
                 }
+            }
+        }
+    }
+
+    /// M27-01：一行资源引用字段的放置区——返回"这一行该写入的新值"（`None` = 本帧无落点）。
+    ///
+    /// 为什么不用 `dnd_drop_zone`：它会把内容包进一个 `Frame` 并改变行布局，而 Inspector 的
+    /// 行高受"内容不得高于行高"的门槛断言管着。这里用它释放判定的**等价物**——hover 响应 +
+    /// `dnd_release_payload`（egui 里就是"指针在内 && 松手 ⇒ `take_payload`"）。
+    ///
+    /// 只在确实有拖拽进行时才登记这块 hover 区：一个常年盖在输入框上的 hover 区会抢走
+    /// 下面控件的 tooltip。
+    fn inspector_field_drop(
+        &mut self,
+        ui: &mut egui::Ui,
+        row_rect: egui::Rect,
+        key: egui::Id,
+        playing: bool,
+    ) -> Option<String> {
+        if playing {
+            // 仍然**认领**这一帧的系统拖放：不认领的话帧末扫尾会说"落点不在可放置的面板内"，
+            // 而真实原因是 Play 锁定。
+            if let Some((_, drop)) =
+                self.claim_external_drop(crate::dnd::DropZone::InspectorField, row_rect)
+            {
+                self.status = format!(
+                    "Play mode locks scene editing; click Stop first{}",
+                    drop.notes()
+                );
+            }
+            return None;
+        }
+        let internal = crate::dnd::internal_drag(ui.ctx());
+        if internal.is_none() && self.external_hover.is_empty() {
+            return None;
+        }
+        let zone = ui.interact(row_rect, key.with("asset_drop"), egui::Sense::hover());
+        if let Some(payload) = zone.dnd_release_payload::<crate::dnd::DropPayload>() {
+            let source = crate::dnd::DragSource::Internal((*payload).clone());
+            let action = crate::dnd::plan(&source, crate::dnd::DropZone::InspectorField);
+            return self.commit_field_ref_drop(&action, String::new());
+        }
+        if let Some((action, drop)) =
+            self.claim_external_drop(crate::dnd::DropZone::InspectorField, row_rect)
+        {
+            let notes = drop.notes();
+            return self.commit_field_ref_drop(&action, notes);
+        }
+        // 还没松手：把这行"松手会得到什么"画出来（合法绿框 / 非法红框都出自同一张矩阵）。
+        let pointer = ui.input(|input| input.pointer.interact_pos());
+        let hovering = self
+            .external_hover_action(crate::dnd::DropZone::InspectorField, row_rect, pointer)
+            .or_else(|| {
+                internal
+                    .filter(|_| pointer.is_some_and(|position| row_rect.contains(position)))
+                    .map(|source| crate::dnd::plan(&source, crate::dnd::DropZone::InspectorField))
+            });
+        if let Some(action) = hovering {
+            crate::dnd::paint_drop_feedback(ui, row_rect, 5, &action);
+        }
+        None
+    }
+
+    /// 落点动作 → 字段新值。工程外的单文件先入库（复制失败就不写引用），拒绝只说话。
+    fn commit_field_ref_drop(
+        &mut self,
+        action: &crate::dnd::DropAction,
+        notes: String,
+    ) -> Option<String> {
+        use crate::dnd::DropAction;
+        match action {
+            DropAction::SetAssetRef(path) => Some(path.clone()),
+            DropAction::ImportAndSetRef(file) => {
+                let report = self.import_external_files(std::slice::from_ref(file));
+                let relative = report.imported.first().cloned();
+                self.status = if relative.is_some() {
+                    format!("{}{notes}", report.status_text())
+                } else {
+                    report.status_text()
+                };
+                relative
+            }
+            DropAction::Reject(reason) => {
+                self.status = format!("{reason}{notes}");
+                None
+            }
+            other => {
+                self.status = format!("资源引用字段收不下这个拖放：{}", other.caption());
+                None
             }
         }
     }
@@ -2187,5 +2284,81 @@ mod tests {
         }
         assert_eq!(app.history.undo_len(), 0);
         assert_eq!(app.document.current_scene, before);
+    }
+
+    // ---- M27-01：资源引用字段的落点结算 ----
+
+    /// 三种结算各管各的：自家资产**只交出一个值**（写文档仍走 `pending` 那条 dispatch）；
+    /// 工程外的文件**先入库**再交出相对路径；拒绝没有值、只把原因写进状态栏，磁盘与文档都不动。
+    #[test]
+    fn a_reference_field_drop_yields_a_value_or_a_reason() {
+        use crate::dnd::DropAction;
+        let mut app = app_with_quad();
+        assert_eq!(
+            app.commit_field_ref_drop(
+                &DropAction::SetAssetRef("assets/textures/a.png".to_owned()),
+                String::new(),
+            )
+            .as_deref(),
+            Some("assets/textures/a.png")
+        );
+
+        let name = format!("rustlua-inspector-drop-{}.png", crate::util::test_token());
+        let outside = std::env::temp_dir().join(&name);
+        std::fs::write(&outside, b"png").expect("写外部文件");
+        let value =
+            app.commit_field_ref_drop(&DropAction::ImportAndSetRef(outside.clone()), String::new());
+        assert_eq!(
+            value.as_deref(),
+            Some(format!("assets/textures/{name}").as_str()),
+            "外部文件要先复制进家族目录，字段写的是工程相对路径：{}",
+            app.status
+        );
+        assert!(
+            app.project
+                .root
+                .join("assets/textures")
+                .join(&name)
+                .is_file(),
+            "文件必须真的入库"
+        );
+        assert!(
+            app.status.starts_with("已导入 1 个文件"),
+            "状态={}",
+            app.status
+        );
+
+        let entities = app
+            .document
+            .current_scene
+            .as_ref()
+            .unwrap()
+            .scene
+            .entities
+            .len();
+        assert_eq!(
+            app.commit_field_ref_drop(
+                &DropAction::Reject("这个字段要的是纹理/模型/预制体".to_owned()),
+                "（跳过 1 个链接）".to_owned(),
+            ),
+            None
+        );
+        assert_eq!(
+            app.status, "这个字段要的是纹理/模型/预制体（跳过 1 个链接）",
+            "拒绝必须带上损耗说明"
+        );
+        assert_eq!(
+            app.document
+                .current_scene
+                .as_ref()
+                .unwrap()
+                .scene
+                .entities
+                .len(),
+            entities
+        );
+        assert_eq!(app.history.undo_len(), 0, "落点结算本身不写历史");
+        let _ = std::fs::remove_file(&outside);
+        let _ = std::fs::remove_dir_all(&app.project.root);
     }
 }

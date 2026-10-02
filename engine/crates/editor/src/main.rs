@@ -2,6 +2,8 @@
 
 mod actions;
 mod command_router;
+mod dnd;
+mod dock;
 mod framegate;
 mod geometry;
 mod gizmo;
@@ -444,6 +446,16 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 struct EditorApp {
     project: ProjectInfo,
+    /// M27-00 阶段 1：工作区 dock 树（资源/层级/Scene+Game/属性/控制台）。
+    /// `None` 只出现在渲染期间：`DockArea` 与 `TabViewer` 都要可变借用 `EditorApp`，
+    /// 树被搬到局部变量，帧末放回（见 `dock::show_workspace`）。
+    dock_state: Option<egui_dock::DockState<crate::dock::DockTab>>,
+    /// 上一次观察到的 dock 结构指纹（M27-00 阶段 2 的变化检测）。
+    /// `None` = 还没登记基线（刚装完一棵树）：下一帧只登记、不算"用户改了布局"，
+    /// 于是打开项目本身不会写盘。
+    dock_signature: Option<u64>,
+    /// 结构指纹最近一次变化的时刻，`None` = 没有待落盘的布局变化（见 `dock_tree_change`）。
+    dock_dirty_since: Option<Instant>,
     document: ProjectDocument,
     tree: SceneTreeState,
     resources: ResourceBrowserState,
@@ -505,6 +517,19 @@ struct EditorApp {
     /// **和面板完全相同的坐标换算**把实体中心换算成屏幕点（`collect_scene_2d_entities`），
     /// 再走真实的 `egui` 事件路径。生产路径的代价是每帧一次 `Rect` 写入。
     pub(crate) scene_canvas_rect: egui::Rect,
+    /// 本帧到达、还没有面板认领的**系统拖放**（M27-01）。
+    ///
+    /// 后端每帧用 `RawInput::take()` 把它搬过来一次，所以这些事件只代表"自上一帧以来
+    /// 到达的拖放"：帧首收一次、帧末清扫没落点的，中间的每次绘制都能用
+    /// [`EditorApp::claim_external_drop`] 认领它。
+    pending_external_drop: Option<crate::dnd::ExternalDrop>,
+    /// 拖拽**途中**悬停在窗口上的文件路径（画高亮与提示文案用，松手前就能显示）。
+    external_hover: Vec<std::path::PathBuf>,
+    /// 本帧资源浏览器**放置区**的屏幕矩形（`NOTHING` = 本帧没画）。
+    ///
+    /// 与 `scene_canvas_rect` 同一用途：让"外部文件拖进资源浏览器"这条链在 GUI smoke 里
+    /// 有真实落点，而不是猜坐标。
+    pub(crate) resource_browser_rect: egui::Rect,
     /// 本帧层级面板**搜索框**的屏幕矩形（`NOTHING` = 本帧没画）。
     ///
     /// docs/55 §8 质量门把"输入焦点"列为 GUI smoke 的一项：键入时 Q/W/E/R 这类快捷键
@@ -543,6 +568,9 @@ struct EditorApp {
     show_performance_panel: bool,
     snap_enabled: bool,
     snap_step: f32,
+    /// 旋转**角度**吸附步长（度，M27-02）：与 `snap_step` 同一个开关，但单位是角度——
+    /// 把距离步长当角度用（0.5 ⇒ 0.5°）不叫吸附，叫抖。
+    snap_angle_step: f32,
     hierarchy_filter: String,
     /// Inspector 的**字段搜索**（第 42 轮 P1）：只影响 schema 字段行的呈现，不改文档。
     inspector_field_filter: String,
@@ -554,9 +582,16 @@ struct EditorApp {
     inspector_clipboard: Option<ComponentClipboard>,
     progress: ProgressPanel,
     publish: crate::publish::PublishState,
-    /// 底部资源浏览器 / Lua 控制台面板的显示开关（收起后 Scene/Game 视图获得最大空间）。
+    /// 六个工作台面板的显示开关（M27-00 阶段 2 收尾：View 菜单逐项可切）。
+    /// 唯一写入口是 [`crate::menu::MenuAction`]，dock 树每帧按这里同步成员关系。
     show_resources_panel: bool,
     show_lua_console: bool,
+    show_hierarchy_panel: bool,
+    show_inspector_panel: bool,
+    /// 中央两个视图标签。**不允许同时为 false**：都关掉工作区就没地方画了，
+    /// 见 [`EditorApp::set_central_view_visible`]。
+    show_scene_view: bool,
+    show_game_view: bool,
     /// M19-03 领域数据面板（Lua 域校验 + 只读视图 + PersistId 注册表）。
     show_domain_data_panel: bool,
     domain_report: Option<crate::panels::domain_data::DomainDataReport>,
@@ -1072,7 +1107,16 @@ enum GizmoAxis {
     Z,
     Y,
     Free,
+    /// 等比缩放（M27-02 起落在手柄**中心方框**上）。
     Scale,
+    /// 单轴缩放把手（M27-02）。
+    ScaleX,
+    ScaleY,
+    ScaleZ,
+    /// 双轴（平面）缩放把手（M27-02）。
+    ScaleXY,
+    ScaleXZ,
+    ScaleYZ,
 }
 
 #[derive(Clone)]
@@ -1083,6 +1127,9 @@ struct ComponentClipboard {
 }
 
 impl EditorApp {
+    /// dock 布局稳定多久才落盘（`dock_tree_change` 的节流窗口，见那里的说明）。
+    const DOCK_LAYOUT_SETTLE: std::time::Duration = std::time::Duration::from_millis(300);
+
     fn new(
         project: ProjectInfo,
         gpu: Option<(wgpu::Device, wgpu::Queue)>,
@@ -1100,6 +1147,9 @@ impl EditorApp {
         Self {
             document: ProjectDocument::open(project.clone()),
             project,
+            dock_state: Some(crate::dock::default_dock_state()),
+            dock_signature: None,
+            dock_dirty_since: None,
             tree: SceneTreeState::new(),
             resources: ResourceBrowserState::new(),
             selected_resource: None,
@@ -1145,6 +1195,9 @@ impl EditorApp {
             gizmo_pivot: crate::scene_interaction::GizmoPivot::default(),
             scene_view_mode: SceneViewMode::default(),
             scene_canvas_rect: egui::Rect::NOTHING,
+            pending_external_drop: None,
+            external_hover: Vec::new(),
+            resource_browser_rect: egui::Rect::NOTHING,
             hierarchy_filter_rect: egui::Rect::NOTHING,
             perf_panel_rect: egui::Rect::NOTHING,
             scene_tools_rect: egui::Rect::NOTHING,
@@ -1161,6 +1214,7 @@ impl EditorApp {
             show_performance_panel: false,
             snap_enabled: false,
             snap_step: 0.5,
+            snap_angle_step: 15.0,
             hierarchy_filter: String::new(),
             inspector_field_filter: String::new(),
             scene_state: SceneEditorState::default(),
@@ -1169,6 +1223,10 @@ impl EditorApp {
             publish,
             show_resources_panel: true,
             show_lua_console: true,
+            show_hierarchy_panel: true,
+            show_inspector_panel: true,
+            show_scene_view: true,
+            show_game_view: true,
             show_domain_data_panel: false,
             domain_report: None,
             persist_registry: None,
@@ -1325,7 +1383,7 @@ impl EditorApp {
 
     fn restore_editor_context(&mut self, snapshot: EditorContextSnapshot) {
         self.selection = snapshot.selection;
-        self.workspace_tab = snapshot.workspace_tab;
+        self.focus_workspace_tab(snapshot.workspace_tab);
         self.set_scene_tool(snapshot.scene_tool);
         self.gizmo_space = snapshot.gizmo_space;
         self.gizmo_pivot = snapshot.gizmo_pivot;
@@ -1522,14 +1580,31 @@ impl EditorApp {
         self.apply_layout();
     }
 
-    /// 把布局字段映射到编辑器状态（面板可见性、工作台标签、视图模式/工具/缩放/分辨率）。
+    /// 切到指定工作台视图：`workspace_tab` 与 dock 的活动标签必须一起动，
+    /// 否则工具栏高亮与实际画出的视图会分叉（M27-00 阶段 1）。
+    pub(crate) fn focus_workspace_tab(&mut self, tab: WorkspaceTab) {
+        // 目标视图被 View 菜单关掉了：聚焦它就先把它显示出来（浮层下一帧由 `sync_visibility`
+        // 补回树里）。加载布局时不会走到这条，见 [`EditorApp::visible_central_tab`]。
+        match tab {
+            WorkspaceTab::Scene => self.show_scene_view = true,
+            WorkspaceTab::Game => self.show_game_view = true,
+        }
+        self.workspace_tab = tab;
+        if let Some(dock_state) = self.dock_state.as_mut() {
+            crate::dock::focus_workspace_tab(dock_state, tab);
+        }
+    }
+
+    /// 把布局字段映射到编辑器状态（面板可见性、dock 树、工作台标签、视图模式/工具/缩放/分辨率）。
     fn apply_layout(&mut self) {
         self.show_resources_panel = self.layout.panel_is_visible(editor::PANEL_RESOURCE);
         self.show_lua_console = self.layout.panel_is_visible(editor::PANEL_CONSOLE);
-        self.workspace_tab = match self.layout.workspace_tab.as_str() {
-            "game" => WorkspaceTab::Game,
-            _ => WorkspaceTab::Scene,
-        };
+        self.show_hierarchy_panel = self.layout.panel_is_visible(editor::PANEL_HIERARCHY);
+        self.show_inspector_panel = self.layout.panel_is_visible(editor::PANEL_INSPECTOR);
+        self.apply_central_views_from_layout();
+        self.restore_dock_tree();
+        let central_tab = self.visible_central_tab();
+        self.focus_workspace_tab(central_tab);
         self.scene_view_mode = match self.layout.scene_view_mode.as_str() {
             "3d" => SceneViewMode::View3D,
             "prefab" => SceneViewMode::Prefab,
@@ -1550,14 +1625,134 @@ impl EditorApp {
         self.preview_resolution = self.layout.preview_resolution;
     }
 
+    /// 布局里的中央视图可见性可以自相矛盾（两个都存成 `false`）。这里不做修复、也不报
+    /// 损坏——按 `workspace_tab` 的口径回落成"只留 Scene"，与其它字段的收敛方式一致。
+    fn apply_central_views_from_layout(&mut self) {
+        self.show_scene_view = self.layout.panel_is_visible(editor::PANEL_SCENE_VIEW);
+        self.show_game_view = self.layout.panel_is_visible(editor::PANEL_GAME_VIEW);
+        if !self.show_scene_view && !self.show_game_view {
+            self.show_scene_view = true;
+        }
+    }
+
+    /// 布局里存的 `workspace_tab` 可能指向一个已经关掉的中央视图（手改文件、或旧版本存的）。
+    /// 聚焦之前先纠正成"还亮着的那个"：[`Self::focus_workspace_tab`] 会把聚焦的视图打开，
+    /// 加载布局不该反过来把用户关掉的视图打开。
+    #[must_use]
+    fn visible_central_tab(&self) -> WorkspaceTab {
+        let wanted = match self.layout.workspace_tab.as_str() {
+            "game" => WorkspaceTab::Game,
+            _ => WorkspaceTab::Scene,
+        };
+        let shown = match wanted {
+            WorkspaceTab::Scene => self.show_scene_view,
+            WorkspaceTab::Game => self.show_game_view,
+        };
+        if shown {
+            return wanted;
+        }
+        match wanted {
+            WorkspaceTab::Scene => WorkspaceTab::Game,
+            WorkspaceTab::Game => WorkspaceTab::Scene,
+        }
+    }
+
+    /// 中央视图开关的唯一写入口（View 菜单）。两个一起关会让工作区没有画面可画，
+    /// 所以**最后一个亮着的中央视图不允许关闭**——拒绝时只留状态栏提示，不改状态。
+    pub(crate) fn set_central_view_visible(&mut self, tab: WorkspaceTab, visible: bool) {
+        let other_visible = match tab {
+            WorkspaceTab::Scene => self.show_game_view,
+            WorkspaceTab::Game => self.show_scene_view,
+        };
+        if !visible && !other_visible {
+            self.status = "Scene 与 Game 至少要保留一个中央视图".to_owned();
+            return;
+        }
+        match tab {
+            WorkspaceTab::Scene => self.show_scene_view = visible,
+            WorkspaceTab::Game => self.show_game_view = visible,
+        }
+        // 关掉的正好是当前聚焦的视图：焦点交给还亮着的那个，否则工具栏高亮会停在一个
+        // 已经不再绘制的标签上（`workspace_tab` 由标签绘制时回写，没人再纠正它）。
+        if !visible && self.workspace_tab == tab {
+            let other = match tab {
+                WorkspaceTab::Scene => WorkspaceTab::Game,
+                WorkspaceTab::Game => WorkspaceTab::Scene,
+            };
+            self.focus_workspace_tab(other);
+        }
+    }
+
+    /// 装上持久化的 dock 树（M27-00 阶段 2）。
+    ///
+    /// 没存过、或存的不是合法树，都用 [`crate::dock::default_dock_state`]：旧布局只是缺
+    /// `dock_tree` 键，不算损坏。后者必须在控制台留一句话——否则用户的体感是"我摆好的
+    /// 面板莫名其妙回去了"，而文件里的其它字段全都照常生效。
+    fn restore_dock_tree(&mut self) {
+        let restored = self
+            .layout
+            .dock_tree
+            .as_deref()
+            .and_then(crate::dock::deserialize);
+        if restored.is_none() && self.layout.dock_tree.is_some() {
+            self.push_console_notice("布局文件里的面板树无法解析，已改用默认面板布局".to_owned());
+        }
+        self.dock_state = Some(restored.unwrap_or_else(crate::dock::default_dock_state));
+        // 刚装的树还没画过（节点矩形是默认值，首帧就会被 `DockArea` 重算），
+        // 指纹基线与脏标记一起清空，免得把"加载"当成"用户改了布局"再写一次盘。
+        self.dock_signature = None;
+        self.dock_dirty_since = None;
+    }
+
+    /// dock 树的结构变化检测（阶段 2）：指纹变了就排一次落盘，稳定 300ms 后才真的序列化。
+    ///
+    /// 为什么要等：egui_dock 每帧都把每个拆分的 `fraction` 重新夹紧到"两侧各留够
+    /// `separator.extra`（默认 175px）"的区间（`show_separator` 末尾那行 `clamp`），所以
+    /// **拖动窗口边缘本身就会连续改结构指纹**——那是真实的布局变化，指纹里不写掉它就只能
+    /// 每帧写一次盘。等到稳定再写，一次拖窗只落一次盘。
+    ///
+    /// 另外两条刻意的保守：
+    /// * 首次观察只登记基线、不算变化 ⇒ 打开项目、加载布局本身不会写 `layout.json`；
+    /// * 序列化失败（未渲染过的树带 ±∞ 矩形）不清脏标记 ⇒ 下一帧再试，不会把这轮布局丢掉。
+    fn dock_tree_change(&mut self) -> Option<serde_json::Value> {
+        let state = self.dock_state.as_ref()?;
+        let signature = crate::dock::signature(state);
+        if self.dock_signature != Some(signature) {
+            let initialized = self.dock_signature.is_some();
+            self.dock_signature = Some(signature);
+            self.dock_dirty_since = initialized.then(Instant::now);
+            return None;
+        }
+        let dirty_since = self.dock_dirty_since?;
+        if Instant::now() - dirty_since < Self::DOCK_LAYOUT_SETTLE {
+            return None;
+        }
+        let value = crate::dock::serialize(state);
+        if value.is_some() {
+            self.dock_dirty_since = None;
+        }
+        value
+    }
+
+    /// 六个工作台面板的可见性 ↔ `panel_visible` 键（View 菜单是唯一写入口）。
+    /// 返回值而不是直接写 `self.layout`：调用点在借用 `self.layout` 的同时还要读 `self`。
+    fn panel_visibility(&self) -> [(&'static str, bool); 6] {
+        [
+            (editor::PANEL_RESOURCE, self.show_resources_panel),
+            (editor::PANEL_HIERARCHY, self.show_hierarchy_panel),
+            (editor::PANEL_INSPECTOR, self.show_inspector_panel),
+            (editor::PANEL_SCENE_VIEW, self.show_scene_view),
+            (editor::PANEL_GAME_VIEW, self.show_game_view),
+            (editor::PANEL_CONSOLE, self.show_lua_console),
+        ]
+    }
+
     /// 把当前会话状态写回布局字段（保存前调用）。
     pub(crate) fn capture_layout(&mut self) {
-        self.layout
-            .panel_visible
-            .insert(editor::PANEL_RESOURCE.to_owned(), self.show_resources_panel);
-        self.layout
-            .panel_visible
-            .insert(editor::PANEL_CONSOLE.to_owned(), self.show_lua_console);
+        let visibility = self.panel_visibility();
+        for (key, visible) in visibility {
+            self.layout.panel_visible.insert(key.to_owned(), visible);
+        }
         self.layout.workspace_tab = match self.workspace_tab {
             WorkspaceTab::Scene => "scene",
             WorkspaceTab::Game => "game",
@@ -1583,24 +1778,29 @@ impl EditorApp {
         self.layout.gizmo_space = self.gizmo_space.as_str().to_owned();
         self.layout.gizmo_pivot = self.gizmo_pivot.as_str().to_owned();
         self.layout.preview_resolution = self.preview_resolution;
+        // 显式保存（菜单「保存布局」）：无视节流直接抓当前树，用户按了就要拿到现状。
+        if let Some(state) = self.dock_state.as_ref() {
+            let signature = crate::dock::signature(state);
+            if let Some(tree) = crate::dock::serialize(state) {
+                self.layout.dock_tree = Some(Box::new(tree));
+                self.dock_signature = Some(signature);
+                self.dock_dirty_since = None;
+            }
+        }
         self.layout.clamp();
     }
 
-    /// 面板可见性/工作台/视图模式变化后自动保存布局（无变化时不写盘）。
+    /// 面板可见性/工作台/视图模式/**dock 树结构**变化后自动保存布局（无变化时不写盘）。
     fn maybe_persist_layout_on_change(&mut self) {
         if !self.project_loaded {
             return;
         }
         let mut current = self.layout.clone();
         let saved = current.clone();
-        let visible_resource = current.panel_is_visible(editor::PANEL_RESOURCE);
-        let visible_console = current.panel_is_visible(editor::PANEL_CONSOLE);
-        current
-            .panel_visible
-            .insert(editor::PANEL_RESOURCE.to_owned(), self.show_resources_panel);
-        current
-            .panel_visible
-            .insert(editor::PANEL_CONSOLE.to_owned(), self.show_lua_console);
+        let visibility = self.panel_visibility();
+        for (key, visible) in visibility {
+            current.panel_visible.insert(key.to_owned(), visible);
+        }
         let tab = match self.workspace_tab {
             WorkspaceTab::Scene => "scene",
             WorkspaceTab::Game => "game",
@@ -1625,16 +1825,22 @@ impl EditorApp {
         current.gizmo_space = self.gizmo_space.as_str().to_owned();
         current.gizmo_pivot = self.gizmo_pivot.as_str().to_owned();
         current.preview_resolution = self.preview_resolution;
+        // dock 树只在结构指纹变化时序列化（每帧算一次哈希，不做 JSON 编码）。
+        if let Some(tree) = self.dock_tree_change() {
+            current.dock_tree = Some(Box::new(tree));
+        }
         current.clamp();
-        let changed = current.panel_is_visible(editor::PANEL_RESOURCE) != visible_resource
-            || current.panel_is_visible(editor::PANEL_CONSOLE) != visible_console
+        let changed = visibility
+            .iter()
+            .any(|(key, visible)| saved.panel_is_visible(key) != *visible)
             || current.workspace_tab != saved.workspace_tab
             || current.scene_view_mode != saved.scene_view_mode
             || current.scene_tool != saved.scene_tool
             || current.gizmo_space != saved.gizmo_space
             || current.gizmo_pivot != saved.gizmo_pivot
             || (current.scene_zoom - saved.scene_zoom).abs() > f32::EPSILON
-            || current.preview_resolution != saved.preview_resolution;
+            || current.preview_resolution != saved.preview_resolution
+            || current.dock_tree != saved.dock_tree;
         self.layout = current;
         if !changed {
             return;
@@ -1668,7 +1874,8 @@ impl EditorApp {
         }
     }
 
-    /// 重置为默认布局并落盘（布局重置）。
+    /// 重置为默认布局并落盘（布局重置）。dock 树一起回到默认形状
+    /// （默认布局的 `dock_tree` 是 `None`，[`Self::restore_dock_tree`] 据此重建）。
     pub(crate) fn reset_layout_to_default(&mut self) {
         let root = crate::util::strip_verbatim_prefix(&self.project.root);
         match editor::reset_layout(&root) {
@@ -1936,6 +2143,10 @@ impl EditorApp {
         self.guard_close_request(context);
         // 重置缩略图 worker 每帧提交预算。
         self.thumbnail_worker.begin_frame();
+        // M27-01：把本帧到达的系统拖放进自己的状态。`raw.dropped_files` 只反映
+        // 自上一帧以来到达的事件（后端每帧 `RawInput::take()` 搬走一次），
+        // 松手之后的帧里它就是空的——所以到达当帧必须收下。
+        self.begin_dnd_frame(context);
         // 启动时把资源扫描延后到首帧：窗口先绘制，扫描不阻塞首帧展示。
         if self.refresh_pending {
             self.refresh_pending = false;
@@ -2064,61 +2275,10 @@ impl EditorApp {
         // 行1 标题栏 + 行2 菜单栏（含崩溃恢复「⚠ 恢复」下拉）。
         self.draw_header_panel(context);
 
-        // 行4 控制台：先占底部以获得全宽。
-        if self.show_lua_console {
-            let started = Instant::now();
-            self.draw_lua_console_panel(context);
-            self.profiler.record_panel("console", started.elapsed());
-        }
-
-        // 行3 资源面板（最左侧）。
-        if self.show_resources_panel {
-            let started = Instant::now();
-            let refresh = self.draw_resource_browser_panel(context);
-            self.profiler
-                .record_panel("resource_browser", started.elapsed());
-            if refresh {
-                // 用户显式刷新：清空"已尝试"记录，让上次没能导入成功的资源重新排队
-                // （自动路径不会清，见 `ResourceBrowserState::import_attempted`）。
-                self.resources.clear_import_attempts();
-                self.refresh_resources();
-            }
-        }
-        // 行3 层级面板（资源面板右侧）。
-        {
-            let started = Instant::now();
-            self.draw_hierarchy_panel(context);
-            self.profiler.record_panel("hierarchy", started.elapsed());
-        }
-
-        // 行3 属性面板（右侧，先于中央绘制，确保 Scene 视图 rect 不延伸到其下方，
-        // 避免在属性面板操作鼠标时误触发 Scene 视图的缩放/平移）。
-        {
-            let started = Instant::now();
-            egui::SidePanel::right("inspector")
-                .resizable(true)
-                .default_width(self.layout.panel_width(editor::PANEL_INSPECTOR))
-                .min_width(260.0)
-                .show(context, |ui| {
-                    self.draw_inspector_panel(ui);
-                });
-            self.profiler.record_panel("inspector", started.elapsed());
-        }
-
-        // 行3 Scene+Game（中央）+ 工具栏。
-        {
-            let started = Instant::now();
-            let workspace = egui::CentralPanel::default().show(context, |ui| {
-                self.draw_workspace_toolbar(ui);
-                ui.separator();
-                match self.workspace_tab {
-                    WorkspaceTab::Scene => self.draw_scene_view(ui),
-                    WorkspaceTab::Game => self.draw_game_view(ui),
-                }
-            });
-            self.workspace_rect = workspace.response.rect;
-            self.profiler.record_panel("workspace", started.elapsed());
-        }
+        // M27-00 阶段 1：整块工作区（资源/层级/Scene+Game/属性/控制台）交给 dock 树，
+        // 取代原先硬编码的 TopBottomPanel + 三个 SidePanel + CentralPanel。
+        // 面板计时桶（`record_panel`）搬进 `dock::DockTabViewer::ui`，键名不变。
+        crate::dock::show_workspace(context, self);
 
         self.progress.window(context);
         self.draw_publish_panel(context);
@@ -2137,6 +2297,10 @@ impl EditorApp {
         // 缓冲为一条历史（Inspector 面板与 Scene View 各自的释放提交已先执行，
         // 这里只兜底「释放发生在面板外 / 文本 Enter」等漏网情形；无挂起即 no-op）。
         self.flush_frame_edit_boundary(context);
+        // M27-01：没被任何放置区认领的系统拖放在这里收尾（状态栏说明为什么没动作）。
+        if let Some(note) = self.sweep_dnd_frame() {
+            self.status = note;
+        }
         // 面板可见性/工作台/视图变化后自动落盘布局（一次小文件原子写，仅在真正变化时发生）。
         self.maybe_persist_layout_on_change();
         // 帧末汇总：帧耗时 + 会话级 gauge（历史深度/日志行数/资源条目/队列）。
@@ -2151,12 +2315,10 @@ mod layout_tests {
     use eframe::egui;
     use engine::core::logging::LogSink;
 
-    /// 布局持久化的**接线**测试（不只是模块单测）：保存 → 重启 → 恢复同一状态；
-    /// 损坏文件回落默认且不改动源文件；重置写回默认。
-    #[test]
-    fn layout_round_trips_through_the_editor_shell() {
+    /// 每次调用都是唯一的临时工程根（`{:?}` 的 SystemTime 保证同纳秒也不会撞车）。
+    fn temp_root(label: &str) -> std::path::PathBuf {
         let root = std::env::temp_dir().join(format!(
-            "rustlua-editor-layout-shell-{}-{:?}",
+            "rustlua-editor-layout-{label}-{}-{:?}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -2165,7 +2327,72 @@ mod layout_tests {
         ));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("temp root");
+        root
+    }
 
+    /// 阶段 2 收尾：六个工作台面板的可见性走同一条持久化路径；两个中央视图同时为
+    /// `false` 的文件按"只留 Scene"收敛，并把聚焦搬到还亮着的那个。
+    #[test]
+    fn every_panel_visibility_round_trips_and_the_central_pair_converges() {
+        let root = temp_root("panel-visibility");
+        let project = || editor::ProjectInfo {
+            root: root.clone(),
+            version: "test".to_owned(),
+            directories: Vec::new(),
+        };
+        let mut app = EditorApp::new(project(), None, LogSink::new(64));
+        app.project_loaded = true;
+        app.show_hierarchy_panel = false;
+        app.show_inspector_panel = false;
+        app.show_scene_view = false;
+        app.persist_layout();
+        let raw = std::fs::read_to_string(editor::layout_path(&root)).expect("layout.json");
+        let json: serde_json::Value = serde_json::from_str(&raw).expect("json");
+        for key in [
+            editor::PANEL_HIERARCHY,
+            editor::PANEL_INSPECTOR,
+            editor::PANEL_SCENE_VIEW,
+        ] {
+            assert_eq!(
+                json["panel_visible"][key], false,
+                "{key} 的关闭状态必须写进文件：{json}"
+            );
+        }
+
+        let mut reloaded = EditorApp::new(project(), None, LogSink::new(64));
+        reloaded.project_loaded = true;
+        reloaded.load_layout_for_project();
+        assert!(!reloaded.show_hierarchy_panel, "层级可见性必须恢复");
+        assert!(!reloaded.show_inspector_panel, "属性可见性必须恢复");
+        assert!(!reloaded.show_scene_view, "Scene 可见性必须恢复");
+        assert!(reloaded.show_game_view, "没关的中央视图不能被顺手改掉");
+        assert_eq!(reloaded.workspace_tab, WorkspaceTab::Game);
+
+        // 手改成"两个中央视图都关"（守卫只拦菜单，拦不住文件）。
+        let mut stored = reloaded.layout.clone();
+        stored
+            .panel_visible
+            .insert(editor::PANEL_GAME_VIEW.to_owned(), false);
+        editor::save_layout(&crate::util::strip_verbatim_prefix(&root), &stored)
+            .expect("save broken layout");
+        let mut both_hidden = EditorApp::new(project(), None, LogSink::new(64));
+        both_hidden.project_loaded = true;
+        both_hidden.load_layout_for_project();
+        assert!(
+            both_hidden.show_scene_view,
+            "两个中央视图都关时必须回落成只留 Scene：{:?}",
+            both_hidden.layout.panel_visible
+        );
+        assert!(!both_hidden.show_game_view, "回落不该把两个都打开");
+        assert_eq!(both_hidden.workspace_tab, WorkspaceTab::Scene);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// 布局持久化的**接线**测试（不只是模块单测）：保存 → 重启 → 恢复同一状态；
+    /// 损坏文件回落默认且不改动源文件；重置写回默认。
+    #[test]
+    fn layout_round_trips_through_the_editor_shell() {
+        let root = temp_root("shell");
         let project = || editor::ProjectInfo {
             root: root.clone(),
             version: "test".to_owned(),
@@ -2226,6 +2453,324 @@ mod layout_tests {
         assert_eq!(
             editor::load_layout(&root).layout(),
             editor::EditorLayout::default()
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// 阶段 2 的接线测试：dock 树跟着「保存 → 重启 → 恢复」这条真实路径走。
+    ///
+    /// 只看 `panel_visible` 是看不出问题的——重排（把面板搬到别处、藏掉一个）只体现在树结构里，
+    /// 恢复后若结构回落到默认树，用户会觉得"布局没存住"。
+    #[test]
+    fn the_dock_tree_round_trips_through_the_editor_shell() {
+        let root = temp_root("dock-tree");
+        let project = || editor::ProjectInfo {
+            root: root.clone(),
+            version: "test".to_owned(),
+            directories: Vec::new(),
+        };
+        let mut app = EditorApp::new(project(), None, LogSink::new(64));
+        app.project_loaded = true;
+        let context = egui::Context::default();
+        // dock 树要有真实矩形才能落盘（`dock::serialize` 的 ±∞ 守卫），所以先画一帧。
+        let _ = context.run(egui::RawInput::default(), |context| {
+            crate::dock::show_workspace(context, &mut app);
+        });
+        // 一次结构变化：藏掉控制台（View 菜单的开关会真的从树里移除标签）。
+        app.show_lua_console = false;
+        let _ = context.run(egui::RawInput::default(), |context| {
+            crate::dock::show_workspace(context, &mut app);
+        });
+        let expected = app
+            .dock_state
+            .as_ref()
+            .map(crate::dock::signature)
+            .expect("帧末必须放回 dock 树");
+        app.persist_layout();
+
+        let mut reloaded = EditorApp::new(project(), None, LogSink::new(64));
+        reloaded.project_loaded = true;
+        reloaded.load_layout_for_project();
+        let restored = reloaded
+            .dock_state
+            .as_ref()
+            .map(crate::dock::signature)
+            .expect("加载后必须有 dock 树");
+        assert_eq!(restored, expected, "结构必须活过一次重启");
+        let tabs: Vec<crate::dock::DockTab> = reloaded
+            .dock_state
+            .as_ref()
+            .expect("加载后必须有 dock 树")
+            .main_surface()
+            .tabs()
+            .copied()
+            .collect();
+        assert!(
+            !tabs.contains(&crate::dock::DockTab::Console),
+            "隐藏的面板不得被默认树带回来：{tabs:?}"
+        );
+        assert!(
+            reloaded.layout.dock_tree.is_some(),
+            "保存下来的必须是真的面板树，而不是只靠 panel_visible 现算"
+        );
+
+        // 「重置布局」必须把树也打回默认形状：只清 `dock_tree` 而不在这里重建，
+        // 用户看到的就是"重置只生效了一半"。
+        reloaded.reset_layout_to_default();
+        assert_eq!(reloaded.layout.dock_tree, None, "重置必须清掉存下来的树");
+        assert_eq!(
+            reloaded.dock_state.as_ref().map(crate::dock::signature),
+            Some(crate::dock::signature(&crate::dock::default_dock_state())),
+            "重置必须回到默认面板树"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// M27-03 验收 3 的启动三态：全新项目 / 文件损坏 / 树内容认不出来，都要给出
+    /// **一棵画得出来的默认树**。
+    ///
+    /// 三种形态各挡一种真实坏法：`.cache/` 不进版本库、外部工具会往里写，所以"截断"与
+    /// "整文件不是 JSON"迟早会发生；第三种是文件合法、`dock_tree` 也确实是对象，但结构
+    /// 解析不了（egui_dock 换了序列化形状就是这个形态）——它是唯一会**静默丢掉用户布局**
+    /// 的一种：其它字段全都照常生效，用户的体感只剩"我摆好的面板莫名其妙回了原位"。
+    /// 因此这一种除了比指纹，还必须查控制台留痕。
+    ///
+    /// 每种都真画一帧：只比指纹的话，"结构对但画不出"的树也算过。
+    #[test]
+    fn the_three_layout_startup_states_all_land_on_a_usable_default_tree() {
+        let root = temp_root("dock-states");
+        let project = || editor::ProjectInfo {
+            root: root.clone(),
+            version: "test".to_owned(),
+            directories: Vec::new(),
+        };
+        let default_tree = crate::dock::signature(&crate::dock::default_dock_state());
+        let context = egui::Context::default();
+
+        // `text` 为 `None` 表示"文件不存在"（全新项目）；其余形态先写文件再启动。
+        let boot = |text: Option<&str>| {
+            let path = editor::layout_path(&root);
+            match text {
+                Some(text) => {
+                    std::fs::create_dir_all(path.parent().expect("布局文件有父目录"))
+                        .expect("建目录");
+                    std::fs::write(&path, text).expect("写布局文件");
+                }
+                None => {
+                    let _ = std::fs::remove_file(&path);
+                }
+            }
+            let mut app = EditorApp::new(project(), None, LogSink::new(64));
+            app.project_loaded = true;
+            app.load_layout_for_project();
+            let tree =
+                crate::dock::signature(app.dock_state.as_ref().expect("启动后必须有 dock 树"));
+            let _ = context.run(egui::RawInput::default(), |context| {
+                crate::dock::show_workspace(context, &mut app);
+            });
+            let state = app.dock_state.as_ref().expect("画完一帧必须把树放回");
+            let tabs: Vec<_> = state.iter_all_tabs().map(|(_, tab)| *tab).collect();
+            assert!(
+                crate::dock::serialize(state).is_some(),
+                "回落后的树必须还能写回 layout.json，否则下一次启动仍是同一棵坏树"
+            );
+            (app, tree, tabs)
+        };
+
+        // ① 全新项目：没有文件 → 默认树，而且**不许报警**（首启就弹"布局损坏"是错的）。
+        let (fresh, tree, tabs) = boot(None);
+        assert_eq!(tree, default_tree, "全新项目必须是默认面板树");
+        assert_eq!(tabs.len(), 6, "默认树要六个常驻视图都在：{tabs:?}");
+        assert!(
+            fresh.console_notices.is_empty(),
+            "全新项目不该有布局提示：{:?}",
+            fresh.console_notices
+        );
+        assert!(!fresh.status.contains("损坏"), "{}", fresh.status);
+
+        // ② 文件损坏：回落默认树 + 状态栏给原因 + **不覆盖**源文件。
+        let truncated = "{\"version\": 2, \"dock_tree\": {";
+        let (broken, tree, tabs) = boot(Some(truncated));
+        assert_eq!(tree, default_tree, "损坏必须整棵回落默认，不能留半棵树");
+        assert_eq!(tabs.len(), 6, "损坏回落后六个常驻视图都在：{tabs:?}");
+        assert!(
+            broken.status.contains("损坏"),
+            "状态栏要说明为什么用默认布局：{}",
+            broken.status
+        );
+        assert_eq!(
+            std::fs::read_to_string(editor::layout_path(&root)).expect("读回布局文件"),
+            truncated,
+            "损坏文件不得被静默覆盖"
+        );
+
+        // ③ `dock_tree` 是对象但内容认不出来：默认树 + 控制台留一句话，且原树仍留在字段里
+        //    （丢掉它等于把"损坏"降级成"用户没存过布局"，重置布局那条路就看不出区别了）。
+        let bogus_tree = "{\"version\": 2, \"dock_tree\": {\"nodes\": [[\"NoSuchPanel\"]]}}";
+        let (mismatched, tree, tabs) = boot(Some(bogus_tree));
+        assert_eq!(tree, default_tree, "认不出的树必须整棵回落默认：{tree}");
+        assert_eq!(tabs.len(), 6, "回落后六个常驻视图都在：{tabs:?}");
+        assert!(
+            mismatched.layout.dock_tree.is_some(),
+            "回落后仍要留着文件里那棵坏树，它是用户的原始数据"
+        );
+        assert!(
+            mismatched
+                .console_notices
+                .iter()
+                .any(|line| line.contains("面板树")),
+            "静默丢布局是这一条唯一要挡的坏形态：{:?}",
+            mismatched.console_notices
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// M27-03 验收 3 的"版本不符"半边：比当前构建更新的布局文件**按字段照读**，不整份作废。
+    ///
+    /// 章程要的是"版本不符也能启动且回落默认"，这里落在字段的粒度上：v2 相对 v1 只多一个
+    /// `dock_tree` 键，读法又是逐键取类型、越界值统一 `clamp`，所以新版写出的文件在旧版手里
+    /// 最坏是"看不懂的新键走默认"，不会把好字段一起赔掉。反过来若判成整份损坏，用户从旧版
+    /// 升上来会白白丢一次布局——那是更差的回落。
+    #[test]
+    fn a_newer_layout_version_is_read_field_by_field_and_keeps_its_number() {
+        let root = temp_root("dock-newer-version");
+        let project = || editor::ProjectInfo {
+            root: root.clone(),
+            version: "test".to_owned(),
+            directories: Vec::new(),
+        };
+        let context = egui::Context::default();
+        let mut app = EditorApp::new(project(), None, LogSink::new(64));
+        app.project_loaded = true;
+        // 先画一帧才有可序列化的矩形（`dock::serialize` 的 ±∞ 守卫），再藏掉控制台造一棵非默认树。
+        let _ = context.run(egui::RawInput::default(), |context| {
+            crate::dock::show_workspace(context, &mut app);
+        });
+        app.show_lua_console = false;
+        let _ = context.run(egui::RawInput::default(), |context| {
+            crate::dock::show_workspace(context, &mut app);
+        });
+        let expected =
+            crate::dock::signature(app.dock_state.as_ref().expect("帧末必须放回 dock 树"));
+        // 缩放要在画完之后才定：首帧的 Scene View 会按内容自适应改它，先设就会被覆盖。
+        app.scene_zoom = 2.5;
+        app.persist_layout();
+
+        let path = editor::layout_path(&root);
+        let text = std::fs::read_to_string(&path).expect("读布局文件");
+        let future = text.replace("\"version\": 2", "\"version\": 99");
+        assert_ne!(future, text, "样例文件必须带版本号键");
+        std::fs::write(&path, &future).expect("写未来版本文件");
+
+        let mut reloaded = EditorApp::new(project(), None, LogSink::new(64));
+        reloaded.project_loaded = true;
+        reloaded.load_layout_for_project();
+        assert!(
+            !reloaded.status.contains("损坏"),
+            "高版本不是损坏：{}",
+            reloaded.status
+        );
+        assert!(
+            reloaded.console_notices.is_empty(),
+            "高版本不该报警：{:?}",
+            reloaded.console_notices
+        );
+        assert!(
+            (reloaded.scene_zoom - 2.5).abs() < 1e-6,
+            "看得见的字段必须照读，不能整份作废：实际 {}",
+            reloaded.scene_zoom
+        );
+        assert_eq!(
+            crate::dock::signature(reloaded.dock_state.as_ref().expect("启动后必须有 dock 树")),
+            expected,
+            "认得出的键照读，面板树也不能被版本号判死"
+        );
+        // 版本号保持 99：把它盖章成 2 等于冒充旧格式，下次真 v3 写回来时没人知道文件被动过。
+        reloaded.persist_layout();
+        assert_eq!(
+            editor::load_layout(&root).layout().version,
+            99,
+            "回写不得偷偷降级版本号"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// 阶段 2 的**自动保存**路径：dock 树要等布局稳定一段时间后才序列化落盘。
+    ///
+    /// 节流是被 egui_dock 的 `separator.extra`（175px 最小面板宽）逼出来的：它每帧把
+    /// `fraction` 重新夹紧一次，于是**拖动窗口边缘本身就会连续改变结构指纹**——没有稳定
+    /// 窗口的话一次拖窗就是每帧写一次盘。这里用"文件先写、树后写"的时序把这条路径钉住。
+    #[test]
+    fn the_dock_tree_autosaves_only_after_the_layout_settles() {
+        let root = temp_root("dock-autosave");
+        let project = || editor::ProjectInfo {
+            root: root.clone(),
+            version: "test".to_owned(),
+            directories: Vec::new(),
+        };
+        let context = egui::Context::default();
+        let draw = |app: &mut EditorApp| {
+            // 矩形要真实才能序列化（`dock::serialize` 的 ±∞ 守卫），所以每步都画一帧。
+            let _ = context.run(egui::RawInput::default(), |ctx| {
+                crate::dock::show_workspace(ctx, app);
+            });
+        };
+        let read = || -> serde_json::Value {
+            serde_json::from_str(
+                &std::fs::read_to_string(editor::layout_path(&root)).expect("layout.json"),
+            )
+            .expect("json")
+        };
+
+        let mut app = EditorApp::new(project(), None, LogSink::new(64));
+        app.project_loaded = true;
+        // 首次观察只登记基线：打开项目、加载布局这一步本身不该写盘。
+        app.maybe_persist_layout_on_change();
+        assert!(
+            !editor::layout_path(&root).exists(),
+            "基线帧不得自动写盘：{:?}",
+            std::fs::read_to_string(editor::layout_path(&root))
+        );
+
+        // 画一帧给树真实矩形（`dock::serialize` 的 ±∞ 守卫在这里把关）。
+        draw(&mut app);
+
+        // 一次结构变化：藏掉控制台会真的把标签从树里移除。
+        // 被跟踪的 `panel_visible` 同步变了，所以文件会立刻写——但节流管的是树，
+        // 此刻文件里的 `dock_tree` 必须还是 null。
+        app.show_lua_console = false;
+        draw(&mut app);
+        app.maybe_persist_layout_on_change();
+        assert!(
+            editor::layout_path(&root).exists(),
+            "可见性变化应当立刻自动保存"
+        );
+        assert!(
+            read()["dock_tree"].is_null(),
+            "稳定窗口内不得序列化 dock 树：{}",
+            read()
+        );
+
+        std::thread::sleep(
+            crate::EditorApp::DOCK_LAYOUT_SETTLE + std::time::Duration::from_millis(50),
+        );
+        app.maybe_persist_layout_on_change();
+        assert!(
+            read()["dock_tree"].is_object(),
+            "布局稳定后必须把树补写进去：{}",
+            read()
+        );
+        assert_eq!(app.dock_dirty_since, None, "写成功后脏标记必须清掉");
+
+        // 自动保存的文件要能被下一次启动原样读回。
+        let expected = app.dock_state.as_ref().map(crate::dock::signature);
+        let mut reloaded = EditorApp::new(project(), None, LogSink::new(64));
+        reloaded.project_loaded = true;
+        reloaded.load_layout_for_project();
+        assert_eq!(
+            reloaded.dock_state.as_ref().map(crate::dock::signature),
+            expected,
+            "自动保存的树必须活过一次重启"
         );
         let _ = std::fs::remove_dir_all(root);
     }

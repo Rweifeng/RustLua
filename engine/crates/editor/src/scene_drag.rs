@@ -265,7 +265,9 @@ impl EditorApp {
         for (id, fields) in &self.scene_state.preview {
             let transform = engine::core::transform::Transform {
                 position: Vec2::new(fields.position_x, fields.position_y),
-                rotation: fields.rotation,
+                // 预览里的旋转是编辑器口径的**度**，引擎的平面 Transform 按**弧度**建四元数：
+                // 这里漏一次换算，"拖到 45°"就会落成"绕 Z 转 45 弧度"（画面跳回约 1°）。
+                rotation: fields.rotation.to_radians(),
                 scale: Vec2::new(fields.scale_x, fields.scale_y),
             };
             if let Ok(local) = LocalTransform::from_2d(transform) {

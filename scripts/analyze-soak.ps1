@@ -1,4 +1,4 @@
-﻿CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     # soak.json 路径（`RUSTLUA_EDITOR_SOAK` 运行产出的归档文件）。
     [Parameter(Mandatory = $true)][string]$Path,
@@ -11,7 +11,9 @@ $ErrorActionPreference = "Stop"
 if (-not (Test-Path -LiteralPath $Path)) {
     throw "soak json not found: $Path"
 }
-$payload = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
+# PS 5.1 的 Get-Content 默认按 ANSI 解码：soak.json 里有中文面板标题，
+# 不显式 UTF8 会让中文的尾字节变成反斜杠，ConvertFrom-Json 直接解析失败。
+$payload = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json
 $samples = @($payload.samples)
 if ($samples.Count -lt 2) {
     throw "soak json has too few samples: $($samples.Count)"

@@ -16,7 +16,7 @@ param(
 $ErrorActionPreference = "Stop"
 function Read-Json([string]$Path) {
     if (-not (Test-Path -LiteralPath $Path)) { throw "Baseline not found: $Path" }
-    return Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
+    return Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json
 }
 function Percent-Delta([double]$Old, [double]$New) {
     if ($Old -eq 0) { return $(if ($New -eq 0) { 0 } else { 100 }) }

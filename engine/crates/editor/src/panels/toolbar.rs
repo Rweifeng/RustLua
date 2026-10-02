@@ -96,6 +96,8 @@ impl EditorApp {
                     }
                 });
             ui.separator();
+            // M27-00 阶段 1：视图切换 = 聚焦到对应 dock 标签（`workspace_tab` 由标签
+            // 渲染时写回），不再直接改状态——否则 dock 与工具栏会互相追。
             if icon_toggle(
                 ui,
                 self.workspace_tab == WorkspaceTab::Scene,
@@ -104,7 +106,7 @@ impl EditorApp {
             )
             .clicked()
             {
-                self.workspace_tab = WorkspaceTab::Scene;
+                self.focus_workspace_tab(WorkspaceTab::Scene);
             }
             if icon_toggle(
                 ui,
@@ -114,7 +116,7 @@ impl EditorApp {
             )
             .clicked()
             {
-                self.workspace_tab = WorkspaceTab::Game;
+                self.focus_workspace_tab(WorkspaceTab::Game);
             }
             ui.separator();
             // 单一 3D 切换：默认 2D，点亮进入 3D，取消回到 2D。
@@ -164,46 +166,18 @@ impl EditorApp {
                 }
                 ui.label("控件（点击创建 / 拖到画布）");
                 // 5b：统一走 create_widget_at_center，与拖放创建共用同一路径。
-                if ui.button("Text").clicked() {
-                    self.create_widget_at_center("Text");
+                // M27-01：拖拽载荷换成 `DropPayload::Widget`——与资源/实体的拖放同一类型，
+                // 落点矩阵（`dnd::plan`）才能对四种来源用同一张表。
+                for kind in crate::dnd::WIDGET_PALETTE {
+                    if ui.button(*kind).clicked() {
+                        self.create_widget_at_center(kind);
+                    }
+                    ui.dnd_drag_source(
+                        egui::Id::new(("widget_palette", kind)),
+                        crate::dnd::DropPayload::Widget(kind),
+                        |ui| ui.small("↕"),
+                    );
                 }
-                ui.dnd_drag_source(
-                    egui::Id::new("widget_palette_text"),
-                    "widget:Text".to_owned(),
-                    |ui| ui.small("↕"),
-                );
-                if ui.button("Image").clicked() {
-                    self.create_widget_at_center("Image");
-                }
-                ui.dnd_drag_source(
-                    egui::Id::new("widget_palette_image"),
-                    "widget:Image".to_owned(),
-                    |ui| ui.small("↕"),
-                );
-                if ui.button("Button").clicked() {
-                    self.create_widget_at_center("Button");
-                }
-                ui.dnd_drag_source(
-                    egui::Id::new("widget_palette_button"),
-                    "widget:Button".to_owned(),
-                    |ui| ui.small("↕"),
-                );
-                if ui.button("Panel").clicked() {
-                    self.create_widget_at_center("Panel");
-                }
-                ui.dnd_drag_source(
-                    egui::Id::new("widget_palette_panel"),
-                    "widget:Panel".to_owned(),
-                    |ui| ui.small("↕"),
-                );
-                if ui.button("Container").clicked() {
-                    self.create_widget_at_center("Container");
-                }
-                ui.dnd_drag_source(
-                    egui::Id::new("widget_palette_container"),
-                    "widget:Container".to_owned(),
-                    |ui| ui.small("↕"),
-                );
             }
             ui.separator();
             ui.checkbox(&mut self.snap_enabled, "吸附");
@@ -229,7 +203,18 @@ impl EditorApp {
                     .range(0.05..=10.0)
                     .speed(0.05)
                     .prefix(" "),
-            );
+            )
+            .on_hover_text("位移吸附步长（世界单位）");
+            // M27-02：旋转**角度**吸附。与位移吸附共用同一个开关，但单位必须是度数——
+            // 拿 0.5 的位移步长当角度用（0.5°）不叫吸附，叫抖。
+            ui.add(
+                egui::DragValue::new(&mut self.snap_angle_step)
+                    .range(1.0..=90.0)
+                    .speed(1.0)
+                    .prefix(" ")
+                    .suffix("°"),
+            )
+            .on_hover_text("旋转角度吸附步长（度），与左侧的吸附开关共用");
             if icon_button(ui, "⊞", "对齐到网格").clicked() {
                 self.align_selected(AlignMode::Grid);
             }

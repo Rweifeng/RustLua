@@ -145,73 +145,76 @@ impl EditorApp {
         egui::TopBottomPanel::bottom("console")
             .exact_height(panel_height)
             .show(context, |ui| {
-                ui.horizontal_top(|ui| {
-                    // 左侧：日志分类导航（图标按钮，切换编辑器日志 / 游戏 Lua 日志）。
-                    self.console_tab_rail(ui);
-                    ui.separator();
-                    ui.vertical(|ui| {
-                        ui.horizontal(|ui| {
-                            let project_name = self
-                                .project
-                                .root
-                                .file_name()
-                                .and_then(|name| name.to_str())
-                                .unwrap_or("项目");
-                            ui.heading(format!("控制台 — {project_name}"));
-                            ui.add(
-                                egui::TextEdit::singleline(&mut self.console_filter)
-                                    .desired_width(160.0)
-                                    .hint_text("过滤日志…"),
-                            );
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    if ui.button("清空").clicked() {
-                                        self.clear_console();
-                                        self.log_sink.clear();
-                                        self.console_notices.clear();
-                                    }
-                                    ui.selectable_value(
-                                        &mut self.console_log_level_filter,
-                                        ConsoleLogLevelFilter::Error,
-                                        "Error",
-                                    );
-                                    ui.selectable_value(
-                                        &mut self.console_log_level_filter,
-                                        ConsoleLogLevelFilter::Warning,
-                                        "Warning",
-                                    );
-                                    ui.selectable_value(
-                                        &mut self.console_log_level_filter,
-                                        ConsoleLogLevelFilter::Info,
-                                        "Info",
-                                    );
-                                    ui.selectable_value(
-                                        &mut self.console_log_level_filter,
-                                        ConsoleLogLevelFilter::All,
-                                        "全部",
-                                    );
-                                },
-                            );
-                        });
-                        // 滚动区填满剩余空间，面板高度保持固定，仅滚动内部内容。
-                        let row_height = console_row_height(ui);
-                        let input_row_budget = row_height + ui.spacing().item_spacing.y;
-                        let log_height = (ui.available_height() - input_row_budget).max(row_height);
-                        egui::ScrollArea::vertical()
-                            .id_salt("console_log_body")
-                            .auto_shrink([false; 2])
-                            .hscroll(false)
-                            .max_height(log_height)
-                            .show(ui, |ui| {
-                                self.draw_console_log_body(ui);
-                            });
-                        // 输入固定在滚动区**下方**：日志滚到哪一行都不影响输入，
-                        // 也避免长日志把输入顶出可见范围。
-                        self.draw_console_input_row(ui);
+                self.draw_console_body(ui);
+            });
+    }
+
+    /// 控制台内容（M27-00 薄切片：从 `draw_lua_console_panel` 抽出的 `&mut Ui` 入口，
+    /// 供 egui_dock `PanelUi` 回调复用；原 TopBottomPanel 外壳绘制路径不变）。
+    pub(crate) fn draw_console_body(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_top(|ui| {
+            // 左侧：日志分类导航（图标按钮，切换编辑器日志 / 游戏 Lua 日志）。
+            self.console_tab_rail(ui);
+            ui.separator();
+            ui.vertical(|ui| {
+                ui.horizontal(|ui| {
+                    let project_name = self
+                        .project
+                        .root
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("项目");
+                    ui.heading(format!("控制台 — {project_name}"));
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.console_filter)
+                            .desired_width(160.0)
+                            .hint_text("过滤日志…"),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("清空").clicked() {
+                            self.clear_console();
+                            self.log_sink.clear();
+                            self.console_notices.clear();
+                        }
+                        ui.selectable_value(
+                            &mut self.console_log_level_filter,
+                            ConsoleLogLevelFilter::Error,
+                            "Error",
+                        );
+                        ui.selectable_value(
+                            &mut self.console_log_level_filter,
+                            ConsoleLogLevelFilter::Warning,
+                            "Warning",
+                        );
+                        ui.selectable_value(
+                            &mut self.console_log_level_filter,
+                            ConsoleLogLevelFilter::Info,
+                            "Info",
+                        );
+                        ui.selectable_value(
+                            &mut self.console_log_level_filter,
+                            ConsoleLogLevelFilter::All,
+                            "全部",
+                        );
                     });
                 });
+                // 滚动区填满剩余空间，面板高度保持固定，仅滚动内部内容。
+                let row_height = console_row_height(ui);
+                let input_row_budget = row_height + ui.spacing().item_spacing.y;
+                let log_height = (ui.available_height() - input_row_budget).max(row_height);
+                egui::ScrollArea::vertical()
+                    .id_salt("console_log_body")
+                    .auto_shrink([false; 2])
+                    .hscroll(false)
+                    .max_height(log_height)
+                    .show(ui, |ui| {
+                        self.draw_console_log_body(ui);
+                    });
+                // 输入固定在滚动区**下方**：日志滚到哪一行都不影响输入，
+                // 也避免长日志把输入顶出可见范围。
+                self.draw_console_input_row(ui);
             });
+        });
     }
 
     /// 控制台输入行（docs/25 §10「输入行 + 执行（或 Enter）在内嵌 VM 执行 Lua」）。

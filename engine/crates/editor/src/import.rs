@@ -1,4 +1,7 @@
 //! 游戏项目导入与资源导入：后台线程任务、进度回传、结果应用。
+//!
+//! M27-01 起这里还是**系统拖放入库**的提交层（`import_external_files`）：
+//! 复制进 `assets/` + 请求后台刷新住在面板外。
 
 use crate::EditorApp;
 use crate::panels::progress::{ProgressEvent, ProgressKind};
@@ -12,6 +15,8 @@ use engine::core::{
     import_cache::ImportCache,
     importer::{ImportSummary, ImporterRegistry, run_import_batch_with_progress},
     resource_db::{AssetId, ResourceDatabase},
+    resource_kind::ResourceKind,
+    scene::SceneEntityId,
 };
 use std::{
     path::{Path, PathBuf},
@@ -167,6 +172,132 @@ impl EditorApp {
     /// 打开最近项目（项目菜单用）：E06 先经未保存确认网关，确认后走后台导入流程。
     pub(crate) fn open_recent_project(&mut self, path: String) {
         self.request_document_change(crate::actions::PendingChange::SwitchProject { path });
+    }
+}
+
+/// 一次外部文件入库的结果明细（状态栏文案要如实说出"几个成功、几个失败"）。
+pub(crate) struct IngestReport {
+    /// 成功进入工程的**相对路径**（`assets/textures/x.png`）。
+    pub(crate) imported: Vec<String>,
+    /// 逐条失败原因（复制报错、目标目录建不出来）。
+    failures: Vec<String>,
+    /// 跳过的条目数（不是文件：设备路径、已消失的临时文件）。
+    skipped: usize,
+}
+
+impl IngestReport {
+    pub(crate) fn status_text(&self) -> String {
+        let mut text = if self.imported.is_empty() {
+            "未导入任何文件".to_owned()
+        } else {
+            format!("已导入 {} 个文件", self.imported.len())
+        };
+        if self.skipped > 0 {
+            text.push_str(&format!("，跳过 {} 个非文件条目", self.skipped));
+        }
+        if !self.failures.is_empty() {
+            text.push_str(&format!(
+                "；{} 个失败：{}",
+                self.failures.len(),
+                self.failures[0]
+            ));
+        }
+        text
+    }
+}
+
+impl EditorApp {
+    /// M27-01：把系统拖进来的文件复制进 `assets/<家族目录>`，随后请求一次后台资源刷新。
+    ///
+    /// 三条不变量：① **永不覆盖**——重名由 `dnd::target_path` 让路（`x.png` → `x-1.png`）；
+    /// ② **工程内拖入不产生副本**（从资源浏览器拖自己的资产时保留原路径）；
+    /// ③ 部分失败不影响成功项，逐条列进状态栏文案。
+    pub(crate) fn import_external_files(&mut self, files: &[PathBuf]) -> IngestReport {
+        let mut report = IngestReport {
+            imported: Vec::new(),
+            failures: Vec::new(),
+            skipped: 0,
+        };
+        if !self.project_loaded {
+            report.failures.push("请先打开游戏项目".to_owned());
+            return report;
+        }
+        let root = strip_verbatim_prefix(&self.project.root);
+        for source in files {
+            if !source.is_file() {
+                report.skipped += 1;
+                continue;
+            }
+            let within_project = source.starts_with(&root);
+            let target = if within_project {
+                source.clone()
+            } else {
+                crate::dnd::target_path(&root, source)
+            };
+            let name = target
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| target.display().to_string());
+            let result = (|| -> Result<(), String> {
+                let dir = target.parent().ok_or("目标路径没有父目录")?;
+                std::fs::create_dir_all(dir).map_err(|error| error.to_string())?;
+                if !within_project {
+                    std::fs::copy(source, &target).map_err(|error| error.to_string())?;
+                }
+                Ok(())
+            })();
+            match result {
+                Err(error) => report.failures.push(format!("{name}：{error}")),
+                Ok(()) => {
+                    if let Some(relative) = crate::dnd::relative_asset(&root, &target) {
+                        report.imported.push(relative);
+                    }
+                }
+            }
+        }
+        if !report.imported.is_empty() {
+            // 复制完交给既有的**后台**扫描：新文件进 pending_imports 后由
+            // `start_resource_import` 转成导入任务（同步扫描会卡住 UI 线程）。
+            self.refresh_resources();
+        }
+        report
+    }
+
+    /// 只入库（资源浏览器落点）。
+    pub(crate) fn ingest_external_files(&mut self, files: &[PathBuf]) -> String {
+        self.import_external_files(files).status_text()
+    }
+
+    /// 入库 + 为可生成的那批建实体（画布/层级落点）。
+    ///
+    /// Play 锁定在复制**之前**就拒绝：拖进来的文件不该在只读预览期间落盘。
+    pub(crate) fn ingest_and_spawn(
+        &mut self,
+        files: &[PathBuf],
+        parent: Option<SceneEntityId>,
+    ) -> String {
+        if self.is_playing() {
+            return "Play mode locks scene editing; click Stop first".to_owned();
+        }
+        let report = self.import_external_files(files);
+        let spawns: Vec<String> = report
+            .imported
+            .iter()
+            .filter(|relative| {
+                crate::dnd::referenceable(ResourceKind::from_path(Path::new(relative)))
+            })
+            .cloned()
+            .collect();
+        let ingest = report.status_text();
+        if spawns.is_empty() {
+            return if ingest == "未导入任何文件" {
+                "该类型不能直接建实体（音频/字体/Lua 只能进资源库）".to_owned()
+            } else {
+                format!("{ingest}；该类型不能直接建实体")
+            };
+        }
+        // 导入本身没有 Undo（它是文件系统动作），只有建实体那一步进历史。
+        format!("{}；{}", self.spawn_dropped_batch(&spawns, parent), ingest)
     }
 }
 
@@ -457,5 +588,130 @@ mod import_tests {
             max_progress >= 0.9,
             "导入应按步骤回报真实进度；max={max_progress}"
         );
+    }
+
+    // ---- M27-01：系统拖放入库的三条不变量 ----
+
+    /// 一个临时工程 + 一个"资源管理器里的外部目录"。
+    struct DropFixture {
+        project: PathBuf,
+        staging: PathBuf,
+    }
+
+    impl DropFixture {
+        fn new(label: &str) -> Self {
+            let token = crate::util::test_token();
+            let root = std::env::temp_dir().join(format!("rustlua-import-{label}-{token}"));
+            // 外部目录必须在工程**外面**，否则它就不是"从资源管理器拖进来"了。
+            let staging = std::env::temp_dir().join(format!("rustlua-import-{label}-{token}-out"));
+            let _ = std::fs::remove_dir_all(&root);
+            let _ = std::fs::remove_dir_all(&staging);
+            std::fs::create_dir_all(&staging).expect("临时目录");
+            std::fs::create_dir_all(&root).expect("临时工程目录");
+            Self {
+                project: root,
+                staging,
+            }
+        }
+
+        fn app(&self) -> EditorApp {
+            let mut app = EditorApp::new(
+                ProjectInfo {
+                    root: self.project.clone(),
+                    version: "test".to_owned(),
+                    directories: Vec::new(),
+                },
+                None,
+                LogSink::new(64),
+            );
+            app.project_loaded = true;
+            app
+        }
+
+        fn write_outside(&self, name: &str, bytes: &[u8]) -> PathBuf {
+            let path = self.staging.join(name);
+            std::fs::write(&path, bytes).expect("写外部文件");
+            path
+        }
+
+        fn read_in_project(&self, relative: &str) -> Vec<u8> {
+            std::fs::read(self.project.join(relative)).unwrap_or_default()
+        }
+
+        fn dispose(self) {
+            let _ = std::fs::remove_dir_all(&self.project);
+            let _ = std::fs::remove_dir_all(&self.staging);
+        }
+    }
+
+    /// ① **永不覆盖**：第二次拖同名文件必须让路（`hero-1.png`），第一份内容不能被改。
+    #[test]
+    fn an_external_file_lands_in_its_family_folder_and_never_overwrites() {
+        let fixture = DropFixture::new("no-overwrite");
+        let mut app = fixture.app();
+        let first = fixture.write_outside("hero.png", b"one");
+
+        let report = app.import_external_files(std::slice::from_ref(&first));
+        assert_eq!(report.imported, vec!["assets/textures/hero.png"]);
+        assert_eq!(fixture.read_in_project("assets/textures/hero.png"), b"one");
+
+        // 同名再来一次：外部文件内容已经变了，落点必须换名而不是覆盖。
+        std::fs::write(&first, b"two").expect("改写外部文件");
+        let second = app.import_external_files(&[first]);
+        assert_eq!(second.imported, vec!["assets/textures/hero-1.png"]);
+        assert_eq!(
+            fixture.read_in_project("assets/textures/hero.png"),
+            b"one",
+            "已有资产不能被一次拖放覆盖"
+        );
+        assert_eq!(
+            fixture.read_in_project("assets/textures/hero-1.png"),
+            b"two"
+        );
+        drop(app);
+        fixture.dispose();
+    }
+
+    /// ② **工程内拖入不产生副本**：从资源浏览器拖自家资产时保留原路径（不复制、不换名）。
+    #[test]
+    fn a_file_already_in_the_project_is_referenced_not_copied() {
+        let fixture = DropFixture::new("in-project");
+        let inside = fixture.project.join("assets/textures/inside.png");
+        std::fs::create_dir_all(inside.parent().unwrap()).unwrap();
+        std::fs::write(&inside, b"keep").unwrap();
+
+        let report = fixture
+            .app()
+            .import_external_files(std::slice::from_ref(&inside));
+        assert_eq!(report.imported, vec!["assets/textures/inside.png"]);
+        assert!(
+            !fixture
+                .project
+                .join("assets/textures/inside-1.png")
+                .exists(),
+            "工程内的文件拖回来不该留下第二份"
+        );
+        assert_eq!(std::fs::read(&inside).unwrap(), b"keep");
+        fixture.dispose();
+    }
+
+    /// ③ 部分失败不影响成功项，而且要说出来：目录不是文件（跳过）、没开项目（整批拒绝）。
+    #[test]
+    fn partial_failures_are_skipped_or_reported_not_panicked() {
+        let fixture = DropFixture::new("partial");
+        let mut app = fixture.app();
+        let good = fixture.write_outside("ok.png", b"png");
+        let report = app.import_external_files(&[fixture.staging.clone(), good]);
+        assert_eq!(report.imported, vec!["assets/textures/ok.png"]);
+        assert_eq!(report.skipped, 1, "目录不是文件，只能跳过");
+        assert!(report.status_text().contains("跳过 1 个非文件条目"));
+
+        let mut closed = fixture.app();
+        closed.project_loaded = false;
+        let refused = closed.import_external_files(&[fixture.write_outside("x.png", b"png")]);
+        assert!(refused.imported.is_empty());
+        assert!(refused.status_text().contains("请先打开游戏项目"));
+        drop(app);
+        fixture.dispose();
     }
 }

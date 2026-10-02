@@ -11,8 +11,9 @@
 //!   build's extra settings survive an older build writing the file;
 //! * **round-trip stability**: save → load → save is byte-identical (locked by a 100-cycle test).
 //!
-//! Serialization is written by hand over `serde_json::Value` (the crate has `serde_json` but no
-//! serde derive), matching how `util.rs` persists the Hierarchy collapse state.
+//! Serialization is written by hand over `serde_json::Value` (matching how `util.rs` persists
+//! the Hierarchy collapse state); the one exception is `dock_tree`, which is egui_dock's own
+//! serde output stored verbatim as a `Value` — this module never interprets it.
 
 use std::{
     collections::BTreeMap,
@@ -21,13 +22,20 @@ use std::{
 };
 
 /// Bumped when the on-disk shape changes in a way that needs migration.
-pub const LAYOUT_VERSION: u32 = 1;
+///
+/// 2（M27-00 阶段 2）：新增 `dock_tree`。v1 文件只是缺这个键，读回来就是"没有存过布局树"，
+/// 于是用默认树——不需要真正的迁移步骤，所以下面 `clamp` 直接把旧版本号升到 2。
+pub const LAYOUT_VERSION: u32 = 2;
 
 /// Panel keys used in `panel_widths`. Kept as data so unknown keys are preserved.
 pub const PANEL_RESOURCE: &str = "resource";
 pub const PANEL_HIERARCHY: &str = "hierarchy";
 pub const PANEL_INSPECTOR: &str = "inspector";
 pub const PANEL_CONSOLE: &str = "console";
+/// 中央工作区的两个视图标签（M27-00 阶段 2 收尾：View 菜单逐项可切）。
+/// 只进 `panel_visible`，不进 `panel_widths`——它们的尺寸由所在叶子的拆分比例决定。
+pub const PANEL_SCENE_VIEW: &str = "scene_view";
+pub const PANEL_GAME_VIEW: &str = "game_view";
 
 /// 面板宽度的合法范围（点）：过窄会裁字，过宽会挤掉 Scene View。
 const PANEL_WIDTH_MIN: f32 = 120.0;
@@ -63,6 +71,11 @@ pub struct EditorLayout {
     pub scene_zoom: f32,
     pub preview_resolution: (u32, u32),
     pub density: String,
+    /// dock 树（egui_dock 的 serde 输出，原样存取）。`None` = 没存过 → 用默认布局树。
+    ///
+    /// 用 `Box` 是为了 `LayoutLoad` 的变体大小（clippy `large_enum_variant`）：这棵树本来
+    /// 就只在加载/保存时读一次，多一层间接不影响任何热路径。
+    pub dock_tree: Option<Box<serde_json::Value>>,
 }
 
 impl Default for EditorLayout {
@@ -80,6 +93,8 @@ impl Default for EditorLayout {
                 (PANEL_HIERARCHY.to_owned(), true),
                 (PANEL_INSPECTOR.to_owned(), true),
                 (PANEL_CONSOLE.to_owned(), true),
+                (PANEL_SCENE_VIEW.to_owned(), true),
+                (PANEL_GAME_VIEW.to_owned(), true),
             ]),
             workspace_tab: "scene".to_owned(),
             scene_view_mode: "2d".to_owned(),
@@ -89,6 +104,7 @@ impl Default for EditorLayout {
             scene_zoom: 1.0,
             preview_resolution: (1280, 720),
             density: "compact".to_owned(),
+            dock_tree: None,
         }
     }
 }
@@ -123,7 +139,10 @@ impl EditorLayout {
 
     /// 收敛非法取值（不 panic）：供 `load` 与外部直接构造后调用。
     pub fn clamp(&mut self) {
-        if self.version == 0 {
+        // 旧版本文件升级：v2 相对 v1 只多了 `dock_tree`，缺键就是"没存过"，所以直接盖章成
+        // 新版本号，下一次保存即为完整的 v2 形状（`version` 为 0 也走这一条）。
+        // 比当前构建更新的版本保持原样（未知键已由 `save` 保留）。
+        if self.version < LAYOUT_VERSION {
             self.version = LAYOUT_VERSION;
         }
         for (key, width) in self.panel_widths.iter_mut() {
@@ -196,6 +215,7 @@ impl EditorLayout {
             "scene_zoom": self.scene_zoom,
             "preview_resolution": [self.preview_resolution.0, self.preview_resolution.1],
             "density": self.density,
+            "dock_tree": self.dock_tree.as_deref().cloned(),
         })
     }
 
@@ -251,6 +271,11 @@ impl EditorLayout {
         }
         if let Some(density) = value.get("density").and_then(|v| v.as_str()) {
             layout.density = density.to_owned();
+        }
+        // 只认"是个对象"，内容留给 `dock::deserialize` 校验：这一层不负责读懂 dock 树。
+        // 类型不符（含 v1 里不该出现的 `null`）就当没存过。
+        if let Some(tree) = value.get("dock_tree").filter(|v| v.is_object()) {
+            layout.dock_tree = Some(Box::new(tree.clone()));
         }
         layout.clamp();
         layout
@@ -445,6 +470,11 @@ mod tests {
         layout.scene_zoom = 2.5;
         layout.preview_resolution = (1920, 1080);
         layout.density = "comfortable".to_owned();
+        // 阶段 2：dock 树是 egui_dock 自己产出的 JSON，这一层只保证"原样带走、不改写"，
+        // 所以测试里填什么都行——真正能不能读回来由 `dock::tests` 负责。
+        layout.dock_tree = Some(Box::new(serde_json::json!({
+            "surfaces": [{ "Main": { "nodes": [{ "Leaf": { "tabs": ["Scene", "Game"], "active": 1 } }] } }]
+        })));
         save_layout(&root, &layout).expect("first save");
         let first_bytes = std::fs::read(layout_path(&root)).expect("read");
 
@@ -463,6 +493,56 @@ mod tests {
             "100 次保存/恢复后文件必须逐字节一致"
         );
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// v1 文件（阶段 2 之前写的）只缺 `dock_tree`：那不是损坏，读回来就是"没存过面板树"，
+    /// 版本号盖章升到当前版本，下一次保存即为完整的 v2 形状。
+    #[test]
+    fn a_v1_file_loads_without_a_dock_tree_and_upgrades_its_version() {
+        let root = temp_root("v1");
+        let path = layout_path(&root);
+        std::fs::create_dir_all(path.parent().unwrap()).expect("dir");
+        std::fs::write(
+            &path,
+            "{\"version\": 1, \"workspace_tab\": \"game\", \"scene_zoom\": 2.0}",
+        )
+        .expect("write v1");
+        let loaded = match load_layout(&root) {
+            LayoutLoad::Loaded(layout) => layout,
+            other => panic!("v1 文件不该走回落：{other:?}"),
+        };
+        assert_eq!(loaded.version, LAYOUT_VERSION, "旧版本号必须升级");
+        assert_eq!(loaded.dock_tree, None, "缺键就是不存");
+        assert_eq!(loaded.workspace_tab, "game");
+        save_layout(&root, &loaded).expect("save");
+        let text = std::fs::read_to_string(&path).expect("read");
+        assert!(
+            text.contains("\"dock_tree\""),
+            "升级后必须写出 v2 形状：{text}"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// `dock_tree` 只按"是不是对象"接受：类型不符就当没存过，绝不在这一层解析内容，
+    /// 也绝不因此把整份布局判成损坏（其它字段照旧生效）。
+    #[test]
+    fn a_dock_tree_of_the_wrong_type_is_ignored() {
+        for (label, value) in [
+            ("null", serde_json::Value::Null),
+            ("string", serde_json::json!("Scene|Game")),
+            ("array", serde_json::json!([1, 2, 3])),
+            ("number", serde_json::json!(7)),
+        ] {
+            let mut json = EditorLayout::default().to_json();
+            *json
+                .as_object_mut()
+                .expect("object")
+                .get_mut("dock_tree")
+                .expect("key") = value;
+            let layout = EditorLayout::from_json(&json);
+            assert_eq!(layout.dock_tree, None, "{label} 形态的 dock_tree 必须忽略");
+            assert_eq!(layout.version, LAYOUT_VERSION);
+        }
     }
 
     #[test]

@@ -20,6 +20,9 @@
 //! | `RUSTLUA_EDITOR_SOAK=<秒>` | 打开 soak（真实窗口内循环 Play/Stop + 编辑），每秒采样一次内存 |
 //! | `RUSTLUA_EDITOR_SOAK_PLAY_SECONDS=<秒>` | soak 里每个 Play 阶段持续多久（默认 2 秒） |
 //! | `RUSTLUA_EDITOR_SOAK_STEP_SECONDS=<秒>` | 两次采样之间的间隔（默认 1 秒） |
+//! | `RUSTLUA_EDITOR_SOAK_CHURN_SECONDS=<秒>` | 每做一轮**编辑负载**（dock 重排 + 拖放导入）的间隔；不设则只循环 Play/Stop（与 docs/55 阶段 0 同构） |
+//! | `RUSTLUA_EDITOR_SOAK_DROP_EVERY=<轮>` | 几轮做一次拖放导入（dock 重排每轮都做，默认 1） |
+//! | `RUSTLUA_EDITOR_SOAK_DROP_SOURCE=<文件>` | 拖放导入的源文件覆盖（默认自动在工程外找一张真实纹理） |
 //!
 //! 退出码：`RUSTLUA_EDITOR_GUI_EVIDENCE` 模式下若有步骤没拿到截图，进程退出码为 2
 //! （由 `run_gui_evidence` 在关闭窗口前记录，`main` 在 `run_native` 之后核对）。
@@ -539,6 +542,10 @@ struct SoakSample {
     entities: usize,
     undo_entries: usize,
     console_lines: usize,
+    /// 截至本采样点做过的负载轮数（未开负载时恒为 0）。
+    /// 放在采样里而不是只看总数：**内存台阶要和负载对齐**才能归因，
+    /// 只有总计数就分不出"涨在第 40 分钟"是导入造成的还是缓存造成的。
+    churn_rounds: u64,
 }
 
 /// 真实窗口长会话 soak：循环 Play/Stop + 编辑 + 资源刷新，定时采样内存。
@@ -557,6 +564,38 @@ pub(crate) struct GuiSoak {
     failed: bool,
     /// 是否已经完成准备（打开文档）。
     prepared: bool,
+    /// M27-03 验收 1 的负载：设了 `RUSTLUA_EDITOR_SOAK_CHURN_SECONDS` 才开。
+    /// 没设时 soak 的行为与 docs/55 阶段 0 逐字一致（Play/Stop + 采样），
+    /// 这条开关不进入生产路径，也不改变既有归档的可比性。
+    churn: Option<ChurnLoad>,
+}
+
+/// soak 的编辑负载运行态（M27-03 验收 1：dock 重排 + 拖放导入）。
+///
+/// 为什么必须**带负载**跑：docs/55 阶段 0 那两档 soak 只循环 Play/Stop，测的是"挂机不动会不会漏"。
+/// M27 新加的面板重排、拖放导入、浮动窗增删都发生在**编辑路径**上，空转 soak 一条都碰不到——
+/// "≥2h 无增长"如果不含这些动作，就等于没测本期。
+struct ChurnLoad {
+    /// 每做一轮负载的间隔（一轮 = 一次 dock 重排 + 一次可选的拖放导入）。
+    every: Duration,
+    /// 上一轮负载的时刻。
+    last: Instant,
+    /// 每几轮做一次拖放导入（dock 重排每轮都做）。
+    drop_every: u64,
+    /// 拖放导入的源文件：必须是**工程外**的真实纹理（工程内的文件走"只引用不复制"，
+    /// 那条路径压不到复制入库与缩略图）。在准备阶段一次性定好。
+    source: Option<PathBuf>,
+    /// 上一轮导入留在工程里的副本。它会在**下一轮**开头删掉，而不是当轮删：
+    /// 入库是后台任务，当轮删除等于专测"导入被文件消失打断"那条错误路径。
+    pending_copy: Option<PathBuf>,
+    rounds: u64,
+    dock_churns: u64,
+    drop_imports: u64,
+    drop_cleanups: u64,
+    /// 负载返回"跳过…"的次数——非零说明负载在空转，报告要显眼地标出来。
+    skipped: u64,
+    /// 最近 12 条负载返回值，进报告（证明"确实在动"而不是只加了一个计数器）。
+    recent: Vec<String>,
 }
 
 impl GuiSoak {
@@ -578,6 +617,31 @@ impl GuiSoak {
         let out_dir = std::env::var("RUSTLUA_EDITOR_GUI_EVIDENCE")
             .map(PathBuf::from)
             .unwrap_or_else(|_| std::env::temp_dir().join("rustlua-editor-soak"));
+        // 负载是**可选**的：没设 CHURN_SECONDS 时 soak 的采样与 Play/Stop 节奏和 docs/55 阶段 0
+        // 的既有归档同构（报告里多一列恒为 0 的 churn_rounds，是为了让"没带负载"这件事
+        // 在数据里可见，而不是要读者去猜），也不会把编辑动作混进一条本来只测挂机的曲线里。
+        let churn = std::env::var("RUSTLUA_EDITOR_SOAK_CHURN_SECONDS")
+            .ok()
+            .and_then(|raw| raw.parse::<u64>().ok())
+            .filter(|value| *value > 0)
+            .map(|every| ChurnLoad {
+                every: Duration::from_secs(every),
+                last: Instant::now(),
+                drop_every: std::env::var("RUSTLUA_EDITOR_SOAK_DROP_EVERY")
+                    .ok()
+                    .and_then(|raw| raw.parse::<u64>().ok())
+                    .filter(|value| *value > 0)
+                    .unwrap_or(1),
+                // 在准备阶段（已经知道工程根）再定源文件。
+                source: None,
+                pending_copy: None,
+                rounds: 0,
+                dock_churns: 0,
+                drop_imports: 0,
+                drop_cleanups: 0,
+                skipped: 0,
+                recent: Vec::new(),
+            });
         Some(Self {
             out_dir,
             duration: Duration::from_secs(seconds),
@@ -592,6 +656,7 @@ impl GuiSoak {
             finished: false,
             failed: false,
             prepared: false,
+            churn,
         })
     }
 
@@ -630,6 +695,20 @@ impl GuiSoak {
                 }
                 tracing::info!(target: "editor", "[soak] 已打开场景 {relative}");
             }
+            if let Some(load) = &mut self.churn {
+                load.source = find_external_drop_source(&app.project.root);
+                match &load.source {
+                    Some(path) => tracing::info!(
+                        target: "editor",
+                        "[soak] 拖放负载源（工程外）={}",
+                        path.display()
+                    ),
+                    None => tracing::warn!(
+                        target: "editor",
+                        "[soak] 没找到工程外的纹理：负载只做 dock 重排，不含拖放导入"
+                    ),
+                }
+            }
             self.prepared = true;
             self.last_sample = now;
         }
@@ -648,14 +727,11 @@ impl GuiSoak {
             }
             Some(_) => {}
         }
+        self.run_churn_round(app, now);
         // 采样：内存 + 会话级计数（历史深度、日志行数、实体数）。
         if now.duration_since(self.last_sample) >= self.step_seconds {
             self.last_sample = now;
-            let entities = app
-                .document
-                .current_scene
-                .as_ref()
-                .map_or(0, |document| document.scene.entities.len());
+            let entities = scene_entity_count(app);
             let console_lines = app.log_sink.len();
             let (egui_textures, egui_texture_bytes) = {
                 let manager = context.tex_manager();
@@ -678,6 +754,7 @@ impl GuiSoak {
                 entities,
                 undo_entries: app.history.undo_len(),
                 console_lines,
+                churn_rounds: self.churn.as_ref().map_or(0, |load| load.rounds),
             });
             // **增量落盘**：8 小时这一档如果被外部打断（关窗、机器重启、会话结束），
             // 只在结束时写报告就等于"什么都没留下"。每 12 个采样重写一次，`complete` 字段
@@ -692,6 +769,94 @@ impl GuiSoak {
         }
         context.request_repaint();
         false
+    }
+
+    /// 做一轮 M27-03 验收 1 的编辑负载：一次 dock 重排，外加每 `drop_every` 轮一次
+    /// "拖放导入 → 撤销建实体 → （下一轮开头）删掉副本"。
+    ///
+    /// 为什么导入要撤销、副本要删：泄漏问的是"**同一份工作**重复上百次会不会留住内存"。
+    /// 每轮真留一个新文件，资源库、缩略图与 `.cache` 就随轮数单调变大，那条曲线量到的是
+    /// "资产变多"而不是"重复工作"，谷值判据当场失去意义。撤销建实体那一步（导入本身是
+    /// 文件系统动作、不进历史）再加下一轮的删副本，把工程大小钉成常量，同时把
+    /// "复制入库 → 分配 GUID → 后台导入 → 建实体 → 撤销 → 删除 → 依赖重算"整条链每轮跑通。
+    fn run_churn_round(&mut self, app: &mut EditorApp, now: Instant) {
+        let Some(load) = &mut self.churn else {
+            return;
+        };
+        if now.duration_since(load.last) < load.every {
+            return;
+        }
+        load.last = now;
+        load.rounds += 1;
+        let round = load.rounds;
+        let mut notes: Vec<String> = Vec::new();
+
+        // 1) dock 重排：走 `DockState` 的真实变更 API，与鼠标拖拽改的是同一棵树
+        //    （但它不是真实鼠标，这点在 `dock::churn` 的文档注释里写明）。
+        //    步号从 0 起：六步里第一步必须是"把控制台拆出去"，从 1 起会让第 1 轮
+        //    直接落在"跳过：控制台不在浮动窗口里"上，报告里那条 skipped 就永远是 1。
+        let dock_note = match app.dock_state.as_mut() {
+            Some(state) => crate::dock::churn(state, (round - 1) as usize),
+            None => "跳过：dock 树正被表面绘制借走".to_owned(),
+        };
+        if dock_note.starts_with("跳过") {
+            load.skipped += 1;
+        } else {
+            load.dock_churns += 1;
+        }
+        notes.push(dock_note);
+
+        // 2) 拖放导入：只在轮到它、且准备阶段找到了工程外源文件时做。
+        let source = if round.is_multiple_of(load.drop_every) {
+            load.source.clone()
+        } else {
+            None
+        };
+        if let Some(source) = source {
+            if let Some(previous) = load.pending_copy.take() {
+                match fs::remove_file(&previous) {
+                    Ok(()) => {
+                        // 删除不需要单独再刷一次：紧随其后的导入自带后台重扫，
+                        // `reconcile` 会把已经消失的文件从数据库里剪掉。
+                        load.drop_cleanups += 1;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => notes.push(format!("跳过：删不掉上一轮的副本 {error}")),
+                }
+            }
+            // Play 期间文档只读、导入会被拒绝，所以先停（这一停是真实动作，计入循环数）。
+            if app.is_playing() {
+                app.stop();
+                self.playing_since = None;
+                self.play_cycles += 1;
+            }
+            // 预测落点：`target_path` 按重名递增，而本轮已经删掉上一轮的副本，名字会重新
+            // 可用，于是每轮都往同一路径写同一份内容——工程大小因此是常量。
+            let target = crate::dnd::target_path(&app.project.root, &source);
+            let entities_before = scene_entity_count(app);
+            let note = app.ingest_and_spawn(std::slice::from_ref(&source), None);
+            if note.contains("未导入任何文件") || note.starts_with("Play mode locks") {
+                load.skipped += 1;
+            } else {
+                load.drop_imports += 1;
+                load.pending_copy = Some(target);
+                // 只有**真建出实体**才撤销：撤销一次没落地的动作等于弹掉历史里别人的改动。
+                if scene_entity_count(app) > entities_before {
+                    app.undo();
+                }
+            }
+            let name = source
+                .file_name()
+                .map_or_else(|| "?".to_owned(), |raw| raw.to_string_lossy().into_owned());
+            notes.push(format!("导入 {name}：{note}"));
+        }
+
+        for note in notes {
+            if load.recent.len() >= 12 {
+                load.recent.remove(0);
+            }
+            load.recent.push(note);
+        }
     }
 
     fn finish(&mut self, app: &mut EditorApp) {
@@ -719,6 +884,25 @@ impl GuiSoak {
             self.play_cycles,
             complete
         ));
+        if let Some(load) = &self.churn {
+            text.push_str(&format!(
+                "churn: every_seconds={} drop_every_rounds={} rounds={} dock_churns={} \
+                 drop_imports={} drop_cleanups={} skipped={} source={}\n\
+                 \x20     rounds/dock_churns/drop_imports 是负载**已做量**：内存台阶要对着这三条线归因；\n\
+                 \x20     skipped>0 表示该轮被 Play 锁定或树状态拒绝，负载在空转，曲线不能读成『重排过这么多遍』。\n",
+                load.every.as_secs(),
+                load.drop_every,
+                load.rounds,
+                load.dock_churns,
+                load.drop_imports,
+                load.drop_cleanups,
+                load.skipped,
+                load.source.as_ref().map_or_else(
+                    || "（没找到工程外源文件）".to_owned(),
+                    |path| path.display().to_string()
+                )
+            ));
+        }
         text.push_str(
             "note: working_set 是**真实进程工作集**（Windows GetProcessMemoryInfo）；\n\
              \x20     egui_tex/tex_MiB 是 egui 纹理账（数量 / 字节），用于归因内存阶跃；\n\
@@ -726,11 +910,11 @@ impl GuiSoak {
              \x20     缓存式锯齿会让均值上下跳，但谷值不抬升；真泄漏会让谷值抬升。\n\n",
         );
         text.push_str(
-            "seconds\tworking_set_mib\tegui_tex\ttex_MiB\tplaying\tframes\tentities\tundo\tconsole\n",
+            "seconds\tworking_set_mib\tegui_tex\ttex_MiB\tplaying\tframes\tentities\tundo\tconsole\tchurn_rounds\n",
         );
         for sample in &self.samples {
             text.push_str(&format!(
-                "{:.0}\t{:.1}\t{}\t{:.1}\t{}\t{}\t{}\t{}\t{}\n",
+                "{:.0}\t{:.1}\t{}\t{:.1}\t{}\t{}\t{}\t{}\t{}\t{}\n",
                 sample.elapsed_seconds,
                 sample.working_set_mib,
                 sample.egui_textures,
@@ -739,7 +923,8 @@ impl GuiSoak {
                 sample.frames,
                 sample.entities,
                 sample.undo_entries,
-                sample.console_lines
+                sample.console_lines,
+                sample.churn_rounds
             ));
         }
         let (head, tail) = window_means(&self.samples);
@@ -774,6 +959,14 @@ impl GuiSoak {
                 first.min_mib, last.min_mib
             ));
         }
+        if let Some(load) = &self.churn {
+            // 逐条留痕：只有计数器无法证明负载真的落到了树上，最近 12 条返回值让复核的人
+            // 一眼看出"这几百轮里有没有一半在空转"。
+            text.push_str(&format!("\nchurn_notes(last={}):\n", load.recent.len()));
+            for note in &load.recent {
+                text.push_str(&format!("  - {note}\n"));
+            }
+        }
         text.push_str(&profile.to_text());
         text.push_str(&format!(
             "\nresult={}\n",
@@ -799,6 +992,7 @@ impl GuiSoak {
                     "entities": sample.entities,
                     "undo_entries": sample.undo_entries,
                     "console_lines": sample.console_lines,
+                    "churn_rounds": sample.churn_rounds,
                 })
             })
             .collect();
@@ -809,6 +1003,19 @@ impl GuiSoak {
             "actual_seconds": self.started.elapsed().as_secs_f32(),
             "frames": self.frames,
             "play_cycles": self.play_cycles,
+            "churn": self.churn.as_ref().map(|load| {
+                serde_json::json!({
+                    "every_seconds": load.every.as_secs(),
+                    "drop_every_rounds": load.drop_every,
+                    "rounds": load.rounds,
+                    "dock_churns": load.dock_churns,
+                    "drop_imports": load.drop_imports,
+                    "drop_cleanups": load.drop_cleanups,
+                    "skipped": load.skipped,
+                    "source": load.source.as_ref().map(|path| path.display().to_string()),
+                    "recent_notes": load.recent,
+                })
+            }),
             "head_mean_mib": head,
             "tail_mean_mib": tail,
             "growth_mib": growth,
@@ -837,6 +1044,98 @@ impl GuiSoak {
             );
         }
     }
+}
+
+/// 当前文档的实体数：采样的一列，也是"撤销有没有真的落地"的判据。
+fn scene_entity_count(app: &EditorApp) -> usize {
+    app.document
+        .current_scene
+        .as_ref()
+        .map_or(0, |document| document.scene.entities.len())
+}
+
+/// soak 拖放负载可入库的扩展名（纹理 + 模型：能建实体、也能走复制与缩略图）。
+const DROP_SOURCE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "tga", "webp", "glb"];
+
+/// 在**工程外**找一个真实可导入的源文件。
+///
+/// 必须落在工程根之外：`dnd::target_path` 对工程内的文件走"只引用不复制"，那条路径既不复制
+/// 也不分配 GUID，拿它当负载等于没测 M27-01 的入库链。候选按示例工程的 `assets` 排，从工程根
+/// 和当前工作目录各自向上找 4 层（`cargo run` 时工作目录在 `engine/`，仓库里的示例图就够得着，
+/// 不必为测试造临时文件）。找不到返回 `None`：soak 照跑，只是不含拖放导入。
+fn find_external_drop_source(root: &Path) -> Option<PathBuf> {
+    if let Ok(raw) = std::env::var("RUSTLUA_EDITOR_SOAK_DROP_SOURCE") {
+        let path = PathBuf::from(&raw);
+        return if path.is_file() && !path_inside(root, &path) {
+            Some(path)
+        } else {
+            None
+        };
+    }
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    for start in [root.to_path_buf(), cwd] {
+        let mut cursor = start.parent().map(PathBuf::from);
+        for _ in 0..4 {
+            let Some(dir) = cursor else { break };
+            for candidate in [
+                dir.join("examples/game_api/assets"),
+                dir.join("examples/game_jhyt/assets"),
+                dir.join("assets"),
+            ] {
+                if let Some(found) = first_drop_source_in(&candidate, root, 3) {
+                    return Some(found);
+                }
+            }
+            cursor = dir.parent().map(PathBuf::from);
+        }
+    }
+    None
+}
+
+/// 在 `dir` 下按字典序递归找第一个可入库的文件（`depth` 限死层数，跳过本地工作目录）。
+fn first_drop_source_in(dir: &Path, root: &Path, depth: u8) -> Option<PathBuf> {
+    if depth == 0 || !dir.is_dir() {
+        return None;
+    }
+    let mut entries: Vec<PathBuf> = fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .collect();
+    entries.sort();
+    for path in entries {
+        if path.is_dir() {
+            let name = path
+                .file_name()
+                .map_or(String::new(), |raw| raw.to_string_lossy().into_owned());
+            if matches!(
+                name.as_str(),
+                ".cache" | ".temp" | ".git" | "target" | "builds"
+            ) {
+                continue;
+            }
+            if let Some(found) = first_drop_source_in(&path, root, depth - 1) {
+                return Some(found);
+            }
+            continue;
+        }
+        let extension = path
+            .extension()
+            .map(|raw| raw.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_default();
+        if DROP_SOURCE_EXTENSIONS.contains(&extension.as_str()) && !path_inside(root, &path) {
+            return Some(path);
+        }
+    }
+    None
+}
+
+/// `path` 是否位于 `root` 之内。工程根可能来自 `--project` 的相对写法，而候选是绝对路径，
+/// 所以两边各自 canonicalize 再比前缀（拿不到 canonical 时退化成原始比较）。
+fn path_inside(root: &Path, path: &Path) -> bool {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    path.starts_with(&root)
 }
 
 /// 一段窗口内的内存与纹理统计（长会话的判据单位）。
@@ -997,6 +1296,7 @@ mod tests {
                     entities: 17,
                     undo_entries: 0,
                     console_lines: 500,
+                    churn_rounds: 0,
                 }
             })
             .collect();
@@ -1030,6 +1330,7 @@ mod tests {
                 entities: 17,
                 undo_entries: 0,
                 console_lines: 500,
+                churn_rounds: 0,
             })
             .collect();
         let windows = memory_windows(&samples, 8);
@@ -1051,6 +1352,7 @@ mod tests {
                 entities: 1,
                 undo_entries: 0,
                 console_lines: 0,
+                churn_rounds: 0,
             })
             .collect();
         let (head, tail) = window_means(&samples);
@@ -1064,5 +1366,190 @@ mod tests {
         if cfg!(windows) {
             assert!(mib > 1.0, "进程工作集应当是可读的正数，实测 {mib}");
         }
+    }
+
+    fn temp_root(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("m27-soak-{label}-{}", crate::util::test_token()))
+    }
+
+    fn copy_tree(source: &Path, destination: &Path) {
+        fs::create_dir_all(destination).expect("建目录");
+        for entry in fs::read_dir(source).expect("读目录").flatten() {
+            let from = entry.path();
+            let to = destination.join(entry.file_name());
+            if entry.file_type().expect("文件类型").is_dir() {
+                copy_tree(&from, &to);
+            } else {
+                if let Some(parent) = to.parent() {
+                    let _ = fs::create_dir_all(parent);
+                }
+                fs::copy(&from, &to).expect("复制文件");
+            }
+        }
+    }
+
+    /// 把示例工程整份拷进临时目录：soak 负载会往工程里复制资源，
+    /// 直接在 `examples/game_api` 上跑等于把导入产物写进仓库。
+    fn copy_sample_project(label: &str) -> PathBuf {
+        let source = engine::core::games_dir().join("examples").join("game_api");
+        let root = temp_root(label);
+        fs::create_dir_all(&root).expect("建临时工程");
+        for dir in ["assets", "scenes", "scripts", "data"] {
+            if source.join(dir).is_dir() {
+                copy_tree(&source.join(dir), &root.join(dir));
+            }
+        }
+        fs::copy(source.join("project.toml"), root.join("project.toml")).expect("拷 project.toml");
+        root
+    }
+
+    fn file_count(dir: &Path) -> usize {
+        if !dir.is_dir() {
+            return 0;
+        }
+        fs::read_dir(dir)
+            .expect("读目录")
+            .flatten()
+            .map(|entry| {
+                let path = entry.path();
+                if path.is_dir() { file_count(&path) } else { 1 }
+            })
+            .sum()
+    }
+
+    /// 装配一份"每帧都做一轮负载、每轮都拖放导入"的 soak（`every = 0` 是刻意的：
+    /// 测试等不起真实间隔，真实间隔由长跑本身验证）。
+    fn soak_with_churn(root: &Path, drop_every: u64) -> GuiSoak {
+        let source =
+            find_external_drop_source(root).expect("仓库示例里应当有工程外的纹理/模型可作为拖放源");
+        GuiSoak {
+            out_dir: temp_root("soak-report"),
+            duration: Duration::from_secs(3_600),
+            play_seconds: Duration::from_secs(2),
+            step_seconds: Duration::from_secs(1),
+            started: Instant::now(),
+            last_sample: Instant::now(),
+            playing_since: None,
+            samples: Vec::new(),
+            frames: 0,
+            play_cycles: 0,
+            finished: false,
+            failed: false,
+            prepared: true,
+            churn: Some(ChurnLoad {
+                every: Duration::ZERO,
+                last: Instant::now(),
+                drop_every,
+                source: Some(source),
+                pending_copy: None,
+                rounds: 0,
+                dock_churns: 0,
+                drop_imports: 0,
+                drop_cleanups: 0,
+                skipped: 0,
+                recent: Vec::new(),
+            }),
+        }
+    }
+
+    /// M27-03 验收 1 的负载半边钉三条：① 每轮都真的改了 dock 树（`skipped == 0`）；
+    /// ② 撤销 + 删副本确实把"同一份工作"钉成常量——实体数与 `assets/` 文件数
+    /// 不随轮数增长（不然曲线量到的是"资产变多"，泄漏判据当场失去意义）；
+    /// ③ 负载计数与逐条留痕真的写进了报告。
+    #[test]
+    fn churn_load_repeats_the_same_work_without_growing_the_project() {
+        let root = copy_sample_project("churn");
+        let project = editor::open_project(&root).expect("打开临时工程");
+        let mut app = EditorApp::new(project, None, engine::core::logging::LogSink::new(256));
+        app.project_loaded = true;
+        app.open_scene_resource(PathBuf::from("scenes/main.scene"));
+        assert!(
+            app.document.current_scene.is_some(),
+            "soak 负载要一个打开的文档：{}",
+            app.status
+        );
+
+        let mut soak = soak_with_churn(&root, 1);
+        let source = soak
+            .churn
+            .as_ref()
+            .and_then(|load| load.source.clone())
+            .expect("装配负载时已经定好源文件");
+        assert!(
+            !path_inside(&root, &source),
+            "拖放源必须落在工程外，否则走的是『只引用不复制』：{}",
+            source.display()
+        );
+
+        let entities = scene_entity_count(&app);
+        let assets = file_count(&root.join("assets"));
+        for _ in 0..30 {
+            soak.run_churn_round(&mut app, Instant::now());
+        }
+        let load = soak.churn.as_ref().expect("负载在装配时就有");
+
+        assert_eq!(load.rounds, 30, "30 次调用就该有 30 轮负载");
+        assert_eq!(load.skipped, 0, "有轮次在空转：{}", load.recent.join(" / "));
+        assert_eq!(load.dock_churns, 30, "每轮都必须改一次 dock 树");
+        assert_eq!(load.drop_imports, 30, "drop_every=1 时每轮都应导入一次");
+        assert_eq!(load.drop_cleanups, 29, "第 1 轮没有上一轮的副本可删");
+        assert_eq!(scene_entity_count(&app), entities, "撤销没把实体数钉回基线");
+        assert!(
+            file_count(&root.join("assets")) <= assets + 1,
+            "副本没删干净：导入前 {} 个，30 轮后 {}",
+            assets,
+            file_count(&root.join("assets"))
+        );
+        assert_eq!(load.recent.len(), 12, "最近留痕应当只留 12 条");
+
+        soak.write_report(&mut app, true);
+        let text = fs::read_to_string(soak.out_dir.join("soak.txt")).expect("读 soak.txt");
+        assert!(
+            text.contains("churn: every_seconds=0 drop_every_rounds=1 rounds=30"),
+            "报告头部没有负载计数：{text}"
+        );
+        assert!(
+            text.contains("churn_notes(last=12):"),
+            "报告没有逐条留痕：{text}"
+        );
+        assert!(
+            text.contains("churn_rounds\n"),
+            "采样表缺 churn_rounds 列：{text}"
+        );
+        let json = fs::read_to_string(soak.out_dir.join("soak.json")).expect("读 soak.json");
+        assert!(
+            json.contains("\"drop_imports\": 30"),
+            "soak.json 缺负载计数：{json}"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&soak.out_dir);
+    }
+
+    /// 负载是**间隔到点才做**：把间隔拉成一小时后连续调用必须原地不动。
+    /// 这一条守的是可比性——负载若无条件每帧生效，"带负载的这一档"就没法和
+    /// docs/55 阶段 0 那两档空转归档放在一起看。
+    #[test]
+    fn churn_rounds_wait_for_their_interval() {
+        let root = temp_root("cadence");
+        fs::create_dir_all(&root).expect("建临时工程");
+        for dir in ["assets", "scenes", "scripts"] {
+            fs::create_dir_all(root.join(dir)).expect("建工程目录");
+        }
+        fs::write(root.join("project.toml"), "[project]\nname = \"demo\"\n")
+            .expect("写 project.toml");
+        let project = editor::open_project(&root).expect("打开空工程");
+        let mut app = EditorApp::new(project, None, engine::core::logging::LogSink::new(16));
+        app.project_loaded = true;
+        let mut soak = soak_with_churn(&root, 1);
+        soak.churn.as_mut().expect("装配好的负载").every = Duration::from_secs(3_600);
+        for _ in 0..5 {
+            soak.run_churn_round(&mut app, Instant::now());
+        }
+        let load = soak.churn.as_ref().expect("负载在装配时就有");
+        assert_eq!(load.rounds, 0, "间隔未到却做了负载");
+        assert!(load.recent.is_empty(), "没做负载就不该留痕");
+
+        let _ = fs::remove_dir_all(&root);
     }
 }
