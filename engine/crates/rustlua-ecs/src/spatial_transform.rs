@@ -859,13 +859,6 @@ impl MigrationReport {
     }
 }
 
-// TODO: These migration functions use Scene types from rustlua-scene, creating a circular
-// dependency. They need to be moved to rustlua-scene crate. Commented out for now to allow
-// the crate split to compile.
-//
-// pub fn migrate_v2_hierarchy(...) { ... }
-// pub fn migrate_scene_to_local_space(...) { ... }
-
 /// 实体属于哪种空间（统一 `Transform` 之后由实体携带的其它组件推断，见 [`entity_space`]）。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SpatialKind {
@@ -1489,8 +1482,6 @@ mod tests {
         );
     }
 
-    // TODO: Scene-dependent migration tests relocated to engine/tests/spatial_migration.rs
-    // They reference `rustlua_scene::scene::Scene` and `migrate_v2_hierarchy`/
-    // `migrate_scene_to_local_space` which create two-version type conflicts in ecs tests.
-    // See: https://github.com/internal (architecture audit WP11)
+    // 场景级迁移（`migrate_scene_to_local_space`）与其世界位置等价性测试都在
+    // `rustlua_scene::scene_migration`——本 crate 看不见 `Scene`，反向依赖会成环。
 }

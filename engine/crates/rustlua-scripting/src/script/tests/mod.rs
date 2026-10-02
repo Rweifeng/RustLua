@@ -29,8 +29,6 @@ mod diagnostics;
 mod entity;
 mod globals;
 mod hot_reload;
-// TODO: input tests reference `engine::host::gamepad` — relocate to engine/tests/
-#[cfg(any())]
 mod input;
 mod particles;
 mod physics;

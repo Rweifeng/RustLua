@@ -1402,16 +1402,9 @@ mod tests {
         "shape=ball;radius=0.5;dynamic=true",
     ];
 
-    /// **运行时认识的每个组件名都必须有 schema**（第 39 轮）：机械化地防住"键名漂移"。
-    ///
-    /// NOTE: This test requires `rustlua_scene::typed_scene::ComponentId` and must live in
-    /// the engine integration tests due to the "two versions of rustlua_ecs" type conflict.
-    /// See: engine/tests/component_schema_parity.rs (TODO: create)
-    #[test]
-    #[ignore = "requires rustlua_scene types — move to engine integration tests"]
-    fn every_component_id_the_runtime_knows_has_a_schema() {
-        // TODO: relocate to engine crate (two-version ECS type conflict with scene dev-dep)
-    }
+    // **运行时认识的每个组件名都必须有 schema** 的门已搬到 `engine/tests/component_schema_parity.rs`：
+    // 它要同时 import 本 crate 的注册表与 `rustlua_scene::typed_scene::ComponentId`，而在本 crate
+    // 的测试里 `rustlua_ecs` 会出现两个版本、类型对不上。engine 依赖两侧且只有一份，是唯一落点。
 
     /// `Collider`（2D）的真实工程实例（`examples/game_jyht/scenes/*.scene`，31+7 个实例、
     /// 形态一致）：与 `COLLIDER_3D_INSTANCES` 同一分工——2D 也没有编码器，所以真实串
