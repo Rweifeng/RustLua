@@ -8135,15 +8135,23 @@ mod sdf_tests {
         );
     }
     /// WP2 的关键验收：**迁移无损**——对同一份"子按世界坐标写"的场景跑真实迁移
-    /// （`migrate_scene_to_local_space`），再把结果写回去并在**开启空间继承**下渲染；
-    /// 两帧顶点必须一致。这条把"迁移 + 继承"的效果钉在**顶点级**证据上。
-    // TODO: This test is temporarily ignored during the crate split.
-    // The migration functions need to be moved from rustlua-ecs to rustlua-scene.
+    /// （`scene_migration::migrate_scene_file`，含写回与读回校验），再把**迁移后的文件**
+    /// 读回来在**开启空间继承**下渲染；两帧顶点必须一致。这条把"迁移 + 继承"的效果钉在
+    /// **顶点级**证据上，并且钉的是**落盘之后**的数据——内存里换一组数值的等价不算数。
     #[test]
-    #[cfg(any())] // disabled: migrate_scene_to_local_space stubbed during crate split
-    #[ignore = "migration functions temporarily stubbed during crate split"]
     fn migrated_child_renders_at_the_same_place_with_inheritance_enabled() {
         let root = game_root();
+        let dir = std::env::temp_dir().join(format!(
+            "rustlua-migration-vertex-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let path = dir.join("hierarchy.scene");
+
         let mut scene = crate::core::scene::Scene::new("hierarchy-render");
         let parent = crate::core::scene::SceneEntityId(1);
         let child = crate::core::scene::SceneEntityId(2);
@@ -8164,6 +8172,7 @@ mod sdf_tests {
                 format!("texture={texture};size=16x16;pivot=0.5,0.5"),
             );
         }
+        scene.save(&path).expect("save legacy scene");
 
         // A：旧数据（子按世界坐标写）+ 关闭继承 = 迁移前的画面。
         let mut legacy =
@@ -8177,25 +8186,26 @@ mod sdf_tests {
             "样例场景应画出精灵（否则这条测试是空转）"
         );
 
-        // B：跑真实迁移并把局部值写回，再开启继承 = 迁移后的画面。
-        let (migration, report) =
-            crate::core::spatial_transform::migrate_scene_to_local_space(&scene);
-        assert!(report.is_lossless(), "{report:?}");
+        // B：跑真实**文件级**迁移（写回 + 读回校验），再把迁移后的文件读回来开继承渲染。
+        let outcome = crate::core::scene_migration::migrate_scene_file(
+            &path,
+            crate::core::scene_migration::MigrationOptions {
+                write: true,
+                backup: false,
+            },
+        )
+        .expect("migrate");
         assert!(
-            report
-                .converted
-                .contains(&crate::core::scene::SceneEntityId(2)),
-            "子实体应被迁移成局部坐标：{report:?}"
+            outcome.written && outcome.verified,
+            "必须真的写盘并读回校验：{outcome:?}"
         );
-        let mut migrated_scene = scene.clone();
-        for (id, value) in &migration.locals {
-            migrated_scene
-                .entities
-                .get_mut(id)
-                .unwrap()
-                .components
-                .insert("Transform".into(), value.clone());
-        }
+        assert!(outcome.is_lossless(), "这份两层场景应无损迁移：{outcome:?}");
+        assert_eq!(
+            outcome.converted, 1,
+            "只有一个子实体需要改成局部坐标：{outcome:?}"
+        );
+        let migrated_scene =
+            crate::core::scene::Scene::load(&path).expect("load migrated scene file");
         let mut migrated =
             RuntimeScene::from_scene_edit(Some(root.as_path()), migrated_scene).expect("migrated");
         migrated.set_spatial_inheritance(true);
@@ -8228,6 +8238,8 @@ mod sdf_tests {
             );
             assert_eq!(left.1, right.1, "第 {index} 个顶点 UV 不一致");
         }
+
+        std::fs::remove_dir_all(&dir).expect("clean temp dir");
     }
     /// WP6：绘制分段必须带上**正确的渲染层**——世界文字/精灵/瓦片是世界内容，
     /// 屏幕 UI 文本是 `ScreenUI`。这条把"哪段几何属于哪一层"从"看谁调了哪个函数"
