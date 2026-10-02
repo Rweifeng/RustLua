@@ -35,6 +35,47 @@ use engine::host::{
     SceneMesh, load_project_font_atlas, load_project_vector_atlas,
 };
 
+/// Scene 视图（2D/3D）显示用的纹理来源。
+///
+/// 有窗口（egui-wgpu 渲染状态）时用 [`SceneViewTexture::Native`]：离屏纹理直接交给
+/// egui 采样，省掉每帧「整帧 GPU→CPU 回读 + CPU→GPU 重传」，画面也不再滞后一帧。
+/// 无窗口（单元测试等没有原生纹理可注册的环境）只能沿用回读像素，用
+/// [`SceneViewTexture::Uploaded`] 承接。
+pub(crate) enum SceneViewTexture {
+    Native(egui::TextureId),
+    Uploaded(egui::TextureHandle),
+}
+
+impl SceneViewTexture {
+    /// 对上层绘制统一接口：`painter.image` 只关心纹理 ID。
+    fn id(&self) -> egui::TextureId {
+        match self {
+            Self::Native(id) => *id,
+            Self::Uploaded(handle) => handle.id(),
+        }
+    }
+}
+
+/// 注册/刷新单个原生纹理槽位（`scene_texture` 重建时上游已先释放旧 ID）。
+fn sync_native_scene_texture(
+    renderer: &mut eframe::egui_wgpu::Renderer,
+    slot: &mut Option<SceneViewTexture>,
+    device: &wgpu::Device,
+    view: &wgpu::TextureView,
+    filter: wgpu::FilterMode,
+) {
+    match slot {
+        Some(SceneViewTexture::Native(id)) => {
+            renderer.update_egui_texture_from_wgpu_texture(device, view, filter, *id);
+        }
+        _ => {
+            *slot = Some(SceneViewTexture::Native(
+                renderer.register_native_texture(device, view, filter),
+            ));
+        }
+    }
+}
+
 impl EditorApp {
     pub(crate) fn draw_scene_view(&mut self, ui: &mut egui::Ui) {
         if self.scene_view_mode == SceneViewMode::View3D {
@@ -2490,6 +2531,12 @@ impl EditorApp {
     pub(crate) fn reset_scene_render_resources(&mut self) {
         self.scene_renderer = None;
         self.scene_texture = None;
+        // 离屏纹理没了，2D/3D 注册的原生 egui 纹理 ID 与「纹理里画的是什么」的渲染
+        // 缓存必须一起失效：项目切换后新旧文档 revision 都可能是 0，缓存误命中就会
+        // 跳过重渲染，视图停在空白画面。
+        self.release_scene_view_textures();
+        self.scene_view_cache_2d = SceneViewCache2d::default();
+        self.scene_view_cache_3d = SceneViewCache3d::default();
         self.scene_screen_texture = None;
         self.scene_screen_tex_id = None;
         self.scene_screen_cache_key = None;
@@ -2511,23 +2558,32 @@ impl EditorApp {
             .scene_texture
             .as_ref()
             .is_none_or(|(texture, _)| texture.width() != width || texture.height() != height);
-        if size_changed && let Some((device, _)) = &self.gpu {
-            let texture = device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("rustlua-scene-view"),
-                size: wgpu::Extent3d {
-                    width,
-                    height,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8UnormSrgb,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-                view_formats: &[],
-            });
-            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-            self.scene_texture = Some((texture, view));
+        if size_changed {
+            // 纹理换了新的：旧的原生 egui 纹理绑定组指向已废弃纹理，先释放 ID，
+            // 下次 `sync_scene_view_texture` 再按新视图注册。
+            self.release_scene_view_textures();
+            if let Some((device, _)) = &self.gpu {
+                let texture = device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("rustlua-scene-view"),
+                    size: wgpu::Extent3d {
+                        width,
+                        height,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                    // TEXTURE_BINDING：让 egui 直接采样这张纹理（原生路径的前提），
+                    // COPY_SRC 保留给无窗口环境的回读回退。
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                        | wgpu::TextureUsages::COPY_SRC
+                        | wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                });
+                let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+                self.scene_texture = Some((texture, view));
+            }
         }
     }
 
@@ -2686,38 +2742,44 @@ impl EditorApp {
             });
         }
         renderer.render_into_texture(&mesh, scene3d.as_ref(), view, render_w, render_h);
-        // 非阻塞回读：就绪则上传并提交缓存；Pending 请求重绘等下帧轮询；
-        // 失败清缓存（保持不匹配）让下帧重试，并显示用户可见错误（R-04）。
-        match renderer.readback_frame(texture, render_w, render_h) {
-            ReadbackStatus::Ready {
-                pixels,
-                width,
-                height,
-            } => {
-                self.scene_view_cache_3d = SceneViewCache3d {
-                    size: (render_w, render_h),
-                    revision,
-                    camera: self.editor_camera,
-                };
-                self.set_scene_3d_texture(pixels, width, height, ctx);
-            }
-            ReadbackStatus::Pending => ctx.request_repaint(),
-            ReadbackStatus::Failed(error) => {
-                tracing::warn!(target: "editor", "[scene view] 3D readback failed: {error}");
-                self.scene_view_cache_3d = SceneViewCache3d::default();
-                self.set_scene_view_diagnostic(format!("Scene View 3D 回读失败：{error}"));
-                ctx.request_repaint();
+        if self.render_state.is_some() {
+            // 原生路径（有窗口）：纹理已在 GPU 上，直接注册给 egui 采样——不回读、
+            // 不重传，画面也不再滞后一帧。`scene_texture` 由 2D/3D 共用且刚被本视图
+            // 覆盖，另一视图的缓存必须失效，否则切回去会命中缓存显示本视图的画面。
+            self.sync_scene_view_texture();
+            self.scene_view_cache_3d = SceneViewCache3d {
+                size: (render_w, render_h),
+                revision,
+                camera: self.editor_camera,
+            };
+            self.scene_view_cache_2d = SceneViewCache2d::default();
+        } else {
+            // 无窗口（测试/无 GPU）：沿用非阻塞回读。
+            // 就绪则上传并提交缓存；Pending 请求重绘等下帧轮询；
+            // 失败清缓存（保持不匹配）让下帧重试，并显示用户可见错误（R-04）。
+            match renderer.readback_frame(texture, render_w, render_h) {
+                ReadbackStatus::Ready {
+                    pixels,
+                    width,
+                    height,
+                } => {
+                    self.scene_view_cache_3d = SceneViewCache3d {
+                        size: (render_w, render_h),
+                        revision,
+                        camera: self.editor_camera,
+                    };
+                    self.set_scene_3d_texture(pixels, width, height, ctx);
+                }
+                ReadbackStatus::Pending => ctx.request_repaint(),
+                ReadbackStatus::Failed(error) => {
+                    tracing::warn!(target: "editor", "[scene view] 3D readback failed: {error}");
+                    self.scene_view_cache_3d = SceneViewCache3d::default();
+                    self.set_scene_view_diagnostic(format!("Scene View 3D 回读失败：{error}"));
+                    ctx.request_repaint();
+                }
             }
         }
-        // 性能打点：仅当单帧耗时超过阈值时记录，便于对照优化前后。
-        let elapsed = started.elapsed();
-        if elapsed >= std::time::Duration::from_millis(8) {
-            tracing::info!(
-                target: "editor",
-                "[editor-perf] scene view 3D frame: {}ms ({render_w}x{render_h})",
-                elapsed.as_millis()
-            );
-        }
+        log_scene_view_frame(started, (render_w, render_h), "3D");
     }
 
     /// 确保编辑场景的 2D 运行时存在，且反映当前文档 revision 的场景内容。
@@ -2846,43 +2908,50 @@ impl EditorApp {
             overlay: None,
         });
         renderer.render_into_texture(&mesh, None, view, width, height);
-        // 非阻塞回读：就绪则上传并提交缓存；Pending 请求重绘等下帧轮询；
-        // 失败清缓存（保持不匹配）让下帧重试，并显示用户可见错误（R-04）。
-        match renderer.readback_frame(texture, render_size.0, render_size.1) {
-            ReadbackStatus::Ready {
-                pixels,
-                width,
-                height,
-            } => {
-                self.scene_view_cache_2d = SceneViewCache2d {
-                    size: render_size,
-                    revision,
-                    camera,
-                };
-                self.set_scene_2d_texture(pixels, width, height, ctx);
-            }
-            ReadbackStatus::Pending => {
-                self.set_scene_view_diagnostic("Scene View 等待 GPU 回读……显示上一帧");
-                ctx.request_repaint();
-            }
-            ReadbackStatus::Failed(error) => {
-                tracing::warn!(target: "editor", "[scene view] 2D readback failed: {error}");
-                self.scene_view_cache_2d = SceneViewCache2d::default();
-                self.set_scene_view_diagnostic(format!("Scene View 回读失败：{error}"));
-                ctx.request_repaint();
+        if self.render_state.is_some() {
+            // 原生路径（有窗口）：纹理已在 GPU 上，直接注册给 egui 采样——不回读、
+            // 不重传，画面也不再滞后一帧。`scene_texture` 由 2D/3D 共用且刚被本视图
+            // 覆盖，另一视图的缓存必须失效，否则切回去会命中缓存显示本视图的画面。
+            self.sync_scene_view_texture();
+            self.scene_view_cache_2d = SceneViewCache2d {
+                size: render_size,
+                revision,
+                camera,
+            };
+            self.scene_view_cache_3d = SceneViewCache3d::default();
+        } else {
+            // 无窗口（测试/无 GPU）：沿用非阻塞回读。
+            // 就绪则上传并提交缓存；Pending 请求重绘等下帧轮询；
+            // 失败清缓存（保持不匹配）让下帧重试，并显示用户可见错误（R-04）。
+            match renderer.readback_frame(texture, render_size.0, render_size.1) {
+                ReadbackStatus::Ready {
+                    pixels,
+                    width,
+                    height,
+                } => {
+                    self.scene_view_cache_2d = SceneViewCache2d {
+                        size: render_size,
+                        revision,
+                        camera,
+                    };
+                    self.set_scene_2d_texture(pixels, width, height, ctx);
+                }
+                ReadbackStatus::Pending => {
+                    self.set_scene_view_diagnostic("Scene View 等待 GPU 回读……显示上一帧");
+                    ctx.request_repaint();
+                }
+                ReadbackStatus::Failed(error) => {
+                    tracing::warn!(target: "editor", "[scene view] 2D readback failed: {error}");
+                    self.scene_view_cache_2d = SceneViewCache2d::default();
+                    self.set_scene_view_diagnostic(format!("Scene View 回读失败：{error}"));
+                    ctx.request_repaint();
+                }
             }
         }
         // 渲染游戏画面（设计分辨率 + 游戏相机 + UI）到设计分辨率包围框内。
+        // 两条路径都要画：原生路径只是省掉了编辑器视图本身的回读。
         self.render_scene_screen(ctx);
-        // 性能打点：仅当单帧耗时超过阈值时记录，便于对照优化前后。
-        let elapsed = started.elapsed();
-        if elapsed >= std::time::Duration::from_millis(8) {
-            tracing::info!(
-                target: "editor",
-                "[editor-perf] scene view 2D frame: {}ms ({width}x{height})",
-                elapsed.as_millis()
-            );
-        }
+        log_scene_view_frame(started, render_size, "2D");
     }
 
     /// 渲染游戏画面（设计分辨率 + 游戏相机 + UI 覆盖层）到离屏纹理，并注册为原生
@@ -3012,6 +3081,58 @@ impl EditorApp {
         }
     }
 
+    /// 把编辑器视图（2D/3D）的离屏纹理注册/更新为原生 egui 纹理。
+    ///
+    /// 与 `sync_scene_screen_texture` 同一套做法：保持各自注册时的过滤模式
+    /// （2D 像素风用 Nearest，3D 用 Linear）。没有窗口时什么都不做——原生 ID 只在
+    /// `render_state` 存在时才可能被创建，此时调用方本就走回读回退。
+    fn sync_scene_view_texture(&mut self) {
+        let Some(render_state) = &self.render_state else {
+            return;
+        };
+        let Some((device, _)) = &self.gpu else {
+            return;
+        };
+        let Some((_, view)) = &self.scene_texture else {
+            return;
+        };
+        let mut renderer = render_state.renderer.write();
+        sync_native_scene_texture(
+            &mut renderer,
+            &mut self.scene_2d_tex,
+            device,
+            view,
+            wgpu::FilterMode::Nearest,
+        );
+        sync_native_scene_texture(
+            &mut renderer,
+            &mut self.scene_preview_tex,
+            device,
+            view,
+            wgpu::FilterMode::Linear,
+        );
+    }
+
+    /// 释放 2D/3D 视图的 egui 原生纹理 ID。
+    ///
+    /// 原生 ID 只是指向 `scene_texture` 绑定组的句柄：离屏纹理被重建或销毁后，
+    /// 旧 ID 会一直指向已废弃的纹理（采样不到内容），所以必须先释放再重新注册。
+    /// `pub(crate)`：关窗时 shell 的 `on_exit` 也要用它归还 ID。
+    pub(crate) fn release_scene_view_textures(&mut self) {
+        let Some(render_state) = &self.render_state else {
+            self.scene_2d_tex = None;
+            self.scene_preview_tex = None;
+            return;
+        };
+        let mut renderer = render_state.renderer.write();
+        for slot in [&mut self.scene_2d_tex, &mut self.scene_preview_tex] {
+            if let Some(SceneViewTexture::Native(id)) = slot {
+                renderer.free_texture(id);
+            }
+            *slot = None;
+        }
+    }
+
     /// 把 2D 回读像素上传到 egui 纹理（NEAREST，像素风）。
     fn set_scene_2d_texture(
         &mut self,
@@ -3023,10 +3144,13 @@ impl EditorApp {
         let image =
             egui::ColorImage::from_rgba_unmultiplied([width as usize, height as usize], &pixels);
         match &mut self.scene_2d_tex {
-            Some(tex) => tex.set(image, egui::TextureOptions::NEAREST),
-            None => {
-                self.scene_2d_tex =
-                    Some(ctx.load_texture("scene_2d", image, egui::TextureOptions::NEAREST));
+            Some(SceneViewTexture::Uploaded(tex)) => tex.set(image, egui::TextureOptions::NEAREST),
+            _ => {
+                self.scene_2d_tex = Some(SceneViewTexture::Uploaded(ctx.load_texture(
+                    "scene_2d",
+                    image,
+                    egui::TextureOptions::NEAREST,
+                )));
             }
         }
     }
@@ -3042,10 +3166,13 @@ impl EditorApp {
         let image =
             egui::ColorImage::from_rgba_unmultiplied([width as usize, height as usize], &pixels);
         match &mut self.scene_preview_tex {
-            Some(tex) => tex.set(image, egui::TextureOptions::LINEAR),
-            None => {
-                self.scene_preview_tex =
-                    Some(ctx.load_texture("scene_view", image, egui::TextureOptions::LINEAR));
+            Some(SceneViewTexture::Uploaded(tex)) => tex.set(image, egui::TextureOptions::LINEAR),
+            _ => {
+                self.scene_preview_tex = Some(SceneViewTexture::Uploaded(ctx.load_texture(
+                    "scene_view",
+                    image,
+                    egui::TextureOptions::LINEAR,
+                )));
             }
         }
     }
@@ -3838,6 +3965,20 @@ fn scene_view_3d_cache_hit(
         && cache.size == (render_w, render_h)
         && cache.revision == revision
         && cache.camera == camera
+}
+
+/// 单帧耗时超过阈值才记录，便于对照「回读 → 原生纹理」两条路径的开销（两条路径共用）。
+fn log_scene_view_frame(started: std::time::Instant, size: (u32, u32), view: &str) {
+    let elapsed = started.elapsed();
+    if elapsed >= std::time::Duration::from_millis(8) {
+        tracing::info!(
+            target: "editor",
+            "[editor-perf] scene view {view} frame: {}ms ({}x{})",
+            elapsed.as_millis(),
+            size.0,
+            size.1
+        );
+    }
 }
 
 #[cfg(test)]

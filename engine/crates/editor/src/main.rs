@@ -24,6 +24,7 @@ mod ui_editor;
 mod util;
 
 use crate::panels::progress::ProgressPanel;
+use crate::panels::scene_view::SceneViewTexture;
 use crate::preview_session::PreviewSession;
 // E11：场景工具枚举只有**一处**定义（交互词汇表里），main.rs 不再自带一份。
 use crate::scene_interaction::SceneTool;
@@ -639,8 +640,8 @@ struct EditorApp {
     scene_renderer: Option<Renderer>,
     /// 3D 场景视图的离屏纹理 + 视图。
     scene_texture: Option<(wgpu::Texture, wgpu::TextureView)>,
-    /// 3D 场景视图显示用的 egui 纹理。
-    scene_preview_tex: Option<egui::TextureHandle>,
+    /// 3D 场景视图显示用的 egui 纹理（有窗口时为原生 GPU 纹理，否则为回读上传）。
+    scene_preview_tex: Option<SceneViewTexture>,
     /// 编辑场景的 2D 运行时（不跑 main.lua，用于 2D 场景视图实时渲染）。
     scene_runtime: Option<RuntimeScene>,
     /// 共享字体图集：运行时随 revision 重建时复用同一实例，避免每帧重新生成
@@ -654,8 +655,8 @@ struct EditorApp {
     custom_font_atlases: engine::host::frame::FontAtlasMap,
     /// 场景 Text 自定义字体的矢量轮廓共享缓存（key = `font://<asset>`）。
     custom_vector_atlases: engine::host::frame::VectorAtlasMap,
-    /// 2D 场景视图显示用的 egui 纹理。
-    scene_2d_tex: Option<egui::TextureHandle>,
+    /// 2D 场景视图显示用的 egui 纹理（有窗口时为原生 GPU 纹理，否则为回读上传）。
+    scene_2d_tex: Option<SceneViewTexture>,
     /// 游戏画面（设计分辨率 + 游戏相机 + UI 覆盖层）离屏纹理 + 视图：在 Scene 视图
     /// 的设计分辨率包围框内显示，UI 随包围框缩放/平移。
     scene_screen_texture: Option<(wgpu::Texture, wgpu::TextureView)>,
@@ -2054,6 +2055,14 @@ impl EditorApp {
 impl eframe::App for EditorApp {
     fn update(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
         self.draw_frame(context);
+    }
+
+    /// 关窗时归还 2D/3D Scene 视图注册的原生 egui 纹理 ID。
+    ///
+    /// `EditorApp` 整体随进程退出、没有 `Drop`，这里是唯一能把 ID 交还给
+    /// egui-wgpu 纹理管理器的时机（否则只能等渲染器整体析构）。
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.release_scene_view_textures();
     }
 }
 
