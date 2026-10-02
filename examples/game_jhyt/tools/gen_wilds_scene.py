@@ -6,7 +6,7 @@
 美术：`tools/gen_wilds_art.py` 产出的 mountain / cave 两套 6 列 tileset + 山道建筑道具 + 采集物。
 
 地图与列语义：
-  mountain_path  40×22  1=林地草地 2=碎石土路 3=石阶 4=岩壁 5=竹林地 6=溪水
+  mountain_path  40×23  1=林地草地 2=碎石土路 3=石阶 4=岩壁 5=竹林地 6=溪水
   cold_spring_cave 20×12  1=洞底石地 2=碎石堆 3=暗河水 4=洞壁 5=矿脉 6=冰晶地
 
 布局：
@@ -47,7 +47,9 @@ MOUNTAIN = {
     "display": "江湖有田·青云山道",
     "title": "青云山道 · 采药与护送",
     "texture": "assets/art/tilesets/mountain/mountain_ground.png",
-    "w": 40, "h": 22,
+    # 23 行是为横屏 1280×720 设计视口定的：40×22 = 1280×704 比屏幕矮 16 像素，
+    # 相机夹到地图下沿后顶/底仍露出 clear color（#0A121F）的深色横条。
+    "w": 40, "h": 23,
     "spawn": (19, 2),
     "exit": (19, 1),
     "path_tile": DIRT,
@@ -193,9 +195,10 @@ def build_mountain():
     # 木桥：溪水上铺石板 → 可走（必须在溪水之后写）
     for (x, y) in rect(MOUNTAIN_BRIDGE):
         ground[y][x] = STONE
-    # 外圈崖壁
+    # 外圈崖壁（底部两行都是崖壁：h 22→23 时原下沿 h-2 保持墙，新行压在最底）
     for x in range(w):
         ground[0][x] = WALL
+        ground[h - 2][x] = WALL
         ground[h - 1][x] = WALL
     for y in range(h):
         ground[y][0] = WALL

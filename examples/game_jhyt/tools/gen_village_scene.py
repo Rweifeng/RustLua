@@ -41,8 +41,10 @@ import re
 
 from pixel_kit import camera_line  # noqa: E402  场景 2D 相机（取景锁在地图内）
 
-# 地图尺寸（maps.lua 的 spawn/exit 边界校验按 40x22 处理，不要改）
-W, H = 40, 22
+# 地图尺寸（maps.lua 的 spawn/exit 边界校验按 40x23 处理，不要改）。
+# 23 行是为横屏 1280×720 设计视口定的：40×22 = 1280×704 比屏幕矮 16 像素，
+# 相机夹到地图下沿后顶/底仍露出 clear color（#0A121F）的深色横条。
+W, H = 40, 23
 TILE = 32
 
 # 列映射（写 scene tile 用）
@@ -169,8 +171,10 @@ def build_tiles():
         for x in range(BRIDGE["x0"], BRIDGE["x1"] + 1):
             ground[y][x] = STONE
     # 外圈院墙（南侧留村口，x18..20 仍是墙，靠牌坊贴图盖住）
+    # 底部两行都是墙：H 从 22 补到 23 时保持原下沿（H-2）仍是墙，新行压在最底。
     for x in range(W):
         ground[0][x] = WALL
+        ground[H - 2][x] = WALL
         ground[H - 1][x] = WALL
     for y in range(H):
         ground[y][0] = WALL

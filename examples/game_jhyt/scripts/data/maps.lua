@@ -142,7 +142,7 @@ M.maps = {
       }
     }
   },
-  -- 演武场：山庄练武场（40x22，scenes/combat_arena.scene 由 tools/gen_arena_scene.py 生成；
+  -- 演武场：山庄练武场（40x23，scenes/combat_arena.scene 由 tools/gen_arena_scene.py 生成；
   -- 战斗验收锚点几何见该文件头注释，改动需与 jhyt_m18_combat.rs 三方同步）。
   combat_arena = {
     display = "江湖有田·演武场",
@@ -190,7 +190,7 @@ function M.validate_all()
       local spawn = map.spawn
       if type(spawn) ~= "table" or type(spawn.x) ~= "number" or type(spawn.y) ~= "number" then
         issues[#issues + 1] = path .. ".spawn: expected {x, y} numbers"
-      elseif spawn.x < 0 or spawn.x >= 40 or spawn.y < 0 or spawn.y >= 22 then
+      elseif spawn.x < 0 or spawn.x >= 40 or spawn.y < 0 or spawn.y >= 23 then
         issues[#issues + 1] = path .. ".spawn: out of map bounds"
       end
       if type(map.exits) ~= "table" then
@@ -215,7 +215,7 @@ function M.validate_all()
               local cell = exit[field]
               if type(cell) ~= "table" or type(cell.x) ~= "number" or type(cell.y) ~= "number" then
                 issues[#issues + 1] = epath .. "." .. field .. ": expected {x, y} numbers"
-              elseif cell.x < 0 or cell.x >= 40 or cell.y < 0 or cell.y >= 22 then
+              elseif cell.x < 0 or cell.x >= 40 or cell.y < 0 or cell.y >= 23 then
                 issues[#issues + 1] = epath .. "." .. field .. ": out of map bounds"
               end
             end

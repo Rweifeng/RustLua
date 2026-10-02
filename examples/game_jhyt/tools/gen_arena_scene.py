@@ -25,7 +25,7 @@
 避免玩家在演武坪里按 E 锄地。本工具把"无 tile 2"作为硬性契约自检。
 
 布局分区（cell，0-index，含端点）：
-  外围院墙   ：row0 / row21 / col0 / col39（tile 4，solid）
+  外围院墙   ：row0 / row21..22 / col0 / col39（tile 4，solid）
   演武坪     ：x1..19, y1..12 石板，战斗锚点全部在坪内
   南门       ：manor_gate x8..10, y0..2，门洞 (9,1)(9,2) 可走 = 出口格 (9,1)
   器械廊     ：y13 草地一排：兵器架×2 / 草垛 / 演武旗×2，石板引道 x9..10
@@ -43,8 +43,9 @@ from character_art import player_art  # noqa: E402  主角形象（与 manifest 
 from pixel_kit import camera_line  # noqa: E402  场景 2D 相机（取景锁在地图内）
 import re
 
-# 地图尺寸：与山庄/云泽村一致（40×22 = 1280×704，正好铺满一屏）。
-W, H = 40, 22
+# 地图尺寸：与山庄/云泽村一致（40×23 = 1280×736，盖过横屏一屏 720；
+# 40×22 = 1280×704 会在屏幕顶/底露出 clear color 的深色横条）。
+W, H = 40, 23
 TILE = 32
 
 # 列映射（写 scene tile 用；三场景共用语义，不可重排）
@@ -165,9 +166,10 @@ def build_tiles():
             ground[y][x] = STONE
     for (x, y) in rect_cells(POND):
         ground[y][x] = WATER
-    # 外圈院墙
+    # 外圈院墙（底部两行都是墙：H 22→23 时原下沿 H-2 保持墙，新行压在最底）
     for x in range(W):
         ground[0][x] = WALL
+        ground[H - 2][x] = WALL
         ground[H - 1][x] = WALL
     for y in range(H):
         ground[y][0] = WALL
@@ -361,7 +363,7 @@ def self_check(ground, solid):
     problems = []
     # 1) 行列长度与 tile 值域（preview_scene.py 同款校验，本地先跑一遍）
     if len(ground) != H or any(len(row) != W for row in ground):
-        problems.append("tiles 矩形尺寸不为 40x22")
+        problems.append("tiles 矩形尺寸不为 40x23")
     if any(tile < 1 or tile > 6 for row in ground for tile in row):
         problems.append("tile 值超出 1..6")
     # 2) farm.lua 防误垦：全场禁止夯土（FARM 矩形无场景门禁，tile==2 即可开垦）

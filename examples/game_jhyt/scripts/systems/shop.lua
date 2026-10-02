@@ -371,6 +371,12 @@ local function clear_ui()
   ui.clear("shp:skin_bg")
   ui.clear("shp:rule")
   ui.clear("shp:sel")
+  -- 换肤贴图走 `ui.image`（跨帧持久）：页签/步进/滚动箭头都要显式清理。
+  for _, id in ipairs({ "shp:divider", "shp:seal", "shp:close",
+    "shp:tab_buy", "shp:tab_sell", "shp:step_minus", "shp:step_plus",
+    "shp:scroll_up", "shp:scroll_down" }) do
+    ui.clear(id)
+  end
   for _, id in ipairs({ "shp:title", "shp:money", "shp:tab1", "shp:tab2", "shp:qty", "shp:msg", "shp:hint" }) do
     ui_text.hide("shp", id)
   end

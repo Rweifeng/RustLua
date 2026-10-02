@@ -71,6 +71,36 @@ local close_down = false
 -- 面板模式切换的边沿：只在 玩法↔面板 变化那一帧释放对侧控件的残留按住态。
 local panel_active = false
 
+-- 面板/玩法两侧的动态元素互斥：`ui.circle` 与 `ui_text` 都跨帧持久（存在宿主
+-- ui_state 里，不重画不会消失）。切换瞬间必须显式清掉对侧残留，否则面板打开后
+-- 玩法按钮簇仍钉在屏幕上、关面板后十字键又糊在画面上（实测：对话模式下摇杆与
+-- 十字键同屏）。ui.clear 对不存在的 id 安全；文本走 `ui_text.hide`（它会同步
+-- ui.hide + 登记表，直接 ui.clear 不认普通文本条目）。
+local function clear_play_ui()
+  for _, id in ipairs({ "vp:stick_ring", "vp:stick_base", "vp:stick_knob" }) do
+    ui.clear(id)
+  end
+  for index = 1, #BUTTONS do
+    ui.clear("vp:ring" .. index)
+    ui.clear("vp:btn" .. index)
+    ui.clear("vp:hl" .. index)
+    ui_text.hide("vp", "vp:lbl" .. index)
+  end
+  ui_text.hide("vp", "vp:dbg")
+end
+
+local function clear_panel_ui()
+  ui.clear("vp:close_ring")
+  ui.clear("vp:close_btn")
+  ui_text.hide("vp", "vp:close_x")
+  for index = 1, #DPAD_KEYS do
+    ui.clear("vp:dring" .. index)
+    ui.clear("vp:dbtn" .. index)
+    ui_text.hide("vp", "vp:dlbl" .. index)
+  end
+  ui_text.hide("vp", "vp:dbg")
+end
+
 local function in_circle(px, py, cx, cy, r)
   local dx, dy = px - cx, py - cy
   return dx * dx + dy * dy <= r * r
@@ -216,7 +246,8 @@ function M.update()
   end
 
   -- 面板/对话/商店态：隐藏玩法控件，十字键（DPad）接管导航。切换瞬间释放玩法控件
-  -- 的残留按住态（否则"打开背包前一指还按着按钮"会持续注入玩法键）。
+  -- 的残留按住态（否则"打开背包前一指还按着按钮"会持续注入玩法键），并清掉对侧
+  -- 上一帧的屏上残留（见 `clear_play_ui` 头注释）。
   local is_panel = not state.is_mode("Playing")
   if is_panel ~= panel_active then
     panel_active = is_panel
@@ -227,10 +258,12 @@ function M.update()
       for index, btn in ipairs(BUTTONS) do
         button_release(index, btn.key)
       end
+      clear_play_ui()
     else
       for index, key in ipairs(DPAD_KEYS) do
         dpad_release(index, DPAD_PHYSICAL[key.dir or key.key])
       end
+      clear_panel_ui()
     end
   end
   if is_panel then

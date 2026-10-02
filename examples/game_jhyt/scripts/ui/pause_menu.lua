@@ -343,6 +343,10 @@ function clear_ui()
   ui.clear("pse:skin_bg")
   ui.clear("pse:rule")
   ui.clear("pse:sel")
+  -- 换肤贴图走 `ui.image`（跨帧持久）：不清就会在面板关闭后留残影。
+  for _, id in ipairs({ "pse:divider", "pse:seal", "pse:close", "pse:key_hint" }) do
+    ui.clear(id)
+  end
   for _, id in ipairs({ "pse:title", "pse:msg", "pse:hint" }) do
     ui_text.hide("pse", id)
   end
@@ -357,6 +361,15 @@ function clear_settings_ui()
   ui.clear("pse:s:skin_bg")
   ui.clear("pse:s:rule")
   ui.clear("pse:s:sel")
+  -- 换肤贴图走 `ui.image`（跨帧持久）：滑轨/手柄/按钮/提示条都要显式清理。
+  for _, id in ipairs({ "pse:s:divider", "pse:s:seal", "pse:s:close", "pse:s:key_hint",
+    "pse:s:slot", "pse:s:btn_save", "pse:s:btn_back" }) do
+    ui.clear(id)
+  end
+  for i = 1, #SETTINGS_ITEMS do
+    ui.clear("pse:s:track" .. i)
+    ui.clear("pse:s:handle" .. i)
+  end
   for _, id in ipairs({ "pse:s:title", "pse:s:subtitle", "pse:s:msg", "pse:s:hint" }) do
     ui_text.hide("pse", id)
   end

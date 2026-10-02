@@ -18,7 +18,7 @@
   * farm.lua 用 `GroundMap tile == 2` 判定可开垦；overlay 列语义由 farm.lua 的 tile_for() 决定。
 
 布局（cell，0-index，y 朝上，含端点）：
-  院墙      ：整圈边界（row0 / row21 / col0 / col39），solid
+  院墙      ：整圈边界（row0 / row21..22 / col0 / col39），solid
   正房      ：x2..8, y5..11（7×7）solid；其上是 224×224 的 manor_house 贴图
   屋前石院  ：x1..12, y1..4 石板，可走（含出生点与 NPC 落点）
   柴房      ：x4..8, y15..18（5×4）solid；贴图 manor_shed
@@ -44,8 +44,10 @@ from character_art import player_art  # noqa: E402  主角形象（与 manifest 
 from pixel_kit import transform_line as spawn_transform  # noqa: E402
 from pixel_kit import camera_line  # noqa: E402  场景 2D 相机（取景锁在地图内）
 
-# 地图尺寸（maps.lua 的 spawn/exit 边界校验按 40x22 处理，不要改）
-W, H = 40, 22
+# 地图尺寸（maps.lua 的 spawn/exit 边界校验按 40x23 处理，不要改）。
+# 23 行是为横屏 1280×720 设计视口定的：40×22 = 1280×704 比屏幕矮 16 像素，
+# 相机夹到地图下沿后顶/底仍露出 clear color（#0A121F）的深色横条。
+W, H = 40, 23
 
 # 列映射（写 scene tile 用）
 GRASS, DIRT, STONE, WALL, ROOF, WATER = 1, 2, 3, 4, 5, 6
@@ -178,9 +180,10 @@ def build_tiles():
         ground[PATH_Y][x] = STONE
     for y in range(GATE_SPUR["y0"], GATE_SPUR["y1"] + 1):
         ground[y][GATE_SPUR["x"]] = STONE
-    # 整圈院墙
+    # 整圈院墙（底部两行都是墙：H 22→23 时原下沿 H-2 保持墙，新行压在最底）
     for x in range(W):
         ground[0][x] = WALL
+        ground[H - 2][x] = WALL
         ground[H - 1][x] = WALL
     for y in range(H):
         ground[y][0] = WALL

@@ -213,6 +213,14 @@ local function clear_ui()
   ui.clear("bp:skin_bg")
   ui.clear("bp:rule")
   ui.clear("bp:sel")
+  -- 换肤贴图走 `ui.image`（跨帧持久，需显式清理）：漏一条就会在面板关闭后
+  -- 原地留一块残影（实测：key_hint 提示条残成画面底部米色横条）。
+  for _, id in ipairs({ "bp:divider", "bp:seal", "bp:key_hint", "bp:sel_slot", "bp:quality" }) do
+    ui.clear(id)
+  end
+  for i = 1, ROW_LIMIT do
+    ui.clear("bp:slot" .. i)
+  end
   for _, id in ipairs({ "bp:title", "bp:cap", "bp:msg", "bp:hint", "bp:empty", "bp:detail" }) do
     ui_text.hide("bp", id)
   end

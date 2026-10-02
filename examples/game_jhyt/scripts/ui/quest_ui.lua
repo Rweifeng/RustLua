@@ -120,6 +120,13 @@ local function clear_ui()
   ui.clear("qst:skin_bg")
   ui.clear("qst:rule")
   ui.clear("qst:sel")
+  -- 换肤贴图走 `ui.image`（跨帧持久）：不清就会在面板关闭后留残影。
+  for _, id in ipairs({ "qst:divider", "qst:seal", "qst:key_hint" }) do
+    ui.clear(id)
+  end
+  for i = 1, ROW_LIMIT do
+    ui.clear("qst:bulletqst:row" .. i)
+  end
   for _, id in ipairs({ "qst:title", "qst:state", "qst:giver", "qst:objtitle", "qst:hint", "qst:empty", "qst:msg" }) do
     ui_text.hide("qst", id)
   end

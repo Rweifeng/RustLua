@@ -233,6 +233,11 @@ local function clear_ui()
   ui.clear("dlg:box")
   ui.clear("dlg:portrait")
   ui.clear("dlg:portrait_frame")
+  -- 换肤图标走 `ui.image`（跨帧持久）：标记与"继续"箭头也要显式清理。
+  ui.clear("dlg:continue")
+  for i = 1, OPTION_LIMIT do
+    ui.clear("dlg:marker" .. i)
+  end
   ui_text.hide("dlg", "dlg:speaker")
   ui_text.hide("dlg", "dlg:text")
   ui_text.hide("dlg", "dlg:hint")
