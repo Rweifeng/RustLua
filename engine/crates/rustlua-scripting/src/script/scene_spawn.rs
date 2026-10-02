@@ -25,6 +25,7 @@ use rustlua_input::input::MouseButton;
 use rustlua_math::math3d::Vec3;
 use rustlua_physics::physics::ColliderDesc;
 use rustlua_physics::physics3d::ColliderDesc3d;
+use rustlua_render::atlas::resolve_atlas_reference;
 use rustlua_render::light::Light;
 use rustlua_render::mesh3d::MeshRenderer;
 use rustlua_render::sprite::SpriteAsset;
@@ -279,13 +280,33 @@ impl LuaRuntime {
                     "failed to build sprite for entity {name:?}: {error}"
                 ))
             })?;
+            // 图集引用语法 `图集路径#区域名`：装配前解析成纹理路径 + 区域 UV，
+            // 运行时仍然只认识 SpriteAsset + Sprite.uv，抽取/合批路径零改动。
+            // 路径与渲染器同源：按项目根解析，返回的纹理路径保持工程根相对写法。
+            let (texture_path, sprite) =
+                match resolve_atlas_reference(state.project_root.as_deref(), &component.texture) {
+                    Ok(Some((texture_path, region))) => (
+                        texture_path,
+                        region.apply(sprite).map_err(|error| {
+                            LuaBridgeError::Api(format!(
+                                "failed to apply atlas region for entity {name:?}: {error}"
+                            ))
+                        })?,
+                    ),
+                    Ok(None) => (component.texture.clone(), sprite),
+                    Err(error) => {
+                        return Err(LuaBridgeError::Api(format!(
+                            "entity {name:?} has an invalid atlas texture reference: {error}"
+                        )));
+                    }
+                };
             state
                 .world
                 .insert(id, sprite)
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
             state
                 .world
-                .insert(id, SpriteAsset(component.texture))
+                .insert(id, SpriteAsset(texture_path))
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
             state
                 .world

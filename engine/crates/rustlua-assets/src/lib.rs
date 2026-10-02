@@ -1,4 +1,6 @@
 pub mod asset_handle;
+pub mod atlas_format;
+pub mod atlas_pack;
 pub mod dependency;
 pub mod gltf_asset;
 pub mod hash;

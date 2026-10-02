@@ -25,3 +25,7 @@ rustlua-audio = { path = "../rustlua-audio" }
 rustlua-input = { path = "../rustlua-input" }
 rustlua-gameplay = { path = "../rustlua-gameplay" }
 rustlua-infra = { path = "../rustlua-infra" }
+
+[dev-dependencies]
+# 图集引用门要真实落盘 PNG：加载器只读图片头取尺寸，非图片字节过不了这一步。
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }

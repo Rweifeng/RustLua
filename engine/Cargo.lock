@@ -1568,6 +1568,7 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "engine",
+ "image",
  "pollster",
  "tracing",
  "wgpu",
@@ -3729,6 +3730,7 @@ name = "rustlua-scripting"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "image",
  "mlua",
  "rustlua-animation",
  "rustlua-assets",

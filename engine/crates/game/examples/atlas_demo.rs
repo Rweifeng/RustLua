@@ -1,12 +1,13 @@
 use bytemuck::{Pod, Zeroable};
 use engine::core::{
-    atlas::SpriteAtlas,
+    atlas::load_atlas,
     camera::{Camera2D, Viewport},
     sprite::Sprite,
     sprite_batch::{SpriteBatch, SpriteBatchItem},
     texture::{TextureAsset, TextureColorSpace},
     transform::{Transform, Vec2},
 };
+use std::fs;
 use wgpu::util::DeviceExt;
 
 #[repr(C)]
@@ -36,11 +37,24 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     let asset = TextureAsset::from_rgba8(4, 4, pixels, TextureColorSpace::Srgb)?;
-    let mut atlas = SpriteAtlas::from_asset(&asset)?;
-    atlas.insert("red", 0, 0, 2, 2)?;
-    atlas.insert("green", 2, 0, 2, 2)?;
-    atlas.insert("blue", 0, 2, 2, 2)?;
-    atlas.insert("yellow", 2, 2, 2, 2)?;
+    // 批 B 文件级门：把纹理与 `.atlas` 源真实落盘，按**工程根相对**写法从磁盘读回图集
+    // （不再手工 insert）。`texture=sheet.png` 保持相对，渲染器再按根 join。
+    let root = std::env::temp_dir().join(format!("rustlua-atlas-demo-{}", std::process::id()));
+    fs::create_dir_all(&root)?;
+    let png = root.join("sheet.png");
+    image::RgbaImage::from_raw(4, 4, asset.pixels().to_vec())
+        .expect("4x4 rgba")
+        .save(&png)?;
+    fs::write(
+        root.join("hero.atlas"),
+        "atlas_version=1\ntexture=sheet.png\nregion\tred\t0\t0\t2\t2\nregion\tgreen\t2\t0\t2\t2\nregion\tblue\t0\t2\t2\t2\nregion\tyellow\t2\t2\t2\t2\n",
+    )?;
+    let loaded = load_atlas(Some(&root), std::path::Path::new("hero.atlas"))?;
+    assert_eq!(
+        loaded.texture_path, "sheet.png",
+        "解析后的纹理路径保持 .atlas 里写的工程根相对路径"
+    );
+    let atlas = loaded.atlas;
 
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
     let adapter = instance
@@ -259,5 +273,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         mesh.vertices.len(),
         mesh.draws.len()
     );
+    let _ = fs::remove_dir_all(&root);
     Ok(())
 }

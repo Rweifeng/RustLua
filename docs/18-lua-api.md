@@ -71,7 +71,7 @@ end
 | `input` | `action/axis/pressed/released` | 键盘与鼠标输入快照 |
 | `entity` | `find/spawn/is_alive/destroy` | 创建、查找、检查和销毁实体；`find(name)` 按显示名（可冲突）查 |
 | `entity` | `spawn(name?, persist_id?)` / `find_id(persist_id)` / `persist_id(id)` | B-1 稳定实体 ID：`spawn` 第二参注册项目级唯一 `persist_id`，重复注册报错；`find_id` 反向取回活实体（不存在返回 nil），`persist_id(id)` 查询实体绑定的 ID；`destroy` 与切场景清理对应注册 |
-| `sprite` | `set(id, 组件串)` | 设置/替换实体 Sprite 组件（`texture=...;size=...`，与场景组件串同格式） |
+| `sprite` | `set(id, 组件串)` | 设置/替换实体 Sprite 组件（`texture=...;size=...`，与场景组件串同格式）；`texture` 支持 `图集路径#区域名` 引用，装配期解析为图集纹理 + 区域 UV（`docs/63`） |
 | `transform` | `get/set/move` | 读取和修改位置、旋转、缩放 |
 | `health` | `get/set/damage` | Demo 用生命值与受伤 API |
 | `particles` | `burst(x,y,count)` | 在 `(x,y)` 爆发 count 个粒子（橙色，扩散速度 120、寿命 0.6s） |

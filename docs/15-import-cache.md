@@ -23,11 +23,11 @@ pub trait Importer: Send + Sync {
 |---|---|---|
 | Texture | png, jpg, jpeg | `image::load_from_memory` 真实解码 |
 | Audio | wav, ogg | `rodio::Decoder::new`；WAV 强制 `total_duration` 读头，OGG 流式格式解码器初始化成功即视为有效 |
-| LuaScript | lua | 非空（语法校验留 M12-04） |
+| LuaScript | lua | `validate_lua_syntax` 只编译不执行，错误含行列定位（非空检查为其前置） |
 | Scene | scene, ron, json | `.scene` 严格 `Scene::from_text`；`.ron/.json` 宽松仅非空 |
 | Prefab | prefab | 严格 `Prefab::from_text` |
 | Model | gltf, glb | `GltfAsset::load` 真实解析 |
-| Atlas | atlas | 占位非空（阶段 1 无解析器） |
+| Atlas | atlas | 严格 `AtlasDefinition::from_text`（`atlas-2`）：缺版本/缺 `texture`/无 region/零尺寸/空名/语法损坏都定位到行 |
 | Font | ttf, otf | `ab_glyph::FontArc::try_from_vec` |
 
 `ImportCache::import_file(id, source, &dyn Importer)`：读源字节 → `content_hash`（FNV-1a 派生 128 位，32 位十六进制）→ 缓存命中（指纹 + importer 版本 + kind token 全匹配且产物文件在盘）直接复用 → 否则 `validate` → `produce` → 原子写入所有 artifact（`.tmp` + rename）。`webp/mp3` 本阶段归 `Other`，支持留 M12-04。

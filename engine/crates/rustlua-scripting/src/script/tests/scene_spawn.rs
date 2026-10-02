@@ -222,3 +222,61 @@ fn runtime_spawned_entity_can_attach_world_text() {
     let _ = fs::remove_file(first);
     let _ = fs::remove_file(second);
 }
+
+/// 批 C 门：Lua 侧 `sprite.set` 的 `图集路径#区域名` 引用必须与场景装配同一解析语义
+/// （sprite.get 读回纹理路径、世界组件落区域 UV、坏引用显式报错）。
+#[test]
+fn lua_sprite_set_resolves_atlas_region_reference() {
+    let root = std::env::temp_dir().join(format!(
+        "rustlua-atlas-lua-{}-{}",
+        std::process::id(),
+        line!()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("assets").join("atlases")).unwrap();
+    let png = root.join("assets").join("atlases").join("hero-0.png");
+    let mut img = image::RgbaImage::new(4, 2);
+    for (x, _y, pixel) in img.enumerate_pixels_mut() {
+        *pixel = if x < 2 {
+            image::Rgba([255, 0, 0, 255])
+        } else {
+            image::Rgba([0, 255, 0, 255])
+        };
+    }
+    img.save(&png).unwrap();
+    // 真实项目形状：`.atlas` 与 Lua 里的引用都写工程根相对路径（正斜杠）。
+    fs::write(
+        root.join("assets").join("atlases").join("hero.atlas"),
+        "atlas_version=1\ntexture=assets/atlases/hero-0.png\nregion\twalk\t2\t0\t2\t2\n",
+    )
+    .unwrap();
+
+    let mut runtime = LuaRuntime::new().unwrap();
+    runtime.set_project_root(root.clone());
+    let id = runtime.with_world_mut(|world| world.spawn());
+    let lua_id = super::super::values::entity_lua_id(id);
+    let texture = runtime
+        .execute_console(&format!(
+            "sprite.set({lua_id}, 'texture=assets/atlases/hero.atlas#walk;size=1x1') return sprite.get({lua_id}).texture"
+        ))
+        .unwrap();
+    assert_eq!(
+        texture.trim(),
+        "assets/atlases/hero-0.png",
+        "sprite.get 必须读回 .atlas 里写的工程根相对纹理路径"
+    );
+    let sprite = runtime.with_world(|world| *world.get::<Sprite>(id).unwrap().unwrap());
+    assert_eq!(
+        sprite.uv_min,
+        rustlua_math::math2d::Vec2::new(0.5, 0.0),
+        "区域 UV 必须来自 .atlas 的实际像素矩形"
+    );
+    assert_eq!(sprite.uv_max, rustlua_math::math2d::Vec2::new(1.0, 1.0));
+
+    // 未知区域：显式报错，绝不静默回退成整图。
+    let broken = runtime.execute_console(&format!(
+        "sprite.set({lua_id}, 'texture=assets/atlases/hero.atlas#fly;size=1x1') return 'unreachable'"
+    ));
+    assert!(broken.is_err(), "未知区域必须显式失败");
+    let _ = fs::remove_dir_all(&root);
+}

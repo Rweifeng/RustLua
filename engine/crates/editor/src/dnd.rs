@@ -140,7 +140,9 @@ fn displayed_name(path: &Path) -> String {
         .unwrap_or_else(|| path.display().to_string())
 }
 
-/// 能变成场景实体/资产引用的资源家族。其余（音频/字体/Lua/场景/图集）只能进资源库。
+/// 能变成场景实体/资产引用的资源家族。其余只能进资源库：音频/字体/Lua/场景本就不是
+/// 场景引用目标，图集要靠 `图集路径#区域名` 指到某个区域，整张 `.atlas` 直接当引用会缺
+/// 区域信息（装配期报错），所以也不给拖成实体或填进引用字段。
 #[must_use]
 pub(crate) fn referenceable(kind: ResourceKind) -> bool {
     matches!(

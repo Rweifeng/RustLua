@@ -1,10 +1,10 @@
 //! Dependency-graph extraction and resolution for the resource database.
 //!
 //! Pure logic (no I/O) shared by the editor, assetc, and game's runtime
-//! verification: it scans scene/prefab component strings and Lua source for
-//! references to other assets, resolves them to [`crate::resource_db::AssetId`]s through the
-//! database, and (in `propagate` / `detect_cycles`) propagates a dependency's
-//! bad state onto its consumers.
+//! verification: it scans scene/prefab component strings, `.atlas` texture
+//! references and Lua source for references to other assets, resolves them to
+//! [`crate::resource_db::AssetId`]s through the database, and (in `propagate` /
+//! `detect_cycles`) propagates a dependency's bad state onto its consumers.
 
 use crate::resource_db::AssetId;
 use crate::resource_db::AssetRecord;
@@ -46,6 +46,7 @@ pub struct UnresolvedRef {
 pub fn extract_refs(text: &str, kind: ResourceKind) -> Vec<DependencyRef> {
     match kind {
         ResourceKind::Scene | ResourceKind::Prefab => extract_scene_assets(text),
+        ResourceKind::Atlas => extract_atlas_texture(text),
         ResourceKind::LuaScript => extract_lua_refs(text),
         _ => Vec::new(),
     }
@@ -99,7 +100,7 @@ pub fn resolve_refs(
     (ids, unresolved)
 }
 
-/// Recomputes dependency edges for every container asset (Scene/Prefab/LuaScript),
+/// Recomputes dependency edges for every container asset (Scene/Prefab/Atlas/LuaScript),
 /// overwriting the previous edges each time so the operation is idempotent.
 /// `read_source` reads a project-relative source file; returning `None` means
 /// the file is gone and yields no edges. Unresolved references are returned so
@@ -113,7 +114,10 @@ pub fn recompute_edges(
         .filter(|record| {
             matches!(
                 record.kind,
-                ResourceKind::Scene | ResourceKind::Prefab | ResourceKind::LuaScript
+                ResourceKind::Scene
+                    | ResourceKind::Prefab
+                    | ResourceKind::Atlas
+                    | ResourceKind::LuaScript
             )
         })
         .map(|record| (record.id, record.kind, record.source_path.clone()))
@@ -417,12 +421,41 @@ fn extract_scene_assets(text: &str) -> Vec<DependencyRef> {
                 end += 1;
             }
             let path: String = chars[i..end].iter().collect();
-            if path != "assets/" && seen.insert(path.clone()) {
+            let path = strip_region_suffix(&path);
+            if path != "assets/" && seen.insert(path.to_owned()) {
                 refs.push(DependencyRef::Asset(PathBuf::from(path)));
             }
             i = end;
         } else {
             i += 1;
+        }
+    }
+    refs
+}
+
+/// `assets/atlases/hero.atlas#walk` 这类图集区域引用：图的消费者是图集文件本身，
+/// `#区域名` 只在装配期解析，所以边指向去掉后缀的图集路径。
+fn strip_region_suffix(raw: &str) -> &str {
+    raw.split('#').next().unwrap_or(raw)
+}
+
+/// 图集描述文件只依赖它引用的那张合并纹理（`texture=` 行）。
+/// 格式约定见 `docs/11`：一条图集记录只有一个纹理，缺字段由 importer 校验报错，
+/// 这里只负责成边。
+fn extract_atlas_texture(text: &str) -> Vec<DependencyRef> {
+    let mut refs = Vec::new();
+    let mut seen = HashSet::new();
+    for line in text.lines() {
+        let line = line.trim_start();
+        if line.starts_with('#') {
+            continue;
+        }
+        let Some(value) = line.strip_prefix("texture=") else {
+            continue;
+        };
+        let value = value.trim();
+        if !value.is_empty() && seen.insert(value.to_owned()) {
+            refs.push(DependencyRef::Asset(PathBuf::from(value)));
         }
     }
     refs
@@ -570,7 +603,7 @@ fn lua_string_refs(context: &str, content: &str) -> Vec<DependencyRef> {
         refs.push(DependencyRef::SceneName(trimmed.to_owned()));
     }
     if let Some(index) = content.find("assets/") {
-        let path = content[index..].trim_end_matches([';', ':', '\n', '\r']);
+        let path = strip_region_suffix(&content[index..]).trim_end_matches([';', ':', '\n', '\r']);
         refs.push(DependencyRef::Asset(PathBuf::from(path)));
     }
     refs
@@ -634,6 +667,33 @@ mod tests {
         assert_eq!(
             asset_paths(&refs),
             vec!["assets/textures/player.png".to_owned()]
+        );
+    }
+
+    #[test]
+    fn atlas_texture_field_is_the_only_edge() {
+        // 图集的依赖是它引用的那张合并纹理；region 行不产生边。
+        let atlas = "atlas_version=1\ntexture=assets/atlases/hero-0.png\n\
+            # 注释里的 texture=assets/x.png 不算\n\
+            region\twalk\t2\t2\t32\t16\n";
+        assert_eq!(
+            asset_paths(&extract_refs(atlas, ResourceKind::Atlas)),
+            vec!["assets/atlases/hero-0.png".to_owned()]
+        );
+    }
+
+    #[test]
+    fn region_suffix_is_dropped_when_building_edges() {
+        // `图集路径#区域名`：边指向图集文件本身，`#walk` 只在使用点解析。
+        let scene = "component 1 Sprite texture=assets/atlases/hero.atlas#walk;size=32x16\n";
+        assert_eq!(
+            asset_paths(&extract_refs(scene, ResourceKind::Scene)),
+            vec!["assets/atlases/hero.atlas".to_owned()]
+        );
+        let lua = "sprite.set(id, 'texture=assets/atlases/hero.atlas#walk;size=32x16')\n";
+        assert_eq!(
+            asset_paths(&extract_refs(lua, ResourceKind::LuaScript)),
+            vec!["assets/atlases/hero.atlas".to_owned()]
         );
     }
 
@@ -808,6 +868,53 @@ mod tests {
         assert_eq!(db.get(scene).unwrap().dependencies, vec![tex]);
         // Lua 引用 scripts/game.lua。
         assert_eq!(db.get(lua).unwrap().dependencies, vec![game]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn recompute_edges_chains_scene_atlas_texture() {
+        let root = temp_root("edges-atlas");
+        let mut db = ResourceDatabase::open(&root).unwrap();
+        let sheet = db
+            .register(
+                "assets/atlases/hero-0.png",
+                ResourceKind::Texture,
+                "texture-1",
+            )
+            .unwrap();
+        let atlas = db
+            .register("assets/atlases/hero.atlas", ResourceKind::Atlas, "atlas-1")
+            .unwrap();
+        let scene = db
+            .register("scenes/main.scene", ResourceKind::Scene, "scene-1")
+            .unwrap();
+        let sources = [
+            (
+                PathBuf::from("assets/atlases/hero.atlas"),
+                "atlas_version=1\ntexture=assets/atlases/hero-0.png\nregion\twalk\t2\t2\t32\t16\n"
+                    .to_owned(),
+            ),
+            (
+                PathBuf::from("scenes/main.scene"),
+                "component 1 Sprite texture=assets/atlases/hero.atlas#walk;size=32x16\n".to_owned(),
+            ),
+        ];
+        let read = |path: &Path| -> Option<String> {
+            sources
+                .iter()
+                .find(|(p, _)| p == path)
+                .map(|(_, text)| text.clone())
+        };
+        assert!(recompute_edges(&mut db, &read).is_empty());
+        assert_eq!(db.get(atlas).unwrap().dependencies, vec![sheet]);
+        assert_eq!(db.get(scene).unwrap().dependencies, vec![atlas]);
+        // 纹理变更沿两级边传导：sheet 缺失 → 图集 Invalid → 场景 Invalid。
+        db.get_mut_for_test(sheet).status = ResourceState::Missing;
+        db.get_mut_for_test(atlas).status = ResourceState::Ready;
+        db.get_mut_for_test(scene).status = ResourceState::Ready;
+        let outcome = propagate(&record_snapshot(&db));
+        assert_eq!(applied_state(&outcome, atlas), ResourceState::Invalid);
+        assert_eq!(applied_state(&outcome, scene), ResourceState::Invalid);
         let _ = std::fs::remove_dir_all(&root);
     }
 

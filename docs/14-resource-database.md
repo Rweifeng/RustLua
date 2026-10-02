@@ -71,7 +71,11 @@ v2 由 v1 的 7 列升级为 **12 列 TSV**，文件头为 `# rustlua-resource-d
 
 ### 依赖边
 
-`dependencies` 列存依赖资源的 UUID（逗号分隔）。`recompute_edges(db, read_source)` 每次对全部 Scene/Prefab/LuaScript 记录重新提取引用并**全量覆盖**依赖边（幂等）；未解析的引用返回为 `UnresolvedRef`，调用方按断链处理，但不建边。
+`dependencies` 列存依赖资源的 UUID（逗号分隔）。`recompute_edges(db, read_source)` 每次对全部 Scene/Prefab/Atlas/LuaScript 记录重新提取引用并**全量覆盖**依赖边（幂等）；未解析的引用返回为 `UnresolvedRef`，调用方按断链处理，但不建边。
+
+图集的两种边：`.atlas` 的 `texture=` 行 → 合并纹理（`atlas → texture`）；场景/脚本里的
+`图集路径#区域名` 引用在建边前去掉 `#区域名` 后缀（`scene → atlas`），因为区域只在使用点解析。
+于是源图变更沿 `texture → atlas → scene` 逐级把消费者标脏，见 `docs/63`。
 
 提取规则（`dependency.rs` 纯函数，引号感知状态机，天然排除注释）：
 

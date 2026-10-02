@@ -44,8 +44,8 @@ pub use rustlua_physics::{physics, physics3d};
 
 // ── rustlua-assets ──
 pub use rustlua_assets::{
-    asset_handle, dependency, gltf_asset, hash, import_cache, importer, pack, resource_db,
-    resource_kind,
+    asset_handle, atlas_format, atlas_pack, dependency, gltf_asset, hash, import_cache, importer,
+    pack, resource_db, resource_kind,
 };
 
 // ── rustlua-audio ──

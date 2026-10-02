@@ -14,3 +14,4 @@ tracing.workspace = true
 bytemuck.workspace = true
 pollster = "0.4"
 wgpu = "27"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }

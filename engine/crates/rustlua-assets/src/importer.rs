@@ -13,6 +13,7 @@ use std::{
     time::Instant,
 };
 
+use crate::atlas_format::AtlasDefinition;
 use crate::gltf_asset::GltfAsset;
 use crate::import_cache::ImportCache;
 use crate::resource_db::{AssetId, ResourceDatabase};
@@ -293,7 +294,7 @@ impl Importer for ModelImporter {
 
 impl Importer for AtlasImporter {
     fn version(&self) -> &'static str {
-        "atlas-1"
+        "atlas-2"
     }
     fn kind(&self) -> ResourceKind {
         ResourceKind::Atlas
@@ -302,8 +303,14 @@ impl Importer for AtlasImporter {
         &["atlas"]
     }
     fn validate(&self, source: &Path, bytes: &[u8]) -> Result<(), String> {
-        // 占位：阶段 1 尚无 atlas 解析器，仅校验非空。
-        reject_empty(source, bytes)
+        reject_empty(source, bytes)?;
+        reject_bom(source, bytes, "atlas 文件")?;
+        let text = std::str::from_utf8(bytes).map_err(|error| {
+            format!("{}: atlas 编码非法（需 UTF-8）: {error}", source.display())
+        })?;
+        AtlasDefinition::from_text(text)
+            .map_err(|error| format!("{}: {error}", source.display()))?;
+        Ok(())
     }
 }
 
@@ -685,6 +692,51 @@ mod tests {
             .get(ResourceKind::Texture)
             .unwrap();
         assert!(importer.validate(&path, b"not an image").is_err());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn atlas_importer_validates_text_format() {
+        let root = root("atlas-format");
+        let importer = ImporterRegistry::builtin()
+            .get(ResourceKind::Atlas)
+            .unwrap();
+        let good = write_source(
+            &root,
+            "hero.atlas",
+            b"atlas_version=1\ntexture=sprites/hero.png\nregion\tidle\t0\t0\t64\t64\n",
+        );
+        importer
+            .validate(&good, &fs::read(&good).unwrap())
+            .expect("合法 .atlas 必须通过");
+
+        // 语法损坏必须定位到文件路径与行号。
+        let bad = write_source(
+            &root,
+            "bad.atlas",
+            b"atlas_version=1\ntexture=a.png\nregion\tx\t0\t0\t0\t8\n",
+        );
+        let error = importer
+            .validate(&bad, &fs::read(&bad).unwrap())
+            .expect_err("零尺寸 region 必须拒绝");
+        assert!(error.contains("bad.atlas"), "诊断需含文件路径: {error}");
+        assert!(error.contains("第 3 行"), "诊断需含行号: {error}");
+
+        // 占位期语义（任意非空即通过）必须不再放行。
+        let junk = write_source(&root, "junk.atlas", b"not an atlas");
+        assert!(importer.validate(&junk, b"not an atlas").is_err());
+        assert!(importer.validate(&junk, b"").is_err());
+
+        // BOM 与 Lua/JSON 同一约定：给出可操作诊断。
+        let bom = write_source(
+            &root,
+            "bom.atlas",
+            b"\xEF\xBB\xBFatlas_version=1\ntexture=a.png\nregion\ta\t0\t0\t1\t1\n",
+        );
+        let error = importer
+            .validate(&bom, &fs::read(&bom).unwrap())
+            .expect_err("BOM 必须拒绝");
+        assert!(error.contains("BOM"), "诊断需含 BOM 提示: {error}");
         let _ = fs::remove_dir_all(&root);
     }
 

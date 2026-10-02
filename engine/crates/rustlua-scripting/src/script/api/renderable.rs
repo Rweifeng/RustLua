@@ -10,6 +10,7 @@ use mlua::Lua;
 use mlua::Result as LuaResult;
 use rustlua_animation::animation::AnimationStateMachine;
 use rustlua_math::math3d::Vec3;
+use rustlua_render::atlas::resolve_atlas_reference;
 use rustlua_render::light::Light;
 use rustlua_render::mesh3d::MeshRenderer;
 use rustlua_render::sprite::SpriteAsset;
@@ -32,10 +33,23 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
                 .map_err(|error| api_error(error.to_string()))?;
             let mut state = s.lua_borrow_mut()?;
             require_alive(&state, id)?;
+            // 图集引用语法 `图集路径#区域名`（与 scene_spawn 同一约定），路径按项目根解析。
+            let (texture_path, sprite_value) =
+                match resolve_atlas_reference(state.project_root.as_deref(), &component.texture)
+                    .map_err(|error| api_error(error.to_string()))?
+                {
+                    Some((texture_path, region)) => (
+                        texture_path,
+                        region
+                            .apply(sprite_value)
+                            .map_err(|error| api_error(error.to_string()))?,
+                    ),
+                    None => (component.texture.clone(), sprite_value),
+                };
             state.world.insert(id, sprite_value).map_err(world_error)?;
             state
                 .world
-                .insert(id, SpriteAsset(component.texture))
+                .insert(id, SpriteAsset(texture_path))
                 .map_err(world_error)?;
             Ok(())
         })?,

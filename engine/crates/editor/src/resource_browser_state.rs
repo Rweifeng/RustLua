@@ -709,6 +709,102 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    /// 批 E（`docs/63`）：图集在资源浏览器里是一行**真资产**，并且
+    /// `scene → atlas → texture` 两级边参与失效传导；`#区域名` 后缀不参与建边。
+    #[test]
+    fn atlas_rows_display_and_chain_texture_to_scene() {
+        let root = temp_root("atlas-chain");
+        file(&root, "assets/atlases/hero-0.png", b"png");
+        file(
+            &root,
+            "assets/atlases/hero.atlas",
+            b"atlas_version=1\ntexture=assets/atlases/hero-0.png\nregion\twalk\t2\t2\t32\t16\n",
+        );
+        file(
+            &root,
+            "scenes/main.scene",
+            b"component 1 Sprite texture=assets/atlases/hero.atlas#walk;size=32x16\n",
+        );
+        let entry = |browser: &ResourceBrowserState, relative: &str| {
+            browser
+                .entries()
+                .iter()
+                .find(|entry| entry.path_string() == relative)
+                .unwrap_or_else(|| panic!("{relative} 未登记"))
+                .clone()
+        };
+
+        let mut browser = ResourceBrowserState::new();
+        browser.refresh(&root).unwrap();
+        assert_eq!(
+            entry(&browser, "assets/atlases/hero.atlas").kind,
+            ResourceKind::Atlas,
+            "`.atlas` 必须归到图集家族而不是 Other"
+        );
+        assert!(
+            browser
+                .pending_imports()
+                .iter()
+                .any(|(_, path)| path == &PathBuf::from("assets/atlases/hero.atlas")),
+            "未导入的图集要进待导入队列，编辑器才会跑真实校验"
+        );
+
+        // 把三者标成 Ready，再改源图内容：变更应沿 atlas→texture 边传导。
+        {
+            let mut db = ResourceDatabase::open(&root).unwrap();
+            for (relative, hash) in [
+                ("assets/atlases/hero-0.png", "h-tex"),
+                ("assets/atlases/hero.atlas", "h-atlas"),
+                ("scenes/main.scene", "h-scene"),
+            ] {
+                let record = db.find_by_path(relative).unwrap().unwrap();
+                db.mark_ready(record.id, format!("cache/{relative}"), hash)
+                    .unwrap();
+            }
+            db.save().unwrap();
+        }
+        file(&root, "assets/atlases/hero-0.png", b"png2");
+        browser.refresh(&root).unwrap();
+        assert_eq!(
+            entry(&browser, "assets/atlases/hero-0.png").status,
+            ResourceState::Stale,
+            "源图自身变更"
+        );
+        assert_eq!(
+            entry(&browser, "assets/atlases/hero.atlas").status,
+            ResourceState::Stale,
+            "源图变化沿 atlas→texture 边弄脏图集"
+        );
+        assert_eq!(
+            entry(&browser, "scenes/main.scene").status,
+            ResourceState::Stale,
+            "再沿 scene→atlas 边传导"
+        );
+        assert!(
+            browser
+                .pending_imports()
+                .iter()
+                .any(|(_, path)| path == &PathBuf::from("assets/atlases/hero.atlas")),
+            "变脏的图集重新排队重导入"
+        );
+
+        // 删掉图集文件：场景按图集路径断链（`#walk` 只在使用点解析）。
+        fs::remove_file(root.join("assets/atlases/hero.atlas")).unwrap();
+        browser.refresh(&root).unwrap();
+        let scene = entry(&browser, "scenes/main.scene");
+        assert_eq!(scene.status, ResourceState::Invalid);
+        assert!(
+            scene
+                .error
+                .as_deref()
+                .unwrap_or("")
+                .contains("assets/atlases/hero.atlas"),
+            "断链文案要指出图集路径而非带 # 的原始引用：{:?}",
+            scene.error
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
     #[test]
     fn pending_imports_exclude_invalid() {
         let root = temp_root("pending-invalid");
