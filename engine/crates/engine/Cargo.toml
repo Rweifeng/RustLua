@@ -34,7 +34,6 @@ rustlua-scripting.workspace = true
 rustlua-infra.workspace = true
 
 [dev-dependencies]
-vorbis = "0.1"
 # wp0_*_golden examples 仍直接依赖（core 拆分后 serde_json 已随模块迁到子 crate）
 serde_json = "1"
 
