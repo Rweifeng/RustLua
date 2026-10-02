@@ -67,7 +67,7 @@ pub(crate) fn validate_mesh_path(mesh: &str) -> Result<(), MeshRendererError> {
     if mesh == GROUND_PLANE_SENTINEL {
         return Ok(());
     }
-    // 与 `entity_script::EntityScript::validate` 共用 `core::paths` 的权威判定：
+    // 与 `entity_script::EntityScript::validate` 共用 `rustlua_infra::paths` 的权威判定：
     // 只用 `Path::is_absolute()` 会放行 Windows 上的 `/etc/x.glb`（根相对但没有盘符），
     // schema 侧的 `FieldRule::ProjectPath` 用的是同一份实现（两边由对拍测试盯住）。
     if rustlua_infra::paths::is_absolute_path(mesh)

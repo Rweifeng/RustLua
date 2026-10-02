@@ -40,7 +40,7 @@ type ResourceReader = dyn Fn(&str) -> Option<Vec<u8>> + 'static;
 /// `read_resource` 按**项目相对路径**（如 `"scripts/main.lua"`、`"data/items.json"`）
 /// 返回资源字节；`None` = 资源不存在。需要 `'static`：provider 会进 vfs 的全局
 /// 存储（桌面 `OnceLock` / wasm `thread_local`）。桌面上 provider 优先于真实
-/// 文件系统（engine `core::vfs` 语义），因此本函数在桌面测试与 Web 宿主行为一致。
+/// 文件系统（`engine::core::vfs` 的语义），因此本函数在桌面测试与 Web 宿主行为一致。
 #[cfg(not(target_arch = "wasm32"))]
 pub fn run_lua_once<F>(read_resource: F) -> anyhow::Result<String>
 where

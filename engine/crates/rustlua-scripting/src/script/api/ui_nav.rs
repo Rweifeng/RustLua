@@ -1,4 +1,4 @@
-//! `ui` 的焦点环与滚动：`focus_*` / `scroll_*`（`core::ui_navigation` 的运行期接线）。
+//! `ui` 的焦点环与滚动：`focus_*` / `scroll_*`（`rustlua_ui::ui_navigation` 的运行期接线）。
 //!
 //! 序号统一 0 基；Lua 面板常用 1 基，由游戏侧 `panel_nav.lua` 转换。
 

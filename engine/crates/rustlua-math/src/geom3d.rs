@@ -1,10 +1,10 @@
 //! 3D 几何基元：射线、视锥与平面。
 //!
-//! 这些类型此前住在 `core::camera` 里，但它们与相机**无关**——射线求交、Gribb–Hartmann
-//! 平面提取、包围球剔除都是纯几何，消费方是拾取（`core::picking`）、编辑器 gizmo 与渲染剔除。
-//! 放在相机模块里会让"改几何"看起来像"改相机"，也让 `camera.rs` 承担了不属于它的职责。
+//! 这些类型此前住在拆分前的 `core::camera`（如今是 `rustlua-camera` 的 `camera`）里，但它们与相机**无关**——
+//! 射线求交、Gribb–Hartmann 平面提取、包围球剔除都是纯几何，消费方是拾取（`rustlua-render` 的
+//! picking）、编辑器 gizmo 与渲染剔除。放在相机模块里会让"改几何"看起来像"改相机"，也让 `camera.rs` 承担了不属于它的职责。
 //!
-//! 迁出后 `core::camera` 仍保留兼容 re-export（`core::camera::Ray3` 等路径继续有效），
+//! 迁出后 `rustlua-camera` 的 `camera` 仍保留兼容 re-export（`camera::Ray3` 等旧路径继续有效），
 //! 新代码请直接 `use crate::geom3d::…`。
 
 use crate::math3d::{Aabb3, Mat4, Math3dError, Vec3};

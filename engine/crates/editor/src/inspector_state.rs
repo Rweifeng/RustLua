@@ -779,7 +779,7 @@ mod tests {
 
     /// Windows 上的"根相对"路径（`/etc/passwd.lua`）没有盘符，`Path::is_absolute()` 会返回
     /// `false`——编辑器曾经因此放行、而运行时拒绝，写出一个运行时不加载的脚本。
-    /// 现在两边共用 `core::paths` 的判定。
+    /// 现在两边共用 `engine::core::paths` 的判定。
     #[test]
     fn lua_windows_root_relative_path_rejected() {
         let (mut document, inspector, id) = setup();

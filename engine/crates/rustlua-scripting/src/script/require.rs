@@ -29,7 +29,7 @@ pub(super) fn file_fingerprint(
 }
 
 /// 读取项目脚本源码，支持发布包的压缩/加密（明文原样返回）。
-/// 桌面走 `std::fs`；wasm32-unknown-unknown 走宿主注入的虚拟文件系统（`core::vfs`）。
+/// 桌面走 `std::fs`；wasm32-unknown-unknown 走宿主注入的虚拟文件系统（`rustlua_infra::vfs`）。
 /// `pub`：wasm Lua 桥（`game_web::lua_bridge::lua_execute_main`）需要它在**既有状态**
 /// 上读取+执行 main.lua（`execute_project_script` 的 `load_candidate` 会新建 Lua
 /// 状态、丢弃已注入的宿主补丁，web 流程不可用）。

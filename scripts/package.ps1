@@ -71,7 +71,8 @@ $invalidNameChars = [IO.Path]::GetInvalidFileNameChars()
 foreach ($ch in $invalidNameChars) { $PublishName = $PublishName.Replace([string]$ch, "_") }
 $PublishName = $PublishName.Trim()
 if ([string]::IsNullOrWhiteSpace($PublishName)) { $PublishName = "game" }
-# M31/P3：玩家数据目录（存档 + 玩家设置）。与引擎 `core::user_dir` 的规则一致：
+# M31/P3：玩家数据目录（存档 + 玩家设置）。与引擎 `rustlua-infra` 的 user_dir 规则一致
+# （engine/crates/rustlua-infra/src/user_dir.rs）：
 # Windows 为 `%APPDATA%\<publish_name>`，其它平台取各自的数据目录；`RUSTLUA_USER_DIR` 可覆盖。
 # 这里只用于**文档与自检断言**（发布包目录里不写任何玩家数据）。
 $PlayerDataDir = if ($env:RUSTLUA_USER_DIR) {

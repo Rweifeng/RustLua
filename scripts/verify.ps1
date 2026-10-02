@@ -273,7 +273,7 @@ try {
     Invoke-Checked cargo @("fmt", "--all", "--", "--check")
 
     # 优化项 10：Lua API 文档桩的再生成一致性。事实源是**运行期 API 面基线**
-    # （`core::api_surface_snapshot/lua_api_surface.json`），所以这一步查的是
+    # （`engine/crates/rustlua-scripting/src/api_surface_snapshot/lua_api_surface.json`），所以这一步查的是
     # 「文档桩与真正暴露给脚本的那 275 个函数是否还是同一份清单」，外加「待补桩数没有变多」。
     # 缺 node 时打印原因后跳过——沿用本仓库口径，跳过绝不写成通过。
     Write-Step "Lua API doc stubs"

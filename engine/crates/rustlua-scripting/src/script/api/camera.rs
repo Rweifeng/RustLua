@@ -136,7 +136,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
                 return Err(api_error("camera3d.ray must be finite"));
             }
             let (camera, viewport) = camera3d_view(&s)?;
-            // 共享链：`core::picking::ray_from_screen`（编辑器 3D 点选与它同一入口）。
+            // 共享链：`rustlua_render::picking::ray_from_screen`（编辑器 3D 点选与它同一入口）。
             let ray = rustlua_render::picking::ray_from_screen(
                 camera,
                 rustlua_ecs::transform::Vec2::new(x, y),

@@ -1556,7 +1556,7 @@ impl Renderer {
         });
         let post_process_params = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("rustlua-post-process-params"),
-            // 32 字节：exposure + vignette + 两个填充位，随后是一个 vec4 着色（见 core::post_process）。
+            // 32 字节：exposure + vignette + 两个填充位，随后是一个 vec4 着色（见 crate::core::post_process）。
             size: 32,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
@@ -5790,7 +5790,7 @@ mod tests {
     }
 
     /// docs/54 §4.3：**计划就是实际执行的那一份**。    ///
-    /// 单测（`core::render_plan`）只证明计划函数本身的顺序与取舍；这条测试在真实（离屏）渲染
+    /// 单测（`crate::core::render_plan`）只证明计划函数本身的顺序与取舍；这条测试在真实（离屏）渲染
     /// 帧上证明渲染器跑的就是计划里列的通道，一条不多一条不少。此前"这一帧跑了哪些通道"只能
     /// 靠读渲染循环的 `if` 猜——现在可以直接断言，而且漏跑会立刻在这里失败。
     #[test]

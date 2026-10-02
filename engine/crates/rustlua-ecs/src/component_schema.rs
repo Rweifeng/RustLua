@@ -192,7 +192,7 @@ fn check_project_path(
     if raw.is_empty() {
         return Err("不能为空".to_owned());
     }
-    // 与 `entity_script::EntityScript::validate` 共用 `core::paths` 的权威判定
+    // 与 `entity_script::EntityScript::validate` 共用 `rustlua_infra::paths` 的权威判定
     // （曾经这里只用 `is_absolute()`，于是 Windows 上的 `/etc/passwd` 被放行）。
     if rustlua_infra::paths::is_absolute_path(raw) {
         return Err(format!("必须是工程内相对路径（{raw} 是绝对路径）"));

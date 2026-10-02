@@ -4,8 +4,8 @@
 // markdown 文档桩（每个绑定函数一个小节，含从 Rust 绑定源码推断出的 Lua 侧签名），并生成
 // `engine::lua_api::<模块>` 这个纯文档模块把它们挂进 rustdoc——发布站上可以直接按模块浏览。
 //
-// 为什么事实源是基线而不是源码：运行期真正暴露的函数清单由快照门（`core::api_surface_snapshot`）
-// 钉成基线；而源码里的注册点有 ①直写 ②宏展开 ③循环注册 三种形状（见下）。以基线为主、源码为辅，
+// 为什么事实源是基线而不是源码：运行期真正暴露的函数清单由快照门（`rustlua-scripting` 的
+// `src/api_surface_snapshot/`）钉成基线；而源码里的注册点有 ①直写 ②宏展开 ③循环注册 三种形状（见下）。以基线为主、源码为辅，
 // 才能同时发现两类失真：
 //   - 「基线有、源码定位不到」→ 注册形状变了，本解析器该修（不会静默降级成没签名）；
 //   - 「源码注册了、运行期不可见」→ 死绑定（docs/37 记过 `input.action` 注册两次、旧的那份成为
@@ -380,7 +380,7 @@ const dead = [...byKey.keys()].filter((key) => {
 const rsOut = [
   '//! Lua API 参考（**本文件与 `src/lua_api/doc/*.md` 由脚本生成，勿手改**）。',
   '//!',
-  '//! - 事实源：运行期 `_G` 探针导出的 API 面基线（`core::api_surface_snapshot` 的快照门，',
+  '//! - 事实源：运行期 `_G` 探针导出的 API 面基线（`rustlua-scripting` 的 api_surface_snapshot 快照门，',
   `//!   \`lua_api_surface.json\`，${generatedModules.length} 个模块表 / ${funcs} 个函数）；`,
   '//! - 再生成：`node scripts/gen-lua-api-docs.js`；说明文字写在各模块的 markdown 里',
   '//!   （`src/lua_api/doc/<模块>.md`），Lua 侧签名从绑定源码推断；',

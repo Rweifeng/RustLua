@@ -6,7 +6,7 @@
 //!
 //! M20-02 追加「音频」小节：编辑 `<project>/settings.toml` 的 `[audio]` 段四路
 //! 音量（主/BGM/音效/界面），与运行期 `audio` Lua API 共用引擎
-//! `core::settings::ProjectSettings` 的读写实现（保序、未知段原样保留）。
+//! `engine::core::settings::ProjectSettings` 的读写实现（保序、未知段原样保留）。
 //!
 //! M20-08 追加「输入」小节：按动作列出绑定文本、捕获式改绑（键盘/手柄按钮/
 //! 手柄轴方向）、跨动作冲突提示与保存前校验、「恢复默认」二次确认、摇杆/扳机

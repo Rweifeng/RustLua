@@ -1,6 +1,6 @@
 //! 手柄设备轮询适配层（M20-06）。
 //!
-//! 引擎的**抽象**手柄输入早已就位（`core::input::InputSnapshot` 的
+//! 引擎的**抽象**手柄输入早已就位（`crate::core::input::InputSnapshot` 的
 //! `gamepad_button_event` / `set_gamepad_axis` 与 `ActionMap` 的
 //! `Binding::GamepadButton` / `Binding::GamepadAxis`），但此前没有任何代码
 //! 喂入真实设备事件。本模块补齐这一层：
@@ -31,11 +31,11 @@
 //! | 12..15 | DPad 上/下/左/右 | | | |
 //!
 //! 死区与阈值是**两个概念**：死区（[`crate::core::input::STICK_DEADZONE`]/[`crate::core::input::TRIGGER_DEADZONE`]）用于
-//! 消除漂移，动作判定阈值沿用 `core::input` 的 0.5。
+//! 消除漂移，动作判定阈值沿用 `crate::core::input` 的 0.5。
 
 use crate::core::input::{AxisDirection, InputSnapshot};
 
-// M22（W5）：死区值类型与纯函数已下沉到 `core::input`（core 不再反向依赖 host）。
+// M22（W5）：死区值类型与纯函数已下沉到 `crate::core::input`（core 不再反向依赖 host）。
 // 这里保留重导出，既有 `host::gamepad::{GamepadDeadzone, MAX_DEADZONE, ...}` 路径
 // 与调用方（编辑器面板、示例、headless 测试）不受影响。
 pub use crate::core::input::{

@@ -24,10 +24,10 @@
 //! | `controller` | 2D 跟随 / 偏移 / 死区 / 平滑 / 抖动 + 请求-回填交接 | ECS、渲染 |
 //! | `selection` | 哪台相机生效（显式选中 → 排序序第一个可用） | 具体相机类型 |
 //! | `view` | 每帧渲染契约（[`crate::camera::Projection`] / [`crate::camera::RenderView`] / [`crate::camera::FrameViews`] / [`crate::camera::ClearPolicy`]） | ECS、宿主 |
-//! | `error` | 坐标与相机换算错误（[`crate::camera::CoordinateError`]，`core::math2d` 也在用） | 相机类型之外的东西 |
+//! | `error` | 坐标与相机换算错误（[`crate::camera::CoordinateError`]，`rustlua_math::math2d` 也在用） | 相机类型之外的东西 |
 //!
 //! 拆分前这些内容分散在 `math2d::Camera2D` 与 `camera3d::Camera3D` 两处，各自带一套视口/投影/
-//! 误差类型，改一处投影要同时想两遍"另一边是不是也这样"。收敛进 `core::camera` 之后再按上述
+//! 误差类型，改一处投影要同时想两遍"另一边是不是也这样"。收敛进 `core::camera`（拆分后是本 crate 的 `crate::camera`）之后再按上述
 //! 职责切成子模块：**公开路径一字不变**（全部由本文件 `pub use`），因此这是一次纯搬家。
 //!
 //! 3D 几何基元（[`rustlua_math::geom3d::Ray3`] / [`rustlua_math::geom3d::Frustum`] / [`rustlua_math::geom3d::Plane`] / [`rustlua_math::geom3d::FrustumClassification`]）已迁到
@@ -61,7 +61,7 @@ pub use view::{
     ClearPolicy, DEFAULT_3D_CLEAR, FrameViews, ORTHO_FAR, ORTHO_NEAR, Projection, RenderView,
 };
 
-// 几何基元的兼容 re-export（`core::camera::Ray3` 等旧路径仍然有效）。
+// 几何基元的兼容 re-export（`crate::camera::Ray3` 等旧路径仍然有效）。
 pub use rustlua_math::geom3d::{Frustum, FrustumClassification, Plane, Ray3};
 
 #[cfg(test)]

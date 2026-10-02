@@ -108,7 +108,7 @@ impl EntityScript {
 
     /// 路径必须是工程根内的**相对**路径：绝对路径与含 `..` 的路径都拒绝。
     ///
-    /// 判定本身来自 `core::paths`（schema 的 `FieldRule::ProjectPath` 用同一份实现）——
+    /// 判定本身来自 `rustlua_infra::paths`（schema 的 `FieldRule::ProjectPath` 用同一份实现）——
     /// 两边各写一遍时曾经不一致：只查 `Path::is_absolute()` 会放行 Windows 上的 `/etc/passwd`。
     pub fn validate(&self) -> Result<(), EntityScriptError> {
         if self.file.trim().is_empty() {

@@ -1571,8 +1571,9 @@ impl InputSnapshot {
 // 手柄死区与轴判定（M22：自 `host::gamepad` 下沉）
 //
 // 这些是**纯值类型与纯函数**，不依赖任何平台 API；原先放在 `host/gamepad.rs`
-// 导致 `core::settings` 反向依赖 `host`（docs/37 P1-1）。下沉后 core 可以独立编译
-// 到 wasm/headless-only 目标，`host::gamepad` 只做重导出以保持既有路径可用。
+// 导致拆分前的 `core::settings`（如今是 `rustlua-gameplay` 的 settings）反向依赖 `host`
+// （docs/37 P1-1）。下沉后本 crate 可以独立编译到 wasm/headless-only 目标，
+// `host::gamepad` 只做重导出以保持既有路径可用。
 // ---------------------------------------------------------------------------
 
 /// 左/右摇杆默认死区。
