@@ -12,6 +12,10 @@ use crate::core::math3d::Quat;
 use crate::core::transform::Vec2;
 
 use crate::host::frame::OverlayVertex;
+// WP12 阶段 4d：这两个名字原先由 `renderer/mod.rs` 顶部的 use 块带进来（测试靠 glob 取用），
+// 构造代码搬走后 `mod.rs` 不再需要它们，就在这里显式声明。
+use crate::host::frame::WorldSpriteVertex;
+use wgpu::DeviceDescriptor;
 
 mod capacity_and_caches;
 mod depth_and_frame_views;
