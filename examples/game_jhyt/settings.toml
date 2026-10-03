@@ -10,7 +10,7 @@
 [input]
 # M22/W1 起为物理键格式 v2：键位名与 winit 的 KeyCode 变体名一一对应
 # （key:w → key:keyw、key:1 → key:digit1、key:up → key:arrowup）。
-map = "rustlua-actions-v2\nmove_up=key:keyw,padaxis:1+\nmove_down=key:keys,padaxis:1-\nmove_left=key:keya,padaxis:0-\nmove_right=key:keyd,padaxis:0+\ninteract=key:keye,pad:0\nattack=key:keyj,pad:2\nskill=key:keyk,pad:3\nskill_2=key:keyv\nskill_3=key:keyn\nskill_4=key:keym\ninventory=key:keyi,pad:4\npause=key:keyp,pad:5\nquest=key:keyl,pad:9\nrespawn=key:keyr,pad:8\n"
+map = "rustlua-actions-v2\nmove_up=key:keyw,padaxis:1+\nmove_down=key:keys,padaxis:1-\nmove_left=key:keya,padaxis:0-\nmove_right=key:keyd,padaxis:0+\ninteract=key:keye,pad:0\nattack=key:keyj,pad:2\nskill=key:keyk,pad:3\nskill_2=key:keyv\nskill_3=key:keyn\nskill_4=key:keym\ndash=key:keyh\nguard=key:keyz\ninventory=key:keyi,pad:4\npause=key:keyp,pad:5\nquest=key:keyl,pad:9\nrespawn=key:keyr,pad:8\n"
 stick_deadzone = 0.15
 trigger_deadzone = 0.05
 # 菜单导航手感（M22/W3 起用毫秒）：左摇杆阈值 / 按住后首次重复延迟 / 重复间隔。

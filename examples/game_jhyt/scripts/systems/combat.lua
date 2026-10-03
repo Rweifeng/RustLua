@@ -69,10 +69,24 @@ local player_dead = false
 local player_hurt = 0
 local player_iframes = 0
 local last_knockback = nil
+local last_dash = nil -- 最近一次轻功的结算（格数/位移/当步无敌帧），headless 与调试面板读它
+-- 格挡（M34-04 / 守心诀）：`guard_wanted` 是输入层每步报上来的"按没按"，
+-- `guard_active` 是本模块结算出来的实际状态（内力不够就自动落防）。
+-- `guard_charge` = 离下一次扣内力还剩几步（docs/33 §6.1 的「10/秒」= 每 60 步扣 10）。
+-- 与硬直/无敌帧同一类**瞬时状态**：不进存档，战败/重开/读档一律落防。
+local guard_wanted = false
+local guard_active = false
+local guard_charge = 0
+local guard_skill_id = nil
+local guard_absorbed = 0
+
 local attacks = {} -- 进行中的攻击记录（数组）
 local cooldowns = {} -- attacker_key:skill_id → 冷却结束帧
 local log_entries = {} -- 战斗日志环形缓冲
-local stats = { attacks = 0, dealt = 0, taken = 0, kills = 0, deaths = 0, ignored = 0, hits = 0 }
+-- dashes/guard_hits/guard_absorbed（M34-04）：轻功与格挡各记自己的账，**不混进 attacks**
+-- ——追风步一下都没打中任何人，把它算成"攻击次数"会让 m28 的每刀读数失真。
+local stats = { attacks = 0, dealt = 0, taken = 0, kills = 0, deaths = 0, ignored = 0,
+  hits = 0, dashes = 0, guard_hits = 0, guard_absorbed = 0 }
 -- enemy.lua 注入的目标协议：
 --   is_enemy(id) → bool
 --   name_of(id) → string|nil
@@ -210,6 +224,65 @@ local function push_player(dir_x, dir_y, distance)
   return distance
 end
 
+-- 轻功位移（M34-04 / 追风步）：**逐格走、第一格被挡就停**，不是"落点被挡就整个不动"。
+-- 这是 9277524（WebGL 固体格碰撞）立下的语义在轻功侧的对应物：贴墙按轻功应当"挪一格"，
+-- 而不是原地烧掉 15 点内力什么也没发生。返回实际位移的格数（0 = 四面都不通，此时调用方
+-- 不扣内力、不进冷却——什么都没发生就不该收费）。
+local function dash_player(dir_x, dir_y, tiles)
+  local pid = player.ensure()
+  if not pid or tiles <= 0 then
+    return 0, 0
+  end
+  local ok, pos = pcall(transform.get, pid)
+  if not ok or type(pos) ~= "table" then
+    return 0, 0
+  end
+  local moved = 0
+  local x, y = pos.x, pos.y
+  for _ = 1, tiles do
+    local nx, ny = x + dir_x * TILE, y + dir_y * TILE
+    if cell_blocked(nx, ny) then
+      break
+    end
+    x, y, moved = nx, ny, moved + 1
+  end
+  if moved == 0 then
+    return 0, 0
+  end
+  player.teleport(x, y)
+  player.stop()
+  return moved, moved * TILE
+end
+
+-- 正面判定（M34-04 / 守心诀）：攻击来源落在以玩家朝向为轴、张角 front_degrees 的扇形内
+-- 才算"正面"。用 `knockback_direction`（攻击者 → 玩家）取反得到"玩家 → 攻击者"，
+-- 再与朝向单位向量点乘比 cos(半角)——**没有新的计时器，也没有新的坐标通道**，
+-- 用的就是击退那一条已经算好的方向。
+local function is_front_hit(atk, target_id, front_degrees)
+  local dir = facing_vector(state.facing)
+  local dx, dy = knockback_direction(atk, target_id)
+  local len = math.sqrt(dx * dx + dy * dy)
+  if len < 0.001 then
+    -- 攻击者与玩家重合（贴脸/寻路卡住）：判成正面，宁可对玩家有利。
+    return true
+  end
+  local to_attacker_x, to_attacker_y = -dx / len, -dy / len
+  local dot = dir.x * to_attacker_x + dir.y * to_attacker_y
+  local half = math.rad(tonumber(front_degrees) or 120) / 2
+  return dot >= math.cos(half)
+end
+
+
+-- 当前生效的格挡招式（没在格挡/招式记录被删则为 nil）。姿态与数据之间只留这一个通道，
+-- 于是"减伤比例/正面角度/每期消耗"三件事在代码里都只有数据来源，没有第二个常数。
+local function active_guard()
+  if not guard_active or not guard_skill_id then
+    return nil
+  end
+  return skills.get(guard_skill_id)
+end
+
+
 -- 命中目标的受击反应元数据（交给 enemy.lua 按自身抵抗系数应用）。
 local function hit_reaction(atk, target_id)
   local dir_x, dir_y = knockback_direction(atk, target_id)
@@ -246,6 +319,11 @@ local function fall_player(source_name, skill_id, damage)
   player_hurt = 0
   player_iframes = 0
   last_knockback = nil
+  -- 倒地就**当场**落防，不等下一个 tick：死人身上不该挂着"正面减伤 70%"，
+  -- 否则死亡动画期间补到的每一刀仍然按减伤后的数字结算。
+  guard_wanted = false
+  guard_active = false
+  guard_charge = 0
   status.clear(PLAYER_ACTOR)
   player.stop()
   -- 主角形象：倒地（非循环条带，播完由 player.tick 落回 idle/walk）
@@ -299,9 +377,25 @@ local function apply_damage(atk, target_id)
       return true
     end
     local dir_x, dir_y = knockback_direction(atk, target_id)
-    player_hp = math.max(0, player_hp - atk.damage)
-    stats.taken = stats.taken + atk.damage
+    -- 格挡减伤（M34-04 / 守心诀）：只有**正面**命中才减，背后挨打一分不减。
+    -- 比例减完向下取整、再兜 1 点（docs/33 §6.1 的 `max(1, …)` 口径）：盾不是无敌，
+    -- 站着一动不动挨 12 刀仍然会倒——04b 接防御进同一条公式时也只改这一处。
+    -- 最外层再 `min(damage, …)` 夹一次：兜 1 点是给"有伤害的攻击"设的下限，不是让
+    -- 0 伤害的命中（训练/试探）被盾**加成**成 1 点。
+    local guard = active_guard()
+    local guarded = guard ~= nil and is_front_hit(atk, target_id, guard.front_degrees)
+    local damage = math.max(0, tonumber(atk.damage) or 0)
+    if guarded then
+      damage = math.min(damage, math.max(1, math.floor(damage * (1 - guard.absorb))))
+    end
+    local absorbed = math.max(0, (tonumber(atk.damage) or 0) - damage)
+    player_hp = math.max(0, player_hp - damage)
+    stats.taken = stats.taken + damage
     stats.hits = stats.hits + 1
+    if guarded then
+      stats.guard_hits = stats.guard_hits + 1
+      stats.guard_absorbed = stats.guard_absorbed + absorbed
+    end
     mirror_health(pid, player_hp)
     audio.sfx("sfx_hit")
     -- 命中挂状态（M34-03）：无敌帧的分支在上面已经 return，所以"整次命中被吸收"
@@ -317,19 +411,22 @@ local function apply_damage(atk, target_id)
       effects.spawn("hit_spark", pos.x, pos.y)
     end
     if player_hp <= 0 then
-      fall_player(atk.attacker_name, atk.skill, atk.damage)
+      fall_player(atk.attacker_name, atk.skill, damage)
     else
       -- 受击反馈三件套：硬直（打断操作）+ 无敌帧（防连击致死）+ 击退（真实位移）。
+      -- 硬直/击退**不吃减伤**（docs §6.1 那一格只说"减伤"，没说免打断；盾扛得住伤害，
+      -- 扛不住推力——这一条口径由 jhyt_m34_skills 的用例钉住）。
       player_hurt = math.max(player_hurt, math.floor(tonumber(atk.hitstun) or 0))
       player_iframes = combat_data.player_iframes()
       local pushed = push_player(dir_x, dir_y, tonumber(atk.knockback) or 0)
       push_log({ event = "hit", attacker = atk.attacker_name, target = "player",
-        skill = atk.skill, damage = atk.damage, remaining = player_hp,
-        knockback = pushed, hitstun = player_hurt, status = status_kind })
+        skill = atk.skill, damage = damage, remaining = player_hp,
+        knockback = pushed, hitstun = player_hurt, status = status_kind,
+        absorbed = absorbed })
       log.info(string.format(
-        "[combat] hit attacker=%s target=player skill=%s damage=%d remaining=%d knockback=%d hitstun=%d iframes=%d status=%s frame=%d",
-        tostring(atk.attacker_name), tostring(atk.skill), atk.damage, player_hp,
-        pushed, player_hurt, player_iframes, tostring(status_kind), frame))
+        "[combat] hit attacker=%s target=player skill=%s damage=%d remaining=%d knockback=%d hitstun=%d iframes=%d status=%s absorbed=%d frame=%d",
+        tostring(atk.attacker_name), tostring(atk.skill), damage, player_hp,
+        pushed, player_hurt, player_iframes, tostring(status_kind), absorbed, frame))
       -- 主角形象：受击（非循环；faint 已在上面的致死分支播过）
       player.play("hurt")
     end
@@ -409,7 +506,107 @@ local function resolve_hits(atk)
   end
 end
 
--- 固定步推进：帧号 +1 → 结算判定窗内的攻击 → 清理过期窗口。
+-- 冷却键：攻击者稳定身份 + 招式（玩家 "player"，敌人 persist_id）。
+local function cooldown_key(attacker_key, skill_id)
+  return tostring(attacker_key) .. ":" .. tostring(skill_id)
+end
+
+-- 施放前门禁（M34-04 从 M.attack 里抽出来）：普攻/武学、轻功共用同一套"能不能出手"的判断，
+-- **reason 字符串就是 HUD 的 last_action 键**，抽取前后逐条一致（用例把 dead/mode/stunned/
+-- player_dead/cooldown 钉死，改这个函数不能顺手改文案键）。
+local function cast_gate(attacker_kind, attacker_key, skill_id)
+  if attacker_kind == "player" then
+    if player_dead then
+      return false, "dead"
+    end
+    if not state.is_mode("Playing") then
+      return false, "mode"
+    end
+    -- 硬直期间不能出手（移动/交互由 input.lua 同样拦住）。
+    if player_hurt > 0 then
+      return false, "stunned"
+    end
+  elseif attacker_kind == "enemy" and player_dead then
+    return false, "player_dead" -- 不鞭尸：玩家已战败，敌人停手
+  end
+  if (cooldowns[cooldown_key(attacker_key, skill_id)] or 0) > frame then
+    return false, "cooldown"
+  end
+  return true, "ok"
+end
+
+-- 内力结算（docs/33 §6.1 的"消耗内力"栏）：够就扣，不够返回 false。
+-- 与门禁分开写，是因为**轻功要"先确定付得起、再走位、最后才扣"**：反过来的话
+-- 一次按错的轻功会把人瞬移走还白扣内力。
+local function pay_inner(cost)
+  local amount = math.max(0, tonumber(cost) or 0)
+  if amount <= 0 then
+    return true
+  end
+  local inner = tonumber(state.inner_power) or 0
+  if inner < amount then
+    return false
+  end
+  state.inner_power = inner - amount
+  return true
+end
+
+-- 本步的格挡姿态结算（M34-04 / 守心诀）：**按下 + 能行动 + 付得起内力**才站得住，
+-- 三者任一不满足就落防。内力按期扣（每 inner_period 步扣一次 inner_cost），那正是
+-- docs/33 §6.1「10/秒」的字面实现：60 步 = 1 秒 ↔ 每秒 10 点，而不是"每秒检查一次"。
+-- 起手当步就扣第一笔（按住的那一刻开始消耗），之后每 inner_period 步一笔。
+local function settle_guard()
+  local skill = guard_skill_id and skills.get(guard_skill_id)
+  local can_hold = guard_wanted
+    and skill ~= nil
+    and skill.kind == "guard"
+    and not player_dead
+    and state.is_mode("Playing")
+    and player_hurt <= 0
+  local cost = math.max(0, tonumber(skill and skill.inner_cost) or 0)
+  local period = math.max(1, math.floor(tonumber(skill and skill.inner_period) or 1))
+  if not can_hold then
+    if guard_active then
+      push_log({ event = "guard_down", attacker = "player", target = nil,
+        skill = guard_skill_id, damage = 0 })
+      log.info("[combat] guard down reason=gate frame=%d", frame)
+    end
+    guard_active = false
+    guard_charge = 0
+    return
+  end
+  if not guard_active then
+    if not pay_inner(cost) then
+      -- 内力不够 → 自动落防：不报错、不进冷却（格挡没有冷却），松一下再按就能重新起。
+      log.info("[combat] guard refused inner=%s cost=%d frame=%d",
+        tostring(state.inner_power), cost, frame)
+      return
+    end
+    guard_active = true
+    guard_charge = period
+    push_log({ event = "guard", attacker = "player", target = nil,
+      skill = guard_skill_id, damage = 0 })
+    log.info(string.format("[combat] guard up skill=%s absorb=%s arc=%s charge=%d frame=%d",
+      tostring(guard_skill_id), tostring(skill.absorb), tostring(skill.front_degrees),
+      guard_charge, frame))
+    return
+  end
+  guard_charge = guard_charge - 1
+  if guard_charge > 0 then
+    return
+  end
+  if not pay_inner(cost) then
+    push_log({ event = "guard_down", attacker = "player", target = nil,
+      skill = guard_skill_id, damage = 0 })
+    log.info("[combat] guard down reason=inner frame=%d", frame)
+    guard_active = false
+    guard_charge = 0
+    return
+  end
+  guard_charge = period
+end
+
+-- 固定步推进：帧号 +1 → 结算格挡姿态 → 结算判定窗内的攻击 → 清理过期窗口。
 function M.tick()
   frame = frame + 1
   -- 受击反馈计时先递减再结算命中：本步被打中时写入满值，
@@ -420,6 +617,9 @@ function M.tick()
   if player_iframes > 0 then
     player_iframes = player_iframes - 1
   end
+  -- 格挡姿态先结算再判命中：**这一步站住的盾，挡得住这一步打来的刀**
+  -- （按键本身在上一帧的 input.update 里报上来，与攻击前摇同样晚一步生效）。
+  settle_guard()
   -- 瞬时状态与受击反馈同一口径：**本步挂上的状态从下一步才开始走**，
   -- 所以"第 N 步挂毒、第 N+tick_steps 步第一次掉血"是可精确断言的（M34-03）。
   for _, event in ipairs(status.tick(PLAYER_ACTOR)) do
@@ -452,31 +652,18 @@ function M.attack(attacker_id, attacker_key, attacker_name, attacker_kind, skill
   if not skill then
     return false, "unknown_skill"
   end
-  if attacker_kind == "player" then
-    if player_dead then
-      return false, "dead"
-    end
-    if not state.is_mode("Playing") then
-      return false, "mode"
-    end
-    -- 硬直期间不能出手（移动/交互由 input.lua 同样拦住）。
-    if player_hurt > 0 then
-      return false, "stunned"
-    end
-  elseif attacker_kind == "enemy" and player_dead then
-    return false, "player_dead" -- 不鞭尸：玩家已战败，敌人停手
+  -- 底座只服务"打出去一击"的招式：判定窗字段（windup/active/range/width）全从这一条路径读。
+  -- 轻功/格挡各有自己的入口（M.player_dash / M.player_guard），不走这里。
+  -- 玩家侧的 input.lua 按 kind 分派，因此这个 reason 永远不会成为 HUD 上的一句英文。
+  if not skills.uses_hitbox(skill) then
+    return false, "not_hitbox"
   end
-  local key = tostring(attacker_key) .. ":" .. tostring(skill_id)
-  if (cooldowns[key] or 0) > frame then
-    return false, "cooldown"
+  local ok, reason = cast_gate(attacker_kind, attacker_key, skill_id)
+  if not ok then
+    return false, reason
   end
-  local cost = skills.inner_cost(skill_id)
-  if cost > 0 then
-    local inner = tonumber(state.inner_power) or 0
-    if inner < cost then
-      return false, "inner_power"
-    end
-    state.inner_power = inner - cost
+  if not pay_inner(skills.inner_cost(skill_id)) then
+    return false, "inner_power"
   end
   local windup = math.max(0, math.floor(tonumber(skill.windup) or 0))
   local active = math.max(1, math.floor(tonumber(skill.active) or 1))
@@ -497,7 +684,7 @@ function M.attack(attacker_id, attacker_key, attacker_name, attacker_kind, skill
     expires_at = frame + windup + active,
     hits = {}
   }
-  cooldowns[key] = frame + math.max(0, math.floor(tonumber(skill.cooldown) or 0))
+  cooldowns[cooldown_key(attacker_key, skill_id)] = frame + math.max(0, math.floor(tonumber(skill.cooldown) or 0))
   stats.attacks = stats.attacks + 1
   push_log({ event = "attack", attacker = attacker_name, target = nil,
     skill = skill_id, damage = math.max(0, tonumber(damage) or 0) })
@@ -526,6 +713,71 @@ function M.player_attack(skill_id)
   end
   local damage = skills.player_damage(skill_id)
   return M.attack(pid, "player", "player", "player", skill_id, state.facing, damage)
+end
+
+-- 轻功（M34-04 / 追风步）入口（input.lua 的 dash 动作）：沿当前朝向位移 dash_tiles 格。
+-- 门禁/内力/冷却复用 M.attack 抽出来的那三件套；与普攻的区别只有两处：**不出判定窗**
+-- （没有攻击记录进 attacks），以及被墙挡住时按实际可走格数结算。
+-- 收费顺序写死在这里：门禁 → 确认内力付得起（只查不扣）→ 走位 → 真扣 → 进冷却。
+-- 身前一个落脚点都没有时什么都不发生：不扣内力、不进冷却、返回 dash_blocked。
+function M.player_dash(skill_id)
+  local skill = skills.get(skill_id)
+  if not skill or skill.kind ~= "movement" then
+    return false, "unknown_skill"
+  end
+  local pid = player.ensure()
+  if not pid then
+    return false, "no_player"
+  end
+  local ok, reason = cast_gate("player", "player", skill_id)
+  if not ok then
+    return false, reason
+  end
+  local cost = math.max(0, tonumber(skill.inner_cost) or 0)
+  if cost > (tonumber(state.inner_power) or 0) then
+    return false, "inner_power"
+  end
+  local tiles = math.max(1, math.floor(tonumber(skill.dash_tiles) or 1))
+  local dir = facing_vector(state.facing)
+  local moved, distance = dash_player(dir.x, dir.y, tiles)
+  if moved == 0 then
+    return false, "dash_blocked"
+  end
+  pay_inner(cost)
+  cooldowns[cooldown_key("player", skill_id)] = frame
+    + math.max(0, math.floor(tonumber(skill.cooldown) or 0))
+  -- 无敌帧走受击反馈**同一个计数器**（docs/33 §10「轻功无敌 | 不受伤害和硬直」）：
+  -- 命中结算里 `player_iframes > 0` 那条分支把伤害/硬直/击退一起吸收，正是那句话。
+  local steps = math.max(0, math.floor(tonumber(skill.invincible_steps) or 0))
+  player_iframes = math.max(player_iframes, steps)
+  stats.dashes = stats.dashes + 1
+  last_dash = { skill = skill_id, tiles = moved, distance = distance, iframes = player_iframes }
+  push_log({ event = "dash", attacker = "player", target = nil, skill = skill_id, damage = 0 })
+  log.info(string.format(
+    "[combat] dash skill=%s tiles=%d distance=%d iframes=%d inner=%s frame=%d",
+    tostring(skill_id), moved, distance, player_iframes, tostring(state.inner_power), frame))
+  -- 形象：主角条带里没有 dash 动作（player.play 会因条带缺失返回 false），
+  -- 于是用 docs/48 已有的身法残影，落在位移**之后**的位置。
+  local ok_pos, pos = pcall(transform.get, pid)
+  if ok_pos and type(pos) == "table" then
+    effects.spawn("dash_streak", pos.x, pos.y)
+  end
+  return true, "ok"
+end
+
+-- 格挡（M34-04 / 守心诀）入口（input.lua 的 guard 动作**长按**）：本函数只把
+-- "按没按"记进账，实际生效由 combat.tick 里的 settle_guard 结算——所以按下的当步还不减伤，
+-- 与攻击前摇同一口径（操作晚一个固定步才落到世界里）。招式不是 kind=guard 就直接落防：
+-- 报错留给调用方，姿态这边绝不"顺手当成格挡"。
+function M.player_guard(wanted, skill_id)
+  local skill = skills.get(skill_id)
+  if not skill or skill.kind ~= "guard" then
+    guard_wanted = false
+    return false, "unknown_skill"
+  end
+  guard_skill_id = skill_id
+  guard_wanted = wanted == true
+  return true, "ok"
 end
 
 -- 玩家气血查询/镜像（HUD 与 headless 断言用）。
@@ -566,6 +818,29 @@ function M.last_knockback()
     distance = last_knockback.distance,
     blocked = last_knockback.blocked
   }
+end
+
+-- 最近一次轻功的结算（tiles = 实际走的格数，永远 <= 数据里的 dash_tiles）。
+function M.last_dash()
+  if not last_dash then
+    return nil
+  end
+  return {
+    skill = last_dash.skill,
+    tiles = last_dash.tiles,
+    distance = last_dash.distance,
+    iframes = last_dash.iframes
+  }
+end
+
+-- 当前是否站着格挡姿态（HUD 与 headless 断言读同一个判据，不再有第二份"盾"的状态）。
+function M.is_guarding()
+  return guard_active
+end
+
+-- 离下一次扣内力还剩几步（0 = 这一步就扣）。
+function M.guard_charge()
+  return guard_charge
 end
 
 -- headless/调试：直接设置玩家气血（0 触发战败流程，便于确定性验收）。
@@ -633,8 +908,11 @@ function M.log()
       hitstun = entry.hitstun,
       -- M34-03：这一击挂上的状态种类（没有则 nil）——"带中毒"从此是可回读的事实。
       -- DOT 自己记的条目用 event = "dot"，种类落在 skill 字段上（同一张表，不另立形状）。
-      status = entry.status
-    }
+      status = entry.status,
+      -- M34-04：这一击被格挡吃掉的那部分伤害（打在玩家身上但未格挡为 0，打向敌人的条目为 nil）。
+      -- damage 仍是**真正吃下的**那一份，两者相加才等于攻击方的原始威力——日志里只留一个数
+      -- 就没法核对"减伤 70%"到底减了多少。
+      absorbed = entry.absorbed }
   end
   return out
 end
@@ -650,7 +928,12 @@ function M.stats()
     ignored = stats.ignored,
     -- 真实打在玩家身上的命中次数（taken 是伤害总和，次数要单独记：
     -- 无敌帧有没有封顶掉血速度，只能看次数）。
-    hits_taken = stats.hits
+    hits_taken = stats.hits,
+    -- 轻功与格挡（M34-04）：dashes 不计入 attacks（追风步一下都没打中任何人，
+    -- 算进"攻击次数"会让 m28 的每刀读数失真）；后两个只统计**正面**被减伤的命中。
+    dashes = stats.dashes,
+    guard_hits = stats.guard_hits,
+    guard_absorbed = stats.guard_absorbed
   }
 end
 
@@ -682,11 +965,16 @@ function M.reset()
   player_hurt = 0
   player_iframes = 0
   last_knockback = nil
+  last_dash = nil
+  guard_wanted = false
+  guard_active = false
+  guard_charge = 0
   status.reset()
   attacks = {}
   cooldowns = {}
   log_entries = {}
-  stats = { attacks = 0, dealt = 0, taken = 0, kills = 0, deaths = 0, ignored = 0, hits = 0 }
+  stats = { attacks = 0, dealt = 0, taken = 0, kills = 0, deaths = 0, ignored = 0,
+    hits = 0, dashes = 0, guard_hits = 0, guard_absorbed = 0 }
   mirror_health(player.ensure(), player_hp)
 end
 
@@ -708,8 +996,13 @@ function M.restore(data)
   player_hurt = 0
   player_iframes = 0
   last_knockback = nil
+  last_dash = nil
   -- 读档清状态（M34-03）：中毒与硬直/无敌帧同类——**瞬时状态不入档**（docs/33 既有裁定），
   -- 读档回来站在安全位置，不该继承上一局的毒素。血线（上面的 hp）才是入档的那一份。
+  -- 格挡（M34-04）同一类：姿态由"此刻按没按键"决定，继承上一局的盾等于凭空多一层血。
+  guard_wanted = false
+  guard_active = false
+  guard_charge = 0
   status.clear(PLAYER_ACTOR)
   mirror_health(player.ensure(), player_hp)
 end

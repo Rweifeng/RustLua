@@ -82,6 +82,12 @@ function M.inner_cost(id)
   return tonumber(skill and skill.inner_cost) or 0
 end
 
+-- 这条招式是否出判定窗（M34-04）：combat.lua 用它把"打出去一击"的招式与轻功/格挡分开。
+-- 判据只有 data/skills.lua 里那一份（按 kind 判定），本模块做直通，不另立第二条 kind 判据。
+function M.uses_hitbox(skill)
+  return data.uses_hitbox(skill)
+end
+
 -- 这里**故意不**再暴露 `M.validate_all` 直通 `data.skills`：真正的校验入口只有
 -- 一个（`data/skills.lua`，已登记进 `scripts/validate_data.lua`）。多一个同名
 -- 直通函数会让"带 validate_all 的模块都要登记"这条不变量出现例外，也会让同一份

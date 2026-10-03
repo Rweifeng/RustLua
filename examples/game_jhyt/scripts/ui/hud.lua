@@ -146,6 +146,12 @@ local ACTION_TEXT = {
   cooldown = "招式还在冷却",
   inner_power = "内力不足",
   unknown_skill = "未知招式",
+  -- 招式扩充（M34-04）的两个新原因。`dash_blocked` 是"贴墙按轻功"（一格都走不了，
+  -- 所以内力与冷却一样不收）；`not_hitbox` 玩家按不出来（input.lua 按 kind 分派，
+  -- 追风步永远不会走 J/K），但底座确实会返回它——而 jhyt_m26_hud_feedback 扫的是
+  -- 源码里的 `return false, "…"`，只要那个字面量存在，这里就得有中文。
+  dash_blocked = "身前没有落脚点",
+  not_hitbox = "这一招不出手",
   -- 瞬时状态（M34-03）：毒蝎咬中之后挂在身上的中毒。键来自 `data/combat.lua` 的
   -- `status.poison.feedback`，由 jhyt_m34_status 逐条比对（数据里加了新状态却没在这儿配文案 → 门红）。
   poisoned = "中毒了，气血在流失",

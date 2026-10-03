@@ -532,6 +532,19 @@ function M.update()
     end
   end
 
+  -- 轻功与格挡（M34-04）：H = 追风步（按下即位移，走得动才扣内力），Z = 守心诀（**长按**才站得住）。
+  -- 两条都不锁移动，与 J/K 同一手感。判据是分开的：轻功判 pressed（一下一跳），
+  -- 格挡判 action 的"此刻按没按"并且**每步都上报**——姿态由 combat.tick 结算，
+  -- 输入层只交事实，不在这里维护第二份"盾"的状态。
+  if input.action_pressed("dash") then
+    local ok, reason = combat.player_dash("chase_wind")
+    if not ok then
+      state.last_action = reason
+      audio.play_on("ui", "ui_cancel")
+    end
+  end
+  combat.player_guard(input.action("guard"), "guard_heart")
+
   -- 送礼输入（M18-04）：G 面向面前 NPC 送出第一件其可收的礼物。
   -- 与 J/K 攻击同样不锁移动（ARPG 习惯）；结果文案进 last_action 供 HUD/验收。
   if input.action_pressed("gift") then
