@@ -522,6 +522,17 @@ function M.name_of(id)
   return nil
 end
 
+--- 该敌人命中后给目标挂的**瞬时状态**种类（M34-03；数据源是 `data/enemies.lua` 的 `status`）。
+--- 按 `persist_id` 查而不是实体 id：攻击记录里带的是稳定身份（实体随切图销毁）。
+--- 未声明 → nil，所以"只有毒蝎会下毒"这件事写在数据里，不写在 if 里。
+function M.status_of(persist_id)
+  local enemy = enemies.get(persist_id)
+  if not enemy or type(enemy.status) ~= "string" then
+    return nil
+  end
+  return enemy.status
+end
+
 -- 复活全部敌人（新档 / 玩家战败重开）：hp 回满、位置回 home、状态清空。
 function M.reset()
   local here = current_map()
@@ -667,7 +678,9 @@ combat.register_enemy({
   is_enemy = M.is_enemy,
   name_of = M.name_of,
   hit = M.hit,
-  reset = M.reset
+  reset = M.reset,
+  -- M34-03：命中给玩家挂哪种瞬时状态（种类在数据里，扣血与结算全在 combat/status 侧）。
+  status_of = M.status_of
 })
 
 return M

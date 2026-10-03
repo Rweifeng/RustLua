@@ -16,6 +16,8 @@
 -- input.lua 每帧调用 draw() 与 text()；本模块不 require input（避免 require 环）。
 local state = require("core.state")
 local combat = require("systems.combat")
+-- M34-03：状态图标的第一次真实驱动（账本本身不依赖 UI，方向是 HUD → status）。
+local status = require("systems.status")
 local weather = require("world.weather")
 local maps = require("data.maps")
 local goals = require("systems.goals")
@@ -66,6 +68,14 @@ local STATUS_ICONS = {
 -- 当前真实激活的状态键（有玩法来源的才返回；其余状态机制未实现 → 不画但已就绪）。
 local function active_status_keys()
   local out = {}
+  -- 中毒等按固定步结算的瞬时状态（M34-03）：账本里有就画，**种类名即图标键**
+  -- （不写 `if kind == "poison"`；将来加减速/流血的形状是"数据 + 一张图"，这里不用改）。
+  -- 顺序 = 施加顺序（`systems/status.lua` 的 `list` 是数组），因此图标排布是确定的。
+  for _, entry in ipairs(status.list("player")) do
+    if STATUS_ICONS[entry.kind] then
+      out[#out + 1] = entry.kind
+    end
+  end
   if require("player.stats").buff_count("player") > 0 then
     out[#out + 1] = "buff"
   end
@@ -136,6 +146,9 @@ local ACTION_TEXT = {
   cooldown = "招式还在冷却",
   inner_power = "内力不足",
   unknown_skill = "未知招式",
+  -- 瞬时状态（M34-03）：毒蝎咬中之后挂在身上的中毒。键来自 `data/combat.lua` 的
+  -- `status.poison.feedback`，由 jhyt_m34_status 逐条比对（数据里加了新状态却没在这儿配文案 → 门红）。
+  poisoned = "中毒了，气血在流失",
   -- M26 补齐（docs/37 4-13）：以下取值此前在表里没有条目，HUD 直接把英文键显示给玩家。
   -- 取值来源是各模块的 `return false, "<reason>"`，由 jhyt_m26_hud_feedback 扫描源码守住。
   gathered = "已采集",
@@ -509,10 +522,19 @@ function M.draw(key_hints)
   skin.icon("hud:avatar_frame", x - 56, y + 8, 48, 48, "hud_avatar_frame")
   -- docs/48 ui 换肤接线：激活状态图标（竖排 16×16，画在资源条右侧区外）。
   local statuses = active_status_keys()
+  local drawn = {}
   for index, key in ipairs(statuses) do
     local tex_key = STATUS_ICONS[key]
     if tex_key then
+      drawn[key] = true
       skin.icon("hud:status_" .. key, BAR.x + BAR.w + 10, BAR.y0 + (index - 1) * 20, 16, 16, tex_key)
+    end
+  end
+  -- 未激活的一定要显式收掉：贴图不在 `ui_text` 的每帧登记表里，上一帧画过的 id 会一直留在
+  -- 屏上——"毒已经过了 600 步、图标还亮着"就是这么来的（buff/weather 同样受益）。
+  for key in pairs(STATUS_ICONS) do
+    if not drawn[key] then
+      ui.clear("hud:status_" .. key)
     end
   end
   ui.panel("hud:box", x, y, w, h, 0.08, 0.09, 0.12, 0.62)

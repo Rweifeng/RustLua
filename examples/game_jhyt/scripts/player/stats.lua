@@ -7,6 +7,9 @@
 --               data.items / data.tools 定义的 stats 表求和；兼容旧字段——
 --               定义无 stats 但有 damage 时视为 stats.attack（练习剑 damage=8）
 --   * buff      临时 Buff：add_buff 写入、按游戏日过期（on_day_start 递减 days）
+--               （**分工**：按"游戏日"过期的属性增益在这层；按**固定步**结算的状态——
+--               中毒掉血那类——在 `systems/status.lua`。两层的过期锚点不同，混用等于
+--               按天结算 DOT；HUD 的 `buff` 状态图标读的也是这一层。）
 --
 -- query(actor, key) = base[key] + equipment[key] + buff[key]（未知 key 返回 0）。
 --

@@ -31,6 +31,12 @@ local skills = require("player.skills")
 local maps = require("data.maps")
 local map_manager = require("world.map_manager")
 local combat_data = require("data.combat")
+-- M34-03：瞬时状态（中毒等）的账本。本模块是它的**唯一推进者**（每固定步一次 tick）
+-- 和唯一扣血者——status.lua 只产出事件、不碰气血，所以"毒能毒死人，但走的是同一套
+-- 战败流程"是结构性的。方向是单向的：combat require status，status 不 require combat。
+local status = require("systems.status")
+-- 玩家侧状态的持有者键（敌人侧将来再扩：今天没有敌人会流血）。
+local PLAYER_ACTOR = "player"
 -- M19-02：命中/受击音效（命中结算处播放，缺文件/无设备静默降级）。
 local audio = require("core.audio")
 -- docs/48 effects 接线：攻击/命中/受击/掌风挂特效条带。
@@ -218,6 +224,62 @@ local function hit_reaction(atk, target_id)
   }
 end
 
+-- 攻击方声明的"打中挂什么状态"（M34-03）：种类写在 `data/enemies.lua` 的 `status` 字段，
+-- 数值写在 `data/combat.lua` 的 `status` 表，本模块只按攻击者的稳定身份去问一句
+-- （敌人个体差异因此不落到 if 分支上，加第二个带状态的敌人只改数据）。
+local function attacker_status_kind(atk)
+  if atk.attacker_kind ~= "enemy" then
+    return nil
+  end
+  if not enemy_kind or type(enemy_kind.status_of) ~= "function" then
+    return nil
+  end
+  return enemy_kind.status_of(atk.attacker_key)
+end
+
+-- 玩家战败的统一收口（M34-03 从命中结算里抽出来）：**直接被打死与被子弹/毒跳死走同一条**。
+-- 冻结受击反馈、清掉瞬时状态（死人身上不该留着还在掉血的毒，否则复活后继续掉血），
+-- 播倒地、记 death 日志。
+local function fall_player(source_name, skill_id, damage)
+  player_dead = true
+  stats.deaths = stats.deaths + 1
+  player_hurt = 0
+  player_iframes = 0
+  last_knockback = nil
+  status.clear(PLAYER_ACTOR)
+  player.stop()
+  -- 主角形象：倒地（非循环条带，播完由 player.tick 落回 idle/walk）
+  player.play("faint")
+  push_log({ event = "death", attacker = source_name, target = "player",
+    skill = skill_id, damage = damage, remaining = 0 })
+  log.warn(string.format(
+    "[combat] death target=player attacker=%s skill=%s frame=%d",
+    tostring(source_name), tostring(skill_id), frame))
+end
+
+-- 状态伤害的结算（M34-03）：**只扣血**，不给硬直、不给无敌帧、不给击退——
+-- 中毒不是"被打了一下"，人要能继续走动，只是气血在往下走。
+-- 致死路径仍然交给 fall_player（要点 4：DOT 可以致死但不绕过死亡流程）。
+local function settle_status_damage(event)
+  if player_dead or event.effect ~= "damage" then
+    return
+  end
+  local amount = math.max(0, math.floor(tonumber(event.amount) or 0))
+  if amount <= 0 then
+    return
+  end
+  player_hp = math.max(0, player_hp - amount)
+  mirror_health(player.ensure(), player_hp)
+  push_log({ event = "dot", attacker = event.source, target = "player",
+    skill = event.kind, damage = amount, remaining = player_hp })
+  log.info(string.format(
+    "[combat] dot source=%s kind=%s damage=%d remaining=%d frame=%d",
+    tostring(event.source), tostring(event.kind), amount, player_hp, frame))
+  if player_hp <= 0 then
+    fall_player(event.source, event.kind, amount)
+  end
+end
+
 -- 伤害结算入口：区分玩家/敌方目标；其余实体（NPC/地图）不参与战斗。
 -- 返回 remaining（敌方）或 true（玩家已结算）/ nil（目标不参与）。
 local function apply_damage(atk, target_id)
@@ -242,6 +304,12 @@ local function apply_damage(atk, target_id)
     stats.hits = stats.hits + 1
     mirror_health(pid, player_hp)
     audio.sfx("sfx_hit")
+    -- 命中挂状态（M34-03）：无敌帧的分支在上面已经 return，所以"整次命中被吸收"
+    -- 连状态一起吃掉——这是有意的（挡了一下就该整下都挡住）。
+    local status_kind = attacker_status_kind(atk)
+    if status_kind then
+      status.apply(status_kind, PLAYER_ACTOR, atk.attacker_name)
+    end
     -- docs/48 effects：玩家受击闪白 + 命中火花。
     local ok, pos = pcall(transform.get, pid)
     if ok and type(pos) == "table" then
@@ -249,20 +317,7 @@ local function apply_damage(atk, target_id)
       effects.spawn("hit_spark", pos.x, pos.y)
     end
     if player_hp <= 0 then
-      player_dead = true
-      stats.deaths = stats.deaths + 1
-      -- 战败清空受击反馈：死亡冻结不该再叠硬直/无敌帧。
-      player_hurt = 0
-      player_iframes = 0
-      last_knockback = nil
-      player.stop()
-      -- 主角形象：倒地（非循环条带，播完由 player.tick 落回 idle/walk）
-      player.play("faint")
-      push_log({ event = "death", attacker = atk.attacker_name, target = "player",
-        skill = atk.skill, damage = atk.damage, remaining = 0 })
-      log.warn(string.format(
-        "[combat] death target=player attacker=%s skill=%s frame=%d",
-        tostring(atk.attacker_name), tostring(atk.skill), frame))
+      fall_player(atk.attacker_name, atk.skill, atk.damage)
     else
       -- 受击反馈三件套：硬直（打断操作）+ 无敌帧（防连击致死）+ 击退（真实位移）。
       player_hurt = math.max(player_hurt, math.floor(tonumber(atk.hitstun) or 0))
@@ -270,11 +325,11 @@ local function apply_damage(atk, target_id)
       local pushed = push_player(dir_x, dir_y, tonumber(atk.knockback) or 0)
       push_log({ event = "hit", attacker = atk.attacker_name, target = "player",
         skill = atk.skill, damage = atk.damage, remaining = player_hp,
-        knockback = pushed, hitstun = player_hurt })
+        knockback = pushed, hitstun = player_hurt, status = status_kind })
       log.info(string.format(
-        "[combat] hit attacker=%s target=player skill=%s damage=%d remaining=%d knockback=%d hitstun=%d iframes=%d frame=%d",
+        "[combat] hit attacker=%s target=player skill=%s damage=%d remaining=%d knockback=%d hitstun=%d iframes=%d status=%s frame=%d",
         tostring(atk.attacker_name), tostring(atk.skill), atk.damage, player_hp,
-        pushed, player_hurt, player_iframes, frame))
+        pushed, player_hurt, player_iframes, tostring(status_kind), frame))
       -- 主角形象：受击（非循环；faint 已在上面的致死分支播过）
       player.play("hurt")
     end
@@ -364,6 +419,11 @@ function M.tick()
   end
   if player_iframes > 0 then
     player_iframes = player_iframes - 1
+  end
+  -- 瞬时状态与受击反馈同一口径：**本步挂上的状态从下一步才开始走**，
+  -- 所以"第 N 步挂毒、第 N+tick_steps 步第一次掉血"是可精确断言的（M34-03）。
+  for _, event in ipairs(status.tick(PLAYER_ACTOR)) do
+    settle_status_damage(event)
   end
   local keep = {}
   for _, atk in ipairs(attacks) do
@@ -514,11 +574,8 @@ function M.set_player_hp(value)
   player_hp = math.min(PLAYER_MAX_HP, hp)
   mirror_health(player.ensure(), player_hp)
   if player_hp <= 0 and not player_dead then
-    player_dead = true
-    stats.deaths = stats.deaths + 1
-    player.stop()
-    push_log({ event = "death", attacker = "debug", target = "player",
-      skill = "-", damage = 0, remaining = 0 })
+    -- 与被打死同一条收口（M34-03）：连"清掉身上还在跳的状态"一起拿到，不留第二条死亡实现。
+    fall_player("debug", "-", 0)
   end
   return player_hp
 end
@@ -530,6 +587,8 @@ function M.respawn()
   end
   player_hp = PLAYER_MAX_HP
   player_dead = false
+  -- 复活把瞬时状态一起归零：毒不该跟着人回庄（§6.3 的口径是"回庄后生命/体力/内力回满"）。
+  status.clear(PLAYER_ACTOR)
   local pid = player.ensure()
   mirror_health(pid, player_hp)
   local map_id = map_manager.current()
@@ -571,7 +630,10 @@ function M.log()
       damage = entry.damage,
       remaining = entry.remaining,
       knockback = entry.knockback,
-      hitstun = entry.hitstun
+      hitstun = entry.hitstun,
+      -- M34-03：这一击挂上的状态种类（没有则 nil）——"带中毒"从此是可回读的事实。
+      -- DOT 自己记的条目用 event = "dot"，种类落在 skill 字段上（同一张表，不另立形状）。
+      status = entry.status
     }
   end
   return out
@@ -620,6 +682,7 @@ function M.reset()
   player_hurt = 0
   player_iframes = 0
   last_knockback = nil
+  status.reset()
   attacks = {}
   cooldowns = {}
   log_entries = {}
@@ -627,8 +690,8 @@ function M.reset()
   mirror_health(player.ensure(), player_hp)
 end
 
--- 存档：只记玩家气血（敌人账本在 enemy provider；攻击窗/冷却/硬直/无敌帧/击退
--- 都是**瞬时状态**，不进档——读档后玩家站在安全位置，不该继承上一局的僵直）。
+-- 存档：只记玩家气血（敌人账本在 enemy provider；攻击窗/冷却/硬直/无敌帧/击退/中毒
+-- 都是**瞬时状态**，不进档——读档后玩家站在安全位置，不该继承上一局的僵直或毒性）。
 function M.capture()
   return { version = 1, hp = player_hp, dead = player_dead }
 end
@@ -645,6 +708,9 @@ function M.restore(data)
   player_hurt = 0
   player_iframes = 0
   last_knockback = nil
+  -- 读档清状态（M34-03）：中毒与硬直/无敌帧同类——**瞬时状态不入档**（docs/33 既有裁定），
+  -- 读档回来站在安全位置，不该继承上一局的毒素。血线（上面的 hp）才是入档的那一份。
+  status.clear(PLAYER_ACTOR)
   mirror_health(player.ensure(), player_hp)
 end
 

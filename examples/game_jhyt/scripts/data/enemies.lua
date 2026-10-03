@@ -21,6 +21,9 @@
 --   knockback_resist 可选，0..1：被击退距离的抵抗系数（1 = 完全不动；默认取
 --                   data/combat.lua 的 enemy.knockback_resist）
 --   hitstun_resist   可选，0..1：被硬直步数的抵抗系数（1 = 完全不打断；同上默认）
+--   status           可选，命中玩家后挂上的**瞬时状态**种类（引用 data/combat.lua 的
+--                   status 表的键，如 "poison"）；步长与每跳伤害都在那张表里，
+--                   敌人只声明"挂哪一种"。写了未知种类直接判错（打错字的状态是无声的）。
 --
 -- 表顺序无关；enemy.lua 按 persist_id 稳定排序遍历。
 local M = {}
@@ -86,7 +89,8 @@ M.enemies = {
     attack_cooldown = 78,
     skill = "strike"
   },
-  -- 毒蝎：短距离突刺，带中毒（中毒状态由 combat/effect 侧结算）。
+  -- 毒蝎：短距离突刺，带中毒。M34-03 起这句注释有了实现：命中玩家后挂 `status.poison`
+  -- （600 步内每 120 步扣 3 点气血，口径 docs/33 §10 的"每 2 秒损失 3 生命 / 10 秒"）。
   {
     name = "毒蝎",
     persist_id = "enemy_scorpion",
@@ -100,7 +104,9 @@ M.enemies = {
     aggro_radius = 150,
     attack_range = 28,
     attack_cooldown = 90,
-    skill = "strike"
+    skill = "strike",
+    -- 命中后给目标挂的瞬时状态种类（步长/伤害见 data/combat.lua 的 status 表）。
+    status = "poison"
   },
   -- 玄冥会徒：格挡与投掷（当前用同一招式的更远判定近似）。
   {
@@ -181,6 +187,8 @@ function M.validate_all()
   end
   local maps = require("data.maps")
   local skills = require("data.skills")
+  -- 状态种类的定义在战斗全局表里（M34-03）：这里只做引用校验，不复制数值。
+  local combat_data = require("data.combat")
   local seen = {}
   for index, enemy in ipairs(M.enemies) do
     local path = "data/enemies.lua:enemies[" .. tostring(index) .. "]"
@@ -228,6 +236,14 @@ function M.validate_all()
         local value = enemy[field]
         if value ~= nil and (type(value) ~= "number" or value < 0 or value > 1) then
           issues[#issues + 1] = path .. "." .. field .. ": expected number in [0, 1]"
+        end
+      end
+      -- 命中施加的瞬时状态（M34-03）：可选，但引用的是 data/combat.lua 的 status 键，
+      -- 打错字的效果和打错字的对话分支一样安静（敌人照常攻击、状态永远不出现），所以必查。
+      if enemy.status ~= nil then
+        if type(enemy.status) ~= "string" or not combat_data.status_entry(enemy.status) then
+          issues[#issues + 1] = path .. ".status: unknown status kind " .. tostring(enemy.status)
+            .. " (known: " .. table.concat(combat_data.status_kinds(), "/") .. ")"
         end
       end
     end
