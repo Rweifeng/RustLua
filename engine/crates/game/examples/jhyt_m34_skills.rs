@@ -721,6 +721,63 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_str(&mut rt, GUARD_SNAPSHOT, "true/60/10")?;
     println!("  内力补到 20 再按：起得来（20 → 10），落防不是永久的");
 
+    // ---------------- ⑤′ 打坐：docs/33 §3 那一格走真实按键路径 ----------------
+    // ⑤ 是按秒**扣**内力的那一半，打坐是**回**的那一半，两半都在同一条按键通路上结算，
+    // 所以这里按的是 Q（`practice` 动作），不是直接调 Lua 函数——绕过输入层的 +5 说明不了玩家按得到。
+    let meditate_rows = markdown_table(&design, "行为")?;
+    let meditate = meditate_rows
+        .iter()
+        .find(|row| row.first().map(String::as_str) == Some("打坐"))
+        .ok_or("docs/33 §3 的劳动表里没有「打坐」那一行")?;
+    if meditate.len() < 4 {
+        return Err(format!("§3 打坐行格式不符（期望 4 列）：{meditate:?}").into());
+    }
+    let meditate_gain = first_number(&meditate[3])
+        .ok_or(format!("§3 打坐「产出/效果」列里没有数字：{:?}", meditate[3]))?;
+    // 起点与上限也从 §2.2 那张表读：文档改数字，这一节跟着动（`ui/input.lua` 的
+    // `min(100, …)` 与 `core/state.lua` 的 `inner_power = 50` 就是被这两格钉住的）。
+    let attr_rows = markdown_table(&design, "属性")?;
+    let inner_max = doc_row_number(&attr_rows, "最大内力", 1)?;
+    let inner_start = doc_row_number(&attr_rows, "内力", 1)?;
+    banner(&format!(
+        "M34-04⑤′ 打坐（Q = practice 动作）：{:?} = 每次 +{meditate_gain:.0} 内力，封顶 {inner_max:.0}，不按不重复",
+        meditate[3]
+    ));
+    let practice_key = KeyCode::from_char('q').expect("QWERTY 字符必须有对应物理键");
+    lua(&mut rt, &format!("require('core.state').inner_power = {inner_start}"))?;
+    hold(&mut rt, &[practice_key], 1)?;
+    assert_num(
+        &mut rt,
+        "require('core.state').inner_power",
+        inner_start + meditate_gain,
+    )?;
+    // 再空走两步：一次按键只结算一次（`action_pressed` 是边沿，不是"按着就一直回"）。
+    frames(&mut rt, 2)?;
+    assert_num(
+        &mut rt,
+        "require('core.state').inner_power",
+        inner_start + meditate_gain,
+    )?;
+    println!(
+        "  内力 {inner_start:.0} → {:.0}（按一步 +{meditate_gain:.0}，松手后再走两步不再往上加）",
+        inner_start + meditate_gain
+    );
+    // 封顶：离上限只差 2 点时也只能加到上限。
+    lua(&mut rt, &format!("require('core.state').inner_power = {}", inner_max - 2.0))?;
+    hold(&mut rt, &[practice_key], 1)?;
+    assert_num(&mut rt, "require('core.state').inner_power", inner_max)?;
+    println!("  内力 {:.0} 再按一次 = {inner_max:.0}（夹在上限，不会加过头）", inner_max - 2.0);
+    // HUD 侧的同一格：打坐把提示写成中文句子（m24 锁的是文档单元格文本，这里锁玩家看到的句子）。
+    let line = query_str(&mut rt, "require('ui.hud').feedback_line()")?;
+    if !line.contains("打坐") {
+        return Err(format!(
+            "按过 practice 之后提示区没有打坐的中文句子：{line}（state.last_action = {:?}）",
+            query_str(&mut rt, "require('core.state').last_action")?
+        )
+        .into());
+    }
+    println!("  提示区：{line}");
+
     // ---------------- ⑥ 瞬时状态 ----------------
     banner("M34-04⑥ 格挡与硬直/无敌帧/中毒同类：倒地即落防、capture 里没有 guard、读档必清");
     prepare_guard(&mut rt, "right", 50.0)?;
@@ -877,6 +934,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "\njhyt_m34_skills_ok project={} dash_tiles={dash_tiles:.0} dash_cost={inner_cost:.0} \
          dash_iframes={iframes:.0} clip={} front={front_expected:.0} back={after_flat:.0} \
+         defense={defense:.0} meditate=+{meditate_gain:.0}/{inner_max:.0} \
          absorb={absorb} period={guard_period:.0} edge_log={edge_log} hud={} map_lines={}",
         project.display(),
         clip_report.join("/"),
@@ -1092,6 +1150,17 @@ fn number_from_cell(cell: &str) -> Option<f64> {
 
 /// 单元格里的第二个数字（"位移 3 格，无敌 0.25 秒" → 0.25）。
 fn second_number(cell: &str) -> Option<f64> {
+    numbers_in(cell).get(1).copied()
+}
+
+/// 单元格里的**第一个**数字（"恢复 5 点内力" → 5）。`number_from_cell` 只认开头就是
+/// 数字的格子，而 §3 的产出列是中文在前——那一列要用这个。
+fn first_number(cell: &str) -> Option<f64> {
+    numbers_in(cell).first().copied()
+}
+
+/// 单元格里按出现顺序排好的全部数字。
+fn numbers_in(cell: &str) -> Vec<f64> {
     let mut seen: Vec<f64> = Vec::new();
     let mut run = String::new();
     for ch in cell.chars().chain(std::iter::once(' ')) {
@@ -1106,7 +1175,24 @@ fn second_number(cell: &str) -> Option<f64> {
             }
         }
     }
-    seen.get(1).copied()
+    seen
+}
+
+/// 按第一列取一行，再读第 `column`（0 起）列里的第一个数字。
+fn doc_row_number(
+    rows: &[Vec<String>],
+    first_cell: &str,
+    column: usize,
+) -> Result<f64, Box<dyn std::error::Error>> {
+    let row = rows
+        .iter()
+        .find(|row| row.first().map(String::as_str) == Some(first_cell))
+        .ok_or(format!("docs/33 的表里没有「{first_cell}」那一行"))?;
+    let cell = row
+        .get(column)
+        .ok_or(format!("「{first_cell}」行缺第 {} 列：{row:?}", column + 1))?;
+    first_number(cell)
+        .ok_or(format!("「{first_cell}」第 {} 列没有数字：{cell:?}", column + 1).into())
 }
 
 /// 以 `first_cell` 为表头的第一张 markdown 表（跳过对齐分隔行）。
