@@ -44,9 +44,9 @@ impl UiLayoutSpace {
 pub const UI_REFERENCE_SIZE: [f32; 2] = [1280.0, 720.0];
 
 /// `scale = 1.0` 对应的像素字号（SDF 字体下 em 高度）。
-/// 与 `rustlua_render::text::EM_PX` 保持一致——修改时必须同步。
+/// 字面量与渲染侧 `text::EM_PX` 同源于 `rustlua_math::text_metrics::TEXT_BASE_PX`。
 /// `font_size` 字段按此换算为渲染 scale。
-pub const UI_TEXT_BASE_PX: f32 = 12.0;
+pub const UI_TEXT_BASE_PX: f32 = rustlua_math::text_metrics::TEXT_BASE_PX;
 
 /// Scene UI `Text` rendering scale derived from the pixel font size.
 #[must_use]

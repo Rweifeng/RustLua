@@ -178,7 +178,8 @@ pub enum TextError {
 
 /// Display px of one em at `style.scale == 1` (real-font metrics).
 /// 也是场景 UI `Text` 组件 `font_size`（像素字号）与 `scale` 的换算基准。
-pub const EM_PX: f32 = 12.0;
+/// 字面量在 `rustlua_math::text_metrics::TEXT_BASE_PX`，与 ui 侧共用一个事实源。
+pub const EM_PX: f32 = rustlua_math::text_metrics::TEXT_BASE_PX;
 /// Line height as a multiple of the em box.
 const LINE_HEIGHT_EM: f32 = 1.2;
 
@@ -556,15 +557,6 @@ fn bitmap(character: char) -> [u8; 7] {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn em_px_matches_ui_text_base() {
-        assert_eq!(
-            EM_PX,
-            rustlua_ui::ui::UI_TEXT_BASE_PX,
-            "render EM_PX and UI_TEXT_BASE_PX must stay in sync"
-        );
-    }
 
     #[test]
     fn atlas_has_expected_dimensions_and_non_empty_glyph() {

@@ -18,6 +18,3 @@ rustlua-ecs = { path = "../rustlua-ecs" }
 rustlua-camera = { path = "../rustlua-camera" }
 rustlua-infra = { path = "../rustlua-infra" }
 rustlua-assets = { path = "../rustlua-assets" }
-
-[dev-dependencies]
-rustlua-ui = { path = "../rustlua-ui" }
