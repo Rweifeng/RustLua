@@ -11,6 +11,9 @@
 //   --drive-new-game          走玩家真实路径（标题按确认 → scene.load 换场景）
 //   --expect-runtime-spawns   断言运行期生成了实体（alive > 场景声明数）
 //   --drive-move N            世界起来后按住方向键 N 帧，断言主角坐标真的变化
+//   --check-api-contract      再把 L3 行为契约（PC 那份 lua_api_contract.lua）注入这个活体
+//                             Lua 状态跑一遍，与 PC transcript 逐行对拍；不一致 exit 1
+//   --probe-host-api a,b,c    问活体 Lua 状态"这几条宿主 API 实没实现"（维护豁免表用，只出证据）
 // 退出码：0 通过、1 失败（失败原因打印到 stderr）。
 'use strict';
 
@@ -117,6 +120,13 @@ let noFrames = false;
   // 极旧基础库）。契约：wasm 失败不得影响 Lua 启动——clock 走 Lua 兜底（web-runtime 的
   // genericCompat）、boot 照常成功、适配层必须显式报告 __RUSTLUA_HOST_API 未接线。
   let noWasm = false;
+  // L3 行为契约对拍（可选，默认关）：把桌面基线那份 `lua_api_contract.lua` 经 bridge
+  // 注进**这个已打完补丁的活体 Lua 状态**跑一遍，与 PC transcript 逐行对拍。
+  // 判据是返回值形状，不是名字——名字两边都在（L2 清单 54 个覆盖点，
+  // `node scripts/check-web-api-overrides.mjs` 给数），所以只有跑同一份用例
+  // 才能抓到"补丁版 clock.now() 少三个字段"这类分叉。非默认开：微信侧与 webgl 侧共用
+  // 同一份补丁层，当前已知 3 条残留分叉（见任务 #9），默认开会红掉整条 harness。
+  let checkApiContract = false;
   // 模拟"宿主不给读代码包里的某个文件"——**真机实测**：
   //   readFileSync('game.json') 一律 permission denied（平台配置不向 FileSystemManager 开放，
   //   与小程序侧 app.json 同理）。这条必须能复现，否则"适配层拿它当判据"这类缺陷在无头测试里全绿。
@@ -133,6 +143,9 @@ let noFrames = false;
   // 而 `mainpack/project.toml`（磁盘上有）报 `permission denied` —— 两种报错必须分开建模，
   // 否则"读不到"这件事在无头测试里永远含糊。
   const denyCodeDirs = [];
+  // `--probe-host-api a,b,c`：拿活体 Lua 状态问这几条宿主 API 到底实没实现（rawget 下钻，
+  // 不碰缺失代理），只打证据行、不判定。维护豁免白名单时用它判断"这条还缺吗"。
+  const probeHostApi = [];
   const hostStubs = {};
   for (let i = 1; i < argv.length; i++) {
     if (argv[i] === '--frames' && argv[i + 1]) frames = Number(argv[++i]) || 12;
@@ -164,6 +177,19 @@ if (argv[i] === '--no-frames') noFrames = true;
     else if (argv[i] === '--subpackage-delay-frames' && argv[i + 1]) subpackageDelayFrames = Math.max(0, Number(argv[++i]) || 0);
     else if (argv[i] === '--expect-pack-failure') expectPackFailure = true;
     else if (argv[i] === '--no-wasm') noWasm = true;
+    else if (argv[i] === '--check-api-contract') checkApiContract = true;
+    else if (argv[i] === '--probe-host-api' && argv[i + 1]) {
+      for (const item of String(argv[++i]).split(',')) {
+        const trimmed = item.trim();
+        if (!trimmed) continue;
+        // 路径要原样嵌进 Lua 字符串字面量，非法字符在这里就挡掉（否则错误会延迟成
+        // 一句看不懂的 chunk 语法错，而这条通道本来就是给人查表用的）。
+        if (!/^[A-Za-z_][A-Za-z0-9_.]*$/.test(trimmed)) {
+          fail(`--probe-host-api 只接受 全局.字段 形式的路径，收到: ${trimmed}`);
+        }
+        probeHostApi.push(trimmed);
+      }
+    }
     else if (argv[i] === '--deny-code-file' && argv[i + 1]) {
       // 可重复给，也可一次给逗号分隔的多个
       for (const item of String(argv[++i]).split(',')) {
@@ -1920,10 +1946,12 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
     // 缺失宿主 API 必须**只有已知可缺的那批**：新缺口一律失败。
     // 平台不实现的宿主 API（这里全是游戏用 type(x)=="function" 探测过、会静默降级的）
     // 记在白名单里；不在这张表里的缺失意味着"某条游戏行为被静默跳过了"。
+    //
+    // 2026-10-03 清过一轮：`ui.focus_open`/`focus_select`/`focus_index`/`focus_move`/
+    // `focus_close`、`ui.scroll_close`、`input.action_repeat` 七条**早已在 web-runtime.js
+    // 里实现**，却还留在表里（控制台永远抓不到它们，见下面的活体探测为什么必须存在）。
     const MISSING_HOST_API_ALLOWED = new Set([
-      'ui.focus_open', 'ui.focus_select', 'ui.focus_index', 'ui.focus_move',
-      'ui.focus_close', 'ui.scroll_close',
-      'input.nav_settings', 'input.set_nav_settings', 'input.last_device', 'input.action_repeat',
+      'input.nav_settings', 'input.set_nav_settings', 'input.last_device',
       // 注：`camera2d`（web / 微信运行时没有 2D 相机控制器）**不在**这张表里，也不需要——
       // 游戏侧 `scripts/world/camera_view.lua` 查宿主启动期算好的缺失全局清单
       // （`__rustlua_missing_globals`）判能力，命中就直接跳过整条相机逻辑，**不碰代理**，
@@ -1931,15 +1959,158 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
       // 代理是可调用/可索引的，调用永远"成功"，缺口反而会被延迟到读字段时才炸。
       // 这条断言因此同时守着"降级路径没有退化回碰代理"。
     ]);
-    const reportedMissing = new Set();
-    for (const line of consoleLogs.concat(consoleWarns, consoleErrors)) {
-      const match = String(line).match(/missing-host-api\] ([A-Za-z_][A-Za-z0-9_.]*)/);
-      if (match) reportedMissing.add(match[1]);
-    }
+    const collectMissingNames = () => {
+      const names = new Set();
+      for (const line of consoleLogs.concat(consoleWarns, consoleErrors)) {
+        const match = String(line).match(/missing-host-api\] ([A-Za-z_][A-Za-z0-9_.]*)/);
+        if (match) names.add(match[1]);
+      }
+      return names;
+    };
+    const reportedMissing = collectMissingNames();
     const unexpectedMissing = Array.from(reportedMissing).filter(name => !MISSING_HOST_API_ALLOWED.has(name));
     if (unexpectedMissing.length) {
       failures.push(`出现了未在白名单里的缺失宿主 API: ${unexpectedMissing.join(', ')}` +
         '（新增缺口要显式实现，或把它加进 MISSING_HOST_API_ALLOWED 并说明游戏侧如何降级）');
+    }
+
+    // 过期豁免必须红。豁免成立的条件是"**这条 API 现在依然没实现**"，而判据不能是
+    // "这局有没有撞上它"——上面那七条就是这么烂在表里的：2026-10-03 实测
+    // `--frames 120 --drive-new-game --expect-runtime-spawns` 一条 missing-host-api
+    // 都没打，控制台证据对它们完全隐身，而 web-runtime.js 里函数早就躺着了。
+    // 所以直接问活体 Lua 状态：`rawget` 逐级下钻，绕过缺失代理的 `__index`（代理表本身
+    // 是空的，rawget 只会拿到 nil；真实实现才有值）。探测只在 Lua 活着时做
+    // （`--no-wasm`、启动失败等形态没有 bridge，那是另外的用例契约，不构成这里的豁免证据），
+    // 没做成就在结论行写 `exemption_probe=skipped:<原因>`——不放行，也不假装验过。
+    const luaBridge = (typeof globalThis.window !== 'undefined' && globalThis.window)
+      ? globalThis.window.__RUSTLUA_LUA_BRIDGE : null;
+    let hostApiProbeError = '';
+    const hostApiProbe = (paths) => {
+      // Map(路径 -> 'present'|'absent')；**返回 null 表示"没有证据"**，调用方不能把 null
+      // 当成"全都缺"（那等于让探测失败悄悄变成放行）。
+      if (paths.length === 0) return new Map();
+      if (noWasm || !luaBridge || typeof luaBridge.lua_do_string !== 'function'
+        || typeof luaBridge.lua_call_global !== 'function') return null;
+      const probeSource = [
+        '__rustlua_harness_host_api_probe = {',
+        paths.map((name) => '  "' + name + '",').join('\n'),
+        '}',
+        'function __rustlua_harness_host_api_check()',
+        '  local rows = {}',
+        '  for _, p in ipairs(__rustlua_harness_host_api_probe) do',
+        '    local present = true',
+        '    local node = _G',
+        "    for seg in string.gmatch(p, '[^.]+') do",
+        "      if type(node) ~= 'table' then present = false break end",
+        '      node = rawget(node, seg)',
+        '      if node == nil then present = false break end',
+        '    end',
+        "    rows[#rows + 1] = p .. '=' .. (present and 'present' or 'absent')",
+        '  end',
+        '  table.sort(rows)',
+        "  return table.concat(rows, '\\n')",
+        'end',
+      ].join('\n');
+      try {
+        luaBridge.lua_do_string(probeSource, 'harness-host-api-probe.lua');
+        const probeOut = luaBridge.lua_call_global('__rustlua_harness_host_api_check', '[]');
+        if (typeof probeOut !== 'string') return null;
+        const state = new Map();
+        for (const row of probeOut.split('\n')) {
+          const split = row.indexOf('=');
+          if (split > 0) state.set(row.slice(0, split), row.slice(split + 1));
+        }
+        return state;
+      } catch (error) {
+        hostApiProbeError = 'probe-error:' + String((error && error.message) || error).slice(0, 80);
+        return null;
+      }
+    };
+
+    const allowedExemptions = Array.from(MISSING_HOST_API_ALLOWED);
+    let exemptionProbe = 'empty';
+    if (allowedExemptions.length) {
+      const exemptionState = hostApiProbe(allowedExemptions);
+      if (!exemptionState) {
+        exemptionProbe = 'skipped:' + (noWasm ? 'no-wasm' : (hostApiProbeError || 'no-lua-bridge'));
+      } else {
+        const stale = allowedExemptions.filter((name) => exemptionState.get(name) === 'present');
+        exemptionProbe = `checked=${exemptionState.size},absent=${exemptionState.size - stale.length},stale=${stale.length}`;
+        if (stale.length) {
+          failures.push(`豁免白名单里有 ${stale.length} 条**已经实现**的宿主 API: ${stale.join(', ')}` +
+            '（活体 rawget 拿到的是函数，说明那条降级路径已经没人走。留着它等于向下一个读表的人' +
+            '宣布"平台缺这些 API"而事实不缺——请删掉这一条，或在游戏侧改回直接调用）');
+        }
+      }
+    }
+    // 同一条通道也能单独问任意路径（`--probe-host-api ui.focus_open,input.nav_settings`）：
+    // 维护这张表时要能问"这条到底实没实现"，而不是只有白名单里的才被问到。只出证据、不判定。
+    if (probeHostApi.length) {
+      const askedState = hostApiProbe(probeHostApi);
+      const askedLine = !askedState
+        ? 'host_api_probe=unavailable:' + (noWasm ? 'no-wasm' : (hostApiProbeError || 'no-lua-bridge'))
+        : 'host_api_probe ' + probeHostApi.map((name) => name + '=' + (askedState.get(name) || 'unreported')).join(' ');
+      console.log(askedLine);
+    }
+
+    // L3 行为契约对拍（`--check-api-contract`）。与 webgl 侧共用**同一个件、同一个表达式**
+    // （scripts/web-api-contract.js 的 pageExpression），差别只在送法：那边经 CDP
+    // `Runtime.evaluate` 送进页面，这里用 `vm.runInThisContext` 在 node 的全局上跑**同一段**
+    // JS。表达式里的 `typeof window !== "undefined"` 在 harness 里同样成立——宿主 window 是
+    // 启动前就装好的 globalThis.window，适配层把 Lua 桥就地挂在它上面，所以两侧执行逐字节一致。
+    // 契约 Lua **不在发布包里**（10 KB 验证资产会挤微信主包配额、一帧都不参与游戏），现读现注入。
+    // 用例自己先把状态设成已知值再读（`clock.set(3,700)` 那一组），所以"游戏已经跑了几百帧"
+    // 不影响对拍；反过来，跑完再扫一遍缺失清单——契约会碰一批游戏剧本不碰的 API，
+    // 那批缺口正是只有它能暴露出来的。
+    let contractEvidence = '';
+    if (checkApiContract && noWasm) {
+      // `--no-wasm` 的期望结果就是"没有 Lua 状态"，那里契约无从跑起，也**不该**算红
+      // （那条用例的响亮失败契约由上面的 boot 断言负责）。如实标 skipped，不静默。
+      contractEvidence = 'api_contract=skipped:no-wasm';
+    } else if (checkApiContract) {
+      const apiContract = require('./web-api-contract.js');
+      let payload = null;
+      let contractReason = '';
+      try {
+        const evaluated = vm.runInThisContext(
+          apiContract.pageExpression(apiContract.readContractSource()),
+          { filename: 'harness-api-contract' }
+        );
+        payload = typeof evaluated === 'string' ? JSON.parse(evaluated) : null;
+      } catch (error) {
+        contractReason = 'evaluate threw: ' + String((error && error.message) || error).slice(0, 140);
+      }
+      if (payload && payload.error) contractReason = 'bridge: ' + payload.error;
+      const webTranscript = (!contractReason && payload) ? payload.transcript : null;
+      if (webTranscript == null) {
+        // 拿不到 transcript 就是没有证据，不是通过（与 webgl 侧同一口径）。这里不需要
+        // "启动本来就期望失败"的分支：`--host-document frozen`、`--expect-boot-stall`
+        // 这些负面用例在到达本段之前就 `return 0` 了，`--no-wasm` 在上面单独标 skipped，
+        // 所以能走到这里的就是"本该起来"的产物。
+        contractEvidence = 'api_contract=unavailable';
+        failures.push('wechat_api_contract_unavailable ' +
+          (contractReason || 'bridge 未挂载') +
+          '（boot=' + bootState + ' 却拿不到 transcript：--check-api-contract 要求契约真的被执行）');
+      } else {
+        const issues = apiContract.diffTranscript(webTranscript, apiContract.readBaselineTranscript());
+        const cases = String(webTranscript).trim().split('\n').length;
+        contractEvidence = issues.length === 0
+          ? `api_contract=ok,cases=${cases}`
+          : `api_contract=failed,mismatches=${issues.length}`;
+        if (issues.length) {
+          failures.push(`wechat_api_contract_failed mismatches=${issues.length}` +
+            `（PC 基线与微信活体跑的是同一份 lua_api_contract.lua，逐行对；用例数 ${cases}）:\n  - ` +
+            issues.slice(0, 12).join('\n  - ') +
+            (issues.length > 12 ? `\n  -（共 ${issues.length} 处，只列前 12）` : '') +
+            '\n修法只有"改实现"这一条：把期望改成 web 的现状等于承认分叉。');
+        }
+        const contractMissing = Array.from(collectMissingNames())
+          .filter((name) => !reportedMissing.has(name) && !MISSING_HOST_API_ALLOWED.has(name));
+        if (contractMissing.length) {
+          failures.push('L3 契约探到游戏剧本没碰到的缺失宿主 API: ' + contractMissing.join(', ') +
+            '（同上一张豁免表判，不另开标准）');
+        }
+      }
     }
 
     // 下面这组是"**启动成功**"路径的证据断言。`--no-wasm` 走的是响亮失败契约（见上），
@@ -2313,7 +2484,7 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
         ` entry=${packEntryError ? 'FAIL' : 'ok'}` +
         ` loading_bar=${drawnTexts.some((text) => text.includes('正在下载资源')) ? 'ok' : 'none'}`
       : ` subpackage=none subpackage_loads=${stats.subpackageLoads}`;
-    console.log(`wechat_minigame_harness_ok path_style=${wxPathStyle} read_strategy=${readStrategy} frames=${stats.frames} draw_ops=${stats.drawOps} draws_per_frame=${perFrameDraws.length > 0 ? perFrameDraws[0] : 0} drawn=${drawn} ui_elements=${uiElements} pack_reads=${stats.packReads} images=${stats.imagesLoaded} binary=${binaryProbe} audio_ctx=${stats.audioCreated} audio_played=${stats.audioPlayed} audio_srcs=${JSON.stringify(stats.audioSrcs.slice(0, 8))}${uploadEvidence}${subpackageEvidence} read_strategies=main:${strategies.main || 'none'}/pack:${strategies.pack || 'none'} font=${fontFamily} boot=${bootState} world=${JSON.stringify(worldSummary.replace(/\s+/g, ' '))} move=${JSON.stringify(moveEvidence)} touch_stick=${JSON.stringify(touchStickEvidence)} attack=${JSON.stringify(attackEvidence)} bag=${JSON.stringify(bagEvidence)} stick_key=w key_bridge=ArrowUp wasm=${wasmDiag ? (wasmDiag.status + ':' + wasmDiag.hostApi + ':' + (wasmDiag.channel || 'none')) : 'no-diag'}${remoteEvidence}`);
+    console.log(`wechat_minigame_harness_ok path_style=${wxPathStyle} read_strategy=${readStrategy} frames=${stats.frames} draw_ops=${stats.drawOps} draws_per_frame=${perFrameDraws.length > 0 ? perFrameDraws[0] : 0} drawn=${drawn} ui_elements=${uiElements} pack_reads=${stats.packReads} images=${stats.imagesLoaded} binary=${binaryProbe} audio_ctx=${stats.audioCreated} audio_played=${stats.audioPlayed} audio_srcs=${JSON.stringify(stats.audioSrcs.slice(0, 8))}${uploadEvidence}${subpackageEvidence} read_strategies=main:${strategies.main || 'none'}/pack:${strategies.pack || 'none'} font=${fontFamily} boot=${bootState} world=${JSON.stringify(worldSummary.replace(/\s+/g, ' '))} move=${JSON.stringify(moveEvidence)} touch_stick=${JSON.stringify(touchStickEvidence)} attack=${JSON.stringify(attackEvidence)} bag=${JSON.stringify(bagEvidence)} stick_key=w key_bridge=ArrowUp exemption_probe=${exemptionProbe} ${contractEvidence || 'api_contract=not-requested'} wasm=${wasmDiag ? (wasmDiag.status + ':' + wasmDiag.hostApi + ':' + (wasmDiag.channel || 'none')) : 'no-diag'}${remoteEvidence}`);
     return 0;
   }).catch((error) => {
     console.error = originalError;

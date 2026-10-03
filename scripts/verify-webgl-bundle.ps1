@@ -16,6 +16,8 @@
 #       [-BundleRoot examples\game_jhyt\builds\webgl] [-Port 8137] [-TimeoutSeconds 90]
 #   # 关掉场景切换门（boot-only，快但不防切换崩溃回归）：
 #   powershell ... -File scripts\verify-webgl-bundle.ps1 -NoSceneVerify
+#   # L3 行为契约对拍（PC transcript vs 活体页面跑同一份 lua_api_contract.lua，多开一次浏览器）：
+#   powershell ... -File scripts\verify-webgl-bundle.ps1 -ApiContract
 #
 # 省略 -BundleRoot 时自动发现（本机唯一的合格 webgl 产物，见 scripts\bundle-discovery.ps1）：
 # 默认值不再写死某个游戏工程，任何工程发布后都能直接跑。
@@ -42,6 +44,12 @@ param(
     [switch]$DriveJhyt,
     # 关掉场景切换防回归门（默认 ON）：仅当产物里没有可 reload 的启动场景时才关。
     [switch]$NoSceneVerify,
+    # L3 行为契约对拍（默认 OFF，`verify.ps1 -Web` 打开它）：boot 落定后把仓库里的
+    # `lua_api_contract.lua` 经 CDP 注入**这个活体页面**（补丁层已生效的 Lua VM）跑一遍，
+    # 与桌面 transcript 基线逐行对拍。契约只碰纯状态类 API（clock/calendar/item/event/…），
+    # 代价是这次无头实例里的游戏时间/背包定义会被改——那是**一次性浏览器**，不影响任何产物。
+    # 契约文本不进发布包：它是验证资产，一帧都不参与游戏，却要占微信 4 MB 主包配额。
+    [switch]$ApiContract,
     # 调用方（`verify.ps1 -Web`）用它拿退出码：`Start-Process -PassThru -RedirectStandardOutput`
     # 返回的进程对象上 `ExitCode` 是 **$null**（本轮实测），而 `[int]$null` 会静默变成 0——
     # "包起不来"于是被当成"通过"。因此由子进程自己把结果写进这个文件。
@@ -161,7 +169,7 @@ if ($queryBits.Count -gt 0) { $url += "?" + ($queryBits -join "&") }
 $domPath = Join-Path $logRoot "bundle-dom-$stamp.html"
 $errPath = Join-Path $logRoot "bundle-dom-$stamp.err"
 
-function Invoke-HeadlessDom([string]$HeadlessFlag) {
+function Invoke-HeadlessDom([string]$HeadlessFlag, [string]$ModeOverride = "", [string]$OutFile = "") {
     # CDP 轮询替代 `--dump-dom`：dump-dom 在页面 load 事件后**立即** dump，而本游戏在
     # module 顶层 await 里加载 wasm + boot（`rustluaRunLuaGame`），dump 常常早于 boot
     # （body 还是 data-rustlua-boot="pending"）。用 `--remote-debugging-port` + Node 轮询
@@ -173,7 +181,9 @@ function Invoke-HeadlessDom([string]$HeadlessFlag) {
     }
     $cdpPort = 9200 + (Get-Random -Maximum 700)
     $profileDir = Join-Path $logRoot "cdp-profile-$stamp-$([guid]::NewGuid().ToString('N').Substring(0, 8))"
-    $waitMode = if ($DriveJhyt) { "drive" } elseif (-not $NoSceneVerify) { "scene" } else { "boot" }
+    $waitMode = if ($ModeOverride) { $ModeOverride } elseif ($DriveJhyt) { "drive" } elseif (-not $NoSceneVerify) { "scene" } else { "boot" }
+    # contract 模式写的是**对拍报告**而不是 DOM，所以输出目标可由调用方指定。
+    $outTarget = if ([string]::IsNullOrWhiteSpace($OutFile)) { $domPath } else { $OutFile }
     $arguments = @(
         $HeadlessFlag,
         "--disable-gpu-sandbox",
@@ -194,8 +204,17 @@ function Invoke-HeadlessDom([string]$HeadlessFlag) {
     )
     $process = Start-Process -FilePath $browser -ArgumentList $arguments -PassThru -NoNewWindow `
         -RedirectStandardOutput $domPath -RedirectStandardError $errPath
-    & node $cdpScript $cdpPort $domPath $waitMode $TimeoutSeconds
+    # **必须接住** node 的 stdout：PS 里函数内未被捕获的输出会并进返回值，于是
+    # Invoke-HeadlessDom 返回的是「[cdp] 那几行 + 文件正文」的**数组**。而 `-match` 作用在
+    # 数组上返回的是"匹配到的元素数组"、**不填 $Matches**（判空时却照样真值），于是
+    # `$contractOutput -match 'mismatches=(\d+)'` 之后 `$Matches[1]` 还是上一条无关 -match
+    # 的捕获组——实测红字里出现过 `verdict=failed(scene=main entities=17) cases=0`：
+    # 红绿方向侥幸没错，但 mismatches 与 cases 两个数都是假的（$dom 那条同理，只是它被
+    # 下面那句 `[string]$dom` 顺手压平了才没出事）。node 那几行本来就只写给控制台，
+    # 真正的结论在 $outTarget 报告文件里，所以这里接住不转印。
+    $cdpEcho = @(& node $cdpScript $cdpPort $outTarget $waitMode $TimeoutSeconds)
     $cdpExit = $LASTEXITCODE
+    foreach ($cdpLine in $cdpEcho) { Write-Log "cdp: $cdpLine" }
     # 收尾：杀本脚本启动的浏览器**全部进程** + 清理 CDP profile（无头实例不会自己退出）。
     # 按唯一 user-data-dir 路径匹配命令行，精确杀本实例的进程树——绝不按进程名一网打尽
     # （开发机上还有用户自己的浏览器）；taskkill /T 对 Edge 的启动器/子进程不可靠。
@@ -206,12 +225,20 @@ function Invoke-HeadlessDom([string]$HeadlessFlag) {
     if ($cdpExit -eq 2) {
         Write-Log "CDP unavailable (chrome did not expose debug endpoint); no DOM dump" Yellow
     }
-    if (Test-Path -LiteralPath $domPath) { return Get-Content -LiteralPath $domPath -Raw } else { return "" }
+    if (Test-Path -LiteralPath $outTarget) { return Get-Content -LiteralPath $outTarget -Raw } else { return "" }
 }
 
 $dom = Invoke-HeadlessDom "--headless"
 if (-not $dom -or $dom -notmatch "data-rustlua-boot") {
     $dom = Invoke-HeadlessDom "--headless=new"
+}
+# L3 行为契约（-ApiContract）：boot 那次验完了，这里**另开一次**无头实例专跑契约——
+# 契约要 CDP 在同一个页面上下文里 `lua_do_string` + `lua_call_global`，浏览器句柄跨不过去。
+# 必须在静态服务器关掉之前跑；boot 都没起来时不必浪费第二次 90s（那次红已经说明问题）。
+$contractReportPath = Join-Path $logRoot "bundle-api-contract-$stamp.txt"
+$contractOutput = ""
+if ($ApiContract -and $dom) {
+    $contractOutput = Invoke-HeadlessDom "--headless" "contract" $contractReportPath
 }
 Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
 
@@ -255,6 +282,23 @@ $driveStateDetail = if ($dom -match 'data-rustlua-drive-detail="([^"]*)"' -and $
 $sceneVerifyState = if ($dom -match 'data-rustlua-scene-verify="([^"]*)"' -and $Matches.Count -gt 0) { $Matches[1] } else { "absent" }
 $sceneVerifyDetail = if ($dom -match 'data-rustlua-scene-verify-detail="([^"]*)"' -and $Matches.Count -gt 0) { $Matches[1] } else { "" }
 
+# L3 行为契约结论。报告首行三选一：`web_api_contract_ok cases=N` /
+# `web_api_contract_failed mismatches=N cases=N` / `web_api_contract_unavailable <原因>`。
+# **找不到这三行也必须算红**：那次 node 调用超时时把 DOM 写进了同一个文件，
+# 把它当"没数据所以放行"就等于给门开了个洞。反过来，格式对不上（比如产物还是旧版
+# cdp 脚本、失败行没有 cases）也一律红，不静默降级成"只报 mismatches"。
+$contractVerdict = "not-requested"
+$contractCases = 0
+if ($ApiContract) {
+    if ($contractOutput -match 'web_api_contract_ok cases=(\d+)' -and $Matches.Count -gt 0) {
+        $contractVerdict = "ok"; $contractCases = [int]$Matches[1]
+    } elseif ($contractOutput -match 'web_api_contract_failed mismatches=(\d+) cases=(\d+)' -and $Matches.Count -gt 1) {
+        $contractVerdict = "failed(" + $Matches[1] + ")"; $contractCases = [int]$Matches[2]
+    } else {
+        $contractVerdict = "unavailable"
+    }
+}
+
 $summary = [ordered]@{
     task           = "M31"
     bundle         = $bundle
@@ -275,6 +319,9 @@ $summary = [ordered]@{
     driveJhytDetail = if ($DriveJhyt) { $driveStateDetail } else { "" }
     sceneVerify    = $sceneVerifyState
     sceneVerifyDetail = $sceneVerifyDetail
+    apiContract    = $contractVerdict
+    apiContractCases = $contractCases
+    apiContractReport = $contractReportPath
     domDump        = $domPath
     log            = $logPath
 }
@@ -292,6 +339,10 @@ if ($DriveJhyt) {
 }
 if (-not $NoSceneVerify) {
     Write-Log "scene_verify: $sceneVerifyState detail: $sceneVerifyDetail" $(if ($sceneVerifyState -eq "done") { "Green" } else { "Yellow" })
+}
+if ($ApiContract) {
+    Write-Log "api_contract: $contractVerdict cases=$contractCases report=$contractReportPath" `
+        $(if ($contractVerdict -eq "ok") { "Green" } else { "Red" })
 }
 Write-Log "dom: $domPath"
 
@@ -318,6 +369,19 @@ if (-not $NoSceneVerify -and $sceneVerifyState -ne "done") {
     # 症状）就是这类问题。absent/in-flight/failed 三种都算失败，因为都意味着
     # applySceneSwitch 的 fetch → parse → on_create 全流程没有干净跑完。
     Write-Log "webgl_bundle_scene_verify_failed boot=$boot scene_verify=$sceneVerifyState detail=$sceneVerifyDetail world=$world" Red
+    Exit-With 1
+}
+
+if ($ApiContract -and $contractVerdict -ne "ok") {
+    # L3：桌面与 web（**打完宿主补丁**的活体运行时）行为不一致。这正是"第二套实现"最容易烂掉
+    # 的地方，也是 docs/51 那句"按引擎源码逐条实现宿主 API"唯一能被机器检查的形式。
+    # 处置顺序固定：先修实现（补丁层多半是历史遗留的死覆盖），再把确实该不同的行为从契约里
+    # **删掉**并在 L2 覆盖清单说明理由；把期望改成 web 的现状 = 把门拆了。
+    Write-Log "webgl_api_contract_failed verdict=$contractVerdict report=$contractReportPath" Red
+    if (Test-Path -LiteralPath $contractReportPath) {
+        Get-Content -LiteralPath $contractReportPath -Encoding UTF8 -TotalCount 26 |
+            ForEach-Object { Write-Log "  $_" Red }
+    }
     Exit-With 1
 }
 

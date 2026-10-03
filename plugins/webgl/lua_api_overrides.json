@@ -1,0 +1,123 @@
+{
+  "groups": [
+    {
+      "module": "asset",
+      "note": "WP10 批次 B/C 的逐条重写（docs/51 记的那条人工同步路）：浏览器没有原生资源句柄，补丁版只维护 Lua 侧 `__rustlua_assets` token 表，不真正加载资源。",
+      "apis": [
+        "asset.load",
+        "asset.release"
+      ]
+    },
+    {
+      "module": "clock",
+      "note": "fengari 时代的兜底覆盖，WP10 批 A 之后 wasm 已带真实现，**属于该删的死覆盖**。实测行为已分叉：引擎版 `clock.now()` 返回 day,hour,minute,minute_of_day,paused,rate，补丁版只返回 day,minute,minute_of_day（少 hour/paused/rate，Lua 侧读到 nil 且不报错）。",
+      "apis": []
+    },
+    {
+      "module": "container",
+      "note": "补丁版把容器复用成 Lua 侧第二个背包（`__rustlua_inventories` 键 `container:<id>`）；引擎版把同一份状态放在 Rust `ScriptState` 里，两边是各存各的。",
+      "apis": [
+        "container.close",
+        "container.get",
+        "container.move",
+        "container.open"
+      ]
+    },
+    {
+      "module": "event",
+      "note": "补丁版把订阅表存在 Lua 侧 `__rustlua_events`（emit 时快照遍历），引擎版存在 `ScriptState`。语义按引擎源码逐条对齐过，但没有自动化保证——回调顺序、重入 emit 这类差异只能靠契约用例钉。",
+      "apis": [
+        "event.emit",
+        "event.off",
+        "event.on",
+        "event.subscribe",
+        "event.unsubscribe"
+      ]
+    },
+    {
+      "module": "input",
+      "note": "平台性差异，必须保留：web 没有手柄设备，补丁镜像桌面 `ActionMap::with_defaults` 的**键盘**部分（省略 GamepadAxis/GamepadButton），`action_repeat` 取「一次边沿 = 一步」语义（web 没有按住重复的设备时钟）。",
+      "apis": [
+        "input.action_axis",
+        "input.action_pressed",
+        "input.action_repeat",
+        "input.actions",
+        "input.bindings"
+      ]
+    },
+    {
+      "module": "interact",
+      "note": "补丁版读 Lua 侧 `__rustlua_tags` / `__rustlua_transforms` 算 query 结果，引擎版读 ECS/`ScriptState`。排序规则（距离升序、同距 priority 降序）是照引擎抄的，抄的过程没有测试。",
+      "apis": [
+        "interact.clear_prompt",
+        "interact.get_prompt",
+        "interact.prompt",
+        "interact.query"
+      ]
+    },
+    {
+      "module": "item",
+      "note": "补丁版把物品定义表存在 Lua 侧 `definitions`，引擎版存在 `ScriptState.item_defs`；`stack` 下限钳位等细节为手工对齐。",
+      "apis": [
+        "item.def",
+        "item.define"
+      ]
+    },
+    {
+      "module": "light",
+      "note": "补丁版状态存 `__rustlua_lights`，引擎版存实体组件；错误文案（`entity has no light`）是手工抄的，与引擎版报错文本不保证一致。",
+      "apis": [
+        "light.get",
+        "light.set",
+        "light.set_active"
+      ]
+    },
+    {
+      "module": "shop",
+      "note": "补丁版把商店目录存 Lua 侧 `__rustlua_shops`，price 直接读 buy/sell；引擎版走 `ScriptState`。",
+      "apis": [
+        "shop.price",
+        "shop.set_catalog"
+      ]
+    },
+    {
+      "module": "tag",
+      "note": "补丁版状态存 `__rustlua_tags`（空值删键、删空袋），引擎版存 `EntityState.tags`。**后果**：只在 web 上 `tag.set` 的数据，任何读引擎侧状态的消费者（存档/快照/运行期面板）都看不到。",
+      "apis": [
+        "tag.get",
+        "tag.set"
+      ]
+    },
+    {
+      "module": "ui",
+      "note": "平台性差异，必须保留：web 的屏幕 UI 由 Canvas 2D 适配层绘制（引擎版依赖 wgpu 提交与 GPU 侧字体度量），26 个 ui 函数里含 `measure_text`、焦点环、滚动这一批。这一组是 docs/62「Web 是第二套实现」的主要来源。",
+      "apis": [
+        "ui.bar",
+        "ui.circle",
+        "ui.clear",
+        "ui.focus_close",
+        "ui.focus_count",
+        "ui.focus_index",
+        "ui.focus_move",
+        "ui.focus_open",
+        "ui.focus_select",
+        "ui.get",
+        "ui.grid",
+        "ui.hide",
+        "ui.image",
+        "ui.image_get",
+        "ui.measure_text",
+        "ui.panel",
+        "ui.panel_get",
+        "ui.scene_text_visible",
+        "ui.scroll_close",
+        "ui.scroll_extents",
+        "ui.scroll_offset",
+        "ui.scroll_to_visible",
+        "ui.show",
+        "ui.text",
+        "ui.text_at"
+      ]
+    }
+  ]
+}
