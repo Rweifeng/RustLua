@@ -159,7 +159,13 @@ impl EditorApp {
         std::fs::create_dir_all(dir.join("assets/fonts")).map_err(fs_err)?;
         let font_path = dir.join("assets/fonts/NotoSansSC-VF.ttf");
         if !font_path.exists() {
-            let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("fonts/NotoSansSC-VF.ttf");
+            // 编译期 CARGO_MANIFEST_DIR 对门构建的 exe 指向已删除的临时 worktree。
+            let source = crate::util::resolve_cjk_font().ok_or_else(|| {
+                format!(
+                    "未找到引擎内嵌中文字体 {}；请设置 RUSTLUA_FONT 指向一份 .ttf",
+                    crate::util::CJK_FONT_FILE_NAME
+                )
+            })?;
             std::fs::copy(&source, &font_path).map_err(fs_err)?;
         }
         std::fs::create_dir_all(dir.join("scripts")).map_err(fs_err)?;

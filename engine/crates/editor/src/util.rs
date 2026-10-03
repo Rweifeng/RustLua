@@ -309,6 +309,9 @@ pub(crate) fn choose_project_directory() -> Option<PathBuf> {
     None
 }
 
+/// 编辑期内嵌中文字体的文件名（候选路径都以它结尾）。
+pub(crate) const CJK_FONT_FILE_NAME: &str = "NotoSansSC-VF.ttf";
+
 /// 中文字体候选路径，按优先级排列。
 ///
 /// **为什么不能只用编译期路径**：原先这里写死 `env!("CARGO_MANIFEST_DIR")/fonts/…`，
@@ -316,10 +319,10 @@ pub(crate) fn choose_project_directory() -> Option<PathBuf> {
 /// 绿色版（免安装、整目录拷到别的 Windows 主机）上那条路径根本不存在，
 /// 于是中文全变成"豆腐块"——一个和包本身无关、却会让跨机验收直接失败的坑。
 ///
-/// 优先级：显式环境变量 → **exe 同目录**（发布/便携形态）→ 编译期路径（开发形态）。
+/// 优先级：显式环境变量 → **exe 同目录**（发布/便携形态）→
+/// **从 exe 向上找回工作区里的那份**（本机开发形态）→ 编译期路径。
 #[must_use]
 pub(crate) fn cjk_font_candidates() -> Vec<PathBuf> {
-    const FILE_NAME: &str = "NotoSansSC-VF.ttf";
     let mut candidates = Vec::new();
     if let Ok(explicit) = env::var("RUSTLUA_FONT") {
         let explicit = PathBuf::from(explicit);
@@ -331,17 +334,47 @@ pub(crate) fn cjk_font_candidates() -> Vec<PathBuf> {
         && let Some(dir) = exe.parent()
     {
         // 包内布局：<包根>/editor.exe + <包根>/fonts/NotoSansSC-VF.ttf
-        candidates.push(dir.join("fonts").join(FILE_NAME));
+        candidates.push(dir.join("fonts").join(CJK_FONT_FILE_NAME));
         // 允许把字体直接摆在 exe 旁边
-        candidates.push(dir.join(FILE_NAME));
+        candidates.push(dir.join(CJK_FONT_FILE_NAME));
+        // 开发形态：exe 在 <工作区>/engine/target/<profile>/ 下，向上爬能找到
+        // crates/editor/fonts 里的那份（见 workspace_font_from_exe）。
+        candidates.extend(workspace_font_from_exe(dir));
     }
-    // 开发形态：源码树里的那份
+    // 最后才试编译期源码树路径——它可能属于一台已经不存在的构建机。
     candidates.push(
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("fonts")
-            .join(FILE_NAME),
+            .join(CJK_FONT_FILE_NAME),
     );
     candidates
+}
+
+/// 从 exe 所在目录逐级向上，找回仓库里的那份编辑期中文字体。
+///
+/// **为什么要这一条**：质量门会在 `%TEMP%` 的一次性 worktree 里用**共享 target**
+/// 构建，于是烘进 exe 的 `CARGO_MANIFEST_DIR` 指向一个门跑完就被删掉的目录
+/// （实测症状：本机 `target/debug/editor.exe` 中文全为方框）。exe 本身一定落在
+/// 真实工作区内，向上爬比编译期路径可靠。
+fn workspace_font_from_exe(exe_dir: &Path) -> Option<PathBuf> {
+    exe_dir.ancestors().find_map(|dir| {
+        ["crates/editor/fonts", "engine/crates/editor/fonts"]
+            .iter()
+            .map(|relative| {
+                relative
+                    .split('/')
+                    .fold(dir.to_path_buf(), |path, part| path.join(part))
+                    .join(CJK_FONT_FILE_NAME)
+            })
+            .find(|path| path.is_file())
+    })
+}
+
+/// 第一个真实存在的中文字体候选（全都不存在时 `None`）。
+pub(crate) fn resolve_cjk_font() -> Option<PathBuf> {
+    cjk_font_candidates()
+        .into_iter()
+        .find(|candidate| candidate.is_file())
 }
 
 /// 为 egui 默认字体追加中文 fallback。
@@ -420,6 +453,35 @@ mod cjk_font_tests {
                 .any(|candidate| candidate.ends_with("fonts/NotoSansSC-VF.ttf")
                     && candidate.to_string_lossy().contains("crates")),
             "编译期源码树路径仍应保留：{candidates:?}"
+        );
+    }
+
+    /// 门构建的 exe 里编译期路径指向已删除的 `%TEMP%` worktree，中文会全变方框：
+    /// 候选必须还能从 exe 位置（`<工作区>/engine/target/<profile>/`）向上爬回源码树。
+    #[test]
+    fn workspace_font_is_found_by_walking_up_from_the_exe() {
+        let crate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        // 假想的 exe 位置：<工作区>/engine/target/debug（编译期路径完全不可见）。
+        let engine_dir = crate_dir
+            .parent()
+            .and_then(std::path::Path::parent)
+            .expect("crates/editor 上溯两级即 engine 目录");
+        let found = super::workspace_font_from_exe(&engine_dir.join("target").join("debug"))
+            .expect("从 target/debug 向上应找回 editor crate 里的字体");
+        assert_eq!(
+            found,
+            crate_dir.join("fonts").join(super::CJK_FONT_FILE_NAME),
+            "向上爬要命中的正是 crate 里那份字体"
+        );
+        // 候选表必须带上这条路径，且排在最后的编译期候选之前。
+        let candidates = super::cjk_font_candidates();
+        let workspace_rank = candidates
+            .iter()
+            .position(|candidate| candidate == &found)
+            .expect("工作区字体必须在候选表里");
+        assert!(
+            workspace_rank + 1 < candidates.len(),
+            "工作区路径要排在编译期路径之前：{candidates:?}"
         );
     }
 }
