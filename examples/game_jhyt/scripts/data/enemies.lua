@@ -25,6 +25,28 @@
 --                   status 表的键，如 "poison"）；步长与每跳伤害都在那张表里，
 --                   敌人只声明"挂哪一种"。写了未知种类直接判错（打错字的状态是无声的）。
 --
+-- Boss 二阶段的专属字段（M34-04b ⑤；只写在**主人**那一行）：
+--   phase2_below     气血阈值：`hp <= phase2_below` 即进入二阶段。**阶段是从 hp 推出来的**，
+--                   没有独立计数器，所以存/读档、切图、受击硬直都不会让 Boss 退回一阶段
+--                   （写了 >= hp 的数字二阶段永远进不去 → validate_all 判错）。
+--   charge_skill     二阶段的冲撞招式 id（引用 data/skills.lua，且必须是出判定窗的 kind：
+--                   kind=movement/guard 撞不到人，那是"没有消费方的假冲撞"）。
+--   charge_speed     冲撞期间的位移速度（世界单位/秒；与 speed 分开，因为"走"和"撞"是两手）。
+--   charge_steps     冲撞最多走多少固定步（撞到 solid 格会提前结束）。
+--   summon_group     召唤组名（与下面 summoned 行的 summon_group 配对；**组里有几行 = 场上同时
+--                   存在的召唤物上界**，所以只有这一处事实，没有第二份 max_alive 会跟它漂移）。
+--   summon_interval  二阶段每多少固定步尝试补满一次空槽位。
+--
+-- 召唤物行（`summoned = true`）的专属字段：
+--   summoned         声明"这一行不随进图生成"：enemy.lua 的 sync/tick/capture/reset 都只把它
+--                   当**槽位**，只有主人二阶段召出时才落地。它因此不入档、切图不残留。
+--   summon_owner     主人的 persist_id（必须是同一组里带 summon_group 的那一行）。
+--   summon_group     组名，与主人的 summon_group 相同。
+--   summon_offset    召出时相对**主人所在格**的偏移 {x, y}（全 0 或超界判错）；
+--                   偏移格是 solid 时退回主人脚下那一格。
+--   summon_ttl       存活上限（固定步）：到期自动离场。写这个数字是因为"召唤物不入档"——
+--                   没有寿命的召唤物会一直占着场上名额，读档后又变成无主实体。
+--
 -- 表顺序无关；enemy.lua 按 persist_id 稳定排序遍历。
 local M = {}
 
@@ -142,6 +164,9 @@ M.enemies = {
     skill = "strike"
   },
   -- 山魈首领：第一章 Boss（厚血、重击；48×48 大体型）。
+  -- M34-04b ⑤ 起它有了 docs/30 §6 承诺的第二阶段：气血掉到一半以下后开始**冲撞**与
+  -- **召唤幼崽**。两组数字都写在这里（不在 enemy.lua 的 if 里），因为它们是玩法旋钮：
+  -- 冲撞靠 ape_charge 的判定窗扫过路径撞人，召唤的上界则由下面那两行槽位决定。
   {
     name = "山魈首领",
     persist_id = "enemy_ape_boss",
@@ -155,8 +180,60 @@ M.enemies = {
     aggro_radius = 300,
     attack_range = 48,
     attack_cooldown = 120,
-    skill = "palm_gust"
-  }
+    skill = "palm_gust",
+    phase2_below = 40,
+    charge_skill = "ape_charge",
+    charge_speed = 150,
+    charge_steps = 40,
+    summon_group = "ape_whelps",
+    summon_interval = 300
+  },
+  -- 山魈幼崽（召唤槽位 1/2）：只在 Boss 二阶段被召出，本身不入档、切图不残留。
+  -- 伤害/血量按"杂兵"定（玩家两刀一个），形象暂借山魈首领的贴图缩到 32×32
+  -- （与野猪借灰狼贴图同一手法：纯数据新增，不生成新美术）。
+  -- 掉落**故意不配**（data/drops.lua 没有这两行）：召唤物是 Boss 战的过程产物，
+  -- 若给铜钱就成了"刷 Boss 召唤物"的无限循环；docs/33 §6.2 那两行的掉落列因此是「无」。
+  {
+    name = "山魈幼崽",
+    persist_id = "enemy_ape_whelp_1",
+    map = "cold_spring_cave",
+    -- 槽位行不靠 home 落位（召出时按 summon_offset 相对主人算），这一格只是初始值。
+    home = { x = 10, y = 6 },
+    art = "mountain_ape_boss",
+    sprite = "texture=assets/art/enemies/mountain_ape_boss/static_s.png;size=32x32;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+    hp = 10,
+    speed = 60,
+    damage = 3,
+    aggro_radius = 240,
+    attack_range = 32,
+    attack_cooldown = 60,
+    skill = "strike",
+    summoned = true,
+    summon_owner = "enemy_ape_boss",
+    summon_group = "ape_whelps",
+    summon_offset = { x = -2, y = 0 },
+    summon_ttl = 600
+  },
+  {
+    name = "山魈幼崽",
+    persist_id = "enemy_ape_whelp_2",
+    map = "cold_spring_cave",
+    home = { x = 10, y = 6 },
+    art = "mountain_ape_boss",
+    sprite = "texture=assets/art/enemies/mountain_ape_boss/static_s.png;size=32x32;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+    hp = 10,
+    speed = 60,
+    damage = 3,
+    aggro_radius = 240,
+    attack_range = 32,
+    attack_cooldown = 60,
+    skill = "strike",
+    summoned = true,
+    summon_owner = "enemy_ape_boss",
+    summon_group = "ape_whelps",
+    summon_offset = { x = 2, y = 0 },
+    summon_ttl = 600
+  },
 }
 
 function M.get(persist_id)
@@ -167,6 +244,21 @@ function M.get(persist_id)
   end
   return nil
 end
+
+-- 敌人记录里合法的键（与 data/skills.lua 的 skill_keys 同一条不变量）：写了别的键 =
+-- 这个键没有任何消费方。召唤/Boss 阶段那批新键尤其要查——`summon_ttl` 打成 `summon_tttl`
+-- 的表现是"召唤物永远不死"，正是最难查的那种安静 bug。
+M.enemy_keys = {
+  name = true, persist_id = true, map = true, home = true, art = true, sprite = true,
+  hp = true, speed = true, damage = true, aggro_radius = true, attack_range = true,
+  attack_cooldown = true, skill = true, status = true,
+  knockback_resist = true, hitstun_resist = true,
+  -- Boss 二阶段（主人行专属）
+  phase2_below = true, charge_skill = true, charge_speed = true, charge_steps = true,
+  summon_group = true, summon_interval = true,
+  -- 召唤物行专属
+  summoned = true, summon_owner = true, summon_offset = true, summon_ttl = true
+}
 
 -- 稳定排序的列表（按 persist_id 升序），供 enemy.lua 遍历/存档。
 function M.list()
@@ -189,12 +281,32 @@ function M.validate_all()
   local skills = require("data.skills")
   -- 状态种类的定义在战斗全局表里（M34-03）：这里只做引用校验，不复制数值。
   local combat_data = require("data.combat")
+  -- 召唤组（M34-04b ⑤）要先建两张索引：主人行与槽位行是**互相引用**的
+  -- （槽位行写 summon_owner，主人行写 summon_group），而表顺序无关，
+  -- 所以不能靠"遍历时已经见过主人"这种巧合来判引用是否存在。
+  local by_id = {}
+  local group_slots = {}
+  for _, enemy in ipairs(M.enemies) do
+    if type(enemy) == "table" then
+      if type(enemy.persist_id) == "string" then
+        by_id[enemy.persist_id] = enemy
+      end
+      if enemy.summoned == true and type(enemy.summon_group) == "string" then
+        group_slots[enemy.summon_group] = (group_slots[enemy.summon_group] or 0) + 1
+      end
+    end
+  end
   local seen = {}
   for index, enemy in ipairs(M.enemies) do
     local path = "data/enemies.lua:enemies[" .. tostring(index) .. "]"
     if type(enemy) ~= "table" then
       issues[#issues + 1] = path .. ": expected object"
     else
+      for field in pairs(enemy) do
+        if not M.enemy_keys[field] then
+          issues[#issues + 1] = path .. "." .. tostring(field) .. ": unknown enemy key"
+        end
+      end
       local id = enemy.persist_id
       if type(id) ~= "string" or id == "" then
         issues[#issues + 1] = path .. ".persist_id: required non-empty string"
@@ -244,6 +356,90 @@ function M.validate_all()
         if type(enemy.status) ~= "string" or not combat_data.status_entry(enemy.status) then
           issues[#issues + 1] = path .. ".status: unknown status kind " .. tostring(enemy.status)
             .. " (known: " .. table.concat(combat_data.status_kinds(), "/") .. ")"
+        end
+      end
+      -- ---- Boss 二阶段与召唤槽位（M34-04b ⑤）----
+      -- 这组校验存在的理由不是"字段格式要好看"，而是这批数字**错了不会响**：
+      -- phase2_below 写得比 hp 大 → 二阶段永远进不去；summon_ttl 打错一个字母 →
+      -- 召唤物永远不死；summon_group 拼错 → Boss 每 summon_interval 步什么也没召出来。
+      -- 四种表现都是"Boss 看起来只是变弱了"，所以必须在加载期就报出来。
+      if enemy.summoned ~= nil then
+        if enemy.summoned ~= true then
+          issues[#issues + 1] = path .. ".summoned: expected true (only used to mark a summon slot)"
+        end
+        local owner = by_id[enemy.summon_owner]
+        if not owner then
+          issues[#issues + 1] = path .. ".summon_owner: unknown enemy " .. tostring(enemy.summon_owner)
+        else
+          if owner.summon_group ~= enemy.summon_group then
+            issues[#issues + 1] = path .. ".summon_group: does not match owner "
+              .. tostring(enemy.summon_owner) .. " group " .. tostring(owner.summon_group)
+          end
+          if owner.map ~= enemy.map then
+            issues[#issues + 1] = path .. ".map: summon slot lives on " .. tostring(enemy.map)
+              .. " but its owner is on " .. tostring(owner.map) .. "（永远不会被召出）"
+          end
+        end
+        if type(enemy.summon_group) ~= "string" or enemy.summon_group == "" then
+          issues[#issues + 1] = path .. ".summon_group: required non-empty string on a summon slot"
+        end
+        local offset = enemy.summon_offset
+        if type(offset) ~= "table"
+          or type(offset.x) ~= "number" or math.floor(offset.x) ~= offset.x
+          or type(offset.y) ~= "number" or math.floor(offset.y) ~= offset.y then
+          issues[#issues + 1] = path .. ".summon_offset: expected {x, y} integers (cells)"
+        elseif offset.x == 0 and offset.y == 0 then
+          issues[#issues + 1] = path .. ".summon_offset: {0, 0} puts every slot on the owner's cell"
+        elseif math.abs(offset.x) > 4 or math.abs(offset.y) > 4 then
+          issues[#issues + 1] = path .. ".summon_offset: out of the boss's reach (|dx|,|dy| <= 4)"
+        end
+        local ttl = tonumber(enemy.summon_ttl)
+        if not ttl or ttl < 1 or math.floor(ttl) ~= ttl then
+          issues[#issues + 1] = path .. ".summon_ttl: expected positive integer (fixed steps)"
+        end
+      elseif type(enemy.summon_group) == "string" then
+        -- 主人行：组里必须真有槽位，否则 summon_interval 是一个"每 5 秒什么也不发生"的旋钮。
+        local slots = group_slots[enemy.summon_group] or 0
+        if slots <= 0 then
+          issues[#issues + 1] = path .. ".summon_group: no summon slot references "
+            .. enemy.summon_group .. "（上界是 0，召不出东西）"
+        end
+        local interval = tonumber(enemy.summon_interval)
+        if not interval or interval < 1 or math.floor(interval) ~= interval then
+          issues[#issues + 1] = path .. ".summon_interval: expected positive integer (fixed steps)"
+        end
+        local below = tonumber(enemy.phase2_below)
+        local max_hp = tonumber(enemy.hp)
+        if not below or below <= 0 then
+          issues[#issues + 1] = path .. ".phase2_below: expected positive hp threshold"
+        elseif max_hp and below >= max_hp then
+          issues[#issues + 1] = path .. ".phase2_below: " .. tostring(below)
+            .. " >= hp " .. tostring(max_hp) .. "（二阶段永远进不去）"
+        end
+        local charge = skills.get(enemy.charge_skill)
+        if not charge then
+          issues[#issues + 1] = path .. ".charge_skill: unknown skill " .. tostring(enemy.charge_skill)
+        elseif not skills.uses_hitbox(charge) then
+          issues[#issues + 1] = path .. ".charge_skill: " .. tostring(enemy.charge_skill)
+            .. " kind=" .. tostring(charge.kind) .. " 不出判定窗，撞不到人"
+        end
+        local charge_speed = tonumber(enemy.charge_speed)
+        if not charge_speed or charge_speed <= 0 then
+          issues[#issues + 1] = path .. ".charge_speed: expected positive number (world units/sec)"
+        end
+        local steps = tonumber(enemy.charge_steps)
+        if not steps or steps < 1 or math.floor(steps) ~= steps then
+          issues[#issues + 1] = path .. ".charge_steps: expected positive integer (fixed steps)"
+        end
+      else
+        -- 既不是槽位也不是主人：二阶段那批键一个都不该出现（否则就是打错字的死键，
+        -- 上面的 unknown enemy key 抓不到它——它确实在白名单里，但没有消费方）。
+        for _, field in ipairs({ "phase2_below", "charge_skill", "charge_speed", "charge_steps",
+          "summon_interval", "summon_owner", "summon_offset", "summon_ttl" }) do
+          if enemy[field] ~= nil then
+            issues[#issues + 1] = path .. "." .. field
+              .. ": 这一行既不是 Boss 阶段行也不是召唤槽位，这个数字没有消费方"
+          end
         end
       end
     end

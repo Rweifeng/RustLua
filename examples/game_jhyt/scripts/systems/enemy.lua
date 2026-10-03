@@ -22,6 +22,11 @@
 --     硬直期间 tick 只递减计数，不追击不出手。
 --   * capture/restore：由 main.lua 注册为存档 provider；reset() 供新档与
 --     玩家战败重开（combat.respawn）复活全部敌人。
+--   * Boss 二阶段（M34-04b ⑤）：hp 掉过 `data/enemies.lua` 的 `phase2_below` 之后开始
+--     **冲撞**（起步注册 charge_skill 的攻击，随后逐格搬动实体 = 判定窗沿路径扫过；
+--     撞到 solid 即停）与**召唤**（`summon_group` 的槽位行；组里有几行 = 场上同时存在的
+--     上界，`summon_ttl` 到期、被打死或 Boss 倒下都退场，且不入档）。阶段本身从 hp 推，
+--     所以切图/存读档之后不会退回一阶段。
 local state = require("core.state")
 local player = require("player.player")
 local combat = require("systems.combat")
@@ -107,6 +112,11 @@ local function activate(actor)
   if actor.dead then
     return nil
   end
+  -- 召唤槽位没被召出时不落地。`sync`/`tick`/`reset` 都遍历整张注册表，所以这一条
+  -- guard 是"槽位行平时什么都不发生"的唯一出口（而不是三个函数各写一个 if）。
+  if actor.enemy.summoned and not actor.summon_active then
+    return nil
+  end
   if actor.id and entity.is_alive(actor.id) then
     return actor.id
   end
@@ -162,6 +172,9 @@ local function despawn(actor)
   actor.path = nil
   actor.path_index = nil
   actor.target_cell = nil
+  -- 冲撞是"实体在走的一段位移"：实体没了这段位移也必须作废，否则切图回来后
+  -- 会带着一份指向旧坐标的冲撞状态继续搬人。
+  actor.charge = nil
 end
 
 -- 朝向：与 npc.lua 同一套（世界 y 朝上，+y 背对 / -y 面向镜头）。
@@ -333,6 +346,157 @@ local function chase(actor, dt, player_pos)
   return true
 end
 
+-- ------------------------------------------------------------------
+-- Boss 二阶段（M34-04b ⑤）：阶段、冲撞与召唤
+-- ------------------------------------------------------------------
+
+--- 阶段**从 hp 推出来**，不存在 actor.phase 计数器：受击、硬直、切图、存/读档之后
+--- 都只剩"hp 现在多少"这一个事实，所以不会出现"读档退回一阶段"这类第二真相。
+--- 阈值在 `data/enemies.lua` 的 `phase2_below`（没有这个键的敌人恒为 1 阶段）。
+local function phase_of(actor)
+  local below = tonumber(actor.enemy.phase2_below)
+  if below == nil or (actor.hp or 0) <= 0 then
+    return 1
+  end
+  return actor.hp <= below and 2 or 1
+end
+
+--- 某个召唤组的槽位行（`enemy_list()` 已按 persist_id 排好，所以顺序确定）。
+--- **组里有几行 = 场上同时存在的召唤物上界**：上界写在数据行数里，不另立一个
+--- `max_alive` 数字——两份事实迟早会漂。
+local function slot_rows(group)
+  local rows = {}
+  if type(group) ~= "string" or group == "" then
+    return rows
+  end
+  for _, enemy in ipairs(enemy_list()) do
+    if enemy.summoned == true and enemy.summon_group == group then
+      rows[#rows + 1] = enemy
+    end
+  end
+  return rows
+end
+
+--- 槽位退回"未被召出"：实体销毁、账本复位。切图、重开、Boss 死、寿命到、召唤物被打死
+--- 都从这一个出口走 —— "召唤物不残留"因此只有一条实现路径（它不入档是同一件事的另一面，
+--- 见 `M.capture`）。
+local function release(actor)
+  actor.summon_active = nil
+  actor.summon_ttl = nil
+  actor.dead = false
+  actor.hp = actor.enemy.hp
+  actor.state = "idle"
+  actor.stun_frames = 0
+  actor.last_knockback = nil
+  actor.pending_pos = nil
+  actor.next_attack = 0
+  actor.charge = nil
+  despawn(actor)
+end
+
+--- 清空一组召唤物（Boss 倒下时调用：小怪不能比 Boss 活得久）。
+local function clear_group(group)
+  for _, row in ipairs(slot_rows(group)) do
+    local actor = actors[row.persist_id]
+    if actor then
+      release(actor)
+    end
+  end
+end
+
+--- 补满空槽位，返回这次召出的只数。落点是"主人格 + 该槽位的 summon_offset"，
+--- 偏移格是 solid 就退回主人脚下那一格（与击退/轻功同一口径：不穿墙）。
+local function summon_slots(owner, here)
+  local cell = cell_of(owner.id) or owner.cell
+  if not cell then
+    return 0
+  end
+  local born = 0
+  for _, row in ipairs(slot_rows(owner.enemy.summon_group)) do
+    local slot = actors[row.persist_id] or record_for(row)
+    if not slot.summon_active then
+      local offset = row.summon_offset or {}
+      local cx, cy = cell.x + (tonumber(offset.x) or 0), cell.y + (tonumber(offset.y) or 0)
+      if cell_solid(cx, cy) then
+        cx, cy = cell.x, cell.y
+      end
+      slot.map = here
+      slot.cell = { x = cx, y = cy }
+      slot.pending_pos = nil
+      slot.dead = false
+      slot.hp = row.hp
+      slot.state = "idle"
+      slot.stun_frames = 0
+      slot.last_knockback = nil
+      slot.next_attack = 0
+      slot.path = nil
+      slot.path_index = nil
+      slot.target_cell = nil
+      slot.summon_ttl = math.max(1, math.floor(tonumber(row.summon_ttl) or 1))
+      slot.summon_active = true
+      if activate(slot) then
+        born = born + 1
+      else
+        slot.summon_active = nil
+      end
+    end
+  end
+  return born
+end
+
+--- 冲撞的一步：走完 `charge_steps` 或撞到 solid 就结束。
+--- 伤害不在这里结算——起步那一刻已经注册了 `charge_skill` 的攻击，而
+--- `combat.resolve_hits` 每步按**攻击者当时的位置**重算 hitbox，所以这段位移
+--- 本身就是把判定窗沿路径扫过去（撞墙提前结束 = 窗口还开着但已经贴住墙）。
+local function step_charge(actor, dt)
+  local charge = actor.charge
+  local budget = (tonumber(actor.enemy.charge_speed) or 0) * dt
+  local ok, pos = pcall(transform.get, actor.id)
+  if not ok or type(pos) ~= "table" then
+    actor.charge = nil
+    return
+  end
+  local nx, ny = pos.x + charge.dir_x * budget, pos.y + charge.dir_y * budget
+  local cell = grid.world_to_cell(nx, ny, TILE)
+  if cell_solid(cell[1], cell[2]) then
+    actor.charge = nil
+    actor.state = "idle"
+    update_animation(actor, false)
+    return
+  end
+  transform.set(actor.id, nx, ny)
+  actor.cell = { x = cell[1], y = cell[2] }
+  actor.facing = facing_from(charge.dir_x, charge.dir_y)
+  update_animation(actor, true)
+  charge.steps = charge.steps - 1
+  if charge.steps <= 0 then
+    actor.charge = nil
+    actor.state = "idle"
+  end
+end
+
+--- 起冲：先把招式注册进 combat（冷却没到就返回 false，本步退回普通追击，
+--- 于是"冲撞的节流"也只有一份事实 = `data/skills.lua` 那一招的 cooldown）。
+local function start_charge(actor, dx, dy, dist)
+  if dist <= 0.0001 then
+    return false
+  end
+  local ok = combat.attack(actor.id, actor.enemy.persist_id, actor.enemy.name, "enemy",
+    actor.enemy.charge_skill, facing_of(dx, dy), tonumber(actor.enemy.damage) or 0)
+  if not ok then
+    return false
+  end
+  actor.charge = {
+    dir_x = dx / dist,
+    dir_y = dy / dist,
+    steps = math.max(1, math.floor(tonumber(actor.enemy.charge_steps) or 1))
+  }
+  actor.state = "charge"
+  actor.path = nil
+  actor.path_index = nil
+  return true
+end
+
 local function tick_actor(actor, here, dt)
   local def = actor.enemy
   -- 他图敌人：逻辑上不在本图，销毁实体等玩家到那张图再重建。
@@ -345,6 +509,15 @@ local function tick_actor(actor, here, dt)
   if not activate(actor) then
     return
   end
+  -- 召唤物的寿命按固定步走（与硬直/无敌/中毒同一计时单位）：到期就退场，
+  -- 不等 Boss 死、也不靠玩家打完这一架。
+  if def.summoned and actor.summon_active then
+    actor.summon_ttl = (actor.summon_ttl or 0) - 1
+    if actor.summon_ttl <= 0 then
+      release(actor)
+      return
+    end
+  end
   -- 硬直（M25）：被打断的这段时间既不追击也不出手，也不重算路径。
   if (actor.stun_frames or 0) > 0 then
     actor.stun_frames = actor.stun_frames - 1
@@ -352,6 +525,12 @@ local function tick_actor(actor, here, dt)
     actor.path = nil
     actor.path_index = nil
     update_animation(actor, false)
+    return
+  end
+  -- 冲撞进行中（M34-04b ⑤）：这两手之间的唯一例外——撞出去就不再重新决策，
+  -- 直到走完 charge_steps 或撞到 solid（撞墙也不回头，剩下的窗口继续贴着墙扫）。
+  if actor.charge then
+    step_charge(actor, dt)
     return
   end
   -- 玩家不在/战败：敌人停手（攻击已被 combat 拦截，这里连追击也停）。
@@ -373,6 +552,15 @@ local function tick_actor(actor, here, dt)
   local damage = tonumber(def.damage) or 0
   local can_attack = damage > 0 and attack_range > 0
 
+  -- 二阶段的两件新本事都只在 hp 掉过阈值之后登场（阈值见 data/enemies.lua）。
+  -- 召唤不占这一步的决策：补完空槽位接着打，所以"召了就不再出手"这种怪手感不存在。
+  local phase = phase_of(actor)
+  if phase >= 2 and def.summon_group and (actor.next_summon or 0) <= combat.frame() then
+    actor.next_summon = combat.frame()
+      + math.max(1, math.floor(tonumber(def.summon_interval) or 1))
+    summon_slots(actor, here)
+  end
+
   if can_attack and dist <= attack_range then
     actor.path = nil
     actor.state = "attack"
@@ -383,6 +571,14 @@ local function tick_actor(actor, here, dt)
         actor.next_attack = combat.frame() + (tonumber(def.attack_cooldown) or 0)
       end
     end
+    return
+  end
+
+  -- 冲撞排在普通追击**之前**：够不着才撞（用位移把距离差抹掉），而不是撞完再走。
+  -- 节流不在这里：招式注册失败（冷却没到）就返回 false，本步落回追击，
+  -- 于是"多久能撞一次"只有 `data/skills.lua:ape_charge.cooldown` 一份事实。
+  if phase >= 2 and def.charge_skill and aggro > 0 and dist <= aggro
+    and start_charge(actor, dx, dy, dist) then
     return
   end
 
@@ -405,7 +601,11 @@ function M.sync()
       actor.map = enemy.map
       actor.cell = { x = enemy.home.x, y = enemy.home.y }
     end
-    if actor.map == here and ground_id and not actor.dead then
+    if enemy.summoned then
+      -- 每次进图（含读档后）都从"零召唤"开始：召唤物是 Boss 战的过程产物，
+      -- 不跨图、不入档、也不在上一次战斗里留着。
+      release(actor)
+    elseif actor.map == here and ground_id and not actor.dead then
       activate(actor)
     else
       despawn(actor)
@@ -465,6 +665,16 @@ function M.hit(id, damage, meta)
           pcall(animation.set, id, "faint_" .. (actor.facing or "s"))
         end
         despawn(actor)
+        -- 召唤物死了 = 槽位空出来（hp/状态复位、summon_active 清空）：Boss 下一次召唤
+        -- 能重新补上这一只，而场上同时存在的只数永远不越过组的大小。
+        if actor.enemy.summoned then
+          release(actor)
+        end
+        -- Boss 倒下 = 它召出来的东西一起退场：小怪不能比主人活得久（否则"杀 Boss 后
+        -- 场上还挂着两只幼崽"会留在场景里，而存档根本不记它们，读档就成无主实体）。
+        if actor.enemy.summon_group then
+          clear_group(actor.enemy.summon_group)
+        end
         -- 击杀掉落（M28）：铜钱当场入账、物品进"当日待入库"袋（data/drops.lua）。
         -- 没有掉落记录的敌人（训练木人）不写任何状态；掉落失败不能影响战斗结算。
         local enemy_id = actor.enemy and actor.enemy.persist_id or nil
@@ -549,7 +759,12 @@ function M.reset()
     actor.path = nil
     actor.path_index = nil
     actor.target_cell = nil
-    if actor.map == here and ground_id then
+    actor.next_summon = 0
+    actor.charge = nil
+    if enemy.summoned then
+      -- 重开（新档 / 玩家战败）后 Boss 回到满血一阶段，场上也不能留着小怪。
+      release(actor)
+    elseif actor.map == here and ground_id then
       actor.map = here
       if actor.id and entity.is_alive(actor.id) then
         local x, y = cell_center(actor.cell.x, actor.cell.y)
@@ -592,7 +807,13 @@ function M.query(persist_id)
     knockback_blocked = actor.last_knockback ~= nil and actor.last_knockback.blocked == true,
     -- 命中会撤销当前寻路（path_active=false 表示"追击被打断"）。
     path_active = actor.path ~= nil,
-    live = actor.id ~= nil and entity.is_alive(actor.id) == true
+    live = actor.id ~= nil and entity.is_alive(actor.id) == true,
+    -- Boss 二阶段（M34-04b ⑤）的读数：阶段从 hp 推、冲撞是否在走、槽位是否被占。
+    phase = phase_of(actor),
+    charging = actor.charge ~= nil,
+    summoned = enemy.summoned == true,
+    summon_active = actor.summon_active == true,
+    summon_ttl_left = actor.summon_ttl
   }
 end
 
@@ -605,11 +826,14 @@ function M.diagnostics()
 end
 
 -- 存档：逐个敌人记 hp/存活/格与精确坐标。
+-- 召唤槽位**不入档**（与格挡姿态/中毒同一口径：瞬时状态不进快照）——快照里留着"两只幼崽在
+-- (8,6)"，读档后它们就成了没有主人的孤儿实体；不写则读档后由 Boss 按二阶段规则重新召，
+-- 上界与寿命都还是数据里那两份数字。
 function M.capture()
   local snapshot = { version = 1, enemies = {} }
   for _, enemy in ipairs(enemy_list()) do
     local actor = actors[enemy.persist_id]
-    if actor then
+    if actor and not enemy.summoned then
       local cell = actor.cell
       local pos = nil
       if actor.id and entity.is_alive(actor.id) then
@@ -638,7 +862,9 @@ function M.restore(data)
   for _, entry in ipairs(data.enemies) do
     if type(entry) == "table" and type(entry.persist_id) == "string" then
       local enemy = enemies.get(entry.persist_id)
-      if enemy then
+      -- 与 capture 同一口径：召唤槽位不认档（旧档里本来就没有这两行，手改出来的也不接受——
+      -- 否则读一个"幼崽在 (8,6)"的条目就会在场上凭空造出一只没有召唤记录的实体）。
+      if enemy and not enemy.summoned then
         local actor = record_for(enemy)
         actor.hp = tonumber(entry.hp) or enemy.hp
         actor.dead = entry.alive == false

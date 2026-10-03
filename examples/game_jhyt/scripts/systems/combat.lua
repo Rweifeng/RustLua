@@ -690,7 +690,12 @@ function M.attack(attacker_id, attacker_key, attacker_name, attacker_kind, skill
   if not ok then
     return false, reason
   end
-  if not pay_inner(skills.inner_cost(skill_id)) then
+  -- 内力是**玩家**的资源（`core.state.inner_power`），所以只有玩家出手才扣、才可能付不起。
+  -- 敌人那一侧的招式带着 inner_cost（Boss 的千风掌 10、山魈冲撞 0）是给 Alpha 的"敌人也有
+  -- 内力池"预留的读法，M34-04b 之前它们实际在扣玩家的池子：Boss 每重击一次玩家就少 10 点内力，
+  -- 而玩家内力不足 10 时 `pay_inner` 返回 false → **敌人的这一招被拒**（reason=inner_power）。
+  -- 那既不是 docs/33 §6.1 的任何一格，也让 Boss 战变成"憋着内力不打"的怪手感，所以在这里切断。
+  if attacker_kind == "player" and not pay_inner(skills.inner_cost(skill_id)) then
     return false, "inner_power"
   end
   local windup = math.max(0, math.floor(tonumber(skill.windup) or 0))

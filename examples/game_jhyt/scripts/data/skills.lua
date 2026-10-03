@@ -128,6 +128,30 @@ M.skills = {
     dash_tiles = 3,
     invincible_steps = 15
   },
+  -- 山魈冲撞（M34-04b ⑤，Boss 二阶段）：前摇长（12 步 = 0.2 秒给玩家看出起手）、
+  -- 判定窗长（48 步 = 冲撞全程都开着窗），宽 48 —— 那正是"一头撞过来"的形状。
+  -- **为什么必须 kind=martial**：`enemy.lua` 的冲撞起步时把这一招注册进 `combat.attack`，
+  -- 然后逐格搬动 Boss 的实体；`combat.resolve_hits` 每步按**攻击者当时的位置**重算 hitbox，
+  -- 于是判定窗真的随位移扫过整条路径。kind=movement/guard 不出判定窗（底座直接拒收），
+  -- 那样的"冲撞"只是一段位移，撞不疼任何人。
+  -- 伤害不在这里：敌人的伤害源是 `data/enemies.lua` 的 damage 字段（docs/33 §6.2 那一格），
+  -- 招式只提供判定窗形状与受击反馈（硬直/击退）。这一格的 8 与 Boss 那行的 `damage = 8`
+  -- 是同一个数字的两个写法，`jhyt_m34_skills` ⑤″ 断言两者相等——想改"冲撞比平A更疼"要先把
+  -- 敌方伤害通路扩一条，而不是在这里悄悄改一个没消费方的数。
+  ape_charge = {
+    name = "山魈冲撞",
+    kind = "martial",
+    uses_weapon = false,
+    damage = 8,
+    inner_cost = 0,
+    cooldown = 180,
+    windup = 12,
+    active = 48,
+    range = 40,
+    width = 48,
+    hitstun = 24,
+    knockback = 80
+  },
   -- 守心诀（docs/33 §6.1 的格挡行）：按住即进入格挡，每 60 步（= 1 秒）扣 10 点内力
   -- ——那正是文档那格的「10/秒」；内力不足会自动落防。正面 120° 内的命中只吃 30% 伤害，
   -- 背后挨打一分不减。冷却恒 0：文档那格写的是"持续"，不是冷却。

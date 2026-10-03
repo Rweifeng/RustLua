@@ -1,5 +1,7 @@
-//! Headless acceptance drive for M34-04a：招式扩充的**轻功（追风步）与格挡（守心诀）**
-//! （`data/skills.lua` 的四类 kind + `systems/combat.lua` 的 dash/guard 分支 + `ui/input.lua` 的 H/Z）。
+//! Headless acceptance drive for M34-04：招式扩充的**轻功（追风步）与格挡（守心诀）**
+//! （`data/skills.lua` 的四类 kind + `systems/combat.lua` 的 dash/guard 分支 + `ui/input.lua` 的 H/Z），
+//! 以及 04b 的**山魈首领二阶段（冲撞与召唤）**（`data/enemies.lua` 的 phase2/summon 那组字段 +
+//! `systems/enemy.lua` 的阶段分支，见下面的第⑤″节）。
 //!
 //! 为什么要这一门：`docs/33` §6.1 的「追风步 = 位移 3 格、无敌 0.25 秒」与「守心诀 = 正面减伤
 //! 70%」两行一直挂在 `jhyt_m24_numeric_alignment` ⑤ 的"未实现白名单"里，而 `docs/30` §14 的
@@ -21,6 +23,13 @@
 //!
 //! 另有 11 条数据负例（每类 kind 的专属字段写错、或写了没有消费方的字段，都必须报出来）与
 //! 4 条分派负例（伤害招式不能当轻功放、轻功不能走攻击底座）。
+//!
+//! **04b 加的第⑤″节**（山魈首领二阶段：冲撞、召唤、上界、不入档）合并在本门里跑，不另起
+//! `jhyt_m34_boss` 样例——它用的仍是同一条 60Hz 固定步、同一个 `combat.attack` 底座（判定窗
+//! 由 `resolve_hits` 按攻击者实时位置重算，所以"撞出去的那段位移"本身就是扫过去的判定窗），
+//! 再加 6 条敌人数据负例。这一节同时把 docs/33 §6.2 新表逐格钉回 `data/enemies.lua`，
+//! 并钉住"敌人出手不吃玩家内力"那条修正（旧行为：Boss 千风掌每次扣玩家 10 点内力，
+//! 内力不足时 Boss 那一招还会被 `inner_power` 拒掉）。
 //!
 //! Usage:
 //!   cargo run -p game --example jhyt_m34_skills [-- <game_jhyt-root>]
@@ -104,6 +113,143 @@ const MAP_LINES: &str = "(function() local out = {}; \
       if line:sub(1, 5) == 'dash=' or line:sub(1, 6) == 'guard=' then out[#out + 1] = line end; \
     end; \
     return table.concat(out, ',') end)()";
+
+// ---------- ⑤″ Boss 二阶段的探针 ----------
+
+/// Boss（山魈首领）**当前所在格**起、沿四个主轴方向扫出的第一段 6 格开阔地：
+/// 返回 `x,y,方向序号`（1=东、2=西、3=北、4=南），扫不到返回 `no_span`。
+/// 为什么现场扫：冲撞要沿一条直线撞出 `charge_speed*charge_steps/60` 个单位，路上不能有墙；
+/// 而阶段切换之前 Boss 已经追了玩家一截，落点不是 home 格——写死坐标的那把尺会跟着地图重排
+/// 一起过期（`WEST_EDGE` 那一格同理）。
+const BOSS_SPAN: &str = "(function() local e = require('systems.enemy'); \
+    local q = e.query('enemy_ape_boss'); if not q or not q.live then return 'no_boss' end; \
+    local g = entity.find('GroundMap'); if not g then return 'no_ground' end; \
+    local info = tilemap.get(g); local cx, cy = q.cell_x, q.cell_y; \
+    local dirs = { {1, 0}, {-1, 0}, {0, 1}, {0, -1} }; \
+    for index, d in ipairs(dirs) do \
+      local open = true; \
+      for k = 0, 5 do \
+        local sx, sy = cx + d[1] * k, cy + d[2] * k; \
+        if sx < 1 or sy < 1 or sx >= info.width - 1 or sy >= info.height - 1 \
+          or tilemap.is_solid(g, sx, sy) then open = false; break end; \
+      end; \
+      if open then return tostring(cx) .. ',' .. tostring(cy) .. ',' .. tostring(index) end; \
+    end; \
+    return 'no_span' end)()";
+
+/// 冲撞过程的一步读数：`是否在撞/战斗帧/Boss 的 x/Boss 的 y`（合成一段读，循环里每步只跑一次 exec）。
+const BOSS_READOUT: &str = "(function() local e = require('systems.enemy'); \
+    local q = e.query('enemy_ape_boss'); local id = entity.find_id('enemy_ape_boss'); \
+    if not id or not q or not q.live then return 'gone/0/0/0' end; \
+    local p = transform.get(id); \
+    return (q.charging and 't' or 'f') .. '/' .. tostring(require('systems.combat').frame()) .. '/' .. \
+      tostring(p.x) .. '/' .. tostring(p.y) end)()";
+
+/// 场上敌人数量与冲撞姿态：`活着的召唤物/占用的槽位/本图活着的敌人总数/是否在冲撞`
+/// （任务要点 5 要断言的就是前两格；合成一段读，采样循环里每步只跑一次 exec）。
+const BOSS_POPULATION: &str = "(function() local e = require('systems.enemy'); \
+    local live, occupied, total, charging = 0, 0, 0, 'f'; \
+    for _, row in ipairs(require('data.enemies').list()) do \
+      local q = e.query(row.persist_id); \
+      if q and q.live then total = total + 1 end; \
+      if row.summoned and q and q.summon_active then occupied = occupied + 1; \
+        if q.live then live = live + 1 end end; \
+      if q and row.persist_id == 'enemy_ape_boss' and q.charging then charging = 't' end; \
+    end; \
+    return tostring(live) .. '/' .. tostring(occupied) .. '/' .. tostring(total) .. '/' .. charging end)()";
+
+/// 本图"天然存在的敌人"行数（非召唤槽位）：召唤上界的基数从数据现读，
+/// 以后往寒泉洞再放一只常规敌人，`total` 那条上界会自己跟着长，不会留下一个过期常量。
+const NATIVE_ROWS: &str = "(function() local d = require('data.enemies'); \
+    local here = d.get('enemy_ape_boss').map; local n = 0; \
+    for _, row in ipairs(d.list()) do \
+      if not row.summoned and row.map == here then n = n + 1 end end; \
+    return tostring(n) end)()";
+
+/// `enemy.capture()` 的形状：`rows=N`，或 `leaks:<persist_id>`（槽位进了快照 = 残留）。
+/// 判据用数据里的 `summoned` 标志，而不是 id 里有没有 `whelp` 字样——改名不会让这条断言变哑。
+const ENEMY_CAPTURE_SHAPE: &str = "(function() local d = require('data.enemies'); \
+    local snap = require('systems.enemy').capture(); local n = 0; \
+    for _, row in ipairs(snap.enemies) do n = n + 1; \
+      local def = d.get(row.persist_id); \
+      if def and def.summoned then return 'leaks:' .. tostring(row.persist_id) end end; \
+    return 'rows=' .. tostring(n) end)()";
+
+/// 敌人出手**不吃玩家内力**（docs/33 §6.2 三条口径之③）：把玩家内力写成 5（低于千风掌的
+/// `inner_cost = 10`）再直接注册一次 Boss 的那一招，期望 `true/ok/5`——修掉的旧行为是
+/// `false/inner_power/5`（Boss 打不出这一招）或 `true/ok/-5`（把玩家的池子扣穿）。
+const ENEMY_INNER_PROBE: &str = "(function() local c = require('systems.combat'); \
+    local d = require('data.enemies'); local boss = d.get('enemy_ape_boss'); \
+    require('core.state').inner_power = 5; \
+    local ok, reason = c.attack(entity.find_id('enemy_ape_boss'), 'enemy_ape_boss', boss.name, \
+      'enemy', boss.skill, 'right', boss.damage); \
+    return tostring(ok) .. '/' .. tostring(reason) .. '/' .. \
+      tostring(require('core.state').inner_power) end)()";
+
+/// 召唤槽位这一组的三件事一次读回：`寿命/行数/寿命是否不统一`。行数就是"上界"，
+/// 寿命段只在组内自比（不与文档数字预比较），所以 600 与 601 并存时第三段会报 1。
+const SLOT_SHAPE: &str = "(function() local d = require('data.enemies'); \
+    local group = d.get('enemy_ape_boss').summon_group; \
+    local ttl, rows, differs = -1, 0, 0; \
+    for _, row in ipairs(d.list()) do \
+      if row.summoned and row.summon_group == group then \
+        rows = rows + 1; \
+        if ttl == -1 then ttl = row.summon_ttl or -1 elseif ttl ~= (row.summon_ttl or -1) then differs = 1 end \
+      end end; \
+    return tostring(ttl) .. '/' .. tostring(rows) .. '/' .. tostring(differs) end)()";
+
+/// 敌人侧的数据负例（⑤″ 新加的那组校验）。这六条的共同点是**改错了不会响**：
+/// `phase2_below` 写得比 hp 大 → Boss 只是"从头到尾少一招"；`summon_ttl` 打错一个字母 →
+/// 召唤物永远不死；`summon_group` 拼错 → 每 5 秒什么也没召出来。表现都是"Boss 好像变弱了"，
+/// 所以只能在加载期报出来。每条改坏 → `validate_all` → **立刻改回**，跑完数据仍是干净的。
+const ENEMY_NEGATIVE_CASES: [(&str, &str, &str); 6] = [
+    (
+        "二阶段阈值写得比满血还高（永远进不去）",
+        "local e = require('data.enemies').get('enemy_ape_boss'); local keep = e.phase2_below; \
+           e.phase2_below = e.hp + 10; \
+           local issues = table.concat((select(2, require('data.enemies').validate_all())) or {}, ';'); \
+           e.phase2_below = keep; return issues",
+        "（二阶段永远进不去）",
+    ),
+    (
+        "冲撞招式选了一招轻功（注册不出判定窗）",
+        "local e = require('data.enemies').get('enemy_ape_boss'); local keep = e.charge_skill; \
+           e.charge_skill = 'chase_wind'; \
+           local issues = table.concat((select(2, require('data.enemies').validate_all())) or {}, ';'); \
+           e.charge_skill = keep; return issues",
+        "kind=movement 不出判定窗，撞不到人",
+    ),
+    (
+        "召唤槽位漏了寿命（小怪永远不会散）",
+        "local w = require('data.enemies').get('enemy_ape_whelp_1'); local keep = w.summon_ttl; \
+           w.summon_ttl = nil; \
+           local issues = table.concat((select(2, require('data.enemies').validate_all())) or {}, ';'); \
+           w.summon_ttl = keep; return issues",
+        ".summon_ttl: expected positive integer",
+    ),
+    (
+        "槽位的组名和主人对不上（这一行永远召不出来）",
+        "local w = require('data.enemies').get('enemy_ape_whelp_2'); local keep = w.summon_group; \
+           w.summon_group = 'ape_whelp'; \
+           local issues = table.concat((select(2, require('data.enemies').validate_all())) or {}, ';'); \
+           w.summon_group = keep; return issues",
+        ".summon_group: does not match owner",
+    ),
+    (
+        "普通敌人行写了 phase2_below（没有消费方）",
+        "local w = require('data.enemies').get('enemy_wolf'); w.phase2_below = 5; \
+           local issues = table.concat((select(2, require('data.enemies').validate_all())) or {}, ';'); \
+           w.phase2_below = nil; return issues",
+        "这个数字没有消费方",
+    ),
+    (
+        "敌人记录里多写一个没人读的键",
+        "local e = require('data.enemies').get('enemy_ape_boss'); e.roar = 1; \
+           local issues = table.concat((select(2, require('data.enemies').validate_all())) or {}, ';'); \
+           e.roar = nil; return issues",
+        ": unknown enemy key",
+    ),
+];
 
 /// 数据负例：`(标题, Lua 片段, 期望片段)`。每条先把 `data/skills.lua` 改坏、跑 `validate_all`、
 /// **再改回来**，所以本门跑完之后数据仍是干净的（第⑨节末尾会再验一次）。
@@ -297,13 +443,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "  维持节奏 = 每 {guard_period:.0} 步扣 {guard_cost:.0} 点内力 = 文档那一格「10/秒」在 60Hz 下的唯一读法"
     );
 
-    assert_num(&mut rt, "#require('data.skills').ids()", 7.0)?;
+    assert_num(&mut rt, "#require('data.skills').ids()", 8.0)?;
     assert_str(
         &mut rt,
         "tostring(require('data.skills').validate_all())",
         "true",
     )?;
-    println!("  7 条招式、validate_all 全绿（四类 kind 的专属字段各有消费方）");
+    println!(
+        "  8 条招式、validate_all 全绿（四类 kind 的专属字段各有消费方；第 8 条是 Boss 的山魈冲撞，见⑤″）"
+    );
     // kind 分派的唯一判据：伤害类出判定窗，轻功/格挡不出（底座因此拒收后两类，见第⑧节）。
     assert_str(
         &mut rt,
@@ -732,8 +880,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if meditate.len() < 4 {
         return Err(format!("§3 打坐行格式不符（期望 4 列）：{meditate:?}").into());
     }
-    let meditate_gain = first_number(&meditate[3])
-        .ok_or(format!("§3 打坐「产出/效果」列里没有数字：{:?}", meditate[3]))?;
+    let meditate_gain = first_number(&meditate[3]).ok_or(format!(
+        "§3 打坐「产出/效果」列里没有数字：{:?}",
+        meditate[3]
+    ))?;
     // 起点与上限也从 §2.2 那张表读：文档改数字，这一节跟着动（`ui/input.lua` 的
     // `min(100, …)` 与 `core/state.lua` 的 `inner_power = 50` 就是被这两格钉住的）。
     let attr_rows = markdown_table(&design, "属性")?;
@@ -744,7 +894,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         meditate[3]
     ));
     let practice_key = KeyCode::from_char('q').expect("QWERTY 字符必须有对应物理键");
-    lua(&mut rt, &format!("require('core.state').inner_power = {inner_start}"))?;
+    lua(
+        &mut rt,
+        &format!("require('core.state').inner_power = {inner_start}"),
+    )?;
     hold(&mut rt, &[practice_key], 1)?;
     assert_num(
         &mut rt,
@@ -763,10 +916,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         inner_start + meditate_gain
     );
     // 封顶：离上限只差 2 点时也只能加到上限。
-    lua(&mut rt, &format!("require('core.state').inner_power = {}", inner_max - 2.0))?;
+    lua(
+        &mut rt,
+        &format!("require('core.state').inner_power = {}", inner_max - 2.0),
+    )?;
     hold(&mut rt, &[practice_key], 1)?;
     assert_num(&mut rt, "require('core.state').inner_power", inner_max)?;
-    println!("  内力 {:.0} 再按一次 = {inner_max:.0}（夹在上限，不会加过头）", inner_max - 2.0);
+    println!(
+        "  内力 {:.0} 再按一次 = {inner_max:.0}（夹在上限，不会加过头）",
+        inner_max - 2.0
+    );
     // HUD 侧的同一格：打坐把提示写成中文句子（m24 锁的是文档单元格文本，这里锁玩家看到的句子）。
     let line = query_str(&mut rt, "require('ui.hud').feedback_line()")?;
     if !line.contains("打坐") {
@@ -777,6 +936,498 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .into());
     }
     println!("  提示区：{line}");
+
+    // ---------------- ⑤″ 山魈首领二阶段：冲撞、召唤、上界、不入档 ----------------
+    // `docs/30` §6 承诺的"重击、冲撞、召唤小怪"里后两样的落地证明。整节在 Boss 所在那张图跑
+    // （地图 id 从 `data/enemies.lua` 现读，不写死图名），跑完切回演武场——⑥ 以后的用例要用训练木人。
+    let boss_rows = markdown_table(&design, "Boss 行为")?;
+    let doc_below = doc_row_number(&boss_rows, "phase2_below", 1)?;
+    let doc_charge_speed = doc_row_number(&boss_rows, "charge_speed", 1)?;
+    let doc_charge_steps = doc_row_number(&boss_rows, "charge_steps", 1)?;
+    let doc_charge_cd = doc_row_number(&boss_rows, "charge_cooldown", 1)?;
+    let doc_interval = doc_row_number(&boss_rows, "summon_interval", 1)?;
+    let doc_ttl = doc_row_number(&boss_rows, "summon_ttl", 1)?;
+    let doc_cap = doc_row_number(&boss_rows, "summon_cap", 1)?;
+
+    let enemy_def = "require('data.enemies')";
+    let boss_ref = format!("{enemy_def}.get('enemy_ape_boss')");
+    let boss_map = query_str(&mut rt, &format!("{boss_ref}.map"))?;
+    let boss_name = query_str(&mut rt, &format!("{boss_ref}.name"))?;
+    let boss_hp = query_num(&mut rt, &format!("{boss_ref}.hp"))?;
+    let boss_damage = query_num(&mut rt, &format!("{boss_ref}.damage"))?;
+    let boss_below = query_num(&mut rt, &format!("{boss_ref}.phase2_below"))?;
+    let boss_charge_speed = query_num(&mut rt, &format!("{boss_ref}.charge_speed"))?;
+    let boss_charge_steps = query_num(&mut rt, &format!("{boss_ref}.charge_steps"))?;
+    let boss_interval = query_num(&mut rt, &format!("{boss_ref}.summon_interval"))?;
+    let charge_cooldown = skill_num(&mut rt, "ape_charge", "cooldown")?;
+    let charge_damage = skill_num(&mut rt, "ape_charge", "damage")?;
+    let charge_windup = skill_num(&mut rt, "ape_charge", "windup")?;
+    let charge_active = skill_num(&mut rt, "ape_charge", "active")?;
+    // 上界**不另立一个 `max_alive` 数字**：组里有几行槽位 = 场上同时存在几只，一份事实。
+    // 寿命一次读回"组里第一行的值 + 行数是几 + 后面有没有行跟它不一样"：拿文档的 600 去数
+    // "等于 600 的行数"是自我循环（写错的那个数字反而不会被数进去），所以判据只认数据自己。
+    let slot_shape = probe_fields(&mut rt, SLOT_SHAPE)?;
+    if slot_shape.len() != 3 {
+        return Err(format!("召唤槽位读数的形状变了：{slot_shape:?}（期望 3 段）").into());
+    }
+    let (slot_ttl, slot_rows, slot_ttl_differs) = (slot_shape[0], slot_shape[1], slot_shape[2]);
+    if slot_ttl_differs > 0.5 {
+        return Err(
+            "同一组召唤槽位的 summon_ttl 不是同一个数字：「上界 2 只」底下藏着两套寿命计时器"
+                .into(),
+        );
+    }
+    let enemy_rows = query_num(&mut rt, &format!("#{enemy_def}.list()"))?;
+    let native_rows = query_num(&mut rt, NATIVE_ROWS)?;
+
+    banner(&format!(
+        "M34-04b⑤″ docs/33 §6.2「Boss 行为」表 == 数据：{boss_name}（{boss_map}）二阶段的冲撞与召唤，上界 {doc_cap:.0} 只"
+    ));
+    let boss_pairs: [(&str, f64, f64); 7] = [
+        ("phase2_below（气血阈值）", doc_below, boss_below),
+        (
+            "charge_speed（冲撞速度）",
+            doc_charge_speed,
+            boss_charge_speed,
+        ),
+        (
+            "charge_steps（冲撞步数）",
+            doc_charge_steps,
+            boss_charge_steps,
+        ),
+        (
+            "charge_cooldown（= data/skills.lua:ape_charge.cooldown，AI 不自建计时器）",
+            doc_charge_cd,
+            charge_cooldown,
+        ),
+        ("summon_interval（补槽间隔）", doc_interval, boss_interval),
+        ("summon_ttl（召唤物寿命）", doc_ttl, slot_ttl),
+        ("summon_cap（= 组里的槽位数）", doc_cap, slot_rows),
+    ];
+    for (label, doc_value, data_value) in &boss_pairs {
+        if (doc_value - data_value).abs() > 1e-9 {
+            return Err(format!("{label}：docs/33 = {doc_value}，数据 = {data_value}").into());
+        }
+        println!("  {label} = {data_value}");
+    }
+    if (boss_below * 2.0 - boss_hp).abs() > 1e-9 {
+        return Err(format!(
+            "文档那一格写的是「满血 {boss_hp:.0} 的一半」，实际阈值 = {boss_below:.0}"
+        )
+        .into());
+    }
+    if (charge_damage - boss_damage).abs() > 1e-9 {
+        return Err(format!(
+            "口径①破了：ape_charge.damage = {charge_damage}，Boss 的 damage = {boss_damage}——\
+             敌人的伤害源只有 `data/enemies.lua` 那一处，招式那格必须是相等的镜像"
+        )
+        .into());
+    }
+    println!(
+        "  镜像与文案：冲撞伤害 = Boss damage = {boss_damage:.0}；阈值 {boss_below:.0} = 满血 {boss_hp:.0} 的一半"
+    );
+    println!(
+        "  判定窗形状（文档没有对应列，是实现口径）：前摇 {charge_windup:.0} 步 + 开窗 {charge_active:.0} 步 = {:.0} 步，\
+         而冲撞最多走 {boss_charge_steps:.0} 步——窗比腿长，撞到底也不会提前关门",
+        charge_windup + charge_active
+    );
+
+    open_scene(&mut rt, &boss_map)?;
+    lua(&mut rt, "require('systems.combat').reset()")?;
+    // 一阶段：新进图 Boss 满血，二阶段的两样本事都该被 hp 挡住。玩家站在洞口出生点不动，
+    // Boss 自己追过来——这 200 步同时用来证明**AI 一直在决策**，否则"没召唤"只是"没醒着"。
+    let mut phase1_live = 0.0;
+    let mut phase1_charged = false;
+    for _ in 0..200 {
+        frames(&mut rt, 1)?;
+        let pop = probe_fields(&mut rt, BOSS_POPULATION)?;
+        if pop[0] > phase1_live {
+            phase1_live = pop[0];
+        }
+        if pop[3] > 0.5 {
+            phase1_charged = true;
+        }
+    }
+    assert_num(
+        &mut rt,
+        "require('systems.enemy').query('enemy_ape_boss').phase",
+        1.0,
+    )?;
+    if phase1_live != 0.0 || phase1_charged {
+        return Err(format!(
+            "hp 还没掉过阈值就出现了召唤/冲撞（幼崽最多 {phase1_live:.0} 只、起冲过 {} 次）：阶段判据漏了",
+            if phase1_charged { "1" } else { "0" }
+        )
+        .into());
+    }
+    let phase1_state = query_str(
+        &mut rt,
+        "require('systems.enemy').query('enemy_ape_boss').state",
+    )?;
+    let boss_attacks = query_num(&mut rt, "require('systems.combat').stats().attacks")?;
+    if phase1_state != "chase" && phase1_state != "attack" {
+        return Err(format!(
+            "一阶段这 200 步里 Boss 的 state={phase1_state}（既没追也没打）：\
+             \"没召唤\"这条观察是假绿，得先让 AI 醒着"
+        )
+        .into());
+    }
+    println!(
+        "  一阶段 200 步：召唤 0 只、冲撞 0 次，而 Boss 一直在决策（state={phase1_state}、这一局出手 {boss_attacks:.0} 次）"
+    );
+
+    // 口径③：敌人出手不吃玩家内力。内力写成 5（低于千风掌的 inner_cost=10）再直接注册一次。
+    lua(&mut rt, "require('systems.combat').reset()")?;
+    assert_str(&mut rt, ENEMY_INNER_PROBE, "true/ok/5")?;
+    println!(
+        "  口径③：玩家内力只有 5 点（< 千风掌的 inner_cost）时 Boss 照打，池子还是 5——\
+         旧的错误读法要么是 false/inner_power（Boss 打不出这一招），要么是内力被扣穿"
+    );
+
+    // 开阔带：从 Boss 当前格沿主轴方向现场扫出 6 格无墙的一条（Boss 刚追过玩家，落点不是 home 格）。
+    let (stand, dir, dir_name) = boss_span(&mut rt)?;
+    let wall = (stand.0 + dir.0 * 2.0, stand.1 + dir.1 * 2.0);
+    println!(
+        "  冲撞用的开阔带 = 格({:.0},{:.0}) 沿{dir_name} 6 格无墙（现场扫的；玩家钉在同方向第 4 格 = 128 单位外，够得着但打不着）",
+        stand.0, stand.1
+    );
+    anchor_boss_witness(&mut rt, dir, 4.0)?;
+    lua(&mut rt, "require('systems.combat').reset()")?;
+    let after_hit = query_str(
+        &mut rt,
+        &format!(
+            "(function() local e = require('systems.enemy'); \
+               local q = e.query('enemy_ape_boss'); \
+               return tostring(e.hit(entity.find_id('enemy_ape_boss'), q.hp - {boss_below})) end)()"
+        ),
+    )?;
+    if after_hit != format!("{boss_below:.0}") {
+        return Err(format!(
+            "把 Boss 打到阈值那一格失败：enemy.hit 返回 {after_hit:?}，期望 {boss_below:.0}（后面的观察全都不成立）"
+        )
+        .into());
+    }
+    assert_num(
+        &mut rt,
+        "require('systems.enemy').query('enemy_ape_boss').phase",
+        2.0,
+    )?;
+    // 二阶段的**第一步**：补满空槽位 + 注册冲撞（同一格里两件事都发生，而注册那一步不位移）。
+    frames(&mut rt, 1)?;
+    let (started, start_frame, x0, y0) = charge_readout(&mut rt)?;
+    if !started {
+        return Err("掉到阈值之后第一步没起冲：距离/冷却/阶段至少一条不对".into());
+    }
+    let cells = summon_slot_cells(&mut rt, stand)?;
+    if cells != "ok" {
+        return Err(format!("召唤落点与数据里的 summon_offset 对不上：{cells}").into());
+    }
+    let born = probe_fields(&mut rt, BOSS_POPULATION)?;
+    if born[0] != doc_cap || born[1] != doc_cap {
+        return Err(format!(
+            "进二阶段的第一步该一次召满 {doc_cap:.0} 只，实际活着的 {:.0} 只、占用的槽位 {:.0} 个",
+            born[0], born[1]
+        )
+        .into());
+    }
+    println!(
+        "  二阶段第一步：一次召满 {doc_cap:.0} 只幼崽（落点 = 主人格 ± 数据的 summon_offset），同时起冲"
+    );
+
+    // 撞墙提前停：在路径第 2 格现造一堵墙（`tilemap.set_solid`，`9277524` 给的那条 API）。
+    // 为什么要现造：开阔带里本来没有墙，"撞出去 100 单位"这一路撞不到东西，那半条口径就没证据。
+    set_cell_solid(&mut rt, wall, true)?;
+    if !cell_is_solid(&mut rt, wall)? {
+        return Err(format!(
+            "tilemap.set_solid 没把格({:.0},{:.0}) 变成 solid：撞墙观察不成立",
+            wall.0, wall.1
+        )
+        .into());
+    }
+    let mut wall_run = ChargeRun::at(start_frame, x0, y0);
+    charge_finish(
+        &mut rt,
+        dir,
+        4.0,
+        &mut wall_run,
+        (boss_charge_steps + 20.0) as usize,
+    )?;
+    let full_moved = boss_speed_distance(boss_charge_speed, boss_charge_steps);
+    if wall_run.moved >= 2.0 * TILE {
+        return Err(format!(
+            "撞到 solid 之后还在往前走：位移 {:.1} 单位，而墙就在第 2 格（{:.0} 单位外）——不穿墙那条破了",
+            wall_run.moved, 2.0 * TILE
+        )
+        .into());
+    }
+    if wall_run.steps as f64 >= boss_charge_steps {
+        return Err(format!(
+            "撞墙那次走满了 {boss_charge_steps:.0} 步（位移 {:.1}）：提前结束没实现",
+            wall_run.moved
+        )
+        .into());
+    }
+    let landed = boss_cell(&mut rt)?;
+    if cell_is_solid(&mut rt, landed)? {
+        return Err(format!(
+            "冲撞结束时 Boss 停在 solid 格({:.0},{:.0}) 里（穿墙）",
+            landed.0, landed.1
+        )
+        .into());
+    }
+    println!(
+        "  撞墙提前停：{} 步 / {:.1} 单位就收住（满打满算该走 {full_moved:.1} 单位），落点格({:.0},{:.0}) 不是 solid",
+        wall_run.steps, wall_run.moved, landed.0, landed.1
+    );
+    set_cell_solid(&mut rt, wall, false)?;
+    if cell_is_solid(&mut rt, wall)? {
+        return Err(format!(
+            "墙没拆掉：格({:.0},{:.0}) 还是 solid，后面的观察会被它挡住",
+            wall.0, wall.1
+        )
+        .into());
+    }
+
+    // 满程冲撞：没有墙时走满 charge_steps，位移 = charge_speed × charge_steps / 60。
+    lua(&mut rt, "require('systems.combat').reset()")?;
+    let (stand2, dir2, dir2_name) = boss_span(&mut rt)?;
+    let free_run = charge_measure(
+        &mut rt,
+        dir2,
+        4.0,
+        (boss_charge_steps + 60.0) as usize,
+        (boss_charge_steps + 40.0) as usize,
+    )?;
+    if (free_run.moved - full_moved).abs() > 0.05 {
+        return Err(format!(
+            "满程冲撞走了 {:.1} 单位 / {} 步（每步均摊 {:.4}），期望 {full_moved:.1} \
+             （= charge_speed {boss_charge_speed:.0} × charge_steps {boss_charge_steps:.0} / 60Hz，\
+             每步 {:.4}）",
+            free_run.moved,
+            free_run.steps,
+            free_run.moved / free_run.steps.max(1) as f64,
+            boss_charge_speed / HZ,
+        )
+        .into());
+    }
+    if free_run.steps as f64 != boss_charge_steps {
+        return Err(format!(
+            "满程冲撞走了 {} 步，期望 {boss_charge_steps:.0} 步",
+            free_run.steps
+        )
+        .into());
+    }
+    if free_run.drift.abs() > 1e-6 {
+        return Err(format!(
+            "冲撞偏离了起手定下的直线（横向漂 {:.3} 单位）：方向该钉在注册那一刻",
+            free_run.drift
+        )
+        .into());
+    }
+    println!(
+        "  满程冲撞 = {} 步 / {:.1} 单位（沿{dir2_name}一条直线，横向漂移 {:.4}）；起点格({:.0},{:.0})",
+        free_run.steps, free_run.moved, free_run.drift, stand2.0, stand2.1
+    );
+    if free_run.start_frame <= start_frame {
+        return Err(format!(
+            "第二次起冲的时刻（帧 {:.0}）不比第一次（{start_frame:.0}）晚：帧计数倒退了",
+            free_run.start_frame
+        )
+        .into());
+    }
+
+    // 口径②：冲撞的节流只有招式冷却这一份——从上一次**起冲那一帧**算起，下一次正好晚 cooldown 步。
+    let throttled = charge_start(&mut rt, dir2, 4.0, (charge_cooldown + 30.0) as usize)?;
+    let gap = throttled.start_frame - free_run.start_frame;
+    if (gap - charge_cooldown).abs() > 1e-9 {
+        return Err(format!(
+            "两次起冲间隔 {gap:.0} 步，而 ape_charge.cooldown = {charge_cooldown:.0}：\
+             AI 里还藏了第二个计时器（或者冷却没生效）"
+        )
+        .into());
+    }
+    println!(
+        "  口径②：两次起冲正好间隔 {gap:.0} 步 = data/skills.lua 那一条 cooldown（AI 没有第二个计时器）"
+    );
+
+    // 上界、寿命与"退场是把槽位还回去"：沿整条时间轴逐步采样。
+    // 为什么要走满 `interval*2 + ttl` 这一截：召唤物的一生要有**三次状态变化**才说明白——
+    // 召满（上界真的到得了）、寿命到集体退场（ttl 真的在扣）、空槽位重新召满（退场不是永久烧掉机会）。
+    let mut max_live: f64 = 0.0;
+    let mut max_total: f64 = 0.0;
+    let mut saw_full = false;
+    let mut drop_step = -1.0;
+    let mut rise_step = -1.0;
+    let sample_limit = (boss_interval * 2.0 + doc_ttl) as usize + 180;
+    for step in 0..sample_limit {
+        if step % 5 == 0 {
+            anchor_boss_witness(&mut rt, dir2, 4.0)?;
+        }
+        frames(&mut rt, 1)?;
+        let pop = probe_fields(&mut rt, BOSS_POPULATION)?;
+        let live = pop[0];
+        let total = pop[2];
+        if live > doc_cap {
+            return Err(format!(
+                "第 {step} 步场上有 {live:.0} 只幼崽，越过上界 {doc_cap:.0}（= 组里的槽位数）"
+            )
+            .into());
+        }
+        if total > native_rows + doc_cap {
+            return Err(format!(
+                "第 {step} 步场上敌人总数 {total:.0}，越过 本图天然敌人 {native_rows:.0} + 上界 {doc_cap:.0}"
+            )
+            .into());
+        }
+        max_live = max_live.max(live);
+        max_total = max_total.max(total);
+        if live >= doc_cap {
+            if drop_step >= 0.0 {
+                rise_step = step as f64;
+                break;
+            }
+            saw_full = true;
+        } else if saw_full && drop_step < 0.0 && live == 0.0 {
+            drop_step = step as f64;
+        }
+    }
+    if drop_step < 0.0 || rise_step < 0.0 {
+        return Err(format!(
+            "采满 {sample_limit} 步没看到完整的\"召满→集体退场→再召满\"（saw_full={saw_full} \
+             drop={drop_step:.0} rise={rise_step:.0}；ttl={doc_ttl:.0}、interval={boss_interval:.0}）：\
+             寿命没在扣，或槽位没还回去"
+        )
+        .into());
+    }
+    println!(
+        "  上界与寿命：采样 {sample_limit} 步内最多同时 {max_live:.0} 只（上界 {doc_cap:.0}）、\
+         场上敌人总数最多 {max_total:.0}（天然 {native_rows:.0} + 上界）；第 {drop_step:.0} 步寿命到集体退场，\
+         第 {rise_step:.0} 步又召满——槽位是还回去的，不是烧掉的"
+    );
+
+    // 不入档：槽位正在场上的时候快照里也不能有它们（读档回来就成了没有主人的孤儿实体）。
+    assert_str(
+        &mut rt,
+        ENEMY_CAPTURE_SHAPE,
+        &format!("rows={:.0}", enemy_rows - slot_rows),
+    )?;
+    println!(
+        "  enemy.capture() 只有 {:.0} 行（= 全部 {enemy_rows:.0} 行 − 槽位 {slot_rows:.0} 行），召唤物不入档",
+        enemy_rows - slot_rows
+    );
+
+    // 切图不残留：寒泉洞 → 演武场 → 寒泉洞，两次都要是零。
+    open_scene(&mut rt, "combat_arena")?;
+    frames(&mut rt, 2)?;
+    let arena_pop = probe_fields(&mut rt, BOSS_POPULATION)?;
+    if arena_pop[0] != 0.0 || arena_pop[1] != 0.0 {
+        return Err(format!(
+            "切到演武场之后召唤物还在（活 {:.0} 只、槽位占着 {:.0} 个）",
+            arena_pop[0], arena_pop[1]
+        )
+        .into());
+    }
+    open_scene(&mut rt, &boss_map)?;
+    frames(&mut rt, 2)?;
+    let back_pop = probe_fields(&mut rt, BOSS_POPULATION)?;
+    if back_pop[0] != 0.0 || back_pop[1] != 0.0 {
+        return Err(format!(
+            "切回{boss_map}当步就挂着上一局的幼崽（活 {:.0} 只、槽位 {:.0} 个）：残留",
+            back_pop[0], back_pop[1]
+        )
+        .into());
+    }
+    assert_num(
+        &mut rt,
+        "require('systems.enemy').query('enemy_ape_boss').phase",
+        2.0,
+    )?;
+    println!(
+        "  切图（{boss_map}→演武场→{boss_map}）：召唤物清零、二阶段还在（阶段从 hp 推，切图/存读档都退不回一阶段）"
+    );
+
+    // Boss 倒下 = 它召出来的东西一起退场（小怪不能比主人活得久）。
+    let mut reborn = 0usize;
+    let live_now = loop {
+        if reborn.is_multiple_of(5) {
+            anchor_boss_witness(&mut rt, dir2, 4.0)?;
+        }
+        frames(&mut rt, 1)?;
+        reborn += 1;
+        let live = probe_fields(&mut rt, BOSS_POPULATION)?[0];
+        if live >= 1.0 || reborn > (boss_interval + 60.0) as usize {
+            break live;
+        }
+    };
+    if live_now < 1.0 {
+        return Err(format!(
+            "切图回来等满 {reborn} 步 Boss 都没再召出一只：summon_interval={boss_interval:.0} 或槽位归还不成立"
+        )
+        .into());
+    }
+    let killed = query_str(
+        &mut rt,
+        "(function() local e = require('systems.enemy'); local q = e.query('enemy_ape_boss'); \
+           return tostring(e.hit(entity.find_id('enemy_ape_boss'), q.hp)) end)()",
+    )?;
+    if killed != "0" {
+        return Err(format!(
+            "这一刀没把 Boss 打死（enemy.hit 返回 {killed:?}）：\"倒下即散\"观察不到"
+        )
+        .into());
+    }
+    let after_boss_death = probe_fields(&mut rt, BOSS_POPULATION)?;
+    if after_boss_death[0] != 0.0 || after_boss_death[1] != 0.0 {
+        return Err(format!(
+            "Boss 倒下后场上还剩 {:.0} 只幼崽（槽位占着 {:.0} 个）：小怪比主人活得久",
+            after_boss_death[0], after_boss_death[1]
+        )
+        .into());
+    }
+    assert_str(
+        &mut rt,
+        "require('systems.enemy').query('enemy_ape_boss').alive",
+        "false",
+    )?;
+    assert_str(
+        &mut rt,
+        ENEMY_CAPTURE_SHAPE,
+        &format!("rows={:.0}", enemy_rows - slot_rows),
+    )?;
+    println!(
+        "  Boss 倒下即散：召着的 {live_now:.0} 只一起退场、槽位全部归还，快照仍是 {:.0} 行（死人入档、活小怪不入档）",
+        enemy_rows - slot_rows
+    );
+    println!(
+        "  （这一刀会走既有的击杀掉落通路：Boss 的铜钱/物品入账本门不复查，掉落表由 jhyt_m28_loop 钉）"
+    );
+
+    // 敌人侧数据负例：这六条改错了都不会响，只能靠加载期报错抓住。
+    for (label, code, want) in ENEMY_NEGATIVE_CASES {
+        let issues = query_str(&mut rt, code)?;
+        if issues.is_empty() {
+            return Err(format!(
+                "{label}：data/enemies.lua 的 validate_all 没报出来（这条静默通过了）"
+            )
+            .into());
+        }
+        if !issues.contains(want) {
+            return Err(format!("{label}：报错文案里没有 {want:?}，实际 {issues}").into());
+        }
+        println!("  {label} → {want}");
+    }
+    assert_str(
+        &mut rt,
+        &format!("tostring({enemy_def}.validate_all())"),
+        "true",
+    )?;
+    println!(
+        "  {} 条敌人数据负例跑完，data/enemies.lua 仍然全绿（每条都改了又改回去）",
+        ENEMY_NEGATIVE_CASES.len()
+    );
+
+    // ⑥ 以后的用例要用演武场的训练木人，先把场景切回去。
+    open_scene(&mut rt, "combat_arena")?;
 
     // ---------------- ⑥ 瞬时状态 ----------------
     banner("M34-04⑥ 格挡与硬直/无敌帧/中毒同类：倒地即落防、capture 里没有 guard、读档必清");
@@ -935,11 +1586,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "\njhyt_m34_skills_ok project={} dash_tiles={dash_tiles:.0} dash_cost={inner_cost:.0} \
          dash_iframes={iframes:.0} clip={} front={front_expected:.0} back={after_flat:.0} \
          defense={defense:.0} meditate=+{meditate_gain:.0}/{inner_max:.0} \
-         absorb={absorb} period={guard_period:.0} edge_log={edge_log} hud={} map_lines={}",
+         absorb={absorb} period={guard_period:.0} edge_log={edge_log} hud={} map_lines={} \
+         boss={boss_name}@{boss_map} phase2={boss_below:.0}/{boss_hp:.0} \
+         charge={:.1}px/{boss_charge_steps:.0}steps gap={gap:.0} \
+         summon_cap={doc_cap:.0} summon_ttl={doc_ttl:.0} live_max={max_live:.0}/{max_total:.0} \
+         drop={drop_step:.0} rise={rise_step:.0} enemy_neg={}",
         project.display(),
         clip_report.join("/"),
         hud_texts.join(","),
-        lines
+        lines,
+        free_run.moved,
+        ENEMY_NEGATIVE_CASES.len(),
     );
     Ok(())
 }
@@ -1106,6 +1763,275 @@ fn player_pos(runtime: &mut LuaRuntime) -> Result<(f64, f64), Box<dyn std::error
     let x = query_num(runtime, "require('player.player').position().x")?;
     let y = query_num(runtime, "require('player.player').position().y")?;
     Ok((x, y))
+}
+
+// ---------- ⑤″ Boss 二阶段的驱动 ----------
+
+/// `BOSS_SPAN` 认的四个主轴方向（探针返回的序号 1..4 对应这里）。
+const SPAN_DIRS: [((f64, f64), &str); 4] = [
+    ((1.0, 0.0), "东"),
+    ((-1.0, 0.0), "西"),
+    ((0.0, 1.0), "北"),
+    ((0.0, -1.0), "南"),
+];
+
+/// 把 `a/b/c` 形态的一次性探针读数拆成数字（`t`/`f` 记 1/0）。
+/// 合成一段读是为了采样循环里每步只跑一次 exec；形状不对就当失败，不猜。
+fn probe_fields(
+    runtime: &mut LuaRuntime,
+    expr: &str,
+) -> Result<Vec<f64>, Box<dyn std::error::Error>> {
+    let raw = query_str(runtime, expr)?;
+    let mut out = Vec::new();
+    for field in raw.split('/') {
+        let value = match field {
+            "t" => 1.0,
+            "f" => 0.0,
+            other => other
+                .parse::<f64>()
+                .map_err(|error| format!("{expr} → {raw:?}：{other:?} 不是数字（{error}）"))?,
+        };
+        out.push(value);
+    }
+    Ok(out)
+}
+
+/// `BOSS_READOUT`：`(是否在冲撞, 战斗帧, Boss 的 x, Boss 的 y)`。
+fn charge_readout(
+    runtime: &mut LuaRuntime,
+) -> Result<(bool, f64, f64, f64), Box<dyn std::error::Error>> {
+    let fields = probe_fields(runtime, BOSS_READOUT)?;
+    if fields.len() != 4 {
+        return Err(format!("冲撞读数的形状变了：{fields:?}（期望 4 段）").into());
+    }
+    Ok((fields[0] > 0.5, fields[1], fields[2], fields[3]))
+}
+
+/// Boss 当前所在格（`enemy.query` 走的是实体实时位置，不是数据里的 home）。
+fn boss_cell(runtime: &mut LuaRuntime) -> Result<(f64, f64), Box<dyn std::error::Error>> {
+    let x = query_num(
+        runtime,
+        "require('systems.enemy').query('enemy_ape_boss').cell_x",
+    )?;
+    let y = query_num(
+        runtime,
+        "require('systems.enemy').query('enemy_ape_boss').cell_y",
+    )?;
+    Ok((x, y))
+}
+
+/// `BOSS_SPAN` 的读数 → `（Boss 当前格, 开阔方向的单位向量, 方向名）`。
+type BossSpan = ((f64, f64), (f64, f64), &'static str);
+
+fn boss_span(runtime: &mut LuaRuntime) -> Result<BossSpan, Box<dyn std::error::Error>> {
+    let raw = query_str(runtime, BOSS_SPAN)?;
+    let fields: Vec<f64> = raw
+        .split(',')
+        .map(|part| {
+            part.parse::<f64>()
+                .map_err(|_| format!("开阔带没扫出来：{raw:?}（期望 x,y,方向序号）"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if fields.len() != 3 {
+        return Err(format!("开阔带读数形状变了：{raw:?}").into());
+    }
+    let index = fields[2] as usize;
+    let Some((dir, name)) = index
+        .checked_sub(1)
+        .and_then(|slot| SPAN_DIRS.get(slot))
+        .map(|(dir, name)| (*dir, *name))
+    else {
+        return Err(format!("开阔带的方向序号越界：{raw:?}").into());
+    };
+    Ok(((fields[0], fields[1]), dir, name))
+}
+
+/// 冲撞的理论满程位移：`charge_speed`（世界单位/秒）× `charge_steps` / 60Hz 固定步。
+fn boss_speed_distance(speed: f64, steps: f64) -> f64 {
+    speed * steps / HZ
+}
+
+/// 把玩家钉在 Boss **实时位置**沿 `dir` 方向 `witness` 格处，并补满气血。
+/// 为什么用实时位置而不是所在格格心：`start_charge` 把方向钉成"注册那一步指向玩家的
+/// 单位向量"，而 Boss 的实际 y 从来不在格心上（差 15.9 单位）——按格心钉人会让冲撞斜着走，
+/// "沿一条直线、位移 = 速度×步数"这两条断言量的就不是 `BOSS_SPAN` 扫出来的那排格子了。
+/// 为什么要每步重钉：`witness` 格决定 AI 选哪一手——第 4 格（128 单位）既大于
+/// `attack_range`（48，否则这一步就走去打人了）又小于 `aggro_radius`（300，否则它回待机）。
+/// 气血也必须补：玩家一死全部敌人停手（`tick_actor` 的 is_player_dead 分支），
+/// 那会把"没越过上界"读成一条假绿。
+fn anchor_boss_witness(
+    runtime: &mut LuaRuntime,
+    dir: (f64, f64),
+    witness: f64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let code = format!(
+        "(function() local e = require('systems.enemy'); local id = entity.find_id('enemy_ape_boss'); \
+           local q = e.query('enemy_ape_boss'); \
+           if not q or not q.live or not id then return end; \
+           local p = transform.get(id); \
+           require('player.player').teleport(p.x + {} * {} * 32, p.y + {} * {} * 32); \
+           local c = require('systems.combat'); c.set_player_hp(c.player_max_hp()) end)()",
+        dir.0, witness, dir.1, witness
+    );
+    lua(runtime, &code)
+}
+
+/// 把某一格的 solid 标志改掉（`9277524` 为 WebGL 补的那条 API，本门用它现造一堵墙）。
+fn set_cell_solid(
+    runtime: &mut LuaRuntime,
+    cell: (f64, f64),
+    solid: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    lua(
+        runtime,
+        &format!(
+            "tilemap.set_solid(entity.find('GroundMap'), {}, {}, {})",
+            cell.0, cell.1, solid
+        ),
+    )
+}
+
+/// 某一格是不是 solid（越界按"不是墙"算，与 `enemy.lua` 的 `cell_solid` 同一口径）。
+fn cell_is_solid(
+    runtime: &mut LuaRuntime,
+    cell: (f64, f64),
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let raw = query_str(
+        runtime,
+        &format!(
+            "(function() local ok, v = pcall(tilemap.is_solid, entity.find('GroundMap'), {}, {}); \
+               return tostring(ok and v == true) end)()",
+            cell.0, cell.1
+        ),
+    )?;
+    match raw.as_str() {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        other => Err(format!("solid 读数不是 true/false：{other:?}").into()),
+    }
+}
+
+/// 每只幼崽的实际落格 vs「主人起冲那一步的格子 + 数据里的 `summon_offset`」；
+/// 偏移格是 solid 时期望退回主人脚下那一格（`summon_slots` 的兜底，与击退/轻功同一口径）。
+/// 全部对上返回 `ok`，否则带回每一行的差异。
+fn summon_slot_cells(
+    runtime: &mut LuaRuntime,
+    stand: (f64, f64),
+) -> Result<String, Box<dyn std::error::Error>> {
+    let expr = format!(
+        "(function() local e = require('systems.enemy'); local d = require('data.enemies'); \
+           local g = entity.find('GroundMap'); local bad = {{}}; \
+           for _, row in ipairs(d.list()) do \
+             if row.summon_owner == 'enemy_ape_boss' then \
+               local q = e.query(row.persist_id); \
+               if not q or not q.live then bad[#bad + 1] = row.persist_id .. '=不在场' \
+               else \
+                 local tx, ty = {sx} + row.summon_offset.x, {sy} + row.summon_offset.y; \
+                 local ok_solid, solid = pcall(tilemap.is_solid, g, tx, ty); \
+                 if ok_solid and solid == true then tx, ty = {sx}, {sy} end; \
+                 if q.cell_x ~= tx or q.cell_y ~= ty then \
+                   bad[#bad + 1] = row.persist_id .. '=在 ' .. tostring(q.cell_x) .. ',' .. tostring(q.cell_y) \
+                     .. '，该落在 ' .. tostring(tx) .. ',' .. tostring(ty) \
+                 end \
+               end \
+             end \
+           end; \
+           if #bad == 0 then return 'ok' end \
+           return table.concat(bad, ' | ') end)()",
+        sx = stand.0,
+        sy = stand.1
+    );
+    query_str(runtime, &expr)
+}
+
+/// 一次冲撞的实测结果。
+struct ChargeRun {
+    /// 起冲那一帧的 `combat.frame()`（节流按这一格算，所以两次结果的差就是冷却）。
+    start_frame: f64,
+    /// 沿冲撞方向的净位移（世界单位）。
+    moved: f64,
+    /// 垂直于冲撞方向的漂移：应当恒为 0（方向钉在注册那一刻，不跟着玩家挪）。
+    drift: f64,
+    /// 实际走到的步数（撞墙提前结束 < `charge_steps`）。
+    steps: usize,
+    x0: f64,
+    y0: f64,
+}
+
+impl ChargeRun {
+    /// 从"已经起冲的那一步"的读数建一条记录（那一步不位移，所以读数就是起点）。
+    fn at(start_frame: f64, x0: f64, y0: f64) -> Self {
+        Self {
+            start_frame,
+            moved: 0.0,
+            drift: 0.0,
+            steps: 0,
+            x0,
+            y0,
+        }
+    }
+}
+
+/// 推进到 Boss **起冲那一帧**（每步把玩家钉在 witness 格）。注册那一步不位移，
+/// 所以返回的读数就是这条冲撞的起点。
+fn charge_start(
+    runtime: &mut LuaRuntime,
+    dir: (f64, f64),
+    witness: f64,
+    wait_limit: usize,
+) -> Result<ChargeRun, Box<dyn std::error::Error>> {
+    for _ in 0..wait_limit {
+        anchor_boss_witness(runtime, dir, witness)?;
+        frames(runtime, 1)?;
+        let (charging, frame, x, y) = charge_readout(runtime)?;
+        if charging {
+            return Ok(ChargeRun::at(frame, x, y));
+        }
+    }
+    Err(
+        format!("等满 {wait_limit} 步 Boss 都没起冲：阶段/冷却/距离三者之一不对（冲撞的观察全断）")
+            .into(),
+    )
+}
+
+/// 从"已经起冲"推进到它熄灭，把位移/步数写回 `run`。
+fn charge_finish(
+    runtime: &mut LuaRuntime,
+    dir: (f64, f64),
+    witness: f64,
+    run: &mut ChargeRun,
+    move_limit: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for _ in 0..move_limit {
+        anchor_boss_witness(runtime, dir, witness)?;
+        frames(runtime, 1)?;
+        run.steps += 1;
+        let (charging, _, x, y) = charge_readout(runtime)?;
+        if !charging {
+            let dx = x - run.x0;
+            let dy = y - run.y0;
+            run.moved = dx * dir.0 + dy * dir.1;
+            run.drift = dx * dir.1 - dy * dir.0;
+            return Ok(());
+        }
+    }
+    Err(
+        format!("冲撞走满 {move_limit} 步还没结束（charge_steps 与 solid 判定至少一个坏了）")
+            .into(),
+    )
+}
+
+/// 完整量一次冲撞：等它起冲 → 推到结束。
+fn charge_measure(
+    runtime: &mut LuaRuntime,
+    dir: (f64, f64),
+    witness: f64,
+    wait_limit: usize,
+    move_limit: usize,
+) -> Result<ChargeRun, Box<dyn std::error::Error>> {
+    let mut run = charge_start(runtime, dir, witness, wait_limit)?;
+    charge_finish(runtime, dir, witness, &mut run, move_limit)?;
+    Ok(run)
 }
 
 /// 解析 `WEST_EDGE` 的 `x,y`（`no_wall` / `no_ground` 一律当失败）。
