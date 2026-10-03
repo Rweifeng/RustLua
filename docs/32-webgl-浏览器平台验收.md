@@ -148,6 +148,38 @@ camera/mesh`），与桌面引擎注册的 36 个顶层全局并不等价。桌�
 cell(19,1)→world(624,48)，world=(cell+0.5)×32），改动线必须与 `web-runtime.js` 的
 `JHYT_EXITS` 两边同步。剧本门已挂进 `verify.ps1` 总门（`webgl_playthrough_ok`）。
 
+**音频后端读数（2026-10-03 新增，只记录不断言）**：`verify-webgl-bundle.ps1` 的常规那一轮
+现在多输出一行 `audio:`，来自运行时写进 DOM 的 `data-rustlua-audio`：
+
+```
+audio: kind=browser created=1 played=1 gated=0 music_played=1 music=pack/assets/audio/bgm_title.mp3
+```
+
+口径与两个坑：
+
+* `played` 只在 `play()` 真正 resolve 时 +1，`gated` 只记 `NotAllowedError`（浏览器自动播放
+  策略）。**这条 flag 是那轮新加的**（`--autoplay-policy=no-user-gesture-required`）：不加时
+  同一个构建在同一台机器上读到 `created=1 played=0 gated=1`——标题 BGM 在手势前起播，被策略
+  拦住，不是链路坏。运行时对被拦的 BGM 有手势补播路径（首次 `pointerdown`/`keydown` 重放），
+  该路径的实测与实现见 [docs/51](51-平台插件适配.md) 的"浏览器音频后端"一节。
+* 门**没有**断言 `played>0`：剧本里的输入是 JS 合成事件、不构成浏览器手势，断言会把策略问题
+  报成产品问题。要断言得先解决这条，与 docs/51 的"web 时间基缺口"同段。
+* 浏览器侧还多一个 `window.__RUSTLUA_AUDIO.musicProbe()`，返回 `currentTime/paused/volume/
+  readyState/src`：`currentTime` 随墙钟前进才等于"真的在放"（人工实测 1.5 s 前进 1.53 s），
+  `play()` resolve 只等于"开始了"。手工复现：`node scripts/serve-static.js examples/game_jhyt/builds/webgl 8765`
+  → 浏览器开 `http://127.0.0.1:8765/index.html` → 控制台读这两个接缝。
+* 完整剧本那一轮（`-DriveJhyt`，同一份运行时）的音频读数：
+  `audio: kind=browser created=9 played=9 gated=0 music_played=4 music=pack/assets/audio/bgm_manor.mp3`
+  （2026-10-03，`artifacts/logs/webgl/bundle-20261003-125502.log`）——三张地图换过曲、五条音效
+  都建了元素；开过新局之后 `musicProbe().volume` 从标题期的 `1` 变成 `0.7`（`audio.init()` 只在
+  `new_game()` 里写主音量，标题期两个宿主都是引擎默认 1.0，逐条推演见
+  [docs/51](51-平台插件适配.md) 的"浏览器音频后端"）。
+* **别同时跑两轮 `verify-webgl-bundle.ps1`**：静态服务默认端口 `8137` 是写死的，两轮并发时后起
+  的那轮连不到自己的服务，`data-rustlua-boot` 永远停在 `pending`，L3 契约就被判成
+  `unavailable`（实测 2026-10-03 12:55 两轮相差 4 秒，先起的那轮 `drive_jhyt=done` 全绿、后起的
+  那轮契约红）。这不是产品回归——单轮重跑即绿（同一构建 13:00 重跑 `api_contract: ok cases=31`）。
+  要么错开跑，要么给其中一轮传 `-Port`。
+
 关键实现细节：无头下**不能用** `--virtual-time-budget`——虚拟时间预算会让 rAF 在页面稳定后
 停止调度（实测 90s 只跑 63 帧、剧本永远停在某个阶段）。`verify-webgl-bundle.ps1` 用真实时钟 +
 `--run-all-compositor-stages-before-draw` 强制每帧完整合成（rAF 稳定推进），并改用
@@ -181,8 +213,10 @@ CDP 轮询真实时钟等状态落定再 dump（常规 bundle 等 `boot`、scene
 - **浏览器回归验证的是平台契约 + 产物启动 + 完整玩法剧本**：常规 `verify-webgl-bundle.ps1`
   断言启动与场景切换机制（scene-verify）；`-DriveJhyt` 把真实玩法内容（移动/背包/任务/切图）
   跑成机器门（2026-10-02 起挂总门，见 §3）；微信真机 harness 覆盖摇杆链路。
-- **Lua VM 已随包分发**：`index.html` 引 `./pkg/fengari-web.js`（由 `package.ps1` 从
-  `plugins/webgl/pkg/fengari-web.js` 复制），不再依赖 CDN，离线/纯内网可运行。
+- **Lua VM 随包分发、不依赖 CDN**：`index.html` 引 `./pkg/game_web.js`（wasm-bindgen 胶水）并实例化
+  `./pkg/game_web_bg.wasm`——**Lua 就在那份 wasm 里**（mlua + vendored Lua 5.4），离线/纯内网可运行。
+  fengari 回退已随 WP10 移除：低于新 EH 门槛的引擎现在连模块都编译不过，页面在下载 wasm 前
+  就用 `EH_FLOOR` 给出可操作的提示（见 `plugins/webgl/index.html` 与 `scripts/verify-webgl-eh.ps1`）。
 - **本机曾装不上 wasm32 目标**，原因不是网络不通：`rustup target add wasm32-unknown-unknown` 用的是
   **已装 toolchain 的 manifest 里烘死的绝对 URL**（`~/.rustup/toolchains/<tc>/lib/rustlib/
   multirust-channel-manifest.toml`），那份 manifest 指向的镜像对该文件返回 403，而

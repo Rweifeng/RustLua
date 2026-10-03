@@ -36,7 +36,7 @@
     },
     {
       "module": "input",
-      "note": "平台性差异，必须保留：web 没有手柄设备，补丁镜像桌面 `ActionMap::with_defaults` 的**键盘**部分（省略 GamepadAxis/GamepadButton），`action_repeat` 取「一次边沿 = 一步」语义（web 没有按住重复的设备时钟）。本分组只列**函数式**定义点；`input = { … }` 那张表里还有 15 个键（`axis`/`is_down`/`just_pressed`/`just_released`/`pressed`/`released`/`virtual_key`…），抽取式看不到它们——这条表是**整表替换**，引擎注册 37 个函数、补丁回露 22 个，另加 `web-runtime.js:2366` 那个 `for _, api in ipairs({audio, input})` 补洞循环给的 `load_settings`/`save_settings`（第三种不可见定义，别把它当成还在），剩下 14 个（`last_device`/`nav_settings`/`pad_*`/`rebind`/`rumble`/`set_action_map`…）在 web 上是 nil 且不进控制台，游戏侧 `type(x)==\"function\"` 的守卫会安静跳过（实测 `hints.lua:221` 的设备提示分支在 web 恒不执行）。整表替换的逐名登记与过期检测属于 L2 的已知缺口（docs/51），本轮把 `input.action`/`input.action_released`（按住态与抬起边沿，L3 契约 `input.action.no_device` 报缺的那两条）先按函数式补上。",
+      "note": "平台性差异，必须保留：web 没有手柄设备，补丁镜像桌面 `ActionMap::with_defaults` 的**键盘**部分（省略 GamepadAxis/GamepadButton），`action_repeat` 取「一次边沿 = 一步」语义（web 没有按住重复的设备时钟）。本分组只列**函数式**定义点；`input = { … }` 那张表里还有 15 个键（`axis`/`is_down`/`just_pressed`/`just_released`/`pressed`/`released`/`virtual_key`…），抽取式看不到它们——这条表是**整表替换**，引擎注册 37 个函数、补丁回露 22 个，另加 `web-runtime.js:2542` 那个 `for _, api in ipairs({audio, input})` 补洞循环给的 `load_settings`/`save_settings`（第三种不可见定义，别把它当成还在），剩下 14 个（`last_device`/`nav_settings`/`pad_*`/`rebind`/`rumble`/`set_action_map`…）在 web 上是 nil 且不进控制台，游戏侧 `type(x)==\"function\"` 的守卫会安静跳过（实测 `hints.lua:221` 的设备提示分支在 web 恒不执行）。整表替换的逐名登记与过期检测属于 L2 的已知缺口（docs/51），本轮把 `input.action`/`input.action_released`（按住态与抬起边沿，L3 契约 `input.action.no_device` 报缺的那两条）先按函数式补上。",
       "apis": [
         "input.action",
         "input.action_axis",
@@ -151,7 +151,7 @@
     },
     {
       "module": "audio",
-      "note": "音量与总线状态在 __rustlua_audio_volume/__rustlua_audio_buses，实际发声与 BGM 经 __rustlua_audio_js_* 调 JS 音频后端。dropped=4：buses 这个枚举访问器补丁里其实有状态（web-runtime.js:1602 定义了四总线并用于名字校验）只是没写成 API，属\"该补的缺失\"；settings_path/settings_text/apply_settings 是 settings.toml 的文本路径与往返，web 没有那个文件系统（补丁另用 for 循环给 audio/input 造了 load_settings/save_settings 的 JS 后端版，见 input 条目）。game_jhyt 正在引用这三条：settings_text 与 settings_path 有 type() 判据（core/audio.lua:273/315），但 settings_path 还有 **一处无判据**（scripts/main.lua:410 的验收 dump）→ 走到就撞 nil；apply_settings 有判据（core/audio.lua:328）。",
+      "note": "音量与总线状态在 __rustlua_audio_volume/__rustlua_audio_buses，实际发声与 BGM 经 __rustlua_audio_js_* 调 JS 音频后端——后端两侧都是真的：微信 wx.createInnerAudioContext，浏览器 HTML5 Audio（2026-10-03 补，此前浏览器一律返回 false，WebGL 包全程静音）。'web platform has no audio backend' 现在只代表桥没接上。dropped=4：buses 这个枚举访问器补丁里其实有状态（web-runtime.js:1602 定义了四总线并用于名字校验）只是没写成 API，属\"该补的缺失\"；settings_path/settings_text/apply_settings 是 settings.toml 的文本路径与往返，web 没有那个文件系统（补丁另用 for 循环给 audio/input 造了 load_settings/save_settings 的 JS 后端版，见 input 条目）。game_jhyt 正在引用这三条：settings_text 与 settings_path 有 type() 判据（core/audio.lua:273/315），但 settings_path 还有 **一处无判据**（scripts/main.lua:410 的验收 dump）→ 走到就撞 nil；apply_settings 有判据（core/audio.lua:328）。",
       "dropped": [
         "apply_settings",
         "buses",

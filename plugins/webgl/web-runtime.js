@@ -1593,12 +1593,12 @@ animation = {
   end
 }
 animation3d = { set = function(...) return true end }
--- 音频宿主 API。微信小游戏走真实后端（JS 桥 __rustlua_audio_js_*，见 web-runtime.js 的
--- installLuaAudioBridge：InnerAudioContext，统一 MP3 格式）；浏览器（WebGL）
--- 没有接入混音器，保持「播放一律失败」的既有语义。
+-- 音频宿主 API。真实后端在 JS 侧（installLuaAudioBridge，见 web-runtime.js）：
+-- 微信小游戏走 wx.createInnerAudioContext，浏览器走 HTML5 Audio，统一 MP3 格式。
 -- **返回值语义必须与引擎一致**：audio.play_on 播放失败要返回 false + 原因，
 -- 游戏侧 core/audio.lua 据此把该 bus:name 记进 failed 表、不再重试；
 -- 若这里返回无意义的成功，游戏会每帧重试同一段缺资源的音效。
+-- 桥没接上（后端没装）时仍然返回 false，而不是 error 出去——音频缺失不能中断玩法。
 __rustlua_audio_buses = { master = true, bgm = true, sfx = true, ui = true }
 __rustlua_audio_volume = { master = 1, bgm = 1, sfx = 1, ui = 1 }
 audio = {
@@ -1644,7 +1644,7 @@ audio = {
     if bus == 'master' then return __rustlua_audio_volume.master end
     return __rustlua_audio_volume.master * __rustlua_audio_volume[bus]
   end,
-  -- 微信小游戏：真实播放（文件不存在/后端不可用才失败）；浏览器：一律失败。
+  -- 真实播放（微信 InnerAudioContext / 浏览器 HTML5 Audio）；文件不存在或后端桥没接上才失败。
   play_on = function(bus, name)
     bus = tostring(bus or '')
     if not __rustlua_audio_buses[bus] then error('unknown audio bus: ' .. bus, 2) end
@@ -1842,14 +1842,25 @@ end
   }
 
 
-  // ---------- 音频后端（微信小游戏：InnerAudioContext；浏览器：无后端） ----------
+  // ---------- 音频后端（微信小游戏：InnerAudioContext；浏览器：HTML5 Audio） ----------
   //
   // Lua 侧 audio 表经 __rustlua_audio_js_* 全局调用到这里。微信端用
-  // wx.createInnerAudioContext() 播放（官方推荐 API，支持流式、适合 BGM 与短音效）。
+  // wx.createInnerAudioContext() 播放（官方推荐 API，支持流式、适合 BGM 与短音效），
+  // 浏览器端用 new Audio()——**两侧对外语义必须一致**（缺文件返回 (false, 原因)，
+  // 游戏侧 core/audio.lua 据此把 bus:name 记进 failed 表、不再重试；返回无意义的
+  // 成功会让它每帧重试同一段缺资源的音效）。
   // 格式统一为 MP3：InnerAudioContext 在 iOS 和 Android 均支持（ogg 在 iOS 不支持，
-  // wav 体积过大）。WebGL（浏览器）没有接入混音器，保持「播放一律失败」的既有语义。
-  function installLuaAudioBridge() {
+  // wav 体积过大）；浏览器三种格式都能放，但扩展名次序与引擎 sound_bytes 对齐
+  // （mp3 → wav → ogg，见 rustlua-audio/src/audio.rs），这样"同一个名字在 PC 放哪
+  // 个文件"在 web 上也放同一个。
+  //
+  // `audioIndex` 是 pack/manifest.txt 里的资源路径集合（发布时真实随包分发的那批）。
+  // 浏览器没有微信的 fs.accessSync，"文件在不在"**只能问 manifest**：先查再播才能
+  // 同步返回 false，否则只能先乐观返回 true、等 onerror 落地，那期间游戏已经按成功
+  // 记过账了。manifest 缺失时退回乐观模式（onerror 会把该名字补进 missing）。
+  function installLuaAudioBridge(audioIndex) {
     const isWechat = typeof wx !== 'undefined' && typeof wx.createInnerAudioContext === 'function';
+    const isBrowser = !isWechat && typeof Audio === 'function';
     // 音量状态（与 Lua 侧 __rustlua_audio_volume 保持一致；Lua 是事实来源，这里只用于播放时应用）。
     const volumes = { master: 1, bgm: 1, sfx: 1, ui: 1 };
     const clamp01 = function (v) { const n = Number(v); if (!(n >= 0)) return 0; return n > 1 ? 1 : n; };
@@ -1859,9 +1870,45 @@ end
       return volumes.master * group;
     };
     // 一次性音效池：[{bus,name,ctx,alive}, ...]（同一音效允许重叠播放）。
+    // 浏览器侧 ctx 就是 HTMLAudioElement，下面的 destroyCtx/applyVolume 两侧共用。
     const sfxPool = [];
     // 循环 BGM（同时只有一个）。
     let musicCtx = null;
+    // 播放失败过的音频名：与微信侧 accessSync 探不到文件同源，之后一律返回 false，
+    // 让游戏侧把它记进 failed 表（浏览器的"不存在"是异步 onerror，这里缓存成同步判据）。
+    const missing = new Set();
+    // 浏览器自动播放策略：首次用户手势之前 play() 一律 reject（NotAllowedError）。
+    // 音效都发生在交互之后，只有标题 BGM 在手势前就要响，所以记下来等手势补播。
+    let pendingMusicEl = null;
+    let gestureSeen = !isBrowser;
+    // 验收接缝：微信侧由 harness 的 wx mock 统计（audio_ctx/audio_played），浏览器
+    // 侧没有 mock 可计，后端自己记同样的三条读数供 CDP 断言。游戏逻辑不读它。
+    const backendStats = { kind: isWechat ? 'wechat' : (isBrowser ? 'browser' : 'none'), created: 0, played: 0, gated: 0, music: null, musicPlayed: 0, srcs: [] };
+    if (typeof window !== 'undefined') window.__RUSTLUA_AUDIO = backendStats;
+    // 浏览器侧多给一个探针：`play()` 的 Promise resolve 只说明"开始放"，currentTime
+    // 在前进才说明"真的在出声"。验收与"玩家说没声音"时的排查读的是同一个数。
+    if (isBrowser) {
+      backendStats.musicProbe = function () {
+        if (!musicCtx) return null;
+        return {
+          src: musicCtx.currentSrc, currentTime: musicCtx.currentTime,
+          paused: musicCtx.paused, volume: musicCtx.volume, loop: musicCtx.loop,
+          readyState: musicCtx.readyState, networkState: musicCtx.networkState
+        };
+      };
+    }
+    // 后端读数抄到 body 的 data-rustlua-audio 上：产物层验收只 dump DOM
+    // （见 scripts/webgl-cdp-wait.js），没有这个属性，"浏览器到底有没有出声"就永远
+    // 进不了门——与微信侧 harness 的 audio_ctx/audio_played 是同一个接缝。
+    function syncAudioMarker() {
+      if (typeof document === 'undefined' || !document.body) return;
+      document.body.setAttribute('data-rustlua-audio',
+        'kind=' + backendStats.kind + ' created=' + backendStats.created +
+        ' played=' + backendStats.played + ' gated=' + backendStats.gated +
+        ' music_played=' + backendStats.musicPlayed +
+        ' music=' + String(backendStats.music || 'none'));
+    }
+    syncAudioMarker();
 
     // 候选 src：微信宿主对不同路径形式的接受程度不一致（分包根相对等），
     // 与 wechat-adapter.js 的 readStrategies 同理，逐个尝试（pack/ 是资源根）。
@@ -1886,10 +1933,32 @@ end
       }
       return null;
     }
+    // 浏览器侧：路径就是"页面根 + pack/"（与 loadImage / fetchText 同一套，不需要
+    // 微信那三种路径方言），存在性问 manifest，扩展名次序与引擎一致。
+    const AUDIO_EXTS = ['mp3', 'wav', 'ogg'];
+    function browserSrc(name) {
+      for (let i = 0; i < AUDIO_EXTS.length; i += 1) {
+        const logical = 'assets/audio/' + name + '.' + AUDIO_EXTS[i];
+        if (!audioIndex || audioIndex.has(logical)) return encodeURI('pack/' + logical);
+      }
+      return null;
+    }
+    function resolveAnySrc(name) {
+      if (missing.has(name)) return null;
+      return isWechat ? resolveSrc(name) : (isBrowser ? browserSrc(name) : null);
+    }
     function destroyCtx(ctx) {
+      // 先立"已释放"标记：下面摘 src 会 load()，浏览器规范里"没有 src 的 load()"会
+      // 补发一个 error 事件，不挡掉它的话被淘汰的音效会被误记成"文件不存在"，
+      // 同一个名字下次就永远不响了。
+      try { ctx.__rustlua_released = true; } catch (error) { }
       try { if (typeof ctx.offEnded === 'function') ctx.offEnded(); } catch (error) { }
       try { if (typeof ctx.offError === 'function') ctx.offError(); } catch (error) { }
       try { if (typeof ctx.stop === 'function') ctx.stop(); } catch (error) { }
+      // 浏览器：pause 之后还要摘掉 src 并 load()，否则一个正在下载的音频不会因为
+      // 元素被丢弃就停——切图时淘汰旧音效池会白占带宽。
+      try { if (typeof ctx.pause === 'function') ctx.pause(); } catch (error) { }
+      try { if (typeof ctx.removeAttribute === 'function') { ctx.removeAttribute('src'); ctx.load(); } } catch (error) { }
       try { if (typeof ctx.destroy === 'function') ctx.destroy(); } catch (error) { }
     }
     function applyVolume(ctx, bus) {
@@ -1900,10 +1969,57 @@ end
         if (!sfxPool[i].alive) sfxPool.splice(i, 1);
       }
     }
+    // 浏览器一次性音效。ended/error 用 addEventListener（微信侧是 onEnded/onError 回调），
+    // 淘汰与池管理仍走共用的 sfxPool。
+    function playBrowserSfx(bus, name, src) {
+      let el;
+      try { el = new Audio(src); } catch (error) { return { ok: false, reason: 'Audio constructor failed: ' + error }; }
+      const entry = { bus: bus, name: name, ctx: el, alive: true };
+      const markDead = function () { entry.alive = false; destroyCtx(el); };
+      try {
+        el.addEventListener('ended', markDead);
+        el.addEventListener('error', function () { if (el.__rustlua_released) return; missing.add(name); markDead(); });
+      } catch (error) { /* 宿主不提供事件时忽略 */ }
+      applyVolume(el, bus);
+      backendStats.created += 1;
+      if (backendStats.srcs.length < 8) backendStats.srcs.push(src);
+      // 音效被手势闸门拦下时直接淘汰（补播一个"三秒前该响的点击声"比不响更怪），
+      // BGM 才需要等手势（见 playBrowserMusic）。
+      startPlayback(el.play(), markDead);
+      syncAudioMarker();
+      sfxPool.push(entry);
+      pruneSfxPool();
+      // 并发音效过多时淘汰最旧的（防止长时间运行内存泄漏）。
+      if (sfxPool.length > 48) {
+        const victim = sfxPool.shift();
+        if (victim) destroyCtx(victim.ctx);
+      }
+      return { ok: true, src: src };
+    }
+    // play() 的三种结局：真正开播（played 计数）、被自动播放策略拦下（gated 计数，
+    // 由 onNotAllowed 把元素留着等手势补播）、源出错（error 监听器已记 missing）。
+    // 收不到 Promise 的老宿主按"已发起"计，与微信侧同步 play() 的口径一致。
+    function startPlayback(promise, onNotAllowed, onPlayed) {
+      if (!promise || typeof promise.then !== 'function') { backendStats.played += 1; if (onPlayed) onPlayed(); syncAudioMarker(); return; }
+      promise.then(function () {
+        backendStats.played += 1;
+        if (onPlayed) onPlayed();
+        syncAudioMarker();
+      }).catch(function (error) {
+        if (error && error.name === 'NotAllowedError') {
+          backendStats.gated += 1;
+          if (onNotAllowed) onNotAllowed();
+          syncAudioMarker();
+        }
+      });
+    }
     function playOn(bus, name) {
-      if (!isWechat) return { ok: false, reason: 'web platform has no audio backend' };
-      const src = resolveSrc(name);
-      if (!src) return { ok: false, reason: 'audio file not found: ' + name };
+      const src = resolveAnySrc(name);
+      if (!src) {
+        if (!isWechat && !isBrowser) return { ok: false, reason: 'web platform has no audio backend' };
+        return { ok: false, reason: isWechat ? 'audio file not found: ' + name : 'no .mp3/.wav/.ogg clip found for ' + name };
+      }
+      if (isBrowser) return playBrowserSfx(bus, name, src);
       let ctx;
       try { ctx = wx.createInnerAudioContext(); } catch (error) { return { ok: false, reason: 'createInnerAudioContext failed: ' + error }; }
       try { ctx.src = src; } catch (error) { destroyCtx(ctx); return { ok: false, reason: 'set src failed: ' + error }; }
@@ -1914,7 +2030,11 @@ end
         ctx.onError(onEnd);
       } catch (error) { /* 宿主未提供回调时忽略 */ }
       applyVolume(ctx, bus);
+      backendStats.created += 1;
       try { ctx.play(); } catch (error) { destroyCtx(ctx); return { ok: false, reason: 'play failed: ' + error }; }
+      // 微信的 play() 是同步调用，没有 Promise 可等：发起即计入 played。
+      backendStats.played += 1;
+      syncAudioMarker();
       sfxPool.push(entry);
       pruneSfxPool();
       // 并发音效过多时淘汰最旧的（防止长时间运行内存泄漏）。
@@ -1924,22 +2044,60 @@ end
       }
       return { ok: true, src: src };
     }
+    // 浏览器 BGM：单个循环元素。被自动播放策略拦下时把元素存进 pendingMusicEl，
+    // 首次手势到了再 play() 一次（元素留着才不用重新下载）。
+    function playBrowserMusic(name, src) {
+      if (musicCtx) { destroyCtx(musicCtx); musicCtx = null; }
+      pendingMusicEl = null;
+      let el;
+      try { el = new Audio(src); } catch (error) { return { ok: false, reason: 'Audio constructor failed: ' + error }; }
+      try { el.loop = true; } catch (error) { /* 宿主只读时忽略 */ }
+      try {
+        el.addEventListener('error', function () {
+          // 换曲/停播会摘 src，那次补发的 error 不代表文件不存在（见 destroyCtx 的标记）。
+          if (el.__rustlua_released) return;
+          missing.add(name);
+          destroyCtx(el);
+          if (musicCtx === el) musicCtx = null;
+          if (pendingMusicEl === el) pendingMusicEl = null;
+        });
+      } catch (error) { /* 同上 */ }
+      applyVolume(el, 'bgm');
+      backendStats.created += 1;
+      backendStats.music = src;
+      const started = el.play();
+      startPlayback(started, function () { pendingMusicEl = el; }, function () { backendStats.musicPlayed += 1; });
+      syncAudioMarker();
+      musicCtx = el;
+      return { ok: true, src: src };
+    }
     function music(name) {
-      if (!isWechat) return { ok: false, reason: 'web platform has no audio backend' };
-      const src = resolveSrc(name);
-      if (!src) return { ok: false, reason: 'audio file not found: ' + name };
+      const src = resolveAnySrc(name);
+      if (!src) {
+        if (!isWechat && !isBrowser) return { ok: false, reason: 'web platform has no audio backend' };
+        return { ok: false, reason: isWechat ? 'audio file not found: ' + name : 'no .mp3/.wav/.ogg clip found for ' + name };
+      }
+      if (isBrowser) return playBrowserMusic(name, src);
       if (musicCtx) { destroyCtx(musicCtx); musicCtx = null; }
       let ctx;
       try { ctx = wx.createInnerAudioContext(); } catch (error) { return { ok: false, reason: 'createInnerAudioContext failed: ' + error }; }
       try { ctx.loop = true; ctx.src = src; } catch (error) { destroyCtx(ctx); return { ok: false, reason: 'music setup failed: ' + error }; }
       try { ctx.onError(function () { /* BGM 播放失败仅静默（下一次切图会重试） */ }); } catch (error) { }
       applyVolume(ctx, 'bgm');
+      backendStats.created += 1;
+      backendStats.music = src;
       try { ctx.play(); } catch (error) { destroyCtx(ctx); return { ok: false, reason: 'music play failed: ' + error }; }
+      backendStats.played += 1;
+      backendStats.musicPlayed += 1;
+      syncAudioMarker();
       musicCtx = ctx;
       return { ok: true, src: src };
     }
     function stopMusic() {
+      pendingMusicEl = null;
+      backendStats.music = null;
       if (musicCtx) { destroyCtx(musicCtx); musicCtx = null; }
+      syncAudioMarker();
     }
     function setVolume(bus, value) {
       volumes[bus] = clamp01(value);
@@ -1947,6 +2105,21 @@ end
         if (sfxPool[i].alive) applyVolume(sfxPool[i].ctx, sfxPool[i].bus);
       }
       if (musicCtx) applyVolume(musicCtx, 'bgm');
+    }
+    // 自动播放解锁：BGM 在手势前就被 reject 过（pendingMusicEl）时，首次 pointerdown/
+    // keydown 立刻补播。监听不摘掉，靠 gestureSeen 短路——标题界面之后还有整局游戏，
+    // 少一个监听器不值得为此维护摘除逻辑。
+    if (isBrowser && typeof window !== 'undefined') {
+      const unlockAudio = function () {
+        if (gestureSeen) return;
+        gestureSeen = true;
+        const el = pendingMusicEl;
+        if (!el) return;
+        pendingMusicEl = null;
+        startPlayback(el.play(), null, function () { backendStats.musicPlayed += 1; });
+      };
+      window.addEventListener('pointerdown', unlockAudio, { capture: true });
+      window.addEventListener('keydown', unlockAudio, { capture: true });
     }
     // WP10 迁移：JS 回调经 wasm 桥注册成 Lua 全局。回调收 Lua 参数（string/number/
     // boolean/nil → JS 基本值），返回 **数组 = 多返回值**（`[ok]` / `[ok, reason]`
@@ -2086,12 +2259,15 @@ function doString(L, source, name) {
     // 可切换的场景清单来自 manifest（发布时真实随包/随资源包分发的那批），
     // 而不是"磁盘上看着有"——与引擎按 scenes/<name>.scene 是否存在判定同源。
     const knownScenes = {};
+    const knownAudio = new Set();
     const modules = {};
     for (const line of manifest.split(/\r?\n/).slice(1)) {
       const path = line.split('\t')[0];
       if (path && path.startsWith('scenes/') && path.endsWith('.scene')) {
         knownScenes[path.slice('scenes/'.length, -'.scene'.length)] = true;
       }
+      // 音频文件名集合给音频后端做"在不在"的同步判据（浏览器没有 accessSync）。
+      if (path && path.startsWith('assets/audio/')) knownAudio.add(path);
       if (path && path.startsWith('scripts/') && path.endsWith('.lua')) {
         const name = path.slice('scripts/'.length, -'.lua'.length).replace(/\//g, '.');
         modules[name] = await fetchText('pack/' + path);
@@ -2114,7 +2290,7 @@ function doString(L, source, name) {
     // `L` 保留为 null 仅为调用点兼容（doString/callGlobal/missingHostGlobals 已走 bridge）。
     bridge.lua_boot();
     const L = null;
-    installLuaAudioBridge();
+    installLuaAudioBridge(knownAudio);
     try {
       const hostGlobals = engineHostGlobals();
       const hostCompat = hostGlobals.map(name => `if ${name} == nil then ${name} = __rustlua_missing_host_global(${luaQuote(name)}) end`).join('\n');

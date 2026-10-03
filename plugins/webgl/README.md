@@ -5,7 +5,8 @@
 
 - `web-runtime.js`：浏览器运行时。负责从 `pack/` 读取工程与场景、经 **wasm Lua 桥**（`__RUSTLUA_LUA_BRIDGE`，执行层在 wasm 侧 mlua）执行 Lua、
   把 `ui.*` 调用与场景静态 UI（`UiLayout` + `Image`/`Text`）画到 2D canvas，并接入
-  键盘/鼠标输入与启动自检标记（`data-rustlua-boot` / `data-rustlua-drawn` / `data-rustlua-ui-*`）。
+  键盘/鼠标输入、音频后端（浏览器 `new Audio` / 微信 `wx.createInnerAudioContext`，
+  验收读数写在 `data-rustlua-audio`）与启动自检标记（`data-rustlua-boot` / `data-rustlua-drawn` / `data-rustlua-ui-*`）。
   **微信小游戏发布共用这一份文件**（见 `plugins/wechat-minigame/README.md`）。
 - `index.html`：浏览器页面模板。`package.ps1` 负责替换 `__PUBLISH_NAME__` /
   `__PUBLISH_NAME_JSON__` / `__FONT_PATH__` 三个占位符（标题、脚本字符串与字体路径）。

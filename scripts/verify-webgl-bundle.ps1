@@ -198,6 +198,12 @@ function Invoke-HeadlessDom([string]$HeadlessFlag, [string]$ModeOverride = "", [
         # 这个标志强制每帧走完整合成管线，rAF 保持 ~55fps——完整玩法剧本（drive=jhyt）
         # 才能跑完并落定 done（实测 30s 推进 1635 帧、3.6 秒剧本一次全通）。
         "--run-all-compositor-stages-before-draw",
+        # 音频后端的验收读数要能显示"真的在放"，而不是"被浏览器拦住"。无头实例没有用户
+        # 手势，Chrome 默认自动播放策略会把 HTMLAudioElement.play() 直接 reject（实测不加
+        # 这条时 `audio: kind=browser created=1 played=0 gated=1`——那不是回归，是策略）。
+        # 这里放行策略，门验的是**我们这侧**的链路（src 解析 → 下载 → 解码 → currentTime
+        # 前进）；策略本身的行为由 runtime 的手势补播路径负责，浏览器真机人工试听。
+        "--autoplay-policy=no-user-gesture-required",
         "--remote-debugging-port=$cdpPort",
         "--user-data-dir=$profileDir",
         $url
@@ -281,6 +287,10 @@ $driveStateDetail = if ($dom -match 'data-rustlua-drive-detail="([^"]*)"' -and $
 # absent=URL 门没接上或 runtime 未升级。后两种都算失败。
 $sceneVerifyState = if ($dom -match 'data-rustlua-scene-verify="([^"]*)"' -and $Matches.Count -gt 0) { $Matches[1] } else { "absent" }
 $sceneVerifyDetail = if ($dom -match 'data-rustlua-scene-verify-detail="([^"]*)"' -and $Matches.Count -gt 0) { $Matches[1] } else { "" }
+# 音频后端读数（`data-rustlua-audio`，由 web-runtime.js 的 syncAudioMarker 写）：**只记录、
+# 不判定**，与微信 harness 的 audio_ctx/audio_played 同口径。absent = 产物还是旧版运行时
+# （后端接缝没落地）；`kind=none` = 后端没装上；停在启动场景时 created 至少为 1（标题 BGM）。
+$audioEvidence = if ($dom -match 'data-rustlua-audio="([^"]*)"' -and $Matches.Count -gt 0) { $Matches[1] } else { "absent" }
 
 # L3 行为契约结论。报告首行三选一：`web_api_contract_ok cases=N` /
 # `web_api_contract_failed mismatches=N cases=N` / `web_api_contract_unavailable <原因>`。
@@ -319,6 +329,7 @@ $summary = [ordered]@{
     driveJhytDetail = if ($DriveJhyt) { $driveStateDetail } else { "" }
     sceneVerify    = $sceneVerifyState
     sceneVerifyDetail = $sceneVerifyDetail
+    audio          = $audioEvidence
     apiContract    = $contractVerdict
     apiContractCases = $contractCases
     apiContractReport = $contractReportPath
@@ -340,6 +351,7 @@ if ($DriveJhyt) {
 if (-not $NoSceneVerify) {
     Write-Log "scene_verify: $sceneVerifyState detail: $sceneVerifyDetail" $(if ($sceneVerifyState -eq "done") { "Green" } else { "Yellow" })
 }
+Write-Log "audio: $audioEvidence" $(if ($audioEvidence -eq "absent") { "Yellow" } else { "Green" })
 if ($ApiContract) {
     Write-Log "api_contract: $contractVerdict cases=$contractCases report=$contractReportPath" `
         $(if ($contractVerdict -eq "ok") { "Green" } else { "Red" })
