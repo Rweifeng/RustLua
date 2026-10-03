@@ -7,7 +7,7 @@
 //! 原先声明在本模块顶部的 helper 也仍在父作用域可见（本目录内没有非 `#[test]` 的 helper）。
 
 use super::*;
-use crate::core::camera::{Camera2D, Projection, RenderView};
+use crate::core::camera::{Camera2D, ClearPolicy, DEFAULT_3D_CLEAR, Projection, RenderView};
 use crate::core::math3d::Quat;
 use crate::core::transform::Vec2;
 

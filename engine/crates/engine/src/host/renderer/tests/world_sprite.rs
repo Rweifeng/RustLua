@@ -4,6 +4,8 @@ use super::*;
 // WP12 阶段 4b：这个名字原先由 `renderer/mod.rs` 顶部的 use 块带进来（测试靠 glob 取用）。
 use crate::core::mesh3d::GROUND_PLANE_SENTINEL;
 use crate::host::frame::WHITE_TEXTURE_PATH;
+// WP12 阶段 4c：视图解析搬进 `renderer::world_sprite` 后不再由 glob 带下来，显式指名。
+use crate::host::renderer::world_sprite::resolve_world_sprite_view;
 
 /// WP6 世界 Sprite 通道的遮挡契约：**测深度但不写深度**，因此顺序即一切。
 /// ① 按 z 排成画家顺序（远→近）时近处胜出；② 顺序反过来时远处胜出——两条一起说明

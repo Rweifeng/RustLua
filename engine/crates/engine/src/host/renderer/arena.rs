@@ -5,7 +5,7 @@
 
 use crate::core::math3d::Mat4;
 
-use super::{GpuMaterial, Renderer, joint_palette_data};
+use super::{GpuMaterial, Renderer, joint_palette_data, next_2d_vertex_capacity};
 
 impl Renderer {
     /// P0-①：把一块 uniform 数据写入材质/调色板帧级环形缓冲，返回
@@ -127,5 +127,38 @@ impl Renderer {
                 },
             ],
         })
+    }
+}
+
+impl Renderer {
+    /// 确保 2D 顶点缓冲能容纳 `required` 字节；不足则按 2 的幂扩容。
+    ///
+    /// 返回扩容后的容量。2D 顶点缓冲不参与任何 bind group（只 `set_vertex_buffer`），
+    /// 因此中途重建是安全的。
+    pub(super) fn ensure_2d_vertex_capacity(&mut self, required: u64) -> u64 {
+        self.vertex_bytes_peak = self.vertex_bytes_peak.max(required);
+        if required <= self.vertex_buffer.size() {
+            return self.vertex_buffer.size();
+        }
+        let capacity = next_2d_vertex_capacity(required);
+        tracing::warn!(
+            target: "render",
+            required,
+            previous = self.vertex_buffer.size(),
+            capacity,
+            growths = self.vertex_buffer_growths + 1,
+            "[runtime] 2D vertex buffer grew: {} -> {} bytes (required {})",
+            self.vertex_buffer.size(),
+            capacity,
+            required
+        );
+        self.vertex_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("rustlua-vertex-buffer"),
+            size: capacity,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.vertex_buffer_growths += 1;
+        capacity
     }
 }
