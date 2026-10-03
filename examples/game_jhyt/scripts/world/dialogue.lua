@@ -243,8 +243,10 @@ local function cond_ok(cond)
     return false
   end
 
-  -- 节气条件（M34-02）：今天落在该节气的窗口里才出现的分支。
-  if cond.festival ~= nil and festival.id() ~= cond.festival then
+  -- 节气条件（M34-02）：今天落在该节气的窗口里；M34-05 起还过一道设施门
+  -- （春分茶会要茶棚建到 3 级，门槛写在 data/festivals.lua 的 unlock 上）。
+  -- 这里必须问 available() 而不是 id()：分成两处判就会各判一半。
+  if cond.festival ~= nil and not festival.available(cond.festival) then
     return false
   end
 

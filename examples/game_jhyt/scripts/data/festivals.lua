@@ -9,6 +9,12 @@
 --   season       所属季节（spring/summer/autumn/winter，与 world/calendar.lua 同源）
 --   from/to      季内第几天开始生效（闭区间，1..season_length；一次事件持续几天）
 --   effects      效果表，只允许 effect_keys 里的键；**空表就是"今天只有一句对话"**
+--   unlock       可选（M34-05）：这场事件的门槛 { building = "<建筑 id>", level = N }——
+--                该建筑**建到过** N 级才听得到（读 systems/building.lua 记进 state.vars 的
+--                历史最高等级，见 data/buildings.lua 的 M.level_var）。
+--                写在事件这一侧而不是建筑的等级行里："春分茶会要几级茶棚"是这条事件的属性，
+--                建筑只管自己有几级；反过来写就得扫描全部建筑才知道门在谁身上。
+--                world/festival.lua 的 M.available() 是唯一消费者（对话条件走它）。
 --
 -- 效果键与消费方（新增键必须同时有消费方，否则 validate_all 报错——与
 -- data/relationships.lua 的 price_off 同一规矩）：
@@ -40,7 +46,10 @@ M.festivals = {
     from = 8,
     to = 10,
     -- 春分是七条里唯一带**订单**的：沈青萝在这三天才会提起茶叶单子（order_tea）。
-    effects = {}
+    effects = {},
+    -- 会期之外还要过一道设施门（docs/33 §7.2 茶棚第三档"解锁节气事件"，M34-05）：
+    -- 茶棚没建到 3 级，这三天里也听不到这单生意。
+    unlock = { building = "tea_shed", level = 3 }
   },
   {
     id = "qingming",
@@ -149,6 +158,7 @@ function M.validate_all()
   end
   local maps = require("data.maps")
   local items = require("data.items")
+  local buildings = require("data.buildings")
   local seen_ids = {}
   local occupied = {}
   for index, entry in ipairs(M.festivals) do
@@ -202,6 +212,31 @@ function M.validate_all()
             issues[#issues + 1] = path .. ".effects." .. tostring(key) .. ": unknown effect key"
           else
             M.validate_effect(path, key, value, issues, maps, items)
+          end
+        end
+      end
+      -- 设施门槛（M34-05）：引用不存在的建筑、或写一个那栋建筑根本升不到的等级，
+      -- 后果是这场事件**永远**听不到——不报出来就只会变成一条谁也查不到的死条件。
+      if entry.unlock ~= nil then
+        local unlock = entry.unlock
+        if type(unlock) ~= "table" then
+          issues[#issues + 1] = path .. ".unlock: expected object { building, level }"
+        else
+          for key in pairs(unlock) do
+            if key ~= "building" and key ~= "level" then
+              issues[#issues + 1] = path .. ".unlock." .. tostring(key) .. ": unknown unlock key"
+            end
+          end
+          local def = buildings.get(unlock.building)
+          if not def then
+            issues[#issues + 1] = path .. ".unlock.building: unknown building "
+              .. tostring(unlock.building)
+          elseif not is_integer(unlock.level) or unlock.level < 1 then
+            issues[#issues + 1] = path .. ".unlock.level: expected integer >= 1"
+          elseif unlock.level > buildings.max_level(def) then
+            issues[#issues + 1] = path .. ".unlock.level: " .. tostring(unlock.level)
+              .. " exceeds max level " .. tostring(buildings.max_level(def))
+              .. " of building " .. tostring(unlock.building)
           end
         end
       end

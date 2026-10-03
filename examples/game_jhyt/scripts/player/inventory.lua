@@ -1,6 +1,16 @@
 local state = require("core.state")
 local items = require("data.items")
 local stats = require("player.stats")
+-- 当日社交饮品的锚点在 relationship 那一侧（M34-05）。这里**延迟 require**：
+-- relationship → world.npc → … 的加载链会绕回背包，模块加载期取到的可能是半张表，
+-- 而 use 发生在所有模块就绪之后（与本文件 heal_motes 那处同一处理）。
+local relationship_cache = nil
+local function relationship()
+  if not relationship_cache then
+    relationship_cache = require("player.relationship")
+  end
+  return relationship_cache
+end
 
 local M = {}
 
@@ -88,6 +98,12 @@ function M.use(item_id)
   if not effect then
     return false, "no_effect"
   end
+  -- 当日社交饮品（M34-05，use.social_day）：今天已经喝过就不给第二杯——
+  -- 与"同一 NPC 每日一次礼物"同族语义，所以在**扣物品之前**挡（不扣物不加分）。
+  if effect.social_day == true and relationship().tea_today() then
+    state.last_action = "tea_today"
+    return false, "tea_today"
+  end
 
   local applied = false
   local energy = tonumber(effect.energy)
@@ -118,11 +134,19 @@ function M.use(item_id)
     end
     applied = true
   end
+  -- 内力已经满的人喝一杯茶仍然"有效果"（当天社交 +10%），否则这杯茶会退回
+  -- "no_effect" 而原地不消耗——满内力是常态，不是异常态。
+  if effect.social_day == true then
+    applied = true
+  end
   if not applied then
     return false, "no_effect"
   end
 
   inv.remove(state.inventory, item_id, 1)
+  if effect.social_day == true then
+    relationship().mark_tea()
+  end
   state.last_action = "use_" .. item_id
   -- docs/48 effects：回复类物品（use.energy）使用成功 → 治疗提示条带。
   -- 延迟 require（avoid 模块加载期循环依赖）：use 时所有模块已就绪。

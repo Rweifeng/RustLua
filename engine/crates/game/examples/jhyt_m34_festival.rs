@@ -7,7 +7,8 @@
 //!
 //! 1. 112 天（四季 × 28 天）逐日扫描：21 个事件日、91 个空日、七日循环不错位；
 //! 2. 四类消费方各走**真实玩法路径**（按 E 开对话、按 E 采集、真实出售、门口按 E）：
-//!    春分的茶叶单子只在会期听得见、清明山道采集翻倍、端午药材行情 +20%、
+//!    春分的茶叶单子只在会期听得见、且**茶棚建到 3 级才听得见**（M34-05 的设施门，
+//!    本样例真在山庄盖一座茶棚并连升两级）、清明山道采集翻倍、端午药材行情 +20%、
 //!    夏至演武给门派声望、中秋灯会给好感与莲子、重阳让一次性采集点按日再刷、
 //!    冬至只封"继续往山里走"那一格（回村方向永远可用，否则就是把玩家关在山上）；
 //! 3. 节气不入存档：跨天/读档后结论随 `day` 一起回来（拨到别的日子不会"记住"上一个节气）。
@@ -41,6 +42,8 @@ const HERB_NODE: &str = "wild_herb_1";
 const BERRY_NODE: &str = "wild_berry_1";
 /// 山道另一处一次性采集点（柴堆）：重阳窗口**之外**的对照组。
 const FIREWOOD_NODE: &str = "wild_firewood_1";
+/// 春分茶会的设施门槛（`data/festivals.lua` 里 teafair 的 `unlock.level`）。
+const TEA_TARGET_LEVEL: i64 = 3;
 /// 春分茶会的接单选项（`data/dialogues/shen_qingluo_herb.lua` ⑤）。
 const TEA_INTRO: &str = "沈掌柜，春分茶会可要备茶？";
 /// 夏至演武的登台选项（`data/dialogues/gu_changfeng_teach.lua` ⑥）。
@@ -172,7 +175,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_str(&mut rt, &option_visible(TEA_INTRO), "false")?;
     choose_option(&mut rt, "改日再说。")?;
     println!("  春 5（会期外）：沈青萝处听不到茶叶单子");
+    // M34-05 给春分茶会加的设施门（docs/33 §7.2 茶棚第三档"解锁节气事件"）：
+    // **会期里但没有茶棚，这单生意照样听不到**。"今天算不算春分"与"茶会办不办得成"
+    // 是两件事，前者永远为真、后者要过 data/festivals.lua 里那条 unlock。
     lua(&mut rt, &format!("clock.set(8, {TEN_AM})"))?;
+    frames(&mut rt, 2)?;
+    talk_to(&mut rt, "npc_shen_qingluo")?;
+    assert_str(&mut rt, &option_visible(TEA_INTRO), "false")?;
+    choose_option(&mut rt, "改日再说。")?;
+    assert_str(&mut rt, "require('world.festival').id()", "teafair")?;
+    // 门槛写在**事件**这一侧（不是建筑的等级行里）：这里把 TEA_TARGET_LEVEL 钉回数据，
+    // 否则数据改了门槛、本门还在按 3 级盖茶棚，红点会落在错误的一章。
+    assert_str(
+        &mut rt,
+        "(function() local e = require('data.festivals').get('teafair'); \
+           return tostring(e.unlock.building) .. ',' .. tostring(e.unlock.level) end)()",
+        "tea_shed,3",
+    )?;
+    assert_str(
+        &mut rt,
+        "tostring(require('world.festival').available('teafair'))",
+        "false",
+    )?;
+    println!("  春 8、茶棚未建：日历仍是 teafair，但 available=false，选项不出现");
+    // 回山庄真实盖一座茶棚并连升两级（place/upgrade 都走 systems/building.lua 的入口）。
+    unlock_teafair(&mut rt, MANOR_POS)?;
+    assert_str(
+        &mut rt,
+        "tostring(require('world.festival').available('teafair'))",
+        "true",
+    )?;
+    println!("  茶棚三级之后：available=true（等级记在 state.vars，站在山庄也查得到）");
+    goto_map(&mut rt, "village", VILLAGE_POS)?;
     frames(&mut rt, 2)?;
     talk_to(&mut rt, "npc_shen_qingluo")?;
     assert_str(&mut rt, &option_visible(TEA_INTRO), "true")?;
@@ -343,7 +377,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // ---------------- ④ 夏至演武：门派声望 ----------------
-    banner("M34-02④ 夏至（day 43–45）：上台演武给门派声望 +10、好感 +6、饭团 ×2，锚点只办一次");
+    banner("M34-02④ 夏至（day 43–45）：演武给门派声望 +10、好感 +6、饭团 ×2，锚点只办一次");
     goto_map(&mut rt, "manor", MANOR_POS)?;
     lua(&mut rt, &format!("clock.set(42, {TEN_AM})"))?;
     frames(&mut rt, 2)?;
@@ -360,6 +394,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "require('player.relationship').reputation('sect')",
         0.0,
     )?;
+    // ② 章盖的三级茶棚在这里还在起作用：乘子 = 1 + 0.1（茶棚档位）+ 0（今天没饮茶）。
+    assert_num(
+        &mut rt,
+        "require('player.relationship').social_multiplier()",
+        1.1,
+    )?;
     let rice_ball_before = query_num(
         &mut rt,
         "inv.count(require('core.state').inventory, 'rice_ball')",
@@ -367,6 +407,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     choose_option(&mut rt, DRILL_OFFER)?;
     choose_option(&mut rt, "弟子登台。")?;
     choose_option(&mut rt, "谢师父。")?;
+    // 门派声望走 add_reputation，**不**过社交乘子（docs/33 §8.1 的加成只给好感）：
+    // 于是这一章同时钉住"乘了哪一份"和"没乘哪一份"。
     assert_num(
         &mut rt,
         "require('player.relationship').reputation('sect')",
@@ -375,7 +417,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_num(
         &mut rt,
         "require('player.relationship').points('npc_gu_changfeng')",
-        6.0,
+        7.0,
     )?;
     assert_num(
         &mut rt,
@@ -398,7 +440,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "require('player.relationship').reputation('sect')",
         10.0,
     )?;
-    println!("  夏 15：声望 +10 / 好感 +6 / 饭团 +2 到账；夏 16 再谈选项已收回（不会重复结算）");
+    println!(
+        "  夏 15：声望 +10（不过乘子）/ 好感 6×1.1 → +7 / 饭团 +2 到账；夏 16 再谈选项已收回（不重复结算）"
+    );
 
     // ---------------- ⑤ 中秋灯会：好感与莲子，不动结局指针 ----------------
     banner("M34-02⑤ 中秋（day 64–66）：点灯给好感 +8 与莲子 ×3，且**不**写 ending 变量");
@@ -423,7 +467,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_num(
         &mut rt,
         "require('player.relationship').points('npc_su_wanqing')",
-        8.0,
+        9.0,
     )?;
     assert_num(
         &mut rt,
@@ -445,7 +489,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "require('world.quest').state('ending_sect')",
         "not_started",
     )?;
-    println!("  秋 8：好感 +8、莲子 +3；ending 仍为 nil、ending_sect 未启动（节日不代管结局）");
+    println!(
+        "  秋 8：好感 8×1.1 → +9、莲子 +3；ending 仍为 nil、ending_sect 未启动（节日不代管结局）"
+    );
 
     // ---------------- ⑥ 重阳：一次性采集点按日再刷 ----------------
     banner("M34-02⑥ 重阳（day 71–73）：一次性采集点按日再刷；出了窗口立刻恢复原语义");
@@ -666,8 +712,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  十条负例跑完，登记表再查一遍仍然干净");
 
     println!(
-        "jhyt_m34_festival_ok project={} event_days=21/112 windows=7x3 tea_order=completed \
-         gather=2/4 sell_lingzhi={:.0} drill_sect_rep=10 lantern_affinity=8 \
+        "jhyt_m34_festival_ok project={} event_days=21/112 windows=7x3 \
+         teafair_door=locked_when_unbuilt->open_at_level3 tea_order=completed \
+         gather=2/4 sell_lingzhi={:.0} drill_sect_rep=10 social_multiplier=1.1 \
+         drill_affinity=7 lantern_affinity=9 \
          chongyang_refresh=daily closed_exit=refused open_exit=village save_festival_fields=0",
         project.display(),
         offered
@@ -841,6 +889,106 @@ fn exit_with(runtime: &mut LuaRuntime, exit_id: &str) -> Result<(), Box<dyn std:
         return Err(format!("出口 {exit_id} 的提示行异常：{prompt}").into());
     }
     press_e_holding(runtime, &stick)
+}
+
+/// 扫描当前地图，返回第一个可放置该建筑的锚点（确定性，与 jhyt_m27_goals 同法）。
+fn first_legal_anchor(
+    runtime: &mut LuaRuntime,
+    building_id: &str,
+) -> Result<(i64, i64), Box<dyn std::error::Error>> {
+    let got = query_str(
+        runtime,
+        &format!(
+            "(function() local b = require('systems.building'); \
+             for y = 0, 21 do for x = 0, 39 do \
+               if b.can_place('{building_id}', x, y) then return x .. ',' .. y end end end \
+             return 'none' end)()"
+        ),
+    )?;
+    let mut parts = got.split(',');
+    let x = parts
+        .next()
+        .and_then(|v| v.parse::<i64>().ok())
+        .ok_or_else(|| format!("山庄没有可放置 {building_id} 的格子: {got}"))?;
+    let y = parts
+        .next()
+        .and_then(|v| v.parse::<i64>().ok())
+        .ok_or_else(|| format!("山庄没有可放置 {building_id} 的格子: {got}"))?;
+    Ok((x, y))
+}
+
+/// 在山庄真盖一座茶棚并连升两级（M34-05 的春分茶会设施门）。
+///
+/// 走 `systems.building` 的 place/upgrade 入口，不用后门：升级要真的扣木材（每级 3），
+/// 等级要真的经 `persist()` 写进 `building_level_tea_shed`（历史最高，随 state 进存档）。
+fn unlock_teafair(
+    runtime: &mut LuaRuntime,
+    spawn: (f32, f32),
+) -> Result<(), Box<dyn std::error::Error>> {
+    goto_map(runtime, "manor", spawn)?;
+    frames(runtime, 2)?;
+    // 每级收一份 upgrade_cost（docs/33 §7.2 口径）：木材消耗从数据里读，不写死。
+    let step_cost = query_num(
+        runtime,
+        "(function() local t = 0; \
+           for _, c in ipairs(require('data.buildings').get('tea_shed').upgrade_cost or {}) do \
+             if c.item == 'timber' then t = t + c.count end end return t end)()",
+    )?;
+    if step_cost <= 0.0 {
+        return Err("茶棚升级不再收木材：设施门的扣料路径失效".into());
+    }
+    let needed = step_cost * ((TEA_TARGET_LEVEL - 1) as f64);
+    let timber_before = query_num(
+        runtime,
+        "inv.count(require('core.state').inventory, 'timber')",
+    )?;
+    lua(
+        runtime,
+        &format!(
+            "inv.add(require('core.state').inventory, 'timber', {})",
+            needed as i64
+        ),
+    )?;
+    let (bx, by) = first_legal_anchor(runtime, "tea_shed")?;
+    assert_str(
+        runtime,
+        &format!("select(1, require('systems.building').place('tea_shed', {bx}, {by}))"),
+        "true",
+    )?;
+    assert_str(
+        runtime,
+        "require('core.state').get_var('building_level_tea_shed')",
+        "1",
+    )?;
+    for level in 2..=TEA_TARGET_LEVEL {
+        assert_str(
+            runtime,
+            &format!("select(1, require('systems.building').upgrade({bx}, {by}))"),
+            "true",
+        )?;
+        assert_str(
+            runtime,
+            &format!("tostring(require('systems.building').at({bx}, {by}).level)"),
+            &level.to_string(),
+        )?;
+        assert_str(
+            runtime,
+            "require('core.state').get_var('building_level_tea_shed')",
+            &level.to_string(),
+        )?;
+    }
+    assert_str(
+        runtime,
+        "require('core.state').last_action",
+        &format!("upgrade_tea_shed_{TEA_TARGET_LEVEL}"),
+    )?;
+    // 木材被连升吃光：等级确实走的是扣料路径，不是白来的。
+    assert_num(
+        runtime,
+        "inv.count(require('core.state').inventory, 'timber')",
+        timber_before,
+    )?;
+    Ok(())
 }
 
 fn new_runtime(project: &Path, save_path: &Path) -> Result<LuaRuntime, Box<dyn std::error::Error>> {

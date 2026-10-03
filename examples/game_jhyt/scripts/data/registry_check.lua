@@ -21,7 +21,7 @@ local ITEM_KINDS = { crop = true, seed = true, consumable = true, material = tru
 local TOOL_KINDS = { tool = true, weapon = true }
 local SEASONS = { spring = true, summer = true, autumn = true, winter = true }
 local FACINGS = { s = true, n = true, e = true, w = true, se = true, sw = true, ne = true, nw = true }
-local USE_KEYS = { energy = true, inner_power = true, buff = true }
+local USE_KEYS = { energy = true, inner_power = true, buff = true, social_day = true }
 -- 与 data/gather.lua 相同的地图格边界（cell 0-index，40x22）。
 local MAP_COLUMNS = 40
 local MAP_ROWS = 22
@@ -105,6 +105,9 @@ local function check_item(path, id, definition, issues)
             issues[#issues + 1] = path .. ".use.buff.days: expected integer >= 1"
           end
         end
+      end
+      if use.social_day ~= nil and use.social_day ~= true then
+        issues[#issues + 1] = path .. ".use.social_day: expected true or absent"
       end
       if effects == 0 then
         issues[#issues + 1] = path .. ".use: has no effect (energy/inner_power/buff)"

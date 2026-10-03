@@ -66,9 +66,12 @@ M.recipes = {
     minutes = 30,
     min_level = 1
   },
-  kitchen_brew_tea = {
+  -- 茶棚（M34-05）：这条原来挂在膳房上（`kitchen_brew_tea`）。docs/33 §7.2 写的是
+  -- "茶棚 1 级 = 解锁茶饮"，所以配方跟着设施走：膳房不再顺便出茶，想喝茶得先把茶棚盖起来。
+  -- 同一产出留两条无差异配方就是第二条数据源（改一份忘一份），故整体改挂、不并存。
+  tea_spring_brew = {
     name = "冲山泉茶",
-    station = "kitchen",
+    station = "tea",
     inputs = { { item = "tea_leaf", count = 2 } },
     output = { item = "tea_brew", count = 1 },
     minutes = 20,

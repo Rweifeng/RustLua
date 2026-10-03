@@ -52,6 +52,14 @@ M.reputation_tiers = {
 -- effects 允许的效果键（新增键必须同时有消费方，否则校验报错）。
 M.effect_keys = { price_off = true }
 
+-- 社交收益的加成语境（M34-05，docs/33 §8.1）：关系分的**正增量**统一乘一个当日乘子，
+-- 乘子 = 1 + 建筑档位加成（data/buildings.lua 的 levels[i].social_bonus，茶棚 2 级 +10%）
+--          + 饮茶加成（这一格，今日喝过山泉清茶再 +10%）。
+-- 只写"饮茶"这一个数字：建筑那一半属于建筑，写在建筑表里才跟着档位走。
+M.social = {
+  tea_bonus = 0.1
+}
+
 M.npcs = {
   npc_shen_qingluo = {
     gifts = { lingzhi = 8, rice = 3, heal_pill = 5 }
@@ -211,6 +219,24 @@ function M.validate_all()
   table.sort(effect_names)
   if M.version ~= 1 then
     issues[#issues + 1] = "data/relationships.lua:version: unsupported version " .. tostring(M.version)
+  end
+
+  -- 饮茶加成（M34-05）：`social_multiplier()` 读的就是这一格。写成 0 就是"喝不喝茶一个样"，
+  -- 键名打错（`tea_bonus` 少个 s）则是乘子直接退回 1——两种都让这条数据静默失效，
+  -- 所以在这里挡住，而不是等玩家在村里发现送礼的数字没变。
+  if type(M.social) ~= "table" then
+    issues[#issues + 1] = "data/relationships.lua:social: expected object"
+  else
+    for key in pairs(M.social) do
+      if key ~= "tea_bonus" then
+        issues[#issues + 1] = "data/relationships.lua:social." .. tostring(key)
+          .. ": unknown social key"
+      end
+    end
+    local bonus = tonumber(M.social.tea_bonus)
+    if not bonus or bonus <= 0 or bonus > 1 then
+      issues[#issues + 1] = "data/relationships.lua:social.tea_bonus: expected number in (0, 1]"
+    end
   end
 
   if type(M.factions) ~= "table" or next(M.factions) == nil then

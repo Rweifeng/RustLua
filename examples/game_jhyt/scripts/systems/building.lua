@@ -272,6 +272,23 @@ local function version_ok(data, where)
   return false
 end
 
+-- 把"这栋建筑建到过几级"记进 core.state 的 vars（M34-05）。两个读取方都不在山庄地图上：
+-- 送礼发生在云泽村、节气条件在对话里判，而建筑记录是按地图存进 map.state 的，
+-- 站在村里读不到山庄的茶棚——所以庄园属性单独记一份。取**历史最高**：拆了不回收，
+-- 与"解锁过的节气事件不再锁回去"是同一口径（写方只有这里，读方走 data/buildings.lua 的 level_var）。
+local function record_levels()
+  for _, key in ipairs(order) do
+    local rec = records[key]
+    if rec then
+      local var = building_data.level_var(rec.building)
+      local reached = tonumber(state.get_var(var)) or 0
+      if rec.level > reached then
+        state.set_var(var, rec.level, "building", "level_" .. tostring(rec.level))
+      end
+    end
+  end
+end
+
 local function persist()
   local list = {}
   for _, key in ipairs(order) do
@@ -288,6 +305,7 @@ local function persist()
     end
   end
   map.state(STATE_KEY, { version = STATE_VERSION, seq = seq, list = list })
+  record_levels()
 end
 
 local function load_state()
@@ -313,6 +331,9 @@ local function load_state()
       order[#order + 1] = key
     end
   end
+  -- 老档回填：M34-05 之前建的茶棚没有等级 var，进图时按现有记录补一次，
+  -- 否则"茶棚已经三级"的存档读回来会听不到春分茶会。
+  record_levels()
 end
 
 -- 切图/读档后重放：绑定 GroundMap、重生视觉、重打阻挡（幂等）

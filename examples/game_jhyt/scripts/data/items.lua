@@ -12,6 +12,10 @@
 --                      buff         临时属性 Buff（M18-04）：
 --                                   { stat=, amount=, days= }，经
 --                                   inventory.use → stats.add_buff 入账
+--                      social_day   当日社交锚点（M34-05）：饮用后**今天**送礼/对话加关系分
+--                                   吃 +10% 乘子（数字在 data/relationships.lua 的
+--                                   social.tea_bonus）。同一日第二杯不再加分，
+--                                   返回 tea_today 且不扣物品——与"每日一次礼物"同族语义。
 --                    无 use 字段即不可使用（如种子/收获物/工具）。
 return {
   lingzhi = {
@@ -280,7 +284,8 @@ return {
     buy = 20,
     sell = 6,
     kind = "consumable",
-    use = { inner_power = 15 }
+    -- social_day（M34-05）：喝过茶的当天，送礼与对话的关系分 +10%（docs/33 §8.1）。
+    use = { inner_power = 15, social_day = true }
   },
   mountain_herb_soup = {
     name = "行药汤",

@@ -10,12 +10,17 @@
 --     每日限次（docs/33 §8.1）：同一 NPC 每日有效礼物最多 1 次，重复送
 --     返回 "gift_today" 且不扣物不加分；gift_facing 面向 NPC 送礼（面前格或
 --     相邻 1 格，只读 npc.query 定位）。
+--   * 社交乘子（M34-05，docs/33 §8.1）：add 的正增量统一乘 `social_multiplier()`
+--     = 1 + 建筑档位加成（茶棚 2 级 +10%）+ 饮茶加成（当日喝过茶 +10%）。
+--     乘子是**只读查询**，来源分别是 data.buildings 的等级行与 data.relationships 的
+--     social.tea_bonus；当日锚点走 core.state 的标量 var（随 state provider 进存档）。
 --
 -- 数据定义见 data/relationships.lua（纯数据 + validate_all）；引用完整性在
 -- 加载期校验（main.validate_content），运行时对未知 NPC/阵营返回明确 reason，
 -- 不静默失败。
 local state = require("core.state")
 local data = require("data.relationships")
+local building_data = require("data.buildings")
 local npcs = require("data.npcs")
 local npc = require("world.npc")
 local player = require("player.player")
@@ -116,7 +121,10 @@ function M.reputation_price_off(faction_id)
 end
 
 -- 加关系分：未知 NPC → false,"unknown_npc"；delta 非数值 → false,"bad_delta"；
--- clamp 到 0..100；来源/事件入有界流水。返回 true,新分数。
+-- 正增量先乘当日社交乘子（M34-05，见下方 social_multiplier），clamp 到 0..100；
+-- 来源/事件入有界流水。返回 true,新分数。
+-- 流水里记的 `delta` 是**乘完之后真正加上去的那一份**：乘子改的是到账数字，
+-- 诊断要看的也是"这一笔实际加了几分"。
 function M.add(npc_id, delta, source, event)
   if type(npc_id) ~= "string" or not npcs.get(npc_id) then
     return false, "unknown_npc"
@@ -125,11 +133,53 @@ function M.add(npc_id, delta, source, event)
   if not step then
     return false, "bad_delta"
   end
+  if step > 0 then
+    step = math.floor(step * M.social_multiplier() + 0.5)
+  end
   local before = tonumber(points[npc_id]) or 0
   local after = math.max(0, math.min(100, before + step))
   points[npc_id] = after
   record_event("relationship", npc_id, step, before, after, source, event)
   return true, after
+end
+
+-- ---- 当日社交乘子（M34-05，docs/33 §8.1）----
+-- 这是一条**只读查询**：`add` 里不判断建筑、不判断节气，只问一句"今天乘多少"，
+-- 于是"社交收益"这条循环只有一个乘子来源，不会在三个调用点各写一套条件。
+-- 两份数字各有归属，都不在这里重复写一遍：
+--   建筑档位加成 = data/buildings.lua 的 levels[i].social_bonus（茶棚 2 级 +10%，
+--                  按"建到过几级"累加；等级读 systems/building.lua 记进 state.vars 的历史最高值）
+--   饮茶加成     = data/relationships.lua 的 social.tea_bonus（今天喝过茶再 +10%）
+-- 两项**相加**（不是相乘），今天最高 1 + 0.1 + 0.1 = 1.2；取整用四舍五入，
+-- 因为 +10% 落在 5 分礼上如果向下取整就还是 5 分——玩家看不出任何变化的一条加成等于没做。
+
+--- 饮茶锚点的 var 名：记的是"哪一天喝过"（标量，与 weather_day 同族做法），
+--- 因此随既有 state provider 自动进出存档，不需要新 provider。
+local TEA_VAR = "tea_day"
+
+--- 今天喝过茶吗（跨天自动失效：日期不等就是没喝过，不需要每日重置钩子）。
+function M.tea_today()
+  local day = tonumber(state.get_var(TEA_VAR))
+  return day ~= nil and day == math.floor(tonumber(clock.now().day) or 0)
+end
+
+--- 记下"今天喝过茶"（由 player/inventory.lua 在 use 一件 `use.social_day` 的物品后调用）。
+function M.mark_tea()
+  local day = math.floor(tonumber(clock.now().day) or 0)
+  return state.set_var(TEA_VAR, day, "tea", "drink")
+end
+
+--- 当前社交乘子（1 = 没有任何加成）。
+function M.social_multiplier()
+  local total = 1
+  for _, id in ipairs(building_data.ids()) do
+    local reached = tonumber(state.get_var(building_data.level_var(id))) or 0
+    total = total + building_data.social_bonus_at(building_data.get(id), reached)
+  end
+  if M.tea_today() then
+    total = total + (tonumber(data.social and data.social.tea_bonus) or 0)
+  end
+  return total
 end
 
 -- 声望值（faction.min..max，默认 0）；未知阵营返回 nil。

@@ -117,6 +117,8 @@ local ACTION_TEXT = {
   not_sold = "本店不出售该物品",
   not_bought = "本店不收购该物品",
   no_effect = "该物品没有使用效果",
+  -- 当日社交饮品（M34-05）：同一日第二杯不再加社交，物品也不扣。
+  tea_today = "今日已饮过茶",
   unknown_item = "未知物品",
   bad_count = "数量无效",
   build_failed = "建造失败",
