@@ -35,6 +35,21 @@
 当运行期判据（分包判据改为首屏清单的 `layout.subpackage_root`，回归守卫是 harness 的
 `--expect-no-read game.json`）。
 
+**上传器的语法档位比开发者工具低一档（实测踩到两次）**：2026-10-03（稳定版 2.02.2608070）点上传
+先后被拒 `Error: invalid file: <文件>, <行>:<列> SyntaxError: Unexpected token ?`，两处现场分别是
+wasm-bindgen 胶水里的 ES2021 逻辑赋值 `__wbg_terminated_addr ??= …`（`pkg/game_web.js, 989:72`）
+和自维护运行时里的 ES2020 空值合并 `body.getAttribute(…) ?? …`（`web-runtime.js, 1:105804`）——
+**同一份包在开发者工具里一帧不缺地跑**，只有上传这一步炸，所以本机跑帧的门抓不到它。三条收口：
+构建期把那句守卫落成 ES5 级等价形式（`scripts/package.ps1` 的 glue 补丁段；`let` 初值 undefined、
+右值是数值除法，故 `=== undefined` 与 `??=` 同义；不能用 `||=`/`if (!x)`——地址算出 0 也是合法值）；
+源码侧 `web-runtime.js` 不再用 `??`（读属性缺项本来就是 `null`，`let` + `if (raw === null)` 同义）；
+发布期用 [scripts/check-upload-ecma.mjs](../../scripts/check-upload-ecma.mjs)（acorn，脚本模式）
+把包内每个 `.js` 按 **ES2019** 再解析一遍，`package.ps1` 与 `verify-wechat-minigame.ps1` 各调一次，
+输出 `upload_ecma_ok files=6 ecma=2019`。档位为什么从 2020 降到 2019：定 2020 时的理由是"同一包里
+的 `??` 从没被拒过"，那是假象——上传器在 `game_web.js` 就中止了，根本没走到 `web-runtime.js`；
+第二处现场到手后 acorn 2019 复述出的行列与上传器逐字一致，2020 档则整包放行（即漏判），
+所以按 2019 判。要再降一档必须先在上传现场拿到证据，再改这个数。
+
 ## 发布与验证
 
 ```powershell

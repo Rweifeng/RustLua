@@ -215,6 +215,32 @@ else {
     }
 }
 
+# 上面那条只证明"Node 能解析"，而**上传器的解析器比开发者工具低一档**：实测（2026-10-03，
+# 稳定版 2.02.2608070）同一份包两次点上传被拒，都是 `SyntaxError: Unexpected token ?`——
+# `pkg/game_web.js, 989:72` 的 ES2021 逻辑赋值 `??=`，和 `web-runtime.js, 1:105804` 的 ES2020
+# 空值合并 `??`。工具里跑得通、开发者也看得见画面，只有点"上传"才炸。这里按上传器实测接受的
+# 那一档（ES2019，口径与两次现场的对照见 scripts/check-upload-ecma.mjs 头部）逐个 .js 复述一遍
+# 解析，把它变成发布期的错误。
+if ($nodeForSyntax) {
+    $ecmaTool = Join-Path $PSScriptRoot "check-upload-ecma.mjs"
+    if (-not (Test-Path -LiteralPath $ecmaTool)) { throw "缺少上传语法门脚本: $ecmaTool" }
+    $savedEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        # 只收 stdout：PS 5.1 在 EAP=Stop 下会把原生程序的 stderr 当终止性错误，`2>&1` 会让
+        # 门在读取结果之前自己先炸（与上面语法探针同一口径）。
+        $ecmaOutput = & $nodeForSyntax.Source $ecmaTool 2019 @($scriptFiles.FullName)
+        $ecmaExit = $LASTEXITCODE
+    }
+    finally { $ErrorActionPreference = $savedEap }
+    if ($ecmaExit -ne 0) {
+        $detail = (($ecmaOutput | ForEach-Object { "$_" }) -join ' ')
+        if (-not $detail) { $detail = "工具退出码 $ecmaExit 且 stdout 无输出（多半是 acorn 没解析到：跑 scripts/minify-toolchain.ps1 或设 `$env:ACORN，细节在它的 stderr 里）" }
+        throw ("发布包里有微信上传器解析不了的语法（口径: ES2019；要改这一档得动 scripts/check-upload-ecma.mjs 的参数并留实测证据）: " + $detail)
+    }
+    Write-Host (($ecmaOutput | Where-Object { $_ -match '^upload_ecma_ok' } | Select-Object -First 1)) -ForegroundColor DarkGray
+}
+
 # 代码包后缀白名单（真机只上传后缀在白名单内的文件，见 scripts/code-package-rules.js）：
 # 资源树里不得有"会被白名单拒掉"的文件——真机上它们根本不存在，运行时读到的是一串 permission denied。
 # 判据不在这里重算：交给同一份规则模块（node 侧），这里只看结论。

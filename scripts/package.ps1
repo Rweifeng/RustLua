@@ -636,8 +636,17 @@ WASM build failed ($Platform)。
             # 也把这类读取当可选路径。webgl 分支不需要补：那边不做 Global 剔除，导出是真的。
             $glueText = [System.IO.File]::ReadAllText($gluePath)
             $guardNeedle = "__wbg_terminated_addr ??= wasm.__instance_terminated.value / 4;"
+            # 守卫必须写成 **上传器档位（ES2019）内的等价形式**，不能原样保留 `??=`：微信**上传器**的
+            # 解析器比开发者工具低一档，实测（2026-10-03，稳定版 2.02.2608070）上传直接拒——
+            #   Error: invalid file: pkg/game_web.js, 989:72 SyntaxError: Unexpected token ?
+            # 而同一份包在开发者工具里跑得好好的（只有上传炸），所以这条既有下面的改写，也有
+            # verify-wechat-minigame.ps1 的 ECMA 档位门兜住"胶水又升级出新语法"这一类。
+            # 为什么 `=== undefined` 与 `??=` 在这里同义：左值是 `let __wbg_terminated_addr;`
+            # （初值 undefined），右值是数值除法（永远不会是 null）。**不能**图省事写成
+            # `||=` 或 `if (!x)`：地址算出来是 0 时那也是合法值，两种写法都会每次重算。
+            $guardPlain = "if (__wbg_terminated_addr === undefined) __wbg_terminated_addr = wasm.__instance_terminated.value / 4;"
             if ($glueText.Contains($guardNeedle)) {
-                $glueText = $glueText.Replace($guardNeedle, "if (!wasm.__instance_terminated) return; $guardNeedle")
+                $glueText = $glueText.Replace($guardNeedle, "if (!wasm.__instance_terminated) return; $guardPlain")
                 [System.IO.File]::WriteAllText($gluePath, $glueText, (New-Object System.Text.UTF8Encoding($false)))
                 Write-Host "==> Patched no-modules glue: wasm-bindgen call guard tolerates the stripped Global exports"
             }
@@ -1367,6 +1376,28 @@ WASM build failed ($Platform)。
                 }
             }
             Write-Host ("==> WeChat scripts are CommonJS-parseable: {0} files" -f $wechatScripts.Count) -ForegroundColor DarkGray
+            # 再加一档**上传器**的解析上限：上面那条用的是本机 Node（什么新语法都认），而微信
+            # 上传器的解析器低一档——实测（2026-10-03，稳定版 2.02.2608070）两次上传被拒：
+            #   pkg/game_web.js, 989:72 → wasm-bindgen 胶水的 ES2021 逻辑赋值 `??=`
+            #   web-runtime.js, 1:105804 → 自维护运行时的 ES2020 空值合并 `??`
+            # （开发者工具里跑得好好的，只有上传炸）。口径与"为什么是 ES2019"见
+            # scripts/check-upload-ecma.mjs 头部。
+            $ecmaTool = Join-Path $PSScriptRoot "check-upload-ecma.mjs"
+            if (-not (Test-Path -LiteralPath $ecmaTool)) { throw "缺少上传语法门脚本: $ecmaTool" }
+            $savedEapEcma = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
+            try {
+                # 同样只收 stdout（stderr 在 EAP=Stop 下会变成终止性错误，见上面的探针注释）。
+                $ecmaOutput = & $nodeForSyntax.Source $ecmaTool 2019 @($wechatScripts.FullName)
+                $ecmaExit = $LASTEXITCODE
+            }
+            finally { $ErrorActionPreference = $savedEapEcma }
+            if ($ecmaExit -ne 0) {
+                $ecmaDetail = (($ecmaOutput | ForEach-Object { "$_" }) -join ' ')
+                if (-not $ecmaDetail) { $ecmaDetail = "退出码 $ecmaExit 且 stdout 无输出（多半是 acorn 没解析到：跑 scripts/minify-toolchain.ps1 或设 `$env:ACORN）" }
+                throw ("发布包里有微信上传器解析不了的语法（口径 ES2019）: {0}" -f $ecmaDetail)
+            }
+            Write-Host ("==> {0}" -f (($ecmaOutput | Where-Object { $_ -match '^upload_ecma_ok' } | Select-Object -First 1))) -ForegroundColor DarkGray
         }
         else {
             # 没有 node 时退回文本检查：顶层 export/import 语句（压缩单行文件不会误伤，

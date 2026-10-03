@@ -3043,7 +3043,10 @@ end
         const body = document.body || document.documentElement;
         if (!body) return -1;
         // 优先读每帧真值 ui-now（剧本判定用）；回退到 30 帧一更的 ui-elements（老字段）。
-        const raw = body.getAttribute('data-rustlua-ui-now') ?? body.getAttribute('data-rustlua-ui-elements');
+        // 不用 `??`：微信上传器的解析器实测只到 ES2019，`??` 会让整包上传被拒
+        // （见 scripts/check-upload-ecma.mjs 头部）。getAttribute 缺属性时返回 null，语义等价。
+        let raw = body.getAttribute('data-rustlua-ui-now');
+        if (raw === null) raw = body.getAttribute('data-rustlua-ui-elements');
         return raw === null ? -1 : (Number(raw) || 0);
       }
       function jhytFail(d, detail) {
