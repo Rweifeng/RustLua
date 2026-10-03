@@ -1,0 +1,22 @@
+//! `Renderer` 的测试集合：WP12 阶段 4a 从 `renderer/mod.rs` 末尾的 `#[cfg(test)] mod tests`
+//! 原样搬来，按域分成 7 个文件（源文件 6,089 行里这一段占 1,847 行，超过计划 §2 的 1,500 行
+//! 上限）。断言、造数据与离屏渲染路径一字未改。
+//!
+//! 可见性依据（计划 §3.1.5）：本目录里的每个模块都是 `renderer` 的后代，`use super::*;` 的
+//! glob 会把父模块的**私有项**连同本模块的 `use` 一并带下来，因此拆分没有放宽任何可见性；
+//! 原先声明在本模块顶部的 helper 也仍在父作用域可见（本目录内没有非 `#[test]` 的 helper）。
+
+use super::*;
+use crate::core::camera::{Camera2D, Projection, RenderView};
+use crate::core::math3d::Quat;
+use crate::core::transform::Vec2;
+
+use crate::host::frame::OverlayVertex;
+
+mod capacity_and_caches;
+mod depth_and_frame_views;
+mod offscreen_and_tetris;
+mod passes;
+mod readback;
+mod render_metrics;
+mod world_sprite;
