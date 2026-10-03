@@ -22,7 +22,7 @@
   var g = typeof globalThis !== 'undefined' ? globalThis : this;
   // 版本号会打进日志和 __RUSTLUA_DIAG()：开发者工具会缓存代码包，
   // "有没有报错" 分不清旧包新包，只有版本号能分清（实测踩过）。
-  var ADAPTER_VERSION = '0.7.1+wasm-path';
+  var ADAPTER_VERSION = '0.7.2+clean-console';
   var wx = g.wx;
   if (!wx) {
     throw new Error('wechat-adapter: 未找到全局 wx —— 本文件只能在微信小游戏运行时中加载');
@@ -409,8 +409,8 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     return out;
   }
 
-  function readText(path) {
-    var result = readWithStrategies(path, readTextRaw);
+  function readText(path, quiet) {
+    var result = readWithStrategies(path, readTextRaw, quiet);
     noteRead(path, result);
     return result ? result.value : null;
   }
@@ -494,8 +494,10 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
   function loadRemoteConfig() {
     if (remoteConfigLoaded) return remoteConfig;
     remoteConfigLoaded = true;
+    // quiet：这个文件**可以不存在**（包内完整资源时就没有它），四种路径形式全空是常态，
+    // 不该在控制台刷一行"读取失败"——真要有远端配置却读不到，下面启用失败会另报。
     var text = null;
-    try { text = readText(REMOTE_CONFIG_FILE); } catch (error) { text = null; }
+    try { text = readText(REMOTE_CONFIG_FILE, true); } catch (error) { text = null; }
     if (!text) return null;
     var parsed = null;
     try { parsed = JSON.parse(text); } catch (error) {
@@ -1153,10 +1155,13 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
   }
 
   var rawGetContext = canvas.getContext;
-  canvas.getContext = function (kind) {
-    if (kind !== '2d') return rawGetContext ? rawGetContext.call(canvas, kind) : null;
+  canvas.getContext = function (kind, attributes) {
+    if (kind !== '2d') return rawGetContext ? rawGetContext.call(canvas, kind, attributes) : null;
     if (!canvas.__rustluaContext) {
-      var ctx = rawGetContext ? rawGetContext.call(canvas, '2d') : null;
+      // 第二个参数必须转给宿主：运行时用 `{ willReadFrequently: true }` 声明"这层 canvas 要频繁
+      // getImageData 回读像素"（画面自检），丢了它宿主就按"很少回读"配上下文，开发者工具会为
+      // 每次回读提示一次性能警告。
+      var ctx = rawGetContext ? rawGetContext.call(canvas, '2d', attributes) : null;
       if (!ctx) return null;
       canvas.__rustluaContext = wrapContext(ctx);
     }
@@ -1822,7 +1827,10 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
       }
       if (!relative) { warn('wechat-adapter: pack/project.toml 未声明 font，跳过自定义字体'); return null; }
       var fontPath = PACK_PREFIX + relative.replace(/^\.?\//, '');
-      // 标记要落在运行时读的那个对象上（web-runtime.js 读的是 bare `window`）。
+      // 字体注册由适配层负责（wx.loadFont + wrapContext 里的 ctx.font 族名替换）。留个标记给
+      // web-runtime.js：它那条浏览器路（FontFace + document.fonts.add）在小游戏里必然撞上宿主
+      // 自己的 FontFaceSet，抛 "parameter 1 is not of type 'FontFace'"。
+      setWindowFlag('__RUSTLUA_FONT_OWNER', 'wechat-adapter');
       setWindowFlag('__RUSTLUA_FONT', fontPath);
       return ensureLocalAsset(fontPath).then(function (result) {
         if (!result.available) { warn('wechat-adapter: 字体资源不可得，中文将使用系统字体: ' + fontPath); return null; }
@@ -2589,7 +2597,12 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
         readBytes: readBytes,
         wasmPath: WASM_MODULE_PATH,
         ehProbePath: EH_PROBE_PATH,
-        onEhProbe: function (verdict) { ehProbeReadout = verdict; },
+        onEhProbe: function (verdict) {
+          ehProbeReadout = verdict;
+          // 落 console：真机 vconsole 里能直接看到设备对 wasm EH 的裁决（accepted / reject[...] /
+          // timeout），不必等 __RUSTLUA_DIAG 快照。诊断对象仍照旧存 ehProbeReadout（见上）。
+          log('wasm-bridge: EH 真机探针裁决 = ' + verdict);
+        },
         log: log
       }).then(function (result) {
         if (result.ok) {

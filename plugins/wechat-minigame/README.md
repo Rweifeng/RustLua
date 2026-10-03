@@ -385,14 +385,15 @@ node scripts\wechat-minigame-harness.js examples\game_jhyt\builds\wechat-minigam
 ## 运行原理
 
 适配层把运行时需要的宿主 API 映射到小游戏 API，因此 `plugins/webgl/web-runtime.js`
-一行不改即可运行：
+一份代码同时跑浏览器与小游戏、几乎不需要改动（唯一的例外是字体注册：小游戏里字体只能由
+`wx.loadFont` 注册，运行时靠下表那行的**所有权标记**让路）：
 
 | 运行时需要 | 小游戏实现 |
 |---|---|
 | `fetch('pack/…')` | `wx.getFileSystemManager().readFileSync`，先查 `USER_DATA_PATH` 再查代码包。**首屏清单内的路径直接读主包 `mainpack/`（不等分包）**；清单外的才先 `await wx.loadSubpackage` 再读 `pack/` |
 | `document` / `window` | 轻量 shim（`getElementById('rustlua-canvas')`、`body.setAttribute('data-rustlua-*')` 启动标记） |
 | `new Image()` | `wx.createImage()`；**包内没有这张贴图时先下载到 `USER_DATA_PATH`，再把 `src` 指向本地文件**（`Image.src` 是宿主自己加载的，给一个不存在的路径只会静默 `onerror`，画面上少东西而日志里看不出来） |
-| `FontFace` + `document.fonts` | `wx.loadFont` / `canvas.loadFont`，并把 `ctx.font` 里的 `RustLuaGameFont` 替换成真实字体族 |
+| `FontFace` + `document.fonts` | `wx.loadFont` / `canvas.loadFont`，并把 `ctx.font` 里的 `RustLuaGameFont` 替换成真实字体族；同时立 `window.__RUSTLUA_FONT_OWNER='wechat-adapter'` 所有权标记，让 `web-runtime.js` 的浏览器那条 `document.fonts.add` 路**让路**（宿主自带原生 FontFaceSet，它会拒绝适配层的 shim FontFace，见"已知边界"⑬） |
 | `requestAnimationFrame` | `wx.requestAnimationFrame`（无则 `setTimeout` 兜底） |
 | `localStorage` | `wx.getStorageSync` / `setStorageSync` |
 | `keydown` / `mouse*` | `wx.onKeyDown/onKeyUp`（微信 PC 端）；触摸映射为指针事件（画布 `mousedown/mousemove` + `window mouseup`）驱动**游戏侧可见虚拟摇杆/按钮**（`ui/virtual_pad.lua`），右半屏触点派发动作键（space，菜单确认） |
@@ -638,3 +639,31 @@ node scripts\wechat-minigame-harness.js examples\game_jhyt\builds\wechat-minigam
   只删前者时 `resolveWebAssembly` 会回退到宿主 `WebAssembly`，把"桥不可用"模拟成"桥可用"）：
   断言 wasm 诊断如实报 `no-webassembly`、boot 照常进入玩法场景、missing 清单不含 `clock`、
   适配层显式报告未接线。
+  ⑬ **开发者工具控制台里的三行噪音**（实测 2026-10-03，稳定版 2.02.2608060 / 基础库 2.25.3）。
+  三条都不是"启动失败"，但它们把真该被看见的那一行挤下去，所以一起收掉：
+  - `wechat-adapter: 读取失败 remote-assets.json -> root-relative(…) | user-data(…) | leading-slash(…) |
+    dot-prefix(…)`：包内自带完整资源时**根本没有**这个可选配置文件，四种路径形式全空是常态，
+    却按"失败"刷一行警告 → `loadRemoteConfig` 改走 `readText(path, quiet)`；远端真启用却配错时
+    仍有专报（`JSON 解析失败` / `缺少合法的 packBaseUrl` 两条，不在 quiet 范围内）。
+  - `[lua] game font could not be loaded: … TypeError: Failed to execute 'add' on 'FontFaceSet':
+    parameter 1 is not of type 'FontFace'`：宿主的 `document` **不可扩展**、自带原生 `FontFaceSet`
+    （适配层换不掉它），而全局 `FontFace` 已被适配层换成自造 shim → 运行时那条浏览器路
+    （`new FontFace` + `document.fonts.add`）必然被宿主拒绝。小游戏里字体唯一正确的注册方式是
+    `wx.loadFont`（适配层已经做了，并在 `ctx.font` 上把族名换掉）→ 立 `__RUSTLUA_FONT_OWNER`
+    所有权标记，运行时认标记、不再自注册。**代价**：`web-runtime.js` 因此多了三行（上面那节
+    "共用一份运行时代码"的说法相应加了例外）。
+  - `Canvas2D: Multiple readback operations using getImageData are faster with the
+    willReadFrequently attribute set to true`：运行时**确实**按 `{ willReadFrequently: true }`
+    取 2D 上下文（画面自检：前 5 帧 + 此后每 30 帧回读一次全画布像素），但适配层接管
+    `canvas.getContext` 时把第二个参数丢了 → 现在原样转发给宿主。
+  三条都做了反向验证（退回旧实现必红，2026-10-03 实测）：harness 的 `--host-document locked/stub`
+  现在给宿主 `document` 附一个**只认自己那个 FontFace 的** `fonts`（locked 形态仍在
+  `preventExtensions` 之前加，所以它同时是"补不动"的那一档），并记录假画布收到的属性参数；
+  新增断言 = 不得出现 `game font could not be loaded`、`getContext` 的属性参数必须转发、
+  包内完整资源（`--remote off`）时不得为 `remote-assets.json` 刷"读取失败"。
+  复现：`node scripts/wechat-minigame-harness.js examples/game_jhyt/builds/wechat-minigame/launcher --frames 30 --host-document locked`
+  （旧版 `wechat-adapter.js` 塞进同一个包跑这条，报出的正是上面那两行现场）。
+  剩下**有意保留**的一行是 `宿主已占用全局 document（宿主 keys: location），已就地补齐 …`——
+  它是 ④ 那条故障类的自证（见 `--host-document` 用例对它的断言），不是错误。
+  另外三条都只是"运行期噪音"，不影响功能；**上传期**的语法档位是另一件事，单列在文件开头
+  "代码包后缀白名单"那一节旁边（见"上传器的语法档位比开发者工具低一档"）。

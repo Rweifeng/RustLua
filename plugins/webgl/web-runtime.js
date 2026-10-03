@@ -437,6 +437,13 @@
 
   // 游戏在 fonts/ 下随包分发中文 TTF；这里用 FontFace 注册，保证 HUD/菜单中文可见。
   async function loadGameFont() {
+    // 小游戏里字体是适配层用 wx.loadFont 注册的（它会把 ctx.font 里的 RustLuaGameFont 换成
+    // 宿主返回的真实族名）。这里的 FontFace + document.fonts 那条路在小游戏宿主上会撞上原生
+    // FontFaceSet，抛 "parameter 1 is not of type 'FontFace'"，所以认标记、不再自己注册。
+    if (typeof window !== 'undefined' && window.__RUSTLUA_FONT_OWNER === 'wechat-adapter') {
+      GAME_FONT = 'RustLuaGameFont, sans-serif';
+      return;
+    }
     const url = (typeof window !== 'undefined' && window.__RUSTLUA_FONT) || '';
     if (!url || typeof FontFace !== 'function' || !document.fonts) return;
     try {

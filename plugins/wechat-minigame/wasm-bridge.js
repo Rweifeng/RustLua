@@ -27,19 +27,130 @@
 'use strict';
 
 // 胶水在模块作用域里用到的宿主全局。**必须在 require 之前装好**：
-//   * `TextEncoder` —— `passStringToWasm0` 用它编码字符串；
+//   * `TextEncoder` —— `passStringToWasm0` 用它编码字符串；`game_web.js:1214` 求值期就 `new TextEncoder()`；
+//   * `TextDecoder` —— `decodeText` 用它解码 wasm 内存里的字符串；`game_web.js:1208` 求值期就 `new TextDecoder(...)`；
 //   * `WebAssembly` —— 求值期就要（tag 导入 + `wrapError` 造 Exception）。小游戏侧只有
 //     `WXWebAssembly` 域名，标准全局缺席时由下面的 facade 转发补上；
 //   * `console` —— 胶水自己的告警路径。
-function ensureGlobals() {
-  var g = typeof globalThis !== 'undefined' ? globalThis : (typeof global !== 'undefined' ? global : this);
+//
+// **文本编解码器为何要 polyfill**：真机小游戏（2026-10-03 vconsole 实测）把 `WebAssembly`、
+// `TextEncoder`、`TextDecoder` 三个标准全局**全部缺席**（读数：TextEncoder=absent TextDecoder=absent）。
+// 胶水在 require 求值期就无条件 `new TextDecoder('utf-8', …)`（见上面 facade 段的同源问题），
+// 于是 require 直接抛 `ReferenceError: TextDecoder is not defined`，被判成 `glue-missing`，
+// wasm 桥装不上，最终 "wasm lua bridge not loaded"。仅"宿主有就转发"顶不住这条——宿主根本没有。
+// 所以这里在转发之外再补一层纯 JS 的 UTF-8 polyfill，保证胶水求值期这两个构造器一定存在。
+function ensureGlobals(g) {
+  if (!g) g = typeof globalThis !== 'undefined' ? globalThis : (typeof global !== 'undefined' ? global : this);
+  // 优先用宿主原生（本机 Node / 有实现的宿主走这条）；`typeof x` 对未声明全局安全，不会抛。
   if (typeof g.TextEncoder !== 'function' && typeof TextEncoder === 'function') {
     g.TextEncoder = TextEncoder;
   }
+  if (typeof g.TextDecoder !== 'function' && typeof TextDecoder === 'function') {
+    g.TextDecoder = TextDecoder;
+  }
+  // 宿主确实没有时，装纯 JS UTF-8 polyfill（真机小游戏走这条）。返回补位清单给调用方落证据。
+  var installed = [];
+  if (typeof g.TextEncoder !== 'function') { g.TextEncoder = makeTextEncoderPolyfill(); installed.push('TextEncoder'); }
+  if (typeof g.TextDecoder !== 'function') { g.TextDecoder = makeTextDecoderPolyfill(); installed.push('TextDecoder'); }
   // `WXWebAssembly` 是宿主注入的全域名；只有它才认小游戏的 wasm 文件。
   // **不**把整份 `WXWebAssembly` 直接改名成 `WebAssembly`——那会覆盖宿主自己的实现；
   // 只在宿主确实没有标准全局时，按 installWebAssemblyFacade 逐条转发构造器。
-  return g;
+  return installed;
+}
+
+// ---------- TextEncoder / TextDecoder polyfill（真机小游戏缺这两个全局时的兜底） ----------
+//
+// 只实现胶水真正用到的那部分 API，够 `--target no-modules` 胶水跑起来即可：
+//   * `new TextEncoder().encode(str) -> Uint8Array`；
+//     **不**定义 `encodeInto`——胶水自己有 `if (!('encodeInto' in cachedTextEncoder))` 的回退分支，
+//     会用我们的 `encode()` 现造一个，交给胶水那段久经考验的逻辑，比我们重写更稳。
+//   * `new TextDecoder('utf-8', { fatal, ignoreBOM }).decode(input?)`；
+//     `decode()` 无参返回 ''（与原生一致，胶水求值期就调了一次空 decode），
+//     `decode(Uint8Array)` 按 UTF-8 解码；`fatal:true` 时遇非法字节抛 TypeError，否则替换成 U+FFFD。
+// 输入总是来自 wasm 内存里的合法 UTF-8（Rust/Lua 字符串），fatal 分支实际不会触发。
+// 全部用 ES2019 及以下语法（上传器实测只到 ES2019）：`codePointAt` / `String.fromCharCode` 都在范围内。
+function makeTextEncoderPolyfill() {
+  function TextEncoderPolyfill() { this.encoding = 'utf-8'; }
+  TextEncoderPolyfill.prototype.encode = function (str) {
+    str = str === undefined ? '' : String(str);
+    var bytes = [];
+    var i = 0;
+    var len = str.length;
+    while (i < len) {
+      var cp = str.codePointAt(i);
+      i += cp > 0xffff ? 2 : 1;
+      if (cp < 0x80) {
+        bytes.push(cp);
+      } else if (cp < 0x800) {
+        bytes.push(0xc0 | (cp >> 6), 0x80 | (cp & 0x3f));
+      } else if (cp < 0x10000) {
+        bytes.push(0xe0 | (cp >> 12), 0x80 | ((cp >> 6) & 0x3f), 0x80 | (cp & 0x3f));
+      } else {
+        bytes.push(0xf0 | (cp >> 18), 0x80 | ((cp >> 12) & 0x3f), 0x80 | ((cp >> 6) & 0x3f), 0x80 | (cp & 0x3f));
+      }
+    }
+    return new Uint8Array(bytes);
+  };
+  return TextEncoderPolyfill;
+}
+
+function makeTextDecoderPolyfill() {
+  function TextDecoderPolyfill(label, options) {
+    options = options || {};
+    this.encoding = 'utf-8';
+    this.fatal = !!options.fatal;
+    this.ignoreBOM = !!options.ignoreBOM;
+  }
+  TextDecoderPolyfill.prototype.decode = function (input) {
+    if (!input) return '';
+    var bytes = input instanceof Uint8Array
+      ? input
+      : new Uint8Array(input.buffer ? input.buffer : input);
+    var fatal = this.fatal;
+    var out = '';
+    var n = bytes.length;
+    var i = 0;
+    // ignoreBOM 为假时剥掉开头一个 EF BB BF（胶水用 ignoreBOM:true，不剥）。
+    if (!this.ignoreBOM && n >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) {
+      i = 3;
+    }
+    while (i < n) {
+      var b = bytes[i];
+      var cp;
+      var extra;
+      if (b < 0x80) { cp = b; extra = 0; }
+      else if ((b & 0xe0) === 0xc0) { cp = b & 0x1f; extra = 1; }
+      else if ((b & 0xf0) === 0xe0) { cp = b & 0x0f; extra = 2; }
+      else if ((b & 0xf8) === 0xf0) { cp = b & 0x07; extra = 3; }
+      else {
+        if (fatal) throw new TypeError('invalid UTF-8 lead byte 0x' + b.toString(16) + ' at ' + i);
+        out += '\ufffd'; i += 1; continue;
+      }
+      if (i + extra >= n) {
+        if (fatal) throw new TypeError('truncated UTF-8 sequence at ' + i);
+        out += '\ufffd'; break;
+      }
+      var ok = true;
+      for (var k = 1; k <= extra; k++) {
+        var cb = bytes[i + k];
+        if ((cb & 0xc0) !== 0x80) { ok = false; break; }
+        cp = (cp << 6) | (cb & 0x3f);
+      }
+      if (!ok) {
+        if (fatal) throw new TypeError('invalid UTF-8 continuation at ' + i);
+        out += '\ufffd'; i += 1; continue;
+      }
+      i += extra + 1;
+      if (cp > 0xffff) {
+        cp -= 0x10000;
+        out += String.fromCharCode(0xd800 + (cp >> 10), 0xdc00 + (cp & 0x3ff));
+      } else {
+        out += String.fromCharCode(cp);
+      }
+    }
+    return out;
+  };
+  return TextDecoderPolyfill;
 }
 
 // 宿主选择：优先 `WXWebAssembly`（小游戏唯一的 wasm 入口），没有才回退到标准 `WebAssembly`。
@@ -132,8 +243,8 @@ function hostKeys(host) {
 
 // 胶水求值期要读的宿主全局，缺席时一次性报出来：屏幕上只截得到 detail，值得把整张能力面带上，
 // 免得"改好 Tag 又死在 TextDecoder 上"要再跑一轮开发者工具。
-// **取的是装 facade 之前的快照**（loadWasmCore 里存成 hostGlobals）：facade 一装 `WebAssembly`
-// 就恒为 present，这句读数会开始撒谎。
+// **取的是装 polyfill / facade 之前的快照**（loadWasmCore 里存成 hostGlobals）：这两层一装
+// `WebAssembly`/`TextEncoder`/`TextDecoder` 就恒为 present，这句读数会开始撒谎。
 function evalGlobalsReadout(g) {
   var names = ['WebAssembly', 'TextEncoder', 'TextDecoder'];
   return names.map(function (name) {
@@ -389,9 +500,13 @@ function loadWasmCore(options) {
   var opts = options || {};
   var log = typeof opts.log === 'function' ? opts.log : function () { };
   var wasmPath = opts.wasmPath || 'pkg/game_web_bg.wasm';
-  var g = ensureGlobals();
-  // 宿主自己给的全局面，装 facade 之前取（读数要说的是宿主，不是我们补出来的东西）。
+  var g = typeof globalThis !== 'undefined' ? globalThis : (typeof global !== 'undefined' ? global : this);
+  // 宿主自己给的全局面，装 polyfill / facade **之前**取（读数要说的是宿主，不是我们补出来的东西）。
   var hostGlobals = evalGlobalsReadout(g);
+  var textPolyfilled = ensureGlobals(g);
+  if (textPolyfilled.length) {
+    log('wasm-bridge: 宿主缺 ' + textPolyfilled.join('/') + '，已装 UTF-8 polyfill（胶水求值期需要）');
+  }
 
   var picked = resolveWebAssembly(g);
   if (!picked.wasm) {
@@ -443,6 +558,7 @@ function loadWasmCore(options) {
       // 胶水**在包里**却 require 失败时，真正的原因几乎一定是某个求值期全局缺席；
       // 只报 ReferenceError 那句话看不出是哪个全局，所以把整张能力面一起带出来。
       detail: errorDetail(error) + '｜' + hostGlobals
+        + (textPolyfilled.length ? '｜text polyfilled=' + textPolyfilled.join(',') : '')
         + (facade ? '｜facade native=' + facade.native.join(',')
           + (facade.polyfilled.length ? ' polyfilled=' + facade.polyfilled.join(',') : '') : ''),
     });

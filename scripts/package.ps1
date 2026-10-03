@@ -169,6 +169,43 @@ function Optimize-WasmBin {
         Write-Warning "wasm-opt 处理失败（$WasmPath），按未优化体积继续发布。"
     }
 }
+function Downgrade-WasmNoExtern {
+    param(
+        [Parameter(Mandatory = $true)][string]$WasmPath
+    )
+    # 把 `ref.null noextern`(D0 72) 降级成扁平的 `ref.null extern`(D0 6F)：真机 WXWebAssembly 不认
+    # GC 终版 typed null（实测 `Unknown heap type -14`，-14 == noextern），本机 V8/开发者工具却都认，
+    # 于是门全绿也照样真机白屏。用 binaryen 133 `wasm-opt --disable-gc` 重编码，实测只改 6 字节、
+    # 大小不变、Node V8 编译通过（首个改动偏移 == 真机报错 @+1486867）。
+    # 完整理由、两个反例（--all-features 写非法 import kind、自动检测因 target-features 已剥而退回
+    # MVP）、显式特性清单、以及"大小不变 + 每处改动都是 0x72→0x6f"的字节级校验，全在
+    # scripts/wasm-lua/downgrade-noextern.mjs 里（那里做校验比 PS 逐字节循环快几个数量级）。
+    if (-not (Test-Path -LiteralPath $WasmPath)) { return }
+    $wasmOptPath = Resolve-WasmOpt -Provision
+    if (-not $wasmOptPath) {
+        throw "降级 noextern 需要 wasm-opt（binaryen 133）：$WasmPath 仍带 heap type -14，真机会 Unknown heap type -14。跑 scripts\minify-toolchain.ps1 自动装，或设 `$env:WASM_OPT。"
+    }
+    $downgradeTool = Join-Path $PSScriptRoot "wasm-lua\downgrade-noextern.mjs"
+    if (-not (Test-Path -LiteralPath $downgradeTool)) {
+        throw "缺少 noextern 降级脚本: $downgradeTool（发布不能在没有它的情况下继续）"
+    }
+    $nodeForDowngrade = Get-Command node -ErrorAction SilentlyContinue
+    if (-not $nodeForDowngrade) { throw "noextern 降级需要 node" }
+    $savedEapDown = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $downOutput = & $nodeForDowngrade.Source $downgradeTool $wasmOptPath $WasmPath 2>&1
+        $downExit = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $savedEapDown
+    }
+    if ($downExit -ne 0) {
+        throw ("noextern→extern 降级失败（{0}）：{1}" -f `
+            $WasmPath, (($downOutput | ForEach-Object { "$_" }) -join ' '))
+    }
+    Write-Host (($downOutput | Where-Object { $_ -match '^downgrade_noextern_ok' } | Select-Object -First 1)) -ForegroundColor DarkGray
+}
 function Minify-JsFile {
     param(
         [Parameter(Mandatory = $true)][string]$JsPath
@@ -793,6 +830,13 @@ WASM build failed ($Platform)。
                     $wasmForStrip, (($stripTagsOutput | ForEach-Object { "$_" }) -join ' '))
             }
             Write-Host (($stripTagsOutput | Where-Object { $_ -match '^strip_wasm_tags_ok' } | Select-Object -First 1)) -ForegroundColor DarkGray
+            # 降级 `ref.null noextern`(D0 72) → `ref.null extern`(D0 6F)：真机 WXWebAssembly 不认
+            # GC 终版 typed null（实测报 `Unknown heap type -14`，heap type -14 == noextern），
+            # 而本机 V8 / 开发者工具都认——门全绿也照样真机白屏。放在 strip-tags 之后、宿主校验之前，
+            # 是对**已剥 tag/global 的最终产物**做最小重编码（实测只改 6 字节、大小不变），细节与两个
+            # 反例（--all-features 会写非法 import kind、自动检测因 target-features 已剥而退回 MVP）
+            # 都在 Downgrade-WasmNoExtern 的注释里。
+            Downgrade-WasmNoExtern $wasmForStrip
             # EH 真机探针模块：wasm-bridge 的 probeEHAcceptance 走 WXWebAssembly.compile('pkg/eh-probe.wasm')
             # 问"设备那台引擎到底认不认 wasm 异常处理"。本机 V8 支持 EH，永远测不出"设备不支持"那一侧，
             # 所以这份模块必须**随代码包带上**——真机跑一次，诊断里的 `eh_probe=` 就是设备裁决。

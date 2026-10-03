@@ -151,6 +151,10 @@ let noFrames = false;
   // `--probe-host-api a,b,c`：拿活体 Lua 状态问这几条宿主 API 到底实没实现（rawget 下钻，
   // 不碰缺失代理），只打证据行、不判定。维护豁免白名单时用它判断"这条还缺吗"。
   const probeHostApi = [];
+  // `--dump-diag`：跑完后把适配层的 `__RUSTLUA_DIAG()`（即 `__RustLuaWechat.diag()`）整个
+  // 以 `RUSTLUA_DIAG <json>` 打到 stdout，供人工核对 shim 补齐状态（document_shim 的
+  // replaced/patched/blocked/missing/hostKeys）、wasm 段、eh_probe 等。默认关，不影响任何门读数。
+  let dumpDiag = false;
   const hostStubs = {};
   for (let i = 1; i < argv.length; i++) {
     if (argv[i] === '--frames' && argv[i + 1]) frames = Number(argv[++i]) || 12;
@@ -184,6 +188,7 @@ if (argv[i] === '--no-frames') noFrames = true;
     else if (argv[i] === '--no-wasm') noWasm = true;
     else if (argv[i] === '--wasm-tag-polyfill-probe') wasmTagPolyfillProbe = true;
     else if (argv[i] === '--check-api-contract') checkApiContract = true;
+    else if (argv[i] === '--dump-diag') dumpDiag = true;
     else if (argv[i] === '--probe-host-api' && argv[i + 1]) {
       for (const item of String(argv[++i]).split(',')) {
         const trimmed = item.trim();
@@ -215,6 +220,20 @@ if (argv[i] === '--no-frames') noFrames = true;
         if (trimmed) denyCodeDirs.push(trimmed.endsWith('/') ? trimmed : trimmed + '/');
       }
     }
+  }
+  // `--dump-diag`：注册在退出前打诊断。放在所有 case 分支之前注册，因为每条用例都各自
+  // `return 0` 提前退出；用 process 'exit' 钩子统一兜住，读的是退出时刻的全局适配层对象
+  // （`globalThis.__RustLuaWechat`），哪条分支跑过都能拿到它装好的 diag。
+  if (dumpDiag) {
+    process.on('exit', () => {
+      try {
+        const diagAdapter = globalThis.__RustLuaWechat;
+        const diag = (diagAdapter && typeof diagAdapter.diag === 'function') ? diagAdapter.diag() : null;
+        process.stdout.write('RUSTLUA_DIAG ' + JSON.stringify(diag) + '\n');
+      } catch (error) {
+        process.stdout.write('RUSTLUA_DIAG_ERROR ' + String((error && error.message) || error) + '\n');
+      }
+    });
   }
   if (!['root', 'slash', 'sub-root', 'no-utf8', 'missing-pack'].includes(wxPathStyle)) {
     fail(`未知的 --wx-path-style: ${wxPathStyle}`);
@@ -476,9 +495,12 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
 
   const canvas = {
     width: 0, height: 0,
-    getContext(kind) {
+    getContext(kind, attributes) {
       if (kind !== '2d') return null;
       if (!this.__ctx) { this.__ctx = createRecordingContext(); this.__ctx.canvas = this; }
+      // 记住最后一次的属性参数：适配层接管 getContext 时必须把 `{ willReadFrequently: true }`
+      // 转给宿主，否则真机开发者工具会因频繁回读像素刷性能警告。
+      this.__ctx.__getContextAttrs = attributes || null;
       return this.__ctx;
     },
     loadFont: hostLoadFont
@@ -1139,6 +1161,18 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
   // 注意：Node 自带 WebAssembly，而 wasm-bridge 的 resolveWebAssembly 在 WXWebAssembly
   // 缺失时会回退到宿主 WebAssembly（实测：只删 WXWebAssembly 时仍报 wasm=ok:ok）——
   // 要模拟"宿主真缺 wasm"，两个入口都必须清掉。
+  //
+  // 同一类"宿主能力面"的第三个缺口（2026-10-03 **真机** vconsole 实测）：`TextEncoder` /
+  // `TextDecoder` 也缺席（读数 `WebAssembly=absent TextEncoder=absent TextDecoder=absent`），
+  // 而胶水在 require 求值期就 `new TextDecoder('utf-8', …)`（pkg/game_web.js:1208）。
+  // Node 两个都自带，不摘掉的话 wasm-bridge 的 UTF-8 polyfill 路径在 harness 里永远走不到——
+  // 真机上那条 `glue-missing: TextDecoder is not defined` 本机同样不响（与 R12 同类假绿）。
+  try { delete globalThis.TextDecoder; } catch (_) { }
+  try { delete globalThis.TextEncoder; } catch (_) { }
+  if (typeof globalThis.TextDecoder !== 'undefined' || typeof globalThis.TextEncoder !== 'undefined') {
+    fail('无法从 globalThis 摘掉 TextDecoder/TextEncoder：harness 复刻不了真机"无文本编解码全局"的形态，'
+      + 'wasm-bridge 的 UTF-8 polyfill 判据会失去牙齿');
+  }
   if (!noWasm) {
     globalThis.WXWebAssembly = makeWxWebAssembly(root);
     // 复刻开发者工具的域名形态：只留 WXWebAssembly。判据在最后的 `wasm=` 证据字段里
@@ -1257,6 +1291,26 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
           writable: true
         });
       }
+      // 开发者工具的 document 还带一套**原生 FontFaceSet**（必须在 preventExtensions 之前加）：
+      // 它只认自己那个 FontFace，而全局 FontFace 已被适配层换成自造 shim →
+      // `document.fonts.add(shim 造的对象)` 抛 "parameter 1 is not of type 'FontFace'"（真机控制台实测）。
+      // 字体在小游戏里由 wx.loadFont 注册，运行时不该再走这条浏览器路。
+      class HostFontFace {}
+      Object.defineProperty(locked, 'fonts', {
+        value: {
+          status: 'loaded',
+          add(face) {
+            if (!(face instanceof HostFontFace)) {
+              throw new TypeError("Failed to execute 'add' on 'FontFaceSet': parameter 1 is not of type 'FontFace'.");
+            }
+          },
+          delete() {},
+          load() { return Promise.reject(new TypeError('harness host fonts: not supported')); }
+        },
+        configurable: true,
+        enumerable: false,
+        writable: true
+      });
       if (hostDocument === 'locked') Object.preventExtensions(locked);
       // 非 locked 的两个形态额外给一个**看着像 DOM、其实不能用**的 body（有 appendChild、
       // 没有 setAttribute）：它会让 data-rustlua-boot / data-rustlua-drawn 全都写不进去，
@@ -1738,6 +1792,16 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
         if (!mouseBridge.some((entry) => entry.startsWith('down:'))) hostFailures.push(`宿主全局下的触摸未派发 canvas mousedown（实际: ${JSON.stringify(mouseBridge)}）`);
         if (!mouseBridge.some((entry) => entry.startsWith('move:'))) hostFailures.push(`宿主全局下的触摸未派发 canvas mousemove（实际: ${JSON.stringify(mouseBridge)}）`);
         if (!mouseBridge.includes('up')) hostFailures.push(`宿主全局下的触摸未把 mouseup 派发到 window（实际: ${JSON.stringify(mouseBridge)}）`);
+        // 字体：宿主那个原生 document.fonts 会拒绝适配层的 FontFace（见上面 hostStubs 处的说明）。
+        // 运行时必须认适配层的字体所有权标记、根本不注册；这条一红就是开发者工具里那行 TypeError。
+        const fontWarning = consoleWarns.find((line) => /game font could not be loaded/.test(String(line)));
+        if (fontWarning) hostFailures.push(`运行时仍去注册 FontFace，被宿主 FontFaceSet 拒绝: ${String(fontWarning).slice(0, 160)}`);
+        if (stats.fontLoaded === 0) hostFailures.push('wx.loadFont 没有被调用（小游戏里字体只能由它注册）');
+        // 像素回读：适配层接管 getContext 时不能把 `{ willReadFrequently: true }` 丢掉。
+        const ctxAttrs = canvas.__ctx && canvas.__ctx.__getContextAttrs;
+        if (!ctxAttrs || ctxAttrs.willReadFrequently !== true) {
+          hostFailures.push(`canvas.getContext 的属性参数没有转发（实际: ${JSON.stringify(ctxAttrs)}）→ 真机每次回读像素都刷 Canvas2D 性能警告`);
+        }
       }
       restoreRemoteConfig();
       if (hostFailures.length) {
@@ -2259,6 +2323,15 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
     if (fsmUnknownProbes.size > 0) {
       failures.push(`适配层探测了 harness 未实现的 FileSystemManager 方法: ${Array.from(fsmUnknownProbes).join(', ')}` +
         '（要么在 harness 里实现它，要么明确它不影响行为——不能让它静默降级）');
+    }
+    // ⑤ 可选配置文件不该刷"读取失败"：包内自带完整资源时**根本没有** remote-assets.json，
+    //    四种路径形式全空是常态——开发者工具控制台里那一长行是纯噪音，还会把真问题挤下去。
+    //    （远端真启用却读不到时，loadRemoteConfig 会另报 packBaseUrl 缺失。）
+    if (remoteMode === 'off') {
+      const noisyOptional = consoleWarns.filter((line) => /读取失败\s+remote-assets\.json/.test(String(line)));
+      if (noisyOptional.length) {
+        failures.push(`读不到可选的 remote-assets.json 被报成 ${noisyOptional.length} 行"读取失败"警告（包内完整资源时本就没有这个文件）`);
+      }
     }
     if (unhandledRejections.length) {
       failures.push(`出现了未处理的 Promise 拒绝 ${unhandledRejections.length} 条（小游戏里表现为彻底静默）: ` +
