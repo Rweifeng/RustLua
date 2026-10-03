@@ -613,7 +613,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify.ps1 -Mvp
 - 可见性放宽：10 处（`targets.rs` 4 + `timestamp.rs` 6；两个类型的定义留在能看见它们的地方，
   只有被 `mod.rs` 调用的方法放宽）。
 - 证明：`node %TEMP%/wp12/proof4a.mjs`（按段去空白包含 + 父文件按原序 + `headExempt` 处理被重排的
-  `use` 块；`pub(super)` 与 rustfmt 补的尾逗号一并归一）。
+  `use` 块；`pub(super)` 与 rustfmt 补的尾逗号一并归一。这批脚本与 spec 已随收口删除，
+  口径留在 §14.8，重放办法也留在 §14.8 末段）。
 - 回滚档：`ef30c52`（4a 的起点）→ 与 4b 一起在 `2e451f3`；要单独回退 4a 只能反向重放，
   实际处置是**整刀回退到 `ef30c52`**（把 4a+4b 一起退回）。
 
@@ -625,11 +626,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify.ps1 -Mvp
 `artifacts/baselines/` 里的留档用连字符（`wp0-2d-golden.json`），所以要先把留档换成下划线名：
 
 ```powershell
-# <prev> = artifacts\baselines 里那六份 2026-09-20 报告的下划线改名副本（-Scene-Frame 那份不参与，见 B）
-mkdir <cur> <prev>; cd <cur>; cargo run --quiet --release --manifest-path ../engine/Cargo.toml -p engine `
-      --example wp0_3d_golden -- --output $PWD/wp0_3d_golden.json      # 其余五份同理（editor_preview 用 -p editor）
-cd <prev>; Copy-Item ..\artifacts\baselines\wp0-3d-golden.json .\wp0_3d_golden.json   # 六份照此改名
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/compare-golden.ps1 -Current <cur> -Previous <prev>
+# 在仓库根执行；<wp> 是本次的临时工作目录（收口后已删，照此重建即可）
+$R = Get-Location
+$cur = "$R\<wp>\cur"; $prev = "$R\<wp>\prev"; mkdir $cur $prev | Out-Null
+cargo run --quiet --release --manifest-path engine/Cargo.toml -p engine --example wp0_3d_golden -- --output "$cur/wp0_3d_golden.json"
+# 其余四份同理：wp0_2d_golden / wp0_mixed_golden / wp0_hud_golden / wp0_lighting_golden
+cargo run --quiet --release --manifest-path engine/Cargo.toml -p editor --example editor_preview_golden -- --output "$cur/editor_preview_golden.json"
+# 把 artifacts\baselines 里那六份 2026-09-20 的连字符名报告，按下划线名放进 prev
+foreach ($p in "2d","3d","mixed","hud","lighting") { Copy-Item "artifacts\baselines\wp0-$p-golden.json" "$prev\wp0_${p}_golden.json" }
+Copy-Item "artifacts\baselines\wp0-editor-preview-golden.json" "$prev\editor_preview_golden.json"
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\compare-golden.ps1 -Current $cur -Previous $prev
 ```
 
 实测 `golden_compare_ok files=6 compared=209 semantic_diffs=1 ignored_noise=3`，唯一一条：
@@ -701,8 +707,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/compare-baseline.ps1
 rustfmt 在 `pub(super)` 存在时会把 `fn f(a: A, b: B)` 折成每参数一行并补尾逗号，
 同一段代码的字节变了但语义没变——这正是 §9 坑 5 说"每阶段用 clippy 清零孤儿 use"的同一件事的另一面。
 
-复核命令（任何一刀）：`node %TEMP%/wp12/proof4c.mjs --spec %TEMP%/wp12/proof4c.spec.json`；
-`wc -l` 的行数对照见 §14.1，回滚档见 §14.2。
+复核这条口径本身不需要那些脚本（它们随收口一起删了）：搬动的每一段都能用
+`git show <该刀起点>:engine/crates/engine/src/host/<旧文件>` 取原文，与目标文件里的同一段并排看，
+差异只应落在 `pub(super)`、尾逗号与换行三件事上——这三件事正是上面归一化掉的内容。
+§14.1 的行数与 §14.2 的回滚档是同一件事的另一种读法。
 
 ### 14.9 收口动作与两处自己造成的回归（都已修）
 
