@@ -32,6 +32,8 @@ use std::{
 const MAIN_SPAWN: (f32, f32) = (528.0, 112.0);
 /// 山庄 → 云泽村出口格 (16,1) 世界坐标。
 const MAIN_EXIT: (f32, f32) = (528.0, 48.0);
+/// 出口格北侧的门廊 (16,2) 世界坐标：玩家最常站的那一格（面向出口按 E 也应离庄）。
+const MAIN_PORCH: (f32, f32) = (528.0, 80.0);
 /// 云泽村出生/入口格 (19,2) 世界坐标。
 const VILLAGE_SPAWN: (f32, f32) = (624.0, 80.0);
 /// 云泽村 → 山庄出口格 (19,1) 世界坐标。
@@ -105,6 +107,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_day(&mut runtime, 2)?;
     assert_num(&mut runtime, "require('core.state').energy", 100.0)?;
     assert_plot_days(&mut runtime, "16,4", 1.0)?;
+
+    banner("M17-01b0 站在门廊面向出口按 E 也能离庄（2026-10-03 实机：走到门口按 E 不传送）");
+    // 门洞只有一格宽：山庄出口格 (16,1) 的南北两侧分别是院墙与门廊 (16,2)，
+    // 玩家最自然的站位是门廊那一格。只认"脚下即出口格"时，这里按 E 既不出庄、
+    // 反馈还是 farm 兜底的"不是药田"（玄鹤 06:00-08:00 就站在门廊，甚至会被对话吃掉）。
+    teleport(&mut runtime, MAIN_PORCH)?;
+    set_facing(&mut runtime, "down")?;
+    assert_str(
+        &mut runtime,
+        "require('systems.interaction').prompt('down')",
+        "E: 离开山庄 · 前往云泽村",
+    )?;
+    press(&mut runtime, KeyCode::KeyE)?;
+    assert_str(
+        &mut runtime,
+        "require('core.state').last_action",
+        "exit_village",
+    )?;
+    runtime.process_scene_transition()?;
+    assert_scene_is(&mut runtime, "village")?;
+    // 背对门口时出口不该抢走交互：门廊上的 NPC 对话仍然可达（不依赖具体是谁在门廊）。
+    teleport(&mut runtime, MAIN_PORCH)?;
+    set_facing(&mut runtime, "up")?;
+    let up_prompt = query_str(
+        &mut runtime,
+        "return require('systems.interaction').prompt('up')",
+    )?;
+    if up_prompt.contains("离开山庄") {
+        return Err(format!("背对门洞时不该提示出口：prompt(up) = {up_prompt:?}").into());
+    }
+    // 回山庄，走既有"站在出口格"路径。
+    teleport(&mut runtime, VILLAGE_EXIT)?;
+    press(&mut runtime, KeyCode::KeyE)?;
+    runtime.process_scene_transition()?;
+    assert_scene_is(&mut runtime, "manor")?;
 
     banner("M17-01b 出口交互：山庄 → 云泽村，背包跨图不清空");
     teleport(&mut runtime, MAIN_EXIT)?;

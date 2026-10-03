@@ -39,6 +39,20 @@ function M.player_cell()
   return cell[1], cell[2]
 end
 
+-- 玩家面前的 cell（与 farm/building 同一约定：`grid.facing_cell`）。
+function M.facing_cell(facing)
+  local pid = player.ensure()
+  if not pid then
+    return nil
+  end
+  local pos = transform.get(pid)
+  if not pos then
+    return nil
+  end
+  local cell = grid.facing_cell(pos.x, pos.y, facing or state.facing or "down", maps.TILE)
+  return cell[1], cell[2]
+end
+
 -- 引擎当前激活地图：__map 未设置时退回 scene.reload()（门面无 __map）。
 function M.current()
   return current_map or map.current() or scene.reload()
@@ -87,11 +101,25 @@ function M.place_player(wx, wy)
 end
 
 -- 出口 target（interaction 协议）：candidate 携带 id/label/exit。
+-- priority=20：**必须高于所有"按距离命中"的玩法交互（NPC 对话/商店/设施，均为 10）**。
+-- 出口 query 只看玩家站立格；而 dialogue/shop 的 query 是 56 单位（≈1.75 格）距离圈、
+-- 不看玩家朝向——若出口优先级低，NPC 站在出口格旁时（如玄鹤 06:00-08:00 在山庄门廊
+-- (16,2)，紧邻出口格 (16,1)），玩家站在出口格按 E 会被对话抢占，永远无法离庄
+-- （实机复现：2026-10-03）。站在出口格就是要离开，出口必须无条件优先。
+--
+-- 触发格判定（两条，任一成立即"在门口"）：
+--   ① 脚下就是出口格（maps.lua 的 `exit.cell`，如山庄 (16,1)）；
+--   ② 脚下是出口格的**正前方一格且面朝出口**（如站在山庄门廊 (16,2) 朝下）。
+-- 只认 ①（原实现）时，玩家最常见的站位——门洞外那一格——按 E 得到的不是出口，
+-- 而是 farm 目标兜底的"不是药田"（实机 2026-10-03："走到传送点按 E 不能传送"；
+-- 门洞只有一格宽，(16,1) 南北两侧分别是墙和门廊，玩家很难恰好停在那一格）。
+-- ② 只在面朝出口时成立：站在门廊背对门洞按 E 仍然是"与门口那个人交谈"，
+-- NPC 对话不会被出口永久吃掉（玄鹤 06:00-08:00 就站在 (16,2)）。
 local function register_exit_target(exit)
   interaction.register({
     id = exit.id,
-    priority = -10, -- 出口低于农田/任务等玩法交互
-    query = function()
+    priority = 20, -- 高于对话/商店/设施（10）与农田（0）：在门口按 E 必能离开
+    query = function(facing)
       local cx, cy = M.player_cell()
       if not cx then
         return nil, "no_player"
@@ -101,6 +129,10 @@ local function register_exit_target(exit)
       end
       if cx == exit.cell.x and cy == exit.cell.y then
         return { id = exit.id, exit = exit, distance = 0.5, facing = 1 }
+      end
+      local fx, fy = M.facing_cell(facing)
+      if fx == exit.cell.x and fy == exit.cell.y then
+        return { id = exit.id, exit = exit, distance = 1.0, facing = 1 }
       end
       return nil, "not_at_exit"
     end,

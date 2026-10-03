@@ -287,10 +287,31 @@ function M.can_interact(facing)
   return true
 end
 
+-- 药田邻域（含外扩一格）：面前格或玩家所在的格落在里面，farm 目标才算"在场"。
+local function near_farm(cx, cy)
+  return cx >= FARM.x0 - 1 and cx <= FARM.x1 + 1
+    and cy >= FARM.y0 - 1 and cy <= FARM.y1 + 1
+end
+
 function M.query(facing)
   local target, reason = M.target(facing)
   if not target then
     return { distance = math.huge, facing = 0 }, reason
+  end
+  -- 离药田很远时**不产生候选**：原实现无条件给候选（reason=not_farmland），于是玩家在
+  -- 山庄门口按 E，HUD 反馈是"不是药田"——与"面前没有可交互目标"相比纯属误导，还会把
+  -- 真正的目标（出口）挤成"兜底原因"（实机 2026-10-03：门口按 E 不能传送 + 反馈是"不是药田"）。
+  local near = near_farm(target.x, target.y)
+  if not near then
+    local pid = player.ensure()
+    local pos = pid and transform.get(pid) or nil
+    if pos then
+      local cell = grid.world_to_cell(pos.x, pos.y, TILE)
+      near = near_farm(cell[1], cell[2])
+    end
+  end
+  if not near then
+    return nil, reason
   end
   return {
     cell = target,

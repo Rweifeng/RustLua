@@ -5,7 +5,8 @@
 --   title        HUD 顶部标题文案（scene 里 HudTitle 显示文本同步）
 --   spawn        首次进入/无入口时的默认出生 cell
 --   exits        本图出口表：
---     cell       玩家需**站立**的触发格（cell 0-index、y 朝上；按下 E 触发）
+--     cell       触发格（cell 0-index、y 朝上）：**站在这一格**按 E 触发，
+--                或**站在它正前方一格并面朝它**按 E（门洞通常一格宽，玩家常停在门外那格）
 --     to         目标地图 id
 --     to_cell    目标地图落点 cell（换算为世界坐标经 map.goto 落位）
 --     label      prompt 文案
