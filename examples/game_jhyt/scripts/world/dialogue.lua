@@ -14,6 +14,8 @@ local npcs = require("data.npcs")
 local items = require("data.items")
 local tools = require("data.tools")
 local relationships_data = require("data.relationships")
+-- M34-01：档位条件读关系分（只读；relationship 不 require dialogue，无环）。
+local relationship = require("player.relationship")
 local interaction = require("systems.interaction")
 local player = require("player.player")
 local npc = require("world.npc")
@@ -100,7 +102,10 @@ local VALID_QUEST_STATE = {
 local VALID_COND = {
   quest = true, state = true, var = true,
   eq = true, gte = true, lte = true, lt = true, gt = true,
-  truthy = true, falsy = true, item = true, count = true
+  truthy = true, falsy = true, item = true, count = true,
+  -- M34-01：关系档位条件（成对出现）——tier_npc 是谁、tier_gte 要到 data.tiers 的
+  -- 哪一档（陌生/相识/友善/亲厚/莫逆）。档位是派生值，这里只做只读查询。
+  tier_npc = true, tier_gte = true
 }
 local VALID_EFFECT = {
   accept_quest = true, deliver_quest = true, fail_quest = true,
@@ -223,6 +228,12 @@ local function cond_ok(cond)
   end
 
   if cond.item ~= nil and inv.count(state.inventory, cond.item) < (tonumber(cond.count) or 1) then
+    return false
+  end
+
+  -- 关系档位条件（M34-01）：与某人的关系到档才出现的分支。
+  if (cond.tier_npc ~= nil or cond.tier_gte ~= nil)
+    and not relationship.affinity_met(cond.tier_npc, cond.tier_gte) then
     return false
   end
 
@@ -606,6 +617,19 @@ local function validate_cond(issues, where, cond)
   end
   if cond.count ~= nil and not positive(cond.count) then
     issues[#issues + 1] = where .. " 的 cond.count 必须为正数"
+  end
+  -- 关系档位条件：两个键必须成对出现，且档位名要在 data/relationships.lua 查得到。
+  if cond.tier_npc ~= nil or cond.tier_gte ~= nil then
+    if cond.tier_npc == nil or cond.tier_gte == nil then
+      issues[#issues + 1] = where .. " 的 cond.tier_npc/cond.tier_gte 必须成对出现"
+    end
+    if type(cond.tier_npc) ~= "string" or not relationships_data.npcs[cond.tier_npc] then
+      issues[#issues + 1] = where .. " 的 cond.tier_npc 引用未登记关系的 NPC：" .. tostring(cond.tier_npc)
+    end
+    if type(cond.tier_gte) ~= "string" or not relationships_data.tier_by_key(cond.tier_gte) then
+      issues[#issues + 1] = where .. " 的 cond.tier_gte 引用未知关系档位：" .. tostring(cond.tier_gte)
+        .. "（已知：" .. table.concat(relationships_data.tier_keys(), "/") .. "）"
+    end
   end
   for _, key in ipairs({ "eq", "gte", "lte", "lt", "gt" }) do
     local value = cond[key]

@@ -72,6 +72,49 @@ function M.tier(npc_id)
   return data.tier_for(value)
 end
 
+-- NPC 所属声望阵营（data.npcs.lua 的 faction 字段）；无阵营/未知 NPC → nil。
+function M.faction_of(npc_id)
+  local def = type(npc_id) == "string" and npcs.get(npc_id) or nil
+  return def and def.faction or nil
+end
+
+-- 关系分是否达到某个档位（对话条件用；tier_key 见 data.tiers 的 key）。
+-- 未知 NPC/tier_key → false（宁可挡住，也不让写错的档位名静默放行）。
+function M.affinity_met(npc_id, tier_key)
+  local required = data.tier_by_key(tier_key)
+  local value = M.points(npc_id)
+  if not required or value == nil then
+    return false
+  end
+  return value >= required.min
+end
+
+-- 声望档位条目（docs/33 §8.2 的五档）；未知阵营返回 nil。
+-- 负声望落在第一档（陌生，无任何效果）——查表规则见 data.reputation_tier_for。
+function M.reputation_tier(faction_id)
+  local def = data.faction(faction_id)
+  if not def then
+    return nil
+  end
+  return data.reputation_tier_for(M.reputation(faction_id))
+end
+
+-- 声望是否达到某个档位（任务目标用；tier_key 见 data.reputation_tiers 的 key）。
+function M.reputation_met(faction_id, tier_key)
+  local required = data.reputation_tier_by_key(tier_key)
+  if not required or not data.faction(faction_id) then
+    return false
+  end
+  return M.reputation(faction_id) >= required.min
+end
+
+-- 该阵营当前给的商店折扣百分数（整数）；无阵营/无档位 → 0（原价）。
+function M.reputation_price_off(faction_id)
+  local tier = M.reputation_tier(faction_id)
+  local effects = tier and tier.effects
+  return effects and tonumber(effects.price_off) or 0
+end
+
 -- 加关系分：未知 NPC → false,"unknown_npc"；delta 非数值 → false,"bad_delta"；
 -- clamp 到 0..100；来源/事件入有界流水。返回 true,新分数。
 function M.add(npc_id, delta, source, event)

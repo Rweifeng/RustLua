@@ -4,6 +4,11 @@
 -- 只挂主线五段 mainline_truth（真相浮现），入口条件是 mainline_xuanming_done
 -- （顾长风交付主线四段后由 quest.on_complete 写入的锚点变量）。
 -- 交付后 on_complete 写入 mainline_truth_done，四个结局入口即解锁。
+--
+-- M34-01 加一条关系档位分支：与陆归藏的关系到"友善"（data.tiers 的 friendly = 45）
+-- 才出现的体己话，说过一次由 lu_guizang_secret 锚住不再重复。主线四段的 +5、
+-- mainline_truth 交付的 +20 与 4 次送礼（tea_brew +5）即到档——档位是派生值，
+-- 这段分支不写任何新状态，只读关系分。
 return {
   version = 1,
   id = "lu_guizang_truth",
@@ -18,9 +23,24 @@ return {
         { text = "八两铁锭已备齐。", cond = { quest = "mainline_truth", state = "deliverable" }, effects = { deliver_quest = "mainline_truth" }, next = "truth_done" },
         { text = "铁锭还在锻。", cond = { quest = "mainline_truth", state = "in_progress" }, next = "truth_remind" },
         { text = "真相已明。", cond = { quest = "mainline_truth", state = "completed" }, next = "thanks" },
+        -- 关系档位分支（M34-01）：与陆归藏关系到"友善"才有的体己话，只说一次。
+        { text = "师叔可还有体己话？", cond = { tier_npc = "npc_lu_guizang", tier_gte = "friendly", var = "lu_guizang_secret", falsy = true }, next = "secret" },
         -- 未接前置时的兜底：把玩家指引回顾长风处。
         { text = "师叔可要提点一二？", cond = { var = "mainline_xuanming_done", falsy = true }, next = "prereq" },
         { text = "改日再来请教。", finish = true }
+      }
+    },
+    secret = {
+      text = "陆归藏压低声音：“留书被撕掉的半页在我袖中。司徒魁要的不是功法，是山庄的地契。”",
+      options = {
+        { text = "徒儿收好。", effects = { set_var = { lu_guizang_secret = true }, add_item = { { item = "herb_tonic", count = 1 } } }, next = "secret_kept" },
+        { text = "徒儿不敢听。", finish = true }
+      }
+    },
+    secret_kept = {
+      text = "陆归藏把一瓶行气散塞进你手里：“此事莫要声张。山里路滑，带着。”",
+      options = {
+        { text = "谢师叔。", finish = true }
       }
     },
     prereq = {

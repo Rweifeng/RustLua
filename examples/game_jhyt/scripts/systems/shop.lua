@@ -4,6 +4,8 @@
 -- 本模块同时负责：
 --   * 营业时间判定（clock.now().minute_of_day 落在 hours 窗口内）
 --   * 原子购买 / 出售（金币、每日限购、背包容量任一不满足都不产生半完成状态）
+--   * 购买价按**店主阵营的声望档位**打折（M34-01，效果数据见 data/relationships.lua
+--     的 reputation_tiers[].effects.price_off；零声望 = 原价，出售价不受影响）
 --   * 每日库存刷新（on_day_start → 限购计数清零，随存档持久化）
 --   * 商店面板 UI（纯键盘：W/S 或方向键选择 / F 切换买卖 / +/- 数量 /
 --     空格确认 / Esc 关闭；M20-02 方向键走引擎焦点环，选中行超出可视窗口时
@@ -22,6 +24,8 @@ local tools = require("data.tools")
 local interaction = require("systems.interaction")
 local player = require("player.player")
 local npc = require("world.npc")
+-- M34-01：档位接线——商店价格读**店主阵营**的声望折扣（只读查询，不写关系状态）。
+local relationship = require("player.relationship")
 -- M19-02：交易成功/失败音效（缺失文件或无设备时静默降级）；M20-02 走 UI 总线。
 local audio = require("core.audio")
 -- M20-02：列表焦点/滚动导航（引擎 ui_navigation）。
@@ -127,6 +131,28 @@ local function stock_price(entry)
   return price
 end
 
+-- 店主阵营的声望折扣（整数百分数，docs/33 §8.2 的 price_off 效果）；
+-- 店主无阵营 → 0。陌生档 effects 为空 = 原价，所以零声望时逐字节等于改动前。
+local function keeper_price_off(def)
+  local keeper = def and def.keeper
+  local faction = keeper and relationship.faction_of(keeper)
+  if not faction then
+    return 0
+  end
+  return relationship.reputation_price_off(faction)
+end
+
+-- 成交价 = 标价按店主阵营档位打折：整数结算（price * off / 100 四舍五入后扣除），
+-- 最低 1 文，杜绝"打折打成 0 文"的免费刷物。出售不受折扣影响（§8.2 只写购买折扣）。
+local function deal_price(def, entry)
+  local price = stock_price(entry)
+  local off = keeper_price_off(def)
+  if price == nil or off <= 0 then
+    return price
+  end
+  return math.max(1, price - math.floor(price * off / 100 + 0.5))
+end
+
 local function stock_entry(def, item_id)
   for _, entry in ipairs(def.stock or {}) do
     if entry.item == item_id then
@@ -197,13 +223,18 @@ function M.stock(shop_id)
     end
     out[#out + 1] = {
       item = entry.item,
-      price = stock_price(entry),
+      price = deal_price(def, entry),
       limit = limit,
       used = used_count,
       remaining = remaining
     }
   end
   return out
+end
+
+-- 本店当前购买折扣（百分数，只读）：店主阵营声望档位决定，零声望为 0。
+function M.price_off(shop_id)
+  return keeper_price_off(M.get(shop_id))
 end
 
 -- 本店收购的商品（当前背包内持有的部分）。
@@ -241,7 +272,7 @@ function M.buy(shop_id, item_id, count)
   if not entry then
     return false, "not_sold"
   end
-  local price = stock_price(entry)
+  local price = deal_price(def, entry)
   if not positive(price) then
     return false, "not_sold"
   end

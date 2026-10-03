@@ -559,9 +559,122 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err(format!("缺少 yield 时未报出问题，得到:\n{missing}").into());
     }
 
+    banner("⑩ 设计案 §8.1/§8.2 档位表 == data/relationships.lua 的 tiers / reputation_tiers");
+    // 两张表都逐格比对：区间下界直接取自数据，区间上界由"下一档下界 - 1"推出、
+    // 末档取值域上界（关系分 0..100 由 relationship.add 的 clamp 定，声望上界取 faction.max）。
+    // 文档改一个数、加一行或删一行都会在这里红——§8.2 的折扣列与 effects.price_off 也是同一口径。
+    let affinity_rows = markdown_table(&design, "关系分区间")?;
+    let affinity_tiers = query_num(&mut runtime, "#require('data.relationships').tiers")? as usize;
+    if affinity_rows.len() != affinity_tiers {
+        return Err(format!(
+            "§8.1 关系档位表 {} 行，data.relationships.tiers {} 档",
+            affinity_rows.len(),
+            affinity_tiers
+        )
+        .into());
+    }
+    for (index, row) in affinity_rows.iter().enumerate() {
+        if row.len() < 2 {
+            return Err(format!("§8.1 第 {} 行格式不符（期望 ≥2 列）: {row:?}", index + 1).into());
+        }
+        let (doc_min, doc_max) = range_from_cell(&row[0])?;
+        let data_min = query_num(
+            &mut runtime,
+            &format!("require('data.relationships').tiers[{}].min", index + 1),
+        )?;
+        let next_min = if index + 1 < affinity_tiers {
+            query_num(
+                &mut runtime,
+                &format!("require('data.relationships').tiers[{}].min", index + 2),
+            )? - 1.0
+        } else {
+            100.0
+        };
+        let data_name = query_str(
+            &mut runtime,
+            &format!(
+                "return require('data.relationships').tiers[{}].name",
+                index + 1
+            ),
+        )?;
+        if doc_min != data_min || doc_max != next_min {
+            return Err(format!(
+                "§8.1 第 {} 档区间写的是「{}」，data.relationships.tiers 推出的是 {data_min:.0}–{next_min:.0}（{data_name}）",
+                index + 1,
+                row[0]
+            )
+            .into());
+        }
+        if row[1] != data_name {
+            return Err(format!(
+                "§8.1 第 {} 档称号是「{}」，data.relationships.tiers 写的是「{data_name}」",
+                index + 1,
+                row[1]
+            )
+            .into());
+        }
+        println!("  关系 {data_min:.0}–{next_min:.0}: {data_name}");
+    }
+
+    let reputation_rows = markdown_table(&design, "声望区间")?;
+    let reputation_tiers = query_num(
+        &mut runtime,
+        "#require('data.relationships').reputation_tiers",
+    )? as usize;
+    if reputation_rows.len() != reputation_tiers {
+        return Err(format!(
+            "§8.2 声望档位表 {} 行，data.relationships.reputation_tiers {} 档",
+            reputation_rows.len(),
+            reputation_tiers
+        )
+        .into());
+    }
+    for (index, row) in reputation_rows.iter().enumerate() {
+        if row.len() < 3 {
+            return Err(format!("§8.2 第 {} 行格式不符（期望 ≥3 列）: {row:?}", index + 1).into());
+        }
+        let (doc_min, doc_max) = range_from_cell(&row[0])?;
+        let doc_off = number_from_cell(&row[2])?;
+        let path = format!(
+            "require('data.relationships').reputation_tiers[{}]",
+            index + 1
+        );
+        let data_min = query_num(&mut runtime, &format!("{path}.min"))?;
+        let data_max = query_num(&mut runtime, &format!("{path}.max"))?;
+        let data_name = query_str(&mut runtime, &format!("return {path}.name"))?;
+        let data_off = query_num(
+            &mut runtime,
+            &format!("({path}.effects and {path}.effects.price_off) or 0"),
+        )?;
+        if doc_min != data_min || doc_max != data_max {
+            return Err(format!(
+                "§8.2 第 {} 档区间写的是 {}，data.relationships.reputation_tiers 是 {data_min:.0}–{data_max:.0}",
+                index + 1,
+                row[0]
+            )
+            .into());
+        }
+        if row[1] != data_name {
+            return Err(format!(
+                "§8.2 第 {} 档称号是「{}」，数据里是「{data_name}」",
+                index + 1,
+                row[1]
+            )
+            .into());
+        }
+        if doc_off != data_off {
+            return Err(format!(
+                "§8.2 「{data_name}」档折扣文档写 {doc_off:.0}%，effects.price_off = {data_off:.0}"
+            )
+            .into());
+        }
+        println!("  声望 {data_min:.0}–{data_max:.0}: {data_name}，购买折扣 {data_off:.0}%");
+    }
+
     println!(
         "jhyt_m24_numeric_alignment_ok project={} crops={} shop_rows={} lingzhi_yield={} \
-         rice_yield={} mutated_yield={} field_cell={} radish_yield={}",
+         rice_yield={} mutated_yield={} field_cell={} radish_yield={} affinity_tiers={} \
+         reputation_tiers={}",
         project.display(),
         crop_rows.len(),
         checked_rows,
@@ -569,7 +682,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         rice_yield,
         mutated_yield,
         field_cell,
-        radish_yield
+        radish_yield,
+        affinity_tiers,
+        reputation_tiers
     );
     Ok(())
 }

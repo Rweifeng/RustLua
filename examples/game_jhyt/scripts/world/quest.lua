@@ -23,7 +23,9 @@ local audio = require("core.audio")
 local M = {}
 
 local VALID_STATUS = { in_progress = true, completed = true, failed = true }
-local VALID_OBJECTIVE = { item = true, var = true, flag = true }
+-- 目标类型：item/var/flag 是既有三类；reputation（M34-01）把"声望到档"写成目标，
+-- 于是交付门槛、任务日志进度行、对话 state 条件三者共用同一套机制，不新造状态。
+local VALID_OBJECTIVE = { item = true, var = true, flag = true, reputation = true }
 local VALID_REWARD = { item = true, money = true, inner_power = true,
   relationship = true, reputation = true }
 -- on_complete 副作用白名单（与 M.apply_effects 支持的字段一致）。
@@ -89,6 +91,9 @@ local function objective_progress(objective)
   elseif kind == "flag" then
     local value = state.get_var(objective.var)
     return (value ~= nil and value ~= false) and 1 or 0, 1
+  elseif kind == "reputation" then
+    -- 档位门槛（M34-01）：目标恒为 1，达成与否由 relationship.reputation_met 判定。
+    return relationship.reputation_met(objective.faction, objective.tier) and 1 or 0, 1
   end
   return 0, 1
 end
@@ -421,6 +426,23 @@ function M.validate_all()
             end
             if not positive(objective.count) then
               issues[#issues + 1] = where .. " 的 count 必须为正数"
+            end
+          elseif objective.kind == "reputation" then
+            -- 声望门槛（M34-01）：阵营 + 档位名都要能在 data/relationships.lua 查到；
+            -- 达成与否只看档位下限，写 count 会让"日志显示的数"和"实际判定"两套口径。
+            if type(objective.faction) ~= "string" or not relationships_data.faction(objective.faction) then
+              issues[#issues + 1] = where .. " 引用未知声望阵营：" .. tostring(objective.faction)
+            end
+            if type(objective.tier) ~= "string"
+              or not relationships_data.reputation_tier_by_key(objective.tier) then
+              issues[#issues + 1] = where .. " 的 tier 引用未知声望档位：" .. tostring(objective.tier)
+                .. "（已知：" .. table.concat(relationships_data.reputation_tier_keys(), "/") .. "）"
+            end
+            if objective.count ~= nil then
+              issues[#issues + 1] = where .. " 的声望目标以 tier 为准，不接受 count"
+            end
+            if type(objective.label) ~= "string" or objective.label == "" then
+              issues[#issues + 1] = where .. " 的声望目标必须有 label（玩家要在任务日志里看懂差什么）"
             end
           else
             if type(objective.var) ~= "string" or objective.var == "" then

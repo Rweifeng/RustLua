@@ -824,7 +824,11 @@ if ($Mvp -or $MvpOnly) {
         "jhyt_m32_camera",
         # M34-00 存档负向门：map.state/快照版本门会红、provider 报错整批回滚、
         # 100 次磁盘往返逐字段不漂移（soak 的成功路径门只断言"没炸"，踩不到失败分支）。
-        "jhyt_m34_save_gates"
+        "jhyt_m34_save_gates",
+        # M34-01 档位接线门：五档关系/五档声望的结构负例、店主阵营声望逐档折扣
+        # （含 19/20/39/40/59/60/79/80/100 与负声望）、结局交付的声望门槛、
+        # 对话的关系档位分支（真实送礼到档才出现）、档位随存档往返派生。
+        "jhyt_m34_relationship_tier"
     )
     $exampleDir = Join-Path $engineRoot "crates\game\examples"
 
