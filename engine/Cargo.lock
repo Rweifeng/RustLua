@@ -3703,7 +3703,6 @@ dependencies = [
  "rustlua-ecs",
  "rustlua-infra",
  "rustlua-math",
- "rustlua-ui",
  "thiserror 2.0.20",
  "ttf-parser",
 ]
