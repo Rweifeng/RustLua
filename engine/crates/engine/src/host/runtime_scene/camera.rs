@@ -141,10 +141,16 @@ impl RuntimeScene {
     /// 启动场景生效"——每张玩法地图各声明一份 bounds 的工程（`examples/game_jhyt`）里，
     /// 只有开工那张图受约束，之后所有地图的相机都退回"无 bounds"。
     ///
-    /// 只取 `bounds`，**不取 center/zoom**：换图时相机姿态的权威是每帧的 `camera2d.*`
-    /// 请求，把它重置回新场景的作者中心会在换图那一帧闪一下（与"场景声明的相机是**初始**
-    /// 相机，不是第二份姿态真源"这条既有裁定一致）。新 bounds 在同一个固定步里就会被
-    /// `step_camera2d` 夹取，因此不会渲染出越界的一帧。
+    /// 只取 `bounds` 与 `zoom`，**不取 center**：换图时相机**中心**的权威是每帧的
+    /// `camera2d.*` 请求，把它重置回新场景的作者中心会在换图那一帧闪一下（与"场景声明的
+    /// 相机是**初始**相机，不是第二份姿态真源"这条既有裁定一致）。新 bounds 在同一个固定
+    /// 步里就会被 `step_camera2d` 夹取，因此不会渲染出越界的一帧。
+    ///
+    /// `zoom` 必须一起取：它与 center 不同，**没有**每帧的属主——控制器只在脚本显式
+    /// `camera2d.set_zoom` 时改它（跟随/死区/平滑/抖动都只动 center），因此场景声明就是
+    /// 每图取景倍率的唯一真源。换图不读它的话，启动场景没声明相机的工程（门面形态，如
+    /// `examples/game_jhyt` 的 `startup_scene = scenes/main.scene`）里声明的 zoom 永远不
+    /// 生效：实测从门面进入玩法图后画面停在 zoom=1，只有把玩法图直接当启动场景才看到 2。
     pub(super) fn sync_camera_from_scene(&mut self) {
         // 拆分批 9：同步的是**当前生效**那台的 bounds（显式选中优先，否则声明的第一台）——
         // 脚本显式选了另一台 2D 相机时，换图不该把它的 bounds 换成"第一台"的。
@@ -160,6 +166,15 @@ impl RuntimeScene {
             );
         }
         self.camera.bounds = declared.bounds;
+        if (self.camera.zoom - declared.zoom).abs() > f32::EPSILON {
+            tracing::info!(
+                target: "render",
+                scene = ?self.script.scene_name(),
+                zoom = declared.zoom,
+                "[render] 2D camera zoom refreshed from the new scene"
+            );
+            self.camera.zoom = declared.zoom;
+        }
     }
 
     /// 拆分批 9：**本帧生效**的 2D 相机载荷（显式选中优先，否则排序序第一台启用的正交相机）。

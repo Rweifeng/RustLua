@@ -200,9 +200,9 @@ impl RuntimeScene {
             },
         ));
         // 换图会把世界连同场景声明的 `Camera` 一起重建，宿主必须**紧跟其后**重新读一次
-        // bounds（否则"声明的相机"只在启动场景生效）。挂在同一格、排在 scene_transition
-        // 之后，因此新 bounds 在同一个固定步里就被 `step_camera2d` 夹取，渲染不会看到
-        // 越界的一帧。
+        // bounds 与 zoom（否则"声明的相机"只在启动场景生效）。挂在同一格、排在
+        // scene_transition 之后，因此新 bounds 在同一个固定步里就被 `step_camera2d` 夹取，
+        // 渲染不会看到越界的一帧。
         self.add_builtin_step_system(System::new(
             "scene_camera_sync",
             ScheduleStage::Simulation,

@@ -23,9 +23,11 @@ fn sample_runtime() -> RuntimeScene {
 /// 于是 `self.camera.bounds` 永远停在开工那张图的值上——每张地图各声明一份 bounds 的
 /// 工程（`examples/game_jhyt`）里，之后所有地图的相机都不受约束，而且**没有任何报错**。
 ///
-/// 断言三件事：① 启动场景（门面，无相机）用历史默认、无 bounds；② 换到声明了相机的
+/// 断言四件事：① 启动场景（门面，无相机）用历史默认、无 bounds；② 换到声明了相机的
 /// 场景后 bounds 变成新场景那一份；③ **center 不被重置**（姿态的权威仍是每帧的
-/// `camera2d.*`，重置回作者中心会在换图那一帧闪一下）。
+/// `camera2d.*`，重置回作者中心会在换图那一帧闪一下）；④ **zoom 跟新场景走**（门面
+/// 无声明 ⇒ 起步 1；进入声明 zoom=2 的地图后必须是 2——zoom 没有每帧属主，场景声明
+/// 是唯一真源，换图不读它则门面形态的工程永远停在 1）。
 #[test]
 fn scene_declared_camera_bounds_refresh_after_scene_switch() {
     let root = crate::core::games_dir().join("examples").join("game_jhyt");
@@ -42,6 +44,11 @@ fn scene_declared_camera_bounds_refresh_after_scene_switch() {
         None,
         "门面 main.scene 没有声明相机 ⇒ 不该有 bounds"
     );
+    assert_eq!(
+        runtime.camera_2d().zoom,
+        1.0,
+        "门面 main.scene 没有声明相机 ⇒ zoom 保持历史默认 1"
+    );
 
     // 进入山庄：bounds 换成地面瓦片图的矩形（40×23 格 × 32 = 1280×736）。
     runtime
@@ -56,6 +63,10 @@ fn scene_declared_camera_bounds_refresh_after_scene_switch() {
         manor.bounds,
         Some(expected),
         "换图后应读入新场景声明的 bounds"
+    );
+    assert_eq!(
+        manor.zoom, 2.0,
+        "换图后应读入新场景声明的 zoom（门面没声明，只能在这里生效）"
     );
     // ③ 姿态不被重置：`enter_playable_map` 先落点再 follow，下一帧相机中心 = 玩家坐标
     // （528,112）。若 bounds 同步顺手把 center 重置成场景作者值，这里会变成 (640,368)——
