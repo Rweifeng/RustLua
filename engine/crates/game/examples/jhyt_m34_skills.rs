@@ -24,10 +24,12 @@
 //! 另有 11 条数据负例（每类 kind 的专属字段写错、或写了没有消费方的字段，都必须报出来）与
 //! 4 条分派负例（伤害招式不能当轻功放、轻功不能走攻击底座）。
 //!
-//! **04b 加的第⑤″节**（山魈首领二阶段：冲撞、召唤、上界、不入档）合并在本门里跑，不另起
+//! **04b 加的第⑤″节**（山魈首领二阶段：冲撞、召唤、上界、不入档）与**第⑤‴节**（玄冥会徒的
+//! 站防：正面减免、没举盾的对照、硬直/击退不吃减伤、落防、快照里不带姿态）合并在本门里跑，
+//! 不另起
 //! `jhyt_m34_boss` 样例——它用的仍是同一条 60Hz 固定步、同一个 `combat.attack` 底座（判定窗
 //! 由 `resolve_hits` 按攻击者实时位置重算，所以"撞出去的那段位移"本身就是扫过去的判定窗），
-//! 再加 6 条敌人数据负例。这一节同时把 docs/33 §6.2 新表逐格钉回 `data/enemies.lua`，
+//! 再加 9 条敌人数据负例。这一节同时把 docs/33 §6.2 新表逐格钉回 `data/enemies.lua`，
 //! 并钉住"敌人出手不吃玩家内力"那条修正（旧行为：Boss 千风掌每次扣玩家 10 点内力，
 //! 内力不足时 Boss 那一招还会被 `inner_power` 拒掉）。
 //!
@@ -198,11 +200,11 @@ const SLOT_SHAPE: &str = "(function() local d = require('data.enemies'); \
       end end; \
     return tostring(ttl) .. '/' .. tostring(rows) .. '/' .. tostring(differs) end)()";
 
-/// 敌人侧的数据负例（⑤″ 新加的那组校验）。这六条的共同点是**改错了不会响**：
+/// 敌人侧的数据负例（⑤″/⑤‴ 新加的两组校验）。这批的共同点是**改错了不会响**：
 /// `phase2_below` 写得比 hp 大 → Boss 只是"从头到尾少一招"；`summon_ttl` 打错一个字母 →
 /// 召唤物永远不死；`summon_group` 拼错 → 每 5 秒什么也没召出来。表现都是"Boss 好像变弱了"，
 /// 所以只能在加载期报出来。每条改坏 → `validate_all` → **立刻改回**，跑完数据仍是干净的。
-const ENEMY_NEGATIVE_CASES: [(&str, &str, &str); 6] = [
+const ENEMY_NEGATIVE_CASES: [(&str, &str, &str); 9] = [
     (
         "二阶段阈值写得比满血还高（永远进不去）",
         "local e = require('data.enemies').get('enemy_ape_boss'); local keep = e.phase2_below; \
@@ -248,6 +250,29 @@ const ENEMY_NEGATIVE_CASES: [(&str, &str, &str); 6] = [
            local issues = table.concat((select(2, require('data.enemies').validate_all())) or {}, ';'); \
            e.roar = nil; return issues",
         ": unknown enemy key",
+    ),
+    (
+        "格挡招式指到普攻（读不到 absorb，减伤静默变成 0）",
+        "local e = require('data.enemies').get('enemy_xuanming'); local keep = e.guard_skill; \
+           e.guard_skill = 'strike'; \
+           local issues = table.concat((select(2, require('data.enemies').validate_all())) or {}, ';'); \
+           e.guard_skill = keep; return issues",
+        "不是格挡招式",
+    ),
+    (
+        "格挡招式 id 打错字（盾永远举不起来）",
+        "local e = require('data.enemies').get('enemy_xuanming'); local keep = e.guard_skill; \
+           e.guard_skill = 'guard_hart'; \
+           local issues = table.concat((select(2, require('data.enemies').validate_all())) or {}, ';'); \
+           e.guard_skill = keep; return issues",
+        ".guard_skill: unknown skill",
+    ),
+    (
+        "不出刀的行写了 guard_skill（没有空档可站防 = 死键）",
+        "local e = require('data.enemies').get('enemy_dummy'); e.guard_skill = 'guard_heart'; \
+           local issues = table.concat((select(2, require('data.enemies').validate_all())) or {}, ';'); \
+           e.guard_skill = nil; return issues",
+        "永远站不起防",
     ),
 ];
 
@@ -1426,6 +1451,381 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ENEMY_NEGATIVE_CASES.len()
     );
 
+    // ---------------- ⑤‴ 玄冥会徒的站防（docs/33 §6.2：把"更远判定"的近似换成真 guard 分支） ----------------
+    // 这一节先做文档↔数据的镜像（那条决定全是引用、没有新数字），再当场打两刀：
+    // 举着盾的正面一刀 10 → 3，同一只敌人**没举盾**的一刀 10 → 10，中间夹一条"硬直/击退不吃减伤"。
+    let xuanming = "enemy_xuanming";
+    let xuanming_ref = format!("{enemy_def}.get('{xuanming}')");
+    let guard_map = query_str(&mut rt, &format!("{xuanming_ref}.map"))?;
+    let guard_name = query_str(&mut rt, &format!("{xuanming_ref}.name"))?;
+    let guard_range = query_num(&mut rt, &format!("{xuanming_ref}.attack_range"))?;
+    let guard_aggro = query_num(&mut rt, &format!("{xuanming_ref}.aggro_radius"))?;
+    let guard_cd = query_num(&mut rt, &format!("{xuanming_ref}.attack_cooldown"))?;
+    let guard_skill_data = query_str(&mut rt, &format!("{xuanming_ref}.guard_skill"))?;
+    let guard_kind = query_str(
+        &mut rt,
+        &format!("require('data.skills').skills.{guard_skill_data}.kind"),
+    )?;
+    // 敌人那份 absorb / front_degrees 读的是**它举着的那条招式记录**；而 `absorb`/`guard_arc`
+    // 两个变量来自 §6.1 玩家守心诀那一行（第④⑥节用的就是它们）。两组数字相等 =
+    // "敌人侧不存在第二份挡多少"这件事在数据层成立，而不只是文档里的一句承诺。
+    let guard_absorb_data = skill_num(&mut rt, &guard_skill_data, "absorb")?;
+    let guard_arc_data = skill_num(&mut rt, &guard_skill_data, "front_degrees")?;
+    let doc_guard_skill = doc_kv(&design, "guard_skill")?;
+    let doc_absorb = doc_kv(&design, "absorb")?;
+
+    banner(&format!(
+        "M34-04b⑤‴ 站防：{guard_name}（{guard_map}）举的是 {guard_skill_data}（kind={guard_kind}），absorb={absorb} / 正面 {guard_arc:.0}° 与玩家守心诀同一份"
+    ));
+    if doc_guard_skill != guard_skill_data {
+        return Err(format!(
+            "docs/33 写的 guard_skill = {doc_guard_skill:?}，数据 = {guard_skill_data:?}"
+        )
+        .into());
+    }
+    if guard_kind != "guard" {
+        return Err(format!(
+            "{guard_skill_data}.kind = {guard_kind:?}：站防只能举 kind=guard 的招（那里才有 absorb 可减）"
+        )
+        .into());
+    }
+    let stance_pairs: [(&str, f64, f64); 4] = [
+        ("absorb（减伤比例）", doc_number(&design, "absorb")?, absorb),
+        (
+            "front_degrees（正面张角）",
+            doc_number(&design, "front_degrees")?,
+            guard_arc,
+        ),
+        (
+            "attack_range（贴进多远它才停下来出刀）",
+            doc_number(&design, "attack_range")?,
+            guard_range,
+        ),
+        (
+            "attack_cooldown（空档来自这一格）",
+            doc_number(&design, "attack_cooldown")?,
+            guard_cd,
+        ),
+    ];
+    for (label, doc_value, data_value) in &stance_pairs {
+        if (doc_value - data_value).abs() > 1e-9 {
+            return Err(format!("{label}：docs/33 = {doc_value}，数据 = {data_value}").into());
+        }
+        println!("  {label} = {data_value}");
+    }
+    for (label, player_side, enemy_side) in [
+        ("absorb", absorb, guard_absorb_data),
+        ("front_degrees", guard_arc, guard_arc_data),
+    ] {
+        if (player_side - enemy_side).abs() > 1e-9 {
+            return Err(format!(
+                "{label}：玩家守心诀 = {player_side}，敌人站防那条记录 = {enemy_side}——\
+                 两边读的不是同一条 data/skills.lua，等于敌人侧藏着第二份数字"
+            )
+            .into());
+        }
+        println!("  {label}：玩家守心诀 == 敌人站防 == {enemy_side}（同一张招式记录）");
+    }
+    let expected_guarded = (HIT_DAMAGE * (1.0 - absorb)).floor().max(1.0);
+    let want_absorbed = HIT_DAMAGE - expected_guarded;
+    let doc_math = format!("floor({HIT_DAMAGE:.0} × (1 - {doc_absorb})) = {expected_guarded:.0}");
+    if !design.contains(&doc_math) {
+        return Err(format!(
+            "docs/33 的算式与实现不同形：文中应当出现 {doc_math:?}（改 absorb 要连那一格一起改）"
+        )
+        .into());
+    }
+    println!(
+        "  文档算式与代码同形：`{doc_math}`（10 点那一格 = 练习剑一刀，来源见 jhyt_m18_stats）"
+    );
+
+    open_scene(&mut rt, &guard_map)?;
+    lua(&mut rt, "require('systems.combat').reset()")?;
+    // 内力写成一个显眼的整数：站防期间它一格都不该动（§6.2 口径③的推论）。
+    lua(&mut rt, "require('core.state').inner_power = 50")?;
+
+    // 其一 正面 + 举盾：10 → 3。
+    let mut stance_steps = 0usize;
+    let readout = loop {
+        anchor_east_of(&mut rt, xuanming, TILE)?;
+        frames(&mut rt, 1)?;
+        let line = strike_watched(&mut rt, xuanming, Some(&guard_skill_data), HIT_DAMAGE)?;
+        if line.split('/').nth(1) == Some("true") {
+            break line;
+        }
+        stance_steps += 1;
+        if stance_steps > (guard_cd * 4.0) as usize {
+            return Err(format!(
+                "{stance_steps} 步都没能在它举着 {guard_skill_data} 的那一步出手（最后一次读数 {line}）：\
+                 空档只有 attack_cooldown={guard_cd:.0} 步减去它自己那一刀的判定窗，抬起时机或姿态读数断了"
+            )
+            .into());
+        }
+    };
+    let fields: Vec<&str> = readout.split('/').collect();
+    if fields.len() != 10 {
+        return Err(format!("站防出手读数的形状变了：{readout:?}（期望 10 段）").into());
+    }
+    if fields[0] != guard_skill_data || fields[9] != "guard" {
+        return Err(format!(
+            "举着盾的那一步读数：姿态 {}、state {}，期望 {guard_skill_data}/guard",
+            fields[0], fields[9]
+        )
+        .into());
+    }
+    let (hp_before, dealt_before, inner_before, guard_hits_before, f0) = (
+        fields[3]
+            .parse::<f64>()
+            .map_err(|error| format!("敌人气血读数 {r:?}：{error}", r = fields[3]))?,
+        fields[4].parse::<f64>()?,
+        fields[5].parse::<f64>()?,
+        fields[6].parse::<f64>()?,
+        fields[8].parse::<f64>()?,
+    );
+    if fields[7] != "nil" {
+        return Err(format!(
+            "举着 {guard_skill_data} 的那一刻 `enemy.capture()` 里带着姿态（{r}）：\
+             盾进快照 = 读档后身上还挂着一面没人举的盾",
+            r = fields[7]
+        )
+        .into());
+    }
+    println!(
+        "  抬起时机（等 {stance_steps} 步就站进空档）：姿态 = {}、state = {}，快照里这一行没有 guarding 这一格（{}）——与硬直/无敌帧/中毒同一类瞬时状态",
+        fields[0], fields[9], fields[7]
+    );
+    let Some(vitals) = wait_for_enemy_damage(&mut rt, xuanming, hp_before)? else {
+        return Err(format!(
+            "那一刀没打在举着盾的{guard_name}身上（30 步内气血没动，日志最后一条 = {}）：\
+             判定窗没开窗，还是它走出了玩家的矩形",
+            last_enemy_hit(&mut rt, &guard_name)?
+        )
+        .into());
+    };
+    let (hp_after, stun_front, knock_front, blocked_front) =
+        (vitals[0], vitals[1], vitals[2], vitals[3]);
+    let delta_front = hp_before - hp_after;
+    if (delta_front - expected_guarded).abs() > 1e-6 {
+        return Err(format!(
+            "正面打在举盾的{guard_name}身上吃下 {delta_front:.0} 点，期望 {expected_guarded:.0}\
+             （原始 {HIT_DAMAGE:.0} × (1 - {absorb}) 取整、兜 1 点）"
+        )
+        .into());
+    }
+    let want_log = format!("{expected_guarded:.0}/{want_absorbed:.0}/{hp_after:.0}");
+    let log_front = last_enemy_hit(&mut rt, &guard_name)?;
+    if log_front != want_log {
+        return Err(format!(
+            "举盾那一条 hit 日志 = {log_front}，期望 damage/absorbed/remaining = {want_log}"
+        )
+        .into());
+    }
+    let window = enemy_log_window(&mut rt, f0)?;
+    let dealt_delta = window[2] - dealt_before;
+    if (dealt_delta - window[1]).abs() > 1e-6 {
+        return Err(format!(
+            "`stats().dealt` 的差 = {dealt_delta:.0}，但日志里这几步打在敌人身上的伤害之和 = {:.0}：\
+             dealt 记的不是落到血上的那一份",
+            window[1]
+        )
+        .into());
+    }
+    if window[0] != 1.0 {
+        return Err(format!(
+            "这几步里有 {:.0} 条命中落在敌人身上（普攻判定窗 44×40 挤进了第二只）：\
+             dealt 的账核不到单独这一刀，先把场地让开",
+            window[0]
+        )
+        .into());
+    }
+    let inner_after = query_num(&mut rt, "require('core.state').inner_power")?;
+    if (inner_after - inner_before).abs() > 1e-6 {
+        return Err(format!(
+            "敌人站防的减伤顺手扣了玩家内力（{inner_before:.0} → {inner_after:.0}）：\
+             inner_cost/inner_period 只对 attacker_kind=player 生效（§6.2 口径③）"
+        )
+        .into());
+    }
+    let guard_hits_after = query_num(&mut rt, "require('systems.combat').stats().guard_hits")?;
+    if (guard_hits_after - guard_hits_before).abs() > 1e-6 {
+        return Err(format!(
+            "玩家的 guard_hits 被敌人那面盾加了 {:.0} 次：guard_hits 记的是**玩家**正面格挡的命中",
+            guard_hits_after - guard_hits_before
+        )
+        .into());
+    }
+    println!(
+        "  举盾 + 正面：气血 {:.0} → {:.0}（吃下 {delta_front:.0}），日志 {log_front}；dealt 只记 {dealt_delta:.0}、guard_hits 与内力都不动（内力 {inner_before:.0} → {inner_after:.0}）",
+        hp_before, hp_after
+    );
+
+    // 其二 对照：把 guard_skill 这一个键摘掉，**同一只敌人、同一套几何**就吃满 10 点。
+    // 为什么不换一只不站防的敌人来打：它在 `attack_range` 内除了出刀那一步之外基本一直举着盾
+    // （空档 = 整个 `attack_cooldown`），而玩家普攻的判定窗最远只到 range 44 + 身体半径 14 = 58
+    // 单位，比它的 `attack_range`（56）只多 2 单位——想"打一个没举盾的玄冥会徒"就得先退出它的
+    // 判定距离，而那同时也就退出了我们自己的判定窗。摘键对照把这两个变量都省了：几何一模一样，
+    // 差的只有那一条数据，于是"减免来自 guard_skill 这条记录"与"state 也从它来"一次钉死。
+    lua(&mut rt, &format!("{xuanming_ref}.guard_skill = nil"))?;
+    let mut control_steps = 0usize;
+    let control = loop {
+        anchor_east_of(&mut rt, xuanming, TILE)?;
+        frames(&mut rt, 1)?;
+        let line = strike_watched(&mut rt, xuanming, None, HIT_DAMAGE)?;
+        if line.split('/').nth(1) == Some("true") {
+            break line;
+        }
+        control_steps += 1;
+        if control_steps > (guard_cd * 4.0) as usize {
+            return Err(format!(
+                "{control_steps} 步都没能在摘了 guard_skill 的{guard_name}身上出手（最后一次读数 {line}）"
+            )
+            .into());
+        }
+    };
+    let control_fields: Vec<&str> = control.split('/').collect();
+    if control_fields.len() != 10 {
+        return Err(format!("对照那一刀的读数形状变了：{control:?}（期望 10 段）").into());
+    }
+    let hp_open = control_fields[3].parse::<f64>()?;
+    let dealt_open = control_fields[4].parse::<f64>()?;
+    let f1 = control_fields[8].parse::<f64>()?;
+    if hp_open <= HIT_DAMAGE {
+        return Err(format!(
+            "摘键对照没法跑：它只剩 {hp_open:.0} 点气血，吃不下 {HIT_DAMAGE:.0} 点的满值一刀——\
+             死在结算之前会被读成\"没减伤\"，先把血量处理干净"
+        )
+        .into());
+    }
+    let Some(vitals) = wait_for_enemy_damage(&mut rt, xuanming, hp_open)? else {
+        return Err(format!(
+            "对照那一刀（姿态 {}）没打中：30 步内气血没动",
+            control_fields[0]
+        )
+        .into());
+    };
+    // 摘键要一直摘到**这一刀结算完**为止：减免读的是命中那一刻的姿态，注册之后马上改回去的话，
+    // 判定窗开的时候盾已经举回来了——那会把"摘键对照"跑成"又一次正面减伤"（本门第一版就栽在
+    // 这里：注册那一步姿态确实是 false，落下来却是 3 点）。
+    lua(
+        &mut rt,
+        &format!("{xuanming_ref}.guard_skill = '{guard_skill_data}'"),
+    )?;
+    let (hp_closed, stun_open, knock_open, blocked_open) =
+        (vitals[0], vitals[1], vitals[2], vitals[3]);
+    let delta_open = hp_open - hp_closed;
+    if (delta_open - HIT_DAMAGE).abs() > 1e-6 {
+        return Err(format!(
+            "摘了 guard_skill 的{guard_name}吃下 {delta_open:.0} 点，期望满值 {HIT_DAMAGE:.0}：\
+             减伤漏到了没有 guard 记录的目标身上"
+        )
+        .into());
+    }
+    let log_open = last_enemy_hit(&mut rt, &guard_name)?;
+    let want_open_log = format!("{HIT_DAMAGE:.0}/0/{hp_closed:.0}");
+    if log_open != want_open_log {
+        return Err(format!(
+            "摘键那一条 hit 日志 = {log_open}，期望 damage/absorbed/remaining = {want_open_log}"
+        )
+        .into());
+    }
+    let window = enemy_log_window(&mut rt, f1)?;
+    if (window[2] - dealt_open - window[1]).abs() > 1e-6 || window[0] != 1.0 {
+        return Err(format!(
+            "对照那一刀的 dealt 对不上账：窗口内 {:.0} 条命中、伤害之和 {:.0}，dealt 差 {:.0}",
+            window[0],
+            window[1],
+            window[2] - dealt_open
+        )
+        .into());
+    }
+    let stance_open = control_fields[0];
+    if stance_open != "false" {
+        return Err(
+            format!("摘掉 guard_skill 之后姿态还读得到 {stance_open}：盾不是从数据来的").into(),
+        );
+    }
+    if control_fields[9] != "attack" {
+        return Err(format!(
+            "摘掉 guard_skill 之后空档里 state = {}，期望 attack：\
+             `enemy.lua` 那一句 `def.guard_skill and \"guard\" or \"attack\"` 不再从数据取招式了",
+            control_fields[9]
+        )
+        .into());
+    }
+    println!(
+        "  摘掉 guard_skill（同一只敌人、同一套几何）：姿态 {stance_open}、state={}，同一刀吃满 {:.0} 点，日志 {log_open}（等 {control_steps} 步）",
+        control_fields[9], delta_open
+    );
+    assert_str(
+        &mut rt,
+        &format!("tostring({enemy_def}.validate_all())"),
+        "true",
+    )?;
+
+    // 其三 硬直与击退不吃减伤：同一招、同一只敌人、同一套几何，只有摘没摘 guard_skill 不同。
+    if (stun_front - stun_open).abs() > 1e-6 {
+        return Err(format!(
+            "减伤把硬直也减了：举盾那一刀之后还剩 {stun_front:.0} 步，摘键那刀之后还剩 {stun_open:.0} 步"
+        )
+        .into());
+    }
+    if blocked_front == blocked_open {
+        if (knock_front - knock_open).abs() > 1e-6 {
+            return Err(format!(
+                "减伤把击退也减了：举盾那一刀推走 {knock_front:.1} 单位，摘键那刀推走 {knock_open:.1}"
+            )
+            .into());
+        }
+        println!(
+            "  盾扛得住伤害，扛不住推力：两刀的硬直都是 {stun_front:.0} 步、击退都是 {knock_front:.1} 单位"
+        );
+    } else {
+        println!(
+            "  硬直两刀都是 {stun_front:.0} 步；击退这次没比（两次里有一次被墙挡住，`push_actor` 不穿墙 → 位移本来就是 0）"
+        );
+    }
+
+    // 其四 落防：退出 `attack_range` 当步就举不起盾（姿态每步重算，不是"举起就一直挡着"）。
+    let standoff = guard_range + TILE;
+    if standoff >= guard_aggro {
+        return Err(format!(
+            "落防那一步要把玩家挪到 {standoff:.0} 单位外，已经超出 aggro_radius（{guard_aggro:.0}）：\
+             state 会是 idle 而不是 chase，换个落点或改判据"
+        )
+        .into());
+    }
+    let waited = approach_until_guarding(
+        &mut rt,
+        xuanming,
+        &guard_skill_data,
+        (guard_cd * 4.0) as usize,
+    )?;
+    let state_up = query_str(
+        &mut rt,
+        &format!("require('systems.enemy').query('{xuanming}').state"),
+    )?;
+    anchor_east_of(&mut rt, xuanming, standoff)?;
+    frames(&mut rt, 1)?;
+    let stance_down = query_str(
+        &mut rt,
+        &format!("tostring(require('systems.enemy').query('{xuanming}').guarding)"),
+    )?;
+    let state_down = query_str(
+        &mut rt,
+        &format!("require('systems.enemy').query('{xuanming}').state"),
+    )?;
+    if stance_down != "false" || state_down != "chase" {
+        return Err(format!(
+            "退出 attack_range（{guard_range:.0}）一步之后：姿态 {stance_down}、state {state_down}，\
+             期望 false/chase——盾还举着就是\"离开距离也在减伤\"，走回待机就是落防没落到 state 上"
+        )
+        .into());
+    }
+    println!(
+        "  抬起→落防：等 {waited} 步站进空档（state={state_up}），挪到 {:.0} 单位外一步就落（姿态 {stance_down}、state={state_down}）",
+        standoff
+    );
+
     // ⑥ 以后的用例要用演武场的训练木人，先把场景切回去。
     open_scene(&mut rt, "combat_arena")?;
 
@@ -1590,7 +1990,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
          boss={boss_name}@{boss_map} phase2={boss_below:.0}/{boss_hp:.0} \
          charge={:.1}px/{boss_charge_steps:.0}steps gap={gap:.0} \
          summon_cap={doc_cap:.0} summon_ttl={doc_ttl:.0} live_max={max_live:.0}/{max_total:.0} \
-         drop={drop_step:.0} rise={rise_step:.0} enemy_neg={}",
+         drop={drop_step:.0} rise={rise_step:.0} \
+         guard={xuanming}:{guard_skill_data} front=10->{expected_guarded:.0}/{want_absorbed:.0} \
+         wait={stance_steps}/{control_steps}/{waited} enemy_neg={}",
         project.display(),
         clip_report.join("/"),
         hud_texts.join(","),
@@ -1911,6 +2313,185 @@ fn cell_is_solid(
     }
 }
 
+// ---------- ⑤‴ 站防的驱动 ----------
+
+/// 把玩家钉在指定敌人**实时位置**东侧 `distance` 单位处，并补满气血（`anchor_boss_witness` 的
+/// 普通敌版）。东侧一格（32 单位）同时管住两件事：距离落在 `attack_range` 内 → 它会停下来出刀，
+/// 于是才有"两刀之间的空档"；而它每步把自己转向玩家 → 举盾那一刻朝向 = 东，我们从东边打回去
+/// 必然落在正面张角里（绕背 docs/33 明说不断言：敌人每步转身，要卡的是它转身之前的那一步）。
+/// 气血每步补满：玩家一死全部敌人停手（`tick_actor` 的 is_player_dead 分支），姿态也就不再被
+/// 算出来——"没格挡"会被读成一条假绿。
+fn anchor_east_of(
+    runtime: &mut LuaRuntime,
+    persist_id: &str,
+    distance: f64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let moved = query_str(
+        runtime,
+        &format!(
+            "(function() local id = entity.find_id('{persist_id}'); \
+               if not id then return 'gone' end; \
+               local p = transform.get(id); \
+               require('player.player').teleport(p.x + {distance}, p.y); \
+               local c = require('systems.combat'); c.set_player_hp(c.player_max_hp()); return 'ok' end)()"
+        ),
+    )?;
+    if moved != "ok" {
+        return Err(format!("{persist_id} 不在这张图上（读数 {moved}）").into());
+    }
+    Ok(())
+}
+
+/// 一次 exec 里读完姿态、按条件注册玩家那一刀、并带回出手**之前**的账本：
+/// `姿态/成没成/为什么/敌人气血/dealt/玩家内力/玩家 guard_hits/快照里的姿态/战斗帧/state`（10 段）。
+/// 三组东西必须同一次 exec 拿：
+/// ① 姿态与注册——空档只有 `attack_cooldown` 减去它自己那一刀的判定窗那么长，中间还夹着硬直，
+///    先查姿态再单独注册会落在它换手出刀的那一步，"减伤没生效"其实是"没打在举盾的敌人身上"；
+/// ② before 值与注册——出手之后再读气血/`dealt` 就已经把这一刀算进去了；
+/// ③ 快照与姿态——`capture()` 要在**举着盾的那一刻**取，否则"瞬时状态不入档"什么也没观察。
+/// `want_stance = None` 是不设姿态门槛（调用方自己保证此刻没有减免：摘掉 guard_skill 的对照），
+/// 但**仍要求不在硬直中**——否则"吃满 10 点"的功劳可能落在硬直上而不是姿态上。
+fn strike_watched(
+    runtime: &mut LuaRuntime,
+    persist_id: &str,
+    want_stance: Option<&str>,
+    damage: f64,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let gate = match want_stance {
+        Some(stance) => format!(
+            "if stance ~= '{stance}' then return stance .. '/false/stance/-/-/-/-/-/-/-' end; "
+        ),
+        None => "if q.guarding ~= false or (q.stun_frames or 0) > 0 then \
+             return stance .. '/false/not_open/-/-/-/-/-/-/-' end; "
+            .to_owned(),
+    };
+    query_str(
+        runtime,
+        &format!(
+            "(function() local e = require('systems.enemy'); local c = require('systems.combat'); \
+               local q = e.query('{persist_id}'); \
+               if not q or not q.live then return 'not_live/-/-/-/-/-/-/-/-/-' end; \
+               local stance = tostring(q.guarding); {gate} \
+               local pl = require('player.player').ensure(); \
+               if not pl then return stance .. '/false/no_player/-/-/-/-/-/-/-' end; \
+               local snap = 'missing'; \
+               for _, row in ipairs(e.capture().enemies) do \
+                 if row.persist_id == '{persist_id}' then snap = tostring(row.guarding) end end; \
+               local s = c.stats(); \
+               local ok, reason = c.attack(pl, 'player', 'player', 'player', 'strike', 'left', {damage}); \
+               return stance .. '/' .. tostring(ok) .. '/' .. tostring(reason) .. '/' .. tostring(q.hp) \
+                 .. '/' .. tostring(s.dealt) .. '/' .. tostring(require('core.state').inner_power) .. '/' \
+                 .. tostring(s.guard_hits) .. '/' .. snap .. '/' .. tostring(c.frame()) .. '/' \
+                 .. tostring(q.state) end)()"
+        ),
+    )
+}
+
+/// 该敌人此刻的 `气血/剩余硬直/上次击退位移/是否被墙挡住`（四格一次读回，比四次 exec 稳）。
+fn enemy_vitals(
+    runtime: &mut LuaRuntime,
+    persist_id: &str,
+) -> Result<Vec<f64>, Box<dyn std::error::Error>> {
+    probe_fields(
+        runtime,
+        &format!(
+            "(function() local q = require('systems.enemy').query('{persist_id}'); \
+               if not q or not q.live then return '-1/-1/-1/f' end; \
+               return tostring(q.hp) .. '/' .. tostring(q.stun_frames) .. '/' .. \
+                 tostring(q.last_knockback) .. '/' .. (q.knockback_blocked and 't' or 'f') end)()"
+        ),
+    )
+}
+
+/// 推进到该敌人气血真的掉下来（最多 30 步：strike 前摇 6 + 判定窗 12 的两倍不到）。
+/// 每步重钉玩家：判定窗是按玩家**实时**位置算的矩形，而敌人被击退正在挪窝——不重钉的话
+/// "没打到"其实是"人走开了、打偏了"。返回掉血那一刻的四格读数（`enemy_vitals`）。
+fn wait_for_enemy_damage(
+    runtime: &mut LuaRuntime,
+    persist_id: &str,
+    before: f64,
+) -> Result<Option<Vec<f64>>, Box<dyn std::error::Error>> {
+    for _ in 0..30 {
+        anchor_east_of(runtime, persist_id, TILE)?;
+        frames(runtime, 1)?;
+        let vitals = enemy_vitals(runtime, persist_id)?;
+        if vitals[0] < before {
+            return Ok(Some(vitals));
+        }
+    }
+    Ok(None)
+}
+
+/// 只读姿态、不出手：推进到它**举着** `want` 那一招（落防那一步要先确认真的举起来了，
+/// 否则"盾掉了"可能从头到尾就是"没举起来"）。返回等了多少步。
+fn approach_until_guarding(
+    runtime: &mut LuaRuntime,
+    persist_id: &str,
+    want: &str,
+    limit: usize,
+) -> Result<usize, Box<dyn std::error::Error>> {
+    let mut stance = String::new();
+    for step in 0..limit {
+        anchor_east_of(runtime, persist_id, TILE)?;
+        frames(runtime, 1)?;
+        stance = query_str(
+            runtime,
+            &format!("tostring(require('systems.enemy').query('{persist_id}').guarding)"),
+        )?;
+        if stance == want {
+            return Ok(step);
+        }
+    }
+    Err(format!(
+        "{limit} 步里它一次都没举着 {want}（最后一次姿态 {stance}）：抬起时机读的是 attack_cooldown，\
+         举不起来就说明空档那一支没走到"
+    )
+    .into())
+}
+
+/// 打在某个敌人身上的最后一条 hit 日志：`伤害/被盾吃掉的部分/剩余气血`。
+/// 按显示名过滤（日志记的是 `name_of(target_id)`，不是 persist_id），只看 `event == 'hit'`
+/// 所以击杀那条（`kill`）不会冒充这里的读数。
+fn last_enemy_hit(
+    runtime: &mut LuaRuntime,
+    target_name: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    query_str(
+        runtime,
+        &format!(
+            "(function() local last; \
+               for _, entry in ipairs(require('systems.combat').log()) do \
+                 if entry.event == 'hit' and entry.target == '{target_name}' then last = entry end end; \
+               if not last then return 'none' end; \
+               return tostring(last.damage) .. '/' .. tostring(last.absorbed) .. '/' .. \
+                 tostring(last.remaining) end)()"
+        ),
+    )
+}
+
+/// `frame > f0` 之后**打在敌人身上**的条目：`条数/伤害之和/dealt 现值`。
+/// 为什么不直接把 `stats().dealt` 的差当"这一刀的 3 点"：玩家普攻的判定窗是 44×40 的矩形，
+/// 同一招可以同时打中挤在窗里的第二只敌人（`resolve_hits` 按目标去重、不按招式去重），
+/// 那时 `dealt` 的差本来就是两个目标之和——它没错，是场地没管住。所以这里先跟日志对账，
+/// 再要求"这几步只有一条命中"，两条同时成立才算核到了单独这一刀。
+fn enemy_log_window(
+    runtime: &mut LuaRuntime,
+    f0: f64,
+) -> Result<Vec<f64>, Box<dyn std::error::Error>> {
+    probe_fields(
+        runtime,
+        &format!(
+            "(function() local n, sum = 0, 0; \
+               for _, entry in ipairs(require('systems.combat').log()) do \
+                 if (entry.event == 'hit' or entry.event == 'kill') \
+                   and entry.target ~= 'player' and entry.frame > {f0} then \
+                   n = n + 1; sum = sum + (entry.damage or 0) end end; \
+               return tostring(n) .. '/' .. tostring(sum) .. '/' .. \
+                 tostring(require('systems.combat').stats().dealt) end)()"
+        ),
+    )
+}
+
 /// 每只幼崽的实际落格 vs「主人起冲那一步的格子 + 数据里的 `summon_offset`」；
 /// 偏移格是 solid 时期望退回主人脚下那一格（`summon_slots` 的兜底，与击退/轻功同一口径）。
 /// 全部对上返回 `ok`，否则带回每一行的差异。
@@ -2102,6 +2683,35 @@ fn numbers_in(cell: &str) -> Vec<f64> {
         }
     }
     seen
+}
+
+/// 正文里以 `` `key = value` `` 形态写着的值（§6.2 的站防段就是这么写的）。
+/// 为什么这一段不走 `markdown_table`：那条决定**不引入新数字**，全部引用既有记录，
+/// 所以它在文档里是一段话；写成表反而诱导后来人往里加"新数字列"。
+/// 读不到就报错、不兜默认值：文档换了说法（把 `absorb = 0.7` 改写成"减伤 70%"）应该让本门红，
+/// 而不是悄悄丢掉这条镜像。值取到第一个空格 / 反引号 / 度数符为止，引号剥掉。
+fn doc_kv(markdown: &str, key: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let needle = format!("`{key} = ");
+    for line in markdown.lines() {
+        let Some((_, rest)) = line.split_once(&needle) else {
+            continue;
+        };
+        let token = rest
+            .split(['`', ' ', '°', '，', ')', '）'])
+            .next()
+            .filter(|token| !token.is_empty())
+            .ok_or_else(|| format!("docs/33 里 {needle}… 后面读不到值"))?;
+        return Ok(token.trim_matches('"').to_owned());
+    }
+    Err(format!("docs/33 里没有 {needle}… 这一格").into())
+}
+
+/// `doc_kv` 的读数转数字（转不动就是文档那一格被改成了文字，让本门红）。
+fn doc_number(markdown: &str, key: &str) -> Result<f64, Box<dyn std::error::Error>> {
+    let token = doc_kv(markdown, key)?;
+    token
+        .parse::<f64>()
+        .map_err(|error| format!("docs/33 的 `{key} = {token}` 不是数字：{error}").into())
 }
 
 /// 按第一列取一行，再读第 `column`（0 起）列里的第一个数字。

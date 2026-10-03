@@ -47,6 +47,15 @@
 --   summon_ttl       存活上限（固定步）：到期自动离场。写这个数字是因为"召唤物不入档"——
 --                   没有寿命的召唤物会一直占着场上名额，读档后又变成无主实体。
 --
+-- 会站防的敌人（M34-04b ⑤‴）：
+--   guard_skill      格挡招式 id（引用 data/skills.lua，且必须是 kind=guard 的那一类）。
+--                   抬起的时机**不建新计时器**：enemy.lua 只在"玩家贴进 attack_range 且
+--                   自己这一刀还在冷却（next_attack 未到）"的空档里站着防，刀一就绪就换手打。
+--                   减免比例与正面角度都读那条 guard 招式记录（与玩家守心诀同一份 absorb），
+--                   所以敌人侧没有第二个"挡多少"的数字；敌人站防不吃玩家内力（§6.2 口径③）。
+--                   写在不出刀的行上（damage/attack_range/attack_cooldown 有一个为 0）永远举不起
+--                   盾，那是死键 → validate_all 判错。
+--
 -- 表顺序无关；enemy.lua 按 persist_id 稳定排序遍历。
 local M = {}
 
@@ -130,7 +139,8 @@ M.enemies = {
     -- 命中后给目标挂的瞬时状态种类（步长/伤害见 data/combat.lua 的 status 表）。
     status = "poison"
   },
-  -- 玄冥会徒：格挡与投掷（当前用同一招式的更远判定近似）。
+  -- 玄冥会徒：会站防的敌人（M34-04b ⑤‴）。以前只有"同一招式的更远判定"这个近似——
+  -- 现在它在自己两刀之间的空档里真的举起格挡，正面命中按 §6.1 守心诀那条记录的 absorb 减。
   {
     name = "玄冥会徒",
     persist_id = "enemy_xuanming",
@@ -144,7 +154,8 @@ M.enemies = {
     aggro_radius = 260,
     attack_range = 56,
     attack_cooldown = 96,
-    skill = "strike"
+    skill = "strike",
+    guard_skill = "guard_heart"
   },
   -- 野猪（M19-01）：青云山道的采集区游荡敌人。攻击低、血薄，
   -- 让「进山采集 → 遭遇 → 战斗」的 MVP 剧本可用练习剑两下解决。
@@ -253,6 +264,8 @@ M.enemy_keys = {
   hp = true, speed = true, damage = true, aggro_radius = true, attack_range = true,
   attack_cooldown = true, skill = true, status = true,
   knockback_resist = true, hitstun_resist = true,
+  -- 站防（普通行也可以用，不是 Boss 专属）
+  guard_skill = true,
   -- Boss 二阶段（主人行专属）
   phase2_below = true, charge_skill = true, charge_speed = true, charge_steps = true,
   summon_group = true, summon_interval = true,
@@ -341,6 +354,24 @@ function M.validate_all()
       end
       if type(enemy.skill) ~= "string" or not skills.get(enemy.skill) then
         issues[#issues + 1] = path .. ".skill: unknown skill " .. tostring(enemy.skill)
+      end
+      -- 站防的敌人（M34-04b ⑤‴）：引用的招式必须是 kind=guard 的那一类。指到伤害招式上，
+      -- enemy.lua 会照样把它"举起来"，而 combat 侧读不到 absorb —— 于是这条数据写没写都一样，
+      -- 玩家只觉这一刀忽然不减了。打错字在加载期报，不留给手感。
+      if enemy.guard_skill ~= nil then
+        local guard = skills.get(enemy.guard_skill)
+        if not guard then
+          issues[#issues + 1] = path .. ".guard_skill: unknown skill " .. tostring(enemy.guard_skill)
+        elseif guard.kind ~= "guard" then
+          issues[#issues + 1] = path .. ".guard_skill: " .. tostring(enemy.guard_skill)
+            .. " kind=" .. tostring(guard.kind) .. " 不是格挡招式（没有 absorb 可减）"
+        elseif (tonumber(enemy.damage) or 0) <= 0
+          or (tonumber(enemy.attack_range) or 0) <= 0
+          or (tonumber(enemy.attack_cooldown) or 0) <= 0 then
+          -- 空档来自"它出一刀之后的冷却"，所以不攻击的行写了 guard_skill 也永远举不起盾。
+          issues[#issues + 1] = path .. ".guard_skill: 这一行不出刀（damage/attack_range/attack_cooldown"
+            .. " 有一个是 0），永远站不起防"
+        end
       end
       -- 受击抵抗（M25）：可选字段，但一旦写了就必须是 [0,1] 的数字，
       -- 否则"木人不会被推走"这类手感约定会静默失效。

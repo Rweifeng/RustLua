@@ -519,6 +519,9 @@ local function tick_actor(actor, here, dt)
     end
   end
   -- 硬直（M25）：被打断的这段时间既不追击也不出手，也不重算路径。
+  -- 格挡姿态与硬直/冲撞/无敌帧同一类**瞬时状态**：每步重算，所以下面四个提前 return 的
+  -- 分支一进来就把盾放下——硬直中身上还挂着一面盾是最难查的那种错（减免照走，却没人看得见）。
+  actor.guarding = nil
   if (actor.stun_frames or 0) > 0 then
     actor.stun_frames = actor.stun_frames - 1
     actor.state = "stunned"
@@ -563,13 +566,19 @@ local function tick_actor(actor, here, dt)
 
   if can_attack and dist <= attack_range then
     actor.path = nil
-    actor.state = "attack"
     if (actor.next_attack or 0) <= combat.frame() then
+      actor.state = "attack"
       local ok = combat.attack(actor.id, def.persist_id, def.name, "enemy",
         def.skill, actor.facing, damage)
       if ok then
         actor.next_attack = combat.frame() + (tonumber(def.attack_cooldown) or 0)
       end
+    else
+      -- 两刀之间的空档（`next_attack` 还没到）：会站防的行就把盾举起来。
+      -- 这里只声明"举的是哪一招"，减免比例/正面角度由 combat 侧读那条 guard 招式记录，
+      -- 所以敌人侧没有第二个"挡多少"的数字，抬起时机也没有新计时器。
+      actor.state = def.guard_skill and "guard" or "attack"
+      actor.guarding = def.guard_skill
     end
     return
   end
@@ -743,6 +752,20 @@ function M.status_of(persist_id)
   return enemy.status
 end
 
+--- 该实体此刻举着的是哪一招格挡（M34-04b ⑤‴）。combat 侧按实体 id 问一句，
+--- 拿到的是 `{skill_id, facing}`——减免比例与正面角度都由那条 guard 招式记录给，
+--- 敌人侧不自建第二份 absorb；没站防返回 nil（硬直/冲撞/两刀之外的时间都是 nil）。
+--- 为什么传 facing：敌人每步把自己转向玩家，所以"正面"必须按它**举盾那一刻**的朝向算，
+--- 而不是复用玩家侧那条 `state.facing` 通道。
+function M.guard_of(id)
+  for _, actor in pairs(actors) do
+    if actor.id and actor.id == id and not actor.dead and actor.guarding then
+      return { skill_id = actor.guarding, facing = actor.facing or "s" }
+    end
+  end
+  return nil
+end
+
 -- 复活全部敌人（新档 / 玩家战败重开）：hp 回满、位置回 home、状态清空。
 function M.reset()
   local here = current_map()
@@ -761,6 +784,7 @@ function M.reset()
     actor.target_cell = nil
     actor.next_summon = 0
     actor.charge = nil
+    actor.guarding = nil
     if enemy.summoned then
       -- 重开（新档 / 玩家战败）后 Boss 回到满血一阶段，场上也不能留着小怪。
       release(actor)
@@ -811,6 +835,8 @@ function M.query(persist_id)
     -- Boss 二阶段（M34-04b ⑤）的读数：阶段从 hp 推、冲撞是否在走、槽位是否被占。
     phase = phase_of(actor),
     charging = actor.charge ~= nil,
+    -- 站防（M34-04b ⑤‴）：读的是它自己那一步的决策，值 = 举着的那招 id，没举就是 false。
+    guarding = actor.guarding or false,
     summoned = enemy.summoned == true,
     summon_active = actor.summon_active == true,
     summon_ttl_left = actor.summon_ttl
@@ -906,7 +932,9 @@ combat.register_enemy({
   hit = M.hit,
   reset = M.reset,
   -- M34-03：命中给玩家挂哪种瞬时状态（种类在数据里，扣血与结算全在 combat/status 侧）。
-  status_of = M.status_of
+  status_of = M.status_of,
+  -- M34-04b ⑤‴：命中敌方时问一句"它正举着哪一招"（减免与正面判定在 combat 侧结算）。
+  guard_of = M.guard_of
 })
 
 return M

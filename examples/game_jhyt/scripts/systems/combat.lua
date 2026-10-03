@@ -265,18 +265,23 @@ end
 -- 才算"正面"。用 `knockback_direction`（攻击者 → 玩家）取反得到"玩家 → 攻击者"，
 -- 再与朝向单位向量点乘比 cos(半角)——**没有新的计时器，也没有新的坐标通道**，
 -- 用的就是击退那一条已经算好的方向。
-local function is_front_hit(atk, target_id, front_degrees)
-  local dir = facing_vector(state.facing)
+local function front_hit(facing, atk, target_id, front_degrees)
+  local dir = facing_vector(facing)
   local dx, dy = knockback_direction(atk, target_id)
   local len = math.sqrt(dx * dx + dy * dy)
   if len < 0.001 then
-    -- 攻击者与玩家重合（贴脸/寻路卡住）：判成正面，宁可对玩家有利。
+    -- 攻击者与挨打的一方重合（贴脸/寻路卡住）：判成正面，宁可对防守方有利。
     return true
   end
   local to_attacker_x, to_attacker_y = -dx / len, -dy / len
   local dot = dir.x * to_attacker_x + dir.y * to_attacker_y
   local half = math.rad(tonumber(front_degrees) or 120) / 2
   return dot >= math.cos(half)
+end
+
+-- 玩家侧的正面判定：朝向取 `core.state.facing`（输入层每步写进来的那一个）。
+local function is_front_hit(atk, target_id, front_degrees)
+  return front_hit(state.facing, atk, target_id, front_degrees)
 end
 
 
@@ -465,31 +470,45 @@ local function apply_damage(atk, target_id)
     if ok and type(pos) == "table" then
       effects.spawn("hit_spark", pos.x, pos.y)
     end
-    -- 敌方侧不做防御平减：`data/enemies.lua` 没有 defense 字段（docs/33 §6.2 的防御列
-    -- 是 Alpha 目标值）。玩家的基础 attack 已经在 `player/skills.lua` 的招式数值里，
-    -- 这一路今天吃满 atk.damage——jhyt_m34_skills ④ 有对照断言钉住。
-    local remaining = enemy_kind.hit(target_id, atk.damage, hit_reaction(atk, target_id))
+    -- 敌方侧没有防御平减：`data/enemies.lua` 没有 defense 字段（docs/33 §6.2 的防御列是
+    -- Alpha 目标值），玩家的基础 attack 也已经在 `player/skills.lua` 的招式数值里，
+    -- 不站防的目标吃满 atk.damage——jhyt_m34_skills ④ 有对照断言钉住这一条。
+    -- **会站防的敌人**（M34-04b ⑤‴）只多走比例那一层：减免读的就是它举着的 guard 招式记录，
+    -- 与玩家守心诀同一份 absorb/front_degrees；正面判据用它举盾那一刻的朝向（敌人每步把自己
+    -- 转向玩家，所以不能复用玩家侧那条 `state.facing` 通道）。硬直与击退照旧不吃减伤——
+    -- 盾扛得住伤害，扛不住推力（§6.1 那条口径在敌我两侧是同一句话）。
+    local guard_state = enemy_kind.guard_of and enemy_kind.guard_of(target_id) or nil
+    local guard = guard_state and skills.get(guard_state.skill_id) or nil
+    local raw = math.max(0, tonumber(atk.damage) or 0)
+    local damage = raw
+    if guard and front_hit(guard_state.facing, atk, target_id, guard.front_degrees) then
+      damage = math.min(raw, math.max(1, math.floor(raw * (1 - tonumber(guard.absorb) or 0))))
+    end
+    local absorbed = damage < raw and (raw - damage) or 0
+    local remaining = enemy_kind.hit(target_id, damage, hit_reaction(atk, target_id))
     if remaining == nil then
       return nil
     end
     if atk.attacker_kind == "player" then
-      stats.dealt = stats.dealt + atk.damage
+      -- `dealt` 记**落到血上的**那一份（与玩家侧的 `taken` 对称）：被盾挡掉的 7 点
+      -- 不算打出去的伤害，否则"这一刀打了多少"和敌人掉了多少血会是两个数。
+      stats.dealt = stats.dealt + damage
     end
     audio.sfx("sfx_hit")
     if remaining <= 0 then
       stats.kills = stats.kills + 1
       push_log({ event = "kill", attacker = atk.attacker_name, target = target_display,
-        skill = atk.skill, damage = atk.damage, remaining = 0 })
+        skill = atk.skill, damage = damage, absorbed = absorbed, remaining = 0 })
       log.info(string.format(
         "[combat] kill attacker=%s target=%s skill=%s damage=%d frame=%d",
-        tostring(atk.attacker_name), target_display, tostring(atk.skill), atk.damage, frame))
+        tostring(atk.attacker_name), target_display, tostring(atk.skill), damage, frame))
     else
       push_log({ event = "hit", attacker = atk.attacker_name, target = target_display,
-        skill = atk.skill, damage = atk.damage, remaining = remaining })
+        skill = atk.skill, damage = damage, absorbed = absorbed, remaining = remaining })
       log.info(string.format(
-        "[combat] hit attacker=%s target=%s skill=%s damage=%d remaining=%d frame=%d",
+        "[combat] hit attacker=%s target=%s skill=%s damage=%d remaining=%d absorbed=%d frame=%d",
         tostring(atk.attacker_name), target_display, tostring(atk.skill),
-        atk.damage, remaining, frame))
+        damage, remaining, absorbed, frame))
     end
     return remaining
   end
@@ -942,7 +961,8 @@ function M.log()
       -- M34-03：这一击挂上的状态种类（没有则 nil）——"带中毒"从此是可回读的事实。
       -- DOT 自己记的条目用 event = "dot"，种类落在 skill 字段上（同一张表，不另立形状）。
       status = entry.status,
-      -- M34-04：这一击被格挡吃掉的那部分伤害（打在玩家身上但未格挡为 0，打向敌人的条目为 nil）。
+      -- M34-04：这一条命中被**比例层**吃掉的那部分伤害。打在玩家身上＝守心诀挡下的（没格挡为 0）；
+      -- M34-04b ⑤‴ 起，打向敌人的条目也可能非 0（会站防的敌人），此时它是这次命中真正少掉的血。
       -- M34-04b：防御平减掉的点数另存 `defense`（比例层与平减层分开记，混在一起就没法回答
       -- "盾挡了多少"）。于是打在玩家身上的条目满足 `damage + absorbed + defense = 原始威力`；
       -- 日志里只留一个数就核不了这两层各扣了多少。
