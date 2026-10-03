@@ -15,7 +15,8 @@
 //! ③–⑦ 把同一套"文档 ↔ 数据"锁扩展到剩余项（M24 续，docs/37 4-14）：
 //!   - ③ §2.2 初始属性（铜钱 120 / 内力 50 / 上限 100）↔ core/state.lua + player/inventory.lua；
 //!   - ④ §3 打坐效果单元格（恢复 5 点内力）↔ ui/input.lua practice 分支口径；
-//!   - ⑤ §6.1 基础刀法（伤害 2 / 内力 0 / 冷却 0.4s=24 步）↔ data/skills.lua，未实现行白名单；
+//!   - ⑤ §6.1 三行招式（基础刀法 2/0/0.4s=24 步、追风步 0/15/2s=120 步+位移 3 格+无敌 15 步、
+//!     守心诀 0/10 每秒/持续+正面减伤 70%）↔ data/skills.lua，未实现行只剩回风掌白名单；
 //!   - ⑥ §7.2 建筑升级成本（仅木材 4/6/3）↔ data/buildings.lua 的 upgrade_cost；
 //!   - ⑦ §9.1 普通订单奖励区间 [40,100] ⊇ order_herb 60 / order_pill 80 / order_hunt 90。
 //!
@@ -272,9 +273,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!("  打坐: 效果单元格 = {:?}", meditate[3]);
 
-    banner("⑤ 设计案 §6.1 玩家招式 == data/skills.lua（基础刀法；未实现行白名单）");
+    banner("⑤ 设计案 §6.1 玩家招式 == data/skills.lua（基础刀法/追风步/守心诀；白名单只剩回风掌）");
     let skill_rows = markdown_table(&design, "招式")?;
-    const SKILL_ROWS_WITHOUT_DATA: &[&str] = &["追风步", "守心诀", "回风掌"];
+    // 白名单的语义是"这一行还没有数据可对"——M34-04 把追风步/守心诀补成了 `data/skills.lua`
+    // 的 movement/guard 两行，所以它们必须从这里**删掉**（留着的分支是静默跳过的）。
+    const SKILL_ROWS_WITHOUT_DATA: &[&str] = &["回风掌"];
     let mut skill_checked = 0;
     for row in &skill_rows {
         if row.len() < 4 {
@@ -318,6 +321,147 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 skill_checked += 1;
                 println!("  基础刀法: 伤害={doc_damage} 内力={doc_inner} 冷却={doc_cooldown_sec}s");
             }
+            "追风步" => {
+                // movement 类：伤害 0 + 内力 + 冷却（文档秒 → 固定步）与基础刀法同一读法，
+                // 「其他」列的位移格数与无敌秒数是这一招**唯一**的行为参数，也必须逐格对上。
+                let doc_damage = number_from_cell(&row[1])?;
+                let data_damage = query_num(
+                    &mut runtime,
+                    "require('data.skills').skills.chase_wind.damage",
+                )?;
+                if (doc_damage - data_damage).abs() > f64::EPSILON {
+                    return Err(format!(
+                        "设计案 §6.1 追风步伤害 = {doc_damage}，data/skills.lua:chase_wind.damage = {data_damage}"
+                    )
+                    .into());
+                }
+                let doc_inner = number_from_cell(&row[2])?;
+                let data_inner = query_num(
+                    &mut runtime,
+                    "require('data.skills').skills.chase_wind.inner_cost",
+                )?;
+                if (doc_inner - data_inner).abs() > f64::EPSILON {
+                    return Err(format!(
+                        "设计案 §6.1 追风步内力消耗 = {doc_inner}，实现为 {data_inner}"
+                    )
+                    .into());
+                }
+                let doc_cooldown_sec = number_from_cell(&row[3])?;
+                let data_cooldown_steps = query_num(
+                    &mut runtime,
+                    "require('data.skills').skills.chase_wind.cooldown",
+                )?;
+                if (doc_cooldown_sec * 60.0 - data_cooldown_steps).abs() > f64::EPSILON {
+                    return Err(format!(
+                        "设计案 §6.1 追风步冷却 = {doc_cooldown_sec}s，实现 {data_cooldown_steps} 步（60Hz）"
+                    )
+                    .into());
+                }
+                let data_tiles = query_num(
+                    &mut runtime,
+                    "require('data.skills').skills.chase_wind.dash_tiles",
+                )?;
+                let want_tiles = format!("位移 {:.0} 格", data_tiles);
+                if !row[4].contains(&want_tiles) {
+                    return Err(format!(
+                        "设计案 §6.1 追风步「其他」= {:?}，实现位移 {data_tiles:.0} 格（应含「{want_tiles}」）",
+                        row[4]
+                    )
+                    .into());
+                }
+                let data_iframe_steps = query_num(
+                    &mut runtime,
+                    "require('data.skills').skills.chase_wind.invincible_steps",
+                )?;
+                let want_iframes = format!("无敌 {:.2} 秒", data_iframe_steps / 60.0);
+                if !row[4].contains(&want_iframes) {
+                    return Err(format!(
+                        "设计案 §6.1 追风步「其他」= {:?}，实现无敌 {data_iframe_steps:.0} 固定步 = {want_iframes}",
+                        row[4]
+                    )
+                    .into());
+                }
+                skill_checked += 1;
+                println!(
+                    "  追风步: 伤害={doc_damage} 内力={doc_inner} 冷却={doc_cooldown_sec}s 位移={data_tiles:.0}格 无敌={data_iframe_steps:.0}固定步（{want_iframes}）"
+                );
+            }
+            "守心诀" => {
+                // guard 类：冷却那一格写的是「持续」（= 数据里 cooldown = 0），内力写「10/秒」
+                // （= 每 inner_period 固定步扣一次 inner_cost），减伤比例在「其他」列。
+                let doc_damage = number_from_cell(&row[1])?;
+                let data_damage = query_num(
+                    &mut runtime,
+                    "require('data.skills').skills.guard_heart.damage",
+                )?;
+                if (doc_damage - data_damage).abs() > f64::EPSILON {
+                    return Err(format!(
+                        "设计案 §6.1 守心诀伤害 = {doc_damage}，data/skills.lua:guard_heart.damage = {data_damage}"
+                    )
+                    .into());
+                }
+                let doc_inner = number_from_cell(&row[2])?;
+                let data_inner = query_num(
+                    &mut runtime,
+                    "require('data.skills').skills.guard_heart.inner_cost",
+                )?;
+                if (doc_inner - data_inner).abs() > f64::EPSILON {
+                    return Err(format!(
+                        "设计案 §6.1 守心诀内力消耗 = {doc_inner}，实现为每期内力 {data_inner}"
+                    )
+                    .into());
+                }
+                if !row[2].contains("/秒") {
+                    return Err(format!(
+                        "设计案 §6.1 守心诀内力那一格 = {:?}，不带「/秒」就无法与「每 inner_period 步扣一次」对齐",
+                        row[2]
+                    )
+                    .into());
+                }
+                let data_period = query_num(
+                    &mut runtime,
+                    "require('data.skills').skills.guard_heart.inner_period",
+                )?;
+                if (data_period - 60.0).abs() > f64::EPSILON {
+                    return Err(format!(
+                        "§6.1 那一格写「{doc_inner}/秒」，实现必须每 60 固定步扣一笔，实际 inner_period = {data_period}"
+                    )
+                    .into());
+                }
+                if !row[3].contains("持续") {
+                    return Err(format!(
+                        "设计案 §6.1 守心诀冷却/恢复那一格 = {:?}，实现口径是「持续」（guard_heart.cooldown = 0）",
+                        row[3]
+                    )
+                    .into());
+                }
+                let data_cooldown = query_num(
+                    &mut runtime,
+                    "require('data.skills').skills.guard_heart.cooldown",
+                )?;
+                if data_cooldown.abs() > f64::EPSILON {
+                    return Err(format!(
+                        "§6.1 写「持续」的招式在数据里有冷却 {data_cooldown} 步（守心诀应该是 0）"
+                    )
+                    .into());
+                }
+                let data_absorb = query_num(
+                    &mut runtime,
+                    "require('data.skills').skills.guard_heart.absorb",
+                )?;
+                let want_absorb = format!("正面减伤 {:.0}%", data_absorb * 100.0);
+                if !row[4].contains(&want_absorb) {
+                    return Err(format!(
+                        "设计案 §6.1 守心诀「其他」= {:?}，实现 absorb = {data_absorb}（应含「{want_absorb}」）",
+                        row[4]
+                    )
+                    .into());
+                }
+                skill_checked += 1;
+                println!(
+                    "  守心诀: 伤害={doc_damage} 内力={doc_inner}/秒（每 {data_period:.0} 步） 恢复={want_absorb}"
+                );
+            }
             name if SKILL_ROWS_WITHOUT_DATA.contains(&name) => {}
             name => {
                 return Err(format!(
@@ -328,8 +472,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
-    if skill_checked != 1 {
-        return Err(format!("§6.1 应比对 1 行（基础刀法），实际 {skill_checked} 行").into());
+    if skill_checked != 3 {
+        return Err(
+            format!("§6.1 应比对 3 行（基础刀法/追风步/守心诀），实际 {skill_checked} 行").into(),
+        );
     }
 
     banner("⑥ 设计案 §7.2 建筑升级成本 == data/buildings.lua（仅木材口径）");
