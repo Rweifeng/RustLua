@@ -81,7 +81,7 @@
 
 ## 3. 渲染管线
 
-宿主渲染器（[host/renderer.rs](../engine/crates/engine/src/host/renderer.rs)、[host/shader.rs](../engine/crates/engine/src/host/shader.rs)）在每帧按顺序执行：
+宿主渲染器（[host/renderer/](../engine/crates/engine/src/host/renderer/mod.rs)、[host/shader.rs](../engine/crates/engine/src/host/shader.rs)）在每帧按顺序执行：
 
 1. **阴影 pass**（`SHADOW_SHADER`）：从**光源那一侧**（`-light.direction`）渲染深度到阴影贴图（`texture_depth_2d`）。
 2. **3D pass**（`MESH3D_SHADER`）：

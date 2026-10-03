@@ -1,5 +1,9 @@
 //! Runtime scene: instantiates the project scene/scripts and produces
-//! per-frame [`SceneMesh`] (2D) and [`Scene3d`] draw data for the renderer.
+//! per-frame [`SceneMesh`](crate::host::frame::SceneMesh) (2D) and
+//! [`Scene3d`](crate::host::frame::Scene3d) draw data for the renderer.
+//!
+//! 这两个链接写全路径：`SceneMesh`/`Scene3d` 的 `use` 跟着建帧代码搬进了 `frame_data.rs`，
+//! 父模块只剩这段文档注释需要它们，短名会让 rustdoc 报 unresolved link。
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
