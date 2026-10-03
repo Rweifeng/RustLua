@@ -2,12 +2,16 @@
   "version": 1,
   "generated_by": "tools/gen_character_sprites.py",
   "design_doc": "docs/36-江湖有田-角色序列帧设计.md",
-  "frame_px": 32,
+  "frame_px": 64,
   "directions": {
     "s": "南(面向镜头)",
     "n": "北(背对)",
     "e": "东(朝右)",
-    "w": "西(朝左)"
+    "w": "西(朝左)",
+    "se": "东南(右下)",
+    "sw": "西南(左下)",
+    "ne": "东北(右上)",
+    "nw": "西北(左上)"
   },
   "engine": {
     "animation_component": "default=<clip>;clip:<name>:<sheet>:<cols>:<fps>:<looped>",
@@ -20,10 +24,10 @@
       "display": "主角·青衫少侠（默认男）",
       "role": "player",
       "note": "素色交领短打 + 竹青护腕束腰，背负木剑；米白/竹青便于在药田绿底上读轮廓",
-      "sprite_size": "32x32",
+      "sprite_size": "64x64",
       "sorting_layer": "actor",
-      "static_sprite": "texture=assets/art/characters/player_male/static_s.png;size=32x32;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
-      "animation": "default=idle_s;clip:idle_s:assets/art/characters/player_male/idle_s.png:4:6:true;clip:idle_n:assets/art/characters/player_male/idle_n.png:4:6:true;clip:idle_e:assets/art/characters/player_male/idle_e.png:4:6:true;clip:idle_w:assets/art/characters/player_male/idle_w.png:4:6:true;clip:walk_s:assets/art/characters/player_male/walk_s.png:6:10:true;clip:walk_n:assets/art/characters/player_male/walk_n.png:6:10:true;clip:walk_e:assets/art/characters/player_male/walk_e.png:6:10:true;clip:walk_w:assets/art/characters/player_male/walk_w.png:6:10:true;clip:hoe_s:assets/art/characters/player_male/hoe_s.png:4:8:false;clip:hoe_n:assets/art/characters/player_male/hoe_n.png:4:8:false;clip:hoe_e:assets/art/characters/player_male/hoe_e.png:4:8:false;clip:hoe_w:assets/art/characters/player_male/hoe_w.png:4:8:false;clip:water_s:assets/art/characters/player_male/water_s.png:4:8:false;clip:water_n:assets/art/characters/player_male/water_n.png:4:8:false;clip:water_e:assets/art/characters/player_male/water_e.png:4:8:false;clip:water_w:assets/art/characters/player_male/water_w.png:4:8:false;clip:attack_s:assets/art/characters/player_male/attack_s.png:4:12:false;clip:attack_n:assets/art/characters/player_male/attack_n.png:4:12:false;clip:attack_e:assets/art/characters/player_male/attack_e.png:4:12:false;clip:attack_w:assets/art/characters/player_male/attack_w.png:4:12:false;clip:hurt_s:assets/art/characters/player_male/hurt_s.png:2:6:false;clip:hurt_n:assets/art/characters/player_male/hurt_n.png:2:6:false;clip:hurt_e:assets/art/characters/player_male/hurt_e.png:2:6:false;clip:hurt_w:assets/art/characters/player_male/hurt_w.png:2:6:false;clip:faint_s:assets/art/characters/player_male/faint_s.png:4:6:false;clip:faint_n:assets/art/characters/player_male/faint_n.png:4:6:false;clip:faint_e:assets/art/characters/player_male/faint_e.png:4:6:false;clip:faint_w:assets/art/characters/player_male/faint_w.png:4:6:false",
+      "static_sprite": "texture=assets/art/characters/player_male/static_s.png;size=64x64;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+      "animation": "default=idle_s;clip:idle_s:assets/art/characters/player_male/idle_s.png:4:6:true;clip:idle_n:assets/art/characters/player_male/idle_n.png:4:6:true;clip:idle_e:assets/art/characters/player_male/idle_e.png:4:6:true;clip:idle_w:assets/art/characters/player_male/idle_w.png:4:6:true;clip:idle_se:assets/art/characters/player_male/idle_se.png:4:6:true;clip:idle_sw:assets/art/characters/player_male/idle_sw.png:4:6:true;clip:idle_ne:assets/art/characters/player_male/idle_ne.png:4:6:true;clip:idle_nw:assets/art/characters/player_male/idle_nw.png:4:6:true;clip:walk_s:assets/art/characters/player_male/walk_s.png:6:10:true;clip:walk_n:assets/art/characters/player_male/walk_n.png:6:10:true;clip:walk_e:assets/art/characters/player_male/walk_e.png:6:10:true;clip:walk_w:assets/art/characters/player_male/walk_w.png:6:10:true;clip:walk_se:assets/art/characters/player_male/walk_se.png:6:10:true;clip:walk_sw:assets/art/characters/player_male/walk_sw.png:6:10:true;clip:walk_ne:assets/art/characters/player_male/walk_ne.png:6:10:true;clip:walk_nw:assets/art/characters/player_male/walk_nw.png:6:10:true;clip:hoe_s:assets/art/characters/player_male/hoe_s.png:4:8:false;clip:hoe_n:assets/art/characters/player_male/hoe_n.png:4:8:false;clip:hoe_e:assets/art/characters/player_male/hoe_e.png:4:8:false;clip:hoe_w:assets/art/characters/player_male/hoe_w.png:4:8:false;clip:hoe_se:assets/art/characters/player_male/hoe_se.png:4:8:false;clip:hoe_sw:assets/art/characters/player_male/hoe_sw.png:4:8:false;clip:hoe_ne:assets/art/characters/player_male/hoe_ne.png:4:8:false;clip:hoe_nw:assets/art/characters/player_male/hoe_nw.png:4:8:false;clip:water_s:assets/art/characters/player_male/water_s.png:4:8:false;clip:water_n:assets/art/characters/player_male/water_n.png:4:8:false;clip:water_e:assets/art/characters/player_male/water_e.png:4:8:false;clip:water_w:assets/art/characters/player_male/water_w.png:4:8:false;clip:water_se:assets/art/characters/player_male/water_se.png:4:8:false;clip:water_sw:assets/art/characters/player_male/water_sw.png:4:8:false;clip:water_ne:assets/art/characters/player_male/water_ne.png:4:8:false;clip:water_nw:assets/art/characters/player_male/water_nw.png:4:8:false;clip:attack_s:assets/art/characters/player_male/attack_s.png:4:12:false;clip:attack_n:assets/art/characters/player_male/attack_n.png:4:12:false;clip:attack_e:assets/art/characters/player_male/attack_e.png:4:12:false;clip:attack_w:assets/art/characters/player_male/attack_w.png:4:12:false;clip:attack_se:assets/art/characters/player_male/attack_se.png:4:12:false;clip:attack_sw:assets/art/characters/player_male/attack_sw.png:4:12:false;clip:attack_ne:assets/art/characters/player_male/attack_ne.png:4:12:false;clip:attack_nw:assets/art/characters/player_male/attack_nw.png:4:12:false;clip:hurt_s:assets/art/characters/player_male/hurt_s.png:2:6:false;clip:hurt_n:assets/art/characters/player_male/hurt_n.png:2:6:false;clip:hurt_e:assets/art/characters/player_male/hurt_e.png:2:6:false;clip:hurt_w:assets/art/characters/player_male/hurt_w.png:2:6:false;clip:hurt_se:assets/art/characters/player_male/hurt_se.png:2:6:false;clip:hurt_sw:assets/art/characters/player_male/hurt_sw.png:2:6:false;clip:hurt_ne:assets/art/characters/player_male/hurt_ne.png:2:6:false;clip:hurt_nw:assets/art/characters/player_male/hurt_nw.png:2:6:false;clip:faint_s:assets/art/characters/player_male/faint_s.png:4:6:false;clip:faint_n:assets/art/characters/player_male/faint_n.png:4:6:false;clip:faint_e:assets/art/characters/player_male/faint_e.png:4:6:false;clip:faint_w:assets/art/characters/player_male/faint_w.png:4:6:false;clip:faint_se:assets/art/characters/player_male/faint_se.png:4:6:false;clip:faint_sw:assets/art/characters/player_male/faint_sw.png:4:6:false;clip:faint_ne:assets/art/characters/player_male/faint_ne.png:4:6:false;clip:faint_nw:assets/art/characters/player_male/faint_nw.png:4:6:false",
       "preview": "assets/art/characters/player_male/preview.png",
       "palette": {
         "skin": "#E8C49A",
@@ -72,6 +76,42 @@
           "dir": "w"
         },
         {
+          "name": "idle_se",
+          "sheet": "assets/art/characters/player_male/idle_se.png",
+          "cols": 4,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "se"
+        },
+        {
+          "name": "idle_sw",
+          "sheet": "assets/art/characters/player_male/idle_sw.png",
+          "cols": 4,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "sw"
+        },
+        {
+          "name": "idle_ne",
+          "sheet": "assets/art/characters/player_male/idle_ne.png",
+          "cols": 4,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "ne"
+        },
+        {
+          "name": "idle_nw",
+          "sheet": "assets/art/characters/player_male/idle_nw.png",
+          "cols": 4,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "nw"
+        },
+        {
           "name": "walk_s",
           "sheet": "assets/art/characters/player_male/walk_s.png",
           "cols": 6,
@@ -106,6 +146,42 @@
           "looped": true,
           "action": "walk",
           "dir": "w"
+        },
+        {
+          "name": "walk_se",
+          "sheet": "assets/art/characters/player_male/walk_se.png",
+          "cols": 6,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "se"
+        },
+        {
+          "name": "walk_sw",
+          "sheet": "assets/art/characters/player_male/walk_sw.png",
+          "cols": 6,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "sw"
+        },
+        {
+          "name": "walk_ne",
+          "sheet": "assets/art/characters/player_male/walk_ne.png",
+          "cols": 6,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "ne"
+        },
+        {
+          "name": "walk_nw",
+          "sheet": "assets/art/characters/player_male/walk_nw.png",
+          "cols": 6,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "nw"
         },
         {
           "name": "hoe_s",
@@ -144,6 +220,42 @@
           "dir": "w"
         },
         {
+          "name": "hoe_se",
+          "sheet": "assets/art/characters/player_male/hoe_se.png",
+          "cols": 4,
+          "fps": 8,
+          "looped": false,
+          "action": "hoe",
+          "dir": "se"
+        },
+        {
+          "name": "hoe_sw",
+          "sheet": "assets/art/characters/player_male/hoe_sw.png",
+          "cols": 4,
+          "fps": 8,
+          "looped": false,
+          "action": "hoe",
+          "dir": "sw"
+        },
+        {
+          "name": "hoe_ne",
+          "sheet": "assets/art/characters/player_male/hoe_ne.png",
+          "cols": 4,
+          "fps": 8,
+          "looped": false,
+          "action": "hoe",
+          "dir": "ne"
+        },
+        {
+          "name": "hoe_nw",
+          "sheet": "assets/art/characters/player_male/hoe_nw.png",
+          "cols": 4,
+          "fps": 8,
+          "looped": false,
+          "action": "hoe",
+          "dir": "nw"
+        },
+        {
           "name": "water_s",
           "sheet": "assets/art/characters/player_male/water_s.png",
           "cols": 4,
@@ -178,6 +290,42 @@
           "looped": false,
           "action": "water",
           "dir": "w"
+        },
+        {
+          "name": "water_se",
+          "sheet": "assets/art/characters/player_male/water_se.png",
+          "cols": 4,
+          "fps": 8,
+          "looped": false,
+          "action": "water",
+          "dir": "se"
+        },
+        {
+          "name": "water_sw",
+          "sheet": "assets/art/characters/player_male/water_sw.png",
+          "cols": 4,
+          "fps": 8,
+          "looped": false,
+          "action": "water",
+          "dir": "sw"
+        },
+        {
+          "name": "water_ne",
+          "sheet": "assets/art/characters/player_male/water_ne.png",
+          "cols": 4,
+          "fps": 8,
+          "looped": false,
+          "action": "water",
+          "dir": "ne"
+        },
+        {
+          "name": "water_nw",
+          "sheet": "assets/art/characters/player_male/water_nw.png",
+          "cols": 4,
+          "fps": 8,
+          "looped": false,
+          "action": "water",
+          "dir": "nw"
         },
         {
           "name": "attack_s",
@@ -216,6 +364,42 @@
           "dir": "w"
         },
         {
+          "name": "attack_se",
+          "sheet": "assets/art/characters/player_male/attack_se.png",
+          "cols": 4,
+          "fps": 12,
+          "looped": false,
+          "action": "attack",
+          "dir": "se"
+        },
+        {
+          "name": "attack_sw",
+          "sheet": "assets/art/characters/player_male/attack_sw.png",
+          "cols": 4,
+          "fps": 12,
+          "looped": false,
+          "action": "attack",
+          "dir": "sw"
+        },
+        {
+          "name": "attack_ne",
+          "sheet": "assets/art/characters/player_male/attack_ne.png",
+          "cols": 4,
+          "fps": 12,
+          "looped": false,
+          "action": "attack",
+          "dir": "ne"
+        },
+        {
+          "name": "attack_nw",
+          "sheet": "assets/art/characters/player_male/attack_nw.png",
+          "cols": 4,
+          "fps": 12,
+          "looped": false,
+          "action": "attack",
+          "dir": "nw"
+        },
+        {
           "name": "hurt_s",
           "sheet": "assets/art/characters/player_male/hurt_s.png",
           "cols": 2,
@@ -252,6 +436,42 @@
           "dir": "w"
         },
         {
+          "name": "hurt_se",
+          "sheet": "assets/art/characters/player_male/hurt_se.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": false,
+          "action": "hurt",
+          "dir": "se"
+        },
+        {
+          "name": "hurt_sw",
+          "sheet": "assets/art/characters/player_male/hurt_sw.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": false,
+          "action": "hurt",
+          "dir": "sw"
+        },
+        {
+          "name": "hurt_ne",
+          "sheet": "assets/art/characters/player_male/hurt_ne.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": false,
+          "action": "hurt",
+          "dir": "ne"
+        },
+        {
+          "name": "hurt_nw",
+          "sheet": "assets/art/characters/player_male/hurt_nw.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": false,
+          "action": "hurt",
+          "dir": "nw"
+        },
+        {
           "name": "faint_s",
           "sheet": "assets/art/characters/player_male/faint_s.png",
           "cols": 4,
@@ -286,6 +506,42 @@
           "looped": false,
           "action": "faint",
           "dir": "w"
+        },
+        {
+          "name": "faint_se",
+          "sheet": "assets/art/characters/player_male/faint_se.png",
+          "cols": 4,
+          "fps": 6,
+          "looped": false,
+          "action": "faint",
+          "dir": "se"
+        },
+        {
+          "name": "faint_sw",
+          "sheet": "assets/art/characters/player_male/faint_sw.png",
+          "cols": 4,
+          "fps": 6,
+          "looped": false,
+          "action": "faint",
+          "dir": "sw"
+        },
+        {
+          "name": "faint_ne",
+          "sheet": "assets/art/characters/player_male/faint_ne.png",
+          "cols": 4,
+          "fps": 6,
+          "looped": false,
+          "action": "faint",
+          "dir": "ne"
+        },
+        {
+          "name": "faint_nw",
+          "sheet": "assets/art/characters/player_male/faint_nw.png",
+          "cols": 4,
+          "fps": 6,
+          "looped": false,
+          "action": "faint",
+          "dir": "nw"
         }
       ]
     },
@@ -294,10 +550,10 @@
       "display": "主角·青衣女侠（可选女）",
       "role": "player",
       "note": "与男主体共用色板与动作集，仅改轮廓（裙摆 + 马尾），保证换装/自定义不返工",
-      "sprite_size": "32x32",
+      "sprite_size": "64x64",
       "sorting_layer": "actor",
-      "static_sprite": "texture=assets/art/characters/player_female/static_s.png;size=32x32;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
-      "animation": "default=idle_s;clip:idle_s:assets/art/characters/player_female/idle_s.png:4:6:true;clip:idle_n:assets/art/characters/player_female/idle_n.png:4:6:true;clip:idle_e:assets/art/characters/player_female/idle_e.png:4:6:true;clip:idle_w:assets/art/characters/player_female/idle_w.png:4:6:true;clip:walk_s:assets/art/characters/player_female/walk_s.png:6:10:true;clip:walk_n:assets/art/characters/player_female/walk_n.png:6:10:true;clip:walk_e:assets/art/characters/player_female/walk_e.png:6:10:true;clip:walk_w:assets/art/characters/player_female/walk_w.png:6:10:true;clip:hoe_s:assets/art/characters/player_female/hoe_s.png:4:8:false;clip:hoe_n:assets/art/characters/player_female/hoe_n.png:4:8:false;clip:hoe_e:assets/art/characters/player_female/hoe_e.png:4:8:false;clip:hoe_w:assets/art/characters/player_female/hoe_w.png:4:8:false;clip:water_s:assets/art/characters/player_female/water_s.png:4:8:false;clip:water_n:assets/art/characters/player_female/water_n.png:4:8:false;clip:water_e:assets/art/characters/player_female/water_e.png:4:8:false;clip:water_w:assets/art/characters/player_female/water_w.png:4:8:false;clip:attack_s:assets/art/characters/player_female/attack_s.png:4:12:false;clip:attack_n:assets/art/characters/player_female/attack_n.png:4:12:false;clip:attack_e:assets/art/characters/player_female/attack_e.png:4:12:false;clip:attack_w:assets/art/characters/player_female/attack_w.png:4:12:false;clip:hurt_s:assets/art/characters/player_female/hurt_s.png:2:6:false;clip:hurt_n:assets/art/characters/player_female/hurt_n.png:2:6:false;clip:hurt_e:assets/art/characters/player_female/hurt_e.png:2:6:false;clip:hurt_w:assets/art/characters/player_female/hurt_w.png:2:6:false;clip:faint_s:assets/art/characters/player_female/faint_s.png:4:6:false;clip:faint_n:assets/art/characters/player_female/faint_n.png:4:6:false;clip:faint_e:assets/art/characters/player_female/faint_e.png:4:6:false;clip:faint_w:assets/art/characters/player_female/faint_w.png:4:6:false",
+      "static_sprite": "texture=assets/art/characters/player_female/static_s.png;size=64x64;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+      "animation": "default=idle_s;clip:idle_s:assets/art/characters/player_female/idle_s.png:4:6:true;clip:idle_n:assets/art/characters/player_female/idle_n.png:4:6:true;clip:idle_e:assets/art/characters/player_female/idle_e.png:4:6:true;clip:idle_w:assets/art/characters/player_female/idle_w.png:4:6:true;clip:idle_se:assets/art/characters/player_female/idle_se.png:4:6:true;clip:idle_sw:assets/art/characters/player_female/idle_sw.png:4:6:true;clip:idle_ne:assets/art/characters/player_female/idle_ne.png:4:6:true;clip:idle_nw:assets/art/characters/player_female/idle_nw.png:4:6:true;clip:walk_s:assets/art/characters/player_female/walk_s.png:6:10:true;clip:walk_n:assets/art/characters/player_female/walk_n.png:6:10:true;clip:walk_e:assets/art/characters/player_female/walk_e.png:6:10:true;clip:walk_w:assets/art/characters/player_female/walk_w.png:6:10:true;clip:walk_se:assets/art/characters/player_female/walk_se.png:6:10:true;clip:walk_sw:assets/art/characters/player_female/walk_sw.png:6:10:true;clip:walk_ne:assets/art/characters/player_female/walk_ne.png:6:10:true;clip:walk_nw:assets/art/characters/player_female/walk_nw.png:6:10:true;clip:hoe_s:assets/art/characters/player_female/hoe_s.png:4:8:false;clip:hoe_n:assets/art/characters/player_female/hoe_n.png:4:8:false;clip:hoe_e:assets/art/characters/player_female/hoe_e.png:4:8:false;clip:hoe_w:assets/art/characters/player_female/hoe_w.png:4:8:false;clip:hoe_se:assets/art/characters/player_female/hoe_se.png:4:8:false;clip:hoe_sw:assets/art/characters/player_female/hoe_sw.png:4:8:false;clip:hoe_ne:assets/art/characters/player_female/hoe_ne.png:4:8:false;clip:hoe_nw:assets/art/characters/player_female/hoe_nw.png:4:8:false;clip:water_s:assets/art/characters/player_female/water_s.png:4:8:false;clip:water_n:assets/art/characters/player_female/water_n.png:4:8:false;clip:water_e:assets/art/characters/player_female/water_e.png:4:8:false;clip:water_w:assets/art/characters/player_female/water_w.png:4:8:false;clip:water_se:assets/art/characters/player_female/water_se.png:4:8:false;clip:water_sw:assets/art/characters/player_female/water_sw.png:4:8:false;clip:water_ne:assets/art/characters/player_female/water_ne.png:4:8:false;clip:water_nw:assets/art/characters/player_female/water_nw.png:4:8:false;clip:attack_s:assets/art/characters/player_female/attack_s.png:4:12:false;clip:attack_n:assets/art/characters/player_female/attack_n.png:4:12:false;clip:attack_e:assets/art/characters/player_female/attack_e.png:4:12:false;clip:attack_w:assets/art/characters/player_female/attack_w.png:4:12:false;clip:attack_se:assets/art/characters/player_female/attack_se.png:4:12:false;clip:attack_sw:assets/art/characters/player_female/attack_sw.png:4:12:false;clip:attack_ne:assets/art/characters/player_female/attack_ne.png:4:12:false;clip:attack_nw:assets/art/characters/player_female/attack_nw.png:4:12:false;clip:hurt_s:assets/art/characters/player_female/hurt_s.png:2:6:false;clip:hurt_n:assets/art/characters/player_female/hurt_n.png:2:6:false;clip:hurt_e:assets/art/characters/player_female/hurt_e.png:2:6:false;clip:hurt_w:assets/art/characters/player_female/hurt_w.png:2:6:false;clip:hurt_se:assets/art/characters/player_female/hurt_se.png:2:6:false;clip:hurt_sw:assets/art/characters/player_female/hurt_sw.png:2:6:false;clip:hurt_ne:assets/art/characters/player_female/hurt_ne.png:2:6:false;clip:hurt_nw:assets/art/characters/player_female/hurt_nw.png:2:6:false;clip:faint_s:assets/art/characters/player_female/faint_s.png:4:6:false;clip:faint_n:assets/art/characters/player_female/faint_n.png:4:6:false;clip:faint_e:assets/art/characters/player_female/faint_e.png:4:6:false;clip:faint_w:assets/art/characters/player_female/faint_w.png:4:6:false;clip:faint_se:assets/art/characters/player_female/faint_se.png:4:6:false;clip:faint_sw:assets/art/characters/player_female/faint_sw.png:4:6:false;clip:faint_ne:assets/art/characters/player_female/faint_ne.png:4:6:false;clip:faint_nw:assets/art/characters/player_female/faint_nw.png:4:6:false",
       "preview": "assets/art/characters/player_female/preview.png",
       "palette": {
         "skin": "#F0CFA8",
@@ -346,6 +602,42 @@
           "dir": "w"
         },
         {
+          "name": "idle_se",
+          "sheet": "assets/art/characters/player_female/idle_se.png",
+          "cols": 4,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "se"
+        },
+        {
+          "name": "idle_sw",
+          "sheet": "assets/art/characters/player_female/idle_sw.png",
+          "cols": 4,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "sw"
+        },
+        {
+          "name": "idle_ne",
+          "sheet": "assets/art/characters/player_female/idle_ne.png",
+          "cols": 4,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "ne"
+        },
+        {
+          "name": "idle_nw",
+          "sheet": "assets/art/characters/player_female/idle_nw.png",
+          "cols": 4,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "nw"
+        },
+        {
           "name": "walk_s",
           "sheet": "assets/art/characters/player_female/walk_s.png",
           "cols": 6,
@@ -380,6 +672,42 @@
           "looped": true,
           "action": "walk",
           "dir": "w"
+        },
+        {
+          "name": "walk_se",
+          "sheet": "assets/art/characters/player_female/walk_se.png",
+          "cols": 6,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "se"
+        },
+        {
+          "name": "walk_sw",
+          "sheet": "assets/art/characters/player_female/walk_sw.png",
+          "cols": 6,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "sw"
+        },
+        {
+          "name": "walk_ne",
+          "sheet": "assets/art/characters/player_female/walk_ne.png",
+          "cols": 6,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "ne"
+        },
+        {
+          "name": "walk_nw",
+          "sheet": "assets/art/characters/player_female/walk_nw.png",
+          "cols": 6,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "nw"
         },
         {
           "name": "hoe_s",
@@ -418,6 +746,42 @@
           "dir": "w"
         },
         {
+          "name": "hoe_se",
+          "sheet": "assets/art/characters/player_female/hoe_se.png",
+          "cols": 4,
+          "fps": 8,
+          "looped": false,
+          "action": "hoe",
+          "dir": "se"
+        },
+        {
+          "name": "hoe_sw",
+          "sheet": "assets/art/characters/player_female/hoe_sw.png",
+          "cols": 4,
+          "fps": 8,
+          "looped": false,
+          "action": "hoe",
+          "dir": "sw"
+        },
+        {
+          "name": "hoe_ne",
+          "sheet": "assets/art/characters/player_female/hoe_ne.png",
+          "cols": 4,
+          "fps": 8,
+          "looped": false,
+          "action": "hoe",
+          "dir": "ne"
+        },
+        {
+          "name": "hoe_nw",
+          "sheet": "assets/art/characters/player_female/hoe_nw.png",
+          "cols": 4,
+          "fps": 8,
+          "looped": false,
+          "action": "hoe",
+          "dir": "nw"
+        },
+        {
           "name": "water_s",
           "sheet": "assets/art/characters/player_female/water_s.png",
           "cols": 4,
@@ -452,6 +816,42 @@
           "looped": false,
           "action": "water",
           "dir": "w"
+        },
+        {
+          "name": "water_se",
+          "sheet": "assets/art/characters/player_female/water_se.png",
+          "cols": 4,
+          "fps": 8,
+          "looped": false,
+          "action": "water",
+          "dir": "se"
+        },
+        {
+          "name": "water_sw",
+          "sheet": "assets/art/characters/player_female/water_sw.png",
+          "cols": 4,
+          "fps": 8,
+          "looped": false,
+          "action": "water",
+          "dir": "sw"
+        },
+        {
+          "name": "water_ne",
+          "sheet": "assets/art/characters/player_female/water_ne.png",
+          "cols": 4,
+          "fps": 8,
+          "looped": false,
+          "action": "water",
+          "dir": "ne"
+        },
+        {
+          "name": "water_nw",
+          "sheet": "assets/art/characters/player_female/water_nw.png",
+          "cols": 4,
+          "fps": 8,
+          "looped": false,
+          "action": "water",
+          "dir": "nw"
         },
         {
           "name": "attack_s",
@@ -490,6 +890,42 @@
           "dir": "w"
         },
         {
+          "name": "attack_se",
+          "sheet": "assets/art/characters/player_female/attack_se.png",
+          "cols": 4,
+          "fps": 12,
+          "looped": false,
+          "action": "attack",
+          "dir": "se"
+        },
+        {
+          "name": "attack_sw",
+          "sheet": "assets/art/characters/player_female/attack_sw.png",
+          "cols": 4,
+          "fps": 12,
+          "looped": false,
+          "action": "attack",
+          "dir": "sw"
+        },
+        {
+          "name": "attack_ne",
+          "sheet": "assets/art/characters/player_female/attack_ne.png",
+          "cols": 4,
+          "fps": 12,
+          "looped": false,
+          "action": "attack",
+          "dir": "ne"
+        },
+        {
+          "name": "attack_nw",
+          "sheet": "assets/art/characters/player_female/attack_nw.png",
+          "cols": 4,
+          "fps": 12,
+          "looped": false,
+          "action": "attack",
+          "dir": "nw"
+        },
+        {
           "name": "hurt_s",
           "sheet": "assets/art/characters/player_female/hurt_s.png",
           "cols": 2,
@@ -526,6 +962,42 @@
           "dir": "w"
         },
         {
+          "name": "hurt_se",
+          "sheet": "assets/art/characters/player_female/hurt_se.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": false,
+          "action": "hurt",
+          "dir": "se"
+        },
+        {
+          "name": "hurt_sw",
+          "sheet": "assets/art/characters/player_female/hurt_sw.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": false,
+          "action": "hurt",
+          "dir": "sw"
+        },
+        {
+          "name": "hurt_ne",
+          "sheet": "assets/art/characters/player_female/hurt_ne.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": false,
+          "action": "hurt",
+          "dir": "ne"
+        },
+        {
+          "name": "hurt_nw",
+          "sheet": "assets/art/characters/player_female/hurt_nw.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": false,
+          "action": "hurt",
+          "dir": "nw"
+        },
+        {
           "name": "faint_s",
           "sheet": "assets/art/characters/player_female/faint_s.png",
           "cols": 4,
@@ -560,6 +1032,42 @@
           "looped": false,
           "action": "faint",
           "dir": "w"
+        },
+        {
+          "name": "faint_se",
+          "sheet": "assets/art/characters/player_female/faint_se.png",
+          "cols": 4,
+          "fps": 6,
+          "looped": false,
+          "action": "faint",
+          "dir": "se"
+        },
+        {
+          "name": "faint_sw",
+          "sheet": "assets/art/characters/player_female/faint_sw.png",
+          "cols": 4,
+          "fps": 6,
+          "looped": false,
+          "action": "faint",
+          "dir": "sw"
+        },
+        {
+          "name": "faint_ne",
+          "sheet": "assets/art/characters/player_female/faint_ne.png",
+          "cols": 4,
+          "fps": 6,
+          "looped": false,
+          "action": "faint",
+          "dir": "ne"
+        },
+        {
+          "name": "faint_nw",
+          "sheet": "assets/art/characters/player_female/faint_nw.png",
+          "cols": 4,
+          "fps": 6,
+          "looped": false,
+          "action": "faint",
+          "dir": "nw"
         }
       ]
     },
@@ -568,10 +1076,10 @@
       "display": "沈青萝·医馆掌柜",
       "role": "npc",
       "note": "藕荷罗衫 + 米白药围裙 + 木药箱；双螺髻，慈和中年女性轮廓",
-      "sprite_size": "32x32",
+      "sprite_size": "64x64",
       "sorting_layer": "actor",
-      "static_sprite": "texture=assets/art/characters/shen_qingluo/static_s.png;size=32x32;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
-      "animation": "default=idle_s;clip:idle_s:assets/art/characters/shen_qingluo/idle_s.png:2:6:true;clip:idle_n:assets/art/characters/shen_qingluo/idle_n.png:2:6:true;clip:idle_e:assets/art/characters/shen_qingluo/idle_e.png:2:6:true;clip:idle_w:assets/art/characters/shen_qingluo/idle_w.png:2:6:true;clip:walk_s:assets/art/characters/shen_qingluo/walk_s.png:4:10:true;clip:walk_n:assets/art/characters/shen_qingluo/walk_n.png:4:10:true;clip:walk_e:assets/art/characters/shen_qingluo/walk_e.png:4:10:true;clip:walk_w:assets/art/characters/shen_qingluo/walk_w.png:4:10:true;clip:talk_s:assets/art/characters/shen_qingluo/talk_s.png:2:4:true;clip:talk_n:assets/art/characters/shen_qingluo/talk_n.png:2:4:true;clip:talk_e:assets/art/characters/shen_qingluo/talk_e.png:2:4:true;clip:talk_w:assets/art/characters/shen_qingluo/talk_w.png:2:4:true",
+      "static_sprite": "texture=assets/art/characters/shen_qingluo/static_s.png;size=64x64;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+      "animation": "default=idle_s;clip:idle_s:assets/art/characters/shen_qingluo/idle_s.png:2:6:true;clip:idle_n:assets/art/characters/shen_qingluo/idle_n.png:2:6:true;clip:idle_e:assets/art/characters/shen_qingluo/idle_e.png:2:6:true;clip:idle_w:assets/art/characters/shen_qingluo/idle_w.png:2:6:true;clip:idle_se:assets/art/characters/shen_qingluo/idle_se.png:2:6:true;clip:idle_sw:assets/art/characters/shen_qingluo/idle_sw.png:2:6:true;clip:idle_ne:assets/art/characters/shen_qingluo/idle_ne.png:2:6:true;clip:idle_nw:assets/art/characters/shen_qingluo/idle_nw.png:2:6:true;clip:walk_s:assets/art/characters/shen_qingluo/walk_s.png:4:10:true;clip:walk_n:assets/art/characters/shen_qingluo/walk_n.png:4:10:true;clip:walk_e:assets/art/characters/shen_qingluo/walk_e.png:4:10:true;clip:walk_w:assets/art/characters/shen_qingluo/walk_w.png:4:10:true;clip:walk_se:assets/art/characters/shen_qingluo/walk_se.png:4:10:true;clip:walk_sw:assets/art/characters/shen_qingluo/walk_sw.png:4:10:true;clip:walk_ne:assets/art/characters/shen_qingluo/walk_ne.png:4:10:true;clip:walk_nw:assets/art/characters/shen_qingluo/walk_nw.png:4:10:true;clip:talk_s:assets/art/characters/shen_qingluo/talk_s.png:2:4:true;clip:talk_n:assets/art/characters/shen_qingluo/talk_n.png:2:4:true;clip:talk_e:assets/art/characters/shen_qingluo/talk_e.png:2:4:true;clip:talk_w:assets/art/characters/shen_qingluo/talk_w.png:2:4:true;clip:talk_se:assets/art/characters/shen_qingluo/talk_se.png:2:4:true;clip:talk_sw:assets/art/characters/shen_qingluo/talk_sw.png:2:4:true;clip:talk_ne:assets/art/characters/shen_qingluo/talk_ne.png:2:4:true;clip:talk_nw:assets/art/characters/shen_qingluo/talk_nw.png:2:4:true",
       "preview": "assets/art/characters/shen_qingluo/preview.png",
       "palette": {
         "skin": "#F0CFA8",
@@ -620,6 +1128,42 @@
           "dir": "w"
         },
         {
+          "name": "idle_se",
+          "sheet": "assets/art/characters/shen_qingluo/idle_se.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "se"
+        },
+        {
+          "name": "idle_sw",
+          "sheet": "assets/art/characters/shen_qingluo/idle_sw.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "sw"
+        },
+        {
+          "name": "idle_ne",
+          "sheet": "assets/art/characters/shen_qingluo/idle_ne.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "ne"
+        },
+        {
+          "name": "idle_nw",
+          "sheet": "assets/art/characters/shen_qingluo/idle_nw.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "nw"
+        },
+        {
           "name": "walk_s",
           "sheet": "assets/art/characters/shen_qingluo/walk_s.png",
           "cols": 4,
@@ -656,6 +1200,42 @@
           "dir": "w"
         },
         {
+          "name": "walk_se",
+          "sheet": "assets/art/characters/shen_qingluo/walk_se.png",
+          "cols": 4,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "se"
+        },
+        {
+          "name": "walk_sw",
+          "sheet": "assets/art/characters/shen_qingluo/walk_sw.png",
+          "cols": 4,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "sw"
+        },
+        {
+          "name": "walk_ne",
+          "sheet": "assets/art/characters/shen_qingluo/walk_ne.png",
+          "cols": 4,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "ne"
+        },
+        {
+          "name": "walk_nw",
+          "sheet": "assets/art/characters/shen_qingluo/walk_nw.png",
+          "cols": 4,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "nw"
+        },
+        {
           "name": "talk_s",
           "sheet": "assets/art/characters/shen_qingluo/talk_s.png",
           "cols": 2,
@@ -690,6 +1270,42 @@
           "looped": true,
           "action": "talk",
           "dir": "w"
+        },
+        {
+          "name": "talk_se",
+          "sheet": "assets/art/characters/shen_qingluo/talk_se.png",
+          "cols": 2,
+          "fps": 4,
+          "looped": true,
+          "action": "talk",
+          "dir": "se"
+        },
+        {
+          "name": "talk_sw",
+          "sheet": "assets/art/characters/shen_qingluo/talk_sw.png",
+          "cols": 2,
+          "fps": 4,
+          "looped": true,
+          "action": "talk",
+          "dir": "sw"
+        },
+        {
+          "name": "talk_ne",
+          "sheet": "assets/art/characters/shen_qingluo/talk_ne.png",
+          "cols": 2,
+          "fps": 4,
+          "looped": true,
+          "action": "talk",
+          "dir": "ne"
+        },
+        {
+          "name": "talk_nw",
+          "sheet": "assets/art/characters/shen_qingluo/talk_nw.png",
+          "cols": 2,
+          "fps": 4,
+          "looped": true,
+          "action": "talk",
+          "dir": "nw"
         }
       ]
     },
@@ -698,10 +1314,10 @@
       "display": "赵铁算盘·集市商人",
       "role": "npc",
       "note": "旧金长衫 + 墨色瓜皮帽 + 腰间算盘；体胖（half_w 4），辨识度靠体型与金色",
-      "sprite_size": "32x32",
+      "sprite_size": "64x64",
       "sorting_layer": "actor",
-      "static_sprite": "texture=assets/art/characters/zhao_tiesuanpan/static_s.png;size=32x32;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
-      "animation": "default=idle_s;clip:idle_s:assets/art/characters/zhao_tiesuanpan/idle_s.png:2:6:true;clip:idle_n:assets/art/characters/zhao_tiesuanpan/idle_n.png:2:6:true;clip:idle_e:assets/art/characters/zhao_tiesuanpan/idle_e.png:2:6:true;clip:idle_w:assets/art/characters/zhao_tiesuanpan/idle_w.png:2:6:true;clip:walk_s:assets/art/characters/zhao_tiesuanpan/walk_s.png:4:10:true;clip:walk_n:assets/art/characters/zhao_tiesuanpan/walk_n.png:4:10:true;clip:walk_e:assets/art/characters/zhao_tiesuanpan/walk_e.png:4:10:true;clip:walk_w:assets/art/characters/zhao_tiesuanpan/walk_w.png:4:10:true;clip:talk_s:assets/art/characters/zhao_tiesuanpan/talk_s.png:2:4:true;clip:talk_n:assets/art/characters/zhao_tiesuanpan/talk_n.png:2:4:true;clip:talk_e:assets/art/characters/zhao_tiesuanpan/talk_e.png:2:4:true;clip:talk_w:assets/art/characters/zhao_tiesuanpan/talk_w.png:2:4:true",
+      "static_sprite": "texture=assets/art/characters/zhao_tiesuanpan/static_s.png;size=64x64;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+      "animation": "default=idle_s;clip:idle_s:assets/art/characters/zhao_tiesuanpan/idle_s.png:2:6:true;clip:idle_n:assets/art/characters/zhao_tiesuanpan/idle_n.png:2:6:true;clip:idle_e:assets/art/characters/zhao_tiesuanpan/idle_e.png:2:6:true;clip:idle_w:assets/art/characters/zhao_tiesuanpan/idle_w.png:2:6:true;clip:idle_se:assets/art/characters/zhao_tiesuanpan/idle_se.png:2:6:true;clip:idle_sw:assets/art/characters/zhao_tiesuanpan/idle_sw.png:2:6:true;clip:idle_ne:assets/art/characters/zhao_tiesuanpan/idle_ne.png:2:6:true;clip:idle_nw:assets/art/characters/zhao_tiesuanpan/idle_nw.png:2:6:true;clip:walk_s:assets/art/characters/zhao_tiesuanpan/walk_s.png:4:10:true;clip:walk_n:assets/art/characters/zhao_tiesuanpan/walk_n.png:4:10:true;clip:walk_e:assets/art/characters/zhao_tiesuanpan/walk_e.png:4:10:true;clip:walk_w:assets/art/characters/zhao_tiesuanpan/walk_w.png:4:10:true;clip:walk_se:assets/art/characters/zhao_tiesuanpan/walk_se.png:4:10:true;clip:walk_sw:assets/art/characters/zhao_tiesuanpan/walk_sw.png:4:10:true;clip:walk_ne:assets/art/characters/zhao_tiesuanpan/walk_ne.png:4:10:true;clip:walk_nw:assets/art/characters/zhao_tiesuanpan/walk_nw.png:4:10:true;clip:talk_s:assets/art/characters/zhao_tiesuanpan/talk_s.png:2:4:true;clip:talk_n:assets/art/characters/zhao_tiesuanpan/talk_n.png:2:4:true;clip:talk_e:assets/art/characters/zhao_tiesuanpan/talk_e.png:2:4:true;clip:talk_w:assets/art/characters/zhao_tiesuanpan/talk_w.png:2:4:true;clip:talk_se:assets/art/characters/zhao_tiesuanpan/talk_se.png:2:4:true;clip:talk_sw:assets/art/characters/zhao_tiesuanpan/talk_sw.png:2:4:true;clip:talk_ne:assets/art/characters/zhao_tiesuanpan/talk_ne.png:2:4:true;clip:talk_nw:assets/art/characters/zhao_tiesuanpan/talk_nw.png:2:4:true",
       "preview": "assets/art/characters/zhao_tiesuanpan/preview.png",
       "palette": {
         "skin": "#E8C49A",
@@ -750,6 +1366,42 @@
           "dir": "w"
         },
         {
+          "name": "idle_se",
+          "sheet": "assets/art/characters/zhao_tiesuanpan/idle_se.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "se"
+        },
+        {
+          "name": "idle_sw",
+          "sheet": "assets/art/characters/zhao_tiesuanpan/idle_sw.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "sw"
+        },
+        {
+          "name": "idle_ne",
+          "sheet": "assets/art/characters/zhao_tiesuanpan/idle_ne.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "ne"
+        },
+        {
+          "name": "idle_nw",
+          "sheet": "assets/art/characters/zhao_tiesuanpan/idle_nw.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "nw"
+        },
+        {
           "name": "walk_s",
           "sheet": "assets/art/characters/zhao_tiesuanpan/walk_s.png",
           "cols": 4,
@@ -786,6 +1438,42 @@
           "dir": "w"
         },
         {
+          "name": "walk_se",
+          "sheet": "assets/art/characters/zhao_tiesuanpan/walk_se.png",
+          "cols": 4,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "se"
+        },
+        {
+          "name": "walk_sw",
+          "sheet": "assets/art/characters/zhao_tiesuanpan/walk_sw.png",
+          "cols": 4,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "sw"
+        },
+        {
+          "name": "walk_ne",
+          "sheet": "assets/art/characters/zhao_tiesuanpan/walk_ne.png",
+          "cols": 4,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "ne"
+        },
+        {
+          "name": "walk_nw",
+          "sheet": "assets/art/characters/zhao_tiesuanpan/walk_nw.png",
+          "cols": 4,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "nw"
+        },
+        {
           "name": "talk_s",
           "sheet": "assets/art/characters/zhao_tiesuanpan/talk_s.png",
           "cols": 2,
@@ -820,6 +1508,42 @@
           "looped": true,
           "action": "talk",
           "dir": "w"
+        },
+        {
+          "name": "talk_se",
+          "sheet": "assets/art/characters/zhao_tiesuanpan/talk_se.png",
+          "cols": 2,
+          "fps": 4,
+          "looped": true,
+          "action": "talk",
+          "dir": "se"
+        },
+        {
+          "name": "talk_sw",
+          "sheet": "assets/art/characters/zhao_tiesuanpan/talk_sw.png",
+          "cols": 2,
+          "fps": 4,
+          "looped": true,
+          "action": "talk",
+          "dir": "sw"
+        },
+        {
+          "name": "talk_ne",
+          "sheet": "assets/art/characters/zhao_tiesuanpan/talk_ne.png",
+          "cols": 2,
+          "fps": 4,
+          "looped": true,
+          "action": "talk",
+          "dir": "ne"
+        },
+        {
+          "name": "talk_nw",
+          "sheet": "assets/art/characters/zhao_tiesuanpan/talk_nw.png",
+          "cols": 2,
+          "fps": 4,
+          "looped": true,
+          "action": "talk",
+          "dir": "nw"
         }
       ]
     },
@@ -828,10 +1552,10 @@
       "display": "林小满·茶农",
       "role": "npc",
       "note": "竹青布衣 + 黛蓝印花头巾 + 竹茶篓；最矮（少女），绿色与药田同色系但靠头巾区分",
-      "sprite_size": "32x32",
+      "sprite_size": "64x64",
       "sorting_layer": "actor",
-      "static_sprite": "texture=assets/art/characters/lin_xiaoman/static_s.png;size=32x32;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
-      "animation": "default=idle_s;clip:idle_s:assets/art/characters/lin_xiaoman/idle_s.png:2:6:true;clip:idle_n:assets/art/characters/lin_xiaoman/idle_n.png:2:6:true;clip:idle_e:assets/art/characters/lin_xiaoman/idle_e.png:2:6:true;clip:idle_w:assets/art/characters/lin_xiaoman/idle_w.png:2:6:true;clip:walk_s:assets/art/characters/lin_xiaoman/walk_s.png:4:10:true;clip:walk_n:assets/art/characters/lin_xiaoman/walk_n.png:4:10:true;clip:walk_e:assets/art/characters/lin_xiaoman/walk_e.png:4:10:true;clip:walk_w:assets/art/characters/lin_xiaoman/walk_w.png:4:10:true;clip:talk_s:assets/art/characters/lin_xiaoman/talk_s.png:2:4:true;clip:talk_n:assets/art/characters/lin_xiaoman/talk_n.png:2:4:true;clip:talk_e:assets/art/characters/lin_xiaoman/talk_e.png:2:4:true;clip:talk_w:assets/art/characters/lin_xiaoman/talk_w.png:2:4:true",
+      "static_sprite": "texture=assets/art/characters/lin_xiaoman/static_s.png;size=64x64;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+      "animation": "default=idle_s;clip:idle_s:assets/art/characters/lin_xiaoman/idle_s.png:2:6:true;clip:idle_n:assets/art/characters/lin_xiaoman/idle_n.png:2:6:true;clip:idle_e:assets/art/characters/lin_xiaoman/idle_e.png:2:6:true;clip:idle_w:assets/art/characters/lin_xiaoman/idle_w.png:2:6:true;clip:idle_se:assets/art/characters/lin_xiaoman/idle_se.png:2:6:true;clip:idle_sw:assets/art/characters/lin_xiaoman/idle_sw.png:2:6:true;clip:idle_ne:assets/art/characters/lin_xiaoman/idle_ne.png:2:6:true;clip:idle_nw:assets/art/characters/lin_xiaoman/idle_nw.png:2:6:true;clip:walk_s:assets/art/characters/lin_xiaoman/walk_s.png:4:10:true;clip:walk_n:assets/art/characters/lin_xiaoman/walk_n.png:4:10:true;clip:walk_e:assets/art/characters/lin_xiaoman/walk_e.png:4:10:true;clip:walk_w:assets/art/characters/lin_xiaoman/walk_w.png:4:10:true;clip:walk_se:assets/art/characters/lin_xiaoman/walk_se.png:4:10:true;clip:walk_sw:assets/art/characters/lin_xiaoman/walk_sw.png:4:10:true;clip:walk_ne:assets/art/characters/lin_xiaoman/walk_ne.png:4:10:true;clip:walk_nw:assets/art/characters/lin_xiaoman/walk_nw.png:4:10:true;clip:talk_s:assets/art/characters/lin_xiaoman/talk_s.png:2:4:true;clip:talk_n:assets/art/characters/lin_xiaoman/talk_n.png:2:4:true;clip:talk_e:assets/art/characters/lin_xiaoman/talk_e.png:2:4:true;clip:talk_w:assets/art/characters/lin_xiaoman/talk_w.png:2:4:true;clip:talk_se:assets/art/characters/lin_xiaoman/talk_se.png:2:4:true;clip:talk_sw:assets/art/characters/lin_xiaoman/talk_sw.png:2:4:true;clip:talk_ne:assets/art/characters/lin_xiaoman/talk_ne.png:2:4:true;clip:talk_nw:assets/art/characters/lin_xiaoman/talk_nw.png:2:4:true",
       "preview": "assets/art/characters/lin_xiaoman/preview.png",
       "palette": {
         "skin": "#F2D3B0",
@@ -880,6 +1604,42 @@
           "dir": "w"
         },
         {
+          "name": "idle_se",
+          "sheet": "assets/art/characters/lin_xiaoman/idle_se.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "se"
+        },
+        {
+          "name": "idle_sw",
+          "sheet": "assets/art/characters/lin_xiaoman/idle_sw.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "sw"
+        },
+        {
+          "name": "idle_ne",
+          "sheet": "assets/art/characters/lin_xiaoman/idle_ne.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "ne"
+        },
+        {
+          "name": "idle_nw",
+          "sheet": "assets/art/characters/lin_xiaoman/idle_nw.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "nw"
+        },
+        {
           "name": "walk_s",
           "sheet": "assets/art/characters/lin_xiaoman/walk_s.png",
           "cols": 4,
@@ -916,6 +1676,42 @@
           "dir": "w"
         },
         {
+          "name": "walk_se",
+          "sheet": "assets/art/characters/lin_xiaoman/walk_se.png",
+          "cols": 4,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "se"
+        },
+        {
+          "name": "walk_sw",
+          "sheet": "assets/art/characters/lin_xiaoman/walk_sw.png",
+          "cols": 4,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "sw"
+        },
+        {
+          "name": "walk_ne",
+          "sheet": "assets/art/characters/lin_xiaoman/walk_ne.png",
+          "cols": 4,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "ne"
+        },
+        {
+          "name": "walk_nw",
+          "sheet": "assets/art/characters/lin_xiaoman/walk_nw.png",
+          "cols": 4,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "nw"
+        },
+        {
           "name": "talk_s",
           "sheet": "assets/art/characters/lin_xiaoman/talk_s.png",
           "cols": 2,
@@ -950,6 +1746,42 @@
           "looped": true,
           "action": "talk",
           "dir": "w"
+        },
+        {
+          "name": "talk_se",
+          "sheet": "assets/art/characters/lin_xiaoman/talk_se.png",
+          "cols": 2,
+          "fps": 4,
+          "looped": true,
+          "action": "talk",
+          "dir": "se"
+        },
+        {
+          "name": "talk_sw",
+          "sheet": "assets/art/characters/lin_xiaoman/talk_sw.png",
+          "cols": 2,
+          "fps": 4,
+          "looped": true,
+          "action": "talk",
+          "dir": "sw"
+        },
+        {
+          "name": "talk_ne",
+          "sheet": "assets/art/characters/lin_xiaoman/talk_ne.png",
+          "cols": 2,
+          "fps": 4,
+          "looped": true,
+          "action": "talk",
+          "dir": "ne"
+        },
+        {
+          "name": "talk_nw",
+          "sheet": "assets/art/characters/lin_xiaoman/talk_nw.png",
+          "cols": 2,
+          "fps": 4,
+          "looped": true,
+          "action": "talk",
+          "dir": "nw"
         }
       ]
     },
@@ -958,10 +1790,10 @@
       "display": "韩铁山·铁匠",
       "role": "npc",
       "note": "钢灰短褂 + 皮革围裙 + 朱砂发带 + 铁锤；肩最宽（half_w 4），配色最重",
-      "sprite_size": "32x32",
+      "sprite_size": "64x64",
       "sorting_layer": "actor",
-      "static_sprite": "texture=assets/art/characters/han_tieshan/static_s.png;size=32x32;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
-      "animation": "default=idle_s;clip:idle_s:assets/art/characters/han_tieshan/idle_s.png:2:6:true;clip:idle_n:assets/art/characters/han_tieshan/idle_n.png:2:6:true;clip:idle_e:assets/art/characters/han_tieshan/idle_e.png:2:6:true;clip:idle_w:assets/art/characters/han_tieshan/idle_w.png:2:6:true;clip:walk_s:assets/art/characters/han_tieshan/walk_s.png:4:10:true;clip:walk_n:assets/art/characters/han_tieshan/walk_n.png:4:10:true;clip:walk_e:assets/art/characters/han_tieshan/walk_e.png:4:10:true;clip:walk_w:assets/art/characters/han_tieshan/walk_w.png:4:10:true;clip:talk_s:assets/art/characters/han_tieshan/talk_s.png:2:4:true;clip:talk_n:assets/art/characters/han_tieshan/talk_n.png:2:4:true;clip:talk_e:assets/art/characters/han_tieshan/talk_e.png:2:4:true;clip:talk_w:assets/art/characters/han_tieshan/talk_w.png:2:4:true",
+      "static_sprite": "texture=assets/art/characters/han_tieshan/static_s.png;size=64x64;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+      "animation": "default=idle_s;clip:idle_s:assets/art/characters/han_tieshan/idle_s.png:2:6:true;clip:idle_n:assets/art/characters/han_tieshan/idle_n.png:2:6:true;clip:idle_e:assets/art/characters/han_tieshan/idle_e.png:2:6:true;clip:idle_w:assets/art/characters/han_tieshan/idle_w.png:2:6:true;clip:idle_se:assets/art/characters/han_tieshan/idle_se.png:2:6:true;clip:idle_sw:assets/art/characters/han_tieshan/idle_sw.png:2:6:true;clip:idle_ne:assets/art/characters/han_tieshan/idle_ne.png:2:6:true;clip:idle_nw:assets/art/characters/han_tieshan/idle_nw.png:2:6:true;clip:walk_s:assets/art/characters/han_tieshan/walk_s.png:4:10:true;clip:walk_n:assets/art/characters/han_tieshan/walk_n.png:4:10:true;clip:walk_e:assets/art/characters/han_tieshan/walk_e.png:4:10:true;clip:walk_w:assets/art/characters/han_tieshan/walk_w.png:4:10:true;clip:walk_se:assets/art/characters/han_tieshan/walk_se.png:4:10:true;clip:walk_sw:assets/art/characters/han_tieshan/walk_sw.png:4:10:true;clip:walk_ne:assets/art/characters/han_tieshan/walk_ne.png:4:10:true;clip:walk_nw:assets/art/characters/han_tieshan/walk_nw.png:4:10:true;clip:talk_s:assets/art/characters/han_tieshan/talk_s.png:2:4:true;clip:talk_n:assets/art/characters/han_tieshan/talk_n.png:2:4:true;clip:talk_e:assets/art/characters/han_tieshan/talk_e.png:2:4:true;clip:talk_w:assets/art/characters/han_tieshan/talk_w.png:2:4:true;clip:talk_se:assets/art/characters/han_tieshan/talk_se.png:2:4:true;clip:talk_sw:assets/art/characters/han_tieshan/talk_sw.png:2:4:true;clip:talk_ne:assets/art/characters/han_tieshan/talk_ne.png:2:4:true;clip:talk_nw:assets/art/characters/han_tieshan/talk_nw.png:2:4:true",
       "preview": "assets/art/characters/han_tieshan/preview.png",
       "palette": {
         "skin": "#D9A87C",
@@ -1010,6 +1842,42 @@
           "dir": "w"
         },
         {
+          "name": "idle_se",
+          "sheet": "assets/art/characters/han_tieshan/idle_se.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "se"
+        },
+        {
+          "name": "idle_sw",
+          "sheet": "assets/art/characters/han_tieshan/idle_sw.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "sw"
+        },
+        {
+          "name": "idle_ne",
+          "sheet": "assets/art/characters/han_tieshan/idle_ne.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "ne"
+        },
+        {
+          "name": "idle_nw",
+          "sheet": "assets/art/characters/han_tieshan/idle_nw.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "nw"
+        },
+        {
           "name": "walk_s",
           "sheet": "assets/art/characters/han_tieshan/walk_s.png",
           "cols": 4,
@@ -1046,6 +1914,42 @@
           "dir": "w"
         },
         {
+          "name": "walk_se",
+          "sheet": "assets/art/characters/han_tieshan/walk_se.png",
+          "cols": 4,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "se"
+        },
+        {
+          "name": "walk_sw",
+          "sheet": "assets/art/characters/han_tieshan/walk_sw.png",
+          "cols": 4,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "sw"
+        },
+        {
+          "name": "walk_ne",
+          "sheet": "assets/art/characters/han_tieshan/walk_ne.png",
+          "cols": 4,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "ne"
+        },
+        {
+          "name": "walk_nw",
+          "sheet": "assets/art/characters/han_tieshan/walk_nw.png",
+          "cols": 4,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "nw"
+        },
+        {
           "name": "talk_s",
           "sheet": "assets/art/characters/han_tieshan/talk_s.png",
           "cols": 2,
@@ -1080,6 +1984,42 @@
           "looped": true,
           "action": "talk",
           "dir": "w"
+        },
+        {
+          "name": "talk_se",
+          "sheet": "assets/art/characters/han_tieshan/talk_se.png",
+          "cols": 2,
+          "fps": 4,
+          "looped": true,
+          "action": "talk",
+          "dir": "se"
+        },
+        {
+          "name": "talk_sw",
+          "sheet": "assets/art/characters/han_tieshan/talk_sw.png",
+          "cols": 2,
+          "fps": 4,
+          "looped": true,
+          "action": "talk",
+          "dir": "sw"
+        },
+        {
+          "name": "talk_ne",
+          "sheet": "assets/art/characters/han_tieshan/talk_ne.png",
+          "cols": 2,
+          "fps": 4,
+          "looped": true,
+          "action": "talk",
+          "dir": "ne"
+        },
+        {
+          "name": "talk_nw",
+          "sheet": "assets/art/characters/han_tieshan/talk_nw.png",
+          "cols": 2,
+          "fps": 4,
+          "looped": true,
+          "action": "talk",
+          "dir": "nw"
         }
       ]
     },
@@ -1088,10 +2028,10 @@
       "display": "顾长风·退隐镖师",
       "role": "npc",
       "note": "黛蓝劲装长衫 + 灰短披肩 + 单刀 + 络腮短须；高个（head_top 3），护送/教刀场景主视觉",
-      "sprite_size": "32x32",
+      "sprite_size": "64x64",
       "sorting_layer": "actor",
-      "static_sprite": "texture=assets/art/characters/gu_changfeng/static_s.png;size=32x32;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
-      "animation": "default=idle_s;clip:idle_s:assets/art/characters/gu_changfeng/idle_s.png:2:6:true;clip:idle_n:assets/art/characters/gu_changfeng/idle_n.png:2:6:true;clip:idle_e:assets/art/characters/gu_changfeng/idle_e.png:2:6:true;clip:idle_w:assets/art/characters/gu_changfeng/idle_w.png:2:6:true;clip:walk_s:assets/art/characters/gu_changfeng/walk_s.png:4:10:true;clip:walk_n:assets/art/characters/gu_changfeng/walk_n.png:4:10:true;clip:walk_e:assets/art/characters/gu_changfeng/walk_e.png:4:10:true;clip:walk_w:assets/art/characters/gu_changfeng/walk_w.png:4:10:true;clip:talk_s:assets/art/characters/gu_changfeng/talk_s.png:2:4:true;clip:talk_n:assets/art/characters/gu_changfeng/talk_n.png:2:4:true;clip:talk_e:assets/art/characters/gu_changfeng/talk_e.png:2:4:true;clip:talk_w:assets/art/characters/gu_changfeng/talk_w.png:2:4:true",
+      "static_sprite": "texture=assets/art/characters/gu_changfeng/static_s.png;size=64x64;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+      "animation": "default=idle_s;clip:idle_s:assets/art/characters/gu_changfeng/idle_s.png:2:6:true;clip:idle_n:assets/art/characters/gu_changfeng/idle_n.png:2:6:true;clip:idle_e:assets/art/characters/gu_changfeng/idle_e.png:2:6:true;clip:idle_w:assets/art/characters/gu_changfeng/idle_w.png:2:6:true;clip:idle_se:assets/art/characters/gu_changfeng/idle_se.png:2:6:true;clip:idle_sw:assets/art/characters/gu_changfeng/idle_sw.png:2:6:true;clip:idle_ne:assets/art/characters/gu_changfeng/idle_ne.png:2:6:true;clip:idle_nw:assets/art/characters/gu_changfeng/idle_nw.png:2:6:true;clip:walk_s:assets/art/characters/gu_changfeng/walk_s.png:4:10:true;clip:walk_n:assets/art/characters/gu_changfeng/walk_n.png:4:10:true;clip:walk_e:assets/art/characters/gu_changfeng/walk_e.png:4:10:true;clip:walk_w:assets/art/characters/gu_changfeng/walk_w.png:4:10:true;clip:walk_se:assets/art/characters/gu_changfeng/walk_se.png:4:10:true;clip:walk_sw:assets/art/characters/gu_changfeng/walk_sw.png:4:10:true;clip:walk_ne:assets/art/characters/gu_changfeng/walk_ne.png:4:10:true;clip:walk_nw:assets/art/characters/gu_changfeng/walk_nw.png:4:10:true;clip:talk_s:assets/art/characters/gu_changfeng/talk_s.png:2:4:true;clip:talk_n:assets/art/characters/gu_changfeng/talk_n.png:2:4:true;clip:talk_e:assets/art/characters/gu_changfeng/talk_e.png:2:4:true;clip:talk_w:assets/art/characters/gu_changfeng/talk_w.png:2:4:true;clip:talk_se:assets/art/characters/gu_changfeng/talk_se.png:2:4:true;clip:talk_sw:assets/art/characters/gu_changfeng/talk_sw.png:2:4:true;clip:talk_ne:assets/art/characters/gu_changfeng/talk_ne.png:2:4:true;clip:talk_nw:assets/art/characters/gu_changfeng/talk_nw.png:2:4:true",
       "preview": "assets/art/characters/gu_changfeng/preview.png",
       "palette": {
         "skin": "#E0B489",
@@ -1140,6 +2080,42 @@
           "dir": "w"
         },
         {
+          "name": "idle_se",
+          "sheet": "assets/art/characters/gu_changfeng/idle_se.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "se"
+        },
+        {
+          "name": "idle_sw",
+          "sheet": "assets/art/characters/gu_changfeng/idle_sw.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "sw"
+        },
+        {
+          "name": "idle_ne",
+          "sheet": "assets/art/characters/gu_changfeng/idle_ne.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "ne"
+        },
+        {
+          "name": "idle_nw",
+          "sheet": "assets/art/characters/gu_changfeng/idle_nw.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "nw"
+        },
+        {
           "name": "walk_s",
           "sheet": "assets/art/characters/gu_changfeng/walk_s.png",
           "cols": 4,
@@ -1176,6 +2152,42 @@
           "dir": "w"
         },
         {
+          "name": "walk_se",
+          "sheet": "assets/art/characters/gu_changfeng/walk_se.png",
+          "cols": 4,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "se"
+        },
+        {
+          "name": "walk_sw",
+          "sheet": "assets/art/characters/gu_changfeng/walk_sw.png",
+          "cols": 4,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "sw"
+        },
+        {
+          "name": "walk_ne",
+          "sheet": "assets/art/characters/gu_changfeng/walk_ne.png",
+          "cols": 4,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "ne"
+        },
+        {
+          "name": "walk_nw",
+          "sheet": "assets/art/characters/gu_changfeng/walk_nw.png",
+          "cols": 4,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "nw"
+        },
+        {
           "name": "talk_s",
           "sheet": "assets/art/characters/gu_changfeng/talk_s.png",
           "cols": 2,
@@ -1210,6 +2222,42 @@
           "looped": true,
           "action": "talk",
           "dir": "w"
+        },
+        {
+          "name": "talk_se",
+          "sheet": "assets/art/characters/gu_changfeng/talk_se.png",
+          "cols": 2,
+          "fps": 4,
+          "looped": true,
+          "action": "talk",
+          "dir": "se"
+        },
+        {
+          "name": "talk_sw",
+          "sheet": "assets/art/characters/gu_changfeng/talk_sw.png",
+          "cols": 2,
+          "fps": 4,
+          "looped": true,
+          "action": "talk",
+          "dir": "sw"
+        },
+        {
+          "name": "talk_ne",
+          "sheet": "assets/art/characters/gu_changfeng/talk_ne.png",
+          "cols": 2,
+          "fps": 4,
+          "looped": true,
+          "action": "talk",
+          "dir": "ne"
+        },
+        {
+          "name": "talk_nw",
+          "sheet": "assets/art/characters/gu_changfeng/talk_nw.png",
+          "cols": 2,
+          "fps": 4,
+          "looped": true,
+          "action": "talk",
+          "dir": "nw"
         }
       ]
     },
@@ -1218,10 +2266,10 @@
       "display": "苏晚晴·青云门弟子",
       "role": "npc",
       "note": "青云色门派道服 + 旧金束腰 + 佩剑；高马尾（走路时甩动），与玄鹤同门派但一蓝一白",
-      "sprite_size": "32x32",
+      "sprite_size": "64x64",
       "sorting_layer": "actor",
-      "static_sprite": "texture=assets/art/characters/su_wanqing/static_s.png;size=32x32;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
-      "animation": "default=idle_s;clip:idle_s:assets/art/characters/su_wanqing/idle_s.png:2:6:true;clip:idle_n:assets/art/characters/su_wanqing/idle_n.png:2:6:true;clip:idle_e:assets/art/characters/su_wanqing/idle_e.png:2:6:true;clip:idle_w:assets/art/characters/su_wanqing/idle_w.png:2:6:true;clip:walk_s:assets/art/characters/su_wanqing/walk_s.png:4:10:true;clip:walk_n:assets/art/characters/su_wanqing/walk_n.png:4:10:true;clip:walk_e:assets/art/characters/su_wanqing/walk_e.png:4:10:true;clip:walk_w:assets/art/characters/su_wanqing/walk_w.png:4:10:true;clip:talk_s:assets/art/characters/su_wanqing/talk_s.png:2:4:true;clip:talk_n:assets/art/characters/su_wanqing/talk_n.png:2:4:true;clip:talk_e:assets/art/characters/su_wanqing/talk_e.png:2:4:true;clip:talk_w:assets/art/characters/su_wanqing/talk_w.png:2:4:true",
+      "static_sprite": "texture=assets/art/characters/su_wanqing/static_s.png;size=64x64;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+      "animation": "default=idle_s;clip:idle_s:assets/art/characters/su_wanqing/idle_s.png:2:6:true;clip:idle_n:assets/art/characters/su_wanqing/idle_n.png:2:6:true;clip:idle_e:assets/art/characters/su_wanqing/idle_e.png:2:6:true;clip:idle_w:assets/art/characters/su_wanqing/idle_w.png:2:6:true;clip:idle_se:assets/art/characters/su_wanqing/idle_se.png:2:6:true;clip:idle_sw:assets/art/characters/su_wanqing/idle_sw.png:2:6:true;clip:idle_ne:assets/art/characters/su_wanqing/idle_ne.png:2:6:true;clip:idle_nw:assets/art/characters/su_wanqing/idle_nw.png:2:6:true;clip:walk_s:assets/art/characters/su_wanqing/walk_s.png:4:10:true;clip:walk_n:assets/art/characters/su_wanqing/walk_n.png:4:10:true;clip:walk_e:assets/art/characters/su_wanqing/walk_e.png:4:10:true;clip:walk_w:assets/art/characters/su_wanqing/walk_w.png:4:10:true;clip:walk_se:assets/art/characters/su_wanqing/walk_se.png:4:10:true;clip:walk_sw:assets/art/characters/su_wanqing/walk_sw.png:4:10:true;clip:walk_ne:assets/art/characters/su_wanqing/walk_ne.png:4:10:true;clip:walk_nw:assets/art/characters/su_wanqing/walk_nw.png:4:10:true;clip:talk_s:assets/art/characters/su_wanqing/talk_s.png:2:4:true;clip:talk_n:assets/art/characters/su_wanqing/talk_n.png:2:4:true;clip:talk_e:assets/art/characters/su_wanqing/talk_e.png:2:4:true;clip:talk_w:assets/art/characters/su_wanqing/talk_w.png:2:4:true;clip:talk_se:assets/art/characters/su_wanqing/talk_se.png:2:4:true;clip:talk_sw:assets/art/characters/su_wanqing/talk_sw.png:2:4:true;clip:talk_ne:assets/art/characters/su_wanqing/talk_ne.png:2:4:true;clip:talk_nw:assets/art/characters/su_wanqing/talk_nw.png:2:4:true",
       "preview": "assets/art/characters/su_wanqing/preview.png",
       "palette": {
         "skin": "#F2D3B0",
@@ -1270,6 +2318,42 @@
           "dir": "w"
         },
         {
+          "name": "idle_se",
+          "sheet": "assets/art/characters/su_wanqing/idle_se.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "se"
+        },
+        {
+          "name": "idle_sw",
+          "sheet": "assets/art/characters/su_wanqing/idle_sw.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "sw"
+        },
+        {
+          "name": "idle_ne",
+          "sheet": "assets/art/characters/su_wanqing/idle_ne.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "ne"
+        },
+        {
+          "name": "idle_nw",
+          "sheet": "assets/art/characters/su_wanqing/idle_nw.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "nw"
+        },
+        {
           "name": "walk_s",
           "sheet": "assets/art/characters/su_wanqing/walk_s.png",
           "cols": 4,
@@ -1306,6 +2390,42 @@
           "dir": "w"
         },
         {
+          "name": "walk_se",
+          "sheet": "assets/art/characters/su_wanqing/walk_se.png",
+          "cols": 4,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "se"
+        },
+        {
+          "name": "walk_sw",
+          "sheet": "assets/art/characters/su_wanqing/walk_sw.png",
+          "cols": 4,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "sw"
+        },
+        {
+          "name": "walk_ne",
+          "sheet": "assets/art/characters/su_wanqing/walk_ne.png",
+          "cols": 4,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "ne"
+        },
+        {
+          "name": "walk_nw",
+          "sheet": "assets/art/characters/su_wanqing/walk_nw.png",
+          "cols": 4,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "nw"
+        },
+        {
           "name": "talk_s",
           "sheet": "assets/art/characters/su_wanqing/talk_s.png",
           "cols": 2,
@@ -1340,6 +2460,42 @@
           "looped": true,
           "action": "talk",
           "dir": "w"
+        },
+        {
+          "name": "talk_se",
+          "sheet": "assets/art/characters/su_wanqing/talk_se.png",
+          "cols": 2,
+          "fps": 4,
+          "looped": true,
+          "action": "talk",
+          "dir": "se"
+        },
+        {
+          "name": "talk_sw",
+          "sheet": "assets/art/characters/su_wanqing/talk_sw.png",
+          "cols": 2,
+          "fps": 4,
+          "looped": true,
+          "action": "talk",
+          "dir": "sw"
+        },
+        {
+          "name": "talk_ne",
+          "sheet": "assets/art/characters/su_wanqing/talk_ne.png",
+          "cols": 2,
+          "fps": 4,
+          "looped": true,
+          "action": "talk",
+          "dir": "ne"
+        },
+        {
+          "name": "talk_nw",
+          "sheet": "assets/art/characters/su_wanqing/talk_nw.png",
+          "cols": 2,
+          "fps": 4,
+          "looped": true,
+          "action": "talk",
+          "dir": "nw"
         }
       ]
     },
@@ -1348,10 +2504,10 @@
       "display": "玄鹤·云游道士",
       "role": "npc",
       "note": "素白道袍 + 灰蓝滚边 + 道髻木簪 + 长须 + 拂尘；最瘦（half_w 2），全白发色最亮",
-      "sprite_size": "32x32",
+      "sprite_size": "64x64",
       "sorting_layer": "actor",
-      "static_sprite": "texture=assets/art/characters/xuanhe/static_s.png;size=32x32;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
-      "animation": "default=idle_s;clip:idle_s:assets/art/characters/xuanhe/idle_s.png:2:6:true;clip:idle_n:assets/art/characters/xuanhe/idle_n.png:2:6:true;clip:idle_e:assets/art/characters/xuanhe/idle_e.png:2:6:true;clip:idle_w:assets/art/characters/xuanhe/idle_w.png:2:6:true;clip:walk_s:assets/art/characters/xuanhe/walk_s.png:4:10:true;clip:walk_n:assets/art/characters/xuanhe/walk_n.png:4:10:true;clip:walk_e:assets/art/characters/xuanhe/walk_e.png:4:10:true;clip:walk_w:assets/art/characters/xuanhe/walk_w.png:4:10:true;clip:talk_s:assets/art/characters/xuanhe/talk_s.png:2:4:true;clip:talk_n:assets/art/characters/xuanhe/talk_n.png:2:4:true;clip:talk_e:assets/art/characters/xuanhe/talk_e.png:2:4:true;clip:talk_w:assets/art/characters/xuanhe/talk_w.png:2:4:true",
+      "static_sprite": "texture=assets/art/characters/xuanhe/static_s.png;size=64x64;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+      "animation": "default=idle_s;clip:idle_s:assets/art/characters/xuanhe/idle_s.png:2:6:true;clip:idle_n:assets/art/characters/xuanhe/idle_n.png:2:6:true;clip:idle_e:assets/art/characters/xuanhe/idle_e.png:2:6:true;clip:idle_w:assets/art/characters/xuanhe/idle_w.png:2:6:true;clip:idle_se:assets/art/characters/xuanhe/idle_se.png:2:6:true;clip:idle_sw:assets/art/characters/xuanhe/idle_sw.png:2:6:true;clip:idle_ne:assets/art/characters/xuanhe/idle_ne.png:2:6:true;clip:idle_nw:assets/art/characters/xuanhe/idle_nw.png:2:6:true;clip:walk_s:assets/art/characters/xuanhe/walk_s.png:4:10:true;clip:walk_n:assets/art/characters/xuanhe/walk_n.png:4:10:true;clip:walk_e:assets/art/characters/xuanhe/walk_e.png:4:10:true;clip:walk_w:assets/art/characters/xuanhe/walk_w.png:4:10:true;clip:walk_se:assets/art/characters/xuanhe/walk_se.png:4:10:true;clip:walk_sw:assets/art/characters/xuanhe/walk_sw.png:4:10:true;clip:walk_ne:assets/art/characters/xuanhe/walk_ne.png:4:10:true;clip:walk_nw:assets/art/characters/xuanhe/walk_nw.png:4:10:true;clip:talk_s:assets/art/characters/xuanhe/talk_s.png:2:4:true;clip:talk_n:assets/art/characters/xuanhe/talk_n.png:2:4:true;clip:talk_e:assets/art/characters/xuanhe/talk_e.png:2:4:true;clip:talk_w:assets/art/characters/xuanhe/talk_w.png:2:4:true;clip:talk_se:assets/art/characters/xuanhe/talk_se.png:2:4:true;clip:talk_sw:assets/art/characters/xuanhe/talk_sw.png:2:4:true;clip:talk_ne:assets/art/characters/xuanhe/talk_ne.png:2:4:true;clip:talk_nw:assets/art/characters/xuanhe/talk_nw.png:2:4:true",
       "preview": "assets/art/characters/xuanhe/preview.png",
       "palette": {
         "skin": "#E8D2B8",
@@ -1400,6 +2556,42 @@
           "dir": "w"
         },
         {
+          "name": "idle_se",
+          "sheet": "assets/art/characters/xuanhe/idle_se.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "se"
+        },
+        {
+          "name": "idle_sw",
+          "sheet": "assets/art/characters/xuanhe/idle_sw.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "sw"
+        },
+        {
+          "name": "idle_ne",
+          "sheet": "assets/art/characters/xuanhe/idle_ne.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "ne"
+        },
+        {
+          "name": "idle_nw",
+          "sheet": "assets/art/characters/xuanhe/idle_nw.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "nw"
+        },
+        {
           "name": "walk_s",
           "sheet": "assets/art/characters/xuanhe/walk_s.png",
           "cols": 4,
@@ -1436,6 +2628,42 @@
           "dir": "w"
         },
         {
+          "name": "walk_se",
+          "sheet": "assets/art/characters/xuanhe/walk_se.png",
+          "cols": 4,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "se"
+        },
+        {
+          "name": "walk_sw",
+          "sheet": "assets/art/characters/xuanhe/walk_sw.png",
+          "cols": 4,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "sw"
+        },
+        {
+          "name": "walk_ne",
+          "sheet": "assets/art/characters/xuanhe/walk_ne.png",
+          "cols": 4,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "ne"
+        },
+        {
+          "name": "walk_nw",
+          "sheet": "assets/art/characters/xuanhe/walk_nw.png",
+          "cols": 4,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "nw"
+        },
+        {
           "name": "talk_s",
           "sheet": "assets/art/characters/xuanhe/talk_s.png",
           "cols": 2,
@@ -1470,6 +2698,42 @@
           "looped": true,
           "action": "talk",
           "dir": "w"
+        },
+        {
+          "name": "talk_se",
+          "sheet": "assets/art/characters/xuanhe/talk_se.png",
+          "cols": 2,
+          "fps": 4,
+          "looped": true,
+          "action": "talk",
+          "dir": "se"
+        },
+        {
+          "name": "talk_sw",
+          "sheet": "assets/art/characters/xuanhe/talk_sw.png",
+          "cols": 2,
+          "fps": 4,
+          "looped": true,
+          "action": "talk",
+          "dir": "sw"
+        },
+        {
+          "name": "talk_ne",
+          "sheet": "assets/art/characters/xuanhe/talk_ne.png",
+          "cols": 2,
+          "fps": 4,
+          "looped": true,
+          "action": "talk",
+          "dir": "ne"
+        },
+        {
+          "name": "talk_nw",
+          "sheet": "assets/art/characters/xuanhe/talk_nw.png",
+          "cols": 2,
+          "fps": 4,
+          "looped": true,
+          "action": "talk",
+          "dir": "nw"
         }
       ]
     },
@@ -1478,10 +2742,10 @@
       "display": "阿七·年轻镖师",
       "role": "npc",
       "note": "护安镖局短打 + 镖旗纹样护腕 + 腰刀；最年轻、动作最利落（偏矮 + 标准体型）",
-      "sprite_size": "32x32",
+      "sprite_size": "64x64",
       "sorting_layer": "actor",
-      "static_sprite": "texture=assets/art/characters/a_qi/static_s.png;size=32x32;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
-      "animation": "default=idle_s;clip:idle_s:assets/art/characters/a_qi/idle_s.png:2:6:true;clip:idle_n:assets/art/characters/a_qi/idle_n.png:2:6:true;clip:idle_e:assets/art/characters/a_qi/idle_e.png:2:6:true;clip:idle_w:assets/art/characters/a_qi/idle_w.png:2:6:true;clip:walk_s:assets/art/characters/a_qi/walk_s.png:4:10:true;clip:walk_n:assets/art/characters/a_qi/walk_n.png:4:10:true;clip:walk_e:assets/art/characters/a_qi/walk_e.png:4:10:true;clip:walk_w:assets/art/characters/a_qi/walk_w.png:4:10:true;clip:talk_s:assets/art/characters/a_qi/talk_s.png:2:4:true;clip:talk_n:assets/art/characters/a_qi/talk_n.png:2:4:true;clip:talk_e:assets/art/characters/a_qi/talk_e.png:2:4:true;clip:talk_w:assets/art/characters/a_qi/talk_w.png:2:4:true",
+      "static_sprite": "texture=assets/art/characters/a_qi/static_s.png;size=64x64;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+      "animation": "default=idle_s;clip:idle_s:assets/art/characters/a_qi/idle_s.png:2:6:true;clip:idle_n:assets/art/characters/a_qi/idle_n.png:2:6:true;clip:idle_e:assets/art/characters/a_qi/idle_e.png:2:6:true;clip:idle_w:assets/art/characters/a_qi/idle_w.png:2:6:true;clip:idle_se:assets/art/characters/a_qi/idle_se.png:2:6:true;clip:idle_sw:assets/art/characters/a_qi/idle_sw.png:2:6:true;clip:idle_ne:assets/art/characters/a_qi/idle_ne.png:2:6:true;clip:idle_nw:assets/art/characters/a_qi/idle_nw.png:2:6:true;clip:walk_s:assets/art/characters/a_qi/walk_s.png:4:10:true;clip:walk_n:assets/art/characters/a_qi/walk_n.png:4:10:true;clip:walk_e:assets/art/characters/a_qi/walk_e.png:4:10:true;clip:walk_w:assets/art/characters/a_qi/walk_w.png:4:10:true;clip:walk_se:assets/art/characters/a_qi/walk_se.png:4:10:true;clip:walk_sw:assets/art/characters/a_qi/walk_sw.png:4:10:true;clip:walk_ne:assets/art/characters/a_qi/walk_ne.png:4:10:true;clip:walk_nw:assets/art/characters/a_qi/walk_nw.png:4:10:true;clip:talk_s:assets/art/characters/a_qi/talk_s.png:2:4:true;clip:talk_n:assets/art/characters/a_qi/talk_n.png:2:4:true;clip:talk_e:assets/art/characters/a_qi/talk_e.png:2:4:true;clip:talk_w:assets/art/characters/a_qi/talk_w.png:2:4:true;clip:talk_se:assets/art/characters/a_qi/talk_se.png:2:4:true;clip:talk_sw:assets/art/characters/a_qi/talk_sw.png:2:4:true;clip:talk_ne:assets/art/characters/a_qi/talk_ne.png:2:4:true;clip:talk_nw:assets/art/characters/a_qi/talk_nw.png:2:4:true",
       "preview": "assets/art/characters/a_qi/preview.png",
       "palette": {
         "skin": "#E8C49A",
@@ -1530,6 +2794,42 @@
           "dir": "w"
         },
         {
+          "name": "idle_se",
+          "sheet": "assets/art/characters/a_qi/idle_se.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "se"
+        },
+        {
+          "name": "idle_sw",
+          "sheet": "assets/art/characters/a_qi/idle_sw.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "sw"
+        },
+        {
+          "name": "idle_ne",
+          "sheet": "assets/art/characters/a_qi/idle_ne.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "ne"
+        },
+        {
+          "name": "idle_nw",
+          "sheet": "assets/art/characters/a_qi/idle_nw.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "nw"
+        },
+        {
           "name": "walk_s",
           "sheet": "assets/art/characters/a_qi/walk_s.png",
           "cols": 4,
@@ -1566,6 +2866,42 @@
           "dir": "w"
         },
         {
+          "name": "walk_se",
+          "sheet": "assets/art/characters/a_qi/walk_se.png",
+          "cols": 4,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "se"
+        },
+        {
+          "name": "walk_sw",
+          "sheet": "assets/art/characters/a_qi/walk_sw.png",
+          "cols": 4,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "sw"
+        },
+        {
+          "name": "walk_ne",
+          "sheet": "assets/art/characters/a_qi/walk_ne.png",
+          "cols": 4,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "ne"
+        },
+        {
+          "name": "walk_nw",
+          "sheet": "assets/art/characters/a_qi/walk_nw.png",
+          "cols": 4,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "nw"
+        },
+        {
           "name": "talk_s",
           "sheet": "assets/art/characters/a_qi/talk_s.png",
           "cols": 2,
@@ -1600,6 +2936,42 @@
           "looped": true,
           "action": "talk",
           "dir": "w"
+        },
+        {
+          "name": "talk_se",
+          "sheet": "assets/art/characters/a_qi/talk_se.png",
+          "cols": 2,
+          "fps": 4,
+          "looped": true,
+          "action": "talk",
+          "dir": "se"
+        },
+        {
+          "name": "talk_sw",
+          "sheet": "assets/art/characters/a_qi/talk_sw.png",
+          "cols": 2,
+          "fps": 4,
+          "looped": true,
+          "action": "talk",
+          "dir": "sw"
+        },
+        {
+          "name": "talk_ne",
+          "sheet": "assets/art/characters/a_qi/talk_ne.png",
+          "cols": 2,
+          "fps": 4,
+          "looped": true,
+          "action": "talk",
+          "dir": "ne"
+        },
+        {
+          "name": "talk_nw",
+          "sheet": "assets/art/characters/a_qi/talk_nw.png",
+          "cols": 2,
+          "fps": 4,
+          "looped": true,
+          "action": "talk",
+          "dir": "nw"
         }
       ]
     },
@@ -1608,10 +2980,10 @@
       "display": "司徒魁·玄冥会执事",
       "role": "npc",
       "note": "玄冥会墨黑长袍 + 暗紫滚边 + 面罩半遮；反派辨识度靠全黑配紫",
-      "sprite_size": "32x32",
+      "sprite_size": "64x64",
       "sorting_layer": "actor",
-      "static_sprite": "texture=assets/art/characters/situ_kui/static_s.png;size=32x32;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
-      "animation": "default=idle_s;clip:idle_s:assets/art/characters/situ_kui/idle_s.png:2:6:true;clip:idle_n:assets/art/characters/situ_kui/idle_n.png:2:6:true;clip:idle_e:assets/art/characters/situ_kui/idle_e.png:2:6:true;clip:idle_w:assets/art/characters/situ_kui/idle_w.png:2:6:true;clip:walk_s:assets/art/characters/situ_kui/walk_s.png:4:10:true;clip:walk_n:assets/art/characters/situ_kui/walk_n.png:4:10:true;clip:walk_e:assets/art/characters/situ_kui/walk_e.png:4:10:true;clip:walk_w:assets/art/characters/situ_kui/walk_w.png:4:10:true;clip:talk_s:assets/art/characters/situ_kui/talk_s.png:2:4:true;clip:talk_n:assets/art/characters/situ_kui/talk_n.png:2:4:true;clip:talk_e:assets/art/characters/situ_kui/talk_e.png:2:4:true;clip:talk_w:assets/art/characters/situ_kui/talk_w.png:2:4:true",
+      "static_sprite": "texture=assets/art/characters/situ_kui/static_s.png;size=64x64;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+      "animation": "default=idle_s;clip:idle_s:assets/art/characters/situ_kui/idle_s.png:2:6:true;clip:idle_n:assets/art/characters/situ_kui/idle_n.png:2:6:true;clip:idle_e:assets/art/characters/situ_kui/idle_e.png:2:6:true;clip:idle_w:assets/art/characters/situ_kui/idle_w.png:2:6:true;clip:idle_se:assets/art/characters/situ_kui/idle_se.png:2:6:true;clip:idle_sw:assets/art/characters/situ_kui/idle_sw.png:2:6:true;clip:idle_ne:assets/art/characters/situ_kui/idle_ne.png:2:6:true;clip:idle_nw:assets/art/characters/situ_kui/idle_nw.png:2:6:true;clip:walk_s:assets/art/characters/situ_kui/walk_s.png:4:10:true;clip:walk_n:assets/art/characters/situ_kui/walk_n.png:4:10:true;clip:walk_e:assets/art/characters/situ_kui/walk_e.png:4:10:true;clip:walk_w:assets/art/characters/situ_kui/walk_w.png:4:10:true;clip:walk_se:assets/art/characters/situ_kui/walk_se.png:4:10:true;clip:walk_sw:assets/art/characters/situ_kui/walk_sw.png:4:10:true;clip:walk_ne:assets/art/characters/situ_kui/walk_ne.png:4:10:true;clip:walk_nw:assets/art/characters/situ_kui/walk_nw.png:4:10:true;clip:talk_s:assets/art/characters/situ_kui/talk_s.png:2:4:true;clip:talk_n:assets/art/characters/situ_kui/talk_n.png:2:4:true;clip:talk_e:assets/art/characters/situ_kui/talk_e.png:2:4:true;clip:talk_w:assets/art/characters/situ_kui/talk_w.png:2:4:true;clip:talk_se:assets/art/characters/situ_kui/talk_se.png:2:4:true;clip:talk_sw:assets/art/characters/situ_kui/talk_sw.png:2:4:true;clip:talk_ne:assets/art/characters/situ_kui/talk_ne.png:2:4:true;clip:talk_nw:assets/art/characters/situ_kui/talk_nw.png:2:4:true",
       "preview": "assets/art/characters/situ_kui/preview.png",
       "palette": {
         "skin": "#D9B08C",
@@ -1660,6 +3032,42 @@
           "dir": "w"
         },
         {
+          "name": "idle_se",
+          "sheet": "assets/art/characters/situ_kui/idle_se.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "se"
+        },
+        {
+          "name": "idle_sw",
+          "sheet": "assets/art/characters/situ_kui/idle_sw.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "sw"
+        },
+        {
+          "name": "idle_ne",
+          "sheet": "assets/art/characters/situ_kui/idle_ne.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "ne"
+        },
+        {
+          "name": "idle_nw",
+          "sheet": "assets/art/characters/situ_kui/idle_nw.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "nw"
+        },
+        {
           "name": "walk_s",
           "sheet": "assets/art/characters/situ_kui/walk_s.png",
           "cols": 4,
@@ -1696,6 +3104,42 @@
           "dir": "w"
         },
         {
+          "name": "walk_se",
+          "sheet": "assets/art/characters/situ_kui/walk_se.png",
+          "cols": 4,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "se"
+        },
+        {
+          "name": "walk_sw",
+          "sheet": "assets/art/characters/situ_kui/walk_sw.png",
+          "cols": 4,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "sw"
+        },
+        {
+          "name": "walk_ne",
+          "sheet": "assets/art/characters/situ_kui/walk_ne.png",
+          "cols": 4,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "ne"
+        },
+        {
+          "name": "walk_nw",
+          "sheet": "assets/art/characters/situ_kui/walk_nw.png",
+          "cols": 4,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "nw"
+        },
+        {
           "name": "talk_s",
           "sheet": "assets/art/characters/situ_kui/talk_s.png",
           "cols": 2,
@@ -1730,6 +3174,42 @@
           "looped": true,
           "action": "talk",
           "dir": "w"
+        },
+        {
+          "name": "talk_se",
+          "sheet": "assets/art/characters/situ_kui/talk_se.png",
+          "cols": 2,
+          "fps": 4,
+          "looped": true,
+          "action": "talk",
+          "dir": "se"
+        },
+        {
+          "name": "talk_sw",
+          "sheet": "assets/art/characters/situ_kui/talk_sw.png",
+          "cols": 2,
+          "fps": 4,
+          "looped": true,
+          "action": "talk",
+          "dir": "sw"
+        },
+        {
+          "name": "talk_ne",
+          "sheet": "assets/art/characters/situ_kui/talk_ne.png",
+          "cols": 2,
+          "fps": 4,
+          "looped": true,
+          "action": "talk",
+          "dir": "ne"
+        },
+        {
+          "name": "talk_nw",
+          "sheet": "assets/art/characters/situ_kui/talk_nw.png",
+          "cols": 2,
+          "fps": 4,
+          "looped": true,
+          "action": "talk",
+          "dir": "nw"
         }
       ]
     },
@@ -1738,10 +3218,10 @@
       "display": "陆归藏·师父（已失踪）",
       "role": "npc",
       "note": "旧青灰布袍 + 灰白发 + 药篓；轮廓与玄鹤区分：更旧的配色、带背篓",
-      "sprite_size": "32x32",
+      "sprite_size": "64x64",
       "sorting_layer": "actor",
-      "static_sprite": "texture=assets/art/characters/lu_guizang/static_s.png;size=32x32;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
-      "animation": "default=idle_s;clip:idle_s:assets/art/characters/lu_guizang/idle_s.png:2:6:true;clip:idle_n:assets/art/characters/lu_guizang/idle_n.png:2:6:true;clip:idle_e:assets/art/characters/lu_guizang/idle_e.png:2:6:true;clip:idle_w:assets/art/characters/lu_guizang/idle_w.png:2:6:true;clip:walk_s:assets/art/characters/lu_guizang/walk_s.png:4:10:true;clip:walk_n:assets/art/characters/lu_guizang/walk_n.png:4:10:true;clip:walk_e:assets/art/characters/lu_guizang/walk_e.png:4:10:true;clip:walk_w:assets/art/characters/lu_guizang/walk_w.png:4:10:true;clip:talk_s:assets/art/characters/lu_guizang/talk_s.png:2:4:true;clip:talk_n:assets/art/characters/lu_guizang/talk_n.png:2:4:true;clip:talk_e:assets/art/characters/lu_guizang/talk_e.png:2:4:true;clip:talk_w:assets/art/characters/lu_guizang/talk_w.png:2:4:true",
+      "static_sprite": "texture=assets/art/characters/lu_guizang/static_s.png;size=64x64;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+      "animation": "default=idle_s;clip:idle_s:assets/art/characters/lu_guizang/idle_s.png:2:6:true;clip:idle_n:assets/art/characters/lu_guizang/idle_n.png:2:6:true;clip:idle_e:assets/art/characters/lu_guizang/idle_e.png:2:6:true;clip:idle_w:assets/art/characters/lu_guizang/idle_w.png:2:6:true;clip:idle_se:assets/art/characters/lu_guizang/idle_se.png:2:6:true;clip:idle_sw:assets/art/characters/lu_guizang/idle_sw.png:2:6:true;clip:idle_ne:assets/art/characters/lu_guizang/idle_ne.png:2:6:true;clip:idle_nw:assets/art/characters/lu_guizang/idle_nw.png:2:6:true;clip:walk_s:assets/art/characters/lu_guizang/walk_s.png:4:10:true;clip:walk_n:assets/art/characters/lu_guizang/walk_n.png:4:10:true;clip:walk_e:assets/art/characters/lu_guizang/walk_e.png:4:10:true;clip:walk_w:assets/art/characters/lu_guizang/walk_w.png:4:10:true;clip:walk_se:assets/art/characters/lu_guizang/walk_se.png:4:10:true;clip:walk_sw:assets/art/characters/lu_guizang/walk_sw.png:4:10:true;clip:walk_ne:assets/art/characters/lu_guizang/walk_ne.png:4:10:true;clip:walk_nw:assets/art/characters/lu_guizang/walk_nw.png:4:10:true;clip:talk_s:assets/art/characters/lu_guizang/talk_s.png:2:4:true;clip:talk_n:assets/art/characters/lu_guizang/talk_n.png:2:4:true;clip:talk_e:assets/art/characters/lu_guizang/talk_e.png:2:4:true;clip:talk_w:assets/art/characters/lu_guizang/talk_w.png:2:4:true;clip:talk_se:assets/art/characters/lu_guizang/talk_se.png:2:4:true;clip:talk_sw:assets/art/characters/lu_guizang/talk_sw.png:2:4:true;clip:talk_ne:assets/art/characters/lu_guizang/talk_ne.png:2:4:true;clip:talk_nw:assets/art/characters/lu_guizang/talk_nw.png:2:4:true",
       "preview": "assets/art/characters/lu_guizang/preview.png",
       "palette": {
         "skin": "#DCC0A0",
@@ -1790,6 +3270,42 @@
           "dir": "w"
         },
         {
+          "name": "idle_se",
+          "sheet": "assets/art/characters/lu_guizang/idle_se.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "se"
+        },
+        {
+          "name": "idle_sw",
+          "sheet": "assets/art/characters/lu_guizang/idle_sw.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "sw"
+        },
+        {
+          "name": "idle_ne",
+          "sheet": "assets/art/characters/lu_guizang/idle_ne.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "ne"
+        },
+        {
+          "name": "idle_nw",
+          "sheet": "assets/art/characters/lu_guizang/idle_nw.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "nw"
+        },
+        {
           "name": "walk_s",
           "sheet": "assets/art/characters/lu_guizang/walk_s.png",
           "cols": 4,
@@ -1826,6 +3342,42 @@
           "dir": "w"
         },
         {
+          "name": "walk_se",
+          "sheet": "assets/art/characters/lu_guizang/walk_se.png",
+          "cols": 4,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "se"
+        },
+        {
+          "name": "walk_sw",
+          "sheet": "assets/art/characters/lu_guizang/walk_sw.png",
+          "cols": 4,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "sw"
+        },
+        {
+          "name": "walk_ne",
+          "sheet": "assets/art/characters/lu_guizang/walk_ne.png",
+          "cols": 4,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "ne"
+        },
+        {
+          "name": "walk_nw",
+          "sheet": "assets/art/characters/lu_guizang/walk_nw.png",
+          "cols": 4,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "nw"
+        },
+        {
           "name": "talk_s",
           "sheet": "assets/art/characters/lu_guizang/talk_s.png",
           "cols": 2,
@@ -1860,6 +3412,42 @@
           "looped": true,
           "action": "talk",
           "dir": "w"
+        },
+        {
+          "name": "talk_se",
+          "sheet": "assets/art/characters/lu_guizang/talk_se.png",
+          "cols": 2,
+          "fps": 4,
+          "looped": true,
+          "action": "talk",
+          "dir": "se"
+        },
+        {
+          "name": "talk_sw",
+          "sheet": "assets/art/characters/lu_guizang/talk_sw.png",
+          "cols": 2,
+          "fps": 4,
+          "looped": true,
+          "action": "talk",
+          "dir": "sw"
+        },
+        {
+          "name": "talk_ne",
+          "sheet": "assets/art/characters/lu_guizang/talk_ne.png",
+          "cols": 2,
+          "fps": 4,
+          "looped": true,
+          "action": "talk",
+          "dir": "ne"
+        },
+        {
+          "name": "talk_nw",
+          "sheet": "assets/art/characters/lu_guizang/talk_nw.png",
+          "cols": 2,
+          "fps": 4,
+          "looped": true,
+          "action": "talk",
+          "dir": "nw"
         }
       ]
     }

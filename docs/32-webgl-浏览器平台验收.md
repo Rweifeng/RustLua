@@ -174,11 +174,13 @@ audio: kind=browser created=1 played=1 gated=0 music_played=1 music=pack/assets/
   都建了元素；开过新局之后 `musicProbe().volume` 从标题期的 `1` 变成 `0.7`（`audio.init()` 只在
   `new_game()` 里写主音量，标题期两个宿主都是引擎默认 1.0，逐条推演见
   [docs/51](51-平台插件适配.md) 的"浏览器音频后端"）。
-* **别同时跑两轮 `verify-webgl-bundle.ps1`**：静态服务默认端口 `8137` 是写死的，两轮并发时后起
-  的那轮连不到自己的服务，`data-rustlua-boot` 永远停在 `pending`，L3 契约就被判成
-  `unavailable`（实测 2026-10-03 12:55 两轮相差 4 秒，先起的那轮 `drive_jhyt=done` 全绿、后起的
-  那轮契约红）。这不是产品回归——单轮重跑即绿（同一构建 13:00 重跑 `api_contract: ok cases=31`）。
-  要么错开跑，要么给其中一轮传 `-Port`。
+* **别同时跑两轮 `verify-webgl-bundle.ps1`**：静态服务端口默认写死 `8137`。并发时后起那轮的
+  `serve-static.js` 直接 `EADDRINUSE` 崩掉（看 `artifacts/logs/webgl/bundle-serve-<stamp>.log.err`），
+  页面于是吃的是**前一轮**的服务；前一轮收尾 `Stop-Process` 之后，后一轮剩下的步骤就 404，
+  `data-rustlua-boot` 永远停在 `pending`，L3 契约被报成 `unavailable`（实测 2026-10-03 12:55 两轮相差
+  4 秒：先起的 `-DriveJhyt` 那轮 `drive_jhyt=done` 全绿，后起的常规轮 `scene_verify=done` 之后
+  `api_contract: unavailable` 判红）。这不是产品回归——同一构建单轮重跑（13:00）即
+  `api_contract: ok cases=31`。要么错开跑，要么给其中一轮传 `-Port`。
 
 关键实现细节：无头下**不能用** `--virtual-time-budget`——虚拟时间预算会让 rAF 在页面稳定后
 停止调度（实测 90s 只跑 63 帧、剧本永远停在某个阶段）。`verify-webgl-bundle.ps1` 用真实时钟 +

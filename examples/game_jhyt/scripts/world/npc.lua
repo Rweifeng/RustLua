@@ -133,8 +133,18 @@ local function target_line(actor, place, def, activity, block)
 end
 
 -- 朝向：世界 y 朝上，所以 +y 是"北/背对"，-y 是"南/面向镜头"。
+-- 位移方向 → 八向条带朝向（s/n/e/w/se/sw/ne/nw）。
+-- 世界坐标 y 向上：dy>0 向北（屏幕上方）。两轴同时显著非零时取对角，
+-- 否则按主轴取四正；阈值 0.001 过滤路径寻路的浮点噪声，避免乱切对角。
 local function facing_from(dx, dy)
-  if math.abs(dx) >= math.abs(dy) then
+  local ax, ay = math.abs(dx), math.abs(dy)
+  if ax > 0.001 and ay > 0.001 then
+    if dx > 0 and dy > 0 then return "ne" end
+    if dx > 0 then return "se" end
+    if dy > 0 then return "nw" end
+    return "sw"
+  end
+  if ax >= ay then
     return dx >= 0 and "e" or "w"
   end
   return dy >= 0 and "n" or "s"

@@ -69,7 +69,8 @@ local function validators()
     { "portrait", require("ui.portrait"), "ui.portrait" },
     { "skin", require("ui.skin"), "ui.skin" },
     -- M32 相机收口追加："camera_view"（world/camera_view.lua）：每张玩法地图在场景里
-    -- 声明的 `Camera` 契约——恰好 1 台、正交投影、`zoom=1`、且 `bounds` 逐值等于该场景
+    -- 声明的 `Camera` 契约——恰好 1 台、正交投影、`zoom=2`（对标星露谷视觉规格，见
+    -- docs/51 §2.2 修订）、且 `bounds` 逐值等于该场景
     -- GroundMap 的真实地图矩形。漂移的表现是"相机取景跑出地图边缘"，但不会有任何报错。
     { "camera_view", require("world.camera_view"), "world.camera_view" }
   }

@@ -2,7 +2,7 @@
   "version": 1,
   "generated_by": "tools/gen_enemy_art.py",
   "design_doc": "docs/31-江湖有田-美术资源方案.md",
-  "frame_px": 32,
+  "frame_px": 64,
   "engine": {
     "animation_component": "default=<clip>;clip:<name>:<sheet>:<cols>:<fps>:<looped>",
     "note": "敌人由 entity.spawn 运行期创建，Lua 目前无法挂 Animation，只能用 static_<dir>.png"
@@ -13,15 +13,19 @@
       "display": "山贼喽啰",
       "kind": "humanoid",
       "note": "短打 + 朱砂头巾 + 单刀；与主角同骨架，只换色板/发型/配件",
-      "sprite_size": "32x32",
-      "static_sprite": "texture=assets/art/enemies/bandit_grunt/static_s.png;size=32x32;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+      "sprite_size": "64x64",
+      "static_sprite": "texture=assets/art/enemies/bandit_grunt/static_s.png;size=64x64;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
       "static_sprites": {
-        "s": "texture=assets/art/enemies/bandit_grunt/static_s.png;size=32x32;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
-        "n": "texture=assets/art/enemies/bandit_grunt/static_n.png;size=32x32;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
-        "e": "texture=assets/art/enemies/bandit_grunt/static_e.png;size=32x32;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
-        "w": "texture=assets/art/enemies/bandit_grunt/static_w.png;size=32x32;tint=1.000,1.000,1.000,1.000;sorting_layer=actor"
+        "s": "texture=assets/art/enemies/bandit_grunt/static_s.png;size=64x64;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+        "n": "texture=assets/art/enemies/bandit_grunt/static_n.png;size=64x64;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+        "e": "texture=assets/art/enemies/bandit_grunt/static_e.png;size=64x64;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+        "w": "texture=assets/art/enemies/bandit_grunt/static_w.png;size=64x64;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+        "se": "texture=assets/art/enemies/bandit_grunt/static_se.png;size=64x64;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+        "sw": "texture=assets/art/enemies/bandit_grunt/static_sw.png;size=64x64;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+        "ne": "texture=assets/art/enemies/bandit_grunt/static_ne.png;size=64x64;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+        "nw": "texture=assets/art/enemies/bandit_grunt/static_nw.png;size=64x64;tint=1.000,1.000,1.000,1.000;sorting_layer=actor"
       },
-      "animation": "default=idle_s;clip:idle_s:assets/art/enemies/bandit_grunt/idle_s.png:4:6:true;clip:idle_n:assets/art/enemies/bandit_grunt/idle_n.png:4:6:true;clip:idle_e:assets/art/enemies/bandit_grunt/idle_e.png:4:6:true;clip:idle_w:assets/art/enemies/bandit_grunt/idle_w.png:4:6:true;clip:walk_s:assets/art/enemies/bandit_grunt/walk_s.png:6:10:true;clip:walk_n:assets/art/enemies/bandit_grunt/walk_n.png:6:10:true;clip:walk_e:assets/art/enemies/bandit_grunt/walk_e.png:6:10:true;clip:walk_w:assets/art/enemies/bandit_grunt/walk_w.png:6:10:true;clip:attack_s:assets/art/enemies/bandit_grunt/attack_s.png:4:12:false;clip:attack_n:assets/art/enemies/bandit_grunt/attack_n.png:4:12:false;clip:attack_e:assets/art/enemies/bandit_grunt/attack_e.png:4:12:false;clip:attack_w:assets/art/enemies/bandit_grunt/attack_w.png:4:12:false;clip:hurt_s:assets/art/enemies/bandit_grunt/hurt_s.png:2:6:false;clip:hurt_n:assets/art/enemies/bandit_grunt/hurt_n.png:2:6:false;clip:hurt_e:assets/art/enemies/bandit_grunt/hurt_e.png:2:6:false;clip:hurt_w:assets/art/enemies/bandit_grunt/hurt_w.png:2:6:false;clip:faint_s:assets/art/enemies/bandit_grunt/faint_s.png:4:6:false;clip:faint_n:assets/art/enemies/bandit_grunt/faint_n.png:4:6:false;clip:faint_e:assets/art/enemies/bandit_grunt/faint_e.png:4:6:false;clip:faint_w:assets/art/enemies/bandit_grunt/faint_w.png:4:6:false",
+      "animation": "default=idle_s;clip:idle_s:assets/art/enemies/bandit_grunt/idle_s.png:4:6:true;clip:idle_n:assets/art/enemies/bandit_grunt/idle_n.png:4:6:true;clip:idle_e:assets/art/enemies/bandit_grunt/idle_e.png:4:6:true;clip:idle_w:assets/art/enemies/bandit_grunt/idle_w.png:4:6:true;clip:idle_se:assets/art/enemies/bandit_grunt/idle_se.png:4:6:true;clip:idle_sw:assets/art/enemies/bandit_grunt/idle_sw.png:4:6:true;clip:idle_ne:assets/art/enemies/bandit_grunt/idle_ne.png:4:6:true;clip:idle_nw:assets/art/enemies/bandit_grunt/idle_nw.png:4:6:true;clip:walk_s:assets/art/enemies/bandit_grunt/walk_s.png:6:10:true;clip:walk_n:assets/art/enemies/bandit_grunt/walk_n.png:6:10:true;clip:walk_e:assets/art/enemies/bandit_grunt/walk_e.png:6:10:true;clip:walk_w:assets/art/enemies/bandit_grunt/walk_w.png:6:10:true;clip:walk_se:assets/art/enemies/bandit_grunt/walk_se.png:6:10:true;clip:walk_sw:assets/art/enemies/bandit_grunt/walk_sw.png:6:10:true;clip:walk_ne:assets/art/enemies/bandit_grunt/walk_ne.png:6:10:true;clip:walk_nw:assets/art/enemies/bandit_grunt/walk_nw.png:6:10:true;clip:attack_s:assets/art/enemies/bandit_grunt/attack_s.png:4:12:false;clip:attack_n:assets/art/enemies/bandit_grunt/attack_n.png:4:12:false;clip:attack_e:assets/art/enemies/bandit_grunt/attack_e.png:4:12:false;clip:attack_w:assets/art/enemies/bandit_grunt/attack_w.png:4:12:false;clip:attack_se:assets/art/enemies/bandit_grunt/attack_se.png:4:12:false;clip:attack_sw:assets/art/enemies/bandit_grunt/attack_sw.png:4:12:false;clip:attack_ne:assets/art/enemies/bandit_grunt/attack_ne.png:4:12:false;clip:attack_nw:assets/art/enemies/bandit_grunt/attack_nw.png:4:12:false;clip:hurt_s:assets/art/enemies/bandit_grunt/hurt_s.png:2:6:false;clip:hurt_n:assets/art/enemies/bandit_grunt/hurt_n.png:2:6:false;clip:hurt_e:assets/art/enemies/bandit_grunt/hurt_e.png:2:6:false;clip:hurt_w:assets/art/enemies/bandit_grunt/hurt_w.png:2:6:false;clip:hurt_se:assets/art/enemies/bandit_grunt/hurt_se.png:2:6:false;clip:hurt_sw:assets/art/enemies/bandit_grunt/hurt_sw.png:2:6:false;clip:hurt_ne:assets/art/enemies/bandit_grunt/hurt_ne.png:2:6:false;clip:hurt_nw:assets/art/enemies/bandit_grunt/hurt_nw.png:2:6:false;clip:faint_s:assets/art/enemies/bandit_grunt/faint_s.png:4:6:false;clip:faint_n:assets/art/enemies/bandit_grunt/faint_n.png:4:6:false;clip:faint_e:assets/art/enemies/bandit_grunt/faint_e.png:4:6:false;clip:faint_w:assets/art/enemies/bandit_grunt/faint_w.png:4:6:false;clip:faint_se:assets/art/enemies/bandit_grunt/faint_se.png:4:6:false;clip:faint_sw:assets/art/enemies/bandit_grunt/faint_sw.png:4:6:false;clip:faint_ne:assets/art/enemies/bandit_grunt/faint_ne.png:4:6:false;clip:faint_nw:assets/art/enemies/bandit_grunt/faint_nw.png:4:6:false",
       "preview": "assets/art/enemies/bandit_grunt/preview.png",
       "clips": [
         {
@@ -61,6 +65,42 @@
           "dir": "w"
         },
         {
+          "name": "idle_se",
+          "sheet": "assets/art/enemies/bandit_grunt/idle_se.png",
+          "cols": 4,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "se"
+        },
+        {
+          "name": "idle_sw",
+          "sheet": "assets/art/enemies/bandit_grunt/idle_sw.png",
+          "cols": 4,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "sw"
+        },
+        {
+          "name": "idle_ne",
+          "sheet": "assets/art/enemies/bandit_grunt/idle_ne.png",
+          "cols": 4,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "ne"
+        },
+        {
+          "name": "idle_nw",
+          "sheet": "assets/art/enemies/bandit_grunt/idle_nw.png",
+          "cols": 4,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "nw"
+        },
+        {
           "name": "walk_s",
           "sheet": "assets/art/enemies/bandit_grunt/walk_s.png",
           "cols": 6,
@@ -95,6 +135,42 @@
           "looped": true,
           "action": "walk",
           "dir": "w"
+        },
+        {
+          "name": "walk_se",
+          "sheet": "assets/art/enemies/bandit_grunt/walk_se.png",
+          "cols": 6,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "se"
+        },
+        {
+          "name": "walk_sw",
+          "sheet": "assets/art/enemies/bandit_grunt/walk_sw.png",
+          "cols": 6,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "sw"
+        },
+        {
+          "name": "walk_ne",
+          "sheet": "assets/art/enemies/bandit_grunt/walk_ne.png",
+          "cols": 6,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "ne"
+        },
+        {
+          "name": "walk_nw",
+          "sheet": "assets/art/enemies/bandit_grunt/walk_nw.png",
+          "cols": 6,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "nw"
         },
         {
           "name": "attack_s",
@@ -133,6 +209,42 @@
           "dir": "w"
         },
         {
+          "name": "attack_se",
+          "sheet": "assets/art/enemies/bandit_grunt/attack_se.png",
+          "cols": 4,
+          "fps": 12,
+          "looped": false,
+          "action": "attack",
+          "dir": "se"
+        },
+        {
+          "name": "attack_sw",
+          "sheet": "assets/art/enemies/bandit_grunt/attack_sw.png",
+          "cols": 4,
+          "fps": 12,
+          "looped": false,
+          "action": "attack",
+          "dir": "sw"
+        },
+        {
+          "name": "attack_ne",
+          "sheet": "assets/art/enemies/bandit_grunt/attack_ne.png",
+          "cols": 4,
+          "fps": 12,
+          "looped": false,
+          "action": "attack",
+          "dir": "ne"
+        },
+        {
+          "name": "attack_nw",
+          "sheet": "assets/art/enemies/bandit_grunt/attack_nw.png",
+          "cols": 4,
+          "fps": 12,
+          "looped": false,
+          "action": "attack",
+          "dir": "nw"
+        },
+        {
           "name": "hurt_s",
           "sheet": "assets/art/enemies/bandit_grunt/hurt_s.png",
           "cols": 2,
@@ -169,6 +281,42 @@
           "dir": "w"
         },
         {
+          "name": "hurt_se",
+          "sheet": "assets/art/enemies/bandit_grunt/hurt_se.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": false,
+          "action": "hurt",
+          "dir": "se"
+        },
+        {
+          "name": "hurt_sw",
+          "sheet": "assets/art/enemies/bandit_grunt/hurt_sw.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": false,
+          "action": "hurt",
+          "dir": "sw"
+        },
+        {
+          "name": "hurt_ne",
+          "sheet": "assets/art/enemies/bandit_grunt/hurt_ne.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": false,
+          "action": "hurt",
+          "dir": "ne"
+        },
+        {
+          "name": "hurt_nw",
+          "sheet": "assets/art/enemies/bandit_grunt/hurt_nw.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": false,
+          "action": "hurt",
+          "dir": "nw"
+        },
+        {
           "name": "faint_s",
           "sheet": "assets/art/enemies/bandit_grunt/faint_s.png",
           "cols": 4,
@@ -203,6 +351,42 @@
           "looped": false,
           "action": "faint",
           "dir": "w"
+        },
+        {
+          "name": "faint_se",
+          "sheet": "assets/art/enemies/bandit_grunt/faint_se.png",
+          "cols": 4,
+          "fps": 6,
+          "looped": false,
+          "action": "faint",
+          "dir": "se"
+        },
+        {
+          "name": "faint_sw",
+          "sheet": "assets/art/enemies/bandit_grunt/faint_sw.png",
+          "cols": 4,
+          "fps": 6,
+          "looped": false,
+          "action": "faint",
+          "dir": "sw"
+        },
+        {
+          "name": "faint_ne",
+          "sheet": "assets/art/enemies/bandit_grunt/faint_ne.png",
+          "cols": 4,
+          "fps": 6,
+          "looped": false,
+          "action": "faint",
+          "dir": "ne"
+        },
+        {
+          "name": "faint_nw",
+          "sheet": "assets/art/enemies/bandit_grunt/faint_nw.png",
+          "cols": 4,
+          "fps": 6,
+          "looped": false,
+          "action": "faint",
+          "dir": "nw"
         }
       ]
     },
@@ -211,15 +395,19 @@
       "display": "灰狼",
       "kind": "quadruped",
       "note": "四足骨架：追击型近战，攻击带前扑",
-      "sprite_size": "32x32",
-      "static_sprite": "texture=assets/art/enemies/gray_wolf/static_s.png;size=32x32;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+      "sprite_size": "64x64",
+      "static_sprite": "texture=assets/art/enemies/gray_wolf/static_s.png;size=64x64;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
       "static_sprites": {
-        "s": "texture=assets/art/enemies/gray_wolf/static_s.png;size=32x32;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
-        "n": "texture=assets/art/enemies/gray_wolf/static_n.png;size=32x32;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
-        "e": "texture=assets/art/enemies/gray_wolf/static_e.png;size=32x32;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
-        "w": "texture=assets/art/enemies/gray_wolf/static_w.png;size=32x32;tint=1.000,1.000,1.000,1.000;sorting_layer=actor"
+        "s": "texture=assets/art/enemies/gray_wolf/static_s.png;size=64x64;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+        "n": "texture=assets/art/enemies/gray_wolf/static_n.png;size=64x64;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+        "e": "texture=assets/art/enemies/gray_wolf/static_e.png;size=64x64;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+        "w": "texture=assets/art/enemies/gray_wolf/static_w.png;size=64x64;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+        "se": "texture=assets/art/enemies/gray_wolf/static_se.png;size=64x64;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+        "sw": "texture=assets/art/enemies/gray_wolf/static_sw.png;size=64x64;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+        "ne": "texture=assets/art/enemies/gray_wolf/static_ne.png;size=64x64;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+        "nw": "texture=assets/art/enemies/gray_wolf/static_nw.png;size=64x64;tint=1.000,1.000,1.000,1.000;sorting_layer=actor"
       },
-      "animation": "default=idle_s;clip:idle_s:assets/art/enemies/gray_wolf/idle_s.png:4:6:true;clip:idle_n:assets/art/enemies/gray_wolf/idle_n.png:4:6:true;clip:idle_e:assets/art/enemies/gray_wolf/idle_e.png:4:6:true;clip:idle_w:assets/art/enemies/gray_wolf/idle_w.png:4:6:true;clip:walk_s:assets/art/enemies/gray_wolf/walk_s.png:6:10:true;clip:walk_n:assets/art/enemies/gray_wolf/walk_n.png:6:10:true;clip:walk_e:assets/art/enemies/gray_wolf/walk_e.png:6:10:true;clip:walk_w:assets/art/enemies/gray_wolf/walk_w.png:6:10:true;clip:attack_s:assets/art/enemies/gray_wolf/attack_s.png:4:12:false;clip:attack_n:assets/art/enemies/gray_wolf/attack_n.png:4:12:false;clip:attack_e:assets/art/enemies/gray_wolf/attack_e.png:4:12:false;clip:attack_w:assets/art/enemies/gray_wolf/attack_w.png:4:12:false;clip:hurt_s:assets/art/enemies/gray_wolf/hurt_s.png:2:6:false;clip:hurt_n:assets/art/enemies/gray_wolf/hurt_n.png:2:6:false;clip:hurt_e:assets/art/enemies/gray_wolf/hurt_e.png:2:6:false;clip:hurt_w:assets/art/enemies/gray_wolf/hurt_w.png:2:6:false",
+      "animation": "default=idle_s;clip:idle_s:assets/art/enemies/gray_wolf/idle_s.png:4:6:true;clip:idle_n:assets/art/enemies/gray_wolf/idle_n.png:4:6:true;clip:idle_e:assets/art/enemies/gray_wolf/idle_e.png:4:6:true;clip:idle_w:assets/art/enemies/gray_wolf/idle_w.png:4:6:true;clip:idle_se:assets/art/enemies/gray_wolf/idle_se.png:4:6:true;clip:idle_sw:assets/art/enemies/gray_wolf/idle_sw.png:4:6:true;clip:idle_ne:assets/art/enemies/gray_wolf/idle_ne.png:4:6:true;clip:idle_nw:assets/art/enemies/gray_wolf/idle_nw.png:4:6:true;clip:walk_s:assets/art/enemies/gray_wolf/walk_s.png:6:10:true;clip:walk_n:assets/art/enemies/gray_wolf/walk_n.png:6:10:true;clip:walk_e:assets/art/enemies/gray_wolf/walk_e.png:6:10:true;clip:walk_w:assets/art/enemies/gray_wolf/walk_w.png:6:10:true;clip:walk_se:assets/art/enemies/gray_wolf/walk_se.png:6:10:true;clip:walk_sw:assets/art/enemies/gray_wolf/walk_sw.png:6:10:true;clip:walk_ne:assets/art/enemies/gray_wolf/walk_ne.png:6:10:true;clip:walk_nw:assets/art/enemies/gray_wolf/walk_nw.png:6:10:true;clip:attack_s:assets/art/enemies/gray_wolf/attack_s.png:4:12:false;clip:attack_n:assets/art/enemies/gray_wolf/attack_n.png:4:12:false;clip:attack_e:assets/art/enemies/gray_wolf/attack_e.png:4:12:false;clip:attack_w:assets/art/enemies/gray_wolf/attack_w.png:4:12:false;clip:attack_se:assets/art/enemies/gray_wolf/attack_se.png:4:12:false;clip:attack_sw:assets/art/enemies/gray_wolf/attack_sw.png:4:12:false;clip:attack_ne:assets/art/enemies/gray_wolf/attack_ne.png:4:12:false;clip:attack_nw:assets/art/enemies/gray_wolf/attack_nw.png:4:12:false;clip:hurt_s:assets/art/enemies/gray_wolf/hurt_s.png:2:6:false;clip:hurt_n:assets/art/enemies/gray_wolf/hurt_n.png:2:6:false;clip:hurt_e:assets/art/enemies/gray_wolf/hurt_e.png:2:6:false;clip:hurt_w:assets/art/enemies/gray_wolf/hurt_w.png:2:6:false;clip:hurt_se:assets/art/enemies/gray_wolf/hurt_se.png:2:6:false;clip:hurt_sw:assets/art/enemies/gray_wolf/hurt_sw.png:2:6:false;clip:hurt_ne:assets/art/enemies/gray_wolf/hurt_ne.png:2:6:false;clip:hurt_nw:assets/art/enemies/gray_wolf/hurt_nw.png:2:6:false",
       "preview": "assets/art/enemies/gray_wolf/preview.png",
       "clips": [
         {
@@ -259,6 +447,42 @@
           "dir": "w"
         },
         {
+          "name": "idle_se",
+          "sheet": "assets/art/enemies/gray_wolf/idle_se.png",
+          "cols": 4,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "se"
+        },
+        {
+          "name": "idle_sw",
+          "sheet": "assets/art/enemies/gray_wolf/idle_sw.png",
+          "cols": 4,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "sw"
+        },
+        {
+          "name": "idle_ne",
+          "sheet": "assets/art/enemies/gray_wolf/idle_ne.png",
+          "cols": 4,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "ne"
+        },
+        {
+          "name": "idle_nw",
+          "sheet": "assets/art/enemies/gray_wolf/idle_nw.png",
+          "cols": 4,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "nw"
+        },
+        {
           "name": "walk_s",
           "sheet": "assets/art/enemies/gray_wolf/walk_s.png",
           "cols": 6,
@@ -293,6 +517,42 @@
           "looped": true,
           "action": "walk",
           "dir": "w"
+        },
+        {
+          "name": "walk_se",
+          "sheet": "assets/art/enemies/gray_wolf/walk_se.png",
+          "cols": 6,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "se"
+        },
+        {
+          "name": "walk_sw",
+          "sheet": "assets/art/enemies/gray_wolf/walk_sw.png",
+          "cols": 6,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "sw"
+        },
+        {
+          "name": "walk_ne",
+          "sheet": "assets/art/enemies/gray_wolf/walk_ne.png",
+          "cols": 6,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "ne"
+        },
+        {
+          "name": "walk_nw",
+          "sheet": "assets/art/enemies/gray_wolf/walk_nw.png",
+          "cols": 6,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "nw"
         },
         {
           "name": "attack_s",
@@ -331,6 +591,42 @@
           "dir": "w"
         },
         {
+          "name": "attack_se",
+          "sheet": "assets/art/enemies/gray_wolf/attack_se.png",
+          "cols": 4,
+          "fps": 12,
+          "looped": false,
+          "action": "attack",
+          "dir": "se"
+        },
+        {
+          "name": "attack_sw",
+          "sheet": "assets/art/enemies/gray_wolf/attack_sw.png",
+          "cols": 4,
+          "fps": 12,
+          "looped": false,
+          "action": "attack",
+          "dir": "sw"
+        },
+        {
+          "name": "attack_ne",
+          "sheet": "assets/art/enemies/gray_wolf/attack_ne.png",
+          "cols": 4,
+          "fps": 12,
+          "looped": false,
+          "action": "attack",
+          "dir": "ne"
+        },
+        {
+          "name": "attack_nw",
+          "sheet": "assets/art/enemies/gray_wolf/attack_nw.png",
+          "cols": 4,
+          "fps": 12,
+          "looped": false,
+          "action": "attack",
+          "dir": "nw"
+        },
+        {
           "name": "hurt_s",
           "sheet": "assets/art/enemies/gray_wolf/hurt_s.png",
           "cols": 2,
@@ -365,6 +661,42 @@
           "looped": false,
           "action": "hurt",
           "dir": "w"
+        },
+        {
+          "name": "hurt_se",
+          "sheet": "assets/art/enemies/gray_wolf/hurt_se.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": false,
+          "action": "hurt",
+          "dir": "se"
+        },
+        {
+          "name": "hurt_sw",
+          "sheet": "assets/art/enemies/gray_wolf/hurt_sw.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": false,
+          "action": "hurt",
+          "dir": "sw"
+        },
+        {
+          "name": "hurt_ne",
+          "sheet": "assets/art/enemies/gray_wolf/hurt_ne.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": false,
+          "action": "hurt",
+          "dir": "ne"
+        },
+        {
+          "name": "hurt_nw",
+          "sheet": "assets/art/enemies/gray_wolf/hurt_nw.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": false,
+          "action": "hurt",
+          "dir": "nw"
         }
       ]
     },
@@ -373,10 +705,10 @@
       "display": "训练木人",
       "kind": "dummy",
       "note": "静态标靶：不移动不攻击，只有待机与受击",
-      "sprite_size": "32x32",
-      "static_sprite": "texture=assets/art/enemies/training_dummy/static_s.png;size=32x32;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+      "sprite_size": "64x64",
+      "static_sprite": "texture=assets/art/enemies/training_dummy/static_s.png;size=64x64;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
       "static_sprites": {
-        "s": "texture=assets/art/enemies/training_dummy/static_s.png;size=32x32;tint=1.000,1.000,1.000,1.000;sorting_layer=actor"
+        "s": "texture=assets/art/enemies/training_dummy/static_s.png;size=64x64;tint=1.000,1.000,1.000,1.000;sorting_layer=actor"
       },
       "animation": "default=idle_s;clip:idle_s:assets/art/enemies/training_dummy/idle_s.png:2:4:true;clip:hurt_s:assets/art/enemies/training_dummy/hurt_s.png:2:6:false",
       "preview": "assets/art/enemies/training_dummy/preview.png",
@@ -406,15 +738,19 @@
       "display": "玄冥会徒",
       "kind": "humanoid",
       "note": "墨黑长袍 + 紫滚边 + 面罩，与司徒魁同色系；复用主角骨架",
-      "sprite_size": "32x32",
-      "static_sprite": "texture=assets/art/enemies/xuanming_adept/static_s.png;size=32x32;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+      "sprite_size": "64x64",
+      "static_sprite": "texture=assets/art/enemies/xuanming_adept/static_s.png;size=64x64;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
       "static_sprites": {
-        "s": "texture=assets/art/enemies/xuanming_adept/static_s.png;size=32x32;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
-        "n": "texture=assets/art/enemies/xuanming_adept/static_n.png;size=32x32;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
-        "e": "texture=assets/art/enemies/xuanming_adept/static_e.png;size=32x32;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
-        "w": "texture=assets/art/enemies/xuanming_adept/static_w.png;size=32x32;tint=1.000,1.000,1.000,1.000;sorting_layer=actor"
+        "s": "texture=assets/art/enemies/xuanming_adept/static_s.png;size=64x64;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+        "n": "texture=assets/art/enemies/xuanming_adept/static_n.png;size=64x64;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+        "e": "texture=assets/art/enemies/xuanming_adept/static_e.png;size=64x64;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+        "w": "texture=assets/art/enemies/xuanming_adept/static_w.png;size=64x64;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+        "se": "texture=assets/art/enemies/xuanming_adept/static_se.png;size=64x64;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+        "sw": "texture=assets/art/enemies/xuanming_adept/static_sw.png;size=64x64;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+        "ne": "texture=assets/art/enemies/xuanming_adept/static_ne.png;size=64x64;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+        "nw": "texture=assets/art/enemies/xuanming_adept/static_nw.png;size=64x64;tint=1.000,1.000,1.000,1.000;sorting_layer=actor"
       },
-      "animation": "default=idle_s;clip:idle_s:assets/art/enemies/xuanming_adept/idle_s.png:4:6:true;clip:idle_n:assets/art/enemies/xuanming_adept/idle_n.png:4:6:true;clip:idle_e:assets/art/enemies/xuanming_adept/idle_e.png:4:6:true;clip:idle_w:assets/art/enemies/xuanming_adept/idle_w.png:4:6:true;clip:walk_s:assets/art/enemies/xuanming_adept/walk_s.png:6:10:true;clip:walk_n:assets/art/enemies/xuanming_adept/walk_n.png:6:10:true;clip:walk_e:assets/art/enemies/xuanming_adept/walk_e.png:6:10:true;clip:walk_w:assets/art/enemies/xuanming_adept/walk_w.png:6:10:true;clip:attack_s:assets/art/enemies/xuanming_adept/attack_s.png:4:12:false;clip:attack_n:assets/art/enemies/xuanming_adept/attack_n.png:4:12:false;clip:attack_e:assets/art/enemies/xuanming_adept/attack_e.png:4:12:false;clip:attack_w:assets/art/enemies/xuanming_adept/attack_w.png:4:12:false;clip:hurt_s:assets/art/enemies/xuanming_adept/hurt_s.png:2:6:false;clip:hurt_n:assets/art/enemies/xuanming_adept/hurt_n.png:2:6:false;clip:hurt_e:assets/art/enemies/xuanming_adept/hurt_e.png:2:6:false;clip:hurt_w:assets/art/enemies/xuanming_adept/hurt_w.png:2:6:false;clip:faint_s:assets/art/enemies/xuanming_adept/faint_s.png:4:6:false;clip:faint_n:assets/art/enemies/xuanming_adept/faint_n.png:4:6:false;clip:faint_e:assets/art/enemies/xuanming_adept/faint_e.png:4:6:false;clip:faint_w:assets/art/enemies/xuanming_adept/faint_w.png:4:6:false",
+      "animation": "default=idle_s;clip:idle_s:assets/art/enemies/xuanming_adept/idle_s.png:4:6:true;clip:idle_n:assets/art/enemies/xuanming_adept/idle_n.png:4:6:true;clip:idle_e:assets/art/enemies/xuanming_adept/idle_e.png:4:6:true;clip:idle_w:assets/art/enemies/xuanming_adept/idle_w.png:4:6:true;clip:idle_se:assets/art/enemies/xuanming_adept/idle_se.png:4:6:true;clip:idle_sw:assets/art/enemies/xuanming_adept/idle_sw.png:4:6:true;clip:idle_ne:assets/art/enemies/xuanming_adept/idle_ne.png:4:6:true;clip:idle_nw:assets/art/enemies/xuanming_adept/idle_nw.png:4:6:true;clip:walk_s:assets/art/enemies/xuanming_adept/walk_s.png:6:10:true;clip:walk_n:assets/art/enemies/xuanming_adept/walk_n.png:6:10:true;clip:walk_e:assets/art/enemies/xuanming_adept/walk_e.png:6:10:true;clip:walk_w:assets/art/enemies/xuanming_adept/walk_w.png:6:10:true;clip:walk_se:assets/art/enemies/xuanming_adept/walk_se.png:6:10:true;clip:walk_sw:assets/art/enemies/xuanming_adept/walk_sw.png:6:10:true;clip:walk_ne:assets/art/enemies/xuanming_adept/walk_ne.png:6:10:true;clip:walk_nw:assets/art/enemies/xuanming_adept/walk_nw.png:6:10:true;clip:attack_s:assets/art/enemies/xuanming_adept/attack_s.png:4:12:false;clip:attack_n:assets/art/enemies/xuanming_adept/attack_n.png:4:12:false;clip:attack_e:assets/art/enemies/xuanming_adept/attack_e.png:4:12:false;clip:attack_w:assets/art/enemies/xuanming_adept/attack_w.png:4:12:false;clip:attack_se:assets/art/enemies/xuanming_adept/attack_se.png:4:12:false;clip:attack_sw:assets/art/enemies/xuanming_adept/attack_sw.png:4:12:false;clip:attack_ne:assets/art/enemies/xuanming_adept/attack_ne.png:4:12:false;clip:attack_nw:assets/art/enemies/xuanming_adept/attack_nw.png:4:12:false;clip:hurt_s:assets/art/enemies/xuanming_adept/hurt_s.png:2:6:false;clip:hurt_n:assets/art/enemies/xuanming_adept/hurt_n.png:2:6:false;clip:hurt_e:assets/art/enemies/xuanming_adept/hurt_e.png:2:6:false;clip:hurt_w:assets/art/enemies/xuanming_adept/hurt_w.png:2:6:false;clip:hurt_se:assets/art/enemies/xuanming_adept/hurt_se.png:2:6:false;clip:hurt_sw:assets/art/enemies/xuanming_adept/hurt_sw.png:2:6:false;clip:hurt_ne:assets/art/enemies/xuanming_adept/hurt_ne.png:2:6:false;clip:hurt_nw:assets/art/enemies/xuanming_adept/hurt_nw.png:2:6:false;clip:faint_s:assets/art/enemies/xuanming_adept/faint_s.png:4:6:false;clip:faint_n:assets/art/enemies/xuanming_adept/faint_n.png:4:6:false;clip:faint_e:assets/art/enemies/xuanming_adept/faint_e.png:4:6:false;clip:faint_w:assets/art/enemies/xuanming_adept/faint_w.png:4:6:false;clip:faint_se:assets/art/enemies/xuanming_adept/faint_se.png:4:6:false;clip:faint_sw:assets/art/enemies/xuanming_adept/faint_sw.png:4:6:false;clip:faint_ne:assets/art/enemies/xuanming_adept/faint_ne.png:4:6:false;clip:faint_nw:assets/art/enemies/xuanming_adept/faint_nw.png:4:6:false",
       "preview": "assets/art/enemies/xuanming_adept/preview.png",
       "clips": [
         {
@@ -454,6 +790,42 @@
           "dir": "w"
         },
         {
+          "name": "idle_se",
+          "sheet": "assets/art/enemies/xuanming_adept/idle_se.png",
+          "cols": 4,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "se"
+        },
+        {
+          "name": "idle_sw",
+          "sheet": "assets/art/enemies/xuanming_adept/idle_sw.png",
+          "cols": 4,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "sw"
+        },
+        {
+          "name": "idle_ne",
+          "sheet": "assets/art/enemies/xuanming_adept/idle_ne.png",
+          "cols": 4,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "ne"
+        },
+        {
+          "name": "idle_nw",
+          "sheet": "assets/art/enemies/xuanming_adept/idle_nw.png",
+          "cols": 4,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "nw"
+        },
+        {
           "name": "walk_s",
           "sheet": "assets/art/enemies/xuanming_adept/walk_s.png",
           "cols": 6,
@@ -488,6 +860,42 @@
           "looped": true,
           "action": "walk",
           "dir": "w"
+        },
+        {
+          "name": "walk_se",
+          "sheet": "assets/art/enemies/xuanming_adept/walk_se.png",
+          "cols": 6,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "se"
+        },
+        {
+          "name": "walk_sw",
+          "sheet": "assets/art/enemies/xuanming_adept/walk_sw.png",
+          "cols": 6,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "sw"
+        },
+        {
+          "name": "walk_ne",
+          "sheet": "assets/art/enemies/xuanming_adept/walk_ne.png",
+          "cols": 6,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "ne"
+        },
+        {
+          "name": "walk_nw",
+          "sheet": "assets/art/enemies/xuanming_adept/walk_nw.png",
+          "cols": 6,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "nw"
         },
         {
           "name": "attack_s",
@@ -526,6 +934,42 @@
           "dir": "w"
         },
         {
+          "name": "attack_se",
+          "sheet": "assets/art/enemies/xuanming_adept/attack_se.png",
+          "cols": 4,
+          "fps": 12,
+          "looped": false,
+          "action": "attack",
+          "dir": "se"
+        },
+        {
+          "name": "attack_sw",
+          "sheet": "assets/art/enemies/xuanming_adept/attack_sw.png",
+          "cols": 4,
+          "fps": 12,
+          "looped": false,
+          "action": "attack",
+          "dir": "sw"
+        },
+        {
+          "name": "attack_ne",
+          "sheet": "assets/art/enemies/xuanming_adept/attack_ne.png",
+          "cols": 4,
+          "fps": 12,
+          "looped": false,
+          "action": "attack",
+          "dir": "ne"
+        },
+        {
+          "name": "attack_nw",
+          "sheet": "assets/art/enemies/xuanming_adept/attack_nw.png",
+          "cols": 4,
+          "fps": 12,
+          "looped": false,
+          "action": "attack",
+          "dir": "nw"
+        },
+        {
           "name": "hurt_s",
           "sheet": "assets/art/enemies/xuanming_adept/hurt_s.png",
           "cols": 2,
@@ -562,6 +1006,42 @@
           "dir": "w"
         },
         {
+          "name": "hurt_se",
+          "sheet": "assets/art/enemies/xuanming_adept/hurt_se.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": false,
+          "action": "hurt",
+          "dir": "se"
+        },
+        {
+          "name": "hurt_sw",
+          "sheet": "assets/art/enemies/xuanming_adept/hurt_sw.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": false,
+          "action": "hurt",
+          "dir": "sw"
+        },
+        {
+          "name": "hurt_ne",
+          "sheet": "assets/art/enemies/xuanming_adept/hurt_ne.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": false,
+          "action": "hurt",
+          "dir": "ne"
+        },
+        {
+          "name": "hurt_nw",
+          "sheet": "assets/art/enemies/xuanming_adept/hurt_nw.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": false,
+          "action": "hurt",
+          "dir": "nw"
+        },
+        {
           "name": "faint_s",
           "sheet": "assets/art/enemies/xuanming_adept/faint_s.png",
           "cols": 4,
@@ -596,6 +1076,42 @@
           "looped": false,
           "action": "faint",
           "dir": "w"
+        },
+        {
+          "name": "faint_se",
+          "sheet": "assets/art/enemies/xuanming_adept/faint_se.png",
+          "cols": 4,
+          "fps": 6,
+          "looped": false,
+          "action": "faint",
+          "dir": "se"
+        },
+        {
+          "name": "faint_sw",
+          "sheet": "assets/art/enemies/xuanming_adept/faint_sw.png",
+          "cols": 4,
+          "fps": 6,
+          "looped": false,
+          "action": "faint",
+          "dir": "sw"
+        },
+        {
+          "name": "faint_ne",
+          "sheet": "assets/art/enemies/xuanming_adept/faint_ne.png",
+          "cols": 4,
+          "fps": 6,
+          "looped": false,
+          "action": "faint",
+          "dir": "ne"
+        },
+        {
+          "name": "faint_nw",
+          "sheet": "assets/art/enemies/xuanming_adept/faint_nw.png",
+          "cols": 4,
+          "fps": 6,
+          "looped": false,
+          "action": "faint",
+          "dir": "nw"
         }
       ]
     },
@@ -604,15 +1120,19 @@
       "display": "毒蝎",
       "kind": "scorpion",
       "note": "低伏甲壳骨架：双螯 + 六足 + 上翘毒尾，攻击带突刺",
-      "sprite_size": "32x32",
-      "static_sprite": "texture=assets/art/enemies/poison_scorpion/static_s.png;size=32x32;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+      "sprite_size": "64x64",
+      "static_sprite": "texture=assets/art/enemies/poison_scorpion/static_s.png;size=64x64;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
       "static_sprites": {
-        "s": "texture=assets/art/enemies/poison_scorpion/static_s.png;size=32x32;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
-        "n": "texture=assets/art/enemies/poison_scorpion/static_n.png;size=32x32;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
-        "e": "texture=assets/art/enemies/poison_scorpion/static_e.png;size=32x32;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
-        "w": "texture=assets/art/enemies/poison_scorpion/static_w.png;size=32x32;tint=1.000,1.000,1.000,1.000;sorting_layer=actor"
+        "s": "texture=assets/art/enemies/poison_scorpion/static_s.png;size=64x64;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+        "n": "texture=assets/art/enemies/poison_scorpion/static_n.png;size=64x64;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+        "e": "texture=assets/art/enemies/poison_scorpion/static_e.png;size=64x64;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+        "w": "texture=assets/art/enemies/poison_scorpion/static_w.png;size=64x64;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+        "se": "texture=assets/art/enemies/poison_scorpion/static_se.png;size=64x64;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+        "sw": "texture=assets/art/enemies/poison_scorpion/static_sw.png;size=64x64;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+        "ne": "texture=assets/art/enemies/poison_scorpion/static_ne.png;size=64x64;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+        "nw": "texture=assets/art/enemies/poison_scorpion/static_nw.png;size=64x64;tint=1.000,1.000,1.000,1.000;sorting_layer=actor"
       },
-      "animation": "default=idle_s;clip:idle_s:assets/art/enemies/poison_scorpion/idle_s.png:4:6:true;clip:idle_n:assets/art/enemies/poison_scorpion/idle_n.png:4:6:true;clip:idle_e:assets/art/enemies/poison_scorpion/idle_e.png:4:6:true;clip:idle_w:assets/art/enemies/poison_scorpion/idle_w.png:4:6:true;clip:walk_s:assets/art/enemies/poison_scorpion/walk_s.png:6:10:true;clip:walk_n:assets/art/enemies/poison_scorpion/walk_n.png:6:10:true;clip:walk_e:assets/art/enemies/poison_scorpion/walk_e.png:6:10:true;clip:walk_w:assets/art/enemies/poison_scorpion/walk_w.png:6:10:true;clip:attack_s:assets/art/enemies/poison_scorpion/attack_s.png:4:12:false;clip:attack_n:assets/art/enemies/poison_scorpion/attack_n.png:4:12:false;clip:attack_e:assets/art/enemies/poison_scorpion/attack_e.png:4:12:false;clip:attack_w:assets/art/enemies/poison_scorpion/attack_w.png:4:12:false;clip:hurt_s:assets/art/enemies/poison_scorpion/hurt_s.png:2:6:false;clip:hurt_n:assets/art/enemies/poison_scorpion/hurt_n.png:2:6:false;clip:hurt_e:assets/art/enemies/poison_scorpion/hurt_e.png:2:6:false;clip:hurt_w:assets/art/enemies/poison_scorpion/hurt_w.png:2:6:false",
+      "animation": "default=idle_s;clip:idle_s:assets/art/enemies/poison_scorpion/idle_s.png:4:6:true;clip:idle_n:assets/art/enemies/poison_scorpion/idle_n.png:4:6:true;clip:idle_e:assets/art/enemies/poison_scorpion/idle_e.png:4:6:true;clip:idle_w:assets/art/enemies/poison_scorpion/idle_w.png:4:6:true;clip:idle_se:assets/art/enemies/poison_scorpion/idle_se.png:4:6:true;clip:idle_sw:assets/art/enemies/poison_scorpion/idle_sw.png:4:6:true;clip:idle_ne:assets/art/enemies/poison_scorpion/idle_ne.png:4:6:true;clip:idle_nw:assets/art/enemies/poison_scorpion/idle_nw.png:4:6:true;clip:walk_s:assets/art/enemies/poison_scorpion/walk_s.png:6:10:true;clip:walk_n:assets/art/enemies/poison_scorpion/walk_n.png:6:10:true;clip:walk_e:assets/art/enemies/poison_scorpion/walk_e.png:6:10:true;clip:walk_w:assets/art/enemies/poison_scorpion/walk_w.png:6:10:true;clip:walk_se:assets/art/enemies/poison_scorpion/walk_se.png:6:10:true;clip:walk_sw:assets/art/enemies/poison_scorpion/walk_sw.png:6:10:true;clip:walk_ne:assets/art/enemies/poison_scorpion/walk_ne.png:6:10:true;clip:walk_nw:assets/art/enemies/poison_scorpion/walk_nw.png:6:10:true;clip:attack_s:assets/art/enemies/poison_scorpion/attack_s.png:4:12:false;clip:attack_n:assets/art/enemies/poison_scorpion/attack_n.png:4:12:false;clip:attack_e:assets/art/enemies/poison_scorpion/attack_e.png:4:12:false;clip:attack_w:assets/art/enemies/poison_scorpion/attack_w.png:4:12:false;clip:attack_se:assets/art/enemies/poison_scorpion/attack_se.png:4:12:false;clip:attack_sw:assets/art/enemies/poison_scorpion/attack_sw.png:4:12:false;clip:attack_ne:assets/art/enemies/poison_scorpion/attack_ne.png:4:12:false;clip:attack_nw:assets/art/enemies/poison_scorpion/attack_nw.png:4:12:false;clip:hurt_s:assets/art/enemies/poison_scorpion/hurt_s.png:2:6:false;clip:hurt_n:assets/art/enemies/poison_scorpion/hurt_n.png:2:6:false;clip:hurt_e:assets/art/enemies/poison_scorpion/hurt_e.png:2:6:false;clip:hurt_w:assets/art/enemies/poison_scorpion/hurt_w.png:2:6:false;clip:hurt_se:assets/art/enemies/poison_scorpion/hurt_se.png:2:6:false;clip:hurt_sw:assets/art/enemies/poison_scorpion/hurt_sw.png:2:6:false;clip:hurt_ne:assets/art/enemies/poison_scorpion/hurt_ne.png:2:6:false;clip:hurt_nw:assets/art/enemies/poison_scorpion/hurt_nw.png:2:6:false",
       "preview": "assets/art/enemies/poison_scorpion/preview.png",
       "clips": [
         {
@@ -652,6 +1172,42 @@
           "dir": "w"
         },
         {
+          "name": "idle_se",
+          "sheet": "assets/art/enemies/poison_scorpion/idle_se.png",
+          "cols": 4,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "se"
+        },
+        {
+          "name": "idle_sw",
+          "sheet": "assets/art/enemies/poison_scorpion/idle_sw.png",
+          "cols": 4,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "sw"
+        },
+        {
+          "name": "idle_ne",
+          "sheet": "assets/art/enemies/poison_scorpion/idle_ne.png",
+          "cols": 4,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "ne"
+        },
+        {
+          "name": "idle_nw",
+          "sheet": "assets/art/enemies/poison_scorpion/idle_nw.png",
+          "cols": 4,
+          "fps": 6,
+          "looped": true,
+          "action": "idle",
+          "dir": "nw"
+        },
+        {
           "name": "walk_s",
           "sheet": "assets/art/enemies/poison_scorpion/walk_s.png",
           "cols": 6,
@@ -686,6 +1242,42 @@
           "looped": true,
           "action": "walk",
           "dir": "w"
+        },
+        {
+          "name": "walk_se",
+          "sheet": "assets/art/enemies/poison_scorpion/walk_se.png",
+          "cols": 6,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "se"
+        },
+        {
+          "name": "walk_sw",
+          "sheet": "assets/art/enemies/poison_scorpion/walk_sw.png",
+          "cols": 6,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "sw"
+        },
+        {
+          "name": "walk_ne",
+          "sheet": "assets/art/enemies/poison_scorpion/walk_ne.png",
+          "cols": 6,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "ne"
+        },
+        {
+          "name": "walk_nw",
+          "sheet": "assets/art/enemies/poison_scorpion/walk_nw.png",
+          "cols": 6,
+          "fps": 10,
+          "looped": true,
+          "action": "walk",
+          "dir": "nw"
         },
         {
           "name": "attack_s",
@@ -724,6 +1316,42 @@
           "dir": "w"
         },
         {
+          "name": "attack_se",
+          "sheet": "assets/art/enemies/poison_scorpion/attack_se.png",
+          "cols": 4,
+          "fps": 12,
+          "looped": false,
+          "action": "attack",
+          "dir": "se"
+        },
+        {
+          "name": "attack_sw",
+          "sheet": "assets/art/enemies/poison_scorpion/attack_sw.png",
+          "cols": 4,
+          "fps": 12,
+          "looped": false,
+          "action": "attack",
+          "dir": "sw"
+        },
+        {
+          "name": "attack_ne",
+          "sheet": "assets/art/enemies/poison_scorpion/attack_ne.png",
+          "cols": 4,
+          "fps": 12,
+          "looped": false,
+          "action": "attack",
+          "dir": "ne"
+        },
+        {
+          "name": "attack_nw",
+          "sheet": "assets/art/enemies/poison_scorpion/attack_nw.png",
+          "cols": 4,
+          "fps": 12,
+          "looped": false,
+          "action": "attack",
+          "dir": "nw"
+        },
+        {
           "name": "hurt_s",
           "sheet": "assets/art/enemies/poison_scorpion/hurt_s.png",
           "cols": 2,
@@ -758,6 +1386,42 @@
           "looped": false,
           "action": "hurt",
           "dir": "w"
+        },
+        {
+          "name": "hurt_se",
+          "sheet": "assets/art/enemies/poison_scorpion/hurt_se.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": false,
+          "action": "hurt",
+          "dir": "se"
+        },
+        {
+          "name": "hurt_sw",
+          "sheet": "assets/art/enemies/poison_scorpion/hurt_sw.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": false,
+          "action": "hurt",
+          "dir": "sw"
+        },
+        {
+          "name": "hurt_ne",
+          "sheet": "assets/art/enemies/poison_scorpion/hurt_ne.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": false,
+          "action": "hurt",
+          "dir": "ne"
+        },
+        {
+          "name": "hurt_nw",
+          "sheet": "assets/art/enemies/poison_scorpion/hurt_nw.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": false,
+          "action": "hurt",
+          "dir": "nw"
         }
       ]
     },
@@ -765,16 +1429,20 @@
       "id": "mountain_ape_boss",
       "display": "山魈首领（第一章 Boss）",
       "kind": "boss",
-      "note": "48×48 大体型骨架：厚肩长臂 + 獠牙 + 朱砂眼；重击/冲撞用同一套攻击帧",
-      "sprite_size": "48x48",
-      "static_sprite": "texture=assets/art/enemies/mountain_ape_boss/static_s.png;size=48x48;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+      "note": "48×48 绘制帧（导出 96×96）大体型骨架：厚肩长臂 + 獠牙 + 朱砂眼；重击/冲撞用同一套攻击帧",
+      "sprite_size": "96x96",
+      "static_sprite": "texture=assets/art/enemies/mountain_ape_boss/static_s.png;size=96x96;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
       "static_sprites": {
-        "s": "texture=assets/art/enemies/mountain_ape_boss/static_s.png;size=48x48;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
-        "n": "texture=assets/art/enemies/mountain_ape_boss/static_n.png;size=48x48;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
-        "e": "texture=assets/art/enemies/mountain_ape_boss/static_e.png;size=48x48;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
-        "w": "texture=assets/art/enemies/mountain_ape_boss/static_w.png;size=48x48;tint=1.000,1.000,1.000,1.000;sorting_layer=actor"
+        "s": "texture=assets/art/enemies/mountain_ape_boss/static_s.png;size=96x96;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+        "n": "texture=assets/art/enemies/mountain_ape_boss/static_n.png;size=96x96;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+        "e": "texture=assets/art/enemies/mountain_ape_boss/static_e.png;size=96x96;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+        "w": "texture=assets/art/enemies/mountain_ape_boss/static_w.png;size=96x96;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+        "se": "texture=assets/art/enemies/mountain_ape_boss/static_se.png;size=96x96;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+        "sw": "texture=assets/art/enemies/mountain_ape_boss/static_sw.png;size=96x96;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+        "ne": "texture=assets/art/enemies/mountain_ape_boss/static_ne.png;size=96x96;tint=1.000,1.000,1.000,1.000;sorting_layer=actor",
+        "nw": "texture=assets/art/enemies/mountain_ape_boss/static_nw.png;size=96x96;tint=1.000,1.000,1.000,1.000;sorting_layer=actor"
       },
-      "animation": "default=idle_s;clip:idle_s:assets/art/enemies/mountain_ape_boss/idle_s.png:4:5:true;clip:idle_n:assets/art/enemies/mountain_ape_boss/idle_n.png:4:5:true;clip:idle_e:assets/art/enemies/mountain_ape_boss/idle_e.png:4:5:true;clip:idle_w:assets/art/enemies/mountain_ape_boss/idle_w.png:4:5:true;clip:walk_s:assets/art/enemies/mountain_ape_boss/walk_s.png:6:8:true;clip:walk_n:assets/art/enemies/mountain_ape_boss/walk_n.png:6:8:true;clip:walk_e:assets/art/enemies/mountain_ape_boss/walk_e.png:6:8:true;clip:walk_w:assets/art/enemies/mountain_ape_boss/walk_w.png:6:8:true;clip:attack_s:assets/art/enemies/mountain_ape_boss/attack_s.png:4:10:false;clip:attack_n:assets/art/enemies/mountain_ape_boss/attack_n.png:4:10:false;clip:attack_e:assets/art/enemies/mountain_ape_boss/attack_e.png:4:10:false;clip:attack_w:assets/art/enemies/mountain_ape_boss/attack_w.png:4:10:false;clip:hurt_s:assets/art/enemies/mountain_ape_boss/hurt_s.png:2:6:false;clip:hurt_n:assets/art/enemies/mountain_ape_boss/hurt_n.png:2:6:false;clip:hurt_e:assets/art/enemies/mountain_ape_boss/hurt_e.png:2:6:false;clip:hurt_w:assets/art/enemies/mountain_ape_boss/hurt_w.png:2:6:false",
+      "animation": "default=idle_s;clip:idle_s:assets/art/enemies/mountain_ape_boss/idle_s.png:4:5:true;clip:idle_n:assets/art/enemies/mountain_ape_boss/idle_n.png:4:5:true;clip:idle_e:assets/art/enemies/mountain_ape_boss/idle_e.png:4:5:true;clip:idle_w:assets/art/enemies/mountain_ape_boss/idle_w.png:4:5:true;clip:idle_se:assets/art/enemies/mountain_ape_boss/idle_se.png:4:5:true;clip:idle_sw:assets/art/enemies/mountain_ape_boss/idle_sw.png:4:5:true;clip:idle_ne:assets/art/enemies/mountain_ape_boss/idle_ne.png:4:5:true;clip:idle_nw:assets/art/enemies/mountain_ape_boss/idle_nw.png:4:5:true;clip:walk_s:assets/art/enemies/mountain_ape_boss/walk_s.png:6:8:true;clip:walk_n:assets/art/enemies/mountain_ape_boss/walk_n.png:6:8:true;clip:walk_e:assets/art/enemies/mountain_ape_boss/walk_e.png:6:8:true;clip:walk_w:assets/art/enemies/mountain_ape_boss/walk_w.png:6:8:true;clip:walk_se:assets/art/enemies/mountain_ape_boss/walk_se.png:6:8:true;clip:walk_sw:assets/art/enemies/mountain_ape_boss/walk_sw.png:6:8:true;clip:walk_ne:assets/art/enemies/mountain_ape_boss/walk_ne.png:6:8:true;clip:walk_nw:assets/art/enemies/mountain_ape_boss/walk_nw.png:6:8:true;clip:attack_s:assets/art/enemies/mountain_ape_boss/attack_s.png:4:10:false;clip:attack_n:assets/art/enemies/mountain_ape_boss/attack_n.png:4:10:false;clip:attack_e:assets/art/enemies/mountain_ape_boss/attack_e.png:4:10:false;clip:attack_w:assets/art/enemies/mountain_ape_boss/attack_w.png:4:10:false;clip:attack_se:assets/art/enemies/mountain_ape_boss/attack_se.png:4:10:false;clip:attack_sw:assets/art/enemies/mountain_ape_boss/attack_sw.png:4:10:false;clip:attack_ne:assets/art/enemies/mountain_ape_boss/attack_ne.png:4:10:false;clip:attack_nw:assets/art/enemies/mountain_ape_boss/attack_nw.png:4:10:false;clip:hurt_s:assets/art/enemies/mountain_ape_boss/hurt_s.png:2:6:false;clip:hurt_n:assets/art/enemies/mountain_ape_boss/hurt_n.png:2:6:false;clip:hurt_e:assets/art/enemies/mountain_ape_boss/hurt_e.png:2:6:false;clip:hurt_w:assets/art/enemies/mountain_ape_boss/hurt_w.png:2:6:false;clip:hurt_se:assets/art/enemies/mountain_ape_boss/hurt_se.png:2:6:false;clip:hurt_sw:assets/art/enemies/mountain_ape_boss/hurt_sw.png:2:6:false;clip:hurt_ne:assets/art/enemies/mountain_ape_boss/hurt_ne.png:2:6:false;clip:hurt_nw:assets/art/enemies/mountain_ape_boss/hurt_nw.png:2:6:false",
       "preview": "assets/art/enemies/mountain_ape_boss/preview.png",
       "clips": [
         {
@@ -814,6 +1482,42 @@
           "dir": "w"
         },
         {
+          "name": "idle_se",
+          "sheet": "assets/art/enemies/mountain_ape_boss/idle_se.png",
+          "cols": 4,
+          "fps": 5,
+          "looped": true,
+          "action": "idle",
+          "dir": "se"
+        },
+        {
+          "name": "idle_sw",
+          "sheet": "assets/art/enemies/mountain_ape_boss/idle_sw.png",
+          "cols": 4,
+          "fps": 5,
+          "looped": true,
+          "action": "idle",
+          "dir": "sw"
+        },
+        {
+          "name": "idle_ne",
+          "sheet": "assets/art/enemies/mountain_ape_boss/idle_ne.png",
+          "cols": 4,
+          "fps": 5,
+          "looped": true,
+          "action": "idle",
+          "dir": "ne"
+        },
+        {
+          "name": "idle_nw",
+          "sheet": "assets/art/enemies/mountain_ape_boss/idle_nw.png",
+          "cols": 4,
+          "fps": 5,
+          "looped": true,
+          "action": "idle",
+          "dir": "nw"
+        },
+        {
           "name": "walk_s",
           "sheet": "assets/art/enemies/mountain_ape_boss/walk_s.png",
           "cols": 6,
@@ -848,6 +1552,42 @@
           "looped": true,
           "action": "walk",
           "dir": "w"
+        },
+        {
+          "name": "walk_se",
+          "sheet": "assets/art/enemies/mountain_ape_boss/walk_se.png",
+          "cols": 6,
+          "fps": 8,
+          "looped": true,
+          "action": "walk",
+          "dir": "se"
+        },
+        {
+          "name": "walk_sw",
+          "sheet": "assets/art/enemies/mountain_ape_boss/walk_sw.png",
+          "cols": 6,
+          "fps": 8,
+          "looped": true,
+          "action": "walk",
+          "dir": "sw"
+        },
+        {
+          "name": "walk_ne",
+          "sheet": "assets/art/enemies/mountain_ape_boss/walk_ne.png",
+          "cols": 6,
+          "fps": 8,
+          "looped": true,
+          "action": "walk",
+          "dir": "ne"
+        },
+        {
+          "name": "walk_nw",
+          "sheet": "assets/art/enemies/mountain_ape_boss/walk_nw.png",
+          "cols": 6,
+          "fps": 8,
+          "looped": true,
+          "action": "walk",
+          "dir": "nw"
         },
         {
           "name": "attack_s",
@@ -886,6 +1626,42 @@
           "dir": "w"
         },
         {
+          "name": "attack_se",
+          "sheet": "assets/art/enemies/mountain_ape_boss/attack_se.png",
+          "cols": 4,
+          "fps": 10,
+          "looped": false,
+          "action": "attack",
+          "dir": "se"
+        },
+        {
+          "name": "attack_sw",
+          "sheet": "assets/art/enemies/mountain_ape_boss/attack_sw.png",
+          "cols": 4,
+          "fps": 10,
+          "looped": false,
+          "action": "attack",
+          "dir": "sw"
+        },
+        {
+          "name": "attack_ne",
+          "sheet": "assets/art/enemies/mountain_ape_boss/attack_ne.png",
+          "cols": 4,
+          "fps": 10,
+          "looped": false,
+          "action": "attack",
+          "dir": "ne"
+        },
+        {
+          "name": "attack_nw",
+          "sheet": "assets/art/enemies/mountain_ape_boss/attack_nw.png",
+          "cols": 4,
+          "fps": 10,
+          "looped": false,
+          "action": "attack",
+          "dir": "nw"
+        },
+        {
           "name": "hurt_s",
           "sheet": "assets/art/enemies/mountain_ape_boss/hurt_s.png",
           "cols": 2,
@@ -920,6 +1696,42 @@
           "looped": false,
           "action": "hurt",
           "dir": "w"
+        },
+        {
+          "name": "hurt_se",
+          "sheet": "assets/art/enemies/mountain_ape_boss/hurt_se.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": false,
+          "action": "hurt",
+          "dir": "se"
+        },
+        {
+          "name": "hurt_sw",
+          "sheet": "assets/art/enemies/mountain_ape_boss/hurt_sw.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": false,
+          "action": "hurt",
+          "dir": "sw"
+        },
+        {
+          "name": "hurt_ne",
+          "sheet": "assets/art/enemies/mountain_ape_boss/hurt_ne.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": false,
+          "action": "hurt",
+          "dir": "ne"
+        },
+        {
+          "name": "hurt_nw",
+          "sheet": "assets/art/enemies/mountain_ape_boss/hurt_nw.png",
+          "cols": 2,
+          "fps": 6,
+          "looped": false,
+          "action": "hurt",
+          "dir": "nw"
         }
       ]
     }

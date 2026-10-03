@@ -20,7 +20,7 @@ local STATS = { attack = true, defense = true }
 local ITEM_KINDS = { crop = true, seed = true, consumable = true, material = true }
 local TOOL_KINDS = { tool = true, weapon = true }
 local SEASONS = { spring = true, summer = true, autumn = true, winter = true }
-local FACINGS = { s = true, n = true, e = true, w = true }
+local FACINGS = { s = true, n = true, e = true, w = true, se = true, sw = true, ne = true, nw = true }
 local USE_KEYS = { energy = true, inner_power = true, buff = true }
 -- 与 data/gather.lua 相同的地图格边界（cell 0-index，40x22）。
 local MAP_COLUMNS = 40
@@ -385,7 +385,7 @@ function M.validate_enemy_art_refs()
       for facing in pairs((type(entry.static_sprite) == "table") and entry.static_sprite or {}) do
         if not FACINGS[facing] then
           issues[#issues + 1] = path .. ".static_sprite." .. tostring(facing)
-            .. ": unknown facing (known: s/n/e/w)"
+            .. ": unknown facing (known: s/n/e/w/se/sw/ne/nw)"
         end
       end
       if is_non_empty_string(entry.animation) then

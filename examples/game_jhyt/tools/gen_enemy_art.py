@@ -40,8 +40,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from pixel_kit import Canvas, draw_text, rgb, shade  # noqa: E402
 from gen_manor_art import fill_ellipse  # noqa: E402  椭圆填充
 from gen_character_sprites import (  # noqa: E402  复用人形骨架与姿态表
+    ART_SCALE,
     FRAME,
+    FRAME_PX,
     INK,
+    MIRROR_DIR,
     POSE_ATTACK,
     POSE_FAINT,
     POSE_HURT,
@@ -51,7 +54,7 @@ from gen_character_sprites import (  # noqa: E402  复用人形骨架与姿态�
 )
 
 OUT_DIR = os.path.join("assets", "art", "enemies")
-DIRECTIONS = ("s", "n", "e", "w")
+DIRECTIONS = ("s", "n", "e", "w", "se", "sw", "ne", "nw")
 
 # 灰狼色板
 FUR = rgb("#8A8F98")
@@ -79,7 +82,7 @@ BANDIT = {
     "display": "山贼喽啰",
     "role": "enemy",
     "frame_px": FRAME,
-    "sprite_size": "32x32",
+    "sprite_size": f"{FRAME_PX}x{FRAME_PX}",
     "kind": "humanoid",
     "note": "短打 + 朱砂头巾 + 单刀；与主角同骨架，只换色板/发型/配件",
     "build": {"head_top": 5, "head_h": 7, "head_w": 7, "half_w": 3, "torso_bottom": 22},
@@ -416,19 +419,23 @@ def render_action(entry, action, facing):
     if entry["kind"] == "humanoid":
         poses, _, _ = HUMANOID_ACTIONS[action]
         frames = []
+        # 人形复用主角骨架（gen_character_sprites）：负 x 朝向镜像，对角有独立条带
+        base = MIRROR_DIR.get(facing, facing)
         for pose in poses:
-            frame = render_frame(entry, "e" if facing == "w" else facing, pose)
-            frames.append(frame.mirrored() if facing == "w" else frame)
+            frame = render_frame(entry, base, pose)
+            frames.append(frame.mirrored() if base != facing else frame)
         return frames
+    # 非人形骨架只画 s/n/e/w：斜向归一到侧身朝向（se/ne→e，sw/nw→w）
+    side = {"se": "e", "ne": "e", "sw": "w", "nw": "w"}.get(facing, facing)
     if entry["kind"] == "quadruped":
         poses, _, _ = QUADRUPED_ACTIONS[action]
-        return [draw_wolf(facing, pose) for pose in poses]
+        return [draw_wolf(side, pose) for pose in poses]
     if entry["kind"] == "scorpion":
         poses, _, _ = SCORPION_ACTIONS[action]
-        return [draw_scorpion(facing, pose) for pose in poses]
+        return [draw_scorpion(side, pose) for pose in poses]
     if entry["kind"] == "boss":
         poses, _, _ = BOSS_ACTIONS[action]
-        return [draw_boss(facing, pose) for pose in poses]
+        return [draw_boss(side, pose) for pose in poses]
     poses, _, _ = DUMMY_ACTIONS[action]
     frames = [draw_dummy(pose) for pose in poses]
     return [frame.mirrored() for frame in frames] if facing == "w" else frames
@@ -455,14 +462,14 @@ def directions_for(entry):
 def enemy_entries():
     return [
         BANDIT,
-        {"id": "gray_wolf", "display": "灰狼", "frame_px": FRAME, "sprite_size": "32x32",
+        {"id": "gray_wolf", "display": "灰狼", "frame_px": FRAME, "sprite_size": f"{FRAME_PX}x{FRAME_PX}",
          "kind": "quadruped", "note": "四足骨架：追击型近战，攻击带前扑",
          "palette": {"fur": "#8A8F98"}},
-        {"id": "training_dummy", "display": "训练木人", "frame_px": FRAME, "sprite_size": "32x32",
+        {"id": "training_dummy", "display": "训练木人", "frame_px": FRAME, "sprite_size": f"{FRAME_PX}x{FRAME_PX}",
          "kind": "dummy", "note": "静态标靶：不移动不攻击，只有待机与受击",
          "palette": {"post": "#8A6A46", "straw": "#C9A05A"}},
         # ---- 批次 4：首发敌人扩充（docs/30 §8.4）----
-        {"id": "xuanming_adept", "display": "玄冥会徒", "frame_px": FRAME, "sprite_size": "32x32",
+        {"id": "xuanming_adept", "display": "玄冥会徒", "frame_px": FRAME, "sprite_size": f"{FRAME_PX}x{FRAME_PX}",
          "kind": "humanoid", "note": "墨黑长袍 + 紫滚边 + 面罩，与司徒魁同色系；复用主角骨架",
          "build": {"head_top": 5, "head_h": 7, "head_w": 7, "half_w": 3, "torso_bottom": 22},
          "outfit": "robe", "hair": "cap", "beard": "none", "accessory": "sword_hip",
@@ -470,12 +477,13 @@ def enemy_entries():
          "palette": {"skin": rgb("#D9B08C"), "hair": rgb("#1E1A1C"), "cloth": rgb("#2A2430"),
                      "cloth_alt": rgb("#4A3A56"), "trim": rgb("#8B6BB8"), "belt": rgb("#8B6BB8"),
                      "shoe": rgb("#1E1A1C")}},
-        {"id": "poison_scorpion", "display": "毒蝎", "frame_px": FRAME, "sprite_size": "32x32",
+        {"id": "poison_scorpion", "display": "毒蝎", "frame_px": FRAME, "sprite_size": f"{FRAME_PX}x{FRAME_PX}",
          "kind": "scorpion", "note": "低伏甲壳骨架：双螯 + 六足 + 上翘毒尾，攻击带突刺",
          "palette": {"shell": "#6B4A3A"}},
         {"id": "mountain_ape_boss", "display": "山魈首领（第一章 Boss）", "frame_px": 48,
-         "sprite_size": "48x48", "kind": "boss",
-         "note": "48×48 大体型骨架：厚肩长臂 + 獠牙 + 朱砂眼；重击/冲撞用同一套攻击帧",
+         "sprite_size": f"{48 * ART_SCALE}x{48 * ART_SCALE}",
+         "kind": "boss",
+         "note": "48×48 绘制帧（导出 96×96）大体型骨架：厚肩长臂 + 獠牙 + 朱砂眼；重击/冲撞用同一套攻击帧",
          "palette": {"fur": "#4E4238"}},
     ]
 
@@ -484,17 +492,19 @@ def build_enemy(entry, out_root, preview_scale=2, quiet=False):
     enemy_dir = os.path.join(out_root, entry["id"])
     os.makedirs(enemy_dir, exist_ok=True)
     frame_px = entry.get("frame_px", FRAME)
+    export_px = frame_px * ART_SCALE  # 导出帧尺寸（与 sprite_size 一致，放大 ART_SCALE 倍）
     clips = []
     rows = []
     for action, (poses, fps, looped) in actions_for(entry).items():
         for facing in directions_for(entry):
             frames = render_action(entry, action, facing)
             assert len(frames) == len(poses), (entry["id"], action, facing)
-            strip = Canvas(frame_px * len(frames), frame_px)
+            strip = Canvas(export_px * len(frames), export_px)
             for index, frame in enumerate(frames):
-                for y in range(frame_px):
-                    for x in range(frame_px):
-                        strip.set(index * frame_px + x, y, frame.get(x, y))
+                scaled = frame.scaled(ART_SCALE)
+                for y in range(export_px):
+                    for x in range(export_px):
+                        strip.set(index * export_px + x, y, scaled.get(x, y))
             name = f"{action}_{facing}"
             rel = f"assets/art/enemies/{entry['id']}/{name}.png"
             with open(os.path.join(enemy_dir, f"{name}.png"), "wb") as handle:
@@ -504,7 +514,7 @@ def build_enemy(entry, out_root, preview_scale=2, quiet=False):
             rows.append((name, frames))
             if action == "idle":
                 with open(os.path.join(enemy_dir, f"static_{facing}.png"), "wb") as handle:
-                    handle.write(frames[0].to_png())
+                    handle.write(frames[0].scaled(ART_SCALE).to_png())
     with open(os.path.join(enemy_dir, "preview.png"), "wb") as handle:
         handle.write(build_enemy_preview(entry, rows, preview_scale).to_png())
     if not quiet:
@@ -576,7 +586,7 @@ def emit_manifest(entries, clips_by_enemy, out_root):
         "version": 1,
         "generated_by": "tools/gen_enemy_art.py",
         "design_doc": "docs/31-江湖有田-美术资源方案.md",
-        "frame_px": FRAME,
+        "frame_px": FRAME_PX,
         "engine": {
             "animation_component": "default=<clip>;clip:<name>:<sheet>:<cols>:<fps>:<looped>",
             "note": "敌人由 entity.spawn 运行期创建，Lua 目前无法挂 Animation，只能用 static_<dir>.png",
@@ -616,7 +626,7 @@ def emit_lua(entries, clips_by_enemy, path):
         "-- 字段：",
         "--   display        显示名",
         "--   sprite_size    世界尺寸（与帧尺寸一致）",
-        "--   static_sprite  单帧 SpriteComponent 串（朝向 s/n/e/w）",
+        "--   static_sprite  单帧 SpriteComponent 串（八向：s/n/e/w/se/sw/ne/nw）",
         "--   animation      Animation 组件串（default + clip:name:sheet:cols:fps:looped）",
         "--   clips          条带清单（调试/验收用）",
         "local M = {}",

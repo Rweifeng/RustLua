@@ -20,7 +20,7 @@ end
 
 -- 直接更新刚体速度（世界单位/秒）：引擎每帧 step_physics 推进位移，
 -- 与 GroundMap solid 瓦片碰撞；0 表示停住。
--- 顺带记录"是否在走"与朝向，供主角形象系统切 walk/idle 与四向条带
+-- 顺带记录"是否在走"与朝向，供主角形象系统切 walk/idle 与八向条带
 -- （不额外读物理速度，Lua 侧本就持有指令来源，避免多一个引擎 API 依赖）。
 function M.set_velocity(dx, dy)
   local pid = M.ensure()
@@ -31,9 +31,10 @@ function M.set_velocity(dx, dy)
   local moving = (tonumber(dx) or 0) ~= 0 or (tonumber(dy) or 0) ~= 0
   M.moving = moving
   if moving then
-    -- state.facing 是玩法口径（up/down/left/right，farm/combat 也在用）；
-    -- 条带是四向 s/n/e/w，二者在这里一次性换算。
-    M.facing = M.clip_dir()
+    -- 条带是八向（s/n/e/w/se/sw/ne/nw），直接用速度向量取朝向；
+    -- state.facing 仍是玩法口径（up/down/left/right，farm/combat 也在用），
+    -- 交互/战斗面前格逻辑不因八向而变（见 input.lua update_movement）。
+    M.facing = M.clip_dir_from_velocity(dx, dy)
   end
 end
 
@@ -130,6 +131,29 @@ function M.clip_dir(facing)
   return DIRECTION_TO_CLIP[name] or "s"
 end
 
+-- 速度向量 → 八向条带朝向（s/n/e/w/se/sw/ne/nw）。
+-- 对角移动（两轴同时非零）返回对角朝向；世界坐标 y 向上：dy>0 是向北（屏幕上方）。
+function M.clip_dir_from_velocity(dx, dy)
+  local ex = tonumber(dx) or 0
+  local ey = tonumber(dy) or 0
+  local exn = ex > 0 and 1 or (ex < 0 and -1 or 0)
+  local eyn = ey > 0 and 1 or (ey < 0 and -1 or 0)
+  if exn == 0 and eyn == 0 then
+    return M.facing or M.clip_dir()
+  end
+  if exn ~= 0 and eyn ~= 0 then
+    -- 对角：东南/西南/东北/西北
+    if exn > 0 and eyn < 0 then return "se" end
+    if exn < 0 and eyn < 0 then return "sw" end
+    if exn > 0 and eyn > 0 then return "ne" end
+    return "nw"
+  end
+  if exn > 0 then return "e" end
+  if exn < 0 then return "w" end
+  if eyn > 0 then return "n" end
+  return "s"
+end
+
 -- 当前形象 id：state 里的值必须真实存在，否则退回默认形象（坏档自愈）。
 function M.appearance_id()
   local id = state.appearance
@@ -183,7 +207,8 @@ function M.apply()
   if not entry then
     return false, "no character art for appearance: " .. tostring(id)
   end
-  M.facing = M.clip_dir()
+  -- 保留上次八向朝向（idle 也按最后移动方向站立）；首次/无记录时回退玩法四向
+  M.facing = M.facing or M.clip_dir()
   local sprite_ok, sprite_err = pcall(sprite.set, pid, entry.static_sprite[M.facing])
   if not sprite_ok then
     return false, "sprite.set failed: " .. tostring(sprite_err)

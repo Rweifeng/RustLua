@@ -165,8 +165,17 @@ local function despawn(actor)
 end
 
 -- 朝向：与 npc.lua 同一套（世界 y 朝上，+y 背对 / -y 面向镜头）。
+-- 八向条带：两轴同时显著非零时取对角（se/sw/ne/nw），否则按主轴取四正。
+-- 注意：玩法朝向 facing_of()（right/left/up/down）保持四向，combat.hitbox 依赖它。
 local function facing_from(dx, dy)
-  if math.abs(dx) >= math.abs(dy) then
+  local ax, ay = math.abs(dx), math.abs(dy)
+  if ax > 0.001 and ay > 0.001 then
+    if dx > 0 and dy > 0 then return "ne" end
+    if dx > 0 then return "se" end
+    if dy > 0 then return "nw" end
+    return "sw"
+  end
+  if ax >= ay then
     return dx >= 0 and "e" or "w"
   end
   return dy >= 0 and "n" or "s"

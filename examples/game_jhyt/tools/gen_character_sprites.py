@@ -41,12 +41,21 @@ import zlib
 # 常量
 # ---------------------------------------------------------------------------
 
-FRAME = 32  # 帧尺寸（像素）：与世界 tile 32 单位 1:1
-FOOT_Y = 29  # 脚底基线（画布 y 向下）
-CX = 16  # 角色中轴
+FRAME = 32  # 绘制画布尺寸（像素）：与世界 tile 32 单位 1:1（绘制逻辑坐标）
+ART_SCALE = 2  # 导出放大倍数：角色帧 = FRAME × ART_SCALE = 64×64（docs/51 §2.2 标准）
+FRAME_PX = FRAME * ART_SCALE  # 导出帧尺寸：引擎 Sprite size 与 Animation 条带采样都用它
+FOOT_Y = 29  # 脚底基线（画布 y 向下，绘制坐标）
+CX = 16  # 角色中轴（绘制坐标）
 
-DIRECTIONS = ("s", "n", "e", "w")
-DIR_TITLE = {"s": "南(面向镜头)", "n": "北(背对)", "e": "东(朝右)", "w": "西(朝左)"}
+# 八向：四正（s/n/e/w）+ 四斜（se/sw/ne/nw）。
+# 对角帧采用"侧身布局 + 正脸头"（像素游戏 8 向通用做法），见 layout()/draw_head()。
+DIRECTIONS = ("s", "n", "e", "w", "se", "sw", "ne", "nw")
+DIR_TITLE = {
+    "s": "南(面向镜头)", "n": "北(背对)", "e": "东(朝右)", "w": "西(朝左)",
+    "se": "东南(右下)", "sw": "西南(左下)", "ne": "东北(右上)", "nw": "西北(左上)",
+}
+# 负 x 朝向 → 正 x 基准朝向（渲染后整体水平镜像），复用既有 w 的镜像逻辑。
+MIRROR_DIR = {"w": "e", "sw": "se", "nw": "ne"}
 
 # 动作 → 每方向帧数 / FPS / 是否循环（对应 docs/31 §3.2 的帧预算）
 ACTIONS = {
@@ -495,12 +504,14 @@ def by_id(char_id):
 
 def layout(ch, facing):
     build = ch["build"]
-    side = facing in ("e", "w")
+    side = facing in ("e", "w", "se", "sw", "ne", "nw")
+    diag = facing in ("se", "sw", "ne", "nw")
     half = build["half_w"] - (1 if side else 0)
     head_top = build["head_top"]
     head_h = build["head_h"]
     return {
         "side": side,
+        "diag": diag,
         "half": max(1, half),
         "head_top": head_top,
         "head_h": head_h,
@@ -777,11 +788,24 @@ def draw_head(cv, ch, facing, lay, o):
         cv.rect(hx0 + 1, head_top + 2, hx1 - 1, chin - 1, hair)
     else:
         eye = INK
-        if side:
+        diag = lay.get("diag", False)
+        if side and not diag:
             cv.rect(hx1 - 2, head_top + 3, hx1 - 2, head_top + 3, eye)
             cv.set(hx1 + 1, head_top + 2, hair)  # 额发
             if hurt:
                 cv.hline(hx1 - 3, hx1 - 1, head_top + 3, eye)
+        elif diag:
+            # 斜向：头保持侧身偏移（hx0/hx1 已 +1），五官用正脸，做出 3/4 侧视角
+            cv.set(hx1 + 1, head_top + 2, hair)  # 额发
+            if hurt:
+                cv.hline(hx0 + 1, hx0 + 2, head_top + 3, eye)
+                cv.hline(hx1 - 2, hx1 - 1, head_top + 3, eye)
+            else:
+                cv.set(hx0 + 1, head_top + 3, eye)
+                cv.set(hx0 + 2, head_top + 3, eye)
+                cv.set(hx1 - 2, head_top + 3, eye)
+                cv.set(hx1 - 1, head_top + 3, eye)
+            cv.hline(CX - 1 + lean, CX + lean, head_top + 5, sdark)
         else:
             if hurt:
                 cv.hline(hx0 + 1, hx0 + 2, head_top + 3, eye)
@@ -1074,10 +1098,12 @@ def clip_frames(action, role):
 
 def render_action(ch, action, facing):
     poses = POSES[action][ch["role"]]
+    # 负 x 朝向（w/sw/nw）以对应正 x 朝向为基准，渲染后整体水平镜像
+    base = MIRROR_DIR.get(facing, facing)
     frames = []
     for pose in poses:
-        frame = render_frame(ch, "e" if facing == "w" else facing, pose)
-        if facing == "w":
+        frame = render_frame(ch, base, pose)
+        if base != facing:
             frame = frame.mirrored()
         frames.append(frame)
     return frames
@@ -1174,11 +1200,13 @@ def build_character(ch, out_root, preview_scale=2, quiet=False):
         for facing in DIRECTIONS:
             frames = render_action(ch, action, facing)
             assert len(frames) == count, (action, facing, len(frames))
-            strip = Canvas(FRAME * len(frames), FRAME)
+            # 导出 = 绘制帧 × ART_SCALE（最近邻放大），条带帧尺寸 FRAME_PX×FRAME_PX
+            strip = Canvas(FRAME_PX * len(frames), FRAME_PX)
             for index, frame in enumerate(frames):
-                for y in range(FRAME):
-                    for x in range(FRAME):
-                        strip.set(index * FRAME + x, y, frame.get(x, y))
+                scaled = frame.scaled(ART_SCALE)
+                for y in range(FRAME_PX):
+                    for x in range(FRAME_PX):
+                        strip.set(index * FRAME_PX + x, y, scaled.get(x, y))
             name = f"{action}_{facing}"
             rel = f"assets/art/characters/{ch['id']}/{name}.png"
             write_png(os.path.join(out_root, ch["id"], f"{name}.png"), strip)
@@ -1195,7 +1223,10 @@ def build_character(ch, out_root, preview_scale=2, quiet=False):
             )
             # 每个朝向的第一帧空闲姿态另存单帧静态图（没有 Animation 组件时的兜底）
             if action == "idle":
-                write_png(os.path.join(out_root, ch["id"], f"static_{facing}.png"), frames[0])
+                write_png(
+                    os.path.join(out_root, ch["id"], f"static_{facing}.png"),
+                    frames[0].scaled(ART_SCALE),
+                )
     write_png(os.path.join(out_root, ch["id"], "preview.png"), build_character_preview(ch, preview_scale))
     if not quiet:
         print(f"  {ch['id']}: {len(clips)} clips / {sum(c['cols'] for c in clips)} frames")
@@ -1218,7 +1249,7 @@ def build_character_preview(ch, scale=2):
     cv.rect(0, 0, width - 1, height - 1, (0x14, 0x17, 0x1A, 255))
     draw_text(cv, 4, 4, ch["id"], (0xE4, 0xC0, 0x78, 255), 2)
     draw_text(cv, 4 + text_width(ch["id"], 2) + 6, 6,
-              f"FRAME {FRAME} X{scale} {len(rows)} ROWS", (0x8A, 0x8F, 0x98, 255), 1)
+              f"FRAME {FRAME_PX} X{scale} {len(rows)} ROWS", (0x8A, 0x8F, 0x98, 255), 1)
     for index, (label, frames) in enumerate(rows):
         y = header + index * row_h
         draw_text(cv, 4, y + tile // 2 - 2, label, (0xA9, 0xC2, 0x8F, 255), 1)
@@ -1264,7 +1295,7 @@ def build_overview(chars, out_root, scale=2):
     height = 22 + len(rows) * row_h + 8
     cv = Canvas(width, height)
     cv.rect(0, 0, width - 1, height - 1, (0x14, 0x17, 0x1A, 255))
-    draw_text(cv, 4, 5, f"JIANGHU YOUTIAN / CHARACTER OVERVIEW / FRAME {FRAME} X{scale}",
+    draw_text(cv, 4, 5, f"JIANGHU YOUTIAN / CHARACTER OVERVIEW / FRAME {FRAME_PX} X{scale}",
               (0xE4, 0xC0, 0x78, 255), 1)
     for index, (label, ch, clip) in enumerate(rows):
         y = 22 + index * row_h
@@ -1318,7 +1349,7 @@ def _fps(value):
 def static_sprite(ch, facing="s"):
     return (
         f"texture=assets/art/characters/{ch['id']}/static_{facing}.png"
-        f";size={FRAME}x{FRAME};tint=1.000,1.000,1.000,1.000;sorting_layer=actor"
+        f";size={FRAME_PX}x{FRAME_PX};tint=1.000,1.000,1.000,1.000;sorting_layer=actor"
     )
 
 
@@ -1327,7 +1358,7 @@ def emit_manifest(chars, clips_by_char, out_root):
         "version": 1,
         "generated_by": "tools/gen_character_sprites.py",
         "design_doc": "docs/36-江湖有田-角色序列帧设计.md",
-        "frame_px": FRAME,
+        "frame_px": FRAME_PX,
         "directions": {key: DIR_TITLE[key] for key in DIRECTIONS},
         "engine": {
             "animation_component": "default=<clip>;clip:<name>:<sheet>:<cols>:<fps>:<looped>",
@@ -1344,7 +1375,7 @@ def emit_manifest(chars, clips_by_char, out_root):
                 "display": ch["display"],
                 "role": ch["role"],
                 "note": ch["note"],
-                "sprite_size": f"{FRAME}x{FRAME}",
+                "sprite_size": f"{FRAME_PX}x{FRAME_PX}",
                 "sorting_layer": "actor",
                 "static_sprite": static_sprite(ch, "s"),
                 "animation": animation_component(clips),
@@ -1380,7 +1411,7 @@ LUA_HEADER = '''-- data/characters.lua：《江湖有田》角色形象与序列
 local M = {}
 
 M.version = 1
-M.frame_px = 32
+M.frame_px = {FRAME_PX}
 
 -- 每个角色：id → 显示名、形象要点、单帧 sprite 串、动画组件串、格子大小。
 M.characters = {
@@ -1389,6 +1420,7 @@ M.characters = {
 LUA_FOOTER = '''}
 
 -- 朝向：s 南(面向镜头) / n 北(背对) / e 东(朝右) / w 西(朝左)
+--       se 东南 / sw 西南 / ne 东北 / nw 西北（斜向帧：侧身布局 + 正脸头）
 function M.get(id)
   return M.characters[id]
 end
@@ -1421,7 +1453,7 @@ function M.player_animation(variant)
   return entry.animation
 end
 
--- NPC 当前可用的单帧 sprite 串（朝向 s/n/e/w）。
+-- NPC 当前可用的单帧 sprite 串（八向：s/n/e/w/se/sw/ne/nw）。
 function M.npc_sprite(id, facing)
   local entry = M.characters[id]
   if not entry then
@@ -1442,7 +1474,7 @@ function M.validate_all()
     if type(entry.animation) ~= "string" or not entry.animation:find("^default=", 1) then
       issues[#issues + 1] = "data/characters.lua:" .. id .. ".animation: expected default=<clip>;clip:... string"
     end
-    for _, facing in ipairs({ "s", "n", "e", "w" }) do
+    for _, facing in ipairs({ "s", "n", "e", "w", "se", "sw", "ne", "nw" }) do
       if type(entry.static_sprite) ~= "table" or type(entry.static_sprite[facing]) ~= "string" then
         issues[#issues + 1] = "data/characters.lua:" .. id .. ".static_sprite." .. facing .. ": missing"
       end
@@ -1466,7 +1498,7 @@ def lua_quote(value):
 
 
 def emit_lua(chars, clips_by_char, path):
-    lines = [LUA_HEADER]
+    lines = [LUA_HEADER.replace("{FRAME_PX}", str(FRAME_PX))]
     for ch in chars:
         clips = clips_by_char[ch["id"]]
         lines.append(f"  {ch['id']} = {{")
@@ -1576,11 +1608,11 @@ def check(out_root, chars, lua_path=None):
                 issues.append("missing sheet: " + clip["sheet"])
                 continue
             width, height, depth, color_type = png_size(path)
-            if height != FRAME:
-                issues.append(f"{clip['sheet']}: height {height} != {FRAME}")
-            if width != FRAME * clip["cols"]:
+            if height != FRAME_PX:
+                issues.append(f"{clip['sheet']}: height {height} != {FRAME_PX}")
+            if width != FRAME_PX * clip["cols"]:
                 issues.append(
-                    f"{clip['sheet']}: width {width} != {FRAME * clip['cols']} (cols={clip['cols']})"
+                    f"{clip['sheet']}: width {width} != {FRAME_PX * clip['cols']} (cols={clip['cols']})"
                 )
             if (depth, color_type) != (8, 6):
                 issues.append(f"{clip['sheet']}: expected RGBA8, got depth={depth} color_type={color_type}")
@@ -1590,8 +1622,8 @@ def check(out_root, chars, lua_path=None):
                 issues.append(f"missing static frame: {entry['id']}/static_{facing}.png")
                 continue
             width, height, _, _ = png_size(path)
-            if (width, height) != (FRAME, FRAME):
-                issues.append(f"{entry['id']}/static_{facing}.png: {width}x{height} != {FRAME}x{FRAME}")
+            if (width, height) != (FRAME_PX, FRAME_PX):
+                issues.append(f"{entry['id']}/static_{facing}.png: {width}x{height} != {FRAME_PX}x{FRAME_PX}")
         if not os.path.exists(os.path.join(out_root, entry["id"], "preview.png")):
             issues.append(f"missing preview: {entry['id']}/preview.png")
     if lua_path:
