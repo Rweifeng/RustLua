@@ -11,6 +11,7 @@
 | --- | --- | --- |
 | `wp0-3d-stress.committed.json` | **门禁基准**：上一次"确认过没回退"的报告；`verify.ps1 -Benchmarks` 拿新鲜报告和它比（`.gitignore` 显式放行） | ✅ 是 |
 | `wp0-3d-stress.json` | 每次 `-Benchmarks` 覆写的新鲜报告（`docs/41` 的基准命令写的就是它） | ❌ 否（运行证据） |
+| `engine-pub-surface.json` | **符号面门禁基准**：`cargo doc` 产物里 `engine` 的对外项清单（路径 + 种类 + `host/` 下的方法归属）。`node scripts/engine-pub-surface.mjs --check` 逐字节比对，`verify.ps1` 的 "Engine public Rust surface" 那一步就是它（`.gitignore` 显式放行） | ✅ 是 |
 | `README.md` | 本说明 | ✅ 是 |
 
 其余 `*.json` / `*.txt`（`m19-soak`、`ecs-stairs`、各 golden 等）仍是运行证据，不进版本库。
@@ -18,7 +19,7 @@
 ## 为什么只比结构性指标（`-GeometryOnly`）
 
 `p95_us` / `p99_us` 是**机器相关**的量：跨机器（或同一台机器的不同负载）比时间必然产生假红。
-`artifacts/` 除上面两行外被 gitignore（证据不进版本库），所以仓库里没有"上一次在同一台机器上的时间"。
+`artifacts/` 除上表标 ✅ 的几行外被 gitignore（证据不进版本库），所以仓库里没有"上一次在同一台机器上的时间"。
 
 因此：
 

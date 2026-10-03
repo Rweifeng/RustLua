@@ -14,6 +14,8 @@ artifacts/
 /artifacts/baselines/*
 !/artifacts/baselines/README.md
 !/artifacts/baselines/wp0-3d-stress.committed.json
+# WP12 阶段 0：engine 对外 Rust 符号面的门禁基准（由 scripts/engine-pub-surface.mjs 生成/比对）
+!/artifacts/baselines/engine-pub-surface.json
 
 # IDE and OS files
 .claude/

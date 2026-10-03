@@ -307,6 +307,18 @@ try {
         $env:RUSTDOCFLAGS = $previousDocFlags
     }
 
+    # WP12 阶段 0：`engine` 对外 Rust 符号面的基线门。它读的就是上面 `cargo doc` 刚生成的产物
+    # （`engine/target/doc/engine`），所以必须紧跟在那一步之后；判据是"路径 + 项的种类 + 方法还挂在
+    # 哪个类型上"逐项与 `artifacts/baselines/engine-pub-surface.json` 相同。
+    # 抓的是模块拆分这一类事故：`impl` 块搬进 `pub mod` 子模块、`pub use` 漏了一项，都会多/少一条路径。
+    # 缺 node 时按本仓库口径打印原因后跳过，绝不把"跳过"写成通过。
+    Write-Step "Engine public Rust surface"
+    if (Get-Command node -ErrorAction SilentlyContinue) {
+        Invoke-Checked node @((Join-Path $projectRoot "scripts/engine-pub-surface.mjs"), "--check")
+    } else {
+        Write-Host "  [SKIP] 未找到 node：对外 Rust 符号面基线门未运行（不是通过）" -ForegroundColor Yellow
+    }
+
     # 优化项 11：本地 pre-commit 门自身的回归。fmt/clippy 步查的是代码，这一步查的是
     # "提交前到底会不会有人被挡住"——hook 的选路、拦截与逃生门逻辑回归了，前面所有步都发现不了。
     # 它只用临时 git 仓库 + cargo fmt（零依赖、秒级）。退出码沿用本仓库口径：
