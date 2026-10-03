@@ -273,6 +273,32 @@ WXWebAssembly.instantiate(path, imports)  ->  Promise<{module, instance}>
 路径通道顺带**省掉把 2.3 MB wasm 读进 JS 堆**那一步。路径候选会试 `pkg/game_web_bg.wasm` 与
 `/pkg/game_web_bg.wasm` 两种写法（前后导斜杠的容忍度按宿主不同），成功的那个进 `path` 证据。
 
+**标准 `WebAssembly` 域名由 bridge 按宿主转发**（`GLUE_EVAL_CTORS` → facade）：胶水不止在实例化时
+读它，它在 **require 求值期**就无条件 `new WebAssembly.Tag(...)`——那两条 tag 同时是 wasm 的导入
+（56 条导入 = 54 function + 2 tag）。宿主只给 `WXWebAssembly` 域名、没有标准全局，所以 facade 必须
+排在 `requireGlue` **之前**装好，而且**只转宿主真有的构造器**：tag 是导入，伪造的 JS 对象在
+instantiate 时必被宿主拒，那只会把撒谎的报错换成另一句撒谎的报错。宿主确实没有 `Tag` 时判
+`webassembly-api-incomplete`（detail 带 `facade missing` + 宿主键名清单 + 求值期全局读数）。
+这次用的域名来源本身是可读的：`__RUSTLUA_DIAG().wasm.facade`。实测与四层修法见
+[docs/52](../../docs/52-微信小游戏分包发布.md) R13。
+
+**开发者工具这一份宿主上 facade 不够**（2026-10-03 实测）：它的 `WXWebAssembly` 域名是
+`Global,Instance,Memory,Module,Table,compile,instantiate`，**没有** `Tag`/`Exception`。实测把 JS 伪造
+的 polyfill tag 塞进 `instantiate` 的 imports 会被宿主**拒绝**（要求真实的 `WebAssembly.Tag`，见
+用例 1a3 的 `polyfill_tag_probe=rejected`）——所以 facade 顶不住 tag 导入，只能把那两个 externref
+tag 导入从 wasm 二进制里剥掉（`scripts/wasm-lua/strip-wasm-tags.mjs`，只剥导入、留住内部 `$tag$0`）。
+
+剥完之后产物里**仍然留着**本地 tag 段 + legacy `try/catch`（那是 Rust `catch_unwind` / Lua `pcall`
+的载体，不能剥）。于是真机上剩下的决定性问题从"引擎认不认 tag 导入"换成"引擎到底实没实现
+wasm 异常处理本身"。缺 `Tag` 时 bridge 会经 `WXWebAssembly.compile` 编译一份**隔离**的极小模块
+`pkg/eh-probe.wasm`（53 字节：零导入 + 一个本地 tag + legacy `try/catch`，把变量收到只剩 EH；
+由发布链路同一个 binaryen-133 `wasm-as` 汇编），3 秒超时、与实例化**并发**跑（不挡 boot），结果写进
+`__RUSTLUA_DIAG().wasm.ehProbe`：`eh_probe=accepted` 说明引擎实现 EH、剥完的产物真机能落地；
+`eh_probe=compile-reject[路径]=<宿主原话>` 说明引擎连本地 tag 段都拒，只能换"根本不用 EH"的产物形态。
+本机 V8 支持 EH，所以本机的 `accepted` 只是**正对照**（证明探针接对），设备那一侧只能真机读；
+配套还有一条 `eh_probe_exec=7`（直接实例化探针调 `f()`，只有真跑过 `throw→catch` 才返回 7）挡住
+"探针其实是份不含 EH 的桩、compile 当然过"的假绿。方向由这几行定，不靠猜。
+
 **失败不掀翻启动**：wasm 核心的宿主交互（`hostapi_*` 诊断）失败只 `console.warn` 一行 +
 `data-rustlua-wasm` 记状态；**但 Lua 执行层就在 wasm 里**（迁移后无备用解释器），`__RUSTLUA_LUA_BRIDGE`
 缺失会让 `web-runtime.js` 抛 `wasm lua bridge not loaded`——这是发布形态问题，不是可降级路径。
@@ -281,7 +307,7 @@ wasm 状态不被静默忽略——有四个读取通道：
 | 通道 | 怎么读 | 取值 |
 |---|---|---|
 | DOM 标记 | `__RustLuaWechat.getAttribute('data-rustlua-wasm')` | 同下表 `status` |
-| 诊断快照 | `__RUSTLUA_DIAG().wasm` / `wx.__rustluaDiag().wasm` | `{status, source, channel, path, exports, detail, attempts}` |
+| 诊断快照 | `__RUSTLUA_DIAG().wasm` / `wx.__rustluaDiag().wasm` | `{status, source, channel, path, facade, exports, detail, attempts, ehProbe}` |
 | 启动日志 | 控制台搜 `wasm-bridge:` | 成功一行（含通道、路径与导出清单）或 `wasm 核心未就绪（<reason>｜通道尝试: …）` |
 | API | `__RustLuaWechat.loadWasm()` / `.wasmInfo()` | 触发/等待加载（返回 Promise）/ 只读状态 |
 
@@ -289,15 +315,15 @@ wasm 状态不被静默忽略——有四个读取通道：
 
 | status | 含义 | 通常原因 |
 |---|---|---|
-| `ok` | 实例化成功，`exports` 是真实导出名，`channel` 标出用了哪条通道 | 正常 |
+| `ok` | 实例化成功，`exports` 是真实导出名，`channel` 标出用了哪条通道，`facade` 标出标准域名的来源（转发的构造器清单或 `host-standard`） | 正常 |
 | `not-attempted` | 还没触发（`start()` 之前） | 正常 |
 | `no-webassembly` | 宿主既没有 `WXWebAssembly` 也没有 `WebAssembly` | 基础库过旧 / harness `--no-wasm` |
-| `webassembly-api-incomplete` | 既没有 `instantiate(path,imports)` 也没有 `Module`/`Instance` | 宿主 wasm 实现残缺 |
+| `webassembly-api-incomplete` | 既没有 `instantiate(path,imports)` 也没有 `Module`/`Instance`；**或**宿主无标准全局且 `WXWebAssembly` 没有 `Tag`（胶水的 tag 导入在求值期就要） | 宿主 wasm 实现残缺 |
 | `path-instantiate-failed` | 两条路径写法宿主都拒绝了（`attempts` 带每条原始信息） | wasm 没在代码包里、路径写法宿主不认、模块被拒绝编译 |
 | `wasm-bytes-unreadable` | 字节通道读不到包内 wasm | 只在字节通道宿主上出现；发布形态没把 wasm 打进去 |
 | `instantiate-failed` | 字节通道里胶水抛错（`detail` 带原始信息） | 产物 EH 与宿主不兼容（rustc ≠ 1.88）、胶水被改动后与宿主不匹配 |
 | `bridge-missing` | `require('./wasm-bridge.js')` 失败 | 平台文件没被复制进产物 |
-| `glue-missing` / `glue-shape-unexpected` | `require('./pkg/game_web.js')` 缺失或不是函数 | **构建期没补 CommonJS 导出**（no-modules 只有顶层 `let`） |
+| `glue-missing` / `glue-shape-unexpected` | `require('./pkg/game_web.js')` 缺失或不是函数 | **构建期没补 CommonJS 导出**（no-modules 只有顶层 `let`）。标准域名缺席这一类已由 facade 接管，所以这句不再被"宿主没有 `WebAssembly` 全局"冒充；detail 带求值期全局读数 |
 
 **能力边界**：wasm 到"能按宿主唯一通道实例化、导出清单可核对"为止。`game_web::start()`（web-sys 形态）
 在小游戏里跑不了，适配层不调用；`start_wechat()`（去 DOM 入口）已写在 Rust 侧但**未接线、未验证**

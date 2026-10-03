@@ -28,7 +28,8 @@
 
 // 胶水在模块作用域里用到的宿主全局。**必须在 require 之前装好**：
 //   * `TextEncoder` —— `passStringToWasm0` 用它编码字符串；
-//   * `WebAssembly` —— 实例化；小游戏侧只有 `WXWebAssembly`（见上）；
+//   * `WebAssembly` —— 求值期就要（tag 导入 + `wrapError` 造 Exception）。小游戏侧只有
+//     `WXWebAssembly` 域名，标准全局缺席时由下面的 facade 转发补上；
 //   * `console` —— 胶水自己的告警路径。
 function ensureGlobals() {
   var g = typeof globalThis !== 'undefined' ? globalThis : (typeof global !== 'undefined' ? global : this);
@@ -36,7 +37,8 @@ function ensureGlobals() {
     g.TextEncoder = TextEncoder;
   }
   // `WXWebAssembly` 是宿主注入的全域名；只有它才认小游戏的 wasm 文件。
-  // 注意：**不**把 `WXWebAssembly` 改名成 `WebAssembly`——那会覆盖宿主自己的实现。
+  // **不**把整份 `WXWebAssembly` 直接改名成 `WebAssembly`——那会覆盖宿主自己的实现；
+  // 只在宿主确实没有标准全局时，按 installWebAssemblyFacade 逐条转发构造器。
   return g;
 }
 
@@ -50,6 +52,202 @@ function resolveWebAssembly(g) {
     return { wasm: g.WebAssembly, source: 'WebAssembly' };
   }
   return { wasm: null, source: 'none' };
+}
+
+// ---------- 标准域名 facade（2026-10-03 开发者工具实测的缺口） ----------
+//
+// 胶水不只是"实例化时用 WebAssembly"，它在 **require 求值期**就无条件读标准域名：
+//   let cachedTextDecoder = new TextDecoder('utf-8', …)      // IIFE 前半段
+//   const __wbindgen_jstag_polyfill = new WebAssembly.Tag({ parameters: ['externref'] })
+// 那两条 Tag 是 wasm 的**导入**（`node -e … Module.imports` 实测：56 条导入里 54 function + 2 tag，
+// 名字是 `__wbindgen_jstag` / `__wbindgen_wrapped_jstag`），所以它们必须是**宿主真的 Tag 对象**
+// ——facade 只能转发 `WXWebAssembly` 上已有的构造器，伪造一个 JS 对象会在 instantiate 时被拒。
+// 开发者工具的小游戏运行时只注入 `WXWebAssembly` 域名，标准 `WebAssembly` 全局**不存在**，
+// 于是 `require('./pkg/game_web.js')` 直接抛 ReferenceError，被判成误导性的
+// `[wasm=glue-missing/WXWebAssembly detail=WebAssembly is not defined]`（胶水其实在包里）。
+// 本机 Node 有真 `WebAssembly` 全局，所以这条缺口在本机永远不响——与 R12 同一类
+// "本机全绿、工具里起不来"。harness 现在复刻这个形态（摘掉标准全局、假宿主给 Tag/Exception），
+// 判据是证据行里的 `wasm=…:…:…:Tag+Exception+…`，见 scripts/wechat-minigame-harness.js。
+var GLUE_EVAL_CTORS = ['Tag', 'Exception', 'Memory', 'Table', 'Global'];
+
+// ---------- Tag / Exception polyfill（宿主 WXWebAssembly 缺这两个时的降级） ----------
+//
+// 胶水在模块作用域无条件执行：
+//   const __wbindgen_jstag_polyfill = new WebAssembly.Tag({ parameters: ['externref'] })
+//   const __wbindgen_wrapped_jstag = new WebAssembly.Tag({ parameters: ['externref'] })
+// 而 `wrapError` 在每次 JS→wasm 桥接调用时执行：
+//   throw new WebAssembly.Exception(__wbindgen_jstag_polyfill, [e], { traceStack: true })
+// 微信开发者工具（2026-10-03 实测）的 WXWebAssembly 有 Global/Instance/Memory/Module/Table/
+// compile/instantiate，唯独缺 Tag 与 Exception。没有 polyfill 时胶水在 require 求值期就抛
+// ReferenceError，整个 wasm 模块加载失败——也就是你看到的那条
+// "wasm lua bridge not loaded (fengari execution layer removed)"。
+//
+// polyfill 不模拟 wasm 引擎的 tag 匹配语义（JS 层面做不到），只提供足够的 API 表面让：
+//   1) 胶水求值期 `new Tag(...)` 不抛；
+//   2) `wrapError` 的 `new Exception(tag, values)` 能造出对象；
+//   3) `instanceof WebAssembly.Exception` 判真，使已有 `if (e instanceof WebAssembly.Exception) throw e`
+//      路径正常透传，不会把 wasm 异常吞成普通 JS Error。
+//
+// 这个"关键验证点"已被实测回答（见 verify-wechat-minigame.ps1 用例 1a3 的 polyfill_tag_probe）：
+// WXWebAssembly.instantiate 收到 JS 伪造的 polyfill tag 时**拒绝**（要求真实的 WebAssembly.Tag），
+// 所以 PolyfillTag 顶不住 tag 导入——修法是把 tag 导入从 wasm 二进制里剥掉（scripts/wasm-lua
+// /strip-wasm-tags.mjs，只剥两个 externref 导入、留着内部 $tag$0）。剥完之后剩下的设备问题换成
+// "引擎认不认 EH 本身"，由下面的 EH 真机探针（probeEHAcceptance）负责，不再是这里。
+//
+// 已知限制：wasm 侧 `__wbg_handle_catch` 用 `e.is(__wbindgen_wrapped_jstag)` 判断异常类型，
+// polyfill 的 `is()` 只比 tag 标识，不与 wasm 引擎的内部 tag 索引对齐——所以 wasm 内部 catch
+// （Rust catch_unwind / Lua pcall 跨 JS 边界场景）可能拦不住从 JS 抛回去的异常。
+// 不影响"正常无异常"的代码路径；影响的是"JS 回调抛异常 → Rust catch"这条错误处理路径。
+function PolyfillTag(descriptor) {
+  this._params = (descriptor && descriptor.parameters) || [];
+}
+PolyfillTag.prototype.parameter = function (index) {
+  return this._params[index] || null;
+};
+
+function PolyfillException(tag, values, options) {
+  if (Array.isArray(tag)) {
+    // Exception(tag) 形式（无 values）
+    this._tag = tag[0] || null;
+    this._values = [];
+  } else {
+    this._tag = tag;
+    this._values = values || [];
+  }
+  if (options && options.traceStack) {
+    this.stack = (new Error()).stack;
+  }
+}
+PolyfillException.prototype.is = function (tag) {
+  return this._tag === tag;
+};
+PolyfillException.prototype.getArg = function (tag, index) {
+  if (this._tag !== tag) throw new TypeError('exception tag mismatch');
+  return this._values[index];
+};
+
+function hostKeys(host) {
+  try { return Object.keys(host || {}).sort().join(',') || 'none'; } catch (error) { return 'unreadable'; }
+}
+
+// 胶水求值期要读的宿主全局，缺席时一次性报出来：屏幕上只截得到 detail，值得把整张能力面带上，
+// 免得"改好 Tag 又死在 TextDecoder 上"要再跑一轮开发者工具。
+// **取的是装 facade 之前的快照**（loadWasmCore 里存成 hostGlobals）：facade 一装 `WebAssembly`
+// 就恒为 present，这句读数会开始撒谎。
+function evalGlobalsReadout(g) {
+  var names = ['WebAssembly', 'TextEncoder', 'TextDecoder'];
+  return names.map(function (name) {
+    return name + '=' + (typeof g[name] === 'undefined' ? 'absent' : 'present');
+  }).join(' ');
+}
+
+// 把宿主那份构造器按标准域名转发一遍；宿主缺的（微信小游戏实测缺 Tag 与 Exception）用上面的
+// polyfill 补位，让胶水求值期 `new WebAssembly.Tag(...)` 与 `wrapError` 里的 `new WebAssembly.Exception(...)`
+// 都不抛。返回里 `native` 记宿主真给的、`polyfilled` 记我们补的——调用方据此判"facade 是不是全原生"。
+function installWebAssemblyFacade(g, host) {
+  var facade = {};
+  var native = [];
+  var polyfilled = [];
+  GLUE_EVAL_CTORS.forEach(function (name) {
+    if (host && typeof host[name] === 'function') {
+      facade[name] = host[name];
+      native.push(name);
+    } else if (name === 'Tag') {
+      facade[name] = PolyfillTag;
+      polyfilled.push(name);
+    } else if (name === 'Exception') {
+      facade[name] = PolyfillException;
+      polyfilled.push(name);
+    }
+  });
+  g.WebAssembly = facade;
+  return { native: native, polyfilled: polyfilled };
+}
+
+// ---------- EH 真机探针（2026-10-03）----------
+//
+// 剥掉 tag 导入之后，产物里仍然留着**本地 tag 段**（`$tag$0`，实测在 wasm 里出现 3 次：
+// 一条声明 + 一条 `throw $tag$0` + 一条 `catch $tag$0`）与**legacy EH 指令**
+// （try=92 / catch_all=501 / rethrow=92 / delegate=3，try_table=0）。那是 Rust `catch_unwind`
+// / Lua `pcall` 的实现，**不能剥**（上一批"整块剥 EH"把 play 路径打成 `Error: unreachable` 就是
+// 证据）。于是剩下的决定性问题是：**微信 `WXWebAssembly` 底下那台引擎到底实没实现 wasm 异常处理
+// 这个 proposal？**
+//   实现   ⇒ 剥完 tag 导入的产物能在真机上编译/实例化，pcall 语义有地方落；
+//   没实现 ⇒ 引擎连本地 tag 段都拒绝，剥二进制这条路救不了微信包，只能换"根本不用 EH"的产物形态
+//     （RUSTFLAGS 去掉 -fwasm-exceptions），并重新验 Lua 错误处理怎么走。
+// 本机 V8 支持 EH，所以 harness **永远测不出**"设备不支持"这一侧——这条只能真机读，harness 那侧
+// 的价值是证明"探针没接错"（正对照：V8 必须 accepted）。
+//
+// 探针用一份**隔离**的极小模块 `pkg/eh-probe.wasm`（53 字节：一个本地 `(tag (param i32))`
+// + 一条 legacy `try/catch/throw`、**零导入**，由发布链路里同一个 binaryen-133 `wasm-as` 汇编），
+// 而不是直接 compile 主产物——主产物还顺带用了 GC/reference-types/bulk-memory 等一片特性，
+// compile 失败分不清是不是 EH 的锅。极小模块把变量收到只剩 EH：它被接受就证明引擎实现 EH，
+// 被拒绝的话宿主原话直指 EH。
+// 用 `compile(path)`：只校验解码、不链接，EH 指令不支持会在这一步就报出来。没有 `compile`
+// 就退到 `instantiate(path, {})`——这份模块零导入，空 imports 正好能一路跑到底，"实例化成功"
+// 是比"编译成功"更强的证据。
+// **必须自带超时**：这个 Promise 与实例化并发排在启动链路上，宿主不兑现它也不能拖垮 boot。
+var PROBE_TIMEOUT_MS = 3000;
+var DEFAULT_EH_PROBE_PATH = 'pkg/eh-probe.wasm';
+
+// 永不 reject：任何分支都兑现成一句 `eh_probe=…` 读数，交给调用方（适配层）落进诊断里。
+function probeEHAcceptance(host, probePath) {
+  var entry = null;
+  var entryName = '';
+  if (host && typeof host.compile === 'function') { entry = function (p) { return host.compile(p); }; entryName = 'compile'; }
+  else if (host && typeof host.instantiate === 'function') { entry = function (p) { return host.instantiate(p, {}); }; entryName = 'instantiate-empty-imports'; }
+  if (!entry) return Promise.resolve('eh_probe=host-compile-missing');
+
+  var candidates = pathCandidates(probePath || DEFAULT_EH_PROBE_PATH);
+  var index = 0;
+  function attempt() {
+    if (index >= candidates.length) return Promise.resolve('eh_probe=all-paths-rejected');
+    var candidate = candidates[index++];
+    var settled = false;
+    var raced = new Promise(function (resolve) {
+      var timer = setTimeout(function () {
+        if (settled) return;
+        settled = true;
+        resolve('eh_probe=' + entryName + '-timeout');
+      }, PROBE_TIMEOUT_MS);
+      var result;
+      try {
+        result = entry(candidate);
+      } catch (error) {
+        clearTimeout(timer);
+        if (settled) return;
+        settled = true;
+        resolve('eh_probe=' + entryName + '-throw[' + candidate + ']=' + errorDetail(error));
+        return;
+      }
+      if (!result || typeof result.then !== 'function') {
+        clearTimeout(timer);
+        if (settled) return;
+        settled = true;
+        resolve('eh_probe=' + entryName + '-not-promise');
+        return;
+      }
+      result.then(function () {
+        clearTimeout(timer);
+        if (settled) return;
+        settled = true;
+        resolve('eh_probe=accepted（引擎实现 wasm EH：本地 tag 段 + legacy try/catch 都认）');
+      }, function (error) {
+        clearTimeout(timer);
+        if (settled) return;
+        settled = true;
+        // 第一条候选路径的原始信息就够定方向了，剩下的写法差异不必再刷进 detail。
+        resolve('eh_probe=' + entryName + '-reject[' + candidate + ']=' + errorDetail(error));
+      });
+    });
+    return raced.then(function (text) {
+      // compile 被拒的原因可能是"路径写法宿主不认"而不是"模块被拒"，两种要分开：
+      // 只有像是文件不存在的报错才继续试下一条写法。
+      if (index < candidates.length && /no such file|not found|permission denied/i.test(text)) return attempt();
+      return text;
+    });
+  }
+  return attempt();
 }
 
 function toBytes(value) {
@@ -126,9 +324,21 @@ function instantiateByPath(g, glue, wasm, wasmPath) {
   };
   shim.Instance = function Instance() { };
   // 胶水不查这几个，但宿主有就转过去，别在 shim 后面凭空少掉。
-  ['Memory', 'Table', 'Global'].forEach(function (name) {
+  // `Tag` / `Exception` 也在其列：shim 生效期间 `__wbg_finalize_init` 会跑 `wasm.__wbindgen_start()`，
+  // Rust 侧一旦抛 JS 异常就走 `wrapError` → `new WebAssembly.Exception(...)`，
+  // 那时读的正是这个被换掉的全局。
+  GLUE_EVAL_CTORS.forEach(function (name) {
     if (typeof wasm[name] === 'function') shim[name] = wasm[name];
   });
+  // Tag / Exception 宿主可能没给（WXWebAssembly 实测缺这两个），但 facade 层已经用 polyfill 补上
+  // （installWebAssemblyFacade 装在 `previous` 里）。shim 必须也带上——`wrapError` 在 shim 生效期间
+  // 执行，读的是 shim.Exception / shim.Tag，不是 facade。没有就从 facade 兜底拿。
+  if (typeof shim.Tag !== 'function' && previous && typeof previous.Tag === 'function') {
+    shim.Tag = previous.Tag;
+  }
+  if (typeof shim.Exception !== 'function' && previous && typeof previous.Exception === 'function') {
+    shim.Exception = previous.Exception;
+  }
   g.WebAssembly = shim;
   return Promise.resolve()
     .then(function () { return glue({}); })
@@ -166,8 +376,11 @@ function instantiateByBytes(g, glue, wasm, bytes) {
  * @param {(path:string)=>*} [options.readBytes] 读包内二进制（仅字节通道用）
  * @param {string} [options.wasmPath]            wasm 在代码包内的路径
  * @param {(msg:string)=>void} [options.log]     日志回调
+ * @param {string} [options.ehProbePath]         EH 真机探针模块在代码包内的路径（默认 pkg/eh-probe.wasm）
+ * @param {(verdict:string)=>void} [options.onEhProbe] EH 探针读数回调（`eh_probe=…`）：与实例化并发、
+ *        不挡 boot，宿主不兑现也在 3s 内自带超时收尾；调用方据此把"设备引擎认不认 EH"落进诊断。
  * @returns {Promise<{ok:boolean, channel?:string, source?:string, exports?:string[],
- *                    bytes?:number, path?:string, host?:Function,
+ *                    bytes?:number, path?:string, host?:Function, facade?:string,
  *                    reason?:string, detail?:string, attempts?:object[]}>}
  *          永不 reject：失败以 `{ok:false, reason, detail, attempts}` 兑现，由调用方决定
  *          是记诊断还是报警。两条通道都试过才判失败，`attempts` 带每条通道的原始原因。
@@ -177,16 +390,31 @@ function loadWasmCore(options) {
   var log = typeof opts.log === 'function' ? opts.log : function () { };
   var wasmPath = opts.wasmPath || 'pkg/game_web_bg.wasm';
   var g = ensureGlobals();
+  // 宿主自己给的全局面，装 facade 之前取（读数要说的是宿主，不是我们补出来的东西）。
+  var hostGlobals = evalGlobalsReadout(g);
 
   var picked = resolveWebAssembly(g);
   if (!picked.wasm) {
-    return Promise.resolve({ ok: false, reason: 'no-webassembly' });
+    return Promise.resolve({ ok: false, reason: 'no-webassembly', detail: hostGlobals });
   }
   if (typeof picked.wasm.instantiate !== 'function'
     && (typeof picked.wasm.Module !== 'function' || typeof picked.wasm.Instance !== 'function')) {
     // 既没有 instantiate 也没有 Module/Instance 构造器：两条通道都无从谈起。
-    return Promise.resolve({ ok: false, reason: 'webassembly-api-incomplete', source: picked.source });
+    return Promise.resolve({ ok: false, reason: 'webassembly-api-incomplete', source: picked.source, detail: 'host keys=' + hostKeys(picked.wasm) + '｜' + hostGlobals });
   }
+
+  // **必须在 requireGlue 之前**补标准域名：胶水求值期就 `new WebAssembly.Tag(...)`（见上面 facade 段）。
+  // 宿主本来就有标准 `WebAssembly` 时不碰它（本机 Node / 浏览器走这条）。
+  var facade = null;
+  if (picked.source === 'WXWebAssembly' && typeof g.WebAssembly === 'undefined') {
+    facade = installWebAssemblyFacade(g, picked.wasm);
+  }
+  // Tag / Exception 缺席时由 installWebAssemblyFacade 装 polyfill（见上面 PolyfillTag /
+  // PolyfillException）：让胶水求值期万一还读到标准域名时不抛 ReferenceError。
+  // 注意产物已经**不再导入 tag**（发布链路 strip-wasm-tags.mjs 剥掉两个 externref tag 导入 +
+  // package.ps1 简化掉胶水的 Tag/Exception 用法），所以这里只是安全网；instantiate 收 polyfill
+  // tag 会被宿主拒这条早已被实测确认（用例 1a3 polyfill_tag_probe=rejected），正是剥二进制的理由。
+  // 剥完之后真机上还留着本地 tag 段 + legacy EH，那个"引擎认不认 EH"的问题交给下面的 EH 探针。
 
   // WXWebAssembly 上路径通道是文档保证的唯一形态，字节通道只是它"看起来也可能有"的
   // 兼容层；标准 WebAssembly（本机 Node）反过来——字节同步最直接，路径要按 cwd 解析。
@@ -194,6 +422,15 @@ function loadWasmCore(options) {
   var order = picked.source === 'WXWebAssembly'
     ? ['path-instantiate', 'bytes-sync']
     : ['bytes-sync', 'path-instantiate'];
+
+  // EH 真机探针：与实例化**并发**跑，绝不挡 boot——结果只经 opts.onEhProbe 回调落到诊断里
+  // （它自带 3s 超时，且这条读数要的是"设备引擎认不认 EH"，与本次实例化成败是两条独立证据）。
+  // 宿主连 compile/instantiate 都没有时前面已 return，这里 entry 不会为空。
+  probeEHAcceptance(picked.wasm, opts.ehProbePath).then(function (verdict) {
+    if (typeof opts.onEhProbe === 'function') {
+      try { opts.onEhProbe(verdict); } catch (probeCbError) { /* 回调抛错不许影响主链路 */ }
+    }
+  });
 
   var glue;
   try {
@@ -203,8 +440,16 @@ function loadWasmCore(options) {
       ok: false,
       reason: error && error.message === 'glue-shape-unexpected' ? 'glue-shape-unexpected' : 'glue-missing',
       source: picked.source,
-      detail: errorDetail(error),
+      // 胶水**在包里**却 require 失败时，真正的原因几乎一定是某个求值期全局缺席；
+      // 只报 ReferenceError 那句话看不出是哪个全局，所以把整张能力面一起带出来。
+      detail: errorDetail(error) + '｜' + hostGlobals
+        + (facade ? '｜facade native=' + facade.native.join(',')
+          + (facade.polyfilled.length ? ' polyfilled=' + facade.polyfilled.join(',') : '') : ''),
     });
+  }
+  if (facade && (facade.native.length || facade.polyfilled.length)) {
+    log('wasm-bridge: 宿主无标准 WebAssembly 域名，已装 facade（native='
+      + facade.native.join(',') + (facade.polyfilled.length ? '；polyfilled=' + facade.polyfilled.join(',') : '') + '）');
   }
 
   var attempts = [];
@@ -312,6 +557,11 @@ function loadWasmCore(options) {
           path: result.path || null,
           exports: result.exports,
           bytes: result.bytes || null,
+          // 标准域名从哪来：转发了 WXWebAssembly 的哪些构造器，或宿主自己就有标准全局。
+          facade: facade
+            ? ('native=' + facade.native.join('+')
+              + (facade.polyfilled.length ? '+polyfilled=' + facade.polyfilled.join('+') : ''))
+            : 'host-standard',
           host: glue,
           attempts: attempts,
         };

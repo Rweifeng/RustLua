@@ -438,6 +438,35 @@ if (-not $SkipRuntime) {
     # 汇总成紧凑 token 附到最终 package_ok 行：polyfill=rejected 是"必须剥二进制"的机检凭据。
     $tagPolyfillVerdict = if ($tagProbeLine -match "polyfill_tag_probe=(\w+)") { $matches[1] } else { "unknown" }
 
+    # EH 真机探针（同一次 --wasm-tag-polyfill-probe 驱动）：产物剥掉两个 externref tag 导入后，
+    # 仍留着**本地 tag 段** $tag$0 + legacy try/catch（实测在产物里 throw/catch $tag$0 各 1 条、
+    # try=92 / catch_all=501 / rethrow=92）——那是 Rust catch_unwind / Lua pcall 的载体，不能剥。
+    # 于是真机上的决定性问题从"引擎认不认 tag 导入"换成"引擎到底实没实现 wasm 异常处理本身"。
+    # wasm-bridge 的 probeEHAcceptance 经 WXWebAssembly.compile 编译随包的极小模块 pkg/eh-probe.wasm
+    # （零导入 + 一个本地 tag + legacy try/catch，把变量收到只剩 EH），读数经适配层落进诊断的
+    # wasm.ehProbe、由 harness 汇成 ok 行里的 `eh_probe=`：
+    #   accepted ⇒ 引擎实现 EH，剥完的产物真机能落地、pcall 有地方走；
+    #   reject[...] ⇒ 引擎连本地 tag 段都拒，剥二进制救不了微信包，只能换"根本不用 EH"的产物形态。
+    # 本机 V8 支持 EH，所以这里的 accepted 是**正对照**（证明探针接对、不是空转），设备那一侧只能真机读。
+    # 另加一条 exec 凭据：直接实例化随包探针调 f()，只有真跑过 `throw $tag`→`catch $tag` 才返回 7，
+    # 挡住"探针其实是份不含 EH 的桩、compile 当然过"这种假绿（与 real_tag_probe=accepted 同一手法）。
+    $ehProbeExecLine = $tagProbeCase.Lines | Where-Object { $_ -match "eh_probe_exec=" } | Select-Object -First 1
+    if (-not $ehProbeExecLine) {
+        throw "EH 探针未输出 eh_probe_exec= 读数（随包探针没被驱动，这条守卫形同虚设）"
+    }
+    if (-not ($ehProbeExecLine -match "eh_probe_exec=7")) {
+        throw ("EH 探针的 exec 正对照没通过（f() 不返回 7：随包探针没真的承载 legacy EH，读数不可信）：{0}" -f $ehProbeExecLine)
+    }
+    Write-Host $ehProbeExecLine -ForegroundColor DarkGray
+    $ehProbeOkLine = $tagProbeCase.Lines | Where-Object { $_ -match "eh_probe=" -and $_ -notmatch "eh_probe_exec=" } | Select-Object -First 1
+    if (-not $ehProbeOkLine) {
+        throw "EH 探针未输出 eh_probe= 读数（探针编译通道没走到，这条守卫形同虚设）"
+    }
+    if (-not ($ehProbeOkLine -match "eh_probe=accepted")) {
+        throw ("EH 真机探针的正对照没通过（本机 compile 不是 accepted，探针通道接错、读数不可信）：{0}" -f $ehProbeOkLine)
+    }
+    $ehProbeVerdict = if ($ehProbeOkLine -match "eh_probe=(\w[\w-]*)") { $matches[1] } else { "unknown" }
+
     # 1b) 分包形态专项（新形态的核心承诺，四条各自钉住一件事）：
     #     · 形态自证：声明有且仅有 1 个 root=pack 的分包、入口 pack/game.js 可执行、
     #       首屏读取全部走主包 mainpack/（= 首屏不需要分包就绪）；
@@ -718,8 +747,8 @@ if (-not $SkipRuntime) {
     elseif ($isThinPack) { " thin_case=ok" }
     else { "" }
     $remoteField = if ($isSubpackagePack) { "remote_fallback=n/a(分包形态不带远端配置)" } else { "remote_fallback=ok" }
-    Write-Host ("wechat_minigame_package_ok files={0} runtime=ok path_styles={1} asset_pack={2} {3} negatives={4} tag_polyfill_probe={6} host_globals=ok,locked render_selfcheck=ok play_path=ok,touch_stick=ok{5}" -f `
-        $required.Count, ($pathStyles -join ','), $formName, $remoteField, (($negativeCases + @("image-src-frozen", "image-src-prototype", "image-callback-bridge", "boot-stall", "host-document-frozen")) -join ','), $formEvidence, $tagPolyfillVerdict) -ForegroundColor Green
+    Write-Host ("wechat_minigame_package_ok files={0} runtime=ok path_styles={1} asset_pack={2} {3} negatives={4} tag_polyfill_probe={6} eh_probe={7} host_globals=ok,locked render_selfcheck=ok play_path=ok,touch_stick=ok{5}" -f `
+        $required.Count, ($pathStyles -join ','), $formName, $remoteField, (($negativeCases + @("image-src-frozen", "image-src-prototype", "image-callback-bridge", "boot-stall", "host-document-frozen")) -join ','), $formEvidence, $tagPolyfillVerdict, $ehProbeVerdict) -ForegroundColor Green
     if ($remoteOkLine) { Write-Host $remoteOkLine -ForegroundColor DarkGray }
 } else {
     Write-Host ("wechat_minigame_package_ok files={0} runtime=skipped" -f $required.Count) -ForegroundColor Yellow

@@ -59,6 +59,9 @@
 // wasm 核心在代码包里的逻辑路径（发布脚本按 `pkg/game_web_bg.wasm` 放置；`.wasm` 在微信
 // 代码包后缀白名单内，因此**不需要**改名，运行时按逻辑路径读取即可）。
 var WASM_MODULE_PATH = 'pkg/game_web_bg.wasm';
+// EH 真机探针模块（53 字节，零导入 + 本地 tag 段 + legacy try/catch）：由发布链路写进 pkg/，
+// wasm-bridge 的 probeEHAcceptance 走同一条代码包通道 compile 它，读"设备引擎认不认 wasm EH"。
+var EH_PROBE_PATH = 'pkg/eh-probe.wasm';
 // WP10 微信侧接线：HostApi 构造器的发布名（与 webgl 发布名一致，app.name() 的返回值）。
 var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
   // 代码包**后缀白名单**的改名映射（构建期生成，产物根；三种形态都有）。
@@ -1355,10 +1358,16 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
         source: wasmState.source,
         channel: wasmState.channel,
         path: wasmState.path,
+        // 标准 `WebAssembly` 域名的来源：facade=转发过来的宿主构造器，host-standard=宿主自己就有。
+        facade: wasmState.facade,
         bytes: wasmState.bytes,
         exports: wasmState.exports,
         detail: wasmState.detail,
         attempts: wasmState.attempts,
+        // EH 真机探针读数（并发跑、独立于 status）：`eh_probe=accepted` 说明设备引擎实现 wasm EH、
+        // 剥完 tag 导入的产物（含本地 $tag$0 + legacy try/catch）能落地；`reject[...]`/`timeout` 才是
+        // "得换不用 EH 的产物形态"的信号。见 wasm-bridge.js 的 probeEHAcceptance。
+        ehProbe: ehProbeReadout,
         luaBridge: wasmState.luaBridge,
         hostApi: wasmState.hostApi
       },
@@ -2536,11 +2545,17 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
   // 所以这里把结果做成可核对的证据（桥缺失时 web-runtime.js 会抛硬错误，不是静默降级）。
   //
   // 结果档位（都进 `__RUSTLUA_DIAG().wasm` 与启动日志）：
-  //   ok                        实例化成功，`channel` 标出用的是哪条通道，`exports` 是真实导出名清单
+  //   ok                        实例化成功，`channel` 标出用的是哪条通道，`facade` 标出标准
+  //                             `WebAssembly` 域名的来源（转发的构造器清单，或 host-standard），
+  //                             `exports` 是真实导出名清单
   //   no-webassembly            宿主没有 WXWebAssembly / WebAssembly（真机极旧基础库）
-  //   webassembly-api-incomplete 宿主既没有 instantiate(path,imports) 也没有 Module/Instance 构造器
+  //   webassembly-api-incomplete 宿主既没有 instantiate(path,imports) 也没有 Module/Instance 构造器；
+  //                             或宿主无标准 `WebAssembly` 域名**且** `WXWebAssembly` 没有 `Tag`
+  //                             （胶水的两条 tag 导入在求值期就要它，2026-10-03 补的判据）
   //   path-instantiate-failed    路径通道（小游戏的唯一公开形态）失败，attempts 里带每条候选路径的原因
-  //   glue-missing / glue-shape-unexpected  胶水没打进包或形态不对（发布形态问题）
+  //   glue-missing / glue-shape-unexpected  胶水没打进包或形态不对（发布形态问题）。标准域名现在
+  //                             由 wasm-bridge 按宿主转发，这句不再被"宿主没有 WebAssembly 全局"
+  //                             冒充；detail 带求值期全局读数（TextEncoder/TextDecoder 缺一也在这里现形）
   //   bridge-missing            wasm-bridge.js 自身 require 失败
   //
   // **为什么是 Promise**：`WXWebAssembly` 只有异步的 `instantiate(路径, imports)`（文档如此，
@@ -2548,6 +2563,10 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
   // （见 start() 里的 loadGameFont 之前那一步）。
   var wasmState = { status: 'not-attempted' };
   var wasmLoadPromise = null;
+  // EH 真机探针的读数（`eh_probe=…`）：单独存，**不**挂在 wasmState 上——loadWasmCoreOnce 里的
+  // finish() 会整个替换 wasmState 对象，而探针与实例化并发、落点先后不定，挂上去会被 finish 抹掉。
+  // 探针永不 reject，最迟 3s 后一定写进来（宿主不兑现也是 timeout），诊断读到它只是迟早。
+  var ehProbeReadout = 'not-attempted';
   // 画布/版面一致性自检结果（见 reportViewAgreement），进 __RUSTLUA_DIAG().view_agreement。
   var viewAgreement = { declared: 'unknown', canvas: 'unknown', agree: null, orientation: 'unknown' };
 
@@ -2569,6 +2588,8 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
       bridge.loadWasmCore({
         readBytes: readBytes,
         wasmPath: WASM_MODULE_PATH,
+        ehProbePath: EH_PROBE_PATH,
+        onEhProbe: function (verdict) { ehProbeReadout = verdict; },
         log: log
       }).then(function (result) {
         if (result.ok) {
@@ -2576,7 +2597,7 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
           // 必须等 finish 换好对象之后再挂，否则诊断里这两个字段会被丢掉。
           finish({
             status: 'ok', source: result.source, channel: result.channel, path: result.path,
-            exports: result.exports, bytes: result.bytes
+            facade: result.facade, exports: result.exports, bytes: result.bytes
           });
           attachWasmBridge(result);
         } else {

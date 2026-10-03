@@ -1112,6 +1112,19 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
         }
         return real.instantiate(fs.readFileSync(file), imports);
       },
+      // 开发者工具的 WXWebAssembly 有 compile（实测），EH 真机探针就是经它问"引擎认不认 EH"。
+      // 这里同样按 path-only 契约复刻：只接受代码包路径、读盘后转给 V8 真 compile——这样
+      // wasm-bridge 那条 compile 分支在 harness 里会真的跑起来（正对照：V8 必 accepted）。
+      compile: function (first) {
+        if (typeof first !== 'string') {
+          return Promise.reject(new TypeError('WebAssembly.compile: first argument must be a string'));
+        }
+        const file = path.join(packageRoot, first.replace(/^\/+/, ''));
+        if (!fs.existsSync(file)) {
+          return Promise.reject(new TypeError('WebAssembly.compile: no such file in the code package: ' + first));
+        }
+        return real.compile(fs.readFileSync(file));
+      },
       Memory: real.Memory,
       Table: real.Table,
       Global: real.Global,
@@ -1180,6 +1193,22 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
       console.log(`polyfill_tag_probe=probe-error[${String((probeError && probeError.message) || probeError).slice(0, 120)}]`);
     } finally {
       try { fs.unlinkSync(probeAbs); } catch (_) { }
+    }
+  }
+  // EH 探针非空转检查（`--wasm-tag-polyfill-probe` 一并驱动）：上面那条 `eh_probe=`（走 wasm-bridge
+  // 的 compile 通道）只证明"宿主收下了这份模块"，而"收下"对一个不含 EH 的桩模块也成立——所以读数
+  // 本身可能被一份写坏了的探针骗过去。这里直接把随包带的 `pkg/eh-probe.wasm` 经同一条 path-only
+  // 通道实例化并**调用导出的 f()**：f() 只有真的跑过 `throw $tag` 被 `catch $tag` 接住才返回 7，
+  // 不含 EH 的桩给不出这个数。于是 `eh_probe_exec=7` 是"这份探针确实承载 legacy EH"的机检凭据，
+  // 与 `real_tag_probe=accepted` 同一套"正对照证明探针非空转"的手法。
+  if (wasmTagPolyfillProbe && !noWasm) {
+    try {
+      const res = await globalThis.WXWebAssembly.instantiate('pkg/eh-probe.wasm', {});
+      const instance = (res && res.instance) ? res.instance : res;
+      const f = instance && instance.exports && instance.exports.f;
+      console.log(`eh_probe_exec=${typeof f === 'function' ? f() : 'no-f-export'}`);
+    } catch (execError) {
+      console.log(`eh_probe_exec=error[${String((execError && execError.message) || execError).replace(/\s+/g, ' ').slice(0, 120)}]`);
     }
   }
   if (debugOverlay) stats.storage.set('rustlua_debug_overlay', '1');
@@ -2558,7 +2587,7 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
         ` entry=${packEntryError ? 'FAIL' : 'ok'}` +
         ` loading_bar=${drawnTexts.some((text) => text.includes('正在下载资源')) ? 'ok' : 'none'}`
       : ` subpackage=none subpackage_loads=${stats.subpackageLoads}`;
-    console.log(`wechat_minigame_harness_ok path_style=${wxPathStyle} read_strategy=${readStrategy} frames=${stats.frames} draw_ops=${stats.drawOps} draws_per_frame=${perFrameDraws.length > 0 ? perFrameDraws[0] : 0} drawn=${drawn} ui_elements=${uiElements} pack_reads=${stats.packReads} images=${stats.imagesLoaded} binary=${binaryProbe} audio_ctx=${stats.audioCreated} audio_played=${stats.audioPlayed} audio_srcs=${JSON.stringify(stats.audioSrcs.slice(0, 8))}${uploadEvidence}${subpackageEvidence} read_strategies=main:${strategies.main || 'none'}/pack:${strategies.pack || 'none'} font=${fontFamily} boot=${bootState} world=${JSON.stringify(worldSummary.replace(/\s+/g, ' '))} move=${JSON.stringify(moveEvidence)} touch_stick=${JSON.stringify(touchStickEvidence)} attack=${JSON.stringify(attackEvidence)} bag=${JSON.stringify(bagEvidence)} stick_key=w key_bridge=ArrowUp exemption_probe=${exemptionProbe} ${contractEvidence || 'api_contract=not-requested'} wasm=${wasmDiag ? (wasmDiag.status + ':' + wasmDiag.hostApi + ':' + (wasmDiag.channel || 'none') + ':' + (wasmDiag.facade || 'none')) : 'no-diag'}${remoteEvidence}`);
+    console.log(`wechat_minigame_harness_ok path_style=${wxPathStyle} read_strategy=${readStrategy} frames=${stats.frames} draw_ops=${stats.drawOps} draws_per_frame=${perFrameDraws.length > 0 ? perFrameDraws[0] : 0} drawn=${drawn} ui_elements=${uiElements} pack_reads=${stats.packReads} images=${stats.imagesLoaded} binary=${binaryProbe} audio_ctx=${stats.audioCreated} audio_played=${stats.audioPlayed} audio_srcs=${JSON.stringify(stats.audioSrcs.slice(0, 8))}${uploadEvidence}${subpackageEvidence} read_strategies=main:${strategies.main || 'none'}/pack:${strategies.pack || 'none'} font=${fontFamily} boot=${bootState} world=${JSON.stringify(worldSummary.replace(/\s+/g, ' '))} move=${JSON.stringify(moveEvidence)} touch_stick=${JSON.stringify(touchStickEvidence)} attack=${JSON.stringify(attackEvidence)} bag=${JSON.stringify(bagEvidence)} stick_key=w key_bridge=ArrowUp exemption_probe=${exemptionProbe} ${contractEvidence || 'api_contract=not-requested'} wasm=${wasmDiag ? (wasmDiag.status + ':' + wasmDiag.hostApi + ':' + (wasmDiag.channel || 'none') + ':' + (wasmDiag.facade || 'none')) : 'no-diag'} eh_probe=${wasmDiag && wasmDiag.ehProbe ? String(wasmDiag.ehProbe).replace(/^eh_probe=/, '').split(/[（[ ]/)[0] : 'not-attempted'}${remoteEvidence}`);
     return 0;
   }).catch((error) => {
     console.error = originalError;

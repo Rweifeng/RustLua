@@ -784,6 +784,23 @@ WASM build failed ($Platform)。
                     $wasmForStrip, (($stripTagsOutput | ForEach-Object { "$_" }) -join ' '))
             }
             Write-Host (($stripTagsOutput | Where-Object { $_ -match '^strip_wasm_tags_ok' } | Select-Object -First 1)) -ForegroundColor DarkGray
+            # EH 真机探针模块：wasm-bridge 的 probeEHAcceptance 走 WXWebAssembly.compile('pkg/eh-probe.wasm')
+            # 问"设备那台引擎到底认不认 wasm 异常处理"。本机 V8 支持 EH，永远测不出"设备不支持"那一侧，
+            # 所以这份模块必须**随代码包带上**——真机跑一次，诊断里的 `eh_probe=` 就是设备裁决。
+            # 下面这 53 字节由发布链路里同一个 binaryen-133 `wasm-as --enable-exception-handling`
+            # 汇编自这份 WAT（字节级确定，已在 V8 验过 0 导入 + 实例化 f()=7）：
+            #   (module (tag $t (param i32))
+            #     (func $f (result i32)
+            #       (try (result i32) (do (throw $t (i32.const 42))) (catch $t (drop) (i32.const 7)))))
+            #     (export "f" (func $f))
+            # 形态刻意对齐产物：一个本地 tag 段 + legacy try/catch/throw、**零导入**，GC/reference-types
+            # 等其它特性一律不带——这样 compile 被拒时宿主原话直指 EH，不会和别的不支持特性混在一起。
+            $ehProbeHex = '0061736d0100000001090260017f006000017f030201010d03010000070501016600000a10010e00067f412a080007001a41070b0b'
+            $ehProbePath = Join-Path $pkgRoot 'eh-probe.wasm'
+            $ehProbeBytes = [byte[]] -split ($ehProbeHex -replace '..', '0x$& ')
+            [System.IO.File]::WriteAllBytes($ehProbePath, $ehProbeBytes)
+            Write-Host ("==> 已写入 EH 真机探针 {0}（{1} 字节，本地 tag 段 + legacy try/catch、零导入）" -f `
+                $ehProbePath, $ehProbeBytes.Length) -ForegroundColor DarkGray
         }
         # wasm 产物必须**真的能被宿主的 WebAssembly 实现接受**（两个 web 平台都在发布期验一次）。
         # 这条守卫把四类回归挡在发布期，而不是等产物上线：
