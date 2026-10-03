@@ -390,6 +390,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ("order_herb", 60.0),
         ("order_pill", 80.0),
         ("order_hunt", 90.0),
+        ("order_tea", 90.0),
     ];
     for (quest_id, expected) in order_rewards {
         let data_money = query_num(
@@ -671,10 +672,67 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  声望 {data_min:.0}–{data_max:.0}: {data_name}，购买折扣 {data_off:.0}%");
     }
 
+    banner("⑪ 策划案 docs/30 §12 节气表 == data/festivals.lua（名称/季节/季内天数逐格比对）");
+    // M34-02：节气表是"今天说得出这句话、采得到两倍、走不走得了山口"的唯一规格来源，
+    // 于是按 docs/30 §12 逐格比：行数、顺序、季节、季内天数闭区间都要对上。
+    // 「实现落点」列同样必填——新增一行而不交代它接在哪个消费方，本示例直接红。
+    let plan_doc = project.join("docs/30-江湖有田-总策划案.md");
+    let plan = fs::read_to_string(&plan_doc)
+        .map_err(|error| format!("cannot read {}: {error}", plan_doc.display()))?;
+    let festival_rows = markdown_table(&plan, "节气/事件")?;
+    let festival_count = query_num(&mut runtime, "#require('data.festivals').festivals")? as usize;
+    if festival_rows.len() != festival_count {
+        return Err(format!(
+            "docs/30 §12 节气表 {} 行，data/festivals.lua {} 条",
+            festival_rows.len(),
+            festival_count
+        )
+        .into());
+    }
+    for (index, row) in festival_rows.iter().enumerate() {
+        if row.len() < 5 || row[4].is_empty() {
+            return Err(format!(
+                "docs/30 §12 第 {} 行缺「实现落点」列（期望 5 列且最后一列非空）: {row:?}",
+                index + 1
+            )
+            .into());
+        }
+        let path = format!("require('data.festivals').festivals[{}]", index + 1);
+        let data_name = query_str(&mut runtime, &format!("return {path}.name"))?;
+        if row[0] != data_name {
+            return Err(format!(
+                "docs/30 §12 第 {} 行是「{}」，data/festivals.lua 第 {} 条是「{data_name}」——名称或顺序对不上",
+                index + 1,
+                row[0],
+                index + 1
+            )
+            .into());
+        }
+        let data_season = query_str(&mut runtime, &format!("return {path}.season"))?;
+        if row[1] != season_cn(&data_season) {
+            return Err(format!(
+                "docs/30 §12「{data_name}」季节写「{}」，data/festivals.lua 是 {data_season}",
+                row[1]
+            )
+            .into());
+        }
+        let (doc_from, doc_to) = range_from_cell(&row[2])?;
+        let data_from = query_num(&mut runtime, &format!("{path}.from"))?;
+        let data_to = query_num(&mut runtime, &format!("{path}.to"))?;
+        if doc_from != data_from || doc_to != data_to {
+            return Err(format!(
+                "docs/30 §12「{data_name}」季内天数写「{}」，数据是 {data_from:.0}–{data_to:.0}",
+                row[2]
+            )
+            .into());
+        }
+        println!("  {data_name}: {data_season} {data_from:.0}–{data_to:.0} 天");
+    }
+
     println!(
         "jhyt_m24_numeric_alignment_ok project={} crops={} shop_rows={} lingzhi_yield={} \
          rice_yield={} mutated_yield={} field_cell={} radish_yield={} affinity_tiers={} \
-         reputation_tiers={}",
+         reputation_tiers={} festivals={}",
         project.display(),
         crop_rows.len(),
         checked_rows,
@@ -684,7 +742,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         field_cell,
         radish_yield,
         affinity_tiers,
-        reputation_tiers
+        reputation_tiers,
+        festival_rows.len()
     );
     Ok(())
 }
@@ -752,6 +811,17 @@ fn parse_cell(cell: &str) -> Result<(i64, i64), Box<dyn std::error::Error>> {
         .split_once(',')
         .ok_or_else(|| format!("cell {cell:?} is not `x,y`"))?;
     Ok((x.trim().parse()?, y.trim().parse()?))
+}
+
+/// 季节标识 → 策划案表格里的中文列（docs/30 §12 用中文写季节）。
+fn season_cn(season: &str) -> &'static str {
+    match season {
+        "spring" => "春",
+        "summer" => "夏",
+        "autumn" => "秋",
+        "winter" => "冬",
+        _ => "?",
+    }
 }
 
 /// 从设计案 markdown 里取出以 `first_cell` 为表头的表格行（去掉表头与分隔行）。

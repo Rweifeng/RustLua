@@ -16,6 +16,9 @@ local tools = require("data.tools")
 local relationships_data = require("data.relationships")
 -- M34-01：档位条件读关系分（只读；relationship 不 require dialogue，无环）。
 local relationship = require("player.relationship")
+-- M34-02：节气条件读"今天是不是某个节气"（festival 是 day 的纯映射，不 require dialogue，无环）。
+local festival = require("world.festival")
+local festivals_data = require("data.festivals")
 local interaction = require("systems.interaction")
 local player = require("player.player")
 local npc = require("world.npc")
@@ -105,7 +108,10 @@ local VALID_COND = {
   truthy = true, falsy = true, item = true, count = true,
   -- M34-01：关系档位条件（成对出现）——tier_npc 是谁、tier_gte 要到 data.tiers 的
   -- 哪一档（陌生/相识/友善/亲厚/莫逆）。档位是派生值，这里只做只读查询。
-  tier_npc = true, tier_gte = true
+  tier_npc = true, tier_gte = true,
+  -- M34-02：节气条件——只有今天落在 data/festivals.lua 的某个窗口里才出现的分支
+  -- （春分茶会才提茶叶单子，过了那三天这句话就收回去）。
+  festival = true
 }
 local VALID_EFFECT = {
   accept_quest = true, deliver_quest = true, fail_quest = true,
@@ -234,6 +240,11 @@ local function cond_ok(cond)
   -- 关系档位条件（M34-01）：与某人的关系到档才出现的分支。
   if (cond.tier_npc ~= nil or cond.tier_gte ~= nil)
     and not relationship.affinity_met(cond.tier_npc, cond.tier_gte) then
+    return false
+  end
+
+  -- 节气条件（M34-02）：今天落在该节气的窗口里才出现的分支。
+  if cond.festival ~= nil and festival.id() ~= cond.festival then
     return false
   end
 
@@ -635,6 +646,14 @@ local function validate_cond(issues, where, cond)
     local value = cond[key]
     if value ~= nil and type(value) ~= "boolean" and not tonumber(value) then
       issues[#issues + 1] = where .. " 的 cond." .. key .. " 必须是数值"
+    end
+  end
+  -- 节气条件：写的 id 必须是 data/festivals.lua 里真有的那七个之一。
+  -- 打错字的分支永远不出现，而对话本身照常跑——这是最安静的一类内容失效。
+  if cond.festival ~= nil then
+    if type(cond.festival) ~= "string" or not festivals_data.get(cond.festival) then
+      issues[#issues + 1] = where .. " 的 cond.festival 引用未知节气：" .. tostring(cond.festival)
+        .. "（已知：" .. table.concat(festivals_data.id_keys(), "/") .. "）"
     end
   end
   return issues

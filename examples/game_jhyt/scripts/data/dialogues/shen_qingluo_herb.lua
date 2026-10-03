@@ -7,6 +7,9 @@
 --   ① 医馆采药 quest_herb（既有）
 --   ② 订单·药庐灵芝 order_herb
 --   ③ 主线二段 mainline_orders（三笔订单任结一笔后出现）与主线三段 mainline_seal
+-- M34-02 追加：
+--   ⑤ 春分茶会 order_tea——入口用 `cond.festival = "teafair"`，只在春分那三天听得见；
+--     交付不带节气条件，所以"错过会期"只会错过接单，不会把已接的单变成死单。
 return {
   version = 1,
   id = "shen_qingluo_herb",
@@ -43,6 +46,12 @@ return {
         { text = "二十份稻谷已入囤。", cond = { quest = "ending_field", state = "deliverable" }, effects = { deliver_quest = "ending_field" }, next = "field_done" },
         { text = "稻谷还在晒。", cond = { quest = "ending_field", state = "in_progress" }, next = "field_remind" },
         { text = "这一亩三分地，我种下了。", cond = { quest = "ending_field", state = "completed" }, next = "ending_epilogue" },
+        -- ⑤ 春分茶会·茶叶订单（M34-02）：cond.festival 让这四句只在春分那三天出现。
+        --   过了窗口，未接的单子听不见；**已接的单子照常能交**（交付选项不带节气条件）。
+        { text = "沈掌柜，春分茶会可要备茶？", cond = { quest = "order_tea", state = "not_started", festival = "teafair" }, next = "tea_intro" },
+        { text = "六两茶叶已备好。", cond = { quest = "order_tea", state = "deliverable" }, effects = { deliver_quest = "order_tea" }, next = "tea_done" },
+        { text = "茶叶还在晒。", cond = { quest = "order_tea", state = "in_progress" }, next = "tea_remind" },
+        { text = "茶会那日，我也讨一碗吃。", cond = { quest = "order_tea", state = "completed" }, next = "tea_thanks" },
         { text = "改日再说。", finish = true }
       }
     },
@@ -194,6 +203,38 @@ return {
     },
     ending_epilogue = {
       text = "沈青萝：“药田青翠，医馆这边也托你照看。”",
+      options = {
+        { text = "告辞。", finish = true }
+      }
+    },
+    -- ⑤ 春分茶会节点（M34-02）
+    tea_intro = {
+      text = "沈青萝：“春分茶会一年一度，山上茶丛正当季。六两鲜叶，九十文现结，茶会上给你留一碗。”",
+      options = {
+        { text = "这单我接了。", effects = { accept_quest = "order_tea", set_var = { teafair_started = true }, relationship = { npc_shen_qingluo = 4 } }, next = "tea_accept" },
+        { text = "六两鲜叶，容我算算。", finish = true }
+      }
+    },
+    tea_accept = {
+      text = "沈青萝：“茶丛在山道东侧，采来便行。会期不长，莫拖到过了春分。”",
+      options = {
+        { text = "记下了。", finish = true }
+      }
+    },
+    tea_done = {
+      text = "沈青萝把茶叶凑近鼻端：“头一遍的嫩叶，好。九十文在此，茶会那日记得来。”",
+      options = {
+        { text = "收下了。", finish = true }
+      }
+    },
+    tea_remind = {
+      text = "沈青萝：“六两鲜叶，凑齐再来。灶上的水已经温上了。”",
+      options = {
+        { text = "这就去。", finish = true }
+      }
+    },
+    tea_thanks = {
+      text = "沈青萝：“今年这场茶会算办成了。明年春分，再来寻我。”",
       options = {
         { text = "告辞。", finish = true }
       }

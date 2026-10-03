@@ -3,6 +3,9 @@
 --
 -- 只挂结局·承业（ending_sect）：需要 mainline_truth_done 才出现，
 -- 交付即锁死 ending = "sect"。
+--
+-- M34-02 追加：② 中秋灯会——只在中秋三天出现的对话，给好感与莲子，不给声望，
+-- 也不碰 ending 变量（结局指针仍只由 ending_sect 写）。
 return {
   version = 1,
   id = "su_wanqing_sect",
@@ -18,6 +21,8 @@ return {
         { text = "从今往后，我是青云掌门。", cond = { quest = "ending_sect", state = "completed" }, next = "ending_epilogue" },
         -- 前置未满足：把玩家指向陆归藏。
         { text = "山庄大事，还需从长计议。", cond = { var = "mainline_truth_done", falsy = true }, next = "prereq" },
+        -- ② 中秋灯会（M34-02）：只在中秋三天出现；办过一次就写锚点收回这句话。
+        { text = "灯会可要人手？弟子来搭把手。", cond = { festival = "midautumn", var = "midautumn_lantern", falsy = true }, next = "lantern_offer" },
         { text = "改日再谈。", finish = true }
       }
     },
@@ -56,6 +61,20 @@ return {
       text = "苏晚晴：“掌门日理万机，晚晴在书房候你。”",
       options = {
         { text = "辛苦你了。", finish = true }
+      }
+    },
+    -- ② 中秋灯会节点（M34-02）
+    lantern_offer = {
+      text = "苏晚晴把一盏未糊的灯笼递过来：“今夜灯会，山庄各处的灯都要人点。你若得闲，便一起走一遭。”",
+      options = {
+        { text = "今晚我来点灯。", effects = { set_var = { midautumn_lantern = true }, relationship = { npc_su_wanqing = 8 }, add_item = { { item = "lotus_seed", count = 3 } } }, next = "lantern_done" },
+        { text = "今夜另有事。", finish = true }
+      }
+    },
+    lantern_done = {
+      text = "苏晚晴把三颗莲子塞进你手心：“灯亮了，山庄看着才像个家。这点莲子你收着，泡水安神。”",
+      options = {
+        { text = "多谢晚晴。", finish = true }
       }
     }
   }

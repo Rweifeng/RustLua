@@ -20,6 +20,8 @@ local state = require("core.state")
 local player = require("player.player")
 local interaction = require("systems.interaction")
 local maps = require("data.maps")
+-- M34-02 冬至封山：出口是否放行读今日节气的效果表（只读查询；封哪些方向在数据里）。
+local festival = require("world.festival")
 
 local M = {}
 local current_map = nil -- 最近一次 on_enter 的地图 id（门面/未进入时为 nil）
@@ -146,6 +148,14 @@ local function register_exit_target(exit)
       local target = candidate and candidate.exit
       if not target then
         return "no_exit"
+      end
+      -- 冬至封山（M34-02）：**命中测试一行不动**（站在门口照样能按到 E），拒绝发生在要走之前。
+      -- 于是"封"只作用在数据点名的方向（山道 → 寒泉洞），回村那一格永远可用——
+      -- 这与 42a565c（门口按 E 必须能离庄）是同一处代码的两个约束：一个不许把出口判没，
+      -- 一个不许把玩家关在山上。
+      if festival.exit_closed(target.id) then
+        state.last_action = "closed_festival"
+        return state.last_action
       end
       if not maps.get(target.to) then
         log.warn("[map] 出口目标地图未注册: " .. tostring(target.to))

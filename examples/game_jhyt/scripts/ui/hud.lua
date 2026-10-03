@@ -150,6 +150,8 @@ local ACTION_TEXT = {
   no_job = "没有可收取的产出",
   unknown_shop = "未知店铺",
   closed = "店铺已打烊",
+  -- 冬至封山（M34-02）：山道往洞里去的那个方向今日不走；回村方向不受影响。
+  closed_festival = "山道封了，进不得",
   no_shop = "附近没有店铺",
   missing_map = "目标地图不存在",
   map_goto_failed = "切换地图失败",

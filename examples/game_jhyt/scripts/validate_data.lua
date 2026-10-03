@@ -72,7 +72,11 @@ local function validators()
     -- 声明的 `Camera` 契约——恰好 1 台、正交投影、`zoom=2`（对标星露谷视觉规格，见
     -- docs/51 §2.2 修订）、且 `bounds` 逐值等于该场景
     -- GroundMap 的真实地图矩形。漂移的表现是"相机取景跑出地图边缘"，但不会有任何报错。
-    { "camera_view", require("world.camera_view"), "world.camera_view" }
+    { "camera_view", require("world.camera_view"), "world.camera_view" },
+    -- M34-02 追加："festivals"（data/festivals.lua）：七条节气事件表。这里守的是
+    -- **时间轴自洽**——同一天不能有两个节气（重叠窗口是纯数据错误，运行时只会静默取第一条）、
+    -- 四季每季至少一个事件、效果键必须在白名单内且有对应的消费方模块。
+    { "festivals", require("data.festivals"), "data.festivals" }
   }
 end
 

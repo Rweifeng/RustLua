@@ -29,6 +29,9 @@
 -- v0.2 扩展：同一文件再挂两个入口
 --   ④ 主线四段 mainline_xuanming（需要 mainline_seal 已完成才出现）
 --   ⑤ 结局·断念 ending_renounce（需要 mainline_truth_done 才出现）
+-- M34-02 追加：
+--   ⑥ 夏至演武（不占任务表：只在夏至三天出现的对话，说完写 xiazhi_drill_done 锚点，
+--      门派声望 +10 + 师父好感 +6 + 两只饭团，是七条节气里最大的一笔阵营声望）
 return {
   version = 1,
   id = "gu_changfeng_teach",
@@ -62,6 +65,9 @@ return {
         { text = "五份行气散留在剑坪了。", cond = { quest = "ending_renounce", state = "deliverable" }, effects = { deliver_quest = "ending_renounce" }, next = "renounce_done" },
         { text = "行气散还没配足。", cond = { quest = "ending_renounce", state = "in_progress" }, next = "renounce_remind" },
         { text = "弟子已断此念。", cond = { quest = "ending_renounce", state = "completed" }, next = "ending_epilogue" },
+        -- ⑥ 夏至演武（M34-02）：cond.festival 让这句话只在夏至那三天出现；
+        --   门派声望 +10 是七条节气里最大的一笔阵营声望，说完写锚点收回（只演一次武）。
+        { text = "夏至演武，弟子愿上台。", cond = { festival = "xiazhi", var = "xiazhi_drill_done", falsy = true }, next = "drill_offer" },
         { text = "改日再来请教。", finish = true }
       }
     },
@@ -217,6 +223,20 @@ return {
       text = "顾长风：“剑坪风大，回屋罢。”",
       options = {
         { text = "弟子告退。", finish = true }
+      }
+    },
+    -- ⑥ 夏至演武节点（M34-02）
+    drill_offer = {
+      text = "顾长风：“夏至演武，庄中弟子皆要上台。你初来乍到，打赢打输不打紧，敢站上去才算入了门。”",
+      options = {
+        { text = "弟子登台。", effects = { set_var = { xiazhi_drill_done = true }, relationship = { npc_gu_changfeng = 6 }, reputation = { sect = 10 }, add_item = { { item = "rice_ball", count = 2 } } }, next = "drill_done" },
+        { text = "还没练成，不上。", finish = true }
+      }
+    },
+    drill_done = {
+      text = "顾长风颔首：“三式走得干净。这两只饭团是演武的分例，拿着。庄里人往后认你是自己人。”",
+      options = {
+        { text = "谢师父。", finish = true }
       }
     }
   }

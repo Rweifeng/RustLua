@@ -23,6 +23,9 @@ local player = require("player.player")
 local gather_data = require("data.gather")
 local items_data = require("data.items")
 local tools_data = require("data.tools")
+-- M34-02：节气效果是**只读查询**（清明踏青的采集倍率、重阳登高的一次性点再刷）。
+-- 判定全在 data/festivals.lua 的 effects 表里，本文件不写"哪个节气"的分支。
+local festival = require("world.festival")
 
 local M = {}
 
@@ -67,13 +70,19 @@ local function current_map()
   return map.current() or scene.reload()
 end
 
--- 是否已刷新（respawn_days <= 0 视为一次性，永不刷新）
+-- 是否已刷新（respawn_days <= 0 视为一次性，永不刷新——除非今天的节气允许再刷）
 local function refreshed(node, record)
   if not record then
     return true
   end
   local days = tonumber(node.respawn_days) or 0
   if days <= 0 then
+    -- 重阳登高（M34-02）："山区稀有资源刷新"的实现口径是一次性点在这几天按日再刷。
+    -- 判定权在数据（哪个节气、哪些图），这里只问一句"今日规则允许吗"。
+    local rule = festival.gather_rule(node.map)
+    if rule and rule.one_time_daily then
+      return (current_day() - (tonumber(record.day) or 0)) >= 1
+    end
     return false
   end
   return (current_day() - (tonumber(record.day) or 0)) >= days
@@ -306,6 +315,12 @@ function M.act(facing)
     return reason
   end
   local count = tonumber(node.count) or 1
+  -- 节气倍率（M34-02 清明踏青）：倍率是整数、按**节点所在图**查，
+  -- 所以"翻倍"这件事在数据里写得完，本文件不会出现节气名。
+  local rule = festival.gather_rule(node.map)
+  if rule and rule.mult then
+    count = count * rule.mult
+  end
   local leftover = tonumber(inv.add(state.inventory, node.item, count)) or 0
   if leftover >= count then
     -- 一件也没装下：拒绝且不消耗节点（与 farming/crafting 的容量语义一致）

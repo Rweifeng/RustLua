@@ -8,6 +8,9 @@
 --   * 三段主线（mainline_arrival / mainline_orders / mainline_seal）
 -- M28 追加：
 --   * 山道猎获（order_hunt）——交付敌人掉落物（狼皮/兽肉），把战斗掉落接进经济
+-- M34-02 追加：
+--   * 春分茶会（order_tea）——第一条**只在某个节气的三天窗口里才接得到**的订单
+--     （入口在 data/dialogues/shen_qingluo_herb.lua 的 cond.festival）
 -- 顺序即任务日志（L 面板）的展示顺序。
 return {
   version = 1,
@@ -18,6 +21,7 @@ return {
     "order_rice",
     "order_pill",
     "order_hunt",
+    "order_tea",
     "mainline_arrival",
     "mainline_orders",
     "mainline_seal",

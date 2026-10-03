@@ -26,6 +26,8 @@ local player = require("player.player")
 local npc = require("world.npc")
 -- M34-01：档位接线——商店价格读**店主阵营**的声望折扣（只读查询，不写关系状态）。
 local relationship = require("player.relationship")
+-- M34-02：端午药集——收购价读今日节气的行情加成（同样是只读查询，节气本身不入档）。
+local festival = require("world.festival")
 -- M19-02：交易成功/失败音效（缺失文件或无设备时静默降级）；M20-02 走 UI 总线。
 local audio = require("core.audio")
 -- M20-02：列表焦点/滚动导航（引擎 ui_navigation）。
@@ -153,6 +155,18 @@ local function deal_price(def, entry)
   return math.max(1, price - math.floor(price * off / 100 + 0.5))
 end
 
+-- 收购单价 = 物品 sell 价按今日节气行情加价（端午药集 +20%），整数结算（四舍五入）。
+-- 无行情 = 物品 sell 价原样，所以零改动时逐字节等于改动前；收购**不受声望折扣影响**
+-- （§8.2 只写购买折扣，把折扣也套到收购上等于两头让利，那是另一个数值决定）。
+local function sell_price(item_id)
+  local base = tonumber((item_def(item_id) or {}).sell)
+  local bonus = festival.sell_bonus(item_id)
+  if base == nil or bonus <= 0 then
+    return base
+  end
+  return math.max(1, base + math.floor(base * bonus / 100 + 0.5))
+end
+
 local function stock_entry(def, item_id)
   for _, entry in ipairs(def.stock or {}) do
     if entry.item == item_id then
@@ -245,7 +259,7 @@ function M.buys(shop_id)
     return out
   end
   for _, item_id in ipairs(def.buys or {}) do
-    local price = tonumber((item_def(item_id) or {}).sell)
+    local price = sell_price(item_id)
     out[#out + 1] = { item = item_id, price = price, have = inv.count(state.inventory, item_id) }
   end
   return out
@@ -316,7 +330,7 @@ function M.sell(shop_id, item_id, count)
   if not buys_item(def, item_id) then
     return false, "not_bought"
   end
-  local price = tonumber((item_def(item_id) or {}).sell)
+  local price = sell_price(item_id)
   if not positive(price) then
     return false, "not_bought"
   end
