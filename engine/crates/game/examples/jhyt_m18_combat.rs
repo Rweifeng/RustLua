@@ -53,7 +53,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     banner("M18-01a 纯数据注册 + 加载期校验：招式/敌人来自 data，错误可定位");
     let mut runtime = new_runtime(&project_arg, &save_path)?;
     enter_main_menu(&mut runtime, &main_script)?;
-    assert_num(&mut runtime, "#(require('data.skills').ids())", 2.0)?;
+    // 招式条数**不写死**（与下面敌人的口径一致）：这一格原本是 `2`，而 M27/M28/M34 每批加招式
+    // 都会让它假红一次——M34-04 认领时它已经是 5≠2 的既有红了。这里要钉的是"`ids()` 与数据表
+    // 同源、排序稳定"；**具体条数**由 `jhyt_m34_skills` ① 按当前招式清单逐格钉住。
+    let skill_registry = query_num(
+        &mut runtime,
+        "(function() local n = 0; \
+        for _ in pairs(require('data.skills').skills) do n = n + 1 end; return n end)()",
+    )?;
+    assert_num(
+        &mut runtime,
+        "#(require('data.skills').ids())",
+        skill_registry,
+    )?;
+    assert_str(
+        &mut runtime,
+        "(function() local ids = require('data.skills').ids(); local sorted = {}; \
+           for i, id in ipairs(ids) do sorted[i] = id end; table.sort(sorted); \
+           return tostring(#ids > 0 and table.concat(ids, ',') == table.concat(sorted, ',')) end)()",
+        "true",
+    )?;
     assert_str(
         &mut runtime,
         "require('data.skills').get('strike').kind",
