@@ -279,8 +279,15 @@ try {
     Write-Step "Lua API doc stubs"
     if (Get-Command node -ErrorAction SilentlyContinue) {
         Invoke-Checked node @((Join-Path $projectRoot "scripts/gen-lua-api-docs.js"), "--check")
+        # docs/51：Web 是引擎的**第二份实现**（plugins/webgl/web-runtime.js 里那批 Lua 宿主补丁）。
+        # 这一步跑 L2 的两份账：补丁层重定义引擎函数的「覆盖点清单」，以及把整张引擎表换掉的
+        # 「整表替换账」（23 处 / 275 个函数里 77 个因此在 web 上是 nil）。判据只读源码与仓库里
+        # 提交的桌面基线 JSON，不需要 wasm 产物，所以放在与文档桩同一层：每次质量门都跑。
+        # 它抓的是"名字两边都在、行为分叉"这一类，与下面的浏览器/产物层门（需要真跑起来）不重叠。
+        Write-Step "Web API override inventory"
+        Invoke-Checked node @((Join-Path $projectRoot "scripts/check-web-api-overrides.mjs"))
     } else {
-        Write-Host "  [SKIP] 未找到 node：Lua API 文档桩门未运行（不是通过）" -ForegroundColor Yellow
+        Write-Host "  [SKIP] 未找到 node：Lua API 文档桩门与 Web API 覆盖清单门未运行（不是通过）" -ForegroundColor Yellow
     }
 
     if (-not $SkipClippy) {

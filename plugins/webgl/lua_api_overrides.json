@@ -121,5 +121,302 @@
         "ui.text_at"
       ]
     }
+  ],
+  "replacements": [
+    {
+      "module": "animation",
+      "note": "动画状态存在 __rustlua_animations，组件解析走 __rustlua_parse_animation，alive 校验走 __rustlua_require_alive。dropped=clips/events/time：剪辑清单与动画时钟都要引擎按帧推进，而 web 帧循环不调 LuaRuntime::step（同 time 那条缺口），所以这三条在 web 上没有可用状态源。",
+      "dropped": [
+        "clips",
+        "events",
+        "time"
+      ],
+      "invented": [],
+      "referenced": [],
+      "line": 1551
+    },
+    {
+      "module": "animation3d",
+      "note": "整表只有一个占位：set 直接 return true，没有任何状态。dropped=5（get/list/paused/set_paused/time），与 3D 侧\"渲染状态不回 Lua\"同源，参见 transform3d。",
+      "dropped": [
+        "get",
+        "list",
+        "paused",
+        "set_paused",
+        "time"
+      ],
+      "invented": [],
+      "referenced": [],
+      "line": 1595
+    },
+    {
+      "module": "audio",
+      "note": "音量与总线状态在 __rustlua_audio_volume/__rustlua_audio_buses，实际发声与 BGM 经 __rustlua_audio_js_* 调 JS 音频后端。dropped=4：buses 这个枚举访问器补丁里其实有状态（web-runtime.js:1602 定义了四总线并用于名字校验）只是没写成 API，属\"该补的缺失\"；settings_path/settings_text/apply_settings 是 settings.toml 的文本路径与往返，web 没有那个文件系统（补丁另用 for 循环给 audio/input 造了 load_settings/save_settings 的 JS 后端版，见 input 条目）。game_jhyt 正在引用这三条：settings_text 与 settings_path 有 type() 判据（core/audio.lua:273/315），但 settings_path 还有 **一处无判据**（scripts/main.lua:410 的验收 dump）→ 走到就撞 nil；apply_settings 有判据（core/audio.lua:328）。",
+      "dropped": [
+        "apply_settings",
+        "buses",
+        "settings_path",
+        "settings_text"
+      ],
+      "invented": [],
+      "referenced": [
+        "apply_settings",
+        "settings_path",
+        "settings_text"
+      ],
+      "line": 1604
+    },
+    {
+      "module": "camera",
+      "note": "整表是占位（set/set_active 只 return true）。dropped=get/get_active：相机真值在 JS 渲染侧且不回 Lua，所以查询函数补了也只能给假数；发包工程读的是自己那份 Lua 侧相机状态（core 里的 camera_view），不依赖这两条。",
+      "dropped": [
+        "get",
+        "get_active"
+      ],
+      "invented": [],
+      "referenced": [],
+      "line": 1776
+    },
+    {
+      "module": "entity",
+      "note": "实体生命周期、名字表、id 分配与存活校验都存在 Lua 侧（__rustlua_alive/__rustlua_names/__rustlua_persist/__rustlua_next_entity_id），因为 web 上 Rust ECS 根本不参与游戏状态。引擎 6 个函数全覆盖，dropped=0。",
+      "dropped": [],
+      "invented": [],
+      "referenced": [],
+      "line": 1207
+    },
+    {
+      "module": "grid",
+      "note": "纯坐标换算（world_to_cell/cell_to_world/in_bounds/facing_cell），补丁按引擎同名实现重写并共用 __rustlua_tile_size/__rustlua_facing_step 取默认格幅与朝向。引擎 4 个函数全覆盖，dropped=0。",
+      "dropped": [],
+      "invented": [],
+      "referenced": [],
+      "line": 922
+    },
+    {
+      "module": "health",
+      "note": "血量存在 Lua 侧 __rustlua_health，get/set/damage 三个函数全按引擎语义重写（damage 复用 get 的 100 默认值），dropped=0。",
+      "dropped": [],
+      "invented": [],
+      "referenced": [],
+      "line": 1435
+    },
+    {
+      "module": "input",
+      "note": "输入状态由 JS 采集、逐帧序列化进 Lua 全局 __rustlua_input（引擎的 Rust InputState 在 web 不参与游戏状态），所以只能整张表换掉。dropped=14 全是设备层与配置后端：手柄（pad_axis/pad_button/rumble/last_device）、改键（rebind/unbind/reset_bindings/set_action_map/action_map_text）、导航手感读写（nav_settings/set_nav_settings）、settings.toml 路径与文本（settings_path/migration_notes/diagnostics）。其中 last_device/nav_settings/set_nav_settings 三个 game_jhyt 正在引用（ui/hints.lua:160/186/221），三处都有\"是不是函数\"的判据，所以 web 上是静默走默认手感而不是崩。invented=press_position 是补丁自造（虚拟摇杆要按下位置，桌面没有这个名字），ui/virtual_pad.lua:241 用 pcall 取它。",
+      "dropped": [
+        "action_map_text",
+        "diagnostics",
+        "last_device",
+        "migration_notes",
+        "nav_settings",
+        "pad_axis",
+        "pad_button",
+        "rebind",
+        "reset_bindings",
+        "rumble",
+        "set_action_map",
+        "set_nav_settings",
+        "settings_path",
+        "unbind"
+      ],
+      "invented": [
+        "press_position"
+      ],
+      "referenced": [
+        "last_device",
+        "nav_settings",
+        "set_nav_settings"
+      ],
+      "line": 857
+    },
+    {
+      "module": "inv",
+      "note": "背包数据存在 Lua 侧 __rustlua_inventories（引擎版存在 Rust ScriptState，两边各存一份），15 个引擎函数全部重写完，dropped=0。invented=open 是补丁多出来的名字（开合状态在桌面属于引擎 UI 层），game_jhyt 没有引用它。",
+      "dropped": [],
+      "invented": [
+        "open"
+      ],
+      "referenced": [],
+      "line": 1017
+    },
+    {
+      "module": "log",
+      "note": "引擎版三个级别写进 Rust 日志管道，web 只有 print（由 JS 桥转成 console），所以整表重写为带前缀的 print。invented=debug 是补丁多给的名字：桌面注册层没有 log.debug，发包工程只在 core/audio.lua:109 用 (log.debug or log.info) 的 nil 安全写法取它，不构成依赖，但也意味着谁直接调 log.debug 就只在 web 跑得通。",
+      "dropped": [],
+      "invented": [
+        "debug"
+      ],
+      "referenced": [],
+      "line": 833
+    },
+    {
+      "module": "map",
+      "note": "当前图、出生点与图内状态存在 __rustlua_map_current/__rustlua_map_spawn/__rustlua_map_state，切图请求另走 __rustlua_scene_request。dropped=go/goto：这两个函数在引擎侧要真正加载场景，web 只把请求记下来交 JS 处理，go/goto 这条路没接。game_jhyt 里对 goto 的\"引用\"只出现在 world/map_manager.lua:133 的日志文案字符串里，不构成 nil 调用。",
+      "dropped": [
+        "go",
+        "goto"
+      ],
+      "invented": [],
+      "referenced": [],
+      "line": 1153
+    },
+    {
+      "module": "mesh",
+      "note": "整表只有一个占位（set return true）。dropped=clear/get：web 的网格数据不进 Lua。",
+      "dropped": [
+        "clear",
+        "get"
+      ],
+      "invented": [],
+      "referenced": [],
+      "line": 1777
+    },
+    {
+      "module": "particles",
+      "note": "整表只有一个占位：burst 直接 return true，没有粒子状态。dropped=count 同理（web 侧没有粒子系统可问）。",
+      "dropped": [
+        "count"
+      ],
+      "invented": [],
+      "referenced": [],
+      "line": 1775
+    },
+    {
+      "module": "physics",
+      "note": "宽相查询按 Lua 侧 __rustlua_transforms 的位置做圆查询、速度存 __rustlua_velocity，与 native 同名 API 同语义（补丁注释里写明了口径）。dropped=6：raycast/overlap/get_velocity 与 ccd 开关（get_ccd/set_ccd）及 debug_draw——射线、连续碰撞与调试绘制需要引擎物理后端，位置近似补不出这些语义。game_jhyt 对 overlap 的提到只在 systems/combat.lua:338 的注释里，不是调用。",
+      "dropped": [
+        "debug_draw",
+        "get_ccd",
+        "get_velocity",
+        "overlap",
+        "raycast",
+        "set_ccd"
+      ],
+      "invented": [],
+      "referenced": [],
+      "line": 1436
+    },
+    {
+      "module": "physics3d",
+      "note": "整表是**纯占位**（set_velocity/set_position return true，events 返回空表），web 没有 3D 物理后端也没有那份状态。dropped=6 与 2D 版同名字（raycast/overlap/get_ccd/set_ccd/get_velocity/debug_draw）。",
+      "dropped": [
+        "debug_draw",
+        "get_ccd",
+        "get_velocity",
+        "overlap",
+        "raycast",
+        "set_ccd"
+      ],
+      "invented": [],
+      "referenced": [],
+      "line": 1481
+    },
+    {
+      "module": "save",
+      "note": "存档键值存在 Lua 侧 __rustlua_save，read/write/commit 走文本路径。dropped=blob_read/blob_write/slot/slot_get：二进制 blob 与槽位 API 在 web 对应的是 Lua 表加 JS 存储，补丁没提供这四个名字。game_jhyt 的两条 blob 调用都用 pcall 包住（core/save_manager.lua:226/268）→ 不崩，但存档写回会静默失败，是这条分叉的真实代价。",
+      "dropped": [
+        "blob_read",
+        "blob_write",
+        "slot",
+        "slot_get"
+      ],
+      "invented": [],
+      "referenced": [
+        "blob_read",
+        "blob_write"
+      ],
+      "line": 1754
+    },
+    {
+      "module": "scene",
+      "note": "场景名与切换请求存在 __rustlua_scene_name/__rustlua_scene_request，引擎版要真去磁盘读 .scene 并重建 ECS——web 没有文件系统也没有那份 ECS，所以 scene 只记账、不换场景。dropped=0（两个函数都重写了）。",
+      "dropped": [],
+      "invented": [],
+      "referenced": [],
+      "line": 906
+    },
+    {
+      "module": "sprite",
+      "note": "精灵组件写回 Lua 侧 __rustlua_sprites 并经 __rustlua_emit 广播，set/get 两个引擎函数都有实现，dropped=0。",
+      "dropped": [],
+      "invented": [],
+      "referenced": [],
+      "line": 1484
+    },
+    {
+      "module": "tilemap",
+      "note": "格子数据、texture 与索引走 __rustlua_tilemap_of/__rustlua_cell_index，变更经 __rustlua_emit 广播。dropped=create/get_meta/set_meta/set_solid。其中 set_solid 被 game_jhyt **无判据直接调用**（systems/building.lua:216 的 apply_terrain）→ 在 web 上放/拆建筑改地形会撞 nil，是这张表唯一一条真风险；create/get_meta/set_meta 未被引用。",
+      "dropped": [
+        "create",
+        "get_meta",
+        "set_meta",
+        "set_solid"
+      ],
+      "invented": [],
+      "referenced": [
+        "set_solid"
+      ],
+      "line": 1277
+    },
+    {
+      "module": "time",
+      "note": "整表只有一个函数：补丁版 time.delta() 恒返回 1/60，而引擎版按真实帧间隔。这不是\"平台没有\"，是 web 帧循环从没把 delta 经桥喂进 Lua（docs/51 记的\"web 时间基\"缺口，同一个缺口让 clock 的倍率在 web 上是空的）。dropped=0，没有引擎函数被删。",
+      "dropped": [],
+      "invented": [],
+      "referenced": [],
+      "line": 834
+    },
+    {
+      "module": "transform",
+      "note": "位置读写走 Lua 侧 __rustlua_transforms（与 entity 同一份状态）。dropped=attach/space/world：补丁只存平面 x/y，没有父子层级也没有局部/世界坐标两套，这三条补不出语义，脚本在 web 上取到 nil。",
+      "dropped": [
+        "attach",
+        "space",
+        "world"
+      ],
+      "invented": [],
+      "referenced": [],
+      "line": 1241
+    },
+    {
+      "module": "transform3d",
+      "note": "整表是**纯占位**：get 恒返回 {x=0,y=0,z=0}，set/move/attach 只 return true，没有任何 Lua 侧状态（body 里不引用 __rustlua_*）。3D 组件的真值在渲染侧，不回 Lua。dropped=world 与占位实现同源。",
+      "dropped": [
+        "world"
+      ],
+      "invented": [],
+      "referenced": [],
+      "line": 1266
+    },
+    {
+      "module": "ui",
+      "note": "站点写法是 ui = {} ——先把整张表清空，再由 25 处 function ui.x / ui.x = function 逐个填回（所以字面键 0 个，这一张的账全靠 dropped 列）。dropped=20：拖拽四件套（drag_begin/active/end/cancel）、模态（modal/modal_show/modal_hide）、tooltip（tooltip/tooltip_hide）、网格格（grid_cell/grid_hit/grid_clear）、滚动细则（scroll_open/scroll_by/scroll_lines/scroll_page/scroll_max/scroll_visible）、文本回读（text_get）、焦点循环（focus_cycle）——这些依赖引擎 UI 层的输入焦点与布局状态，补丁侧只有 scroll_state 一张局部表（已按引擎 ScrollState 语义补齐 scroll_extents/to_visible/offset/close，见 docs/51）。game_jhyt 对 focus_cycle 的提到只在 ui/panel_nav.lua:8 的注释里，不是调用。",
+      "dropped": [
+        "drag_active",
+        "drag_begin",
+        "drag_cancel",
+        "drag_end",
+        "focus_cycle",
+        "grid_cell",
+        "grid_clear",
+        "grid_hit",
+        "modal",
+        "modal_hide",
+        "modal_show",
+        "scroll_by",
+        "scroll_lines",
+        "scroll_max",
+        "scroll_open",
+        "scroll_page",
+        "scroll_visible",
+        "text_get",
+        "tooltip",
+        "tooltip_hide"
+      ],
+      "invented": [],
+      "referenced": [],
+      "line": 1656
+    }
   ]
 }
