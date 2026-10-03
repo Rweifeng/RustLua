@@ -38,10 +38,16 @@ use std::{
 const HZ: f64 = 60.0;
 /// 格边长（世界单位），与 `grid.world_to_cell` / `data/maps.lua` 同一约定。
 const TILE: f64 = 32.0;
-/// 门自己注册的一次敌人命中使用的伤害：**伤害由调用方给**（敌人 AI 用自己的 damage 字段），
-/// 于是"减伤 70%"能对上整数：10 → 正面 3、背面 10；2 → 正面 1（向下取整后兜 1）。
+/// 门自己注册的一次敌人命中使用的伤害：**伤害由调用方给**（敌人 AI 用自己的 damage 字段）。
+/// M34-04b 起这一格是"平减前"的原始值：玩家 defense 先扣，正面格挡再乘比例，
+/// 期望值全部从 `player.stats` / `data/skills.lua` 现读现算（见第④节），这里不写结果数字。
 const HIT_DAMAGE: f64 = 10.0;
-const EDGE_DAMAGE: f64 = 2.0;
+/// 边界那一刀要落在**平减之后**剩 2 点上：2 × (1-0.7) 取整 = 0，再兜回 1 点，
+/// 才是"盾不是无敌、减伤不把命中减成 0"那条口径的证明。注册时给 `defense + 2`，
+/// 因为防御平减先跑——写死 2 的话平减就把这一刀削成 1 点，盾那一层根本轮不到取整。
+const EDGE_FLAT_DAMAGE: f64 = 2.0;
+/// 防御 A/B 用的临时 Buff 量（stats.add_buff 的 defense 增量）。
+const DEFENSE_BUFF: f64 = 3.0;
 
 /// 演武场里"西墙 + 可走坪"的分界格：第一个"本格可走、西邻是 solid"的 `x,y`。
 /// 行号取训练木人的 home.y（`tools/gen_arena_scene.py` 声明的战斗锚点行），
@@ -66,6 +72,13 @@ const LAST_PLAYER_HIT: &str = "(function() local last; \
       if e.event == 'hit' and e.target == 'player' then last = e end end; \
     if not last then return 'none' end; \
     return tostring(last.damage) .. '/' .. tostring(last.absorbed) end)()";
+
+/// 玩家身上最后一条 hit 日志里**防御平减掉的点数**（M34-04b 新字段，与 `absorbed` 分开记：
+/// 后者只算盾的比例层，不含玩家天生那 1 点防御）。
+const LAST_PLAYER_HIT_DEFENSE: &str = "(function() local last; \
+    for _, e in ipairs(require('systems.combat').log()) do \
+      if e.event == 'hit' and e.target == 'player' then last = e end end; \
+    if not last then return 'none' end; return tostring(last.defense) end)()";
 
 /// 轻功结算一行：`招式/格数/像素/无敌步数`（`last_dash` 是 M34-04 新查询，与 `last_knockback` 同形）。
 const LAST_DASH: &str = "(function() local d = require('systems.combat').last_dash(); \
@@ -474,21 +487,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // ---------------- ④ 守心诀：正面减伤 / 背面不减 / 不格挡对照 ----------------
+    // ---------------- ④ 伤害公式：平减在前（defense）+ 比例在后（守心诀） ----------------
+    // docs/33 §6.1 的减伤顺序在 M34-04b 落进 `apply_damage`：期望值全部从属性模型和
+    // 招式数据现读现算，任何一层改动（防具落地、absorb 调参）都会让这里自己跟上。
+    let defense = query_num(&mut rt, "require('player.stats').query('player','defense')")?;
+    let after_flat = (HIT_DAMAGE - defense).max(1.0);
+    let front_expected = (after_flat * (1.0 - absorb)).floor().max(1.0);
     banner(&format!(
-        "M34-04④ Z（guard 动作）= 守心诀：正面 {HIT_DAMAGE:.0} → 3、背面 {HIT_DAMAGE:.0} → {HIT_DAMAGE:.0}、不格挡 {HIT_DAMAGE:.0} → {HIT_DAMAGE:.0}"
+        "M34-04④ 伤害公式：玩家 defense = {defense:.0}，{HIT_DAMAGE:.0} 点平减后 {after_flat:.0}；正面格挡再乘 (1 - {absorb}) → {front_expected:.0}，背面与不格挡都是 {after_flat:.0}"
     ));
-    let front_expected = (HIT_DAMAGE * (1.0 - absorb)).floor().max(1.0);
     for (case, facing, guarding, expect_hit, expect_absorbed) in [
         (
             "格挡 + 正面",
             "right",
             true,
             front_expected,
-            HIT_DAMAGE - front_expected,
+            after_flat - front_expected,
         ),
-        ("格挡 + 背面", "left", true, HIT_DAMAGE, 0.0),
-        ("不格挡 + 正面", "right", false, HIT_DAMAGE, 0.0),
+        ("格挡 + 背面", "left", true, after_flat, 0.0),
+        ("不格挡 + 正面", "right", false, after_flat, 0.0),
     ] {
         prepare_guard(&mut rt, facing, 50.0)?;
         if guarding {
@@ -505,7 +522,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let log_line = query_str(&mut rt, LAST_PLAYER_HIT)?;
         if (delta - expect_hit).abs() > 1e-6 {
             return Err(format!(
-                "{case}：吃下 {delta:.0} 点，期望 {expect_hit:.0}（absorb={absorb}、伤害 {HIT_DAMAGE:.0}）"
+                "{case}：吃下 {delta:.0} 点，期望 {expect_hit:.0}\
+                 （原始 {HIT_DAMAGE:.0} - defense {defense:.0} = {after_flat:.0}，absorb={absorb}）"
             )
             .into());
         }
@@ -518,22 +536,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         println!("  {case}：日志 {log_line}（气血 100 → {hp:.0}）");
     }
-    // 取整与"盾不是无敌"：2 点减 70% → floor 成 0，兜回 1 点。
+    // 取整与"盾不是无敌"：平减之后剩 2 点，减 70% → floor 成 0，兜回 1 点。
+    let edge_raw = defense + EDGE_FLAT_DAMAGE;
     prepare_guard(&mut rt, "right", 50.0)?;
     hold(&mut rt, &[guard_key], 2)?;
-    register_dummy_hit(&mut rt, EDGE_DAMAGE)?;
+    register_dummy_hit(&mut rt, edge_raw)?;
     if !wait_for_player_damage(&mut rt, &[guard_key], 100.0)? {
-        return Err("边界那一刀（伤害 2）没打到玩家".into());
+        return Err(format!("边界那一刀（原始 {edge_raw:.0}）没打到玩家").into());
     }
     let edge_log = query_str(&mut rt, LAST_PLAYER_HIT)?;
     if edge_log != "1/1" {
         return Err(format!(
-            "正面减伤把 {EDGE_DAMAGE:.0} 点减成 {edge_log}（damage/absorbed），期望 1/1：floor(0.6) = 0 之后兜 1 点——盾不是无敌"
+            "正面减伤把平减后 {EDGE_FLAT_DAMAGE:.0} 点的一刀减成 {edge_log}（damage/absorbed），期望 1/1：\
+             floor(0.6) = 0 之后兜 1 点——盾不是无敌"
         )
         .into());
     }
     println!(
-        "  边界：正面吃下 {EDGE_DAMAGE:.0} 点的一刀 → 日志 {edge_log}（向下取整后兜 1 点，减伤不把命中减成 0）"
+        "  边界：原始 {edge_raw:.0} 点 → 平减剩 {EDGE_FLAT_DAMAGE:.0} → 正面减伤 floor(0.6)=0 后兜 1 点，日志 {edge_log}（减伤不把命中减成 0）"
     );
     let guard_stats = query_str(
         &mut rt,
@@ -541,7 +561,109 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
            return tostring(s.guard_hits) .. '/' .. tostring(s.guard_absorbed) end)()",
     )?;
     println!(
-        "  本轮最后的 stats：guard_hits/guard_absorbed = {guard_stats}（只有正面被减的命中才计数）"
+        "  本轮最后的 stats：guard_hits/guard_absorbed = {guard_stats}（只有正面被减的命中才计数；\
+         `absorbed` 只算盾那一层，防御平减记在 `defense` 字段里）"
+    );
+
+    // ---------------- ④′ 防御结算 A/B：加成层每一点 defense 都换成等量减伤 ----------------
+    banner(&format!(
+        "M34-04④′ 防御结算：同一刀 {HIT_DAMAGE:.0} 点，defense {defense:.0} vs {defense:.0}+{DEFENSE_BUFF:.0} 两次吃下的差 = {DEFENSE_BUFF:.0}"
+    ));
+    // 先确认这一层的来源：`equipment_bonus` 的 stats 分支今天没有数据行可走
+    // （docs/33 没有防具表、`data/items.lua`/`data/tools.lua` 里没有任何带 defense 的装备，
+    // grep 全仓 `defense` 只有 stats.lua 与 registry_check 两处），所以 A/B 走 Buff 层。
+    // 两层在 `stats.query` 里是同一句加法，来源不同而通路相同——装备层一落地，
+    // 这条断言不用改（它比的是两次的**差**）。
+    let equipped_defense = query_num(
+        &mut rt,
+        "(require('player.stats').equipment_bonus('player').defense) or 0",
+    )?;
+    println!("  装备层 defense 当前 = {equipped_defense:.0}（防具还没有数据行）");
+    let mut flat_cases = Vec::new();
+    let mut taken_without_buff = 0.0;
+    let mut taken_with_buff = 0.0;
+    for (label, buffed) in [("不穿（只有基础防御）", false), ("加成层 +3", true)] {
+        prepare_guard(&mut rt, "right", 50.0)?;
+        lua(&mut rt, "require('player.stats').reset()")?;
+        if buffed {
+            let added = query_str(
+                &mut rt,
+                &format!(
+                    "tostring(require('player.stats').add_buff('player', \
+                       {{ stat = 'defense', amount = {DEFENSE_BUFF}, days = 1 }}))"
+                ),
+            )?;
+            if added != "true" {
+                return Err(format!("加 defense Buff 被拒绝：{added}").into());
+            }
+        }
+        let query = query_num(&mut rt, "require('player.stats').query('player','defense')")?;
+        let want_query = defense + if buffed { DEFENSE_BUFF } else { 0.0 };
+        if (query - want_query).abs() > 1e-6 {
+            return Err(format!(
+                "{label}：stats.query('player','defense') = {query:.0}，期望 {want_query:.0}"
+            )
+            .into());
+        }
+        register_dummy_hit(&mut rt, HIT_DAMAGE)?;
+        if !wait_for_player_damage(&mut rt, &[], 100.0)? {
+            return Err(format!("{label}：木人那一刀在 24 步内没打到玩家").into());
+        }
+        let delta = 100.0 - query_num(&mut rt, "require('systems.combat').player_hp()")?;
+        let defense_log = query_str(&mut rt, LAST_PLAYER_HIT_DEFENSE)?;
+        let want_taken = (HIT_DAMAGE - query).max(1.0);
+        if (delta - want_taken).abs() > 1e-6 {
+            return Err(format!(
+                "{label}：吃下 {delta:.0} 点，期望 max(1, {HIT_DAMAGE:.0} - {query:.0}) = {want_taken:.0}"
+            )
+            .into());
+        }
+        if (defense_log.parse::<f64>().unwrap_or(-1.0) - (HIT_DAMAGE - want_taken)).abs() > 1e-6 {
+            return Err(format!(
+                "{label}：hit 日志的 defense 字段 = {defense_log}，期望扣掉的点数 {:.0}",
+                HIT_DAMAGE - want_taken
+            )
+            .into());
+        }
+        if buffed {
+            taken_with_buff = delta;
+        } else {
+            taken_without_buff = delta;
+        }
+        flat_cases.push(format!(
+            "{label} defense={query:.0}→吃{delta:.0}/记{defense_log}"
+        ));
+    }
+    lua(&mut rt, "require('player.stats').reset()")?;
+    let restored = query_num(&mut rt, "require('player.stats').query('player','defense')")?;
+    if (restored - defense).abs() > 1e-6 {
+        return Err(
+            format!("Buff 清掉之后 defense 应回到基础值 {defense:.0}，实际 {restored:.0}").into(),
+        );
+    }
+    if (taken_without_buff - taken_with_buff - DEFENSE_BUFF).abs() > 1e-6 {
+        return Err(format!(
+            "两次吃下的差 = {:.0}，期望正好等于加成层那 {DEFENSE_BUFF:.0} 点防御",
+            taken_without_buff - taken_with_buff
+        )
+        .into());
+    }
+    println!("  {}；差 = {DEFENSE_BUFF:.0} 点", flat_cases.join("；"));
+    // 对照：敌方侧**没有**这一层——`data/enemies.lua` 没有 defense 字段，玩家那一刀吃满。
+    let enemy_control = query_str(
+        &mut rt,
+        "(function() local e = require('data.enemies').get('enemy_dummy'); \
+           return tostring(e.defense) end)()",
+    )?;
+    if enemy_control != "nil" {
+        return Err(format!(
+            "data/enemies.lua 出现了 defense 字段（{enemy_control}）：敌方侧的平减要一起进公式，\
+             本门的对照断言与 docs/33 §6.2 的口径都得重写"
+        )
+        .into());
+    }
+    println!(
+        "  对照：敌人数据没有 defense 字段，所以玩家那一刀不被平减（docs/33 §6.2 的防御列仍是 Alpha 目标）"
     );
 
     // ---------------- ⑤ 维持消耗按步扣 + 自动落防 ----------------
@@ -754,7 +876,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!(
         "\njhyt_m34_skills_ok project={} dash_tiles={dash_tiles:.0} dash_cost={inner_cost:.0} \
-         dash_iframes={iframes:.0} clip={} front={front_expected:.0} back={HIT_DAMAGE:.0} \
+         dash_iframes={iframes:.0} clip={} front={front_expected:.0} back={after_flat:.0} \
          absorb={absorb} period={guard_period:.0} edge_log={edge_log} hud={} map_lines={}",
         project.display(),
         clip_report.join("/"),

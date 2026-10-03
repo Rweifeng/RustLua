@@ -48,7 +48,7 @@
 | D-1 | NPC 日程模型 | ✖ | 时段计划数据 + 寻路执行器。引擎无 `npc`/日程概念，但有全部地基：A\* `find_path`（B-4）、`GameClock`、`grid.*` 坐标、`data.load/schema`；缺日程 schema 与"沿路径移动实体/按时钟切状态"的薄执行层 | 纯数据新增 1 个 NPC 无需改 Rust |
 | D-2 | 对话 schema | 🚧 | **通用层已具备**：`data_schema::validate`（`data.schema` / `map.schema` 双入口）能给出文件+字段级错误（如 `farm.plots[1].x`），有 4 个单测。**对话领域模型为零**：无节点/条件/选项/变量副作用/关系变更运行时 | 数据错误定位到文件+字段（通用层已满足） |
 | D-3 | 任务 schema | ✖ | 全引擎无 `quest`/任务状态机；仅可复用的 blob 存档 / 事件总线 / schema 校验原语 | 纯数据新增 1 条任务无需改 Rust |
-| D-4 | 装备属性查询 | 🚧 | `inv.equip/equip_get/equip_list` **存储骨架已具备**（源码自注 "no runtime effect yet, stats land in M18-00"）；`ItemDefinition` 无伤害/防御等属性字段；武器伤害未真实生效 | 武器伤害真实生效 |
+| D-4 | 装备属性查询 | 🚧 | `inv.equip/equip_get/equip_list` **存储骨架已具备**（源码自注 "no runtime effect yet, stats land in M18-00"）；引擎的 `ItemDefinition` 确实没有属性字段——**属性在 Lua 侧**：`data/items.lua` / `data/tools.lua` 的定义带 `stats` 表（旧字段 `damage` 兼容为 `stats.attack`），经 `player/stats.lua` 三层模型（基础/装备/Buff）合成，`player/skills.lua:weapon_bonus()` 是消费方（练习剑 8 → 普攻 2+8=10，`jhyt_m18_stats` 逐格断言）；M34-04b 起 `systems/combat.lua:apply_damage` 另读 `defense` 做平减（`jhyt_m34_skills` ④/④′）。仍缺的是**引擎侧**的"物品 → 属性"查询：换装收益全靠游戏脚本，绑定层不参与 | 武器伤害真实生效 —— 已达成（M18-04 装备层 / M34-04b 防御层，都在游戏侧）；引擎侧属性查询仍未做 |
 | D-5 | 关系/声望数据模型 | ✖ | 全引擎无好感/阵营/声望；仅通用 KV+blob 存档可兜底，无模型、范围校验或汇总 | 关系可存档恢复（需游戏侧自实现） |
 
 ## P1 —— 编辑器生产工具（阶段 D/F）

@@ -21,6 +21,9 @@
 --     （`data/combat.lua:player.iframes`），无敌期间整次命中被吸收并记 dodge。
 --     敌人侧的抵抗（如训练木人完全不动）在 `data/enemies.lua` 按个体声明，
 --     由 enemy.lua 应用；本模块只负责"算出这一击造成什么"。
+--   * 伤害公式（docs/33 §6.1，M34-04b）：玩家受击按**平减在前、比例在后**结算——
+--     先 `min(原始, max(1, 原始 - defense))`（defense 来自 `player/stats.lua` 三层模型），
+--     正面格挡再乘 `(1 - absorb)` 并向下取整。DOT 不吃这两层（见 settle_status_damage）。
 --
 -- 依赖约定：本模块不 require enemy.lua；enemy.lua 加载后调用
 -- M.register_enemy 注入目标判定/伤害回调，避免循环依赖（main.lua 先
@@ -35,6 +38,10 @@ local combat_data = require("data.combat")
 -- 和唯一扣血者——status.lua 只产出事件、不碰气血，所以"毒能毒死人，但走的是同一套
 -- 战败流程"是结构性的。方向是单向的：combat require status，status 不 require combat。
 local status = require("systems.status")
+-- M34-04b：防御属性。伤害公式从三层属性模型读 `defense`（基础 + 装备 + Buff，
+-- 见 `player/stats.lua`）。名字用 `stats_model` 是因为本模块已经有一个局部 `stats`
+-- 是战斗账本（见下方 `local stats = { attacks = … }`），两者不能同名。
+local stats_model = require("player.stats")
 -- 玩家侧状态的持有者键（敌人侧将来再扩：今天没有敌人会流血）。
 local PLAYER_ACTOR = "player"
 -- M19-02：命中/受击音效（命中结算处播放，缺文件/无设备静默降级）。
@@ -282,6 +289,14 @@ local function active_guard()
   return skills.get(guard_skill_id)
 end
 
+-- 目标的防御平减（M34-04b）：三层属性模型（基础 + 装备 + Buff）合成出的 defense。
+-- **只有玩家侧有这一层**：`data/enemies.lua` 没有任何 defense 字段（docs/33 §6.2 的
+-- 防御列写的是 Alpha 目标值，不是实现值），所以敌方受击仍直吃 atk.damage，
+-- 见 apply_damage 的敌方分支与 jhyt_m34_skills ④ 的那一条对照断言。
+local function defense_of(actor)
+  return math.max(0, math.floor(tonumber(stats_model.query(actor, "defense")) or 0))
+end
+
 
 -- 命中目标的受击反应元数据（交给 enemy.lua 按自身抵抗系数应用）。
 local function hit_reaction(atk, target_id)
@@ -342,6 +357,9 @@ local function settle_status_damage(event)
   if player_dead or event.effect ~= "damage" then
     return
   end
+  -- 状态伤害（中毒这类 DOT）**不走命中公式**：没有防御平减，也没有格挡比例。
+  -- 两层减免各自按自己的锚点结算——DOT 每 N 步一跳、减免只在 hit 发生时生效，
+  -- 让 DOT 再吃一次防御等于同一层减免跨两套计时重复扣（M34-03 文件头那条分工的延续）。
   local amount = math.max(0, math.floor(tonumber(event.amount) or 0))
   if amount <= 0 then
     return
@@ -377,18 +395,25 @@ local function apply_damage(atk, target_id)
       return true
     end
     local dir_x, dir_y = knockback_direction(atk, target_id)
-    -- 格挡减伤（M34-04 / 守心诀）：只有**正面**命中才减，背后挨打一分不减。
-    -- 比例减完向下取整、再兜 1 点（docs/33 §6.1 的 `max(1, …)` 口径）：盾不是无敌，
-    -- 站着一动不动挨 12 刀仍然会倒——04b 接防御进同一条公式时也只改这一处。
-    -- 最外层再 `min(damage, …)` 夹一次：兜 1 点是给"有伤害的攻击"设的下限，不是让
-    -- 0 伤害的命中（训练/试探）被盾**加成**成 1 点。
+    -- 伤害公式（docs/33 §6.1）：**平减在前、比例在后**，两条通路各扣一次是双倍减伤。
+    -- ① 防御平减：`max(1, 攻击力+招式伤害-防御力)` 的兜 1 点只给**有伤害的**命中，
+    --    所以外面再 `min(raw, …)` 夹一次——0 伤害的试探（训练木人/摆姿势）不会被
+    --    防御公式**加成**成 1 点。格挡那一层用同一个形状，理由相同。
+    -- ② 格挡减伤（M34-04 / 守心诀）：只有**正面**命中才乘 `(1 - absorb)`，背后挨打
+    --    一分不减；比例减完向下取整。盾不是无敌，站着一动不动挨 12 刀仍然会倒。
     local guard = active_guard()
     local guarded = guard ~= nil and is_front_hit(atk, target_id, guard.front_degrees)
-    local damage = math.max(0, tonumber(atk.damage) or 0)
+    local raw = math.max(0, tonumber(atk.damage) or 0)
+    local defense = defense_of(PLAYER_ACTOR)
+    local after_flat = math.min(raw, math.max(1, raw - defense))
+    local flat_reduced = raw - after_flat
+    local damage = after_flat
     if guarded then
-      damage = math.min(damage, math.max(1, math.floor(damage * (1 - guard.absorb))))
+      damage = math.min(after_flat, math.max(1, math.floor(after_flat * (1 - guard.absorb))))
     end
-    local absorbed = math.max(0, (tonumber(atk.damage) or 0) - damage)
+    -- `absorbed` 只记**盾**挡下的那部分（比例层），防御平减另存 `defense` 字段：
+    -- 两者混记会让"格挡挡了多少"这种读数里混进玩家天生那 1 点防御。
+    local absorbed = math.max(0, after_flat - damage)
     player_hp = math.max(0, player_hp - damage)
     stats.taken = stats.taken + damage
     stats.hits = stats.hits + 1
@@ -422,11 +447,11 @@ local function apply_damage(atk, target_id)
       push_log({ event = "hit", attacker = atk.attacker_name, target = "player",
         skill = atk.skill, damage = damage, remaining = player_hp,
         knockback = pushed, hitstun = player_hurt, status = status_kind,
-        absorbed = absorbed })
+        absorbed = absorbed, defense = flat_reduced })
       log.info(string.format(
-        "[combat] hit attacker=%s target=player skill=%s damage=%d remaining=%d knockback=%d hitstun=%d iframes=%d status=%s absorbed=%d frame=%d",
+        "[combat] hit attacker=%s target=player skill=%s damage=%d remaining=%d knockback=%d hitstun=%d iframes=%d status=%s absorbed=%d defense=%d frame=%d",
         tostring(atk.attacker_name), tostring(atk.skill), damage, player_hp,
-        pushed, player_hurt, player_iframes, tostring(status_kind), absorbed, frame))
+        pushed, player_hurt, player_iframes, tostring(status_kind), absorbed, flat_reduced, frame))
       -- 主角形象：受击（非循环；faint 已在上面的致死分支播过）
       player.play("hurt")
     end
@@ -440,6 +465,9 @@ local function apply_damage(atk, target_id)
     if ok and type(pos) == "table" then
       effects.spawn("hit_spark", pos.x, pos.y)
     end
+    -- 敌方侧不做防御平减：`data/enemies.lua` 没有 defense 字段（docs/33 §6.2 的防御列
+    -- 是 Alpha 目标值）。玩家的基础 attack 已经在 `player/skills.lua` 的招式数值里，
+    -- 这一路今天吃满 atk.damage——jhyt_m34_skills ④ 有对照断言钉住。
     local remaining = enemy_kind.hit(target_id, atk.damage, hit_reaction(atk, target_id))
     if remaining == nil then
       return nil
@@ -910,9 +938,11 @@ function M.log()
       -- DOT 自己记的条目用 event = "dot"，种类落在 skill 字段上（同一张表，不另立形状）。
       status = entry.status,
       -- M34-04：这一击被格挡吃掉的那部分伤害（打在玩家身上但未格挡为 0，打向敌人的条目为 nil）。
-      -- damage 仍是**真正吃下的**那一份，两者相加才等于攻击方的原始威力——日志里只留一个数
-      -- 就没法核对"减伤 70%"到底减了多少。
-      absorbed = entry.absorbed }
+      -- M34-04b：防御平减掉的点数另存 `defense`（比例层与平减层分开记，混在一起就没法回答
+      -- "盾挡了多少"）。于是打在玩家身上的条目满足 `damage + absorbed + defense = 原始威力`；
+      -- 日志里只留一个数就核不了这两层各扣了多少。
+      absorbed = entry.absorbed,
+      defense = entry.defense }
   end
   return out
 end

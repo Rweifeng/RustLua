@@ -355,15 +355,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &mut rt,
         "require('data.enemies').get('enemy_scorpion').damage",
     )?;
+    // M34-04b：命中走 docs/33 §6.1 的平减公式，所以这一口吃下的是
+    // `max(1, 毒蝎 damage - 玩家 defense)`，不是 damage 本身。defense 从属性模型现读
+    // （玩家基础 1、今天没有装备/Buff），写死数字的话防具一落地这里就是假绿灯。
+    let defense = query_num(&mut rt, "require('player.stats').query('player','defense')")?;
+    let bite = (damage - defense).max(1.0);
     let hp_after_bite = player_hp(&mut rt)?;
-    if (hp_before - hp_after_bite - damage).abs() > f64::EPSILON {
+    if (hp_before - hp_after_bite - bite).abs() > f64::EPSILON {
         return Err(format!(
-            "这一口的伤害不是毒蝎的 damage 字段（{damage}）：{hp_before} → {hp_after_bite}"
+            "这一口应吃下 {bite}（毒蝎 damage {damage} - 玩家 defense {defense}，兜 1 点）：{hp_before} → {hp_after_bite}"
         )
         .into());
     }
     println!(
-        "  第 {bite_step} 步被咬（战斗步 {frame_at_bite:.0}）：气血 {hp_before:.0} → {hp_after_bite:.0}，账本 600/120/毒蝎"
+        "  第 {bite_step} 步被咬（战斗步 {frame_at_bite:.0}）：气血 {hp_before:.0} → {hp_after_bite:.0}（{damage:.0} 点扣掉 {defense:.0} 点防御），账本 600/120/毒蝎"
     );
     // 命中日志带上种类 → "带中毒"从此是可回读的事实。
     let hit_log = query_str(
@@ -603,8 +608,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ---------------- ⑦ 毒可以毒死人，但只有一条死亡流程 ----------------
     banner("M34-03⑦ 低气血时被咬：致死那一跳走的是同一套战败流程（DOT 致死 → systems/death 回庄）");
-    // 5 点血：被咬扣 2 剩 3（不死），120 步后 DOT 扣 3 → 0。这样"致命的一定是 DOT 那一跳"。
-    lua(&mut rt, "require('systems.combat').set_player_hp(5)")?;
+    // 气血刚好留"一跳 DOT"的量：被咬扣 `max(1, 毒蝎伤害 - 防御)` 后剩 DOT 单跳的伤害，
+    // 于是"不死 → 被 DOT 跳死"这条链在数值动了之后仍然只由 DOT 收口。
+    // 以前这里写死 5 点（咬掉 2 剩 3 = 一跳），M34-04b 防御进公式后 5 点会剩 4 点，
+    // 一跳毒死不了人——所以两个数都从数据现读，不再靠"5"这个巧合。
+    let dot = query_num(
+        &mut rt,
+        "require('data.combat').status_entry('poison').damage",
+    )?;
+    let hp_at_bite = bite + dot;
+    lua(
+        &mut rt,
+        &format!("require('systems.combat').set_player_hp({hp_at_bite})"),
+    )?;
     assert_str(
         &mut rt,
         "require('systems.status').has('poison', 'player')",
@@ -619,7 +635,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_str(
         &mut rt,
         "require('systems.combat').player_hp()",
-        &format!("{:.0}", 5.0 - damage),
+        &format!("{:.0}", dot),
     )?;
     let mut died_by_dot = false;
     for _ in 1..=140i64 {
