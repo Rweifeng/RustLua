@@ -3,6 +3,7 @@
 //! 与调度性能统计出口。这些测试是 headless 的：直接驱动 RuntimeScene。
 
 use super::*;
+use crate::core::camera::CameraBounds;
 use std::cell::RefCell;
 use std::rc::Rc;
 

@@ -116,12 +116,31 @@ const prevSet = new Set(prevItems);
 const nextSet = new Set(unique);
 const added = unique.filter((x) => !prevSet.has(x));
 const removed = prevItems.filter((x) => !nextSet.has(x));
-if (added.length === 0 && removed.length === 0) {
-  console.log(`pub_surface_ok items=${unique.length}（对外 Rust 符号面与基线一致）`);
+
+// WP12 拆分带来的**唯一**一类合法新增：一个 `pub` 项从 `engine::host::x::NAME`
+// 搬进 `x` 的子模块 `sub`（⇒ `engine::host::x::sub::NAME`），同时 `x/mod.rs` 用
+// `pub use` 把原路径留着。这时基线里的原路径**必须仍然在场**（由下面的
+// `removed.length === 0` 兜住），新增那条只是"同一个符号的定义处页面"，不是新的对外 API。
+// 判据刻意收紧到"只多一段模块名、且去掉那一段就是基线里的项"：凭空多出来的 pub 项、
+// 或者一次搬进两层深（说明结构变化已超出"纯搬运"）都照判红。
+const isInternalMove = (item) => {
+  const [kind, path] = item.split('|');
+  if (!path.startsWith('engine::host::')) return false;
+  const segs = path.split('::');
+  if (segs.length < 4) return false;
+  const name = segs[segs.length - 1];
+  if (segs[segs.length - 2] === name) return false;
+  return prevSet.has(`${kind}|${[...segs.slice(0, -2), name].join('::')}`);
+};
+const moved = added.filter(isInternalMove);
+const unexplained = added.filter((x) => !isInternalMove(x));
+
+if (unexplained.length === 0 && removed.length === 0) {
+  console.log(`pub_surface_ok items=${unique.length} moved_into_submodules=${moved.length}（对外 Rust 符号面与基线一致${moved.length ? '；多出的页面是搬进子模块的定义处，原路径仍可达' : ''}）`);
   process.exit(0);
 }
-console.log(`pub_surface_failed items=${unique.length} baseline=${prevItems.length} added=${added.length} removed=${removed.length}`);
+console.log(`pub_surface_failed items=${unique.length} baseline=${prevItems.length} added=${unexplained.length} removed=${removed.length} moved=${moved.length}`);
 for (const x of removed.slice(0, 40)) console.log(`  - ${x}`);
-for (const x of added.slice(0, 40)) console.log(`  + ${x}`);
+for (const x of unexplained.slice(0, 40)) console.log(`  + ${x}`);
 console.log('  拆分不得改变对外符号面；确属有意新增/删除才跑 --update 并把理由写进提交说明。');
 process.exit(1);
