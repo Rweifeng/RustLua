@@ -9,6 +9,20 @@
 
 use super::*;
 
+// WP12 阶段 3b：这些名字原先由 `runtime_scene.rs` 顶部的 use 块带进来（测试靠 glob 取用）。
+// 生产代码搬走后父模块的导入被裁掉，这里改由测试自己声明——断言与造数据的路径一字未改。
+use crate::core::{
+    layer::RenderLayer,
+    math3d::Vec3,
+    quad::Quad,
+    resource_kind::ResourceKind,
+    sprite::Sprite,
+    transform::Transform3D,
+    ui::{UiImage, UiText},
+    ui_layout::UiRect,
+};
+use crate::host::frame::SceneMesh;
+
 // 示例重组后，展示工程从 examples/ 迁入 examples/game_api/（多项目布局）；
 // 此处路径同步修正，恢复 showcase/ui_test 等测试的真实覆盖（M18-03）。
 fn game_root() -> std::path::PathBuf {
