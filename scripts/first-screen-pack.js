@@ -15,10 +15,14 @@
  * 因此本清单是构建期（package.ps1 按它搬运文件）、运行时（适配层按它路由）、
  * 验收期（harness / verify 按它断言「清单项在主包且不在分包」）三方共用的契约。
  *
- * 保守性原则：**宁可多列，不可漏列**。
+ * 保守性原则：**宁可多列，不可漏列**，但"多列"要列在入口界面上。
  *   漏列 → 首屏要用的资源被路由到分包 → 分包未挂载时读不到 → 贴图 onerror。
- *   多列 → 该资源留在主包、分包变小。而 4MB 上限卡的是**分包那一侧**，
- *          主包预算很宽（实测约 37%），所以多列与体积上限的方向是一致的。
+ *   多列 → 该资源留在主包、分包变小。**上限卡的是主包那一侧**（微信小游戏：主包 ≤ 4MB、
+ *          单个普通分包不单独限大小、总量 ≤ 20MB，口径见 verify 头部注释），
+ *          实测也确实是主包紧（examples/game_jhyt 分包形态：主包 3,736 KB / 4,096 KB = 91.2%，
+ *          读数只信 verify 的 `main_kb=… main_of_limit=…%`，别用 du 估——本机虚高约 350 KB）。
+ *          所以清单的语义必须是"入口界面要用的"，不能顺手扩成"某一类资源的全部"
+ *          （见下方 DEFAULT_INCLUDE_PREFIXES 的取舍）。
  *
  * 漏列不会静默：适配层的 assetStats.imageFailed / 屏幕红条 / data-rustlua-boot-detail
  * 三条既有通道会把它变成可见失败，harness 的 imageFailures > 0 断言直接红。
@@ -53,9 +57,23 @@ const EXIT_NOT_FOUND = 3;
 // 否则工具算出来的闭包会与运行时真正读的贴图漂移。
 const COMPONENT_FIELD_PATTERN = /([A-Za-z_][A-Za-z0-9_]*)=/g;
 
-// 启动场景的 UI 不只来自场景里的静态 Image 实体，还有 main.lua 通过 ui.* 运行时画的部分，
-// 静态推不出来。assets/art/ui/** 在样板工程只有约 55 KB，属于"便宜且必要"的过度包含。
-const DEFAULT_INCLUDE_PREFIXES = ['assets/art/ui/'];
+// 保守前缀：只补"静态推不出来、但入口界面一定会画"的那一类。
+// 启动场景的贴图闭包（第 5 步）已含 main.scene 里 7 张静态 Image；剩下的是 ui/title_menu.lua
+// 按 skin 键动态画的装饰（四角 ornaments、bamboo divider、seal、hover 态）与从未被静态引用到的
+// 按下态 pressed —— 键名要过 ui/skin.lua 的 tex 注册表才落成路径，静态推不出来，
+// 所以整目录纳入 assets/art/ui/menu/（13 张）。
+//
+// 为什么不再整收 assets/art/ui/**：其余 10 个子目录（common 24 / hud 19 / skills 6 / backpack 5 /
+// dialogue 3 / save 2 / build 2 / settings 2 / shop 2 / quest 2）只被局内面板引用
+// （shop.lua / inventory_ui.lua / pause_menu.lua / quest_ui.lua / hud.lua），标题画面一张都不画；
+// 它们留在分包 pack/，分包挂载后照常可读（harness 的 subpackage never/delay 两档就是
+// "分包还没挂上"的负控，首屏缺图会直接红）。
+//
+// 收益把话说小（实测 examples/game_jhyt，逐文件 stat 求和，不要用 du）：主包内 art 从
+// 69,367 B（82 文件）降到 58,271 B（15 文件），省 11,096 B —— 在 3,729 KB 的主包里占 0.3%，
+// 改这里**不是**为了过 4MB 线；为的是"首屏清单 = 入口界面要用的"这个契约本身（此前它等价于"全部 UI"）。
+// 需要临时多带某目录时用 --include <pack 相对前缀>，不动这里的默认值。
+const DEFAULT_INCLUDE_PREFIXES = ['assets/art/ui/menu/'];
 
 const MANIFEST_HEADER_KEY = 'assetc_manifest';
 
