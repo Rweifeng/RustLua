@@ -701,6 +701,37 @@ try {
                 Write-Host "webgl_playthrough_ok driveJhyt=$($jhytPayload.driveJhyt) milestones=$($jhytPayload.driveJhytDetail)" -ForegroundColor Green
             }
 
+            # ③″ L3 行为契约层（docs/51）：把桌面那份 `lua_api_contract.lua` 注进**这个已打完
+            # 宿主补丁的活体 Lua 状态**再跑一遍，与 PC 的 transcript 逐行对拍。它是三层门里唯一
+            # 能抓"名字两边都在、行为不一样"的那层——L1 比的是注册表（wasm 与桌面同源，空转），
+            # L2 比的是名字清单（整表替换那 77 个 nil 它只知道"没了"）。
+            # 判红口径沿用子脚本：`unavailable`（产物没接 Lua 桥、报告首行三选一都对不上）同样
+            # 算红——"没数据所以放行"等于给门开洞。无浏览器/无产物才是环境受限（exit 2/3）。
+            $contractRun = & $runWebEvidence $bundleScript "bundle-api-contract" -ExtraArgs @("-ApiContract")
+            $contractExit = $contractRun.ExitCode
+            if ($contractExit -eq 1) {
+                throw "webgl API contract FAILED (verify-webgl-bundle.ps1 -ApiContract exit 1; PC 与打完补丁的 web 活体行为不一致，或契约报告首行读不出来 - 见 bundle-summary-*.json 的 apiContract 与 artifacts/logs/webgl/api-contract-*.txt)"
+            }
+            if ($contractExit -ne 0) {
+                Write-Host "webgl_api_contract_skipped reason=environment_limited_or_no_bundle exit=$contractExit" -ForegroundColor Yellow
+            }
+            else {
+                $contractSummary = Get-ChildItem -LiteralPath $webEvidenceRoot -Filter "bundle-summary-*.json" -ErrorAction SilentlyContinue |
+                    Where-Object { $_.LastWriteTime -ge $contractRun.StartedAt } |
+                    Sort-Object LastWriteTime -Descending | Select-Object -First 1
+                if (-not $contractSummary) {
+                    throw "webgl API contract reported success but wrote no FRESH bundle-summary JSON"
+                }
+                $contractPayload = Get-Content -LiteralPath $contractSummary.FullName -Raw | ConvertFrom-Json
+                if ($contractPayload.apiContract -ne 'ok') {
+                    throw "webgl API contract gate FAILED: api_contract=$($contractPayload.apiContract) cases=$($contractPayload.apiContractCases)"
+                }
+                if ($contractPayload.apiContractCases -le 0) {
+                    throw "webgl API contract reports ok with cases=$($contractPayload.apiContractCases) (0 条用例的绿不算证据)"
+                }
+                Write-Host "webgl_api_contract_ok cases=$($contractPayload.apiContractCases) report=$($contractPayload.apiContractReport)" -ForegroundColor Green
+            }
+
             # ③ 新 EH（try_table/exnref）跨浏览器层：本产物是纯新 EH，低于门槛的引擎连编译都
             # 过不去（iOS Safari 18.4 / Chrome·Edge 137 / Firefox 131）。这一层只**编译**真实
             # wasm（不跑游戏），因此与启动层正交：启动层可能因运行期 bug 判红，但只要模块能编译，
