@@ -133,7 +133,7 @@
       ],
       "invented": [],
       "referenced": [],
-      "line": 1551
+      "line": 1607
     },
     {
       "module": "animation3d",
@@ -147,7 +147,7 @@
       ],
       "invented": [],
       "referenced": [],
-      "line": 1595
+      "line": 1651
     },
     {
       "module": "audio",
@@ -164,7 +164,7 @@
         "settings_path",
         "settings_text"
       ],
-      "line": 1604
+      "line": 1660
     },
     {
       "module": "camera",
@@ -175,7 +175,7 @@
       ],
       "invented": [],
       "referenced": [],
-      "line": 1776
+      "line": 1832
     },
     {
       "module": "entity",
@@ -183,7 +183,7 @@
       "dropped": [],
       "invented": [],
       "referenced": [],
-      "line": 1207
+      "line": 1249
     },
     {
       "module": "grid",
@@ -191,7 +191,7 @@
       "dropped": [],
       "invented": [],
       "referenced": [],
-      "line": 922
+      "line": 964
     },
     {
       "module": "health",
@@ -199,7 +199,7 @@
       "dropped": [],
       "invented": [],
       "referenced": [],
-      "line": 1435
+      "line": 1491
     },
     {
       "module": "input",
@@ -228,7 +228,7 @@
         "nav_settings",
         "set_nav_settings"
       ],
-      "line": 857
+      "line": 899
     },
     {
       "module": "inv",
@@ -238,7 +238,7 @@
         "open"
       ],
       "referenced": [],
-      "line": 1017
+      "line": 1059
     },
     {
       "module": "log",
@@ -248,7 +248,7 @@
         "debug"
       ],
       "referenced": [],
-      "line": 833
+      "line": 875
     },
     {
       "module": "map",
@@ -259,7 +259,7 @@
       ],
       "invented": [],
       "referenced": [],
-      "line": 1153
+      "line": 1195
     },
     {
       "module": "mesh",
@@ -270,7 +270,7 @@
       ],
       "invented": [],
       "referenced": [],
-      "line": 1777
+      "line": 1833
     },
     {
       "module": "particles",
@@ -280,7 +280,7 @@
       ],
       "invented": [],
       "referenced": [],
-      "line": 1775
+      "line": 1831
     },
     {
       "module": "physics",
@@ -295,7 +295,7 @@
       ],
       "invented": [],
       "referenced": [],
-      "line": 1436
+      "line": 1492
     },
     {
       "module": "physics3d",
@@ -310,7 +310,7 @@
       ],
       "invented": [],
       "referenced": [],
-      "line": 1481
+      "line": 1537
     },
     {
       "module": "save",
@@ -326,7 +326,7 @@
         "blob_read",
         "blob_write"
       ],
-      "line": 1754
+      "line": 1810
     },
     {
       "module": "scene",
@@ -334,7 +334,7 @@
       "dropped": [],
       "invented": [],
       "referenced": [],
-      "line": 906
+      "line": 948
     },
     {
       "module": "sprite",
@@ -342,22 +342,19 @@
       "dropped": [],
       "invented": [],
       "referenced": [],
-      "line": 1484
+      "line": 1540
     },
     {
       "module": "tilemap",
-      "note": "格子数据、texture 与索引走 __rustlua_tilemap_of/__rustlua_cell_index，变更经 __rustlua_emit 广播。dropped=create/get_meta/set_meta/set_solid。其中 set_solid 被 game_jhyt **无判据直接调用**（systems/building.lua:216 的 apply_terrain）→ 在 web 上放/拆建筑改地形会撞 nil，是这张表唯一一条真风险；create/get_meta/set_meta 未被引用。",
+      "note": "格子数据、texture 与索引走 __rustlua_tilemap_of/__rustlua_cell_index，变更经 __rustlua_emit 广播。dropped=create/get_meta/set_meta（都未被发包工程引用）。set_solid 2026-10-03 已实现：与 set_cell 同构改 Lua 侧 solid 串并广播 Z 行，让渲染侧 map.solid 与 Lua 的碰撞表同步；同时补上了 web 侧缺失的格碰撞（__rustlua_move_with_collision：带 Collider 的实体按分轴子步在 solid 格前停住，几何对齐引擎 solid_cell_colliders 的静态 cuboid）。此前 web 上主角能穿过院墙/水面/屋基，放/拆建筑也不改碰撞（building.lua 的 apply_terrain 在 web 上调用的是缺失代理）。",
       "dropped": [
         "create",
         "get_meta",
-        "set_meta",
-        "set_solid"
+        "set_meta"
       ],
       "invented": [],
-      "referenced": [
-        "set_solid"
-      ],
-      "line": 1277
+      "referenced": [],
+      "line": 1319
     },
     {
       "module": "time",
@@ -365,7 +362,7 @@
       "dropped": [],
       "invented": [],
       "referenced": [],
-      "line": 834
+      "line": 876
     },
     {
       "module": "transform",
@@ -377,7 +374,7 @@
       ],
       "invented": [],
       "referenced": [],
-      "line": 1241
+      "line": 1283
     },
     {
       "module": "transform3d",
@@ -387,7 +384,7 @@
       ],
       "invented": [],
       "referenced": [],
-      "line": 1266
+      "line": 1308
     },
     {
       "module": "ui",
@@ -416,7 +413,7 @@
       ],
       "invented": [],
       "referenced": [],
-      "line": 1656
+      "line": 1712
     }
   ]
 }

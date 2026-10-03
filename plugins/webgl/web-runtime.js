@@ -139,6 +139,33 @@
         pivot_y: Number.isFinite(pivot[1]) ? pivot[1] : 0.5,
       };
     }
+    if (entity.components.Collider) {
+      // 碰撞体：`shape=ball;radius=..` / `shape=cuboid;half_width=..;half_height=..`，
+      // 可选 `sensor=true`、`offset=x,y`（字段与 `rustlua-physics` 的
+      // `ColliderDesc::from_component_str` 一致）。
+      // 为什么要解析：web 侧没有物理世界，移动靠 Lua 自己积分——没有这半边信息，
+      // 主角会直接穿过院墙/水面/屋基（实机 2026-10-03：web 上"可以穿越任何阻碍点"）。
+      const c = parseProps(entity.components.Collider);
+      const shape = String(c.shape || 'ball').toLowerCase();
+      const offset = String(c.offset || '').split(',').map(Number);
+      const collider = {
+        shape,
+        sensor: c.sensor === 'true' || c.sensor === true || c.sensor === '1',
+        ox: Number.isFinite(offset[0]) ? offset[0] : 0,
+        oy: Number.isFinite(offset[1]) ? offset[1] : 0,
+        hx: 0,
+        hy: 0,
+      };
+      if (shape === 'cuboid') {
+        collider.hx = Number(c.half_width) > 0 ? Number(c.half_width) : 0;
+        collider.hy = Number(c.half_height) > 0 ? Number(c.half_height) : 0;
+      } else {
+        const radius = Number(c.radius);
+        collider.hx = Number.isFinite(radius) && radius > 0 ? radius : 0;
+        collider.hy = collider.hx;
+      }
+      entity.collider = collider;
+    }
     if (entity.components.Camera) {
       // 相机组件：`projection=orthographic;center=x,y;zoom=z;bounds=min_x,min_y,max_x,max_y`。
       // 原生与 web 共用同一份视觉口径（docs/51 §2.2：zoom=2 对标星露谷）。
@@ -364,6 +391,17 @@
         const index = y * map.width + x;
         if (index < 0 || index >= map.tiles.length) continue;
         map.tiles = map.tiles.slice(0, index) + String.fromCharCode(48 + (Number(parts[4]) || 0)) + map.tiles.slice(index + 1);
+      } else if (parts[0] === 'Z') {
+        // `tilemap.set_solid`（运行期放置/拆除建筑）：Lua 侧的碰撞表与渲染侧的
+        // `map.solid` 必须同步，否则"放置的建筑不挡路"（两侧数据分叉）。
+        const map = entity.tilemap;
+        const x = Number(parts[2]);
+        const y = Number(parts[3]);
+        if (!map || !Number.isFinite(x) || !Number.isFinite(y)) continue;
+        const index = y * map.width + x;
+        if (index < 0 || index >= map.solid.length) continue;
+        const on = Number(parts[4]) ? '1' : '0';
+        map.solid = map.solid.slice(0, index) + on + map.solid.slice(index + 1);
       } else if (parts[0] === 'U') {
         if (entity.tilemap) entity.tilemap.texture = parts.slice(2).join('\t');
       } else if (parts[0] === 'D') {
@@ -783,17 +821,21 @@
     const transforms = {};
     const tilemaps = {};
     const animations = {};
+    const colliders = {};
     for (const entity of sceneState.entities.values()) {
       names[entity.name] = entity.id;
       if (entity.transform) transforms[entity.id] = entity.transform;
       if (entity.tilemap) tilemaps[entity.id] = entity.tilemap;
       if (entity.animation) animations[entity.id] = entity.animation;
+      if (entity.collider) colliders[entity.id] = entity.collider;
     }
     return `
 __rustlua_scene_name = ${luaQuote(sceneState.name)}
 __rustlua_names = ${luaValue(names)}
 __rustlua_transforms = ${luaValue(transforms)}
 __rustlua_tilemaps = ${luaValue(tilemaps)}
+-- 碰撞体表（scene 里的 Collider 组件）：Lua 侧的移动积分靠它决定"谁参与格碰撞"。
+__rustlua_colliders = ${luaValue(colliders)}
 __rustlua_animations = ${luaValue(animations)}
 __rustlua_health = {}
 __rustlua_velocity = {}
@@ -1310,6 +1352,20 @@ tilemap = {
     __rustlua_emit('C\t' .. id .. '\t' .. cx .. '\t' .. cy .. '\t' .. tostring(value))
     return true
   end,
+  -- 阻挡层改写（建筑放置/拆除走这里）：引擎侧会重建该图的静态刚体
+  -- （refresh_tilemap_physics），web 侧同样要**当场**影响移动——Lua 的碰撞表
+  -- 与渲染侧的 map.solid 一起改，否则"放下去的建筑不挡路"。
+  set_solid = function(id, x, y, value)
+    local m = __rustlua_tilemap_of(id)
+    if not m then error('entity has no tilemap', 2) end
+    local cx, cy = math.floor(tonumber(x) or -1), math.floor(tonumber(y) or -1)
+    local i = __rustlua_cell_index(m, cx, cy)
+    if not i then error('tilemap cell (' .. tostring(x) .. ', ' .. tostring(y) .. ') is out of bounds', 2) end
+    local on = value and value ~= false and value ~= 0
+    m.solid = string.sub(m.solid, 1, i - 1) .. (on and '1' or '0') .. string.sub(m.solid, i + 1)
+    __rustlua_emit('Z\t' .. id .. '\t' .. cx .. '\t' .. cy .. '\t' .. (on and 1 or 0))
+    return true
+  end,
   set_texture = function(id, texture)
     local m = __rustlua_tilemap_of(id)
     if not m then error('entity has no tilemap', 2) end
@@ -1776,11 +1832,77 @@ particles = { burst = function(...) return true end }
 camera = { set = function(...) return true end, set_active = function(...) return true end }
 mesh = { set = function(...) return true end }
 os = os or {}; os.getenv = function(_) return nil end
+-- ---------------------------------------------------------------------------
+-- 固体格碰撞（web 侧的第二套实现，几何与引擎一致）
+-- ---------------------------------------------------------------------------
+-- 引擎侧的事实（rustlua-scripting/src/script/mod.rs）：
+--   * solid_cell_colliders：每个 Tilemap.solid 格 → 一个静态 cuboid，
+--     半宽/半高 = 格尺寸/2，偏移 = 该格中心；refresh_tilemap_physics 保证运行期
+--     tilemap.set_solid 立刻重建静态体。
+--   * 实体按场景 Collider 组件（ball/cuboid）生成刚体，只有**有刚体的实体**参与碰撞
+--     （本工程的玩法地图里只有主角 JianghuPlayer 有 Collider）。
+-- web 侧没有物理世界：physics.set_velocity 只是一张速度表，位移靠下面这段自己积分。
+-- 因此这里必须自己实现同一套阻挡——否则主角会直接穿过院墙/水面/屋基
+-- （实机 2026-10-03：web 上"角色可以穿越任何阻碍点"）。
+--
+-- 做法：把实体近似成以自身为心的 AABB，按**分轴 + 子步**移动（每轴最多 1px 一步）：
+-- 该轴撞上就停、另一轴照走 ⇒ 贴墙滑动，与 Rapier 的手感一致；只对带 Collider 的
+-- 实体生效（没刚体的实体照旧自由移动，与引擎"没刚体不参与碰撞"等价）。
+function __rustlua_cell_solid(m, cx, cy)
+  if cx < 0 or cy < 0 or cx >= m.width or cy >= m.height then return true end
+  local i = cy * m.width + cx + 1
+  return string.sub(m.solid, i, i) == '1'
+end
+
+function __rustlua_blocked_at(id, x, y)
+  local colliders = __rustlua_colliders
+  local col = colliders and colliders[id]
+  if not col or col.sensor then return false end
+  local hx, hy = col.hx or 0, col.hy or 0
+  local px, py = x + (col.ox or 0), y + (col.oy or 0)
+  for map_id, m in pairs(__rustlua_tilemaps) do
+    local t = __rustlua_transforms[map_id] or { x = 0, y = 0 }
+    local ts = m.tile_size or 32
+    local ox, oy = t.x or 0, t.y or 0
+    -- 与格边重合不算撞（引擎里球贴着实心面停住，不会越界到邻格）。
+    local cx0 = math.floor((px - hx - ox) / ts)
+    local cx1 = math.floor((px + hx - ox) / ts - 1e-4)
+    local cy0 = math.floor((py - hy - oy) / ts)
+    local cy1 = math.floor((py + hy - oy) / ts - 1e-4)
+    for cy = cy0, cy1 do
+      for cx = cx0, cx1 do
+        if __rustlua_cell_solid(m, cx, cy) then return true end
+      end
+    end
+  end
+  return false
+end
+
+function __rustlua_move_with_collision(id, dx, dy)
+  local p = __rustlua_transforms[id]
+  if not p then return end
+  local colliders = __rustlua_colliders
+  if not (colliders and colliders[id]) then
+    p.x, p.y = (p.x or 0) + dx, (p.y or 0) + dy
+    __rustlua_transforms[id] = p
+    return
+  end
+  local n = math.max(1, math.ceil(math.max(math.abs(dx), math.abs(dy))))
+  local sx, sy = dx / n, dy / n
+  local x, y = p.x or 0, p.y or 0
+  for _ = 1, n do
+    if not __rustlua_blocked_at(id, x + sx, y) then x = x + sx end
+    if not __rustlua_blocked_at(id, x, y + sy) then y = y + sy end
+  end
+  p.x, p.y = x, y
+  __rustlua_transforms[id] = p
+end
+
 -- 每帧把 Lua 侧的场景状态交给渲染器（syncLuaScene 解析）。
 --   step=false 用于 on_create 之后的"只看不改"快照：不推进速度积分与动画帧，
 --   否则一次切换会白白多走一帧动画。
 -- 行格式：R=spawn（建实体） S=sprite.set（Sprite 组件串） X=animation.attach
---        C=set_cell  U=set_texture  D=destroy  T=Transform  A=动画当前 clip + 帧序号
+--        C=set_cell  Z=set_solid  U=set_texture  D=destroy  T=Transform  A=动画当前 clip + 帧序号
 -- R/D 这类结构变更只发一次（op 列表取走即清）；T/A 每帧对**存活**实体重新发。
 function __rustlua_export_state(step)
   local rows = __rustlua_ops
@@ -1789,10 +1911,7 @@ function __rustlua_export_state(step)
   if advance then
     for id, v in pairs(__rustlua_velocity) do
       if __rustlua_alive[id] == true then
-        local p = __rustlua_transforms[id] or { x = 0, y = 0 }
-        p.x = (p.x or 0) + (v.x or 0) * time.delta()
-        p.y = (p.y or 0) + (v.y or 0) * time.delta()
-        __rustlua_transforms[id] = p
+        __rustlua_move_with_collision(id, (v.x or 0) * time.delta(), (v.y or 0) * time.delta())
       end
     end
     for _, a in pairs(__rustlua_animations) do __rustlua_advance_animation(a, time.delta()) end
